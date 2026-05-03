@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html><head><title>eSE HLS Diagnostic</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#111;color:#eee;font-family:monospace;font-size:13px;padding:16px}
+h1{font-size:18px;margin-bottom:12px;color:#9147ff}
+.row{display:flex;gap:16px}
+video{width:640px;height:360px;background:#000;display:block;border:1px solid #333}
+#log{width:100%;height:400px;overflow-y:auto;background:#1a1a1a;border:1px solid #333;padding:8px;margin-top:12px}
+.log-line{margin:2px 0}
+.err{color:#e74c3c} .warn{color:#f1c40f} .ok{color:#2ecc71} .info{color:#3498db}
+#stats{padding:8px;background:#1a1a1a;border:1px solid #333;min-width:300px}
+#stats div{margin:4px 0}
+.label{color:#888;margin-right:8px}
+button{background:#9147ff;color:#fff;border:none;padding:8px 16px;cursor:pointer;margin:4px;border-radius:4px}
+button:hover{background:#7c3aed}
+</style>
+</head><body>
+<h1>eSE Live HLS Diagnostic</h1>
+<div class="row">
+  <div>
+    <video id="v" controls muted></video>
+    <div style="margin-top:8px">
+      <button onclick="startDirect()">Play from :4712 (Node)</button>
+      <button onclick="startEmule()">Play from :4711 (eMule)</button>
+      <button onclick="stopAll()">Stop</button>
+      <button onclick="clearLog()">Clear Log</button>
+    </div>
+  </div>
+  <div id="stats">
+    <h3>Stats (updated every 1s)</h3>
+    <div><span class="label">State:</span><span id="s_state">-</span></div>
+    <div><span class="label">Buffer:</span><span id="s_buffer">-</span></div>
+    <div><span class="label">Current Time:</span><span id="s_time">-</span></div>
+    <div><span class="label">Latency:</span><span id="s_latency">-</span></div>
+    <div><span class="label">Video Paused:</span><span id="s_paused">-</span></div>
+    <div><span class="label">ReadyState:</span><span id="s_ready">-</span></div>
+    <div><span class="label">Network State:</span><span id="s_net">-</span></div>
+    <div><span class="label">Segments Loaded:</span><span id="s_segs">0</span></div>
+    <div><span class="label">Errors:</span><span id="s_errs">0</span></div>
+    <div><span class="label">Media Seq:</span><span id="s_seq">-</span></div>
+    <div><span class="label">Levels:</span><span id="s_levels">-</span></div>
+  </div>
+</div>
+<div id="log"></div>
+
+<script>
+const v = document.getElementById('v');
+const logEl = document.getElementById('log');
+let hls = null;
+let segCount = 0;
+let errCount = 0;
+
+function log(msg, cls='info') {
+  const t = new Date().toISOString().substr(11,12);
+  const div = document.createElement('div');
+  div.className = 'log-line ' + cls;
+  div.textContent = `[${t}] ${msg}`;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function clearLog() { logEl.innerHTML = ''; segCount = 0; errCount = 0; }
+
+function stopAll() {
+  if (hls) { hls.destroy(); hls = null; }
+  v.src = '';
+  log('Stopped', 'warn');
+}
+
+function startStream(src) {
+  stopAll();
+  log(`Starting: ${src}`);
+  
+  if (!Hls.isSupported()) {
+    log('HLS.js not supported!', 'err');
+    return;
+  }
+  
+  hls = new Hls({
+    liveSyncDurationCount: 3,
+    liveMaxLatencyDurationCount: 10,
+    liveDurationInfinity: true,
+    maxBufferLength: 30,
+    maxMaxBufferLength: 60,
+    maxBufferHole: 2,
+    nudgeOffset: 0.5,
+    highBufferWatchdogPeriod: 2,
+    manifestLoadingMaxRetry: 50,
+    levelLoadingMaxRetry: 50,
+    fragLoadingMaxRetry: 50,
+    fragLoadingMaxRetryTimeout: 4000,
+    manifestLoadingTimeOut: 10000,
+    levelLoadingTimeOut: 10000,
+    fragLoadingTimeOut: 20000,
+    debug: false
+  });
+  
+  // Track ALL events
+  hls.on(Hls.Events.MANIFEST_PARSED, (e, d) => {
+    log(`Manifest parsed: ${d.levels.length} levels`, 'ok');
+    v.play();
+  });
+  
+  hls.on(Hls.Events.LEVEL_LOADED, (e, d) => {
+    const det = d.details;
+    document.getElementById('s_seq').textContent = det.startSN + '-' + det.endSN;
+    log(`Playlist loaded: seq ${det.startSN}-${det.endSN}, ${det.fragments.length} frags, live=${det.live}`, 'info');
+  });
+  
+  hls.on(Hls.Events.FRAG_LOADED, (e, d) => {
+    segCount++;
+    document.getElementById('s_segs').textContent = segCount;
+    const frag = d.frag;
+    const size = d.payload ? d.payload.byteLength : 0;
+    log(`Segment loaded: sn=${frag.sn} dur=${frag.duration.toFixed(1)}s size=${(size/1024).toFixed(0)}KB`, 'ok');
+  });
+  
+  hls.on(Hls.Events.FRAG_BUFFERED, (e, d) => {
+    log(`Segment buffered: sn=${d.frag.sn}`, 'info');
+  });
+  
+  hls.on(Hls.Events.ERROR, (e, d) => {
+    errCount++;
+    document.getElementById('s_errs').textContent = errCount;
+    log(`ERROR: type=${d.type} details=${d.details} fatal=${d.fatal} url=${d.url||'?'}`, 'err');
+    
+    if (d.fatal) {
+      switch(d.type) {
+        case Hls.ErrorTypes.MEDIA_ERROR:
+          log('Attempting media recovery...', 'warn');
+          hls.recoverMediaError();
+          break;
+        case Hls.ErrorTypes.NETWORK_ERROR:
+          log('Network error, retrying in 3s...', 'warn');
+          setTimeout(() => hls.loadSource(src), 3000);
+          break;
+        default:
+          log('Fatal error, cannot recover', 'err');
+      }
+    }
+  });
+  
+  hls.on(Hls.Events.BUFFER_STALLED_ERROR, () => {
+    log('Buffer stalled!', 'warn');
+  });
+  
+  hls.loadSource(src);
+  hls.attachMedia(v);
+}
+
+function startDirect() {
+  startStream('http://localhost:4712/stream.m3u8');
+}
+
+function startEmule() {
+  // Get hash from eMule's API (port 4711)
+  const emuleBase = 'http://' + location.hostname + ':4711';
+  fetch(emuleBase + '/api/live/channels').then(r=>r.json()).then(d=>{
+    if (d.channels.length > 0) {
+      const hash = d.channels[0].hash;
+      startStream(`${emuleBase}/api/live/${hash}/stream.m3u8`);
+    } else {
+      log('No channels found!', 'err');
+    }
+  }).catch(e => log('Cannot reach eMule API: ' + e, 'err'));
+}
+
+// Video events
+v.addEventListener('playing', () => log('Video: PLAYING', 'ok'));
+v.addEventListener('pause', () => log('Video: PAUSED', 'warn'));
+v.addEventListener('waiting', () => log('Video: WAITING (buffering)', 'warn'));
+v.addEventListener('stalled', () => log('Video: STALLED', 'err'));
+v.addEventListener('error', () => log('Video: ERROR ' + (v.error?.message||''), 'err'));
+v.addEventListener('seeking', () => log(`Video: SEEKING to ${v.currentTime.toFixed(1)}s`, 'info'));
+
+// Stats updater
+setInterval(() => {
+  const states = ['HAVE_NOTHING','HAVE_METADATA','HAVE_CURRENT_DATA','HAVE_FUTURE_DATA','HAVE_ENOUGH_DATA'];
+  const nets = ['EMPTY','IDLE','LOADING','NO_SOURCE'];
+  
+  document.getElementById('s_state').textContent = hls ? (v.paused ? 'PAUSED' : 'PLAYING') : 'STOPPED';
+  document.getElementById('s_paused').textContent = v.paused;
+  document.getElementById('s_ready').textContent = states[v.readyState] || v.readyState;
+  document.getElementById('s_net').textContent = nets[v.networkState] || v.networkState;
+  document.getElementById('s_time').textContent = v.currentTime.toFixed(1) + 's';
+  
+  // Buffer info
+  let bufInfo = '-';
+  if (v.buffered.length > 0) {
+    const end = v.buffered.end(v.buffered.length - 1);
+    const ahead = end - v.currentTime;
+    bufInfo = `${ahead.toFixed(1)}s ahead (${v.currentTime.toFixed(1)}→${end.toFixed(1)})`;
+  }
+  document.getElementById('s_buffer').textContent = bufInfo;
+  
+  // Latency
+  if (hls && hls.latency !== undefined) {
+    document.getElementById('s_latency').textContent = hls.latency.toFixed(1) + 's';
+  }
+}, 1000);
+
+log('Diagnostic ready. Click a button to start.');
+</script>
+</body></html>

@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{46CF2D25-6A36-4189-B59C-E4815388E554}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectName>mbedTLS</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <OutDir>$(SolutionDir)$(Configuration)\</OutDir>
+    <IntDir>$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <OutDir>$(SolutionDir)$(Configuration)\</OutDir>
+    <IntDir>$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_LIB;MBEDTLS_CONFIG_FILE="mbedtls/mbedtls_config.h";MBEDTLS_THREADING_C;MBEDTLS_THREADING_ALT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\..\include;..\..\tf-psa-crypto\include;..\..\tf-psa-crypto\drivers\builtin\include;..\..\tf-psa-crypto\drivers\builtin\src;..\..\library;..\..\tf-psa-crypto\core;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <CompileAs>CompileAsC</CompileAs>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_LIB;MBEDTLS_CONFIG_FILE="mbedtls/mbedtls_config.h";MBEDTLS_THREADING_C;MBEDTLS_THREADING_ALT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\..\include;..\..\tf-psa-crypto\include;..\..\tf-psa-crypto\drivers\builtin\include;..\..\tf-psa-crypto\drivers\builtin\src;..\..\library;..\..\tf-psa-crypto\core;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <CompileAs>CompileAsC</CompileAs>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_LIB;MBEDTLS_CONFIG_FILE="mbedtls/mbedtls_config.h";MBEDTLS_THREADING_C;MBEDTLS_THREADING_ALT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\..\include;..\..\tf-psa-crypto\include;..\..\tf-psa-crypto\drivers\builtin\include;..\..\tf-psa-crypto\drivers\builtin\src;..\..\library;..\..\tf-psa-crypto\core;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <CompileAs>CompileAsC</CompileAs>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_LIB;MBEDTLS_CONFIG_FILE="mbedtls/mbedtls_config.h";MBEDTLS_THREADING_C;MBEDTLS_THREADING_ALT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\..\include;..\..\tf-psa-crypto\include;..\..\tf-psa-crypto\drivers\builtin\include;..\..\tf-psa-crypto\drivers\builtin\src;..\..\library;..\..\tf-psa-crypto\core;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <CompileAs>CompileAsC</CompileAs>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="..\..\library\debug.c" />
+    <ClCompile Include="..\..\library\error.c" />
+    <ClCompile Include="..\..\library\mbedtls_config.c" />
+    <ClCompile Include="..\..\library\mps_reader.c" />
+    <ClCompile Include="..\..\library\mps_trace.c" />
+    <ClCompile Include="..\..\library\net_sockets.c" />
+    <ClCompile Include="..\..\library\pkcs7.c" />
+    <ClCompile Include="..\..\library\ssl_cache.c" />
+    <ClCompile Include="..\..\library\ssl_ciphersuites.c" />
+    <ClCompile Include="..\..\library\ssl_client.c" />
+    <ClCompile Include="..\..\library\ssl_cookie.c" />
+    <ClCompile Include="..\..\library\ssl_debug_helpers_generated.c" />
+    <ClCompile Include="..\..\library\ssl_msg.c" />
+    <ClCompile Include="..\..\library\ssl_ticket.c" />
+    <ClCompile Include="..\..\library\ssl_tls.c" />
+    <ClCompile Include="..\..\library\ssl_tls12_client.c" />
+    <ClCompile Include="..\..\library\ssl_tls12_server.c" />
+    <ClCompile Include="..\..\library\ssl_tls13_client.c" />
+    <ClCompile Include="..\..\library\ssl_tls13_generic.c" />
+    <ClCompile Include="..\..\library\ssl_tls13_keys.c" />
+    <ClCompile Include="..\..\library\ssl_tls13_server.c" />
+    <ClCompile Include="..\..\library\timing.c" />
+    <ClCompile Include="..\..\library\version.c" />
+    <ClCompile Include="..\..\library\version_features.c" />
+    <ClCompile Include="..\..\library\x509.c" />
+    <ClCompile Include="..\..\library\x509write.c" />
+    <ClCompile Include="..\..\library\x509write_crt.c" />
+    <ClCompile Include="..\..\library\x509write_csr.c" />
+    <ClCompile Include="..\..\library\x509_create.c" />
+    <ClCompile Include="..\..\library\x509_crl.c" />
+    <ClCompile Include="..\..\library\x509_crt.c" />
+    <ClCompile Include="..\..\library\x509_csr.c" />
+    <ClCompile Include="..\..\library\x509_oid.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\core\psa_crypto.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\core\psa_crypto_client.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\core\psa_crypto_driver_wrappers_no_static.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\core\psa_crypto_slot_management.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\core\psa_crypto_storage.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\core\psa_its_file.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\core\tf_psa_crypto_config.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\core\tf_psa_crypto_version.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\aes.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\aesce.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\aesni.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\aria.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\asn1parse.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\asn1write.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\base64.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\bignum.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\bignum_core.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\bignum_mod.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\bignum_mod_raw.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\block_cipher.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\camellia.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\ccm.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\chacha20.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\chachapoly.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\cipher.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\cipher_wrap.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\cmac.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\constant_time.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\ctr_drbg.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\ecdh.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\ecdsa.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\ecjpake.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\ecp.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\ecp_curves.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\ecp_curves_new.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\entropy.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\entropy_poll.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\gcm.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\hmac_drbg.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\lmots.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\lms.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\md.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\md5.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\memory_buffer_alloc.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\nist_kw.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\oid.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\pem.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\pk.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\pkcs5.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\pkparse.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\pkwrite.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\pk_ecc.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\pk_rsa.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\pk_wrap.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\platform.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\platform_util.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\poly1305.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\psa_crypto_aead.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\psa_crypto_cipher.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\psa_crypto_ecp.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\psa_crypto_ffdh.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\psa_crypto_hash.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\psa_crypto_mac.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\psa_crypto_pake.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\psa_crypto_rsa.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\psa_util.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\ripemd160.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\rsa.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\rsa_alt_helpers.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\sha1.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\sha256.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\sha3.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\sha512.c" />
+    <ClCompile Include="..\..\tf-psa-crypto\drivers\builtin\src\threading.c" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -1,0 +1,311 @@
+'use strict';
+const fs           = require('fs');
+const path         = require('path');
+const aiAssistant  = require('../ai_assistant');
+
+let _ctx = {};
+
+function init(ctx) { _ctx = ctx; }
+
+function readJsonBody(req, callback) {
+  let body = '';
+  req.on('data', d => body += d);
+  req.on('end', () => {
+    if (!body.trim()) return callback(null, {});
+    try { callback(null, JSON.parse(body)); }
+    catch (e) { callback(e); }
+  });
+}
+
+function sendJson(res, code, data) {
+  res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(data));
+}
+
+function handle(url, req, res) {
+  // Settings
+  if (url.pathname === '/api/settings' && req.method === 'GET') {
+    const settings = _ctx.security ? _ctx.security.redactSettings(_ctx.loadSettings()) : _ctx.loadSettings();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(settings));
+    return true;
+  }
+
+  if (url.pathname === '/api/settings' && req.method === 'POST') {
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const newSettings = JSON.parse(body);
+        const current = _ctx.loadSettings();
+        if (_ctx.security) _ctx.security.mergeSettings(current, newSettings);
+        else Object.assign(current, newSettings);
+        _ctx.saveSettings(current);
+        const safeSettings = _ctx.security ? _ctx.security.redactSettings(current) : current;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(safeSettings));
+      } catch(e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      }
+    });
+    return true;
+  }
+
+  if (!url.pathname.startsWith('/api/emule/')) return false;
+
+  if (url.pathname === '/api/emule/login') {
+    const password = url.searchParams.get('p') || _ctx.loadSettings().emulePassword || '';
+    _ctx.emuleLogin(password, (err, session) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: !err, session: session || null, error: err ? err.message : null }));
+    });
+    return true;
+  }
+
+  if (url.pathname === '/api/emule/status') {
+    const session = _ctx.getSession();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ loggedIn: !!session, session }));
+    return true;
+  }
+
+  if (url.pathname === '/api/emule/search') {
+    const q = url.searchParams.get('q') || '';
+    if (!q) { res.writeHead(400); res.end('{}'); return true; }
+    const doSearch = () => {
+      _ctx.emuleSearch(q, _ctx.loadSettings(), (err, results) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: !err, results: results || [], error: err ? err.message : null }));
+      });
+    };
+    if (!_ctx.getSession()) {
+      const pw = _ctx.loadSettings().emulePassword;
+      if (pw) {
+        _ctx.emuleLogin(pw, (err) => {
+          if (err) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, results: [], error: 'eMule login failed: ' + err.message }));
+          } else doSearch();
+        });
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, results: [], error: 'No eMule password configured. Go to Settings.' }));
+      }
+    } else doSearch();
+    return true;
+  }
+
+  if (url.pathname === '/api/emule/download') {
+    const hash = url.searchParams.get('hash') || '';
+    if (!hash) { res.writeHead(400); res.end('{}'); return true; }
+    _ctx.emuleDownload(hash, (err, ok) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: ok, error: err ? err.message : null }));
+    });
+    return true;
+  }
+
+  if (url.pathname === '/api/emule/download/action') {
+    const run = (params) => {
+      if (!_ctx.emuleTransferAction) {
+        return sendJson(res, 501, { success: false, error: 'transfer actions unavailable' });
+      }
+      _ctx.emuleTransferAction(params, (err, result) => {
+        if (err) return sendJson(res, 400, { success: false, error: err.message });
+        sendJson(res, 200, { success: true, result });
+      });
+    };
+
+    if (req.method === 'POST') {
+      readJsonBody(req, (err, body) => {
+        if (err) return sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+        run(body || {});
+      });
+    } else {
+      run(Object.fromEntries(url.searchParams.entries()));
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/emule/downloads') {
+    const EMULE_TEMP = path.join(path.dirname(_ctx.EMULE_INCOMING), 'Temp');
+    try {
+      const partFiles = fs.readdirSync(EMULE_TEMP).filter(f => /^\d+\.part$/.test(f));
+      const downloads = [];
+      for (const pf of partFiles) {
+        const metFile = path.join(EMULE_TEMP, pf + '.met');
+        const partPath = path.join(EMULE_TEMP, pf);
+        if (fs.existsSync(metFile)) {
+          const metText = fs.readFileSync(metFile).toString('latin1');
+          const fnMatch = metText.match(/[^\x00-\x1F\x7F-\x9F]{5,}\.(avi|mkv|mp4|wmv|mov|webm|flv)/i);
+          const fileName = fnMatch ? fnMatch[0] : pf;
+          const stat = fs.statSync(partPath);
+          const isActive = (Date.now() - stat.mtimeMs) < 30000;
+          downloads.push({ partFile: pf, fileName, sizeMB: Math.round(stat.size / (1024 * 1024)), sizeBytes: stat.size, partPath, lastModified: stat.mtimeMs, active: isActive });
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(downloads));
+    } catch(e) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('[]');
+    }
+    return true;
+  }
+
+  if (url.pathname === '/api/emule/smartsearch') {
+    const q = url.searchParams.get('q') || '';
+    if (!q) { res.writeHead(400); res.end('{}'); return true; }
+
+    const doSmartSearch = () => {
+      const settings = _ctx.loadSettings();
+      const year     = url.searchParams.get('year') || '';
+
+      // Build the canonical primary query (same logic as before)
+      const parts = q.split(/\s*[:]\s*/).filter(s => s.trim().length > 1);
+      let mainTitle = parts[0] || q;
+      if (mainTitle.length < 3) mainTitle = q.replace(/[:]/g, ' ').replace(/\s+/g, ' ').trim();
+      const primaryQuery = mainTitle + (year ? ' ' + year : '');
+
+      console.log('[SmartSearch] Primary query: "' + primaryQuery + '" (original: "' + q + '")');
+
+      // ── Step 1: Generate query variants (AI or heuristic) ───────────────────
+      aiAssistant.generateQueryVariants(primaryQuery, settings, (err1, variants) => {
+        const queriesToRun = (variants && variants.length > 0) ? variants : [primaryQuery];
+        console.log('[SmartSearch] Will run', queriesToRun.length, 'variant(s):', queriesToRun);
+
+        // ── Step 2: Run searches sequentially, merge by ed2k hash ──────────────
+        // eMule supports only one concurrent search — we exploit its sequential
+        // nature. We stop early once we have ENOUGH_RESULTS good candidates.
+        const ENOUGH_RESULTS = 8;
+        const mergedByHash = {};  // hash(uppercase) → best result object
+        let variantIdx = 0;
+
+        const runNextVariant = () => {
+          // Early-exit: enough high-quality results already gathered
+          if (variantIdx > 0) {
+            const goodSoFar = Object.values(mergedByHash)
+              .filter(r => r.completeSources > 0 && r.score > 0).length;
+            if (goodSoFar >= ENOUGH_RESULTS) {
+              console.log('[SmartSearch] Early-exit: ' + goodSoFar + ' good results, skipping remaining variants');
+              return finalize(Object.values(mergedByHash));
+            }
+          }
+
+          if (variantIdx >= queriesToRun.length) {
+            return finalize(Object.values(mergedByHash));
+          }
+
+          const currentQuery = queriesToRun[variantIdx++];
+          console.log('[SmartSearch] Running variant', variantIdx, '/', queriesToRun.length + ': "' + currentQuery + '"');
+
+          _ctx.emuleSearch(currentQuery, settings, (err2, results) => {
+            let newCount = 0;
+            (results || []).forEach(r => {
+              const key = (r.hash || '').toUpperCase();
+              if (!key) return;
+              if (!mergedByHash[key] || r.score > mergedByHash[key].score) {
+                mergedByHash[key] = { ...r, foundByQuery: currentQuery };
+                newCount++;
+              }
+            });
+            console.log(
+              '[SmartSearch] Variant', variantIdx, ': found', (results || []).length,
+              'results (+' + newCount + ' new), total unique:', Object.keys(mergedByHash).length
+            );
+            runNextVariant();
+          });
+        };
+
+        // ── Step 3: AI re-rank + finalize ──────────────────────────────────────
+        const finalize = (allResults) => {
+          aiAssistant.rankResults(primaryQuery, allResults, settings, (err3, rankedResults) => {
+            const ranked = rankedResults || allResults;
+
+            // Filter: remove definitive fakes and hopeless files.
+            // Rules (in priority order):
+            //   1. score <= -900 → always drop (exe, password-protected, etc.)
+            //   2. Large files (>500MB) → NEVER drop based on sources or heuristic alone;
+            //      only a hard score (< -900) eliminates them.
+            //   3. isFake (heuristic) AND AI confirms unsafe → drop
+            //   4. 0 complete sources AND AI not approving AND small file → drop
+            //   5. Anything with positive score OR AI blessing → keep
+            const viable = ranked.filter(r => {
+              if (r.score <= -900) return false;                     // hard fake (exe, pass-protected…)
+              if (r.sizeMB > 500)  return true;                      // large file: always show, never hide
+              if (r.isFake && !r.aiSafe) return false;               // heuristic fake, AI not overriding
+              if (r.completeSources === 0 && !r.aiSafe) return false; // 0 seeds, not AI-approved, small
+              return r.score > 0 || r.aiSafe || r.sizeMB > 200;     // positive score, AI blessing, or decent size
+            });
+            viable.sort((a, b) => b.score - a.score);
+
+            const totalFound    = allResults.length;
+            const fakesFiltered = totalFound - viable.length;
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              success:       true,
+              query:         primaryQuery,
+              originalQuery: q,
+              variantsUsed:  queriesToRun,
+              aiEnhanced:    aiAssistant.isEnabled(settings),
+              totalFound,
+              fakesFiltered,
+              results:       viable
+            }));
+          });
+        };
+
+        runNextVariant();
+      });
+    };
+
+    if (!_ctx.getSession()) {
+      const pw = _ctx.loadSettings().emulePassword || '';
+      _ctx.emuleLogin(pw, (err) => {
+        if (err) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, results: [], error: 'eMule login failed. Check Settings.' }));
+        } else doSmartSearch();
+      });
+    } else doSmartSearch();
+    return true;
+  }
+
+  if (url.pathname === '/api/emule/ed2klink' && req.method === 'POST') {
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      let link = '';
+      try {
+        const parsed = JSON.parse(body);
+        link = (parsed.link || '').trim();
+      } catch(e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'JSON inválido' }));
+        return;
+      }
+
+      if (!link) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Enlace vacío' }));
+        return;
+      }
+
+      _ctx.emuleAddEd2kLink(link, (err, result) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        if (err) {
+          res.end(JSON.stringify({ success: false, error: err.message }));
+        } else {
+          res.end(JSON.stringify({ success: true, fileName: result.fileName, sizeMB: result.sizeMB, hash: result.hash }));
+        }
+      });
+    });
+    return true;
+  }
+
+  return false;
+}
+
+module.exports = { init, handle };

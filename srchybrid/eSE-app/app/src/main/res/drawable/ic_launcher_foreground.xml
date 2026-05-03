@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Play triangle icon in orange gradient -->
+    <path
+        android:fillColor="#FF6B35"
+        android:pathData="M40,30 L75,54 L40,78 Z"/>
+    <!-- Small "e" letter -->
+    <path
+        android:fillColor="#FF2D78"
+        android:pathData="M30,80 Q30,86 36,86 Q42,86 42,80 L38,80 Q38,83 36,83 Q34,83 34,80 Q34,77 36,77 Q38,77 38,79 L42,79 Q42,73 36,73 Q30,73 30,80 Z"/>
+</vector>

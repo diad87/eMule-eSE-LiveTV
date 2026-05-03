@@ -1,0 +1,105 @@
+<?xml version='1.0' encoding='utf-8' ?>
+<!-- C++Builder XML Project --><PROJECT>
+  <MACROS>
+    <VERSION value="BCB.06.00"/>
+    <PROJECT value="Debug\id3lib.lib"/>
+    <OBJFILES value=" c_wrapper.obj field.obj field_binary.obj field_integer.obj field_string_ascii.obj field_string_unicode.obj frame.obj frame_impl.obj frame_parse.obj frame_render.obj globals.obj header.obj header_frame.obj header_tag.obj helpers.obj io.obj io_decorators.obj io_helpers.obj misc_support.obj mp3_parse.obj readers.obj spec.obj tag.obj tag_file.obj tag_find.obj tag_impl.obj tag_parse.obj tag_parse_lyrics3.obj tag_parse_musicmatch.obj tag_parse_v1.obj tag_render.obj utils.obj writers.obj"/>
+    <RESFILES value=""/>
+    <IDLFILES value=""/>
+    <IDLGENFILES value=""/>
+    <DEFFILE value=""/>
+    <RESDEPEN value="$(RESFILES)"/>
+    <LIBFILES value=""/>
+    <LIBRARIES value=""/>
+    <SPARELIBS value=""/>
+    <PACKAGES value=""/>
+    <PATHCPP value=".;..\src\;"/>
+    <PATHPAS value=".;"/>
+    <PATHRC value=".;"/>
+    <PATHASM value=".;"/>
+    <DEBUGLIBPATH value="$(BCB)\lib\debug"/>
+    <RELEASELIBPATH value="$(BCB)\lib\release"/>
+    <LINKER value="tlib"/>
+    <USERDEFINES value="_DEBUG;WIN32;_MBCS;_LIB;_WINDOWS;HAVE_CONFIG_H;ID3LIB_LINKOPTION=1"/>
+    <SYSDEFINES value="_MSC_VER=1100;_NO_VCL;;_ASSERTE;NO_STRICT"/>
+    <MAINSOURCE value="id3lib.bpf"/>
+    <INCLUDEPATH value="$(BCB)\include;$(BCB)\include\mfc;$(BCB)\include\atl;$(BCB)\include\vcl;"/>
+    <LIBPATH value="$(BCB)\lib;$(DEBUGLIBPATH);;$(BCB)\lib\psdk;"/>
+    <WARNINGS value="-w-8026 -w-8027 -w-8022 -w-8084 -w-8010 -w-8013 -w-8058 -w-par"/>
+  </MACROS>
+  <OPTIONS>
+    <IDLCFLAGS value="-I$(BCB)\include"/>
+    <CFLAG1 value=" -q -w -x -v -Od -I.\\ -I..\\ -I..\include -I..\include\id3 -I..\zlib\include -c -w-8026 -w-8027 -w-8022 -w-8084 -w-8010 -w-8013 -w-8058 -w-par"/>
+    <PFLAGS value="-N0Debug"/>
+    <RFLAGS value="/l 0x809 /d &quot;_DEBUG&quot; /i$(BCB)\include;$(BCB)\include\mfc"/>
+    <AFLAGS value="/mx /w2 /zd"/>
+    <LFLAGS value="/P128"/>
+  </OPTIONS>
+  <LINKER>
+    <ALLOBJ value=" $(OBJFILES)"/>
+    <ALLRES value="$(RESFILES)"/>
+    <ALLLIB value="$(LIBFILES) $(LIBRARIES) "/>
+  </LINKER>
+  <IDEOPTIONS>
+[Version Info]
+IncludeVerInfo=0
+AutoIncBuild=0
+MajorVer=1
+MinorVer=0
+Release=0
+Build=0
+Debug=0
+PreRelease=0
+Special=0
+Private=0
+DLL=0
+Locale=1033
+CodePage=1252
+
+[Version Info Keys]
+CompanyName=
+FileDescription=
+FileVersion=1.0.0.0
+InternalName=
+LegalCopyright=
+LegalTrademarks=
+OriginalFilename=
+ProductName=
+ProductVersion=1.0.0.0
+Comments=
+
+[HistoryLists\hlIncludePath]
+Count=0
+
+[HistoryLists\hlLibraryPath]
+Count=0
+
+[HistoryLists\hlDebugSourcePath]
+Count=0
+
+[HistoryLists\hlConditionals]
+Count=
+
+[HistoryLists\hlTlibPageSize]
+Count=4
+Item0=0x0010
+Item1=0x0020
+Item1=0x0040
+Item1=0x0080
+
+[Debugging]
+DebugSourceDirs=$(BCB)\source\vcl
+
+[Parameters]
+RunParams=
+HostApplication=
+RemoteHost=
+RemotePath=
+RemoteDebug=0
+
+  </IDEOPTIONS>
+  <FILES>
+    
+  </FILES>
+</PROJECT>
+

@@ -1,0 +1,17 @@
+USEUNIT("..\src\adler32.c");
+USEUNIT("..\src\compress.c");
+USEUNIT("..\src\crc32.c");
+USEUNIT("..\src\deflate.c");
+USEUNIT("..\src\gzio.c");
+USEUNIT("..\src\infblock.c");
+USEUNIT("..\src\infcodes.c");
+USEUNIT("..\src\inffast.c");
+USEUNIT("..\src\inflate.c");
+USEUNIT("..\src\inftrees.c");
+USEUNIT("..\src\infutil.c");
+USEUNIT("..\src\trees.c");
+USEUNIT("..\src\uncompr.c");
+USEUNIT("..\src\zutil.c");
+USEFILE("vctobpr.log");
+
+#define Library

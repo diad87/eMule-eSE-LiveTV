@@ -1,0 +1,35 @@
+{
+  "name": "eSE",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js",
+    "build": "pkg server.js --targets node22-win-x64 --output ese-server.exe --compress GZip"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "nat-upnp-2": "^3.0.3"
+  },
+  "pkg": {
+    "scripts": [
+      "*.js",
+      "eSE-live/*.js",
+      "pages/*.js",
+      "routes/*.js"
+    ],
+    "assets": [
+      "emule_mascot.svg",
+      "favicon.ico",
+      "eSE-live/thumbs/**/*",
+      "eSE-live/live/.gitkeep"
+    ],
+    "targets": [
+      "node22-win-x64"
+    ],
+    "outputPath": "dist"
+  }
+}

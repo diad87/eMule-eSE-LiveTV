@@ -1,0 +1,288 @@
+// $Id: dami.idl,v 1.1 2000/10/23 06:04:47 eldamitri Exp $
+
+// damilib: a software library for creating and manipulating id3v1/v2 tags
+// Copyright 1999, 2000  Scott Thomas Haug
+
+// This library is free software; you can redistribute it and/or modify it
+// under the terms of the GNU Library General Public License as published by
+// the Free Software Foundation; either version 2 of the License, or (at your
+// option) any later version.
+//
+// This library is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+// FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Library General Public
+// License for more details.
+//
+// You should have received a copy of the GNU Library General Public License
+// along with this library; if not, write to the Free Software Foundation,
+// Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+
+// The damilib authors encourage improvements and optimisations to be sent to
+// the damilib coordinator.  Please see the README file for details on where to
+// send such submissions.  See the AUTHORS file for a list of people who have
+// contributed to damilib.  See the ChangeLog file for a list of changes to
+// damilib.  These files are distributed with damilib at
+// http://download.sourceforge.net/damilib/
+
+#ifndef _DAMI_IDL_
+#define _DAMI_IDL_
+
+module dami
+{
+  module id3
+  {
+    module v1
+    {
+      typedef const octet GenreID;
+      module genres
+      {
+        GenreID BLUES             =   0;
+        GenreID CLASSIC_ROCK      =   1;
+        GenreID COUNTRY           =   2;
+        GenreID DANCE             =   3;
+        GenreID DISCO             =   4;
+        GenreID FUNK              =   5;
+        GenreID GRUNGE            =   6;
+        GenreID HIP_HOP           =   7;
+        GenreID JAZZ              =   8;
+        GenreID METAL             =   9;
+        GenreID NEW_AGE           =  10;
+        GenreID OLDIES            =  11;
+        GenreID OTHER             =  12;
+        GenreID POP               =  13;
+        GenreID R_B               =  14;
+        GenreID RAP               =  15;
+        GenreID REGGAE            =  16;
+        GenreID ROCK              =  17;
+        GenreID TECHNO            =  18;
+        GenreID INDUSTRIAL        =  19;
+        GenreID ALTERNATIVE       =  20;
+        GenreID SKA               =  21;
+        GenreID DEATH_METAL       =  22;
+        GenreID PRANKS            =  23;
+        GenreID SOUNDTRACK        =  24;
+        GenreID EURO_TECHNO       =  25;
+        GenreID AMBIENT           =  26;
+        GenreID TRIP_HOP          =  27;
+        GenreID VOCAL             =  28;
+        GenreID JAZZ_FUNK         =  29;
+        GenreID FUSION            =  30;
+        GenreID TRANCE            =  31;
+        GenreID CLASSICAL         =  32;
+        GenreID INSTRUMENTAL      =  33;
+        GenreID ACID              =  34;
+        GenreID HOUSE             =  35;
+        GenreID GAME              =  36;
+        GenreID SOUND_CLIP        =  37;
+        GenreID GOSPEL            =  38;
+        GenreID NOISE             =  39;
+        GenreID ALTERNROCK        =  40;
+        GenreID BASS              =  41;
+        GenreID SOUL              =  42;
+        GenreID PUNK              =  43;
+        GenreID SPACE             =  44;
+        GenreID MEDITATIVE        =  45;
+        GenreID INSTRUMENTAL_POP  =  46;
+        GenreID INSTRUMENTAL_ROCK =  47;
+        GenreID ETHNIC            =  48;
+        GenreID GOTHIC            =  49;
+        GenreID DARKWAVE          =  50;
+        GenreID TECHNO_INDUSTRIAL =  51;
+        GenreID ELECTRONIC        =  52;
+        GenreID POP_FOLK          =  53;
+        GenreID EURODANCE         =  54;
+        GenreID DREAM             =  55;
+        GenreID SOUTHERN_ROCK     =  56;
+        GenreID COMEDY            =  57;
+        GenreID CULT              =  58;
+        GenreID GANGSTA           =  59;
+        GenreID TOP_40            =  60;
+        GenreID CHRISTIAN_RAP     =  61;
+        GenreID POP/FUNK          =  62;
+        GenreID JUNGLE            =  63;
+        GenreID NATIVE_AMERICAN   =  64;
+        GenreID CABARET           =  65;
+        GenreID NEW_WAVE          =  66;
+        GenreID PSYCHADELIC       =  67;
+        GenreID RAVE              =  68;
+        GenreID SHOWTUNES         =  69;  
+        GenreID TRAILER           =  70;
+        GenreID LO_FI             =  71;
+        GenreID TRIBAL            =  72;
+        GenreID ACID_PUNK         =  73;
+        GenreID ACID_JAZZ         =  74;
+        GenreID POLKA             =  75;
+        GenreID RETRO             =  76;
+        GenreID MUSICAL           =  77;
+        GenreID ROCK_ROLL         =  78;
+        GenreID HARD_ROCK         =  79;
+        GenreID FOLK              =  80;
+        GenreID FOLK_ROCK         =  81;
+        GenreID NATIONAL_FOLK     =  82;
+        GenreID SWING             =  83;
+        GenreID FAST_FUSION       =  84;
+        GenreID BEBOB             =  85;
+        GenreID LATIN             =  86;
+        GenreID REVIVAL           =  87;
+        GenreID CELTIC            =  88;
+        GenreID BLUEGRASS         =  89;
+        GenreID AVANTGARDE        =  90;
+        GenreID GOTHIC_ROCK       =  91;
+        GenreID PROGRESSIVE_ROCK  =  92;
+        GenreID PSYCHEDELIC_ROCK  =  93;
+        GenreID SYMPHONIC_ROCK    =  94;
+        GenreID SLOW_ROCK         =  95;
+        GenreID BIG_BAND          =  96;
+        GenreID CHORUS            =  97;
+        GenreID EASY_LISTENING    =  98;
+        GenreID ACOUSTIC          =  99;
+        GenreID HUMOUR            = 100;
+        GenreID SPEECH            = 101;
+        GenreID CHANSON           = 102;
+        GenreID OPERA             = 103;
+        GenreID CHAMBER_MUSIC     = 104;
+        GenreID SONATA            = 105;
+        GenreID SYMPHONY          = 106;
+        GenreID BOOTY_BASS        = 107;
+        GenreID PRIMUS            = 108;
+        GenreID PORN_GROOVE       = 109;
+        GenreID SATIRE            = 110;
+        GenreID SLOW_JAM          = 111;
+        GenreID CLUB              = 112;
+        GenreID TANGO             = 113;
+        GenreID SAMBA             = 114;
+        GenreID FOLKLORE          = 115;
+        GenreID BALLAD            = 116;
+        GenreID POWER_BALLAD      = 117;
+        GenreID RHYTHMIC_SOUL     = 118;
+        GenreID FREESTYLE         = 119;
+        GenreID DUET              = 120;
+        GenreID PUNK_ROCK         = 121;
+        GenreID DRUM_SOLO         = 122;
+        GenreID A_CAPELLA         = 123;
+        GenreID EURO_HOUSE        = 124;
+        GenreID DANCE_HALL        = 125;
+        GenreID UNKNOWN           = 0xFF;
+      };
+      
+      interface Tag
+      {
+        attribute string<30> title;
+        attribute string<30> artist;
+        attribute string<30> album;
+        attribute string<4>  year;
+        attribute string<30> comment;
+        // id3v1.1: if track > 0, comment[28] = 0 and comment[29] = track
+        attribute octet      track;
+        attribute octet      genre;
+        
+        Tag clone();
+      };
+    };
+    
+    module v2
+    {
+      interface Frame;
+      interface Field;
+      
+      module field
+      {
+        module flags
+        {
+          const unsigned short NONE      =      0;
+          const unsigned short CSTR      = 1 << 0;
+          const unsigned short LIST      = 1 << 1;
+          const unsigned short ENCODABLE = 1 << 2;
+        };
+
+        module types
+        {
+          enum Types { INTEGER, BINARY, ASCII, UTF8, UTF16 };
+        }
+        typedef types::Types Type;
+      };
+
+      interface Tag
+      {
+        typedef sequence<Frame>  Frames;
+        typedef sequence<Frames> FramesList;
+
+        attribute readonly Frames     frames;
+        attribute readonly FramesList conflicts;
+        
+        Frame createFrame(in string<4> abbrev);
+        Frame importFrame(in Frame);
+        Frame removeFrame(in Frame);
+        
+        Tag clone();
+      };
+
+      interface Frame
+      {
+        typedef sequence<Field> Fields;
+        
+        attribute readonly Tag       tag;
+        attribute readonly string<4> longName;
+        attribute readonly string<3> shortName;
+        attribute readonly string<4> name;
+        attribute readonly boolean   tagDiscard;
+        attribute readonly boolean   fileDiscard;
+        attribute readonly Fields    fields;
+        
+        Frame clone();
+      };
+
+      interface Field
+      {
+        attribute readonly unsigned short fixedSize;
+        attribute readonly field::Type    type;
+      };
+
+      interface IntegerField : Field
+      {
+        attribute unsinged long integer;
+      };
+
+      interface BinaryField : Field
+      {
+        attribute sequence<octet> binary;
+      };
+
+      interface TextField : Field
+      {
+        attribute readonly unsigned short numItems;
+        attribute          string         text;
+        
+        string getTextItem(in unsigned short index);
+        void   addTextItem(in string item);
+        void   removeTextItem();
+      };
+
+      interface TagFacade
+      {
+        void addTag(in Tag);
+        Frame removeTag(in Tag);
+      };
+
+      interface FrameFacade
+      {
+        void  addFrame(in Frame);
+        Frame removeFrame(in Frame);
+      };
+
+      interface TextFacade : FrameFacade
+      {
+        attribute string text;
+      };
+
+      interface DescriptionFacade : Facade
+      {
+        attribute string description;
+      };
+
+      interface
+    };
+  };
+};
+
+#endif /* _DAMI_IDL_ */

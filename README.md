@@ -6,9 +6,9 @@
 
 ## ⬇️ Download
 
-### 📦 [Download eSE LiveTV v0.70b — Portable x64 (ZIP ~84 MB)](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE/eSE-LiveTV-x64-2026-05-03.zip)
+### 📦 [Download eSE LiveTV v0.70b-eSE7.0 — Portable x64 (ZIP ~170 MB)](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE7.0/eSE-LiveTV-v0.70b-eSE7.0-2026-05-17-x64.zip)
 
-> Also available on the [Releases](../../releases) page.
+> Also available on the [Releases](../../releases) page — always pick **Latest**.
 
 **How to run:** Extract the ZIP → double-click `eSE.vbs` → everything starts automatically:
 - eMule client (minimized to tray)

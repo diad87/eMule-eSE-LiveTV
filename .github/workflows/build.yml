@@ -12,10 +12,18 @@
 name: build
 
 on:
-  push:
-    branches: [ main, claude/** ]
-  pull_request:
-    branches: [ main ]
+  # 2026-05-17: CI temporarily set to manual-only (workflow_dispatch).
+  # The repo's vendored-libs build (libpng, zlib, cryptopp, mbedTLS, etc.)
+  # has multiple project-ordering issues on a fresh GitHub-hosted runner:
+  # the local Windows checkouts work because each lib has been built in
+  # the right order at some point, leaving intermediate artifacts. CI from
+  # zero hits a cascade — fixed pnglibconf.h missing, .gitmodules,
+  # hardcoded ZLibSrcDir; next layer is likely link-order between
+  # cryptopp/mbedtls/libpng/libutp.
+  #
+  # Decision (per user, 2026-05-17): ship v0.70b-eSE7.0 without CI,
+  # restore push/PR triggers in v7.1 once the project dependencies are
+  # cleaned up. Manual runs still available via the Actions tab.
   workflow_dispatch:
 
 permissions:

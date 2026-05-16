@@ -1,0 +1,80 @@
+# Build outputs
+Output/
+eSE-Package/
+srchybrid/x64/
+srchybrid/Win32/
+**/x64/Release*/
+**/x64/Debug*/
+**/Win32/Release*/
+**/Win32/Debug*/
+*.obj
+*.pdb
+*.pch
+*.ilk
+*.idb
+*.tlog
+*.recipe
+*.lastbuildstate
+*.Build.CppClean.log
+*.log
+
+# Packaged binaries and generated runtime files
+*.exe
+*.dll
+*.lib
+*.zip
+
+# Internal development docs (not for public repo)
+CHANGELOG_eSE.md
+CHANGELOG_KLUPPY.md
+CHANGELOG_WEB.md
+ARCHITECTURE_eSE_NETWORK.md
+DISTRIBUTION_GUIDE.md
+FOROCOCHES_POST.md
+FUNCTIONAL_BUG_AUDIT_PLAN.md
+FUNCTIONAL_BUG_AUDIT_REPORT.md
+IDEAS.md
+LIVE_TV_STABILIZATION_PLAN.md
+PUBLIC_RELEASE_CHECKLIST.md
+PUBLIC_RELEASE_README.md
+UX_UI_AUDIT_PLAN.md
+UX_UI_AUDIT_REPORT.md
+
+# Build logs and temp outputs
+build*.txt
+changelog_full.txt
+
+# Local eSE runtime/config/secrets
+srchybrid/eSE/node_modules/
+eSE-Package/eSE/node_modules/
+srchybrid/eSE/config.json
+srchybrid/eSE/current_url.txt
+srchybrid/eSE/emule_paths.json
+srchybrid/eSE/telegram.json
+srchybrid/eSE/debug.txt
+srchybrid/eSE/err.txt
+srchybrid/eSE/*.bak
+
+# Temporary/legacy vendor folders
+mbedtls_old_2.7.0/
+miniupnp_temp/
+
+# Local IDE/agent files
+.vs/
+.vscode/
+.idea/
+.claude/
+*.user
+*.suo
+*.aps
+
+# Misc local files
+cache.met
+msbuild_path.txt
+node_modules/
+
+# Dist folder (binaries go in GitHub Releases, not in repo)
+dist/
+
+# Audit tools (internal)
+audit-tools/

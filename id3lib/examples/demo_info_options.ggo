@@ -1,0 +1,8 @@
+# $Id: demo_info_options.ggo,v 1.2 2000/11/07 09:44:02 eldamitri Exp $
+
+package "id3info"
+# don't define 'version' - use the one defined by id3lib's automake
+
+option  "assign"        a "Test the assignment operator"        flag    off
+option  "warning"       w "Turn on warnings (for debugging)"    flag    off
+option  "notice"        n "Turn on notices (for debugging)"     flag    off

@@ -31,7 +31,13 @@
 	 versions do not match.  The zlib version used in this build is recorded
 	 below:
      -->
-    <ZLibSrcDir>c:\Users\iunan\OneDrive\Desktop\eMule0.70b-Sources\zlib</ZLibSrcDir>
+    <!-- Was an absolute c:\Users\iunan\... path, which broke CI on the
+         GitHub-hosted runner (D:\a\eMule-eSE-LiveTV\...). Changed to a
+         relative path so the build works from any checkout location.
+         The path is resolved relative to the importing vcxproj's dir
+         (libpng/projects/vstudio/<subdir>/<project>.vcxproj) — 4 levels
+         up from there hits the repo root, then into the sibling zlib/. -->
+    <ZLibSrcDir>..\..\..\..\zlib</ZLibSrcDir>
 
     <!-- The following line allows compilation for an ARM target with Visual
          Studio 2012.  Notice that this is not supported by the Visual Studio

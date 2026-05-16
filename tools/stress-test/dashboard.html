@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>eSE Stress Dashboard</title>
+<style>
+body{font-family:system-ui,Segoe UI,sans-serif;background:#0d1117;color:#c9d1d9;margin:0;padding:20px}
+h1{margin-top:0;font-size:20px;color:#58a6ff}
+.row{display:flex;gap:20px;margin-bottom:20px}
+.tile{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:16px;min-width:160px}
+.tile .label{font-size:12px;color:#8b949e;text-transform:uppercase}
+.tile .val{font-size:28px;font-weight:600;margin-top:4px}
+canvas{background:#161b22;border:1px solid #30363d;border-radius:6px}
+.status{font-family:Consolas,monospace;font-size:12px;color:#8b949e}
+</style>
+</head>
+<body>
+<h1>eSE Stress Test Dashboard</h1>
+<div class="row">
+  <div class="tile"><div class="label">Alive viewers</div><div id="t-alive" class="val">-</div></div>
+  <div class="tile"><div class="label">Avg latency (ms)</div><div id="t-lat" class="val">-</div></div>
+  <div class="tile"><div class="label">Chunks received</div><div id="t-chunks-rx" class="val">-</div></div>
+  <div class="tile"><div class="label">Chunks served</div><div id="t-chunks-tx" class="val">-</div></div>
+  <div class="tile"><div class="label">Active peers</div><div id="t-peers" class="val">-</div></div>
+</div>
+<canvas id="chart" width="900" height="280"></canvas>
+<div class="status" id="status"></div>
+
+<script>
+// Tiny line chart in plain canvas (no external deps)
+const c = document.getElementById('chart');
+const ctx = c.getContext('2d');
+const aliveSeries = [];
+const latSeries = [];
+const chunksSeries = [];
+const labels = [];
+const MAX_PTS = 60;
+
+function drawChart() {
+    ctx.clearRect(0, 0, c.width, c.height);
+    if (aliveSeries.length < 2) return;
+    const W = c.width, H = c.height, pad = 30;
+    function plotLine(series, color) {
+        if (series.length === 0) return;
+        const max = Math.max(...series, 1);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = 0; i < series.length; i++) {
+            const x = pad + (i / (MAX_PTS - 1)) * (W - 2 * pad);
+            const y = H - pad - (series[i] / max) * (H - 2 * pad);
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+    }
+    plotLine(aliveSeries, '#58a6ff');     // blue: alive
+    plotLine(latSeries, '#f85149');        // red: latency
+    plotLine(chunksSeries.map((v, i) => i === 0 ? 0 : v - chunksSeries[i - 1]),
+        '#3fb950');                         // green: chunks/5s delta
+    // legend
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('blue: alive viewers   red: avg latency ms   green: chunks/5s', pad, 18);
+}
+
+async function tick() {
+    try {
+        const r = await fetch('/aggregate');
+        const d = await r.json();
+        document.getElementById('t-alive').textContent = `${d.alive} / ${d.total}`;
+        document.getElementById('t-lat').textContent = d.avgLatency.toFixed(0);
+        document.getElementById('t-chunks-rx').textContent = d.totalChunksRecv;
+        document.getElementById('t-chunks-tx').textContent = d.totalChunksServed;
+        document.getElementById('t-peers').textContent = d.totalActivePeers;
+
+        labels.push(new Date(d.ts).toLocaleTimeString());
+        aliveSeries.push(d.alive);
+        latSeries.push(d.avgLatency);
+        chunksSeries.push(d.totalChunksRecv);
+        if (labels.length > MAX_PTS) {
+            labels.shift(); aliveSeries.shift(); latSeries.shift(); chunksSeries.shift();
+        }
+        drawChart();
+        document.getElementById('status').textContent =
+            `last update ${new Date(d.ts).toISOString()} (${labels.length} samples)`;
+    } catch (e) {
+        document.getElementById('status').textContent = 'error: ' + e.message;
+    }
+}
+setInterval(tick, 5000);
+tick();
+</script>
+</body>
+</html>

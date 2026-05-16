@@ -1,10 +1,17 @@
-$src = "c:\Users\iunan\OneDrive\Desktop\eMule0.70b-Sources"
-$dst = "$src\eSE-Package"
+# 2026-05-17: derive $src from $PSScriptRoot so the script works from
+# any worktree (was hardcoded to the main checkout, which produced a
+# stale v7.0 ZIP packaging a 13-day-old emule.exe + ese-server.exe from
+# the main worktree while the fresh build sat in the worktree where
+# build_all.ps1 was actually invoked).
+$src = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
+if (-not $src) { $src = (Get-Location).Path }
+$dst = Join-Path $src 'eSE-Package'
 # ZIP filename includes the release tag + date so multiple builds coexist
 # in the Desktop without overwriting each other.
 $releaseTag = if ($env:ESE_RELEASE_TAG) { $env:ESE_RELEASE_TAG } else { 'v0.70b-eSE7.0' }
 $buildDate  = Get-Date -Format 'yyyy-MM-dd'
-$zip = "c:\Users\iunan\OneDrive\Desktop\eSE-LiveTV-$releaseTag-$buildDate-x64.zip"
+$desktop = [Environment]::GetFolderPath('Desktop')
+$zip = Join-Path $desktop "eSE-LiveTV-$releaseTag-$buildDate-x64.zip"
 if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
 New-Item -ItemType Directory $dst | Out-Null
 Write-Host "[1] emule.exe"
@@ -120,14 +127,22 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
 }
 Write-Host "[4b] ese-server.exe (Node.js bundled dashboard, ~74 MB)"
 # emule.exe expects ese-server.exe in the same folder. Without this the user
-# gets the recurring "ese-server.exe not found" dialog. We fish for the most
-# recent local copy; if none is found, log instructions for rebuilding it.
-$eseSrvCandidates = @(
-    "$env:USERPROFILE\OneDrive\Desktop\eSE-Package\ese-server.exe",
-    "$env:USERPROFILE\Downloads\eSE-LiveTV-x64-2026-05-03\ese-server.exe",
-    "$src\Output\eSE-LiveTV-x64-2026-05-03\ese-server.exe",
-    "$src\srchybrid\eSE\ese-server.exe"
-) | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending
+# gets the recurring "ese-server.exe not found" dialog.
+#
+# 2026-05-17: the freshly-built ese-server.exe lives next to package.json
+# in this worktree. Always prefer it. The other candidates are fallbacks
+# for users running build_package.ps1 without having just rebuilt
+# (they pick up the most recent locally-cached copy).
+$freshEse = Join-Path $src 'srchybrid\eSE\ese-server.exe'
+if (Test-Path $freshEse) {
+    $eseSrvCandidates = @($freshEse)
+} else {
+    $eseSrvCandidates = @(
+        "$env:USERPROFILE\OneDrive\Desktop\eSE-Package\ese-server.exe",
+        "$env:USERPROFILE\Downloads\eSE-LiveTV-x64-2026-05-03\ese-server.exe",
+        "$src\Output\eSE-LiveTV-x64-2026-05-03\ese-server.exe"
+    ) | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending
+}
 if ($eseSrvCandidates.Count -gt 0) {
     Copy-Item $eseSrvCandidates[0] "$dst\ese-server.exe"
     $sMB = [math]::Round((Get-Item "$dst\ese-server.exe").Length / 1MB, 1)

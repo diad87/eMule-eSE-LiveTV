@@ -84,7 +84,7 @@ jobs:
       # ── 3) Minimal smoke: emule.exe --help should exit 0 without GUI ──
       # If --help isn't recognised, the binary still loads — that's all
       # we can verify without a real Kad mesh.
-      - name: Smoke: emule.exe loads
+      - name: "Smoke: emule.exe loads"
         shell: pwsh
         continue-on-error: true   # MFC apps may not exit cleanly on --help; tolerate non-0
         run: |

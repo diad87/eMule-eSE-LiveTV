@@ -23,9 +23,11 @@ Diff vs upstream eMule 0.70b: [CHANGES_FROM_EMULE_0.70b.md](CHANGES_FROM_EMULE_0
 
 ## ⬇️ Download
 
-### 📦 [Download eSE LiveTV v0.70b-eSE7.0 — Portable x64 (ZIP ~170 MB)](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE7.0/eSE-LiveTV-v0.70b-eSE7.0-2026-05-17-x64.zip)
+### 📦 [Download latest release — Portable x64 ZIP (~170 MB)](https://github.com/diad87/eMule-eSE-LiveTV/releases/latest)
 
-> Also on the [Releases](../../releases) page — always pick **Latest**.
+Click the link, then download the `.zip` asset from the latest release page. The releases page always reflects what's current — no broken hardcoded URLs to maintain.
+
+> All historical builds are on the [Releases](../../releases) page.
 
 **How to run:**
 

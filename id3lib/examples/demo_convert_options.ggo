@@ -1,0 +1,11 @@
+# $Id: demo_convert_options.ggo,v 1.2 2000/11/07 09:44:02 eldamitri Exp $
+
+package "id3convert"
+# don't define 'version' - use the one defined by id3lib's automake
+
+option  "v1tag"         1 "Render only the id3v1 tag"           flag    off
+option  "v2tag"         2 "Render only the id3v2 tag"           flag    off
+option  "strip"         s "Strip the tags instead of rendering" flag    off
+option  "padding"       p "Use padding in the tag"              flag    off
+option  "warning"       w "Turn on warnings (for debugging)"    flag    off
+option  "notice"        n "Turn on notices (for debugging)"     flag    off

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0d0d12">
+
+    <!-- WebView (hidden until connected) -->
+    <WebView
+        android:id="@+id/webview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <!-- Splash / Connection screen -->
+    <FrameLayout
+        android:id="@+id/splash_screen"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="visible">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="32dp">
+
+            <!-- Logo -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="eSE"
+                android:textColor="#FF6B35"
+                android:textSize="48sp"
+                android:textStyle="bold"
+                android:fontFamily="sans-serif-condensed" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="eMule Streaming Engine"
+                android:textColor="#666666"
+                android:textSize="14sp"
+                android:layout_marginTop="4dp" />
+
+            <!-- Spinner -->
+            <ProgressBar
+                android:id="@+id/progress_bar"
+                style="?android:attr/progressBarStyleLarge"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginTop="48dp"
+                android:indeterminateTint="#FF6B35" />
+
+            <!-- Status text -->
+            <TextView
+                android:id="@+id/status_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Conectando..."
+                android:textColor="#AAAAAA"
+                android:textSize="15sp"
+                android:textAlignment="center"
+                android:layout_marginTop="16dp"
+                android:maxWidth="280dp" />
+
+        </LinearLayout>
+    </FrameLayout>
+
+</FrameLayout>

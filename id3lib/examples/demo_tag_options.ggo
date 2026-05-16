@@ -1,0 +1,18 @@
+# $Id: demo_tag_options.ggo,v 1.2 2000/11/07 09:44:02 eldamitri Exp $
+
+package "id3tag"
+# don't define 'version' - use the one defined by id3lib's automake
+
+option  "v1tag"         1 "Render only the id3v1 tag"           flag    off
+option  "v2tag"         2 "Render only the id3v2 tag"           flag    off
+option  "artist"        a "Set the artist information"          string  no
+option  "album"         A "Set the album title information"     string  no
+option  "song"          s "Set the title information"           string  no
+option  "comment"       c "Set the comment information"         string  no
+option  "desc"          C "Set the comment description"         string  no
+option  "year"          y "Set the year"                        string  no
+option  "track"         t "Set the track number"                string  no
+option  "total"         T "Set the total number of tracks"      string  no
+option  "genre"         g "Set the genre"                       short   no
+option  "warning"       w "Turn on warnings (for debugging)"    flag    off
+option  "notice"        n "Turn on notices (for debugging)"     flag    off

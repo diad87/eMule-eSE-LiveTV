@@ -1,0 +1,19 @@
+# ── eSE — Archivos locales que NO deben migrar entre PCs ──────────────────────
+
+# Rutas de instalación local (generadas con emule_paths.json si Incoming/Temp no son estándar)
+emule_paths.json
+
+# Estado de sesión / túnel (específico de cada sesión/PC)
+current_url.txt
+telegram.json
+config.json
+
+# Logs y artefactos de debug
+debug.txt
+err.txt
+
+# Backups generados por el editor
+*.bak
+
+# Dependencias Node (se restauran con 'npm install')
+node_modules/

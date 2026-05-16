@@ -1,0 +1,22 @@
+eSE — eMule Streaming Engine
+Licencia de uso
+
+Este software es una modificación del cliente eMule 0.70b (código abierto bajo GNU GPL v2).
+
+El código fuente original de eMule está disponible en:
+https://github.com/irwir/eMule
+
+Las modificaciones realizadas por el proyecto eSE incluyen:
+- Motor de streaming en tiempo real (VOD + Live)
+- Interfaz web eSE
+- Soporte multi-audio HLS
+- Broadcasting 24/7 desde archivos multimedia
+
+Este software se distribuye bajo los mismos términos de la GNU General Public License v2.
+Puedes redistribuirlo y/o modificarlo bajo los términos de dicha licencia.
+
+Este software se proporciona "tal cual", sin garantía de ningún tipo.
+El uso de este software es bajo tu propia responsabilidad.
+
+Para más información sobre la GPL v2, visita:
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.html

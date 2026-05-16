@@ -32,7 +32,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          submodules: false  # vendored under cryptopp/, mbedtls/, etc. — already in tree
+          # libutp is a real submodule (160000 mode); cryptopp/mbedtls/etc.
+          # are vendored as regular trees. Recursive clones libutp.
+          submodules: recursive
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2

@@ -108,15 +108,14 @@ foreach ($sd in "pages","routes","shared","eSE-live") {
     $sp = "$src\srchybrid\eSE\$sd"
     if (Test-Path $sp) { Copy-Item $sp "$dst\eSE\$sd" -Recurse }
 }
-Write-Host "[3] node_modules"
-if (Test-Path "$src\srchybrid\eSE\node_modules") {
-    try {
-        Copy-Item "$src\srchybrid\eSE\node_modules" "$dst\eSE\node_modules" -Recurse -ErrorAction Stop
-        Write-Host "  node_modules OK"
-    } catch {
-        Write-Host "  node_modules partial copy (some files locked): $_" -ForegroundColor DarkYellow
-    }
-}
+Write-Host "[3] node_modules — SKIPPED (redundant + leak risk)"
+# 2026-05-17: node_modules NO se incluye en el ZIP final.
+#   - ese-server.exe ya tiene TODAS las deps bundleadas via pkg.
+#   - Llevaba ~50 MB y ~600 ficheros redundantes en el ZIP público.
+#   - Algunos paquetes (ej. fast-xml-parser) traen .log con paths del
+#     autor en sus tarballs de npm — innecesario exponer eso.
+# Si en el futuro hace falta en el dist (porque el .vbs lanza node
+# directamente en lugar del exe), re-habilitar aquí.
 Write-Host "[4] node.exe"
 New-Item -ItemType Directory "$dst\node" | Out-Null
 if (Get-Command node -ErrorAction SilentlyContinue) {
@@ -335,13 +334,15 @@ foreach ($d in $docFiles) {
 }
 # Build-stamp so support can identify which checkout produced the zip.
 # Version stamp -- keep in sync with tools/build_all.ps1 -ReleaseTag default.
+# 2026-05-17 PRIVACY: removed 'host: $env:COMPUTERNAME' — it leaked the
+# builder's PC name (e.g. 'IÑAKI-CASA') into the public release ZIP.
+# Anonymous build info only.
 $releaseTag = if ($env:ESE_RELEASE_TAG) { $env:ESE_RELEASE_TAG } else { 'v0.70b-eSE7.0' }
 $gitSha = $(git -C "$src" rev-parse --short HEAD 2>$null)
 @(
     "release:  $releaseTag",
     "built:    $(Get-Date -Format 'yyyy-MM-dd HH:mm')",
-    "commit:   $gitSha",
-    "host:     $env:COMPUTERNAME"
+    "commit:   $gitSha"
 ) | Out-File "$dst\BUILD_INFO.txt" -Encoding ASCII
 
 # D6: ship the auto-update helper next to emule.exe so the in-app

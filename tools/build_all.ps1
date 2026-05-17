@@ -163,7 +163,11 @@ $ok = Step 'langs' {
     $built = 0; $failed = 0
     foreach ($p in $projs) {
         $log = Join-Path $logDir "lang-$($p.BaseName)-$stamp.log"
-        & $msbuild $p.FullName /p:Configuration=Dynamic /p:Platform=x64 `
+        # /p:PlatformToolset=v143 overrides the v141_xp from the .vcxproj
+        # files. The XP toolset isn't installed on most VS 2022 builders;
+        # v143 is the default and produces fully-working DLLs.
+        # (Same override applied in build_package.ps1.)
+        & $msbuild $p.FullName /p:Configuration=Dynamic /p:Platform=x64 /p:PlatformToolset=v143 `
             /v:quiet /nologo /m `
             /fl /flp:"LogFile=$log;ErrorsOnly" 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) { $built++ }

@@ -9,8 +9,13 @@
 //  preferences in-memory, and passes it to the child via env var so they
 //  always agree without any user intervention.
 // ============================================================================
-
-class CString;
+//
+//  This header uses MFC's CString without forward-declaring it. Every
+//  translation unit that includes this header in eMule already pulls in
+//  MFC via stdafx.h (precompiled), so CString is already defined.
+//  Forward-declaring `class CString;` is wrong because CString is a
+//  typedef of CStringT<TCHAR, ...>, not a regular class — and the
+//  conflict cascades into hundreds of "CString undefined" errors.
 
 namespace eSEHelpers
 {

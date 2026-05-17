@@ -30,12 +30,12 @@ Write-Host "[1b] Language DLLs (srchybrid\lang\*.vcxproj)"
 $langDst = Join-Path $dst 'lang'
 New-Item -ItemType Directory $langDst -Force -ErrorAction SilentlyContinue | Out-Null
 
-# PS 5.1 has no ?. null-conditional operator — use explicit if/else.
+# PS 5.1 has no ?. null-conditional operator -- use explicit if/else.
 $msbuildCmd = Get-Command MSBuild.exe -ErrorAction SilentlyContinue
 $msbuild = if ($msbuildCmd) { $msbuildCmd.Source } else { $null }
 if (-not $msbuild) {
     # Common VS2022 install path
-    # Env-var names with parens require ${...} to escape — $env:ProgramFiles(x86) gets parsed wrong.
+    # Env-var names with parens require ${...} to escape -- $env:ProgramFiles(x86) gets parsed wrong.
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vswhere) {
         $vsRoot = & $vswhere -latest -prerelease -products * -requires Microsoft.Component.MSBuild -property installationPath
@@ -112,14 +112,14 @@ foreach ($sd in "pages","routes","shared","eSE-live") {
     $sp = "$src\srchybrid\eSE\$sd"
     if (Test-Path $sp) { Copy-Item $sp "$dst\eSE\$sd" -Recurse }
 }
-Write-Host "[3] node_modules — SKIPPED (redundant + leak risk)"
+Write-Host "[3] node_modules -- SKIPPED (redundant + leak risk)"
 # 2026-05-17: node_modules NO se incluye en el ZIP final.
 #   - ese-server.exe ya tiene TODAS las deps bundleadas via pkg.
-#   - Llevaba ~50 MB y ~600 ficheros redundantes en el ZIP público.
+#   - Llevaba ~50 MB y ~600 ficheros redundantes en el ZIP publico.
 #   - Algunos paquetes (ej. fast-xml-parser) traen .log con paths del
-#     autor en sus tarballs de npm — innecesario exponer eso.
+#     autor en sus tarballs de npm -- innecesario exponer eso.
 # Si en el futuro hace falta en el dist (porque el .vbs lanza node
-# directamente en lugar del exe), re-habilitar aquí.
+# directamente en lugar del exe), re-habilitar aqui.
 Write-Host "[4] node.exe"
 New-Item -ItemType Directory "$dst\node" | Out-Null
 if (Get-Command node -ErrorAction SilentlyContinue) {
@@ -140,11 +140,13 @@ $freshEse = Join-Path $src 'srchybrid\eSE\ese-server.exe'
 if (Test-Path $freshEse) {
     $eseSrvCandidates = @($freshEse)
 } else {
-    $eseSrvCandidates = @(
+    # Wrap pipeline in @() so a single match stays a 1-elem array (else PS
+    # collapses to a scalar string and $cands[0] returns the first CHAR).
+    $eseSrvCandidates = @(@(
         "$env:USERPROFILE\OneDrive\Desktop\eSE-Package\ese-server.exe",
         "$env:USERPROFILE\Downloads\eSE-LiveTV-x64-2026-05-03\ese-server.exe",
         "$src\Output\eSE-LiveTV-x64-2026-05-03\ese-server.exe"
-    ) | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending
+    ) | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending)
 }
 if ($eseSrvCandidates.Count -gt 0) {
     Copy-Item $eseSrvCandidates[0] "$dst\ese-server.exe"
@@ -220,12 +222,12 @@ Write-Host "[5a2] eMule.tmpl (WebServer template)"
 # eMule.tmpl") even though our /api/* endpoints don't actually need it.
 # Bundle the template alongside emule.exe AND in config/ so the search
 # logic in Preferences.cpp finds it under either CONFIGDIR or EXECUTABLEDIR.
-$tmplCandidates = @(
+$tmplCandidates = @(@(
     "$env:USERPROFILE\Downloads\eSE-LiveTV-x64-2026-05-03\config\eMule.tmpl",
     "$src\Output\eSE-LiveTV-x64-2026-05-03\config\eMule.tmpl",
     "$src\srchybrid\eMule.tmpl",
     "$env:LOCALAPPDATA\eMule\config\eMule.tmpl"
-) | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending
+) | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending)
 New-Item -ItemType Directory "$dst\config" -Force -ErrorAction SilentlyContinue | Out-Null
 if ($tmplCandidates.Count -gt 0) {
     Copy-Item $tmplCandidates[0] "$dst\config\eMule.tmpl" -Force
@@ -239,11 +241,11 @@ Write-Host "[5b0] eD2K server list (server.met)"
 # Without server.met the user's first-run eMule has zero servers to connect
 # to. ed2k stays Disconnected, Kad bootstrap may also struggle. Ship a
 # known-good copy from the local install, falling back to the public list.
-$serverMetCandidates = @(
+$serverMetCandidates = @(@(
     "$env:APPDATA\eMule\config\server.met",
     "$env:LOCALAPPDATA\eMule\config\server.met",
     "$src\srchybrid\config\server.met"
-) | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending
+) | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending)
 New-Item -ItemType Directory "$dst\config" -Force -ErrorAction SilentlyContinue | Out-Null
 if ($serverMetCandidates.Count -gt 0) {
     Copy-Item $serverMetCandidates[0] "$dst\config\server.met" -Force
@@ -271,12 +273,12 @@ Write-Host "[5b] Kad bootstrap (nodes.dat)"
 # instant (~5 s) instead of 5-15 minutes of cold-boot DHT discovery.
 # We grab the most recent local copy if any exists; otherwise fetch from
 # the well-known nodes-dat repo at build time.
-$nodesDatCandidates = @(
+$nodesDatCandidates = @(@(
     "$env:USERPROFILE\Downloads\eSE-LiveTV-x64-2026-05-03\config\nodes.dat",
     "$env:APPDATA\eMule\config\nodes.dat",
     "$env:LOCALAPPDATA\eMule\config\nodes.dat",
     "$src\srchybrid\config\nodes.dat"
-) | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending
+) | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending)
 if ($nodesDatCandidates.Count -gt 0) {
     Copy-Item $nodesDatCandidates[0] "$dst\config\nodes.dat" -Force
     Write-Host "  nodes.dat bundled from $($nodesDatCandidates[0])" -ForegroundColor Green
@@ -338,8 +340,8 @@ foreach ($d in $docFiles) {
 }
 # Build-stamp so support can identify which checkout produced the zip.
 # Version stamp -- keep in sync with tools/build_all.ps1 -ReleaseTag default.
-# 2026-05-17 PRIVACY: removed 'host: $env:COMPUTERNAME' — it leaked the
-# builder's PC name (e.g. 'IÑAKI-CASA') into the public release ZIP.
+# 2026-05-17 PRIVACY: removed 'host: $env:COMPUTERNAME' -- it leaked the
+# builder's PC name (e.g. 'INAKI-CASA') into the public release ZIP.
 # Anonymous build info only.
 $releaseTag = if ($env:ESE_RELEASE_TAG) { $env:ESE_RELEASE_TAG } else { 'v0.70b-eSE7.0' }
 $gitSha = $(git -C "$src" rev-parse --short HEAD 2>$null)

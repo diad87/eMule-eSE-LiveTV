@@ -24,7 +24,6 @@ const modules = [
   'search_ui.js',
   'smart_play.js',
   'poster_hero.js',
-  'hero_ui.js',
   'init.js',
 ];
 

@@ -1206,7 +1206,7 @@ video{width:100%;height:100%;object-fit:contain;cursor:pointer}
 </div>
 <div class="join-retry" id="join-retry"></div>
 </div>
-<video id="v" autoplay playsinline></video>
+<video id="v" autoplay muted playsinline></video>
 <div class="controls">
 <div class="ctrl-row">
 <button class="ctrl-btn" id="play-btn" onclick="togglePlay()">&#9646;&#9646;</button>

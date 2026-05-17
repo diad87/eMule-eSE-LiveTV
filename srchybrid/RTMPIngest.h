@@ -93,6 +93,17 @@ private:
 	DWORD			m_dwLastRestartTick;
 	void			TryWatchdogRestart();  // called from WatcherLoop on FFmpeg death
 
+	// v7.1.6 — ABR variant preference for the P2P chunk feed (file mode only).
+	// File broadcasts encode 4 simultaneous variants (0=360p, 1=540p, 2=720p,
+	// 3=1080p) but only ONE of them goes through the P2P chunk buffer. Before
+	// v7.1.6 this was hardcoded to variant 2 (720p, ~3 Mbps) — too heavy for
+	// viewers on 4G/CGN or other constrained links. Now driven by the bitrate
+	// parameter passed to StartMediaFile: <=1000 picks 0, <=2000 picks 1,
+	// <=3500 picks 2, otherwise 3. Other variants are still encoded (no
+	// ffmpeg-side change) so the watcher can fall back if the requested
+	// variant isn't produced yet for a given segment number.
+	UINT			m_nPreferredVariant;  // 0..3, default 2 (720p)
+
 	// Static thread proc for the segment watcher.
 	static DWORD WINAPI WatcherThread(LPVOID param);
 	void WatcherLoop();

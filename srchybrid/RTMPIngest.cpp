@@ -470,6 +470,19 @@ bool CRTMPIngest::StartScreenCapture(UINT bitrate, const CString& outputDir, Chu
 	m_nLastBitrate    = bitrate;
 	m_strLastFile.Empty();
 
+	// v7.1.5 STREAM-MIX FIX: kill ANY ffmpeg leftover from a prior emule
+	// session that crashed/was force-killed. Without this, the orphan keeps
+	// writing seg_*.ts into %TEMP%\eMule_RTMP\ in parallel with the new
+	// ffmpeg we're about to spawn, the WatcherThread reads whichever bytes
+	// landed last, and viewers see the wrong content (e.g. test pattern
+	// instead of the movie they joined). Only Start() did this — the other
+	// 3 modes inherited orphans and silently bled them into the buffer.
+	int orphans = RTMPKillOrphanFFmpegs(_T("eMule_RTMP"));
+	if (orphans > 0) {
+		LIVE_LOG("RTMP", "Screen: reaped %d orphan ffmpeg.exe(s) from prior session", orphans);
+		Sleep(500);
+	}
+
 	// Ensure output directory exists
 	CreateDirectory(outputDir, NULL);
 
@@ -557,6 +570,17 @@ bool CRTMPIngest::StartMediaFile(const CString& filePath, UINT bitrate, const CS
 	if (GetFileAttributes(filePath) == INVALID_FILE_ATTRIBUTES) {
 		AddLogLine(true, _T("eSE Media: File not found: %s"), (LPCTSTR)filePath);
 		return false;
+	}
+
+	// v7.1.5 STREAM-MIX FIX: see StartScreenCapture comment. An orphan
+	// ffmpeg from a previously-crashed emule keeps writing test-pattern
+	// (or screen, or prior-file) seg_*.ts into the same dir, racing this
+	// new spawn — viewers end up with mixed/wrong bytes that pass the
+	// streamKey filter and render as the wrong content.
+	int orphans = RTMPKillOrphanFFmpegs(_T("eMule_RTMP"));
+	if (orphans > 0) {
+		LIVE_LOG("RTMP", "Media: reaped %d orphan ffmpeg.exe(s) from prior session", orphans);
+		Sleep(500);
 	}
 
 	// Ensure output directory exists
@@ -917,6 +941,14 @@ bool CRTMPIngest::StartTestPattern(UINT bitrate, const CString& outputDir, Chunk
 	m_nLastSourceMode = 1;
 	m_nLastBitrate    = bitrate;
 	m_strLastFile.Empty();
+
+	// v7.1.5 STREAM-MIX FIX: see StartScreenCapture comment. Symmetric
+	// orphan reap for test-pattern mode (same crash-then-restart hazard).
+	int orphans = RTMPKillOrphanFFmpegs(_T("eMule_RTMP"));
+	if (orphans > 0) {
+		LIVE_LOG("RTMP", "TestPattern: reaped %d orphan ffmpeg.exe(s) from prior session", orphans);
+		Sleep(500);
+	}
 
 	// Ensure output directory exists
 	CreateDirectory(outputDir, NULL);

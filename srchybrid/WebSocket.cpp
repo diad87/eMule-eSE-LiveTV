@@ -298,7 +298,13 @@ UINT AFX_CDECL WebSocketAcceptedFunc(LPVOID pD)
 	const SocketData *pData = static_cast<SocketData*>(pD);
 	CWebServer *pThis = static_cast<CWebServer*>(pData->pThis);
 	SOCKET hSocket = pData->hSocket;
-	const in_addr &ad(pData->incomingaddr);
+	// 2026-05-17 BUG FIX: was 'const in_addr &ad(pData->incomingaddr)'. The
+	// reference dangles after 'delete pData' below, and is dereferenced way
+	// later in OnReceived() at lines ~362/367. The memory typically reads as
+	// zeros after free, so /api/live/* requests intermittently saw clientIP=0
+	// and got rejected by the localhost-only security gate ("[SEC] Blocked
+	// remote /api/live request from 0.0.0.0"). Copy by VALUE.
+	const in_addr ad = pData->incomingaddr;
 	pThis->SetIP(ad.s_addr);
 	delete pData;
 

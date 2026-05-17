@@ -1582,8 +1582,59 @@ function pollEmuleChannels() {
   req.on('timeout', () => req.destroy());
 }
 
-// Initial fetch + interval
+// Background poller for Kad-discovered streams (works without UI activity).
+// /api/live/kad/streams returns the current Kad-discovered directory on the
+// C++ side. Mirroring it into channelSearch means opening /live shows other
+// people's broadcasts even when nobody has the page open to drive a poll.
+function pollKadStreams() {
+  const req = http.get('http://127.0.0.1:4711/api/live/kad/streams', { timeout: 3000 }, (res) => {
+    let body = '';
+    res.on('data', d => body += d);
+    res.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        if (!data.streams || data.streams.length === 0) return;
+        data.streams.forEach(s => {
+          if (!s.streamKey) return;
+          // Skip own stream — the pipeline already registers it as isLocal.
+          if (s.own) return;
+          const startedIso = s.startedAt
+            ? new Date(s.startedAt * 1000).toISOString()
+            : new Date().toISOString();
+          channelSearch.addRemoteChannel({
+            streamKey: s.streamKey,
+            title: s.title || 'Live',
+            category: s.category || 'general',
+            language: s.language || 'es',
+            bitrate: s.bitrate || 3000,
+            viewers: s.viewers || 0,
+            started: startedIso,
+            broadcasterIP: s.broadcasterIP,
+            broadcasterPort: s.broadcasterPort
+          });
+        });
+      } catch (e) { console.warn('[eSE Live] pollKadStreams parse error:', e.message); }
+    });
+  });
+  req.on('error', () => {});
+  req.on('timeout', () => req.destroy());
+}
+
+// Initial fetch + interval.
+// During the first 60s after Node starts up we poll Kad fast (every 3s)
+// so a freshly-launched eMule populates /live within seconds. Then we back
+// off to the normal 10s cadence to avoid churn.
 pollEmuleChannels();
+pollKadStreams();
 setInterval(pollEmuleChannels, 10000);
+
+const __eseKadFastUntil = Date.now() + 60000;
+const __eseKadFastId = setInterval(() => {
+  pollKadStreams();
+  if (Date.now() > __eseKadFastUntil) {
+    clearInterval(__eseKadFastId);
+    setInterval(pollKadStreams, 10000);
+  }
+}, 3000);
 
 module.exports = { handleRoute };

@@ -2,9 +2,17 @@
  * media_resolver.js — Centralized media file resolution
  * Finds media files across eMule Incoming (completed) and Temp (.part) directories.
  * Handles hash extraction from .part.met files.
+ *
+ * SECURITY: resolveMediaFile() is reachable from public HTTP endpoints because
+ * tunnel.js opens port 8080 over UPnP and via Cloudflare Quick Tunnel. The
+ * fileName argument therefore comes from untrusted input. We sanitize at the
+ * function entry with safeBasename(): any '../', absolute path, drive prefix,
+ * NUL byte or path separator causes the lookup to fail fast (returns null).
+ * See utils.safeBasename for the policy.
  */
 const fs = require('fs');
 const path = require('path');
+const { safeBasename, isPathWithin } = require('./utils');
 
 const VIDEO_EXTENSIONS_RE = /\.(avi|mkv|mp4|wmv|mov|flv|webm|mpg|mpeg)$/i;
 const MET_FILENAME_RE = /[^\x00-\x1F\x7F-\x9F]{5,}\.(avi|mkv|mp4|wmv|mov|webm|flv)/i;
@@ -48,15 +56,24 @@ function extractFileName(metBuf) {
  * @returns {object|null} { filePath, isPartFile, fileSize, hash?, realFileName? }
  */
 function resolveMediaFile(fileName, incomingDir, tempDir) {
-  if (!fileName) return null;
-  
+  // SECURITY: Reject path traversal attempts before touching the filesystem.
+  // fileName arrives from HTTP, which is publicly reachable via UPnP/Cloudflare.
+  const safeName = safeBasename(fileName);
+  if (!safeName) return null;
+  // Re-bind to the sanitized version so the rest of the function never sees
+  // the raw input. We intentionally don't fall back to fileName anywhere below.
+  fileName = safeName;
+
   // 1. Exact match in Incoming (completed download)
   const incomingPath = path.join(incomingDir, fileName);
+  // Defence-in-depth: verify the resolved path is still under incomingDir
+  // (catches symlink escapes if the user has unusual content in Incoming).
+  if (!isPathWithin(incomingPath, incomingDir)) return null;
   if (fs.existsSync(incomingPath)) {
     const stat = fs.statSync(incomingPath);
     return { filePath: incomingPath, isPartFile: false, fileSize: stat.size };
   }
-  
+
   // 2. Case-insensitive match in Incoming
   try {
     const incomingFiles = fs.readdirSync(incomingDir).filter(f => VIDEO_EXTENSIONS_RE.test(f));

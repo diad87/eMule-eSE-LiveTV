@@ -285,6 +285,7 @@
     <ClCompile Include="EMSocket.cpp" />
     <ClCompile Include="Emule.cpp" />
     <ClCompile Include="EmuleDlg.cpp" />
+    <ClCompile Include="eSEHelpers.cpp" />
     <ClCompile Include="EnBitmap.cpp" />
     <ClCompile Include="EncryptedDatagramSocket.cpp" />
     <ClCompile Include="EncryptedStreamSocket.cpp" />
@@ -583,6 +584,7 @@
     <ClInclude Include="Emule.h" />
     <ClInclude Include="emule_site_config.h" />
     <ClInclude Include="EmuleDlg.h" />
+    <ClInclude Include="eSEHelpers.h" />
     <ClInclude Include="EnBitmap.h" />
     <ClInclude Include="EncryptedDatagramSocket.h" />
     <ClInclude Include="EncryptedStreamSocket.h" />

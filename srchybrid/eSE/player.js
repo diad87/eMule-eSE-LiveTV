@@ -1,4 +1,22 @@
-﻿let estTotalSec = 0;
+﻿// ════════════════════════════════════════════════════════════════════════════
+//  player.js — LEGACY MONOLITH (kept as fallback only)
+// ════════════════════════════════════════════════════════════════════════════
+//  This file is NOT served when the prebuilt _player_bundle.js exists, which
+//  is the default in release builds. The bundle is built from the modular
+//  files (search_ui.js, poster_hero.js, init.js, etc.) which have the up-to-
+//  date fixes. Maintain those, not this monolith.
+//
+//  Audit 2026-05-17 backported the following blocking fixes here so the
+//  fallback path is not catastrophically broken:
+//    - C1: TMDB_KEY declared globally
+//    - C2: var meta/details added in showMovieDetail
+//    - C5: duplicate setTimeout(fetchLocalPosters) removed
+//    - I5: TMDB fetches routed through /api/tmdb/* proxy
+//  Many other issues remain (XSS/CSS injection, leaks). See the audit and
+//  use the modular bundle instead.
+// ════════════════════════════════════════════════════════════════════════════
+
+let estTotalSec = 0;
 let mediaSource = null;
 let sourceBuffer = null;
 let currentPartNum = null;
@@ -10,6 +28,12 @@ let pumpRunning = false;
 let bytesReceived = 0;
 let lastBitrateCheck = 0;
 let currentBitrate = 0;
+
+// C1 fix: declare TMDB_KEY at module level so heroInfo/showMovieDetail can use it.
+// (Was previously only declared inside fetchLocalPosters/loadHero, causing
+//  ReferenceError in the other call sites.) The key is now also kept
+//  server-side via the /api/tmdb/* proxy — fetches below should use that.
+var TMDB_KEY = (typeof window !== 'undefined' && window.ESE_TMDB_KEY) || '2dca580c2a14b55200e784d157207b4d';
 
 var video = document.getElementById('video-player');
 
@@ -664,7 +688,7 @@ function showMovieDetail(imdbId, localFileName, localizedTitle) {
     
     // Fetch HD backdrop from TMDB (OMDB poster is only 300px)
     var backdropUrl = poster;
-    fetch('https://api.themoviedb.org/3/find/' + imdbId + '?api_key=' + TMDB_KEY + '&external_source=imdb_id')
+    fetch('/api/tmdb/find/' + encodeURIComponent(imdbId) + '?external_source=imdb_id')
       .then(function(r){return r.json()})
       .then(function(find) {
         var results = (find.movie_results || []).concat(find.tv_results || []);
@@ -677,6 +701,11 @@ function showMovieDetail(imdbId, localFileName, localizedTitle) {
         if (el) el.style.backgroundImage = 'url(' + backdropUrl + ')';
       }).catch(function(){});
     
+    // C2 fix: declare meta/details locally so they don't become accidental globals
+    // (which would carry stale HTML across subsequent showMovieDetail calls).
+    var meta = '';
+    var details = '';
+
     // Build buttons — Play ALWAYS visible
     var buttons = '';
     var seriesUI = '';
@@ -1953,20 +1982,21 @@ setTimeout(loadTrendingMovies, 500);
 
 // Fetch posters for local files (completed + downloading)
 function fetchLocalPosters() {
-  var TMDB_KEY = window.ESE_TMDB_KEY || '2dca580c2a14b55200e784d157207b4d';var cards = document.querySelectorAll('.card[data-title]');
+  // I5 fix: TMDB key kept server-side via /api/tmdb/* proxy.
+  var cards = document.querySelectorAll('.card[data-title]');
   cards.forEach(function(card) {
     var raw = card.getAttribute('data-title');
     if (!raw) return;
-    
+
     // Check if filename has embedded TMDB ID (e.g., [tmdbid-1297842])
     var tmdbId = (window._tmdbFromFilename && window._tmdbFromFilename[raw]) || null;
-    
+
     // Smart filename cleaning for P2P files
     var candidates = extractMovieTitles(raw);
-    
+
     if (tmdbId) {
       // Direct TMDB lookup — guaranteed accurate
-      fetch('https://api.themoviedb.org/3/movie/' + tmdbId + '?api_key=' + TMDB_KEY + '&language=es-ES')
+      fetch('/api/tmdb/movie/' + encodeURIComponent(tmdbId) + '?language=es-ES')
         .then(function(r) { return r.json(); })
         .then(function(m) {
           if (m && m.poster_path) {
@@ -1977,29 +2007,29 @@ function fetchLocalPosters() {
               imdbId: m.imdb_id
             });
           } else if (candidates.length > 0) {
-            tryTMDBCandidate(candidates, 0, card, TMDB_KEY);
+            tryTMDBCandidate(candidates, 0, card);
           }
-        }).catch(function() { if (candidates.length > 0) tryTMDBCandidate(candidates, 0, card, TMDB_KEY); });
+        }).catch(function() { if (candidates.length > 0) tryTMDBCandidate(candidates, 0, card); });
     } else if (candidates.length > 0) {
-      tryTMDBCandidate(candidates, 0, card, TMDB_KEY);
+      tryTMDBCandidate(candidates, 0, card);
     }
   });
 }
 
-function tryTMDBCandidate(candidates, idx, card, apiKey) {
+function tryTMDBCandidate(candidates, idx, card) {
   if (idx >= candidates.length) {
     // Last resort: try OMDb
     tryOMDbFallback(candidates, card);
     return;
   }
   var query = candidates[idx];
-  fetch('https://api.themoviedb.org/3/search/movie?api_key=' + apiKey + '&language=es-ES&query=' + encodeURIComponent(query))
+  fetch('/api/tmdb/search/movie?language=es-ES&query=' + encodeURIComponent(query))
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.results && data.results.length > 0) {
         var m = data.results[0];
         // Get IMDB ID for detailed modal
-        fetch('https://api.themoviedb.org/3/movie/' + m.id + '/external_ids?api_key=' + apiKey)
+        fetch('/api/tmdb/movie/' + encodeURIComponent(m.id) + '/external_ids')
           .then(function(r) { return r.json(); })
           .then(function(ids) {
             applyPosterToCard(card, {
@@ -2015,9 +2045,9 @@ function tryTMDBCandidate(candidates, idx, card, apiKey) {
             });
           });
       } else {
-        tryTMDBCandidate(candidates, idx + 1, card, apiKey);
+        tryTMDBCandidate(candidates, idx + 1, card);
       }
-    }).catch(function() { tryTMDBCandidate(candidates, idx + 1, card, apiKey); });
+    }).catch(function() { tryTMDBCandidate(candidates, idx + 1, card); });
 }
 
 function tryOMDbFallback(candidates, card) {
@@ -2155,7 +2185,8 @@ function extractMovieTitles(raw) {
   
   return candidates;
 }
-setTimeout(fetchLocalPosters, 1000);
+// (C5 fix: duplicate setTimeout(fetchLocalPosters, 1000) removed.
+//  Single call is at line ~1869.)
 
 // === DISNEY+ STYLE HERO ===
 var heroMovies = [];
@@ -2175,9 +2206,8 @@ function toggleHeaderSearch() {
 }
 
 function loadHero() {
-  // Use TMDB trending to get HD backdrops
-  var TMDB_KEY = window.ESE_TMDB_KEY || '2dca580c2a14b55200e784d157207b4d';
-  fetch('https://api.themoviedb.org/3/trending/movie/week?api_key=' + TMDB_KEY + '&language=es-ES')
+  // I5 fix: TMDB key kept server-side via /api/tmdb/* proxy.
+  fetch('/api/tmdb/trending/movie/week?language=es-ES')
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (!data.results || !data.results.length) return;
@@ -2246,7 +2276,7 @@ function heroInfo() {
   if (!m) return;
   var title = m.title || m.name;
   // Get IMDB ID from TMDB (reliable, since we already have the TMDB id)
-  fetch('https://api.themoviedb.org/3/movie/' + m.id + '/external_ids?api_key=' + TMDB_KEY + '')
+  fetch('/api/tmdb/movie/' + encodeURIComponent(m.id) + '/external_ids')
     .then(function(r) { return r.json(); })
     .then(function(ids) {
       if (ids.imdb_id) {

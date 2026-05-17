@@ -32,13 +32,12 @@ Click the link, then download the `.zip` asset from the latest release page. The
 **How to run:**
 
 1. Extract the ZIP anywhere (e.g. `C:\eSE\`)
-2. Double-click `eSE.vbs` — eMule starts minimized to tray, the dashboard launches in the background, and your browser opens to `http://localhost:8080/live`.
-
-Alternatively, double-click `emule.exe` directly: it auto-spawns `ese-server.exe` on startup, so the dashboard becomes available regardless. The `.vbs` only adds the convenience of auto-opening the browser.
+2. Double-click `emule.exe` — connect to ed2k + Kad as usual, then press the **eSE** button in the toolbar. The embedded Node.js server starts in the background and your browser opens to `http://localhost:8080/live`.
 
 No installer required. No external dependencies. 100% portable. Settings live under `%APPDATA%\eMule\`.
 
-> For the full broadcast / watch / troubleshoot walkthrough see [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+> Spanish quickstart (5 steps, with screenshots): [GUIA-RAPIDA.md](GUIA-RAPIDA.md)
+> Full broadcast / watch / troubleshoot walkthrough: [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 
 ---
 

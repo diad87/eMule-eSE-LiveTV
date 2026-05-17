@@ -1312,13 +1312,30 @@ function smartPlay(movieTitle, movieYear) {
           hideSpinner();
           if (titleEl) titleEl.textContent = 'Error de conexion';
           updateStatus(data.error || 'No se pudo conectar a eMule', 0);
-          showActions([
-            { text: 'Reintentar', primary: true, action: function() { smartPlay(movieTitle, movieYear); } },
-            { text: 'Volver', primary: false, action: backToDetail }
-          ]);
+
+          var actions = [];
+          if (data.reason === 'webserver_down') {
+            actions.push({ text: 'He abierto eMule', primary: true, action: function() {
+              updateStatus('Reintentando...', 10);
+              setTimeout(function() { smartPlay(movieTitle, movieYear); }, 500);
+            }});
+          } else if (data.reason === 'password_mismatch') {
+            actions.push({ text: 'Resincronizar', primary: true, action: function() {
+              updateStatus('Resincronizando con eMule...', 10);
+              fetch('/api/emule/resync', { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                  if (d.success) smartPlay(movieTitle, movieYear);
+                  else updateStatus('No se pudo resincronizar: ' + (d.error || ''), 0);
+                });
+            }});
+          }
+          actions.push({ text: 'Reintentar', primary: actions.length === 0, action: function() { smartPlay(movieTitle, movieYear); } });
+          actions.push({ text: 'Volver', primary: false, action: backToDetail });
+          showActions(actions);
           return;
         }
-        
+
         if (!data.results || data.results.length === 0) {
           hideSpinner();
           var filteredMsg = data.fakesFiltered > 0

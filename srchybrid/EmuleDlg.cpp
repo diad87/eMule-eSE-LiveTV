@@ -73,6 +73,7 @@
 #include "DropTarget.h"
 #include "LastCommonRouteFinder.h"
 #include "WebServer.h"
+#include "eSEHelpers.h"
 #include "DownloadQueue.h"
 #include "ClientUDPSocket.h"
 #include "UploadQueue.h"
@@ -3442,6 +3443,37 @@ void CemuleDlg::ToggleEseServer(bool bOpenBrowser)
 			AddDebugLogLine(true, _T("eSE auto-spawn: dashboard not found in any known location"));
 		}
 		return;
+	}
+
+	// === Pre-flight: garantizar WebServer activo con password conocida ===
+	// Sin esto, ese-server.exe arrancaría e intentaría loguearse contra el
+	// WebInterface de eMule, pero podría estar apagado o con otra password
+	// → "eMule login failed. Check Settings." en la UI del usuario.
+	{
+		CString configDir = thePrefs.GetMuleDirectory(EMULE_CONFIGDIR);
+		CString sharedPw = eSEHelpers::EnsureSharedPassword(configDir);
+
+		bool needRestartSockets = false;
+		if (thePrefs.GetWSPort() != 4711) {
+			thePrefs.SetWSPort(4711);
+			needRestartSockets = true;
+		}
+		if (!thePrefs.GetWSIsEnabled())
+			thePrefs.SetWSIsEnabled(true);
+		thePrefs.SetWSPass(sharedPw);  // siempre sincroniza (idempotente)
+
+		// Aplicar al WebServer en caliente (idempotente — no reinicia eMule)
+		if (theApp.webserver) {
+			theApp.webserver->StartServer();
+			if (needRestartSockets)
+				theApp.webserver->RestartSockets();
+		}
+
+		// Persistir prefs.ini para próximos arranques
+		CPreferences::Save();
+
+		// Pasar la password al hijo vía env var (el child la hereda)
+		SetEnvironmentVariable(_T("ESE_EMULE_PASSWORD"), sharedPw);
 	}
 
 	// Launch hidden, with the resolved working directory.

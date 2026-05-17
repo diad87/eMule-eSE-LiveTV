@@ -24,6 +24,7 @@ CRTMPIngest::CRTMPIngest()
 	, m_nLastBitrate(0)
 	, m_nRestarts(0)
 	, m_dwLastRestartTick(0)
+	, m_nPreferredVariant(2)  // v7.1.6: default = 720p, matches pre-7.1.6 behavior
 {
 }
 
@@ -565,6 +566,18 @@ bool CRTMPIngest::StartMediaFile(const CString& filePath, UINT bitrate, const CS
 	m_nLastSourceMode = 3;
 	m_nLastBitrate    = bitrate;
 	m_strLastFile     = filePath;
+
+	// v7.1.6 — Map the requested bitrate to which ABR variant feeds the P2P
+	// chunk buffer. ffmpeg still encodes all 4 variants (hardcoded ladder
+	// 800/1600/2800/4500 kbps below); this only changes WHICH variant the
+	// watcher picks up. <=1000 -> 360p (~800k), <=2000 -> 540p (~1.6M),
+	// <=3500 -> 720p (~2.8M, prior behavior), otherwise 1080p (~4.5M).
+	if      (bitrate <= 1000) m_nPreferredVariant = 0;
+	else if (bitrate <= 2000) m_nPreferredVariant = 1;
+	else if (bitrate <= 3500) m_nPreferredVariant = 2;
+	else                      m_nPreferredVariant = 3;
+	LIVE_LOG("RTMP", "Media: bitrate=%u -> P2P variant %u (360p|540p|720p|1080p)",
+		bitrate, m_nPreferredVariant);
 
 	// Verify file exists
 	if (GetFileAttributes(filePath) == INVALID_FILE_ATTRIBUTES) {
@@ -1210,33 +1223,50 @@ void CRTMPIngest::WatcherLoop()
 			break;
 		}
 
-		// Look for the next expected segment file. Try patterns in order of
-		// preference (best P2P-feedable variant first):
-		//   1. seg_NNNNN.ts            — single-stream (RTMP/testpattern)
-		//   2. seg_2_NNNNN.ts          — ABR variant 2 (720p, our P2P feed)
-		//   3. seg_1_NNNNN.ts          — ABR variant 1 (540p fallback)
-		//   4. seg_0_NNNNN.ts          — ABR variant 0 (360p minimum)
-		//   5. seg_3_NNNNN.ts          — ABR variant 3 (1080p, too big — last resort)
-		// Variant 2 (720p) is the best balance for P2P: ~700 KB chunks at
-		// 2.8 Mbps, big enough to look HD on viewers, small enough that mesh
-		// propagation stays fast under high viewer counts.
+		// Look for the next expected segment file. Always try the single-stream
+		// name first (testpattern/screen/RTMP produce these). For file mode,
+		// fall through to ABR variants in an order driven by m_nPreferredVariant
+		// (v7.1.6: prefer the variant matching the broadcaster's bitrate hint,
+		// then walk outward — closest variants next, farthest last).
+		//
+		// Example: preferred=0 (360p) -> try seg_, seg_0_, seg_1_, seg_2_, seg_3_
+		// Example: preferred=2 (720p, pre-v7.1.6 default) -> try seg_, seg_2_, seg_1_, seg_3_, seg_0_
+		// The fallback order matters when the preferred variant lags behind
+		// (NVENC sometimes finishes higher variants before lower ones).
 		CString segFile;
 		DWORD attr = INVALID_FILE_ATTRIBUTES;
-		const TCHAR* kPatterns[] = {
-			_T("%s\\seg_%05u.ts"),
-			_T("%s\\seg_2_%05u.ts"),
-			_T("%s\\seg_1_%05u.ts"),
-			_T("%s\\seg_0_%05u.ts"),
-			_T("%s\\seg_3_%05u.ts"),
-		};
-		for (int p = 0; p < (int)_countof(kPatterns); ++p) {
+		// Build the per-variant suffix order once (cheap).
+		int variantOrder[4];
+		{
+			int n = 0;
+			variantOrder[n++] = (int)m_nPreferredVariant;
+			for (int dist = 1; n < 4; ++dist) {
+				int up   = (int)m_nPreferredVariant + dist;
+				int down = (int)m_nPreferredVariant - dist;
+				if (down >= 0 && down <= 3 && n < 4) variantOrder[n++] = down;
+				if (up   >= 0 && up   <= 3 && n < 4) variantOrder[n++] = up;
+			}
+		}
+		// Single-stream pattern is tried first (always present for non-ABR modes).
+		{
 			CString candidate;
-			candidate.Format(kPatterns[p], (LPCTSTR)m_strOutputDir, lastSeg);
+			candidate.Format(_T("%s\\seg_%05u.ts"), (LPCTSTR)m_strOutputDir, lastSeg);
 			DWORD a = GetFileAttributes(candidate);
 			if (a != INVALID_FILE_ATTRIBUTES) {
 				segFile = candidate;
 				attr    = a;
-				break;
+			}
+		}
+		if (attr == INVALID_FILE_ATTRIBUTES) {
+			for (int i = 0; i < 4 && attr == INVALID_FILE_ATTRIBUTES; ++i) {
+				CString candidate;
+				candidate.Format(_T("%s\\seg_%d_%05u.ts"), (LPCTSTR)m_strOutputDir,
+					variantOrder[i], lastSeg);
+				DWORD a = GetFileAttributes(candidate);
+				if (a != INVALID_FILE_ATTRIBUTES) {
+					segFile = candidate;
+					attr    = a;
+				}
 			}
 		}
 		if (attr != INVALID_FILE_ATTRIBUTES) {

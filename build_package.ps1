@@ -52,7 +52,11 @@ if ($msbuild -and $langProjects) {
     $built = 0; $failed = 0
     foreach ($proj in $langProjects) {
         $logFile = Join-Path $env:TEMP "lang_$($proj.BaseName).log"
-        & $msbuild $proj.FullName /p:Configuration=Dynamic /p:Platform=x64 /v:quiet /nologo /m `
+        # 2026-05-17: /p:PlatformToolset=v143 overrides the v141_xp from the
+        # .vcxproj files. The XP toolset isn't installed on most VS 2022
+        # builders; v143 is the default and produces fully-working DLLs.
+        # (Drops XP/Vista support which the README already excludes.)
+        & $msbuild $proj.FullName /p:Configuration=Dynamic /p:Platform=x64 /p:PlatformToolset=v143 /v:quiet /nologo /m `
             /fl /flp:"LogFile=$logFile;ErrorsOnly" 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) {
             $built++

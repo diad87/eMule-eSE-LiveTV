@@ -40,6 +40,13 @@ static char THIS_FILE[] = __FILE__;
 #define ESE_KAD_SEARCH_COOLDOWN_FAST (5 * 1000)        // 5 s while empty
 #define ESE_KAD_SEARCH_COOLDOWN_SLOW (30 * 1000)       // 30 s once we have results
 #define ESE_KAD_SEARCH_COOLDOWN     ESE_KAD_SEARCH_COOLDOWN_SLOW  // legacy alias
+// Disk snapshot: persist the channel directory across eMule restarts so
+// /live is not empty on the first second after launch (Kad takes time to
+// repopulate organically). Snapshot file uses a versioned plain-text
+// format — additive, never breaks older readers.
+#define ESE_KAD_DISK_SAVE_INTERVAL  (5 * 60 * 1000)    // every 5 min
+#define ESE_KAD_DIRECTORY_FILENAME  _T("eselive_directory.dat")
+#define ESE_KAD_DIRECTORY_VERSION   1
 
 // Tag names for live stream metadata in Kad
 // Using non-conflicting custom tag IDs above 0xF0
@@ -67,11 +74,22 @@ CLiveKadBridge::CLiveKadBridge()
     , m_bKadWasConnectedLastTick(false)     // DISC-S03
     , m_nSearchTokens(10)                   // DISC-S08
     , m_dwLastSearchTokenRefill(0)          // DISC-S08
+    , m_bLoadedFromDisk(false)              // disk persistence
+    , m_dwLastDiskSaveTime(0)               // disk persistence
 {
 }
 
 CLiveKadBridge::~CLiveKadBridge()
 {
+    // Flush the directory to disk so the next eMule run can prefill /live
+    // before Kad has had a chance to reconnect.
+    try {
+        CSingleLock lock(&m_lock, TRUE);
+        if (m_bLoadedFromDisk)
+            SaveDirectoryToDisk();
+    } catch (...) {
+        // never throw from destructor
+    }
     m_streamDirectory.RemoveAll();
 }
 
@@ -654,6 +672,17 @@ void CLiveKadBridge::Process()
 {
     DWORD now = GetTickCount();
 
+    // Lazy disk load on first tick: restores last-seen channel directory so
+    // /live shows known broadcasters immediately on startup (subject to TTL).
+    if (!m_bLoadedFromDisk) {
+        CSingleLock lock(&m_lock, TRUE);
+        if (!m_bLoadedFromDisk) {
+            LoadDirectoryFromDisk();
+            m_bLoadedFromDisk = true;
+            m_dwLastDiskSaveTime = now;  // don't immediately re-save what we just loaded
+        }
+    }
+
     // DISC-S03: detect Kad off->on transition. If we deferred a publish
     // because Kad was disconnected, fire an immediate burst NOW so the
     // broadcaster appears in the DHT within seconds of Kad coming up
@@ -704,6 +733,13 @@ void CLiveKadBridge::Process()
                 "Drained %d dial(s); %d still queued",
                 drained, (int)m_pendingDials.GetCount());
         }
+    }
+
+    // Periodically snapshot the directory so it survives eMule restarts.
+    if (now - m_dwLastDiskSaveTime >= ESE_KAD_DISK_SAVE_INTERVAL) {
+        CSingleLock lock(&m_lock, TRUE);
+        SaveDirectoryToDisk();
+        m_dwLastDiskSaveTime = now;
     }
 }
 
@@ -789,4 +825,184 @@ KadDebugSnapshot CLiveKadBridge::BuildDebugKadSnapshot() const
     snap.lastResultIP    = m_dwLastResultIP;
     snap.lastResultPort  = m_wLastResultPort;
     return snap;
+}
+
+
+// ============================================================
+// DISK PERSISTENCE
+// ============================================================
+// On-disk format (versioned, plain-text, one record per line so a future
+// version can read older snapshots without breaking compatibility):
+//
+//   ESELIVE_DIR v1
+//   <streamKey-hex32>\t<title>\t<category>\t<language>\t<bitrate>\t
+//                <viewerCount>\t<broadcasterIP>\t<broadcasterPort>\t
+//                <broadcasterUDPPort>\t<startedAt>\t<lastSeenUnix>\n
+//
+// Own-stream entries are skipped on save (they get repopulated at runtime
+// when the broadcaster starts again). Entries older than 2x the TTL are
+// dropped at load time — the broadcaster has almost certainly stopped.
+
+CString CLiveKadBridge::GetDirectoryFilePath()
+{
+    return thePrefs.GetMuleDirectory(EMULE_CONFIGDIR) + ESE_KAD_DIRECTORY_FILENAME;
+}
+
+void CLiveKadBridge::LoadDirectoryFromDisk()
+{
+    // Caller must hold m_lock.
+    CString path = GetDirectoryFilePath();
+    CStdioFile file;
+    CFileException ex;
+    if (!file.Open(path, CFile::modeRead | CFile::typeText | CFile::shareDenyWrite, &ex))
+        return;  // file doesn't exist yet — fine on first run
+
+    try {
+        CString line;
+        if (!file.ReadString(line) || line.Find(_T("ESELIVE_DIR v")) != 0) {
+            file.Close();
+            return;
+        }
+        int version = _ttoi((LPCTSTR)line + 13);
+        if (version < 1 || version > ESE_KAD_DIRECTORY_VERSION) {
+            file.Close();
+            return;  // unknown future version — leave file untouched
+        }
+
+        uint32 nowUnix = (uint32)time(NULL);
+        int loaded = 0;
+        int skipped = 0;
+        while (file.ReadString(line)) {
+            line.TrimRight(_T("\r\n"));
+            if (line.IsEmpty()) continue;
+
+            // Tab-separated fields (11 in v1).
+            CString fields[11];
+            int fIdx = 0;
+            int pos = 0;
+            CString tok;
+            while (fIdx < 11) {
+                tok = line.Tokenize(_T("\t"), pos);
+                if (tok.IsEmpty() && pos < 0) break;
+                fields[fIdx++] = tok;
+            }
+            if (fIdx < 11) { skipped++; continue; }
+
+            if (fields[0].GetLength() != 32) { skipped++; continue; }
+
+            LiveStreamEntry entry;
+            bool keyOk = true;
+            for (int i = 0; i < 16 && keyOk; i++) {
+                int hi, lo;
+                TCHAR ch = fields[0].GetAt(i * 2);
+                if      (ch >= _T('0') && ch <= _T('9')) hi = ch - _T('0');
+                else if (ch >= _T('a') && ch <= _T('f')) hi = 10 + (ch - _T('a'));
+                else if (ch >= _T('A') && ch <= _T('F')) hi = 10 + (ch - _T('A'));
+                else { keyOk = false; break; }
+                ch = fields[0].GetAt(i * 2 + 1);
+                if      (ch >= _T('0') && ch <= _T('9')) lo = ch - _T('0');
+                else if (ch >= _T('a') && ch <= _T('f')) lo = 10 + (ch - _T('a'));
+                else if (ch >= _T('A') && ch <= _T('F')) lo = 10 + (ch - _T('A'));
+                else { keyOk = false; break; }
+                entry.streamKey[i] = (uchar)((hi << 4) | lo);
+            }
+            if (!keyOk) { skipped++; continue; }
+
+            entry.title              = fields[1];
+            entry.category           = fields[2];
+            entry.language           = fields[3];
+            entry.bitrate            = (uint16)_ttoi(fields[4]);
+            entry.viewerCount        = (uint32)_ttoi(fields[5]);
+            entry.broadcasterIP      = (uint32)_ttoi64(fields[6]);
+            entry.broadcasterPort    = (uint16)_ttoi(fields[7]);
+            entry.broadcasterUDPPort = (uint16)_ttoi(fields[8]);
+            entry.startedAt          = (uint32)_ttoi64(fields[9]);
+            uint32 lastSeenUnix      = (uint32)_ttoi64(fields[10]);
+            entry.isOwnStream        = false;  // broadcaster repopulates on start
+
+            // Drop anything older than 2x the TTL — almost certainly gone.
+            if (nowUnix > lastSeenUnix
+                && (nowUnix - lastSeenUnix) * 1000 > (ESE_KAD_ENTRY_TTL * 2))
+            {
+                skipped++;
+                continue;
+            }
+            uint32 ageMs = (nowUnix > lastSeenUnix) ? (nowUnix - lastSeenUnix) * 1000 : 0;
+            DWORD nowTicks = GetTickCount();
+            entry.lastSeen = (ageMs < nowTicks) ? (nowTicks - ageMs) : 0;
+
+            CString strKey = StreamKeyToString(entry.streamKey);
+            m_streamDirectory[strKey] = entry;
+            loaded++;
+        }
+        file.Close();
+        AddLogLine(false, _T("eSE Kad: Loaded %d cached stream entries from disk (%d skipped)"),
+            loaded, skipped);
+    } catch (CFileException* fex) {
+        fex->Delete();
+        try { file.Close(); } catch (...) {}
+    }
+}
+
+void CLiveKadBridge::SaveDirectoryToDisk()
+{
+    // Caller must hold m_lock.
+    CString path = GetDirectoryFilePath();
+    CString tmpPath = path + _T(".tmp");
+
+    CStdioFile file;
+    CFileException ex;
+    if (!file.Open(tmpPath,
+            CFile::modeCreate | CFile::modeWrite | CFile::typeText | CFile::shareExclusive,
+            &ex))
+    {
+        return;  // can't write — silently skip, retry later
+    }
+
+    try {
+        CString hdr;
+        hdr.Format(_T("ESELIVE_DIR v%d\n"), ESE_KAD_DIRECTORY_VERSION);
+        file.WriteString(hdr);
+
+        uint32 nowUnix = (uint32)time(NULL);
+        DWORD nowTicks = GetTickCount();
+
+        CString key;
+        LiveStreamEntry entry;
+        POSITION pos = m_streamDirectory.GetStartPosition();
+        int written = 0;
+        while (pos) {
+            m_streamDirectory.GetNextAssoc(pos, key, entry);
+            if (entry.isOwnStream) continue;  // re-registered on broadcaster start
+            if (entry.broadcasterIP == 0 || entry.broadcasterPort == 0) continue;
+
+            uint32 ageMs = (nowTicks > entry.lastSeen) ? (nowTicks - entry.lastSeen) : 0;
+            uint32 lastSeenUnix = (ageMs / 1000 < nowUnix) ? (nowUnix - ageMs / 1000) : nowUnix;
+
+            // Sanitize strings to keep the tab format intact
+            CString title    = entry.title;    title.Replace(_T("\t"), _T(" ")); title.Replace(_T("\n"), _T(" "));
+            CString category = entry.category; category.Replace(_T("\t"), _T(" ")); category.Replace(_T("\n"), _T(" "));
+            CString language = entry.language; language.Replace(_T("\t"), _T(" ")); language.Replace(_T("\n"), _T(" "));
+
+            CString hex = StreamKeyToString(entry.streamKey);
+
+            CString row;
+            row.Format(_T("%s\t%s\t%s\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\n"),
+                (LPCTSTR)hex, (LPCTSTR)title, (LPCTSTR)category, (LPCTSTR)language,
+                entry.bitrate, entry.viewerCount,
+                entry.broadcasterIP, entry.broadcasterPort, entry.broadcasterUDPPort,
+                entry.startedAt, lastSeenUnix);
+            file.WriteString(row);
+            written++;
+        }
+        file.Close();
+
+        MoveFileEx(tmpPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+
+        AddDebugLogLine(false, _T("eSE Kad: Persisted %d stream entries to disk"), written);
+    } catch (CFileException* fex) {
+        fex->Delete();
+        try { file.Close(); } catch (...) {}
+        try { DeleteFile(tmpPath); } catch (...) {}
+    }
 }

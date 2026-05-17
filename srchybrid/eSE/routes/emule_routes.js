@@ -70,6 +70,22 @@ function handle(url, req, res) {
     return true;
   }
 
+  if (url.pathname === '/api/emule/resync' && req.method === 'POST') {
+    // Fuerza un re-login con la password fresca de settings.json (o env var).
+    // Útil cuando el usuario cierra eMule, lo reabre, y la sesión vieja murió.
+    const pw = _ctx.loadSettings().emulePassword || '';
+    _ctx.emuleLogin(pw, (err, session) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: !err,
+        session: session || null,
+        error:   err ? err.message  : null,
+        reason:  err ? (err.reason || null) : null
+      }));
+    });
+    return true;
+  }
+
   if (url.pathname === '/api/emule/search') {
     const q = url.searchParams.get('q') || '';
     if (!q) { res.writeHead(400); res.end('{}'); return true; }
@@ -85,7 +101,7 @@ function handle(url, req, res) {
         _ctx.emuleLogin(pw, (err) => {
           if (err) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: false, results: [], error: 'eMule login failed: ' + err.message }));
+            res.end(JSON.stringify({ success: false, results: [], error: err.message, reason: err.reason || null }));
           } else doSearch();
         });
       } else {
@@ -266,7 +282,7 @@ function handle(url, req, res) {
       _ctx.emuleLogin(pw, (err) => {
         if (err) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: false, results: [], error: 'eMule login failed. Check Settings.' }));
+          res.end(JSON.stringify({ success: false, results: [], error: err.message, reason: err.reason || null }));
         } else doSmartSearch();
       });
     } else doSmartSearch();

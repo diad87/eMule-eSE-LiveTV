@@ -705,7 +705,11 @@ fetch('/api/eSE/update/check').then(function(r){return r.json();}).then(function
           // hint comes from the C++ backend and tells direct vs kad-search.
           var dest = (d.ip && d.port) ? (d.ip + ':' + d.port) : 'Kad';
           setMsg((d.hint || ('Conectado a ' + dest)) + ' — abriendo player...', 'ok');
-          setTimeout(function(){ window.location.href = '/player'; }, 1500);
+          // Player lives at /live/watch/local in the live_tv routes. The
+          // standalone /player route exists only in the orphan
+          // live_player_server.js (never wired into the request handler chain),
+          // so redirecting there 404s. See PR #10 / v0.70b-eSE7.1.4 notes.
+          setTimeout(function(){ window.location.href = '/live/watch/local'; }, 1500);
         } else {
           setMsg('Backend rechazó: ' + (d && (d.hint || d.error) ? (d.hint || d.error) : 'link inválido o eMule offline'), 'err');
         }

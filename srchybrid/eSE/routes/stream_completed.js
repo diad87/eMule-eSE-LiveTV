@@ -2,10 +2,28 @@
 const fs   = require('fs');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
+const { safeBasename } = require('../utils');
 
 let _ctx = {};
 
 function init(ctx) { _ctx = ctx; }
+
+// SECURITY: this route handles /api/stream/* endpoints that accept a fileName
+// from URL query/path. Even though resolveMediaFile() also sanitizes, we
+// validate at the route boundary too so we can reply 400 early and log
+// traversal attempts. Without this, an attacker hitting the publicly
+// reachable port 8080 (UPnP or Cloudflare Quick Tunnel) could try paths like
+// '../../Windows/System32/config/SAM' and waste server cycles before refusal.
+function _safeOrReject(fileName, res) {
+  const safe = safeBasename(fileName);
+  if (!safe) {
+    if (fileName) console.warn('[SEC] Rejected suspicious fileName: ' + JSON.stringify(fileName).slice(0, 120));
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'bad_filename' }));
+    return null;
+  }
+  return safe;
+}
 
 function handle(url, req, res) {
   if (!url.pathname.startsWith('/api/stream/')) return false;
@@ -23,7 +41,8 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/stream/completed/info') {
-    const fileName = url.searchParams.get('name');
+    const fileName = _safeOrReject(url.searchParams.get('name'), res);
+    if (!fileName) return true;
     const resolved = _ctx.resolveMediaFile(fileName);
     if (!resolved) { res.writeHead(404); res.end('{}'); return true; }
     const dur = _ctx.getDuration(resolved.filePath);
@@ -33,7 +52,8 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/stream/tracks') {
-    const fileName = url.searchParams.get('name') || '';
+    const fileName = _safeOrReject(url.searchParams.get('name'), res);
+    if (!fileName) return true;
     const resolved = _ctx.resolveMediaFile(fileName);
     if (!resolved) { res.writeHead(404); res.end('{}'); return true; }
     const ffprobePath = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
@@ -55,7 +75,8 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/stream/seek') {
-    const fileName = url.searchParams.get('name') || '';
+    const fileName = _safeOrReject(url.searchParams.get('name'), res);
+    if (!fileName) return true;
     const seekTime = parseFloat(url.searchParams.get('time') || '0');
     const resolved = _ctx.resolveMediaFile(fileName);
     if (!resolved) { res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' })); return true; }
@@ -79,7 +100,8 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/stream/subtitle') {
-    const fileName = url.searchParams.get('name') || '';
+    const fileName = _safeOrReject(url.searchParams.get('name'), res);
+    if (!fileName) return true;
     const trackIdx = parseInt(url.searchParams.get('track') || '0');
     const resolved = _ctx.resolveMediaFile(fileName);
     if (!resolved) { res.writeHead(404); res.end('Not found'); return true; }
@@ -105,7 +127,12 @@ function handle(url, req, res) {
   }
 
   if (url.pathname.startsWith('/api/stream/completed/')) {
-    const fileName = decodeURIComponent(url.pathname.replace('/api/stream/completed/', ''));
+    // Endpoint format: /api/stream/completed/<urlEncodedFileName>
+    let rawName;
+    try { rawName = decodeURIComponent(url.pathname.replace('/api/stream/completed/', '')); }
+    catch(e) { res.writeHead(400); res.end('Bad URL encoding'); return true; }
+    const fileName = _safeOrReject(rawName, res);
+    if (!fileName) return true;
     const resolved = _ctx.resolveMediaFile(fileName);
     if (!resolved) { res.writeHead(404); res.end('Not found'); return true; }
     const { filePath, isPartFile } = resolved;

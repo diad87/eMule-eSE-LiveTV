@@ -1,0 +1,47 @@
+name: Bug report
+description: Something doesn't work. Crash, wrong behavior, broken feature, etc.
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please fill in as much as you can — even partial info helps.
+
+  - type: input
+    id: version
+    attributes:
+      label: eMule version
+      description: Top-left of the eMule window, e.g. "v0.70b eSE 7.0"
+      placeholder: "v0.70b eSE 7.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happens
+    attributes:
+      label: What happens?
+      description: What did you do and what went wrong?
+      placeholder: "I clicked X, expected Y, got Z instead."
+    validations:
+      required: true
+
+  - type: textarea
+    id: how-to-reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open eMule
+        2. Click ...
+        3. ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (optional)
+      description: If you see error messages in the console window, paste them here.
+      render: text
+    validations:
+      required: false

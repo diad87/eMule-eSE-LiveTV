@@ -2,12 +2,60 @@
 const fs    = require('fs');
 const https = require('https');
 const path  = require('path');
+const { TMDB_KEY } = require('../api_keys');
 
 let _ctx = {};
 
 function init(ctx) { _ctx = ctx; }
 
+// ── /api/tmdb/* proxy ──────────────────────────────────────────────────────────
+// Forwards any TMDB v3 path to api.themoviedb.org, injecting the server-side
+// key. Keeps the key out of the client bundle (was previously hardcoded in
+// poster_hero.js and search_ui.js, exposing it to public scrape).
+//
+// Examples:
+//   GET /api/tmdb/trending/movie/week?language=es-ES
+//   GET /api/tmdb/movie/123/external_ids
+//   GET /api/tmdb/search/movie?query=Matrix&language=es-ES
+//
+// Path is anything after /api/tmdb/. Query params are forwarded as-is.
+// Allowlist on path prefix prevents abusing this as a generic outbound proxy.
+const _TMDB_ALLOW = /^(trending|movie|search|find|tv|discover|configuration|genre)(\/|$)/;
+
+function _handleTmdbProxy(url, req, res) {
+  // Strip /api/tmdb/ and validate
+  const tmdbPath = url.pathname.replace(/^\/api\/tmdb\//, '');
+  if (!_TMDB_ALLOW.test(tmdbPath)) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'forbidden' }));
+    return true;
+  }
+
+  // Build outbound URL: forward query string, inject api_key
+  const params = new URLSearchParams(url.search);
+  params.set('api_key', TMDB_KEY);
+  const target = 'https://api.themoviedb.org/3/' + tmdbPath + '?' + params.toString();
+
+  https.get(target, { headers: { 'User-Agent': 'eSE-LiveTV/7.0' } }, (tmdbRes) => {
+    res.writeHead(tmdbRes.statusCode || 502, {
+      'Content-Type': tmdbRes.headers['content-type'] || 'application/json',
+      'Cache-Control': 'public, max-age=300'  // 5min client cache
+    });
+    tmdbRes.pipe(res);
+  }).on('error', (e) => {
+    res.writeHead(502, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'tmdb_unreachable', detail: e.message }));
+  });
+
+  return true;
+}
+
 function handle(url, req, res) {
+  // TMDB proxy
+  if (url.pathname.startsWith('/api/tmdb/')) {
+    return _handleTmdbProxy(url, req, res);
+  }
+
   if (!url.pathname.startsWith('/api/movies/')) return false;
 
   if (url.pathname === '/api/movies/poster') {

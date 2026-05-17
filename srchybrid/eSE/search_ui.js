@@ -18,8 +18,9 @@ function translateGenres(genreStr) {
 }
 
 // ── Obtiene sinopsis en español de TMDB y la parchea en el DOM ────────────────
+// TMDB calls go through /api/tmdb/* proxy — key stays server-side.
 function patchSpanishPlot(imdbId) {
-  var TMDB_KEY = window.ESE_TMDB_KEY || '2dca580c2a14b55200e784d157207b4d';fetch('https://api.themoviedb.org/3/find/' + imdbId + '?api_key=' + TMDB_KEY + '&language=es-ES&external_source=imdb_id')
+  fetch('/api/tmdb/find/' + encodeURIComponent(imdbId) + '?language=es-ES&external_source=imdb_id')
     .then(function(r) { return r.json(); })
     .then(function(data) {
       var results = (data.movie_results || []).concat(data.tv_results || []);
@@ -202,7 +203,6 @@ function tryAlternativesSequentially(alts, idx, originalQuery, grid) {
 
 // ── Modal de detalle de película ───────────────────────────────────────────────
 function showMovieDetail(imdbId, localFileName, localizedTitle) {
-  var TMDB_KEY = window.ESE_TMDB_KEY || '2dca580c2a14b55200e784d157207b4d';
   var old = document.getElementById('movie-modal');
   if (old) old.remove();
 
@@ -232,7 +232,7 @@ function showMovieDetail(imdbId, localFileName, localizedTitle) {
 
     // Fetch HD backdrop from TMDB (OMDB poster is only 300px)
     var backdropUrl = poster;
-    fetch('https://api.themoviedb.org/3/find/' + imdbId + '?api_key=' + TMDB_KEY + '&external_source=imdb_id')
+    fetch('/api/tmdb/find/' + encodeURIComponent(imdbId) + '?external_source=imdb_id')
       .then(function(r){return r.json();})
       .then(function(find) {
         var results = (find.movie_results || []).concat(find.tv_results || []);

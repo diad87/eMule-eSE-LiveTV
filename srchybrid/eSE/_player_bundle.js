@@ -3021,7 +3021,7 @@ function heroInfo() {
 setTimeout(loadHero, 500);
 
 
-// ==== init.js (15968 bytes) ====
+// ==== init.js (17074 bytes) ====
 // init.js — parámetros URL, banner "Continuar viendo", logo SVG, favicon, filterCategory
 
 // ── Parámetros URL (redirect desde /search) ────────────────────────────────────
@@ -3272,6 +3272,29 @@ setTimeout(loadHero, 500);
       addToMyList({ imdbId: imdbId, title: title, poster: poster, year: year, type: type || 'movie' });
       showNotification('\u2714 A\u00f1adido a Mi Lista');
       return true;
+    }
+  };
+
+  // toggleMyListBtn \u2014 called by the "Mi Lista" button rendered inside the
+  // movie-detail modal (see search_ui.js renderMovieCard / showMovieDetail).
+  // Previously only existed in the legacy player.js monolith, NOT in the
+  // modular bundle that users actually run. The inline onclick was therefore
+  // throwing ReferenceError and the button did nothing.
+  window.toggleMyListBtn = function(btn) {
+    var m = window._modalMovie;
+    if (!m) return;
+    var added = (typeof toggleMyList === 'function')
+      && toggleMyList(m.imdbId, m.title, m.poster, m.year);
+    var listIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" '
+      + 'stroke="currentColor" stroke-width="2" style="margin-right:6px;'
+      + 'vertical-align:-2px"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 '
+      + '0 0 1 2 2z"></path></svg>';
+    if (added) {
+      btn.classList.add('btn-list-active');
+      btn.innerHTML = listIcon + ' Quitar de Mi Lista';
+    } else {
+      btn.classList.remove('btn-list-active');
+      btn.innerHTML = listIcon + ' Mi Lista';
     }
   };
 })();

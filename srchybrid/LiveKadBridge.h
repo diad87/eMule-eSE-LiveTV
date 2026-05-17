@@ -164,6 +164,18 @@ private:
     static const int    kMaxPendingDials   = 50;   // FIFO drop beyond this
     static const int    kDialsPerTick      = 3;
 
+    // Disk persistence: keep a snapshot of the discovered-streams directory
+    // so the viewer doesn't start /live empty after every eMule restart
+    // (Kad takes a while to repopulate it organically).
+    bool    m_bLoadedFromDisk;          // false until first lazy load attempt
+    DWORD   m_dwLastDiskSaveTime;       // throttles SaveDirectoryToDisk()
+
+    // Disk persistence helpers (versioned, plain-text key=value lines).
+    // Path: <ConfigDir>\eselive_directory.dat
+    void LoadDirectoryFromDisk();
+    void SaveDirectoryToDisk();
+    static CString GetDirectoryFilePath();
+
     // Helper: generate Kad keyword hash from stream title
     CString StreamKeyToString(const uchar* streamKey) const;
 

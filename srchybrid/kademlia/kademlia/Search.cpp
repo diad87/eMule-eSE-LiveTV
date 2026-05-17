@@ -1603,6 +1603,34 @@ void CSearch::PrepareLivePacketForTags(CByteIO *byIO) const
 			listTag.push_back(new CKadTagUInt(TAG_ESE_LIVE_VIEWERS, m_uLiveViewerCount));
 			listTag.push_back(new CKadTagUInt(TAG_ESE_LIVE_STARTED_AT, m_uLiveStartedAt));
 			listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, m_uLiveBroadcasterPort));
+			// eSE Live: ship our public IP IN the publish itself. The holder code
+			// at KademliaUDPListener.cpp:1341 also tries to derive TAG_SOURCEIP
+			// from the UDP packet source, but that only works when the holder is
+			// running this fork. Upstream-eMule holders store the publish without
+			// the IP tag — viewers then read uLiveIP=0 (the default) and our
+			// "REJECTED — invalid endpoint" filter at LiveKadBridge.cpp:523 drops
+			// every result. Adding the tag explicitly makes the publish
+			// self-contained regardless of holder version.
+			//
+			// Byte order — IMPORTANT: theApp.GetPublicIP() returns HOST byte
+			// order (it does ntohl internally). Both the receiver's `uLiveIP =
+			// cTag.GetInt()` at Search.cpp:1200 and the final `ipstr(uLiveIP)`
+			// display in LiveKadBridge.cpp:539 ALSO expect host byte order on
+			// Intel. Storing the value directly (no htonl) keeps it consistent
+			// end-to-end. The line-1341 holder code does `htonl(uIP)` because
+			// IT receives uIP in network byte order from the UDP packet, so
+			// the byte-swap there gets the value into host order too.
+			uint32 ourPublicIP = theApp.GetPublicIP();
+			if (ourPublicIP != 0) {
+				listTag.push_back(new CKadTagUInt(TAG_SOURCEIP, ourPublicIP));
+			} else {
+				// One-shot warning per publish so it's visible when a broadcast
+				// goes out without a usable IP (the entry will still publish
+				// fine and the holder may fill TAG_SOURCEIP from the UDP source,
+				// but if it doesn't, viewers reject the entry).
+				AddDebugLogLine(false,
+					_T("eSE Live: publishing without TAG_SOURCEIP — public IP not yet known"));
+			}
 			if (!CKademlia::GetPrefs()->GetUseExternKadPort())
 				listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
 

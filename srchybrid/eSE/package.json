@@ -2,10 +2,12 @@
   "name": "eSE",
   "version": "1.0.0",
   "main": "server.js",
+  "bin": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
-    "build": "pkg server.js --targets node18-win-x64 --output ese-server.exe --compress GZip"
+    "prebuild": "node tools/bundle_client.js",
+    "build": "pkg . --targets node18-win-x64 --output ese-server.exe --compress GZip"
   },
   "keywords": [],
   "author": "",
@@ -22,23 +24,12 @@
       "pages/*.js",
       "routes/*.js"
     ],
-    "_": "2026-05-17: removed '*.js' glob from scripts. pkg auto-includes any .js statically required from server.js (entry point), so cleanup/debug_log/emule_api/security/tmdb_api/utils/etc. still get bytecoded. The wildcard was ALSO matching client-side files (poster_hero, init, cinema_player, etc.) which are served raw to the browser via /player.js. Bytecoding them prevented fs.readFileSync from returning their text, so the /player.js bundle was empty and the home page never enriched cards with TMDB posters. Now those files live only in 'assets' (below) and stay readable.",
     "assets": [
       "emule_mascot.svg",
       "favicon.ico",
       "eSE-live/thumbs/**/*",
       "eSE-live/live/.gitkeep",
-      "shared/safe_dom.js",
-      "player_core.js",
-      "mse_engine.js",
-      "tunnel_settings.js",
-      "cinema_player.js",
-      "search_ui.js",
-      "smart_play.js",
-      "poster_hero.js",
-      "hero_ui.js",
-      "init.js",
-      "player.js"
+      "_player_bundle.js"
     ],
     "targets": [
       "node18-win-x64"

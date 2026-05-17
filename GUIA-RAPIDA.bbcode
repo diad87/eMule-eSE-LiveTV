@@ -1,0 +1,123 @@
+[CENTER][SIZE=5][B]Guía rápida — Tu Netflix P2P en 5 minutos[/B][/SIZE]
+[I]Sin compilar, sin instalar nada raro. Descargar, descomprimir y un botón.[/I][/CENTER]
+
+[HR][/HR]
+
+[SIZE=4][B]1. Descarga el paquete desde GitHub[/B][/SIZE]
+
+Abre tu navegador y entra aquí:
+[URL]https://github.com/diad87/eMule-eSE-LiveTV/releases[/URL]
+
+La versión de arriba del todo es la más reciente. Busca el fichero que termina en [B].zip[/B] (pesa unos 84 MB) y haz clic para descargarlo.
+
+[IMG]URL_CAPTURA_1_RELEASES[/IMG]
+[I]↑ Página de Releases de GitHub. Pincha sobre el ZIP del final de la sección «Assets».[/I]
+
+[HR][/HR]
+
+[SIZE=4][B]2. Descomprime el ZIP[/B][/SIZE]
+
+Clic derecho sobre el ZIP → [B]Extraer todo…[/B]
+Elige una carpeta cómoda (por ejemplo [B]C:\eSE[/B] o el Escritorio). Cuando termine, abre la carpeta extraída:
+
+[IMG]URL_CAPTURA_2_CARPETA[/IMG]
+[I]↑ Contenido de la carpeta. Lo importante: emule.exe y ese-server.exe juntos.[/I]
+
+Ficheros clave:
+[LIST]
+[*][B]emule.exe[/B] ← este es el que vas a abrir
+[*][B]ese-server.exe[/B] ← el motor del panel web (no lo toques, pero tiene que estar al lado de emule.exe)
+[*]Carpeta [B]eSE\[/B] — recursos del panel
+[*]Carpeta [B]node\[/B] — Node.js portable, no tocar
+[/LIST]
+
+[COLOR=red][B]⚠ No muevas ficheros sueltos.[/B][/COLOR] emule.exe y ese-server.exe tienen que estar [B]siempre en la misma carpeta[/B]; si no, el botón eSE dará error.
+
+[HR][/HR]
+
+[SIZE=4][B]3. Arranca eMule[/B][/SIZE]
+
+Doble clic en [B]emule.exe[/B].
+
+La primera vez Windows puede pedirte permiso para abrir el cortafuegos: [B]Acepta[/B] (es para que eMule pueda conectarse a la red P2P).
+
+Si Windows SmartScreen lloriquea con «Se impidió el inicio de una aplicación no reconocida», pulsa [B]Más información → Ejecutar de todas formas[/B].
+
+[IMG]URL_CAPTURA_3_EMULE[/IMG]
+[I]↑ Ventana principal de eMule recién abierta.[/I]
+
+[HR][/HR]
+
+[SIZE=4][B]4. Conéctate a ed2k y Kad[/B][/SIZE]
+
+En la barra de herramientas de arriba, pulsa el botón [B]Conectar[/B]:
+
+[IMG]URL_CAPTURA_4_CONECTAR[/IMG]
+[I]↑ Botón «Conectar» en la barra de herramientas.[/I]
+
+Espera unos segundos. En la parte de abajo a la derecha (la barra de estado) tienen que aparecer [B]dos bolitas verdes[/B]:
+
+[LIST]
+[*][COLOR=green][B]ed2k:[/B] verde[/COLOR] = conectado al servidor de la red eDonkey
+[*][COLOR=green][B]Kad:[/B] verde[/COLOR] = conectado a la red Kademlia (la descentralizada)
+[/LIST]
+
+[IMG]URL_CAPTURA_5_VERDE[/IMG]
+[I]↑ Esquina inferior derecha con los dos indicadores en verde.[/I]
+
+Si alguna queda en amarillo o rojo, espera 1-2 minutos más — a veces tarda en encontrar nodos. Si pasados 5 minutos siguen sin ponerse en verde, revisa cortafuegos o router.
+
+[HR][/HR]
+
+[SIZE=4][B]5. Pulsa el botón eSE — y a disfrutar[/B][/SIZE]
+
+Ya con eMule conectado, en la barra de herramientas busca el botón con el logo [B]eSE[/B]:
+
+[IMG]URL_CAPTURA_6_BOTON_ESE[/IMG]
+[I]↑ Botón eSE resaltado en la barra de herramientas.[/I]
+
+Púlsalo. eMule arranca el servidor web internamente y se abre tu navegador en el [B]panel eSE[/B] — tu Netflix P2P:
+
+[IMG]URL_CAPTURA_7_PANEL[/IMG]
+[I]↑ El panel web corriendo en http://localhost:8080.[/I]
+
+Desde ahí puedes:
+[LIST]
+[*][B]Ver canales en directo[/B] que otros usuarios estén emitiendo
+[*][B]Buscar películas[/B] con carátulas (vía TMDB) y reproducirlas mientras se descargan
+[*][B]Emitir tu propio canal[/B] vía RTMP (por ejemplo desde OBS)
+[/LIST]
+
+[I]Para parar el panel sin cerrar eMule, vuelve a pulsar el botón eSE: hace toggle (arranca/para el servidor).[/I]
+
+[HR][/HR]
+
+[SIZE=4][B]Problemas frecuentes[/B][/SIZE]
+
+[B]Al pulsar el botón eSE sale «No se encontró ese-server.exe junto a emule.exe»[/B]
+→ Has movido emule.exe o ese-server.exe a carpetas distintas. Tienen que estar [B]siempre en la misma carpeta[/B]. Si extrajiste mal el ZIP, vuelve a extraer y deja la estructura intacta.
+
+[B]Windows SmartScreen bloquea emule.exe[/B]
+→ Clic derecho sobre el ZIP original [B]antes[/B] de extraer → Propiedades → marca «Desbloquear» → Aplicar. Vuelve a extraer.
+
+[B]El navegador abre localhost:8080 pero la página no carga[/B]
+→ Espera 10 segundos más y refresca con F5. La primera vez tarda en arrancar el servidor.
+
+[B]eMule no se pone en verde (ed2k/Kad)[/B]
+→ Comprueba que tu router no bloquea los puertos [B]4662 TCP[/B] y [B]4672 UDP[/B]. Si tu ISP usa CGNAT, abre el panel eSE y entra en [B]Settings → NAT[/B] para ver el diagnóstico.
+
+[B]Falta FFmpeg para emitir en directo[/B]
+→ Solo lo necesitas si vas a [B]emitir[/B] un canal (no para ver). Descarga [URL=https://ffmpeg.org]ffmpeg.exe[/URL] y déjalo al lado de emule.exe.
+
+[HR][/HR]
+
+[SIZE=4][B]Para cerrarlo todo[/B][/SIZE]
+
+[LIST]
+[*][B]Cerrar el panel web (sin cerrar eMule):[/B] pulsa otra vez el botón [B]eSE[/B] en la barra de herramientas.
+[*][B]Cerrar eMule del todo:[/B] clic derecho en el burrito de la bandeja del sistema → [B]Salir[/B]. Eso cierra eMule, el servidor web y libera los puertos.
+[/LIST]
+
+[HR][/HR]
+
+[CENTER][I]¿Listo? Pues ya tienes tu Netflix descentralizado funcionando.[/I][/CENTER]

@@ -300,18 +300,24 @@ void CPPgGeneral::OnBnClickedEditWebservices()
 
 void CPPgGeneral::OnLangChange()
 {
-// Official version mirrors
-//#define MIRRORS_URL	_T("http://langmirror%u.emule-project.org/lang/%u%u%u%u/")
-
-// Community version mirrors
-#if defined _M_IX86
-#define SBITS _T("32/")
-#elif defined _M_X64
-#define SBITS _T("64/")
-#else
-#define SBITS
-#endif
-#define MIRRORS_URL	_T("https://langmirror%u.emule-project.org/lang/fox/%u%u%u%u/") SBITS
+// 2026-05-17 — Lang DLL download URL:
+//
+// The official upstream mirrors (langmirror[123].emule-project.org)
+// were emptied — every URL returns 404 on the server even though the
+// DNS still resolves. The fork-mirror path /lang/fox/0700/64/<lang>.dll
+// is dead too. The result was a frustrating "ask to download → spinner
+// → failed" UX whenever a user picked a not-yet-installed language.
+//
+// We now self-host every language DLL on this repo's GitHub Releases
+// using the canonical /releases/latest/download/<filename> path, which
+// auto-redirects to the most recent published release and therefore
+// follows the version of eMule the user has installed without any
+// per-version URL substitution.
+//
+// The DLLs are also shipped pre-bundled in the release ZIP under
+// /lang/, so the download is only ever needed when the user picks a
+// language NOT included in the ZIP (e.g. zh_TW on a Spanish-only build).
+#define MIRRORS_URL _T("https://github.com/diad87/eMule-eSE-LiveTV/releases/latest/download/")
 
 	LANGID newLangId = (LANGID)m_language.GetItemData(m_language.GetCurSel());
 	if (thePrefs.GetLanguageID() != newLangId) {
@@ -321,14 +327,9 @@ void CPPgGeneral::OnLangChange()
 			if (AfxMessageBox(sAsk, MB_ICONQUESTION | MB_YESNO) == IDYES) {
 				// download file
 				const CString &strFilename(thePrefs.GetLangDLLNameByID(newLangId));
-				// create url, use random mirror for load balancing
-				UINT nRand = rand() % 3 + 1;
+				// New URL is constant + filename; no version/mirror substitution needed.
 				CString strUrl;
-				strUrl.Format(MIRRORS_URL _T("%s")
-					, nRand
-					, CemuleApp::m_nVersionMjr, CemuleApp::m_nVersionMin
-					, CemuleApp::m_nVersionUpd, CemuleApp::m_nVersionBld
-					, (LPCTSTR)strFilename);
+				strUrl.Format(_T("%s%s"), MIRRORS_URL, (LPCTSTR)strFilename);
 
 				// start download
 				CHttpDownloadDlg dlgDownload;

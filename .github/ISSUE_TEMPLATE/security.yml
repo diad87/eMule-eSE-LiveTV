@@ -1,0 +1,59 @@
+name: Security report
+description: Vulnerability, exposure, or any security concern.
+title: "[SECURITY] "
+labels: ["security"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## ⚠️ Sensitive vulnerabilities
+
+        If the bug lets an attacker read files, run code, or steal data, please
+        **DO NOT post it here publicly**. Instead, email it to **i.unanue@kluppy.com**
+        or use GitHub's [private vulnerability reporting](https://github.com/diad87/eMule-eSE-LiveTV/security/advisories/new).
+
+        Use this template only for low-severity stuff that's OK to disclose openly.
+
+  - type: input
+    id: severity
+    attributes:
+      label: Severity
+      description: Low, Medium, High, or Critical (your best guess)
+      placeholder: "Medium"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      placeholder: "What's the issue?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: affected-files
+    attributes:
+      label: Affected files / endpoints
+      placeholder: |
+        - srchybrid/eSE/foo.js (line 42)
+        - HTTP endpoint /api/bar
+    validations:
+      required: false
+
+  - type: textarea
+    id: fix
+    attributes:
+      label: Suggested fix (optional)
+      placeholder: "If you have an idea of how to fix it..."
+    validations:
+      required: false
+
+  - type: input
+    id: discovery
+    attributes:
+      label: Discovery method
+      description: Manual review, Semgrep, CodeQL, fuzzing, etc.
+      placeholder: "Semgrep automated scan"
+    validations:
+      required: false

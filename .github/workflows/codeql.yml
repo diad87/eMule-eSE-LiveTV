@@ -1,0 +1,58 @@
+# CodeQL — automatic security analysis by GitHub
+#
+# What this does, in plain words:
+# - Every time someone pushes code or opens a PR, GitHub runs CodeQL on it.
+# - CodeQL is a static analyzer that catches path traversal, SQL injection,
+#   command injection, XSS, etc. The same kind of bug reported in issue #1.
+# - Results show up in the repo "Security" tab → "Code scanning alerts".
+# - If a PR introduces a bug, the PR gets a red mark before you merge.
+#
+# You don't need to do anything to keep this running. GitHub handles it.
+# Free for public repos.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [ main, "release-*" ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Re-scan every Monday at 06:00 UTC, in case a CVE is published for a
+    # pattern we already shipped.
+    - cron: '0 6 * * 1'
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # We ship Node.js (ese-server) and the MFC client is C++ but built on
+        # Windows with MSBuild, which CodeQL can't easily wrap from Linux —
+        # so we only scan JavaScript for now. Add 'cpp' here later if you
+        # want the C++ analyzed too (it needs a build matrix change).
+        language: [ 'javascript' ]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # Use the 'security-extended' query suite — catches the path
+          # traversal pattern from issue #1 plus several dozen more.
+          queries: security-extended
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

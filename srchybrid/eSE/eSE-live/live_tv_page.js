@@ -163,6 +163,9 @@ ${directory.getCSS()}
 
   // Content: empty state or channel grid
   if (channelCount === 0) {
+    // Render filters AND an (initially empty) channel-list anyway so that when
+    // streams appear via background Kad discovery we can populate the grid
+    // in-place without needing the user to reload the page.
     html += `
 <div class="live-empty" id="live-empty">
   <div class="live-empty-icon">
@@ -180,6 +183,7 @@ ${directory.getCSS()}
   </div>
   <a href="/explore" class="live-empty-cta">Explorar cat\u00e1logo \u2192</a>
 </div>
+<div id="filters-host" style="display:none">${directory.renderFilters()}</div>
 <div id="channel-list" style="display:none"></div>`;
   } else {
     html += `
@@ -256,17 +260,22 @@ function refreshChannels(){
   fetch('/api/live/channels').then(r=>r.json()).then(d=>{
     var grid=document.getElementById('channel-list');
     var empty=document.getElementById('live-empty');
+    var filters=document.getElementById('filters-host');
     var lr=document.getElementById('last-refresh');
     if(lr)lr.textContent='ahora';
     if(!d.channels||d.channels.length===0){
       if(grid)grid.style.display='none';
+      if(filters)filters.style.display='none';
       if(empty)empty.style.display='';
       return;
     }
+    // Channels available: hide empty state, reveal filters + grid and
+    // populate the grid via filterChannels() so the user sees streams
+    // appear live as background discovery surfaces them.
     if(empty)empty.style.display='none';
+    if(filters)filters.style.display='';
     if(grid){
       grid.style.display='';
-      // Re-render via filterChannels if available
       if(typeof filterChannels==='function')filterChannels();
     }
   }).catch(()=>{});
@@ -327,10 +336,19 @@ function refreshMonitor() {
 checkConnection();
 refreshPreflight();
 refreshMonitor();
+refreshChannels();
 setInterval(checkConnection, 15000);
-setInterval(refreshChannels, 10000);
 setInterval(refreshPreflight, 8000);
 setInterval(refreshMonitor, 2000);
+// First minute: poll channels every 3s for snappy discovery; then back off to 10s.
+var __ese_channelsFastUntil = Date.now() + 60000;
+var __ese_channelsPollId = setInterval(function(){
+  refreshChannels();
+  if (Date.now() > __ese_channelsFastUntil) {
+    clearInterval(__ese_channelsPollId);
+    setInterval(refreshChannels, 10000);
+  }
+}, 3000);
 
 // Sprint 3 I.2 — Auto-update check (silent, once per page load)
 fetch('/api/eSE/update/check').then(function(r){return r.json();}).then(function(d){

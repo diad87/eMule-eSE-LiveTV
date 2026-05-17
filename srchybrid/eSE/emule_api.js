@@ -113,7 +113,12 @@ function setSettingsFunctions(load, save) {
 // ─── HTTP REQUEST ──────────────────────────────────────────────
 
 function emuleRequest(urlPath, callback) {
-  const fullUrl = 'http://localhost:' + EMULE_WS_PORT + '/' + urlPath;
+  // Use the IPv4 literal explicitly. On Windows, `localhost` resolves to ::1
+  // first (IPv6); eMule's WebServer binds INADDR_ANY (IPv4-only, see
+  // WebSocket.cpp:449). Node 18 doesn't auto-fall-back to IPv4, so a
+  // `localhost` request hits ::1, fails ECONNREFUSED, and the UI shows
+  // "eMule WebServer no responde" even when the WebServer is fully up.
+  const fullUrl = 'http://127.0.0.1:' + EMULE_WS_PORT + '/' + urlPath;
   const urlObj = new URL(fullUrl);
   
   const options = {

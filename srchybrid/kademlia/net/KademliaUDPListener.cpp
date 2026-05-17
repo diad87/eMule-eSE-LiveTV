@@ -1337,7 +1337,14 @@ void CKademliaUDPListener::Process_KADEMLIA2_PUBLISH_KEY_REQ(const byte *pbyPack
 			throw;
 		}
 
-		if (bEseLiveEntry)
+		// eSE Live: derive TAG_SOURCEIP from packet source ONLY if we have a
+		// valid uIP. If uIP is 0 (self-publish via loopback, broken NAT, etc.)
+		// the holder must NOT override the publisher's own TAG_SOURCEIP tag
+		// with 0 — that would set viewer-side uLiveIP=0 and cause every
+		// result to be REJECTED at LiveKadBridge.cpp:523 as invalid endpoint.
+		// Pair this guard with Search.cpp's explicit TAG_SOURCEIP in the
+		// publish so the entry stays reachable end-to-end.
+		if (bEseLiveEntry && uIP != 0)
 			pEntry->AddTag(new CKadTagUInt(TAG_SOURCEIP, htonl(uIP)));
 
 		if (!CKademlia::GetIndexed()->AddKeyword(uFile, uTarget, pEntry, uLoad)) {

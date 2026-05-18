@@ -221,6 +221,20 @@ public:
     // Called when a peer disconnects
     void OnPeerDisconnected(CUpDownClient* peer);
 
+    // v7.2.0 — Called when a peer sends OP_LIVE_END (or when the local
+    // watchdog declares a stream dead). Tombstones the streamKey for
+    // ~30 min so Kad echoes from cached nodes can't resurrect it, then
+    // gossips the END to our mesh peers (one hop is enough; receivers
+    // re-gossip iff not already tombstoned, so propagation is bounded
+    // and storms self-limit). If we were viewing this stream, we leave
+    // it. `fromPeer` is the peer that informed us — we don't gossip
+    // back to them. NULL means "self-detected via watchdog".
+    void OnStreamEnded(const uchar* streamKey, uint8 reason, CUpDownClient* fromPeer);
+
+    // v7.2.0 — Tombstone check used by the Kad bridge to discard Kad
+    // search results for streams we already know are dead.
+    bool IsStreamTombstoned(const uchar* streamKey) const;
+
     // === Anti-Sybil ===
     // Calculate trust level for a peer based on response rate (NOT volume)
     int CalculateTrustLevel(CUpDownClient* peer);
@@ -358,6 +372,21 @@ private:
 
     // V2-S05: latency distribution (chunk timestamp -> arrival, ms)
     LatencyHistogram    m_chunkArrivalLatency;
+
+    // v7.2.0 — Tombstones for streams we've been informed are dead
+    // (OP_LIVE_END received OR watchdog declared them so). Key = hex
+    // streamKey; value = GetTickCount() expiration. TTL ~30 min: long
+    // enough to outlast any reasonable Kad echo that could resurrect
+    // the entry, short enough that legitimate restarts of the same
+    // streamKey within the hour will be missed for a while (acceptable
+    // because StartBroadcast generates a NEW streamKey every time).
+    // Pruned each Process() tick.
+    CMap<CString, LPCTSTR, DWORD, DWORD&> m_streamTombstones;
+    DWORD               m_dwLastTombstonePrune;
+    // Watchdog: per-viewing-session timestamp of the last chunk or
+    // heartbeat we received from ANY peer for the active stream. If
+    // (now - this) > 90 s while m_bViewing, declare end + gossip.
+    DWORD               m_dwLastLiveActivity;
 
     // DISC-S04: pending ghost-cleanup. Loaded from preferences at startup;
     // if non-empty, Process() will try to publish a tombstone once Kad

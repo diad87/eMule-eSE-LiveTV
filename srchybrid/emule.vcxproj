@@ -336,6 +336,7 @@
     <ClCompile Include="kademlia\kademlia\KadV2KEffective.cpp" />
     <ClCompile Include="kademlia\kademlia\KadV2Sharding.cpp" />
     <ClCompile Include="kademlia\kademlia\KadV2Stats.cpp" />
+    <ClCompile Include="kademlia\kademlia\KadV2SubscriberPin.cpp" />
     <ClCompile Include="kademlia\kademlia\SearchManager.cpp" />
     <ClCompile Include="kademlia\kademlia\UDPFirewallTester.cpp" />
     <ClCompile Include="kademlia\net\KademliaUDPListener.cpp" />
@@ -368,6 +369,10 @@
     <ClCompile Include="LiveOnionCrypto.cpp" />
     <ClCompile Include="LiveChannel.cpp" />
     <ClCompile Include="LiveSubscriptionStore.cpp" />
+    <ClCompile Include="LiveGossip.cpp" />
+    <ClCompile Include="LiveBootstrap.cpp" />
+    <ClCompile Include="LiveSubscriberPinning.cpp" />
+    <ClCompile Include="SubscriberPinScheduler.cpp" />
     <ClCompile Include="FirewallProberV6.cpp" />
     <ClCompile Include="KadKeepalive.cpp" />
     <ClCompile Include="HolePuncher.cpp" />
@@ -653,6 +658,7 @@
     <ClInclude Include="kademlia\kademlia\KadV2KEffective.h" />
     <ClInclude Include="kademlia\kademlia\KadV2Sharding.h" />
     <ClInclude Include="kademlia\kademlia\KadV2Stats.h" />
+    <ClInclude Include="kademlia\kademlia\KadV2SubscriberPin.h" />
     <ClInclude Include="kademlia\kademlia\SearchManager.h" />
     <ClInclude Include="kademlia\kademlia\Tag.h" />
     <ClInclude Include="kademlia\kademlia\UDPFirewallTester.h" />
@@ -689,6 +695,10 @@
     <ClInclude Include="LiveOnionCrypto.h" />
     <ClInclude Include="LiveChannel.h" />
     <ClInclude Include="LiveSubscriptionStore.h" />
+    <ClInclude Include="LiveGossip.h" />
+    <ClInclude Include="LiveBootstrap.h" />
+    <ClInclude Include="LiveSubscriberPinning.h" />
+    <ClInclude Include="SubscriberPinScheduler.h" />
     <ClInclude Include="FirewallProberV6.h" />
     <ClInclude Include="KadKeepalive.h" />
     <ClInclude Include="HolePuncher.h" />

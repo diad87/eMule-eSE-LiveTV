@@ -143,6 +143,15 @@ public:
 	const CString&	GetClientModVer() const							{ return m_strModVersion; }
 	void			InitClientSoftwareVersion();
 	UINT			GetVersion() const								{ return m_nClientVersion; }
+
+	// v0.71 IPv6 Sprint 6 — peer's fork capability bits (from OP_HELLO/ANSWER
+	// CT_FORK_CAPABILITIES tag). Use these to decide whether to emit legacy
+	// or _V6 opcodes for follow-up packets.
+	uint32          GetForkCaps()           const { return m_dwForkCaps; }
+	bool            SupportsIPv6Wire()      const { return (m_dwForkCaps & 0x01) != 0; }
+	bool            SupportsKadV6()         const { return (m_dwForkCaps & 0x02) != 0; }
+	bool            HasV6DualStack()        const { return (m_dwForkCaps & 0x04) != 0; }
+	bool            SupportsEd25519Live()   const { return (m_dwForkCaps & 0x08) != 0; }
 	uint8			GetMuleVersion() const							{ return m_byEmuleVersion; }
 	bool			ExtProtocolAvailable() const					{ return m_bEmuleProtocol; }
 	bool			SupportMultiPacket() const						{ return m_bMultiPacket; }
@@ -497,6 +506,10 @@ protected:
 	uint8	m_byExtendedRequestsVer;
 	//--group aligned to int32
 	uint8	m_byCompatibleClient;
+	// v0.71 IPv6 Sprint 6 — fork capability bits from CT_FORK_CAPABILITIES (0xF0).
+	// 0 = baseline / upstream eMule / pre-v7.7 fork (no _V6 / no ED25519).
+	// See Opcodes.h for bit definitions.
+	uint32  m_dwForkCaps;
 	bool	m_bFriendSlot;
 	bool	m_bCommentDirty;
 	bool	m_bIsML;

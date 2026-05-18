@@ -22,6 +22,7 @@
 #include "LiveStreamManager.h"
 #include "LiveCrypto.h"        // v7.6.0 — StreamKeyMatchesPubkey
 #include "../cryptopp/sha.h"   // v7.7.0 — SHA256 for OP_LIVE_CHUNK_V2 verify
+#include "eMuleAI/Address.h"   // v0.71 IPv6 Sprint 7 — CAddress in PEER_LIST_V2
 #include "UpDownClient.h"
 #include "ClientList.h"
 #include "DownloadQueue.h"
@@ -1894,6 +1895,51 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 					ports.Add(data.ReadUInt16());
 				}
 
+				if (theApp.liveStreamManager)
+					theApp.liveStreamManager->OnPeerListReceived(client, streamKey, ips, ports);
+			}
+			break;
+		case OP_LIVE_PEER_LIST_V2:
+			{
+				// v0.71 IPv6 Sprint 7 — peer list with CAddress payload.
+				// Layout: <StreamKey 16><Count 2>(<CAddress 6 or 18><Port 2>) × Count
+				// Receiver cap is identical to OP_LIVE_PEER_LIST (16 entries).
+				if (thePrefs.GetDebugClientTCPLevel() > 0)
+					DebugRecv("OP_LivePeerListV2", client);
+				theStats.AddDownDataOverheadOther(uRawSize);
+				if (size < 18) break;
+				CSafeMemFile data(packet, size);
+				uchar streamKey[16];
+				data.ReadHash16(streamKey);
+				uint16 count = data.ReadUInt16();
+				const uint16 ESE_LIVE_MAX_PEER_LIST_V2 = 16;
+				if (count > ESE_LIVE_MAX_PEER_LIST_V2)
+					count = ESE_LIVE_MAX_PEER_LIST_V2;
+
+				// V2 mixes v4 and v6 entries. Until LiveStreamManager learns
+				// to ingest CAddress directly (Sprint 7 follow-up — currently
+				// it takes CArray<DWORD> for backward compat), we lower v4
+				// entries to the legacy uint32 path and SKIP v6 entries with
+				// a counter. Once the manager API is upgraded this becomes
+				// a clean pass-through.
+				CArray<DWORD> ips;
+				CArray<uint16> ports;
+				uint32 v6Dropped = 0;
+				for (uint16 i = 0; i < count && data.GetPosition() + 4 <= data.GetLength(); ++i) {
+					CAddress addr;
+					if (!addr.ReadFromBuffer(&data)) break;
+					if (data.GetPosition() + 2 > data.GetLength()) break;
+					uint16 port = data.ReadUInt16();
+					if (addr.GetType() == CAddress::IPv4) {
+						ips.Add((DWORD)addr.ToUInt32(false));
+						ports.Add(port);
+					} else if (addr.GetType() == CAddress::IPv6) {
+						v6Dropped++;  // Sprint 7 follow-up unlocks these
+					}
+				}
+				if (v6Dropped > 0) {
+					DebugLog(_T("OP_LivePeerListV2: %u v6 peers dropped (mgr API pending v6 upgrade)"), v6Dropped);
+				}
 				if (theApp.liveStreamManager)
 					theApp.liveStreamManager->OnPeerListReceived(client, streamKey, ips, ports);
 			}

@@ -4,6 +4,7 @@
 #include "LivePackets.h"
 #include "LiveCrypto.h"        // v7.7.0 — SignMessage for OP_LIVE_CHUNK_V2
 #include "../cryptopp/sha.h"   // v7.7.0 — SHA256 for chunk integrity hash
+#include "eMuleAI/Address.h"   // v0.71 IPv6 Sprint 7 — CAddress in peer list V2
 #include "opcodes.h"
 #include "Packets.h"
 #include "SafeFile.h"
@@ -132,6 +133,39 @@ Packet* CreatePeerListPacket(const uchar* streamKey,
 
     Packet* pkt = new Packet(data, OP_EMULEPROT);
     pkt->opcode = OP_LIVE_PEER_LIST;
+    return pkt;
+}
+
+// v0.71 IPv6 Sprint 7 — peer list V2 with CAddress. Each entry is variable-
+// width: 6 bytes for v4 (1 family + 1 length + 4 addr) + 2 port = 8 bytes,
+// or 18+2=20 bytes for v6. Max payload assuming all v6 + cap = 16:
+// 16+2 (header) + 16 entries * 20 bytes = 338 bytes. Well under any
+// reasonable packet ceiling.
+Packet* CreatePeerListPacketV2(const uchar* streamKey,
+    const ::CAddress* addrs, const uint16* ports, uint16 count)
+{
+    // Pre-compute size to size the SafeMemFile correctly. Each addr is
+    // 6 or 18 bytes via WriteToBuffer; we walk once for sizing then again
+    // for writing — cleaner than reallocs.
+    size_t totalBytes = 16 + 2;  // streamKey + count
+    for (uint16 i = 0; i < count; ++i) {
+        size_t addrBytes = 2;  // family + length prefix
+        switch (addrs[i].GetType()) {
+            case ::CAddress::IPv4: addrBytes += 4;  break;
+            case ::CAddress::IPv6: addrBytes += 16; break;
+            case ::CAddress::None:                  break;
+        }
+        totalBytes += addrBytes + 2;  // port
+    }
+    CSafeMemFile data(totalBytes);
+    data.WriteHash16(streamKey);
+    data.WriteUInt16(count);
+    for (uint16 i = 0; i < count; ++i) {
+        addrs[i].WriteToBuffer(&data);
+        data.WriteUInt16(ports[i]);
+    }
+    Packet* pkt = new Packet(data, OP_EMULEPROT);
+    pkt->opcode = OP_LIVE_PEER_LIST_V2;
     return pkt;
 }
 

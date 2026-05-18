@@ -186,6 +186,7 @@ void CUpDownClient::Init()
 	m_byExtendedRequestsVer = 0;
 
 	m_byCompatibleClient = 0;
+	m_dwForkCaps = 0;  // v0.71 IPv6 Sprint 6 — unset until peer sends CT_FORK_CAPABILITIES
 	m_bFriendSlot = false;
 	m_bCommentDirty = false;
 	m_bIsML = false;
@@ -611,6 +612,19 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 			} else if (bDbgInfo)
 				m_strHelloInfo.AppendFormat(_T("\n  ***UnkType=%s"), (LPCTSTR)temptag.GetFullInfo());
 			break;
+		case CT_FORK_CAPABILITIES:
+			// v0.71 IPv6 Sprint 6 — fork capability bits.
+			// Bits: 0x01 IPV6_WIRE, 0x02 IPV6_KAD, 0x04 IPV6_DUALSTACK, 0x08 ED25519.
+			// Upstream eMule and pre-v7.7 forks don't emit this tag, so absent =
+			// "legacy, no _V6 capabilities". Storing in m_dwForkCaps lets later
+			// code branch on Supports* helpers (added to UpDownClient.h below).
+			if (temptag.IsInt()) {
+				m_dwForkCaps = (uint32)temptag.GetInt();
+				if (bDbgInfo)
+					m_strHelloInfo.AppendFormat(_T("\n  ForkCaps=0x%08x"), m_dwForkCaps);
+			} else if (bDbgInfo)
+				m_strHelloInfo.AppendFormat(_T("\n  ***UnkType=%s"), (LPCTSTR)temptag.GetFullInfo());
+			break;
 		default:
 			// Since eDonkeyHybrid 1.3 is no longer sending the additional Int32 at the end of
 			// the Hello packet, we use the "pr=1" tag to determine them.
@@ -991,6 +1005,11 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	if (theApp.clientlist->GetBuddy() && theApp.IsFirewalled())
 		tagcount += 2;
 
+	// v0.71 IPv6 Sprint 6 — always advertise CT_FORK_CAPABILITIES so peers
+	// can route to our _V6 opcodes. Upstream eMule and forks that don't know
+	// this tag drop it silently (per the eD2K TLV contract), so it's safe.
+	tagcount += 1;
+
 	data.WriteUInt32(tagcount);
 
 	// eD2K Name
@@ -1104,6 +1123,24 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 				//(RESERVED					   )
 				);
 	tagMuleVersion.WriteTagToFile(data);
+
+	// v0.71 IPv6 Sprint 6 — fork capability bits. We always set CAP_FORK_ED25519
+	// (we've shipped that since v7.6); the IPv6 caps are gated by the
+	// IsIPv6Enabled() preference so a strictly-v4 build doesn't lie about
+	// being v6-capable. Receiving peers store the bits in
+	// CUpDownClient::m_dwForkCaps and use them to choose between legacy and
+	// _V6 opcodes for follow-up packets.
+	uint32 forkCaps = CAP_FORK_ED25519;
+	if (thePrefs.IsIPv6Enabled()) {
+		forkCaps |= CAP_FORK_IPV6_WIRE;
+		forkCaps |= CAP_FORK_IPV6_KAD;
+		// CAP_FORK_IPV6_DUALSTACK is set by the firewall prober once it has
+		// confirmed v6 reachability; the bit is OR-ed in below if set.
+		extern uint32 g_uForkCapsRuntime;  // defined in FirewallProberV6.cpp
+		forkCaps |= g_uForkCapsRuntime;
+	}
+	CTag tagForkCaps(CT_FORK_CAPABILITIES, forkCaps);
+	tagForkCaps.WriteTagToFile(data);
 
 	uint32 dwIP;
 	uint16 nPort;

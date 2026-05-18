@@ -277,7 +277,13 @@ function handleRoute(url, req, res, ctx) {
   }
   if (p === '/live/watch/local') {
     const html = require('../live_player_html')();
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    // v7.1.7 — no-cache for the same reason as /live above.
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    });
     res.end(html);
     return true;
   }
@@ -1148,7 +1154,13 @@ function handleRoute(url, req, res, ctx) {
     // stream.m3u8 into %TEMP%\eMule_RTMP\<HASH>\ as chunks arrive). This
     // avoids the broken eMule WebServer hls-proxy on PC2.
     const hlsBase = '/hls-local/' + hash.toLowerCase();
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    // v7.1.7 — no-cache: same justification as /live above.
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    });
     res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>eSE Live</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
@@ -1353,7 +1365,15 @@ fetch('/api/live/emule-channels').then(r=>r.json()).then(d=>{
       const livePage = require('./live_tv_page');
       const status = pipeline.getStatus();
       const html = livePage.render(status, streamMeta);
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      // v7.1.7 — never cache /live. Page embeds an inline <script> that
+      // changes between releases; cached copies survive ese-server.exe
+      // hot-swaps and serve obsolete JS that breaks the UI silently.
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      });
       res.end(html);
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'text/plain' });

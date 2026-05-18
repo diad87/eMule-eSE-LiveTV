@@ -510,6 +510,17 @@ void CLiveKadBridge::GetKnownStreams(CArray<LiveStreamEntry>& outList) const
     POSITION pos = m_streamDirectory.GetStartPosition();
     while (pos) {
         m_streamDirectory.GetNextAssoc(pos, key, entry);
+        // v7.2.0 — drop entries we've tombstoned. Even if a stale Kad
+        // echo from another node refreshed the lastSeen of this entry,
+        // we know the broadcast is dead because either (a) we received
+        // OP_LIVE_END for this streamKey, or (b) our watchdog declared
+        // it dead. Hide from any caller (channel grid, mesh dialer,
+        // search results) until the tombstone expires.
+        if (theApp.liveStreamManager
+            && theApp.liveStreamManager->IsStreamTombstoned(entry.streamKey))
+        {
+            continue;
+        }
         outList.Add(entry);
     }
 }
@@ -556,6 +567,19 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
             (LPCTSTR)ipstr(broadcasterIP), broadcasterPort);
         if (theApp.liveStreamManager != NULL)
             InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsRejected);
+        return;
+    }
+
+    // v7.2.0 — local tombstone filter: if WE already know this stream
+    // is dead (via OP_LIVE_END or our watchdog), drop the Kad result
+    // even though some other node's cache is still echoing it. Without
+    // this, dead streams resurrect themselves every ~5 min when a fresh
+    // Kad echo arrives from a node that never got the gossip.
+    if (theApp.liveStreamManager != NULL
+        && theApp.liveStreamManager->IsStreamTombstoned(streamKey))
+    {
+        AddLogLine(false, _T("eSE Kad: ignored Kad echo for tombstoned stream \"%s\""), (LPCTSTR)title);
+        InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsRejected);
         return;
     }
 

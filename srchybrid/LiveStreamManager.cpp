@@ -26,6 +26,26 @@ static char THIS_FILE[] = __FILE__;
 #endif
 
 
+// v7.2.0 — Tombstone / watchdog constants. Forward of the helper below.
+// TTL after which a tombstone is forgotten. 30 min: long enough to
+// outlive Kad echo cascades, short enough that same-key re-broadcasts
+// within the hour are rare (StartBroadcast generates fresh streamKeys).
+static const DWORD ESE_TOMBSTONE_TTL_MS    = 30u * 60u * 1000u;
+static const DWORD ESE_TOMBSTONE_PRUNE_MS  = 60u * 1000u;
+// Watchdog threshold: if a viewer hasn't heard chunk or heartbeat in
+// this window, declare the stream dead. 90 s leaves ~22-90 missed
+// 1-4 s heartbeats — well into "definitely dead", not a transient.
+static const DWORD ESE_LIVE_WATCHDOG_MS    = 90u * 1000u;
+
+static CString HexStreamKey(const uchar* streamKey)
+{
+    CString out;
+    for (int i = 0; i < 16; ++i)
+        out.AppendFormat(_T("%02x"), streamKey[i]);
+    return out;
+}
+
+
 CLiveStreamManager::CLiveStreamManager()
     : m_bBroadcasting(false)
     , m_bViewing(false)
@@ -49,6 +69,8 @@ CLiveStreamManager::CLiveStreamManager()
     , m_bHasPendingGhostKey(false) // DISC-S04
     , m_bBootstrapAttempted(false) // Capa 3
     , m_dwBootstrapTick(0)         // Capa 3
+    , m_dwLastTombstonePrune(0)    // v7.2.0
+    , m_dwLastLiveActivity(0)      // v7.2.0
 {
     memset(m_pendingGhostKey, 0, sizeof m_pendingGhostKey);
     m_meshManager.Init(this);
@@ -259,14 +281,47 @@ void CLiveStreamManager::StopBroadcast()
     if (!m_bBroadcasting) return;
     LIVE_LOG("MGR", "StopBroadcast");
 
-    // Notify all peers: stream ended normally
-    POSITION pos = m_broadcastPeers.GetHeadPosition();
-    while (pos) {
-        CUpDownClient* peer = m_broadcastPeers.GetNext(pos);
+    // v7.2.0 — Tombstone our own streamKey locally first. That way if
+    // the gossip below results in a duplicate END coming back at us via
+    // the mesh, OnStreamEnded short-circuits at the tombstone-check and
+    // we don't bounce it again.
+    CString hexKey = HexStreamKey(m_streamInfo.streamKey);
+    m_streamTombstones[hexKey] = GetTickCount() + ESE_TOMBSTONE_TTL_MS;
+
+    // Notify all direct viewers + mesh peers: stream ended normally.
+    // Before v7.2.0, only m_broadcastPeers was notified, so secondary
+    // relays / super-seeders that we redistributed to never got the
+    // memo and kept advertising the stream until their own watchdog
+    // (which didn't exist) fired. Now we cast wide: broadcast peers
+    // first, then any additional mesh peer we know.
+    auto sendEnd = [&](CUpDownClient* peer) {
+        if (!peer) return;
         Packet* pkt = eSELive::CreateEndPacket(m_streamInfo.streamKey, ESE_END_NORMAL);
         if (pkt) {
             theStats.AddUpDataOverheadOther(pkt->size);
             peer->SendPacket(pkt);
+        }
+    };
+    {
+        POSITION pos = m_broadcastPeers.GetHeadPosition();
+        while (pos) sendEnd(m_broadcastPeers.GetNext(pos));
+    }
+    // m_viewPeers is empty on a pure broadcaster, but defensive: if the
+    // user was both viewing and broadcasting (relay scenario), notify
+    // those too. m_peerCounters keys are also a set of "peers we know"
+    // — covers any mesh participant not in either list. The send is
+    // de-duped by SendPacket since each peer has its own send-queue.
+    {
+        POSITION pos = m_viewPeers.GetHeadPosition();
+        while (pos) sendEnd(m_viewPeers.GetNext(pos));
+    }
+    {
+        POSITION pos = m_peerCounters.GetStartPosition();
+        CUpDownClient* peer = NULL;
+        PeerCounters pc;
+        while (pos) {
+            m_peerCounters.GetNextAssoc(pos, peer, pc);
+            sendEnd(peer);
         }
     }
 
@@ -334,6 +389,13 @@ bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title
     // compute time-to-first-chunk on the first inbound chunk.
     m_dwJoinTick = GetTickCount();
     m_bFirstChunkLogged = false;
+
+    // v7.2.0 — arm the watchdog from JoinStream so the 90 s clock starts
+    // counting from "joined" rather than from "first chunk". If the
+    // discovery + dial never produces any activity at all, we still
+    // catch it and declare the stream unfindable instead of leaving the
+    // viewer hanging on "Buscando…" forever.
+    m_dwLastLiveActivity = m_dwJoinTick;
 
     AddLogLine(true, _T("eSE Live: Joining stream \"%s\""), (LPCTSTR)title);
 
@@ -1029,6 +1091,9 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
     DWORD nowTick = GetTickCount();
     InterlockedIncrement(&m_counters.chunksReceived);  // Phase 0: OBS-1 (atomic)
     InterlockedExchange((LONG*)&m_counters.lastChunkReceivedAt, (LONG)nowTick);
+    // v7.2.0 — feed the crash-watchdog. Any chunk arrival proves the
+    // broadcast chain is still pumping; reset the "stream alive" clock.
+    m_dwLastLiveActivity = nowTick;
 
     // DISC-S12: record time-to-first-chunk on the first chunk of this
     // JoinStream session. Helps measure how long discovery + dial took
@@ -1132,6 +1197,11 @@ void CLiveStreamManager::OnPeerBitmap(CUpDownClient* peer, const uchar* streamKe
     info.oldestSeq  = oldestSeq;
     info.lastUpdate = GetTickCount();
     m_peerBitmaps[peer] = info;
+    // v7.2.0 — bitmap heartbeats also count as proof-of-life for the
+    // watchdog: the upstream is still alive even if it has nothing new
+    // to send yet. Without this, slow streams (e.g. test pattern at
+    // very low bitrate) could spuriously trip the 90 s timeout.
+    if (m_bViewing) m_dwLastLiveActivity = info.lastUpdate;
 
     // Phase 1 BOOT-2: if we are a viewer with an empty buffer, this is our
     // bootstrap signal. The viewer's chunkBuffer starts with oldest=0, but the
@@ -1262,6 +1332,91 @@ void CLiveStreamManager::OnPeerDisconnected(CUpDownClient* peer)
     InterlockedIncrement(&m_counters.peerDisconnects);  // Phase 0: OBS-1 (atomic)
     // Remove from mesh manager
     m_meshManager.RemoveMeshPeer(peer);
+}
+
+
+// ============================================================
+// v7.2.0 — STREAM END NOTIFICATION (tombstone + gossip + watchdog)
+// (Constants + HexStreamKey helper hoisted to top of file so StopBroadcast
+// can see them. Definitions used in this section follow.)
+// ============================================================
+
+void CLiveStreamManager::OnStreamEnded(const uchar* streamKey, uint8 reason, CUpDownClient* fromPeer)
+{
+    if (streamKey == NULL) return;
+
+    CSingleLock lock(&m_lock, TRUE);
+
+    CString hexKey = HexStreamKey(streamKey);
+
+    // Idempotency: if already tombstoned and still in TTL, drop. Stops
+    // gossip loops dead at the second hop (every receiver re-gossips
+    // only the FIRST time it learns).
+    DWORD now = GetTickCount();
+    DWORD expire = 0;
+    if (m_streamTombstones.Lookup(hexKey, expire) && expire > now) {
+        return;
+    }
+
+    // Record tombstone with absolute expiration tick.
+    m_streamTombstones[hexKey] = now + ESE_TOMBSTONE_TTL_MS;
+    LIVE_LOG("MGR", "Tombstone %S reason=%u from=%S (mesh size now %d)",
+        (LPCWSTR)hexKey, (unsigned)reason,
+        fromPeer ? L"peer" : L"watchdog",
+        (int)m_streamTombstones.GetCount());
+
+    // Note: we don't proactively evict from m_kadBridge.m_streamDirectory
+    // here because IsStreamTombstoned() is checked at READ time
+    // (OnKadSearchResult / GetKnownStreams iteration), and the existing
+    // PruneStaleEntries handles eviction within ESE_KAD_ENTRY_TTL=120s.
+    // Tombstone-driven read filtering is sufficient and avoids exposing
+    // a public Remove on the bridge.
+
+    // If WE were viewing this stream, leave it. LeaveStream sends
+    // UNSUBSCRIBE to our source peers but that's harmless — they'll
+    // tombstone the same stream key on their side via their own watchdog
+    // or via the gossip below.
+    if (m_bViewing && memcmp(m_streamInfo.streamKey, streamKey, 16) == 0) {
+        AddLogLine(true, _T("eSE Live: stream ended, leaving"));
+        // Inline-leave so we don't recurse OnStreamEnded.
+        m_bViewing = false;
+        m_chunkBuffer.Clear();
+        m_viewPeers.RemoveAll();
+        m_peerBitmaps.RemoveAll();
+        m_dwLastLiveActivity = 0;
+    }
+
+    // Gossip to OUR mesh peers (anyone we exchange chunks with for this
+    // stream, viewer- or broadcaster-side). Don't bounce back to the
+    // peer that just told us. Each receiver tombstones first, so a
+    // duplicate from another path is dropped at line ~early-return above.
+    auto gossip = [&](CUpDownClient* peer) {
+        if (!peer || peer == fromPeer) return;
+        Packet* pkt = eSELive::CreateEndPacket(streamKey, reason);
+        if (pkt) {
+            theStats.AddUpDataOverheadOther(pkt->size);
+            peer->SendPacket(pkt);
+        }
+    };
+    {
+        POSITION pos = m_broadcastPeers.GetHeadPosition();
+        while (pos) gossip(m_broadcastPeers.GetNext(pos));
+    }
+    {
+        POSITION pos = m_viewPeers.GetHeadPosition();
+        while (pos) gossip(m_viewPeers.GetNext(pos));
+    }
+}
+
+bool CLiveStreamManager::IsStreamTombstoned(const uchar* streamKey) const
+{
+    if (streamKey == NULL) return false;
+    CSingleLock lock(&m_lock, TRUE);
+
+    CString hexKey = HexStreamKey(streamKey);
+    DWORD expire = 0;
+    if (!m_streamTombstones.Lookup(hexKey, expire)) return false;
+    return expire > GetTickCount();
 }
 
 
@@ -1526,6 +1681,40 @@ void CLiveStreamManager::Process()
     CSingleLock lock(&m_lock, TRUE);
 
     DWORD now = GetTickCount();
+
+    // v7.2.0 — prune expired tombstones once a minute. Cheap; the map
+    // is small (a tombstone per dead stream we've personally heard
+    // about, capped naturally by ESE_TOMBSTONE_TTL_MS=30 min).
+    if (now - m_dwLastTombstonePrune > ESE_TOMBSTONE_PRUNE_MS) {
+        m_dwLastTombstonePrune = now;
+        CStringArray dead;
+        CString k; DWORD expire = 0;
+        POSITION pos = m_streamTombstones.GetStartPosition();
+        while (pos) {
+            m_streamTombstones.GetNextAssoc(pos, k, expire);
+            if (expire <= now) dead.Add(k);
+        }
+        for (INT_PTR i = 0; i < dead.GetCount(); ++i)
+            m_streamTombstones.RemoveKey(dead[i]);
+    }
+
+    // v7.2.0 — crash-detect watchdog. If we are viewing AND haven't
+    // heard a chunk or bitmap from anyone in 90 s, declare the stream
+    // dead locally, tombstone it, and gossip to our mesh peers so they
+    // know too. This is the path that covers broadcaster crashes (which
+    // by definition cannot send OP_LIVE_END themselves).
+    if (m_bViewing
+        && m_dwLastLiveActivity != 0
+        && (now - m_dwLastLiveActivity) > ESE_LIVE_WATCHDOG_MS)
+    {
+        LIVE_LOG("MGR", "Watchdog: %u ms without chunk/heartbeat, declaring stream dead",
+            now - m_dwLastLiveActivity);
+        uchar deadKey[16];
+        memcpy(deadKey, m_streamInfo.streamKey, 16);
+        // OnStreamEnded leaves the stream and gossips. NULL fromPeer
+        // marks this as a self-detected (not relayed) END.
+        OnStreamEnded(deadKey, /*reason*/ ESE_END_ERROR, /*fromPeer*/ NULL);
+    }
 
     if (m_bBroadcasting) {
         // Send bitmap to all peers

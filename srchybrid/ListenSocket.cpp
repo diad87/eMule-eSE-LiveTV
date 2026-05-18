@@ -1890,9 +1890,20 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				if (thePrefs.GetDebugClientTCPLevel() > 0)
 					DebugRecv("OP_LiveEnd", client);
 				theStats.AddDownDataOverheadOther(uRawSize);
-				AddLogLine(true, _T("eSE Live: Stream ended by broadcaster"));
-				if (theApp.liveStreamManager)
+				// v7.2.0 — payload: <streamKey 16><reason 1>.
+				// LiveStreamManager handles tombstone + leave-if-viewing +
+				// gossip to mesh peers (deduped by tombstone, so storms
+				// self-limit at one hop). Fallback to OnPeerDisconnected
+				// if the packet is short (shouldn't happen — pre-v7.2.0
+				// senders already ship 17-byte payloads).
+				if (size >= 16 && theApp.liveStreamManager) {
+					uint8 reason = (size >= 17) ? packet[16] : 0;
+					AddLogLine(true, _T("eSE Live: Stream ended (reason=%u)"), reason);
+					theApp.liveStreamManager->OnStreamEnded(packet, reason, client);
+				} else if (theApp.liveStreamManager) {
+					AddLogLine(true, _T("eSE Live: Stream ended (malformed END)"));
 					theApp.liveStreamManager->OnPeerDisconnected(client);
+				}
 			}
 			break;
 		case OP_LIVE_PING:

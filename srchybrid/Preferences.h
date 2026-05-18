@@ -703,6 +703,13 @@ public:
 
 	static uint16	GetPort()							{ return port; }
 	static uint16	GetUDPPort()						{ return udpport; }
+	// V2-S07+: cmdline-driven port override (stress test multi-instance).
+	static void		SetPort(uint16 p)					{ port = p; }
+	static void		SetUDPPort(uint16 p)				{ udpport = p; }
+	// V2-S07+: regenerate a random user hash so a same-host headless viewer
+	// isn't mistaken for "self" by the broadcaster (which would normally
+	// share preferences.ini and thus the same userhash).
+	static void		RegenerateUserHash();
 	static uint16	GetServerUDPPort()					{ return nServerUDPPort; }
 	static uchar*	GetUserHash()						{ return userhash; }
 	// ZZ:UploadSpeedSense -->

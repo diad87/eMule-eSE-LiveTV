@@ -2,6 +2,7 @@
 // eSE — Kad Bridge for Live Stream Discovery Implementation
 #include "stdafx.h"
 #include "LiveKadBridge.h"
+#include "LiveDebugLog.h"
 #include "LiveStreamManager.h"  // For KadDebugSnapshot struct
 #include "emule.h"
 #include "opcodes.h"
@@ -27,9 +28,25 @@ static char THIS_FILE[] = __FILE__;
 
 // Constants
 #define ESE_KAD_REPUBLISH_INTERVAL  ESE_LIVE_KAD_PUBLISH_INTERVAL
-#define ESE_KAD_PRUNE_INTERVAL      (60 * 1000)        // 1 minute
-#define ESE_KAD_ENTRY_TTL           (10 * 60 * 1000)   // 10 minutes
-#define ESE_KAD_SEARCH_COOLDOWN     (30 * 1000)        // 30 seconds
+// DISC-S02: aggressive freshness. A broadcaster republishes every 60 s
+// (ESE_KAD_REPUBLISH_INTERVAL), so any entry older than 180 s without a
+// fresh sighting is almost certainly a fantasma — evict locally.
+#define ESE_KAD_PRUNE_INTERVAL      (30 * 1000)        // 30 s
+#define ESE_KAD_ENTRY_TTL           (120 * 1000)       // v7.1.9: 2 min (was 3; original 10). Broadcaster republishes every 60 s, so 2 misses = dead.
+// Phase 2 LAT-1: adaptive search cooldown.
+// The viewer needs to retry quickly while it has no results yet (Kad propagation
+// can take 1-5 minutes). Once results start coming in, we relax to 30 s to avoid
+// hammering the DHT.
+#define ESE_KAD_SEARCH_COOLDOWN_FAST (5 * 1000)        // 5 s while empty
+#define ESE_KAD_SEARCH_COOLDOWN_SLOW (30 * 1000)       // 30 s once we have results
+#define ESE_KAD_SEARCH_COOLDOWN     ESE_KAD_SEARCH_COOLDOWN_SLOW  // legacy alias
+// Disk snapshot: persist the channel directory across eMule restarts so
+// /live is not empty on the first second after launch (Kad takes time to
+// repopulate organically). Snapshot file uses a versioned plain-text
+// format — additive, never breaks older readers.
+#define ESE_KAD_DISK_SAVE_INTERVAL  (5 * 60 * 1000)    // every 5 min
+#define ESE_KAD_DIRECTORY_FILENAME  _T("eselive_directory.dat")
+#define ESE_KAD_DIRECTORY_VERSION   1
 
 // Tag names for live stream metadata in Kad
 // Using non-conflicting custom tag IDs above 0xF0
@@ -51,11 +68,28 @@ CLiveKadBridge::CLiveKadBridge()
     , m_dwLastResultIP(0)
     , m_wLastResultPort(0)
     , m_dwLastResultTime(0)
+    , m_nPublishBurstCount(0)
+    , m_dwBurstStartTime(0)
+    , m_bDeferredFirstPublish(false)        // DISC-S03
+    , m_bKadWasConnectedLastTick(false)     // DISC-S03
+    , m_nSearchTokens(10)                   // DISC-S08
+    , m_dwLastSearchTokenRefill(0)          // DISC-S08
+    , m_bLoadedFromDisk(false)              // disk persistence
+    , m_dwLastDiskSaveTime(0)               // disk persistence
 {
 }
 
 CLiveKadBridge::~CLiveKadBridge()
 {
+    // Flush the directory to disk so the next eMule run can prefill /live
+    // before Kad has had a chance to reconnect.
+    try {
+        CSingleLock lock(&m_lock, TRUE);
+        if (m_bLoadedFromDisk)
+            SaveDirectoryToDisk();
+    } catch (...) {
+        // never throw from destructor
+    }
     m_streamDirectory.RemoveAll();
 }
 
@@ -76,8 +110,29 @@ bool CLiveKadBridge::PublishStream(const LiveStreamInfo& info)
     bool wasSameStream = m_bPublished && memcmp(previousInfo.streamKey, info.streamKey, 16) == 0;
     m_publishedInfo = info;
     m_bPublished = true;
-    if (!wasSameStream)
+    if (!wasSameStream) {
         m_dwLastPublishTime = 0;  // Force immediate publish when Kad is available
+        // Phase 2 LAT-2: arm accelerated publish burst for the new stream.
+        m_nPublishBurstCount = 0;
+        m_dwBurstStartTime   = GetTickCount();
+    }
+
+    // v7.1.9 — when the streamKey changes (new broadcast supersedes old),
+    // sweep any prior isOwnStream entries from the directory before adding
+    // the new one. Without this, every key change leaves the previous own
+    // entry hanging around forever (PruneStaleEntries explicitly skipped
+    // own entries until the v7.1.9 fix below), so the channel list slowly
+    // fills with the broadcaster's past streamKeys.
+    if (!wasSameStream) {
+        POSITION pos = m_streamDirectory.GetStartPosition();
+        while (pos) {
+            CString k; LiveStreamEntry e;
+            m_streamDirectory.GetNextAssoc(pos, k, e);
+            if (e.isOwnStream) {
+                m_streamDirectory.RemoveKey(k);
+            }
+        }
+    }
 
     // Add to our own directory
     LiveStreamEntry entry;
@@ -99,11 +154,19 @@ bool CLiveKadBridge::PublishStream(const LiveStreamInfo& info)
     if (!Kademlia::CKademlia::IsConnected()) {
         AddLogLine(false, _T("eSE Kad: Stream \"%s\" queued; Kad is not connected yet"),
             (LPCTSTR)info.title);
+        CLiveDebugLog::Get().Append("KAD",
+            "PublishStream QUEUED \"%S\" — Kad not connected", (LPCWSTR)info.title);
+        // DISC-S03: arm the deferred-publish flag so Process() forces an
+        // immediate burst when Kad transitions to connected.
+        m_bDeferredFirstPublish = true;
         return false;
     }
 
     AddLogLine(true, _T("eSE Kad: Publishing stream \"%s\" to Kad DHT"),
         (LPCTSTR)info.title);
+    CLiveDebugLog::Get().Append("KAD",
+        "PublishStream OK \"%S\" port=%u",
+        (LPCWSTR)info.title, (unsigned)thePrefs.GetPort());
 
     return true;
 }
@@ -112,11 +175,108 @@ void CLiveKadBridge::UnpublishStream(const uchar* streamKey)
 {
     CSingleLock lock(&m_lock, TRUE);
 
+    // DISC-S01: publish a TOMBSTONE before clearing local state. Other Kad
+    // nodes still hold our publish until their own TTL expires (~10 min);
+    // republishing with bitrate=0 lets viewers identify the entry as
+    // "broadcaster gone" and skip it. OnKadSearchResult treats bitrate==0
+    // as a deprecation marker.
+    if (m_bPublished && Kademlia::CKademlia::IsConnected()) {
+        CString hashKeyword(_T("livehash:"));
+        for (int i = 0; i < 16; ++i) {
+            CString h; h.Format(_T("%02x"), streamKey[i]);
+            hashKeyword += h;
+        }
+        Kademlia::CUInt128 uTarget;
+        Kademlia::CKadTagValueString wstrKw(hashKeyword);
+        KadGetKeywordHash(wstrKw, &uTarget);
+        Kademlia::CSearch* pSearch = Kademlia::CSearchManager::PrepareLookup(
+            Kademlia::CSearch::STOREKEYWORD, false, uTarget);
+        if (pSearch) {
+            pSearch->SetGUIName(_T("eSE Live tombstone"));
+            pSearch->SetLiveStreamPublish(streamKey,
+                m_publishedInfo.title, m_publishedInfo.category, m_publishedInfo.language,
+                /*bitrate=*/0,         // sentinel: broadcaster gone
+                /*viewerCount=*/0,
+                m_publishedInfo.startedAt, thePrefs.GetPort());
+            Kademlia::CSearchManager::StartSearch(pSearch);
+            AddLogLine(false, _T("eSE Kad: Stream tombstone published (bitrate=0)"));
+        }
+    }
+
     CString strKey = StreamKeyToString(streamKey);
     m_streamDirectory.RemoveKey(strKey);
     m_bPublished = false;
+    // Phase 2 LAT-2: reset burst state so next StartBroadcast re-arms.
+    m_nPublishBurstCount = 0;
+    m_dwBurstStartTime   = 0;
 
     AddLogLine(true, _T("eSE Kad: Stream unpublished from directory"));
+}
+
+bool CLiveKadBridge::PublishTombstoneFor(const uchar* streamKey)
+{
+    // DISC-S04: stateless tombstone publish, used at startup to evict a
+    // ghost left by a previous crashed session.
+    CSingleLock lock(&m_lock, TRUE);
+    if (!Kademlia::CKademlia::IsConnected()) return false;
+
+    CString hashKeyword(_T("livehash:"));
+    for (int i = 0; i < 16; ++i) {
+        CString h; h.Format(_T("%02x"), streamKey[i]);
+        hashKeyword += h;
+    }
+    Kademlia::CUInt128 uTarget;
+    Kademlia::CKadTagValueString wstrKw(hashKeyword);
+    KadGetKeywordHash(wstrKw, &uTarget);
+    Kademlia::CSearch* pSearch = Kademlia::CSearchManager::PrepareLookup(
+        Kademlia::CSearch::STOREKEYWORD, false, uTarget);
+    if (!pSearch) return false;
+    pSearch->SetGUIName(_T("eSE Live ghost-tombstone"));
+    pSearch->SetLiveStreamPublish(streamKey, L"", L"", L"",
+        /*bitrate=*/0, /*viewerCount=*/0,
+        /*startedAt=*/(uint32)time(NULL), thePrefs.GetPort());
+    Kademlia::CSearchManager::StartSearch(pSearch);
+    AddLogLine(false, _T("eSE Kad: Ghost tombstone published for streamKey %s"),
+        (LPCTSTR)hashKeyword);
+    return true;
+}
+
+bool CLiveKadBridge::PublishAsRelay(const uchar* streamKey, LPCWSTR title,
+    LPCWSTR category, LPCWSTR language, uint16 bitrate)
+{
+    // V2-S17 — Anonymous relay/secondary-source publish.
+    // Only publishes under livehash:HASH (not eselive/title/category) so the
+    // global directory does not fill up with duplicate stream entries; only
+    // joiners that explicitly look up the streamKey via JoinStream find us.
+    CSingleLock lock(&m_lock, TRUE);
+    if (!Kademlia::CKademlia::IsConnected()) return false;
+
+    CString hashKeyword(_T("livehash:"));
+    for (int i = 0; i < 16; ++i) {
+        CString byteHex; byteHex.Format(_T("%02x"), streamKey[i]);
+        hashKeyword += byteHex;
+    }
+
+    Kademlia::CUInt128 uTarget;
+    Kademlia::CKadTagValueString wstrKw(hashKeyword);
+    KadGetKeywordHash(wstrKw, &uTarget);
+
+    Kademlia::CSearch* pSearch = Kademlia::CSearchManager::PrepareLookup(
+        Kademlia::CSearch::STOREKEYWORD, false, uTarget);
+    if (!pSearch) return false;
+
+    CString guiName;
+    guiName.Format(_T("eSE Live (relay): %s"), (LPCTSTR)hashKeyword);
+    pSearch->SetGUIName(guiName);
+    pSearch->SetLiveStreamPublish(streamKey, title ? title : L"",
+        category ? category : L"", language ? language : L"",
+        (uint32)bitrate, /*viewerCount*/ 0,
+        /*startedAt*/ (uint32)time(NULL), thePrefs.GetPort());
+    Kademlia::CSearchManager::StartSearch(pSearch);
+
+    AddLogLine(false, _T("eSE Kad: Secondary-source publish under %s"),
+        (LPCTSTR)hashKeyword);
+    return true;
 }
 
 void CLiveKadBridge::RepublishIfNeeded()
@@ -127,7 +287,15 @@ void CLiveKadBridge::RepublishIfNeeded()
     if (!Kademlia::CKademlia::IsConnected()) return;
 
     DWORD now = GetTickCount();
-    if (now - m_dwLastPublishTime < ESE_KAD_REPUBLISH_INTERVAL) return;
+    // Phase 2 LAT-2: accelerated publish for the first 20 seconds.
+    // Schedule:  t=0  → first publish (forced by m_dwLastPublishTime=0)
+    //            t=5  → second publish (burst #1)
+    //            t=20 → third publish  (burst #2)
+    //            t≥80 → 60 s steady state
+    DWORD interval = ESE_KAD_REPUBLISH_INTERVAL;  // default 60 s
+    if (m_nPublishBurstCount == 0)      interval = 5  * 1000;   // first follow-up
+    else if (m_nPublishBurstCount == 1) interval = 15 * 1000;   // second follow-up
+    if (now - m_dwLastPublishTime < interval) return;
 
     // === Phase 1 KAD-1: Multi-keyword publishing ===
     // We publish under multiple keywords to maximize discoverability:
@@ -183,6 +351,22 @@ void CLiveKadBridge::RepublishIfNeeded()
         keywords.Add(langKeyword);
     }
 
+    // Hash keyword (eSE: anonymous-link bootstrap). The anonymous link form
+    // ed2k://|live|HASH||TITLE|/ carries the streamKey but no IP. Without
+    // this, the viewer searches by "eselive" / title and depends on title
+    // matching exactly + Kad propagation reaching the right nodes — flaky
+    // first 30-90 s. By indexing under the hash itself the viewer can do
+    // SearchStreams("livehash:<HASH>") and get a guaranteed direct match.
+    {
+        CString hashKeyword(_T("livehash:"));
+        for (int i = 0; i < 16; ++i) {
+            CString byteHex;
+            byteHex.Format(_T("%02x"), m_publishedInfo.streamKey[i]);
+            hashKeyword += byteHex;
+        }
+        keywords.Add(hashKeyword);
+    }
+
     // Publish under each keyword
     int publishCount = 0;
     for (INT_PTR i = 0; i < keywords.GetCount(); i++) {
@@ -206,10 +390,11 @@ void CLiveKadBridge::RepublishIfNeeded()
         }
     }
 
-    AddLogLine(false, _T("eSE Kad: Published stream under %d keywords (eselive + %d extra)"),
-        publishCount, publishCount - 1);
+    AddLogLine(false, _T("eSE Kad: Published stream under %d keywords (eselive + %d extra) [burst %d]"),
+        publishCount, publishCount - 1, m_nPublishBurstCount);
 
     m_dwLastPublishTime = now;
+    if (m_nPublishBurstCount < 2) m_nPublishBurstCount++;
 
     // Update viewer count in our entry
     CString strKey = StreamKeyToString(m_publishedInfo.streamKey);
@@ -232,6 +417,8 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword)
 
     if (!Kademlia::CKademlia::IsConnected()) {
         AddLogLine(false, _T("eSE Kad: Cannot search — Kad not connected"));
+        CLiveDebugLog::Get().Append("KAD",
+            "Search SKIPPED keyword=\"%S\" — Kad not connected", (LPCWSTR)keyword);
         return false;
     }
 
@@ -241,10 +428,45 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword)
     searchWord.Trim();
 
     DWORD now = GetTickCount();
-    if (now - m_dwLastSearchTime < ESE_KAD_SEARCH_COOLDOWN
+
+    // DISC-S08: global token-bucket rate limit. Refill 1 token every 6 s,
+    // capacity 10 -> sustained 10 searches/minute regardless of keyword.
+    // This complements the per-keyword cooldown below and prevents any
+    // pathological caller (UI auto-refresh, bug, attacker) from saturating
+    // the DHT with our node's searches.
+    if (m_dwLastSearchTokenRefill == 0) m_dwLastSearchTokenRefill = now;
+    DWORD elapsed = now - m_dwLastSearchTokenRefill;
+    if (elapsed >= 6000) {
+        int tokensToAdd = (int)(elapsed / 6000);
+        m_nSearchTokens = min(10, m_nSearchTokens + tokensToAdd);
+        m_dwLastSearchTokenRefill += (DWORD)(tokensToAdd * 6000);
+    }
+    if (m_nSearchTokens <= 0) {
+        CLiveDebugLog::Get().Append("KAD",
+            "Search RATE-LIMITED keyword=\"%S\" (10/min cap reached)",
+            (LPCWSTR)searchWord);
+        // DISC-S11: count rate-limited drops for /api/live/metrics
+        if (theApp.liveStreamManager)
+            InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadSearchesRateLimited);
+        return false;
+    }
+    m_nSearchTokens--;
+
+    // Phase 2 LAT-1: adaptive cooldown. While the local directory is empty
+    // (no peer found yet) we retry every 5 s; once we have at least one entry
+    // we slow to 30 s to be neighbourly to the DHT.
+    DWORD cooldown = (m_streamDirectory.GetCount() == 0)
+        ? ESE_KAD_SEARCH_COOLDOWN_FAST
+        : ESE_KAD_SEARCH_COOLDOWN_SLOW;
+    if (now - m_dwLastSearchTime < cooldown
         && searchWord.CompareNoCase(m_strLastSearchKeyword) == 0)
     {
-        AddLogLine(false, _T("eSE Kad: Search cooldown active, try again shortly"));
+        AddLogLine(false,
+            _T("eSE Kad: Search cooldown active (%ums), try again shortly"),
+            cooldown - (now - m_dwLastSearchTime));
+        CLiveDebugLog::Get().Append("KAD",
+            "Search COOLDOWN keyword=\"%S\" wait %ums", (LPCWSTR)searchWord,
+            (unsigned)(cooldown - (now - m_dwLastSearchTime)));
         return false;
     }
 
@@ -263,6 +485,9 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword)
 
         AddLogLine(true, _T("eSE Kad: Searching for live streams (keyword=\"%s\", SearchID=%u)"),
             (LPCTSTR)searchWord, pSearch->GetSearchID());
+        CLiveDebugLog::Get().Append("KAD",
+            "Search BEGIN keyword=\"%S\" SearchID=%u",
+            (LPCWSTR)searchWord, (unsigned)pSearch->GetSearchID());
         m_dwLastSearchTime = now;
         m_strLastSearchKeyword = searchWord;
         return true;
@@ -270,6 +495,8 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword)
 
     AddLogLine(false, _T("eSE Kad: Search already in progress for \"%s\""),
         (LPCTSTR)searchWord);
+    CLiveDebugLog::Get().Append("KAD",
+        "Search ALREADY IN PROGRESS keyword=\"%S\"", (LPCWSTR)searchWord);
     return false;
 }
 
@@ -283,6 +510,17 @@ void CLiveKadBridge::GetKnownStreams(CArray<LiveStreamEntry>& outList) const
     POSITION pos = m_streamDirectory.GetStartPosition();
     while (pos) {
         m_streamDirectory.GetNextAssoc(pos, key, entry);
+        // v7.2.0 — drop entries we've tombstoned. Even if a stale Kad
+        // echo from another node refreshed the lastSeen of this entry,
+        // we know the broadcast is dead because either (a) we received
+        // OP_LIVE_END for this streamKey, or (b) our watchdog declared
+        // it dead. Hide from any caller (channel grid, mesh dialer,
+        // search results) until the tombstone expires.
+        if (theApp.liveStreamManager
+            && theApp.liveStreamManager->IsStreamTombstoned(entry.streamKey))
+        {
+            continue;
+        }
         outList.Add(entry);
     }
 }
@@ -303,6 +541,7 @@ bool CLiveKadBridge::GetStreamInfo(const uchar* streamKey, LiveStreamEntry& outE
 void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     const CString& title, const CString& category,
     uint32 broadcasterIP, uint16 broadcasterPort,
+    uint16 broadcasterUDPPort,
     uint16 bitrate, uint32 viewerCount)
 {
     CSingleLock lock(&m_lock, TRUE);
@@ -314,6 +553,33 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
             broadcasterIP, broadcasterPort, (LPCTSTR)title);
         if (theApp.liveStreamManager != NULL)
             InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsRejected);
+        return;
+    }
+
+    // DISC-S01 tombstone filter: bitrate==0 is the sentinel a broadcaster
+    // publishes from UnpublishStream() so peers can recognise "I left" even
+    // before the DHT TTL expires (~10 min). Also evict any local cached
+    // entry so the directory reflects the takedown immediately.
+    if (bitrate == 0) {
+        CString strKey = StreamKeyToString(streamKey);
+        m_streamDirectory.RemoveKey(strKey);
+        AddLogLine(false, _T("eSE Kad: TOMBSTONE received for %s:%u — evicting local entry"),
+            (LPCTSTR)ipstr(broadcasterIP), broadcasterPort);
+        if (theApp.liveStreamManager != NULL)
+            InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsRejected);
+        return;
+    }
+
+    // v7.2.0 — local tombstone filter: if WE already know this stream
+    // is dead (via OP_LIVE_END or our watchdog), drop the Kad result
+    // even though some other node's cache is still echoing it. Without
+    // this, dead streams resurrect themselves every ~5 min when a fresh
+    // Kad echo arrives from a node that never got the gossip.
+    if (theApp.liveStreamManager != NULL
+        && theApp.liveStreamManager->IsStreamTombstoned(streamKey))
+    {
+        AddLogLine(false, _T("eSE Kad: ignored Kad echo for tombstoned stream \"%s\""), (LPCTSTR)title);
+        InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsRejected);
         return;
     }
 
@@ -338,6 +604,27 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
         if (theApp.liveStreamManager != NULL)
             InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsRejected);
         return;
+    }
+
+    // DISC-S14: sanity-clamp values that came from an untrusted Kad entry.
+    // Bitrate > 50 Mbps is unrealistic for any v2/v3 use case and likely
+    // spam or a malformed publish. ViewerCount > 100k is clamped because
+    // pure-P2P v2 isn't expected to exceed that — V3+ may raise the cap.
+    if (bitrate > 50000) {
+        AddLogLine(false, _T("eSE Kad: REJECTED result — bogus bitrate %u kbps from %s"),
+            bitrate, (LPCTSTR)ipstr(broadcasterIP));
+        CLiveDebugLog::Get().Append("KAD",
+            "DISC-S14: discard result %S:%u bogus bitrate=%u",
+            (LPCWSTR)ipstr(broadcasterIP), broadcasterPort, bitrate);
+        if (theApp.liveStreamManager != NULL)
+            InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsRejected);
+        return;
+    }
+    if (viewerCount > 100000) {
+        CLiveDebugLog::Get().Append("KAD",
+            "DISC-S14: clamp suspicious viewerCount %u -> 100000 for %S:%u",
+            viewerCount, (LPCWSTR)ipstr(broadcasterIP), broadcasterPort);
+        viewerCount = 100000;
     }
 
     // === Phase 1 KAD-4: Self-connection guard ===
@@ -372,6 +659,7 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
         entry.viewerCount = viewerCount;
         entry.broadcasterIP = broadcasterIP;
         entry.broadcasterPort = broadcasterPort;
+        entry.broadcasterUDPPort = broadcasterUDPPort;  // A.4 Sprint 1
         entry.lastSeen = GetTickCount();
         entry.startedAt = (uint32)time(NULL);
         entry.isOwnStream = false;
@@ -379,6 +667,10 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
         AddLogLine(false, _T("eSE Kad: Discovered stream \"%s\" from %s:%u (%u viewers, %ukbps)"),
             (LPCTSTR)title, (LPCTSTR)ipstr(broadcasterIP), broadcasterPort,
             viewerCount, bitrate);
+        CLiveDebugLog::Get().Append("KAD",
+            "Discovered \"%S\" src=%S:%u udp=%u %ukbps",
+            (LPCWSTR)title, (LPCWSTR)ipstr(broadcasterIP),
+            (unsigned)broadcasterPort, (unsigned)broadcasterUDPPort, (unsigned)bitrate);
     }
 
     m_streamDirectory[strKey] = entry;
@@ -392,11 +684,24 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     if (theApp.liveStreamManager != NULL)
         InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsAccepted);
 
-    lock.Unlock();
-
-    // Phase 1 KAD-5: Connect to discovered source
-    if (theApp.liveStreamManager != NULL)
-        theApp.liveStreamManager->TryConnectToStreamSource(streamKey, broadcasterIP, broadcasterPort);
+    // DISC-S06: enqueue for throttled dialing instead of immediate connect.
+    // A popular keyword can return 100+ results — auto-dialing each one
+    // synchronously would burst-open 100 sockets. Process() drains at
+    // kDialsPerTick (3/s) so the dial rate stays civil. FIFO-drop if the
+    // queue exceeds kMaxPendingDials to bound memory.
+    if (theApp.liveStreamManager != NULL) {
+        if (m_pendingDials.GetCount() >= kMaxPendingDials) {
+            m_pendingDials.RemoveAt(0);  // drop oldest
+            // DISC-S11: count FIFO-drops for visibility
+            InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().pendingDialsDropped);
+        }
+        PendingDial pd;
+        memcpy(pd.streamKey, streamKey, 16);
+        pd.ip      = broadcasterIP;
+        pd.port    = broadcasterPort;
+        pd.udpPort = broadcasterUDPPort;
+        m_pendingDials.Add(pd);
+    }
 }
 
 
@@ -408,6 +713,38 @@ void CLiveKadBridge::Process()
 {
     DWORD now = GetTickCount();
 
+    // Lazy disk load on first tick: restores last-seen channel directory so
+    // /live shows known broadcasters immediately on startup (subject to TTL).
+    if (!m_bLoadedFromDisk) {
+        CSingleLock lock(&m_lock, TRUE);
+        if (!m_bLoadedFromDisk) {
+            LoadDirectoryFromDisk();
+            m_bLoadedFromDisk = true;
+            m_dwLastDiskSaveTime = now;  // don't immediately re-save what we just loaded
+        }
+    }
+
+    // DISC-S03: detect Kad off->on transition. If we deferred a publish
+    // because Kad was disconnected, fire an immediate burst NOW so the
+    // broadcaster appears in the DHT within seconds of Kad coming up
+    // (instead of waiting up to 60 s for the regular republish cadence).
+    {
+        bool kadNow = Kademlia::CKademlia::IsConnected();
+        if (kadNow && !m_bKadWasConnectedLastTick && m_bDeferredFirstPublish && m_bPublished) {
+            AddLogLine(false, _T("eSE Kad: connected — flushing deferred publish for \"%s\""),
+                (LPCTSTR)m_publishedInfo.title);
+            CLiveDebugLog::Get().Append("KAD",
+                "Kad ONLINE — deferred publish flush, resetting burst");
+            // Force RepublishIfNeeded() to publish on this tick by resetting
+            // the cadence counters.
+            m_dwLastPublishTime = 0;
+            m_nPublishBurstCount = 0;
+            m_dwBurstStartTime   = now;
+            m_bDeferredFirstPublish = false;
+        }
+        m_bKadWasConnectedLastTick = kadNow;
+    }
+
     // Republish if broadcasting
     if (m_bPublished) {
         RepublishIfNeeded();
@@ -418,6 +755,33 @@ void CLiveKadBridge::Process()
         PruneStaleEntries();
         m_dwLastPruneTime = now;
     }
+
+    // DISC-S06: drain pending dial queue up to kDialsPerTick per tick.
+    if (theApp.liveStreamManager != NULL && m_pendingDials.GetCount() > 0) {
+        CSingleLock dialLock(&m_lock, TRUE);
+        int drained = 0;
+        while (drained < kDialsPerTick && m_pendingDials.GetCount() > 0) {
+            PendingDial pd = m_pendingDials[0];
+            m_pendingDials.RemoveAt(0);
+            dialLock.Unlock();   // TryConnectToStreamSource takes its own lock
+            theApp.liveStreamManager->TryConnectToStreamSource(
+                pd.streamKey, pd.ip, pd.port, pd.udpPort);
+            dialLock.Lock();
+            drained++;
+        }
+        if (drained > 0) {
+            CLiveDebugLog::Get().Append("KAD",
+                "Drained %d dial(s); %d still queued",
+                drained, (int)m_pendingDials.GetCount());
+        }
+    }
+
+    // Periodically snapshot the directory so it survives eMule restarts.
+    if (now - m_dwLastDiskSaveTime >= ESE_KAD_DISK_SAVE_INTERVAL) {
+        CSingleLock lock(&m_lock, TRUE);
+        SaveDirectoryToDisk();
+        m_dwLastDiskSaveTime = now;
+    }
 }
 
 void CLiveKadBridge::PruneStaleEntries()
@@ -427,14 +791,31 @@ void CLiveKadBridge::PruneStaleEntries()
     DWORD now = GetTickCount();
     CStringArray toRemove;
 
+    // v7.1.9 — figure out which streamKey (if any) is the broadcaster's
+    // ACTIVE one right now. Own entries from prior broadcasts (different
+    // streamKey, or any leftover when m_bPublished is false) get pruned
+    // like remote ones. Without this, killing emule mid-broadcast or
+    // changing streamKey left orphan isOwnStream entries forever, since
+    // the old code skipped every entry.isOwnStream unconditionally.
+    CString activeOwnKey;
+    if (m_bPublished) {
+        activeOwnKey = StreamKeyToString(m_publishedInfo.streamKey);
+    }
+
     CString key;
     LiveStreamEntry entry;
     POSITION pos = m_streamDirectory.GetStartPosition();
     while (pos) {
         m_streamDirectory.GetNextAssoc(pos, key, entry);
-        // Don't prune our own stream
-        if (entry.isOwnStream) continue;
-        // Prune if not seen in TTL
+        if (entry.isOwnStream) {
+            // Keep only the currently-published own entry; stale own
+            // entries (prior streamKeys, broadcaster stopped) are dropped.
+            if (m_bPublished && key.CompareNoCase(activeOwnKey) == 0)
+                continue;
+            toRemove.Add(key);
+            continue;
+        }
+        // Remote entries: prune if not seen in TTL
         if (now - entry.lastSeen > ESE_KAD_ENTRY_TTL) {
             toRemove.Add(key);
         }
@@ -502,4 +883,184 @@ KadDebugSnapshot CLiveKadBridge::BuildDebugKadSnapshot() const
     snap.lastResultIP    = m_dwLastResultIP;
     snap.lastResultPort  = m_wLastResultPort;
     return snap;
+}
+
+
+// ============================================================
+// DISK PERSISTENCE
+// ============================================================
+// On-disk format (versioned, plain-text, one record per line so a future
+// version can read older snapshots without breaking compatibility):
+//
+//   ESELIVE_DIR v1
+//   <streamKey-hex32>\t<title>\t<category>\t<language>\t<bitrate>\t
+//                <viewerCount>\t<broadcasterIP>\t<broadcasterPort>\t
+//                <broadcasterUDPPort>\t<startedAt>\t<lastSeenUnix>\n
+//
+// Own-stream entries are skipped on save (they get repopulated at runtime
+// when the broadcaster starts again). Entries older than 2x the TTL are
+// dropped at load time — the broadcaster has almost certainly stopped.
+
+CString CLiveKadBridge::GetDirectoryFilePath()
+{
+    return thePrefs.GetMuleDirectory(EMULE_CONFIGDIR) + ESE_KAD_DIRECTORY_FILENAME;
+}
+
+void CLiveKadBridge::LoadDirectoryFromDisk()
+{
+    // Caller must hold m_lock.
+    CString path = GetDirectoryFilePath();
+    CStdioFile file;
+    CFileException ex;
+    if (!file.Open(path, CFile::modeRead | CFile::typeText | CFile::shareDenyWrite, &ex))
+        return;  // file doesn't exist yet — fine on first run
+
+    try {
+        CString line;
+        if (!file.ReadString(line) || line.Find(_T("ESELIVE_DIR v")) != 0) {
+            file.Close();
+            return;
+        }
+        int version = _ttoi((LPCTSTR)line + 13);
+        if (version < 1 || version > ESE_KAD_DIRECTORY_VERSION) {
+            file.Close();
+            return;  // unknown future version — leave file untouched
+        }
+
+        uint32 nowUnix = (uint32)time(NULL);
+        int loaded = 0;
+        int skipped = 0;
+        while (file.ReadString(line)) {
+            line.TrimRight(_T("\r\n"));
+            if (line.IsEmpty()) continue;
+
+            // Tab-separated fields (11 in v1).
+            CString fields[11];
+            int fIdx = 0;
+            int pos = 0;
+            CString tok;
+            while (fIdx < 11) {
+                tok = line.Tokenize(_T("\t"), pos);
+                if (tok.IsEmpty() && pos < 0) break;
+                fields[fIdx++] = tok;
+            }
+            if (fIdx < 11) { skipped++; continue; }
+
+            if (fields[0].GetLength() != 32) { skipped++; continue; }
+
+            LiveStreamEntry entry;
+            bool keyOk = true;
+            for (int i = 0; i < 16 && keyOk; i++) {
+                int hi, lo;
+                TCHAR ch = fields[0].GetAt(i * 2);
+                if      (ch >= _T('0') && ch <= _T('9')) hi = ch - _T('0');
+                else if (ch >= _T('a') && ch <= _T('f')) hi = 10 + (ch - _T('a'));
+                else if (ch >= _T('A') && ch <= _T('F')) hi = 10 + (ch - _T('A'));
+                else { keyOk = false; break; }
+                ch = fields[0].GetAt(i * 2 + 1);
+                if      (ch >= _T('0') && ch <= _T('9')) lo = ch - _T('0');
+                else if (ch >= _T('a') && ch <= _T('f')) lo = 10 + (ch - _T('a'));
+                else if (ch >= _T('A') && ch <= _T('F')) lo = 10 + (ch - _T('A'));
+                else { keyOk = false; break; }
+                entry.streamKey[i] = (uchar)((hi << 4) | lo);
+            }
+            if (!keyOk) { skipped++; continue; }
+
+            entry.title              = fields[1];
+            entry.category           = fields[2];
+            entry.language           = fields[3];
+            entry.bitrate            = (uint16)_ttoi(fields[4]);
+            entry.viewerCount        = (uint32)_ttoi(fields[5]);
+            entry.broadcasterIP      = (uint32)_ttoi64(fields[6]);
+            entry.broadcasterPort    = (uint16)_ttoi(fields[7]);
+            entry.broadcasterUDPPort = (uint16)_ttoi(fields[8]);
+            entry.startedAt          = (uint32)_ttoi64(fields[9]);
+            uint32 lastSeenUnix      = (uint32)_ttoi64(fields[10]);
+            entry.isOwnStream        = false;  // broadcaster repopulates on start
+
+            // Drop anything older than 2x the TTL — almost certainly gone.
+            if (nowUnix > lastSeenUnix
+                && (nowUnix - lastSeenUnix) * 1000 > (ESE_KAD_ENTRY_TTL * 2))
+            {
+                skipped++;
+                continue;
+            }
+            uint32 ageMs = (nowUnix > lastSeenUnix) ? (nowUnix - lastSeenUnix) * 1000 : 0;
+            DWORD nowTicks = GetTickCount();
+            entry.lastSeen = (ageMs < nowTicks) ? (nowTicks - ageMs) : 0;
+
+            CString strKey = StreamKeyToString(entry.streamKey);
+            m_streamDirectory[strKey] = entry;
+            loaded++;
+        }
+        file.Close();
+        AddLogLine(false, _T("eSE Kad: Loaded %d cached stream entries from disk (%d skipped)"),
+            loaded, skipped);
+    } catch (CFileException* fex) {
+        fex->Delete();
+        try { file.Close(); } catch (...) {}
+    }
+}
+
+void CLiveKadBridge::SaveDirectoryToDisk()
+{
+    // Caller must hold m_lock.
+    CString path = GetDirectoryFilePath();
+    CString tmpPath = path + _T(".tmp");
+
+    CStdioFile file;
+    CFileException ex;
+    if (!file.Open(tmpPath,
+            CFile::modeCreate | CFile::modeWrite | CFile::typeText | CFile::shareExclusive,
+            &ex))
+    {
+        return;  // can't write — silently skip, retry later
+    }
+
+    try {
+        CString hdr;
+        hdr.Format(_T("ESELIVE_DIR v%d\n"), ESE_KAD_DIRECTORY_VERSION);
+        file.WriteString(hdr);
+
+        uint32 nowUnix = (uint32)time(NULL);
+        DWORD nowTicks = GetTickCount();
+
+        CString key;
+        LiveStreamEntry entry;
+        POSITION pos = m_streamDirectory.GetStartPosition();
+        int written = 0;
+        while (pos) {
+            m_streamDirectory.GetNextAssoc(pos, key, entry);
+            if (entry.isOwnStream) continue;  // re-registered on broadcaster start
+            if (entry.broadcasterIP == 0 || entry.broadcasterPort == 0) continue;
+
+            uint32 ageMs = (nowTicks > entry.lastSeen) ? (nowTicks - entry.lastSeen) : 0;
+            uint32 lastSeenUnix = (ageMs / 1000 < nowUnix) ? (nowUnix - ageMs / 1000) : nowUnix;
+
+            // Sanitize strings to keep the tab format intact
+            CString title    = entry.title;    title.Replace(_T("\t"), _T(" ")); title.Replace(_T("\n"), _T(" "));
+            CString category = entry.category; category.Replace(_T("\t"), _T(" ")); category.Replace(_T("\n"), _T(" "));
+            CString language = entry.language; language.Replace(_T("\t"), _T(" ")); language.Replace(_T("\n"), _T(" "));
+
+            CString hex = StreamKeyToString(entry.streamKey);
+
+            CString row;
+            row.Format(_T("%s\t%s\t%s\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\n"),
+                (LPCTSTR)hex, (LPCTSTR)title, (LPCTSTR)category, (LPCTSTR)language,
+                entry.bitrate, entry.viewerCount,
+                entry.broadcasterIP, entry.broadcasterPort, entry.broadcasterUDPPort,
+                entry.startedAt, lastSeenUnix);
+            file.WriteString(row);
+            written++;
+        }
+        file.Close();
+
+        MoveFileEx(tmpPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+
+        AddDebugLogLine(false, _T("eSE Kad: Persisted %d stream entries to disk"), written);
+    } catch (CFileException* fex) {
+        fex->Delete();
+        try { file.Close(); } catch (...) {}
+        try { DeleteFile(tmpPath); } catch (...) {}
+    }
 }

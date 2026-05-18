@@ -45,9 +45,18 @@ function renderGrid(channels, favorites) {
     const barsHtml = renderBars(ch.experienceBars || 3);
     const langFlag = langToFlag(ch.language);
 
+    // BROWSE-S01: prefer the cross-peer thumbnailUrl when channel_api
+    // provided it (absolute URL pointing to the remote broadcaster's
+    // own Node :8080), otherwise fall back to the local relative path.
+    // The browser caches the image and onerror hides on 404 / timeout.
+    const thumbBase = (ch.thumbnailUrl && ch.thumbnailUrl.length > 0)
+      ? ch.thumbnailUrl
+      : ('/live/thumb/' + encodeURIComponent(streamKey) + '.jpg');
+    const cacheBust = (thumbBase.indexOf('?') >= 0 ? '&' : '?') + 't=' + Math.floor(Date.now()/20000);
+
     html += `<div class="channel-card" data-key="${escH(streamKey)}">
 <div class="ch-thumb">
-<img src="/live/thumb/${encodeURIComponent(streamKey)}.jpg?t=${Math.floor(Date.now()/20000)}" alt="" loading="lazy" onerror="this.style.display='none'">
+<img src="${escH(thumbBase + cacheBust)}" alt="" loading="lazy" onerror="this.style.display='none'">
 <div class="ch-thumb-overlay">
 <span class="ch-live-dot"></span>
 <span class="ch-viewers">${viewers} viewers</span>
@@ -88,7 +97,7 @@ function renderFilters() {
 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2">
 <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
 </svg>
-<input type="text" id="dir-search" placeholder="Buscar canales..." oninput="filterChannels()">
+<input type="text" id="dir-search" placeholder="Buscar canales..." oninput="(window.__chDeb&&clearTimeout(window.__chDeb),window.__chDeb=setTimeout(filterChannels,250))">
 </div>
 <select id="dir-category" onchange="filterChannels()">
 <option value="all">Todas las categor&#237;as</option>

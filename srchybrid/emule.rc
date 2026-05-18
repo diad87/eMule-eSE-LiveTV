@@ -3740,58 +3740,75 @@ END
 LIVESTREAM ICON "res\\Kad.ico"
 ESESERVER  ICON "res\\ESESERVER.ico"
 
-IDD_LIVESTREAM DIALOGEX 0, 35, 511, 310
+IDD_LIVESTREAM DIALOGEX 0, 35, 511, 530
 STYLE DS_LOCALEDIT | DS_SETFONT | DS_FIXEDSYS | DS_CONTROL | WS_CHILD | WS_SYSMENU
 FONT 8, "MS Shell Dlg", 0, 0, 0x0
 BEGIN
+    // ── Pre-flight (16 May 2026 — show the user the system is ready) ──
+    GROUPBOX        "Pre-flight",IDC_LIVE_GRP_PREFLIGHT,4,0,504,28
+    LTEXT           "● Kad",IDC_LIVE_PF_KAD,12,12,90,10
+    LTEXT           "● HighID",IDC_LIVE_PF_HIGHID,108,12,110,10
+    LTEXT           "● FFmpeg",IDC_LIVE_PF_FFMPEG,224,12,90,10
+    LTEXT           "● IP: --",IDC_LIVE_PF_PUBIP,320,12,184,10
+
     // ── Your Broadcast ───────────────────────────────────────────────
-    GROUPBOX        "Your Broadcast",IDC_STATIC,4,0,504,68
-    LTEXT           "Title:",IDC_STATIC,10,12,22,8
-    EDITTEXT        IDC_LIVE_TITLE,34,10,468,13,ES_AUTOHSCROLL
-    LTEXT           "Source:",IDC_STATIC,10,30,26,8
-    COMBOBOX        IDC_LIVE_SOURCE,38,28,150,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "Quality:",IDC_STATIC,196,30,28,8
-    COMBOBOX        IDC_LIVE_BITRATE,226,28,100,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "Category:",IDC_STATIC,334,30,36,8
-    COMBOBOX        IDC_LIVE_CATEGORY,372,28,132,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "Language:",IDC_STATIC,10,46,38,8
-    COMBOBOX        IDC_LIVE_LANGUAGE,50,44,130,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    PUSHBUTTON      "START BROADCAST",IDC_LIVE_STARTSTOP,196,42,310,16
+    // ALL labels and the groupbox now have unique IDs so CResizableDialog
+    // renders them (it skips anything declared as IDC_STATIC = -1).
+    GROUPBOX        "Your Broadcast",IDC_LIVE_GRP_BROADCAST,4,32,504,68
+    LTEXT           "Title:",IDC_LIVE_LBL_TITLE,10,44,22,8
+    EDITTEXT        IDC_LIVE_TITLE,34,42,468,13,ES_AUTOHSCROLL
+    LTEXT           "Source:",IDC_LIVE_LBL_SOURCE,10,62,26,8
+    COMBOBOX        IDC_LIVE_SOURCE,38,60,150,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Quality:",IDC_LIVE_LBL_QUALITY,196,62,28,8
+    COMBOBOX        IDC_LIVE_BITRATE,226,60,100,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Category:",IDC_LIVE_LBL_CATEGORY,334,62,36,8
+    COMBOBOX        IDC_LIVE_CATEGORY,372,60,132,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Language:",IDC_LIVE_LBL_LANGUAGE,10,78,38,8
+    COMBOBOX        IDC_LIVE_LANGUAGE,50,76,130,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "START BROADCAST",IDC_LIVE_STARTSTOP,196,74,310,16
 
     // ── Stream Status ────────────────────────────────────────────────
-    GROUPBOX        "Stream Status",IDC_STATIC,4,70,504,62
-    LTEXT           "Status: Ready",IDC_LIVE_STATUS,10,82,108,8
-    LTEXT           "Viewers: 0",IDC_LIVE_VIEWERS,126,82,70,8
-    LTEXT           "Uptime: --:--",IDC_LIVE_UPTIME,204,82,80,8
-    LTEXT           "Network Health:",IDC_STATIC,10,95,56,8
-    CONTROL         "",IDC_LIVE_MESHPROG,"msctls_progress32",0,68,93,200,10
-    LTEXT           "Peers:",IDC_STATIC,278,95,22,8
-    LTEXT           "0",IDC_LIVE_PEER_VAL,302,93,28,10
-    LTEXT           "Upload:",IDC_STATIC,334,95,26,8
-    LTEXT           "0 KB/s",IDC_LIVE_UPLOAD_VAL,362,93,50,10
-    LTEXT           "Bitrate:",IDC_STATIC,418,95,26,8
-    LTEXT           "0 kbps",IDC_LIVE_BITRATE_VAL,446,93,52,10
+    // Values self-label (e.g. "Peers: 5"). Layout keeps the extra
+    // "Network Health:" descriptor on the left of the progress bar.
+    GROUPBOX        "Stream Status",IDC_LIVE_GRP_STATUS,4,102,504,76
+    LTEXT           "Status: Inactivo",IDC_LIVE_STATUS,10,114,170,8
+    LTEXT           "Viewers: 0",IDC_LIVE_VIEWERS,184,114,90,8
+    LTEXT           "Uptime: --:--",IDC_LIVE_UPTIME,278,114,110,8
+    LTEXT           "Network Health:",IDC_LIVE_LBL_NETHEALTH,10,127,56,8
+    CONTROL         "",IDC_LIVE_MESHPROG,"msctls_progress32",0,68,125,160,10
+    LTEXT           "Peers: 0",IDC_LIVE_PEER_VAL,232,127,80,8
+    LTEXT           "Upload: 0 KB/s",IDC_LIVE_UPLOAD_VAL,316,127,90,8
+    LTEXT           "Bitrate: 0 kbps",IDC_LIVE_BITRATE_VAL,410,127,90,8
+    // Extra row: chunk-buffer health so the user can SEE that segments
+    // are flowing (count grows over time when broadcasting properly).
+    LTEXT           "Buffer: 0 segs · written: 0",IDC_LIVE_CHUNKS,10,158,494,8
 
     // ── Share Your Stream ────────────────────────────────────────────
-    GROUPBOX        "Share Your Stream",IDC_STATIC,4,134,504,86
-    LTEXT           "ed2k link:",IDC_STATIC,10,148,36,8
-    EDITTEXT        IDC_LIVE_ED2KLINK,50,146,402,13,ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "Copy",IDC_LIVE_COPY_ED2K,458,144,46,15
-    LTEXT           "RTMP URL:",IDC_STATIC,10,166,36,8
-    EDITTEXT        IDC_LIVE_RTMPURL,50,164,402,13,ES_AUTOHSCROLL | ES_READONLY
-    PUSHBUTTON      "Copy",IDC_LIVE_COPY_RTMP,458,162,46,15
-    LTEXT           "(Select 'OBS Studio' source to see the RTMP ingest URL)",IDC_STATIC,50,182,310,8
-    PUSHBUTTON      "Open in Browser \x2192",IDC_LIVE_OPENBROWSER,362,178,142,15
+    GROUPBOX        "Share Your Stream",IDC_LIVE_GRP_SHARE,4,182,504,86
+    LTEXT           "ed2k link:",IDC_LIVE_LBL_ED2K,10,196,36,8
+    EDITTEXT        IDC_LIVE_ED2KLINK,50,194,402,13,ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "Copy",IDC_LIVE_COPY_ED2K,458,192,46,15
+    LTEXT           "RTMP URL:",IDC_LIVE_LBL_RTMP,10,214,36,8
+    EDITTEXT        IDC_LIVE_RTMPURL,50,212,402,13,ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON      "Copy",IDC_LIVE_COPY_RTMP,458,210,46,15
+    // Hint label has its own ID now (was IDC_STATIC). C++ updates the
+    // text dynamically: "(only used by OBS source)" when source != OBS.
+    LTEXT           "(Select 'OBS Studio' source to see the RTMP ingest URL)",IDC_LIVE_LBL_RTMPHINT,50,230,310,8
+    PUSHBUTTON      "Browse Live Directory \x2192",IDC_LIVE_OPENBROWSER,362,226,142,15
 
     // ── NAT Traversal Health ─────────────────────────────────────────
-    GROUPBOX        "NAT Traversal Health",IDC_STATIC,4,222,504,48
-    LTEXT           "Attempts:",IDC_STATIC,10,234,38,8
-    LTEXT           "0",IDC_LIVE_HP_ATTEMPTS,50,234,36,8
-    LTEXT           "Success:",IDC_STATIC,96,234,32,8
-    LTEXT           "0",IDC_LIVE_HP_SUCCESS,130,234,36,8
-    LTEXT           "SymNAT Fail:",IDC_STATIC,176,234,48,8
-    LTEXT           "0",IDC_LIVE_HP_SYMNATFAIL,226,234,36,8
-    LTEXT           "Rate: --",IDC_LIVE_HP_RATE,280,234,80,8
+    GROUPBOX        "NAT Traversal Health",IDC_LIVE_GRP_NAT,4,272,504,48
+    LTEXT           "Attempts: 0",IDC_LIVE_HP_ATTEMPTS,10,284,90,8
+    LTEXT           "Success: 0",IDC_LIVE_HP_SUCCESS,108,284,90,8
+    LTEXT           "SymNAT: 0",IDC_LIVE_HP_SYMNATFAIL,206,284,90,8
+    LTEXT           "Rate: --",IDC_LIVE_HP_RATE,304,284,100,8
+
+    // ── Debug log (live tail) ────────────────────────────────────────
+    // Read-only multi-line edit. Mirrors /api/live/log. Helps diagnose
+    // why a broadcast or join isn't working without leaving emule.
+    GROUPBOX        "Debug log (live tail)",IDC_LIVE_GRP_DEBUGLOG,4,324,504,200
+    EDITTEXT        IDC_LIVE_DEBUGLOG,8,336,496,184,
+                    ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL | NOT WS_TABSTOP
 
     // ── Hidden peer list (DDX only, zero size) ───────────────────────
     CONTROL         "",IDC_LIVE_PEERS,"SysListView32",LVS_REPORT | LVS_SINGLESEL,0,0,0,0

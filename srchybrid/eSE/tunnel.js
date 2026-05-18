@@ -4,16 +4,18 @@ const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const runtimeDir = require('./runtime_dir');
 
 // Puerto del servidor — se configura con init()
 let PORT = 8080;
 
-/** Configura el puerto. Llamar antes de startTunnel/setupUPnP. */
+/** Configura el puerto. Llamar antes de setupUPnP. */
 function init(port) { PORT = port; }
 
 // ─── Config / secrets ────────────────────────────────────────────────────────
-
-const CONFIG_PATH = path.join(__dirname, 'config.json');
+// Writable runtime files MUST live outside the pkg snapshot (which is read-only).
+// See runtime_dir.js: returns %APPDATA%\eSE in pkg mode, __dirname in dev.
+const CONFIG_PATH = runtimeDir.join('config.json');
 
 function loadConfig() {
   if (fs.existsSync(CONFIG_PATH)) {
@@ -80,12 +82,16 @@ fetch("https://ntfy.sh/${LOOKUP_TOPIC}/json?poll=1&since=1h")
 go();
 </script></body></html>`;
 
-// Generar archivo de acceso remoto si no existe
+// Generar archivo de acceso remoto si no existe (writable runtime dir)
 (function generateRemoteHtml() {
-  const redirectPath = path.join(__dirname, 'eSE_Remote.html');
+  const redirectPath = runtimeDir.join('eSE_Remote.html');
   if (!fs.existsSync(redirectPath)) {
-    fs.writeFileSync(redirectPath, redirectHtml);
-    console.log('[config] Generated eSE_Remote.html \u2014 save this file on your phone!');
+    try {
+      fs.writeFileSync(redirectPath, redirectHtml);
+      console.log('[config] Generated eSE_Remote.html at ' + redirectPath);
+    } catch (e) {
+      console.log('[config] Could not write eSE_Remote.html: ' + e.message);
+    }
   }
 })();
 
@@ -102,16 +108,18 @@ function encryptMsg(text) {
 
 // ─── Estado interno ───────────────────────────────────────────────────────────
 
-let tunnelProcess = null;
-let tunnelUrl     = null;
+// v7.4.0 — Cloudflare Quick Tunnel removed. We rely on UPnP for public
+// reachability or LAN for trusted networks; users wanting cross-NAT access
+// over a third-party overlay are expected to set up Tailscale or Tor
+// manually (see README).
 let upnpClient    = null;
 let publicUrl     = null;
 
 // ─── Publicación de URL (ntfy.sh + Telegram) ─────────────────────────────────
 
 function publishUrl(url, isHeartbeat) {
-  const urlInfo = { tunnel: tunnelUrl || null, p2p: publicUrl || null, ts: Date.now() };
-  try { fs.writeFileSync(path.join(__dirname, 'current_url.txt'), JSON.stringify(urlInfo)); } catch (e) {}
+  const urlInfo = { tunnel: null, p2p: publicUrl || null, ts: Date.now() };
+  try { fs.writeFileSync(runtimeDir.join('current_url.txt'), JSON.stringify(urlInfo)); } catch (e) {}
 
   const encryptedPayload = encryptMsg(JSON.stringify(urlInfo));
   const postData = JSON.stringify({ topic: LOOKUP_TOPIC, title: 'eSE', message: encryptedPayload, tags: ['lock'] });
@@ -140,7 +148,7 @@ function publishUrl(url, isHeartbeat) {
 
   // Telegram (solo en publicación inicial, no en heartbeats)
   if (!isHeartbeat) {
-    const cfgPath = path.join(__dirname, 'telegram.json');
+    const cfgPath = runtimeDir.join('telegram.json');
     if (fs.existsSync(cfgPath)) {
       try {
         const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
@@ -162,69 +170,8 @@ function publishUrl(url, isHeartbeat) {
 
 // Heartbeat: re-publicar URLs cada 5 minutos
 setInterval(() => {
-  if (tunnelUrl || publicUrl) publishUrl(tunnelUrl || publicUrl, true);
+  if (publicUrl) publishUrl(publicUrl, true);
 }, 5 * 60 * 1000);
-
-// ─── Cloudflare Tunnel ────────────────────────────────────────────────────────
-
-function startTunnel(res) {
-  if (tunnelUrl) {
-    if (res) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ url: tunnelUrl })); }
-    return;
-  }
-
-  const cfPath = path.join(__dirname, 'cloudflared.exe');
-  if (!fs.existsSync(cfPath)) {
-    if (res) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'cloudflared.exe not found' })); }
-    return;
-  }
-
-  console.log('[tunnel] Starting Cloudflare Quick Tunnel...');
-  tunnelProcess = spawn(cfPath, ['tunnel', '--url', 'http://localhost:' + PORT]);
-
-  let responded = false;
-  let output    = '';
-
-  tunnelProcess.stderr.on('data', (data) => {
-    output += data.toString();
-    const match = output.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-    if (match && !responded) {
-      responded  = true;
-      tunnelUrl  = match[0];
-      console.log('');
-      console.log('  ==========================================');
-      console.log('  PUBLIC URL: ' + tunnelUrl);
-      console.log('  ==========================================');
-      console.log('');
-      publishUrl(tunnelUrl);
-      if (res) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ url: tunnelUrl })); }
-    }
-  });
-
-  tunnelProcess.on('close', (code) => {
-    console.log('[tunnel] Closed (code ' + code + ')');
-    tunnelProcess = null;
-    tunnelUrl     = null;
-    setTimeout(() => { console.log('[tunnel] Auto-restarting...'); startTunnel(null); }, 10000);
-  });
-
-  setTimeout(() => {
-    if (!responded) {
-      responded = true;
-      console.log('[tunnel] Timeout - could not establish tunnel');
-      if (res) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Tunnel timeout' })); }
-    }
-  }, 15000);
-}
-
-function stopTunnel() {
-  if (tunnelProcess) {
-    tunnelProcess.kill();
-    tunnelProcess = null;
-    tunnelUrl     = null;
-    console.log('[tunnel] Stopped');
-  }
-}
 
 // ─── UPnP ────────────────────────────────────────────────────────────────────
 
@@ -268,9 +215,9 @@ async function setupUPnP() {
       console.log('[UPnP] Port mapped but could not detect public IP');
     }
   } catch (e) {
-    console.log('[UPnP] Failed: ' + e.message + ' - trying Cloudflare fallback');
-    const cfPath = path.join(__dirname, 'cloudflared.exe');
-    if (fs.existsSync(cfPath)) startTunnel(null);
+    console.log('[UPnP] Failed: ' + e.message);
+    console.log('[UPnP] No public URL available. Use LAN (http://localhost:' + PORT + '),');
+    console.log('[UPnP] Tailscale, or a Tor onion service set up manually.');
   }
 }
 
@@ -290,11 +237,9 @@ module.exports = {
   LOOKUP_URL,
   encryptMsg,
   publishUrl,
-  startTunnel,
-  stopTunnel,
   setupUPnP,
   removeUPnP,
-  get tunnelUrl()  { return tunnelUrl; },
+  get tunnelUrl()  { return null; },   // legacy stub — no third-party tunnel anymore
   get publicUrl()  { return publicUrl; },
-  get active()     { return !!tunnelProcess; },
+  get active()     { return !!publicUrl; },
 };

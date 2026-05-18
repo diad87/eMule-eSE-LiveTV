@@ -162,12 +162,21 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <SubSystem>Windows</SubSystem>
-      <AdditionalOptions>/FORCE:MULTIPLE %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/FORCE:MULTIPLE /MAP /MAPINFO:EXPORTS %(AdditionalOptions)</AdditionalOptions>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>res/$(TargetName)$(Platform).manifest %(AdditionalManifestFiles)</AdditionalManifestFiles>
       <EnableDpiAwareness>false</EnableDpiAwareness>
     </Manifest>
+    <PreBuildEvent>
+      <!-- Auto-rebuild ese-server.exe when any srchybrid/eSE/*.js is newer.
+           Idempotent: skips silently if Node is not installed or sources
+           are already up to date. Never fails the C++ build on warnings;
+           only signals failure on a hard rebuild error after timestamp
+           said a rebuild was actually required. -->
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)..\tools\build_ese_server.ps1"</Command>
+      <Message>Sync srchybrid/eSE JS -> ese-server.exe (idempotent)</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='_SpecialBootstrapNodes|Win32'">
     <ClCompile>
@@ -346,10 +355,12 @@
     <ClCompile Include="ListCtrlX.cpp" />
     <ClCompile Include="ListenSocket.cpp" />
     <ClCompile Include="LiveChunkBuffer.cpp" />
+    <ClCompile Include="LiveDebugLog.cpp" />
     <ClCompile Include="LiveKadBridge.cpp" />
     <ClCompile Include="LiveMeshManager.cpp" />
     <ClCompile Include="LivePackets.cpp" />
     <ClCompile Include="LiveProtocol.cpp" />
+    <ClCompile Include="LiveCrypto.cpp" />
     <ClCompile Include="LiveStreamDlg.cpp" />
     <ClCompile Include="LiveStreamDlgUI.cpp" />
     <ClCompile Include="LiveStreamHandlers.cpp" />
@@ -655,8 +666,10 @@
     <ClInclude Include="ListCtrlX.h" />
     <ClInclude Include="ListenSocket.h" />
     <ClInclude Include="LiveChunkBuffer.h" />
+    <ClInclude Include="LiveDebugLog.h" />
     <ClInclude Include="LiveKadBridge.h" />
     <ClInclude Include="LiveMeshManager.h" />
+    <ClInclude Include="LiveCrypto.h" />
     <ClInclude Include="LivePackets.h" />
     <ClInclude Include="LiveProtocol.h" />
     <ClInclude Include="LiveStreamDlg.h" />

@@ -1,0 +1,11 @@
+{
+  "name": "ese-stress-test",
+  "version": "1.0.0",
+  "description": "V2-S08/S09/S10 — multi-instance eMule headless viewer launcher + dashboard + sweep",
+  "main": "orchestrator.js",
+  "private": true,
+  "scripts": {
+    "start": "node orchestrator.js",
+    "sweep": "node sweep.js"
+  }
+}

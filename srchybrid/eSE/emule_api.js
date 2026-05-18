@@ -53,7 +53,21 @@ function ensureEmuleRunning() {
 // Kills FFmpeg orphans launched by eMule when eMule dies.
 // eMule spawns ffmpeg.exe from its install folder (e.g. C:\Program Files (x86)\eMule\ffmpeg.exe)
 // and does NOT kill it on exit. This watchdog cleans up every 10s.
+//
+// v7.4.0 — also tracks revival: when eMule transitions dead→alive, we bump a
+// monotonic library epoch (in-memory, NOT persisted to disk — front-end
+// detects epoch=0 on cold-start and refreshes naturally) and notify handlers
+// registered with onRevived(). Used by smart_play.js to know when a stale
+// .part file is still playable from a fresh eMule process.
 let _emuleWasAlive = false;
+let _emuleRestartedAt = 0;     // ms epoch when alive last flipped false→true
+let _emuleLibraryEpoch = 0;    // monotonic counter — NOT persisted
+const _onEmuleRevivedHandlers = [];
+function onRevived(handler) {
+  if (typeof handler === 'function') _onEmuleRevivedHandlers.push(handler);
+}
+function getLibraryEpoch() { return _emuleLibraryEpoch; }
+function getRestartedAt()  { return _emuleRestartedAt; }
 
 function killEmuleFFmpegOrphans() {
   try {
@@ -82,12 +96,25 @@ function killEmuleFFmpegOrphans() {
   } catch(e) {}
 }
 
-// Watchdog: check every 10s if eMule is alive; if it just died, kill its FFmpeg children
+// Watchdog: check every 10s. On dead→alive, bump epoch and notify handlers.
+// On alive→dead, kill orphan ffmpeg children.
 setInterval(function emuleLifecycleWatchdog() {
   const alive = isEmuleRunning();
   if (_emuleWasAlive && !alive) {
     console.log('[eMule] Process died — cleaning up orphan FFmpeg broadcasts...');
     killEmuleFFmpegOrphans();
+    emuleSession = null;
+  } else if (!_emuleWasAlive && alive) {
+    _emuleRestartedAt = Date.now();
+    _emuleLibraryEpoch++;
+    console.log('[eMule] Process back online (epoch=' + _emuleLibraryEpoch + ')');
+    // Auto-login is called by server.js initialisation; the autoLoginEmule
+    // function declared later in this file picks up immediately. We just
+    // notify external listeners.
+    for (const h of _onEmuleRevivedHandlers) {
+      try { h(_emuleLibraryEpoch); }
+      catch(e) { console.warn('[watchdog] revived handler error:', e.message); }
+    }
   }
   _emuleWasAlive = alive;
 }, 10000);
@@ -113,7 +140,12 @@ function setSettingsFunctions(load, save) {
 // ─── HTTP REQUEST ──────────────────────────────────────────────
 
 function emuleRequest(urlPath, callback) {
-  const fullUrl = 'http://localhost:' + EMULE_WS_PORT + '/' + urlPath;
+  // Use the IPv4 literal explicitly. On Windows, `localhost` resolves to ::1
+  // first (IPv6); eMule's WebServer binds INADDR_ANY (IPv4-only, see
+  // WebSocket.cpp:449). Node 18 doesn't auto-fall-back to IPv4, so a
+  // `localhost` request hits ::1, fails ECONNREFUSED, and the UI shows
+  // "eMule WebServer no responde" even when the WebServer is fully up.
+  const fullUrl = 'http://127.0.0.1:' + EMULE_WS_PORT + '/' + urlPath;
   const urlObj = new URL(fullUrl);
   
   const options = {
@@ -682,5 +714,8 @@ module.exports = {
   getPassword,
   isEmuleRunning,
   killEmuleFFmpegOrphans,
+  onRevived,
+  getLibraryEpoch,
+  getRestartedAt,
   EMULE_WS_PORT
 };

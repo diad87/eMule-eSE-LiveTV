@@ -2405,6 +2405,31 @@
 #define IDC_LIVE_HP_SUCCESS             3124   // LTEXT: hole-punch success count
 #define IDC_LIVE_HP_SYMNATFAIL          3125   // LTEXT: symmetric NAT fail count
 #define IDC_LIVE_HP_RATE                3126   // LTEXT: success rate percentage
+// eSE Live — UI overhaul (16 May 2026): give every label a real ID so the
+// CResizableDialog parent doesn't skip rendering them. Anything declared as
+// IDC_STATIC (-1) is silently ignored by the resizer at paint time.
+#define IDC_LIVE_GRP_BROADCAST          3127   // GROUPBOX "Your Broadcast"
+#define IDC_LIVE_GRP_STATUS             3128   // GROUPBOX "Stream Status"
+#define IDC_LIVE_GRP_SHARE              3129   // GROUPBOX "Share Your Stream"
+#define IDC_LIVE_GRP_NAT                3130   // GROUPBOX "NAT Traversal Health"
+#define IDC_LIVE_LBL_TITLE              3131   // LTEXT "Title:"
+#define IDC_LIVE_LBL_SOURCE             3132   // LTEXT "Source:"
+#define IDC_LIVE_LBL_QUALITY            3133   // LTEXT "Quality:"
+#define IDC_LIVE_LBL_CATEGORY           3134   // LTEXT "Category:"
+#define IDC_LIVE_LBL_LANGUAGE           3135   // LTEXT "Language:"
+#define IDC_LIVE_LBL_NETHEALTH          3136   // LTEXT "Network Health:"
+#define IDC_LIVE_LBL_ED2K               3137   // LTEXT "ed2k link:"
+#define IDC_LIVE_LBL_RTMP               3138   // LTEXT "RTMP URL:"
+#define IDC_LIVE_LBL_RTMPHINT           3139   // LTEXT hint about OBS source
+// New pre-flight inline panel + chunk buffer indicator
+#define IDC_LIVE_GRP_PREFLIGHT          3140   // GROUPBOX "Pre-flight"
+#define IDC_LIVE_PF_KAD                 3141   // LTEXT "● Kad"
+#define IDC_LIVE_PF_HIGHID              3142   // LTEXT "● HighID"
+#define IDC_LIVE_PF_FFMPEG              3143   // LTEXT "● FFmpeg"
+#define IDC_LIVE_PF_PUBIP               3144   // LTEXT "● IP: x.x.x.x"
+#define IDC_LIVE_CHUNKS                 3145   // LTEXT "Buffer: N segs · K written"
+#define IDC_LIVE_GRP_DEBUGLOG           3146   // GROUPBOX "Debug log"
+#define IDC_LIVE_DEBUGLOG               3147   // EDIT readonly multi-line log tail
 #define IDS_EM_LIVESTREAM               1611
 #define IDS_EM_ESE                      1612   // eSE Server toolbar button label
 #define IDA_ENTER                       32771

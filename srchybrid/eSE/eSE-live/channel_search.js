@@ -20,6 +20,18 @@ let channels = {};
 function registerChannel(info) {
   if (!info || !info.streamKey) return;
 
+  // v7.1.9 — only one local broadcast at a time on this machine. Sweep any
+  // stale isLocal entries (local_<ts>, obs_<ts>, external_<ts>, prior
+  // streamKeys from earlier broadcasts) before inserting the new one.
+  // Otherwise the local channel directory accumulates ghosts forever; the
+  // search() pipeline-active flag is global, not per-streamKey, so it kept
+  // every stale local entry visible.
+  for (const k of Object.keys(channels)) {
+    if (channels[k] && channels[k].isLocal && k !== info.streamKey) {
+      delete channels[k];
+    }
+  }
+
   channels[info.streamKey] = {
     streamKey: info.streamKey,
     title: info.title || 'Sin titulo',
@@ -52,8 +64,13 @@ function unregisterChannel(streamKey) {
 function addRemoteChannel(info) {
   if (!info || !info.streamKey) return;
   if (channels[info.streamKey]) {
-    // Update existing
-    Object.assign(channels[info.streamKey], info, { lastUpdate: Date.now() });
+    // v7.1.9 — preserve the original `started` across updates. The C++ Kad
+    // side doesn't emit a stable start timestamp; each poll passed
+    // new Date().toISOString() through, resetting uptime to "0min" on
+    // every refresh. Honor the existing one if we already have it.
+    const preserved = { lastUpdate: Date.now() };
+    if (channels[info.streamKey].started) preserved.started = channels[info.streamKey].started;
+    Object.assign(channels[info.streamKey], info, preserved);
   } else {
     channels[info.streamKey] = { ...info, isLocal: false, lastUpdate: Date.now() };
   }

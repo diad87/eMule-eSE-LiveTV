@@ -1472,6 +1472,20 @@ void CPreferences::CreateUserHash()
 	userhash[14] = 111;	//0x6f
 }
 
+void CPreferences::RegenerateUserHash()
+{
+	// V2-S07+ headless stress: force a fresh userhash so the broadcaster's
+	// AttachToAlreadyKnown / "same userhash" guards don't think the viewer
+	// is itself. Re-rolls until isbadhash is false, then re-applies the
+	// eMule marker bytes (same as CreateUserHash).
+	CryptoPP::AutoSeededRandomPool rng;
+	do {
+		rng.GenerateBlock(userhash, sizeof userhash);
+		userhash[5]  = 14;
+		userhash[14] = 111;
+	} while (isbadhash(userhash));
+}
+
 UINT CPreferences::GetRecommendedMaxConnections()
 {
 	UINT iRealMax = GetMaxWindowsTCPConnections();
@@ -2218,6 +2232,19 @@ void CPreferences::LoadPreferences()
 	m_strVideoPlayerArgs = ini.GetString(_T("VideoPlayerArgs"), _T(""));
 
 	m_strTemplateFile = ini.GetString(_T("WebTemplateFile"), GetMuleDirectory(EMULE_EXECUTABLEDIR) + _T("eMule.tmpl"));
+
+	// eSE: cascading fallback. If the configured WebTemplateFile is missing
+	// (typical when a portable package was extracted to a new path while
+	// preferences.ini still points at the previous install), try the config
+	// dir then the executable dir before giving up. Without this, a stale
+	// override silently breaks ReloadTemplates → WebServer never binds.
+	if (!::PathFileExists(m_strTemplateFile)) {
+		const CString cfgPath = GetMuleDirectory(EMULE_CONFIGDIR) + _T("eMule.tmpl");
+		const CString exePath = GetMuleDirectory(EMULE_EXECUTABLEDIR) + _T("eMule.tmpl");
+		if (::PathFileExists(cfgPath))      m_strTemplateFile = cfgPath;
+		else if (::PathFileExists(exePath)) m_strTemplateFile = exePath;
+	}
+
 	// if emule is using the default, check if the file is in the config folder, as it used to be val prior version
 	// and might be wanted by the user when switching to a personalized template
 	if (m_strTemplateFile.Compare(GetMuleDirectory(EMULE_EXECUTABLEDIR) + _T("eMule.tmpl")) == 0)
@@ -2390,6 +2417,27 @@ void CPreferences::LoadPreferences()
 	m_iWebTimeoutMins = ini.GetInt(_T("WebTimeoutMins"), 5);
 	m_iWebFileUploadSizeLimitMB = ini.GetInt(_T("MaxFileUploadSizeMB"), 5);
 	m_bAllowAdminHiLevFunc = ini.GetBool(_T("AllowAdminHiLevelFunc"), false);
+
+	// eSE: zero-config WebServer in portable mode (m_nCurrentUserDirMode == 2).
+	// Portable means "user dropped the package and runs the .exe — no setup".
+	// Without this auto-enable, every portable install needs the user to
+	// manually toggle WebServer in Options > Remote Control before /api/live/*
+	// works — including the dashboard at port 4711 used by the eSE Node UI.
+	// Detection: if the [WebServer] section was never explicitly written
+	// (Enabled defaults to false AND password is empty AND no template
+	// override), treat as first-run portable and turn the WebServer on.
+	if (m_nCurrentUserDirMode == 2 && !m_bWebEnabled
+		&& m_strWebPassword.IsEmpty()
+		&& m_strWebLowPassword.IsEmpty())
+	{
+		m_bWebEnabled = true;
+		if (m_nWebPort == 0 || m_nWebPort > 65535)
+			m_nWebPort = 4711;
+		// Persist so subsequent loads see Enabled=1 and respect any future
+		// user toggle from Options > Remote Control.
+		ini.WriteBool(_T("Enabled"), true);
+		ini.WriteInt(_T("Port"), m_nWebPort);
+	}
 
 	buffer = ini.GetString(_T("AllowedIPs"));
 	for (int iPos = 0; iPos >= 0;) {

@@ -80,7 +80,8 @@ function go() {
       
       var attempts = [];
       if (urls.p2p) attempts.push({ url: urls.p2p, label: 'Conexión directa (P2P)', id: 'p2p' });
-      if (urls.tunnel) attempts.push({ url: urls.tunnel, label: 'Túnel Cloudflare', id: 'tunnel' });
+      // v7.4.0 — urls.tunnel removed (Cloudflare Quick Tunnel is gone). Older
+      // servers may still send a value; we ignore it.
       
       if (!attempts.length) {
         setStep('urls', 'fail', 'No hay URLs disponibles');

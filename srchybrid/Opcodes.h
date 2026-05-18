@@ -296,6 +296,9 @@
 #define OP_LIVE_HEARTBEAT		0xC6	// <StreamHash 16><Bitmap 2><OldestSeq 4>
 #define OP_LIVE_DENY			0xC7	// <StreamHash 16><Reason 1> (ratio, banned, full)
 #define OP_LIVE_END				0xC8	// <StreamHash 16><Reason 1> (0=normal, 1=error, 2=kicked)
+#define OP_LIVE_PING			0xC9	// V2-S03: <StreamHash 16><PingId 4><Timestamp 8> RTT measurement
+#define OP_LIVE_PONG			0xCB	// V2-S03: <StreamHash 16><PingId 4><Timestamp 8> RTT echo (0xCA used)
+#define OP_LIVE_CHUNK_V2		0xCC	// v7.7.0: <StreamHash 16><SeqNum 4><Timestamp 4><DataSize 4><Bitrate 2><sha256 32><Sig 64><Data DataSize>; verified against pinned pubkey
 // extended prot client <-> extended prot client UDP
 #define OP_REASKFILEPING		0x90	// <HASH 16>
 #define OP_REASKACK				0x91	// <RANG 2>

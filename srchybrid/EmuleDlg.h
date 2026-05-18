@@ -158,8 +158,12 @@ public:
 	CWnd			*activewnd;
 	uint8			status;
 
-	// eSE Server process control
-	void  ToggleEseServer();
+	// eSE Server process control.
+	// bOpenBrowser=true (default, called by toolbar button click) opens
+	// http://localhost:8080 after the spawn. bOpenBrowser=false is used
+	// by the OnInitDialog auto-spawn so the dashboard is ready in the
+	// background but no browser pop-up appears at every eMule launch.
+	void  ToggleEseServer(bool bOpenBrowser = true);
 	bool  IsEseServerRunning() const;
 
 protected:
@@ -225,6 +229,15 @@ protected:
 	// UPnP TimeOutTimer
 	UINT_PTR m_hUPnPTimeOutTimer;
 	static void CALLBACK UPnPTimeOutTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
+
+	// V2-S06/S27: headless one-shot timer. Fires ~8 s after init to trigger
+	// either JoinStream(streamKey) or the SelfTest broadcast smoke (then exit).
+	UINT_PTR m_hHeadlessActionTimer;
+	static void CALLBACK HeadlessActionTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
+
+	// D7: scan %APPDATA%\eMule\crashdumps\ for unsent .dmp files and
+	// offer the user a one-time prompt. Called from OnInitDialog.
+	void CheckForPreviousCrashDumps();
 
 	void StartConnection();
 	void CloseConnection();

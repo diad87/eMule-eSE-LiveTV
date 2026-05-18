@@ -19,6 +19,7 @@
 #include "resource.h"
 #include "opcodes.h"
 #include "ED2KLink.h"
+#include "LiveDebugLog.h"
 #include "SafeFile.h"
 #include "StringConversion.h"
 #include "preferences.h"
@@ -359,6 +360,13 @@ CED2KStreamLink::CED2KStreamLink(LPCTSTR pszTitle, LPCTSTR pszHash)
 	}
 }
 
+CED2KStreamLink::CED2KStreamLink(LPCTSTR pszTitle, LPCTSTR pszHash, uint32 dialIPNet, uint16 dialPort)
+	: CED2KStreamLink(pszTitle, pszHash)
+{
+	m_dialIPNet = dialIPNet;
+	m_dialPort  = dialPort;
+}
+
 void CED2KStreamLink::GetLink(CString &lnk) const
 {
 	lnk.Format(_T("ed2k://|stream|%s|%s|/")
@@ -432,6 +440,86 @@ CED2KLink* CED2KLink::CreateLinkFromUrl(LPCTSTR uri)
 			const CString &strHash(GetNextString(strURI, _T('|'), iPos));
 			if (!strTitle.IsEmpty() && !strHash.IsEmpty() && GetNextString(strURI, _T('|'), iPos) == _T("/"))
 				return new CED2KStreamLink(URLDecode(strTitle), strHash);
+		} else if (strTok == _T("live")) {
+			// eSE Live links: ed2k://|live|HASH|IP:PORT|TITLE|/
+			// IP:PORT field is optional (anonymous form leaves it empty).
+			// When present we pass it through so EmuleDlg can dial directly
+			// without waiting for a Kad search to propagate.
+			//
+			// DISC-S09: log every parse outcome so a user pasting a broken
+			// link in the UI can see WHY it didn't work in /api/live/log
+			// instead of just "nothing happens".
+			const CString &strHash(GetNextString(strURI, _T('|'), iPos));
+			const CString &strIpPort(GetNextString(strURI, _T('|'), iPos));
+			const CString &strTitle(GetNextString(strURI, _T('|'), iPos));
+			const CString &strTerm(GetNextString(strURI, _T('|'), iPos));
+
+			if (strHash.IsEmpty()) {
+				CLiveDebugLog::Get().Append("LINK",
+					"REJECTED: empty hash field in ed2k://|live|...");
+				return NULL;
+			}
+			if (strHash.GetLength() != 32) {
+				CLiveDebugLog::Get().Append("LINK",
+					"REJECTED: hash length=%d (expected 32 hex chars)",
+					strHash.GetLength());
+				return NULL;
+			}
+			for (int i = 0; i < 32; ++i) {
+				TCHAR c = strHash[i];
+				if (!((c >= _T('0') && c <= _T('9'))
+				   || (c >= _T('a') && c <= _T('f'))
+				   || (c >= _T('A') && c <= _T('F')))) {
+					CLiveDebugLog::Get().Append("LINK",
+						"REJECTED: non-hex char in hash position %d", i);
+					return NULL;
+				}
+			}
+			if (strTerm != _T("/")) {
+				CLiveDebugLog::Get().Append("LINK",
+					"REJECTED: missing trailing '/' terminator");
+				return NULL;
+			}
+
+			CString title = strTitle.IsEmpty() ? CString(_T("Live")) : URLDecode(strTitle);
+			uint32 dialIPNet = 0;
+			uint16 dialPort  = 0;
+			if (!strIpPort.IsEmpty()) {
+				int colon = strIpPort.Find(_T(':'));
+				if (colon <= 0) {
+					CLiveDebugLog::Get().Append("LINK",
+						"WARN: IP:PORT field present but no ':' — treating as anonymous");
+				} else {
+					CStringA ipA(strIpPort.Left(colon));
+					dialIPNet = (uint32)inet_addr((LPCSTR)ipA);
+					if (dialIPNet == INADDR_NONE) {
+						CLiveDebugLog::Get().Append("LINK",
+							"WARN: invalid IP \"%s\" — treating as anonymous",
+							(LPCSTR)ipA);
+						dialIPNet = 0;
+					}
+					dialPort = (uint16)_ttoi(strIpPort.Mid(colon + 1));
+					if (dialPort == 0)
+						CLiveDebugLog::Get().Append("LINK",
+							"WARN: port 0 in IP:PORT — treating as anonymous");
+				}
+			}
+			if (dialIPNet != 0 && dialPort != 0) {
+				CLiveDebugLog::Get().Append("LINK",
+					"OK direct dial: hash=%S ip=%u.%u.%u.%u port=%u title=\"%S\"",
+					(LPCWSTR)strHash,
+					(unsigned)(dialIPNet & 0xFF),
+					(unsigned)((dialIPNet >> 8) & 0xFF),
+					(unsigned)((dialIPNet >> 16) & 0xFF),
+					(unsigned)((dialIPNet >> 24) & 0xFF),
+					dialPort,
+					(LPCWSTR)title);
+				return new CED2KStreamLink(title, strHash, dialIPNet, dialPort);
+			}
+			CLiveDebugLog::Get().Append("LINK",
+				"OK anonymous: hash=%S title=\"%S\" — relying on Kad search",
+				(LPCWSTR)strHash, (LPCWSTR)title);
+			return new CED2KStreamLink(title, strHash);
 		}
 	} else {
 		iPos = 0;

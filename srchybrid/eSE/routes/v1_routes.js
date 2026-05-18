@@ -41,16 +41,29 @@ function handle(url, req, res) {
     return true;
   }
 
+  // v7.4.0 — lifecycle endpoint. Surfaces eMule alive/dead + monotonic library
+  // epoch so the front-end can detect a process restart and refresh stale
+  // state (e.g. smart_play's .part-still-playable heuristic).
+  if (p === '/api/v1/lifecycle') {
+    const alive = !!(_ctx.emuleApi && _ctx.emuleApi.isEmuleRunning && _ctx.emuleApi.isEmuleRunning());
+    json(res, 200, {
+      alive,
+      epoch: _ctx.emuleApi && _ctx.emuleApi.getLibraryEpoch ? _ctx.emuleApi.getLibraryEpoch() : 0,
+      restartedAt: _ctx.emuleApi && _ctx.emuleApi.getRestartedAt ? _ctx.emuleApi.getRestartedAt() : 0
+    });
+    return true;
+  }
+
   if (p === '/api/v1/capabilities') {
     json(res, 200, {
       remoteControl: [
-        'status', 'settings', 'search', 'smartsearch', 'download', 'download-actions',
+        'status', 'lifecycle', 'settings', 'search', 'smartsearch', 'download', 'download-actions',
         'ed2klink', 'downloads', 'completed-library', 'streaming', 'tunnel', 'live-p2p'
       ],
       compatibility: {
         liveP2P: 'ese-only',
         classicEmule: 'unchanged',
-        fallback: ['cloudflare', 'upnp', 'local-hls']
+        fallback: ['upnp', 'local-hls']
       },
       pendingNativeCoverage: [
         'server-list mutations', 'kad bootstrap mutations', 'upload queue controls',

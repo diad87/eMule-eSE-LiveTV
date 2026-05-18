@@ -18,6 +18,8 @@
 #ifdef _DEBUG
 #include "DebugHelpers.h"
 #endif
+#include "LiveDebugLog.h"
+#include "LiveStreamManager.h"  // v7.1.8 — for OnPeerDisconnected from dtor
 #include "emule.h"
 #include "UpDownClient.h"
 #include "FriendList.h"
@@ -323,6 +325,23 @@ CUpDownClient::~CUpDownClient()
 		m_Friend->SetLinkedClient(NULL);
 	}
 	ASSERT(m_eConnectingState == CCS_NONE || theApp.IsClosing());
+
+	// v7.1.8 USE-AFTER-FREE FIX: notify LiveStreamManager that this client
+	// is going away BEFORE its memory is freed. The LSM keeps raw
+	// CUpDownClient* in m_broadcastPeers / m_viewPeers / m_peerTrust /
+	// m_peerBitmaps; these are only scrubbed today by OnPeerDisconnected,
+	// which until now was wired only into two LIVE-protocol packet handlers
+	// (UNSUBSCRIBE, END). Any client destroyed via socket close — TCP RST,
+	// CGN keep-alive timeout, ListenSocket cleanup — left a dangling
+	// pointer behind. Next Process() tick, SendBitmapToAll iterated and
+	// crashed with EXCEPTION_ACCESS_VIOLATION at
+	// CUpDownClient::SendPacket+0x23 reading a vtable from freed memory.
+	// Confirmed via crash dump (offset 0xe23b3, this) = 0x0000279400000250).
+	// Calling OnPeerDisconnected here closes the gap for ALL destruction
+	// paths and is idempotent if the peer was never on a LIVE peer list.
+	if (theApp.liveStreamManager != NULL)
+		theApp.liveStreamManager->OnPeerDisconnected(this);
+
 	theApp.clientlist->RemoveClient(this, _T("Destructing client object"));
 
 	if (socket) {
@@ -1472,19 +1491,55 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 	// If we know the peer's Kad IP:port but can't do Direct Callback,
 	// try a uTP hole-punch: send HOLEPUNCH_REQ via Kad and seed our NAT expectation.
 	// The peer will respond with ACK and both sides open pinholes for uTP SYN.
+	//
+	// A.3 Sprint 1: ADAPTIVE COOLDOWN. The original 30 s blanket cooldown
+	// meant the first few attempts (when the user is actively waiting) were
+	// just as slow as repeated retries against an unreachable peer. We now use
+	// 5 s for the first 3 attempts per peer (fast-arrival path) and 30 s after
+	// (back-off for stubborn peers). Counter resets on successful uTP accept.
 	if (Kademlia::CKademlia::IsConnected() && GetConnectIP() != 0 && GetKadPort() != 0
 		&& thePrefs.GetUtpHolePunchEnabled()
-		&& SupportsUTP()
-		&& ::GetTickCount() >= m_uLastNatRendezvousTick + SEC2MS(30))
+		&& SupportsUTP())
 	{
-		m_uLastNatRendezvousTick = ::GetTickCount();
-		// GetConnectIP() returns network-order IP; Kad uses host-order
-		uint32 kadIP = ntohl(GetConnectIP());
-		Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReq(kadIP, GetKadPort());
-		// Don't return — fall through to Server/Kad callback as backup.
-		// The hole-punch is opportunistic; if it works, on_utp_accept will handle it.
-		DebugLog(_T("eSE: TryToConnect — initiated hole-punch to %s:%u, falling through to callback"),
-			(LPCTSTR)ipstr(GetConnectIP()), GetKadPort());
+		// A.2 Sprint 1: heuristic symmetric-NAT detection.
+		// After 4 hole-punch attempts without a successful uTP accept (which
+		// would have reset m_uNatRendezvousAttempts to 0 in UtpSocket.cpp),
+		// classify this peer's NAT as 'unreachable via hole-punch' and stop
+		// firing more REQs. Increments stats counter so /api/status reflects
+		// the symmetric-NAT diagnosis to the UI.
+		const uint8 SYM_NAT_THRESHOLD = 4;
+		if (m_uNatRendezvousAttempts >= SYM_NAT_THRESHOLD) {
+			static uint32 s_lastSymNatLog = 0;
+			if (::GetTickCount() - s_lastSymNatLog > 60000) {
+				s_lastSymNatLog = ::GetTickCount();
+				InterlockedIncrement(&CStatistics::m_dwHolePunchSymNATFail);
+				DebugLog(_T("eSE: hole-punch giving up on %s:%u after %u attempts (symmetric NAT?)"),
+					(LPCTSTR)ipstr(GetConnectIP()), GetKadPort(), m_uNatRendezvousAttempts);
+				CLiveDebugLog::Get().Append("HOLE",
+					"GIVE UP on %S:%u after %u attempts (symmetric NAT?)",
+					(LPCWSTR)ipstr(GetConnectIP()),
+					(unsigned)GetKadPort(), (unsigned)m_uNatRendezvousAttempts);
+			}
+		} else {
+			uint32 cooldownSec = (m_uNatRendezvousAttempts < 3) ? 5 : 30;
+			if (::GetTickCount() >= m_uLastNatRendezvousTick + SEC2MS(cooldownSec))
+			{
+				m_uLastNatRendezvousTick = ::GetTickCount();
+				if (m_uNatRendezvousAttempts < 255) m_uNatRendezvousAttempts++;
+				// GetConnectIP() returns network-order IP; Kad uses host-order
+				uint32 kadIP = ntohl(GetConnectIP());
+				Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReq(kadIP, GetKadPort());
+				// Don't return — fall through to Server/Kad callback as backup.
+				// The hole-punch is opportunistic; if it works, on_utp_accept will handle it.
+				DebugLog(_T("eSE: TryToConnect — hole-punch attempt #%u to %s:%u (cooldown=%us)"),
+					m_uNatRendezvousAttempts, (LPCTSTR)ipstr(GetConnectIP()), GetKadPort(), cooldownSec);
+				CLiveDebugLog::Get().Append("HOLE",
+					"hole-punch attempt #%u to %S:%u (cooldown=%us)",
+					(unsigned)m_uNatRendezvousAttempts,
+					(LPCWSTR)ipstr(GetConnectIP()),
+					(unsigned)GetKadPort(), (unsigned)cooldownSec);
+			}
+		}
 	}
 	////////////////////////////////////////////////////////////
 	// 6) Server Callback + 7) Kad Callback

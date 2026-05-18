@@ -79,6 +79,13 @@ public:
     bool IsUtpWritable() const { return m_bUtpWritable; }
     uint32 m_uLastNatRendezvousTick = 0;
     uint32 m_uDeferredNatConnectTick = 0;
+    // A.3 Sprint 1: track per-peer hole-punch attempts so the cooldown can be
+    // aggressive (5 s) for the first few tries and relax (30 s) only after the
+    // peer has clearly proven hard-to-reach. Without this, a fresh "connect to
+    // peer X" attempt has to wait 30 s after each previous attempt — terrible UX.
+    uint8  m_uNatRendezvousAttempts = 0;
+    // A.3: high-water mark of attempts since last successful uTP connect with
+    // this peer. Resets to 0 when the punch succeeds (in CUtpSocket on_accept).
     bool SupportsUTP() const;
 
 

@@ -71,29 +71,40 @@ function handle(url, req, res) {
   }
 
   // ── Misc system routes ─────────────────────────────────────────────────────
+  // v7.5.0 — /api/cleanup deletes server state; require POST so an <img src>
+  // / DNS-rebinding hit can't trigger it from a malicious page (CSRF #29).
   if (url.pathname === '/api/cleanup') {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json', 'Allow': 'POST' });
+      res.end(JSON.stringify({ error: 'method_not_allowed', expected: 'POST' }));
+      return true;
+    }
     _ctx.cleanup.cleanupAll();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ cleaned: true }));
     return true;
   }
 
+  // v7.4.0 — /api/tunnel/start and /api/tunnel/stop kept as legacy stubs so
+  // existing front-ends that still post to them get a clean response instead
+  // of a 404. Cloudflare Quick Tunnel is gone; UPnP runs unconditionally
+  // at startup. Front-end will be cleaned up to drop these calls in v7.5.
   if (url.pathname === '/api/tunnel/start') {
-    _ctx.tunnel.startTunnel(res);
+    res.writeHead(410, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'gone', reason: 'cloudflare-removed', publicUrl: _ctx.tunnel.publicUrl || null }));
     return true;
   }
 
   if (url.pathname === '/api/tunnel/status') {
     const t = _ctx.tunnel;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ url: t.tunnelUrl, publicUrl: t.publicUrl, active: t.active, lookupUrl: t.LOOKUP_URL }));
+    res.end(JSON.stringify({ url: null, publicUrl: t.publicUrl, active: t.active, lookupUrl: t.LOOKUP_URL }));
     return true;
   }
 
   if (url.pathname === '/api/tunnel/stop') {
-    _ctx.tunnel.stopTunnel();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ stopped: true }));
+    res.writeHead(410, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'gone', reason: 'cloudflare-removed' }));
     return true;
   }
 

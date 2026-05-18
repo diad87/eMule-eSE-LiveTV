@@ -6,8 +6,11 @@
 
 const fs   = require('fs');
 const path = require('path');
+const runtimeDir = require('./runtime_dir');
 
-const CONFIG_PATH = path.join(__dirname, 'config.json');
+// In pkg mode this is %APPDATA%\eSE\config.json (writable, shared with
+// tunnel.js). In dev it's the source-tree path.
+const CONFIG_PATH = runtimeDir.join('config.json');
 
 /**
  * Loads TMDB API key from config.json.

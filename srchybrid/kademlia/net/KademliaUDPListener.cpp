@@ -31,6 +31,7 @@ their client on the eMule forum.
 */
 
 #include "stdafx.h"
+#include "../../LiveDebugLog.h"
 #include "clientlist.h"
 #include "ClientUDPSocket.h"
 #include "emule.h"
@@ -1336,7 +1337,14 @@ void CKademliaUDPListener::Process_KADEMLIA2_PUBLISH_KEY_REQ(const byte *pbyPack
 			throw;
 		}
 
-		if (bEseLiveEntry)
+		// eSE Live: derive TAG_SOURCEIP from packet source ONLY if we have a
+		// valid uIP. If uIP is 0 (self-publish via loopback, broken NAT, etc.)
+		// the holder must NOT override the publisher's own TAG_SOURCEIP tag
+		// with 0 — that would set viewer-side uLiveIP=0 and cause every
+		// result to be REJECTED at LiveKadBridge.cpp:523 as invalid endpoint.
+		// Pair this guard with Search.cpp's explicit TAG_SOURCEIP in the
+		// publish so the entry stays reachable end-to-end.
+		if (bEseLiveEntry && uIP != 0)
 			pEntry->AddTag(new CKadTagUInt(TAG_SOURCEIP, htonl(uIP)));
 
 		if (!CKademlia::GetIndexed()->AddKeyword(uFile, uTarget, pEntry, uLoad)) {
@@ -2207,6 +2215,11 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, 
 	DebugLog(_T("eSE: HOLEPUNCH_ACK from %s:%u nonce=0x%08X — pinhole ready (total: %u/%u)"),
 		(LPCTSTR)ipstr(htonl(uIP)), uResponderUDPPort, uNonce,
 		CStatistics::m_dwHolePunchSuccess, CStatistics::m_dwHolePunchAttempts);
+	CLiveDebugLog::Get().Append("HOLE",
+		"SUCCESS pinhole to %S:%u  total %u/%u",
+		(LPCWSTR)ipstr(htonl(uIP)), (unsigned)uResponderUDPPort,
+		(unsigned)CStatistics::m_dwHolePunchSuccess,
+		(unsigned)CStatistics::m_dwHolePunchAttempts);
 
 	// Prepare sockaddr for the remote peer endpoint
 	SOCKADDR_IN sa = {};

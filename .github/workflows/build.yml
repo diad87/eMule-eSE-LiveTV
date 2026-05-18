@@ -1,0 +1,134 @@
+# Builds emule.exe (MFC, Release|x64) + ese-server.exe (Node.js via pkg)
+# and uploads both as a single artifact bundle. Runs on push, PR, and
+# manual dispatch.
+#
+# Time budget: ~12-15 min on github-hosted windows-latest. MFC build is
+# the slow part (~8 min). ese-server.exe is ~90 s.
+#
+# We do NOT run --selftest in CI because it needs UDP multicast + a
+# functioning eD2K mesh, neither of which exist on the hosted runner.
+# The hardware-required E2E tests live in docs/ACCEPTANCE_CHECKLIST.md.
+
+name: build
+
+on:
+  # 2026-05-17: CI temporarily set to manual-only (workflow_dispatch).
+  # The repo's vendored-libs build (libpng, zlib, cryptopp, mbedTLS, etc.)
+  # has multiple project-ordering issues on a fresh GitHub-hosted runner:
+  # the local Windows checkouts work because each lib has been built in
+  # the right order at some point, leaving intermediate artifacts. CI from
+  # zero hits a cascade — fixed pnglibconf.h missing, .gitmodules,
+  # hardcoded ZLibSrcDir; next layer is likely link-order between
+  # cryptopp/mbedtls/libpng/libutp.
+  #
+  # Decision (per user, 2026-05-17): ship v0.70b-eSE7.0 without CI,
+  # restore push/PR triggers in v7.1 once the project dependencies are
+  # cleaned up. Manual runs still available via the Actions tab.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          # libutp is a real submodule (160000 mode); cryptopp/mbedtls/etc.
+          # are vendored as regular trees. Recursive clones libutp.
+          submodules: recursive
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      # ── 1) eSE Node server ────────────────────────────────────────────
+      - name: Install npm deps (eSE)
+        working-directory: srchybrid/eSE
+        run: npm ci --no-audit --no-fund
+
+      - name: Build ese-server.exe (pkg)
+        working-directory: srchybrid/eSE
+        run: npm run build
+
+      - name: Verify ese-server.exe was produced
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "srchybrid/eSE/ese-server.exe")) {
+            Write-Error "ese-server.exe missing after pkg build"
+            exit 1
+          }
+          $size = (Get-Item "srchybrid/eSE/ese-server.exe").Length / 1MB
+          Write-Host "ese-server.exe = $([math]::Round($size,1)) MB"
+
+      # ── 2) emule.exe MFC build ────────────────────────────────────────
+      # PreBuildEvent in emule.vcxproj re-runs tools/build_ese_server.ps1
+      # but ese-server.exe is already fresh from the step above, so it's a
+      # fast mtime no-op.
+      - name: Build emule.sln (Release|x64)
+        run: |
+          msbuild srchybrid/emule.sln /p:Configuration=Release /p:Platform=x64 /m /verbosity:minimal /nologo
+        shell: pwsh
+
+      - name: Verify emule.exe was produced
+        shell: pwsh
+        run: |
+          $exe = "srchybrid/x64/Release/emule.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Error "emule.exe missing after MSBuild"
+            exit 1
+          }
+          $size = (Get-Item $exe).Length / 1MB
+          Write-Host "emule.exe = $([math]::Round($size,1)) MB"
+
+      # ── 3) Minimal smoke: emule.exe --help should exit 0 without GUI ──
+      # If --help isn't recognised, the binary still loads — that's all
+      # we can verify without a real Kad mesh.
+      - name: "Smoke: emule.exe loads"
+        shell: pwsh
+        continue-on-error: true   # MFC apps may not exit cleanly on --help; tolerate non-0
+        run: |
+          $p = Start-Process -FilePath "srchybrid/x64/Release/emule.exe" `
+                             -ArgumentList "--headless","--selftest","--timeout=10" `
+                             -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(20000)) {
+            Stop-Process -Id $p.Id -Force
+            Write-Host "emule.exe did not exit within 20s (expected for --selftest without mesh)"
+          } else {
+            Write-Host "emule.exe --selftest exited with code $($p.ExitCode)"
+          }
+
+      # ── 4) Bundle the build artefacts ─────────────────────────────────
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          $dst = "build_output"
+          New-Item -ItemType Directory $dst -Force | Out-Null
+          Copy-Item "srchybrid/x64/Release/emule.exe" $dst
+          Copy-Item "srchybrid/eSE/ese-server.exe"    $dst
+          Copy-Item "README.md"                       $dst
+          Copy-Item "license.txt"                     $dst
+          Copy-Item "THIRD_PARTY_LICENSES.md"         $dst
+          Copy-Item "docs/USER_GUIDE.md"              $dst
+          # Build stamp
+          "build: $(Get-Date -Format 'yyyy-MM-dd HH:mm') UTC`ncommit: $env:GITHUB_SHA`nrunner: $env:RUNNER_OS" |
+            Out-File "$dst/BUILD_INFO.txt" -Encoding ASCII
+          Get-ChildItem $dst | Select-Object Name, @{N='SizeMB';E={[math]::Round($_.Length/1MB,1)}}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: emule-ese-${{ github.sha }}
+          path: build_output/
+          retention-days: 14
+          if-no-files-found: error

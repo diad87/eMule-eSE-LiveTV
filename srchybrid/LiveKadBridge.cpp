@@ -76,6 +76,7 @@ CLiveKadBridge::CLiveKadBridge()
     , m_dwLastSearchTokenRefill(0)          // DISC-S08
     , m_bLoadedFromDisk(false)              // disk persistence
     , m_dwLastDiskSaveTime(0)               // disk persistence
+    , m_dwLastNsMapPrune(0)                 // H5 — namespace attribution map
 {
 }
 
@@ -181,26 +182,38 @@ void CLiveKadBridge::UnpublishStream(const uchar* streamKey)
     // "broadcaster gone" and skip it. OnKadSearchResult treats bitrate==0
     // as a deprecation marker.
     if (m_bPublished && Kademlia::CKademlia::IsConnected()) {
+        // H7 — dual-publish tombstone. The clean half tells eSE-aware
+        // viewers the stream is gone even after legacy is turned off in
+        // a future release; the legacy half tells old forks the same.
         CString hashKeyword(_T("livehash:"));
         for (int i = 0; i < 16; ++i) {
             CString h; h.Format(_T("%02x"), streamKey[i]);
             hashKeyword += h;
         }
-        Kademlia::CUInt128 uTarget;
         Kademlia::CKadTagValueString wstrKw(hashKeyword);
-        KadGetKeywordHash(wstrKw, &uTarget);
-        Kademlia::CSearch* pSearch = Kademlia::CSearchManager::PrepareLookup(
-            Kademlia::CSearch::STOREKEYWORD, false, uTarget);
-        if (pSearch) {
-            pSearch->SetGUIName(_T("eSE Live tombstone"));
-            pSearch->SetLiveStreamPublish(streamKey,
-                m_publishedInfo.title, m_publishedInfo.category, m_publishedInfo.language,
-                /*bitrate=*/0,         // sentinel: broadcaster gone
-                /*viewerCount=*/0,
-                m_publishedInfo.startedAt, thePrefs.GetPort());
-            Kademlia::CSearchManager::StartSearch(pSearch);
-            AddLogLine(false, _T("eSE Kad: Stream tombstone published (bitrate=0)"));
+
+        int nPublished = 0;
+        Kademlia::CUInt128 uClean;
+        EseLiveGetKeywordHash(wstrKw, &uClean);
+        if (StartKeywordPublish(uClean, _T("eSE Live tombstone [clean]"),
+                streamKey, m_publishedInfo.title,
+                m_publishedInfo.category, m_publishedInfo.language,
+                /*bitrate=*/0, /*viewerCount=*/0, m_publishedInfo.startedAt,
+                /*bCleanNs=*/true))
+            nPublished++;
+        if (thePrefs.GetEseLivePublishLegacy()) {
+            Kademlia::CUInt128 uLegacy;
+            KadGetKeywordHash(wstrKw, &uLegacy);
+            if (StartKeywordPublish(uLegacy, _T("eSE Live tombstone [legacy]"),
+                    streamKey, m_publishedInfo.title,
+                    m_publishedInfo.category, m_publishedInfo.language,
+                    /*bitrate=*/0, /*viewerCount=*/0, m_publishedInfo.startedAt,
+                    /*bCleanNs=*/false))
+                nPublished++;
         }
+        AddLogLine(false,
+            _T("eSE Kad: Stream tombstone published (bitrate=0, %d namespace(s))"),
+            nPublished);
     }
 
     CString strKey = StreamKeyToString(streamKey);
@@ -217,6 +230,8 @@ bool CLiveKadBridge::PublishTombstoneFor(const uchar* streamKey)
 {
     // DISC-S04: stateless tombstone publish, used at startup to evict a
     // ghost left by a previous crashed session.
+    // H7 — dual-namespace so clients with legacy=false also evict the
+    // ghost from their directory (otherwise it lingers until Kad TTL).
     CSingleLock lock(&m_lock, TRUE);
     if (!Kademlia::CKademlia::IsConnected()) return false;
 
@@ -225,20 +240,30 @@ bool CLiveKadBridge::PublishTombstoneFor(const uchar* streamKey)
         CString h; h.Format(_T("%02x"), streamKey[i]);
         hashKeyword += h;
     }
-    Kademlia::CUInt128 uTarget;
     Kademlia::CKadTagValueString wstrKw(hashKeyword);
-    KadGetKeywordHash(wstrKw, &uTarget);
-    Kademlia::CSearch* pSearch = Kademlia::CSearchManager::PrepareLookup(
-        Kademlia::CSearch::STOREKEYWORD, false, uTarget);
-    if (!pSearch) return false;
-    pSearch->SetGUIName(_T("eSE Live ghost-tombstone"));
-    pSearch->SetLiveStreamPublish(streamKey, L"", L"", L"",
-        /*bitrate=*/0, /*viewerCount=*/0,
-        /*startedAt=*/(uint32)time(NULL), thePrefs.GetPort());
-    Kademlia::CSearchManager::StartSearch(pSearch);
-    AddLogLine(false, _T("eSE Kad: Ghost tombstone published for streamKey %s"),
-        (LPCTSTR)hashKeyword);
-    return true;
+    const uint32 now = (uint32)time(NULL);
+
+    int nPublished = 0;
+    Kademlia::CUInt128 uClean;
+    EseLiveGetKeywordHash(wstrKw, &uClean);
+    if (StartKeywordPublish(uClean, _T("eSE Live ghost-tombstone [clean]"),
+            streamKey, L"", L"", L"",
+            /*bitrate=*/0, /*viewerCount=*/0, /*startedAt=*/now,
+            /*bCleanNs=*/true))
+        nPublished++;
+    if (thePrefs.GetEseLivePublishLegacy()) {
+        Kademlia::CUInt128 uLegacy;
+        KadGetKeywordHash(wstrKw, &uLegacy);
+        if (StartKeywordPublish(uLegacy, _T("eSE Live ghost-tombstone [legacy]"),
+                streamKey, L"", L"", L"",
+                /*bitrate=*/0, /*viewerCount=*/0, /*startedAt=*/now,
+                /*bCleanNs=*/false))
+            nPublished++;
+    }
+    AddLogLine(false,
+        _T("eSE Kad: Ghost tombstone published for streamKey %s (%d namespace(s))"),
+        (LPCTSTR)hashKeyword, nPublished);
+    return nPublished > 0;
 }
 
 bool CLiveKadBridge::PublishAsRelay(const uchar* streamKey, LPCWSTR title,
@@ -248,6 +273,8 @@ bool CLiveKadBridge::PublishAsRelay(const uchar* streamKey, LPCWSTR title,
     // Only publishes under livehash:HASH (not eselive/title/category) so the
     // global directory does not fill up with duplicate stream entries; only
     // joiners that explicitly look up the streamKey via JoinStream find us.
+    // H7 — dual-namespace so legacy=false viewers still discover relays
+    // (otherwise the topology degenerates to all-vs-broadcaster).
     CSingleLock lock(&m_lock, TRUE);
     if (!Kademlia::CKademlia::IsConnected()) return false;
 
@@ -256,27 +283,35 @@ bool CLiveKadBridge::PublishAsRelay(const uchar* streamKey, LPCWSTR title,
         CString byteHex; byteHex.Format(_T("%02x"), streamKey[i]);
         hashKeyword += byteHex;
     }
-
-    Kademlia::CUInt128 uTarget;
     Kademlia::CKadTagValueString wstrKw(hashKeyword);
-    KadGetKeywordHash(wstrKw, &uTarget);
+    const uint32 now = (uint32)time(NULL);
+    LPCWSTR sTitle    = title    ? title    : L"";
+    LPCWSTR sCategory = category ? category : L"";
+    LPCWSTR sLanguage = language ? language : L"";
 
-    Kademlia::CSearch* pSearch = Kademlia::CSearchManager::PrepareLookup(
-        Kademlia::CSearch::STOREKEYWORD, false, uTarget);
-    if (!pSearch) return false;
-
-    CString guiName;
-    guiName.Format(_T("eSE Live (relay): %s"), (LPCTSTR)hashKeyword);
-    pSearch->SetGUIName(guiName);
-    pSearch->SetLiveStreamPublish(streamKey, title ? title : L"",
-        category ? category : L"", language ? language : L"",
-        (uint32)bitrate, /*viewerCount*/ 0,
-        /*startedAt*/ (uint32)time(NULL), thePrefs.GetPort());
-    Kademlia::CSearchManager::StartSearch(pSearch);
-
-    AddLogLine(false, _T("eSE Kad: Secondary-source publish under %s"),
-        (LPCTSTR)hashKeyword);
-    return true;
+    int nPublished = 0;
+    Kademlia::CUInt128 uClean;
+    EseLiveGetKeywordHash(wstrKw, &uClean);
+    CString guiClean; guiClean.Format(_T("eSE Live (relay) [clean]: %s"), (LPCTSTR)hashKeyword);
+    if (StartKeywordPublish(uClean, guiClean,
+            streamKey, sTitle, sCategory, sLanguage,
+            bitrate, /*viewerCount*/ 0, /*startedAt*/ now,
+            /*bCleanNs=*/true))
+        nPublished++;
+    if (thePrefs.GetEseLivePublishLegacy()) {
+        Kademlia::CUInt128 uLegacy;
+        KadGetKeywordHash(wstrKw, &uLegacy);
+        CString guiLegacy; guiLegacy.Format(_T("eSE Live (relay) [legacy]: %s"), (LPCTSTR)hashKeyword);
+        if (StartKeywordPublish(uLegacy, guiLegacy,
+                streamKey, sTitle, sCategory, sLanguage,
+                bitrate, /*viewerCount*/ 0, /*startedAt*/ now,
+                /*bCleanNs=*/false))
+            nPublished++;
+    }
+    AddLogLine(false,
+        _T("eSE Kad: Secondary-source publish under %s (%d namespace(s))"),
+        (LPCTSTR)hashKeyword, nPublished);
+    return nPublished > 0;
 }
 
 void CLiveKadBridge::RepublishIfNeeded()
@@ -367,31 +402,38 @@ void CLiveKadBridge::RepublishIfNeeded()
         keywords.Add(hashKeyword);
     }
 
-    // Publish under each keyword
-    int publishCount = 0;
+    // Publish under each keyword in BOTH namespaces during the transition
+    // (project_backward_compat): clean = MD4("\x00eSE\x00" || utf8(kw)),
+    // legacy = MD4(utf8(kw)). New clients find each other on the clean
+    // hash; old forks still find us on legacy. Legacy half can be turned
+    // off via thePrefs.GetEseLivePublishLegacy() once adoption metrics
+    // (knownStreamsClean ≥ knownStreamsLegacy) say it's safe.
+    int publishCleanCount = 0;
+    int publishLegacyCount = 0;
+    const bool bPublishLegacy = thePrefs.GetEseLivePublishLegacy();
     for (INT_PTR i = 0; i < keywords.GetCount(); i++) {
-        Kademlia::CUInt128 uTarget;
         Kademlia::CKadTagValueString wstrKw(keywords[i]);
-        KadGetKeywordHash(wstrKw, &uTarget);
 
-        Kademlia::CSearch* pSearch = Kademlia::CSearchManager::PrepareLookup(
-            Kademlia::CSearch::STOREKEYWORD, false, uTarget);
+        // (A) Clean namespace — primary discovery for eSE-aware clients.
+        Kademlia::CUInt128 uTargetClean;
+        EseLiveGetKeywordHash(wstrKw, &uTargetClean);
+        if (StartLivePublishSearch(uTargetClean, keywords[i], _T("clean")))
+            publishCleanCount++;
 
-        if (pSearch) {
-            CString guiName;
-            guiName.Format(_T("eSE Live: %s"), (LPCTSTR)keywords[i]);
-            pSearch->SetGUIName(guiName);
-            pSearch->SetLiveStreamPublish(m_publishedInfo.streamKey,
-                m_publishedInfo.title, m_publishedInfo.category, m_publishedInfo.language,
-                m_publishedInfo.bitrate, m_publishedInfo.viewerCount,
-                m_publishedInfo.startedAt, thePrefs.GetPort());
-            Kademlia::CSearchManager::StartSearch(pSearch);
-            publishCount++;
+        // (B) Legacy namespace — interop with 0.70b upstream + older forks.
+        // Gated by pref so we can amputate the leak path in a future
+        // release without rebuilding the protocol.
+        if (bPublishLegacy) {
+            Kademlia::CUInt128 uTargetLegacy;
+            KadGetKeywordHash(wstrKw, &uTargetLegacy);
+            if (StartLivePublishSearch(uTargetLegacy, keywords[i], _T("legacy")))
+                publishLegacyCount++;
         }
     }
 
-    AddLogLine(false, _T("eSE Kad: Published stream under %d keywords (eselive + %d extra) [burst %d]"),
-        publishCount, publishCount - 1, m_nPublishBurstCount);
+    AddLogLine(false,
+        _T("eSE Kad: Published stream under %d clean + %d legacy keywords [burst %d]"),
+        publishCleanCount, publishLegacyCount, m_nPublishBurstCount);
 
     m_dwLastPublishTime = now;
     if (m_nPublishBurstCount < 2) m_nPublishBurstCount++;
@@ -404,6 +446,45 @@ void CLiveKadBridge::RepublishIfNeeded()
         entry.lastSeen = now;
         m_streamDirectory[strKey] = entry;
     }
+}
+
+// H7 — primitive helper. STOREKEYWORD + SetLiveStreamPublish + StartSearch
+// with all parameters explicit. Calling code holds m_lock already.
+// H8 — bCleanNs gates omission of TAG_FILENAME/TAG_FILETYPE so eSE-aware
+// crawlers can't harvest titles from the dedicated namespace.
+bool CLiveKadBridge::StartKeywordPublish(const Kademlia::CUInt128& uTarget,
+    LPCTSTR displayName, const uchar* streamKey, LPCWSTR title,
+    LPCWSTR category, LPCWSTR language,
+    uint16 bitrate, uint32 viewerCount, uint32 startedAt,
+    bool bCleanNs)
+{
+    Kademlia::CSearch* pSearch = Kademlia::CSearchManager::PrepareLookup(
+        Kademlia::CSearch::STOREKEYWORD, false, uTarget);
+    if (!pSearch)
+        return false;
+    pSearch->SetGUIName(displayName);
+    pSearch->SetLiveStreamPublish(streamKey, title, category, language,
+        bitrate, viewerCount, startedAt, thePrefs.GetPort());
+    pSearch->SetLivePublishCleanNs(bCleanNs);
+    Kademlia::CSearchManager::StartSearch(pSearch);
+    return true;
+}
+
+// Dual-namespace publish helper for RepublishIfNeeded. Pulls all the
+// stream parameters from m_publishedInfo so the loop in RepublishIfNeeded
+// stays tight. Caller holds m_lock. The `clean` vs `legacy` choice for
+// H8 is inferred from namespaceTag — the caller already encodes it there.
+bool CLiveKadBridge::StartLivePublishSearch(const Kademlia::CUInt128& uTarget,
+                                            LPCTSTR keyword, LPCTSTR namespaceTag)
+{
+    const bool bCleanNs = (_tcscmp(namespaceTag, _T("clean")) == 0);
+    CString guiName;
+    guiName.Format(_T("eSE Live: %s [%s]"), keyword, namespaceTag);
+    return StartKeywordPublish(uTarget, guiName,
+        m_publishedInfo.streamKey,
+        m_publishedInfo.title, m_publishedInfo.category, m_publishedInfo.language,
+        m_publishedInfo.bitrate, m_publishedInfo.viewerCount,
+        m_publishedInfo.startedAt, bCleanNs);
 }
 
 
@@ -470,34 +551,66 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword)
         return false;
     }
 
-    Kademlia::CUInt128 uTarget;
+    // Dual-namespace search: launch one KEYWORD search per hash domain.
+    // (A) Clean — finds streams that current/future eSE clients publish
+    //     under EseLiveGetKeywordHash. Discovery primary.
+    // (B) Legacy — finds streams that earlier forks (and our own legacy
+    //     half during the transition) publish under KadGetKeywordHash.
+    // Both feed OnKadSearchResult; m_streamDirectory dedupes by streamKey.
+    //
+    // Cooldown is applied to the PAIR as a single logical refresh — one
+    // consumed token, one m_dwLastSearchTime stamp — so the user pressing
+    // refresh does not pay 2× the rate-limit budget.
     Kademlia::CKadTagValueString wstrKeyword(searchWord);
-    KadGetKeywordHash(wstrKeyword, &uTarget);
 
-    // Start a KEYWORD search
-    Kademlia::CSearch* pSearch = Kademlia::CSearchManager::PrepareLookup(
-        Kademlia::CSearch::KEYWORD, true, uTarget);
+    Kademlia::CUInt128 uTargetClean;
+    EseLiveGetKeywordHash(wstrKeyword, &uTargetClean);
+    Kademlia::CSearch* pSearchClean = Kademlia::CSearchManager::PrepareLookup(
+        Kademlia::CSearch::KEYWORD, true, uTargetClean);
 
-    if (pSearch) {
-        // Phase 0: Instrument search counter (via parent manager)
-        if (theApp.liveStreamManager != NULL)
-            InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadSearches);
+    Kademlia::CUInt128 uTargetLegacy;
+    KadGetKeywordHash(wstrKeyword, &uTargetLegacy);
+    Kademlia::CSearch* pSearchLegacy = Kademlia::CSearchManager::PrepareLookup(
+        Kademlia::CSearch::KEYWORD, true, uTargetLegacy);
 
-        AddLogLine(true, _T("eSE Kad: Searching for live streams (keyword=\"%s\", SearchID=%u)"),
-            (LPCTSTR)searchWord, pSearch->GetSearchID());
+    if (pSearchClean == NULL && pSearchLegacy == NULL) {
+        AddLogLine(false, _T("eSE Kad: Search already in progress for \"%s\" (both namespaces)"),
+            (LPCTSTR)searchWord);
         CLiveDebugLog::Get().Append("KAD",
-            "Search BEGIN keyword=\"%S\" SearchID=%u",
-            (LPCWSTR)searchWord, (unsigned)pSearch->GetSearchID());
-        m_dwLastSearchTime = now;
-        m_strLastSearchKeyword = searchWord;
-        return true;
+            "Search ALREADY IN PROGRESS keyword=\"%S\"", (LPCWSTR)searchWord);
+        return false;
     }
 
-    AddLogLine(false, _T("eSE Kad: Search already in progress for \"%s\""),
-        (LPCTSTR)searchWord);
-    CLiveDebugLog::Get().Append("KAD",
-        "Search ALREADY IN PROGRESS keyword=\"%S\"", (LPCWSTR)searchWord);
-    return false;
+    // Phase 0: count the search as one logical operation, regardless of
+    // how many namespaces actually fired (we don't want the kadSearches
+    // counter to drift by 2× and break dashboard heuristics).
+    if (theApp.liveStreamManager != NULL)
+        InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadSearches);
+
+    if (pSearchClean != NULL) {
+        AddLogLine(true,
+            _T("eSE Kad: Searching live streams [clean] (keyword=\"%s\", SearchID=%u)"),
+            (LPCTSTR)searchWord, pSearchClean->GetSearchID());
+        CLiveDebugLog::Get().Append("KAD",
+            "Search BEGIN [clean] keyword=\"%S\" SearchID=%u",
+            (LPCWSTR)searchWord, (unsigned)pSearchClean->GetSearchID());
+        PendingSearchTag pst { ESE_NS_CLEAN, now };
+        m_pendingSearchNamespaces[pSearchClean->GetSearchID()] = pst;
+    }
+    if (pSearchLegacy != NULL) {
+        AddLogLine(true,
+            _T("eSE Kad: Searching live streams [legacy] (keyword=\"%s\", SearchID=%u)"),
+            (LPCTSTR)searchWord, pSearchLegacy->GetSearchID());
+        CLiveDebugLog::Get().Append("KAD",
+            "Search BEGIN [legacy] keyword=\"%S\" SearchID=%u",
+            (LPCWSTR)searchWord, (unsigned)pSearchLegacy->GetSearchID());
+        PendingSearchTag pst { ESE_NS_LEGACY, now };
+        m_pendingSearchNamespaces[pSearchLegacy->GetSearchID()] = pst;
+    }
+
+    m_dwLastSearchTime = now;
+    m_strLastSearchKeyword = searchWord;
+    return true;
 }
 
 void CLiveKadBridge::GetKnownStreams(CArray<LiveStreamEntry>& outList) const
@@ -542,9 +655,20 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     const CString& title, const CString& category,
     uint32 broadcasterIP, uint16 broadcasterPort,
     uint16 broadcasterUDPPort,
-    uint16 bitrate, uint32 viewerCount)
+    uint16 bitrate, uint32 viewerCount,
+    uint32 fromSearchID)
 {
     CSingleLock lock(&m_lock, TRUE);
+
+    // H5 — namespace attribution. Look up the search ID against the map
+    // we populated in SearchStreams. Synthetic callers (PEX/bootstrap)
+    // pass fromSearchID=0 which doesn't exist in the map → unknown.
+    uint8 nsTag = ESE_NS_UNKNOWN;
+    if (fromSearchID != 0) {
+        PendingSearchTag tag;
+        if (m_pendingSearchNamespaces.Lookup(fromSearchID, tag))
+            nsTag = tag.nsTag;
+    }
 
     // === Phase 1 KAD-3: Strict IP/port validation ===
     // Reject results with missing endpoint data — they can't be connected to.
@@ -664,13 +788,26 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
         entry.startedAt = (uint32)time(NULL);
         entry.isOwnStream = false;
 
-        AddLogLine(false, _T("eSE Kad: Discovered stream \"%s\" from %s:%u (%u viewers, %ukbps)"),
+        AddLogLine(false, _T("eSE Kad: Discovered stream \"%s\" from %s:%u (%u viewers, %ukbps) [%s]"),
             (LPCTSTR)title, (LPCTSTR)ipstr(broadcasterIP), broadcasterPort,
-            viewerCount, bitrate);
+            viewerCount, bitrate,
+            nsTag == ESE_NS_CLEAN  ? _T("clean")
+          : nsTag == ESE_NS_LEGACY ? _T("legacy")
+          :                          _T("synthetic"));
         CLiveDebugLog::Get().Append("KAD",
-            "Discovered \"%S\" src=%S:%u udp=%u %ukbps",
+            "Discovered \"%S\" src=%S:%u udp=%u %ukbps ns=%u",
             (LPCWSTR)title, (LPCWSTR)ipstr(broadcasterIP),
-            (unsigned)broadcasterPort, (unsigned)broadcasterUDPPort, (unsigned)bitrate);
+            (unsigned)broadcasterPort, (unsigned)broadcasterUDPPort,
+            (unsigned)bitrate, (unsigned)nsTag);
+    }
+
+    // H5 — Upgrade-only tag update. clean > legacy > unknown. Once seen
+    // on clean, stay on clean even if a legacy echo arrives later (so the
+    // adoption counter doesn't flicker downward on every legacy refresh).
+    if (nsTag == ESE_NS_CLEAN ||
+        (nsTag == ESE_NS_LEGACY && entry.discoveryNamespace == ESE_NS_UNKNOWN))
+    {
+        entry.discoveryNamespace = nsTag;
     }
 
     m_streamDirectory[strKey] = entry;
@@ -782,6 +919,27 @@ void CLiveKadBridge::Process()
         SaveDirectoryToDisk();
         m_dwLastDiskSaveTime = now;
     }
+
+    // H5 — prune stale entries from m_pendingSearchNamespaces. A Kad
+    // search completes in 5-10 s; anything older than kNsMapEntryTTL
+    // (30 s) is either finished + already attributed every result it
+    // is going to attribute, or it was lost — either way the entry is
+    // dead weight. Bounds map size in the worst case (UI auto-refresh).
+    if (now - m_dwLastNsMapPrune >= kNsMapPruneInterval) {
+        CSingleLock lock(&m_lock, TRUE);
+        CArray<uint32> toRemove;
+        POSITION pos = m_pendingSearchNamespaces.GetStartPosition();
+        while (pos) {
+            uint32 sid;
+            PendingSearchTag tag;
+            m_pendingSearchNamespaces.GetNextAssoc(pos, sid, tag);
+            if (now - tag.createdAt > kNsMapEntryTTL)
+                toRemove.Add(sid);
+        }
+        for (INT_PTR i = 0; i < toRemove.GetCount(); ++i)
+            m_pendingSearchNamespaces.RemoveKey(toRemove[i]);
+        m_dwLastNsMapPrune = now;
+    }
 }
 
 void CLiveKadBridge::PruneStaleEntries()
@@ -882,6 +1040,24 @@ KadDebugSnapshot CLiveKadBridge::BuildDebugKadSnapshot() const
     snap.lastResultTime  = m_dwLastResultTime;
     snap.lastResultIP    = m_dwLastResultIP;
     snap.lastResultPort  = m_wLastResultPort;
+
+    // H5 — adoption tally. Iterate the directory under the lock we are
+    // already holding. Own streams and unknown-tagged entries are NOT
+    // counted in either bucket; sum can therefore be less than
+    // knownStreams (the difference is "synthetic + our own broadcasts").
+    snap.knownStreamsClean  = 0;
+    snap.knownStreamsLegacy = 0;
+    {
+        POSITION pos = m_streamDirectory.GetStartPosition();
+        CString k;
+        LiveStreamEntry e;
+        while (pos) {
+            m_streamDirectory.GetNextAssoc(pos, k, e);
+            if (e.isOwnStream) continue;
+            if (e.discoveryNamespace == ESE_NS_CLEAN)  snap.knownStreamsClean++;
+            else if (e.discoveryNamespace == ESE_NS_LEGACY) snap.knownStreamsLegacy++;
+        }
+    }
     return snap;
 }
 

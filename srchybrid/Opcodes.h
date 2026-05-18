@@ -333,11 +333,14 @@
 #define ST_SOFTFILES			0x88	// <uint32>
 #define ST_HARDFILES			0x89	// <uint32>
 #define ST_LASTPING				0x90	// <uint32>
-// v0.71 IPv6 Sprint 8 — server.met v2 tag carrying the server's IPv6.
-// Coexists with the legacy v1 32-bit IP field; upstream eMule parsers
-// drop unknown tags so this is wire-additive and safe.
-#define ST_IPV6					0x91	// <CAddress> (1 + 1 + 16 bytes)
 #define	ST_VERSION				0x91	// <string>|<uint32>
+// v0.71 IPv6 Sprint 8 — server.met v2 tag carrying the server's IPv6.
+// Original ST_IPV6=0x91 draft collided with ST_VERSION; moved to 0xA0
+// which is in the free band above the legacy 0x85..0x98 range. Old
+// upstream parsers drop unknown tags so this is wire-additive and safe;
+// new parsers (v0.71+) read both the legacy 32-bit IP header (for v4
+// peers) and ST_IPV6 (for v6-only or dual-stacked peers).
+#define ST_IPV6					0xA0	// <CAddress> (1 + 1 + 16 bytes)
 #define	ST_UDPFLAGS				0x92	// <uint32>
 #define	ST_AUXPORTSLIST			0x93	// <string>
 #define	ST_LOWIDUSERS			0x94	// <uint32>
@@ -635,11 +638,16 @@
 // v0.71 IPv6 Sprint 5 — Kad keepalive + hole-punch opcodes.
 // PING/RES: minimal "tickle" packet, 25 s tick, holds NAT conntrack open.
 // HOLEPUNCH_REQ/FWD/ACK: 3-way rendezvous between two firewalled peers.
-#define KADEMLIA3_PING_REQ				0x61
-#define KADEMLIA3_PING_RES				0x62
-#define KADEMLIA3_HOLEPUNCH_REQ			0x63
-#define KADEMLIA3_HOLEPUNCH_FWD			0x64
-#define KADEMLIA3_HOLEPUNCH_ACK			0x65
+// First draft used 0x61..0x65 which collided with KADEMLIA2_PONG (0x61),
+// KADEMLIA2_FIREWALLUDP (0x62), KADEMLIA_ESE_HOLEPUNCH_REQ (0x63) and
+// KADEMLIA_ESE_HOLEPUNCH_ACK (0x64). Moved to the contiguous free
+// 0x66..0x6A band. Tag-name space `\x66` (TAG_SOURCEIP_V6) is a separate
+// namespace (tags inside payloads, not the opcode byte at hdr[1]).
+#define KADEMLIA3_PING_REQ				0x66
+#define KADEMLIA3_PING_RES				0x67
+#define KADEMLIA3_HOLEPUNCH_REQ			0x68
+#define KADEMLIA3_HOLEPUNCH_FWD			0x69
+#define KADEMLIA3_HOLEPUNCH_ACK			0x6A
 
 #define KADEMLIA_RES_DEPRECATED					0x28	// <HASH (target) [16]> <CNT> <PEER [25]>*(CNT)
 #define KADEMLIA2_RES					0x29	//

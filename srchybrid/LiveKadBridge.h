@@ -9,6 +9,7 @@
 struct KadDebugSnapshot;  // Forward declaration (defined in LiveStreamManager.h)
 
 class CUpDownClient;
+namespace Kademlia { class CUInt128; }  // for StartLivePublishSearch helper
 
 // DISC-S15 NOTE (deferred to V3): a true wire-level "role" tag distinguishing
 // broadcaster origin from secondary relay requires extending the Kad core
@@ -20,6 +21,17 @@ class CUpDownClient;
 // minor cost: the parent selector (V2-S20 RTT-bias + V2-S19 multi-parent)
 // already prefers low-RTT peers regardless of role, so the absence of an
 // explicit "origin" preference is functionally invisible in practice.
+
+// eSE Live keyword-namespace attribution tags. Carried on each
+// LiveStreamEntry to track which hash domain it was discovered through.
+// 'clean'  = MD4("\x00eSE\x00" || utf8(kw))  — new dedicated namespace.
+// 'legacy' = MD4(utf8(kw))                   — old shared namespace.
+// 'unknown'= synthetic (PEX, bootstrap cache, MFC-side hand-injected).
+enum EseLiveNamespace : uint8 {
+    ESE_NS_UNKNOWN = 0,
+    ESE_NS_CLEAN   = 1,
+    ESE_NS_LEGACY  = 2
+};
 
 // Discovery entry for a found live stream
 struct LiveStreamEntry {
@@ -35,6 +47,10 @@ struct LiveStreamEntry {
     DWORD       lastSeen = 0;            // GetTickCount() when last seen/refreshed
     uint32      startedAt = 0;           // Unix timestamp
     bool        isOwnStream = false;
+    // H5 — dual-namespace adoption telemetry. Upgrade-only: once an
+    // entry has been seen on the clean namespace we keep that tag even
+    // if a later legacy result for the same streamKey arrives.
+    uint8       discoveryNamespace = ESE_NS_UNKNOWN;
 };
 
 class CLiveKadBridge
@@ -86,10 +102,14 @@ public:
     // A.4 Sprint 1: broadcasterUDPPort is the Kad UDP port (TAG_SOURCEUPORT)
     // — needed for uTP hole-punching when both peers are LowID. Pass 0 if
     // not advertised (legacy clients); we'll skip hole-punch in that case.
+    // H5: fromSearchID is the CSearch ID that produced this result, used
+    // for clean-vs-legacy namespace attribution. 0 = synthetic (PEX,
+    // bootstrap cache, MFC-side hand-injected) — counts as unknown.
     void OnKadSearchResult(const uchar* streamKey, const CString& title,
         const CString& category, uint32 broadcasterIP, uint16 broadcasterPort,
         uint16 broadcasterUDPPort,
-        uint16 bitrate, uint32 viewerCount);
+        uint16 bitrate, uint32 viewerCount,
+        uint32 fromSearchID = 0);
 
     // === Periodic Maintenance ===
 
@@ -164,6 +184,20 @@ private:
     static const int    kMaxPendingDials   = 50;   // FIFO drop beyond this
     static const int    kDialsPerTick      = 3;
 
+    // H5 — Kad search ID → namespace attribution map.
+    // Populated by SearchStreams when a KEYWORD search is created;
+    // read by OnKadSearchResult to tag the resulting LiveStreamEntry.
+    // Pruned in Process() after 30 s — Kad searches complete in 5-10 s
+    // so 30 s is generous and bounds map size in the worst case.
+    struct PendingSearchTag {
+        uint8 nsTag;       // ESE_NS_CLEAN or ESE_NS_LEGACY
+        DWORD createdAt;   // GetTickCount() at insertion
+    };
+    CMap<uint32, uint32, PendingSearchTag, PendingSearchTag&> m_pendingSearchNamespaces;
+    DWORD m_dwLastNsMapPrune;
+    static const DWORD kNsMapEntryTTL = 30u * 1000u;
+    static const DWORD kNsMapPruneInterval = 10u * 1000u;
+
     // Disk persistence: keep a snapshot of the discovered-streams directory
     // so the viewer doesn't start /live empty after every eMule restart
     // (Kad takes a while to repopulate it organically).
@@ -181,4 +215,28 @@ private:
 
     // Helper: encode stream info into Kad-compatible tag format
     void EncodeStreamTags(const LiveStreamInfo& info, CByteArray& outData) const;
+
+    // eSE Live dual-namespace publish helper. Builds a CSearch::STOREKEYWORD
+    // for `uTarget` and seeds it with m_publishedInfo + thePrefs.GetPort().
+    // `keyword` is only used for the GUI name and log line; the actual
+    // Kad target is `uTarget` (caller picks clean vs legacy hash).
+    // `namespaceTag` is a short literal ("clean" | "legacy") that ends up
+    // in the GUI name + log so dual-publish operations are distinguishable
+    // by eye when grepping logs. Returns true if the search was started.
+    bool StartLivePublishSearch(const Kademlia::CUInt128& uTarget,
+                                LPCTSTR keyword, LPCTSTR namespaceTag);
+
+    // H7 — primitive STOREKEYWORD publish with all SetLiveStreamPublish
+    // parameters explicit. Used by tombstones, ghost-cleanup, and relay
+    // announcements where the params don't come from m_publishedInfo and
+    // can't share StartLivePublishSearch's m_publishedInfo bindings.
+    // Port is always thePrefs.GetPort(). Returns true on success.
+    // bCleanNs (H8): when true, the publish targets the eSE-dedicated
+    // namespace and TAG_FILENAME/TAG_FILETYPE will be omitted to deny a
+    // human-readable title to eSE-aware crawlers.
+    bool StartKeywordPublish(const Kademlia::CUInt128& uTarget, LPCTSTR displayName,
+                             const uchar* streamKey, LPCWSTR title,
+                             LPCWSTR category, LPCWSTR language,
+                             uint16 bitrate, uint32 viewerCount, uint32 startedAt,
+                             bool bCleanNs);
 };

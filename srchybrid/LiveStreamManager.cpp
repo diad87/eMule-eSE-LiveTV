@@ -19,6 +19,7 @@
 #include <deque>
 #include <shlobj.h>     // Capa 3: SHGetFolderPath for %APPDATA%
 #include "ClientList.h"
+#include "eMuleAI/Address.h"  // v0.71 IPv6 Sprint 7 — CAddress in OnPeerListReceivedV6
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -1513,6 +1514,63 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
                 (LPCTSTR)ipstr(ip), port);
         }
     }
+}
+
+// v0.71 IPv6 Sprint 7 follow-up — OP_LIVE_PEER_LIST_V2 receiver.
+// Splits CAddress entries: IPv4 ones go through the legacy uint32 path so
+// the dial/IPFilter/clientlist logic stays single-sourced; IPv6 ones are
+// logged and counted but NOT dialed yet. CUpDownClient still keys peers by
+// network-order uint32 (CClientList::FindClientByIP), so wiring a real
+// v6 dial path requires Sprint 4 Kad-v6 to land first (routing zone + a
+// v6-aware connection helper). Until then, advertising v6 peers in v2
+// lists is harmless because the receiver simply ignores them — that's
+// also the back-compat story for upstream 0.70b which never sees these
+// entries because it never asks for OP_LIVE_PEER_LIST_V2 (it has neither
+// the opcode nor the CAP_FORK_IPV6_WIRE handshake).
+void CLiveStreamManager::OnPeerListReceivedV6(CUpDownClient* peer,
+    const uchar* streamKey,
+    const CArray<CAddress>& addrs, const CArray<uint16>& ports)
+{
+    // Fast path: separate v4 and v6, then delegate the v4 set to the
+    // uint32 overload (which already takes m_lock). We don't take m_lock
+    // around the partition because addrs/ports are local CArrays owned
+    // by the caller on its stack.
+    CArray<DWORD> v4ips;
+    CArray<uint16> v4ports;
+    int v6Count = 0;
+    for (INT_PTR i = 0; i < addrs.GetCount() && i < ports.GetCount(); ++i) {
+        const CAddress& a = addrs[i];
+        switch (a.GetType()) {
+            case CAddress::IPv4: {
+                v4ips.Add(a.ToUInt32(/*bReverse=*/false));  // network-order DWORD
+                v4ports.Add(ports[i]);
+                break;
+            }
+            case CAddress::IPv6: {
+                ++v6Count;
+                LIVE_LOG("MESHv6",
+                    "v6 peer-list entry from %S:%u — %S:%u (dial pending Sprint-4 Kad-v6)",
+                    peer ? (LPCWSTR)ipstr(peer->GetIP()) : L"?",
+                    peer ? (unsigned)peer->GetUserPort() : 0,
+                    (LPCWSTR)a.ToStringC(),
+                    (unsigned)ports[i]);
+                break;
+            }
+            case CAddress::None:
+            default:
+                // Malformed/empty entry — silently skip; the wire reader
+                // already rejected truly bad frames, this is just defense
+                // in depth against future readers.
+                break;
+        }
+    }
+    if (v6Count > 0) {
+        AddDebugLogLine(false,
+            _T("eSE Live: OP_LIVE_PEER_LIST_V2 carried %d v6 entries (dial deferred until Sprint-4 Kad-v6 lands)"),
+            v6Count);
+    }
+    if (v4ips.GetCount() > 0)
+        OnPeerListReceived(peer, streamKey, v4ips, v4ports);
 }
 
 void CLiveStreamManager::OnPeerDisconnected(CUpDownClient* peer)

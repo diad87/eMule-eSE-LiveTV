@@ -739,6 +739,17 @@ bool CServerList::SaveServermetToFile()
 				++uTagCount;
 			}
 
+			// v0.71 IPv6 Sprint 8 — server.met v2 ST_IPV6 emit. 18-byte
+			// CAddress wire form as a BLOB. Old 0.70b parsers don't know
+			// 0xA0 and skip the tag; new parsers stash it via
+			// CServer::SetIPv6Wire. Emitted only when the server actually
+			// has a v6 address so we don't bloat legacy files.
+			if (nextserver->HasIPv6()) {
+				CTag tagV6(ST_IPV6, /*nSize=*/18, nextserver->GetIPv6Wire());
+				tagV6.WriteTagToFile(file);
+				++uTagCount;
+			}
+
 			file.Seek(uTagCountFilePos, CFile::begin);
 			file.WriteUInt32(uTagCount);
 			file.SeekToEnd();

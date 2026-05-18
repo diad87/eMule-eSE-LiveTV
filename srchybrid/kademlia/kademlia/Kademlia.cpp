@@ -40,6 +40,7 @@ their client on the eMule forum.
 #include "kademlia/kademlia/Kademlia.h"
 #include "kademlia/kademlia/defines.h"
 #include "kademlia/kademlia/Prefs.h"
+#include "kademlia/kademlia/Search.h"          // ESE_LIVE_KEYWORD_PREFIX + decls
 #include "kademlia/kademlia/SearchManager.h"
 #include "kademlia/kademlia/Indexed.h"
 #include "kademlia/kademlia/UDPFirewallTester.h"
@@ -538,6 +539,25 @@ CStringA KadGetKeywordBytes(const Kademlia::CKadTagValueString &rstrKeywordW)
 void KadGetKeywordHash(const Kademlia::CKadTagValueString &rstrKeywordW, Kademlia::CUInt128 *pKadID)
 {
 	KadGetKeywordHash(KadGetKeywordBytes(rstrKeywordW), pKadID);
+}
+
+// eSE Live dedicated namespace — see comment in Search.h. The MD4 feed is
+// 5 sentinel bytes ("\x00eSE\x00") followed by the same UTF-8 bytes the
+// legacy hash sees. Result is a deterministic-but-unreachable-from-UI
+// 128-bit target in DHT space. No legacy code path produces those input
+// bytes, so the only writers/readers at this hash are eSE-aware clients.
+void EseLiveGetKeywordHash(const CStringA &rstrKeywordA, Kademlia::CUInt128 *pKadID)
+{
+	CMD4 md4;
+	md4.Add((byte*)ESE_LIVE_KEYWORD_PREFIX, ESE_LIVE_KEYWORD_PREFIX_LEN);
+	md4.Add((byte*)(LPCSTR)rstrKeywordA, rstrKeywordA.GetLength());
+	md4.Finish();
+	pKadID->SetValueBE(md4.GetHash());
+}
+
+void EseLiveGetKeywordHash(const Kademlia::CKadTagValueString &rstrKeywordW, Kademlia::CUInt128 *pKadID)
+{
+	EseLiveGetKeywordHash(KadGetKeywordBytes(rstrKeywordW), pKadID);
 }
 
 void CKademlia::StatsAddClosestDistance(const CUInt128 &uDist)

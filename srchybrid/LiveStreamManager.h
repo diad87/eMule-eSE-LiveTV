@@ -126,6 +126,13 @@ struct KadDebugSnapshot {
     DWORD  lastResultTime;
     uint32 lastResultIP;
     uint16 lastResultPort;
+    // H5 — dual-namespace adoption: count of entries in the directory
+    // tagged as clean / legacy / unknown (synthetic) by source. Sum can
+    // be less than knownStreams when own-streams or stale entries lack
+    // a discovery tag yet. Used by /api/live/debug to decide when it
+    // is safe to flip GetEseLivePublishLegacy() to false.
+    int    knownStreamsClean;
+    int    knownStreamsLegacy;
 };
 
 // eSE: Thread-safe debug snapshot for /api/live/debug.
@@ -225,6 +232,14 @@ public:
     // Called when a peer sends OP_LIVE_PEER_LIST
     void OnPeerListReceived(CUpDownClient* peer, const uchar* streamKey,
                             const CArray<DWORD>& ips, const CArray<uint16>& ports);
+    // v0.71 IPv6 Sprint 7 follow-up — OP_LIVE_PEER_LIST_V2 receiver path.
+    // The v4 entries are passed through to the uint32 overload; v6 entries
+    // are logged and dropped until CUpDownClient learns a v6 socket path
+    // (Sprint 4 Kad-v6 routing zone integration). When that lands, the
+    // method dials v6 peers directly via TryConnectToStreamSource(CAddress).
+    void OnPeerListReceivedV6(CUpDownClient* peer, const uchar* streamKey,
+                              const CArray<class CAddress>& addrs,
+                              const CArray<uint16>& ports);
     // Called when a peer disconnects
     void OnPeerDisconnected(CUpDownClient* peer);
 

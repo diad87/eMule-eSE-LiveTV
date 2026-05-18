@@ -466,6 +466,42 @@ void CKademliaUDPListener::ProcessPacket(const byte *pbyData, uint32 uLenData, u
 		Process_ESE_HOLEPUNCH_ACK(pbyPacketData, uLenData, uIP, uUDPPort, senderUDPKey);
 		break;
 
+	// v0.71 IPv6 Sprint 4 — Kad3 v6-aware opcodes (parse-and-drop until
+	// a v6 routing zone exists). See KademliaUDPListener.h comment block.
+	case KADEMLIA3_BOOTSTRAP_REQ:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_BOOTSTRAP_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_BOOTSTRAP_RES:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_BOOTSTRAP_RES", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_HELLO_REQ:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_HELLO_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_HELLO_RES:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_HELLO_RES", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_REQ:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_RES:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_RES", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_PING_REQ:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_PING_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_PING_RES:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_PING_RES", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_HOLEPUNCH_REQ:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_HOLEPUNCH_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_HOLEPUNCH_FWD:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_HOLEPUNCH_FWD", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_HOLEPUNCH_ACK:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_HOLEPUNCH_ACK", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+
 	// old Kad1 opcodes which we don't handle any more
 	case KADEMLIA_BOOTSTRAP_REQ_DEPRECATED:
 	case KADEMLIA_BOOTSTRAP_RES_DEPRECATED:
@@ -2240,4 +2276,28 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, 
 		// The RESPONDER is passively waiting via on_utp_accept.
 		theApp.clientudp->InitiateUtpConnect(uIP, uResponderUDPPort);
 	}
+}
+
+// v0.71 IPv6 Sprint 4 — Kad3 (v6-aware) generic stub handler.
+// Logs the receipt of any 0x02/0x0A/0x12/0x1A/0x23/0x2A/0x61/0x62/0x63/0x64/0x65
+// packet at debug level and drops the body. We deliberately do NOT:
+//   - Parse the CAddress payload (would require careful malformed-input
+//     handling that's not justified until a real v6 routing zone exists).
+//   - Insert any contact into the existing v4 routing zone (would
+//     pollute its bucket invariants).
+//   - Send a v3 response (would require us to have a v6 socket bound
+//     and an identity to advertise; Sprint 6/9 work).
+// The packet is therefore wire-reserved but inert. Older 0.70b nodes
+// don't know these opcodes at all, so this fork sending v3 packets to
+// non-fork peers would just be dropped — which is why we gate any
+// sending behind CAP_FORK_IPV6_WIRE handshake (Sprint 6).
+void CKademliaUDPListener::Process_KADEMLIA3_GENERIC(const char *szOpcodeName,
+    const byte * /*pbyPacketData*/, uint32 uLenPacket,
+    uint32 uIP, uint16 uUDPPort)
+{
+    if (thePrefs.GetDebugClientKadUDPLevel() > 0) {
+        DebugRecv(szOpcodeName, uIP, uUDPPort);
+    }
+    DebugLog(_T("Kad3: %hs from %s:%u (len=%u) — v6 routing zone not yet integrated, dropping"),
+        szOpcodeName, (LPCTSTR)ipstr(htonl(uIP)), uUDPPort, uLenPacket);
 }

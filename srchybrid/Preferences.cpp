@@ -69,6 +69,10 @@ uint16	CPreferences::udpport;
 // v0.71 IPv6 Sprint 2 — IPv6 prefs, default OFF until Sprint 9.
 CPreferences::EIPv6Mode CPreferences::m_eIPv6Mode = CPreferences::IPv6OffMode;
 CString CPreferences::m_strIPv6BindAddr;
+// eSE Live dedicated keyword namespace — dual-publish stays ON until a
+// future release decides the legacy half can be dropped (see accessor
+// comment in Preferences.h).
+bool	CPreferences::m_bEseLivePublishLegacy = true;
 uint16	CPreferences::nServerUDPPort;
 UINT	CPreferences::maxconnections;
 UINT	CPreferences::maxhalfconnections;

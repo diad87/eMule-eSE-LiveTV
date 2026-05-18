@@ -166,6 +166,8 @@ public:
 	// v0.71 IPv6 Sprint 2 — storage for IPv6 prefs. Default OFF until Sprint 9.
 	static EIPv6Mode	m_eIPv6Mode;
 	static CString  m_strIPv6BindAddr;
+	// eSE Live — dual-namespace publish gate (see accessor comment).
+	static bool     m_bEseLivePublishLegacy;
 	static uint16	nServerUDPPort;
 	static UINT		maxconnections;
 	static UINT		maxhalfconnections;
@@ -723,6 +725,19 @@ public:
 	static void     SetIPv6Mode(EIPv6Mode m)            { m_eIPv6Mode = m; }
 	// Optional explicit bind for v6. Empty = "[::]" (any).
 	static LPCTSTR  GetIPv6BindAddr()                   { return m_strIPv6BindAddr; }
+
+	// eSE Live — dual-namespace publish gate.
+	// When true (default during transition) RepublishIfNeeded publishes
+	// every live keyword under BOTH the new dedicated hash (clean) and
+	// the legacy MD4(utf8) hash (legacy). When false, only the clean
+	// hash is published, severing visibility from any non-eSE node.
+	// Search is dual-mode regardless of this flag — we always need to
+	// find streams from forks still publishing legacy-only.
+	// Default flip-off plan: once /api/live/debug shows clean ≥ legacy
+	// for N days across the user base, ship a release that defaults
+	// this to false; the release after that removes the legacy branch.
+	static bool     GetEseLivePublishLegacy()           { return m_bEseLivePublishLegacy; }
+	static void     SetEseLivePublishLegacy(bool b)     { m_bEseLivePublishLegacy = b; }
 	// V2-S07+: cmdline-driven port override (stress test multi-instance).
 	static void		SetPort(uint16 p)					{ port = p; }
 	static void		SetUDPPort(uint16 p)				{ udpport = p; }

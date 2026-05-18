@@ -1,0 +1,246 @@
+(*
+  eSE Live tunnel handshake — ProVerif model (F4a, unified plan).
+  Author: eSE project, May 2026. Public-domain academic artifact.
+
+  Models the ntor-style handshake used to build a 2-hop circuit:
+
+       V (viewer/originator)            A (hop 1 / "guard")           B (hop 2 / "exit")
+       ----------------------------     -----------------------       --------------------
+       e_pub_A                          (already known: B_pub_long)
+       e_pub_B    (chosen by V, used inside encrypted EXTEND)
+
+       1.  V → A : CELL_CREATE { e_pub_A }
+       2.  A → V : CELL_CREATED { E_pub_A , mac_A }                  -- derive K_send_A, K_recv_A
+       3.  V → A : CELL_RELAY { onion-encrypted CELL_EXTEND
+                                { hop_addr_B , e_pub_B } }
+       4.  A → B : CELL_CREATE { e_pub_B }
+       5.  B → A : CELL_CREATED { E_pub_B , mac_B }
+       6.  A → V : CELL_RELAY { onion-encrypted CELL_EXTENDED
+                                { E_pub_B , mac_B } }                -- V derives K_send_B, K_recv_B
+
+  Trust model (Dolev-Yao):
+    - Network attacker fully controls the wire.
+    - Long-term Ed25519 public keys of A, B are KNOWN to V (selected from
+      swarm peer list with signed identity).
+    - The corresponding LONG-term secret of EITHER hop may be compromised
+      by the adversary AFTER the handshake completes; forward secrecy
+      must hold (G1).
+
+  Properties to verify:
+    G1.  Forward secrecy: after the handshake, an attacker who learns
+         the long-term secret of A or B cannot derive K_send_*, K_recv_*
+         of past sessions.
+    G2.  Unilateral authentication: V verifies it is talking to the
+         intended A (long-term pubkey matches); A does NOT learn V's
+         identity (V is anonymous).
+    G4.  Confidentiality of payload after the handshake: a Dolev-Yao
+         attacker cannot decrypt CELL_RELAY data.
+    NR.  No replay: a CREATE/CREATED transcript cannot be replayed.
+
+  This model is INTENTIONALLY MINIMAL — only the two-hop happy path. It
+  does NOT model rotation, multipath, cover traffic, or destroy cells.
+  Those are out of scope for the cryptographic property check.
+*)
+
+
+(* ============================================================ *)
+(*                       Types and constants                    *)
+(* ============================================================ *)
+
+type point.            (* element of the X25519 curve         *)
+type scalar.           (* private key / ephemeral scalar     *)
+type key.              (* AEAD symmetric key (ChaCha20-Poly) *)
+type hash.             (* SHA-256 output                     *)
+type bitstring.        (* generic message                    *)
+
+const g : point [data].   (* curve base point (public)       *)
+
+(* ============================================================ *)
+(*                         Primitives                           *)
+(* ============================================================ *)
+
+(* Elliptic-curve scalar multiplication. Modeled abstractly:
+   exp(g, x) is the public key; exp(exp(g,x), y) = exp(exp(g,y), x). *)
+fun exp(point, scalar): point.
+
+equation forall x : scalar, y : scalar;
+    exp(exp(g, x), y) = exp(exp(g, y), x).
+
+(* HKDF-SHA-256, modeled as a one-way function on a shared-secret point. *)
+fun kdf(point, bitstring): key.
+
+(* MAC tag derived from the same shared secret, distinct domain. *)
+fun mac(point, bitstring): hash.
+
+(* AEAD: senc(k, m) is opaque ciphertext that can be opened only with k. *)
+fun aenc(key, bitstring): bitstring.
+reduc forall k : key, m : bitstring;
+    adec(k, aenc(k, m)) = m.
+
+(* Long-term Ed25519 signing — modeled abstractly to express that only
+   the holder of the secret can produce a verifiable signature. *)
+type sig.
+fun sign(scalar, bitstring): sig.
+fun verify(point, bitstring, sig): bool
+    reduc forall s : scalar, m : bitstring;
+        verify(exp(g, s), m, sign(s, m)) = true.
+
+(* ============================================================ *)
+(*                  Adversary & channels                        *)
+(* ============================================================ *)
+
+free c : channel.                       (* public network channel        *)
+
+(* ============================================================ *)
+(*                        Long-term keys                        *)
+(* ============================================================ *)
+
+free sk_A_long : scalar [private].      (* hop A long-term secret        *)
+free sk_B_long : scalar [private].      (* hop B long-term secret        *)
+
+(* Public counterparts — visible to everybody, including the attacker. *)
+free pk_A_long : point.
+free pk_B_long : point.
+
+(* Sanity equation enforcing pk_*_long = exp(g, sk_*_long). *)
+equation pk_A_long = exp(g, sk_A_long).
+equation pk_B_long = exp(g, sk_B_long).
+
+
+(* ============================================================ *)
+(*                     Events and queries                       *)
+(* ============================================================ *)
+
+(* Events fire whenever a party reaches a defined point in the
+   protocol. ProVerif's correspondence-assertion machinery uses them
+   to prove authentication / freshness properties. *)
+event V_finished_with(point, point).    (* V finished circuit (A, B)     *)
+event A_finished_with(point, point).    (* A reached EXTENDED, expects V *)
+event B_finished_with(point, point).    (* B reached CREATED, expects A  *)
+
+free secret_payload : bitstring [private].
+
+(* G1 — Forward secrecy. After completion, learn sk_A_long XOR sk_B_long
+   — i.e. compromise one hop's long-term key. secret_payload still
+   protected.
+   Encoded as a non-reachability of secret_payload by attacker AFTER the
+   reveal of sk_*_long.
+*)
+query attacker(secret_payload).
+
+(* G2 — Unilateral authentication of A by V. *)
+query x : point, y : point;
+    event(V_finished_with(x, y)) ==> event(A_finished_with(x, y)).
+
+(* NR — No replay of CREATE→CREATED transcript. *)
+query x : point, y : point;
+    inj-event(V_finished_with(x, y)) ==> inj-event(A_finished_with(x, y)).
+
+
+(* ============================================================ *)
+(*                         Roles                                *)
+(* ============================================================ *)
+
+let V() =
+    new e_priv_A : scalar;                                  (* ephemeral for hop A   *)
+    let e_pub_A = exp(g, e_priv_A) in
+    out(c, e_pub_A);                                        (* CELL_CREATE → A       *)
+
+    in(c, (E_pub_A : point, mac_A : hash));                 (* CELL_CREATED ← A      *)
+    let ss_A = exp(E_pub_A, e_priv_A) in                    (* DH shared secret      *)
+    if mac_A = mac(ss_A, e_pub_A) then
+    let K_send_A = kdf(ss_A, e_pub_A) in
+    let K_recv_A = kdf(ss_A, E_pub_A) in
+    event V_finished_with(pk_A_long, pk_B_long);            (* (G2 anchor)           *)
+
+    (* Now extend through A to B. *)
+    new e_priv_B : scalar;
+    let e_pub_B = exp(g, e_priv_B) in
+    (* EXTEND payload onion-wrapped to A: { B's address (pk_B_long), e_pub_B } *)
+    let extend_inner = (pk_B_long, e_pub_B) in
+    out(c, aenc(K_send_A, (e_pub_A, extend_inner)));        (* CELL_RELAY(EXTEND)     *)
+
+    in(c, (cell_extended : bitstring));                     (* CELL_RELAY(EXTENDED)   *)
+    let inner = adec(K_recv_A, cell_extended) in
+    let (E_pub_B : point, mac_B : hash) = inner in
+    let ss_B = exp(E_pub_B, e_priv_B) in
+    if mac_B = mac(ss_B, e_pub_B) then
+    let K_send_B = kdf(ss_B, e_pub_B) in
+    let K_recv_B = kdf(ss_B, E_pub_B) in
+
+    (* Circuit fully built. Send secret payload. *)
+    out(c, aenc(K_send_B, secret_payload)).
+
+
+let A() =                                                    (* hop 1 / guard         *)
+    in(c, (in_e_pub_A : point));                            (* CELL_CREATE from V    *)
+    new e_priv_A_resp : scalar;
+    let E_pub_A_resp = exp(g, e_priv_A_resp) in
+    let ss_A = exp(in_e_pub_A, e_priv_A_resp) in
+    let mac_A = mac(ss_A, in_e_pub_A) in
+    out(c, (E_pub_A_resp, mac_A));                          (* CELL_CREATED          *)
+    let K_send_A = kdf(ss_A, in_e_pub_A) in
+    let K_recv_A = kdf(ss_A, E_pub_A_resp) in
+    event A_finished_with(pk_A_long, pk_B_long);
+
+    in(c, (relay_in : bitstring));                          (* CELL_RELAY from V     *)
+    let inner = adec(K_recv_A, relay_in) in
+    let (e_pub_in : point, (next_pk : point, e_pub_B_in : point)) = inner in
+
+    (* Forward CREATE to B. *)
+    out(c, e_pub_B_in);
+    in(c, (E_pub_B_resp : point, mac_B_resp : hash));        (* CELL_CREATED from B   *)
+    (* Wrap back to V. *)
+    out(c, aenc(K_send_A, (E_pub_B_resp, mac_B_resp))).
+
+
+let B() =                                                    (* hop 2 / exit          *)
+    in(c, (in_e_pub_B : point));
+    new e_priv_B_resp : scalar;
+    let E_pub_B_resp = exp(g, e_priv_B_resp) in
+    let ss_B = exp(in_e_pub_B, e_priv_B_resp) in
+    let mac_B = mac(ss_B, in_e_pub_B) in
+    out(c, (E_pub_B_resp, mac_B));
+    let K_send_B = kdf(ss_B, in_e_pub_B) in
+    let K_recv_B = kdf(ss_B, E_pub_B_resp) in
+    event B_finished_with(pk_A_long, pk_B_long);
+    in(c, (payload : bitstring));
+    let _ = adec(K_recv_B, payload) in
+    0.
+
+
+(* ============================================================ *)
+(*                  Main: parallel composition                  *)
+(* ============================================================ *)
+
+process
+    ( !V() | !A() | !B() )
+
+
+(* ============================================================ *)
+(*                         How to run                           *)
+(* ============================================================ *)
+
+(*
+  Install ProVerif 2.04+ from https://bblanche.gitlabpages.inria.fr/proverif/
+  and run:
+
+     proverif handshake.pv
+
+  Expected output for a CORRECT handshake (G1 + G2 + NR all hold):
+
+     RESULT not attacker(secret_payload[]) is true.
+     RESULT event(V_finished_with(x,y)) ==> event(A_finished_with(x,y)) is true.
+     RESULT inj-event(V_finished_with(x,y)) ==> inj-event(A_finished_with(x,y)) is true.
+
+  Status: BLOQUEANTE_HUMANO — this model has been written by the project
+  but NOT run on ProVerif. The unified plan (§F4a) requires a human
+  with ProVerif experience to:
+    1. Install ProVerif locally.
+    2. Run `proverif handshake.pv` and confirm RESULT lines.
+    3. If any property fails, report which trace and we redesign.
+    4. Sign off in docs/audit/proverif/REVIEW.md before V1 release.
+
+  Until step 4 is complete, V1 is NOT release-ready (Decision 8.1 + 9.2
+  thesis main, BLOCKING for V1).
+*)

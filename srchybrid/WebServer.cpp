@@ -21,6 +21,8 @@
 #include "Kademlia/Kademlia/Kademlia.h"
 #include "Kademlia/Kademlia/UDPFirewallTester.h"
 #include "Kademlia/net/KademliaUDPListener.h"
+#include "Kademlia/Kademlia/KadV2Defines.h"     // F5: privacy endpoint
+#include "Kademlia/Kademlia/KadV2ModeSelector.h"
 #include "KademliaWnd.h"
 #include "KadSearchListCtrl.h"
 #include "kademlia/kademlia/Entry.h"
@@ -5008,6 +5010,57 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			(LPCSTR)ffPathA,
 			(kadConn && highId && ffmpegFound) ? "true" : "false");
 
+		CStringA header;
+		header.Format(
+			"HTTP/1.1 200 OK\r\n"
+			HTTPInit
+			"Content-Type: application/json\r\n"
+			"Content-Length: %d\r\n\r\n",
+			json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/live/privacy --- F5: expose Kad v2 mode + fallback policy + sensitive keywords.
+	// GET: returns current state. PATCH (via query params): updates state.
+	if (sURL.Left(17) == "/api/live/privacy") {
+		using Kademlia::CKadV2ModeSelector;
+		using Kademlia::CKadV2Mode;
+		auto& sel = CKadV2ModeSelector::Get();
+		const CString modeArg     = _ParseURL(Data.sURL, _T("mode"));        // direct|tunneled|adaptive
+		const CString fallbackArg = _ParseURL(Data.sURL, _T("fallback"));    // strict|balanced|best_effort
+		const CString addSens     = _ParseURL(Data.sURL, _T("add_sensitive"));
+		const CString rmSens      = _ParseURL(Data.sURL, _T("rm_sensitive"));
+		if (!modeArg.IsEmpty()) {
+			if      (modeArg == _T("direct"))    sel.SetDefaultMode(CKadV2Mode::Direct);
+			else if (modeArg == _T("tunneled"))  sel.SetDefaultMode(CKadV2Mode::Tunneled);
+			else if (modeArg == _T("adaptive"))  sel.SetDefaultMode(CKadV2Mode::Adaptive);
+		}
+		if (!fallbackArg.IsEmpty()) {
+			if      (fallbackArg == _T("strict"))      sel.SetFallbackPolicy(CKadV2ModeSelector::STRICT_PRIVACY);
+			else if (fallbackArg == _T("balanced"))    sel.SetFallbackPolicy(CKadV2ModeSelector::BALANCED);
+			else if (fallbackArg == _T("best_effort")) sel.SetFallbackPolicy(CKadV2ModeSelector::BEST_EFFORT);
+		}
+		if (!addSens.IsEmpty()) sel.AddSensitiveKeyword((LPCWSTR)addSens);
+		if (!rmSens.IsEmpty())  sel.RemoveSensitiveKeyword((LPCWSTR)rmSens);
+
+		const char* modeStr =
+			sel.GetDefaultMode() == CKadV2Mode::Direct    ? "direct"   :
+			sel.GetDefaultMode() == CKadV2Mode::Tunneled  ? "tunneled" : "adaptive";
+		const char* fbStr =
+			sel.GetFallbackPolicy() == CKadV2ModeSelector::STRICT_PRIVACY ? "strict"   :
+			sel.GetFallbackPolicy() == CKadV2ModeSelector::BEST_EFFORT     ? "best_effort" : "balanced";
+		std::vector<CStringW> kws;
+		sel.GetSensitiveKeywords(kws);
+		CStringA kwJson;
+		for (size_t i = 0; i < kws.size(); ++i) {
+			if (i > 0) kwJson += ",";
+			kwJson += "\""; kwJson += CStringA(kws[i]); kwJson += "\"";
+		}
+		CStringA json;
+		json.Format("{\"mode\":\"%s\",\"fallback\":\"%s\",\"sensitiveKeywords\":[%s]}",
+			modeStr, fbStr, (LPCSTR)kwJson);
 		CStringA header;
 		header.Format(
 			"HTTP/1.1 200 OK\r\n"

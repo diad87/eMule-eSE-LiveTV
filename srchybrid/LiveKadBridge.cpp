@@ -32,7 +32,7 @@ static char THIS_FILE[] = __FILE__;
 // (ESE_KAD_REPUBLISH_INTERVAL), so any entry older than 180 s without a
 // fresh sighting is almost certainly a fantasma — evict locally.
 #define ESE_KAD_PRUNE_INTERVAL      (30 * 1000)        // 30 s
-#define ESE_KAD_ENTRY_TTL           (180 * 1000)       // 3 min (was 10)
+#define ESE_KAD_ENTRY_TTL           (120 * 1000)       // v7.1.9: 2 min (was 3; original 10). Broadcaster republishes every 60 s, so 2 misses = dead.
 // Phase 2 LAT-1: adaptive search cooldown.
 // The viewer needs to retry quickly while it has no results yet (Kad propagation
 // can take 1-5 minutes). Once results start coming in, we relax to 30 s to avoid
@@ -115,6 +115,23 @@ bool CLiveKadBridge::PublishStream(const LiveStreamInfo& info)
         // Phase 2 LAT-2: arm accelerated publish burst for the new stream.
         m_nPublishBurstCount = 0;
         m_dwBurstStartTime   = GetTickCount();
+    }
+
+    // v7.1.9 — when the streamKey changes (new broadcast supersedes old),
+    // sweep any prior isOwnStream entries from the directory before adding
+    // the new one. Without this, every key change leaves the previous own
+    // entry hanging around forever (PruneStaleEntries explicitly skipped
+    // own entries until the v7.1.9 fix below), so the channel list slowly
+    // fills with the broadcaster's past streamKeys.
+    if (!wasSameStream) {
+        POSITION pos = m_streamDirectory.GetStartPosition();
+        while (pos) {
+            CString k; LiveStreamEntry e;
+            m_streamDirectory.GetNextAssoc(pos, k, e);
+            if (e.isOwnStream) {
+                m_streamDirectory.RemoveKey(k);
+            }
+        }
     }
 
     // Add to our own directory
@@ -750,14 +767,31 @@ void CLiveKadBridge::PruneStaleEntries()
     DWORD now = GetTickCount();
     CStringArray toRemove;
 
+    // v7.1.9 — figure out which streamKey (if any) is the broadcaster's
+    // ACTIVE one right now. Own entries from prior broadcasts (different
+    // streamKey, or any leftover when m_bPublished is false) get pruned
+    // like remote ones. Without this, killing emule mid-broadcast or
+    // changing streamKey left orphan isOwnStream entries forever, since
+    // the old code skipped every entry.isOwnStream unconditionally.
+    CString activeOwnKey;
+    if (m_bPublished) {
+        activeOwnKey = StreamKeyToString(m_publishedInfo.streamKey);
+    }
+
     CString key;
     LiveStreamEntry entry;
     POSITION pos = m_streamDirectory.GetStartPosition();
     while (pos) {
         m_streamDirectory.GetNextAssoc(pos, key, entry);
-        // Don't prune our own stream
-        if (entry.isOwnStream) continue;
-        // Prune if not seen in TTL
+        if (entry.isOwnStream) {
+            // Keep only the currently-published own entry; stale own
+            // entries (prior streamKeys, broadcaster stopped) are dropped.
+            if (m_bPublished && key.CompareNoCase(activeOwnKey) == 0)
+                continue;
+            toRemove.Add(key);
+            continue;
+        }
+        // Remote entries: prune if not seen in TTL
         if (now - entry.lastSeen > ESE_KAD_ENTRY_TTL) {
             toRemove.Add(key);
         }

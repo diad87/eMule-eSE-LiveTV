@@ -339,6 +339,7 @@
     <ClCompile Include="kademlia\kademlia\KadV2SubscriberPin.cpp" />
     <ClCompile Include="kademlia\kademlia\KadV2TunnelPool.cpp" />
     <ClCompile Include="kademlia\kademlia\KadV2ModeSelector.cpp" />
+    <ClCompile Include="kademlia\kademlia\KadV2Tokenizer.cpp" />
     <ClCompile Include="kademlia\kademlia\SearchManager.cpp" />
     <ClCompile Include="kademlia\kademlia\UDPFirewallTester.cpp" />
     <ClCompile Include="kademlia\net\KademliaUDPListener.cpp" />
@@ -668,6 +669,7 @@
     <ClInclude Include="kademlia\kademlia\KadV2SubscriberPin.h" />
     <ClInclude Include="kademlia\kademlia\KadV2TunnelPool.h" />
     <ClInclude Include="kademlia\kademlia\KadV2ModeSelector.h" />
+    <ClInclude Include="kademlia\kademlia\KadV2Tokenizer.h" />
     <ClInclude Include="kademlia\kademlia\SearchManager.h" />
     <ClInclude Include="kademlia\kademlia\Tag.h" />
     <ClInclude Include="kademlia\kademlia\UDPFirewallTester.h" />

@@ -5560,6 +5560,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				"\"discovery\":{"
 				"\"kadConnected\":%s,"
 				"\"knownStreams\":%d,"
+				"\"knownStreamsClean\":%d,"
+				"\"knownStreamsLegacy\":%d,"
 				"\"lastPublishAgeMs\":%u,"
 				"\"lastSearchAgeMs\":%u,"
 				"\"lastResultAgeMs\":%u,"
@@ -5567,6 +5569,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				"\"lastResultPort\":%u}",
 				s.kad.kadConnected ? "true" : "false",
 				s.kad.knownStreams,
+				s.kad.knownStreamsClean,
+				s.kad.knownStreamsLegacy,
 				lastPublishAge,
 				lastSearchAge,
 				lastResultAge,
@@ -5668,6 +5672,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			json = "{\"broadcasting\":false,\"viewing\":false,"
 				"\"emergencyMode\":false,\"uptimeMs\":0,\"totalRedistributed\":0,"
 				"\"discovery\":{\"kadConnected\":false,\"knownStreams\":0,"
+				"\"knownStreamsClean\":0,\"knownStreamsLegacy\":0,"
 				"\"lastPublishAgeMs\":0,\"lastSearchAgeMs\":0,\"lastResultAgeMs\":0,"
 				"\"lastResultIP\":0,\"lastResultPort\":0},"
 				"\"peers\":{\"viewPeers\":0,\"broadcastPeers\":0,\"meshPeers\":0,"

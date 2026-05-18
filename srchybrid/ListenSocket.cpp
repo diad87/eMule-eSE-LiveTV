@@ -1916,32 +1916,23 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				if (count > ESE_LIVE_MAX_PEER_LIST_V2)
 					count = ESE_LIVE_MAX_PEER_LIST_V2;
 
-				// V2 mixes v4 and v6 entries. Until LiveStreamManager learns
-				// to ingest CAddress directly (Sprint 7 follow-up — currently
-				// it takes CArray<DWORD> for backward compat), we lower v4
-				// entries to the legacy uint32 path and SKIP v6 entries with
-				// a counter. Once the manager API is upgraded this becomes
-				// a clean pass-through.
-				CArray<DWORD> ips;
+				// Sprint 7 follow-up: pass CAddress entries through to the
+				// V6-aware receiver, which splits v4 and v6 internally. v4
+				// peers reach the existing dial path; v6 peers are logged
+				// and counted until Sprint-4 Kad-v6 wires a real v6 socket
+				// helper to CUpDownClient (see OnPeerListReceivedV6 notes).
+				CArray<CAddress> addrs;
 				CArray<uint16> ports;
-				uint32 v6Dropped = 0;
 				for (uint16 i = 0; i < count && data.GetPosition() + 4 <= data.GetLength(); ++i) {
 					CAddress addr;
 					if (!addr.ReadFromBuffer(&data)) break;
 					if (data.GetPosition() + 2 > data.GetLength()) break;
 					uint16 port = data.ReadUInt16();
-					if (addr.GetType() == CAddress::IPv4) {
-						ips.Add((DWORD)addr.ToUInt32(false));
-						ports.Add(port);
-					} else if (addr.GetType() == CAddress::IPv6) {
-						v6Dropped++;  // Sprint 7 follow-up unlocks these
-					}
-				}
-				if (v6Dropped > 0) {
-					DebugLog(_T("OP_LivePeerListV2: %u v6 peers dropped (mgr API pending v6 upgrade)"), v6Dropped);
+					addrs.Add(addr);
+					ports.Add(port);
 				}
 				if (theApp.liveStreamManager)
-					theApp.liveStreamManager->OnPeerListReceived(client, streamKey, ips, ports);
+					theApp.liveStreamManager->OnPeerListReceivedV6(client, streamKey, addrs, ports);
 			}
 			break;
 		case OP_LIVE_HEARTBEAT:
@@ -2371,8 +2362,38 @@ bool CListenSocket::StartListening()
 	// socket is already used by some other application (e.g. a 2nd emule), we though bind
 	// to that socket leading to the situation that 2 applications are listening on the same
 	// port!
-	if (!Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, thePrefs.GetBindAddr(), AF_INET))
-		return false;
+
+	// v0.71 IPv6 Sprint 3 — when the flag is on, prefer a dual-stack AF_INET6
+	// socket with IPV6_V6ONLY=0 so the same listener accepts both v4 and v6
+	// inbound. Falls back to AF_INET on any creation failure (older Windows,
+	// firewall driver weirdness, etc) so the baseline IPv4 path is always a
+	// safety net.
+	bool bUsingV6 = false;
+	if (thePrefs.IsIPv6Enabled()) {
+		// Bind address NULL means "[::]" — listen on all v6 interfaces. We
+		// don't pass thePrefs.GetBindAddr() because it's the v4 bind addr
+		// (TCHAR* dotted-quad) and would fail an AF_INET6 parse. If the user
+		// configured a specific v6 bind addr, it lives in prefs::IPv6BindAddr.
+		LPCTSTR v6Bind = thePrefs.GetIPv6BindAddr();
+		if (v6Bind == NULL || v6Bind[0] == 0)
+			v6Bind = _T("::");
+		if (Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, v6Bind, AF_INET6)) {
+			// Disable V6ONLY so v4 connections via IPv4-mapped addresses also
+			// land on this listener.
+			DWORD v6only = 0;
+			VERIFY( SetSockOpt(IPV6_V6ONLY, &v6only, sizeof v6only, IPPROTO_IPV6) );
+			bUsingV6 = true;
+			AddDebugLogLine(false, _T("ListenSocket: dual-stack v6 bound on [%s]:%u (IPV6_V6ONLY=0)"),
+				v6Bind, (unsigned)thePrefs.GetPort());
+		} else {
+			AddDebugLogLine(false, _T("ListenSocket: AF_INET6 Create failed err=%u, falling back to v4-only"),
+				::WSAGetLastError());
+		}
+	}
+	if (!bUsingV6) {
+		if (!Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, thePrefs.GetBindAddr(), AF_INET))
+			return false;
+	}
 
 	// Rejecting a connection with conditional WSAAccept and not using SO_CONDITIONAL_ACCEPT
 	// -------------------------------------------------------------------------------------

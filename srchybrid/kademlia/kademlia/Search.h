@@ -63,6 +63,14 @@ namespace Kademlia
 		void	SetLiveStreamPublish(const uchar *streamKey, LPCWSTR title, LPCWSTR category,
 					LPCWSTR language, uint32 bitrate, uint32 viewerCount,
 					uint32 startedAt, uint16 broadcasterPort);
+		// H8 — marks this publish as targeting the eSE-dedicated keyword
+		// namespace (MD4("\x00eSE\x00" || utf8(kw))). When set,
+		// PrepareLivePacketForTags omits TAG_FILENAME and TAG_FILETYPE
+		// to deny eSE-aware crawlers a human-readable title from the Kad
+		// entry. Default false (legacy / namespace-shared publish keeps
+		// those tags for back-compat with 0.70b parsers).
+		void	SetLivePublishCleanNs(bool bClean)						{ m_bLivePublishCleanNs = bClean; }
+		bool	IsLivePublishCleanNs() const							{ return m_bLivePublishCleanNs; }
 		static CString GetTypeName(uint32 uType);
 
 		void	AddFileID(const CUInt128 &uID);
@@ -144,9 +152,43 @@ namespace Kademlia
 		uint16 m_uLiveBroadcasterPort;
 		bool m_bStoping;
 		bool m_bLiveStreamPublish;
+		bool m_bLivePublishCleanNs;   // H8 — see SetLivePublishCleanNs
 	};
 }
 
 void KadGetKeywordHash(const Kademlia::CKadTagValueString &rstrKeywordW, Kademlia::CUInt128 *puKadID);
 void KadGetKeywordHash(const CStringA &rstrKeywordA, Kademlia::CUInt128 *puKadID);
 CStringA KadGetKeywordBytes(const Kademlia::CKadTagValueString &rstrKeywordW);
+
+// eSE Live — dedicated keyword-hash namespace for live streams.
+//
+// Rationale: KadGetKeywordHash(kw) = MD4(utf8(kw)) lives in the SAME DHT
+// region that any legacy 0.70b client reaches when typing the keyword in
+// search. That means our live publishes share the index nodes with every
+// regular search, which (a) leaks broadcaster presence to legacy clients
+// that have no business knowing, and (b) lets a hostile legacy node fill
+// the bucket with garbage that pushes our live entries out.
+//
+// EseLiveGetKeywordHash(kw) = MD4(prefix || utf8(kw)) where prefix is a
+// 5-byte sentinel containing NUL bytes — impossible to produce through
+// the keyboard. Therefore:
+//   - Two eSE clients hashing the same keyword land on the same Kad
+//     node deterministically (discovery works).
+//   - No legacy client typing the keyword can ever reach that node
+//     (isolation works).
+//
+// Compatibility constraint (project_backward_compat memory): we cannot
+// break interop with 0.70b upstream or earlier forks that publish under
+// the legacy hash. Hence: publish under BOTH namespaces during the
+// transition, search BOTH, and gate the legacy half behind a pref so a
+// future release can flip the default off without touching code.
+//
+// Same MD4 cost, same wire format, same opcodes — only the input bytes
+// to the hash change. From any non-eSE node's perspective this is an
+// ordinary STOREKEYWORD with an unfamiliar target hash; nothing else
+// to interpret.
+#define ESE_LIVE_KEYWORD_PREFIX      "\x00""eSE""\x00"
+#define ESE_LIVE_KEYWORD_PREFIX_LEN  5
+
+void EseLiveGetKeywordHash(const Kademlia::CKadTagValueString &rstrKeywordW, Kademlia::CUInt128 *puKadID);
+void EseLiveGetKeywordHash(const CStringA &rstrKeywordA, Kademlia::CUInt128 *puKadID);

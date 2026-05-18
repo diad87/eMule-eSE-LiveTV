@@ -502,6 +502,31 @@ void CKademliaUDPListener::ProcessPacket(const byte *pbyData, uint32 uLenData, u
 		Process_KADEMLIA3_GENERIC("KADEMLIA3_HOLEPUNCH_ACK", pbyPacketData, uLenData, uIP, uUDPPort);
 		break;
 
+	// === F0 (unified plan) — Kad Search v2 opcode reservations 0xCA-0xCF ===
+	// Stubs: log and drop. Real handlers from F1 (M3/M5/M6) and F8 (M2/M4).
+	// 0.70b clients never send these opcodes (unknown to them); fork peers
+	// gate emission behind TAG_ESE_CAPS bits, so until F1 enables those
+	// bits no peer should send these. Defense in depth: if one arrives
+	// anyway, drop quietly.
+	case KADEMLIA2_KEY_SHARD_ANNOUNCE:
+		Process_KADEMLIA3_GENERIC("[STUB F0] KADEMLIA2_KEY_SHARD_ANNOUNCE", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA2_PUBLISH_TRIGRAM_REQ:
+		Process_KADEMLIA3_GENERIC("[STUB F0] KADEMLIA2_PUBLISH_TRIGRAM_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA2_SEARCH_TRIGRAM_REQ:
+		Process_KADEMLIA3_GENERIC("[STUB F0] KADEMLIA2_SEARCH_TRIGRAM_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA2_BLOOM_DIGEST_REQ:
+		Process_KADEMLIA3_GENERIC("[STUB F0] KADEMLIA2_BLOOM_DIGEST_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA2_LOCAL_QUERY_REQ:
+		Process_KADEMLIA3_GENERIC("[STUB F0] KADEMLIA2_LOCAL_QUERY_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA2_LOCAL_QUERY_RES:
+		Process_KADEMLIA3_GENERIC("[STUB F0] KADEMLIA2_LOCAL_QUERY_RES", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+
 	// old Kad1 opcodes which we don't handle any more
 	case KADEMLIA_BOOTSTRAP_REQ_DEPRECATED:
 	case KADEMLIA_BOOTSTRAP_RES_DEPRECATED:

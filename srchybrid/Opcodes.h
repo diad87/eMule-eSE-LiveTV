@@ -310,6 +310,29 @@
 #define OP_LIVE_PEER_LIST_V2	0xCD	// <StreamHash 16><Count 2>(<CAddress><Port 2><Score 1>) × Count
 #define OP_LIVE_RELAY_REQ		0xCE	// Sprint 8: viewer asks a v6 buddy to relay
 #define OP_LIVE_RELAY_FWD		0xCF	// Sprint 8: buddy forwards chunks via that link
+
+// === eSE Live Tunneled — reservado 0xD0-0xDF (F0 unified plan, tesis privacidad Cap 5 §5.7.1) ==
+// All these opcodes are dispatched in OP_EMULEPROT subspace. Receiving them at this stage of
+// implementation is a NO-OP (stub handler logs and returns). Real handlers land progressively:
+//   F3: 0xD0..0xD3 channel ops      F4: 0xD5 tunnel cell    F5: 0xD6..0xDD data plane + invites
+// 0xD4 deliberately SKIPPED: collides with OP_PACKEDPROT at header byte level (line 139).
+#define OP_LIVE_CHANNEL_GOSSIP   0xD0   // F3: <count uint16><list of channel_pubkey 32B>
+#define OP_LIVE_CHANNEL_REQUEST  0xD1   // F3: pedir ChannelRecord completo
+#define OP_LIVE_CHANNEL_ANSWER   0xD2   // F3: entregar ChannelRecord firmado
+#define OP_LIVE_CHANNEL_REVOKE   0xD3   // F3: anunciar ChannelRevocation
+// 0xD4 RESERVED -- OP_PACKEDPROT collision at header level, do not reuse.
+#define OP_LIVE_TUNNEL_CELL      0xD5   // F4: 512B cell {circ_id 4|cmd 1|length 2|payload+padding 505}
+#define OP_LIVE_T_SUBSCRIBE      0xD6   // F5: tunneled SUBSCRIBE wrapper
+#define OP_LIVE_T_UNSUBSCRIBE    0xD7   // F5: tunneled UNSUBSCRIBE wrapper
+#define OP_LIVE_T_REQUEST        0xD8   // F5: tunneled chunk REQUEST
+#define OP_LIVE_T_CHUNK          0xD9   // F5: tunneled CHUNK_V2 wrapper (decision: T_CHUNK envuelve CHUNK_V2 íntegro tras peel onion)
+#define OP_LIVE_T_HEARTBEAT      0xDA   // F5: tunneled HEARTBEAT wrapper
+#define OP_LIVE_T_ANNOUNCE       0xDB   // F5: tunneled ANNOUNCE wrapper
+#define OP_LIVE_T_DENY           0xDC   // F5: tunneled DENY wrapper
+#define OP_LIVE_T_END            0xDD   // F5: tunneled END wrapper
+#define OP_LIVE_PEER_INVITE      0xDE   // F3: PeerInvite token (QR-able)
+#define OP_LIVE_RENDEZVOUS_PEERS 0xDF   // F5: rendezvous swarm peer list
+
 // extended prot client <-> extended prot client UDP
 #define OP_REASKFILEPING		0x90	// <HASH 16>
 #define OP_REASKACK				0x91	// <RANG 2>
@@ -449,6 +472,31 @@
 // Upstream readers skip tags whose names they don't recognise; safe to add.
 #define TAG_SOURCEIP_V6			"\x66"	// <CAddress> alongside legacy uint32
 #define TAG_SERVERIP_V6			"\x67"	// <CAddress> alongside legacy uint32
+
+// === Tags eSE unificados — F0 unified plan (2026-05-18) ===
+// Audit del namespace 0x68-0xCF realizado: estos slots están libres.
+// Asignación CONGELADA en F0; cambiar requiere errata documentada.
+//
+// TAG_ESE_CAPS unifica capabilities Kad v2 (Cap 5 §5.4.1 monografía) y
+// privacy (Cap 5 §5.9.3 tesis principal). Bitmap uint32:
+//   bit 0: M1 subscriber pinning (files eD2K)
+//   bit 1: M2 composite keys
+//   bit 2: M3 sharding
+//   bit 3: M4 trigrams
+//   bit 4: M5 bloom gossip
+//   bit 5: M6 k effective
+//   bit 6-7: reservado Kad v2
+//   bit 8:  privacy tunneling
+//   bit 9:  sealed records (canales privados)
+//   bit 10: gossip protocol (channels)
+//   bit 11: cover traffic
+//   bit 12-31: reservado privacy
+// En F0 se EMITE pero con valor 0 (sin features). Cada fase enciende su bit
+// al pasar criterio de salida.
+#define TAG_K_EFFECTIVE              "\x69"   // M6 (uint8 [4..24])
+#define TAG_SHARD_DEGREE             "\x6A"   // M3 (uint8 [0..6])
+#define TAG_PINNED_BY_SUBSCRIBER     "\x6B"   // M1 (uint8 flag 0/1)
+#define TAG_ESE_CAPS                 "\x6C"   // global capabilities bitmap (uint32)
 #define TAG_SOURCEUPORT			"\xFC"	// <uint16>
 #define TAG_SOURCEPORT			"\xFD"	// <uint16>
 #define TAG_SOURCEIP			"\xFE"	// <uint32>
@@ -695,6 +743,17 @@
 // Both peers exchange these before initiating a uTP session through CG-NAT/symmetric NAT
 #define KADEMLIA_ESE_HOLEPUNCH_REQ		0x63	// <SenderKadID 16><SenderUDPPort 2><Nonce 4>
 #define KADEMLIA_ESE_HOLEPUNCH_ACK		0x64	// <ResponderKadID 16><ResponderUDPPort 2><Nonce 4>
+
+// === Kad Search v2 — reservado 0xCA-0xCF en OP_KADEMLIAHEADER subspace ==
+// (F0 unified plan, monografía Kad Search v2 Cap 5 §5.3) — DIFFERENT subspace
+// from OP_LIVE_PEER_LIST (0xCA) which lives in OP_EMULEPROT. NO collision.
+// Stub handlers in Phase 0; real handlers from F1 (M3/M5) onward.
+#define KADEMLIA2_KEY_SHARD_ANNOUNCE   0xCA   // M3: <keyword_hash 16><s 1><valid_until 4>
+#define KADEMLIA2_PUBLISH_TRIGRAM_REQ  0xCB   // M4: trigram_key + source + entry
+#define KADEMLIA2_SEARCH_TRIGRAM_REQ   0xCC   // M4: array of trigram_keys + max
+#define KADEMLIA2_BLOOM_DIGEST_REQ     0xCD   // M5: 32KB bloom blob
+#define KADEMLIA2_LOCAL_QUERY_REQ      0xCE   // M5: query terms
+#define KADEMLIA2_LOCAL_QUERY_RES      0xCF   // M5: results
 
 // KADEMLIA (parameter)
 #define KADEMLIA_FIND_VALUE				0x02

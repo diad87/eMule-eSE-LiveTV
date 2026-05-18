@@ -1189,6 +1189,30 @@ void CLiveStreamManager::OnPeerBitmap(CUpDownClient* peer, const uchar* streamKe
     CSingleLock lock(&m_lock, TRUE);
 
     if (memcmp(m_streamInfo.streamKey, streamKey, 16) != 0) return;
+    if (peer == NULL) return;
+
+    // v7.2.1 — Self-heal peer lists. v7.1.8 added ~CUpDownClient ->
+    // OnPeerDisconnected to scrub dangling pointers, but that ALSO fires
+    // when CClientList::AttachToAlreadyKnown merges two CUpDownClient
+    // objects for the same peer (e.g. on second OP_HELLO). The new
+    // instance keeps the TCP socket alive but isn't in m_broadcastPeers
+    // because no OP_LIVE_JOIN is resent — only OP_LIVE_BITMAP heartbeats
+    // arrive. Effect before this fix: 4 active TCP connections, internal
+    // viewer count stuck at 0. Heartbeats fire every 1 s, so we just
+    // re-add the peer here whenever it's the matching key + matching role.
+    if (m_bBroadcasting && m_broadcastPeers.Find(peer) == NULL) {
+        m_broadcastPeers.AddTail(peer);
+        m_streamInfo.viewerCount = (uint32)m_broadcastPeers.GetCount();
+        LIVE_LOG("PEER", "REJOIN viewer=%S:%u (heartbeat after ClientList swap) total=%u",
+            (LPCWSTR)ipstr(peer->GetIP()), (unsigned)peer->GetUserPort(),
+            m_streamInfo.viewerCount);
+    }
+    if (m_bViewing && m_viewPeers.Find(peer) == NULL) {
+        m_viewPeers.AddTail(peer);
+        LIVE_LOG("PEER", "REJOIN source=%S:%u (heartbeat after ClientList swap) total=%d",
+            (LPCWSTR)ipstr(peer->GetIP()), (unsigned)peer->GetUserPort(),
+            (int)m_viewPeers.GetCount());
+    }
 
     // Phase 1 BOOT-1: persist BOTH bitmap and oldestSeq.
     // The bitmap bit positions are anchored at the peer's oldestSeq, not ours.

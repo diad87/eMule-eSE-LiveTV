@@ -365,6 +365,9 @@
     <ClCompile Include="LivePackets.cpp" />
     <ClCompile Include="LiveProtocol.cpp" />
     <ClCompile Include="LiveCrypto.cpp" />
+    <ClCompile Include="LiveOnionCrypto.cpp" />
+    <ClCompile Include="LiveChannel.cpp" />
+    <ClCompile Include="LiveSubscriptionStore.cpp" />
     <ClCompile Include="FirewallProberV6.cpp" />
     <ClCompile Include="KadKeepalive.cpp" />
     <ClCompile Include="HolePuncher.cpp" />
@@ -683,6 +686,9 @@
     <ClInclude Include="LiveKadBridge.h" />
     <ClInclude Include="LiveMeshManager.h" />
     <ClInclude Include="LiveCrypto.h" />
+    <ClInclude Include="LiveOnionCrypto.h" />
+    <ClInclude Include="LiveChannel.h" />
+    <ClInclude Include="LiveSubscriptionStore.h" />
     <ClInclude Include="FirewallProberV6.h" />
     <ClInclude Include="KadKeepalive.h" />
     <ClInclude Include="HolePuncher.h" />

@@ -53,6 +53,11 @@ their client on the eMule forum.
 #include "kademlia/kademlia/Indexed.h"
 #include "kademlia/kademlia/Defines.h"
 #include "kademlia/kademlia/Entry.h"
+#include "kademlia/kademlia/KadV2Defines.h"    // F1: Kad Search v2 M3/M5/M6
+#include "kademlia/kademlia/KadV2Sharding.h"
+#include "kademlia/kademlia/KadV2BloomFilter.h"
+#include "kademlia/kademlia/KadV2KEffective.h"
+#include "kademlia/kademlia/KadV2Stats.h"
 #include "kademlia/kademlia/UDPFirewallTester.h"
 #include "kademlia/routing/RoutingZone.h"
 #include "kademlia/routing/Contact.h"
@@ -502,29 +507,57 @@ void CKademliaUDPListener::ProcessPacket(const byte *pbyData, uint32 uLenData, u
 		Process_KADEMLIA3_GENERIC("KADEMLIA3_HOLEPUNCH_ACK", pbyPacketData, uLenData, uIP, uUDPPort);
 		break;
 
-	// === F0 (unified plan) — Kad Search v2 opcode reservations 0xCA-0xCF ===
-	// Stubs: log and drop. Real handlers from F1 (M3/M5/M6) and F8 (M2/M4).
-	// 0.70b clients never send these opcodes (unknown to them); fork peers
-	// gate emission behind TAG_ESE_CAPS bits, so until F1 enables those
-	// bits no peer should send these. Defense in depth: if one arrives
-	// anyway, drop quietly.
+	// === F1 (unified plan) — Kad Search v2 M3/M5 wire handlers ============
+	// M3 sharding announce parses payload and feeds CKadV2Sharding cache.
+	// M5 bloom digest and local query are not yet wired to the actual file
+	// index (file index integration is F1.5 work); for now we count
+	// receipts so /api/live/debug reflects activity.
+	// M4 trigrams (PUBLISH/SEARCH) stay as stubs — F8 implements them.
 	case KADEMLIA2_KEY_SHARD_ANNOUNCE:
-		Process_KADEMLIA3_GENERIC("[STUB F0] KADEMLIA2_KEY_SHARD_ANNOUNCE", pbyPacketData, uLenData, uIP, uUDPPort);
-		break;
-	case KADEMLIA2_PUBLISH_TRIGRAM_REQ:
-		Process_KADEMLIA3_GENERIC("[STUB F0] KADEMLIA2_PUBLISH_TRIGRAM_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
-		break;
-	case KADEMLIA2_SEARCH_TRIGRAM_REQ:
-		Process_KADEMLIA3_GENERIC("[STUB F0] KADEMLIA2_SEARCH_TRIGRAM_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		{
+			Kademlia::CUInt128 uTarget;
+			uint8 sNew = 0;
+			uint32 validUntil = 0;
+			if (Kademlia::CKadV2Sharding::ParseAnnounce(pbyPacketData, uLenData, uTarget, sNew, validUntil)) {
+				Kademlia::CKadV2Sharding::Get().OnShardAnnounceReceived(uTarget, sNew, validUntil);
+				DebugLog(_T("KadV2 M3: shard announce s=%u valid_until=%u from %s"),
+					(unsigned)sNew, (unsigned)validUntil, (LPCTSTR)ipstr(htonl(uIP)));
+			} else {
+				DebugLog(_T("KadV2 M3: malformed KEY_SHARD_ANNOUNCE from %s (len=%u)"),
+					(LPCTSTR)ipstr(htonl(uIP)), (unsigned)uLenData);
+			}
+		}
 		break;
 	case KADEMLIA2_BLOOM_DIGEST_REQ:
-		Process_KADEMLIA3_GENERIC("[STUB F0] KADEMLIA2_BLOOM_DIGEST_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		{
+			// F1: count + log; full reception path (per-neighbour quota,
+			// CKadV2BloomFilter::DeserializeFrom + cache by senderID) is
+			// F1.5 work. Currently we tally receipts for visibility.
+			Kademlia::CKadV2Stats::Get().OnBloomRx();
+			DebugLog(_T("KadV2 M5: BLOOM_DIGEST_REQ from %s (len=%u) — cache integration pending F1.5"),
+				(LPCTSTR)ipstr(htonl(uIP)), (unsigned)uLenData);
+		}
 		break;
 	case KADEMLIA2_LOCAL_QUERY_REQ:
-		Process_KADEMLIA3_GENERIC("[STUB F0] KADEMLIA2_LOCAL_QUERY_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		{
+			Kademlia::CKadV2Stats::Get().OnLocalQueryRx();
+			DebugLog(_T("KadV2 M5: LOCAL_QUERY_REQ from %s (len=%u) — index lookup pending F1.5"),
+				(LPCTSTR)ipstr(htonl(uIP)), (unsigned)uLenData);
+		}
 		break;
 	case KADEMLIA2_LOCAL_QUERY_RES:
-		Process_KADEMLIA3_GENERIC("[STUB F0] KADEMLIA2_LOCAL_QUERY_RES", pbyPacketData, uLenData, uIP, uUDPPort);
+		{
+			// Receiving a response without having issued the query is
+			// invalid; ignore quietly.
+			DebugLog(_T("KadV2 M5: unsolicited LOCAL_QUERY_RES from %s — dropping"),
+				(LPCTSTR)ipstr(htonl(uIP)));
+		}
+		break;
+	case KADEMLIA2_PUBLISH_TRIGRAM_REQ:
+		Process_KADEMLIA3_GENERIC("[STUB F8] KADEMLIA2_PUBLISH_TRIGRAM_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA2_SEARCH_TRIGRAM_REQ:
+		Process_KADEMLIA3_GENERIC("[STUB F8] KADEMLIA2_SEARCH_TRIGRAM_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
 		break;
 
 	// old Kad1 opcodes which we don't handle any more

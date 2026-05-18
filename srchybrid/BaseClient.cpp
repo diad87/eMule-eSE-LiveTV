@@ -19,6 +19,7 @@
 #include "DebugHelpers.h"
 #endif
 #include "LiveDebugLog.h"
+#include "LiveStreamManager.h"  // v7.1.8 — for OnPeerDisconnected from dtor
 #include "emule.h"
 #include "UpDownClient.h"
 #include "FriendList.h"
@@ -324,6 +325,23 @@ CUpDownClient::~CUpDownClient()
 		m_Friend->SetLinkedClient(NULL);
 	}
 	ASSERT(m_eConnectingState == CCS_NONE || theApp.IsClosing());
+
+	// v7.1.8 USE-AFTER-FREE FIX: notify LiveStreamManager that this client
+	// is going away BEFORE its memory is freed. The LSM keeps raw
+	// CUpDownClient* in m_broadcastPeers / m_viewPeers / m_peerTrust /
+	// m_peerBitmaps; these are only scrubbed today by OnPeerDisconnected,
+	// which until now was wired only into two LIVE-protocol packet handlers
+	// (UNSUBSCRIBE, END). Any client destroyed via socket close — TCP RST,
+	// CGN keep-alive timeout, ListenSocket cleanup — left a dangling
+	// pointer behind. Next Process() tick, SendBitmapToAll iterated and
+	// crashed with EXCEPTION_ACCESS_VIOLATION at
+	// CUpDownClient::SendPacket+0x23 reading a vtable from freed memory.
+	// Confirmed via crash dump (offset 0xe23b3, this) = 0x0000279400000250).
+	// Calling OnPeerDisconnected here closes the gap for ALL destruction
+	// paths and is idempotent if the peer was never on a LIVE peer list.
+	if (theApp.liveStreamManager != NULL)
+		theApp.liveStreamManager->OnPeerDisconnected(this);
+
 	theApp.clientlist->RemoveClient(this, _T("Destructing client object"));
 
 	if (socket) {

@@ -2092,6 +2092,33 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 					theApp.liveStreamManager->OnLivePong(client, streamKey, pingId, echoTick);
 			}
 			break;
+
+		// === F0 (unified plan) — eSE Live Tunneled opcode reservations 0xD0-0xDF ===
+		// Stub handlers: log and drop. Real implementation in F3 (channels),
+		// F4 (tunnel cell), F5 (data plane + invites). 0.70b clients never
+		// hit these (G6) because they fall into the default arm of the parent
+		// switch when they don't recognise OP_EMULEPROT subspace opcodes.
+		case OP_LIVE_CHANNEL_GOSSIP:
+		case OP_LIVE_CHANNEL_REQUEST:
+		case OP_LIVE_CHANNEL_ANSWER:
+		case OP_LIVE_CHANNEL_REVOKE:
+		case OP_LIVE_TUNNEL_CELL:
+		case OP_LIVE_T_SUBSCRIBE:
+		case OP_LIVE_T_UNSUBSCRIBE:
+		case OP_LIVE_T_REQUEST:
+		case OP_LIVE_T_CHUNK:
+		case OP_LIVE_T_HEARTBEAT:
+		case OP_LIVE_T_ANNOUNCE:
+		case OP_LIVE_T_DENY:
+		case OP_LIVE_T_END:
+		case OP_LIVE_PEER_INVITE:
+		case OP_LIVE_RENDEZVOUS_PEERS:
+			theStats.AddDownDataOverheadOther(uRawSize);
+			DebugLog(_T("[STUB F0] OP_LIVE_T_* opcode 0x%02x received from %s — reserved, no handler yet (unified plan F3-F5)"),
+				(unsigned)opcode,
+				client ? (LPCTSTR)ipstr(client->GetIP()) : _T("?"));
+			break;
+
 		default:
 			theStats.AddDownDataOverheadOther(uRawSize);
 			PacketToDebugLogLine(_T("eMule"), packet, size, opcode);

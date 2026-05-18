@@ -454,6 +454,14 @@ CString ipstr(uint32 nIP);
 CString ipstr(uint32 nIP, uint16 nPort);
 CString ipstr(LPCTSTR pszAddress, uint16 nPort);
 CStringA ipstrA(uint32 nIP);
+
+// v0.71 IPv6 Sprint 1 — address-family-aware logging overload.
+// Returns "1.2.3.4" / "1.2.3.4:5678" / "[2001:db8::1]" / "[2001:db8::1]:5678".
+// The CAddress overload is the new canonical form for new code; the uint32
+// overloads above stay for legacy callers that haven't been migrated yet.
+class CAddress;
+CString ipstr(const CAddress& addr);
+CString ipstr(const CAddress& addr, uint16 nPort);
 void ipstrA(CHAR *pszAddress, int iMaxAddress, uint32 nIP);
 inline CString ipstr(in_addr nIP)
 {

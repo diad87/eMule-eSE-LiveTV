@@ -28,7 +28,23 @@ function getHTML() {
   '.ml-empty-title{font-size:22px;font-weight:600;color:#888;margin-bottom:8px}' +
   '.ml-empty-sub{font-size:14px;color:#555;max-width:400px;margin:0 auto}' +
   '.ml-empty-btn{display:inline-block;margin-top:20px;padding:12px 28px;background:linear-gradient(135deg,#ff6b35,#ff2d78);color:#fff;border:none;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;transition:opacity .2s}' +
-  '.ml-empty-btn:hover{opacity:.85}';
+  '.ml-empty-btn:hover{opacity:.85}' +
+  // v7.4.0 — tab navigation between "Mi Lista" (saved bookmarks) and "Descargas" (live transfers).
+  '.ml-tabs{display:flex;gap:4px;margin-bottom:24px;border-bottom:1px solid #222}' +
+  '.ml-tab{padding:10px 20px;background:none;border:none;color:#888;font-size:14px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;transition:all .2s}' +
+  '.ml-tab.active{color:#ff6b35;border-bottom-color:#ff6b35}' +
+  '.ml-tab:hover{color:#fff}' +
+  '.dl-list{display:flex;flex-direction:column;gap:8px}' +
+  '.dl-row{display:grid;grid-template-columns:1fr 200px 110px auto;gap:14px;align-items:center;background:#0f0f17;border:1px solid #1f1f29;border-radius:8px;padding:12px 16px}' +
+  '.dl-row.dl-paused{opacity:.6}' +
+  '.dl-name{font-size:13px;color:#fff;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+  '.dl-bar-wrap{height:6px;background:#1a1a26;border-radius:3px;overflow:hidden}' +
+  '.dl-bar{height:100%;background:linear-gradient(90deg,#ff6b35,#ff2d78);transition:width .3s}' +
+  '.dl-meta{font-size:12px;color:#888;font-family:monospace}' +
+  '.dl-actions{display:flex;gap:4px}' +
+  '.dl-actions button{background:#1a1a26;border:1px solid #2a2a38;color:#ccc;width:30px;height:30px;border-radius:4px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center}' +
+  '.dl-actions button:hover{background:#2a2a38;color:#fff}' +
+  '.dl-empty{padding:60px 20px;text-align:center;color:#555}';
 
   // ── Inline JS ──
   const inlineJS = `
@@ -71,13 +87,82 @@ function removeItem(imdbId){
   renderMyList();
 }
 renderMyList();
+
+// v7.4.0 \u2014 tabs + downloads panel
+var _dlTimer = null;
+function switchTab(name) {
+  document.querySelectorAll('.ml-tab').forEach(function(t){
+    t.classList.toggle('active', t.getAttribute('data-tab') === name);
+  });
+  document.getElementById('ml-tab-mylist').style.display    = (name === 'mylist')    ? '' : 'none';
+  document.getElementById('ml-tab-downloads').style.display = (name === 'downloads') ? '' : 'none';
+  if (name === 'downloads') {
+    renderDownloads();
+    if (_dlTimer) clearInterval(_dlTimer);
+    _dlTimer = setInterval(renderDownloads, 3000);
+  } else if (_dlTimer) {
+    clearInterval(_dlTimer); _dlTimer = null;
+  }
+}
+function renderDownloads() {
+  fetch('/api/emule/downloads').then(function(r){return r.json();}).catch(function(){return [];}).then(function(downloads) {
+    var host = document.getElementById('downloads-content');
+    if (!host) return;
+    if (!downloads.length) {
+      host.innerHTML = '<div class="dl-empty"><div style="font-size:48px;opacity:.3;margin-bottom:12px">\\u2b07</div><div style="font-size:16px;color:#888">No hay descargas activas</div></div>';
+      return;
+    }
+    var rows = downloads.map(function(dl) {
+      var fullSize = dl.sizeBytes ? Math.round(dl.sizeBytes / 1048576) : 0;
+      var pct = fullSize > 0 ? Math.min(100, Math.round((dl.sizeMB / fullSize) * 100)) : 0;
+      var stateClass = dl.active ? 'dl-active' : 'dl-paused';
+      return '<div class="dl-row ' + stateClass + '">' +
+        '<div class="dl-name" title="' + _a(dl.fileName || '') + '">' + _e(dl.fileName || 'sin nombre') + '</div>' +
+        '<div class="dl-bar-wrap"><div class="dl-bar" style="width:' + pct + '%"></div></div>' +
+        '<div class="dl-meta">' + dl.sizeMB + ' / ' + (fullSize || '?') + ' MB</div>' +
+        '<div class="dl-actions">' +
+          '<button onclick="dlAct(\\'' + _a(dl.hash || '') + '\\',\\'pause\\')" title="Pausar">\\u23f8</button>' +
+          '<button onclick="dlAct(\\'' + _a(dl.hash || '') + '\\',\\'resume\\')" title="Reanudar">\\u25b6</button>' +
+          '<button onclick="dlAct(\\'' + _a(dl.hash || '') + '\\',\\'priohigh\\')" title="Prio alta">\\u2b06</button>' +
+          '<button onclick="dlAct(\\'' + _a(dl.hash || '') + '\\',\\'prionormal\\')" title="Prio normal">=</button>' +
+          '<button onclick="dlCancel(\\'' + _a(dl.hash || '') + '\\',\\'' + _a(dl.fileName || '') + '\\')" style="color:#ff6b35" title="Cancelar y borrar">\\u2716</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+    host.innerHTML = '<div class="dl-list">' + rows + '</div>';
+  });
+}
+function dlAct(hash, op) {
+  if (!hash) return;
+  // v7.5.0 — X-Requested-With header marks this as same-origin fetch (CSRF defence).
+  fetch('/api/emule/download/action?hash=' + encodeURIComponent(hash) + '&op=' + op,
+        { headers: { 'X-Requested-With': 'eSE' } })
+    .then(function(r){return r.json();}).catch(function(){return {};})
+    .then(function(d){ if (d && d.success === false) console.warn('[dl] action failed:', d.error); renderDownloads(); });
+}
+function dlCancel(hash, name) {
+  if (!hash) return;
+  if (!confirm('\\u00bfCancelar "' + name + '" y borrar archivos parciales?')) return;
+  fetch('/api/emule/download/action?hash=' + encodeURIComponent(hash) + '&op=cancel',
+        { headers: { 'X-Requested-With': 'eSE' } })
+    .then(function(){ setTimeout(renderDownloads, 500); });
+}
+window.switchTab  = switchTab;
+window.dlAct      = dlAct;
+window.dlCancel   = dlCancel;
+window.renderDownloads = renderDownloads;
 `;
 
   return navbar.getHead('Mi Lista \u2014 eSE', mlCSS) +
   navbar.getHTML('mylist') +
   '<div class="ml-page">' +
-  '<div class="ml-header"><h1 class="ml-title">Mi Lista</h1><span id="ml-count" class="ml-count"></span></div>' +
-  '<div id="ml-content"></div>' +
+  '<div class="ml-header"><h1 class="ml-title">Mi Biblioteca</h1><span id="ml-count" class="ml-count"></span></div>' +
+  '<div class="ml-tabs">' +
+    '<button class="ml-tab active" data-tab="mylist" onclick="switchTab(\'mylist\')">Mi Lista</button>' +
+    '<button class="ml-tab" data-tab="downloads" onclick="switchTab(\'downloads\')">Descargas activas</button>' +
+  '</div>' +
+  '<div id="ml-tab-mylist"><div id="ml-content"></div></div>' +
+  '<div id="ml-tab-downloads" style="display:none"><div id="downloads-content"></div></div>' +
   '</div>' +
   '<script>' + inlineJS + '</script>' +
   '</body></html>';

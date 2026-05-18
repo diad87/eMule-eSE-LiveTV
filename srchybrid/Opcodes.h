@@ -266,6 +266,12 @@
 #define	OP_PEERCACHE_ACK		0x96	// *DEFUNCT*
 #define	OP_PUBLICIP_REQ			0x97
 #define	OP_PUBLICIP_ANSWER		0x98
+// v0.71 IPv6 Sprint 3 — reserve v6 PUBLICIP answer. Payload: <CAddress>.
+// Only emitted to peers that advertise CAP_FORK_IPV6_WIRE (Sprint 6).
+#define	OP_PUBLICIP_ANSWER_V6	0xE0
+// v0.71 IPv6 Sprint 6 — reserve callback + foundsources v6 variants.
+#define	OP_CALLBACK_V6			0xE1
+#define	OP_FOUNDSOURCES_V6		0xE2
 #define OP_CALLBACK				0x99	// <HASH 16><HASH 16><uint 16>
 #define OP_REASKCALLBACKTCP		0x9A
 #define OP_AICHREQUEST			0x9B	// <HASH 16><uint16><HASH aichhashlen>
@@ -298,6 +304,12 @@
 #define OP_LIVE_END				0xC8	// <StreamHash 16><Reason 1> (0=normal, 1=error, 2=kicked)
 #define OP_LIVE_PING			0xC9	// V2-S03: <StreamHash 16><PingId 4><Timestamp 8> RTT measurement
 #define OP_LIVE_PONG			0xCB	// V2-S03: <StreamHash 16><PingId 4><Timestamp 8> RTT echo (0xCA used)
+#define OP_LIVE_CHUNK_V2		0xCC	// v7.7.0: <StreamHash 16><SeqNum 4><Timestamp 4><DataSize 4><Bitrate 2><sha256 32><Sig 64><Data DataSize>; verified against pinned pubkey
+// v0.71 IPv6 Sprint 7 reserves V2 peer list with CAddress payload (vs legacy
+// uint32-only in OP_LIVE_PEER_LIST at 0xCA). Sprint 8 reserves buddy relay.
+#define OP_LIVE_PEER_LIST_V2	0xCD	// <StreamHash 16><Count 2>(<CAddress><Port 2><Score 1>) × Count
+#define OP_LIVE_RELAY_REQ		0xCE	// Sprint 8: viewer asks a v6 buddy to relay
+#define OP_LIVE_RELAY_FWD		0xCF	// Sprint 8: buddy forwards chunks via that link
 // extended prot client <-> extended prot client UDP
 #define OP_REASKFILEPING		0x90	// <HASH 16>
 #define OP_REASKACK				0x91	// <RANG 2>
@@ -321,6 +333,10 @@
 #define ST_SOFTFILES			0x88	// <uint32>
 #define ST_HARDFILES			0x89	// <uint32>
 #define ST_LASTPING				0x90	// <uint32>
+// v0.71 IPv6 Sprint 8 — server.met v2 tag carrying the server's IPv6.
+// Coexists with the legacy v1 32-bit IP field; upstream eMule parsers
+// drop unknown tags so this is wire-additive and safe.
+#define ST_IPV6					0x91	// <CAddress> (1 + 1 + 16 bytes)
 #define	ST_VERSION				0x91	// <string>|<uint32>
 #define	ST_UDPFLAGS				0x92	// <uint32>
 #define	ST_AUXPORTSLIST			0x93	// <string>
@@ -426,6 +442,10 @@
 #define TAG_CLIENTLOWID			"\xF9"	// <uint32>
 #define TAG_SERVERPORT			"\xFA"	// <uint16>
 #define TAG_SERVERIP			"\xFB"	// <uint32>
+// v0.71 IPv6 Sprint 8 — known.met v0x10 IPv6 source/server tags.
+// Upstream readers skip tags whose names they don't recognise; safe to add.
+#define TAG_SOURCEIP_V6			"\x66"	// <CAddress> alongside legacy uint32
+#define TAG_SERVERIP_V6			"\x67"	// <CAddress> alongside legacy uint32
 #define TAG_SOURCEUPORT			"\xFC"	// <uint16>
 #define TAG_SOURCEPORT			"\xFD"	// <uint16>
 #define TAG_SOURCEIP			"\xFE"	// <uint32>
@@ -531,6 +551,16 @@
 #define CT_EMULE_RESERVED13		0xff
 #define CT_SERVER_UDPSEARCH_FLAGS 0x0E
 
+// v0.71 IPv6 Sprint 6 — fork-private capability bits in OP_HELLO[ANSWER].
+// Upstream eMule ignores unknown CT_ tags, so this is wire-additive and
+// safe vs the baseline. Value: <uint32 capability bits>.
+#define CT_FORK_CAPABILITIES	0xF0
+// Capability bits:
+#define CAP_FORK_IPV6_WIRE      0x00000001  // peer speaks _V6 opcodes
+#define CAP_FORK_IPV6_KAD       0x00000002  // peer participates in KADEMLIA3_*
+#define CAP_FORK_IPV6_DUALSTACK 0x00000004  // peer has both v4 + v6 reachable
+#define CAP_FORK_ED25519        0x00000008  // peer speaks v7.6+ signed live chunks
+
 // values for CT_SERVER_FLAGS (server capabilities)
 #define SRVCAP_ZLIB				0x0001
 #define SRVCAP_IP_IN_LOGIN		0x0002
@@ -590,6 +620,26 @@
 #define KADEMLIA2_REQ					0x21	//
 
 #define KADEMLIA2_HELLO_RES_ACK			0x22	// <NodeID><uint8 tags>
+
+// v0.71 IPv6 Sprint 4 — reserve Kad3 opcodes (IPv6-aware) per IPV6_PLAN.md §5.
+// Payload format mirrors Kad2 but PEER blocks carry CAddress (1+1+N bytes)
+// instead of fixed uint32. Kad2 opcodes are kept intact — v4 peers continue
+// to speak Kad2 byte-identical to upstream; only v6-aware peers see Kad3.
+#define KADEMLIA3_BOOTSTRAP_REQ			0x02	//
+#define KADEMLIA3_BOOTSTRAP_RES			0x0A	//
+#define KADEMLIA3_HELLO_REQ				0x12	// <NodeID><CAddress><Port><…>
+#define KADEMLIA3_HELLO_RES				0x1A	//
+#define KADEMLIA3_REQ					0x23	// <TYPE><HASH target><HASH receiver-CAddress>
+#define KADEMLIA3_RES					0x2A	// <HASH target><CNT><PEER3>*(CNT)  PEER3 = NodeID + CAddress
+
+// v0.71 IPv6 Sprint 5 — Kad keepalive + hole-punch opcodes.
+// PING/RES: minimal "tickle" packet, 25 s tick, holds NAT conntrack open.
+// HOLEPUNCH_REQ/FWD/ACK: 3-way rendezvous between two firewalled peers.
+#define KADEMLIA3_PING_REQ				0x61
+#define KADEMLIA3_PING_RES				0x62
+#define KADEMLIA3_HOLEPUNCH_REQ			0x63
+#define KADEMLIA3_HOLEPUNCH_FWD			0x64
+#define KADEMLIA3_HOLEPUNCH_ACK			0x65
 
 #define KADEMLIA_RES_DEPRECATED					0x28	// <HASH (target) [16]> <CNT> <PEER [25]>*(CNT)
 #define KADEMLIA2_RES					0x29	//

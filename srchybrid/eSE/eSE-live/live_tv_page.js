@@ -120,35 +120,9 @@ ${directory.getCSS()}
   <div id="hp-test-result" style="margin-top:8px;font-size:11px;color:#888;font-family:monospace"></div>
 </div>`;
 
-  // Cloudflare Tunnel panel \u2014 OPT-IN with TOS warning (avoids Cloudflare ban risk)
-  html += `
-<details id="cf-tunnel-panel" style="margin:0 0 16px;padding:12px 16px;background:rgba(220,38,38,.04);border:1px solid rgba(220,38,38,.25);border-radius:10px">
-  <summary style="cursor:pointer;display:flex;align-items:center;gap:10px;font-weight:700;color:#f87171;font-size:13px">
-    \u26a0\ufe0f T\u00fanel HTTPS de emergencia (avanzado, leer antes)
-  </summary>
-  <div style="margin-top:14px;padding:12px;background:rgba(220,38,38,.08);border-left:3px solid #ef4444;border-radius:4px;font-size:12px;color:#fca5a5;line-height:1.5">
-    <b>\u26a0\ufe0f Advertencia importante:</b> El t\u00fanel Cloudflare expone tu servidor local
-    a internet via HTTPS. Es \u00fatil cuando tu router bloquea TODO el P2P, pero:
-    <ul style="margin:6px 0 6px 18px;padding:0">
-      <li>El AUP de Cloudflare proh\u00edbe t\u00faneles para P2P file sharing</li>
-      <li>Uso sostenido o reportes pueden cancelar tu URL/IP sin aviso</li>
-      <li>Cloudflare ve metadatos de toda la conexi\u00f3n</li>
-      <li>Solo usar para contenido propio/legal (demos, tus archivos, testing)</li>
-      <li>NO usar para distribuci\u00f3n masiva ni contenido con copyright</li>
-    </ul>
-    Para LowID-LowID normal usa el hole-punch P2P (panel naranja arriba) que
-    es 100% descentralizado y sin riesgos de ban.
-  </div>
-  <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-    <label style="font-size:12px;color:#cbd5e1;display:flex;align-items:center;gap:6px;cursor:pointer">
-      <input type="checkbox" id="cf-ack-tos">
-      He le\u00eddo los riesgos y acepto la responsabilidad
-    </label>
-    <div id="cf-tunnel-status" style="flex:1;min-width:200px;font-size:12px;color:#9ca3af">Apagado</div>
-    <button id="cf-tunnel-toggle" disabled style="padding:8px 18px;background:#374151;color:#fff;border:none;border-radius:6px;font-weight:700;cursor:not-allowed;font-size:12px;opacity:.5">Activar</button>
-  </div>
-  <div id="cf-tunnel-url" style="display:none;margin-top:10px;padding:8px 12px;background:#0e0e10;border:1px solid #2a2a2e;border-radius:6px;font-family:monospace;font-size:12px;color:#a5b4fc;word-break:break-all"></div>
-</details>`;
+  // v7.4.0 \u2014 Cloudflare Tunnel panel removed. Symmetric-NAT users now point
+  // to Tailscale / Tor / manual overlay (see README) instead of falling back
+  // to a third-party tunnel that violates the project's "sin dominios" rule.
 
   // Direct Join panel (Phase 1 \u2014 paste an ed2k://|live|... link to bypass Kad)
   html += `
@@ -456,7 +430,7 @@ fetch('/api/eSE/update/check').then(function(r){return r.json();}).then(function
             if (deltaSuc > 0) {
               setOut('🎉 ÉXITO: ACK recibido del peer remoto. Hole-punch funciona entre vosotros. Counters: attempts=' + att + ', success=' + suc + ' (+' + deltaSuc + '), symNATfail=' + sym, true);
             } else if (sym > (d.counters && d.counters.sym_nat_fail || 0)) {
-              setOut('⚠️ NAT simétrico detectado. Tu router asigna puerto distinto en cada conexión saliente. Necesitarás Cloudflare Tunnel como fallback. Counters: attempts=' + att + ', symNATfail=' + sym, false);
+              setOut('⚠️ NAT simétrico detectado. Tu router asigna puerto distinto en cada conexión saliente. Sin hole-punch directo: usa Tailscale o una onion service Tor como overlay. Counters: attempts=' + att + ', symNATfail=' + sym, false);
             } else {
               setOut('⏳ Sin respuesta aún. Posibles causas: el peer remoto no está corriendo eMule, su Kad no tiene Hole-Punch enabled, o su firewall bloquea UDP entrante. Counters: attempts=' + att + ', success=' + suc + ', symNATfail=' + sym, false);
             }
@@ -470,89 +444,9 @@ fetch('/api/eSE/update/check').then(function(r){return r.json();}).then(function
   });
 })();
 
-// Tier 3.1 — Cloudflare Tunnel (OPT-IN, requires TOS acknowledgement)
-(function(){
-  var btn = document.getElementById('cf-tunnel-toggle');
-  var stat = document.getElementById('cf-tunnel-status');
-  var urlBox = document.getElementById('cf-tunnel-url');
-  var ackBox = document.getElementById('cf-ack-tos');
-  if (!btn || !stat || !urlBox || !ackBox) return;
-
-  // Button disabled until user checks the TOS acknowledgement
-  ackBox.addEventListener('change', function(){
-    btn.disabled = !ackBox.checked;
-    btn.style.cursor = ackBox.checked ? 'pointer' : 'not-allowed';
-    btn.style.opacity = ackBox.checked ? '1' : '.5';
-    btn.style.background = ackBox.checked ? '#4f46e5' : '#374151';
-  });
-
-  var watchHandle = null;
-  function paintStatus(d) {
-    if (!d || d.status === 'idle' || d.status === 'stopped') {
-      btn.textContent = 'Activar';
-      btn.disabled = false;
-      btn.style.background = '#4f46e5';
-      stat.textContent = 'Apagado — actívalo si tu router bloquea P2P';
-      stat.style.color = '#9ca3af';
-      urlBox.style.display = 'none';
-    } else if (d.status === 'starting') {
-      btn.textContent = '⏳ Arrancando...';
-      btn.disabled = true;
-      stat.textContent = 'Conectando con Cloudflare...';
-      stat.style.color = '#f59e0b';
-      urlBox.style.display = 'none';
-    } else if (d.status === 'running' && d.url) {
-      btn.textContent = 'Apagar';
-      btn.disabled = false;
-      btn.style.background = '#dc2626';
-      stat.textContent = '✅ Activo — comparte la URL de abajo con cualquiera';
-      stat.style.color = '#10b981';
-      urlBox.style.display = '';
-      // Live HLS link viewers can paste in any browser
-      urlBox.innerHTML = '<div style="margin-bottom:6px;color:#9ca3af;font-size:11px">URL pública (válida solo mientras esté activo):</div>' +
-        '<a href="' + d.url + '/live/watch/local" target="_blank" style="color:#a5b4fc;text-decoration:underline">' +
-        d.url + '/live/watch/local</a>';
-    } else if (d.status === 'error') {
-      btn.textContent = 'Reintentar';
-      btn.disabled = false;
-      btn.style.background = '#dc2626';
-      stat.textContent = '❌ Error: ' + (d.error || 'desconocido');
-      stat.style.color = '#ef4444';
-      urlBox.style.display = 'none';
-    }
-  }
-  function poll() {
-    fetch('/api/live/tunnel/status').then(function(r){return r.json();}).then(paintStatus).catch(function(){});
-  }
-  btn.addEventListener('click', function(){
-    var stopping = btn.textContent === 'Apagar';
-    btn.disabled = true;
-    // Pass ack_tos=true so the C++ endpoint knows the user has consented
-    var url = stopping ? '/api/live/tunnel/stop' : '/api/live/tunnel/start?ack_tos=true';
-    fetch(url).then(function(r){return r.json();}).then(function(){
-      poll();
-      if (!stopping) {
-        // Poll every 1.5 s during startup until URL appears or it errors
-        if (watchHandle) clearInterval(watchHandle);
-        watchHandle = setInterval(function(){
-          fetch('/api/live/tunnel/status').then(function(r){return r.json();}).then(function(d){
-            paintStatus(d);
-            if (d.status === 'running' || d.status === 'error' || d.status === 'idle') {
-              clearInterval(watchHandle); watchHandle = null;
-            }
-          });
-        }, 1500);
-      }
-    }).catch(function(){
-      btn.disabled = false;
-      stat.textContent = 'Error de red contactando con eSE.';
-      stat.style.color = '#ef4444';
-    });
-  });
-  // Initial state + slow refresh
-  poll();
-  setInterval(poll, 10000);
-})();
+// v7.4.0 — Tier 3.1 Cloudflare Tunnel IIFE removed. The endpoints
+// /api/live/tunnel/{start,stop,status} return 410 Gone now; no DOM panel
+// to wire up either.
 
 // ═══════════════════════════════════════════════════════════════════
 // Tier 2.1 — First-run wizard + 2.3 actionable error messages
@@ -572,7 +466,7 @@ fetch('/api/eSE/update/check').then(function(r){return r.json();}).then(function
     // contexts (seen on PC2 with LowID), leaving the single-quoted string
     // unterminated and aborting the entire inline script. Solution: zero
     // newlines of any kind inside this string. Rendered HTML lays out fine.
-    modal.innerHTML = '<div style="background:#13141a;border:1px solid #1f2937;border-radius:14px;max-width:580px;width:90%;padding:32px;color:#ddd;box-shadow:0 20px 60px rgba(0,0,0,.6);max-height:90vh;overflow-y:auto"><div style="font-size:26px;font-weight:800;color:#fff;margin-bottom:8px">👋 Bienvenido a eSE Live</div><div style="color:#9ca3af;font-size:14px;margin-bottom:20px">Vamos a comprobar tu equipo en 30 segundos. No hay que tocar nada manualmente.</div><details style="margin-bottom:20px;padding:10px 14px;background:rgba(99,102,241,.06);border-left:3px solid #818cf8;border-radius:4px;font-size:12px;color:#cbd5e1"><summary style="cursor:pointer;font-weight:600;color:#818cf8">🔒 Privacidad y datos (GDPR) — léelo antes de continuar</summary><div style="margin-top:10px;line-height:1.6">eSE Live es una red P2P. Para que funcione necesita exponer cierta información a otros usuarios:<ul style="margin:6px 0;padding-left:20px"><li><b>Tu IP pública</b> es visible para los peers a los que te conectes (igual que en cualquier red P2P).</li><li>Si emites, tu IP + puerto se publican en Kad (red descentralizada).</li><li>Si activas el túnel HTTPS, Cloudflare ve metadatos de tu conexión.</li><li>No recopilamos analítica. No hay servidor central.</li></ul>eMule + eSE Live se ejecutan localmente en tu equipo. Los datos compartidos están bajo tu control directo.</div></details><div id="wiz-checks" style="background:#0e0e10;border:1px solid #2a2a2e;border-radius:8px;padding:16px;margin-bottom:20px"><div id="wiz-c-kad" style="margin:6px 0;font-size:13px">⏳ Conectando a la red Kad...</div><div id="wiz-c-id" style="margin:6px 0;font-size:13px">⏳ Comprobando NAT/firewall...</div><div id="wiz-c-ffmpeg" style="margin:6px 0;font-size:13px">⏳ Buscando FFmpeg...</div><div id="wiz-c-ip" style="margin:6px 0;font-size:13px">⏳ Detectando IP pública...</div></div><div id="wiz-tip" style="margin-bottom:18px;padding:10px 14px;background:rgba(243,156,18,.08);border-left:3px solid #f39c12;border-radius:4px;font-size:12px;color:#f39c12;display:none"></div><div id="wiz-actions" style="display:flex;gap:10px;justify-content:flex-end;align-items:center"><a id="wiz-skip" href="#" style="color:#6b7280;font-size:12px;text-decoration:none;margin-right:auto">Saltar wizard</a><button id="wiz-test" disabled style="padding:10px 18px;background:#2ecc71;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:13px;opacity:.5">🎬 Crear emisión de prueba</button><button id="wiz-close" style="padding:10px 18px;background:#374151;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">Acepto y cerrar</button></div></div>';
+    modal.innerHTML = '<div style="background:#13141a;border:1px solid #1f2937;border-radius:14px;max-width:580px;width:90%;padding:32px;color:#ddd;box-shadow:0 20px 60px rgba(0,0,0,.6);max-height:90vh;overflow-y:auto"><div style="font-size:26px;font-weight:800;color:#fff;margin-bottom:8px">👋 Bienvenido a eSE Live</div><div style="color:#9ca3af;font-size:14px;margin-bottom:20px">Vamos a comprobar tu equipo en 30 segundos. No hay que tocar nada manualmente.</div><details style="margin-bottom:20px;padding:10px 14px;background:rgba(99,102,241,.06);border-left:3px solid #818cf8;border-radius:4px;font-size:12px;color:#cbd5e1"><summary style="cursor:pointer;font-weight:600;color:#818cf8">🔒 Privacidad y datos (GDPR) — léelo antes de continuar</summary><div style="margin-top:10px;line-height:1.6">eSE Live es una red P2P. Para que funcione necesita exponer cierta información a otros usuarios:<ul style="margin:6px 0;padding-left:20px"><li><b>Tu IP pública</b> es visible para los peers a los que te conectes (igual que en cualquier red P2P).</li><li>Si emites, tu IP + puerto se publican en Kad (red descentralizada).</li><li>Si usas un overlay externo (Tailscale, Tor), su operador verá metadatos según su política.</li><li>No recopilamos analítica. No hay servidor central.</li></ul>eMule + eSE Live se ejecutan localmente en tu equipo. Los datos compartidos están bajo tu control directo.</div></details><div id="wiz-checks" style="background:#0e0e10;border:1px solid #2a2a2e;border-radius:8px;padding:16px;margin-bottom:20px"><div id="wiz-c-kad" style="margin:6px 0;font-size:13px">⏳ Conectando a la red Kad...</div><div id="wiz-c-id" style="margin:6px 0;font-size:13px">⏳ Comprobando NAT/firewall...</div><div id="wiz-c-ffmpeg" style="margin:6px 0;font-size:13px">⏳ Buscando FFmpeg...</div><div id="wiz-c-ip" style="margin:6px 0;font-size:13px">⏳ Detectando IP pública...</div></div><div id="wiz-tip" style="margin-bottom:18px;padding:10px 14px;background:rgba(243,156,18,.08);border-left:3px solid #f39c12;border-radius:4px;font-size:12px;color:#f39c12;display:none"></div><div id="wiz-actions" style="display:flex;gap:10px;justify-content:flex-end;align-items:center"><a id="wiz-skip" href="#" style="color:#6b7280;font-size:12px;text-decoration:none;margin-right:auto">Saltar wizard</a><button id="wiz-test" disabled style="padding:10px 18px;background:#2ecc71;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:13px;opacity:.5">🎬 Crear emisión de prueba</button><button id="wiz-close" style="padding:10px 18px;background:#374151;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px">Acepto y cerrar</button></div></div>';
     document.body.appendChild(modal);
 
     function dismiss() {

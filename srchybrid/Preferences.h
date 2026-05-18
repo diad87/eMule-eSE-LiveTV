@@ -129,6 +129,11 @@ struct Category_Struct
 
 class CPreferences
 {
+public:
+	// v0.71 IPv6 Sprint 2 — hoisted to class top so the private storage
+	// declaration below can name the enum type before its members.
+	enum EIPv6Mode { IPv6OffMode = 0, IPv6AutoMode = 1, IPv6PreferredMode = 2 };
+private:
 	friend class CPreferencesWnd;
 	friend class CPPgConnection;
 	friend class CPPgDebug;
@@ -158,6 +163,9 @@ public:
 	static CStringW m_strBindAddrW;
 	static uint16	port;
 	static uint16	udpport;
+	// v0.71 IPv6 Sprint 2 — storage for IPv6 prefs. Default OFF until Sprint 9.
+	static EIPv6Mode	m_eIPv6Mode;
+	static CString  m_strIPv6BindAddr;
 	static uint16	nServerUDPPort;
 	static UINT		maxconnections;
 	static UINT		maxhalfconnections;
@@ -703,6 +711,18 @@ public:
 
 	static uint16	GetPort()							{ return port; }
 	static uint16	GetUDPPort()						{ return udpport; }
+
+	// v0.71 IPv6 Sprint 2 — IPv6 preferences. Enum hoisted to class top.
+	// IPv6Mode:
+	//   0 = IPv4Only (default, byte-identical baseline behaviour)
+	//   1 = Auto (use IPv6 if OS supports it; falls back gracefully)
+	//   2 = IPv6Preferred (always try v6 first, then v4)
+	// Default Auto flip lives in Sprint 9. Until then, default = IPv4Only.
+	static EIPv6Mode GetIPv6Mode()                      { return m_eIPv6Mode; }
+	static bool     IsIPv6Enabled()                     { return m_eIPv6Mode != IPv6OffMode; }
+	static void     SetIPv6Mode(EIPv6Mode m)            { m_eIPv6Mode = m; }
+	// Optional explicit bind for v6. Empty = "[::]" (any).
+	static LPCTSTR  GetIPv6BindAddr()                   { return m_strIPv6BindAddr; }
 	// V2-S07+: cmdline-driven port override (stress test multi-instance).
 	static void		SetPort(uint16 p)					{ port = p; }
 	static void		SetUDPPort(uint16 p)				{ udpport = p; }

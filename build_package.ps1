@@ -88,26 +88,15 @@ if ($msbuild -and $langProjects) {
 Write-Host "[2] eSE modules"
 New-Item -ItemType Directory "$dst\eSE" | Out-Null
 Get-ChildItem "$src\srchybrid\eSE\*.js" | Copy-Item -Destination "$dst\eSE"
-foreach ($f in "package.json","package-lock.json","emule_mascot.svg","favicon.ico","cloudflared.exe") {
+foreach ($f in "package.json","package-lock.json","emule_mascot.svg","favicon.ico") {
     $fp = "$src\srchybrid\eSE\$f"
     if (Test-Path $fp) { Copy-Item $fp "$dst\eSE" }
 }
-# Tier 3.1: ensure cloudflared.exe is present. If missing, fetch the latest
-# Windows AMD64 release from the official Cloudflare GitHub mirror so users
-# get the HTTPS-fallback tunnel out of the box.
-if (-not (Test-Path "$dst\eSE\cloudflared.exe")) {
-    Write-Host "  cloudflared.exe missing locally, downloading from Cloudflare GitHub..." -ForegroundColor Yellow
-    $cfUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
-    try {
-        Invoke-WebRequest -Uri $cfUrl -OutFile "$dst\eSE\cloudflared.exe" -TimeoutSec 60 -UseBasicParsing
-        $cfMB = [math]::Round((Get-Item "$dst\eSE\cloudflared.exe").Length / 1MB, 1)
-        Write-Host "  cloudflared.exe fetched ($cfMB MB)" -ForegroundColor Green
-    } catch {
-        Write-Host "  WARNING: Could not fetch cloudflared.exe: $_" -ForegroundColor Yellow
-        Write-Host "  HTTPS-tunnel fallback (Tier 3.1) will not work." -ForegroundColor Yellow
-        Write-Host "  Manually download from: $cfUrl" -ForegroundColor Yellow
-    }
-}
+# v7.4.0 — cloudflared.exe NO LONGER bundled. Cloudflare Quick Tunnel was
+# removed due to TOS risk (P2P repackaging violates Cloudflare AUP) and to
+# satisfy the project's "100% gratis, sin dominios" invariant. UPnP runs
+# unconditionally for public-IP discovery; users without UPnP fall back to
+# LAN, Tailscale, or a manually-configured Tor onion service.
 foreach ($sd in "pages","routes","shared","eSE-live") {
     $sp = "$src\srchybrid\eSE\$sd"
     if (Test-Path $sp) { Copy-Item $sp "$dst\eSE\$sd" -Recurse }

@@ -6,6 +6,7 @@
 #include "../cryptopp/sha.h"   // eSE 8.14: SHA256 for challenge-response
 #include <locale.h>
 #include <algorithm>
+#include <vector>
 #include "emule.h"
 #include "StringConversion.h"
 #include "WebServer.h"
@@ -1522,46 +1523,61 @@ CString CWebServer::_GetTransferList(const ThreadData &Data)
 			} else {
 				uchar FileHash[MDX_DIGEST_SIZE];
 				bool bHash = strmd4(sFile, FileHash);
-				CPartFile *found_file = bHash ? theApp.downloadqueue->GetFileByID(FileHash) : NULL;
-				if (found_file) {	// SyruS all actions require a found file (removed double-check inside)
-					if (sOp == _T("stop"))
-						found_file->StopFile();
-					else if (sOp == _T("pause"))
-						found_file->PauseFile();
-					else if (sOp == _T("resume"))
-						found_file->ResumeFile();
-					else if (sOp == _T("cancel")) {
-						found_file->DeletePartFile();
-						SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPD_CATTABS, 0);
-					} else if (sOp == _T("getflc"))
-						found_file->GetPreviewPrio();
-					else if (sOp == _T("rename")) {
-						const CString &sNewName(_ParseURL(Data.sURL, _T("name")));
-						theApp.emuledlg->SendMessage(WEB_FILE_RENAME, (WPARAM)found_file, (LPARAM)(LPCTSTR)sNewName);
-					} else if (sOp == _T("priolow")) {
-						found_file->SetAutoDownPriority(false);
-						found_file->SetDownPriority(PR_LOW);
-					} else if (sOp == _T("prionormal")) {
-						found_file->SetAutoDownPriority(false);
-						found_file->SetDownPriority(PR_NORMAL);
-					} else if (sOp == _T("priohigh")) {
-						found_file->SetAutoDownPriority(false);
-						found_file->SetDownPriority(PR_HIGH);
-					} else if (sOp == _T("prioauto")) {
-						found_file->SetAutoDownPriority(true);
-						found_file->SetDownPriority(PR_HIGH);
-					} else if (sOp == _T("setcat")) {
-						const CString &newcat(_ParseURL(Data.sURL, _T("filecat")));
-						if (!newcat.IsEmpty())
-							found_file->SetCategory(_tstol(newcat));
-					} else if (sOp == _T("streamseek")) {
-						// eSE: Set streaming seek target part
-						const CString &sPart(_ParseURL(Data.sURL, _T("part")));
-						if (!sPart.IsEmpty()) {
-							uint16 seekPart = (uint16)_tstol(sPart);
-							found_file->SetStreamSeekPart(seekPart);
+				if (bHash) {
+					// v7.4.0 — WithFileByID runs under the DownloadQueue lock; the
+					// lambda mutates state but never re-enters DownloadQueue, so the
+					// lock-order invariant holds. SendMessage callouts to the main
+					// thread happen INSIDE the lock here — that's safe because the
+					// main thread is the only one that mutates filelist, and it can't
+					// re-enter WithFileByID while it's waiting on the SendMessage to
+					// be processed by... wait, it IS the main thread. So we cache
+					// what's needed and SendMessage AFTER the lock releases below.
+					bool needsCatTabsUpdate = false;
+					CPartFile *renamedFile = NULL;
+					CString renameTo;
+					theApp.downloadqueue->WithFileByID(FileHash, [&](CPartFile *found_file) {
+						if (sOp == _T("stop"))
+							found_file->StopFile();
+						else if (sOp == _T("pause"))
+							found_file->PauseFile();
+						else if (sOp == _T("resume"))
+							found_file->ResumeFile();
+						else if (sOp == _T("cancel")) {
+							found_file->DeletePartFile();
+							needsCatTabsUpdate = true;
+						} else if (sOp == _T("getflc"))
+							found_file->GetPreviewPrio();
+						else if (sOp == _T("rename")) {
+							renamedFile = found_file;
+							renameTo = _ParseURL(Data.sURL, _T("name"));
+						} else if (sOp == _T("priolow")) {
+							found_file->SetAutoDownPriority(false);
+							found_file->SetDownPriority(PR_LOW);
+						} else if (sOp == _T("prionormal")) {
+							found_file->SetAutoDownPriority(false);
+							found_file->SetDownPriority(PR_NORMAL);
+						} else if (sOp == _T("priohigh")) {
+							found_file->SetAutoDownPriority(false);
+							found_file->SetDownPriority(PR_HIGH);
+						} else if (sOp == _T("prioauto")) {
+							found_file->SetAutoDownPriority(true);
+							found_file->SetDownPriority(PR_HIGH);
+						} else if (sOp == _T("setcat")) {
+							const CString &newcat(_ParseURL(Data.sURL, _T("filecat")));
+							if (!newcat.IsEmpty())
+								found_file->SetCategory(_tstol(newcat));
+						} else if (sOp == _T("streamseek")) {
+							const CString &sPart(_ParseURL(Data.sURL, _T("part")));
+							if (!sPart.IsEmpty()) {
+								uint16 seekPart = (uint16)_tstol(sPart);
+								found_file->SetStreamSeekPart(seekPart);
+							}
 						}
-					}
+					});
+					if (needsCatTabsUpdate)
+						SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPD_CATTABS, 0);
+					if (renamedFile)
+						theApp.emuledlg->SendMessage(WEB_FILE_RENAME, (WPARAM)renamedFile, (LPARAM)(LPCTSTR)renameTo);
 				}
 			}
 		}
@@ -3814,34 +3830,55 @@ CString CWebServer::_GetDownloadGraph(const ThreadData &Data, const CString &fil
 		_T("blue5.gif"), _T("blue6.gif"), _T("greenpercent.gif"), _T("transparent.gif")
 	};
 
-	const CPartFile *pPartFile = theApp.downloadqueue->GetFileByID(fileid);
-	const LPCTSTR *barcolours = (pPartFile && (pPartFile->GetStatus() == PS_PAUSED)) ? styles_paused : styles_active;
+	// v7.4.0 — snapshot under DownloadQueue lock so the rendering loop below
+	// never reads CPartFile state mid-mutation. Holding a CPartFile* across
+	// the rendering loop is the use-after-free we keep almost hitting.
+	struct PartFileRenderSnapshot {
+		bool             found = false;
+		bool             isPartFile = false;
+		EPartFileStatus  status = PS_EMPTY;
+		UINT             percentCompleted = 0;
+		CStringA         chunkBar;
+		uint16           barWidth = 0;
+	};
+	PartFileRenderSnapshot snap;
+	snap.barWidth = pThis->m_Templates.iProgressbarWidth;
+	theApp.downloadqueue->WithFileByID(fileid, [&](CPartFile *f) {
+		snap.found            = true;
+		snap.isPartFile       = f->IsPartFile();
+		snap.status           = f->GetStatus();
+		snap.percentCompleted = f->GetPercentCompleted();
+		snap.chunkBar         = f->GetProgressString(snap.barWidth);
+	});
+	const LPCTSTR *barcolours = (snap.found && snap.status == PS_PAUSED) ? styles_paused : styles_active;
 
 	CString Out;
-	if (pPartFile == NULL || !pPartFile->IsPartFile()) {
-		Out.Format(pThis->m_Templates.sProgressbarImgsPercent, barcolours[10], pThis->m_Templates.iProgressbarWidth);
+	if (!snap.found || !snap.isPartFile) {
+		Out.Format(pThis->m_Templates.sProgressbarImgsPercent, barcolours[10], snap.barWidth);
 		Out += _T("<br>");
-		Out.AppendFormat(pThis->m_Templates.sProgressbarImgs, barcolours[0], pThis->m_Templates.iProgressbarWidth);
+		Out.AppendFormat(pThis->m_Templates.sProgressbarImgs, barcolours[0], snap.barWidth);
 	} else {
-		const CStringA &s_ChunkBar(pPartFile->GetProgressString(pThis->m_Templates.iProgressbarWidth));
+		const CStringA &s_ChunkBar = snap.chunkBar;
 		// and now make a graph out of the array - need to be in a progressive way
 
-		int compl = static_cast<int>((pThis->m_Templates.iProgressbarWidth / 100.0) * pPartFile->GetPercentCompleted());
+		int compl = static_cast<int>((snap.barWidth / 100.0) * snap.percentCompleted);
 		Out.Format(pThis->m_Templates.sProgressbarImgsPercent, barcolours[compl > 0 ? 10 : 11], (compl > 0 ? compl : 5));
 		Out += _T("<br>");
 
 		BYTE lastcolor = 1;
 		uint16 lastindex = 0;
-		const uint16 uBarWidth = pThis->m_Templates.iProgressbarWidth;
+		const uint16 uBarWidth = snap.barWidth;
 		for (uint16 i = 0; i < uBarWidth; ++i) {
-			if (lastcolor != (BYTE)(s_ChunkBar[i] - '0')) {
+			BYTE c = (BYTE)(s_ChunkBar[i] - '0');
+			if (c >= _countof(styles_active)) c = 0;          // defence-in-depth clamp
+			if (lastcolor != c) {
 				if (i > lastindex && lastcolor < _countof(styles_active))
 					Out.AppendFormat(pThis->m_Templates.sProgressbarImgs, barcolours[lastcolor], i - lastindex);
-				lastcolor = (BYTE)(s_ChunkBar[i] - '0');
-				ASSERT(lastcolor <= 9);
+				lastcolor = c;
 				lastindex = i;
 			}
 		}
+		if (lastcolor >= _countof(styles_active)) lastcolor = 0;   // hard clamp
 		Out.AppendFormat(pThis->m_Templates.sProgressbarImgs, barcolours[lastcolor], uBarWidth - lastindex);
 	}
 	return Out;
@@ -3985,7 +4022,7 @@ CString CWebServer::_GetSearch(const ThreadData &Data)
 		nRed = nGreen = nBlue = 255;
 		DecodeBase16(structFile.m_strFileHash, 32, aFileHash, _countof(aFileHash));
 		strOverlayImage = _T("none");
-		if (theApp.downloadqueue->GetFileByID(aFileHash) != NULL) {
+		if (theApp.downloadqueue->HasFileByID(aFileHash)) {
 			nBlue = 128;
 			nGreen = 128;
 		} else {
@@ -4216,20 +4253,26 @@ void CWebServer::_InsertCatBox(CString &Out, int preselect, LPCTSTR boxlabel, bo
 
 	tempBuff.Empty();
 
+	// v7.4.0 — snapshot the category once before the loop, under the lock.
+	// Previous code re-resolved found_file every iteration AND held a raw
+	// CPartFile* in flight across calls that may trigger a GUI message-pump.
+	int snapshotCategory = preselect;
+	bool foundFile = false;
+	if (!sFileHash.IsEmpty()) {
+		uchar FileHash[16];
+		if (strmd4(sFileHash, FileHash)) {
+			theApp.downloadqueue->WithFileByID(FileHash, [&](CPartFile *f) {
+				snapshotCategory = f->GetCategory();
+				foundFile = true;
+			});
+		}
+	}
+
 	// For each user category index...
 	for (int i = 0; i < thePrefs.GetCatCount(); i++)
 	{
-		uchar FileHash[16];
-
-		CPartFile *found_file = NULL;
-		if (!sFileHash.IsEmpty()) {
-			strmd4(sFileHash, FileHash);
-			found_file = theApp.downloadqueue->GetFileByID(FileHash);
-		}
-
-		// Get the user category index of 'found_file' in 'preselect'.
-		if (found_file)
-			preselect = found_file->GetCategory();
+		if (foundFile)
+			preselect = snapshotCategory;
 
 		if (i == preselect)
 		{
@@ -5577,7 +5620,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				lastChunkAge,
 				ESE_LIVE_SEGMENT_DURATION);
 
-			// --- Counters section (Fix 4: added sourceDialAttempts) ---
+			// --- Counters section (Fix 4: added sourceDialAttempts; v7.3.0: skipped/rate-limit/auth/evict) ---
 			CStringA ctrJson;
 			ctrJson.Format(
 				"\"counters\":{"
@@ -5591,13 +5634,19 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				"\"chunksRequested\":%u,"
 				"\"chunksReceived\":%u,"
 				"\"chunksMissing\":%u,"
-				"\"peerDisconnects\":%u}",
+				"\"peerDisconnects\":%u,"
+				"\"skippedInitialPushes\":%u,"
+				"\"subscribesRateLimited\":%u,"
+				"\"endsRejectedNoAuth\":%u,"
+				"\"tombstonesEvicted\":%u}",
 				s.counters.kadPublishes, s.counters.kadSearches,
 				s.counters.kadResultsAccepted, s.counters.kadResultsRejected,
 				s.counters.sourceDialAttempts,
 				s.counters.subscribeSent, s.counters.subscribeAccepted,
 				s.counters.chunksRequested, s.counters.chunksReceived,
-				s.counters.chunksMissing, s.counters.peerDisconnects);
+				s.counters.chunksMissing, s.counters.peerDisconnects,
+				s.counters.skippedInitialPushes, s.counters.subscribesRateLimited,
+				s.counters.endsRejectedNoAuth, s.counters.tombstonesEvicted);
 
 			// --- Assemble final JSON ---
 			json.Format(
@@ -6015,37 +6064,58 @@ CString CWebServer::_GetCommentlist(const ThreadData &Data)
 {
 	uchar FileHash[MDX_DIGEST_SIZE];
 	bool bHash = strmd4(_ParseURL(Data.sURL, _T("filehash")), FileHash);
-	const CPartFile *pPartFile = bHash ? theApp.downloadqueue->GetFileByID(FileHash) : NULL;
-	if (!pPartFile)
+	if (!bHash)
 		return CString();
 
 	const CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
+
+	// v7.4.0 — snapshot everything we need under the lock; never iterate srclist
+	// or getNotes() outside it.
+	struct CommentSrc { CString user, file, comment, rating; };
+	struct NoteEntry  { CString file, descr, rating; };
+	CString          fileNameSnap;
+	std::vector<CommentSrc> srcSnap;
+	std::vector<NoteEntry>  noteSnap;
+	bool found = theApp.downloadqueue->WithFileByID(FileHash, [&](CPartFile *pPartFile) {
+		fileNameSnap = pPartFile->GetFileName();
+		for (POSITION pos = pPartFile->srclist.GetHeadPosition(); pos != NULL;) {
+			const CUpDownClient *cur_src = pPartFile->srclist.GetNext(pos);
+			if (cur_src->HasFileRating() || !cur_src->GetFileComment().IsEmpty()) {
+				CommentSrc c;
+				c.user    = _SpecialChars(cur_src->GetUserName());
+				c.file    = _SpecialChars(cur_src->GetClientFilename());
+				c.comment = _SpecialChars(cur_src->GetFileComment());
+				c.rating  = _SpecialChars(GetRateString(cur_src->GetFileRating()));
+				srcSnap.push_back(c);
+			}
+		}
+		const CTypedPtrList<CPtrList, Kademlia::CEntry*> &list = pPartFile->getNotes();
+		for (POSITION pos = list.GetHeadPosition(); pos != NULL;) {
+			const Kademlia::CEntry *entry = list.GetNext(pos);
+			NoteEntry n;
+			n.file   = _SpecialChars(entry->GetCommonFileName());
+			n.descr  = _SpecialChars(entry->GetStrTagValue(Kademlia::CKadTagNameString(TAG_DESCRIPTION)));
+			n.rating = _SpecialChars(GetRateString((UINT)entry->GetIntTagValue(Kademlia::CKadTagNameString(TAG_FILERATING))));
+			noteSnap.push_back(n);
+		}
+	});
+	if (!found)
+		return CString();
+
 	CString Out(pThis->m_Templates.sCommentList);
 
 	CString comments(GetResString(IDS_COMMENT));
-	comments.AppendFormat(_T(": %s"), (LPCTSTR)pPartFile->GetFileName());
+	comments.AppendFormat(_T(": %s"), (LPCTSTR)fileNameSnap);
 	Out.Replace(_T("[COMMENTS]"), comments);
 
 	CString commentlines;
-	// prepare comments info string
-	for (POSITION pos = pPartFile->srclist.GetHeadPosition(); pos != NULL;) {
-		const CUpDownClient *cur_src = pPartFile->srclist.GetNext(pos);
-		if (cur_src->HasFileRating() || !cur_src->GetFileComment().IsEmpty())
-			commentlines.AppendFormat(pThis->m_Templates.sCommentListLine
-				, (LPCTSTR)_SpecialChars(cur_src->GetUserName())
-				, (LPCTSTR)_SpecialChars(cur_src->GetClientFilename())
-				, (LPCTSTR)_SpecialChars(cur_src->GetFileComment())
-				, (LPCTSTR)_SpecialChars(GetRateString(cur_src->GetFileRating())));
+	for (const auto &c : srcSnap) {
+		commentlines.AppendFormat(pThis->m_Templates.sCommentListLine,
+			(LPCTSTR)c.user, (LPCTSTR)c.file, (LPCTSTR)c.comment, (LPCTSTR)c.rating);
 	}
-
-	const CTypedPtrList<CPtrList, Kademlia::CEntry*> &list = pPartFile->getNotes();
-	for (POSITION pos = list.GetHeadPosition(); pos != NULL;) {
-		const Kademlia::CEntry *entry = list.GetNext(pos);
-		commentlines.AppendFormat(pThis->m_Templates.sCommentListLine
-			, _T("")
-			, (LPCTSTR)_SpecialChars(entry->GetCommonFileName())
-			, (LPCTSTR)_SpecialChars(entry->GetStrTagValue(Kademlia::CKadTagNameString(TAG_DESCRIPTION)))
-			, (LPCTSTR)_SpecialChars(GetRateString((UINT)entry->GetIntTagValue(Kademlia::CKadTagNameString(TAG_FILERATING)))));
+	for (const auto &n : noteSnap) {
+		commentlines.AppendFormat(pThis->m_Templates.sCommentListLine,
+			_T(""), (LPCTSTR)n.file, (LPCTSTR)n.descr, (LPCTSTR)n.rating);
 	}
 
 	Out.Replace(_T("[COMMENTLINES]"), commentlines);

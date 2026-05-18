@@ -567,16 +567,26 @@ bool CRTMPIngest::StartMediaFile(const CString& filePath, UINT bitrate, const CS
 	m_nLastBitrate    = bitrate;
 	m_strLastFile     = filePath;
 
-	// v7.1.6 — Map the requested bitrate to which ABR variant feeds the P2P
-	// chunk buffer. ffmpeg still encodes all 4 variants (hardcoded ladder
-	// 800/1600/2800/4500 kbps below); this only changes WHICH variant the
-	// watcher picks up. <=1000 -> 360p (~800k), <=2000 -> 540p (~1.6M),
-	// <=3500 -> 720p (~2.8M, prior behavior), otherwise 1080p (~4.5M).
+	// v7.1.6 / v7.3.0 — Map the requested bitrate to which ABR variant
+	// feeds the P2P chunk buffer. ffmpeg encodes the full ladder on
+	// NVENC (5 variants, with 4K added in v7.3.0); on QSV/AMF/libx264
+	// only the first 3 exist. This only changes which variant the
+	// watcher copies into m_chunkBuffer for distribution.
+	//   <= 1000  -> 0  (360p,  ~800 kbps)
+	//   <= 2000  -> 1  (540p,  ~1.6 Mbps)
+	//   <= 3500  -> 2  (720p,  ~2.8 Mbps, prior default)
+	//   <= 8500  -> 3  (1080p, ~4.5 Mbps — covers UI tiers 5000 AND 8000)
+	//   >  8500  -> 4  (4K,    ~12 Mbps, NVENC only — UI tier 12000)
+	// v7.3.0-fix: threshold raised from 7000 to 8500 so the UI "8000 kbps
+	// 1080p (alta tasa)" picker maps to variant 3 instead of variant 4.
+	// Otherwise the broadcaster pushed ~5 MB chunks to viewers who saw a
+	// "1080p" label and expected ~2.5 MB chunks, saturating bandwidth.
 	if      (bitrate <= 1000) m_nPreferredVariant = 0;
 	else if (bitrate <= 2000) m_nPreferredVariant = 1;
 	else if (bitrate <= 3500) m_nPreferredVariant = 2;
-	else                      m_nPreferredVariant = 3;
-	LIVE_LOG("RTMP", "Media: bitrate=%u -> P2P variant %u (360p|540p|720p|1080p)",
+	else if (bitrate <= 8500) m_nPreferredVariant = 3;
+	else                      m_nPreferredVariant = 4;
+	LIVE_LOG("RTMP", "Media: bitrate=%u -> P2P variant %u (360p|540p|720p|1080p|4K)",
 		bitrate, m_nPreferredVariant);
 
 	// Verify file exists
@@ -809,21 +819,27 @@ bool CRTMPIngest::StartMediaFile(const CString& filePath, UINT bitrate, const CS
 		// previous single-stream broadcasts so the /hls/stream.m3u8 URL still
 		// works for clients).
 		if (hwenc == HWENC_NVENC) {
-			// 4 variants on NVENC — GPU eats it without breaking a sweat.
+			// v7.3.0 — 5 variants on NVENC (added 4K @ 12 Mbps). RTX 20xx+
+			// handles 5 concurrent H.264 encodes in real-time; on weaker
+			// cards (GTX 16xx) the highest variant may drop frames but the
+			// rest stay live. The P2P watcher picks at most ONE variant
+			// to feed peers, so the extra encoder work is wasted unless
+			// someone requests 4K.
 			cmdLine.Format(
 				_T("\"%s\" -loglevel warning -re -stream_loop -1 ")
 				_T("-i \"%s\" ")
-				_T("-map 0:v:0 -map 0:v:0 -map 0:v:0 -map 0:v:0 ")
-				_T("-map 0:a:0? -map 0:a:0? -map 0:a:0? -map 0:a:0? ")
+				_T("-map 0:v:0 -map 0:v:0 -map 0:v:0 -map 0:v:0 -map 0:v:0 ")
+				_T("-map 0:a:0? -map 0:a:0? -map 0:a:0? -map 0:a:0? -map 0:a:0? ")
 				_T("-c:v h264_nvenc -preset p4 -profile:v high -pix_fmt yuv420p ")
 				_T("-rc vbr -g 48 -bf 2 ")
-				_T("-s:v:0 640x360   -b:v:0  800k -maxrate:v:0  1200k -bufsize:v:0 1600k ")
-				_T("-s:v:1 960x540   -b:v:1 1600k -maxrate:v:1  2200k -bufsize:v:1 3200k ")
-				_T("-s:v:2 1280x720  -b:v:2 2800k -maxrate:v:2  3600k -bufsize:v:2 5600k ")
-				_T("-s:v:3 1920x1080 -b:v:3 4500k -maxrate:v:3  5800k -bufsize:v:3 9000k ")
+				_T("-s:v:0 640x360    -b:v:0  800k  -maxrate:v:0  1200k -bufsize:v:0  1600k ")
+				_T("-s:v:1 960x540    -b:v:1 1600k  -maxrate:v:1  2200k -bufsize:v:1  3200k ")
+				_T("-s:v:2 1280x720   -b:v:2 2800k  -maxrate:v:2  3600k -bufsize:v:2  5600k ")
+				_T("-s:v:3 1920x1080  -b:v:3 4500k  -maxrate:v:3  5800k -bufsize:v:3  9000k ")
+				_T("-s:v:4 3840x2160  -b:v:4 12000k -maxrate:v:4 15000k -bufsize:v:4 24000k ")
 				_T("-c:a aac -ac 2 -ar 48000 ")
-				_T("-b:a:0  96k -b:a:1 128k -b:a:2 160k -b:a:3 192k ")
-				_T("-var_stream_map \"v:0,a:0 v:1,a:1 v:2,a:2 v:3,a:3\" ")
+				_T("-b:a:0  96k -b:a:1 128k -b:a:2 160k -b:a:3 192k -b:a:4 256k ")
+				_T("-var_stream_map \"v:0,a:0 v:1,a:1 v:2,a:2 v:3,a:3 v:4,a:4\" ")
 				_T("-master_pl_name stream.m3u8 ")
 				_T("-f hls -hls_time 4 -hls_list_size 20 ")
 				_T("-hls_init_time 2 -hls_allow_cache 0 ")
@@ -1229,22 +1245,24 @@ void CRTMPIngest::WatcherLoop()
 		// (v7.1.6: prefer the variant matching the broadcaster's bitrate hint,
 		// then walk outward — closest variants next, farthest last).
 		//
-		// Example: preferred=0 (360p) -> try seg_, seg_0_, seg_1_, seg_2_, seg_3_
-		// Example: preferred=2 (720p, pre-v7.1.6 default) -> try seg_, seg_2_, seg_1_, seg_3_, seg_0_
+		// v7.3.0: extended to 5 variants (added v4 = 4K on NVENC). Order
+		// example for preferred=4: 4, 3, 2, 1, 0. For preferred=0: 0,1,2,3,4.
 		// The fallback order matters when the preferred variant lags behind
-		// (NVENC sometimes finishes higher variants before lower ones).
+		// (NVENC sometimes finishes higher variants before lower ones, and
+		// non-NVENC encoders produce only v0-v2 so 3/4 are NEVER present).
+		const int VARIANT_COUNT = 5;
 		CString segFile;
 		DWORD attr = INVALID_FILE_ATTRIBUTES;
 		// Build the per-variant suffix order once (cheap).
-		int variantOrder[4];
+		int variantOrder[VARIANT_COUNT];
 		{
 			int n = 0;
 			variantOrder[n++] = (int)m_nPreferredVariant;
-			for (int dist = 1; n < 4; ++dist) {
+			for (int dist = 1; n < VARIANT_COUNT; ++dist) {
 				int up   = (int)m_nPreferredVariant + dist;
 				int down = (int)m_nPreferredVariant - dist;
-				if (down >= 0 && down <= 3 && n < 4) variantOrder[n++] = down;
-				if (up   >= 0 && up   <= 3 && n < 4) variantOrder[n++] = up;
+				if (down >= 0 && down <= VARIANT_COUNT - 1 && n < VARIANT_COUNT) variantOrder[n++] = down;
+				if (up   >= 0 && up   <= VARIANT_COUNT - 1 && n < VARIANT_COUNT) variantOrder[n++] = up;
 			}
 		}
 		// Single-stream pattern is tried first (always present for non-ABR modes).
@@ -1258,7 +1276,7 @@ void CRTMPIngest::WatcherLoop()
 			}
 		}
 		if (attr == INVALID_FILE_ATTRIBUTES) {
-			for (int i = 0; i < 4 && attr == INVALID_FILE_ATTRIBUTES; ++i) {
+			for (int i = 0; i < VARIANT_COUNT && attr == INVALID_FILE_ATTRIBUTES; ++i) {
 				CString candidate;
 				candidate.Format(_T("%s\\seg_%d_%05u.ts"), (LPCTSTR)m_strOutputDir,
 					variantOrder[i], lastSeg);

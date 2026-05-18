@@ -4,8 +4,9 @@
  * Handles hash extraction from .part.met files.
  *
  * SECURITY: resolveMediaFile() is reachable from public HTTP endpoints because
- * tunnel.js opens port 8080 over UPnP and via Cloudflare Quick Tunnel. The
- * fileName argument therefore comes from untrusted input. We sanitize at the
+ * tunnel.js opens port 8080 over UPnP (Cloudflare Quick Tunnel was removed in
+ * v7.4.0). The fileName argument therefore comes from untrusted input. We
+ * sanitize at the
  * function entry with safeBasename(): any '../', absolute path, drive prefix,
  * NUL byte or path separator causes the lookup to fail fast (returns null).
  * See utils.safeBasename for the policy.
@@ -57,7 +58,7 @@ function extractFileName(metBuf) {
  */
 function resolveMediaFile(fileName, incomingDir, tempDir) {
   // SECURITY: Reject path traversal attempts before touching the filesystem.
-  // fileName arrives from HTTP, which is publicly reachable via UPnP/Cloudflare.
+  // fileName arrives from HTTP, which is publicly reachable via UPnP.
   const safeName = safeBasename(fileName);
   if (!safeName) return null;
   // Re-bind to the sanitized version so the rest of the function never sees

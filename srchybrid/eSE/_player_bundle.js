@@ -645,7 +645,7 @@ function showErrorToast(msg) {
 }
 
 
-// ==== tunnel_settings.js (44315 bytes) ====
+// ==== tunnel_settings.js (44210 bytes) ====
 // tunnel_settings.js — notificaciones, estado tunnel/sharing, panel de ajustes
 
 // ── Notificaciones ─────────────────────────────────────────────────────────────
@@ -751,7 +751,7 @@ function renderSettingsPanel(settings) {
   panel.innerHTML = '<div class="settings-header"><h2>Ajustes</h2><button class="settings-close" onclick="document.getElementById(\'settings-panel\').remove()">&times;</button></div>' +
     '<div class="settings-section"><h3>Acceso Remoto</h3>' +
     '<div class="setting-row"><span class="setting-label">IP Pública (P2P)</span><span id="set-public-ip" class="setting-value" style="color:#2ecc71;font-family:monospace;cursor:pointer;font-size:12px" onclick="navigator.clipboard.writeText(this.textContent);showNotification(\'IP copiada\')">Cargando...</span></div>' +
-    '<div class="setting-row"><span class="setting-label">Túnel (Cloudflare)</span><span id="set-tunnel-url" class="setting-value" style="color:#ff6b35;font-family:monospace;cursor:pointer;font-size:12px;word-break:break-all" onclick="navigator.clipboard.writeText(this.textContent);showNotification(\'URL copiada\')">Cargando...</span></div>' +
+    '<div class="setting-row"><span class="setting-label">Acceso público</span><span id="set-tunnel-url" class="setting-value" style="color:#888;font-family:monospace;font-size:12px;word-break:break-all">UPnP / LAN solamente</span></div>' +
     '<div class="setting-row"><span class="setting-label">Canal ntfy</span><span id="set-ntfy-url" class="setting-value" style="color:#888;font-family:monospace;cursor:pointer;font-size:11px;word-break:break-all" onclick="navigator.clipboard.writeText(this.textContent);showNotification(\'URL copiada\')">—</span></div>' +
     '</div>' +
     '<div class="settings-section"><h3>Preferencias de Reproducción</h3>' +
@@ -1371,7 +1371,7 @@ function showEd2kPanel() {
 }
 
 
-// ==== cinema_player.js (20565 bytes) ====
+// ==== cinema_player.js (23862 bytes) ====
 // cinema_player.js — reproductor modal cinema, controles, subtítulos, sesión
 
 // ── Reproductor modal cinema ───────────────────────────────────────────────────
@@ -1517,60 +1517,77 @@ function playInModal(encodedName) {
   window._cinemaAudioTrack = null;
   window._cinemaSubTrack = '-1'; // no subs by default
 
-  Promise.all([
-    fetch('/api/stream/completed/info?name=' + encodeURIComponent(fileName)).then(function(r){return r.json();}),
-    fetch('/api/stream/tracks?name=' + encodeURIComponent(fileName)).then(function(r){return r.json();}).catch(function(){return {audio:[],subtitles:[]};})
-  ]).then(function(results) {
-    var data = results[0];
-    var tracks = results[1];
-    estTotalSec = data.estimatedTotalSec || 7200;
-    window._isPartFile = !!data.isPartFile;
-    if (data.isPartFile && data.partNum) {
-      currentPartNum = data.partNum;
-    } else {
-      currentPartNum = null;
-    }
-    currentQuality = 'auto';
+  // v7.4.0 - start streaming IMMEDIATELY with defaults instead of waiting for
+  // /info + /tracks in series. ffprobe on partial HEVC can take 15-20s and
+  // blocking the spinner there is what people perceive as "no arranca".
+  // Both calls now run in parallel and patch the UI in place.
+  estTotalSec = 7200;
+  window._isPartFile = false;
+  currentPartNum = null;
+  currentQuality = 'auto';
+  var status0 = document.getElementById('modal-player-status');
+  if (status0) status0.textContent = 'Iniciando streaming...';
+  startCompletedMSE(fileName, 'auto', 0);
 
-    // Populate audio selector
-    var audioSel = document.getElementById('cinema-audio');
-    if (audioSel && tracks.audio && tracks.audio.length > 1) {
-      audioSel.innerHTML = '';
-      tracks.audio.forEach(function(a, i) {
-        var label = (a.lang || 'und').toUpperCase();
-        if (a.title) label += ' \u2014 ' + a.title;
-        if (a.channels) label += ' (' + a.channels + 'ch)';
-        var opt = document.createElement('option');
-        opt.value = a.index;
-        opt.textContent = label;
-        if (i === 0) opt.selected = true;
-        audioSel.appendChild(opt);
-      });
-      var audioRow = document.getElementById('cinema-audio-row');
-      if (audioRow) audioRow.style.display = '';
-    }
+  // Show transcoding hint as soon as response headers arrive.
+  // Endpoint is /api/stream/completed/<encodedName>?quality=… (positional path,
+  // not ?name=… — see stream_completed.js:129).
+  fetch('/api/stream/completed/' + encodeURIComponent(fileName) + '?quality=auto', { method: 'HEAD' })
+    .then(function(r) {
+      var mode = r.headers.get('X-ESE-Transcoding');
+      var s = document.getElementById('modal-player-status');
+      if (s && mode === 'hevc-to-h264') s.textContent = 'Transcodificando HEVC en vivo — puede tardar hasta 60s en empezar';
+      else if (s && mode === 'transcode') s.textContent = 'Transcodificando — puede tardar';
+    }).catch(function(){});
 
-    // Populate subtitle selector
-    var subSel = document.getElementById('cinema-subs');
-    if (subSel && tracks.subtitles && tracks.subtitles.length > 0) {
-      subSel.innerHTML = '<option value="-1" selected>Desactivados</option>';
-      tracks.subtitles.forEach(function(s, i) {
-        var label = (s.lang || 'und').toUpperCase();
-        if (s.title) label += ' \u2014 ' + s.title;
-        if (s.forced) label += ' [Forzados]';
-        var opt = document.createElement('option');
-        opt.value = i;
-        opt.textContent = label;
-        subSel.appendChild(opt);
-      });
-      var subsRow = document.getElementById('cinema-subs-row');
-      if (subsRow) subsRow.style.display = '';
-    }
+  // /info enriches the UI when it is ready (true duration, part flag).
+  fetch('/api/stream/completed/info?name=' + encodeURIComponent(fileName))
+    .then(function(r){return r.json();}).catch(function(){return {};})
+    .then(function(data) {
+      estTotalSec = data.estimatedTotalSec || 7200;
+      window._isPartFile = !!data.isPartFile;
+      if (data.isPartFile && data.partNum) currentPartNum = data.partNum;
+      var s = document.getElementById('modal-player-status');
+      if (s && s.textContent.indexOf('Transcod') !== 0)
+        s.textContent = 'Streaming iniciado — ' + fmtT(estTotalSec);
+    });
 
-    var status = document.getElementById('modal-player-status');
-    if (status) status.textContent = 'Streaming iniciado — ' + fmtT(estTotalSec);
-    startCompletedMSE(fileName, 'auto', 0);
-  });
+  // /tracks patches the audio/subtitle selectors when ready.
+  fetch('/api/stream/tracks?name=' + encodeURIComponent(fileName))
+    .then(function(r){return r.json();}).catch(function(){return {audio:[],subtitles:[]};})
+    .then(function(tracks) {
+      var audioSel = document.getElementById('cinema-audio');
+      if (audioSel && tracks.audio && tracks.audio.length > 1) {
+        audioSel.innerHTML = '';
+        tracks.audio.forEach(function(a, i) {
+          var label = (a.lang || 'und').toUpperCase();
+          if (a.title) label += ' \u2014 ' + a.title;
+          if (a.channels) label += ' (' + a.channels + 'ch)';
+          var opt = document.createElement('option');
+          opt.value = a.index;
+          opt.textContent = label;
+          if (i === 0) opt.selected = true;
+          audioSel.appendChild(opt);
+        });
+        var audioRow = document.getElementById('cinema-audio-row');
+        if (audioRow) audioRow.style.display = '';
+      }
+      var subSel = document.getElementById('cinema-subs');
+      if (subSel && tracks.subtitles && tracks.subtitles.length > 0) {
+        subSel.innerHTML = '<option value="-1" selected>Desactivados</option>';
+        tracks.subtitles.forEach(function(s, i) {
+          var label = (s.lang || 'und').toUpperCase();
+          if (s.title) label += ' \u2014 ' + s.title;
+          if (s.forced) label += ' [Forzados]';
+          var opt = document.createElement('option');
+          opt.value = i;
+          opt.textContent = label;
+          subSel.appendChild(opt);
+        });
+        var subsRow = document.getElementById('cinema-subs-row');
+        if (subsRow) subsRow.style.display = '';
+      }
+    });
 }
 
 // ── Controles del cinema player ────────────────────────────────────────────────
@@ -1834,15 +1851,50 @@ function startCompletedMSE(fileName, quality, seekSec) {
     }
   });
 
+  // v7.4.0 — retry up to MAX_RETRIES on video errors, then surface a real
+  // error state instead of looping forever. Previous code kept reissuing
+  // `?retry=1` indefinitely if the underlying issue was a codec mismatch
+  // or the stream genuinely had no data.
+  var _retryCount = 0;
+  var MAX_RETRIES = 3;
   video.addEventListener('error', function onErr() {
-    video.removeEventListener('error', onErr);
-    console.log('[Player] Video error, retrying...');
+    _retryCount++;
+    console.log('[Player] Video error, retry ' + _retryCount + '/' + MAX_RETRIES);
+    if (_retryCount > MAX_RETRIES) {
+      video.removeEventListener('error', onErr);
+      var status = document.getElementById('modal-player-status');
+      if (status) status.textContent = 'No se puede reproducir — codec incompatible o sin datos suficientes';
+      showPlayerErrorActions();
+      return;
+    }
     setTimeout(function() {
-      video.src = streamUrl + '&retry=1';
+      video.src = streamUrl + '&retry=' + _retryCount;
       video.load();
       video.play().catch(function(){});
     }, 2000);
   });
+}
+
+// v7.4.0 — show a clear error UI inside the player modal with two actions:
+// retry from scratch (resets retry count + reloads) or close.
+function showPlayerErrorActions() {
+  var modal = document.getElementById('cinema-player');
+  if (!modal) return;
+  var existing = document.getElementById('modal-player-error-actions');
+  if (existing) existing.remove();
+  var bar = document.createElement('div');
+  bar.id = 'modal-player-error-actions';
+  bar.style.cssText = 'position:absolute;bottom:80px;left:50%;transform:translateX(-50%);display:flex;gap:12px;z-index:1000';
+  var retry = document.createElement('button');
+  retry.textContent = 'Reintentar';
+  retry.style.cssText = 'background:linear-gradient(135deg,#ff6b35,#ff2d78);border:none;color:#fff;padding:10px 22px;border-radius:8px;cursor:pointer;font-weight:600';
+  retry.onclick = function() { bar.remove(); location.reload(); };
+  var close = document.createElement('button');
+  close.textContent = 'Volver';
+  close.style.cssText = 'background:transparent;border:1px solid #444;color:#888;padding:10px 22px;border-radius:8px;cursor:pointer';
+  close.onclick = function() { bar.remove(); var c = document.getElementById('cinema-player'); if (c) c.style.display = 'none'; };
+  bar.appendChild(retry); bar.appendChild(close);
+  modal.appendChild(bar);
 }
 
 
@@ -2365,7 +2417,7 @@ function smartDownload(movieTitle, movieYear) {
 setTimeout(loadTrendingMovies, 500);
 
 
-// ==== smart_play.js (17280 bytes) ====
+// ==== smart_play.js (22555 bytes) ====
 // smart_play.js — smartPlay, trySmartSource, monitorForFile
 
 // ── Smart Play: evalúa → decide → actúa ───────────────────────────────────────
@@ -2445,32 +2497,54 @@ function smartPlay(movieTitle, movieYear) {
     return matchCount >= Math.ceil(movieWords.length * 0.4);
   }
 
-  Promise.all([
-    fetch('/api/stream/completed/list').then(function(r){return r.json();}).catch(function(){return [];}),
-    fetch('/api/emule/downloads').then(function(r){return r.json();}).catch(function(){return [];})
-  ]).then(function(results) {
-    var completed = results[0] || [];
-    var downloads = results[1] || [];
+  // v7.4.0 — check lifecycle BEFORE Phase 1 to detect a recent eMule restart.
+  // If eMule just woke up, a large .part file from a previous session is
+  // still playable even though its `active` flag is false (sources haven't
+  // reconnected yet). This stops the player from falling through to a
+  // pointless new Phase 2 search when the bytes are already on disk.
+  fetch('/api/v1/lifecycle').then(function(r){return r.json();}).catch(function(){return { epoch: 0, restartedAt: 0 };})
+    .then(function(lc) {
+      var epochChanged = (window._emuleEpoch !== undefined && window._emuleEpoch !== lc.epoch);
+      window._emuleEpoch = lc.epoch;
+      var justRestarted = epochChanged && (Date.now() - lc.restartedAt < 60000);
 
-    // Check completed files
-    for (var i = 0; i < completed.length; i++) {
-      if (matchTitle(completed[i].fileName)) {
-        updateStatus('Archivo encontrado: ' + completed[i].fileName, 100);
-        if (titleEl) titleEl.textContent = 'Listo para reproducir';
-        setTimeout(function() { playInModal(encodeURIComponent(completed[i].fileName)); }, 1000);
-        return;
-      }
-    }
+      Promise.all([
+        fetch('/api/stream/completed/list').then(function(r){return r.json();}).catch(function(){return [];}),
+        fetch('/api/emule/downloads').then(function(r){return r.json();}).catch(function(){return [];})
+      ]).then(function(results) {
+        var completed = results[0] || [];
+        var downloads = results[1] || [];
 
-    // Check active downloads with enough data
-    for (var j = 0; j < downloads.length; j++) {
-      if (matchTitle(downloads[j].fileName) && downloads[j].active && downloads[j].sizeMB > 50) {
-        updateStatus('Descarga en progreso: ' + downloads[j].fileName + ' (' + downloads[j].sizeMB + ' MB)', 80);
-        if (titleEl) titleEl.textContent = 'Datos disponibles';
-        setTimeout(function() { playPartFile(downloads[j].partFile, downloads[j].fileName); }, 2000);
-        return;
-      }
-    }
+        // Check completed files
+        for (var i = 0; i < completed.length; i++) {
+          if (matchTitle(completed[i].fileName)) {
+            updateStatus('Archivo encontrado: ' + completed[i].fileName, 100);
+            if (titleEl) titleEl.textContent = 'Listo para reproducir';
+            (function(fn){ setTimeout(function() { playInModal(encodeURIComponent(fn)); }, 1000); })(completed[i].fileName);
+            return;
+          }
+        }
+
+        // .part playable rules:
+        //   - actively downloading and >50 MB                → play (live)
+        //   - eMule just restarted, file >50 MB              → play (sources will reattach)
+        //   - file >300 MB regardless of active state        → play (enough buffered)
+        for (var j = 0; j < downloads.length; j++) {
+          var dl = downloads[j];
+          if (!matchTitle(dl.fileName)) continue;
+          var isPlayable = (dl.active && dl.sizeMB > 50) ||
+                           (justRestarted && dl.sizeMB > 50) ||
+                           (dl.sizeMB > 300);
+          if (isPlayable) {
+            var msg = justRestarted
+              ? 'eMule acaba de reiniciar — usando descarga existente'
+              : (dl.active ? 'Descarga en progreso' : 'Reanudando descarga existente');
+            updateStatus(msg + ': ' + dl.fileName + ' (' + dl.sizeMB + ' MB)', 80);
+            if (titleEl) titleEl.textContent = justRestarted ? 'Reanudando' : 'Datos disponibles';
+            (function(pf, fn){ setTimeout(function() { playPartFile(pf, fn); }, 2000); })(dl.partFile, dl.fileName);
+            return;
+          }
+        }
 
     // Phase 2: Search eMule
     updateStatus('Buscando fuentes en la red eMule...', 20);
@@ -2523,7 +2597,14 @@ function smartPlay(movieTitle, movieYear) {
 
         window._smartPlayResults = data.results;
         window._smartPlayIndex = 0;
-        trySmartSource(0);
+        // v7.4.0 — only auto-pick when there's a single candidate. With >1
+        // result we show a picker so the user owns the quality/language/size
+        // trade-off instead of being silently routed to whatever scored best.
+        if (data.results.length === 1) {
+          trySmartSource(0);
+        } else {
+          showSourcePicker(data.results);
+        }
       })
       .catch(function(err) {
         hideSpinner();
@@ -2531,7 +2612,73 @@ function smartPlay(movieTitle, movieYear) {
         updateStatus('Error: ' + err.message, 0);
         showActions([{ text: 'Volver', primary: true, action: backToDetail }]);
       });
+      });
+    });
+}
+
+// ── Source picker (v7.4.0) ─────────────────────────────────────────────────
+// Shown when smart-search returns >1 candidate. Lists up to 12 results
+// (sorted by score) as clickable cards so the user picks the version
+// (quality / language / file size / availability) they actually want.
+function showSourcePicker(results) {
+  var titleEl   = document.getElementById('smart-play-title');
+  var statusEl  = document.getElementById('smart-play-status');
+  var actionsEl = document.getElementById('smart-play-actions');
+  var spinner   = document.querySelector('#cinema-player .spinner');
+  if (spinner) spinner.style.display = 'none';
+  if (titleEl)  titleEl.textContent  = 'Elige versión';
+  if (statusEl) statusEl.textContent = results.length + ' fuentes disponibles — ordenadas por mejor coincidencia';
+  if (!actionsEl) return;
+  actionsEl.innerHTML = '';
+  actionsEl.style.display = 'flex';
+  actionsEl.style.flexDirection = 'column';
+  actionsEl.style.gap = '8px';
+  actionsEl.style.maxHeight = '60vh';
+  actionsEl.style.overflowY = 'auto';
+  actionsEl.style.alignItems = 'center';
+
+  results.slice(0, 12).forEach(function(r, idx) {
+    var btn = document.createElement('button');
+    btn.style.cssText =
+      'display:flex;flex-direction:column;align-items:flex-start;' +
+      'background:rgba(255,255,255,.05);border:1px solid #333;' +
+      'border-radius:8px;padding:12px 16px;color:#fff;cursor:pointer;' +
+      'text-align:left;width:420px;transition:background .2s';
+    btn.onmouseover = function() { btn.style.background = 'rgba(255,107,53,.15)'; };
+    btn.onmouseout  = function() { btn.style.background = 'rgba(255,255,255,.05)'; };
+    var shortName = r.fileName && r.fileName.length > 70 ? r.fileName.substring(0, 67) + '…' : (r.fileName || 'sin nombre');
+    var sourceColor = (r.completeSources || 0) > 5 ? '#4caf50' : ((r.completeSources || 0) > 0 ? '#ff6b35' : '#888');
+    btn.innerHTML =
+      '<div style="font-size:13px;font-weight:600;margin-bottom:6px">' + escapeHTML(shortName) + '</div>' +
+      '<div style="font-size:11px;color:#aaa;display:flex;gap:12px;flex-wrap:wrap">' +
+        '<span><b>' + ((r.quality || '?') + '').toUpperCase() + '</b></span>' +
+        '<span>' + ((r.language || '?') + '').toUpperCase() + '</span>' +
+        '<span>' + (r.sizeMB || '?') + ' MB</span>' +
+        '<span style="color:' + sourceColor + '">●  ' + (r.completeSources || 0) + '/' + (r.sources || 0) + ' fuentes</span>' +
+        '<span style="color:#888">score ' + (r.score || 0) + '</span>' +
+      '</div>';
+    btn.onclick = function() {
+      window._smartPlayIndex = idx;
+      trySmartSource(idx);
+    };
+    actionsEl.appendChild(btn);
   });
+
+  var back = document.createElement('button');
+  back.textContent = 'Cancelar';
+  back.style.cssText = 'background:transparent;border:1px solid #444;color:#888;padding:8px 16px;border-radius:8px;cursor:pointer;margin-top:8px;width:200px';
+  back.onclick = backToDetail;
+  actionsEl.appendChild(back);
+}
+
+// Local HTML-escape fallback (smart_play.js is bundled before escapeHTML is
+// defined elsewhere in some load orders).
+if (typeof escapeHTML !== 'function') {
+  window.escapeHTML = function(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  };
 }
 
 // ── Prueba una fuente concreta ────────────────────────────────────────────────

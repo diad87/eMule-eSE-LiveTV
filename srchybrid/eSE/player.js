@@ -1803,7 +1803,7 @@ function renderSettingsPanel(settings) {
   panel.innerHTML = '<div class="settings-header"><h2>Ajustes</h2><button class="settings-close" onclick="document.getElementById(\'settings-panel\').remove()">&times;</button></div>' +
     '<div class="settings-section"><h3>Acceso Remoto</h3>' +
     '<div class="setting-row"><span class="setting-label">IP Pública (P2P)</span><span id="set-public-ip" class="setting-value" style="color:#2ecc71;font-family:monospace;cursor:pointer;font-size:12px" onclick="navigator.clipboard.writeText(this.textContent);showNotification(\'IP copiada\')">Cargando...</span></div>' +
-    '<div class="setting-row"><span class="setting-label">Túnel (Cloudflare)</span><span id="set-tunnel-url" class="setting-value" style="color:#ff6b35;font-family:monospace;cursor:pointer;font-size:12px;word-break:break-all" onclick="navigator.clipboard.writeText(this.textContent);showNotification(\'URL copiada\')">Cargando...</span></div>' +
+    '<div class="setting-row"><span class="setting-label">Acceso público</span><span id="set-tunnel-url" class="setting-value" style="color:#888;font-family:monospace;font-size:12px;word-break:break-all">UPnP / LAN solamente</span></div>' +
     '<div class="setting-row"><span class="setting-label">Canal ntfy</span><span id="set-ntfy-url" class="setting-value" style="color:#888;font-family:monospace;cursor:pointer;font-size:11px;word-break:break-all" onclick="navigator.clipboard.writeText(this.textContent);showNotification(\'URL copiada\')">—</span></div>' +
     '</div>' +
     '<div class="settings-section"><h3>Preferencias de Reproducción</h3>' +

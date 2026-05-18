@@ -360,6 +360,8 @@
     <ClCompile Include="LiveMeshManager.cpp" />
     <ClCompile Include="LivePackets.cpp" />
     <ClCompile Include="LiveProtocol.cpp" />
+    <ClCompile Include="LiveCrypto.cpp" />
+    <ClCompile Include="FirewallProberV6.cpp" />
     <ClCompile Include="LiveStreamDlg.cpp" />
     <ClCompile Include="LiveStreamDlgUI.cpp" />
     <ClCompile Include="LiveStreamHandlers.cpp" />
@@ -668,6 +670,8 @@
     <ClInclude Include="LiveDebugLog.h" />
     <ClInclude Include="LiveKadBridge.h" />
     <ClInclude Include="LiveMeshManager.h" />
+    <ClInclude Include="LiveCrypto.h" />
+    <ClInclude Include="FirewallProberV6.h" />
     <ClInclude Include="LivePackets.h" />
     <ClInclude Include="LiveProtocol.h" />
     <ClInclude Include="LiveStreamDlg.h" />

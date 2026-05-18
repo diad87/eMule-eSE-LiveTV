@@ -373,6 +373,10 @@
     <ClCompile Include="LiveBootstrap.cpp" />
     <ClCompile Include="LiveSubscriberPinning.cpp" />
     <ClCompile Include="SubscriberPinScheduler.cpp" />
+    <ClCompile Include="LiveTunnel.cpp" />
+    <ClCompile Include="LiveCircuit.cpp" />
+    <ClCompile Include="LiveCellQueue.cpp" />
+    <ClCompile Include="LiveCoverTraffic.cpp" />
     <ClCompile Include="FirewallProberV6.cpp" />
     <ClCompile Include="KadKeepalive.cpp" />
     <ClCompile Include="HolePuncher.cpp" />
@@ -699,6 +703,10 @@
     <ClInclude Include="LiveBootstrap.h" />
     <ClInclude Include="LiveSubscriberPinning.h" />
     <ClInclude Include="SubscriberPinScheduler.h" />
+    <ClInclude Include="LiveTunnel.h" />
+    <ClInclude Include="LiveCircuit.h" />
+    <ClInclude Include="LiveCellQueue.h" />
+    <ClInclude Include="LiveCoverTraffic.h" />
     <ClInclude Include="FirewallProberV6.h" />
     <ClInclude Include="KadKeepalive.h" />
     <ClInclude Include="HolePuncher.h" />

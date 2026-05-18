@@ -309,8 +309,13 @@ void CDownloadQueue::AddDownload(CPartFile *newfile, bool paused)
 
 	SetAutoCat(newfile);// HoaX_69 / Slugfiller: AutoCat
 
-	filelist.AddTail(newfile);
-	SortByPriority();
+	// v7.4.0 — hold lock only across filelist mutation. GUI / message-pump
+	// callouts happen OUTSIDE the lock to avoid re-entrancy via PostMessage.
+	{
+		CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
+		filelist.AddTail(newfile);
+		SortByPriority();
+	}
 	CheckDiskspace();
 	theApp.emuledlg->transferwnd->GetDownloadList()->AddFile(newfile);
 	AddLogLine(true, GetResString(IDS_NEWDOWNLOAD), (LPCTSTR)newfile->GetFileName());
@@ -421,6 +426,7 @@ void CDownloadQueue::Process()
 
 CPartFile* CDownloadQueue::GetFileNext(POSITION &pos) const
 {
+	CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
 	if (!pos)
 		pos = filelist.GetHeadPosition();
 	return pos ? filelist.GetNext(pos) : NULL;
@@ -428,6 +434,7 @@ CPartFile* CDownloadQueue::GetFileNext(POSITION &pos) const
 
 CPartFile* CDownloadQueue::GetFileByID(const uchar *filehash) const
 {
+	CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
 	for (POSITION pos = filelist.GetHeadPosition(); pos != NULL;) {
 		CPartFile *cur_file = filelist.GetNext(pos);
 		if (md4equ(filehash, cur_file->GetFileHash()))
@@ -438,6 +445,7 @@ CPartFile* CDownloadQueue::GetFileByID(const uchar *filehash) const
 
 CPartFile* CDownloadQueue::GetFileByKadFileSearchID(uint32 id) const
 {
+	CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
 	for (POSITION pos = filelist.GetHeadPosition(); pos != NULL;) {
 		CPartFile *cur_file = filelist.GetNext(pos);
 		if (id == cur_file->GetKadFileSearchID())
@@ -446,8 +454,38 @@ CPartFile* CDownloadQueue::GetFileByKadFileSearchID(uint32 id) const
 	return NULL;
 }
 
+// v7.4.0 — thread-safe iteration helpers. WithFileByID runs `fn` with the
+// CPartFile* while the lock is held, so callers never see a freed pointer.
+// Callers must NOT call back into DownloadQueue from `fn` (would re-enter
+// the same critsec — recursive locks are allowed by CCriticalSection but
+// the lock-order invariant must not be violated).
+bool CDownloadQueue::WithFileByID(const uchar *fileHash, std::function<void(CPartFile*)> fn)
+{
+	CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
+	for (POSITION pos = filelist.GetHeadPosition(); pos != NULL;) {
+		CPartFile *cur = filelist.GetNext(pos);
+		if (md4equ(fileHash, cur->GetFileHash())) {
+			fn(cur);
+			return true;
+		}
+	}
+	return false;
+}
+
+bool CDownloadQueue::HasFileByID(const uchar *fileHash) const
+{
+	CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
+	for (POSITION pos = filelist.GetHeadPosition(); pos != NULL;) {
+		const CPartFile *cur = filelist.GetNext(pos);
+		if (md4equ(fileHash, cur->GetFileHash()))
+			return true;
+	}
+	return false;
+}
+
 bool CDownloadQueue::IsPartFile(const CKnownFile *file) const
 {
+	CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
 	return filelist.Find((void*)file) != NULL;
 }
 
@@ -672,16 +710,23 @@ void CDownloadQueue::RemoveFile(CPartFile *toremove)
 {
 	RemoveLocalServerRequest(toremove);
 
-	POSITION pos = filelist.Find(toremove);
-	if (pos != NULL)
-		filelist.RemoveAt(pos);
-	SortByPriority();
+	// v7.4.0 — lock around filelist mutation only.
+	{
+		CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
+		POSITION pos = filelist.Find(toremove);
+		if (pos != NULL)
+			filelist.RemoveAt(pos);
+		SortByPriority();
+	}
 	CheckDiskspace();
 	ExportPartMetFilesOverview();
 }
 
 void CDownloadQueue::DeleteAll()
 {
+	// v7.4.0 — iteration must be locked; mutators on each cur_file (srclist.RemoveAll,
+	// RemoveAllRequestedBlocks) are member-internal and don't re-enter DownloadQueue.
+	CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
 	for (POSITION pos = filelist.GetHeadPosition(); pos != NULL;) {
 		CPartFile *cur_file = filelist.GetNext(pos);
 		cur_file->srclist.RemoveAll();
@@ -1220,6 +1265,7 @@ void CDownloadQueue::MoveCat(UINT from, UINT to)
 
 UINT CDownloadQueue::GetDownloadingFileCount() const
 {
+	CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
 	UINT result = 0;
 	for (POSITION pos = filelist.GetHeadPosition(); pos != NULL;) {
 		const EPartFileStatus uStatus = filelist.GetNext(pos)->GetStatus();
@@ -1231,6 +1277,7 @@ UINT CDownloadQueue::GetDownloadingFileCount() const
 
 UINT CDownloadQueue::GetPausedFileCount() const
 {
+	CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
 	UINT result = 0;
 	for (POSITION pos = filelist.GetHeadPosition(); pos != NULL;)
 		if (filelist.GetNext(pos)->GetStatus() == PS_PAUSED)

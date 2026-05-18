@@ -190,6 +190,6 @@ Third-party components bundled in the binary distribution (FFmpeg, Node.js, clou
 - **eMule Project** — Original client ([emule-project.net](https://www.emule-project.net)). This is a fork of eMule **0.70b**.
 - **eSE modifications** — P2P live streaming, decentralized 3-layer discovery, web dashboard, security hardening, uTP streaming, auto-update lifecycle.
 - **Native libraries** — CryptoPP, mbedTLS, miniupnpc, libutp, zlib, libpng, id3lib, CxImage, ResizableLib.
-- **Runtime** — Node.js (packaged via [pkg](https://github.com/vercel/pkg)), FFmpeg, cloudflared (optional HTTPS tunnel).
+- **Runtime** — Node.js (packaged via [pkg](https://github.com/vercel/pkg)), FFmpeg, UPnP (via `nat-upnp-2`) for public-port discovery.
 
 Full attribution: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Detailed diff vs upstream: [CHANGES_FROM_EMULE_0.70b.md](CHANGES_FROM_EMULE_0.70b.md).

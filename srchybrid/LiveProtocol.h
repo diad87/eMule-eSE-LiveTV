@@ -201,7 +201,7 @@ struct PeerBitmapInfo {
 // LiveStreamInfo — Metadata about a live stream (for Kad publishing)
 //
 struct LiveStreamInfo {
-    uchar   streamKey[16];      // Unique stream identifier
+    uchar   streamKey[16];      // Unique stream identifier; v7.6.0: sha1(pubkey)[:16]
     CString title;              // Stream title
     CString category;           // Category (Cine, Deportes, etc.)
     CString language;           // Language code (es, en, fr...)
@@ -211,6 +211,12 @@ struct LiveStreamInfo {
     bool    isMultiAudio;       // Has multiple audio tracks
     bool    isBroadcaster;      // Am I the original source?
 
+    // v7.6.0 — Ed25519 public key of the broadcaster. The streamKey above is
+    // sha1(pubkey)[:16] so any peer can verify that the pubkey is authentic
+    // for a given streamKey, then verify signatures on chunks/announces/end.
+    // Zeroed for streams discovered from v7.5- peers (back-compat).
+    uchar   pubkey[32];
+
     LiveStreamInfo()
         : bitrate(0)
         , viewerCount(0)
@@ -219,5 +225,6 @@ struct LiveStreamInfo {
         , isBroadcaster(false)
     {
         memset(streamKey, 0, 16);
+        memset(pubkey, 0, 32);
     }
 };

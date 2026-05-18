@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <regex>
 #include "emule.h"
+#include "eMuleAI/Address.h"  // v0.71 IPv6 Sprint 1 — ipstr(CAddress) overload
 #include "UpDownClient.h"
 #include "DownloadQueue.h"
 #include "Preferences.h"
@@ -2663,6 +2664,29 @@ CString ipstr(uint32 nIP, uint16 nPort)
 CString ipstr(uint32 nIP)
 {
 	return CString(inet_ntoa(*(in_addr*)&nIP));
+}
+
+// v0.71 IPv6 Sprint 1 — CAddress overloads. Uses CAddress::ToStringC() which
+// already produces the right textual form for v4 ("1.2.3.4") and v6
+// ("2001:db8::1"). For v6+port we wrap in brackets per RFC 3986.
+CString ipstr(const CAddress& addr)
+{
+	if (addr.GetType() == CAddress::IPv6) {
+		CString out(_T("["));
+		out += addr.ToStringC();
+		out += _T("]");
+		return out;
+	}
+	return addr.ToStringC();
+}
+
+CString ipstr(const CAddress& addr, uint16 nPort)
+{
+	CString out = ipstr(addr);
+	CString port;
+	port.Format(_T(":%u"), (unsigned)nPort);
+	out += port;
+	return out;
 }
 
 CStringA ipstrA(uint32 nIP)

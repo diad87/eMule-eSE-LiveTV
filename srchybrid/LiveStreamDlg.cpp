@@ -114,12 +114,20 @@ BOOL CLiveStreamDlg::OnInitDialog()
 	m_comboLanguage.AddString(_T("Portuguese"));
 	m_comboLanguage.SetCurSel(0);
 
-	// Bitrate combo
-	m_comboBitrate.AddString(_T("1500 kbps (SD)"));
-	m_comboBitrate.AddString(_T("3000 kbps (HD)"));
-	m_comboBitrate.AddString(_T("5000 kbps (FHD)"));
-	m_comboBitrate.AddString(_T("8000 kbps (4K)"));
-	m_comboBitrate.SetCurSel(1);
+	// Bitrate combo — v7.3.0: 6 tiers including a real 4K option and a
+	// low-bitrate 360p option for slow uploads. The previous "8000 kbps
+	// (4K)" label was misleading: ffmpeg only encoded up to 1080p so
+	// selecting it just wasted bits. Now index 5 is truly 4K (3840×2160).
+	m_comboBitrate.AddString(_T("800 kbps — 360p (lento / 4G)"));
+	m_comboBitrate.AddString(_T("1500 kbps — 540p (ADSL)"));
+	m_comboBitrate.AddString(_T("3000 kbps — 720p HD (fibra básica)"));
+	m_comboBitrate.AddString(_T("5000 kbps — 1080p Full HD"));
+	m_comboBitrate.AddString(_T("8000 kbps — 1080p (alta tasa)"));
+	m_comboBitrate.AddString(_T("12000 kbps — 4K UHD (NVENC)"));
+	// Default to 720p HD — equilibrio razonable. Quien tenga upload <2 Mbps
+	// debería bajar a 360p o 540p manualmente. v7.3.0 idealmente añadiría
+	// un pre-flight que sugiera el tier según la subida medida.
+	m_comboBitrate.SetCurSel(2);
 
 	// Progress bar range
 	m_progressMesh.SetRange(0, 100);
@@ -239,8 +247,16 @@ void CLiveStreamDlg::StartBroadcast()
 	static const uint16 langCodes[] = { 0x656E, 0x6573, 0x6672, 0x6465, 0x7074 };
 	uint16 language = langCodes[min(m_comboLanguage.GetCurSel(), 4)];
 
-	static const uint32 bitrates[] = { 1500, 3000, 5000, 8000 };
-	uint32 bitrate = bitrates[min(m_comboBitrate.GetCurSel(), 3)];
+	// v7.3.0 — 6 quality tiers covering 360p (slow upload / 4G) up to 4K.
+	// Index 0: 800   kbps = 360p   (subida ~1 Mbps, 4G, ADSL slow)
+	// Index 1: 1500  kbps = 540p   (subida ~2 Mbps, ADSL típico)
+	// Index 2: 3000  kbps = 720p   (subida ~4 Mbps, fibra básica)
+	// Index 3: 5000  kbps = 1080p  (subida ~6 Mbps, fibra estándar)
+	// Index 4: 8000  kbps = 1080p+ (subida ~10 Mbps)
+	// Index 5: 12000 kbps = 4K     (subida ~15 Mbps, NVENC required)
+	// RTMPIngest maps these to ABR variant 0/1/2/3/3/4 respectively.
+	static const uint32 bitrates[] = { 800, 1500, 3000, 5000, 8000, 12000 };
+	uint32 bitrate = bitrates[min(m_comboBitrate.GetCurSel(), 5)];
 
 	// Phase 3.5 ROB-LowID: warn the user before they start broadcasting if
 	// their TCP port is REALLY closed. We only fire this warning when the Kad

@@ -2,6 +2,7 @@
 // eSE — Live Stream Manager Implementation
 #include "stdafx.h"
 #include "LiveStreamManager.h"
+#include "LiveCrypto.h"        // v7.6.0 — Ed25519 keypair helpers
 #include "LiveDebugLog.h"
 #include "LivePackets.h"
 #include "emule.h"
@@ -32,10 +33,15 @@ static char THIS_FILE[] = __FILE__;
 // within the hour are rare (StartBroadcast generates fresh streamKeys).
 static const DWORD ESE_TOMBSTONE_TTL_MS    = 30u * 60u * 1000u;
 static const DWORD ESE_TOMBSTONE_PRUNE_MS  = 60u * 1000u;
-// Watchdog threshold: if a viewer hasn't heard chunk or heartbeat in
-// this window, declare the stream dead. 90 s leaves ~22-90 missed
-// 1-4 s heartbeats — well into "definitely dead", not a transient.
-static const DWORD ESE_LIVE_WATCHDOG_MS    = 90u * 1000u;
+// Watchdog threshold: 180 s. v7.2.0 had 90 s which was too aggressive
+// for bandwidth-limited viewers (4G CGN saturated by a too-high
+// variant) — chunks arrive in bursts with multi-tens-of-seconds gaps,
+// the 90 s timer expired, viewer gossipped a (false) END for the
+// stream, broadcaster cascaded the END to all OTHER viewers, mass
+// disconnect. v7.2.2 raises to 180 s AND additionally gates on
+// m_viewPeers.GetCount() == 0 so we only declare dead when we are
+// genuinely alone, not just slow.
+static const DWORD ESE_LIVE_WATCHDOG_MS    = 180u * 1000u;
 
 static CString HexStreamKey(const uchar* streamKey)
 {
@@ -43,6 +49,41 @@ static CString HexStreamKey(const uchar* streamKey)
     for (int i = 0; i < 16; ++i)
         out.AppendFormat(_T("%02x"), streamKey[i]);
     return out;
+}
+
+// v7.7.0 — pin the pubkey for a streamKey. Idempotent: if already pinned to
+// the same pubkey, returns true; if pinned to a DIFFERENT pubkey, rejects.
+// The caller MUST have already verified sha1(pubkey)[:16] == streamKey;
+// this function does not re-check that (cheap to call, no cryptography).
+bool CLiveStreamManager::PinStreamPubkey(const uchar streamKey[16], const uchar pubkey[32])
+{
+    CSingleLock lock(&m_lock, TRUE);
+    CString hex = HexStreamKey(streamKey);
+    PubkeyPin existing;
+    if (m_streamPubkeyPin.Lookup(hex, existing)) {
+        if (memcmp(existing.pubkey, pubkey, 32) == 0)
+            return true;  // same key — idempotent
+        LIVE_LOG("PIN", "REJECT pubkey switch for stream %s — keeping original",
+            (LPCSTR)CStringA(hex));
+        return false;
+    }
+    PubkeyPin pin;
+    memcpy(pin.pubkey, pubkey, 32);
+    pin.pinnedAt = GetTickCount();
+    m_streamPubkeyPin[hex] = pin;
+    LIVE_LOG("PIN", "PIN pubkey for stream %s", (LPCSTR)CStringA(hex));
+    return true;
+}
+
+bool CLiveStreamManager::GetPinnedPubkey(const uchar streamKey[16], uchar outPubkey[32]) const
+{
+    CSingleLock lock(&m_lock, TRUE);
+    CString hex = HexStreamKey(streamKey);
+    PubkeyPin pin;
+    if (!const_cast<CMap<CString, LPCTSTR, PubkeyPin, PubkeyPin&>&>(m_streamPubkeyPin).Lookup(hex, pin))
+        return false;
+    memcpy(outPubkey, pin.pubkey, 32);
+    return true;
 }
 
 
@@ -73,6 +114,7 @@ CLiveStreamManager::CLiveStreamManager()
     , m_dwLastLiveActivity(0)      // v7.2.0
 {
     memset(m_pendingGhostKey, 0, sizeof m_pendingGhostKey);
+    memset(m_broadcasterPrivkey, 0, sizeof m_broadcasterPrivkey);
     m_meshManager.Init(this);
     MeasureUploadCapacity();      // V2-S11: initial classification at startup
 
@@ -131,14 +173,18 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
         return false;
     }
 
-    // Generate unique stream key from title + timestamp
-    CMD4 md4;
-    CStringA titleA(title);
+    // v7.6.0 — generate a fresh Ed25519 keypair for this broadcast. The
+    // streamKey is the first 16 bytes of sha1(pubkey), so any peer that knows
+    // the streamKey can derive the expected pubkey hash and reject forgeries.
+    // The old key-from-title-and-timestamp design (#1 in audit) was easily
+    // predictable: attacker pre-computes streamKey for popular titles and
+    // races the legitimate broadcaster to claim the Kad slot.
+    if (!eSELive::GenerateBroadcasterKeypair(m_streamInfo.pubkey, m_broadcasterPrivkey)) {
+        AddLogLine(true, _T("eSE Live: Failed to generate Ed25519 keypair"));
+        return false;
+    }
+    eSELive::DeriveStreamKey(m_streamInfo.pubkey, m_streamInfo.streamKey);
     uint32 now = (uint32)time(NULL);
-    md4.Add((const BYTE*)(LPCSTR)titleA, titleA.GetLength());
-    md4.Add((const BYTE*)&now, sizeof(now));
-    md4.Finish();
-    md4cpy(m_streamInfo.streamKey, md4.GetHash());
 
     m_streamInfo.title = title;
     m_streamInfo.category = category;
@@ -294,9 +340,23 @@ void CLiveStreamManager::StopBroadcast()
     // memo and kept advertising the stream until their own watchdog
     // (which didn't exist) fired. Now we cast wide: broadcast peers
     // first, then any additional mesh peer we know.
+    // v7.7.0 — sign the END so peers can verify origin. Message format:
+    // streamKey (16) || reason (1). Compact; receiver reconstructs the same
+    // bytes on the wire side before verifying.
+    uchar endSig[64] = {0};
+    bool haveSig = false;
+    {
+        uchar msg[17];
+        memcpy(msg, m_streamInfo.streamKey, 16);
+        msg[16] = (uchar)ESE_END_NORMAL;
+        haveSig = eSELive::SignMessage(m_broadcasterPrivkey, m_streamInfo.pubkey,
+                                       msg, sizeof msg, endSig);
+    }
+
     auto sendEnd = [&](CUpDownClient* peer) {
         if (!peer) return;
-        Packet* pkt = eSELive::CreateEndPacket(m_streamInfo.streamKey, ESE_END_NORMAL);
+        Packet* pkt = eSELive::CreateEndPacket(m_streamInfo.streamKey, ESE_END_NORMAL,
+                                               haveSig ? endSig : NULL);
         if (pkt) {
             theStats.AddUpDataOverheadOther(pkt->size);
             peer->SendPacket(pkt);
@@ -332,6 +392,11 @@ void CLiveStreamManager::StopBroadcast()
     m_broadcastPeers.RemoveAll();
     m_peerTrust.RemoveAll();
     m_peerBitmaps.RemoveAll();
+
+    // v7.6.0 — wipe the Ed25519 private key from memory. The pubkey can
+    // stick around in m_streamInfo until the next StartBroadcast() overwrites
+    // it; only the secret half matters.
+    memset(m_broadcasterPrivkey, 0, sizeof m_broadcasterPrivkey);
 
     // DISC-S04: clear the persisted streamKey marker — graceful shutdown
     // means there's no ghost to clean up on next start.
@@ -733,6 +798,48 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     if (!m_bBroadcasting && !m_bViewing) return;
     if (memcmp(m_streamInfo.streamKey, streamKey, 16) != 0) return;
 
+    // v7.3.0 — Per-IP SUBSCRIBE rate limit. Cap: 30 SUBSCRIBEs/60 s from
+    // the same IP. Prevents subscribe-flood DoS where a single IP
+    // forces the broadcaster into 3-chunk PUSH cycles repeatedly. The
+    // /24 rate limit in ListenSocket is too coarse — 256 distinct IPs
+    // share one budget; with that the attacker just sweeps the /24.
+    // This is per individual IP. Cap was 5 in v7.3.0 RC but legitimate
+    // LowID viewers cycle through CClientList swaps every ~6 s (~10/min)
+    // and were being blocked; 30 leaves headroom while still rejecting
+    // genuine floods (real attackers fire 100s/sec).
+    if (peer != NULL && peer->GetIP() != 0) {
+        const DWORD SUB_RATE_WINDOW_MS = 60u * 1000u;
+        const int   SUB_RATE_CAP       = 30;
+        DWORD now = GetTickCount();
+        SubRateState st;
+        if (!m_subscribeRate.Lookup(peer->GetIP(), st)) {
+            memset(&st, 0, sizeof(st));
+        }
+        // Count ticks within the window.
+        int recentCount = 0;
+        for (int i = 0; i < SUB_RATE_CAP; ++i) {
+            if (st.ticks[i] != 0 && (now - st.ticks[i]) < SUB_RATE_WINDOW_MS)
+                recentCount++;
+        }
+        if (recentCount >= SUB_RATE_CAP) {
+            InterlockedIncrement(&m_counters.subscribesRateLimited);
+            LIVE_LOG("CAP", "RATE-LIMIT SUBSCRIBE from %S:%u (%d in last %us)",
+                (LPCWSTR)ipstr(peer->GetIP()), (unsigned)peer->GetUserPort(),
+                recentCount, SUB_RATE_WINDOW_MS / 1000);
+            Packet* deny = eSELive::CreateDenyPacket(m_streamInfo.streamKey, ESE_DENY_FULL);
+            if (deny) {
+                theStats.AddUpDataOverheadOther(deny->size);
+                peer->SendPacket(deny);
+            }
+            return;
+        }
+        // Record this SUBSCRIBE tick.
+        st.ticks[st.nextSlot] = now;
+        st.nextSlot = (st.nextSlot + 1) % SUB_RATE_CAP;
+        st.lastSeen = now;
+        m_subscribeRate[peer->GetIP()] = st;
+    }
+
     // V2-S13/S16: enforce concurrent-upload cap (tier-derived + broadcaster
     // hard cap). Reply with a peer list of alternative sources so the
     // requester can fan out instead of bouncing between us and the broadcaster.
@@ -852,27 +959,66 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     // We only push when broadcasting; when relaying as a mesh peer, the
     // requester will fetch what it needs via REQUEST (avoids amplifying
     // unsolicited traffic to mesh hops).
+    //
+    // v7.2.2 — Skip the initial push if we already pushed to this
+    // (IP, port) in the last 10 seconds. LowID viewers cycle SUBSCRIBE
+    // every ~6 s through CClientList::AttachToAlreadyKnown, and a
+    // 3-chunk re-push of ~4.5 MB the viewer already has saturates
+    // their TCP recv buffer + delays NEW chunks → microcuts. The
+    // cooldown is keyed by endpoint (not by CUpDownClient pointer)
+    // because the pointer changes on every swap.
+    const DWORD ESE_INITIAL_PUSH_COOLDOWN_MS = 10000;
+    uint64 pushKey = ((uint64)(peer ? peer->GetIP() : 0) << 16)
+                   | (uint64)(peer ? peer->GetUserPort() : 0);
+    bool skipInitialPush = false;
+    if (pushKey != 0) {
+        DWORD lastTick = 0;
+        if (m_recentInitialPushes.Lookup(pushKey, lastTick)
+            && (GetTickCount() - lastTick) < ESE_INITIAL_PUSH_COOLDOWN_MS)
+        {
+            skipInitialPush = true;
+            InterlockedIncrement(&m_counters.skippedInitialPushes);  // v7.3.0
+            LIVE_LOG("PUSH", "SKIP initial push to %S:%u (pushed %u ms ago, cooldown)",
+                (LPCWSTR)ipstr(peer->GetIP()), (unsigned)peer->GetUserPort(),
+                GetTickCount() - lastTick);
+        }
+    }
+
     int pushed = 0;
     uint32 startSeq = 0, newest = 0;
-    if (m_bBroadcasting && m_chunkBuffer.GetCount() > 0) {
+    if (!skipInitialPush && m_bBroadcasting && m_chunkBuffer.GetCount() > 0) {
         const uint32 pushCount = 3;
         newest = m_chunkBuffer.GetNewestSeq();
         uint32 oldest = m_chunkBuffer.GetOldestSeq();
         startSeq = (newest >= pushCount - 1) ? (newest - (pushCount - 1)) : oldest;
         if (startSeq < oldest) startSeq = oldest;
 
-        // Build all packets under the lock (chunk->data stays valid here).
-        // CreateChunkPacket copies chunk->data into the Packet, so once the
-        // packet exists it is independent of the buffer.
+        // v7.5.0 — WithSegment serializes the read against AddSegment; previous
+        // code held the LiveStreamManager m_lock but NOT the chunk buffer's
+        // own m_lock, so AddSegment from the broadcaster thread could free
+        // the slot between GetSegment() and CreateChunkPacket()'s memcpy.
+        // CreateChunkPacket copies the bytes, so once it returns the Packet is
+        // self-contained and safe to use after the buffer's lock releases.
         CArray<Packet*> pushBatch;
         uint64 totalBytes = 0;
         for (uint32 seq = startSeq; seq <= newest; ++seq) {
-            const LiveChunk* chunk = m_chunkBuffer.GetSegment(seq);
-            if (!chunk) continue;
-            Packet* chunkPkt = eSELive::CreateChunkPacket(chunk);
+            Packet* chunkPkt = NULL;
+            uint32 chunkSize = 0;
+            m_chunkBuffer.WithSegment(seq, [&](const LiveChunk& chunk) {
+                // v7.7.0 — if we're broadcasting our own stream, emit signed V2.
+                // Otherwise (relay of someone else's chunk) emit legacy V1.
+                if (m_bBroadcasting &&
+                    memcmp(chunk.streamKey, m_streamInfo.streamKey, 16) == 0) {
+                    chunkPkt = eSELive::CreateChunkPacketV2(&chunk,
+                        m_broadcasterPrivkey, m_streamInfo.pubkey);
+                }
+                if (!chunkPkt)
+                    chunkPkt = eSELive::CreateChunkPacket(&chunk);
+                chunkSize = chunk.dataSize;
+            });
             if (!chunkPkt) continue;
             pushBatch.Add(chunkPkt);
-            totalBytes += chunk->dataSize;
+            totalBytes += chunkSize;
         }
 
         // Update trust + mesh counters under the lock (they read m_peerTrust).
@@ -909,6 +1055,11 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
             pushed, startSeq, newest,
             peer ? (LPCWSTR)ipstr(peer->GetIP()) : L"?",
             peer ? (unsigned)peer->GetUserPort() : 0);
+        // v7.2.2 — record this push so a rapid re-SUBSCRIBE within
+        // 10 s gets the skip-path above. Map grows bounded by unique
+        // endpoints we've served, pruned in Process() once a minute.
+        if (pushKey != 0)
+            m_recentInitialPushes[pushKey] = GetTickCount();
     }
 }
 
@@ -986,8 +1137,23 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
         return;
     }
 
-    const LiveChunk* chunk = m_chunkBuffer.GetSegment(seqNum);
-    if (!chunk) {
+    // v7.5.0 — snapshot what we need from the chunk under the buffer's lock.
+    // The legacy GetSegment() returned a raw pointer that could be freed
+    // before we finished using it (UAF #7).
+    Packet*  chunkPkt   = NULL;
+    uint32   chunkSize  = 0;
+    bool     chunkFound = m_chunkBuffer.WithSegment(seqNum, [&](const LiveChunk& c) {
+        // v7.7.0 — sign if we own this stream; else V1 for relays.
+        if (m_bBroadcasting &&
+            memcmp(c.streamKey, m_streamInfo.streamKey, 16) == 0) {
+            chunkPkt = eSELive::CreateChunkPacketV2(&c,
+                m_broadcasterPrivkey, m_streamInfo.pubkey);
+        }
+        if (!chunkPkt)
+            chunkPkt = eSELive::CreateChunkPacket(&c);
+        chunkSize = c.dataSize;
+    });
+    if (!chunkFound) {
         LIVE_LOG("REQ", "MISS seq=%u from %S:%u — not in buffer",
             seqNum,
             peer ? (LPCWSTR)ipstr(peer->GetIP()) : L"?",
@@ -1045,12 +1211,13 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
     trust.requestsReceived++;
     trust.requestsServed++;
 
-    // Send the chunk data to the peer
-    Packet* pkt = eSELive::CreateChunkPacket(chunk);
-    if (pkt) {
-        theStats.AddUpDataOverheadOther(pkt->size);
-        peer->SendPacket(pkt);
-        m_meshManager.TrackUpload(peer, chunk->dataSize);
+    // Send the chunk data to the peer. v7.5.0: chunkPkt was built inside the
+    // WithSegment lambda above using a now-released copy of the bytes, so it's
+    // safe to use without any buffer lock; chunkSize is a captured uint32.
+    if (chunkPkt) {
+        theStats.AddUpDataOverheadOther(chunkPkt->size);
+        peer->SendPacket(chunkPkt);
+        m_meshManager.TrackUpload(peer, chunkSize);
         // Fix 5: Actually count active uploads so /api/live/debug isn't always 0
         m_meshManager.IncrementChunksServed();
 
@@ -1058,13 +1225,13 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
         DWORD nowTick = GetTickCount();
         PeerCounters& pc = m_peerCounters[peer];
         pc.MaybeResetWindow(nowTick);
-        pc.bytes_out_total      += chunk->dataSize;
-        pc.bytes_out_window_60s += chunk->dataSize;
+        pc.bytes_out_total      += chunkSize;
+        pc.bytes_out_window_60s += chunkSize;
         pc.chunks_served++;
         pc.last_chunk_sent_ms = nowTick;
 
         LIVE_LOG("REQ", "SERVE seq=%u (%u KB) -> %S:%u",
-            seqNum, chunk->dataSize / 1024,
+            seqNum, chunkSize / 1024,
             peer ? (LPCWSTR)ipstr(peer->GetIP()) : L"?",
             peer ? (unsigned)peer->GetUserPort() : 0);
     }
@@ -1146,11 +1313,39 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
     // Subject to the same EffectiveMaxConcurrentUploads cap (no fan-out
     // amplification beyond what S13/S16 already authorize).
     //
-    // Build the LiveChunk view we just stored — chunk_buffer copied the data
-    // into its own LiveChunk, so we use that pointer for the packet body.
+    // v7.5.0 — was reading `stored->dataSize` and passing `stored` to
+    // CreateChunkPacket across N iterations while AddSegment from the encoder
+    // thread could free that slot. Pre-build the packets and snapshot the size
+    // inside one WithSegment lambda, then send outside the buffer lock.
     if (!m_broadcastPeers.IsEmpty()) {
-        const LiveChunk* stored = m_chunkBuffer.GetSegment(seqNum);
-        if (stored) {
+        uint32 storedSize = 0;
+        bool   storedFound = false;
+        // We can't build N packets inside the lambda without knowing N — we
+        // don't know how many children will receive yet. So copy the bytes
+        // into a local buffer under the lock and rebuild a packet per child
+        // afterwards. CreateChunkPacket takes a LiveChunk* with an owned data
+        // pointer; we pass a stack-local LiveChunk view of our copy.
+        std::vector<BYTE> bodyCopy;
+        uchar localStreamKey[16] = {0};
+        uint32 localTs = 0;
+        uint16 localBitrate = 0;
+        m_chunkBuffer.WithSegment(seqNum, [&](const LiveChunk& c) {
+            storedFound = true;
+            storedSize  = c.dataSize;
+            bodyCopy.assign(c.data, c.data + c.dataSize);
+            memcpy(localStreamKey, c.streamKey, 16);
+            localTs      = c.timestamp;
+            localBitrate = c.bitrate;
+        });
+        if (storedFound) {
+            LiveChunk localView;
+            memcpy(localView.streamKey, localStreamKey, 16);
+            localView.sequenceNumber = seqNum;
+            localView.timestamp      = localTs;
+            localView.dataSize       = storedSize;
+            localView.bitrate        = localBitrate;
+            localView.data           = bodyCopy.data();   // points into bodyCopy, valid for this scope
+
             int relayMax = EffectiveMaxConcurrentUploads();
             int relayed = 0;
             POSITION cpos = m_broadcastPeers.GetHeadPosition();
@@ -1158,22 +1353,31 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
                 CUpDownClient* child = m_broadcastPeers.GetNext(cpos);
                 if (!child) continue;
                 if (child == peer) continue;  // do not bounce back to source
-                Packet* pkt = eSELive::CreateChunkPacket(stored);
+                // v7.7.0 — sign if we own this stream; else V1 for relays.
+                Packet* pkt = NULL;
+                if (m_bBroadcasting &&
+                    memcmp(localView.streamKey, m_streamInfo.streamKey, 16) == 0) {
+                    pkt = eSELive::CreateChunkPacketV2(&localView,
+                        m_broadcasterPrivkey, m_streamInfo.pubkey);
+                }
+                if (!pkt)
+                    pkt = eSELive::CreateChunkPacket(&localView);
                 if (!pkt) continue;
                 theStats.AddUpDataOverheadOther(pkt->size);
                 child->SendPacket(pkt, true);  // bVerifyConnection: skip dead sockets
-                m_meshManager.TrackUpload(child, stored->dataSize);
+                m_meshManager.TrackUpload(child, storedSize);
                 m_meshManager.IncrementChunksServed();
 
                 // Update per-child counters as if they had requested.
                 PeerCounters& ccp = m_peerCounters[child];
                 ccp.MaybeResetWindow(nowTick);
-                ccp.bytes_out_total      += stored->dataSize;
-                ccp.bytes_out_window_60s += stored->dataSize;
+                ccp.bytes_out_total      += storedSize;
+                ccp.bytes_out_window_60s += storedSize;
                 ccp.chunks_served++;
                 ccp.last_chunk_sent_ms = nowTick;
                 relayed++;
             }
+            localView.data = NULL;  // disown so LiveChunk dtor doesn't free
             if (relayed > 0)
                 LIVE_LOG("RELAY", "PUSH seq=%u to %d child(ren)", seqNum, relayed);
         }
@@ -1371,6 +1575,40 @@ void CLiveStreamManager::OnStreamEnded(const uchar* streamKey, uint8 reason, CUp
 
     CSingleLock lock(&m_lock, TRUE);
 
+    // v7.2.2 — CRITICAL: if WE are broadcasting this exact stream, ignore
+    // the END completely. The remote peer is wrong (their watchdog
+    // probably misfired on a bandwidth-induced stall, or someone in their
+    // mesh gossiped a stale END). We KNOW the stream is alive — we're
+    // serving it. Tombstoning would block our own viewers from finding
+    // us; gossiping to our broadcastPeers would cascade-kick every viewer
+    // we have. Both of those are exactly the cascade that produced the
+    // 94:90 subscribe:disconnect ratio in 7.2.0/7.2.1 testing.
+    if (m_bBroadcasting && memcmp(m_streamInfo.streamKey, streamKey, 16) == 0) {
+        LIVE_LOG("MGR", "Ignored OP_LIVE_END for our own active broadcast (from=%S)",
+            fromPeer ? L"peer" : L"watchdog");
+        return;
+    }
+
+    // v7.3.0 — Authenticate the sender. Honor END only from:
+    //   - Self-watchdog (fromPeer == NULL)
+    //   - A peer we are CURRENTLY viewing from (m_viewPeers) — they are
+    //     in a position to legitimately report the broadcaster died, OR
+    //   - A peer we are currently SERVING (m_broadcastPeers) — relay path
+    //     where they are forwarding gossip from the actual broadcaster.
+    // Reject random peers gossiping END for streamKeys we know nothing
+    // about; otherwise an attacker can poison every receiver's tombstone
+    // map for 30 min by spamming OP_LIVE_END for popular streamKeys.
+    if (fromPeer != NULL
+        && m_viewPeers.Find(fromPeer) == NULL
+        && m_broadcastPeers.Find(fromPeer) == NULL)
+    {
+        InterlockedIncrement(&m_counters.endsRejectedNoAuth);
+        LIVE_LOG("MGR", "Rejected unauthenticated OP_LIVE_END from %S:%u",
+            (LPCWSTR)ipstr(fromPeer->GetIP()),
+            (unsigned)fromPeer->GetUserPort());
+        return;
+    }
+
     CString hexKey = HexStreamKey(streamKey);
 
     // Idempotency: if already tombstoned and still in TTL, drop. Stops
@@ -1380,6 +1618,28 @@ void CLiveStreamManager::OnStreamEnded(const uchar* streamKey, uint8 reason, CUp
     DWORD expire = 0;
     if (m_streamTombstones.Lookup(hexKey, expire) && expire > now) {
         return;
+    }
+
+    // v7.3.0 — Cap tombstone map at ESE_TOMBSTONE_MAX_ENTRIES. If full,
+    // evict the entry with the smallest (= oldest) expire tick before
+    // inserting. Prevents memory-exhaustion DoS where an attacker spams
+    // OP_LIVE_END for random streamKeys; without the cap, every accepted
+    // END allocates a CString + DWORD pair that lives 30 min.
+    const INT_PTR ESE_TOMBSTONE_MAX_ENTRIES = 10000;
+    if (m_streamTombstones.GetCount() >= ESE_TOMBSTONE_MAX_ENTRIES) {
+        CString oldestKey;
+        DWORD   oldestExpire = 0xFFFFFFFFu;
+        CString k;
+        DWORD   v;
+        POSITION p = m_streamTombstones.GetStartPosition();
+        while (p) {
+            m_streamTombstones.GetNextAssoc(p, k, v);
+            if (v < oldestExpire) { oldestExpire = v; oldestKey = k; }
+        }
+        if (!oldestKey.IsEmpty()) {
+            m_streamTombstones.RemoveKey(oldestKey);
+            InterlockedIncrement(&m_counters.tombstonesEvicted);
+        }
     }
 
     // Record tombstone with absolute expiration tick.
@@ -1720,18 +1980,39 @@ void CLiveStreamManager::Process()
         }
         for (INT_PTR i = 0; i < dead.GetCount(); ++i)
             m_streamTombstones.RemoveKey(dead[i]);
+
+        // v7.2.2 — same cadence: prune recent-push tracking older than
+        // 60 s. The cooldown window is 10 s so anything older is dead
+        // weight. Caps map size at one entry per distinct endpoint
+        // that subscribed in the last minute.
+        CArray<uint64> deadKeys;
+        uint64 pk; DWORD pt = 0;
+        POSITION pp = m_recentInitialPushes.GetStartPosition();
+        while (pp) {
+            m_recentInitialPushes.GetNextAssoc(pp, pk, pt);
+            if (now - pt > 60000) deadKeys.Add(pk);
+        }
+        for (INT_PTR i = 0; i < deadKeys.GetCount(); ++i)
+            m_recentInitialPushes.RemoveKey(deadKeys[i]);
     }
 
-    // v7.2.0 — crash-detect watchdog. If we are viewing AND haven't
-    // heard a chunk or bitmap from anyone in 90 s, declare the stream
-    // dead locally, tombstone it, and gossip to our mesh peers so they
-    // know too. This is the path that covers broadcaster crashes (which
-    // by definition cannot send OP_LIVE_END themselves).
+    // v7.2.2 — crash-detect watchdog (stricter than 7.2.0). Only fires
+    // when ALL of:
+    //   1. We are viewing
+    //   2. >180 s since last chunk OR heartbeat (was 90 s, false-fired
+    //      on bandwidth-throttled viewers receiving high-variant
+    //      streams in bursts)
+    //   3. m_viewPeers is empty — i.e. nobody left to receive from
+    // The third condition is critical: if we still have peers we're
+    // talking to, we might just be slow (their bandwidth, our
+    // bandwidth, intermediate NAT). Only when EVERY source peer has
+    // dropped AND we've had 180 s of silence is it really dead.
     if (m_bViewing
+        && m_viewPeers.GetCount() == 0
         && m_dwLastLiveActivity != 0
         && (now - m_dwLastLiveActivity) > ESE_LIVE_WATCHDOG_MS)
     {
-        LIVE_LOG("MGR", "Watchdog: %u ms without chunk/heartbeat, declaring stream dead",
+        LIVE_LOG("MGR", "Watchdog: %u ms silence + 0 view peers, declaring stream dead",
             now - m_dwLastLiveActivity);
         uchar deadKey[16];
         memcpy(deadKey, m_streamInfo.streamKey, 16);
@@ -2020,8 +2301,11 @@ void CLiveStreamManager::SendAnnounceToAll()
     POSITION pos = m_broadcastPeers.GetHeadPosition();
     while (pos) {
         CUpDownClient* peer = m_broadcastPeers.GetNext(pos);
+        // v7.6.0 — include pubkey so receivers can pin the streamKey→pubkey
+        // binding before chunks/end arrive with signatures (T4/T5).
         Packet* pkt = eSELive::CreateAnnouncePacket(
-            m_streamInfo.streamKey, newestSeq, m_streamInfo.bitrate);
+            m_streamInfo.streamKey, newestSeq, m_streamInfo.bitrate,
+            m_streamInfo.pubkey);
         if (pkt) {
             theStats.AddUpDataOverheadOther(pkt->size);
             peer->SendPacket(pkt);

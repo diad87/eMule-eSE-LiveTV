@@ -418,7 +418,10 @@ public class MainActivity extends AppCompatActivity {
             }
             reader.close();
 
-            // Extract URL from message (format: "🔗 URL: https://xxx.trycloudflare.com\n...")
+            // v7.4.0 — Cloudflare Quick Tunnel was removed; ntfy messages now
+            // carry a JSON payload with `p2p: "http://<upnp-ip>:8080"` (and
+            // `tunnel: null` for back-compat with v7.3.x readers). We still
+            // accept any embedded http(s):// URL so old + new servers both work.
             if (lastMessage != null) {
                 String[] lines = lastMessage.split("\n");
                 for (String l : lines) {

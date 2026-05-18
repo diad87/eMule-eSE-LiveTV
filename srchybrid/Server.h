@@ -167,7 +167,10 @@ public:
 
 private:
 	void	init();
-	TCHAR	ipfull[3+1+3+1+3+1+3+1]; // 16, null terminated
+	// v0.71 IPv6 Sprint 2 — widened from 16 to 48 chars to fit IPv6 textual
+	// addresses. IPv6 max literal is "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255"
+	// (mapped-IPv4 form) = 45 chars + NUL. 48 is the next round number.
+	TCHAR	ipfull[48];
 	CString	m_strDescription;
 	CString	m_strName;
 	CString	m_strDynIP;

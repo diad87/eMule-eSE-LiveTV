@@ -119,10 +119,10 @@ function getBestMP4(partNum, tempDir) {
 
 // ─── PATH SAFETY ────────────────────────────────────────────────
 //
-// SECURITY: the server is publicly reachable via UPnP-opened port 8080 and via
-// Cloudflare Quick Tunnel (see tunnel.js). Any HTTP parameter that ends up in
-// path.join() / path.resolve() must be sanitized before touching the filesystem
-// or an attacker can read arbitrary files (CWE-22 Path Traversal).
+// SECURITY: the server is publicly reachable via UPnP-opened port 8080 (the
+// Cloudflare Quick Tunnel fallback was removed in v7.4.0). Any HTTP parameter
+// that ends up in path.join() / path.resolve() must be sanitized before touching
+// the filesystem or an attacker can read arbitrary files (CWE-22 Path Traversal).
 //
 // Use safeBasename() at the entry of every function that takes an external
 // filename and uses it on disk. It strips directory components and rejects

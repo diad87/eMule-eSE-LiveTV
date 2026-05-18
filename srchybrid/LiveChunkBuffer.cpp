@@ -116,6 +116,16 @@ const LiveChunk* CLiveChunkBuffer::GetSegment(uint32 seqNum) const
     return m_segments[slot];
 }
 
+// v7.5.0 — UAF-safe accessor; lambda runs under the lock.
+bool CLiveChunkBuffer::WithSegment(uint32 seqNum, std::function<void(const LiveChunk&)> fn) const
+{
+    CSingleLock lock(&m_lock, TRUE);
+    int slot = FindSlot(seqNum);
+    if (slot < 0 || !m_segments[slot]) return false;
+    fn(*m_segments[slot]);
+    return true;
+}
+
 bool CLiveChunkBuffer::HasSegment(uint32 seqNum) const
 {
     CSingleLock lock(&m_lock, TRUE);

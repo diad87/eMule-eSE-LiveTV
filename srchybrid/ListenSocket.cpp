@@ -20,6 +20,8 @@
 #include "ListenSocket.h"
 #include "opcodes.h"
 #include "LiveStreamManager.h"
+#include "LiveCrypto.h"        // v7.6.0 — StreamKeyMatchesPubkey
+#include "../cryptopp/sha.h"   // v7.7.0 — SHA256 for OP_LIVE_CHUNK_V2 verify
 #include "UpDownClient.h"
 #include "ClientList.h"
 #include "DownloadQueue.h"
@@ -875,7 +877,9 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT opcode, UINT uRawSize)
 {
 	try {
-		if (opcode >= OP_LIVE_ANNOUNCE && opcode <= OP_LIVE_PEER_LIST && !client->SupportsLiveP2P()) {
+		// v7.7.0 — range now includes 0xCC (OP_LIVE_CHUNK_V2). OP_LIVE_PEER_LIST=0xCA,
+		// PONG=0xCB, CHUNK_V2=0xCC; bump the upper bound accordingly.
+		if (opcode >= OP_LIVE_ANNOUNCE && opcode <= OP_LIVE_CHUNK_V2 && !client->SupportsLiveP2P()) {
 			theStats.AddDownDataOverheadOther(uRawSize);
 			DebugLogWarning(_T("Ignoring eSE live opcode 0x%02X from non-eSE client %s"),
 				opcode, (LPCTSTR)client->DbgGetClientInfo());
@@ -1797,6 +1801,72 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 						seqNum, timestamp, chunkData, chunkSize);
 			}
 			break;
+		case OP_LIVE_CHUNK_V2:
+			{
+				// v7.7.0 — signed chunk.
+				// Format: streamKey(16) + seqNum(4) + ts(4) + dataSize(4) + bitrate(2)
+				//        + sha256(32) + sig(64) + data(dataSize).
+				if (thePrefs.GetDebugClientTCPLevel() > 1)
+					DebugRecv("OP_LiveChunkV2", client, (size >= 16) ? packet : NULL);
+				theStats.AddDownDataOverheadOther(uRawSize);
+				if (size < 126) break;  // header alone
+
+				CSafeMemFile data(packet, size);
+				uchar streamKey[16];
+				data.ReadHash16(streamKey);
+				uint32 seqNum    = data.ReadUInt32();
+				uint32 timestamp = data.ReadUInt32();
+				uint32 chunkSize = data.ReadUInt32();
+				/*uint16 bitrate =*/ data.ReadUInt16();
+				uchar digest[32];
+				data.Read(digest, 32);
+				uchar sig[64];
+				data.Read(sig, 64);
+
+				if (chunkSize > size - 126 || chunkSize > 4 * 1024 * 1024) break;
+
+				const BYTE* chunkData = packet + 126;
+
+				// 1. Need a pinned pubkey for this streamKey; without it we
+				//    can't verify. Drop silently — V1 path will retry if/when
+				//    an ANNOUNCE carries the pubkey.
+				uchar pubkey[32];
+				if (!theApp.liveStreamManager ||
+				    !theApp.liveStreamManager->GetPinnedPubkey(streamKey, pubkey)) {
+					break;
+				}
+
+				// 2. Verify sha256(data) matches digest. Cheap integrity check
+				//    that also amortises the cost of the signature path: if a
+				//    peer corrupts even one byte we fail here before doing
+				//    the expensive Ed25519 verify.
+				{
+					CryptoPP::SHA256 hash;
+					uchar computed[32];
+					hash.CalculateDigest(computed, chunkData, chunkSize);
+					if (memcmp(computed, digest, 32) != 0) {
+						AddLogLine(true, _T("eSE Live: chunk seq=%u digest mismatch — dropping"), seqNum);
+						break;
+					}
+				}
+
+				// 3. Verify signature over (streamKey || seqNum || digest).
+				{
+					uchar signMsg[16 + 4 + 32];
+					memcpy(signMsg, streamKey, 16);
+					memcpy(signMsg + 16, &seqNum, 4);
+					memcpy(signMsg + 20, digest, 32);
+					if (!eSELive::VerifySignature(pubkey, signMsg, sizeof signMsg, sig)) {
+						AddLogLine(true, _T("eSE Live: chunk seq=%u bad signature — dropping"), seqNum);
+						break;
+					}
+				}
+
+				// All checks passed — hand to the manager exactly like V1.
+				theApp.liveStreamManager->OnChunkReceived(client, streamKey,
+					seqNum, timestamp, chunkData, chunkSize);
+			}
+			break;
 		case OP_LIVE_PEER_LIST:
 			{
 				if (thePrefs.GetDebugClientTCPLevel() > 0)
@@ -1808,6 +1878,14 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				uchar streamKey[16];
 				data.ReadHash16(streamKey);
 				uint16 count = data.ReadUInt16();
+
+				// v7.5.0 — hard cap on peer-list size. A hostile peer that
+				// announces count=65535 would otherwise force us to launch
+				// up to 65535 TCP connect() attempts (FD exhaustion + SYN
+				// reflection). 16 candidates is plenty for mesh recovery.
+				const uint16 ESE_LIVE_MAX_PEER_LIST = 16;
+				if (count > ESE_LIVE_MAX_PEER_LIST)
+					count = ESE_LIVE_MAX_PEER_LIST;
 
 				CArray<DWORD> ips;
 				CArray<uint16> ports;
@@ -1867,7 +1945,25 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				uchar streamKey[16];
 				data.ReadHash16(streamKey);
 				uint32 newestSeq = data.ReadUInt32();
-				// uint16 bitrate = data.ReadUInt16(); // available but not needed here
+				/*uint16 bitrate =*/ data.ReadUInt16();
+
+				// v7.6.0 — optional pubkey trailer (32 bytes). If present and
+				// it doesn't hash to the announced streamKey, the peer is
+				// either confused or attempting to claim a streamKey it can't
+				// sign for. Drop the announcement silently in that case.
+				if (size >= 54) {
+					uchar pubkey[32];
+					data.Read(pubkey, 32);
+					if (!eSELive::StreamKeyMatchesPubkey(streamKey, pubkey)) {
+						// Mismatch — log + reject.
+						break;
+					}
+					// v7.7.0 — pin the pubkey for this streamKey so future
+					// signed chunks/END packets can be verified. Idempotent
+					// for the same (streamKey, pubkey) pair.
+					if (theApp.liveStreamManager)
+						theApp.liveStreamManager->PinStreamPubkey(streamKey, pubkey);
+				}
 
 				// Trigger segment request for the newly announced segment
 				if (theApp.liveStreamManager && theApp.liveStreamManager->IsViewingLive())
@@ -1890,16 +1986,37 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				if (thePrefs.GetDebugClientTCPLevel() > 0)
 					DebugRecv("OP_LiveEnd", client);
 				theStats.AddDownDataOverheadOther(uRawSize);
-				// v7.2.0 — payload: <streamKey 16><reason 1>.
-				// LiveStreamManager handles tombstone + leave-if-viewing +
-				// gossip to mesh peers (deduped by tombstone, so storms
-				// self-limit at one hop). Fallback to OnPeerDisconnected
-				// if the packet is short (shouldn't happen — pre-v7.2.0
-				// senders already ship 17-byte payloads).
+				// Payload: <streamKey 16><reason 1> [<sig 64>]
+				// v7.7.0: if a 64-byte sig is appended (total >= 81 bytes),
+				// verify it against the pinned pubkey for streamKey. A peer
+				// without the broadcaster's privkey cannot forge this sig,
+				// so signed ENDs are accepted regardless of source.
+				// Unsigned ENDs still go through the v7.5.0 auth path in
+				// LiveStreamManager::OnStreamEnded (must come from a known
+				// m_broadcastPeers/m_viewPeers member, or watchdog NULL).
 				if (size >= 16 && theApp.liveStreamManager) {
 					uint8 reason = (size >= 17) ? packet[16] : 0;
+					CUpDownClient* effectivePeer = client;
+					if (size >= 81) {
+						uchar pubkey[32];
+						if (theApp.liveStreamManager->GetPinnedPubkey(packet, pubkey)) {
+							uchar msg[17];
+							memcpy(msg, packet, 16);
+							msg[16] = reason;
+							const uchar* sigPtr = packet + 17;
+							if (eSELive::VerifySignature(pubkey, msg, sizeof msg, sigPtr)) {
+								// Signed END from the legitimate broadcaster.
+								// Pass NULL as peer so OnStreamEnded skips
+								// the "must be in m_viewPeers" auth check.
+								effectivePeer = NULL;
+							} else {
+								AddLogLine(true, _T("eSE Live: rejected END (bad signature)"));
+								break;
+							}
+						}
+					}
 					AddLogLine(true, _T("eSE Live: Stream ended (reason=%u)"), reason);
-					theApp.liveStreamManager->OnStreamEnded(packet, reason, client);
+					theApp.liveStreamManager->OnStreamEnded(packet, reason, effectivePeer);
 				} else if (theApp.liveStreamManager) {
 					AddLogLine(true, _T("eSE Live: Stream ended (malformed END)"));
 					theApp.liveStreamManager->OnPeerDisconnected(client);

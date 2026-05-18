@@ -379,7 +379,7 @@ function handleRoute(url, req, res, ctx) {
       '<ul>' +
       '<li><b>Tu IP pública</b> es visible para los peers a los que te conectes (igual que en BitTorrent o eD2K). Los peers que descarguen tu emisión saben tu IP.</li>' +
       '<li>Si emites, tu <b>IP + puertos TCP/UDP</b> se publican en la red Kad (DHT pública). Cualquiera buscando "eselive" puede encontrarte.</li>' +
-      '<li>Si activas el túnel HTTPS opcional, <b>Cloudflare ve los metadatos</b> de la conexión (IP, hostnames, volumen de tráfico).</li>' +
+      '<li>Si usas un overlay externo (Tailscale, Tor, etc.) para acceso público, ese proveedor verá metadatos según su política.</li>' +
       '<li>El watchdog de auto-fetch de <code>nodes.dat</code> contacta con <code>nodes-dat.com</code> y <code>api.ipify.org</code> (este último solo si tu Kad no detecta tu IP).</li>' +
       '<li>El check de auto-update contacta con <code>api.github.com</code>.</li>' +
       '</ul>' +
@@ -403,7 +403,7 @@ function handleRoute(url, req, res, ctx) {
       '<ul style="margin:0">' +
       '<li>Cualquier red P2P expone tu IP. Si te preocupa, considera usar VPN.</li>' +
       '<li>El contenido que emitas/distribuyas es responsabilidad tuya. No verificamos legalidad.</li>' +
-      '<li>El túnel Cloudflare opcional viola su AUP si lo usas para distribuir P2P file-sharing — solo úsalo para tu propio contenido legal.</li>' +
+      '<li>Si usas Tailscale o Tor como overlay, su uso queda sujeto a las TOS de cada proveedor.</li>' +
       '<li>Las claves de stream son públicas en Kad; no son secretas. No emitas contenido confidencial sin cifrado adicional.</li>' +
       '</ul></div>' +
       '<h2>Cómo borrar todo</h2>' +
@@ -537,25 +537,19 @@ function handleRoute(url, req, res, ctx) {
   // warning. Cloudflare's AUP prohibits tunnels for P2P file sharing — using
   // this for sustained content distribution risks URL/IP/account ban.
   // ALWAYS for personal use / testing / legal content only.
-  if (p === '/api/live/tunnel/start') {
-    if (url.searchParams.get('ack_tos') !== 'true') {
-      jsonResponse(res, 400, {
-        success: false,
-        error: 'tos_acknowledgement_required',
-        message: 'Cloudflare Tunnel violates Cloudflare AUP if used for P2P content distribution. Pass ack_tos=true after reading the warning.'
-      });
-      return true;
-    }
-    const r = cfTunnel.start({ port: 8080 });
-    jsonResponse(res, r.success ? 200 : 400, r);
-    return true;
-  }
-  if (p === '/api/live/tunnel/stop') {
-    jsonResponse(res, 200, cfTunnel.stop());
+  // v7.4.0 — Cloudflare Quick Tunnel removed (TOS risk + "100% gratis sin
+  // dominios" project invariant). Endpoints return 410 Gone so existing
+  // front-ends fail gracefully instead of getting 404 + silent breakage.
+  if (p === '/api/live/tunnel/start' || p === '/api/live/tunnel/stop') {
+    jsonResponse(res, 410, {
+      success: false,
+      error: 'cloudflare_removed',
+      message: 'Cloudflare Quick Tunnel was removed in v7.4.0. For cross-NAT broadcasts use UPnP, Tailscale, or a Tor onion service set up manually.'
+    });
     return true;
   }
   if (p === '/api/live/tunnel/status') {
-    jsonResponse(res, 200, cfTunnel.getStatus());
+    jsonResponse(res, 200, { status: 'removed', url: null, error: null, startedAt: null });
     return true;
   }
 

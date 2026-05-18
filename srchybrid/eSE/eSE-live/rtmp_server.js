@@ -7,12 +7,17 @@
 'use strict';
 
 const { spawn, execSync } = require('child_process');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 
 let rtmpProcess = null;
 let rtmpStatus = 'idle'; // idle | waiting | receiving | error
 let rtmpPort = 1935;
+// v7.5.0 — per-session ingest key. Generated on each start(), embedded in
+// the URL ffmpeg listens on. Any other local process that does NOT know the
+// key cannot push a stream into our pipeline (#10: RTMP hijack defense).
+let rtmpIngestKey = null;
 
 /**
  * Start RTMP ingest server (ffmpeg listening for OBS).
@@ -36,8 +41,14 @@ function start(opts) {
 
   const port = opts.port || 1935;
   rtmpPort = port;
-  // BUG-061 FIX: bind to localhost only to prevent network exposure
-  const rtmpUrl = `rtmp://127.0.0.1:${port}/live/stream`;
+  // v7.5.0 — generate a fresh ingest key per session. 16 hex chars from a
+  // CSPRNG. Local malware that wanted to push fake video into our pipeline
+  // would have to guess this key (2^64 space) before our session ends, which
+  // is infeasible. The key is returned in result.rtmpUrl so the user can
+  // paste the full URL (including key) into OBS.
+  rtmpIngestKey = crypto.randomBytes(8).toString('hex');
+  // BUG-061 FIX: bind to localhost only to prevent network exposure.
+  const rtmpUrl = `rtmp://127.0.0.1:${port}/live/${rtmpIngestKey}`;
   const playlistPath = path.join(opts.outputDir, 'stream.m3u8');
   const segmentPattern = path.join(opts.outputDir, 'seg_%05d.ts');
 
@@ -125,7 +136,12 @@ function start(opts) {
 
   return {
     success: true,
-    rtmpUrl: `rtmp://localhost:${port}/live/stream`
+    // v7.5.0 — include the per-session key so OBS can connect. OBS UI accepts
+    // a "Server" (rtmp://localhost:1935/live) + "Stream Key" (<key>) pair, OR
+    // the full URL pasted into the Custom field.
+    rtmpUrl: `rtmp://localhost:${port}/live/${rtmpIngestKey}`,
+    rtmpServer: `rtmp://localhost:${port}/live`,
+    rtmpStreamKey: rtmpIngestKey
   };
 }
 
@@ -133,6 +149,8 @@ function start(opts) {
  * Stop RTMP server.
  */
 function stop() {
+  // v7.5.0 — clear the ingest key on stop so a stale key can't be reused.
+  rtmpIngestKey = null;
   if (!rtmpProcess) {
     rtmpStatus = 'idle';
     return { success: true };
@@ -173,7 +191,11 @@ function getStatus() {
   return {
     status: rtmpStatus,
     port: rtmpPort,
-    rtmpUrl: `rtmp://localhost:${rtmpPort}/live/stream`
+    // v7.5.0 — only expose the URL while the server is running. Idle = null
+    // so a stopped key doesn't leak via status polling.
+    rtmpUrl: rtmpIngestKey ? `rtmp://localhost:${rtmpPort}/live/${rtmpIngestKey}` : null,
+    rtmpServer: rtmpIngestKey ? `rtmp://localhost:${rtmpPort}/live` : null,
+    rtmpStreamKey: rtmpIngestKey
   };
 }
 

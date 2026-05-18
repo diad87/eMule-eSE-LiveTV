@@ -29,6 +29,11 @@ struct LiveStreamCounters {
     LONG hlsPlaylistRefresh;    // HLS .m3u8 regenerations
     LONG peerDisconnects;       // Peer disconnect events
     LONG lastChunkReceivedAt;   // GetTickCount() of last chunk arrival (via InterlockedExchange)
+    // v7.3.0 — observability for the security/efficiency passes.
+    LONG skippedInitialPushes;  // Initial pushes skipped by (IP,port) cooldown (v7.2.2)
+    LONG subscribesRateLimited; // SUBSCRIBE rejects by per-IP rate limit (v7.3.0)
+    LONG endsRejectedNoAuth;    // OP_LIVE_END rejected because sender wasn't in our mesh
+    LONG tombstonesEvicted;     // Tombstones forcibly evicted to keep map under cap
     // DISC-S11: visibility into Kad discovery health
     LONG kadSearchesEmpty;      // searches that returned 0 hits (timeout / propagation)
     LONG kadSearchesRateLimited;// searches dropped by token bucket (DISC-S08)
@@ -46,6 +51,8 @@ struct LiveStreamCounters {
         , chunksRequested(0), chunksReceived(0), chunksMissing(0)
         , hlsSegmentsWritten(0), hlsPlaylistRefresh(0)
         , peerDisconnects(0), lastChunkReceivedAt(0)
+        , skippedInitialPushes(0), subscribesRateLimited(0)
+        , endsRejectedNoAuth(0), tombstonesEvicted(0)
         , kadSearchesEmpty(0), kadSearchesRateLimited(0)
         , pendingDialsDropped(0)
         , joinToFirstChunkSamples(0), joinToFirstChunkSumMs(0)
@@ -258,6 +265,15 @@ public:
     CLiveKadBridge& GetKadBridge() { return m_kadBridge; }
     CLiveMeshManager& GetMeshManager() { return m_meshManager; }
 
+    // v7.7.0 — pubkey pin accessors. PinStreamPubkey is idempotent: once a
+    // streamKey is pinned to a pubkey, subsequent calls with a different
+    // pubkey for the same streamKey are rejected (returns false). Used by
+    // OP_LIVE_ANNOUNCE handler and Kad search result to record the binding,
+    // and by OP_LIVE_CHUNK_V2 / signed OP_LIVE_END handlers to verify.
+    bool PinStreamPubkey(const uchar streamKey[16], const uchar pubkey[32]);
+    // Returns true and fills outPubkey if a pin exists for streamKey.
+    bool GetPinnedPubkey(const uchar streamKey[16], uchar outPubkey[32]) const;
+
     // Accessors for WebServer and UI
     const uchar* GetStreamKey() const { return m_streamInfo.streamKey; }
     CString GetStreamTitle() const { return m_streamInfo.title; }
@@ -321,6 +337,10 @@ private:
     bool                m_bBroadcasting;
     bool                m_bViewing;
     LiveStreamInfo      m_streamInfo;
+    // v7.6.0 — broadcaster's Ed25519 private key. Generated freshly on every
+    // StartBroadcast(); never serialized to disk; zeroed on StopBroadcast.
+    // The matching public key lives in m_streamInfo.pubkey and IS published.
+    uint8_t             m_broadcasterPrivkey[32];
     CLiveChunkBuffer    m_chunkBuffer;
     uint32              m_nNextSeqNum;      // Next segment sequence number
 
@@ -383,6 +403,32 @@ private:
     // Pruned each Process() tick.
     CMap<CString, LPCTSTR, DWORD, DWORD&> m_streamTombstones;
     DWORD               m_dwLastTombstonePrune;
+
+    // v7.2.2 — Recent initial-PUSH timestamps by (IP, port). Key =
+    // (uint64)ip << 16 | port. Value = GetTickCount() when we last
+    // pushed the 3-chunk initial burst to that endpoint. Used to
+    // skip duplicate pushes on rapid re-SUBSCRIBE (LowID viewers
+    // cycle every 6 s due to CClientList::AttachToAlreadyKnown).
+    // Without this we burn ~4.5 MB on every re-subscribe with chunks
+    // the viewer already has, which saturates their TCP recv buffer
+    // and produces the very stalls the push was supposed to prevent.
+    CMap<uint64, uint64, DWORD, DWORD&> m_recentInitialPushes;
+
+    // v7.3.0 — Per-IP SUBSCRIBE rate limit. Key = IP (uint32). Value =
+    // tick of the SUBSCRIBE_RATE_WINDOW most recent SUBSCRIBE for this
+    // IP, with the count packed in. Tracks the 30 most recent ticks; if
+    // all 30 fall inside the 60 s window, the 31st SUBSCRIBE is rejected
+    // with OP_LIVE_DENY before doing any state change. Headroom accounts
+    // for legitimate LowID viewers cycling through CClientList swaps every
+    // ~6 s (~10/min) plus brief reconnect bursts. Prevents a single IP from
+    // amplifying broadcaster work (per-/24 limit in ListenSocket is too
+    // coarse: 256 IPs share one /24 budget).
+    struct SubRateState {
+        DWORD ticks[30];       // ring buffer of last 30 SUBSCRIBE ticks
+        int   nextSlot;        // 0..29
+        DWORD lastSeen;        // for pruning
+    };
+    CMap<uint32, uint32, SubRateState, SubRateState&> m_subscribeRate;
     // Watchdog: per-viewing-session timestamp of the last chunk or
     // heartbeat we received from ANY peer for the active stream. If
     // (now - this) > 90 s while m_bViewing, declare end + gossip.
@@ -394,6 +440,20 @@ private:
     // entry in the DHT for ~3 min (the new ESE_KAD_ENTRY_TTL).
     uchar               m_pendingGhostKey[16];
     bool                m_bHasPendingGhostKey;
+
+    // v7.7.0 — streamKey → broadcaster pubkey pin. Populated the first time
+    // we see a self-certifying ANNOUNCE / Kad result for a given streamKey
+    // (sha1(pubkey) == streamKey). Future chunks and END packets for that
+    // streamKey are validated against this pubkey. A peer can't switch the
+    // identity of a stream mid-flight: once pinned, the pin stays for the
+    // lifetime of m_streamPubkeyPin (cleared on Clear() / process exit).
+    // Key: hex(streamKey) — CString-friendly for the existing CMap pattern.
+    // Value: 32-byte pubkey (heap-allocated; deleted in destructor / Clear).
+    struct PubkeyPin {
+        uchar pubkey[32];
+        DWORD pinnedAt;       // GetTickCount() — for staleness pruning if ever needed
+    };
+    CMap<CString, LPCTSTR, PubkeyPin, PubkeyPin&> m_streamPubkeyPin;
 
     // V2-S11: result of upload-capacity probe in kbps (0 = leaf-restricted).
     DWORD               m_measuredUploadKbps;

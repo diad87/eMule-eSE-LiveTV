@@ -13,7 +13,8 @@
 #include "kademlia/kademlia/indexed.h"
 #include "WebServer.h"
 #include "clientlist.h"
-#include "ListenSocket.h"   // v0.71 IPv6 Sprint 9 — IsDualStack() for Network info panel
+#include "ListenSocket.h"        // v0.71 IPv6 Sprint 9 — IsDualStack()
+#include "FirewallProberV6.h"    // v0.71 IPv6 Sprint 3 — GetDetectedV6IP()
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -130,15 +131,22 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 	}
 	rCtrl << _T("\r\n");
 
-	// IP pública v4 (siempre que la sepamos)
+	// IP pública v4 (siempre que la sepamos). theApp.GetPublicIP() ya
+	// está en network order — NO aplicar htonl (eD2K hace lo mismo en
+	// la línea de servidor).
 	if (theApp.GetPublicIP() != 0) {
-		rCtrl << _T("IP pública v4:\t") << ipstr(htonl(theApp.GetPublicIP())) << _T("\r\n");
+		rCtrl << _T("IP pública v4:\t") << ipstr(theApp.GetPublicIP()) << _T("\r\n");
 	}
-	// IP pública v6: aún no detectada por el cliente (Sprint 3 dejó stub).
-	// Cuando FirewallProberV6 aterrice el público v6, esta línea la
-	// rellena con el valor real.
+	// IP pública v6 — la detecta CFirewallProberV6::TryHighID() vía HTTPS
+	// GET a https://api6.ipify.org (5 s timeout). Cached hasta restart.
 	rCtrl << _T("IP pública v6:\t");
-	rCtrl << _T("(pendiente Sprint 3 v6 prober)");
+	{
+		CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+		if (v6.IsNull())
+			rCtrl << _T("(sin IPv6 público — ISP no provee o probe aún corriendo)");
+		else
+			rCtrl << v6.ToStringC();
+	}
 	rCtrl << _T("\r\n");
 
 	rCtrl << _T("\r\n");

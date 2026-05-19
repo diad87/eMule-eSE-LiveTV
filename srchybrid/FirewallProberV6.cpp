@@ -5,6 +5,10 @@
 #include "LiveDebugLog.h"
 #include "Preferences.h"
 
+// v0.71 IPv6 Sprint 3 follow-up — public v6 detection via WinHTTP.
+#include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
+
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #undef THIS_FILE
@@ -88,33 +92,91 @@ const TCHAR* CFirewallProberV6::GetLayerLabel() const
 // has the OS-can-make-a-v6-socket check in TryHighID; the rest are wired
 // up in later sprints.
 
+// v0.71 IPv6 Sprint 3 follow-up — GET https://api6.ipify.org over WinHTTP
+// to detect our public v6 address. api6.ipify.org accepts only v6 traffic
+// so a successful response proves we have v6 connectivity to the public
+// Internet. Returns IP string (e.g. "2001:db8::1") on success, empty on
+// failure / timeout. Synchronous with 5 s budget — runs once at startup.
+static CStringA HttpGetPublicV6(DWORD timeoutMs = 5000)
+{
+    CStringA result;
+    HINTERNET hSession = WinHttpOpen(L"eMule eSE Live IPv6 prober",
+        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession) return result;
+    WinHttpSetTimeouts(hSession, (int)timeoutMs, (int)timeoutMs, (int)timeoutMs, (int)timeoutMs);
+
+    HINTERNET hConnect = WinHttpConnect(hSession, L"api6.ipify.org",
+        INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (!hConnect) { WinHttpCloseHandle(hSession); return result; }
+
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", L"/",
+        NULL, WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    if (!hRequest) {
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return result;
+    }
+
+    BOOL ok = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+        WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+    if (ok) ok = WinHttpReceiveResponse(hRequest, NULL);
+    if (ok) {
+        char buf[128] = {0};
+        DWORD bytesRead = 0;
+        if (WinHttpReadData(hRequest, buf, (DWORD)sizeof(buf) - 1, &bytesRead) && bytesRead > 0) {
+            buf[bytesRead] = 0;
+            // Trim whitespace.
+            char* start = buf;
+            while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') ++start;
+            char* end = start + strlen(start);
+            while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) --end;
+            *end = 0;
+            // Only accept if contains ':' (looks like v6). api6 should never
+            // return v4 but defensive: if no ':' the endpoint must have
+            // misbehaved.
+            if (strchr(start, ':') != NULL)
+                result = start;
+        }
+    }
+    WinHttpCloseHandle(hRequest);
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+    return result;
+}
+
 bool CFirewallProberV6::TryHighID()
 {
-    // Sprint 3 minimal test: can we open AF_INET6 socket at all? Without
-    // a peer to connect back this is NOT a real HighID check — Sprint 6
-    // adds the connect-back exchange via OP_PUBLICIP_ANSWER_V6.
+    // Two checks:
+    //   1. Can we open an AF_INET6 socket at all? (OS / no v6 stack guard)
+    //   2. Can we GET a v6-only HTTPS endpoint? If yes, we have v6
+    //      egress AND a public v6 address. Store it for the UI panel.
+    //
+    // Note: HighID in eD2K parlance means "peers can connect back to us
+    // unsolicited". A successful HTTPS GET proves egress only, NOT inbound
+    // reachability. So we conservatively still return false here — but we
+    // DO populate m_detectedIP so the UI shows the user's actual v6
+    // address. A real HighID confirmation (peer-initiated connect-back)
+    // is Sprint 6 work via OP_PUBLICIP_ANSWER_V6.
     SOCKET s = ::socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) {
         LIVE_LOG("NETV6", "TryHighID: AF_INET6 socket() failed err=%d", WSAGetLastError());
         return false;
     }
-    sockaddr_in6 sa = {};
-    sa.sin6_family = AF_INET6;
-    sa.sin6_port   = htons(thePrefs.GetPort());
-    // bind to [::] (all interfaces). Note: with IPV6_V6ONLY=0 the same socket
-    // accepts v4-mapped too, but we don't enable V6ONLY=0 here because Sprint 3
-    // doesn't commit to dual-stack — that's Sprint 6 / S6.6.
-    int rc = ::bind(s, (sockaddr*)&sa, sizeof sa);
-    int err = (rc == SOCKET_ERROR) ? WSAGetLastError() : 0;
     ::closesocket(s);
-    if (rc == SOCKET_ERROR) {
-        LIVE_LOG("NETV6", "TryHighID: bind [::]:%u failed err=%d", (unsigned)thePrefs.GetPort(), err);
-        return false;
+
+    const CStringA v6 = HttpGetPublicV6();
+    if (!v6.IsEmpty()) {
+        LIVE_LOG("NETV6", "TryHighID: detected public v6 = %hs (egress OK, inbound unconfirmed)",
+            (LPCSTR)v6);
+        // Store in m_detectedIP via the CAddress string constructor.
+        m_detectedIP.FromString(std::string((LPCSTR)v6), false);
+    } else {
+        LIVE_LOG("NETV6", "TryHighID: no public v6 detected (api6.ipify.org timeout or no v6 path)");
     }
-    LIVE_LOG("NETV6", "TryHighID: AF_INET6 socket OK (no peer test yet — Sprint 6)");
-    // Returning false until Sprint 6 lands the peer-side connect-back: a
-    // successful bind is necessary but not sufficient. Without a peer
-    // confirming inbound reachability, we DO NOT claim HighID.
+    // Still return false until Sprint 6 lands peer-side connect-back proof.
+    // The detected IP populates the UI regardless of the cascade verdict.
     return false;
 }
 

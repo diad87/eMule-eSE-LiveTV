@@ -2390,13 +2390,19 @@ bool CListenSocket::StartListening()
 	// to that socket leading to the situation that 2 applications are listening on the same
 	// port!
 
-	// v0.71 IPv6 Sprint 3 — when the flag is on, prefer a dual-stack AF_INET6
-	// socket with IPV6_V6ONLY=0 so the same listener accepts both v4 and v6
-	// inbound. Falls back to AF_INET on any creation failure (older Windows,
-	// firewall driver weirdness, etc) so the baseline IPv4 path is always a
-	// safety net.
+	// v0.71 IPv6 Sprint 3 + Sprint 9 hotfix — dual-stack AF_INET6 listener is
+	// now OPT-IN (only IPv6PreferredMode). Real-world testing on Windows
+	// 10/11 + consumer routers shows that even with IPV6_V6ONLY=0 and the
+	// SOCKADDR_STORAGE OnAccept normalization, the eD2K server TCP callback
+	// test and Kad firewall test fail intermittently — the kernel surfaces
+	// v4 traffic via WSAAccept paths the legacy code wasn't expecting, and
+	// some NAT/conntrack helpers don't see the SYN-ACK in time. Auto mode
+	// therefore stays on the rock-solid AF_INET path; users who explicitly
+	// pick "IPv6 preferido" in Preferences→Conexión opt into the dual-stack
+	// experiment. The v6 prober (FirewallProberV6) still runs in Auto so
+	// the panel shows the detected public v6 address either way.
 	bool bUsingV6 = false;
-	if (thePrefs.IsIPv6Enabled()) {
+	if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
 		// Bind address NULL means "[::]" — listen on all v6 interfaces. We
 		// don't pass thePrefs.GetBindAddr() because it's the v4 bind addr
 		// (TCHAR* dotted-quad) and would fail an AF_INET6 parse. If the user
@@ -2410,7 +2416,7 @@ bool CListenSocket::StartListening()
 			DWORD v6only = 0;
 			VERIFY( SetSockOpt(IPV6_V6ONLY, &v6only, sizeof v6only, IPPROTO_IPV6) );
 			bUsingV6 = true;
-			AddDebugLogLine(false, _T("ListenSocket: dual-stack v6 bound on [%s]:%u (IPV6_V6ONLY=0)"),
+			AddDebugLogLine(false, _T("ListenSocket: dual-stack v6 bound on [%s]:%u (IPV6_V6ONLY=0, opt-in IPv6PreferredMode)"),
 				v6Bind, (unsigned)thePrefs.GetPort());
 		} else {
 			AddDebugLogLine(false, _T("ListenSocket: AF_INET6 Create failed err=%u, falling back to v4-only"),

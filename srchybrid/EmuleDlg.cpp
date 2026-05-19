@@ -1202,17 +1202,23 @@ void CemuleDlg::ShowConnectionState()
 	ShowConnectionStateIcon();
 	statusbar->SetText(GetConnectionStateString(), SBarConnected, 0);
 
-	// v0.71 IPv6 Sprint 9 — status bar pane that says IPv6 / IPv4.
-	// Reads the actual listener state (not just the pref), so if v6
-	// was requested but the OS rejected it the user sees "IPv4" and
-	// understands the fallback happened.
+	// v0.71 IPv6 Sprint 9 + hotfix — status bar pane.
+	// Auto mode now keeps the TCP listener on AF_INET (HighID stable),
+	// so the pane reads "IPv4 (+v6 prober)" if the v6 prober detected
+	// a public v6 address (egress only). Dual-stack only shows when
+	// the user explicitly opts into IPv6 preferido and AF_INET6 Create
+	// succeeded.
 	LPCTSTR ipver;
-	if (theApp.listensocket && theApp.listensocket->IsDualStack())
+	if (theApp.listensocket && theApp.listensocket->IsDualStack()) {
 		ipver = _T("IPv6 + v4");
-	else if (thePrefs.IsIPv6Enabled())
-		ipver = _T("IPv4 (v6 fb)");   // v6 requested but Create failed
-	else
+	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
+		ipver = _T("IPv4 (v6 fb)");   // dual-stack pedido pero Create falló
+	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6AutoMode
+	           && !CFirewallProberV6::Instance().GetDetectedV6IP().IsNull()) {
+		ipver = _T("IPv4 +v6 out");   // egress v6 confirmado por prober
+	} else {
 		ipver = _T("IPv4");
+	}
 	statusbar->SetText(ipver, SBarIPVersion, 0);
 
 	TBBUTTONINFO tbbi;

@@ -13,6 +13,7 @@
 #include "kademlia/kademlia/indexed.h"
 #include "WebServer.h"
 #include "clientlist.h"
+#include "ListenSocket.h"   // v0.71 IPv6 Sprint 9 — IsDualStack() for Network info panel
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -100,6 +101,47 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 		rCtrl << _T("UDP ") << GetResString(IDS_PORT) << _T(":\t") << thePrefs.GetUDPPort() << _T("\r\n");
 		rCtrl << _T("\r\n");
 	}
+
+	///////////////////////////////////////////////////////////////////////////
+	// v0.71 IPv6 Sprint 9 — Connectivity (IPv4 / IPv6)
+	///////////////////////////////////////////////////////////////////////////
+	rCtrl.SetSelectionCharFormat(rcfBold);
+	rCtrl << _T("Conectividad\r\n");
+	rCtrl.SetSelectionCharFormat(rcfDef);
+
+	// Modo (pref del usuario)
+	rCtrl << _T("Modo:\t");
+	switch (thePrefs.GetIPv6Mode()) {
+		case CPreferences::IPv6OffMode:       rCtrl << _T("IPv4 (IPv6 desactivado)"); break;
+		case CPreferences::IPv6AutoMode:      rCtrl << _T("Auto (IPv6 si disponible)"); break;
+		case CPreferences::IPv6PreferredMode: rCtrl << _T("IPv6 preferido"); break;
+		default:                              rCtrl << _T("?"); break;
+	}
+	rCtrl << _T("\r\n");
+
+	// Estado real del listener (independiente de la pref)
+	rCtrl << _T("Listener:\t");
+	if (theApp.listensocket && theApp.listensocket->IsDualStack()) {
+		rCtrl << _T("Dual-stack ([::]:") << thePrefs.GetPort() << _T(", IPV6_V6ONLY=0)");
+	} else if (thePrefs.IsIPv6Enabled()) {
+		rCtrl << _T("IPv4 solo (IPv6 pedido pero AF_INET6 falló — ver log)");
+	} else {
+		rCtrl << _T("IPv4 solo (0.0.0.0:") << thePrefs.GetPort() << _T(")");
+	}
+	rCtrl << _T("\r\n");
+
+	// IP pública v4 (siempre que la sepamos)
+	if (theApp.GetPublicIP() != 0) {
+		rCtrl << _T("IP pública v4:\t") << ipstr(htonl(theApp.GetPublicIP())) << _T("\r\n");
+	}
+	// IP pública v6: aún no detectada por el cliente (Sprint 3 dejó stub).
+	// Cuando FirewallProberV6 aterrice el público v6, esta línea la
+	// rellena con el valor real.
+	rCtrl << _T("IP pública v6:\t");
+	rCtrl << _T("(pendiente Sprint 3 v6 prober)");
+	rCtrl << _T("\r\n");
+
+	rCtrl << _T("\r\n");
 
 	///////////////////////////////////////////////////////////////////////////
 	// ED2K

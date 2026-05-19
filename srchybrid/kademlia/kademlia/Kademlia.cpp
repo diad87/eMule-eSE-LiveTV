@@ -57,6 +57,8 @@ their client on the eMule forum.
 #include "kademlia/kademlia/KadV2TunnelPool.h"
 #include "../../LiveTunnel.h"
 #include "../../LiveBootstrap.h"
+// v0.71 P3.10 — ServerWnd::UpdateMyInfo periodic refresh
+#include "../../ServerWnd.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -237,6 +239,23 @@ void CKademlia::Process()
 		// etc) which can leave the count stale for minutes.
 		if (theApp.emuledlg)
 			theApp.emuledlg->UpdatePrivacyStatusPane();
+
+		// v0.71 P3.10 — refresh the embedded "Mi información" rich-edit
+		// in ServerWnd every 2 seconds. UpdateMyInfo() is a full text
+		// rebuild (~50 lines), so we throttle to 2s to avoid CPU.
+		// Same staleness fix as the status bar pane: before this, the
+		// embedded panel only refreshed on connection-state events.
+		static DWORD s_lastMyInfoRefresh = 0;
+		DWORD nowTick = GetTickCount();
+		if (nowTick - s_lastMyInfoRefresh >= 2000
+		    && theApp.emuledlg
+		    && theApp.emuledlg->serverwnd)
+		{
+			s_lastMyInfoRefresh = nowTick;
+			try {
+				theApp.emuledlg->serverwnd->UpdateMyInfo();
+			} catch (...) {}
+		}
 	}
 
 	uint32 uMaxUsers = 0;

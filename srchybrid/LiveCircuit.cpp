@@ -22,6 +22,11 @@ void CLiveCircuit::WipeKeys()
         SecureWipe(h.k_send, sizeof h.k_send);
         SecureWipe(h.k_recv, sizeof h.k_recv);
     }
+    // v0.71 P3.3 — also wipe the handshake ephemeral if still present.
+    if (m_have_ephemeral) {
+        SecureWipe(m_ephemeral_priv, sizeof m_ephemeral_priv);
+        m_have_ephemeral = false;
+    }
 }
 
 bool CLiveCircuit::AddHop(const CircuitHop& hop)

@@ -64,6 +64,23 @@ public:
     void Tick();
 
     size_t ActiveCircuitCount() const;
+    size_t RelayCircuitCount() const;        // v0.71 P3.3 — circuits we relay (intermediate)
+    size_t TotalCircuitCount() const;        // v0.71 P3.3 — for UI / metrics
+
+    // v0.71 P3.6 — self-loop test: build a single-hop circuit to a peer
+    // identified by clientHint. If clientHint == NULL, picks the first
+    // connected CUpDownClient with a working socket (works for solo
+    // testing against any eD2K peer; the peer will see an unknown
+    // OP_LIVE_TUNNEL_CELL opcode and drop, so the originator circuit
+    // stays Pending — but the SEND path is exercised end-to-end). If
+    // clientHint points to a peer running this fork the handshake
+    // completes and the circuit reaches Active. Returns the circuit_id
+    // assigned, or 0 on failure.
+    uint32_t BuildTestCircuit(CUpDownClient* clientHint);
+
+    // v0.71 P3.3 — total counts of cells sent / received for metrics.
+    uint64_t CellsSentTotal() const { return m_cellsSentTotal; }
+    uint64_t CellsRecvTotal() const { return m_cellsRecvTotal; }
 
 private:
     CLiveTunnel();
@@ -72,10 +89,28 @@ private:
 
     static uint32_t NewCircuitId();
 
+    // v0.71 P3.3 — send a packed cell (CELL_TOTAL_BYTES) to a peer over
+    // its existing CClientReqSocket, wrapped as OP_LIVE_TUNNEL_CELL.
+    // Returns true if the packet was queued for send. Increments stats.
+    bool SendCellToPeer(CUpDownClient* peer, const uint8_t cell[CELL_TOTAL_BYTES]);
+
+    // Originator-side CREATED handler: complete handshake on hop 1.
+    bool HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
+                                  const uint8_t* payload, uint16_t payloadLen);
+
+    // Relay-side CREATE handler: generate ephemeral, derive keys, reply
+    // with CREATED, register as relay circuit so future RELAY cells are
+    // peeled correctly.
+    bool HandleCreate_Relay(uint32_t circId,
+                            const uint8_t* payload, uint16_t payloadLen,
+                            CUpDownClient* fromPeer);
+
     mutable CCriticalSection m_lock;
     std::vector<std::shared_ptr<CLiveCircuit>> m_circuits;
     size_t m_rrNextIdx;
     DWORD m_lastTickMs;
+    uint64_t m_cellsSentTotal = 0;
+    uint64_t m_cellsRecvTotal = 0;
 };
 
 }  // namespace eSELive

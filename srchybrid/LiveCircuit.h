@@ -10,6 +10,8 @@
 #include <vector>
 #include "LiveCellQueue.h"
 
+class CUpDownClient;   // v0.71 P3.3 — for first hop client pointer
+
 namespace eSELive {
 
 enum class CircuitState : uint8_t {
@@ -18,6 +20,15 @@ enum class CircuitState : uint8_t {
     Built      = 2,   // all hops established
     Active     = 3,   // in use
     Destroyed  = 4    // being torn down
+};
+
+// v0.71 P3.3 — circuit role. The same node can be:
+//   Originator: it built the circuit (knows full path)
+//   Relay:      it's an intermediate hop (knows only neighbours)
+// The state machine differs per role; same struct serves both via this flag.
+enum class CircuitRole : uint8_t {
+    Originator = 0,
+    Relay      = 1
 };
 
 struct CircuitHop {
@@ -63,6 +74,26 @@ public:
 
     // Pool for outgoing cells (sender→hop1)
     CCellQueue m_sendQ;
+
+    // === v0.71 P3.3 — handshake & routing state =========================
+    // Role (originator vs relay). Originators know the full path; relays
+    // only know their neighbours.
+    CircuitRole m_role = CircuitRole::Originator;
+
+    // First-hop CUpDownClient* (originator side): where we send cells.
+    // Owned by ClientList; we hold a raw pointer and rely on
+    // CClientList notifications to clear circuits when a peer is destroyed.
+    CUpDownClient* m_firstHopClient = NULL;
+
+    // Relay side: pointer to the peer we received CREATE from. We send
+    // CREATED back through it and forward any RELAY cells from the
+    // forward direction back here.
+    CUpDownClient* m_prevHopClient = NULL;
+
+    // Ephemeral X25519 private key used during the CREATE/CREATED
+    // handshake. Wiped after the shared secret is derived.
+    uint8_t  m_ephemeral_priv[32] = {0};
+    bool     m_have_ephemeral = false;
 
     // Wipe all session key material. Called from destructor.
     void WipeKeys();

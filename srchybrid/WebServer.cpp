@@ -5030,6 +5030,41 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
+	// --- /api/live/privacy/test_circuit --- v0.71 P3.6 — solo testing helper.
+	// Builds a single-hop test circuit through any currently connected peer
+	// (or a specific peer if &peerip= is supplied). The originator code
+	// path runs end-to-end (X25519 keygen → CELL_CREATE → TCP send). If
+	// the chosen peer runs this fork, the handshake completes and the
+	// circuit reaches Active; if not, the circuit stays Pending until
+	// the ~6 s timeout reaps it. Either way the user gets visible proof
+	// the SEND path is wired (Privacidad panel shows circuit count +1
+	// briefly even on failure).
+	if (sURL == "/api/live/privacy/test_circuit") {
+		uint32_t circId = 0;
+		CStringA result;
+		try {
+			circId = eSELive::CLiveTunnel::Get().BuildTestCircuit(NULL);
+		} catch (...) {}
+		if (circId == 0) {
+			result = "{\"ok\":false,\"reason\":\"no connected peers — open eD2K/Kad first\"}";
+		} else {
+			CStringA tmp;
+			tmp.Format("{\"ok\":true,\"circuit_id\":\"0x%08x\",\"note\":\"watch Privacidad panel — circuit appears as Pending; if peer runs eSE fork it advances to Active\"}",
+				(unsigned)circId);
+			result = tmp;
+		}
+		CStringA header;
+		header.Format(
+			"HTTP/1.1 200 OK\r\n"
+			HTTPInit
+			"Content-Type: application/json\r\n"
+			"Content-Length: %d\r\n\r\n",
+			result.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(result, result.GetLength());
+		return;
+	}
+
 	// --- /api/live/privacy --- F5: expose Kad v2 mode + fallback policy + sensitive keywords.
 	// GET: returns current state. PATCH (via query params): updates state.
 	if (sURL.Left(17) == "/api/live/privacy") {

@@ -186,6 +186,24 @@ void CClientList::DeleteAll()
 		delete list.RemoveHead(); // recursive: this will call RemoveClient
 }
 
+// v0.71 P3.6 — snapshot of connected clients for the privacy test
+// endpoint. Filters to peers with a live socket; caps at `max` entries.
+// Pointers are raw — caller must not retain them across event-loop turns
+// (the ClientList may free them on disconnect).
+void CClientList::GetConnectedSnapshot(std::vector<CUpDownClient*>& out, size_t max) const
+{
+	out.clear();
+	if (max == 0) return;
+	for (POSITION pos = list.GetHeadPosition(); pos != NULL; ) {
+		CUpDownClient* c = list.GetNext(pos);
+		if (!c) continue;
+		if (!c->socket) continue;
+		if (!c->socket->IsConnected()) continue;
+		out.push_back(c);
+		if (out.size() >= max) break;
+	}
+}
+
 bool CClientList::AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket *sender)
 {
 	CUpDownClient *tocheck = *client;

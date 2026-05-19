@@ -241,15 +241,72 @@ setInterval(function emuleWebServerWatchdog() {
 
 // ─── PASSWORD (unique per-installation, zero-config) ──────────
 //
-// Priority order:
-//   1. ESE_EMULE_PASSWORD env var — set by emule.exe when the user clicks the
-//      eSE toolbar button. emule.exe also calls SetWSPass with the same value
-//      in-memory, so login is guaranteed to work without restart.
-//   2. settings.json `emulePassword` — persisted from a previous run.
-//   3. Fresh random password — for standalone launches when neither of the
+// Priority order (v8.0.4):
+//   1. eSE_pass.bin on disk — the authoritative source written by
+//      eSEHelpers::EnsureSharedPassword on the C++ side. We stat the file on
+//      every call and re-read if the mtime changed. This way, if the user
+//      reinstalls / migrates / changes the file manually, the next eMule
+//      request picks up the new password without a server restart.
+//   2. ESE_EMULE_PASSWORD env var — set by emule.exe at spawn. Useful when
+//      eSE_pass.bin can't be located (non-standard eMule install path).
+//   3. settings.json `emulePassword` — persisted from a previous run.
+//   4. Fresh random password — for standalone launches when none of the
 //      above is available (user double-clicked ese-server.exe directly).
 
+// Candidate paths for eSE_pass.bin. The C++ side writes to <configDir>\eSE_pass.bin
+// where configDir is thePrefs.GetMuleDirectory(EMULE_CONFIGDIR) — usually
+// %APPDATA%\eMule\config but it can be %LOCALAPPDATA% or the install dir on
+// older / portable setups. We check the most-likely paths in order.
+function _candidatePassFiles() {
+  const candidates = [];
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  if (process.env.APPDATA)      candidates.push(path.join(process.env.APPDATA,      'eMule', 'config', 'eSE_pass.bin'));
+  if (process.env.LOCALAPPDATA) candidates.push(path.join(process.env.LOCALAPPDATA, 'eMule', 'config', 'eSE_pass.bin'));
+  if (home) candidates.push(path.join(home, 'AppData', 'Roaming', 'eMule', 'config', 'eSE_pass.bin'));
+  if (home) candidates.push(path.join(home, 'AppData', 'Local',   'eMule', 'config', 'eSE_pass.bin'));
+  // Override file alongside ese-server.exe for users with custom install layouts.
+  candidates.push(path.join(__dirname, '..', 'config', 'eSE_pass.bin'));
+  return candidates;
+}
+
+// Cache: { path, mtimeMs, value }. Re-read when stat.mtimeMs differs.
+let _passCache = { path: null, mtimeMs: 0, value: null };
+
+function _readPassFromDisk() {
+  for (const p of _candidatePassFiles()) {
+    let st;
+    try { st = fs.statSync(p); } catch (e) { continue; }
+    if (!st || !st.isFile()) continue;
+    // Fast path: same file + same mtime as cached.
+    if (_passCache.path === p && _passCache.mtimeMs === st.mtimeMs && _passCache.value) {
+      return _passCache.value;
+    }
+    let raw;
+    try { raw = fs.readFileSync(p, 'utf8'); } catch (e) { continue; }
+    const pw = String(raw).trim();
+    // Same validation the C++ side enforces: 8-64 printable ASCII chars.
+    if (pw.length < 8 || pw.length > 64) continue;
+    if (!/^[\x20-\x7E]+$/.test(pw)) continue;
+    _passCache = { path: p, mtimeMs: st.mtimeMs, value: pw };
+    return pw;
+  }
+  return null;
+}
+
 function getOrCreatePassword() {
+  // 1. eSE_pass.bin — authoritative, picks up live edits via mtime check.
+  const fromDisk = _readPassFromDisk();
+  if (fromDisk) {
+    // Keep settings.json in sync so legacy code paths that read it still work.
+    const s = _loadSettings();
+    if (s.emulePassword !== fromDisk) {
+      s.emulePassword = fromDisk;
+      _saveSettings(s);
+    }
+    return fromDisk;
+  }
+
+  // 2. ENV var injected by emule.exe at spawn time.
   const envPw = process.env.ESE_EMULE_PASSWORD;
   if (envPw) {
     const s = _loadSettings();
@@ -259,8 +316,12 @@ function getOrCreatePassword() {
     }
     return envPw;
   }
+
+  // 3. settings.json from a previous run.
   const s = _loadSettings();
   if (s.emulePassword) return s.emulePassword;
+
+  // 4. Fresh random — standalone mode.
   const pw = crypto.randomBytes(16).toString('hex');
   s.emulePassword = pw;
   _saveSettings(s);

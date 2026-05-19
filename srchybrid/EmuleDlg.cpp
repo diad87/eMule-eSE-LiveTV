@@ -1261,6 +1261,54 @@ CString CemuleDlg::GetConnectionStateString()
 	return state;
 }
 
+// v0.71 P3.8 — lightweight pane refresh, callable at 1 Hz from
+// CKademlia::Process. Touches ONLY the SBarPrivacy pane — does NOT
+// recompute eD2K connection state, toolbar buttons, menu items, etc.
+// (Those still go via ShowConnectionState as before.)
+void CemuleDlg::UpdatePrivacyStatusPane()
+{
+	if (theApp.IsClosing()) return;
+	if (!statusbar) return;
+	using namespace Kademlia;
+	CKadV2Mode m = CKadV2ModeSelector::Get().GetDefaultMode();
+	size_t cActive = 0, cPending = 0;
+	try {
+		cActive  = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
+		cPending = eSELive::CLiveTunnel::Get().PendingCircuitCount();
+	} catch (...) {}
+	CString privText;
+	// Compact format: "P:Adaptive 1A 1P" when there's activity; just
+	// "P:Adaptive" if quiescent (saves visual noise).
+	auto countSuffix = [&](LPCTSTR label) -> CString {
+		CString out;
+		if (cActive == 0 && cPending == 0) {
+			out = label;
+		} else if (cPending == 0) {
+			out.Format(_T("%s %uA"), label, (unsigned)cActive);
+		} else if (cActive == 0) {
+			out.Format(_T("%s %uP"), label, (unsigned)cPending);
+		} else {
+			out.Format(_T("%s %uA %uP"), label, (unsigned)cActive, (unsigned)cPending);
+		}
+		return out;
+	};
+	switch (m) {
+	case CKadV2Mode::Direct:
+		privText = (g_uEseCapsRuntime != 0) ? _T("P:Direct") : _T("P:Off");
+		break;
+	case CKadV2Mode::Tunneled:
+		privText = countSuffix(_T("P:Tunneled"));
+		break;
+	case CKadV2Mode::Adaptive:
+		privText = countSuffix(_T("P:Adaptive"));
+		break;
+	default:
+		privText = _T("P:?");
+		break;
+	}
+	statusbar->SetText(privText, SBarPrivacy, 0);
+}
+
 void CemuleDlg::ShowConnectionState()
 {
 	if (theApp.IsClosing())
@@ -1292,51 +1340,10 @@ void CemuleDlg::ShowConnectionState()
 	}
 	statusbar->SetText(ipver, SBarIPVersion, 0);
 
-	// v0.71 P2.2 + P3.8 — Privacy status pane. Shows mode + circuit
-	// counts (active / pending). Pending circuits matter: a test_circuit
-	// against a legacy peer creates a Pending that never reaches Active,
-	// so without exposing pending the user sees 0 in the whole 6s
-	// window and falsely concludes the pipeline is broken.
-	{
-		using namespace Kademlia;
-		CKadV2Mode m = CKadV2ModeSelector::Get().GetDefaultMode();
-		size_t cActive = 0, cPending = 0;
-		try {
-			cActive  = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
-			cPending = eSELive::CLiveTunnel::Get().PendingCircuitCount();
-		} catch (...) {}
-		CString privText;
-		// Compact format: "P:Adaptive 1A 1P" when there's activity; just
-		// "P:Adaptive" if quiescent (saves visual noise).
-		auto countSuffix = [&](LPCTSTR label) -> CString {
-			CString out;
-			if (cActive == 0 && cPending == 0) {
-				out = label;
-			} else if (cPending == 0) {
-				out.Format(_T("%s %uA"), label, (unsigned)cActive);
-			} else if (cActive == 0) {
-				out.Format(_T("%s %uP"), label, (unsigned)cPending);
-			} else {
-				out.Format(_T("%s %uA %uP"), label, (unsigned)cActive, (unsigned)cPending);
-			}
-			return out;
-		};
-		switch (m) {
-		case CKadV2Mode::Direct:
-			privText = (g_uEseCapsRuntime != 0) ? _T("P:Direct") : _T("P:Off");
-			break;
-		case CKadV2Mode::Tunneled:
-			privText = countSuffix(_T("P:Tunneled"));
-			break;
-		case CKadV2Mode::Adaptive:
-			privText = countSuffix(_T("P:Adaptive"));
-			break;
-		default:
-			privText = _T("P:?");
-			break;
-		}
-		statusbar->SetText(privText, SBarPrivacy, 0);
-	}
+	// v0.71 P2.2 + P3.8 — Privacy pane refresh delegated to a separate
+	// method that's also called from CKademlia::Process (1 Hz) so the
+	// counts update in real time, not just on connection-state events.
+	UpdatePrivacyStatusPane();
 
 	TBBUTTONINFO tbbi;
 	tbbi.cbSize = (UINT)sizeof(TBBUTTONINFO);

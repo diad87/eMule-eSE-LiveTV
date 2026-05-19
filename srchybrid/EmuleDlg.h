@@ -76,6 +76,11 @@ public:
 
 	CImageList& GetClientIconList();
 	void ShowConnectionState();
+	// v0.71 P3.8 — lightweight 1 Hz refresh of the SBarPrivacy pane.
+	// Called from CKademlia::Process (already runs at 1 Hz) so the
+	// pane shows real-time circuit counts without dragging
+	// ShowConnectionState (which updates the whole toolbar/menu).
+	void UpdatePrivacyStatusPane();
 	void ShowNotifier(LPCTSTR pszText, TbnMsg nMsgType, LPCTSTR pszLink = NULL, bool bForceSoundOFF = false);
 	void SendNotificationMail(TbnMsg nMsgType, LPCTSTR pszText);
 	void ShowUserCount();

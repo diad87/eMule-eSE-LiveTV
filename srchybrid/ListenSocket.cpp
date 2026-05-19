@@ -2537,11 +2537,25 @@ void CListenSocket::OnAccept(int nErrorCode)
 			--m_nPendingConnections;
 
 			CClientReqSocket *newclient;
+			// v0.71 IPv6 Sprint 9 hotfix — when the listener is bound as
+			// AF_INET6 (dual-stack), incoming v4 connections arrive as
+			// IPv4-mapped IPv6 addresses (::ffff:1.2.3.4) wrapped in a
+			// SOCKADDR_IN6 (28 bytes). Using a SOCKADDR_IN (16 bytes)
+			// buffer truncates the address and Accept() either returns
+			// junk in sin_addr.s_addr or fails silently — which makes
+			// Kad report TCP "firewalled" because no inbound connections
+			// reach the upper-layer dispatcher.
+			// Fix: use SOCKADDR_STORAGE (>= 28 bytes) and normalize to
+			// SOCKADDR_IN after the Accept call. v6-native peers (not
+			// v4-mapped) are dropped here for now — the rest of eMule
+			// only understands v4 endpoints; full v6 peer support is
+			// future work.
+			SOCKADDR_STORAGE SockStorage = {};
 			SOCKADDR_IN SockAddr = {};
-			int iSockAddrLen = sizeof SockAddr;
+			int iSockAddrLen = (int)sizeof SockStorage;
 			if (thePrefs.GetConditionalTCPAccept() && !thePrefs.GetProxySettings().bUseProxy) {
 				s_iAcceptConnectionCondRejected = 0;
-				SOCKET sNew = WSAAccept(m_SocketData.hSocket, (LPSOCKADDR)&SockAddr, &iSockAddrLen, AcceptConnectionCond, 0);
+				SOCKET sNew = WSAAccept(m_SocketData.hSocket, (LPSOCKADDR)&SockStorage, &iSockAddrLen, AcceptConnectionCond, 0);
 				if (sNew == INVALID_SOCKET) {
 					DWORD nError = CAsyncSocket::GetLastError();
 					if (nError == WSAEWOULDBLOCK) {
@@ -2573,10 +2587,34 @@ void CListenSocket::OnAccept(int nErrorCode)
 				newclient->m_SocketData.hSocket = sNew;
 				newclient->AttachHandle();
 
+				// Normalize address: v4 → SOCKADDR_IN direct;
+				// v6 v4-mapped → extract last 4 bytes; v6 native → drop.
+				if (SockStorage.ss_family == AF_INET) {
+					memcpy(&SockAddr, &SockStorage, sizeof SockAddr);
+				} else if (SockStorage.ss_family == AF_INET6) {
+					SOCKADDR_IN6 *p6 = (SOCKADDR_IN6*)&SockStorage;
+					if (IN6_IS_ADDR_V4MAPPED(&p6->sin6_addr)) {
+						SockAddr.sin_family      = AF_INET;
+						SockAddr.sin_port        = p6->sin6_port;
+						// v4 lives in the last 4 bytes of the v6 addr.
+						memcpy(&SockAddr.sin_addr.s_addr,
+							   &p6->sin6_addr.u.Byte[12], 4);
+					} else {
+						// Native v6 peer — no upper-layer handling yet.
+						DebugLogWarning(_T("Native v6 peer dropped (upper-layer is v4-only): %hs"),
+							"::");
+						newclient->Safe_Delete();
+						continue;
+					}
+				} else {
+					newclient->Safe_Delete();
+					continue;
+				}
+
 				AddConnection();
 			} else {
 				newclient = new CClientReqSocket;
-				if (!Accept(*newclient, (LPSOCKADDR)&SockAddr, &iSockAddrLen)) {
+				if (!Accept(*newclient, (LPSOCKADDR)&SockStorage, &iSockAddrLen)) {
 					newclient->Safe_Delete();
 					DWORD nError = CAsyncSocket::GetLastError();
 					if (nError == WSAEWOULDBLOCK) {
@@ -2601,9 +2639,30 @@ void CListenSocket::OnAccept(int nErrorCode)
 
 				AddConnection();
 
+				// v0.71 IPv6 Sprint 9 hotfix — normalize as above for the
+				// non-conditional Accept path. Same rationale.
+				if (SockStorage.ss_family == AF_INET) {
+					memcpy(&SockAddr, &SockStorage, sizeof SockAddr);
+				} else if (SockStorage.ss_family == AF_INET6) {
+					SOCKADDR_IN6 *p6 = (SOCKADDR_IN6*)&SockStorage;
+					if (IN6_IS_ADDR_V4MAPPED(&p6->sin6_addr)) {
+						SockAddr.sin_family = AF_INET;
+						SockAddr.sin_port   = p6->sin6_port;
+						memcpy(&SockAddr.sin_addr.s_addr,
+							   &p6->sin6_addr.u.Byte[12], 4);
+					} else {
+						DebugLogWarning(_T("Native v6 peer dropped (upper-layer is v4-only)"));
+						newclient->Safe_Delete();
+						continue;
+					}
+				} else {
+					newclient->Safe_Delete();
+					continue;
+				}
+
 				if (SockAddr.sin_addr.s_addr == INADDR_ANY) { // for safety.
-					iSockAddrLen = (int)sizeof SockAddr;
-					newclient->GetPeerName((LPSOCKADDR)&SockAddr, &iSockAddrLen);
+					int iLen4 = (int)sizeof SockAddr;
+					newclient->GetPeerName((LPSOCKADDR)&SockAddr, &iLen4);
 					DebugLogWarning(_T("SockAddr.sin_addr.s_addr == 0;  GetPeerName returned %s"), (LPCTSTR)ipstr(SockAddr.sin_addr.s_addr));
 				}
 

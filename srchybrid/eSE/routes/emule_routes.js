@@ -66,21 +66,37 @@ function _pushRateSample(partFile, bytes) {
 //   then         : tag count (DWORD LE)
 //   then         : tag count × CTag-serialised tags
 //
-// CTag serialisation:
+// CTag serialisation (from eMule's OpCodes.h):
 //   type byte. If bit 7 (0x80) set: 1-byte name id follows, type &= 0x7F.
 //   Else: 2-byte LE namelen. namelen==1 → 1-byte name id; namelen>1 → ASCII name.
 //   Value depends on type:
-//     0x01 HASH16   16 bytes
-//     0x02 STRING   2-byte LE length + UTF-8/ASCII bytes
-//     0x03 UINT32   4 bytes LE
-//     0x04 FLOAT32  4 bytes LE
-//     0x07 BSOB     1-byte length + bytes
-//     0x08 UINT16   2 bytes LE
-//     0x09 UINT8    1 byte
-//     0x0B UINT64   8 bytes LE
+//     0x01 HASH16     16 bytes
+//     0x02 STRING     2-byte LE length + bytes
+//     0x03 UINT32     4 bytes LE
+//     0x04 FLOAT32    4 bytes LE
+//     0x05 BOOL       1 byte
+//     0x06 BOOLARRAY  2-byte LE length-in-bits + ceil(n/8) bytes
+//     0x07 BLOB       4-byte LE length + bytes              (NOT 1-byte!)
+//     0x08 UINT16     2 bytes LE
+//     0x09 UINT8      1 byte
+//     0x0A BSOB       1-byte length + bytes                  (NOT 0x07!)
+//     0x0B UINT64     8 bytes LE
 //     0x11..0x20 STR1..STR16 fixed-length string
 //
-// Unknown types abort the parse early; we never propagate garbage.
+// v8.0.19 fix: previous version had 0x07 typed as "1-byte BSOB" (the
+// correct shape for 0x0A) and never declared 0x0A. A real BLOB tag in
+// the .met (FT_AICH_HASHSET, present in nearly every modern .met) would
+// be parsed as a 1-byte payload, the parser would then advance way too
+// few bytes, misread the next "type byte" as random payload data, and
+// eventually hit an unrecognised type → break. fileSize had usually been
+// captured by then but the gap tags (which come later) never were, so
+// gapBytes=0 and downloaded was reported as fileSize. The user saw
+// "headContiguous 39000 MB de 39000" while eMule had only 200 MB.
+//
+// Unknown types still abort the parse early, but now we set
+// parseTruncated so the consumer knows the gap list is suspect. When
+// truncated AND we found no gaps, we return downloaded/head as null
+// rather than the misleading fileSize.
 function _parseMetGaps(buf) {
   const out = {
     fileSize: null,
@@ -89,6 +105,7 @@ function _parseMetGaps(buf) {
     firstGapStart: null,
     firstGapEnd: null,
     gapCount: 0,
+    parseTruncated: false,
   };
   try {
     if (!buf || buf.length < 25) return out;
@@ -101,6 +118,7 @@ function _parseMetGaps(buf) {
     let fileSize = null;
     const gapStarts = Object.create(null);
     const gapEnds   = Object.create(null);
+    let tagsRead = 0;
 
     for (let i = 0; i < tagCount && pos < buf.length; i++) {
       let type = buf.readUInt8(pos++);
@@ -138,9 +156,18 @@ function _parseMetGaps(buf) {
       } else if (type === 0x04) {    // FLOAT32
         if (pos + 4 > buf.length) break;
         pos += 4; value = null;
-      } else if (type === 0x07) {    // BSOB
+      } else if (type === 0x05) {    // BOOL  (v8.0.19)
         if (pos + 1 > buf.length) break;
-        const blen = buf.readUInt8(pos++);
+        value = buf.readUInt8(pos++);
+      } else if (type === 0x06) {    // BOOLARRAY  (v8.0.19)
+        if (pos + 2 > buf.length) break;
+        const nbits = buf.readUInt16LE(pos); pos += 2;
+        const nbytes = Math.ceil(nbits / 8);
+        if (pos + nbytes > buf.length) break;
+        pos += nbytes; value = null;
+      } else if (type === 0x07) {    // BLOB  (v8.0.19: 4-byte length, was wrong)
+        if (pos + 4 > buf.length) break;
+        const blen = buf.readUInt32LE(pos); pos += 4;
         if (pos + blen > buf.length) break;
         pos += blen; value = null;
       } else if (type === 0x08) {    // UINT16
@@ -148,6 +175,11 @@ function _parseMetGaps(buf) {
         value = buf.readUInt16LE(pos); pos += 2;
       } else if (type === 0x09) {    // UINT8
         value = buf.readUInt8(pos++);
+      } else if (type === 0x0A) {    // BSOB  (v8.0.19: 1-byte length, was missing)
+        if (pos + 1 > buf.length) break;
+        const blen = buf.readUInt8(pos++);
+        if (pos + blen > buf.length) break;
+        pos += blen; value = null;
       } else if (type === 0x0B) {    // UINT64
         if (pos + 8 > buf.length) break;
         const lo = buf.readUInt32LE(pos); pos += 4;
@@ -159,8 +191,10 @@ function _parseMetGaps(buf) {
         pos += slen; value = null;
       } else {
         // Unknown type — bail rather than skip a payload of unknown size.
+        // Flag the result as suspect so the consumer doesn't trust gap=0.
         break;
       }
+      tagsRead++;
 
       // FT_FILESIZE (id 0x02). Could be UINT32 or UINT64 depending on version.
       if (nameId === 0x02 && typeof value === 'number') {
@@ -176,13 +210,14 @@ function _parseMetGaps(buf) {
       }
     }
 
+    // Did we walk the whole tag table, or bail early?
+    out.parseTruncated = tagsRead < tagCount;
+
     if (fileSize == null) return out;
     let gapBytes = 0;
     // Collect valid pairs, then find the one starting closest to offset 0.
     // headContiguousBytes = firstGapStart (everything before that offset is
-    // contiguously downloaded). If no gaps exist, headContiguousBytes equals
-    // fileSize (file is complete or eMule hasn't recorded any unfinished
-    // ranges yet — both mean head is fully available).
+    // contiguously downloaded).
     const pairs = [];
     for (const idx in gapStarts) {
       if (gapEnds[idx] != null && gapEnds[idx] >= gapStarts[idx]) {
@@ -191,12 +226,30 @@ function _parseMetGaps(buf) {
       }
     }
     out.fileSize   = fileSize;
-    out.downloaded = Math.max(0, fileSize - gapBytes);
     out.gapCount   = pairs.length;
+
+    if (pairs.length === 0 && out.parseTruncated) {
+      // v8.0.19: parser bailed before reaching the gap entries. We DO know
+      // fileSize but downloaded/head are unknown — return null for both so
+      // the caller doesn't trust "0 gaps → file complete" when it's really
+      // "we couldn't read the .met past the first unknown tag". The state
+      // machine treats null as "keep waiting in INIT, don't fast-forward
+      // to PROBE".
+      out.downloaded = null;
+      out.headContiguousBytes = null;
+      out.firstGapStart = null;
+      out.firstGapEnd   = null;
+      return out;
+    }
+
+    out.downloaded = Math.max(0, fileSize - gapBytes);
     if (pairs.length === 0) {
-      // No gaps recorded → head is the entire file (download finished, or
-      // .met hasn't been updated yet but in either case there's no hole at
-      // the start).
+      // Genuine zero-gap result AND parser walked the full tag table → the
+      // file IS complete from the .met's point of view. Head spans the
+      // whole file. (Caller can still distinguish "freshly queued but no
+      // chunks" vs "complete" because that scenario writes a single gap
+      // pair start=0/end=fileSize — gapBytes would equal fileSize and
+      // downloaded would be 0.)
       out.headContiguousBytes = fileSize;
       out.firstGapStart = null;
       out.firstGapEnd   = null;
@@ -388,17 +441,23 @@ function handle(url, req, res) {
           // actual content. Parsing FT_FILESIZE + FT_GAPSTART/FT_GAPEND
           // pairs gives ground truth.
           const met = _parseMetGaps(metBuf);
+          // v8.0.19: do NOT fall back to stat.size for downloaded/head when
+          // the .met parser couldn't read the gap table. stat.size lies on
+          // pre-allocated sparse .part files (it returns the LOGICAL full
+          // size — exactly what fileSize is). The old fallback caused the
+          // user-reported "39 GB de 39 GB" while eMule had 200 MB.
+          //
+          // When parser succeeds: use met values.
+          // When parser bails before gaps: report 0 (we don't know — be
+          // pessimistic). The state machine treats 0 as "keep waiting in
+          // INIT" until eMule updates the .met and we can parse it cleanly.
           const totalSize       = met.fileSize   != null ? met.fileSize    : stat.size;
-          const downloadedBytes = met.downloaded != null ? met.downloaded  : stat.size;
+          const downloadedBytes = met.downloaded != null ? met.downloaded  : 0;
           const downloadedMB    = Math.round(downloadedBytes / (1024 * 1024));
           const totalMB         = Math.round(totalSize       / (1024 * 1024));
-          // v8.0.16: surface head-contiguity + first-gap to the state machine.
-          // headContiguousBytes is what the player can actually stream right
-          // now without seeking past a hole. Fall back to downloadedBytes if
-          // the .met didn't yield a clean value (treat "no gap info" the same
-          // as "everything we have is at the head" — pessimistic but safe).
-          const headContiguousBytes =
-            met.headContiguousBytes != null ? met.headContiguousBytes : downloadedBytes;
+          const headContiguousBytes = met.headContiguousBytes != null
+            ? met.headContiguousBytes
+            : 0;
           const headContiguousMB = Math.round(headContiguousBytes / (1024 * 1024));
           // Backward-compat: `sizeMB`/`sizeBytes` keep meaning "logical size"
           // (what stat returns) so existing code that uses them for display
@@ -419,6 +478,10 @@ function handle(url, req, res) {
             firstGapStart: met.firstGapStart,
             firstGapEnd:   met.firstGapEnd,
             gapCount:      met.gapCount,
+            // v8.0.19: visibility into whether the .met parse was complete.
+            // When false, downloadedBytes/headContiguousBytes default to 0
+            // (pessimistic) — the state machine should keep waiting.
+            metParseOk:    !met.parseTruncated && met.downloaded != null,
             progress: totalSize > 0 ? Math.round((downloadedBytes / totalSize) * 1000) / 10 : 0,
             partPath, lastModified: stat.mtimeMs, active: isActive,
           });

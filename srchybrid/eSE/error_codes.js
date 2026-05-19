@@ -22,7 +22,7 @@ const path = require('path');
 // ─── Version ───────────────────────────────────────────────────────────────
 // Hardcoded here AND read from package.json as a sanity check. The hardcoded
 // value wins if package.json is missing or unreadable inside the pkg snapshot.
-const VERSION = '8.0.18';
+const VERSION = '8.0.19';
 
 // ─── Build hash ────────────────────────────────────────────────────────────
 // At build time `tools/bake_build_hash.js` writes a 40-char SHA into

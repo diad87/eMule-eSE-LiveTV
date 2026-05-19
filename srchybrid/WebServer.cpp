@@ -5036,6 +5036,140 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// This is the FIRST end-to-end demonstration of the data plane working
 	// through the onion tunnel. If circuits exist but the reply doesn't
 	// arrive within timeoutMs, returns ok:false with reason.
+	// --- /api/live/privacy/subscriptions --- v0.71 P2.A — REST CRUD
+	// over the DPAPI-encrypted subscriptions store. The full MFC dialog
+	// is deferred; REST gives users (or external UI clients) immediate
+	// access via curl to add/list/remove subscriptions.
+	//   GET                       -> list current entries
+	//   GET ?add=<32 hex>&name=N  -> add channel
+	//   GET ?remove=<32 hex>      -> remove channel
+	if (sURL.Left(33) == "/api/live/privacy/subscriptions") {
+		const CString addArg = _ParseURL(Data.sURL, _T("add"));
+		const CString rmArg  = _ParseURL(Data.sURL, _T("remove"));
+		const CString nmArg  = _ParseURL(Data.sURL, _T("name"));
+		auto hexToBytes = [](const CString& hex, uint8_t out[32]) -> bool {
+			if (hex.GetLength() != 64) return false;
+			for (int i = 0; i < 32; ++i) {
+				int hi = -1, lo = -1;
+				TCHAR a = hex[i*2], b = hex[i*2+1];
+				if (a >= '0' && a <= '9') hi = a - '0';
+				else if (a >= 'a' && a <= 'f') hi = a - 'a' + 10;
+				else if (a >= 'A' && a <= 'F') hi = a - 'A' + 10;
+				if (b >= '0' && b <= '9') lo = b - '0';
+				else if (b >= 'a' && b <= 'f') lo = b - 'a' + 10;
+				else if (b >= 'A' && b <= 'F') lo = b - 'A' + 10;
+				if (hi < 0 || lo < 0) return false;
+				out[i] = (uint8_t)((hi << 4) | lo);
+			}
+			return true;
+		};
+
+		bool ok = true;
+		CStringA msg = "ok";
+		try {
+			auto& store = eSELive::CLiveSubscriptionStore::Get();
+			if (!addArg.IsEmpty()) {
+				uint8_t pk[32];
+				if (!hexToBytes(addArg, pk)) { ok = false; msg = "invalid pubkey hex (need 64 chars)"; }
+				else {
+					eSELive::SubscriptionEntry e = {};
+					memcpy(e.channel_pubkey, pk, 32);
+					e.name = CStringA(nmArg);
+					e.added_unix_ts = (uint64_t)time(NULL);
+					e.notifications = true;
+					if (!store.Add(e)) { ok = false; msg = "add failed (already subscribed?)"; }
+					else store.Save();
+				}
+			}
+			if (!rmArg.IsEmpty()) {
+				uint8_t pk[32];
+				if (!hexToBytes(rmArg, pk)) { ok = false; msg = "invalid pubkey hex"; }
+				else if (!store.Remove(pk)) { ok = false; msg = "not subscribed"; }
+				else store.Save();
+			}
+
+			// List current entries (always in response).
+			std::vector<eSELive::SubscriptionEntry> all;
+			store.GetAll(all);
+			CStringA arr;
+			for (size_t i = 0; i < all.size(); ++i) {
+				if (i > 0) arr += ",";
+				CStringA pkHex;
+				for (int b = 0; b < 32; ++b) {
+					CStringA pair;
+					pair.Format("%02x", all[i].channel_pubkey[b]);
+					pkHex += pair;
+				}
+				CStringA line;
+				line.Format("{\"pubkey\":\"%s\",\"name\":\"%s\",\"added\":%llu}",
+					(LPCSTR)pkHex, (LPCSTR)all[i].name,
+					(unsigned long long)all[i].added_unix_ts);
+				arr += line;
+			}
+			CStringA json;
+			json.Format("{\"ok\":%s,\"msg\":\"%s\",\"count\":%u,\"subscriptions\":[%s]}",
+				ok ? "true" : "false", (LPCSTR)msg, (unsigned)all.size(), (LPCSTR)arr);
+			CStringA header;
+			header.Format(
+			    "HTTP/1.1 200 OK\r\n"
+			    HTTPInit
+			    "Content-Type: application/json\r\n"
+			    "Content-Length: %d\r\n\r\n",
+			    json.GetLength());
+			Data.pSocket->SendData(header, header.GetLength());
+			Data.pSocket->SendData(json, json.GetLength());
+		} catch (...) {
+			const char* err = "{\"ok\":false,\"msg\":\"exception in subscriptions handler\"}";
+			CStringA header;
+			header.Format("HTTP/1.1 200 OK\r\n" HTTPInit "Content-Type: application/json\r\nContent-Length: %d\r\n\r\n",
+				(int)strlen(err));
+			Data.pSocket->SendData(header, header.GetLength());
+			Data.pSocket->SendData(err, (int)strlen(err));
+		}
+		return;
+	}
+
+	// --- /api/live/privacy/tunnel_search?keyword=foo --- v0.71 P1.A —
+	// REAL operation through onion tunnel. Sends TUN_OP_KAD_SEARCH; exit
+	// relay queries its local stream directory and returns matching
+	// streams as KAD_RESULT. V's keyword is NEVER sent to Kad directly
+	// → preserves privacy of WHAT V is looking for. Length: 31 chars.
+	if (sURL.Left(31) == "/api/live/privacy/tunnel_search") {
+		CString kwArg = _ParseURL(Data.sURL, _T("keyword"));
+		if (kwArg.IsEmpty()) kwArg = _T("eselive");
+		CStringA kwA(kwArg);
+		kwA.MakeLower();
+		std::string keyword((LPCSTR)kwA);
+		std::string reply;
+		bool ok = false;
+		try {
+			ok = eSELive::CLiveTunnel::Get().TunneledKadSearch(keyword, reply, 3000);
+		} catch (...) {}
+
+		CStringA json;
+		if (ok) {
+			CStringA safe;
+			for (char c : reply) {
+				if (c == '"' || c == '\\') safe += '\\';
+				safe += c;
+			}
+			json.Format("{\"ok\":true,\"keyword\":\"%s\",\"raw_hits\":\"%s\",\"format\":\"title|bitrate|viewers;\"}",
+				(LPCSTR)kwA, (LPCSTR)safe);
+		} else {
+			json = "{\"ok\":false,\"reason\":\"no active circuit or timeout - build a circuit first via test_circuit\"}";
+		}
+		CStringA header;
+		header.Format(
+		    "HTTP/1.1 200 OK\r\n"
+		    HTTPInit
+		    "Content-Type: application/json\r\n"
+		    "Content-Length: %d\r\n\r\n",
+		    json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
 	// "/api/live/privacy/tunnel_ping" is exactly 29 chars.
 	if (sURL.Left(29) == "/api/live/privacy/tunnel_ping") {
 		CString textArg = _ParseURL(Data.sURL, _T("text"));

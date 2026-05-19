@@ -26,6 +26,12 @@
 #include "Packets.h"
 #include "Opcodes.h"          // OP_EMULEPROT, OP_LIVE_TUNNEL_CELL
 #include "emule.h"            // theApp
+#include "Preferences.h"      // v0.71 P0.B — thePrefs.GetUserHash()
+#include "Log.h"              // v0.71 P0.B — AddDebugLogLine
+// v0.71 P1 — Kad search through tunnel: lookup against local directory
+#include "LiveStreamManager.h"
+#include "LiveKadBridge.h"
+#include "kademlia/kademlia/KadV2ModeSelector.h"
 
 namespace eSELive {
 
@@ -115,12 +121,28 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
         c->m_have_ephemeral = true;
         c->SetState(CircuitState::Pending);
 
-        // Build CELL_CREATE payload = evPub (32B) only for now. A future
-        // version would append a tag binding to the relay's long-term
-        // pubkey (ntor proper) — we don't have a peer-id registry yet so
-        // we skip that step and trust TCP origin (BCP for prototype).
+        // v0.71 P0.B — CELL_CREATE payload = ev_pub (32B) + target_user_hash
+        // (16B). target_user_hash binds the CREATE to a specific recipient:
+        // the hop receiving it verifies the hash matches their own
+        // eMule user_hash; if not (redirection attack), reply with
+        // CELL_DESTROY. Old fork binaries that don't know about this
+        // suffix parse the first 32B as ev_pub and ignore the rest —
+        // backward compat preserved. Real ntor (with Ed25519 long-term
+        // identity) would replace this with a signed binding; for now
+        // user_hash is the available persistent identifier per node.
+        uint8_t payload[32 + 16];
+        memcpy(payload, evPub, 32);
+        const uchar* hop1Hash = hop1->GetUserHash();
+        if (hop1Hash) {
+            memcpy(payload + 32, hop1Hash, 16);
+        } else {
+            // No hash known yet → fall back to ev_pub only (32B). The
+            // hop1 with new binary won't reject; will accept (legacy compat).
+            // Defensive — should be rare since HELLO completed.
+            memset(payload + 32, 0, 16);
+        }
         uint8_t cell[CELL_TOTAL_BYTES];
-        if (!CellPack(id, CELL_CREATE, evPub, sizeof evPub, cell)) {
+        if (!CellPack(id, CELL_CREATE, payload, sizeof payload, cell)) {
             // wipe ephemeral, skip
             c->WipeKeys();
             continue;
@@ -276,6 +298,33 @@ bool CLiveTunnel::HandleCreate_Relay(uint32_t circId,
 {
     if (!fromPeer || payloadLen < 32) return false;
     const uint8_t* viewerPub = payload;
+
+    // v0.71 P0.B — verify target_user_hash binding (anti-MITM lite).
+    // Payload format: ev_pub (32B) + target_user_hash (16B) = 48B from
+    // new fork. Old fork sends just 32B (no target_hash). We accept
+    // both for backward compat, but if the 16B suffix is present, it
+    // MUST match our own user_hash — else this CREATE was targeted at
+    // someone else (redirection attack) and we drop it.
+    if (payloadLen >= 48) {
+        const uint8_t* targetHash = payload + 32;
+        const uchar* ourHash = thePrefs.GetUserHash();
+        // Treat all-zero as "no binding info, fall back to legacy
+        // acceptance" — defensive against new fork peers that couldn't
+        // determine our hash before sending.
+        bool allZero = true;
+        for (int i = 0; i < 16; ++i) if (targetHash[i] != 0) { allZero = false; break; }
+        if (!allZero && ourHash) {
+            if (memcmp(targetHash, ourHash, 16) != 0) {
+                // Not for us. Decline. (Could reply CELL_DESTROY but
+                // silent drop also works — V's circuit will time out
+                // and retry. Silent drop is harder to fingerprint
+                // since attacker doesn't get explicit "rejected" signal.)
+                AddDebugLogLine(false,
+                    _T("LiveTunnel: CELL_CREATE target_hash mismatch — dropping (redirection attempt?)"));
+                return false;
+            }
+        }
+    }
 
     uint8_t erPub[32], erPriv[32];
     if (!X25519GenerateKeypair(erPub, erPriv)) return false;
@@ -439,12 +488,14 @@ bool CLiveTunnel::BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
         return false;
     circ->m_have_ephemeral = true;
 
-    // Build EXTEND payload: 4B IP + 2B port + 32B ev_pub2 = 38B.
-    uint8_t extendPlain[38];
+    // v0.71 P0.B — EXTEND payload now 54B: 4B IP + 2B port + 32B ev_pub2
+    // + 16B target_user_hash of hop2. hop2's HandleCreate_Relay will
+    // verify the hash matches its own user_hash before responding,
+    // making redirection by hop1 detectable.
+    uint8_t extendPlain[54];
     const uint32 hop2_ip = hop2->GetIP();           // network byte order
     const uint16 hop2_port = hop2->GetUserPort();
     // Write IP as 4 bytes little-endian (consistent with our cell convention).
-    // Note: peer-side will need to use this when calling FindClientByIP.
     extendPlain[0] = (uint8_t)(hop2_ip & 0xFF);
     extendPlain[1] = (uint8_t)((hop2_ip >>  8) & 0xFF);
     extendPlain[2] = (uint8_t)((hop2_ip >> 16) & 0xFF);
@@ -452,6 +503,12 @@ bool CLiveTunnel::BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
     extendPlain[4] = (uint8_t)(hop2_port & 0xFF);
     extendPlain[5] = (uint8_t)((hop2_port >> 8) & 0xFF);
     memcpy(extendPlain + 6, evPub2, 32);
+    const uchar* hop2Hash = hop2->GetUserHash();
+    if (hop2Hash) {
+        memcpy(extendPlain + 38, hop2Hash, 16);
+    } else {
+        memset(extendPlain + 38, 0, 16);
+    }
 
     // OnionEncrypt with the single registered hop (hop1). Since there's
     // only 1 hop, this just AEAD-encrypts with K_v_to_hop1.
@@ -489,23 +546,26 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
     // Caller holds m_lock. circ is the relay-side circuit (m_role == Relay).
     if (!circ || circ->m_role != CircuitRole::Relay) return false;
     if (circ->HopCount() != 1) return false;
-    // The encrypted EXTEND payload arrives as the cell's payload. We
-    // need to AEAD-decrypt using our K_recv_v_to_hop1 (== hop[0].k_recv).
-    // Plaintext is 38B; ciphertext = 38+16 tag = 54B.
+    // v0.71 P0.B — payload now 54B plaintext (was 38B): 6B endpoint +
+    // 32B ev_pub2 + 16B target_hash of hop2. Ciphertext = 54+16 tag = 70B.
+    // Backward compat: if peer sent old 38B plaintext (54B ciphertext),
+    // we still parse but skip the target_hash forward.
     if (payloadLen < 54) return false;
-    uint8_t extendPlain[54];
+    uint8_t extendPlain[70];
     size_t extendPlainLen = 0;
     if (!circ->OnionPeelOne(0, payload, payloadLen, extendPlain, extendPlainLen))
         return false;
     if (extendPlainLen < 38) return false;
 
-    // Parse hop2 endpoint + ev_pub2.
+    // Parse hop2 endpoint + ev_pub2 + (optional) target_hash.
     uint32 hop2_ip = (uint32)extendPlain[0]
                    | ((uint32)extendPlain[1] << 8)
                    | ((uint32)extendPlain[2] << 16)
                    | ((uint32)extendPlain[3] << 24);
     uint16 hop2_port = (uint16)extendPlain[4] | ((uint16)extendPlain[5] << 8);
     const uint8_t* evPub2 = extendPlain + 6;
+    const bool haveHop2Hash = (extendPlainLen >= 54);
+    const uint8_t* hop2HashIn = haveHop2Hash ? (extendPlain + 38) : NULL;
 
     // v0.71 B — self-loopback detection. With only 2 fork PCs in the
     // network (testing), V picks the same peer for hop1 and hop2; so we
@@ -624,9 +684,23 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
     circ->m_nextHopClient = hop2;
     circ->m_nextCircId    = outId;
 
-    // Build and send CELL_CREATE to hop2 with the ev_pub2 we got from V.
+    // v0.71 P0.B — forward V's target_hash for hop2 in the CELL_CREATE.
+    // Without this, an adversarial hop1 could send CREATE to a peer
+    // OTHER than hop2 (different identity), and that peer would accept
+    // since hop2_hash isn't validated. With the hash forwarded, the
+    // wrong peer rejects (its own hash doesn't match) → V detects
+    // hop1's redirection via timeout.
+    uint8_t fwdPayload[48];
+    memcpy(fwdPayload, evPub2, 32);
+    if (haveHop2Hash) {
+        memcpy(fwdPayload + 32, hop2HashIn, 16);
+    } else {
+        // Legacy V (no hash forwarded). Send zero so receiver does
+        // legacy compat acceptance.
+        memset(fwdPayload + 32, 0, 16);
+    }
     uint8_t cell[CELL_TOTAL_BYTES];
-    if (!CellPack(outId, CELL_CREATE, evPub2, 32, cell)) {
+    if (!CellPack(outId, CELL_CREATE, fwdPayload, sizeof fwdPayload, cell)) {
         SecureWipe(extendPlain, sizeof extendPlain);
         return false;
     }
@@ -814,6 +888,12 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
         m_pendingPingReplies[req_id] = text;
         return true;
     }
+    if (sub_cmd == TUN_OP_KAD_RESULT) {
+        // v0.71 P1.A — store Kad search results for TunneledKadSearch poller.
+        CSingleLock pl(&m_pendingLock, TRUE);
+        m_pendingKadResults[req_id] = text;
+        return true;
+    }
     // Unknown sub_cmd: drop silently (future ops land here).
     return true;
 }
@@ -858,7 +938,117 @@ bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
         memcpy(reply.data() + 7, echoText.data(), echoText.size());
         return SendRelayReply(circ, reply.data(), reply.size());
     }
+
+    if (sub_cmd == TUN_OP_KAD_SEARCH) {
+        // v0.71 P1.C — exit-side handler: V asked us to find streams
+        // matching `keyword`. We don't issue a fresh Kad query (too
+        // complex/async for MVP); we serve from our LOCAL stream
+        // directory cache that CLiveKadBridge has built up. This still
+        // preserves V's privacy: V doesn't ask Kad → only WE know what
+        // V is looking for (and we already know about streams).
+        std::string keyword((const char*)plain + 7, text_len);
+        // Lower-case the keyword in-place for simple substring match.
+        for (auto& ch : keyword) {
+            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+        }
+
+        CStringA resultStr;
+        size_t matchCount = 0;
+        const size_t MAX_HITS = 16;
+        const size_t MAX_RESULT_BYTES = CELL_PAYLOAD_MAX - 7 - 16;
+        try {
+            if (theApp.liveStreamManager) {
+                CArray<LiveStreamEntry> entries;
+                theApp.liveStreamManager->GetKadBridge().GetKnownStreams(entries);
+                for (INT_PTR i = 0; i < entries.GetCount() && matchCount < MAX_HITS; ++i) {
+                    const auto& e = entries[i];
+                    CStringA titleA(e.title);
+                    // Lowercase compare
+                    CStringA titleLow = titleA;
+                    titleLow.MakeLower();
+                    if (titleLow.Find((LPCSTR)keyword.c_str()) < 0 && !keyword.empty())
+                        continue;
+                    CStringA hit;
+                    hit.Format("%s|%u|%u;",
+                        (LPCSTR)titleA, (unsigned)e.bitrate, (unsigned)e.viewerCount);
+                    if ((size_t)(resultStr.GetLength() + hit.GetLength()) > MAX_RESULT_BYTES)
+                        break;
+                    resultStr += hit;
+                    ++matchCount;
+                }
+            }
+        } catch (...) {}
+
+        std::string replyText((LPCSTR)resultStr, resultStr.GetLength());
+        std::vector<uint8_t> reply(7 + replyText.size());
+        reply[0] = TUN_OP_KAD_RESULT;
+        reply[1] = (uint8_t)(req_id & 0xFF);
+        reply[2] = (uint8_t)((req_id >>  8) & 0xFF);
+        reply[3] = (uint8_t)((req_id >> 16) & 0xFF);
+        reply[4] = (uint8_t)((req_id >> 24) & 0xFF);
+        const uint16_t rl = (uint16_t)replyText.size();
+        reply[5] = (uint8_t)(rl & 0xFF);
+        reply[6] = (uint8_t)((rl >> 8) & 0xFF);
+        memcpy(reply.data() + 7, replyText.data(), replyText.size());
+        return SendRelayReply(circ, reply.data(), reply.size());
+    }
+
     return true;
+}
+
+bool CLiveTunnel::ShouldRouteThroughTunnel(const wchar_t* keywordOrNull) const
+{
+    using namespace Kademlia;
+    CKadV2ModeSelector& sel = CKadV2ModeSelector::Get();
+    CKadV2ModeSelector::QueryContext q = {};
+    q.includesPrivateChannelHash = false;
+    if (keywordOrNull) q.keywordLowercase = keywordOrNull;
+    CKadV2Mode decided = sel.Decide(q);
+    return decided == CKadV2Mode::Tunneled;
+}
+
+bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
+                                    std::string& resultsJsonOut,
+                                    uint32_t timeoutMs)
+{
+    // v0.71 P1.A — send KAD_SEARCH through any active circuit, await
+    // KAD_RESULT reply matching req_id.
+    uint8_t r[4];
+    SecureRandomBytes(r, 4);
+    const uint32_t req_id = (uint32_t)r[0]
+                          | ((uint32_t)r[1] << 8)
+                          | ((uint32_t)r[2] << 16)
+                          | ((uint32_t)r[3] << 24);
+    std::vector<uint8_t> payload(7 + keywordLower.size());
+    payload[0] = TUN_OP_KAD_SEARCH;
+    payload[1] = (uint8_t)(req_id & 0xFF);
+    payload[2] = (uint8_t)((req_id >>  8) & 0xFF);
+    payload[3] = (uint8_t)((req_id >> 16) & 0xFF);
+    payload[4] = (uint8_t)((req_id >> 24) & 0xFF);
+    const uint16_t kl = (uint16_t)keywordLower.size();
+    payload[5] = (uint8_t)(kl & 0xFF);
+    payload[6] = (uint8_t)((kl >> 8) & 0xFF);
+    memcpy(payload.data() + 7, keywordLower.data(), keywordLower.size());
+
+    if (!SendThrough(payload.data(), payload.size()))
+        return false;
+
+    DWORD start = GetTickCount();
+    while (GetTickCount() - start < timeoutMs) {
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            auto it = m_pendingKadResults.find(req_id);
+            if (it != m_pendingKadResults.end()) {
+                resultsJsonOut = it->second;
+                m_pendingKadResults.erase(it);
+                return true;
+            }
+        }
+        Sleep(50);
+    }
+    CSingleLock pl(&m_pendingLock, TRUE);
+    m_pendingKadResults.erase(req_id);
+    return false;
 }
 
 bool CLiveTunnel::SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,
@@ -952,6 +1142,46 @@ void CLiveTunnel::Tick()
             // probably isn't running the fork.
             c->SetState(CircuitState::Destroyed);
     }
+
+    // 3. v0.71 P0.A — cover traffic emission. For each Active originator
+    // circuit, if it's past m_nextPaddingTick, emit a CELL_PADDING with
+    // random length and reschedule via Poisson distribution.
+    // This makes TAG_ESE_CAPS bit 11 (cover_traffic) truthful: the bit
+    // claims we generate cover traffic, and now we actually do.
+    auto& covCfg = CLiveCoverTraffic::Get();
+    for (auto& c : m_circuits) {
+        if (c->State() != CircuitState::Active) continue;
+        if (c->m_role != CircuitRole::Originator) continue;   // only originator drives cover
+        if (c->HopCount() < 1) continue;
+        if (c->m_lastPaddingTick == 0) {
+            c->m_lastPaddingTick = now;
+            c->m_nextPaddingDelayMs =
+                covCfg.NextPaddingDelayMs((uint32_t)covCfg.GetProfile());
+            continue;
+        }
+        if (now - c->m_lastPaddingTick < c->m_nextPaddingDelayMs) continue;
+
+        // Build a CELL_PADDING: payload = random bytes of random length.
+        uint16_t fakeLen = covCfg.SampleFakeLength();
+        std::vector<uint8_t> fakePlain(fakeLen);
+        if (fakeLen > 0) SecureRandomBytes(fakePlain.data(), fakeLen);
+        // Onion-wrap through the same hops as a real RELAY would.
+        uint8_t cellPayload[CELL_PAYLOAD_MAX];
+        size_t cellPayloadLen = 0;
+        if (!c->OnionEncrypt(fakePlain.data(), fakePlain.size(),
+                             cellPayload, cellPayloadLen))
+            continue;
+        uint8_t cell[CELL_TOTAL_BYTES];
+        if (!CellPack(c->Id(), CELL_PADDING, cellPayload, cellPayloadLen, cell))
+            continue;
+        if (!c->m_firstHopClient) continue;
+        if (SendCellToPeer(c->m_firstHopClient, cell)) {
+            c->m_lastPaddingTick = now;
+            c->m_nextPaddingDelayMs =
+                covCfg.NextPaddingDelayMs((uint32_t)covCfg.GetProfile());
+        }
+    }
+
     m_lastTickMs = now;
 }
 

@@ -97,9 +97,33 @@ public:
     // Future sub_cmds (Kad search, Live subscribe, etc.) will extend
     // this. Keep the first 7 bytes structure stable.
     enum TunnelOpCmd : uint8_t {
-        TUN_OP_PING       = 0x01,
-        TUN_OP_PING_REPLY = 0x02
+        TUN_OP_PING        = 0x01,
+        TUN_OP_PING_REPLY  = 0x02,
+        // v0.71 P1.A — real operations through tunnel
+        TUN_OP_KAD_SEARCH       = 0x10,   // V → exit: do Kad keyword search on my behalf
+        TUN_OP_KAD_RESULT       = 0x11,   // exit → V: serialized search hits
+        TUN_OP_LIVE_SUBSCRIBE   = 0x20,   // V → exit: forward subscribe to broadcaster
+        TUN_OP_LIVE_SUB_ACK     = 0x21    // exit → V: ack / broadcaster contact info
     };
+
+    // v0.71 P1.B — does the user's mode + this operation route through
+    // a tunnel? Returns true if a circuit should be used. Centralised
+    // here so the same logic gates Kad search, Live subscribe, future
+    // ops without code duplication. The decision combines the mode
+    // selector (Direct/Tunneled/Adaptive) and current circuit
+    // availability. If decision is "tunnel" but no Active circuit
+    // exists, callers should fall back to the direct path (no
+    // privacy but functional) rather than fail entirely.
+    bool ShouldRouteThroughTunnel(const wchar_t* keywordOrNull) const;
+
+    // v0.71 P1.A — issue a Kad keyword search through the tunnel.
+    // Sends TUN_OP_KAD_SEARCH, waits for TUN_OP_KAD_RESULT. timeoutMs
+    // bound on the whole operation. Returns true if any results came
+    // back; resultsJsonOut receives a JSON array of {streamKey, name,
+    // viewers, bitrate, ip, port} for the caller to interpret.
+    bool TunneledKadSearch(const std::string& keywordLower,
+                           std::string& resultsJsonOut,
+                           uint32_t timeoutMs);
 
     // v0.71 C — synchronous tunnel ping. Sends a PING through any
     // active circuit, blocks up to timeoutMs waiting for the reply.
@@ -206,6 +230,8 @@ private:
     // or on timeout.
     mutable CCriticalSection m_pendingLock;
     std::map<uint32_t, std::string> m_pendingPingReplies;
+    // v0.71 P1.A — pending KAD_RESULT replies keyed by req_id.
+    std::map<uint32_t, std::string> m_pendingKadResults;
 
     mutable CCriticalSection m_lock;
     std::vector<std::shared_ptr<CLiveCircuit>> m_circuits;

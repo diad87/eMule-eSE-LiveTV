@@ -11,10 +11,18 @@ class CLiveCoverTraffic {
 public:
     static CLiveCoverTraffic& Get();
 
+    // v0.71 P0.A — rates reduced from the original thesis values
+    // (10/50/200 cells/s) which were per-stream-of-multiple-circuits.
+    // With our current 1 Hz tick + per-originator-circuit emission,
+    // the cap is effectively 1 cell/sec from the tick rate. We use
+    // lower mu so most ticks DON'T emit (preserving Poisson burstiness).
+    // 2/s default ≈ one padding every 500ms on average across all
+    // circuits, which is enough to mask bursts without saturating
+    // bandwidth.
     enum Profile : uint8_t {
-        ProfileLowBw   = 10,
-        ProfileDefault = 50,
-        ProfileHighRisk = 200
+        ProfileLowBw    = 1,
+        ProfileDefault  = 2,
+        ProfileHighRisk = 8
     };
 
     // Compute milliseconds until the NEXT padding cell, given μ (cells/sec).

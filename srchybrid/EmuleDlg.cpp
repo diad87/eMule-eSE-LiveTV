@@ -3652,6 +3652,28 @@ void CemuleDlg::ToggleEseServer(bool bOpenBrowser)
 			thePrefs.SetWSIsEnabled(true);
 		thePrefs.SetWSPass(sharedPw);  // siempre sincroniza (idempotente)
 
+		// v8.0.7 one-shot defaults: enforce unlimited bandwidth.
+		//
+		// Only fires when the user is still on eMule's stock hardcoded defaults
+		// (80 KB/s up, 90 KB/s down) — once we run once, a marker file in the
+		// config dir prevents future overrides so the user's choice sticks if
+		// they later set their own cap. The completion-notifier balloon
+		// disable lives in the bundled preferences.ini (fresh installs only)
+		// because Preferences.cpp exposes no setter for that boolean.
+		{
+			CString flagFile;
+			flagFile.Format(_T("%s\\eSE_v807_defaults_applied"), (LPCTSTR)configDir);
+			if (::GetFileAttributes(flagFile) == INVALID_FILE_ATTRIBUTES) {
+				if (thePrefs.GetMaxUpload() == 80 && thePrefs.GetMaxDownload() == 90) {
+					thePrefs.SetMaxUpload(0);
+					thePrefs.SetMaxDownload(0);
+					AddLogLine(false, _T("[eSE] One-shot: bandwidth caps reset to unlimited (was 80/90 default)."));
+				}
+				HANDLE hFlag = ::CreateFile(flagFile, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+				if (hFlag != INVALID_HANDLE_VALUE) ::CloseHandle(hFlag);
+			}
+		}
+
 		// Aplicar al WebServer en caliente (idempotente — no reinicia eMule)
 		if (theApp.webserver) {
 			theApp.webserver->StartServer();

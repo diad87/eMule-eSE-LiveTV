@@ -114,18 +114,23 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 	rCtrl << _T("Modo:\t");
 	switch (thePrefs.GetIPv6Mode()) {
 		case CPreferences::IPv6OffMode:       rCtrl << _T("IPv4 (IPv6 desactivado)"); break;
-		case CPreferences::IPv6AutoMode:      rCtrl << _T("Auto (IPv6 si disponible)"); break;
-		case CPreferences::IPv6PreferredMode: rCtrl << _T("IPv6 preferido"); break;
+		case CPreferences::IPv6AutoMode:      rCtrl << _T("Auto (v4 listener + v6 prober)"); break;
+		case CPreferences::IPv6PreferredMode: rCtrl << _T("IPv6 preferido (dual-stack experimental)"); break;
 		default:                              rCtrl << _T("?"); break;
 	}
 	rCtrl << _T("\r\n");
 
-	// Estado real del listener (independiente de la pref)
+	// Estado real del listener (independiente de la pref). Auto deja el
+	// listener en v4 puro (HighID estable) y solo corre el prober v6
+	// para mostrar la IP pública v6. Dual-stack TCP es opt-in en modo
+	// "IPv6 preferido" — ver comentario en ListenSocket::StartListening.
 	rCtrl << _T("Listener:\t");
 	if (theApp.listensocket && theApp.listensocket->IsDualStack()) {
 		rCtrl << _T("Dual-stack ([::]:") << thePrefs.GetPort() << _T(", IPV6_V6ONLY=0)");
-	} else if (thePrefs.IsIPv6Enabled()) {
-		rCtrl << _T("IPv4 solo (IPv6 pedido pero AF_INET6 falló — ver log)");
+	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
+		rCtrl << _T("IPv4 solo (dual-stack pedido pero AF_INET6 falló — ver log)");
+	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6AutoMode) {
+		rCtrl << _T("IPv4 (0.0.0.0:") << thePrefs.GetPort() << _T(") + prober v6 activo");
 	} else {
 		rCtrl << _T("IPv4 solo (0.0.0.0:") << thePrefs.GetPort() << _T(")");
 	}

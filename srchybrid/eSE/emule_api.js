@@ -139,6 +139,16 @@ function setSettingsFunctions(load, save) {
 
 // ─── HTTP REQUEST ──────────────────────────────────────────────
 
+// v8.0.2 — emuleRequest now enforces an 8 s timeout.
+//
+// Previously, if the eMule WebServer thread deadlocked or its accept loop got
+// wedged (rare but observed during privacy stress tests), http.get() waited
+// indefinitely for headers, hanging the JS event loop on every UI poll.
+// Eight seconds is generous for a local round-trip but short enough to keep
+// the dashboard responsive; the timeout error bubbles up via callback the
+// same way as ECONNREFUSED, so existing call sites already handle it.
+const EMULE_REQUEST_TIMEOUT_MS = 8000;
+
 function emuleRequest(urlPath, callback) {
   // Use the IPv4 literal explicitly. On Windows, `localhost` resolves to ::1
   // first (IPv6); eMule's WebServer binds INADDR_ANY (IPv4-only, see
@@ -147,29 +157,87 @@ function emuleRequest(urlPath, callback) {
   // "eMule WebServer no responde" even when the WebServer is fully up.
   const fullUrl = 'http://127.0.0.1:' + EMULE_WS_PORT + '/' + urlPath;
   const urlObj = new URL(fullUrl);
-  
+
   const options = {
     hostname: urlObj.hostname,
     port: urlObj.port,
     path: urlObj.pathname + urlObj.search,
-    headers: { 'Accept-Encoding': 'gzip, deflate, identity' }
+    headers: { 'Accept-Encoding': 'gzip, deflate, identity' },
+    timeout: EMULE_REQUEST_TIMEOUT_MS,
   };
-  
-  http.get(options, (res) => {
+
+  let cbFired = false;
+  const fire = (err, body) => {
+    if (cbFired) return;
+    cbFired = true;
+    callback(err, body);
+  };
+
+  const req = http.get(options, (res) => {
     const chunks = [];
     const encoding = res.headers['content-encoding'];
     let stream = res;
     if (encoding === 'gzip') stream = res.pipe(zlib.createGunzip());
     else if (encoding === 'deflate') stream = res.pipe(zlib.createInflate());
-    
+
     stream.on('data', d => chunks.push(d));
     stream.on('end', () => {
       const buf = Buffer.concat(chunks);
-      callback(null, buf.toString('latin1'));
+      _emuleWsLastOkAt = Date.now();
+      fire(null, buf.toString('latin1'));
     });
-    stream.on('error', (err) => callback(err, null));
-  }).on('error', (err) => callback(err, null));
+    stream.on('error', (err) => fire(err, null));
+  });
+  req.on('timeout', () => {
+    req.destroy(new Error('emuleRequest timeout after ' + EMULE_REQUEST_TIMEOUT_MS + ' ms'));
+  });
+  req.on('error', (err) => fire(err, null));
 }
+
+// v8.0.2 — HTTP-level WebServer watchdog.
+//
+// The process-level watchdog at the top of this file checks `tasklist` to
+// see whether emule.exe is alive. That's a coarse signal: the process can
+// be alive but the WebServer thread can be stuck (deadlock, blocked I/O,
+// hung TLS handshake). This HTTP watchdog complements it by pinging the
+// /?w=stats endpoint (the cheapest no-auth path) every 30 s. After three
+// consecutive failures the dashboard surfaces "WS unresponsive" instead of
+// silently spinning. We never kill the process — the user owns that.
+let _emuleWsLastOkAt = 0;
+let _emuleWsConsecFails = 0;
+let _emuleWsResponsive = true;
+function emuleWsIsResponsive() { return _emuleWsResponsive; }
+function emuleWsLastOkAt()     { return _emuleWsLastOkAt; }
+
+setInterval(function emuleWebServerWatchdog() {
+  if (!isEmuleRunning()) return;  // process-level watchdog handles this case
+  const req = http.get({
+    hostname: '127.0.0.1', port: EMULE_WS_PORT, path: '/',
+    timeout: 3000, headers: { 'Connection': 'close' },
+  }, (res) => {
+    // Any 2xx/3xx (or even 401 — WS is alive and answering) counts as "up".
+    res.resume();  // discard body
+    if (res.statusCode && res.statusCode < 500) {
+      _emuleWsConsecFails = 0;
+      _emuleWsLastOkAt = Date.now();
+      if (!_emuleWsResponsive) {
+        console.log('[ws-watchdog] WebServer back up (status=' + res.statusCode + ')');
+        _emuleWsResponsive = true;
+      }
+    } else {
+      _emuleWsConsecFails++;
+    }
+  });
+  req.on('timeout', () => { req.destroy(new Error('ws-watchdog ping timeout')); });
+  req.on('error', (err) => {
+    _emuleWsConsecFails++;
+    if (_emuleWsConsecFails === 3 && _emuleWsResponsive) {
+      _emuleWsResponsive = false;
+      const _msg = String(err && err.message).replace(/[\r\n\t]+/g, ' ');
+      console.log('[ws-watchdog] WebServer unresponsive after 3 pings (last: ' + _msg + ')');
+    }
+  });
+}, 30000);
 
 // ─── PASSWORD (unique per-installation, zero-config) ──────────
 //
@@ -717,5 +785,7 @@ module.exports = {
   onRevived,
   getLibraryEpoch,
   getRestartedAt,
+  emuleWsIsResponsive,
+  emuleWsLastOkAt,
   EMULE_WS_PORT
 };

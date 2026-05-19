@@ -22,6 +22,9 @@ const modules = [
   'tunnel_settings.js',
   'cinema_player.js',
   'search_ui.js',
+  // v8.0.16: playback_state.js exposes window.startSmartMonitor — must load
+  // BEFORE smart_play.js so monitorForFile's thin wrapper can find it.
+  'playback_state.js',
   'smart_play.js',
   'poster_hero.js',
   'init.js',

@@ -1432,11 +1432,57 @@ function trySmartSource(index) {
   }, 1500);
 }
 
-// expectedHash (optional): MD4 hex string. When present, downloads are matched
-// by hash (exact) instead of fuzzy filename — prevents auto-playing the wrong
-// movie when a same-prefix file is already in Incoming/ (e.g. "a todo gas 1"
-// played instead of the "a todo gas 6" the user just started).
+// v8.0.16: thin wrapper around window.startSmartMonitor (playback_state.js).
+// See smart_play.js header for the rationale — same change applied here so the
+// /player.js bundle gets the new state-machine path. Legacy implementation
+// renamed to _monitorForFile_legacy and kept as graceful-degradation fallback.
 function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex, expectedHash) {
+  if (typeof window.startSmartMonitor === 'function') {
+    var statusEl   = document.getElementById('smart-play-status');
+    var progressEl = document.getElementById('smart-play-progress');
+    var titleEl    = document.getElementById('smart-play-title');
+    var actionsEl  = document.getElementById('smart-play-actions');
+    var prev = window._smartPlayMonitor;
+    if (prev && typeof prev.stop === 'function') { try { prev.stop('replaced'); } catch (e) {} }
+    window._smartPlayMonitor = window.startSmartMonitor({
+      movieTitle: movieTitle,
+      expectedFileName: expectedFileName,
+      totalSizeMB: totalSizeMB,
+      sourceIndex: sourceIndex,
+      expectedHash: expectedHash,
+      ui: { statusEl: statusEl, progressEl: progressEl, titleEl: titleEl, actionsEl: actionsEl },
+      onPlay: function (partFile, fileName /*, probe */) {
+        if (progressEl) progressEl.style.width = '100%';
+        if (typeof playPartFile === 'function') playPartFile(partFile, fileName);
+      },
+      onComplete: function (fileName) {
+        if (typeof playInModal === 'function') playInModal(encodeURIComponent(fileName));
+      },
+      onFail: function (reason, remaining, retry /*, ctx */) {
+        var sp = document.querySelector('#cinema-player .spinner');
+        if (sp) sp.style.display = 'none';
+        if (window.PlaybackState && window.PlaybackState.renderDefaultFailButtons) {
+          window.PlaybackState.renderDefaultFailButtons(actionsEl, reason, remaining, retry, {
+            titleEl: titleEl,
+            onBack: function () { if (typeof backToDetail === 'function') backToDetail(); },
+            onLeaveDownloading: function () {
+              if (typeof backToDetail === 'function') backToDetail();
+              if (typeof showNotification === 'function') {
+                showNotification('La descarga continua en segundo plano');
+              }
+            },
+          });
+        }
+      },
+    });
+    return;
+  }
+  return _monitorForFile_legacy(movieTitle, expectedFileName, totalSizeMB, sourceIndex, expectedHash);
+}
+
+// Legacy v8.0.15 implementation, kept as a fallback when playback_state.js
+// failed to load (dev mode, custom bundle).
+function _monitorForFile_legacy(movieTitle, expectedFileName, totalSizeMB, sourceIndex, expectedHash) {
   var statusEl = document.getElementById('smart-play-status');
   var progressEl = document.getElementById('smart-play-progress');
   var titleEl = document.getElementById('smart-play-title');

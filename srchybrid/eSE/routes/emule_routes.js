@@ -1,9 +1,38 @@
 'use strict';
 const fs           = require('fs');
 const path         = require('path');
+const { execFile } = require('child_process');
 const aiAssistant  = require('../ai_assistant');
+const { safeBasename } = require('../utils');
 
 let _ctx = {};
+
+// v8.0.16 — ffprobe cache for the smart-playback state machine.
+// Keyed by partFile basename (e.g. "0042.part"). Each entry holds the parsed
+// metadata plus an expiry timestamp. We re-probe every 60s during PROBE state
+// because partial files grow and ffprobe's bitrate estimate sharpens as more
+// of the moov/index becomes available.
+const _probeCache = Object.create(null);
+const PROBE_TTL_MS = 60 * 1000;
+
+// v8.0.16 — rolling-rate samples per partFile. Each entry is an array of
+// { t: ms-epoch, bytes: downloadedBytes-at-t }. We trim entries older than
+// 120s to bound memory. The /api/emule/rate endpoint computes the slope
+// over the requested windowSec.
+const _rateSamples = Object.create(null);
+const RATE_MAX_AGE_MS = 120 * 1000;
+
+function _pushRateSample(partFile, bytes) {
+  if (typeof bytes !== 'number' || bytes < 0) return;
+  const now = Date.now();
+  const arr = _rateSamples[partFile] || (_rateSamples[partFile] = []);
+  arr.push({ t: now, bytes });
+  // Trim old samples + cap length so a long-running monitor can't grow this
+  // unbounded if rate is being polled aggressively.
+  const cutoff = now - RATE_MAX_AGE_MS;
+  while (arr.length && arr[0].t < cutoff) arr.shift();
+  if (arr.length > 240) arr.splice(0, arr.length - 240);
+}
 
 // v8.0.14 — minimal eMule .met file parser focused on extracting the data the
 // monitor needs to decide "is enough actually downloaded to start playing":
@@ -13,6 +42,20 @@ let _ctx = {};
 //     offsets describing ranges that HAVE NOT been downloaded yet
 //
 // downloadedBytes = fileSize - sum(gapEnd - gapStart for each pair).
+//
+// v8.0.16 — extended return shape for the smart-playback state machine:
+//   - headContiguousBytes : number of bytes contiguously downloaded starting
+//                           at offset 0 (= firstGapStart, or fileSize if no
+//                           gaps at all = file complete from head onward).
+//                           This is the ground-truth "how much of the start
+//                           of the movie is actually available to stream".
+//   - firstGapStart       : byte offset where the FIRST missing range begins.
+//                           Same as headContiguousBytes, exposed separately
+//                           for symmetry with firstGapEnd.
+//   - firstGapEnd         : byte offset where the FIRST missing range ends.
+//                           Useful to know "after how big a hole does the
+//                           next available chunk start".
+//   - gapCount            : total number of unresolved gap pairs.
 //
 // .met header layout (matches PartFile.cpp::LoadPartFile):
 //   byte 0       : version (0xE0 / 0xE1)
@@ -39,7 +82,14 @@ let _ctx = {};
 //
 // Unknown types abort the parse early; we never propagate garbage.
 function _parseMetGaps(buf) {
-  const out = { fileSize: null, downloaded: null };
+  const out = {
+    fileSize: null,
+    downloaded: null,
+    headContiguousBytes: null,
+    firstGapStart: null,
+    firstGapEnd: null,
+    gapCount: 0,
+  };
   try {
     if (!buf || buf.length < 25) return out;
     let pos = 21;                                          // skip ver+date+hash
@@ -128,13 +178,35 @@ function _parseMetGaps(buf) {
 
     if (fileSize == null) return out;
     let gapBytes = 0;
+    // Collect valid pairs, then find the one starting closest to offset 0.
+    // headContiguousBytes = firstGapStart (everything before that offset is
+    // contiguously downloaded). If no gaps exist, headContiguousBytes equals
+    // fileSize (file is complete or eMule hasn't recorded any unfinished
+    // ranges yet — both mean head is fully available).
+    const pairs = [];
     for (const idx in gapStarts) {
       if (gapEnds[idx] != null && gapEnds[idx] >= gapStarts[idx]) {
         gapBytes += (gapEnds[idx] - gapStarts[idx]);
+        pairs.push({ start: gapStarts[idx], end: gapEnds[idx] });
       }
     }
     out.fileSize   = fileSize;
     out.downloaded = Math.max(0, fileSize - gapBytes);
+    out.gapCount   = pairs.length;
+    if (pairs.length === 0) {
+      // No gaps recorded → head is the entire file (download finished, or
+      // .met hasn't been updated yet but in either case there's no hole at
+      // the start).
+      out.headContiguousBytes = fileSize;
+      out.firstGapStart = null;
+      out.firstGapEnd   = null;
+    } else {
+      pairs.sort((a, b) => a.start - b.start);
+      const first = pairs[0];
+      out.headContiguousBytes = first.start;
+      out.firstGapStart       = first.start;
+      out.firstGapEnd         = first.end;
+    }
   } catch (e) { /* malformed .met — fall back to stat.size */ }
   return out;
 }
@@ -320,15 +392,33 @@ function handle(url, req, res) {
           const downloadedBytes = met.downloaded != null ? met.downloaded  : stat.size;
           const downloadedMB    = Math.round(downloadedBytes / (1024 * 1024));
           const totalMB         = Math.round(totalSize       / (1024 * 1024));
+          // v8.0.16: surface head-contiguity + first-gap to the state machine.
+          // headContiguousBytes is what the player can actually stream right
+          // now without seeking past a hole. Fall back to downloadedBytes if
+          // the .met didn't yield a clean value (treat "no gap info" the same
+          // as "everything we have is at the head" — pessimistic but safe).
+          const headContiguousBytes =
+            met.headContiguousBytes != null ? met.headContiguousBytes : downloadedBytes;
+          const headContiguousMB = Math.round(headContiguousBytes / (1024 * 1024));
           // Backward-compat: `sizeMB`/`sizeBytes` keep meaning "logical size"
           // (what stat returns) so existing code that uses them for display
           // doesn't change. New fields totalMB/downloadedMB/downloadedBytes
           // are what the monitor should gate on.
+          // v8.0.16: feed the rolling-rate window from the SAME truth the
+          // state machine sees. The frontend used to keep its own sample
+          // buffer in window._smartPlayRateSamples, but that gets reset on
+          // every page reload and double-counts when two tabs poll at the
+          // same time. Backend ownership = single source of truth.
+          _pushRateSample(pf, downloadedBytes);
           downloads.push({
             partFile: pf, fileName, fileHash,
             sizeMB: Math.round(stat.size / (1024 * 1024)), sizeBytes: stat.size,
             totalMB, totalBytes: totalSize,
             downloadedMB, downloadedBytes,
+            headContiguousMB, headContiguousBytes,
+            firstGapStart: met.firstGapStart,
+            firstGapEnd:   met.firstGapEnd,
+            gapCount:      met.gapCount,
             progress: totalSize > 0 ? Math.round((downloadedBytes / totalSize) * 1000) / 10 : 0,
             partPath, lastModified: stat.mtimeMs, active: isActive,
           });
@@ -340,6 +430,169 @@ function handle(url, req, res) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('[]');
     }
+    return true;
+  }
+
+  // v8.0.16 — ffprobe wrapper. Returns the metadata the state machine needs
+  // to compute the sustained-rate target (duration + bitrate) plus codec info
+  // so we can surface honest "transcoding required" warnings in S2 instead of
+  // discovering them only when ffmpeg pipes 500 the first time.
+  //
+  // Cached per partFile for 60s. Partial .part files are valid ffprobe
+  // input as long as enough of the moov atom has arrived — that's typically
+  // the case once headContiguousBytes >= ~5 MB. Below that we return a
+  // not_ready response so the state machine can keep waiting in PROBE.
+  if (url.pathname === '/api/emule/probe' && req.method === 'GET') {
+    const fileParam = url.searchParams.get('file') || '';
+    const safe = safeBasename(fileParam);
+    if (!safe || !/^\d+\.part$/.test(safe)) {
+      return sendJson(res, 400, { error: 'bad_file', expected: '<n>.part' });
+    }
+    const EMULE_TEMP = path.join(path.dirname(_ctx.EMULE_INCOMING), 'Temp');
+    const partPath = path.join(EMULE_TEMP, safe);
+    if (!fs.existsSync(partPath)) {
+      return sendJson(res, 404, { error: 'not_found', file: safe });
+    }
+    // Cache hit?
+    const now = Date.now();
+    const cached = _probeCache[safe];
+    if (cached && cached.expires > now) {
+      return sendJson(res, 200, Object.assign({ cached: true }, cached.data));
+    }
+    // Refuse to probe a file that's too small — ffprobe will hang or return
+    // "Invalid data found when processing input" and we'll just thrash retry
+    // loops. Tell the caller to retry later.
+    let stat;
+    try { stat = fs.statSync(partPath); } catch(e) {
+      return sendJson(res, 500, { error: 'stat_failed', message: e.message });
+    }
+    // Use head-contiguous bytes from the .met as the readiness check — that's
+    // the bytes ffprobe will actually see at the start of the file. statSize
+    // can be many GB on a pre-allocated sparse file with zero real content.
+    let headContig = stat.size;
+    try {
+      const metPath = partPath + '.met';
+      if (fs.existsSync(metPath)) {
+        const m = _parseMetGaps(fs.readFileSync(metPath));
+        if (m.headContiguousBytes != null) headContig = m.headContiguousBytes;
+      }
+    } catch(e) { /* fall back to stat.size */ }
+    if (headContig < 5 * 1024 * 1024) {
+      return sendJson(res, 200, {
+        ready: false,
+        reason: 'head_too_small',
+        headContiguousBytes: headContig,
+        minBytes: 5 * 1024 * 1024,
+      });
+    }
+    const ffmpegPath = _ctx.FFMPEG_PATH || '';
+    if (!ffmpegPath) {
+      return sendJson(res, 500, { error: 'ffmpeg_path_missing' });
+    }
+    const ffprobePath = ffmpegPath.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
+    // execFile (not exec) so the path is passed as a separate argv entry —
+    // not parsed by a shell, so no quote-injection from filenames. The .part
+    // basename has already been validated by safeBasename + the \d+\.part
+    // regex, so partPath is built only from controlled segments, but execFile
+    // is the right tool regardless.
+    const args = [
+      '-v', 'error',
+      '-print_format', 'json',
+      '-show_format',
+      '-show_streams',
+      partPath,
+    ];
+    execFile(ffprobePath, args, { timeout: 12000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        return sendJson(res, 200, {
+          ready: false,
+          reason: 'ffprobe_failed',
+          message: String(err.message || err).slice(0, 200),
+          stderr: String(stderr || '').slice(0, 400),
+        });
+      }
+      let probe;
+      try { probe = JSON.parse(stdout); }
+      catch(e) {
+        return sendJson(res, 200, { ready: false, reason: 'ffprobe_bad_json' });
+      }
+      const fmt   = probe.format  || {};
+      const sList = probe.streams || [];
+      const v = sList.find(s => s.codec_type === 'video');
+      const a = sList.find(s => s.codec_type === 'audio');
+      // Duration in seconds. ffprobe sometimes leaves it blank for .part files
+      // mid-download; fall back to the stream-level value or null. Bitrate
+      // likewise — when missing we'll compute it lazily in the state machine
+      // as totalBytes / duration so we always have a number to gate on.
+      const duration = parseFloat(fmt.duration) || (v && parseFloat(v.duration)) || null;
+      const bitrate  = parseInt(fmt.bit_rate, 10) || (v && parseInt(v.bit_rate, 10)) || null;
+      const data = {
+        ready: true,
+        container: (fmt.format_name || '').split(',')[0] || '',
+        duration,                         // seconds
+        bitrate,                          // bits/sec
+        sizeBytes: parseInt(fmt.size, 10) || null,
+        hasVideo: !!v,
+        hasAudio: !!a,
+        videoCodec: v ? (v.codec_name || '') : '',
+        audioCodec: a ? (a.codec_name || '') : '',
+        width:  v ? (v.width  || 0) : 0,
+        height: v ? (v.height || 0) : 0,
+        audioChannels: a ? (a.channels || 0) : 0,
+        audioSampleRate: a ? (parseInt(a.sample_rate, 10) || 0) : 0,
+      };
+      _probeCache[safe] = { data, expires: now + PROBE_TTL_MS };
+      sendJson(res, 200, data);
+    });
+    return true;
+  }
+
+  // v8.0.16 — rolling-rate window. The state machine asks "how fast is this
+  // download going over the last <windowSec> seconds?" and gets back a clean
+  // KB/s number derived from the same backend-collected samples that feed
+  // /api/emule/downloads. Default window 60s, min 5s, max 120s.
+  if (url.pathname === '/api/emule/rate' && req.method === 'GET') {
+    const fileParam = url.searchParams.get('file') || '';
+    const safe = safeBasename(fileParam);
+    if (!safe || !/^\d+\.part$/.test(safe)) {
+      return sendJson(res, 400, { error: 'bad_file', expected: '<n>.part' });
+    }
+    let windowSec = parseInt(url.searchParams.get('windowSec') || '60', 10);
+    if (!Number.isFinite(windowSec) || windowSec < 5)  windowSec = 5;
+    if (windowSec > 120) windowSec = 120;
+    const now = Date.now();
+    const cutoff = now - windowSec * 1000;
+    const arr = _rateSamples[safe] || [];
+    // Pick the oldest sample inside the window as the anchor. If we have none
+    // (cold start, or backend just restarted), use the oldest available; the
+    // state machine will treat low-confidence rate as "still measuring".
+    const windowed = arr.filter(s => s.t >= cutoff);
+    if (windowed.length < 2) {
+      return sendJson(res, 200, {
+        ready: false,
+        reason: 'insufficient_samples',
+        samples: windowed.length,
+        bytesPerSec: 0,
+        windowSec,
+      });
+    }
+    const first = windowed[0];
+    const last  = windowed[windowed.length - 1];
+    const dtSec = Math.max(0.001, (last.t - first.t) / 1000);
+    // Clamp negative slopes to 0. A .part file shouldn't shrink, but if eMule
+    // re-allocates or a .met rewrite happens to coincide with a poll, we
+    // could see a transient drop. Returning a negative number would confuse
+    // the state machine; 0 is the honest answer ("no progress measured").
+    const bps = Math.max(0, (last.bytes - first.bytes) / dtSec);
+    sendJson(res, 200, {
+      ready: true,
+      bytesPerSec: Math.round(bps),
+      kbPerSec:    Math.round(bps / 1024),
+      windowSec,
+      samples:     windowed.length,
+      firstSampleMsAgo: Math.round(now - first.t),
+      lastSampleMsAgo:  Math.round(now - last.t),
+    });
     return true;
   }
 

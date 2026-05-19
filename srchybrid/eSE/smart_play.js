@@ -323,11 +323,64 @@ function trySmartSource(index) {
 }
 
 // ── Monitoriza la descarga hasta que hay buffer suficiente ────────────────────
-// expectedHash (optional): MD4 hex string of the download. When present we
-// match by hash, which is exact — fuzzy name matching would otherwise pick a
-// pre-existing same-prefix file (e.g. "a todo gas 1" played instead of the
-// "a todo gas 6" the user just started).
+// v8.0.16: this used to be a ~245-line ad-hoc poll loop. It's now a thin
+// wrapper around window.startSmartMonitor (playback_state.js) — a real state
+// machine S1..S7 that gates playback on sustained-rate math, runs ffprobe
+// against the partial file to learn the actual bitrate, and pauses the video
+// during stalls instead of letting it pretend everything's fine. Same DOM
+// ids (`smart-play-status` / `-title` / `-progress` / `-actions`) so all the
+// existing UI keeps working — user said "reutiliza".
+//
+// If the new module isn't loaded for any reason (dev mode without rebuild,
+// custom bundle, etc.) we fall back to the legacy implementation below so
+// behaviour degrades gracefully.
 function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex, expectedHash) {
+  if (typeof window.startSmartMonitor === 'function') {
+    var statusEl   = document.getElementById('smart-play-status');
+    var progressEl = document.getElementById('smart-play-progress');
+    var titleEl    = document.getElementById('smart-play-title');
+    var actionsEl  = document.getElementById('smart-play-actions');
+    var prev = window._smartPlayMonitor;
+    if (prev && typeof prev.stop === 'function') { try { prev.stop('replaced'); } catch (e) {} }
+    window._smartPlayMonitor = window.startSmartMonitor({
+      movieTitle: movieTitle,
+      expectedFileName: expectedFileName,
+      totalSizeMB: totalSizeMB,
+      sourceIndex: sourceIndex,
+      expectedHash: expectedHash,
+      ui: { statusEl: statusEl, progressEl: progressEl, titleEl: titleEl, actionsEl: actionsEl },
+      onPlay: function (partFile, fileName /*, probe */) {
+        if (progressEl) progressEl.style.width = '100%';
+        if (typeof playPartFile === 'function') playPartFile(partFile, fileName);
+      },
+      onComplete: function (fileName) {
+        if (typeof playInModal === 'function') playInModal(encodeURIComponent(fileName));
+      },
+      onFail: function (reason, remaining, retry /*, ctx */) {
+        var sp = document.querySelector('#cinema-player .spinner');
+        if (sp) sp.style.display = 'none';
+        if (window.PlaybackState && window.PlaybackState.renderDefaultFailButtons) {
+          window.PlaybackState.renderDefaultFailButtons(actionsEl, reason, remaining, retry, {
+            titleEl: titleEl,
+            onBack: function () { if (typeof backToDetail === 'function') backToDetail(); },
+            onLeaveDownloading: function () {
+              if (typeof backToDetail === 'function') backToDetail();
+              if (typeof showNotification === 'function') {
+                showNotification('La descarga continua en segundo plano');
+              }
+            },
+          });
+        }
+      },
+    });
+    return;
+  }
+  // ── Legacy implementation kept as a fallback when playback_state.js
+  //    didn't load. Identical to v8.0.15 behaviour. ──────────────────────────
+  return _monitorForFile_legacy(movieTitle, expectedFileName, totalSizeMB, sourceIndex, expectedHash);
+}
+
+function _monitorForFile_legacy(movieTitle, expectedFileName, totalSizeMB, sourceIndex, expectedHash) {
   var statusEl = document.getElementById('smart-play-status');
   var progressEl = document.getElementById('smart-play-progress');
   var titleEl = document.getElementById('smart-play-title');

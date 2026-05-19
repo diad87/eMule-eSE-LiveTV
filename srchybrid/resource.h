@@ -2375,6 +2375,9 @@
 #define IDC_SMTPPASS                    3036
 #define IDC_SF_FICON                    3037
 #define IDC_SF_FNAME                    3038
+// v0.71 IPv6 Sprint 9 — Preferences→Connection IPv6 controls
+#define IDC_PREF_ENABLE_IPV6            3060
+#define IDC_PREF_IPV6_HINT              3061
 // eSE Live — LiveStreamDlg resource IDs
 #define IDD_LIVESTREAM                  3100
 #define IDC_LIVE_TITLE                  3101

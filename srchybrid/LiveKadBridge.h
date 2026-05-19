@@ -171,6 +171,16 @@ private:
     int     m_nSearchTokens;
     DWORD   m_dwLastSearchTokenRefill;
 
+    // v0.71 P3.8 — log spam throttling. When a polling client (web UI auto-
+    // refresh) keeps hitting cooldowns or "already in progress", we still
+    // want to inform the user ONCE per condition transition without flooding
+    // the log every 3 seconds. CLiveDebugLog (verbose) always gets every
+    // event for diagnostics. These flags track the last-printed state so we
+    // only emit AddLogLine when something actually changed.
+    bool    m_bLoggedKadNotConnected = false;       // logged "Kad not connected"
+    bool    m_bLoggedSearchCooldown = false;        // logged "cooldown active"
+    bool    m_bLoggedAlreadyInProgress = false;     // logged "already in progress"
+
     // DISC-S06: pending dial queue. OnKadSearchResult enqueues here instead
     // of dialing synchronously; Process() drains at most 3 per tick so a
     // search that returns 100 hits doesn't burst-open 100 sockets.

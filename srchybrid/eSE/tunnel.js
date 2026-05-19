@@ -37,12 +37,18 @@ function init(port) { PORT = port; }
 const CONFIG_PATH = runtimeDir.join('config.json');
 
 function loadConfig() {
-  if (fs.existsSync(CONFIG_PATH)) {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  // Try-read instead of existsSync→read so we don't expose a TOCTOU window
+  // where the file could disappear (or be swapped) between the two syscalls
+  // (CodeQL js/file-system-race #47-48). Same fix as PR #11.
+  let cfg = null;
+  try { cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch (e) { /* missing / unreadable / not JSON */ }
+  if (cfg) {
     let changed = false;
     if (!cfg.encKey)       { cfg.encKey       = crypto.randomBytes(32).toString('hex'); changed = true; }
     if (!cfg.accessToken)  { cfg.accessToken  = crypto.randomBytes(16).toString('hex'); changed = true; }
-    if (changed) fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+    if (changed) {
+      try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2)); } catch (e) {}
+    }
     return cfg;
   }
   const config = {
@@ -51,7 +57,7 @@ function loadConfig() {
     accessToken: crypto.randomBytes(16).toString('hex'),
     createdAt:   new Date().toISOString()
   };
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+  try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2)); } catch (e) {}
   console.log('[config] Generated new secrets');
   return config;
 }
@@ -112,7 +118,12 @@ async function setupUPnP() {
       console.log('[UPnP] Use http://localhost:' + PORT + ' locally, or set up Tailscale / a Tor onion service for cross-NAT access.');
     }
   } catch (e) {
-    console.log('[UPnP] Failed: ' + e.message);
+    // CodeQL js/log-injection — e.message can carry CR/LF from upstream
+    // network errors. Same hardening PR #11 applied to publishUrl's [ntfy]
+    // logger; that function is gone in v8.0.1 but UPnP still surfaces
+    // network errors so apply the same sanitization here.
+    const _safeMsg = String(e && e.message).replace(/[\r\n\t]+/g, ' ');
+    console.log('[UPnP] Failed: ' + _safeMsg);
     console.log('[UPnP] No public URL available. Use LAN (http://localhost:' + PORT + '),');
     console.log('[UPnP] Tailscale (100.64/10), or a Tor onion service set up manually.');
   }

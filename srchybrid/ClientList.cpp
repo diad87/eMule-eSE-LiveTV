@@ -190,7 +190,8 @@ void CClientList::DeleteAll()
 // endpoint. Filters to peers with a live socket; caps at `max` entries.
 // Pointers are raw — caller must not retain them across event-loop turns
 // (the ClientList may free them on disconnect).
-void CClientList::GetConnectedSnapshot(std::vector<CUpDownClient*>& out, size_t max) const
+void CClientList::GetConnectedSnapshot(std::vector<CUpDownClient*>& out, size_t max,
+                                       bool bRequirePrivacyTunneling /*=false*/) const
 {
 	out.clear();
 	if (max == 0) return;
@@ -199,6 +200,11 @@ void CClientList::GetConnectedSnapshot(std::vector<CUpDownClient*>& out, size_t 
 		if (!c) continue;
 		if (!c->socket) continue;
 		if (!c->socket->IsConnected()) continue;
+		// v0.71 P3.5 — filter by privacy tunneling capability if asked.
+		// Peers that didn't advertise TAG_ESE_CAPS (legacy) will have
+		// m_uEseCapabilities == 0 and fail this check.
+		if (bRequirePrivacyTunneling && !c->SupportsEsePrivacyTunneling())
+			continue;
 		out.push_back(c);
 		if (out.size() >= max) break;
 	}

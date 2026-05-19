@@ -187,6 +187,7 @@ void CUpDownClient::Init()
 
 	m_byCompatibleClient = 0;
 	m_dwForkCaps = 0;  // v0.71 IPv6 Sprint 6 — unset until peer sends CT_FORK_CAPABILITIES
+	m_uEseCapabilities = 0;  // v0.71 P3.5 — unset until peer sends TAG_ESE_CAPS
 	m_bFriendSlot = false;
 	m_bCommentDirty = false;
 	m_bIsML = false;
@@ -625,6 +626,20 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 			} else if (bDbgInfo)
 				m_strHelloInfo.AppendFormat(_T("\n  ***UnkType=%s"), (LPCTSTR)temptag.GetFullInfo());
 			break;
+		case 0x6C:   // TAG_ESE_CAPS — v0.71 P3.5
+			// Peer advertises eSE privacy capabilities. Bits are defined in
+			// Opcodes.h (ESE_CAP_*): M1..M6 + Sealed + Gossip + Tunneling +
+			// Cover traffic. Stored in m_uEseCapabilities so the privacy
+			// layer can filter relay candidates (eg only peers with
+			// ESE_CAP_PRIVACY_TUNNELING are used in CLiveTunnel::BuildPool).
+			// Absent tag = legacy peer = 0 = "no privacy support".
+			if (temptag.IsInt()) {
+				m_uEseCapabilities = (uint32)temptag.GetInt();
+				if (bDbgInfo)
+					m_strHelloInfo.AppendFormat(_T("\n  EseCaps=0x%08x"), m_uEseCapabilities);
+			} else if (bDbgInfo)
+				m_strHelloInfo.AppendFormat(_T("\n  ***UnkType=%s"), (LPCTSTR)temptag.GetFullInfo());
+			break;
 		default:
 			// Since eDonkeyHybrid 1.3 is no longer sending the additional Int32 at the end of
 			// the Hello packet, we use the "pr=1" tag to determine them.
@@ -1010,6 +1025,12 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	// this tag drop it silently (per the eD2K TLV contract), so it's safe.
 	tagcount += 1;
 
+	// v0.71 P3.5 — advertise TAG_ESE_CAPS (0x6C) so the privacy stack
+	// can detect which peers run this fork and support tunneling. Same
+	// TLV-additive contract as CT_FORK_CAPABILITIES: unknown tag drops
+	// silently on legacy peers, no wire break.
+	tagcount += 1;
+
 	data.WriteUInt32(tagcount);
 
 	// eD2K Name
@@ -1141,6 +1162,20 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	}
 	CTag tagForkCaps(CT_FORK_CAPABILITIES, forkCaps);
 	tagForkCaps.WriteTagToFile(data);
+
+	// v0.71 P3.5 — TAG_ESE_CAPS (single-byte name 0x6C, see Opcodes.h
+	// for the kad-style string form "\x6C"). Carries the runtime privacy
+	// capability bitmap built up at startup in EmuleDlg::StartupTimer
+	// (g_uEseCapsRuntime). A peer that doesn't run this fork ignores
+	// the unknown tag; a peer that does runs reads m_uEseCapabilities
+	// (see ProcessHelloTypePacket / Sprint P3.5 below) and the privacy
+	// layer uses it to filter relay candidates.
+	{
+		extern uint32 g_uEseCapsRuntime;  // defined in FirewallProberV6.cpp
+		const uint8 kEseCapsTagName = 0x6C;  // TAG_ESE_CAPS byte form
+		CTag tagEseCaps(kEseCapsTagName, (uint64)g_uEseCapsRuntime);
+		tagEseCaps.WriteTagToFile(data);
+	}
 
 	uint32 dwIP;
 	uint16 nPort;

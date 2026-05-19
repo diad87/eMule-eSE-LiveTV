@@ -93,7 +93,13 @@ public:
 	// privacy test endpoint. Bounded by `max`; pushes pointers to `out`.
 	// Caller MUST hold no client-modifying locks while iterating the
 	// returned snapshot — these are raw pointers, not strong refs.
-	void	GetConnectedSnapshot(std::vector<CUpDownClient*>& out, size_t max) const;
+	// v0.71 P3.5 — bRequirePrivacyTunneling=true filters out peers that
+	// did not advertise ESE_CAP_PRIVACY_TUNNELING in their handshake;
+	// false returns any connected peer (used by test_circuit). The
+	// privacy tunnel layer always requests true for real circuit builds
+	// to avoid wasting CREATE cells on peers that will drop them.
+	void	GetConnectedSnapshot(std::vector<CUpDownClient*>& out, size_t max,
+	                             bool bRequirePrivacyTunneling = false) const;
 	bool	AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket *sender);
 	CUpDownClient* FindClientByConnIP(uint32 clientip, UINT port) const;
 	CUpDownClient* FindClientByIP(uint32 clientip, UINT port) const;

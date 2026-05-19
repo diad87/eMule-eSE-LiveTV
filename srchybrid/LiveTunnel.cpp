@@ -147,12 +147,14 @@ uint32_t CLiveTunnel::BuildTestCircuit(CUpDownClient* clientHint)
     if (clientHint) {
         cands.push_back(clientHint);
     } else if (theApp.clientlist) {
-        // Pick up to 3 connected clients as candidates. We DON'T filter
-        // by TAG_ESE_CAPS yet because P3.5 (emit/parse caps in handshake)
-        // is the next step. So this might fail handshake silently if the
-        // peer doesn't run the fork; the UI will reflect that honestly
-        // (circuit stays Pending until rotation kills it ~6 s later).
-        theApp.clientlist->GetConnectedSnapshot(cands, 3);
+        // v0.71 P3.5 — PREFER peers that advertised ESE_CAP_PRIVACY_TUNNELING.
+        // If we find any, use only those (handshake will actually succeed).
+        // Fallback: any connected peer (test path still works — circuit
+        // goes Pending until ~6 s timeout, demonstrates the send pipeline).
+        theApp.clientlist->GetConnectedSnapshot(cands, 3, /*tunnelOnly=*/true);
+        if (cands.empty()) {
+            theApp.clientlist->GetConnectedSnapshot(cands, 3, /*tunnelOnly=*/false);
+        }
     }
     if (cands.empty()) return 0;
 

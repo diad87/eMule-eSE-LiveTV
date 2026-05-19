@@ -108,6 +108,11 @@ setInterval(function emuleLifecycleWatchdog() {
     _emuleRestartedAt = Date.now();
     _emuleLibraryEpoch++;
     console.log('[eMule] Process back online (epoch=' + _emuleLibraryEpoch + ')');
+    // v8.0.10: a fresh emule.exe may have written a NEW eSE_pass.bin to disk
+    // (especially when the user closed eMule and re-launched from a different
+    // install dir). Drop the cached password so the next request re-reads
+    // from disk and finds the live value.
+    try { invalidatePasswordCache(); } catch (e) {}
     // Auto-login is called by server.js initialisation; the autoLoginEmule
     // function declared later in this file picks up immediately. We just
     // notify external listeners.
@@ -260,6 +265,18 @@ setInterval(function emuleWebServerWatchdog() {
 function _candidatePassFiles() {
   const candidates = [];
   const home = process.env.USERPROFILE || process.env.HOME || '';
+
+  // v8.0.10: PORTABLE-MODE FIRST. eMule.exe in portable mode (with a config/
+  // dir next to the binary) writes eSE_pass.bin there instead of %APPDATA%.
+  // Real-world log evidence: a v7.1.3 portable install at
+  //   C:\Users\iunan\Downloads\eSE-LiveTV-v0.70b-eSE7.1.3-...\config\eSE_pass.bin
+  // had the live password while %APPDATA%\eMule\config\eSE_pass.bin was stale.
+  // process.cwd() is set to the eMule install dir by ToggleEseServer's
+  // CreateProcess(workingDir=exeDir), so this hits the portable config first.
+  try {
+    candidates.push(path.join(process.cwd(), 'config', 'eSE_pass.bin'));
+  } catch (e) {}
+
   if (process.env.APPDATA)      candidates.push(path.join(process.env.APPDATA,      'eMule', 'config', 'eSE_pass.bin'));
   if (process.env.LOCALAPPDATA) candidates.push(path.join(process.env.LOCALAPPDATA, 'eMule', 'config', 'eSE_pass.bin'));
   if (home) candidates.push(path.join(home, 'AppData', 'Roaming', 'eMule', 'config', 'eSE_pass.bin'));
@@ -271,6 +288,16 @@ function _candidatePassFiles() {
 
 // Cache: { path, mtimeMs, value }. Re-read when stat.mtimeMs differs.
 let _passCache = { path: null, mtimeMs: 0, value: null };
+
+// v8.0.10: when emule.exe is restarted while ese-server keeps running (the
+// orphan scenario), the password on disk may differ from our cache because
+// the new emule.exe wrote its own. Called from the process watchdog on
+// dead→alive transition to force the next read to refresh from disk.
+function invalidatePasswordCache() {
+  _passCache = { path: null, mtimeMs: 0, value: null };
+  emulePassword = null;
+  console.log('[eMule] Password cache invalidated (eMule revival or explicit reset).');
+}
 
 function _readPassFromDisk() {
   for (const p of _candidatePassFiles()) {
@@ -287,6 +314,11 @@ function _readPassFromDisk() {
     // Same validation the C++ side enforces: 8-64 printable ASCII chars.
     if (pw.length < 8 || pw.length > 64) continue;
     if (!/^[\x20-\x7E]+$/.test(pw)) continue;
+    // v8.0.10: log the source on first read or when mtime changed, so the
+    // user can diagnose mismatch issues without strace.
+    if (_passCache.path !== p || _passCache.mtimeMs !== st.mtimeMs) {
+      console.log('[eMule] Loaded eSE_pass.bin from ' + p + ' (mtime=' + new Date(st.mtimeMs).toISOString() + ')');
+    }
     _passCache = { path: p, mtimeMs: st.mtimeMs, value: pw };
     return pw;
   }

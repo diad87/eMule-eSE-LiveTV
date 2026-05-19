@@ -250,7 +250,11 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 			cs.Format(_T("%u activos / pool PST %u"), (unsigned)circuits, (unsigned)pool);
 			rCtrl << _T("Onion tunnels:\t") << cs;
 			if (circuits == 0 && sel.GetDefaultMode() != CKadV2Mode::Direct) {
-				rCtrl << _T("  (modo no-Directo pero TCP send pendiente F5 P3)");
+				// P3 done: TCP send wired. Now the reason for 0 circuits
+				// is no eSE V1 peer in handshake range. Honest disclosure
+				// to the user about WHY the count is 0 without pretending
+				// the protocol is broken.
+				rCtrl << _T("  (esperando peer eSE V1; prueba /api/live/privacy/test_circuit)");
 			}
 			rCtrl << _T("\r\n");
 

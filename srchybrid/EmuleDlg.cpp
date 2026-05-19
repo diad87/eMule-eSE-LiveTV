@@ -3699,8 +3699,38 @@ void CemuleDlg::ToggleEseServer(bool bOpenBrowser)
 		// (toolbar button click). Auto-spawn from OnInitDialog skips this
 		// to avoid popping up a window every time eMule launches.
 		if (bOpenBrowser) {
-			ShellExecute(NULL, _T("open"), _T("http://localhost:8080"),
-			             NULL, NULL, SW_SHOWNORMAL);
+			// v8.0.4 — ese-server may have fallen back to a port other than
+			// 8080 if Jenkins/Tomcat/etc. already hold it. We discover the
+			// actual bound port by polling %APPDATA%\eSE\port.txt for up to
+			// ~3 s; the child writes it as soon as server.listen() succeeds.
+			// Fall back to 8080 if the file never appears (older child build
+			// or write permission issue).
+			int boundPort = 8080;
+			TCHAR appData[MAX_PATH] = {0};
+			if (GetEnvironmentVariable(_T("APPDATA"), appData, MAX_PATH) > 0) {
+				CString portFile;
+				portFile.Format(_T("%s\\eSE\\port.txt"), appData);
+				for (int attempt = 0; attempt < 30; ++attempt) {
+					HANDLE hPort = CreateFile(portFile, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+					                          NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+					if (hPort != INVALID_HANDLE_VALUE) {
+						char buf[16] = {0};
+						DWORD read = 0;
+						if (ReadFile(hPort, buf, sizeof(buf) - 1, &read, NULL) && read > 0) {
+							buf[read] = 0;
+							int parsed = atoi(buf);
+							if (parsed >= 1 && parsed <= 65535) boundPort = parsed;
+						}
+						CloseHandle(hPort);
+						break;
+					}
+					Sleep(100);
+				}
+			}
+			CString url;
+			url.Format(_T("http://localhost:%d"), boundPort);
+			ShellExecute(NULL, _T("open"), url, NULL, NULL, SW_SHOWNORMAL);
+			AddDebugLogLine(false, _T("eSE launcher: opened browser at %s"), (LPCTSTR)url);
 		}
 		AddDebugLogLine(false, _T("eSE launcher: started %s (browser=%d)"),
 			(LPCTSTR)launchExe, bOpenBrowser ? 1 : 0);

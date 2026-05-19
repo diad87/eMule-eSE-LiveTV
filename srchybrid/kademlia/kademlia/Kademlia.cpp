@@ -50,6 +50,13 @@ their client on the eMule forum.
 #include "kademlia/utils/KadUDPKey.h"
 #include "kademlia/utils/KadClientSearcher.h"
 #include "kademlia/kademlia/tag.h"
+// v0.71 P0.2 — privacy stack ticks. Run once per second from CKademlia::Process
+// which is the always-on heartbeat (1 Hz, driven by UploadQueue.cpp). Each
+// module self-throttles internally (TunnelPool gates by lifetime, Bootstrap
+// gates by m_lastMDNSTick), so calling them every second is safe and idempotent.
+#include "kademlia/kademlia/KadV2TunnelPool.h"
+#include "../../LiveTunnel.h"
+#include "../../LiveBootstrap.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -206,6 +213,25 @@ void CKademlia::Process()
 {
 	if (m_pInstance == NULL || !m_bRunning)
 		return;
+
+	// v0.71 P0.2 — privacy stack heartbeat. Wrapped in try/catch because
+	// the privacy modules are best-effort and must NEVER bring down the
+	// Kad scheduler. If one throws we log once and stop ticking it (the
+	// flag prevents log spam — m_bRunning of Kad itself is unaffected).
+	{
+		static bool s_privacyTickDisabled = false;
+		if (!s_privacyTickDisabled) {
+			try {
+				eSELive::CLiveTunnel::Get().Tick();
+				CKadV2TunnelPool::Get().Tick();
+				eSELive::CLiveBootstrap::Get().TickMDNS();
+			} catch (...) {
+				DebugLogError(_T("Privacy tick threw exception — disabling further ticks this session"));
+				s_privacyTickDisabled = true;
+			}
+		}
+	}
+
 	uint32 uMaxUsers = 0;
 	time_t tNow = time(NULL);
 	ASSERT(m_pInstance->m_pPrefs != NULL);

@@ -497,6 +497,28 @@
 #define TAG_SHARD_DEGREE             "\x6A"   // M3 (uint8 [0..6])
 #define TAG_PINNED_BY_SUBSCRIBER     "\x6B"   // M1 (uint8 flag 0/1)
 #define TAG_ESE_CAPS                 "\x6C"   // global capabilities bitmap (uint32)
+
+// v0.71 P0.3 — bit constants for the TAG_ESE_CAPS bitmap. Used at runtime
+// to set g_uEseCapsRuntime (FirewallProberV6.cpp) which the UI panel reads
+// to show the user what eSE features are actually live. Phase exit gating:
+// a bit is ONLY set when the feature module is initialised AND its phase
+// exit criteria are met (audit 2026-05-19 found bits at 0 due to never
+// being OR-ed; P0 fixes that for the modules already wired).
+#define ESE_CAP_M1_SUBSCRIBER_PIN    0x00000001  // bit 0 — files pinned by my subscribers
+#define ESE_CAP_M2_COMPOSITE_KEYS    0x00000002  // bit 1 — composite (kw,ft,size) keys
+#define ESE_CAP_M3_SHARDING          0x00000004  // bit 2 — hot keyword sharding
+#define ESE_CAP_M4_TRIGRAMS          0x00000008  // bit 3 — trigram index for prefix
+#define ESE_CAP_M5_BLOOM_GOSSIP      0x00000010  // bit 4 — bloom digest gossip
+#define ESE_CAP_M6_K_EFFECTIVE       0x00000020  // bit 5 — adaptive k per keyword
+#define ESE_CAP_PRIVACY_TUNNELING    0x00000100  // bit 8 — onion tunnels active
+#define ESE_CAP_SEALED_RECORDS       0x00000200  // bit 9 — sealed channels (Ed25519+HKDF)
+#define ESE_CAP_GOSSIP_PROTOCOL      0x00000400  // bit 10 — channel gossip
+#define ESE_CAP_COVER_TRAFFIC        0x00000800  // bit 11 — Poisson cover cells
+
+// Runtime accumulator for TAG_ESE_CAPS. Defined in FirewallProberV6.cpp
+// (same file as g_uForkCapsRuntime — both are runtime cap accumulators
+// updated as modules go live; both are read by the UI for visibility).
+extern uint32 g_uEseCapsRuntime;
 #define TAG_SOURCEUPORT			"\xFC"	// <uint16>
 #define TAG_SOURCEPORT			"\xFD"	// <uint16>
 #define TAG_SOURCEIP			"\xFE"	// <uint32>

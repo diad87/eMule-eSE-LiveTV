@@ -15,6 +15,13 @@
 #include "clientlist.h"
 #include "ListenSocket.h"        // v0.71 IPv6 Sprint 9 — IsDualStack()
 #include "FirewallProberV6.h"    // v0.71 IPv6 Sprint 3 — GetDetectedV6IP()
+// v0.71 P2.1 — Privacidad block. Reads live state from the privacy
+// singletons so the user can verify the modules are actually running.
+#include "LiveTunnel.h"
+#include "LiveSubscriptionStore.h"
+#include "kademlia/kademlia/KadV2TunnelPool.h"
+#include "kademlia/kademlia/KadV2ModeSelector.h"
+#include "Opcodes.h"   // g_uEseCapsRuntime + ESE_CAP_* bits
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -153,6 +160,104 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 			rCtrl << v6.ToStringC();
 	}
 	rCtrl << _T("\r\n");
+
+	rCtrl << _T("\r\n");
+
+	///////////////////////////////////////////////////////////////////////////
+	// v0.71 P2.1 — Privacidad (eSE V1)
+	///////////////////////////////////////////////////////////////////////////
+	// Este bloque demuestra al usuario qué partes del stack de privacidad
+	// (tesis de seguridad + Kad Search v2) están REALMENTE encendidas. La
+	// auditoría 2026-05-19 reveló que los módulos F2-F5 existían como
+	// código pero nadie los instanciaba en runtime. P0 los enchufa al
+	// arranque; este bloque hace visible que están vivos.
+	rCtrl.SetSelectionCharFormat(rcfBold);
+	rCtrl << _T("Privacidad (eSE V1)\r\n");
+	rCtrl.SetSelectionCharFormat(rcfDef);
+
+	{
+		using namespace Kademlia;
+		CKadV2ModeSelector& sel = CKadV2ModeSelector::Get();
+
+		// Modo activo (preferencia del usuario)
+		rCtrl << _T("Modo:\t");
+		switch (sel.GetDefaultMode()) {
+			case CKadV2Mode::Direct:   rCtrl << _T("Directo (sin onion routing)"); break;
+			case CKadV2Mode::Tunneled: rCtrl << _T("Tunelizado (todo a través de 2-hop onion)"); break;
+			case CKadV2Mode::Adaptive: rCtrl << _T("Adaptativo (decide por consulta)"); break;
+			default:                   rCtrl << _T("?"); break;
+		}
+		rCtrl << _T("\r\n");
+
+		// Política de fallback si faltan relays
+		rCtrl << _T("Fallback:\t");
+		switch (sel.GetFallbackPolicy()) {
+			case CKadV2ModeSelector::STRICT_PRIVACY: rCtrl << _T("Estricto (aborta si no hay relays)"); break;
+			case CKadV2ModeSelector::BALANCED:       rCtrl << _T("Equilibrado (reduce fanout)"); break;
+			case CKadV2ModeSelector::BEST_EFFORT:    rCtrl << _T("Best effort (cae a Directo y avisa)"); break;
+			default:                                 rCtrl << _T("?"); break;
+		}
+		rCtrl << _T("\r\n");
+
+		// Capabilities runtime — bitmap TAG_ESE_CAPS. Refleja qué módulos
+		// reales se han instanciado al arranque (P0.3). 0x00000000 sería
+		// señal de stack apagado.
+		rCtrl << _T("Capabilities:\t");
+		{
+			CString cs;
+			cs.Format(_T("0x%08X"), (unsigned)g_uEseCapsRuntime);
+			rCtrl << cs;
+			if (g_uEseCapsRuntime == 0) {
+				rCtrl << _T("  (stack apagado — privacy code no inicializado)");
+			} else {
+				rCtrl << _T("  [");
+				bool first = true;
+				#define APPEND_CAP(bit, name) \
+					do { if (g_uEseCapsRuntime & (bit)) { \
+						if (!first) rCtrl << _T(", "); \
+						rCtrl << _T(name); first = false; \
+					} } while (0)
+				APPEND_CAP(ESE_CAP_M1_SUBSCRIBER_PIN, "M1");
+				APPEND_CAP(ESE_CAP_M2_COMPOSITE_KEYS, "M2");
+				APPEND_CAP(ESE_CAP_M3_SHARDING,       "M3");
+				APPEND_CAP(ESE_CAP_M4_TRIGRAMS,       "M4");
+				APPEND_CAP(ESE_CAP_M5_BLOOM_GOSSIP,   "M5");
+				APPEND_CAP(ESE_CAP_M6_K_EFFECTIVE,    "M6");
+				APPEND_CAP(ESE_CAP_SEALED_RECORDS,    "Sealed");
+				APPEND_CAP(ESE_CAP_GOSSIP_PROTOCOL,   "Gossip");
+				APPEND_CAP(ESE_CAP_PRIVACY_TUNNELING, "Tunneling");
+				APPEND_CAP(ESE_CAP_COVER_TRAFFIC,     "Cover");
+				#undef APPEND_CAP
+				rCtrl << _T("]");
+			}
+		}
+		rCtrl << _T("\r\n");
+
+		// Circuitos onion activos (LiveTunnel). 0 con modo != Directo
+		// significa que el TCP send path (F5 P3) aún no está cableado —
+		// es un signo honesto al usuario.
+		size_t circuits = 0;
+		size_t pool = 0;
+		size_t subs = 0;
+		try {
+			circuits = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
+			pool     = CKadV2TunnelPool::Get().Size();
+			subs     = eSELive::CLiveSubscriptionStore::Get().Count();
+		} catch (...) {}
+
+		{
+			CString cs;
+			cs.Format(_T("%u activos / pool PST %u"), (unsigned)circuits, (unsigned)pool);
+			rCtrl << _T("Onion tunnels:\t") << cs;
+			if (circuits == 0 && sel.GetDefaultMode() != CKadV2Mode::Direct) {
+				rCtrl << _T("  (modo no-Directo pero TCP send pendiente F5 P3)");
+			}
+			rCtrl << _T("\r\n");
+
+			cs.Format(_T("%u canales (DPAPI)"), (unsigned)subs);
+			rCtrl << _T("Suscripciones:\t") << cs << _T("\r\n");
+		}
+	}
 
 	rCtrl << _T("\r\n");
 

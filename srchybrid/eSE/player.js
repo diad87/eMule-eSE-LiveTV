@@ -1502,12 +1502,39 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex, 
             var dl = downloads[j];
             if (!matchDownload(dl)) continue;
             
-            // v8.0.14 — gate on real bytes (downloadedMB from .met gaps),
-            // not on wall-clock waiting time. Same fix as smart_play.js.
-            var MIN_HEAD_MB = 50;
+            // v8.0.15 — sustained-rate gate. Mirrors smart_play.js logic.
+            // Plays only when (head bytes available) AND (download rate >=
+            // estimated playback rate × 1.3) — so we never start a movie
+            // we can't sustain.
+            var MIN_HEAD_MB = 15;
+            var SAFETY = 1.3;
+            var ASSUMED_DURATION_SEC = 90 * 60;
+            var MIN_REQUIRED_RATE_KBPS = 256;
             var isActive = dl.active;
-            var dlMB  = (typeof dl.downloadedMB === 'number') ? dl.downloadedMB : (dl.sizeMB || 0);
-            var totMB = (typeof dl.totalMB === 'number') ? dl.totalMB : (dl.sizeMB || 0);
+            var dlBytes  = (typeof dl.downloadedBytes === 'number') ? dl.downloadedBytes
+                         : (typeof dl.downloadedMB === 'number')   ? dl.downloadedMB * 1024 * 1024
+                         : (dl.sizeBytes || 0);
+            var totBytes = (typeof dl.totalBytes === 'number') ? dl.totalBytes
+                         : (typeof dl.totalMB === 'number')   ? dl.totalMB * 1024 * 1024
+                         : (dl.sizeBytes || 0);
+            var dlMB  = Math.round(dlBytes  / (1024 * 1024));
+            var totMB = Math.round(totBytes / (1024 * 1024));
+
+            if (!window._playerRateSamples) window._playerRateSamples = [];
+            var samples = window._playerRateSamples;
+            samples.push([Date.now(), dlBytes]);
+            while (samples.length > 7) samples.shift();
+            var downloadRateBps = 0;
+            if (samples.length >= 2) {
+              var first = samples[0]; var last = samples[samples.length - 1];
+              var dtSec = Math.max(1, (last[0] - first[0]) / 1000);
+              downloadRateBps = Math.max(0, (last[1] - first[1]) / dtSec);
+            }
+            var downloadRateKBps = Math.round(downloadRateBps / 1024);
+            var requiredRateBps = totBytes > 0
+              ? Math.max(MIN_REQUIRED_RATE_KBPS * 1024, (totBytes / ASSUMED_DURATION_SEC) * SAFETY)
+              : MIN_REQUIRED_RATE_KBPS * 1024;
+            var requiredRateKBps = Math.round(requiredRateBps / 1024);
 
             if (isActive) {
               if (fileFirstSeen === 0) fileFirstSeen = Date.now();
@@ -1517,24 +1544,41 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex, 
             }
 
             var waitingSec = fileFirstSeen > 0 ? Math.round((Date.now() - fileFirstSeen) / 1000) : 0;
+            var hasHead = dlMB >= MIN_HEAD_MB;
+            var rateOk  = downloadRateBps >= requiredRateBps;
+            var alreadyComplete = totBytes > 0 && dlBytes >= totBytes;
 
             if (fileFirstSeen > 0) {
-              var bufferPct = Math.min((dlMB / MIN_HEAD_MB) * 100, 100);
-              if (progressEl) progressEl.style.width = (60 + bufferPct * 0.4) + '%';
+              var headPct = Math.min(dlMB / MIN_HEAD_MB, 1) * 50;
+              var ratePct = requiredRateBps > 0 ? Math.min(downloadRateBps / requiredRateBps, 1) * 50 : 0;
+              if (progressEl) progressEl.style.width = (60 + (headPct + ratePct) * 0.4) + '%';
               if (isActive) {
-                if (statusEl) statusEl.textContent = 'Descargado ' + dlMB + ' / ' + totMB + ' MB (buffer ' + Math.round(bufferPct) + '%)';
+                if (statusEl) statusEl.textContent =
+                  'Descargado ' + dlMB + ' / ' + totMB + ' MB · ↓ ' + downloadRateKBps +
+                  ' KB/s · necesitas ≥ ' + requiredRateKBps + ' KB/s';
               } else {
                 if (statusEl) statusEl.textContent = 'Archivo detectado, esperando datos...';
               }
-              if (titleEl) titleEl.textContent = 'Buffering... (' + Math.round(bufferPct) + '%)';
+              if (titleEl) {
+                titleEl.textContent = alreadyComplete ? 'Listo (archivo completo)'
+                  : hasHead && rateOk ? 'Listo · velocidad ok'
+                  : !hasHead ? ('Buffering... cargando inicio (' + dlMB + '/' + MIN_HEAD_MB + ' MB)')
+                  : 'Buffering... esperando velocidad estable';
+              }
             }
 
-            // Success: enough buffer
-            if (dlMB >= MIN_HEAD_MB && waitingSec >= BUFFER_WAIT_SEC && activeChecks >= 3) {
+            var canPlay = alreadyComplete || (
+              isActive && hasHead && rateOk &&
+              waitingSec >= BUFFER_WAIT_SEC && activeChecks >= 3 &&
+              samples.length >= 4
+            );
+            if (canPlay) {
               clearInterval(checker);
               if (progressEl) progressEl.style.width = '100%';
               if (titleEl) titleEl.textContent = 'Reproduciendo';
-              if (statusEl) statusEl.textContent = 'Buffer listo (' + dlMB + ' MB descargados)';
+              if (statusEl) statusEl.textContent = alreadyComplete
+                ? 'Buffer listo (archivo completo, ' + dlMB + ' MB)'
+                : 'Buffer listo (' + dlMB + ' MB · ↓ ' + downloadRateKBps + ' KB/s)';
               setTimeout(function() { playPartFile(dl.partFile, dl.fileName); }, 1000);
               return;
             }

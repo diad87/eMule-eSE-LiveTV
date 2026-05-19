@@ -807,22 +807,27 @@ function detectLanguage(fileName) {
 
 // ─── DOWNLOAD ──────────────────────────────────────────────────
 
+// v8.0.15 — track which hashes we've already flipped to preview-prio so
+// repeated Reproducir clicks on the same source don't spam eMule with
+// duplicate transfer-action requests (one user reported eMule misbehaving
+// after v8.0.12 — probably the priohigh call moving things around in the
+// queue every click). Set lives for the ese-server process lifetime.
+const _previewedHashes = new Set();
+
 function emuleDownload(hash, callback) {
   if (!emuleSession) { callback(new Error('Not logged in')); return; }
   emuleRequest('?ses=' + emuleSession + '&w=search&downloads=' + hash, (err, html) => {
     if (err) { callback(err, false); return; }
-    // v8.0.12 — after adding to the queue, flip the new download to
-    // "preview priority" + HIGH priority. Without this, eMule grabs chunks
-    // RANDOMLY across the file — observed in real-world reports as
-    // "tengo 1 GB descargado a 25 MB/s y no arranca la reproducción"
-    // because the FIRST bytes (MP4/MKV container header) hadn't arrived
-    // yet so ffmpeg couldn't open the .part. Preview-prio biases chunk
-    // selection toward the start, so the head fills before the tail.
-    // Both calls are fire-and-forget: failures here are non-fatal (the
-    // download still works, just without streaming optimisation).
+    // v8.0.15 — fire op=setpreview once per hash. Drops the v8.0.12
+    // op=priohigh call entirely: changing global queue priority on every
+    // click was too invasive and reshuffled the user's other downloads.
+    // Preview-prio alone is enough to bias head-chunk fetching for the
+    // ffmpeg-can-parse-the-header requirement.
     const upper = String(hash || '').toUpperCase();
-    emuleRequest('?ses=' + emuleSession + '&w=transfer&downloads=' + upper + '&op=setpreview&en=1', () => {});
-    emuleRequest('?ses=' + emuleSession + '&w=transfer&downloads=' + upper + '&op=priohigh',         () => {});
+    if (upper && !_previewedHashes.has(upper)) {
+      _previewedHashes.add(upper);
+      emuleRequest('?ses=' + emuleSession + '&w=transfer&downloads=' + upper + '&op=setpreview&en=1', () => {});
+    }
     callback(null, true);
   });
 }

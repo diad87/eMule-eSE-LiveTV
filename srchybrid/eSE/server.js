@@ -541,7 +541,7 @@ function tryListen(p) {
     _writePortFile(p);
 
     console.log('');
-    console.log('  eSE v8.0.14 - http://localhost:' + p);
+    console.log('  eSE v8.0.15 - http://localhost:' + p);
     console.log('  ffmpeg: ' + FFMPEG_PATH);
     console.log('  diagnostic: ' + errorCodes.buildCode('E00'));
     if (p !== PORT_PREFERRED) {

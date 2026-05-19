@@ -2424,7 +2424,7 @@ function smartDownload(movieTitle, movieYear) {
 setTimeout(loadTrendingMovies, 500);
 
 
-// ==== smart_play.js (25105 bytes) ====
+// ==== smart_play.js (28827 bytes) ====
 // smart_play.js — smartPlay, trySmartSource, monitorForFile
 
 // ── Smart Play: evalúa → decide → actúa ───────────────────────────────────────
@@ -2848,21 +2848,66 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex, 
             var dl = downloads[j];
             if (!matchDownload(dl)) continue;
 
-            // v8.0.14 — gate playback on REAL bytes downloaded, not just
-            // wall-clock since-detection. eMule preallocates the .part file
-            // at queue-add time, so stat.size lies; the .met gap-list parser
-            // in routes/emule_routes.js now exposes downloadedMB and totalMB
-            // which give the truth. The MIN_HEAD threshold is conservative
-            // (50 MB) — enough for ffmpeg to parse the MP4/MKV container
-            // header on most 720p/1080p movies with the preview-priority
-            // (head-first chunk picking from v8.0.12).
-            var MIN_HEAD_MB = 50;
+            // v8.0.15 — playback gate based on SUSTAINED-RATE math, not
+            // just absolute bytes downloaded.
+            //
+            // Insight from user feedback after v8.0.14: "de qué me sirve
+            // tener 10 minutos de reproducción disponible si luego
+            // descargo a 100 kbps y se me va a cortar". Exactly right —
+            // a fixed 50 MB head is meaningless if the download rate
+            // can't keep up with playback rate for the rest of the film.
+            //
+            // Real condition: download rate must exceed playback rate by
+            // a safety margin, OR we already have the whole file. Plus
+            // a minimum head (15 MB) so ffmpeg can parse the container
+            // before we hit play.
+            //
+            // Playback rate estimate: totalBytes / assumed-duration. We
+            // pick 90 minutes (5400 s) as the assumed worst-case duration
+            // because:
+            //   - It OVER-estimates rate for typical 120-150 min features
+            //     → we demand a higher download rate → we're conservative
+            //   - It's roughly right for shorter movies / 720p encodes
+            // We never go below 256 KB/s as a floor (covers very-low-
+            // bitrate files where the formula would say e.g. 60 KB/s and
+            // we'd start playing on a 100 kbps trickle).
+            var MIN_HEAD_MB = 15;
+            var SAFETY = 1.3;            // require 30 % headroom over playback rate
+            var ASSUMED_DURATION_SEC = 90 * 60;
+            var MIN_REQUIRED_RATE_KBPS = 256;
+
             var isActive = dl.active;
-            // Prefer the new downloadedMB field (true bytes from .met gaps);
-            // fall back to legacy sizeMB so older ese-server.exe builds still
-            // get SOME progress signal (just less accurate).
-            var dlMB = (typeof dl.downloadedMB === 'number') ? dl.downloadedMB : (dl.sizeMB || 0);
-            var totMB = (typeof dl.totalMB === 'number') ? dl.totalMB : (dl.sizeMB || 0);
+            var dlBytes = (typeof dl.downloadedBytes === 'number') ? dl.downloadedBytes
+                        : (typeof dl.downloadedMB === 'number') ? dl.downloadedMB * 1024 * 1024
+                        : (dl.sizeBytes || 0);
+            var totBytes = (typeof dl.totalBytes === 'number') ? dl.totalBytes
+                        : (typeof dl.totalMB === 'number') ? dl.totalMB * 1024 * 1024
+                        : (dl.sizeBytes || 0);
+            var dlMB  = Math.round(dlBytes / (1024 * 1024));
+            var totMB = Math.round(totBytes / (1024 * 1024));
+
+            // Rolling rate window: keep last ~30 s of samples and derive
+            // the average rate from the oldest-to-newest delta. Discrete
+            // poll-to-poll deltas are noisy; the window smooths them out.
+            if (!window._smartPlayRateSamples) window._smartPlayRateSamples = [];
+            var samples = window._smartPlayRateSamples;
+            var nowMs = Date.now();
+            samples.push([nowMs, dlBytes]);
+            while (samples.length > 7) samples.shift();   // 6 × 5 s = 30 s window
+            var downloadRateBps = 0;
+            if (samples.length >= 2) {
+              var first = samples[0];
+              var last  = samples[samples.length - 1];
+              var dtSec = Math.max(1, (last[0] - first[0]) / 1000);
+              downloadRateBps = Math.max(0, (last[1] - first[1]) / dtSec);
+            }
+            var downloadRateKBps = Math.round(downloadRateBps / 1024);
+
+            // Required playback rate, with floor.
+            var requiredRateBps = totBytes > 0
+              ? Math.max(MIN_REQUIRED_RATE_KBPS * 1024, (totBytes / ASSUMED_DURATION_SEC) * SAFETY)
+              : MIN_REQUIRED_RATE_KBPS * 1024;
+            var requiredRateKBps = Math.round(requiredRateBps / 1024);
 
             if (isActive) {
               if (fileFirstSeen === 0) fileFirstSeen = Date.now();
@@ -2872,26 +2917,53 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex, 
             }
 
             var waitingSec = fileFirstSeen > 0 ? Math.round((Date.now() - fileFirstSeen) / 1000) : 0;
+            var hasHead = dlMB >= MIN_HEAD_MB;
+            var rateOk  = downloadRateBps >= requiredRateBps;
+            var alreadyComplete = totBytes > 0 && dlBytes >= totBytes;
 
             if (fileFirstSeen > 0) {
-              var bufferPct = Math.min((dlMB / MIN_HEAD_MB) * 100, 100);
-              if (progressEl) progressEl.style.width = (60 + bufferPct * 0.4) + '%';
+              // Progress bar: 40 % head fill + 60 % rate confidence.
+              var headPct = Math.min(dlMB / MIN_HEAD_MB, 1) * 40;
+              var ratePct = requiredRateBps > 0 ? Math.min(downloadRateBps / requiredRateBps, 1) * 60 : 0;
+              if (progressEl) progressEl.style.width = (60 + headPct + ratePct) * 0.4 + 60 + '%';
               if (isActive) {
-                if (statusEl) statusEl.textContent = 'Descargado ' + dlMB + ' / ' + totMB + ' MB (buffer ' + Math.round(bufferPct) + '%)';
+                if (statusEl) statusEl.textContent =
+                  'Descargado ' + dlMB + ' / ' + totMB + ' MB · ' +
+                  '↓ ' + downloadRateKBps + ' KB/s · ' +
+                  'necesitas ≥ ' + requiredRateKBps + ' KB/s';
               } else {
                 if (statusEl) statusEl.textContent = 'Archivo detectado, esperando datos...';
               }
-              if (titleEl) titleEl.textContent = 'Buffering... (' + Math.round(bufferPct) + '%)';
+              if (titleEl) {
+                titleEl.textContent = alreadyComplete
+                  ? 'Listo (archivo completo)'
+                  : hasHead && rateOk
+                    ? 'Listo · velocidad ok'
+                    : !hasHead
+                      ? 'Buffering... cargando inicio (' + dlMB + '/' + MIN_HEAD_MB + ' MB)'
+                      : 'Buffering... esperando velocidad estable';
+              }
             }
 
-            // Trigger play when we have at least MIN_HEAD_MB of real bytes
-            // AND we've waited the minimum buffer time (gives ffmpeg time to
-            // parse the header chunks even if they only just arrived).
-            if (dlMB >= MIN_HEAD_MB && waitingSec >= BUFFER_WAIT_SEC && activeChecks >= 3) {
+            // Trigger play when ALL conditions hold:
+            //   - file is active (chunks arriving)
+            //   - we have enough head bytes for ffmpeg to parse the container
+            //   - we've been active long enough for the rate sample to stabilise
+            //   - sustained rate >= required playback rate
+            // OR the file is already fully downloaded.
+            var canPlay = alreadyComplete || (
+              isActive && hasHead && rateOk &&
+              waitingSec >= BUFFER_WAIT_SEC && activeChecks >= 3 &&
+              samples.length >= 4   // need ~15 s of rate history before trusting it
+            );
+            if (canPlay) {
               clearInterval(checker);
               if (progressEl) progressEl.style.width = '100%';
               if (titleEl) titleEl.textContent = 'Reproduciendo';
-              if (statusEl) statusEl.textContent = 'Buffer listo (' + dlMB + ' MB descargados)';
+              if (statusEl) statusEl.textContent =
+                alreadyComplete
+                  ? 'Buffer listo (archivo completo, ' + dlMB + ' MB)'
+                  : 'Buffer listo (' + dlMB + ' MB · ↓ ' + downloadRateKBps + ' KB/s)';
               setTimeout(function() { playPartFile(dl.partFile, dl.fileName); }, 1000);
               return;
             }

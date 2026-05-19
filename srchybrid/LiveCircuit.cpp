@@ -2,6 +2,7 @@
 #include "stdafx.h"
 #include "LiveCircuit.h"
 #include "LiveOnionCrypto.h"
+#include <vector>   // v0.71 C — OnionDecryptAll scratch buffers
 
 namespace eSELive {
 
@@ -85,6 +86,52 @@ bool CLiveCircuit::OnionPeelOne(uint8_t hopIdx,
     if (!AeadDecrypt(h.k_recv, nonce, NULL, 0, in, inLen, out))
         return false;
     outLen = inLen - 16;
+    return true;
+}
+
+bool CLiveCircuit::EncryptOneLayer(uint8_t hopIdx,
+                                   const uint8_t* in, size_t inLen,
+                                   uint8_t* out, size_t& outLen)
+{
+    if (hopIdx >= m_hops.size()) return false;
+    CircuitHop& h = m_hops[hopIdx];
+    uint8_t nonce[12];
+    BuildNonce(h.nonce_send++, nonce);
+    if (!AeadEncrypt(h.k_send, nonce, NULL, 0, in, inLen, out))
+        return false;
+    outLen = inLen + 16;   // 16-byte AEAD tag appended
+    return true;
+}
+
+// v0.71 C — peel all registered hops in forward order. Each layer
+// strips 16 bytes of AEAD tag. For a 2-hop circuit, inLen of the
+// cell payload must be original_plaintext + 32 (2 tags).
+bool CLiveCircuit::OnionDecryptAll(const uint8_t* in, size_t inLen,
+                                  uint8_t* out, size_t outBufLen, size_t& outLen)
+{
+    if (m_hops.empty()) return false;
+    // Decrypt into a scratch buffer in-place style: alternate between
+    // two buffers to avoid in-place AEAD overlap issues.
+    std::vector<uint8_t> a(in, in + inLen);
+    std::vector<uint8_t> b(inLen);
+    bool useA = true;
+    for (size_t i = 0; i < m_hops.size(); ++i) {
+        const uint8_t* src = useA ? a.data() : b.data();
+        uint8_t* dst       = useA ? b.data() : a.data();
+        size_t srcLen      = useA ? a.size() : b.size();
+        if (srcLen < 16) return false;
+        size_t dstLen = 0;
+        if (!OnionPeelOne((uint8_t)i, src, srcLen, dst, dstLen))
+            return false;
+        if (useA) b.resize(dstLen); else a.resize(dstLen);
+        useA = !useA;
+    }
+    // Result is in whichever buffer we wrote LAST (so the "not useA" one,
+    // since useA was flipped after the final iteration).
+    const std::vector<uint8_t>& finalBuf = useA ? a : b;
+    if (finalBuf.size() > outBufLen) return false;
+    memcpy(out, finalBuf.data(), finalBuf.size());
+    outLen = finalBuf.size();
     return true;
 }
 

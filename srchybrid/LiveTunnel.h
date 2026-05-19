@@ -15,6 +15,8 @@
 
 #include <memory>
 #include <vector>
+#include <string>   // v0.71 C — TunnelPing text I/O
+#include <map>      // v0.71 C — pending request table
 
 class CUpDownClient;
 
@@ -85,6 +87,26 @@ public:
     // (semantically weird but valid for state-machine testing). Real
     // multi-node deployments pick 2 distinct peers.
     uint32_t BuildTestCircuit2Hop();
+
+    // v0.71 C — sub-protocol for application payloads carried inside
+    // CELL_RELAY. The plaintext after onion peel has this layout:
+    //   [0]     sub_cmd (TunnelOpCmd)
+    //   [1..4]  req_id (uint32 LE) — correlates request to reply
+    //   [5..6]  text_len (uint16 LE)
+    //   [7..N]  text bytes
+    // Future sub_cmds (Kad search, Live subscribe, etc.) will extend
+    // this. Keep the first 7 bytes structure stable.
+    enum TunnelOpCmd : uint8_t {
+        TUN_OP_PING       = 0x01,
+        TUN_OP_PING_REPLY = 0x02
+    };
+
+    // v0.71 C — synchronous tunnel ping. Sends a PING through any
+    // active circuit, blocks up to timeoutMs waiting for the reply.
+    // Returns true if reply arrived in time, with replyText populated.
+    // Used by the /api/live/privacy/tunnel_ping REST endpoint.
+    bool TunnelPing(const std::string& text, std::string& replyText,
+                    uint32_t timeoutMs);
 
     // v0.71 B — accessor for the panel/REST endpoint to enumerate all
     // active circuits with their per-hop endpoints. The caller receives
@@ -159,6 +181,31 @@ private:
     // v0.71 B — looks up a relay-side circuit by its OUTBOUND id (the
     // one we chose for talking to hop2). Returns nullptr if not found.
     std::shared_ptr<CLiveCircuit> FindRelayByOutgoingId(uint32_t outboundCircId);
+
+    // v0.71 C — CELL_RELAY handlers.
+    // Originator: peel ALL hops, parse TunnelOp, deliver to pending
+    // request table or drop if no waiter.
+    bool HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
+                                const uint8_t* payload, uint16_t payloadLen);
+    // Exit/relay-with-2-hops: peel ALL hops (we keep both layers'
+    // recv keys in m_hops when we're the exit). Parse TunnelOp.
+    // For PING, build PING_REPLY and wrap back through both hops.
+    bool HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
+                          const uint8_t* payload, uint16_t payloadLen);
+
+    // v0.71 C — wrap a plaintext payload through a relay-side circuit's
+    // hops in REVERSE order (mirror of originator's OnionEncrypt) and
+    // send back to V via m_prevHopClient. Used when the exit produces
+    // a reply (PING_REPLY, KadSearch result, etc.).
+    bool SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,
+                        const uint8_t* plain, size_t plainLen);
+
+    // v0.71 C — pending tunnel_ping requests. Key = req_id, value = the
+    // reply text once it arrives. The TunnelPing() blocking call polls
+    // this map under m_pendingLock with a wait/timeout. Cleared on reply
+    // or on timeout.
+    mutable CCriticalSection m_pendingLock;
+    std::map<uint32_t, std::string> m_pendingPingReplies;
 
     mutable CCriticalSection m_lock;
     std::vector<std::shared_ptr<CLiveCircuit>> m_circuits;

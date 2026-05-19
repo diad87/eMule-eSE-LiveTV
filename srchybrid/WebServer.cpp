@@ -5030,6 +5030,64 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
+	// --- /api/live/privacy/peers --- v0.71 P3.11 — debug helper.
+	// Lists currently connected peers with their TAG_ESE_CAPS bitmap so
+	// the user can verify which peers PC1 actually sees as fork-capable.
+	// Critical for diagnosing why test_circuit creates Pending circuits
+	// that never become Active (most common cause: PC2 not in ClientList,
+	// or PC2 running an older binary that didn't emit TAG_ESE_CAPS).
+	if (sURL == "/api/live/privacy/peers") {
+		std::vector<CUpDownClient*> all;
+		std::vector<CUpDownClient*> tunneling;
+		try {
+			if (theApp.clientlist) {
+				theApp.clientlist->GetConnectedSnapshot(all,        50, /*tunnelOnly=*/false);
+				theApp.clientlist->GetConnectedSnapshot(tunneling,  50, /*tunnelOnly=*/true);
+			}
+		} catch (...) {}
+
+		CStringA peersJson;
+		for (size_t i = 0; i < all.size(); ++i) {
+			if (i > 0) peersJson += ",";
+			CUpDownClient* c = all[i];
+			CStringA line;
+			const uint32 ip = c ? c->GetIP() : 0;
+			const uint16 port = c ? c->GetUserPort() : 0;
+			const uint32 fork = c ? c->GetForkCaps() : 0;
+			const uint32 ese  = c ? c->GetEseCapabilities() : 0;
+			line.Format(
+			    "{\"ip\":\"%u.%u.%u.%u\",\"port\":%u,"
+			    "\"forkCaps\":\"0x%08X\",\"eseCaps\":\"0x%08X\","
+			    "\"isFork\":%s}",
+			    (unsigned)(ip & 0xFF),
+			    (unsigned)((ip >> 8) & 0xFF),
+			    (unsigned)((ip >> 16) & 0xFF),
+			    (unsigned)((ip >> 24) & 0xFF),
+			    (unsigned)port,
+			    fork, ese,
+			    (ese & 0x00000100) ? "true" : "false");
+			peersJson += line;
+		}
+
+		CStringA json;
+		json.Format(
+		    "{\"totalConnected\":%u,\"forkTunnelingCapable\":%u,\"peers\":[%s]}",
+		    (unsigned)all.size(),
+		    (unsigned)tunneling.size(),
+		    (LPCSTR)peersJson);
+
+		CStringA header;
+		header.Format(
+		    "HTTP/1.1 200 OK\r\n"
+		    HTTPInit
+		    "Content-Type: application/json\r\n"
+		    "Content-Length: %d\r\n\r\n",
+		    json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
 	// --- /api/live/privacy/test_circuit --- v0.71 P3.6 — solo testing helper.
 	// Builds a single-hop test circuit through any currently connected peer
 	// (or a specific peer if &peerip= is supplied). The originator code

@@ -251,12 +251,18 @@ bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
     SecureWipe(shared, sizeof shared);
     SecureWipe(okm, sizeof okm);
 
-    // 1-hop done — for the V1 release we treat this as Active. To extend
-    // to 2-hop: here we'd build a CELL_EXTEND containing hop 2's
-    // endpoint + a fresh ephemeral, encrypt with k_send (which IS what
-    // OnionEncrypt does over the single registered hop), and send.
-    // TODO P3.next: 2-hop extension.
+    // 1-hop done. If BuildTestCircuit2Hop pre-staged a hop2 candidate
+    // in m_nextHopClient, automatically extend now. Otherwise stay at
+    // 1-hop Active (current default behavior, preserves P3 compat).
     circ->SetState(CircuitState::Active);
+    if (circ->m_nextHopClient) {
+        CUpDownClient* hop2 = circ->m_nextHopClient;
+        circ->m_nextHopClient = NULL;   // clear staging slot
+        // BuildExtend transitions back to HalfBuilt; CELL_EXTENDED will
+        // promote to Active once derived. Failure leaves circuit at
+        // 1-hop Active (graceful degrade).
+        BuildExtend(circ, hop2);
+    }
     return true;
 }
 
@@ -334,7 +340,20 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
         return HandleCreate_Relay(circ_id, payload, payloadLen, fromPeer);
     }
 
-    // All other cells require an existing circuit entry.
+    // v0.71 B — CELL_CREATED may be a relay-side "reply from hop2".
+    // Look up by OUTBOUND id (relay-side m_nextCircId) BEFORE falling
+    // through to the originator-side lookup. If found, this is hop1
+    // receiving CREATED from hop2 and we must wrap it as EXTENDED back
+    // to V on V's circ_id.
+    if (cmd == CELL_CREATED) {
+        auto relayCirc = FindRelayByOutgoingId(circ_id);
+        if (relayCirc) {
+            return ForwardCreatedAsExtended_Relay(circ_id, payload, payloadLen);
+        }
+    }
+
+    // All other cells require an existing circuit entry by circ_id
+    // (originator's V-side id, or relay-side from-V id).
     std::shared_ptr<CLiveCircuit> circ;
     for (auto& c : m_circuits)
         if (c->Id() == circ_id) { circ = c; break; }
@@ -342,14 +361,19 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
 
     switch (cmd) {
         case CELL_CREATED:
-            // Only meaningful on originator side.
+            // Originator-side CREATED for hop1.
             if (circ->m_role != CircuitRole::Originator) return false;
             return HandleCreated_Originator(circ, payload, payloadLen);
 
         case CELL_EXTEND:
+            // v0.71 B — relay receives EXTEND from V, forwards to hop2.
+            if (circ->m_role != CircuitRole::Relay) return false;
+            return HandleExtend_Relay(circ, payload, payloadLen);
+
         case CELL_EXTENDED:
-            // TODO P3.next: 2-hop. For now log and drop.
-            return true;
+            // v0.71 B — originator receives EXTENDED back, derives hop2 keys.
+            if (circ->m_role != CircuitRole::Originator) return false;
+            return HandleExtended_Originator(circ, payload, payloadLen);
 
         case CELL_RELAY:
             // Originator: peel ALL layers; the consumer is whoever
@@ -376,6 +400,286 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
 
         default:
             return false;
+    }
+}
+
+// === v0.71 B — 2-hop extension =============================================
+// V (originator) → hop1 → hop2 → destination.
+// After hop1's CREATED arrives, V triggers BuildExtend:
+//   1. Generate a fresh X25519 ephemeral (separate from the one used for hop1)
+//   2. Build EXTEND payload: hop2_ip(4) + hop2_port(2) + ev_pub2(32) = 38B
+//   3. OnionEncrypt with V↔hop1 keys → ciphertext (38 + 16 tag = 54B)
+//   4. Pack as CELL_EXTEND on V's circ_id, send to hop1
+// hop1's HandleExtend_Relay:
+//   1. AEAD-decrypt with K_recv_v_to_hop1 → plaintext 38B
+//   2. Read hop2_endpoint, ev_pub2
+//   3. Pick fresh outbound circ_id, send CELL_CREATE(ev_pub2) to hop2
+//   4. Stash forwarding: m_nextHopClient + m_nextCircId on relay circuit
+// hop2 sees a normal CELL_CREATE → HandleCreate_Relay (existing code) →
+//   replies CELL_CREATED(er_pub2) to hop1 on the outbound circuit
+// hop1's ForwardCreatedAsExtended_Relay:
+//   1. Find relay circuit by outbound id
+//   2. Wrap er_pub2 with K_send_r_to_v (AEAD-encrypt)
+//   3. Send CELL_EXTENDED on V-side circ_id back to V
+// V's HandleExtended_Originator:
+//   1. AEAD-decrypt with K_recv_r_to_v_hop1 → er_pub2 plaintext
+//   2. shared = X25519(er_pub2, V_extend_ephemeral_priv)
+//   3. HKDF → K_v_to_hop2 + K_hop2_to_v
+//   4. AddHop, wipe ephemeral, mark Active with hopCount=2
+
+bool CLiveTunnel::BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
+                              CUpDownClient* hop2)
+{
+    // Caller holds m_lock.
+    if (!circ || !hop2) return false;
+    if (circ->m_role != CircuitRole::Originator) return false;
+    if (circ->HopCount() != 1) return false;   // must have hop1 already
+
+    // Generate a fresh ephemeral for V↔hop2. The slot was wiped after
+    // hop1's CREATED so it's safe to reuse.
+    uint8_t evPub2[32];
+    if (!X25519GenerateKeypair(evPub2, circ->m_ephemeral_priv))
+        return false;
+    circ->m_have_ephemeral = true;
+
+    // Build EXTEND payload: 4B IP + 2B port + 32B ev_pub2 = 38B.
+    uint8_t extendPlain[38];
+    const uint32 hop2_ip = hop2->GetIP();           // network byte order
+    const uint16 hop2_port = hop2->GetUserPort();
+    // Write IP as 4 bytes little-endian (consistent with our cell convention).
+    // Note: peer-side will need to use this when calling FindClientByIP.
+    extendPlain[0] = (uint8_t)(hop2_ip & 0xFF);
+    extendPlain[1] = (uint8_t)((hop2_ip >>  8) & 0xFF);
+    extendPlain[2] = (uint8_t)((hop2_ip >> 16) & 0xFF);
+    extendPlain[3] = (uint8_t)((hop2_ip >> 24) & 0xFF);
+    extendPlain[4] = (uint8_t)(hop2_port & 0xFF);
+    extendPlain[5] = (uint8_t)((hop2_port >> 8) & 0xFF);
+    memcpy(extendPlain + 6, evPub2, 32);
+
+    // OnionEncrypt with the single registered hop (hop1). Since there's
+    // only 1 hop, this just AEAD-encrypts with K_v_to_hop1.
+    uint8_t cellPayload[CELL_PAYLOAD_MAX];
+    size_t cellLen = 0;
+    if (!circ->OnionEncrypt(extendPlain, sizeof extendPlain, cellPayload, cellLen)) {
+        SecureWipe(circ->m_ephemeral_priv, sizeof circ->m_ephemeral_priv);
+        circ->m_have_ephemeral = false;
+        return false;
+    }
+
+    // Pack as CELL_EXTEND and send through hop1.
+    uint8_t cell[CELL_TOTAL_BYTES];
+    if (!CellPack(circ->Id(), CELL_EXTEND, cellPayload, cellLen, cell)) {
+        SecureWipe(circ->m_ephemeral_priv, sizeof circ->m_ephemeral_priv);
+        circ->m_have_ephemeral = false;
+        return false;
+    }
+    if (!circ->m_firstHopClient || !SendCellToPeer(circ->m_firstHopClient, cell)) {
+        SecureWipe(circ->m_ephemeral_priv, sizeof circ->m_ephemeral_priv);
+        circ->m_have_ephemeral = false;
+        return false;
+    }
+
+    // Move state from Active (1-hop) back to "extending" — we represent
+    // that as HalfBuilt to signal "more than just hop1 in flight". When
+    // EXTENDED arrives we promote to Active again.
+    circ->SetState(CircuitState::HalfBuilt);
+    return true;
+}
+
+bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
+                                     const uint8_t* payload, uint16_t payloadLen)
+{
+    // Caller holds m_lock. circ is the relay-side circuit (m_role == Relay).
+    if (!circ || circ->m_role != CircuitRole::Relay) return false;
+    if (circ->HopCount() != 1) return false;
+    // The encrypted EXTEND payload arrives as the cell's payload. We
+    // need to AEAD-decrypt using our K_recv_v_to_hop1 (== hop[0].k_recv).
+    // Plaintext is 38B; ciphertext = 38+16 tag = 54B.
+    if (payloadLen < 54) return false;
+    uint8_t extendPlain[54];
+    size_t extendPlainLen = 0;
+    if (!circ->OnionPeelOne(0, payload, payloadLen, extendPlain, extendPlainLen))
+        return false;
+    if (extendPlainLen < 38) return false;
+
+    // Parse hop2 endpoint + ev_pub2.
+    uint32 hop2_ip = (uint32)extendPlain[0]
+                   | ((uint32)extendPlain[1] << 8)
+                   | ((uint32)extendPlain[2] << 16)
+                   | ((uint32)extendPlain[3] << 24);
+    uint16 hop2_port = (uint16)extendPlain[4] | ((uint16)extendPlain[5] << 8);
+    const uint8_t* evPub2 = extendPlain + 6;
+
+    // Resolve hop2 in our ClientList. Two-hop only works if we (hop1)
+    // already have an open socket to hop2.
+    CUpDownClient* hop2 = NULL;
+    if (theApp.clientlist)
+        hop2 = theApp.clientlist->FindClientByIP(hop2_ip, hop2_port);
+    if (!hop2 || !hop2->socket || !hop2->socket->IsConnected())
+        return false;
+
+    // Pick a fresh outbound circ_id for the V↔hop2 leg as seen from us.
+    uint32_t outId = 0;
+    for (int t = 0; t < 4; ++t) {
+        outId = NewCircuitId();
+        bool collision = false;
+        for (auto& c : m_circuits)
+            if (c->Id() == outId || c->m_nextCircId == outId) { collision = true; break; }
+        if (!collision) break;
+        outId = 0;
+    }
+    if (outId == 0) return false;
+
+    // Stash forwarding state on the relay circuit.
+    circ->m_nextHopClient = hop2;
+    circ->m_nextCircId    = outId;
+
+    // Build and send CELL_CREATE to hop2 with the ev_pub2 we got from V.
+    uint8_t cell[CELL_TOTAL_BYTES];
+    if (!CellPack(outId, CELL_CREATE, evPub2, 32, cell)) return false;
+    SendCellToPeer(hop2, cell);
+    SecureWipe(extendPlain, sizeof extendPlain);
+    return true;
+}
+
+std::shared_ptr<CLiveCircuit> CLiveTunnel::FindRelayByOutgoingId(uint32_t outboundCircId)
+{
+    // Caller holds m_lock.
+    for (auto& c : m_circuits) {
+        if (c->m_role == CircuitRole::Relay && c->m_nextCircId == outboundCircId)
+            return c;
+    }
+    return nullptr;
+}
+
+bool CLiveTunnel::ForwardCreatedAsExtended_Relay(uint32_t outboundCircId,
+                                                 const uint8_t* payload, uint16_t payloadLen)
+{
+    // Caller holds m_lock.
+    auto circ = FindRelayByOutgoingId(outboundCircId);
+    if (!circ || circ->HopCount() != 1 || payloadLen < 32) return false;
+
+    // The cell's payload is hop2's er_pub2 (32B unencrypted). We wrap it
+    // with K_send_r_to_v (hop[0].k_send on relay side, see HandleCreate_Relay
+    // where we put R-to-V key into hop.k_send).
+    uint8_t wrapped[CELL_PAYLOAD_MAX];
+    size_t wrappedLen = 0;
+    if (!circ->OnionEncrypt(payload, 32, wrapped, wrappedLen))
+        return false;
+
+    // Pack as CELL_EXTENDED on V's circ_id (which is circ->Id()).
+    uint8_t cell[CELL_TOTAL_BYTES];
+    if (!CellPack(circ->Id(), CELL_EXTENDED, wrapped, wrappedLen, cell))
+        return false;
+    if (!circ->m_prevHopClient || !SendCellToPeer(circ->m_prevHopClient, cell))
+        return false;
+    return true;
+}
+
+bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
+                                            const uint8_t* payload, uint16_t payloadLen)
+{
+    // Caller holds m_lock. circ is the V-side circuit. The cell payload
+    // is the wrapped er_pub2 (32+16 tag = 48B).
+    if (!circ || circ->m_role != CircuitRole::Originator) return false;
+    if (circ->HopCount() != 1) return false;
+    if (!circ->m_have_ephemeral) return false;
+    if (payloadLen < 48) return false;
+
+    uint8_t plain[48];
+    size_t plainLen = 0;
+    if (!circ->OnionPeelOne(0, payload, payloadLen, plain, plainLen))
+        return false;
+    if (plainLen < 32) return false;
+    const uint8_t* erPub2 = plain;
+
+    // Derive V↔hop2 keys.
+    uint8_t shared[32];
+    if (!X25519SharedSecret(erPub2, circ->m_ephemeral_priv, shared))
+        return false;
+
+    uint8_t okm[64];
+    const uint8_t info_send[] = "ese-tunnel-V-to-R-v1";
+    const uint8_t info_recv[] = "ese-tunnel-R-to-V-v1";
+    if (!Hkdf(shared, sizeof shared, NULL, 0, info_send, sizeof info_send - 1, okm, 32) ||
+        !Hkdf(shared, sizeof shared, NULL, 0, info_recv, sizeof info_recv - 1, okm + 32, 32))
+    {
+        SecureWipe(shared, sizeof shared);
+        return false;
+    }
+
+    CircuitHop hop2 = {};
+    hop2.hop_id = circ->Id();
+    memcpy(hop2.k_send, okm,      32);
+    memcpy(hop2.k_recv, okm + 32, 32);
+    hop2.nonce_send = 0;
+    hop2.nonce_recv = 0;
+    if (!circ->AddHop(hop2)) {
+        SecureWipe(shared, sizeof shared);
+        SecureWipe(okm, sizeof okm);
+        return false;
+    }
+
+    SecureWipe(circ->m_ephemeral_priv, sizeof circ->m_ephemeral_priv);
+    circ->m_have_ephemeral = false;
+    SecureWipe(shared, sizeof shared);
+    SecureWipe(okm, sizeof okm);
+    SecureWipe(plain, sizeof plain);
+
+    circ->SetState(CircuitState::Active);
+    return true;
+}
+
+uint32_t CLiveTunnel::BuildTestCircuit2Hop()
+{
+    // Pick up to 2 distinct fork peers for the circuit. If only 1 fork
+    // peer is available we loop hop2 back to the same peer — semantically
+    // weird (a real circuit wants distinct hops for anonymity) but valid
+    // for protocol/state-machine testing on a 2-PC dev setup. With 3+
+    // fork nodes in the wild, the picker chooses 2 distinct ones.
+    std::vector<CUpDownClient*> forkCands;
+    if (theApp.clientlist)
+        theApp.clientlist->GetConnectedSnapshot(forkCands, 5, /*tunnelOnly=*/true);
+    if (forkCands.empty()) return 0;
+
+    CUpDownClient* hop1 = forkCands[0];
+    CUpDownClient* hop2 = (forkCands.size() >= 2) ? forkCands[1] : forkCands[0];
+
+    std::vector<CUpDownClient*> hop1Vec = { hop1 };
+    size_t built = BuildPool(NULL, hop1Vec, 1);
+    if (built == 0) return 0;
+
+    // The freshly-built circuit is at the back of m_circuits. We can't
+    // call BuildExtend yet — the circuit is still Pending until CREATED
+    // arrives. We mark a flag so HandleCreated_Originator triggers
+    // BuildExtend automatically. For simplicity (and because there's no
+    // good place to stash hop2 right now), we register a one-shot
+    // post-CREATED action via a static map.
+    CSingleLock lk(&m_lock, TRUE);
+    if (m_circuits.empty()) return 0;
+    auto& c = m_circuits.back();
+    // Re-use m_nextHopClient on the ORIGINATOR side to mean "after
+    // CREATED, extend to this peer". HandleCreated_Originator will check.
+    c->m_nextHopClient = hop2;
+    return c->Id();
+}
+
+void CLiveTunnel::GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const
+{
+    CSingleLock lock(&m_lock, TRUE);
+    out.clear();
+    out.reserve(m_circuits.size());
+    DWORD now = GetTickCount();
+    for (auto& c : m_circuits) {
+        CircuitSnapshot s = {};
+        s.circ_id      = c->Id();
+        s.role         = (uint8_t)c->m_role;
+        s.state        = (uint8_t)c->State();
+        s.age_ms       = now - c->BornAtTick();
+        s.hop_count    = (uint32_t)c->HopCount();
+        s.next_hop_set = c->m_nextHopClient ? 1 : 0;
+        s.next_circ_id = c->m_nextCircId;
+        out.push_back(s);
     }
 }
 

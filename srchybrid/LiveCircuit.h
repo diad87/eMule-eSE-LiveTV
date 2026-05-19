@@ -90,8 +90,20 @@ public:
     // forward direction back here.
     CUpDownClient* m_prevHopClient = NULL;
 
+    // v0.71 B — relay-side forwarding state for 2-hop. When V sends
+    // CELL_EXTEND through this relay (us = hop1), we pick a new outbound
+    // circuit id, create a CELL_CREATE for hop2 with V's new ephemeral,
+    // and stash hop2's CUpDownClient + the outbound id here. When hop2
+    // replies CELL_CREATED on the outbound circuit, we look up this entry,
+    // wrap with our K_send_r_to_v key, and send as CELL_EXTENDED to V.
+    CUpDownClient* m_nextHopClient = NULL;
+    uint32_t       m_nextCircId    = 0;
+
     // Ephemeral X25519 private key used during the CREATE/CREATED
-    // handshake. Wiped after the shared secret is derived.
+    // handshake. Wiped after the shared secret is derived. For the
+    // originator, this slot is reused for the EXTEND step (a new
+    // ephemeral is generated for V↔hop2 handshake AFTER hop1's CREATED
+    // wipe), so the same field naturally serves both phases.
     uint8_t  m_ephemeral_priv[32] = {0};
     bool     m_have_ephemeral = false;
 

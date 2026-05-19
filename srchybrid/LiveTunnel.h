@@ -79,6 +79,27 @@ public:
     // assigned, or 0 on failure.
     uint32_t BuildTestCircuit(CUpDownClient* clientHint);
 
+    // v0.71 B (2-hop) — extended test: builds a 1-hop circuit AND, once
+    // CREATED arrives, requests a 2nd hop. Returns the V-side circ_id.
+    // If only 1 fork peer is available, hop2 loops back to the same peer
+    // (semantically weird but valid for state-machine testing). Real
+    // multi-node deployments pick 2 distinct peers.
+    uint32_t BuildTestCircuit2Hop();
+
+    // v0.71 B — accessor for the panel/REST endpoint to enumerate all
+    // active circuits with their per-hop endpoints. The caller receives
+    // copies (no live refs) and may iterate without holding our lock.
+    struct CircuitSnapshot {
+        uint32_t circ_id;
+        uint8_t  role;          // 0 = Originator, 1 = Relay
+        uint8_t  state;         // CircuitState as uint
+        uint32_t age_ms;
+        uint32_t hop_count;
+        uint8_t  next_hop_set;  // relay-side: 1 if forwarding to hop2
+        uint32_t next_circ_id;
+    };
+    void GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const;
+
     // v0.71 P3.3 — total counts of cells sent / received for metrics.
     uint64_t CellsSentTotal() const { return m_cellsSentTotal; }
     uint64_t CellsRecvTotal() const { return m_cellsRecvTotal; }
@@ -105,6 +126,39 @@ private:
     bool HandleCreate_Relay(uint32_t circId,
                             const uint8_t* payload, uint16_t payloadLen,
                             CUpDownClient* fromPeer);
+
+    // v0.71 B — originator side: send CELL_EXTEND through the now-active
+    // hop1 circuit. Generates a fresh X25519 ephemeral for V↔hop2 and
+    // encrypts a 38-byte payload (hop2 IP + port + new ev_pub) with
+    // hop1's K_send. The receiver-side handlers below complete the
+    // round-trip. Returns true on success.
+    bool BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
+                     CUpDownClient* hop2);
+
+    // v0.71 B — relay side: a CELL_EXTEND cell arrived on a relay-side
+    // circuit. Peel V→hop1 layer, parse hop2 endpoint + new ephemeral,
+    // pick new outbound circ_id, send CELL_CREATE to hop2. Store
+    // forwarding state on the relay circuit.
+    bool HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
+                            const uint8_t* payload, uint16_t payloadLen);
+
+    // v0.71 B — relay side: CELL_CREATED arrived from hop2 on our
+    // outbound forwarding circ. Look up which V-side circuit asked for
+    // it, wrap CREATED payload with K_send_r_to_v, send as
+    // CELL_EXTENDED back to V on V's circ_id.
+    bool ForwardCreatedAsExtended_Relay(uint32_t outboundCircId,
+                                        const uint8_t* payload, uint16_t payloadLen);
+
+    // v0.71 B — originator side: a CELL_EXTENDED cell arrived on a
+    // V-side originator circuit. Peel V→hop1 layer to reveal hop2's
+    // er_pub. Derive V↔hop2 keys, add hop2 to m_hops, mark fully Active
+    // with 2 hops. Wipe ephemeral.
+    bool HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
+                                   const uint8_t* payload, uint16_t payloadLen);
+
+    // v0.71 B — looks up a relay-side circuit by its OUTBOUND id (the
+    // one we chose for talking to hop2). Returns nullptr if not found.
+    std::shared_ptr<CLiveCircuit> FindRelayByOutgoingId(uint32_t outboundCircId);
 
     mutable CCriticalSection m_lock;
     std::vector<std::shared_ptr<CLiveCircuit>> m_circuits;

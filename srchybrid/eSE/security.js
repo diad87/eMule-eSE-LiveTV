@@ -29,12 +29,22 @@ function fixedTimeEqual(a, b) {
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
+// Reject cookie / settings keys that would walk the prototype chain.
+// __proto__, constructor, prototype must never become writable property names
+// from network-supplied input (CodeQL js/remote-property-injection #68 + js/prototype-pollution-utility #14).
+function isUnsafeKey(key) {
+  return key === '__proto__' || key === 'constructor' || key === 'prototype';
+}
+
 function parseCookies(req) {
-  const out = {};
+  const out = Object.create(null);
   const raw = req.headers.cookie || '';
   raw.split(';').forEach(part => {
     const idx = part.indexOf('=');
-    if (idx > 0) out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
+    if (idx <= 0) return;
+    const name = part.slice(0, idx).trim();
+    if (!name || isUnsafeKey(name)) return;
+    out[name] = decodeURIComponent(part.slice(idx + 1).trim());
   });
   return out;
 }
@@ -280,6 +290,10 @@ function mergeSettings(current, incoming) {
   const target = current && typeof current === 'object' ? current : {};
   if (!incoming || typeof incoming !== 'object') return target;
   Object.keys(incoming).forEach(key => {
+    // Reject prototype-walking keys before any assignment (CodeQL #14).
+    // JSON.parse('{"__proto__":{...}}') produces an own enumerable property,
+    // and the recursive `target[key] = val` would otherwise pollute Object.prototype.
+    if (isUnsafeKey(key)) return;
     const val = incoming[key];
     if (isSensitiveKey(key) && (val === REDACTED || val === '' || val === null || typeof val === 'undefined')) return;
     if (val && typeof val === 'object' && !Array.isArray(val) && target[key] && typeof target[key] === 'object' && !Array.isArray(target[key])) {

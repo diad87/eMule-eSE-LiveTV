@@ -198,7 +198,9 @@ function findLoopbackDevice(ffmpegPath) {
 }
 
 function quoteDshowName(name) {
-  return '"' + String(name || '').replace(/"/g, '\\"') + '"';
+  // CodeQL js/incomplete-sanitization #30 — escape backslashes before the quote
+  // escape so a device name like `Cam\"evil` can't break the dshow input string.
+  return '"' + String(name || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
 }
 
 function buildDshowInput(videoDevice, audioDevice) {

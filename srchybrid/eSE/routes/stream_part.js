@@ -70,7 +70,9 @@ function handle(url, req, res) {
 
     if (!filePath) { res.writeHead(404); res.end('File not found in Temp or Incoming'); return true; }
     const stat = fs.statSync(filePath);
-    console.log('[Stream] Streaming: ' + filePath + ' (' + Math.round(stat.size / (1024*1024)) + ' MB)');
+    // CodeQL js/log-injection #66 — filePath may be derived from query params; strip CR/LF.
+    const _safeFilePath = String(filePath).replace(/[\r\n\t]+/g, ' ');
+    console.log('[Stream] Streaming: ' + _safeFilePath + ' (' + Math.round(stat.size / (1024*1024)) + ' MB)');
 
     res.writeHead(200, { 'Content-Type': 'video/mp4', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
     const fnLower = filePath.toLowerCase();
@@ -151,7 +153,9 @@ function handle(url, req, res) {
     if (_ctx.HW_ENCODER === 'libx264') ffArgs.push('-profile:v', 'baseline', '-level', '3.1');
     if (q.scale) ffArgs.push('-vf', 'scale=' + q.scale);
     ffArgs.push('-c:a', 'aac', '-b:a', q.abr, '-ac', '2', '-err_detect', 'ignore_err', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-frag_duration', '2000000', '-f', 'mp4', 'pipe:1');
-    console.log('[MSE] Starting ffmpeg pipe (quality: ' + quality + ', encoder: ' + _ctx.HW_ENCODER + ')');
+    // CodeQL js/log-injection #67 — quality is from `?q=`; strip CR/LF before logging.
+    const _safeQuality = String(quality).replace(/[\r\n\t]+/g, ' ');
+    console.log('[MSE] Starting ffmpeg pipe (quality: ' + _safeQuality + ', encoder: ' + _ctx.HW_ENCODER + ')');
     const ff = spawn(_ctx.FFMPEG_PATH, ffArgs);
     _ctx.activeStreams[partNum] = ff;
     res.writeHead(200, { 'Content-Type': 'video/mp4', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });

@@ -191,12 +191,17 @@ function handle(url, req, res) {
       if (mainTitle.length < 3) mainTitle = q.replace(/[:]/g, ' ').replace(/\s+/g, ' ').trim();
       const primaryQuery = mainTitle + (year ? ' ' + year : '');
 
-      console.log('[SmartSearch] Primary query: "' + primaryQuery + '" (original: "' + q + '")');
+      // CodeQL js/log-injection #62 #63 — strip CR/LF so the user's q can't forge log lines.
+      const _safePrimary = String(primaryQuery).replace(/[\r\n\t]+/g, ' ');
+      const _safeQ       = String(q).replace(/[\r\n\t]+/g, ' ');
+      console.log('[SmartSearch] Primary query: "' + _safePrimary + '" (original: "' + _safeQ + '")');
 
       // ── Step 1: Generate query variants (AI or heuristic) ───────────────────
       aiAssistant.generateQueryVariants(primaryQuery, settings, (err1, variants) => {
         const queriesToRun = (variants && variants.length > 0) ? variants : [primaryQuery];
-        console.log('[SmartSearch] Will run', queriesToRun.length, 'variant(s):', queriesToRun);
+        // CodeQL #64 — sanitize each variant for logging (joined to a string by console.log).
+        const _safeVariants = queriesToRun.map(v => String(v).replace(/[\r\n\t]+/g, ' '));
+        console.log('[SmartSearch] Will run', queriesToRun.length, 'variant(s):', _safeVariants);
 
         // ── Step 2: Run searches sequentially, merge by ed2k hash ──────────────
         // eMule supports only one concurrent search — we exploit its sequential
@@ -221,7 +226,9 @@ function handle(url, req, res) {
           }
 
           const currentQuery = queriesToRun[variantIdx++];
-          console.log('[SmartSearch] Running variant', variantIdx, '/', queriesToRun.length + ': "' + currentQuery + '"');
+          // CodeQL #65 — sanitize the variant string before logging.
+          const _safeCurrent = String(currentQuery).replace(/[\r\n\t]+/g, ' ');
+          console.log('[SmartSearch] Running variant', variantIdx, '/', queriesToRun.length + ': "' + _safeCurrent + '"');
 
           _ctx.emuleSearch(currentQuery, settings, (err2, results) => {
             let newCount = 0;

@@ -18,12 +18,18 @@ function init(port) { PORT = port; }
 const CONFIG_PATH = runtimeDir.join('config.json');
 
 function loadConfig() {
-  if (fs.existsSync(CONFIG_PATH)) {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  // Try-read instead of existsSync→read so we don't expose a TOCTOU window
+  // where the file could disappear (or be swapped) between the two syscalls
+  // (CodeQL js/file-system-race #47-48).
+  let cfg = null;
+  try { cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch (e) { /* missing / unreadable / not JSON */ }
+  if (cfg) {
     let changed = false;
     if (!cfg.encKey)       { cfg.encKey       = crypto.randomBytes(32).toString('hex'); changed = true; }
     if (!cfg.accessToken)  { cfg.accessToken  = crypto.randomBytes(16).toString('hex'); changed = true; }
-    if (changed) fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+    if (changed) {
+      try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2)); } catch (e) {}
+    }
     return cfg;
   }
   // Primera ejecución: generar todos los secretos
@@ -33,7 +39,7 @@ function loadConfig() {
     accessToken: crypto.randomBytes(16).toString('hex'),
     createdAt:   new Date().toISOString()
   };
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+  try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2)); } catch (e) {}
   console.log('[config] Generated new secrets');
   return config;
 }
@@ -82,14 +88,17 @@ fetch("https://ntfy.sh/${LOOKUP_TOPIC}/json?poll=1&since=1h")
 go();
 </script></body></html>`;
 
-// Generar archivo de acceso remoto si no existe (writable runtime dir)
+// Generar archivo de acceso remoto si no existe (writable runtime dir).
+// Use the 'wx' (write exclusive) flag so the create-if-absent decision is
+// atomic in the kernel — eliminates the TOCTOU between existsSync and
+// writeFileSync (CodeQL js/file-system-race #49).
 (function generateRemoteHtml() {
   const redirectPath = runtimeDir.join('eSE_Remote.html');
-  if (!fs.existsSync(redirectPath)) {
-    try {
-      fs.writeFileSync(redirectPath, redirectHtml);
-      console.log('[config] Generated eSE_Remote.html at ' + redirectPath);
-    } catch (e) {
+  try {
+    fs.writeFileSync(redirectPath, redirectHtml, { flag: 'wx' });
+    console.log('[config] Generated eSE_Remote.html at ' + redirectPath);
+  } catch (e) {
+    if (e.code !== 'EEXIST') {
       console.log('[config] Could not write eSE_Remote.html: ' + e.message);
     }
   }
@@ -142,7 +151,8 @@ function publishUrl(url, isHeartbeat) {
       }
     }
   );
-  req.on('error', (e) => console.log('[ntfy] Failed: ' + e.message));
+  // CodeQL js/log-injection #61 — e.message comes from network/DNS, strip CR/LF.
+  req.on('error', (e) => console.log('[ntfy] Failed: ' + String(e && e.message).replace(/[\r\n\t]+/g, ' ')));
   req.write(postData);
   req.end();
 

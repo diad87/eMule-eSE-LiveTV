@@ -490,7 +490,8 @@ function renderMovieCard(m) {
   var title = m.Title || 'Sin titulo';
   var year = m.Year || '';
   var imdbId = m.imdbID || '';
-  var safeTitle = title.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  // CodeQL js/incomplete-sanitization #32 — escape \ before ' so the literal can't be broken out of.
+  var safeTitle = title.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
   return '<div class="card" onclick="requestMovie(\'' + safeTitle + '\',\'' + imdbId + '\')">' +
     '<div class="card-poster" style="' + (poster ? 'background-image:url(' + poster + ');' : '') + '">' +
     (poster ? '' : '<div class="play-icon">&#9654;</div>') +
@@ -547,7 +548,7 @@ function doSmartSearch(query, grid, isOriginal) {
         var origQuery = document.getElementById('search-input').value.trim();
         header = '<div style="padding:12px 20px;color:#aaa;font-size:13px">' +
           'Mostrando resultados para <strong style="color:#ff6b35">"' + query + '"</strong>' +
-          ' · <a href="#" onclick="forceSearch(\'' + origQuery.replace(/'/g, "\\'") + '\');return false" style="color:#888;text-decoration:underline">' +
+          ' · <a href="#" onclick="forceSearch(\'' + origQuery.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + '\');return false" style="color:#888;text-decoration:underline">' +
           'Buscar exactamente "' + origQuery + '"</a></div>';
       }
       grid.innerHTML = header + data.Search.map(renderMovieCard).join('');
@@ -642,7 +643,7 @@ function tryAlternativesSequentially(alts, idx, originalQuery, grid) {
     if (data.Search && data.Search.length > 0) {
       var header = '<div style="padding:12px 20px;color:#aaa;font-size:13px">' +
         'Mostrando resultados para <strong style="color:#ff6b35">"' + alts[idx] + '"</strong>' +
-        ' · <a href="#" onclick="forceSearch(\'' + originalQuery.replace(/'/g, "\\'") + '\');return false" style="color:#888;text-decoration:underline">' +
+        ' · <a href="#" onclick="forceSearch(\'' + originalQuery.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + '\');return false" style="color:#888;text-decoration:underline">' +
         'Buscar exactamente "' + originalQuery + '"</a></div>';
       grid.innerHTML = header + data.Search.map(renderMovieCard).join('');
     } else {
@@ -682,9 +683,9 @@ function showMovieDetail(imdbId, localFileName, localizedTitle) {
     }
     
     var poster = (m.Poster && m.Poster !== 'N/A') ? m.Poster : '';
-    var safeTitle = (m.Title || '').replace(/'/g, "\\'");
+    var safeTitle = (m.Title || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     // Use localized title (from TMDB Spanish) for eMule searches
-    var searchTitle = (localizedTitle || m.Title || '').replace(/'/g, "\\'");
+    var searchTitle = (localizedTitle || m.Title || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     
     // Fetch HD backdrop from TMDB (OMDB poster is only 300px)
     var backdropUrl = poster;
@@ -731,7 +732,7 @@ function showMovieDetail(imdbId, localFileName, localizedTitle) {
     var searchIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>';
     var listIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg>';
 
-    var tEsc = searchTitle.replace(/'/g, "\\'");
+    var tEsc = searchTitle.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     var yArg = m.Type === 'series' ? '' : movieYear;
 
     // Store movie data globally so Mi Lista button can access it without escaping hell
@@ -743,7 +744,7 @@ function showMovieDetail(imdbId, localFileName, localizedTitle) {
       buttons += '<button class="modal-btn btn-play" id="modal-play-btn" onclick="smartPlay(window.getTvQuery(\'' + tEsc + '\'), \'' + yArg + '\')">' + playIcon + ' Reproducir</button>';
       buttons += '<button class="modal-btn btn-download" id="modal-download-btn" onclick="smartDownload(window.getTvQuery(\'' + tEsc + '\'), \'' + yArg + '\')">' + dlIcon + ' Descargar</button>';
     }
-    buttons += '<button class="modal-btn btn-trailer" id="trailer-btn" onclick="loadTrailer(\'' + (m.Title||'').replace(/'/g,"\\'")+' '+movieYear+ '\')">' + trIcon + ' Tráiler</button>';
+    buttons += '<button class="modal-btn btn-trailer" id="trailer-btn" onclick="loadTrailer(\'' + (m.Title||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")+' '+movieYear+ '\')">' + trIcon + ' Tráiler</button>';
     if (!localFileName) {
       buttons += '<button class="modal-btn btn-emule" onclick="startEmuleSearch(window.getTvQuery(\'' + tEsc + '\'), \'' + yArg + '\')">' + searchIcon + ' Búsqueda avanzada</button>';
     }
@@ -1674,7 +1675,7 @@ function startEmuleSearch(title, year) {
         '<div class="source-name">' + (i === 0 ? ' ' : '') + r.fileName + '<br><span style="color:#666;font-size:11px">' + r.sizeMB + ' MB</span></div>' +
         '<div class="source-meta">' + qualityBadge + langBadge + sourcesBadge + scoreBadge + fakeBadge + '</div>' +
         '<div class="source-actions">' +
-          '<button class="source-btn source-btn-play" onclick="streamSource(\'' + r.hash + '\', \'' + title.replace(/'/g, "\\'") + '\')" title="Reproducir ahora">▶ Reproducir</button>' +
+          '<button class="source-btn source-btn-play" onclick="streamSource(\'' + r.hash + '\', \'' + title.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + '\')" title="Reproducir ahora">▶ Reproducir</button>' +
           '<button class="source-btn source-btn-dl" onclick="downloadSource(\'' + r.hash + '\')" title="Descargar para ver luego"> Descargar</button>' +
         '</div>' +
       '</div>';
@@ -2097,7 +2098,7 @@ function applyPosterToCard(card, info) {
     var origOnclick = card.getAttribute('onclick') || '';
     var fnMatch = origOnclick.match(/playCompleted\('([^']+)'\)/);
     if (fnMatch) {
-      var localFile = decodeURIComponent(fnMatch[1]).replace(/'/g, "\\'");
+      var localFile = decodeURIComponent(fnMatch[1]).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
       card.setAttribute('onclick', "showMovieDetail('" + info.imdbId + "','" + localFile + "')");
     } else {
       card.setAttribute('onclick', "showMovieDetail('" + info.imdbId + "',null)");

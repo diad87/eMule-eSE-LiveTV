@@ -47,15 +47,20 @@
 
   /**
    * Escape a string for safe use inside an onclick="fn('...')" attribute.
-   * Handles both single-quote escaping and HTML entity encoding.
+   * Order matters: the HTML parser decodes entities first, then the JS string
+   * literal is interpreted. So the JS-string escapes (`\\`, `\'`) must be
+   * applied first, and the HTML-attribute escapes (`&amp;`, `&quot;`, ...)
+   * second — including `&` so the final HTML-attribute layer is well-formed
+   * (CodeQL js/incomplete-html-attribute-sanitization #22-29).
    * @param {string} str - Value to escape for inline JS attribute
    * @returns {string} Safe string for onclick attributes
    */
   function escapeAttr(str) {
     if (!str) return '';
     return String(str)
-      .replace(/\\/g, '\\\\')
-      .replace(/'/g, "\\'")
+      .replace(/\\/g, '\\\\')   // JS string literal: escape backslash first
+      .replace(/'/g, "\\'")     // JS string literal: escape single quote
+      .replace(/&/g, '&amp;')   // HTML attribute: must come before the others
       .replace(/"/g, '&quot;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');

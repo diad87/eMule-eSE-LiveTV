@@ -33,6 +33,18 @@ const GOOGLE_REVOKE_URL  = 'https://oauth2.googleapis.com/revoke';
 const GEMINI_SCOPE       = 'https://www.googleapis.com/auth/generative-language';
 const REDIRECT_PATH      = '/api/ai/oauth/callback';
 
+// Minimal HTML escape so attacker-controlled query params (e.g. ?error=<script>)
+// can't break out of the response template. Used in handleCallback's sendPage.
+// CodeQL js/reflected-xss #2.
+function _escapeHtml(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
 // In-flight state: code_verifier + state token per pending login
 const _pendingConnections = new Map(); // state → { codeVerifier, resolve, reject, timeout }
 
@@ -114,7 +126,8 @@ function handleCallback(reqUrl, res, port) {
 
   const sendPage = (ok, message) => {
     const color = ok ? '#2ecc71' : '#e74c3c';
-    const icon  = ok ? '✔' : '✗';
+    const icon  = ok ? '✔' : '✘';
+    const safeMessage = _escapeHtml(message);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>eSE – Conectar IA</title>
@@ -124,7 +137,7 @@ h2{font-size:28px;font-weight:800} p{color:#888;font-size:15px}
 .icon{font-size:64px}</style></head><body>
 <div class="icon" style="color:${color}">${icon}</div>
 <h2 style="color:${color}">${ok ? 'Gemini conectado' : 'Error de conexión'}</h2>
-<p>${message}</p>
+<p>${safeMessage}</p>
 <p style="font-size:12px;color:#444">Puedes cerrar esta pestaña y volver a eSE.</p>
 <script>setTimeout(()=>window.close(),3000);</script>
 </body></html>`);

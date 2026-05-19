@@ -16,13 +16,20 @@ function ts() {
   return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
 }
 
+// Strip CR/LF/TAB so a user-controlled value can't forge extra ring-buffer
+// entries when it gets logged (CodeQL js/log-injection #58-67). Also exposed
+// for callers that want to explicitly sanitize a single field before logging.
+function safe(value) {
+  return String(value == null ? '' : value).replace(/[\r\n\t]+/g, ' ');
+}
+
 function append(tag, args) {
   const body = args.map(a => {
-    if (a instanceof Error) return a.stack || a.message;
+    if (a instanceof Error) return safe(a.stack || a.message);
     if (typeof a === 'object') {
-      try { return JSON.stringify(a); } catch (e) { return String(a); }
+      try { return safe(JSON.stringify(a)); } catch (e) { return safe(a); }
     }
-    return String(a);
+    return safe(a);
   }).join(' ');
   const line = ts() + ' [' + tag + '] ' + body;
   lines.push(line);
@@ -74,4 +81,4 @@ function handle(url, req, res) {
   return false;
 }
 
-module.exports = { install, add, recent, handle };
+module.exports = { install, add, recent, handle, safe };

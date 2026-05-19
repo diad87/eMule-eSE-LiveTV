@@ -76,7 +76,9 @@ function generateQueryVariants(rawQuery, settings, callback) {
         .filter((v, i, arr) => arr.findIndex(x => x.toLowerCase() === v.toLowerCase()) === i)
         .slice(0, 5);
 
-      console.log('[AI] Query variants generated:', merged);
+      // CodeQL js/log-injection #59 — merged includes the user's raw query; sanitize each entry.
+      const _safeMerged = merged.map(s => String(s).replace(/[\r\n\t]+/g, ' '));
+      console.log('[AI] Query variants generated:', _safeMerged);
       callback(null, merged);
     } catch (e) {
       console.log('[AI] Variant parse error, using heuristic. Raw:', aiRaw.substring(0, 120));

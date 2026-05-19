@@ -156,8 +156,18 @@ function handle(url, req, res) {
     const needsSubs = subTrack && subTrack !== '-1' && subTrack !== 'undefined';
     console.log('[Stream] Codec: v=' + srcVideoCodec + ' a=' + srcAudioCodec + ' | Copy: v=' + canCopyVideo + ' a=' + canCopyAudio + ' | Part=' + isPartFile);
 
-    try { if (fs.statSync(filePath).size < 5 * 1024 * 1024) { res.writeHead(400); res.end('File too small to stream'); return true; } } catch(e) { res.writeHead(500); res.end('Cannot read file'); return true; }
-    try { const fd = fs.openSync(filePath, 'r'); fs.closeSync(fd); } catch(e) { res.writeHead(503); res.end('File is locked by another process'); return true; }
+    // Open once, then stat the handle. Avoids the TOCTOU window between
+    // fs.statSync(path) and fs.openSync(path) (CodeQL js/file-system-race #46).
+    {
+      let fd;
+      try { fd = fs.openSync(filePath, 'r'); }
+      catch (e) { res.writeHead(503); res.end('File is locked by another process'); return true; }
+      let size = 0;
+      try { size = fs.fstatSync(fd).size; }
+      catch (e) { try { fs.closeSync(fd); } catch (ignored) {} res.writeHead(500); res.end('Cannot read file'); return true; }
+      try { fs.closeSync(fd); } catch (ignored) {}
+      if (size < 5 * 1024 * 1024) { res.writeHead(400); res.end('File too small to stream'); return true; }
+    }
 
     const ffArgs = ['-err_detect', 'ignore_err', '-fflags', '+genpts+igndts+discardcorrupt'];
     // v7.4.0 — reduced .part analyzeduration/probesize from 30s/50MB → 10s/20MB.
@@ -180,6 +190,10 @@ function handle(url, req, res) {
       const vfParts = [];
       if (q.scale) vfParts.push('scale=' + q.scale);
       if (needsSubs) {
+        // The first replace already removes every backslash (Windows path → POSIX),
+        // so the subsequent `'` → `'\\''` shell-style escape can't leave a dangling
+        // backslash. CodeQL js/incomplete-sanitization #31 is a false positive here;
+        // kept the form because ffmpeg's libavfilter parses this exact escape.
         let ep = filePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\\\''");
         vfParts.push("subtitles='" + ep + "':si=" + subTrack);
       }

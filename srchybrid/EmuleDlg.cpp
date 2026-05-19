@@ -3529,6 +3529,36 @@ void CemuleDlg::ToggleEseServer(bool bOpenBrowser)
 		return;
 	}
 
+	// v8.0.2 — Kill ANY orphan ese-server.exe before spawning a fresh one.
+	//
+	// Root cause: ese-server.exe is started via CreateProcess and is NOT
+	// attached to a Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+	// When emule.exe crashes, the child survives. The next emule.exe boot:
+	//   - sees m_hEseProcess == NULL (local handle from a dead process tree)
+	//   - resets WSPass to a new random value
+	//   - tries to spawn a fresh ese-server.exe → fails EADDRINUSE silently
+	//     because the orphan still holds port 8080
+	//   - the user's browser ends up talking to the orphan, which has the
+	//     PREVIOUS WSPass cached → every emuleRequest fails with "login failed"
+	// This taskkill flush eliminates the race. Worst case it kills a
+	// legitimate ese-server.exe from another eMule instance — acceptable on
+	// a single-user dev machine, and we're about to spawn a new one anyway.
+	{
+		SHELLEXECUTEINFO sei = { sizeof(sei) };
+		sei.fMask  = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NO_CONSOLE;
+		sei.lpVerb = _T("open");
+		sei.lpFile = _T("taskkill.exe");
+		sei.lpParameters = _T("/F /IM ese-server.exe");
+		sei.nShow = SW_HIDE;
+		if (ShellExecuteEx(&sei) && sei.hProcess) {
+			WaitForSingleObject(sei.hProcess, 3000);
+			CloseHandle(sei.hProcess);
+		}
+		// Give Windows ~500 ms to actually release the :8080 listener
+		// (LSP / firewall drivers occasionally lag the FIN_WAIT_2).
+		Sleep(500);
+	}
+
 	// Resolve eSE launch strategy. We try, in order:
 	//   1. ese-server.exe in the same folder (the bundled pkg-built exe)
 	//   2. node.exe + eSE/server.js in the same folder (dev/build-from-source)

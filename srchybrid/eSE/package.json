@@ -14,6 +14,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "hls.js": "1.5",
     "nat-upnp-2": "^3.0.3"
   },
   "pkg": {
@@ -29,7 +30,8 @@
       "favicon.ico",
       "eSE-live/thumbs/**/*",
       "eSE-live/live/.gitkeep",
-      "_player_bundle.js"
+      "_player_bundle.js",
+      "node_modules/hls.js/dist/hls.min.js"
     ],
     "targets": [
       "node18-win-x64"

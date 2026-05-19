@@ -32,31 +32,36 @@ function handle(url, req, res) {
     return;
   }
 
-  // UX-007: Connection seed for mobile pairing — REQUIRES authentication
-  // This endpoint exposes secrets (encKey, accessToken, LOOKUP_TOPIC),
-  // so it MUST be gated behind a valid token.
+  // UX-007: Connection seed for mobile pairing — REQUIRES authentication.
+  // The seed lets a phone on the same LAN find this server and authenticate.
+  // v8.0.1: removed `secret`/`s` (ntfy.sh LOOKUP_TOPIC, gone) and `tunnel`/`t`
+  // (third-party tunnel URL, gone). Pairing is LAN-only now; for cross-NAT
+  // access set up Tailscale (100.64/10) or a Tor onion service manually.
   if (url.pathname === '/api/connect-seed') {
     if (_security && !_security.isValidToken(url, req)) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized', message: 'Authentication required to access connection seed.' }));
       return;
     }
-    const localIPs = Object.values(require('os').networkInterfaces()).flat()
-      .filter(i => i.family === 'IPv4' && !i.internal).map(i => i.address);
+    const ifaces = Object.values(require('os').networkInterfaces()).flat()
+      .filter(i => i.family === 'IPv4' && !i.internal);
+    const localIPs = ifaces.map(i => i.address);
+    // Surface Tailscale 100.64/10 separately so the UI can prefer it for
+    // cross-network pairing without leaking that the user has it installed.
+    const tailscaleIPs = ifaces
+      .filter(i => /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(i.address))
+      .map(i => i.address);
     const seed = {
       name: 'eSE',
       n: 'eSE',
-      version: '7.5.2',
+      version: '8.0.1',
       port: PORT,
       p: PORT,
       localIPs: localIPs,
       l: localIPs,
+      tailscaleIPs: tailscaleIPs,
       publicIP: tunnel.publicUrl ? tunnel.publicUrl.replace('http://', '').split(':')[0] : null,
       e: tunnel.publicUrl ? tunnel.publicUrl.replace('http://', '').split(':')[0] : null,
-      tunnel: tunnel.tunnelUrl || null,
-      t: tunnel.tunnelUrl || null,
-      secret: tunnel.LOOKUP_TOPIC,
-      s: tunnel.LOOKUP_TOPIC,
       k: tunnel.CONFIG.encKey,
       a: tunnel.CONFIG.accessToken,
       ts: Date.now()
@@ -78,74 +83,43 @@ function handle(url, req, res) {
       display: 'standalone',
       background_color: '#0d0d12',
       theme_color: '#0d0d12',
-      icons: [{ src: 'https://img.icons8.com/color/192/cinema.png', sizes: '192x192', type: 'image/png' }, { src: 'https://img.icons8.com/color/512/cinema.png', sizes: '512x512', type: 'image/png' }]
+      icons: [{ src: '/emule_mascot.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }]
     }));
     return;
   }
 
-  if (url.pathname === '/go' || url.pathname === '/go/' + tunnel.CONFIG.secretId) {
-    const goPage = '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">' +
-      '<title>eSE - Conectando...</title><link rel="icon" href="/emule_mascot.svg" />' +
-      '<style>*{margin:0;padding:0}body{background:#0d0d12;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}' +
-      '.box{max-width:400px}.logo{font-size:28px;font-weight:800;color:#ff6b35;margin-bottom:16px}.spin{display:inline-block;width:40px;height:40px;border:3px solid #333;border-top-color:#ff6b35;border-radius:50%;animation:s 1s linear infinite;margin-bottom:16px}@keyframes s{to{transform:rotate(360deg)}}' +
-      '.msg{color:#888;font-size:14px;margin-top:12px}a{color:#ff6b35}</style></head><body><div class="box">' +
-      '<div class="logo">eSE</div><div class="spin"></div>' +
-      '<div id="status">Buscando tu servidor...</div>' +
-      '<div class="msg" id="msg"></div></div>' +
-      '<script>' +
-      'var topic="' + tunnel.LOOKUP_TOPIC + '";' +
-      'fetch("https://ntfy.sh/"+topic+"/json?poll=1&since=1h").then(function(r){return r.text()}).then(function(t){' +
-      '  var lines=t.trim().split("\\n");if(!lines[0]){document.getElementById("status").textContent="Servidor offline";document.getElementById("msg").textContent="No se encontro ninguna sesion activa. Asegurate de que eSE esta corriendo.";return}' +
-      '  var last=JSON.parse(lines[lines.length-1]);' +
-      '  var target=last.message||"";' +
-      '  /* UX-006: Validate redirect URL — only allow http/https to prevent open redirect */' +
-      '  if(!/^https?:\\/\\//i.test(target)){document.getElementById("status").textContent="URL invalida";document.getElementById("msg").textContent="El servidor devolvio una URL no segura.";return}' +
-      '  document.getElementById("status").textContent="Encontrado! Redirigiendo...";' +
-      '  setTimeout(function(){window.location.href=target},500);' +
-      '}).catch(function(){document.getElementById("status").textContent="Error de conexion";});' +
-      '</script></body></html>';
+  // v8.0.1 — /go, /go/<secretId>, /remote, /qr removed.
+  // Previous behaviour relied on ntfy.sh (server lookup) and api.qrserver.com
+  // (QR image generator). Both are third-party services that contradict the
+  // "100% gratis, sin dominios" project invariant. Pairing is LAN-only now.
+  if (url.pathname === '/go'
+      || (tunnel.CONFIG && url.pathname === '/go/' + tunnel.CONFIG.secretId)
+      || url.pathname === '/remote'
+      || url.pathname === '/qr') {
+    const ifaces = Object.values(require('os').networkInterfaces()).flat()
+      .filter(i => i.family === 'IPv4' && !i.internal).map(i => i.address);
+    const lanList = ifaces.length
+      ? ifaces.map(ip => '<li><code>http://' + ip + ':' + PORT + '/</code></li>').join('')
+      : '<li><em>No se encontró ninguna IP de LAN.</em></li>';
+    const pubLine = tunnel.publicUrl
+      ? '<p>Acceso público (mismo PC tras UPnP): <code>' + tunnel.publicUrl + '</code></p>'
+      : '<p>UPnP no abrió ningún puerto. Para acceso fuera de tu red: Tailscale o Tor onion service.</p>';
+    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">' +
+      '<title>eSE - Acceso</title><link rel="icon" href="/emule_mascot.svg" />' +
+      '<style>*{margin:0;padding:0}body{background:#0d0d12;color:#fff;font-family:system-ui;padding:40px;line-height:1.6}' +
+      '.box{max-width:600px;margin:0 auto}h1{color:#ff6b35;margin-bottom:16px}' +
+      'code{background:#16161e;padding:2px 6px;border-radius:4px;color:#2ecc71;font-family:monospace}' +
+      'ul{margin:12px 0 12px 24px}p{margin-bottom:12px;color:#ccc}' +
+      '.note{background:#16161e;border-left:3px solid #ff6b35;padding:12px;margin-top:16px;color:#aaa;font-size:13px}' +
+      '</style></head><body><div class="box">' +
+      '<h1>eSE</h1>' +
+      '<p>El acceso remoto basado en ntfy.sh fue eliminado en v8.0.1 (terceros / TOS risk).</p>' +
+      '<p>Abre eSE desde la LAN usando una de estas URLs:</p><ul>' + lanList + '</ul>' +
+      pubLine +
+      '<div class="note">Para uso desde fuera de tu red, instala <a href="https://tailscale.com/" style="color:#ff6b35">Tailscale</a> (gratis, P2P) o expón eSE como Tor onion service. eSE no depende de ningún servicio de terceros para funcionar.</div>' +
+      '</div></body></html>';
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(goPage);
-    return true;
-  }
-
-  if (url.pathname === '/remote') {
-    // Serve the redirect HTML for download
-    const rPath = path.join(__dirname, 'eSE_Remote.html');
-    if (fs.existsSync(rPath)) {
-      res.writeHead(200, {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Content-Disposition': 'attachment; filename="eSE_Remote.html"'
-      });
-      res.end(fs.readFileSync(rPath));
-    } else {
-      res.writeHead(404); res.end('Not generated yet');
-    }
-    return true;
-  }
-
-  if (url.pathname === '/qr') {
-    // v7.4.0 — QR target prefers the UPnP-derived public URL; falls back to
-    // the ntfy.sh lookup so a phone can still find this server even without
-    // a public IP (no Cloudflare tunnel anymore).
-    const qrTarget = tunnel.publicUrl || ('https://ntfy.sh/' + tunnel.LOOKUP_TOPIC);
-    const qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(qrTarget);
-    const remoteQr = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent((tunnel.publicUrl || 'http://localhost:' + PORT) + '/remote');
-    const qrPage = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>eSE QR</title><link rel="icon" href="/emule_mascot.svg" />' +
-      '<style>*{margin:0;padding:0}body{background:#0d0d12;color:#fff;font-family:system-ui;padding:40px;text-align:center}' +
-      '.logo{font-size:28px;font-weight:800;color:#ff6b35;margin-bottom:30px}' +
-      '.card{display:inline-block;background:#16161e;border:1px solid #222;border-radius:16px;padding:24px;margin:16px;vertical-align:top;max-width:350px}' +
-      '.card h3{color:#ff6b35;margin-bottom:12px;font-size:16px}.card p{color:#888;font-size:12px;margin-top:12px;line-height:1.5}' +
-      'img{border-radius:8px;background:#fff;padding:8px}' +
-      '.url{color:#2ecc71;font-size:13px;word-break:break-all;margin-top:8px;font-family:monospace}</style></head><body>' +
-      '<div class="logo">eSE - Compartir</div>' +
-      '<div class="card"><h3> Acceso directo</h3><p>Escanea para abrir eSE ahora</p>' +
-      '<img src="' + qrImg + '" width="250" height="250"><div class="url">' + qrTarget + '</div></div>' +
-      '<div class="card"><h3> Descargar acceso remoto</h3><p>Escanea para guardar eSE_Remote.html<br>Funciona siempre, sin importar la URL del tunnel</p>' +
-      '<img src="' + remoteQr + '" width="250" height="250"><div class="url">Archivo auto-redirect permanente</div></div>' +
-      '</body></html>';
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(qrPage);
+    res.end(html);
     return true;
   }
 

@@ -130,75 +130,21 @@ function connect() {
   document.getElementById('saved').style.display = 'block';
   document.getElementById('saved').textContent = ' Servidor vinculado: ' + (seed.e || seed.l[0] || '?') + ':' + seed.p;
   
-  // Build list of URLs to try
+  // v8.0.1: discovery is LAN-only. Removed ntfy.sh fallback that was used
+  // when all direct URLs failed; it leaked the encrypted topic to a third
+  // party on every reconnect. Tailscale IPs (100.64/10) and the UPnP-
+  // derived public IP are tried as part of the normal URL list.
   var urls = [];
-  // 1. Local IPs (fastest, same network)
-  if (seed.l) seed.l.forEach(function(ip) { urls.push({ url: 'http://' + ip + ':' + seed.p, label: 'Red local (' + ip + ')', id: 'local-' + ip.replace(/\\./g,'-') }); });
-  // 2. Public IP (P2P direct)
-  if (seed.e) urls.push({ url: 'http://' + seed.e + ':' + seed.p, label: 'IP pública (' + seed.e + ')', id: 'public' });
-  // 3. Tunnel (fallback)
-  if (seed.t) urls.push({ url: seed.t, label: 'Túnel guardado', id: 'tunnel' });
-  
+  if (seed.l) seed.l.forEach(function(ip) { urls.push({ url: 'http://' + ip + ':' + seed.p, label: 'Red local (' + ip + ')', id: 'local-' + ip.replace(/\./g,'-') }); });
+  if (seed.tailscaleIPs) seed.tailscaleIPs.forEach(function(ip) { urls.push({ url: 'http://' + ip + ':' + seed.p, label: 'Tailscale (' + ip + ')', id: 'tailscale-' + ip.replace(/\./g,'-') }); });
+  if (seed.e) urls.push({ url: 'http://' + seed.e + ':' + seed.p, label: 'IP publica (' + seed.e + ')', id: 'public' });
+
   var tryNext = function(idx) {
     if (idx >= urls.length) {
-      // All direct attempts failed ââ â try ntfy discovery (invisible to user)
-      if (seed.s && seed.k) {
-        setStep('discovery', 'try', 'Buscando servidor (cifrado)...');
-        fetch('https://ntfy.sh/' + seed.s + '/json?poll=1&since=30m')
-          .then(function(r) { return r.text(); })
-          .then(function(t) {
-            var lines = t.trim().split('\\n').filter(function(l) { return l.startsWith('{'); });
-            if (!lines.length) {
-              setStep('discovery', 'fail', 'Servidor offline (sin señal reciente)');
-              document.getElementById('status').textContent = 'Servidor apagado';
-              document.getElementById('detail').textContent = 'No se detectó actividad en los últimos 30 minutos.';
-              document.getElementById('spinner').style.display = 'none';
-              document.getElementById('retry').style.display = 'inline-block';
-              return;
-            }
-            var last = JSON.parse(lines[lines.length - 1]);
-            // Decrypt the message using AES key from seed
-            decryptMsg(last.message, seed.k).then(function(info) {
-              var discoveredUrl = info.tunnel || info.p2p;
-              if (discoveredUrl) {
-                seed.t = info.tunnel || seed.t;
-                localStorage.setItem('ese_seed', JSON.stringify(seed));
-                setStep('discovery', 'try', 'Conectando vía túnel seguro...');
-                tryUrl(discoveredUrl, 6000).then(function(result) {
-                  if (result) {
-                    setStep('discovery', 'ok', 'Servidor encontrado ');
-                    document.getElementById('status').textContent = 'Â¡Conectado!';
-                    authFetch(result + '/api/connect-seed').then(function(r){return r.json()}).then(updateSeedFromServer).catch(function(){});
-                    setTimeout(function() { enterServer(result); }, 800);
-                  } else {
-                    setStep('discovery', 'fail', 'Túnel no respondió');
-                    document.getElementById('status').textContent = 'Servidor no accesible';
-                    document.getElementById('spinner').style.display = 'none';
-                    document.getElementById('retry').style.display = 'inline-block';
-                  }
-                });
-              } else {
-                setStep('discovery', 'fail', 'Sin URL en la señal');
-                document.getElementById('spinner').style.display = 'none';
-                document.getElementById('retry').style.display = 'inline-block';
-              }
-            }).catch(function() {
-              setStep('discovery', 'fail', 'Error descifrando señal');
-              document.getElementById('spinner').style.display = 'none';
-              document.getElementById('retry').style.display = 'inline-block';
-            });
-          })
-          .catch(function() {
-            setStep('discovery', 'fail', 'Error de conexión');
-            document.getElementById('spinner').style.display = 'none';
-            document.getElementById('retry').style.display = 'inline-block';
-          });
-      } else {
-        document.getElementById('status').textContent = 'Servidor no accesible';
-        document.getElementById('detail').textContent = 'Asegúrate de que el PC está encendido y eSE corriendo.';
-        document.getElementById('spinner').style.display = 'none';
-        document.getElementById('retry').style.display = 'inline-block';
-      }
+      document.getElementById('status').textContent = 'Servidor no accesible';
+      document.getElementById('detail').textContent = 'Comprueba que el PC esta encendido, eSE corriendo, y que estas en la misma red Wi-Fi (o conectado por Tailscale).';
+      document.getElementById('spinner').style.display = 'none';
+      document.getElementById('retry').style.display = 'inline-block';
       return;
     }
     var u = urls[idx];

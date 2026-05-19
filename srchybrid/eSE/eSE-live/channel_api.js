@@ -17,7 +17,9 @@ const favorites = require('./favorites_manager');
 const rtmpServer = require('./rtmp_server');
 const wsTunnel = require('./ws_tunnel');
 const thumbExtractor = require('./thumbnail_extractor');
-const cfTunnel = require('./cloudflare_tunnel');
+// v8.0.1: cloudflare_tunnel.js removed entirely. Cloudflare Quick Tunnel was
+// dropped in v7.4.0; the stub file is now gone too. /api/live/tunnel/* still
+// returns 410 Gone below for any client still polling it.
 const updateNotifier = require('./update_notifier');  // D6: GitHub release polling
 
 const HLS_LIVE_DIR = path.join(os.tmpdir(), 'eMule_RTMP');
@@ -122,34 +124,14 @@ function markFirstRunSeen() {
   } catch (e) { return false; }
 }
 
-// Tier 1.4 — Public IP cache (STUN/HTTP fallback)
-// eMule learns the public IP from Kad's firewall test, which can take 30-90 s
-// after launch. We provide an HTTP fallback (api.ipify.org) so the UI can
-// generate a working ed2k://|live|... link within seconds. Cached for 10 min.
+// Tier 1.4 — Public IP source
+// v8.0.1: api.ipify.org HTTP fallback removed (third-party leak of usage
+// patterns). eMule's Kad firewall test is now the only source of truth. If
+// public_ip is empty for the first 30-90 s, the UI says "Esperando a Kad"
+// rather than calling a third party behind the user's back.
 const https = require('https');
-let _publicIPCache = { ip: null, fetchedAt: 0 };
-const PUBLIC_IP_CACHE_MS = 10 * 60 * 1000;
 function getCachedPublicIP(cb) {
-  const now = Date.now();
-  if (_publicIPCache.ip && (now - _publicIPCache.fetchedAt) < PUBLIC_IP_CACHE_MS) {
-    return cb(_publicIPCache.ip);
-  }
-  const req = https.get('https://api.ipify.org?format=text', { timeout: 3000 }, (r) => {
-    let body = '';
-    r.on('data', d => body += d);
-    r.on('end', () => {
-      const ip = (body || '').trim();
-      // Sanity check: dotted IPv4
-      if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
-        _publicIPCache = { ip: ip, fetchedAt: now };
-        cb(ip);
-      } else {
-        cb(null);
-      }
-    });
-  });
-  req.on('error',   () => cb(null));
-  req.on('timeout', () => { req.destroy(); cb(null); });
+  return cb(null);
 }
 
 /**
@@ -380,7 +362,7 @@ function handleRoute(url, req, res, ctx) {
       '<li><b>Tu IP pública</b> es visible para los peers a los que te conectes (igual que en BitTorrent o eD2K). Los peers que descarguen tu emisión saben tu IP.</li>' +
       '<li>Si emites, tu <b>IP + puertos TCP/UDP</b> se publican en la red Kad (DHT pública). Cualquiera buscando "eselive" puede encontrarte.</li>' +
       '<li>Si usas un overlay externo (Tailscale, Tor, etc.) para acceso público, ese proveedor verá metadatos según su política.</li>' +
-      '<li>El watchdog de auto-fetch de <code>nodes.dat</code> contacta con <code>nodes-dat.com</code> y <code>api.ipify.org</code> (este último solo si tu Kad no detecta tu IP).</li>' +
+      '<li>El watchdog de auto-fetch de <code>nodes.dat</code> contacta con <code>nodes-dat.com</code> SOLO si tu Kad no arranca tras 60 s. v8.0.1 ya no llama a <code>api.ipify.org</code>; el IP público se aprende solo via Kad.</li>' +
       '<li>El check de auto-update contacta con <code>api.github.com</code>.</li>' +
       '</ul>' +
       '<h2>Datos que NO se recogen</h2>' +
@@ -624,11 +606,10 @@ function handleRoute(url, req, res, ctx) {
     return true;
   }
 
-  // === GET /api/live/preflight — Proxy + STUN fallback for public IP ===
-  // Tier 1.4: if eMule's Kad firewall test hasn't completed yet, public_ip
-  // comes back empty. We then fall back to a public HTTP echo service
-  // (api.ipify.org) so the user gets their IP within seconds of launching,
-  // not minutes. The result is cached in-memory for 10 minutes.
+  // === GET /api/live/preflight — Proxy to eMule's preflight check ===
+  // v8.0.1: previous versions fell back to api.ipify.org if Kad hadn't
+  // detected our public IP yet. Removed — third-party leak. We now just
+  // report what Kad has, with public_ip_source='kad' or '' if unknown.
   if (p === '/api/live/preflight') {
     const proxyReq = http.get('http://127.0.0.1:4711/api/live/preflight', { timeout: 3000 }, (proxyRes) => {
       let body = '';
@@ -637,20 +618,8 @@ function handleRoute(url, req, res, ctx) {
         let data;
         try { data = JSON.parse(body); }
         catch (e) { return jsonResponse(res, 200, { ready: false, error: 'parse_error' }); }
-
-        // STUN fallback: if eMule doesn't know our public IP yet, ask ipify.
-        if (!data.public_ip) {
-          getCachedPublicIP(function (ip) {
-            if (ip) {
-              data.public_ip = ip;
-              data.public_ip_source = 'ipify';
-            }
-            jsonResponse(res, 200, data);
-          });
-        } else {
-          data.public_ip_source = 'kad';
-          jsonResponse(res, 200, data);
-        }
+        data.public_ip_source = data.public_ip ? 'kad' : '';
+        jsonResponse(res, 200, data);
       });
     });
     proxyReq.on('error',   () => jsonResponse(res, 200, { ready: false, error: 'eMule offline' }));
@@ -1157,8 +1126,8 @@ function handleRoute(url, req, res, ctx) {
     });
     res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>eSE Live</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<!-- v8.0.1: Google Fonts CDN dropped; system-ui only. -->
+<script src="/vendor/hls.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;font-family:"Inter",sans-serif;overflow:hidden}

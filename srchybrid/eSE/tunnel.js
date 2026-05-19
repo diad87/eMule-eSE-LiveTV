@@ -1,20 +1,39 @@
 'use strict';
-const https  = require('https');
+//
+// eSE — tunnel.js (v8.0.1: third-party services purged)
+//
+// HISTORY
+//   v7.4.0 dropped Cloudflare Quick Tunnel (AUP risk + project invariant).
+//   v8.0.1 drops ntfy.sh discovery + Telegram notifications + public-IP
+//          lookups via api.ipify.org / icanhazip.com / ifconfig.me.
+//
+// WHAT THIS FILE STILL DOES
+//   - Generates and caches local secrets (encKey, accessToken) for HTTP auth
+//     and the /api/connect-seed LAN pairing flow.
+//   - Provides AES-256-CBC envelope encryption (encryptMsg) for that seed.
+//   - Asks the local router via UPnP to forward our HTTP port, and asks the
+//     same router for its WAN IP (zero third-party services involved).
+//
+// WHAT THIS FILE NO LONGER DOES
+//   - Publishes anything to ntfy.sh.
+//   - Sends Telegram messages.
+//   - Calls api.ipify.org, icanhazip.com, ifconfig.me, or any similar third
+//     party. If your router does not speak UPnP we simply have no public URL
+//     and the UI says so honestly. Use Tailscale (100.64/10) or a Tor onion
+//     service set up outside eSE if you need cross-NAT access.
+//
 const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
 const runtimeDir = require('./runtime_dir');
 
-// Puerto del servidor — se configura con init()
+// Local HTTP port — set by init() before setupUPnP().
 let PORT = 8080;
-
-/** Configura el puerto. Llamar antes de setupUPnP. */
 function init(port) { PORT = port; }
 
 // ─── Config / secrets ────────────────────────────────────────────────────────
 // Writable runtime files MUST live outside the pkg snapshot (which is read-only).
-// See runtime_dir.js: returns %APPDATA%\eSE in pkg mode, __dirname in dev.
+// runtime_dir.js returns %APPDATA%\eSE in pkg mode, __dirname in dev.
 const CONFIG_PATH = runtimeDir.join('config.json');
 
 function loadConfig() {
@@ -26,7 +45,6 @@ function loadConfig() {
     if (changed) fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
     return cfg;
   }
-  // Primera ejecución: generar todos los secretos
   const config = {
     secretId:    crypto.randomBytes(8).toString('hex'),
     encKey:      crypto.randomBytes(32).toString('hex'),
@@ -38,64 +56,9 @@ function loadConfig() {
   return config;
 }
 
-const CONFIG       = loadConfig();
-const LOOKUP_TOPIC = 'ese-' + CONFIG.secretId;
-const LOOKUP_URL   = 'https://ntfy.sh/' + LOOKUP_TOPIC;
+const CONFIG = loadConfig();
 
-// ─── Redirect HTML (se genera una sola vez) ───────────────────────────────────
-
-const redirectHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>eSE</title><link rel="icon" href="data:image/svg+xml;base64,PHN2ZyBjbGFzcz0iZW11bGUtbG9nbyIgd2lkdGg9IjI4IiBoZWlnaHQ9IjI4IiB2aWV3Qm94PSIwIDAgMTAwIDEwMCIgZmlsbD0ibm9uZSIgc3R5bGU9Im1hcmdpbi1yaWdodDoxMHB4O3ZlcnRpY2FsLWFsaWduOm1pZGRsZTsiPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjQ4IiBmaWxsPSJ1cmwoI2dyYWQpIiBzdHJva2U9IiNmZjZiMzUiIHN0cm9rZS13aWR0aD0iMiIvPjxwYXRoIGQ9Ik03MCAzNWMtNS01LTE1LTUtMjAgMC01LTUtMTUtNS0yMCAwLTMgMy0zIDEwIDAgMTUgNSA1IDIwIDE1IDIwIDE1czE1LTEwIDIwLTE1YzMtNSAzLTEyIDAtMTV6IiBmaWxsPSIjZmZmIi8+PGNpcmNsZSBjeD0iNDIiIGN5PSI0MiIgcj0iMyIgZmlsbD0iIzAwMCIvPjxjaXJjbGUgY3g9IjU4IiBjeT0iNDIiIHI9IjMiIGZpbGw9IiMwMDAiLz48cGF0aCBkPSJNNDUgNTVxNSA1IDEwIDAiIHN0cm9rZT0iI2ZmMmQ3OCIgc3Ryb2tlLXdpZHRoPSIzIiBmaWxsPSJub25lIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImdyYWQiIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMTAwJSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiNmZjZiMzUiLz48c3RvcCBvZmZzZXQ9IjUwJSIgc3RvcC1jb2xvcj0iI2ZmMmQ3OCIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI2M4NDBlOSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjwvc3ZnPg==" />
-<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0d0d12;color:#fff;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}
-.box{max-width:400px;padding:20px}.logo{font-size:32px;font-weight:800;background:linear-gradient(135deg,#ff6b35,#ff2d78);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:20px}
-.spin{display:inline-block;width:44px;height:44px;border:3px solid #222;border-top-color:#ff6b35;border-radius:50%;animation:s .8s linear infinite;margin-bottom:16px}@keyframes s{to{transform:rotate(360deg)}}
-#status{font-size:16px;margin-bottom:8px}.msg{color:#666;font-size:13px;margin-top:12px;line-height:1.6}a{color:#ff6b35}
-.retry{margin-top:16px;background:#ff6b35;border:none;color:#fff;padding:10px 24px;border-radius:8px;font-size:14px;cursor:pointer;display:none}</style></head>
-<body><div class="box"><div class="logo">eSE</div><div class="spin" id="spinner"></div>
-<div id="status">Buscando tu servidor...</div><div class="msg" id="msg"></div>
-<button class="retry" id="retry" onclick="go()">Reintentar</button></div>
-<script>
-function go(){
-document.getElementById("status").textContent="Buscando tu servidor...";
-document.getElementById("spinner").style.display="inline-block";
-document.getElementById("retry").style.display="none";
-fetch("https://ntfy.sh/${LOOKUP_TOPIC}/json?poll=1&since=1h")
-.then(function(r){return r.text()})
-.then(function(t){
-  var lines=t.trim().split("\\n");
-  if(!lines[0]||!lines[0].startsWith("{")){
-    document.getElementById("status").textContent="Servidor offline";
-    document.getElementById("spinner").style.display="none";
-    document.getElementById("msg").innerHTML="eSE no esta corriendo ahora.<br>Enciende tu PC e inicia eSE.";
-    document.getElementById("retry").style.display="inline-block";
-    return;
-  }
-  var last=JSON.parse(lines[lines.length-1]);
-  document.getElementById("status").textContent="Encontrado! Redirigiendo...";
-  setTimeout(function(){window.location.href=last.message},500);
-}).catch(function(){
-  document.getElementById("status").textContent="Error de conexion";
-  document.getElementById("spinner").style.display="none";
-  document.getElementById("retry").style.display="inline-block";
-});
-}
-go();
-</script></body></html>`;
-
-// Generar archivo de acceso remoto si no existe (writable runtime dir)
-(function generateRemoteHtml() {
-  const redirectPath = runtimeDir.join('eSE_Remote.html');
-  if (!fs.existsSync(redirectPath)) {
-    try {
-      fs.writeFileSync(redirectPath, redirectHtml);
-      console.log('[config] Generated eSE_Remote.html at ' + redirectPath);
-    } catch (e) {
-      console.log('[config] Could not write eSE_Remote.html: ' + e.message);
-    }
-  }
-})();
-
-// ─── Cifrado AES-256-CBC ──────────────────────────────────────────────────────
+// ─── Symmetric envelope (used by /api/connect-seed) ──────────────────────────
 
 function encryptMsg(text) {
   const key    = Buffer.from(CONFIG.encKey, 'hex');
@@ -106,90 +69,23 @@ function encryptMsg(text) {
   return iv.toString('hex') + ':' + enc;
 }
 
-// ─── Estado interno ───────────────────────────────────────────────────────────
+// ─── UPnP ─────────────────────────────────────────────────────────────────────
+// We ask the local router to forward our port AND for its own WAN IP.
+// No DNS lookups, no third-party HTTPS calls. The IP we display is whatever
+// the router itself reports via GetExternalIPAddress (SSDP/SOAP, LAN-local).
 
-// v7.4.0 — Cloudflare Quick Tunnel removed. We rely on UPnP for public
-// reachability or LAN for trusted networks; users wanting cross-NAT access
-// over a third-party overlay are expected to set up Tailscale or Tor
-// manually (see README).
-let upnpClient    = null;
-let publicUrl     = null;
+let upnpClient = null;
+let publicUrl  = null;  // computed once setupUPnP succeeds
 
-// ─── Publicación de URL (ntfy.sh + Telegram) ─────────────────────────────────
-
-function publishUrl(url, isHeartbeat) {
-  const urlInfo = { tunnel: null, p2p: publicUrl || null, ts: Date.now() };
-  try { fs.writeFileSync(runtimeDir.join('current_url.txt'), JSON.stringify(urlInfo)); } catch (e) {}
-
-  const encryptedPayload = encryptMsg(JSON.stringify(urlInfo));
-  const postData = JSON.stringify({ topic: LOOKUP_TOPIC, title: 'eSE', message: encryptedPayload, tags: ['lock'] });
-
-  const req = https.request(
-    { hostname: 'ntfy.sh', path: '/', method: 'POST', headers: { 'Content-Type': 'application/json' } },
-    (res) => {
-      if (res.statusCode === 200) {
-        if (!isHeartbeat) {
-          console.log('[ntfy] URL published!');
-          console.log('');
-          console.log('   ACCESO REMOTO (bookmark esto):');
-          console.log('  ' + LOOKUP_URL);
-          console.log('');
-        }
-      } else {
-        let body = '';
-        res.on('data', d => body += d);
-        res.on('end', () => console.log('[ntfy] Error: ' + res.statusCode + ' ' + body));
-      }
-    }
-  );
-  req.on('error', (e) => console.log('[ntfy] Failed: ' + e.message));
-  req.write(postData);
-  req.end();
-
-  // Telegram (solo en publicación inicial, no en heartbeats)
-  if (!isHeartbeat) {
-    const cfgPath = runtimeDir.join('telegram.json');
-    if (fs.existsSync(cfgPath)) {
-      try {
-        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-        if (cfg.token && cfg.chatId) {
-          const msg = ' eSE activo!\n\n' + (url || 'Sin URL') + '\n\nAbre en cualquier navegador.';
-          const td  = JSON.stringify({ chat_id: cfg.chatId, text: msg });
-          const tr  = https.request(
-            { hostname: 'api.telegram.org', path: '/bot' + cfg.token + '/sendMessage', method: 'POST', headers: { 'Content-Type': 'application/json' } },
-            () => {}
-          );
-          tr.on('error', () => {});
-          tr.write(td);
-          tr.end();
-        }
-      } catch (e) {}
-    }
-  }
-}
-
-// Heartbeat: re-publicar URLs cada 5 minutos
-setInterval(() => {
-  if (publicUrl) publishUrl(publicUrl, true);
-}, 5 * 60 * 1000);
-
-// ─── UPnP ────────────────────────────────────────────────────────────────────
-
-function getPublicIP() {
+function getExternalIpViaUpnp() {
   return new Promise((resolve) => {
-    const services = ['https://api.ipify.org', 'https://icanhazip.com', 'https://ifconfig.me/ip'];
-    let tried = 0;
-    for (const svc of services) {
-      https.get(svc, { timeout: 5000 }, (res) => {
-        let data = '';
-        res.on('data', d => data += d);
-        res.on('end', () => {
-          const ip = data.trim();
-          if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) resolve(ip);
-          else { tried++; if (tried >= services.length) resolve(null); }
-        });
-      }).on('error', () => { tried++; if (tried >= services.length) resolve(null); });
-    }
+    if (!upnpClient) return resolve(null);
+    try {
+      upnpClient.externalIp((err, ip) => {
+        if (err || !ip || !/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return resolve(null);
+        resolve(ip);
+      });
+    } catch (_) { resolve(null); }
   });
 }
 
@@ -202,7 +98,7 @@ async function setupUPnP() {
         (err) => err ? reject(err) : resolve());
     });
     console.log('[UPnP] Port ' + PORT + ' mapped on router');
-    const ip = await getPublicIP();
+    const ip = await getExternalIpViaUpnp();
     if (ip) {
       publicUrl = 'http://' + ip + ':' + PORT;
       console.log('');
@@ -212,12 +108,13 @@ async function setupUPnP() {
       console.log('  No third parties. Direct connection.');
       console.log('');
     } else {
-      console.log('[UPnP] Port mapped but could not detect public IP');
+      console.log('[UPnP] Port mapped but router did not report a WAN IP.');
+      console.log('[UPnP] Use http://localhost:' + PORT + ' locally, or set up Tailscale / a Tor onion service for cross-NAT access.');
     }
   } catch (e) {
     console.log('[UPnP] Failed: ' + e.message);
     console.log('[UPnP] No public URL available. Use LAN (http://localhost:' + PORT + '),');
-    console.log('[UPnP] Tailscale, or a Tor onion service set up manually.');
+    console.log('[UPnP] Tailscale (100.64/10), or a Tor onion service set up manually.');
   }
 }
 
@@ -229,17 +126,17 @@ function removeUPnP() {
 }
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
+// Legacy fields LOOKUP_TOPIC / LOOKUP_URL / tunnelUrl / publishUrl removed in
+// v8.0.1. Callers were updated; any leftover consumer reading them gets
+// `undefined`, which the prior code already treated as "no remote URL".
 
 module.exports = {
   init,
   CONFIG,
-  LOOKUP_TOPIC,
-  LOOKUP_URL,
   encryptMsg,
-  publishUrl,
   setupUPnP,
   removeUPnP,
-  get tunnelUrl()  { return null; },   // legacy stub — no third-party tunnel anymore
-  get publicUrl()  { return publicUrl; },
-  get active()     { return !!publicUrl; },
+  get tunnelUrl() { return null; },     // legacy stub — no third-party tunnel
+  get publicUrl() { return publicUrl; },
+  get active()    { return !!publicUrl; },
 };

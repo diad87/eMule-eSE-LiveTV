@@ -7,12 +7,12 @@ module.exports = function getLivePlayerHTML() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>eSE Live — P2P Stream</title>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1"><\/script>
+<script src="/vendor/hls.min.js"><\/script>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+  /* v8.0.1: Inter from fonts.googleapis.com dropped (third-party CDN). */
   * { margin:0; padding:0; box-sizing:border-box; }
   body {
-    font-family:'Inter',sans-serif;
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
     background:#0a0a0f;
     color:#e0e0e0;
     min-height:100vh;

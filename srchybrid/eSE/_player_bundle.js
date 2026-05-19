@@ -645,7 +645,7 @@ function showErrorToast(msg) {
 }
 
 
-// ==== tunnel_settings.js (44210 bytes) ====
+// ==== tunnel_settings.js (44211 bytes) ====
 // tunnel_settings.js — notificaciones, estado tunnel/sharing, panel de ajustes
 
 // ── Notificaciones ─────────────────────────────────────────────────────────────
@@ -918,7 +918,7 @@ function renderSettingsPanel(settings) {
     else if (ipEl) ipEl.textContent = 'No disponible';
     if (tunnelEl && seed.tunnel) tunnelEl.textContent = seed.tunnel;
     else if (tunnelEl) tunnelEl.textContent = 'No disponible';
-    if (ntfyEl && seed.ntfyTopic) ntfyEl.textContent = 'https://ntfy.sh/' + seed.ntfyTopic;
+    if (ntfyEl) ntfyEl.textContent = ''; // v8.0.1: ntfy.sh removed (third-party + TOS risk)
   }).catch(function() {});
 
   // Check eMule status on open

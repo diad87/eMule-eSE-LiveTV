@@ -283,10 +283,8 @@ function refreshPreflight() {
     paintCheck('pf-ff', d.ffmpeg_found ? 'ok' : 'fail', 'FFmpeg');
     var ipEl = document.getElementById('pf-ip');
     if (ipEl) {
-      var src = d.public_ip_source === 'ipify' ? ' (via ipify)'
-              : d.public_ip_source === 'kad'   ? ''
-              : '';
-      ipEl.textContent = (d.public_ip ? d.public_ip + ':' + d.port + src : '');
+      // v8.0.1: ipify HTTP fallback removed; IP source is always Kad now.
+      ipEl.textContent = (d.public_ip ? d.public_ip + ':' + d.port : '');
     }
   }).catch(function(){
     paintCheck('pf-kad', 'fail', 'Kad', 'eMule offline');

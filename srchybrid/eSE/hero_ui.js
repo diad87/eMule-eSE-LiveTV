@@ -48,7 +48,7 @@
     else if (ipEl) ipEl.textContent = 'No disponible';
     if (tunnelEl && seed.tunnel) tunnelEl.textContent = seed.tunnel;
     else if (tunnelEl) tunnelEl.textContent = 'No disponible';
-    if (ntfyEl && seed.ntfyTopic) ntfyEl.textContent = 'https://ntfy.sh/' + seed.ntfyTopic;
+    if (ntfyEl) ntfyEl.textContent = ''; // v8.0.1: ntfy.sh removed (third-party + TOS risk)
   }).catch(function() {});
   
   // Check eMule status on open

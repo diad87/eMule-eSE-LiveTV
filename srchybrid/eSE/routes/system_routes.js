@@ -96,9 +96,43 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/tunnel/status') {
+    // v8.0.1: lookupUrl removed (ntfy.sh dropped). The only public URL we
+    // surface is whatever UPnP gave us. tunnelUrl stays null permanently.
     const t = _ctx.tunnel;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ url: null, publicUrl: t.publicUrl, active: t.active, lookupUrl: t.LOOKUP_URL }));
+    res.end(JSON.stringify({ url: null, publicUrl: t.publicUrl, active: t.active, lookupUrl: null }));
+    return true;
+  }
+
+  // v8.0.1 — /api/system/network: surface the network overlays this machine
+  // can reach over without going through a third-party tunnel. Tailscale
+  // assigns addresses in 100.64.0.0/10 (CGNAT range); if the user has it
+  // installed and signed in, those addresses appear on a local interface.
+  // This is the cleanest way to do "P2P access outside my LAN, free, no
+  // domains" — see project memory feedback_gratis_no_barato.md.
+  if (url.pathname === '/api/system/network') {
+    const os = require('os');
+    const all = Object.values(os.networkInterfaces()).flat().filter(i => !i.internal);
+    const cgnat100 = all.filter(i => i.family === 'IPv4' && /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(i.address));
+    const v4 = all.filter(i => i.family === 'IPv4').map(i => i.address);
+    const v6 = all.filter(i => i.family === 'IPv6' && !i.scopeid).map(i => i.address);
+    const t = _ctx.tunnel;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      lan_v4: v4,
+      lan_v6: v6,
+      tailscale: {
+        active: cgnat100.length > 0,
+        ips: cgnat100.map(i => i.address),
+        // Note: detection is heuristic. Any tool that assigns a 100.64/10
+        // address (Tailscale, Headscale, ZeroTier with custom range) trips it.
+        note: cgnat100.length ? 'IPv4 in 100.64.0.0/10 detected on a local interface — likely Tailscale or compatible overlay.' : null
+      },
+      upnp: {
+        active: !!t.publicUrl,
+        publicUrl: t.publicUrl || null
+      }
+    }));
     return true;
   }
 

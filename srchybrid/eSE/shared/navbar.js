@@ -77,7 +77,7 @@ function getHead(title, extraCSS) {
     '<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">' +
     '<title>' + title + '</title>' +
     '<link rel="icon" href="/emule_mascot.svg" />' +
-    '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">' +
+    '<!-- v8.0.1: Google Fonts CDN removed. system-ui fallback in CSS below. -->' +
     '<style>' +
     '*{margin:0;padding:0;box-sizing:border-box}' +
     'body{font-family:"Inter",sans-serif;background:#0a0a0f;color:#e5e5e5;min-height:100vh;padding-top:72px}' +

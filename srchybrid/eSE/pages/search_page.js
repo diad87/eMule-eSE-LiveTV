@@ -10,7 +10,7 @@ function handle(url, req, res) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Buscar ââ¬â eSE</title><link rel="icon" href="/emule_mascot.svg" />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<!-- v8.0.1: Google Fonts CDN removed. Fallback chain in CSS uses system fonts. -->
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0f;color:#fff;font-family:'Inter',system-ui,sans-serif;min-height:100vh}

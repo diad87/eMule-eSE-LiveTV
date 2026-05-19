@@ -5,6 +5,7 @@
 
 #include "stdafx.h"
 #include "Address.h"
+#include "../SafeFile.h"           // v0.71 IPv6 Sprint 1 — WriteToBuffer/ReadFromBuffer
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <wspiapi.h>
@@ -570,4 +571,125 @@ inline const int _inet_pton(const int af, const char *src, const void *dst)
         memset(&to[elipsis], 0, 16-i);
     }
     return 1;
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
+// v0.71 IPv6 Sprint 1 — wire serialization, hashing, subnet ops.
+// Reference: docs/IPV6_PLAN.md §5.1.
+// ────────────────────────────────────────────────────────────────────────
+
+void CAddress::WriteToBuffer(CSafeMemFile* file) const
+{
+    if (!file) return;
+    uint8 fam = 0;
+    uint8 len = 0;
+    switch (m_eAF) {
+    case IPv4: fam = 4;  len = 4;  break;
+    case IPv6: fam = 6;  len = 16; break;
+    case None: fam = 0;  len = 0;  break;
+    }
+    file->WriteUInt8(fam);
+    file->WriteUInt8(len);
+    if (len > 0)
+        file->Write(m_IP, len);
+}
+
+bool CAddress::ReadFromBuffer(CSafeMemFile* file)
+{
+    if (!file) return false;
+    // Need at least 2 bytes for the prefix.
+    if (file->GetPosition() + 2 > file->GetLength()) return false;
+    uint8 fam = file->ReadUInt8();
+    uint8 len = file->ReadUInt8();
+    EAF type;
+    uint8 expected;
+    switch (fam) {
+    case 0: type = None; expected = 0;  break;
+    case 4: type = IPv4; expected = 4;  break;
+    case 6: type = IPv6; expected = 16; break;
+    default: return false;
+    }
+    if (len != expected) return false;
+    if (file->GetPosition() + len > file->GetLength()) return false;
+    memset(m_IP, 0, 16);
+    if (len > 0)
+        file->Read(m_IP, len);
+    m_eAF = type;
+    return true;
+}
+
+UINT CAddress::HashKey() const
+{
+    // FNV-1a 32-bit over the 17-byte (family + 16 raw addr) tuple. Cheap and
+    // distributes well enough for CMap; collisions are functionally tolerated
+    // because CMap probes the equality operator after a hash hit.
+    UINT h = 2166136261u;
+    h ^= (UINT)m_eAF;       h *= 16777619u;
+    for (int i = 0; i < 16; ++i) { h ^= (UINT)m_IP[i]; h *= 16777619u; }
+    return h;
+}
+
+CAddress CAddress::GetSubnet(int prefixBits) const
+{
+    if (m_eAF == None || prefixBits <= 0) {
+        CAddress out(*this);
+        memset(out.m_IP, 0, 16);
+        return out;
+    }
+    int maxBits = (m_eAF == IPv4) ? 32 : 128;
+    if (prefixBits >= maxBits) return *this;
+
+    CAddress out(*this);
+    // Bytes fully kept, bytes fully zeroed, plus the partial byte at the seam.
+    int byteCount = prefixBits / 8;
+    int leftover  = prefixBits % 8;
+    if (leftover == 0) {
+        // Zero everything from byteCount onward (within the addr family len).
+        int total = (m_eAF == IPv4) ? 4 : 16;
+        for (int i = byteCount; i < total; ++i) out.m_IP[i] = 0;
+    } else {
+        uint8 mask = (uint8)(0xFFu << (8 - leftover));
+        out.m_IP[byteCount] &= mask;
+        int total = (m_eAF == IPv4) ? 4 : 16;
+        for (int i = byteCount + 1; i < total; ++i) out.m_IP[i] = 0;
+    }
+    return out;
+}
+
+bool CAddress::InSameSubnet(const CAddress& other, int prefixBits) const
+{
+    if (m_eAF != other.m_eAF) return false;
+    if (m_eAF == None) return true;
+    return GetSubnet(prefixBits) == other.GetSubnet(prefixBits);
+}
+
+CAddress CAddress::FromKadHostOrder(uint32 hostIp)
+{
+    // Kad's m_uIp is host-order (high byte first in human terms); our internal
+    // m_IP is the raw network-order bytes. Reverse to convert.
+    return CAddress(hostIp, /*bReverse=*/true);
+}
+
+uint32 CAddress::ToKadHostOrder() const
+{
+    return ToUInt32(/*bReverse=*/true);
+}
+
+uint32 CAddress::ToSyntheticUInt32() const
+{
+    // Synthetic uint32 for IPv6 addresses: hash + high bit forced on so the
+    // legacy CMap<uint32, …> never collides with a real public IPv4 (which
+    // never starts with bit 0x80000000 set in network order — actually it can,
+    // since 128.0.0.0/1 is valid v4; we use a magic prefix instead).
+    if (m_eAF == IPv4) return ToUInt32(/*bReverse=*/false);
+    if (m_eAF == None) return 0;
+    // IPv6: synthesize. Use FNV-1a 32-bit over the 16 addr bytes, then force
+    // the top byte to 0xFE — explicitly chosen because 254.x.x.x/8 is
+    // reserved-future and never appears as a real public IPv4. Any collision
+    // here is by definition a different IPv6 that synthesizes to the same
+    // 24-bit suffix, which is acceptable for CMap probing.
+    uint32 h = 2166136261u;
+    for (int i = 0; i < 16; ++i) { h ^= (uint32)m_IP[i]; h *= 16777619u; }
+    return (uint32)((h & 0x00FFFFFFu) | 0xFE000000u);
 }

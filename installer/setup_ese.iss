@@ -4,10 +4,10 @@
 ; No decisions. No config. Firewall + FFmpeg handled automatically.
 
 #define AppName      "eSE - eMule Streaming Engine"
-#define AppVersion   "0.70b-eSE6.2"
+#define AppVersion   "0.70b-eSE7.0"
 #define AppPublisher "eSE Project"
 #define AppURL       "https://github.com/eSE-project"
-#define AppExeName   "eSE.vbs"
+#define AppExeName   "emule.exe"
 
 [Setup]
 AppId={{E5E-EMULE-STREAMING-ENGINE}
@@ -42,11 +42,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Crear acceso directo en el Escritorio"; GroupDescription: "Iconos adicionales:"; Flags: checked
 
 [Files]
-; eMule binary
+; eMule binary (incluye el botón eSE en la barra de herramientas — arranca ese-server.exe / node automáticamente)
 Source: "..\srchybrid\x64\Release\emule.exe"; DestDir: "{app}"; Flags: ignoreversion
-
-; Launcher
-Source: "eSE.vbs"; DestDir: "{app}"; Flags: ignoreversion
 
 ; eSE server + UI
 Source: "..\srchybrid\eSE\*.js"; DestDir: "{app}\eSE"; Flags: ignoreversion recursesubdirs
@@ -64,9 +61,9 @@ Source: "config\preferences.ini"; DestDir: "{app}\config"; Flags: onlyifdoesntex
 Source: "ffmpeg\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\eSE.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\emule.exe"
+Name: "{group}\{#AppName}"; Filename: "{app}\emule.exe"; WorkingDir: "{app}"
 Name: "{group}\Desinstalar {#AppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\eSE.vbs"""; WorkingDir: "{app}"; IconFilename: "{app}\emule.exe"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\emule.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 ; --- AUTOMATIC (always runs, no user choice) ---
@@ -78,8 +75,8 @@ Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""eSE Node"" 
 
 ; --- POST-INSTALL (user sees the final page) ---
 
-; Launch eSE after install (checked by default — auto-opens browser via eSE.vbs)
-Filename: "{sys}\wscript.exe"; Parameters: """{app}\eSE.vbs"""; Description: "Iniciar eSE ahora"; Flags: postinstall nowait skipifsilent; WorkingDir: "{app}"
+; Launch eMule after install (el usuario pulsa el botón eSE para arrancar el panel web)
+Filename: "{app}\emule.exe"; Description: "Iniciar eMule ahora"; Flags: postinstall nowait skipifsilent; WorkingDir: "{app}"
 
 [UninstallRun]
 ; Clean firewall rules on uninstall

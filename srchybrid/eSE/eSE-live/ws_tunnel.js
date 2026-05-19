@@ -19,6 +19,23 @@ let keepaliveTimer = null;
 const PING_INTERVAL_MS = 30000;  // Send ping every 30s
 const PONG_TIMEOUT_MS  = 90000;  // Kill connection if no pong in 90s
 
+// v7.5.0 — frame/buffer hard caps. Prevents OOM via:
+//   (a) attacker announcing payloadLen=2^53 (we reject before alloc)
+//   (b) trickle-feed chunks growing recvBuf linearly (we reject before concat)
+const MAX_FRAME_PAYLOAD = 1 * 1024 * 1024;   // 1 MB per frame
+const MAX_RECV_BUFFER   = 4 * 1024 * 1024;   // 4 MB pending reassembly
+
+// v7.5.0 — Origin allowlist for the WS upgrade. Without this any web page can
+// open a WS to localhost:8443 and inject crafted frames.
+function _wsOriginIsAllowed(origin) {
+  if (!origin) return false;
+  try {
+    const u = new URL(origin);
+    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1') return true;
+    return false;
+  } catch { return false; }
+}
+
 /**
  * Start the WebSocket tunnel server.
  * Upgrades HTTP connections on a given port to WebSocket for P2P relay.
@@ -45,6 +62,19 @@ function startServer(opts) {
     // Handle WebSocket upgrade
     tunnelServer.on('upgrade', (req, socket, head) => {
       if (req.url !== '/ese-live') {
+        socket.destroy();
+        return;
+      }
+
+      // v7.5.0 — reject upgrades from cross-origin pages. The Origin header
+      // is set by browsers automatically and cannot be spoofed from JS, so
+      // this catches the "any web page opens a WS to localhost" attack.
+      // Native eSE peer-to-peer connections that aren't browsers can either
+      // omit the header (we accept that case — non-browser) or set it to
+      // a local value.
+      const origin = req.headers.origin;
+      if (origin && !_wsOriginIsAllowed(origin)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
         socket.destroy();
         return;
       }
@@ -231,6 +261,17 @@ function processIncoming(clientId, chunk, opts) {
   const conn = tunnelConnections.get(clientId);
   if (!conn) return;
 
+  // v7.5.0 — bound the reassembly buffer BEFORE the concat so a trickle-feed
+  // attacker can't push us past MAX_RECV_BUFFER even momentarily. Previous
+  // code allowed an unbounded grow and only checked AFTER concat, so a peer
+  // announcing a 2GB frame could OOM the host while the concat ran.
+  if (conn.recvBuf.length + chunk.length > MAX_RECV_BUFFER) {
+    console.log('[eSE Tunnel] Buffer over hard cap, disconnecting peer:', clientId);
+    try { conn.socket.destroy(); } catch (e) {}
+    tunnelConnections.delete(clientId);
+    return;
+  }
+
   // Append new data to reassembly buffer
   conn.recvBuf = Buffer.concat([conn.recvBuf, chunk]);
 
@@ -238,6 +279,13 @@ function processIncoming(clientId, chunk, opts) {
   while (conn.recvBuf.length >= 2) {
     const frameInfo = peekFrameLength(conn.recvBuf);
     if (!frameInfo) break; // Not enough data for header
+    if (frameInfo.totalLen < 0 || frameInfo.totalLen > MAX_FRAME_PAYLOAD + 14) {
+      // Header announced a payload bigger than we'll ever accept — drop peer.
+      console.log('[eSE Tunnel] Frame size over cap, disconnecting peer:', clientId);
+      try { conn.socket.destroy(); } catch (e) {}
+      tunnelConnections.delete(clientId);
+      return;
+    }
 
     if (conn.recvBuf.length < frameInfo.totalLen) break; // Incomplete frame
 
@@ -246,13 +294,6 @@ function processIncoming(clientId, chunk, opts) {
     conn.recvBuf = conn.recvBuf.slice(frameInfo.totalLen);
 
     handleWsFrame(clientId, frameData, opts);
-  }
-
-  // Safety: prevent buffer from growing unbounded (max 16MB)
-  if (conn.recvBuf.length > 16 * 1024 * 1024) {
-    console.log('[eSE Tunnel] Buffer overflow, disconnecting peer:', clientId);
-    try { conn.socket.destroy(); } catch (e) {}
-    tunnelConnections.delete(clientId);
   }
 }
 
@@ -273,7 +314,16 @@ function peekFrameLength(data) {
     offset = 4;
   } else if (payloadLen === 127) {
     if (data.length < 10) return null;
-    payloadLen = Number(data.readBigUInt64BE(2));
+    // v7.5.0 — readBigUInt64BE can yield values up to 2^64; once cast to
+    // Number anything > 2^53 loses precision and we end up trusting bogus
+    // arithmetic in totalLen. Reject anything over the per-frame cap before
+    // it can poison `offset + payloadLen`.
+    const big = data.readBigUInt64BE(2);
+    if (big > BigInt(MAX_FRAME_PAYLOAD)) {
+      // Sentinel — caller treats negative as "too big" and drops the peer.
+      return { totalLen: -1 };
+    }
+    payloadLen = Number(big);
     offset = 10;
   }
 

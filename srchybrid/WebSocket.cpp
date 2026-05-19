@@ -5,6 +5,7 @@
 #include "Preferences.h"
 #include "StringConversion.h"
 #include "Log.h"
+#include "LiveDebugLog.h"
 
 #include "mbedtls/net_sockets.h"
 #include "mbedtls/ssl_cache.h"
@@ -75,8 +76,15 @@ void CWebSocket::OnRequestReceived(const char *pHeader, DWORD dwHeaderLen, const
 		return;
 	}
 
-	// eSE: Route /api/ endpoints to the eSE JSON API handler
-	if (!filereq && sURL.Left(5) == "/api/") {
+	// eSE: Route /api/ + /dashboard + /hls/ to the eSE JSON/HTML/HLS handler.
+	// Sprint 5: /dashboard serves the embedded mini-dashboard, /hls/* serves
+	// HLS .ts/.m3u8 files from %TEMP%\eMule_RTMP — both implemented in
+	// _ProcessLiveAPI so emule.exe alone is functional without ese-server.exe.
+	if (!filereq && (
+		sURL.Left(5) == "/api/" ||
+		sURL == "/dashboard" || sURL == "/dashboard/" ||
+		sURL.Left(5) == "/hls/"
+	)) {
 		m_pParent->_ProcessLiveAPI(Data);
 	} else if (!filereq)
 		m_pParent->_ProcessURL(Data);
@@ -290,7 +298,13 @@ UINT AFX_CDECL WebSocketAcceptedFunc(LPVOID pD)
 	const SocketData *pData = static_cast<SocketData*>(pD);
 	CWebServer *pThis = static_cast<CWebServer*>(pData->pThis);
 	SOCKET hSocket = pData->hSocket;
-	const in_addr &ad(pData->incomingaddr);
+	// 2026-05-17 BUG FIX: was 'const in_addr &ad(pData->incomingaddr)'. The
+	// reference dangles after 'delete pData' below, and is dereferenced way
+	// later in OnReceived() at lines ~362/367. The memory typically reads as
+	// zeros after free, so /api/live/* requests intermittently saw clientIP=0
+	// and got rejected by the localhost-only security gate ("[SEC] Blocked
+	// remote /api/live request from 0.0.0.0"). Copy by VALUE.
+	const in_addr ad = pData->incomingaddr;
 	pThis->SetIP(ad.s_addr);
 	delete pData;
 
@@ -441,15 +455,38 @@ UINT AFX_CDECL WebSocketListeningFunc(LPVOID pThis)
 	DbgSetThreadName("WebSocketListening");
 	InitThreadLocale();
 
+	uint16 wsPort = (uint16)thePrefs.GetWSPort();
+	CLiveDebugLog::Get().Append("WS",
+		"Listener thread started: port=%u  bindAddr=\"%s\"",
+		(unsigned)wsPort,
+		thePrefs.GetBindAddrA() ? thePrefs.GetBindAddrA() : "INADDR_ANY");
 
 	SOCKET hSocket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, 0);
-	if (INVALID_SOCKET != hSocket) {
+	if (INVALID_SOCKET == hSocket) {
+		CLiveDebugLog::Get().Append("WS",
+			"WSASocket FAILED: WSAErr=%d", WSAGetLastError());
+		return 0;
+	}
+	{
 		SOCKADDR_IN stAddr;
 		stAddr.sin_family = AF_INET;
-		stAddr.sin_port = htons(thePrefs.GetWSPort());
+		stAddr.sin_port = htons(wsPort);
 		stAddr.sin_addr.s_addr = thePrefs.GetBindAddrA() ? inet_addr(thePrefs.GetBindAddrA()) : INADDR_ANY;
 
-		if (!bind(hSocket, (LPSOCKADDR)&stAddr, sizeof stAddr) && !listen(hSocket, SOMAXCONN)) {
+		int bindRv = bind(hSocket, (LPSOCKADDR)&stAddr, sizeof stAddr);
+		if (bindRv != 0) {
+			CLiveDebugLog::Get().Append("WS",
+				"bind(%u) FAILED: WSAErr=%d  (10048=AddrInUse, 10013=AccessDenied)",
+				(unsigned)wsPort, WSAGetLastError());
+		}
+		int listenRv = (bindRv == 0) ? listen(hSocket, SOMAXCONN) : -1;
+		if (bindRv == 0 && listenRv != 0) {
+			CLiveDebugLog::Get().Append("WS",
+				"listen(%u) FAILED: WSAErr=%d", (unsigned)wsPort, WSAGetLastError());
+		}
+		if (bindRv == 0 && listenRv == 0) {
+			CLiveDebugLog::Get().Append("WS",
+				"BOUND OK on port %u — accepting connections", (unsigned)wsPort);
 			HANDLE hEvent = CreateEvent(NULL, FALSE, TRUE, NULL);
 			if (hEvent) {
 				if (!WSAEventSelect(hSocket, hEvent, FD_ACCEPT)) {

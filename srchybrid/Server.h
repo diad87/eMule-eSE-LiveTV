@@ -18,6 +18,7 @@
 
 class CTag;
 class CFileDataIO;
+class CAddress;  // v0.71 IPv6 Sprint 8 — server.met v2 ST_IPV6 storage
 
 #pragma pack(push, 1)
 struct ServerMet_Struct
@@ -163,11 +164,26 @@ public:
 	bool	SupportsObfuscationTCP() const			{ return GetObfuscationPortTCP() != 0 && (SupportsObfuscationUDP() || SupportsGetSourcesObfuscation()); }
 	bool	SupportsGetSourcesObfuscation() const	{ return (GetTCPFlags() & SRV_TCPFLG_TCPOBFUSCATION) != 0; } // mapped to SRV_TCPFLG_TCPOBFUSCATION
 
+	// v0.71 IPv6 Sprint 8 — server.met v2 IPv6 address. Stored as the
+	// 18-byte CAddress wire form so we can pass it byte-identical through
+	// the ST_IPV6 BLOB tag without re-serializing. HasIPv6() is the
+	// authoritative emit/dial gate; the wire bytes are valid only when
+	// it returns true.
+	bool	HasIPv6() const							{ return m_bHasV6Addr; }
+	const byte* GetIPv6Wire() const					{ return m_v6Wire; }
+	// Returns 18 (the v6 wire length) when HasIPv6(), else 0.
+	uint32	GetIPv6WireLen() const					{ return m_bHasV6Addr ? 18u : 0u; }
+	void	SetIPv6Wire(const byte* pucWire18);     // 18 bytes; family must be 6
+	void	ClearIPv6()								{ m_bHasV6Addr = false; memset(m_v6Wire, 0, sizeof m_v6Wire); }
+
 	//bool	IsEqual(const CServer *pServer) const; - unused
 
 private:
 	void	init();
-	TCHAR	ipfull[3+1+3+1+3+1+3+1]; // 16, null terminated
+	// v0.71 IPv6 Sprint 2 — widened from 16 to 48 chars to fit IPv6 textual
+	// addresses. IPv6 max literal is "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255"
+	// (mapped-IPv4 form) = 45 chars + NUL. 48 is the next round number.
+	TCHAR	ipfull[48];
 	CString	m_strDescription;
 	CString	m_strName;
 	CString	m_strDynIP;
@@ -198,4 +214,9 @@ private:
 	bool	m_bstaticservermember;
 	bool	m_bCryptPingReplyPending;
 	bool	m_bTriedCryptOnce;
+	// v0.71 IPv6 Sprint 8 — server.met v2 storage. m_v6Wire holds the
+	// 18-byte CAddress IPv6 wire form (family=6 + length=16 + addr 16B);
+	// m_bHasV6Addr gates use. Defaults: false / zero on every constructor.
+	bool	m_bHasV6Addr;
+	byte	m_v6Wire[18];
 };

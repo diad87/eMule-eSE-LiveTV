@@ -66,6 +66,17 @@ LPCWSTR	CPreferences::m_pszBindAddrW;
 CStringW CPreferences::m_strBindAddrW;
 uint16	CPreferences::port;
 uint16	CPreferences::udpport;
+// v0.71 IPv6 Sprint 9 (post-F8 follow-up) — flip default to Auto. The
+// dual-stack listener gracefully falls back to v4-only when the OS or
+// the network has no v6 (see ListenSocket::StartListening). Users can
+// disable explicitly via the "Enable IPv6" checkbox in Preferences →
+// Connection, persisted as IPv6Mode= in preferences.ini.
+CPreferences::EIPv6Mode CPreferences::m_eIPv6Mode = CPreferences::IPv6AutoMode;
+CString CPreferences::m_strIPv6BindAddr;
+// eSE Live dedicated keyword namespace — dual-publish stays ON until a
+// future release decides the legacy half can be dropped (see accessor
+// comment in Preferences.h).
+bool	CPreferences::m_bEseLivePublishLegacy = true;
 uint16	CPreferences::nServerUDPPort;
 UINT	CPreferences::maxconnections;
 UINT	CPreferences::maxhalfconnections;
@@ -1472,6 +1483,20 @@ void CPreferences::CreateUserHash()
 	userhash[14] = 111;	//0x6f
 }
 
+void CPreferences::RegenerateUserHash()
+{
+	// V2-S07+ headless stress: force a fresh userhash so the broadcaster's
+	// AttachToAlreadyKnown / "same userhash" guards don't think the viewer
+	// is itself. Re-rolls until isbadhash is false, then re-applies the
+	// eMule marker bytes (same as CreateUserHash).
+	CryptoPP::AutoSeededRandomPool rng;
+	do {
+		rng.GenerateBlock(userhash, sizeof userhash);
+		userhash[5]  = 14;
+		userhash[14] = 111;
+	} while (isbadhash(userhash));
+}
+
 UINT CPreferences::GetRecommendedMaxConnections()
 {
 	UINT iRealMax = GetMaxWindowsTCPConnections();
@@ -1807,6 +1832,8 @@ void CPreferences::SavePreferences()
 	// Section: "UPnP"
 	//
 	ini.WriteBool(_T("EnableUPnP"), m_bEnableUPnP, _T("UPnP"));
+	// v0.71 IPv6 Sprint 9 — persist the IPv6 mode (0=Off, 1=Auto, 2=Preferred).
+	ini.WriteInt(_T("IPv6Mode"), (int)m_eIPv6Mode, _T("Connection"));
 	ini.WriteBool(_T("SkipWANIPSetup"), m_bSkipWANIPSetup);
 	ini.WriteBool(_T("SkipWANPPPSetup"), m_bSkipWANPPPSetup);
 	ini.WriteBool(_T("CloseUPnPOnExit"), m_bCloseUPnPOnExit);
@@ -2218,6 +2245,19 @@ void CPreferences::LoadPreferences()
 	m_strVideoPlayerArgs = ini.GetString(_T("VideoPlayerArgs"), _T(""));
 
 	m_strTemplateFile = ini.GetString(_T("WebTemplateFile"), GetMuleDirectory(EMULE_EXECUTABLEDIR) + _T("eMule.tmpl"));
+
+	// eSE: cascading fallback. If the configured WebTemplateFile is missing
+	// (typical when a portable package was extracted to a new path while
+	// preferences.ini still points at the previous install), try the config
+	// dir then the executable dir before giving up. Without this, a stale
+	// override silently breaks ReloadTemplates → WebServer never binds.
+	if (!::PathFileExists(m_strTemplateFile)) {
+		const CString cfgPath = GetMuleDirectory(EMULE_CONFIGDIR) + _T("eMule.tmpl");
+		const CString exePath = GetMuleDirectory(EMULE_EXECUTABLEDIR) + _T("eMule.tmpl");
+		if (::PathFileExists(cfgPath))      m_strTemplateFile = cfgPath;
+		else if (::PathFileExists(exePath)) m_strTemplateFile = exePath;
+	}
+
 	// if emule is using the default, check if the file is in the config folder, as it used to be val prior version
 	// and might be wanted by the user when switching to a personalized template
 	if (m_strTemplateFile.Compare(GetMuleDirectory(EMULE_EXECUTABLEDIR) + _T("eMule.tmpl")) == 0)
@@ -2391,6 +2431,27 @@ void CPreferences::LoadPreferences()
 	m_iWebFileUploadSizeLimitMB = ini.GetInt(_T("MaxFileUploadSizeMB"), 5);
 	m_bAllowAdminHiLevFunc = ini.GetBool(_T("AllowAdminHiLevelFunc"), false);
 
+	// eSE: zero-config WebServer in portable mode (m_nCurrentUserDirMode == 2).
+	// Portable means "user dropped the package and runs the .exe — no setup".
+	// Without this auto-enable, every portable install needs the user to
+	// manually toggle WebServer in Options > Remote Control before /api/live/*
+	// works — including the dashboard at port 4711 used by the eSE Node UI.
+	// Detection: if the [WebServer] section was never explicitly written
+	// (Enabled defaults to false AND password is empty AND no template
+	// override), treat as first-run portable and turn the WebServer on.
+	if (m_nCurrentUserDirMode == 2 && !m_bWebEnabled
+		&& m_strWebPassword.IsEmpty()
+		&& m_strWebLowPassword.IsEmpty())
+	{
+		m_bWebEnabled = true;
+		if (m_nWebPort == 0 || m_nWebPort > 65535)
+			m_nWebPort = 4711;
+		// Persist so subsequent loads see Enabled=1 and respect any future
+		// user toggle from Options > Remote Control.
+		ini.WriteBool(_T("Enabled"), true);
+		ini.WriteInt(_T("Port"), m_nWebPort);
+	}
+
 	buffer = ini.GetString(_T("AllowedIPs"));
 	for (int iPos = 0; iPos >= 0;) {
 		const CString &strIP(buffer.Tokenize(_T(";"), iPos));
@@ -2408,6 +2469,12 @@ void CPreferences::LoadPreferences()
 	// Section: "UPnP"
 	//
 	m_bEnableUPnP = ini.GetBool(_T("EnableUPnP"), true, _T("UPnP")); // eSE: Default true to fix Low ID out of the box
+	// v0.71 IPv6 Sprint 9 — read IPv6 mode; default Auto (1). Clamp to known values.
+	{
+		int v = ini.GetInt(_T("IPv6Mode"), (int)IPv6AutoMode, _T("Connection"));
+		if (v < 0 || v > 2) v = (int)IPv6AutoMode;
+		m_eIPv6Mode = (EIPv6Mode)v;
+	}
 	m_bSkipWANIPSetup = ini.GetBool(_T("SkipWANIPSetup"), false);
 	m_bSkipWANPPPSetup = ini.GetBool(_T("SkipWANPPPSetup"), false);
 	m_bCloseUPnPOnExit = ini.GetBool(_T("CloseUPnPOnExit"), true);

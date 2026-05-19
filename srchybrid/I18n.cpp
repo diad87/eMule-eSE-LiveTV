@@ -259,11 +259,24 @@ void CPreferences::SetLanguage()
 		//LANGID lidLocalePri = PRIMARYLANGID(GetThreadLocale());
 		//LANGID lidLocaleSub = SUBLANGID(GetThreadLocale());
 
+		// Also try the primary language alone (e.g. "es" matches es_AS / es_ES_T)
+		// before giving up on the user's region.
 		bFoundLang = LoadLangLib(GetMuleDirectory(EMULE_INSTLANGDIR), GetMuleDirectory(EMULE_ADDLANGDIR, false), lidLocale);
+		if (!bFoundLang) {
+			const LANGID priOnly = MAKELANGID(PRIMARYLANGID(lidLocale), SUBLANG_DEFAULT);
+			if (priOnly != lidLocale)
+				bFoundLang = LoadLangLib(GetMuleDirectory(EMULE_INSTLANGDIR), GetMuleDirectory(EMULE_ADDLANGDIR, false), priOnly);
+			if (bFoundLang)
+				lidLocale = priOnly;
+		}
 		if (!bFoundLang) {
 			LoadLangLib(GetMuleDirectory(EMULE_INSTLANGDIR), GetMuleDirectory(EMULE_ADDLANGDIR, false), LANGID_EN_US);
 			m_wLanguageID = LANGID_EN_US;
-			LocMessageBox(IDS_MB_LANGUAGEINFO, MB_ICONASTERISK);
+			// Old behavior popped a modal "we fell back to English" message every
+			// launch. That was disruptive for users on a fresh install where
+			// the right DLL just isn't bundled. Quiet log instead — the user can
+			// pick a language in Preferences if they care.
+			TRACE(_T("[I18n] no DLL for OS locale 0x%04X, falling back to en_US\n"), lidLocale);
 		} else
 			m_wLanguageID = lidLocale;
 	}

@@ -51,12 +51,49 @@ function isValidToken(url, req) {
   return fixedTimeEqual(getPresentedToken(url, req), getAccessToken());
 }
 
-// Localhost connections are trusted (user is on their own machine)
+// v7.5.0 — DNS-rebinding defense. A request is treated as "local" only when:
+//   (a) The TCP peer address is loopback (127.0.0.1 / ::1), AND
+//   (b) The HTTP Host header is loopback or numeric IP (NOT a hostname).
+//
+// Without (b), an attacker can DNS-rebind `attacker.com` → 127.0.0.1, get the
+// victim's browser to send a request whose socket.remoteAddress IS loopback,
+// and the original ListenSocket->WebServer chain treats it as trusted. The
+// browser still attaches `Host: attacker.com`, so we use that as the second
+// signal. We accept hostnames `localhost`, `127.0.0.1`, `[::1]`, and any
+// RFC1918 address the local box owns (so LAN access from a phone with a
+// real `Host: 192.168.1.50:8080` works).
+function _hostIsLocal(hostHeader) {
+  if (!hostHeader) return false;
+  // strip port
+  let h = String(hostHeader);
+  if (h.startsWith('[')) {
+    // IPv6 literal: "[::1]:8080"
+    const end = h.indexOf(']');
+    if (end < 0) return false;
+    h = h.slice(1, end);
+    return h === '::1' || h.toLowerCase() === '::1';
+  }
+  const colon = h.lastIndexOf(':');
+  if (colon > 0) h = h.slice(0, colon);
+  h = h.toLowerCase();
+  if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return true;
+  // RFC1918 / link-local — own LAN, real numeric IPs only (not arbitrary hostnames)
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  // Tailscale (CGNAT 100.64.0.0/10) — 100.64.x.x .. 100.127.x.x
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  return false;
+}
+
 function isLocalRequest(req) {
-  // If request comes through a reverse proxy (Cloudflare tunnel), it's NOT local
   if (req.headers['x-forwarded-for'] || req.headers['cf-connecting-ip']) return false;
   const addr = req.socket && req.socket.remoteAddress;
-  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+  const peerIsLoopback = addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+  if (!peerIsLoopback) return false;
+  // v7.5.0 — Host header MUST match a known local name to block DNS-rebinding.
+  return _hostIsLocal(req.headers.host);
 }
 
 function isSecureRequest(req) {
@@ -64,11 +101,17 @@ function isSecureRequest(req) {
 }
 
 function cookieFor(req) {
+  // v7.5.0 — SameSite=Strict (was Lax). With Lax, top-level navigations from
+  // a third-party site (e.g. attacker links to http://127.0.0.1:8080/api/...
+  // via window.open) attach the cookie. Strict blocks that entirely; the only
+  // way to acquire the cookie is the /api/auth/session flow, which itself
+  // requires the access token. Genuine bookmarks from the same origin still
+  // get the cookie attached.
   const parts = [
     'ese_access=' + encodeURIComponent(getAccessToken()),
     'Path=/',
     'HttpOnly',
-    'SameSite=Lax',
+    'SameSite=Strict',
     'Max-Age=2592000'
   ];
   if (isSecureRequest(req)) parts.push('Secure');
@@ -139,13 +182,13 @@ function sendUnauthorized(res) {
   res.end(JSON.stringify({ error: 'unauthorized' }));
 }
 
-// BUG-052 FIX: CORS origin whitelist instead of reflection
+// BUG-052 FIX: CORS origin whitelist instead of reflection.
+// v7.4.0: trycloudflare.com entry removed (Cloudflare Quick Tunnel gone).
 function isAllowedOrigin(origin) {
   if (!origin) return false;
   try {
     const u = new URL(origin);
     if (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1') return true;
-    if (u.hostname.endsWith('.trycloudflare.com')) return true;
     return false;
   } catch { return false; }
 }
@@ -254,5 +297,8 @@ module.exports = {
   isReady,
   redactSettings,
   mergeSettings,
-  isValidToken
+  isValidToken,
+  // v7.5.0 — exported for unit tests and any caller that needs the DNS-rebinding-aware check.
+  isLocalRequest,
+  _hostIsLocal
 };

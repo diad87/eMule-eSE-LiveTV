@@ -79,6 +79,13 @@ public:
     bool IsUtpWritable() const { return m_bUtpWritable; }
     uint32 m_uLastNatRendezvousTick = 0;
     uint32 m_uDeferredNatConnectTick = 0;
+    // A.3 Sprint 1: track per-peer hole-punch attempts so the cooldown can be
+    // aggressive (5 s) for the first few tries and relax (30 s) only after the
+    // peer has clearly proven hard-to-reach. Without this, a fresh "connect to
+    // peer X" attempt has to wait 30 s after each previous attempt — terrible UX.
+    uint8  m_uNatRendezvousAttempts = 0;
+    // A.3: high-water mark of attempts since last successful uTP connect with
+    // this peer. Resets to 0 when the punch succeeds (in CUtpSocket on_accept).
     bool SupportsUTP() const;
 
 
@@ -136,6 +143,21 @@ public:
 	const CString&	GetClientModVer() const							{ return m_strModVersion; }
 	void			InitClientSoftwareVersion();
 	UINT			GetVersion() const								{ return m_nClientVersion; }
+
+	// v0.71 IPv6 Sprint 6 — peer's fork capability bits (from OP_HELLO/ANSWER
+	// CT_FORK_CAPABILITIES tag). Use these to decide whether to emit legacy
+	// or _V6 opcodes for follow-up packets.
+	uint32          GetForkCaps()           const { return m_dwForkCaps; }
+	bool            SupportsIPv6Wire()      const { return (m_dwForkCaps & 0x01) != 0; }
+	bool            SupportsKadV6()         const { return (m_dwForkCaps & 0x02) != 0; }
+	bool            HasV6DualStack()        const { return (m_dwForkCaps & 0x04) != 0; }
+	bool            SupportsEd25519Live()   const { return (m_dwForkCaps & 0x08) != 0; }
+	// v0.71 P3.5 — eSE privacy capability bitmap. See Opcodes.h for the
+	// ESE_CAP_* bit constants. 0 = legacy peer / no privacy support.
+	uint32          GetEseCapabilities()    const { return m_uEseCapabilities; }
+	bool            SupportsEsePrivacyTunneling() const { return (m_uEseCapabilities & 0x00000100) != 0; }
+	bool            SupportsEseSealedRecords()    const { return (m_uEseCapabilities & 0x00000200) != 0; }
+	bool            SupportsEseGossip()           const { return (m_uEseCapabilities & 0x00000400) != 0; }
 	uint8			GetMuleVersion() const							{ return m_byEmuleVersion; }
 	bool			ExtProtocolAvailable() const					{ return m_bEmuleProtocol; }
 	bool			SupportMultiPacket() const						{ return m_bMultiPacket; }
@@ -490,6 +512,13 @@ protected:
 	uint8	m_byExtendedRequestsVer;
 	//--group aligned to int32
 	uint8	m_byCompatibleClient;
+	// v0.71 IPv6 Sprint 6 — fork capability bits from CT_FORK_CAPABILITIES (0xF0).
+	// 0 = baseline / upstream eMule / pre-v7.7 fork (no _V6 / no ED25519).
+	// See Opcodes.h for bit definitions.
+	uint32  m_dwForkCaps;
+	// v0.71 P3.5 — eSE privacy capability bits from TAG_ESE_CAPS (0x6C).
+	// 0 = legacy / no privacy support. See Opcodes.h ESE_CAP_* bits.
+	uint32  m_uEseCapabilities;
 	bool	m_bFriendSlot;
 	bool	m_bCommentDirty;
 	bool	m_bIsML;

@@ -40,6 +40,7 @@ their client on the eMule forum.
 #include "kademlia/kademlia/Kademlia.h"
 #include "kademlia/kademlia/defines.h"
 #include "kademlia/kademlia/Prefs.h"
+#include "kademlia/kademlia/Search.h"          // ESE_LIVE_KEYWORD_PREFIX + decls
 #include "kademlia/kademlia/SearchManager.h"
 #include "kademlia/kademlia/Indexed.h"
 #include "kademlia/kademlia/UDPFirewallTester.h"
@@ -49,6 +50,15 @@ their client on the eMule forum.
 #include "kademlia/utils/KadUDPKey.h"
 #include "kademlia/utils/KadClientSearcher.h"
 #include "kademlia/kademlia/tag.h"
+// v0.71 P0.2 — privacy stack ticks. Run once per second from CKademlia::Process
+// which is the always-on heartbeat (1 Hz, driven by UploadQueue.cpp). Each
+// module self-throttles internally (TunnelPool gates by lifetime, Bootstrap
+// gates by m_lastMDNSTick), so calling them every second is safe and idempotent.
+#include "kademlia/kademlia/KadV2TunnelPool.h"
+#include "../../LiveTunnel.h"
+#include "../../LiveBootstrap.h"
+// v0.71 P3.10 — ServerWnd::UpdateMyInfo periodic refresh
+#include "../../ServerWnd.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -205,6 +215,49 @@ void CKademlia::Process()
 {
 	if (m_pInstance == NULL || !m_bRunning)
 		return;
+
+	// v0.71 P0.2 — privacy stack heartbeat. Wrapped in try/catch because
+	// the privacy modules are best-effort and must NEVER bring down the
+	// Kad scheduler. If one throws we log once and stop ticking it (the
+	// flag prevents log spam — m_bRunning of Kad itself is unaffected).
+	{
+		static bool s_privacyTickDisabled = false;
+		if (!s_privacyTickDisabled) {
+			try {
+				eSELive::CLiveTunnel::Get().Tick();
+				CKadV2TunnelPool::Get().Tick();
+				eSELive::CLiveBootstrap::Get().TickMDNS();
+			} catch (...) {
+				DebugLogError(_T("Privacy tick threw exception — disabling further ticks this session"));
+				s_privacyTickDisabled = true;
+			}
+		}
+		// v0.71 P3.8 — refresh the SBarPrivacy pane every 1 Hz so the
+		// user sees Pending counts drop to 0 after the 6s handshake
+		// timeout. Without this the pane only updates on connection
+		// state events (server connect/disconnect, Kad firewall check,
+		// etc) which can leave the count stale for minutes.
+		if (theApp.emuledlg)
+			theApp.emuledlg->UpdatePrivacyStatusPane();
+
+		// v0.71 P3.10 — refresh the embedded "Mi información" rich-edit
+		// in ServerWnd every 2 seconds. UpdateMyInfo() is a full text
+		// rebuild (~50 lines), so we throttle to 2s to avoid CPU.
+		// Same staleness fix as the status bar pane: before this, the
+		// embedded panel only refreshed on connection-state events.
+		static DWORD s_lastMyInfoRefresh = 0;
+		DWORD nowTick = GetTickCount();
+		if (nowTick - s_lastMyInfoRefresh >= 2000
+		    && theApp.emuledlg
+		    && theApp.emuledlg->serverwnd)
+		{
+			s_lastMyInfoRefresh = nowTick;
+			try {
+				theApp.emuledlg->serverwnd->UpdateMyInfo();
+			} catch (...) {}
+		}
+	}
+
 	uint32 uMaxUsers = 0;
 	time_t tNow = time(NULL);
 	ASSERT(m_pInstance->m_pPrefs != NULL);
@@ -538,6 +591,25 @@ CStringA KadGetKeywordBytes(const Kademlia::CKadTagValueString &rstrKeywordW)
 void KadGetKeywordHash(const Kademlia::CKadTagValueString &rstrKeywordW, Kademlia::CUInt128 *pKadID)
 {
 	KadGetKeywordHash(KadGetKeywordBytes(rstrKeywordW), pKadID);
+}
+
+// eSE Live dedicated namespace — see comment in Search.h. The MD4 feed is
+// 5 sentinel bytes ("\x00eSE\x00") followed by the same UTF-8 bytes the
+// legacy hash sees. Result is a deterministic-but-unreachable-from-UI
+// 128-bit target in DHT space. No legacy code path produces those input
+// bytes, so the only writers/readers at this hash are eSE-aware clients.
+void EseLiveGetKeywordHash(const CStringA &rstrKeywordA, Kademlia::CUInt128 *pKadID)
+{
+	CMD4 md4;
+	md4.Add((byte*)ESE_LIVE_KEYWORD_PREFIX, ESE_LIVE_KEYWORD_PREFIX_LEN);
+	md4.Add((byte*)(LPCSTR)rstrKeywordA, rstrKeywordA.GetLength());
+	md4.Finish();
+	pKadID->SetValueBE(md4.GetHash());
+}
+
+void EseLiveGetKeywordHash(const Kademlia::CKadTagValueString &rstrKeywordW, Kademlia::CUInt128 *pKadID)
+{
+	EseLiveGetKeywordHash(KadGetKeywordBytes(rstrKeywordW), pKadID);
 }
 
 void CKademlia::StatsAddClosestDistance(const CUInt128 &uDist)

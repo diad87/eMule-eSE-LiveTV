@@ -127,6 +127,7 @@ CSearch::CSearch()
 	, m_uLiveBroadcasterPort()
 	, m_bStoping()
 	, m_bLiveStreamPublish()
+	, m_bLivePublishCleanNs(false)   // H8 — opt-in for clean-namespace publishes
 {
 	m_pLookupHistory = new CLookupHistory();
 	theApp.emuledlg->kademliawnd->searchList->SearchAdd(this);
@@ -1154,6 +1155,7 @@ void CSearch::ProcessResultKeyword(const CUInt128 &uAnswer, TagList &rlistInfo, 
 	uint32 uLiveStartedAt = 0;
 	uint32 uLiveIP = 0;
 	uint16 uLivePort = 0;
+	uint16 uLiveUDPPort = 0;  // A.4 Sprint 1: broadcaster's Kad UDP port for hole-punching
 	CArray<CAICHHash> aAICHHashes;
 	CArray<uint8, uint8> aAICHHashPopularity;
 	// Flags that are set if we want this keyword.
@@ -1199,6 +1201,23 @@ void CSearch::ProcessResultKeyword(const CUInt128 &uAnswer, TagList &rlistInfo, 
 			uLiveIP = (uint32)cTag.GetInt();
 		else if (cTag.m_name == TAG_SOURCEPORT)
 			uLivePort = (uint16)cTag.GetInt();
+		// v0.71 IPv6 Sprint 8 — forward-compat TAG_SOURCEIP_V6 reader.
+		// Until CEntry/CLiveKadBridge learn v6, we accept-and-log the tag
+		// so we can observe v6-aware forks publishing once they exist. No
+		// behavioural change: dial still falls back to uLiveIP (v4). The
+		// emit side is deliberately not wired yet because CemuleApp has no
+		// v6 public IP source (Sprint 3 firewall prober TryHighID is a
+		// stub). When that lands, mirror the v4 emit at line ~1623.
+		else if (cTag.m_name == TAG_SOURCEIP_V6) {
+			// Tag value is BSOB carrying CAddress wire form (18 bytes for v6).
+			// We don't dispatch on it yet — see comment block above.
+			AddDebugLogLine(false,
+				_T("eSE Live: received TAG_SOURCEIP_V6 from peer (v6 dial-path pending Sprint 3/6 v6 source)"));
+		}
+		// A.4 Sprint 1: capture broadcaster's Kad UDP port for hole-punching.
+		// Without it, LowID broadcasters are unreachable from LowID viewers.
+		else if (cTag.m_name == TAG_SOURCEUPORT)
+			uLiveUDPPort = (uint16)cTag.GetInt();
 		else if (cTag.m_name.Compare(TAG_ESE_LIVE_MARKER) == 0)
 			bLiveMarker = cTag.IsInt() && cTag.GetInt() == 1;
 		else if (cTag.m_name.Compare(TAG_ESE_LIVE_STREAM_KEY) == 0 && cTag.IsStr())
@@ -1287,8 +1306,10 @@ void CSearch::ProcessResultKeyword(const CUInt128 &uAnswer, TagList &rlistInfo, 
 				liveCategory,
 				uLiveIP,
 				uLivePort,
+				uLiveUDPPort,                                  // A.4: pass Kad UDP for hole-punch
 				(uint16)min(uLiveBitrate, 65535u),
-				uLiveViewers);
+				uLiveViewers,
+				m_uSearchID);                                  // H5: namespace attribution
 		}
 	}
 
@@ -1582,12 +1603,26 @@ void CSearch::PrepareLivePacketForTags(CByteIO *byIO) const
 			if (title.IsEmpty())
 				title = L"eSE Live";
 
-			CStringW fileName;
-			fileName.Format(L"eselive %ls", (LPCWSTR)title);
-
-			listTag.push_back(new CKadTagStr(TAG_FILENAME, fileName));
+			// H8 — TAG_FILENAME ("eselive <title>") and TAG_FILETYPE
+			// ("eSELive") are the only tags in this publish that are
+			// human-readable AND understood by a vanilla 0.70b parser.
+			// In the clean namespace (MD4("\x00eSE\x00" || utf8(kw))),
+			// no legacy client can reach this entry, so they're pure
+			// title-leak surface for any eSE-aware crawler that learns
+			// the prefix. Omit them in clean publishes; eSE viewers use
+			// TAG_ESE_LIVE_TITLE / TAG_ESE_LIVE_MARKER instead, which
+			// non-eSE parsers don't recognise. TAG_FILESIZE stays at 1
+			// because some Kad implementations sanity-check filesize > 0
+			// before keeping the entry.
+			if (!m_bLivePublishCleanNs) {
+				CStringW fileName;
+				fileName.Format(L"eselive %ls", (LPCWSTR)title);
+				listTag.push_back(new CKadTagStr(TAG_FILENAME, fileName));
+			}
 			listTag.push_back(new CKadTagUInt(TAG_FILESIZE, 1));
-			listTag.push_back(new CKadTagStr(TAG_FILETYPE, L"eSELive"));
+			if (!m_bLivePublishCleanNs) {
+				listTag.push_back(new CKadTagStr(TAG_FILETYPE, L"eSELive"));
+			}
 			listTag.push_back(new CKadTagUInt(TAG_ESE_LIVE_MARKER, 1));
 			listTag.push_back(new CKadTagStr(TAG_ESE_LIVE_STREAM_KEY, EseLiveKeyToHexW(streamKey)));
 			listTag.push_back(new CKadTagStr(TAG_ESE_LIVE_TITLE, title));
@@ -1597,6 +1632,34 @@ void CSearch::PrepareLivePacketForTags(CByteIO *byIO) const
 			listTag.push_back(new CKadTagUInt(TAG_ESE_LIVE_VIEWERS, m_uLiveViewerCount));
 			listTag.push_back(new CKadTagUInt(TAG_ESE_LIVE_STARTED_AT, m_uLiveStartedAt));
 			listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, m_uLiveBroadcasterPort));
+			// eSE Live: ship our public IP IN the publish itself. The holder code
+			// at KademliaUDPListener.cpp:1341 also tries to derive TAG_SOURCEIP
+			// from the UDP packet source, but that only works when the holder is
+			// running this fork. Upstream-eMule holders store the publish without
+			// the IP tag — viewers then read uLiveIP=0 (the default) and our
+			// "REJECTED — invalid endpoint" filter at LiveKadBridge.cpp:523 drops
+			// every result. Adding the tag explicitly makes the publish
+			// self-contained regardless of holder version.
+			//
+			// Byte order — IMPORTANT: theApp.GetPublicIP() returns HOST byte
+			// order (it does ntohl internally). Both the receiver's `uLiveIP =
+			// cTag.GetInt()` at Search.cpp:1200 and the final `ipstr(uLiveIP)`
+			// display in LiveKadBridge.cpp:539 ALSO expect host byte order on
+			// Intel. Storing the value directly (no htonl) keeps it consistent
+			// end-to-end. The line-1341 holder code does `htonl(uIP)` because
+			// IT receives uIP in network byte order from the UDP packet, so
+			// the byte-swap there gets the value into host order too.
+			uint32 ourPublicIP = theApp.GetPublicIP();
+			if (ourPublicIP != 0) {
+				listTag.push_back(new CKadTagUInt(TAG_SOURCEIP, ourPublicIP));
+			} else {
+				// One-shot warning per publish so it's visible when a broadcast
+				// goes out without a usable IP (the entry will still publish
+				// fine and the holder may fill TAG_SOURCEIP from the UDP source,
+				// but if it doesn't, viewers reject the entry).
+				AddDebugLogLine(false,
+					_T("eSE Live: publishing without TAG_SOURCEIP — public IP not yet known"));
+			}
 			if (!CKademlia::GetPrefs()->GetUseExternKadPort())
 				listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
 

@@ -43,6 +43,7 @@
 #include "SharedFilesWnd.h"
 #include "ChatWnd.h"
 #include "LiveStreamDlg.h"
+#include "LiveDebugLog.h"
 #include "IrcWnd.h"
 #include "StatisticsDlg.h"
 #include "CreditsDlg.h"
@@ -72,6 +73,7 @@
 #include "DropTarget.h"
 #include "LastCommonRouteFinder.h"
 #include "WebServer.h"
+#include "eSEHelpers.h"
 #include "DownloadQueue.h"
 #include "ClientUDPSocket.h"
 #include "UploadQueue.h"
@@ -84,6 +86,16 @@
 #include "TaskbarNotifier.h"
 #include "MuleStatusbarCtrl.h"
 #include "ListenSocket.h"
+#include "FirewallProberV6.h"   // v0.71 IPv6 Sprint 3 — ProbeAsync() at startup
+// v0.71 P0 — privacy stack wiring at app startup. Headers brought in here
+// (not in stdafx) because they pull eSELive namespace and a deep chain of
+// crypto / Kad headers that we don't want everywhere.
+#include "LiveSubscriptionStore.h"
+#include "LiveBootstrap.h"
+#include "LiveTunnel.h"
+#include "kademlia/kademlia/KadV2SubscriberPin.h"
+#include "kademlia/kademlia/KadV2TunnelPool.h"
+#include "kademlia/kademlia/KadV2ModeSelector.h"
 #include "Server.h"
 #include "PartFile.h"
 #include "Scheduler.h"
@@ -252,6 +264,7 @@ CemuleDlg::CemuleDlg(CWnd *pParent /*=NULL*/)
 	, m_pMiniMule()
 	, m_hTimer()
 	, m_hUPnPTimeOutTimer()
+	, m_hHeadlessActionTimer()  // V2-S06
 	, notifierenabled()
 {
 	g_uMainThreadId = GetCurrentThreadId();
@@ -398,9 +411,12 @@ BOOL CemuleDlg::OnInitDialog()
 	// temporary disable the 'startup minimized' option, otherwise no window will be shown at all
 	if (!thePrefs.IsFirstStart())
 		m_bStartMinimized = thePrefs.GetStartMinimized() || theApp.DidWeAutoStart();
+	// V2-S06: headless honours the user's StartMinimized preference but does NOT
+	// force-minimize on its own (forcing here triggers a tray-icon code path that
+	// crashes when InitInstance hasn't fully wired up the TrayDialog parent).
 
 	// show splash screen as early as possible to "entertain" user while starting emule up
-	if (thePrefs.UseSplashScreen() && !m_bStartMinimized)
+	if (thePrefs.UseSplashScreen() && !m_bStartMinimized && !theApp.m_bHeadless)
 		ShowSplash();
 
 	// Create global GUI objects
@@ -627,6 +643,16 @@ BOOL CemuleDlg::OnInitDialog()
 	}
 	SetWindowPlacement(&wp);
 
+	// V2-S07: headless mode can override the WebServer port so multiple
+	// stress instances on the same host expose /api/live/metrics on
+	// different ports without colliding. Forces enable too.
+	if (theApp.m_uHeadlessMetricsPort > 0) {
+		CPreferences::SetWSPort(theApp.m_uHeadlessMetricsPort);
+		CPreferences::SetWSIsEnabled(true);
+		AddLogLine(true, _T("Headless: WebServer override port=%u"),
+			theApp.m_uHeadlessMetricsPort);
+	}
+
 	if (thePrefs.GetWSIsEnabled())
 		theApp.webserver->StartServer();
 
@@ -656,7 +682,153 @@ BOOL CemuleDlg::OnInitDialog()
 	if (!thePrefs.HasCustomTaskIconColor())
 		SetTaskbarIconColor();
 
+	// Auto-spawn the eSE Node.js dashboard on startup (16 May 2026).
+	// Until now, the user had to click the eSE toolbar button to launch the
+	// web dashboard. Many users (especially on PC2/remote machines) opened
+	// http://localhost:8080/live and got "site unreachable" because Node
+	// was never spawned. Spawning here makes the dashboard available the
+	// moment eMule is up — same 3-tier fallback (ese-server.exe / node +
+	// server.js / well-known paths) used by ToggleEseServer().
+	//
+	// We pass bOpenBrowser=false so the user is not bombarded with a
+	// browser tab on every eMule launch. They can still click the eSE
+	// toolbar button anytime to open the dashboard manually (since it's
+	// already running, that click will STOP the dashboard — toggle
+	// behaviour preserved). On startup-failure we just log; no popups.
+	ToggleEseServer(/*bOpenBrowser=*/false);
+
+	// V2-S06/S27: only schedule the headless one-shot if there's actual work
+	// (a JoinStream or selftest). Plain --headless --metrics-port (= "expose
+	// metrics, do nothing else") doesn't need the timer at all and skipping
+	// it avoids a TIMERPROC dispatch that previously crashed.
+	const bool bHeadlessHasWork =
+		theApp.m_bSelfTest ||
+		(theApp.m_bHeadless && !theApp.m_strHeadlessJoinKey.IsEmpty());
+	if (bHeadlessHasWork) {
+		m_hHeadlessActionTimer = ::SetTimer(NULL, 0, 8000, HeadlessActionTimer);
+		LIVE_LOG("HEADLESS", "Scheduled headless action in 8 s (selftest=%d viewer=%S)",
+			theApp.m_bSelfTest ? 1 : 0,
+			(LPCWSTR)theApp.m_strHeadlessJoinKey);
+	}
+
+	// D7: check for previously-written crash dumps and offer the user a
+	// one-time prompt. Skipped in headless/--selftest to keep stress runs
+	// non-interactive.
+	if (!theApp.m_bHeadless)
+		CheckForPreviousCrashDumps();
+
 	return TRUE;
+}
+
+// D7: scan %APPDATA%\eMule\crashdumps\ for .dmp files newer than
+// "LastCrashAck" timestamp. On match, ask the user once whether to open
+// the folder. Headless and silent on first-ever launch.
+void CemuleDlg::CheckForPreviousCrashDumps()
+{
+	CString sCrashDir = thePrefs.GetMuleDirectory(EMULE_CONFIGDIR) + _T("crashdumps\\");
+	CFileFind ff;
+	if (!ff.FindFile(sCrashDir + _T("*.dmp")))
+		return;
+
+	// CemuleApp inherits the MFC GetProfileInt -> SetRegistryKey-aware storage.
+	// The unqualified Win32 GetProfileInt would write to win.ini, which we don't want.
+	const ULONGLONG ullAck = (ULONGLONG)theApp.GetProfileInt(_T("eMule"), _T("LastCrashAck"), 0)
+	                          | ((ULONGLONG)theApp.GetProfileInt(_T("eMule"), _T("LastCrashAckHi"), 0) << 32);
+	FILETIME ftAck; ftAck.dwLowDateTime = (DWORD)ullAck; ftAck.dwHighDateTime = (DWORD)(ullAck >> 32);
+
+	ULONGLONG ullNewest = ullAck;
+	int nNew = 0;
+	CString sNewestPath;
+	BOOL bMore = TRUE;
+	while (bMore) {
+		bMore = ff.FindNextFile();
+		if (ff.IsDots() || ff.IsDirectory()) continue;
+		FILETIME ftMod;
+		if (ff.GetLastWriteTime(&ftMod)) {
+			ULONGLONG u = ((ULONGLONG)ftMod.dwHighDateTime << 32) | ftMod.dwLowDateTime;
+			if (u > ullAck) {
+				++nNew;
+				if (u > ullNewest) { ullNewest = u; sNewestPath = ff.GetFilePath(); }
+			}
+		}
+	}
+	ff.Close();
+	if (nNew == 0) return;
+
+	CString sMsg;
+	sMsg.Format(
+		_T("eMule has detected %d unsent crash dump(s) from a previous session.\n\n")
+		_T("Newest: %s\n\n")
+		_T("Open the crash-dump folder so you can attach the .dmp to a GitHub issue?\n")
+		_T("(Helps the maintainer reproduce and fix the crash.)"),
+		nNew, (LPCTSTR)sNewestPath);
+	int r = MessageBox(sMsg, _T("eMule eSE — Previous crash detected"),
+		MB_ICONINFORMATION | MB_YESNO | MB_DEFBUTTON1);
+	if (r == IDYES)
+		ShellExecute(NULL, _T("open"), sCrashDir, NULL, NULL, SW_SHOWNORMAL);
+
+	// Whether the user said yes or no, remember the watermark so we don't
+	// prompt for these same dumps again next launch.
+	theApp.WriteProfileInt(_T("eMule"), _T("LastCrashAck"),   (int)(ullNewest & 0xFFFFFFFFu));
+	theApp.WriteProfileInt(_T("eMule"), _T("LastCrashAckHi"), (int)(ullNewest >> 32));
+}
+
+// V2-S06: hex32 -> 16-byte buffer. Returns false on bad chars / wrong length.
+static bool HexToKey16(const CString& hex, uchar out[16])
+{
+	if (hex.GetLength() != 32) return false;
+	for (int i = 0; i < 16; ++i) {
+		auto h2n = [](TCHAR c) -> int {
+			if (c >= _T('0') && c <= _T('9')) return c - _T('0');
+			if (c >= _T('a') && c <= _T('f')) return c - _T('a') + 10;
+			if (c >= _T('A') && c <= _T('F')) return c - _T('A') + 10;
+			return -1;
+		};
+		int hi = h2n(hex[i*2]);
+		int lo = h2n(hex[i*2 + 1]);
+		if (hi < 0 || lo < 0) return false;
+		out[i] = (uchar)((hi << 4) | lo);
+	}
+	return true;
+}
+
+void CALLBACK CemuleDlg::HeadlessActionTimer(HWND /*hwnd*/, UINT /*uiMsg*/,
+	UINT_PTR idEvent, DWORD /*dwTime*/) noexcept
+{
+	::KillTimer(NULL, idEvent);
+	if (theApp.emuledlg)
+		theApp.emuledlg->m_hHeadlessActionTimer = 0;
+
+	try {
+		// V2-S27: smoke test — start a 5 s testpattern broadcast then exit clean.
+		if (theApp.m_bSelfTest) {
+			LIVE_LOG("HEADLESS", "Selftest: 5 s testpattern broadcast");
+			if (theApp.liveStreamManager) {
+				theApp.liveStreamManager->StartBroadcastWithSource(
+					_T("testpattern"), _T("Selftest"),
+					_T(""), _T("en"), 1500);
+				::Sleep(5000);
+				theApp.liveStreamManager->StopBroadcastFull();
+			}
+			LIVE_LOG("HEADLESS", "Selftest done — quitting");
+			::PostQuitMessage(0);
+			return;
+		}
+
+		// V2-S06: viewer mode — JoinStream(streamKey)
+		if (!theApp.m_strHeadlessJoinKey.IsEmpty() && theApp.liveStreamManager) {
+			uchar key[16] = {0};
+			if (!HexToKey16(theApp.m_strHeadlessJoinKey, key)) {
+				LIVE_LOG("HEADLESS", "Bad --viewer key: %S",
+					(LPCWSTR)theApp.m_strHeadlessJoinKey);
+				return;
+			}
+			LIVE_LOG("HEADLESS", "JoinStream key=%S",
+				(LPCWSTR)theApp.m_strHeadlessJoinKey);
+			theApp.liveStreamManager->JoinStream(key, _T("Headless Viewer"));
+		}
+	}
+	CATCH_DFLT_EXCEPTIONS(_T("HeadlessActionTimer"))
 }
 
 // modders: don't remove or change the original version check! (additional are OK)
@@ -732,6 +904,77 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 						theApp.emuledlg->ShowNotifier(strError, TBN_IMPORTANTEVENT);
 					bError = true;
 				}
+
+				// v0.71 IPv6 Sprint 3 follow-up — kick the v6 firewall
+				// probe right after the listener binds. Synchronous with
+				// 5s timeout: blocks startup briefly but only once, and
+				// only when IPv6 is enabled in prefs. Populates
+				// CFirewallProberV6::Instance().GetDetectedV6IP() for the
+				// Network Info panel + status bar.
+				if (thePrefs.IsIPv6Enabled())
+					CFirewallProberV6::Instance().ProbeAsync();
+
+				// === v0.71 P0 — privacy stack wiring ============================
+				// F2-F5 modules existed as compiled code but were NEVER
+				// instantiated at startup. Audit 2026-05-19 confirmed the
+				// stack was INERTE: subscriptions never loaded, bootstrap
+				// cascade never kicked, subscriber-pin never scanning
+				// completed files, tunnel pool unreachable. P0 fixes that.
+				//
+				// Each call is defensive: Load() returns true if the file
+				// is absent (first run). Start() is idempotent. Failures
+				// log but don't abort startup, because privacy is additive
+				// to the eD2K/Kad baseline which must keep working.
+				try {
+					if (!eSELive::CLiveSubscriptionStore::Get().Load()) {
+						AddDebugLogLine(false, _T("Privacy: subscriptions.dat present but decrypt/parse failed"));
+					} else {
+						AddDebugLogLine(false, _T("Privacy: subscriptions store loaded (%u channels)"),
+							(unsigned)eSELive::CLiveSubscriptionStore::Get().Count());
+					}
+					eSELive::CLiveBootstrap::Get().Start();
+					AddDebugLogLine(false, _T("Privacy: bootstrap cascade started (B-1..B-5)"));
+
+					// Touch tunnel singletons so the Tick added in P0.2 is
+					// safe even before the first circuit is built.
+					(void)eSELive::CLiveTunnel::Get();
+					(void)Kademlia::CKadV2TunnelPool::Get();
+
+					Kademlia::CKadV2SubscriberPin::Get().Start();
+					AddDebugLogLine(false, _T("Privacy: Kad v2 subscriber pinning started (%s)"),
+						Kademlia::CKadV2SubscriberPin::Get().IsEnabled() ? _T("enabled") : _T("disabled"));
+				} catch (...) {
+					AddDebugLogLine(false, _T("Privacy: stack init threw exception (continuing without privacy)"));
+				}
+
+				// === v0.71 P0.3 — runtime cap bits ==============================
+				// Set TAG_ESE_CAPS bits for features the modules above just
+				// brought live. We set the conservative set (M1/M3/M5/M6 +
+				// sealed records + gossip) which corresponds to the modules
+				// instantiated by Start()/Load() above. Tunneling and cover
+				// traffic stay OFF until F5 P3 wires the real TCP send.
+				g_uEseCapsRuntime = ESE_CAP_M1_SUBSCRIBER_PIN
+				                  | ESE_CAP_M3_SHARDING
+				                  | ESE_CAP_M5_BLOOM_GOSSIP
+				                  | ESE_CAP_M6_K_EFFECTIVE
+				                  | ESE_CAP_SEALED_RECORDS
+				                  | ESE_CAP_GOSSIP_PROTOCOL;
+				{
+					Kademlia::CKadV2Mode m = Kademlia::CKadV2ModeSelector::Get().GetDefaultMode();
+					if (m == Kademlia::CKadV2Mode::Tunneled || m == Kademlia::CKadV2Mode::Adaptive) {
+						// User opted into non-Direct. Advertise tunneling
+						// intent. NOTE: the bit being set does NOT mean
+						// circuits are up — it means the user's policy
+						// is "use tunnels when available". The Network
+						// Info panel separately shows "Onion circuits:
+						// N" which is the actual running count.
+						g_uEseCapsRuntime |= ESE_CAP_PRIVACY_TUNNELING;
+						g_uEseCapsRuntime |= ESE_CAP_COVER_TRAFFIC;
+					}
+				}
+				AddDebugLogLine(false, _T("Privacy: TAG_ESE_CAPS runtime = 0x%08X"), g_uEseCapsRuntime);
+				// === end P0 wiring ==============================================
+
 				if (!theApp.clientudp->Create()) {
 					CString strError;
 					strError.Format(GetResString(IDS_MAIN_SOCKETERROR), thePrefs.GetUDPPort());
@@ -1018,6 +1261,54 @@ CString CemuleDlg::GetConnectionStateString()
 	return state;
 }
 
+// v0.71 P3.8 — lightweight pane refresh, callable at 1 Hz from
+// CKademlia::Process. Touches ONLY the SBarPrivacy pane — does NOT
+// recompute eD2K connection state, toolbar buttons, menu items, etc.
+// (Those still go via ShowConnectionState as before.)
+void CemuleDlg::UpdatePrivacyStatusPane()
+{
+	if (theApp.IsClosing()) return;
+	if (!statusbar) return;
+	using namespace Kademlia;
+	CKadV2Mode m = CKadV2ModeSelector::Get().GetDefaultMode();
+	size_t cActive = 0, cPending = 0;
+	try {
+		cActive  = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
+		cPending = eSELive::CLiveTunnel::Get().PendingCircuitCount();
+	} catch (...) {}
+	CString privText;
+	// Compact format: "P:Adaptive 1A 1P" when there's activity; just
+	// "P:Adaptive" if quiescent (saves visual noise).
+	auto countSuffix = [&](LPCTSTR label) -> CString {
+		CString out;
+		if (cActive == 0 && cPending == 0) {
+			out = label;
+		} else if (cPending == 0) {
+			out.Format(_T("%s %uA"), label, (unsigned)cActive);
+		} else if (cActive == 0) {
+			out.Format(_T("%s %uP"), label, (unsigned)cPending);
+		} else {
+			out.Format(_T("%s %uA %uP"), label, (unsigned)cActive, (unsigned)cPending);
+		}
+		return out;
+	};
+	switch (m) {
+	case CKadV2Mode::Direct:
+		privText = (g_uEseCapsRuntime != 0) ? _T("P:Direct") : _T("P:Off");
+		break;
+	case CKadV2Mode::Tunneled:
+		privText = countSuffix(_T("P:Tunneled"));
+		break;
+	case CKadV2Mode::Adaptive:
+		privText = countSuffix(_T("P:Adaptive"));
+		break;
+	default:
+		privText = _T("P:?");
+		break;
+	}
+	statusbar->SetText(privText, SBarPrivacy, 0);
+}
+
 void CemuleDlg::ShowConnectionState()
 {
 	if (theApp.IsClosing())
@@ -1029,6 +1320,30 @@ void CemuleDlg::ShowConnectionState()
 
 	ShowConnectionStateIcon();
 	statusbar->SetText(GetConnectionStateString(), SBarConnected, 0);
+
+	// v0.71 IPv6 Sprint 9 + hotfix — status bar pane.
+	// Auto mode now keeps the TCP listener on AF_INET (HighID stable),
+	// so the pane reads "IPv4 (+v6 prober)" if the v6 prober detected
+	// a public v6 address (egress only). Dual-stack only shows when
+	// the user explicitly opts into IPv6 preferido and AF_INET6 Create
+	// succeeded.
+	LPCTSTR ipver;
+	if (theApp.listensocket && theApp.listensocket->IsDualStack()) {
+		ipver = _T("IPv6 + v4");
+	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
+		ipver = _T("IPv4 (v6 fb)");   // dual-stack pedido pero Create falló
+	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6AutoMode
+	           && !CFirewallProberV6::Instance().GetDetectedV6IP().IsNull()) {
+		ipver = _T("IPv4 +v6 out");   // egress v6 confirmado por prober
+	} else {
+		ipver = _T("IPv4");
+	}
+	statusbar->SetText(ipver, SBarIPVersion, 0);
+
+	// v0.71 P2.2 + P3.8 — Privacy pane refresh delegated to a separate
+	// method that's also called from CKademlia::Process (1 Hz) so the
+	// counts update in real time, not just on connection-state events.
+	UpdatePrivacyStatusPane();
 
 	TBBUTTONINFO tbbi;
 	tbbi.cbSize = (UINT)sizeof(TBBUTTONINFO);
@@ -1230,13 +1545,20 @@ void CemuleDlg::SetStatusBarPartsSize()
 		ussShift = thePrefs.IsDynUpUseMillisecondPingTolerance() ? 65 : 110;
 	else
 		ussShift = 0;
-	int aiWidths[6] =
+	// v0.71 IPv6 Sprint 9 — reserve 70 px tail for SBarIPVersion.
+	// v0.71 P2.2 — reserve extra 90 px for SBarPrivacy after IPVersion.
+	const int ipv6Pane    = 70;
+	const int privacyPane = 90;
+	const int tailReserve = ipv6Pane + privacyPane;
+	int aiWidths[8] =
 	{
-		rect.right - 695 - ussShift,
-		rect.right - 450 - ussShift,
-		rect.right - 250 - ussShift,
-		rect.right - 25 - ussShift,
-		rect.right - 25,
+		rect.right - 695 - ussShift - tailReserve,
+		rect.right - 450 - ussShift - tailReserve,
+		rect.right - 250 - ussShift - tailReserve,
+		rect.right - 25  - ussShift - tailReserve,
+		rect.right - 25  - tailReserve,
+		rect.right - tailReserve,
+		rect.right - privacyPane,
 		-1
 	};
 	statusbar->SetParts(_countof(aiWidths), aiWidths);
@@ -1327,6 +1649,16 @@ void CemuleDlg::ProcessED2KLink(LPCTSTR pszData)
 				uchar streamKey[16];
 				if (strmd4(pStreamLink->GetHash(), streamKey) && theApp.liveStreamManager != NULL) {
 					theApp.liveStreamManager->JoinStream(streamKey, pStreamLink->GetTitle());
+					// If link carries an explicit broadcaster endpoint, dial
+					// directly so we don't have to wait 30-90 s for Kad
+					// propagation. Anonymous links still go through Kad.
+					if (pStreamLink->HasDialEndpoint()) {
+						theApp.liveStreamManager->TryConnectToStreamSource(
+							streamKey,
+							pStreamLink->GetDialIP(),
+							pStreamLink->GetDialPort(),
+							0);
+					}
 					CString url;
 					url.Format(_T("http://localhost:8080/live/watch/%s"), (LPCTSTR)pStreamLink->GetHash());
 					ShellExecute(NULL, _T("open"), url, NULL, NULL, SW_SHOWNORMAL);
@@ -3181,9 +3513,12 @@ bool CemuleDlg::IsEseServerRunning() const
 	       WaitForSingleObject(m_hEseProcess, 0) == WAIT_TIMEOUT;
 }
 
-void CemuleDlg::ToggleEseServer()
+void CemuleDlg::ToggleEseServer(bool bOpenBrowser)
 {
-	// If already running => stop it
+	// If already running => stop it.
+	// (Auto-spawn from OnInitDialog passes bOpenBrowser=false; if the user
+	// then clicks the toolbar button, IsEseServerRunning is true and we
+	// stop — this is the expected toggle behaviour.)
 	if (IsEseServerRunning()) {
 		TerminateProcess(m_hEseProcess, 0);
 		CloseHandle(m_hEseProcess);
@@ -3194,53 +3529,163 @@ void CemuleDlg::ToggleEseServer()
 		return;
 	}
 
-	// Resolve path to ese-server.exe (same folder as emule.exe)
+	// Resolve eSE launch strategy. We try, in order:
+	//   1. ese-server.exe in the same folder (the bundled pkg-built exe)
+	//   2. node.exe + eSE/server.js in the same folder (dev/build-from-source)
+	//   3. ese-server.exe in any of the well-known fallback locations
+	//      (works for users running freshly compiled emule.exe from
+	//       srchybrid/x64/Release/ without copying ese-server.exe over)
+	// This eliminates the recurring "ese-server.exe not found" friction.
 	TCHAR exeDir[MAX_PATH];
 	GetModuleFileName(NULL, exeDir, MAX_PATH);
 	PathRemoveFileSpec(exeDir);
 
-	CString serverExe;
-	serverExe.Format(_T("%s\\ese-server.exe"), exeDir);
+	CString launchExe;       // executable to launch
+	CString launchArgs;      // args (empty for ese-server.exe, "<scriptPath>" for node)
+	CString launchCwd;       // working directory
 
-	if (!PathFileExists(serverExe)) {
-		AfxMessageBox(
-			_T("No se encontró ese-server.exe junto a emule.exe.\n")
-			_T("Copia ese-server.exe en la misma carpeta que emule.exe."),
-			MB_ICONERROR);
+	// Strategy 1: ese-server.exe next to emule.exe
+	CString candidate;
+	candidate.Format(_T("%s\\ese-server.exe"), exeDir);
+	if (PathFileExists(candidate)) {
+		launchExe = candidate;
+		launchCwd = exeDir;
+	}
+
+	// Strategy 2: node.exe + eSE\server.js next to emule.exe (dev path)
+	if (launchExe.IsEmpty()) {
+		CString nodeExe; nodeExe.Format(_T("%s\\node\\node.exe"), exeDir);
+		CString srvJs;   srvJs.Format(_T("%s\\eSE\\server.js"), exeDir);
+		if (PathFileExists(nodeExe) && PathFileExists(srvJs)) {
+			launchExe = nodeExe;
+			launchArgs.Format(_T("\"%s\""), (LPCTSTR)srvJs);
+			launchCwd.Format(_T("%s\\eSE"), exeDir);
+		}
+	}
+
+	// Strategy 3: scan known fallback locations for ese-server.exe
+	if (launchExe.IsEmpty()) {
+		TCHAR userProfile[MAX_PATH] = {};
+		GetEnvironmentVariable(_T("USERPROFILE"), userProfile, MAX_PATH);
+		const LPCTSTR fallbacks[] = {
+			_T("%s\\OneDrive\\Desktop\\eSE-Package\\ese-server.exe"),
+			_T("%s\\Downloads\\eSE-LiveTV-x64-2026-05-03\\ese-server.exe"),
+			_T("%s\\Desktop\\eSE-Package\\ese-server.exe"),
+		};
+		for (auto fmt : fallbacks) {
+			CString trial; trial.Format(fmt, userProfile);
+			if (PathFileExists(trial)) {
+				launchExe = trial;
+				CString trialDir(trial);
+				PathRemoveFileSpec(trialDir.GetBuffer());
+				trialDir.ReleaseBuffer();
+				launchCwd = trialDir;
+				break;
+			}
+		}
+	}
+
+	if (launchExe.IsEmpty()) {
+		// Don't pop a modal dialog during auto-spawn at startup — the user
+		// hasn't even seen eMule yet. Just log it; if they later click the
+		// toolbar button, they'll get the message.
+		if (bOpenBrowser) {
+			AfxMessageBox(
+				_T("No se encontró el dashboard eSE.\n\n")
+				_T("Buscado:\n")
+				_T("  1. ese-server.exe junto a emule.exe\n")
+				_T("  2. node\\node.exe + eSE\\server.js junto a emule.exe\n")
+				_T("  3. Carpetas conocidas en %USERPROFILE%\n\n")
+				_T("Descarga el paquete completo desde GitHub o copia ese-server.exe\n")
+				_T("a la carpeta de emule.exe."),
+				MB_ICONERROR);
+		} else {
+			AddDebugLogLine(true, _T("eSE auto-spawn: dashboard not found in any known location"));
+		}
 		return;
 	}
 
-	// Launch ese-server.exe hidden, with exe dir as working directory
+	// === Pre-flight: garantizar WebServer activo con password conocida ===
+	// Sin esto, ese-server.exe arrancaría e intentaría loguearse contra el
+	// WebInterface de eMule, pero podría estar apagado o con otra password
+	// → "eMule login failed. Check Settings." en la UI del usuario.
+	{
+		CString configDir = thePrefs.GetMuleDirectory(EMULE_CONFIGDIR);
+		CString sharedPw = eSEHelpers::EnsureSharedPassword(configDir);
+
+		bool needRestartSockets = false;
+		if (thePrefs.GetWSPort() != 4711) {
+			thePrefs.SetWSPort(4711);
+			needRestartSockets = true;
+		}
+		if (!thePrefs.GetWSIsEnabled())
+			thePrefs.SetWSIsEnabled(true);
+		thePrefs.SetWSPass(sharedPw);  // siempre sincroniza (idempotente)
+
+		// Aplicar al WebServer en caliente (idempotente — no reinicia eMule)
+		if (theApp.webserver) {
+			theApp.webserver->StartServer();
+			if (needRestartSockets)
+				theApp.webserver->RestartSockets();
+		}
+
+		// Persistir prefs.ini para próximos arranques
+		CPreferences::Save();
+
+		// Pasar la password al hijo vía env var (el child la hereda)
+		SetEnvironmentVariable(_T("ESE_EMULE_PASSWORD"), sharedPw);
+	}
+
+	// Launch hidden, with the resolved working directory.
 	STARTUPINFO si = {};
 	PROCESS_INFORMATION pi = {};
 	si.cb = sizeof(si);
 	si.dwFlags = STARTF_USESHOWWINDOW;
 	si.wShowWindow = SW_HIDE;
 
-	if (CreateProcess(
-			(LPCTSTR)serverExe, // exe path
-			NULL,               // no extra args
-			NULL, NULL, FALSE,
-			CREATE_NO_WINDOW, NULL,
-			exeDir,             // working directory = exe folder
-			&si, &pi))
-	{
+	// CreateProcess needs a writable command-line buffer when args are used.
+	CString cmdLine;
+	if (launchArgs.IsEmpty())
+		cmdLine.Format(_T("\"%s\""), (LPCTSTR)launchExe);
+	else
+		cmdLine.Format(_T("\"%s\" %s"), (LPCTSTR)launchExe, (LPCTSTR)launchArgs);
+
+	BOOL ok = CreateProcess(
+		NULL,
+		cmdLine.GetBuffer(),
+		NULL, NULL, FALSE,
+		CREATE_NO_WINDOW, NULL,
+		(LPCTSTR)launchCwd,
+		&si, &pi);
+	cmdLine.ReleaseBuffer();
+
+	if (ok) {
 		CloseHandle(pi.hThread);
 		m_hEseProcess = pi.hProcess;
-
-		// Check button to show server is active
 		if (toolbar && toolbar->m_hWnd)
 			toolbar->CheckButton(TBBTN_ESE, TRUE);
-
-		// Open browser after 2.5s (server startup time)
-		SetTimer(1972, 2500, NULL); // reuse a safe timer ID; handled generically
-		ShellExecute(NULL, _T("open"), _T("http://localhost:8080"),
-		             NULL, NULL, SW_SHOWNORMAL);
+		SetTimer(1972, 2500, NULL);
+		// Only open the browser when the user explicitly asked for it
+		// (toolbar button click). Auto-spawn from OnInitDialog skips this
+		// to avoid popping up a window every time eMule launches.
+		if (bOpenBrowser) {
+			ShellExecute(NULL, _T("open"), _T("http://localhost:8080"),
+			             NULL, NULL, SW_SHOWNORMAL);
+		}
+		AddDebugLogLine(false, _T("eSE launcher: started %s (browser=%d)"),
+			(LPCTSTR)launchExe, bOpenBrowser ? 1 : 0);
 	} else {
-		AfxMessageBox(
-			_T("No se pudo iniciar ese-server.exe.\n")
-			_T("Asegúrate de que ese-server.exe existe en la carpeta de eMule."),
-			MB_ICONERROR);
+		DWORD err = GetLastError();
+		CString msg;
+		msg.Format(
+			_T("No se pudo iniciar el dashboard eSE.\n\n")
+			_T("Comando: %s\n")
+			_T("Error CreateProcess: %u"),
+			(LPCTSTR)cmdLine, err);
+		if (bOpenBrowser)
+			AfxMessageBox(msg, MB_ICONERROR);
+		else
+			AddDebugLogLine(true, _T("eSE auto-spawn failed: %s"), (LPCTSTR)msg);
 	}
 }
 
@@ -3546,8 +3991,17 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 			Log(GetResString(IDS_UPNPSUCCESS), impl->GetUsedTCPPort(), impl->GetUsedUDPPort());
 			// eSE Fase 2: Limpiar error crítico al obtener mapeo exitoso
 			thePrefs.SetUPnPCriticalError(false);
-		} else
+			// V2-S24: surface in /api/live/log so the live debug panel shows the result.
+			// GetImplementationID() returns an int enum (UPNP_IMPL_MINIUPNPLIB etc),
+			// NOT a string — the previous %S formatter was dereferencing the enum
+			// value as a wide-string pointer and crashing wcsnlen at t≈8s.
+			LIVE_LOG("UPNP", "Port mapped TCP=%u UDP=%u (impl=%d)",
+				impl->GetUsedTCPPort(), impl->GetUsedUDPPort(),
+				impl->GetImplementationID());
+		} else {
 			LogWarning(GetResString(IDS_UPNPFAILED));
+			LIVE_LOG("UPNP", "Mapping FAILED (rc=%u). LowID likely unless STUN/UPnP succeeds elsewhere.", (unsigned)wParam);
+		}
 
 		if (theApp.IsRunning() && m_bConnectRequestDelayedForUPnP)
 			StartConnection();

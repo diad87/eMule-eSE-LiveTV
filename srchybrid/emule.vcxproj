@@ -162,12 +162,21 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <SubSystem>Windows</SubSystem>
-      <AdditionalOptions>/FORCE:MULTIPLE %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/FORCE:MULTIPLE /MAP /MAPINFO:EXPORTS %(AdditionalOptions)</AdditionalOptions>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>res/$(TargetName)$(Platform).manifest %(AdditionalManifestFiles)</AdditionalManifestFiles>
       <EnableDpiAwareness>false</EnableDpiAwareness>
     </Manifest>
+    <PreBuildEvent>
+      <!-- Auto-rebuild ese-server.exe when any srchybrid/eSE/*.js is newer.
+           Idempotent: skips silently if Node is not installed or sources
+           are already up to date. Never fails the C++ build on warnings;
+           only signals failure on a hard rebuild error after timestamp
+           said a rebuild was actually required. -->
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)..\tools\build_ese_server.ps1"</Command>
+      <Message>Sync srchybrid/eSE JS -> ese-server.exe (idempotent)</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='_SpecialBootstrapNodes|Win32'">
     <ClCompile>
@@ -276,6 +285,7 @@
     <ClCompile Include="EMSocket.cpp" />
     <ClCompile Include="Emule.cpp" />
     <ClCompile Include="EmuleDlg.cpp" />
+    <ClCompile Include="eSEHelpers.cpp" />
     <ClCompile Include="EnBitmap.cpp" />
     <ClCompile Include="EncryptedDatagramSocket.cpp" />
     <ClCompile Include="EncryptedStreamSocket.cpp" />
@@ -322,6 +332,14 @@
     <ClCompile Include="kademlia\kademlia\Kademlia.cpp" />
     <ClCompile Include="kademlia\kademlia\Prefs.cpp" />
     <ClCompile Include="kademlia\kademlia\Search.cpp" />
+    <ClCompile Include="kademlia\kademlia\KadV2BloomFilter.cpp" />
+    <ClCompile Include="kademlia\kademlia\KadV2KEffective.cpp" />
+    <ClCompile Include="kademlia\kademlia\KadV2Sharding.cpp" />
+    <ClCompile Include="kademlia\kademlia\KadV2Stats.cpp" />
+    <ClCompile Include="kademlia\kademlia\KadV2SubscriberPin.cpp" />
+    <ClCompile Include="kademlia\kademlia\KadV2TunnelPool.cpp" />
+    <ClCompile Include="kademlia\kademlia\KadV2ModeSelector.cpp" />
+    <ClCompile Include="kademlia\kademlia\KadV2Tokenizer.cpp" />
     <ClCompile Include="kademlia\kademlia\SearchManager.cpp" />
     <ClCompile Include="kademlia\kademlia\UDPFirewallTester.cpp" />
     <ClCompile Include="kademlia\net\KademliaUDPListener.cpp" />
@@ -345,10 +363,28 @@
     <ClCompile Include="ListCtrlX.cpp" />
     <ClCompile Include="ListenSocket.cpp" />
     <ClCompile Include="LiveChunkBuffer.cpp" />
+    <ClCompile Include="LiveDebugLog.cpp" />
     <ClCompile Include="LiveKadBridge.cpp" />
     <ClCompile Include="LiveMeshManager.cpp" />
     <ClCompile Include="LivePackets.cpp" />
     <ClCompile Include="LiveProtocol.cpp" />
+    <ClCompile Include="LiveCrypto.cpp" />
+    <ClCompile Include="LiveOnionCrypto.cpp" />
+    <ClCompile Include="LiveChannel.cpp" />
+    <ClCompile Include="LiveSubscriptionStore.cpp" />
+    <ClCompile Include="LiveGossip.cpp" />
+    <ClCompile Include="LiveBootstrap.cpp" />
+    <ClCompile Include="LiveSubscriberPinning.cpp" />
+    <ClCompile Include="SubscriberPinScheduler.cpp" />
+    <ClCompile Include="LiveTunnel.cpp" />
+    <ClCompile Include="LiveCircuit.cpp" />
+    <ClCompile Include="LiveCellQueue.cpp" />
+    <ClCompile Include="LiveCoverTraffic.cpp" />
+    <ClCompile Include="LiveMigrationV7.cpp" />
+    <ClCompile Include="FirewallProberV6.cpp" />
+    <ClCompile Include="KadKeepalive.cpp" />
+    <ClCompile Include="HolePuncher.cpp" />
+    <ClCompile Include="LiveBuddyRelay.cpp" />
     <ClCompile Include="LiveStreamDlg.cpp" />
     <ClCompile Include="LiveStreamDlgUI.cpp" />
     <ClCompile Include="LiveStreamHandlers.cpp" />
@@ -573,6 +609,7 @@
     <ClInclude Include="Emule.h" />
     <ClInclude Include="emule_site_config.h" />
     <ClInclude Include="EmuleDlg.h" />
+    <ClInclude Include="eSEHelpers.h" />
     <ClInclude Include="EnBitmap.h" />
     <ClInclude Include="EncryptedDatagramSocket.h" />
     <ClInclude Include="EncryptedStreamSocket.h" />
@@ -624,6 +661,15 @@
     <ClInclude Include="kademlia\kademlia\Kademlia.h" />
     <ClInclude Include="kademlia\kademlia\Prefs.h" />
     <ClInclude Include="kademlia\kademlia\Search.h" />
+    <ClInclude Include="kademlia\kademlia\KadV2BloomFilter.h" />
+    <ClInclude Include="kademlia\kademlia\KadV2Defines.h" />
+    <ClInclude Include="kademlia\kademlia\KadV2KEffective.h" />
+    <ClInclude Include="kademlia\kademlia\KadV2Sharding.h" />
+    <ClInclude Include="kademlia\kademlia\KadV2Stats.h" />
+    <ClInclude Include="kademlia\kademlia\KadV2SubscriberPin.h" />
+    <ClInclude Include="kademlia\kademlia\KadV2TunnelPool.h" />
+    <ClInclude Include="kademlia\kademlia\KadV2ModeSelector.h" />
+    <ClInclude Include="kademlia\kademlia\KadV2Tokenizer.h" />
     <ClInclude Include="kademlia\kademlia\SearchManager.h" />
     <ClInclude Include="kademlia\kademlia\Tag.h" />
     <ClInclude Include="kademlia\kademlia\UDPFirewallTester.h" />
@@ -653,8 +699,26 @@
     <ClInclude Include="ListCtrlX.h" />
     <ClInclude Include="ListenSocket.h" />
     <ClInclude Include="LiveChunkBuffer.h" />
+    <ClInclude Include="LiveDebugLog.h" />
     <ClInclude Include="LiveKadBridge.h" />
     <ClInclude Include="LiveMeshManager.h" />
+    <ClInclude Include="LiveCrypto.h" />
+    <ClInclude Include="LiveOnionCrypto.h" />
+    <ClInclude Include="LiveChannel.h" />
+    <ClInclude Include="LiveSubscriptionStore.h" />
+    <ClInclude Include="LiveGossip.h" />
+    <ClInclude Include="LiveBootstrap.h" />
+    <ClInclude Include="LiveSubscriberPinning.h" />
+    <ClInclude Include="SubscriberPinScheduler.h" />
+    <ClInclude Include="LiveTunnel.h" />
+    <ClInclude Include="LiveCircuit.h" />
+    <ClInclude Include="LiveCellQueue.h" />
+    <ClInclude Include="LiveCoverTraffic.h" />
+    <ClInclude Include="LiveMigrationV7.h" />
+    <ClInclude Include="FirewallProberV6.h" />
+    <ClInclude Include="KadKeepalive.h" />
+    <ClInclude Include="HolePuncher.h" />
+    <ClInclude Include="LiveBuddyRelay.h" />
     <ClInclude Include="LivePackets.h" />
     <ClInclude Include="LiveProtocol.h" />
     <ClInclude Include="LiveStreamDlg.h" />

@@ -117,6 +117,52 @@ function getBestMP4(partNum, tempDir) {
   return null;
 }
 
+// ─── PATH SAFETY ────────────────────────────────────────────────
+//
+// SECURITY: the server is publicly reachable via UPnP-opened port 8080 (the
+// Cloudflare Quick Tunnel fallback was removed in v7.4.0). Any HTTP parameter
+// that ends up in path.join() / path.resolve() must be sanitized before touching
+// the filesystem or an attacker can read arbitrary files (CWE-22 Path Traversal).
+//
+// Use safeBasename() at the entry of every function that takes an external
+// filename and uses it on disk. It strips directory components and rejects
+// the input outright if it contained any path separator, drive prefix, NUL,
+// or '..' segment — which is what we want for filenames coming over HTTP.
+//
+//   const safe = safeBasename(userFileName);
+//   if (!safe) { res.writeHead(400); res.end('Bad file name'); return; }
+//   const fullPath = path.join(BASE_DIR, safe);
+//
+// For defence-in-depth where you also have a known base directory, additionally
+// resolve and verify with isPathWithin(fullPath, BASE_DIR).
+
+function safeBasename(fileName) {
+  if (typeof fileName !== 'string' || !fileName) return null;
+  // NUL bytes can truncate paths in some legacy syscalls; reject outright.
+  if (fileName.indexOf('\0') !== -1) return null;
+  // Reject special directory names — these are valid basenames but represent
+  // the current/parent directory and have no business being treated as files.
+  // (path.basename('..') === '..', so the equality check below would let them
+  //  through.) Also reject any sequence that is purely dots.
+  if (/^\.+$/.test(fileName)) return null;
+  // Strict reject anything that looks like a parent-dir hop or absolute path.
+  // path.basename() alone would silently rewrite e.g. '../../etc/passwd' to
+  // 'passwd' — that masks the attack rather than refusing it. We want a hard
+  // 400 so callers can log/alert on attempted traversal.
+  const base = path.basename(fileName);
+  if (base !== fileName) return null;
+  // Reject if it still contains separators or drive prefixes (Windows
+  // 'C:foo.txt' is allowed by path.basename on POSIX but not what we want).
+  if (/[\\\/]/.test(base) || /^[A-Za-z]:/.test(base)) return null;
+  return base;
+}
+
+function isPathWithin(resolvedPath, baseDir) {
+  const normalizedBase = path.resolve(baseDir) + path.sep;
+  const normalizedTarget = path.resolve(resolvedPath);
+  return normalizedTarget.startsWith(normalizedBase) || normalizedTarget === path.resolve(baseDir);
+}
+
 // ─── SETTINGS ──────────────────────────────────────────────────
 
 const DEFAULT_SETTINGS = {
@@ -148,5 +194,7 @@ module.exports = {
   getBestMP4,
   loadSettings,
   saveSettings,
-  DEFAULT_SETTINGS
+  DEFAULT_SETTINGS,
+  safeBasename,
+  isPathWithin
 };

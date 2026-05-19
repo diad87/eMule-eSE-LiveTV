@@ -70,6 +70,22 @@ function handle(url, req, res) {
     return true;
   }
 
+  if (url.pathname === '/api/emule/resync' && req.method === 'POST') {
+    // Fuerza un re-login con la password fresca de settings.json (o env var).
+    // Útil cuando el usuario cierra eMule, lo reabre, y la sesión vieja murió.
+    const pw = _ctx.loadSettings().emulePassword || '';
+    _ctx.emuleLogin(pw, (err, session) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: !err,
+        session: session || null,
+        error:   err ? err.message  : null,
+        reason:  err ? (err.reason || null) : null
+      }));
+    });
+    return true;
+  }
+
   if (url.pathname === '/api/emule/search') {
     const q = url.searchParams.get('q') || '';
     if (!q) { res.writeHead(400); res.end('{}'); return true; }
@@ -85,7 +101,7 @@ function handle(url, req, res) {
         _ctx.emuleLogin(pw, (err) => {
           if (err) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: false, results: [], error: 'eMule login failed: ' + err.message }));
+            res.end(JSON.stringify({ success: false, results: [], error: err.message, reason: err.reason || null }));
           } else doSearch();
         });
       } else {
@@ -117,13 +133,20 @@ function handle(url, req, res) {
       });
     };
 
+    // v7.5.0 — accept POST (preferred) OR GET with X-Requested-With header (which
+    // a cross-origin <img src> / DNS-rebinding hit can't set without CORS preflight).
+    // Breaks naive CSRF (<img src="/api/emule/download/action?hash=…&op=cancel">)
+    // while staying same-origin friendly for the existing fetch()-based UI.
     if (req.method === 'POST') {
       readJsonBody(req, (err, body) => {
         if (err) return sendJson(res, 400, { success: false, error: 'Invalid JSON' });
         run(body || {});
       });
-    } else {
+    } else if (req.method === 'GET' && req.headers['x-requested-with']) {
       run(Object.fromEntries(url.searchParams.entries()));
+    } else {
+      res.writeHead(405, { 'Content-Type': 'application/json', 'Allow': 'POST' });
+      res.end(JSON.stringify({ error: 'method_not_allowed', expected: 'POST or GET with X-Requested-With header' }));
     }
     return true;
   }
@@ -266,7 +289,7 @@ function handle(url, req, res) {
       _ctx.emuleLogin(pw, (err) => {
         if (err) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: false, results: [], error: 'eMule login failed. Check Settings.' }));
+          res.end(JSON.stringify({ success: false, results: [], error: err.message, reason: err.reason || null }));
         } else doSmartSearch();
       });
     } else doSmartSearch();
@@ -301,6 +324,37 @@ function handle(url, req, res) {
           res.end(JSON.stringify({ success: true, fileName: result.fileName, sizeMB: result.sizeMB, hash: result.hash }));
         }
       });
+    });
+    return true;
+  }
+
+  // v7.4.0 — delete a completed file from the Incoming folder. Used by the
+  // "Mi Biblioteca" panel. Guarded by safeBasename + isPathWithin to refuse
+  // any path-traversal attempts; the server is publicly reachable via UPnP.
+  if (url.pathname === '/api/emule/completed/delete' && req.method === 'POST') {
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const { fileName } = JSON.parse(body || '{}');
+        const utils = require('../utils');
+        const safe = utils.safeBasename(fileName);
+        if (!safe) return sendJson(res, 400, { success: false, error: 'bad_filename' });
+        const incoming = _ctx.EMULE_INCOMING;
+        const filePath = path.join(incoming, safe);
+        if (typeof utils.isPathWithin === 'function' && !utils.isPathWithin(filePath, incoming)) {
+          return sendJson(res, 400, { success: false, error: 'path_traversal' });
+        }
+        if (!fs.existsSync(filePath)) {
+          return sendJson(res, 404, { success: false, error: 'not_found' });
+        }
+        fs.unlinkSync(filePath);
+        console.log('[delete] Removed completed file: ' + safe);
+        // eMule's sharedfiles list refreshes lazily; users who want the file
+        // gone from search results can re-share or restart. Not auto-nudging
+        // emuledlg here to keep this thread-safe.
+        sendJson(res, 200, { success: true });
+      } catch(e) { sendJson(res, 500, { success: false, error: e.message }); }
     });
     return true;
   }

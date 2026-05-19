@@ -15,6 +15,8 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
 
+#include <functional>
+
 class CSafeMemFile;
 class CSearchFile;
 class CUpDownClient;
@@ -77,7 +79,7 @@ public:
 	void	RemoveFile(CPartFile *toremove);
 	void	DeleteAll();
 
-	INT_PTR	GetFileCount() const							{ return filelist.GetCount(); }
+	INT_PTR	GetFileCount() const							{ CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE); return filelist.GetCount(); }
 	UINT	GetDownloadingFileCount() const;
 	UINT	GetPausedFileCount() const;
 
@@ -87,6 +89,25 @@ public:
 	CPartFile* GetFileByID(const uchar *filehash) const;
 	CPartFile* GetFileNext(POSITION &pos) const; //trivial iterator
 	CPartFile* GetFileByKadFileSearchID(uint32 id) const;
+
+	// v7.4.0 — Concurrency model. Protects `filelist` and `m_localServerReqQueue`.
+	//
+	// Lock order (must always be acquired in this order if multiple are taken):
+	//   1. downloadqueue->m_csFilelistMainThrdWriteOtherThrdsRead   (most external)
+	//   2. sharedfiles->m_mutWriteList
+	//   3. uploadqueue->m_csUploadListMainThrdWriteOtherThrdsRead
+	//
+	// Never hold this lock while calling code that may PostMessage/SendMessage
+	// to emuledlg — those dispatch in the main thread and can re-enter this class.
+	//
+	// Use WithFileByID() from any thread other than the main thread. The lambda
+	// runs while the lock is held, so don't call back into DownloadQueue from it.
+	// GetFileByID() is kept for legacy main-thread callers; it locks too so it
+	// is safe, but a returned pointer is only valid for the brief moment before
+	// the lock releases — never store it across HTTP response boundaries.
+	mutable CCriticalSection m_csFilelistMainThrdWriteOtherThrdsRead;
+	bool	WithFileByID(const uchar *fileHash, std::function<void(CPartFile*)> fn);
+	bool	HasFileByID(const uchar *fileHash) const;
 
 	void	StartNextFileIfPrefs(int cat);
 	void	StartNextFile(int cat = -1, bool force = false);

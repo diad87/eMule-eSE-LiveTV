@@ -53,7 +53,21 @@ function ensureEmuleRunning() {
 // Kills FFmpeg orphans launched by eMule when eMule dies.
 // eMule spawns ffmpeg.exe from its install folder (e.g. C:\Program Files (x86)\eMule\ffmpeg.exe)
 // and does NOT kill it on exit. This watchdog cleans up every 10s.
+//
+// v7.4.0 — also tracks revival: when eMule transitions dead→alive, we bump a
+// monotonic library epoch (in-memory, NOT persisted to disk — front-end
+// detects epoch=0 on cold-start and refreshes naturally) and notify handlers
+// registered with onRevived(). Used by smart_play.js to know when a stale
+// .part file is still playable from a fresh eMule process.
 let _emuleWasAlive = false;
+let _emuleRestartedAt = 0;     // ms epoch when alive last flipped false→true
+let _emuleLibraryEpoch = 0;    // monotonic counter — NOT persisted
+const _onEmuleRevivedHandlers = [];
+function onRevived(handler) {
+  if (typeof handler === 'function') _onEmuleRevivedHandlers.push(handler);
+}
+function getLibraryEpoch() { return _emuleLibraryEpoch; }
+function getRestartedAt()  { return _emuleRestartedAt; }
 
 function killEmuleFFmpegOrphans() {
   try {
@@ -82,12 +96,25 @@ function killEmuleFFmpegOrphans() {
   } catch(e) {}
 }
 
-// Watchdog: check every 10s if eMule is alive; if it just died, kill its FFmpeg children
+// Watchdog: check every 10s. On dead→alive, bump epoch and notify handlers.
+// On alive→dead, kill orphan ffmpeg children.
 setInterval(function emuleLifecycleWatchdog() {
   const alive = isEmuleRunning();
   if (_emuleWasAlive && !alive) {
     console.log('[eMule] Process died — cleaning up orphan FFmpeg broadcasts...');
     killEmuleFFmpegOrphans();
+    emuleSession = null;
+  } else if (!_emuleWasAlive && alive) {
+    _emuleRestartedAt = Date.now();
+    _emuleLibraryEpoch++;
+    console.log('[eMule] Process back online (epoch=' + _emuleLibraryEpoch + ')');
+    // Auto-login is called by server.js initialisation; the autoLoginEmule
+    // function declared later in this file picks up immediately. We just
+    // notify external listeners.
+    for (const h of _onEmuleRevivedHandlers) {
+      try { h(_emuleLibraryEpoch); }
+      catch(e) { console.warn('[watchdog] revived handler error:', e.message); }
+    }
   }
   _emuleWasAlive = alive;
 }, 10000);
@@ -96,39 +123,7 @@ _emuleWasAlive = isEmuleRunning();
 
 const zlib = require('zlib');
 
-// eMule is a Unicode (UTF-16LE) MFC build. MD5Sum::Calculate() hashes
-// (LPCTSTR)sSource with sSource.GetLength() * sizeof(TCHAR), where
-// sizeof(TCHAR) = 2. We must replicate this in Node.js.
-function md5utf16le(str) {
-  return crypto.createHash('md5').update(Buffer.from(str, 'utf16le')).digest('hex').toUpperCase();
-}
-
 const EMULE_WS_PORT = 4711;
-
-// ─── PORTABLE-FIRST CONFIG DETECTION ───────────────────────────
-// Mirrors eMule C++ logic (Preferences.cpp::GetDefaultDirectory):
-//   1. If <exe_dir>/config/preferences.ini exists → portable mode
-//   2. Else → %LOCALAPPDATA%\eMule\config (standard multi-user mode)
-function resolveEmuleConfigDir() {
-  // Portable: config/ folder alongside this script (same dir as emule.exe)
-  const portableConfig = path.join(__dirname, 'config');
-  const portablePrefs = path.join(portableConfig, 'preferences.ini');
-  if (fs.existsSync(portablePrefs)) {
-    console.log('[eMule] Config mode: PORTABLE (' + portableConfig + ')');
-    return portableConfig;
-  }
-
-  // Standard: %LOCALAPPDATA%\eMule\config
-  const localAppData = process.env.LOCALAPPDATA ||
-    path.join(process.env.USERPROFILE || path.join('C:', 'Users', process.env.USERNAME || 'Default'), 'AppData', 'Local');
-  const standardConfig = path.join(localAppData, 'eMule', 'config');
-  console.log('[eMule] Config mode: STANDARD (' + standardConfig + ')');
-  return standardConfig;
-}
-
-const EMULE_CONFIG_DIR = resolveEmuleConfigDir();
-const EMULE_PREFS_INI = path.join(EMULE_CONFIG_DIR, 'preferences.ini');
-const KNOWN_PASSWORDS = ['eSE', 'emule', 'admin', '12345', 'password', ''];
 
 let emuleSession = null;
 let emulePassword = null;
@@ -145,7 +140,12 @@ function setSettingsFunctions(load, save) {
 // ─── HTTP REQUEST ──────────────────────────────────────────────
 
 function emuleRequest(urlPath, callback) {
-  const fullUrl = 'http://localhost:' + EMULE_WS_PORT + '/' + urlPath;
+  // Use the IPv4 literal explicitly. On Windows, `localhost` resolves to ::1
+  // first (IPv6); eMule's WebServer binds INADDR_ANY (IPv4-only, see
+  // WebSocket.cpp:449). Node 18 doesn't auto-fall-back to IPv4, so a
+  // `localhost` request hits ::1, fails ECONNREFUSED, and the UI shows
+  // "eMule WebServer no responde" even when the WebServer is fully up.
+  const fullUrl = 'http://127.0.0.1:' + EMULE_WS_PORT + '/' + urlPath;
   const urlObj = new URL(fullUrl);
   
   const options = {
@@ -172,141 +172,54 @@ function emuleRequest(urlPath, callback) {
 }
 
 // ─── PASSWORD (unique per-installation, zero-config) ──────────
+//
+// Priority order:
+//   1. ESE_EMULE_PASSWORD env var — set by emule.exe when the user clicks the
+//      eSE toolbar button. emule.exe also calls SetWSPass with the same value
+//      in-memory, so login is guaranteed to work without restart.
+//   2. settings.json `emulePassword` — persisted from a previous run.
+//   3. Fresh random password — for standalone launches when neither of the
+//      above is available (user double-clicked ese-server.exe directly).
 
 function getOrCreatePassword() {
+  const envPw = process.env.ESE_EMULE_PASSWORD;
+  if (envPw) {
+    const s = _loadSettings();
+    if (s.emulePassword !== envPw) {
+      s.emulePassword = envPw;
+      _saveSettings(s);
+    }
+    return envPw;
+  }
   const s = _loadSettings();
   if (s.emulePassword) return s.emulePassword;
-  // First run: generate unique password for this installation
   const pw = crypto.randomBytes(16).toString('hex');
   s.emulePassword = pw;
   _saveSettings(s);
-  console.log('[eMule] Generated unique installation password');
+  console.log('[eMule] Generated unique installation password (standalone mode)');
   return pw;
-}
-
-// ─── INI SECTION HELPERS ───────────────────────────────────────
-// eMule's CIni reads/writes keys under specific [Section] headers.
-// We must respect that to avoid cross-section key collisions.
-
-/**
- * Extracts the value of `key` from a specific [section] in an INI string.
- * Returns null if section or key is not found.
- */
-function iniGetValue(ini, section, key) {
-  const sectionRegex = new RegExp('\\[' + section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\]', 'i');
-  const sectionMatch = ini.match(sectionRegex);
-  if (!sectionMatch) return null;
-
-  const afterSection = ini.substring(sectionMatch.index + sectionMatch[0].length);
-  const nextSection = afterSection.search(/^\[/m);
-  const sectionBody = nextSection >= 0 ? afterSection.substring(0, nextSection) : afterSection;
-
-  const keyRegex = new RegExp('^' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '=(.*)$', 'mi');
-  const keyMatch = sectionBody.match(keyRegex);
-  return keyMatch ? keyMatch[1].trim() : null;
-}
-
-/**
- * Sets a key=value under a specific [section]. Creates the section if missing.
- * Replaces the key if it already exists within that section.
- */
-function iniSetValue(ini, section, key, value) {
-  const sectionHeader = '[' + section + ']';
-  const sectionRegex = new RegExp('\\[' + section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\]', 'i');
-  const sectionMatch = ini.match(sectionRegex);
-
-  if (!sectionMatch) {
-    // Section doesn't exist — append it
-    return ini.trimEnd() + '\n\n' + sectionHeader + '\n' + key + '=' + value + '\n';
-  }
-
-  const afterSection = ini.substring(sectionMatch.index + sectionMatch[0].length);
-  const nextSection = afterSection.search(/^\[/m);
-  const sectionBody = nextSection >= 0 ? afterSection.substring(0, nextSection) : afterSection;
-
-  const keyRegex = new RegExp('^' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '=.*$', 'mi');
-  const keyMatch = sectionBody.match(keyRegex);
-
-  if (keyMatch) {
-    // Replace existing key within the section
-    const absolutePos = sectionMatch.index + sectionMatch[0].length + keyMatch.index;
-    return ini.substring(0, absolutePos) + key + '=' + value + ini.substring(absolutePos + keyMatch[0].length);
-  }
-
-  // Key doesn't exist in section — insert after section header
-  const insertPos = sectionMatch.index + sectionMatch[0].length;
-  return ini.substring(0, insertPos) + '\n' + key + '=' + value + ini.substring(insertPos);
-}
-
-function detectEmulePassword() {
-  try {
-    const ourPassword = getOrCreatePassword();
-
-    if (!fs.existsSync(EMULE_PREFS_INI)) return ourPassword;
-    let ini = fs.readFileSync(EMULE_PREFS_INI, 'utf8');
-
-    // Ensure [WebServer] section exists and Enabled=1
-    const wsEnabled = iniGetValue(ini, 'WebServer', 'Enabled');
-    if (wsEnabled !== '1') {
-      console.log('[eMule] Enabling WebServer in [WebServer] section...');
-      ini = iniSetValue(ini, 'WebServer', 'Enabled', '1');
-      fs.writeFileSync(EMULE_PREFS_INI, ini);
-    }
-
-    // Read Password from [WebServer] section specifically
-    const storedHash = (iniGetValue(ini, 'WebServer', 'Password') || '').toUpperCase();
-
-    // No password in eMule → write ours
-    if (!storedHash) {
-      const hash = md5utf16le(ourPassword);
-      ini = iniSetValue(ini, 'WebServer', 'Password', hash);
-      fs.writeFileSync(EMULE_PREFS_INI, ini);
-      console.log('[eMule] Password hash written to [WebServer] in preferences.ini');
-      return ourPassword;
-    }
-
-    // Fast path: our password matches
-    if (md5utf16le(ourPassword) === storedHash) {
-      console.log('[eMule] Password OK (from settings)');
-      return ourPassword;
-    }
-
-    // Try known passwords (user had eMule before eSE)
-    for (const pw of KNOWN_PASSWORDS) {
-      if (md5utf16le(pw) === storedHash) {
-        // BUG-049 FIX: never log passwords, even common ones
-        console.log('[eMule] Detected existing legacy password (matched hash)');
-        const s = _loadSettings();
-        s.emulePassword = pw;
-        _saveSettings(s);
-        return pw;
-      }
-    }
-
-    // No match → overwrite with ours (requires eMule restart to take effect)
-    const hash = md5utf16le(ourPassword);
-    ini = iniSetValue(ini, 'WebServer', 'Password', hash);
-    fs.writeFileSync(EMULE_PREFS_INI, ini);
-    console.log('[eMule] ⚠️  Password updated in [WebServer]. Restart eMule to apply.');
-    return ourPassword;
-
-  } catch(e) {
-    console.log('[eMule] Password setup error:', e.message);
-    return getOrCreatePassword();
-  }
 }
 
 // ─── LOGIN ─────────────────────────────────────────────────────
 
 function emuleLogin(password, callback) {
   emuleRequest('?w=password&p=' + encodeURIComponent(password), (err, html) => {
-    if (err) { callback(err); return; }
-    const sesMatch = html.match(/ses=(\d+)/);
+    if (err) {
+      if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT') {
+        const e = new Error('eMule WebServer no responde (¿eMule cerrado?)');
+        e.reason = 'webserver_down';
+        return callback(e);
+      }
+      return callback(err);
+    }
+    const sesMatch = html && html.match(/ses=(\d+)/);
     if (sesMatch) {
       emuleSession = sesMatch[1];
       callback(null, emuleSession);
     } else {
-      callback(new Error('Login failed - wrong password?'));
+      const e = new Error('eMule rechazó la password (settings.json desincronizado)');
+      e.reason = 'password_mismatch';
+      callback(e);
     }
   });
 }
@@ -317,7 +230,7 @@ var _autoLoginMaxRetries = 15;
 var _autoLoginBaseDelay = 10000;
 
 function autoLoginEmule() {
-  const pw = detectEmulePassword();
+  const pw = getOrCreatePassword();
   emuleLogin(pw, (err, session) => {
     if (!err && session) {
       emulePassword = pw;
@@ -354,7 +267,7 @@ function ensureEmuleSession(onReady, query, settings, callback) {
 }
 
 function autoLoginAndRetry(query, settings, callback) {
-  const pw = detectEmulePassword();
+  const pw = getOrCreatePassword();
   emuleLogin(pw, (err, session) => {
     if (err) {
       console.log('[eMule] ❌ Auto-relogin failed');
@@ -634,7 +547,7 @@ function emuleDownload(hash, callback) {
 
 function withEmuleSession(callback) {
   if (emuleSession) return callback(null, emuleSession);
-  const pw = detectEmulePassword();
+  const pw = getOrCreatePassword();
   emuleLogin(pw, (err, session) => {
     if (err) return callback(err);
     emulePassword = pw;
@@ -752,7 +665,7 @@ function emuleAddEd2kLink(ed2kLink, callback) {
   };
 
   if (!emuleSession) {
-    const pw = detectEmulePassword();
+    const pw = getOrCreatePassword();
     emuleLogin(pw, (err, session) => {
       if (err) { return callback(new Error('eMule login fallido: ' + err.message)); }
       emulePassword = pw;
@@ -791,7 +704,6 @@ module.exports = {
   emuleTransferAction,
   emuleAddEd2kLink,
   autoLoginEmule,
-  detectEmulePassword,
   parseEmuleSearchResults,
   scoreResult,
   detectQuality,
@@ -802,5 +714,8 @@ module.exports = {
   getPassword,
   isEmuleRunning,
   killEmuleFFmpegOrphans,
+  onRevived,
+  getLibraryEpoch,
+  getRestartedAt,
   EMULE_WS_PORT
 };

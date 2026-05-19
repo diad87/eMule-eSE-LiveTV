@@ -129,6 +129,11 @@ struct Category_Struct
 
 class CPreferences
 {
+public:
+	// v0.71 IPv6 Sprint 2 — hoisted to class top so the private storage
+	// declaration below can name the enum type before its members.
+	enum EIPv6Mode { IPv6OffMode = 0, IPv6AutoMode = 1, IPv6PreferredMode = 2 };
+private:
 	friend class CPreferencesWnd;
 	friend class CPPgConnection;
 	friend class CPPgDebug;
@@ -158,6 +163,11 @@ public:
 	static CStringW m_strBindAddrW;
 	static uint16	port;
 	static uint16	udpport;
+	// v0.71 IPv6 Sprint 2 — storage for IPv6 prefs. Default OFF until Sprint 9.
+	static EIPv6Mode	m_eIPv6Mode;
+	static CString  m_strIPv6BindAddr;
+	// eSE Live — dual-namespace publish gate (see accessor comment).
+	static bool     m_bEseLivePublishLegacy;
 	static uint16	nServerUDPPort;
 	static UINT		maxconnections;
 	static UINT		maxhalfconnections;
@@ -703,6 +713,38 @@ public:
 
 	static uint16	GetPort()							{ return port; }
 	static uint16	GetUDPPort()						{ return udpport; }
+
+	// v0.71 IPv6 Sprint 2 — IPv6 preferences. Enum hoisted to class top.
+	// IPv6Mode:
+	//   0 = IPv4Only (default, byte-identical baseline behaviour)
+	//   1 = Auto (use IPv6 if OS supports it; falls back gracefully)
+	//   2 = IPv6Preferred (always try v6 first, then v4)
+	// Default Auto flip lives in Sprint 9. Until then, default = IPv4Only.
+	static EIPv6Mode GetIPv6Mode()                      { return m_eIPv6Mode; }
+	static bool     IsIPv6Enabled()                     { return m_eIPv6Mode != IPv6OffMode; }
+	static void     SetIPv6Mode(EIPv6Mode m)            { m_eIPv6Mode = m; }
+	// Optional explicit bind for v6. Empty = "[::]" (any).
+	static LPCTSTR  GetIPv6BindAddr()                   { return m_strIPv6BindAddr; }
+
+	// eSE Live — dual-namespace publish gate.
+	// When true (default during transition) RepublishIfNeeded publishes
+	// every live keyword under BOTH the new dedicated hash (clean) and
+	// the legacy MD4(utf8) hash (legacy). When false, only the clean
+	// hash is published, severing visibility from any non-eSE node.
+	// Search is dual-mode regardless of this flag — we always need to
+	// find streams from forks still publishing legacy-only.
+	// Default flip-off plan: once /api/live/debug shows clean ≥ legacy
+	// for N days across the user base, ship a release that defaults
+	// this to false; the release after that removes the legacy branch.
+	static bool     GetEseLivePublishLegacy()           { return m_bEseLivePublishLegacy; }
+	static void     SetEseLivePublishLegacy(bool b)     { m_bEseLivePublishLegacy = b; }
+	// V2-S07+: cmdline-driven port override (stress test multi-instance).
+	static void		SetPort(uint16 p)					{ port = p; }
+	static void		SetUDPPort(uint16 p)				{ udpport = p; }
+	// V2-S07+: regenerate a random user hash so a same-host headless viewer
+	// isn't mistaken for "self" by the broadcaster (which would normally
+	// share preferences.ini and thus the same userhash).
+	static void		RegenerateUserHash();
 	static uint16	GetServerUDPPort()					{ return nServerUDPPort; }
 	static uchar*	GetUserHash()						{ return userhash; }
 	// ZZ:UploadSpeedSense -->

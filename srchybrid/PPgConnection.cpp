@@ -66,6 +66,7 @@ BEGIN_MESSAGE_MAP(CPPgConnection, CPropertyPage)
 	ON_WM_HELPINFO()
 	ON_BN_CLICKED(IDC_OPENPORTS, OnBnClickedOpenports)
 	ON_BN_CLICKED(IDC_PREF_UPNPONSTART, OnSettingsChange)
+	ON_BN_CLICKED(IDC_PREF_ENABLE_IPV6, OnSettingsChange)   // v0.71 IPv6 Sprint 9
 END_MESSAGE_MAP()
 
 CPPgConnection::CPPgConnection()
@@ -205,6 +206,18 @@ void CPPgConnection::LoadSettings()
 
 		CheckDlgButton(IDC_PREF_UPNPONSTART, static_cast<UINT>(thePrefs.IsUPnPEnabled()));
 
+		// v0.71 IPv6 Sprint 9 + IPv6 hotfix — IPv6 enable checkbox now
+		// maps cleanly to {Off, Auto}. Auto = the safe production mode
+		// (v4 listener + v6 egress prober). The third mode Preferido
+		// (real dual-stack listener AF_INET6 + V6ONLY=0) is confirmed
+		// to break eD2K server callbacks on Windows across multiple
+		// networks (home Telefónica fija + 4G Movistar), and is therefore
+		// hidden from the GUI to avoid users accidentally breaking
+		// HighID. Power users can still set IPv6Mode=2 in preferences.ini
+		// for testing/debugging the dual-stack code path. The hint text
+		// in the .rc warns about this.
+		CheckDlgButton(IDC_PREF_ENABLE_IPV6, static_cast<UINT>(thePrefs.IsIPv6Enabled()));
+
 		//ShowLimitValues(); - will be called in OnLimiterChange()
 		OnLimiterChange();
 	}
@@ -331,6 +344,14 @@ BOOL CPPgConnection::OnApply()
 			theApp.emuledlg->StartUPnP();
 		if (theApp.emuledlg->preferenceswnd->m_wndWebServer)
 			theApp.emuledlg->preferenceswnd->m_wndWebServer.SetUPnPState();
+	}
+
+	// v0.71 IPv6 Sprint 9 — IPv6 mode toggle. Off ↔ Auto. Change requires
+	// restart to re-create the listener as dual-stack (or fallback to v4).
+	const bool wantIPv6 = (IsDlgButtonChecked(IDC_PREF_ENABLE_IPV6) != 0);
+	if (thePrefs.IsIPv6Enabled() != wantIPv6) {
+		thePrefs.SetIPv6Mode(wantIPv6 ? CPreferences::IPv6AutoMode
+		                              : CPreferences::IPv6OffMode);
 	}
 
 	theApp.scheduler->SaveOriginals();

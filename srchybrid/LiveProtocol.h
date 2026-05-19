@@ -6,10 +6,13 @@
 #include "types.h"
 
 // eSE Live — Protocol constants
-#define ESE_LIVE_MAX_SEGMENTS       15      // Ring buffer: 60s / 4s = 15 segments
-#define ESE_LIVE_SEGMENT_DURATION   4       // Seconds per HLS segment
-#define ESE_LIVE_BITMAP_INTERVAL    2000    // Bitmap exchange every 2s (ms)
-#define ESE_LIVE_ANNOUNCE_INTERVAL  4000    // Announce every 4s (ms)
+// Sprint 2 C.1: HLS segments 4s → 2s. Halves time-to-first-frame.
+// MAX_SEGMENTS stays at 16 (limit: PeerBitmap uint16). With 2s segments
+// the buffer window shrinks from 60s → 32s, still plenty for live viewing.
+#define ESE_LIVE_MAX_SEGMENTS       16      // Ring buffer: matches uint16 bitmap
+#define ESE_LIVE_SEGMENT_DURATION   2       // Seconds per HLS segment
+#define ESE_LIVE_BITMAP_INTERVAL    1000    // Bitmap exchange every 1s (was 2s)
+#define ESE_LIVE_ANNOUNCE_INTERVAL  2000    // Announce every 2s (was 4s)
 #define ESE_LIVE_STATS_INTERVAL     10000   // Stats report every 10s (ms)
 #define ESE_LIVE_KAD_PUBLISH_INTERVAL 60000 // Kad publish every 60s (ms)
 #define ESE_LIVE_MAX_PEERS          5       // Max peers per viewer
@@ -34,8 +37,10 @@
 #define ESE_TRUST_SUPERSEEDER       0       // 15 min + response rate > 90%
 
 // Promotion thresholds
-#define ESE_PROMOTE_MIDDLE_TIME     (5 * 60 * 1000)     // 5 minutes
-#define ESE_PROMOTE_SUPER_TIME      (15 * 60 * 1000)    // 15 minutes
+// Sprint 2 G.1: super-seeder promotion 15min → 5min, middle 5min → 2min.
+// Helps the mesh ramp up upload capacity faster on flash crowds.
+#define ESE_PROMOTE_MIDDLE_TIME     (2 * 60 * 1000)     // 2 minutes (was 5)
+#define ESE_PROMOTE_SUPER_TIME      (5 * 60 * 1000)     // 5 minutes (was 15)
 #define ESE_PROMOTE_MIDDLE_RATE     0.80f               // 80% response rate
 #define ESE_PROMOTE_SUPER_RATE      0.90f               // 90% response rate
 #define ESE_BAN_RESPONSE_RATE       0.20f               // < 20% after 10+ requests = ban
@@ -158,10 +163,45 @@ struct PeerTrust {
 
 
 //
+// PeerBitmapInfo — Bitmap + anchor reported by a remote peer's HEARTBEAT.
+//
+// IMPORTANT: `bitmap` bits are indexed relative to THIS peer's `oldestSeq`,
+// NOT our local viewer's oldest seq. Bit 0 = oldestSeq, bit N = oldestSeq + N.
+// Fixing the previous bug where the viewer used its own oldestSeq as anchor.
+//
+struct PeerBitmapInfo {
+    uint16  bitmap;       // 16-bit availability map relative to oldestSeq
+    uint32  oldestSeq;    // Peer's oldest segment number (anchor for bitmap)
+    DWORD   lastUpdate;   // GetTickCount() when last received (staleness)
+
+    PeerBitmapInfo()
+        : bitmap(0), oldestSeq(0), lastUpdate(0)
+    {}
+
+    // True if this peer claims to have the given segment number.
+    bool Has(uint32 seqNum) const {
+        if (seqNum < oldestSeq) return false;
+        uint32 bit = seqNum - oldestSeq;
+        if (bit >= 16) return false;
+        return (bitmap & (1 << bit)) != 0;
+    }
+
+    // Highest segment number the peer reports as available, or 0 if empty.
+    uint32 NewestSeq() const {
+        if (bitmap == 0) return 0;
+        for (int i = 15; i >= 0; --i) {
+            if (bitmap & (1 << i)) return oldestSeq + (uint32)i;
+        }
+        return 0;
+    }
+};
+
+
+//
 // LiveStreamInfo — Metadata about a live stream (for Kad publishing)
 //
 struct LiveStreamInfo {
-    uchar   streamKey[16];      // Unique stream identifier
+    uchar   streamKey[16];      // Unique stream identifier; v7.6.0: sha1(pubkey)[:16]
     CString title;              // Stream title
     CString category;           // Category (Cine, Deportes, etc.)
     CString language;           // Language code (es, en, fr...)
@@ -171,6 +211,12 @@ struct LiveStreamInfo {
     bool    isMultiAudio;       // Has multiple audio tracks
     bool    isBroadcaster;      // Am I the original source?
 
+    // v7.6.0 — Ed25519 public key of the broadcaster. The streamKey above is
+    // sha1(pubkey)[:16] so any peer can verify that the pubkey is authentic
+    // for a given streamKey, then verify signatures on chunks/announces/end.
+    // Zeroed for streams discovered from v7.5- peers (back-compat).
+    uchar   pubkey[32];
+
     LiveStreamInfo()
         : bitrate(0)
         , viewerCount(0)
@@ -179,5 +225,6 @@ struct LiveStreamInfo {
         , isBroadcaster(false)
     {
         memset(streamKey, 0, 16);
+        memset(pubkey, 0, 32);
     }
 };

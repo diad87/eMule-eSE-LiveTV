@@ -2,10 +2,28 @@
 const fs   = require('fs');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
+const { safeBasename } = require('../utils');
 
 let _ctx = {};
 
 function init(ctx) { _ctx = ctx; }
+
+// SECURITY: this route handles /api/stream/* endpoints that accept a fileName
+// from URL query/path. Even though resolveMediaFile() also sanitizes, we
+// validate at the route boundary too so we can reply 400 early and log
+// traversal attempts. Without this, an attacker hitting the publicly
+// reachable port 8080 (UPnP) could try paths like
+// '../../Windows/System32/config/SAM' and waste server cycles before refusal.
+function _safeOrReject(fileName, res) {
+  const safe = safeBasename(fileName);
+  if (!safe) {
+    if (fileName) console.warn('[SEC] Rejected suspicious fileName: ' + JSON.stringify(fileName).slice(0, 120));
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'bad_filename' }));
+    return null;
+  }
+  return safe;
+}
 
 function handle(url, req, res) {
   if (!url.pathname.startsWith('/api/stream/')) return false;
@@ -23,7 +41,8 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/stream/completed/info') {
-    const fileName = url.searchParams.get('name');
+    const fileName = _safeOrReject(url.searchParams.get('name'), res);
+    if (!fileName) return true;
     const resolved = _ctx.resolveMediaFile(fileName);
     if (!resolved) { res.writeHead(404); res.end('{}'); return true; }
     const dur = _ctx.getDuration(resolved.filePath);
@@ -33,7 +52,8 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/stream/tracks') {
-    const fileName = url.searchParams.get('name') || '';
+    const fileName = _safeOrReject(url.searchParams.get('name'), res);
+    if (!fileName) return true;
     const resolved = _ctx.resolveMediaFile(fileName);
     if (!resolved) { res.writeHead(404); res.end('{}'); return true; }
     const ffprobePath = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
@@ -55,7 +75,8 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/stream/seek') {
-    const fileName = url.searchParams.get('name') || '';
+    const fileName = _safeOrReject(url.searchParams.get('name'), res);
+    if (!fileName) return true;
     const seekTime = parseFloat(url.searchParams.get('time') || '0');
     const resolved = _ctx.resolveMediaFile(fileName);
     if (!resolved) { res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' })); return true; }
@@ -79,7 +100,8 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/stream/subtitle') {
-    const fileName = url.searchParams.get('name') || '';
+    const fileName = _safeOrReject(url.searchParams.get('name'), res);
+    if (!fileName) return true;
     const trackIdx = parseInt(url.searchParams.get('track') || '0');
     const resolved = _ctx.resolveMediaFile(fileName);
     if (!resolved) { res.writeHead(404); res.end('Not found'); return true; }
@@ -105,7 +127,12 @@ function handle(url, req, res) {
   }
 
   if (url.pathname.startsWith('/api/stream/completed/')) {
-    const fileName = decodeURIComponent(url.pathname.replace('/api/stream/completed/', ''));
+    // Endpoint format: /api/stream/completed/<urlEncodedFileName>
+    let rawName;
+    try { rawName = decodeURIComponent(url.pathname.replace('/api/stream/completed/', '')); }
+    catch(e) { res.writeHead(400); res.end('Bad URL encoding'); return true; }
+    const fileName = _safeOrReject(rawName, res);
+    if (!fileName) return true;
     const resolved = _ctx.resolveMediaFile(fileName);
     if (!resolved) { res.writeHead(404); res.end('Not found'); return true; }
     const { filePath, isPartFile } = resolved;
@@ -133,7 +160,14 @@ function handle(url, req, res) {
     try { const fd = fs.openSync(filePath, 'r'); fs.closeSync(fd); } catch(e) { res.writeHead(503); res.end('File is locked by another process'); return true; }
 
     const ffArgs = ['-err_detect', 'ignore_err', '-fflags', '+genpts+igndts+discardcorrupt'];
-    if (isPartFile) ffArgs.push('-analyzeduration', '30000000', '-probesize', '50000000', '-max_error_rate', '1.0');
+    // v7.4.0 — reduced .part analyzeduration/probesize from 30s/50MB → 10s/20MB.
+    // Previously, ffmpeg would spend the entire 30s dataTimeout window
+    // analyzing the file before piping any frame, which caused the first
+    // chunk to arrive AFTER the watchdog had already killed ffmpeg on HEVC
+    // re-encode runs. Smaller probe = first byte sooner = player doesn't
+    // bail. Trade-off: ffmpeg may miss some metadata, but for .part files
+    // that's expected (the file is by definition incomplete).
+    if (isPartFile) ffArgs.push('-analyzeduration', '10000000', '-probesize', '20000000', '-max_error_rate', '1.0');
     if (seekSec > 0) ffArgs.push('-ss', String(seekSec));
     ffArgs.push('-i', filePath, '-map', '0:v:0');
     if (audioTrack && audioTrack !== '' && audioTrack !== 'undefined') ffArgs.push('-map', '0:' + audioTrack + '?');
@@ -159,7 +193,17 @@ function handle(url, req, res) {
     if (_ctx.activeStreams[streamKey]) { _ctx.activeStreams[streamKey].kill(); delete _ctx.activeStreams[streamKey]; }
     let currentSeekSec = seekSec, totalBytesSent = 0, restartCount = 0, clientDisconnected = false;
     const MAX_RESTARTS = 20;
-    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
+    // v7.4.0 — expose transcoding mode so the client can show a friendlier
+    // "transcodificando HEVC, hasta 60s" hint instead of a generic spinner.
+    const transcodingMode = canCopyVideo
+      ? 'copy'
+      : (srcVideoCodec && /^(hevc|h265)$/i.test(srcVideoCodec) ? 'hevc-to-h264' : 'transcode');
+    res.writeHead(200, {
+      'Content-Type': 'video/mp4',
+      'Transfer-Encoding': 'chunked',
+      'Cache-Control': 'no-cache',
+      'X-ESE-Transcoding': transcodingMode
+    });
 
     const launchFfmpeg = (seekFrom) => {
       const currentArgs = [...ffArgs];
@@ -212,9 +256,17 @@ function handle(url, req, res) {
         delete _ctx.activeStreams[streamKey];
         if (!res.writableEnded) res.end();
       });
+      // v7.4.0 — .part needs longer dataTimeout because HEVC→H264 re-encode
+      // (Interstellar etc.) routinely takes 30-50s to emit the first frame
+      // when buffered data is still light. Completed files stay at 30s.
+      const DATA_TIMEOUT_MS = isPartFile ? 60000 : 30000;
       dataTimeout = setTimeout(() => {
-        if (!gotData && _ctx.activeStreams[streamKey]) { console.log('[Stream] No data from ffmpeg after 30s, killing'); _ctx.activeStreams[streamKey].kill(); delete _ctx.activeStreams[streamKey]; }
-      }, 30000);
+        if (!gotData && _ctx.activeStreams[streamKey]) {
+          console.log('[Stream] No data from ffmpeg after ' + (DATA_TIMEOUT_MS / 1000) + 's, killing');
+          _ctx.activeStreams[streamKey].kill();
+          delete _ctx.activeStreams[streamKey];
+        }
+      }, DATA_TIMEOUT_MS);
     };
 
     launchFfmpeg(seekSec);

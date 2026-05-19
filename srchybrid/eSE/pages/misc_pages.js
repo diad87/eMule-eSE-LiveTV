@@ -125,10 +125,12 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/qr') {
-    // QR code page with current tunnel URL and remote download
-    const qrTarget = tunnel.tunnelUrl || ('https://ntfy.sh/' + tunnel.LOOKUP_TOPIC);
+    // v7.4.0 — QR target prefers the UPnP-derived public URL; falls back to
+    // the ntfy.sh lookup so a phone can still find this server even without
+    // a public IP (no Cloudflare tunnel anymore).
+    const qrTarget = tunnel.publicUrl || ('https://ntfy.sh/' + tunnel.LOOKUP_TOPIC);
     const qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(qrTarget);
-    const remoteQr = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent((tunnel.tunnelUrl || 'http://localhost:' + PORT) + '/remote');
+    const remoteQr = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent((tunnel.publicUrl || 'http://localhost:' + PORT) + '/remote');
     const qrPage = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>eSE QR</title><link rel="icon" href="/emule_mascot.svg" />' +
       '<style>*{margin:0;padding:0}body{background:#0d0d12;color:#fff;font-family:system-ui;padding:40px;text-align:center}' +
       '.logo{font-size:28px;font-weight:800;color:#ff6b35;margin-bottom:30px}' +

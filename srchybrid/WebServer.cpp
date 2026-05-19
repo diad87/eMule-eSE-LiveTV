@@ -5030,6 +5030,57 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
+	// --- /api/live/privacy/circuits --- v0.71 B — per-circuit detail.
+	// Enumerates all circuits in CLiveTunnel with id, role, state, age
+	// in ms, hop count, and forwarding state (next_hop_set / next_circ_id
+	// for relay circuits that have already received EXTEND). Used to
+	// verify "Hops: 2" after BuildTestCircuit2Hop succeeds.
+	if (sURL == "/api/live/privacy/circuits") {
+		std::vector<eSELive::CLiveTunnel::CircuitSnapshot> snap;
+		try {
+			eSELive::CLiveTunnel::Get().GetCircuitsSnapshot(snap);
+		} catch (...) {}
+
+		CStringA arr;
+		for (size_t i = 0; i < snap.size(); ++i) {
+			if (i > 0) arr += ",";
+			const auto& s = snap[i];
+			CStringA line;
+			line.Format(
+			    "{\"circ_id\":\"0x%08X\",\"role\":\"%s\","
+			    "\"state\":\"%s\",\"age_ms\":%u,"
+			    "\"hop_count\":%u,\"forwarding\":%s,"
+			    "\"next_circ_id\":\"0x%08X\"}",
+			    s.circ_id,
+			    s.role == 0 ? "Originator" : "Relay",
+			    (s.state == 0 ? "Pending"
+			      : s.state == 1 ? "HalfBuilt"
+			      : s.state == 2 ? "Built"
+			      : s.state == 3 ? "Active"
+			      : s.state == 4 ? "Destroyed" : "?"),
+			    s.age_ms,
+			    s.hop_count,
+			    s.next_hop_set ? "true" : "false",
+			    s.next_circ_id);
+			arr += line;
+		}
+
+		CStringA json;
+		json.Format("{\"total\":%u,\"circuits\":[%s]}",
+		    (unsigned)snap.size(), (LPCSTR)arr);
+
+		CStringA header;
+		header.Format(
+		    "HTTP/1.1 200 OK\r\n"
+		    HTTPInit
+		    "Content-Type: application/json\r\n"
+		    "Content-Length: %d\r\n\r\n",
+		    json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
 	// --- /api/live/privacy/peers --- v0.71 P3.11 — debug helper.
 	// Lists currently connected peers with their TAG_ESE_CAPS bitmap so
 	// the user can verify which peers PC1 actually sees as fork-capable.
@@ -5097,21 +5148,26 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// the ~6 s timeout reaps it. Either way the user gets visible proof
 	// the SEND path is wired (Privacidad panel shows circuit count +1
 	// briefly even on failure).
-	if (sURL == "/api/live/privacy/test_circuit") {
+	if (sURL.Left(31) == "/api/live/privacy/test_circuit") {
+		// v0.71 B — optional ?hops=2 to build a 2-hop circuit. Default
+		// is 1-hop (backward compat). 2-hop picks 2 fork peers if
+		// available; with 1 fork peer it loops hop2 back (testing aid).
+		const CString hopsArg = _ParseURL(Data.sURL, _T("hops"));
+		const int hops = (hopsArg == _T("2")) ? 2 : 1;
 		uint32_t circId = 0;
 		CStringA result;
 		try {
-			circId = eSELive::CLiveTunnel::Get().BuildTestCircuit(NULL);
+			if (hops == 2)
+				circId = eSELive::CLiveTunnel::Get().BuildTestCircuit2Hop();
+			else
+				circId = eSELive::CLiveTunnel::Get().BuildTestCircuit(NULL);
 		} catch (...) {}
 		if (circId == 0) {
-			// ASCII-only to avoid UTF-8/CP1252 mojibake without forcing
-			// a BOM on this huge .cpp — the response Content-Type also
-			// doesn't declare a charset, so safer to stay 7-bit ASCII.
-			result = "{\"ok\":false,\"reason\":\"no connected peers - open eD2K/Kad first\"}";
+			result = "{\"ok\":false,\"reason\":\"no connected fork-capable peers - check /api/live/privacy/peers\"}";
 		} else {
 			CStringA tmp;
-			tmp.Format("{\"ok\":true,\"circuit_id\":\"0x%08x\",\"note\":\"watch Privacidad panel - circuit appears as Pending; if peer runs eSE fork it advances to Active\"}",
-				(unsigned)circId);
+			tmp.Format("{\"ok\":true,\"circuit_id\":\"0x%08x\",\"hops_requested\":%d,\"note\":\"poll /api/live/privacy and /api/live/privacy/circuits to watch handshake progress\"}",
+				(unsigned)circId, hops);
 			result = tmp;
 		}
 		CStringA header;

@@ -1582,6 +1582,20 @@ CString CWebServer::_GetTransferList(const ThreadData &Data)
 								uint16 seekPart = (uint16)_tstol(sPart);
 								found_file->SetStreamSeekPart(seekPart);
 							}
+						} else if (sOp == _T("setpreview")) {
+							// v8.0.12 — eSE LiveTV needs head chunks (file beginning)
+							// first so the in-browser player can read the MP4/MKV
+							// header and start decoding before the file is complete.
+							// eMule's default is non-contiguous chunk fetching; this
+							// flips the file to "preview priority" mode which makes
+							// PartFile prefer chunks at lower offsets when picking
+							// the next gap to request.
+							const CString &sEn(_ParseURL(Data.sURL, _T("en")));
+							const bool bEn = sEn.IsEmpty() ? true : (_tstoi(sEn) != 0);
+							found_file->SetPreviewPrio(bEn);
+							AddLogLine(false, _T("[WS] SetPreviewPrio(%s) on file %s"),
+								bEn ? _T("ON") : _T("OFF"),
+								(LPCTSTR)found_file->GetFileName());
 						}
 					});
 					if (needsCatTabsUpdate)

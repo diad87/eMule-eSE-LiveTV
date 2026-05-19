@@ -6,7 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
-    "prebuild": "node tools/bundle_client.js",
+    "prebuild": "node tools/bake_build_hash.js && node tools/bundle_client.js",
     "build": "pkg . --targets node18-win-x64 --output ese-server.exe --compress GZip"
   },
   "keywords": [],
@@ -31,7 +31,8 @@
       "eSE-live/thumbs/**/*",
       "eSE-live/live/.gitkeep",
       "_player_bundle.js",
-      "node_modules/hls.js/dist/hls.min.js"
+      "node_modules/hls.js/dist/hls.min.js",
+      "build_hash.txt"
     ],
     "targets": [
       "node18-win-x64"

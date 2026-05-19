@@ -297,21 +297,45 @@ var _autoLoginAttempts = 0;
 var _autoLoginMaxRetries = 15;
 var _autoLoginBaseDelay = 10000;
 
+// v8.0.3 — error_codes.js is required lazily here to avoid a circular dep
+// at module load time (error_codes.js's probes read emuleApi.getSession).
+let _errorCodes = null;
+function _errCode(name) {
+  try {
+    if (!_errorCodes) _errorCodes = require('./error_codes');
+    return _errorCodes.buildCode(name);
+  } catch (e) { return '[ESE ?] E00'; }
+}
+
+// Most-recent login failure code, exposed via getLastErrorCode() for the
+// UI's "copy this code" affordance.
+let _lastErrorCode = null;
+function getLastErrorCode() { return _lastErrorCode; }
+
 function autoLoginEmule() {
   const pw = getOrCreatePassword();
   emuleLogin(pw, (err, session) => {
     if (!err && session) {
       emulePassword = pw;
       _autoLoginAttempts = 0;
+      _lastErrorCode = null;
       console.log('[eMule] Logged in, session: ' + session);
     } else {
       _autoLoginAttempts++;
+      // Classify: timeout vs unreachable vs auth-failure. emuleLogin's err
+      // message is typically "ECONNREFUSED" (WS off), "timeout" (deadlock),
+      // or a parse error (WS responded but rejected the password).
+      const msg = String(err && err.message || '').toLowerCase();
+      let codeName = 'emule_ws_login_failed';
+      if (msg.indexOf('econnrefused') >= 0) codeName = 'emule_ws_unreachable';
+      else if (msg.indexOf('timeout')     >= 0) codeName = 'emule_ws_timeout';
+      _lastErrorCode = _errCode(codeName);
       if (_autoLoginAttempts >= _autoLoginMaxRetries) {
-        console.error('[eMule] Login failed after ' + _autoLoginMaxRetries + ' attempts. Giving up.');
+        console.error('[eMule] Login failed after ' + _autoLoginMaxRetries + ' attempts. Giving up. ' + _lastErrorCode);
         return;
       }
       var delay = Math.min(_autoLoginBaseDelay * Math.pow(2, _autoLoginAttempts - 1), 300000);
-      console.log('[eMule] Login failed (attempt ' + _autoLoginAttempts + '/' + _autoLoginMaxRetries + '). Retrying in ' + (delay/1000) + 's...');
+      console.log('[eMule] Login failed (attempt ' + _autoLoginAttempts + '/' + _autoLoginMaxRetries + '). Retrying in ' + (delay/1000) + 's... ' + _lastErrorCode);
       setTimeout(autoLoginEmule, delay);
     }
   });
@@ -787,5 +811,6 @@ module.exports = {
   getRestartedAt,
   emuleWsIsResponsive,
   emuleWsLastOkAt,
+  getLastErrorCode,
   EMULE_WS_PORT
 };

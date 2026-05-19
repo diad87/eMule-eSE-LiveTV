@@ -53,6 +53,50 @@ function getHTML(activePage) {
     item.icon + item.label + '</a>'
   ).join('');
 
+  // v8.0.3: bottom-right "build code" badge.
+  //
+  // Always visible, copy-on-click. Polls /api/debug/last every 3 s; when the
+  // backend reports a recent error, the badge turns red and shows the error
+  // code instead of the boot code. That way users reporting "no me funciona"
+  // can just click the badge → paste in the forum and we get version + state
+  // + failure path in one short string. No PII; no tokens.
+  const codeBadge =
+    '<div id="ese-code-badge" title="Click para copiar el codigo de diagnostico" ' +
+      'style="position:fixed;bottom:12px;right:12px;z-index:200;background:#16161e;' +
+      'border:1px solid #333;color:#888;font-family:monospace;font-size:11px;' +
+      'padding:6px 10px;border-radius:6px;cursor:pointer;user-select:all;' +
+      'box-shadow:0 2px 8px rgba(0,0,0,.4);transition:all .2s">' +
+      '<span id="ese-code-text">[ESE] cargando...</span>' +
+    '</div>' +
+    '<script>(function(){' +
+      'var el=document.getElementById("ese-code-badge");' +
+      'var txt=document.getElementById("ese-code-text");' +
+      'if(!el||!txt)return;' +
+      'function refresh(){' +
+        'fetch("/api/debug/last",{cache:"no-store"}).then(function(r){return r.json();})' +
+        '.then(function(d){' +
+          'var code=d.last||d.current||"[ESE ?]";' +
+          'txt.textContent=code;' +
+          'if(d.last){el.style.borderColor="#e74c3c";el.style.color="#e74c3c";el.title="ERROR detectado. Click para copiar este codigo y pegarlo en tu reporte.";}' +
+          'else{el.style.borderColor="#333";el.style.color="#888";el.title="Codigo de diagnostico. Click para copiar y pegar en reportes.";}' +
+        '}).catch(function(){txt.textContent="[ESE ?] sin conexion al backend";});' +
+      '}' +
+      'el.addEventListener("click",function(){' +
+        'var t=txt.textContent;' +
+        'if(navigator.clipboard&&navigator.clipboard.writeText){' +
+          'navigator.clipboard.writeText(t).then(function(){' +
+            'var orig=el.style.background;el.style.background="#1f3a1f";' +
+            'setTimeout(function(){el.style.background=orig;},600);' +
+          '}).catch(function(){});' +
+        '}else{' +
+          'var r=document.createRange();r.selectNode(txt);' +
+          'window.getSelection().removeAllRanges();window.getSelection().addRange(r);' +
+          'try{document.execCommand("copy");}catch(e){}' +
+        '}' +
+      '});' +
+      'refresh();setInterval(refresh,3000);' +
+    '})();</script>';
+
   return (
     '<div class="header">' +
     '<div class="nav-left">' +
@@ -62,7 +106,8 @@ function getHTML(activePage) {
     '<div class="nav-right">' +
     '<a href="/" class="nav-icon" title="Buscar">' + ICONS.search + '</a>' +
     '<a href="/connect" class="nav-icon" title="Conectar">' + ICONS.connect + '</a>' +
-    '</div></div>'
+    '</div></div>' +
+    codeBadge
   );
 }
 

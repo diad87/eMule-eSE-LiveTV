@@ -91,6 +91,13 @@ public:
     DWORD BornAtTick() const { return m_born_tick; }
     DWORD AgeMs() const { return GetTickCount() - m_born_tick; }
 
+    // v0.71 P0.A — cover traffic state. Each circuit emits CELL_PADDING
+    // independently with Poisson timing. m_nextPaddingTick is the tick
+    // at which the next padding cell should be emitted. Set lazily on
+    // first Active state; updated after each emit.
+    DWORD m_lastPaddingTick = 0;
+    DWORD m_nextPaddingDelayMs = 0;
+
     // Pool for outgoing cells (sender→hop1)
     CCellQueue m_sendQ;
 

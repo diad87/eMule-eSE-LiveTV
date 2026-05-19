@@ -152,6 +152,12 @@ public:
 	bool            SupportsKadV6()         const { return (m_dwForkCaps & 0x02) != 0; }
 	bool            HasV6DualStack()        const { return (m_dwForkCaps & 0x04) != 0; }
 	bool            SupportsEd25519Live()   const { return (m_dwForkCaps & 0x08) != 0; }
+	// v0.71 P3.5 — eSE privacy capability bitmap. See Opcodes.h for the
+	// ESE_CAP_* bit constants. 0 = legacy peer / no privacy support.
+	uint32          GetEseCapabilities()    const { return m_uEseCapabilities; }
+	bool            SupportsEsePrivacyTunneling() const { return (m_uEseCapabilities & 0x00000100) != 0; }
+	bool            SupportsEseSealedRecords()    const { return (m_uEseCapabilities & 0x00000200) != 0; }
+	bool            SupportsEseGossip()           const { return (m_uEseCapabilities & 0x00000400) != 0; }
 	uint8			GetMuleVersion() const							{ return m_byEmuleVersion; }
 	bool			ExtProtocolAvailable() const					{ return m_bEmuleProtocol; }
 	bool			SupportMultiPacket() const						{ return m_bMultiPacket; }
@@ -510,6 +516,9 @@ protected:
 	// 0 = baseline / upstream eMule / pre-v7.7 fork (no _V6 / no ED25519).
 	// See Opcodes.h for bit definitions.
 	uint32  m_dwForkCaps;
+	// v0.71 P3.5 — eSE privacy capability bits from TAG_ESE_CAPS (0x6C).
+	// 0 = legacy / no privacy support. See Opcodes.h ESE_CAP_* bits.
+	uint32  m_uEseCapabilities;
 	bool	m_bFriendSlot;
 	bool	m_bCommentDirty;
 	bool	m_bIsML;

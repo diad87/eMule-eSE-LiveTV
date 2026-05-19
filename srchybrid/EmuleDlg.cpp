@@ -1292,25 +1292,44 @@ void CemuleDlg::ShowConnectionState()
 	}
 	statusbar->SetText(ipver, SBarIPVersion, 0);
 
-	// v0.71 P2.2 — Privacy status pane. Shows mode + active onion
-	// circuit count so the user can verify at-a-glance whether their
-	// privacy stack is running. Reading the live singletons (not the
-	// pref) ensures we display reality, not configuration intent.
+	// v0.71 P2.2 + P3.8 — Privacy status pane. Shows mode + circuit
+	// counts (active / pending). Pending circuits matter: a test_circuit
+	// against a legacy peer creates a Pending that never reaches Active,
+	// so without exposing pending the user sees 0 in the whole 6s
+	// window and falsely concludes the pipeline is broken.
 	{
 		using namespace Kademlia;
 		CKadV2Mode m = CKadV2ModeSelector::Get().GetDefaultMode();
-		size_t circuits = 0;
-		try { circuits = eSELive::CLiveTunnel::Get().ActiveCircuitCount(); } catch (...) {}
+		size_t cActive = 0, cPending = 0;
+		try {
+			cActive  = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
+			cPending = eSELive::CLiveTunnel::Get().PendingCircuitCount();
+		} catch (...) {}
 		CString privText;
+		// Compact format: "P:Adaptive 1A 1P" when there's activity; just
+		// "P:Adaptive" if quiescent (saves visual noise).
+		auto countSuffix = [&](LPCTSTR label) -> CString {
+			CString out;
+			if (cActive == 0 && cPending == 0) {
+				out = label;
+			} else if (cPending == 0) {
+				out.Format(_T("%s %uA"), label, (unsigned)cActive);
+			} else if (cActive == 0) {
+				out.Format(_T("%s %uP"), label, (unsigned)cPending);
+			} else {
+				out.Format(_T("%s %uA %uP"), label, (unsigned)cActive, (unsigned)cPending);
+			}
+			return out;
+		};
 		switch (m) {
 		case CKadV2Mode::Direct:
 			privText = (g_uEseCapsRuntime != 0) ? _T("P:Direct") : _T("P:Off");
 			break;
 		case CKadV2Mode::Tunneled:
-			privText.Format(_T("P:Tunneled %u"), (unsigned)circuits);
+			privText = countSuffix(_T("P:Tunneled"));
 			break;
 		case CKadV2Mode::Adaptive:
-			privText.Format(_T("P:Adaptive %u"), (unsigned)circuits);
+			privText = countSuffix(_T("P:Adaptive"));
 			break;
 		default:
 			privText = _T("P:?");

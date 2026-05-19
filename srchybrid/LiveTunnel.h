@@ -64,6 +64,7 @@ public:
     void Tick();
 
     size_t ActiveCircuitCount() const;
+    size_t PendingCircuitCount() const;      // v0.71 P3.8 — circuits in CREATE/CREATED handshake
     size_t RelayCircuitCount() const;        // v0.71 P3.3 — circuits we relay (intermediate)
     size_t TotalCircuitCount() const;        // v0.71 P3.3 — for UI / metrics
 

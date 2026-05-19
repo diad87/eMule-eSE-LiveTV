@@ -5112,12 +5112,14 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		// circuits=0 with mode=tunneled means the TCP-send path in F5 P3
 		// isn't wired yet — the user knows where they stand).
 		size_t circuitsActive = 0;
+		size_t circuitsPending = 0;   // v0.71 P3.8 — visible Pending state
 		size_t tunnelPoolSize = 0;
 		size_t subscriptionCount = 0;
 		uint32 capsRuntime = g_uEseCapsRuntime;
 		CStringA proberV6Str = "";
 		try {
 			circuitsActive    = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
+			circuitsPending   = eSELive::CLiveTunnel::Get().PendingCircuitCount();
 			tunnelPoolSize    = Kademlia::CKadV2TunnelPool::Get().Size();
 			subscriptionCount = eSELive::CLiveSubscriptionStore::Get().Count();
 			CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
@@ -5153,6 +5155,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		        "\"capsBits\":\"0x%08X\","
 		        "\"capsHumanReadable\":[%s],"
 		        "\"circuitsActive\":%u,"
+		        "\"circuitsPending\":%u,"
 		        "\"tunnelPoolSize\":%u,"
 		        "\"subscriptionsLoaded\":%u,"
 		        "\"publicIPv6\":\"%s\""
@@ -5162,6 +5165,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		    capsRuntime,
 		    (LPCSTR)capsArr,
 		    (unsigned)circuitsActive,
+		    (unsigned)circuitsPending,
 		    (unsigned)tunnelPoolSize,
 		    (unsigned)subscriptionCount,
 		    (LPCSTR)proberV6Str);

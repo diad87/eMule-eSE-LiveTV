@@ -233,28 +233,39 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 		}
 		rCtrl << _T("\r\n");
 
-		// Circuitos onion activos (LiveTunnel). 0 con modo != Directo
-		// significa que el TCP send path (F5 P3) aún no está cableado —
-		// es un signo honesto al usuario.
-		size_t circuits = 0;
+		// Circuitos onion. Mostramos pending + active separadamente
+		// porque un test_circuit contra peer legacy crea un Pending que
+		// NUNCA llega a Active — ocultar Pending hacía parecer que no
+		// pasaba nada (panel mostraba 0 todo el rato aunque el código
+		// sí enviase la cell). Honestidad > simplicidad.
+		size_t circuitsActive = 0;
+		size_t circuitsPending = 0;
 		size_t pool = 0;
 		size_t subs = 0;
 		try {
-			circuits = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
-			pool     = CKadV2TunnelPool::Get().Size();
-			subs     = eSELive::CLiveSubscriptionStore::Get().Count();
+			circuitsActive  = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
+			circuitsPending = eSELive::CLiveTunnel::Get().PendingCircuitCount();
+			pool            = CKadV2TunnelPool::Get().Size();
+			subs            = eSELive::CLiveSubscriptionStore::Get().Count();
 		} catch (...) {}
 
 		{
 			CString cs;
-			cs.Format(_T("%u activos / pool PST %u"), (unsigned)circuits, (unsigned)pool);
+			cs.Format(_T("%u activos / %u negociando / pool PST %u"),
+				(unsigned)circuitsActive, (unsigned)circuitsPending, (unsigned)pool);
 			rCtrl << _T("Onion tunnels:\t") << cs;
-			if (circuits == 0 && sel.GetDefaultMode() != CKadV2Mode::Direct) {
-				// P3 done: TCP send wired. Now the reason for 0 circuits
-				// is no eSE V1 peer in handshake range. Honest disclosure
-				// to the user about WHY the count is 0 without pretending
-				// the protocol is broken.
+			if (circuitsActive == 0 && circuitsPending == 0
+			    && sel.GetDefaultMode() != CKadV2Mode::Direct)
+			{
+				// P3 done: TCP send wired. No circuits anywhere means
+				// no fork peer has been encountered yet and no manual
+				// test has run.
 				rCtrl << _T("  (esperando peer eSE V1; prueba /api/live/privacy/test_circuit)");
+			} else if (circuitsActive == 0 && circuitsPending > 0) {
+				// Pending only — handshake in flight or doomed to time
+				// out against a legacy peer. Visible proof that send
+				// pipeline is working.
+				rCtrl << _T("  (negociando handshake — si el peer no es eSE V1, expira en ~6s)");
 			}
 			rCtrl << _T("\r\n");
 

@@ -86,6 +86,7 @@
 #include "TaskbarNotifier.h"
 #include "MuleStatusbarCtrl.h"
 #include "ListenSocket.h"
+#include "FirewallProberV6.h"   // v0.71 IPv6 Sprint 3 — ProbeAsync() at startup
 #include "Server.h"
 #include "PartFile.h"
 #include "Scheduler.h"
@@ -894,6 +895,15 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 						theApp.emuledlg->ShowNotifier(strError, TBN_IMPORTANTEVENT);
 					bError = true;
 				}
+
+				// v0.71 IPv6 Sprint 3 follow-up — kick the v6 firewall
+				// probe right after the listener binds. Synchronous with
+				// 5s timeout: blocks startup briefly but only once, and
+				// only when IPv6 is enabled in prefs. Populates
+				// CFirewallProberV6::Instance().GetDetectedV6IP() for the
+				// Network Info panel + status bar.
+				if (thePrefs.IsIPv6Enabled())
+					CFirewallProberV6::Instance().ProbeAsync();
 				if (!theApp.clientudp->Create()) {
 					CString strError;
 					strError.Format(GetResString(IDS_MAIN_SOCKETERROR), thePrefs.GetUDPPort());

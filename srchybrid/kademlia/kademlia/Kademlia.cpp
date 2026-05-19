@@ -230,6 +230,13 @@ void CKademlia::Process()
 				s_privacyTickDisabled = true;
 			}
 		}
+		// v0.71 P3.8 — refresh the SBarPrivacy pane every 1 Hz so the
+		// user sees Pending counts drop to 0 after the 6s handshake
+		// timeout. Without this the pane only updates on connection
+		// state events (server connect/disconnect, Kad firewall check,
+		// etc) which can leave the count stale for minutes.
+		if (theApp.emuledlg)
+			theApp.emuledlg->UpdatePrivacyStatusPane();
 	}
 
 	uint32 uMaxUsers = 0;

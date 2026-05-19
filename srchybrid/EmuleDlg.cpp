@@ -3652,22 +3652,37 @@ void CemuleDlg::ToggleEseServer(bool bOpenBrowser)
 			thePrefs.SetWSIsEnabled(true);
 		thePrefs.SetWSPass(sharedPw);  // siempre sincroniza (idempotente)
 
-		// v8.0.7 one-shot defaults: enforce unlimited bandwidth.
+		// v8.0.11 one-shot defaults: enforce unlimited bandwidth — but with a
+		// wider rule than v8.0.7.
 		//
-		// Only fires when the user is still on eMule's stock hardcoded defaults
-		// (80 KB/s up, 90 KB/s down) — once we run once, a marker file in the
-		// config dir prevents future overrides so the user's choice sticks if
-		// they later set their own cap. The completion-notifier balloon
-		// disable lives in the bundled preferences.ini (fresh installs only)
-		// because Preferences.cpp exposes no setter for that boolean.
+		// Observed in the wild: a user reported "venía limitada la descarga a
+		// 1 kb/s y la subida tambien". v8.0.7's rule only matched (80, 90)
+		// exactly, so caps of (1, 1), (10, 30), or anything else that was
+		// clearly a mistake or stale-test value never got reset. Wider rule
+		// now: if MaxUpload <= 10 KB/s OR MaxDownload <= 30 KB/s, treat as
+		// "broken or never-configured" and reset both to 0 (unlimited).
+		// Above those thresholds we leave the user's choice alone.
+		//
+		// New marker file name (eSE_v8011_unlimited_applied) so users who
+		// went through v8.0.7's one-shot are re-evaluated under the wider
+		// rule without their old marker blocking it.
+		//
+		// Always log current values so future bug reports show what eMule
+		// actually loaded from preferences.ini.
 		{
+			AddLogLine(false, _T("[eSE] Current bandwidth caps: MaxUpload=%u KB/s, MaxDownload=%u KB/s"),
+				thePrefs.GetMaxUpload(), thePrefs.GetMaxDownload());
+
 			CString flagFile;
-			flagFile.Format(_T("%s\\eSE_v807_defaults_applied"), (LPCTSTR)configDir);
+			flagFile.Format(_T("%s\\eSE_v8011_unlimited_applied"), (LPCTSTR)configDir);
 			if (::GetFileAttributes(flagFile) == INVALID_FILE_ATTRIBUTES) {
-				if (thePrefs.GetMaxUpload() == 80 && thePrefs.GetMaxDownload() == 90) {
+				const uint32 mu = thePrefs.GetMaxUpload();
+				const uint32 md = thePrefs.GetMaxDownload();
+				const bool tooLow = (mu > 0 && mu <= 10) || (md > 0 && md <= 30);
+				if (tooLow) {
 					thePrefs.SetMaxUpload(0);
 					thePrefs.SetMaxDownload(0);
-					AddLogLine(false, _T("[eSE] One-shot: bandwidth caps reset to unlimited (was 80/90 default)."));
+					AddLogLine(false, _T("[eSE] One-shot: bandwidth caps reset to unlimited (was %u/%u KB/s, below sensible defaults)."), mu, md);
 				}
 				HANDLE hFlag = ::CreateFile(flagFile, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 				if (hFlag != INVALID_HANDLE_VALUE) ::CloseHandle(hFlag);

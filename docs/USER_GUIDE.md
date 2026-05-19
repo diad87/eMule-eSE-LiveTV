@@ -12,16 +12,23 @@ For the design / architecture see [MASTER_PLAN.md](MASTER_PLAN.md) and
 
 1. Download `eSE-LiveTV-x64-*.zip` from the [Releases](../../../releases) page.
 2. Extract anywhere (e.g. `C:\eSE\`).
-3. Double-click `eSE.vbs`.
+3. Double-click **`emule.exe`**.
+4. Wait for eD2K + Kad to connect (status icons go green/yellow).
+5. Click the **`eSE`** button in the eMule toolbar.
 
-That's it. The launcher starts:
+That triggers:
 
-- `emule.exe` (minimized to tray) — handles eD2K / Kad / mesh transport
-- `ese-server.exe` (background) — the modern Node.js dashboard on port 8080
+- `emule.exe` keeps running — handles eD2K / Kad / mesh transport
+- `ese-server.exe` is auto-spawned in background — the Node.js dashboard on port 8080
 - Default browser opens to <http://localhost:8080/live>
 
 If a UAC prompt appears the first time, accept it — needed for UPnP
-to map the eD2K ports on your router.
+to map the eD2K ports on your router. If Windows Firewall asks about
+`emule.exe`, `ese-server.exe`, or `ffmpeg.exe`, allow all three.
+
+> **Note:** earlier releases used a `eSE.vbs` launcher. That was
+> dropped — you now launch `emule.exe` directly and the eSE button
+> in the toolbar does the rest.
 
 ### What writable files get created
 

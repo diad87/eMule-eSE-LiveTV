@@ -435,76 +435,108 @@ function autoLoginAndRetry(query, settings, callback) {
 
 // ─── SEARCH ────────────────────────────────────────────────────
 
+// v8.0.6 — searchMethod 'auto' is the new default. The flow:
+//   1. Translate 'auto' → 'server' first attempt (server search is faster
+//      when it works because results come from a centralized index).
+//   2. Run the search exactly as before.
+//   3. If after maxAttempts polls the result list is STILL empty, AND
+//      the original method was 'auto', retry once with method='kademlia'.
+//      This covers the "only Kad connected" case where server search
+//      necessarily returns 0 because there's no server to ask.
+// Explicit 'server' / 'kad' / 'global' user choices are respected without
+// fallback — those users know what they want.
+function _wsMethodFor(name) {
+  if (name === 'global')   return 'global';
+  if (name === 'server')   return '';           // empty = server (eMule WS default)
+  if (name === 'kad')      return 'kademlia';
+  if (name === 'kademlia') return 'kademlia';
+  // anything else (including 'auto', undefined) → start with server, the
+  // caller knows to fallback to kademlia on empty.
+  return '';
+}
+
 function emuleSearch(query, settings, callback) {
   const doSearch = () => {
     if (!emuleSession) { callback(new Error('Not logged in')); return; }
     const s = settings || _loadSettings();
-    
+
     let searchQuery = query;
     if (s.quality && s.quality !== 'auto') {
       searchQuery += ' ' + (s.quality === '4k' ? '2160p' : s.quality);
     }
-    
-    const method = s.searchMethod === 'global' ? 'global' : (s.searchMethod === 'server' ? '' : 'kademlia');
-    
-    let safeSearchQuery = searchQuery;
 
-    const searchUrl = '?ses=' + emuleSession + '&w=search&tosearch=' + encodeURIComponent(safeSearchQuery) + '&type=Video' + (method ? '&method=' + method : '');
-    
-    console.log('[eMule] Starting new search: "' + searchQuery + '" -> safe: "' + safeSearchQuery + '" method=' + (method || 'server'));
-    console.log('[eMule] EXACT URI: ' + searchUrl);
-    
-    emuleRequest(searchUrl, (err2, html) => {
-      if (err2) { callback(err2, []); return; }
-      
-      if (html.includes('w=password') || html.includes('Login') && !html.includes('tosearch')) {
-        console.log('[eMule] ⚠ Session expired during search! Re-logging in...');
-        emuleSession = null;
-        autoLoginAndRetry(query, settings, callback);
-        return;
-      }
-      
-      const immediateResults = parseEmuleSearchResults(html, s, query);
-      if (immediateResults.length > 0) {
-        console.log('[eMule] Found ' + immediateResults.length + ' results in immediate response');
-        callback(null, immediateResults);
-        return;
-      }
-      
-      let attempt = 0;
-      const maxAttempts = 5;   // Reduced: less hammering on WebServer
-      const pollInterval = 6000; // Increased: give eMule more breathing room
-      
-      const poll = () => {
-        // Abort if eMule died during polling
-        if (!isEmuleRunning()) {
-          console.log('[eMule] ⚠ eMule died during search poll — aborting');
-          ensureEmuleRunning(); // Try to restart it
-          callback(new Error('eMule process died during search'), []);
+    const isAuto = (s.searchMethod === 'auto' || !s.searchMethod);
+    const firstMethod = _wsMethodFor(s.searchMethod);
+
+    runOnce(searchQuery, firstMethod, isAuto, /*alreadyRetried=*/false);
+
+    function runOnce(safeSearchQuery, method, autoMode, alreadyRetried) {
+      const searchUrl = '?ses=' + emuleSession + '&w=search&tosearch=' + encodeURIComponent(safeSearchQuery) + '&type=Video' + (method ? '&method=' + method : '');
+      console.log('[eMule] Starting new search: "' + safeSearchQuery + '" method=' + (method || 'server') + ' auto=' + autoMode + ' retried=' + alreadyRetried);
+
+      emuleRequest(searchUrl, (err2, html) => {
+        if (err2) { callback(err2, []); return; }
+
+        if (html.includes('w=password') || (html.includes('Login') && !html.includes('tosearch'))) {
+          console.log('[eMule] ⚠ Session expired during search! Re-logging in...');
+          emuleSession = null;
+          autoLoginAndRetry(query, settings, callback);
           return;
         }
-        attempt++;
-        emuleRequest('?ses=' + emuleSession + '&w=search', (err3, html2) => {
-          if (err3) { callback(err3, []); return; }
-          if (html2.includes('w=password')) {
-            emuleSession = null;
-            autoLoginAndRetry(query, settings, callback);
+
+        const immediateResults = parseEmuleSearchResults(html, s, query);
+        if (immediateResults.length > 0) {
+          console.log('[eMule] Found ' + immediateResults.length + ' results in immediate response');
+          callback(null, immediateResults);
+          return;
+        }
+
+        let attempt = 0;
+        // Auto-mode: shorter poll budget on the first leg so the Kad fallback
+        // doesn't take forever to kick in. 3 polls × 4 s = 12 s before retry.
+        const maxAttempts = autoMode && !alreadyRetried ? 3 : 5;
+        const pollInterval = autoMode && !alreadyRetried ? 4000 : 6000;
+
+        const poll = () => {
+          if (!isEmuleRunning()) {
+            console.log('[eMule] ⚠ eMule died during search poll — aborting');
+            ensureEmuleRunning();
+            callback(new Error('eMule process died during search'), []);
             return;
           }
-          
-          const results = parseEmuleSearchResults(html2, s, query);
-          const ed2kCount = (html2.match(/ed2k:\/\//g) || []).length;
-          console.log('[eMule] Poll ' + attempt + ': ed2k=' + ed2kCount + ' parsed=' + results.length);
-          
-          if (results.length > 0 || attempt >= maxAttempts) {
-            callback(null, results);
-          } else {
+          attempt++;
+          emuleRequest('?ses=' + emuleSession + '&w=search', (err3, html2) => {
+            if (err3) { callback(err3, []); return; }
+            if (html2.includes('w=password')) {
+              emuleSession = null;
+              autoLoginAndRetry(query, settings, callback);
+              return;
+            }
+
+            const results = parseEmuleSearchResults(html2, s, query);
+            const ed2kCount = (html2.match(/ed2k:\/\//g) || []).length;
+            console.log('[eMule] Poll ' + attempt + ': ed2k=' + ed2kCount + ' parsed=' + results.length);
+
+            if (results.length > 0) {
+              callback(null, results);
+              return;
+            }
+            if (attempt >= maxAttempts) {
+              // Auto-mode fallback: 0 results after server search → retry Kad.
+              if (autoMode && !alreadyRetried) {
+                console.log('[eMule] Auto-mode: server search returned 0. Falling back to Kademlia.');
+                runOnce(safeSearchQuery, 'kademlia', true, true);
+                return;
+              }
+              callback(null, results);
+              return;
+            }
             setTimeout(poll, pollInterval);
-          }
-        });
-      };
-      setTimeout(poll, 3000);
-    });
+          });
+        };
+        setTimeout(poll, 3000);
+      });
+    }
   };
   ensureEmuleSession(doSearch, query, settings, callback);
 }

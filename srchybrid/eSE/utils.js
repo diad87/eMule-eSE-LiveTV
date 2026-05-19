@@ -168,7 +168,11 @@ function isPathWithin(resolvedPath, baseDir) {
 const DEFAULT_SETTINGS = {
   quality: 'auto',
   language: 'spanish',
-  searchMethod: 'server',
+  // v8.0.6: default to 'auto' so users not connected to a server (Kad-only)
+  // still get search results. 'auto' = try server first; if 0 results after
+  // the first poll, fall back to Kademlia. Explicit 'server' / 'kad' /
+  // 'global' choices are respected as-is. See emuleSearch in emule_api.js.
+  searchMethod: 'auto',
   minSizeMB: 300,
   emulePassword: '',
   autoPlay: true

@@ -645,7 +645,7 @@ function showErrorToast(msg) {
 }
 
 
-// ==== tunnel_settings.js (44505 bytes) ====
+// ==== tunnel_settings.js (44705 bytes) ====
 // tunnel_settings.js — notificaciones, estado tunnel/sharing, panel de ajustes
 
 // ── Notificaciones ─────────────────────────────────────────────────────────────
@@ -774,9 +774,10 @@ function renderSettingsPanel(settings) {
     '<div class="settings-section"><h3> Búsqueda eMule</h3>' +
     '<div class="setting-row"><span class="setting-label">Método</span>' +
     '<select class="setting-select" id="set-method">' +
-    '<option value="kad"' + (s.searchMethod === 'kad' ? ' selected' : '') + '>Kademlia (más fuentes)</option>' +
-    '<option value="global"' + (s.searchMethod === 'global' ? ' selected' : '') + '>Global (más rápido)</option>' +
-    '<option value="server"' + (s.searchMethod === 'server' ? ' selected' : '') + '>Servidor actual</option>' +
+    '<option value="auto"' + ((!s.searchMethod || s.searchMethod === 'auto') ? ' selected' : '') + '>Auto: server con fallback a Kad (recomendado)</option>' +
+    '<option value="kad"' + (s.searchMethod === 'kad' ? ' selected' : '') + '>Kademlia (más fuentes, sin server)</option>' +
+    '<option value="global"' + (s.searchMethod === 'global' ? ' selected' : '') + '>Global (todos los servers)</option>' +
+    '<option value="server"' + (s.searchMethod === 'server' ? ' selected' : '') + '>Servidor actual (solo si tienes uno)</option>' +
     '</select></div>' +
     '<div class="setting-row"><span class="setting-label">Tamaño mínimo</span>' +
     '<select class="setting-select" id="set-minsize">' +

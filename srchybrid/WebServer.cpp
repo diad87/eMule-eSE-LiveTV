@@ -5046,10 +5046,13 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			circId = eSELive::CLiveTunnel::Get().BuildTestCircuit(NULL);
 		} catch (...) {}
 		if (circId == 0) {
-			result = "{\"ok\":false,\"reason\":\"no connected peers — open eD2K/Kad first\"}";
+			// ASCII-only to avoid UTF-8/CP1252 mojibake without forcing
+			// a BOM on this huge .cpp — the response Content-Type also
+			// doesn't declare a charset, so safer to stay 7-bit ASCII.
+			result = "{\"ok\":false,\"reason\":\"no connected peers - open eD2K/Kad first\"}";
 		} else {
 			CStringA tmp;
-			tmp.Format("{\"ok\":true,\"circuit_id\":\"0x%08x\",\"note\":\"watch Privacidad panel — circuit appears as Pending; if peer runs eSE fork it advances to Active\"}",
+			tmp.Format("{\"ok\":true,\"circuit_id\":\"0x%08x\",\"note\":\"watch Privacidad panel - circuit appears as Pending; if peer runs eSE fork it advances to Active\"}",
 				(unsigned)circId);
 			result = tmp;
 		}

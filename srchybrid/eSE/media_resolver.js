@@ -193,7 +193,18 @@ function getCompletedFiles(incomingDir) {
       .map(f => {
         const fp = path.join(incomingDir, f);
         const stat = fs.statSync(fp);
-        return { fileName: f, filePath: fp, sizeMB: Math.round(stat.size / (1024 * 1024)) };
+        // v8.0.18: `completed: true` is what main_page.js:renderCard uses to
+        // decide between the COMPLETO/DESCARGANDO badge AND between
+        // onclick=playCompleted(fileName) / onclick=playVideo(partNum).
+        // Without this flag every file in Incoming/ rendered with the
+        // DESCARGANDO badge and clicked through to playVideo(undefined) →
+        // backend rejected as "Invalid partNum".
+        return {
+          fileName: f,
+          filePath: fp,
+          sizeMB: Math.round(stat.size / (1024 * 1024)),
+          completed: true,
+        };
       });
   } catch(e) { return []; }
 }

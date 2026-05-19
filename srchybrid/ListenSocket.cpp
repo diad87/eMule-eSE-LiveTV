@@ -2421,6 +2421,7 @@ bool CListenSocket::StartListening()
 		if (!Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, thePrefs.GetBindAddr(), AF_INET))
 			return false;
 	}
+	m_bDualStack = bUsingV6;   // v0.71 IPv6 Sprint 9 — expose to UI status bar
 
 	// Rejecting a connection with conditional WSAAccept and not using SO_CONDITIONAL_ACCEPT
 	// -------------------------------------------------------------------------------------

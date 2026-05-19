@@ -66,6 +66,7 @@ BEGIN_MESSAGE_MAP(CPPgConnection, CPropertyPage)
 	ON_WM_HELPINFO()
 	ON_BN_CLICKED(IDC_OPENPORTS, OnBnClickedOpenports)
 	ON_BN_CLICKED(IDC_PREF_UPNPONSTART, OnSettingsChange)
+	ON_BN_CLICKED(IDC_PREF_ENABLE_IPV6, OnSettingsChange)   // v0.71 IPv6 Sprint 9
 END_MESSAGE_MAP()
 
 CPPgConnection::CPPgConnection()
@@ -205,6 +206,11 @@ void CPPgConnection::LoadSettings()
 
 		CheckDlgButton(IDC_PREF_UPNPONSTART, static_cast<UINT>(thePrefs.IsUPnPEnabled()));
 
+		// v0.71 IPv6 Sprint 9 — IPv6 enable checkbox. Mode Auto / Preferred
+		// both display as checked; Off shows unchecked. OnApply maps back
+		// to Auto when re-enabled (Preferred is reserved for future UX).
+		CheckDlgButton(IDC_PREF_ENABLE_IPV6, static_cast<UINT>(thePrefs.IsIPv6Enabled()));
+
 		//ShowLimitValues(); - will be called in OnLimiterChange()
 		OnLimiterChange();
 	}
@@ -331,6 +337,14 @@ BOOL CPPgConnection::OnApply()
 			theApp.emuledlg->StartUPnP();
 		if (theApp.emuledlg->preferenceswnd->m_wndWebServer)
 			theApp.emuledlg->preferenceswnd->m_wndWebServer.SetUPnPState();
+	}
+
+	// v0.71 IPv6 Sprint 9 — IPv6 mode toggle. Off ↔ Auto. Change requires
+	// restart to re-create the listener as dual-stack (or fallback to v4).
+	const bool wantIPv6 = (IsDlgButtonChecked(IDC_PREF_ENABLE_IPV6) != 0);
+	if (thePrefs.IsIPv6Enabled() != wantIPv6) {
+		thePrefs.SetIPv6Mode(wantIPv6 ? CPreferences::IPv6AutoMode
+		                              : CPreferences::IPv6OffMode);
 	}
 
 	theApp.scheduler->SaveOriginals();

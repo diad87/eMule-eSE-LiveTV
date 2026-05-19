@@ -1192,6 +1192,19 @@ void CemuleDlg::ShowConnectionState()
 	ShowConnectionStateIcon();
 	statusbar->SetText(GetConnectionStateString(), SBarConnected, 0);
 
+	// v0.71 IPv6 Sprint 9 — status bar pane that says IPv6 / IPv4.
+	// Reads the actual listener state (not just the pref), so if v6
+	// was requested but the OS rejected it the user sees "IPv4" and
+	// understands the fallback happened.
+	LPCTSTR ipver;
+	if (theApp.listensocket && theApp.listensocket->IsDualStack())
+		ipver = _T("IPv6 + v4");
+	else if (thePrefs.IsIPv6Enabled())
+		ipver = _T("IPv4 (v6 fb)");   // v6 requested but Create failed
+	else
+		ipver = _T("IPv4");
+	statusbar->SetText(ipver, SBarIPVersion, 0);
+
 	TBBUTTONINFO tbbi;
 	tbbi.cbSize = (UINT)sizeof(TBBUTTONINFO);
 	tbbi.dwMask = TBIF_IMAGE | TBIF_TEXT;
@@ -1392,13 +1405,16 @@ void CemuleDlg::SetStatusBarPartsSize()
 		ussShift = thePrefs.IsDynUpUseMillisecondPingTolerance() ? 65 : 110;
 	else
 		ussShift = 0;
-	int aiWidths[6] =
+	// v0.71 IPv6 Sprint 9 — reserve 70 px tail for the SBarIPVersion pane.
+	const int ipv6Pane = 70;
+	int aiWidths[7] =
 	{
-		rect.right - 695 - ussShift,
-		rect.right - 450 - ussShift,
-		rect.right - 250 - ussShift,
-		rect.right - 25 - ussShift,
-		rect.right - 25,
+		rect.right - 695 - ussShift - ipv6Pane,
+		rect.right - 450 - ussShift - ipv6Pane,
+		rect.right - 250 - ussShift - ipv6Pane,
+		rect.right - 25  - ussShift - ipv6Pane,
+		rect.right - 25  - ipv6Pane,
+		rect.right - ipv6Pane,
 		-1
 	};
 	statusbar->SetParts(_countof(aiWidths), aiWidths);

@@ -66,8 +66,12 @@ LPCWSTR	CPreferences::m_pszBindAddrW;
 CStringW CPreferences::m_strBindAddrW;
 uint16	CPreferences::port;
 uint16	CPreferences::udpport;
-// v0.71 IPv6 Sprint 2 — IPv6 prefs, default OFF until Sprint 9.
-CPreferences::EIPv6Mode CPreferences::m_eIPv6Mode = CPreferences::IPv6OffMode;
+// v0.71 IPv6 Sprint 9 (post-F8 follow-up) — flip default to Auto. The
+// dual-stack listener gracefully falls back to v4-only when the OS or
+// the network has no v6 (see ListenSocket::StartListening). Users can
+// disable explicitly via the "Enable IPv6" checkbox in Preferences →
+// Connection, persisted as IPv6Mode= in preferences.ini.
+CPreferences::EIPv6Mode CPreferences::m_eIPv6Mode = CPreferences::IPv6AutoMode;
 CString CPreferences::m_strIPv6BindAddr;
 // eSE Live dedicated keyword namespace — dual-publish stays ON until a
 // future release decides the legacy half can be dropped (see accessor
@@ -1828,6 +1832,8 @@ void CPreferences::SavePreferences()
 	// Section: "UPnP"
 	//
 	ini.WriteBool(_T("EnableUPnP"), m_bEnableUPnP, _T("UPnP"));
+	// v0.71 IPv6 Sprint 9 — persist the IPv6 mode (0=Off, 1=Auto, 2=Preferred).
+	ini.WriteInt(_T("IPv6Mode"), (int)m_eIPv6Mode, _T("Connection"));
 	ini.WriteBool(_T("SkipWANIPSetup"), m_bSkipWANIPSetup);
 	ini.WriteBool(_T("SkipWANPPPSetup"), m_bSkipWANPPPSetup);
 	ini.WriteBool(_T("CloseUPnPOnExit"), m_bCloseUPnPOnExit);
@@ -2463,6 +2469,12 @@ void CPreferences::LoadPreferences()
 	// Section: "UPnP"
 	//
 	m_bEnableUPnP = ini.GetBool(_T("EnableUPnP"), true, _T("UPnP")); // eSE: Default true to fix Low ID out of the box
+	// v0.71 IPv6 Sprint 9 — read IPv6 mode; default Auto (1). Clamp to known values.
+	{
+		int v = ini.GetInt(_T("IPv6Mode"), (int)IPv6AutoMode, _T("Connection"));
+		if (v < 0 || v > 2) v = (int)IPv6AutoMode;
+		m_eIPv6Mode = (EIPv6Mode)v;
+	}
 	m_bSkipWANIPSetup = ini.GetBool(_T("SkipWANIPSetup"), false);
 	m_bSkipWANPPPSetup = ini.GetBool(_T("SkipWANPPPSetup"), false);
 	m_bCloseUPnPOnExit = ini.GetBool(_T("CloseUPnPOnExit"), true);

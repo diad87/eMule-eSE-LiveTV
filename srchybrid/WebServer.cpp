@@ -5148,7 +5148,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// the ~6 s timeout reaps it. Either way the user gets visible proof
 	// the SEND path is wired (Privacidad panel shows circuit count +1
 	// briefly even on failure).
-	if (sURL.Left(31) == "/api/live/privacy/test_circuit") {
+	// Length of "/api/live/privacy/test_circuit" is exactly 30 chars.
+	// Left(30) matches both bare URL and URL with ?query suffix.
+	if (sURL.Left(30) == "/api/live/privacy/test_circuit") {
 		// v0.71 B — optional ?hops=2 to build a 2-hop circuit. Default
 		// is 1-hop (backward compat). 2-hop picks 2 fork peers if
 		// available; with 1 fork peer it loops hop2 back (testing aid).

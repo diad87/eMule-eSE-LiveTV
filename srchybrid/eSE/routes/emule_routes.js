@@ -160,12 +160,21 @@ function handle(url, req, res) {
         const metFile = path.join(EMULE_TEMP, pf + '.met');
         const partPath = path.join(EMULE_TEMP, pf);
         if (fs.existsSync(metFile)) {
-          const metText = fs.readFileSync(metFile).toString('latin1');
+          const metBuf = fs.readFileSync(metFile);
+          // .met layout: byte 0 = version (0xE0/0xE1), bytes 1..4 = date,
+          // bytes 5..20 = 16-byte MD4 file hash. Required so the client can
+          // identify a download by hash instead of fuzzy-matching its filename
+          // (which collides across sequels — "a todo gas 6" vs "a todo gas 1").
+          let fileHash = '';
+          if (metBuf.length >= 21) {
+            fileHash = metBuf.slice(5, 21).toString('hex').toUpperCase();
+          }
+          const metText = metBuf.toString('latin1');
           const fnMatch = metText.match(/[^\x00-\x1F\x7F-\x9F]{5,}\.(avi|mkv|mp4|wmv|mov|webm|flv)/i);
           const fileName = fnMatch ? fnMatch[0] : pf;
           const stat = fs.statSync(partPath);
           const isActive = (Date.now() - stat.mtimeMs) < 30000;
-          downloads.push({ partFile: pf, fileName, sizeMB: Math.round(stat.size / (1024 * 1024)), sizeBytes: stat.size, partPath, lastModified: stat.mtimeMs, active: isActive });
+          downloads.push({ partFile: pf, fileName, fileHash, sizeMB: Math.round(stat.size / (1024 * 1024)), sizeBytes: stat.size, partPath, lastModified: stat.mtimeMs, active: isActive });
         }
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });

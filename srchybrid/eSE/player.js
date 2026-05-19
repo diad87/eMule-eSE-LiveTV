@@ -1416,7 +1416,10 @@ function trySmartSource(index) {
         if (dlData.success) {
           if (progressEl) progressEl.style.width = '60%';
           if (titleEl) titleEl.textContent = 'Monitorizando velocidad...';
-          monitorForFile(window._smartPlayTitle, best.fileName, best.sizeMB || 0, index);
+          // Pass MD4 hash so monitorForFile binds to this download (not a same-titled
+          // pre-existing file). See routes/emule_routes.js — /api/emule/downloads
+          // now exposes fileHash from the .met header.
+          monitorForFile(window._smartPlayTitle, best.fileName, best.sizeMB || 0, index, best.hash);
         } else {
           if (statusEl) statusEl.textContent = 'Error al iniciar descarga';
           // Try next source
@@ -1429,13 +1432,18 @@ function trySmartSource(index) {
   }, 1500);
 }
 
-function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) {
+// expectedHash (optional): MD4 hex string. When present, downloads are matched
+// by hash (exact) instead of fuzzy filename — prevents auto-playing the wrong
+// movie when a same-prefix file is already in Incoming/ (e.g. "a todo gas 1"
+// played instead of the "a todo gas 6" the user just started).
+function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex, expectedHash) {
   var statusEl = document.getElementById('smart-play-status');
   var progressEl = document.getElementById('smart-play-progress');
   var titleEl = document.getElementById('smart-play-title');
   var actionsEl = document.getElementById('smart-play-actions');
   var checkCount = 0;
-  
+  var hashUpper = (expectedHash || '').toUpperCase();
+
   // Normalize: remove accents, punctuation, dots → spaces
   function normalize(s) {
     return s.toLowerCase()
@@ -1451,18 +1459,29 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
   var BUFFER_WAIT_SEC = 15;
   var MAX_EVAL_CHECKS = 24; // 24 × 5s = 2 minutes max evaluation
   
+  function matchDownload(dl) {
+    if (hashUpper && dl.fileHash) return (dl.fileHash || '').toUpperCase() === hashUpper;
+    return matchTitle(dl.fileName);
+  }
+
   function matchTitle(fn) {
     fn = normalize(fn);
     var matchCount = 0;
     movieWords.forEach(function(w) { if (fn.includes(w)) matchCount++; });
     return matchCount >= Math.max(1, Math.ceil(movieWords.length * 0.3));
   }
-  
+
   var checker = setInterval(function() {
     checkCount++;
-    
-    // Check completed files
-    fetch('/api/stream/completed/list').then(function(r) { return r.json(); }).then(function(files) {
+
+    // Skip completed-files lookup when we know the hash: a brand-new download
+    // cannot be among files completed before we started, and a same-titled
+    // pre-existing file with a different hash is exactly the wrong-movie bug.
+    var completedScan = hashUpper
+      ? Promise.resolve([])
+      : fetch('/api/stream/completed/list').then(function(r) { return r.json(); }).catch(function() { return []; });
+
+    completedScan.then(function(files) {
       if (files && files.length) {
         for (var i = 0; i < files.length; i++) {
           if (matchTitle(files[i].fileName)) {
@@ -1475,13 +1494,13 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
           }
         }
       }
-      
+
       // Check active downloads
       fetch('/api/emule/downloads').then(function(r2) { return r2.json(); }).then(function(downloads) {
         if (downloads && downloads.length) {
           for (var j = 0; j < downloads.length; j++) {
             var dl = downloads[j];
-            if (!matchTitle(dl.fileName)) continue;
+            if (!matchDownload(dl)) continue;
             
             var isActive = dl.active;
             if (isActive) {

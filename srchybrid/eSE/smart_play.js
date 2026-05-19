@@ -307,7 +307,10 @@ function trySmartSource(index) {
         if (dlData.success) {
           if (progressEl) progressEl.style.width = '60%';
           if (titleEl) titleEl.textContent = 'Monitorizando velocidad...';
-          monitorForFile(window._smartPlayTitle, best.fileName, best.sizeMB || 0, index);
+          // Pass the MD4 hash so monitorForFile binds to THIS download, not a
+          // same-titled file already in the library (e.g. user has "a todo gas 1"
+          // completed and started "a todo gas 6" — fuzzy-name would play the wrong one).
+          monitorForFile(window._smartPlayTitle, best.fileName, best.sizeMB || 0, index, best.hash);
         } else {
           if (statusEl) statusEl.textContent = 'Error al iniciar descarga';
           setTimeout(function() { trySmartSource(index + 1); }, 2000);
@@ -320,12 +323,17 @@ function trySmartSource(index) {
 }
 
 // ── Monitoriza la descarga hasta que hay buffer suficiente ────────────────────
-function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) {
+// expectedHash (optional): MD4 hex string of the download. When present we
+// match by hash, which is exact — fuzzy name matching would otherwise pick a
+// pre-existing same-prefix file (e.g. "a todo gas 1" played instead of the
+// "a todo gas 6" the user just started).
+function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex, expectedHash) {
   var statusEl = document.getElementById('smart-play-status');
   var progressEl = document.getElementById('smart-play-progress');
   var titleEl = document.getElementById('smart-play-title');
   var actionsEl = document.getElementById('smart-play-actions');
   var checkCount = 0;
+  var hashUpper = (expectedHash || '').toUpperCase();
 
   function normalize(s) {
     return s.toLowerCase()
@@ -339,6 +347,11 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
   var activeChecks = 0;
   var BUFFER_WAIT_SEC = 15;
   var MAX_EVAL_CHECKS = 24; // 24 × 5s = 2 min max
+
+  function matchDownload(dl) {
+    if (hashUpper && dl.fileHash) return (dl.fileHash || '').toUpperCase() === hashUpper;
+    return matchTitle(dl.fileName);
+  }
 
   function matchTitle(fn) {
     fn = normalize(fn);
@@ -379,7 +392,16 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
   var checker = setInterval(function() {
     checkCount++;
 
-    fetch('/api/stream/completed/list').then(function(r) { return r.json(); }).then(function(files) {
+    // Skip the completed-files lookup when we know the download's hash: a
+    // brand-new download by hash cannot be among files that were already in
+    // Incoming/ before we started — and if a same-titled file IS there with a
+    // different hash, fuzzy-matching it would auto-play the wrong movie
+    // (the "a todo gas 1 vs 6" bug).
+    var completedScan = hashUpper
+      ? Promise.resolve([])
+      : fetch('/api/stream/completed/list').then(function(r) { return r.json(); }).catch(function() { return []; });
+
+    completedScan.then(function(files) {
       if (files && files.length) {
         for (var i = 0; i < files.length; i++) {
           if (matchTitle(files[i].fileName)) {
@@ -397,7 +419,7 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex) 
         if (downloads && downloads.length) {
           for (var j = 0; j < downloads.length; j++) {
             var dl = downloads[j];
-            if (!matchTitle(dl.fileName)) continue;
+            if (!matchDownload(dl)) continue;
 
             var isActive = dl.active;
             if (isActive) {

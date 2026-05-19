@@ -487,7 +487,10 @@ function streamSource(hash, movieTitle) {
       }
 
       window._smartPlayTitle = movieTitle;
-      monitorForFile(movieTitle, '', 0, 0);
+      // Pass the MD4 hash so monitorForFile binds to THIS download by hash and
+      // not by fuzzy title (which would pick up "a todo gas 1" already in
+      // Incoming/ when the user starts "a todo gas 6").
+      monitorForFile(movieTitle, '', 0, 0, hash);
     } else {
       showNotification(' Error: ' + (data.error || 'No se pudo iniciar'));
     }

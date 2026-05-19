@@ -694,9 +694,12 @@ function showEd2kPanel() {
           document.body.style.overflow = 'hidden';
           window._smartPlayTitle = cleanTitle;
 
-          // Iniciar monitorización del .part (idéntico a lo que hace streamSource)
+          // Iniciar monitorización del .part (idéntico a lo que hace streamSource).
+          // Pass data.hash (returned by /api/emule/ed2klink) so monitorForFile
+          // binds to THIS download instead of fuzzy-matching a same-titled file
+          // already in Incoming/ (e.g. "a todo gas 1" played when starting "a todo gas 6").
           if (typeof monitorForFile === 'function') {
-            monitorForFile(cleanTitle, '', 0, 0);
+            monitorForFile(cleanTitle, '', 0, 0, data.hash || parsedLink.hash || '');
           } else {
             // fallback: notificación simple
             showNotification('\u25B6 Descargando \u2014 \xE1brelo desde el cat\xE1logo cuando haya datos');

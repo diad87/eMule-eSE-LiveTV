@@ -34,10 +34,18 @@ static char THIS_FILE[] = __FILE__;
 IMPLEMENT_DYNAMIC(CNetworkInfoDlg, CDialog)
 
 BEGIN_MESSAGE_MAP(CNetworkInfoDlg, CResizableDialog)
+	ON_WM_TIMER()        // v0.71 P3.9 — periodic refresh
+	ON_WM_DESTROY()
 END_MESSAGE_MAP()
 
 CNetworkInfoDlg::CNetworkInfoDlg(CWnd *pParent /*=NULL*/)
 	: CResizableDialog(CNetworkInfoDlg::IDD, pParent)
+{
+	ZeroMemory(&m_rcfDef, sizeof m_rcfDef);
+	ZeroMemory(&m_rcfBold, sizeof m_rcfBold);
+}
+
+CNetworkInfoDlg::~CNetworkInfoDlg()
 {
 }
 
@@ -88,9 +96,62 @@ BOOL CNetworkInfoDlg::OnInitDialog()
 		cfBold.dwEffects |= CFE_BOLD;
 	}
 
+	// v0.71 P3.9 — cache the formats so the timer refresh can re-render
+	// without re-querying them every tick.
+	m_rcfDef  = cfDef;
+	m_rcfBold = cfBold;
+
 	CreateNetworkInfo(m_info, cfDef, cfBold, true);
 	DisableAutoSelect(m_info);
+
+	// v0.71 P3.9 — periodic refresh (every 2 s) so live counters
+	// (privacy circuits, connection state, IP) update without the user
+	// having to close+reopen the dialog. Cost is one full text rebuild
+	// every 2 s — cheap, no perceivable CPU.
+	m_nRefreshTimer = SetTimer(0xE5E1 /* eSE Info ID */, 2000, NULL);
 	return TRUE;
+}
+
+// v0.71 P3.9 — full re-render of the rich-edit content, preserving the
+// user's scroll position so the panel doesn't jump while they're reading.
+void CNetworkInfoDlg::RefreshNow()
+{
+	if (theApp.IsClosing()) return;
+
+	// Save scroll position so the refresh doesn't yank the viewport.
+	CPoint scroll(0, 0);
+	m_info.GetScrollPos(SB_HORZ);  // dummy to trigger; not strictly needed
+	int yPos = m_info.GetFirstVisibleLine();
+
+	m_info.SetRedraw(FALSE);
+	m_info.SetSel(0, -1);
+	m_info.ReplaceSel(_T(""));
+	CreateNetworkInfo(m_info, m_rcfDef, m_rcfBold, true);
+	DisableAutoSelect(m_info);
+	// Restore scroll
+	int curLine = m_info.GetFirstVisibleLine();
+	if (curLine != yPos)
+		m_info.LineScroll(yPos - curLine);
+	m_info.SetRedraw(TRUE);
+	m_info.Invalidate();
+}
+
+void CNetworkInfoDlg::OnTimer(UINT_PTR nIDEvent)
+{
+	if (nIDEvent == 0xE5E1) {
+		RefreshNow();
+		return;
+	}
+	CResizableDialog::OnTimer(nIDEvent);
+}
+
+void CNetworkInfoDlg::OnDestroy()
+{
+	if (m_nRefreshTimer) {
+		KillTimer(m_nRefreshTimer);
+		m_nRefreshTimer = 0;
+	}
+	CResizableDialog::OnDestroy();
 }
 
 void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rcfBold, bool bFullInfo)

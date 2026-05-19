@@ -21,6 +21,8 @@
 #include "opcodes.h"
 #include "LiveStreamManager.h"
 #include "LiveCrypto.h"        // v7.6.0 — StreamKeyMatchesPubkey
+#include "LiveTunnel.h"        // v0.71 P3.4 — OP_LIVE_TUNNEL_CELL dispatch
+#include "LiveCellQueue.h"     // v0.71 P3.4 — CELL_TOTAL_BYTES + CellUnpack
 #include "../cryptopp/sha.h"   // v7.7.0 — SHA256 for OP_LIVE_CHUNK_V2 verify
 #include "eMuleAI/Address.h"   // v0.71 IPv6 Sprint 7 — CAddress in PEER_LIST_V2
 #include "UpDownClient.h"
@@ -2093,16 +2095,50 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 			}
 			break;
 
-		// === F0 (unified plan) — eSE Live Tunneled opcode reservations 0xD0-0xDF ===
-		// Stub handlers: log and drop. Real implementation in F3 (channels),
-		// F4 (tunnel cell), F5 (data plane + invites). 0.70b clients never
-		// hit these (G6) because they fall into the default arm of the parent
-		// switch when they don't recognise OP_EMULEPROT subspace opcodes.
+		// === v0.71 P3.4 — OP_LIVE_TUNNEL_CELL real handler ===========
+		// A 512B onion cell arrived. Hand to CLiveTunnel which:
+		//   - If circ_id is one WE originated: complete the handshake
+		//     (CREATED → derive K_send/K_recv, set HalfBuilt) or peel
+		//     a returned RELAY layer for our consumer.
+		//   - If circ_id is one we're RELAYING for (intermediate hop):
+		//     peel ONE layer with our hop key and forward to next hop
+		//     using the relay-side circuit table.
+		//   - If unknown: drop with debug log (could be late from a
+		//     destroyed circuit, not necessarily malicious).
+		case OP_LIVE_TUNNEL_CELL:
+			theStats.AddDownDataOverheadOther(uRawSize);
+			if (size != eSELive::CELL_TOTAL_BYTES) {
+				DebugLog(_T("OP_LIVE_TUNNEL_CELL: wrong size %u (expected %u) from %s — dropping"),
+					size, (unsigned)eSELive::CELL_TOTAL_BYTES,
+					client ? (LPCTSTR)ipstr(client->GetIP()) : _T("?"));
+				break;
+			}
+			{
+				uint32_t circId;
+				uint8_t cmd;
+				const uint8_t* cellPayload = NULL;
+				uint16_t cellPayloadLen = 0;
+				if (!eSELive::CellUnpack(packet, circId, cmd, cellPayload, cellPayloadLen)) {
+					DebugLog(_T("OP_LIVE_TUNNEL_CELL: CellUnpack failed — dropping"));
+					break;
+				}
+				bool consumed = eSELive::CLiveTunnel::Get().OnCellReceived(
+					circId, cmd, cellPayload, cellPayloadLen, client);
+				if (!consumed) {
+					DebugLog(_T("OP_LIVE_TUNNEL_CELL: circ=0x%08x cmd=0x%02x not consumed (unknown circuit)"),
+						circId, cmd);
+				}
+			}
+			break;
+
+		// === F0 (unified plan) — remaining eSE Live Tunneled opcodes ==
+		// Stub handlers for opcodes whose data plane (F5 P3+) is not yet
+		// implemented. Channel ops (0xD0-0xD3) land here until F3 wires
+		// the channel store; T_* (0xD6-0xDD) wait for tunneled wrappers.
 		case OP_LIVE_CHANNEL_GOSSIP:
 		case OP_LIVE_CHANNEL_REQUEST:
 		case OP_LIVE_CHANNEL_ANSWER:
 		case OP_LIVE_CHANNEL_REVOKE:
-		case OP_LIVE_TUNNEL_CELL:
 		case OP_LIVE_T_SUBSCRIBE:
 		case OP_LIVE_T_UNSUBSCRIBE:
 		case OP_LIVE_T_REQUEST:

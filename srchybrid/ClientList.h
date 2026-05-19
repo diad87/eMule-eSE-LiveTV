@@ -16,6 +16,7 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
 #include "DeadSourceList.h"
+#include <vector>   // v0.71 P3.6 — GetConnectedSnapshot
 
 class CClientReqSocket;
 class CUpDownClient;
@@ -88,6 +89,11 @@ public:
 						  CClientVersionMap &clientVersionAMule);
 	INT_PTR	GetClientCount()							{ return list.GetCount(); }
 	void	DeleteAll();
+	// v0.71 P3.6 — snapshot of currently-connected clients for the
+	// privacy test endpoint. Bounded by `max`; pushes pointers to `out`.
+	// Caller MUST hold no client-modifying locks while iterating the
+	// returned snapshot — these are raw pointers, not strong refs.
+	void	GetConnectedSnapshot(std::vector<CUpDownClient*>& out, size_t max) const;
 	bool	AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket *sender);
 	CUpDownClient* FindClientByConnIP(uint32 clientip, UINT port) const;
 	CUpDownClient* FindClientByIP(uint32 clientip, UINT port) const;

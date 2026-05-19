@@ -8,7 +8,8 @@ enum EStatusBarPane
 	SBarConnected,
 	SBarUSS,
 	SBarChatMsg,
-	SBarIPVersion   // v0.71 IPv6 Sprint 9 — shows "IPv6" / "IPv4" / "IPv6+v4"
+	SBarIPVersion,   // v0.71 IPv6 Sprint 9 — shows "IPv6" / "IPv4" / "IPv6+v4"
+	SBarPrivacy      // v0.71 P2.2 — shows privacy mode + onion count
 };
 
 class CMuleStatusBarCtrl : public CStatusBarCtrl

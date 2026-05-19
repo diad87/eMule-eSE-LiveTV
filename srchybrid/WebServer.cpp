@@ -23,6 +23,14 @@
 #include "Kademlia/net/KademliaUDPListener.h"
 #include "Kademlia/Kademlia/KadV2Defines.h"     // F5: privacy endpoint
 #include "Kademlia/Kademlia/KadV2ModeSelector.h"
+// v0.71 P1.1 — runtime visibility headers for /api/live/privacy. We expose
+// what the privacy stack is ACTUALLY doing so the user (and any external
+// monitoring) can verify the modules are alive vs. dormant.
+#include "Kademlia/Kademlia/KadV2TunnelPool.h"
+#include "LiveTunnel.h"
+#include "LiveSubscriptionStore.h"
+#include "FirewallProberV6.h"
+#include "Opcodes.h"   // g_uEseCapsRuntime extern
 #include "KademliaWnd.h"
 #include "KadSearchListCtrl.h"
 #include "kademlia/kademlia/Entry.h"
@@ -5058,9 +5066,67 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			if (i > 0) kwJson += ",";
 			kwJson += "\""; kwJson += CStringA(kws[i]); kwJson += "\"";
 		}
+
+		// v0.71 P1.1 — runtime metrics. Each value is read from the live
+		// singletons so the user can see what's actually happening, not
+		// just what the settings say. Empty / zero values are an honest
+		// signal that the module exists but isn't doing work yet (eg.
+		// circuits=0 with mode=tunneled means the TCP-send path in F5 P3
+		// isn't wired yet — the user knows where they stand).
+		size_t circuitsActive = 0;
+		size_t tunnelPoolSize = 0;
+		size_t subscriptionCount = 0;
+		uint32 capsRuntime = g_uEseCapsRuntime;
+		CStringA proberV6Str = "";
+		try {
+			circuitsActive    = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
+			tunnelPoolSize    = Kademlia::CKadV2TunnelPool::Get().Size();
+			subscriptionCount = eSELive::CLiveSubscriptionStore::Get().Count();
+			CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+			if (!v6.IsNull()) proberV6Str = CStringA(v6.ToStringC());
+		} catch (...) {
+			// keep zeros; this endpoint must never throw
+		}
+
+		// Build the human-readable caps array cleanly (no printf comma games).
+		CStringA capsArr;
+		auto appendCap = [&capsArr](const char* name) {
+		    if (!capsArr.IsEmpty()) capsArr += ",";
+		    capsArr += "\""; capsArr += name; capsArr += "\"";
+		};
+		if (capsRuntime & ESE_CAP_M1_SUBSCRIBER_PIN)   appendCap("M1_subscriber_pin");
+		if (capsRuntime & ESE_CAP_M2_COMPOSITE_KEYS)   appendCap("M2_composite_keys");
+		if (capsRuntime & ESE_CAP_M3_SHARDING)         appendCap("M3_sharding");
+		if (capsRuntime & ESE_CAP_M4_TRIGRAMS)         appendCap("M4_trigrams");
+		if (capsRuntime & ESE_CAP_M5_BLOOM_GOSSIP)     appendCap("M5_bloom_gossip");
+		if (capsRuntime & ESE_CAP_M6_K_EFFECTIVE)      appendCap("M6_k_effective");
+		if (capsRuntime & ESE_CAP_PRIVACY_TUNNELING)   appendCap("privacy_tunneling");
+		if (capsRuntime & ESE_CAP_SEALED_RECORDS)      appendCap("sealed_records");
+		if (capsRuntime & ESE_CAP_GOSSIP_PROTOCOL)     appendCap("gossip_protocol");
+		if (capsRuntime & ESE_CAP_COVER_TRAFFIC)       appendCap("cover_traffic");
+
 		CStringA json;
-		json.Format("{\"mode\":\"%s\",\"fallback\":\"%s\",\"sensitiveKeywords\":[%s]}",
-			modeStr, fbStr, (LPCSTR)kwJson);
+		json.Format(
+		    "{"
+		    "\"mode\":\"%s\","
+		    "\"fallback\":\"%s\","
+		    "\"sensitiveKeywords\":[%s],"
+		    "\"runtime\":{"
+		        "\"capsBits\":\"0x%08X\","
+		        "\"capsHumanReadable\":[%s],"
+		        "\"circuitsActive\":%u,"
+		        "\"tunnelPoolSize\":%u,"
+		        "\"subscriptionsLoaded\":%u,"
+		        "\"publicIPv6\":\"%s\""
+		    "}"
+		    "}",
+		    modeStr, fbStr, (LPCSTR)kwJson,
+		    capsRuntime,
+		    (LPCSTR)capsArr,
+		    (unsigned)circuitsActive,
+		    (unsigned)tunnelPoolSize,
+		    (unsigned)subscriptionCount,
+		    (LPCSTR)proberV6Str);
 		CStringA header;
 		header.Format(
 			"HTTP/1.1 200 OK\r\n"

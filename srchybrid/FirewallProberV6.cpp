@@ -20,6 +20,20 @@ static char THIS_FILE[] = __FILE__;
 // reachability layer (e.g. CAP_FORK_IPV6_DUALSTACK once HighID is confirmed).
 uint32 g_uForkCapsRuntime = 0;
 
+// v0.71 P0.3 — runtime eSE capability bits (TAG_ESE_CAPS bitmap, see
+// Opcodes.h). Set in CemuleDlg startup once the privacy/Kad-v2 modules
+// initialise. The Network Info panel and /api/live/privacy/status read
+// this so the user can verify which privacy features are actually live.
+//
+// Important: a bit is set ONLY when the underlying module has been
+// instantiated AND its phase-exit criteria pass. Audit 2026-05-19 found
+// these bits at 0 because no code ever OR-ed them; P0 fixes that for the
+// modules already wired (F1 sharding RX, F3 subscriber pin, F2 sealed
+// records / subscriptions store). Bits for features that are still
+// skeleton (cover traffic, tunneling) stay at 0 until F5 P3 wires the
+// actual TCP send path.
+uint32 g_uEseCapsRuntime = 0;
+
 CFirewallProberV6& CFirewallProberV6::Instance()
 {
     static CFirewallProberV6 inst;

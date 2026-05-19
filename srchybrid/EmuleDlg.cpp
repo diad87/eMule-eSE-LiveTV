@@ -87,6 +87,15 @@
 #include "MuleStatusbarCtrl.h"
 #include "ListenSocket.h"
 #include "FirewallProberV6.h"   // v0.71 IPv6 Sprint 3 — ProbeAsync() at startup
+// v0.71 P0 — privacy stack wiring at app startup. Headers brought in here
+// (not in stdafx) because they pull eSELive namespace and a deep chain of
+// crypto / Kad headers that we don't want everywhere.
+#include "LiveSubscriptionStore.h"
+#include "LiveBootstrap.h"
+#include "LiveTunnel.h"
+#include "kademlia/kademlia/KadV2SubscriberPin.h"
+#include "kademlia/kademlia/KadV2TunnelPool.h"
+#include "kademlia/kademlia/KadV2ModeSelector.h"
 #include "Server.h"
 #include "PartFile.h"
 #include "Scheduler.h"
@@ -904,6 +913,68 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				// Network Info panel + status bar.
 				if (thePrefs.IsIPv6Enabled())
 					CFirewallProberV6::Instance().ProbeAsync();
+
+				// === v0.71 P0 — privacy stack wiring ============================
+				// F2-F5 modules existed as compiled code but were NEVER
+				// instantiated at startup. Audit 2026-05-19 confirmed the
+				// stack was INERTE: subscriptions never loaded, bootstrap
+				// cascade never kicked, subscriber-pin never scanning
+				// completed files, tunnel pool unreachable. P0 fixes that.
+				//
+				// Each call is defensive: Load() returns true if the file
+				// is absent (first run). Start() is idempotent. Failures
+				// log but don't abort startup, because privacy is additive
+				// to the eD2K/Kad baseline which must keep working.
+				try {
+					if (!eSELive::CLiveSubscriptionStore::Get().Load()) {
+						AddDebugLogLine(false, _T("Privacy: subscriptions.dat present but decrypt/parse failed"));
+					} else {
+						AddDebugLogLine(false, _T("Privacy: subscriptions store loaded (%u channels)"),
+							(unsigned)eSELive::CLiveSubscriptionStore::Get().Count());
+					}
+					eSELive::CLiveBootstrap::Get().Start();
+					AddDebugLogLine(false, _T("Privacy: bootstrap cascade started (B-1..B-5)"));
+
+					// Touch tunnel singletons so the Tick added in P0.2 is
+					// safe even before the first circuit is built.
+					(void)eSELive::CLiveTunnel::Get();
+					(void)Kademlia::CKadV2TunnelPool::Get();
+
+					Kademlia::CKadV2SubscriberPin::Get().Start();
+					AddDebugLogLine(false, _T("Privacy: Kad v2 subscriber pinning started (%s)"),
+						Kademlia::CKadV2SubscriberPin::Get().IsEnabled() ? _T("enabled") : _T("disabled"));
+				} catch (...) {
+					AddDebugLogLine(false, _T("Privacy: stack init threw exception (continuing without privacy)"));
+				}
+
+				// === v0.71 P0.3 — runtime cap bits ==============================
+				// Set TAG_ESE_CAPS bits for features the modules above just
+				// brought live. We set the conservative set (M1/M3/M5/M6 +
+				// sealed records + gossip) which corresponds to the modules
+				// instantiated by Start()/Load() above. Tunneling and cover
+				// traffic stay OFF until F5 P3 wires the real TCP send.
+				g_uEseCapsRuntime = ESE_CAP_M1_SUBSCRIBER_PIN
+				                  | ESE_CAP_M3_SHARDING
+				                  | ESE_CAP_M5_BLOOM_GOSSIP
+				                  | ESE_CAP_M6_K_EFFECTIVE
+				                  | ESE_CAP_SEALED_RECORDS
+				                  | ESE_CAP_GOSSIP_PROTOCOL;
+				{
+					Kademlia::CKadV2Mode m = Kademlia::CKadV2ModeSelector::Get().GetDefaultMode();
+					if (m == Kademlia::CKadV2Mode::Tunneled || m == Kademlia::CKadV2Mode::Adaptive) {
+						// User opted into non-Direct. Advertise tunneling
+						// intent. NOTE: the bit being set does NOT mean
+						// circuits are up — it means the user's policy
+						// is "use tunnels when available". The Network
+						// Info panel separately shows "Onion circuits:
+						// N" which is the actual running count.
+						g_uEseCapsRuntime |= ESE_CAP_PRIVACY_TUNNELING;
+						g_uEseCapsRuntime |= ESE_CAP_COVER_TRAFFIC;
+					}
+				}
+				AddDebugLogLine(false, _T("Privacy: TAG_ESE_CAPS runtime = 0x%08X"), g_uEseCapsRuntime);
+				// === end P0 wiring ==============================================
+
 				if (!theApp.clientudp->Create()) {
 					CString strError;
 					strError.Format(GetResString(IDS_MAIN_SOCKETERROR), thePrefs.GetUDPPort());
@@ -1221,6 +1292,33 @@ void CemuleDlg::ShowConnectionState()
 	}
 	statusbar->SetText(ipver, SBarIPVersion, 0);
 
+	// v0.71 P2.2 — Privacy status pane. Shows mode + active onion
+	// circuit count so the user can verify at-a-glance whether their
+	// privacy stack is running. Reading the live singletons (not the
+	// pref) ensures we display reality, not configuration intent.
+	{
+		using namespace Kademlia;
+		CKadV2Mode m = CKadV2ModeSelector::Get().GetDefaultMode();
+		size_t circuits = 0;
+		try { circuits = eSELive::CLiveTunnel::Get().ActiveCircuitCount(); } catch (...) {}
+		CString privText;
+		switch (m) {
+		case CKadV2Mode::Direct:
+			privText = (g_uEseCapsRuntime != 0) ? _T("P:Direct") : _T("P:Off");
+			break;
+		case CKadV2Mode::Tunneled:
+			privText.Format(_T("P:Tunneled %u"), (unsigned)circuits);
+			break;
+		case CKadV2Mode::Adaptive:
+			privText.Format(_T("P:Adaptive %u"), (unsigned)circuits);
+			break;
+		default:
+			privText = _T("P:?");
+			break;
+		}
+		statusbar->SetText(privText, SBarPrivacy, 0);
+	}
+
 	TBBUTTONINFO tbbi;
 	tbbi.cbSize = (UINT)sizeof(TBBUTTONINFO);
 	tbbi.dwMask = TBIF_IMAGE | TBIF_TEXT;
@@ -1421,16 +1519,20 @@ void CemuleDlg::SetStatusBarPartsSize()
 		ussShift = thePrefs.IsDynUpUseMillisecondPingTolerance() ? 65 : 110;
 	else
 		ussShift = 0;
-	// v0.71 IPv6 Sprint 9 — reserve 70 px tail for the SBarIPVersion pane.
-	const int ipv6Pane = 70;
-	int aiWidths[7] =
+	// v0.71 IPv6 Sprint 9 — reserve 70 px tail for SBarIPVersion.
+	// v0.71 P2.2 — reserve extra 90 px for SBarPrivacy after IPVersion.
+	const int ipv6Pane    = 70;
+	const int privacyPane = 90;
+	const int tailReserve = ipv6Pane + privacyPane;
+	int aiWidths[8] =
 	{
-		rect.right - 695 - ussShift - ipv6Pane,
-		rect.right - 450 - ussShift - ipv6Pane,
-		rect.right - 250 - ussShift - ipv6Pane,
-		rect.right - 25  - ussShift - ipv6Pane,
-		rect.right - 25  - ipv6Pane,
-		rect.right - ipv6Pane,
+		rect.right - 695 - ussShift - tailReserve,
+		rect.right - 450 - ussShift - tailReserve,
+		rect.right - 250 - ussShift - tailReserve,
+		rect.right - 25  - ussShift - tailReserve,
+		rect.right - 25  - tailReserve,
+		rect.right - tailReserve,
+		rect.right - privacyPane,
 		-1
 	};
 	statusbar->SetParts(_countof(aiWidths), aiWidths);

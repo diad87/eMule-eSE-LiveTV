@@ -5,6 +5,140 @@ const aiAssistant  = require('../ai_assistant');
 
 let _ctx = {};
 
+// v8.0.14 — minimal eMule .met file parser focused on extracting the data the
+// monitor needs to decide "is enough actually downloaded to start playing":
+//
+//   - FT_FILESIZE (tag id 0x02)        : true total file size in bytes
+//   - FT_GAPSTART (0x09) / FT_GAPEND (0x0A) string-named tags : pairs of byte
+//     offsets describing ranges that HAVE NOT been downloaded yet
+//
+// downloadedBytes = fileSize - sum(gapEnd - gapStart for each pair).
+//
+// .met header layout (matches PartFile.cpp::LoadPartFile):
+//   byte 0       : version (0xE0 / 0xE1)
+//   byte 1..4    : date (DWORD)
+//   byte 5..20   : MD4 file hash (16 bytes)
+//   byte 21..22  : part count (WORD LE)
+//   byte 23..    : part count × 16 bytes of part hashes
+//   then         : tag count (DWORD LE)
+//   then         : tag count × CTag-serialised tags
+//
+// CTag serialisation:
+//   type byte. If bit 7 (0x80) set: 1-byte name id follows, type &= 0x7F.
+//   Else: 2-byte LE namelen. namelen==1 → 1-byte name id; namelen>1 → ASCII name.
+//   Value depends on type:
+//     0x01 HASH16   16 bytes
+//     0x02 STRING   2-byte LE length + UTF-8/ASCII bytes
+//     0x03 UINT32   4 bytes LE
+//     0x04 FLOAT32  4 bytes LE
+//     0x07 BSOB     1-byte length + bytes
+//     0x08 UINT16   2 bytes LE
+//     0x09 UINT8    1 byte
+//     0x0B UINT64   8 bytes LE
+//     0x11..0x20 STR1..STR16 fixed-length string
+//
+// Unknown types abort the parse early; we never propagate garbage.
+function _parseMetGaps(buf) {
+  const out = { fileSize: null, downloaded: null };
+  try {
+    if (!buf || buf.length < 25) return out;
+    let pos = 21;                                          // skip ver+date+hash
+    const partCount = buf.readUInt16LE(pos); pos += 2;
+    pos += partCount * 16;                                 // skip part hashes
+    if (pos + 4 > buf.length) return out;
+    const tagCount = buf.readUInt32LE(pos); pos += 4;
+
+    let fileSize = null;
+    const gapStarts = Object.create(null);
+    const gapEnds   = Object.create(null);
+
+    for (let i = 0; i < tagCount && pos < buf.length; i++) {
+      let type = buf.readUInt8(pos++);
+      let nameId = 0, nameStr = '';
+      if (type & 0x80) {
+        type &= 0x7F;
+        if (pos >= buf.length) break;
+        nameId = buf.readUInt8(pos++);
+      } else {
+        if (pos + 2 > buf.length) break;
+        const namelen = buf.readUInt16LE(pos); pos += 2;
+        if (pos + namelen > buf.length) break;
+        if (namelen === 1) {
+          nameId = buf.readUInt8(pos++);
+        } else {
+          nameStr = buf.slice(pos, pos + namelen).toString('latin1');
+          pos += namelen;
+        }
+      }
+
+      let value;
+      if (type === 0x01) {           // HASH16
+        if (pos + 16 > buf.length) break;
+        pos += 16;                   // we don't use the value, skip
+        value = null;
+      } else if (type === 0x02) {    // STRING
+        if (pos + 2 > buf.length) break;
+        const slen = buf.readUInt16LE(pos); pos += 2;
+        if (pos + slen > buf.length) break;
+        value = buf.slice(pos, pos + slen).toString('latin1');
+        pos += slen;
+      } else if (type === 0x03) {    // UINT32
+        if (pos + 4 > buf.length) break;
+        value = buf.readUInt32LE(pos); pos += 4;
+      } else if (type === 0x04) {    // FLOAT32
+        if (pos + 4 > buf.length) break;
+        pos += 4; value = null;
+      } else if (type === 0x07) {    // BSOB
+        if (pos + 1 > buf.length) break;
+        const blen = buf.readUInt8(pos++);
+        if (pos + blen > buf.length) break;
+        pos += blen; value = null;
+      } else if (type === 0x08) {    // UINT16
+        if (pos + 2 > buf.length) break;
+        value = buf.readUInt16LE(pos); pos += 2;
+      } else if (type === 0x09) {    // UINT8
+        value = buf.readUInt8(pos++);
+      } else if (type === 0x0B) {    // UINT64
+        if (pos + 8 > buf.length) break;
+        const lo = buf.readUInt32LE(pos); pos += 4;
+        const hi = buf.readUInt32LE(pos); pos += 4;
+        value = hi * 4294967296 + lo;
+      } else if (type >= 0x11 && type <= 0x20) {   // STR1..STR16
+        const slen = type - 0x10;
+        if (pos + slen > buf.length) break;
+        pos += slen; value = null;
+      } else {
+        // Unknown type — bail rather than skip a payload of unknown size.
+        break;
+      }
+
+      // FT_FILESIZE (id 0x02). Could be UINT32 or UINT64 depending on version.
+      if (nameId === 0x02 && typeof value === 'number') {
+        fileSize = value;
+      }
+      // Gap pairs: stored as STRING name like '\x09<n>' / '\x0A<n>' with a
+      // numeric value, where <n> is the pair index as ASCII digits.
+      if (nameId === 0 && nameStr.length >= 2 && typeof value === 'number') {
+        const code = nameStr.charCodeAt(0);
+        const idx  = nameStr.substring(1);
+        if      (code === 0x09) gapStarts[idx] = value;
+        else if (code === 0x0A) gapEnds[idx]   = value;
+      }
+    }
+
+    if (fileSize == null) return out;
+    let gapBytes = 0;
+    for (const idx in gapStarts) {
+      if (gapEnds[idx] != null && gapEnds[idx] >= gapStarts[idx]) {
+        gapBytes += (gapEnds[idx] - gapStarts[idx]);
+      }
+    }
+    out.fileSize   = fileSize;
+    out.downloaded = Math.max(0, fileSize - gapBytes);
+  } catch (e) { /* malformed .met — fall back to stat.size */ }
+  return out;
+}
+
 function init(ctx) { _ctx = ctx; }
 
 function readJsonBody(req, callback) {
@@ -174,7 +308,30 @@ function handle(url, req, res) {
           const fileName = fnMatch ? fnMatch[0] : pf;
           const stat = fs.statSync(partPath);
           const isActive = (Date.now() - stat.mtimeMs) < 30000;
-          downloads.push({ partFile: pf, fileName, fileHash, sizeMB: Math.round(stat.size / (1024 * 1024)), sizeBytes: stat.size, partPath, lastModified: stat.mtimeMs, active: isActive });
+
+          // v8.0.14: parse the .met gap list to get REAL downloaded bytes.
+          // stat.size lies when eMule pre-allocated the file at full size at
+          // queue-add time (which it did with bPreallocate=1 / sparse-files),
+          // so the monitor's "buffer listo" trigger fired on 0 bytes of
+          // actual content. Parsing FT_FILESIZE + FT_GAPSTART/FT_GAPEND
+          // pairs gives ground truth.
+          const met = _parseMetGaps(metBuf);
+          const totalSize       = met.fileSize   != null ? met.fileSize    : stat.size;
+          const downloadedBytes = met.downloaded != null ? met.downloaded  : stat.size;
+          const downloadedMB    = Math.round(downloadedBytes / (1024 * 1024));
+          const totalMB         = Math.round(totalSize       / (1024 * 1024));
+          // Backward-compat: `sizeMB`/`sizeBytes` keep meaning "logical size"
+          // (what stat returns) so existing code that uses them for display
+          // doesn't change. New fields totalMB/downloadedMB/downloadedBytes
+          // are what the monitor should gate on.
+          downloads.push({
+            partFile: pf, fileName, fileHash,
+            sizeMB: Math.round(stat.size / (1024 * 1024)), sizeBytes: stat.size,
+            totalMB, totalBytes: totalSize,
+            downloadedMB, downloadedBytes,
+            progress: totalSize > 0 ? Math.round((downloadedBytes / totalSize) * 1000) / 10 : 0,
+            partPath, lastModified: stat.mtimeMs, active: isActive,
+          });
         }
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });

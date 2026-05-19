@@ -1502,33 +1502,39 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex, 
             var dl = downloads[j];
             if (!matchDownload(dl)) continue;
             
+            // v8.0.14 — gate on real bytes (downloadedMB from .met gaps),
+            // not on wall-clock waiting time. Same fix as smart_play.js.
+            var MIN_HEAD_MB = 50;
             var isActive = dl.active;
+            var dlMB  = (typeof dl.downloadedMB === 'number') ? dl.downloadedMB : (dl.sizeMB || 0);
+            var totMB = (typeof dl.totalMB === 'number') ? dl.totalMB : (dl.sizeMB || 0);
+
             if (isActive) {
               if (fileFirstSeen === 0) fileFirstSeen = Date.now();
               activeChecks++;
             } else {
               activeChecks = Math.max(0, activeChecks - 1);
             }
-            
+
             var waitingSec = fileFirstSeen > 0 ? Math.round((Date.now() - fileFirstSeen) / 1000) : 0;
-            
+
             if (fileFirstSeen > 0) {
-              var bufferPct = Math.min(waitingSec / BUFFER_WAIT_SEC * 100, 100);
+              var bufferPct = Math.min((dlMB / MIN_HEAD_MB) * 100, 100);
               if (progressEl) progressEl.style.width = (60 + bufferPct * 0.4) + '%';
               if (isActive) {
-                if (statusEl) statusEl.textContent = 'Recibiendo datos (' + dl.sizeMB + ' MB) | Buffer: ' + waitingSec + '/' + BUFFER_WAIT_SEC + 's';
+                if (statusEl) statusEl.textContent = 'Descargado ' + dlMB + ' / ' + totMB + ' MB (buffer ' + Math.round(bufferPct) + '%)';
               } else {
                 if (statusEl) statusEl.textContent = 'Archivo detectado, esperando datos...';
               }
               if (titleEl) titleEl.textContent = 'Buffering... (' + Math.round(bufferPct) + '%)';
             }
-            
+
             // Success: enough buffer
-            if (waitingSec >= BUFFER_WAIT_SEC && activeChecks >= 3) {
+            if (dlMB >= MIN_HEAD_MB && waitingSec >= BUFFER_WAIT_SEC && activeChecks >= 3) {
               clearInterval(checker);
               if (progressEl) progressEl.style.width = '100%';
               if (titleEl) titleEl.textContent = 'Reproduciendo';
-              if (statusEl) statusEl.textContent = 'Buffer listo';
+              if (statusEl) statusEl.textContent = 'Buffer listo (' + dlMB + ' MB descargados)';
               setTimeout(function() { playPartFile(dl.partFile, dl.fileName); }, 1000);
               return;
             }

@@ -2424,7 +2424,7 @@ function smartDownload(movieTitle, movieYear) {
 setTimeout(loadTrendingMovies, 500);
 
 
-// ==== smart_play.js (23797 bytes) ====
+// ==== smart_play.js (25105 bytes) ====
 // smart_play.js — smartPlay, trySmartSource, monitorForFile
 
 // ── Smart Play: evalúa → decide → actúa ───────────────────────────────────────
@@ -2848,7 +2848,22 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex, 
             var dl = downloads[j];
             if (!matchDownload(dl)) continue;
 
+            // v8.0.14 — gate playback on REAL bytes downloaded, not just
+            // wall-clock since-detection. eMule preallocates the .part file
+            // at queue-add time, so stat.size lies; the .met gap-list parser
+            // in routes/emule_routes.js now exposes downloadedMB and totalMB
+            // which give the truth. The MIN_HEAD threshold is conservative
+            // (50 MB) — enough for ffmpeg to parse the MP4/MKV container
+            // header on most 720p/1080p movies with the preview-priority
+            // (head-first chunk picking from v8.0.12).
+            var MIN_HEAD_MB = 50;
             var isActive = dl.active;
+            // Prefer the new downloadedMB field (true bytes from .met gaps);
+            // fall back to legacy sizeMB so older ese-server.exe builds still
+            // get SOME progress signal (just less accurate).
+            var dlMB = (typeof dl.downloadedMB === 'number') ? dl.downloadedMB : (dl.sizeMB || 0);
+            var totMB = (typeof dl.totalMB === 'number') ? dl.totalMB : (dl.sizeMB || 0);
+
             if (isActive) {
               if (fileFirstSeen === 0) fileFirstSeen = Date.now();
               activeChecks++;
@@ -2859,21 +2874,24 @@ function monitorForFile(movieTitle, expectedFileName, totalSizeMB, sourceIndex, 
             var waitingSec = fileFirstSeen > 0 ? Math.round((Date.now() - fileFirstSeen) / 1000) : 0;
 
             if (fileFirstSeen > 0) {
-              var bufferPct = Math.min(waitingSec / BUFFER_WAIT_SEC * 100, 100);
+              var bufferPct = Math.min((dlMB / MIN_HEAD_MB) * 100, 100);
               if (progressEl) progressEl.style.width = (60 + bufferPct * 0.4) + '%';
               if (isActive) {
-                if (statusEl) statusEl.textContent = 'Recibiendo datos (' + dl.sizeMB + ' MB) | Buffer: ' + waitingSec + '/' + BUFFER_WAIT_SEC + 's';
+                if (statusEl) statusEl.textContent = 'Descargado ' + dlMB + ' / ' + totMB + ' MB (buffer ' + Math.round(bufferPct) + '%)';
               } else {
                 if (statusEl) statusEl.textContent = 'Archivo detectado, esperando datos...';
               }
               if (titleEl) titleEl.textContent = 'Buffering... (' + Math.round(bufferPct) + '%)';
             }
 
-            if (waitingSec >= BUFFER_WAIT_SEC && activeChecks >= 3) {
+            // Trigger play when we have at least MIN_HEAD_MB of real bytes
+            // AND we've waited the minimum buffer time (gives ffmpeg time to
+            // parse the header chunks even if they only just arrived).
+            if (dlMB >= MIN_HEAD_MB && waitingSec >= BUFFER_WAIT_SEC && activeChecks >= 3) {
               clearInterval(checker);
               if (progressEl) progressEl.style.width = '100%';
               if (titleEl) titleEl.textContent = 'Reproduciendo';
-              if (statusEl) statusEl.textContent = 'Buffer listo';
+              if (statusEl) statusEl.textContent = 'Buffer listo (' + dlMB + ' MB descargados)';
               setTimeout(function() { playPartFile(dl.partFile, dl.fileName); }, 1000);
               return;
             }

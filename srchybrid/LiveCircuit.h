@@ -68,6 +68,25 @@ public:
                       const uint8_t* in, size_t inLen,
                       uint8_t* out, size_t& outLen);
 
+    // v0.71 C — V-side peel of ALL hops in forward order (hop0 outer,
+    // hopN inner). Mirror of OnionEncrypt which iterates m_hops in
+    // REVERSE wrapping with k_send; here we iterate FORWARD unwrapping
+    // with k_recv. Returns true on success and writes the deepest-layer
+    // plaintext into `out`. Used by the originator-side CELL_RELAY
+    // handler to recover the application payload from incoming cells.
+    bool OnionDecryptAll(const uint8_t* in, size_t inLen,
+                        uint8_t* out, size_t outBufLen, size_t& outLen);
+
+    // v0.71 C — AEAD-encrypt `in` with a SINGLE hop's k_send (no onion
+    // wrapping). Used in two cases:
+    //   1. Hop1 wrapping CELL_EXTENDED before V has hop2 registered
+    //      (V only expects 1 layer of K_hop1_to_v).
+    //   2. Diagnostics / debugging primitives that need a single layer.
+    // Increments the hop's nonce_send counter atomically.
+    bool EncryptOneLayer(uint8_t hopIdx,
+                         const uint8_t* in, size_t inLen,
+                         uint8_t* out, size_t& outLen);
+
     // Birth / age
     DWORD BornAtTick() const { return m_born_tick; }
     DWORD AgeMs() const { return GetTickCount() - m_born_tick; }

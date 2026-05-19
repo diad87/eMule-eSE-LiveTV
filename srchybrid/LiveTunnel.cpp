@@ -376,18 +376,15 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
             return HandleExtended_Originator(circ, payload, payloadLen);
 
         case CELL_RELAY:
-            // Originator: peel ALL layers; the consumer is whoever
-            // registered with the tunnel (LiveStreamManager in F5 P3+).
-            // Relay: peel ONE layer and forward (originator-side stays
-            // single-hop in P3, so the relay branch is unreachable until
-            // 2-hop extension lands — but we keep the check for safety).
+            // v0.71 C — data plane delivery.
+            // Originator: peel ALL hops, parse TunnelOp, deliver.
+            // Relay/exit (we hold V↔hop2 keys via self-loopback): peel
+            //   all hops, dispatch the inner payload, wrap reply,
+            //   send back to V.
             if (circ->m_role == CircuitRole::Originator) {
-                // For now, only count it; data plane delivery is the
-                // next milestone.
-                return true;
+                return HandleRelay_Originator(circ, payload, payloadLen);
             } else {
-                // Relay forwarding logic — not needed for 1-hop tests.
-                return true;
+                return HandleRelay_Exit(circ, payload, payloadLen);
             }
 
         case CELL_DESTROY:
@@ -527,19 +524,61 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
             SecureWipe(extendPlain, sizeof extendPlain);
             return false;
         }
-        // Derive shared so it can be wiped immediately. We don't keep
-        // V↔hop2 keys on our side because in the loopback test we won't
-        // be acting as the real exit (data plane goes elsewhere).
+        // v0.71 C — derive AND KEEP V↔hop2 keys on our side so we can
+        // act as the exit hop for incoming CELL_RELAY. Before C we
+        // wiped them (B only needed CREATED reply); now data plane
+        // requires hop2's perspective on the same node.
         uint8_t shared[32];
-        X25519SharedSecret(evPub2, erPriv2, shared);
+        if (!X25519SharedSecret(evPub2, erPriv2, shared)) {
+            SecureWipe(erPriv2, sizeof erPriv2);
+            SecureWipe(extendPlain, sizeof extendPlain);
+            return false;
+        }
         SecureWipe(erPriv2, sizeof erPriv2);
+
+        // HKDF the V↔hop2 keys with the SAME info-labels V uses.
+        // From hop2's perspective: V→R is our RECV, R→V is our SEND.
+        uint8_t okm[64];
+        const uint8_t info_v_to_r[] = "ese-tunnel-V-to-R-v1";
+        const uint8_t info_r_to_v[] = "ese-tunnel-R-to-V-v1";
+        if (!Hkdf(shared, sizeof shared, NULL, 0, info_v_to_r, sizeof info_v_to_r - 1, okm, 32) ||
+            !Hkdf(shared, sizeof shared, NULL, 0, info_r_to_v, sizeof info_r_to_v - 1, okm + 32, 32))
+        {
+            SecureWipe(shared, sizeof shared);
+            SecureWipe(extendPlain, sizeof extendPlain);
+            return false;
+        }
         SecureWipe(shared, sizeof shared);
 
-        // Wrap er_pub2 with our K_send_r_to_v (hop[0].k_send on our
-        // relay circuit) and send as CELL_EXTENDED.
+        // Add a SECOND hop entry to the relay-side circuit, representing
+        // ourselves as hop2. Now m_hops has [V↔hop1, V↔hop2]. When a
+        // CELL_RELAY arrives we peel both layers (the outer with
+        // hop[0].k_recv = K_v_to_hop1, the inner with hop[1].k_recv
+        // = K_v_to_hop2) to recover the application payload.
+        CircuitHop hop2 = {};
+        hop2.hop_id = circ->Id();
+        memcpy(hop2.k_send, okm + 32, 32);   // R-to-V from hop2's view
+        memcpy(hop2.k_recv, okm,      32);   // V-to-R from hop2's view
+        hop2.nonce_send = 0;
+        hop2.nonce_recv = 0;
+        circ->AddHop(hop2);
+        SecureWipe(okm, sizeof okm);
+
+        // Wrap er_pub2 with our K_send_r_to_v of THE FIRST hop entry
+        // (V↔hop1, which is m_hops[0].k_send) and send as CELL_EXTENDED.
+        // OnionEncrypt iterates m_hops in REVERSE, so with 2 hops it'd
+        // wrap with hop[1].k_send (V↔hop2) first, then hop[0].k_send.
+        // But V expects the EXTENDED payload to be wrapped ONCE with
+        // V↔hop1 key only (since V hasn't added hop2 yet at the moment
+        // of receiving EXTENDED). So we manually AEAD-encrypt with just
+        // m_hops[0].k_send instead of using OnionEncrypt.
         uint8_t wrapped[CELL_PAYLOAD_MAX];
         size_t wrappedLen = 0;
-        if (!circ->OnionEncrypt(erPub2, 32, wrapped, wrappedLen)) {
+        // Use EncryptOneLayer with hop 0 only — V hasn't registered hop2
+        // on her side yet, so the EXTENDED reply must be wrapped with
+        // ONLY V↔hop1 key (not both). OnionEncrypt with 2 hops would
+        // wrap with both, which V couldn't decrypt at this point.
+        if (!circ->EncryptOneLayer(0, erPub2, 32, wrapped, wrappedLen)) {
             SecureWipe(extendPlain, sizeof extendPlain);
             return false;
         }
@@ -735,6 +774,160 @@ void CLiveTunnel::GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const
         s.next_circ_id = c->m_nextCircId;
         out.push_back(s);
     }
+}
+
+// === v0.71 C — Data plane: CELL_RELAY delivery + tunnel ping =================
+// Sub-protocol carried inside the AEAD-decrypted CELL_RELAY payload:
+//   [0]      sub_cmd (TunnelOpCmd: PING=0x01, PING_REPLY=0x02)
+//   [1..4]   req_id (uint32 LE) — correlates request to reply
+//   [5..6]   text_len (uint16 LE)
+//   [7..N]   text bytes (UTF-8)
+// V dispatches PING_REPLY by req_id to pending HTTP requests in
+// m_pendingPingReplies (under m_pendingLock). Exit-side dispatches PING
+// by echoing back "echo:<text>" wrapped with the same circuit's keys.
+
+bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
+                                         const uint8_t* payload, uint16_t payloadLen)
+{
+    if (!circ || circ->m_role != CircuitRole::Originator) return false;
+    if (circ->HopCount() < 1) return false;
+
+    // Peel all V-side hops to get the plaintext sub-protocol payload.
+    uint8_t plain[CELL_PAYLOAD_MAX];
+    size_t plainLen = 0;
+    if (!circ->OnionDecryptAll(payload, payloadLen, plain, sizeof plain, plainLen))
+        return false;
+    if (plainLen < 7) return false;   // too short for header
+
+    const uint8_t sub_cmd = plain[0];
+    const uint32_t req_id = (uint32_t)plain[1]
+                          | ((uint32_t)plain[2] << 8)
+                          | ((uint32_t)plain[3] << 16)
+                          | ((uint32_t)plain[4] << 24);
+    const uint16_t text_len = (uint16_t)plain[5] | ((uint16_t)plain[6] << 8);
+    if (7u + text_len > plainLen) return false;
+    std::string text((const char*)plain + 7, text_len);
+
+    if (sub_cmd == TUN_OP_PING_REPLY) {
+        // Store reply for the waiting TunnelPing() call.
+        CSingleLock pl(&m_pendingLock, TRUE);
+        m_pendingPingReplies[req_id] = text;
+        return true;
+    }
+    // Unknown sub_cmd: drop silently (future ops land here).
+    return true;
+}
+
+bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
+                                   const uint8_t* payload, uint16_t payloadLen)
+{
+    if (!circ || circ->m_role != CircuitRole::Relay) return false;
+    // Exit requires ALL hops' recv keys to peel the full onion. In the
+    // self-loopback path we stash both V↔hop1 and V↔hop2 keys in
+    // m_hops. If only 1 hop is registered we're hop1-only (no exit
+    // capability) and the cell should have been forwarded already.
+    if (circ->HopCount() < 2) return false;
+
+    uint8_t plain[CELL_PAYLOAD_MAX];
+    size_t plainLen = 0;
+    if (!circ->OnionDecryptAll(payload, payloadLen, plain, sizeof plain, plainLen))
+        return false;
+    if (plainLen < 7) return false;
+
+    const uint8_t sub_cmd = plain[0];
+    const uint32_t req_id = (uint32_t)plain[1]
+                          | ((uint32_t)plain[2] << 8)
+                          | ((uint32_t)plain[3] << 16)
+                          | ((uint32_t)plain[4] << 24);
+    const uint16_t text_len = (uint16_t)plain[5] | ((uint16_t)plain[6] << 8);
+    if (7u + text_len > plainLen) return false;
+
+    if (sub_cmd == TUN_OP_PING) {
+        // Build PING_REPLY echoing the same text with "echo:" prefix.
+        std::string echoText = "echo:" + std::string((const char*)plain + 7, text_len);
+        if (echoText.size() > CELL_PAYLOAD_MAX - 7) echoText.resize(CELL_PAYLOAD_MAX - 7);
+        std::vector<uint8_t> reply(7 + echoText.size());
+        reply[0] = TUN_OP_PING_REPLY;
+        reply[1] = (uint8_t)(req_id & 0xFF);
+        reply[2] = (uint8_t)((req_id >>  8) & 0xFF);
+        reply[3] = (uint8_t)((req_id >> 16) & 0xFF);
+        reply[4] = (uint8_t)((req_id >> 24) & 0xFF);
+        const uint16_t rl = (uint16_t)echoText.size();
+        reply[5] = (uint8_t)(rl & 0xFF);
+        reply[6] = (uint8_t)((rl >> 8) & 0xFF);
+        memcpy(reply.data() + 7, echoText.data(), echoText.size());
+        return SendRelayReply(circ, reply.data(), reply.size());
+    }
+    return true;
+}
+
+bool CLiveTunnel::SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,
+                                 const uint8_t* plain, size_t plainLen)
+{
+    if (!circ || circ->HopCount() < 1 || !circ->m_prevHopClient) return false;
+    // Wrap through ALL registered hops in REVERSE order, mirroring
+    // V's OnionEncrypt. With m_hops = [V↔hop1, V↔hop2] this produces
+    // outer-layer K_hop1_to_v wrapping inner-layer K_hop2_to_v — exactly
+    // what V expects to peel (hop[0] outer first, hop[1] inner).
+    uint8_t wrapped[CELL_PAYLOAD_MAX];
+    size_t wrappedLen = 0;
+    if (!circ->OnionEncrypt(plain, plainLen, wrapped, wrappedLen))
+        return false;
+    uint8_t cell[CELL_TOTAL_BYTES];
+    if (!CellPack(circ->Id(), CELL_RELAY, wrapped, wrappedLen, cell))
+        return false;
+    return SendCellToPeer(circ->m_prevHopClient, cell);
+}
+
+bool CLiveTunnel::TunnelPing(const std::string& text, std::string& replyText,
+                             uint32_t timeoutMs)
+{
+    // Generate a random req_id (32-bit). Probabilistic collision is
+    // ~negligible for the few outstanding pings we'd ever have.
+    uint8_t r[4];
+    SecureRandomBytes(r, 4);
+    const uint32_t req_id = (uint32_t)r[0]
+                          | ((uint32_t)r[1] << 8)
+                          | ((uint32_t)r[2] << 16)
+                          | ((uint32_t)r[3] << 24);
+
+    // Build sub-protocol payload.
+    std::vector<uint8_t> payload(7 + text.size());
+    payload[0] = TUN_OP_PING;
+    payload[1] = (uint8_t)(req_id & 0xFF);
+    payload[2] = (uint8_t)((req_id >>  8) & 0xFF);
+    payload[3] = (uint8_t)((req_id >> 16) & 0xFF);
+    payload[4] = (uint8_t)((req_id >> 24) & 0xFF);
+    const uint16_t tl = (uint16_t)text.size();
+    payload[5] = (uint8_t)(tl & 0xFF);
+    payload[6] = (uint8_t)((tl >> 8) & 0xFF);
+    memcpy(payload.data() + 7, text.data(), text.size());
+
+    // Send through tunnel.
+    if (!SendThrough(payload.data(), payload.size()))
+        return false;
+
+    // Poll the pending replies map until timeout. Cheap poll because
+    // the map is tiny; we sleep 50ms between checks. The CELL_RELAY
+    // handler runs on the socket thread and writes to the map under
+    // m_pendingLock.
+    DWORD start = GetTickCount();
+    while (GetTickCount() - start < timeoutMs) {
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            auto it = m_pendingPingReplies.find(req_id);
+            if (it != m_pendingPingReplies.end()) {
+                replyText = it->second;
+                m_pendingPingReplies.erase(it);
+                return true;
+            }
+        }
+        Sleep(50);
+    }
+    // Timeout. Clean up the slot if anything appeared meanwhile.
+    CSingleLock pl(&m_pendingLock, TRUE);
+    m_pendingPingReplies.erase(req_id);
+    return false;
 }
 
 void CLiveTunnel::Tick()

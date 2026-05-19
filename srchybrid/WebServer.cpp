@@ -5030,6 +5030,48 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
+	// --- /api/live/privacy/tunnel_ping?text=... --- v0.71 C — data plane demo.
+	// Sends a TUN_OP_PING through any active circuit (1-hop or 2-hop).
+	// The exit relay echoes back as TUN_OP_PING_REPLY with "echo:<text>".
+	// This is the FIRST end-to-end demonstration of the data plane working
+	// through the onion tunnel. If circuits exist but the reply doesn't
+	// arrive within timeoutMs, returns ok:false with reason.
+	if (sURL.Left(31) == "/api/live/privacy/tunnel_ping") {
+		CString textArg = _ParseURL(Data.sURL, _T("text"));
+		if (textArg.IsEmpty()) textArg = _T("hello");
+		std::string text((LPCSTR)CStringA(textArg));
+		std::string reply;
+		bool ok = false;
+		try {
+			ok = eSELive::CLiveTunnel::Get().TunnelPing(text, reply, 3000);
+		} catch (...) {}
+
+		CStringA json;
+		if (ok) {
+			// Escape any quotes/backslashes in reply just in case
+			CStringA safe;
+			for (char c : reply) {
+				if (c == '"' || c == '\\') safe += '\\';
+				safe += c;
+			}
+			json.Format("{\"ok\":true,\"sent\":\"%s\",\"received\":\"%s\"}",
+				(LPCSTR)CStringA(textArg), (LPCSTR)safe);
+		} else {
+			json = "{\"ok\":false,\"reason\":\"no active circuit or timeout - build a 2-hop circuit first via test_circuit?hops=2\"}";
+		}
+
+		CStringA header;
+		header.Format(
+		    "HTTP/1.1 200 OK\r\n"
+		    HTTPInit
+		    "Content-Type: application/json\r\n"
+		    "Content-Length: %d\r\n\r\n",
+		    json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
 	// --- /api/live/privacy/circuits --- v0.71 B — per-circuit detail.
 	// Enumerates all circuits in CLiveTunnel with id, role, state, age
 	// in ms, hop count, and forwarding state (next_hop_set / next_circ_id

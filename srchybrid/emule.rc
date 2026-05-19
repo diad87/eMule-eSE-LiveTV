@@ -377,9 +377,9 @@ BEGIN
     PUSHBUTTON      "Setup ports on WinXP SP1 firewall",IDC_OPENPORTS,83,84,137,12,WS_DISABLED
     CONTROL         "Use UPnP to Setup Port Forwarding",IDC_PREF_UPNPONSTART,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,11,116,208,10
-    CONTROL         "Enable IPv6 (dual-stack, falls back to v4 if no v6)",IDC_PREF_ENABLE_IPV6,
+    CONTROL         "Enable IPv6 (v4 listener + v6 egress detection)",IDC_PREF_ENABLE_IPV6,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,11,128,208,10
-    LTEXT           "Requires restart to take effect.",IDC_PREF_IPV6_HINT,11,140,208,8
+    LTEXT           "Restart required. Experimental dual-stack: set IPv6Mode=2 in preferences.ini (may break eD2K).",IDC_PREF_IPV6_HINT,11,140,250,16
 END
 
 IDD_WIZARD DIALOGEX 0, 0, 257, 223

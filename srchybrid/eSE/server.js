@@ -151,7 +151,17 @@ function emuleTransferAction(params, cb) { return emuleApi.emuleTransferAction(p
 function emuleAddEd2kLink(l, cb){ return emuleApi.emuleAddEd2kLink(l, cb); }
 function autoLoginEmule()       { return emuleApi.autoLoginEmule(); }
 
-function fetchAndCacheMovie(title, cb) { return tmdbApi.fetchAndCacheMovie(title, CACHE_DIR, cb); }
+// v8.0.17: forward the real (title, cacheDir, callback, rawFilename, settings)
+// signature instead of dropping the last three args. The previous 2-arg
+// wrapper `(title, cb)` made the route's actual callback land in CACHE_DIR
+// (a STRING) on the way through, which made `aiFallback()` inside tmdb_api
+// crash with "callback is not a function" whenever OMDB returned no match —
+// surfacing as a noisy "[Uncaught]" each time a poster query missed.
+// Accept the route's CACHE_DIR as a 2nd arg (ignored — we always use the
+// server-side const, the route is just being explicit), keep the rest live.
+function fetchAndCacheMovie(title, _cacheDirFromRoute, cb, rawFilename, settings) {
+  return tmdbApi.fetchAndCacheMovie(title, CACHE_DIR, cb, rawFilename, settings);
+}
 function getCompletedFiles() { return mediaResolver.getCompletedFiles(EMULE_INCOMING); }
 
 // Auto-login eMule + keepalive
@@ -198,18 +208,131 @@ cleanup.init(activeStreams, TEMP_DIR);
 
 // OMDb API proxy
 
+// v8.0.17 — proxyOMDB with TMDB fallback on quota / network errors.
+//
+// The free OMDB key has a 1000-request/day cap. When we hit it, OMDB returns
+// {"Response":"False","Error":"Request limit reached!"} and the trending grid
+// + search results disappear from the UI (every card depends on data.Search).
+//
+// TMDB is on a different key and quota and is reliably available, so we
+// translate OMDB's response shape into TMDB-as-OMDB whenever OMDB is sad:
+//
+//   GET /api/movies/search?q=...  → 's=' params  → TMDB /search/movie?query=
+//   GET /api/movies/detail?id=ttN → 'i=ttN' params → TMDB /find/ttN with imdb_id
+//
+// Returns a SHAPED response that matches OMDB's wire format so the existing
+// client (renderMovieCard, hero_ui, etc.) renders unchanged.
 function proxyOMDB(params, res) {
   const fullUrl = 'https://www.omdbapi.com/?' + params + '&apikey=' + OMDB_KEY + '&type=movie';
   https.get(fullUrl, (omdbRes) => {
     let data = '';
     omdbRes.on('data', d => data += d);
     omdbRes.on('end', () => {
+      // Try to detect "Request limit reached!" / "Invalid API key" /
+      // generic Error responses so we can fall through to TMDB. Anything
+      // else (a real hit, "Movie not found" etc.) we pass through verbatim.
+      let parsed = null;
+      try { parsed = JSON.parse(data); } catch (e) {}
+      const hardErr = parsed && parsed.Response === 'False'
+        && typeof parsed.Error === 'string'
+        && /limit reached|invalid api|daily limit/i.test(parsed.Error);
+      if (hardErr) {
+        return _fallbackToTMDB(params, res, parsed.Error);
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(data);
     });
   }).on('error', (e) => {
-    res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
+    _fallbackToTMDB(params, res, e.message);
   });
+}
+
+function _fallbackToTMDB(params, res, omdbReason) {
+  // Parse the OMDB-style query string to figure out what kind of lookup we
+  // need to do against TMDB.
+  const usp = new URLSearchParams(params);
+  const sQ  = usp.get('s');  // search by name
+  const iId = usp.get('i');  // lookup by IMDB id
+  const tQ  = usp.get('t');  // exact title
+
+  // Helper: GET https + JSON.parse
+  function tmdbGet(path, cb) {
+    const tmdbKey = require('./api_keys').TMDB_KEY;
+    if (!tmdbKey) return cb(new Error('TMDB key missing'));
+    const url = 'https://api.themoviedb.org/3' + path +
+      (path.indexOf('?') === -1 ? '?' : '&') +
+      'api_key=' + tmdbKey;
+    https.get(url, { headers: { 'User-Agent': 'eSE-LiveTV/8.0' } }, (r) => {
+      let buf = '';
+      r.on('data', d => buf += d);
+      r.on('end', () => {
+        try { cb(null, JSON.parse(buf)); }
+        catch (e) { cb(e); }
+      });
+    }).on('error', cb);
+  }
+  // Translate a single TMDB movie record → OMDB-style Search row.
+  function toOmdbSearchRow(m) {
+    return {
+      Title:  m.title || m.original_title || '',
+      Year:   (m.release_date || '').substring(0, 4),
+      imdbID: m._imdbID || '',   // populated by caller when available
+      Type:   'movie',
+      Poster: m.poster_path ? ('https://image.tmdb.org/t/p/w500' + m.poster_path) : 'N/A',
+    };
+  }
+  function sendJson(obj) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(obj));
+  }
+  function sendNone(extra) {
+    sendJson(Object.assign({ Response: 'False', Error: 'No results' }, extra || {}));
+  }
+
+  console.log('[OMDB] fallback to TMDB: ' + omdbReason);
+
+  if (sQ) {
+    tmdbGet('/search/movie?language=es-ES&query=' + encodeURIComponent(sQ), (err, data) => {
+      if (err || !data || !Array.isArray(data.results)) return sendNone();
+      sendJson({
+        Search: data.results.slice(0, 10).map(toOmdbSearchRow),
+        totalResults: String(data.total_results || data.results.length),
+        Response: 'True',
+        _source: 'tmdb_fallback',
+      });
+    });
+    return;
+  }
+  if (iId) {
+    tmdbGet('/find/' + encodeURIComponent(iId) + '?language=es-ES&external_source=imdb_id', (err, data) => {
+      if (err || !data || !data.movie_results || !data.movie_results.length) return sendNone();
+      const m = data.movie_results[0];
+      m._imdbID = iId;
+      const row = toOmdbSearchRow(m);
+      // Detail endpoint returns a single movie shape, not a Search array.
+      sendJson(Object.assign({}, row, {
+        Response: 'True',
+        Plot: m.overview || '',
+        _source: 'tmdb_fallback',
+      }));
+    });
+    return;
+  }
+  if (tQ) {
+    // Title lookup. Use search/movie + take the top result.
+    tmdbGet('/search/movie?language=es-ES&query=' + encodeURIComponent(tQ), (err, data) => {
+      if (err || !data || !Array.isArray(data.results) || !data.results.length) return sendNone();
+      const m = data.results[0];
+      sendJson(Object.assign({}, toOmdbSearchRow(m), {
+        Response: 'True',
+        Plot: m.overview || '',
+        _source: 'tmdb_fallback',
+      }));
+    });
+    return;
+  }
+  // Unknown query shape — give back the original OMDB error so callers know.
+  sendNone({ Error: omdbReason || 'OMDB unavailable' });
 }
 
 

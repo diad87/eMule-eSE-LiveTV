@@ -435,16 +435,30 @@ function autoLoginAndRetry(query, settings, callback) {
 
 // ─── SEARCH ────────────────────────────────────────────────────
 
-// v8.0.6 — searchMethod 'auto' is the new default. The flow:
-//   1. Translate 'auto' → 'server' first attempt (server search is faster
-//      when it works because results come from a centralized index).
-//   2. Run the search exactly as before.
-//   3. If after maxAttempts polls the result list is STILL empty, AND
-//      the original method was 'auto', retry once with method='kademlia'.
-//      This covers the "only Kad connected" case where server search
-//      necessarily returns 0 because there's no server to ask.
-// Explicit 'server' / 'kad' / 'global' user choices are respected without
-// fallback — those users know what they want.
+// v8.0.9 — fallback is now UNIVERSAL.
+//
+// Old behaviour (v8.0.6): only `searchMethod === 'auto'` triggered the
+// server-then-Kad retry. Users with a persisted settings.json from an
+// older build had `searchMethod: 'server'` saved explicitly — that path
+// never fell back to Kad, so users on Kad-only nets saw 0 results even
+// though Kad would have answered. Observed in real-world log
+// (avatar 2009 + Oppenheimer 2023 both returned 0 with method=server,
+// no fallback).
+//
+// New behaviour:
+//   - 'auto'   → server first, fallback to Kad if 0.
+//   - 'server' → server first, fallback to Kad if 0.
+//   - 'kad'    → Kad first, fallback to server if 0.
+//   - 'global' → global first, fallback to Kad if 0.
+//   Any 0-result primary leg now retries with the OTHER network. If both
+//   end up empty there really are no sources. Explicit user choices still
+//   control WHICH network is tried first; only the empty-result behaviour
+//   changed.
+//
+// Plus a one-shot settings migration in autoLoginEmule's settings path:
+// any persisted searchMethod === 'server' from a pre-v8.0.6 install is
+// quietly migrated to 'auto' on first run, so the dropdown also reflects
+// the smart default.
 function _wsMethodFor(name) {
   if (name === 'global')   return 'global';
   if (name === 'server')   return '';           // empty = server (eMule WS default)
@@ -455,7 +469,37 @@ function _wsMethodFor(name) {
   return '';
 }
 
+// Pick the fallback method when the primary returned 0 results. Going
+// server→Kad is the default; if the user explicitly picked Kad, we fall
+// back to server (the inverse) so a Kad query that hit no peers can still
+// pick up server-indexed files.
+function _fallbackMethodFor(primaryWsMethod) {
+  if (primaryWsMethod === 'kademlia') return '';        // kad → server
+  return 'kademlia';                                    // server/global/auto → kad
+}
+
+// v8.0.9 one-shot migration: rewrite a persisted searchMethod='server'
+// (left over from a pre-v8.0.6 install where 'server' was the default)
+// to 'auto' so the new fallback logic engages and the settings dropdown
+// reflects the recommended choice. Fires once per install — tracked by
+// the marker file in the same dir as settings.json.
+function _maybeMigrateSearchMethod() {
+  try {
+    const s = _loadSettings();
+    if (s.__v809_searchMethodMigrated) return;
+    if (s.searchMethod === 'server') {
+      s.searchMethod = 'auto';
+      console.log('[eMule] One-shot: persisted searchMethod=server migrated to auto (v8.0.9). User can still pick server explicitly in Settings.');
+    }
+    s.__v809_searchMethodMigrated = true;
+    _saveSettings(s);
+  } catch (e) { /* settings unavailable — skip silently */ }
+}
+
 function emuleSearch(query, settings, callback) {
+  // v8.0.9 — migrate stale persisted searchMethod once before reading.
+  _maybeMigrateSearchMethod();
+
   const doSearch = () => {
     if (!emuleSession) { callback(new Error('Not logged in')); return; }
     const s = settings || _loadSettings();
@@ -465,14 +509,14 @@ function emuleSearch(query, settings, callback) {
       searchQuery += ' ' + (s.quality === '4k' ? '2160p' : s.quality);
     }
 
-    const isAuto = (s.searchMethod === 'auto' || !s.searchMethod);
     const firstMethod = _wsMethodFor(s.searchMethod);
 
-    runOnce(searchQuery, firstMethod, isAuto, /*alreadyRetried=*/false);
+    runOnce(searchQuery, firstMethod, /*alreadyRetried=*/false);
 
-    function runOnce(safeSearchQuery, method, autoMode, alreadyRetried) {
+    function runOnce(safeSearchQuery, method, alreadyRetried) {
       const searchUrl = '?ses=' + emuleSession + '&w=search&tosearch=' + encodeURIComponent(safeSearchQuery) + '&type=Video' + (method ? '&method=' + method : '');
-      console.log('[eMule] Starting new search: "' + safeSearchQuery + '" method=' + (method || 'server') + ' auto=' + autoMode + ' retried=' + alreadyRetried);
+      const displayMethod = method || 'server';
+      console.log('[eMule] Starting new search: "' + safeSearchQuery + '" method=' + displayMethod + ' retried=' + alreadyRetried);
 
       emuleRequest(searchUrl, (err2, html) => {
         if (err2) { callback(err2, []); return; }
@@ -492,10 +536,11 @@ function emuleSearch(query, settings, callback) {
         }
 
         let attempt = 0;
-        // Auto-mode: shorter poll budget on the first leg so the Kad fallback
-        // doesn't take forever to kick in. 3 polls × 4 s = 12 s before retry.
-        const maxAttempts = autoMode && !alreadyRetried ? 3 : 5;
-        const pollInterval = autoMode && !alreadyRetried ? 4000 : 6000;
+        // First leg gets a shorter poll budget (3 polls × 4 s = 12 s) so the
+        // fallback to the other network kicks in fast. Second leg gets the
+        // full budget because by then we've committed to the result.
+        const maxAttempts = alreadyRetried ? 5 : 3;
+        const pollInterval = alreadyRetried ? 6000 : 4000;
 
         const poll = () => {
           if (!isEmuleRunning()) {
@@ -522,12 +567,19 @@ function emuleSearch(query, settings, callback) {
               return;
             }
             if (attempt >= maxAttempts) {
-              // Auto-mode fallback: 0 results after server search → retry Kad.
-              if (autoMode && !alreadyRetried) {
-                console.log('[eMule] Auto-mode: server search returned 0. Falling back to Kademlia.');
-                runOnce(safeSearchQuery, 'kademlia', true, true);
+              // v8.0.9: universal fallback. If the primary leg returned 0
+              // results, ALWAYS try the other network — regardless of which
+              // method the user picked. Users on Kad-only get Kad results
+              // even if their settings says "server"; users on server-only
+              // get server results even if their settings says "kad".
+              if (!alreadyRetried) {
+                const fbMethod = _fallbackMethodFor(method);
+                const fbDisplay = fbMethod || 'server';
+                console.log('[eMule] ' + displayMethod + ' search returned 0. Falling back to ' + fbDisplay + '.');
+                runOnce(safeSearchQuery, fbMethod, true);
                 return;
               }
+              console.log('[eMule] Both ' + displayMethod + ' and fallback returned 0 results — giving up.');
               callback(null, results);
               return;
             }

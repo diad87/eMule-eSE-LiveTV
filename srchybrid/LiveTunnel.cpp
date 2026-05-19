@@ -822,11 +822,11 @@ bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
                                    const uint8_t* payload, uint16_t payloadLen)
 {
     if (!circ || circ->m_role != CircuitRole::Relay) return false;
-    // Exit requires ALL hops' recv keys to peel the full onion. In the
-    // self-loopback path we stash both V↔hop1 and V↔hop2 keys in
-    // m_hops. If only 1 hop is registered we're hop1-only (no exit
-    // capability) and the cell should have been forwarded already.
-    if (circ->HopCount() < 2) return false;
+    // Exit needs at least 1 hop's recv keys to peel. In the loopback
+    // 2-hop case we hold both V↔hop1 and V↔hop2 keys (HopCount==2);
+    // in 1-hop case we hold just V↔hop1 (HopCount==1). Both are valid
+    // exit configurations from THIS node's perspective.
+    if (circ->HopCount() < 1) return false;
 
     uint8_t plain[CELL_PAYLOAD_MAX];
     size_t plainLen = 0;

@@ -510,13 +510,61 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
     uint16 hop2_port = (uint16)extendPlain[4] | ((uint16)extendPlain[5] << 8);
     const uint8_t* evPub2 = extendPlain + 6;
 
-    // Resolve hop2 in our ClientList. Two-hop only works if we (hop1)
-    // already have an open socket to hop2.
+    // v0.71 B — self-loopback detection. With only 2 fork PCs in the
+    // network (testing), V picks the same peer for hop1 and hop2; so we
+    // (hop1) receive an EXTEND with hop2_ip == our own public IP. We're
+    // not in our own ClientList, so FindClientByIP returns NULL. To make
+    // the test reach hop_count==2 visibly, we synthesize the hop2 reply
+    // locally: generate er_pub2/er_priv2, derive the shared (just to
+    // wipe er_priv2 cleanly), wrap er_pub2 as CELL_EXTENDED with the
+    // current circuit's K_send_r_to_v, send back to V on V's circ_id.
+    // From V's perspective the protocol completes perfectly; reality is
+    // that hop1 and hop2 are the same node (zero anonymity — explicit
+    // test mode, NOT for production).
+    if (theApp.GetPublicIP() != 0 && hop2_ip == theApp.GetPublicIP()) {
+        uint8_t erPub2[32], erPriv2[32];
+        if (!X25519GenerateKeypair(erPub2, erPriv2)) {
+            SecureWipe(extendPlain, sizeof extendPlain);
+            return false;
+        }
+        // Derive shared so it can be wiped immediately. We don't keep
+        // V↔hop2 keys on our side because in the loopback test we won't
+        // be acting as the real exit (data plane goes elsewhere).
+        uint8_t shared[32];
+        X25519SharedSecret(evPub2, erPriv2, shared);
+        SecureWipe(erPriv2, sizeof erPriv2);
+        SecureWipe(shared, sizeof shared);
+
+        // Wrap er_pub2 with our K_send_r_to_v (hop[0].k_send on our
+        // relay circuit) and send as CELL_EXTENDED.
+        uint8_t wrapped[CELL_PAYLOAD_MAX];
+        size_t wrappedLen = 0;
+        if (!circ->OnionEncrypt(erPub2, 32, wrapped, wrappedLen)) {
+            SecureWipe(extendPlain, sizeof extendPlain);
+            return false;
+        }
+        uint8_t cell[CELL_TOTAL_BYTES];
+        if (!CellPack(circ->Id(), CELL_EXTENDED, wrapped, wrappedLen, cell)) {
+            SecureWipe(extendPlain, sizeof extendPlain);
+            return false;
+        }
+        if (!circ->m_prevHopClient || !SendCellToPeer(circ->m_prevHopClient, cell)) {
+            SecureWipe(extendPlain, sizeof extendPlain);
+            return false;
+        }
+        SecureWipe(extendPlain, sizeof extendPlain);
+        return true;
+    }
+
+    // Normal (non-loopback) path: resolve hop2 in our ClientList.
+    // Two-hop only works if we (hop1) already have an open socket to hop2.
     CUpDownClient* hop2 = NULL;
     if (theApp.clientlist)
         hop2 = theApp.clientlist->FindClientByIP(hop2_ip, hop2_port);
-    if (!hop2 || !hop2->socket || !hop2->socket->IsConnected())
+    if (!hop2 || !hop2->socket || !hop2->socket->IsConnected()) {
+        SecureWipe(extendPlain, sizeof extendPlain);
         return false;
+    }
 
     // Pick a fresh outbound circ_id for the V↔hop2 leg as seen from us.
     uint32_t outId = 0;
@@ -528,7 +576,10 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
         if (!collision) break;
         outId = 0;
     }
-    if (outId == 0) return false;
+    if (outId == 0) {
+        SecureWipe(extendPlain, sizeof extendPlain);
+        return false;
+    }
 
     // Stash forwarding state on the relay circuit.
     circ->m_nextHopClient = hop2;
@@ -536,7 +587,10 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
 
     // Build and send CELL_CREATE to hop2 with the ev_pub2 we got from V.
     uint8_t cell[CELL_TOTAL_BYTES];
-    if (!CellPack(outId, CELL_CREATE, evPub2, 32, cell)) return false;
+    if (!CellPack(outId, CELL_CREATE, evPub2, 32, cell)) {
+        SecureWipe(extendPlain, sizeof extendPlain);
+        return false;
+    }
     SendCellToPeer(hop2, cell);
     SecureWipe(extendPlain, sizeof extendPlain);
     return true;

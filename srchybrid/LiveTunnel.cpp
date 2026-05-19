@@ -413,6 +413,21 @@ size_t CLiveTunnel::ActiveCircuitCount() const
     return n;
 }
 
+// v0.71 P3.8 — count circuits in flight (CREATE sent, CREATED not yet
+// received). Important to expose because a test_circuit against a non-fork
+// peer creates a Pending circuit that NEVER reaches Active (peer drops
+// the unknown opcode), and ActiveCircuitCount alone would show 0
+// throughout the entire 6s pending window, falsely suggesting nothing
+// happened.
+size_t CLiveTunnel::PendingCircuitCount() const
+{
+    CSingleLock lock(&m_lock, TRUE);
+    size_t n = 0;
+    for (auto& c : m_circuits)
+        if (c->State() == CircuitState::Pending) ++n;
+    return n;
+}
+
 size_t CLiveTunnel::RelayCircuitCount() const
 {
     CSingleLock lock(&m_lock, TRUE);

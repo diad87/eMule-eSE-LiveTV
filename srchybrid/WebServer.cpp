@@ -5036,7 +5036,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// This is the FIRST end-to-end demonstration of the data plane working
 	// through the onion tunnel. If circuits exist but the reply doesn't
 	// arrive within timeoutMs, returns ok:false with reason.
-	if (sURL.Left(31) == "/api/live/privacy/tunnel_ping") {
+	// "/api/live/privacy/tunnel_ping" is exactly 29 chars.
+	if (sURL.Left(29) == "/api/live/privacy/tunnel_ping") {
 		CString textArg = _ParseURL(Data.sURL, _T("text"));
 		if (textArg.IsEmpty()) textArg = _T("hello");
 		std::string text((LPCSTR)CStringA(textArg));

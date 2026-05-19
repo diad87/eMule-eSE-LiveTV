@@ -54,6 +54,24 @@ void CServer::init()
 	m_bstaticservermember = false;
 	m_bCryptPingReplyPending = false;
 	m_bTriedCryptOnce = false;
+	m_bHasV6Addr = false;
+	memset(m_v6Wire, 0, sizeof m_v6Wire);
+}
+
+void CServer::SetIPv6Wire(const byte* pucWire18)
+{
+	// Caller MUST hand us 18 bytes that pass CAddress::ReadFromBuffer's
+	// sanity check (family=6, length=16). We trust the caller because
+	// the only entry points are the server.met v2 parser (already
+	// validated by ReadFromBuffer) and explicit unit tests. Family byte
+	// at offset 0 must be 6.
+	if (!pucWire18 || pucWire18[0] != 6 || pucWire18[1] != 16) {
+		m_bHasV6Addr = false;
+		memset(m_v6Wire, 0, sizeof m_v6Wire);
+		return;
+	}
+	memcpy(m_v6Wire, pucWire18, 18);
+	m_bHasV6Addr = true;
 }
 
 CServer::CServer(const ServerMet_Struct *in_data)
@@ -107,6 +125,8 @@ CServer::CServer(const CServer *pOld)
 	m_bstaticservermember = pOld->IsStaticMember();
 	m_bCryptPingReplyPending = pOld->m_bCryptPingReplyPending;
 	m_bTriedCryptOnce = pOld->m_bTriedCryptOnce;
+	m_bHasV6Addr = pOld->m_bHasV6Addr;
+	memcpy(m_v6Wire, pOld->m_v6Wire, sizeof m_v6Wire);
 }
 
 bool CServer::AddTagFromFile(CFileDataIO &servermet)
@@ -227,6 +247,16 @@ bool CServer::AddTagFromFile(CFileDataIO &servermet)
 			m_nObfuscationPortUDP = (uint16)tag->GetInt();
 		else
 			ASSERT(0);
+		break;
+	case ST_IPV6:
+		// v0.71 IPv6 Sprint 8 — server.met v2 IPv6 address.
+		// Carried as a BLOB of 18 bytes (CAddress wire form). Older
+		// 0.70b clients don't recognise ST_IPV6 (0xA0) and silently
+		// drop the tag; new clients verify the wire form and stash it.
+		if (tag->IsBlob() && tag->GetBlobSize() == 18) {
+			SetIPv6Wire(tag->GetBlob());
+		}
+		// silently ignore malformed payloads — defense in depth
 		break;
 	default:
 		if (tag->GetNameID() == 0 && CmpED2KTagName(tag->GetName(), "files") == 0) {

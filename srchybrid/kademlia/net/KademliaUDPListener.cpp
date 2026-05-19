@@ -31,6 +31,7 @@ their client on the eMule forum.
 */
 
 #include "stdafx.h"
+#include "../../LiveDebugLog.h"
 #include "clientlist.h"
 #include "ClientUDPSocket.h"
 #include "emule.h"
@@ -52,6 +53,11 @@ their client on the eMule forum.
 #include "kademlia/kademlia/Indexed.h"
 #include "kademlia/kademlia/Defines.h"
 #include "kademlia/kademlia/Entry.h"
+#include "kademlia/kademlia/KadV2Defines.h"    // F1: Kad Search v2 M3/M5/M6
+#include "kademlia/kademlia/KadV2Sharding.h"
+#include "kademlia/kademlia/KadV2BloomFilter.h"
+#include "kademlia/kademlia/KadV2KEffective.h"
+#include "kademlia/kademlia/KadV2Stats.h"
 #include "kademlia/kademlia/UDPFirewallTester.h"
 #include "kademlia/routing/RoutingZone.h"
 #include "kademlia/routing/Contact.h"
@@ -463,6 +469,95 @@ void CKademliaUDPListener::ProcessPacket(const byte *pbyData, uint32 uLenData, u
 		if (thePrefs.GetDebugClientKadUDPLevel() > 0)
 			DebugRecv("KADEMLIA_ESE_HOLEPUNCH_ACK", uIP, uUDPPort);
 		Process_ESE_HOLEPUNCH_ACK(pbyPacketData, uLenData, uIP, uUDPPort, senderUDPKey);
+		break;
+
+	// v0.71 IPv6 Sprint 4 — Kad3 v6-aware opcodes (parse-and-drop until
+	// a v6 routing zone exists). See KademliaUDPListener.h comment block.
+	case KADEMLIA3_BOOTSTRAP_REQ:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_BOOTSTRAP_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_BOOTSTRAP_RES:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_BOOTSTRAP_RES", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_HELLO_REQ:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_HELLO_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_HELLO_RES:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_HELLO_RES", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_REQ:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_RES:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_RES", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_PING_REQ:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_PING_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_PING_RES:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_PING_RES", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_HOLEPUNCH_REQ:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_HOLEPUNCH_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_HOLEPUNCH_FWD:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_HOLEPUNCH_FWD", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA3_HOLEPUNCH_ACK:
+		Process_KADEMLIA3_GENERIC("KADEMLIA3_HOLEPUNCH_ACK", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+
+	// === F1 (unified plan) — Kad Search v2 M3/M5 wire handlers ============
+	// M3 sharding announce parses payload and feeds CKadV2Sharding cache.
+	// M5 bloom digest and local query are not yet wired to the actual file
+	// index (file index integration is F1.5 work); for now we count
+	// receipts so /api/live/debug reflects activity.
+	// M4 trigrams (PUBLISH/SEARCH) stay as stubs — F8 implements them.
+	case KADEMLIA2_KEY_SHARD_ANNOUNCE:
+		{
+			Kademlia::CUInt128 uTarget;
+			uint8 sNew = 0;
+			uint32 validUntil = 0;
+			if (Kademlia::CKadV2Sharding::ParseAnnounce(pbyPacketData, uLenData, uTarget, sNew, validUntil)) {
+				Kademlia::CKadV2Sharding::Get().OnShardAnnounceReceived(uTarget, sNew, validUntil);
+				DebugLog(_T("KadV2 M3: shard announce s=%u valid_until=%u from %s"),
+					(unsigned)sNew, (unsigned)validUntil, (LPCTSTR)ipstr(htonl(uIP)));
+			} else {
+				DebugLog(_T("KadV2 M3: malformed KEY_SHARD_ANNOUNCE from %s (len=%u)"),
+					(LPCTSTR)ipstr(htonl(uIP)), (unsigned)uLenData);
+			}
+		}
+		break;
+	case KADEMLIA2_BLOOM_DIGEST_REQ:
+		{
+			// F1: count + log; full reception path (per-neighbour quota,
+			// CKadV2BloomFilter::DeserializeFrom + cache by senderID) is
+			// F1.5 work. Currently we tally receipts for visibility.
+			Kademlia::CKadV2Stats::Get().OnBloomRx();
+			DebugLog(_T("KadV2 M5: BLOOM_DIGEST_REQ from %s (len=%u) — cache integration pending F1.5"),
+				(LPCTSTR)ipstr(htonl(uIP)), (unsigned)uLenData);
+		}
+		break;
+	case KADEMLIA2_LOCAL_QUERY_REQ:
+		{
+			Kademlia::CKadV2Stats::Get().OnLocalQueryRx();
+			DebugLog(_T("KadV2 M5: LOCAL_QUERY_REQ from %s (len=%u) — index lookup pending F1.5"),
+				(LPCTSTR)ipstr(htonl(uIP)), (unsigned)uLenData);
+		}
+		break;
+	case KADEMLIA2_LOCAL_QUERY_RES:
+		{
+			// Receiving a response without having issued the query is
+			// invalid; ignore quietly.
+			DebugLog(_T("KadV2 M5: unsolicited LOCAL_QUERY_RES from %s — dropping"),
+				(LPCTSTR)ipstr(htonl(uIP)));
+		}
+		break;
+	case KADEMLIA2_PUBLISH_TRIGRAM_REQ:
+		Process_KADEMLIA3_GENERIC("[STUB F8] KADEMLIA2_PUBLISH_TRIGRAM_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		break;
+	case KADEMLIA2_SEARCH_TRIGRAM_REQ:
+		Process_KADEMLIA3_GENERIC("[STUB F8] KADEMLIA2_SEARCH_TRIGRAM_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
 		break;
 
 	// old Kad1 opcodes which we don't handle any more
@@ -1336,7 +1431,14 @@ void CKademliaUDPListener::Process_KADEMLIA2_PUBLISH_KEY_REQ(const byte *pbyPack
 			throw;
 		}
 
-		if (bEseLiveEntry)
+		// eSE Live: derive TAG_SOURCEIP from packet source ONLY if we have a
+		// valid uIP. If uIP is 0 (self-publish via loopback, broken NAT, etc.)
+		// the holder must NOT override the publisher's own TAG_SOURCEIP tag
+		// with 0 — that would set viewer-side uLiveIP=0 and cause every
+		// result to be REJECTED at LiveKadBridge.cpp:523 as invalid endpoint.
+		// Pair this guard with Search.cpp's explicit TAG_SOURCEIP in the
+		// publish so the entry stays reachable end-to-end.
+		if (bEseLiveEntry && uIP != 0)
 			pEntry->AddTag(new CKadTagUInt(TAG_SOURCEIP, htonl(uIP)));
 
 		if (!CKademlia::GetIndexed()->AddKeyword(uFile, uTarget, pEntry, uLoad)) {
@@ -2207,6 +2309,11 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, 
 	DebugLog(_T("eSE: HOLEPUNCH_ACK from %s:%u nonce=0x%08X — pinhole ready (total: %u/%u)"),
 		(LPCTSTR)ipstr(htonl(uIP)), uResponderUDPPort, uNonce,
 		CStatistics::m_dwHolePunchSuccess, CStatistics::m_dwHolePunchAttempts);
+	CLiveDebugLog::Get().Append("HOLE",
+		"SUCCESS pinhole to %S:%u  total %u/%u",
+		(LPCWSTR)ipstr(htonl(uIP)), (unsigned)uResponderUDPPort,
+		(unsigned)CStatistics::m_dwHolePunchSuccess,
+		(unsigned)CStatistics::m_dwHolePunchAttempts);
 
 	// Prepare sockaddr for the remote peer endpoint
 	SOCKADDR_IN sa = {};
@@ -2227,4 +2334,28 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, 
 		// The RESPONDER is passively waiting via on_utp_accept.
 		theApp.clientudp->InitiateUtpConnect(uIP, uResponderUDPPort);
 	}
+}
+
+// v0.71 IPv6 Sprint 4 — Kad3 (v6-aware) generic stub handler.
+// Logs the receipt of any 0x02/0x0A/0x12/0x1A/0x23/0x2A/0x61/0x62/0x63/0x64/0x65
+// packet at debug level and drops the body. We deliberately do NOT:
+//   - Parse the CAddress payload (would require careful malformed-input
+//     handling that's not justified until a real v6 routing zone exists).
+//   - Insert any contact into the existing v4 routing zone (would
+//     pollute its bucket invariants).
+//   - Send a v3 response (would require us to have a v6 socket bound
+//     and an identity to advertise; Sprint 6/9 work).
+// The packet is therefore wire-reserved but inert. Older 0.70b nodes
+// don't know these opcodes at all, so this fork sending v3 packets to
+// non-fork peers would just be dropped — which is why we gate any
+// sending behind CAP_FORK_IPV6_WIRE handshake (Sprint 6).
+void CKademliaUDPListener::Process_KADEMLIA3_GENERIC(const char *szOpcodeName,
+    const byte * /*pbyPacketData*/, uint32 uLenPacket,
+    uint32 uIP, uint16 uUDPPort)
+{
+    if (thePrefs.GetDebugClientKadUDPLevel() > 0) {
+        DebugRecv(szOpcodeName, uIP, uUDPPort);
+    }
+    DebugLog(_T("Kad3: %hs from %s:%u (len=%u) — v6 routing zone not yet integrated, dropping"),
+        szOpcodeName, (LPCTSTR)ipstr(htonl(uIP)), uUDPPort, uLenPacket);
 }

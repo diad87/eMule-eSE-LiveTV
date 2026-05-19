@@ -177,15 +177,59 @@ module.exports = function getLivePlayerHTML() {
       }
       video.play().catch(()=>{});
     });
+    // Sprint 2 E.2 — Auto-reconnect with exponential backoff (no full page reload).
+    // Previously a single fatal error reloaded the page (lost player state, scroll
+    // position, video element, every wizard input). Now we rebuild ONLY the hls.js
+    // pipeline with capped exponential backoff (1s → 2s → 4s → 8s → 16s, then 16s).
+    var __reconnectTry = 0;
+    var __reconnectTimer = null;
+    function __scheduleReconnect(reason) {
+      if (__reconnectTimer) return;
+      var delay = Math.min(16000, 1000 * Math.pow(2, __reconnectTry));
+      __reconnectTry++;
+      statusEl.textContent = '\\ud83d\\udd34 ' + reason + ' \\u2014 reintentando en ' + (delay/1000) + 's (#' + __reconnectTry + ')';
+      statusEl.className = 'error';
+      __reconnectTimer = setTimeout(function(){
+        __reconnectTimer = null;
+        try { hls.destroy(); } catch(e) {}
+        // Re-create with same config (HLS_CONFIG is the object literal above, captured)
+        // Simpler: just re-loadSource on a brand new instance.
+        var newHls = new Hls({
+          liveSyncDurationCount: 3,
+          liveMaxLatencyDurationCount: 6,
+          liveDurationInfinity: true,
+          enableWorker: true,
+          lowLatencyMode: false,
+          maxBufferLength: 30,
+          maxMaxBufferLength: 60,
+          maxBufferHole: 2,
+          backBufferLength: 0,
+          manifestLoadingMaxRetry: 50,
+          levelLoadingMaxRetry: 50,
+          fragLoadingMaxRetry: 50,
+        });
+        window.hls = newHls;
+        // Re-attach the same event handlers
+        newHls.on(Hls.Events.MANIFEST_PARSED, function(){
+          statusEl.textContent = '\\ud83d\\udfe2 Reconnected — jumping to live...';
+          statusEl.className = 'connected';
+          if (newHls.liveSyncPosition) video.currentTime = newHls.liveSyncPosition;
+          video.play().catch(function(){});
+          __reconnectTry = 0;  // reset backoff on success
+        });
+        newHls.on(Hls.Events.ERROR, hls.listeners(Hls.Events.ERROR)[0] || function(){});
+        newHls.loadSource('/hls/stream.m3u8');
+        newHls.attachMedia(video);
+        hls = newHls;
+      }, delay);
+    }
     hls.on(Hls.Events.ERROR, (e, data) => {
       if (data.fatal) {
-        statusEl.textContent = '\\ud83d\\udd34 Stream error \\u2014 will retry...';
-        statusEl.className = 'error';
         if (data.type === 'mediaError') {
-          hls.recoverMediaError();
+          statusEl.textContent = '\\ud83d\\udfe1 Recovering media error...';
+          try { hls.recoverMediaError(); } catch(err) { __scheduleReconnect('mediaError'); }
         } else {
-          hls.destroy();
-          setTimeout(() => { location.reload(); }, 3000);
+          __scheduleReconnect(data.type || 'fatal error');
         }
       }
     });

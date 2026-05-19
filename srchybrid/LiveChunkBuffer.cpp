@@ -2,6 +2,7 @@
 // eSE — Live Chunk Buffer Implementation
 #include "stdafx.h"
 #include "LiveChunkBuffer.h"
+#include "LiveDebugLog.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -36,16 +37,40 @@ void CLiveChunkBuffer::AddSegment(const uchar* streamKey, uint32 seqNum,
         memcpy(m_streamKey, streamKey, 16);
 
     // Don't accept segments for a different stream
-    if (memcmp(m_streamKey, streamKey, 16) != 0)
+    if (memcmp(m_streamKey, streamKey, 16) != 0) {
+        LIVE_LOG("CHUNK", "REJECT seq=%u: wrong streamKey", seqNum);
         return;
+    }
 
-    // Don't accept old segments (already evicted from window)
-    if (m_count > 0 && seqNum <= m_newestSeq - ESE_LIVE_MAX_SEGMENTS)
+    // Don't accept old segments (already evicted from window).
+    //
+    // CRITICAL BUG FIX (15 May 2026):
+    // The original guard was `seqNum <= m_newestSeq - ESE_LIVE_MAX_SEGMENTS`.
+    // When m_newestSeq < 16 (the first 16 segments of any broadcast), the
+    // subtraction underflows uint32 to ~4.29e9, so EVERY subsequent seqNum
+    // matched the guard and got rejected as "old". The buffer would only
+    // ever contain the very first segment (seq=0) and never grow.
+    //
+    // Symptom in production: broadcaster reports broadcasting=true,
+    // hls.segmentsWritten=N (large), but chunks.count=1 forever. PC2 viewers
+    // would receive only seq=0 and then stall — no new chunks ever arriving.
+    //
+    // Fix: only apply the eviction guard once the broadcast has ramped past
+    // the ring-buffer size (m_newestSeq >= ESE_LIVE_MAX_SEGMENTS). Before
+    // that, every new seqNum is welcome.
+    if (m_count > 0
+        && m_newestSeq >= ESE_LIVE_MAX_SEGMENTS
+        && seqNum <= m_newestSeq - ESE_LIVE_MAX_SEGMENTS) {
+        LIVE_LOG("CHUNK", "REJECT seq=%u: too old (newest=%u, window=%d)",
+            seqNum, m_newestSeq, ESE_LIVE_MAX_SEGMENTS);
         return;
+    }
 
     // Don't accept duplicates
-    if (HasSegment(seqNum))
+    if (HasSegment(seqNum)) {
+        LIVE_LOG("CHUNK", "REJECT seq=%u: duplicate", seqNum);
         return;
+    }
 
     // Delete old segment in this slot
     delete m_segments[m_writePos];
@@ -78,6 +103,9 @@ void CLiveChunkBuffer::AddSegment(const uchar* streamKey, uint32 seqNum,
         // Buffer full: oldest moves forward
         m_oldestSeq = m_newestSeq - ESE_LIVE_MAX_SEGMENTS + 1;
     }
+
+    LIVE_LOG("CHUNK", "ACCEPT seq=%u size=%u kbps=%u  [count=%d, range=%u..%u]",
+        seqNum, dataSize, bitrate, m_count, m_oldestSeq, m_newestSeq);
 }
 
 const LiveChunk* CLiveChunkBuffer::GetSegment(uint32 seqNum) const
@@ -86,6 +114,16 @@ const LiveChunk* CLiveChunkBuffer::GetSegment(uint32 seqNum) const
     int slot = FindSlot(seqNum);
     if (slot < 0) return NULL;
     return m_segments[slot];
+}
+
+// v7.5.0 — UAF-safe accessor; lambda runs under the lock.
+bool CLiveChunkBuffer::WithSegment(uint32 seqNum, std::function<void(const LiveChunk&)> fn) const
+{
+    CSingleLock lock(&m_lock, TRUE);
+    int slot = FindSlot(seqNum);
+    if (slot < 0 || !m_segments[slot]) return false;
+    fn(*m_segments[slot]);
+    return true;
 }
 
 bool CLiveChunkBuffer::HasSegment(uint32 seqNum) const

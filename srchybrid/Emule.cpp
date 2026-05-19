@@ -438,11 +438,19 @@ BOOL CemuleApp::InitInstance()
 	///////////////////////////////////////////////////////////////////////////
 	// Install crash dump creation
 	//
-	theCrashDumper.uCreateCrashDump = GetProfileInt(_T("eMule"), _T("CreateCrashDump"), 0);
+	// D7: default to ENABLED (was 0) so every release crash leaves a .dmp
+	// for the user. Writes to a dedicated crashdumps/ subdir under the
+	// config dir to keep %APPDATA%\eMule\ tidy. Mode "1" = ask before
+	// writing the dump; mode "2" = write silently. Mode "0" disables.
+	theCrashDumper.uCreateCrashDump = GetProfileInt(_T("eMule"), _T("CreateCrashDump"), 1);
 #if !defined(_BETA) && !defined(_DEVBUILD)
 	if (theCrashDumper.uCreateCrashDump > 0)
 #endif
-		theCrashDumper.Enable(_T("eMule ") + m_strCurVersionLongDbg, true, sConfDir);
+	{
+		CString sCrashDir = sConfDir + _T("crashdumps\\");
+		::CreateDirectory(sCrashDir, NULL);   // OK if it already exists
+		theCrashDumper.Enable(_T("eMule ") + m_strCurVersionLongDbg, true, sCrashDir);
+	}
 
 	///////////////////////////////////////////////////////////////////////////
 	// Locale initialization -- BE VERY CAREFUL HERE!!!
@@ -509,6 +517,22 @@ BOOL CemuleApp::InitInstance()
 	// create & initialize all the important stuff
 	thePrefs.Init();
 	theStats.Init();
+
+	// V2-S07+ (port override, second pass): thePrefs.Init() just read the .ini
+	// and clobbered our pre-mutex SetPort(). Re-apply the cmdline overrides so
+	// the listen sockets bind on the headless-specific ports. The first SetPort
+	// in ProcessCommandline still matters for the mutex name (so multiple
+	// instances coexist); this pass makes the actual networking match.
+	if (m_uHeadlessTcpPort > 0)
+		CPreferences::SetPort(m_uHeadlessTcpPort);
+	if (m_uHeadlessUdpPort > 0)
+		CPreferences::SetUDPPort(m_uHeadlessUdpPort);
+
+	// V2-S07+: in headless mode, regenerate a random userhash so the
+	// broadcaster (sharing preferences.ini on the same host) doesn't think
+	// the inbound HELLO is "self" and reject the SUBSCRIBE.
+	if (m_bHeadless)
+		CPreferences::RegenerateUserHash();
 
 	// check if we have to restart eMule as Secure user
 	if (thePrefs.IsRunAsUserEnabled()) {
@@ -661,6 +685,13 @@ int CemuleApp::ExitInstance()
 {
 	AddDebugLogLine(DLP_VERYLOW, _T("%hs"), __FUNCTION__);
 
+	// DISC-S01: explicit broadcast teardown BEFORE the manager destructor
+	// runs. StopBroadcastFull() invokes UnpublishStream(), which now
+	// publishes a Kad tombstone so other nodes evict our entry within
+	// seconds instead of waiting for the ~10 min DHT TTL.
+	if (liveStreamManager && liveStreamManager->IsBroadcasting())
+		liveStreamManager->StopBroadcastFull();
+
 	if (m_wTimerRes != 0)
 		timeEndPeriod(m_wTimerRes);
 
@@ -704,10 +735,21 @@ int eMuleAllocHook(int mode, void *pUserData, size_t nSize, int nBlockUse, long 
 bool CemuleApp::ProcessCommandline()
 {
 	bool bIgnoreRunningInstances = (GetProfileInt(_T("eMule"), _T("IgnoreInstances"), 0) != 0);
+
+	// V2-S06/S07: defaults
+	m_bHeadless           = false;
+	m_bSelfTest           = false;
+	m_uHeadlessMetricsPort = 0;
+	m_uHeadlessTcpPort    = 0;
+	m_uHeadlessUdpPort    = 0;
+	m_strHeadlessJoinKey.Empty();
+
 	for (int i = 1; i < __argc; ++i) {
 		LPCTSTR pszParam = __targv[i];
 		if (pszParam[0] == _T('-') || pszParam[0] == _T('/')) {
 			++pszParam;
+			// strip second leading dash so both --flag and -flag work
+			if (*pszParam == _T('-')) ++pszParam;
 #ifdef _DEBUG
 			if (_tcsicmp(pszParam, _T("assertfile")) == 0)
 				_CrtSetReportHook(CrtDebugReportCB);
@@ -715,16 +757,50 @@ bool CemuleApp::ProcessCommandline()
 			bIgnoreRunningInstances |= (_tcsicmp(pszParam, _T("ignoreinstances")) == 0);
 
 			m_bAutoStart |= (_tcsicmp(pszParam, _T("AutoStart")) == 0);
+
+			// V2-S06: --headless / --selftest flags
+			m_bHeadless    |= (_tcsicmp(pszParam, _T("headless")) == 0);
+			m_bSelfTest    |= (_tcsicmp(pszParam, _T("selftest")) == 0);
+
+			// V2-S06: --viewer=<HEX32>
+			if (_tcsnicmp(pszParam, _T("viewer="), 7) == 0) {
+				m_strHeadlessJoinKey = pszParam + 7;
+				m_bHeadless = true;  // implies headless
+			}
+			// V2-S07: --metrics-port=<N>
+			if (_tcsnicmp(pszParam, _T("metrics-port="), 13) == 0) {
+				m_uHeadlessMetricsPort = (uint16)_ttoi(pszParam + 13);
+			}
+			// V2-S07+: --tcp-port=<N> and --udp-port=<N> for multi-instance
+			// stress on a single host. Each headless gets unique eD2K ports
+			// so they can all hold HighID + bootstrap Kad independently.
+			if (_tcsnicmp(pszParam, _T("tcp-port="), 9) == 0) {
+				m_uHeadlessTcpPort = (uint16)_ttoi(pszParam + 9);
+			}
+			if (_tcsnicmp(pszParam, _T("udp-port="), 9) == 0) {
+				m_uHeadlessUdpPort = (uint16)_ttoi(pszParam + 9);
+			}
 		}
 	}
 
 	CCommandLineInfo cmdInfo;
 	ParseCommandLine(cmdInfo);
 
+	// V2-S07+: apply cmdline TCP/UDP port overrides BEFORE the single-instance
+	// mutex check. The mutex name embeds the TCP port, so distinct overrides
+	// produce distinct mutex names -> multiple processes coexist (each can
+	// independently bind its own listen sockets and bootstrap Kad).
+	if (m_uHeadlessTcpPort > 0)
+		CPreferences::SetPort(m_uHeadlessTcpPort);
+	if (m_uHeadlessUdpPort > 0)
+		CPreferences::SetUDPPort(m_uHeadlessUdpPort);
+
 	// If we create our TCP listen socket with SO_REUSEADDR, we have to ensure that there are
 	// no 2 eMules are running on the same port.
 	// NOTE: This will not prevent from some other application using that port!
-	UINT uTcpPort = GetProfileInt(_T("eMule"), _T("Port"), DEFAULT_TCP_PORT_OLD);
+	UINT uTcpPort = (m_uHeadlessTcpPort > 0)
+		? m_uHeadlessTcpPort
+		: GetProfileInt(_T("eMule"), _T("Port"), DEFAULT_TCP_PORT_OLD);
 	CString strMutextName;
 	strMutextName.Format(_T("%s:%u"), EMULE_GUID, uTcpPort);
 	m_hMutexOneInstance = CreateMutex(NULL, FALSE, strMutextName);
@@ -1292,7 +1368,7 @@ HICON CemuleApp::LoadIcon(LPCTSTR lpszResourceName, int cx, int cy, UINT uFlags)
 				}
 			} else {
 				// WINBUG???: 'ExtractIcon' does not work well on ICO-files when using the color
-				// scheme 'Windows-Standard (extragroß)' -> always try to use 'LoadImage'!
+				// scheme 'Windows-Standard (extragroï¿½)' -> always try to use 'LoadImage'!
 				//
 				// If the ICO file contains a 16x16 icon, 'LoadImage' will though return a 32x32 icon,
 				// if LR_DEFAULTSIZE is specified! -> always specify the requested size!

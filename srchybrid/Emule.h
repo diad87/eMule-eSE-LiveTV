@@ -239,6 +239,21 @@ protected:
 	bool		m_bGuardClipboardPrompt;
 	bool		m_bAutoStart;
 
+public:
+	// V2-S06/S07: headless viewer mode for stress testing.
+	// --headless                  -> bypass main UI ShowWindow
+	// --viewer=<32hexkey>         -> auto-JoinStream after Kad bootstrap
+	// --metrics-port=<port>       -> override WebServer port (S07)
+	// --tcp-port=<N>              -> override eD2K TCP listen port (multi-instance)
+	// --udp-port=<N>              -> override eD2K UDP/Kad listen port (multi-instance)
+	// --selftest                  -> run a 5s broadcast+stop smoke test then exit
+	bool		m_bHeadless;
+	bool		m_bSelfTest;
+	uint16		m_uHeadlessMetricsPort;
+	uint16		m_uHeadlessTcpPort;
+	uint16		m_uHeadlessUdpPort;
+	CString		m_strHeadlessJoinKey;
+
 	DECLARE_MESSAGE_MAP()
 	afx_msg void OnHelp();
 

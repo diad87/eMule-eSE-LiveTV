@@ -3,6 +3,7 @@
 // Thread-safe circular buffer for HLS segments.
 #pragma once
 
+#include <functional>
 #include "LiveProtocol.h"
 
 class CLiveChunkBuffer {
@@ -14,9 +15,20 @@ public:
     void AddSegment(const uchar* streamKey, uint32 seqNum, uint32 timestamp,
                     const BYTE* data, uint32 dataSize, uint16 bitrate);
 
-    // Get a segment by sequence number (returns NULL if not in buffer)
-    // Caller must NOT delete the returned pointer.
+    // v7.5.0 — DEPRECATED legacy raw-pointer accessor. NOT thread-safe: the
+    // returned pointer is valid only WHILE m_lock is held, but the lock is
+    // released when this function returns, so any subsequent dereference is
+    // a use-after-free if another thread runs AddSegment in between. New
+    // callers MUST use WithSegment(); kept for source-compat with forks.
     const LiveChunk* GetSegment(uint32 seqNum) const;
+
+    // v7.5.0 — Thread-safe segment accessor. Runs `fn` with a const reference
+    // to the segment while the internal lock is held. Returns true if the
+    // segment was found and `fn` ran; false otherwise.
+    // The `fn` lambda MUST NOT call back into this buffer (would re-enter
+    // the lock). It should copy what it needs (e.g. build a Packet that owns
+    // its own data buffer) before returning.
+    bool WithSegment(uint32 seqNum, std::function<void(const LiveChunk&)> fn) const;
 
     // Check if a specific segment is available
     bool HasSegment(uint32 seqNum) const;

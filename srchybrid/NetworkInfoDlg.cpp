@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "emule.h"
 #include "NetworkInfoDlg.h"
 #include "RichEditCtrlX.h"
@@ -13,6 +13,15 @@
 #include "kademlia/kademlia/indexed.h"
 #include "WebServer.h"
 #include "clientlist.h"
+#include "ListenSocket.h"        // v0.71 IPv6 Sprint 9 — IsDualStack()
+#include "FirewallProberV6.h"    // v0.71 IPv6 Sprint 3 — GetDetectedV6IP()
+// v0.71 P2.1 — Privacidad block. Reads live state from the privacy
+// singletons so the user can verify the modules are actually running.
+#include "LiveTunnel.h"
+#include "LiveSubscriptionStore.h"
+#include "kademlia/kademlia/KadV2TunnelPool.h"
+#include "kademlia/kademlia/KadV2ModeSelector.h"
+#include "Opcodes.h"   // g_uEseCapsRuntime + ESE_CAP_* bits
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -25,10 +34,18 @@ static char THIS_FILE[] = __FILE__;
 IMPLEMENT_DYNAMIC(CNetworkInfoDlg, CDialog)
 
 BEGIN_MESSAGE_MAP(CNetworkInfoDlg, CResizableDialog)
+	ON_WM_TIMER()        // v0.71 P3.9 — periodic refresh
+	ON_WM_DESTROY()
 END_MESSAGE_MAP()
 
 CNetworkInfoDlg::CNetworkInfoDlg(CWnd *pParent /*=NULL*/)
 	: CResizableDialog(CNetworkInfoDlg::IDD, pParent)
+{
+	ZeroMemory(&m_rcfDef, sizeof m_rcfDef);
+	ZeroMemory(&m_rcfBold, sizeof m_rcfBold);
+}
+
+CNetworkInfoDlg::~CNetworkInfoDlg()
 {
 }
 
@@ -79,9 +96,62 @@ BOOL CNetworkInfoDlg::OnInitDialog()
 		cfBold.dwEffects |= CFE_BOLD;
 	}
 
+	// v0.71 P3.9 — cache the formats so the timer refresh can re-render
+	// without re-querying them every tick.
+	m_rcfDef  = cfDef;
+	m_rcfBold = cfBold;
+
 	CreateNetworkInfo(m_info, cfDef, cfBold, true);
 	DisableAutoSelect(m_info);
+
+	// v0.71 P3.9 — periodic refresh (every 2 s) so live counters
+	// (privacy circuits, connection state, IP) update without the user
+	// having to close+reopen the dialog. Cost is one full text rebuild
+	// every 2 s — cheap, no perceivable CPU.
+	m_nRefreshTimer = SetTimer(0xE5E1 /* eSE Info ID */, 2000, NULL);
 	return TRUE;
+}
+
+// v0.71 P3.9 — full re-render of the rich-edit content, preserving the
+// user's scroll position so the panel doesn't jump while they're reading.
+void CNetworkInfoDlg::RefreshNow()
+{
+	if (theApp.IsClosing()) return;
+
+	// Save scroll position so the refresh doesn't yank the viewport.
+	CPoint scroll(0, 0);
+	m_info.GetScrollPos(SB_HORZ);  // dummy to trigger; not strictly needed
+	int yPos = m_info.GetFirstVisibleLine();
+
+	m_info.SetRedraw(FALSE);
+	m_info.SetSel(0, -1);
+	m_info.ReplaceSel(_T(""));
+	CreateNetworkInfo(m_info, m_rcfDef, m_rcfBold, true);
+	DisableAutoSelect(m_info);
+	// Restore scroll
+	int curLine = m_info.GetFirstVisibleLine();
+	if (curLine != yPos)
+		m_info.LineScroll(yPos - curLine);
+	m_info.SetRedraw(TRUE);
+	m_info.Invalidate();
+}
+
+void CNetworkInfoDlg::OnTimer(UINT_PTR nIDEvent)
+{
+	if (nIDEvent == 0xE5E1) {
+		RefreshNow();
+		return;
+	}
+	CResizableDialog::OnTimer(nIDEvent);
+}
+
+void CNetworkInfoDlg::OnDestroy()
+{
+	if (m_nRefreshTimer) {
+		KillTimer(m_nRefreshTimer);
+		m_nRefreshTimer = 0;
+	}
+	CResizableDialog::OnDestroy();
 }
 
 void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rcfBold, bool bFullInfo)
@@ -100,6 +170,172 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 		rCtrl << _T("UDP ") << GetResString(IDS_PORT) << _T(":\t") << thePrefs.GetUDPPort() << _T("\r\n");
 		rCtrl << _T("\r\n");
 	}
+
+	///////////////////////////////////////////////////////////////////////////
+	// v0.71 IPv6 Sprint 9 — Connectivity (IPv4 / IPv6)
+	///////////////////////////////////////////////////////////////////////////
+	rCtrl.SetSelectionCharFormat(rcfBold);
+	rCtrl << _T("Conectividad\r\n");
+	rCtrl.SetSelectionCharFormat(rcfDef);
+
+	// Modo (pref del usuario). Texto con escapes \u00xx para tildes y
+	// — (em-dash) porque el .cpp está en Windows-1252 sin BOM y
+	// MSVC interpretaría los UTF-8 raw como mojibake (pública -> pÃºblica).
+	rCtrl << _T("Modo:\t");
+	switch (thePrefs.GetIPv6Mode()) {
+		case CPreferences::IPv6OffMode:       rCtrl << _T("IPv4 (IPv6 desactivado)"); break;
+		case CPreferences::IPv6AutoMode:      rCtrl << _T("Auto (v4 listener + v6 prober)"); break;
+		case CPreferences::IPv6PreferredMode: rCtrl << _T("IPv6 preferido (dual-stack experimental)"); break;
+		default:                              rCtrl << _T("?"); break;
+	}
+	rCtrl << _T("\r\n");
+
+	// Estado real del listener (independiente de la pref). Auto deja el
+	// listener en v4 puro (HighID estable) y solo corre el prober v6
+	// para mostrar la IP pública v6. Dual-stack TCP es opt-in en modo
+	// "IPv6 preferido" — ver comentario en ListenSocket::StartListening.
+	rCtrl << _T("Listener:\t");
+	if (theApp.listensocket && theApp.listensocket->IsDualStack()) {
+		rCtrl << _T("Dual-stack ([::]:") << thePrefs.GetPort() << _T(", IPV6_V6ONLY=0)");
+	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
+		// "AF_INET6 fallo - ver log" con escapes Unicode (ó = o-acute, — = em-dash).
+		rCtrl << _T("IPv4 solo (dual-stack pedido pero AF_INET6 falló — ver log)");
+	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6AutoMode) {
+		rCtrl << _T("IPv4 (0.0.0.0:") << thePrefs.GetPort() << _T(") + prober v6 activo");
+	} else {
+		rCtrl << _T("IPv4 solo (0.0.0.0:") << thePrefs.GetPort() << _T(")");
+	}
+	rCtrl << _T("\r\n");
+
+	// "IP pública v4" con escape para la "ú" (ú).
+	if (theApp.GetPublicIP() != 0) {
+		rCtrl << _T("IP pública v4:\t") << ipstr(theApp.GetPublicIP()) << _T("\r\n");
+	}
+	// "IP pública v6" + mensaje con escapes para "público", "—", "aún".
+	rCtrl << _T("IP pública v6:\t");
+	{
+		CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+		if (v6.IsNull())
+			rCtrl << _T("(sin IPv6 público — ISP no provee o probe aún corriendo)");
+		else
+			rCtrl << v6.ToStringC();
+	}
+	rCtrl << _T("\r\n");
+
+	rCtrl << _T("\r\n");
+
+	///////////////////////////////////////////////////////////////////////////
+	// v0.71 P2.1 — Privacidad (eSE V1)
+	///////////////////////////////////////////////////////////////////////////
+	// Este bloque demuestra al usuario qué partes del stack de privacidad
+	// (tesis de seguridad + Kad Search v2) están REALMENTE encendidas. La
+	// auditoría 2026-05-19 reveló que los módulos F2-F5 existían como
+	// código pero nadie los instanciaba en runtime. P0 los enchufa al
+	// arranque; este bloque hace visible que están vivos.
+	rCtrl.SetSelectionCharFormat(rcfBold);
+	rCtrl << _T("Privacidad (eSE V1)\r\n");
+	rCtrl.SetSelectionCharFormat(rcfDef);
+
+	{
+		using namespace Kademlia;
+		CKadV2ModeSelector& sel = CKadV2ModeSelector::Get();
+
+		// Modo activo (preferencia del usuario)
+		rCtrl << _T("Modo:\t");
+		switch (sel.GetDefaultMode()) {
+			case CKadV2Mode::Direct:   rCtrl << _T("Directo (sin onion routing)"); break;
+			case CKadV2Mode::Tunneled: rCtrl << _T("Tunelizado (todo a través de 2-hop onion)"); break;
+			case CKadV2Mode::Adaptive: rCtrl << _T("Adaptativo (decide por consulta)"); break;
+			default:                   rCtrl << _T("?"); break;
+		}
+		rCtrl << _T("\r\n");
+
+		// Política de fallback si faltan relays
+		rCtrl << _T("Fallback:\t");
+		switch (sel.GetFallbackPolicy()) {
+			case CKadV2ModeSelector::STRICT_PRIVACY: rCtrl << _T("Estricto (aborta si no hay relays)"); break;
+			case CKadV2ModeSelector::BALANCED:       rCtrl << _T("Equilibrado (reduce fanout)"); break;
+			case CKadV2ModeSelector::BEST_EFFORT:    rCtrl << _T("Best effort (cae a Directo y avisa)"); break;
+			default:                                 rCtrl << _T("?"); break;
+		}
+		rCtrl << _T("\r\n");
+
+		// Capabilities runtime — bitmap TAG_ESE_CAPS. Refleja qué módulos
+		// reales se han instanciado al arranque (P0.3). 0x00000000 sería
+		// señal de stack apagado.
+		rCtrl << _T("Capabilities:\t");
+		{
+			CString cs;
+			cs.Format(_T("0x%08X"), (unsigned)g_uEseCapsRuntime);
+			rCtrl << cs;
+			if (g_uEseCapsRuntime == 0) {
+				rCtrl << _T("  (stack apagado — privacy code no inicializado)");
+			} else {
+				rCtrl << _T("  [");
+				bool first = true;
+				#define APPEND_CAP(bit, name) \
+					do { if (g_uEseCapsRuntime & (bit)) { \
+						if (!first) rCtrl << _T(", "); \
+						rCtrl << _T(name); first = false; \
+					} } while (0)
+				APPEND_CAP(ESE_CAP_M1_SUBSCRIBER_PIN, "M1");
+				APPEND_CAP(ESE_CAP_M2_COMPOSITE_KEYS, "M2");
+				APPEND_CAP(ESE_CAP_M3_SHARDING,       "M3");
+				APPEND_CAP(ESE_CAP_M4_TRIGRAMS,       "M4");
+				APPEND_CAP(ESE_CAP_M5_BLOOM_GOSSIP,   "M5");
+				APPEND_CAP(ESE_CAP_M6_K_EFFECTIVE,    "M6");
+				APPEND_CAP(ESE_CAP_SEALED_RECORDS,    "Sealed");
+				APPEND_CAP(ESE_CAP_GOSSIP_PROTOCOL,   "Gossip");
+				APPEND_CAP(ESE_CAP_PRIVACY_TUNNELING, "Tunneling");
+				APPEND_CAP(ESE_CAP_COVER_TRAFFIC,     "Cover");
+				#undef APPEND_CAP
+				rCtrl << _T("]");
+			}
+		}
+		rCtrl << _T("\r\n");
+
+		// Circuitos onion. Mostramos pending + active separadamente
+		// porque un test_circuit contra peer legacy crea un Pending que
+		// NUNCA llega a Active — ocultar Pending hacía parecer que no
+		// pasaba nada (panel mostraba 0 todo el rato aunque el código
+		// sí enviase la cell). Honestidad > simplicidad.
+		size_t circuitsActive = 0;
+		size_t circuitsPending = 0;
+		size_t pool = 0;
+		size_t subs = 0;
+		try {
+			circuitsActive  = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
+			circuitsPending = eSELive::CLiveTunnel::Get().PendingCircuitCount();
+			pool            = CKadV2TunnelPool::Get().Size();
+			subs            = eSELive::CLiveSubscriptionStore::Get().Count();
+		} catch (...) {}
+
+		{
+			CString cs;
+			cs.Format(_T("%u activos / %u negociando / pool PST %u"),
+				(unsigned)circuitsActive, (unsigned)circuitsPending, (unsigned)pool);
+			rCtrl << _T("Onion tunnels:\t") << cs;
+			if (circuitsActive == 0 && circuitsPending == 0
+			    && sel.GetDefaultMode() != CKadV2Mode::Direct)
+			{
+				// P3 done: TCP send wired. No circuits anywhere means
+				// no fork peer has been encountered yet and no manual
+				// test has run.
+				rCtrl << _T("  (esperando peer eSE V1; prueba /api/live/privacy/test_circuit)");
+			} else if (circuitsActive == 0 && circuitsPending > 0) {
+				// Pending only — handshake in flight or doomed to time
+				// out against a legacy peer. Visible proof that send
+				// pipeline is working.
+				rCtrl << _T("  (negociando handshake — si el peer no es eSE V1, expira en ~6s)");
+			}
+			rCtrl << _T("\r\n");
+
+			cs.Format(_T("%u canales (DPAPI)"), (unsigned)subs);
+			rCtrl << _T("Suscripciones:\t") << cs << _T("\r\n");
+		}
+	}
+
+	rCtrl << _T("\r\n");
 
 	///////////////////////////////////////////////////////////////////////////
 	// ED2K

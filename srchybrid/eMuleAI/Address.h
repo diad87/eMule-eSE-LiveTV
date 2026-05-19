@@ -46,6 +46,35 @@ class CAddress
     const unsigned char* 	Data() const;
     const size_t	GetSize() const;
 
+    // ── v0.71 IPv6 Sprint 1 — wire serialization, hashing, subnet ops ──
+    // Wire format: [family 1B] [length 1B] [addr length B]
+    //   family=0 None : length=0, 0-byte addr   (total 2 bytes)
+    //   family=4 IPv4 : length=4, 4-byte addr   (total 6 bytes)
+    //   family=6 IPv6 : length=16, 16-byte addr (total 18 bytes)
+    // ReadFromBuffer returns false on malformed wire data.
+    void			WriteToBuffer(class CSafeMemFile* file) const;
+    bool			ReadFromBuffer(class CSafeMemFile* file);
+
+    // CMap<CAddress, ...> support — collides only on weak (full-byte) flips.
+    UINT			HashKey() const;
+
+    // Subnet ops for anti-Sybil and PeX diversity (per IPV6_PLAN.md ADR-05).
+    // prefixBits is 0..32 for IPv4 and 0..128 for IPv6.
+    CAddress		GetSubnet(int prefixBits) const;
+    bool			InSameSubnet(const CAddress& other, int prefixBits) const;
+
+    // Host-order convenience matching Kad's convention. (m_uIp in Contact is
+    // historically host-order, m_uNetIp network-order; ToUInt32(bool) already
+    // serves both via the bReverse param. These wrappers are sugar.)
+    static CAddress FromKadHostOrder(uint32 hostIp);
+    uint32			ToKadHostOrder() const;
+
+    // Synthetic uint32 representation of an IPv6 address. Lossy by design:
+    // intended ONLY for legacy data structures (e.g. CClientList CMap key)
+    // that haven't yet been migrated to CAddress. Never goes on the wire.
+    // High bit (0x80000000) is forced set to avoid collision with real v4.
+    uint32			ToSyntheticUInt32() const;
+
   protected:
     byte			m_IP[16];
     EAF				m_eAF;

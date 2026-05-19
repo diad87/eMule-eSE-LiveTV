@@ -1,0 +1,2 @@
+C:\Users\iunan\OneDrive\Desktop\eMule0.70b-Sources\.claude\worktrees\focused-bohr-b819cf\srchybrid\lang\x64\Dynamic\es_ES_T.dll
+C:\emule-ipv6-build\srchybrid\lang\x64\Dynamic\es_ES_T.dll

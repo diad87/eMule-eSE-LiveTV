@@ -20,6 +20,11 @@
 #include "ListenSocket.h"
 #include "opcodes.h"
 #include "LiveStreamManager.h"
+#include "LiveCrypto.h"        // v7.6.0 — StreamKeyMatchesPubkey
+#include "LiveTunnel.h"        // v0.71 P3.4 — OP_LIVE_TUNNEL_CELL dispatch
+#include "LiveCellQueue.h"     // v0.71 P3.4 — CELL_TOTAL_BYTES + CellUnpack
+#include "../cryptopp/sha.h"   // v7.7.0 — SHA256 for OP_LIVE_CHUNK_V2 verify
+#include "eMuleAI/Address.h"   // v0.71 IPv6 Sprint 7 — CAddress in PEER_LIST_V2
 #include "UpDownClient.h"
 #include "ClientList.h"
 #include "DownloadQueue.h"
@@ -875,7 +880,9 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT opcode, UINT uRawSize)
 {
 	try {
-		if (opcode >= OP_LIVE_ANNOUNCE && opcode <= OP_LIVE_PEER_LIST && !client->SupportsLiveP2P()) {
+		// v7.7.0 — range now includes 0xCC (OP_LIVE_CHUNK_V2). OP_LIVE_PEER_LIST=0xCA,
+		// PONG=0xCB, CHUNK_V2=0xCC; bump the upper bound accordingly.
+		if (opcode >= OP_LIVE_ANNOUNCE && opcode <= OP_LIVE_CHUNK_V2 && !client->SupportsLiveP2P()) {
 			theStats.AddDownDataOverheadOther(uRawSize);
 			DebugLogWarning(_T("Ignoring eSE live opcode 0x%02X from non-eSE client %s"),
 				opcode, (LPCTSTR)client->DbgGetClientInfo());
@@ -1797,6 +1804,72 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 						seqNum, timestamp, chunkData, chunkSize);
 			}
 			break;
+		case OP_LIVE_CHUNK_V2:
+			{
+				// v7.7.0 — signed chunk.
+				// Format: streamKey(16) + seqNum(4) + ts(4) + dataSize(4) + bitrate(2)
+				//        + sha256(32) + sig(64) + data(dataSize).
+				if (thePrefs.GetDebugClientTCPLevel() > 1)
+					DebugRecv("OP_LiveChunkV2", client, (size >= 16) ? packet : NULL);
+				theStats.AddDownDataOverheadOther(uRawSize);
+				if (size < 126) break;  // header alone
+
+				CSafeMemFile data(packet, size);
+				uchar streamKey[16];
+				data.ReadHash16(streamKey);
+				uint32 seqNum    = data.ReadUInt32();
+				uint32 timestamp = data.ReadUInt32();
+				uint32 chunkSize = data.ReadUInt32();
+				/*uint16 bitrate =*/ data.ReadUInt16();
+				uchar digest[32];
+				data.Read(digest, 32);
+				uchar sig[64];
+				data.Read(sig, 64);
+
+				if (chunkSize > size - 126 || chunkSize > 4 * 1024 * 1024) break;
+
+				const BYTE* chunkData = packet + 126;
+
+				// 1. Need a pinned pubkey for this streamKey; without it we
+				//    can't verify. Drop silently — V1 path will retry if/when
+				//    an ANNOUNCE carries the pubkey.
+				uchar pubkey[32];
+				if (!theApp.liveStreamManager ||
+				    !theApp.liveStreamManager->GetPinnedPubkey(streamKey, pubkey)) {
+					break;
+				}
+
+				// 2. Verify sha256(data) matches digest. Cheap integrity check
+				//    that also amortises the cost of the signature path: if a
+				//    peer corrupts even one byte we fail here before doing
+				//    the expensive Ed25519 verify.
+				{
+					CryptoPP::SHA256 hash;
+					uchar computed[32];
+					hash.CalculateDigest(computed, chunkData, chunkSize);
+					if (memcmp(computed, digest, 32) != 0) {
+						AddLogLine(true, _T("eSE Live: chunk seq=%u digest mismatch — dropping"), seqNum);
+						break;
+					}
+				}
+
+				// 3. Verify signature over (streamKey || seqNum || digest).
+				{
+					uchar signMsg[16 + 4 + 32];
+					memcpy(signMsg, streamKey, 16);
+					memcpy(signMsg + 16, &seqNum, 4);
+					memcpy(signMsg + 20, digest, 32);
+					if (!eSELive::VerifySignature(pubkey, signMsg, sizeof signMsg, sig)) {
+						AddLogLine(true, _T("eSE Live: chunk seq=%u bad signature — dropping"), seqNum);
+						break;
+					}
+				}
+
+				// All checks passed — hand to the manager exactly like V1.
+				theApp.liveStreamManager->OnChunkReceived(client, streamKey,
+					seqNum, timestamp, chunkData, chunkSize);
+			}
+			break;
 		case OP_LIVE_PEER_LIST:
 			{
 				if (thePrefs.GetDebugClientTCPLevel() > 0)
@@ -1809,6 +1882,14 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				data.ReadHash16(streamKey);
 				uint16 count = data.ReadUInt16();
 
+				// v7.5.0 — hard cap on peer-list size. A hostile peer that
+				// announces count=65535 would otherwise force us to launch
+				// up to 65535 TCP connect() attempts (FD exhaustion + SYN
+				// reflection). 16 candidates is plenty for mesh recovery.
+				const uint16 ESE_LIVE_MAX_PEER_LIST = 16;
+				if (count > ESE_LIVE_MAX_PEER_LIST)
+					count = ESE_LIVE_MAX_PEER_LIST;
+
 				CArray<DWORD> ips;
 				CArray<uint16> ports;
 				for (uint16 i = 0; i < count && data.GetPosition() + 6 <= data.GetLength(); i++) {
@@ -1818,6 +1899,42 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 
 				if (theApp.liveStreamManager)
 					theApp.liveStreamManager->OnPeerListReceived(client, streamKey, ips, ports);
+			}
+			break;
+		case OP_LIVE_PEER_LIST_V2:
+			{
+				// v0.71 IPv6 Sprint 7 — peer list with CAddress payload.
+				// Layout: <StreamKey 16><Count 2>(<CAddress 6 or 18><Port 2>) × Count
+				// Receiver cap is identical to OP_LIVE_PEER_LIST (16 entries).
+				if (thePrefs.GetDebugClientTCPLevel() > 0)
+					DebugRecv("OP_LivePeerListV2", client);
+				theStats.AddDownDataOverheadOther(uRawSize);
+				if (size < 18) break;
+				CSafeMemFile data(packet, size);
+				uchar streamKey[16];
+				data.ReadHash16(streamKey);
+				uint16 count = data.ReadUInt16();
+				const uint16 ESE_LIVE_MAX_PEER_LIST_V2 = 16;
+				if (count > ESE_LIVE_MAX_PEER_LIST_V2)
+					count = ESE_LIVE_MAX_PEER_LIST_V2;
+
+				// Sprint 7 follow-up: pass CAddress entries through to the
+				// V6-aware receiver, which splits v4 and v6 internally. v4
+				// peers reach the existing dial path; v6 peers are logged
+				// and counted until Sprint-4 Kad-v6 wires a real v6 socket
+				// helper to CUpDownClient (see OnPeerListReceivedV6 notes).
+				CArray<CAddress> addrs;
+				CArray<uint16> ports;
+				for (uint16 i = 0; i < count && data.GetPosition() + 4 <= data.GetLength(); ++i) {
+					CAddress addr;
+					if (!addr.ReadFromBuffer(&data)) break;
+					if (data.GetPosition() + 2 > data.GetLength()) break;
+					uint16 port = data.ReadUInt16();
+					addrs.Add(addr);
+					ports.Add(port);
+				}
+				if (theApp.liveStreamManager)
+					theApp.liveStreamManager->OnPeerListReceivedV6(client, streamKey, addrs, ports);
 			}
 			break;
 		case OP_LIVE_HEARTBEAT:
@@ -1835,6 +1952,25 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 
 				if (theApp.liveStreamManager)
 					theApp.liveStreamManager->OnPeerBitmap(client, streamKey, oldestSeq, bitmap);
+
+				// Decentralized Capa 1 (PEX): optional trailing block
+				// <pexCount 1><entry pexCount * 22>. Each entry is
+				// streamKey(16) + ip(4) + port(2). Skipped by old peers
+				// because they stop reading at byte 22.
+				if (size >= 23 && theApp.liveStreamManager) {
+					uint8 pexCount = data.ReadUInt8();
+					if (pexCount > 5) pexCount = 5; // sanity cap
+					const UINT pexBytes = (UINT)pexCount * 22U;
+					if (data.GetPosition() + pexBytes <= (UINT)size) {
+						for (uint8 i = 0; i < pexCount; ++i) {
+							uchar pexKey[16];
+							data.ReadHash16(pexKey);
+							uint32 pexIP   = data.ReadUInt32();
+							uint16 pexPort = data.ReadUInt16();
+							theApp.liveStreamManager->OnPexEntry(pexKey, pexIP, pexPort);
+						}
+					}
+				}
 			}
 			break;
 		case OP_LIVE_ANNOUNCE:
@@ -1848,7 +1984,25 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				uchar streamKey[16];
 				data.ReadHash16(streamKey);
 				uint32 newestSeq = data.ReadUInt32();
-				// uint16 bitrate = data.ReadUInt16(); // available but not needed here
+				/*uint16 bitrate =*/ data.ReadUInt16();
+
+				// v7.6.0 — optional pubkey trailer (32 bytes). If present and
+				// it doesn't hash to the announced streamKey, the peer is
+				// either confused or attempting to claim a streamKey it can't
+				// sign for. Drop the announcement silently in that case.
+				if (size >= 54) {
+					uchar pubkey[32];
+					data.Read(pubkey, 32);
+					if (!eSELive::StreamKeyMatchesPubkey(streamKey, pubkey)) {
+						// Mismatch — log + reject.
+						break;
+					}
+					// v7.7.0 — pin the pubkey for this streamKey so future
+					// signed chunks/END packets can be verified. Idempotent
+					// for the same (streamKey, pubkey) pair.
+					if (theApp.liveStreamManager)
+						theApp.liveStreamManager->PinStreamPubkey(streamKey, pubkey);
+				}
 
 				// Trigger segment request for the newly announced segment
 				if (theApp.liveStreamManager && theApp.liveStreamManager->IsViewingLive())
@@ -1871,11 +2025,136 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				if (thePrefs.GetDebugClientTCPLevel() > 0)
 					DebugRecv("OP_LiveEnd", client);
 				theStats.AddDownDataOverheadOther(uRawSize);
-				AddLogLine(true, _T("eSE Live: Stream ended by broadcaster"));
-				if (theApp.liveStreamManager)
+				// Payload: <streamKey 16><reason 1> [<sig 64>]
+				// v7.7.0: if a 64-byte sig is appended (total >= 81 bytes),
+				// verify it against the pinned pubkey for streamKey. A peer
+				// without the broadcaster's privkey cannot forge this sig,
+				// so signed ENDs are accepted regardless of source.
+				// Unsigned ENDs still go through the v7.5.0 auth path in
+				// LiveStreamManager::OnStreamEnded (must come from a known
+				// m_broadcastPeers/m_viewPeers member, or watchdog NULL).
+				if (size >= 16 && theApp.liveStreamManager) {
+					uint8 reason = (size >= 17) ? packet[16] : 0;
+					CUpDownClient* effectivePeer = client;
+					if (size >= 81) {
+						uchar pubkey[32];
+						if (theApp.liveStreamManager->GetPinnedPubkey(packet, pubkey)) {
+							uchar msg[17];
+							memcpy(msg, packet, 16);
+							msg[16] = reason;
+							const uchar* sigPtr = packet + 17;
+							if (eSELive::VerifySignature(pubkey, msg, sizeof msg, sigPtr)) {
+								// Signed END from the legitimate broadcaster.
+								// Pass NULL as peer so OnStreamEnded skips
+								// the "must be in m_viewPeers" auth check.
+								effectivePeer = NULL;
+							} else {
+								AddLogLine(true, _T("eSE Live: rejected END (bad signature)"));
+								break;
+							}
+						}
+					}
+					AddLogLine(true, _T("eSE Live: Stream ended (reason=%u)"), reason);
+					theApp.liveStreamManager->OnStreamEnded(packet, reason, effectivePeer);
+				} else if (theApp.liveStreamManager) {
+					AddLogLine(true, _T("eSE Live: Stream ended (malformed END)"));
 					theApp.liveStreamManager->OnPeerDisconnected(client);
+				}
 			}
 			break;
+		case OP_LIVE_PING:
+			{
+				// V2-S03: <streamKey 16><pingId 4><sendTick 8> — echo back as PONG.
+				if (thePrefs.GetDebugClientTCPLevel() > 1)
+					DebugRecv("OP_LivePing", client);
+				theStats.AddDownDataOverheadOther(uRawSize);
+				if (size < 28) break;
+				CSafeMemFile data(packet, size);
+				uchar streamKey[16];
+				data.ReadHash16(streamKey);
+				uint32 pingId   = data.ReadUInt32();
+				uint64 sendTick = data.ReadUInt64();
+				if (theApp.liveStreamManager)
+					theApp.liveStreamManager->OnLivePing(client, streamKey, pingId, sendTick);
+			}
+			break;
+		case OP_LIVE_PONG:
+			{
+				// V2-S03: <streamKey 16><pingId 4><echoTick 8> — feed RTT EWMA.
+				if (thePrefs.GetDebugClientTCPLevel() > 1)
+					DebugRecv("OP_LivePong", client);
+				theStats.AddDownDataOverheadOther(uRawSize);
+				if (size < 28) break;
+				CSafeMemFile data(packet, size);
+				uchar streamKey[16];
+				data.ReadHash16(streamKey);
+				uint32 pingId   = data.ReadUInt32();
+				uint64 echoTick = data.ReadUInt64();
+				if (theApp.liveStreamManager)
+					theApp.liveStreamManager->OnLivePong(client, streamKey, pingId, echoTick);
+			}
+			break;
+
+		// === v0.71 P3.4 — OP_LIVE_TUNNEL_CELL real handler ===========
+		// A 512B onion cell arrived. Hand to CLiveTunnel which:
+		//   - If circ_id is one WE originated: complete the handshake
+		//     (CREATED → derive K_send/K_recv, set HalfBuilt) or peel
+		//     a returned RELAY layer for our consumer.
+		//   - If circ_id is one we're RELAYING for (intermediate hop):
+		//     peel ONE layer with our hop key and forward to next hop
+		//     using the relay-side circuit table.
+		//   - If unknown: drop with debug log (could be late from a
+		//     destroyed circuit, not necessarily malicious).
+		case OP_LIVE_TUNNEL_CELL:
+			theStats.AddDownDataOverheadOther(uRawSize);
+			if (size != eSELive::CELL_TOTAL_BYTES) {
+				DebugLog(_T("OP_LIVE_TUNNEL_CELL: wrong size %u (expected %u) from %s — dropping"),
+					size, (unsigned)eSELive::CELL_TOTAL_BYTES,
+					client ? (LPCTSTR)ipstr(client->GetIP()) : _T("?"));
+				break;
+			}
+			{
+				uint32_t circId;
+				uint8_t cmd;
+				const uint8_t* cellPayload = NULL;
+				uint16_t cellPayloadLen = 0;
+				if (!eSELive::CellUnpack(packet, circId, cmd, cellPayload, cellPayloadLen)) {
+					DebugLog(_T("OP_LIVE_TUNNEL_CELL: CellUnpack failed — dropping"));
+					break;
+				}
+				bool consumed = eSELive::CLiveTunnel::Get().OnCellReceived(
+					circId, cmd, cellPayload, cellPayloadLen, client);
+				if (!consumed) {
+					DebugLog(_T("OP_LIVE_TUNNEL_CELL: circ=0x%08x cmd=0x%02x not consumed (unknown circuit)"),
+						circId, cmd);
+				}
+			}
+			break;
+
+		// === F0 (unified plan) — remaining eSE Live Tunneled opcodes ==
+		// Stub handlers for opcodes whose data plane (F5 P3+) is not yet
+		// implemented. Channel ops (0xD0-0xD3) land here until F3 wires
+		// the channel store; T_* (0xD6-0xDD) wait for tunneled wrappers.
+		case OP_LIVE_CHANNEL_GOSSIP:
+		case OP_LIVE_CHANNEL_REQUEST:
+		case OP_LIVE_CHANNEL_ANSWER:
+		case OP_LIVE_CHANNEL_REVOKE:
+		case OP_LIVE_T_SUBSCRIBE:
+		case OP_LIVE_T_UNSUBSCRIBE:
+		case OP_LIVE_T_REQUEST:
+		case OP_LIVE_T_CHUNK:
+		case OP_LIVE_T_HEARTBEAT:
+		case OP_LIVE_T_ANNOUNCE:
+		case OP_LIVE_T_DENY:
+		case OP_LIVE_T_END:
+		case OP_LIVE_PEER_INVITE:
+		case OP_LIVE_RENDEZVOUS_PEERS:
+			theStats.AddDownDataOverheadOther(uRawSize);
+			DebugLog(_T("[STUB F0] OP_LIVE_T_* opcode 0x%02x received from %s — reserved, no handler yet (unified plan F3-F5)"),
+				(unsigned)opcode,
+				client ? (LPCTSTR)ipstr(client->GetIP()) : _T("?"));
+			break;
+
 		default:
 			theStats.AddDownDataOverheadOther(uRawSize);
 			PacketToDebugLogLine(_T("eMule"), packet, size, opcode);
@@ -2146,8 +2425,45 @@ bool CListenSocket::StartListening()
 	// socket is already used by some other application (e.g. a 2nd emule), we though bind
 	// to that socket leading to the situation that 2 applications are listening on the same
 	// port!
-	if (!Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, thePrefs.GetBindAddr(), AF_INET))
-		return false;
+
+	// v0.71 IPv6 Sprint 3 + Sprint 9 hotfix — dual-stack AF_INET6 listener is
+	// now OPT-IN (only IPv6PreferredMode). Real-world testing on Windows
+	// 10/11 + consumer routers shows that even with IPV6_V6ONLY=0 and the
+	// SOCKADDR_STORAGE OnAccept normalization, the eD2K server TCP callback
+	// test and Kad firewall test fail intermittently — the kernel surfaces
+	// v4 traffic via WSAAccept paths the legacy code wasn't expecting, and
+	// some NAT/conntrack helpers don't see the SYN-ACK in time. Auto mode
+	// therefore stays on the rock-solid AF_INET path; users who explicitly
+	// pick "IPv6 preferido" in Preferences→Conexión opt into the dual-stack
+	// experiment. The v6 prober (FirewallProberV6) still runs in Auto so
+	// the panel shows the detected public v6 address either way.
+	bool bUsingV6 = false;
+	if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
+		// Bind address NULL means "[::]" — listen on all v6 interfaces. We
+		// don't pass thePrefs.GetBindAddr() because it's the v4 bind addr
+		// (TCHAR* dotted-quad) and would fail an AF_INET6 parse. If the user
+		// configured a specific v6 bind addr, it lives in prefs::IPv6BindAddr.
+		LPCTSTR v6Bind = thePrefs.GetIPv6BindAddr();
+		if (v6Bind == NULL || v6Bind[0] == 0)
+			v6Bind = _T("::");
+		if (Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, v6Bind, AF_INET6)) {
+			// Disable V6ONLY so v4 connections via IPv4-mapped addresses also
+			// land on this listener.
+			DWORD v6only = 0;
+			VERIFY( SetSockOpt(IPV6_V6ONLY, &v6only, sizeof v6only, IPPROTO_IPV6) );
+			bUsingV6 = true;
+			AddDebugLogLine(false, _T("ListenSocket: dual-stack v6 bound on [%s]:%u (IPV6_V6ONLY=0, opt-in IPv6PreferredMode)"),
+				v6Bind, (unsigned)thePrefs.GetPort());
+		} else {
+			AddDebugLogLine(false, _T("ListenSocket: AF_INET6 Create failed err=%u, falling back to v4-only"),
+				::WSAGetLastError());
+		}
+	}
+	if (!bUsingV6) {
+		if (!Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, thePrefs.GetBindAddr(), AF_INET))
+			return false;
+	}
+	m_bDualStack = bUsingV6;   // v0.71 IPv6 Sprint 9 — expose to UI status bar
 
 	// Rejecting a connection with conditional WSAAccept and not using SO_CONDITIONAL_ACCEPT
 	// -------------------------------------------------------------------------------------
@@ -2263,11 +2579,25 @@ void CListenSocket::OnAccept(int nErrorCode)
 			--m_nPendingConnections;
 
 			CClientReqSocket *newclient;
+			// v0.71 IPv6 Sprint 9 hotfix — when the listener is bound as
+			// AF_INET6 (dual-stack), incoming v4 connections arrive as
+			// IPv4-mapped IPv6 addresses (::ffff:1.2.3.4) wrapped in a
+			// SOCKADDR_IN6 (28 bytes). Using a SOCKADDR_IN (16 bytes)
+			// buffer truncates the address and Accept() either returns
+			// junk in sin_addr.s_addr or fails silently — which makes
+			// Kad report TCP "firewalled" because no inbound connections
+			// reach the upper-layer dispatcher.
+			// Fix: use SOCKADDR_STORAGE (>= 28 bytes) and normalize to
+			// SOCKADDR_IN after the Accept call. v6-native peers (not
+			// v4-mapped) are dropped here for now — the rest of eMule
+			// only understands v4 endpoints; full v6 peer support is
+			// future work.
+			SOCKADDR_STORAGE SockStorage = {};
 			SOCKADDR_IN SockAddr = {};
-			int iSockAddrLen = sizeof SockAddr;
+			int iSockAddrLen = (int)sizeof SockStorage;
 			if (thePrefs.GetConditionalTCPAccept() && !thePrefs.GetProxySettings().bUseProxy) {
 				s_iAcceptConnectionCondRejected = 0;
-				SOCKET sNew = WSAAccept(m_SocketData.hSocket, (LPSOCKADDR)&SockAddr, &iSockAddrLen, AcceptConnectionCond, 0);
+				SOCKET sNew = WSAAccept(m_SocketData.hSocket, (LPSOCKADDR)&SockStorage, &iSockAddrLen, AcceptConnectionCond, 0);
 				if (sNew == INVALID_SOCKET) {
 					DWORD nError = CAsyncSocket::GetLastError();
 					if (nError == WSAEWOULDBLOCK) {
@@ -2299,10 +2629,34 @@ void CListenSocket::OnAccept(int nErrorCode)
 				newclient->m_SocketData.hSocket = sNew;
 				newclient->AttachHandle();
 
+				// Normalize address: v4 → SOCKADDR_IN direct;
+				// v6 v4-mapped → extract last 4 bytes; v6 native → drop.
+				if (SockStorage.ss_family == AF_INET) {
+					memcpy(&SockAddr, &SockStorage, sizeof SockAddr);
+				} else if (SockStorage.ss_family == AF_INET6) {
+					SOCKADDR_IN6 *p6 = (SOCKADDR_IN6*)&SockStorage;
+					if (IN6_IS_ADDR_V4MAPPED(&p6->sin6_addr)) {
+						SockAddr.sin_family      = AF_INET;
+						SockAddr.sin_port        = p6->sin6_port;
+						// v4 lives in the last 4 bytes of the v6 addr.
+						memcpy(&SockAddr.sin_addr.s_addr,
+							   &p6->sin6_addr.u.Byte[12], 4);
+					} else {
+						// Native v6 peer — no upper-layer handling yet.
+						DebugLogWarning(_T("Native v6 peer dropped (upper-layer is v4-only): %hs"),
+							"::");
+						newclient->Safe_Delete();
+						continue;
+					}
+				} else {
+					newclient->Safe_Delete();
+					continue;
+				}
+
 				AddConnection();
 			} else {
 				newclient = new CClientReqSocket;
-				if (!Accept(*newclient, (LPSOCKADDR)&SockAddr, &iSockAddrLen)) {
+				if (!Accept(*newclient, (LPSOCKADDR)&SockStorage, &iSockAddrLen)) {
 					newclient->Safe_Delete();
 					DWORD nError = CAsyncSocket::GetLastError();
 					if (nError == WSAEWOULDBLOCK) {
@@ -2327,9 +2681,30 @@ void CListenSocket::OnAccept(int nErrorCode)
 
 				AddConnection();
 
+				// v0.71 IPv6 Sprint 9 hotfix — normalize as above for the
+				// non-conditional Accept path. Same rationale.
+				if (SockStorage.ss_family == AF_INET) {
+					memcpy(&SockAddr, &SockStorage, sizeof SockAddr);
+				} else if (SockStorage.ss_family == AF_INET6) {
+					SOCKADDR_IN6 *p6 = (SOCKADDR_IN6*)&SockStorage;
+					if (IN6_IS_ADDR_V4MAPPED(&p6->sin6_addr)) {
+						SockAddr.sin_family = AF_INET;
+						SockAddr.sin_port   = p6->sin6_port;
+						memcpy(&SockAddr.sin_addr.s_addr,
+							   &p6->sin6_addr.u.Byte[12], 4);
+					} else {
+						DebugLogWarning(_T("Native v6 peer dropped (upper-layer is v4-only)"));
+						newclient->Safe_Delete();
+						continue;
+					}
+				} else {
+					newclient->Safe_Delete();
+					continue;
+				}
+
 				if (SockAddr.sin_addr.s_addr == INADDR_ANY) { // for safety.
-					iSockAddrLen = (int)sizeof SockAddr;
-					newclient->GetPeerName((LPSOCKADDR)&SockAddr, &iSockAddrLen);
+					int iLen4 = (int)sizeof SockAddr;
+					newclient->GetPeerName((LPSOCKADDR)&SockAddr, &iLen4);
 					DebugLogWarning(_T("SockAddr.sin_addr.s_addr == 0;  GetPeerName returned %s"), (LPCTSTR)ipstr(SockAddr.sin_addr.s_addr));
 				}
 

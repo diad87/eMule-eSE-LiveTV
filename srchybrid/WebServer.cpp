@@ -6,6 +6,7 @@
 #include "../cryptopp/sha.h"   // eSE 8.14: SHA256 for challenge-response
 #include <locale.h>
 #include <algorithm>
+#include <vector>
 #include "emule.h"
 #include "StringConversion.h"
 #include "WebServer.h"
@@ -18,12 +19,27 @@
 #include "MD5Sum.h"
 #include "ini2.h"
 #include "Kademlia/Kademlia/Kademlia.h"
+#include "Kademlia/Kademlia/UDPFirewallTester.h"
+#include "Kademlia/net/KademliaUDPListener.h"
+#include "Kademlia/Kademlia/KadV2Defines.h"     // F5: privacy endpoint
+#include "Kademlia/Kademlia/KadV2ModeSelector.h"
+// v0.71 P1.1 — runtime visibility headers for /api/live/privacy. We expose
+// what the privacy stack is ACTUALLY doing so the user (and any external
+// monitoring) can verify the modules are alive vs. dormant.
+#include "Kademlia/Kademlia/KadV2TunnelPool.h"
+#include "LiveTunnel.h"
+#include "LiveSubscriptionStore.h"
+#include "FirewallProberV6.h"
+#include "Opcodes.h"   // g_uEseCapsRuntime extern
 #include "KademliaWnd.h"
 #include "KadSearchListCtrl.h"
 #include "kademlia/kademlia/Entry.h"
 #include "KnownFileList.h"
 #include "ListenSocket.h"
 #include "LiveStreamManager.h"
+#include "LiveDebugLog.h"
+#include "RTMPIngest.h"
+#include <deque>
 #include "Log.h"
 #include "MenuCmds.h"
 #include "Preferences.h"
@@ -181,14 +197,19 @@ bool CWebServer::ReloadTemplates()
 	m_Params.sETag = MD5Sum(m_Params.sLastModified).GetHashString();
 
 	const CString &sFile(thePrefs.GetTemplate());
+	LIVE_LOG("WS", "ReloadTemplates: opening \"%S\" (exists=%d)",
+		(LPCWSTR)sFile, (int)::PathFileExists(sFile));
 	CStdioFile file;
 	if (file.Open(sFile, CFile::modeRead | CFile::shareDenyWrite | CFile::typeText)) {
+		LIVE_LOG("WS", "ReloadTemplates: file opened OK");
 		CString sAll, sLine;
 		while (file.ReadString(sLine))
 			sAll.AppendFormat(_T("%s\n"), (LPCTSTR)sLine);
 		file.Close();
 
 		const CString &sVersion(_LoadTemplate(sAll, _T("TMPL_VERSION")));
+		LIVE_LOG("WS", "ReloadTemplates: TMPL_VERSION=\"%S\" (need >= %d)",
+			(LPCWSTR)sVersion, WEB_SERVER_TEMPLATES_VERSION);
 		if (_tstol(sVersion) >= WEB_SERVER_TEMPLATES_VERSION) {
 			m_Templates.sHeader = _LoadTemplate(sAll, _T("TMPL_HEADER"));
 			m_Templates.sHeaderStylesheet = _LoadTemplate(sAll, _T("TMPL_HEADER_STYLESHEET"));
@@ -249,12 +270,16 @@ bool CWebServer::ReloadTemplates()
 			CString buffer;
 			buffer.Format(GetResString(IDS_WS_ERR_LOADTEMPLATE), (LPCTSTR)sFile);
 			AddLogLine(true, buffer);
+			LIVE_LOG("WS", "ReloadTemplates: VERSION TOO OLD — popup + StopServer");
 			AfxMessageBox(buffer, MB_OK);
 			StopServer();
 		}
 	} else if (m_bServerWorking) {
 		AddLogLine(true, GetResString(IDS_WEB_ERR_CANTLOAD), (LPCTSTR)sFile);
+		LIVE_LOG("WS", "ReloadTemplates: file.Open FAILED — calling StopServer (this is what kills the WebServer)");
 		StopServer();
+	} else {
+		LIVE_LOG("WS", "ReloadTemplates: file.Open FAILED but server not working anyway — no-op");
 	}
 	return false;
 }
@@ -288,24 +313,41 @@ void CWebServer::RestartSockets()
 
 void CWebServer::StartServer()
 {
-	if (m_bServerWorking == thePrefs.GetWSIsEnabled())
+	bool wsPrefEnabled = thePrefs.GetWSIsEnabled();
+	LIVE_LOG("WS", "StartServer entry: pref.Enabled=%d  pref.Port=%u  serverWorking=%d  template=\"%S\"",
+		(int)wsPrefEnabled, (unsigned)thePrefs.GetWSPort(),
+		(int)m_bServerWorking, (LPCWSTR)thePrefs.GetTemplate());
+
+	if (m_bServerWorking == wsPrefEnabled) {
+		LIVE_LOG("WS", "StartServer SKIP: already in target state (%d)", (int)wsPrefEnabled);
 		return;
-	m_bServerWorking = thePrefs.GetWSIsEnabled();
+	}
+	m_bServerWorking = wsPrefEnabled;
 	if (m_bServerWorking) {
+		LIVE_LOG("WS", "StartServer: calling ReloadTemplates()");
 		ReloadTemplates();
+		LIVE_LOG("WS", "StartServer: ReloadTemplates returned, serverWorking=%d", (int)m_bServerWorking);
 		if (m_bServerWorking) {
+			LIVE_LOG("WS", "StartServer: calling StartSockets()");
 			StartSockets(this);
 			m_nIntruderDetect = 0;
 			m_bIsTempDisabled = false;
+			LIVE_LOG("WS", "StartServer: StartSockets returned (no bind feedback yet — see WSL events)");
+		} else {
+			LIVE_LOG("WS", "StartServer ABORT: ReloadTemplates disabled the server");
 		}
-	} else
+	} else {
+		LIVE_LOG("WS", "StartServer: stopping (pref disabled)");
 		StopSockets();
+	}
 
 	UINT uid = (thePrefs.GetWSIsEnabled() && m_bServerWorking) ? IDS_ENABLED : IDS_DISABLED;
 	AddLogLine(false, _T("%s: %s%s")
 		, (LPCTSTR)_GetPlainResString(IDS_PW_WS)
 		, (LPCTSTR)_GetPlainResString(uid).MakeLower()
 		, (uid == IDS_ENABLED && thePrefs.GetWebUseHttps()) ? _T(" (HTTPS)") : _T(""));
+	LIVE_LOG("WS", "StartServer EXIT: bServerWorking=%d  pref.Enabled=%d",
+		(int)m_bServerWorking, (int)thePrefs.GetWSIsEnabled());
 }
 
 void CWebServer::StopServer()
@@ -1491,46 +1533,61 @@ CString CWebServer::_GetTransferList(const ThreadData &Data)
 			} else {
 				uchar FileHash[MDX_DIGEST_SIZE];
 				bool bHash = strmd4(sFile, FileHash);
-				CPartFile *found_file = bHash ? theApp.downloadqueue->GetFileByID(FileHash) : NULL;
-				if (found_file) {	// SyruS all actions require a found file (removed double-check inside)
-					if (sOp == _T("stop"))
-						found_file->StopFile();
-					else if (sOp == _T("pause"))
-						found_file->PauseFile();
-					else if (sOp == _T("resume"))
-						found_file->ResumeFile();
-					else if (sOp == _T("cancel")) {
-						found_file->DeletePartFile();
-						SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPD_CATTABS, 0);
-					} else if (sOp == _T("getflc"))
-						found_file->GetPreviewPrio();
-					else if (sOp == _T("rename")) {
-						const CString &sNewName(_ParseURL(Data.sURL, _T("name")));
-						theApp.emuledlg->SendMessage(WEB_FILE_RENAME, (WPARAM)found_file, (LPARAM)(LPCTSTR)sNewName);
-					} else if (sOp == _T("priolow")) {
-						found_file->SetAutoDownPriority(false);
-						found_file->SetDownPriority(PR_LOW);
-					} else if (sOp == _T("prionormal")) {
-						found_file->SetAutoDownPriority(false);
-						found_file->SetDownPriority(PR_NORMAL);
-					} else if (sOp == _T("priohigh")) {
-						found_file->SetAutoDownPriority(false);
-						found_file->SetDownPriority(PR_HIGH);
-					} else if (sOp == _T("prioauto")) {
-						found_file->SetAutoDownPriority(true);
-						found_file->SetDownPriority(PR_HIGH);
-					} else if (sOp == _T("setcat")) {
-						const CString &newcat(_ParseURL(Data.sURL, _T("filecat")));
-						if (!newcat.IsEmpty())
-							found_file->SetCategory(_tstol(newcat));
-					} else if (sOp == _T("streamseek")) {
-						// eSE: Set streaming seek target part
-						const CString &sPart(_ParseURL(Data.sURL, _T("part")));
-						if (!sPart.IsEmpty()) {
-							uint16 seekPart = (uint16)_tstol(sPart);
-							found_file->SetStreamSeekPart(seekPart);
+				if (bHash) {
+					// v7.4.0 — WithFileByID runs under the DownloadQueue lock; the
+					// lambda mutates state but never re-enters DownloadQueue, so the
+					// lock-order invariant holds. SendMessage callouts to the main
+					// thread happen INSIDE the lock here — that's safe because the
+					// main thread is the only one that mutates filelist, and it can't
+					// re-enter WithFileByID while it's waiting on the SendMessage to
+					// be processed by... wait, it IS the main thread. So we cache
+					// what's needed and SendMessage AFTER the lock releases below.
+					bool needsCatTabsUpdate = false;
+					CPartFile *renamedFile = NULL;
+					CString renameTo;
+					theApp.downloadqueue->WithFileByID(FileHash, [&](CPartFile *found_file) {
+						if (sOp == _T("stop"))
+							found_file->StopFile();
+						else if (sOp == _T("pause"))
+							found_file->PauseFile();
+						else if (sOp == _T("resume"))
+							found_file->ResumeFile();
+						else if (sOp == _T("cancel")) {
+							found_file->DeletePartFile();
+							needsCatTabsUpdate = true;
+						} else if (sOp == _T("getflc"))
+							found_file->GetPreviewPrio();
+						else if (sOp == _T("rename")) {
+							renamedFile = found_file;
+							renameTo = _ParseURL(Data.sURL, _T("name"));
+						} else if (sOp == _T("priolow")) {
+							found_file->SetAutoDownPriority(false);
+							found_file->SetDownPriority(PR_LOW);
+						} else if (sOp == _T("prionormal")) {
+							found_file->SetAutoDownPriority(false);
+							found_file->SetDownPriority(PR_NORMAL);
+						} else if (sOp == _T("priohigh")) {
+							found_file->SetAutoDownPriority(false);
+							found_file->SetDownPriority(PR_HIGH);
+						} else if (sOp == _T("prioauto")) {
+							found_file->SetAutoDownPriority(true);
+							found_file->SetDownPriority(PR_HIGH);
+						} else if (sOp == _T("setcat")) {
+							const CString &newcat(_ParseURL(Data.sURL, _T("filecat")));
+							if (!newcat.IsEmpty())
+								found_file->SetCategory(_tstol(newcat));
+						} else if (sOp == _T("streamseek")) {
+							const CString &sPart(_ParseURL(Data.sURL, _T("part")));
+							if (!sPart.IsEmpty()) {
+								uint16 seekPart = (uint16)_tstol(sPart);
+								found_file->SetStreamSeekPart(seekPart);
+							}
 						}
-					}
+					});
+					if (needsCatTabsUpdate)
+						SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPD_CATTABS, 0);
+					if (renamedFile)
+						theApp.emuledlg->SendMessage(WEB_FILE_RENAME, (WPARAM)renamedFile, (LPARAM)(LPCTSTR)renameTo);
 				}
 			}
 		}
@@ -3783,34 +3840,55 @@ CString CWebServer::_GetDownloadGraph(const ThreadData &Data, const CString &fil
 		_T("blue5.gif"), _T("blue6.gif"), _T("greenpercent.gif"), _T("transparent.gif")
 	};
 
-	const CPartFile *pPartFile = theApp.downloadqueue->GetFileByID(fileid);
-	const LPCTSTR *barcolours = (pPartFile && (pPartFile->GetStatus() == PS_PAUSED)) ? styles_paused : styles_active;
+	// v7.4.0 — snapshot under DownloadQueue lock so the rendering loop below
+	// never reads CPartFile state mid-mutation. Holding a CPartFile* across
+	// the rendering loop is the use-after-free we keep almost hitting.
+	struct PartFileRenderSnapshot {
+		bool             found = false;
+		bool             isPartFile = false;
+		EPartFileStatus  status = PS_EMPTY;
+		UINT             percentCompleted = 0;
+		CStringA         chunkBar;
+		uint16           barWidth = 0;
+	};
+	PartFileRenderSnapshot snap;
+	snap.barWidth = pThis->m_Templates.iProgressbarWidth;
+	theApp.downloadqueue->WithFileByID(fileid, [&](CPartFile *f) {
+		snap.found            = true;
+		snap.isPartFile       = f->IsPartFile();
+		snap.status           = f->GetStatus();
+		snap.percentCompleted = f->GetPercentCompleted();
+		snap.chunkBar         = f->GetProgressString(snap.barWidth);
+	});
+	const LPCTSTR *barcolours = (snap.found && snap.status == PS_PAUSED) ? styles_paused : styles_active;
 
 	CString Out;
-	if (pPartFile == NULL || !pPartFile->IsPartFile()) {
-		Out.Format(pThis->m_Templates.sProgressbarImgsPercent, barcolours[10], pThis->m_Templates.iProgressbarWidth);
+	if (!snap.found || !snap.isPartFile) {
+		Out.Format(pThis->m_Templates.sProgressbarImgsPercent, barcolours[10], snap.barWidth);
 		Out += _T("<br>");
-		Out.AppendFormat(pThis->m_Templates.sProgressbarImgs, barcolours[0], pThis->m_Templates.iProgressbarWidth);
+		Out.AppendFormat(pThis->m_Templates.sProgressbarImgs, barcolours[0], snap.barWidth);
 	} else {
-		const CStringA &s_ChunkBar(pPartFile->GetProgressString(pThis->m_Templates.iProgressbarWidth));
+		const CStringA &s_ChunkBar = snap.chunkBar;
 		// and now make a graph out of the array - need to be in a progressive way
 
-		int compl = static_cast<int>((pThis->m_Templates.iProgressbarWidth / 100.0) * pPartFile->GetPercentCompleted());
+		int compl = static_cast<int>((snap.barWidth / 100.0) * snap.percentCompleted);
 		Out.Format(pThis->m_Templates.sProgressbarImgsPercent, barcolours[compl > 0 ? 10 : 11], (compl > 0 ? compl : 5));
 		Out += _T("<br>");
 
 		BYTE lastcolor = 1;
 		uint16 lastindex = 0;
-		const uint16 uBarWidth = pThis->m_Templates.iProgressbarWidth;
+		const uint16 uBarWidth = snap.barWidth;
 		for (uint16 i = 0; i < uBarWidth; ++i) {
-			if (lastcolor != (BYTE)(s_ChunkBar[i] - '0')) {
+			BYTE c = (BYTE)(s_ChunkBar[i] - '0');
+			if (c >= _countof(styles_active)) c = 0;          // defence-in-depth clamp
+			if (lastcolor != c) {
 				if (i > lastindex && lastcolor < _countof(styles_active))
 					Out.AppendFormat(pThis->m_Templates.sProgressbarImgs, barcolours[lastcolor], i - lastindex);
-				lastcolor = (BYTE)(s_ChunkBar[i] - '0');
-				ASSERT(lastcolor <= 9);
+				lastcolor = c;
 				lastindex = i;
 			}
 		}
+		if (lastcolor >= _countof(styles_active)) lastcolor = 0;   // hard clamp
 		Out.AppendFormat(pThis->m_Templates.sProgressbarImgs, barcolours[lastcolor], uBarWidth - lastindex);
 	}
 	return Out;
@@ -3954,7 +4032,7 @@ CString CWebServer::_GetSearch(const ThreadData &Data)
 		nRed = nGreen = nBlue = 255;
 		DecodeBase16(structFile.m_strFileHash, 32, aFileHash, _countof(aFileHash));
 		strOverlayImage = _T("none");
-		if (theApp.downloadqueue->GetFileByID(aFileHash) != NULL) {
+		if (theApp.downloadqueue->HasFileByID(aFileHash)) {
 			nBlue = 128;
 			nGreen = 128;
 		} else {
@@ -4185,20 +4263,26 @@ void CWebServer::_InsertCatBox(CString &Out, int preselect, LPCTSTR boxlabel, bo
 
 	tempBuff.Empty();
 
+	// v7.4.0 — snapshot the category once before the loop, under the lock.
+	// Previous code re-resolved found_file every iteration AND held a raw
+	// CPartFile* in flight across calls that may trigger a GUI message-pump.
+	int snapshotCategory = preselect;
+	bool foundFile = false;
+	if (!sFileHash.IsEmpty()) {
+		uchar FileHash[16];
+		if (strmd4(sFileHash, FileHash)) {
+			theApp.downloadqueue->WithFileByID(FileHash, [&](CPartFile *f) {
+				snapshotCategory = f->GetCategory();
+				foundFile = true;
+			});
+		}
+	}
+
 	// For each user category index...
 	for (int i = 0; i < thePrefs.GetCatCount(); i++)
 	{
-		uchar FileHash[16];
-
-		CPartFile *found_file = NULL;
-		if (!sFileHash.IsEmpty()) {
-			strmd4(sFileHash, FileHash);
-			found_file = theApp.downloadqueue->GetFileByID(FileHash);
-		}
-
-		// Get the user category index of 'found_file' in 'preselect'.
-		if (found_file)
-			preselect = found_file->GetCategory();
+		if (foundFile)
+			preselect = snapshotCategory;
 
 		if (i == preselect)
 		{
@@ -4433,6 +4517,49 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 {
 	CStringA sURL(CT2A(Data.sURL));
 
+	// --- SECURITY GATE -------------------------------------------------------
+	// Critical: this dispatch in WebSocket.cpp:88 BYPASSES the password gate
+	// that _ProcessURL applies to the classic WebServer. Without this guard,
+	// any host on the LAN that AllowedRemoteAccessIPs admits (default = ALLOW
+	// ALL) can issue GET /api/live/broadcast/start?source=screen&title=Pwned
+	// and start streaming the victim's desktop, then read it via the published
+	// Kad link. Same attack works against /api/holepunch/* and /api/live/log.
+	//
+	// Mitigation: only accept these endpoints from localhost. The legitimate
+	// Node.js dashboard on :8080 proxies through 127.0.0.1 -> 127.0.0.1:4711
+	// so it keeps working. Genuine remote-admin use cases must go through the
+	// password-gated routes in _ProcessURL or hit the Node side which has
+	// session/cookie auth.
+	bool bIsLiveOrHolepunch =
+		(sURL.Left(10) == "/api/live/")
+		|| (sURL.Left(15) == "/api/holepunch/")
+		|| (sURL == "/api/status")
+		|| (sURL == "/dashboard") || (sURL == "/dashboard/")
+		|| (sURL.Left(5) == "/hls/");
+	if (bIsLiveOrHolepunch) {
+		const uint32 clientIP = Data.inadr.S_un.S_addr; // network order
+		const uint32 loopback = htonl(INADDR_LOOPBACK);
+		if (clientIP != loopback) {
+			CStringA body = "{\"error\":\"forbidden\",\"hint\":\"this API is localhost-only\"}";
+			CStringA hdr;
+			hdr.Format(
+				"HTTP/1.1 403 Forbidden\r\n"
+				"Content-Type: application/json\r\n"
+				"Cache-Control: no-store\r\n"
+				"Content-Length: %d\r\n\r\n",
+				body.GetLength());
+			Data.pSocket->SendData(hdr, hdr.GetLength());
+			Data.pSocket->SendData(body, body.GetLength());
+			LIVE_LOG("SEC", "Blocked remote /api/live request from %lu.%lu.%lu.%lu  url=%s",
+				(unsigned long)(clientIP & 0xFF),
+				(unsigned long)((clientIP >> 8) & 0xFF),
+				(unsigned long)((clientIP >> 16) & 0xFF),
+				(unsigned long)((clientIP >> 24) & 0xFF),
+				(LPCSTR)sURL);
+			return;
+		}
+	}
+
 	// --- /api/status --- eSE Network health for React alerts (Fase 2)
 	if (sURL == "/api/status") {
 		CStringA json;
@@ -4507,6 +4634,1201 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
+	// --- /api/live/broadcast/start --- Tier 2.2: web-driven broadcast launch.
+	// Lets the user start a stream from the browser without ever opening the
+	// MFC "Live" tab. Source: testpattern (default), screen, file, rtmp.
+	// Example: GET /api/live/broadcast/start?source=testpattern&title=Mi+Canal&bitrate=1500
+	// (Use Left() match so query string doesn't break the route.)
+	if (sURL.Left(25) == "/api/live/broadcast/start") {
+		CString sourceT(_ParseURL(Data.sURL, _T("source")));
+		CString titleT (_ParseURL(Data.sURL, _T("title")));
+		CString catT   (_ParseURL(Data.sURL, _T("category")));
+		CString langT  (_ParseURL(Data.sURL, _T("language")));
+		CString brT    (_ParseURL(Data.sURL, _T("bitrate")));
+		CString fileT  (_ParseURL(Data.sURL, _T("file")));
+
+		if (sourceT.IsEmpty()) sourceT = _T("testpattern");
+		if (titleT.IsEmpty())  titleT  = _T("eSE Live");
+		if (catT.IsEmpty())    catT    = _T("General");
+		if (langT.IsEmpty())   langT   = _T("Spanish");
+		uint16 bitrate = (uint16)_ttoi(brT);
+		if (bitrate == 0) bitrate = 1500;
+
+		bool ok = (theApp.liveStreamManager != NULL)
+		          && theApp.liveStreamManager->StartBroadcastWithSource(
+		                 sourceT, titleT, catT, langT, bitrate, fileT);
+
+		// Build the share link if broadcast started + we know our IP.
+		CStringA linkA;
+		if (ok) {
+			const uchar* key = theApp.liveStreamManager->GetStreamKey();
+			uint32 pubIP = theApp.GetPublicIP();
+			uint16 port  = thePrefs.GetPort();
+			if (key) {
+				CStringA hex = EseHexKey16A(key);
+				CString titleEnc = titleT;
+				titleEnc.Replace(_T(" "), _T("+"));
+
+				// 17 May 2026 — anonymous is now the DEFAULT for share links.
+				// Both variants are still emitted in the JSON so any caller can
+				// pick. The `link` field returns:
+				//   - link_anonymous by default (privacy first; viewer does a
+				//     Kad lookup to resolve broadcaster IP at click time)
+				//   - link_direct only if ?direct=1 was passed (LAN-only, no
+				//     Kad, faster but leaks IP into the URL string)
+				// ?anon=1 still honored for backward compat (no-op since it's
+				// now the default).
+				CStringA linkAnon, linkDirect;
+				linkAnon.Format("ed2k://|live|%s||%s|/",
+					(LPCSTR)hex, (LPCSTR)CT2A(titleEnc));
+				if (pubIP != 0 && port != 0) {
+					linkDirect.Format("ed2k://|live|%s|%s:%u|%s|/",
+						(LPCSTR)hex, (LPCSTR)CT2A(ipstr(pubIP)), port,
+						(LPCSTR)CT2A(titleEnc));
+				}
+				CString directT(_ParseURL(Data.sURL, _T("direct")));
+				bool wantDirect = (directT == _T("1") || directT.CompareNoCase(_T("true")) == 0);
+				linkA = (wantDirect && !linkDirect.IsEmpty()) ? linkDirect : linkAnon;
+
+				// Both variants get exposed in the JSON so a smart caller
+				// can show a "switch to anonymous" toggle to its user.
+				CStringA jsonLinks;
+				jsonLinks.Format(
+					"{\"success\":%s,\"source\":\"%s\",\"bitrate\":%u,"
+					"\"link\":\"%s\",\"link_anonymous\":\"%s\",\"link_direct\":\"%s\"}",
+					ok ? "true" : "false",
+					(LPCSTR)CT2A(sourceT), (unsigned)bitrate,
+					(LPCSTR)linkA, (LPCSTR)linkAnon,
+					(LPCSTR)(linkDirect.IsEmpty() ? linkAnon : linkDirect));
+
+				CStringA header;
+				header.Format(
+					"HTTP/1.1 %s\r\n"
+					"Content-Type: application/json\r\n"
+					"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
+					"X-Content-Type-Options: nosniff\r\n"
+					"Content-Length: %d\r\n\r\n",
+					ok ? "200 OK" : "400 Bad Request",
+					jsonLinks.GetLength());
+				Data.pSocket->SendData(header, header.GetLength());
+				Data.pSocket->SendData(jsonLinks, jsonLinks.GetLength());
+				return;
+			}
+		}
+
+		CStringA json;
+		json.Format(
+			"{\"success\":%s,\"source\":\"%s\",\"bitrate\":%u,\"link\":\"%s\"}",
+			ok ? "true" : "false",
+			(LPCSTR)CT2A(sourceT), (unsigned)bitrate,
+			(LPCSTR)linkA);
+		CStringA header;
+		header.Format(
+			"HTTP/1.1 %s\r\n"
+			"Content-Type: application/json\r\n"
+			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
+			"X-Content-Type-Options: nosniff\r\n"
+			"Content-Length: %d\r\n\r\n",
+			ok ? "200 OK" : "400 Bad Request",
+			json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/live/broadcast/stop --- Tier 2.2: stop FFmpeg + Kad publish.
+	if (sURL == "/api/live/broadcast/stop") {
+		bool wasBroadcasting = (theApp.liveStreamManager != NULL)
+		                       && theApp.liveStreamManager->IsBroadcasting();
+		if (theApp.liveStreamManager)
+			theApp.liveStreamManager->StopBroadcastFull();
+
+		CStringA json;
+		json.Format("{\"success\":true,\"was_broadcasting\":%s}",
+			wasBroadcasting ? "true" : "false");
+		CStringA header;
+		header.Format(
+			"HTTP/1.1 200 OK\r\n"
+			"Content-Type: application/json\r\n"
+			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
+			"Content-Length: %d\r\n\r\n",
+			json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /hls/<file> --- Sprint 5: serve HLS files directly from C++ WebServer.
+	// Mirrors what Node.js channel_api.js does at port 8080. Lets the dashboard
+	// (and any HLS player like VLC) work even when ese-server.exe is absent.
+	if (sURL.Left(5) == "/hls/") {
+		CStringA req = sURL.Mid(5);
+		// Strip query string
+		int q = req.Find('?'); if (q >= 0) req = req.Left(q);
+		// Sanitize: only allow [A-Za-z0-9_.-], no slashes (path traversal guard)
+		bool ok = !req.IsEmpty() && req.GetLength() < 64;
+		for (int i = 0; ok && i < req.GetLength(); ++i) {
+			char c = req[i];
+			if (!(isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-')) ok = false;
+		}
+		// Only allow .m3u8 and .ts extensions
+		bool isPlay = req.Right(5).CompareNoCase(".m3u8") == 0;
+		bool isSeg  = req.Right(3).CompareNoCase(".ts") == 0;
+		if (!ok || !(isPlay || isSeg)) {
+			const char* hdr = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
+			Data.pSocket->SendData(hdr, (int)strlen(hdr));
+			return;
+		}
+		TCHAR tmp[MAX_PATH]; GetTempPath(MAX_PATH, tmp);
+		CString fp;
+		fp.Format(_T("%seMule_RTMP\\%hs"), tmp, (LPCSTR)req);
+		HANDLE hF = CreateFile(fp, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			NULL, OPEN_EXISTING, 0, NULL);
+		if (hF == INVALID_HANDLE_VALUE) {
+			const char* hdr = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+			Data.pSocket->SendData(hdr, (int)strlen(hdr));
+			return;
+		}
+		DWORD sz = GetFileSize(hF, NULL);
+		const char* mime = isPlay ? "application/vnd.apple.mpegurl" : "video/mp2t";
+		const char* cache = isPlay ? "no-cache" : "max-age=30";
+		CStringA hdr;
+		hdr.Format(
+			"HTTP/1.1 200 OK\r\n"
+			"Content-Type: %s\r\n"
+			"Content-Length: %u\r\n"
+			"Cache-Control: %s\r\n"
+			"Access-Control-Allow-Origin: *\r\n\r\n",
+			mime, (unsigned)sz, cache);
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		// Stream file in 64 KB chunks (small player segments are < 1 MB anyway)
+		BYTE buf[65536];
+		DWORD got = 0;
+		while (ReadFile(hF, buf, sizeof(buf), &got, NULL) && got > 0) {
+			Data.pSocket->SendData((const char*)buf, (int)got);
+		}
+		CloseHandle(hF);
+		return;
+	}
+
+	// --- /dashboard --- Sprint 5: minimal embedded dashboard (no Node.js needed).
+	// Self-contained HTML page that talks to the C++ WebServer endpoints we
+	// already expose. Lets the user broadcast + diagnose without ese-server.exe.
+	// For the full polished experience, the Node.js dashboard at :8080 is still
+	// preferred — but this guarantees emule.exe alone is functional.
+	// Only catches /dashboard explicitly — leaves "/" and other paths to the
+	// classic eMule WebServer pages so we don't shadow the legacy UI.
+	if (sURL == "/dashboard" || sURL == "/dashboard/") {
+		const char* dashHtml =
+"<!DOCTYPE html><html lang=es><head><meta charset=utf-8><title>eSE Live (mini)</title>"
+"<style>body{background:#0a0a0e;color:#e2e8f0;font-family:system-ui;margin:0;padding:20px;max-width:900px;margin:auto}"
+"h1{color:#fff}.box{background:#13141a;border:1px solid #2a2a2e;border-radius:8px;padding:16px;margin:14px 0}"
+"button{background:#4f46e5;color:#fff;border:0;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:700;font-size:13px}"
+"button.stop{background:#dc2626}button.warn{background:#f59e0b}"
+"input{background:#0e0e10;border:1px solid #2a2a2e;color:#ddd;padding:8px;border-radius:5px;font-family:monospace;font-size:12px}"
+"input.wide{width:100%}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}"
+".pf{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}.pf>div{padding:4px 0}"
+".ok{color:#10b981}.err{color:#ef4444}.warn-c{color:#f59e0b}"
+"a{color:#818cf8}code{background:#0e0e10;padding:2px 6px;border-radius:3px;font-size:90%}"
+"#log{font-family:monospace;font-size:11px;color:#94a3b8;background:#0e0e10;padding:8px;border-radius:5px;max-height:140px;overflow-y:auto;white-space:pre-wrap}"
+"</style></head><body>"
+"<h1>🎬 eSE Live <span style=font-size:13px;color:#6b7280>mini dashboard (sin Node.js)</span></h1>"
+"<p style=font-size:13px;color:#9ca3af>Esta es la versión embebida en <code>emule.exe</code>. Para la experiencia completa abre <a href=http://localhost:8080/live>http://localhost:8080/live</a> (requiere ese-server.exe).</p>"
+"<div class=box><h3 style=margin-top:0>🔍 Pre-flight</h3><div class=pf id=pf>cargando...</div></div>"
+"<div class=box><h3 style=margin-top:0>🎬 Emisión</h3>"
+"<div class=row><label>Título: <input id=br-title placeholder='Mi Stream' value='eSE Demo'></label>"
+"<select id=br-source style=padding:8px;background:#0e0e10;color:#ddd;border:1px solid #2a2a2e;border-radius:5px>"
+"<option value=testpattern>Test Pattern</option><option value=screen>Screen Capture</option><option value=rtmp>OBS (RTMP)</option></select>"
+"<select id=br-bitrate style=padding:8px;background:#0e0e10;color:#ddd;border:1px solid #2a2a2e;border-radius:5px>"
+"<option>1500</option><option selected>3000</option><option>5000</option></select>"
+"<button id=br-start>▶ START</button><button id=br-stop class=stop>■ STOP</button></div>"
+"<div id=br-status style=font-size:12px;color:#94a3b8;margin-top:8px>Inactivo.</div>"
+"<div id=br-link style=margin-top:8px;display:none><b>Link:</b> <input id=br-link-input class=wide readonly></div>"
+"</div>"
+"<div class=box><h3 style=margin-top:0>👁 Ver stream</h3>"
+"<div class=row><input id=join-link class=wide placeholder='ed2k://|live|HEX|IP:PUERTO|TITULO|/'><button id=join-btn>Conectar</button></div>"
+"<div id=join-msg style=font-size:12px;color:#94a3b8;margin-top:8px></div>"
+"<div class=row><a href=/hls/stream.m3u8 style=font-size:12px>📺 Abrir HLS directo (VLC)</a></div>"
+"</div>"
+"<div class=box><h3 style=margin-top:0>📊 Estado en vivo</h3><div id=mon style=font-size:12px;font-family:monospace>—</div></div>"
+"<div class=box><h3 style=margin-top:0>📜 Log</h3><div id=log></div></div>"
+"<p style=text-align:center;margin-top:24px;font-size:11px;color:#6b7280>"
+"<a href=/api/status>/api/status</a> · <a href=/api/live/debug>/api/live/debug</a> · <a href=/api/live/preflight>/api/live/preflight</a>"
+"</p>"
+"<script>"
+"function L(t){var l=document.getElementById('log');l.textContent+=new Date().toLocaleTimeString()+' '+t+'\\n';l.scrollTop=l.scrollHeight;}"
+"function PF(){fetch('/api/live/preflight').then(function(r){return r.json();}).then(function(d){var p=document.getElementById('pf');var f=function(ok,t){var c=ok===true?'ok':(ok==='checking'?'warn-c':'err');var i=ok===true?'✅':(ok==='checking'?'⏳':'❌');return '<div class='+c+'>'+i+' '+t+'</div>';};p.innerHTML=f(d.kad_connected,'Kad')+f(d.high_id?true:(d.firewall_checking?'checking':false),d.high_id?'HighID':(d.firewall_checking?'NAT…':'LowID'))+f(d.ffmpeg_found,'FFmpeg')+f(!!d.public_ip,'IP '+(d.public_ip||'?')+':'+d.port);}).catch(function(){});}"
+"function MON(){fetch('/api/live/debug').then(function(r){return r.json();}).then(function(d){var m=document.getElementById('mon');if(!d){m.textContent='-';return;}m.innerHTML='broadcasting='+d.broadcasting+' viewing='+d.viewing+'<br>buffer='+(d.chunks?d.chunks.count+' segs ['+d.chunks.oldestSeq+'..'+d.chunks.newestSeq+']':'')+'<br>peers: view='+(d.peers?d.peers.viewPeers:0)+' broadcast='+(d.peers?d.peers.broadcastPeers:0)+' mesh='+(d.peers?d.peers.meshPeers:0)+'<br>kad: '+(d.discovery?'connected='+d.discovery.kadConnected+' streams='+d.discovery.knownStreams:'?');}).catch(function(){});}"
+"PF();MON();setInterval(PF,8000);setInterval(MON,2000);"
+"document.getElementById('br-start').onclick=function(){var t=encodeURIComponent(document.getElementById('br-title').value||'eSE');var s=document.getElementById('br-source').value;var b=document.getElementById('br-bitrate').value;L('Iniciando broadcast '+s+' '+b+'k…');fetch('/api/live/broadcast/start?source='+s+'&title='+t+'&bitrate='+b).then(function(r){return r.json();}).then(function(d){if(d.success){document.getElementById('br-status').textContent='✅ Emitiendo: '+d.source+' @ '+d.bitrate+' kbps';if(d.link){document.getElementById('br-link').style.display='';document.getElementById('br-link-input').value=d.link;}L('OK link='+d.link);}else{document.getElementById('br-status').textContent='❌ '+(d.error||'fallo');L('FAIL '+d.error);}});};"
+"document.getElementById('br-stop').onclick=function(){fetch('/api/live/broadcast/stop').then(function(r){return r.json();}).then(function(d){document.getElementById('br-status').textContent='Detenido';document.getElementById('br-link').style.display='none';L('Stopped');});};"
+"document.getElementById('join-btn').onclick=function(){var l=document.getElementById('join-link').value.trim();if(!l){return;}L('Joining '+l);fetch('/api/live/direct_join?link='+encodeURIComponent(l)).then(function(r){return r.json();}).then(function(d){var m=document.getElementById('join-msg');if(d.success){m.innerHTML='✅ Conectado a '+d.ip+':'+d.port+'. <a href=/hls/stream.m3u8>Abre el HLS</a>';m.className='ok';L('Joined');}else{m.textContent='❌ '+(d.error||'fallo');m.className='err';}});};"
+"</script></body></html>";
+		size_t bodyLen = strlen(dashHtml);
+		CStringA hdr;
+		hdr.Format(
+			"HTTP/1.1 200 OK\r\n"
+			"Content-Type: text/html; charset=utf-8\r\n"
+			"Content-Length: %zu\r\n"
+			"Cache-Control: no-cache\r\n\r\n",
+			bodyLen);
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(dashHtml, (int)bodyLen);
+		return;
+	}
+
+	// --- /api/holepunch/test --- Manual hole-punch trigger for diagnostics.
+	// Lets the user fire a HOLEPUNCH_REQ at a known LowID peer's Kad endpoint
+	// to verify the uTP NAT traversal works between two specific networks
+	// (e.g. office ↔ home). Returns immediately with the attempt counters;
+	// success is observed indirectly by polling /api/status afterward.
+	//
+	// Usage: GET /api/holepunch/test?ip=1.2.3.4&udp_port=4672
+	//
+	// SAFETY: rate-limited to 1 manual fire per 5 s to avoid being mistaken
+	// for a Sybil attack on the target.
+	if (sURL.Left(19) == "/api/holepunch/test") {
+		static DWORD s_lastManualHolePunch = 0;
+		DWORD now = ::GetTickCount();
+		if (now - s_lastManualHolePunch < 5000) {
+			CStringA json = "{\"success\":false,\"error\":\"rate_limited\",\"retry_after_ms\":";
+			CStringA n;
+			n.Format("%u}", 5000 - (now - s_lastManualHolePunch));
+			json += n;
+			CStringA hdr;
+			hdr.Format(
+				"HTTP/1.1 429 Too Many Requests\r\n"
+				"Content-Type: application/json\r\n"
+				"Content-Length: %d\r\n\r\n",
+				json.GetLength());
+			Data.pSocket->SendData(hdr, hdr.GetLength());
+			Data.pSocket->SendData(json, json.GetLength());
+			return;
+		}
+
+		CString ipT  (_ParseURL(Data.sURL, _T("ip")));
+		CString portT(_ParseURL(Data.sURL, _T("udp_port")));
+		CStringA ipA = CT2A(ipT);
+		uint32 ipNet = (uint32)inet_addr((LPCSTR)ipA);
+		uint16 udpPort = (uint16)_ttoi(portT);
+
+		bool ok = false;
+		const char* errCode = "ok";
+		DWORD attemptsBefore = CStatistics::m_dwHolePunchAttempts;
+
+		if (ipNet == INADDR_NONE || ipNet == 0 || udpPort == 0) {
+			errCode = "invalid_ip_port";
+		} else if (!Kademlia::CKademlia::IsConnected() || Kademlia::CKademlia::GetUDPListener() == NULL) {
+			errCode = "kad_not_ready";
+		} else if (!thePrefs.GetUtpHolePunchEnabled()) {
+			errCode = "holepunch_disabled";
+		} else {
+			// SendEseHolePunchReq expects host-order IP, host-order port.
+			Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReq(ntohl(ipNet), udpPort);
+			s_lastManualHolePunch = now;
+			ok = true;
+		}
+
+		CStringA json;
+		json.Format(
+			"{\"success\":%s,\"error\":\"%s\","
+			"\"target_ip\":\"%s\",\"target_udp_port\":%u,"
+			"\"attempts_before\":%u,\"attempts_after\":%u,"
+			"\"counters\":{"
+			"\"attempts\":%u,\"success\":%u,\"sym_nat_fail\":%u,"
+			"\"encrypted\":%u,\"plaintext\":%u}}",
+			ok ? "true" : "false",
+			errCode,
+			(LPCSTR)CT2A(ipT), (unsigned)udpPort,
+			(unsigned)attemptsBefore, (unsigned)CStatistics::m_dwHolePunchAttempts,
+			(unsigned)CStatistics::m_dwHolePunchAttempts,
+			(unsigned)CStatistics::m_dwHolePunchSuccess,
+			(unsigned)CStatistics::m_dwHolePunchSymNATFail,
+			(unsigned)CStatistics::m_dwHolePunchEncrypted,
+			(unsigned)CStatistics::m_dwHolePunchPlaintext);
+		CStringA hdr;
+		hdr.Format(
+			"HTTP/1.1 %s\r\n"
+			"Content-Type: application/json\r\n"
+			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
+			"X-Content-Type-Options: nosniff\r\n"
+			"Content-Length: %d\r\n\r\n",
+			ok ? "200 OK" : "400 Bad Request",
+			json.GetLength());
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/live/preflight --- Read-only health check before broadcasting.
+	// Returns the four conditions that determine whether broadcasting will work:
+	//   1. kad_connected   — your stream metadata can reach the DHT
+	//   2. high_id         — viewers can open a TCP socket to your port
+	//   3. upload_ok       — your max upload exceeds bitrate × 1.5 (per viewer)
+	//   4. ffmpeg_found    — RTMPIngest can launch the encoder
+	// The web UI uses this to gate the START button and explain failures.
+	if (sURL == "/api/live/preflight") {
+		bool kadConn = Kademlia::CKademlia::IsConnected();
+		// Tier 1.5: differentiate between "firewall test completed and we ARE
+		// firewalled" vs "test still running, don't know yet". This avoids
+		// the pre-flight panel flashing a red ❌ during the first 30-90 s of
+		// Kad's startup when the tester hasn't reported yet.
+		bool fwVerified = Kademlia::CUDPFirewallTester::IsVerified();
+		bool kadFw   = theApp.IsFirewalled();
+		bool ed2kFw  = (theApp.serverconnect && theApp.serverconnect->IsConnected()
+		                && theApp.serverconnect->IsLowID());
+		bool highId  = !kadFw && !ed2kFw;
+		bool fwChecking = !fwVerified && kadConn && !ed2kFw;  // still measuring
+		uint32 maxUpKBs = thePrefs.GetMaxUpload();   // KB/s, 0 = unlimited
+		uint16 port = thePrefs.GetPort();
+		uint32 pubIP = theApp.GetPublicIP();
+		CString ffPath = CRTMPIngest::FindFFmpeg();
+		bool ffmpegFound = (GetFileAttributes(ffPath) != INVALID_FILE_ATTRIBUTES);
+
+		CStringA pubIpA;
+		if (pubIP != 0)
+			pubIpA = (LPCSTR)CT2A(ipstr(pubIP));
+		else
+			pubIpA = "";
+
+		CStringA ffPathA = (LPCSTR)CT2A(ffPath);
+		ffPathA = EseJsonEscapeA(ffPathA);
+
+		CStringA json;
+		json.Format(
+			"{\"kad_connected\":%s,"
+			"\"high_id\":%s,"
+			"\"kad_firewalled\":%s,"
+			"\"ed2k_lowid\":%s,"
+			"\"firewall_checking\":%s,"
+			"\"max_upload_kbs\":%u,"
+			"\"port\":%u,"
+			"\"public_ip\":\"%s\","
+			"\"ffmpeg_found\":%s,"
+			"\"ffmpeg_path\":\"%s\","
+			"\"ready\":%s}",
+			kadConn ? "true" : "false",
+			highId ? "true" : "false",
+			kadFw ? "true" : "false",
+			ed2kFw ? "true" : "false",
+			fwChecking ? "true" : "false",
+			(unsigned)maxUpKBs, (unsigned)port,
+			(LPCSTR)pubIpA,
+			ffmpegFound ? "true" : "false",
+			(LPCSTR)ffPathA,
+			(kadConn && highId && ffmpegFound) ? "true" : "false");
+
+		CStringA header;
+		header.Format(
+			"HTTP/1.1 200 OK\r\n"
+			HTTPInit
+			"Content-Type: application/json\r\n"
+			"Content-Length: %d\r\n\r\n",
+			json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/live/privacy/tunnel_ping?text=... --- v0.71 C — data plane demo.
+	// Sends a TUN_OP_PING through any active circuit (1-hop or 2-hop).
+	// The exit relay echoes back as TUN_OP_PING_REPLY with "echo:<text>".
+	// This is the FIRST end-to-end demonstration of the data plane working
+	// through the onion tunnel. If circuits exist but the reply doesn't
+	// arrive within timeoutMs, returns ok:false with reason.
+	// --- /api/live/privacy/subscriptions --- v0.71 P2.A — REST CRUD
+	// over the DPAPI-encrypted subscriptions store. The full MFC dialog
+	// is deferred; REST gives users (or external UI clients) immediate
+	// access via curl to add/list/remove subscriptions.
+	//   GET                       -> list current entries
+	//   GET ?add=<32 hex>&name=N  -> add channel
+	//   GET ?remove=<32 hex>      -> remove channel
+	if (sURL.Left(33) == "/api/live/privacy/subscriptions") {
+		const CString addArg = _ParseURL(Data.sURL, _T("add"));
+		const CString rmArg  = _ParseURL(Data.sURL, _T("remove"));
+		const CString nmArg  = _ParseURL(Data.sURL, _T("name"));
+		auto hexToBytes = [](const CString& hex, uint8_t out[32]) -> bool {
+			if (hex.GetLength() != 64) return false;
+			for (int i = 0; i < 32; ++i) {
+				int hi = -1, lo = -1;
+				TCHAR a = hex[i*2], b = hex[i*2+1];
+				if (a >= '0' && a <= '9') hi = a - '0';
+				else if (a >= 'a' && a <= 'f') hi = a - 'a' + 10;
+				else if (a >= 'A' && a <= 'F') hi = a - 'A' + 10;
+				if (b >= '0' && b <= '9') lo = b - '0';
+				else if (b >= 'a' && b <= 'f') lo = b - 'a' + 10;
+				else if (b >= 'A' && b <= 'F') lo = b - 'A' + 10;
+				if (hi < 0 || lo < 0) return false;
+				out[i] = (uint8_t)((hi << 4) | lo);
+			}
+			return true;
+		};
+
+		bool ok = true;
+		CStringA msg = "ok";
+		try {
+			auto& store = eSELive::CLiveSubscriptionStore::Get();
+			if (!addArg.IsEmpty()) {
+				uint8_t pk[32];
+				if (!hexToBytes(addArg, pk)) { ok = false; msg = "invalid pubkey hex (need 64 chars)"; }
+				else {
+					eSELive::SubscriptionEntry e = {};
+					memcpy(e.channel_pubkey, pk, 32);
+					e.name = CStringA(nmArg);
+					e.added_unix_ts = (uint64_t)time(NULL);
+					e.notifications = true;
+					if (!store.Add(e)) { ok = false; msg = "add failed (already subscribed?)"; }
+					else store.Save();
+				}
+			}
+			if (!rmArg.IsEmpty()) {
+				uint8_t pk[32];
+				if (!hexToBytes(rmArg, pk)) { ok = false; msg = "invalid pubkey hex"; }
+				else if (!store.Remove(pk)) { ok = false; msg = "not subscribed"; }
+				else store.Save();
+			}
+
+			// List current entries (always in response).
+			std::vector<eSELive::SubscriptionEntry> all;
+			store.GetAll(all);
+			CStringA arr;
+			for (size_t i = 0; i < all.size(); ++i) {
+				if (i > 0) arr += ",";
+				CStringA pkHex;
+				for (int b = 0; b < 32; ++b) {
+					CStringA pair;
+					pair.Format("%02x", all[i].channel_pubkey[b]);
+					pkHex += pair;
+				}
+				CStringA line;
+				line.Format("{\"pubkey\":\"%s\",\"name\":\"%s\",\"added\":%llu}",
+					(LPCSTR)pkHex, (LPCSTR)all[i].name,
+					(unsigned long long)all[i].added_unix_ts);
+				arr += line;
+			}
+			CStringA json;
+			json.Format("{\"ok\":%s,\"msg\":\"%s\",\"count\":%u,\"subscriptions\":[%s]}",
+				ok ? "true" : "false", (LPCSTR)msg, (unsigned)all.size(), (LPCSTR)arr);
+			CStringA header;
+			header.Format(
+			    "HTTP/1.1 200 OK\r\n"
+			    HTTPInit
+			    "Content-Type: application/json\r\n"
+			    "Content-Length: %d\r\n\r\n",
+			    json.GetLength());
+			Data.pSocket->SendData(header, header.GetLength());
+			Data.pSocket->SendData(json, json.GetLength());
+		} catch (...) {
+			const char* err = "{\"ok\":false,\"msg\":\"exception in subscriptions handler\"}";
+			CStringA header;
+			header.Format("HTTP/1.1 200 OK\r\n" HTTPInit "Content-Type: application/json\r\nContent-Length: %d\r\n\r\n",
+				(int)strlen(err));
+			Data.pSocket->SendData(header, header.GetLength());
+			Data.pSocket->SendData(err, (int)strlen(err));
+		}
+		return;
+	}
+
+	// --- /api/live/privacy/tunnel_search?keyword=foo --- v0.71 P1.A —
+	// REAL operation through onion tunnel. Sends TUN_OP_KAD_SEARCH; exit
+	// relay queries its local stream directory and returns matching
+	// streams as KAD_RESULT. V's keyword is NEVER sent to Kad directly
+	// → preserves privacy of WHAT V is looking for. Length: 31 chars.
+	if (sURL.Left(31) == "/api/live/privacy/tunnel_search") {
+		CString kwArg = _ParseURL(Data.sURL, _T("keyword"));
+		if (kwArg.IsEmpty()) kwArg = _T("eselive");
+		CStringA kwA(kwArg);
+		kwA.MakeLower();
+		std::string keyword((LPCSTR)kwA);
+		std::string reply;
+		bool ok = false;
+		try {
+			ok = eSELive::CLiveTunnel::Get().TunneledKadSearch(keyword, reply, 3000);
+		} catch (...) {}
+
+		CStringA json;
+		if (ok) {
+			CStringA safe;
+			for (char c : reply) {
+				if (c == '"' || c == '\\') safe += '\\';
+				safe += c;
+			}
+			json.Format("{\"ok\":true,\"keyword\":\"%s\",\"raw_hits\":\"%s\",\"format\":\"title|bitrate|viewers;\"}",
+				(LPCSTR)kwA, (LPCSTR)safe);
+		} else {
+			json = "{\"ok\":false,\"reason\":\"no active circuit or timeout - build a circuit first via test_circuit\"}";
+		}
+		CStringA header;
+		header.Format(
+		    "HTTP/1.1 200 OK\r\n"
+		    HTTPInit
+		    "Content-Type: application/json\r\n"
+		    "Content-Length: %d\r\n\r\n",
+		    json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// "/api/live/privacy/tunnel_ping" is exactly 29 chars.
+	if (sURL.Left(29) == "/api/live/privacy/tunnel_ping") {
+		CString textArg = _ParseURL(Data.sURL, _T("text"));
+		if (textArg.IsEmpty()) textArg = _T("hello");
+		std::string text((LPCSTR)CStringA(textArg));
+		std::string reply;
+		bool ok = false;
+		try {
+			ok = eSELive::CLiveTunnel::Get().TunnelPing(text, reply, 3000);
+		} catch (...) {}
+
+		CStringA json;
+		if (ok) {
+			// Escape any quotes/backslashes in reply just in case
+			CStringA safe;
+			for (char c : reply) {
+				if (c == '"' || c == '\\') safe += '\\';
+				safe += c;
+			}
+			json.Format("{\"ok\":true,\"sent\":\"%s\",\"received\":\"%s\"}",
+				(LPCSTR)CStringA(textArg), (LPCSTR)safe);
+		} else {
+			json = "{\"ok\":false,\"reason\":\"no active circuit or timeout - build a 2-hop circuit first via test_circuit?hops=2\"}";
+		}
+
+		CStringA header;
+		header.Format(
+		    "HTTP/1.1 200 OK\r\n"
+		    HTTPInit
+		    "Content-Type: application/json\r\n"
+		    "Content-Length: %d\r\n\r\n",
+		    json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/live/privacy/circuits --- v0.71 B — per-circuit detail.
+	// Enumerates all circuits in CLiveTunnel with id, role, state, age
+	// in ms, hop count, and forwarding state (next_hop_set / next_circ_id
+	// for relay circuits that have already received EXTEND). Used to
+	// verify "Hops: 2" after BuildTestCircuit2Hop succeeds.
+	if (sURL == "/api/live/privacy/circuits") {
+		std::vector<eSELive::CLiveTunnel::CircuitSnapshot> snap;
+		try {
+			eSELive::CLiveTunnel::Get().GetCircuitsSnapshot(snap);
+		} catch (...) {}
+
+		CStringA arr;
+		for (size_t i = 0; i < snap.size(); ++i) {
+			if (i > 0) arr += ",";
+			const auto& s = snap[i];
+			CStringA line;
+			line.Format(
+			    "{\"circ_id\":\"0x%08X\",\"role\":\"%s\","
+			    "\"state\":\"%s\",\"age_ms\":%u,"
+			    "\"hop_count\":%u,\"forwarding\":%s,"
+			    "\"next_circ_id\":\"0x%08X\"}",
+			    s.circ_id,
+			    s.role == 0 ? "Originator" : "Relay",
+			    (s.state == 0 ? "Pending"
+			      : s.state == 1 ? "HalfBuilt"
+			      : s.state == 2 ? "Built"
+			      : s.state == 3 ? "Active"
+			      : s.state == 4 ? "Destroyed" : "?"),
+			    s.age_ms,
+			    s.hop_count,
+			    s.next_hop_set ? "true" : "false",
+			    s.next_circ_id);
+			arr += line;
+		}
+
+		CStringA json;
+		json.Format("{\"total\":%u,\"circuits\":[%s]}",
+		    (unsigned)snap.size(), (LPCSTR)arr);
+
+		CStringA header;
+		header.Format(
+		    "HTTP/1.1 200 OK\r\n"
+		    HTTPInit
+		    "Content-Type: application/json\r\n"
+		    "Content-Length: %d\r\n\r\n",
+		    json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/live/privacy/peers --- v0.71 P3.11 — debug helper.
+	// Lists currently connected peers with their TAG_ESE_CAPS bitmap so
+	// the user can verify which peers PC1 actually sees as fork-capable.
+	// Critical for diagnosing why test_circuit creates Pending circuits
+	// that never become Active (most common cause: PC2 not in ClientList,
+	// or PC2 running an older binary that didn't emit TAG_ESE_CAPS).
+	if (sURL == "/api/live/privacy/peers") {
+		std::vector<CUpDownClient*> all;
+		std::vector<CUpDownClient*> tunneling;
+		try {
+			if (theApp.clientlist) {
+				theApp.clientlist->GetConnectedSnapshot(all,        50, /*tunnelOnly=*/false);
+				theApp.clientlist->GetConnectedSnapshot(tunneling,  50, /*tunnelOnly=*/true);
+			}
+		} catch (...) {}
+
+		CStringA peersJson;
+		for (size_t i = 0; i < all.size(); ++i) {
+			if (i > 0) peersJson += ",";
+			CUpDownClient* c = all[i];
+			CStringA line;
+			const uint32 ip = c ? c->GetIP() : 0;
+			const uint16 port = c ? c->GetUserPort() : 0;
+			const uint32 fork = c ? c->GetForkCaps() : 0;
+			const uint32 ese  = c ? c->GetEseCapabilities() : 0;
+			line.Format(
+			    "{\"ip\":\"%u.%u.%u.%u\",\"port\":%u,"
+			    "\"forkCaps\":\"0x%08X\",\"eseCaps\":\"0x%08X\","
+			    "\"isFork\":%s}",
+			    (unsigned)(ip & 0xFF),
+			    (unsigned)((ip >> 8) & 0xFF),
+			    (unsigned)((ip >> 16) & 0xFF),
+			    (unsigned)((ip >> 24) & 0xFF),
+			    (unsigned)port,
+			    fork, ese,
+			    (ese & 0x00000100) ? "true" : "false");
+			peersJson += line;
+		}
+
+		CStringA json;
+		json.Format(
+		    "{\"totalConnected\":%u,\"forkTunnelingCapable\":%u,\"peers\":[%s]}",
+		    (unsigned)all.size(),
+		    (unsigned)tunneling.size(),
+		    (LPCSTR)peersJson);
+
+		CStringA header;
+		header.Format(
+		    "HTTP/1.1 200 OK\r\n"
+		    HTTPInit
+		    "Content-Type: application/json\r\n"
+		    "Content-Length: %d\r\n\r\n",
+		    json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/live/privacy/test_circuit --- v0.71 P3.6 — solo testing helper.
+	// Builds a single-hop test circuit through any currently connected peer
+	// (or a specific peer if &peerip= is supplied). The originator code
+	// path runs end-to-end (X25519 keygen → CELL_CREATE → TCP send). If
+	// the chosen peer runs this fork, the handshake completes and the
+	// circuit reaches Active; if not, the circuit stays Pending until
+	// the ~6 s timeout reaps it. Either way the user gets visible proof
+	// the SEND path is wired (Privacidad panel shows circuit count +1
+	// briefly even on failure).
+	// Length of "/api/live/privacy/test_circuit" is exactly 30 chars.
+	// Left(30) matches both bare URL and URL with ?query suffix.
+	if (sURL.Left(30) == "/api/live/privacy/test_circuit") {
+		// v0.71 B — optional ?hops=2 to build a 2-hop circuit. Default
+		// is 1-hop (backward compat). 2-hop picks 2 fork peers if
+		// available; with 1 fork peer it loops hop2 back (testing aid).
+		const CString hopsArg = _ParseURL(Data.sURL, _T("hops"));
+		const int hops = (hopsArg == _T("2")) ? 2 : 1;
+		uint32_t circId = 0;
+		CStringA result;
+		try {
+			if (hops == 2)
+				circId = eSELive::CLiveTunnel::Get().BuildTestCircuit2Hop();
+			else
+				circId = eSELive::CLiveTunnel::Get().BuildTestCircuit(NULL);
+		} catch (...) {}
+		if (circId == 0) {
+			result = "{\"ok\":false,\"reason\":\"no connected fork-capable peers - check /api/live/privacy/peers\"}";
+		} else {
+			CStringA tmp;
+			tmp.Format("{\"ok\":true,\"circuit_id\":\"0x%08x\",\"hops_requested\":%d,\"note\":\"poll /api/live/privacy and /api/live/privacy/circuits to watch handshake progress\"}",
+				(unsigned)circId, hops);
+			result = tmp;
+		}
+		CStringA header;
+		header.Format(
+			"HTTP/1.1 200 OK\r\n"
+			HTTPInit
+			"Content-Type: application/json\r\n"
+			"Content-Length: %d\r\n\r\n",
+			result.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(result, result.GetLength());
+		return;
+	}
+
+	// --- /api/live/privacy --- F5: expose Kad v2 mode + fallback policy + sensitive keywords.
+	// GET: returns current state. PATCH (via query params): updates state.
+	if (sURL.Left(17) == "/api/live/privacy") {
+		using Kademlia::CKadV2ModeSelector;
+		using Kademlia::CKadV2Mode;
+		auto& sel = CKadV2ModeSelector::Get();
+		const CString modeArg     = _ParseURL(Data.sURL, _T("mode"));        // direct|tunneled|adaptive
+		const CString fallbackArg = _ParseURL(Data.sURL, _T("fallback"));    // strict|balanced|best_effort
+		const CString addSens     = _ParseURL(Data.sURL, _T("add_sensitive"));
+		const CString rmSens      = _ParseURL(Data.sURL, _T("rm_sensitive"));
+		if (!modeArg.IsEmpty()) {
+			if      (modeArg == _T("direct"))    sel.SetDefaultMode(CKadV2Mode::Direct);
+			else if (modeArg == _T("tunneled"))  sel.SetDefaultMode(CKadV2Mode::Tunneled);
+			else if (modeArg == _T("adaptive"))  sel.SetDefaultMode(CKadV2Mode::Adaptive);
+		}
+		if (!fallbackArg.IsEmpty()) {
+			if      (fallbackArg == _T("strict"))      sel.SetFallbackPolicy(CKadV2ModeSelector::STRICT_PRIVACY);
+			else if (fallbackArg == _T("balanced"))    sel.SetFallbackPolicy(CKadV2ModeSelector::BALANCED);
+			else if (fallbackArg == _T("best_effort")) sel.SetFallbackPolicy(CKadV2ModeSelector::BEST_EFFORT);
+		}
+		if (!addSens.IsEmpty()) sel.AddSensitiveKeyword((LPCWSTR)addSens);
+		if (!rmSens.IsEmpty())  sel.RemoveSensitiveKeyword((LPCWSTR)rmSens);
+
+		const char* modeStr =
+			sel.GetDefaultMode() == CKadV2Mode::Direct    ? "direct"   :
+			sel.GetDefaultMode() == CKadV2Mode::Tunneled  ? "tunneled" : "adaptive";
+		const char* fbStr =
+			sel.GetFallbackPolicy() == CKadV2ModeSelector::STRICT_PRIVACY ? "strict"   :
+			sel.GetFallbackPolicy() == CKadV2ModeSelector::BEST_EFFORT     ? "best_effort" : "balanced";
+		std::vector<CStringW> kws;
+		sel.GetSensitiveKeywords(kws);
+		CStringA kwJson;
+		for (size_t i = 0; i < kws.size(); ++i) {
+			if (i > 0) kwJson += ",";
+			kwJson += "\""; kwJson += CStringA(kws[i]); kwJson += "\"";
+		}
+
+		// v0.71 P1.1 — runtime metrics. Each value is read from the live
+		// singletons so the user can see what's actually happening, not
+		// just what the settings say. Empty / zero values are an honest
+		// signal that the module exists but isn't doing work yet (eg.
+		// circuits=0 with mode=tunneled means the TCP-send path in F5 P3
+		// isn't wired yet — the user knows where they stand).
+		size_t circuitsActive = 0;
+		size_t circuitsPending = 0;   // v0.71 P3.8 — visible Pending state
+		size_t tunnelPoolSize = 0;
+		size_t subscriptionCount = 0;
+		uint32 capsRuntime = g_uEseCapsRuntime;
+		CStringA proberV6Str = "";
+		try {
+			circuitsActive    = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
+			circuitsPending   = eSELive::CLiveTunnel::Get().PendingCircuitCount();
+			tunnelPoolSize    = Kademlia::CKadV2TunnelPool::Get().Size();
+			subscriptionCount = eSELive::CLiveSubscriptionStore::Get().Count();
+			CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+			if (!v6.IsNull()) proberV6Str = CStringA(v6.ToStringC());
+		} catch (...) {
+			// keep zeros; this endpoint must never throw
+		}
+
+		// Build the human-readable caps array cleanly (no printf comma games).
+		CStringA capsArr;
+		auto appendCap = [&capsArr](const char* name) {
+		    if (!capsArr.IsEmpty()) capsArr += ",";
+		    capsArr += "\""; capsArr += name; capsArr += "\"";
+		};
+		if (capsRuntime & ESE_CAP_M1_SUBSCRIBER_PIN)   appendCap("M1_subscriber_pin");
+		if (capsRuntime & ESE_CAP_M2_COMPOSITE_KEYS)   appendCap("M2_composite_keys");
+		if (capsRuntime & ESE_CAP_M3_SHARDING)         appendCap("M3_sharding");
+		if (capsRuntime & ESE_CAP_M4_TRIGRAMS)         appendCap("M4_trigrams");
+		if (capsRuntime & ESE_CAP_M5_BLOOM_GOSSIP)     appendCap("M5_bloom_gossip");
+		if (capsRuntime & ESE_CAP_M6_K_EFFECTIVE)      appendCap("M6_k_effective");
+		if (capsRuntime & ESE_CAP_PRIVACY_TUNNELING)   appendCap("privacy_tunneling");
+		if (capsRuntime & ESE_CAP_SEALED_RECORDS)      appendCap("sealed_records");
+		if (capsRuntime & ESE_CAP_GOSSIP_PROTOCOL)     appendCap("gossip_protocol");
+		if (capsRuntime & ESE_CAP_COVER_TRAFFIC)       appendCap("cover_traffic");
+
+		CStringA json;
+		json.Format(
+		    "{"
+		    "\"mode\":\"%s\","
+		    "\"fallback\":\"%s\","
+		    "\"sensitiveKeywords\":[%s],"
+		    "\"runtime\":{"
+		        "\"capsBits\":\"0x%08X\","
+		        "\"capsHumanReadable\":[%s],"
+		        "\"circuitsActive\":%u,"
+		        "\"circuitsPending\":%u,"
+		        "\"tunnelPoolSize\":%u,"
+		        "\"subscriptionsLoaded\":%u,"
+		        "\"publicIPv6\":\"%s\""
+		    "}"
+		    "}",
+		    modeStr, fbStr, (LPCSTR)kwJson,
+		    capsRuntime,
+		    (LPCSTR)capsArr,
+		    (unsigned)circuitsActive,
+		    (unsigned)circuitsPending,
+		    (unsigned)tunnelPoolSize,
+		    (unsigned)subscriptionCount,
+		    (LPCSTR)proberV6Str);
+		CStringA header;
+		header.Format(
+			"HTTP/1.1 200 OK\r\n"
+			HTTPInit
+			"Content-Type: application/json\r\n"
+			"Content-Length: %d\r\n\r\n",
+			json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/live/metrics --- V2-S04+S05: Prometheus exposition.
+	// Plain text/plain (version=0.0.4) endpoint that Prometheus can scrape.
+	// Exposes counters (chunks received/served/missing, peers by role, kad ops,
+	// disconnects) plus latency percentiles from LatencyHistogram (V2-S05).
+	if (sURL == "/api/live/metrics") {
+		CStringA body;
+		LiveDebugSnapshot snap;
+		bool haveSnap = false;
+		if (theApp.liveStreamManager) {
+			snap = theApp.liveStreamManager->BuildDebugSnapshot();
+			haveSnap = true;
+		}
+
+		DWORD p50 = 0, p95 = 0, p99 = 0, mean = 0;
+		int   nLat = 0;
+		if (theApp.liveStreamManager) {
+			theApp.liveStreamManager->ChunkArrivalLatency().Percentiles(p50, p95, p99);
+			mean = theApp.liveStreamManager->ChunkArrivalLatency().Mean();
+			nLat = theApp.liveStreamManager->ChunkArrivalLatency().SampleCount();
+		}
+
+		body.Format(
+			"# HELP esmule_chunks_received_total Total chunks received from peers\n"
+			"# TYPE esmule_chunks_received_total counter\n"
+			"esmule_chunks_received_total %ld\n"
+			"# HELP esmule_chunks_requested_total Chunk requests issued by us\n"
+			"# TYPE esmule_chunks_requested_total counter\n"
+			"esmule_chunks_requested_total %ld\n"
+			"# HELP esmule_chunks_missing_total Chunk timeouts / missing detections\n"
+			"# TYPE esmule_chunks_missing_total counter\n"
+			"esmule_chunks_missing_total %ld\n"
+			"# HELP esmule_chunks_served_total Chunks served to peers (mesh redistribution)\n"
+			"# TYPE esmule_chunks_served_total counter\n"
+			"esmule_chunks_served_total %d\n"
+			"# HELP esmule_kad_publishes_total Total Kad publish operations queued\n"
+			"# TYPE esmule_kad_publishes_total counter\n"
+			"esmule_kad_publishes_total %ld\n"
+			"# HELP esmule_kad_searches_total Total Kad search requests issued\n"
+			"# TYPE esmule_kad_searches_total counter\n"
+			"esmule_kad_searches_total %ld\n"
+			"# HELP esmule_peer_disconnects_total Total peer disconnect events\n"
+			"# TYPE esmule_peer_disconnects_total counter\n"
+			"esmule_peer_disconnects_total %ld\n"
+			"# HELP esmule_active_peers Currently connected peers, by role\n"
+			"# TYPE esmule_active_peers gauge\n"
+			"esmule_active_peers{role=\"viewer\"} %d\n"
+			"esmule_active_peers{role=\"broadcaster\"} %d\n"
+			"esmule_active_peers{role=\"mesh\"} %d\n"
+			"# HELP esmule_chunk_buffer_count Chunks currently held in the ring buffer\n"
+			"# TYPE esmule_chunk_buffer_count gauge\n"
+			"esmule_chunk_buffer_count %d\n"
+			"# HELP esmule_pending_requests Outstanding chunk requests awaiting a peer reply\n"
+			"# TYPE esmule_pending_requests gauge\n"
+			"esmule_pending_requests %d\n"
+			"# HELP esmule_broadcasting Whether this instance is broadcasting (1) or not (0)\n"
+			"# TYPE esmule_broadcasting gauge\n"
+			"esmule_broadcasting %d\n"
+			"# HELP esmule_viewing Whether this instance is viewing a live stream (1/0)\n"
+			"# TYPE esmule_viewing gauge\n"
+			"esmule_viewing %d\n"
+			"# HELP esmule_chunk_latency_ms Chunk arrival latency in ms (broadcaster timestamp -> our recv)\n"
+			"# TYPE esmule_chunk_latency_ms summary\n"
+			"esmule_chunk_latency_ms_count %d\n"
+			"esmule_chunk_latency_ms_sum %lu\n"
+			"esmule_chunk_latency_ms{quantile=\"0.5\"} %lu\n"
+			"esmule_chunk_latency_ms{quantile=\"0.95\"} %lu\n"
+			"esmule_chunk_latency_ms{quantile=\"0.99\"} %lu\n"
+			"# HELP esmule_kad_searches_empty_total Searches that returned 0 hits (DISC-S11)\n"
+			"# TYPE esmule_kad_searches_empty_total counter\n"
+			"esmule_kad_searches_empty_total %ld\n"
+			"# HELP esmule_kad_searches_rate_limited_total Searches dropped by token bucket (DISC-S08)\n"
+			"# TYPE esmule_kad_searches_rate_limited_total counter\n"
+			"esmule_kad_searches_rate_limited_total %ld\n"
+			"# HELP esmule_pending_dials_dropped_total FIFO drops in pending dial queue (DISC-S06)\n"
+			"# TYPE esmule_pending_dials_dropped_total counter\n"
+			"esmule_pending_dials_dropped_total %ld\n"
+			"# HELP esmule_join_to_first_chunk_ms Average ms from JoinStream to first chunk (DISC-S12)\n"
+			"# TYPE esmule_join_to_first_chunk_ms summary\n"
+			"esmule_join_to_first_chunk_ms_count %ld\n"
+			"esmule_join_to_first_chunk_ms_sum %ld\n",
+			haveSnap ? snap.counters.chunksReceived : 0L,
+			haveSnap ? snap.counters.chunksRequested : 0L,
+			haveSnap ? snap.counters.chunksMissing : 0L,
+			haveSnap ? snap.chunksServed : 0,
+			haveSnap ? snap.counters.kadPublishes : 0L,
+			haveSnap ? snap.counters.kadSearches : 0L,
+			haveSnap ? snap.counters.peerDisconnects : 0L,
+			haveSnap ? snap.viewPeers : 0,
+			haveSnap ? snap.broadcastPeers : 0,
+			haveSnap ? snap.meshPeers : 0,
+			haveSnap ? snap.bufCount : 0,
+			haveSnap ? snap.pendingRequests : 0,
+			(haveSnap && snap.broadcasting) ? 1 : 0,
+			(haveSnap && snap.viewing) ? 1 : 0,
+			nLat,
+			(unsigned long)((uint64)mean * (uint64)nLat),
+			(unsigned long)p50,
+			(unsigned long)p95,
+			(unsigned long)p99,
+			haveSnap ? snap.counters.kadSearchesEmpty : 0L,
+			haveSnap ? snap.counters.kadSearchesRateLimited : 0L,
+			haveSnap ? snap.counters.pendingDialsDropped : 0L,
+			haveSnap ? snap.counters.joinToFirstChunkSamples : 0L,
+			haveSnap ? snap.counters.joinToFirstChunkSumMs : 0L);
+
+		CStringA hdr;
+		hdr.Format(
+			"HTTP/1.1 200 OK\r\n"
+			"Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n"
+			"Cache-Control: no-store\r\n"
+			"Access-Control-Allow-Origin: *\r\n"
+			"Content-Length: %d\r\n\r\n",
+			body.GetLength());
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(body, body.GetLength());
+		return;
+	}
+
+	// --- /api/live/log --- Tail of the in-process live debug log.
+	// Returns JSON {"items":["HH:MM:SS [TAG] msg", ...]} oldest first. Used by
+	// the MFC "Live Stream" tab and the web /live debug panel to surface the
+	// same internal events that previously only went to AddLogLine().
+	// ?n=N selects the last N entries (default 100, max 500).
+	if (sURL.Left(13) == "/api/live/log") {
+		int n = _ttoi(_ParseURL(Data.sURL, _T("n")));
+		if (n <= 0) n = 100;
+		if (n > 500) n = 500;
+
+		std::deque<CStringA> items;
+		CLiveDebugLog::Get().GetRecent(n, items);
+
+		CStringA json = "{\"items\":[";
+		bool first = true;
+		for (const auto& l : items) {
+			if (!first) json += ",";
+			first = false;
+			// Escape minimally for JSON: backslash and double-quote only.
+			CStringA esc = l;
+			esc.Replace("\\", "\\\\");
+			esc.Replace("\"", "\\\"");
+			json += "\"";
+			json += esc;
+			json += "\"";
+		}
+		json += "]}";
+
+		CStringA header;
+		header.Format(
+			"HTTP/1.1 200 OK\r\n"
+			"Content-Type: application/json; charset=utf-8\r\n"
+			"Cache-Control: no-store\r\n"
+			"Access-Control-Allow-Origin: *\r\n"
+			"Content-Length: %d\r\n\r\n",
+			json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/live/diagnose --- DISC-S10: comprehensive self-diagnostic.
+	// Returns JSON with everything a user/support engineer needs to figure
+	// out why a stream isn't discoverable. Usage: /api/live/diagnose?key=HEX32
+	// (key is optional — without it, returns global discovery state).
+	if (sURL.Left(18) == "/api/live/diagnose") {
+		CString keyT(_ParseURL(Data.sURL, _T("key")));
+		uchar streamKey[16] = {0};
+		bool keyValid = false;
+		if (keyT.GetLength() == 32) {
+			CStringA keyA = CT2A(keyT);
+			keyValid = EseHexToKey16A(keyA, streamKey);
+		}
+
+		// Gather state under no lock — these accessors are atomic/snapshot.
+		bool kadConnected = Kademlia::CKademlia::IsConnected();
+		bool isBroadcasting = (theApp.liveStreamManager
+			&& theApp.liveStreamManager->IsBroadcasting());
+		bool isViewing = (theApp.liveStreamManager
+			&& theApp.liveStreamManager->IsViewingLive());
+		uint32 publicIP = theApp.GetPublicIP();
+		uint16 tcpPort = thePrefs.GetPort();
+
+		LiveStreamEntry entry;
+		bool inDirectory = false;
+		if (keyValid && theApp.liveStreamManager) {
+			inDirectory = theApp.liveStreamManager->GetKadBridge().GetStreamInfo(streamKey, entry);
+		}
+		int totalKnown = theApp.liveStreamManager
+			? theApp.liveStreamManager->GetKadBridge().GetDirectoryCount() : 0;
+
+		CStringA json;
+		CStringA entryJson = "null";
+		if (inDirectory) {
+			CStringA titleA = CT2A(entry.title);
+			titleA.Replace("\"", "\\\"");
+			CStringA t;
+			t.Format("{\"title\":\"%s\",\"ip\":\"%s\",\"port\":%u,"
+			         "\"bitrate\":%u,\"viewerCount\":%u,"
+			         "\"lastSeenAgeMs\":%u,\"isOwn\":%s}",
+				(LPCSTR)titleA,
+				(LPCSTR)CStringA(ipstr(entry.broadcasterIP)),
+				(unsigned)entry.broadcasterPort,
+				(unsigned)entry.bitrate,
+				(unsigned)entry.viewerCount,
+				(unsigned)(GetTickCount() - entry.lastSeen),
+				entry.isOwnStream ? "true" : "false");
+			entryJson = t;
+		}
+
+		json.Format(
+			"{\"keyProvided\":%s,\"keyValid\":%s,"
+			"\"kadConnected\":%s,\"publicIP\":\"%s\",\"tcpPort\":%u,"
+			"\"isBroadcasting\":%s,\"isViewing\":%s,"
+			"\"directorySize\":%d,\"streamInDirectory\":%s,"
+			"\"directoryEntry\":%s,"
+			"\"hint\":\"%s\"}",
+			keyT.IsEmpty() ? "false" : "true",
+			keyValid ? "true" : "false",
+			kadConnected ? "true" : "false",
+			(LPCSTR)CStringA(ipstr(publicIP)),
+			(unsigned)tcpPort,
+			isBroadcasting ? "true" : "false",
+			isViewing ? "true" : "false",
+			totalKnown,
+			inDirectory ? "true" : "false",
+			(LPCSTR)entryJson,
+			(!kadConnected) ? "Kad is not connected. Wait or check firewall."
+			: (keyValid && !inDirectory) ? "Stream not in local directory. Run JoinStream first or wait for Kad propagation."
+			: (isBroadcasting && !publicIP) ? "Broadcasting but no public IP detected. Check UPnP / port forward."
+			: "OK");
+
+		CStringA hdr;
+		hdr.Format(
+			"HTTP/1.1 200 OK\r\n"
+			"Content-Type: application/json\r\n"
+			"Cache-Control: no-store\r\n"
+			"Access-Control-Allow-Origin: *\r\n"
+			"Content-Length: %d\r\n\r\n",
+			json.GetLength());
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/live/direct_join --- Bypass Kad: connect directly to a known peer.
+	// Accepts either:
+	//   ?link=ed2k://|live|HEXKEY|IP:PORT|TITLE|/
+	//   ?key=HEXKEY&ip=1.2.3.4&port=4662&title=My+Stream
+	// The "live" link is the format the broadcaster's Share panel produces when
+	// its public IP is known. Direct Join skips the 30s Kad search cooldown and
+	// the multi-minute DHT propagation delay — the viewer can connect within
+	// seconds of the broadcaster pressing START.
+	if (sURL.Left(21) == "/api/live/direct_join") {
+		CString linkT(_ParseURL(Data.sURL, _T("link")));
+		CString keyT (_ParseURL(Data.sURL, _T("key")));
+		CString ipT  (_ParseURL(Data.sURL, _T("ip")));
+		CString portT(_ParseURL(Data.sURL, _T("port")));
+		CString titleT(_ParseURL(Data.sURL, _T("title")));
+
+		// If a full link was provided, parse "ed2k://|live|HEX|IP:PORT|TITLE|/"
+		if (!linkT.IsEmpty() && keyT.IsEmpty()) {
+			// Tokenize on '|'. Expected order: ["ed2k://", "live", HEX, IP:PORT, TITLE, "/"]
+			CStringArray parts;
+			int start = 0;
+			while (start <= linkT.GetLength()) {
+				int end = linkT.Find(_T('|'), start);
+				if (end < 0) end = linkT.GetLength();
+				parts.Add(linkT.Mid(start, end - start));
+				start = end + 1;
+			}
+			if (parts.GetCount() >= 5
+				&& parts[1].CompareNoCase(_T("live")) == 0)
+			{
+				keyT = parts[2];
+				CString ipPort = parts[3];
+				int colon = ipPort.Find(_T(':'));
+				if (colon > 0) {
+					ipT   = ipPort.Left(colon);
+					portT = ipPort.Mid(colon + 1);
+				}
+				if (titleT.IsEmpty() && parts.GetCount() >= 5)
+					titleT = parts[4];
+			}
+		}
+		if (titleT.IsEmpty())
+			titleT = _T("Live");
+
+		uchar streamKey[16];
+		bool keyOk = (theApp.liveStreamManager != NULL);
+		if (keyOk) {
+			CStringA keyA = CT2A(keyT);
+			keyOk = EseHexToKey16A(keyA, streamKey);
+		}
+
+		// Anonymous links (ed2k://|live|HEX||TITLE|/) carry no IP — that's
+		// the privacy default. We must NOT bail out here; instead we fall
+		// back to a Kad-only join so the viewer searches the DHT for the
+		// broadcaster's IP. The previous code returned 400 Bad Request and
+		// the UI just showed "no hace nada".
+		uint32 ipNet = 0;
+		uint16 port  = 0;
+		if (keyOk && !ipT.IsEmpty() && !portT.IsEmpty()) {
+			CStringA ipA = CT2A(ipT);
+			ipNet = (uint32)inet_addr((LPCSTR)ipA);
+			port  = (uint16)_ttoi(portT);
+			if (ipNet == INADDR_NONE || ipNet == 0 || port == 0) {
+				ipNet = 0; port = 0;  // treat as anonymous
+			}
+		}
+
+		bool joined = false;
+		bool dialed = false;
+		if (keyOk) {
+			joined = theApp.liveStreamManager->JoinStream(streamKey, titleT);
+			// Direct dial only when the link carried an explicit endpoint.
+			// Otherwise rely on Kad search (kicked off inside JoinStream)
+			// to find the broadcaster within the next 5-30 s.
+			if (joined && ipNet != 0 && port != 0)
+				dialed = theApp.liveStreamManager->TryConnectToStreamSource(streamKey, ipNet, port);
+		}
+
+		// SUCCESS = the join was accepted by the manager. For anonymous
+		// links, dialed=false is expected — the search runs in background.
+		bool overall = keyOk && joined;
+
+		CStringA json;
+		json.Format(
+			"{\"success\":%s,\"joined\":%s,\"dialed\":%s,"
+			"\"streamKey\":\"%s\",\"ip\":\"%s\",\"port\":%u,"
+			"\"mode\":\"%s\",\"hint\":\"%s\"}",
+			overall ? "true" : "false",
+			joined ? "true" : "false",
+			dialed ? "true" : "false",
+			(LPCSTR)CStringA(CT2A(keyT)),
+			(LPCSTR)CStringA(CT2A(ipT)),
+			(unsigned)port,
+			(ipNet != 0 && port != 0) ? "direct" : "kad-search",
+			overall
+				? ((ipNet != 0 && port != 0)
+					? "Dialing broadcaster directly"
+					: "Anonymous link — searching Kad for the broadcaster (5-30 s)")
+				: (keyOk ? "JoinStream rejected" : "Bad streamKey or eMule not ready"));
+		CStringA header;
+		header.Format(
+			"HTTP/1.1 %s\r\n"
+			"Content-Type: application/json\r\n"
+			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
+			"X-Content-Type-Options: nosniff\r\n"
+			"Content-Length: %d\r\n\r\n",
+			overall ? "200 OK" : "400 Bad Request",
+			json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
 	// --- /api/live/channels --- JSON list of active streams
 	if (sURL == "/api/live/channels") {
 		CStringA json = "{\"channels\":[";
@@ -4549,12 +5871,12 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			int superSeeders = 0;
 			int middle = 0;
 			int leaf = 0;
-			const CMap<CUpDownClient*, CUpDownClient*, uint16, uint16>& bitmaps =
+			const CMap<CUpDownClient*, CUpDownClient*, PeerBitmapInfo, PeerBitmapInfo&>& bitmaps =
 				theApp.liveStreamManager->GetPeerBitmaps();
 			POSITION pos = bitmaps.GetStartPosition();
 			while (pos) {
 				CUpDownClient* peer = NULL;
-				uint16 bitmap = 0;
+				PeerBitmapInfo bitmap;
 				bitmaps.GetNextAssoc(pos, peer, bitmap);
 
 				PeerTrust trust;
@@ -4692,6 +6014,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				"\"discovery\":{"
 				"\"kadConnected\":%s,"
 				"\"knownStreams\":%d,"
+				"\"knownStreamsClean\":%d,"
+				"\"knownStreamsLegacy\":%d,"
 				"\"lastPublishAgeMs\":%u,"
 				"\"lastSearchAgeMs\":%u,"
 				"\"lastResultAgeMs\":%u,"
@@ -4699,6 +6023,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				"\"lastResultPort\":%u}",
 				s.kad.kadConnected ? "true" : "false",
 				s.kad.knownStreams,
+				s.kad.knownStreamsClean,
+				s.kad.knownStreamsLegacy,
 				lastPublishAge,
 				lastSearchAge,
 				lastResultAge,
@@ -4752,7 +6078,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				lastChunkAge,
 				ESE_LIVE_SEGMENT_DURATION);
 
-			// --- Counters section (Fix 4: added sourceDialAttempts) ---
+			// --- Counters section (Fix 4: added sourceDialAttempts; v7.3.0: skipped/rate-limit/auth/evict) ---
 			CStringA ctrJson;
 			ctrJson.Format(
 				"\"counters\":{"
@@ -4766,13 +6092,19 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				"\"chunksRequested\":%u,"
 				"\"chunksReceived\":%u,"
 				"\"chunksMissing\":%u,"
-				"\"peerDisconnects\":%u}",
+				"\"peerDisconnects\":%u,"
+				"\"skippedInitialPushes\":%u,"
+				"\"subscribesRateLimited\":%u,"
+				"\"endsRejectedNoAuth\":%u,"
+				"\"tombstonesEvicted\":%u}",
 				s.counters.kadPublishes, s.counters.kadSearches,
 				s.counters.kadResultsAccepted, s.counters.kadResultsRejected,
 				s.counters.sourceDialAttempts,
 				s.counters.subscribeSent, s.counters.subscribeAccepted,
 				s.counters.chunksRequested, s.counters.chunksReceived,
-				s.counters.chunksMissing, s.counters.peerDisconnects);
+				s.counters.chunksMissing, s.counters.peerDisconnects,
+				s.counters.skippedInitialPushes, s.counters.subscribesRateLimited,
+				s.counters.endsRejectedNoAuth, s.counters.tombstonesEvicted);
 
 			// --- Assemble final JSON ---
 			json.Format(
@@ -4794,6 +6126,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			json = "{\"broadcasting\":false,\"viewing\":false,"
 				"\"emergencyMode\":false,\"uptimeMs\":0,\"totalRedistributed\":0,"
 				"\"discovery\":{\"kadConnected\":false,\"knownStreams\":0,"
+				"\"knownStreamsClean\":0,\"knownStreamsLegacy\":0,"
 				"\"lastPublishAgeMs\":0,\"lastSearchAgeMs\":0,\"lastResultAgeMs\":0,"
 				"\"lastResultIP\":0,\"lastResultPort\":0},"
 				"\"peers\":{\"viewPeers\":0,\"broadcastPeers\":0,\"meshPeers\":0,"
@@ -4913,6 +6246,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"<div class='grid' id='g'></div>"
 			"<div class='empty' id='e'>Loading channels...</div>"
 			"<script>"
+			// SEC: broadcaster-supplied title/category/quality must be HTML-escaped
+			// before being inserted into the DOM. A malicious peer publishing a
+			// title like <img src=x onerror=fetch('/api/live/broadcast/stop')>
+			// would otherwise execute in any viewer that opens this page.
+			"function esc(s){return String(s==null?'':s).replace(/[&<>\"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'})[c]})}"
 			"function r(){fetch('/api/live/channels').then(r=>r.json()).then(d=>{"
 			"const g=document.getElementById('g'),e=document.getElementById('e');"
 			"g.innerHTML='';"
@@ -4920,10 +6258,10 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"e.style.display='none';"
 			"d.channels.forEach(c=>{"
 			"const card=document.createElement('div');card.className='card';"
-			"card.onclick=()=>location.href='/live/'+c.hash;"
+			"card.onclick=()=>location.href='/live/'+encodeURIComponent(c.hash);"
 			"card.innerHTML='<div class=\"thumb\"><span class=\"badge\">LIVE</span></div>'"
-			"+'<div class=\"info\"><div class=\"title\"><span class=\"live-dot\"></span>'+c.title+'</div>'"
-			"+'<div class=\"meta\">'+c.category+' | '+c.quality+' | '+c.viewers+' viewers</div></div>';"
+			"+'<div class=\"info\"><div class=\"title\"><span class=\"live-dot\"></span>'+esc(c.title)+'</div>'"
+			"+'<div class=\"meta\">'+esc(c.category)+' | '+esc(c.quality)+' | '+esc(c.viewers)+' viewers</div></div>';"
 			"g.appendChild(card)})})"
 			".catch(()=>{document.getElementById('e').textContent='Failed to load channels.'})}"
 			"r();setInterval(r,5000);"
@@ -5020,9 +6358,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"}"
 			"});"
 			"}else if(v.canPlayType('application/vnd.apple.mpegurl')){v.src=src}"
+			// SEC: same escaping concern as the channels grid - title is broadcaster-controlled.
+			"function esc(s){return String(s==null?'':s).replace(/[&<>\"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'})[c]})}"
 			"fetch('/api/live/channels').then(r=>r.json()).then(d=>{"
 			"const ch=d.channels.find(c=>c.hash==='%s');"
-			"if(ch){document.querySelector('h1').innerHTML='<span class=\"badge\">LIVE</span> '+ch.title;"
+			"if(ch){document.querySelector('h1').innerHTML='<span class=\"badge\">LIVE</span> '+esc(ch.title);"
 			"document.getElementById('m').textContent=ch.category+' | '+ch.quality+' | '+ch.viewers+' viewers'}});"
 			"</script></body></html>",
 			(LPCSTR)hash, (LPCSTR)hash);
@@ -5183,37 +6523,58 @@ CString CWebServer::_GetCommentlist(const ThreadData &Data)
 {
 	uchar FileHash[MDX_DIGEST_SIZE];
 	bool bHash = strmd4(_ParseURL(Data.sURL, _T("filehash")), FileHash);
-	const CPartFile *pPartFile = bHash ? theApp.downloadqueue->GetFileByID(FileHash) : NULL;
-	if (!pPartFile)
+	if (!bHash)
 		return CString();
 
 	const CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
+
+	// v7.4.0 — snapshot everything we need under the lock; never iterate srclist
+	// or getNotes() outside it.
+	struct CommentSrc { CString user, file, comment, rating; };
+	struct NoteEntry  { CString file, descr, rating; };
+	CString          fileNameSnap;
+	std::vector<CommentSrc> srcSnap;
+	std::vector<NoteEntry>  noteSnap;
+	bool found = theApp.downloadqueue->WithFileByID(FileHash, [&](CPartFile *pPartFile) {
+		fileNameSnap = pPartFile->GetFileName();
+		for (POSITION pos = pPartFile->srclist.GetHeadPosition(); pos != NULL;) {
+			const CUpDownClient *cur_src = pPartFile->srclist.GetNext(pos);
+			if (cur_src->HasFileRating() || !cur_src->GetFileComment().IsEmpty()) {
+				CommentSrc c;
+				c.user    = _SpecialChars(cur_src->GetUserName());
+				c.file    = _SpecialChars(cur_src->GetClientFilename());
+				c.comment = _SpecialChars(cur_src->GetFileComment());
+				c.rating  = _SpecialChars(GetRateString(cur_src->GetFileRating()));
+				srcSnap.push_back(c);
+			}
+		}
+		const CTypedPtrList<CPtrList, Kademlia::CEntry*> &list = pPartFile->getNotes();
+		for (POSITION pos = list.GetHeadPosition(); pos != NULL;) {
+			const Kademlia::CEntry *entry = list.GetNext(pos);
+			NoteEntry n;
+			n.file   = _SpecialChars(entry->GetCommonFileName());
+			n.descr  = _SpecialChars(entry->GetStrTagValue(Kademlia::CKadTagNameString(TAG_DESCRIPTION)));
+			n.rating = _SpecialChars(GetRateString((UINT)entry->GetIntTagValue(Kademlia::CKadTagNameString(TAG_FILERATING))));
+			noteSnap.push_back(n);
+		}
+	});
+	if (!found)
+		return CString();
+
 	CString Out(pThis->m_Templates.sCommentList);
 
 	CString comments(GetResString(IDS_COMMENT));
-	comments.AppendFormat(_T(": %s"), (LPCTSTR)pPartFile->GetFileName());
+	comments.AppendFormat(_T(": %s"), (LPCTSTR)fileNameSnap);
 	Out.Replace(_T("[COMMENTS]"), comments);
 
 	CString commentlines;
-	// prepare comments info string
-	for (POSITION pos = pPartFile->srclist.GetHeadPosition(); pos != NULL;) {
-		const CUpDownClient *cur_src = pPartFile->srclist.GetNext(pos);
-		if (cur_src->HasFileRating() || !cur_src->GetFileComment().IsEmpty())
-			commentlines.AppendFormat(pThis->m_Templates.sCommentListLine
-				, (LPCTSTR)_SpecialChars(cur_src->GetUserName())
-				, (LPCTSTR)_SpecialChars(cur_src->GetClientFilename())
-				, (LPCTSTR)_SpecialChars(cur_src->GetFileComment())
-				, (LPCTSTR)_SpecialChars(GetRateString(cur_src->GetFileRating())));
+	for (const auto &c : srcSnap) {
+		commentlines.AppendFormat(pThis->m_Templates.sCommentListLine,
+			(LPCTSTR)c.user, (LPCTSTR)c.file, (LPCTSTR)c.comment, (LPCTSTR)c.rating);
 	}
-
-	const CTypedPtrList<CPtrList, Kademlia::CEntry*> &list = pPartFile->getNotes();
-	for (POSITION pos = list.GetHeadPosition(); pos != NULL;) {
-		const Kademlia::CEntry *entry = list.GetNext(pos);
-		commentlines.AppendFormat(pThis->m_Templates.sCommentListLine
-			, _T("")
-			, (LPCTSTR)_SpecialChars(entry->GetCommonFileName())
-			, (LPCTSTR)_SpecialChars(entry->GetStrTagValue(Kademlia::CKadTagNameString(TAG_DESCRIPTION)))
-			, (LPCTSTR)_SpecialChars(GetRateString((UINT)entry->GetIntTagValue(Kademlia::CKadTagNameString(TAG_FILERATING)))));
+	for (const auto &n : noteSnap) {
+		commentlines.AppendFormat(pThis->m_Templates.sCommentListLine,
+			_T(""), (LPCTSTR)n.file, (LPCTSTR)n.descr, (LPCTSTR)n.rating);
 	}
 
 	Out.Replace(_T("[COMMENTLINES]"), commentlines);

@@ -2,10 +2,12 @@
   "name": "eSE",
   "version": "1.0.0",
   "main": "server.js",
+  "bin": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
-    "build": "pkg server.js --targets node22-win-x64 --output ese-server.exe --compress GZip"
+    "prebuild": "node tools/bundle_client.js",
+    "build": "pkg . --targets node18-win-x64 --output ese-server.exe --compress GZip"
   },
   "keywords": [],
   "author": "",
@@ -16,8 +18,9 @@
   },
   "pkg": {
     "scripts": [
-      "*.js",
+      "runtime_dir.js",
       "eSE-live/*.js",
+      "eSE-live/lan_discovery.js",
       "pages/*.js",
       "routes/*.js"
     ],
@@ -25,11 +28,15 @@
       "emule_mascot.svg",
       "favicon.ico",
       "eSE-live/thumbs/**/*",
-      "eSE-live/live/.gitkeep"
+      "eSE-live/live/.gitkeep",
+      "_player_bundle.js"
     ],
     "targets": [
-      "node22-win-x64"
+      "node18-win-x64"
     ],
     "outputPath": "dist"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
   }
 }

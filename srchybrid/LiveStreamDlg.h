@@ -5,7 +5,8 @@
 #include "LiveStreamManager.h"
 #include "Resource.h"
 #include "ResizableLib\ResizableDialog.h"
-#include "RTMPIngest.h"
+// RTMPIngest now lives inside CLiveStreamManager (Tier 2.2). The dialog
+// reaches it via theApp.liveStreamManager->GetRTMPIngest().
 
 // MFC Dialog for live streaming control in eMule's main window
 // Integrates as a tab in the Transfer window
@@ -80,10 +81,16 @@ private:
 	// ── Hidden DDX (zero-size) ───────────────────────────────────────
 	CListCtrl		m_listPeers;         // IDC_LIVE_PEERS — DDX only, size 0
 
+	// ── Debug log panel ──────────────────────────────────────────────
+	// Read-only multi-line edit at the bottom of the dialog. Mirrors
+	// /api/live/log. Refreshed every timer tick from CLiveDebugLog::GetRecent().
+	CEdit			m_editDebugLog;      // IDC_LIVE_DEBUGLOG
+	int				m_nLastLogCount;     // last GetCount() seen — skip refresh if unchanged
+
 	// State
 	bool			m_bBroadcasting;
 	UINT_PTR		m_nTimerID;
-	CRTMPIngest		m_rtmpIngest;
+	// (CRTMPIngest moved to CLiveStreamManager — Tier 2.2)
 
 	// ── Internal helpers ────────────────────────────────────────────
 	void UpdatePeerList();

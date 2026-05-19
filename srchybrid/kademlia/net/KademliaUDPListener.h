@@ -108,6 +108,19 @@ namespace Kademlia
 		void Process_ESE_HOLEPUNCH_REQ(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
 		void Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
 
+		// v0.71 IPv6 Sprint 4 — Kad3 (v6-aware) opcode handlers.
+		// Currently shallow: parse just enough to consume the bytes, log
+		// the contact, and drop the packet. Adding the contact to the v4
+		// routing zone would corrupt its v4 view; a real v6 routing zone
+		// is a larger subsystem that ships in a follow-up sprint. Wire is
+		// reserved, dispatch is non-crashing, upstream 0.70b doesn't know
+		// these opcodes so packets never reach unsuspecting upstream nodes
+		// (we never send 0x12..0x65 in this band unless we know the peer
+		// advertises CAP_FORK_IPV6_WIRE).
+		static void Process_KADEMLIA3_GENERIC(const char *szOpcodeName,
+			const byte *pbyPacketData, uint32 uLenPacket,
+			uint32 uIP, uint16 uUDPPort);
+
 		CList<FetchNodeID_Struct> listFetchNodeIDRequests;
 		//uint32	m_nOpenHellos;
 		//uint32	m_nFirewalledHellos;

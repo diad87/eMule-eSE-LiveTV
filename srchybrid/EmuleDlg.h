@@ -76,6 +76,11 @@ public:
 
 	CImageList& GetClientIconList();
 	void ShowConnectionState();
+	// v0.71 P3.8 — lightweight 1 Hz refresh of the SBarPrivacy pane.
+	// Called from CKademlia::Process (already runs at 1 Hz) so the
+	// pane shows real-time circuit counts without dragging
+	// ShowConnectionState (which updates the whole toolbar/menu).
+	void UpdatePrivacyStatusPane();
 	void ShowNotifier(LPCTSTR pszText, TbnMsg nMsgType, LPCTSTR pszLink = NULL, bool bForceSoundOFF = false);
 	void SendNotificationMail(TbnMsg nMsgType, LPCTSTR pszText);
 	void ShowUserCount();
@@ -158,8 +163,12 @@ public:
 	CWnd			*activewnd;
 	uint8			status;
 
-	// eSE Server process control
-	void  ToggleEseServer();
+	// eSE Server process control.
+	// bOpenBrowser=true (default, called by toolbar button click) opens
+	// http://localhost:8080 after the spawn. bOpenBrowser=false is used
+	// by the OnInitDialog auto-spawn so the dashboard is ready in the
+	// background but no browser pop-up appears at every eMule launch.
+	void  ToggleEseServer(bool bOpenBrowser = true);
 	bool  IsEseServerRunning() const;
 
 protected:
@@ -225,6 +234,15 @@ protected:
 	// UPnP TimeOutTimer
 	UINT_PTR m_hUPnPTimeOutTimer;
 	static void CALLBACK UPnPTimeOutTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
+
+	// V2-S06/S27: headless one-shot timer. Fires ~8 s after init to trigger
+	// either JoinStream(streamKey) or the SelfTest broadcast smoke (then exit).
+	UINT_PTR m_hHeadlessActionTimer;
+	static void CALLBACK HeadlessActionTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
+
+	// D7: scan %APPDATA%\eMule\crashdumps\ for unsent .dmp files and
+	// offer the user a one-time prompt. Called from OnInitDialog.
+	void CheckForPreviousCrashDumps();
 
 	void StartConnection();
 	void CloseConnection();

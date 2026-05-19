@@ -7,8 +7,10 @@
 
 const fs = require('fs');
 const path = require('path');
+const runtimeDir = require('../runtime_dir');
 
-const FAVORITES_FILE = path.join(__dirname, 'favorites.json');
+// Writable runtime path (pkg-snapshot is read-only).
+const FAVORITES_FILE = path.join(runtimeDir.get(), 'eSE-live', 'favorites.json');
 
 // In-memory favorites cache
 let favorites = [];

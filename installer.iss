@@ -22,8 +22,8 @@ Source: "eSE-Package\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 
 [Icons]
 ; Acceso directo en Escritorio y Menu de Inicio
-Name: "{autodesktop}\eSE Live TV"; Filename: "wscript.exe"; Parameters: """{app}\eSE.vbs"""; IconFilename: "{app}\emule.exe"; Tasks: desktopicon
-Name: "{group}\eSE Live TV"; Filename: "wscript.exe"; Parameters: """{app}\eSE.vbs"""; IconFilename: "{app}\emule.exe"
+Name: "{autodesktop}\eSE Live TV"; Filename: "{app}\emule.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\eSE Live TV"; Filename: "{app}\emule.exe"; WorkingDir: "{app}"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
@@ -37,8 +37,8 @@ Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""eSE Live TV
 Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""eSE Node Server"" dir=in action=allow program=""{app}\node\node.exe"" enable=yes"; Flags: runhidden
 Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""eSE Node Server"" dir=out action=allow program=""{app}\node\node.exe"" enable=yes"; Flags: runhidden
 
-; --- 2. LANZAR eSE AL TERMINAR DE INSTALAR ---
-Filename: "wscript.exe"; Parameters: """{app}\eSE.vbs"""; Description: "Launch eSE Live TV Now"; Flags: nowait postinstall runhidden
+; --- 2. LANZAR eMule AL TERMINAR DE INSTALAR (el usuario pulsa el botón eSE para el panel web) ---
+Filename: "{app}\emule.exe"; WorkingDir: "{app}"; Description: "Launch eSE Live TV Now"; Flags: nowait postinstall
 
 [UninstallRun]
 ; --- 3. LIMPIEZA DE FIREWALL AL DESINSTALAR ---

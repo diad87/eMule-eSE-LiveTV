@@ -133,24 +133,18 @@ int CLiveMeshManager::CountPeersWithSegment(uint32 seqNum) const
 {
     if (!m_pManager) return 0;
 
-    const CLiveChunkBuffer& buffer = m_pManager->GetBuffer();
-    uint32 oldest = buffer.GetOldestSeq();
-    uint32 bit = seqNum - oldest;
-    if (bit >= 16) return 0;
+    // Phase 1 BOOT-3: each peer's bitmap is anchored at its own oldestSeq.
+    // Resolve via PeerBitmapInfo::Has() instead of indexing against our buffer.
+    auto& bitmaps = const_cast<CMap<CUpDownClient*, CUpDownClient*, PeerBitmapInfo, PeerBitmapInfo&>&>(
+        m_pManager->GetPeerBitmaps());
 
     int count = 0;
     POSITION pos = m_meshPeers.GetHeadPosition();
     while (pos) {
         CUpDownClient* peer = m_meshPeers.GetNext(pos);
-        uint16 bitmap = 0;
-        CMap<CUpDownClient*, CUpDownClient*, uint16, uint16>& bitmaps =
-            const_cast<CMap<CUpDownClient*, CUpDownClient*, uint16, uint16>&>(
-                m_pManager->GetPeerBitmaps());
-        if (bitmaps.Lookup(peer, bitmap)) {
-            if (bitmap & (1 << bit)) {
-                count++;
-            }
-        }
+        PeerBitmapInfo info;
+        if (bitmaps.Lookup(peer, info) && info.Has(seqNum))
+            count++;
     }
     return count;
 }
@@ -161,10 +155,9 @@ CUpDownClient* CLiveMeshManager::SelectBestPeerForSegment(uint32 seqNum)
 
     if (!m_pManager) return NULL;
 
-    const CLiveChunkBuffer& buffer = m_pManager->GetBuffer();
-    uint32 oldest = buffer.GetOldestSeq();
-    uint32 bit = seqNum - oldest;
-    if (bit >= 16) return NULL;
+    // Phase 1 BOOT-3: resolve "has segment" against each peer's own anchor.
+    auto& bitmaps = const_cast<CMap<CUpDownClient*, CUpDownClient*, PeerBitmapInfo, PeerBitmapInfo&>&>(
+        m_pManager->GetPeerBitmaps());
 
     CUpDownClient* bestPeer = NULL;
     int bestScore = -1;
@@ -172,16 +165,9 @@ CUpDownClient* CLiveMeshManager::SelectBestPeerForSegment(uint32 seqNum)
     POSITION pos = m_meshPeers.GetHeadPosition();
     while (pos) {
         CUpDownClient* peer = m_meshPeers.GetNext(pos);
-        uint16 bitmap = 0;
-
-        CMap<CUpDownClient*, CUpDownClient*, uint16, uint16>& bitmaps =
-            const_cast<CMap<CUpDownClient*, CUpDownClient*, uint16, uint16>&>(
-                m_pManager->GetPeerBitmaps());
-        if (!bitmaps.Lookup(peer, bitmap))
-            continue;
-
-        if (!(bitmap & (1 << bit)))
-            continue;
+        PeerBitmapInfo info;
+        if (!bitmaps.Lookup(peer, info)) continue;
+        if (!info.Has(seqNum)) continue;
 
         // Score: trust-based + load-balanced
         int score = 50; // base score

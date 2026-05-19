@@ -16,6 +16,7 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
 #include "DeadSourceList.h"
+#include <vector>   // v0.71 P3.6 — GetConnectedSnapshot
 
 class CClientReqSocket;
 class CUpDownClient;
@@ -88,6 +89,17 @@ public:
 						  CClientVersionMap &clientVersionAMule);
 	INT_PTR	GetClientCount()							{ return list.GetCount(); }
 	void	DeleteAll();
+	// v0.71 P3.6 — snapshot of currently-connected clients for the
+	// privacy test endpoint. Bounded by `max`; pushes pointers to `out`.
+	// Caller MUST hold no client-modifying locks while iterating the
+	// returned snapshot — these are raw pointers, not strong refs.
+	// v0.71 P3.5 — bRequirePrivacyTunneling=true filters out peers that
+	// did not advertise ESE_CAP_PRIVACY_TUNNELING in their handshake;
+	// false returns any connected peer (used by test_circuit). The
+	// privacy tunnel layer always requests true for real circuit builds
+	// to avoid wasting CREATE cells on peers that will drop them.
+	void	GetConnectedSnapshot(std::vector<CUpDownClient*>& out, size_t max,
+	                             bool bRequirePrivacyTunneling = false) const;
 	bool	AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket *sender);
 	CUpDownClient* FindClientByConnIP(uint32 clientip, UINT port) const;
 	CUpDownClient* FindClientByIP(uint32 clientip, UINT port) const;

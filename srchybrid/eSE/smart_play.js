@@ -77,32 +77,54 @@ function smartPlay(movieTitle, movieYear) {
     return matchCount >= Math.ceil(movieWords.length * 0.4);
   }
 
-  Promise.all([
-    fetch('/api/stream/completed/list').then(function(r){return r.json();}).catch(function(){return [];}),
-    fetch('/api/emule/downloads').then(function(r){return r.json();}).catch(function(){return [];})
-  ]).then(function(results) {
-    var completed = results[0] || [];
-    var downloads = results[1] || [];
+  // v7.4.0 — check lifecycle BEFORE Phase 1 to detect a recent eMule restart.
+  // If eMule just woke up, a large .part file from a previous session is
+  // still playable even though its `active` flag is false (sources haven't
+  // reconnected yet). This stops the player from falling through to a
+  // pointless new Phase 2 search when the bytes are already on disk.
+  fetch('/api/v1/lifecycle').then(function(r){return r.json();}).catch(function(){return { epoch: 0, restartedAt: 0 };})
+    .then(function(lc) {
+      var epochChanged = (window._emuleEpoch !== undefined && window._emuleEpoch !== lc.epoch);
+      window._emuleEpoch = lc.epoch;
+      var justRestarted = epochChanged && (Date.now() - lc.restartedAt < 60000);
 
-    // Check completed files
-    for (var i = 0; i < completed.length; i++) {
-      if (matchTitle(completed[i].fileName)) {
-        updateStatus('Archivo encontrado: ' + completed[i].fileName, 100);
-        if (titleEl) titleEl.textContent = 'Listo para reproducir';
-        setTimeout(function() { playInModal(encodeURIComponent(completed[i].fileName)); }, 1000);
-        return;
-      }
-    }
+      Promise.all([
+        fetch('/api/stream/completed/list').then(function(r){return r.json();}).catch(function(){return [];}),
+        fetch('/api/emule/downloads').then(function(r){return r.json();}).catch(function(){return [];})
+      ]).then(function(results) {
+        var completed = results[0] || [];
+        var downloads = results[1] || [];
 
-    // Check active downloads with enough data
-    for (var j = 0; j < downloads.length; j++) {
-      if (matchTitle(downloads[j].fileName) && downloads[j].active && downloads[j].sizeMB > 50) {
-        updateStatus('Descarga en progreso: ' + downloads[j].fileName + ' (' + downloads[j].sizeMB + ' MB)', 80);
-        if (titleEl) titleEl.textContent = 'Datos disponibles';
-        setTimeout(function() { playPartFile(downloads[j].partFile, downloads[j].fileName); }, 2000);
-        return;
-      }
-    }
+        // Check completed files
+        for (var i = 0; i < completed.length; i++) {
+          if (matchTitle(completed[i].fileName)) {
+            updateStatus('Archivo encontrado: ' + completed[i].fileName, 100);
+            if (titleEl) titleEl.textContent = 'Listo para reproducir';
+            (function(fn){ setTimeout(function() { playInModal(encodeURIComponent(fn)); }, 1000); })(completed[i].fileName);
+            return;
+          }
+        }
+
+        // .part playable rules:
+        //   - actively downloading and >50 MB                → play (live)
+        //   - eMule just restarted, file >50 MB              → play (sources will reattach)
+        //   - file >300 MB regardless of active state        → play (enough buffered)
+        for (var j = 0; j < downloads.length; j++) {
+          var dl = downloads[j];
+          if (!matchTitle(dl.fileName)) continue;
+          var isPlayable = (dl.active && dl.sizeMB > 50) ||
+                           (justRestarted && dl.sizeMB > 50) ||
+                           (dl.sizeMB > 300);
+          if (isPlayable) {
+            var msg = justRestarted
+              ? 'eMule acaba de reiniciar — usando descarga existente'
+              : (dl.active ? 'Descarga en progreso' : 'Reanudando descarga existente');
+            updateStatus(msg + ': ' + dl.fileName + ' (' + dl.sizeMB + ' MB)', 80);
+            if (titleEl) titleEl.textContent = justRestarted ? 'Reanudando' : 'Datos disponibles';
+            (function(pf, fn){ setTimeout(function() { playPartFile(pf, fn); }, 2000); })(dl.partFile, dl.fileName);
+            return;
+          }
+        }
 
     // Phase 2: Search eMule
     updateStatus('Buscando fuentes en la red eMule...', 20);
@@ -115,10 +137,27 @@ function smartPlay(movieTitle, movieYear) {
           hideSpinner();
           if (titleEl) titleEl.textContent = 'Error de conexion';
           updateStatus(data.error || 'No se pudo conectar a eMule', 0);
-          showActions([
-            { text: 'Reintentar', primary: true, action: function() { smartPlay(movieTitle, movieYear); } },
-            { text: 'Volver', primary: false, action: backToDetail }
-          ]);
+
+          var actions = [];
+          if (data.reason === 'webserver_down') {
+            actions.push({ text: 'He abierto eMule', primary: true, action: function() {
+              updateStatus('Reintentando...', 10);
+              setTimeout(function() { smartPlay(movieTitle, movieYear); }, 500);
+            }});
+          } else if (data.reason === 'password_mismatch') {
+            actions.push({ text: 'Resincronizar', primary: true, action: function() {
+              updateStatus('Resincronizando con eMule...', 10);
+              fetch('/api/emule/resync', { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                  if (d.success) smartPlay(movieTitle, movieYear);
+                  else updateStatus('No se pudo resincronizar: ' + (d.error || ''), 0);
+                });
+            }});
+          }
+          actions.push({ text: 'Reintentar', primary: actions.length === 0, action: function() { smartPlay(movieTitle, movieYear); } });
+          actions.push({ text: 'Volver', primary: false, action: backToDetail });
+          showActions(actions);
           return;
         }
 
@@ -138,7 +177,14 @@ function smartPlay(movieTitle, movieYear) {
 
         window._smartPlayResults = data.results;
         window._smartPlayIndex = 0;
-        trySmartSource(0);
+        // v7.4.0 — only auto-pick when there's a single candidate. With >1
+        // result we show a picker so the user owns the quality/language/size
+        // trade-off instead of being silently routed to whatever scored best.
+        if (data.results.length === 1) {
+          trySmartSource(0);
+        } else {
+          showSourcePicker(data.results);
+        }
       })
       .catch(function(err) {
         hideSpinner();
@@ -146,7 +192,73 @@ function smartPlay(movieTitle, movieYear) {
         updateStatus('Error: ' + err.message, 0);
         showActions([{ text: 'Volver', primary: true, action: backToDetail }]);
       });
+      });
+    });
+}
+
+// ── Source picker (v7.4.0) ─────────────────────────────────────────────────
+// Shown when smart-search returns >1 candidate. Lists up to 12 results
+// (sorted by score) as clickable cards so the user picks the version
+// (quality / language / file size / availability) they actually want.
+function showSourcePicker(results) {
+  var titleEl   = document.getElementById('smart-play-title');
+  var statusEl  = document.getElementById('smart-play-status');
+  var actionsEl = document.getElementById('smart-play-actions');
+  var spinner   = document.querySelector('#cinema-player .spinner');
+  if (spinner) spinner.style.display = 'none';
+  if (titleEl)  titleEl.textContent  = 'Elige versión';
+  if (statusEl) statusEl.textContent = results.length + ' fuentes disponibles — ordenadas por mejor coincidencia';
+  if (!actionsEl) return;
+  actionsEl.innerHTML = '';
+  actionsEl.style.display = 'flex';
+  actionsEl.style.flexDirection = 'column';
+  actionsEl.style.gap = '8px';
+  actionsEl.style.maxHeight = '60vh';
+  actionsEl.style.overflowY = 'auto';
+  actionsEl.style.alignItems = 'center';
+
+  results.slice(0, 12).forEach(function(r, idx) {
+    var btn = document.createElement('button');
+    btn.style.cssText =
+      'display:flex;flex-direction:column;align-items:flex-start;' +
+      'background:rgba(255,255,255,.05);border:1px solid #333;' +
+      'border-radius:8px;padding:12px 16px;color:#fff;cursor:pointer;' +
+      'text-align:left;width:420px;transition:background .2s';
+    btn.onmouseover = function() { btn.style.background = 'rgba(255,107,53,.15)'; };
+    btn.onmouseout  = function() { btn.style.background = 'rgba(255,255,255,.05)'; };
+    var shortName = r.fileName && r.fileName.length > 70 ? r.fileName.substring(0, 67) + '…' : (r.fileName || 'sin nombre');
+    var sourceColor = (r.completeSources || 0) > 5 ? '#4caf50' : ((r.completeSources || 0) > 0 ? '#ff6b35' : '#888');
+    btn.innerHTML =
+      '<div style="font-size:13px;font-weight:600;margin-bottom:6px">' + escapeHTML(shortName) + '</div>' +
+      '<div style="font-size:11px;color:#aaa;display:flex;gap:12px;flex-wrap:wrap">' +
+        '<span><b>' + ((r.quality || '?') + '').toUpperCase() + '</b></span>' +
+        '<span>' + ((r.language || '?') + '').toUpperCase() + '</span>' +
+        '<span>' + (r.sizeMB || '?') + ' MB</span>' +
+        '<span style="color:' + sourceColor + '">●  ' + (r.completeSources || 0) + '/' + (r.sources || 0) + ' fuentes</span>' +
+        '<span style="color:#888">score ' + (r.score || 0) + '</span>' +
+      '</div>';
+    btn.onclick = function() {
+      window._smartPlayIndex = idx;
+      trySmartSource(idx);
+    };
+    actionsEl.appendChild(btn);
   });
+
+  var back = document.createElement('button');
+  back.textContent = 'Cancelar';
+  back.style.cssText = 'background:transparent;border:1px solid #444;color:#888;padding:8px 16px;border-radius:8px;cursor:pointer;margin-top:8px;width:200px';
+  back.onclick = backToDetail;
+  actionsEl.appendChild(back);
+}
+
+// Local HTML-escape fallback (smart_play.js is bundled before escapeHTML is
+// defined elsewhere in some load orders).
+if (typeof escapeHTML !== 'function') {
+  window.escapeHTML = function(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  };
 }
 
 // ── Prueba una fuente concreta ────────────────────────────────────────────────

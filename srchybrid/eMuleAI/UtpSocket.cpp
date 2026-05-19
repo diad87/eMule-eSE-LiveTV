@@ -380,8 +380,13 @@ static uint64 on_utp_state_change(utp_callback_arguments* a)
 			DebugLog(_T("[NatTraversal][uTP] CONNECT state"));
 		if (thePrefs.GetVerboseLogPriority() <= DLP_LOW)
 			AddDebugLogLine(DLP_LOW, false, _T("[NAT-T][uTP] CONNECT state"));
-		if (natClient)
+		if (natClient) {
 			natClient->SetUtpWritable(false);
+			// A.3 Sprint 1: hole-punch succeeded — reset the per-peer attempt
+			// counter so the next time we want to dial we start with the fast
+			// 5 s cooldown (instead of stuck at 30 s back-off).
+			natClient->m_uNatRendezvousAttempts = 0;
+		}
 		break;
 	case UTP_STATE_WRITABLE:
 		pSocket->OnSend(0);

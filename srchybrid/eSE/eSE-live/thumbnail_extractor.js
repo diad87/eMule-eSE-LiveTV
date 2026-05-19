@@ -9,8 +9,12 @@ const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const runtimeDir = require('../runtime_dir');
 
-const THUMB_DIR = path.join(__dirname, 'thumbs');
+// Thumbnails MUST live in a writable location. In pkg-bundled mode
+// __dirname is C:\snapshot\eSE\eSE-live which is read-only; runtimeDir
+// returns %APPDATA%\eSE in that case (and __dirname in dev).
+const THUMB_DIR = path.join(runtimeDir.get(), 'eSE-live', 'thumbs');
 const EMULE_HLS_DIR = path.join(os.tmpdir(), 'eMule_RTMP');
 const INTERVAL_MS = 20000; // Extract every 20 seconds
 let timer = null;
@@ -83,10 +87,54 @@ function extractFromEmuleHLS() {
     const age = Date.now() - fs.statSync(latestSeg).mtimeMs;
     if (age > 60000) return;
 
+    // Always write the legacy 'emule_broadcast.jpg' for backwards-compat
+    // fallback (used by getThumbPath when no per-key file exists).
     extractFrame(latestSeg, 'emule_broadcast');
+
+    // ALSO write per-stream-key thumbnails so multiple discovered streams
+    // each have their own image in the grid. Fetch the active broadcast
+    // hash from the C++ /api/live/channels endpoint (best-effort, silent
+    // on failure — extractor keeps working with the legacy file alone).
+    fetchOwnStreamKey((streamKey) => {
+      if (streamKey && /^[a-fA-F0-9]{32}$/.test(streamKey)) {
+        extractFrame(latestSeg, streamKey.toLowerCase());
+      }
+    });
   } catch (e) {
     // Silent fail
   }
+}
+
+// Fetch the local broadcaster's stream hash from C++ side. Cached briefly
+// so we don't fire an HTTP request every 20 s — the hash doesn't change
+// during a broadcast.
+let cachedHash = null;
+let cachedHashAt = 0;
+function fetchOwnStreamKey(cb) {
+  const now = Date.now();
+  if (cachedHash && (now - cachedHashAt) < 60000) {
+    cb(cachedHash);
+    return;
+  }
+  const http = require('http');
+  const req = http.get('http://127.0.0.1:4711/api/live/channels', { timeout: 1500 }, (res) => {
+    let body = '';
+    res.on('data', (c) => body += c);
+    res.on('end', () => {
+      try {
+        const json = JSON.parse(body);
+        if (json && json.channels && json.channels.length > 0 && json.channels[0].hash) {
+          cachedHash = json.channels[0].hash;
+          cachedHashAt = now;
+          cb(cachedHash);
+        } else {
+          cb(null);
+        }
+      } catch (_) { cb(null); }
+    });
+  });
+  req.on('error', () => cb(null));
+  req.on('timeout', () => { req.destroy(); cb(null); });
 }
 
 /**

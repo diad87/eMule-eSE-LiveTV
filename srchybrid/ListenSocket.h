@@ -95,6 +95,10 @@ public:
 
 	bool	StartListening();
 	void	StopListening();
+	// v0.71 IPv6 Sprint 9 — true when AF_INET6 Create succeeded and the
+	// listener is bound as dual-stack (IPV6_V6ONLY=0). False if v6 is
+	// off in prefs or v6 Create failed (fallback to v4-only).
+	bool	IsDualStack() const { return m_bDualStack; }
 	virtual void OnAccept(int nErrorCode);
 	void	Process();
 	void	RemoveSocket(CClientReqSocket *todel);
@@ -123,6 +127,7 @@ public:
 
 private:
 	bool bListening;
+	bool m_bDualStack = false;   // v0.71 IPv6 Sprint 9
 	CTypedPtrList<CPtrList, CClientReqSocket*> socket_list;
 	uint16	m_OpenSocketsInterval;
 	uint32	maxconnectionreached;

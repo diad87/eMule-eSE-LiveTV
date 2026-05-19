@@ -167,6 +167,10 @@ class CED2KStreamLink : public CED2KLink
 {
 public:
 	CED2KStreamLink(LPCTSTR pszTitle, LPCTSTR pszHash);
+	// Constructor for |live| links that carry an explicit broadcaster
+	// endpoint. When dial info is present, EmuleDlg's stream handler can
+	// bypass Kad entirely with TryConnectToStreamSource.
+	CED2KStreamLink(LPCTSTR pszTitle, LPCTSTR pszHash, uint32 dialIPNet, uint16 dialPort);
 
 	LinkType GetKind() const							{ return kStream; }
 	void GetLink(CString &lnk) const;
@@ -174,6 +178,9 @@ public:
 
 	const CString& GetTitle() const						{ return m_strTitle; }
 	const CString& GetHash() const						{ return m_strHash; }
+	uint32         GetDialIP() const					{ return m_dialIPNet; }   // network byte order
+	uint16         GetDialPort() const					{ return m_dialPort; }
+	bool           HasDialEndpoint() const				{ return m_dialIPNet != 0 && m_dialPort != 0; }
 
 private:
 	CED2KStreamLink();
@@ -181,4 +188,6 @@ private:
 	CED2KStreamLink& operator=(const CED2KStreamLink&) = delete;
 	CString m_strTitle;
 	CString m_strHash;
+	uint32  m_dialIPNet = 0;   // optional IP for direct join (network order)
+	uint16  m_dialPort  = 0;   // optional TCP port for direct join
 };

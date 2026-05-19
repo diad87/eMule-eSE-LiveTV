@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "emule.h"
 #include "NetworkInfoDlg.h"
 #include "RichEditCtrlX.h"
@@ -110,7 +110,9 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 	rCtrl << _T("Conectividad\r\n");
 	rCtrl.SetSelectionCharFormat(rcfDef);
 
-	// Modo (pref del usuario)
+	// Modo (pref del usuario). Texto con escapes \u00xx para tildes y
+	// — (em-dash) porque el .cpp está en Windows-1252 sin BOM y
+	// MSVC interpretaría los UTF-8 raw como mojibake (pública -> pÃºblica).
 	rCtrl << _T("Modo:\t");
 	switch (thePrefs.GetIPv6Mode()) {
 		case CPreferences::IPv6OffMode:       rCtrl << _T("IPv4 (IPv6 desactivado)"); break;
@@ -128,6 +130,7 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 	if (theApp.listensocket && theApp.listensocket->IsDualStack()) {
 		rCtrl << _T("Dual-stack ([::]:") << thePrefs.GetPort() << _T(", IPV6_V6ONLY=0)");
 	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
+		// "AF_INET6 fallo - ver log" con escapes Unicode (ó = o-acute, — = em-dash).
 		rCtrl << _T("IPv4 solo (dual-stack pedido pero AF_INET6 falló — ver log)");
 	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6AutoMode) {
 		rCtrl << _T("IPv4 (0.0.0.0:") << thePrefs.GetPort() << _T(") + prober v6 activo");
@@ -136,14 +139,11 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 	}
 	rCtrl << _T("\r\n");
 
-	// IP pública v4 (siempre que la sepamos). theApp.GetPublicIP() ya
-	// está en network order — NO aplicar htonl (eD2K hace lo mismo en
-	// la línea de servidor).
+	// "IP pública v4" con escape para la "ú" (ú).
 	if (theApp.GetPublicIP() != 0) {
 		rCtrl << _T("IP pública v4:\t") << ipstr(theApp.GetPublicIP()) << _T("\r\n");
 	}
-	// IP pública v6 — la detecta CFirewallProberV6::TryHighID() vía HTTPS
-	// GET a https://api6.ipify.org (5 s timeout). Cached hasta restart.
+	// "IP pública v6" + mensaje con escapes para "público", "—", "aún".
 	rCtrl << _T("IP pública v6:\t");
 	{
 		CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();

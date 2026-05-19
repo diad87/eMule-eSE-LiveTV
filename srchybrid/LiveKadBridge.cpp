@@ -497,11 +497,21 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword)
     CSingleLock lock(&m_lock, TRUE);
 
     if (!Kademlia::CKademlia::IsConnected()) {
-        AddLogLine(false, _T("eSE Kad: Cannot search — Kad not connected"));
+        // v0.71 P3.8 — log once per disconnected stretch, not every poll.
+        // ASCII hyphen instead of em-dash to avoid CP1252/UTF-8 mojibake
+        // ("â€"") when the log is rendered by a CP1252-decoding viewer.
+        if (!m_bLoggedKadNotConnected) {
+            AddLogLine(false, _T("eSE Kad: Cannot search - Kad not connected"));
+            m_bLoggedKadNotConnected = true;
+        }
         CLiveDebugLog::Get().Append("KAD",
-            "Search SKIPPED keyword=\"%S\" — Kad not connected", (LPCWSTR)keyword);
+            "Search SKIPPED keyword=\"%S\" - Kad not connected", (LPCWSTR)keyword);
         return false;
     }
+    // Kad is connected now — reset the "not connected" log gate so the
+    // next disconnect prints again. Same pattern below for the other
+    // throttled states.
+    m_bLoggedKadNotConnected = false;
 
     // Use "eselive" as the default search keyword to find all streams
     CString searchWord = keyword.IsEmpty() ? _T("eselive") : keyword;
@@ -542,14 +552,23 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword)
     if (now - m_dwLastSearchTime < cooldown
         && searchWord.CompareNoCase(m_strLastSearchKeyword) == 0)
     {
-        AddLogLine(false,
-            _T("eSE Kad: Search cooldown active (%ums), try again shortly"),
-            cooldown - (now - m_dwLastSearchTime));
+        // v0.71 P3.8 — log AddLogLine only once per cooldown window.
+        // The web UI polls every 3-5 s; without this gate the user sees
+        // ~10 identical lines per cooldown. CLiveDebugLog still gets
+        // every event for diagnostics.
+        if (!m_bLoggedSearchCooldown) {
+            AddLogLine(false,
+                _T("eSE Kad: Search cooldown active (%ums), waiting"),
+                cooldown - (now - m_dwLastSearchTime));
+            m_bLoggedSearchCooldown = true;
+        }
         CLiveDebugLog::Get().Append("KAD",
             "Search COOLDOWN keyword=\"%S\" wait %ums", (LPCWSTR)searchWord,
             (unsigned)(cooldown - (now - m_dwLastSearchTime)));
         return false;
     }
+    // Past cooldown — reset the gate.
+    m_bLoggedSearchCooldown = false;
 
     // Dual-namespace search: launch one KEYWORD search per hash domain.
     // (A) Clean — finds streams that current/future eSE clients publish
@@ -574,12 +593,18 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword)
         Kademlia::CSearch::KEYWORD, true, uTargetLegacy);
 
     if (pSearchClean == NULL && pSearchLegacy == NULL) {
-        AddLogLine(false, _T("eSE Kad: Search already in progress for \"%s\" (both namespaces)"),
-            (LPCTSTR)searchWord);
+        // v0.71 P3.8 — throttle: log once per "already in progress" stretch.
+        if (!m_bLoggedAlreadyInProgress) {
+            AddLogLine(false, _T("eSE Kad: Search already in progress for \"%s\""),
+                (LPCTSTR)searchWord);
+            m_bLoggedAlreadyInProgress = true;
+        }
         CLiveDebugLog::Get().Append("KAD",
             "Search ALREADY IN PROGRESS keyword=\"%S\"", (LPCWSTR)searchWord);
         return false;
     }
+    // A new search actually started — reset the gate.
+    m_bLoggedAlreadyInProgress = false;
 
     // Phase 0: count the search as one logical operation, regardless of
     // how many namespaces actually fired (we don't want the kadSearches

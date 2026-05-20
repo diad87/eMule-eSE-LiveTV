@@ -4678,7 +4678,16 @@ bool CPartFile::GetNextRequestedBlock(CUpDownClient *sender, Requested_Block_Str
 			const uint16 almostRareBound = 4 * limit;
 
 			// Cache Preview state (Criterion 2)
-			const bool isPreviewEnable = (thePrefs.GetPreviewPrio() || (GetPreviewPrio() && thePrefs.IsExtControlsEnabled()))
+			// v8.0.23 — the per-file preview-prio flag (GetPreviewPrio()) used
+			// to count ONLY when Extended Controls were also enabled. That gate
+			// silently neutered eSE LiveTV's "press Play -> bias head chunks"
+			// flow: op=setpreview set the flag correctly, but this selector
+			// ignored it unless the user had separately turned on a setting
+			// they don't know exists. The flag is only ever set from controlled
+			// places (GUI right-click menu, the FT_DL_PREVIEW .met tag, or
+			// op=setpreview), so honouring it unconditionally is safe — files
+			// that were never marked still fall through to normal rarest-first.
+			const bool isPreviewEnable = (thePrefs.GetPreviewPrio() || GetPreviewPrio())
 				&& (uint64)m_nFileSize > 2 * PARTSIZE
 				&& IsPreviewableFileType();
 

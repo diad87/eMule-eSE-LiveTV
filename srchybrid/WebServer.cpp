@@ -1555,9 +1555,20 @@ CString CWebServer::_GetTransferList(const ThreadData &Data)
 						else if (sOp == _T("cancel")) {
 							found_file->DeletePartFile();
 							needsCatTabsUpdate = true;
-						} else if (sOp == _T("getflc"))
-							found_file->GetPreviewPrio();
-						else if (sOp == _T("rename")) {
+						} else if (sOp == _T("getflc")) {
+							// v8.0.23 — this handler was a no-op: it called the
+							// GETTER GetPreviewPrio() and discarded the value, so
+							// eMule's own web-UI preview-priority button did
+							// nothing. Restore the intended behaviour: with no
+							// 'en' param, toggle (legacy web-UI semantics); with
+							// 'en' present, set explicitly. (eSE uses op=setpreview
+							// below, not this — but a dead op is still a bug.)
+							const CString &sEn(_ParseURL(Data.sURL, _T("en")));
+							if (sEn.IsEmpty())
+								found_file->SetPreviewPrio(!found_file->GetPreviewPrio());
+							else
+								found_file->SetPreviewPrio(_tstoi(sEn) != 0);
+						} else if (sOp == _T("rename")) {
 							renamedFile = found_file;
 							renameTo = _ParseURL(Data.sURL, _T("name"));
 						} else if (sOp == _T("priolow")) {

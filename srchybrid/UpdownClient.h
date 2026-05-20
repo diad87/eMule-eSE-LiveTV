@@ -238,6 +238,11 @@ public:
 	bool			GetViewSharedFilesSupport() const				{ return m_fNoViewSharedFiles==0; }
 	bool			SafeConnectAndSendPacket(Packet *packet);
 	bool			SendPacket(Packet *packet, bool bVerifyConnection = false);
+	// v8.0.24 — payload bytes pending in this client's control-packet send
+	// queue. Used by the eSE Live relay for backpressure: a child whose
+	// queue is backed up is draining slower than the stream bitrate, so
+	// pushing more chunks just leaks RAM. 0 when there is no socket.
+	uint32			GetControlSendQueueSize();
 	void			CheckForGPLEvilDoer();
 	// Encryption / Obfuscation / Connect options
 	bool			SupportsCryptLayer() const						{ return m_fSupportsCryptLayer; }

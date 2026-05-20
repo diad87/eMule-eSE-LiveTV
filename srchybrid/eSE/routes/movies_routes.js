@@ -36,11 +36,27 @@ function _handleTmdbProxy(url, req, res) {
   params.set('api_key', TMDB_KEY);
   const target = 'https://api.themoviedb.org/3/' + tmdbPath + '?' + params.toString();
 
-  https.get(target, { headers: { 'User-Agent': 'eSE-LiveTV/7.0' } }, (tmdbRes) => {
-    res.writeHead(tmdbRes.statusCode || 502, {
+  https.get(target, {
+    headers: {
+      'User-Agent': 'eSE-LiveTV/8.0',
+      // v8.0.26 FIX: ask TMDB for an UNCOMPRESSED body. This proxy pipes the
+      // response straight through; TMDB gzips JSON by default, so without
+      // this the browser received gzip bytes WITHOUT a Content-Encoding
+      // header and JSON.parse() threw — which left the home hero permanently
+      // black (loadHero silently swallows the error). We request 'identity'
+      // AND, belt-and-suspenders, forward whatever Content-Encoding TMDB
+      // still returns so the browser can always decode the body.
+      'Accept-Encoding': 'identity'
+    }
+  }, (tmdbRes) => {
+    const head = {
       'Content-Type': tmdbRes.headers['content-type'] || 'application/json',
       'Cache-Control': 'public, max-age=300'  // 5min client cache
-    });
+    };
+    if (tmdbRes.headers['content-encoding']) {
+      head['Content-Encoding'] = tmdbRes.headers['content-encoding'];
+    }
+    res.writeHead(tmdbRes.statusCode || 502, head);
     tmdbRes.pipe(res);
   }).on('error', (e) => {
     res.writeHead(502, { 'Content-Type': 'application/json' });

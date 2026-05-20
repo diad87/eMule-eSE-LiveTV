@@ -201,10 +201,27 @@ function extractMovieTitles(raw) {
 
 setTimeout(fetchLocalPosters, 1000);
 
-// ── Hero section (TMDB trending) ──────────────────────────────────────────────
+// ── Hero section (TMDB trending + baked-in fallback) ──────────────────────────
+// v8.0.26: the hero used to depend 100% on /api/tmdb/trending/movie/week. Any
+// hiccup (proxy miss, network blip, TMDB rate-limit, JSON error) left
+// #hero-backdrop empty -> a pure-black hero showing only the default "eSE"
+// text. Now: render a baked-in curated list IMMEDIATELY (zero network -> never
+// black), then upgrade to live trending if/when it loads. Backdrop images load
+// straight from the public image.tmdb.org CDN (no API key needed).
 var heroMovies = [];
 var heroIndex = 0;
 var heroInterval = null;
+var _heroIsFallback = false;
+
+// Curated evergreen fallback — real TMDB data, stable backdrops.
+var HERO_FALLBACK = [
+  { id: 157336, imdb_id: 'tt0816692', title: 'Interstellar', backdrop_path: '/2ssWTSVklAEc98frZUQhgtGHx7s.jpg', vote_average: 8.5, release_date: '2014-11-05', overview: 'Un grupo de exploradores hace uso de un agujero de gusano recién descubierto para superar las limitaciones de los viajes espaciales tripulados y vencer las inmensas distancias de un viaje interestelar.' },
+  { id: 27205, imdb_id: 'tt1375666', title: 'Origen', backdrop_path: '/8ZTVqvKDQ8emSGUEMjsS4yHAwrp.jpg', vote_average: 8.4, release_date: '2010-07-15', overview: 'Dom Cobb es un ladrón habilidoso, el mejor en el peligroso arte de la extracción: robar secretos del subconsciente durante el sueño, cuando la mente es más vulnerable.' },
+  { id: 693134, imdb_id: 'tt15239678', title: 'Dune: Parte dos', backdrop_path: '/xOMo8BRK7PfcJv9JCnx7s5hj0PX.jpg', vote_average: 8.1, release_date: '2024-02-27', overview: 'Paul Atreides se une a Chani y los Fremen en una guerra de venganza contra los conspiradores que destruyeron a su familia, dividido entre el amor de su vida y el destino del universo.' },
+  { id: 872585, imdb_id: 'tt15398776', title: 'Oppenheimer', backdrop_path: '/neeNHeXjMF5fXoCJRsOmkNGC7q.jpg', vote_average: 8.0, release_date: '2023-07-19', overview: 'La historia del físico J. Robert Oppenheimer y su papel como artífice de la bomba atómica durante el Proyecto Manhattan.' },
+  { id: 19995, imdb_id: 'tt0499549', title: 'Avatar', backdrop_path: '/vL5LR6WdxWPjLPFRLe133jXWsh5.jpg', vote_average: 7.6, release_date: '2009-12-16', overview: 'Año 2154. Jake Sully, un exmarine en silla de ruedas, es enviado al planeta Pandora, donde puede controlar de forma remota un cuerpo biológico con la apariencia de los nativos del planeta.' },
+  { id: 155, imdb_id: 'tt0468569', title: 'El caballero oscuro', backdrop_path: '/cfT29Im5VDvjE0RpyKOSdCKZal7.jpg', vote_average: 8.5, release_date: '2008-07-16', overview: 'Batman regresa para continuar su guerra contra el crimen en Gotham. Con la ayuda de Jim Gordon y el fiscal Harvey Dent, se enfrenta a un nuevo criminal: el Joker.' }
+];
 
 function toggleHeaderSearch() {
   var s = document.getElementById('header-search');
@@ -218,21 +235,42 @@ function toggleHeaderSearch() {
   }
 }
 
+// (re)start the 10s rotation — safe to call repeatedly (clears any prior timer).
+function _startHeroRotation() {
+  if (heroInterval) { clearInterval(heroInterval); heroInterval = null; }
+  if (heroMovies.length < 2) return;
+  heroInterval = setInterval(function() {
+    heroIndex = (heroIndex + 1) % heroMovies.length;
+    showHeroMovie(heroIndex);
+  }, 10000);
+}
+
 function loadHero() {
+  // 1) Render the baked-in fallback right away — the hero is never black,
+  //    even with no network or an unavailable TMDB proxy.
+  try {
+    heroMovies = HERO_FALLBACK.slice();
+    heroIndex = 0;
+    _heroIsFallback = true;
+    showHeroMovie(0);
+    _startHeroRotation();
+  } catch (e) {}
+
+  // 2) Try to upgrade to live "trending this week". On ANY failure we keep
+  //    the fallback that is already on screen.
   fetch('/api/tmdb/trending/movie/week?language=es-ES')
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      if (!data.results || !data.results.length) return;
-      heroMovies = data.results.filter(function(m) { return m.backdrop_path; }).slice(0, 8);
-      if (heroMovies.length > 0) {
-        showHeroMovie(0);
-        heroInterval = setInterval(function() {
-          heroIndex = (heroIndex + 1) % heroMovies.length;
-          showHeroMovie(heroIndex);
-        }, 10000);
-      }
+      if (!data || !data.results || !data.results.length) return;
+      var fresh = data.results.filter(function(m) { return m.backdrop_path; }).slice(0, 8);
+      if (fresh.length === 0) return;
+      heroMovies = fresh;
+      heroIndex = 0;
+      _heroIsFallback = false;
+      showHeroMovie(0);
+      _startHeroRotation();
     })
-    .catch(function() {});
+    .catch(function() { /* keep the fallback already on screen */ });
 }
 
 function showHeroMovie(idx) {
@@ -249,9 +287,14 @@ function showHeroMovie(idx) {
   if (backdrop && m.backdrop_path && /^\/[a-zA-Z0-9]+\.\w{3,4}$/.test(m.backdrop_path)) {
     backdrop.style.backgroundImage = 'url(https://image.tmdb.org/t/p/original' + m.backdrop_path + ')';
   }
-  if (title) title.textContent = m.title || m.name;
+  if (title) title.textContent = m.title || m.name || 'eSE';
   if (desc) desc.textContent = (m.overview || '').substring(0, 200) + (m.overview && m.overview.length > 200 ? '...' : '');
-  if (meta) meta.textContent = '⭐ ' + (m.vote_average || '').toString().substring(0, 3) + ' · ' + (m.release_date || '').substring(0, 4) + ' · Trending #' + (idx + 1);
+  if (meta) {
+    var _hStars = '⭐ ' + (m.vote_average || '').toString().substring(0, 3);
+    var _hYear = (m.release_date || '').substring(0, 4);
+    meta.textContent = _hStars + (_hYear ? ' · ' + _hYear : '') +
+      (_heroIsFallback ? ' · Destacada' : ' · Tendencia #' + (idx + 1));
+  }
   if (playBtn) { playBtn.style.display = 'inline-block'; playBtn.setAttribute('data-title', m.title || m.name); playBtn.setAttribute('data-id', m.id); }
   if (infoBtn) { infoBtn.style.display = 'inline-block'; infoBtn.setAttribute('data-title', m.title || m.name); infoBtn.setAttribute('data-id', m.id); }
 
@@ -284,6 +327,8 @@ function heroInfo() {
   var m = window._heroCurrentMovie;
   if (!m) return;
   var title = m.title || m.name;
+  // Baked-in fallback movies carry their imdb_id directly — skip the proxy.
+  if (m.imdb_id) { showMovieDetail(m.imdb_id, null, title); return; }
   fetch('/api/tmdb/movie/' + encodeURIComponent(m.id) + '/external_ids')
     .then(function(r) { return r.json(); })
     .then(function(ids) {

@@ -143,22 +143,31 @@ function handle(url, req, res) {
     const audioTrack = url.searchParams.get('audio');
     const subTrack = url.searchParams.get('sub');
     const presets = { 'auto': { scale: null, abr: '256k' }, '480p': { scale: '854:480', abr: '128k' }, '720p': { scale: '1280:720', abr: '192k' }, '1080p': { scale: '-2:1080', abr: '256k' }, 'original': { scale: null, abr: '256k' } };
-    const q = presets[quality] || presets['auto'];
+    let q = presets[quality] || presets['auto'];
 
     // Probe codec — v8.0.27: ONE bounded ffprobe instead of two unbounded ones.
     // execSync blocks the Node event loop; an unbounded probe of a huge or
     // still-downloading .part file froze the whole dashboard for 10-20 s.
-    let srcVideoCodec = '', srcAudioCodec = '';
+    let srcVideoCodec = '', srcAudioCodec = '', srcVideoHeight = 0;
     try {
       const fp = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
       const probeJson = execSync('"' + fp + '" -v quiet -probesize 5000000 -analyzeduration 5000000 -print_format json -show_streams "' + filePath + '"', { timeout: 8000 }).toString();
       const probeStreams = (JSON.parse(probeJson).streams) || [];
       const vS = probeStreams.find(s => s.codec_type === 'video');
       const aS = probeStreams.find(s => s.codec_type === 'audio');
-      if (vS) srcVideoCodec = (vS.codec_name || '').toLowerCase();
+      if (vS) { srcVideoCodec = (vS.codec_name || '').toLowerCase(); srcVideoHeight = parseInt(vS.height, 10) || 0; }
       if (aS) srcAudioCodec = (aS.codec_name || '').toLowerCase();
     } catch(e) {}
 
+    // v8.0.27: 'Auto' caps at 1080p. Encoding a 4K source at full resolution
+    // is the single most expensive thing the transcoder does — on a modest CPU
+    // it pegs every core. If the source is taller than 1080, Auto downscales to
+    // 1080p: big CPU saving, imperceptible on a normal screen. Explicit quality
+    // choices (720p, original, ...) are still honoured as-is.
+    if (quality === 'auto' && srcVideoHeight > 1080) {
+      q = { scale: '-2:1080', abr: q.abr };
+      console.log('[Stream] Auto: source ' + srcVideoHeight + 'p -> downscaling to 1080p');
+    }
     const canCopyVideo = srcVideoCodec === 'h264' && !q.scale;
     const canCopyAudio = srcAudioCodec === 'aac';
     const needsSubs = subTrack && subTrack !== '-1' && subTrack !== 'undefined';

@@ -78,13 +78,28 @@ function detectHwEncoder(ffmpegPath) {
 }
 
 function getDuration(file, ffmpegPath) {
+  const p = ffmpegPath.replace('ffmpeg.exe', 'ffprobe.exe');
+  // v8.0.27: bounded probesize/analyzeduration — without it ffprobe can scan
+  // a huge or incomplete .part file for 10-20 s, and since this is execSync
+  // it blocks the Node event loop the whole time, freezing the dashboard.
+  const PROBE = '-v error -probesize 3000000 -analyzeduration 3000000';
+  // 1) Container-level duration. Works for completed files AND for any .part
+  //    whose header chunk is already on disk (eMule's preview priority fetches
+  //    the file head early, so for in-progress downloads this hits more often
+  //    than you'd think).
   try {
-    const p = ffmpegPath.replace('ffmpeg.exe', 'ffprobe.exe');
-    // v8.0.27: bounded probesize/analyzeduration — without it ffprobe can scan
-    // a huge or incomplete .part file for 10-20 s, and since this is execSync
-    // it blocks the Node event loop the whole time, freezing the dashboard.
-    return parseFloat(execSync('"' + p + '" -v error -probesize 3000000 -analyzeduration 3000000 -show_entries format=duration -of csv=p=0 "' + file + '"', { timeout: 5000 }).toString().trim()) || 0;
-  } catch(e) { return 0; }
+    const d = parseFloat(execSync('"' + p + '" ' + PROBE + ' -show_entries format=duration -of csv=p=0 "' + file + '"', { timeout: 8000 }).toString().trim());
+    if (d > 0) return d;
+  } catch (e) {}
+  // 2) Fallback: per-track DURATION tag (HH:MM:SS.ssss). Many MKVs — damaged or
+  //    unusual muxes, and partial .part files — carry no container duration
+  //    but DO carry this tag right in the track header.
+  try {
+    const t = execSync('"' + p + '" ' + PROBE + ' -select_streams v:0 -show_entries stream_tags=DURATION -of csv=p=0 "' + file + '"', { timeout: 8000 }).toString().trim();
+    const m = t.match(/(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (m) return (parseInt(m[1], 10) * 3600) + (parseInt(m[2], 10) * 60) + parseFloat(m[3]);
+  } catch (e) {}
+  return 0;
 }
 
 // ─── FORMATTING ────────────────────────────────────────────────

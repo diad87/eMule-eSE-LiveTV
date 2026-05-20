@@ -4,7 +4,7 @@
   "main": "server.js",
   "bin": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node tests/run.js",
     "start": "node server.js",
     "prebuild": "node tools/bake_build_hash.js && node tools/bundle_client.js",
     "build": "pkg . --targets node18-win-x64 --output ese-server.exe --compress GZip"

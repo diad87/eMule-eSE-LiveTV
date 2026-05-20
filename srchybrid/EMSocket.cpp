@@ -470,6 +470,24 @@ void CEMSocket::SendPacket(Packet *packet, bool controlpacket, uint32 actualPayl
 	}
 }
 
+// v8.0.24 — sum of payload bytes still pending in controlpacket_queue.
+// Walked under sendLocker because the upload-throttler thread pops from the
+// same queue. O(queue length); the queue is short in normal operation and
+// only long precisely when the live relay is about to drop — so the cost is
+// paid only when it matters.
+uint32 CEMSocket::GetControlPacketQueueSize()
+{
+	uint32 total = 0;
+	sendLocker.Lock();
+	for (POSITION pos = controlpacket_queue.GetHeadPosition(); pos != NULL;) {
+		const Packet *p = controlpacket_queue.GetNext(pos);
+		if (p != NULL)
+			total += p->size;
+	}
+	sendLocker.Unlock();
+	return total;
+}
+
 uint64 CEMSocket::GetSentBytesCompleteFileSinceLastCallAndReset()
 {
 	return (uint64)::InterlockedExchange64((LONG64*)&m_numberOfSentBytesCompleteFile, 0);

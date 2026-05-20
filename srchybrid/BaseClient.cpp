@@ -2392,6 +2392,13 @@ bool CUpDownClient::SendPacket(Packet *packet, bool bVerifyConnection)
 	return false;
 }
 
+// v8.0.24 — see UpDownClient.h. Forwards to the socket's control-queue
+// byte total. 0 when there is no socket (then nothing is queued anyway).
+uint32 CUpDownClient::GetControlSendQueueSize()
+{
+	return (socket != NULL) ? socket->GetControlPacketQueueSize() : 0;
+}
+
 #ifdef _DEBUG
 void CUpDownClient::AssertValid() const
 {

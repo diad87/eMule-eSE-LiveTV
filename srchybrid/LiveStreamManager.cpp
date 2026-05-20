@@ -1354,6 +1354,23 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
                 CUpDownClient* child = m_broadcastPeers.GetNext(cpos);
                 if (!child) continue;
                 if (child == peer) continue;  // do not bounce back to source
+
+                // v8.0.24 — backpressure. If this child's control-packet send
+                // queue is already backed up, it is draining slower than the
+                // stream bitrate. Pushing another ~1-2 MB chunk would just grow
+                // controlpacket_queue without bound — that is the multi-GB RAM
+                // leak: CEMSocket::SendPacket AddTails control packets
+                // unconditionally and never refuses, and classic eMule never
+                // hits it because file upload is pull-based. For LIVE video the
+                // correct move is to DROP, not buffer: a lagging viewer must
+                // skip ahead, not receive stale chunks late. The 8 MB cap lets
+                // a freshly-joined viewer's 3-chunk burst (~4.5 MB) through but
+                // stops a slow peer from accumulating beyond ~8 MB. We check
+                // BEFORE building/signing the packet so a stalled child does
+                // not even cost an Ed25519 signature.
+                if (child->GetControlSendQueueSize() > 8u * 1024u * 1024u)
+                    continue;
+
                 // v7.7.0 — sign if we own this stream; else V1 for relays.
                 Packet* pkt = NULL;
                 if (m_bBroadcasting &&

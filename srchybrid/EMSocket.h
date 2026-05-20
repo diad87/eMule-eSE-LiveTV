@@ -52,6 +52,12 @@ public:
 	virtual bool IsEnoughFileDataQueued(uint32 nMinFilePayloadBytes) const;
 	virtual bool UseBigSendBuffer();
 	INT_PTR	DbgGetStdQueueCount() const		{ return standardpacket_queue.GetCount(); }
+	// v8.0.24 — total payload bytes currently queued in controlpacket_queue.
+	// eSE Live relays MB-sized video chunks as CONTROL packets; that queue
+	// has no size cap and SendPacket() AddTails unconditionally, so for a
+	// slow-draining peer it grows without bound (the 6 GB RAM leak). The
+	// live relay reads this to apply backpressure: drop, don't buffer.
+	uint32	GetControlPacketQueueSize();
 
 	virtual DWORD GetTimeOut() const		{ return m_uTimeOut; }
 	virtual void SetTimeOut(DWORD uTimeOut) { m_uTimeOut = uTimeOut; }

@@ -45,6 +45,21 @@ function it(name, fn) {
   }
 }
 
+// Async variant — for tests that await a fake clock / promise chains.
+// Returns a promise the caller must await (test files that use itAsync
+// export an async runner; see run.js).
+async function itAsync(name, fn) {
+  try {
+    await fn();
+    _state.passed++;
+    console.log('    ok   ' + name);
+  } catch (e) {
+    _state.failed++;
+    _state.failures.push({ suite: _state.suite, test: name, error: e });
+    console.log('    FAIL ' + name + '  — ' + e.message);
+  }
+}
+
 function assert(cond, msg) {
   if (!cond) throw new Error(msg || 'assertion failed');
 }
@@ -102,7 +117,7 @@ function summary() {
 }
 
 module.exports = {
-  describe, it,
+  describe, it, itAsync,
   assert, assertEqual, assertDeepEqual, assertClose, assertThrows,
   summary,
 };

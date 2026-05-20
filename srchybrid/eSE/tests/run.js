@@ -25,8 +25,18 @@ if (testFiles.length === 0) {
   process.exit(1);
 }
 
-for (const f of testFiles) {
-  require(path.join(dir, f));
-}
-
-process.exit(harness.summary());
+// A test file either runs synchronously at require time (met_parser,
+// rate_window) OR exports an async runner function (playback_state, which
+// needs to await a fake clock). We require all of them, then await any
+// async runners before printing the summary.
+(async () => {
+  const asyncRunners = [];
+  for (const f of testFiles) {
+    const mod = require(path.join(dir, f));
+    if (typeof mod === 'function') asyncRunners.push(mod);
+  }
+  for (const run of asyncRunners) {
+    await run(harness);
+  }
+  process.exit(harness.summary());
+})();

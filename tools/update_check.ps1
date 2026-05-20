@@ -42,13 +42,30 @@ if (-not $InstallDir) {
 }
 
 # ── 2) Read current version (from BUILD_INFO.txt) ──────────────────────────
-$currentSha    = ''
-$currentDateUtc = ''
+# v8.0.27 FIX: compare the eSE version NUMBER, not a commit SHA / build date.
+# BUILD_INFO.txt carries a 'release:  v0.70b-eSE8.0.27' line; we pull the
+# X.Y.Z that follows 'eSE'. The old logic looked for a 'commit:' line and a
+# 'built ' (no colon) date that this file format never had, so it always
+# fell through to "assume update" — the dashboard nagged about an update
+# forever, even when running a build NEWER than the published release.
+function Get-EseVer([string]$s) {
+    if ($s -and ($s -match 'eSE[^0-9]*(\d+)\.(\d+)\.(\d+)')) {
+        return "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+    }
+    if ($s -and ($s -match '(\d+)\.(\d+)\.(\d+)')) {
+        return "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+    }
+    return ''
+}
+$currentVer = ''
+$currentSha = ''
 $buildInfoPath = if ($InstallDir) { Join-Path $InstallDir 'BUILD_INFO.txt' } else { '' }
 if ($buildInfoPath -and (Test-Path $buildInfoPath)) {
     $bi = Get-Content $buildInfoPath -Raw
-    if ($bi -match 'commit:\s*(\w+)')        { $currentSha = $Matches[1] }
-    if ($bi -match 'built\s+(\d{4}-\d{2}-\d{2}[^`r`n]*)') { $currentDateUtc = $Matches[1].Trim() }
+    if ($bi -match 'commit:\s*(\w+)') { $currentSha = $Matches[1] }
+    $relLine = ($bi -split "`n" | Where-Object { $_ -match '^\s*release' } | Select-Object -First 1)
+    $currentVer = Get-EseVer $relLine
+    if (-not $currentVer) { $currentVer = Get-EseVer $bi }
 }
 
 # ── 3) Fetch latest release info from GitHub ───────────────────────────────
@@ -76,39 +93,33 @@ $latestDate = $rel.published_at
 $asset = $rel.assets | Where-Object { $_.name -like 'eSE-LiveTV-*.zip' } | Select-Object -First 1
 $dlUrl = if ($asset) { $asset.browser_download_url } else { '' }
 
-# Best-effort "is there an update?" heuristic:
-#   - If we don't know our current build, assume yes (force the prompt).
-#   - Otherwise compare SHAs if both available, else compare dates if both available.
+# Is there an update? Compare the eSE version NUMBERS semantically.
+#   - update only when the published release is STRICTLY newer than ours.
+#   - if either side is unreadable, do NOT flag an update: a perpetual false
+#     "new version" badge is worse than silence (the user can check manually).
+$latestVer = Get-EseVer $latestTag
 $hasUpdate = $false
-if (-not $currentSha -and -not $currentDateUtc) {
-    $hasUpdate = $true
-} elseif ($latestSha -and $currentSha -and ($latestSha.ToLower() -ne $currentSha.ToLower())) {
-    $hasUpdate = $true
-} elseif ($latestDate -and $currentDateUtc) {
-    try {
-        $latestDt  = [datetime]::Parse($latestDate)
-        $currentDt = [datetime]::Parse($currentDateUtc)
-        if ($latestDt -gt $currentDt) { $hasUpdate = $true }
-    } catch { $hasUpdate = $true }   # parse failure -> assume update available
+if ($currentVer -and $latestVer) {
+    try { $hasUpdate = ([version]$latestVer -gt [version]$currentVer) } catch { $hasUpdate = $false }
 }
 
 if ($CheckOnly) {
     @{
-        has_update     = $hasUpdate
-        current_sha    = $currentSha
-        current_built  = $currentDateUtc
-        latest_tag     = $latestTag
-        latest_sha     = $latestSha
-        latest_built   = $latestDate
-        download_url   = $dlUrl
-        release_url    = $rel.html_url
+        has_update      = $hasUpdate
+        current_version = $currentVer
+        current_sha     = $currentSha
+        latest_tag      = $latestTag
+        latest_version  = $latestVer
+        latest_built    = $latestDate
+        download_url    = $dlUrl
+        release_url     = $rel.html_url
     } | ConvertTo-Json -Compress
     exit 0
 }
 
 # ── 4) Interactive flow ────────────────────────────────────────────────────
 if (-not $hasUpdate -and -not $Force) {
-    Write-Host "You are running the latest version ($latestTag, built $currentDateUtc)." -ForegroundColor Green
+    Write-Host "You are running the latest version (current $currentVer, latest published $latestTag)." -ForegroundColor Green
     exit 0
 }
 
@@ -125,7 +136,7 @@ if (-not $InstallDir) {
 
 Add-Type -AssemblyName System.Windows.Forms
 $msg = "A new version is available:`n`n" +
-       "  Current : $currentSha ($currentDateUtc)`n" +
+       "  Current : $currentVer`n" +
        "  Latest  : $latestTag ($latestDate)`n`n" +
        "Download (~$([math]::Round($asset.size/1MB,1)) MB) and replace the install at`n" +
        "  $InstallDir ?`n`n" +

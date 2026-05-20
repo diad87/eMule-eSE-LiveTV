@@ -301,6 +301,15 @@ $lines = @(
     "ToolbarLabels=1",      # show button text under icons (else toolbar looks like icons-only)
     "ToolbarIconSize=32",
     "ReBarToolbar=1",
+    # v8.0.25 — pin bandwidth to UNLIMITED. -1 is eMule's native sentinel
+    # (UNLIMITED == _UI32_MAX; eMule itself writes -1 to the ini for "no
+    # limit"). Do NOT use 0: CPreferences::LoadPreferences reads MaxDownload
+    # verbatim and skips the 0->UNLIMITED conversion the setter does, so
+    # MaxDownload=0 loads as a literal 0 and GetMaxDownloadInBytesPerSec()
+    # returns 0 -> dead download. Omitting the keys is also wrong (eMule
+    # then falls back to its 80/90 KB/s hardcoded defaults).
+    "MaxUpload=-1",
+    "MaxDownload=-1",
     "[WebServer]",
     "Enabled=1",
     "Port=4711",

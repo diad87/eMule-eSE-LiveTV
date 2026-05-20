@@ -22,6 +22,21 @@ static char THIS_FILE[] = __FILE__;
 static HANDLE s_hTerminate = NULL;
 static CWinThread *s_pSocketThread = NULL;
 
+// eSE fix: bound the embedded webserver's worker threads. The per-connection
+// CWinThread model (WebSocketListeningFunc spawns one worker per accepted
+// socket) has no idle timeout — WebSocketAcceptedFunc waits on
+// WaitForMultipleObjects(INFINITE) and only leaves once the client sends
+// FD_CLOSE. A client that reads its reply but never closes the connection
+// leaves the worker parked forever, leaking a thread + socket + handles per
+// request. The eSE Node companion server polls the web interface continuously,
+// so these accumulated into 700+ stuck threads and froze the process.
+//   WEBSOCKET_MAX_LIFETIME_MS    - hard cap on a single worker's lifetime.
+//   WEBSOCKET_MAX_WORKER_THREADS - hard cap on concurrent workers.
+static const DWORD WEBSOCKET_WAIT_SLICE_MS      = 1000;
+static const DWORD WEBSOCKET_MAX_LIFETIME_MS    = 30000;
+static const LONG  WEBSOCKET_MAX_WORKER_THREADS = 64;
+static volatile LONG s_lActiveWebThreads        = 0;
+
 mbedtls_ssl_config conf;
 mbedtls_x509_crt srvcert;
 mbedtls_pk_context pkey;
@@ -329,6 +344,10 @@ UINT AFX_CDECL WebSocketAcceptedFunc(LPVOID pD)
 			stWebSocket.m_dwHttpContentLen = 0;
 			stWebSocket.m_ssl = &ssl;
 
+			// Declared before the SSL block so the 'goto thread_exit' paths
+			// below don't jump into the scope of an initialized variable.
+			const DWORD dwWorkerStartTick = ::GetTickCount();
+
 			if (thePrefs.GetWebUseHttps()) {
 				mbedtls_ssl_init(&ssl);
 				int ret = mbedtls_ssl_setup(&ssl, &conf);
@@ -343,7 +362,23 @@ UINT AFX_CDECL WebSocketAcceptedFunc(LPVOID pD)
 			}
 			HANDLE pWait[] = {hEvent, s_hTerminate};
 
-			while (WAIT_OBJECT_0 == ::WaitForMultipleObjects(DWORD(_countof(pWait)), pWait, FALSE, INFINITE)) {
+			for (;;) {
+				const DWORD dwWaitRes = ::WaitForMultipleObjects(DWORD(_countof(pWait)), pWait, FALSE, WEBSOCKET_WAIT_SLICE_MS);
+				if (dwWaitRes != WAIT_OBJECT_0) {
+					// Not a socket event: WAIT_TIMEOUT (idle slice), s_hTerminate,
+					// or WAIT_FAILED. Leave the loop once this worker has outlived
+					// the hard cap so a client that never sends FD_CLOSE cannot
+					// keep the thread (and its socket/handles) alive forever.
+					if (dwWaitRes != WAIT_TIMEOUT)
+						break;
+					if (::GetTickCount() - dwWorkerStartTick > WEBSOCKET_MAX_LIFETIME_MS) {
+						CLiveDebugLog::Get().Append("WS",
+							"Worker reaped after %u ms - client never closed connection",
+							(unsigned)(::GetTickCount() - dwWorkerStartTick));
+						break;
+					}
+					continue;
+				}
 				while (stWebSocket.m_bValid) {
 					WSANETWORKEVENTS stEvents;
 					if (WSAEnumNetworkEvents(hSocket, NULL, &stEvents))
@@ -424,6 +459,12 @@ UINT AFX_CDECL WebSocketAcceptedFunc(LPVOID pD)
 
 				if (!stWebSocket.m_bValid || (!stWebSocket.m_bCanRecv && !stWebSocket.m_pHead))
 					break;
+				if (::GetTickCount() - dwWorkerStartTick > WEBSOCKET_MAX_LIFETIME_MS) {
+					CLiveDebugLog::Get().Append("WS",
+						"Worker reaped after %u ms - request exceeded lifetime cap",
+						(unsigned)(::GetTickCount() - dwWorkerStartTick));
+					break;
+				}
 			}
 thread_exit:
 			stWebSocket.m_bValid = false;
@@ -447,6 +488,8 @@ thread_exit:
 		mbedtls_net_free((mbedtls_net_context*)&hSocket);
 	else
 		VERIFY(!closesocket(hSocket));
+
+	InterlockedDecrement(&s_lActiveWebThreads);
 	return 0;
 }
 
@@ -516,6 +559,19 @@ UINT AFX_CDECL WebSocketListeningFunc(LPVOID pThis)
 							}
 
 							if (thePrefs.GetWSIsEnabled()) {
+								// eSE fix: refuse the connection if the worker pool is
+								// already at its hard ceiling. Bounds the leak even if a
+								// request handler deadlocks — a stuck worker never returns
+								// to its wait loop, so the per-worker lifetime cap in
+								// WebSocketAcceptedFunc cannot reap it.
+								if (InterlockedIncrement(&s_lActiveWebThreads) > WEBSOCKET_MAX_WORKER_THREADS) {
+									InterlockedDecrement(&s_lActiveWebThreads);
+									CLiveDebugLog::Get().Append("WS",
+										"Worker cap (%ld) reached - refusing connection",
+										(long)WEBSOCKET_MAX_WORKER_THREADS);
+									VERIFY(!closesocket(hAccepted));
+									continue;
+								}
 								SocketData *pData = new SocketData;
 								pData->pThis = pThis;
 								pData->hSocket = hAccepted;
@@ -525,6 +581,8 @@ UINT AFX_CDECL WebSocketListeningFunc(LPVOID pThis)
 								CWinThread *pAcceptThread = new CWinThread(WebSocketAcceptedFunc, (LPVOID)pData);
 								if (!pAcceptThread->CreateThread()) {
 									delete pAcceptThread;
+									delete pData;
+									InterlockedDecrement(&s_lActiveWebThreads);
 									VERIFY(!closesocket(hAccepted));
 								}
 							} else

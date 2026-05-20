@@ -5143,7 +5143,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		std::string reply;
 		bool ok = false;
 		try {
-			ok = eSELive::CLiveTunnel::Get().TunneledKadSearch(keyword, reply, 3000);
+			ok = eSELive::CLiveTunnel::Get().TunneledKadSearch(keyword, reply, 5000);
 		} catch (...) {}
 
 		CStringA json;
@@ -5178,7 +5178,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		std::string reply;
 		bool ok = false;
 		try {
-			ok = eSELive::CLiveTunnel::Get().TunnelPing(text, reply, 3000);
+			ok = eSELive::CLiveTunnel::Get().TunnelPing(text, reply, 5000);
 		} catch (...) {}
 
 		CStringA json;
@@ -5265,35 +5265,30 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// that never become Active (most common cause: PC2 not in ClientList,
 	// or PC2 running an older binary that didn't emit TAG_ESE_CAPS).
 	if (sURL == "/api/live/privacy/peers") {
-		std::vector<CUpDownClient*> all;
-		std::vector<CUpDownClient*> tunneling;
+		// v0.72 — served from the main-thread-maintained peer cache; the
+		// worker thread must never dereference CUpDownClient pointers.
+		std::vector<eSELive::CLiveTunnel::PeerSnapshot> all;
+		size_t tunnelingCount = 0;
 		try {
-			if (theApp.clientlist) {
-				theApp.clientlist->GetConnectedSnapshot(all,        50, /*tunnelOnly=*/false);
-				theApp.clientlist->GetConnectedSnapshot(tunneling,  50, /*tunnelOnly=*/true);
-			}
+			eSELive::CLiveTunnel::Get().GetPeersSnapshot(all, tunnelingCount);
 		} catch (...) {}
 
 		CStringA peersJson;
 		for (size_t i = 0; i < all.size(); ++i) {
 			if (i > 0) peersJson += ",";
-			CUpDownClient* c = all[i];
+			const eSELive::CLiveTunnel::PeerSnapshot& p = all[i];
 			CStringA line;
-			const uint32 ip = c ? c->GetIP() : 0;
-			const uint16 port = c ? c->GetUserPort() : 0;
-			const uint32 fork = c ? c->GetForkCaps() : 0;
-			const uint32 ese  = c ? c->GetEseCapabilities() : 0;
 			line.Format(
 			    "{\"ip\":\"%u.%u.%u.%u\",\"port\":%u,"
 			    "\"forkCaps\":\"0x%08X\",\"eseCaps\":\"0x%08X\","
 			    "\"isFork\":%s}",
-			    (unsigned)(ip & 0xFF),
-			    (unsigned)((ip >> 8) & 0xFF),
-			    (unsigned)((ip >> 16) & 0xFF),
-			    (unsigned)((ip >> 24) & 0xFF),
-			    (unsigned)port,
-			    fork, ese,
-			    (ese & 0x00000100) ? "true" : "false");
+			    (unsigned)(p.ip & 0xFF),
+			    (unsigned)((p.ip >> 8) & 0xFF),
+			    (unsigned)((p.ip >> 16) & 0xFF),
+			    (unsigned)((p.ip >> 24) & 0xFF),
+			    (unsigned)p.port,
+			    p.fork_caps, p.ese_caps,
+			    (p.ese_caps & 0x00000100) ? "true" : "false");
 			peersJson += line;
 		}
 
@@ -5301,7 +5296,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		json.Format(
 		    "{\"totalConnected\":%u,\"forkTunnelingCapable\":%u,\"peers\":[%s]}",
 		    (unsigned)all.size(),
-		    (unsigned)tunneling.size(),
+		    (unsigned)tunnelingCount,
 		    (LPCSTR)peersJson);
 
 		CStringA header;
@@ -5336,10 +5331,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		uint32_t circId = 0;
 		CStringA result;
 		try {
-			if (hops == 2)
-				circId = eSELive::CLiveTunnel::Get().BuildTestCircuit2Hop();
-			else
-				circId = eSELive::CLiveTunnel::Get().BuildTestCircuit(NULL);
+			// v0.72 — marshaled to the main thread (the build touches the
+			// ClientList + peer sockets). Waits up to ~2.5 s for the result.
+			circId = eSELive::CLiveTunnel::Get().RequestTestCircuit(hops, 2500);
 		} catch (...) {}
 		if (circId == 0) {
 			result = "{\"ok\":false,\"reason\":\"no connected fork-capable peers - check /api/live/privacy/peers\"}";

@@ -850,6 +850,127 @@ void CLiveTunnel::GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const
     }
 }
 
+// === v0.72 — main-thread marshaling impl ====================================
+// SendThrough()/BuildTestCircuit*() touch peer sockets and the ClientList,
+// which are main-thread only. The webserver privacy endpoints run on worker
+// threads, so they enqueue the work here; the main thread runs it from
+// ProcessMainThreadWork() (CKademlia::Process, ~1 Hz).
+
+void CLiveTunnel::EnqueueSend(const uint8_t* payload, size_t payloadLen)
+{
+    if (!payload || payloadLen == 0) return;
+    CSingleLock lk(&m_mtLock, TRUE);
+    MainThreadReq req;
+    req.op = MT_SEND;
+    req.payload.assign(payload, payload + payloadLen);
+    m_mtQueue.push_back(std::move(req));
+}
+
+uint32_t CLiveTunnel::RequestTestCircuit(int hops, uint32_t timeoutMs)
+{
+    // Random req_id correlates this request with the result the main thread
+    // publishes into m_pendingBuildResults.
+    uint8_t r[4];
+    SecureRandomBytes(r, 4);
+    const uint32_t reqId = (uint32_t)r[0] | ((uint32_t)r[1] << 8)
+                         | ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
+    {
+        CSingleLock lk(&m_mtLock, TRUE);
+        MainThreadReq req;
+        req.op    = (hops == 2) ? MT_BUILD_2HOP : MT_BUILD_1HOP;
+        req.reqId = reqId;
+        m_mtQueue.push_back(std::move(req));
+    }
+    // Poll until the main thread runs the build (it drains the queue once
+    // per Kad tick, ~1 Hz) or we hit the timeout.
+    const DWORD start = GetTickCount();
+    while (GetTickCount() - start < timeoutMs) {
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            auto it = m_pendingBuildResults.find(reqId);
+            if (it != m_pendingBuildResults.end()) {
+                const uint32_t circId = it->second;
+                m_pendingBuildResults.erase(it);
+                return circId;
+            }
+        }
+        Sleep(50);
+    }
+    CSingleLock pl(&m_pendingLock, TRUE);
+    m_pendingBuildResults.erase(reqId);
+    return 0;
+}
+
+void CLiveTunnel::ProcessMainThreadWork()
+{
+    // MAIN THREAD. Drain the marshaled-work queue. Bounded per call so a
+    // burst of requests cannot stretch a single Kad tick.
+    for (int budget = 0; budget < 256; ++budget) {
+        MainThreadReq req;
+        {
+            CSingleLock lk(&m_mtLock, TRUE);
+            if (m_mtQueue.empty()) break;
+            req = std::move(m_mtQueue.front());
+            m_mtQueue.pop_front();
+        }
+        try {
+            switch (req.op) {
+            case MT_SEND:
+                if (!req.payload.empty())
+                    SendThrough(req.payload.data(), req.payload.size());
+                break;
+            case MT_BUILD_1HOP:
+            case MT_BUILD_2HOP: {
+                const uint32_t circId = (req.op == MT_BUILD_2HOP)
+                                      ? BuildTestCircuit2Hop()
+                                      : BuildTestCircuit(NULL);
+                CSingleLock pl(&m_pendingLock, TRUE);
+                m_pendingBuildResults[req.reqId] = circId;
+                break;
+            }
+            }
+        } catch (...) {
+            // A single failed action must not stall the rest of the queue.
+        }
+    }
+    RebuildPeersCache();
+}
+
+void CLiveTunnel::RebuildPeersCache()
+{
+    // MAIN THREAD. Snapshot the ClientList into value-typed records so the
+    // /api/live/privacy/peers worker handler never touches CUpDownClient.
+    std::vector<PeerSnapshot> all;
+    size_t tunnelingCount = 0;
+    if (theApp.clientlist) {
+        std::vector<CUpDownClient*> snapAll, snapTun;
+        theApp.clientlist->GetConnectedSnapshot(snapAll, 50, /*tunnelOnly=*/false);
+        theApp.clientlist->GetConnectedSnapshot(snapTun, 50, /*tunnelOnly=*/true);
+        tunnelingCount = snapTun.size();
+        all.reserve(snapAll.size());
+        for (CUpDownClient* c : snapAll) {
+            if (!c) continue;
+            PeerSnapshot p;
+            p.ip        = c->GetIP();
+            p.port      = c->GetUserPort();
+            p.fork_caps = c->GetForkCaps();
+            p.ese_caps  = c->GetEseCapabilities();
+            all.push_back(p);
+        }
+    }
+    CSingleLock lk(&m_peersCacheLock, TRUE);
+    m_peersCacheAll.swap(all);
+    m_peersCacheTunnelingCount = tunnelingCount;
+}
+
+void CLiveTunnel::GetPeersSnapshot(std::vector<PeerSnapshot>& outAll,
+                                   size_t& outTunnelingCount) const
+{
+    CSingleLock lk(&m_peersCacheLock, TRUE);
+    outAll            = m_peersCacheAll;
+    outTunnelingCount = m_peersCacheTunnelingCount;
+}
+
 // === v0.71 C — Data plane: CELL_RELAY delivery + tunnel ping =================
 // Sub-protocol carried inside the AEAD-decrypted CELL_RELAY payload:
 //   [0]      sub_cmd (TunnelOpCmd: PING=0x01, PING_REPLY=0x02)
@@ -1030,8 +1151,10 @@ bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
     payload[6] = (uint8_t)((kl >> 8) & 0xFF);
     memcpy(payload.data() + 7, keywordLower.data(), keywordLower.size());
 
-    if (!SendThrough(payload.data(), payload.size()))
-        return false;
+    // v0.72 — marshal the send to the main thread (SendThrough touches peer
+    // sockets, which are main-thread only). If no circuit exists the send is
+    // a no-op and the poll below simply times out -> returns false.
+    EnqueueSend(payload.data(), payload.size());
 
     DWORD start = GetTickCount();
     while (GetTickCount() - start < timeoutMs) {
@@ -1093,9 +1216,10 @@ bool CLiveTunnel::TunnelPing(const std::string& text, std::string& replyText,
     payload[6] = (uint8_t)((tl >> 8) & 0xFF);
     memcpy(payload.data() + 7, text.data(), text.size());
 
-    // Send through tunnel.
-    if (!SendThrough(payload.data(), payload.size()))
-        return false;
+    // Send through the tunnel — marshaled to the main thread (SendThrough
+    // touches peer sockets, which are main-thread only). If no circuit
+    // exists the send is a no-op and the poll below times out -> false.
+    EnqueueSend(payload.data(), payload.size());
 
     // Poll the pending replies map until timeout. Cheap poll because
     // the map is tiny; we sleep 50ms between checks. The CELL_RELAY

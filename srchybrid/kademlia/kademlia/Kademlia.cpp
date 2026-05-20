@@ -225,6 +225,7 @@ void CKademlia::Process()
 		if (!s_privacyTickDisabled) {
 			try {
 				eSELive::CLiveTunnel::Get().Tick();
+				eSELive::CLiveTunnel::Get().ProcessMainThreadWork();
 				CKadV2TunnelPool::Get().Tick();
 				eSELive::CLiveBootstrap::Get().TickMDNS();
 			} catch (...) {

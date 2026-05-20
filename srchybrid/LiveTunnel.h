@@ -17,6 +17,8 @@
 #include <vector>
 #include <string>   // v0.71 C — TunnelPing text I/O
 #include <map>      // v0.71 C — pending request table
+#include <deque>    // v0.72 — main-thread work queue
+#include <utility>  // v0.72 — std::move
 
 class CUpDownClient;
 
@@ -146,6 +148,39 @@ public:
     };
     void GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const;
 
+    // === v0.72 — main-thread marshaling ====================================
+    // The embedded webserver answers each HTTP request on its own worker
+    // thread. CLiveTunnel, CUpDownClient and the eMule sockets are
+    // single-threaded (main thread only), so the /api/live/privacy/*
+    // endpoints must NOT call SendThrough / BuildTestCircuit* directly —
+    // those touch peer sockets and the ClientList. Instead the endpoints
+    // enqueue the work here and the main thread drains it from
+    // ProcessMainThreadWork() (called once per Kad tick). Read-only endpoints
+    // are served from caches the main thread keeps refreshed.
+
+    // Worker-thread safe. Builds a test circuit ON THE MAIN THREAD and waits
+    // up to timeoutMs for the resulting circuit id. hops is 1 or 2. Returns
+    // the circuit id, or 0 on failure / timeout.
+    uint32_t RequestTestCircuit(int hops, uint32_t timeoutMs);
+
+    // Value-typed peer info — safe to hand to a worker thread (unlike raw
+    // CUpDownClient pointers, which only the main thread may dereference).
+    struct PeerSnapshot {
+        uint32_t ip;
+        uint16_t port;
+        uint32_t fork_caps;
+        uint32_t ese_caps;
+    };
+    // Worker-thread safe. Copies the peer snapshot the main thread refreshes
+    // in ProcessMainThreadWork(). outTunnelingCount = connected peers that
+    // advertised privacy-tunneling capability.
+    void GetPeersSnapshot(std::vector<PeerSnapshot>& outAll,
+                          size_t& outTunnelingCount) const;
+
+    // MAIN THREAD ONLY. Drains the marshaled-work queue and refreshes the
+    // peer cache. Call once per Kad process tick.
+    void ProcessMainThreadWork();
+
     // v0.71 P3.3 — total counts of cells sent / received for metrics.
     uint64_t CellsSentTotal() const { return m_cellsSentTotal; }
     uint64_t CellsRecvTotal() const { return m_cellsRecvTotal; }
@@ -232,6 +267,32 @@ private:
     std::map<uint32_t, std::string> m_pendingPingReplies;
     // v0.71 P1.A — pending KAD_RESULT replies keyed by req_id.
     std::map<uint32_t, std::string> m_pendingKadResults;
+    // v0.72 — test-circuit build results keyed by req_id (value 0 = failed).
+    // RequestTestCircuit polls this; ProcessMainThreadWork fills it.
+    std::map<uint32_t, uint32_t> m_pendingBuildResults;
+
+    // v0.72 — marshaled-work queue: webserver worker threads push, the main
+    // thread drains it in ProcessMainThreadWork().
+    enum MtOp : uint8_t { MT_SEND = 1, MT_BUILD_1HOP = 2, MT_BUILD_2HOP = 3 };
+    struct MainThreadReq {
+        MtOp                 op    = MT_SEND;
+        uint32_t             reqId = 0;   // MT_BUILD_* key into m_pendingBuildResults
+        std::vector<uint8_t> payload;     // MT_SEND payload bytes
+    };
+    mutable CCriticalSection  m_mtLock;
+    std::deque<MainThreadReq> m_mtQueue;
+
+    // v0.72 — peer snapshot cache, rebuilt by the main thread every tick so
+    // worker threads never dereference CUpDownClient pointers.
+    mutable CCriticalSection  m_peersCacheLock;
+    std::vector<PeerSnapshot> m_peersCacheAll;
+    size_t                    m_peersCacheTunnelingCount = 0;
+
+    // v0.72 — enqueue a SendThrough payload for the main thread. Used by
+    // TunnelPing / TunneledKadSearch (they run on webserver worker threads).
+    void EnqueueSend(const uint8_t* payload, size_t payloadLen);
+    // v0.72 — MAIN THREAD: refresh m_peersCache* from the live ClientList.
+    void RebuildPeersCache();
 
     mutable CCriticalSection m_lock;
     std::vector<std::shared_ptr<CLiveCircuit>> m_circuits;

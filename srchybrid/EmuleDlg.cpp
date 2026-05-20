@@ -906,11 +906,18 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				}
 
 				// v0.71 IPv6 Sprint 3 follow-up — kick the v6 firewall
-				// probe right after the listener binds. Synchronous with
-				// 5s timeout: blocks startup briefly but only once, and
-				// only when IPv6 is enabled in prefs. Populates
-				// CFirewallProberV6::Instance().GetDetectedV6IP() for the
-				// Network Info panel + status bar.
+				// probe right after the listener binds.
+				//
+				// v8.0.21 — ProbeAsync() is now genuinely asynchronous: it
+				// spawns a background worker thread and returns instantly.
+				// It used to run the cascade — including a 5 s blocking
+				// WinHTTP GET to api6.ipify.org — synchronously. Since this
+				// runs inside a WM_TIMER (the staggered startup sequence),
+				// that froze the whole UI for 2-4 s on every launch without
+				// an IPv6 path, and delayed the Connect button enabled just
+				// below. The probe result (public v6 address) is purely
+				// informational for the Network Info panel + status bar, so
+				// it arrives a few seconds later off-thread with no freeze.
 				if (thePrefs.IsIPv6Enabled())
 					CFirewallProberV6::Instance().ProbeAsync();
 

@@ -27,6 +27,8 @@
 #pragma once
 
 #include "eMuleAI/Address.h"
+#include <afxmt.h>   // v8.0.21 — CCriticalSection / CSingleLock for the
+                     // background-thread result guard (see ProbeAsync).
 
 class CFirewallProberV6 {
 public:
@@ -45,13 +47,24 @@ public:
 
     // Kick off the probe in the background. Idempotent. Result lands in
     // GetCurrentLayer() once the cascade settles.
+    //
+    // v8.0.21 — this is now ACTUALLY asynchronous: it spawns a worker
+    // thread and returns immediately. Previously, despite the name, it ran
+    // the whole cascade synchronously — including a 5 s WinHTTP GET — and
+    // because EmuleDlg calls it from a WM_TIMER (the staggered startup
+    // sequence) that froze the UI thread for 2-4 s and delayed the Connect
+    // button. The result is now informational-only and arrives a few
+    // seconds later without ever blocking the UI.
     void ProbeAsync();
 
-    // Layer-aware accessors. Until ProbeAsync completes, GetCurrentLayer
-    // returns LayerUnknown.
+    // Layer-aware accessors. Until the probe completes, GetCurrentLayer
+    // returns LayerUnknown. m_eLayer is an int-sized enum — its read/write
+    // is atomic on x86/x64, so the UI can poll it lock-free.
     ECascadeLayer GetCurrentLayer() const { return m_eLayer; }
     bool          IsReachable()     const { return m_eLayer >= LayerHighID && m_eLayer <= LayerHolePunch; }
-    CAddress      GetDetectedV6IP() const { return m_detectedIP; }
+    // v8.0.21 — defined in the .cpp: takes m_csResult so the copy can't tear
+    // against the worker thread's write.
+    CAddress      GetDetectedV6IP() const;
     const TCHAR*  GetLayerLabel()   const;
 
     // Manual override from preferences (Sprint 9 UI exposes this).
@@ -71,9 +84,19 @@ private:
     bool TryHolePunch();
     bool TryBuddyRelay();
 
+    // v8.0.21 — background-thread plumbing. ProbeAsync() spawns
+    // ProbeThreadProc via AfxBeginThread; the thread calls RunCascade(),
+    // which is the cascade body that used to live inline in ProbeAsync().
+    static UINT AFX_CDECL ProbeThreadProc(LPVOID pParam);
+    void RunCascade();
+
     ECascadeLayer m_eLayer;
     ECascadeLayer m_eOverrideLayer;
-    CAddress      m_detectedIP;
+    CAddress      m_detectedIP;          // guarded by m_csResult
     bool          m_bProbeStarted;
     DWORD         m_dwLastProbeTick;
+    // v8.0.21 — guards m_detectedIP: written by the probe worker thread,
+    // read by the UI thread via GetDetectedV6IP(). mutable so the const
+    // accessor can lock it.
+    mutable CCriticalSection m_csResult;
 };

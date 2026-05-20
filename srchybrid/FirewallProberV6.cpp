@@ -50,9 +50,17 @@ CFirewallProberV6::CFirewallProberV6()
 
 void CFirewallProberV6::ProbeAsync()
 {
-    // Sprint 3 — synchronous best-effort cascade. Each Try*() is a stub for
-    // now; the real work lands in Sprints 5/6/9. Until those land, the
-    // probe always terminates in Unreachable, which is the safe default.
+    // v8.0.21 — ACTUALLY asynchronous now. The cheap, instant checks
+    // (IPv6 disabled / manual override) still resolve inline on the
+    // calling thread; only the cascade — which contains a 5 s blocking
+    // WinHTTP GET — is moved onto a background worker thread.
+    //
+    // Why this mattered: EmuleDlg's staggered startup calls this from a
+    // WM_TIMER (case 4 of the startup sequence). A WM_TIMER handler runs
+    // on the UI thread, so the old synchronous cascade froze the whole
+    // window — and delayed the Connect button — for 2-4 s on every launch
+    // whenever the machine had no IPv6 path (the common residential case),
+    // because the GET to api6.ipify.org sat there until the timeout fired.
     if (!CPreferences::IsIPv6Enabled()) {
         m_eLayer = LayerUnreachable;
         LIVE_LOG("NETV6", "probe skipped (IPv6 mode = off)");
@@ -65,10 +73,42 @@ void CFirewallProberV6::ProbeAsync()
         return;
     }
 
+    // Idempotent: a second ProbeAsync() while the first probe is still
+    // running (or already finished) must not spawn another worker thread.
+    if (m_bProbeStarted) {
+        LIVE_LOG("NETV6", "probe already started — ignoring duplicate ProbeAsync()");
+        return;
+    }
     m_bProbeStarted = true;
     m_dwLastProbeTick = GetTickCount();
-    LIVE_LOG("NETV6", "starting IPv6 firewall probe cascade");
 
+    LIVE_LOG("NETV6", "starting IPv6 firewall probe cascade (background thread)");
+    CWinThread* pThread = AfxBeginThread(&CFirewallProberV6::ProbeThreadProc, this);
+    if (pThread == NULL) {
+        // Thread creation failed (severe resource exhaustion only). Fall
+        // back to running inline so the detected-IP field still gets
+        // populated — accepting the brief freeze in that rare case.
+        LIVE_LOG("NETV6", "AfxBeginThread failed — running probe inline");
+        RunCascade();
+    }
+}
+
+// v8.0.21 — worker entry point. AfxBeginThread auto-deletes the CWinThread
+// when this returns, so it is fire-and-forget. The cascade finishes within
+// the WinHTTP 5 s budget.
+UINT AFX_CDECL CFirewallProberV6::ProbeThreadProc(LPVOID pParam)
+{
+    CFirewallProberV6* pSelf = static_cast<CFirewallProberV6*>(pParam);
+    if (pSelf != NULL)
+        pSelf->RunCascade();
+    return 0;
+}
+
+// v8.0.21 — the cascade body. Runs on the background worker thread (or, on
+// the rare AfxBeginThread failure, inline). Each Try*() is a stub except
+// TryHighID, which performs the WinHTTP public-v6 detection.
+void CFirewallProberV6::RunCascade()
+{
     if (TryHighID())     { m_eLayer = LayerHighID;     LIVE_LOG("NETV6", "layer settled: HighID"); return; }
     if (TryPCP())        { m_eLayer = LayerPCP;        LIVE_LOG("NETV6", "layer settled: PCP"); return; }
     if (TryIGDv2())      { m_eLayer = LayerIGDv2;      LIVE_LOG("NETV6", "layer settled: IGDv2"); return; }
@@ -78,6 +118,16 @@ void CFirewallProberV6::ProbeAsync()
 
     m_eLayer = LayerUnreachable;
     LIVE_LOG("NETV6", "layer settled: Unreachable");
+}
+
+// v8.0.21 — guarded copy. The probe worker thread writes m_detectedIP
+// inside TryHighID(); this read can be called concurrently from the UI
+// thread (Network Info panel). CAddress is ~32 bytes (byte[16] + enum +
+// vptr), so an unguarded copy could tear; the lock makes it atomic.
+CAddress CFirewallProberV6::GetDetectedV6IP() const
+{
+    CSingleLock lock(&m_csResult, TRUE);
+    return m_detectedIP;
 }
 
 void CFirewallProberV6::SetOverrideLayer(ECascadeLayer layer)
@@ -184,7 +234,9 @@ bool CFirewallProberV6::TryHighID()
     if (!v6.IsEmpty()) {
         LIVE_LOG("NETV6", "TryHighID: detected public v6 = %hs (egress OK, inbound unconfirmed)",
             (LPCSTR)v6);
-        // Store in m_detectedIP via the CAddress string constructor.
+        // v8.0.21 — this runs on the background probe thread; guard the
+        // write so the UI thread's GetDetectedV6IP() copy can't tear.
+        CSingleLock lock(&m_csResult, TRUE);
         m_detectedIP.FromString(std::string((LPCSTR)v6), false);
     } else {
         LIVE_LOG("NETV6", "TryHighID: no public v6 detected (api6.ipify.org timeout or no v6 path)");

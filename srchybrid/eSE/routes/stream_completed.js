@@ -58,7 +58,7 @@ function handle(url, req, res) {
     if (!resolved) { res.writeHead(404); res.end('{}'); return true; }
     const ffprobePath = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
     try {
-      const probeOut = execSync('"' + ffprobePath + '" -v quiet -print_format json -show_streams "' + resolved.filePath + '"', { timeout: 15000 }).toString();
+      const probeOut = execSync('"' + ffprobePath + '" -v quiet -probesize 5000000 -analyzeduration 5000000 -print_format json -show_streams "' + resolved.filePath + '"', { timeout: 15000 }).toString();
       const probe = JSON.parse(probeOut);
       const audio = [], subtitles = [];
       (probe.streams || []).forEach(s => {
@@ -107,7 +107,7 @@ function handle(url, req, res) {
     if (!resolved) { res.writeHead(404); res.end('Not found'); return true; }
     const ffprobePath = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
     try {
-      const probeOut = execSync('"' + ffprobePath + '" -v quiet -print_format json -show_streams -select_streams s "' + resolved.filePath + '"', { timeout: 15000 }).toString();
+      const probeOut = execSync('"' + ffprobePath + '" -v quiet -probesize 5000000 -analyzeduration 5000000 -print_format json -show_streams -select_streams s "' + resolved.filePath + '"', { timeout: 15000 }).toString();
       const subStreams = JSON.parse(probeOut).streams || [];
       if (trackIdx >= subStreams.length) { res.writeHead(404); res.end('Track not found'); return true; }
       const subStream = subStreams[trackIdx];
@@ -115,11 +115,13 @@ function handle(url, req, res) {
         res.writeHead(400); res.end('Bitmap subtitles cannot be converted to WebVTT'); return true;
       }
       const ffSub = spawn(_ctx.FFMPEG_PATH, ['-i', resolved.filePath, '-map', '0:' + subStream.index, '-f', 'webvtt', 'pipe:1']);
+      if (_ctx.cleanup && _ctx.cleanup.watchFfmpeg) _ctx.cleanup.watchFfmpeg(ffSub, res);
       res.writeHead(200, { 'Content-Type': 'text/vtt; charset=utf-8', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' });
       ffSub.stdout.pipe(res);
       ffSub.stderr.on('data', () => {});
       ffSub.on('close', () => { if (!res.writableEnded) res.end(); });
-      req.on('close', () => { ffSub.kill(); });
+      req.on('close', () => { try { ffSub.kill(); } catch (e) {} });
+      res.on('close', () => { try { ffSub.kill(); } catch (e) {} });
     } catch(e) {
       res.writeHead(500); res.end('Error extracting subtitle');
     }
@@ -143,12 +145,18 @@ function handle(url, req, res) {
     const presets = { 'auto': { scale: null, abr: '256k' }, '480p': { scale: '854:480', abr: '128k' }, '720p': { scale: '1280:720', abr: '192k' }, '1080p': { scale: '-2:1080', abr: '256k' }, 'original': { scale: null, abr: '256k' } };
     const q = presets[quality] || presets['auto'];
 
-    // Probe codec
+    // Probe codec — v8.0.27: ONE bounded ffprobe instead of two unbounded ones.
+    // execSync blocks the Node event loop; an unbounded probe of a huge or
+    // still-downloading .part file froze the whole dashboard for 10-20 s.
     let srcVideoCodec = '', srcAudioCodec = '';
     try {
       const fp = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
-      srcVideoCodec = execSync('"' + fp + '" -v quiet -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "' + filePath + '"', { timeout: 5000 }).toString().trim().split('\n')[0].trim().toLowerCase();
-      srcAudioCodec = execSync('"' + fp + '" -v quiet -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "' + filePath + '"', { timeout: 5000 }).toString().trim().split('\n')[0].trim().toLowerCase();
+      const probeJson = execSync('"' + fp + '" -v quiet -probesize 5000000 -analyzeduration 5000000 -print_format json -show_streams "' + filePath + '"', { timeout: 8000 }).toString();
+      const probeStreams = (JSON.parse(probeJson).streams) || [];
+      const vS = probeStreams.find(s => s.codec_type === 'video');
+      const aS = probeStreams.find(s => s.codec_type === 'audio');
+      if (vS) srcVideoCodec = (vS.codec_name || '').toLowerCase();
+      if (aS) srcAudioCodec = (aS.codec_name || '').toLowerCase();
     } catch(e) {}
 
     const canCopyVideo = srcVideoCodec === 'h264' && !q.scale;
@@ -192,6 +200,7 @@ function handle(url, req, res) {
     const streamKey = 'completed_' + fileName;
     if (_ctx.activeStreams[streamKey]) { _ctx.activeStreams[streamKey].kill(); delete _ctx.activeStreams[streamKey]; }
     let currentSeekSec = seekSec, totalBytesSent = 0, restartCount = 0, clientDisconnected = false;
+    let currentFf = null;  // v8.0.27: the ffmpeg this request currently owns
     const MAX_RESTARTS = 20;
     // v7.4.0 — expose transcoding mode so the client can show a friendlier
     // "transcodificando HEVC, hasta 60s" hint instead of a generic spinner.
@@ -205,13 +214,21 @@ function handle(url, req, res) {
       'X-ESE-Transcoding': transcodingMode
     });
 
+    // v8.0.27: a HEAD request (cinema_player.js fires one to read the
+    // X-ESE-Transcoding header) must NOT spawn a transcode. The old code
+    // treated HEAD exactly like GET and launched a full phantom ffmpeg on
+    // every single movie-open — half of the process pile-up came from here.
+    if (req.method === 'HEAD') { res.end(); return true; }
+
     const launchFfmpeg = (seekFrom) => {
       const currentArgs = [...ffArgs];
       const ssIdx = currentArgs.indexOf('-ss');
       if (ssIdx >= 0) currentArgs[ssIdx + 1] = String(seekFrom);
       else if (seekFrom > 0) { const iIdx = currentArgs.indexOf('-i'); currentArgs.splice(iIdx, 0, '-ss', String(seekFrom)); }
       const ff = spawn(_ctx.FFMPEG_PATH, currentArgs);
+      currentFf = ff;
       _ctx.activeStreams[streamKey] = ff;
+      if (_ctx.cleanup && _ctx.cleanup.watchFfmpeg) _ctx.cleanup.watchFfmpeg(ff, res);
       let gotData = false, dataTimeout = null, lastErr = '';
       ff.stdout.on('data', (chunk) => {
         gotData = true; totalBytesSent += chunk.length;
@@ -246,14 +263,14 @@ function handle(url, req, res) {
                 if (!clientDisconnected && !res.writableEnded) {
                   const newSize = fs.statSync(filePath).size;
                   if (newSize > currentSize) { launchFfmpeg(currentSeekSec); }
-                  else { delete _ctx.activeStreams[streamKey]; if (!res.writableEnded) res.end(); }
+                  else { if (_ctx.activeStreams[streamKey] === ff) delete _ctx.activeStreams[streamKey]; if (!res.writableEnded) res.end(); }
                 }
               }, 15000);
               return;
             }
           } catch(e) {}
         }
-        delete _ctx.activeStreams[streamKey];
+        if (_ctx.activeStreams[streamKey] === ff) delete _ctx.activeStreams[streamKey];
         if (!res.writableEnded) res.end();
       });
       // v7.4.0 — .part needs longer dataTimeout because HEVC→H264 re-encode
@@ -261,16 +278,25 @@ function handle(url, req, res) {
       // when buffered data is still light. Completed files stay at 30s.
       const DATA_TIMEOUT_MS = isPartFile ? 60000 : 30000;
       dataTimeout = setTimeout(() => {
-        if (!gotData && _ctx.activeStreams[streamKey]) {
+        if (!gotData) {
           console.log('[Stream] No data from ffmpeg after ' + (DATA_TIMEOUT_MS / 1000) + 's, killing');
-          _ctx.activeStreams[streamKey].kill();
-          delete _ctx.activeStreams[streamKey];
+          try { ff.kill(); } catch (e) {}
+          if (_ctx.activeStreams[streamKey] === ff) delete _ctx.activeStreams[streamKey];
         }
       }, DATA_TIMEOUT_MS);
     };
 
     launchFfmpeg(seekSec);
-    req.on('close', () => { clientDisconnected = true; if (_ctx.activeStreams[streamKey]) { _ctx.activeStreams[streamKey].kill(); delete _ctx.activeStreams[streamKey]; } });
+    // v8.0.27: tear down on EITHER req or res close, and kill the ffmpeg this
+    // request actually owns (currentFf) — never "whatever is under streamKey",
+    // which on a seek could be the NEXT request's live transcode.
+    const _teardown = () => {
+      clientDisconnected = true;
+      if (currentFf) { try { currentFf.kill(); } catch (e) {} }
+      if (_ctx.activeStreams[streamKey] === currentFf) delete _ctx.activeStreams[streamKey];
+    };
+    req.on('close', _teardown);
+    res.on('close', _teardown);
     return true;
   }
 

@@ -85,6 +85,7 @@ function handle(url, req, res) {
     ffArgs.push('-c:a', 'aac', '-b:a', '192k', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-max_muxing_queue_size', '1024', '-f', 'mp4', '-');
 
     const ff = spawn(_ctx.FFMPEG_PATH, ffArgs);
+    if (_ctx.cleanup && _ctx.cleanup.watchFfmpeg) _ctx.cleanup.watchFfmpeg(ff, res);
     let dataSent = false, stderrLog = '';
     ff.stdout.on('data', (chunk) => {
       if (!dataSent) { dataSent = true; console.log('[Stream] First data chunk sent (' + chunk.length + ' bytes)'); }
@@ -98,6 +99,7 @@ function handle(url, req, res) {
     });
     ff.on('error', (err) => { console.log('[Stream] ffmpeg error: ' + err.message); try { res.end(); } catch(e) {} });
     res.on('close', () => { try { ff.kill('SIGKILL'); } catch(e) {} });
+    req.on('close', () => { try { ff.kill('SIGKILL'); } catch(e) {} });
     return true;
   }
 
@@ -154,26 +156,29 @@ function handle(url, req, res) {
     console.log('[MSE] Starting ffmpeg pipe (quality: ' + quality + ', encoder: ' + _ctx.HW_ENCODER + ')');
     const ff = spawn(_ctx.FFMPEG_PATH, ffArgs);
     _ctx.activeStreams[partNum] = ff;
+    if (_ctx.cleanup && _ctx.cleanup.watchFfmpeg) _ctx.cleanup.watchFfmpeg(ff, res);
     res.writeHead(200, { 'Content-Type': 'video/mp4', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
     ff.stdout.pipe(res);
     ff.stderr.on('data', () => {});
-    // BUG-042 FIX: Clean up stream reference and ensure response closes
+    // BUG-042 FIX: Clean up stream reference and ensure response closes.
+    // v8.0.27: identity-checked delete — never wipe a newer request's entry.
     ff.on('close', (code) => {
       console.log('[MSE] ffmpeg done (code ' + code + ')');
-      delete _ctx.activeStreams[partNum];
+      if (_ctx.activeStreams[partNum] === ff) delete _ctx.activeStreams[partNum];
       if (!res.writableEnded) try { res.end(); } catch(e) {}
     });
     ff.on('error', (err) => {
       console.error('[MSE] ffmpeg process error:', err.message);
-      delete _ctx.activeStreams[partNum];
+      if (_ctx.activeStreams[partNum] === ff) delete _ctx.activeStreams[partNum];
       if (!res.writableEnded) try { res.end(); } catch(e) {}
     });
-    req.on('close', () => {
-      if (_ctx.activeStreams[partNum]) {
-        try { _ctx.activeStreams[partNum].kill('SIGKILL'); } catch(e) {}
-        delete _ctx.activeStreams[partNum];
-      }
-    });
+    // v8.0.27: tear down on EITHER req or res close; kill this request's own ff.
+    const _teardownData = () => {
+      try { ff.kill('SIGKILL'); } catch(e) {}
+      if (_ctx.activeStreams[partNum] === ff) delete _ctx.activeStreams[partNum];
+    };
+    req.on('close', _teardownData);
+    res.on('close', _teardownData);
     return true;
   }
 

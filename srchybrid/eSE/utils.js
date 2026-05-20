@@ -80,7 +80,10 @@ function detectHwEncoder(ffmpegPath) {
 function getDuration(file, ffmpegPath) {
   try {
     const p = ffmpegPath.replace('ffmpeg.exe', 'ffprobe.exe');
-    return parseFloat(execSync('"' + p + '" -v error -show_entries format=duration -of csv=p=0 "' + file + '"', { timeout: 5000 }).toString().trim()) || 0;
+    // v8.0.27: bounded probesize/analyzeduration — without it ffprobe can scan
+    // a huge or incomplete .part file for 10-20 s, and since this is execSync
+    // it blocks the Node event loop the whole time, freezing the dashboard.
+    return parseFloat(execSync('"' + p + '" -v error -probesize 3000000 -analyzeduration 3000000 -show_entries format=duration -of csv=p=0 "' + file + '"', { timeout: 5000 }).toString().trim()) || 0;
   } catch(e) { return 0; }
 }
 

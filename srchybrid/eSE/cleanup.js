@@ -167,7 +167,54 @@ function registerShutdownHooks() {
   }
 }
 
+// ── v8.0.27: ffmpeg leak guard ───────────────────────────────────────────────
+// Root cause of the "ffmpeg.exe pile-up": cleanup of a streaming ffmpeg relied
+// on a single req 'close' event firing. When it didn't (browser swapped
+// video.src on a seek, the modal closed, a HEAD probe, ...) the ffmpeg was
+// orphaned — Node still drained its stdout into the void, so it kept
+// transcoding at full speed (~12% CPU + ~1 GB RAM EACH). Eight of those = a
+// frozen PC, exactly what users reported.
+//
+// Fix: every streaming ffmpeg registers here with its HTTP response. The
+// reaper runs every 25 s and kills any ffmpeg whose response is already
+// closed/destroyed — i.e. nobody is watching it anymore. This is a safety net
+// independent of the per-request close handlers: no ffmpeg can outlive its
+// viewer by more than ~25 s, even if every close event is missed.
+const _ffWatch = new Set();
+
+function watchFfmpeg(ff, res) {
+  if (!ff) return null;
+  const entry = { ff: ff, res: res, born: Date.now() };
+  _ffWatch.add(entry);
+  const drop = () => _ffWatch.delete(entry);
+  ff.once('close', drop);
+  ff.once('error', drop);
+  return entry;
+}
+
+function _responseIsDead(res) {
+  if (!res) return true;
+  if (res.writableEnded || res.destroyed) return true;
+  if (res.socket && res.socket.destroyed) return true;
+  return false;
+}
+
+function reapStaleFfmpeg() {
+  let reaped = 0;
+  for (const e of _ffWatch) {
+    // Grace period — a freshly spawned ffmpeg whose response is still wiring up.
+    if (Date.now() - e.born < 8000) continue;
+    if (_responseIsDead(e.res)) {
+      try { e.ff.kill(); } catch (x) {}
+      _ffWatch.delete(e);
+      reaped++;
+    }
+  }
+  if (reaped > 0) console.log('[cleanup] Reaper killed ' + reaped + ' orphaned ffmpeg (no live viewer)');
+}
+setInterval(reapStaleFfmpeg, 25000);
+
 // Limpieza periódica: borrar archivos con más de 60 min cada 10 min
 setInterval(() => cleanupOld(60), 10 * 60 * 1000);
 
-module.exports = { init, cleanupAll, cleanupOld, gracefulShutdown };
+module.exports = { init, cleanupAll, cleanupOld, gracefulShutdown, watchFfmpeg };

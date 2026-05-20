@@ -199,6 +199,40 @@ async function _runAll(h) {
     ctrl.stop();
   });
 
+  await itAsync('only a same-titled WRONG download present → never plays it, fails no_data', async () => {
+    // The literal "a todo gas 6" scenario: the user starts episode 6, but
+    // only episode 1 (same title prefix, healthy, ready) is in Temp. The
+    // monitor must NOT play episode 1 — it must keep waiting for the hash
+    // it was given and ultimately fail no_data, never auto-play the wrong
+    // movie. This is the strongest form of the v8.0.5 regression guard.
+    env.resetForNextTest();
+    const WANT_6  = 'A70D0A506666666666666666666666EE'; // hash of episode 6
+    const DECOY_1 = 'A70D0A501111111111111111111111EE'; // hash of episode 1
+    env.setFetchHandler(backend({
+      downloads: () => [
+        // episode 1 — perfectly healthy & playable, but the WRONG hash
+        Object.assign(healthyDownload(DECOY_1, 80 * MB, 4000 * MB),
+                      { partFile: '0001.part', fileName: 'A Todo Gas 1.mkv' }),
+      ],
+      probe: () => ({ ready: true, bitrate: 4000000, duration: 7200 }),
+      rate: () => ({ ready: true, bytesPerSec: 1 * MB }),
+    }));
+
+    let played = null;
+    let failReason = null;
+    const ctrl = startSmartMonitor({
+      movieTitle: 'A Todo Gas', expectedHash: WANT_6, sourceIndex: 0,
+      onPlay: (partFile) => { played = partFile; },
+      onFail: (reason) => { failReason = reason; },
+    });
+
+    await runUntil(ctrl, s => s === 'FAIL', 400);
+    assertEqual(played, null, 'never played the wrong (same-titled) movie');
+    assertEqual(ctrl.getState(), 'FAIL', 'ended in FAIL, not PLAYING');
+    assertEqual(failReason, 'no_data', 'failed waiting for its hash — did not fuzzy-match the decoy');
+    ctrl.stop();
+  });
+
   describe('playback_state — complete file fast-path', () => {});
 
   await itAsync('already-complete download promotes straight through SUSTAIN', async () => {

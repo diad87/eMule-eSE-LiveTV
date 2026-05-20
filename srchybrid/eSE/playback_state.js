@@ -142,14 +142,43 @@
 
       _movieWords:     normalize(args.movieTitle || '').split(' ').filter(function (w) { return w.length > 2; }),
       _timer:          null,
+      // v8.0.20: unique id so the backend /api/playback/log can group all
+      // transitions of one playback attempt together.
+      _sessionId:      'sp' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     };
 
     function elapsedSec() { return (Date.now() - ctx.stateEnteredMs) / 1000; }
+
+    // v8.0.20: fire-and-forget POST of one transition to the backend so a
+    // failed playback can be diagnosed from %APPDATA%\eSE\debug.log and
+    // GET /api/playback/log — without asking the user to reproduce it.
+    function postPlaybackLog(from, to, reason) {
+      try {
+        var body = {
+          session: ctx._sessionId,
+          from: from, to: to,
+          reason: reason || '',
+          partFile: (ctx.download && ctx.download.partFile) || '',
+          elapsedSec: elapsedSec(),
+        };
+        if (ctx.rate && ctx.rate.ready) body.rateKBps = Math.round(ctx.rate.bytesPerSec / 1024);
+        if (ctx.bitrateBps) body.bitrateKbps = Math.round(ctx.bitrateBps / 1000);
+        if (ctx.download && ctx.download.headContiguousBytes != null) {
+          body.headMB = Math.round(ctx.download.headContiguousBytes / (1024 * 1024));
+        }
+        fetch('/api/emule/playback-log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }).catch(function () {});   // never let logging affect playback
+      } catch (e) { /* logging must never throw into the state machine */ }
+    }
 
     function setState(next) {
       if (next === ctx.state) return;
       // Tiny audit trail in console — helps debug "why did it stall here".
       try { console.log('[PlaybackState] ' + ctx.state + ' → ' + next + ' (after ' + elapsedSec().toFixed(1) + 's)'); } catch (e) {}
+      postPlaybackLog(ctx.state, next, '');
       ctx.state = next;
       ctx.stateEnteredMs = Date.now();
       ctx.ticks = 0;
@@ -163,6 +192,9 @@
     }
 
     function fail(reason) {
+      // Log the FAIL with its reason BEFORE setState (setState logs the bare
+      // transition; this carries the cause).
+      postPlaybackLog(ctx.state, 'FAIL', reason || 'unknown');
       setState('FAIL');
       stop(reason);
       var remaining = ((window._smartPlayResults || []).length - (ctx.sourceIndex + 1)) | 0;

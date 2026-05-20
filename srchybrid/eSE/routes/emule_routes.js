@@ -20,6 +20,91 @@ let _ctx = {};
 const _probeCache = Object.create(null);
 const PROBE_TTL_MS = 60 * 1000;
 
+// v8.0.20 — playback event ring buffer. The S1..S7 state machine
+// (playback_state.js) runs in the browser, so its console.log transitions
+// never reach the backend debug log. It now POSTs each transition / decision
+// to /api/emule/playback-log; we keep the last PLAYBACK_LOG_MAX entries in
+// memory AND console.log a one-liner (which debug_log.js captures to disk +
+// the /debug viewer). GET dumps the ring as JSON so a failed
+// playback can be diagnosed without asking the user to reproduce it.
+const _playbackLog = [];
+const PLAYBACK_LOG_MAX = 300;
+
+function _recordPlaybackEvent(ev) {
+  // Whitelist + coerce — the body comes from the browser, never trust shapes.
+  const e = {
+    t: Date.now(),
+    session: String(ev.session || '').slice(0, 40),
+    from:    String(ev.from || '').slice(0, 20),
+    to:      String(ev.to || '').slice(0, 20),
+    reason:  String(ev.reason || '').slice(0, 60),
+    partFile: String(ev.partFile || '').slice(0, 40),
+    elapsedSec:  Number.isFinite(+ev.elapsedSec)  ? Math.round(+ev.elapsedSec)  : null,
+    rateKBps:    Number.isFinite(+ev.rateKBps)    ? Math.round(+ev.rateKBps)    : null,
+    bitrateKbps: Number.isFinite(+ev.bitrateKbps) ? Math.round(+ev.bitrateKbps) : null,
+    headMB:      Number.isFinite(+ev.headMB)      ? Math.round(+ev.headMB)      : null,
+    leadSec:     Number.isFinite(+ev.leadSec)     ? Math.round(+ev.leadSec)     : null,
+  };
+  _playbackLog.push(e);
+  if (_playbackLog.length > PLAYBACK_LOG_MAX) {
+    _playbackLog.splice(0, _playbackLog.length - PLAYBACK_LOG_MAX);
+  }
+  // One-liner to the backend console — debug_log.js hooks console.* so this
+  // lands in %APPDATA%\eSE\debug.log and the /debug viewer for free.
+  const bits = [];
+  if (e.partFile)            bits.push(e.partFile);
+  if (e.elapsedSec != null)  bits.push(e.elapsedSec + 's');
+  if (e.rateKBps != null)    bits.push('rate=' + e.rateKBps + 'KB/s');
+  if (e.bitrateKbps != null) bits.push('br=' + e.bitrateKbps + 'kbps');
+  if (e.headMB != null)      bits.push('head=' + e.headMB + 'MB');
+  if (e.leadSec != null)     bits.push('lead=' + e.leadSec + 's');
+  if (e.reason)              bits.push('(' + e.reason + ')');
+  console.log('[PLAYBACK] ' + (e.from || '?') + ' -> ' + (e.to || '?') +
+              (bits.length ? '  ' + bits.join(' ') : ''));
+  return e;
+}
+
+// v8.0.20 — torn-read guard for the .met file.
+//
+// eMule rewrites the .met every few seconds while a download is active. A
+// poll can catch it mid-write and read a torn buffer — e.g. half the old
+// gap list and half the new. The v8.0.19 parser walks the whole tag table
+// happily (parseTruncated stays false) and computes a gapBytes that is
+// neither the old nor the new truth: a lie the parser CANNOT detect.
+//
+// Defence: stat → read → stat. If mtimeMs AND size are identical before and
+// after the read, no write occurred during our read window, so the buffer
+// is a consistent on-disk snapshot. Retry up to 3× on a race; if all three
+// attempts race a write (practically impossible — eMule writes a few-KB
+// file in well under a millisecond), return the last buffer as best effort
+// (the parser's parseTruncated path still handles a torn tail).
+//
+// The .met HEADER (bytes 0..20: version, date, MD4 hash) is fixed for the
+// lifetime of the download, so the fileHash read from bytes 5..20 is always
+// reliable even on a torn read — only the gap tags deeper in the file can
+// be caught mid-rewrite.
+function _readMetStable(metPath) {
+  let last = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let st1, buf, st2;
+    try {
+      st1 = fs.statSync(metPath);
+      buf = fs.readFileSync(metPath);
+      st2 = fs.statSync(metPath);
+    } catch (e) {
+      return last;   // file vanished / unreadable — return whatever we had
+    }
+    last = buf;
+    if (st1.mtimeMs === st2.mtimeMs &&
+        st1.size === st2.size &&
+        buf.length === st2.size) {
+      return buf;    // provably consistent snapshot
+    }
+    // else: eMule wrote during our read window — retry.
+  }
+  return last;       // 3 races (≈impossible) — best effort
+}
+
 function init(ctx) { _ctx = ctx; }
 
 function readJsonBody(req, callback) {
@@ -175,7 +260,9 @@ function handle(url, req, res) {
         const metFile = path.join(EMULE_TEMP, pf + '.met');
         const partPath = path.join(EMULE_TEMP, pf);
         if (fs.existsSync(metFile)) {
-          const metBuf = fs.readFileSync(metFile);
+          // v8.0.20: stable read — never parse a buffer caught mid-rewrite.
+          const metBuf = _readMetStable(metFile);
+          if (!metBuf) continue;   // .met vanished between readdir and read
           // .met layout: byte 0 = version (0xE0/0xE1), bytes 1..4 = date,
           // bytes 5..20 = 16-byte MD4 file hash. Required so the client can
           // identify a download by hash instead of fuzzy-matching its filename
@@ -272,12 +359,7 @@ function handle(url, req, res) {
     if (!fs.existsSync(partPath)) {
       return sendJson(res, 404, { error: 'not_found', file: safe });
     }
-    // Cache hit?
     const now = Date.now();
-    const cached = _probeCache[safe];
-    if (cached && cached.expires > now) {
-      return sendJson(res, 200, Object.assign({ cached: true }, cached.data));
-    }
     // Refuse to probe a file that's too small — ffprobe will hang or return
     // "Invalid data found when processing input" and we'll just thrash retry
     // loops. Tell the caller to retry later.
@@ -285,17 +367,39 @@ function handle(url, req, res) {
     try { stat = fs.statSync(partPath); } catch(e) {
       return sendJson(res, 500, { error: 'stat_failed', message: e.message });
     }
+    // Read the .met ONCE: it gives us both the head-contiguous readiness
+    // check AND the file's MD4 hash. v8.0.20: the hash goes into the probe
+    // cache key. eMule RECYCLES part-file numbers — '0042.part' can be
+    // movie A today and movie B after a cancel+restart. Keying the cache by
+    // basename alone would serve A's bitrate/duration for B within the 60 s
+    // TTL, feeding a wrong bitrate into the SUSTAIN gate. Keying by
+    // basename#hash makes a recycled part number a cache miss.
+    //
     // Use head-contiguous bytes from the .met as the readiness check — that's
     // the bytes ffprobe will actually see at the start of the file. statSize
     // can be many GB on a pre-allocated sparse file with zero real content.
     let headContig = stat.size;
+    let fileHash = '';
     try {
       const metPath = partPath + '.met';
       if (fs.existsSync(metPath)) {
-        const m = _parseMetGaps(fs.readFileSync(metPath));
-        if (m.headContiguousBytes != null) headContig = m.headContiguousBytes;
+        const metBuf = _readMetStable(metPath);   // v8.0.20: torn-read guard
+        if (metBuf) {
+          if (metBuf.length >= 21) {
+            fileHash = metBuf.slice(5, 21).toString('hex');
+          }
+          const m = _parseMetGaps(metBuf);
+          if (m.headContiguousBytes != null) headContig = m.headContiguousBytes;
+        }
       }
     } catch(e) { /* fall back to stat.size */ }
+
+    // Cache hit? Keyed by basename#hash so a recycled part number misses.
+    const cacheKey = safe + '#' + fileHash;
+    const cached = _probeCache[cacheKey];
+    if (cached && cached.expires > now) {
+      return sendJson(res, 200, Object.assign({ cached: true }, cached.data));
+    }
     if (headContig < 5 * 1024 * 1024) {
       return sendJson(res, 200, {
         ready: false,
@@ -360,7 +464,7 @@ function handle(url, req, res) {
         audioChannels: a ? (a.channels || 0) : 0,
         audioSampleRate: a ? (parseInt(a.sample_rate, 10) || 0) : 0,
       };
-      _probeCache[safe] = { data, expires: now + PROBE_TTL_MS };
+      _probeCache[cacheKey] = { data, expires: now + PROBE_TTL_MS };
       sendJson(res, 200, data);
     });
     return true;
@@ -378,6 +482,28 @@ function handle(url, req, res) {
     }
     // v8.0.20: slope computation moved to rate_window.computeRate (unit-tested).
     sendJson(res, 200, rateWindow.computeRate(safe, url.searchParams.get('windowSec') || 60));
+    return true;
+  }
+
+  // v8.0.20 — playback event log. POST records one S1..S7 transition;
+  // GET dumps the in-memory ring (newest last) for diagnosis.
+  // Path is under /api/emule/ because handle() early-returns for anything
+  // that isn't (see the prefix gate at the top of this function).
+  if (url.pathname === '/api/emule/playback-log') {
+    if (req.method === 'POST') {
+      readJsonBody(req, (err, body) => {
+        if (err) return sendJson(res, 400, { ok: false, error: 'bad_json' });
+        try { _recordPlaybackEvent(body || {}); } catch (e) { /* never fail the client */ }
+        sendJson(res, 200, { ok: true });
+      });
+      return true;
+    }
+    if (req.method === 'GET') {
+      sendJson(res, 200, { count: _playbackLog.length, events: _playbackLog });
+      return true;
+    }
+    res.writeHead(405, { 'Content-Type': 'application/json', 'Allow': 'GET, POST' });
+    res.end(JSON.stringify({ error: 'method_not_allowed' }));
     return true;
   }
 

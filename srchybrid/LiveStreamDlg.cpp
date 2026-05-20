@@ -18,6 +18,25 @@
 static char THIS_FILE[] = __FILE__;
 #endif
 
+// v8.0.22 — posted by the background broadcast-start worker back to the
+// dialog. wParam = success (BOOL), lParam = SBroadcastStartParams* (the
+// handler reads sourceIdx then frees it).
+#define WM_LIVE_BROADCAST_DONE   (WM_APP + 0x121)
+
+// v8.0.22 — inputs handed to the background broadcast-start worker. All
+// CStrings are deep copies, so the worker is independent of the dialog's
+// controls once spawned.
+struct SBroadcastStartParams {
+	CString sourceType;
+	CString title;
+	CString catStr;
+	CString langStr;
+	uint16  bitrate;
+	CString chosenFile;
+	int     sourceIdx;
+	HWND    hwndDlg;
+};
+
 
 BEGIN_MESSAGE_MAP(CLiveStreamDlg, CResizableDialog)
 	ON_BN_CLICKED(IDC_LIVE_STARTSTOP,    OnBnClickedStartStop)
@@ -27,11 +46,13 @@ BEGIN_MESSAGE_MAP(CLiveStreamDlg, CResizableDialog)
 	ON_CBN_SELCHANGE(IDC_LIVE_SOURCE,    OnCbnSelchangeSource)
 	ON_WM_TIMER()
 	ON_WM_CTLCOLOR()
+	ON_MESSAGE(WM_LIVE_BROADCAST_DONE,   OnBroadcastDone)
 END_MESSAGE_MAP()
 
 CLiveStreamDlg::CLiveStreamDlg(CWnd* pParent)
 	: CResizableDialog(CLiveStreamDlg::IDD, pParent)
 	, m_bBroadcasting(false)
+	, m_bBroadcastStarting(false)
 	, m_nTimerID(0)
 	, m_nLastLogCount(-1)
 {
@@ -234,7 +255,6 @@ void CLiveStreamDlg::OnBnClickedStartStop()
 void CLiveStreamDlg::StartBroadcast()
 {
 	if (!theApp.liveStreamManager) return;
-	auto* mgr = theApp.liveStreamManager;
 
 	CString title;
 	m_editTitle.GetWindowText(title);
@@ -313,13 +333,86 @@ void CLiveStreamDlg::StartBroadcast()
 	m_comboCategory.GetLBText(m_comboCategory.GetCurSel(), catStr);
 	m_comboLanguage.GetLBText(m_comboLanguage.GetCurSel(), langStr);
 
-	if (!mgr->StartBroadcastWithSource(sourceType, title, catStr, langStr,
-	                                   (uint16)bitrate, chosenFile))
-	{
-		// Surface the real reason from the debug log instead of the
-		// generic "verifica ffmpeg / puerto / log" text. The user
-		// already has the log on screen, but seeing the immediate cause
-		// in the popup avoids the round-trip.
+	// v8.0.22 — StartBroadcastWithSource() blocks for up to ~24 s: it kills
+	// orphan ffmpeg processes (Sleep 500 ms), waits on the ffmpeg file
+	// probe (WaitForSingleObject 10 s) and fills the prebuffer (a
+	// while/Sleep(100) loop up to 14 s). This handler runs on the UI
+	// thread, so calling it synchronously froze the whole window — and the
+	// STOP button needed to cancel — for that entire time. The web API
+	// (/api/live/broadcast/start) already calls the very same function
+	// from a WebServer worker thread, which proves it is safe off the UI
+	// thread. So spawn a worker; the verdict returns via
+	// WM_LIVE_BROADCAST_DONE → OnBroadcastDone().
+	if (m_bBroadcastStarting)
+		return;   // a start worker is already in flight — ignore double click
+
+	SBroadcastStartParams* p = new SBroadcastStartParams();
+	p->sourceType = sourceType;
+	p->title      = title;
+	p->catStr     = catStr;
+	p->langStr    = langStr;
+	p->bitrate    = (uint16)bitrate;
+	p->chosenFile = chosenFile;
+	p->sourceIdx  = sourceIdx;
+	p->hwndDlg    = GetSafeHwnd();
+
+	m_bBroadcastStarting = true;
+	m_btnStartStop.EnableWindow(FALSE);
+	m_btnStartStop.SetWindowText(_T("INICIANDO..."));
+	m_staticStatus.SetWindowText(_T("Status: Iniciando emision..."));
+
+	if (AfxBeginThread(&CLiveStreamDlg::BroadcastWorkerProc, p) == NULL) {
+		// Thread spawn failed (severe resource exhaustion only). Run the
+		// worker inline — it PostMessages its own result, so
+		// OnBroadcastDone() still runs once this handler returns. The
+		// brief freeze is accepted in this rare fallback.
+		BroadcastWorkerProc(p);
+	}
+}
+
+// v8.0.22 — background worker. Runs the up-to-~24 s blocking
+// StartBroadcastWithSource() off the UI thread, then posts the verdict
+// back to the dialog. Fire-and-forget: the CWinThread auto-deletes when
+// this returns.
+UINT AFX_CDECL CLiveStreamDlg::BroadcastWorkerProc(LPVOID pParam)
+{
+	SBroadcastStartParams* p = static_cast<SBroadcastStartParams*>(pParam);
+	BOOL ok = FALSE;
+	if (p != NULL && theApp.liveStreamManager != NULL) {
+		ok = theApp.liveStreamManager->StartBroadcastWithSource(
+			p->sourceType, p->title, p->catStr, p->langStr,
+			p->bitrate, p->chosenFile) ? TRUE : FALSE;
+	}
+	if (p != NULL) {
+		// Hand the params struct back so OnBroadcastDone can read
+		// sourceIdx, then free it. If the dialog window is already gone,
+		// PostMessage fails — free here so the struct never leaks.
+		if (!::PostMessage(p->hwndDlg, WM_LIVE_BROADCAST_DONE,
+		                   (WPARAM)ok, (LPARAM)p))
+			delete p;
+	}
+	return 0;
+}
+
+// v8.0.22 — result handler, back on the UI thread. Applies the
+// success/failure UI that used to sit inline at the end of
+// StartBroadcast() before the work was moved off-thread.
+LRESULT CLiveStreamDlg::OnBroadcastDone(WPARAM wParam, LPARAM lParam)
+{
+	SBroadcastStartParams* p = reinterpret_cast<SBroadcastStartParams*>(lParam);
+	const BOOL ok = (BOOL)wParam;
+	const int  sourceIdx = (p != NULL) ? p->sourceIdx : -1;
+
+	m_bBroadcastStarting = false;
+	m_btnStartStop.EnableWindow(TRUE);
+
+	if (!ok) {
+		// Failed — restore the idle button and surface the cause from the
+		// debug log (the same popup the old synchronous path showed).
+		m_btnStartStop.SetWindowText(_T("START BROADCAST"));
+		m_btnStartStop.Invalidate();
+		m_staticStatus.SetWindowText(_T("Status: Idle"));
+
 		std::deque<CStringA> tail;
 		CLiveDebugLog::Get().GetRecent(15, tail);
 		CString detail;
@@ -346,14 +439,15 @@ void CLiveStreamDlg::StartBroadcast()
 			_T("  • El log completo está en la pestaña Live Stream"),
 			(LPCTSTR)detail);
 		AfxMessageBox(msg, MB_ICONERROR);
-		return;
+		if (p != NULL) delete p;
+		return 0;
 	}
 
-	// Show source-specific status string.
+	// Succeeded — apply the source-specific status string + share panel.
 	CString statusMsg;
 	if (sourceIdx == 0) {
 		statusMsg.Format(_T("Status: Waiting for OBS on %s"),
-			(LPCTSTR)mgr->GetRTMPIngest().GetRTMPUrl());
+			(LPCTSTR)theApp.liveStreamManager->GetRTMPIngest().GetRTMPUrl());
 	} else if (sourceIdx == 1) {
 		statusMsg = _T("Status: Broadcasting Media File (looping)");
 	} else if (sourceIdx == 2) {
@@ -368,6 +462,9 @@ void CLiveStreamDlg::StartBroadcast()
 	m_btnStartStop.Invalidate();
 	PopulateSharePanel();
 	UpdateStatusBar();
+
+	if (p != NULL) delete p;
+	return 0;
 }
 
 void CLiveStreamDlg::StopBroadcast()

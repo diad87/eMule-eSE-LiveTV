@@ -40,8 +40,18 @@ protected:
 	afx_msg void OnBnClickedOpenBrowser();
 	afx_msg void OnCbnSelchangeSource();
 	afx_msg HBRUSH OnCtlColor(CDC* pDC, CWnd* pWnd, UINT nCtlColor);
+	// v8.0.22 — result of the background broadcast-start worker. Posted by
+	// BroadcastWorkerProc; runs back on the UI thread to update controls.
+	afx_msg LRESULT OnBroadcastDone(WPARAM wParam, LPARAM lParam);
 
 	DECLARE_MESSAGE_MAP()
+
+	// v8.0.22 — StartBroadcastWithSource() blocks for up to ~24 s (orphan
+	// ffmpeg kill + WaitForSingleObject 10 s + prebuffer fill 14 s). Calling
+	// it on the UI thread froze the whole window. This worker runs it on a
+	// background thread (the web API already calls the same function off
+	// the UI thread, so it is safe). Defined in the .cpp.
+	static UINT AFX_CDECL BroadcastWorkerProc(LPVOID pParam);
 
 private:
 	// ── Broadcast config ──────────────────────────────────────────
@@ -89,6 +99,7 @@ private:
 
 	// State
 	bool			m_bBroadcasting;
+	bool			m_bBroadcastStarting;   // v8.0.22 — a start worker is in flight
 	UINT_PTR		m_nTimerID;
 	// (CRTMPIngest moved to CLiveStreamManager — Tier 2.2)
 

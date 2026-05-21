@@ -48,6 +48,16 @@ a buildable target (`tests/unit.vcxproj` is the planned name).
 Until then, L1 covers what the helpers in `tools/` can reach with pure
 Python.
 
+**Python spec-regression tests** in `tests/` (run each directly; exit 0 = pass):
+
+| Test | Locks down |
+|------|------------|
+| `test_address_wire.py`   | `CAddress` wire format (IPv6 Sprint 1) |
+| `test_tunnel_framing.py` | v8.1 onion-tunnel sub-header + fragment header (Sprint A) |
+
+Each replicates a C++ wire format in Python against fixed vectors; the
+eventual C++ unit test MUST agree with these vectors byte-for-byte.
+
 ---
 
 ## L2 — Integration

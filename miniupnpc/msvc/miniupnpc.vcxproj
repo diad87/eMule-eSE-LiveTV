@@ -128,7 +128,7 @@
       <AdditionalIncludeDirectories>..;..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <PreBuildEvent>
-      <Command>genminiupnpcstrings.vbs</Command>
+      <Command>cscript //nologo genminiupnpcstrings.vbs</Command>
     </PreBuildEvent>
     <ResourceCompile>
       <PreprocessorDefinitions>INTERNAL_NAME="\"miniupnpc.dll\0\"";%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -148,7 +148,7 @@
       <AdditionalIncludeDirectories>..;..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <PreBuildEvent>
-      <Command>genminiupnpcstrings.vbs</Command>
+      <Command>cscript //nologo genminiupnpcstrings.vbs</Command>
     </PreBuildEvent>
     <Link>
       <AdditionalDependencies>ws2_32.lib;IPHlpApi.Lib;%(AdditionalDependencies)</AdditionalDependencies>
@@ -170,7 +170,7 @@
       <AdditionalIncludeDirectories>..;..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <PreBuildEvent>
-      <Command>genminiupnpcstrings.vbs</Command>
+      <Command>cscript //nologo genminiupnpcstrings.vbs</Command>
     </PreBuildEvent>
     <ResourceCompile>
       <PreprocessorDefinitions>INTERNAL_NAME="\"miniupnpc.dll\0\"";%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -188,7 +188,7 @@
       <AdditionalIncludeDirectories>..;..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <PreBuildEvent>
-      <Command>genminiupnpcstrings.vbs</Command>
+      <Command>cscript //nologo genminiupnpcstrings.vbs</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -204,7 +204,7 @@
       <AdditionalIncludeDirectories>..;..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <PreBuildEvent>
-      <Command>genminiupnpcstrings.vbs</Command>
+      <Command>cscript //nologo genminiupnpcstrings.vbs</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release Dll|Win32'">
@@ -221,7 +221,7 @@
       <AdditionalIncludeDirectories>..;..\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <PreBuildEvent>
-      <Command>genminiupnpcstrings.vbs</Command>
+      <Command>cscript //nologo genminiupnpcstrings.vbs</Command>
     </PreBuildEvent>
     <Link>
       <AdditionalDependencies>ws2_32.lib;IPHlpApi.Lib;%(AdditionalDependencies)</AdditionalDependencies>

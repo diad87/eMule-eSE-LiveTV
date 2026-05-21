@@ -2561,6 +2561,13 @@ uint32 CLiveStreamManager::GetMinUploadRequired() const
 
 LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
 {
+    // Snapshot the KadBridge BEFORE taking our m_lock. BuildDebugKadSnapshot
+    // locks CLiveKadBridge::m_lock; CLiveKadBridge::GetKnownStreams locks that
+    // same lock and then calls IsStreamTombstoned() -> our m_lock. Holding our
+    // m_lock across this call is the B-A half of an A-B/B-A deadlock that
+    // froze the UI thread when two /api/live/* worker threads raced.
+    const KadDebugSnapshot kadSnap = m_kadBridge.BuildDebugKadSnapshot();
+
     CSingleLock lock(&m_lock, TRUE);
 
     LiveDebugSnapshot snap;
@@ -2573,8 +2580,7 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
     snap.uptimeMs      = (m_streamInfo.startedAt > 0)
         ? ((uint32)time(NULL) - m_streamInfo.startedAt) * 1000 : 0;
 
-    // Kad — delegate to KadBridge's own lock
-    snap.kad = m_kadBridge.BuildDebugKadSnapshot();
+    snap.kad = kadSnap;
 
     // Peers (counted under our lock)
     snap.viewPeers      = (int)m_viewPeers.GetCount();

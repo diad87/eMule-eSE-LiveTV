@@ -158,6 +158,7 @@ public:
 	bool            SupportsEsePrivacyTunneling() const { return (m_uEseCapabilities & 0x00000100) != 0; }
 	bool            SupportsEseSealedRecords()    const { return (m_uEseCapabilities & 0x00000200) != 0; }
 	bool            SupportsEseGossip()           const { return (m_uEseCapabilities & 0x00000400) != 0; }
+	bool            SupportsEseTunnelDataplane()  const { return (m_uEseCapabilities & 0x00001000) != 0; }  // v8.1 multi-cell
 	uint8			GetMuleVersion() const							{ return m_byEmuleVersion; }
 	bool			ExtProtocolAvailable() const					{ return m_bEmuleProtocol; }
 	bool			SupportMultiPacket() const						{ return m_bMultiPacket; }

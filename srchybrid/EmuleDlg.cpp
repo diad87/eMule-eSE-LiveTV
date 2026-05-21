@@ -970,6 +970,7 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 						// N" which is the actual running count.
 						g_uEseCapsRuntime |= ESE_CAP_PRIVACY_TUNNELING;
 						g_uEseCapsRuntime |= ESE_CAP_COVER_TRAFFIC;
+						g_uEseCapsRuntime |= ESE_CAP_TUNNEL_DATAPLANE;  // v8.1 -- multi-cell tunnel transport
 					}
 				}
 				AddDebugLogLine(false, _T("Privacy: TAG_ESE_CAPS runtime = 0x%08X"), g_uEseCapsRuntime);

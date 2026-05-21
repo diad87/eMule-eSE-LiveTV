@@ -514,6 +514,7 @@
 #define ESE_CAP_SEALED_RECORDS       0x00000200  // bit 9 — sealed channels (Ed25519+HKDF)
 #define ESE_CAP_GOSSIP_PROTOCOL      0x00000400  // bit 10 — channel gossip
 #define ESE_CAP_COVER_TRAFFIC        0x00000800  // bit 11 — Poisson cover cells
+#define ESE_CAP_TUNNEL_DATAPLANE     0x00001000  // bit 12 -- v8.1 multi-cell tunnel data plane
 
 // Runtime accumulator for TAG_ESE_CAPS. Defined in FirewallProberV6.cpp
 // (same file as g_uForkCapsRuntime — both are runtime cap accumulators

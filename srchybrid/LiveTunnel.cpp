@@ -114,6 +114,10 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
         auto c = std::make_shared<CLiveCircuit>(id);
         c->m_role = CircuitRole::Originator;
         c->m_firstHopClient = hop1;
+        // v8.1 A7.4 -- a circuit carries multi-cell messages only if EVERY hop
+        // advertised ESE_CAP_TUNNEL_DATAPLANE. Seed from hop1; BuildExtend
+        // AND-s in hop2. A v8.0.0 hop -> false -> single-cell fallback.
+        c->m_multicell_ok = hop1->SupportsEseTunnelDataplane();
         uint8_t evPub[32];
         if (!X25519GenerateKeypair(evPub, c->m_ephemeral_priv)) {
             continue;
@@ -480,6 +484,11 @@ bool CLiveTunnel::BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
     if (!circ || !hop2) return false;
     if (circ->m_role != CircuitRole::Originator) return false;
     if (circ->HopCount() != 1) return false;   // must have hop1 already
+
+    // v8.1 A7.4 -- AND hop2's multi-cell capability into the circuit flag.
+    // If hop2 is a v8.0.0 peer, the whole circuit drops to single-cell.
+    if (!hop2->SupportsEseTunnelDataplane())
+        circ->m_multicell_ok = false;
 
     // Generate a fresh ephemeral for V↔hop2. The slot was wiped after
     // hop1's CREATED so it's safe to reuse.
@@ -992,16 +1001,12 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
     size_t plainLen = 0;
     if (!circ->OnionDecryptAll(payload, payloadLen, plain, sizeof plain, plainLen))
         return false;
-    if (plainLen < 7) return false;   // too short for header
-
-    const uint8_t sub_cmd = plain[0];
-    const uint32_t req_id = (uint32_t)plain[1]
-                          | ((uint32_t)plain[2] << 8)
-                          | ((uint32_t)plain[3] << 16)
-                          | ((uint32_t)plain[4] << 24);
-    const uint16_t text_len = (uint16_t)plain[5] | ((uint16_t)plain[6] << 8);
-    if (7u + text_len > plainLen) return false;
-    std::string text((const char*)plain + 7, text_len);
+    // A1.2 — parse + validate the 7-byte sub-header via the shared helper.
+    uint8_t sub_cmd = 0; uint32_t req_id = 0; uint16_t text_len = 0;
+    const uint8_t* body = NULL;
+    if (!ParseSubHeader(plain, plainLen, sub_cmd, req_id, text_len, body))
+        return false;   // malformed sub-header
+    std::string text((const char*)body, text_len);
 
     if (sub_cmd == TUN_OP_PING_REPLY) {
         // Store reply for the waiting TunnelPing() call.
@@ -1033,30 +1038,20 @@ bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
     size_t plainLen = 0;
     if (!circ->OnionDecryptAll(payload, payloadLen, plain, sizeof plain, plainLen))
         return false;
-    if (plainLen < 7) return false;
-
-    const uint8_t sub_cmd = plain[0];
-    const uint32_t req_id = (uint32_t)plain[1]
-                          | ((uint32_t)plain[2] << 8)
-                          | ((uint32_t)plain[3] << 16)
-                          | ((uint32_t)plain[4] << 24);
-    const uint16_t text_len = (uint16_t)plain[5] | ((uint16_t)plain[6] << 8);
-    if (7u + text_len > plainLen) return false;
+    // A1.2 — parse + validate the 7-byte sub-header via the shared helper.
+    uint8_t sub_cmd = 0; uint32_t req_id = 0; uint16_t text_len = 0;
+    const uint8_t* body = NULL;
+    if (!ParseSubHeader(plain, plainLen, sub_cmd, req_id, text_len, body))
+        return false;   // malformed sub-header
 
     if (sub_cmd == TUN_OP_PING) {
         // Build PING_REPLY echoing the same text with "echo:" prefix.
-        std::string echoText = "echo:" + std::string((const char*)plain + 7, text_len);
-        if (echoText.size() > CELL_PAYLOAD_MAX - 7) echoText.resize(CELL_PAYLOAD_MAX - 7);
-        std::vector<uint8_t> reply(7 + echoText.size());
-        reply[0] = TUN_OP_PING_REPLY;
-        reply[1] = (uint8_t)(req_id & 0xFF);
-        reply[2] = (uint8_t)((req_id >>  8) & 0xFF);
-        reply[3] = (uint8_t)((req_id >> 16) & 0xFF);
-        reply[4] = (uint8_t)((req_id >> 24) & 0xFF);
-        const uint16_t rl = (uint16_t)echoText.size();
-        reply[5] = (uint8_t)(rl & 0xFF);
-        reply[6] = (uint8_t)((rl >> 8) & 0xFF);
-        memcpy(reply.data() + 7, echoText.data(), echoText.size());
+        std::string echoText = "echo:" + std::string((const char*)body, text_len);
+        if (echoText.size() > CELL_PAYLOAD_MAX - SUB_HEADER_BYTES)
+            echoText.resize(CELL_PAYLOAD_MAX - SUB_HEADER_BYTES);
+        std::vector<uint8_t> reply(SUB_HEADER_BYTES + echoText.size());
+        PackSubHeader(TUN_OP_PING_REPLY, req_id, (uint16_t)echoText.size(), reply.data());
+        memcpy(reply.data() + SUB_HEADER_BYTES, echoText.data(), echoText.size());
         return SendRelayReply(circ, reply.data(), reply.size());
     }
 
@@ -1067,7 +1062,7 @@ bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
         // directory cache that CLiveKadBridge has built up. This still
         // preserves V's privacy: V doesn't ask Kad → only WE know what
         // V is looking for (and we already know about streams).
-        std::string keyword((const char*)plain + 7, text_len);
+        std::string keyword((const char*)body, text_len);
         // Lower-case the keyword in-place for simple substring match.
         for (auto& ch : keyword) {
             if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
@@ -1101,16 +1096,9 @@ bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
         } catch (...) {}
 
         std::string replyText((LPCSTR)resultStr, resultStr.GetLength());
-        std::vector<uint8_t> reply(7 + replyText.size());
-        reply[0] = TUN_OP_KAD_RESULT;
-        reply[1] = (uint8_t)(req_id & 0xFF);
-        reply[2] = (uint8_t)((req_id >>  8) & 0xFF);
-        reply[3] = (uint8_t)((req_id >> 16) & 0xFF);
-        reply[4] = (uint8_t)((req_id >> 24) & 0xFF);
-        const uint16_t rl = (uint16_t)replyText.size();
-        reply[5] = (uint8_t)(rl & 0xFF);
-        reply[6] = (uint8_t)((rl >> 8) & 0xFF);
-        memcpy(reply.data() + 7, replyText.data(), replyText.size());
+        std::vector<uint8_t> reply(SUB_HEADER_BYTES + replyText.size());
+        PackSubHeader(TUN_OP_KAD_RESULT, req_id, (uint16_t)replyText.size(), reply.data());
+        memcpy(reply.data() + SUB_HEADER_BYTES, replyText.data(), replyText.size());
         return SendRelayReply(circ, reply.data(), reply.size());
     }
 
@@ -1140,16 +1128,9 @@ bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
                           | ((uint32_t)r[1] << 8)
                           | ((uint32_t)r[2] << 16)
                           | ((uint32_t)r[3] << 24);
-    std::vector<uint8_t> payload(7 + keywordLower.size());
-    payload[0] = TUN_OP_KAD_SEARCH;
-    payload[1] = (uint8_t)(req_id & 0xFF);
-    payload[2] = (uint8_t)((req_id >>  8) & 0xFF);
-    payload[3] = (uint8_t)((req_id >> 16) & 0xFF);
-    payload[4] = (uint8_t)((req_id >> 24) & 0xFF);
-    const uint16_t kl = (uint16_t)keywordLower.size();
-    payload[5] = (uint8_t)(kl & 0xFF);
-    payload[6] = (uint8_t)((kl >> 8) & 0xFF);
-    memcpy(payload.data() + 7, keywordLower.data(), keywordLower.size());
+    std::vector<uint8_t> payload(SUB_HEADER_BYTES + keywordLower.size());
+    PackSubHeader(TUN_OP_KAD_SEARCH, req_id, (uint16_t)keywordLower.size(), payload.data());
+    memcpy(payload.data() + SUB_HEADER_BYTES, keywordLower.data(), keywordLower.size());
 
     // v0.72 — marshal the send to the main thread (SendThrough touches peer
     // sockets, which are main-thread only). If no circuit exists the send is
@@ -1205,16 +1186,9 @@ bool CLiveTunnel::TunnelPing(const std::string& text, std::string& replyText,
                           | ((uint32_t)r[3] << 24);
 
     // Build sub-protocol payload.
-    std::vector<uint8_t> payload(7 + text.size());
-    payload[0] = TUN_OP_PING;
-    payload[1] = (uint8_t)(req_id & 0xFF);
-    payload[2] = (uint8_t)((req_id >>  8) & 0xFF);
-    payload[3] = (uint8_t)((req_id >> 16) & 0xFF);
-    payload[4] = (uint8_t)((req_id >> 24) & 0xFF);
-    const uint16_t tl = (uint16_t)text.size();
-    payload[5] = (uint8_t)(tl & 0xFF);
-    payload[6] = (uint8_t)((tl >> 8) & 0xFF);
-    memcpy(payload.data() + 7, text.data(), text.size());
+    std::vector<uint8_t> payload(SUB_HEADER_BYTES + text.size());
+    PackSubHeader(TUN_OP_PING, req_id, (uint16_t)text.size(), payload.data());
+    memcpy(payload.data() + SUB_HEADER_BYTES, text.data(), text.size());
 
     // Send through the tunnel — marshaled to the main thread (SendThrough
     // touches peer sockets, which are main-thread only). If no circuit

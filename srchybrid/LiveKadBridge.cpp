@@ -640,26 +640,36 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword)
 
 void CLiveKadBridge::GetKnownStreams(CArray<LiveStreamEntry>& outList) const
 {
-    CSingleLock lock(&m_lock, TRUE);
-
     outList.RemoveAll();
-    CString key;
-    LiveStreamEntry entry;
-    POSITION pos = m_streamDirectory.GetStartPosition();
-    while (pos) {
-        m_streamDirectory.GetNextAssoc(pos, key, entry);
-        // v7.2.0 — drop entries we've tombstoned. Even if a stale Kad
-        // echo from another node refreshed the lastSeen of this entry,
-        // we know the broadcast is dead because either (a) we received
-        // OP_LIVE_END for this streamKey, or (b) our watchdog declared
-        // it dead. Hide from any caller (channel grid, mesh dialer,
-        // search results) until the tombstone expires.
+
+    // Copy the directory under m_lock, then release it before filtering.
+    // IsStreamTombstoned() locks CLiveStreamManager::m_lock, and that class's
+    // BuildDebugSnapshot() locks our m_lock the other way round — calling it
+    // while still holding m_lock is the A-B/B-A deadlock that froze the UI.
+    CArray<LiveStreamEntry> candidates;
+    {
+        CSingleLock lock(&m_lock, TRUE);
+        CString key;
+        LiveStreamEntry entry;
+        POSITION pos = m_streamDirectory.GetStartPosition();
+        while (pos) {
+            m_streamDirectory.GetNextAssoc(pos, key, entry);
+            candidates.Add(entry);
+        }
+    }
+
+    // v7.2.0 — drop entries we've tombstoned. Even if a stale Kad echo from
+    // another node refreshed the lastSeen of this entry, we know the broadcast
+    // is dead because either (a) we received OP_LIVE_END for this streamKey,
+    // or (b) our watchdog declared it dead. Hide from any caller (channel
+    // grid, mesh dialer, search results) until the tombstone expires.
+    for (INT_PTR i = 0; i < candidates.GetCount(); ++i) {
         if (theApp.liveStreamManager
-            && theApp.liveStreamManager->IsStreamTombstoned(entry.streamKey))
+            && theApp.liveStreamManager->IsStreamTombstoned(candidates[i].streamKey))
         {
             continue;
         }
-        outList.Add(entry);
+        outList.Add(candidates[i]);
     }
 }
 

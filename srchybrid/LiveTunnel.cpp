@@ -45,6 +45,8 @@ CLiveTunnel::CLiveTunnel()
         [this](const TunnelRequestCtx& c){ ExitHandle_Ping(c); });
     RegisterExitHandler(TUN_OP_KAD_SEARCH,
         [this](const TunnelRequestCtx& c){ ExitHandle_KadSearch(c); });
+    RegisterExitHandler(TUN_OP_ECHO_LARGE,
+        [this](const TunnelRequestCtx& c){ ExitHandle_EchoLarge(c); });
 }
 
 CLiveTunnel& CLiveTunnel::Get()
@@ -1039,6 +1041,32 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
     const uint8_t* body = NULL;
     if (!ParseSubHeader(plain, plainLen, sub_cmd, req_id, text_len, body))
         return false;   // malformed sub-header
+
+    // v8.1 A1.7 - multi-cell reply (sub_cmd >= 0x40): the body carries an
+    // 8-byte fragment header. Accumulate fragments; when the logical reply
+    // is complete, hand it to the waiting TunnelEchoLarge() caller.
+    if (sub_cmd >= TUN_MULTICELL_OP_MIN) {
+        uint16_t fragIndex = 0, fragCount = 0;
+        uint32_t msgTotal = 0;
+        const uint8_t* fragData = NULL;
+        size_t fragDataLen = 0;
+        if (!ParseFragHeader(body, text_len, fragIndex, fragCount, msgTotal,
+                             fragData, fragDataLen))
+            return false;
+        CSingleLock pl(&m_pendingLock, TRUE);
+        ReassemblyEntry& e = m_reassembly[req_id];
+        ReassemblyResult r = ReassemblyIngest(e, fragIndex, fragCount,
+                                              msgTotal, fragData, fragDataLen);
+        if (r == ReassemblyResult::Incomplete) return true;
+        if (r == ReassemblyResult::Error) {
+            m_reassembly.erase(req_id);
+            return true;
+        }
+        m_pendingEchoReplies[req_id] = std::move(e.message);
+        m_reassembly.erase(req_id);
+        return true;
+    }
+
     std::string text((const char*)body, text_len);
 
     if (sub_cmd == TUN_OP_PING_REPLY) {
@@ -1236,6 +1264,14 @@ void CLiveTunnel::ExitHandle_KadSearch(const TunnelRequestCtx& ctx)
               (const uint8_t*)(LPCSTR)resultStr, (size_t)resultStr.GetLength());
 }
 
+// v8.1 A1.7 - exit handler for the multi-cell echo test op. The dispatcher
+// has already reassembled the full request; echo it straight back as
+// TUN_OP_ECHO_LARGE_REPLY (SendReply re-fragments it for the return trip).
+void CLiveTunnel::ExitHandle_EchoLarge(const TunnelRequestCtx& ctx)
+{
+    SendReply(ctx, TUN_OP_ECHO_LARGE_REPLY, ctx.body, ctx.bodyLen);
+}
+
 bool CLiveTunnel::ShouldRouteThroughTunnel(const wchar_t* keywordOrNull) const
 {
     using namespace Kademlia;
@@ -1346,6 +1382,52 @@ bool CLiveTunnel::TunnelPing(const std::string& text, std::string& replyText,
     // Timeout. Clean up the slot if anything appeared meanwhile.
     CSingleLock pl(&m_pendingLock, TRUE);
     m_pendingPingReplies.erase(req_id);
+    return false;
+}
+
+// v8.1 A1.7 - multi-cell echo round-trip. Splits payload into
+// TUN_OP_ECHO_LARGE fragments, enqueues them for the main thread to send,
+// then polls for the reassembled TUN_OP_ECHO_LARGE_REPLY. Worker-thread
+// safe (same pattern as TunnelPing). A3 will replace the poll with an event.
+bool CLiveTunnel::TunnelEchoLarge(const std::vector<uint8_t>& payload,
+                                  std::vector<uint8_t>& replyOut,
+                                  uint32_t timeoutMs)
+{
+    uint8_t r[4];
+    SecureRandomBytes(r, 4);
+    const uint32_t req_id = (uint32_t)r[0] | ((uint32_t)r[1] << 8)
+                          | ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
+
+    // Fragment the message. fragDataMax leaves room for the worst-case
+    // onion overhead (2 hops = 32 B) plus the sub-header + fragment header,
+    // so a fragment fits whether the circuit ends up 1- or 2-hop.
+    const size_t fragDataMax = CELL_PAYLOAD_MAX - SUB_HEADER_BYTES
+                             - FRAG_HEADER_BYTES - 2 * 16;
+    std::vector<std::vector<uint8_t> > cells;
+    if (!SplitIntoCells(TUN_OP_ECHO_LARGE, req_id,
+                        payload.data(), payload.size(), fragDataMax, cells))
+        return false;   // message exceeds TUN_MSG_MAX_BYTES / TUN_MSG_MAX_FRAGS
+
+    // Enqueue every fragment for the main thread. They are sent in order on
+    // the active circuit -> TCP keeps them ordered -> reassembly is trivial.
+    for (size_t i = 0; i < cells.size(); ++i)
+        EnqueueSend(cells[i].data(), cells[i].size());
+
+    const DWORD start = GetTickCount();
+    while (GetTickCount() - start < timeoutMs) {
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            auto it = m_pendingEchoReplies.find(req_id);
+            if (it != m_pendingEchoReplies.end()) {
+                replyOut = std::move(it->second);
+                m_pendingEchoReplies.erase(it);
+                return true;
+            }
+        }
+        Sleep(50);
+    }
+    CSingleLock pl(&m_pendingLock, TRUE);
+    m_pendingEchoReplies.erase(req_id);
     return false;
 }
 

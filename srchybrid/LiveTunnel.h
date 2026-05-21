@@ -159,6 +159,13 @@ public:
     bool TunnelPing(const std::string& text, std::string& replyText,
                     uint32_t timeoutMs);
 
+    // v8.1 A1.7 - multi-cell echo test op. Splits `payload` into fragments,
+    // sends them as TUN_OP_ECHO_LARGE, awaits the reassembled
+    // TUN_OP_ECHO_LARGE_REPLY. Exercises the whole multi-cell path
+    // end-to-end. Returns false on timeout or oversize message.
+    bool TunnelEchoLarge(const std::vector<uint8_t>& payload,
+                         std::vector<uint8_t>& replyOut, uint32_t timeoutMs);
+
     // v0.71 B — accessor for the panel/REST endpoint to enumerate all
     // active circuits with their per-hop endpoints. The caller receives
     // copies (no live refs) and may iterate without holding our lock.
@@ -296,6 +303,7 @@ private:
     // Built-in exit handlers (registered in the constructor).
     void ExitHandle_Ping(const TunnelRequestCtx& ctx);
     void ExitHandle_KadSearch(const TunnelRequestCtx& ctx);
+    void ExitHandle_EchoLarge(const TunnelRequestCtx& ctx);   // A1.7 test op
     // A2.2 - sub_cmd -> handler registry.
     std::map<uint8_t, TunnelOpHandler> m_exitHandlers;
     // A1.5 - req_id -> partial multi-cell message under reassembly. Accessed
@@ -310,6 +318,9 @@ private:
     std::map<uint32_t, std::string> m_pendingPingReplies;
     // v0.71 P1.A — pending KAD_RESULT replies keyed by req_id.
     std::map<uint32_t, std::string> m_pendingKadResults;
+    // v8.1 A1.7 — reassembled TUN_OP_ECHO_LARGE_REPLY payloads keyed by
+    // req_id; TunnelEchoLarge polls this under m_pendingLock.
+    std::map<uint32_t, std::vector<uint8_t> > m_pendingEchoReplies;
     // v0.72 — test-circuit build results keyed by req_id (value 0 = failed).
     // RequestTestCircuit polls this; ProcessMainThreadWork fills it.
     std::map<uint32_t, uint32_t> m_pendingBuildResults;

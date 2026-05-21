@@ -5237,6 +5237,44 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
+	// --- /api/live/privacy/tunnel_echo?bytes=N --- v8.1 A1.7 test op.
+	// Sends an N-byte payload through the tunnel as a multi-cell
+	// TUN_OP_ECHO_LARGE message and checks the reassembled reply is
+	// byte-identical. Exercises fragmentation + reassembly + dispatcher
+	// end-to-end. "/api/live/privacy/tunnel_echo" is exactly 29 chars.
+	if (sURL.Left(29) == "/api/live/privacy/tunnel_echo") {
+		CString bytesArg = _ParseURL(Data.sURL, _T("bytes"));
+		int n = bytesArg.IsEmpty() ? 1024 : _ttoi(bytesArg);
+		if (n < 0) n = 0;
+		// Deterministic test pattern so the round-trip is verifiable.
+		std::vector<uint8_t> payload((size_t)n);
+		for (size_t i = 0; i < payload.size(); ++i)
+			payload[i] = (uint8_t)((i * 31u + 7u) & 0xFF);
+		std::vector<uint8_t> reply;
+		bool ok = false;
+		try {
+			ok = eSELive::CLiveTunnel::Get().TunnelEchoLarge(payload, reply, 15000);
+		} catch (...) {}
+		const bool match = ok && reply.size() == payload.size()
+			&& (payload.empty()
+			    || memcmp(reply.data(), payload.data(), payload.size()) == 0);
+
+		CStringA json;
+		json.Format("{\"ok\":%s,\"bytes\":%d,\"replied\":%u,\"match\":%s}",
+			ok ? "true" : "false", n, (unsigned)reply.size(),
+			match ? "true" : "false");
+		CStringA header;
+		header.Format(
+		    "HTTP/1.1 200 OK\r\n"
+		    HTTPInit
+		    "Content-Type: application/json\r\n"
+		    "Content-Length: %d\r\n\r\n",
+		    json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
 	// "/api/live/privacy/tunnel_ping" is exactly 29 chars.
 	if (sURL.Left(29) == "/api/live/privacy/tunnel_ping") {
 		CString textArg = _ParseURL(Data.sURL, _T("text"));

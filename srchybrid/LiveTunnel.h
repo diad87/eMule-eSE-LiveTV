@@ -27,7 +27,7 @@ namespace eSELive {
 // Pool size limits from §5.5.5 thesis
 const size_t TUNNEL_POOL_MIN = 3;
 const size_t TUNNEL_POOL_MAX = 5;
-const DWORD  TUNNEL_ROTATION_BASE_MS  = 30u * 1000u;
+const DWORD  TUNNEL_ROTATION_BASE_MS  = 300u * 1000u;   // v8.1: 5 min (was 30 s, too short: micro-cut streams + blocked testing)
 const DWORD  TUNNEL_ROTATION_JITTER_MS = 10u * 1000u;
 const DWORD  TUNNEL_HANDSHAKE_TIMEOUT_MS = 800u;
 

@@ -444,9 +444,20 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
             circ->SetState(CircuitState::Destroyed);
             return true;
 
-        case CELL_PADDING:
-            // Cover traffic — drop, statistics already counted.
+        case CELL_PADDING: {
+            // Cover traffic. The originator OnionEncrypt'd this cell, which
+            // advanced its per-hop nonce_send counter. We MUST peel it here
+            // so our nonce_recv stays in lockstep: the ChaCha20-Poly1305
+            // nonce is an implicit counter (not on the wire), so a dropped
+            // cell desyncs it and the next real CELL_RELAY fails AEAD auth.
+            // The decrypted plaintext is random padding and is discarded.
+            if (circ->m_role == CircuitRole::Relay) {
+                uint8_t scratch[CELL_PAYLOAD_MAX];
+                size_t  scratchLen = 0;
+                circ->OnionDecryptAll(payload, payloadLen, scratch, sizeof scratch, scratchLen);
+            }
             return true;
+        }
 
         default:
             return false;
@@ -576,18 +587,33 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
     const bool haveHop2Hash = (extendPlainLen >= 54);
     const uint8_t* hop2HashIn = haveHop2Hash ? (extendPlain + 38) : NULL;
 
-    // v0.71 B — self-loopback detection. With only 2 fork PCs in the
-    // network (testing), V picks the same peer for hop1 and hop2; so we
-    // (hop1) receive an EXTEND with hop2_ip == our own public IP. We're
-    // not in our own ClientList, so FindClientByIP returns NULL. To make
-    // the test reach hop_count==2 visibly, we synthesize the hop2 reply
-    // locally: generate er_pub2/er_priv2, derive the shared (just to
-    // wipe er_priv2 cleanly), wrap er_pub2 as CELL_EXTENDED with the
-    // current circuit's K_send_r_to_v, send back to V on V's circ_id.
-    // From V's perspective the protocol completes perfectly; reality is
-    // that hop1 and hop2 are the same node (zero anonymity — explicit
+    // v0.71 B - self-loopback detection. With only 2 fork PCs (testing), V
+    // picks the same peer for hop1 and hop2, so this EXTEND's hop2 is US.
+    // We detect that and synthesize the hop2 reply locally: generate
+    // er_pub2/er_priv2, derive the shared, wrap er_pub2 as CELL_EXTENDED
+    // with the current circuit's K_send_r_to_v, send back to V on V's
+    // circ_id. From V's perspective the protocol completes perfectly;
+    // reality is hop1 and hop2 are the same node (zero anonymity, explicit
     // test mode, NOT for production).
-    if (theApp.GetPublicIP() != 0 && hop2_ip == theApp.GetPublicIP()) {
+    //
+    // v8.1 fix: detect the loopback by USER HASH, not IP. The old check
+    // 'hop2_ip == theApp.GetPublicIP()' only matched when V reached us on
+    // our public IP; over Tailscale/LAN/VPN hop2_ip is that address
+    // instead, the compare failed, and the circuit stalled forever at
+    // HalfBuilt. The user hash is our stable identity on any transport.
+    bool isLoopback = false;
+    if (haveHop2Hash) {
+        bool hashAllZero = true;
+        for (int i = 0; i < 16; ++i)
+            if (hop2HashIn[i] != 0) { hashAllZero = false; break; }
+        const uchar* ourHash = thePrefs.GetUserHash();
+        if (!hashAllZero && ourHash && memcmp(hop2HashIn, ourHash, 16) == 0)
+            isLoopback = true;
+    }
+    // Legacy fallback: public-IP match (pre-hash peers / same-WAN setups).
+    if (!isLoopback && theApp.GetPublicIP() != 0 && hop2_ip == theApp.GetPublicIP())
+        isLoopback = true;
+    if (isLoopback) {
         uint8_t erPub2[32], erPriv2[32];
         if (!X25519GenerateKeypair(erPub2, erPriv2)) {
             SecureWipe(extendPlain, sizeof extendPlain);
@@ -1239,6 +1265,12 @@ void CLiveTunnel::Tick()
             // 8x handshake timeout = ~6.4 s. After this, give up — peer
             // probably isn't running the fork.
             c->SetState(CircuitState::Destroyed);
+        else if (c->State() == CircuitState::HalfBuilt && c->AgeMs() > TUNNEL_HANDSHAKE_TIMEOUT_MS * 16)
+            // v8.1 fix: a circuit stuck mid-EXTEND (hop1 done, EXTENDED
+            // never arrived) used to fall through both arms above and
+            // leak forever. Time it out, with a longer budget since it
+            // is waiting on a second handshake leg.
+            c->SetState(CircuitState::Destroyed);
     }
 
     // 3. v0.71 P0.A — cover traffic emission. For each Active originator
@@ -1261,6 +1293,13 @@ void CLiveTunnel::Tick()
 
         // Build a CELL_PADDING: payload = random bytes of random length.
         uint16_t fakeLen = covCfg.SampleFakeLength();
+        // v8.1 fix: cap the fake length so the onion-wrapped padding cell
+        // fits (each hop adds a 16-byte AEAD tag). SampleFakeLength()
+        // returns 0..505, so without this ~6% of cover cells on a 2-hop
+        // circuit overflowed OnionEncrypt and were dropped.
+        const size_t covMaxFake = (c->HopCount() * 16 < CELL_PAYLOAD_MAX)
+                                ? (CELL_PAYLOAD_MAX - c->HopCount() * 16) : 0;
+        if (fakeLen > covMaxFake) fakeLen = (uint16_t)covMaxFake;
         std::vector<uint8_t> fakePlain(fakeLen);
         if (fakeLen > 0) SecureRandomBytes(fakePlain.data(), fakeLen);
         // Onion-wrap through the same hops as a real RELAY would.

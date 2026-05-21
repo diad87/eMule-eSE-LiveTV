@@ -1,2 +1,3 @@
 C:\Users\iunan\OneDrive\Desktop\eMule0.70b-Sources\.claude\worktrees\focused-bohr-b819cf\srchybrid\lang\x64\Dynamic\nl_NL.dll
 C:\emule-ipv6-build\srchybrid\lang\x64\Dynamic\nl_NL.dll
+C:\Users\iunan\OneDrive\Desktop\eMule0.70b-Sources\srchybrid\lang\x64\Dynamic\nl_NL.dll

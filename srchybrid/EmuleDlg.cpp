@@ -203,6 +203,8 @@ BEGIN_MESSAGE_MAP(CemuleDlg, CTrayDialog)
 	ON_MESSAGE(WEB_CATPRIO, OnWebSetCatPrio)
 	ON_MESSAGE(WEB_ADDREMOVEFRIEND, OnAddRemoveFriend)
 	ON_MESSAGE(UM_LIVE_KAD_REFRESH, OnLiveKadRefresh)
+	ON_MESSAGE(UM_LIVE_WEB_JOIN, OnLiveWebJoin)
+	ON_MESSAGE(UM_LIVE_WEB_BROADCAST, OnLiveWebBroadcast)
 
 	// Version Check DNS
 	ON_MESSAGE(UM_VERSIONCHECK_RESPONSE, OnVersionCheckResponse)
@@ -1687,6 +1689,40 @@ LRESULT CemuleDlg::OnLiveKadRefresh(WPARAM, LPARAM)
 	if (theApp.liveStreamManager != NULL && !theApp.IsClosing())
 		theApp.liveStreamManager->GetKadBridge().SearchStreams(_T("eselive"));
 	return 0;
+}
+
+LRESULT CemuleDlg::OnLiveWebJoin(WPARAM, LPARAM lParam)
+{
+	// Marshaled from a /api/live/join or /api/live/direct_join webserver
+	// worker. JoinStream + TryConnectToStreamSource mutate Live state and
+	// touch Kad / CSearchManager / the eD2K sockets — all main-thread only.
+	LiveWebJoinReq *r = (LiveWebJoinReq *)lParam;
+	if (r == NULL || theApp.liveStreamManager == NULL || theApp.IsClosing())
+		return 0;
+	r->joined = theApp.liveStreamManager->JoinStream(r->streamKey, CString(r->title));
+	if (r->joined && r->ip != 0 && r->port != 0)
+		r->dialed = theApp.liveStreamManager->TryConnectToStreamSource(r->streamKey, r->ip, r->port);
+	return 1;
+}
+
+LRESULT CemuleDlg::OnLiveWebBroadcast(WPARAM, LPARAM lParam)
+{
+	// Marshaled from /api/live/broadcast/{start,stop}. The launch (FFmpeg +
+	// Kad publish) and the stop (FFmpeg stop + OP_LIVE_END over eD2K sockets)
+	// are main-thread only. The ~14 s prebuffer wait stays on the worker.
+	LiveWebBroadcastReq *r = (LiveWebBroadcastReq *)lParam;
+	if (r == NULL || theApp.liveStreamManager == NULL || theApp.IsClosing())
+		return 0;
+	if (r->action == LIVE_WEB_BC_STOP) {
+		r->ok = theApp.liveStreamManager->IsBroadcasting();
+		theApp.liveStreamManager->StopBroadcastFull();
+	} else {
+		r->ok = theApp.liveStreamManager->StartBroadcastWithSource(
+			CString(r->sourceType), CString(r->title), CString(r->category),
+			CString(r->language), r->bitrate, CString(r->mediaFilePath),
+			false /* waitForPrebuffer — the worker does the wait */);
+	}
+	return 1;
 }
 
 LRESULT CemuleDlg::OnWMData(WPARAM, LPARAM lParam)

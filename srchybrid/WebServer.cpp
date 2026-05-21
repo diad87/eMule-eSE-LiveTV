@@ -4615,8 +4615,21 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		CStringA keyA = CT2A(keyT);
 		uchar streamKey[16];
 		bool ok = (theApp.liveStreamManager != NULL) && EseHexToKey16A(keyA, streamKey);
-		if (ok)
-			ok = theApp.liveStreamManager->JoinStream(streamKey, title);
+		if (ok) {
+			// JoinStream mutates Live state and drives Kad — marshal it to the
+			// main thread. This worker holds no Live lock here, so the blocking
+			// SendMessage cannot deadlock.
+			LiveWebJoinReq req;
+			req.streamKey = streamKey;
+			req.title     = title;
+			req.ip        = 0;
+			req.port      = 0;
+			req.joined    = false;
+			req.dialed    = false;
+			if (theApp.emuledlg != NULL)
+				theApp.emuledlg->SendMessage(UM_LIVE_WEB_JOIN, 0, (LPARAM)&req);
+			ok = req.joined;
+		}
 
 		CStringA json;
 		json.Format("{\"success\":%s,\"streamKey\":\"%s\"}", ok ? "true" : "false", (LPCSTR)keyA);
@@ -4654,9 +4667,51 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		uint16 bitrate = (uint16)_ttoi(brT);
 		if (bitrate == 0) bitrate = 1500;
 
-		bool ok = (theApp.liveStreamManager != NULL)
-		          && theApp.liveStreamManager->StartBroadcastWithSource(
-		                 sourceT, titleT, catT, langT, bitrate, fileT);
+		// The launch (FFmpeg + Kad publish) is main-thread only — marshal it.
+		// The ~14 s prebuffer wait then runs HERE on this worker thread; it
+		// polls a lock-correct liveness status, so the main thread never blocks.
+		bool ok = false;
+		if (theApp.liveStreamManager != NULL && theApp.emuledlg != NULL) {
+			LiveWebBroadcastReq req;
+			req.action        = LIVE_WEB_BC_LAUNCH;
+			req.sourceType    = sourceT;
+			req.title         = titleT;
+			req.category      = catT;
+			req.language      = langT;
+			req.mediaFilePath = fileT;
+			req.bitrate       = bitrate;
+			req.ok            = false;
+			theApp.emuledlg->SendMessage(UM_LIVE_WEB_BROADCAST, 0, (LPARAM)&req);
+			ok = req.ok;
+			if (ok) {
+				DWORD t0 = GetTickCount();
+				for (;;) {
+					bool alive = false;
+					int  chunks = 0;
+					theApp.liveStreamManager->GetBroadcastLivenessStatus(alive, chunks);
+					if (!alive) {
+						// FFmpeg died early — abort; marshal the stop.
+						LiveWebBroadcastReq stopReq;
+						stopReq.action        = LIVE_WEB_BC_STOP;
+						stopReq.sourceType    = _T("");
+						stopReq.title         = _T("");
+						stopReq.category      = _T("");
+						stopReq.language      = _T("");
+						stopReq.mediaFilePath = _T("");
+						stopReq.bitrate       = 0;
+						stopReq.ok            = false;
+						theApp.emuledlg->SendMessage(UM_LIVE_WEB_BROADCAST, 0, (LPARAM)&stopReq);
+						ok = false;
+						break;
+					}
+					if (chunks >= 3)
+						break;
+					if (GetTickCount() - t0 >= 14000)
+						break;
+					Sleep(100);
+				}
+			}
+		}
 
 		// Build the share link if broadcast started + we know our IP.
 		CStringA linkA;
@@ -4738,10 +4793,22 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 
 	// --- /api/live/broadcast/stop --- Tier 2.2: stop FFmpeg + Kad publish.
 	if (sURL == "/api/live/broadcast/stop") {
-		bool wasBroadcasting = (theApp.liveStreamManager != NULL)
-		                       && theApp.liveStreamManager->IsBroadcasting();
-		if (theApp.liveStreamManager)
-			theApp.liveStreamManager->StopBroadcastFull();
+		// Stop touches FFmpeg + sends OP_LIVE_END to peers over eD2K sockets —
+		// main-thread only. Marshal it.
+		bool wasBroadcasting = false;
+		if (theApp.liveStreamManager != NULL && theApp.emuledlg != NULL) {
+			LiveWebBroadcastReq req;
+			req.action        = LIVE_WEB_BC_STOP;
+			req.sourceType    = _T("");
+			req.title         = _T("");
+			req.category      = _T("");
+			req.language      = _T("");
+			req.mediaFilePath = _T("");
+			req.bitrate       = 0;
+			req.ok            = false;
+			theApp.emuledlg->SendMessage(UM_LIVE_WEB_BROADCAST, 0, (LPARAM)&req);
+			wasBroadcasting = req.ok;
+		}
 
 		CStringA json;
 		json.Format("{\"success\":true,\"was_broadcasting\":%s}",
@@ -5780,12 +5847,23 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		bool joined = false;
 		bool dialed = false;
 		if (keyOk) {
-			joined = theApp.liveStreamManager->JoinStream(streamKey, titleT);
-			// Direct dial only when the link carried an explicit endpoint.
-			// Otherwise rely on Kad search (kicked off inside JoinStream)
-			// to find the broadcaster within the next 5-30 s.
-			if (joined && ipNet != 0 && port != 0)
-				dialed = theApp.liveStreamManager->TryConnectToStreamSource(streamKey, ipNet, port);
+			// JoinStream + TryConnectToStreamSource mutate Live state and touch
+			// Kad / the eD2K sockets — marshal both to the main thread in one
+			// round-trip. This worker holds no Live lock, so the blocking
+			// SendMessage cannot deadlock. Direct dial happens only when the
+			// link carried an explicit endpoint; otherwise the Kad search
+			// kicked off inside JoinStream finds the broadcaster.
+			LiveWebJoinReq req;
+			req.streamKey = streamKey;
+			req.title     = titleT;
+			req.ip        = ipNet;
+			req.port      = port;
+			req.joined    = false;
+			req.dialed    = false;
+			if (theApp.emuledlg != NULL)
+				theApp.emuledlg->SendMessage(UM_LIVE_WEB_JOIN, 0, (LPARAM)&req);
+			joined = req.joined;
+			dialed = req.dialed;
 		}
 
 		// SUCCESS = the join was accepted by the manager. For anonymous
@@ -5826,22 +5904,25 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// --- /api/live/channels --- JSON list of active streams
 	if (sURL == "/api/live/channels") {
 		CStringA json = "{\"channels\":[";
-		if (theApp.liveStreamManager && theApp.liveStreamManager->IsBroadcasting()) {
+		if (theApp.liveStreamManager != NULL) {
+			LiveChannelSnapshot ch = theApp.liveStreamManager->GetChannelSnapshot();
+			if (ch.broadcasting) {
 			// Single broadcast model â€” expose our current stream
-			CStringA hashHex = EseHexKey16A(theApp.liveStreamManager->GetStreamKey());
-			CStringA titleA = EseJsonEscapeA(CStringA(CT2A(theApp.liveStreamManager->GetStreamTitle())));
-			uint32 br = theApp.liveStreamManager->GetBitrate();
-			const char* quality = "SD";
-			if (br >= 8000) quality = "4K";
-			else if (br >= 5000) quality = "FHD";
-			else if (br >= 3000) quality = "HD";
+				CStringA hashHex = EseHexKey16A(ch.streamKey);
+				CStringA titleA = EseJsonEscapeA(CStringA(CT2A((LPCTSTR)ch.title)));
+				uint32 br = ch.bitrate;
+				const char* quality = "SD";
+				if (br >= 8000) quality = "4K";
+				else if (br >= 5000) quality = "FHD";
+				else if (br >= 3000) quality = "HD";
 
-			json.AppendFormat(
-				"{\"hash\":\"%s\",\"title\":\"%s\",\"category\":\"General\","
-				"\"viewers\":%u,\"bitrate\":%u,\"quality\":\"%s\"}",
-				(LPCSTR)hashHex, (LPCSTR)titleA,
-				theApp.liveStreamManager->GetViewerCount(),
-				br, quality);
+				json.AppendFormat(
+					"{\"hash\":\"%s\",\"title\":\"%s\",\"category\":\"General\","
+					"\"viewers\":%u,\"bitrate\":%u,\"quality\":\"%s\"}",
+					(LPCSTR)hashHex, (LPCSTR)titleA,
+					ch.viewerCount,
+					br, quality);
+			}
 		}
 		json += "]}";
 
@@ -5861,32 +5942,10 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	if (sURL == "/api/live/mesh") {
 		CStringA json;
 		if (theApp.liveStreamManager != NULL) {
-			CLiveMeshManager& mesh = theApp.liveStreamManager->GetMeshManager();
-			int superSeeders = 0;
-			int middle = 0;
-			int leaf = 0;
-			const CMap<CUpDownClient*, CUpDownClient*, PeerBitmapInfo, PeerBitmapInfo&>& bitmaps =
-				theApp.liveStreamManager->GetPeerBitmaps();
-			POSITION pos = bitmaps.GetStartPosition();
-			while (pos) {
-				CUpDownClient* peer = NULL;
-				PeerBitmapInfo bitmap;
-				bitmaps.GetNextAssoc(pos, peer, bitmap);
-
-				PeerTrust trust;
-				if (theApp.liveStreamManager->GetPeerTrust(peer, trust)) {
-					if (trust.currentLevel == ESE_TRUST_SUPERSEEDER)
-						superSeeders++;
-					else if (trust.currentLevel == ESE_TRUST_MIDDLE)
-						middle++;
-					else
-						leaf++;
-				}
-				else {
-					leaf++;
-				}
-			}
-
+			// Lock-correct snapshot — BuildDebugSnapshot runs the trust-tier
+			// census under m_lock. Never iterate m_peerBitmaps or dereference
+			// CUpDownClient* / GetPeerTrust() from this worker thread.
+			LiveDebugSnapshot s = theApp.liveStreamManager->BuildDebugSnapshot();
 			json.Format(
 				"{\"meshPeers\":%d,"
 				"\"pendingRequests\":%d,"
@@ -5896,13 +5955,13 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				"\"uploadFloor\":%u,"
 				"\"emergencyMode\":%s,"
 				"\"source\":\"emule-core\"}",
-				mesh.GetMeshPeerCount(),
-				mesh.GetPendingRequestCount(),
-				mesh.GetChunksServedCount(),
-				(unsigned __int64)mesh.GetTotalBytesRedistributed(),
-				superSeeders, middle, leaf,
-				theApp.liveStreamManager->GetMinUploadRequired(),
-				theApp.liveStreamManager->IsEmergencyMode() ? "true" : "false");
+				s.meshPeers,
+				s.pendingRequests,
+				s.chunksServed,
+				(unsigned __int64)s.totalRedistributed,
+				s.superSeeders, s.middlePeers, s.leafPeers,
+				s.minUploadRequired,
+				s.emergencyMode ? "true" : "false");
 		}
 		else {
 			json = "{\"meshPeers\":0,\"pendingRequests\":0,\"chunksServed\":0,"

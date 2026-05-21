@@ -38,7 +38,14 @@ namespace eSELive {
 CLiveTunnel::CLiveTunnel()
     : m_rrNextIdx(0)
     , m_lastTickMs(0)
-{}
+{
+    // v8.1 A2 - register the built-in exit-side handlers. Sprint B/C ops
+    // register theirs the same way instead of editing HandleRelay_Exit.
+    RegisterExitHandler(TUN_OP_PING,
+        [this](const TunnelRequestCtx& c){ ExitHandle_Ping(c); });
+    RegisterExitHandler(TUN_OP_KAD_SEARCH,
+        [this](const TunnelRequestCtx& c){ ExitHandle_KadSearch(c); });
+}
 
 CLiveTunnel& CLiveTunnel::Get()
 {
@@ -1065,70 +1072,168 @@ bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
     if (!circ->OnionDecryptAll(payload, payloadLen, plain, sizeof plain, plainLen))
         return false;
     // A1.2 — parse + validate the 7-byte sub-header via the shared helper.
-    uint8_t sub_cmd = 0; uint32_t req_id = 0; uint16_t text_len = 0;
+    uint8_t sub_cmd = 0; uint32_t req_id = 0; uint16_t body_len = 0;
     const uint8_t* body = NULL;
-    if (!ParseSubHeader(plain, plainLen, sub_cmd, req_id, text_len, body))
+    if (!ParseSubHeader(plain, plainLen, sub_cmd, req_id, body_len, body))
         return false;   // malformed sub-header
 
-    if (sub_cmd == TUN_OP_PING) {
-        // Build PING_REPLY echoing the same text with "echo:" prefix.
-        std::string echoText = "echo:" + std::string((const char*)body, text_len);
-        if (echoText.size() > CELL_PAYLOAD_MAX - SUB_HEADER_BYTES)
-            echoText.resize(CELL_PAYLOAD_MAX - SUB_HEADER_BYTES);
-        std::vector<uint8_t> reply(SUB_HEADER_BYTES + echoText.size());
-        PackSubHeader(TUN_OP_PING_REPLY, req_id, (uint16_t)echoText.size(), reply.data());
-        memcpy(reply.data() + SUB_HEADER_BYTES, echoText.data(), echoText.size());
-        return SendRelayReply(circ, reply.data(), reply.size());
-    }
+    // v8.1 A2 - generic dispatch. sub_cmd < 0x40 is a legacy single-cell op
+    // (body is the request as-is). sub_cmd >= 0x40 is a multi-cell op: the
+    // body starts with an 8-byte fragment header; accumulate fragments
+    // until the logical message is complete, then dispatch it.
+    if (sub_cmd >= TUN_MULTICELL_OP_MIN) {
+        uint16_t fragIndex = 0, fragCount = 0;
+        uint32_t msgTotal = 0;
+        const uint8_t* fragData = NULL;
+        size_t fragDataLen = 0;
+        if (!ParseFragHeader(body, body_len, fragIndex, fragCount, msgTotal,
+                             fragData, fragDataLen))
+            return false;   // malformed fragment header
 
-    if (sub_cmd == TUN_OP_KAD_SEARCH) {
-        // v0.71 P1.C — exit-side handler: V asked us to find streams
-        // matching `keyword`. We don't issue a fresh Kad query (too
-        // complex/async for MVP); we serve from our LOCAL stream
-        // directory cache that CLiveKadBridge has built up. This still
-        // preserves V's privacy: V doesn't ask Kad → only WE know what
-        // V is looking for (and we already know about streams).
-        std::string keyword((const char*)body, text_len);
-        // Lower-case the keyword in-place for simple substring match.
-        for (auto& ch : keyword) {
-            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
-        }
-
-        CStringA resultStr;
-        size_t matchCount = 0;
-        const size_t MAX_HITS = 16;
-        const size_t MAX_RESULT_BYTES = CELL_PAYLOAD_MAX - 7 - 16;
-        try {
-            if (theApp.liveStreamManager) {
-                CArray<LiveStreamEntry> entries;
-                theApp.liveStreamManager->GetKadBridge().GetKnownStreams(entries);
-                for (INT_PTR i = 0; i < entries.GetCount() && matchCount < MAX_HITS; ++i) {
-                    const auto& e = entries[i];
-                    CStringA titleA(e.title);
-                    // Lowercase compare
-                    CStringA titleLow = titleA;
-                    titleLow.MakeLower();
-                    if (titleLow.Find((LPCSTR)keyword.c_str()) < 0 && !keyword.empty())
-                        continue;
-                    CStringA hit;
-                    hit.Format("%s|%u|%u;",
-                        (LPCSTR)titleA, (unsigned)e.bitrate, (unsigned)e.viewerCount);
-                    if ((size_t)(resultStr.GetLength() + hit.GetLength()) > MAX_RESULT_BYTES)
-                        break;
-                    resultStr += hit;
-                    ++matchCount;
-                }
+        std::vector<uint8_t> message;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            ReassemblyEntry& e = m_reassembly[req_id];
+            ReassemblyResult r = ReassemblyIngest(e, fragIndex, fragCount,
+                                                  msgTotal, fragData, fragDataLen);
+            if (r == ReassemblyResult::Incomplete)
+                return true;                    // wait for more fragments
+            if (r == ReassemblyResult::Error) {
+                m_reassembly.erase(req_id);     // malformed -> drop the entry
+                return true;
             }
-        } catch (...) {}
-
-        std::string replyText((LPCSTR)resultStr, resultStr.GetLength());
-        std::vector<uint8_t> reply(SUB_HEADER_BYTES + replyText.size());
-        PackSubHeader(TUN_OP_KAD_RESULT, req_id, (uint16_t)replyText.size(), reply.data());
-        memcpy(reply.data() + SUB_HEADER_BYTES, replyText.data(), replyText.size());
-        return SendRelayReply(circ, reply.data(), reply.size());
+            message = std::move(e.message);     // Complete: take the bytes
+            m_reassembly.erase(req_id);
+        }
+        TunnelRequestCtx ctx;
+        ctx.circ    = circ;
+        ctx.sub_cmd = sub_cmd;
+        ctx.req_id  = req_id;
+        ctx.body    = message.data();
+        ctx.bodyLen = message.size();
+        DispatchExitRequest(ctx);
+        return true;
     }
 
+    // Legacy single-cell op: dispatch the raw body straight away.
+    TunnelRequestCtx ctx;
+    ctx.circ    = circ;
+    ctx.sub_cmd = sub_cmd;
+    ctx.req_id  = req_id;
+    ctx.body    = body;
+    ctx.bodyLen = body_len;
+    DispatchExitRequest(ctx);
     return true;
+}
+
+// v8.1 A2.2 - register an exit-side handler for a sub_cmd (last wins).
+void CLiveTunnel::RegisterExitHandler(uint8_t sub_cmd, TunnelOpHandler handler)
+{
+    m_exitHandlers[sub_cmd] = std::move(handler);
+}
+
+// v8.1 A2 - look up and invoke the handler for a fully-received request.
+// m_exitHandlers is populated once in the constructor and only read after,
+// so no lock is needed. Unknown sub_cmd -> drop silently.
+void CLiveTunnel::DispatchExitRequest(const TunnelRequestCtx& ctx)
+{
+    auto it = m_exitHandlers.find(ctx.sub_cmd);
+    if (it != m_exitHandlers.end() && it->second)
+        it->second(ctx);
+}
+
+// v8.1 A2.4 - fragment + send a reply back to V. A legacy reply op
+// (reply_op < 0x40) goes as one single cell; a v8.1 op (>= 0x40) is split
+// into multi-cell fragments. Each cell is onion-wrapped via SendRelayReply.
+bool CLiveTunnel::SendReply(const TunnelRequestCtx& ctx, uint8_t reply_op,
+                            const uint8_t* payload, size_t payloadLen)
+{
+    if (!ctx.circ) return false;
+    std::shared_ptr<CLiveCircuit> circ = ctx.circ;   // SendRelayReply wants a non-const ref
+
+    if (reply_op < TUN_MULTICELL_OP_MIN) {
+        // Legacy single-cell reply: 7-byte sub-header + raw body.
+        if (payloadLen > CELL_PAYLOAD_MAX - SUB_HEADER_BYTES) return false;
+        std::vector<uint8_t> cell(SUB_HEADER_BYTES + payloadLen);
+        PackSubHeader(reply_op, ctx.req_id, (uint16_t)payloadLen, cell.data());
+        if (payloadLen > 0)
+            memcpy(cell.data() + SUB_HEADER_BYTES, payload, payloadLen);
+        return SendRelayReply(circ, cell.data(), cell.size());
+    }
+
+    // Multi-cell reply: leave room in each cell for this circuit's onion
+    // tags (16 B per hop) plus the sub-header + fragment header.
+    const size_t hopOverhead = circ->HopCount() * 16;
+    if (SUB_HEADER_BYTES + FRAG_HEADER_BYTES + hopOverhead >= CELL_PAYLOAD_MAX)
+        return false;
+    const size_t fragDataMax =
+        CELL_PAYLOAD_MAX - SUB_HEADER_BYTES - FRAG_HEADER_BYTES - hopOverhead;
+    std::vector<std::vector<uint8_t> > cells;
+    if (!SplitIntoCells(reply_op, ctx.req_id, payload, payloadLen,
+                        fragDataMax, cells))
+        return false;
+    bool ok = true;
+    for (size_t i = 0; i < cells.size(); ++i)
+        ok = SendRelayReply(circ, cells[i].data(), cells[i].size()) && ok;
+    return ok;
+}
+
+// v8.1 A2 - exit handler for TUN_OP_PING: echo the body back with an
+// "echo:" prefix as TUN_OP_PING_REPLY. (Was inline in HandleRelay_Exit.)
+void CLiveTunnel::ExitHandle_Ping(const TunnelRequestCtx& ctx)
+{
+    std::string echoText = "echo:" + std::string((const char*)ctx.body, ctx.bodyLen);
+    if (echoText.size() > CELL_PAYLOAD_MAX - SUB_HEADER_BYTES)
+        echoText.resize(CELL_PAYLOAD_MAX - SUB_HEADER_BYTES);
+    SendReply(ctx, TUN_OP_PING_REPLY,
+              (const uint8_t*)echoText.data(), echoText.size());
+}
+
+// v8.1 A2 - exit handler for TUN_OP_KAD_SEARCH. v0.71 P1.C behaviour:
+// serve matches from our LOCAL stream directory cache (built by
+// CLiveKadBridge) rather than issuing a fresh Kad query - that keeps V's
+// privacy (only WE know what V searched for). Sprint B replaces this with
+// a real CSearch. (Was inline in HandleRelay_Exit.)
+void CLiveTunnel::ExitHandle_KadSearch(const TunnelRequestCtx& ctx)
+{
+    std::string keyword((const char*)ctx.body, ctx.bodyLen);
+    for (auto& ch : keyword) {
+        if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+    }
+
+    CStringA resultStr;
+    size_t matchCount = 0;
+    const size_t MAX_HITS = 16;
+    // Single-cell result: budget = payload room minus this circuit's onion
+    // tags. Sprint B makes KAD results multi-cell (TUN_OP_KAD_RESULT_V2).
+    const size_t hopOverhead = ctx.circ ? ctx.circ->HopCount() * 16 : 32;
+    const size_t MAX_RESULT_BYTES =
+        (CELL_PAYLOAD_MAX > SUB_HEADER_BYTES + hopOverhead)
+            ? (CELL_PAYLOAD_MAX - SUB_HEADER_BYTES - hopOverhead) : 0;
+    try {
+        if (theApp.liveStreamManager) {
+            CArray<LiveStreamEntry> entries;
+            theApp.liveStreamManager->GetKadBridge().GetKnownStreams(entries);
+            for (INT_PTR i = 0; i < entries.GetCount() && matchCount < MAX_HITS; ++i) {
+                const auto& e = entries[i];
+                CStringA titleA(e.title);
+                CStringA titleLow = titleA;
+                titleLow.MakeLower();
+                if (titleLow.Find((LPCSTR)keyword.c_str()) < 0 && !keyword.empty())
+                    continue;
+                CStringA hit;
+                hit.Format("%s|%u|%u;",
+                    (LPCSTR)titleA, (unsigned)e.bitrate, (unsigned)e.viewerCount);
+                if ((size_t)(resultStr.GetLength() + hit.GetLength()) > MAX_RESULT_BYTES)
+                    break;
+                resultStr += hit;
+                ++matchCount;
+            }
+        }
+    } catch (...) {}
+
+    SendReply(ctx, TUN_OP_KAD_RESULT,
+              (const uint8_t*)(LPCSTR)resultStr, (size_t)resultStr.GetLength());
 }
 
 bool CLiveTunnel::ShouldRouteThroughTunnel(const wchar_t* keywordOrNull) const

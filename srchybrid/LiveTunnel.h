@@ -12,6 +12,7 @@
 
 #include "LiveCircuit.h"
 #include "LiveOnionCrypto.h"
+#include "LiveCellQueue.h"   // v8.1 A2 - ReassemblyEntry, fragment helpers
 
 #include <memory>
 #include <vector>
@@ -19,6 +20,7 @@
 #include <map>      // v0.71 C — pending request table
 #include <deque>    // v0.72 — main-thread work queue
 #include <utility>  // v0.72 — std::move
+#include <functional> // v8.1 A2 - std::function handler registry
 
 class CUpDownClient;
 
@@ -112,6 +114,24 @@ public:
         TUN_OP_ECHO_LARGE       = 0x40,   // A1.7 test: V -> exit, arbitrary-size echo
         TUN_OP_ECHO_LARGE_REPLY = 0x41    // A1.7 test: exit -> V, echoed payload
     };
+
+    // === v8.1 A2 - generic exit-side dispatcher ============================
+    // Replaces the hardcoded sub_cmd switch in HandleRelay_Exit. One handler
+    // is registered per sub_cmd; once a request is fully received (a legacy
+    // single-cell op, or a reassembled multi-cell op) the dispatcher builds a
+    // TunnelRequestCtx and invokes the handler. New ops (Sprint B/C) just
+    // register a handler instead of editing HandleRelay_Exit.
+    struct TunnelRequestCtx {
+        std::shared_ptr<CLiveCircuit> circ;     // circuit the request arrived on
+        uint8_t        sub_cmd = 0;
+        uint32_t       req_id  = 0;
+        const uint8_t* body    = nullptr;       // request body (frag header stripped)
+        size_t         bodyLen = 0;
+    };
+    using TunnelOpHandler = std::function<void(const TunnelRequestCtx&)>;
+
+    // Register an exit-side handler for a sub_cmd. Last registration wins.
+    void RegisterExitHandler(uint8_t sub_cmd, TunnelOpHandler handler);
 
     // v0.71 P1.B — does the user's mode + this operation route through
     // a tunnel? Returns true if a circuit should be used. Centralised
@@ -263,6 +283,24 @@ private:
     // a reply (PING_REPLY, KadSearch result, etc.).
     bool SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,
                         const uint8_t* plain, size_t plainLen);
+
+    // === v8.1 A2 - generic exit dispatcher (internals) =====================
+    // Look up and invoke the registered handler for a fully-received request.
+    void DispatchExitRequest(const TunnelRequestCtx& ctx);
+    // Fragment + send a reply back to V. reply_op >= 0x40 is split into
+    // multi-cell fragments (sub-header + frag-header per cell); a legacy
+    // reply op (< 0x40) goes as one single cell. Each cell is onion-wrapped
+    // and sent via SendRelayReply.
+    bool SendReply(const TunnelRequestCtx& ctx, uint8_t reply_op,
+                   const uint8_t* payload, size_t payloadLen);
+    // Built-in exit handlers (registered in the constructor).
+    void ExitHandle_Ping(const TunnelRequestCtx& ctx);
+    void ExitHandle_KadSearch(const TunnelRequestCtx& ctx);
+    // A2.2 - sub_cmd -> handler registry.
+    std::map<uint8_t, TunnelOpHandler> m_exitHandlers;
+    // A1.5 - req_id -> partial multi-cell message under reassembly. Accessed
+    // under m_pendingLock. Swept by Tick() (A5).
+    std::map<uint32_t, ReassemblyEntry> m_reassembly;
 
     // v0.71 C — pending tunnel_ping requests. Key = req_id, value = the
     // reply text once it arrives. The TunnelPing() blocking call polls

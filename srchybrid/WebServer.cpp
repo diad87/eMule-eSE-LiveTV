@@ -5927,7 +5927,14 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	if (sURL == "/api/live/kad/streams") {
 		CArray<LiveStreamEntry> streams;
 		if (theApp.liveStreamManager != NULL) {
-			theApp.liveStreamManager->GetKadBridge().SearchStreams(_T("eselive"));
+			// SearchStreams drives CSearchManager and adds a row to the Kad
+			// search-list UI control (InsertItem -> cross-thread SendMessage),
+			// all main-thread only. On this webserver worker it would hold the
+			// KadBridge lock across that SendMessage and deadlock the UI
+			// thread. Marshal the search to the main thread; the worker just
+			// reads the already-cached directory below.
+			if (theApp.emuledlg != NULL)
+				theApp.emuledlg->PostMessage(UM_LIVE_KAD_REFRESH);
 			theApp.liveStreamManager->GetKadBridge().GetKnownStreams(streams);
 		}
 

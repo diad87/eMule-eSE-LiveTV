@@ -202,6 +202,7 @@ BEGIN_MESSAGE_MAP(CemuleDlg, CTrayDialog)
 	ON_MESSAGE(WEB_ADDDOWNLOADS, OnWebAddDownloads)
 	ON_MESSAGE(WEB_CATPRIO, OnWebSetCatPrio)
 	ON_MESSAGE(WEB_ADDREMOVEFRIEND, OnAddRemoveFriend)
+	ON_MESSAGE(UM_LIVE_KAD_REFRESH, OnLiveKadRefresh)
 
 	// Version Check DNS
 	ON_MESSAGE(UM_VERSIONCHECK_RESPONSE, OnVersionCheckResponse)
@@ -1675,6 +1676,17 @@ void CemuleDlg::ProcessED2KLink(LPCTSTR pszData)
 	} catch (...) {
 		LogWarning(LOG_STATUSBAR, GetResString(IDS_LINKNOTADDED));
 	}
+}
+
+LRESULT CemuleDlg::OnLiveKadRefresh(WPARAM, LPARAM)
+{
+	// Posted by the /api/live/kad/streams webserver worker. SearchStreams must
+	// run on the main thread: it drives CSearchManager and adds a row to the
+	// Kad search-list UI control (InsertItem). Running it here keeps that work
+	// — and the SendMessage InsertItem issues — on the UI thread.
+	if (theApp.liveStreamManager != NULL && !theApp.IsClosing())
+		theApp.liveStreamManager->GetKadBridge().SearchStreams(_T("eselive"));
+	return 0;
 }
 
 LRESULT CemuleDlg::OnWMData(WPARAM, LPARAM lParam)

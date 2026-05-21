@@ -106,6 +106,11 @@ public:
     // only know their neighbours.
     CircuitRole m_role = CircuitRole::Originator;
 
+    // v8.1 Sprint A7 — true while EVERY hop of this circuit advertised
+    // ESE_CAP_TUNNEL_DATAPLANE. If a v8.0.0 peer is a hop this goes false and
+    // the circuit is restricted to single-cell messages (no fragmentation).
+    bool m_multicell_ok = true;
+
     // First-hop CUpDownClient* (originator side): where we send cells.
     // Owned by ClientList; we hold a raw pointer and rely on
     // CClientList notifications to clear circuits when a peer is destroyed.

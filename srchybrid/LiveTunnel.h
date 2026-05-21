@@ -105,7 +105,12 @@ public:
         TUN_OP_KAD_SEARCH       = 0x10,   // V → exit: do Kad keyword search on my behalf
         TUN_OP_KAD_RESULT       = 0x11,   // exit → V: serialized search hits
         TUN_OP_LIVE_SUBSCRIBE   = 0x20,   // V → exit: forward subscribe to broadcaster
-        TUN_OP_LIVE_SUB_ACK     = 0x21    // exit → V: ack / broadcaster contact info
+        TUN_OP_LIVE_SUB_ACK     = 0x21,   // exit → V: ack / broadcaster contact info
+        // v8.1 Sprint A — multi-cell ops. sub_cmd >= TUN_MULTICELL_OP_MIN (0x40)
+        // ALWAYS carries an 8-byte fragment header in its body (see
+        // LiveCellQueue.h). 0x42-0x7F are reserved for Sprint B/C.
+        TUN_OP_ECHO_LARGE       = 0x40,   // A1.7 test: V -> exit, arbitrary-size echo
+        TUN_OP_ECHO_LARGE_REPLY = 0x41    // A1.7 test: exit -> V, echoed payload
     };
 
     // v0.71 P1.B — does the user's mode + this operation route through

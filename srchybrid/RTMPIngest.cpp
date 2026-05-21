@@ -13,6 +13,35 @@
 static char THIS_FILE[] = __FILE__;
 #endif
 
+// Every long-lived ffmpeg child eMule spawns is placed in one Job Object
+// created with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE. The job handle is never
+// closed explicitly — it lives as long as eMule's process does. When eMule
+// exits by ANY means (clean exit, crash, or an external TerminateProcess /
+// Task Manager "End task"), the kernel closes the handle, the job closes, and
+// every ffmpeg.exe in it is killed. Without this, an ffmpeg child outlives a
+// crashed/killed eMule as an orphan — burning a CPU core and ~1.3 GB until
+// killed by hand, and breaking the next broadcast because it still holds the
+// RTMP port and the HLS temp dir. The pre-existing orphan reaper can't be
+// relied on: it shells out to wmic.exe, which Microsoft has removed from
+// current Windows 11 builds.
+static void JailFFmpegProcess(HANDLE hProcess)
+{
+	if (hProcess == NULL || hProcess == INVALID_HANDLE_VALUE)
+		return;
+	static HANDLE s_hFFmpegJob = NULL;
+	if (s_hFFmpegJob == NULL) {
+		s_hFFmpegJob = CreateJobObject(NULL, NULL);
+		if (s_hFFmpegJob != NULL) {
+			JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = {};
+			jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+			SetInformationJobObject(s_hFFmpegJob, JobObjectExtendedLimitInformation,
+				&jeli, sizeof jeli);
+		}
+	}
+	if (s_hFFmpegJob != NULL)
+		AssignProcessToJobObject(s_hFFmpegJob, hProcess);
+}
+
 CRTMPIngest::CRTMPIngest()
 	: m_hFFmpegProcess(NULL)
 	, m_hWatcherThread(NULL)
@@ -441,6 +470,7 @@ bool CRTMPIngest::Start(UINT rtmpPort, UINT bitrate, const CString& outputDir, C
 
 	CloseHandle(pi.hThread);
 	m_hFFmpegProcess = pi.hProcess;
+	JailFFmpegProcess(pi.hProcess);   // ffmpeg dies with eMule even on a crash/kill
 	m_bRunning = true;
 	m_bStopWatcher = false;
 
@@ -543,6 +573,7 @@ bool CRTMPIngest::StartScreenCapture(UINT bitrate, const CString& outputDir, Chu
 
 	CloseHandle(pi.hThread);
 	m_hFFmpegProcess = pi.hProcess;
+	JailFFmpegProcess(pi.hProcess);   // ffmpeg dies with eMule even on a crash/kill
 	m_bRunning = true;
 	m_bStopWatcher = false;
 
@@ -947,6 +978,7 @@ bool CRTMPIngest::StartMediaFile(const CString& filePath, UINT bitrate, const CS
 
 	CloseHandle(pi.hThread);
 	m_hFFmpegProcess = pi.hProcess;
+	JailFFmpegProcess(pi.hProcess);   // ffmpeg dies with eMule even on a crash/kill
 	m_bRunning = true;
 	m_bStopWatcher = false;
 
@@ -1043,6 +1075,7 @@ bool CRTMPIngest::StartTestPattern(UINT bitrate, const CString& outputDir, Chunk
 
 	CloseHandle(pi.hThread);
 	m_hFFmpegProcess = pi.hProcess;
+	JailFFmpegProcess(pi.hProcess);   // ffmpeg dies with eMule even on a crash/kill
 	m_bRunning = true;
 	m_bStopWatcher = false;
 

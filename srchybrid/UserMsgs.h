@@ -47,5 +47,10 @@ enum EUserWndMessages
 	UM_ARCHIVESCANDONE,
 
 	// UPnP
-	UM_UPNP_RESULT //+30
+	UM_UPNP_RESULT, //+30
+
+	// eSE Live — webserver worker -> main thread: run a Kad stream-directory
+	// search. CLiveKadBridge::SearchStreams drives CSearchManager and the
+	// search-list UI, both main-thread only.
+	UM_LIVE_KAD_REFRESH //+31
 };

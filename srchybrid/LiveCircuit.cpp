@@ -51,6 +51,14 @@ bool CLiveCircuit::OnionEncrypt(const uint8_t* plaintext, size_t plaintextLen,
                                 size_t& outPayloadLen)
 {
     if (m_hops.empty()) return false;
+    // v8.1 fix: bail BEFORE touching any nonce_send counter if the fully
+    // onion-wrapped cell would not fit. Each hop appends a 16-byte AEAD
+    // tag. The old code only discovered an overflow mid-loop, by which
+    // point the already-processed layers had their nonce_send advanced
+    // while the cell was never sent -> the peer's nonce_recv never caught
+    // up and every later cell on the circuit failed AEAD auth. Atomic now.
+    if (plaintextLen + m_hops.size() * 16 > CELL_PAYLOAD_MAX)
+        return false;
     // The deepest message is the plaintext itself, wrapped progressively
     // by each hop in reverse order: layer N..1.
     // For F4 we apply AEAD per layer with a fresh nonce; the AEAD tag

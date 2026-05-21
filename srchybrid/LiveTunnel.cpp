@@ -1055,6 +1055,9 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
             return false;
         CSingleLock pl(&m_pendingLock, TRUE);
         ReassemblyEntry& e = m_reassembly[req_id];
+        // v8.1 A5 - stamp the entry on its first fragment so Tick() can
+        // sweep it if the rest of the message never arrives.
+        if (!e.started) e.first_seen_tick = GetTickCount();
         ReassemblyResult r = ReassemblyIngest(e, fragIndex, fragCount,
                                               msgTotal, fragData, fragDataLen);
         if (r == ReassemblyResult::Incomplete) return true;
@@ -1122,6 +1125,9 @@ bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
         {
             CSingleLock pl(&m_pendingLock, TRUE);
             ReassemblyEntry& e = m_reassembly[req_id];
+            // v8.1 A5 - stamp the entry on its first fragment so Tick()
+            // can sweep it if the rest of the message never arrives.
+            if (!e.started) e.first_seen_tick = GetTickCount();
             ReassemblyResult r = ReassemblyIngest(e, fragIndex, fragCount,
                                                   msgTotal, fragData, fragDataLen);
             if (r == ReassemblyResult::Incomplete)
@@ -1503,6 +1509,19 @@ void CLiveTunnel::Tick()
             c->m_lastPaddingTick = now;
             c->m_nextPaddingDelayMs =
                 covCfg.NextPaddingDelayMs((uint32_t)covCfg.GetProfile());
+        }
+    }
+
+    // 4. v8.1 A5 - sweep abandoned reassembly buffers. A multi-cell message
+    // whose remaining fragments never arrive would otherwise leave its
+    // ReassemblyEntry in m_reassembly forever (memory leak + DoS vector).
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        for (auto it = m_reassembly.begin(); it != m_reassembly.end(); ) {
+            if ((DWORD)(now - it->second.first_seen_tick) > TUN_REASSEMBLY_TTL_MS)
+                it = m_reassembly.erase(it);
+            else
+                ++it;
         }
     }
 

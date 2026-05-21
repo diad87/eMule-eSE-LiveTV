@@ -222,7 +222,7 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
 
 bool CLiveStreamManager::StartBroadcastWithSource(const CString& sourceType,
     const CString& title, const CString& category, const CString& language,
-    uint16 bitrate, const CString& mediaFilePath)
+    uint16 bitrate, const CString& mediaFilePath, bool waitForPrebuffer)
 {
     // Tier 2.2: unified broadcast launcher reusable from web + MFC.
     // Order: FFmpeg first (PRE-WARM), 2 s liveness probe, then Kad publish.
@@ -290,6 +290,12 @@ bool CLiveStreamManager::StartBroadcastWithSource(const CString& sourceType,
     LIVE_LOG("MGR", "FFmpeg launched source=%S bitrate=%u, broadcast state ARMED, waiting up to 14s for prebuffer",
         (LPCWSTR)sourceType, bitrate);
 
+    // Web API path: the launch (FFmpeg + Kad publish) is marshaled to the
+    // main thread, but the prebuffer wait below would block it — the caller
+    // runs that wait itself on a webserver worker via GetBroadcastLivenessStatus().
+    if (!waitForPrebuffer)
+        return true;
+
     // Phase 3.4 ROB-FFmpeg + V2-S07+ prebuffer: wait until either FFmpeg
     // dies (early crash) OR the ring buffer has >= 3 chunks (~12 s of
     // content) so when VLC connects it always finds segments ready to play.
@@ -319,6 +325,13 @@ void CLiveStreamManager::StopBroadcastFull()
     if (m_rtmpIngest.IsRunning())
         m_rtmpIngest.Stop();
     StopBroadcast();
+}
+
+void CLiveStreamManager::GetBroadcastLivenessStatus(bool& outFFmpegRunning, int& outChunkCount)
+{
+    CSingleLock lock(&m_lock, TRUE);
+    outFFmpegRunning = m_rtmpIngest.IsRunning();
+    outChunkCount    = (int)m_chunkBuffer.GetCount();
 }
 
 void CLiveStreamManager::StopBroadcast()
@@ -2628,11 +2641,24 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
 
     // Mesh
     snap.totalRedistributed = m_meshManager.GetTotalBytesRedistributed();
+    snap.minUploadRequired  = GetMinUploadRequired();
 
     // Atomic counters — plain copy (all LONG fields, atomic reads on x86)
     snap.counters = m_counters;
 
     return snap;
+}
+
+LiveChannelSnapshot CLiveStreamManager::GetChannelSnapshot() const
+{
+    CSingleLock lock(&m_lock, TRUE);
+    LiveChannelSnapshot s;
+    s.broadcasting = m_bBroadcasting;
+    memcpy(s.streamKey, m_streamInfo.streamKey, sizeof s.streamKey);
+    s.title        = m_streamInfo.title;
+    s.bitrate      = m_streamInfo.bitrate;
+    s.viewerCount  = GetViewerCount();
+    return s;
 }
 
 

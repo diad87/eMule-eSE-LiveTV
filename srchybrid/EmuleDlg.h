@@ -328,6 +328,8 @@ protected:
 	afx_msg LRESULT OnWebSetCatPrio(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnAddRemoveFriend(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnLiveKadRefresh(WPARAM, LPARAM);
+	afx_msg LRESULT OnLiveWebJoin(WPARAM, LPARAM);
+	afx_msg LRESULT OnLiveWebBroadcast(WPARAM, LPARAM);
 	// VersionCheck DNS
 	afx_msg LRESULT OnVersionCheckResponse(WPARAM, LPARAM lParam);
 	// MiniMule

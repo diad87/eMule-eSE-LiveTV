@@ -52,5 +52,13 @@ enum EUserWndMessages
 	// eSE Live — webserver worker -> main thread: run a Kad stream-directory
 	// search. CLiveKadBridge::SearchStreams drives CSearchManager and the
 	// search-list UI, both main-thread only.
-	UM_LIVE_KAD_REFRESH //+31
+	UM_LIVE_KAD_REFRESH, //+31
+
+	// eSE Live — webserver worker -> main thread: run JoinStream (+ optional
+	// TryConnectToStreamSource) for /api/live/join and /api/live/direct_join.
+	UM_LIVE_WEB_JOIN, //+32
+
+	// eSE Live — webserver worker -> main thread: launch / stop a broadcast
+	// for /api/live/broadcast/start and /api/live/broadcast/stop.
+	UM_LIVE_WEB_BROADCAST //+33
 };

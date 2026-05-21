@@ -166,9 +166,51 @@ struct LiveDebugSnapshot {
 
     // Mesh
     uint64   totalRedistributed;
+    uint32   minUploadRequired;   // upload floor for the throttler (/api/live/mesh)
 
     // Counters (atomic snapshot)
     LiveStreamCounters counters;
+};
+
+// eSE: Thread-safe snapshot for /api/live/channels — copied under m_lock so
+// the WebServer worker never reads m_streamInfo (incl. its CString title)
+// while the main thread mutates it.
+struct LiveChannelSnapshot {
+    bool    broadcasting;
+    uchar   streamKey[16];
+    CString title;
+    uint32  bitrate;
+    uint32  viewerCount;
+};
+
+// eSE: worker -> main-thread marshaling block for /api/live/join and
+// /api/live/direct_join (UM_LIVE_WEB_JOIN). The webserver worker fills the
+// inputs and SendMessage's a pointer to this struct (synchronous, so it stays
+// alive for the call); the main thread runs JoinStream + the optional
+// TryConnectToStreamSource and writes the results back.
+struct LiveWebJoinReq {
+    const uchar *streamKey;   // -> caller's uchar[16], stable during SendMessage
+    LPCTSTR      title;       // -> caller's CString buffer
+    uint32       ip;          // 0 => Kad-only join, no direct dial
+    uint16       port;        // 0 => Kad-only join, no direct dial
+    bool         joined;      // [out] JoinStream accepted the request
+    bool         dialed;      // [out] TryConnectToStreamSource dialed a source
+};
+
+// eSE: worker -> main-thread marshaling block for /api/live/broadcast/start
+// and /api/live/broadcast/stop (UM_LIVE_WEB_BROADCAST). Only the launch /
+// stop runs on the main thread; the webserver worker does the prebuffer wait
+// itself via GetBroadcastLivenessStatus().
+enum LiveWebBroadcastAction { LIVE_WEB_BC_LAUNCH = 0, LIVE_WEB_BC_STOP = 1 };
+struct LiveWebBroadcastReq {
+    int     action;          // LiveWebBroadcastAction
+    LPCTSTR sourceType;      // launch inputs (-> caller's CString buffers)
+    LPCTSTR title;
+    LPCTSTR category;
+    LPCTSTR language;
+    LPCTSTR mediaFilePath;
+    uint16  bitrate;
+    bool    ok;              // [out] launch: armed; stop: was broadcasting
 };
 
 class CUpDownClient;
@@ -199,7 +241,11 @@ public:
                                   const CString& category,
                                   const CString& language,
                                   uint16 bitrate,
-                                  const CString& mediaFilePath = _T(""));
+                                  const CString& mediaFilePath = _T(""),
+                                  bool waitForPrebuffer = true);
+    // Lock-correct liveness probe for the web API's prebuffer wait: reads
+    // FFmpeg-running + chunk-buffer count under m_lock. Worker-thread safe.
+    void GetBroadcastLivenessStatus(bool& outFFmpegRunning, int& outChunkCount);
     // Stop both the FFmpeg ingest AND the P2P broadcast in one call.
     void StopBroadcastFull();
     // Read access to the shared ingest (MFC dialog uses it for status text).
@@ -298,6 +344,9 @@ public:
 
     // Thread-safe debug snapshot (takes m_lock, copies all state)
     LiveDebugSnapshot BuildDebugSnapshot() const;
+
+    // Thread-safe snapshot for /api/live/channels (takes m_lock).
+    LiveChannelSnapshot GetChannelSnapshot() const;
 
     // Accessors for mesh manager (bitmap and trust data) — use ONLY under m_lock
     // Phase 1 BOOT-1: now exposes bitmap + oldestSeq anchor per peer.

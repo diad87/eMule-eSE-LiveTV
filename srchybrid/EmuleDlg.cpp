@@ -944,6 +944,26 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 					(void)eSELive::CLiveTunnel::Get();
 					(void)Kademlia::CKadV2TunnelPool::Get();
 
+					// === v8.1 D2 — seed the mode selector from persisted prefs ===
+					// Without this the selector keeps its Adaptive/Balanced ctor
+					// defaults every launch (so the tunneled control plane was
+					// dormant). Must run BEFORE the cap-bit read below, which
+					// derives PRIVACY_TUNNELING from GetDefaultMode().
+					{
+						Kademlia::CKadV2ModeSelector &sel = Kademlia::CKadV2ModeSelector::Get();
+						sel.SetDefaultMode((Kademlia::CKadV2Mode)thePrefs.GetKadV2PrivacyMode());
+						sel.SetFallbackPolicy(
+							(Kademlia::CKadV2ModeSelector::FallbackPolicy)thePrefs.GetKadV2FallbackPolicy());
+						CString kws = thePrefs.GetKadV2SensitiveKeywords();
+						for (int pos = 0; pos >= 0; ) {
+							CString k = kws.Tokenize(_T("|"), pos);
+							k.Trim();
+							if (!k.IsEmpty()) sel.AddSensitiveKeyword((CStringW)k);
+						}
+						AddDebugLogLine(false, _T("Privacy: mode seeded from prefs (mode=%d fallback=%d)"),
+							thePrefs.GetKadV2PrivacyMode(), thePrefs.GetKadV2FallbackPolicy());
+					}
+
 					Kademlia::CKadV2SubscriberPin::Get().Start();
 					AddDebugLogLine(false, _T("Privacy: Kad v2 subscriber pinning started (%s)"),
 						Kademlia::CKadV2SubscriberPin::Get().IsEnabled() ? _T("enabled") : _T("disabled"));
@@ -951,18 +971,36 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 					AddDebugLogLine(false, _T("Privacy: stack init threw exception (continuing without privacy)"));
 				}
 
-				// === v0.71 P0.3 — runtime cap bits ==============================
-				// Set TAG_ESE_CAPS bits for features the modules above just
-				// brought live. We set the conservative set (M1/M3/M5/M6 +
-				// sealed records + gossip) which corresponds to the modules
-				// instantiated by Start()/Load() above. Tunneling and cover
-				// traffic stay OFF until F5 P3 wires the real TCP send.
-				g_uEseCapsRuntime = ESE_CAP_M1_SUBSCRIBER_PIN
-				                  | ESE_CAP_M3_SHARDING
-				                  | ESE_CAP_M5_BLOOM_GOSSIP
-				                  | ESE_CAP_M6_K_EFFECTIVE
-				                  | ESE_CAP_SEALED_RECORDS
+				// === v0.71 P0.3 — runtime cap bits (honest phase-exit gating) ===
+				// A cap bit advertises to PEERS (via TAG_ESE_CAPS, see
+				// BaseClient.cpp) and to the UI that a feature's DATA PATH is
+				// live. Per Opcodes.h a bit is set ONLY when the module is
+				// initialised AND its phase-exit criteria are met — otherwise
+				// we tell peers we support mechanisms we don't, violating Kad
+				// v2 design principle P1 (bidirectional 0.70b compat).
+				//
+				// 2026-06-11 audit (Kad v2 plan review): the M1/M3/M5/M6 data
+				// paths are NOT wired, so they must NOT be advertised:
+				//   M1 subscriber-pin : CKadV2SubscriberPin::DoRepublish() is a
+				//                       no-op (deferred to F5) — nothing pinned.
+				//   M3 sharding       : RX-only (we parse inbound
+				//                       KEY_SHARD_ANNOUNCE but never publish or
+				//                       query sharded — no producer side).
+				//   M5 bloom gossip   : opcode bodies counted, never parsed.
+				//   M6 k-effective    : zero callers; dead code.
+				// They stay OFF until their phase lands and flips the gate
+				// below (replace the predicate, then OR the bit). SEALED_RECORDS
+				// + GOSSIP_PROTOCOL have real, ProVerif-audited implementations
+				// (LiveChannel/LiveGossip/LiveOnionCrypto) and keep their bits.
+				// PRIVACY_TUNNELING/COVER/DATAPLANE are set below from the
+				// user's mode policy.
+				g_uEseCapsRuntime = ESE_CAP_SEALED_RECORDS
 				                  | ESE_CAP_GOSSIP_PROTOCOL;
+				// Re-enable each Kad v2 cap at its phase exit, e.g.:
+				//   if (Kademlia::CKadV2SubscriberPin::Get().IsRepublishingLive())
+				//       g_uEseCapsRuntime |= ESE_CAP_M1_SUBSCRIBER_PIN;
+				// (M1: F5 republish wired; M3: producer publish/query sharded;
+				//  M5: digest bodies (de)serialised; M6: announce path has callers.)
 				{
 					Kademlia::CKadV2Mode m = Kademlia::CKadV2ModeSelector::Get().GetDefaultMode();
 					if (m == Kademlia::CKadV2Mode::Tunneled || m == Kademlia::CKadV2Mode::Adaptive) {

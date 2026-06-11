@@ -390,6 +390,9 @@ uint16	CPreferences::m_nWebPort;
 bool	CPreferences::m_bWebUseUPnP;
 bool	CPreferences::m_bUPnPCriticalError;
 bool	CPreferences::m_bEnableUtpHolePunch;
+int		CPreferences::m_iKadV2PrivacyMode;      // D2
+int		CPreferences::m_iKadV2FallbackPolicy;   // D2
+CString	CPreferences::m_strKadV2SensitiveKeywords; // D2
 bool	CPreferences::m_bWebEnabled;
 bool	CPreferences::m_bWebUseGzip;
 int		CPreferences::m_nWebPageRefresh;
@@ -1839,6 +1842,12 @@ void CPreferences::SavePreferences()
 	ini.WriteBool(_T("CloseUPnPOnExit"), m_bCloseUPnPOnExit);
 	ini.WriteInt(_T("LastWorkingImplementation"), m_nLastWorkingImpl);
 
+	///////////////////////////////////////////////////////////////////////////
+	// Section: "eSE"  (D2 Sprint D — privacy-routing mode round-trips here)
+	//
+	ini.WriteInt(_T("KadV2PrivacyMode"), m_iKadV2PrivacyMode, _T("eSE"));
+	ini.WriteInt(_T("KadV2FallbackPolicy"), m_iKadV2FallbackPolicy, _T("eSE"));
+	ini.WriteString(_T("KadV2SensitiveKeywords"), m_strKadV2SensitiveKeywords, _T("eSE"));
 }
 
 void CPreferences::ResetStatsColor(int index)
@@ -2486,6 +2495,20 @@ void CPreferences::LoadPreferences()
 	// Section: "eSE"
 	//
 	m_bEnableUtpHolePunch = ini.GetBool(_T("EnableUtpHolePunch"), true, _T("eSE"));
+
+	// D2 (Sprint D): persisted privacy-routing mode. Before this, the mode
+	// selector reset to its Adaptive default every launch, which kept the
+	// tunneled control plane dormant. Defaults match the selector's ctor
+	// (Adaptive / Balanced); clamp to the known enum range like IPv6Mode.
+	{
+		int pm = ini.GetInt(_T("KadV2PrivacyMode"), 2 /*Adaptive*/, _T("eSE"));
+		if (pm < 0 || pm > 2) pm = 2;
+		m_iKadV2PrivacyMode = pm;
+		int fb = ini.GetInt(_T("KadV2FallbackPolicy"), 1 /*Balanced*/, _T("eSE"));
+		if (fb < 0 || fb > 2) fb = 1;
+		m_iKadV2FallbackPolicy = fb;
+		m_strKadV2SensitiveKeywords = ini.GetString(_T("KadV2SensitiveKeywords"), _T(""), _T("eSE"));
+	}
 
 	LoadCats();
 	SetLanguage();

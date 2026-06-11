@@ -303,11 +303,16 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 		size_t circuitsPending = 0;
 		size_t pool = 0;
 		size_t subs = 0;
+		uint64_t cellsSent = 0, cellsRecv = 0, bytesSent = 0, bytesRecv = 0;  // v8.1 D8
 		try {
 			circuitsActive  = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
 			circuitsPending = eSELive::CLiveTunnel::Get().PendingCircuitCount();
 			pool            = CKadV2TunnelPool::Get().Size();
 			subs            = eSELive::CLiveSubscriptionStore::Get().Count();
+			cellsSent       = eSELive::CLiveTunnel::Get().CellsSentTotal();   // v8.1 D8
+			cellsRecv       = eSELive::CLiveTunnel::Get().CellsRecvTotal();
+			bytesSent       = eSELive::CLiveTunnel::Get().BytesSentTotal();
+			bytesRecv       = eSELive::CLiveTunnel::Get().BytesRecvTotal();
 		} catch (...) {}
 
 		{
@@ -329,6 +334,13 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 				rCtrl << _T("  (negociando handshake — si el peer no es eSE V1, expira en ~6s)");
 			}
 			rCtrl << _T("\r\n");
+
+			// v8.1 D8 — tunnel wire-byte/cell telemetry (honest: counts only cells
+			// carried by the onion tunnel, not direct eD2K traffic). 0/0 until a
+			// circuit is built + used.
+			cs.Format(_T("TX %I64u cells / %I64u KB   RX %I64u cells / %I64u KB"),
+				cellsSent, bytesSent / 1024, cellsRecv, bytesRecv / 1024);
+			rCtrl << _T("Tunnel traffic:\t") << cs << _T("\r\n");
 
 			cs.Format(_T("%u canales (DPAPI)"), (unsigned)subs);
 			rCtrl << _T("Suscripciones:\t") << cs << _T("\r\n");

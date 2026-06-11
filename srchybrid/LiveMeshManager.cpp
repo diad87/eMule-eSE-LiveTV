@@ -195,6 +195,14 @@ CUpDownClient* CLiveMeshManager::SelectBestPeerForSegment(uint32 seqNum)
     return bestPeer;
 }
 
+// Duplicate-request fix (2026-06): ScheduleRequests is no longer CALLED (see
+// CLiveMeshManager::Process). CLiveStreamManager::RequestMissingSegments is now
+// the SOLE chunk-pull engine — it has the in-flight dedup (m_inflightSegReqs),
+// lookahead and live-edge bootstrap. This mesh scheduler ran in PARALLEL with
+// its OWN separate request table (m_pendingRequests), so the same seqNum got an
+// OP_LIVE_REQUEST from BOTH engines in the same tick → the duplicate request /
+// duplicate SERVE ("trocitos repetidos") seen in 2-PC tests. Kept (uncalled)
+// for reference / a future rarest-first unification.
 void CLiveMeshManager::ScheduleRequests()
 {
     CSingleLock lock(&m_lock, TRUE);
@@ -238,34 +246,15 @@ void CLiveMeshManager::ScheduleRequests()
 }
 
 
-void CLiveMeshManager::OnSegmentAnnounced(uint32 seqNum)
+void CLiveMeshManager::OnSegmentAnnounced(uint32 /*seqNum*/)
 {
-    CSingleLock lock(&m_lock, TRUE);
-
-    if (!m_pManager || !m_pManager->IsViewingLive()) return;
-    if (m_meshPeers.GetCount() == 0) return;
-
-    // Skip if already requested or already have it
-    if (IsRequested(seqNum)) return;
-    if (m_pManager->GetBuffer().GetSegment(seqNum) != NULL) return;
-
-    // Don't exceed max concurrent requests
-    if (m_pendingRequests.GetCount() >= MAX_PENDING_REQUESTS) return;
-
-    // Immediately select best peer and request
-    CUpDownClient* peer = SelectBestPeerForSegment(seqNum);
-    if (!peer) return;
-
-    const LiveStreamInfo& info = m_pManager->GetStreamInfo();
-    Packet* pkt = eSELive::CreateRequestPacket(info.streamKey, seqNum);
-    if (pkt) {
-        theStats.AddUpDataOverheadOther(pkt->size);
-        peer->SendPacket(pkt);
-        TrackRequest(seqNum, peer);
-
-        AddLogLine(false, _T("eSE Mesh: Immediate request for announced seg #%u"),
-            seqNum);
-    }
+    // Duplicate-request fix (2026-06): DISABLED. This sent an immediate
+    // OP_LIVE_REQUEST on announce using the mesh's separate request table,
+    // racing CLiveStreamManager::RequestMissingSegments (the sole, deduped pull
+    // engine) and producing duplicate requests. RequestMissingSegments picks up
+    // a newly-announced segment on its next ~1 s tick (its lookahead already
+    // anticipates the live edge), so the only cost is up to ~1 s of latency on
+    // the very newest segment — well worth eliminating the duplicate SERVE.
 }
 
 
@@ -384,11 +373,10 @@ void CLiveMeshManager::Process()
 {
     DWORD now = GetTickCount();
 
-    // Schedule new segment requests (rarest-first)
-    if (now - m_dwLastSchedule >= SCHEDULE_INTERVAL_MS) {
-        ScheduleRequests();
-        m_dwLastSchedule = now;
-    }
+    // Duplicate-request fix (2026-06): the rarest-first ScheduleRequests() is no
+    // longer called — CLiveStreamManager::RequestMissingSegments is the sole
+    // pull engine (with the in-flight dedup). Running both duplicated every
+    // request. CheckTimeouts/RequestMorePeers below still run.
 
     // Check for timed-out requests
     if (now - m_dwLastTimeoutCheck >= TIMEOUT_CHECK_MS) {

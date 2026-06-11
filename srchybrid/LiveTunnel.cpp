@@ -1262,23 +1262,36 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
         if (!ParseFragHeader(body, text_len, fragIndex, fragCount, msgTotal,
                              fragData, fragDataLen))
             return false;
-        CSingleLock pl(&m_pendingLock, TRUE);
-        // A1 fix - key by (circ_id, req_id), consistent with the exit side.
-        const uint64_t rkey = ExitOpKey(circ->Id(), req_id);
-        ReassemblyEntry& e = m_reassembly[rkey];
-        // v8.1 A5 - stamp the entry on its first fragment so Tick() can
-        // sweep it if the rest of the message never arrives.
-        if (!e.started) e.first_seen_tick = GetTickCount();
-        ReassemblyResult r = ReassemblyIngest(e, fragIndex, fragCount,
-                                              msgTotal, fragData, fragDataLen);
-        if (r == ReassemblyResult::Incomplete) return true;
-        if (r == ReassemblyResult::Error) {
+        std::vector<uint8_t> msg;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            // A1 fix - key by (circ_id, req_id), consistent with the exit side.
+            const uint64_t rkey = ExitOpKey(circ->Id(), req_id);
+            ReassemblyEntry& e = m_reassembly[rkey];
+            // v8.1 A5 - stamp the entry on its first fragment so Tick() can
+            // sweep it if the rest of the message never arrives.
+            if (!e.started) e.first_seen_tick = GetTickCount();
+            ReassemblyResult r = ReassemblyIngest(e, fragIndex, fragCount,
+                                                  msgTotal, fragData, fragDataLen);
+            if (r == ReassemblyResult::Incomplete) return true;
+            if (r == ReassemblyResult::Error) {
+                m_reassembly.erase(rkey);
+                return true;
+            }
+            msg = std::move(e.message);
             m_reassembly.erase(rkey);
-            return true;
+        }   // release m_pendingLock before the heavier work below
+        // v8.1 D1 - a tunneled DISCOVERY search reply (KAD_RESULT_V2) has no PendingRequest
+        // waiter when issued by the fire-and-forget SendKadSearchV2NoWait, so SignalReply
+        // would just drop it. Parse it straight into the SAME Live directory the direct
+        // search uses, so a Tunneled-mode viewer's stream grid populates without leaking V's
+        // IP/keyword onto the DHT. (Also runs for the blocking webserver TunneledKadSearch —
+        // harmless: the directory dedupes by streamKey and that caller still gets its JSON
+        // via SignalReply below.) Done AFTER releasing m_pendingLock; main thread.
+        if (sub_cmd == TUN_OP_KAD_RESULT_V2 && theApp.liveStreamManager) {
+            theApp.liveStreamManager->GetKadBridge().FeedTunneledSearchResults(msg);
         }
-        std::vector<uint8_t> msg = std::move(e.message);
-        m_reassembly.erase(rkey);
-        // v8.1 A3 - wake the blocked TunnelEchoLarge() call. SignalReply
+        // v8.1 A3 - wake the blocked TunnelEchoLarge()/TunneledKadSearch() call. SignalReply
         // re-takes m_pendingLock (CCriticalSection is recursive).
         SignalReply(req_id, msg.data(), msg.size(), 0);
         return true;
@@ -1629,7 +1642,10 @@ void CLiveTunnel::ExitHandle_KadSearchV2(const TunnelRequestCtx& ctx)
     try {
         if (theApp.liveStreamManager) {
             CString kw(keyword.c_str());
-            theApp.liveStreamManager->GetKadBridge().SearchStreams(kw, &job.kadSearchIds);
+            // v8.1 D1 - bForceDirect=true: the exit MUST query Kad from its OWN IP, never
+            // re-enter the tunnel branch (would cascade a tunneled search out our circuit).
+            theApp.liveStreamManager->GetKadBridge().SearchStreams(kw, &job.kadSearchIds,
+                                                                   /*bForceDirect*/true);
         }
     } catch (...) {}
 
@@ -1966,13 +1982,14 @@ void CLiveTunnel::ExitHandle_EchoLarge(const TunnelRequestCtx& ctx)
     CompleteExitOperation(ctx.circ->Id(), ctx.req_id, echo.data(), echo.size());
 }
 
-bool CLiveTunnel::ShouldRouteThroughTunnel(const wchar_t* keywordOrNull) const
+bool CLiveTunnel::ShouldRouteThroughTunnel(const wchar_t* keywordOrNull, uint8_t opClass) const
 {
     using namespace Kademlia;
     CKadV2ModeSelector& sel = CKadV2ModeSelector::Get();
     CKadV2ModeSelector::QueryContext q = {};
     q.includesPrivateChannelHash = false;
     if (keywordOrNull) q.keywordLowercase = keywordOrNull;
+    q.operationClass = (CKadV2ModeSelector::QueryContext::OperationClass)opClass;   // v8.1 D7
     CKadV2Mode decided = sel.Decide(q);
     return decided == CKadV2Mode::Tunneled;
 }
@@ -2144,6 +2161,26 @@ void CLiveTunnel::SendLiveSubscribeNoWait(const uint8_t streamKey[16],
     eseWrU16LE(body.data() + 22, bUDP);
     eseWrU32LE(body.data() + 24, bAltIP);
     EnqueueSendMsg(req_id, TUN_OP_LIVE_SUBSCRIBE, body.data(), body.size());
+}
+
+// v8.1 D1 - non-blocking tunneled Kad keyword search. Like SendLiveSubscribeNoWait, uses a
+// throwaway req_id with NO PendingRequest: the exit runs the real Kad search on our behalf
+// and replies TUN_OP_KAD_RESULT_V2, which HandleRelay_Originator parses straight into the
+// Live directory (no waiter to wake). This lets CLiveKadBridge::SearchStreams route
+// discovery through the tunnel from the MAIN thread without blocking (the existing
+// TunneledKadSearch is blocking and only safe off the main thread). Body =
+// [flags u8][kw_len u16 LE][keyword bytes] (Sprint B breakdown 2.2), keyword UTF-8.
+void CLiveTunnel::SendKadSearchV2NoWait(const std::string& keywordLower)
+{
+    const uint32_t req_id = NewCircuitId();
+    std::vector<uint8_t> body;
+    const uint16_t kwLen =
+        (uint16_t)(keywordLower.size() > 0xFFFF ? 0xFFFF : keywordLower.size());
+    body.push_back(0x01);                       // flags bit0 = include local cache
+    body.push_back((uint8_t)(kwLen & 0xFF));
+    body.push_back((uint8_t)(kwLen >> 8));
+    body.insert(body.end(), keywordLower.begin(), keywordLower.begin() + kwLen);
+    EnqueueSendMsg(req_id, TUN_OP_KAD_SEARCH_V2, body.data(), body.size());
 }
 
 bool CLiveTunnel::SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,

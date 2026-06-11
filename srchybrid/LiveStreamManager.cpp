@@ -565,7 +565,9 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     // v8.1 D3 — fallback policy when the mode wants a tunnel. Separating "want"
     // from "can" (a circuit is Active) gives the fallback its meaning:
     //   STRICT      -> no circuit means abort (never expose the viewer directly)
-    //   BALANCED    -> (no real fanout knob yet) degrades to BEST_EFFORT
+    //   BALANCED    -> direct PRIMARY subscribe like BEST_EFFORT, but the SECONDARY
+    //                  peer-list fanout is capped (see OnPeerListReceived, D3) so the
+    //                  viewer's IP reaches far fewer sources than BEST_EFFORT's full mesh
     //   BEST_EFFORT -> fall to a direct subscribe, but WARN (IP visible to emisor)
     bool useTunnel = false;
     {
@@ -1778,12 +1780,32 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
     // DIRECT in Tunelizado, so V's IP is still visible to every source it fetches
     // chunks from (primary and secondary) — full data-plane tunneling is Sprint E.
     // In Direct mode this is unchanged (direct subscribe).
-    const bool tunMode = eSELive::CLiveTunnel::Get().ShouldRouteThroughTunnel(NULL)
-                         && eSELive::CLiveTunnel::Get().ActiveCircuitCount() > 0;
+    auto& tun = eSELive::CLiveTunnel::Get();
+    const bool wantTunnel  = tun.ShouldRouteThroughTunnel(NULL);
+    const bool haveCircuit = tun.ActiveCircuitCount() > 0;
+    const bool tunMode = wantTunnel && haveCircuit;
+    // v8.1 D3 BALANCED - "Tunelizado wanted, no circuit, BALANCED fallback policy": the
+    // viewer must still watch (direct primary), but must NOT amplify its IP exposure across
+    // the whole peer-list. Cap the secondary fanout to the resilience floor so BALANCED stays
+    // narrow while BEST_EFFORT expands to the full mesh. (STRICT never reaches here — it aborts
+    // the primary in TryConnectToStreamSource before any view peer exists.)
+    const bool balancedDegraded = wantTunnel && !haveCircuit
+        && Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy()
+               == Kademlia::CKadV2ModeSelector::BALANCED;
+    static const int kBalancedFanoutCap = 3;
 
     for (INT_PTR i = 0; i < ips.GetCount(); i++) {
         DWORD ip = ips[i];
         uint16 port = ports[i];
+
+        // v8.1 D3 BALANCED - stop amplifying fanout past the cap in the degraded state, so a
+        // BALANCED viewer with no circuit exposes its IP to far fewer secondary sources than
+        // a BEST_EFFORT viewer (which keeps the full peer-list mesh).
+        if (balancedDegraded && (int)m_viewPeers.GetCount() >= kBalancedFanoutCap) {
+            LIVE_LOG("TUN", "D3 BALANCED: secondary-fanout cap (%d) reached, skip rest of peer-list",
+                kBalancedFanoutCap);
+            break;
+        }
 
         // Skip our own IP
         if (ip == theApp.GetPublicIP()) continue;

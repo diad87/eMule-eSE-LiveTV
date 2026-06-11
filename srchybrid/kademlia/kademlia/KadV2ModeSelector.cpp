@@ -65,14 +65,21 @@ CKadV2Mode CKadV2ModeSelector::Decide(const QueryContext& q) const
         case CKadV2Mode::Direct:    return CKadV2Mode::Direct;
         case CKadV2Mode::Tunneled:  return CKadV2Mode::Tunneled;
         case CKadV2Mode::Adaptive: {
-            // Cap 6 §6.3 Modo C rules.
-            if (q.includesPrivateChannelHash) return CKadV2Mode::Tunneled;
+            // v8.1 D7 - Cap 6 §6.3 Modo C rules, now per operation class so each class
+            // weighs only the inputs it actually carries:
+            //  - KAD_SEARCH tunnels iff its keyword is sensitive (a search has no channel hash).
+            //  - KAD_PUBLISH / LIVE_CONTROL tunnel for a private channel, or a sensitive keyword.
+            // LIVE_CONTROL reproduces the pre-D7 behaviour exactly (existing callers pass it).
+            bool keywordSensitive = false;
             if (!q.keywordLowercase.IsEmpty()) {
                 for (const auto& k : m_sensitive)
-                    if (q.keywordLowercase.Find(k) >= 0)
-                        return CKadV2Mode::Tunneled;
+                    if (q.keywordLowercase.Find(k) >= 0) { keywordSensitive = true; break; }
             }
-            return CKadV2Mode::Direct;
+            if (q.operationClass == QueryContext::KAD_SEARCH)
+                return keywordSensitive ? CKadV2Mode::Tunneled : CKadV2Mode::Direct;
+            // KAD_PUBLISH + LIVE_CONTROL:
+            if (q.includesPrivateChannelHash) return CKadV2Mode::Tunneled;
+            return keywordSensitive ? CKadV2Mode::Tunneled : CKadV2Mode::Direct;
         }
     }
     return CKadV2Mode::Direct;

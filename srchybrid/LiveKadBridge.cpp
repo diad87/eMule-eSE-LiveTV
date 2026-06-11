@@ -19,8 +19,13 @@
 #include "kademlia/kademlia/Defines.h"
 #include "kademlia/kademlia/prefs.h"
 #include "kademlia/utils/UInt128.h"
+#include "LiveTunnel.h"                          // v8.1 D1 - route discovery through the tunnel
+#include "kademlia/kademlia/KadV2TunnelPool.h"   // v8.1 D5 - Acquire() picks the circuit
+#include "kademlia/kademlia/KadV2ModeSelector.h" // v8.1 D1/D3 - fallback policy on no circuit
 #include <iphlpapi.h>   // NAT-reach: GetIpAddrTable for overlay-IP detection
 #pragma comment(lib, "iphlpapi.lib")
+
+extern UINT g_uMainThreadId;   // v8.1 D1 - main-thread assertions on the new cross-lock paths
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -563,7 +568,8 @@ bool CLiveKadBridge::StartLivePublishSearch(const Kademlia::CUInt128& uTarget,
 // ============================================================
 
 bool CLiveKadBridge::SearchStreams(const CString& keyword,
-                                   std::vector<uint32>* outSearchIds)
+                                   std::vector<uint32>* outSearchIds,
+                                   bool bForceDirect)
 {
     CSingleLock lock(&m_lock, TRUE);
     if (outSearchIds) outSearchIds->clear();
@@ -642,6 +648,64 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword,
     // Past cooldown — reset the gate.
     m_bLoggedSearchCooldown = false;
 
+    // v8.1 D1 - route discovery THROUGH THE TUNNEL when the mode wants it (Tunneled, or
+    // Adaptive + a sensitive keyword) AND a circuit is available: the exit runs the real Kad
+    // search on our behalf and the results return via the tunnel into our directory
+    // (FeedTunneledSearchResults), so our IP + keyword never hit the public DHT. The token
+    // bucket + cooldown above already rate-limited this call, so tunneled searches are capped too.
+    // The EXIT (bForceDirect) MUST query Kad from its OWN IP; it must never re-enter the tunnel
+    // branch (that would cascade a tunneled search out the exit's own circuit and return
+    // stale-cache only). So the gate is skipped entirely for the exit.
+    // LOCK NOTE: this gate calls tunnel / pool / selector methods while holding
+    // CLiveKadBridge::m_lock => kadbridge -> {tunnel, pool[leaf], selector[leaf]}. That is the
+    // REVERSE of the tunnel->kadbridge feed in HandleRelay_Originator (FeedTunneledSearchResults).
+    // It is deadlock-free ONLY because both legs run on the MAIN thread (all SearchStreams callers
+    // are main-thread / marshaled via UM_LIVE_KAD_REFRESH; the feed runs under OnCellReceived on
+    // the main message pump). Never call SearchStreams or FeedTunneledSearchResults off the main thread.
+    if (!bForceDirect) {
+        ASSERT(GetCurrentThreadId() == g_uMainThreadId);
+        eSELive::CLiveTunnel& tun = eSELive::CLiveTunnel::Get();
+        const bool wantTunnel = tun.ShouldRouteThroughTunnel((LPCWSTR)searchWord,
+            (uint8_t)Kademlia::CKadV2ModeSelector::QueryContext::KAD_SEARCH);
+        if (wantTunnel) {
+            // D5 - let the PST pool pick the circuit (any Active today; XOR-closest deferred).
+            const bool haveTunnel =
+                Kademlia::CKadV2TunnelPool::Get().Acquire(Kademlia::CUInt128()) != nullptr
+                || tun.ActiveCircuitCount() > 0;
+            // wide -> UTF-8 (already lowercased) for the tunnel search body.
+            std::string kwUtf8;
+            int blen = WideCharToMultiByte(CP_UTF8, 0, (LPCWSTR)searchWord,
+                                           searchWord.GetLength(), NULL, 0, NULL, NULL);
+            if (blen > 0) {
+                kwUtf8.resize((size_t)blen);
+                WideCharToMultiByte(CP_UTF8, 0, (LPCWSTR)searchWord, searchWord.GetLength(),
+                                    &kwUtf8[0], blen, NULL, NULL);
+            }
+            if (haveTunnel && !kwUtf8.empty()) {
+                tun.SendKadSearchV2NoWait(kwUtf8);
+                m_dwLastSearchTime = now;
+                m_strLastSearchKeyword = searchWord;
+                AddLogLine(true, _T("eSE Kad: Searching live streams [TUNNELED] (keyword=\"%s\")"),
+                    (LPCTSTR)searchWord);
+                CLiveDebugLog::Get().Append("KAD", "Search BEGIN [tunneled] keyword=\"%S\"",
+                    (LPCWSTR)searchWord);
+                return true;
+            }
+            // Wanted a tunnel but no circuit (or keyword unencodable) -> D3 fallback policy
+            // (same as the subscribe path).
+            const Kademlia::CKadV2ModeSelector::FallbackPolicy fb =
+                Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy();
+            if (fb == Kademlia::CKadV2ModeSelector::STRICT_PRIVACY) {
+                AddLogLine(false, _T("eSE Kad: Privacidad ESTRICTA - sin circuito tunel, no busco (tu IP no se expone)"));
+                CLiveDebugLog::Get().Append("KAD",
+                    "Search ABORT [strict] keyword=\"%S\" - no tunnel circuit", (LPCWSTR)searchWord);
+                return false;
+            }
+            // BALANCED / BEST_EFFORT -> fall through to the direct search below (warn IP visible).
+            AddLogLine(false, _T("eSE Kad: Tunelizado pedido pero sin circuito - busqueda directa (tu IP es visible)"));
+        }
+    }
+
     // Dual-namespace search: launch one KEYWORD search per hash domain.
     // (A) Clean — finds streams that current/future eSE clients publish
     //     under EseLiveGetKeywordHash. Discovery primary.
@@ -710,6 +774,75 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword,
     m_dwLastSearchTime = now;
     m_strLastSearchKeyword = searchWord;
     return true;
+}
+
+// v8.1 D1 - UTF-8 wire string -> CString (CStringW in this Unicode build).
+static CString Ese_Utf8ToCString(const std::string& u)
+{
+    if (u.empty()) return CString();
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, u.data(), (int)u.size(), NULL, 0);
+    if (wlen <= 0) return CString();
+    CStringW w;
+    MultiByteToWideChar(CP_UTF8, 0, u.data(), (int)u.size(), w.GetBufferSetLength(wlen), wlen);
+    w.ReleaseBuffer(wlen);
+    return CString((LPCWSTR)w);
+}
+
+void CLiveKadBridge::FeedTunneledSearchResults(const std::vector<uint8_t>& in)
+{
+    // v8.1 D1 - MAIN THREAD ONLY. Reached under the tunnel m_lock (HandleRelay_Originator <-
+    // OnCellReceived) and takes CLiveKadBridge::m_lock via OnKadSearchResult (tunnel->kadbridge).
+    // Deadlock-free only because the reverse kadbridge->tunnel edge in the SearchStreams gate is
+    // also main-thread. Do not call from a worker.
+    ASSERT(GetCurrentThreadId() == g_uMainThreadId);
+    // Wire format (Sprint B breakdown 2.3): [count u16 LE][2 reserved] then count *
+    //   { recLen u16 LE, fixed 35B [streamKey16, ip u32 LE, port u16, uport u16, brate u16,
+    //     views u32, start u32, ns u8], then 3 length-prefixed UTF-8 strings title/cat/lang }.
+    // Every read is bounds-checked; OnKadSearchResult does NOT need m_lock held by us (it
+    // takes its own), so we call it per record without holding it across the loop.
+    const size_t n = in.size();
+    if (n < 4) return;
+    auto rd16 = [&](size_t o)->uint16_t { return (uint16_t)in[o] | ((uint16_t)in[o+1] << 8); };
+    auto rd32 = [&](size_t o)->uint32_t {
+        return (uint32_t)in[o] | ((uint32_t)in[o+1] << 8)
+             | ((uint32_t)in[o+2] << 16) | ((uint32_t)in[o+3] << 24); };
+    const uint16_t count = rd16(0);
+    size_t p = 4;
+    int fed = 0;
+    for (uint16_t r = 0; r < count && p + 2 <= n; ++r) {
+        const uint16_t recLen = rd16(p); p += 2;
+        const size_t recEnd = p + recLen;
+        if (recEnd > n) break;
+        if (recLen < 35) { p = recEnd; continue; }   // fixed part = 35 B
+        const size_t rec = p;
+        uchar streamKey[16];
+        memcpy(streamKey, &in[rec], 16);
+        size_t q = rec + 16;
+        const uint32_t ip    = rd32(q); q += 4;
+        const uint16_t port  = rd16(q); q += 2;
+        const uint16_t uport = rd16(q); q += 2;
+        const uint16_t brate = rd16(q); q += 2;
+        const uint32_t views = rd32(q); q += 4;
+        q += 4;   // started_at (unused here)
+        q += 1;   // ns tag (tunneled results attribute as UNKNOWN namespace)
+        std::string title, cat, lang;
+        auto rdstr = [&](std::string& o)->bool {
+            if (q + 1 > recEnd) return false;
+            uint8_t len = in[q]; q += 1;
+            if (q + len > recEnd) return false;
+            o.assign((const char*)&in[q], len); q += len; return true;
+        };
+        if (!rdstr(title) || !rdstr(cat) || !rdstr(lang)) { p = recEnd; continue; }
+        // Same sink as the direct path (Search.cpp): OnKadSearchResult runs all the
+        // validation / tombstone / clamp / dedupe logic and writes m_streamDirectory.
+        // fromSearchID/altIP default to 0 (UNKNOWN namespace; no overlay endpoint over the tunnel).
+        OnKadSearchResult(streamKey, Ese_Utf8ToCString(title), Ese_Utf8ToCString(cat),
+                          ip, port, uport, brate, views);
+        ++fed;
+        p = recEnd;
+    }
+    if (fed > 0)
+        CLiveDebugLog::Get().Append("KAD", "Tunneled search fed %d result(s) into directory", fed);
 }
 
 void CLiveKadBridge::GetKnownStreams(CArray<LiveStreamEntry>& outList) const

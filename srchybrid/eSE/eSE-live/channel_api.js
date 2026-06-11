@@ -520,8 +520,9 @@ function handleRoute(url, req, res, ctx) {
       // eMule endpoint parses query params on any method, so a GET suffices.
       '<script>(function(){' +
       'var sel=document.getElementById("ese-mode");var st=document.getElementById("ese-mode-status");' +
-      'function show(d){if(d&&d.mode){sel.value=d.mode;var c=(d.runtime&&d.runtime.circuitsActive)||0;' +
-      'st.textContent="Modo: "+d.mode+" · fallback: "+(d.fallback||"?")+" · circuitos túnel activos: "+c+(c===0?" (el modo Tunelizado no surtirá efecto hasta que haya circuitos)":"")}' +
+      'function show(d){if(d&&d.mode){sel.value=d.mode;var r=d.runtime||{};var c=r.circuitsActive||0;' +
+      'st.textContent="Modo: "+d.mode+" · fallback: "+(d.fallback||"?")+" · circuitos túnel activos: "+c+(c===0?" (el modo Tunelizado no surtirá efecto hasta que haya circuitos)":"")' +
+      '+" · celdas TX/RX: "+(r.cellsSent||0)+"/"+(r.cellsRecv||0)+" · bytes túnel TX/RX: "+(r.bytesSent||0)+"/"+(r.bytesRecv||0)+" · RTT medio: "+(r.meanRttMs?r.meanRttMs+" ms":"—")}' +
       'else{st.textContent="No se pudo leer el estado (¿eMule abierto en este equipo?)"}}' +
       'function load(){fetch("/api/live/privacy").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="eMule no responde"})}' +
       'sel.addEventListener("change",function(){st.textContent="Aplicando…";' +

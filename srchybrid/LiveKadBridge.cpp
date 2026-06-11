@@ -668,9 +668,16 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword,
         const bool wantTunnel = tun.ShouldRouteThroughTunnel((LPCWSTR)searchWord,
             (uint8_t)Kademlia::CKadV2ModeSelector::QueryContext::KAD_SEARCH);
         if (wantTunnel) {
-            // D5 - let the PST pool pick the circuit (any Active today; XOR-closest deferred).
+            // D5 - the PST pool picks the XOR-closest circuit to the real Kad keyword target
+            // (Acquire now ranks by the exit's Kad node-ID). NOTE: the send path
+            // (SendKadSearchV2NoWait -> SendMessagePinned) still round-robins, so Acquire here
+            // drives availability + PST reuse; per-search traffic-steering through the exact
+            // XOR-closest circuit is a soft follow-up (the XOR is a heuristic anyway).
+            Kademlia::CKadTagValueString wstrKwTarget(searchWord);
+            Kademlia::CUInt128 uXorTarget;
+            EseLiveGetKeywordHash(wstrKwTarget, &uXorTarget);
             const bool haveTunnel =
-                Kademlia::CKadV2TunnelPool::Get().Acquire(Kademlia::CUInt128()) != nullptr
+                Kademlia::CKadV2TunnelPool::Get().Acquire(uXorTarget) != nullptr
                 || tun.ActiveCircuitCount() > 0;
             // wide -> UTF-8 (already lowercased) for the tunnel search body.
             std::string kwUtf8;

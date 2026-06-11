@@ -2213,6 +2213,7 @@
 #define IDC_KAD_LOOKUPGRAPH             2855
 #define IDC_NETWORK_INFO                2856
 #define IDC_NETWORK_INFO_LABEL          2857
+#define IDC_NETINFO_KADMODE             3039
 #define IDC_SPLITTER_IRC                2858
 #define IDC_SPLITTER_STAT               2859
 #define IDC_SPLITTER_STAT_HR            2860
@@ -2443,7 +2444,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        1568
 #define _APS_NEXT_COMMAND_VALUE         32773
-#define _APS_NEXT_CONTROL_VALUE         3037
+#define _APS_NEXT_CONTROL_VALUE         3040
 #define _APS_NEXT_SYMED_VALUE           1610
 #endif
 #endif

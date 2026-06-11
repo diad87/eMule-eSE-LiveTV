@@ -36,6 +36,7 @@ IMPLEMENT_DYNAMIC(CNetworkInfoDlg, CDialog)
 BEGIN_MESSAGE_MAP(CNetworkInfoDlg, CResizableDialog)
 	ON_WM_TIMER()        // v0.71 P3.9 — periodic refresh
 	ON_WM_DESTROY()
+	ON_CBN_SELCHANGE(IDC_NETINFO_KADMODE, &CNetworkInfoDlg::OnKadModeChanged)   // v8.1 D6
 END_MESSAGE_MAP()
 
 CNetworkInfoDlg::CNetworkInfoDlg(CWnd *pParent /*=NULL*/)
@@ -53,6 +54,7 @@ void CNetworkInfoDlg::DoDataExchange(CDataExchange *pDX)
 {
 	CResizableDialog::DoDataExchange(pDX);
 	DDX_Control(pDX, IDC_NETWORK_INFO, m_info);
+	DDX_Control(pDX, IDC_NETINFO_KADMODE, m_cbKadMode);   // v8.1 D6
 }
 
 BOOL CNetworkInfoDlg::OnInitDialog()
@@ -63,6 +65,17 @@ BOOL CNetworkInfoDlg::OnInitDialog()
 
 	AddAnchor(IDC_NETWORK_INFO, TOP_LEFT, BOTTOM_RIGHT);
 	AddAnchor(IDOK, BOTTOM_RIGHT);
+
+	// v8.1 D6 - native privacy-mode dropdown (parity with the web /privacy selector). Populate
+	// ONCE here (not in the 2s refresh timer, which would reset the user's open selection). The
+	// 3 items map 1:1 to CKadV2Mode (Direct=0, Tunneled=1, Adaptive=2).
+	AddAnchor(IDC_NETINFO_KADMODE, TOP_LEFT, TOP_RIGHT);
+	m_cbKadMode.ResetContent();
+	m_cbKadMode.AddString(_T("Directo — sin túnel (tu IP visible al emisor)"));
+	m_cbKadMode.AddString(_T("Tunelizado — control por túnel onion"));
+	m_cbKadMode.AddString(_T("Adaptativo — túnel solo para canales/keywords sensibles"));
+	m_cbKadMode.SetCurSel((int)Kademlia::CKadV2ModeSelector::Get().GetDefaultMode());
+
 	EnableSaveRestore(PREF_INI_SECTION);
 
 	SetWindowText(GetResString(IDS_NETWORK_INFO));
@@ -110,6 +123,19 @@ BOOL CNetworkInfoDlg::OnInitDialog()
 	// every 2 s — cheap, no perceivable CPU.
 	m_nRefreshTimer = SetTimer(0xE5E1 /* eSE Info ID */, 2000, NULL);
 	return TRUE;
+}
+
+// v8.1 D6 - dropdown changed: set the mode in the selector + mirror into prefs (persists at
+// eMule's exit-time Save, exactly like the web /privacy handler — no Save() from here). Refresh
+// the panel so the read-only "Modo:" line updates immediately.
+void CNetworkInfoDlg::OnKadModeChanged()
+{
+	int sel = m_cbKadMode.GetCurSel();
+	if (sel == CB_ERR) return;
+	Kademlia::CKadV2ModeSelector& s = Kademlia::CKadV2ModeSelector::Get();
+	s.SetDefaultMode((Kademlia::CKadV2Mode)sel);
+	thePrefs.SetKadV2PrivacyMode((int)s.GetDefaultMode());
+	RefreshNow();
 }
 
 // v0.71 P3.9 — full re-render of the rich-edit content, preserving the

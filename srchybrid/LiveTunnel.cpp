@@ -1276,6 +1276,27 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
         }
         return true;
     }
+    if (sub_cmd == TUN_OP_LIVE_PEER_LIST) {
+        // v8.1 Sprint C (C2/C3) - exit relayed the broadcaster's peer-list of
+        // alternative sources. Body: [streamKey 16][count u8][count*(ip u32 LE +
+        // port u16 LE)]. Feed it into the normal (direct, in Tunelizado) dial path.
+        const uint8_t* b = (const uint8_t*)text.data();
+        if (text.size() >= 16 + 1 && theApp.liveStreamManager) {
+            uchar streamKey[16]; memcpy(streamKey, b, 16);
+            uint8_t count = b[16];
+            if (count > 16) count = 16;
+            const size_t need = 16u + 1u + (size_t)count * 6u;
+            if (text.size() >= need) {
+                uint32_t ips[16]; uint16_t ports[16];
+                for (uint8_t i = 0; i < count; ++i) {
+                    ips[i]   = eseRdU32LE(b + 17 + (size_t)i * 6);
+                    ports[i] = eseRdU16LE(b + 17 + (size_t)i * 6 + 4);
+                }
+                theApp.liveStreamManager->OnTunneledPeerList(streamKey, ips, ports, count);
+            }
+        }
+        return true;
+    }
     // Unknown sub_cmd: drop silently (future ops land here).
     return true;
 }
@@ -1714,6 +1735,60 @@ void CLiveTunnel::ExitRelayLiveControl(const uint8_t streamKey[16],
         ctx.circ   = circ;
         ctx.req_id = 0;   // unsolicited push
         SendReply(ctx, TUN_OP_LIVE_HEARTBEAT, body, bodyLen);
+    }
+}
+
+// C2/C3 (Sprint C finish) - relay the broadcaster's OP_LIVE_PEER_LIST (alternative
+// sources) down every circuit that proxy-subscribed to `streamKey` through us, so a
+// tunneled viewer learns the alt sources WITHOUT the broadcaster ever seeing the
+// viewer. Same snapshot-under-pending-lock then walk-under-m_lock pattern as
+// ExitRelayLiveControl (preserves the tunnel->manager-only lock order). Push
+// (req_id = 0). Body: [streamKey 16][count u8][count*(ip u32 LE + port u16 LE)].
+// ip is a net-order DWORD written byte-preserving via eseWrU32LE; the viewer reads
+// it back with eseRdU32LE and feeds the identical value into OnPeerListReceived.
+void CLiveTunnel::ExitRelayPeerList(const uint8_t streamKey[16],
+                                    const uint32_t* ips, const uint16_t* ports,
+                                    uint8_t count)
+{
+    if (count == 0 || ips == NULL || ports == NULL) return;
+    if (count > 16) count = 16;   // ESE_LIVE_MAX_PEER_LIST; also bounds the single cell
+    const std::string hex = LiveStreamKeyHex(streamKey);
+
+    std::vector<uint32_t> targets;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        auto it = m_exitLiveSubs.find(hex);
+        if (it == m_exitLiveSubs.end() || it->second.circuits.empty()) return;
+        const DWORD nowT = GetTickCount();
+        for (auto& kv : it->second.circuits) {
+            kv.second.lastSeen = nowT;   // active relay keeps the circuit fresh vs the TTL sweep
+            targets.push_back(kv.first);
+        }
+    }
+
+    // Build the relay body once. Max = 16 + 1 + 16*6 = 113 bytes (well under the
+    // single-cell payload budget), so no multi-cell fragmentation is needed.
+    uint8_t body[16 + 1 + 16 * 6];
+    memcpy(body, streamKey, 16);
+    body[16] = count;
+    for (uint8_t i = 0; i < count; ++i) {
+        eseWrU32LE(body + 17 + (size_t)i * 6,     ips[i]);
+        eseWrU16LE(body + 17 + (size_t)i * 6 + 4, ports[i]);
+    }
+    const size_t bodyLen = 16 + 1 + (size_t)count * 6;
+
+    CSingleLock lock(&m_lock, TRUE);
+    for (size_t i = 0; i < targets.size(); ++i) {
+        std::shared_ptr<CLiveCircuit> circ;
+        for (auto& c : m_circuits) {
+            if (c->Id() == targets[i] && c->State() == CircuitState::Active &&
+                c->m_role == CircuitRole::Relay) { circ = c; break; }
+        }
+        if (!circ) continue;
+        TunnelRequestCtx ctx;
+        ctx.circ   = circ;
+        ctx.req_id = 0;   // unsolicited push
+        SendReply(ctx, TUN_OP_LIVE_PEER_LIST, body, bodyLen);
     }
 }
 

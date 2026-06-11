@@ -1685,12 +1685,22 @@ void CLiveStreamManager::OnPeerBitmap(CUpDownClient* peer, const uchar* streamKe
     if (m_bBroadcasting && m_broadcastPeers.Find(peer) == NULL) {
         m_broadcastPeers.AddTail(peer);
         m_streamInfo.viewerCount = (uint32)m_broadcastPeers.GetCount();
+        // C6 finish: OnPeerDisconnected (fires on the AttachToAlreadyKnown swap)
+        // also evicted this peer from the pointer-keyed mesh via RemoveMeshPeer,
+        // but only m_broadcastPeers was restored above. Restore mesh membership
+        // too so GetMeshPeerCount / the (dormant) rarest-first scheduler stay
+        // consistent. AddMeshPeer is idempotent (IsMeshPeer guard, no counter
+        // resets), so this cannot double-add.
+        m_meshManager.AddMeshPeer(peer);
         LIVE_LOG("PEER", "REJOIN viewer=%S:%u (heartbeat after ClientList swap) total=%u",
             (LPCWSTR)ipstr(peer->GetIP()), (unsigned)peer->GetUserPort(),
             m_streamInfo.viewerCount);
     }
     if (m_bViewing && m_viewPeers.Find(peer) == NULL) {
         m_viewPeers.AddTail(peer);
+        // C6 finish: restore mesh membership lost to the swap's RemoveMeshPeer
+        // (see the broadcaster branch above). Idempotent, side-effect-free on add.
+        m_meshManager.AddMeshPeer(peer);
         LIVE_LOG("PEER", "REJOIN source=%S:%u (heartbeat after ClientList swap) total=%d",
             (LPCWSTR)ipstr(peer->GetIP()), (unsigned)peer->GetUserPort(),
             (int)m_viewPeers.GetCount());
@@ -1736,11 +1746,40 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
     const uchar* streamKey,
     const CArray<DWORD>& ips, const CArray<uint16>& ports)
 {
+    // C2/C3 (Sprint C finish): if THIS node is an exit proxying `streamKey` for
+    // tunneled viewers, relay the broadcaster's peer-list down their circuits
+    // BEFORE taking m_lock. The tunnel call takes tunnel locks; holding the
+    // manager m_lock here would invert the tunnel->manager-only order. ExitRelay
+    // PeerList is a no-op if we proxy no one for this stream, so this is cheap on
+    // a normal (non-exit) viewer too. ips are net-order DWORDs (value-preserving).
+    {
+        int n = (int)ips.GetCount();
+        if (n > (int)ports.GetCount()) n = (int)ports.GetCount();
+        if (n > 16) n = 16;
+        if (n > 0) {
+            uint32_t ipBuf[16]; uint16_t portBuf[16];
+            for (int i = 0; i < n; ++i) { ipBuf[i] = (uint32_t)ips[i]; portBuf[i] = ports[i]; }
+            eSELive::CLiveTunnel::Get().ExitRelayPeerList(streamKey, ipBuf, portBuf, (uint8_t)n);
+        }
+    }
+
     CSingleLock lock(&m_lock, TRUE);
 
     if (!m_bViewing) return;
     if (memcmp(m_streamInfo.streamKey, streamKey, 16) != 0) return;
     LIVE_LOG("MESH", "Received peer-list (%d entries)", (int)ips.GetCount());
+
+    // C2/C3 finish: in Tunelizado the SUBSCRIBE to each secondary source must be
+    // tunneled too (the exit proxy-subscribes on our behalf), symmetric with the C5
+    // primary path — otherwise we would hand every secondary source a direct
+    // user-hash<->stream<->IP association that the primary deliberately withholds.
+    // SendLiveSubscribeNoWait only takes the leaf m_mtLock, so it is safe to call
+    // under m_lock (exactly as the C5 self-heal does). NOTE: the DATA plane stays
+    // DIRECT in Tunelizado, so V's IP is still visible to every source it fetches
+    // chunks from (primary and secondary) — full data-plane tunneling is Sprint E.
+    // In Direct mode this is unchanged (direct subscribe).
+    const bool tunMode = eSELive::CLiveTunnel::Get().ShouldRouteThroughTunnel(NULL)
+                         && eSELive::CLiveTunnel::Get().ActiveCircuitCount() > 0;
 
     for (INT_PTR i = 0; i < ips.GetCount(); i++) {
         DWORD ip = ips[i];
@@ -1766,37 +1805,60 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
 
         // Try to find or create a client for this peer. Peer-list IPs are stored in network order.
         CUpDownClient* newClient = theApp.clientlist->FindClientByIP(ip, port);
-        if (newClient) {
-            // Send OP_LIVE_SUBSCRIBE to join the stream via this peer
-            Packet* pkt = eSELive::CreateSubscribePacket(
-                m_streamInfo.streamKey, thePrefs.GetUserHash(), 0);
-            if (pkt) {
-                theStats.AddUpDataOverheadOther(pkt->size);
-                newClient->SafeConnectAndSendPacket(pkt);
-            }
-            if (m_viewPeers.Find(newClient) == NULL)
-                m_viewPeers.AddTail(newClient);
-            m_meshManager.AddMeshPeer(newClient);
-
-            AddLogLine(false, _T("eSE Live: Connected to peer %s:%u from peer list"),
-                (LPCTSTR)ipstr(ip), port);
-        } else {
-            CUpDownClient* created = new CUpDownClient(NULL, port, ntohl(ip), 0, 0, false);
-            created->SetIP(ip);
-            theApp.clientlist->AddClient(created);
-            Packet* pkt = eSELive::CreateSubscribePacket(
-                m_streamInfo.streamKey, thePrefs.GetUserHash(), 0);
-            if (pkt) {
-                theStats.AddUpDataOverheadOther(pkt->size);
-                created->SafeConnectAndSendPacket(pkt);
-            }
-            m_viewPeers.AddTail(created);
-            m_meshManager.AddMeshPeer(created);
-
-            AddLogLine(false, _T("eSE Live: Dialing new peer %s:%u from peer list"),
-                (LPCTSTR)ipstr(ip), port);
+        if (newClient == NULL) {
+            newClient = new CUpDownClient(NULL, port, ntohl(ip), 0, 0, false);
+            newClient->SetIP(ip);
+            theApp.clientlist->AddClient(newClient);
         }
+        // UAF-safe ordering (matches the C5 fix in TryConnectToStreamSource): add to
+        // the view/mesh lists BEFORE the connect, because SafeConnectAndSendPacket /
+        // TryToConnect can `delete this` on a LowID hard-fail and ~CUpDownClient ->
+        // OnPeerDisconnected scrubs these lists — self-cleaning only if the pointer is
+        // already IN them. The old order (add after connect) inserted a freed pointer.
+        if (m_viewPeers.Find(newClient) == NULL)
+            m_viewPeers.AddTail(newClient);
+        m_meshManager.AddMeshPeer(newClient);
+
+        if (tunMode) {
+            // Tunelizado: tunnel the subscribe to this secondary source (exit
+            // subscribes on our behalf — the source sees the exit, not us), then open
+            // the direct data socket so chunks can be pulled (data plane direct).
+            eSELive::CLiveTunnel::Get().SendLiveSubscribeNoWait(
+                m_streamInfo.streamKey, ip, port, 0, 0);
+            newClient->TryToConnect(true);   // may delete newClient -> destructor scrubs lists
+        } else {
+            // Direct: subscribe directly (the source sees us).
+            Packet* pkt = eSELive::CreateSubscribePacket(
+                m_streamInfo.streamKey, thePrefs.GetUserHash(), 0);
+            if (pkt) {
+                theStats.AddUpDataOverheadOther(pkt->size);
+                newClient->SafeConnectAndSendPacket(pkt);   // may delete newClient
+            }
+        }
+        // do NOT touch newClient past this point (it may have been freed by the connect)
+        AddLogLine(false, _T("eSE Live: Subscribed to peer %s:%u from peer list (%s)"),
+            (LPCTSTR)ipstr(ip), port, tunMode ? _T("tunneled") : _T("direct"));
     }
+}
+
+// v8.1 Sprint C (C2/C3 finish) — a tunneled viewer received the broadcaster's
+// peer-list relayed by the exit (TUN_OP_LIVE_PEER_LIST). Reuse the single-sourced
+// OnPeerListReceived dial/IPFilter/clientlist path (it takes m_lock itself). The
+// peer arg is unused, so NULL is safe; chunks then flow DIRECT per the Tunelizado
+// contract. Re-entering OnPeerListReceived runs its exit-relay hook again, but a
+// viewer is not an exit for this stream so that is a cheap no-op (no relay loop).
+void CLiveStreamManager::OnTunneledPeerList(const uchar* streamKey,
+    const uint32_t* ips, const uint16_t* ports, uint8_t count)
+{
+    if (streamKey == NULL || ips == NULL || ports == NULL) return;
+    if (count > 16) count = 16;
+    CArray<DWORD> ipArr;
+    CArray<uint16> portArr;
+    for (uint8_t i = 0; i < count; ++i) {
+        ipArr.Add((DWORD)ips[i]);
+        portArr.Add(ports[i]);
+    }
+    OnPeerListReceived(NULL, streamKey, ipArr, portArr);
 }
 
 // v0.71 IPv6 Sprint 7 follow-up — OP_LIVE_PEER_LIST_V2 receiver.

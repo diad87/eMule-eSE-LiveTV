@@ -39,6 +39,13 @@ const size_t TUN_SEARCH_MAX_RESULTS = 100;     // cap records per reply (anti-Do
 
 // Endpoint opaque handle exposed to LiveMeshManager (Cap 5 §5.6.3 thesis).
 // The mesh layer manipulates TunnelEndpoint references, not raw client pointers.
+// RESERVED for the Sprint E data plane (C6/E3), where CLiveMeshManager re-indexes
+// peers by endpoint. It is intentionally NOT used by the exit's ExitStreamProxy,
+// which keys proxied viewers by bare circ_id: at an exit the originating viewer's
+// pubkey is structurally unknowable (onion routing hides the originator — a relay
+// circuit knows only its neighbour hops), and circ_id is the stable session handle
+// that survives a CUpDownClient swap. remote_pubkey is populated only on the
+// ORIGINATOR side, from the channel pubkey the viewer already holds.
 struct TunnelEndpoint {
     uint32_t circ_id;
     uint8_t  remote_pubkey[32];      // origin's Ed25519 pub (channel pubkey for streams)
@@ -113,6 +120,7 @@ public:
         TUN_OP_LIVE_SUBSCRIBE   = 0x20,   // V → exit: forward subscribe to broadcaster
         TUN_OP_LIVE_SUB_ACK     = 0x21,   // exit → V: ack / broadcaster contact info
         TUN_OP_LIVE_HEARTBEAT   = 0x22,   // exit → V: relay broadcaster heartbeat/announce (C3)
+        TUN_OP_LIVE_PEER_LIST   = 0x23,   // exit → V: relay broadcaster's OP_LIVE_PEER_LIST alt sources (C2/C3)
         // v8.1 Sprint A — multi-cell ops. sub_cmd >= TUN_MULTICELL_OP_MIN (0x40)
         // ALWAYS carries an 8-byte fragment header in its body (see
         // LiveCellQueue.h). 0x42-0x7F are reserved for Sprint B/C.
@@ -175,6 +183,11 @@ public:
     // exit confirmed it forwarded the subscribe. The broadcaster's live-edge
     // bitmap + pubkey flow back via tunneled heartbeats (C3). ip/port/udp/altIP
     // are the same endpoint the viewer would dial directly (learned from Kad).
+    // SUPERSEDED by SendLiveSubscribeNoWait (below) and has NO current caller: the
+    // wired design is fire-and-forget — the one-way subscribe establishes the
+    // tunneled session and the live edge returns via the C3 heartbeat relay, so no
+    // caller blocks on the SUB_ACK (both dial sites run on the main thread, where a
+    // blocking wait would be wrong). Kept as the symmetric off-thread blocking twin.
     // BLOCKING up to timeoutMs — call OFF the main thread (like TunneledKadSearch).
     bool TunneledLiveSubscribe(const uint8_t streamKey[16],
                                uint32_t bIP, uint16_t bPort, uint16_t bUDP,
@@ -420,6 +433,14 @@ public:
     void ExitRelayLiveControl(const uint8_t streamKey[16],
                               bool hasBitmap, uint16_t bitmap, uint32_t oldestSeq,
                               const uint8_t* pubkeyOrNull);
+    // v8.1 Sprint C (C2/C3 finish) — called from CLiveStreamManager::OnPeerListReceived
+    // (main thread, BEFORE its m_lock). If THIS node is an exit proxying `streamKey`
+    // for tunneled viewers, relay the broadcaster's alternative-source list to each
+    // subscribed circuit as TUN_OP_LIVE_PEER_LIST. No-op if we proxy no one for this
+    // stream, so it is cheap to call unconditionally. ips are net-order DWORDs,
+    // value-preserving through the LE body (no byte-swap).
+    void ExitRelayPeerList(const uint8_t streamKey[16],
+                           const uint32_t* ips, const uint16_t* ports, uint8_t count);
 private:
     // B2/B3 - main thread: reply to jobs whose window elapsed, then drop them.
     void FinishDueSearchJobs();

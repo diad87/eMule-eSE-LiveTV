@@ -32,6 +32,7 @@
 #include "LiveStreamManager.h"
 #include "LiveKadBridge.h"
 #include "kademlia/kademlia/KadV2ModeSelector.h"
+#include "kademlia/kademlia/SearchManager.h"   // v8.1 B - StopSearch on tunneled search
 
 namespace eSELive {
 
@@ -47,6 +48,11 @@ CLiveTunnel::CLiveTunnel()
         [this](const TunnelRequestCtx& c){ ExitHandle_KadSearch(c); });
     RegisterExitHandler(TUN_OP_ECHO_LARGE,
         [this](const TunnelRequestCtx& c){ ExitHandle_EchoLarge(c); });
+    // v8.1 Sprint B - real Kad search through the tunnel.
+    RegisterExitHandler(TUN_OP_KAD_SEARCH_V2,
+        [this](const TunnelRequestCtx& c){ ExitHandle_KadSearchV2(c); });
+    RegisterExitHandler(TUN_OP_KAD_CANCEL,
+        [this](const TunnelRequestCtx& c){ ExitHandle_KadCancel(c); });
 }
 
 CLiveTunnel& CLiveTunnel::Get()
@@ -1467,6 +1473,180 @@ void CLiveTunnel::ExitHandle_KadSearch(const TunnelRequestCtx& ctx)
               (const uint8_t*)(LPCSTR)resultStr, (size_t)resultStr.GetLength());
 }
 
+// === v8.1 Sprint B - real Kad search via tunnel ==========================
+
+// B1 - exit handler for TUN_OP_KAD_SEARCH_V2: launch a REAL dual-namespace Kad
+// CSearch on V's behalf and DEFER the reply (A6). Results land asynchronously
+// in the Kad bridge's stream directory (thread-safe there); FinishDueSearchJobs()
+// (main thread, from Tick) reads them after TUN_SEARCH_WINDOW_MS and sends
+// TUN_OP_KAD_RESULT_V2. The keyword reaches the exit in clear - accepted by
+// design (thesis Decision 12.3); the exit queries Kad from ITS OWN ip, so V's
+// identity never touches the DHT. Runs on the main thread (OnCellReceived).
+void CLiveTunnel::ExitHandle_KadSearchV2(const TunnelRequestCtx& ctx)
+{
+    if (!ctx.circ) return;
+    // body = [flags u8][kw_len u16 LE][keyword UTF-8] (breakdown 2.2); also
+    // accept a bare keyword (no header) for forward-compat.
+    std::string keyword;
+    if (ctx.bodyLen >= 3) {
+        uint16_t kwLen = (uint16_t)ctx.body[1] | ((uint16_t)ctx.body[2] << 8);
+        size_t avail = ctx.bodyLen - 3;
+        if (kwLen > avail) kwLen = (uint16_t)avail;
+        keyword.assign((const char*)ctx.body + 3, kwLen);
+    } else {
+        keyword.assign((const char*)ctx.body, ctx.bodyLen);
+    }
+    for (auto& ch : keyword)
+        if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+
+    BeginExitOperation(ctx, TUN_OP_KAD_RESULT_V2);
+
+    TunnelSearchJob job;
+    job.circ_id  = ctx.circ->Id();
+    job.req_id   = ctx.req_id;
+    job.keyword  = keyword;
+    job.deadline = GetTickCount() + TUN_SEARCH_WINDOW_MS;
+
+    // Fire the real dual-namespace search (main thread). The rate-limit /
+    // cooldown inside SearchStreams protects the exit from being used as a Kad
+    // amplifier; if it declines, kadSearchIds stays empty and we just serve
+    // whatever the directory already holds when the window elapses.
+    try {
+        if (theApp.liveStreamManager) {
+            CString kw(keyword.c_str());
+            theApp.liveStreamManager->GetKadBridge().SearchStreams(kw, &job.kadSearchIds);
+        }
+    } catch (...) {}
+
+    CSingleLock pl(&m_pendingLock, TRUE);
+    m_searchJobs[ExitOpKey(job.circ_id, job.req_id)] = std::move(job);
+}
+
+// B7 - exit handler for TUN_OP_KAD_CANCEL: V aborts an in-flight search by
+// req_id. Stop the CSearch(es), drop the deferred op, erase the job. No reply.
+void CLiveTunnel::ExitHandle_KadCancel(const TunnelRequestCtx& ctx)
+{
+    if (!ctx.circ) return;
+    const uint64_t key = ExitOpKey(ctx.circ->Id(), ctx.req_id);
+    TunnelSearchJob job;
+    bool found = false;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        auto it = m_searchJobs.find(key);
+        if (it != m_searchJobs.end()) {
+            job = std::move(it->second);
+            m_searchJobs.erase(it);
+            found = true;
+        }
+    }
+    if (found) StopSearchJobKad(job);
+    AbortExitOperation(ctx.circ->Id(), ctx.req_id);
+}
+
+// B2/B3 - MAIN THREAD (from Tick): reply to every search job whose accumulation
+// window has elapsed, then drop it. The directory has been filling async with
+// real Kad results since ExitHandle_KadSearchV2 fired the search.
+void CLiveTunnel::FinishDueSearchJobs()
+{
+    const DWORD now = GetTickCount();
+    std::vector<TunnelSearchJob> due;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        for (auto it = m_searchJobs.begin(); it != m_searchJobs.end(); ) {
+            if ((int)(now - it->second.deadline) >= 0) {   // window elapsed (wrap-safe)
+                due.push_back(std::move(it->second));
+                it = m_searchJobs.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (size_t i = 0; i < due.size(); ++i) {
+        std::vector<uint8_t> payload;
+        SerializeSearchResults(due[i].keyword, payload);
+        // CompleteExitOperation no-ops if the circuit rotated/died meanwhile.
+        CompleteExitOperation(due[i].circ_id, due[i].req_id,
+                              payload.data(), payload.size());
+        StopSearchJobKad(due[i]);   // free the CSearch either way
+    }
+}
+
+// B3 - serialize known streams matching `keyword` into the TUN_OP_KAD_RESULT_V2
+// wire body (breakdown 2.3). Reuses the exit's directory + GetKnownStreams()
+// (which already filters tombstones and is thread-safe).
+void CLiveTunnel::SerializeSearchResults(const std::string& keyword,
+                                         std::vector<uint8_t>& out) const
+{
+    out.assign(4, 0);   // header: result_count(2) + flags(1) + reserved(1)
+    uint16_t count = 0;
+
+    auto putU16 = [&](uint16_t v){ out.push_back((uint8_t)(v & 0xFF));
+                                   out.push_back((uint8_t)((v >> 8) & 0xFF)); };
+    auto putU32 = [&](uint32_t v){ for (int i = 0; i < 4; ++i)
+                                       out.push_back((uint8_t)((v >> (i*8)) & 0xFF)); };
+    auto putStr8 = [&](const CStringA& s){
+        int n = s.GetLength(); if (n > 255) n = 255;
+        out.push_back((uint8_t)n);
+        const char* p = (LPCSTR)s;
+        out.insert(out.end(), (const uint8_t*)p, (const uint8_t*)p + n);
+    };
+
+    try {
+        if (theApp.liveStreamManager) {
+            CArray<LiveStreamEntry> entries;
+            theApp.liveStreamManager->GetKadBridge().GetKnownStreams(entries);
+            for (INT_PTR i = 0;
+                 i < entries.GetCount() && count < TUN_SEARCH_MAX_RESULTS; ++i) {
+                const LiveStreamEntry& e = entries[i];
+                CStringA titleA(e.title);
+                CStringA titleLow = titleA; titleLow.MakeLower();
+                // "eselive" is the global keyword every stream publishes under,
+                // so treat it (and an empty keyword) as match-all; any other
+                // keyword still filters by title substring.
+                if (!keyword.empty() && keyword != "eselive"
+                    && titleLow.Find((LPCSTR)keyword.c_str()) < 0)
+                    continue;
+                if (out.size() > TUN_MSG_MAX_BYTES - 512) break;   // keep under the cap
+
+                CStringA catA(e.category), langA(e.language);
+                const size_t recLenPos = out.size();
+                putU16(0);                                   // rec_len placeholder
+                const size_t bodyStart = out.size();
+                out.insert(out.end(), e.streamKey, e.streamKey + 16);
+                putU32(e.broadcasterIP);
+                putU16(e.broadcasterPort);
+                putU16(e.broadcasterUDPPort);
+                putU16(e.bitrate);
+                putU32(e.viewerCount);
+                putU32(e.startedAt);
+                out.push_back(e.discoveryNamespace);
+                putStr8(titleA);
+                putStr8(catA);
+                putStr8(langA);
+                const uint16_t recLen = (uint16_t)(out.size() - bodyStart);
+                out[recLenPos]     = (uint8_t)(recLen & 0xFF);
+                out[recLenPos + 1] = (uint8_t)((recLen >> 8) & 0xFF);
+                ++count;
+            }
+        }
+    } catch (...) {}
+
+    out[0] = (uint8_t)(count & 0xFF);
+    out[1] = (uint8_t)((count >> 8) & 0xFF);
+    out[2] = 0x02;   // flags bit1 = final (MVP: single final reply)
+    out[3] = 0;
+}
+
+// Stop the CSearch(es) a job launched (main thread). Delayed-delete lets late
+// UDP packets drain; the search is gone within ~15 s regardless.
+void CLiveTunnel::StopSearchJobKad(const TunnelSearchJob& job)
+{
+    for (size_t i = 0; i < job.kadSearchIds.size(); ++i) {
+        try { Kademlia::CSearchManager::StopSearch(job.kadSearchIds[i], true); }
+        catch (...) {}
+    }
+}
+
 // v8.1 A1.7 - exit handler for the multi-cell echo test op. The dispatcher
 // has already reassembled the full request; echo it back as
 // TUN_OP_ECHO_LARGE_REPLY. v8.1 A6 - routed through the deferred-operation
@@ -1493,29 +1673,120 @@ bool CLiveTunnel::ShouldRouteThroughTunnel(const wchar_t* keywordOrNull) const
     return decided == CKadV2Mode::Tunneled;
 }
 
+// v8.1 Sprint B - parse the TUN_OP_KAD_RESULT_V2 wire body (breakdown 2.3) into
+// a JSON array. Defensive: every field is bounds-checked against the buffer and
+// the per-record length, since this is network-sourced data.
+static std::string SB_JsonEscape(const char* p, size_t n)
+{
+    static const char* HEX = "0123456789abcdef";
+    std::string s;
+    for (size_t i = 0; i < n; ++i) {
+        char c = p[i];
+        if (c == '"' || c == '\\') { s += '\\'; s += c; }
+        else if ((unsigned char)c < 0x20) {
+            s += "\\u00"; s += HEX[((unsigned char)c >> 4) & 0xF]; s += HEX[c & 0xF];
+        } else s += c;
+    }
+    return s;
+}
+
+static std::string SB_ParseSearchResultsToJson(const std::vector<uint8_t>& in)
+{
+    static const char* HEX = "0123456789abcdef";
+    const size_t n = in.size();
+    if (n < 4) return "[]";
+    auto rd16 = [&](size_t o)->uint16_t { return (uint16_t)in[o] | ((uint16_t)in[o+1] << 8); };
+    auto rd32 = [&](size_t o)->uint32_t {
+        return (uint32_t)in[o] | ((uint32_t)in[o+1] << 8)
+             | ((uint32_t)in[o+2] << 16) | ((uint32_t)in[o+3] << 24); };
+
+    const uint16_t count = rd16(0);
+    std::string json = "[";
+    size_t p = 4;
+    bool first = true;
+    for (uint16_t r = 0; r < count && p + 2 <= n; ++r) {
+        const uint16_t recLen = rd16(p); p += 2;
+        const size_t recEnd = p + recLen;
+        if (recEnd > n) break;
+        if (recLen < 35) { p = recEnd; continue; }   // fixed part = 35 B
+        const size_t rec = p;
+        char keyhex[33];
+        for (int i = 0; i < 16; ++i) {
+            keyhex[i*2]   = HEX[(in[rec + i] >> 4) & 0xF];
+            keyhex[i*2+1] = HEX[in[rec + i] & 0xF];
+        }
+        keyhex[32] = 0;
+        size_t q = rec + 16;
+        const uint32_t ip    = rd32(q); q += 4;
+        const uint16_t port  = rd16(q); q += 2;
+        const uint16_t uport = rd16(q); q += 2;
+        const uint16_t brate = rd16(q); q += 2;
+        const uint32_t views = rd32(q); q += 4;
+        const uint32_t start = rd32(q); q += 4;
+        const uint8_t  ns    = in[q];   q += 1;
+        std::string title, cat, lang;
+        auto rdstr = [&](std::string& o)->bool {
+            if (q + 1 > recEnd) return false;
+            uint8_t len = in[q]; q += 1;
+            if (q + len > recEnd) return false;
+            o.assign((const char*)&in[q], len); q += len; return true;
+        };
+        if (!rdstr(title) || !rdstr(cat) || !rdstr(lang)) { p = recEnd; continue; }
+
+        std::string ipstr = std::to_string(ip & 0xFF) + "." + std::to_string((ip >> 8) & 0xFF)
+                          + "." + std::to_string((ip >> 16) & 0xFF) + "." + std::to_string((ip >> 24) & 0xFF);
+        if (!first) json += ",";
+        first = false;
+        json += "{\"stream_key\":\""; json += keyhex;
+        json += "\",\"title\":\"";    json += SB_JsonEscape(title.data(), title.size());
+        json += "\",\"category\":\""; json += SB_JsonEscape(cat.data(), cat.size());
+        json += "\",\"language\":\""; json += SB_JsonEscape(lang.data(), lang.size());
+        json += "\",\"bitrate\":";    json += std::to_string(brate);
+        json += ",\"viewers\":";      json += std::to_string(views);
+        json += ",\"ip\":\"";         json += ipstr;
+        json += "\",\"port\":";       json += std::to_string(port);
+        json += ",\"uport\":";        json += std::to_string(uport);
+        json += ",\"started_at\":";   json += std::to_string(start);
+        json += ",\"ns\":";           json += std::to_string((unsigned)ns);
+        json += "}";
+        p = recEnd;
+    }
+    json += "]";
+    return json;
+}
+
 bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
                                     std::string& resultsJsonOut,
                                     uint32_t timeoutMs)
 {
-    // v0.71 P1.A — send KAD_SEARCH through any active circuit, await
-    // KAD_RESULT reply matching req_id.
+    // v8.1 Sprint B - send TUN_OP_KAD_SEARCH_V2: the exit runs a REAL Kad
+    // CSearch on our behalf, accumulates DHT results for ~TUN_SEARCH_WINDOW_MS,
+    // and replies with rich multi-cell TUN_OP_KAD_RESULT_V2. timeoutMs MUST
+    // exceed the exit's window. resultsJsonOut receives a JSON array.
     uint32_t req_id;
-    // v8.1 A4 - register the waiter (generates a unique req_id), stash the
-    // message for retry, then marshal a pinned send and block (A3, no poll).
     PendingRequest* pr = RegisterPending(req_id);
+
+    // request body = [flags u8][kw_len u16 LE][keyword] (breakdown 2.2).
+    std::vector<uint8_t> body;
+    const uint16_t kwLen =
+        (uint16_t)(keywordLower.size() > 0xFFFF ? 0xFFFF : keywordLower.size());
+    body.push_back(0x01);                       // flags bit0 = include local cache
+    body.push_back((uint8_t)(kwLen & 0xFF));
+    body.push_back((uint8_t)(kwLen >> 8));
+    body.insert(body.end(), keywordLower.begin(), keywordLower.begin() + kwLen);
+
     {
         CSingleLock pl(&m_pendingLock, TRUE);
-        pr->sub_cmd      = TUN_OP_KAD_SEARCH;
-        pr->request_msg.assign(keywordLower.begin(), keywordLower.end());
+        pr->sub_cmd      = TUN_OP_KAD_SEARCH_V2;
+        pr->request_msg  = body;
         pr->retries_left = TUN_SEND_RETRIES;
     }
-    EnqueueSendMsg(req_id, TUN_OP_KAD_SEARCH,
-                   (const uint8_t*)keywordLower.data(), keywordLower.size());
+    EnqueueSendMsg(req_id, TUN_OP_KAD_SEARCH_V2, body.data(), body.size());
 
     std::vector<uint8_t> reply;
     if (!WaitPending(req_id, pr, timeoutMs, reply, NULL))
         return false;
-    resultsJsonOut.assign((const char*)reply.data(), reply.size());
+    resultsJsonOut = SB_ParseSearchResultsToJson(reply);
     return true;
 }
 
@@ -1735,6 +2006,10 @@ void CLiveTunnel::Tick()
                 ++it;
         }
     }
+
+    // 7. v8.1 Sprint B - reply to tunneled Kad searches whose accumulation
+    // window has elapsed (real results have been landing in the directory).
+    FinishDueSearchJobs();
 
     m_lastTickMs = now;
 }

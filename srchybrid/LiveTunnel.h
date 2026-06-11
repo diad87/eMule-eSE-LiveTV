@@ -33,6 +33,10 @@ const DWORD  TUNNEL_ROTATION_BASE_MS  = 300u * 1000u;   // v8.1: 5 min (was 30 s
 const DWORD  TUNNEL_ROTATION_JITTER_MS = 10u * 1000u;
 const DWORD  TUNNEL_HANDSHAKE_TIMEOUT_MS = 800u;
 
+// v8.1 Sprint B — tunneled Kad search.
+const DWORD  TUN_SEARCH_WINDOW_MS   = 7000u;   // accumulate Kad results this long, then reply
+const size_t TUN_SEARCH_MAX_RESULTS = 100;     // cap records per reply (anti-DoS + size)
+
 // Endpoint opaque handle exposed to LiveMeshManager (Cap 5 §5.6.3 thesis).
 // The mesh layer manipulates TunnelEndpoint references, not raw client pointers.
 struct TunnelEndpoint {
@@ -112,7 +116,11 @@ public:
         // ALWAYS carries an 8-byte fragment header in its body (see
         // LiveCellQueue.h). 0x42-0x7F are reserved for Sprint B/C.
         TUN_OP_ECHO_LARGE       = 0x40,   // A1.7 test: V -> exit, arbitrary-size echo
-        TUN_OP_ECHO_LARGE_REPLY = 0x41    // A1.7 test: exit -> V, echoed payload
+        TUN_OP_ECHO_LARGE_REPLY = 0x41,   // A1.7 test: exit -> V, echoed payload
+        // v8.1 Sprint B — real Kad search through the tunnel (multi-cell).
+        TUN_OP_KAD_SEARCH_V2    = 0x42,   // V -> exit: run a real Kad CSearch on my behalf
+        TUN_OP_KAD_RESULT_V2    = 0x43,   // exit -> V: rich result records (multi-cell)
+        TUN_OP_KAD_CANCEL       = 0x44    // V -> exit: abort an in-flight search by req_id
     };
 
     // === v8.1 A2 - generic exit-side dispatcher ============================
@@ -338,6 +346,30 @@ private:
                                const uint8_t* payload, size_t payloadLen);
     // Discard a deferred op without replying (e.g. cancelled / circuit dead).
     void AbortExitOperation(uint32_t circ_id, uint32_t req_id);
+
+    // === v8.1 Sprint B - real Kad search via tunnel =======================
+    // TUN_OP_KAD_SEARCH_V2 starts a real Kad CSearch on the exit and defers the
+    // reply (A6). Results accumulate in CLiveKadBridge's directory (filled async
+    // on the Kad UDP thread, thread-safe there); after TUN_SEARCH_WINDOW_MS,
+    // Tick() reads the matching streams, serializes them as TUN_OP_KAD_RESULT_V2
+    // and completes the deferred op. All of THIS runs on the main thread.
+    struct TunnelSearchJob {
+        uint32_t              circ_id  = 0;
+        uint32_t              req_id   = 0;
+        std::string           keyword;          // normalized (lowercase)
+        DWORD                 deadline = 0;      // GetTickCount() when to reply
+        std::vector<uint32_t> kadSearchIds;     // CSearch ids to StopSearch on finish
+    };
+    std::map<uint64_t, TunnelSearchJob> m_searchJobs;   // key = ExitOpKey, under m_pendingLock
+    void ExitHandle_KadSearchV2(const TunnelRequestCtx& ctx);   // B1
+    void ExitHandle_KadCancel(const TunnelRequestCtx& ctx);     // B7
+    // B2/B3 - main thread: reply to jobs whose window elapsed, then drop them.
+    void FinishDueSearchJobs();
+    // Serialize matching known streams into the TUN_OP_KAD_RESULT_V2 wire body.
+    void SerializeSearchResults(const std::string& keyword,
+                                std::vector<uint8_t>& out) const;
+    // StopSearch on the job's CSearch ids (main thread only).
+    void StopSearchJobKad(const TunnelSearchJob& job);
 
     // v0.71 C — pending tunnel_ping requests. Key = req_id, value = the
     // reply text once it arrives. The TunnelPing() blocking call polls

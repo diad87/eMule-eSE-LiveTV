@@ -304,6 +304,7 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 		size_t pool = 0;
 		size_t subs = 0;
 		uint64_t cellsSent = 0, cellsRecv = 0, bytesSent = 0, bytesRecv = 0;  // v8.1 D8
+		uint32_t meanRtt = 0;                                                 // v8.1 D8
 		try {
 			circuitsActive  = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
 			circuitsPending = eSELive::CLiveTunnel::Get().PendingCircuitCount();
@@ -313,6 +314,7 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 			cellsRecv       = eSELive::CLiveTunnel::Get().CellsRecvTotal();
 			bytesSent       = eSELive::CLiveTunnel::Get().BytesSentTotal();
 			bytesRecv       = eSELive::CLiveTunnel::Get().BytesRecvTotal();
+			meanRtt         = eSELive::CLiveTunnel::Get().MeanRttMs();
 		} catch (...) {}
 
 		{
@@ -341,6 +343,12 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 			cs.Format(_T("TX %I64u cells / %I64u KB   RX %I64u cells / %I64u KB"),
 				cellsSent, bytesSent / 1024, cellsRecv, bytesRecv / 1024);
 			rCtrl << _T("Tunnel traffic:\t") << cs << _T("\r\n");
+
+			// v8.1 D8 - mean end-to-end tunnel RTT (only shown once a probe round-trips).
+			if (meanRtt > 0) {
+				cs.Format(_T("~%u ms (media EWMA, ida y vuelta por el tunel)"), meanRtt);
+				rCtrl << _T("Tunnel RTT:\t") << cs << _T("\r\n");
+			}
 
 			cs.Format(_T("%u canales (DPAPI)"), (unsigned)subs);
 			rCtrl << _T("Suscripciones:\t") << cs << _T("\r\n");

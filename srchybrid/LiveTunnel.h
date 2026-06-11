@@ -271,6 +271,9 @@ public:
     // fixed OP_EMULEPROT/opcode header). Honest tunnel-carried byte figure.
     uint64_t BytesSentTotal() const { return m_bytesSentTotal; }
     uint64_t BytesRecvTotal() const { return m_bytesRecvTotal; }
+    // v8.1 D8 — EWMA mean end-to-end tunnel RTT in ms (0 = unknown / no sample yet).
+    // Measured by a periodic fire-and-forget TUN_OP_PING probe (see Tick).
+    uint32_t MeanRttMs() const { return m_meanRttMs; }
 
 private:
     CLiveTunnel();
@@ -540,6 +543,11 @@ private:
     uint64_t m_cellsRecvTotal = 0;
     uint64_t m_bytesSentTotal = 0;   // v8.1 D8 - tunnel wire-byte telemetry
     uint64_t m_bytesRecvTotal = 0;
+    // v8.1 D8 - periodic RTT probe state (all touched only under m_lock).
+    DWORD    m_lastRttPingTick = 0;  // when we last SENT an RTT probe (interval gate)
+    DWORD    m_rttPingSentTick = 0;  // send tick of the in-flight probe
+    uint32_t m_rttPingReqId    = 0;  // req_id of the in-flight probe (0 = none outstanding)
+    uint32_t m_meanRttMs       = 0;  // EWMA mean tunnel RTT (0 = unknown)
 };
 
 }  // namespace eSELive

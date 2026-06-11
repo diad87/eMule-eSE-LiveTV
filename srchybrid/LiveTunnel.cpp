@@ -1003,6 +1003,12 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
         auto& c = m_circuits[idx];
         if (c->State() == CircuitState::Active && c->HopCount() >= 1
             && c->m_firstHopClient
+            // v8.1 D8 - only ORIGINATOR circuits can be pinned: we hold the full onion
+            // key stack to reach the exit. Today m_firstHopClient is set only on the
+            // originator path, so this is the same set; the explicit role check makes the
+            // invariant self-documenting and future-proof (a relay circuit must never be
+            // selected — we'd lack the keys to reach the exit).
+            && c->m_role == CircuitRole::Originator
             // A7.4 - a multi-cell op (>= 0x40) needs every hop dataplane-capable;
             // a circuit with a v8.0.0 hop (m_multicell_ok == false) is only
             // eligible for single-cell legacy ops.
@@ -1281,7 +1287,19 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
     std::string text((const char*)body, text_len);
 
     if (sub_cmd == TUN_OP_PING_REPLY) {
-        // v8.1 A3 - wake the blocked TunnelPing() call.
+        // v8.1 D8 - if this is our periodic RTT probe's reply, record the round trip.
+        // (Runs under m_lock via OnCellReceived, same as the Tick send, so the RTT
+        // fields are consistently synchronized.)
+        if (req_id != 0 && req_id == m_rttPingReqId && m_rttPingSentTick != 0) {
+            DWORD rtt = GetTickCount() - m_rttPingSentTick;
+            if (rtt > 60000u) rtt = 60000u;   // clamp absurd/stale samples; also no overflow
+            // EWMA (1/4 weight); first sample seeds the mean.
+            m_meanRttMs = (m_meanRttMs == 0) ? (uint32_t)rtt
+                                             : (uint32_t)((m_meanRttMs * 3 + rtt) / 4);
+            m_rttPingReqId = 0;   // consume so a duplicate reply can't re-match
+        }
+        // v8.1 A3 - wake the blocked TunnelPing() call (no-op for the RTT probe, which
+        // has no registered waiter).
         SignalReply(req_id, (const uint8_t*)text.data(), text.size(), 0);
         return true;
     }
@@ -2272,6 +2290,34 @@ void CLiveTunnel::Tick()
             c->m_lastPaddingTick = now;
             c->m_nextPaddingDelayMs =
                 covCfg.NextPaddingDelayMs((uint32_t)covCfg.GetProfile());
+        }
+    }
+
+    // 3b. v8.1 D8 - periodic tunnel RTT probe. Every RTT_PING_INTERVAL_MS, send ONE
+    // fire-and-forget TUN_OP_PING (reusing the existing ping op — no new wire opcode)
+    // pinned by SendMessagePinned to an Active circuit, and record its req_id + send
+    // tick. The PING_REPLY arm in HandleRelay_Originator differences the tick into
+    // m_meanRttMs (EWMA). SendMessagePinned returns 0 when there is no Active circuit,
+    // so this is a pure no-op on a single-PC node (it never builds anything).
+    {
+        const DWORD RTT_PING_INTERVAL_MS = 5000u;
+        if ((DWORD)(now - m_lastRttPingTick) >= RTT_PING_INTERVAL_MS) {
+            m_lastRttPingTick = now;
+            // req_id is a fresh random NewCircuitId(), NOT deduped against m_pending
+            // (can't take m_pendingLock here — Tick holds m_lock, and the order is
+            // m_pendingLock->m_lock). A ~2^-32 collision with an in-flight manual
+            // TunnelPing would cost one washed-out EWMA sample; accepted given the odds
+            // and that TunnelPing is a dev-only diagnostic path.
+            const uint32_t rttReqId = NewCircuitId();
+            const uint8_t pingBody[1] = { 0 };          // 1-byte body (exit echoes it)
+            if (SendMessagePinned(rttReqId, TUN_OP_PING, pingBody, sizeof pingBody) != 0) {
+                m_rttPingReqId    = rttReqId;
+                m_rttPingSentTick = now;
+            } else {
+                // No Active circuit -> no probe in flight. Drop any stale stamp so a
+                // very-delayed reply to an old probe can't yield an inflated RTT sample.
+                m_rttPingReqId = 0;
+            }
         }
     }
 

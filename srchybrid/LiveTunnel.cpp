@@ -33,6 +33,7 @@
 #include "LiveKadBridge.h"
 #include "kademlia/kademlia/KadV2ModeSelector.h"
 #include "kademlia/kademlia/SearchManager.h"   // v8.1 B - StopSearch on tunneled search
+#include "kademlia/kademlia/KadV2TunnelPool.h"  // v8.1 D4 - register Active circuits in the PST pool
 
 namespace eSELive {
 
@@ -100,6 +101,7 @@ bool CLiveTunnel::SendCellToPeer(CUpDownClient* peer, const uint8_t cell[CELL_TO
     memcpy(pkt->pBuffer, cell, CELL_TOTAL_BYTES);
     peer->socket->SendPacket(pkt, true, true, 0);
     ++m_cellsSentTotal;
+    m_bytesSentTotal += CELL_TOTAL_BYTES;   // v8.1 D8 - tunnel wire-byte telemetry
     return true;
 }
 
@@ -229,11 +231,34 @@ uint32_t CLiveTunnel::BuildTestCircuit(CUpDownClient* clientHint)
     return 0;
 }
 
+// v8.1 D4 - tunnelOnly-STRICT successor build for the PST pool's make-before-break.
+// Unlike BuildTestCircuit (which falls back to ANY connected peer for the manual test
+// path), this builds ONLY through a peer that advertised privacy-tunneling, so on a
+// single-PC node with no fork peer it is a pure no-op (GetConnectedSnapshot returns
+// empty -> BuildPool builds nothing -> returns false). Builds EXACTLY ONE 1-hop circuit:
+// BuildPool floors `count` up to TUNNEL_POOL_MIN(3), so we instead cap the CANDIDATE
+// snapshot to 1 — BuildPool's build loop is bounded by relayCandidates.size(), so a
+// 1-candidate snapshot yields exactly 1 circuit regardless of the floor.
+// Called from CKadV2TunnelPool::Tick (main thread, with the pool lock NOT held).
+bool CLiveTunnel::BuildSuccessorCircuit()
+{
+    std::vector<CUpDownClient*> cands;
+    if (theApp.clientlist)
+        theApp.clientlist->GetConnectedSnapshot(cands, 1, /*tunnelOnly=*/true);
+    if (cands.empty()) return false;
+    return BuildPool(NULL, cands, 1) > 0;
+}
+
 void CLiveTunnel::Stop()
 {
     CSingleLock lock(&m_lock, TRUE);
     m_circuits.clear();
     m_rrNextIdx = 0;
+    // v8.1 D4 - the PST pool holds a 2nd shared_ptr alias per circuit. Clearing
+    // m_circuits without clearing the pool would keep those circuits alive (and
+    // counted as Active) indefinitely, and the pool would keep building successors
+    // against a stopped subsystem. Clear it too (tunnel->pool order, same as RegisterTunnel).
+    Kademlia::CKadV2TunnelPool::Get().Clear();
 }
 
 bool CLiveTunnel::SendThrough(const uint8_t* payload, size_t payloadLen)
@@ -318,7 +343,16 @@ bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
         // BuildExtend transitions back to HalfBuilt; CELL_EXTENDED will
         // promote to Active once derived. Failure leaves circuit at
         // 1-hop Active (graceful degrade).
-        BuildExtend(circ, hop2);
+        if (!BuildExtend(circ, hop2)) {
+            // v8.1 D4 - extend failed -> circuit stays 1-hop Active and would otherwise
+            // never be pooled (HandleExtended_Originator won't run). Register it now.
+            Kademlia::CKadV2TunnelPool::Get().RegisterTunnel(circ);
+        }
+    } else {
+        // v8.1 D4 - 1-hop-final circuit reached Active: register it in the PST pool.
+        // (The 2-hop case registers in HandleExtended_Originator once EXTENDED lands;
+        // registering here too would add an entry about to leave Active via BuildExtend.)
+        Kademlia::CKadV2TunnelPool::Get().RegisterTunnel(circ);
     }
     return true;
 }
@@ -416,6 +450,7 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
 {
     CSingleLock lock(&m_lock, TRUE);
     ++m_cellsRecvTotal;
+    m_bytesRecvTotal += CELL_TOTAL_BYTES;   // v8.1 D8 - tunnel wire-byte telemetry
 
     // CELL_CREATE: someone is asking us to be a relay for them. Handle
     // even if we don't know circ_id yet (this is by design — circ_id is
@@ -860,6 +895,8 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
     SecureWipe(plain, sizeof plain);
 
     circ->SetState(CircuitState::Active);
+    // v8.1 D4 - 2-hop circuit reached final Active: register it in the PST pool.
+    Kademlia::CKadV2TunnelPool::Get().RegisterTunnel(circ);
     return true;
 }
 

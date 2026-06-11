@@ -1,9 +1,12 @@
 // this file is part of eMule eSE — Persistent Search Tunnel pool (F4b)
 //
 // Cap 6 §6.5 monograph. PST reuses an existing tunnel for multiple Kad
-// RPCs in a session, reducing setup overhead (~600 ms per query) by
-// ~80 %. Make-before-break: at 25/30 s into a tunnel's lifetime, a
-// successor is pre-built so rotation is invisible to the consumer.
+// RPCs in a session, reducing setup overhead (~600 ms per query) by ~80 %.
+// v8.1 D4: make-before-break is now POOL_TARGET-driven — the pool keeps up to
+// POOL_TARGET warm circuits and pre-builds a successor (only while ALREADY seeded
+// with >=1 Active circuit) so a circuit rotation is invisible to the consumer.
+// Entries are retired when their underlying circuit reaches Destroyed (the circuit's
+// OWN 300s rotation), not a fixed pool TTL.
 #pragma once
 
 #include "KadV2Defines.h"
@@ -22,13 +25,18 @@ public:
     // Returns NULL if no tunnel matches; caller falls back to building one.
     std::shared_ptr<eSELive::CLiveCircuit> Acquire(const CUInt128& destinationKey);
 
-    // Register a freshly-built tunnel with the pool. Lifetime starts now.
+    // Register a freshly-built tunnel with the pool (called when a circuit reaches
+    // Active). Stores a 2nd shared_ptr alias; retired when the circuit is Destroyed.
     void RegisterTunnel(std::shared_ptr<eSELive::CLiveCircuit> tunnel);
 
+    // Drop all entries (called from CLiveTunnel::Stop so the pool's shared_ptr aliases
+    // don't keep stopped circuits alive / counted).
+    void Clear();
+
     // Periodic tick (called from CKademlia::Process every second):
-    //   - At lifetime 25/30 s: schedule a successor tunnel build.
-    //   - At lifetime 30 s: retire current tunnel (state Destroyed),
-    //     replacement should already be ready.
+    //   - Retire entries whose circuit is Destroyed.
+    //   - While SEEDED (>=1 Active) and below POOL_TARGET and nothing mid-handshake,
+    //     build ONE successor so a rotation never leaves the consumer with no circuit.
     void Tick();
 
     size_t Size() const;
@@ -44,8 +52,6 @@ private:
 
     struct PoolEntry {
         std::shared_ptr<eSELive::CLiveCircuit> tunnel;
-        DWORD createdTick;
-        bool  successorScheduled;
     };
     mutable CCriticalSection m_lock;
     std::vector<PoolEntry> m_entries;

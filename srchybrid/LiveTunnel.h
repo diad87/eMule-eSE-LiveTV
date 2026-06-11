@@ -96,6 +96,11 @@ public:
     // assigned, or 0 on failure.
     uint32_t BuildTestCircuit(CUpDownClient* clientHint);
 
+    // v8.1 D4 — PST pool make-before-break successor. tunnelOnly-STRICT (no
+    // any-peer fallback), so it builds NOTHING when no fork peer is connected
+    // (single-PC no-op). At most one 1-hop circuit. Called from CKadV2TunnelPool::Tick.
+    bool BuildSuccessorCircuit();
+
     // v0.71 B (2-hop) — extended test: builds a 1-hop circuit AND, once
     // CREATED arrives, requests a 2nd hop. Returns the V-side circ_id.
     // If only 1 fork peer is available, hop2 loops back to the same peer
@@ -262,6 +267,10 @@ public:
     // v0.71 P3.3 — total counts of cells sent / received for metrics.
     uint64_t CellsSentTotal() const { return m_cellsSentTotal; }
     uint64_t CellsRecvTotal() const { return m_cellsRecvTotal; }
+    // v8.1 D8 — total tunnel wire bytes (cells * CELL_TOTAL_BYTES; excludes the small
+    // fixed OP_EMULEPROT/opcode header). Honest tunnel-carried byte figure.
+    uint64_t BytesSentTotal() const { return m_bytesSentTotal; }
+    uint64_t BytesRecvTotal() const { return m_bytesRecvTotal; }
 
 private:
     CLiveTunnel();
@@ -529,6 +538,8 @@ private:
     DWORD m_lastTickMs;
     uint64_t m_cellsSentTotal = 0;
     uint64_t m_cellsRecvTotal = 0;
+    uint64_t m_bytesSentTotal = 0;   // v8.1 D8 - tunnel wire-byte telemetry
+    uint64_t m_bytesRecvTotal = 0;
 };
 
 }  // namespace eSELive

@@ -135,15 +135,14 @@ int CLiveMeshManager::CountPeersWithSegment(uint32 seqNum) const
 
     // Phase 1 BOOT-3: each peer's bitmap is anchored at its own oldestSeq.
     // Resolve via PeerBitmapInfo::Has() instead of indexing against our buffer.
-    auto& bitmaps = const_cast<CMap<CUpDownClient*, CUpDownClient*, PeerBitmapInfo, PeerBitmapInfo&>&>(
-        m_pManager->GetPeerBitmaps());
-
+    // C6: bitmaps are keyed by LivePeerId inside the manager — go through the
+    // GetPeerBitmap(peer,out) accessor which does the conversion.
     int count = 0;
     POSITION pos = m_meshPeers.GetHeadPosition();
     while (pos) {
         CUpDownClient* peer = m_meshPeers.GetNext(pos);
         PeerBitmapInfo info;
-        if (bitmaps.Lookup(peer, info) && info.Has(seqNum))
+        if (m_pManager->GetPeerBitmap(peer, info) && info.Has(seqNum))
             count++;
     }
     return count;
@@ -156,9 +155,7 @@ CUpDownClient* CLiveMeshManager::SelectBestPeerForSegment(uint32 seqNum)
     if (!m_pManager) return NULL;
 
     // Phase 1 BOOT-3: resolve "has segment" against each peer's own anchor.
-    auto& bitmaps = const_cast<CMap<CUpDownClient*, CUpDownClient*, PeerBitmapInfo, PeerBitmapInfo&>&>(
-        m_pManager->GetPeerBitmaps());
-
+    // C6: bitmaps keyed by LivePeerId; resolve via the accessor.
     CUpDownClient* bestPeer = NULL;
     int bestScore = -1;
 
@@ -166,7 +163,7 @@ CUpDownClient* CLiveMeshManager::SelectBestPeerForSegment(uint32 seqNum)
     while (pos) {
         CUpDownClient* peer = m_meshPeers.GetNext(pos);
         PeerBitmapInfo info;
-        if (!bitmaps.Lookup(peer, info)) continue;
+        if (!m_pManager->GetPeerBitmap(peer, info)) continue;
         if (!info.Has(seqNum)) continue;
 
         // Score: trust-based + load-balanced

@@ -11,8 +11,11 @@ public:
     CLiveChunkBuffer();
     ~CLiveChunkBuffer();
 
-    // Add a new segment to the buffer (overwrites oldest if full)
-    void AddSegment(const uchar* streamKey, uint32 seqNum, uint32 timestamp,
+    // Add a new segment to the buffer (overwrites oldest if full).
+    // Returns true if the segment was stored; false if it was rejected
+    // (wrong stream, evicted-window stale arrival, or duplicate). Callers
+    // use this to skip HLS rewrites and the V2-S21 relay for wasted bytes.
+    bool AddSegment(const uchar* streamKey, uint32 seqNum, uint32 timestamp,
                     const BYTE* data, uint32 dataSize, uint16 bitrate);
 
     // v7.5.0 — DEPRECATED legacy raw-pointer accessor. NOT thread-safe: the

@@ -27,7 +27,7 @@ CLiveChunkBuffer::~CLiveChunkBuffer()
     Clear();
 }
 
-void CLiveChunkBuffer::AddSegment(const uchar* streamKey, uint32 seqNum,
+bool CLiveChunkBuffer::AddSegment(const uchar* streamKey, uint32 seqNum,
     uint32 timestamp, const BYTE* data, uint32 dataSize, uint16 bitrate)
 {
     CSingleLock lock(&m_lock, TRUE);
@@ -39,7 +39,7 @@ void CLiveChunkBuffer::AddSegment(const uchar* streamKey, uint32 seqNum,
     // Don't accept segments for a different stream
     if (memcmp(m_streamKey, streamKey, 16) != 0) {
         LIVE_LOG("CHUNK", "REJECT seq=%u: wrong streamKey", seqNum);
-        return;
+        return false;
     }
 
     // Don't accept old segments (already evicted from window).
@@ -63,13 +63,13 @@ void CLiveChunkBuffer::AddSegment(const uchar* streamKey, uint32 seqNum,
         && seqNum <= m_newestSeq - ESE_LIVE_MAX_SEGMENTS) {
         LIVE_LOG("CHUNK", "REJECT seq=%u: too old (newest=%u, window=%d)",
             seqNum, m_newestSeq, ESE_LIVE_MAX_SEGMENTS);
-        return;
+        return false;
     }
 
     // Don't accept duplicates
     if (HasSegment(seqNum)) {
         LIVE_LOG("CHUNK", "REJECT seq=%u: duplicate", seqNum);
-        return;
+        return false;
     }
 
     // Delete old segment in this slot
@@ -106,6 +106,7 @@ void CLiveChunkBuffer::AddSegment(const uchar* streamKey, uint32 seqNum,
 
     LIVE_LOG("CHUNK", "ACCEPT seq=%u size=%u kbps=%u  [count=%d, range=%u..%u]",
         seqNum, dataSize, bitrate, m_count, m_oldestSeq, m_newestSeq);
+    return true;
 }
 
 const LiveChunk* CLiveChunkBuffer::GetSegment(uint32 seqNum) const

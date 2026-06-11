@@ -45,6 +45,7 @@ struct LiveStreamEntry {
     uint32      broadcasterIP = 0;
     uint16      broadcasterPort = 0;
     uint16      broadcasterUDPPort = 0;  // A.4 Sprint 1: Kad UDP port for hole-punch
+    uint32      broadcasterAltIP = 0;    // NAT-reach: overlay IPv4 (TAG_ESE_LIVE_ALTIP), 0 = none
     DWORD       lastSeen = 0;            // GetTickCount() when last seen/refreshed
     uint32      startedAt = 0;           // Unix timestamp
     bool        isOwnStream = false;
@@ -110,11 +111,16 @@ public:
     // H5: fromSearchID is the CSearch ID that produced this result, used
     // for clean-vs-legacy namespace attribution. 0 = synthetic (PEX,
     // bootstrap cache, MFC-side hand-injected) — counts as unknown.
+    // broadcasterAltIP (NAT-reach 2026-06): optional overlay IPv4 from
+    // TAG_ESE_LIVE_ALTIP. When non-zero the dial drain tries BOTH endpoints
+    // (public + overlay, happy-eyeballs); whichever TCP connect lands first
+    // delivers the heartbeat. 0 = tag absent (legacy publisher).
     void OnKadSearchResult(const uchar* streamKey, const CString& title,
         const CString& category, uint32 broadcasterIP, uint16 broadcasterPort,
         uint16 broadcasterUDPPort,
         uint16 bitrate, uint32 viewerCount,
-        uint32 fromSearchID = 0);
+        uint32 fromSearchID = 0,
+        uint32 broadcasterAltIP = 0);
 
     // === Periodic Maintenance ===
 
@@ -194,6 +200,7 @@ private:
         uint32 ip;
         uint16 port;
         uint16 udpPort;
+        uint32 altIP;     // NAT-reach: overlay endpoint, dialed alongside ip (0 = none)
     };
     CArray<PendingDial> m_pendingDials;
     static const int    kMaxPendingDials   = 50;   // FIFO drop beyond this
@@ -227,6 +234,14 @@ private:
 
     // Helper: generate Kad keyword hash from stream title
     CString StreamKeyToString(const uchar* streamKey) const;
+
+    // NAT-reach (2026-06): the local overlay IPv4 this node should advertise
+    // in TAG_ESE_LIVE_ALTIP. Resolution order: [eMule] LiveAltIP INI override
+    // (dotted IPv4) → first local interface address inside the CGNAT range
+    // 100.64.0.0/10 (Tailscale et al.) → 0 (publish nothing). Network byte
+    // order, same as theApp.GetPublicIP(). Cached for 60 s — called once per
+    // publish keyword, and interface enumeration isn't free.
+    static uint32 GetLocalOverlayIP();
 
     // Helper: encode stream info into Kad-compatible tag format
     void EncodeStreamTags(const LiveStreamInfo& info, CByteArray& outData) const;

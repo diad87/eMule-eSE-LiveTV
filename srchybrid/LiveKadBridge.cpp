@@ -19,6 +19,8 @@
 #include "kademlia/kademlia/Defines.h"
 #include "kademlia/kademlia/prefs.h"
 #include "kademlia/utils/UInt128.h"
+#include <iphlpapi.h>   // NAT-reach: GetIpAddrTable for overlay-IP detection
+#pragma comment(lib, "iphlpapi.lib")
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -163,11 +165,21 @@ bool CLiveKadBridge::PublishStream(const LiveStreamInfo& info)
         return false;
     }
 
-    AddLogLine(true, _T("eSE Kad: Publishing stream \"%s\" to Kad DHT"),
-        (LPCTSTR)info.title);
+    // NAT-reach: surface what reach info the publish will carry, so a
+    // broadcaster can verify at a glance that viewers will be able to dial
+    // (overlay endpoint and/or UDP hole-punch port).
+    uint32 altIP = GetLocalOverlayIP();
+    if (altIP != 0) {
+        AddLogLine(true, _T("eSE Kad: Publishing stream \"%s\" to Kad DHT (overlay endpoint %s)"),
+            (LPCTSTR)info.title, (LPCTSTR)ipstr(altIP));
+    } else {
+        AddLogLine(true, _T("eSE Kad: Publishing stream \"%s\" to Kad DHT"),
+            (LPCTSTR)info.title);
+    }
     CLiveDebugLog::Get().Append("KAD",
-        "PublishStream OK \"%S\" port=%u",
-        (LPCWSTR)info.title, (unsigned)thePrefs.GetPort());
+        "PublishStream OK \"%S\" port=%u alt=%S",
+        (LPCWSTR)info.title, (unsigned)thePrefs.GetPort(),
+        altIP ? (LPCWSTR)ipstr(altIP) : L"-");
 
     return true;
 }
@@ -448,6 +460,63 @@ void CLiveKadBridge::RepublishIfNeeded()
     }
 }
 
+// NAT-reach (2026-06) — local overlay IPv4 for TAG_ESE_LIVE_ALTIP.
+// A broadcaster behind home NAT publishes a public IP nobody can dial; if
+// the machine is also on an overlay network (Tailscale & friends hand out
+// CGNAT 100.64.0.0/10 addresses), that address IS reachable by any viewer
+// on the same overlay. Publish it alongside the public IP so the viewer's
+// dial drain can race both endpoints. INI override for other overlays:
+//   [eMule] LiveAltIP=<dotted IPv4>
+// Returns network byte order (same convention as theApp.GetPublicIP() /
+// TAG_SOURCEIP). 0 when there is nothing to advertise. Cached 60 s.
+uint32 CLiveKadBridge::GetLocalOverlayIP()
+{
+    static uint32 s_cachedIP = 0;
+    static DWORD  s_cachedAt = 0;
+    DWORD now = GetTickCount();
+    if (s_cachedAt != 0 && (now - s_cachedAt) < 60u * 1000u)
+        return s_cachedIP;
+    s_cachedAt = now;
+    s_cachedIP = 0;
+
+    // 1) Explicit INI override wins (lets Tor/other-overlay setups inject
+    //    whatever endpoint they want without code changes).
+    CString iniIP = theApp.GetProfileString(_T("eMule"), _T("LiveAltIP"), _T(""));
+    iniIP.Trim();
+    if (!iniIP.IsEmpty()) {
+        uint32 ip = inet_addr(CT2CA(iniIP));
+        if (ip != INADDR_NONE && ip != 0) {
+            s_cachedIP = ip;
+            return s_cachedIP;
+        }
+    }
+
+    // 2) Auto-detect: first local interface address in 100.64.0.0/10.
+    BYTE stackBuf[2048];
+    ULONG size = sizeof stackBuf;
+    PMIB_IPADDRTABLE table = (PMIB_IPADDRTABLE)stackBuf;
+    DWORD ret = GetIpAddrTable(table, &size, FALSE);
+    BYTE* heapBuf = NULL;
+    if (ret == ERROR_INSUFFICIENT_BUFFER) {
+        heapBuf = new BYTE[size];
+        table = (PMIB_IPADDRTABLE)heapBuf;
+        ret = GetIpAddrTable(table, &size, FALSE);
+    }
+    if (ret == NO_ERROR) {
+        for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+            uint32 addr = table->table[i].dwAddr;   // network byte order
+            uint8 first  = (uint8)addr;
+            uint8 second = (uint8)(addr >> 8);
+            if (first == 100 && second >= 64 && second <= 127) {  // 100.64.0.0/10
+                s_cachedIP = addr;
+                break;
+            }
+        }
+    }
+    delete[] heapBuf;
+    return s_cachedIP;
+}
+
 // H7 — primitive helper. STOREKEYWORD + SetLiveStreamPublish + StartSearch
 // with all parameters explicit. Calling code holds m_lock already.
 // H8 — bCleanNs gates omission of TAG_FILENAME/TAG_FILETYPE so eSE-aware
@@ -464,7 +533,8 @@ bool CLiveKadBridge::StartKeywordPublish(const Kademlia::CUInt128& uTarget,
         return false;
     pSearch->SetGUIName(displayName);
     pSearch->SetLiveStreamPublish(streamKey, title, category, language,
-        bitrate, viewerCount, startedAt, thePrefs.GetPort());
+        bitrate, viewerCount, startedAt, thePrefs.GetPort(),
+        GetLocalOverlayIP());   // NAT-reach: advertise overlay endpoint too
     pSearch->SetLivePublishCleanNs(bCleanNs);
     Kademlia::CSearchManager::StartSearch(pSearch);
     return true;
@@ -695,9 +765,21 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     uint32 broadcasterIP, uint16 broadcasterPort,
     uint16 broadcasterUDPPort,
     uint16 bitrate, uint32 viewerCount,
-    uint32 fromSearchID)
+    uint32 fromSearchID,
+    uint32 broadcasterAltIP)
 {
     CSingleLock lock(&m_lock, TRUE);
+
+    // NAT-reach: sanitize the optional overlay endpoint up front. It is a
+    // bonus dial target, never a reason to reject the whole result — zero
+    // it on any doubt. IsGoodIP(_, true) forces the LAN check (10.x/172.16/
+    // 192.168 stay out of the public DHT) while CGNAT overlay addresses
+    // (100.64.0.0/10, e.g. Tailscale) pass.
+    if (broadcasterAltIP != 0
+        && (broadcasterAltIP == broadcasterIP
+            || !IsGoodIP(broadcasterAltIP, true)
+            || theApp.ipfilter->IsFiltered(broadcasterAltIP)))
+        broadcasterAltIP = 0;
 
     // H5 — namespace attribution. Look up the search ID against the map
     // we populated in SearchStreams. Synthetic callers (PEX/bootstrap)
@@ -812,6 +894,10 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
         entry.viewerCount = viewerCount;
         entry.lastSeen = GetTickCount();
         if (!title.IsEmpty()) entry.title = title;
+        // NAT-reach: a republish echo may carry endpoint extras an earlier
+        // (legacy / synthetic) sighting lacked — merge them in.
+        if (broadcasterUDPPort != 0) entry.broadcasterUDPPort = broadcasterUDPPort;
+        if (broadcasterAltIP  != 0) entry.broadcasterAltIP  = broadcasterAltIP;
     } else {
         // New stream discovered
         memcpy(entry.streamKey, streamKey, 16);
@@ -823,6 +909,7 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
         entry.broadcasterIP = broadcasterIP;
         entry.broadcasterPort = broadcasterPort;
         entry.broadcasterUDPPort = broadcasterUDPPort;  // A.4 Sprint 1
+        entry.broadcasterAltIP = broadcasterAltIP;      // NAT-reach
         entry.lastSeen = GetTickCount();
         entry.startedAt = (uint32)time(NULL);
         entry.isOwnStream = false;
@@ -834,9 +921,10 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
           : nsTag == ESE_NS_LEGACY ? _T("legacy")
           :                          _T("synthetic"));
         CLiveDebugLog::Get().Append("KAD",
-            "Discovered \"%S\" src=%S:%u udp=%u %ukbps ns=%u",
+            "Discovered \"%S\" src=%S:%u udp=%u alt=%S %ukbps ns=%u",
             (LPCWSTR)title, (LPCWSTR)ipstr(broadcasterIP),
             (unsigned)broadcasterPort, (unsigned)broadcasterUDPPort,
+            broadcasterAltIP ? (LPCWSTR)ipstr(broadcasterAltIP) : L"-",
             (unsigned)bitrate, (unsigned)nsTag);
     }
 
@@ -866,6 +954,23 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     // kDialsPerTick (3/s) so the dial rate stays civil. FIFO-drop if the
     // queue exceeds kMaxPendingDials to bound memory.
     if (theApp.liveStreamManager != NULL) {
+        // Churn fix (2026-06): only a VIEWER needs to dial discovered sources.
+        // On a non-viewing node (a pure broadcaster acting as tunnel exit, which
+        // runs "eselive" searches on viewers' behalf) every dial is a no-op
+        // (TryConnectToStreamSource bails on !m_bViewing) but still grows the
+        // queue to its 50 cap and, worse, would have the broadcaster dial back
+        // the very viewer it is serving (the viewer's V2-S17 relay republish) —
+        // a reverse AttachToAlreadyKnown collision. Gate the enqueue on viewing.
+        if (!theApp.liveStreamManager->IsViewingLive())
+            return;
+        // Dedup at enqueue: skip if this (ip,port) is already queued (results
+        // arrive in bursts faster than the 3/tick drain, so the same endpoint
+        // piles up and keeps re-triggering dials). The dial-time cooldown in
+        // TryConnectToStreamSource is the second line of defense.
+        for (INT_PTR i = 0; i < m_pendingDials.GetCount(); ++i) {
+            if (m_pendingDials[i].ip == broadcasterIP && m_pendingDials[i].port == broadcasterPort)
+                return;
+        }
         if (m_pendingDials.GetCount() >= kMaxPendingDials) {
             m_pendingDials.RemoveAt(0);  // drop oldest
             // DISC-S11: count FIFO-drops for visibility
@@ -876,6 +981,9 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
         pd.ip      = broadcasterIP;
         pd.port    = broadcasterPort;
         pd.udpPort = broadcasterUDPPort;
+        // NAT-reach: use the merged entry value so a legacy echo without the
+        // tag still dials the overlay endpoint learned from an earlier result.
+        pd.altIP   = entry.broadcasterAltIP;
         m_pendingDials.Add(pd);
     }
 }
@@ -942,6 +1050,15 @@ void CLiveKadBridge::Process()
             dialLock.Unlock();   // TryConnectToStreamSource takes its own lock
             theApp.liveStreamManager->TryConnectToStreamSource(
                 pd.streamKey, pd.ip, pd.port, pd.udpPort);
+            // NAT-reach: race the overlay endpoint too (happy-eyeballs). A
+            // NATed broadcaster's public IP never answers; its 100.64/10
+            // overlay address does. Whichever TCP connect lands first sends
+            // the heartbeat; the loser is a dead CUpDownClient that times
+            // out harmlessly. Dedupe/caps inside TryConnectToStreamSource
+            // (per-IP+port match, kMaxViewPeers) keep this bounded.
+            if (pd.altIP != 0 && pd.altIP != pd.ip)
+                theApp.liveStreamManager->TryConnectToStreamSource(
+                    pd.streamKey, pd.altIP, pd.port, pd.udpPort);
             dialLock.Lock();
             drained++;
         }

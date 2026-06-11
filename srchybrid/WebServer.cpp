@@ -4647,6 +4647,47 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
+	// --- /api/live/leave --- Stop P2P viewing (ghost-viewer fix 2026-06).
+	// Hit by the player pages' pagehide beacon (relayed by ese-server for
+	// the :8080 pages). Marshaled: LeaveStream sends OP_LIVE_UNSUBSCRIBE
+	// over eD2K sockets — main-thread only. Idempotent when not viewing.
+	if (sURL.Left(15) == "/api/live/leave") {
+		LiveWebLeaveReq req;
+		req.wasViewing = false;
+		if (theApp.emuledlg != NULL && theApp.liveStreamManager != NULL)
+			theApp.emuledlg->SendMessage(UM_LIVE_WEB_LEAVE, 0, (LPARAM)&req);
+		CStringA json;
+		json.Format("{\"success\":true,\"wasViewing\":%s}", req.wasViewing ? "true" : "false");
+		CStringA header;
+		header.Format(
+			"HTTP/1.1 200 OK\r\n"
+			"Content-Type: application/json\r\n"
+			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
+			"X-Content-Type-Options: nosniff\r\n"
+			"Content-Length: %d\r\n\r\n",
+			json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/live/player-alive --- heartbeat for the ghost-viewer watchdog.
+	// ese-server pings this (throttled) while a browser keeps fetching HLS
+	// from its /hls-local handler, which eMule otherwise never sees. Atomic
+	// tick write only — safe on this worker thread (same class as the OBS-1
+	// Interlocked counters; no Live lock, no marshaling needed).
+	if (sURL.Left(22) == "/api/live/player-alive") {
+		if (theApp.liveStreamManager != NULL)
+			theApp.liveStreamManager->NotePlayerFetch();
+		static const char kAliveResp[] =
+			"HTTP/1.1 200 OK\r\n"
+			"Content-Type: application/json\r\n"
+			"Content-Length: 16\r\n\r\n"
+			"{\"success\":true}";
+		Data.pSocket->SendData(kAliveResp, (int)strlen(kAliveResp));
+		return;
+	}
+
 	// --- /api/live/broadcast/start --- Tier 2.2: web-driven broadcast launch.
 	// Lets the user start a stream from the browser without ever opening the
 	// MFC "Live" tab. Source: testpattern (default), screen, file, rtmp.
@@ -4846,6 +4887,10 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			Data.pSocket->SendData(hdr, (int)strlen(hdr));
 			return;
 		}
+		// Ghost-viewer watchdog: any whitelisted HLS fetch proves a player is
+		// alive — including 404 polls while the playlist isn't written yet.
+		if (theApp.liveStreamManager != NULL)
+			theApp.liveStreamManager->NotePlayerFetch();
 		TCHAR tmp[MAX_PATH]; GetTempPath(MAX_PATH, tmp);
 		CString fp;
 		fp.Format(_T("%seMule_RTMP\\%hs"), tmp, (LPCSTR)req);
@@ -6187,7 +6232,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				lastChunkAge,
 				ESE_LIVE_SEGMENT_DURATION);
 
-			// --- Counters section (Fix 4: added sourceDialAttempts; v7.3.0: skipped/rate-limit/auth/evict) ---
+			// --- Counters section (Fix 4: added sourceDialAttempts; v7.3.0: skipped/rate-limit/auth/evict;
+			//     Phase-1 2026-06: duplicateChunksReceived/requestsSuppressedInflight) ---
 			CStringA ctrJson;
 			ctrJson.Format(
 				"\"counters\":{"
@@ -6201,6 +6247,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				"\"chunksRequested\":%u,"
 				"\"chunksReceived\":%u,"
 				"\"chunksMissing\":%u,"
+				"\"duplicateChunksReceived\":%u,"
+				"\"requestsSuppressedInflight\":%u,"
 				"\"peerDisconnects\":%u,"
 				"\"skippedInitialPushes\":%u,"
 				"\"subscribesRateLimited\":%u,"
@@ -6211,7 +6259,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				s.counters.sourceDialAttempts,
 				s.counters.subscribeSent, s.counters.subscribeAccepted,
 				s.counters.chunksRequested, s.counters.chunksReceived,
-				s.counters.chunksMissing, s.counters.peerDisconnects,
+				s.counters.chunksMissing,
+				s.counters.duplicateChunksReceived, s.counters.requestsSuppressedInflight,
+				s.counters.peerDisconnects,
 				s.counters.skippedInitialPushes, s.counters.subscribesRateLimited,
 				s.counters.endsRejectedNoAuth, s.counters.tombstonesEvicted);
 
@@ -6276,6 +6326,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			Data.pSocket->SendReply("HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\n\r\nBad request");
 			return;
 		}
+
+		// Ghost-viewer watchdog: a validated per-stream HLS fetch proves a
+		// player is alive (404s included — startup polls count).
+		if (theApp.liveStreamManager != NULL)
+			theApp.liveStreamManager->NotePlayerFetch();
 
 		// Serve HLS files directly from disk â€” no stream hash verification needed
 		// (the hash routes to the correct stream but doesn't gate access)
@@ -6430,12 +6485,28 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"});"
 			"h.loadSource(src);h.attachMedia(v);"
 			"h.on(Hls.Events.MANIFEST_PARSED,()=>v.play());"
+			// Audio-distortion fix (2026-06): hls.js requires the two-step media
+			// recovery — if a second fatal mediaError lands shortly after a
+			// recoverMediaError(), swapAudioCodec() must be called first or the
+			// audio is re-appended with the wrong AAC/HE-AAC signaling and plays
+			// at the wrong sample rate (the deep/slow audio after stalls).
+			"let mErrAt=0;"
 			"h.on(Hls.Events.ERROR,(e,d)=>{"
 			"if(!d.fatal)return;"
-			"if(d.type==='mediaError'){h.recoverMediaError()}"
+			"if(d.type==='mediaError'){"
+			"const n=Date.now();"
+			"if(n-mErrAt<6000){h.swapAudioCodec()}"
+			"mErrAt=n;"
+			"h.recoverMediaError()"
+			"}"
 			"else{setTimeout(()=>{h.loadSource(src);h.attachMedia(v)},3000)}"
 			"});"
 			"setInterval(()=>{if(v.paused&&v.readyState>=2)v.play()},2000);"
+			// Ghost-viewer fix (2026-06): tell eMule we left when the page goes
+			// away (navigation/close). keepalive lets the request outlive the
+			// page. The 60 s idle watchdog in Process() is the backstop for
+			// killed tabs where this never fires.
+			"addEventListener('pagehide',()=>{try{fetch('/api/live/leave',{keepalive:true})}catch(_){}});"
 			"const langNames={eng:'English',spa:'Spanish',fre:'French',ger:'German',ita:'Italian',por:'Portuguese',jpn:'Japanese',kor:'Korean',chi:'Chinese',rus:'Russian',ara:'Arabic',und:'Track'};"
 			"const langFlags={eng:'[EN]',spa:'[ES]',fre:'[FR]',ger:'[DE]',ita:'[IT]',por:'[PT]',jpn:'[JP]',rus:'[RU]',kor:'[KR]',chi:'[CN]',ara:'[AR]',und:''};"
 			"function buildAudioSel(tracks,setFn){"

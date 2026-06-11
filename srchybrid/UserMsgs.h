@@ -60,5 +60,10 @@ enum EUserWndMessages
 
 	// eSE Live — webserver worker -> main thread: launch / stop a broadcast
 	// for /api/live/broadcast/start and /api/live/broadcast/stop.
-	UM_LIVE_WEB_BROADCAST //+33
+	UM_LIVE_WEB_BROADCAST, //+33
+
+	// eSE Live — webserver worker -> main thread: LeaveStream for
+	// /api/live/leave (ghost-viewer fix 2026-06). LeaveStream sends
+	// OP_LIVE_UNSUBSCRIBE over eD2K sockets — main-thread only.
+	UM_LIVE_WEB_LEAVE //+34
 };

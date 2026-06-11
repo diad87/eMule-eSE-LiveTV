@@ -322,14 +322,22 @@
 #define OP_LIVE_CHANNEL_REVOKE   0xD3   // F3: anunciar ChannelRevocation
 // 0xD4 RESERVED -- OP_PACKEDPROT collision at header level, do not reuse.
 #define OP_LIVE_TUNNEL_CELL      0xD5   // F4: 512B cell {circ_id 4|cmd 1|length 2|payload+padding 505}
-#define OP_LIVE_T_SUBSCRIBE      0xD6   // F5: tunneled SUBSCRIBE wrapper
-#define OP_LIVE_T_UNSUBSCRIBE    0xD7   // F5: tunneled UNSUBSCRIBE wrapper
-#define OP_LIVE_T_REQUEST        0xD8   // F5: tunneled chunk REQUEST
-#define OP_LIVE_T_CHUNK          0xD9   // F5: tunneled CHUNK_V2 wrapper (decision: T_CHUNK envuelve CHUNK_V2 íntegro tras peel onion)
-#define OP_LIVE_T_HEARTBEAT      0xDA   // F5: tunneled HEARTBEAT wrapper
-#define OP_LIVE_T_ANNOUNCE       0xDB   // F5: tunneled ANNOUNCE wrapper
-#define OP_LIVE_T_DENY           0xDC   // F5: tunneled DENY wrapper
-#define OP_LIVE_T_END            0xDD   // F5: tunneled END wrapper
+// v8.1 Sprint C (C4): the 0xD6-0xDD "tunneled wrapper" opcodes are SUPERSEDED
+// and never appear on the wire. The tunneled control/data plane is multiplexed
+// INSIDE OP_LIVE_TUNNEL_CELL (0xD5) via the TUN_OP_* sub-commands (LiveTunnel.h
+// TunnelOpCmd) — a top-level wrapper opcode would bypass the onion layer. The
+// numbers stay RESERVED (append-only enum; never reuse) and the handler drops
+// them permanently. Mapping: T_SUBSCRIBE->TUN_OP_LIVE_SUBSCRIBE,
+// T_HEARTBEAT/T_ANNOUNCE->TUN_OP_LIVE_* control relays (C3), T_REQUEST/T_CHUNK->
+// the bulk data plane (OP_LIVE_BULK_CELL, Sprint E).
+#define OP_LIVE_T_SUBSCRIBE      0xD6   // RESERVED — superseded by TUN_OP_LIVE_SUBSCRIBE
+#define OP_LIVE_T_UNSUBSCRIBE    0xD7   // RESERVED — superseded by tunneled UNSUBSCRIBE sub-cmd
+#define OP_LIVE_T_REQUEST        0xD8   // RESERVED — superseded by Sprint E bulk data plane
+#define OP_LIVE_T_CHUNK          0xD9   // RESERVED — superseded by Sprint E bulk data plane
+#define OP_LIVE_T_HEARTBEAT      0xDA   // RESERVED — superseded by C3 tunneled heartbeat relay
+#define OP_LIVE_T_ANNOUNCE       0xDB   // RESERVED — superseded by C3 tunneled announce relay
+#define OP_LIVE_T_DENY           0xDC   // RESERVED — superseded by tunneled DENY sub-cmd
+#define OP_LIVE_T_END            0xDD   // RESERVED — superseded by tunneled END sub-cmd
 #define OP_LIVE_PEER_INVITE      0xDE   // F3: PeerInvite token (QR-able)
 #define OP_LIVE_RENDEZVOUS_PEERS 0xDF   // F5: rendezvous swarm peer list
 

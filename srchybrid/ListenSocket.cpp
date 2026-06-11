@@ -1953,6 +1953,13 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				if (theApp.liveStreamManager)
 					theApp.liveStreamManager->OnPeerBitmap(client, streamKey, oldestSeq, bitmap);
 
+				// v8.1 Sprint C (C3): if we are an exit proxying this stream for
+				// tunneled viewers, relay the live-edge to them. Called with no
+				// Live lock held (OnPeerBitmap already released it) so the only
+				// manager<->tunnel lock direction stays tunnel->manager.
+				eSELive::CLiveTunnel::Get().ExitRelayLiveControl(
+					streamKey, /*hasBitmap*/true, bitmap, oldestSeq, /*pubkey*/NULL);
+
 				// Decentralized Capa 1 (PEX): optional trailing block
 				// <pexCount 1><entry pexCount * 22>. Each entry is
 				// streamKey(16) + ip(4) + port(2). Skipped by old peers
@@ -2002,6 +2009,10 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 					// for the same (streamKey, pubkey) pair.
 					if (theApp.liveStreamManager)
 						theApp.liveStreamManager->PinStreamPubkey(streamKey, pubkey);
+					// v8.1 Sprint C (C3): relay the broadcaster pubkey to any
+					// tunneled viewers we proxy for this stream (no-op otherwise).
+					eSELive::CLiveTunnel::Get().ExitRelayLiveControl(
+						streamKey, /*hasBitmap*/false, 0, 0, pubkey);
 				}
 
 				// Trigger segment request for the newly announced segment
@@ -2133,8 +2144,11 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 
 		// === F0 (unified plan) — remaining eSE Live Tunneled opcodes ==
 		// Stub handlers for opcodes whose data plane (F5 P3+) is not yet
-		// implemented. Channel ops (0xD0-0xD3) land here until F3 wires
-		// the channel store; T_* (0xD6-0xDD) wait for tunneled wrappers.
+		// Channel ops (0xD0-0xD3, 0xDE) land here until F3 wires the channel
+		// store. v8.1 Sprint C (C4): the T_* wrappers (0xD6-0xDD) are SUPERSEDED
+		// — the tunneled control/data plane rides inside OP_LIVE_TUNNEL_CELL
+		// (0xD5) as TUN_OP_* sub-commands, so a top-level T_* opcode must never
+		// appear on the wire. We drop it permanently (reserved, not "not yet").
 		case OP_LIVE_CHANNEL_GOSSIP:
 		case OP_LIVE_CHANNEL_REQUEST:
 		case OP_LIVE_CHANNEL_ANSWER:
@@ -2150,7 +2164,7 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 		case OP_LIVE_PEER_INVITE:
 		case OP_LIVE_RENDEZVOUS_PEERS:
 			theStats.AddDownDataOverheadOther(uRawSize);
-			DebugLog(_T("[STUB F0] OP_LIVE_T_* opcode 0x%02x received from %s — reserved, no handler yet (unified plan F3-F5)"),
+			DebugLog(_T("[STUB] OP_LIVE 0x%02x from %s — reserved/superseded, dropped (channels: F3; T_* wrappers: superseded by TUN_OP_* in 0xD5)"),
 				(unsigned)opcode,
 				client ? (LPCTSTR)ipstr(client->GetIP()) : _T("?"));
 			break;

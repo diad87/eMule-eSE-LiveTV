@@ -423,6 +423,27 @@ function handleRoute(url, req, res, ctx) {
     return true;
   }
 
+  // === /api/live/privacy/* sub-paths (circuits, peers, test_circuit) — proxy to eMule.
+  // The /privacy mode page polls /circuits to show handshake progress and posts to
+  // /test_circuit to build a DELIBERATE test circuit (manual; never auto-engaged).
+  // GET-only; eMule parses query params on any method. test_circuit blocks up to
+  // ~2.5 s on eMule's side, so the timeout here is wider than the simple read above.
+  // Trailing slash in the prefix so it never shadows the exact /api/live/privacy.
+  if (p.startsWith('/api/live/privacy/')) {
+    const q = url.search || '';
+    const preq = http.get('http://127.0.0.1:4711' + p + q, { timeout: 6000 }, (pres) => {
+      let body = '';
+      pres.on('data', d => body += d);
+      pres.on('end', () => {
+        try { jsonResponse(res, 200, JSON.parse(body)); }
+        catch (e) { jsonResponse(res, 200, { error: 'parse_error', raw: body.substring(0, 200) }); }
+      });
+    });
+    preq.on('error',   () => jsonResponse(res, 200, { error: 'offline' }));
+    preq.on('timeout', () => { preq.destroy(); jsonResponse(res, 200, { error: 'timeout' }); });
+    return true;
+  }
+
   // === GET /privacy — Sprint 4 J.2: privacy & data handling page ===
   if (p === '/privacy') {
     const html = '<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>eSE Live — Privacidad</title>' +
@@ -444,6 +465,17 @@ function handleRoute(url, req, res, ctx) {
       '</select>' +
       '<div id="ese-mode-status" style="font-size:12px;color:#6b7280">Cargando estado…</div>' +
       '<div style="font-size:12px;color:#fbbf24;margin-top:10px;line-height:1.5">&#9888;&#65039; Honestidad: el anonimato real necesita <b>3+ nodos del fork</b> en la red. Con 2 nodos (hop1=hop2 = mismo equipo) el anonimato es 0. Además, en este modo los <b>chunks de vídeo siguen yendo directos</b> — tu IP es visible al emisor al pedir chunks. El plano de datos por túnel llega en una versión posterior.</div>' +
+      // Manual tunnel-circuit tester + live circuit readout. This is the SAFE way
+      // to validate the tunneled control plane on a 2-PC setup: nothing builds a
+      // circuit on its own (no auto-engage of the untested path on your working
+      // direct stream) — you click here on purpose and watch the handshake.
+      '<div style="margin-top:12px;border-top:1px solid #2a2a2e;padding-top:12px">' +
+      '<button id="ese-test-circ" style="background:#1e293b;color:#a5b4fc;border:1px solid #3a3a3e;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Probar circuito de t&uacute;nel (2-hop)</button> ' +
+      '<button id="ese-refresh-circ" style="background:#13141a;color:#9ca3af;border:1px solid #3a3a3e;border-radius:6px;padding:8px 12px;font-size:13px;cursor:pointer">Actualizar</button>' +
+      '<div id="ese-circ-status" style="font-size:12px;color:#6b7280;margin-top:8px"></div>' +
+      '<pre id="ese-circ-list" style="font-size:12px;color:#9ca3af;margin:6px 0 0;white-space:pre-wrap;font-family:ui-monospace,monospace"></pre>' +
+      '<div style="font-size:11px;color:#6b7280;margin-top:6px">Construir un circuito necesita <b>otro nodo del fork conectado</b>. En un solo PC dir&aacute; &laquo;sin candidatos&raquo; &mdash; es lo esperado. Con el 2&ordm; equipo encendido ver&aacute;s el handshake (Pendiente&rarr;Activo). 2-hop con un solo peer reusa el mismo peer: prueba el protocolo, no da anonimato (eso necesita 3+ nodos).</div>' +
+      '</div>' +
       '</div>' +
       '<p>eSE Live es una aplicación P2P descentralizada que se ejecuta enteramente en tu equipo. No hay servidor central que recopile datos. Aun así, conviene que entiendas qué información se expone.</p>' +
       '<h2>Datos que SÍ se exponen</h2>' +
@@ -494,7 +526,21 @@ function handleRoute(url, req, res, ctx) {
       'function load(){fetch("/api/live/privacy").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="eMule no responde"})}' +
       'sel.addEventListener("change",function(){st.textContent="Aplicando…";' +
       'fetch("/api/live/privacy?mode="+encodeURIComponent(sel.value)).then(function(r){return r.json()}).then(function(d){show(d);if(d&&d.mode)st.textContent="Guardado: "+d.mode+" — persiste al cerrar eMule"}).catch(function(){st.textContent="eMule no responde"})});' +
-      'load();})();</script>' +
+      // Tunnel-circuit tester wiring (manual, observable). Builds nothing on its own.
+      'var tc=document.getElementById("ese-test-circ");var rc=document.getElementById("ese-refresh-circ");' +
+      'var cstat=document.getElementById("ese-circ-status");var clist=document.getElementById("ese-circ-list");' +
+      'function stES(s){return s==="Active"?"ACTIVO":s==="Pending"?"Pendiente":s==="HalfBuilt"?"Medio-construido":s==="Built"?"Construido":s==="Destroyed"?"Destruido":s}' +
+      'function showCircs(d){if(!d||!d.circuits||d.total===0){clist.textContent="(0 circuitos)";return}' +
+      'var t="";for(var i=0;i<d.circuits.length;i++){var c=d.circuits[i];' +
+      't+=c.circ_id+"  "+stES(c.state)+"  "+c.hop_count+" hop  "+Math.round((c.age_ms||0)/1000)+"s  ("+c.role+")\\n"}clist.textContent=t}' +
+      'function loadCircs(){fetch("/api/live/privacy/circuits").then(function(r){return r.json()}).then(showCircs).catch(function(){clist.textContent="(no se pudo leer circuitos)"})}' +
+      'var pn=0,pt=null;function poll(){pn=0;if(pt)clearInterval(pt);pt=setInterval(function(){loadCircs();if(++pn>12){clearInterval(pt);pt=null}},1500)}' +
+      'if(tc)tc.addEventListener("click",function(){cstat.textContent="Construyendo circuito…";' +
+      'fetch("/api/live/privacy/test_circuit?hops=2").then(function(r){return r.json()}).then(function(d){' +
+      'if(d&&d.ok){cstat.textContent="Circuito "+d.circuit_id+" iniciado — mira el handshake abajo";poll()}' +
+      'else{cstat.textContent="Sin candidatos — "+((d&&d.reason)||"no hay peer del fork conectado")+" (normal en 1 solo PC)"}}).catch(function(){cstat.textContent="eMule no responde"})});' +
+      'if(rc)rc.addEventListener("click",loadCircs);' +
+      'load();loadCircs();})();</script>' +
       '</body></html>';
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);

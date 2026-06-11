@@ -5196,11 +5196,13 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
-	// --- /api/live/privacy/tunnel_search?keyword=foo --- v0.71 P1.A —
-	// REAL operation through onion tunnel. Sends TUN_OP_KAD_SEARCH; exit
-	// relay queries its local stream directory and returns matching
-	// streams as KAD_RESULT. V's keyword is NEVER sent to Kad directly
-	// → preserves privacy of WHAT V is looking for. Length: 31 chars.
+	// --- /api/live/privacy/tunnel_search?keyword=foo --- v8.1 Sprint B —
+	// REAL Kad search through the onion tunnel. Sends TUN_OP_KAD_SEARCH_V2;
+	// the EXIT runs an actual dual-namespace Kad CSearch on V's behalf and
+	// returns rich result records (TUN_OP_KAD_RESULT_V2, multi-cell). The
+	// keyword is emitted to Kad from the EXIT's IP, never V's → V's identity
+	// stays off the DHT. (The keyword does reach the exit in clear; encrypting
+	// it toward the exit is v9.0 roadmap, thesis Decision 12.3.) Length: 31.
 	if (sURL.Left(31) == "/api/live/privacy/tunnel_search") {
 		CString kwArg = _ParseURL(Data.sURL, _T("keyword"));
 		if (kwArg.IsEmpty()) kwArg = _T("eselive");
@@ -5210,18 +5212,27 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		std::string reply;
 		bool ok = false;
 		try {
-			ok = eSELive::CLiveTunnel::Get().TunneledKadSearch(keyword, reply, 5000);
+			// 12 s: the exit accumulates real Kad results for ~7 s (the
+			// window) before replying with TUN_OP_KAD_RESULT_V2.
+			ok = eSELive::CLiveTunnel::Get().TunneledKadSearch(keyword, reply, 12000);
 		} catch (...) {}
 
 		CStringA json;
 		if (ok) {
-			CStringA safe;
-			for (char c : reply) {
-				if (c == '"' || c == '\\') safe += '\\';
-				safe += c;
+			// `reply` is already a JSON array of rich result records built by
+			// TunneledKadSearch; embed it directly. Do NOT use Format here - a
+			// '%' in a stream title would be misread as a format spec.
+			CStringA kwSafe;
+			for (int i = 0; i < kwA.GetLength(); ++i) {
+				char c = kwA[i];
+				if (c == '"' || c == '\\') kwSafe += '\\';
+				kwSafe += c;
 			}
-			json.Format("{\"ok\":true,\"keyword\":\"%s\",\"raw_hits\":\"%s\",\"format\":\"title|bitrate|viewers;\"}",
-				(LPCSTR)kwA, (LPCSTR)safe);
+			json = "{\"ok\":true,\"keyword\":\"";
+			json += kwSafe;
+			json += "\",\"results\":";
+			json += reply.c_str();
+			json += "}";
 		} else {
 			json = "{\"ok\":false,\"reason\":\"no active circuit or timeout - build a circuit first via test_circuit\"}";
 		}

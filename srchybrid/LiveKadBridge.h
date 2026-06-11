@@ -4,6 +4,7 @@
 // without modifying the Kad core code.
 #pragma once
 
+#include <vector>          // v8.1 B1.3 - SearchStreams out-param of CSearch ids
 #include "LiveProtocol.h"
 
 struct KadDebugSnapshot;  // Forward declaration (defined in LiveStreamManager.h)
@@ -87,8 +88,12 @@ public:
     // === Discovery (Viewer side) ===
 
     // Search for live streams by keyword
-    // Results arrive asynchronously via OnStreamFound callback
-    bool SearchStreams(const CString& keyword);
+    // Results arrive asynchronously via OnStreamFound callback.
+    // v8.1 B1.3 — if outSearchIds != NULL, it receives the CSearch ids actually
+    // launched (clean + legacy), so a tunnel search job can correlate results
+    // and StopSearch() them when done. Empty if rate-limited / cooldown.
+    bool SearchStreams(const CString& keyword,
+                       std::vector<uint32>* outSearchIds = NULL);
 
     // Get current directory of known streams
     void GetKnownStreams(CArray<LiveStreamEntry>& outList) const;

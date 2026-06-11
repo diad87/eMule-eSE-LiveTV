@@ -492,9 +492,11 @@ bool CLiveKadBridge::StartLivePublishSearch(const Kademlia::CUInt128& uTarget,
 // DISCOVERY (Viewer side)
 // ============================================================
 
-bool CLiveKadBridge::SearchStreams(const CString& keyword)
+bool CLiveKadBridge::SearchStreams(const CString& keyword,
+                                   std::vector<uint32>* outSearchIds)
 {
     CSingleLock lock(&m_lock, TRUE);
+    if (outSearchIds) outSearchIds->clear();
 
     if (!Kademlia::CKademlia::IsConnected()) {
         // v0.71 P3.8 — log once per disconnected stretch, not every poll.
@@ -621,6 +623,7 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword)
             (LPCWSTR)searchWord, (unsigned)pSearchClean->GetSearchID());
         PendingSearchTag pst { ESE_NS_CLEAN, now };
         m_pendingSearchNamespaces[pSearchClean->GetSearchID()] = pst;
+        if (outSearchIds) outSearchIds->push_back(pSearchClean->GetSearchID());
     }
     if (pSearchLegacy != NULL) {
         AddLogLine(true,
@@ -631,6 +634,7 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword)
             (LPCWSTR)searchWord, (unsigned)pSearchLegacy->GetSearchID());
         PendingSearchTag pst { ESE_NS_LEGACY, now };
         m_pendingSearchNamespaces[pSearchLegacy->GetSearchID()] = pst;
+        if (outSearchIds) outSearchIds->push_back(pSearchLegacy->GetSearchID());
     }
 
     m_dwLastSearchTime = now;

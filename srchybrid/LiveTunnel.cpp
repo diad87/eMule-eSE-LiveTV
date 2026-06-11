@@ -34,6 +34,9 @@
 #include "kademlia/kademlia/KadV2ModeSelector.h"
 #include "kademlia/kademlia/SearchManager.h"   // v8.1 B - StopSearch on tunneled search
 #include "kademlia/kademlia/KadV2TunnelPool.h"  // v8.1 D4 - register Active circuits in the PST pool
+#include "kademlia/kademlia/Kademlia.h"          // v8.1 D5 - routing-table lookup for the exit Kad ID
+#include "kademlia/routing/RoutingZone.h"        // v8.1 D5
+#include "kademlia/routing/Contact.h"            // v8.1 D5
 
 namespace eSELive {
 
@@ -292,6 +295,24 @@ bool CLiveTunnel::SendThrough(const uint8_t* payload, size_t payloadLen)
     return false;
 }
 
+// v8.1 D5 - best-effort: resolve the EXIT (last hop) peer's Kad node-ID from our routing
+// table and stash it on the circuit, so CKadV2TunnelPool::Acquire can pick the circuit whose
+// exit is XOR-closest to a Kad search target. Returns silently when the peer is not a Kad
+// contact (mirrors the proven CUpDownClient::GetContact usage in BaseClient.cpp). The CUInt128
+// is value-copied (a CContact* can be evicted from the routing bin). Main thread only.
+static void EseTryResolveExitKadKey(CUpDownClient* exit, CLiveCircuit& c)
+{
+    if (!exit || c.m_haveExitKadKey) return;
+    if (exit->GetConnectIP() == 0) return;   // D5 - avoid GetContact(0,...) matching a 0-IP contact
+    if (!Kademlia::CKademlia::IsRunning()) return;
+    Kademlia::CRoutingZone* rz = Kademlia::CKademlia::GetRoutingZone();
+    if (!rz) return;
+    Kademlia::CContact* pc = rz->GetContact(ntohl(exit->GetConnectIP()), 0, false);
+    if (!pc) return;
+    c.m_exitKadKey     = pc->GetClientID();   // value copy
+    c.m_haveExitKadKey = true;
+}
+
 // v0.71 P3.3 — originator-side: CELL_CREATED arrived for our circuit.
 // Payload = relay's ephemeral X25519 pub (32B). We derive the shared
 // secret with our stored ephemeral private, run HKDF, register hop 1,
@@ -340,18 +361,26 @@ bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
     if (circ->m_nextHopClient) {
         CUpDownClient* hop2 = circ->m_nextHopClient;
         circ->m_nextHopClient = NULL;   // clear staging slot
+        // v8.1 D5 - hop2 becomes the exit once EXTENDED lands; resolve its Kad key NOW while
+        // the client pointer is in hand (HandleExtended_Originator keeps no hop2 reference).
+        EseTryResolveExitKadKey(hop2, *circ);
         // BuildExtend transitions back to HalfBuilt; CELL_EXTENDED will
         // promote to Active once derived. Failure leaves circuit at
         // 1-hop Active (graceful degrade).
         if (!BuildExtend(circ, hop2)) {
             // v8.1 D4 - extend failed -> circuit stays 1-hop Active and would otherwise
             // never be pooled (HandleExtended_Originator won't run). Register it now.
+            // v8.1 D5 - the exit is now the FIRST hop, not hop2: reset + re-resolve.
+            circ->m_haveExitKadKey = false;
+            EseTryResolveExitKadKey(circ->m_firstHopClient, *circ);
             Kademlia::CKadV2TunnelPool::Get().RegisterTunnel(circ);
         }
     } else {
         // v8.1 D4 - 1-hop-final circuit reached Active: register it in the PST pool.
         // (The 2-hop case registers in HandleExtended_Originator once EXTENDED lands;
         // registering here too would add an entry about to leave Active via BuildExtend.)
+        // v8.1 D5 - the exit is the first hop.
+        EseTryResolveExitKadKey(circ->m_firstHopClient, *circ);
         Kademlia::CKadV2TunnelPool::Get().RegisterTunnel(circ);
     }
     return true;
@@ -444,6 +473,84 @@ bool CLiveTunnel::HandleCreate_Relay(uint32_t circId,
     return true;
 }
 
+// === DoS hardening — CREATE handshake admission gate =======================
+// A CELL_CREATE costs us an X25519 keypair + DH + HKDF on the MAIN thread and
+// requires NO prior state from the sender — the classic Tor CREATE-flood. The
+// gate runs before any crypto. All caps are deliberately GENEROUS: clipping a
+// legitimate peer is worse than letting a mild flood through (the per-cell
+// cost is sub-millisecond; only sustained floods matter).
+namespace {
+const DWORD CREATE_GATE_WINDOW_MS = 5000;
+// Per source IP: a legit neighbour sends ~1-2 CREATEs per pool build (the
+// pool's 3-5 circuits are spread over DISTINCT relays) plus one per rotation
+// (every ~5 min, TUNNEL_ROTATION_BASE_MS), plus hop1->hop2 forwarded CREATEs
+// when the neighbour relays for several viewers at once. 15 per 5 s window
+// (3/s sustained) is ~2 orders of magnitude above that worst legit case.
+const uint32_t CREATE_GATE_MAX_PER_IP = 15;
+// Global, all sources: bounds total handshake crypto at 20/s no matter how
+// distributed the flood is (~well under 2% of the main thread). Legit global
+// load is viewers rotating 5-min pools through us: 20/s sustained covers
+// thousands of simultaneous tunnels — far beyond this network's scale.
+const uint32_t CREATE_GATE_MAX_GLOBAL = 100;
+// Concurrent relay-side circuits ("concurrent handshakes": the handshake
+// itself completes synchronously inside HandleCreate_Relay, so the durable
+// per-CREATE cost is the circuit registered in m_circuits — memory plus the
+// linear scan every incoming cell pays). Tick() reaps every circuit after
+// the 5-min rotation, so this also bounds a slow drip-flood. 512 concurrent
+// relay circuits = hundreds of simultaneous viewers tunneling through us.
+const size_t CREATE_GATE_MAX_RELAY_CIRCS = 512;
+
+struct CreateRateSlot {
+    uint32_t srcIp;        // full source IP (network order)
+    uint32_t count;
+    DWORD    windowStart;  // 0 = slot free
+};
+static CreateRateSlot s_createRates[32] = {};
+static uint32_t s_createGlobalCount  = 0;
+static DWORD    s_createGlobalWindow = 0;
+
+// Counts this CREATE against the per-IP and global windows; returns true if
+// it may proceed to the X25519 handshake. Main thread only (called from
+// OnCellReceived). Sliding-window open-addressed cache, same pattern as the
+// /24 OP_LIVE_REQUEST limiter in LiveStreamManager.cpp.
+bool CreateGateAdmit(uint32_t ipNet)
+{
+    const DWORD now = ::GetTickCount();
+    if (now - s_createGlobalWindow > CREATE_GATE_WINDOW_MS) {
+        s_createGlobalWindow = now;
+        s_createGlobalCount  = 0;
+    }
+    if (++s_createGlobalCount > CREATE_GATE_MAX_GLOBAL)
+        return false;
+    int slot = -1, freeSlot = -1;
+    uint32_t h = (ipNet * 0x9E3779B1u) % _countof(s_createRates);
+    for (uint32_t i = 0; i < _countof(s_createRates); ++i) {
+        uint32_t idx = (h + i) % _countof(s_createRates);
+        if (s_createRates[idx].srcIp == ipNet && s_createRates[idx].windowStart != 0) {
+            slot = (int)idx; break;
+        }
+        if (s_createRates[idx].windowStart == 0 && freeSlot == -1) freeSlot = (int)idx;
+        // Reuse expired slots
+        if (s_createRates[idx].windowStart != 0 && now - s_createRates[idx].windowStart > CREATE_GATE_WINDOW_MS * 4) {
+            if (freeSlot == -1) freeSlot = (int)idx;
+        }
+    }
+    if (slot >= 0) {
+        if (now - s_createRates[slot].windowStart > CREATE_GATE_WINDOW_MS) {
+            s_createRates[slot].windowStart = now;
+            s_createRates[slot].count = 1;
+        } else if (++s_createRates[slot].count > CREATE_GATE_MAX_PER_IP) {
+            return false;
+        }
+    } else if (freeSlot >= 0) {
+        s_createRates[freeSlot].srcIp = ipNet;
+        s_createRates[freeSlot].windowStart = now;
+        s_createRates[freeSlot].count = 1;
+    }
+    return true;
+}
+}  // namespace
+
 bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
                                  const uint8_t* payload, uint16_t payloadLen,
                                  CUpDownClient* fromPeer)
@@ -456,6 +563,29 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
     // even if we don't know circ_id yet (this is by design — circ_id is
     // chosen by the originator and we learn it from the cell).
     if (cmd == CELL_CREATE) {
+        if (!fromPeer) return false;   // HandleCreate_Relay would reject anyway
+        // DoS hardening: admission gate BEFORE the X25519 work (see the
+        // constants above). Drops are silent on the wire — V's circuit just
+        // times out, exactly as if we were a vanilla 0.70b peer ignoring the
+        // opcode — and the debug log is throttled so a flood can't flood it.
+        bool admit = CreateGateAdmit(fromPeer->GetIP());
+        if (admit) {
+            size_t relayCircs = 0;
+            for (const auto& c : m_circuits)
+                if (c->m_role == CircuitRole::Relay) ++relayCircs;
+            if (relayCircs >= CREATE_GATE_MAX_RELAY_CIRCS) admit = false;
+        }
+        if (!admit) {
+            static DWORD s_lastGateLog = 0;
+            if (::GetTickCount() - s_lastGateLog > 30000) {
+                s_lastGateLog = ::GetTickCount();
+                const uint32_t ip = fromPeer->GetIP();
+                AddDebugLogLine(false,
+                    _T("LiveTunnel: CREATE admission gate dropping handshake(s), last from %u.%u.%u.%u (DoS protection)"),
+                    ip & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF, (ip >> 24) & 0xFF);
+            }
+            return true;   // consumed: silently dropped
+        }
         return HandleCreate_Relay(circ_id, payload, payloadLen, fromPeer);
     }
 

@@ -23,19 +23,27 @@ CKadV2TunnelPool& CKadV2TunnelPool::Get()
     return s_instance;
 }
 
-std::shared_ptr<eSELive::CLiveCircuit> CKadV2TunnelPool::Acquire(const CUInt128& /*destinationKey*/)
+std::shared_ptr<eSELive::CLiveCircuit> CKadV2TunnelPool::Acquire(const CUInt128& destinationKey)
 {
-    // F4b: simple LRU-style acquire. Real "destination match" (Cap 6
-    // §6.5.2 ≤2-hop-XOR proximity) is added in F5 when we have the
-    // last-hop routing-table info per circuit. For now we return any
-    // Active circuit, which already gives the basic PST cost reduction
-    // (most savings come from not rebuilding tunnels in the same session).
+    // v8.1 D5 (Cap 6 §6.5.2) - return the Active circuit whose EXIT is XOR-closest to
+    // destinationKey. Best-effort: only circuits whose exit Kad node-ID was resolved at build
+    // time (m_haveExitKadKey) join the XOR ranking; if none resolved one, fall back to the
+    // first Active circuit (preserves the basic PST reuse benefit). XOR-by-exit-ID is a SOFT
+    // proximity heuristic (the exit being near the target in DHT space => likely fewer hops at
+    // its own Kad query), NOT a guarantee the exit holds the keyword.
     CSingleLock lock(&m_lock, TRUE);
+    std::shared_ptr<eSELive::CLiveCircuit> bestXor;
+    CUInt128 bestDist;   // meaningful only once bestXor is set
+    std::shared_ptr<eSELive::CLiveCircuit> firstActive;
     for (auto& e : m_entries) {
-        if (e.tunnel->State() == eSELive::CircuitState::Active)
-            return e.tunnel;
+        if (!e.tunnel || e.tunnel->State() != eSELive::CircuitState::Active) continue;
+        if (!firstActive) firstActive = e.tunnel;
+        if (!e.tunnel->m_haveExitKadKey) continue;
+        CUInt128 dist = destinationKey;
+        dist.Xor(e.tunnel->m_exitKadKey);
+        if (!bestXor || dist < bestDist) { bestXor = e.tunnel; bestDist = dist; }
     }
-    return nullptr;
+    return bestXor ? bestXor : firstActive;   // firstActive is nullptr if no Active circuit
 }
 
 void CKadV2TunnelPool::RegisterTunnel(std::shared_ptr<eSELive::CLiveCircuit> tunnel)

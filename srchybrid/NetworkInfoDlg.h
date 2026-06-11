@@ -20,6 +20,7 @@ public:
 
 protected:
 	CRichEditCtrlX m_info;
+	CComboBox      m_cbKadMode;  // v8.1 D6 — native privacy-mode dropdown
 	CHARFORMAT     m_rcfDef;     // v0.71 P3.9 — cached for timer refresh
 	CHARFORMAT     m_rcfBold;
 	UINT_PTR       m_nRefreshTimer = 0;
@@ -28,6 +29,7 @@ protected:
 	virtual void DoDataExchange(CDataExchange *pDX);    // DDX/DDV support
 	afx_msg void OnTimer(UINT_PTR nIDEvent);            // v0.71 P3.9 — periodic refresh
 	afx_msg void OnDestroy();                           // v0.71 P3.9 — KillTimer
+	afx_msg void OnKadModeChanged();                    // v8.1 D6 — dropdown -> SetDefaultMode
 
 	void RefreshNow();   // v0.71 P3.9 — re-render the panel, preserve scroll
 

@@ -9,6 +9,7 @@
 
 #include <vector>
 #include "LiveCellQueue.h"
+#include "kademlia/utils/UInt128.h"   // v8.1 D5 - exit Kad node-ID for XOR-closest Acquire
 
 class CUpDownClient;   // v0.71 P3.3 — for first hop client pointer
 
@@ -137,6 +138,14 @@ public:
     // wipe), so the same field naturally serves both phases.
     uint8_t  m_ephemeral_priv[32] = {0};
     bool     m_have_ephemeral = false;
+
+    // v8.1 D5 - best-effort Kad node-ID of the EXIT (last hop), resolved from our routing
+    // table at build time (originator side). Lets CKadV2TunnelPool::Acquire pick the circuit
+    // whose exit is XOR-closest to a Kad search target. m_haveExitKadKey is the validity flag
+    // (a real all-zero ID must not masquerade as "unknown"). Best-effort: stays false when the
+    // exit peer is not a Kad contact, and Acquire then falls back to any-Active.
+    Kademlia::CUInt128 m_exitKadKey;
+    bool               m_haveExitKadKey = false;
 
     // Wipe all session key material. Called from destructor.
     void WipeKeys();

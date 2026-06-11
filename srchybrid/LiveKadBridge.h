@@ -93,8 +93,12 @@ public:
     // v8.1 B1.3 — if outSearchIds != NULL, it receives the CSearch ids actually
     // launched (clean + legacy), so a tunnel search job can correlate results
     // and StopSearch() them when done. Empty if rate-limited / cooldown.
+    // v8.1 D1 - bForceDirect=true makes SearchStreams ALWAYS query Kad directly (skips the
+    // tunnel gate). The EXIT searching on a requester's behalf passes true: it MUST query from
+    // its own IP, never re-enter the tunnel branch (would cascade / return stale-cache only).
     bool SearchStreams(const CString& keyword,
-                       std::vector<uint32>* outSearchIds = NULL);
+                       std::vector<uint32>* outSearchIds = NULL,
+                       bool bForceDirect = false);
 
     // Get current directory of known streams
     void GetKnownStreams(CArray<LiveStreamEntry>& outList) const;
@@ -121,6 +125,12 @@ public:
         uint16 bitrate, uint32 viewerCount,
         uint32 fromSearchID = 0,
         uint32 broadcasterAltIP = 0);
+
+    // v8.1 D1 - parse a tunneled TUN_OP_KAD_RESULT_V2 wire body and feed each record into
+    // the directory via OnKadSearchResult (the SAME sink the direct Kad search uses), so a
+    // Tunneled-mode viewer's stream grid populates from results the exit fetched on its
+    // behalf. Called from CLiveTunnel::HandleRelay_Originator (main thread).
+    void FeedTunneledSearchResults(const std::vector<uint8_t>& wire);
 
     // === Periodic Maintenance ===
 

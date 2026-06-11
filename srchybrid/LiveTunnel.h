@@ -163,7 +163,11 @@ public:
     // availability. If decision is "tunnel" but no Active circuit
     // exists, callers should fall back to the direct path (no
     // privacy but functional) rather than fail entirely.
-    bool ShouldRouteThroughTunnel(const wchar_t* keywordOrNull) const;
+    // v8.1 D7 - opClass is Kademlia::CKadV2ModeSelector::QueryContext::OperationClass
+    // (0=KAD_SEARCH, 1=KAD_PUBLISH, 2=LIVE_CONTROL); passed as uint8_t to avoid pulling the
+    // selector header into this widely-included header. Defaults to LIVE_CONTROL so the
+    // existing subscribe call sites are unchanged.
+    bool ShouldRouteThroughTunnel(const wchar_t* keywordOrNull, uint8_t opClass = 2) const;
 
     // v0.71 P1.A — issue a Kad keyword search through the tunnel.
     // Sends TUN_OP_KAD_SEARCH, waits for TUN_OP_KAD_RESULT. timeoutMs
@@ -209,6 +213,12 @@ public:
     void SendLiveSubscribeNoWait(const uint8_t streamKey[16],
                                  uint32_t bIP, uint16_t bPort, uint16_t bUDP,
                                  uint32_t bAltIP);
+
+    // v8.1 D1 - fire-and-forget tunneled Kad keyword search (keyword UTF-8, lowercased).
+    // Like SendLiveSubscribeNoWait: throwaway req_id, no waiter; the TUN_OP_KAD_RESULT_V2
+    // reply is parsed straight into the Live directory by HandleRelay_Originator. Safe from
+    // the MAIN thread (the blocking TunneledKadSearch is not). No-op without an Active circuit.
+    void SendKadSearchV2NoWait(const std::string& keywordLower);
 
     // v8.1 A1.7 - multi-cell echo test op. Splits `payload` into fragments,
     // sends them as TUN_OP_ECHO_LARGE, awaits the reassembled

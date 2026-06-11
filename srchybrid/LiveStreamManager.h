@@ -311,6 +311,13 @@ public:
                                uint16 bitmap, uint32 oldestSeq,
                                const uchar* pubkeyOrNull);
 
+    // v8.1 Sprint C (C2/C3 finish) — a tunneled viewer received the broadcaster's
+    // peer-list (alternative sources) relayed by the exit. Thin wrapper that builds
+    // the arrays OnPeerListReceived expects and feeds them into the (direct, in
+    // Tunelizado) dial path. Called from the tunnel originator demux (main thread).
+    void OnTunneledPeerList(const uchar* streamKey,
+                            const uint32_t* ips, const uint16_t* ports, uint8_t count);
+
     // === Peer Management ===
     // Called when a peer sends OP_LIVE_JOIN
     void OnPeerJoin(CUpDownClient* peer, const uchar* streamKey, uint32 uploadCapacity);

@@ -910,14 +910,160 @@ void CLiveTunnel::EnqueueSend(const uint8_t* payload, size_t payloadLen)
     m_mtQueue.push_back(std::move(req));
 }
 
+// v8.1 A4 - marshal a whole logical message for pinned send on the main thread.
+void CLiveTunnel::EnqueueSendMsg(uint32_t req_id, uint8_t sub_cmd,
+                                 const uint8_t* msg, size_t msgLen)
+{
+    CSingleLock lk(&m_mtLock, TRUE);
+    MainThreadReq req;
+    req.op     = MT_SEND_MSG;
+    req.reqId  = req_id;
+    req.subCmd = sub_cmd;
+    if (msg && msgLen) req.payload.assign(msg, msg + msgLen);
+    m_mtQueue.push_back(std::move(req));
+}
+
+// v8.1 A4 - pin a whole logical message to ONE circuit. Round-robin BY MESSAGE
+// (not by cell, as SendThrough does): all cells of one fragmented message must
+// ride the same circuit so they reach the same exit in order and reassemble
+// trivially. Returns the circuit id used (for retry tracking), or 0 if no
+// Active circuit was available / the send could not start. MAIN THREAD ONLY.
+uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
+                                        const uint8_t* msg, size_t msgLen)
+{
+    CSingleLock lock(&m_lock, TRUE);
+    if (m_circuits.empty()) return 0;
+
+    // Pick one Active circuit, advancing the round-robin cursor once per
+    // message. (SendThrough advances it once per cell -> wrong for multi-cell.)
+    std::shared_ptr<CLiveCircuit> chosen;
+    size_t tries = m_circuits.size();
+    while (tries-- > 0) {
+        const size_t idx = m_rrNextIdx % m_circuits.size();
+        m_rrNextIdx = (m_rrNextIdx + 1) % m_circuits.size();
+        auto& c = m_circuits[idx];
+        if (c->State() == CircuitState::Active && c->HopCount() >= 1
+            && c->m_firstHopClient
+            // A7.4 - a multi-cell op (>= 0x40) needs every hop dataplane-capable;
+            // a circuit with a v8.0.0 hop (m_multicell_ok == false) is only
+            // eligible for single-cell legacy ops.
+            && (sub_cmd < TUN_MULTICELL_OP_MIN || c->m_multicell_ok)) {
+            chosen = c;
+            break;
+        }
+    }
+    if (!chosen) return 0;
+
+    const size_t hopOverhead = chosen->HopCount() * 16;   // AEAD tag per hop
+
+    // Build the cell plaintext(s) for this circuit's hop count.
+    std::vector<std::vector<uint8_t> > cells;
+    if (sub_cmd >= TUN_MULTICELL_OP_MIN) {
+        if (SUB_HEADER_BYTES + FRAG_HEADER_BYTES + hopOverhead >= CELL_PAYLOAD_MAX)
+            return 0;
+        const size_t fragDataMax =
+            CELL_PAYLOAD_MAX - SUB_HEADER_BYTES - FRAG_HEADER_BYTES - hopOverhead;
+        if (!SplitIntoCells(sub_cmd, req_id, msg, msgLen, fragDataMax, cells))
+            return 0;
+    } else {
+        // Single-cell legacy op (ping/search): sub-header + raw body, no frag hdr.
+        if (SUB_HEADER_BYTES + msgLen + hopOverhead > CELL_PAYLOAD_MAX)
+            return 0;
+        std::vector<uint8_t> cell(SUB_HEADER_BYTES + msgLen);
+        PackSubHeader(sub_cmd, req_id, (uint16_t)msgLen, cell.data());
+        if (msgLen) memcpy(cell.data() + SUB_HEADER_BYTES, msg, msgLen);
+        cells.push_back(std::move(cell));
+    }
+
+    // Onion-wrap each plaintext and send ALL on the SAME (chosen) circuit.
+    for (size_t i = 0; i < cells.size(); ++i) {
+        uint8_t cellPayload[CELL_PAYLOAD_MAX];
+        size_t  cellLen = 0;
+        uint8_t cell[CELL_TOTAL_BYTES];
+        if (!chosen->OnionEncrypt(cells[i].data(), cells[i].size(),
+                                  cellPayload, cellLen)
+            || !CellPack(chosen->Id(), CELL_RELAY, cellPayload, cellLen, cell)) {
+            // A4 fix - a mid-message failure can leave this circuit's per-hop
+            // nonce out of step (OnionEncrypt advances it before it can fail).
+            // Destroy the circuit so it is never reused with a desynced nonce;
+            // returning its id lets Tick's retry (A4.3) re-send the whole
+            // message on another circuit.
+            chosen->SetState(CircuitState::Destroyed);
+            return chosen->Id();
+        }
+        if (!SendCellToPeer(chosen->m_firstHopClient, cell))
+            chosen->m_sendQ.Push(cell);   // transient socket busy -> queue
+    }
+    return chosen->Id();
+}
+
+// v8.1 A3 - async request/reply primitives. RegisterPending creates a
+// per-request slot with an auto-reset event; WaitPending blocks on it (in a
+// webserver worker thread - never the main thread); SignalReply fills the
+// reply and wakes the waiter. The PendingRequest is freed by the waiter
+// only, after it has erased the slot, so the signaler cannot use-after-free.
+CLiveTunnel::PendingRequest* CLiveTunnel::RegisterPending(uint32_t& req_id)
+{
+    PendingRequest* pr = new PendingRequest();
+    pr->evt = CreateEvent(NULL, FALSE, FALSE, NULL);   // auto-reset, unsignaled
+    CSingleLock pl(&m_pendingLock, TRUE);
+    // Pick a req_id not already in flight. A 32-bit random collision is ~2^-32,
+    // but a duplicate would silently hijack the other request's slot, so we
+    // re-roll (the same guard NewCircuitId() uses for circuit ids).
+    uint32_t id;
+    for (;;) {
+        uint8_t r[4];
+        SecureRandomBytes(r, 4);
+        id = (uint32_t)r[0] | ((uint32_t)r[1] << 8)
+           | ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
+        if (id != 0 && m_pending.find(id) == m_pending.end()) break;
+    }
+    req_id = id;
+    m_pending[id] = pr;
+    return pr;
+}
+
+bool CLiveTunnel::WaitPending(uint32_t req_id, PendingRequest* pr,
+                              uint32_t timeoutMs,
+                              std::vector<uint8_t>& outReply,
+                              uint32_t* outResult)
+{
+    WaitForSingleObject(pr->evt, timeoutMs);
+    bool ok = false;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        m_pending.erase(req_id);          // unregister: SignalReply can't find it now
+        // A4: a request woken by send failure (pr->failed) returns false so the
+        // caller reports an honest error, not an empty-but-"successful" reply.
+        if (pr->done && !pr->failed) {
+            outReply = std::move(pr->reply);
+            if (outResult) *outResult = pr->result;
+            ok = true;
+        }
+    }
+    CloseHandle(pr->evt);
+    delete pr;
+    return ok;
+}
+
+void CLiveTunnel::SignalReply(uint32_t req_id, const uint8_t* reply,
+                              size_t replyLen, uint32_t result)
+{
+    CSingleLock pl(&m_pendingLock, TRUE);
+    auto it = m_pending.find(req_id);
+    if (it == m_pending.end()) return;     // no waiter (timed out / unknown)
+    PendingRequest* pr = it->second;
+    if (reply && replyLen > 0)
+        pr->reply.assign(reply, reply + replyLen);
+    pr->result = result;
+    pr->done   = true;
+    SetEvent(pr->evt);
+}
+
 uint32_t CLiveTunnel::RequestTestCircuit(int hops, uint32_t timeoutMs)
 {
-    // Random req_id correlates this request with the result the main thread
-    // publishes into m_pendingBuildResults.
-    uint8_t r[4];
-    SecureRandomBytes(r, 4);
-    const uint32_t reqId = (uint32_t)r[0] | ((uint32_t)r[1] << 8)
-                         | ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
+    uint32_t reqId;
+    PendingRequest* pr = RegisterPending(reqId);   // generates a unique req_id
     {
         CSingleLock lk(&m_mtLock, TRUE);
         MainThreadReq req;
@@ -925,24 +1071,10 @@ uint32_t CLiveTunnel::RequestTestCircuit(int hops, uint32_t timeoutMs)
         req.reqId = reqId;
         m_mtQueue.push_back(std::move(req));
     }
-    // Poll until the main thread runs the build (it drains the queue once
-    // per Kad tick, ~1 Hz) or we hit the timeout.
-    const DWORD start = GetTickCount();
-    while (GetTickCount() - start < timeoutMs) {
-        {
-            CSingleLock pl(&m_pendingLock, TRUE);
-            auto it = m_pendingBuildResults.find(reqId);
-            if (it != m_pendingBuildResults.end()) {
-                const uint32_t circId = it->second;
-                m_pendingBuildResults.erase(it);
-                return circId;
-            }
-        }
-        Sleep(50);
-    }
-    CSingleLock pl(&m_pendingLock, TRUE);
-    m_pendingBuildResults.erase(reqId);
-    return 0;
+    std::vector<uint8_t> dummy;
+    uint32_t circId = 0;
+    WaitPending(reqId, pr, timeoutMs, dummy, &circId);
+    return circId;   // 0 on timeout / build failure
 }
 
 void CLiveTunnel::ProcessMainThreadWork()
@@ -963,13 +1095,25 @@ void CLiveTunnel::ProcessMainThreadWork()
                 if (!req.payload.empty())
                     SendThrough(req.payload.data(), req.payload.size());
                 break;
+            case MT_SEND_MSG: {
+                // A4 - pin the whole message to one circuit; record which one
+                // in the PendingRequest so Tick() can retry it on circuit death.
+                const uint32_t cid = SendMessagePinned(
+                    req.reqId, req.subCmd,
+                    req.payload.empty() ? NULL : req.payload.data(),
+                    req.payload.size());
+                CSingleLock pl(&m_pendingLock, TRUE);
+                auto it = m_pending.find(req.reqId);
+                if (it != m_pending.end() && it->second)
+                    it->second->circ_id = cid;   // 0 = no circuit -> caller times out
+                break;
+            }
             case MT_BUILD_1HOP:
             case MT_BUILD_2HOP: {
                 const uint32_t circId = (req.op == MT_BUILD_2HOP)
                                       ? BuildTestCircuit2Hop()
                                       : BuildTestCircuit(NULL);
-                CSingleLock pl(&m_pendingLock, TRUE);
-                m_pendingBuildResults[req.reqId] = circId;
+                SignalReply(req.reqId, NULL, 0, circId);   // wake RequestTestCircuit
                 break;
             }
             }
@@ -1021,9 +1165,9 @@ void CLiveTunnel::GetPeersSnapshot(std::vector<PeerSnapshot>& outAll,
 //   [1..4]   req_id (uint32 LE) — correlates request to reply
 //   [5..6]   text_len (uint16 LE)
 //   [7..N]   text bytes (UTF-8)
-// V dispatches PING_REPLY by req_id to pending HTTP requests in
-// m_pendingPingReplies (under m_pendingLock). Exit-side dispatches PING
-// by echoing back "echo:<text>" wrapped with the same circuit's keys.
+// V correlates a reply to its blocked caller by req_id via SignalReply ->
+// the PendingRequest in m_pending (A3, under m_pendingLock). Exit-side
+// dispatches PING by echoing back "echo:<text>" wrapped with the circuit keys.
 
 bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
                                          const uint8_t* payload, uint16_t payloadLen)
@@ -1054,7 +1198,9 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
                              fragData, fragDataLen))
             return false;
         CSingleLock pl(&m_pendingLock, TRUE);
-        ReassemblyEntry& e = m_reassembly[req_id];
+        // A1 fix - key by (circ_id, req_id), consistent with the exit side.
+        const uint64_t rkey = ExitOpKey(circ->Id(), req_id);
+        ReassemblyEntry& e = m_reassembly[rkey];
         // v8.1 A5 - stamp the entry on its first fragment so Tick() can
         // sweep it if the rest of the message never arrives.
         if (!e.started) e.first_seen_tick = GetTickCount();
@@ -1062,26 +1208,27 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
                                               msgTotal, fragData, fragDataLen);
         if (r == ReassemblyResult::Incomplete) return true;
         if (r == ReassemblyResult::Error) {
-            m_reassembly.erase(req_id);
+            m_reassembly.erase(rkey);
             return true;
         }
-        m_pendingEchoReplies[req_id] = std::move(e.message);
-        m_reassembly.erase(req_id);
+        std::vector<uint8_t> msg = std::move(e.message);
+        m_reassembly.erase(rkey);
+        // v8.1 A3 - wake the blocked TunnelEchoLarge() call. SignalReply
+        // re-takes m_pendingLock (CCriticalSection is recursive).
+        SignalReply(req_id, msg.data(), msg.size(), 0);
         return true;
     }
 
     std::string text((const char*)body, text_len);
 
     if (sub_cmd == TUN_OP_PING_REPLY) {
-        // Store reply for the waiting TunnelPing() call.
-        CSingleLock pl(&m_pendingLock, TRUE);
-        m_pendingPingReplies[req_id] = text;
+        // v8.1 A3 - wake the blocked TunnelPing() call.
+        SignalReply(req_id, (const uint8_t*)text.data(), text.size(), 0);
         return true;
     }
     if (sub_cmd == TUN_OP_KAD_RESULT) {
-        // v0.71 P1.A — store Kad search results for TunneledKadSearch poller.
-        CSingleLock pl(&m_pendingLock, TRUE);
-        m_pendingKadResults[req_id] = text;
+        // v8.1 A3 - wake the blocked TunneledKadSearch() call.
+        SignalReply(req_id, (const uint8_t*)text.data(), text.size(), 0);
         return true;
     }
     // Unknown sub_cmd: drop silently (future ops land here).
@@ -1124,7 +1271,11 @@ bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
         std::vector<uint8_t> message;
         {
             CSingleLock pl(&m_pendingLock, TRUE);
-            ReassemblyEntry& e = m_reassembly[req_id];
+            // A1 fix - key by (circ_id, req_id): the exit reassembles for many
+            // circuits at once, so two messages sharing a req_id on different
+            // circuits must not collide in one ReassemblyEntry.
+            const uint64_t rkey = ExitOpKey(circ->Id(), req_id);
+            ReassemblyEntry& e = m_reassembly[rkey];
             // v8.1 A5 - stamp the entry on its first fragment so Tick()
             // can sweep it if the rest of the message never arrives.
             if (!e.started) e.first_seen_tick = GetTickCount();
@@ -1133,11 +1284,11 @@ bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
             if (r == ReassemblyResult::Incomplete)
                 return true;                    // wait for more fragments
             if (r == ReassemblyResult::Error) {
-                m_reassembly.erase(req_id);     // malformed -> drop the entry
+                m_reassembly.erase(rkey);       // malformed -> drop the entry
                 return true;
             }
             message = std::move(e.message);     // Complete: take the bytes
-            m_reassembly.erase(req_id);
+            m_reassembly.erase(rkey);
         }
         TunnelRequestCtx ctx;
         ctx.circ    = circ;
@@ -1174,6 +1325,52 @@ void CLiveTunnel::DispatchExitRequest(const TunnelRequestCtx& ctx)
     auto it = m_exitHandlers.find(ctx.sub_cmd);
     if (it != m_exitHandlers.end() && it->second)
         it->second(ctx);
+}
+
+// === v8.1 A6 - deferred exit operations ==================================
+// BeginExitOperation registers a pending reply; CompleteExitOperation sends it
+// when the handler's work finishes (immediately, or later from a callback in
+// Sprint B). Both run on the main thread (OnCellReceived / Kad callbacks).
+
+bool CLiveTunnel::BeginExitOperation(const TunnelRequestCtx& ctx, uint8_t reply_op)
+{
+    if (!ctx.circ) return false;
+    ExitOperation op;
+    op.circ     = ctx.circ;
+    op.circ_id  = ctx.circ->Id();
+    op.req_id   = ctx.req_id;
+    op.reply_op = reply_op;
+    op.started  = GetTickCount();
+    CSingleLock pl(&m_pendingLock, TRUE);
+    m_exitOps[ExitOpKey(op.circ_id, op.req_id)] = op;
+    return true;
+}
+
+bool CLiveTunnel::CompleteExitOperation(uint32_t circ_id, uint32_t req_id,
+                                        const uint8_t* payload, size_t payloadLen)
+{
+    std::shared_ptr<CLiveCircuit> circ;
+    uint8_t reply_op = 0;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        auto it = m_exitOps.find(ExitOpKey(circ_id, req_id));
+        if (it == m_exitOps.end()) return false;
+        circ     = it->second.circ.lock();
+        reply_op = it->second.reply_op;
+        m_exitOps.erase(it);
+    }
+    if (!circ) return false;            // circuit rotated/destroyed -> drop
+    // Rebuild a minimal ctx and reuse SendReply (A2.4) for the fragmented reply.
+    TunnelRequestCtx ctx;
+    ctx.circ   = circ;
+    ctx.req_id = req_id;
+    return SendReply(ctx, reply_op, payload, payloadLen);
+}
+
+void CLiveTunnel::AbortExitOperation(uint32_t circ_id, uint32_t req_id)
+{
+    CSingleLock pl(&m_pendingLock, TRUE);
+    m_exitOps.erase(ExitOpKey(circ_id, req_id));
 }
 
 // v8.1 A2.4 - fragment + send a reply back to V. A legacy reply op
@@ -1271,11 +1468,18 @@ void CLiveTunnel::ExitHandle_KadSearch(const TunnelRequestCtx& ctx)
 }
 
 // v8.1 A1.7 - exit handler for the multi-cell echo test op. The dispatcher
-// has already reassembled the full request; echo it straight back as
-// TUN_OP_ECHO_LARGE_REPLY (SendReply re-fragments it for the return trip).
+// has already reassembled the full request; echo it back as
+// TUN_OP_ECHO_LARGE_REPLY. v8.1 A6 - routed through the deferred-operation
+// framework: register the op, then complete it (here immediately; Sprint B1
+// will instead complete from a Kad search callback that fires much later).
+// The body is copied because a deferred completer cannot rely on ctx.body
+// still being alive when it runs.
 void CLiveTunnel::ExitHandle_EchoLarge(const TunnelRequestCtx& ctx)
 {
-    SendReply(ctx, TUN_OP_ECHO_LARGE_REPLY, ctx.body, ctx.bodyLen);
+    if (!ctx.circ) return;
+    std::vector<uint8_t> echo(ctx.body, ctx.body + ctx.bodyLen);
+    BeginExitOperation(ctx, TUN_OP_ECHO_LARGE_REPLY);
+    CompleteExitOperation(ctx.circ->Id(), ctx.req_id, echo.data(), echo.size());
 }
 
 bool CLiveTunnel::ShouldRouteThroughTunnel(const wchar_t* keywordOrNull) const
@@ -1295,37 +1499,24 @@ bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
 {
     // v0.71 P1.A — send KAD_SEARCH through any active circuit, await
     // KAD_RESULT reply matching req_id.
-    uint8_t r[4];
-    SecureRandomBytes(r, 4);
-    const uint32_t req_id = (uint32_t)r[0]
-                          | ((uint32_t)r[1] << 8)
-                          | ((uint32_t)r[2] << 16)
-                          | ((uint32_t)r[3] << 24);
-    std::vector<uint8_t> payload(SUB_HEADER_BYTES + keywordLower.size());
-    PackSubHeader(TUN_OP_KAD_SEARCH, req_id, (uint16_t)keywordLower.size(), payload.data());
-    memcpy(payload.data() + SUB_HEADER_BYTES, keywordLower.data(), keywordLower.size());
-
-    // v0.72 — marshal the send to the main thread (SendThrough touches peer
-    // sockets, which are main-thread only). If no circuit exists the send is
-    // a no-op and the poll below simply times out -> returns false.
-    EnqueueSend(payload.data(), payload.size());
-
-    DWORD start = GetTickCount();
-    while (GetTickCount() - start < timeoutMs) {
-        {
-            CSingleLock pl(&m_pendingLock, TRUE);
-            auto it = m_pendingKadResults.find(req_id);
-            if (it != m_pendingKadResults.end()) {
-                resultsJsonOut = it->second;
-                m_pendingKadResults.erase(it);
-                return true;
-            }
-        }
-        Sleep(50);
+    uint32_t req_id;
+    // v8.1 A4 - register the waiter (generates a unique req_id), stash the
+    // message for retry, then marshal a pinned send and block (A3, no poll).
+    PendingRequest* pr = RegisterPending(req_id);
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        pr->sub_cmd      = TUN_OP_KAD_SEARCH;
+        pr->request_msg.assign(keywordLower.begin(), keywordLower.end());
+        pr->retries_left = TUN_SEND_RETRIES;
     }
-    CSingleLock pl(&m_pendingLock, TRUE);
-    m_pendingKadResults.erase(req_id);
-    return false;
+    EnqueueSendMsg(req_id, TUN_OP_KAD_SEARCH,
+                   (const uint8_t*)keywordLower.data(), keywordLower.size());
+
+    std::vector<uint8_t> reply;
+    if (!WaitPending(req_id, pr, timeoutMs, reply, NULL))
+        return false;
+    resultsJsonOut.assign((const char*)reply.data(), reply.size());
+    return true;
 }
 
 bool CLiveTunnel::SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,
@@ -1349,92 +1540,55 @@ bool CLiveTunnel::SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,
 bool CLiveTunnel::TunnelPing(const std::string& text, std::string& replyText,
                              uint32_t timeoutMs)
 {
-    // Generate a random req_id (32-bit). Probabilistic collision is
-    // ~negligible for the few outstanding pings we'd ever have.
-    uint8_t r[4];
-    SecureRandomBytes(r, 4);
-    const uint32_t req_id = (uint32_t)r[0]
-                          | ((uint32_t)r[1] << 8)
-                          | ((uint32_t)r[2] << 16)
-                          | ((uint32_t)r[3] << 24);
-
-    // Build sub-protocol payload.
-    std::vector<uint8_t> payload(SUB_HEADER_BYTES + text.size());
-    PackSubHeader(TUN_OP_PING, req_id, (uint16_t)text.size(), payload.data());
-    memcpy(payload.data() + SUB_HEADER_BYTES, text.data(), text.size());
-
-    // Send through the tunnel — marshaled to the main thread (SendThrough
-    // touches peer sockets, which are main-thread only). If no circuit
-    // exists the send is a no-op and the poll below times out -> false.
-    EnqueueSend(payload.data(), payload.size());
-
-    // Poll the pending replies map until timeout. Cheap poll because
-    // the map is tiny; we sleep 50ms between checks. The CELL_RELAY
-    // handler runs on the socket thread and writes to the map under
-    // m_pendingLock.
-    DWORD start = GetTickCount();
-    while (GetTickCount() - start < timeoutMs) {
-        {
-            CSingleLock pl(&m_pendingLock, TRUE);
-            auto it = m_pendingPingReplies.find(req_id);
-            if (it != m_pendingPingReplies.end()) {
-                replyText = it->second;
-                m_pendingPingReplies.erase(it);
-                return true;
-            }
-        }
-        Sleep(50);
+    // v8.1 A4 - register the waiter BEFORE sending (generates a unique req_id;
+    // a fast reply cannot race the registration), stash the message for retry,
+    // then marshal a pinned send and block on the event (A3, no poll).
+    uint32_t req_id;
+    PendingRequest* pr = RegisterPending(req_id);
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        pr->sub_cmd      = TUN_OP_PING;
+        pr->request_msg.assign(text.begin(), text.end());
+        pr->retries_left = TUN_SEND_RETRIES;
     }
-    // Timeout. Clean up the slot if anything appeared meanwhile.
-    CSingleLock pl(&m_pendingLock, TRUE);
-    m_pendingPingReplies.erase(req_id);
-    return false;
+    EnqueueSendMsg(req_id, TUN_OP_PING,
+                   (const uint8_t*)text.data(), text.size());
+
+    std::vector<uint8_t> reply;
+    if (!WaitPending(req_id, pr, timeoutMs, reply, NULL))
+        return false;
+    replyText.assign((const char*)reply.data(), reply.size());
+    return true;
 }
 
-// v8.1 A1.7 - multi-cell echo round-trip. Splits payload into
-// TUN_OP_ECHO_LARGE fragments, enqueues them for the main thread to send,
-// then polls for the reassembled TUN_OP_ECHO_LARGE_REPLY. Worker-thread
-// safe (same pattern as TunnelPing). A3 will replace the poll with an event.
+// v8.1 A1.7 - multi-cell echo round-trip. Marshals the message for a pinned
+// send (A4: SendMessagePinned fragments it onto one circuit) and blocks on the
+// event (A3) for the reassembled TUN_OP_ECHO_LARGE_REPLY. Worker-thread safe.
 bool CLiveTunnel::TunnelEchoLarge(const std::vector<uint8_t>& payload,
                                   std::vector<uint8_t>& replyOut,
                                   uint32_t timeoutMs)
 {
-    uint8_t r[4];
-    SecureRandomBytes(r, 4);
-    const uint32_t req_id = (uint32_t)r[0] | ((uint32_t)r[1] << 8)
-                          | ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
+    // Reject oversize up front so the caller gets a clean false (the real
+    // fragmentation now happens in SendMessagePinned, sized to the actual
+    // circuit's hop count).
+    if (payload.size() > TUN_MSG_MAX_BYTES)
+        return false;
 
-    // Fragment the message. fragDataMax leaves room for the worst-case
-    // onion overhead (2 hops = 32 B) plus the sub-header + fragment header,
-    // so a fragment fits whether the circuit ends up 1- or 2-hop.
-    const size_t fragDataMax = CELL_PAYLOAD_MAX - SUB_HEADER_BYTES
-                             - FRAG_HEADER_BYTES - 2 * 16;
-    std::vector<std::vector<uint8_t> > cells;
-    if (!SplitIntoCells(TUN_OP_ECHO_LARGE, req_id,
-                        payload.data(), payload.size(), fragDataMax, cells))
-        return false;   // message exceeds TUN_MSG_MAX_BYTES / TUN_MSG_MAX_FRAGS
-
-    // Enqueue every fragment for the main thread. They are sent in order on
-    // the active circuit -> TCP keeps them ordered -> reassembly is trivial.
-    for (size_t i = 0; i < cells.size(); ++i)
-        EnqueueSend(cells[i].data(), cells[i].size());
-
-    const DWORD start = GetTickCount();
-    while (GetTickCount() - start < timeoutMs) {
-        {
-            CSingleLock pl(&m_pendingLock, TRUE);
-            auto it = m_pendingEchoReplies.find(req_id);
-            if (it != m_pendingEchoReplies.end()) {
-                replyOut = std::move(it->second);
-                m_pendingEchoReplies.erase(it);
-                return true;
-            }
-        }
-        Sleep(50);
+    // v8.1 A4 - register the waiter (generates a unique req_id), stash the
+    // message for retry, then marshal a pinned send: all fragments ride ONE
+    // circuit so they reassemble at one exit. Block on the event (A3, no poll).
+    uint32_t req_id;
+    PendingRequest* pr = RegisterPending(req_id);
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        pr->sub_cmd      = TUN_OP_ECHO_LARGE;
+        pr->request_msg  = payload;
+        pr->retries_left = TUN_SEND_RETRIES;
     }
-    CSingleLock pl(&m_pendingLock, TRUE);
-    m_pendingEchoReplies.erase(req_id);
-    return false;
+    EnqueueSendMsg(req_id, TUN_OP_ECHO_LARGE,
+                   payload.empty() ? NULL : payload.data(), payload.size());
+
+    return WaitPending(req_id, pr, timeoutMs, replyOut, NULL);
 }
 
 void CLiveTunnel::Tick()
@@ -1520,6 +1674,63 @@ void CLiveTunnel::Tick()
         for (auto it = m_reassembly.begin(); it != m_reassembly.end(); ) {
             if ((DWORD)(now - it->second.first_seen_tick) > TUN_REASSEMBLY_TTL_MS)
                 it = m_reassembly.erase(it);
+            else
+                ++it;
+        }
+    }
+
+    // 5. v8.1 A4 - retry/fail messages pinned to a circuit that died mid-flight.
+    // Rotation (step 2 above) or a CELL_DESTROY can kill a circuit while one of
+    // its multi-cell messages was still in flight. Re-send the whole message on
+    // another circuit (up to retries_left); when retries run out, wake the
+    // waiter with a failure so it returns a clean error instead of timing out.
+    {
+        auto circuitAlive = [&](uint32_t id) -> bool {
+            for (auto& c : m_circuits)
+                if (c->Id() == id && c->State() == CircuitState::Active) return true;
+            return false;
+        };
+        std::vector<MainThreadReq> retries;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            for (auto& kv : m_pending) {
+                PendingRequest* pr = kv.second;
+                if (!pr || pr->done) continue;
+                if (pr->circ_id == 0) continue;            // not sent yet / no circuit
+                if (circuitAlive(pr->circ_id)) continue;   // still on a live circuit
+                if (pr->retries_left > 0) {
+                    pr->retries_left--;
+                    pr->circ_id = 0;                       // reassigned on resend
+                    MainThreadReq rq;
+                    rq.op      = MT_SEND_MSG;
+                    rq.reqId   = kv.first;
+                    rq.subCmd  = pr->sub_cmd;
+                    rq.payload = pr->request_msg;
+                    retries.push_back(std::move(rq));
+                } else {
+                    pr->failed = true;                     // out of retries -> honest fail
+                    pr->done   = true;
+                    SetEvent(pr->evt);
+                }
+            }
+        }
+        if (!retries.empty()) {
+            CSingleLock lk(&m_mtLock, TRUE);
+            for (size_t i = 0; i < retries.size(); ++i)
+                m_mtQueue.push_back(std::move(retries[i]));
+        }
+    }
+
+    // 6. v8.1 A6 - sweep deferred exit operations that never completed, or
+    // whose circuit has gone (weak_ptr expired). TTL reuses the hard request
+    // bound; without this a never-finishing exit op would leak forever.
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        for (auto it = m_exitOps.begin(); it != m_exitOps.end(); ) {
+            const bool expired =
+                (DWORD)(now - it->second.started) > TUN_REQUEST_HARD_TTL_MS;
+            if (expired || it->second.circ.expired())
+                it = m_exitOps.erase(it);
             else
                 ++it;
         }

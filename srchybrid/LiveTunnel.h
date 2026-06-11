@@ -306,32 +306,91 @@ private:
     void ExitHandle_EchoLarge(const TunnelRequestCtx& ctx);   // A1.7 test op
     // A2.2 - sub_cmd -> handler registry.
     std::map<uint8_t, TunnelOpHandler> m_exitHandlers;
-    // A1.5 - req_id -> partial multi-cell message under reassembly. Accessed
-    // under m_pendingLock. Swept by Tick() (A5).
-    std::map<uint32_t, ReassemblyEntry> m_reassembly;
+    // A1.5 - partial multi-cell message under reassembly, keyed by
+    // ExitOpKey(circ_id, req_id) so messages on different circuits that happen
+    // to share a req_id never collide (the exit reassembles for many circuits
+    // at once). Accessed under m_pendingLock. Swept by Tick() (A5).
+    std::map<uint64_t, ReassemblyEntry> m_reassembly;
+
+    // === v8.1 A6 - deferred exit-side operations ==========================
+    // An exit handler that cannot answer immediately (e.g. a real Kad CSearch
+    // in Sprint B that completes via callbacks up to 45 s later) registers an
+    // ExitOperation in the handler and calls CompleteExitOperation when its
+    // work finishes. The op remembers which circuit + req_id to reply on and
+    // the reply opcode; it holds a weak_ptr so a slow operation does not keep a
+    // rotated-out circuit alive. Swept on TTL / aborted when its circuit dies.
+    struct ExitOperation {
+        std::weak_ptr<CLiveCircuit> circ;       // circuit to reply on
+        uint32_t circ_id  = 0;
+        uint32_t req_id   = 0;
+        uint8_t  reply_op = 0;
+        DWORD    started  = 0;
+    };
+    static uint64_t ExitOpKey(uint32_t circ_id, uint32_t req_id) {
+        return ((uint64_t)circ_id << 32) | req_id;
+    }
+    std::map<uint64_t, ExitOperation> m_exitOps;   // under m_pendingLock
+    // Register a deferred reply; the handler returns without answering.
+    bool BeginExitOperation(const TunnelRequestCtx& ctx, uint8_t reply_op);
+    // Send the deferred reply (fragmented via SendReply) and discard the op.
+    // Returns false if the op is unknown or its circuit has gone.
+    bool CompleteExitOperation(uint32_t circ_id, uint32_t req_id,
+                               const uint8_t* payload, size_t payloadLen);
+    // Discard a deferred op without replying (e.g. cancelled / circuit dead).
+    void AbortExitOperation(uint32_t circ_id, uint32_t req_id);
 
     // v0.71 C — pending tunnel_ping requests. Key = req_id, value = the
     // reply text once it arrives. The TunnelPing() blocking call polls
     // this map under m_pendingLock with a wait/timeout. Cleared on reply
     // or on timeout.
     mutable CCriticalSection m_pendingLock;
-    std::map<uint32_t, std::string> m_pendingPingReplies;
-    // v0.71 P1.A — pending KAD_RESULT replies keyed by req_id.
-    std::map<uint32_t, std::string> m_pendingKadResults;
-    // v8.1 A1.7 — reassembled TUN_OP_ECHO_LARGE_REPLY payloads keyed by
-    // req_id; TunnelEchoLarge polls this under m_pendingLock.
-    std::map<uint32_t, std::vector<uint8_t> > m_pendingEchoReplies;
-    // v0.72 — test-circuit build results keyed by req_id (value 0 = failed).
-    // RequestTestCircuit polls this; ProcessMainThreadWork fills it.
-    std::map<uint32_t, uint32_t> m_pendingBuildResults;
+    // v8.1 A3 - async request/reply. One PendingRequest per in-flight
+    // request, keyed by req_id; the waiter (a webserver worker thread)
+    // blocks on `evt`, the cell handler / main thread fills the reply and
+    // SetEvent()s. Replaces the v0.71/v0.72 Sleep(50)-poll maps.
+    struct PendingRequest {
+        HANDLE   evt    = NULL;        // auto-reset; signaled when reply lands
+        bool     done   = false;
+        bool     failed = false;       // A4: woken by a send failure, not a reply
+        uint32_t result = 0;          // RequestTestCircuit: built circuit id
+        std::vector<uint8_t> reply;   // tunnel reply payload
+        // v8.1 A4 - message pinning + retry. The whole logical message is sent
+        // on ONE circuit; if that circuit dies mid-message Tick() retries it on
+        // another (up to retries_left) by re-enqueuing from request_msg.
+        uint32_t circ_id      = 0;     // circuit this request was pinned to (0 = not sent yet)
+        uint8_t  sub_cmd      = 0;     // op to resend with
+        int      retries_left = 0;     // remaining retries on circuit death
+        std::vector<uint8_t> request_msg;  // original logical message body (for resend)
+    };
+    std::map<uint32_t, PendingRequest*> m_pending;     // under m_pendingLock
+    // A3 helpers. RegisterPending must run BEFORE the send so a fast reply
+    // cannot race the registration; the waiter owns the PendingRequest.
+    // It generates a collision-free req_id (out param) under m_pendingLock so
+    // two concurrent requests can never share a slot.
+    PendingRequest* RegisterPending(uint32_t& req_id);
+    bool WaitPending(uint32_t req_id, PendingRequest* pr, uint32_t timeoutMs,
+                     std::vector<uint8_t>& outReply, uint32_t* outResult);
+    void SignalReply(uint32_t req_id, const uint8_t* reply, size_t replyLen,
+                     uint32_t result);
+
+    // v8.1 A4 - send a whole logical message pinned to ONE circuit (round-robin
+    // BY MESSAGE, not by cell). sub_cmd >= 0x40 is fragmented via SplitIntoCells;
+    // < 0x40 is a single legacy cell. Returns the circuit id used, or 0 if no
+    // Active circuit was available. MAIN THREAD ONLY (touches sockets).
+    uint32_t SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
+                               const uint8_t* msg, size_t msgLen);
 
     // v0.72 — marshaled-work queue: webserver worker threads push, the main
     // thread drains it in ProcessMainThreadWork().
-    enum MtOp : uint8_t { MT_SEND = 1, MT_BUILD_1HOP = 2, MT_BUILD_2HOP = 3 };
+    // A4 adds MT_SEND_MSG: marshal a whole logical message (req_id + sub_cmd +
+    // body) so the main thread picks one circuit and pins all its cells to it.
+    enum MtOp : uint8_t { MT_SEND = 1, MT_BUILD_1HOP = 2, MT_BUILD_2HOP = 3,
+                          MT_SEND_MSG = 4 };
     struct MainThreadReq {
-        MtOp                 op    = MT_SEND;
-        uint32_t             reqId = 0;   // MT_BUILD_* key into m_pendingBuildResults
-        std::vector<uint8_t> payload;     // MT_SEND payload bytes
+        MtOp                 op     = MT_SEND;
+        uint32_t             reqId  = 0;   // MT_BUILD_*/MT_SEND_MSG key
+        uint8_t              subCmd = 0;   // MT_SEND_MSG op
+        std::vector<uint8_t> payload;      // MT_SEND payload / MT_SEND_MSG body
     };
     mutable CCriticalSection  m_mtLock;
     std::deque<MainThreadReq> m_mtQueue;
@@ -345,6 +404,11 @@ private:
     // v0.72 — enqueue a SendThrough payload for the main thread. Used by
     // TunnelPing / TunneledKadSearch (they run on webserver worker threads).
     void EnqueueSend(const uint8_t* payload, size_t payloadLen);
+    // v8.1 A4 — enqueue a whole logical message for pinned send on the main
+    // thread (see SendMessagePinned). Replaces the per-cell EnqueueSend path
+    // for tunnel ops so all cells of one message ride one circuit.
+    void EnqueueSendMsg(uint32_t req_id, uint8_t sub_cmd,
+                        const uint8_t* msg, size_t msgLen);
     // v0.72 — MAIN THREAD: refresh m_peersCache* from the live ClientList.
     void RebuildPeersCache();
 

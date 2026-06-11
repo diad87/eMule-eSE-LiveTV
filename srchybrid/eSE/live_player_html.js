@@ -151,7 +151,27 @@ module.exports = function getLivePlayerHTML() {
   }
 
   if (Hls.isSupported()) {
-    const hls = new Hls({
+    // Sprint 2 E.2 — Auto-reconnect with exponential backoff (no full page reload),
+    // rewritten 2026-06. The old version created the player as a \`const hls\` and
+    // the reconnect timer did \`hls = newHls\` → TypeError: Assignment to constant
+    // variable. Worse, the new instance's ERROR handler was copied from the
+    // already-destroyed emitter (always a no-op), so the FIRST reconnect attempt
+    // that hit another 404 left the player dead forever. That is exactly the
+    // pasted-link case: the page opens before the viewer has written
+    // stream.m3u8 (needs 2 contiguous segments), the initial load 404s, and the
+    // broken reconnect never recovered. Now a single startPlayer() wires the
+    // full pipeline every time, so retry #N is identical to the first load.
+    var hls = null;
+    var __reconnectTry = 0;
+    var __reconnectTimer = null;
+    // Audio-distortion fix (2026-06): consecutive fatal mediaErrors within a
+    // short window mean recoverMediaError() alone isn't sticking. Per hls.js
+    // docs the 2nd strike needs swapAudioCodec() (AAC/HE-AAC mis-signal —
+    // without it audio resumes at the wrong sample rate: the deep/slow
+    // audio heard after stalls); the 3rd strike rebuilds the pipeline.
+    var __mediaErrAt = 0;
+    var __mediaErrRun = 0;
+    var HLS_CONFIG = {
       liveSyncDurationCount: 3,
       liveMaxLatencyDurationCount: 6,
       liveDurationInfinity: true,
@@ -164,25 +184,8 @@ module.exports = function getLivePlayerHTML() {
       manifestLoadingMaxRetry: 50,
       levelLoadingMaxRetry: 50,
       fragLoadingMaxRetry: 50,
-    });
-    window.hls = hls;
-    hls.loadSource('/hls/stream.m3u8');
-    hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      statusEl.textContent = '\\ud83d\\udfe2 Connected \\u2014 Jumping to live...';
-      statusEl.className = 'connected';
-      // Force seek to live edge
-      if (hls.liveSyncPosition) {
-        video.currentTime = hls.liveSyncPosition;
-      }
-      video.play().catch(()=>{});
-    });
-    // Sprint 2 E.2 — Auto-reconnect with exponential backoff (no full page reload).
-    // Previously a single fatal error reloaded the page (lost player state, scroll
-    // position, video element, every wizard input). Now we rebuild ONLY the hls.js
-    // pipeline with capped exponential backoff (1s → 2s → 4s → 8s → 16s, then 16s).
-    var __reconnectTry = 0;
-    var __reconnectTimer = null;
+    };
+
     function __scheduleReconnect(reason) {
       if (__reconnectTimer) return;
       var delay = Math.min(16000, 1000 * Math.pow(2, __reconnectTry));
@@ -191,53 +194,66 @@ module.exports = function getLivePlayerHTML() {
       statusEl.className = 'error';
       __reconnectTimer = setTimeout(function(){
         __reconnectTimer = null;
-        try { hls.destroy(); } catch(e) {}
-        // Re-create with same config (HLS_CONFIG is the object literal above, captured)
-        // Simpler: just re-loadSource on a brand new instance.
-        var newHls = new Hls({
-          liveSyncDurationCount: 3,
-          liveMaxLatencyDurationCount: 6,
-          liveDurationInfinity: true,
-          enableWorker: true,
-          lowLatencyMode: false,
-          maxBufferLength: 30,
-          maxMaxBufferLength: 60,
-          maxBufferHole: 2,
-          backBufferLength: 0,
-          manifestLoadingMaxRetry: 50,
-          levelLoadingMaxRetry: 50,
-          fragLoadingMaxRetry: 50,
-        });
-        window.hls = newHls;
-        // Re-attach the same event handlers
-        newHls.on(Hls.Events.MANIFEST_PARSED, function(){
-          statusEl.textContent = '\\ud83d\\udfe2 Reconnected — jumping to live...';
-          statusEl.className = 'connected';
-          if (newHls.liveSyncPosition) video.currentTime = newHls.liveSyncPosition;
-          video.play().catch(function(){});
-          __reconnectTry = 0;  // reset backoff on success
-        });
-        newHls.on(Hls.Events.ERROR, hls.listeners(Hls.Events.ERROR)[0] || function(){});
-        newHls.loadSource('/hls/stream.m3u8');
-        newHls.attachMedia(video);
-        hls = newHls;
+        try { if (hls) hls.destroy(); } catch(e) {}
+        startPlayer();
       }, delay);
     }
-    hls.on(Hls.Events.ERROR, (e, data) => {
-      if (data.fatal) {
-        if (data.type === 'mediaError') {
-          statusEl.textContent = '\\ud83d\\udfe1 Recovering media error...';
-          try { hls.recoverMediaError(); } catch(err) { __scheduleReconnect('mediaError'); }
-        } else {
-          __scheduleReconnect(data.type || 'fatal error');
+
+    function startPlayer() {
+      hls = new Hls(HLS_CONFIG);
+      window.hls = hls;
+      hls.on(Hls.Events.MANIFEST_PARSED, function(){
+        statusEl.textContent = '\\ud83d\\udfe2 Connected \\u2014 Jumping to live...';
+        statusEl.className = 'connected';
+        // Force seek to live edge
+        if (hls.liveSyncPosition) {
+          video.currentTime = hls.liveSyncPosition;
         }
-      }
+        video.play().catch(function(){});
+        __reconnectTry = 0;  // reset backoff on success
+      });
+      hls.on(Hls.Events.ERROR, function(e, data){
+        if (data && data.fatal) {
+          if (data.type === 'mediaError') {
+            var nowMs = Date.now();
+            __mediaErrRun = (nowMs - __mediaErrAt < 6000) ? __mediaErrRun + 1 : 1;
+            __mediaErrAt = nowMs;
+            if (__mediaErrRun >= 3) {
+              __mediaErrRun = 0;
+              __scheduleReconnect('mediaError');
+              return;
+            }
+            if (__mediaErrRun === 2) {
+              try { hls.swapAudioCodec(); } catch(err) {}
+            }
+            statusEl.textContent = '\\ud83d\\udfe1 Recovering media error...';
+            try { hls.recoverMediaError(); } catch(err) { __scheduleReconnect('mediaError'); }
+          } else {
+            __scheduleReconnect(data.type || 'fatal error');
+          }
+        }
+      });
+      hls.on(Hls.Events.FRAG_BUFFERED, updateStats);
+      hls.loadSource('/hls/stream.m3u8');
+      hls.attachMedia(video);
+    }
+
+    startPlayer();
+
+    // Ghost-viewer fix (2026-06): tell eMule we left when the page goes away.
+    // sendBeacon survives unload; Node's /api/live/leave relays to eMule.
+    // The 60 s player-idle watchdog covers killed tabs where this never fires.
+    addEventListener('pagehide', function(){
+      try {
+        if (!navigator.sendBeacon || !navigator.sendBeacon('/api/live/leave'))
+          fetch('/api/live/leave', {keepalive:true}).catch(function(){});
+      } catch(_) {}
     });
-    hls.on(Hls.Events.FRAG_BUFFERED, updateStats);
+
     // Auto-catchup: if too far from live edge, re-seek
-    setInterval(() => {
-      if (hls.liveSyncPosition && video.currentTime > 0) {
-        const drift = hls.liveSyncPosition - video.currentTime;
+    setInterval(function(){
+      if (hls && hls.liveSyncPosition && video.currentTime > 0) {
+        var drift = hls.liveSyncPosition - video.currentTime;
         if (drift > 30) {
           video.currentTime = hls.liveSyncPosition;
           statusEl.textContent = '\\ud83d\\udfe2 Re-synced to live edge';

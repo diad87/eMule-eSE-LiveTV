@@ -53,7 +53,23 @@ CLiveTunnel::CLiveTunnel()
         [this](const TunnelRequestCtx& c){ ExitHandle_KadSearchV2(c); });
     RegisterExitHandler(TUN_OP_KAD_CANCEL,
         [this](const TunnelRequestCtx& c){ ExitHandle_KadCancel(c); });
+    // v8.1 Sprint C - tunneled LiveTV subscribe (single-cell control op).
+    RegisterExitHandler(TUN_OP_LIVE_SUBSCRIBE,
+        [this](const TunnelRequestCtx& c){ ExitHandle_LiveSubscribe(c); });
 }
+
+// v8.1 Sprint C — little-endian field helpers for the Live tunnel op bodies.
+namespace {
+inline void eseWrU16LE(uint8_t* p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+inline void eseWrU32LE(uint8_t* p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+inline uint16_t eseRdU16LE(const uint8_t* p) { return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8)); }
+inline uint32_t eseRdU32LE(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+}  // namespace
 
 CLiveTunnel& CLiveTunnel::Get()
 {
@@ -1237,6 +1253,29 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
         SignalReply(req_id, (const uint8_t*)text.data(), text.size(), 0);
         return true;
     }
+    if (sub_cmd == TUN_OP_LIVE_SUB_ACK) {
+        // v8.1 Sprint C - wake the blocked TunneledLiveSubscribe() call.
+        // Body is binary ([status u8][streamKey 16]); std::string carries it fine.
+        SignalReply(req_id, (const uint8_t*)text.data(), text.size(), 0);
+        return true;
+    }
+    if (sub_cmd == TUN_OP_LIVE_HEARTBEAT) {
+        // v8.1 Sprint C (C3) - exit relayed the broadcaster's control update.
+        // Body: [streamKey 16][flags u8][bitmap u16 LE][oldestSeq u32 LE][pubkey 32].
+        const uint8_t* b = (const uint8_t*)text.data();
+        if (text.size() >= 16 + 1 + 2 + 4 + 32 && theApp.liveStreamManager) {
+            uchar streamKey[16]; memcpy(streamKey, b, 16);
+            uint8_t flags    = b[16];
+            uint16_t bitmap  = eseRdU16LE(b + 17);
+            uint32_t oldest  = eseRdU32LE(b + 19);
+            const bool hasBitmap = (flags & 0x01) != 0;
+            const bool hasPubkey = (flags & 0x02) != 0;
+            theApp.liveStreamManager->OnTunneledLiveControl(
+                streamKey, hasBitmap, bitmap, oldest,
+                hasPubkey ? (b + 23) : NULL);
+        }
+        return true;
+    }
     // Unknown sub_cmd: drop silently (future ops land here).
     return true;
 }
@@ -1543,6 +1582,141 @@ void CLiveTunnel::ExitHandle_KadCancel(const TunnelRequestCtx& ctx)
     AbortExitOperation(ctx.circ->Id(), ctx.req_id);
 }
 
+// === v8.1 Sprint C - tunneled LiveTV subscribe ===========================
+// C2 - exit handler for TUN_OP_LIVE_SUBSCRIBE. The viewer (V) found the stream
+// via Kad and knows the broadcaster endpoint, but does not want the broadcaster
+// (or a passive observer) to learn V's IP. So V tunnels the subscribe to us
+// (the exit); WE dial the broadcaster and send OP_LIVE_SUBSCRIBE with OUR
+// identity — the broadcaster sees the exit, never V. We ack immediately with
+// TUN_OP_LIVE_SUB_ACK; the broadcaster's live-edge bitmap + pubkey reach V via
+// tunneled heartbeats (C3). Runs on the main thread (OnCellReceived), so the
+// dial + packet send are safe to do here. The broadcaster endpoint reaches the
+// exit in clear — accepted in the 2-hop model (cf. Decision 12.3, keyword leak);
+// what matters is V's identity never touches the broadcaster or the DHT.
+void CLiveTunnel::ExitHandle_LiveSubscribe(const TunnelRequestCtx& ctx)
+{
+    // body = [streamKey 16][bIP u32 LE][bPort u16 LE][bUDP u16 LE][bAltIP u32 LE] = 28
+    uint8_t status = 1;            // 1 = bad request (default)
+    uint8_t streamKey[16] = {0};
+    if (ctx.body && ctx.bodyLen >= 28) {
+        memcpy(streamKey, ctx.body, 16);
+        uint32_t bIP    = eseRdU32LE(ctx.body + 16);
+        uint16_t bPort  = eseRdU16LE(ctx.body + 20);
+        uint16_t bUDP   = eseRdU16LE(ctx.body + 22);
+        uint32_t bAltIP = eseRdU32LE(ctx.body + 24);
+        // C7 — exit as multicast proxy: if we ALREADY hold a proxy subscription
+        // for this stream (another tunneled viewer arrived first), do NOT dial /
+        // re-subscribe to the broadcaster. One subscription per channel is enough
+        // — the broadcaster sends the stream once to us and C3's ExitRelayLive
+        // Control fans the control updates out to every subscribed circuit. This
+        // avoids opening N sockets and tripping the broadcaster's per-IP SUBSCRIBE
+        // rate limit when many viewers share one exit.
+        const std::string hex = LiveStreamKeyHex(streamKey);
+        bool alreadyProxied = false;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            auto it = m_exitLiveSubs.find(hex);
+            alreadyProxied = (it != m_exitLiveSubs.end() && !it->second.circuits.empty());
+        }
+        bool sent = alreadyProxied;
+        if (!alreadyProxied) {
+            try {
+                if (theApp.liveStreamManager)
+                    sent = theApp.liveStreamManager->ExitProxySubscribe(
+                        streamKey, bIP, bPort, bUDP, bAltIP);
+            } catch (...) {}
+        }
+        status = sent ? 0 : 2;     // 0 = forwarded OK, 2 = dial/forward failed
+        if (sent && ctx.circ) {
+            // C3: remember this circuit so the broadcaster's heartbeats/announces
+            // (which arrive on OUR socket, since we are the proxy subscriber) get
+            // relayed back to this viewer. Record the broadcaster endpoint so the
+            // sweep can UNSUBSCRIBE when the last viewer leaves (C4 zombie fix).
+            CSingleLock pl(&m_pendingLock, TRUE);
+            ExitStreamProxy& sp = m_exitLiveSubs[hex];
+            if (sp.bIP == 0) { sp.bIP = bIP; sp.bPort = bPort; memcpy(sp.streamKey, streamKey, 16); }
+            sp.circuits[ctx.circ->Id()].lastSeen = GetTickCount();
+            if (alreadyProxied)
+                LIVE_LOG("TUN", "C7 multicast: +1 tunneled viewer on existing proxy sub (%d total)",
+                    (int)sp.circuits.size());
+        }
+    }
+    // reply SUB_ACK = [status u8][streamKey 16] = 17 bytes (single-cell).
+    uint8_t ack[17];
+    ack[0] = status;
+    memcpy(ack + 1, streamKey, 16);
+    SendReply(ctx, TUN_OP_LIVE_SUB_ACK, ack, sizeof ack);
+}
+
+// C3 - 32-char lowercase hex of a 16-byte streamKey (map key for m_exitLiveSubs).
+std::string CLiveTunnel::LiveStreamKeyHex(const uint8_t streamKey[16])
+{
+    static const char* hexd = "0123456789abcdef";
+    std::string s(32, '0');
+    for (int i = 0; i < 16; ++i) {
+        s[i * 2]     = hexd[(streamKey[i] >> 4) & 0xF];
+        s[i * 2 + 1] = hexd[streamKey[i] & 0xF];
+    }
+    return s;
+}
+
+// C3 - relay a broadcaster control update to every circuit that proxy-subscribed
+// to `streamKey` through us. Called from the Live HEARTBEAT/ANNOUNCE handlers on
+// the main thread. Builds TUN_OP_LIVE_HEARTBEAT and pushes it down each circuit
+// (req_id = 0: this is an unsolicited push, not a reply to a pending request).
+// Body: [streamKey 16][flags u8][bitmap u16 LE][oldestSeq u32 LE][pubkey 32].
+// flags bit0 = bitmap/oldestSeq valid, bit1 = pubkey valid.
+void CLiveTunnel::ExitRelayLiveControl(const uint8_t streamKey[16],
+                                       bool hasBitmap, uint16_t bitmap, uint32_t oldestSeq,
+                                       const uint8_t* pubkeyOrNull)
+{
+    const std::string hex = LiveStreamKeyHex(streamKey);
+
+    // Snapshot the target circuit ids under the pending lock, and RESTAMP
+    // lastSeen on each: the broadcaster's heartbeats flow continuously while it
+    // is live, so an actively-relayed circuit stays fresh. Without this restamp
+    // the TTL sweep reaps a still-watching viewer at 10 min (lastSeen was frozen
+    // at subscribe time), stopping the relay and stalling the stream.
+    std::vector<uint32_t> targets;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        auto it = m_exitLiveSubs.find(hex);
+        if (it == m_exitLiveSubs.end() || it->second.circuits.empty()) return;
+        const DWORD nowT = GetTickCount();
+        for (auto& kv : it->second.circuits) {
+            kv.second.lastSeen = nowT;
+            targets.push_back(kv.first);
+        }
+    }
+
+    // Build the relay body once.
+    uint8_t body[16 + 1 + 2 + 4 + 32];
+    memcpy(body, streamKey, 16);
+    uint8_t flags = 0;
+    if (hasBitmap)      flags |= 0x01;
+    if (pubkeyOrNull)   flags |= 0x02;
+    body[16] = flags;
+    eseWrU16LE(body + 17, hasBitmap ? bitmap : 0);
+    eseWrU32LE(body + 19, hasBitmap ? oldestSeq : 0);
+    if (pubkeyOrNull) memcpy(body + 23, pubkeyOrNull, 32);
+    else              memset(body + 23, 0, 32);
+    const size_t bodyLen = sizeof body;
+
+    CSingleLock lock(&m_lock, TRUE);
+    for (size_t i = 0; i < targets.size(); ++i) {
+        std::shared_ptr<CLiveCircuit> circ;
+        for (auto& c : m_circuits) {
+            if (c->Id() == targets[i] && c->State() == CircuitState::Active &&
+                c->m_role == CircuitRole::Relay) { circ = c; break; }
+        }
+        if (!circ) continue;
+        TunnelRequestCtx ctx;
+        ctx.circ   = circ;
+        ctx.req_id = 0;   // unsolicited push
+        SendReply(ctx, TUN_OP_LIVE_HEARTBEAT, body, bodyLen);
+    }
+}
+
 // B2/B3 - MAIN THREAD (from Tick): reply to every search job whose accumulation
 // window has elapsed, then drop it. The directory has been filling async with
 // real Kad results since ExitHandle_KadSearchV2 fired the search.
@@ -1790,6 +1964,58 @@ bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
     return true;
 }
 
+// v8.1 Sprint C (C1) — send TUN_OP_LIVE_SUBSCRIBE and block for the SUB_ACK.
+// Mirror of TunneledKadSearch: register the waiter first, pin the message to
+// one circuit (A4), wait for the exit's reply. Returns true iff status == 0
+// (the exit forwarded our subscribe to the broadcaster). BLOCKING — call off
+// the main thread.
+bool CLiveTunnel::TunneledLiveSubscribe(const uint8_t streamKey[16],
+                                        uint32_t bIP, uint16_t bPort, uint16_t bUDP,
+                                        uint32_t bAltIP, uint32_t timeoutMs)
+{
+    uint32_t req_id;
+    PendingRequest* pr = RegisterPending(req_id);
+
+    std::vector<uint8_t> body(28);
+    memcpy(body.data(), streamKey, 16);
+    eseWrU32LE(body.data() + 16, bIP);
+    eseWrU16LE(body.data() + 20, bPort);
+    eseWrU16LE(body.data() + 22, bUDP);
+    eseWrU32LE(body.data() + 24, bAltIP);
+
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        pr->sub_cmd      = TUN_OP_LIVE_SUBSCRIBE;
+        pr->request_msg  = body;
+        pr->retries_left = TUN_SEND_RETRIES;
+    }
+    EnqueueSendMsg(req_id, TUN_OP_LIVE_SUBSCRIBE, body.data(), body.size());
+
+    std::vector<uint8_t> reply;
+    if (!WaitPending(req_id, pr, timeoutMs, reply, NULL))
+        return false;
+    // reply = [status u8][streamKey 16]; status 0 == forwarded.
+    return reply.size() >= 1 && reply[0] == 0;
+}
+
+// v8.1 Sprint C (C5) — non-blocking tunneled subscribe (see header). Uses a
+// throwaway req_id with NO PendingRequest: ProcessMainThreadWork's MT_SEND_MSG
+// tolerates a missing slot (it just skips retry tracking), and the SUB_ACK
+// reply finds no waiter in SignalReply (no-op). No leak, no block.
+void CLiveTunnel::SendLiveSubscribeNoWait(const uint8_t streamKey[16],
+                                          uint32_t bIP, uint16_t bPort, uint16_t bUDP,
+                                          uint32_t bAltIP)
+{
+    const uint32_t req_id = NewCircuitId();   // random, collision-irrelevant here
+    std::vector<uint8_t> body(28);
+    memcpy(body.data(), streamKey, 16);
+    eseWrU32LE(body.data() + 16, bIP);
+    eseWrU16LE(body.data() + 20, bPort);
+    eseWrU16LE(body.data() + 22, bUDP);
+    eseWrU32LE(body.data() + 24, bAltIP);
+    EnqueueSendMsg(req_id, TUN_OP_LIVE_SUBSCRIBE, body.data(), body.size());
+}
+
 bool CLiveTunnel::SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,
                                  const uint8_t* plain, size_t plainLen)
 {
@@ -2010,6 +2236,51 @@ void CLiveTunnel::Tick()
     // 7. v8.1 Sprint B - reply to tunneled Kad searches whose accumulation
     // window has elapsed (real results have been landing in the directory).
     FinishDueSearchJobs();
+
+    // 8. v8.1 Sprint C (C3) - sweep exit-proxy subscriptions whose circuit died
+    // or that went silent past the TTL, so a departed viewer stops us relaying
+    // (and re-subscribing to) the broadcaster on its behalf.
+    {
+        auto circuitAlive = [&](uint32_t id) -> bool {
+            for (auto& c : m_circuits)
+                if (c->Id() == id && c->State() == CircuitState::Active) return true;
+            return false;
+        };
+        const DWORD EXIT_SUB_TTL_MS = 10u * 60u * 1000u;   // 10 min
+        // Streams whose last viewer left: UNSUBSCRIBE the exit from the
+        // broadcaster (C4 zombie fix). Collected under m_pendingLock, dispatched
+        // AFTER releasing it (the manager call takes CLiveStreamManager::m_lock —
+        // preserve the tunnel->manager ordering, never hold m_pendingLock across it).
+        struct DeadProxy { uint8_t streamKey[16]; uint32_t bIP; uint16_t bPort; };
+        std::vector<DeadProxy> dead;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            for (auto sit = m_exitLiveSubs.begin(); sit != m_exitLiveSubs.end(); ) {
+                auto& circs = sit->second.circuits;
+                for (auto cit = circs.begin(); cit != circs.end(); ) {
+                    if (!circuitAlive(cit->first) ||
+                        (DWORD)(now - cit->second.lastSeen) > EXIT_SUB_TTL_MS)
+                        cit = circs.erase(cit);
+                    else
+                        ++cit;
+                }
+                if (circs.empty()) {
+                    DeadProxy dp;
+                    memcpy(dp.streamKey, sit->second.streamKey, 16);
+                    dp.bIP = sit->second.bIP; dp.bPort = sit->second.bPort;
+                    dead.push_back(dp);
+                    sit = m_exitLiveSubs.erase(sit);
+                } else {
+                    ++sit;
+                }
+            }
+        }
+        for (size_t i = 0; i < dead.size(); ++i) {
+            if (theApp.liveStreamManager && dead[i].bIP != 0)
+                theApp.liveStreamManager->ExitProxyUnsubscribe(
+                    dead[i].streamKey, dead[i].bIP, dead[i].bPort);
+        }
+    }
 
     m_lastTickMs = now;
 }

@@ -112,6 +112,7 @@ public:
         TUN_OP_KAD_RESULT       = 0x11,   // exit → V: serialized search hits
         TUN_OP_LIVE_SUBSCRIBE   = 0x20,   // V → exit: forward subscribe to broadcaster
         TUN_OP_LIVE_SUB_ACK     = 0x21,   // exit → V: ack / broadcaster contact info
+        TUN_OP_LIVE_HEARTBEAT   = 0x22,   // exit → V: relay broadcaster heartbeat/announce (C3)
         // v8.1 Sprint A — multi-cell ops. sub_cmd >= TUN_MULTICELL_OP_MIN (0x40)
         // ALWAYS carries an 8-byte fragment header in its body (see
         // LiveCellQueue.h). 0x42-0x7F are reserved for Sprint B/C.
@@ -166,6 +167,30 @@ public:
     // Used by the /api/live/privacy/tunnel_ping REST endpoint.
     bool TunnelPing(const std::string& text, std::string& replyText,
                     uint32_t timeoutMs);
+
+    // v8.1 Sprint C (C1/C2) — tunneled LiveTV subscribe. Sends
+    // TUN_OP_LIVE_SUBSCRIBE through a circuit; the exit forwards a real
+    // OP_LIVE_SUBSCRIBE to the broadcaster ON V's BEHALF (the broadcaster sees
+    // the exit, never V) and replies TUN_OP_LIVE_SUB_ACK. Returns true iff the
+    // exit confirmed it forwarded the subscribe. The broadcaster's live-edge
+    // bitmap + pubkey flow back via tunneled heartbeats (C3). ip/port/udp/altIP
+    // are the same endpoint the viewer would dial directly (learned from Kad).
+    // BLOCKING up to timeoutMs — call OFF the main thread (like TunneledKadSearch).
+    bool TunneledLiveSubscribe(const uint8_t streamKey[16],
+                               uint32_t bIP, uint16_t bPort, uint16_t bUDP,
+                               uint32_t bAltIP, uint32_t timeoutMs);
+
+    // v8.1 Sprint C (C5) — fire-and-forget tunneled subscribe. Unlike
+    // TunneledLiveSubscribe this does NOT block for the SUB_ACK, so it is safe
+    // to call from the main thread (the Live dial path). It enqueues a
+    // TUN_OP_LIVE_SUBSCRIBE on a throwaway req_id; if no Active circuit exists
+    // the enqueued send is a no-op (caller should have already checked
+    // ActiveCircuitCount and fallen back to a direct subscribe). The SUB_ACK,
+    // if any, is dropped (no waiter). The broadcaster's live edge then reaches
+    // the viewer via the C3 tunneled-heartbeat relay.
+    void SendLiveSubscribeNoWait(const uint8_t streamKey[16],
+                                 uint32_t bIP, uint16_t bPort, uint16_t bUDP,
+                                 uint32_t bAltIP);
 
     // v8.1 A1.7 - multi-cell echo test op. Splits `payload` into fragments,
     // sends them as TUN_OP_ECHO_LARGE, awaits the reassembled
@@ -363,6 +388,39 @@ private:
     std::map<uint64_t, TunnelSearchJob> m_searchJobs;   // key = ExitOpKey, under m_pendingLock
     void ExitHandle_KadSearchV2(const TunnelRequestCtx& ctx);   // B1
     void ExitHandle_KadCancel(const TunnelRequestCtx& ctx);     // B7
+    // v8.1 Sprint C (C2) — exit forwards a tunneled subscribe to the broadcaster
+    // on the viewer's behalf, then acks. Runs on the main thread (OnCellReceived).
+    void ExitHandle_LiveSubscribe(const TunnelRequestCtx& ctx);
+
+    // v8.1 Sprint C (C3) — active exit-proxy subscriptions: streamKey (hex) ->
+    // the set of V-side circuit ids that subscribed to that stream through us.
+    // Populated by ExitHandle_LiveSubscribe; consumed by ExitRelayLiveControl to
+    // tunnel the broadcaster's heartbeat/announce back to each subscribed V.
+    // Swept (dead circuits / TTL) in Tick. Under m_pendingLock.
+    struct ExitLiveSub { DWORD lastSeen = 0; };
+    // Per-stream proxy: the broadcaster endpoint we subscribed to (so the sweep
+    // can UNSUBSCRIBE when the last viewer leaves — otherwise the exit stays a
+    // zombie viewer holding an upload slot) + the set of V circuits to relay to.
+    struct ExitStreamProxy {
+        uint8_t  streamKey[16] = {0};
+        uint32_t bIP   = 0;
+        uint16_t bPort = 0;
+        std::map<uint32_t, ExitLiveSub> circuits;
+    };
+    std::map<std::string, ExitStreamProxy> m_exitLiveSubs;
+    static std::string LiveStreamKeyHex(const uint8_t streamKey[16]);
+
+public:
+    // v8.1 Sprint C (C3) — called from the Live HEARTBEAT/ANNOUNCE handlers
+    // (main thread). If THIS node is an exit proxying `streamKey` for one or
+    // more tunneled viewers, relay the control update (bitmap+oldestSeq from a
+    // heartbeat, and/or the broadcaster pubkey from an announce) to each
+    // subscribed circuit as TUN_OP_LIVE_HEARTBEAT. No-op if we proxy no one for
+    // this stream, so it is cheap to call unconditionally.
+    void ExitRelayLiveControl(const uint8_t streamKey[16],
+                              bool hasBitmap, uint16_t bitmap, uint32_t oldestSeq,
+                              const uint8_t* pubkeyOrNull);
+private:
     // B2/B3 - main thread: reply to jobs whose window elapsed, then drop them.
     void FinishDueSearchJobs();
     // Serialize matching known streams into the TUN_OP_KAD_RESULT_V2 wire body.

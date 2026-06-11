@@ -60,9 +60,13 @@ namespace Kademlia
 		const CStringW& GetGUIName() const;
 		void	SetGUIName(LPCWSTR sGUIName);
 		void	SetSearchTermData(uint32 uSearchTermDataSize, LPBYTE pucSearchTermsData);
+		// altIP (NAT-reach 2026-06): optional overlay IPv4 (TAG_ESE_LIVE_ALTIP,
+		// e.g. Tailscale 100.64/10) published alongside the public IP so
+		// viewers behind the same overlay can dial an endpoint NAT can't block.
+		// 0 = don't publish the tag.
 		void	SetLiveStreamPublish(const uchar *streamKey, LPCWSTR title, LPCWSTR category,
 					LPCWSTR language, uint32 bitrate, uint32 viewerCount,
-					uint32 startedAt, uint16 broadcasterPort);
+					uint32 startedAt, uint16 broadcasterPort, uint32 altIP = 0);
 		// H8 — marks this publish as targeting the eSE-dedicated keyword
 		// namespace (MD4("\x00eSE\x00" || utf8(kw))). When set,
 		// PrepareLivePacketForTags omits TAG_FILENAME and TAG_FILETYPE
@@ -122,6 +126,10 @@ namespace Kademlia
 		std::map<Kademlia::CUInt128, bool> m_mapResponded;
 		ContactMap m_mapPossible;
 		ContactMap m_mapTried;
+		// eSE: GetTickCount stamp of the last KADEMLIA2_REQ sent to each contact,
+		// keyed by IP (same key CFastKad uses), so ProcessResponse can feed the
+		// real round-trip time to the FastKad adaptive-timeout estimator.
+		std::map<uint32, DWORD> m_mapEseReqSendTick;
 		ContactMap m_mapBest;
 		ContactMap m_mapInUse;
 		ContactArray m_listDelete;
@@ -149,6 +157,7 @@ namespace Kademlia
 		uint32 m_uLiveBitrate;
 		uint32 m_uLiveViewerCount;
 		uint32 m_uLiveStartedAt;
+		uint32 m_uLiveAltIP;          // NAT-reach: overlay IPv4 for TAG_ESE_LIVE_ALTIP (0 = omit)
 		uint16 m_uLiveBroadcasterPort;
 		bool m_bStoping;
 		bool m_bLiveStreamPublish;

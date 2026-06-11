@@ -330,6 +330,7 @@ protected:
 	afx_msg LRESULT OnLiveKadRefresh(WPARAM, LPARAM);
 	afx_msg LRESULT OnLiveWebJoin(WPARAM, LPARAM);
 	afx_msg LRESULT OnLiveWebBroadcast(WPARAM, LPARAM);
+	afx_msg LRESULT OnLiveWebLeave(WPARAM, LPARAM);
 	// VersionCheck DNS
 	afx_msg LRESULT OnVersionCheckResponse(WPARAM, LPARAM lParam);
 	// MiniMule

@@ -10,6 +10,16 @@
 #include "LiveDebugLog.h"        // V2-S05: LatencyHistogram
 #include "RTMPIngest.h"
 
+// C6 (2026-06): CMap hash for the durable LivePeerId key. `inline` keeps it
+// ODR-safe across the TUs that include this header (same idiom as MapKey.h's
+// HashKey<CSKey>). operator== for LivePeerId is in LiveProtocol.h.
+template<> inline UINT AFXAPI HashKey(const LivePeerId& key)
+{
+    UINT h = 2166136261u ^ (UINT)key.kind;   // FNV-1a over kind + 32 id bytes
+    for (int i = 0; i < 32; ++i) { h ^= key.bytes[i]; h *= 16777619u; }
+    return h;
+}
+
 // eSE Phase 0: Per-stream observability counters (OBS-1)
 // All counters are LONG for InterlockedIncrement/InterlockedExchange thread safety.
 // These are incremented from multiple threads (network callbacks, timer, UI)
@@ -42,6 +52,9 @@ struct LiveStreamCounters {
     // on the first chunk of a JoinStream session). Total/count -> mean.
     LONG joinToFirstChunkSamples;
     LONG joinToFirstChunkSumMs;
+    // Phase-1 stabilization (2026-06): waste visibility for the pull path.
+    LONG duplicateChunksReceived;     // chunks the buffer rejected (dup/stale) — wasted download
+    LONG requestsSuppressedInflight;  // re-requests skipped because one was already in flight
 
     LiveStreamCounters()
         : kadPublishes(0), kadSearches(0)
@@ -56,6 +69,7 @@ struct LiveStreamCounters {
         , kadSearchesEmpty(0), kadSearchesRateLimited(0)
         , pendingDialsDropped(0)
         , joinToFirstChunkSamples(0), joinToFirstChunkSumMs(0)
+        , duplicateChunksReceived(0), requestsSuppressedInflight(0)
     {}
 };
 
@@ -213,6 +227,12 @@ struct LiveWebBroadcastReq {
     bool    ok;              // [out] launch: armed; stop: was broadcasting
 };
 
+// eSE: worker -> main-thread marshaling block for /api/live/leave
+// (UM_LIVE_WEB_LEAVE, ghost-viewer fix 2026-06).
+struct LiveWebLeaveReq {
+    bool wasViewing;         // [out] true if a viewing session was actually ended
+};
+
 class CUpDownClient;
 
 class CLiveStreamManager {
@@ -263,6 +283,33 @@ public:
     // KadPort so TryToConnect can hole-punch via SendEseHolePunchReq if TCP
     // direct fails (LowID broadcaster).
     bool TryConnectToStreamSource(const uchar* streamKey, uint32 ip, uint16 port, uint16 udpPort = 0);
+
+    // v8.1 Sprint C (C2) — exit-side proxy subscribe. Called on the main thread
+    // by the tunnel exit handler (ExitHandle_LiveSubscribe) when a tunneled
+    // subscribe arrives: dial the broadcaster and send OP_LIVE_SUBSCRIBE from
+    // THIS node (the exit) on the viewer's behalf, WITHOUT entering our own
+    // viewing state (m_bViewing / m_viewPeers untouched). The broadcaster thus
+    // sees the exit, never the viewer. altIP is tried if the public endpoint is
+    // non-routable. Returns true if the subscribe packet was sent. The heartbeat
+    // / announce relay back to the viewer is C3.
+    bool ExitProxySubscribe(const uchar* streamKey, uint32 ip, uint16 port,
+                            uint16 udpPort, uint32 altIP);
+
+    // v8.1 Sprint C (C4 zombie fix) — exit-side proxy UNSUBSCRIBE. Called from
+    // the tunnel sweep when the last tunneled viewer of a stream leaves: tells
+    // the broadcaster to drop us from m_broadcastPeers so we stop occupying an
+    // upload slot with zero downstream viewers. Main thread.
+    void ExitProxyUnsubscribe(const uchar* streamKey, uint32 ip, uint16 port);
+
+    // v8.1 Sprint C (C3) — viewer side: the exit relayed the broadcaster's
+    // control update (a heartbeat's bitmap+oldestSeq, and/or an announce's
+    // pubkey) over the tunnel. Pin the pubkey, and in Tunelizado mode bridge the
+    // live-edge bitmap onto our DIRECT view peer(s) so the existing pull path
+    // (SelectPeerForSegment) works with chunks staying direct. Called from the
+    // tunnel originator demux (main thread). pubkeyOrNull may be NULL.
+    void OnTunneledLiveControl(const uchar* streamKey, bool hasBitmap,
+                               uint16 bitmap, uint32 oldestSeq,
+                               const uchar* pubkeyOrNull);
 
     // === Peer Management ===
     // Called when a peer sends OP_LIVE_JOIN
@@ -342,20 +389,38 @@ public:
     uint32 GetBroadcastStartTime() const { return m_streamInfo.startedAt; }
     bool IsEmergencyMode() const { return m_bEmergencyMode; }
 
+    // Ghost-viewer watchdog (2026-06). A web player session that stops
+    // fetching HLS (tab closed or crashed without the pagehide leave beacon)
+    // used to leave m_bViewing latched forever: the viewer machinery kept
+    // re-dialing/re-subscribing for the whole life of the broadcast — the
+    // JOIN/DISCONNECT loop visible on the broadcaster's status page.
+    // NotePlayerFetch() is an atomic tick write, safe from webserver worker
+    // threads (same class as the OBS-1 Interlocked counters); it is stamped
+    // by eMule's own /hls + /api/live/{hash}/* handlers and by the
+    // /api/live/player-alive heartbeat that ese-server relays while it
+    // serves /hls-local to a browser. MarkWebPlayerSession() arms the
+    // watchdog and is only called for web-originated joins (OnLiveWebJoin)
+    // so MFC/VLC-from-disk flows, which produce no HTTP fetches, are never
+    // auto-left. Process() leaves the stream after 60 s of player silence.
+    void NotePlayerFetch() { InterlockedExchange(&m_lastPlayerFetchTick, (LONG)::GetTickCount()); }
+    void MarkWebPlayerSession() { InterlockedExchange(&m_bWebPlayerSession, 1); NotePlayerFetch(); }
+
     // Thread-safe debug snapshot (takes m_lock, copies all state)
     LiveDebugSnapshot BuildDebugSnapshot() const;
 
     // Thread-safe snapshot for /api/live/channels (takes m_lock).
     LiveChannelSnapshot GetChannelSnapshot() const;
 
-    // Accessors for mesh manager (bitmap and trust data) — use ONLY under m_lock
-    // Phase 1 BOOT-1: now exposes bitmap + oldestSeq anchor per peer.
-    const CMap<CUpDownClient*, CUpDownClient*, PeerBitmapInfo, PeerBitmapInfo&>& GetPeerBitmaps() const
-        { return m_peerBitmaps; }
-    bool GetPeerTrust(CUpDownClient* peer, PeerTrust& outTrust) const
-        { return m_peerTrust.Lookup(peer, outTrust) != FALSE; }
-    void SetPeerTrust(CUpDownClient* peer, const PeerTrust& trust)
-        { m_peerTrust[peer] = trust; }
+    // Accessors for mesh manager (bitmap and trust data) — use ONLY under m_lock.
+    // C6 (2026-06): per-peer state is now keyed by LivePeerId (durable identity),
+    // not the CUpDownClient* pointer. These accessors keep their CUpDownClient*
+    // signatures and convert internally (defined in the .cpp where CUpDownClient
+    // is complete), so the mesh manager is unchanged. GetPeerBitmaps() (raw-map
+    // exposure) is replaced by GetPeerBitmap(peer,out) — the mesh can't hold a
+    // LivePeerId map reference without leaking the key type.
+    bool GetPeerBitmap(CUpDownClient* peer, PeerBitmapInfo& outInfo) const;
+    bool GetPeerTrust(CUpDownClient* peer, PeerTrust& outTrust) const;
+    void SetPeerTrust(CUpDownClient* peer, const PeerTrust& trust);
 
     // Phase 0: Observability counters
     const LiveStreamCounters& GetCounters() const { return m_counters; }
@@ -368,9 +433,10 @@ public:
     // which already takes the lock). The non-const accessor returns a reference
     // to the map entry so writers can `++c.chunks_received` etc. without a
     // second lookup.
-    const CMap<CUpDownClient*, CUpDownClient*, PeerCounters, PeerCounters&>& GetPeerCounters() const
+    // C6: re-keyed by LivePeerId. Not iterated by any external consumer.
+    const CMap<LivePeerId, const LivePeerId&, PeerCounters, PeerCounters&>& GetPeerCounters() const
         { return m_peerCounters; }
-    PeerCounters& GetOrCreatePeerCounters(CUpDownClient* peer) { return m_peerCounters[peer]; }
+    PeerCounters& GetOrCreatePeerCounters(CUpDownClient* peer);
 
     // V2-S03: PING/PONG handlers, dispatched from ListenSocket.cpp.
     void OnLivePing(CUpDownClient* peer, const uchar* streamKey, uint32 pingId, uint64 sendTick);
@@ -412,13 +478,15 @@ private:
     CTypedPtrList<CPtrList, CUpDownClient*> m_broadcastPeers;   // Peers watching our stream
     CTypedPtrList<CPtrList, CUpDownClient*> m_viewPeers;        // Peers we get stream from
 
-    // Trust data (keyed by client pointer for fast lookup)
-    CMap<CUpDownClient*, CUpDownClient*, PeerTrust, PeerTrust&> m_peerTrust;
+    // Trust data. C6 (2026-06): keyed by LivePeerId (durable user-hash/pubkey
+    // identity), NOT the CUpDownClient* pointer — so it survives the ~6 s LowID
+    // AttachToAlreadyKnown swap that used to orphan it and cause the micro-cut.
+    CMap<LivePeerId, const LivePeerId&, PeerTrust, PeerTrust&> m_peerTrust;
 
-    // Peer bitmaps (keyed by client pointer)
+    // Peer bitmaps. C6: keyed by LivePeerId (durable identity).
     // Phase 1 BOOT-1: stores both bitmap and oldestSeq, so bit positions are
     // interpreted against the peer's anchor (not the viewer's).
-    CMap<CUpDownClient*, CUpDownClient*, PeerBitmapInfo, PeerBitmapInfo&> m_peerBitmaps;
+    CMap<LivePeerId, const LivePeerId&, PeerBitmapInfo, PeerBitmapInfo&> m_peerBitmaps;
 
     // Timers
     DWORD               m_dwLastBitmapSend;
@@ -443,8 +511,9 @@ private:
     LiveStreamCounters  m_counters;
 
     // V2-S01/S02/S03: per-peer state (counters + RTT EWMA + window).
-    // Cleaned up in OnPeerDisconnected to avoid dangling pointer keys.
-    CMap<CUpDownClient*, CUpDownClient*, PeerCounters, PeerCounters&> m_peerCounters;
+    // C6: keyed by LivePeerId (durable identity); pruned by TTL, not scrubbed
+    // on every disconnect (a disconnect is usually just a pointer swap).
+    CMap<LivePeerId, const LivePeerId&, PeerCounters, PeerCounters&> m_peerCounters;
 
     // V2-S03: outstanding pings (peer -> map<pingId, sendTick>) waiting for PONG.
     // Stale entries (>30 s) are reaped each Process() tick to bound memory.
@@ -477,6 +546,17 @@ private:
     // the viewer already has, which saturates their TCP recv buffer
     // and produces the very stalls the push was supposed to prevent.
     CMap<uint64, uint64, DWORD, DWORD&> m_recentInitialPushes;
+
+    // Churn fix (2026-06): per-endpoint dial cooldown for the VIEWER side.
+    // Re-dialing a source we dialed seconds ago recycles its CUpDownClient via
+    // CClientList::AttachToAlreadyKnown, which drops the live TCP socket
+    // mid-transfer — the JOIN/DISCONNECT churn + micro-cuts seen in 2-PC tests.
+    // The m_viewPeers dedup is defeated when the recycle briefly removes the
+    // peer from the list, so we cooldown by endpoint (key = ip<<16|port),
+    // surviving the transient disconnect. Fed by the Kad dial-queue drain,
+    // EnsureMultiParent and the failover, which all re-dial known sources.
+    // Pruned in Process(); cleared on Join/Leave.
+    CMap<uint64, uint64, DWORD, DWORD&> m_recentDials;
 
     // v7.3.0 — Per-IP SUBSCRIBE rate limit. Key = IP (uint32). Value =
     // tick of the SUBSCRIBE_RATE_WINDOW most recent SUBSCRIBE for this
@@ -544,10 +624,47 @@ private:
     // V2-S19: last time EnsureMultiParent dialed extra sources.
     DWORD               m_dwLastMultiParentTick;
 
+    // Phase-1 fix #2 (2026-06) — in-flight pull-request tracking. Without it,
+    // RequestMissingSegments re-sent OP_LIVE_REQUEST for every missing seq on
+    // every 1 s Process() tick: a 500 KB segment takes 1.5-2 s to transfer at
+    // 2-3 Mbps, so the same segment was requested (and served) 2-3 times —
+    // wasting bandwidth exactly when the link is congested. Keyed by seqNum;
+    // bounded by the 16-segment ring + lookahead. Peer identity is stored as
+    // IP+port (NOT CUpDownClient* — pointers are unstable, cf. §13.1) so an
+    // expired entry can bias the retry away from the unresponsive peer.
+    // Fulfilled entries are erased in OnChunkReceived; evicted/stale ones are
+    // pruned at the top of RequestMissingSegments. All access under m_lock.
+    struct InflightSegReq {
+        DWORD  sentTick;    // GetTickCount() when the request went out
+        uint32 peerIp;      // peer we asked
+        uint16 peerPort;
+        int    attempts;    // total requests sent for this seq this session
+    };
+    CMap<uint32, uint32, InflightSegReq, InflightSegReq&> m_inflightSegReqs;
+
+    // Phase-1 fix #1 (2026-06) — the HLS buffer-minimum gate applies only
+    // until the FIRST playlist write of the session. Set true after the
+    // first successful stream.m3u8 write; reset in ResetViewerHlsOutput().
+    bool                m_bHlsPlaylistStarted;
+
+    // Ghost-viewer watchdog state (see NotePlayerFetch/MarkWebPlayerSession).
+    // LONG + Interlocked because writers include webserver worker threads.
+    volatile LONG       m_lastPlayerFetchTick;  // GetTickCount() of last player sign of life
+    volatile LONG       m_bWebPlayerSession;    // 1 = current viewing session came from the web API
+
     // Tier 2.2: shared FFmpeg ingest. Owned by the manager so both the MFC
     // dialog and the web API can drive broadcast start/stop. Only one source
     // can be active at a time (CRTMPIngest enforces this internally).
     CRTMPIngest         m_rtmpIngest;
+
+    // C6: durable peer identity from a CUpDownClient. Uses the eD2K user-hash
+    // (LPID_USERHASH) — stable across the AttachToAlreadyKnown swap. Falls back
+    // to a pointer-derived key (LPID_INVALID kind) only for a hashless/pre-HELLO
+    // peer, which degrades to the old per-pointer behavior for that peer alone.
+    LivePeerId PeerId(CUpDownClient* peer) const;
+    // C6: drop durable per-peer entries (trust/bitmap/counters) whose LivePeerId
+    // hasn't been touched within the TTL — replaces the per-disconnect scrub.
+    void PrunePeerState(DWORD now);
 
     // Internal helpers
     void SendBitmapToAll();
@@ -562,8 +679,9 @@ private:
     void BanPeer(CUpDownClient* peer);
     PeerTrust& GetOrCreateTrust(CUpDownClient* peer);
 
-    // Select best peer to request a segment from
-    CUpDownClient* SelectPeerForSegment(uint32 seqNum);
+    // Select best peer to request a segment from. excludeIp != 0 skips that
+    // peer — used to retry a timed-out in-flight request somewhere else.
+    CUpDownClient* SelectPeerForSegment(uint32 seqNum, uint32 excludeIp = 0);
 
     // V2-S03 helpers
     void PingAllPeers();           // periodic, called from Process()
@@ -584,4 +702,23 @@ private:
     CString BootstrapCachePath() const;
     bool                m_bBootstrapAttempted;
     DWORD               m_dwBootstrapTick;
+
+    // C6: last durable-state TTL sweep (PrunePeerState), throttled in Process().
+    DWORD               m_dwLastPeerPrune;
+
+    // C5/C3 (Sprint C review fix): endpoint of the broadcaster we tunnel-
+    // subscribed to this session (0 = not in Tunelizado / not dialed). The C3
+    // relayed heartbeat carries the broadcaster's live edge; OnTunneledLiveControl
+    // applies it ONLY to the view peer matching this endpoint, so secondary
+    // sources (dialed via OP_LIVE_PEER_LIST, with their own real bitmaps) are
+    // not clobbered. Set in TryConnectToStreamSource's tunnel branch; cleared in
+    // JoinStream/LeaveStream.
+    uint32              m_tunnelSourceIP;
+    uint16              m_tunnelSourcePort;
+    // C5/C6 review fix: self-heal a lost tunneled subscribe (dropped send,
+    // broadcaster DENY of the exit, or a circuit-death TOCTOU). Re-issue the
+    // tunneled subscribe from Process() if no live edge appears within a grace
+    // window. Bounded by m_tunnelResubCount.
+    DWORD               m_tunnelSubscribeTick;
+    int                 m_tunnelResubCount;
 };

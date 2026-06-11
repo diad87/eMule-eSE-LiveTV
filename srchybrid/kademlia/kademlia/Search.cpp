@@ -124,6 +124,7 @@ CSearch::CSearch()
 	, m_uLiveBitrate()
 	, m_uLiveViewerCount()
 	, m_uLiveStartedAt()
+	, m_uLiveAltIP()
 	, m_uLiveBroadcasterPort()
 	, m_bStoping()
 	, m_bLiveStreamPublish()
@@ -1156,6 +1157,7 @@ void CSearch::ProcessResultKeyword(const CUInt128 &uAnswer, TagList &rlistInfo, 
 	uint32 uLiveIP = 0;
 	uint16 uLivePort = 0;
 	uint16 uLiveUDPPort = 0;  // A.4 Sprint 1: broadcaster's Kad UDP port for hole-punching
+	uint32 uLiveAltIP = 0;    // NAT-reach: broadcaster's overlay IPv4 (TAG_ESE_LIVE_ALTIP)
 	CArray<CAICHHash> aAICHHashes;
 	CArray<uint8, uint8> aAICHHashPopularity;
 	// Flags that are set if we want this keyword.
@@ -1234,6 +1236,8 @@ void CSearch::ProcessResultKeyword(const CUInt128 &uAnswer, TagList &rlistInfo, 
 			uLiveViewers = (uint32)cTag.GetInt();
 		else if (cTag.m_name.Compare(TAG_ESE_LIVE_STARTED_AT) == 0)
 			uLiveStartedAt = (uint32)cTag.GetInt();
+		else if (cTag.m_name.Compare(TAG_ESE_LIVE_ALTIP) == 0)
+			uLiveAltIP = (uint32)cTag.GetInt();
 		else if (cTag.m_name == TAG_PUBLISHINFO) {
 			if (uFromKadVersion >= KADEMLIA_VERSION6_49aBETA) {
 				// we don't keep this as a tag, but as a member property of the search file,
@@ -1309,7 +1313,8 @@ void CSearch::ProcessResultKeyword(const CUInt128 &uAnswer, TagList &rlistInfo, 
 				uLiveUDPPort,                                  // A.4: pass Kad UDP for hole-punch
 				(uint16)min(uLiveBitrate, 65535u),
 				uLiveViewers,
-				m_uSearchID);                                  // H5: namespace attribution
+				m_uSearchID,                                   // H5: namespace attribution
+				uLiveAltIP);                                   // NAT-reach: overlay endpoint
 		}
 	}
 
@@ -1436,7 +1441,8 @@ void CSearch::AddFileID(const CUInt128 &uID)
 }
 
 void CSearch::SetLiveStreamPublish(const uchar *streamKey, LPCWSTR title, LPCWSTR category,
-	LPCWSTR language, uint32 bitrate, uint32 viewerCount, uint32 startedAt, uint16 broadcasterPort)
+	LPCWSTR language, uint32 bitrate, uint32 viewerCount, uint32 startedAt, uint16 broadcasterPort,
+	uint32 altIP)
 {
 	if (streamKey == NULL)
 		return;
@@ -1450,6 +1456,7 @@ void CSearch::SetLiveStreamPublish(const uchar *streamKey, LPCWSTR title, LPCWST
 	m_uLiveViewerCount = viewerCount;
 	m_uLiveStartedAt = startedAt;
 	m_uLiveBroadcasterPort = broadcasterPort;
+	m_uLiveAltIP = altIP;
 	m_listFileIDs.RemoveAll();
 	m_listFileIDs.Add(m_uLiveStreamID);
 }
@@ -1660,8 +1667,29 @@ void CSearch::PrepareLivePacketForTags(CByteIO *byIO) const
 				AddDebugLogLine(false,
 					_T("eSE Live: publishing without TAG_SOURCEIP — public IP not yet known"));
 			}
-			if (!CKademlia::GetPrefs()->GetUseExternKadPort())
-				listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
+			// NAT-reach (2026-06): ship the overlay/alt IP (Tailscale 100.64/10
+			// or INI override) when the publisher has one. Viewers dial both
+			// endpoints; the overlay one works across home NAT for peers on
+			// the same overlay network. Additive tag — old parsers ignore it.
+			if (m_uLiveAltIP != 0)
+				listTag.push_back(new CKadTagUInt(TAG_ESE_LIVE_ALTIP, m_uLiveAltIP));
+			// NAT-reach (2026-06): ALWAYS include TAG_SOURCEUPORT in live
+			// publishes. The stock-eMule conditional (`only when not using the
+			// extern Kad port`) made sense for SOURCE entries, where the reader
+			// can derive the UDP endpoint from the holder contact — but a live
+			// entry is read by viewers who have no other way to learn the
+			// broadcaster's Kad UDP port. Publishing with uport=0 disabled the
+			// A.4 UDP hole-punch fallback entirely (the "uport:0" bug): NATed
+			// broadcasters were unreachable even though the punch path existed.
+			// Prefer the externally-visible port when the prefs say to use it.
+			{
+				uint16 uLiveKadUDP = CKademlia::GetPrefs()->GetUseExternKadPort()
+					? CKademlia::GetPrefs()->GetExternalKadPort() : (uint16)0;
+				if (uLiveKadUDP == 0)
+					uLiveKadUDP = CKademlia::GetPrefs()->GetInternKadPort();
+				if (uLiveKadUDP != 0)
+					listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, uLiveKadUDP));
+			}
 
 			byIO->WriteTagList(listTag);
 		} else

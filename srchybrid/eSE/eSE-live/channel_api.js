@@ -30,6 +30,23 @@ try { if (!fs.existsSync(LIVE_DIR)) fs.mkdirSync(LIVE_DIR, { recursive: true });
 let streamMeta = { title: '', category: 'general', language: 'es' };
 let localStreamKey = null;
 
+// Ghost-viewer fix (2026-06) — player-alive heartbeat relay.
+// The watch pages fetch HLS from THIS server (/hls-local, /hls), so eMule's
+// own ghost-viewer watchdog never sees those fetches. Relay a throttled
+// "player is alive" ping to eMule's /api/live/player-alive so its 60 s
+// idle auto-leave only fires when the browser really stopped fetching.
+// Fire-and-forget; errors ignored (eMule offline just means nothing to do).
+let lastAliveRelayMs = 0;
+function relayPlayerAlive() {
+  const now = Date.now();
+  if (now - lastAliveRelayMs < 10000) return;
+  lastAliveRelayMs = now;
+  try {
+    http.get('http://127.0.0.1:4711/api/live/player-alive', { timeout: 3000 },
+      (r) => r.resume()).on('error', () => {});
+  } catch (e) { /* ignore */ }
+}
+
 // B.2 Sprint 1 — Auto-fetch nodes.dat watchdog
 // If eMule's Kad layer is still not connected after 60 s of dashboard uptime,
 // the user almost certainly has no nodes.dat or it's stale. We fetch a fresh
@@ -253,6 +270,7 @@ function handleRoute(url, req, res, ctx) {
     const fileName = parts[2];
     const ext = require('path').extname(fileName).toLowerCase();
     if (ext !== '.m3u8' && ext !== '.ts') { res.writeHead(403); res.end('Forbidden'); return true; }
+    relayPlayerAlive();  // ghost-viewer fix: fetches here prove the player lives
     const filePath = require('path').join(HLS_LIVE_DIR, parts[1].toLowerCase(), fileName);
     try {
       const fstat = require('fs').statSync(filePath);
@@ -266,6 +284,7 @@ function handleRoute(url, req, res, ctx) {
     const fileName = require('path').basename(p);
     const ext = require('path').extname(fileName).toLowerCase();
     if (ext !== '.m3u8' && ext !== '.ts') { res.writeHead(403); res.end('Forbidden'); return true; }
+    relayPlayerAlive();  // ghost-viewer fix: fetches here prove the player lives
     const filePath = require('path').join(HLS_LIVE_DIR, fileName);
     try {
       const fstat = require('fs').statSync(filePath);
@@ -358,6 +377,28 @@ function handleRoute(url, req, res, ctx) {
     });
     joinReq.on('timeout', () => {
       joinReq.destroy();
+      jsonResponse(res, 200, { success: false, error: 'timeout' });
+    });
+    return true;
+  }
+
+  // === /api/live/leave — Proxy leave to eMule (ghost-viewer fix 2026-06) ===
+  // Hit by the watch pages' pagehide beacon (sendBeacon POSTs; we accept any
+  // method). Forwarded as GET to eMule's marshaled /api/live/leave.
+  if (p === '/api/live/leave') {
+    const leaveReq = http.get('http://127.0.0.1:4711/api/live/leave', { timeout: 5000 }, (leaveRes) => {
+      let body = '';
+      leaveRes.on('data', d => body += d);
+      leaveRes.on('end', () => {
+        try { jsonResponse(res, 200, JSON.parse(body)); }
+        catch (e) { jsonResponse(res, 200, { success: true, raw: body.substring(0, 200) }); }
+      });
+    });
+    leaveReq.on('error', () => {
+      jsonResponse(res, 200, { success: false, error: 'eMule offline' });
+    });
+    leaveReq.on('timeout', () => {
+      leaveReq.destroy();
       jsonResponse(res, 200, { success: false, error: 'timeout' });
     });
     return true;
@@ -1317,7 +1358,12 @@ h.loadSource(src);h.attachMedia(v);
 // Phase 3: Transition to PLAYING only on FRAG_BUFFERED (actual data), not MANIFEST_PARSED (existence)
 h.on(Hls.Events.MANIFEST_PARSED,()=>{v.play();updateJoinOverlay('BUFFERING',0,0,'OK')});
 h.on(Hls.Events.FRAG_BUFFERED,()=>{if(joinState!=='PLAYING'){updateJoinOverlay('PLAYING',0,0,'OK');clearInterval(joinPollId)}});
-h.on(Hls.Events.ERROR,(e,d)=>{if(!d.fatal)return;if(d.type==='mediaError'){h.recoverMediaError()}else{setTimeout(()=>{h.loadSource(src);h.attachMedia(v)},3000)}});
+// Audio-distortion fix (2026-06): two-step recovery per hls.js docs — a second
+// fatal mediaError right after a recoverMediaError() means the audio codec is
+// mis-signalled (AAC vs HE-AAC); call swapAudioCodec() first or the audio is
+// re-appended at the wrong sample rate (the deep/slow audio after stalls).
+let mErrAt=0;
+h.on(Hls.Events.ERROR,(e,d)=>{if(!d.fatal)return;if(d.type==='mediaError'){const n=Date.now();if(n-mErrAt<6000){h.swapAudioCodec()}mErrAt=n;h.recoverMediaError()}else{setTimeout(()=>{h.loadSource(src);h.attachMedia(v)},3000)}});
 h.on(Hls.Events.AUDIO_TRACKS_UPDATED,()=>{
   const tracks=h.audioTrackController?h.audioTrackController.audioTracks:[];
   if(tracks.length<2)return;
@@ -1348,6 +1394,12 @@ fetch('/api/live/emule-channels').then(r=>r.json()).then(d=>{
   const ch=(d.channels||[]).find(c=>c.hash==='${hash}');
   if(ch)document.getElementById('ch-title').textContent=ch.title;
 }).catch(()=>{});
+
+// Ghost-viewer fix (2026-06): tell eMule we left when the page goes away
+// (navigation, back button, tab close). sendBeacon survives page unload; the
+// Node /api/live/leave route relays it to eMule. The 60 s player-idle
+// watchdog in eMule is the backstop for killed tabs where this never fires.
+addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBeacon('/api/live/leave'))fetch('/api/live/leave',{keepalive:true}).catch(()=>{})}catch(_){}});
 </script></body></html>`);
     return true;
   }

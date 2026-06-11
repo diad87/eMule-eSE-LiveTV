@@ -205,6 +205,7 @@ BEGIN_MESSAGE_MAP(CemuleDlg, CTrayDialog)
 	ON_MESSAGE(UM_LIVE_KAD_REFRESH, OnLiveKadRefresh)
 	ON_MESSAGE(UM_LIVE_WEB_JOIN, OnLiveWebJoin)
 	ON_MESSAGE(UM_LIVE_WEB_BROADCAST, OnLiveWebBroadcast)
+	ON_MESSAGE(UM_LIVE_WEB_LEAVE, OnLiveWebLeave)
 
 	// Version Check DNS
 	ON_MESSAGE(UM_VERSIONCHECK_RESPONSE, OnVersionCheckResponse)
@@ -1702,6 +1703,23 @@ LRESULT CemuleDlg::OnLiveWebJoin(WPARAM, LPARAM lParam)
 	r->joined = theApp.liveStreamManager->JoinStream(r->streamKey, CString(r->title));
 	if (r->joined && r->ip != 0 && r->port != 0)
 		r->dialed = theApp.liveStreamManager->TryConnectToStreamSource(r->streamKey, r->ip, r->port);
+	// Ghost-viewer watchdog: this join came from the web API, so an HTTP
+	// player will be polling HLS — arm the player-idle auto-leave.
+	if (r->joined)
+		theApp.liveStreamManager->MarkWebPlayerSession();
+	return 1;
+}
+
+LRESULT CemuleDlg::OnLiveWebLeave(WPARAM, LPARAM lParam)
+{
+	// Marshaled from /api/live/leave (ghost-viewer fix 2026-06). LeaveStream
+	// sends OP_LIVE_UNSUBSCRIBE over the eD2K sockets — main-thread only.
+	LiveWebLeaveReq *r = (LiveWebLeaveReq *)lParam;
+	if (r == NULL || theApp.liveStreamManager == NULL || theApp.IsClosing())
+		return 0;
+	r->wasViewing = theApp.liveStreamManager->IsViewingLive();
+	if (r->wasViewing)
+		theApp.liveStreamManager->LeaveStream();
 	return 1;
 }
 

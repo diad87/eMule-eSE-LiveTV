@@ -30,6 +30,12 @@
 #define TAG_ESE_LIVE_BITRATE        "ese.live.bitrate"     // <uint32> kbps
 #define TAG_ESE_LIVE_VIEWERS        "ese.live.viewers"     // <uint32>
 #define TAG_ESE_LIVE_STARTED_AT     "ese.live.started"     // <uint32> unix time
+// NAT-reach (2026-06): broadcaster's overlay/alternative IPv4 (e.g. a
+// Tailscale CGNAT 100.64/10 address, or the [eMule] LiveAltIP INI override).
+// Same byte order as TAG_SOURCEIP. Viewers dial BOTH the public IP and this
+// one (happy-eyeballs); whichever connects first wins. Additive tag: vanilla
+// 0.70b and older forks store/ignore it like any unknown keyword tag.
+#define TAG_ESE_LIVE_ALTIP          "ese.live.altip"       // <uint32> overlay IPv4
 
 // Trust levels
 #define ESE_TRUST_LEAF              2       // Default: new peer
@@ -112,6 +118,32 @@ struct LiveChunk {
 
 
 //
+// LivePeerId — durable peer identity for the Live mesh (C6, 2026-06).
+//
+// Keys per-peer mesh state (trust, bitmap, counters) so it SURVIVES the
+// CClientList::AttachToAlreadyKnown pointer swap that recycles a peer's
+// CUpDownClient object every ~6 s for LowID peers. That swap (delete old
+// object -> ~CUpDownClient -> OnPeerDisconnected scrubs pointer-keyed state)
+// was orphaning the bitmap/trust/counters of a peer that is still streaming,
+// forcing a re-subscribe + re-push + blind re-request = the micro-cut.
+//
+// kind=LPID_USERHASH uses bytes[0..16): the eD2K user-hash, which
+// AttachToAlreadyKnown ITSELF matches on (ClientList.cpp:219), so it is stable
+// across the swap. kind=LPID_PUBKEY uses bytes[0..32): the channel/circuit
+// Ed25519 key, used by the tunneled control plane (C2). NEVER key on IP or raw
+// pointer — NAT/LowID/lifetime-unstable (thesis §13.1).
+//
+enum LivePeerIdKind : uint8 { LPID_INVALID = 0, LPID_USERHASH = 1, LPID_PUBKEY = 2 };
+struct LivePeerId {
+    uint8 kind;
+    uint8 bytes[32];
+    LivePeerId() : kind(LPID_INVALID) { memset(bytes, 0, sizeof bytes); }
+};
+inline bool operator==(const LivePeerId& a, const LivePeerId& b) {
+    return a.kind == b.kind && memcmp(a.bytes, b.bytes, sizeof a.bytes) == 0;
+}
+
+//
 // PeerTrust — Trust and performance data for a connected peer
 //
 // NOTE: Anti-Sybil uses RESPONSE RATE (requests answered / requests received),
@@ -129,6 +161,7 @@ struct PeerTrust {
     DWORD   lastPromotionTime;  // When last promoted
     DWORD   lastProbeTime;      // When last probe test was sent
     bool    isBanned;           // Banned for bad behavior
+    DWORD   lastSeen;           // C6: GetTickCount() of last interaction — drives the durable-state TTL prune
 
     PeerTrust()
         : joinedAt(0)
@@ -141,6 +174,7 @@ struct PeerTrust {
         , lastPromotionTime(0)
         , lastProbeTime(0)
         , isBanned(false)
+        , lastSeen(0)
     {}
 
     // Response rate: what matters for anti-Sybil

@@ -650,6 +650,12 @@ public:
 	// eSE: Network State & Feature Flags
 	static bool		m_bUPnPCriticalError;	// Fase 2: Indica fallo absoluto de UPnP/NAT-PMP
 	static bool		m_bEnableUtpHolePunch;	// Fase 4: Kill-switch maestro para Hole Punching uTP
+	// D2 (Sprint D): persisted privacy-routing mode. Stored as plain ints so this
+	// header doesn't have to pull in the kademlia mode-selector headers; the glue
+	// at startup casts them to the real enums. Defaults: Adaptive / Balanced.
+	static int		m_iKadV2PrivacyMode;		// 0=Direct,1=Tunneled,2=Adaptive
+	static int		m_iKadV2FallbackPolicy;		// 0=Strict,1=Balanced,2=BestEffort
+	static CString	m_strKadV2SensitiveKeywords;// '|'-delimited lowercase keywords
 
 	// Spam
 	static bool		m_bEnableSearchResultFilter;
@@ -1259,6 +1265,13 @@ public:
 	static void		SetUPnPCriticalError(bool b)		{ m_bUPnPCriticalError = b; }
 	static bool		GetUtpHolePunchEnabled()			{ return m_bEnableUtpHolePunch; }
 	static void		SetUtpHolePunchEnabled(bool b)		{ m_bEnableUtpHolePunch = b; }
+	// D2 (Sprint D): privacy-routing mode persistence accessors (plain int).
+	static int		GetKadV2PrivacyMode()				{ return m_iKadV2PrivacyMode; }
+	static void		SetKadV2PrivacyMode(int m)			{ m_iKadV2PrivacyMode = m; }
+	static int		GetKadV2FallbackPolicy()			{ return m_iKadV2FallbackPolicy; }
+	static void		SetKadV2FallbackPolicy(int p)		{ m_iKadV2FallbackPolicy = p; }
+	static const CString& GetKadV2SensitiveKeywords()			{ return m_strKadV2SensitiveKeywords; }
+	static void		SetKadV2SensitiveKeywords(const CString &s)	{ m_strKadV2SensitiveKeywords = s; }
 	static bool		GetWSIsEnabled()					{ return m_bWebEnabled; }
 	static void		SetWSIsEnabled(bool bEnable)		{ m_bWebEnabled = bEnable; }
 	static bool		GetWebUseGzip()						{ return m_bWebUseGzip; }

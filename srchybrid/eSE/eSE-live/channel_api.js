@@ -404,6 +404,25 @@ function handleRoute(url, req, res, ctx) {
     return true;
   }
 
+  // === /api/live/privacy — D2 (Sprint D): proxy mode read/set to eMule (4711).
+  // GET reads current state; GET with ?mode=/?fallback= sets it (the eMule
+  // endpoint parses query params regardless of method). The change persists on
+  // eMule's side (mirrored into prefs, saved on exit).
+  if (p === '/api/live/privacy') {
+    const q = url.search || '';
+    const preq = http.get('http://127.0.0.1:4711/api/live/privacy' + q, { timeout: 4000 }, (pres) => {
+      let body = '';
+      pres.on('data', d => body += d);
+      pres.on('end', () => {
+        try { jsonResponse(res, 200, JSON.parse(body)); }
+        catch (e) { jsonResponse(res, 200, { error: 'parse_error', raw: body.substring(0, 200) }); }
+      });
+    });
+    preq.on('error',   () => jsonResponse(res, 200, { error: 'offline' }));
+    preq.on('timeout', () => { preq.destroy(); jsonResponse(res, 200, { error: 'timeout' }); });
+    return true;
+  }
+
   // === GET /privacy — Sprint 4 J.2: privacy & data handling page ===
   if (p === '/privacy') {
     const html = '<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><title>eSE Live — Privacidad</title>' +
@@ -415,6 +434,17 @@ function handleRoute(url, req, res, ctx) {
       '</style></head><body>' +
       '<a href="/live" style="font-size:12px">← Volver a Live</a>' +
       '<h1>Privacidad y datos en eSE Live</h1>' +
+      // D6 (Sprint D, web UI): the mode selector. Persists on eMule's side.
+      '<div style="background:#13141a;border:1px solid #2a2a2e;border-radius:8px;padding:16px 18px;margin:18px 0">' +
+      '<div style="color:#fff;font-weight:600;margin-bottom:8px">&#129529; Modo de enrutado privado (Kad / LiveTV)</div>' +
+      '<select id="ese-mode" style="background:#0a0a0e;color:#e0e0e0;border:1px solid #3a3a3e;border-radius:6px;padding:8px 12px;font-size:14px;width:100%;box-sizing:border-box;margin-bottom:8px">' +
+      '<option value="direct">Directo — sin túnel (máxima velocidad; tu IP es visible)</option>' +
+      '<option value="adaptive">Adaptativo — túnel solo para canales privados / palabras sensibles</option>' +
+      '<option value="tunneled">Tunelizado — el control (búsqueda/subscribe) va por túnel onion</option>' +
+      '</select>' +
+      '<div id="ese-mode-status" style="font-size:12px;color:#6b7280">Cargando estado…</div>' +
+      '<div style="font-size:12px;color:#fbbf24;margin-top:10px;line-height:1.5">&#9888;&#65039; Honestidad: el anonimato real necesita <b>3+ nodos del fork</b> en la red. Con 2 nodos (hop1=hop2 = mismo equipo) el anonimato es 0. Además, en este modo los <b>chunks de vídeo siguen yendo directos</b> — tu IP es visible al emisor al pedir chunks. El plano de datos por túnel llega en una versión posterior.</div>' +
+      '</div>' +
       '<p>eSE Live es una aplicación P2P descentralizada que se ejecuta enteramente en tu equipo. No hay servidor central que recopile datos. Aun así, conviene que entiendas qué información se expone.</p>' +
       '<h2>Datos que SÍ se exponen</h2>' +
       '<ul>' +
@@ -454,6 +484,17 @@ function handleRoute(url, req, res, ctx) {
       '<li>Borra <code>%TEMP%\\eMule_RTMP\\</code> si quedan restos.</li>' +
       '</ol>' +
       '<p style="font-size:12px;color:#6b7280;margin-top:32px">eSE Live es software libre (GPL v2). Toda la lógica está en el código fuente abierto en <a href="https://github.com/diad87/eMule-eSE-LiveTV">GitHub</a>.</p>' +
+      // D6 selector wiring: read current mode on load, set it on change. The
+      // eMule endpoint parses query params on any method, so a GET suffices.
+      '<script>(function(){' +
+      'var sel=document.getElementById("ese-mode");var st=document.getElementById("ese-mode-status");' +
+      'function show(d){if(d&&d.mode){sel.value=d.mode;var c=(d.runtime&&d.runtime.circuitsActive)||0;' +
+      'st.textContent="Modo: "+d.mode+" · fallback: "+(d.fallback||"?")+" · circuitos túnel activos: "+c+(c===0?" (el modo Tunelizado no surtirá efecto hasta que haya circuitos)":"")}' +
+      'else{st.textContent="No se pudo leer el estado (¿eMule abierto en este equipo?)"}}' +
+      'function load(){fetch("/api/live/privacy").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="eMule no responde"})}' +
+      'sel.addEventListener("change",function(){st.textContent="Aplicando…";' +
+      'fetch("/api/live/privacy?mode="+encodeURIComponent(sel.value)).then(function(r){return r.json()}).then(function(d){show(d);if(d&&d.mode)st.textContent="Guardado: "+d.mode+" — persiste al cerrar eMule"}).catch(function(){st.textContent="eMule no responde"})});' +
+      'load();})();</script>' +
       '</body></html>';
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);

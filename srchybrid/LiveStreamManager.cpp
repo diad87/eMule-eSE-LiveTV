@@ -6,6 +6,7 @@
 #include "LiveDebugLog.h"
 #include "LivePackets.h"
 #include "LiveTunnel.h"        // v8.1 Sprint C — C5 mode handoff (CLiveTunnel)
+#include "kademlia/kademlia/KadV2ModeSelector.h"  // v8.1 D3 — fallback policy
 #include "emule.h"
 #include "opcodes.h"
 #include "OtherFunctions.h"
@@ -561,15 +562,32 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     // direct socket for OP_LIVE_REQUEST, and the live edge arrives via the C3
     // tunneled-heartbeat relay. Default mode is Adaptive with no keyword ->
     // Direct, so this path is dormant until the Sprint D mode UI enables it.
+    // v8.1 D3 — fallback policy when the mode wants a tunnel. Separating "want"
+    // from "can" (a circuit is Active) gives the fallback its meaning:
+    //   STRICT      -> no circuit means abort (never expose the viewer directly)
+    //   BALANCED    -> (no real fanout knob yet) degrades to BEST_EFFORT
+    //   BEST_EFFORT -> fall to a direct subscribe, but WARN (IP visible to emisor)
     bool useTunnel = false;
     {
         eSELive::CLiveTunnel& tun = eSELive::CLiveTunnel::Get();
-        if (streamKey != NULL && ip != 0 && port != 0
-            && tun.ShouldRouteThroughTunnel(NULL)
-            && tun.ActiveCircuitCount() > 0)
-        {
-            useTunnel = true;
-            tun.SendLiveSubscribeNoWait(streamKey, ip, port, udpPort, /*altIP*/0);
+        const bool wantTunnel = (streamKey != NULL && ip != 0 && port != 0
+                                 && tun.ShouldRouteThroughTunnel(NULL));
+        if (wantTunnel) {
+            if (tun.ActiveCircuitCount() > 0) {
+                useTunnel = true;
+                tun.SendLiveSubscribeNoWait(streamKey, ip, port, udpPort, /*altIP*/0);
+            } else {
+                Kademlia::CKadV2ModeSelector::FallbackPolicy fb =
+                    Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy();
+                if (fb == Kademlia::CKadV2ModeSelector::STRICT_PRIVACY) {
+                    AddLogLine(true, _T("eSE Live: Privacidad ESTRICTA — sin circuito túnel, no me conecto (tu IP no se expone)"));
+                    LIVE_LOG("TUN", "D3 STRICT: no tunnel circuit -> abort subscribe (privacy)");
+                    return false;
+                }
+                AddLogLine(true, _T("eSE Live: Tunelizado pedido pero sin circuito — Directo (tu IP es visible al emisor)"));
+                LIVE_LOG("TUN", "D3 %s: no tunnel circuit -> direct fallback (warned)",
+                    fb == Kademlia::CKadV2ModeSelector::BALANCED ? "BALANCED" : "BEST_EFFORT");
+            }
         }
     }
 

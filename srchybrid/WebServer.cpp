@@ -5539,6 +5539,28 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		if (!addSens.IsEmpty()) sel.AddSensitiveKeyword((LPCWSTR)addSens);
 		if (!rmSens.IsEmpty())  sel.RemoveSensitiveKeyword((LPCWSTR)rmSens);
 
+		// D2 (Sprint D): mirror any change into the persisted prefs so the mode
+		// survives restart. The selector update above already takes effect THIS
+		// session (ShouldRouteThroughTunnel -> sel.Decide). We only set the pref
+		// members here (cheap; the main thread reads them at startup-seed /
+		// exit-save, not concurrently) — we do NOT call thePrefs.Save() from this
+		// webserver WORKER thread (file I/O + project_ese_live_api_threadsafety);
+		// persistence lands on eMule's normal exit-time Save().
+		if (!modeArg.IsEmpty() || !fallbackArg.IsEmpty() || !addSens.IsEmpty() || !rmSens.IsEmpty()) {
+			thePrefs.SetKadV2PrivacyMode((int)sel.GetDefaultMode());
+			thePrefs.SetKadV2FallbackPolicy((int)sel.GetFallbackPolicy());
+			std::vector<CStringW> persistKws;
+			sel.GetSensitiveKeywords(persistKws);
+			CString joined;
+			for (size_t i = 0; i < persistKws.size(); ++i) {
+				CString k(persistKws[i]);
+				k.Replace(_T("|"), _T(" "));   // keep the '|' delimiter lossless
+				if (!joined.IsEmpty()) joined += _T("|");
+				joined += k;
+			}
+			thePrefs.SetKadV2SensitiveKeywords(joined);
+		}
+
 		const char* modeStr =
 			sel.GetDefaultMode() == CKadV2Mode::Direct    ? "direct"   :
 			sel.GetDefaultMode() == CKadV2Mode::Tunneled  ? "tunneled" : "adaptive";

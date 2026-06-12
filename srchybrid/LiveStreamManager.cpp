@@ -15,6 +15,8 @@
 #include "Log.h"
 #include "UpDownClient.h"
 #include "ListenSocket.h"   // CClientReqSocket::IsConnected (dual-dial dedup gate)
+#include "LiveCrypto.h"     // v8.1.x — VerifySignature for reassembled V2 chunks
+#include "../cryptopp/sha.h" // v8.1.x — SHA256 integrity check for reassembled chunks
 #include "Packets.h"
 #include "SafeFile.h"
 #include "Statistics.h"
@@ -1329,8 +1331,11 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
         // the slot between GetSegment() and CreateChunkPacket()'s memcpy.
         // CreateChunkPacket copies the bytes, so once it returns the Packet is
         // self-contained and safe to use after the buffer's lock releases.
-        CArray<Packet*> pushBatch;
+        // v8.1.x — fragment oversized segments if the viewer can reassemble.
+        const bool peerFrag = peer && (peer->GetEseCapabilities() & ESE_CAP_LIVE_CHUNK_FRAG) != 0;
+        CArray<Packet*> pushBatch;   // may hold >1 packet per segment when fragmented
         uint64 totalBytes = 0;
+        int segsPushed = 0;
         for (uint32 seq = startSeq; seq <= newest; ++seq) {
             if (haveVbm && vbm.Has(seq)) continue;   // viewer already has it -> don't re-push
             Packet* chunkPkt = NULL;
@@ -1348,19 +1353,20 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
                 chunkSize = chunk.dataSize;
             });
             if (!chunkPkt) continue;
-            pushBatch.Add(chunkPkt);
+            eSELive::AppendChunkSendPackets(chunkPkt, peerFrag, pushBatch);  // takes ownership
             totalBytes += chunkSize;
+            segsPushed++;
         }
 
-        // Update trust + mesh counters under the lock (they read m_peerTrust).
-        trust.requestsServed += (uint32)pushBatch.GetCount();
-        for (INT_PTR i = 0; i < pushBatch.GetCount(); ++i) {
+        // Update trust + mesh counters under the lock (per SEGMENT, not per packet).
+        trust.requestsServed += (uint32)segsPushed;
+        for (int i = 0; i < segsPushed; ++i) {
             m_meshManager.IncrementChunksServed();
         }
-        if (pushBatch.GetCount() > 0)
+        if (segsPushed > 0)
             m_meshManager.TrackUpload(peer, (uint32)totalBytes);
 
-        pushed = (int)pushBatch.GetCount();
+        pushed = segsPushed;
 
         // RELEASE THE MANAGER LOCK before doing socket I/O. This prevents
         // FeedSegment (called from the FFmpeg watcher thread) from blocking
@@ -1546,8 +1552,16 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
     // WithSegment lambda above using a now-released copy of the bytes, so it's
     // safe to use without any buffer lock; chunkSize is a captured uint32.
     if (chunkPkt) {
-        theStats.AddUpDataOverheadOther(chunkPkt->size);
-        peer->SendPacket(chunkPkt);
+        // v8.1.x — fragment if oversized and the peer can reassemble; else send
+        // the single packet unchanged. AppendChunkSendPackets takes ownership of
+        // chunkPkt (do NOT touch it after this call).
+        const bool peerFrag = peer && (peer->GetEseCapabilities() & ESE_CAP_LIVE_CHUNK_FRAG) != 0;
+        CArray<Packet*> sendBatch;
+        eSELive::AppendChunkSendPackets(chunkPkt, peerFrag, sendBatch);
+        for (INT_PTR si = 0; si < sendBatch.GetCount(); ++si) {
+            theStats.AddUpDataOverheadOther(sendBatch[si]->size);
+            peer->SendPacket(sendBatch[si]);
+        }
         m_meshManager.TrackUpload(peer, chunkSize);
         // Fix 5: Actually count active uploads so /api/live/debug isn't always 0
         m_meshManager.IncrementChunksServed();
@@ -1565,6 +1579,157 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
             seqNum, chunkSize / 1024,
             peer ? (LPCWSTR)ipstr(peer->GetIP()) : L"?",
             peer ? (unsigned)peer->GetUserPort() : 0);
+    }
+}
+
+// v8.1.x — verify+ingest one WHOLE inner chunk payload (V1 OP_LIVE_CHUNK or V2
+// OP_LIVE_CHUNK_V2), whether it arrived as a single packet (ListenSocket) or was
+// reassembled from OP_LIVE_CHUNK_FRAG fragments. The verify path is identical to
+// (and supersedes) the inline ListenSocket handlers, so signature/integrity
+// checks run exactly ONCE over the full segment.
+void CLiveStreamManager::IngestChunkPayload(CUpDownClient* peer, uint8 innerOpcode,
+    const BYTE* body, uint32 bodyLen)
+{
+    if (body == NULL) return;
+
+    if (innerOpcode == OP_LIVE_CHUNK) {
+        // V1: streamKey(16)+seqNum(4)+ts(4)+chunkSize(4)+data
+        if (bodyLen < 28) return;
+        CSafeMemFile data(const_cast<BYTE*>(body), bodyLen);
+        uchar streamKey[16];
+        data.ReadHash16(streamKey);
+        uint32 seqNum    = data.ReadUInt32();
+        uint32 timestamp = data.ReadUInt32();
+        uint32 chunkSize = data.ReadUInt32();
+        if (chunkSize > bodyLen - 28 || chunkSize > eSELive::ESE_FRAG_MAX_TOTAL) return;
+        OnChunkReceived(peer, streamKey, seqNum, timestamp, body + 28, chunkSize);
+        return;
+    }
+
+    if (innerOpcode == OP_LIVE_CHUNK_V2) {
+        // V2: streamKey(16)+seqNum(4)+ts(4)+dataSize(4)+bitrate(2)+sha256(32)+sig(64)+data
+        if (bodyLen < 126) return;
+        CSafeMemFile data(const_cast<BYTE*>(body), bodyLen);
+        uchar streamKey[16];
+        data.ReadHash16(streamKey);
+        uint32 seqNum    = data.ReadUInt32();
+        uint32 timestamp = data.ReadUInt32();
+        uint32 chunkSize = data.ReadUInt32();
+        /*uint16 bitrate =*/ data.ReadUInt16();
+        uchar digest[32]; data.Read(digest, 32);
+        uchar sig[64];    data.Read(sig, 64);
+        if (chunkSize > bodyLen - 126 || chunkSize > eSELive::ESE_FRAG_MAX_TOTAL) return;
+        const BYTE* chunkData = body + 126;
+
+        uchar pubkey[32];
+        if (!GetPinnedPubkey(streamKey, pubkey)) return;
+
+        // Integrity: sha256(data) == digest (cheap; amortises the signature cost).
+        {
+            CryptoPP::SHA256 hash;
+            uchar computed[32];
+            hash.CalculateDigest(computed, chunkData, chunkSize);
+            if (memcmp(computed, digest, 32) != 0) {
+                AddLogLine(true, _T("eSE Live: chunk seq=%u digest mismatch — dropping"), seqNum);
+                return;
+            }
+        }
+        // Signature over (streamKey || seqNum || digest).
+        {
+            uchar signMsg[16 + 4 + 32];
+            memcpy(signMsg, streamKey, 16);
+            memcpy(signMsg + 16, &seqNum, 4);
+            memcpy(signMsg + 20, digest, 32);
+            if (!eSELive::VerifySignature(pubkey, signMsg, sizeof signMsg, sig)) {
+                AddLogLine(true, _T("eSE Live: chunk seq=%u bad signature — dropping"), seqNum);
+                return;
+            }
+        }
+        OnChunkReceived(peer, streamKey, seqNum, timestamp, chunkData, chunkSize);
+        return;
+    }
+    // Unknown inner opcode — drop silently.
+}
+
+// v8.1.x — accumulate a fragment of an oversized chunk. On the last fragment,
+// the reassembled buffer is byte-identical to the inner V1/V2 payload, fed to
+// IngestChunkPayload (verify runs once). Bounded + TTL-swept; a lost fragment
+// just drops the segment and the normal pull re-requests it.
+void CLiveStreamManager::OnChunkFragmentReceived(CUpDownClient* peer, const uchar* streamKey,
+    uint32 seqNum, uint16 fragIndex, uint16 fragCount, uint8 innerOpcode,
+    uint32 totalLen, const BYTE* fragData, uint32 fragLen)
+{
+    CSingleLock lock(&m_lock, TRUE);
+
+    if (!m_bViewing) return;
+    if (memcmp(m_streamInfo.streamKey, streamKey, 16) != 0) {
+        LIVE_LOG("FRAG", "DROP seq=%u — wrong key", seqNum);
+        return;
+    }
+
+    // Validate the header BEFORE allocating anything (defends against a peer
+    // announcing a huge totalLen / fragCount to exhaust memory).
+    if (fragCount < 1 || fragCount > eSELive::ESE_FRAG_MAX_COUNT) return;
+    if (fragIndex >= fragCount) return;
+    if (totalLen == 0 || totalLen > eSELive::ESE_FRAG_MAX_TOTAL) return;
+    if (innerOpcode != OP_LIVE_CHUNK_V2 && innerOpcode != OP_LIVE_CHUNK) return;
+    const uint32 expectCount = (totalLen + eSELive::ESE_FRAG_PAYLOAD - 1) / eSELive::ESE_FRAG_PAYLOAD;
+    if ((uint32)fragCount != expectCount) return;
+    const uint32 expectLen = (fragIndex == fragCount - 1)
+        ? (totalLen - (uint32)(fragCount - 1) * eSELive::ESE_FRAG_PAYLOAD)
+        : eSELive::ESE_FRAG_PAYLOAD;
+    if (fragLen != expectLen || fragLen > eSELive::ESE_FRAG_PAYLOAD || fragData == NULL) return;
+
+    const DWORD now = GetTickCount();
+    std::pair<LivePeerId, uint32> key(PeerId(peer), seqNum);
+    std::map<std::pair<LivePeerId, uint32>, FragReasm, FragKeyLess>::iterator it = m_fragReasm.find(key);
+
+    if (it != m_fragReasm.end()) {
+        // Broadcaster re-sent this seq with a different shape (VBR restart) — reset.
+        if (it->second.fragCount != fragCount || it->second.totalLen != totalLen
+            || it->second.innerOpcode != innerOpcode) {
+            m_fragReasm.erase(it);
+            it = m_fragReasm.end();
+        }
+    }
+    if (it == m_fragReasm.end()) {
+        // Bound concurrent reassemblies — evict the oldest partial first.
+        if ((int)m_fragReasm.size() >= eSELive::ESE_FRAG_MAX_CONCURRENT) {
+            std::map<std::pair<LivePeerId, uint32>, FragReasm, FragKeyLess>::iterator oldest = m_fragReasm.begin();
+            for (std::map<std::pair<LivePeerId, uint32>, FragReasm, FragKeyLess>::iterator i2 = m_fragReasm.begin();
+                 i2 != m_fragReasm.end(); ++i2)
+                if ((LONG)(i2->second.firstSeenTick - oldest->second.firstSeenTick) < 0)
+                    oldest = i2;
+            m_fragReasm.erase(oldest);
+        }
+        FragReasm fr;
+        fr.innerOpcode   = innerOpcode;
+        fr.totalLen      = totalLen;
+        fr.fragCount     = fragCount;
+        fr.haveCount     = 0;
+        fr.buf.resize(totalLen);
+        fr.got.assign(fragCount, false);
+        fr.firstSeenTick = now;
+        it = m_fragReasm.insert(std::make_pair(key, std::move(fr))).first;
+    }
+
+    FragReasm& fr = it->second;
+    if (fr.got[fragIndex]) {
+        LIVE_LOG("FRAG", "DUP-FRAG seq=%u idx=%u", seqNum, (unsigned)fragIndex);
+        return;
+    }
+    memcpy(fr.buf.data() + (uint32)fragIndex * eSELive::ESE_FRAG_PAYLOAD, fragData, fragLen);
+    fr.got[fragIndex] = true;
+    fr.haveCount++;
+
+    if (fr.haveCount == fr.fragCount) {
+        // Complete: move the buffer out, drop the map entry, verify+ingest once.
+        std::vector<uint8> full(std::move(fr.buf));
+        const uint8  innerOp = fr.innerOpcode;
+        const uint32 len     = fr.totalLen;
+        m_fragReasm.erase(it);
+        LIVE_LOG("FRAG", "COMPLETE seq=%u (%u bytes, %u frags)", seqNum, len, (unsigned)fragCount);
+        IngestChunkPayload(peer, innerOp, full.data(), len);
     }
 }
 
@@ -1732,10 +1897,17 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
                 // Defer the actual send to after m_lock is released. The
                 // packet owns its own serialized copy of the chunk, so it
                 // stays valid after bodyCopy goes out of scope.
-                RelayOut out;
-                out.child = child;
-                out.pkt   = pkt;
-                relayPkts.push_back(out);
+                // v8.1.x — fragment for this child if it can reassemble; else one
+                // packet as today. AppendChunkSendPackets takes ownership of pkt.
+                const bool childFrag = (child->GetEseCapabilities() & ESE_CAP_LIVE_CHUNK_FRAG) != 0;
+                CArray<Packet*> childBatch;
+                eSELive::AppendChunkSendPackets(pkt, childFrag, childBatch);
+                for (INT_PTR bi = 0; bi < childBatch.GetCount(); ++bi) {
+                    RelayOut out;
+                    out.child = child;
+                    out.pkt   = childBatch[bi];
+                    relayPkts.push_back(out);
+                }
             }
             localView.data = NULL;  // disown so LiveChunk dtor doesn't free
         }
@@ -2681,6 +2853,20 @@ void CLiveStreamManager::Process()
                 hashSearch.AppendFormat(_T("%S"), keyHexA);
                 m_kadBridge.SearchStreams(hashSearch);
                 LIVE_LOG("ANYCAST", "Orphan: re-searching %s", (LPCSTR)CT2A(hashSearch));
+            }
+        }
+
+        // v8.1.x — drop fragment reassembly buffers that never completed within
+        // the TTL; a lost fragment just loses that seq, and RequestMissingSegments
+        // below re-requests it from any peer like any other missing chunk.
+        for (std::map<std::pair<LivePeerId, uint32>, FragReasm, FragKeyLess>::iterator fit = m_fragReasm.begin();
+             fit != m_fragReasm.end(); ) {
+            if ((DWORD)(now - fit->second.firstSeenTick) > eSELive::ESE_FRAG_REASM_TTL) {
+                LIVE_LOG("FRAG", "TIMEOUT seq=%u have=%u/%u", fit->first.second,
+                    (unsigned)fit->second.haveCount, (unsigned)fit->second.fragCount);
+                fit = m_fragReasm.erase(fit);
+            } else {
+                ++fit;
             }
         }
 

@@ -35,6 +35,30 @@ Packet* CreateChunkPacketV2(const ::LiveChunk* chunk,
 // Format: <StreamKey 16><SequenceNumber 4><Timestamp 4><ChunkSize 4><Data ChunkSize>
 Packet* CreateChunkPacket(const LiveChunk* chunk);
 
+// ── v8.1.x Live chunk fragmentation ───────────────────────────────────────
+// eMule's socket rejects any packet > 2,000,000 bytes (EMSocket.cpp:261,
+// ERR_TOOBIG). A whole HLS segment at >=8000 kbps exceeds that, so we split it.
+// Fragment header (29 bytes) precedes each slice of the byte-identical inner
+// chunk payload; the receiver reassembles the full payload and runs the EXISTING
+// verify once. Below FRAG_THRESHOLD nothing is fragmented (byte-identical wire).
+const uint32 ESE_FRAG_HEADER      = 29;          // streamKey16+seq4+idx2+cnt2+innerOp1+totalLen4
+const uint32 ESE_FRAG_PAYLOAD     = 1400000;     // per-fragment slice cap (packet stays << 2MB)
+const uint32 ESE_FRAG_THRESHOLD   = 1800000;     // inner-payload size above which we fragment
+const uint32 ESE_FRAG_MAX_TOTAL   = 12582912;    // 12MB hard cap on a reassembled payload (DoS bound; covers ~12000-15000 kbps 4s VBR peaks)
+const uint16 ESE_FRAG_MAX_COUNT   = 64;          // max fragments per segment
+const int    ESE_FRAG_MAX_CONCURRENT = 8;        // concurrent partial reassemblies (8*8MB worst case)
+const DWORD  ESE_FRAG_REASM_TTL   = 4000;        // ms; drop a partial that hasn't completed
+
+// Take ownership of an already-built chunk packet (V1 OP_LIVE_CHUNK or V2
+// OP_LIVE_CHUNK_V2). If its payload <= ESE_FRAG_THRESHOLD or !peerSupportsFrag,
+// appends it unchanged to `out` (byte-identical wire). Otherwise slices its
+// payload into N OP_LIVE_CHUNK_FRAG packets (each << 2MB) appended to `out`, and
+// deletes the original. streamKey/seqNum/innerOpcode are read from the packet
+// itself, so the slices reassemble to exactly the original payload. The V2
+// signature was computed once when the inner packet was built — fragments are
+// pure transport slicing, never re-signed.
+void AppendChunkSendPackets(Packet* innerPkt, bool peerSupportsFrag, CArray<Packet*>& out);
+
 // Create OP_LIVE_PEER_LIST packet: broadcaster sends list of peers
 // Format: <StreamKey 16><Count 2>(<IP 4><Port 2>)[Count]
 Packet* CreatePeerListPacket(const uchar* streamKey,

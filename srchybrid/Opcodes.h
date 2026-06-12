@@ -310,6 +310,14 @@
 #define OP_LIVE_PEER_LIST_V2	0xCD	// <StreamHash 16><Count 2>(<CAddress><Port 2><Score 1>) × Count
 #define OP_LIVE_RELAY_REQ		0xCE	// Sprint 8: viewer asks a v6 buddy to relay
 #define OP_LIVE_RELAY_FWD		0xCF	// Sprint 8: buddy forwards chunks via that link
+// v8.1.x — chunk fragmentation: split a >1.8MB Live segment into sub-2MB
+// transport fragments to get past eMule's 2MB per-packet cap (EMSocket.cpp:261
+// ERR_TOOBIG). Each fragment carries a slice of the byte-identical inner V2/V1
+// chunk payload; the viewer reassembles the whole payload and runs the existing
+// verify ONCE. 0xE0 is clear of the 0xC0-0xCF Live block and the 0xD0-0xDF
+// tunnel-reserved block. Gated behind ESE_CAP_LIVE_CHUNK_FRAG; <=1.8MB segments
+// never fragment, so the wire is byte-identical to today (backward-compatible).
+#define OP_LIVE_CHUNK_FRAG		0xE0	// <StreamKey 16><SeqNum 4><FragIndex 2><FragCount 2><InnerOpcode 1><TotalLen 4><FragData>
 
 // === eSE Live Tunneled — reservado 0xD0-0xDF (F0 unified plan, tesis privacidad Cap 5 §5.7.1) ==
 // All these opcodes are dispatched in OP_EMULEPROT subspace. Receiving them at this stage of
@@ -523,6 +531,7 @@
 #define ESE_CAP_GOSSIP_PROTOCOL      0x00000400  // bit 10 — channel gossip
 #define ESE_CAP_COVER_TRAFFIC        0x00000800  // bit 11 — Poisson cover cells
 #define ESE_CAP_TUNNEL_DATAPLANE     0x00001000  // bit 12 -- v8.1 multi-cell tunnel data plane
+#define ESE_CAP_LIVE_CHUNK_FRAG      0x00002000  // bit 13 -- v8.1.x Live segment fragmentation (>1.8MB chunks split into sub-2MB packets)
 
 // Runtime accumulator for TAG_ESE_CAPS. Defined in FirewallProberV6.cpp
 // (same file as g_uForkCapsRuntime — both are runtime cap accumulators

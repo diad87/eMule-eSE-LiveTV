@@ -9,6 +9,8 @@
 #include "LiveMeshManager.h"
 #include "LiveDebugLog.h"        // V2-S05: LatencyHistogram
 #include "RTMPIngest.h"
+#include <map>      // v8.1.x — fragment reassembly map
+#include <vector>   // v8.1.x — fragment reassembly buffers
 
 // C6 (2026-06): CMap hash for the durable LivePeerId key. `inline` keeps it
 // ODR-safe across the TUs that include this header (same idiom as MapKey.h's
@@ -329,6 +331,18 @@ public:
     // Called when we receive OP_LIVE_CHUNK from a peer
     void OnChunkReceived(CUpDownClient* peer, const uchar* streamKey,
                          uint32 seqNum, uint32 timestamp, const BYTE* data, uint32 dataSize);
+    // v8.1.x — OP_LIVE_CHUNK_FRAG receiver: accumulate fragments of an oversized
+    // chunk; on completion verify+ingest the reassembled inner payload via
+    // IngestChunkPayload (the SAME verify the direct V2/V1 path uses).
+    void OnChunkFragmentReceived(CUpDownClient* peer, const uchar* streamKey,
+                                 uint32 seqNum, uint16 fragIndex, uint16 fragCount,
+                                 uint8 innerOpcode, uint32 totalLen,
+                                 const BYTE* fragData, uint32 fragLen);
+    // v8.1.x — parse+verify (V2) one whole inner chunk payload, then hand the
+    // segment to OnChunkReceived. Shared by the direct ListenSocket handler and
+    // the fragment reassembler so the verify path is single-sourced.
+    void IngestChunkPayload(CUpDownClient* peer, uint8 innerOpcode,
+                            const BYTE* body, uint32 bodyLen);
     // Called when a peer sends OP_LIVE_BITMAP
     void OnPeerBitmap(CUpDownClient* peer, const uchar* streamKey,
                       uint32 oldestSeq, uint16 bitmap);
@@ -524,6 +538,30 @@ private:
     // C6: keyed by LivePeerId (durable identity); pruned by TTL, not scrubbed
     // on every disconnect (a disconnect is usually just a pointer swap).
     CMap<LivePeerId, const LivePeerId&, PeerCounters, PeerCounters&> m_peerCounters;
+
+    // v8.1.x — reassembly buffers for fragmented (>1.8MB) chunks. Keyed by the
+    // DURABLE peer id (PeerId) + seqNum so an AttachToAlreadyKnown pointer swap
+    // mid-segment doesn't orphan a partial. Bounded by ESE_FRAG_MAX_CONCURRENT,
+    // swept on TTL in Process(). All access under m_lock.
+    struct FragReasm {
+        uint8  innerOpcode = 0;
+        uint32 totalLen    = 0;
+        uint16 fragCount   = 0;
+        uint16 haveCount   = 0;
+        std::vector<uint8> buf;     // sized to totalLen once, after validation
+        std::vector<bool>  got;     // per-fragIndex received flag (OOO + dup defense)
+        DWORD  firstSeenTick = 0;
+    };
+    struct FragKeyLess {
+        bool operator()(const std::pair<LivePeerId, uint32>& a,
+                        const std::pair<LivePeerId, uint32>& b) const {
+            if (a.first.kind != b.first.kind) return a.first.kind < b.first.kind;
+            int c = memcmp(a.first.bytes, b.first.bytes, sizeof a.first.bytes);
+            if (c != 0) return c < 0;
+            return a.second < b.second;
+        }
+    };
+    std::map<std::pair<LivePeerId, uint32>, FragReasm, FragKeyLess> m_fragReasm;
 
     // V2-S03: outstanding pings (peer -> map<pingId, sendTick>) waiting for PONG.
     // Stale entries (>30 s) are reaped each Process() tick to bound memory.

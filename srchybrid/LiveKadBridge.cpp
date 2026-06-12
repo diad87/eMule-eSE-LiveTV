@@ -1189,16 +1189,18 @@ void CLiveKadBridge::Process()
             m_pendingDials.RemoveAt(0);
             dialLock.Unlock();   // TryConnectToStreamSource takes its own lock
             theApp.liveStreamManager->TryConnectToStreamSource(
-                pd.streamKey, pd.ip, pd.port, pd.udpPort);
+                pd.streamKey, pd.ip, pd.port, pd.udpPort, pd.altIP);
             // NAT-reach: race the overlay endpoint too (happy-eyeballs). A
             // NATed broadcaster's public IP never answers; its 100.64/10
             // overlay address does. Whichever TCP connect lands first sends
-            // the heartbeat; the loser is a dead CUpDownClient that times
-            // out harmlessly. Dedupe/caps inside TryConnectToStreamSource
-            // (per-IP+port match, kMaxViewPeers) keep this bounded.
+            // the heartbeat. We pass each call its SIBLING address so that once
+            // one endpoint is a live view-peer, TryConnectToStreamSource
+            // suppresses re-dialing the other (dual-dial churn fix: a 2nd
+            // session would recycle the working socket via AttachToAlreadyKnown).
+            // Dedupe/caps inside TryConnectToStreamSource keep this bounded.
             if (pd.altIP != 0 && pd.altIP != pd.ip)
                 theApp.liveStreamManager->TryConnectToStreamSource(
-                    pd.streamKey, pd.altIP, pd.port, pd.udpPort);
+                    pd.streamKey, pd.altIP, pd.port, pd.udpPort, pd.ip);
             dialLock.Lock();
             drained++;
         }

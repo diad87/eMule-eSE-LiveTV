@@ -7,11 +7,14 @@
 #include "LivePackets.h"
 #include "LiveTunnel.h"        // v8.1 Sprint C — C5 mode handoff (CLiveTunnel)
 #include "kademlia/kademlia/KadV2ModeSelector.h"  // v8.1 D3 — fallback policy
+#include "kademlia/kademlia/Kademlia.h"           // Milestone 1 — CKademlia::IsConnected/GetUDPListener
+#include "kademlia/net/KademliaUDPListener.h"     // Milestone 1 — SendEseHolePunchReq (LowID hole-punch)
 #include "emule.h"
 #include "opcodes.h"
 #include "OtherFunctions.h"
 #include "Log.h"
 #include "UpDownClient.h"
+#include "ListenSocket.h"   // CClientReqSocket::IsConnected (dual-dial dedup gate)
 #include "Packets.h"
 #include "SafeFile.h"
 #include "Statistics.h"
@@ -550,7 +553,7 @@ void CLiveStreamManager::LeaveStream()
     LIVE_LOG("MGR", "LeaveStream");
 }
 
-bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32 ip, uint16 port, uint16 udpPort)
+bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32 ip, uint16 port, uint16 udpPort, uint32 siblingIP)
 {
     // v8.1 Sprint C (C5) — privacy-mode handoff. Decide BEFORE taking m_lock:
     // these tunnel calls take the TUNNEL lock with NO manager lock held, so the
@@ -630,6 +633,23 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
                 existing->SetKadPort(udpPort);
             return true;
         }
+        // Dual-dial churn fix (2026-06): one Kad live record advertises a
+        // broadcaster's public IP AND its overlay alt IP (TAG_ESE_LIVE_ALTIP) —
+        // ONE machine, ONE user-hash. If we are ALREADY connected on the sibling
+        // address, do NOT dial this one: a 2nd inbound session lands on the
+        // broadcaster and CClientList::AttachToAlreadyKnown recycles the WORKING
+        // socket (the ~6 s JOIN/DISCONNECT churn that rolls segments out of the
+        // 16-slot ring -> NO_PEER stalls -> playback cuts). Gate on a LIVE socket
+        // so first-contact still races both endpoints; once one is up the other
+        // is suppressed; if it later dies IsConnected() goes false and the
+        // failover/EnsureMultiParent path re-dials it. siblingIP==0 => no-op,
+        // so direct-join callers that don't know the pair are unaffected.
+        if (siblingIP != 0 && existing
+            && existing->GetIP() == siblingIP
+            && existing->GetUserPort() == port
+            && existing->socket && existing->socket->IsConnected()) {
+            return true;
+        }
     }
 
     // Churn fix (2026-06): per-endpoint dial cooldown. If we dialed this exact
@@ -686,6 +706,46 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     m_meshManager.AddMeshPeer(client);
     // Fix 4: Use dedicated sourceDialAttempts instead of duplicate kadResultsAccepted
     InterlockedIncrement(&m_counters.sourceDialAttempts);
+
+    // v8.1 Milestone 1 (LOWID_NAT_TRAVERSAL_PLAN Fase 0) — eSE uTP hole-punch on
+    // the Live dial, for a broadcaster that can't open a port (LowID/CGNAT). A
+    // Live source is built with the broadcaster's PUBLIC IP, so HasLowID()=false
+    // and CUpDownClient::TryToConnect returns at its HighID-TCP branch BEFORE the
+    // in-tree punch block (BaseClient.cpp:1556); and that block's SupportsUTP()
+    // gate is false at first contact (m_strModVersion/m_nUDPPort are Hello-set,
+    // the dial only SetKadPort'd). So the punch never fires for a Live source via
+    // TryToConnect. We kick it directly here — the proven WebServer.cpp debug
+    // path — BEFORE the connect below (client is still alive; the connect may
+    // delete it). Safe to fire for ANY source: InitiateUtpConnect skips a client
+    // whose socket is already connected (ClientUDPSocket.cpp:672), so a reachable
+    // HighID broadcaster keeps its working TCP socket (no double-socket churn).
+    // The queued OP_LIVE_SUBSCRIBE lives in the client's m_WaitingPackets_list
+    // (not the socket), so it survives the socket swap and flushes on the HELLO
+    // that InitiateUtpConnect sends over the punched pinhole — no re-subscribe.
+    // Reuse the client's NAT-rendezvous counter: it auto-resets to 0 on a
+    // successful uTP accept (UtpSocket.cpp), so ">=4" means 4 *failed* attempts.
+    // The per-endpoint 15 s m_recentDials cooldown above already rate-limits
+    // re-entry here, so no extra adaptive cooldown is needed.
+    if (udpPort != 0
+        && Kademlia::CKademlia::IsConnected()
+        && Kademlia::CKademlia::GetUDPListener() != NULL
+        && thePrefs.GetUtpHolePunchEnabled())
+    {
+        const uint8 ESE_LIVE_SYM_NAT_GIVEUP = 4;
+        if (client->m_uNatRendezvousAttempts >= ESE_LIVE_SYM_NAT_GIVEUP) {
+            InterlockedIncrement(&CStatistics::m_dwHolePunchSymNATFail);
+            LIVE_LOG("HOLE", "Live dial GIVE UP on %S:%u after %u attempts (symmetric NAT?)",
+                (LPCWSTR)ipstr(ip), udpPort, (unsigned)client->m_uNatRendezvousAttempts);
+        } else {
+            // ip is NETWORK order here; SendEseHolePunchReq wants HOST order
+            // (cf. WebServer.cpp / BaseClient.cpp:1596). udpPort is host order.
+            if (client->m_uNatRendezvousAttempts < 255) client->m_uNatRendezvousAttempts++;
+            client->m_uLastNatRendezvousTick = ::GetTickCount();
+            Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReq(ntohl(ip), udpPort);
+            LIVE_LOG("HOLE", "Live dial hole-punch attempt #%u to %S:%u",
+                (unsigned)client->m_uNatRendezvousAttempts, (LPCWSTR)ipstr(ip), udpPort);
+        }
+    }
 
     bool subSent = false;
     if (!useTunnel) {
@@ -2629,14 +2689,20 @@ void CLiveStreamManager::Process()
                         continue;
                     if (known[i].broadcasterIP == 0 || known[i].broadcasterPort == 0)
                         continue;
-                    // Skip peers we are already viewing from (same IP+port).
+                    // Skip peers we are already viewing from — match EITHER
+                    // address of this broadcaster (public IP or overlay alt IP),
+                    // both carried in one Kad entry = one machine. Matching only
+                    // broadcasterIP re-dialed the dead public address of an
+                    // already-connected broadcaster (dual-dial churn).
                     bool alreadyConnected = false;
                     POSITION pos = m_viewPeers.GetHeadPosition();
                     while (pos) {
                         CUpDownClient* existing = m_viewPeers.GetNext(pos);
                         if (existing
-                            && existing->GetIP()       == known[i].broadcasterIP
-                            && existing->GetUserPort() == known[i].broadcasterPort)
+                            && existing->GetUserPort() == known[i].broadcasterPort
+                            && (existing->GetIP() == known[i].broadcasterIP
+                                || (known[i].broadcasterAltIP != 0
+                                    && existing->GetIP() == known[i].broadcasterAltIP)))
                         {
                             alreadyConnected = true;
                             break;
@@ -2649,16 +2715,17 @@ void CLiveStreamManager::Process()
                     // so release briefly to avoid self-deadlock.
                     // A.4 Sprint 1: pass Kad UDP port too for hole-punch fallback.
                     lock.Unlock();
+                    // NAT-reach: race the overlay endpoint too (see drain in
+                    // CLiveKadBridge::Process). Pass each call its sibling so the
+                    // inner backstop drops the redundant dial once one connects.
                     TryConnectToStreamSource(m_streamInfo.streamKey,
                         known[i].broadcasterIP, known[i].broadcasterPort,
-                        known[i].broadcasterUDPPort);
-                    // NAT-reach: race the overlay endpoint too (see drain in
-                    // CLiveKadBridge::Process for rationale).
+                        known[i].broadcasterUDPPort, known[i].broadcasterAltIP);
                     if (known[i].broadcasterAltIP != 0
                         && known[i].broadcasterAltIP != known[i].broadcasterIP)
                         TryConnectToStreamSource(m_streamInfo.streamKey,
                             known[i].broadcasterAltIP, known[i].broadcasterPort,
-                            known[i].broadcasterUDPPort);
+                            known[i].broadcasterUDPPort, known[i].broadcasterIP);
                     lock.Lock();
                 }
             }
@@ -3606,13 +3673,21 @@ void CLiveStreamManager::EnsureMultiParent()
         if (memcmp(known[i].streamKey, m_streamInfo.streamKey, 16) != 0) continue;
         if (known[i].broadcasterIP == 0 || known[i].broadcasterPort == 0) continue;
 
-        // Dedupe — already viewing from this IP+port?
+        // Dedupe — already viewing from EITHER address of this broadcaster?
+        // One Kad entry binds the public IP and the overlay alt IP (same
+        // machine); being connected on either one means this broadcaster is NOT
+        // a missing parent. Matching only broadcasterIP (the old code) made us
+        // re-dial the dead public address of an already-connected broadcaster
+        // every cycle -> AttachToAlreadyKnown recycled the working socket -> the
+        // JOIN churn. Counting the alt address as "have it" stops that.
         bool already = false;
         POSITION pos = m_viewPeers.GetHeadPosition();
         while (pos) {
             CUpDownClient* p = m_viewPeers.GetNext(pos);
-            if (p && p->GetIP() == known[i].broadcasterIP
-                  && p->GetUserPort() == known[i].broadcasterPort) {
+            if (p && p->GetUserPort() == known[i].broadcasterPort
+                  && (p->GetIP() == known[i].broadcasterIP
+                      || (known[i].broadcasterAltIP != 0
+                          && p->GetIP() == known[i].broadcasterAltIP))) {
                 already = true;
                 break;
             }
@@ -3626,16 +3701,18 @@ void CLiveStreamManager::EnsureMultiParent()
         // TryConnectToStreamSource takes m_lock recursively; release ours
         // briefly to avoid self-deadlock with the inner CSingleLock.
         m_lock.Unlock();
+        // NAT-reach: race the overlay endpoint too (see drain in
+        // CLiveKadBridge::Process for rationale). Pass each call its sibling so
+        // that once one endpoint connects, the inner backstop suppresses the
+        // other (belt-and-braces with the pair-aware pre-check above).
         TryConnectToStreamSource(m_streamInfo.streamKey,
             known[i].broadcasterIP, known[i].broadcasterPort,
-            known[i].broadcasterUDPPort);
-        // NAT-reach: race the overlay endpoint too (see drain in
-        // CLiveKadBridge::Process for rationale).
+            known[i].broadcasterUDPPort, known[i].broadcasterAltIP);
         if (known[i].broadcasterAltIP != 0
             && known[i].broadcasterAltIP != known[i].broadcasterIP)
             TryConnectToStreamSource(m_streamInfo.streamKey,
                 known[i].broadcasterAltIP, known[i].broadcasterPort,
-                known[i].broadcasterUDPPort);
+                known[i].broadcasterUDPPort, known[i].broadcasterIP);
         m_lock.Lock();
         dialed++;
     }

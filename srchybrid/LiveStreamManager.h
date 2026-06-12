@@ -282,7 +282,10 @@ public:
     // A.4 Sprint 1: udpPort optional — when non-zero, populates CUpDownClient
     // KadPort so TryToConnect can hole-punch via SendEseHolePunchReq if TCP
     // direct fails (LowID broadcaster).
-    bool TryConnectToStreamSource(const uchar* streamKey, uint32 ip, uint16 port, uint16 udpPort = 0);
+    // siblingIP: the OTHER address of the SAME broadcaster from one Kad record
+    // (public IP <-> overlay alt IP, TAG_ESE_LIVE_ALTIP). When we are already
+    // connected on the sibling, this dial is suppressed (dual-dial churn fix).
+    bool TryConnectToStreamSource(const uchar* streamKey, uint32 ip, uint16 port, uint16 udpPort = 0, uint32 siblingIP = 0);
 
     // v8.1 Sprint C (C2) — exit-side proxy subscribe. Called on the main thread
     // by the tunnel exit handler (ExitHandle_LiveSubscribe) when a tunneled

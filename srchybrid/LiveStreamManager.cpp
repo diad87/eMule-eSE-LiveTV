@@ -726,7 +726,20 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     // successful uTP accept (UtpSocket.cpp), so ">=4" means 4 *failed* attempts.
     // The per-endpoint 15 s m_recentDials cooldown above already rate-limits
     // re-entry here, so no extra adaptive cooldown is needed.
-    if (udpPort != 0
+    //
+    // BUT: never punch an OVERLAY address (Tailscale/CGNAT-shared 100.64.0.0/10).
+    // Those are already routable, so the direct TCP connect succeeds — firing the
+    // punch there just races a uTP socket in via InitiateUtpConnect, and eMule's
+    // uTP uses LEDBAT congestion control that deliberately YIELDS bandwidth,
+    // throttling a high-bitrate Live pull (the observed cut at 8000 kbps over
+    // Tailscale: fluid on TCP, stalls once uTP grafts). The punch is only needed
+    // for a firewalled PUBLIC IP, which is never in 100.64/10 (the broadcaster
+    // publishes its real public IP as TAG_SOURCEIP; the overlay is the altIP).
+    const uint32 hpHostIP = ntohl(ip);
+    const bool hpIsOverlay = ((hpHostIP >> 24) == 100u)
+        && (((hpHostIP >> 16) & 0xFFu) >= 64u)
+        && (((hpHostIP >> 16) & 0xFFu) <= 127u);
+    if (udpPort != 0 && !hpIsOverlay
         && Kademlia::CKademlia::IsConnected()
         && Kademlia::CKademlia::GetUDPListener() != NULL
         && thePrefs.GetUtpHolePunchEnabled())
@@ -1297,6 +1310,19 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
         startSeq = (newest >= pushCount - 1) ? (newest - (pushCount - 1)) : oldest;
         if (startSeq < oldest) startSeq = oldest;
 
+        // PUSH/PULL dedup (2026-06): the viewer already PULLs missing segments
+        // (ASK -> OP_LIVE_REQUEST). On a RE-subscribe (~12 s cadence, past the
+        // push cooldown) the live-edge segments we'd push are ones it already has
+        // and ACK'd, so the push is a wasted ~2-3 MB burst that competes with the
+        // live pull (the periodic ms stutter). Consult the viewer's last-known
+        // bitmap (recorded every ~1 s by OnPeerBitmap; GetPeerBitmap is a lockless
+        // map lookup) and skip segments it reports having. First subscribe = no
+        // recorded bitmap -> haveVbm false -> push all (bootstrap preserved). A
+        // stale/missing bitmap degrades to today's push, and the viewer's own PULL
+        // still fetches anything truly missing, so this never withholds data.
+        PeerBitmapInfo vbm;
+        const bool haveVbm = GetPeerBitmap(peer, vbm);
+
         // v7.5.0 — WithSegment serializes the read against AddSegment; previous
         // code held the LiveStreamManager m_lock but NOT the chunk buffer's
         // own m_lock, so AddSegment from the broadcaster thread could free
@@ -1306,6 +1332,7 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
         CArray<Packet*> pushBatch;
         uint64 totalBytes = 0;
         for (uint32 seq = startSeq; seq <= newest; ++seq) {
+            if (haveVbm && vbm.Has(seq)) continue;   // viewer already has it -> don't re-push
             Packet* chunkPkt = NULL;
             uint32 chunkSize = 0;
             m_chunkBuffer.WithSegment(seq, [&](const LiveChunk& chunk) {

@@ -119,6 +119,56 @@ Packet* CreateChunkPacketV2(const ::LiveChunk* chunk,
     return pkt;
 }
 
+// v8.1.x — take ownership of an already-built V1/V2 chunk packet and append
+// either it (unchanged) or its fragment packets to `out`. See LivePackets.h.
+void AppendChunkSendPackets(Packet* innerPkt, bool peerSupportsFrag, CArray<Packet*>& out)
+{
+    if (innerPkt == NULL)
+        return;
+
+    // Below threshold, or the peer can't reassemble -> send the single packet
+    // exactly as today (byte-identical wire). A too-big packet to a non-frag
+    // peer will ERR_TOOBIG on their side — no worse than before this feature.
+    if (innerPkt->size <= ESE_FRAG_THRESHOLD || !peerSupportsFrag) {
+        out.Add(innerPkt);
+        return;
+    }
+
+    // Slice the inner payload. streamKey(16) + seqNum(4) sit at the front of
+    // every chunk payload (both V1 CreateChunkPacket and V2 CreateChunkPacketV2),
+    // so the reassembled buffer is byte-identical to innerPkt->pBuffer.
+    const uint8* body         = (const uint8*)innerPkt->pBuffer;
+    const uint32 totalLen     = innerPkt->size;
+    const uint8  innerOpcode  = innerPkt->opcode;
+    const uint32 fragCount    = (totalLen + ESE_FRAG_PAYLOAD - 1) / ESE_FRAG_PAYLOAD;
+
+    // If it would need more fragments than the receiver accepts, fall back to the
+    // single packet (ERR_TOOBIG on their side — no regression).
+    if (fragCount == 0 || fragCount > ESE_FRAG_MAX_COUNT) {
+        out.Add(innerPkt);
+        return;
+    }
+
+    for (uint32 i = 0; i < fragCount; ++i) {
+        const uint32 off     = i * ESE_FRAG_PAYLOAD;
+        const uint32 fragLen = min(ESE_FRAG_PAYLOAD, totalLen - off);
+
+        CSafeMemFile data(ESE_FRAG_HEADER + fragLen);
+        data.Write(body, 20);                  // streamKey(16) + seqNum(4) — copied from the payload
+        data.WriteUInt16((uint16)i);           // fragIndex
+        data.WriteUInt16((uint16)fragCount);   // fragCount
+        data.WriteUInt8(innerOpcode);          // innerOpcode (0xCC V2 / 0xC2 V1)
+        data.WriteUInt32(totalLen);            // totalLen (length of the whole inner payload)
+        data.Write(body + off, fragLen);       // this fragment's slice
+
+        Packet* fp = new Packet(data, OP_EMULEPROT);
+        fp->opcode = OP_LIVE_CHUNK_FRAG;
+        out.Add(fp);
+    }
+
+    delete innerPkt;   // its bytes have been copied into the fragments
+}
+
 Packet* CreatePeerListPacket(const uchar* streamKey,
     const DWORD* ips, const uint16* ports, uint16 count)
 {

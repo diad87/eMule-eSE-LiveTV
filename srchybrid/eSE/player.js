@@ -16,6 +16,33 @@
 //  use the modular bundle instead.
 // ════════════════════════════════════════════════════════════════════════════
 
+// ── XSS-safe escaping helpers (mirror shared/safe_dom.js) ───────────────────
+// escHtml: for text interpolated into innerHTML strings.
+// escJsAttr: for values inside onclick="fn('...')" attributes (JS string in
+//            an HTML attribute — needs backslash, quote AND entity escaping).
+// cssBgUrl: for URLs inside style="background-image:url(...)" — scheme
+//           allowlist plus %-encoding of CSS/HTML metacharacters.
+function escHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+}
+function escJsAttr(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/\\/g, '\\\\').replace(/&/g, '&amp;').replace(/'/g, "\\'")
+    .replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function cssBgUrl(u) {
+  u = String(u || '').trim();
+  if (!(/^https?:\/\//i.test(u) || u.charAt(0) === '/')) return '';
+  u = u.replace(/[\\'"()<> ]/g, function (c) {
+    return '%' + ('0' + c.charCodeAt(0).toString(16).toUpperCase()).slice(-2);
+  });
+  return "background-image:url('" + u + "');";
+}
+
 let estTotalSec = 0;
 let mediaSource = null;
 let sourceBuffer = null;
@@ -490,13 +517,13 @@ function renderMovieCard(m) {
   var title = m.Title || 'Sin titulo';
   var year = m.Year || '';
   var imdbId = m.imdbID || '';
-  var safeTitle = title.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-  return '<div class="card" onclick="requestMovie(\'' + safeTitle + '\',\'' + imdbId + '\')">' +
-    '<div class="card-poster" style="' + (poster ? 'background-image:url(' + poster + ');' : '') + '">' +
-    (poster ? '' : '<div class="play-icon">&#9654;</div>') +
+  var posterCss = cssBgUrl(poster);
+  return '<div class="card" onclick="requestMovie(\'' + escJsAttr(title) + '\',\'' + escJsAttr(imdbId) + '\')">' +
+    '<div class="card-poster" style="' + posterCss + '">' +
+    (posterCss ? '' : '<div class="play-icon">&#9654;</div>') +
     '</div>' +
-    '<div class="card-info"><h3 class="card-title">' + title + '</h3>' +
-    '<div class="card-meta">' + year + '</div></div></div>';
+    '<div class="card-info"><h3 class="card-title">' + escHtml(title) + '</h3>' +
+    '<div class="card-meta">' + escHtml(year) + '</div></div></div>';
 }
 
 function loadTrendingMovies() {
@@ -546,9 +573,9 @@ function doSmartSearch(query, grid, isOriginal) {
       if (!isOriginal) {
         var origQuery = document.getElementById('search-input').value.trim();
         header = '<div style="padding:12px 20px;color:#aaa;font-size:13px">' +
-          'Mostrando resultados para <strong style="color:#ff6b35">"' + query + '"</strong>' +
-          ' · <a href="#" onclick="forceSearch(\'' + origQuery.replace(/'/g, "\\'") + '\');return false" style="color:#888;text-decoration:underline">' +
-          'Buscar exactamente "' + origQuery + '"</a></div>';
+          'Mostrando resultados para <strong style="color:#ff6b35">"' + escHtml(query) + '"</strong>' +
+          ' · <a href="#" onclick="forceSearch(\'' + escJsAttr(origQuery) + '\');return false" style="color:#888;text-decoration:underline">' +
+          'Buscar exactamente "' + escHtml(origQuery) + '"</a></div>';
       }
       grid.innerHTML = header + data.Search.map(renderMovieCard).join('');
     } else if (isOriginal) {
@@ -557,7 +584,7 @@ function doSmartSearch(query, grid, isOriginal) {
       tryAlternativesSequentially(alts, 0, query, grid);
     } else {
       grid.innerHTML = '<div style="color:#888;padding:40px;text-align:center">' +
-        '<p style="font-size:18px;margin-bottom:8px">Sin resultados para "' + query + '"</p>' +
+        '<p style="font-size:18px;margin-bottom:8px">Sin resultados para "' + escHtml(query) + '"</p>' +
         '<p style="font-size:13px">Prueba con el título en inglés</p></div>';
     }
   }).catch(function() {
@@ -634,16 +661,16 @@ function generateAlternatives(query) {
 function tryAlternativesSequentially(alts, idx, originalQuery, grid) {
   if (idx >= alts.length) {
     grid.innerHTML = '<div style="color:#888;padding:40px;text-align:center">' +
-      '<p style="font-size:18px;margin-bottom:8px">Sin resultados para "' + originalQuery + '"</p>' +
+      '<p style="font-size:18px;margin-bottom:8px">Sin resultados para "' + escHtml(originalQuery) + '"</p>' +
       '<p style="font-size:13px;color:#666">Prueba con el título en inglés</p></div>';
     return;
   }
   fetch('/api/movies/search?q=' + encodeURIComponent(alts[idx])).then(function(r) { return r.json(); }).then(function(data) {
     if (data.Search && data.Search.length > 0) {
       var header = '<div style="padding:12px 20px;color:#aaa;font-size:13px">' +
-        'Mostrando resultados para <strong style="color:#ff6b35">"' + alts[idx] + '"</strong>' +
-        ' · <a href="#" onclick="forceSearch(\'' + originalQuery.replace(/'/g, "\\'") + '\');return false" style="color:#888;text-decoration:underline">' +
-        'Buscar exactamente "' + originalQuery + '"</a></div>';
+        'Mostrando resultados para <strong style="color:#ff6b35">"' + escHtml(alts[idx]) + '"</strong>' +
+        ' · <a href="#" onclick="forceSearch(\'' + escJsAttr(originalQuery) + '\');return false" style="color:#888;text-decoration:underline">' +
+        'Buscar exactamente "' + escHtml(originalQuery) + '"</a></div>';
       grid.innerHTML = header + data.Search.map(renderMovieCard).join('');
     } else {
       tryAlternativesSequentially(alts, idx + 1, originalQuery, grid);
@@ -682,9 +709,11 @@ function showMovieDetail(imdbId, localFileName, localizedTitle) {
     }
     
     var poster = (m.Poster && m.Poster !== 'N/A') ? m.Poster : '';
-    var safeTitle = (m.Title || '').replace(/'/g, "\\'");
-    // Use localized title (from TMDB Spanish) for eMule searches
-    var searchTitle = (localizedTitle || m.Title || '').replace(/'/g, "\\'");
+    var safeTitle = escJsAttr(m.Title || '');
+    // Use localized title (from TMDB Spanish) for eMule searches.
+    // Kept UNescaped here — escaping happens once at the interpolation
+    // points (tEsc) so apostrophes no longer get double-escaped.
+    var searchTitle = localizedTitle || m.Title || '';
     
     // Fetch HD backdrop from TMDB (OMDB poster is only 300px)
     var backdropUrl = poster;
@@ -731,8 +760,8 @@ function showMovieDetail(imdbId, localFileName, localizedTitle) {
     var searchIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>';
     var listIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg>';
 
-    var tEsc = searchTitle.replace(/'/g, "\\'");
-    var yArg = m.Type === 'series' ? '' : movieYear;
+    var tEsc = escJsAttr(searchTitle);
+    var yArg = m.Type === 'series' ? '' : escJsAttr(movieYear);
 
     // Store movie data globally so Mi Lista button can access it without escaping hell
     window._modalMovie = { imdbId: imdbId, title: m.Title || searchTitle, poster: (m.Poster && m.Poster !== 'N/A') ? m.Poster : '', year: movieYear };
@@ -743,7 +772,7 @@ function showMovieDetail(imdbId, localFileName, localizedTitle) {
       buttons += '<button class="modal-btn btn-play" id="modal-play-btn" onclick="smartPlay(window.getTvQuery(\'' + tEsc + '\'), \'' + yArg + '\')">' + playIcon + ' Reproducir</button>';
       buttons += '<button class="modal-btn btn-download" id="modal-download-btn" onclick="smartDownload(window.getTvQuery(\'' + tEsc + '\'), \'' + yArg + '\')">' + dlIcon + ' Descargar</button>';
     }
-    buttons += '<button class="modal-btn btn-trailer" id="trailer-btn" onclick="loadTrailer(\'' + (m.Title||'').replace(/'/g,"\\'")+' '+movieYear+ '\')">' + trIcon + ' Tráiler</button>';
+    buttons += '<button class="modal-btn btn-trailer" id="trailer-btn" onclick="loadTrailer(\'' + escJsAttr((m.Title || '') + ' ' + movieYear) + '\')">' + trIcon + ' Tráiler</button>';
     if (!localFileName) {
       buttons += '<button class="modal-btn btn-emule" onclick="startEmuleSearch(window.getTvQuery(\'' + tEsc + '\'), \'' + yArg + '\')">' + searchIcon + ' Búsqueda avanzada</button>';
     }
@@ -1664,18 +1693,18 @@ function startEmuleSearch(title, year) {
       '<div class="source-results">';
     
     data.results.forEach(function(r, i) {
-      var qualityBadge = r.quality !== 'unknown' ? '<span class="source-badge badge-quality">' + r.quality.toUpperCase() + '</span>' : '';
-      var langBadge = r.language !== 'unknown' ? '<span class="source-badge badge-lang">' + r.language + '</span>' : '';
-      var scoreBadge = '<span class="source-badge badge-score">⭐ ' + r.score + '</span>';
-      var sourcesBadge = '<span class="source-badge badge-sources">' + r.sources + '/' + r.completeSources + ' fuentes</span>';
+      var qualityBadge = r.quality !== 'unknown' ? '<span class="source-badge badge-quality">' + escHtml(String(r.quality).toUpperCase()) + '</span>' : '';
+      var langBadge = r.language !== 'unknown' ? '<span class="source-badge badge-lang">' + escHtml(r.language) + '</span>' : '';
+      var scoreBadge = '<span class="source-badge badge-score">⭐ ' + escHtml(r.score) + '</span>';
+      var sourcesBadge = '<span class="source-badge badge-sources">' + escHtml(r.sources) + '/' + escHtml(r.completeSources) + ' fuentes</span>';
       var fakeBadge = r.isFake ? '<span class="source-badge" style="background:#e74c3c">FAKE</span>' : '';
-      
+
       html += '<div class="source-item">' +
-        '<div class="source-name">' + (i === 0 ? ' ' : '') + r.fileName + '<br><span style="color:#666;font-size:11px">' + r.sizeMB + ' MB</span></div>' +
+        '<div class="source-name">' + (i === 0 ? ' ' : '') + escHtml(r.fileName) + '<br><span style="color:#666;font-size:11px">' + escHtml(r.sizeMB) + ' MB</span></div>' +
         '<div class="source-meta">' + qualityBadge + langBadge + sourcesBadge + scoreBadge + fakeBadge + '</div>' +
         '<div class="source-actions">' +
-          '<button class="source-btn source-btn-play" onclick="streamSource(\'' + r.hash + '\', \'' + title.replace(/'/g, "\\'") + '\')" title="Reproducir ahora">▶ Reproducir</button>' +
-          '<button class="source-btn source-btn-dl" onclick="downloadSource(\'' + r.hash + '\')" title="Descargar para ver luego"> Descargar</button>' +
+          '<button class="source-btn source-btn-play" onclick="streamSource(\'' + escJsAttr(r.hash) + '\', \'' + escJsAttr(title) + '\')" title="Reproducir ahora">▶ Reproducir</button>' +
+          '<button class="source-btn source-btn-dl" onclick="downloadSource(\'' + escJsAttr(r.hash) + '\')" title="Descargar para ver luego"> Descargar</button>' +
         '</div>' +
       '</div>';
     });
@@ -1684,7 +1713,7 @@ function startEmuleSearch(title, year) {
     searchDiv.innerHTML = html;
     
   }).catch(function(err) {
-    searchDiv.innerHTML = '<div style="padding:20px"><p style="color:#e74c3c">Error: ' + err.message + '</p></div>';
+    searchDiv.innerHTML = '<div style="padding:20px"><p style="color:#e74c3c">Error: ' + escHtml(err.message) + '</p></div>';
   });
 }
 
@@ -1942,8 +1971,8 @@ function startCompletedMSE(fileName, quality, seekSec) {
   // browser handles chunked transfer natively. No MSE needed.
   if (abortController) abortController.abort();
   
-  var streamUrl = '/api/stream/completed/' + encodeURIComponent(fileName) + '?q=' + quality + '&ss=' + seekSec;
-  if (window._cinemaAudioTrack) streamUrl += '&audio=' + window._cinemaAudioTrack;
+  var streamUrl = '/api/stream/completed/' + encodeURIComponent(fileName) + '?q=' + encodeURIComponent(quality) + '&ss=' + encodeURIComponent(seekSec);
+  if (window._cinemaAudioTrack) streamUrl += '&audio=' + encodeURIComponent(window._cinemaAudioTrack);
   // NO sub= parameter — subtitles are now loaded as WebVTT tracks (0% CPU)
   window._currentFileName = fileName;
   window._isPartFile = false;
@@ -1957,7 +1986,7 @@ function startCompletedMSE(fileName, quality, seekSec) {
   
   // Add WebVTT subtitle track if requested
   if (window._cinemaSubTrack && window._cinemaSubTrack !== '-1') {
-    var subUrl = '/api/stream/subtitle?name=' + encodeURIComponent(fileName) + '&track=' + window._cinemaSubTrack;
+    var subUrl = '/api/stream/subtitle?name=' + encodeURIComponent(fileName) + '&track=' + encodeURIComponent(window._cinemaSubTrack);
     var track = document.createElement('track');
     track.kind = 'subtitles';
     track.src = subUrl;
@@ -2096,11 +2125,14 @@ function applyPosterToCard(card, info) {
     card.setAttribute('data-imdbid', info.imdbId);
     var origOnclick = card.getAttribute('onclick') || '';
     var fnMatch = origOnclick.match(/playCompleted\('([^']+)'\)/);
+    // setAttribute('onclick') is parsed as raw JS — escape backslashes first,
+    // then quotes, or a trailing \ in the value defeats the quote escaping.
+    var jsStr = function (s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); };
     if (fnMatch) {
-      var localFile = decodeURIComponent(fnMatch[1]).replace(/'/g, "\\'");
-      card.setAttribute('onclick', "showMovieDetail('" + info.imdbId + "','" + localFile + "')");
+      var localFile = jsStr(decodeURIComponent(fnMatch[1]));
+      card.setAttribute('onclick', "showMovieDetail('" + jsStr(info.imdbId) + "','" + localFile + "')");
     } else {
-      card.setAttribute('onclick', "showMovieDetail('" + info.imdbId + "',null)");
+      card.setAttribute('onclick', "showMovieDetail('" + jsStr(info.imdbId) + "',null)");
     }
   }
   var titleEl = card.querySelector('.card-title');

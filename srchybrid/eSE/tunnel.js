@@ -18,8 +18,11 @@ function init(port) { PORT = port; }
 const CONFIG_PATH = runtimeDir.join('config.json');
 
 function loadConfig() {
-  if (fs.existsSync(CONFIG_PATH)) {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  // Read directly and handle ENOENT instead of existsSync-then-read (TOCTOU).
+  let raw = null;
+  try { raw = fs.readFileSync(CONFIG_PATH, 'utf8'); } catch (e) { /* first run */ }
+  if (raw !== null) {
+    const cfg = JSON.parse(raw);
     let changed = false;
     if (!cfg.encKey)       { cfg.encKey       = crypto.randomBytes(32).toString('hex'); changed = true; }
     if (!cfg.accessToken)  { cfg.accessToken  = crypto.randomBytes(16).toString('hex'); changed = true; }
@@ -85,13 +88,12 @@ go();
 // Generar archivo de acceso remoto si no existe (writable runtime dir)
 (function generateRemoteHtml() {
   const redirectPath = runtimeDir.join('eSE_Remote.html');
-  if (!fs.existsSync(redirectPath)) {
-    try {
-      fs.writeFileSync(redirectPath, redirectHtml);
-      console.log('[config] Generated eSE_Remote.html at ' + redirectPath);
-    } catch (e) {
-      console.log('[config] Could not write eSE_Remote.html: ' + e.message);
-    }
+  try {
+    // 'wx' = create only if it does not exist — atomic, no exists-check race.
+    fs.writeFileSync(redirectPath, redirectHtml, { flag: 'wx' });
+    console.log('[config] Generated eSE_Remote.html at ' + redirectPath);
+  } catch (e) {
+    if (e.code !== 'EEXIST') console.log('[config] Could not write eSE_Remote.html: ' + e.message);
   }
 })();
 
@@ -142,7 +144,7 @@ function publishUrl(url, isHeartbeat) {
       }
     }
   );
-  req.on('error', (e) => console.log('[ntfy] Failed: ' + e.message));
+  req.on('error', (e) => console.log('[ntfy] Failed: ' + String(e.message).replace(/[\r\n]/g, ' ')));
   req.write(postData);
   req.end();
 

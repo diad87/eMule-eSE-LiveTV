@@ -156,8 +156,17 @@ function handle(url, req, res) {
     const needsSubs = subTrack && subTrack !== '-1' && subTrack !== 'undefined';
     console.log('[Stream] Codec: v=' + srcVideoCodec + ' a=' + srcAudioCodec + ' | Copy: v=' + canCopyVideo + ' a=' + canCopyAudio + ' | Part=' + isPartFile);
 
-    try { if (fs.statSync(filePath).size < 5 * 1024 * 1024) { res.writeHead(400); res.end('File too small to stream'); return true; } } catch(e) { res.writeHead(500); res.end('Cannot read file'); return true; }
-    try { const fd = fs.openSync(filePath, 'r'); fs.closeSync(fd); } catch(e) { res.writeHead(503); res.end('File is locked by another process'); return true; }
+    // Single open + fstat on the descriptor: no stat/open race, and the same
+    // probe detects both unreadable and locked files.
+    try {
+      const fd = fs.openSync(filePath, 'r');
+      let fileSize;
+      try { fileSize = fs.fstatSync(fd).size; } finally { fs.closeSync(fd); }
+      if (fileSize < 5 * 1024 * 1024) { res.writeHead(400); res.end('File too small to stream'); return true; }
+    } catch(e) {
+      if (e.code === 'EBUSY' || e.code === 'EPERM' || e.code === 'EACCES') { res.writeHead(503); res.end('File is locked by another process'); return true; }
+      res.writeHead(500); res.end('Cannot read file'); return true;
+    }
 
     const ffArgs = ['-err_detect', 'ignore_err', '-fflags', '+genpts+igndts+discardcorrupt'];
     // v7.4.0 — reduced .part analyzeduration/probesize from 30s/50MB → 10s/20MB.

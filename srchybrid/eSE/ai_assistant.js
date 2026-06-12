@@ -76,10 +76,10 @@ function generateQueryVariants(rawQuery, settings, callback) {
         .filter((v, i, arr) => arr.findIndex(x => x.toLowerCase() === v.toLowerCase()) === i)
         .slice(0, 5);
 
-      console.log('[AI] Query variants generated:', merged);
+      console.log('[AI] Query variants generated:', merged.map(s => String(s).replace(/[\r\n]/g, ' ')).join(' | '));
       callback(null, merged);
     } catch (e) {
-      console.log('[AI] Variant parse error, using heuristic. Raw:', aiRaw.substring(0, 120));
+      console.log('[AI] Variant parse error, using heuristic. Raw:', String(aiRaw).replace(/[\r\n]/g, ' ').substring(0, 120));
       callback(null, heuristic);
     }
   });

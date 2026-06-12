@@ -140,8 +140,11 @@ function killOrphanedFFmpeg() {
   }
 }
 
-// BUG-016 FIX: PID file heartbeat for external watchdog
-const PID_FILE = path.join(_tempDir || require('os').tmpdir(), 'ese_server.pid');
+// BUG-016 FIX: PID file heartbeat for external watchdog.
+// Lives in the per-user eSE runtime dir, not the shared OS temp dir — a
+// world-writable predictable path invites tampering, and _tempDir was always
+// '' at module-load time anyway so the old `_tempDir ||` fallback never fired.
+const PID_FILE = require('./runtime_dir').join('ese_server.pid');
 function writePidFile() {
   try { fs.writeFileSync(PID_FILE, String(process.pid)); } catch (e) {}
 }

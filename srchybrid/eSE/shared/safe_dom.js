@@ -55,6 +55,7 @@
     if (!str) return '';
     return String(str)
       .replace(/\\/g, '\\\\')
+      .replace(/&/g, '&amp;')
       .replace(/'/g, "\\'")
       .replace(/"/g, '&quot;')
       .replace(/</g, '&lt;')

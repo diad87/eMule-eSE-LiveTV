@@ -89,7 +89,7 @@ function tryAutoFetchNodesDat() {
         }
       }
     });
-  }).on('error', (e) => console.warn('[eSE Boot] nodes.dat fetch error: ' + e.message))
+  }).on('error', (e) => console.warn('[eSE Boot] nodes.dat fetch error: ' + String(e.message).replace(/[\r\n]/g, ' ')))
     .on('timeout', function() { this.destroy(); console.warn('[eSE Boot] nodes.dat fetch timeout'); });
 }
 // Periodic check: every 15 s, if uptime > 60 s and Kad still down, fetch.
@@ -603,13 +603,19 @@ function handleRoute(url, req, res, ctx) {
     for (const c of candidates) { try { fs.statSync(c); logPath = c; break; } catch(e) {} }
     if (!logPath) { jsonResponse(res, 200, { lines: [], path: null, error: 'no_log_found' }); return true; }
     try {
-      const stat = fs.statSync(logPath);
-      // Read at most last 256 KB to keep the request snappy on huge logs
-      const startAt = Math.max(0, stat.size - 256 * 1024);
+      // Open first, then fstat the descriptor — no stat/open race on a file
+      // that rotates while we read it.
       const fd = fs.openSync(logPath, 'r');
-      const buf = Buffer.alloc(stat.size - startAt);
-      fs.readSync(fd, buf, 0, buf.length, startAt);
-      fs.closeSync(fd);
+      let buf;
+      try {
+        const stat = fs.fstatSync(fd);
+        // Read at most last 256 KB to keep the request snappy on huge logs
+        const startAt = Math.max(0, stat.size - 256 * 1024);
+        buf = Buffer.alloc(stat.size - startAt);
+        fs.readSync(fd, buf, 0, buf.length, startAt);
+      } finally {
+        fs.closeSync(fd);
+      }
       const lines = buf.toString('utf8').split(/\r?\n/);
       jsonResponse(res, 200, {
         lines: lines.slice(-n),

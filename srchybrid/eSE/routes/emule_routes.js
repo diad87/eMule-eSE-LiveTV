@@ -191,12 +191,13 @@ function handle(url, req, res) {
       if (mainTitle.length < 3) mainTitle = q.replace(/[:]/g, ' ').replace(/\s+/g, ' ').trim();
       const primaryQuery = mainTitle + (year ? ' ' + year : '');
 
-      console.log('[SmartSearch] Primary query: "' + primaryQuery + '" (original: "' + q + '")');
+      const sanLog = (s) => String(s).replace(/[\r\n]/g, ' ');
+      console.log('[SmartSearch] Primary query: "' + sanLog(primaryQuery) + '" (original: "' + sanLog(q) + '")');
 
       // ── Step 1: Generate query variants (AI or heuristic) ───────────────────
       aiAssistant.generateQueryVariants(primaryQuery, settings, (err1, variants) => {
         const queriesToRun = (variants && variants.length > 0) ? variants : [primaryQuery];
-        console.log('[SmartSearch] Will run', queriesToRun.length, 'variant(s):', queriesToRun);
+        console.log('[SmartSearch] Will run', queriesToRun.length, 'variant(s):', queriesToRun.map(sanLog).join(' | '));
 
         // ── Step 2: Run searches sequentially, merge by ed2k hash ──────────────
         // eMule supports only one concurrent search — we exploit its sequential
@@ -221,7 +222,7 @@ function handle(url, req, res) {
           }
 
           const currentQuery = queriesToRun[variantIdx++];
-          console.log('[SmartSearch] Running variant', variantIdx, '/', queriesToRun.length + ': "' + currentQuery + '"');
+          console.log('[SmartSearch] Running variant', variantIdx, '/', queriesToRun.length + ': "' + sanLog(currentQuery) + '"');
 
           _ctx.emuleSearch(currentQuery, settings, (err2, results) => {
             let newCount = 0;

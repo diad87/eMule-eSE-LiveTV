@@ -30,7 +30,9 @@ function fixedTimeEqual(a, b) {
 }
 
 function parseCookies(req) {
-  const out = {};
+  // Object.create(null): cookie names become object keys — a null prototype
+  // keeps hostile names like __proto__/constructor from touching Object.prototype.
+  const out = Object.create(null);
   const raw = req.headers.cookie || '';
   raw.split(';').forEach(part => {
     const idx = part.indexOf('=');
@@ -280,6 +282,9 @@ function mergeSettings(current, incoming) {
   const target = current && typeof current === 'object' ? current : {};
   if (!incoming || typeof incoming !== 'object') return target;
   Object.keys(incoming).forEach(key => {
+    // Prototype-pollution guard: a JSON body like {"__proto__":{...}} must not
+    // let the recursive merge write through to Object.prototype.
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') return;
     const val = incoming[key];
     if (isSensitiveKey(key) && (val === REDACTED || val === '' || val === null || typeof val === 'undefined')) return;
     if (val && typeof val === 'object' && !Array.isArray(val) && target[key] && typeof target[key] === 'object' && !Array.isArray(target[key])) {

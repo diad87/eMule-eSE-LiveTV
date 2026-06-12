@@ -24,7 +24,10 @@ function append(tag, args) {
     }
     return String(a);
   }).join(' ');
-  const line = ts() + ' [' + tag + '] ' + body;
+  // One ring-buffer entry per call: strip newlines/ANSI escapes so user- or
+  // peer-controlled text can't forge extra log lines in the dashboard.
+  const clean = body.replace(/[\r\n\x1b]+/g, ' ');
+  const line = ts() + ' [' + tag + '] ' + clean;
   lines.push(line);
   while (lines.length > MAX_LINES) lines.shift();
 }

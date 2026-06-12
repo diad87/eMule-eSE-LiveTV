@@ -438,8 +438,8 @@ function playCompleted(encodedName) {
 function startCompletedMSE(fileName, quality, seekSec) {
   if (abortController) abortController.abort();
 
-  var streamUrl = '/api/stream/completed/' + encodeURIComponent(fileName) + '?q=' + quality + '&ss=' + seekSec;
-  if (window._cinemaAudioTrack) streamUrl += '&audio=' + window._cinemaAudioTrack;
+  var streamUrl = '/api/stream/completed/' + encodeURIComponent(fileName) + '?q=' + encodeURIComponent(quality) + '&ss=' + encodeURIComponent(seekSec);
+  if (window._cinemaAudioTrack) streamUrl += '&audio=' + encodeURIComponent(window._cinemaAudioTrack);
   // NO sub= parameter — subtitles are loaded as WebVTT tracks (0% CPU)
   window._currentFileName = fileName;
   window._isPartFile = false;
@@ -453,7 +453,7 @@ function startCompletedMSE(fileName, quality, seekSec) {
 
   // Add WebVTT subtitle track if requested
   if (window._cinemaSubTrack && window._cinemaSubTrack !== '-1') {
-    var subUrl = '/api/stream/subtitle?name=' + encodeURIComponent(fileName) + '&track=' + window._cinemaSubTrack;
+    var subUrl = '/api/stream/subtitle?name=' + encodeURIComponent(fileName) + '&track=' + encodeURIComponent(window._cinemaSubTrack);
     var track = document.createElement('track');
     track.kind = 'subtitles';
     track.src = subUrl;

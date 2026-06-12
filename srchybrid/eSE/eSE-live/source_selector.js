@@ -198,7 +198,9 @@ function findLoopbackDevice(ffmpegPath) {
 }
 
 function quoteDshowName(name) {
-  return '"' + String(name || '').replace(/"/g, '\\"') + '"';
+  // Escape backslashes BEFORE quotes — a name ending in \ would otherwise
+  // neutralize the escaped closing quote.
+  return '"' + String(name || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
 }
 
 function buildDshowInput(videoDevice, audioDevice) {

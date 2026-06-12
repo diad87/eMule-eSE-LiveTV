@@ -115,6 +115,11 @@ function handleCallback(reqUrl, res, port) {
   const sendPage = (ok, message) => {
     const color = ok ? '#2ecc71' : '#e74c3c';
     const icon  = ok ? '✔' : '✗';
+    // `message` can carry the raw ?error= query param — escape it or this
+    // page is a reflected XSS on the localhost origin.
+    message = String(message == null ? '' : message)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>eSE – Conectar IA</title>

@@ -37,6 +37,16 @@
 // 0.70b and older forks store/ignore it like any unknown keyword tag.
 #define TAG_ESE_LIVE_ALTIP          "ese.live.altip"       // <uint32> overlay IPv4
 
+// H8 fix (2026-06): constant TAG_FILENAME value for clean-namespace live
+// publishes. Every Kad holder — upstream 0.70b included — rejects a keyword
+// entry whose filename is empty (CIndexed::AddKeyword), so a publish with NO
+// name is silently unstorable anywhere. A CONSTANT name satisfies that check
+// while carrying zero per-stream information, so the title leak H8 closed
+// stays closed. Used by the publisher (PrepareLivePacketForTags) and by the
+// holder (Process_KADEMLIA2_PUBLISH_KEY_REQ) to repair nameless publishes
+// from prior fork versions. Do not put anything stream-derived in here.
+#define ESE_LIVE_CLEAN_NS_FILENAME  L"eselive"
+
 // Trust levels
 #define ESE_TRUST_LEAF              2       // Default: new peer
 #define ESE_TRUST_MIDDLE            1       // 5 min + response rate > 80%

@@ -2063,7 +2063,15 @@ void CLiveTunnel::SerializeSearchResults(const std::string& keyword,
                 putU16(0);                                   // rec_len placeholder
                 const size_t bodyStart = out.size();
                 out.insert(out.end(), e.streamKey, e.streamKey + 16);
-                putU32(e.broadcasterIP);
+                // IP=0 fix (v8.1): our OWN stream's directory entry may still
+                // carry broadcasterIP=0 if it was published before our public
+                // IP was known. Substitute it here — the IP is reliably known
+                // by the time we serve a tunneled search — so the originator
+                // doesn't reject the result as "invalid endpoint (IP=0)".
+                uint32 outBroadcasterIP = e.broadcasterIP;
+                if (outBroadcasterIP == 0 && e.isOwnStream)
+                    outBroadcasterIP = theApp.GetPublicIP();
+                putU32(outBroadcasterIP);
                 putU16(e.broadcasterPort);
                 putU16(e.broadcasterUDPPort);
                 putU16(e.bitrate);

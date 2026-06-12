@@ -150,7 +150,15 @@ bool CLiveKadBridge::PublishStream(const LiveStreamInfo& info)
     entry.language = info.language;
     entry.bitrate = info.bitrate;
     entry.viewerCount = info.viewerCount;
-    entry.broadcasterIP = 0;  // Will be filled by Kad
+    // IP=0 fix (v8.1): carry OUR public IP (HOST byte order — same value we
+    // publish in TAG_SOURCEIP, see Search.cpp:1706) instead of 0. When WE act
+    // as a tunnel exit and serialize this entry for a tunneled keyword search
+    // (CLiveTunnel::SerializeSearchResults), a 0 here went out on the wire and
+    // the originator rejected the result as "invalid endpoint (IP=0)". The
+    // direct/legacy path was unaffected (it reads TAG_SOURCEIP off the wire,
+    // not this field). 0 if the public IP isn't known yet — no worse than
+    // before; SerializeSearchResults has a serialize-time fallback for that.
+    entry.broadcasterIP = theApp.GetPublicIP();
     entry.broadcasterPort = thePrefs.GetPort();
     entry.lastSeen = GetTickCount();
     entry.startedAt = info.startedAt;

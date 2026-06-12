@@ -131,6 +131,10 @@ function omdbRequest(params, cb, type) {
  * @param {object}   [settings]    - App settings (for AI provider/key)
  */
 function fetchAndCacheMovie(title, cacheDir, callback, rawFilename, settings) {
+  // Defensive: never throw if a caller passes a bad callback (signature drift).
+  // A 2-arg wrapper once shifted CACHE_DIR into `callback`, crashing the poster
+  // lookup with an uncaught "callback is not a function".
+  if (typeof callback !== 'function') callback = function () {};
   const cached = getCachedInfo(title, cacheDir);
   if (cached && cached.Poster && cached.Poster !== 'N/A') { callback(cached); return; }
   

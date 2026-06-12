@@ -995,7 +995,8 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				// PRIVACY_TUNNELING/COVER/DATAPLANE are set below from the
 				// user's mode policy.
 				g_uEseCapsRuntime = ESE_CAP_SEALED_RECORDS
-				                  | ESE_CAP_GOSSIP_PROTOCOL;
+				                  | ESE_CAP_GOSSIP_PROTOCOL
+				                  | ESE_CAP_LIVE_CHUNK_FRAG;  // v8.1.x — pure transport feature, always advertised
 				// Re-enable each Kad v2 cap at its phase exit, e.g.:
 				//   if (Kademlia::CKadV2SubscriberPin::Get().IsRepublishingLive())
 				//       g_uEseCapsRuntime |= ESE_CAP_M1_SUBSCRIBER_PIN;

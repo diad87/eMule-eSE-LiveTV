@@ -877,6 +877,70 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 	return true;
 }
 
+// === DoS hardening — per-source-IP rate cap on OP_LIVE_TUNNEL_CELL ========
+// Same sliding-window open-addressed cache as the /24 OP_LIVE_REQUEST limiter
+// in LiveStreamManager.cpp, but keyed by FULL source IP: every well-formed
+// cell on an established circuit costs an AEAD decrypt (plus onion peel +
+// forward at a relay) ON THE MAIN THREAD, so a flood must be droppable here,
+// before CLiveTunnel touches any crypto. Otherwise OP_LIVE_CHUNK_V2 dispatch
+// misses the 2 s sliding-window deadline.
+//
+// Sizing (generous on purpose — must never clip a legitimate peer):
+//   - A cell is CELL_TOTAL_BYTES = 512 B. The tunneled control plane
+//     (subscribe, heartbeats, peer lists, Kad search replies, RTT probes,
+//     cover traffic) is a few cells/s per circuit, <= 5 circuits per pool
+//     => tens of cells/s per neighbour IP in the worst legit case today.
+//   - Cap: 6000 cells / 5 s window = 1200 cells/s ~= 4.9 Mbit/s of cell
+//     traffic per source IP. That is ~2 orders of magnitude above the
+//     control plane AND big enough that the E-alpha data plane (chunks at
+//     native bitrate + FEC riding the tunnel, v8.1.1) still fits through a
+//     single neighbour. A flooder is held to ~1200 decrypts/s, which the
+//     main thread absorbs without noticing.
+// Main thread only (MFC message pump delivers all client TCP) — no lock.
+namespace {
+	struct TunnelCellRate {
+		uint32 srcIp;          // full source IP (network order)
+		uint32 count;
+		DWORD  windowStart;    // 0 = slot free
+	};
+	static TunnelCellRate s_tunnelCellRates[64] = {};
+	bool IsTunnelCellRateLimited(uint32 ipNet)
+	{
+		const DWORD  WINDOW_MS = 5000;
+		const uint32 MAX_CELLS = 6000;
+		DWORD now = ::GetTickCount();
+		// Find slot: hash + linear probe (cache is tiny, O(1) amortized)
+		int slot = -1, freeSlot = -1;
+		uint32 h = (ipNet * 0x9E3779B1u) % _countof(s_tunnelCellRates);
+		for (uint32 i = 0; i < _countof(s_tunnelCellRates); ++i) {
+			uint32 idx = (h + i) % _countof(s_tunnelCellRates);
+			if (s_tunnelCellRates[idx].srcIp == ipNet && s_tunnelCellRates[idx].windowStart != 0) {
+				slot = (int)idx; break;
+			}
+			if (s_tunnelCellRates[idx].windowStart == 0 && freeSlot == -1) freeSlot = (int)idx;
+			// Reuse expired slots
+			if (s_tunnelCellRates[idx].windowStart != 0 && now - s_tunnelCellRates[idx].windowStart > WINDOW_MS * 4) {
+				if (freeSlot == -1) freeSlot = (int)idx;
+			}
+		}
+		bool limited = false;
+		if (slot >= 0) {
+			if (now - s_tunnelCellRates[slot].windowStart > WINDOW_MS) {
+				s_tunnelCellRates[slot].windowStart = now;
+				s_tunnelCellRates[slot].count = 1;
+			} else {
+				s_tunnelCellRates[slot].count++;
+				if (s_tunnelCellRates[slot].count > MAX_CELLS) limited = true;
+			}
+		} else if (freeSlot >= 0) {
+			s_tunnelCellRates[freeSlot].srcIp = ipNet;
+			s_tunnelCellRates[freeSlot].windowStart = now;
+			s_tunnelCellRates[freeSlot].count = 1;
+		}
+		return limited;
+	}
+}
+
 bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT opcode, UINT uRawSize)
 {
 	try {
@@ -1870,6 +1934,39 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 					seqNum, timestamp, chunkData, chunkSize);
 			}
 			break;
+		case OP_LIVE_CHUNK_FRAG:
+			{
+				// v8.1.x — one fragment of an oversized (>2MB) chunk that won't
+				// fit in a single eMule packet. The manager accumulates fragments
+				// and, on the last one, verifies+ingests the reassembled inner
+				// payload (IngestChunkPayload). 0xE0 is above the 0xC0..0xCC range
+				// gated at the top of ProcessExtPacket, so gate non-eSE clients
+				// explicitly here.
+				if (!client->SupportsLiveP2P()) {
+					theStats.AddDownDataOverheadOther(uRawSize);
+					break;
+				}
+				if (thePrefs.GetDebugClientTCPLevel() > 1)
+					DebugRecv("OP_LiveChunkFrag", client, (size >= 16) ? packet : NULL);
+				theStats.AddDownDataOverheadOther(uRawSize);
+				if (size < 29) break;  // frag header: key16+seq4+idx2+cnt2+innerOp1+totalLen4
+
+				CSafeMemFile data(packet, size);
+				uchar streamKey[16];
+				data.ReadHash16(streamKey);
+				uint32 seqNum      = data.ReadUInt32();
+				uint16 fragIndex   = data.ReadUInt16();
+				uint16 fragCount   = data.ReadUInt16();
+				uint8  innerOpcode = data.ReadUInt8();
+				uint32 totalLen    = data.ReadUInt32();
+				uint32 fragLen     = size - 29;
+
+				if (theApp.liveStreamManager)
+					theApp.liveStreamManager->OnChunkFragmentReceived(client, streamKey,
+						seqNum, fragIndex, fragCount, innerOpcode, totalLen,
+						packet + 29, fragLen);
+			}
+			break;
 		case OP_LIVE_PEER_LIST:
 			{
 				if (thePrefs.GetDebugClientTCPLevel() > 0)
@@ -2122,6 +2219,19 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				DebugLog(_T("OP_LIVE_TUNNEL_CELL: wrong size %u (expected %u) from %s — dropping"),
 					size, (unsigned)eSELive::CELL_TOTAL_BYTES,
 					client ? (LPCTSTR)ipstr(client->GetIP()) : _T("?"));
+				break;
+			}
+			// DoS hardening: per-IP cell-rate cap BEFORE CellUnpack and any
+			// CLiveTunnel crypto. Silent at protocol level (no reply, no new
+			// opcode — a vanilla 0.70b peer never sends cells anyway); debug
+			// log throttled so the flood can't also flood the log.
+			if (client && IsTunnelCellRateLimited(client->GetIP())) {
+				static DWORD s_lastCellRateLog = 0;
+				if (::GetTickCount() - s_lastCellRateLog > 30000) {
+					s_lastCellRateLog = ::GetTickCount();
+					DebugLog(_T("OP_LIVE_TUNNEL_CELL: cell-rate cap exceeded for %s — dropping (DoS protection)"),
+						(LPCTSTR)ipstr(client->GetIP()));
+				}
 				break;
 			}
 			{

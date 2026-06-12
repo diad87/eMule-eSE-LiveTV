@@ -124,7 +124,10 @@ private:
     static const int   MIN_MESH_PEERS       = 3;       // Minimum before requesting more
     static const DWORD SCHEDULE_INTERVAL_MS = 500;     // Schedule every 500ms
     static const DWORD TIMEOUT_CHECK_MS     = 1000;    // Check timeouts every 1s
-    static const DWORD PEER_CHECK_MS        = 5000;    // Check peer count every 5s
+    static const DWORD PEER_CHECK_MS        = 30000;   // Check peer count every 30s (was 5s: with
+                                                       // MIN_MESH_PEERS=3 unreachable in tiny meshes the
+                                                       // 5s re-SUBSCRIBE churned the broadcaster — re-JOIN
+                                                       // every ~6s + initial-PUSH/ASK dup. 30s cuts it 6x.)
 
     mutable CCriticalSection m_lock;
 

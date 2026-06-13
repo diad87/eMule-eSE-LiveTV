@@ -409,8 +409,13 @@ function handleRoute(url, req, res, ctx) {
   // endpoint parses query params regardless of method). The change persists on
   // eMule's side (mirrored into prefs, saved on exit).
   if (p === '/api/live/privacy') {
-    const q = url.search || '';
-    const preq = http.get('http://127.0.0.1:4711/api/live/privacy' + q, { timeout: 4000 }, (pres) => {
+    // SSRF hardening (CodeQL js/request-forgery): pin the upstream host/port to the LOCAL
+    // eMule via the options object (no user string in the host), and forward only the known
+    // params re-encoded — so no user-controlled value can redirect the request.
+    const fwd = new URLSearchParams();
+    for (const k of ['mode', 'fallback']) { const v = url.searchParams.get(k); if (v != null) fwd.set(k, v); }
+    const qs = fwd.toString();
+    const preq = http.get({ host: '127.0.0.1', port: 4711, path: '/api/live/privacy' + (qs ? '?' + qs : ''), timeout: 4000 }, (pres) => {
       let body = '';
       pres.on('data', d => body += d);
       pres.on('end', () => {
@@ -430,8 +435,13 @@ function handleRoute(url, req, res, ctx) {
   // ~2.5 s on eMule's side, so the timeout here is wider than the simple read above.
   // Trailing slash in the prefix so it never shadows the exact /api/live/privacy.
   if (p.startsWith('/api/live/privacy/')) {
-    const q = url.search || '';
-    const preq = http.get('http://127.0.0.1:4711' + p + q, { timeout: 6000 }, (pres) => {
+    // SSRF hardening (CodeQL js/request-forgery): pin the host, ALLOWLIST the sub-path (so a
+    // user can't reach an unintended local endpoint via path traversal) and re-encode the
+    // query. Unknown sub-paths 404 instead of being proxied.
+    const sub = p.slice('/api/live/privacy/'.length);
+    if (!/^(circuits|peers|test_circuit)$/.test(sub)) { jsonResponse(res, 404, { error: 'not_found' }); return true; }
+    const qs = url.searchParams.toString();
+    const preq = http.get({ host: '127.0.0.1', port: 4711, path: '/api/live/privacy/' + sub + (qs ? '?' + qs : ''), timeout: 6000 }, (pres) => {
       let body = '';
       pres.on('data', d => body += d);
       pres.on('end', () => {

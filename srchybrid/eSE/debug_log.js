@@ -43,10 +43,19 @@ const orig = {
 };
 
 function install() {
-  console.log   = function () { append('LOG',  Array.from(arguments)); orig.log.apply(console, arguments); };
-  console.info  = function () { append('LOG',  Array.from(arguments)); orig.info.apply(console, arguments); };
-  console.warn  = function () { append('WARN', Array.from(arguments)); orig.warn.apply(console, arguments); };
-  console.error = function () { append('ERR',  Array.from(arguments)); orig.error.apply(console, arguments); };
+  // Sanitize string args (strip CR/LF/ANSI) for BOTH the ring buffer AND stdout, so peer- or
+  // user-controlled text can never forge log lines (CodeQL js/log-injection). Error objects
+  // pass through untouched so developer stack traces keep their newlines.
+  const san = (a) => {
+    const out = [];
+    for (let i = 0; i < a.length; i++)
+      out.push(typeof a[i] === 'string' ? a[i].replace(/[\r\n\x1b]+/g, ' ') : a[i]);
+    return out;
+  };
+  console.log   = function () { const a = san(arguments); append('LOG',  a); orig.log.apply(console, a); };
+  console.info  = function () { const a = san(arguments); append('LOG',  a); orig.info.apply(console, a); };
+  console.warn  = function () { const a = san(arguments); append('WARN', a); orig.warn.apply(console, a); };
+  console.error = function () { const a = san(arguments); append('ERR',  a); orig.error.apply(console, a); };
 
   // Capture any uncaught errors that escaped the existing handlers.
   process.on('uncaughtException',  err => append('UNCAUGHT',  [err]));

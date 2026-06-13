@@ -36,7 +36,14 @@ function parseCookies(req) {
   const raw = req.headers.cookie || '';
   raw.split(';').forEach(part => {
     const idx = part.indexOf('=');
-    if (idx > 0) out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
+    if (idx > 0) {
+      const name = part.slice(0, idx).trim();
+      // Only accept RFC6265 token cookie names as keys (CodeQL js/remote-property-injection):
+      // keeps a hostile property name out of the map. Object.create(null) above also blocks
+      // any prototype pollution.
+      if (/^[!#$%&'*+\-.0-9A-Z^_`a-z|~]+$/.test(name))
+        out[name] = decodeURIComponent(part.slice(idx + 1).trim());
+    }
   });
   return out;
 }

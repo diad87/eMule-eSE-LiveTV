@@ -10,21 +10,36 @@ v8.1 añade un **plano de control anónimo** al P2P LiveTV: la **búsqueda Kad p
 
 - **Transporte onion tunelizado** (Sprint A): celdas multi-cell sobre `OP_EMULEPROT`, dispatcher en el exit, API asíncrona, sweeper de buffers abandonados.
 - **Búsqueda Kad por el túnel** (Sprint B): el exit ejecuta una `CSearch` real en nombre del viewer; los resultados vuelven por el circuito, nunca exponen la IP del que busca.
-- **Suscripción y control de LiveTV por el túnel** (Sprint C): el exit hace de **proxy multicast** (C7) — se suscribe UNA vez al emisor en nombre de N viewers tunelizados; el emisor ve al exit, nunca al viewer.
+- **Suscripción y control de LiveTV por el túnel** (Sprint C): el exit hace de **proxy multicast** (C7) — se suscribe UNA vez al emisor en nombre de N viewers tunelizados; **el emisor ve al exit, nunca al viewer**. ⚠️ Pero ver el aviso de abajo: en v8.1 el circuito es de **1 salto**, así que el **exit sí ve la IP del viewer**.
 - **Selector de modo de privacidad** (Sprint D): `Directo` / `Tunelizado` / `Adaptive`, persistente, con política de *fallback* (`strict` / `balanced` / `best-effort`) y panel web.
 - **Estabilidad a bitrate alto:** fragmentación de chunks por encima del límite de 2 MB de eMule (`OP_LIVE_CHUNK_FRAG`, gated por capacidad) + segmentos HLS de 2 s → emisión fluida validada a **12000 kbps (4K)** en malla de varios viewers.
 
-## ⚠️ Alcance honesto de la privacidad (léelo)
+## ⚠️ Alcance honesto de la privacidad (léelo) — CORREGIDO 2026-06-13
 
-v8.1 anonimiza el **plano de control**, NO el **plano de datos**:
+> **Corrección de honestidad (importante).** La primera versión de estas notas daba a entender que el
+> plano de control anonimizaba al viewer. Una auditoría posterior del código encontró que **los circuitos
+> de v8.1 son de UN SOLO SALTO** (el pool nunca construye 2 saltos en producción). A 1 salto **no hay
+> separación de relés**: el exit es el único relé y está **conectado directo al viewer**, así que **ve su
+> IP y sabe qué canal pide**. El anonimato real de onion exige ≥2 saltos para que ningún relé vea a la vez
+> *quién eres* y *qué pides*. Por tanto v8.1 oculta al viewer **del emisor y de la red Kad**, pero **NO del
+> exit**. Un exit malicioso/comprometido desanonimiza al viewer por completo.
 
-| Qué | v8.1 |
-|-----|------|
-| Quién BUSCA un canal | 🟢 oculto (búsqueda tunelizada) |
-| Quién se SUSCRIBE a un canal | 🟢 oculto (el emisor ve al exit, no al viewer) |
-| La IP del viewer al recibir los CHUNKS | 🔴 **visible** (el plano de datos sigue directo) |
+v8.1 anonimiza el control **frente al emisor y la red**, NO frente al exit, y NO anonimiza los datos:
 
-El modo `Tunelizado` **NO satisface la garantía G1** (anonimato de la IP del viewer en los datos) — eso lo cierra **v8.1.1 (Sprint E)**, con los chunks por el túnel a bitrate nativo. Hasta entonces, `Tunelizado` = *control privado, datos directos*. Se documenta así en la UI.
+| Qué | ¿Oculto frente a…? | Estado real v8.1 (1 salto) |
+|-----|--------------------|----------------------------|
+| Quién BUSCA un canal | emisor + red Kad | 🟢 oculto · 🔴 **el exit ve la IP + la keyword** |
+| Quién se SUSCRIBE a un canal | emisor (broadcaster) | 🟢 el emisor ve al exit, no a V · 🔴 **el exit ve la IP de V** |
+| La IP del viewer al recibir los CHUNKS | — | 🔴 **visible** (el plano de datos sigue directo) |
+
+El modo `Tunelizado` **NO satisface G1** (anonimato real del viewer) **por dos razones**: (1) los datos van
+directos, y (2) **el exit ve al viewer** (1 salto). Ambas las cierra el roadmap de v8.1.x:
+- **v8.1.1 "Reenvío 2-hop real":** circuitos de 2 saltos de verdad (hop1 ≠ exit) → el exit deja de ver la
+  IP del viewer en el **plano de control**. Hace real el anonimato que estas notas prometían.
+- **v8.1.2 (Sprint E / E-α):** los chunks por el túnel de 2 saltos a bitrate nativo → cierra G1 también en
+  el **plano de datos**.
+
+Hasta entonces, usa `Tunelizado` entendiendo que **confías en el nodo exit**. No es anonimato fuerte todavía.
 
 ## Compatibilidad hacia atrás (F2 — auditado, PASA)
 

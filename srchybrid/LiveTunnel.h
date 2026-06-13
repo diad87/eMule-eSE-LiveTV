@@ -13,6 +13,7 @@
 #include "LiveCircuit.h"
 #include "LiveOnionCrypto.h"
 #include "LiveCellQueue.h"   // v8.1 A2 - ReassemblyEntry, fragment helpers
+#include "LiveBulk.h"        // v8.1.2 E1.2/E3.4 - bulk cell wire + multi-block FEC + replay window
 
 #include <memory>
 #include <vector>
@@ -21,6 +22,7 @@
 #include <deque>    // v0.72 — main-thread work queue
 #include <utility>  // v0.72 — std::move
 #include <functional> // v8.1 A2 - std::function handler registry
+#include <set>     // v8.1.2 E3.1 — exit-proxy stream-key set
 
 class CUpDownClient;
 
@@ -76,6 +78,36 @@ public:
     bool OnCellReceived(uint32_t circ_id, uint8_t cmd,
                         const uint8_t* payload, uint16_t payloadLen,
                         CUpDownClient* fromPeer);
+
+    // v8.1.2 Sprint E (E1.2) — incoming OP_LIVE_BULK_CELL (0xD9) from a hop. Called by
+    // the ListenSocket dispatch with the RAW packet bytes (after the opcode). Parses the
+    // variable-length bulk cell (LiveBulk §2.1), then either FORWARDS it (intermediate
+    // relay, reverse direction exit->hop1->V) or TERMINATES it (originator/viewer:
+    // explicit-nonce onion-decrypt -> replay check -> BULK_DATA -> reassembly E3.4).
+    // Returns true if the cell was consumed (incl. silently dropped).
+    bool OnBulkCellReceived(const uint8_t* pkt, uint32_t size, CUpDownClient* fromPeer);
+
+    // === v8.1.2 E3.1 — exit headless ingest hooks ==========================
+    // Called from CLiveStreamManager's chunk path (IngestChunkPayload / OnChunkFragment
+    // Received), which holds the MANAGER lock, BEFORE its m_bViewing gate. To preserve the
+    // documented tunnel->manager lock order, these touch ONLY a LEAF-locked tunnel queue
+    // (never the tunnel m_lock / m_pendingLock); the heavy work (FEC encode + stripe push)
+    // runs later in Tick(). IsExitProxying is a cheap predicate (false for any non-exit
+    // node and any stream we don't proxy -> the direct viewer path is byte-for-byte unchanged).
+    bool IsExitProxying(const uint8_t streamKey[16]) const;
+    // A whole CHUNK_V2/V1 record arrived for a proxied stream (small/low-bitrate path).
+    void ExitProxyOnWholeChunk(const uint8_t streamKey[16], const uint8_t* record, uint32_t recordLen);
+    // A fragment arrived for a proxied stream (native-bitrate path: 0xE0 > 1.8MB). The exit
+    // reassembles it itself (the viewer's m_fragReasm is m_bViewing-gated + single-stream).
+    void ExitProxyOnFragment(const uint8_t streamKey[16], uint32_t seqNum,
+                             uint16_t fragIndex, uint16_t fragCount, uint32_t totalLen,
+                             const uint8_t* fragData, uint32_t fragLen);
+
+    // v8.1.2 E3.2 (viewer) — start the bulk data plane for `streamKey`: send
+    // TUN_OP_BULK_SUBSCRIBE on every Active bulk-capable circuit, all tagged with one fresh
+    // session_id (so the exit stripes across them). No-op if no bulk circuit exists (caller
+    // stays on the direct/fallback path). Returns the number of circuits subscribed.
+    size_t BulkSubscribe(const uint8_t streamKey[16]);
 
     // Periodic tick (rotation, cover traffic, dead circuit cleanup).
     void Tick();
@@ -134,7 +166,13 @@ public:
         // v8.1 Sprint B — real Kad search through the tunnel (multi-cell).
         TUN_OP_KAD_SEARCH_V2    = 0x42,   // V -> exit: run a real Kad CSearch on my behalf
         TUN_OP_KAD_RESULT_V2    = 0x43,   // exit -> V: rich result records (multi-cell)
-        TUN_OP_KAD_CANCEL       = 0x44    // V -> exit: abort an in-flight search by req_id
+        TUN_OP_KAD_CANCEL       = 0x44,   // V -> exit: abort an in-flight search by req_id
+        // v8.1.2 Sprint E (E3.2) — bulk data plane control (0x50-0x5F reserved for E).
+        // SUBSCRIBE body: stream_key 16 + flags 1 + r_pref 1 + session_id 4. session_id
+        // groups a viewer's multiple bulk circuits so the exit can STRIPE symbols across
+        // them (one viewer = one session_id on all its circuits).
+        TUN_OP_BULK_SUBSCRIBE   = 0x50,   // V -> exit: start the bulk push for a stream on this circuit
+        TUN_OP_BULK_UNSUB       = 0x54    // V -> exit: stop the bulk push on this circuit
     };
 
     // === v8.1 A2 - generic exit-side dispatcher ============================
@@ -316,6 +354,16 @@ private:
     bool BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
                      CUpDownClient* hop2);
 
+    // v8.1.1 F-2 — build a TRUE 2-hop circuit V -> hop1 -> exit with hop1 != exit
+    // (DISTINCT nodes by user-hash), so the exit never has a direct socket to V and
+    // never sees V's IP (real anonymity / G1). Picks two distinct tunnel-capable
+    // peers; pre-stages hop2 on the originator so HandleCreated_Originator auto-
+    // extends after hop1's CREATED. NO loopback / 1-hop fallback here — returns
+    // false if fewer than 2 distinct tunnel peers are connected (the caller decides
+    // whether a degraded 1-hop circuit is acceptable). The loopback degenerate case
+    // stays confined to BuildTestCircuit2Hop (manual 2-PC dev test only).
+    bool BuildSuccessor2Hop();
+
     // v0.71 B — relay side: a CELL_EXTEND cell arrived on a relay-side
     // circuit. Peel V→hop1 layer, parse hop2 endpoint + new ephemeral,
     // pick new outbound circ_id, send CELL_CREATE to hop2. Store
@@ -358,6 +406,94 @@ private:
     // a reply (PING_REPLY, KadSearch result, etc.).
     bool SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,
                         const uint8_t* plain, size_t plainLen);
+
+    // === v8.1.1 F-1 — TRUE 2-hop relay forwarding of DATA cells (CELL_RELAY) ===
+    // Until now the code only TERMINATED relay cells (HandleRelay_Exit peels ALL
+    // layers + dispatches), so the only working configs were 1-hop (exit==hop1,
+    // directly connected to V) or loopback — in both the exit sees V's IP, defeating
+    // G1. These forward an OPAQUE cell through an intermediate hop1 WITHOUT decrypting
+    // the application payload: hop1 peels/re-adds exactly ONE layer and relays. The
+    // construction side (non-loopback HandleExtend_Relay) already stashes the
+    // forwarding state (m_nextHopClient/m_nextCircId on hop1, m_prevHopClient on the
+    // exit); these two methods are the missing DATA path. Counter-based crypto is fine
+    // here (control rides TCP, no expected loss); the bulk data plane uses the
+    // explicit-nonce twins (LiveCircuit::*Explicit) because FEC/NACK lose cells.
+    //   Forward (V -> hop1 -> exit): peel our 1 layer, relay inner ct on m_nextCircId.
+    bool ForwardRelayCell_Forward(std::shared_ptr<CLiveCircuit>& circ,
+                                  const uint8_t* payload, uint16_t payloadLen);
+    //   Reverse (exit -> hop1 -> V): re-add our 1 layer, relay to V on circ->Id().
+    bool ForwardRelayCell_Reverse(std::shared_ptr<CLiveCircuit>& circ,
+                                  const uint8_t* payload, uint16_t payloadLen);
+
+    // === v8.1.2 Sprint E — bulk data plane carrier (OP_LIVE_BULK_CELL 0xD9) =====
+    // Same 2-hop topology as F-1 but for variable-length bulk cells with an EXPLICIT
+    // on-wire nonce (B2), so FEC/NACK loss never tears the circuit. Data flows
+    // exit -> hop1 -> V only (push); the viewer's NACK/feedback ride the 512 B control
+    // cells (TUN_OP_BULK_*).
+    //   Send a variable-length bulk cell to a peer wrapped as OP_LIVE_BULK_CELL.
+    bool SendBulkCellToPeer(CUpDownClient* peer, const uint8_t* bytes, size_t size);
+    //   hop1 relays a bulk cell back to V: re-add our hop1->V layer (explicit nonce),
+    //   preserving bcmd; re-pack on V's circ id and send to m_prevHopClient.
+    bool ForwardBulkCell_Reverse(std::shared_ptr<CLiveCircuit>& circ, uint8_t bcmd,
+                                 uint64_t nonce_seq, const uint8_t* payload, size_t payloadLen);
+    //   EXIT pushes ONE bulk cell toward V (E3.3 scheduler uses this): wrap with our
+    //   1 layer (explicit nonce from m_bulk_nonce_send++) and send to m_prevHopClient.
+    bool SendBulkCellReverse(std::shared_ptr<CLiveCircuit>& circ, uint8_t bcmd,
+                             const uint8_t* plain, size_t plainLen);
+    //   Viewer terminating decode: explicit-nonce onion-decrypt-all -> replay check ->
+    //   BULK_DATA -> accumulate into reassembly; on a complete segment, RS-decode the
+    //   whole CHUNK_V2 record (E3.4) and deliver it to the chunk pipeline.
+    void DeliverBulkData(std::shared_ptr<CLiveCircuit>& circ, uint64_t nonce_seq,
+                         const uint8_t* payload, size_t payloadLen);
+
+    // E3.4 reassembly: symbols of a (streamKey, seq) segment arrive STRIPED across the
+    // viewer's bulk circuits, so this is keyed globally by (streamKey, seq), not per
+    // circuit. The decode is attempted only once every block has >= k_b symbols (bounds
+    // the 3 MB-buffer cost); Bulk::BulkDecodeSegment then rebuilds the signed CHUNK_V2
+    // record byte-identical -> existing verify/inject (unchanged).
+    struct BulkReasmEntry {
+        uint32_t          msg_len  = 0;
+        uint8_t           n_blocks = 0;
+        uint8_t           r        = 0;
+        DWORD             first_seen_tick = 0;
+        bool              done     = false;
+        Bulk::BulkLayout  layout;                // derived from msg_len on the first symbol
+        bool              haveLayout = false;
+        std::vector<int>  blockRecv;             // distinct symbols received per block
+        std::vector<Bulk::BulkSymbol> symbols;   // deduped by (block_idx, symbol_idx)
+    };
+    std::map<std::string, BulkReasmEntry> m_bulkReasm;          // key = streamKeyHex + ":" + seq
+    std::map<uint32_t, Bulk::BulkReplayWindow> m_bulkReplay;    // per terminating circ_id (recv dir)
+    static std::string BulkReasmKey(const uint8_t streamKey[16], uint32_t seq);
+    // Sweep stale partial segments (pattern A5); called from Tick().
+    void SweepBulkReasm();
+
+    // === v8.1.2 E3.1/E3.3 — exit proxy ingest -> FEC encode -> stripe push ==
+    // LEAF lock: held ONLY to touch the m_proxy* state, NEVER while acquiring m_lock /
+    // m_pendingLock / the manager lock -> the documented tunnel->manager order is never
+    // inverted, so the chunk hooks (which run under the manager lock) are deadlock-safe.
+    mutable CCriticalSection m_proxyIngestLock;
+    std::set<std::string> m_proxyKeys;                 // streamKeyHex this node exit-proxies (mirror of m_exitLiveSubs)
+    struct ProxyFrag {
+        uint32_t totalLen = 0; uint16_t fragCount = 0; uint16_t haveCount = 0; DWORD firstTick = 0;
+        std::vector<uint8_t> buf; std::vector<bool> got;
+    };
+    std::map<std::string, ProxyFrag> m_proxyFragReasm; // key = streamKeyHex + ":" + seq (exit-side 0xE0 reassembly)
+    std::deque<std::vector<uint8_t>> m_proxyReady;     // whole CHUNK_V2 records ready to FEC-encode + push
+    // MAIN THREAD (Tick, under m_lock): refresh m_proxyKeys, drain m_proxyReady, FEC-encode each
+    // record and push its symbols across the stream's subscribed bulk circuits.
+    void ProcessProxyIngest();
+    void RefreshProxyKeys();   // rebuild m_proxyKeys from m_exitLiveSubs + m_bulkSubs (under m_pendingLock + leaf)
+
+    // v8.1.2 E3.2 — explicit bulk subscriptions. The viewer sends TUN_OP_BULK_SUBSCRIBE on
+    // EACH of its bulk circuits, all carrying the SAME session_id, so the exit can group a
+    // viewer's circuits and STRIPE a segment's symbols across them. When a stream has explicit
+    // bulk subs, ProcessProxyIngest pushes to THESE (grouped + striped); otherwise it falls
+    // back to the C7 control subs (full k+r per circuit). Under m_pendingLock.
+    struct BulkSub { uint32_t circ_id = 0; uint32_t session_id = 0; uint8_t r_pref = 0; DWORD lastSeen = 0; };
+    std::map<std::string, std::vector<BulkSub>> m_bulkSubs;   // streamKeyHex -> subs
+    void ExitHandle_BulkSubscribe(const TunnelRequestCtx& ctx);   // register/refresh a bulk sub
+    void ExitHandle_BulkUnsub(const TunnelRequestCtx& ctx);       // drop a bulk sub
 
     // === v8.1 A2 - generic exit dispatcher (internals) =====================
     // Look up and invoke the registered handler for a fully-received request.
@@ -558,6 +694,8 @@ private:
     DWORD    m_rttPingSentTick = 0;  // send tick of the in-flight probe
     uint32_t m_rttPingReqId    = 0;  // req_id of the in-flight probe (0 = none outstanding)
     uint32_t m_meanRttMs       = 0;  // EWMA mean tunnel RTT (0 = unknown)
+    // v8.1.2 E3.2 - last tick we (re)sent the viewer bulk-subscribe (throttle, < BULK_SUB_TTL_MS).
+    DWORD    m_lastBulkSubTick  = 0;
 };
 
 }  // namespace eSELive

@@ -143,4 +143,66 @@ bool CLiveCircuit::OnionDecryptAll(const uint8_t* in, size_t inLen,
     return true;
 }
 
+// === v8.1.1 Sprint E (E1.4 / B2) — explicit-nonce bulk crypto ===============
+// Mirror of EncryptOneLayer / OnionPeelOne / OnionDecryptAll, but the AEAD nonce
+// comes from the explicit per-cell nonce_seq (wire) instead of a per-hop counter,
+// so a dropped/reordered/retransmitted bulk cell does NOT desync and kill the
+// circuit. No nonce_send/nonce_recv counter is touched. Same keys/direction as the
+// counter-based twins. Caller-provided buffers (no 505-byte cap) for 16 KB symbols.
+
+bool CLiveCircuit::EncryptOneLayerExplicit(uint8_t hopIdx, uint64_t nonce_seq,
+                                           const uint8_t* in, size_t inLen,
+                                           uint8_t* out, size_t& outLen)
+{
+    if (hopIdx >= m_hops.size()) return false;
+    CircuitHop& h = m_hops[hopIdx];
+    uint8_t nonce[12];
+    BuildNonce(nonce_seq, nonce);                 // explicit — counter untouched
+    if (!AeadEncrypt(h.k_send, nonce, NULL, 0, in, inLen, out))
+        return false;
+    outLen = inLen + 16;                          // 16-byte AEAD tag appended
+    return true;
+}
+
+bool CLiveCircuit::OnionPeelOneExplicit(uint8_t hopIdx, uint64_t nonce_seq,
+                                        const uint8_t* in, size_t inLen,
+                                        uint8_t* out, size_t& outLen)
+{
+    if (hopIdx >= m_hops.size()) return false;
+    if (inLen < 16) return false;
+    CircuitHop& h = m_hops[hopIdx];
+    uint8_t nonce[12];
+    BuildNonce(nonce_seq, nonce);                 // explicit — counter untouched
+    if (!AeadDecrypt(h.k_recv, nonce, NULL, 0, in, inLen, out))
+        return false;
+    outLen = inLen - 16;
+    return true;
+}
+
+bool CLiveCircuit::OnionDecryptAllExplicit(uint64_t nonce_seq,
+                                           const uint8_t* in, size_t inLen,
+                                           uint8_t* out, size_t outBufLen, size_t& outLen)
+{
+    if (m_hops.empty()) return false;
+    std::vector<uint8_t> a(in, in + inLen);
+    std::vector<uint8_t> b(inLen);
+    bool useA = true;
+    for (size_t i = 0; i < m_hops.size(); ++i) {
+        const uint8_t* src = useA ? a.data() : b.data();
+        uint8_t* dst       = useA ? b.data() : a.data();
+        size_t srcLen      = useA ? a.size() : b.size();
+        if (srcLen < 16) return false;
+        size_t dstLen = 0;
+        if (!OnionPeelOneExplicit((uint8_t)i, nonce_seq, src, srcLen, dst, dstLen))
+            return false;
+        if (useA) b.resize(dstLen); else a.resize(dstLen);
+        useA = !useA;
+    }
+    const std::vector<uint8_t>& finalBuf = useA ? a : b;
+    if (finalBuf.size() > outBufLen) return false;
+    memcpy(out, finalBuf.data(), finalBuf.size());
+    outLen = finalBuf.size();
+    return true;
+}
+
 }  // namespace eSELive

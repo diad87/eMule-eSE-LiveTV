@@ -88,6 +88,36 @@ public:
                          const uint8_t* in, size_t inLen,
                          uint8_t* out, size_t& outLen);
 
+    // === v8.1.1 Sprint E (E1.4 / B2) — explicit-nonce bulk crypto =========
+    // The control plane derives the AEAD nonce from an IMPLICIT per-hop counter
+    // (nonce_send/nonce_recv). A single lost/reordered/retransmitted cell desyncs
+    // that counter and every later cell on the circuit then fails AEAD auth — which
+    // would TEAR DOWN a bulk circuit on the first dropped symbol (LiveTunnel.cpp
+    // documents exactly this). The bulk data plane therefore carries an EXPLICIT
+    // nonce on the wire (BulkCellHeader.nonce_seq, LiveBulk.h §2.1) and derives the
+    // AEAD nonce from it — never from a counter. These mirror their counter-based
+    // twins above (same keys/direction) but take an explicit nonce and use
+    // caller-provided buffers (no CELL_PAYLOAD_MAX cap), so 16 KB symbols fit.
+    // The sender MUST make nonce_seq strictly increase per (circuit, direction) so a
+    // (key, nonce) pair is never reused; the receiver enforces this with a replay
+    // window (LiveBulk BulkReplayWindow). Same nonce across hops is safe: each hop
+    // has a distinct key.
+
+    // Add ONE layer with k_send[hopIdx], nonce = nonce_seq. out needs inLen + 16.
+    bool EncryptOneLayerExplicit(uint8_t hopIdx, uint64_t nonce_seq,
+                                 const uint8_t* in, size_t inLen,
+                                 uint8_t* out, size_t& outLen);
+
+    // Peel ONE layer with k_recv[hopIdx], nonce = nonce_seq. out needs inLen - 16.
+    bool OnionPeelOneExplicit(uint8_t hopIdx, uint64_t nonce_seq,
+                              const uint8_t* in, size_t inLen,
+                              uint8_t* out, size_t& outLen);
+
+    // Originator peel of ALL layers (k_recv, forward order), nonce = nonce_seq.
+    bool OnionDecryptAllExplicit(uint64_t nonce_seq,
+                                 const uint8_t* in, size_t inLen,
+                                 uint8_t* out, size_t outBufLen, size_t& outLen);
+
     // Birth / age
     DWORD BornAtTick() const { return m_born_tick; }
     DWORD AgeMs() const { return GetTickCount() - m_born_tick; }
@@ -111,6 +141,18 @@ public:
     // ESE_CAP_TUNNEL_DATAPLANE. If a v8.0.0 peer is a hop this goes false and
     // the circuit is restricted to single-cell messages (no fragmentation).
     bool m_multicell_ok = true;
+
+    // v8.1.2 Sprint E (E1.5) — true while EVERY hop advertised ESE_CAP_TUNNEL_BULK.
+    // Only then may the bulk data plane (OP_LIVE_BULK_CELL 0xD9) ride this circuit;
+    // otherwise the per-symbol multi-cell fallback (E1.6) is used. Seeded from hop1
+    // in BuildPool, AND-ed with hop2 in BuildExtend (any non-bulk hop -> false).
+    bool m_bulk_ok = false;
+
+    // v8.1.2 (B2) — explicit per-cell AEAD nonce for the bulk data plane. The sender
+    // increments this per bulk cell it originates on this circuit (send direction);
+    // the value travels on the wire (BulkCellHeader.nonce_seq) so a dropped/reordered
+    // bulk cell never desyncs the AEAD (unlike the control plane's implicit counter).
+    uint64_t m_bulk_nonce_send = 0;
 
     // First-hop CUpDownClient* (originator side): where we send cells.
     // Owned by ClientList; we hold a raw pointer and rely on

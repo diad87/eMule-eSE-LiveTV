@@ -341,7 +341,12 @@
 #define OP_LIVE_T_SUBSCRIBE      0xD6   // RESERVED — superseded by TUN_OP_LIVE_SUBSCRIBE
 #define OP_LIVE_T_UNSUBSCRIBE    0xD7   // RESERVED — superseded by tunneled UNSUBSCRIBE sub-cmd
 #define OP_LIVE_T_REQUEST        0xD8   // RESERVED — superseded by Sprint E bulk data plane
-#define OP_LIVE_T_CHUNK          0xD9   // RESERVED — superseded by Sprint E bulk data plane
+// v8.1.1 Sprint E (E1.1): 0xD9 is IMPLEMENTED as the bulk data-plane carrier.
+//   Wire (LiveBulk.h §2.1): circ_id u32 | bcmd u8 | nonce_seq u64 | length u32 | payload(AEAD).
+//   Gated by ESE_CAP_TUNNEL_BULK (0x4000). On v8.0.x it was a log-and-drop stub and vanilla
+//   discards the unknown extended opcode -> never sent to a peer without the cap (backward-compat).
+#define OP_LIVE_BULK_CELL        0xD9   // Sprint E: variable-length bulk cell (AEAD onion, explicit nonce)
+#define OP_LIVE_T_CHUNK          OP_LIVE_BULK_CELL  // legacy alias (was RESERVED stub; reused as bulk carrier)
 #define OP_LIVE_T_HEARTBEAT      0xDA   // RESERVED — superseded by C3 tunneled heartbeat relay
 #define OP_LIVE_T_ANNOUNCE       0xDB   // RESERVED — superseded by C3 tunneled announce relay
 #define OP_LIVE_T_DENY           0xDC   // RESERVED — superseded by tunneled DENY sub-cmd
@@ -532,6 +537,7 @@
 #define ESE_CAP_COVER_TRAFFIC        0x00000800  // bit 11 — Poisson cover cells
 #define ESE_CAP_TUNNEL_DATAPLANE     0x00001000  // bit 12 -- v8.1 multi-cell tunnel data plane
 #define ESE_CAP_LIVE_CHUNK_FRAG      0x00002000  // bit 13 -- v8.1.x Live segment fragmentation (>1.8MB chunks split into sub-2MB packets)
+#define ESE_CAP_TUNNEL_BULK          0x00004000  // bit 14 -- v8.1.1 Sprint E bulk data plane (OP_LIVE_BULK_CELL 0xD9; FEC+stripe). Gate: exit AND every hop must advertise it.
 
 // Runtime accumulator for TAG_ESE_CAPS. Defined in FirewallProberV6.cpp
 // (same file as g_uForkCapsRuntime — both are runtime cap accumulators

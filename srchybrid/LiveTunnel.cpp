@@ -30,6 +30,7 @@
 #include "Log.h"              // v0.71 P0.B — AddDebugLogLine
 // v0.71 P1 — Kad search through tunnel: lookup against local directory
 #include "LiveStreamManager.h"
+#include "LivePackets.h"        // v8.1.2 E3.1 - ESE_FRAG_* (exit-side 0xE0 reassembly)
 #include "LiveKadBridge.h"
 #include "kademlia/kademlia/KadV2ModeSelector.h"
 #include "kademlia/kademlia/SearchManager.h"   // v8.1 B - StopSearch on tunneled search
@@ -60,6 +61,11 @@ CLiveTunnel::CLiveTunnel()
     // v8.1 Sprint C - tunneled LiveTV subscribe (single-cell control op).
     RegisterExitHandler(TUN_OP_LIVE_SUBSCRIBE,
         [this](const TunnelRequestCtx& c){ ExitHandle_LiveSubscribe(c); });
+    // v8.1.2 Sprint E (E3.2) - explicit bulk data-plane subscribe/unsub.
+    RegisterExitHandler(TUN_OP_BULK_SUBSCRIBE,
+        [this](const TunnelRequestCtx& c){ ExitHandle_BulkSubscribe(c); });
+    RegisterExitHandler(TUN_OP_BULK_UNSUB,
+        [this](const TunnelRequestCtx& c){ ExitHandle_BulkUnsub(c); });
 }
 
 // v8.1 Sprint C — little-endian field helpers for the Live tunnel op bodies.
@@ -154,6 +160,9 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
         // advertised ESE_CAP_TUNNEL_DATAPLANE. Seed from hop1; BuildExtend
         // AND-s in hop2. A v8.0.0 hop -> false -> single-cell fallback.
         c->m_multicell_ok = hop1->SupportsEseTunnelDataplane();
+        // v8.1.2 E1.5 — bulk data plane rides this circuit only if EVERY hop advertises
+        // ESE_CAP_TUNNEL_BULK. Seed from hop1; BuildExtend AND-s in hop2.
+        c->m_bulk_ok = hop1->SupportsEseTunnelBulk();
         uint8_t evPub[32];
         if (!X25519GenerateKeypair(evPub, c->m_ephemeral_priv)) {
             continue;
@@ -245,11 +254,60 @@ uint32_t CLiveTunnel::BuildTestCircuit(CUpDownClient* clientHint)
 // Called from CKadV2TunnelPool::Tick (main thread, with the pool lock NOT held).
 bool CLiveTunnel::BuildSuccessorCircuit()
 {
+    // v8.1.1 F-2: prefer a TRUE 2-hop circuit (hop1 != exit) so the exit never has
+    // a direct socket to V and never sees V's IP (real anonymity / G1). Only if
+    // fewer than 2 distinct tunnel peers are connected do we fall back to a 1-hop
+    // circuit — which has NO exit-anonymity (the exit is directly connected to V).
+    // hop_count is exposed in GetCircuitsSnapshot so the mode/policy + UI can refuse
+    // a 1-hop circuit under STRICT max-privacy.
+    if (BuildSuccessor2Hop()) return true;
+
+    // 1-hop fallback (degraded: broadcaster-anonymity only, exit sees V).
     std::vector<CUpDownClient*> cands;
     if (theApp.clientlist)
         theApp.clientlist->GetConnectedSnapshot(cands, 1, /*tunnelOnly=*/true);
     if (cands.empty()) return false;
     return BuildPool(NULL, cands, 1) > 0;
+}
+
+// v8.1.1 F-2 — build a TRUE 2-hop circuit V -> hop1 -> exit with hop1 != exit.
+// Mirrors BuildTestCircuit2Hop's pre-stage mechanism but REQUIRES two DISTINCT
+// nodes (by user-hash), so a production circuit can never silently collapse into
+// the loopback (hop2==hop1) degenerate case that looks like 2-hop but gives zero
+// anonymity. No 1-hop fallback here (the caller decides that).
+bool CLiveTunnel::BuildSuccessor2Hop()
+{
+    std::vector<CUpDownClient*> cands;
+    if (theApp.clientlist)
+        theApp.clientlist->GetConnectedSnapshot(cands, 5, /*tunnelOnly=*/true);
+
+    CUpDownClient* hop1 = NULL;
+    CUpDownClient* hop2 = NULL;
+    for (CUpDownClient* p : cands) {
+        if (!p) continue;
+        if (!hop1) { hop1 = p; continue; }
+        if (p == hop1) continue;
+        // require a DISTINCT node (different user hash) -> never an effective loopback
+        const uchar* h1 = hop1->GetUserHash();
+        const uchar* h2 = p->GetUserHash();
+        if (h1 && h2 && memcmp(h1, h2, 16) == 0) continue;
+        hop2 = p; break;
+    }
+    if (!hop1 || !hop2) return false;   // < 2 distinct tunnel peers -> no real 2-hop
+
+    size_t before = 0;
+    { CSingleLock lk(&m_lock, TRUE); before = m_circuits.size(); }
+
+    std::vector<CUpDownClient*> hop1Vec = { hop1 };
+    if (BuildPool(NULL, hop1Vec, 1) == 0) return false;   // BuildPool takes m_lock itself
+
+    CSingleLock lk(&m_lock, TRUE);
+    if (m_circuits.size() <= before) return false;
+    auto& c = m_circuits.back();
+    // Pre-stage the exit: HandleCreated_Originator auto-extends to it after hop1's
+    // CELL_CREATED, producing a real V -> hop1 -> exit circuit (hop1 forwards via F-1).
+    c->m_nextHopClient = hop2;
+    return true;
 }
 
 void CLiveTunnel::Stop()
@@ -601,6 +659,17 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
         }
     }
 
+    // v8.1.1 F-1 — reverse 2-hop DATA forwarding. A CELL_RELAY arriving on a
+    // relay's OUTBOUND id (m_nextCircId) is a data cell coming back from hop2/exit;
+    // re-add our hop1->V layer and relay it to V. Looked up BEFORE the by-Id lookup
+    // (the outbound id is not a circuit Id on this node), mirroring CELL_CREATED above.
+    if (cmd == CELL_RELAY) {
+        auto relayCirc = FindRelayByOutgoingId(circ_id);
+        if (relayCirc) {
+            return ForwardRelayCell_Reverse(relayCirc, payload, payloadLen);
+        }
+    }
+
     // All other cells require an existing circuit entry by circ_id
     // (originator's V-side id, or relay-side from-V id).
     std::shared_ptr<CLiveCircuit> circ;
@@ -625,11 +694,18 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
             return HandleExtended_Originator(circ, payload, payloadLen);
 
         case CELL_RELAY:
-            // v0.71 C — data plane delivery.
+            // v8.1.1 F-1 — if we are an INTERMEDIATE relay (hop1) of a TRUE 2-hop
+            // circuit (m_nextHopClient set, non-loopback), forward toward hop2/exit by
+            // peeling exactly ONE layer — never terminate. This is what makes the exit
+            // NOT see V's IP (G1). A 1-hop exit or loopback exit has m_nextHopClient
+            // NULL and still terminates via HandleRelay_Exit below.
+            if (circ->m_role == CircuitRole::Relay && circ->m_nextHopClient) {
+                return ForwardRelayCell_Forward(circ, payload, payloadLen);
+            }
+            // v0.71 C — data plane delivery (terminating end).
             // Originator: peel ALL hops, parse TunnelOp, deliver.
-            // Relay/exit (we hold V↔hop2 keys via self-loopback): peel
-            //   all hops, dispatch the inner payload, wrap reply,
-            //   send back to V.
+            // Exit (1-hop, or loopback holding V↔hop2 keys): peel all hops,
+            //   dispatch the inner payload, wrap reply, send back to V.
             if (circ->m_role == CircuitRole::Originator) {
                 return HandleRelay_Originator(circ, payload, payloadLen);
             } else {
@@ -696,6 +772,10 @@ bool CLiveTunnel::BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
     // If hop2 is a v8.0.0 peer, the whole circuit drops to single-cell.
     if (!hop2->SupportsEseTunnelDataplane())
         circ->m_multicell_ok = false;
+    // v8.1.2 E1.5 -- AND hop2's bulk capability. Any non-bulk hop -> no bulk data plane
+    // on this circuit (the per-symbol multi-cell fallback E1.6 is used instead).
+    if (!hop2->SupportsEseTunnelBulk())
+        circ->m_bulk_ok = false;
 
     // Generate a fresh ephemeral for V↔hop2. The slot was wiped after
     // hop1's CREATED so it's safe to reuse.
@@ -810,6 +890,12 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
     if (!isLoopback && theApp.GetPublicIP() != 0 && hop2_ip == theApp.GetPublicIP())
         isLoopback = true;
     if (isLoopback) {
+        // v8.1.1 F-2 — loopback collapses BOTH hops onto one node: ZERO anonymity
+        // (exit == hop1, directly connected to V). This is TEST-ONLY (2-PC dev via
+        // BuildTestCircuit2Hop). Production builds (BuildSuccessor2Hop) require two
+        // DISTINCT nodes and never reach here. Log it so it is never mistaken for
+        // a real 2-hop circuit.
+        AddDebugLogLine(false, _T("LiveTunnel: 2-hop EXTEND is LOOPBACK (hop2==self) — TEST-ONLY, ZERO anonymity (the exit sees V's IP)"));
         uint8_t erPub2[32], erPriv2[32];
         if (!X25519GenerateKeypair(erPub2, erPriv2)) {
             SecureWipe(extendPlain, sizeof extendPlain);
@@ -2339,6 +2425,514 @@ bool CLiveTunnel::SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,
     return SendCellToPeer(circ->m_prevHopClient, cell);
 }
 
+// === v8.1.1 F-1 — TRUE 2-hop relay forwarding of DATA cells ==================
+// hop1 sits between V and the exit. It relays opaque onion cells in both
+// directions, peeling/adding exactly ONE layer, so it learns V's IP but never
+// the application payload, and the exit learns the payload but never V's IP (G1).
+// CellPack always repads to CELL_TOTAL_BYTES, so the 512 B wire size is preserved
+// after a layer is removed (the declared `length` shrinks by the 16 B AEAD tag).
+
+// Forward (V -> hop1 -> exit): peel our V<->hop1 layer (advances nonce_recv) and
+// relay the still-encrypted inner cell to hop2/exit on the outbound circ id.
+bool CLiveTunnel::ForwardRelayCell_Forward(std::shared_ptr<CLiveCircuit>& circ,
+                                           const uint8_t* payload, uint16_t payloadLen)
+{
+    if (!circ || circ->m_role != CircuitRole::Relay) return false;
+    if (!circ->m_nextHopClient || circ->m_nextCircId == 0) return false;
+    if (circ->HopCount() < 1) return false;
+
+    uint8_t inner[CELL_PAYLOAD_MAX];
+    size_t  innerLen = 0;
+    // Peel exactly ONE layer (hop[0].k_recv = V->hop1). The inner bytes stay
+    // encrypted for the exit; we never parse them. A bad/desynced cell -> drop.
+    if (!circ->OnionPeelOne(0, payload, payloadLen, inner, innerLen))
+        return false;
+
+    uint8_t cell[CELL_TOTAL_BYTES];
+    if (!CellPack(circ->m_nextCircId, CELL_RELAY, inner, innerLen, cell))
+        return false;
+    return SendCellToPeer(circ->m_nextHopClient, cell);
+}
+
+// Reverse (exit -> hop1 -> V): a data cell arrived from hop2/exit on our outbound
+// id. Add our hop1->V layer back (hop[0].k_send) and relay to V on V's circ id.
+bool CLiveTunnel::ForwardRelayCell_Reverse(std::shared_ptr<CLiveCircuit>& circ,
+                                           const uint8_t* payload, uint16_t payloadLen)
+{
+    if (!circ || circ->m_role != CircuitRole::Relay || !circ->m_prevHopClient) return false;
+    if (circ->HopCount() < 1) return false;
+
+    uint8_t wrapped[CELL_PAYLOAD_MAX];
+    size_t  wrappedLen = 0;
+    // Add ONE layer (hop[0].k_send = hop1->V). V then peels hop1 (outer) then the
+    // exit layer (inner) via OnionDecryptAll. payloadLen + 16 must fit a cell; the
+    // forward path already bounds the plaintext so it does.
+    if (!circ->EncryptOneLayer(0, payload, payloadLen, wrapped, wrappedLen))
+        return false;
+    if (wrappedLen > CELL_PAYLOAD_MAX) return false;
+
+    uint8_t cell[CELL_TOTAL_BYTES];
+    if (!CellPack(circ->Id(), CELL_RELAY, wrapped, wrappedLen, cell))
+        return false;
+    return SendCellToPeer(circ->m_prevHopClient, cell);
+}
+
+// === v8.1.2 Sprint E — bulk data plane carrier (OP_LIVE_BULK_CELL 0xD9) =======
+// Same 2-hop topology as F-1 but for variable-length bulk cells with an EXPLICIT
+// on-wire nonce (B2). Data flows exit -> hop1 -> V (push); NACK/feedback ride the
+// 512 B control cells. Bulk buffers are up to ~17 KB so they live on the heap, not
+// the 505 B stack cells.
+
+bool CLiveTunnel::SendBulkCellToPeer(CUpDownClient* peer, const uint8_t* bytes, size_t size)
+{
+    if (!peer || !peer->socket || !peer->socket->IsConnected())
+        return false;
+    Packet* pkt = new Packet(OP_LIVE_BULK_CELL, (uint32)size, OP_EMULEPROT);
+    memcpy(pkt->pBuffer, bytes, size);
+    peer->socket->SendPacket(pkt, true, true, 0);
+    ++m_cellsSentTotal;
+    m_bytesSentTotal += size;
+    return true;
+}
+
+bool CLiveTunnel::OnBulkCellReceived(const uint8_t* pkt, uint32_t size, CUpDownClient* fromPeer)
+{
+    (void)fromPeer;   // per-IP byte rate cap is enforced in the ListenSocket dispatch
+    CSingleLock lock(&m_lock, TRUE);
+    ++m_cellsRecvTotal;
+    m_bytesRecvTotal += size;
+
+    Bulk::BulkCellHeader h;
+    const uint8_t* payload = NULL;
+    if (!Bulk::BulkCellParse(pkt, size, h, payload))
+        return true;   // malformed -> consume + drop
+
+    // Reverse forwarding: a bulk cell on a relay's OUTBOUND id is coming back from
+    // hop2/exit -> re-add our hop1->V layer and relay to V (mirror of CELL_RELAY F-1).
+    {
+        auto relayCirc = FindRelayByOutgoingId(h.circ_id);
+        if (relayCirc) {
+            ForwardBulkCell_Reverse(relayCirc, h.bcmd, h.nonce_seq, payload, h.length);
+            return true;
+        }
+    }
+
+    // Terminating end (viewer/originator): decode + reassemble.
+    std::shared_ptr<CLiveCircuit> circ;
+    for (auto& c : m_circuits)
+        if (c->Id() == h.circ_id) { circ = c; break; }
+    if (!circ) return true;
+    if (circ->m_role == CircuitRole::Originator)
+        DeliverBulkData(circ, h.nonce_seq, payload, h.length);
+    return true;
+}
+
+bool CLiveTunnel::ForwardBulkCell_Reverse(std::shared_ptr<CLiveCircuit>& circ, uint8_t bcmd,
+                                          uint64_t nonce_seq, const uint8_t* payload, size_t payloadLen)
+{
+    if (!circ || circ->m_role != CircuitRole::Relay || !circ->m_prevHopClient) return false;
+    if (circ->HopCount() < 1) return false;
+
+    std::vector<uint8_t> wrapped(payloadLen + 16);
+    size_t wrappedLen = 0;
+    if (!circ->EncryptOneLayerExplicit(0, nonce_seq, payload, payloadLen, wrapped.data(), wrappedLen))
+        return false;
+
+    Bulk::BulkCellHeader h;
+    h.circ_id   = circ->Id();
+    h.bcmd      = bcmd;
+    h.nonce_seq = nonce_seq;
+    std::vector<uint8_t> cell;
+    Bulk::BulkCellPack(h, wrapped.data(), wrappedLen, cell);
+    return SendBulkCellToPeer(circ->m_prevHopClient, cell.data(), cell.size());
+}
+
+bool CLiveTunnel::SendBulkCellReverse(std::shared_ptr<CLiveCircuit>& circ, uint8_t bcmd,
+                                      const uint8_t* plain, size_t plainLen)
+{
+    if (!circ || circ->m_role != CircuitRole::Relay || !circ->m_prevHopClient) return false;
+    if (circ->HopCount() < 1) return false;
+
+    const uint64_t nonce_seq = circ->m_bulk_nonce_send++;   // strictly increasing per (circ, dir)
+    std::vector<uint8_t> wrapped(plainLen + 16);
+    size_t wrappedLen = 0;
+    if (!circ->EncryptOneLayerExplicit(0, nonce_seq, plain, plainLen, wrapped.data(), wrappedLen))
+        return false;
+
+    Bulk::BulkCellHeader h;
+    h.circ_id   = circ->Id();
+    h.bcmd      = bcmd;
+    h.nonce_seq = nonce_seq;
+    std::vector<uint8_t> cell;
+    Bulk::BulkCellPack(h, wrapped.data(), wrappedLen, cell);
+    return SendBulkCellToPeer(circ->m_prevHopClient, cell.data(), cell.size());
+}
+
+void CLiveTunnel::DeliverBulkData(std::shared_ptr<CLiveCircuit>& circ, uint64_t nonce_seq,
+                                  const uint8_t* payload, size_t payloadLen)
+{
+    if (!circ) return;
+    // Replay guard (per terminating circuit, recv direction) — out-of-order accepted.
+    if (!m_bulkReplay[circ->Id()].Check(nonce_seq)) return;
+
+    std::vector<uint8_t> plain(payloadLen ? payloadLen : 1);
+    size_t plainLen = 0;
+    if (!circ->OnionDecryptAllExplicit(nonce_seq, payload, payloadLen,
+                                       plain.data(), plain.size(), plainLen))
+        return;   // AEAD auth fail / bad cell -> drop
+
+    Bulk::BulkDataHeader bh;
+    const uint8_t* symbol = NULL;
+    if (!Bulk::BulkDataParse(plain.data(), plainLen, bh, symbol)) return;
+    if (bh.msg_len == 0 || bh.n_blocks == 0) return;
+
+    const std::string key = BulkReasmKey(bh.stream_key, bh.seq);
+    BulkReasmEntry& e = m_bulkReasm[key];
+    if (e.done) return;   // segment already rebuilt
+
+    if (!e.haveLayout) {
+        if (!Bulk::BulkComputeLayout(bh.msg_len, e.layout)) { m_bulkReasm.erase(key); return; }
+        e.msg_len = bh.msg_len;
+        e.n_blocks = bh.n_blocks;
+        e.r = bh.r;
+        e.first_seen_tick = GetTickCount();
+        e.blockRecv.assign(e.layout.n_blocks, 0);
+        e.haveLayout = true;
+    }
+    if (bh.block_idx >= e.layout.n_blocks) return;   // foreign block index
+
+    // dedup by (block_idx, symbol_idx)
+    for (const auto& s : e.symbols)
+        if (s.block_idx == bh.block_idx && s.symbol_idx == bh.symbol_idx) return;
+
+    Bulk::BulkSymbol bs;
+    bs.block_idx  = bh.block_idx;
+    bs.symbol_idx = bh.symbol_idx;
+    bs.k          = bh.k;
+    bs.data.assign(symbol, symbol + Bulk::BULK_SYMBOL_BYTES);
+    e.symbols.push_back(std::move(bs));
+    e.blockRecv[bh.block_idx]++;
+
+    // Decode only once EVERY block has >= k_b symbols (bounds the 3 MB decode buffer).
+    for (int b = 0; b < e.layout.n_blocks; ++b)
+        if (e.blockRecv[b] < e.layout.k[b]) return;
+
+    std::vector<uint8_t> record;
+    if (Bulk::BulkDecodeSegment(e.symbols, e.msg_len, e.r, record)) {
+        e.done = true;
+        e.symbols.clear();              // free ~3 MB; keep the entry as a 'done' marker
+        e.blockRecv.clear();
+        AddDebugLogLine(false,
+            _T("LiveTunnel: bulk segment rebuilt seq=%u (%u bytes, %u blocks) via FEC — injecting"),
+            bh.seq, (unsigned)record.size(), (unsigned)e.n_blocks);
+        // E3.4-final — hand the byte-identical signed CHUNK_V2 record to the EXISTING viewer
+        // verify+inject path. IngestChunkPayload runs the SAME sha256 + Ed25519 verify the
+        // direct path uses (against the pinned pubkey, LiveStreamManager.cpp:1609+) and, on
+        // the viewer (m_bViewing), buffers + writes HLS so VLC plays it. NULL peer = no
+        // per-peer credit (bulk arrives STRIPED across multi-hop circuits, not from one
+        // CUpDownClient); PeerId(NULL)/GetOrCreateTrust(NULL) are null-safe (the one peer->
+        // deref past the gate is already guarded). Backward-compat: only viewers that
+        // negotiated bulk circuits ever reach here.
+        if (theApp.liveStreamManager && theApp.liveStreamManager->IsViewingLive())
+            theApp.liveStreamManager->IngestChunkPayload(NULL, OP_LIVE_CHUNK_V2,
+                                                         record.data(), (uint32)record.size());
+    }
+}
+
+std::string CLiveTunnel::BulkReasmKey(const uint8_t streamKey[16], uint32_t seq)
+{
+    std::string s = LiveStreamKeyHex(streamKey);
+    char tail[16];
+    _snprintf_s(tail, sizeof tail, _TRUNCATE, ":%u", seq);
+    return s + tail;
+}
+
+void CLiveTunnel::SweepBulkReasm()
+{
+    // A5 pattern: drop partial/done segments past the ring window, and replay windows
+    // for circuits that no longer exist. Caller holds m_lock (called from Tick()).
+    const DWORD now = GetTickCount();
+    const DWORD BULK_REASM_TTL_MS = 40000;   // > 16 segments x 2 s ring (32 s) + slack
+    for (auto it = m_bulkReasm.begin(); it != m_bulkReasm.end(); ) {
+        if (now - it->second.first_seen_tick > BULK_REASM_TTL_MS) it = m_bulkReasm.erase(it);
+        else ++it;
+    }
+    for (auto it = m_bulkReplay.begin(); it != m_bulkReplay.end(); ) {
+        bool alive = false;
+        for (auto& c : m_circuits) if (c->Id() == it->first) { alive = true; break; }
+        if (!alive) it = m_bulkReplay.erase(it); else ++it;
+    }
+
+    // v8.1.2 E3.2 — sweep explicit bulk subs: drop those whose circuit died or that went
+    // silent past the TTL (the viewer re-subscribes on each refresh; the exit dedups by circ_id).
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        for (auto it = m_bulkSubs.begin(); it != m_bulkSubs.end(); ) {
+            std::vector<BulkSub>& subs = it->second;
+            for (auto i = subs.begin(); i != subs.end(); ) {
+                bool alive = false;
+                for (auto& c : m_circuits) if (c->Id() == i->circ_id) { alive = true; break; }
+                if (!alive || (DWORD)(now - i->lastSeen) > Bulk::BULK_SUB_TTL_MS) i = subs.erase(i);
+                else ++i;
+            }
+            if (subs.empty()) it = m_bulkSubs.erase(it); else ++it;
+        }
+    }
+}
+
+// === v8.1.2 E3.1/E3.3 — exit headless ingest -> FEC encode -> stripe push =====
+// The chunk hooks below run UNDER the manager lock and only touch the leaf-locked
+// m_proxy* state (never m_lock/m_pendingLock), so the tunnel->manager lock order is
+// never inverted. The heavy work runs in ProcessProxyIngest() from Tick() under m_lock.
+
+bool CLiveTunnel::IsExitProxying(const uint8_t streamKey[16]) const
+{
+    const std::string hex = LiveStreamKeyHex(streamKey);
+    CSingleLock lk(&m_proxyIngestLock, TRUE);   // leaf
+    return m_proxyKeys.find(hex) != m_proxyKeys.end();
+}
+
+void CLiveTunnel::ExitProxyOnWholeChunk(const uint8_t streamKey[16],
+                                        const uint8_t* record, uint32_t recordLen)
+{
+    (void)streamKey;
+    if (!record || recordLen < 20 || recordLen > ESE_FRAG_MAX_TOTAL) return;
+    CSingleLock lk(&m_proxyIngestLock, TRUE);   // leaf
+    m_proxyReady.emplace_back(record, record + recordLen);
+    while (m_proxyReady.size() > 64) m_proxyReady.pop_front();   // bound (DoS)
+}
+
+void CLiveTunnel::ExitProxyOnFragment(const uint8_t streamKey[16], uint32_t seqNum,
+                                      uint16_t fragIndex, uint16_t fragCount, uint32_t totalLen,
+                                      const uint8_t* fragData, uint32_t fragLen)
+{
+    // Validate (mirror of the viewer's checks — this runs BEFORE them).
+    if (fragCount < 1 || fragCount > ESE_FRAG_MAX_COUNT) return;
+    if (fragIndex >= fragCount) return;
+    if (totalLen == 0 || totalLen > ESE_FRAG_MAX_TOTAL) return;
+    if (!fragData) return;
+    const uint32_t off = (uint32_t)fragIndex * ESE_FRAG_PAYLOAD;
+    if (fragLen > ESE_FRAG_PAYLOAD || off > totalLen || off + fragLen > totalLen) return;
+
+    char tail[16];
+    _snprintf_s(tail, sizeof tail, _TRUNCATE, ":%u", seqNum);
+    const std::string key = LiveStreamKeyHex(streamKey) + tail;
+
+    CSingleLock lk(&m_proxyIngestLock, TRUE);   // leaf
+    auto it = m_proxyFragReasm.find(key);
+    if (it == m_proxyFragReasm.end()) {
+        if ((int)m_proxyFragReasm.size() >= ESE_FRAG_MAX_CONCURRENT) {   // evict oldest
+            auto oldest = m_proxyFragReasm.begin();
+            for (auto i = m_proxyFragReasm.begin(); i != m_proxyFragReasm.end(); ++i)
+                if ((LONG)(i->second.firstTick - oldest->second.firstTick) < 0) oldest = i;
+            m_proxyFragReasm.erase(oldest);
+        }
+        ProxyFrag nf;
+        nf.totalLen = totalLen; nf.fragCount = fragCount; nf.haveCount = 0;
+        nf.firstTick = GetTickCount();
+        nf.buf.resize(totalLen);
+        nf.got.assign(fragCount, false);
+        it = m_proxyFragReasm.emplace(key, std::move(nf)).first;
+    } else if (it->second.totalLen != totalLen || it->second.fragCount != fragCount) {
+        ProxyFrag& f2 = it->second;                                     // VBR restart -> reset
+        f2.totalLen = totalLen; f2.fragCount = fragCount; f2.haveCount = 0;
+        f2.firstTick = GetTickCount();
+        f2.buf.assign(totalLen, 0);
+        f2.got.assign(fragCount, false);
+    }
+    ProxyFrag& fr = it->second;
+    if (fragIndex < fr.got.size() && fr.got[fragIndex]) return;          // dup fragment
+    memcpy(fr.buf.data() + off, fragData, fragLen);
+    if (fragIndex < fr.got.size()) fr.got[fragIndex] = true;
+    fr.haveCount++;
+    if (fr.haveCount == fr.fragCount) {                                  // complete record
+        m_proxyReady.push_back(std::move(fr.buf));
+        m_proxyFragReasm.erase(it);
+        while (m_proxyReady.size() > 64) m_proxyReady.pop_front();
+    }
+}
+
+void CLiveTunnel::RefreshProxyKeys()
+{
+    // Rebuild the leaf-locked mirror of which streams we exit-proxy. Called from Tick()
+    // (m_lock held); m_pendingLock guards m_exitLiveSubs. Order: m_lock -> m_pendingLock
+    // -> m_proxyIngestLock (leaf), consistent with the rest of the tunnel.
+    std::set<std::string> keys;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        for (const auto& kv : m_exitLiveSubs)
+            if (!kv.second.circuits.empty()) keys.insert(kv.first);
+        for (const auto& kv : m_bulkSubs)       // E3.2 — also proxy streams with explicit bulk subs
+            if (!kv.second.empty()) keys.insert(kv.first);
+    }
+    CSingleLock lk(&m_proxyIngestLock, TRUE);
+    m_proxyKeys.swap(keys);
+}
+
+void CLiveTunnel::ProcessProxyIngest()
+{
+    // MAIN THREAD, from Tick() under m_lock. Refresh the proxy-key mirror, drain ready
+    // records, FEC-encode each and push its symbols across the stream's subscribed circuits.
+    RefreshProxyKeys();
+
+    std::deque<std::vector<uint8_t>> ready;
+    {
+        CSingleLock lk(&m_proxyIngestLock, TRUE);   // leaf
+        if (m_proxyReady.empty()) return;
+        ready.swap(m_proxyReady);
+    }
+
+    for (std::vector<uint8_t>& record : ready) {
+        if (record.size() < 20) continue;
+        uint8_t streamKey[16];
+        memcpy(streamKey, record.data(), 16);
+        const uint32_t seq = eseRdU32LE(record.data() + 16);
+
+        std::vector<Bulk::BulkSymbol> symbols;
+        if (!Bulk::BulkEncodeSegment(record.data(), record.size(), Bulk::BULK_DEFAULT_R, symbols))
+            continue;
+        Bulk::BulkLayout layout;
+        if (!Bulk::BulkComputeLayout((uint32_t)record.size(), layout)) continue;
+
+        // Build the push "sessions" — each is one viewer's circuit list. Prefer EXPLICIT bulk
+        // subs (E3.2, grouped by session_id -> we can stripe across a viewer's circuits); fall
+        // back to the C7 control subs (1 circuit each -> full k+r). Snapshot under m_pendingLock.
+        const std::string hex = LiveStreamKeyHex(streamKey);
+        std::vector<std::vector<uint32_t>> sessions;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            auto bit = m_bulkSubs.find(hex);
+            if (bit != m_bulkSubs.end() && !bit->second.empty()) {
+                std::map<uint32_t, std::vector<uint32_t>> bySession;
+                for (const BulkSub& s : bit->second) bySession[s.session_id].push_back(s.circ_id);
+                for (auto& kv : bySession) sessions.push_back(std::move(kv.second));
+            } else {
+                auto eit = m_exitLiveSubs.find(hex);
+                if (eit != m_exitLiveSubs.end())
+                    for (const auto& c : eit->second.circuits)
+                        sessions.push_back(std::vector<uint32_t>(1, c.first));
+            }
+        }
+        if (sessions.empty()) continue;
+
+        // For each viewer (session), STRIPE the segment's symbols INTERLEAVED across its
+        // circuits (B5): symbol with (block_idx b, symbol_idx s) -> circuit[(s + b) mod C], so
+        // no circuit holds a whole block and a circuit death loses <= ceil((k+r)/C)/block. With
+        // C==1 (fallback / single-circuit viewer) the whole k+r goes down the one circuit.
+        // m_lock is held by Tick -> m_circuits is safe to read.
+        size_t pushed = 0;
+        for (const std::vector<uint32_t>& sess : sessions) {
+            const size_t C = sess.size();
+            if (C == 0) continue;
+            std::vector<std::shared_ptr<CLiveCircuit>> sc(C);
+            for (size_t i = 0; i < C; ++i)
+                for (auto& c : m_circuits) if (c->Id() == sess[i]) { sc[i] = c; break; }
+            for (const Bulk::BulkSymbol& s : symbols) {
+                std::shared_ptr<CLiveCircuit>& cc = sc[((size_t)s.symbol_idx + s.block_idx) % C];
+                if (!cc || cc->m_role != CircuitRole::Relay) continue;
+                Bulk::BulkDataHeader bh;
+                memcpy(bh.stream_key, streamKey, 16);
+                bh.seq = seq; bh.block_idx = s.block_idx; bh.n_blocks = (uint8_t)layout.n_blocks;
+                bh.symbol_idx = s.symbol_idx; bh.k = s.k; bh.r = (uint8_t)Bulk::BULK_DEFAULT_R;
+                bh.flags = 0; bh.msg_len = (uint32_t)record.size();
+                std::vector<uint8_t> payload;
+                Bulk::BulkDataPack(bh, s.data.data(), payload);
+                SendBulkCellReverse(cc, Bulk::BULK_DATA, payload.data(), payload.size());
+                ++pushed;
+            }
+        }
+        if (pushed)
+            AddDebugLogLine(false,
+                _T("LiveTunnel: exit pushed bulk seq=%u — %u symbols across %u viewer-session(s), %u blocks"),
+                seq, (unsigned)symbols.size(), (unsigned)sessions.size(), (unsigned)layout.n_blocks);
+    }
+}
+
+// === v8.1.2 E3.2 — explicit bulk subscribe (exit handlers + viewer sender) =====
+
+void CLiveTunnel::ExitHandle_BulkSubscribe(const TunnelRequestCtx& ctx)
+{
+    // body: stream_key 16 + flags 1 + r_pref 1 + session_id 4
+    if (!ctx.circ || !ctx.body || ctx.bodyLen < 22) return;
+    uint8_t streamKey[16];
+    memcpy(streamKey, ctx.body, 16);
+    const uint8_t  r_pref    = ctx.body[17];
+    const uint32_t sessionId = eseRdU32LE(ctx.body + 18);
+    const std::string hex = LiveStreamKeyHex(streamKey);
+    const uint32_t cid = ctx.circ->Id();
+    const DWORD now = GetTickCount();
+
+    CSingleLock pl(&m_pendingLock, TRUE);
+    std::vector<BulkSub>& subs = m_bulkSubs[hex];
+    bool found = false;
+    for (BulkSub& s : subs)
+        if (s.circ_id == cid) { s.session_id = sessionId; s.r_pref = r_pref; s.lastSeen = now; found = true; break; }
+    if (!found) {
+        if (subs.size() < 32) {                  // per-stream sub cap (DoS)
+            BulkSub s; s.circ_id = cid; s.session_id = sessionId; s.r_pref = r_pref; s.lastSeen = now;
+            subs.push_back(s);
+        }
+    }
+    AddDebugLogLine(false, _T("LiveTunnel: [E3.2] bulk SUBSCRIBE circ=0x%08x session=0x%08x r=%u (%u sub(s))"),
+        cid, sessionId, (unsigned)r_pref, (unsigned)subs.size());
+}
+
+void CLiveTunnel::ExitHandle_BulkUnsub(const TunnelRequestCtx& ctx)
+{
+    if (!ctx.circ || !ctx.body || ctx.bodyLen < 16) return;
+    uint8_t streamKey[16];
+    memcpy(streamKey, ctx.body, 16);
+    const std::string hex = LiveStreamKeyHex(streamKey);
+    const uint32_t cid = ctx.circ->Id();
+    CSingleLock pl(&m_pendingLock, TRUE);
+    auto it = m_bulkSubs.find(hex);
+    if (it == m_bulkSubs.end()) return;
+    std::vector<BulkSub>& subs = it->second;
+    for (auto i = subs.begin(); i != subs.end(); )
+        if (i->circ_id == cid) i = subs.erase(i); else ++i;
+    if (subs.empty()) m_bulkSubs.erase(it);
+}
+
+size_t CLiveTunnel::BulkSubscribe(const uint8_t streamKey[16])
+{
+    CSingleLock lock(&m_lock, TRUE);
+    // One fresh session_id groups ALL of this viewer's bulk circuits so the exit stripes
+    // a segment's symbols across them (E3.2). body: stream_key 16 + flags 1 + r_pref 1 + session 4.
+    const uint32_t sessionId = NewCircuitId();
+    uint8_t body[22];
+    memcpy(body, streamKey, 16);
+    body[16] = 0;                                 // flags (reserved)
+    body[17] = (uint8_t)Bulk::BULK_DEFAULT_R;     // r_pref
+    eseWrU32LE(body + 18, sessionId);
+
+    size_t sent = 0;
+    for (auto& c : m_circuits) {
+        if (c->m_role != CircuitRole::Originator) continue;
+        if (c->State() != CircuitState::Active) continue;
+        if (c->HopCount() < 1 || !c->m_bulk_ok) continue;   // only bulk-capable Active circuits
+        const size_t onion = c->HopCount() * 16;
+        if (onion + SUB_HEADER_BYTES + FRAG_HEADER_BYTES >= CELL_PAYLOAD_MAX) continue;
+        const size_t fragDataMax = CELL_PAYLOAD_MAX - onion - SUB_HEADER_BYTES - FRAG_HEADER_BYTES;
+        std::vector<std::vector<uint8_t>> cells;
+        if (!SplitIntoCells(TUN_OP_BULK_SUBSCRIBE, NewCircuitId(), body, sizeof body, fragDataMax, cells))
+            continue;
+        bool ok = true;
+        for (auto& plain : cells) {
+            uint8_t cellPayload[CELL_PAYLOAD_MAX];
+            size_t cellLen = 0;
+            if (!c->OnionEncrypt(plain.data(), plain.size(), cellPayload, cellLen)) { ok = false; break; }
+            uint8_t cell[CELL_TOTAL_BYTES];
+            if (!CellPack(c->Id(), CELL_RELAY, cellPayload, cellLen, cell)) { ok = false; break; }
+            if (!c->m_firstHopClient || !SendCellToPeer(c->m_firstHopClient, cell)) { ok = false; break; }
+        }
+        if (ok) ++sent;
+    }
+    if (sent)
+        AddDebugLogLine(false, _T("LiveTunnel: [E3.2] viewer bulk-subscribed on %u circuit(s), session=0x%08x"),
+            (unsigned)sent, sessionId);
+    return sent;
+}
+
 bool CLiveTunnel::TunnelPing(const std::string& text, std::string& replyText,
                              uint32_t timeoutMs)
 {
@@ -2506,6 +3100,33 @@ void CLiveTunnel::Tick()
                 it = m_reassembly.erase(it);
             else
                 ++it;
+        }
+    }
+
+    // 4b. v8.1.2 E3.4 - sweep abandoned bulk segment reassembly + dead-circuit replay
+    // windows (under m_lock, already held). Same rationale as A5.
+    SweepBulkReasm();
+
+    // 4c. v8.1.2 E3.1/E3.3 - exit-side: drain headless-ingested records, FEC-encode and
+    // push their symbols to the subscribed bulk circuits (under m_lock, already held).
+    ProcessProxyIngest();
+
+    // 4d. v8.1.2 E3.2 (viewer trigger) - while viewing a stream WITH Active bulk-capable
+    // circuits, (re)subscribe to the bulk data plane every ~10 s. The throttle is well under
+    // BULK_SUB_TTL_MS so the exit's subs stay fresh AND circuits that turned Active after the
+    // join get covered. No-op at any node the exit isn't proxying this stream for (the exit
+    // only registers/pushes if it proxies the streamKey). BulkSubscribe re-takes m_lock
+    // (recursive CCriticalSection) — fine. liveStreamManager->IsViewingLive()/GetStreamKey()
+    // are unlocked inline reads (same pattern as elsewhere), so no manager lock is taken here.
+    if (theApp.liveStreamManager && theApp.liveStreamManager->IsViewingLive()
+        && (DWORD)(now - m_lastBulkSubTick) > 10000u) {
+        bool haveBulk = false;
+        for (auto& c : m_circuits)
+            if (c->m_role == CircuitRole::Originator && c->State() == CircuitState::Active
+                && c->HopCount() >= 1 && c->m_bulk_ok) { haveBulk = true; break; }
+        if (haveBulk) {
+            m_lastBulkSubTick = now;
+            BulkSubscribe(theApp.liveStreamManager->GetStreamKey());
         }
     }
 

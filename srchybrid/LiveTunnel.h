@@ -35,6 +35,13 @@ const DWORD  TUNNEL_ROTATION_BASE_MS  = 300u * 1000u;   // v8.1: 5 min (was 30 s
 const DWORD  TUNNEL_ROTATION_JITTER_MS = 10u * 1000u;
 const DWORD  TUNNEL_HANDSHAKE_TIMEOUT_MS = 800u;
 
+// v8.x Phase 2 — tunnel auth policy. Mixed (default): emit v2 to auth-capable
+// peers, v1 otherwise, accept either. Strict: require a verified v2 handshake and
+// abort any v1/unsigned cell. Toggle is a runtime flag for now (wire to a pref/UI
+// later); the handshake crypto is final regardless of the toggle source.
+bool TunnelAuthStrict();
+void SetTunnelAuthStrict(bool strict);
+
 // v8.1 Sprint B — tunneled Kad search.
 const DWORD  TUN_SEARCH_WINDOW_MS   = 7000u;   // accumulate Kad results this long, then reply
 const size_t TUN_SEARCH_MAX_RESULTS = 100;     // cap records per reply (anti-DoS + size)
@@ -172,6 +179,9 @@ public:
         // groups a viewer's multiple bulk circuits so the exit can STRIPE symbols across
         // them (one viewer = one session_id on all its circuits).
         TUN_OP_BULK_SUBSCRIBE   = 0x50,   // V -> exit: start the bulk push for a stream on this circuit
+        // NACK body: stream_key 16 + count 1 + (seq 4 + block_idx 1)*count. Requests a re-push
+        // of specific (seq, block) the viewer could not reassemble (E3.5 gap-fill).
+        TUN_OP_BULK_NACK        = 0x52,   // V -> exit: re-push missing (seq, block)
         TUN_OP_BULK_UNSUB       = 0x54    // V -> exit: stop the bulk push on this circuit
     };
 
@@ -276,6 +286,7 @@ public:
         uint32_t hop_count;
         uint8_t  next_hop_set;  // relay-side: 1 if forwarding to hop2
         uint32_t next_circ_id;
+        uint8_t  auth_ok;       // v8.x Phase 2: 1 if ALL hops completed the authenticated v2 handshake
     };
     void GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const;
 
@@ -452,6 +463,8 @@ private:
     // the 3 MB-buffer cost); Bulk::BulkDecodeSegment then rebuilds the signed CHUNK_V2
     // record byte-identical -> existing verify/inject (unchanged).
     struct BulkReasmEntry {
+        uint8_t           streamKey[16] = {0};   // for E3.5 NACK addressing
+        uint32_t          seq      = 0;
         uint32_t          msg_len  = 0;
         uint8_t           n_blocks = 0;
         uint8_t           r        = 0;
@@ -461,7 +474,12 @@ private:
         bool              haveLayout = false;
         std::vector<int>  blockRecv;             // distinct symbols received per block
         std::vector<Bulk::BulkSymbol> symbols;   // deduped by (block_idx, symbol_idx)
+        DWORD             lastNackTick = 0;       // E3.5 — throttle NACKs for this (streamKey,seq)
     };
+    // E3.5 (viewer) — send a NACK requesting re-push of the listed (seq, block) pairs of a
+    // stream, on an Active bulk circuit. Returns true if a NACK was sent.
+    bool SendBulkNack(const uint8_t streamKey[16],
+                      const std::vector<std::pair<uint32_t, uint8_t>>& missing);
     std::map<std::string, BulkReasmEntry> m_bulkReasm;          // key = streamKeyHex + ":" + seq
     std::map<uint32_t, Bulk::BulkReplayWindow> m_bulkReplay;    // per terminating circ_id (recv dir)
     static std::string BulkReasmKey(const uint8_t streamKey[16], uint32_t seq);
@@ -494,6 +512,19 @@ private:
     std::map<std::string, std::vector<BulkSub>> m_bulkSubs;   // streamKeyHex -> subs
     void ExitHandle_BulkSubscribe(const TunnelRequestCtx& ctx);   // register/refresh a bulk sub
     void ExitHandle_BulkUnsub(const TunnelRequestCtx& ctx);       // drop a bulk sub
+
+    // v8.1.2 E3.5 (NACK gap-fill) + E4' (adaptive r). The exit retains the last few whole
+    // records per stream so it can RE-PUSH blocks a viewer could not reassemble (TUN_OP_BULK_
+    // NACK), and tracks the NACK rate to ADAPT the parity r up/down. All under m_lock.
+    struct ProxyRecentRec { uint8_t streamKey[16] = {0}; uint32_t seq = 0; std::vector<uint8_t> record; DWORD tick = 0; };
+    std::deque<ProxyRecentRec> m_proxyRecent;          // ring of recent records for re-push
+    struct ProxyStreamCtl { int r = Bulk::BULK_DEFAULT_R; uint32_t nackCount = 0; DWORD windowStart = 0; };
+    std::map<std::string, ProxyStreamCtl> m_proxyCtl;  // per streamKeyHex — adaptive r + NACK telemetry
+    void ExitHandle_BulkNack(const TunnelRequestCtx& ctx);  // re-push missing (seq, block) + bump NACK rate
+    int  ProxyAdaptiveR(const std::string& hex);            // E4' — current r for a stream (adapts on NACK rate)
+    // Re-encode `record` and push ONLY block `blockIdx` to `circ` (used by ExitHandle_BulkNack).
+    void PushBlockToCircuit(std::shared_ptr<CLiveCircuit>& circ, const uint8_t streamKey[16],
+                            uint32_t seq, const std::vector<uint8_t>& record, int r, uint8_t blockIdx);
 
     // === v8.1 A2 - generic exit dispatcher (internals) =====================
     // Look up and invoke the registered handler for a fully-received request.

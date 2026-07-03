@@ -66,6 +66,21 @@ void CPartFileWriteThread::EndThread()
 	m_eventThreadEnded.Lock();
 }
 
+//GetQueuedCompletionStatus()==FALSE with a dequeued packet (*ppOverlapped != NULL) means
+//failed or cancelled I/O (e.g. a file handle was closed with operations in flight).
+//Deliver such packets to the caller with 0 transferred bytes so they reach the completion
+//routine; returning FALSE (which terminates the thread) is reserved for an empty dequeue:
+//a timeout or a broken port.
+static BOOL DequeueCompletionPacket(HANDLE hPort, DWORD dwTimeout, LPDWORD pdwTransferred, PULONG_PTR pulCompletionKey, LPOVERLAPPED *ppOverlapped)
+{
+	if (::GetQueuedCompletionStatus(hPort, pdwTransferred, pulCompletionKey, ppOverlapped, dwTimeout))
+		return TRUE;
+	if (*ppOverlapped == NULL)
+		return FALSE;
+	*pdwTransferred = 0;
+	return TRUE;
+}
+
 UINT CPartFileWriteThread::RunInternal()
 {
 	m_hPort = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, 0, 0, 1);
@@ -77,7 +92,7 @@ UINT CPartFileWriteThread::RunInternal()
 	OverlappedWrite_Struct *pCurIO = NULL;
 	m_Run = RUN_IDLE;
 	while (m_Run
-		&& ::GetQueuedCompletionStatus(m_hPort, &dwWrite, &completionKey, (LPOVERLAPPED*)&pCurIO, INFINITE)
+		&& DequeueCompletionPacket(m_hPort, INFINITE, &dwWrite, &completionKey, (LPOVERLAPPED*)&pCurIO)
 		&& completionKey)
 	{
 		m_Run = RUN_WORK;
@@ -97,7 +112,7 @@ UINT CPartFileWriteThread::RunInternal()
 				break;
 			if (completionKey != WAKEUP) //ignore wakeups
 				WriteCompletionRoutine(dwWrite, pCurIO);
-		} while (::GetQueuedCompletionStatus(m_hPort, &dwWrite, &completionKey, (LPOVERLAPPED*)&pCurIO, 0));
+		} while (DequeueCompletionPacket(m_hPort, 0, &dwWrite, &completionKey, (LPOVERLAPPED*)&pCurIO));
 
 		if (!completionKey) //thread termination
 			break;
@@ -107,10 +122,29 @@ UINT CPartFileWriteThread::RunInternal()
 	}
 	m_Run = RUN_STOP;
 
-	//Improper termination of asynchronous I/O follows...
-	//close file handles to release I/O completion port
-	while (!m_listPendingIO.IsEmpty())
-		WriteCompletionRoutine(0, m_listPendingIO.RemoveHead());
+	//Asynchronous writes may still be in flight. Close the file handles to cancel the
+	//outstanding I/O, then drain the completion packets from the port: the kernel owns
+	//each OVERLAPPED until its completion packet has been delivered, so the structures
+	//must not be freed before that.
+	for (POSITION pos = m_listPendingIO.GetHeadPosition(); pos != NULL;)
+		RemFile(m_listPendingIO.GetNext(pos)->pFile);
+	while (!m_listPendingIO.IsEmpty()
+		&& DequeueCompletionPacket(m_hPort, 10000, &dwWrite, &completionKey, (LPOVERLAPPED*)&pCurIO))
+	{
+		if (pCurIO != NULL && completionKey != WAKEUP)
+			WriteCompletionRoutine(0, pCurIO);
+	}
+	ASSERT(m_listPendingIO.IsEmpty());
+
+	//writes this thread never picked up: release their counts so that a delayed
+	//file deletion (m_bDelayDelete) is not stalled forever
+	while (!m_listToWrite.IsEmpty()) {
+		const ToWrite &item = m_listToWrite.RemoveHead();
+		if (item.pBuffer->data == NULL)
+			delete item.pBuffer; //allocation request - owned by the queue
+		if (item.pFile)
+			::InterlockedDecrement(&item.pFile->m_iWrites);
+	}
 
 	::CloseHandle(m_hPort);
 	m_hPort = 0;
@@ -149,15 +183,24 @@ void CPartFileWriteThread::WriteBuffers()
 						item.pBuffer->dwError = dwError;
 						item.pBuffer->flushed = PB_ERROR;
 						theApp.QueueDebugLogLineEx(LOG_WARNING, _T("WriteBuffers error: %lu"), dwError);
-					}
+					} else
+						delete item.pBuffer; //allocation request - owned by the queue
 					RemFile(pFile);
+					::InterlockedDecrement(&pFile->m_iWrites); //counted at queue time; the last use of pFile
 					return;
 				}
 			}
 			pOvWrite->pos = m_listPendingIO.AddTail(pOvWrite);
-			++pFile->m_iWrites;
-		} else
+		} else {
 			theApp.QueueDebugLogLineEx(LOG_ERROR, _T("WriteBuffers error: CPartFile cannot be written"));
+			if (pBuffer->data) {
+				pBuffer->dwError = ERROR_OPEN_FAILED;
+				pBuffer->flushed = PB_ERROR; //let the main thread see the failure instead of waiting forever
+			} else
+				delete pBuffer; //allocation request - owned by the queue
+			if (pFile)
+				::InterlockedDecrement(&pFile->m_iWrites);
+		}
 	}
 }
 
@@ -168,22 +211,26 @@ void CPartFileWriteThread::WriteCompletionRoutine(DWORD dwBytesWritten, const Ov
 		return;
 	}
 	CPartFile *pFile = pOvWrite->pFile;
+	ASSERT(pOvWrite->pos);
+	m_listPendingIO.RemoveAt(pOvWrite->pos);
 	if (m_Run) {
 		PartFileBufferedData *pBuffer = pOvWrite->pBuffer;
 		const DWORD dwWrite = (DWORD)(pBuffer->end - pBuffer->start + 1);
 
-		ASSERT(pOvWrite->pos);
-		m_listPendingIO.RemoveAt(pOvWrite->pos);
 		if (dwBytesWritten && dwWrite == dwBytesWritten) {
 			if (pFile) {
-				--pFile->m_iWrites;
 				if (pBuffer->data) { //write data
-					ASSERT(pBuffer->flushed = PB_PENDING && pFile->m_iWrites >= 0);
+					ASSERT(pBuffer->flushed == PB_PENDING && pFile->m_iWrites > 0);
 					pBuffer->flushed = PB_WRITTEN;
 				} else { //full file allocation
 					ASSERT(dwBytesWritten == 1);
 					::FlushFileBuffers(pFile->m_hWrite);
-					pFile->m_hpartfile.SetLength(pBuffer->start); //truncate the extra byte
+					//truncate the extra byte through this thread's own handle: m_hpartfile
+					//and its file pointer are in concurrent use by the main thread
+					LARGE_INTEGER liLength;
+					liLength.QuadPart = (LONGLONG)pBuffer->start;
+					if (!::SetFilePointerEx(pFile->m_hWrite, liLength, NULL, FILE_BEGIN) || !::SetEndOfFile(pFile->m_hWrite))
+						theApp.QueueDebugLogLineEx(LOG_WARNING, _T("Failed to truncate the file allocation byte: %s"), (LPCTSTR)GetErrorMessage(::GetLastError(), 1));
 					delete pBuffer;
 				}
 			}
@@ -195,6 +242,10 @@ void CPartFileWriteThread::WriteCompletionRoutine(DWORD dwBytesWritten, const Ov
 		RemFile(pFile);
 
 	delete pOvWrite;
+	//the decrement must be the very last use of the file object: the main thread
+	//delays the deletion of a cancelled download while m_iWrites > 0
+	if (pFile)
+		::InterlockedDecrement(&pFile->m_iWrites);
 }
 
 bool CPartFileWriteThread::AddFile(CPartFile *pFile)
@@ -225,6 +276,26 @@ void CPartFileWriteThread::RemFile(CPartFile *pFile)
 		VERIFY(::CloseHandle(pFile->m_hWrite));
 		pFile->m_hWrite = INVALID_HANDLE_VALUE;
 	}
+}
+
+//Drop the writes that are queued but not yet picked up for a file about to be deleted.
+//Writes already moved to m_listToWrite or in flight stay counted in m_iWrites:
+//the caller must delay the destruction until the counter reaches zero.
+void CPartFileWriteThread::PurgeQueuedWrites(CPartFile *pFile)
+{
+	ASSERT(pFile);
+	m_lockFlushList.Lock();
+	for (POSITION pos = m_FlushList.GetHeadPosition(); pos != NULL;) {
+		POSITION posLast = pos;
+		const ToWrite &item = m_FlushList.GetNext(pos);
+		if (item.pFile == pFile) {
+			if (item.pBuffer->data == NULL)
+				delete item.pBuffer; //allocation request - owned by the queue
+			m_FlushList.RemoveAt(posLast);
+			::InterlockedDecrement(&pFile->m_iWrites);
+		}
+	}
+	m_lockFlushList.Unlock();
 }
 
 void CPartFileWriteThread::WakeUpCall()

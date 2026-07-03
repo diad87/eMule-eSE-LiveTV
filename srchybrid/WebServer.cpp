@@ -54,6 +54,8 @@
 #include "StatisticsDlg.h"
 #include "Opcodes.h"
 #include "Statistics.h"
+#include "KadKeepalive.h"      // R.2: keepalive control + stats for /api/keepalive and /api/status
+#include "LiveBuddyRelay.h"    // R.3: relay accept/egress/viewer-connect for /api/relay/*
 #include "QArray.h"
 #include "TransferDlg.h"
 #include "UploadQueue.h"
@@ -4517,6 +4519,46 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 {
 	CStringA sURL(CT2A(Data.sURL));
 
+	// --- M1 (mobile track): token-prefixed remote access ---------------------
+	// Remote HLS players (Media3/VLC/Safari) resolve segment URIs relative to
+	// the playlist URL and drop query strings, so the session token travels as
+	// a path prefix instead: /s/{ses}/api/live/{hash}/stream.m3u8. The token is
+	// a live webserver session id obtained through the password-gated login in
+	// _ProcessURL; _IsLoggedIn() both validates it and renews its expiry, so an
+	// actively playing stream keeps its own session alive. Bad or expired
+	// tokens get a 403 but are NOT added to badlogins: a player left paused
+	// past the session timeout would otherwise ban its own IP.
+	bool bTokenAuth = false;
+	bool bTokenAdmin = false;
+	if (sURL.GetLength() > 3 && strncmp(sURL, "/s/", 3) == 0) {
+		const int iSlash = sURL.Find('/', 3);
+		const long lToken = (iSlash > 3) ? atol((LPCSTR)sURL + 3) : 0;
+		if (lToken != 0 && _IsLoggedIn(Data, lToken)) {
+			bTokenAuth = true;
+			bTokenAdmin = _IsSessionAdmin(Data, lToken);
+			sURL.Delete(0, iSlash); // strip prefix; routing below sees the bare path
+		} else {
+			CStringA body = "{\"error\":\"forbidden\",\"hint\":\"invalid or expired token\"}";
+			CStringA hdr;
+			hdr.Format(
+				"HTTP/1.1 403 Forbidden\r\n"
+				"Content-Type: application/json\r\n"
+				"Cache-Control: no-store\r\n"
+				"Content-Length: %d\r\n\r\n",
+				body.GetLength());
+			Data.pSocket->SendData(hdr, hdr.GetLength());
+			Data.pSocket->SendData(body, body.GetLength());
+			const uint32 clientIP = Data.inadr.S_un.S_addr; // network order
+			LIVE_LOG("SEC", "Rejected /s/ request with bad token from %lu.%lu.%lu.%lu  url=%s",
+				(unsigned long)(clientIP & 0xFF),
+				(unsigned long)((clientIP >> 8) & 0xFF),
+				(unsigned long)((clientIP >> 16) & 0xFF),
+				(unsigned long)((clientIP >> 24) & 0xFF),
+				(LPCSTR)sURL);
+			return;
+		}
+	}
+
 	// --- SECURITY GATE -------------------------------------------------------
 	// Critical: this dispatch in WebSocket.cpp:88 BYPASSES the password gate
 	// that _ProcessURL applies to the classic WebServer. Without this guard,
@@ -4525,21 +4567,27 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// and start streaming the victim's desktop, then read it via the published
 	// Kad link. Same attack works against /api/holepunch/* and /api/live/log.
 	//
-	// Mitigation: only accept these endpoints from localhost. The legitimate
-	// Node.js dashboard on :8080 proxies through 127.0.0.1 -> 127.0.0.1:4711
-	// so it keeps working. Genuine remote-admin use cases must go through the
-	// password-gated routes in _ProcessURL or hit the Node side which has
-	// session/cookie auth.
+	// Mitigation: only accept these endpoints from localhost or with a valid
+	// session token in the /s/{ses}/ path prefix (validated above — bTokenAuth
+	// can only be true after _IsLoggedIn() matched a session created through
+	// the password gate). The legitimate Node.js dashboard on :8080 proxies
+	// through 127.0.0.1 -> 127.0.0.1:4711 so it keeps working. With no
+	// webserver password configured no session can exist, so remote access
+	// stays fully blocked exactly as before.
 	bool bIsLiveOrHolepunch =
 		(sURL.Left(10) == "/api/live/")
 		|| (sURL.Left(15) == "/api/holepunch/")
+		|| (sURL.Left(15) == "/api/keepalive/")
+		|| (sURL.Left(11) == "/api/relay/")
+		|| (sURL.Left(11) == "/api/ese/v9")
 		|| (sURL == "/api/status")
 		|| (sURL == "/dashboard") || (sURL == "/dashboard/")
-		|| (sURL.Left(5) == "/hls/");
+		|| (sURL.Left(5) == "/hls/")
+		|| (sURL == "/live") || (sURL.Left(6) == "/live/");
 	if (bIsLiveOrHolepunch) {
 		const uint32 clientIP = Data.inadr.S_un.S_addr; // network order
 		const uint32 loopback = htonl(INADDR_LOOPBACK);
-		if (clientIP != loopback) {
+		if (clientIP != loopback && !bTokenAuth) {
 			CStringA body = "{\"error\":\"forbidden\",\"hint\":\"this API is localhost-only\"}";
 			CStringA hdr;
 			hdr.Format(
@@ -4560,6 +4608,26 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		}
 	}
 
+	// Guest (low-user) tokens are viewers only: operator endpoints stay
+	// admin-session-only when reached through /s/. Loopback keeps today's
+	// full-trust behavior.
+	if (bTokenAuth && !bTokenAdmin && (
+		(sURL.Left(20) == "/api/live/broadcast/")
+		|| (sURL.Left(15) == "/api/holepunch/")
+		|| (sURL.Left(18) == "/api/live/privacy/"))) {
+		CStringA body = "{\"error\":\"forbidden\",\"hint\":\"admin session required\"}";
+		CStringA hdr;
+		hdr.Format(
+			"HTTP/1.1 403 Forbidden\r\n"
+			"Content-Type: application/json\r\n"
+			"Cache-Control: no-store\r\n"
+			"Content-Length: %d\r\n\r\n",
+			body.GetLength());
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(body, body.GetLength());
+		return;
+	}
+
 	// --- /api/status --- eSE Network health for React alerts (Fase 2)
 	if (sURL == "/api/status") {
 		CStringA json;
@@ -4569,6 +4637,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			TRISTATE ts = theApp.m_pUPnPFinder->GetImplementation()->ArePortsForwarded();
 			szUpnpFwd = (ts == TRIS_TRUE) ? "true" : (ts == TRIS_FALSE) ? "false" : "unknown";
 		}
+		CKadKeepalive::Stats ksKeepalive = CKadKeepalive::Instance().GetStats();  // R.2 telemetry snapshot
 		json.Format(
 			"{\"upnp_critical_error\":%s,"
 			"\"utp_hole_punch_enabled\":%s,"
@@ -4580,7 +4649,18 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"\"hole_punch_success\":%u,"
 			"\"hole_punch_sym_nat_fail\":%u,"
 			"\"hole_punch_encrypted\":%u,"
-			"\"hole_punch_plaintext\":%u}",
+			"\"hole_punch_plaintext\":%u,"
+			"\"hole_punch_req_recv\":%u,"
+			"\"hole_punch_challenge_sent\":%u,"
+			"\"kad3_rdv_req_sent\":%u,"
+			"\"kad3_rdv_req_recv\":%u,"
+			"\"kad3_rdv_challenge_sent\":%u,"
+			"\"kad3_rdv_fwd\":%u,"
+			"\"kad3_rdv_success\":%u,"
+			"\"keepalive_running\":%s,"
+			"\"keepalive_pings_sent\":%u,"
+			"\"keepalive_pongs_recv\":%u,"
+			"\"keepalive_supernodes\":%u}",
 			thePrefs.GetUPnPCriticalError() ? "true" : "false",
 			thePrefs.GetUtpHolePunchEnabled() ? "true" : "false",
 			thePrefs.GetWSUseUPnP() ? "true" : "false",
@@ -4591,7 +4671,18 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			CStatistics::m_dwHolePunchSuccess,
 			CStatistics::m_dwHolePunchSymNATFail,
 			CStatistics::m_dwHolePunchEncrypted,
-			CStatistics::m_dwHolePunchPlaintext
+			CStatistics::m_dwHolePunchPlaintext,
+			CStatistics::m_dwHolePunchReqRecv,
+			CStatistics::m_dwHolePunchChallengeSent,
+			CStatistics::m_dwKad3RdvReqSent,
+			CStatistics::m_dwKad3RdvReqRecv,
+			CStatistics::m_dwKad3RdvChallengeSent,
+			CStatistics::m_dwKad3RdvFwd,
+			CStatistics::m_dwKad3RdvSuccess,
+			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
+			ksKeepalive.pingsSent,
+			ksKeepalive.pongsReceived,
+			ksKeepalive.supernodesActive
 		);
 		CStringA header;
 		header.Format(
@@ -4999,6 +5090,202 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	//
 	// SAFETY: rate-limited to 1 manual fire per 5 s to avoid being mistaken
 	// for a Sybil attack on the target.
+	// --- /api/holepunch/rdv_test --- Manual R.1 (3-way rendezvous) trigger.
+	// A fires a HOLEPUNCH_REQ(0x68) at rendezvous R asking it to relay toward B.
+	// Usage: GET /api/holepunch/rdv_test?target_ip=B&target_udp_port=4672&rdv_ip=R&rdv_udp_port=4672
+	// Observe kad3_rdv_* in /api/status on A, R and B. Rate-limited 1 fire / 5 s.
+	if (sURL.Left(23) == "/api/holepunch/rdv_test") {
+		static DWORD s_lastManualRdv = 0;
+		DWORD now = ::GetTickCount();
+		if (now - s_lastManualRdv < 5000) {
+			CStringA json = "{\"success\":false,\"error\":\"rate_limited\",\"retry_after_ms\":";
+			CStringA n; n.Format("%u}", 5000 - (now - s_lastManualRdv));
+			json += n;
+			CStringA hdr;
+			hdr.Format("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", json.GetLength());
+			Data.pSocket->SendData(hdr, hdr.GetLength());
+			Data.pSocket->SendData(json, json.GetLength());
+			return;
+		}
+
+		CStringA tIpA = CT2A(_ParseURL(Data.sURL, _T("target_ip")));
+		CStringA rIpA = CT2A(_ParseURL(Data.sURL, _T("rdv_ip")));
+		uint32 tIpNet = (uint32)inet_addr((LPCSTR)tIpA);
+		uint16 tPort  = (uint16)_ttoi(_ParseURL(Data.sURL, _T("target_udp_port")));
+		uint32 rIpNet = (uint32)inet_addr((LPCSTR)rIpA);
+		uint16 rPort  = (uint16)_ttoi(_ParseURL(Data.sURL, _T("rdv_udp_port")));
+
+		bool ok = false;
+		const char* errCode = "ok";
+		if (tIpNet == INADDR_NONE || tIpNet == 0 || tPort == 0 || rIpNet == INADDR_NONE || rIpNet == 0 || rPort == 0) {
+			errCode = "invalid_ip_port";
+		} else if (!Kademlia::CKademlia::IsConnected() || Kademlia::CKademlia::GetUDPListener() == NULL) {
+			errCode = "kad_not_ready";
+		} else if (!thePrefs.GetUtpHolePunchEnabled()) {
+			errCode = "holepunch_disabled";
+		} else {
+			// InitiateKad3Rendezvous wants host-order IP/port (Kad convention).
+			Kademlia::CKademlia::GetUDPListener()->InitiateKad3Rendezvous(ntohl(rIpNet), rPort, ntohl(tIpNet), tPort);
+			s_lastManualRdv = now;
+			ok = true;
+		}
+
+		CStringA json;
+		json.Format(
+			"{\"success\":%s,\"error\":\"%s\","
+			"\"kad3_rdv\":{\"req_sent\":%u,\"req_recv\":%u,\"challenge_sent\":%u,\"fwd\":%u,\"rdv_success\":%u}}",
+			ok ? "true" : "false", errCode,
+			(unsigned)CStatistics::m_dwKad3RdvReqSent,
+			(unsigned)CStatistics::m_dwKad3RdvReqRecv,
+			(unsigned)CStatistics::m_dwKad3RdvChallengeSent,
+			(unsigned)CStatistics::m_dwKad3RdvFwd,
+			(unsigned)CStatistics::m_dwKad3RdvSuccess);
+		CStringA hdr;
+		hdr.Format(
+			"HTTP/1.1 %s\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n",
+			ok ? "200 OK" : "400 Bad Request", json.GetLength());
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/keepalive/{start|stop} --- Manual R.2 (Kad keepalive / pinhole) control.
+	// start: RequestStart() flips a cross-thread flag; the Kad thread then self-populates
+	// the supernode pool from the routing table and pings each every 25 s (PING_REQ 0x66),
+	// each answered with a PONG (0x67) that refreshes the pinhole. Observe keepalive_* in
+	// /api/status afterward. RequestStart/Stop are atomic (InterlockedExchange), so they
+	// are safe to call from this webserver worker thread (no Kad/Live state touched here).
+	if (sURL.Left(15) == "/api/keepalive/") {
+		const bool bStart = (sURL.Left(20) == "/api/keepalive/start");
+		const bool bStop  = (sURL.Left(19) == "/api/keepalive/stop");
+		// Throttle state-toggles: a rapid start/stop loop spams the Kad log and re-scans
+		// the routing table. 2 s is invisible to manual testing but kills a toggle flood.
+		static DWORD s_lastKeepaliveToggle = 0;
+		DWORD nowKa = ::GetTickCount();
+		if ((bStart || bStop) && s_lastKeepaliveToggle != 0 && (nowKa - s_lastKeepaliveToggle) < 2000) {
+			CStringA json = "{\"success\":false,\"error\":\"rate_limited\",\"retry_after_ms\":";
+			CStringA n; n.Format("%u}", 2000 - (nowKa - s_lastKeepaliveToggle));
+			json += n;
+			CStringA hdr;
+			hdr.Format("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", json.GetLength());
+			Data.pSocket->SendData(hdr, hdr.GetLength());
+			Data.pSocket->SendData(json, json.GetLength());
+			return;
+		}
+		const char* errCode = "ok";
+		bool ok = true;
+		if (bStart)      { CKadKeepalive::Instance().RequestStart(); s_lastKeepaliveToggle = nowKa; }
+		else if (bStop)  { CKadKeepalive::Instance().RequestStop();  s_lastKeepaliveToggle = nowKa; }
+		else { ok = false; errCode = "unknown_action"; }
+
+		CKadKeepalive::Stats ks = CKadKeepalive::Instance().GetStats();
+		CStringA json;
+		json.Format(
+			"{\"success\":%s,\"error\":\"%s\",\"requested\":\"%s\","
+			"\"keepalive\":{\"running\":%s,\"pings_sent\":%u,\"pongs_recv\":%u,\"supernodes\":%u}}",
+			ok ? "true" : "false", errCode,
+			bStart ? "start" : (bStop ? "stop" : "none"),
+			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
+			(unsigned)ks.pingsSent, (unsigned)ks.pongsReceived, (unsigned)ks.supernodesActive);
+		CStringA hdr;
+		hdr.Format(
+			"HTTP/1.1 %s\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n",
+			ok ? "200 OK" : "400 Bad Request", json.GetLength());
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/ese/v9?on=1 --- One-command v9 reachability bring-up / soft kill-switch.
+	// Flips ALL four default-OFF v9 prefs together (reach selector + relay accept + relay egress +
+	// auto-keepalive) so a multi-PC test needs ONE call instead of four scattered /api/relay and
+	// /api/keepalive toggles; on=0 reverts the node to vanilla reachability in one shot. Also
+	// starts/stops the Kad keepalive to match (RequestStart/Stop are atomic flag-flips, idempotent
+	// and safe from this worker thread — same contract the /api/keepalive handler relies on).
+	// NOTE: the master 2-way hole-punch (EnableUtpHolePunch) is a SEPARATE, default-ON pref and is
+	// intentionally NOT touched here — this lever governs only the dormant v9 cascade layers.
+	if (sURL.Left(11) == "/api/ese/v9") {
+		const bool bOn = (_ParseURL(Data.sURL, _T("on")) != _T("0"));   // default ON unless on=0
+		thePrefs.SetEseReachSelector(bOn);
+		thePrefs.SetEseRelayAccept(bOn);
+		thePrefs.SetEseRelayEgress(bOn);
+		thePrefs.SetEseAutoKeepalive(bOn);
+		thePrefs.SetEseHolePunchPortPredict(bOn);   // anti-CGNAT port spray (both eD2K + Live)
+		thePrefs.SetEseEd2kPunch3(bOn);             // eD2K downloads escalate to 3-way rendezvous
+		if (bOn) CKadKeepalive::Instance().RequestStart();
+		else     CKadKeepalive::Instance().RequestStop();
+		CStringA json;
+		json.Format("{\"success\":true,\"on\":%s,"
+			"\"v9\":{\"selector\":%s,\"relay_accept\":%s,\"relay_egress\":%s,\"auto_keepalive\":%s,"
+			"\"port_predict\":%s,\"ed2k_punch3\":%s,"
+			"\"keepalive_running\":%s,\"hole_punch_master\":%s},"
+			"\"reach_connects\":{\"direct\":%u,\"punch2\":%u,\"punch3\":%u,\"relay\":%u}}",
+			bOn ? "true" : "false",
+			thePrefs.GetEseReachSelector() ? "true" : "false",
+			thePrefs.GetEseRelayAccept() ? "true" : "false",
+			thePrefs.GetEseRelayEgress() ? "true" : "false",
+			thePrefs.GetEseAutoKeepalive() ? "true" : "false",
+			thePrefs.GetEseHolePunchPortPredict() ? "true" : "false",
+			thePrefs.GetEseEd2kPunch3() ? "true" : "false",
+			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
+			thePrefs.GetUtpHolePunchEnabled() ? "true" : "false",
+			(unsigned)CStatistics::m_dwReachConnDirect, (unsigned)CStatistics::m_dwReachConnPunch2,
+			(unsigned)CStatistics::m_dwReachConnPunch3, (unsigned)CStatistics::m_dwReachConnRelay);
+		CStringA hdr;
+		hdr.Format("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n", json.GetLength());
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/relay/{accept|egress|selector|connect} --- R.3 relay floor + selector test/activation.
+	//   accept?on=1   (relay buddy X): flip EseRelayAccept  — accept 0xCF SETUP + serve 0xCE viewers.
+	//   egress?on=1   (broadcaster B): flip EseRelayEgress  — push my stream to a connected HighID buddy.
+	//   selector?on=1 (viewer V):      flip EseReachSelector— Direct->punch2->punch3->relay escalation.
+	//   connect?stream=<32hex>&buddy_ip=<X>&buddy_port=<P> (viewer V): subscribe to relay X via 0xCE.
+	// Same prefs are loadable from emule.ini [eSE]; these flip them at runtime (no restart). on=0 turns off.
+	if (sURL.Left(11) == "/api/relay/") {
+		const bool bOn = (_ParseURL(Data.sURL, _T("on")) != _T("0"));   // default ON unless on=0
+		const char* action = "unknown";
+		bool ok = true;
+		if (sURL.Left(17) == "/api/relay/accept")        { thePrefs.SetEseRelayAccept(bOn);   action = "accept"; }
+		else if (sURL.Left(17) == "/api/relay/egress")   { thePrefs.SetEseRelayEgress(bOn);   action = "egress"; }
+		else if (sURL.Left(19) == "/api/relay/selector") { thePrefs.SetEseReachSelector(bOn); action = "selector"; }
+		else if (sURL.Left(18) == "/api/relay/connect") {
+			CStringA keyA = CT2A(_ParseURL(Data.sURL, _T("stream")));
+			CStringA ipA  = CT2A(_ParseURL(Data.sURL, _T("buddy_ip")));
+			uint16 port   = (uint16)_ttoi(_ParseURL(Data.sURL, _T("buddy_port")));
+			uchar streamKey[16];
+			uint32 ipNet = (uint32)inet_addr((LPCSTR)ipA);
+			if (EseHexToKey16A(keyA, streamKey) && ipNet != INADDR_NONE && ipNet != 0 && port != 0) {
+				CLiveBuddyRelay::Instance().RequestViewerConnect(streamKey, ipNet, port);
+				action = "connect";
+			} else { ok = false; action = "connect_bad_args"; }
+		}
+		else { ok = false; }
+		CStringA json;
+		json.Format("{\"success\":%s,\"action\":\"%s\",\"on\":%s,"
+			"\"relay\":{\"accept\":%s,\"egress\":%s,\"selector\":%s,"
+			"\"req_recv\":%u,\"accepted\":%u,\"active\":%u,\"bytes_fwd_kb\":%u,"
+			"\"budget_drops\":%u,\"max_kbps\":%u},"
+			"\"reach_connects\":{\"direct\":%u,\"punch2\":%u,\"punch3\":%u,\"relay\":%u}}",
+			ok ? "true" : "false", action, bOn ? "true" : "false",
+			thePrefs.GetEseRelayAccept() ? "true" : "false",
+			thePrefs.GetEseRelayEgress() ? "true" : "false",
+			thePrefs.GetEseReachSelector() ? "true" : "false",
+			(unsigned)CStatistics::m_dwRelayReqRecv, (unsigned)CStatistics::m_dwRelayAccepted,
+			(unsigned)CStatistics::m_dwRelayActive, (unsigned)CStatistics::m_dwRelayBytesFwdKB,
+			(unsigned)CStatistics::m_dwRelayBudgetDrops, (unsigned)thePrefs.GetEseRelayMaxKBps(),
+			(unsigned)CStatistics::m_dwReachConnDirect, (unsigned)CStatistics::m_dwReachConnPunch2,
+			(unsigned)CStatistics::m_dwReachConnPunch3, (unsigned)CStatistics::m_dwReachConnRelay);
+		CStringA hdr;
+		hdr.Format("HTTP/1.1 %s\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n",
+			ok ? "200 OK" : "400 Bad Request", json.GetLength());
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
 	if (sURL.Left(19) == "/api/holepunch/test") {
 		static DWORD s_lastManualHolePunch = 0;
 		DWORD now = ::GetTickCount();
@@ -5027,6 +5314,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		bool ok = false;
 		const char* errCode = "ok";
 		DWORD attemptsBefore = CStatistics::m_dwHolePunchAttempts;
+		uint16 hpSpread = 0;   // [eSE v9] port-predict spread actually used (0 = single-shot); reported in JSON
 
 		if (ipNet == INADDR_NONE || ipNet == 0 || udpPort == 0) {
 			errCode = "invalid_ip_port";
@@ -5036,7 +5324,14 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			errCode = "holepunch_disabled";
 		} else {
 			// SendEseHolePunchReq expects host-order IP, host-order port.
-			Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReq(ntohl(ipNet), udpPort);
+			// [eSE v9] optional ?spread=N (0-8) exercises anti-CGNAT port prediction straight
+			// from the test endpoint without flipping the pref; empty/0 falls back to the
+			// EseHolePunchPortPredict pref so normal test runs are unchanged.
+			int spreadReq = _ttoi(_ParseURL(Data.sURL, _T("spread")));
+			hpSpread = (spreadReq > 0)
+				? (uint16)(spreadReq > 8 ? 8 : spreadReq)
+				: (thePrefs.GetEseHolePunchPortPredict() ? (uint16)thePrefs.GetEseHolePunchPortSpread() : 0);
+			Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(ntohl(ipNet), udpPort, hpSpread);
 			s_lastManualHolePunch = now;
 			ok = true;
 		}
@@ -5048,7 +5343,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"\"attempts_before\":%u,\"attempts_after\":%u,"
 			"\"counters\":{"
 			"\"attempts\":%u,\"success\":%u,\"sym_nat_fail\":%u,"
-			"\"encrypted\":%u,\"plaintext\":%u}}",
+			"\"encrypted\":%u,\"plaintext\":%u,\"spray_reqs\":%u,"
+			"\"req_recv\":%u,\"challenge_sent\":%u},"
+			"\"port_predict\":{\"on\":%s,\"spread\":%u,\"used\":%u}}",
 			ok ? "true" : "false",
 			errCode,
 			(LPCSTR)CT2A(ipT), (unsigned)udpPort,
@@ -5057,7 +5354,13 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			(unsigned)CStatistics::m_dwHolePunchSuccess,
 			(unsigned)CStatistics::m_dwHolePunchSymNATFail,
 			(unsigned)CStatistics::m_dwHolePunchEncrypted,
-			(unsigned)CStatistics::m_dwHolePunchPlaintext);
+			(unsigned)CStatistics::m_dwHolePunchPlaintext,
+			(unsigned)CStatistics::m_dwHolePunchSprayReqs,
+			(unsigned)CStatistics::m_dwHolePunchReqRecv,
+			(unsigned)CStatistics::m_dwHolePunchChallengeSent,
+			thePrefs.GetEseHolePunchPortPredict() ? "true" : "false",
+			(unsigned)thePrefs.GetEseHolePunchPortSpread(),
+			(unsigned)hpSpread);
 		CStringA hdr;
 		hdr.Format(
 			"HTTP/1.1 %s\r\n"
@@ -5103,6 +5406,17 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		else
 			pubIpA = "";
 
+		// v0.71 IPv6 — surface the in-band detected public v6 address
+		// (OP_PUBLICIP_ANSWER_V6 / CFirewallProberV6) so the eSE web UI can show
+		// and link it WITHOUT querying any third-party echo service. Empty until
+		// a peer has observed and reported our v6 address.
+		CStringA pubIp6A = "";
+		try {
+			CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+			if (!v6.IsNull())
+				pubIp6A = CStringA(v6.ToStringC());
+		} catch (...) { /* a health endpoint must never throw */ }
+
 		CStringA ffPathA = (LPCSTR)CT2A(ffPath);
 		ffPathA = EseJsonEscapeA(ffPathA);
 
@@ -5116,6 +5430,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"\"max_upload_kbs\":%u,"
 			"\"port\":%u,"
 			"\"public_ip\":\"%s\","
+			"\"public_ip_v6\":\"%s\","
 			"\"ffmpeg_found\":%s,"
 			"\"ffmpeg_path\":\"%s\","
 			"\"ready\":%s}",
@@ -5126,6 +5441,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			fwChecking ? "true" : "false",
 			(unsigned)maxUpKBs, (unsigned)port,
 			(LPCSTR)pubIpA,
+			(LPCSTR)pubIp6A,
 			ffmpegFound ? "true" : "false",
 			(LPCSTR)ffPathA,
 			(kadConn && highId && ffmpegFound) ? "true" : "false");
@@ -5388,7 +5704,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			    "{\"circ_id\":\"0x%08X\",\"role\":\"%s\","
 			    "\"state\":\"%s\",\"age_ms\":%u,"
 			    "\"hop_count\":%u,\"forwarding\":%s,"
-			    "\"next_circ_id\":\"0x%08X\"}",
+			    "\"next_circ_id\":\"0x%08X\",\"auth_ok\":%s}",
 			    s.circ_id,
 			    s.role == 0 ? "Originator" : "Relay",
 			    (s.state == 0 ? "Pending"
@@ -5399,7 +5715,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			    s.age_ms,
 			    s.hop_count,
 			    s.next_hop_set ? "true" : "false",
-			    s.next_circ_id);
+			    s.next_circ_id,
+			    s.auth_ok ? "true" : "false");
 			arr += line;
 		}
 
@@ -5587,6 +5904,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		size_t subscriptionCount = 0;
 		uint32 capsRuntime = g_uEseCapsRuntime;
 		CStringA proberV6Str = "";
+		// v8.1 D8-web - tunnel byte/cell/RTT telemetry (mirrors the MFC Network Info panel).
+		// Read-only scalar getters; safe to call from the webserver worker (same pattern as
+		// ActiveCircuitCount below — a momentary torn read just yields a slightly stale count).
+		uint64_t cellsSent = 0, cellsRecv = 0, bytesSent = 0, bytesRecv = 0;
+		uint32 meanRttMs = 0;
 		try {
 			circuitsActive    = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
 			circuitsPending   = eSELive::CLiveTunnel::Get().PendingCircuitCount();
@@ -5594,6 +5916,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			subscriptionCount = eSELive::CLiveSubscriptionStore::Get().Count();
 			CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
 			if (!v6.IsNull()) proberV6Str = CStringA(v6.ToStringC());
+			cellsSent  = eSELive::CLiveTunnel::Get().CellsSentTotal();   // v8.1 D8-web
+			cellsRecv  = eSELive::CLiveTunnel::Get().CellsRecvTotal();
+			bytesSent  = eSELive::CLiveTunnel::Get().BytesSentTotal();
+			bytesRecv  = eSELive::CLiveTunnel::Get().BytesRecvTotal();
+			meanRttMs  = eSELive::CLiveTunnel::Get().MeanRttMs();
 		} catch (...) {
 			// keep zeros; this endpoint must never throw
 		}
@@ -5628,6 +5955,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		        "\"circuitsPending\":%u,"
 		        "\"tunnelPoolSize\":%u,"
 		        "\"subscriptionsLoaded\":%u,"
+		        "\"cellsSent\":%I64u,\"cellsRecv\":%I64u,"
+		        "\"bytesSent\":%I64u,\"bytesRecv\":%I64u,"
+		        "\"meanRttMs\":%u,"
 		        "\"publicIPv6\":\"%s\""
 		    "}"
 		    "}",
@@ -5638,6 +5968,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		    (unsigned)circuitsPending,
 		    (unsigned)tunnelPoolSize,
 		    (unsigned)subscriptionCount,
+		    (unsigned __int64)cellsSent,
+		    (unsigned __int64)cellsRecv,
+		    (unsigned __int64)bytesSent,
+		    (unsigned __int64)bytesRecv,
+		    (unsigned)meanRttMs,
 		    (LPCSTR)proberV6Str);
 		CStringA header;
 		header.Format(
@@ -6167,6 +6502,43 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 
+#ifdef ESE_TEST_HOOKS
+	// --- /api/live/test/edge_sabotage?on=1&mode=drop|delay&delay=6000 ---
+	// TEST-ONLY (rogue node R): toggle selective live-edge sabotage in
+	// OnPeerRequest for the 3-PC validation recipe. Compiled ONLY under
+	// ESE_TEST_HOOKS, so the honest/production binary never links this route.
+	// Loopback-only (the generic /api/live/ remote gate above already blocks
+	// non-local callers); no full-trust requirement since it's a local test op.
+	if (sURL.Left(28) == "/api/live/test/edge_sabotage") {
+		extern bool  g_eseTestSabotageOn;
+		extern int   g_eseTestSabotageMode;
+		extern DWORD g_eseTestSabotageDelayMs;
+		CString onT   (_ParseURL(Data.sURL, _T("on")));
+		CString modeT (_ParseURL(Data.sURL, _T("mode")));
+		CString delayT(_ParseURL(Data.sURL, _T("delay")));
+		g_eseTestSabotageOn   = (onT == _T("1"));
+		g_eseTestSabotageMode = (modeT == _T("delay")) ? 1 : 0;
+		int dl = _ttoi(delayT);
+		g_eseTestSabotageDelayMs = (dl > 0) ? (DWORD)dl : 6000;
+		CStringA json;
+		json.Format("{\"ok\":true,\"on\":%s,\"mode\":\"%s\",\"delayMs\":%u}",
+			g_eseTestSabotageOn ? "true" : "false",
+			g_eseTestSabotageMode ? "delay" : "drop",
+			g_eseTestSabotageDelayMs);
+		CStringA header;
+		header.Format(
+			"HTTP/1.1 200 OK\r\n"
+			"Content-Type: application/json\r\n"
+			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
+			"X-Content-Type-Options: nosniff\r\n"
+			"Content-Length: %d\r\n\r\n",
+			json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+#endif
+
 	// --- /api/live/debug --- Phase 0 Observability (OBS-1)
 	// Fix 1 (ALTA): All state is read via BuildDebugSnapshot() under m_lock.
 	// No direct CMap/CTypedPtrList iteration from the WebServer thread.
@@ -6287,6 +6659,24 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				s.counters.skippedInitialPushes, s.counters.subscribesRateLimited,
 				s.counters.endsRejectedNoAuth, s.counters.tombstonesEvicted);
 
+			CStringA peerDetailJson;   // empty unless snapshot was populated (ESE_TEST_HOOKS build)
+			if (s.peerDetailCount > 0) {
+				peerDetailJson = ",\"peerDetail\":[";
+				for (int pd = 0; pd < s.peerDetailCount; pd++) {
+					CStringA one;
+					// ip[] is already a bounded, safe <=45-char string (FillPeerIpSafe);
+					// v4/v6 digits/dots/colons need no JSON escaping.
+					one.Format("%s{\"ip\":\"%s\",\"port\":%u,\"level\":%d,"
+						"\"failCount\":%d,\"respPct\":%d,\"rttMs\":%u}",
+						pd ? "," : "",
+						s.peerDetail[pd].ip, (unsigned)s.peerDetail[pd].port,
+						s.peerDetail[pd].level, s.peerDetail[pd].failCount,
+						s.peerDetail[pd].respPct, s.peerDetail[pd].rttMs);
+					peerDetailJson += one;
+				}
+				peerDetailJson += "]";
+			}
+
 			// --- Assemble final JSON ---
 			json.Format(
 				"{\"broadcasting\":%s,"
@@ -6294,7 +6684,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				"\"emergencyMode\":%s,"
 				"\"uptimeMs\":%u,"
 				"\"totalRedistributed\":%I64u,"
-				"%s,%s,%s,%s,%s,"
+				"%s,%s,%s,%s,%s%s,"
 				"\"source\":\"emule-core-debug\"}",
 				s.broadcasting ? "true" : "false",
 				s.viewing ? "true" : "false",
@@ -6302,7 +6692,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				s.uptimeMs,
 				(unsigned __int64)s.totalRedistributed,
 				(LPCSTR)discovery, (LPCSTR)peers, (LPCSTR)chunks,
-				(LPCSTR)hlsStatus, (LPCSTR)ctrJson);
+				(LPCSTR)hlsStatus, (LPCSTR)ctrJson, (LPCSTR)peerDetailJson);
 		} else {
 			json = "{\"broadcasting\":false,\"viewing\":false,"
 				"\"emergencyMode\":false,\"uptimeMs\":0,\"totalRedistributed\":0,"
@@ -6437,14 +6827,18 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			// title like <img src=x onerror=fetch('/api/live/broadcast/stop')>
 			// would otherwise execute in any viewer that opens this page.
 			"function esc(s){return String(s==null?'':s).replace(/[&<>\"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'})[c]})}"
-			"function r(){fetch('/api/live/channels').then(r=>r.json()).then(d=>{"
+			// M1: B = the /s/{ses}/ prefix when the page is served token-routed,
+			// "" when served at /live directly — keeps every fetch and link
+			// inside the authenticated namespace.
+			"const B=location.pathname.replace(/\\/live\\/?$/,'');"
+			"function r(){fetch(B+'/api/live/channels').then(r=>r.json()).then(d=>{"
 			"const g=document.getElementById('g'),e=document.getElementById('e');"
 			"g.innerHTML='';"
 			"if(!d.channels||d.channels.length===0){e.textContent='No live channels right now.';e.style.display='block';return}"
 			"e.style.display='none';"
 			"d.channels.forEach(c=>{"
 			"const card=document.createElement('div');card.className='card';"
-			"card.onclick=()=>location.href='/live/'+encodeURIComponent(c.hash);"
+			"card.onclick=()=>location.href=B+'/live/'+encodeURIComponent(c.hash);"
 			"card.innerHTML='<div class=\"thumb\"><span class=\"badge\">LIVE</span></div>'"
 			"+'<div class=\"info\"><div class=\"title\"><span class=\"live-dot\"></span>'+esc(c.title)+'</div>'"
 			"+'<div class=\"meta\">'+esc(c.category)+' | '+esc(c.quality)+' | '+esc(c.viewers)+' viewers</div></div>';"
@@ -6489,9 +6883,16 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"<div class='info'><h1><span class='badge'>LIVE</span>Stream</h1>"
 			"<div class='meta' id='m'>Connecting...</div></div></div>"
 			"<script>"
+			// M1: same B-prefix trick as the channels page; also fixes the back
+			// link so navigation never falls out of the /s/{ses}/ namespace.
 			"const v=document.getElementById('v');"
-			"const src='/api/live/%s/stream.m3u8';"
-			"if(Hls.isSupported()){"
+			"const B=location.pathname.split('/live/')[0];"
+			"document.querySelector('.back').href=B+'/live';"
+			"const src=B+'/api/live/%s/stream.m3u8';"
+			// window.Hls guard: with no internet the CDN script never loads and a
+			// bare Hls.isSupported() would throw, killing the native-HLS fallback
+			// below (Safari/iOS plays the stream without hls.js).
+			"if(window.Hls&&Hls.isSupported()){"
 			"const h=new Hls({"
 			"liveSyncDurationCount:3,"
 			"liveMaxLatencyDurationCount:8,"
@@ -6528,7 +6929,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			// away (navigation/close). keepalive lets the request outlive the
 			// page. The 60 s idle watchdog in Process() is the backstop for
 			// killed tabs where this never fires.
-			"addEventListener('pagehide',()=>{try{fetch('/api/live/leave',{keepalive:true})}catch(_){}});"
+			"addEventListener('pagehide',()=>{try{fetch(B+'/api/live/leave',{keepalive:true})}catch(_){}});"
 			"const langNames={eng:'English',spa:'Spanish',fre:'French',ger:'German',ita:'Italian',por:'Portuguese',jpn:'Japanese',kor:'Korean',chi:'Chinese',rus:'Russian',ara:'Arabic',und:'Track'};"
 			"const langFlags={eng:'[EN]',spa:'[ES]',fre:'[FR]',ger:'[DE]',ita:'[IT]',por:'[PT]',jpn:'[JP]',rus:'[RU]',kor:'[KR]',chi:'[CN]',ara:'[AR]',und:''};"
 			"function buildAudioSel(tracks,setFn){"
@@ -6562,7 +6963,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"}else if(v.canPlayType('application/vnd.apple.mpegurl')){v.src=src}"
 			// SEC: same escaping concern as the channels grid - title is broadcaster-controlled.
 			"function esc(s){return String(s==null?'':s).replace(/[&<>\"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'})[c]})}"
-			"fetch('/api/live/channels').then(r=>r.json()).then(d=>{"
+			"fetch(B+'/api/live/channels').then(r=>r.json()).then(d=>{"
 			"const ch=d.channels.find(c=>c.hash==='%s');"
 			"if(ch){document.querySelector('h1').innerHTML='<span class=\"badge\">LIVE</span> '+esc(ch.title);"
 			"document.getElementById('m').textContent=ch.category+' | '+ch.quality+' | '+ch.viewers+' viewers'}});"

@@ -57,6 +57,8 @@ their client on the eMule forum.
 #include "kademlia/kademlia/KadV2TunnelPool.h"
 #include "../../LiveTunnel.h"
 #include "../../LiveBootstrap.h"
+#include "../../LiveBuddyRelay.h"               // R.3: relay floor (buddy relay) for symmetric NAT
+#include "../../KadKeepalive.h"                 // R.2: keepalive pinger
 // v0.71 P3.10 — ServerWnd::UpdateMyInfo periodic refresh
 #include "../../ServerWnd.h"
 
@@ -216,6 +218,11 @@ void CKademlia::Process()
 	if (m_pInstance == NULL || !m_bRunning)
 		return;
 
+	// the index otherwise only cleans when search requests arrive;
+	// Clean() self-limits to one pass per 30 min and to loaded data
+	if (m_pInstance->m_pIndexed != NULL)
+		m_pInstance->m_pIndexed->Clean();
+
 	// v0.71 P0.2 — privacy stack heartbeat. Wrapped in try/catch because
 	// the privacy modules are best-effort and must NEVER bring down the
 	// Kad scheduler. If one throws we log once and stop ticking it (the
@@ -228,6 +235,27 @@ void CKademlia::Process()
 				eSELive::CLiveTunnel::Get().ProcessMainThreadWork();
 				CKadV2TunnelPool::Get().Tick();
 				eSELive::CLiveBootstrap::Get().TickMDNS();
+				// CHolePuncher removed 2026-06-14: superseded by the live R.1 rendezvous in
+				// CKademliaUDPListener (InitiateKad3Rendezvous + Process_KADEMLIA3_HOLEPUNCH_*).
+				CLiveBuddyRelay::Instance().Tick(); // R.3: relay floor session health (no-op until increment 2)
+				// R.2 AUTO-ACTIVATION (dormant unless EseAutoKeepalive ini pref is set). This is
+				// the always-on 1 Hz main-thread heartbeat; throttle the firewalled re-check to 5 s.
+				// When ON: RequestStart the keepalive once we are firewalled/LowID + Kad-connected
+				// (the pool is sourced from the live routing table), and RequestStop when HighID.
+				// Idempotent atomic flag writes honored in ka.Tick() below (same thread).
+				if (thePrefs.GetEseAutoKeepalive()) {
+					static DWORD s_lastAutoKaCheck = 0;
+					const DWORD nowKa = ::GetTickCount();
+					if (nowKa - s_lastAutoKaCheck >= 5000) {
+						s_lastAutoKaCheck = nowKa;
+						CKadKeepalive& ka = CKadKeepalive::Instance();
+						if (CKademlia::IsConnected() && theApp.IsFirewalled() && !ka.IsRunning())
+							ka.RequestStart();
+						else if (ka.IsRunning() && !theApp.IsFirewalled())
+							ka.RequestStop();
+					}
+				}
+				CKadKeepalive::Instance().Tick();   // R.2: keepalive pinger (inert until supernode pool populated)
 			} catch (...) {
 				DebugLogError(_T("Privacy tick threw exception — disabling further ticks this session"));
 				s_privacyTickDisabled = true;

@@ -56,6 +56,8 @@
 #include "CollectionViewDialog.h"
 #include "uploaddiskiothread.h"
 #include "PartFileWriteThread.h"
+#include "UploadQueue.h"
+#include "PartHashThread.h"
 #ifndef XP_BUILD
 #include <urlmon.h>
 #endif
@@ -232,6 +234,7 @@ void CPartFile::Init()
 	lastseencomplete = 0;
 	m_hWrite = INVALID_HANDLE_VALUE;
 	m_iWrites = 0;
+	m_uPartHashGen = 0; // eSE H1
 	m_LastSearchTime = 0;
 	m_LastSearchTimeKad = 0;
 	memset(src_stats, 0, sizeof src_stats);
@@ -289,16 +292,31 @@ void CPartFile::Init()
 
 CPartFile::~CPartFile()
 {
+	// eSE H1: drop queued hash jobs; an in-flight verdict dies at the IsPartFile check.
+	// Leftover parts still marked in m_aChangedPart are re-verified synchronously by the
+	// FlushBuffer below (at shutdown the hash thread is already stopped - plan §2.6)
+	if (theApp.m_pPartHashThread)
+		theApp.m_pPartHashThread->CancelFile(this);
+	m_mapPendingHashParts.RemoveAll();
+
 	// Barry - Ensure all buffered data is written
 	if ((HANDLE)m_hpartfile != INVALID_HANDLE_VALUE) {
 		// commit file and directory entry
-		FlushBuffer(false, true);
+		FlushBuffer(false, true, true);
 		CPartFileWriteThread::RemFile(this);
 		m_hpartfile.Close();
 		// Update met file (with the current directory entry)
 		SavePartFile();
 	} else
 		CPartFileWriteThread::RemFile(this);
+
+	// perf-audit lote 2: the write thread must hold no references to the buffers freed
+	// below. Runtime deletions arrive here with m_iWrites == 0 (DeletePartFile delays
+	// the delete); at shutdown the write thread has already ended, but entries it never
+	// dequeued may remain in the flush list.
+	if (theApp.m_pPartFileWriteThread)
+		theApp.m_pPartFileWriteThread->PurgeQueuedWrites(this);
+	ASSERT(m_iWrites <= 0);
 
 	while (!m_BufferedData_list.IsEmpty()) {
 		const PartFileBufferedData *item = m_BufferedData_list.RemoveHead();
@@ -1577,6 +1595,13 @@ void CPartFile::PartFileHashFinished(CKnownFile *result)
 void CPartFile::AddGap(uint64 start, uint64 end) //keep the list ordered!
 {
 	ASSERT(end < (uint64)m_nFileSize && start <= end);
+	// eSE H1: data in these parts is changing; invalidate any in-flight hash verdicts
+	if (!m_mapPendingHashParts.IsEmpty())
+		for (UINT uPart = (UINT)(start / PARTSIZE); uPart <= (UINT)(end / PARTSIZE); ++uPart) {
+			UINT uGen;
+			if (m_mapPendingHashParts.Lookup(uPart, uGen))
+				m_mapPendingHashParts[uPart] = ++m_uPartHashGen;
+		}
 	POSITION before = NULL;
 	for (POSITION pos = m_gaplist.GetHeadPosition(); pos != NULL;) {
 		POSITION pos2 = pos;
@@ -2672,8 +2697,12 @@ bool CPartFile::RemoveBlockFromList(uint64 start, uint64 end)
 
 void CPartFile::CompleteFile(bool bIsHashingDone)
 {
-	ASSERT(m_iWrites <= 0 && m_gaplist.IsEmpty() && m_BufferedData_list.IsEmpty());
+	ASSERT(m_iWrites <= 0 && m_gaplist.IsEmpty() && m_BufferedData_list.IsEmpty() && m_mapPendingHashParts.IsEmpty());
 	CPartFileWriteThread::RemFile(this);
+	// eSE H1: a completing file has no business in the hash queue
+	if (theApp.m_pPartHashThread)
+		theApp.m_pPartHashThread->CancelFile(this);
+	m_mapPendingHashParts.RemoveAll();
 	m_nFileFlushTime = 0;
 
 	theApp.downloadqueue->RemoveLocalServerRequest(this);
@@ -3082,6 +3111,25 @@ void CPartFile::DeletePartFile()
 	}
 
 	theApp.sharedfiles->RemoveFile(this, true);
+
+	// perf-audit lote 2: asynchronous disk I/O may still hold pointers to this object.
+	// Drop the writes still queued for the write thread, then let a disk-read-thread
+	// iteration that was already past GetFileByID finish: it issues its reads (counted
+	// in nInUse) while holding the upload list lock, so touching that lock is a barrier.
+	// Destruction is delayed while any read or write is outstanding;
+	// CPartFile::StopPausedFile retries on every CDownloadQueue::Process pass.
+	if (theApp.m_pPartFileWriteThread)
+		theApp.m_pPartFileWriteThread->PurgeQueuedWrites(this);
+	if (theApp.uploadqueue) {
+		CCriticalSection *pcsUploadList = NULL;
+		theApp.uploadqueue->GetUploadListTS(&pcsUploadList);
+		CSingleLock lockUploadList(pcsUploadList, TRUE);
+	}
+	if (m_iWrites > 0 || nInUse > 0) {
+		m_bDelayDelete = true;
+		return;
+	}
+
 	theApp.downloadqueue->RemoveFile(this);
 	theApp.emuledlg->transferwnd->GetDownloadList()->RemoveFile(this);
 	theApp.knownfiles->AddCancelledFileID(GetFileHash());
@@ -3377,8 +3425,10 @@ void CPartFile::ResumeFile(bool resort)
 {
 	if (status == PS_COMPLETE || status == PS_COMPLETING)
 		return;
+	if (m_bDelayDelete) //deletion pending (file op or outstanding disk I/O) - don't revive
+		return;
 	if (status == PS_ERROR && m_bCompletionError) {
-		if (m_gaplist.IsEmpty() && m_BufferedData_list.IsEmpty()) {
+		if (m_gaplist.IsEmpty() && m_BufferedData_list.IsEmpty() && m_mapPendingHashParts.IsEmpty()) { // eSE H1: wait for verdicts
 			// file rehashing could probably be avoided, but better be on the safe side.
 			m_bCompletionError = false;
 			CompleteFile(false);
@@ -4040,7 +4090,7 @@ uint32 CPartFile::WriteToBuffer(uint64 transize, const BYTE *data, uint64 start,
 	return static_cast<uint32>(lenData);
 }
 
-void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH)
+void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH, bool bSyncHash)
 {
 	m_nLastBufferFlushTime = ::GetTickCount();
 	if (GetPartCount() <= 0) //&& m_BufferedData_list.IsEmpty())
@@ -4050,6 +4100,11 @@ void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH)
 	//	AddDebugLogLine(false, _T("Flushing file %s - buffer size = %ld bytes (%ld queued items) transferred = %ld [time = %ld]"), (LPCTSTR)GetFileName(), m_nTotalBufferData, m_BufferedData_list.GetCount(), m_uTransferred, m_nLastBufferFlushTime);
 
 	try {
+		// eSE H0: temporary timing instrumentation, remove in H1 (docs/PART_HASH_THREAD_PLAN.md)
+		const DWORD dwFlushStart = ::GetTickCount();
+		DWORD dwHashMs = 0, dwAllocMs = 0, dwMetMs = 0;
+		UINT nHashedParts = 0;
+
 		ULONGLONG cursize = m_hpartfile.GetLength();
 		bool bCheckDiskspace = thePrefs.IsCheckDiskspaceEnabled() && thePrefs.GetMinFreeDiskSpace() > 0;
 		//Previously full file allocation was performed in a special thread. That thread was writing
@@ -4097,8 +4152,11 @@ void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH)
 				AfxThrowFileException(CFileException::diskFull, 0, m_hpartfile.GetFileName());
 		}
 		// Ensure file is big enough for asynchronous writes
-		if (newsize)
+		if (newsize) {
+			const DWORD dwAllocT0 = ::GetTickCount(); // eSE H0
 			m_hpartfile.SetLength(newsize); // may throw 'diskFull'
+			dwAllocMs = ::GetTickCount() - dwAllocT0; // eSE H0
+		}
 
 		//pass data to the writing thread
 		CPartFileWriteThread *pThread = theApp.m_pPartFileWriteThread;
@@ -4110,13 +4168,18 @@ void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH)
 					if (!bLocked) {
 						bLocked = true;
 						pThread->m_lockFlushList.Lock();
-						if (uAllocate == 1) //an extra byte to allocate
+						if (uAllocate == 1) { //an extra byte to allocate
 							pThread->m_FlushList.AddHead(ToWrite{ this, new PartFileBufferedData{ (uint64)m_nFileSize, (uint64)m_nFileSize } });
+							::InterlockedIncrement(&m_iWrites);
+						}
 					}
 					if (uAllocate == 2 && pos == NULL) //using the last item for allocation
 						pThread->m_FlushList.AddHead(ToWrite{ this,  item });
 					else
 						pThread->m_FlushList.AddTail(ToWrite{ this,  item });
+					//counted at queue time (not when the write starts) so that a pending
+					//deletion waits for entries the write thread has not picked up yet
+					::InterlockedIncrement(&m_iWrites);
 					item->dwError = 0; //reset error (this could be a retry)
 					item->flushed = PB_PENDING;
 				}
@@ -4153,50 +4216,40 @@ void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH)
 		}
 
 		// Check every changed part of the file
+		CPartHashThread *pHashThread = theApp.m_pPartHashThread; // eSE H1
+		const bool bAsyncHash = !bSyncHash && pHashThread != NULL && pHashThread->IsRunning() && !theApp.IsClosing();
 		for (UINT uPartNumber = 0; uPartNumber < GetPartCount(); ++uPartNumber) {
 			if (!m_aChangedPart[uPartNumber])
 				continue;
-			m_aChangedPart[uPartNumber] = false;
 
 			const uint64 uStart = PARTSIZE * uPartNumber;
 			const uint64 uEnd = min(uStart + PARTSIZE, (uint64)m_nFileSize) - 1;
 			// Is this 9MB part complete
 			if (IsCompleteBD(uStart, uEnd)) {
+				// eSE H1: verify off the main thread. The part stays marked in m_aChangedPart
+				// until its verdict is processed (TM_PARTHASHED), so with the hash thread
+				// stopped (shutdown) the leftovers are re-verified right here, synchronously.
+				if (bAsyncHash) {
+					UINT uGen;
+					if (!m_mapPendingHashParts.Lookup(uPartNumber, uGen))
+						EnqueuePartHash(uPartNumber, uStart, uEnd, bNoAICH);
+					continue;
+				}
+				m_aChangedPart[uPartNumber] = false;
+				m_mapPendingHashParts.RemoveKey(uPartNumber);
 				// Is part corrupt
 				bool bAICHAgreed;
-				if (!HashSinglePart(uPartNumber, &bAICHAgreed)) {
-					LogWarning(LOG_STATUSBAR, GetResString(IDS_ERR_PARTCORRUPT), uPartNumber, (LPCTSTR)GetFileName());
-					AddGap(uStart, uEnd);
-
-					// add part to corrupted list, if not already there
-					if (!IsCorruptedPart(uPartNumber))
-						corrupted_list.AddTail((uint16)uPartNumber);
-
-					// request AICH recovery data, except if AICH already agreed anyway or we explicitly don't want to
-					if (!bNoAICH && !bAICHAgreed)
-						RequestAICHRecovery(uPartNumber);
-
-					// update stats
-					uint64 lost = uEnd - uStart + 1;
-					m_uCorruptionLoss += lost;
-					thePrefs.Add2LostFromCorruption(lost);
-				} else {
-					if (!m_bMD4HashsetNeeded && thePrefs.GetVerbose())
-						AddDebugLogLine(DLP_VERYLOW, false, _T("Finished part %u of \"%s\""), uPartNumber, (LPCTSTR)GetFileName());
-
-					// tell the blackbox about the verified data
-					m_CorruptionBlackBox.VerifiedData(uStart, uEnd);
-
-					// if this part was successfully completed (although ICH is active), remove from corrupted list
-					POSITION posCorrupted = corrupted_list.Find((uint16)uPartNumber);
-					if (posCorrupted)
-						corrupted_list.RemoveAt(posCorrupted);
-
-					AddToSharedFiles(); // Successfully completed part, make it available for sharing
-				}
+				const DWORD dwHashT0 = ::GetTickCount(); // eSE H0
+				const bool bPartHashOK = HashSinglePart(uPartNumber, &bAICHAgreed);
+				dwHashMs += ::GetTickCount() - dwHashT0; ++nHashedParts; // eSE H0
+				ProcessCompletePartVerdict(uPartNumber, bPartHashOK, bAICHAgreed, bNoAICH);
 			} else if (IsCorruptedPart(uPartNumber) && (thePrefs.IsICHEnabled() || bForceICH)) {
+				m_aChangedPart[uPartNumber] = false;
 				// Try to recover with minimal loss
-				if (HashSinglePart(uPartNumber)) {
+				const DWORD dwIchHashT0 = ::GetTickCount(); // eSE H0
+				const bool bIchHashOK = HashSinglePart(uPartNumber);
+				dwHashMs += ::GetTickCount() - dwIchHashT0; ++nHashedParts; // eSE H0
+				if (bIchHashOK) {
 					++m_uPartsSavedDueICH;
 					thePrefs.Add2SessionPartsSavedByICH(1);
 
@@ -4227,18 +4280,23 @@ void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH)
 
 					AddToSharedFiles(); // Successfully recovered part, make it available for sharing
 				}
-			}
+			} else
+				m_aChangedPart[uPartNumber] = false; // eSE H1: nothing to verify for this part
 		}
 
-		if (m_nNextMetFlushTime < m_nLastBufferFlushTime) {
+		// eSE H1: while verdicts are pending, the met save is deferred to the verdict
+		// handler, so the .met never persists a complete-but-unverified part (plan R2)
+		if (m_nNextMetFlushTime < m_nLastBufferFlushTime && m_mapPendingHashParts.IsEmpty()) {
+			const DWORD dwMetT0 = ::GetTickCount(); // eSE H0
 			SavePartFile();	// Update met file
+			dwMetMs = ::GetTickCount() - dwMetT0; // eSE H0
 			m_nNextMetFlushTime = m_nLastBufferFlushTime + SEC2MS(29);
 		}
 
 		if (!theApp.IsClosing()) { // may be called during shutdown!
 			// Is this file finished?
 			if (m_gaplist.IsEmpty()) {
-				if (m_iWrites <= 0 && m_BufferedData_list.IsEmpty() && GetStatus() != PS_COMPLETING)
+				if (m_iWrites <= 0 && m_BufferedData_list.IsEmpty() && m_mapPendingHashParts.IsEmpty() && GetStatus() != PS_COMPLETING)
 					CompleteFile(false);
 				else
 					m_nLastBufferFlushTime -= thePrefs.GetFileBufferTimeLimit() - 211; //try again shortly
@@ -4274,6 +4332,11 @@ void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH)
 				}
 			}
 		}
+		// eSE H0: temporary timing instrumentation, remove in H1 (docs/PART_HASH_THREAD_PLAN.md)
+		const DWORD dwFlushTotal = ::GetTickCount() - dwFlushStart;
+		if (thePrefs.GetVerbose() && dwFlushTotal >= 50)
+			AddDebugLogLine(false, _T("eSE H0: FlushBuffer %u ms (hash %u ms / %u parts, alloc %u ms, met %u ms) - %s")
+				, dwFlushTotal, dwHashMs, nHashedParts, dwAllocMs, dwMetMs, (LPCTSTR)GetFileName());
 	} catch (CFileException *ex) {
 		FlushBuffersExceptionHandler(ex);
 #ifndef _DEBUG
@@ -4341,6 +4404,166 @@ void CPartFile::FlushBuffersExceptionHandler()
 	m_anStates[DS_DOWNLOADING] = 0;
 	if (!theApp.IsClosing()) // may be called during shutdown!
 		UpdateDisplayedInfo();
+}
+
+// eSE H1: snapshot a completed part for the hash worker. Everything the worker needs is
+// copied here, on the main thread; expected hashes are NOT copied - the comparison runs
+// at verdict time against the then-current m_FileIdentifier (late hashsets are honored).
+void CPartFile::EnqueuePartHash(UINT uPartNumber, uint64 uStart, uint64 uEnd, bool bNoAICH)
+{
+	// no hashset of any kind to check against: same semantics as HashSinglePart (assume OK)
+	if (!m_FileIdentifier.HasExpectedMD4HashCount()
+		&& !(m_FileIdentifier.HasAICHHash() && m_FileIdentifier.HasExpectedAICHHashCount()))
+	{
+		LogError(LOG_STATUSBAR, GetResString(IDS_ERR_HASHERRORWARNING), (LPCTSTR)GetFileName());
+		m_bMD4HashsetNeeded = true;
+		m_bAICHPartHashsetNeeded = true;
+		m_aChangedPart[uPartNumber] = false;
+		ProcessCompletePartVerdict(uPartNumber, true, false, bNoAICH);
+		return;
+	}
+
+	PartHashJob_Struct *pJob = new PartHashJob_Struct{};
+	pJob->pFile = this;
+	pJob->sFilePath = RemoveFileExtension(GetFullName()); //path of the .part file
+	pJob->uPart = uPartNumber;
+	pJob->uGen = ++m_uPartHashGen;
+	pJob->uStart = uStart;
+	pJob->uLength = uEnd - uStart + 1;
+	pJob->bNoAICH = bNoAICH;
+	if (m_FileIdentifier.HasAICHHash() && m_FileIdentifier.HasExpectedAICHHashCount()) {
+		const CAICHHashTree *pPartTree = m_pAICHRecoveryHashSet->FindPartHash((uint16)uPartNumber);
+		if (pPartTree != NULL) {
+			pJob->bComputeAICH = true;
+			pJob->uAICHDataSize = pPartTree->m_nDataSize;
+			pJob->bAICHLeftBranch = pPartTree->m_bIsLeftBranch;
+			pJob->uAICHBaseSize = pPartTree->GetBaseSize();
+		} else
+			ASSERT(0);
+	}
+	m_mapPendingHashParts[uPartNumber] = pJob->uGen;
+	theApp.m_pPartHashThread->QueueJob(pJob);
+}
+
+// eSE H1: consequences of a completed-part hash verdict (extracted from FlushBuffer).
+// Runs on the main thread, both for the synchronous path and for TM_PARTHASHED verdicts.
+void CPartFile::ProcessCompletePartVerdict(UINT uPartNumber, bool bHashOK, bool bAICHAgreed, bool bNoAICH)
+{
+	const uint64 uStart = PARTSIZE * uPartNumber;
+	const uint64 uEnd = min(uStart + PARTSIZE, (uint64)m_nFileSize) - 1;
+	if (!bHashOK) {
+		LogWarning(LOG_STATUSBAR, GetResString(IDS_ERR_PARTCORRUPT), uPartNumber, (LPCTSTR)GetFileName());
+		AddGap(uStart, uEnd);
+
+		// add part to corrupted list, if not already there
+		if (!IsCorruptedPart(uPartNumber))
+			corrupted_list.AddTail((uint16)uPartNumber);
+
+		// request AICH recovery data, except if AICH already agreed anyway or we explicitly don't want to
+		if (!bNoAICH && !bAICHAgreed)
+			RequestAICHRecovery(uPartNumber);
+
+		// update stats
+		uint64 lost = uEnd - uStart + 1;
+		m_uCorruptionLoss += lost;
+		thePrefs.Add2LostFromCorruption(lost);
+	} else {
+		if (!m_bMD4HashsetNeeded && thePrefs.GetVerbose())
+			AddDebugLogLine(DLP_VERYLOW, false, _T("Finished part %u of \"%s\""), uPartNumber, (LPCTSTR)GetFileName());
+
+		// tell the blackbox about the verified data
+		m_CorruptionBlackBox.VerifiedData(uStart, uEnd);
+
+		// if this part was successfully completed (although ICH is active), remove from corrupted list
+		POSITION posCorrupted = corrupted_list.Find((uint16)uPartNumber);
+		if (posCorrupted)
+			corrupted_list.RemoveAt(posCorrupted);
+
+		AddToSharedFiles(); // Successfully completed part, make it available for sharing
+	}
+}
+
+// eSE H1: main-thread processing of an asynchronous part-hash verdict (TM_PARTHASHED).
+// Decision logic mirrors HashSinglePart(), but compares against the CURRENT hashsets.
+void CPartFile::ProcessPartHashVerdict(const PartHashVerdict_Struct &verdict)
+{
+	UINT uGen;
+	if (!m_mapPendingHashParts.Lookup(verdict.uPart, uGen))
+		return; //canceled meanwhile
+	m_mapPendingHashParts.RemoveKey(verdict.uPart);
+	if (uGen != verdict.uGen)
+		return; //stale: the part changed while hashing; m_aChangedPart is still set, so
+				//the next flush re-enqueues it once the part is complete again
+
+	if (verdict.uPart >= GetPartCount()) {
+		ASSERT(0);
+		return;
+	}
+	const uint64 uStart = PARTSIZE * verdict.uPart;
+	const uint64 uEnd = min(uStart + PARTSIZE, (uint64)m_nFileSize) - 1;
+	if (!IsCompleteBD(uStart, uEnd))
+		return; //re-gapped while the verdict was in transit (belt and braces; the
+				//generation check above should have caught this)
+
+	m_aChangedPart[verdict.uPart] = false;
+
+	if (verdict.bReadError) {
+		//same outcome as a read failure in the synchronous flush path
+		FlushBuffersExceptionHandler();
+		return;
+	}
+
+	bool bMD4Error = false;
+	bool bMD4Checked = m_FileIdentifier.HasExpectedMD4HashCount();
+	if (bMD4Checked) {
+		if (GetPartCount() > 1 || m_nFileSize == PARTSIZE) {
+			if (m_FileIdentifier.GetAvailableMD4PartHashCount() > verdict.uPart)
+				bMD4Error = !md4equ(verdict.aMD4Hash, m_FileIdentifier.GetMD4PartHash(verdict.uPart));
+			else {
+				ASSERT(0);
+				m_bMD4HashsetNeeded = true;
+			}
+		} else
+			bMD4Error = !md4equ(verdict.aMD4Hash, m_FileIdentifier.GetMD4Hash());
+	} else {
+		DebugLogError(_T("MD4 HashSet not present while verifying part %u for file %s"), verdict.uPart, (LPCTSTR)GetFileName());
+		m_bMD4HashsetNeeded = true;
+	}
+
+	bool bAICHError = false;
+	bool bAICHChecked = verdict.bAICHValid && m_FileIdentifier.HasAICHHash() && m_FileIdentifier.HasExpectedAICHHashCount();
+	if (bAICHChecked) {
+		if (GetPartCount() > 1) {
+			if (m_FileIdentifier.GetAvailableAICHPartHashCount() > verdict.uPart)
+				bAICHError = m_FileIdentifier.GetRawAICHHashSet()[verdict.uPart] != verdict.aichHash;
+			else
+				ASSERT(0);
+		} else
+			bAICHError = m_FileIdentifier.GetAICHHash() != verdict.aichHash;
+	}
+
+	if (!bMD4Checked && !bAICHChecked) {
+		//no hashset available (anymore): same semantics as HashSinglePart (assume OK)
+		LogError(LOG_STATUSBAR, GetResString(IDS_ERR_HASHERRORWARNING), (LPCTSTR)GetFileName());
+		m_bMD4HashsetNeeded = true;
+		m_bAICHPartHashsetNeeded = true;
+	}
+	if (bMD4Checked && bAICHChecked && bMD4Error != bAICHError)
+		DebugLogError(_T("AICH and MD4 HashSet disagree on verifying part %u for file %s. MD4: %s - AICH: %s"), verdict.uPart
+			, (LPCTSTR)GetFileName(), bMD4Error ? _T("Corrupt") : _T("OK"), bAICHError ? _T("Corrupt") : _T("OK"));
+
+	ProcessCompletePartVerdict(verdict.uPart, !bMD4Error && !bAICHError, bAICHChecked && !bAICHError, verdict.bNoAICH);
+
+	if (m_mapPendingHashParts.IsEmpty() && !theApp.IsClosing()) {
+		//deferred met save (plan R2)
+		if (m_nNextMetFlushTime < ::GetTickCount()) {
+			SavePartFile();
+			m_nNextMetFlushTime = ::GetTickCount() + SEC2MS(29);
+		}
+		//the last verdict completes the file (mirror of the check in FlushBuffer)
+		if (m_gaplist.IsEmpty() && m_iWrites <= 0 && m_BufferedData_list.IsEmpty() && GetStatus() != PS_COMPLETING)
+			CompleteFile(false);
+	}
 }
 
 // Barry - This will invert the gap list, the caller have to delete gaps when done
@@ -5379,7 +5602,7 @@ void CPartFile::AICHRecoveryDataAvailable(UINT nPart)
 
 		AddToSharedFiles(); // Successfully recovered part, make it available for sharing
 
-		if (m_gaplist.IsEmpty() && m_BufferedData_list.IsEmpty() && !theApp.IsClosing()) // Is this file finished?
+		if (m_gaplist.IsEmpty() && m_BufferedData_list.IsEmpty() && m_mapPendingHashParts.IsEmpty() && !theApp.IsClosing()) // Is this file finished?
 			CompleteFile(false);
 
 	} // end sanity check

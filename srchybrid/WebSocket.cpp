@@ -95,10 +95,15 @@ void CWebSocket::OnRequestReceived(const char *pHeader, DWORD dwHeaderLen, const
 	// Sprint 5: /dashboard serves the embedded mini-dashboard, /hls/* serves
 	// HLS .ts/.m3u8 files from %TEMP%\eMule_RTMP — both implemented in
 	// _ProcessLiveAPI so emule.exe alone is functional without ese-server.exe.
+	// M1 (mobile track): /s/{ses}/* is the token-prefixed remote namespace and
+	// /live* are the embedded channel/player pages — both handled (and the
+	// token validated) in _ProcessLiveAPI.
 	if (!filereq && (
 		sURL.Left(5) == "/api/" ||
 		sURL == "/dashboard" || sURL == "/dashboard/" ||
-		sURL.Left(5) == "/hls/"
+		sURL.Left(5) == "/hls/" ||
+		sURL.Left(3) == "/s/" ||
+		sURL == "/live" || sURL.Left(6) == "/live/"
 	)) {
 		m_pParent->_ProcessLiveAPI(Data);
 	} else if (!filereq)

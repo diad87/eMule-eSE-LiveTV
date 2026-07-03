@@ -1,0 +1,67 @@
+# Standalone unit test for the node-identity storage abstraction
+# (INodeIdentityStorage + CreateNodeIdentityStorage factory).
+#
+# Unlike build.yml (manual-only: the vendored libpng/zlib/cryptopp/mbedtls/libutp
+# chain is flaky from a clean runner), this job compiles only TWO self-contained,
+# MFC-free, dependency-free files, so it is safe to run on every push/PR. It is the
+# first automated unit test in CI; it follows the libreach standalone discipline.
+#
+# Linux job answers the design question directly: it validates that the factory
+# picks the POSIX backend off-Win32 and that the key file is persisted chmod 0600.
+# Windows job validates the DPAPI backend + factory dispatch.
+
+name: storage-test
+
+on:
+  push:
+    paths:
+      - 'srchybrid/INodeIdentityStorage.h'
+      - 'srchybrid/NodeIdentityStorage.cpp'
+      - 'tests/test_node_identity_storage.cpp'
+      - '.github/workflows/storage-test.yml'
+  pull_request:
+    paths:
+      - 'srchybrid/INodeIdentityStorage.h'
+      - 'srchybrid/NodeIdentityStorage.cpp'
+      - 'tests/test_node_identity_storage.cpp'
+      - '.github/workflows/storage-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  posix:
+    name: POSIX backend (ubuntu, g++)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Compile + run (exercises PosixFileStorage + factory + 0600)
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra \
+            srchybrid/NodeIdentityStorage.cpp \
+            tests/test_node_identity_storage.cpp \
+            -o storage_test
+          ./storage_test
+
+  windows:
+    name: DPAPI backend (windows, cl)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Set up MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Compile + run (exercises WinDpapiStorage + factory)
+        shell: cmd
+        run: |
+          cl /EHsc /O2 /W4 /std:c++17 ^
+            srchybrid\NodeIdentityStorage.cpp ^
+            tests\test_node_identity_storage.cpp ^
+            Crypt32.lib /Fe:storage_test.exe
+          storage_test.exe

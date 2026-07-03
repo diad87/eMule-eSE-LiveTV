@@ -1,0 +1,11 @@
+name,value,namespace,intro_version,status,capability_gate,format,compat,file,line
+TAG_SOURCEIP_V6,0x66,TAG-ED2K,v0.71,reserved,CAP_FORK_IPV6_WIRE,"<CAddress> alongside legacy uint32 source IP",additive-ignorable,srchybrid/Opcodes.h,494
+TAG_SERVERIP_V6,0x67,TAG-ED2K,v0.71,reserved,CAP_FORK_IPV6_WIRE,"<CAddress> alongside legacy uint32 server IP",additive-ignorable,srchybrid/Opcodes.h,495
+TAG_ESE_REACH,0x68,TAG-ED2K,DESIGN,reserved-proposed,none,"reachability vector R (TLV) -- thesis Kad-sin-LowID; NOT in code yet; 0x68 verified free in TAG-ED2K",additive-ignorable,docs/THESIS_KAD_SIN_LOWID.md,0
+TAG_K_EFFECTIVE,0x69,TAG-ED2K,v8.1,experimental,ESE_CAP_M6_K_EFFECTIVE,"uint8 [4..24]",additive-ignorable,srchybrid/Opcodes.h,517
+TAG_SHARD_DEGREE,0x6A,TAG-ED2K,v8.1,experimental,ESE_CAP_M3_SHARDING,"uint8 [0..6]",additive-ignorable,srchybrid/Opcodes.h,518
+TAG_PINNED_BY_SUBSCRIBER,0x6B,TAG-ED2K,v8.1,experimental,ESE_CAP_M1_SUBSCRIBER_PIN,"uint8 flag 0/1",additive-ignorable,srchybrid/Opcodes.h,519
+TAG_ESE_CAPS,0x6C,TAG-ED2K,v8.1,stable,none,"uint32 capabilities bitmap (see CAPABILITIES.csv CAP-ESE)",additive-ignorable,srchybrid/Opcodes.h,520
+TAG_ESE_NODE_PUB,0x6D,TAG-ED2K,DESIGN,reserved-proposed,ESE_CAP_TUNNEL_AUTH,"32-byte Ed25519 node identity pubkey (TAGTYPE_BLOB); advertised next to TAG_ESE_CAPS in HELLO. NOT in code yet.",additive-ignorable,docs/AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md,0
+TAG_ESE_KADIP_V6,0x6E,TAG-ED2K,v9,experimental,CAP_FORK_IPV6_WIRE,"<BSOB 16> network-order IPv6 of contact, observed-by-peer; Kad HELLO; additive, unknown-tag-ignored upstream; TX gated behind EseKadV6Tag pref (default off)",additive-ignorable,srchybrid/Opcodes.h,535
+ST_IPV6,0xA0,SERVER-MET,v0.71,reserved,CAP_FORK_IPV6_WIRE,"<CAddress> server.met v2 tag (moved off 0x91 collision with ST_VERSION)",additive-ignorable,srchybrid/Opcodes.h,387

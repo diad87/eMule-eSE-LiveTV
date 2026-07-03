@@ -206,6 +206,9 @@ void CClientCreditsList::LoadList()
 		}
 
 		uint32 count = file.ReadUInt32();
+		// a corrupt header must not drive a huge InitHashTable allocation: cap by what the file can hold
+		const uint32 uRecSize = (version == CREDITFILE_VERSION_29) ? sizeof(CreditStruct_29a) : sizeof(CreditStruct);
+		count = min(count, (uint32)((file.GetLength() - file.GetPosition()) / uRecSize));
 		m_mapClients.InitHashTable(count + 5000); // TODO: should be prime number... and 20% larger
 
 		const time_t dwExpired = time(NULL) - DAY2S(150); // today - 150 days
@@ -213,6 +216,8 @@ void CClientCreditsList::LoadList()
 		for (uint32 i = 0; i < count; ++i) {
 			CreditStruct newcstruct{};
 			file.Read(&newcstruct, (version == CREDITFILE_VERSION_29) ? sizeof(CreditStruct_29a) : sizeof(CreditStruct));
+			if (newcstruct.nKeySize > MAXPUBKEYSIZE) //corrupt entry: a larger value would overrun the 80-byte ident buffers downstream
+				newcstruct.nKeySize = 0;
 
 			if (newcstruct.nLastSeen < (uint32)dwExpired)
 				++cDeleted;

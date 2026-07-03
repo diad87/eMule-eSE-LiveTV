@@ -52,6 +52,24 @@ Packet* CreateRequestPacket(const uchar* streamKey, uint32 seqNum)
     return pkt;
 }
 
+// R.3 (relay floor) — OP_LIVE_RELAY_FWD: the broadcaster<->relay control+data link.
+// Format: <SubOp 1><StreamKey 16><Payload ...>. Sub-ops (SETUP/SETUP_OK/SETUP_DENY/CHUNK)
+// are file-private in LiveBuddyRelay.cpp. For CHUNK the payload is a whole V1/V2 chunk
+// record (the relay ingests it via CLiveTunnel::ExitProxyOnWholeChunk). This mirrors the
+// receive framing in ListenSocket OP_LIVE_RELAY_FWD (subop + streamKey16, then payload).
+Packet* CreateRelayFwdPacket(uint8 subop, const uchar* streamKey, const uint8* payload, uint32 len)
+{
+    CSafeMemFile data(17 + (payload != NULL ? len : 0));
+    data.WriteUInt8(subop);
+    data.WriteHash16(streamKey);
+    if (payload != NULL && len > 0)
+        data.Write(payload, len);
+
+    Packet* pkt = new Packet(data, OP_EMULEPROT);
+    pkt->opcode = OP_LIVE_RELAY_FWD;
+    return pkt;
+}
+
 Packet* CreateChunkPacket(const LiveChunk* chunk)
 {
     if (!chunk || !chunk->data || chunk->dataSize == 0)

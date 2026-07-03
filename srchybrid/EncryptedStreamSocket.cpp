@@ -70,7 +70,7 @@ Basic Obfuscated Handshake Protocol Client <-> Server:
 
 	- Overhead: 206-251 (~229) Bytes + 2 * IP/TCP Headers per Connection
 
-	- DH Agreement Specifics: sizeof(a) and sizeof(b) = 128 Bits, g = 2, p = dh2048_p (see below), sizeof p, s, etc. = 768 bits
+	- DH Agreement Specifics: sizeof(a) and sizeof(b) = 128 Bits, g = 2, p = dh768_p (see below), sizeof p, s, etc. = 768 bits
 */
 #include "stdafx.h"
 #include "EncryptedStreamSocket.h"
@@ -84,6 +84,7 @@ Basic Obfuscated Handshake Protocol Client <-> Server:
 #include "clientlist.h"
 #include "ServerConnect.h"
 #include "cryptopp/osrng.h"
+#include "eMuleAI/Address.h"   // v0.71 IPv6 Sprint 6 — GetPeerCAddress()
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -97,26 +98,17 @@ static char THIS_FILE[] = __FILE__;
 #define	MAGICVALUE_SYNC			0x835E6FC4					// value to check if we have a working encrypted stream
 #define DHAGREEMENT_A_BITS		128
 
-#define PRIMESIZE_BYTES  256
-unsigned char dh2048_p[] = {
-0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xC9,0x0F,0xDA,0xA2,0x21,0x68,0xC2,0x34,
-0xC4,0xC6,0x62,0x8B,0x80,0xDC,0x1C,0xD1,0x29,0x02,0x4E,0x08,0x8A,0x67,0xCC,0x74,
-0x02,0x0B,0xBE,0xA6,0x3B,0x13,0x9B,0x22,0x51,0x4A,0x08,0x79,0x8E,0x34,0x04,0xDD,
-0xEF,0x95,0x19,0xB3,0xCD,0x3A,0x43,0x1B,0x30,0x2B,0x0A,0x6D,0xF2,0x5F,0x14,0x37,
-0x4F,0xE1,0x35,0x6D,0x6D,0x51,0xC2,0x45,0xE4,0x85,0xB5,0x76,0x62,0x5E,0x7E,0xC6,
-0xF4,0x4C,0x42,0xE9,0xA6,0x37,0xED,0x6B,0x0B,0xFF,0x5C,0xB6,0xF4,0x06,0xB7,0xED,
-0xEE,0x38,0x6B,0xFB,0x5A,0x89,0x9F,0xA5,0xAE,0x9F,0x24,0x11,0x7C,0x4B,0x1F,0xE6,
-0x49,0x28,0x66,0x51,0xEC,0xE4,0x5B,0x3D,0xC2,0x00,0x7C,0xB8,0xA1,0x63,0xBF,0x05,
-0x98,0xDA,0x48,0x36,0x1C,0x55,0xD3,0x9A,0x69,0x16,0x3F,0xA8,0xFD,0x24,0xCF,0x5F,
-0x83,0x65,0x5D,0x23,0xDC,0xA3,0xAD,0x96,0x1C,0x62,0xF3,0x56,0x20,0x85,0x52,0xBB,
-0x9E,0xD5,0x29,0x07,0x70,0x96,0x96,0x6D,0x67,0x0C,0x35,0x4E,0x4A,0xBC,0x98,0x04,
-0xF1,0x74,0x6C,0x08,0xCA,0x18,0x21,0x7C,0x32,0x90,0x5E,0x46,0x2E,0x36,0xCE,0x3B,
-0xE3,0x9E,0x77,0x2C,0x18,0x0E,0x86,0x03,0x9B,0x27,0x83,0xA2,0xEC,0x07,0xA2,0x8F,
-0xB5,0xC5,0x5D,0xF0,0x6F,0x4C,0x52,0xC9,0xDE,0x2B,0xCB,0xF6,0x95,0x58,0x17,0x18,
-0x39,0x95,0x49,0x7C,0xEA,0x95,0x6A,0xE5,0x15,0xD2,0x26,0x18,0x98,0xFA,0x05,0x10,
-0x15,0x72,0x8E,0x5A,0x8A,0xAC,0xAA,0x68,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+#define PRIMESIZE_BYTES	 96
+static unsigned char dh768_p[] = {
+	0xF2,0xBF,0x52,0xC5,0x5F,0x58,0x7A,0xDD,0x53,0x71,0xA9,0x36,
+	0xE8,0x86,0xEB,0x3C,0x62,0x17,0xA3,0x3E,0xC3,0x4C,0xB4,0x0D,
+	0xC7,0x3A,0x41,0xA6,0x43,0xAF,0xFC,0xE7,0x21,0xFC,0x28,0x63,
+	0x66,0x53,0x5B,0xDB,0xCE,0x25,0x9F,0x22,0x86,0xDA,0x4A,0x91,
+	0xB2,0x07,0xCB,0xAA,0x52,0x55,0xD4,0xF6,0x1C,0xCE,0xAE,0xD4,
+	0x5A,0xD5,0xE0,0x74,0x7D,0xF7,0x78,0x18,0x28,0x10,0x5F,0x34,
+	0x0F,0x76,0x23,0x87,0xF8,0x8B,0x28,0x91,0x42,0xFB,0x42,0x68,
+	0x8F,0x05,0x15,0x0F,0x54,0x8B,0x5F,0x43,0x6A,0xF7,0x0D,0xF3
 };
-unsigned char dh2048_g[] = { 0x02 };
 
 static CryptoPP::AutoSeededRandomPool cryptRandomGen;
 
@@ -287,11 +279,9 @@ int CEncryptedStreamSocket::Receive(void *lpBuf, int nBufLen, int nFlags)
 			// which will even ignore test connections
 			// Update: New server now support encrypted callbacks
 
-			SOCKADDR_IN sockAddr = {};
-			int nSockAddrLen = sizeof sockAddr;
-			GetPeerName((LPSOCKADDR)&sockAddr, &nSockAddrLen);
-			if (thePrefs.IsCryptLayerRequiredStrict() || (!theApp.serverconnect->AwaitingTestFromIP(sockAddr.sin_addr.s_addr)
-				&& !theApp.clientlist->IsKadFirewallCheckIP(sockAddr.sin_addr.s_addr)))
+			const uint32 uPeerIP = GetPeerAddressV4();
+			if (thePrefs.IsCryptLayerRequiredStrict() || (!theApp.serverconnect->AwaitingTestFromIP(uPeerIP)
+				&& !theApp.clientlist->IsKadFirewallCheckIP(uPeerIP)))
 			{
 #if defined(_DEBUG) || defined(_BETA) || defined(_DEVBUILD)
 				// TODO: Remove after testing
@@ -417,7 +407,7 @@ void CEncryptedStreamSocket::StartNegotiation(bool bOutgoing)
 
 		m_cryptDHA.Randomize(cryptRandomGen, DHAGREEMENT_A_BITS); // our random a
 		ASSERT(m_cryptDHA.MinEncodedSize() <= DHAGREEMENT_A_BITS / 8);
-		CryptoPP::Integer cryptDHPrime((byte*)dh2048_p, PRIMESIZE_BYTES);  // our fixed prime
+		CryptoPP::Integer cryptDHPrime((byte*)dh768_p, PRIMESIZE_BYTES);  // our fixed prime
 		// calculate g^a % p
 		CryptoPP::Integer cryptDHGexpAmodP = CryptoPP::a_exp_b_mod_c(CryptoPP::Integer(2), m_cryptDHA, cryptDHPrime);
 		ASSERT(m_cryptDHA.MinEncodedSize() <= PRIMESIZE_BYTES);
@@ -531,10 +521,7 @@ int CEncryptedStreamSocket::Negotiate(const uchar *pBuffer, int nLen)
 					const uint8 bySelectedEncryptionMethod = ENM_OBFUSCATION; // we do not support any further encryption in this version, so no need to look which the other client preferred
 					fileResponse.WriteUInt8(bySelectedEncryptionMethod);
 
-					SOCKADDR_IN sockAddr = {};
-					int nSockAddrLen = sizeof sockAddr;
-					GetPeerName((LPSOCKADDR)&sockAddr, &nSockAddrLen);
-					const uint8 byPaddingLen = theApp.serverconnect->AwaitingTestFromIP(sockAddr.sin_addr.s_addr) ? 16 : (thePrefs.GetCryptTCPPaddingLength() + 1);
+					const uint8 byPaddingLen = theApp.serverconnect->AwaitingTestFromIP(GetPeerAddressV4()) ? 16 : (thePrefs.GetCryptTCPPaddingLength() + 1);
 					uint8 byPadding = (uint8)(cryptRandomGen.GenerateByte() % byPaddingLen);
 
 					fileResponse.WriteUInt8(byPadding);
@@ -582,7 +569,7 @@ int CEncryptedStreamSocket::Negotiate(const uchar *pBuffer, int nLen)
 					uchar aBuffer[PRIMESIZE_BYTES + 1];
 					m_pfiReceiveBuffer->Read(aBuffer, PRIMESIZE_BYTES);
 					CryptoPP::Integer cryptDHAnswer(static_cast<byte*>(aBuffer), PRIMESIZE_BYTES);
-					CryptoPP::Integer cryptDHPrime(static_cast<byte*>(dh2048_p), PRIMESIZE_BYTES);  // our fixed prime
+					CryptoPP::Integer cryptDHPrime(static_cast<byte*>(dh768_p), PRIMESIZE_BYTES);  // our fixed prime
 					CryptoPP::Integer cryptResult = CryptoPP::a_exp_b_mod_c(cryptDHAnswer, m_cryptDHA, cryptDHPrime);
 
 					m_cryptDHA = 0;
@@ -726,12 +713,49 @@ int CEncryptedStreamSocket::SendNegotiatingData(const void *lpBuf, int nBufLen, 
 	return result;
 }
 
+uint32 CEncryptedStreamSocket::GetPeerAddressV4()
+{
+	SOCKADDR_STORAGE SockStorage = {};
+	int nSockAddrLen = sizeof SockStorage;
+	if (!GetPeerName((LPSOCKADDR)&SockStorage, &nSockAddrLen))
+		return 0;	// not connected yet or already closing — same outcome the legacy zeroed buffer produced
+	if (SockStorage.ss_family == AF_INET)
+		return ((SOCKADDR_IN&)SockStorage).sin_addr.s_addr;
+	if (SockStorage.ss_family == AF_INET6) {
+		const SOCKADDR_IN6 *p6 = (const SOCKADDR_IN6*)&SockStorage;
+		if (IN6_IS_ADDR_V4MAPPED(&p6->sin6_addr)) {
+			uint32 uIP;
+			memcpy(&uIP, &p6->sin6_addr.u.Byte[12], 4);
+			return uIP;
+		}
+		// Native v6 peers must have been dropped in OnAccept; if one shows up
+		// here an accept/dial path is missing the guard — scream, don't guess.
+		DebugLogError(_T("IPv6 guard: native v6 peer [%s] reached GetPeerAddressV4 — upper layer is v4-only, treating as no-IP"),
+			(LPCTSTR)Inet6AddrToString(p6->sin6_addr));
+		return 0;
+	}
+	DebugLogError(_T("IPv6 guard: unexpected address family %u in GetPeerAddressV4"), SockStorage.ss_family);
+	return 0;
+}
+
 CString CEncryptedStreamSocket::DbgGetIPString()
 {
-	SOCKADDR_IN sockAddr = {};
-	int nSockAddrLen = sizeof sockAddr;
-	GetPeerName((LPSOCKADDR)&sockAddr, &nSockAddrLen);
-	return ipstr(sockAddr.sin_addr.s_addr);
+	return ipstr(GetPeerAddressV4());
+}
+
+CAddress CEncryptedStreamSocket::GetPeerCAddress()
+{
+	// Family-agnostic companion to GetPeerAddressV4: reads the peer endpoint via
+	// the v6-safe SOCKADDR_STORAGE getpeername() and returns it as a CAddress.
+	// CAddress::FromSA normalises v4-mapped v6 (::ffff:a.b.c.d) back to IPv4, so
+	// a CAddress::IPv6 result here is a genuine native-v6 peer.
+	CAddress addr;	// CAddress::None when unconnected / family unknown
+	SOCKADDR_STORAGE SockStorage = {};
+	int nSockAddrLen = sizeof SockStorage;
+	if (!GetPeerName((LPSOCKADDR)&SockStorage, &nSockAddrLen))
+		return addr;	// not connected yet or already closing
+	addr.FromSA((const sockaddr*)&SockStorage, nSockAddrLen);
+	return addr;
 }
 
 uint8 CEncryptedStreamSocket::GetSemiRandomNotProtocolMarker()

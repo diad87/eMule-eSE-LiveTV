@@ -390,6 +390,15 @@ uint16	CPreferences::m_nWebPort;
 bool	CPreferences::m_bWebUseUPnP;
 bool	CPreferences::m_bUPnPCriticalError;
 bool	CPreferences::m_bEnableUtpHolePunch;
+bool	CPreferences::m_bEseAutoKeepalive;	// R.2 auto-activation pref
+bool	CPreferences::m_bEseKadV6Tag;		// [eSE v9] Kad-HELLO v6 tag TX pref
+bool	CPreferences::m_bEseRelayAccept;	// [eSE v9] R.3 relay accept pref
+bool	CPreferences::m_bEseRelayEgress;	// [eSE v9] R.3 relay egress pref
+bool	CPreferences::m_bEseReachSelector;	// [eSE v9] reachability selector pref
+bool	CPreferences::m_bEseHolePunchPortPredict;	// [eSE v9] anti-CGNAT port-prediction pref
+int		CPreferences::m_iEseHolePunchPortSpread;	// [eSE v9] port-prediction window half-width
+bool	CPreferences::m_bEseEd2kPunch3;		// [eSE v9] eD2K punch3 escalation pref
+int		CPreferences::m_iEseRelayMaxKBps;	// [eSE v9] R.3 relay egress byte-budget pref
 int		CPreferences::m_iKadV2PrivacyMode;      // D2
 int		CPreferences::m_iKadV2FallbackPolicy;   // D2
 CString	CPreferences::m_strKadV2SensitiveKeywords; // D2
@@ -2495,6 +2504,38 @@ void CPreferences::LoadPreferences()
 	// Section: "eSE"
 	//
 	m_bEnableUtpHolePunch = ini.GetBool(_T("EnableUtpHolePunch"), true, _T("eSE"));
+	// R.2 auto-activation. DEFAULT FALSE: until set, keepalive only starts via
+	// /api/keepalive/start exactly as before (zero behavior change). When TRUE,
+	// CKademlia::Process() autonomously RequestStart()s the keepalive whenever we
+	// are firewalled/LowID and Kad is connected.
+	m_bEseAutoKeepalive = ini.GetBool(_T("EseAutoKeepalive"), false, _T("eSE"));
+	// [eSE v9] root link TX. DEFAULT FALSE: our HELLO is byte-identical to before until set.
+	m_bEseKadV6Tag = ini.GetBool(_T("EseKadV6Tag"), false, _T("eSE"));
+	// [eSE v9] R.3 relay + reachability selector activation gates. ALL DEFAULT FALSE -> the
+	// relay/selector code is byte-for-byte dormant exactly as before until an operator opts in.
+	m_bEseRelayAccept   = ini.GetBool(_T("EseRelayAccept"),   false, _T("eSE"));
+	m_bEseRelayEgress   = ini.GetBool(_T("EseRelayEgress"),   false, _T("eSE"));
+	m_bEseReachSelector = ini.GetBool(_T("EseReachSelector"), false, _T("eSE"));
+	// [eSE v9] anti-CGNAT port prediction ("birthday spray"). DEFAULT OFF -> the punch fires a
+	// single REQ at the observed port exactly as before. When ON, it also sprays a small window of
+	// ports (helps symmetric NAT / CGNAT that randomizes the external port). Spread clamped [0,8]
+	// so a misconfig can't turn the punch into a flood (max 2*8+1 = 17 packets per attempt).
+	m_bEseHolePunchPortPredict = ini.GetBool(_T("EseHolePunchPortPredict"), false, _T("eSE"));
+	m_iEseHolePunchPortSpread  = ini.GetInt(_T("EseHolePunchPortSpread"), 4, _T("eSE"));
+	if (m_iEseHolePunchPortSpread < 0) m_iEseHolePunchPortSpread = 0;
+	if (m_iEseHolePunchPortSpread > 8) m_iEseHolePunchPortSpread = 8;
+	// [eSE v9] eD2K punch3 escalation. DEFAULT OFF -> downloads behave exactly as before (2-way
+	// punch, then concede at SYM_NAT_THRESHOLD). When ON, a peer that advertised the RDV cap gets
+	// ONE 3-way rendezvous attempt via a picked R node before we concede — the same mechanism Live
+	// already uses, extended to the transfer engine.
+	m_bEseEd2kPunch3 = ini.GetBool(_T("EseEd2kPunch3"), false, _T("eSE"));
+	// [eSE v9] R.3 hard relay byte-budget: ceiling on the egress bandwidth we donate as a relay
+	// (KB/s, measured as len*(1+downstream) per chunk). Bounds the free-CDN abuse vector; over
+	// budget we shed load by dropping chunks. Default 4096 KB/s (generous for one relayed stream);
+	// clamp [64,65536]. Only matters when EseRelayAccept is ON.
+	m_iEseRelayMaxKBps = ini.GetInt(_T("EseRelayMaxKBps"), 4096, _T("eSE"));
+	if (m_iEseRelayMaxKBps < 64)    m_iEseRelayMaxKBps = 64;
+	if (m_iEseRelayMaxKBps > 65536) m_iEseRelayMaxKBps = 65536;
 
 	// D2 (Sprint D): persisted privacy-routing mode. Before this, the mode
 	// selector reset to its Adaptive default every launch, which kept the

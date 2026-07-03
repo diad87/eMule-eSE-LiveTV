@@ -12,6 +12,12 @@
 #include <map>      // v8.1.x — fragment reassembly map
 #include <vector>   // v8.1.x — fragment reassembly buffers
 
+// eSE test scaffolding (threat-model ① validation): forward decls so the
+// always-present m_testDeferredSends queue can hold these by pointer without
+// pulling the full headers here. Redundant if already declared — legal.
+class CUpDownClient;
+class Packet;
+
 // C6 (2026-06): CMap hash for the durable LivePeerId key. `inline` keeps it
 // ODR-safe across the TUs that include this header (same idiom as MapKey.h's
 // HashKey<CSKey>). operator== for LivePeerId is in LiveProtocol.h.
@@ -183,6 +189,26 @@ struct LiveDebugSnapshot {
     // Mesh
     uint64   totalRedistributed;
     uint32   minUploadRequired;   // upload floor for the throttler (/api/live/mesh)
+
+    // eSE test instrumentation (threat-model ① validation): per-peer trust
+    // detail for /api/live/debug. Layout is UNCONDITIONAL (constant sizeof
+    // regardless of ESE_TEST_HOOKS — no per-TU ODR mismatch); only the fill
+    // (BuildDebugSnapshot) is gated, and the emission is count-guarded, so the
+    // production binary always reports peerDetailCount==0 and emits nothing.
+    // ip[] is sized 46 (== INET6_ADDRSTRLEN): the worst-case IPv6 textual form
+    // (<=45 visible chars) + NUL fits, so a future dual-stack v6 peer needs no
+    // change here. Written only by a bounded writer (FillPeerIpSafe).
+    struct PeerDbg {
+        char   ip[46];      // worst-case IPv6 text + NUL — never sized for IPv4(16)
+        uint16 port;
+        int    level;       // 0=super, 1=middle, 2=leaf
+        int    failCount;
+        int    respPct;     // GetResponseRate() * 100
+        uint32 rttMs;       // EWMA RTT, ms
+    };
+    static const int MAX_PEER_DBG = 16;
+    PeerDbg peerDetail[MAX_PEER_DBG];
+    int     peerDetailCount;
 
     // Counters (atomic snapshot)
     LiveStreamCounters counters;
@@ -451,6 +477,10 @@ public:
     LiveStreamCounters& GetCountersMut() { return m_counters; }
     int GetViewPeerCount() const { return (int)m_viewPeers.GetCount(); }
     int GetBroadcastPeerCount() const { return (int)m_broadcastPeers.GetCount(); }
+    // v8.1.2 B6 — is `peer` one of our SOURCES for the currently viewed stream (a co-seeder
+    // that serves us this channel)? The tunnel's 2-hop builder keeps such a peer out of
+    // hop1/exit (it would deanonymize the viewer by channel). Main-thread read, no lock.
+    bool IsStreamSourcePeer(CUpDownClient* peer) const;
 
     // V2-S01: Per-peer counter accessors. Both reader+writer paths must hold
     // m_lock externally (callers from WebServer go through BuildDebugSnapshot
@@ -497,6 +527,10 @@ private:
     uint8_t             m_broadcasterPrivkey[32];
     CLiveChunkBuffer    m_chunkBuffer;
     uint32              m_nNextSeqNum;      // Next segment sequence number
+    // R.3 relay egress (gated by pref EseRelayEgress): proactively forward new segments to a
+    // relay buddy when we are an unreachable broadcaster (symmetric NAT/CGNAT).
+    uint32              m_lastRelayedSeq;       // last seq forwarded to the buddy (UINT_MAX = none)
+    DWORD               m_dwLastRelaySetup;     // throttle for (re)sending SETUP when no buddy
 
     // Peer lists
     CTypedPtrList<CPtrList, CUpDownClient*> m_broadcastPeers;   // Peers watching our stream
@@ -606,6 +640,14 @@ private:
     // Pruned in Process(); cleared on Join/Leave.
     CMap<uint64, uint64, DWORD, DWORD&> m_recentDials;
 
+    // [eSE v9] Reachability SELECTOR — per-source escalation state. Endpoint-keyed
+    // (ip<<16|port, HOST-order ip) like m_recentDials so it survives the LowID
+    // AttachToAlreadyKnown pointer swap. Drives Direct(R.0)->2way-punch->3way-rdv(R.1)
+    // ->relay(R.3). Dormant: m_bReachSelectorOn default-OFF AND GetUtpHolePunchEnabled().
+    enum EReachStage { REACH_DIRECT = 0, REACH_PUNCH2 = 1, REACH_PUNCH3 = 2, REACH_RELAY = 3, REACH_DONE = 4 };
+    struct ReachState { uint8 stage; DWORD stageEnteredTick; uint16 udpPort; };
+    CMap<uint64, uint64, ReachState, ReachState&> m_escalation;   // gated by pref EseReachSelector
+
     // v7.3.0 — Per-IP SUBSCRIBE rate limit. Key = IP (uint32). Value =
     // tick of the SUBSCRIBE_RATE_WINDOW most recent SUBSCRIBE for this
     // IP, with the count packed in. Tracks the 30 most recent ticks; if
@@ -687,8 +729,19 @@ private:
         uint32 peerIp;      // peer we asked
         uint16 peerPort;
         int    attempts;    // total requests sent for this seq this session
+        bool   edgeCritical; // seq was within ESE_LIVE_EDGE_GUARD of the playhead
+        bool   failCharged;  // punctuality failure already charged for this request
     };
     CMap<uint32, uint32, InflightSegReq, InflightSegReq&> m_inflightSegReqs;
+
+    // eSE test scaffolding (threat-model ① validation, 3-PC recipe). Layout is
+    // UNCONDITIONAL (this member is always present so sizeof(CLiveStreamManager)
+    // never depends on ESE_TEST_HOOKS — no per-TU ODR mismatch). Only the code
+    // that PUSHES to it (OnPeerRequest sabotage hook) and FLUSHES it (Process)
+    // is gated by ESE_TEST_HOOKS; in the production binary it stays empty,
+    // untouched and inert. Holds delayed "almost made the deadline" sends.
+    struct TestDeferredSend { CUpDownClient* peer; Packet* pkt; DWORD fireTick; };
+    std::vector<TestDeferredSend> m_testDeferredSends;
 
     // Phase-1 fix #1 (2026-06) — the HLS buffer-minimum gate applies only
     // until the FIRST playlist write of the session. Set true after the
@@ -717,6 +770,9 @@ private:
     // Internal helpers
     void SendBitmapToAll();
     void SendAnnounceToAll();
+    void RelayPushNewSegments();   // R.3: forward new segments to the active relay buddy (main thread, lock-free)
+    void TickReachabilitySelector(DWORD now);   // [eSE v9] reachability escalation (dormant unless m_bReachSelectorOn)
+    bool PickRendezvous(uint32 targetIpHost, uint16 targetUdp, uint32& outRipHost, uint16& outRport);
     void RequestMissingSegments();
     void PublishToKad();
     CString GetLiveHlsDir() const;
@@ -725,6 +781,9 @@ private:
     void RefreshViewerHlsPlaylist();
     void DemotePeer(CUpDownClient* peer);
     void BanPeer(CUpDownClient* peer);
+    // Threat-model vector #3 (piece starvation): charge a punctuality failure to
+    // the peer (ip+port) we asked when a CRITICAL near-playhead request times out.
+    void ChargePunctualityFailure(uint32 ip, uint16 port);
     PeerTrust& GetOrCreateTrust(CUpDownClient* peer);
 
     // Select best peer to request a segment from. excludeIp != 0 skips that

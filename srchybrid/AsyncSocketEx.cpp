@@ -303,13 +303,21 @@ public:
 
 #ifndef NOSOCKETSTATES
 						// netfinity: Check that socket is still valid. It might have got deleted.
-						if (!nErrorCode && pWnd->m_pAsyncSocketExWindowData	&& pSocket == pWnd->m_pAsyncSocketExWindowData[message - WM_SOCKETEX_NOTIFY].m_pSocket) {
-							if ((pSocket->m_nPendingEvents & (FD_READ | FD_FORCEREAD)) && pSocket->GetState() == connected)
-								pSocket->OnReceive(0);
-							if ((pSocket->m_nPendingEvents & FD_WRITE) && pSocket->GetState() == connected)
-								pSocket->OnSend(0);
+						if (pWnd->m_pAsyncSocketExWindowData && pSocket == pWnd->m_pAsyncSocketExWindowData[message - WM_SOCKETEX_NOTIFY].m_pSocket) {
+							const int nPendingEvents = pSocket->m_nPendingEvents;
+							pSocket->m_nPendingEvents = 0;
+							if (!nErrorCode) {
+								if ((nPendingEvents & (FD_READ | FD_FORCEREAD)) && pSocket->GetState() == connected)
+									pSocket->OnReceive(0);
+								if ((nPendingEvents & FD_WRITE)
+									&& pWnd->m_pAsyncSocketExWindowData
+									&& pSocket == pWnd->m_pAsyncSocketExWindowData[message - WM_SOCKETEX_NOTIFY].m_pSocket
+									&& pSocket->GetState() == connected)
+								{
+									pSocket->OnSend(0);
+								}
+							}
 						}
-						pSocket->m_nPendingEvents = 0;
 #endif
 						break;
 					case FD_ACCEPT:
@@ -437,15 +445,27 @@ public:
 							pSocket->OnConnect(nErrorCode);
 
 #ifndef NOSOCKETSTATES
-						if (!nErrorCode && pSocket->GetState() == connected) {
-							if ((pSocket->m_nPendingEvents & FD_READ) && pSocket->m_lEvent & FD_READ)
-								pSocket->OnReceive(0);
-							if ((pSocket->m_nPendingEvents & FD_FORCEREAD) && pSocket->m_lEvent & FD_READ)
-								pSocket->OnReceive(0);
-							if (pSocket->m_nPendingEvents & FD_WRITE && pSocket->m_lEvent & FD_WRITE)
-								pSocket->OnSend(0);
+						// Check that socket is still valid: OnConnect might have deleted it.
+						if (pWnd->m_pAsyncSocketExWindowData && pSocket == pWnd->m_pAsyncSocketExWindowData[wParam].m_pSocket) {
+							const int nPendingEvents = pSocket->m_nPendingEvents;
+							pSocket->m_nPendingEvents = 0;
+							if (!nErrorCode && pSocket->GetState() == connected) {
+								if ((nPendingEvents & FD_READ) && pSocket->m_lEvent & FD_READ)
+									pSocket->OnReceive(0);
+								if ((nPendingEvents & FD_FORCEREAD)
+									&& pSocket == pWnd->m_pAsyncSocketExWindowData[wParam].m_pSocket
+									&& pSocket->m_lEvent & FD_READ)
+								{
+									pSocket->OnReceive(0);
+								}
+								if (nPendingEvents & FD_WRITE
+									&& pSocket == pWnd->m_pAsyncSocketExWindowData[wParam].m_pSocket
+									&& pSocket->m_lEvent & FD_WRITE)
+								{
+									pSocket->OnSend(0);
+								}
+							}
 						}
-						pSocket->m_nPendingEvents = 0;
 #endif //NOSOCKETSTATES
 						break;
 					case FD_ACCEPT:

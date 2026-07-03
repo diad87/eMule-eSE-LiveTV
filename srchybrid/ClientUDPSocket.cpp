@@ -471,6 +471,7 @@ SocketSentBytes CClientUDPSocket::SendControlData(uint32 maxNumberOfBytesToSend,
 				delete cur_packet;
 			} else {
 				controlpacket_queue.AddHead(cur_packet); //try to resend on next throttler tick
+				delete[] sendbuffer; //the buffer is rebuilt from cur_packet on the next attempt
 				break; // BUG-013 FIX: yield to throttler instead of Sleep(20) blocking
 			}
 			delete[] sendbuffer;
@@ -503,6 +504,37 @@ int CClientUDPSocket::SendTo(uchar *lpBuf, int nBufLen, uint32 dwIP, uint16 nPor
 		}
 		if (thePrefs.GetVerbose())
 			DebugLogError(_T("Error: Client UDP socket, failed to send data to %s:%u: %s"), (LPCTSTR)ipstr(dwIP), nPort, (LPCTSTR)GetErrorMessage(dwError, 1));
+		return 0; //error
+	}
+	return result; //success
+}
+
+// [eSE v9] R.4 PHASE B (DORMANT groundwork): raw IPv6 send primitive. Builds a sockaddr_in6
+// from the 16-byte NETWORK-order address (as stored in CContact::GetIPv6Address / the
+// TAG_ESE_KADIP_V6 HELLO root-link) and transmits UNOBFUSCATED via the sockaddr form of SendTo
+// (the obfuscation layer keys on the uint32 v4 IP, which a native-v6 peer lacks).
+//
+// NOT CALLED by anything yet. It requires the dual-stack AF_INET6 socket (R.4 Phase A, gated on
+// IPv6PreferredMode) to actually transmit — on today's v4-only socket a v6 sendto returns
+// WSAEAFNOSUPPORT. And a v6 datagram it sends has no working receiver until native-v6 Kad RX
+// (Phase C: ProcessPacket keyed on the payload KadID, not the uint32 source) lands. This is
+// pure additive scaffolding so the v6 send half is ready; deferred per the shelved-Kad-v6
+// thesis until there is real v6-only-user demand. See docs / project_ipv6_kad_shelved.
+int CClientUDPSocket::SendToV6(uchar *lpBuf, int nBufLen, const uint8 v6Addr[16], uint16 nPort)
+{
+	sockaddr_in6 sa6 = {};
+	sa6.sin6_family = AF_INET6;
+	sa6.sin6_port = htons(nPort);
+	memcpy(&sa6.sin6_addr, v6Addr, 16);   // network order, opaque end-to-end (no byte swap)
+	int result = CAsyncSocket::SendTo(lpBuf, nBufLen, (const SOCKADDR*)&sa6, sizeof sa6);
+	if (result == SOCKET_ERROR) {
+		DWORD dwError = (DWORD)CAsyncSocket::GetLastError();
+		if (dwError == WSAEWOULDBLOCK) {
+			m_bWouldBlock = true;
+			return -1; //blocked
+		}
+		if (thePrefs.GetVerbose())
+			DebugLogError(_T("Error: Client UDP socket, failed to send v6 data on port %u: %s"), nPort, (LPCTSTR)GetErrorMessage(dwError, 1));
 		return 0; //error
 	}
 	return result; //success

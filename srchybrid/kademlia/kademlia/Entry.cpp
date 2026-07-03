@@ -387,7 +387,7 @@ void CKeyEntry::MergeIPsAndFilenames(CKeyEntry *pFromEntry)
 			if (Cur.m_uIP == m_uIP) {
 				bRefresh = true;
 				const time_t tNow = time(NULL);
-				if ((tNow < Cur.m_tLastPublish) + (KADEMLIAREPUBLISHTIMES - HR2S(1))) {
+				if (tNow < Cur.m_tLastPublish + (KADEMLIAREPUBLISHTIMES - HR2S(1))) {
 					DEBUG_ONLY(DebugLog(_T("KadEntryTracking: FastRefresh publish, ip: %s"), (LPCTSTR)ipstr(htonl(m_uIP))));
 					bFastRefresh = true; // refreshed faster than expected, will not count into filename popularity index
 				}

@@ -47,6 +47,7 @@ public:
 	bool	IsRunning() const							{ return m_Run > 0; }
 	bool	AddFile(CPartFile *pFile);
 	static void	RemFile(CPartFile *pFile);
+	void	PurgeQueuedWrites(CPartFile *pFile);
 
 	CCriticalSection m_lockFlushList;
 	CList<ToWrite> m_FlushList;

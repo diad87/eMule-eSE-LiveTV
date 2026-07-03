@@ -128,6 +128,8 @@ void CContact::Copy(const CContact &fromContact)
 	m_uInUse = fromContact.m_uInUse;
 	m_uIp = fromContact.m_uIp;
 	m_uNetIp = fromContact.m_uNetIp;
+	m_bHasV6 = fromContact.m_bHasV6;
+	memcpy(m_uV6Ip, fromContact.m_uV6Ip, sizeof(m_uV6Ip));
 	m_uTcpPort = fromContact.m_uTcpPort;
 	m_uUdpPort = fromContact.m_uUdpPort;
 	m_uVersion = fromContact.m_uVersion;
@@ -141,6 +143,23 @@ void CContact::Copy(const CContact &fromContact)
 void CContact::InitContact()
 {
 	m_tCreated = m_tLastTypeSet = time(NULL);
+	ResetIPv6();   // [eSE v9] root link: default-empty for every constructor
+}
+
+void CContact::ResetIPv6()
+{
+	memset(m_uV6Ip, 0, sizeof(m_uV6Ip));
+	m_bHasV6 = false;
+}
+
+void CContact::SetIPv6Address(const uint8 *pV6)
+{
+	if (pV6 != NULL) {
+		memcpy(m_uV6Ip, pV6, sizeof(m_uV6Ip));
+		m_bHasV6 = true;
+	} else {
+		ResetIPv6();
+	}
 }
 
 void Kademlia::CContact::GetClientID(CString &sId) const

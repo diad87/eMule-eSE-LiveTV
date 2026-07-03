@@ -305,7 +305,9 @@ void CSearch::JumpStart()
 {
 	// eSE: Use adaptive timeout from FastKad instead of fixed 3 seconds.
 	// fastKad.GetEstMaxResponseTime() returns mean + 2*stddev (95% confidence), capped at 3s.
-	time_t uAdaptiveTimeoutSec = max(1, static_cast<time_t>(fastKad.GetEstMaxResponseTime() / CLOCKS_PER_SEC));
+	// Round up: m_uLastResponse only has whole-second granularity, and truncating
+	// would under-wait the estimated max response time by up to a second.
+	time_t uAdaptiveTimeoutSec = max(1, static_cast<time_t>((fastKad.GetEstMaxResponseTime() + CLOCKS_PER_SEC - 1) / CLOCKS_PER_SEC));
 	if (time(NULL) < m_uLastResponse + uAdaptiveTimeoutSec)
 		return;
 
@@ -388,6 +390,18 @@ void CSearch::ProcessResponse(uint32 uFromIP, uint16 uFromPort, const ContactArr
 		return;
 	}
 
+	// eSE: feed the real round-trip time (SendFindValue stamp -> now) to the
+	// FastKad adaptive-timeout estimator. Erase the stamp so a duplicate
+	// response cannot re-feed a stale sample.
+	if (pFromContact != NULL) {
+		const std::map<uint32, DWORD>::iterator itSendTick = m_mapEseReqSendTick.find(uFromIP);
+		if (itSendTick != m_mapEseReqSendTick.end()) {
+			const DWORD dwRttMs = ::GetTickCount() - itSendTick->second; // unsigned delta, wrap-safe
+			m_mapEseReqSendTick.erase(itSendTick);
+			fastKad.AddResponseTime(uFromIP, static_cast<clock_t>(static_cast<ULONGLONG>(dwRttMs) * CLOCKS_PER_SEC / 1000));
+		}
+	}
+
 	if (m_uType == NODE || m_uType == NODEFWCHECKUDP) {
 		// Note we got an answer
 		++m_uAnswers;
@@ -417,10 +431,6 @@ void CSearch::ProcessResponse(uint32 uFromIP, uint16 uFromPort, const ContactArr
 		theApp.emuledlg->kademliawnd->searchList->SearchRef(this);
 		return;
 	}
-
-	// eSE: Feed response time to FastKad adaptive estimator
-	if (pFromContact != NULL)
-		fastKad.AddResponseTime(uFromIP, static_cast<clock_t>((time(NULL) - m_uLastResponse) * CLOCKS_PER_SEC));
 
 	try {
 		if (pFromContact != NULL) {
@@ -1278,27 +1288,18 @@ void CSearch::ProcessResultKeyword(const CUInt128 &uAnswer, TagList &rlistInfo, 
 		}
 	}
 
-	// If we don't have a valid filename or file size, drop this keyword.
-	if (!bFileName || !bFileSize)
-		return;
-
-	// Check that this result matches the original criteria
-	WordList listTestWords;
-	CSearchManager::GetWords(sName, listTestWords);
-	CKadTagValueString keyword;
-	for (WordList::const_iterator itWordListWords = m_listWords.begin(); itWordListWords != m_listWords.end(); ++itWordListWords) {
-		keyword = *itWordListWords;
-		bool bInterested = false;
-		for (WordList::const_iterator itWordListTestWords = listTestWords.begin(); itWordListTestWords != listTestWords.end(); ++itWordListTestWords)
-			if (EqualKadTagStr(keyword, *itWordListTestWords)) {
-				bInterested = true;
-				break;
-			}
-
-		if (!bInterested)
-			return;
-	}
-
+	// H8 fix (2026-06-11): dispatch live-stream results BEFORE the
+	// filename/size gate below. Clean-namespace publishes may carry no
+	// TAG_FILENAME (v8.1 broadcasters omit it entirely; current ones send
+	// a constant), so gating the live dispatch on bFileName silently
+	// dropped every clean-namespace result — H8 discovery never reached
+	// the bridge and the H5 ESE_NS_CLEAN attribution could not fire. Live
+	// entries are identified by TAG_ESE_LIVE_MARKER and keyed by
+	// TAG_ESE_LIVE_STREAM_KEY; they don't need a filename. The
+	// keyword-words check below is name-based too, so it must not gate
+	// live results either (bridge searches carry no words anyway —
+	// m_listWords is empty for PrepareLookup searches).
+	bool bLiveDispatched = false;
 	if (bLiveMarker && !sLiveKey.IsEmpty() && theApp.liveStreamManager != NULL) {
 		uchar liveKey[MDX_DIGEST_SIZE];
 		if (EseLiveHexToKey(sLiveKey, liveKey)) {
@@ -1315,7 +1316,38 @@ void CSearch::ProcessResultKeyword(const CUInt128 &uAnswer, TagList &rlistInfo, 
 				uLiveViewers,
 				m_uSearchID,                                   // H5: namespace attribution
 				uLiveAltIP);                                   // NAT-reach: overlay endpoint
+			bLiveDispatched = true;
 		}
+	}
+
+	// If we don't have a valid filename or file size, drop this keyword.
+	if (!bFileName || !bFileSize) {
+		// ...unless it was a live entry (already dispatched above) — count
+		// it as an answer so the clean-namespace search terminates on the
+		// same answer-count lifecycle as the legacy one, then skip the
+		// file-result path, which has nothing to do with live entries.
+		if (bLiveDispatched) {
+			++m_uAnswers;
+			theApp.emuledlg->kademliawnd->searchList->SearchRef(this);
+		}
+		return;
+	}
+
+	// Check that this result matches the original criteria
+	WordList listTestWords;
+	CSearchManager::GetWords(sName, listTestWords);
+	CKadTagValueString keyword;
+	for (WordList::const_iterator itWordListWords = m_listWords.begin(); itWordListWords != m_listWords.end(); ++itWordListWords) {
+		keyword = *itWordListWords;
+		bool bInterested = false;
+		for (WordList::const_iterator itWordListTestWords = listTestWords.begin(); itWordListTestWords != listTestWords.end(); ++itWordListTestWords)
+			if (EqualKadTagStr(keyword, *itWordListTestWords)) {
+				bInterested = true;
+				break;
+			}
+
+		if (!bInterested)
+			return;
 	}
 
 	if (m_pSearchTerm == NULL && m_pucSearchTermsData != NULL && m_uSearchTermsDataSize != 0) {
@@ -1376,6 +1408,8 @@ void CSearch::SendFindValue(CContact *pContact, bool bReAskMore)
 			theApp.emuledlg->kademliawnd->searchList->SearchRef(this);
 
 			if (pContact->GetVersion() >= KADEMLIA_VERSION2_47a) {
+				// eSE: stamp the ask so ProcessResponse can measure this contact's RTT
+				m_mapEseReqSendTick[pContact->GetIPAddress()] = ::GetTickCount();
 				m_pLookupHistory->ContactAskedKad(pContact);
 				theApp.emuledlg->kademliawnd->UpdateSearchGraph(m_pLookupHistory);
 				if (pContact->GetVersion() >= KADEMLIA_VERSION6_49aBETA) {
@@ -1616,12 +1650,25 @@ void CSearch::PrepareLivePacketForTags(CByteIO *byIO) const
 			// In the clean namespace (MD4("\x00eSE\x00" || utf8(kw))),
 			// no legacy client can reach this entry, so they're pure
 			// title-leak surface for any eSE-aware crawler that learns
-			// the prefix. Omit them in clean publishes; eSE viewers use
-			// TAG_ESE_LIVE_TITLE / TAG_ESE_LIVE_MARKER instead, which
-			// non-eSE parsers don't recognise. TAG_FILESIZE stays at 1
-			// because some Kad implementations sanity-check filesize > 0
-			// before keeping the entry.
-			if (!m_bLivePublishCleanNs) {
+			// the prefix. eSE viewers use TAG_ESE_LIVE_TITLE /
+			// TAG_ESE_LIVE_MARKER instead, which non-eSE parsers don't
+			// recognise. TAG_FILESIZE stays at 1 because some Kad
+			// implementations sanity-check filesize > 0 before keeping
+			// the entry.
+			//
+			// H8 fix (2026-06-11): the clean publish must still carry a
+			// TAG_FILENAME — every holder (upstream 0.70b's
+			// CIndexed::AddKeyword included) drops keyword entries whose
+			// filename is empty, so the original "omit it entirely"
+			// design made clean publishes silently unstorable anywhere.
+			// A CONSTANT name keeps the holder check happy without
+			// leaking the title: all per-stream data stays in the
+			// TAG_ESE_LIVE_* tags. It also keeps v8.1 viewers working,
+			// whose result parser drops nameless entries before the
+			// live dispatch.
+			if (m_bLivePublishCleanNs) {
+				listTag.push_back(new CKadTagStr(TAG_FILENAME, ESE_LIVE_CLEAN_NS_FILENAME));
+			} else {
 				CStringW fileName;
 				fileName.Format(L"eselive %ls", (LPCWSTR)title);
 				listTag.push_back(new CKadTagStr(TAG_FILENAME, fileName));

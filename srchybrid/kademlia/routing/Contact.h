@@ -63,6 +63,12 @@ namespace Kademlia
 		uint32	GetNetIP() const						{ return m_uNetIp; }
 		void	GetIPAddress(CString &sIp) const;
 		void	SetIPAddress(uint32 uIp);
+		// [eSE v9] Root link — additive IPv6 field. Default-empty; populated on HELLO RX,
+		// persisted in the nodes.dat ESV6 supplement. Layout-safe (the object only grows).
+		bool			HasIPv6() const			{ return m_bHasV6; }
+		const uint8*	GetIPv6Address() const	{ return m_uV6Ip; }
+		void			SetIPv6Address(const uint8 *pV6);   // NULL => reset
+		void			ResetIPv6();
 		uint16	GetTCPPort() const						{ return m_uTcpPort; }
 		void	GetTCPPort(CString &sPort) const;
 		void	SetTCPPort(uint16 uPort)				{ m_uTcpPort = uPort; }
@@ -110,6 +116,9 @@ namespace Kademlia
 		uint32	m_uInUse;
 		uint32	m_uIp; //host byte order
 		uint32	m_uNetIp; //network byte order
+		// [eSE v9] Root-link IPv6 (additive). Zeroed in InitContact, copied in Copy.
+		bool	m_bHasV6;
+		uint8	m_uV6Ip[16];
 		uint16	m_uTcpPort;
 		uint16	m_uUdpPort;
 		uint8	m_uVersion;

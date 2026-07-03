@@ -139,35 +139,14 @@ function markFirstRunSeen() {
   } catch (e) { return false; }
 }
 
-// Tier 1.4 — Public IP cache (STUN/HTTP fallback)
-// eMule learns the public IP from Kad's firewall test, which can take 30-90 s
-// after launch. We provide an HTTP fallback (api.ipify.org) so the UI can
-// generate a working ed2k://|live|... link within seconds. Cached for 10 min.
-const https = require('https');
-let _publicIPCache = { ip: null, fetchedAt: 0 };
-const PUBLIC_IP_CACHE_MS = 10 * 60 * 1000;
-function getCachedPublicIP(cb) {
-  const now = Date.now();
-  if (_publicIPCache.ip && (now - _publicIPCache.fetchedAt) < PUBLIC_IP_CACHE_MS) {
-    return cb(_publicIPCache.ip);
-  }
-  const req = https.get('https://api.ipify.org?format=text', { timeout: 3000 }, (r) => {
-    let body = '';
-    r.on('data', d => body += d);
-    r.on('end', () => {
-      const ip = (body || '').trim();
-      // Sanity check: dotted IPv4
-      if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
-        _publicIPCache = { ip: ip, fetchedAt: now };
-        cb(ip);
-      } else {
-        cb(null);
-      }
-    });
-  });
-  req.on('error',   () => cb(null));
-  req.on('timeout', () => { req.destroy(); cb(null); });
-}
+// Public IP detection — NO third parties.
+// eMule learns the public IP from Kad's firewall test (v4) and from the
+// in-band OP_PUBLICIP_ANSWER_V6 peer observation (v6, CFirewallProberV6).
+// We rely ONLY on those, surfaced through /api/live/preflight. If eMule
+// hasn't determined the address yet, the UI shows "detecting…" — we never
+// fall back to a commercial echo service (api.ipify.org etc.), per the
+// project's "100% free, discovery via IP/overlay only" constraint.
+const https = require('https');  // still used: nodes.dat watchdog + GitHub update check
 
 /**
  * Handle all /api/live/* routes.
@@ -493,7 +472,7 @@ function handleRoute(url, req, res, ctx) {
       '<li><b>Tu IP pública</b> es visible para los peers a los que te conectes (igual que en BitTorrent o eD2K). Los peers que descarguen tu emisión saben tu IP.</li>' +
       '<li>Si emites, tu <b>IP + puertos TCP/UDP</b> se publican en la red Kad (DHT pública). Cualquiera buscando "eselive" puede encontrarte.</li>' +
       '<li>Si usas un overlay externo (Tailscale, Tor, etc.) para acceso público, ese proveedor verá metadatos según su política.</li>' +
-      '<li>El watchdog de auto-fetch de <code>nodes.dat</code> contacta con <code>nodes-dat.com</code> y <code>api.ipify.org</code> (este último solo si tu Kad no detecta tu IP).</li>' +
+      '<li>El watchdog de auto-fetch de <code>nodes.dat</code> contacta con <code>nodes-dat.com</code> (solo si tu Kad no tiene nodos). Tu IP pública se detecta sin terceros: vía Kad (v4) y observación de peer in-band (v6).</li>' +
       '<li>El check de auto-update contacta con <code>api.github.com</code>.</li>' +
       '</ul>' +
       '<h2>Datos que NO se recogen</h2>' +
@@ -543,7 +522,8 @@ function handleRoute(url, req, res, ctx) {
       'function stES(s){return s==="Active"?"ACTIVO":s==="Pending"?"Pendiente":s==="HalfBuilt"?"Medio-construido":s==="Built"?"Construido":s==="Destroyed"?"Destruido":s}' +
       'function showCircs(d){if(!d||!d.circuits||d.total===0){clist.textContent="(0 circuitos)";return}' +
       'var t="";for(var i=0;i<d.circuits.length;i++){var c=d.circuits[i];' +
-      't+=c.circ_id+"  "+stES(c.state)+"  "+c.hop_count+" hop  "+Math.round((c.age_ms||0)/1000)+"s  ("+c.role+")\\n"}clist.textContent=t}' +
+      'var au=c.role==="Relay"?"—":(c.auth_ok?(c.state==="Active"?"v2":"v2…"):(c.state==="Active"?"v1":"-"));' +
+      't+=c.circ_id+"  "+stES(c.state)+"  "+c.hop_count+" hop  "+Math.round((c.age_ms||0)/1000)+"s  "+au+"  ("+c.role+")\\n"}clist.textContent=t}' +
       'function loadCircs(){fetch("/api/live/privacy/circuits").then(function(r){return r.json()}).then(showCircs).catch(function(){clist.textContent="(no se pudo leer circuitos)"})}' +
       'var pn=0,pt=null;function poll(){pn=0;if(pt)clearInterval(pt);pt=setInterval(function(){loadCircs();if(++pn>12){clearInterval(pt);pt=null}},1500)}' +
       'if(tc)tc.addEventListener("click",function(){cstat.textContent="Construyendo circuito…";' +
@@ -769,11 +749,12 @@ function handleRoute(url, req, res, ctx) {
     return true;
   }
 
-  // === GET /api/live/preflight — Proxy + STUN fallback for public IP ===
-  // Tier 1.4: if eMule's Kad firewall test hasn't completed yet, public_ip
-  // comes back empty. We then fall back to a public HTTP echo service
-  // (api.ipify.org) so the user gets their IP within seconds of launching,
-  // not minutes. The result is cached in-memory for 10 minutes.
+  // === GET /api/live/preflight — Proxy for eMule's own public-IP detection ===
+  // No third parties: we pass through ONLY what eMule itself detected —
+  // public_ip (v4, from Kad's firewall test) and public_ip_v6 (from the in-band
+  // OP_PUBLICIP_ANSWER_V6 peer observation). If neither is known yet, both stay
+  // empty and the UI shows "detecting…" instead of querying a commercial echo
+  // service. The Kad firewall test can take 30-90 s after launch.
   if (p === '/api/live/preflight') {
     const proxyReq = http.get('http://127.0.0.1:4711/api/live/preflight', { timeout: 3000 }, (proxyRes) => {
       let body = '';
@@ -783,19 +764,11 @@ function handleRoute(url, req, res, ctx) {
         try { data = JSON.parse(body); }
         catch (e) { return jsonResponse(res, 200, { ready: false, error: 'parse_error' }); }
 
-        // STUN fallback: if eMule doesn't know our public IP yet, ask ipify.
-        if (!data.public_ip) {
-          getCachedPublicIP(function (ip) {
-            if (ip) {
-              data.public_ip = ip;
-              data.public_ip_source = 'ipify';
-            }
-            jsonResponse(res, 200, data);
-          });
-        } else {
-          data.public_ip_source = 'kad';
-          jsonResponse(res, 200, data);
-        }
+        // Tag the source as eMule's own detection so the UI can label it
+        // honestly. Empty when eMule hasn't determined an address yet.
+        if (data.public_ip)         data.public_ip_source = 'kad';
+        else if (data.public_ip_v6) data.public_ip_source = 'kad6';
+        jsonResponse(res, 200, data);
       });
     });
     proxyReq.on('error',   () => jsonResponse(res, 200, { ready: false, error: 'eMule offline' }));

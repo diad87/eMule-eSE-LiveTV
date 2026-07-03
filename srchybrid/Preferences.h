@@ -650,6 +650,15 @@ public:
 	// eSE: Network State & Feature Flags
 	static bool		m_bUPnPCriticalError;	// Fase 2: Indica fallo absoluto de UPnP/NAT-PMP
 	static bool		m_bEnableUtpHolePunch;	// Fase 4: Kill-switch maestro para Hole Punching uTP
+	static bool		m_bEseAutoKeepalive;	// R.2 auto-activation: when firewalled+Kad-connected, autonomously RequestStart() the Kad keepalive (was /api-only). Default OFF -> dormant-safe.
+	static bool		m_bEseKadV6Tag;			// [eSE v9] root link: emit our public IPv6 as an additive Kad-HELLO tag (TX). Default OFF -> no HELLO wire change until validated.
+	static bool		m_bEseRelayAccept;		// [eSE v9] R.3: act as a relay buddy (accept 0xCF SETUP + serve 0xCE viewers). Default OFF.
+	static bool		m_bEseRelayEgress;		// [eSE v9] R.3: as an unreachable broadcaster, push my stream to a relay buddy. Default OFF.
+	static bool		m_bEseReachSelector;	// [eSE v9] reachability selector: escalate Direct->punch2->punch3->relay on the Live dial. Default OFF.
+	static bool		m_bEseHolePunchPortPredict;	// [eSE v9] anti-CGNAT: birthday-spray REQs across a port window (symmetric NAT / CGNAT). Default OFF.
+	static int		m_iEseHolePunchPortSpread;	// [eSE v9] port-prediction window half-width (ports each side of the observed port). Clamped [0,8].
+	static bool		m_bEseEd2kPunch3;			// [eSE v9] eD2K downloads: escalate to 3-way rendezvous (punch3) when the 2-way punch fails. Default OFF.
+	static int		m_iEseRelayMaxKBps;			// [eSE v9] R.3 hard relay egress byte-budget (KB/s of donated bandwidth). Clamped [64,65536].
 	// D2 (Sprint D): persisted privacy-routing mode. Stored as plain ints so this
 	// header doesn't have to pull in the kademlia mode-selector headers; the glue
 	// at startup casts them to the real enums. Defaults: Adaptive / Balanced.
@@ -722,10 +731,10 @@ public:
 
 	// v0.71 IPv6 Sprint 2 — IPv6 preferences. Enum hoisted to class top.
 	// IPv6Mode:
-	//   0 = IPv4Only (default, byte-identical baseline behaviour)
-	//   1 = Auto (use IPv6 if OS supports it; falls back gracefully)
+	//   0 = IPv4Only (byte-identical baseline behaviour)
+	//   1 = Auto (default since Sprint 9; uses IPv6 if the OS supports it,
+	//       falls back gracefully — see initializer in Preferences.cpp)
 	//   2 = IPv6Preferred (always try v6 first, then v4)
-	// Default Auto flip lives in Sprint 9. Until then, default = IPv4Only.
 	static EIPv6Mode GetIPv6Mode()                      { return m_eIPv6Mode; }
 	static bool     IsIPv6Enabled()                     { return m_eIPv6Mode != IPv6OffMode; }
 	static void     SetIPv6Mode(EIPv6Mode m)            { m_eIPv6Mode = m; }
@@ -1265,6 +1274,24 @@ public:
 	static void		SetUPnPCriticalError(bool b)		{ m_bUPnPCriticalError = b; }
 	static bool		GetUtpHolePunchEnabled()			{ return m_bEnableUtpHolePunch; }
 	static void		SetUtpHolePunchEnabled(bool b)		{ m_bEnableUtpHolePunch = b; }
+	static bool		GetEseAutoKeepalive()				{ return m_bEseAutoKeepalive; }
+	static void		SetEseAutoKeepalive(bool b)			{ m_bEseAutoKeepalive = b; }
+	static bool		GetEseKadV6Tag()					{ return m_bEseKadV6Tag; }
+	static void		SetEseKadV6Tag(bool b)				{ m_bEseKadV6Tag = b; }
+	static bool		GetEseRelayAccept()					{ return m_bEseRelayAccept; }
+	static void		SetEseRelayAccept(bool b)			{ m_bEseRelayAccept = b; }
+	static bool		GetEseRelayEgress()					{ return m_bEseRelayEgress; }
+	static void		SetEseRelayEgress(bool b)			{ m_bEseRelayEgress = b; }
+	static bool		GetEseReachSelector()				{ return m_bEseReachSelector; }
+	static void		SetEseReachSelector(bool b)			{ m_bEseReachSelector = b; }
+	static bool		GetEseHolePunchPortPredict()		{ return m_bEseHolePunchPortPredict; }
+	static void		SetEseHolePunchPortPredict(bool b)	{ m_bEseHolePunchPortPredict = b; }
+	static int		GetEseHolePunchPortSpread()			{ return m_iEseHolePunchPortSpread; }
+	static void		SetEseHolePunchPortSpread(int n)		{ m_iEseHolePunchPortSpread = n; }
+	static bool		GetEseEd2kPunch3()					{ return m_bEseEd2kPunch3; }
+	static void		SetEseEd2kPunch3(bool b)			{ m_bEseEd2kPunch3 = b; }
+	static int		GetEseRelayMaxKBps()				{ return m_iEseRelayMaxKBps; }
+	static void		SetEseRelayMaxKBps(int n)			{ m_iEseRelayMaxKBps = n; }
 	// D2 (Sprint D): privacy-routing mode persistence accessors (plain int).
 	static int		GetKadV2PrivacyMode()				{ return m_iKadV2PrivacyMode; }
 	static void		SetKadV2PrivacyMode(int m)			{ m_iKadV2PrivacyMode = m; }

@@ -229,7 +229,8 @@ public:
 
 	// Barry - Added as replacement for BlockReceived to buffer data before writing to disk
 	uint32	WriteToBuffer(uint64 transize, const BYTE *data, uint64 start, uint64 end, Requested_Block_Struct *block, const CUpDownClient *client, bool bCopyData);
-	void	FlushBuffer(bool bForceICH = false, bool bNoAICH = false);
+	// eSE H1: bSyncHash forces inline part verification (destructor/shutdown path)
+	void	FlushBuffer(bool bForceICH = false, bool bNoAICH = false, bool bSyncHash = false);
 	// Barry - This will invert the gap list, up to the caller to delete gaps when done
 	// 'Gaps' returned are really the filled areas, and guaranteed to be in order
 	void	GetFilledArray(CArray<Gap_Struct> &filled) const;
@@ -302,6 +303,10 @@ public:
 	void	FlushBuffersExceptionHandler(CFileException *ex);
 	void	FlushBuffersExceptionHandler();
 
+	// eSE H1: main-thread processing of a TM_PARTHASHED verdict (CPartHashThread)
+	void	ProcessPartHashVerdict(const struct PartHashVerdict_Struct &verdict);
+	bool	IsPartHashPending() const					{ return !m_mapPendingHashParts.IsEmpty(); }
+
 	void	PerformFileCompleteEnd(DWORD dwResult);
 
 	void	SetFileOp(EPartFileOp eFileOp)				{ m_eFileOp = eFileOp; }
@@ -342,7 +347,7 @@ public:
 	CFile	m_hpartfile;				// permanent opened handle to avoid write conflicts
 	CMutex	m_FileCompleteMutex;		// Lord KiRon - Mutex for file completion
 	HANDLE	m_hWrite;					// asynchronous part file writing
-	int		m_iWrites;					// outstanding I/O counter - read only in the main thread
+	volatile LONG m_iWrites;			// writes queued for or in flight in the write thread (interlocked); deletion is delayed while > 0
 	DWORD	m_LastSearchTime;
 	DWORD	m_LastSearchTimeKad;
 	uint16	src_stats[4];
@@ -365,6 +370,9 @@ private:
 	static UINT CompleteThreadProc(LPVOID pvParams); // Lord KiRon - Used as separate thread to complete file
 	void	CharFillRange(CStringA &buffer, uint32 start, uint32 end, char color) const;
 	void	AddToSharedFiles();
+	// eSE H1: snapshot a completed part for the hash worker / apply a verdict's consequences
+	void	EnqueuePartHash(UINT uPartNumber, uint64 uStart, uint64 uEnd, bool bNoAICH);
+	void	ProcessCompletePartVerdict(UINT uPartNumber, bool bHashOK, bool bAICHAgreed, bool bNoAICH);
 	void	DeleteWrittenItem(const POSITION pos);
 
 	static CBarShader s_LoadBar;
@@ -377,6 +385,10 @@ private:
 	CArray<uint16, uint16> m_SrcPartFrequency;
 	CList<uint16, uint16> corrupted_list;
 	CArray<bool, bool> m_aChangedPart;
+	// eSE H1: parts with an async hash verdict in flight -> generation; main thread only.
+	// AddGap on a pending part bumps its generation, invalidating the in-flight verdict.
+	CMap<UINT, UINT, UINT, UINT> m_mapPendingHashParts;
+	UINT	m_uPartHashGen;
 	CUpDownClientPtrList m_downloadingSourceList;
 	CString m_fullname;
 	CString m_partmetfilename;

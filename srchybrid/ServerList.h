@@ -84,4 +84,5 @@ private:
 	UINT		delservercount;
 	DWORD		m_nLastSaved;
 	uint8		version;
+	bool		m_bLoadingMet;
 };

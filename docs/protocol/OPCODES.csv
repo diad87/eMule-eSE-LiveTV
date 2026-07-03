@@ -1,0 +1,58 @@
+name,value,namespace,intro_version,status,capability_gate,format,compat,file,line
+OP_LIVE_ANNOUNCE,0xC0,EMULEPROT-CC,v7.0,stable,none,"<StreamHash 16><Title len><Category 1><Language 2><Bitrate 4><Flags 1>",additive,srchybrid/Opcodes.h,296
+OP_LIVE_REQUEST,0xC1,EMULEPROT-CC,v7.0,stable,none,"<StreamHash 16><SegmentIndex 4>",additive,srchybrid/Opcodes.h,297
+OP_LIVE_CHUNK,0xC2,EMULEPROT-CC,v7.0,stable,none,"<StreamHash 16><SegmentIndex 4><ChunkSize 4><Payload>",additive,srchybrid/Opcodes.h,298
+OP_LIVE_SUBSCRIBE,0xC3,EMULEPROT-CC,v7.0,stable,none,"<StreamHash 16><ViewerHash 16>",additive,srchybrid/Opcodes.h,299
+OP_LIVE_UNSUBSCRIBE,0xC4,EMULEPROT-CC,v7.0,stable,none,"<StreamHash 16><ViewerHash 16>",additive,srchybrid/Opcodes.h,300
+OP_LIVE_HEARTBEAT,0xC6,EMULEPROT-CC,v7.0,stable,none,"<StreamHash 16><Bitmap 2><OldestSeq 4>(+PEX)",additive,srchybrid/Opcodes.h,302
+OP_LIVE_DENY,0xC7,EMULEPROT-CC,v7.0,stable,none,"<StreamHash 16><Reason 1>",additive,srchybrid/Opcodes.h,303
+OP_LIVE_END,0xC8,EMULEPROT-CC,v7.0,stable,none,"<StreamHash 16><Reason 1>",additive,srchybrid/Opcodes.h,304
+OP_LIVE_PING,0xC9,EMULEPROT-CC,v7.x,stable,none,"<StreamHash 16><PingId 4><Timestamp 8>",additive,srchybrid/Opcodes.h,305
+OP_LIVE_PEER_LIST,0xCA,EMULEPROT-CC,v7.0,stable,none,"<StreamHash 16><Count 2>(<IP 4><Port 2><Score 1>)xN",additive,srchybrid/Opcodes.h,301
+OP_LIVE_PONG,0xCB,EMULEPROT-CC,v7.x,stable,none,"<StreamHash 16><PingId 4><Timestamp 8>",additive,srchybrid/Opcodes.h,306
+OP_LIVE_CHUNK_V2,0xCC,EMULEPROT-CC,v7.7.0,stable,none,"<StreamHash 16><SeqNum 4><Ts 4><DataSize 4><Bitrate 2><sha256 32><Sig 64><Data>",additive,srchybrid/Opcodes.h,307
+OP_LIVE_PEER_LIST_V2,0xCD,EMULEPROT-CC,v0.71,reserved,CAP_FORK_IPV6_WIRE,"<StreamHash 16><Count 2>(<CAddress><Port 2><Score 1>)xN",additive,srchybrid/Opcodes.h,310
+OP_LIVE_RELAY_REQ,0xCE,EMULEPROT-CC,v0.71,reserved,CAP_FORK_IPV6_WIRE,"buddy relay request",additive,srchybrid/Opcodes.h,311
+OP_LIVE_RELAY_FWD,0xCF,EMULEPROT-CC,v0.71,reserved,CAP_FORK_IPV6_WIRE,"buddy relay forward",additive,srchybrid/Opcodes.h,312
+OP_LIVE_CHANNEL_GOSSIP,0xD0,EMULEPROT-CC,v8.1,experimental,ESE_CAP_GOSSIP_PROTOCOL,"<count u16><channel_pubkey 32>xN",additive,srchybrid/Opcodes.h,327
+OP_LIVE_CHANNEL_REQUEST,0xD1,EMULEPROT-CC,v8.1,experimental,ESE_CAP_GOSSIP_PROTOCOL,"request ChannelRecord",additive,srchybrid/Opcodes.h,328
+OP_LIVE_CHANNEL_ANSWER,0xD2,EMULEPROT-CC,v8.1,experimental,ESE_CAP_GOSSIP_PROTOCOL,"signed ChannelRecord",additive,srchybrid/Opcodes.h,329
+OP_LIVE_CHANNEL_REVOKE,0xD3,EMULEPROT-CC,v8.1,experimental,ESE_CAP_GOSSIP_PROTOCOL,"ChannelRevocation",additive,srchybrid/Opcodes.h,330
+OP_LIVE_TUNNEL_CELL,0xD5,EMULEPROT-CC,v8.1,stable,ESE_CAP_PRIVACY_TUNNELING,"512B onion cell {circ_id 4|cmd 1|len 2|payload 505}",additive,srchybrid/Opcodes.h,332
+OP_LIVE_T_SUBSCRIBE,0xD6,EMULEPROT-CC,v8.1,reserved,ESE_CAP_PRIVACY_TUNNELING,"RESERVED-superseded by TUN_OP_LIVE_SUBSCRIBE",additive,srchybrid/Opcodes.h,341
+OP_LIVE_T_UNSUBSCRIBE,0xD7,EMULEPROT-CC,v8.1,reserved,ESE_CAP_PRIVACY_TUNNELING,"RESERVED-superseded",additive,srchybrid/Opcodes.h,342
+OP_LIVE_T_REQUEST,0xD8,EMULEPROT-CC,v8.1,reserved,ESE_CAP_TUNNEL_BULK,"RESERVED-superseded by bulk plane",additive,srchybrid/Opcodes.h,343
+OP_LIVE_BULK_CELL,0xD9,EMULEPROT-CC,v8.1.1,stable,ESE_CAP_TUNNEL_BULK,"circ_id u32|bcmd u8|nonce_seq u64|len u32|payload(AEAD)",additive,srchybrid/Opcodes.h,348
+OP_LIVE_T_HEARTBEAT,0xDA,EMULEPROT-CC,v8.1,reserved,ESE_CAP_PRIVACY_TUNNELING,"RESERVED-superseded",additive,srchybrid/Opcodes.h,350
+OP_LIVE_T_ANNOUNCE,0xDB,EMULEPROT-CC,v8.1,reserved,ESE_CAP_PRIVACY_TUNNELING,"RESERVED-superseded",additive,srchybrid/Opcodes.h,351
+OP_LIVE_T_DENY,0xDC,EMULEPROT-CC,v8.1,reserved,ESE_CAP_PRIVACY_TUNNELING,"RESERVED-superseded",additive,srchybrid/Opcodes.h,352
+OP_LIVE_T_END,0xDD,EMULEPROT-CC,v8.1,reserved,ESE_CAP_PRIVACY_TUNNELING,"RESERVED-superseded",additive,srchybrid/Opcodes.h,353
+OP_LIVE_PEER_INVITE,0xDE,EMULEPROT-CC,v8.1,experimental,ESE_CAP_GOSSIP_PROTOCOL,"PeerInvite token (QR)",additive,srchybrid/Opcodes.h,354
+OP_LIVE_RENDEZVOUS_PEERS,0xDF,EMULEPROT-CC,v8.1,reserved,ESE_CAP_PRIVACY_TUNNELING,"rendezvous swarm peer list",additive,srchybrid/Opcodes.h,355
+OP_PUBLICIP_ANSWER_V6,0xB3,EMULEPROT-CC,v0.71,experimental,CAP_FORK_IPV6_WIRE,"<CAddress> (18 B for v6) -- MOVED 0xE0->0xB3 per PROTOCOL_REGISTRY.md §2.1 (0xE0 owned by shipped OP_LIVE_CHUNK_FRAG). NOW EMITTED: in-band public-v6 detection (replaces api6.ipify.org); pending 2-PC runtime validation",additive,srchybrid/Opcodes.h,282
+OP_LIVE_CHUNK_FRAG,0xE0,EMULEPROT-CC,v8.1.x,stable,ESE_CAP_LIVE_CHUNK_FRAG,"<StreamKey 16><SeqNum 4><FragIndex 2><FragCount 2><InnerOpcode 1><TotalLen 4><FragData> -- SHIPPED+validated 2-PC @12000kbps; sole owner of 0xE0 (OP_PUBLICIP_ANSWER_V6 moved to 0xB3)",additive,srchybrid/Opcodes.h,331
+OP_LIVE_CHUNK_V3,0xB4,EMULEPROT-CC,DESIGN,reserved-proposed,ESE_CAP_LIVE_BLAKE3,"<StreamKey 16><SeqNum 4><Ts 4><DataSize 4><Bitrate 2><blake3 32><Sig 64><Data> -- BLAKE3-256 variant of OP_LIVE_CHUNK_V2 (0xCC); Sig over StreamKey+SeqNum+blake3. In freed 0xB3-0xB9 band (Live 0xC0-0xCF exhausted; 0xC5=OP_EMULEPROT header). NOT in code yet.",additive,docs/protocol/PROTOCOL_REGISTRY.md,0
+OP_CALLBACK_V6,0xE1,EMULEPROT-CC,v0.71,reserved,CAP_FORK_IPV6_WIRE,"v6 callback variant",additive,srchybrid/Opcodes.h,284
+OP_FOUNDSOURCES_V6,0xE2,EMULEPROT-CC,v0.71,reserved,CAP_FORK_IPV6_WIRE,"v6 foundsources variant",additive,srchybrid/Opcodes.h,285
+KADEMLIA3_BOOTSTRAP_REQ,0x02,KADEMLIA-UDP,v0.71,reserved,CAP_FORK_IPV6_KAD,"Kad3 bootstrap req (CAddress peers)",additive,srchybrid/Opcodes.h,725
+KADEMLIA3_BOOTSTRAP_RES,0x0A,KADEMLIA-UDP,v0.71,reserved,CAP_FORK_IPV6_KAD,"Kad3 bootstrap res",additive,srchybrid/Opcodes.h,726
+KADEMLIA3_HELLO_REQ,0x12,KADEMLIA-UDP,v0.71,reserved,CAP_FORK_IPV6_KAD,"<NodeID><CAddress><Port>",additive,srchybrid/Opcodes.h,727
+KADEMLIA3_HELLO_RES,0x1A,KADEMLIA-UDP,v0.71,reserved,CAP_FORK_IPV6_KAD,"Kad3 hello res",additive,srchybrid/Opcodes.h,728
+KADEMLIA3_REQ,0x23,KADEMLIA-UDP,v0.71,reserved,CAP_FORK_IPV6_KAD,"<TYPE><HASH target><HASH receiver-CAddress>",additive,srchybrid/Opcodes.h,729
+KADEMLIA3_RES,0x2A,KADEMLIA-UDP,v0.71,reserved,CAP_FORK_IPV6_KAD,"<HASH target><CNT><PEER3>xCNT",additive,srchybrid/Opcodes.h,730
+KADEMLIA_ESE_HOLEPUNCH_REQ,0x63,KADEMLIA-UDP,v7.x,stable,none,"<SenderKadID 16><SenderUDPPort 2><Nonce 4>",additive,srchybrid/Opcodes.h,790
+KADEMLIA_ESE_HOLEPUNCH_ACK,0x64,KADEMLIA-UDP,v7.x,stable,none,"<ResponderKadID 16><ResponderUDPPort 2><Nonce 4>",additive,srchybrid/Opcodes.h,791
+KADEMLIA3_PING_REQ,0x66,KADEMLIA-UDP,v0.71,reserved,ESE_CAP_KAD_KEEPALIVE,"keepalive tickle",additive,srchybrid/Opcodes.h,740
+KADEMLIA3_PING_RES,0x67,KADEMLIA-UDP,v0.71,reserved,ESE_CAP_KAD_KEEPALIVE,"keepalive tickle res",additive,srchybrid/Opcodes.h,741
+KADEMLIA3_HOLEPUNCH_REQ,0x68,KADEMLIA-UDP,v0.71,reserved,ESE_CAP_HOLEPUNCH_RDV,"3-way rendezvous req",additive,srchybrid/Opcodes.h,742
+KADEMLIA3_HOLEPUNCH_FWD,0x69,KADEMLIA-UDP,v0.71,reserved,ESE_CAP_HOLEPUNCH_RDV,"3-way rendezvous fwd",additive,srchybrid/Opcodes.h,743
+KADEMLIA3_HOLEPUNCH_ACK,0x6A,KADEMLIA-UDP,v0.71,reserved,ESE_CAP_HOLEPUNCH_RDV,"3-way rendezvous ack",additive,srchybrid/Opcodes.h,744
+KADEMLIA_ESE_HOLEPUNCH_CHALLENGE,0x65,KADEMLIA-UDP,v8.x,experimental,ESE_CAP_HOLEPUNCH_COOKIE,"<nonce_a 4><cookie 16> = 20B -- 2-way stateless return-routability: responder->initiator cookie (HMAC-SHA256, rotating key T=16s, no heap, HolePunchCookieCore.h). Initiator re-sends 38B 0x63 echoing the cookie BEFORE any NAT-expectation seed. WIRED: Process_ESE_HOLEPUNCH_CHALLENGE + SendEseHolePunchChallenge (KademliaUDPListener.cpp); responder challenges unknown senders, verifies expanded 38B REQ pre-seed. P0 anti-reflection hardening of KADEMLIA_ESE_HOLEPUNCH_REQ.",additive,srchybrid/Opcodes.h,815
+KADEMLIA3_HOLEPUNCH_CHALLENGE,0x6B,KADEMLIA-UDP,DESIGN,reserved-proposed,ESE_CAP_HOLEPUNCH_RDV,"<nonce_a 4><cookie 16> -- 3-way rendezvous return-routability: R->A cookie. NOTE opcode namespace; 0x6B coincides numerically with TAG_PINNED_BY_SUBSCRIBER (TAG-ED2K), a DISTINCT namespace -- no collision.",additive,docs/LOWID_NAT_TRAVERSAL_PLAN.md,0
+KADEMLIA3_HOLEPUNCH_PROCEED,0x6C,KADEMLIA-UDP,DESIGN,reserved-proposed,ESE_CAP_HOLEPUNCH_RDV,"<nonce_r 8> -- 3-way: R->A proceed signal after FWD relayed to B. NOTE opcode namespace; 0x6C coincides numerically with TAG_ESE_CAPS (TAG-ED2K), a DISTINCT namespace -- no collision.",additive,docs/LOWID_NAT_TRAVERSAL_PLAN.md,0
+KADEMLIA2_KEY_SHARD_ANNOUNCE,0xCA,KADEMLIA-UDP,v8.1,experimental,ESE_CAP_M3_SHARDING,"<keyword_hash 16><s 1><valid_until 4>",additive,srchybrid/Opcodes.h,797
+KADEMLIA2_PUBLISH_TRIGRAM_REQ,0xCB,KADEMLIA-UDP,v8.1,experimental,ESE_CAP_M4_TRIGRAMS,"trigram_key + source + entry",additive,srchybrid/Opcodes.h,798
+KADEMLIA2_SEARCH_TRIGRAM_REQ,0xCC,KADEMLIA-UDP,v8.1,experimental,ESE_CAP_M4_TRIGRAMS,"trigram_keys + max",additive,srchybrid/Opcodes.h,799
+KADEMLIA2_BLOOM_DIGEST_REQ,0xCD,KADEMLIA-UDP,v8.1,experimental,ESE_CAP_M5_BLOOM_GOSSIP,"32KB bloom blob",additive,srchybrid/Opcodes.h,800
+KADEMLIA2_LOCAL_QUERY_REQ,0xCE,KADEMLIA-UDP,v8.1,experimental,ESE_CAP_M5_BLOOM_GOSSIP,"query terms",additive,srchybrid/Opcodes.h,801
+KADEMLIA2_LOCAL_QUERY_RES,0xCF,KADEMLIA-UDP,v8.1,experimental,ESE_CAP_M5_BLOOM_GOSSIP,"query results",additive,srchybrid/Opcodes.h,802

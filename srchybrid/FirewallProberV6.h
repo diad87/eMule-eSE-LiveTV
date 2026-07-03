@@ -43,16 +43,29 @@ public:
 
     static CFirewallProberV6& Instance();
 
-    // Kick off the probe in the background. Idempotent. Result lands in
-    // GetCurrentLayer() once the cascade settles.
+    // Kick off the probe on a worker thread. Idempotent — a second call
+    // while a probe is in flight (or already done) is a no-op. Result
+    // lands in GetCurrentLayer() once the cascade settles. Kept on a worker
+    // thread for headroom (future PCP/UPnP layers can block); the v6 address
+    // itself is detected separately, in-band, via SetDetectedV6IP().
     void ProbeAsync();
 
-    // Layer-aware accessors. Until ProbeAsync completes, GetCurrentLayer
-    // returns LayerUnknown.
-    ECascadeLayer GetCurrentLayer() const { return m_eLayer; }
-    bool          IsReachable()     const { return m_eLayer >= LayerHighID && m_eLayer <= LayerHolePunch; }
-    CAddress      GetDetectedV6IP() const { return m_detectedIP; }
+    // Layer-aware accessors. Until the cascade settles, GetCurrentLayer
+    // returns LayerUnknown. Locked: the worker thread writes the verdict
+    // while the UI / webserver read it.
+    ECascadeLayer GetCurrentLayer() const { CSingleLock l(&m_lock, TRUE); return m_eLayer; }
+    bool          IsReachable()     const { ECascadeLayer e = GetCurrentLayer(); return e >= LayerHighID && e <= LayerHolePunch; }
+    CAddress      GetDetectedV6IP() const { CSingleLock l(&m_lock, TRUE); return m_detectedIP; }
     const TCHAR*  GetLayerLabel()   const;
+
+    // v0.71 IPv6 Sprint 6 — record our public v6 address as observed by a peer
+    // via the in-band OP_PUBLICIP_ANSWER_V6 connect-back (replaces the old
+    // api6.ipify.org HTTPS probe — no third party, no correlation point). Called
+    // from the network thread when a CAP_FORK_IPV6_WIRE peer answers our
+    // OP_PUBLICIP_REQ. First public-v6 answer wins (matches theApp.SetPublicIP);
+    // non-public / non-v6 / null addresses are ignored. Egress proof only — does
+    // NOT change the cascade verdict (inbound HighID is separate, later work).
+    void          SetDetectedV6IP(const CAddress& addr);
 
     // Manual override from preferences (Sprint 9 UI exposes this).
     void SetOverrideLayer(ECascadeLayer layer);
@@ -63,6 +76,10 @@ private:
     CFirewallProberV6(const CFirewallProberV6&) = delete;
     CFirewallProberV6& operator=(const CFirewallProberV6&) = delete;
 
+    // Worker-thread entry: runs the cascade and publishes the verdict.
+    static UINT AFX_CDECL ProbeThreadProc(LPVOID pParam);
+    void RunCascade();
+
     // Sprint 3 stubs — return early with Unreachable. Sprints 5/6/9 fill in.
     bool TryHighID();
     bool TryPCP();
@@ -71,9 +88,10 @@ private:
     bool TryHolePunch();
     bool TryBuddyRelay();
 
+    mutable CCriticalSection m_lock; // guards m_eLayer + m_detectedIP
     ECascadeLayer m_eLayer;
     ECascadeLayer m_eOverrideLayer;
     CAddress      m_detectedIP;
-    bool          m_bProbeStarted;
+    volatile LONG m_lProbeStarted;   // InterlockedExchange re-entry guard
     DWORD         m_dwLastProbeTick;
 };

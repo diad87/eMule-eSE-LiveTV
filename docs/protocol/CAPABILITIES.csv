@@ -1,0 +1,25 @@
+name,value,namespace,intro_version,status,capability_gate,format,compat,file,line
+ESE_CAP_M1_SUBSCRIBER_PIN,0x00000001,CAP-ESE,v8.1,experimental,none,"bit 0 -- files pinned by my subscribers",additive,srchybrid/Opcodes.h,528
+ESE_CAP_M2_COMPOSITE_KEYS,0x00000002,CAP-ESE,v8.1,experimental,none,"bit 1 -- composite (kw,ft,size) keys",additive,srchybrid/Opcodes.h,529
+ESE_CAP_M3_SHARDING,0x00000004,CAP-ESE,v8.1,experimental,none,"bit 2 -- hot keyword sharding",additive,srchybrid/Opcodes.h,530
+ESE_CAP_M4_TRIGRAMS,0x00000008,CAP-ESE,v8.1,experimental,none,"bit 3 -- trigram index",additive,srchybrid/Opcodes.h,531
+ESE_CAP_M5_BLOOM_GOSSIP,0x00000010,CAP-ESE,v8.1,experimental,none,"bit 4 -- bloom digest gossip",additive,srchybrid/Opcodes.h,532
+ESE_CAP_M6_K_EFFECTIVE,0x00000020,CAP-ESE,v8.1,experimental,none,"bit 5 -- adaptive k per keyword",additive,srchybrid/Opcodes.h,533
+ESE_CAP_PRIVACY_TUNNELING,0x00000100,CAP-ESE,v8.1,stable,none,"bit 8 -- onion tunnels active",additive,srchybrid/Opcodes.h,534
+ESE_CAP_SEALED_RECORDS,0x00000200,CAP-ESE,v8.1,experimental,none,"bit 9 -- sealed channels (Ed25519+HKDF)",additive,srchybrid/Opcodes.h,535
+ESE_CAP_GOSSIP_PROTOCOL,0x00000400,CAP-ESE,v8.1,experimental,none,"bit 10 -- channel gossip",additive,srchybrid/Opcodes.h,536
+ESE_CAP_COVER_TRAFFIC,0x00000800,CAP-ESE,v8.1,experimental,none,"bit 11 -- Poisson cover cells",additive,srchybrid/Opcodes.h,537
+ESE_CAP_TUNNEL_DATAPLANE,0x00001000,CAP-ESE,v8.1,stable,none,"bit 12 -- multi-cell tunnel data plane",additive,srchybrid/Opcodes.h,538
+ESE_CAP_LIVE_CHUNK_FRAG,0x00002000,CAP-ESE,v8.1.x,stable,none,"bit 13 -- Live segment fragmentation (SHIPPED+validated)",additive,srchybrid/Opcodes.h,539
+ESE_CAP_TUNNEL_BULK,0x00004000,CAP-ESE,v8.1.1,stable,none,"bit 14 -- Sprint E bulk data plane (SHIPPED)",additive,srchybrid/Opcodes.h,540
+ESE_CAP_HOLEPUNCH_RDV,0x00008000,CAP-ESE,DESIGN,reserved-proposed,none,"bit 15 -- 3-way rendezvous (LOWID_NAT plan). CORRECTED from bit 13 which collided with LIVE_CHUNK_FRAG. NOT in code yet.",additive,docs/LOWID_NAT_TRAVERSAL_PLAN.md,0
+ESE_CAP_KAD_KEEPALIVE,0x00010000,CAP-ESE,DESIGN,reserved-proposed,none,"bit 16 -- keepalive pinhole (LOWID_NAT plan). CORRECTED from bit 14 which collided with TUNNEL_BULK. NOT in code yet.",additive,docs/LOWID_NAT_TRAVERSAL_PLAN.md,0
+ESE_CAP_REACH_V2,0x00020000,CAP-ESE,DESIGN,reserved-proposed,none,"bit 17 -- reachability vector v2 (thesis Kad-sin-LowID). NOT in code yet.",additive,docs/THESIS_KAD_SIN_LOWID.md,0
+ESE_CAP_TUNNEL_AUTH,0x00040000,CAP-ESE,DESIGN,reserved-proposed,none,"bit 18 -- authenticated tunnel handshake (CREATE/CREATED v2, Ed25519 signed). 0x8000/bit15 deliberately AVOIDED (taken by HOLEPUNCH_RDV). NOT in code yet.",additive,docs/AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md,0
+ESE_CAP_HOLEPUNCH_COOKIE,0x00080000,CAP-ESE,v8.x,experimental,none,"bit 19 -- return-routability cookie for eSE hole-punch (anti-reflection). Cookie flow wired (Process_ESE_HOLEPUNCH_REQ/CHALLENGE + EseHolePunchCookie). LOAD-BEARING: gates stateless challenge for unverified entries; informational otherwise. Two-tier gate in Process_ESE_HOLEPUNCH_REQ: TIER1 verified-known contact (IsIpVerified) -> legacy ACK+seed; TIER2 gray zone (unknown OR known-but-unverified) -> challenge IFF sender advertises this bit, else floored ACK+seed (back-compat for legacy peers). Slot below 15/16/17/18 = RDV/KEEPALIVE/REACH_V2/AUTH.",additive,srchybrid/Opcodes.h,557
+ESE_CAP_LIVE_BLAKE3,0x00100000,CAP-ESE,DESIGN,reserved-proposed,none,"bit 20 -- peer verifies BLAKE3-256 digest Live chunks (OP_LIVE_CHUNK_V3). Digest SUBSTITUTION replacing SHA256 in the signed chunk, NOT an added hash field. NOT in code yet.",additive,docs/protocol/PROTOCOL_REGISTRY.md,0
+ESE_CAP_LIVE_RELAY,0x00200000,CAP-ESE,v9,experimental,none,"bit 21 -- R.3 buddy relay egress (broadcaster connect-out + 0xCF SETUP/CHUNK + 0xCE downstream re-emit). Advertised iff GetEseRelayAccept() (default OFF); a node that does not accept relay duty keeps its caps byte-identical. Egress bandwidth bounded by pref EseRelayMaxKBps. bit 20 deliberately skipped (LIVE_BLAKE3).",additive,srchybrid/Opcodes.h,558
+CAP_FORK_IPV6_WIRE,0x00000001,CAP-FORK,v0.71,reserved,none,"bit 0 -- peer speaks _V6 opcodes",additive,srchybrid/Opcodes.h,656
+CAP_FORK_IPV6_KAD,0x00000002,CAP-FORK,v0.71,reserved,none,"bit 1 -- peer participates in KADEMLIA3_*",additive,srchybrid/Opcodes.h,657
+CAP_FORK_IPV6_DUALSTACK,0x00000004,CAP-FORK,v0.71,experimental,none,"bit 2 -- peer has both v4 + v6 reachable",additive,srchybrid/Opcodes.h,658
+CAP_FORK_ED25519,0x00000008,CAP-FORK,v7.6,stable,none,"bit 3 -- peer speaks signed live chunks",additive,srchybrid/Opcodes.h,659

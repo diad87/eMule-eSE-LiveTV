@@ -23,6 +23,7 @@
 #include "LiveCrypto.h"        // v7.6.0 — StreamKeyMatchesPubkey
 #include "LiveTunnel.h"        // v0.71 P3.4 — OP_LIVE_TUNNEL_CELL dispatch
 #include "LiveCellQueue.h"     // v0.71 P3.4 — CELL_TOTAL_BYTES + CellUnpack
+#include "LiveBuddyRelay.h"    // R.3: relay floor (OP_LIVE_RELAY_FWD dispatch)
 #include "../cryptopp/sha.h"   // v7.7.0 — SHA256 for OP_LIVE_CHUNK_V2 verify
 #include "eMuleAI/Address.h"   // v0.71 IPv6 Sprint 7 — CAddress in PEER_LIST_V2
 #include "UpDownClient.h"
@@ -89,6 +90,21 @@ CUtpSocket* CClientReqSocket::InitUtpSupport()
 	delete pUtpLayer;
 	DebugLogWarning(_T("[eSE] InitUtpSupport: AddLayer FAILED on CClientReqSocket %p"), this);
 	return NULL;
+}
+
+// eSE: CClientReqSocket owns the uTP layer it adds in InitUtpSupport(). The base
+// CAsyncSocketEx::RemoveAllLayers() only nulls the chain pointers and
+// CEMSocket::RemoveAllLayers() only deletes m_pProxyLayer, so without this override
+// the CUtpSocket object is never deleted on the success path: it leaks per connection
+// and stays orphaned in theApp.g_UtpSockets (which Process() iterates every tick).
+// ~CUtpSocket erases itself from g_UtpSockets under g_utpSocketsLock, so deleting it
+// here is UAF-safe. Idempotent: RemoveAllLayers can run more than once (OnClose +
+// socket teardown); deleting a NULL pointer is a no-op. Mirror of CEMSocket's override.
+void CClientReqSocket::RemoveAllLayers()
+{
+	CEMSocket::RemoveAllLayers();
+	delete m_pUtpLayer;
+	m_pUtpLayer = NULL;
 }
 
 void CClientReqSocket::SetConState(SocketState val)
@@ -939,6 +955,46 @@ namespace {
 		}
 		return limited;
 	}
+
+	// v8.1.2 E1.3 (major16) — per-source-IP BYTE-rate cap for OP_LIVE_BULK_CELL (0xD9).
+	// A bulk cell is ~17 KB (~34x a 512 B control cell), so the cell-count cap above
+	// weighs it far too lightly. Account in BYTES: a single 12000 kbps + FEC stream is
+	// ~1.7 MB/s on one circuit; cap at ~5 MB/s (25 MB / 5 s) per source IP — generous for
+	// the validated bitrate yet bounds a flooder's main-thread AEAD/forward work. Same
+	// sliding-window open-addressed cache. Main thread only.
+	struct BulkByteRate { uint32 srcIp; uint64 bytes; DWORD windowStart; };
+	static BulkByteRate s_bulkByteRates[64] = {};
+	bool IsBulkByteRateLimited(uint32 ipNet, uint32 addBytes)
+	{
+		const DWORD  WINDOW_MS = 5000;
+		const uint64 MAX_BYTES = 25ull * 1024 * 1024;   // 25 MB / 5 s = 5 MB/s ~= 40 Mbit/s per source IP
+		DWORD now = ::GetTickCount();
+		int slot = -1, freeSlot = -1;
+		uint32 h = (ipNet * 0x9E3779B1u) % _countof(s_bulkByteRates);
+		for (uint32 i = 0; i < _countof(s_bulkByteRates); ++i) {
+			uint32 idx = (h + i) % _countof(s_bulkByteRates);
+			if (s_bulkByteRates[idx].srcIp == ipNet && s_bulkByteRates[idx].windowStart != 0) { slot = (int)idx; break; }
+			if (s_bulkByteRates[idx].windowStart == 0 && freeSlot == -1) freeSlot = (int)idx;
+			if (s_bulkByteRates[idx].windowStart != 0 && now - s_bulkByteRates[idx].windowStart > WINDOW_MS * 4) {
+				if (freeSlot == -1) freeSlot = (int)idx;
+			}
+		}
+		bool limited = false;
+		if (slot >= 0) {
+			if (now - s_bulkByteRates[slot].windowStart > WINDOW_MS) {
+				s_bulkByteRates[slot].windowStart = now;
+				s_bulkByteRates[slot].bytes = addBytes;
+			} else {
+				s_bulkByteRates[slot].bytes += addBytes;
+				if (s_bulkByteRates[slot].bytes > MAX_BYTES) limited = true;
+			}
+		} else if (freeSlot >= 0) {
+			s_bulkByteRates[freeSlot].srcIp = ipNet;
+			s_bulkByteRates[freeSlot].windowStart = now;
+			s_bulkByteRates[freeSlot].bytes = addBytes;
+		}
+		return limited;
+	}
 }
 
 bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT opcode, UINT uRawSize)
@@ -1438,6 +1494,15 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 
 			client->ProcessPublicIPAnswer(packet, size);
 			break;
+		case OP_PUBLICIP_ANSWER_V6:
+			// v0.71 IPv6 Sprint 6 — peer-observed public v6 address (in-band
+			// replacement for the api6.ipify.org HTTPS probe). Payload <CAddress>.
+			if (thePrefs.GetDebugClientTCPLevel() > 0)
+				DebugRecv("OP_PublicIPAns(v6)", client);
+			theStats.AddDownDataOverheadOther(uRawSize);
+
+			client->ProcessPublicIPAnswerV6(packet, size);
+			break;
 		case OP_PUBLICIP_REQ:
 			{
 				if (thePrefs.GetDebugClientTCPLevel() > 0)
@@ -1450,6 +1515,27 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				PokeUInt32(pPacket->pBuffer, client->GetIP());
 				theStats.AddUpDataOverheadOther(pPacket->size);
 				SendPacket(pPacket);
+
+				// v0.71 IPv6 Sprint 6 — also answer the requester's public v6
+				// address when (a) it advertised CAP_FORK_IPV6_WIRE so it can
+				// parse the _V6 opcode, and (b) this connection is over native
+				// IPv6 so the address we observe for it is its v6 source.
+				// GetPeerCAddress folds v4-mapped v6 to IPv4, so an IPv6 type
+				// here is a genuine native-v6 peer; a v4 peer simply gets no v6
+				// answer (in-band analogue of OP_PUBLICIP_ANSWER, gated for
+				// backward-compat — old peers never receive 0xB3).
+				if (client->SupportsIPv6Wire()) {
+					CAddress peerV6 = GetPeerCAddress();
+					if (peerV6.GetType() == CAddress::IPv6 && peerV6.IsPublicIP()) {
+						CSafeMemFile dataV6(18);
+						peerV6.WriteToBuffer(&dataV6);
+						if (thePrefs.GetDebugClientTCPLevel() > 0)
+							DebugSend("OP_PublicIPAns(v6)", client);
+						Packet *pV6 = new Packet(dataV6, OP_EMULEPROT, OP_PUBLICIP_ANSWER_V6);
+						theStats.AddUpDataOverheadOther(pV6->size);
+						SendPacket(pV6);
+					}
+				}
 			}
 			break;
 		case OP_PORTTEST:
@@ -1827,6 +1913,33 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 
 				if (theApp.liveStreamManager)
 					theApp.liveStreamManager->OnPeerDisconnected(client);
+			}
+			break;
+		// R.3 (relay floor) — buddy side. 0xCF = B<->Rel link (setup + chunk push);
+		// 0xCE = V->Rel subscribe (handler lands in R.3 increment 4).
+		case OP_LIVE_RELAY_FWD:
+			{
+				if (thePrefs.GetDebugClientTCPLevel() > 0)
+					DebugRecv("OP_LiveRelayFwd", client);
+				theStats.AddDownDataOverheadOther(uRawSize);
+				if (size < 17) break;  // subop(1) + streamKey(16)
+				CSafeMemFile data(packet, size);
+				uint8 subop = data.ReadUInt8();
+				uchar streamKey[16];
+				data.ReadHash16(streamKey);
+				CLiveBuddyRelay::Instance().OnRelayFwd(client, subop, streamKey, (const uint8*)packet + 17, size - 17);
+			}
+			break;
+		case OP_LIVE_RELAY_REQ:
+			{
+				if (thePrefs.GetDebugClientTCPLevel() > 0)
+					DebugRecv("OP_LiveRelayReq", client);
+				theStats.AddDownDataOverheadOther(uRawSize);
+				if (size < 16) break;                       // streamKey(16) [+ viewerHash(16) optional]
+				CSafeMemFile data(packet, size);
+				uchar streamKey[16];
+				data.ReadHash16(streamKey);
+				CLiveBuddyRelay::Instance().OnRelayReq(client, streamKey);
 			}
 			break;
 		case OP_LIVE_REQUEST:
@@ -2266,7 +2379,6 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 		case OP_LIVE_T_SUBSCRIBE:
 		case OP_LIVE_T_UNSUBSCRIBE:
 		case OP_LIVE_T_REQUEST:
-		case OP_LIVE_T_CHUNK:
 		case OP_LIVE_T_HEARTBEAT:
 		case OP_LIVE_T_ANNOUNCE:
 		case OP_LIVE_T_DENY:
@@ -2277,6 +2389,31 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 			DebugLog(_T("[STUB] OP_LIVE 0x%02x from %s — reserved/superseded, dropped (channels: F3; T_* wrappers: superseded by TUN_OP_* in 0xD5)"),
 				(unsigned)opcode,
 				client ? (LPCTSTR)ipstr(client->GetIP()) : _T("?"));
+			break;
+
+		// === v8.1.2 Sprint E — OP_LIVE_BULK_CELL (0xD9) bulk data plane ====
+		// Variable-length onion bulk cell (LiveBulk §2.1). CLiveTunnel FORWARDS it
+		// (intermediate relay) or TERMINATES it (viewer: explicit-nonce decrypt ->
+		// FEC reassembly). Gated by ESE_CAP_TUNNEL_BULK, so vanilla/v8.0.x never
+		// send one (the old 0xD9 stub dropped it -> backward-compatible).
+		case OP_LIVE_BULK_CELL:
+			theStats.AddDownDataOverheadOther(uRawSize);
+			if (size < 17 || size > 17000) {   // header(17) .. one symbol + headers + 2 AEAD layers
+				DebugLog(_T("OP_LIVE_BULK_CELL: bad size %u — dropping"), size);
+				break;
+			}
+			// DoS: per-source-IP BYTE-rate cap (E1.3/major16) — accounts in bytes, not
+			// cells, BEFORE any AEAD/forward. ~5 MB/s per IP (covers 12000 kbps + FEC).
+			if (client && IsBulkByteRateLimited(client->GetIP(), size)) {
+				static DWORD s_lastBulkRateLog = 0;
+				if (::GetTickCount() - s_lastBulkRateLog > 30000) {
+					s_lastBulkRateLog = ::GetTickCount();
+					DebugLog(_T("OP_LIVE_BULK_CELL: rate cap exceeded for %s — dropping (DoS protection)"),
+						(LPCTSTR)ipstr(client->GetIP()));
+				}
+				break;
+			}
+			eSELive::CLiveTunnel::Get().OnBulkCellReceived(packet, size, client);
 			break;
 
 		default:
@@ -2310,12 +2447,10 @@ void CClientReqSocket::PacketToDebugLogLine(LPCTSTR protocol, const uchar *packe
 
 CString CClientReqSocket::DbgGetClientInfo()
 {
-	SOCKADDR_IN sockAddr = {};
-	int nSockAddrLen = sizeof sockAddr;
-	GetPeerName((LPSOCKADDR)&sockAddr, &nSockAddrLen);
+	const uint32 uPeerIP = GetPeerAddressV4();
 	CString str;
-	if (sockAddr.sin_addr.s_addr != 0 && (client == NULL || sockAddr.sin_addr.s_addr != client->GetIP()))
-		str.Format(_T("IP=%s"), (LPCTSTR)ipstr(sockAddr.sin_addr));
+	if (uPeerIP != 0 && (client == NULL || uPeerIP != client->GetIP()))
+		str.Format(_T("IP=%s"), (LPCTSTR)ipstr(uPeerIP));
 	if (client)
 		str.AppendFormat(&_T("; Client=%s")[str.IsEmpty() ? 2 : 0], (LPCTSTR)client->DbgGetClientInfo());
 	return str;
@@ -2551,16 +2686,18 @@ bool CListenSocket::StartListening()
 	// port!
 
 	// v0.71 IPv6 Sprint 3 + Sprint 9 hotfix — dual-stack AF_INET6 listener is
-	// now OPT-IN (only IPv6PreferredMode). Real-world testing on Windows
-	// 10/11 + consumer routers shows that even with IPV6_V6ONLY=0 and the
-	// SOCKADDR_STORAGE OnAccept normalization, the eD2K server TCP callback
-	// test and Kad firewall test fail intermittently — the kernel surfaces
-	// v4 traffic via WSAAccept paths the legacy code wasn't expecting, and
-	// some NAT/conntrack helpers don't see the SYN-ACK in time. Auto mode
-	// therefore stays on the rock-solid AF_INET path; users who explicitly
-	// pick "IPv6 preferido" in Preferences→Conexión opt into the dual-stack
-	// experiment. The v6 prober (FirewallProberV6) still runs in Auto so
-	// the panel shows the detected public v6 address either way.
+	// OPT-IN (only IPv6PreferredMode). The May-2026 failure ("Tras
+	// cortafuegos" with the router port open) was root-caused in June 2026:
+	// the OnAccept SOCKADDR_STORAGE fix was not enough because every later
+	// GetPeerName() on the accepted v6-family socket still used a 16-byte
+	// SOCKADDR_IN buffer, failed with WSAEFAULT, and read peer IP 0.0.0.0 —
+	// so the obfuscation gate rejected server/Kad firewall probes and every
+	// inbound client was born with IP=0. Those call sites now go through
+	// CEncryptedStreamSocket::GetPeerAddressV4 (storage-sized + v4-mapped
+	// normalization + loud "IPv6 guard" logging). Auto stays on AF_INET
+	// until the helper soaks under IPv6PreferredMode on real hardware; the
+	// v6 prober (FirewallProberV6) still runs in Auto so the panel shows
+	// the detected public v6 address either way.
 	bool bUsingV6 = false;
 	if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
 		// Bind address NULL means "[::]" — listen on all v6 interfaces. We
@@ -2827,9 +2964,11 @@ void CListenSocket::OnAccept(int nErrorCode)
 				}
 
 				if (SockAddr.sin_addr.s_addr == INADDR_ANY) { // for safety.
-					int iLen4 = (int)sizeof SockAddr;
-					newclient->GetPeerName((LPSOCKADDR)&SockAddr, &iLen4);
-					DebugLogWarning(_T("SockAddr.sin_addr.s_addr == 0;  GetPeerName returned %s"), (LPCTSTR)ipstr(SockAddr.sin_addr.s_addr));
+					// v0.71 IPv6 — the old SOCKADDR_IN re-query failed with
+					// WSAEFAULT on v6-family sockets, so this "for safety"
+					// fallback returned 0 exactly when it was needed.
+					SockAddr.sin_addr.s_addr = newclient->GetPeerAddressV4();
+					DebugLogWarning(_T("SockAddr.sin_addr.s_addr == 0;  GetPeerAddressV4 returned %s"), (LPCTSTR)ipstr(SockAddr.sin_addr.s_addr));
 				}
 
 				ASSERT(SockAddr.sin_addr.s_addr != INADDR_ANY && SockAddr.sin_addr.s_addr != INADDR_NONE);

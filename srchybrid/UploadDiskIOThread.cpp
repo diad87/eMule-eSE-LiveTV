@@ -81,6 +81,21 @@ void CUploadDiskIOThread::EndThread()
 	m_eventThreadEnded.Lock();
 }
 
+//GetQueuedCompletionStatus()==FALSE with a dequeued packet (*ppOverlapped != NULL) means
+//failed or cancelled I/O (e.g. a file handle was closed with operations in flight).
+//Deliver such packets to the caller with 0 transferred bytes so they reach the completion
+//routine; returning FALSE (which terminates the thread) is reserved for an empty dequeue:
+//a timeout or a broken port.
+static BOOL DequeueCompletionPacket(HANDLE hPort, DWORD dwTimeout, LPDWORD pdwTransferred, PULONG_PTR pulCompletionKey, LPOVERLAPPED *ppOverlapped)
+{
+	if (::GetQueuedCompletionStatus(hPort, pdwTransferred, pulCompletionKey, ppOverlapped, dwTimeout))
+		return TRUE;
+	if (*ppOverlapped == NULL)
+		return FALSE;
+	*pdwTransferred = 0;
+	return TRUE;
+}
+
 UINT CUploadDiskIOThread::RunInternal()
 {
 	m_hPort = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, 0, 0, 1);
@@ -92,7 +107,7 @@ UINT CUploadDiskIOThread::RunInternal()
 	OverlappedRead_Struct *pCurIO = NULL;
 	m_Run = RUN_IDLE;
 	while (m_Run
-			&& ::GetQueuedCompletionStatus(m_hPort, &dwRead, &completionKey, (LPOVERLAPPED*)&pCurIO, INFINITE)
+			&& DequeueCompletionPacket(m_hPort, INFINITE, &dwRead, &completionKey, (LPOVERLAPPED*)&pCurIO)
 			&& completionKey)
 	{
 		m_Run = RUN_WORK;
@@ -111,7 +126,7 @@ UINT CUploadDiskIOThread::RunInternal()
 				break;
 			if (completionKey != WAKEUP) //ignore wakeups
 				ReadCompletionRoutine(dwRead, pCurIO);
-		} while (::GetQueuedCompletionStatus(m_hPort, &dwRead, &completionKey, (LPOVERLAPPED*)&pCurIO, 0));
+		} while (DequeueCompletionPacket(m_hPort, 0, &dwRead, &completionKey, (LPOVERLAPPED*)&pCurIO));
 
 		if (!completionKey) //thread termination
 			break;
@@ -126,10 +141,19 @@ UINT CUploadDiskIOThread::RunInternal()
 	}
 	m_Run = RUN_STOP;
 
-	//Improper termination of asynchronous I/O follows...
-	//close file handles to release the I/O completion port
-	while (!m_listPendingIO.IsEmpty())
-		ReadCompletionRoutine(0, m_listPendingIO.RemoveHead());
+	//Asynchronous reads may still be in flight. Close the file handles to cancel the
+	//outstanding I/O, then drain the completion packets from the port: the kernel owns
+	//each OVERLAPPED until its completion packet has been delivered, so the structures
+	//must not be freed before that.
+	for (POSITION pos = m_listPendingIO.GetHeadPosition(); pos != NULL;)
+		DissociateFile(m_listPendingIO.GetNext(pos)->pFile);
+	while (!m_listPendingIO.IsEmpty()
+		&& DequeueCompletionPacket(m_hPort, 10000, &dwRead, &completionKey, (LPOVERLAPPED*)&pCurIO))
+	{
+		if (pCurIO != NULL && completionKey != WAKEUP)
+			ReadCompletionRoutine(0, pCurIO);
+	}
+	ASSERT(m_listPendingIO.IsEmpty());
 
 	::CloseHandle(m_hPort);
 	m_hPort = 0;
@@ -210,7 +234,14 @@ void CUploadDiskIOThread::StartCreateNextBlockPackage(UploadingToClient_Struct *
 				return;
 			}
 
+			//the shared files map mutates under m_mutWriteList in the main thread, so the
+			//lookup must hold that lock. We already hold the upload list lock and
+			//m_mutWriteList ranks before it (lock order in DownloadQueue.h), so never
+			//block on it here - skip and retry on the next wakeup instead
+			if (!::TryEnterCriticalSection(&theApp.sharedfiles->m_mutWriteList.m_sect))
+				return;
 			CKnownFile *pFile = theApp.sharedfiles->GetFileByID(currentblock->FileID);
+			::LeaveCriticalSection(&theApp.sharedfiles->m_mutWriteList.m_sect);
 			if (pFile == NULL)
 				throwCStr(_T("CUploadDiskIOThread::StartCreateNextBlockPackage: shared file not found"));
 			if (pFile->bNoNewReads) //should be moving to incoming
@@ -279,11 +310,9 @@ void CUploadDiskIOThread::ReadCompletionRoutine(DWORD dwRead, const OverlappedRe
 	}
 	ASSERT(pOvRead->pFile && pOvRead->pos);
 
-	--pOvRead->pFile->nInUse;
-
 	CKnownFile *pKnownFile = pOvRead->pFile;
+	m_listPendingIO.RemoveAt(pOvRead->pos);
 	if (m_Run) {
-		m_listPendingIO.RemoveAt(pOvRead->pos);
 		bool bReadError = !dwRead;
 		if (bReadError)
 			Debug(_T("  Completed read, dwRead=0\n"));
@@ -346,6 +375,10 @@ void CUploadDiskIOThread::ReadCompletionRoutine(DWORD dwRead, const OverlappedRe
 	// cleanup
 	delete[] pOvRead->pBuffer;
 	delete pOvRead;
+	//the decrement must be the very last use of the file object: the main thread
+	//delays the deletion of a part file while nInUse > 0 (CPartFile::DeletePartFile)
+	if (pKnownFile)
+		--pKnownFile->nInUse;
 }
 
 bool CUploadDiskIOThread::ShouldCompressBasedOnFilename(const CString &strFileName)

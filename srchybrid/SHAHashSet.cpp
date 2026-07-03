@@ -669,7 +669,7 @@ bool CAICHRecoveryHashSet::ReadRecoveryData(uint64 nPartStartPos, CSafeMemFile &
 			return false;
 		}
 		DEBUG_ONLY(theApp.QueueDebugLogLine(/*DLP_VERYHIGH,*/ false, _T("Read recovery data for %s - Received packet with  %u 32bit hash identifiers)"), (LPCTSTR)m_pOwner->GetFileName(), nHashesAvailable));
-		for (uint32 i = 0; i != nHashsToRead; ++i) {
+		for (uint32 i = 0; i != nHashesAvailable; ++i) {
 			uint32 wHashIdent = fileDataIn.ReadUInt32();
 			if (wHashIdent == 1 //never allow masterhash to be overwritten
 				|| wHashIdent > 0x400000
@@ -794,16 +794,16 @@ bool CAICHRecoveryHashSet::LoadHashSet()
 		return false;
 	}
 
-	CSafeFile file;
+	CSafeBufferedFile file;
 	CFileException fex;
 	if (!file.Open(thePrefs.GetMuleDirectory(EMULE_CONFIGDIR) + KNOWN2_MET_FILENAME
-		, CFile::modeCreate | CFile::modeRead | CFile::modeNoTruncate | CFile::osSequentialScan | CFile::typeBinary | CFile::shareDenyNone, &fex))
+		, CFile::modeRead | CFile::osSequentialScan | CFile::typeBinary | CFile::shareDenyNone, &fex))
 	{
 		if (fex.m_cause != CFileException::fileNotFound)
 			theApp.QueueLogLine(true, _T("%s%s"), _T("Failed to load ") KNOWN2_MET_FILENAME, (LPCTSTR)CExceptionStrDash(fex));
 		return false;
 	}
-	//::setvbuf(file.m_pStream, NULL, _IOFBF, 16384);
+	::setvbuf(file.m_pStream, NULL, _IOFBF, 16384);
 	try {
 		uint8 header = file.ReadUInt8();
 		if (header != KNOWN2_MET_VERSION)
@@ -863,7 +863,7 @@ bool CAICHRecoveryHashSet::LoadHashSet()
 				return true;
 			}
 			nHashCount = file.ReadUInt32();
-			if (file.GetPosition() + nHashCount * HASHSIZE > nExistingSize)
+			if (file.GetPosition() + nHashCount * (ULONGLONG)HASHSIZE > nExistingSize)
 				AfxThrowFileException(CFileException::endOfFile, 0, file.GetFileName());
 
 			// skip the rest of this hashset

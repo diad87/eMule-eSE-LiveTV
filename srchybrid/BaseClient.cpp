@@ -20,6 +20,7 @@
 #endif
 #include "LiveDebugLog.h"
 #include "LiveStreamManager.h"  // v7.1.8 — for OnPeerDisconnected from dtor
+#include "LiveBuddyRelay.h"      // R.3 — free relay slot/downstream/buddy on teardown
 #include "emule.h"
 #include "UpDownClient.h"
 #include "FriendList.h"
@@ -28,10 +29,12 @@
 #include "ListenSocket.h"
 #include "Packets.h"
 #include "Opcodes.h"
+#include "NodeIdentity.h"   // v8.x Phase 1 — eSE node identity pubkey for TAG_ESE_NODE_PUB (0x6D)
 #include "SafeFile.h"
 #include "Preferences.h"
 #include "Server.h"
 #include "ClientCredits.h"
+#include "FirewallProberV6.h"   // v0.71 IPv6 Sprint 6 — in-band public v6 detection
 #include "IPFilter.h"
 #include "Friend.h"
 #include "Statistics.h"
@@ -157,13 +160,10 @@ void CUpDownClient::Init()
 	m_lastPartAsked = _UI16_MAX;
 	m_bAddNextConnect = false;
 
-	if (socket) {
-		SOCKADDR_IN sockAddr = {};
-		int nSockAddrLen = sizeof sockAddr;
-		socket->GetPeerName(reinterpret_cast<LPSOCKADDR>(&sockAddr), &nSockAddrLen);
-		SetIP(sockAddr.sin_addr.s_addr);
-	} else
-		SetIP(0);
+	// v0.71 IPv6 — GetPeerAddressV4 handles v6-family sockets from the
+	// dual-stack listener; the legacy SOCKADDR_IN buffer failed there and
+	// every inbound client was born with IP=0 (May-2026 revert root cause).
+	SetIP(socket ? socket->GetPeerAddressV4() : 0);
 	m_dwServerIP = 0;
 	m_nUserIDHybrid = 0;
 	m_nUserPort = 0;
@@ -188,6 +188,8 @@ void CUpDownClient::Init()
 	m_byCompatibleClient = 0;
 	m_dwForkCaps = 0;  // v0.71 IPv6 Sprint 6 — unset until peer sends CT_FORK_CAPABILITIES
 	m_uEseCapabilities = 0;  // v0.71 P3.5 — unset until peer sends TAG_ESE_CAPS
+	memset(m_eseNodePub, 0, sizeof m_eseNodePub);  // v8.x Phase 1 — TAG_ESE_NODE_PUB (0x6D)
+	m_bEseNodePubSet = false;
 	m_bFriendSlot = false;
 	m_bCommentDirty = false;
 	m_bIsML = false;
@@ -295,6 +297,7 @@ void CUpDownClient::Init()
 	m_fUnaskQueueRankRecv = 0;
 	m_fFailedFileIdReqs = 0;
 	m_fNeedOurPublicIP = 0;
+	m_fNeedOurPublicIPV6 = 0;
 	m_fSupportsAICH = 0;
 	m_fAICHRequested = 0;
 	m_fSentOutOfPartReqs = 0;
@@ -343,6 +346,7 @@ CUpDownClient::~CUpDownClient()
 	// paths and is idempotent if the peer was never on a LIVE peer list.
 	if (theApp.liveStreamManager != NULL)
 		theApp.liveStreamManager->OnPeerDisconnected(this);
+	CLiveBuddyRelay::Instance().OnPeerDisconnected(this);   // R.3: free relay slot / downstream / buddy
 
 	theApp.clientlist->RemoveClient(this, _T("Destructing client object"));
 
@@ -640,7 +644,18 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 			} else if (bDbgInfo)
 				m_strHelloInfo.AppendFormat(_T("\n  ***UnkType=%s"), (LPCTSTR)temptag.GetFullInfo());
 			break;
-		default:
+		case 0x6D:   // TAG_ESE_NODE_PUB — v8.x Phase 1 (authenticated tunnel handshake)
+			// Peer's 32-byte Ed25519 node identity (TAGTYPE_BLOB). Stored now;
+			// pinned in Phase 2 for the CREATE/CREATED v2 handshake
+			// (docs/AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md). Absent / wrong
+			// size = legacy or pre-Phase-1 peer (no node identity).
+			if (temptag.IsBlob() && temptag.GetBlobSize() == 32) {
+				memcpy(m_eseNodePub, temptag.GetBlob(), 32);
+				m_bEseNodePubSet = true;
+				if (bDbgInfo)
+					m_strHelloInfo.AppendFormat(_T("\n  EseNodePub set (32B)"));
+			}
+			break;
 			// Since eDonkeyHybrid 1.3 is no longer sending the additional Int32 at the end of
 			// the Hello packet, we use the "pr=1" tag to determine them.
 			if (temptag.GetName() && temptag.GetName()[0] == 'p' && temptag.GetName()[1] == 'r')
@@ -684,10 +699,7 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 		}
 	}
 
-	SOCKADDR_IN sockAddr = {};
-	int nSockAddrLen = sizeof sockAddr;
-	socket->GetPeerName((LPSOCKADDR)&sockAddr, &nSockAddrLen);
-	SetIP(sockAddr.sin_addr.s_addr);
+	SetIP(socket->GetPeerAddressV4());
 
 	if (thePrefs.GetAddServersFromClients() && m_dwServerIP && m_nServerPort) {
 		CServer *addsrv = new CServer(m_nServerPort, ipstr(m_dwServerIP));
@@ -1031,6 +1043,13 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	// silently on legacy peers, no wire break.
 	tagcount += 1;
 
+	// v8.x Phase 1 — TAG_ESE_NODE_PUB (0x6D). Capture the pointer ONCE so the
+	// count here and the write further down share the SAME condition; an
+	// off-by-one between them would corrupt the entire HELLO tag stream.
+	const uint8* eseNodePub = eSELive::NodeIdentityPub();
+	if (eseNodePub != NULL)
+		tagcount += 1;
+
 	data.WriteUInt32(tagcount);
 
 	// eD2K Name
@@ -1175,6 +1194,15 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 		const uint8 kEseCapsTagName = 0x6C;  // TAG_ESE_CAPS byte form
 		CTag tagEseCaps(kEseCapsTagName, (uint64)g_uEseCapsRuntime);
 		tagEseCaps.WriteTagToFile(data);
+	}
+
+	// v8.x Phase 1 — TAG_ESE_NODE_PUB (0x6D): our 32-byte Ed25519 node identity,
+	// as a blob, so peers can pin it for the authenticated CREATE/CREATED v2
+	// handshake. Same eseNodePub captured above -> count and write stay in sync.
+	// Legacy peers ignore the unknown tag (TLV-additive contract).
+	if (eseNodePub != NULL) {
+		CTag tagNodePub((uint8)0x6D, (size_t)32, (const BYTE*)eseNodePub);
+		tagNodePub.WriteTagToFile(data);
 	}
 
 	uint32 dwIP;
@@ -1375,6 +1403,31 @@ bool CUpDownClient::Disconnected(LPCTSTR pszReason, bool bFromSocket)
 	m_fFailedFileIdReqs = 0;
 	m_fUnaskQueueRankRecv = 0;
 	m_fSentOutOfPartReqs = 0;
+	return false;
+}
+
+// [eSE v9] R-node picker for extending punch3 (3-way rendezvous) to eD2K downloads. Unlike the
+// Live picker we use ONLY a connected fork peer that ADVERTISED the RDV cap (known able to forward
+// our REQ to B); we skip the random-Kad-contact fallback because a vanilla R would silently drop
+// the forward and waste the one attempt. HOST-order out; skips R==target and R==self.
+static bool EsePickRdvForDownload(uint32 uTargetIpHost, uint32& uOutRipHost, uint16& uOutRport)
+{
+	uOutRipHost = 0; uOutRport = 0;
+	if (theApp.clientlist == NULL)
+		return false;
+	const uint32 uMyIpHost = ntohl(theApp.GetPublicIP());   // GetPublicIP() is NET order
+	std::vector<CUpDownClient*> cands;
+	theApp.clientlist->GetConnectedSnapshot(cands, 10, false);
+	for (size_t i = 0; i < cands.size(); ++i) {
+		CUpDownClient* c = cands[i];
+		if (c == NULL || !c->SupportsEseHolePunchRdv() || c->GetKadPort() == 0)
+			continue;
+		const uint32 uCipHost = ntohl(c->GetIP());          // GetIP() is NET order
+		if (uCipHost == 0 || uCipHost == uTargetIpHost || uCipHost == uMyIpHost)
+			continue;
+		uOutRipHost = uCipHost; uOutRport = c->GetKadPort();
+		return true;
+	}
 	return false;
 }
 
@@ -1581,26 +1634,59 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 		// the symmetric-NAT diagnosis to the UI.
 		const uint8 SYM_NAT_THRESHOLD = 4;
 		if (m_uNatRendezvousAttempts >= SYM_NAT_THRESHOLD) {
-			static uint32 s_lastSymNatLog = 0;
-			if (::GetTickCount() - s_lastSymNatLog > 60000) {
-				s_lastSymNatLog = ::GetTickCount();
-				InterlockedIncrement(&CStatistics::m_dwHolePunchSymNATFail);
-				DebugLog(_T("eSE: hole-punch giving up on %s:%u after %u attempts (symmetric NAT?)"),
-					(LPCTSTR)ipstr(GetConnectIP()), GetKadPort(), m_uNatRendezvousAttempts);
-				CLiveDebugLog::Get().Append("HOLE",
-					"GIVE UP on %S:%u after %u attempts (symmetric NAT?)",
-					(LPCWSTR)ipstr(GetConnectIP()),
-					(unsigned)GetKadPort(), (unsigned)m_uNatRendezvousAttempts);
+			// [eSE v9] Before conceding to symmetric NAT, try ONE 3-way rendezvous (punch3) when
+			// enabled AND this peer advertised the RDV cap: a rendezvous node R that B keepalives
+			// forwards our REQ so B punches back even when a plain 2-way punch can't reach B's
+			// per-destination external port. Reuses the R.1 machinery validated for Live. One shot
+			// per peer (m_bNatRdvTried), reset on a successful uTP accept.
+			if (thePrefs.GetEseEd2kPunch3() && !m_bNatRdvTried && SupportsEseHolePunchRdv()
+				&& Kademlia::CKademlia::GetUDPListener() != NULL) {
+				const uint32 uTargetIpHost = ntohl(GetConnectIP());
+				uint32 uRipHost = 0; uint16 uRport = 0;
+				if (EsePickRdvForDownload(uTargetIpHost, uRipHost, uRport)) {
+					// Consume the one-shot ONLY when a rendezvous is actually initiated. If no
+					// RDV-capable R is connected yet, leave the flag unburned so a later dial cycle
+					// can still escalate once a suitable R appears (else a transient empty peer-pool
+					// would lock this peer out of punch3 forever — the reset needs a uTP accept).
+					m_bNatRdvTried = true;
+					Kademlia::CKademlia::GetUDPListener()->InitiateKad3Rendezvous(uRipHost, uRport, uTargetIpHost, GetKadPort());
+					DebugLog(_T("eSE: eD2K punch2->punch3 for %s:%u via rendezvous %s"),
+						(LPCTSTR)ipstr(GetConnectIP()), GetKadPort(), (LPCTSTR)ipstr(htonl(uRipHost)));
+					CLiveDebugLog::Get().Append("HOLE", "eD2K PUNCH2->PUNCH3 %S:%u via R %S",
+						(LPCWSTR)ipstr(GetConnectIP()), (unsigned)GetKadPort(), (LPCWSTR)ipstr(htonl(uRipHost)));
+				} else {
+					static uint32 s_lastNoRdvLog = 0;   // throttle: this branch can run every tick until an R connects
+					if (::GetTickCount() - s_lastNoRdvLog > 60000) {
+						s_lastNoRdvLog = ::GetTickCount();
+						CLiveDebugLog::Get().Append("HOLE", "eD2K punch3 wanted but no RDV-capable rendezvous for %S:%u",
+							(LPCWSTR)ipstr(GetConnectIP()), (unsigned)GetKadPort());
+					}
+				}
+			} else {
+				static uint32 s_lastSymNatLog = 0;
+				if (::GetTickCount() - s_lastSymNatLog > 60000) {
+					s_lastSymNatLog = ::GetTickCount();
+					InterlockedIncrement(&CStatistics::m_dwHolePunchSymNATFail);
+					DebugLog(_T("eSE: hole-punch giving up on %s:%u after %u attempts (symmetric NAT?)"),
+						(LPCTSTR)ipstr(GetConnectIP()), GetKadPort(), m_uNatRendezvousAttempts);
+					CLiveDebugLog::Get().Append("HOLE",
+						"GIVE UP on %S:%u after %u attempts (symmetric NAT?)",
+						(LPCWSTR)ipstr(GetConnectIP()),
+						(unsigned)GetKadPort(), (unsigned)m_uNatRendezvousAttempts);
+				}
 			}
 		} else {
 			uint32 cooldownSec = (m_uNatRendezvousAttempts < 3) ? 5 : 30;
-			if (::GetTickCount() >= m_uLastNatRendezvousTick + SEC2MS(cooldownSec))
+			if (::GetTickCount() - m_uLastNatRendezvousTick >= SEC2MS(cooldownSec))
 			{
 				m_uLastNatRendezvousTick = ::GetTickCount();
 				if (m_uNatRendezvousAttempts < 255) m_uNatRendezvousAttempts++;
 				// GetConnectIP() returns network-order IP; Kad uses host-order
 				uint32 kadIP = ntohl(GetConnectIP());
-				Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReq(kadIP, GetKadPort());
+				// [eSE v9] anti-CGNAT: when port-prediction is on, spray a window of ports
+				// (symmetric NAT opens a different external port toward us than its Kad port).
+				uint16 hpSpread = thePrefs.GetEseHolePunchPortPredict() ? (uint16)thePrefs.GetEseHolePunchPortSpread() : 0;
+				Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(kadIP, GetKadPort(), hpSpread);
 				// Don't return — fall through to Server/Kad callback as backup.
 				// The hole-punch is opportunistic; if it works, on_utp_accept will handle it.
 				DebugLog(_T("eSE: TryToConnect — hole-punch attempt #%u to %s:%u (cooldown=%us)"),
@@ -1716,6 +1802,22 @@ void CUpDownClient::ConnectionEstablished()
 	if (theApp.GetPublicIP() == 0 && theApp.IsConnected() && m_fPeerCache)
 		SendPublicIPRequest();
 */
+	// v0.71 IPv6 Sprint 6 — in-band public v6 detection (replaces api6.ipify.org).
+	// If we still don't know our public v6 address and this peer speaks the _V6
+	// wire (CAP_FORK_IPV6_WIRE — set in m_dwForkCaps from the Hello, which is
+	// always parsed before ConnectionEstablished is reached), ask it once. It
+	// observes our v6 source address on the connection and answers
+	// OP_PUBLICIP_ANSWER_V6 — but only when the connection is actually over IPv6,
+	// so a v4 peer is a no-op. No third party, no correlation point. Fires per
+	// peer until one answers (m_detectedIP non-null), then stops.
+	if (thePrefs.IsIPv6Enabled()
+		&& SupportsIPv6Wire()
+		&& !m_fNeedOurPublicIPV6
+		&& CFirewallProberV6::Instance().GetDetectedV6IP().IsNull())
+	{
+		SendPublicIPRequestV6();
+	}
+
 	switch (GetKadState()) {
 	case KS_CONNECTING_FWCHECK:
 		SetKadState(KS_CONNECTED_FWCHECK);
@@ -2733,6 +2835,40 @@ void CUpDownClient::ProcessPublicIPAnswer(const BYTE *pbyData, UINT uSize)
 		m_fNeedOurPublicIP = 0;
 		if (theApp.GetPublicIP() == 0 && !::IsLowID(dwIP))
 			theApp.SetPublicIP(dwIP);
+	}
+}
+
+// v0.71 IPv6 Sprint 6 — ask this peer for our public v6 address. Reuses the
+// existing OP_PUBLICIP_REQ (no separate _V6 request opcode): a CAP_FORK_IPV6_WIRE
+// peer answers it with BOTH OP_PUBLICIP_ANSWER (v4) and OP_PUBLICIP_ANSWER_V6
+// (v6) when our connection to it is over IPv6. We set only the v6-pending flag,
+// so the v4 answer that comes back is ignored (its handler checks m_fNeedOurPublicIP).
+void CUpDownClient::SendPublicIPRequestV6()
+{
+	if (socket && socket->IsConnected()) {
+		if (thePrefs.GetDebugClientTCPLevel() > 0)
+			DebugSend("OP_PublicIPReq(v6)", this);
+		Packet *packet = new Packet(OP_PUBLICIP_REQ, 0, OP_EMULEPROT);
+		theStats.AddUpDataOverheadOther(packet->size);
+		SendPacket(packet);
+		m_fNeedOurPublicIPV6 = 1;
+	}
+}
+
+// Payload: <CAddress> (CAddress::WriteToBuffer wire form — 18 bytes for v6). The
+// peer observed this address as our source on the (v6) connection; record it as
+// our public v6 address for the Network Info panel + status bar. Egress proof
+// only — does NOT assert inbound HighID reachability.
+void CUpDownClient::ProcessPublicIPAnswerV6(const BYTE *pbyData, UINT uSize)
+{
+	CSafeMemFile data(pbyData, uSize);
+	CAddress addr;
+	if (!addr.ReadFromBuffer(&data))
+		throw GetResString(IDS_ERR_WRONGPACKETSIZE);
+	if (m_fNeedOurPublicIPV6 == 1) { // did we ask this peer?
+		m_fNeedOurPublicIPV6 = 0;
+		// SetDetectedV6IP re-validates (native v6 + public) and keeps the first answer.
+		CFirewallProberV6::Instance().SetDetectedV6IP(addr);
 	}
 }
 

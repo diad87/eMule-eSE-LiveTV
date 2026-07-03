@@ -67,7 +67,7 @@ int CAICHSyncThread::Run()
 			return 0;
 		}
 	}
-	uint32 nLastVerifiedPos = 0;
+	ULONGLONG nLastVerifiedPos = 0;
 	try {
 		if (file.GetLength() >= 1) {
 			uint8 header = file.ReadUInt8();
@@ -85,7 +85,7 @@ int CAICHSyncThread::Run()
 
 				// skip the rest of this hashset
 				file.Seek(nHashCount * (LONGLONG)CAICHHash::GetHashSize(), CFile::current);
-				nLastVerifiedPos = (uint32)file.GetPosition();
+				nLastVerifiedPos = file.GetPosition();
 			}
 		} else
 			file.WriteUInt8(KNOWN2_MET_VERSION);

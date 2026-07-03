@@ -348,6 +348,40 @@ static void AddExpectedPeer(CUtpSocket* owner, const sockaddr* to, socklen_t tol
 		}
 	}
 
+	// SECURITY (PUNTO 1.1 — g_expectedPeers DoS cap, 2026-06): this store is the
+	// REAL reflection/state sink. Process_ESE_HOLEPUNCH_REQ seeds it (via
+	// RegisterExpectedPeer) on a spoofable first packet, and until now the vector
+	// had NO size bound — only a 20 s TTL. A flood of (same IP, varying port)
+	// hints grows it unbounded within the TTL window. Cap the TOTAL size and the
+	// per-source-IP count BEFORE inserting a genuinely new entry (the de-dup loop
+	// above already handled refresh). Over the cap we DROP the new hint; we never
+	// evict a live one. Hole-punch hints are IPv4 (SeedNatTraversalExpectation).
+	{
+		static const size_t kMaxExpectedTotal = 512; // global hard cap (transient 20s hints)
+		static const size_t kMaxExpectedPerIP = 4;   // concurrent hints per source IP
+		if (g_expectedPeers.size() >= kMaxExpectedTotal) {
+			g_expectedPeersLock.Unlock();
+			if (thePrefs.GetVerbose())
+				DebugLog(_T("[uTP][ExpectPeer] global cap %u reached — dropping hint (DoS guard)"), (unsigned)kMaxExpectedTotal);
+			return;
+		}
+		if (to->sa_family == AF_INET) {
+			const u_long newIp = ((const sockaddr_in*)to)->sin_addr.s_addr;
+			size_t perIp = 0;
+			for (size_t i = 0; i < g_expectedPeers.size(); ++i) {
+				const sockaddr* ea = (const sockaddr*)&g_expectedPeers[i].addr;
+				if (ea->sa_family == AF_INET && ((const sockaddr_in*)ea)->sin_addr.s_addr == newIp)
+					++perIp;
+			}
+			if (perIp >= kMaxExpectedPerIP) {
+				g_expectedPeersLock.Unlock();
+				if (thePrefs.GetVerbose())
+					DebugLog(_T("[uTP][ExpectPeer] per-IP cap %u reached — dropping hint (DoS guard)"), (unsigned)kMaxExpectedPerIP);
+				return;
+			}
+		}
+	}
+
 	g_expectedPeers.push_back(e);
 	g_expectedPeersLock.Unlock();
 }
@@ -386,6 +420,7 @@ static uint64 on_utp_state_change(utp_callback_arguments* a)
 			// counter so the next time we want to dial we start with the fast
 			// 5 s cooldown (instead of stuck at 30 s back-off).
 			natClient->m_uNatRendezvousAttempts = 0;
+			natClient->m_bNatRdvTried = false;   // [eSE v9] allow a fresh punch3 escalation on the next dial cycle
 		}
 		break;
 	case UTP_STATE_WRITABLE:

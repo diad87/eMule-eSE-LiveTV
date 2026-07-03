@@ -1,8 +1,8 @@
 #include "stdafx.h"
 #include "eSEHelpers.h"
-#include <wincrypt.h>
+#include <bcrypt.h>
 
-#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "bcrypt.lib")
 
 namespace eSEHelpers
 {
@@ -10,18 +10,15 @@ namespace eSEHelpers
 static const TCHAR kPassFileName[] = _T("eSE_pass.bin");
 
 // Generate 16 cryptographically-random bytes → 32 hex chars.
-// Uses Windows Crypto API; falls back to rand() if the provider can't be
-// acquired (extremely unlikely on Win7+, but keep things robust).
+// Uses BCrypt (CNG) with the system-preferred RNG; falls back to rand() if
+// that fails (extremely unlikely on Win7+, but keep things robust).
 static CString GenerateRandomHexPassword()
 {
 	BYTE rnd[16] = {0};
 	bool ok = false;
 
-	HCRYPTPROV hProv = NULL;
-	if (CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
-		ok = (CryptGenRandom(hProv, sizeof(rnd), rnd) != FALSE);
-		CryptReleaseContext(hProv, 0);
-	}
+	NTSTATUS status = BCryptGenRandom(NULL, rnd, (ULONG)sizeof(rnd), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+	ok = BCRYPT_SUCCESS(status);
 
 	if (!ok) {
 		srand((unsigned)GetTickCount() ^ GetCurrentProcessId());

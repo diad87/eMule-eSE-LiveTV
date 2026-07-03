@@ -266,9 +266,23 @@
 #define	OP_PEERCACHE_ACK		0x96	// *DEFUNCT*
 #define	OP_PUBLICIP_REQ			0x97
 #define	OP_PUBLICIP_ANSWER		0x98
-// v0.71 IPv6 Sprint 3 — reserve v6 PUBLICIP answer. Payload: <CAddress>.
-// Only emitted to peers that advertise CAP_FORK_IPV6_WIRE (Sprint 6).
-#define	OP_PUBLICIP_ANSWER_V6	0xE0
+// v0.71 IPv6 Sprint 3 — v6 PUBLICIP answer. Payload: <CAddress> (18 B for v6).
+// In-band peer connect-back replacement for the old api6.ipify.org HTTPS probe:
+// a peer that advertises CAP_FORK_IPV6_WIRE observes our v6 source address on
+// the existing connection and answers this opcode (analogous to the v4
+// OP_PUBLICIP_REQ/OP_PUBLICIP_ANSWER pair). Only emitted to peers that advertise
+// CAP_FORK_IPV6_WIRE; old peers hit the harmless default dispatch case.
+//
+// MOVED 0xE0 -> 0xB3 (docs/protocol/PROTOCOL_REGISTRY.md §2.1): 0xE0 had been
+// shipped + 2-PC-validated as OP_LIVE_CHUNK_FRAG (Opcodes.h:331), so emitting
+// this opcode at 0xE0 would make v8.1.x peers misparse it as a Live chunk
+// fragment. The define had never been emitted AT 0xE0, which is what made the
+// move wire-risk-free. It is now live + emitted AT 0xB3: constructed and
+// SendPacket()'d at ListenSocket.cpp:1533 and dispatched/handled at
+// ListenSocket.cpp:1496 (-> CUpDownClient::ProcessPublicIPAnswerV6). 0xB3 is the
+// next free byte in OP_EMULEPROT space (the old 0xB3-0xB9 duplicate Live block
+// was removed; see line ~820).
+#define	OP_PUBLICIP_ANSWER_V6	0xB3
 // v0.71 IPv6 Sprint 6 — reserve callback + foundsources v6 variants.
 #define	OP_CALLBACK_V6			0xE1
 #define	OP_FOUNDSOURCES_V6		0xE2
@@ -518,6 +532,7 @@
 #define TAG_SHARD_DEGREE             "\x6A"   // M3 (uint8 [0..6])
 #define TAG_PINNED_BY_SUBSCRIBER     "\x6B"   // M1 (uint8 flag 0/1)
 #define TAG_ESE_CAPS                 "\x6C"   // global capabilities bitmap (uint32)
+#define TAG_ESE_KADIP_V6             "\x6E"   // [eSE v9] root link: contact's public IPv6 (BSOB 16, network order), additive Kad-HELLO tag
 
 // v0.71 P0.3 — bit constants for the TAG_ESE_CAPS bitmap. Used at runtime
 // to set g_uEseCapsRuntime (FirewallProberV6.cpp) which the UI panel reads
@@ -538,6 +553,10 @@
 #define ESE_CAP_TUNNEL_DATAPLANE     0x00001000  // bit 12 -- v8.1 multi-cell tunnel data plane
 #define ESE_CAP_LIVE_CHUNK_FRAG      0x00002000  // bit 13 -- v8.1.x Live segment fragmentation (>1.8MB chunks split into sub-2MB packets)
 #define ESE_CAP_TUNNEL_BULK          0x00004000  // bit 14 -- v8.1.1 Sprint E bulk data plane (OP_LIVE_BULK_CELL 0xD9; FEC+stripe). Gate: exit AND every hop must advertise it.
+#define ESE_CAP_HOLEPUNCH_RDV        0x00008000  // bit 15 -- R.1 3-way Kad rendezvous (responder + R-relay validated 3-PC). Advertised iff GetUtpHolePunchEnabled(); the responder/R-relay handlers are gated on the same pref. bit 16/17 keepalive/reach-v2 still RESERVED (see CAPABILITIES.csv) — do NOT reuse.
+#define ESE_CAP_TUNNEL_AUTH          0x00040000  // bit 18 -- authenticated tunnel handshake (CREATE/CREATED v2, Ed25519). Advertised from Phase 2; Phase 1 only ships TAG_ESE_NODE_PUB.
+#define ESE_CAP_LIVE_RELAY           0x00200000  // bit 21 -- R.3 buddy relay egress (broadcaster connect-out + 0xCF SETUP/CHUNK + 0xCE downstream). Advertised iff GetEseRelayAccept() (default OFF) — a node that does not accept relay duty keeps its caps byte-identical to before. bit 20 (0x00100000) is reserved for ESE_CAP_LIVE_BLAKE3 (see CAPABILITIES.csv) — do NOT reuse.
+#define ESE_CAP_HOLEPUNCH_COOKIE     0x00080000  // bit 19 -- return-routability cookie for eSE hole-punch (anti-reflection). LOAD-BEARING in the two-tier gate of Process_ESE_HOLEPUNCH_REQ: TIER1 (IP-verified known contact) -> legacy ACK+seed (bit informational here); TIER2 (unknown / known-but-unverified "gray zone") -> stateless 0x65 CHALLENGE ONLY if the sender advertises this bit, else legacy ACK+seed floored by the per-IP token bucket (back-compat: a legacy peer that cannot answer a CHALLENGE keeps its hole-punch). Initiator echoes the cookie in a 38B REQ. See HolePunchCookieCore.h / HolePunchCookie.h.
 
 // Runtime accumulator for TAG_ESE_CAPS. Defined in FirewallProberV6.cpp
 // (same file as g_uForkCapsRuntime — both are runtime cap accumulators
@@ -742,6 +761,12 @@ extern uint32 g_uEseCapsRuntime;
 #define KADEMLIA3_HOLEPUNCH_REQ			0x68
 #define KADEMLIA3_HOLEPUNCH_FWD			0x69
 #define KADEMLIA3_HOLEPUNCH_ACK			0x6A
+// R.1 anti-reflection (return-routability): R MUST NOT forward A's REQ to B until
+// A echoes a stateless cookie, so A cannot weaponize R to spam an arbitrary B
+// (the FWD is a reflection/amplification primitive otherwise). Mirrors the 2-way
+// 0x65 CHALLENGE. Wire bodies + handlers land in R.1 increment 2.
+#define KADEMLIA3_HOLEPUNCH_CHALLENGE	0x6B	// R->A: <Nonce_a 4><Cookie 16> = 20B
+#define KADEMLIA3_HOLEPUNCH_PROCEED		0x6C	// R->A: <Nonce_r 8> = 8B (FWD relayed to B, go)
 
 #define KADEMLIA_RES_DEPRECATED					0x28	// <HASH (target) [16]> <CNT> <PEER [25]>*(CNT)
 #define KADEMLIA2_RES					0x29	//
@@ -787,8 +812,15 @@ extern uint32 g_uEseCapsRuntime;
 
 // eSE: uTP Hole Punching signaling via Kademlia (Fase 3)
 // Both peers exchange these before initiating a uTP session through CG-NAT/symmetric NAT
-#define KADEMLIA_ESE_HOLEPUNCH_REQ		0x63	// <SenderKadID 16><SenderUDPPort 2><Nonce 4>
+#define KADEMLIA_ESE_HOLEPUNCH_REQ		0x63	// <SenderKadID 16><SenderUDPPort 2><Nonce 4>  (legacy); cookie-capable: +<Cookie 16> = 38B
 #define KADEMLIA_ESE_HOLEPUNCH_ACK		0x64	// <ResponderKadID 16><ResponderUDPPort 2><Nonce 4>
+// eSE P0 — return-routability cookie challenge (anti-reflection hardening).
+// The RESPONDER sends this when it gets a cookie-capable REQ (38B) whose cookie
+// does NOT verify (first attempt or forged). The initiator must echo the cookie
+// in a second 38B REQ before any NAT state is seeded — proving it receives
+// datagrams at the claimed IP. Gated by ESE_CAP_HOLEPUNCH_COOKIE; legacy 22B
+// REQs keep today's path. Cookie math: HolePunchCookieCore.h (HMAC-SHA256).
+#define KADEMLIA_ESE_HOLEPUNCH_CHALLENGE	0x65	// <Nonce(echo) 4><Cookie 16> = 20B
 
 // === Kad Search v2 — reservado 0xCA-0xCF en OP_KADEMLIAHEADER subspace ==
 // (F0 unified plan, monografía Kad Search v2 Cap 5 §5.3) — DIFFERENT subspace

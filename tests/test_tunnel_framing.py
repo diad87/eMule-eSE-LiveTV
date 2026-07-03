@@ -287,13 +287,17 @@ def test_capability_bits():
     assert bin(ESE_CAP_TUNNEL_DATAPLANE).count('1') == 1, "not a single bit"
     for name, bit in ESE_CAP_BITS.items():
         assert bit != ESE_CAP_TUNNEL_DATAPLANE, f"0x1000 collides with ESE_CAP_{name}"
-    # In Tunneled/Adaptive mode the v8.1 runtime caps = v8.0.0 set | 0x1000.
-    v800 = (ESE_CAP_BITS['M1_SUBSCRIBER_PIN'] | ESE_CAP_BITS['M3_SHARDING']
+    # Bit-LAYOUT regression guard: the OR of all allocated cap bits must
+    # not drift (catches accidental renumbering/collision). This is NOT the
+    # runtime g_uEseCapsRuntime value — since the 2026-06-11 Kad v2 audit,
+    # M1/M3/M5/M6 are only advertised at their data-path phase exit, so the
+    # actual advertised caps are a subset of this allocation map.
+    allocated = (ESE_CAP_BITS['M1_SUBSCRIBER_PIN'] | ESE_CAP_BITS['M3_SHARDING']
             | ESE_CAP_BITS['M5_BLOOM_GOSSIP'] | ESE_CAP_BITS['M6_K_EFFECTIVE']
             | ESE_CAP_BITS['SEALED_RECORDS'] | ESE_CAP_BITS['GOSSIP_PROTOCOL']
             | ESE_CAP_BITS['PRIVACY_TUNNELING'] | ESE_CAP_BITS['COVER_TRAFFIC'])
-    assert v800 == 0x0F35, f"v8.0.0 caps baseline drifted: {v800:#06x}"
-    assert (v800 | ESE_CAP_TUNNEL_DATAPLANE) == 0x1F35, "expected v8.1 runtime caps 0x1F35"
+    assert allocated == 0x0F35, f"cap bit allocation drifted: {allocated:#06x}"
+    assert (allocated | ESE_CAP_TUNNEL_DATAPLANE) == 0x1F35, "dataplane bit layout drifted"
 
 
 def run():

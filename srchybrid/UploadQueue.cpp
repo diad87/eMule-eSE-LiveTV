@@ -491,7 +491,7 @@ CUpDownClient* CUploadQueue::GetWaitingClientByIP_UDP(uint32 dwIP, uint16 nUDPPo
 		CUpDownClient *cur_client = waitinglist.GetNext(pos);
 		if (dwIP == cur_client->GetIP() && nUDPPort == cur_client->GetUDPPort())
 			return cur_client;
-		if (bIgnorePortOnUniqueIP) {
+		if (dwIP == cur_client->GetIP() && bIgnorePortOnUniqueIP) {
 			pMatchingIPClient = cur_client;
 			++cMatches;
 		}

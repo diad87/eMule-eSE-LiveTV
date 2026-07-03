@@ -92,6 +92,22 @@ public:
 	int Send(const void *lpBuf, int nBufLen, int nFlags = 0);
 	virtual void	OnSend(int nErrorCode);
 
+	// v0.71 IPv6 — only sanctioned way to read the peer IPv4 from a client
+	// socket. On a dual-stack (AF_INET6) listener the accepted socket is
+	// v6-family and getpeername() needs a 28-byte SOCKADDR_IN6: the legacy
+	// 16-byte SOCKADDR_IN pattern fails with WSAEFAULT, silently yielding
+	// IP 0.0.0.0 (root cause of the May-2026 dual-stack revert, 5de5126).
+	// Returns the address in network byte order (as sin_addr.s_addr);
+	// 0 if unconnected or for a native-v6 peer (logged, upper layer is v4-only).
+	uint32	GetPeerAddressV4();
+
+	// v0.71 IPv6 Sprint 6 — family-agnostic peer address as a CAddress (v4 or
+	// native v6). Used by the in-band public-v6 detection: the OP_PUBLICIP_REQ
+	// handler reads the requester's observed v6 source address from here to fill
+	// OP_PUBLICIP_ANSWER_V6. FromSA normalises v4-mapped v6 back to IPv4, so a
+	// CAddress::IPv6 result here is a genuine native-v6 peer. None if unconnected.
+	class CAddress	GetPeerCAddress();
+
 	uint8	m_dbgbyEncryptionSupported;
 	uint8	m_dbgbyEncryptionRequested;
 	uint8	m_dbgbyEncryptionMethodSet;
@@ -110,6 +126,15 @@ protected:
 	bool	m_bServerCrypt;
 
 private:
+	// v0.71 IPv6 — compile-time guardrail. The raw getpeername-style overload
+	// silently truncates on v6-family sockets when handed the classic 16-byte
+	// SOCKADDR_IN (May-2026 dual-stack revert root cause), so it is hidden on
+	// every client/server socket: new code that tries the old pattern fails
+	// to compile and must use GetPeerAddressV4() instead. Name hiding makes
+	// the CString overload inaccessible too — re-expose it deliberately if a
+	// future caller needs it (it is v6-safe, but nobody calls it today).
+	using CAsyncSocketEx::GetPeerName;
+
 	int		Negotiate(const uchar *pBuffer, int nLen);
 	void	StartNegotiation(bool bOutgoing);
 	int		SendNegotiatingData(const void *lpBuf, int nBufLen, int nStartCryptFromByte = 0, bool bDelaySend = false);

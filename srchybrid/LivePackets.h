@@ -35,6 +35,11 @@ Packet* CreateChunkPacketV2(const ::LiveChunk* chunk,
 // Format: <StreamKey 16><SequenceNumber 4><Timestamp 4><ChunkSize 4><Data ChunkSize>
 Packet* CreateChunkPacket(const LiveChunk* chunk);
 
+// R.3 (relay floor) — OP_LIVE_RELAY_FWD builder (broadcaster<->relay link).
+// Format: <SubOp 1><StreamKey 16><Payload len>. Sub-ops live in LiveBuddyRelay.cpp.
+// Consumed by ListenSocket OP_LIVE_RELAY_FWD -> CLiveBuddyRelay::OnRelayFwd.
+Packet* CreateRelayFwdPacket(uint8 subop, const uchar* streamKey, const uint8* payload, uint32 len);
+
 // ── v8.1.x Live chunk fragmentation ───────────────────────────────────────
 // eMule's socket rejects any packet > 2,000,000 bytes (EMSocket.cpp:261,
 // ERR_TOOBIG). A whole HLS segment at >=8000 kbps exceeds that, so we split it.

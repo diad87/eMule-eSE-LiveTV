@@ -163,6 +163,34 @@ public:
 	static volatile DWORD	m_dwHolePunchSymNATFail;	// Failures attributed to symmetric NAT (port prediction miss)
 	static volatile DWORD	m_dwHolePunchEncrypted;		// eSE 8.12.2: Hole-punch REQs sent with Kad encryption
 	static volatile DWORD	m_dwHolePunchPlaintext;		// eSE 8.12.2: Hole-punch REQs sent unencrypted (peer not in routing table)
+	static volatile DWORD	m_dwHolePunchSprayReqs;		// [eSE v9] extra REQs fired by anti-CGNAT port-prediction spray (beyond the base port)
+	// eSE v9 GATE (responder-side visibility for the 2-PC validation): the counters above are
+	// initiator-centric — Attempts only fires on the OUTBOUND REQ, Success only when the initiator
+	// gets the ACK. On the responder PC both stay 0, so a failed punch can't be localized to A->B
+	// vs B->A. These close that blind spot. Incremented via InterlockedIncrement (same pattern).
+	static volatile DWORD	m_dwHolePunchReqRecv;		// Inbound REQs received & answered (responder side)
+	static volatile DWORD	m_dwHolePunchChallengeSent;	// Cookie CHALLENGEs issued (return-routability path engaged)
+	// R.1 3-way rendezvous (Kad3 hole-punch) telemetry — incremented via InterlockedIncrement.
+	static volatile DWORD	m_dwKad3RdvReqSent;			// A: REQ sent to rendezvous R
+	static volatile DWORD	m_dwKad3RdvReqRecv;			// R: REQ received from A
+	static volatile DWORD	m_dwKad3RdvChallengeSent;	// R: CHALLENGE issued to A (anti-reflection)
+	static volatile DWORD	m_dwKad3RdvFwd;				// R: FWD relayed to B (after A proved return-routability)
+	static volatile DWORD	m_dwKad3RdvSuccess;			// hole opened (ACK received)
+	// R.3 relay floor (buddy relay) telemetry — incremented via InterlockedIncrement.
+	static volatile DWORD	m_dwRelayReqRecv;			// buddy: OP_LIVE_RELAY_REQ received
+	static volatile DWORD	m_dwRelayAccepted;			// buddy: relay sessions accepted (policy passed)
+	static volatile DWORD	m_dwRelayActive;			// currently active relayed streams (gauge)
+	static volatile DWORD	m_dwRelayBytesFwdKB;		// KB forwarded through us as relay
+	static volatile DWORD	m_dwRelayBudgetDrops;		// [eSE v9] chunks dropped by the hard relay byte-budget (abuse cap)
+	// [eSE v9] reach-cascade OUTCOME telemetry: which stage actually got the source connected.
+	// The selector used to collapse "connected via live socket" and "gave up" into the same
+	// REACH_DONE, so after a 2-3 PC run you could not tell whether Direct, Punch2, Punch3 or Relay
+	// won. Incremented once per source at the connect edge (TickReachabilitySelector). Exposed in
+	// /api/relay and /api/ese/v9. Pure diagnostics — no wire/behavior change.
+	static volatile DWORD	m_dwReachConnDirect;		// source connected while still at stage DIRECT
+	static volatile DWORD	m_dwReachConnPunch2;		// source connected after 2-way punch
+	static volatile DWORD	m_dwReachConnPunch3;		// source connected after 3-way rendezvous
+	static volatile DWORD	m_dwReachConnRelay;			// source connected via the relay floor
 
 private:
 	typedef struct {

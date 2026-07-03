@@ -314,6 +314,8 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 				APPEND_CAP(ESE_CAP_GOSSIP_PROTOCOL,   "Gossip");
 				APPEND_CAP(ESE_CAP_PRIVACY_TUNNELING, "Tunneling");
 				APPEND_CAP(ESE_CAP_COVER_TRAFFIC,     "Cover");
+				APPEND_CAP(ESE_CAP_HOLEPUNCH_RDV,     "RDV");
+				APPEND_CAP(ESE_CAP_LIVE_RELAY,        "Relay");
 				#undef APPEND_CAP
 				rCtrl << _T("]");
 			}

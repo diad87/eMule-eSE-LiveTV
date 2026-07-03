@@ -2,6 +2,7 @@
 // eSE — Live Chunk Buffer Implementation
 #include "stdafx.h"
 #include "LiveChunkBuffer.h"
+#include "LivePackets.h"   // eSELive::ESE_FRAG_MAX_TOTAL — canonical reassembly cap (PUNTO 1.2)
 #include "LiveDebugLog.h"
 
 #ifdef _DEBUG
@@ -31,6 +32,24 @@ bool CLiveChunkBuffer::AddSegment(const uchar* streamKey, uint32 seqNum,
     uint32 timestamp, const BYTE* data, uint32 dataSize, uint16 bitrate)
 {
     CSingleLock lock(&m_lock, TRUE);
+
+    // SECURITY (PUNTO 1.2, 2026-06): defense-in-depth size guard BEFORE the
+    // `new BYTE[dataSize]; memcpy(...)` below. Until now the only size check
+    // lived in the wire parser (ListenSocket / LiveStreamManager OnChunk*), so
+    // ANY caller reaching this sink without it (the local encoder FeedSegment,
+    // a future tunnel/bulk re-inject) could drive an attacker/bug-controlled
+    // allocation+copy = heap overflow primitive. Cap = eSELive::ESE_FRAG_MAX_TOTAL
+    // (12MB) — the SAME contract the fragment/tunnel reassembly already enforces
+    // (LivePackets.h), NOT a tighter 4MB, so legitimate high-bitrate reassembled
+    // chunks (validated at 12000 kbps) are unaffected. A violation is impossible
+    // from a well-formed peer/encoder: drop + log, NEVER ban (a ban here would be
+    // a false-positive mesh self-eviction, and the tunnel re-inject path carries
+    // no peer to attribute). Purely a RAM-side limit: no wire change, full back-compat.
+    if (data == NULL || dataSize == 0 || dataSize > eSELive::ESE_FRAG_MAX_TOTAL) {
+        LIVE_LOG("CHUNK", "REJECT seq=%u: bad dataSize=%u (cap=%u, data=%p)",
+            seqNum, dataSize, (unsigned)eSELive::ESE_FRAG_MAX_TOTAL, data);
+        return false;
+    }
 
     // Set stream key on first segment
     if (m_count == 0)

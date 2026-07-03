@@ -5,9 +5,9 @@
 // to a relay candidate over OP_LIVE_TUNNEL_CELL, the relay derives shared
 // secret via X25519, derives K_send/K_recv via HKDF, replies CELL_CREATED.
 // The originator completes the same derivation and the circuit reaches
-// Active. 2-hop extension (CELL_EXTEND/CELL_EXTENDED) is documented as
-// the next step but not implemented here — single-hop is enough to make
-// Onion tunnels: N > 0 in the UI and prove the path is wired.
+// Active. 2-hop extension (CELL_EXTEND/CELL_EXTENDED) is IMPLEMENTED below
+// (BuildExtend / HandleExtend_Relay / ForwardCreatedAsExtended_Relay /
+// HandleExtended_Originator), in both v1 and authenticated v2 forms.
 //
 // IMPORTANT: cells go through TCP via CClientReqSocket::SendPacket using
 // the eMule extension protocol (OP_LIVE_TUNNEL_CELL = 0xD5). Any peer
@@ -28,6 +28,8 @@
 #include "emule.h"            // theApp
 #include "Preferences.h"      // v0.71 P0.B — thePrefs.GetUserHash()
 #include "Log.h"              // v0.71 P0.B — AddDebugLogLine
+#include "NodeIdentity.h"     // v8.x Phase 2 — NodeIdentityPub/Sign for CREATED v2
+#include "LiveCrypto.h"       // v8.x Phase 2 — VerifySignature (originator verify side)
 // v0.71 P1 — Kad search through tunnel: lookup against local directory
 #include "LiveStreamManager.h"
 #include "LivePackets.h"        // v8.1.2 E3.1 - ESE_FRAG_* (exit-side 0xE0 reassembly)
@@ -40,6 +42,79 @@
 #include "kademlia/routing/Contact.h"            // v8.1 D5
 
 namespace eSELive {
+
+// ===== v8.x Phase 2 — authenticated CREATE/CREATED v2 (signed handshake) =====
+// docs/AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md §4/§5. Byte-exact, little-endian,
+// fixed widths. The transcript serializer MUST be identical on the signer (relay)
+// and the verifier (originator) — a single byte of drift makes the HKDF keys
+// diverge and the circuit dies on its first AEAD cell.
+static inline void PutU32LE(uint8_t* p, uint32_t v) {
+    p[0] = (uint8_t)(v & 0xFF);
+    p[1] = (uint8_t)((v >> 8) & 0xFF);
+    p[2] = (uint8_t)((v >> 16) & 0xFF);
+    p[3] = (uint8_t)((v >> 24) & 0xFF);
+}
+
+// "ese-tun-created-v2" = 18 bytes (no NUL in the transcript).
+static const char   TUN_TRANSCRIPT_LABEL[] = "ese-tun-created-v2";
+static const size_t TUN_TRANSCRIPT_LEN     = 18 + 32 + 32 + 4 + 16 + 16 + 32;       // 150 (circ_id dropped: per-leg on EXTEND, breaks cross-node match)
+// Compile-time guards against single-byte drift: edit the label or the layout
+// formula without updating its twin and the BUILD breaks here, instead of the
+// circuit dying silently on its first AEAD cell (signer/verifier key divergence).
+static_assert(sizeof(TUN_TRANSCRIPT_LABEL) - 1 == 18, "eSE Auth: transcript label must be exactly 18 bytes (NUL excluded).");
+static_assert(TUN_TRANSCRIPT_LEN == 150, "eSE Auth: canonical transcript layout must be exactly 150 bytes.");
+
+// Canonical CREATED-v2 transcript (§4). `out` must hold TUN_TRANSCRIPT_LEN bytes.
+static void BuildCreatedTranscript(uint32_t circ_id,
+                                   const uint8_t ev_pub[32], const uint8_t er_pub[32],
+                                   uint32_t signed_caps, const uint8_t create_nonce[16],
+                                   const uint8_t target_user_hash[16], const uint8_t node_pub[32],
+                                   uint8_t* out /* TUN_TRANSCRIPT_LEN */) {
+    size_t o = 0;
+    (void)circ_id;   // circ_id is PER-LEG (V's id on V<->hop1, hop1's outId on hop1<->hop2),
+                     // so signer and verifier would disagree on the EXTEND. create_nonce is the
+                     // real session anchor and IS leg-consistent (V mints it, it's forwarded intact).
+    memcpy(out + o, TUN_TRANSCRIPT_LABEL, 18);  o += 18;
+    memcpy(out + o, ev_pub, 32);                o += 32;
+    memcpy(out + o, er_pub, 32);                o += 32;
+    PutU32LE(out + o, signed_caps);             o += 4;
+    memcpy(out + o, create_nonce, 16);          o += 16;
+    memcpy(out + o, target_user_hash, 16);      o += 16;
+    memcpy(out + o, node_pub, 32);              o += 32;
+    (void)o;  // == TUN_TRANSCRIPT_LEN
+}
+
+// HKDF `info` for the v2 directional keys (§5): label ‖ circ_id ‖ ev_pub ‖ er_pub
+// ‖ signed_caps ‖ node_pub. `label20` is a 20-char direction string (no NUL).
+static const size_t TUN_HKDF_INFO_LEN = 20 + 32 + 32 + 4 + 32;       // 120 (circ_id dropped, see transcript)
+static_assert(TUN_HKDF_INFO_LEN == 120, "eSE Auth: HKDF info context buffer must be exactly 120 bytes.");
+static size_t BuildHkdfInfoV2(const char* label20, uint32_t circ_id,
+                              const uint8_t ev_pub[32], const uint8_t er_pub[32],
+                              uint32_t signed_caps, const uint8_t node_pub[32],
+                              uint8_t* out /* TUN_HKDF_INFO_LEN */) {
+    size_t o = 0;
+    (void)circ_id;   // excluded (per-leg, see transcript); salt = create_nonce binds the session.
+    memcpy(out + o, label20, 20);   o += 20;
+    memcpy(out + o, ev_pub, 32);    o += 32;
+    memcpy(out + o, er_pub, 32);    o += 32;
+    PutU32LE(out + o, signed_caps); o += 4;
+    memcpy(out + o, node_pub, 32);  o += 32;
+    return o;  // == TUN_HKDF_INFO_LEN
+}
+
+// v8.x Phase 2 — tunnel auth policy (see LiveTunnel.h). Mixed (default) accepts
+// v1 + v2; Strict aborts any v1/unsigned handshake. Runtime flag for now.
+static bool s_tunnelAuthStrict = false;
+bool TunnelAuthStrict()          { return s_tunnelAuthStrict; }
+void SetTunnelAuthStrict(bool s) { s_tunnelAuthStrict = s; }
+
+// v8.x Phase 2 — compile-time tripwires: any future edit that desyncs a wire size
+// from the helpers/buffers fails the BUILD, not a 3-PC lab run.
+static_assert(TUN_TRANSCRIPT_LEN == 150, "CREATED-v2 transcript size drift (must equal the field sum)");
+static_assert(TUN_HKDF_INFO_LEN  == 120, "HKDF-v2 info size drift (must equal the field sum)");
+static_assert(69u  <= CELL_PAYLOAD_MAX,  "CREATE v2 (69B) must fit one cell payload");
+static_assert(133u <= CELL_PAYLOAD_MAX,  "CREATED v2 (133B) must fit one cell payload");
+static_assert(149u <= CELL_PAYLOAD_MAX,  "wrapped EXTENDED v2 (133+16 tag) must fit one cell payload");
 
 CLiveTunnel::CLiveTunnel()
     : m_rrNextIdx(0)
@@ -66,6 +141,8 @@ CLiveTunnel::CLiveTunnel()
         [this](const TunnelRequestCtx& c){ ExitHandle_BulkSubscribe(c); });
     RegisterExitHandler(TUN_OP_BULK_UNSUB,
         [this](const TunnelRequestCtx& c){ ExitHandle_BulkUnsub(c); });
+    RegisterExitHandler(TUN_OP_BULK_NACK,
+        [this](const TunnelRequestCtx& c){ ExitHandle_BulkNack(c); });
 }
 
 // v8.1 Sprint C — little-endian field helpers for the Live tunnel op bodies.
@@ -123,11 +200,11 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
     // the circuit in Pending state. The handshake completes asynchronously
     // when CELL_CREATED arrives via OnCellReceived.
     //
-    // 2-hop extension is the NEXT step: after CELL_CREATED, the originator
-    // would send CELL_EXTEND (encrypted with K_send_hop1) carrying hop 2
-    // endpoint + new ephemeral; hop 1 forwards as CELL_CREATE to hop 2.
-    // That logic plugs into HandleCreated_Originator below — search for
-    // "TODO P3.next" comment.
+    // 2-hop extension is IMPLEMENTED: after CELL_CREATED, HandleCreated_Originator
+    // auto-calls BuildExtend (when a hop2 candidate was pre-staged), which sends
+    // CELL_EXTEND (encrypted with K_send_hop1) carrying hop 2 endpoint + new
+    // ephemeral; hop 1 forwards as CELL_CREATE to hop 2. Both v1 and authenticated
+    // v2 paths exist.
     if (count < TUNNEL_POOL_MIN) count = TUNNEL_POOL_MIN;
     if (count > TUNNEL_POOL_MAX) count = TUNNEL_POOL_MAX;
     if (relayCandidates.empty()) return 0;
@@ -179,19 +256,38 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
         // backward compat preserved. Real ntor (with Ed25519 long-term
         // identity) would replace this with a signed binding; for now
         // user_hash is the available persistent identifier per node.
-        uint8_t payload[32 + 16];
-        memcpy(payload, evPub, 32);
+        // v8.x Phase 2 — emit CREATE v2 (signed handshake) when hop1 can do it;
+        // else v1. The v2 suffix (magic "EAU2" + ver + create_nonce) is ignored
+        // by v1 peers (TLV-additive). Strict mode refuses non-auth hops outright.
         const uchar* hop1Hash = hop1->GetUserHash();
-        if (hop1Hash) {
-            memcpy(payload + 32, hop1Hash, 16);
+        const bool   hop1Auth = hop1->SupportsEseTunnelAuth() && hop1->HasEseNodePub()
+                                && hop1->HasValidHash() && (NodeIdentityPub() != NULL);
+        if (TunnelAuthStrict() && !hop1Auth) {
+            c->WipeKeys();   // strict: no authenticated hop -> don't build this circuit
+            continue;
+        }
+        uint8_t payload[69];
+        size_t  payloadLen;
+        memcpy(payload, evPub, 32);
+        if (hop1Hash) memcpy(payload + 32, hop1Hash, 16);
+        else          memset(payload + 32, 0, 16);
+        if (hop1Auth) {
+            memcpy(payload + 48, "EAU2", 4);
+            payload[52] = 0x02;
+            SecureRandomBytes(c->m_create_nonce, 16);
+            memcpy(payload + 53, c->m_create_nonce, 16);
+            payloadLen = 69;
+            // Pin hop1's identity (from its OWN HELLO) + stash our ephemeral pub and
+            // the target hash so HandleCreated_Originator can rebuild the transcript.
+            memcpy(c->m_ephemeral_pub,   evPub, 32);
+            memcpy(c->m_expectedNodePub, hop1->GetEseNodePub(), 32);
+            c->m_expectedNodePubSet = true;
+            memcpy(c->m_expectedHash, hop1Hash, 16);
         } else {
-            // No hash known yet → fall back to ev_pub only (32B). The
-            // hop1 with new binary won't reject; will accept (legacy compat).
-            // Defensive — should be rare since HELLO completed.
-            memset(payload + 32, 0, 16);
+            payloadLen = 48;   // v1: ev_pub + target_user_hash
         }
         uint8_t cell[CELL_TOTAL_BYTES];
-        if (!CellPack(id, CELL_CREATE, payload, sizeof payload, cell)) {
+        if (!CellPack(id, CELL_CREATE, payload, payloadLen, cell)) {
             // wipe ephemeral, skip
             c->WipeKeys();
             continue;
@@ -285,6 +381,10 @@ bool CLiveTunnel::BuildSuccessor2Hop()
     CUpDownClient* hop2 = NULL;
     for (CUpDownClient* p : cands) {
         if (!p) continue;
+        // v8.1.2 B6 (co-seeder filter) — never route a circuit through a peer that serves us
+        // the channel we're viewing: it would learn (by being our hop) that this IP watches
+        // that stream, defeating G1. Applies to hop1 AND the exit.
+        if (theApp.liveStreamManager && theApp.liveStreamManager->IsStreamSourcePeer(p)) continue;
         if (!hop1) { hop1 = p; continue; }
         if (p == hop1) continue;
         // require a DISTINCT node (different user hash) -> never an effective loopback
@@ -380,31 +480,88 @@ bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
 {
     if (!circ->m_have_ephemeral) return false;
     if (payloadLen < 32) return false;
-    const uint8_t* relayPub = payload;
+
+    // v8.x Phase 2 — authenticated CREATED v2 (133B: ver|er_pub|node_pub|caps|sig).
+    const bool v2 = (payloadLen >= 133 && payload[0] == 0x02);
+    if (TunnelAuthStrict() && !v2) {
+        // Distinct, greppable abort reasons (the rogue-relay test reads these to prove
+        // the rejection was CRYPTO, not a network timeout — cf. the Tick reap logs).
+        AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop1 circ=0x%08x reason=STRICT_V1 (unsigned CREATED rejected in strict mode)"), circ->Id());
+        circ->SetState(CircuitState::Destroyed);   // strict: refuse the unsigned v1 downgrade
+        return false;
+    }
+
+    const uint8_t* relayPub  = v2 ? (payload + 1) : payload;   // er_pub
+    const uint8_t* node_pub  = NULL;
+    uint32_t       signedCaps = 0;
+    if (v2) {
+        node_pub   = payload + 33;
+        signedCaps = (uint32_t)payload[65] | ((uint32_t)payload[66] << 8)
+                   | ((uint32_t)payload[67] << 16) | ((uint32_t)payload[68] << 24);
+        const uint8_t* sig = payload + 69;
+        // (1) Identity pin: node_pub MUST equal the key V learned from hop1's own
+        // HELLO (set in BuildPool, independent of any relay). Mismatch = substitution.
+        if (!circ->m_expectedNodePubSet || memcmp(node_pub, circ->m_expectedNodePub, 32) != 0) {
+            AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop1 circ=0x%08x reason=PIN_MISMATCH (node_pub != pinned hop1 identity)"), circ->Id());
+            circ->SetState(CircuitState::Destroyed);
+            return false;
+        }
+        // (2) Strict caps floor.
+        if (TunnelAuthStrict() && !(signedCaps & ESE_CAP_TUNNEL_AUTH)) {
+            AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop1 circ=0x%08x reason=CAPS_FLOOR (signed_caps lacks TUNNEL_AUTH)"), circ->Id());
+            circ->SetState(CircuitState::Destroyed);
+            return false;
+        }
+        // (3) VERIFY-BEFORE-DERIVE: a bad signature aborts before any X25519/HKDF,
+        // so a forged CREATED costs zero asymmetric work and contaminates no state.
+        uint8_t transcript[TUN_TRANSCRIPT_LEN];
+        BuildCreatedTranscript(circ->Id(), circ->m_ephemeral_pub, relayPub, signedCaps,
+                               circ->m_create_nonce, circ->m_expectedHash, node_pub, transcript);
+        if (!VerifySignature(node_pub, transcript, sizeof transcript, sig)) {
+            AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop1 circ=0x%08x reason=SIG_FAIL (Ed25519 verify-before-derive tripped — forged/rogue CREATED)"), circ->Id());
+            circ->SetState(CircuitState::Destroyed);
+            return false;
+        }
+    }
 
     uint8_t shared[32];
     if (!X25519SharedSecret(relayPub, circ->m_ephemeral_priv, shared))
         return false;
 
-    // HKDF: derive 64 bytes (k_send 32 + k_recv 32) from the shared.
-    // Salt is empty, info distinguishes direction so V→R and R→V keys
-    // can be derived from the SAME shared without confusion attacks.
+    // HKDF: v1 = bare directional labels; v2 = transcript-bound (salt =
+    // create_nonce). Originator's k_send = V→R, k_recv = R→V.
     uint8_t okm[64];
-    const uint8_t info_send[] = "ese-tunnel-V-to-R-v1";
-    const uint8_t info_recv[] = "ese-tunnel-R-to-V-v1";
-    if (!Hkdf(shared, sizeof shared, NULL, 0, info_send, sizeof info_send - 1, okm, 32))
+    bool kdfOk;
+    if (v2) {
+        uint8_t infoSend[TUN_HKDF_INFO_LEN], infoRecv[TUN_HKDF_INFO_LEN];
+        size_t infoLen = BuildHkdfInfoV2("ese-tunnel-V-to-R-v2", circ->Id(), circ->m_ephemeral_pub, relayPub, signedCaps, node_pub, infoSend);
+        BuildHkdfInfoV2("ese-tunnel-R-to-V-v2", circ->Id(), circ->m_ephemeral_pub, relayPub, signedCaps, node_pub, infoRecv);
+        kdfOk = Hkdf(shared, sizeof shared, circ->m_create_nonce, 16, infoSend, infoLen, okm, 32)
+             && Hkdf(shared, sizeof shared, circ->m_create_nonce, 16, infoRecv, infoLen, okm + 32, 32);
+    } else {
+        const uint8_t info_send[] = "ese-tunnel-V-to-R-v1";
+        const uint8_t info_recv[] = "ese-tunnel-R-to-V-v1";
+        kdfOk = Hkdf(shared, sizeof shared, NULL, 0, info_send, sizeof info_send - 1, okm, 32)
+             && Hkdf(shared, sizeof shared, NULL, 0, info_recv, sizeof info_recv - 1, okm + 32, 32);
+    }
+    if (!kdfOk) {
+        SecureWipe(shared, sizeof shared);
         return false;
-    if (!Hkdf(shared, sizeof shared, NULL, 0, info_recv, sizeof info_recv - 1, okm + 32, 32))
-        return false;
+    }
 
     CircuitHop hop = {};
     hop.hop_id = circ->Id();   // hop_id placeholder; ntor uses dedicated tag
     memcpy(hop.k_send, okm,      32);
     memcpy(hop.k_recv, okm + 32, 32);
+    if (v2) memcpy(hop.pub_long, node_pub, 32);   // record the verified hop identity
     hop.nonce_send = 0;
     hop.nonce_recv = 0;
-    if (!circ->AddHop(hop))
+    if (!circ->AddHop(hop)) {
+        SecureWipe(shared, sizeof shared);
+        SecureWipe(okm, sizeof okm);
         return false;
+    }
+    if (v2) circ->m_auth_ok = true;
 
     // Wipe ephemeral private key + shared.
     SecureWipe(circ->m_ephemeral_priv, sizeof circ->m_ephemeral_priv);
@@ -416,6 +573,8 @@ bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
     // in m_nextHopClient, automatically extend now. Otherwise stay at
     // 1-hop Active (current default behavior, preserves P3 compat).
     circ->SetState(CircuitState::Active);
+    if (circ->m_auth_ok && !circ->m_nextHopClient)
+        AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH SUCCESS 1-hop circ=0x%08x (handshake complete and verified)"), circ->Id());
     if (circ->m_nextHopClient) {
         CUpDownClient* hop2 = circ->m_nextHopClient;
         circ->m_nextHopClient = NULL;   // clear staging slot
@@ -482,6 +641,19 @@ bool CLiveTunnel::HandleCreate_Relay(uint32_t circId,
         }
     }
 
+    // v8.x Phase 2 — authenticated CREATE v2 detection (magic "EAU2" + ver 0x02 +
+    // 16B create_nonce). BuildPool emits CREATE v2 whenever hop1 advertises
+    // ESE_CAP_TUNNEL_AUTH (its hop1Auth branch), so this signed path IS reached
+    // once that cap is advertised. Gated dormant today only because EmuleDlg does
+    // not yet advertise the cap — not because the emit side is missing.
+    const bool v2req = (payloadLen >= 69
+                        && memcmp(payload + 48, "EAU2", 4) == 0
+                        && payload[52] == 0x02);
+    const uint8_t* nodePub     = v2req ? NodeIdentityPub() : NULL;   // our identity
+    const bool     v2          = v2req && (nodePub != NULL);         // can't sign without it
+    const uint8_t* createNonce = v2 ? (payload + 53) : NULL;
+    const uint32_t signedCaps  = g_uEseCapsRuntime;
+
     uint8_t erPub[32], erPriv[32];
     if (!X25519GenerateKeypair(erPub, erPriv)) return false;
 
@@ -492,14 +664,25 @@ bool CLiveTunnel::HandleCreate_Relay(uint32_t circId,
     }
     SecureWipe(erPriv, sizeof erPriv);
 
-    // Same HKDF as the originator, but the labels are inverted from
-    // *our* perspective: what V calls V→R is the relay's RECV, etc.
+    // HKDF: v1 = bare directional labels; v2 = transcript-bound (salt =
+    // create_nonce; info carries circ_id + both ephemerals + signed_caps +
+    // node_pub) so any tampered field makes V and R derive different keys (§5).
+    // Labels are inverted from *our* perspective: what V calls V→R is our RECV.
     uint8_t okm[64];
-    const uint8_t info_v_to_r[] = "ese-tunnel-V-to-R-v1";
-    const uint8_t info_r_to_v[] = "ese-tunnel-R-to-V-v1";
-    if (!Hkdf(shared, sizeof shared, NULL, 0, info_v_to_r, sizeof info_v_to_r - 1, okm, 32) ||
-        !Hkdf(shared, sizeof shared, NULL, 0, info_r_to_v, sizeof info_r_to_v - 1, okm + 32, 32))
-    {
+    bool kdfOk;
+    if (v2) {
+        uint8_t infoVR[TUN_HKDF_INFO_LEN], infoRV[TUN_HKDF_INFO_LEN];
+        size_t infoLen = BuildHkdfInfoV2("ese-tunnel-V-to-R-v2", circId, viewerPub, erPub, signedCaps, nodePub, infoVR);
+        BuildHkdfInfoV2("ese-tunnel-R-to-V-v2", circId, viewerPub, erPub, signedCaps, nodePub, infoRV);
+        kdfOk = Hkdf(shared, sizeof shared, createNonce, 16, infoVR, infoLen, okm, 32)
+             && Hkdf(shared, sizeof shared, createNonce, 16, infoRV, infoLen, okm + 32, 32);
+    } else {
+        const uint8_t info_v_to_r[] = "ese-tunnel-V-to-R-v1";
+        const uint8_t info_r_to_v[] = "ese-tunnel-R-to-V-v1";
+        kdfOk = Hkdf(shared, sizeof shared, NULL, 0, info_v_to_r, sizeof info_v_to_r - 1, okm, 32)
+             && Hkdf(shared, sizeof shared, NULL, 0, info_r_to_v, sizeof info_r_to_v - 1, okm + 32, 32);
+    }
+    if (!kdfOk) {
         SecureWipe(shared, sizeof shared);
         return false;
     }
@@ -523,10 +706,29 @@ bool CLiveTunnel::HandleCreate_Relay(uint32_t circId,
     SecureWipe(shared, sizeof shared);
     SecureWipe(okm, sizeof okm);
 
-    // Reply with CELL_CREATED carrying our ephemeral pub.
+    // Reply with CELL_CREATED. v1 = bare er_pub (32B). v2 = signed bundle (133B):
+    // ver|er_pub|node_pub|signed_caps|sig, sig = Ed25519(node_priv, transcript).
+    // The originator pins node_pub and verifies BEFORE deriving keys (§3.2/§7.3).
     uint8_t cell[CELL_TOTAL_BYTES];
-    if (!CellPack(circId, CELL_CREATED, erPub, sizeof erPub, cell))
-        return false;
+    if (v2) {
+        uint8_t transcript[TUN_TRANSCRIPT_LEN];
+        BuildCreatedTranscript(circId, viewerPub, erPub, signedCaps, createNonce,
+                               payload + 32 /* target_user_hash, from the wire */, nodePub, transcript);
+        uint8_t sig[64];
+        if (!NodeIdentitySign(transcript, sizeof transcript, sig))
+            return false;
+        uint8_t created[133];
+        created[0] = 0x02;                       // ver
+        memcpy(created + 1,  erPub,   32);        // er_pub
+        memcpy(created + 33, nodePub, 32);        // node_pub
+        PutU32LE(created + 65, signedCaps);       // signed_caps
+        memcpy(created + 69, sig, 64);            // sig
+        if (!CellPack(circId, CELL_CREATED, created, sizeof created, cell))
+            return false;
+    } else {
+        if (!CellPack(circId, CELL_CREATED, erPub, sizeof erPub, cell))
+            return false;
+    }
     SendCellToPeer(fromPeer, cell);
     return true;
 }
@@ -784,14 +986,23 @@ bool CLiveTunnel::BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
         return false;
     circ->m_have_ephemeral = true;
 
-    // v0.71 P0.B — EXTEND payload now 54B: 4B IP + 2B port + 32B ev_pub2
-    // + 16B target_user_hash of hop2. hop2's HandleCreate_Relay will
-    // verify the hash matches its own user_hash before responding,
-    // making redirection by hop1 detectable.
-    uint8_t extendPlain[54];
+    // v8.x Phase 2 — EXTEND payload: v1 = 54B (6B endpoint + ev_pub2 + hop2_hash);
+    // v2 = 71B (+ ver 1 + create_nonce2 16). The v2 suffix rides INSIDE the V↔hop1
+    // layer; hop1 reads it to build hop2's CREATE v2 but cannot usefully tamper —
+    // hop2 signs it and V verifies against its OWN stored ev_pub2/nonce2 + hop2 pin.
     const uint32 hop2_ip = hop2->GetIP();           // network byte order
     const uint16 hop2_port = hop2->GetUserPort();
-    // Write IP as 4 bytes little-endian (consistent with our cell convention).
+    const uchar* hop2Hash = hop2->GetUserHash();
+    const bool hop2Auth = hop2->SupportsEseTunnelAuth() && hop2->HasEseNodePub()
+                          && hop2->HasValidHash() && (NodeIdentityPub() != NULL);
+    if (TunnelAuthStrict() && !hop2Auth) {
+        SecureWipe(circ->m_ephemeral_priv, sizeof circ->m_ephemeral_priv);
+        circ->m_have_ephemeral = false;
+        return false;   // strict: never extend through a non-authenticated exit
+    }
+    uint8_t extendPlain[71];
+    size_t  extendPlainLen;
+    // 6B endpoint, little-endian (consistent with our cell convention).
     extendPlain[0] = (uint8_t)(hop2_ip & 0xFF);
     extendPlain[1] = (uint8_t)((hop2_ip >>  8) & 0xFF);
     extendPlain[2] = (uint8_t)((hop2_ip >> 16) & 0xFF);
@@ -799,18 +1010,27 @@ bool CLiveTunnel::BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
     extendPlain[4] = (uint8_t)(hop2_port & 0xFF);
     extendPlain[5] = (uint8_t)((hop2_port >> 8) & 0xFF);
     memcpy(extendPlain + 6, evPub2, 32);
-    const uchar* hop2Hash = hop2->GetUserHash();
-    if (hop2Hash) {
-        memcpy(extendPlain + 38, hop2Hash, 16);
+    if (hop2Hash) memcpy(extendPlain + 38, hop2Hash, 16);
+    else          memset(extendPlain + 38, 0, 16);
+    if (hop2Auth) {
+        extendPlain[54] = 0x02;                          // v2 EXTEND marker (ver)
+        SecureRandomBytes(circ->m_create_nonce2, 16);
+        memcpy(extendPlain + 55, circ->m_create_nonce2, 16);
+        extendPlainLen = 71;
+        // Pin hop2 (from V's OWN HELLO with hop2) + stash our ev_pub2 so
+        // HandleExtended_Originator can rebuild the verification transcript.
+        memcpy(circ->m_ephemeral_pub2,   evPub2, 32);
+        memcpy(circ->m_expectedNodePub2, hop2->GetEseNodePub(), 32);
+        circ->m_expectedNodePub2Set = true;
+        memcpy(circ->m_expectedHash2, hop2Hash, 16);
     } else {
-        memset(extendPlain + 38, 0, 16);
+        extendPlainLen = 54;
     }
 
-    // OnionEncrypt with the single registered hop (hop1). Since there's
-    // only 1 hop, this just AEAD-encrypts with K_v_to_hop1.
+    // OnionEncrypt with the single registered hop (hop1): 1-layer AEAD with K_v_to_hop1.
     uint8_t cellPayload[CELL_PAYLOAD_MAX];
     size_t cellLen = 0;
-    if (!circ->OnionEncrypt(extendPlain, sizeof extendPlain, cellPayload, cellLen)) {
+    if (!circ->OnionEncrypt(extendPlain, extendPlainLen, cellPayload, cellLen)) {
         SecureWipe(circ->m_ephemeral_priv, sizeof circ->m_ephemeral_priv);
         circ->m_have_ephemeral = false;
         return false;
@@ -847,7 +1067,10 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
     // Backward compat: if peer sent old 38B plaintext (54B ciphertext),
     // we still parse but skip the target_hash forward.
     if (payloadLen < 54) return false;
-    uint8_t extendPlain[70];
+    uint8_t extendPlain[CELL_PAYLOAD_MAX];   // v8.x: holds the 71B v2 plaintext; sized to
+                                             // max also BOUNDS a hostile oversized EXTEND
+                                             // (was [70] — OnionPeelOne has no capacity arg,
+                                             //  so a 505B cell peeled 489B -> stack smash).
     size_t extendPlainLen = 0;
     if (!circ->OnionPeelOne(0, payload, payloadLen, extendPlain, extendPlainLen))
         return false;
@@ -862,6 +1085,11 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
     const uint8_t* evPub2 = extendPlain + 6;
     const bool haveHop2Hash = (extendPlainLen >= 54);
     const uint8_t* hop2HashIn = haveHop2Hash ? (extendPlain + 38) : NULL;
+    // v8.x Phase 2 — v2 EXTEND carries ver(0x02)+create_nonce2 at offset 54; hop1
+    // propagates them into hop2's CREATE v2. (The loopback test path below ignores
+    // them and stays v1 — 2-PC dev only; validate authenticated 2-hop with 3 nodes.)
+    const bool v2ext = (extendPlainLen >= 71 && extendPlain[54] == 0x02);
+    const uint8_t* nonce2In = v2ext ? (extendPlain + 55) : NULL;
 
     // v0.71 B - self-loopback detection. With only 2 fork PCs (testing), V
     // picks the same peer for hop1 and hop2, so this EXTEND's hop2 is US.
@@ -1007,17 +1235,23 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
     // since hop2_hash isn't validated. With the hash forwarded, the
     // wrong peer rejects (its own hash doesn't match) → V detects
     // hop1's redirection via timeout.
-    uint8_t fwdPayload[48];
+    uint8_t fwdPayload[69];
+    size_t  fwdLen;
     memcpy(fwdPayload, evPub2, 32);
-    if (haveHop2Hash) {
-        memcpy(fwdPayload + 32, hop2HashIn, 16);
+    if (haveHop2Hash) memcpy(fwdPayload + 32, hop2HashIn, 16);
+    else              memset(fwdPayload + 32, 0, 16);   // legacy V: zero -> compat acceptance
+    if (v2ext) {
+        // Build hop2's CREATE v2 (magic "EAU2" + ver + create_nonce2); hop2's
+        // HandleCreate_Relay detects it and signs the CREATED v2.
+        memcpy(fwdPayload + 48, "EAU2", 4);
+        fwdPayload[52] = 0x02;
+        memcpy(fwdPayload + 53, nonce2In, 16);
+        fwdLen = 69;
     } else {
-        // Legacy V (no hash forwarded). Send zero so receiver does
-        // legacy compat acceptance.
-        memset(fwdPayload + 32, 0, 16);
+        fwdLen = 48;
     }
     uint8_t cell[CELL_TOTAL_BYTES];
-    if (!CellPack(outId, CELL_CREATE, fwdPayload, sizeof fwdPayload, cell)) {
+    if (!CellPack(outId, CELL_CREATE, fwdPayload, fwdLen, cell)) {
         SecureWipe(extendPlain, sizeof extendPlain);
         return false;
     }
@@ -1043,12 +1277,12 @@ bool CLiveTunnel::ForwardCreatedAsExtended_Relay(uint32_t outboundCircId,
     auto circ = FindRelayByOutgoingId(outboundCircId);
     if (!circ || circ->HopCount() != 1 || payloadLen < 32) return false;
 
-    // The cell's payload is hop2's er_pub2 (32B unencrypted). We wrap it
-    // with K_send_r_to_v (hop[0].k_send on relay side, see HandleCreate_Relay
-    // where we put R-to-V key into hop.k_send).
+    // hop2's CREATED rides back verbatim: v1 = 32B er_pub2, v2 = 133B signed bundle.
+    // Wrap the WHOLE payload (length-preserving) with K_send_r_to_v (hop[0].k_send) —
+    // hardcoding 32 would TRUNCATE a v2 CREATED and break hop2's signature for V.
     uint8_t wrapped[CELL_PAYLOAD_MAX];
     size_t wrappedLen = 0;
-    if (!circ->OnionEncrypt(payload, 32, wrapped, wrappedLen))
+    if (!circ->OnionEncrypt(payload, payloadLen, wrapped, wrappedLen))
         return false;
 
     // Pack as CELL_EXTENDED on V's circ_id (which is circ->Id()).
@@ -1070,12 +1304,56 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
     if (!circ->m_have_ephemeral) return false;
     if (payloadLen < 48) return false;
 
-    uint8_t plain[48];
+    uint8_t plain[CELL_PAYLOAD_MAX];   // was [48] — fits the 133B v2 payload AND bounds the peel
     size_t plainLen = 0;
     if (!circ->OnionPeelOne(0, payload, payloadLen, plain, plainLen))
         return false;
     if (plainLen < 32) return false;
-    const uint8_t* erPub2 = plain;
+
+    // v8.x Phase 2 — authenticated EXTENDED v2 (peeled = 133B: ver|er_pub2|node_pub2|caps|sig).
+    const bool v2 = (plainLen >= 133 && plain[0] == 0x02);
+    if (TunnelAuthStrict() && !v2) {
+        AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop2 circ=0x%08x reason=STRICT_V1 (unsigned EXTENDED rejected in strict mode)"), circ->Id());
+        circ->SetState(CircuitState::Destroyed);   // strict: refuse an unsigned hop2
+        SecureWipe(plain, sizeof plain);
+        return false;
+    }
+
+    const uint8_t* erPub2     = v2 ? (plain + 1) : plain;
+    const uint8_t* node_pub2  = NULL;
+    uint32_t       signedCaps2 = 0;
+    if (v2) {
+        node_pub2   = plain + 33;
+        signedCaps2 = (uint32_t)plain[65] | ((uint32_t)plain[66] << 8)
+                    | ((uint32_t)plain[67] << 16) | ((uint32_t)plain[68] << 24);
+        const uint8_t* sig2 = plain + 69;
+        // (1) Pin hop2's identity against the key V learned from its OWN HELLO with
+        // hop2 (set in BuildExtend). If hop1 swapped in its own key -> mismatch -> abort.
+        if (!circ->m_expectedNodePub2Set || memcmp(node_pub2, circ->m_expectedNodePub2, 32) != 0) {
+            AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop2 circ=0x%08x reason=PIN_MISMATCH (exit node_pub != pinned hop2 identity — hop1 impersonation?)"), circ->Id());
+            circ->SetState(CircuitState::Destroyed);
+            SecureWipe(plain, sizeof plain);
+            return false;
+        }
+        // (2) Strict caps floor.
+        if (TunnelAuthStrict() && !(signedCaps2 & ESE_CAP_TUNNEL_AUTH)) {
+            AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop2 circ=0x%08x reason=CAPS_FLOOR (exit signed_caps lacks TUNNEL_AUTH)"), circ->Id());
+            circ->SetState(CircuitState::Destroyed);
+            SecureWipe(plain, sizeof plain);
+            return false;
+        }
+        // (3) VERIFY-BEFORE-DERIVE against V's OWN stored ev_pub2/nonce2 — so a
+        // tampered ev_pub2 (hop1 MITM) fails here, before the second X25519/HKDF.
+        uint8_t transcript[TUN_TRANSCRIPT_LEN];
+        BuildCreatedTranscript(circ->Id(), circ->m_ephemeral_pub2, erPub2, signedCaps2,
+                               circ->m_create_nonce2, circ->m_expectedHash2, node_pub2, transcript);
+        if (!VerifySignature(node_pub2, transcript, sizeof transcript, sig2)) {
+            AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop2 circ=0x%08x reason=SIG_FAIL (exit Ed25519 verify-before-derive tripped — hop1 tampered ev_pub2 or forged CREATED)"), circ->Id());
+            circ->SetState(CircuitState::Destroyed);
+            SecureWipe(plain, sizeof plain);
+            return false;
+        }
+    }
 
     // Derive V↔hop2 keys.
     uint8_t shared[32];
@@ -1083,12 +1361,22 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
         return false;
 
     uint8_t okm[64];
-    const uint8_t info_send[] = "ese-tunnel-V-to-R-v1";
-    const uint8_t info_recv[] = "ese-tunnel-R-to-V-v1";
-    if (!Hkdf(shared, sizeof shared, NULL, 0, info_send, sizeof info_send - 1, okm, 32) ||
-        !Hkdf(shared, sizeof shared, NULL, 0, info_recv, sizeof info_recv - 1, okm + 32, 32))
-    {
+    bool kdfOk;
+    if (v2) {
+        uint8_t infoSend[TUN_HKDF_INFO_LEN], infoRecv[TUN_HKDF_INFO_LEN];
+        size_t infoLen = BuildHkdfInfoV2("ese-tunnel-V-to-R-v2", circ->Id(), circ->m_ephemeral_pub2, erPub2, signedCaps2, node_pub2, infoSend);
+        BuildHkdfInfoV2("ese-tunnel-R-to-V-v2", circ->Id(), circ->m_ephemeral_pub2, erPub2, signedCaps2, node_pub2, infoRecv);
+        kdfOk = Hkdf(shared, sizeof shared, circ->m_create_nonce2, 16, infoSend, infoLen, okm, 32)
+             && Hkdf(shared, sizeof shared, circ->m_create_nonce2, 16, infoRecv, infoLen, okm + 32, 32);
+    } else {
+        const uint8_t info_send[] = "ese-tunnel-V-to-R-v1";
+        const uint8_t info_recv[] = "ese-tunnel-R-to-V-v1";
+        kdfOk = Hkdf(shared, sizeof shared, NULL, 0, info_send, sizeof info_send - 1, okm, 32)
+             && Hkdf(shared, sizeof shared, NULL, 0, info_recv, sizeof info_recv - 1, okm + 32, 32);
+    }
+    if (!kdfOk) {
         SecureWipe(shared, sizeof shared);
+        SecureWipe(plain, sizeof plain);
         return false;
     }
 
@@ -1096,13 +1384,16 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
     hop2.hop_id = circ->Id();
     memcpy(hop2.k_send, okm,      32);
     memcpy(hop2.k_recv, okm + 32, 32);
+    if (v2) memcpy(hop2.pub_long, node_pub2, 32);   // record the verified exit identity
     hop2.nonce_send = 0;
     hop2.nonce_recv = 0;
     if (!circ->AddHop(hop2)) {
         SecureWipe(shared, sizeof shared);
         SecureWipe(okm, sizeof okm);
+        SecureWipe(plain, sizeof plain);
         return false;
     }
+    circ->m_auth_ok = circ->m_auth_ok && v2;   // circuit fully authenticated only if BOTH hops were v2
 
     SecureWipe(circ->m_ephemeral_priv, sizeof circ->m_ephemeral_priv);
     circ->m_have_ephemeral = false;
@@ -1111,6 +1402,8 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
     SecureWipe(plain, sizeof plain);
 
     circ->SetState(CircuitState::Active);
+    if (circ->m_auth_ok)
+        AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH SUCCESS both hops circ=0x%08x (handshake complete and verified)"), circ->Id());
     // v8.1 D4 - 2-hop circuit reached final Active: register it in the PST pool.
     Kademlia::CKadV2TunnelPool::Get().RegisterTunnel(circ);
     return true;
@@ -1165,6 +1458,7 @@ void CLiveTunnel::GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const
         s.hop_count    = (uint32_t)c->HopCount();
         s.next_hop_set = c->m_nextHopClient ? 1 : 0;
         s.next_circ_id = c->m_nextCircId;
+        s.auth_ok      = c->m_auth_ok ? 1 : 0;   // v8.x Phase 2 — drives the panel "Auth" column
         out.push_back(s);
     }
 }
@@ -2592,6 +2886,8 @@ void CLiveTunnel::DeliverBulkData(std::shared_ptr<CLiveCircuit>& circ, uint64_t 
 
     if (!e.haveLayout) {
         if (!Bulk::BulkComputeLayout(bh.msg_len, e.layout)) { m_bulkReasm.erase(key); return; }
+        memcpy(e.streamKey, bh.stream_key, 16);   // E3.5 NACK addressing
+        e.seq = bh.seq;
         e.msg_len = bh.msg_len;
         e.n_blocks = bh.n_blocks;
         e.r = bh.r;
@@ -2654,9 +2950,25 @@ void CLiveTunnel::SweepBulkReasm()
     const DWORD now = GetTickCount();
     const DWORD BULK_REASM_TTL_MS = 40000;   // > 16 segments x 2 s ring (32 s) + slack
     for (auto it = m_bulkReasm.begin(); it != m_bulkReasm.end(); ) {
-        if (now - it->second.first_seen_tick > BULK_REASM_TTL_MS) it = m_bulkReasm.erase(it);
-        else ++it;
+        BulkReasmEntry& e = it->second;
+        if (now - e.first_seen_tick > BULK_REASM_TTL_MS) { it = m_bulkReasm.erase(it); continue; }
+        // E3.5 (viewer) — still incomplete past the NACK deadline -> request a re-push of the
+        // blocks short of k_b (throttled per entry). The exit re-encodes from its retained record.
+        if (!e.done && e.haveLayout
+            && (DWORD)(now - e.first_seen_tick) > 3000
+            && (DWORD)(now - e.lastNackTick) > 2000) {
+            std::vector<std::pair<uint32_t, uint8_t>> missing;
+            for (int b = 0; b < e.layout.n_blocks && missing.size() < 16; ++b)
+                if (b < (int)e.blockRecv.size() && e.blockRecv[b] < e.layout.k[b])
+                    missing.push_back(std::make_pair(e.seq, (uint8_t)b));
+            if (!missing.empty() && SendBulkNack(e.streamKey, missing))
+                e.lastNackTick = now;
+        }
+        ++it;
     }
+    // E3.5 — sweep retained exit records past the ring window (oldest at the front).
+    while (!m_proxyRecent.empty() && now - m_proxyRecent.front().tick > BULK_REASM_TTL_MS)
+        m_proxyRecent.pop_front();
     for (auto it = m_bulkReplay.begin(); it != m_bulkReplay.end(); ) {
         bool alive = false;
         for (auto& c : m_circuits) if (c->Id() == it->first) { alive = true; break; }
@@ -2787,9 +3099,11 @@ void CLiveTunnel::ProcessProxyIngest()
         uint8_t streamKey[16];
         memcpy(streamKey, record.data(), 16);
         const uint32_t seq = eseRdU32LE(record.data() + 16);
+        const std::string hex = LiveStreamKeyHex(streamKey);
+        const int r = ProxyAdaptiveR(hex);   // E4' — parity adapts to the measured NACK rate
 
         std::vector<Bulk::BulkSymbol> symbols;
-        if (!Bulk::BulkEncodeSegment(record.data(), record.size(), Bulk::BULK_DEFAULT_R, symbols))
+        if (!Bulk::BulkEncodeSegment(record.data(), record.size(), r, symbols))
             continue;
         Bulk::BulkLayout layout;
         if (!Bulk::BulkComputeLayout((uint32_t)record.size(), layout)) continue;
@@ -2797,7 +3111,6 @@ void CLiveTunnel::ProcessProxyIngest()
         // Build the push "sessions" — each is one viewer's circuit list. Prefer EXPLICIT bulk
         // subs (E3.2, grouped by session_id -> we can stripe across a viewer's circuits); fall
         // back to the C7 control subs (1 circuit each -> full k+r). Snapshot under m_pendingLock.
-        const std::string hex = LiveStreamKeyHex(streamKey);
         std::vector<std::vector<uint32_t>> sessions;
         {
             CSingleLock pl(&m_pendingLock, TRUE);
@@ -2830,10 +3143,16 @@ void CLiveTunnel::ProcessProxyIngest()
             for (const Bulk::BulkSymbol& s : symbols) {
                 std::shared_ptr<CLiveCircuit>& cc = sc[((size_t)s.symbol_idx + s.block_idx) % C];
                 if (!cc || cc->m_role != CircuitRole::Relay) continue;
+                // v8.1.2 E7.2 (backpressure) — don't pile cells onto a hop socket that is
+                // already backed up (slow viewer/circuit). Skipping bounds the exit's send-
+                // queue RAM; the viewer recovers the skipped symbol via FEC parity or a NACK
+                // (E3.5). For a multi-circuit viewer the other circuits still carry their stripe.
+                if (cc->m_prevHopClient && cc->m_prevHopClient->socket
+                    && cc->m_prevHopClient->socket->IsBusyQuickCheck()) continue;
                 Bulk::BulkDataHeader bh;
                 memcpy(bh.stream_key, streamKey, 16);
                 bh.seq = seq; bh.block_idx = s.block_idx; bh.n_blocks = (uint8_t)layout.n_blocks;
-                bh.symbol_idx = s.symbol_idx; bh.k = s.k; bh.r = (uint8_t)Bulk::BULK_DEFAULT_R;
+                bh.symbol_idx = s.symbol_idx; bh.k = s.k; bh.r = (uint8_t)r;
                 bh.flags = 0; bh.msg_len = (uint32_t)record.size();
                 std::vector<uint8_t> payload;
                 Bulk::BulkDataPack(bh, s.data.data(), payload);
@@ -2843,8 +3162,16 @@ void CLiveTunnel::ProcessProxyIngest()
         }
         if (pushed)
             AddDebugLogLine(false,
-                _T("LiveTunnel: exit pushed bulk seq=%u — %u symbols across %u viewer-session(s), %u blocks"),
-                seq, (unsigned)symbols.size(), (unsigned)sessions.size(), (unsigned)layout.n_blocks);
+                _T("LiveTunnel: exit pushed bulk seq=%u — %u symbols across %u viewer-session(s), %u blocks (r=%d)"),
+                seq, (unsigned)symbols.size(), (unsigned)sessions.size(), (unsigned)layout.n_blocks, r);
+
+        // E3.5 — retain the whole record so a viewer that fails to reassemble can NACK a
+        // re-push (PushBlockToCircuit re-encodes on demand). Bounded ring (~16 segs x streams).
+        ProxyRecentRec rec;
+        memcpy(rec.streamKey, streamKey, 16);
+        rec.seq = seq; rec.tick = GetTickCount(); rec.record = std::move(record);
+        m_proxyRecent.push_back(std::move(rec));
+        while (m_proxyRecent.size() > 48) m_proxyRecent.pop_front();
     }
 }
 
@@ -2933,6 +3260,110 @@ size_t CLiveTunnel::BulkSubscribe(const uint8_t streamKey[16])
     return sent;
 }
 
+// === v8.1.2 E3.5 (NACK gap-fill) + E4' (adaptive r) ===========================
+
+int CLiveTunnel::ProxyAdaptiveR(const std::string& hex)
+{
+    // E4' — adapt PARITY (not bitrate) to the measured NACK rate per stream (~10 s window):
+    // no NACKs -> ease r down toward 2; light loss -> >=3; heavy -> up to BULK_MAX_R. Caller
+    // holds m_lock.
+    const DWORD now = GetTickCount();
+    ProxyStreamCtl& c = m_proxyCtl[hex];
+    if (c.windowStart == 0) { c.windowStart = now; c.r = Bulk::BULK_DEFAULT_R; }
+    if ((DWORD)(now - c.windowStart) >= 10000) {
+        if      (c.nackCount == 0) c.r = (c.r > 2 ? c.r - 1 : 2);
+        else if (c.nackCount <= 3) c.r = (c.r < 3 ? 3 : c.r);
+        else                       c.r = (c.r < Bulk::BULK_MAX_R ? c.r + 1 : Bulk::BULK_MAX_R);
+        c.nackCount = 0;
+        c.windowStart = now;
+    }
+    if (c.r < 2) c.r = 2;
+    if (c.r > Bulk::BULK_MAX_R) c.r = Bulk::BULK_MAX_R;
+    return c.r;
+}
+
+void CLiveTunnel::PushBlockToCircuit(std::shared_ptr<CLiveCircuit>& circ, const uint8_t streamKey[16],
+                                     uint32_t seq, const std::vector<uint8_t>& record, int r, uint8_t blockIdx)
+{
+    if (!circ || record.size() < 20) return;
+    Bulk::BulkLayout layout;
+    if (!Bulk::BulkComputeLayout((uint32_t)record.size(), layout)) return;
+    if (blockIdx >= layout.n_blocks) return;
+    std::vector<Bulk::BulkSymbol> symbols;
+    if (!Bulk::BulkEncodeSegment(record.data(), record.size(), r, symbols)) return;
+    for (const Bulk::BulkSymbol& s : symbols) {
+        if (s.block_idx != blockIdx) continue;
+        Bulk::BulkDataHeader bh;
+        memcpy(bh.stream_key, streamKey, 16);
+        bh.seq = seq; bh.block_idx = s.block_idx; bh.n_blocks = (uint8_t)layout.n_blocks;
+        bh.symbol_idx = s.symbol_idx; bh.k = s.k; bh.r = (uint8_t)r;
+        bh.flags = 0; bh.msg_len = (uint32_t)record.size();
+        std::vector<uint8_t> payload;
+        Bulk::BulkDataPack(bh, s.data.data(), payload);
+        SendBulkCellReverse(circ, Bulk::BULK_DATA, payload.data(), payload.size());
+    }
+}
+
+void CLiveTunnel::ExitHandle_BulkNack(const TunnelRequestCtx& ctx)
+{
+    // body: stream_key 16 + count 1 + (seq 4 + block_idx 1)*count
+    if (!ctx.circ || !ctx.body || ctx.bodyLen < 17) return;
+    uint8_t streamKey[16];
+    memcpy(streamKey, ctx.body, 16);
+    const uint8_t count = ctx.body[16];
+    if (count == 0 || (size_t)ctx.bodyLen < 17 + (size_t)count * 5) return;
+    const std::string hex = LiveStreamKeyHex(streamKey);
+    m_proxyCtl[hex].nackCount++;                  // E4' telemetry
+    const int r = ProxyAdaptiveR(hex);
+    std::shared_ptr<CLiveCircuit> circ = ctx.circ;
+    for (uint8_t i = 0; i < count; ++i) {
+        const uint8_t* ePtr = ctx.body + 17 + (size_t)i * 5;
+        const uint32_t seq = eseRdU32LE(ePtr);
+        const uint8_t  blk = ePtr[4];
+        for (auto& rec : m_proxyRecent)
+            if (rec.seq == seq && memcmp(rec.streamKey, streamKey, 16) == 0) {
+                PushBlockToCircuit(circ, streamKey, seq, rec.record, r, blk);
+                break;
+            }
+    }
+    AddDebugLogLine(false, _T("LiveTunnel: [E3.5] bulk NACK %u block(s) re-pushed (r=%d)"),
+        (unsigned)count, r);
+}
+
+bool CLiveTunnel::SendBulkNack(const uint8_t streamKey[16],
+                               const std::vector<std::pair<uint32_t, uint8_t>>& missing)
+{
+    if (missing.empty() || missing.size() > 40) return false;   // caller holds m_lock
+    std::vector<uint8_t> body;
+    body.insert(body.end(), streamKey, streamKey + 16);
+    body.push_back((uint8_t)missing.size());
+    for (const auto& m : missing) {
+        uint8_t tmp[4]; eseWrU32LE(tmp, m.first);
+        body.insert(body.end(), tmp, tmp + 4);
+        body.push_back(m.second);
+    }
+    for (auto& c : m_circuits) {
+        if (c->m_role != CircuitRole::Originator || c->State() != CircuitState::Active) continue;
+        if (c->HopCount() < 1 || !c->m_bulk_ok) continue;
+        const size_t onion = c->HopCount() * 16;
+        if (onion + SUB_HEADER_BYTES + FRAG_HEADER_BYTES >= CELL_PAYLOAD_MAX) continue;
+        const size_t fragDataMax = CELL_PAYLOAD_MAX - onion - SUB_HEADER_BYTES - FRAG_HEADER_BYTES;
+        std::vector<std::vector<uint8_t>> cells;
+        if (!SplitIntoCells(TUN_OP_BULK_NACK, NewCircuitId(), body.data(), body.size(), fragDataMax, cells))
+            continue;
+        bool ok = true;
+        for (auto& plain : cells) {
+            uint8_t cp[CELL_PAYLOAD_MAX]; size_t cl = 0;
+            if (!c->OnionEncrypt(plain.data(), plain.size(), cp, cl)) { ok = false; break; }
+            uint8_t cell[CELL_TOTAL_BYTES];
+            if (!CellPack(c->Id(), CELL_RELAY, cp, cl, cell)) { ok = false; break; }
+            if (!c->m_firstHopClient || !SendCellToPeer(c->m_firstHopClient, cell)) { ok = false; break; }
+        }
+        if (ok) return true;
+    }
+    return false;
+}
+
 bool CLiveTunnel::TunnelPing(const std::string& text, std::string& replyText,
                              uint32_t timeoutMs)
 {
@@ -3002,18 +3433,22 @@ void CLiveTunnel::Tick()
     // they're waiting for handshake reply.
     const DWORD now = GetTickCount();
     for (auto& c : m_circuits) {
-        if (c->State() == CircuitState::Active && c->AgeMs() > TUNNEL_ROTATION_BASE_MS)
-            c->SetState(CircuitState::Destroyed);
-        else if (c->State() == CircuitState::Pending && c->AgeMs() > TUNNEL_HANDSHAKE_TIMEOUT_MS * 8)
+        if (c->State() == CircuitState::Active && c->AgeMs() > TUNNEL_ROTATION_BASE_MS) {
+            c->SetState(CircuitState::Destroyed);   // normal rotation, not an error
+        } else if (c->State() == CircuitState::Pending && c->AgeMs() > TUNNEL_HANDSHAKE_TIMEOUT_MS * 8) {
             // 8x handshake timeout = ~6.4 s. After this, give up — peer
-            // probably isn't running the fork.
+            // probably isn't running the fork. Distinct from a crypto reject:
+            // this is a TIMED reap from Tick (with age), not a synchronous AUTH-ABORT.
+            AddDebugLogLine(false, _T("LiveTunnel: circ=0x%08x REAP reason=HANDSHAKE_TIMEOUT (CREATED never arrived, age=%u ms) — NOT a crypto reject"), c->Id(), c->AgeMs());
             c->SetState(CircuitState::Destroyed);
-        else if (c->State() == CircuitState::HalfBuilt && c->AgeMs() > TUNNEL_HANDSHAKE_TIMEOUT_MS * 16)
+        } else if (c->State() == CircuitState::HalfBuilt && c->AgeMs() > TUNNEL_HANDSHAKE_TIMEOUT_MS * 16) {
             // v8.1 fix: a circuit stuck mid-EXTEND (hop1 done, EXTENDED
             // never arrived) used to fall through both arms above and
             // leak forever. Time it out, with a longer budget since it
             // is waiting on a second handshake leg.
+            AddDebugLogLine(false, _T("LiveTunnel: circ=0x%08x REAP reason=EXTEND_TIMEOUT (EXTENDED never arrived, age=%u ms) — NOT a crypto reject"), c->Id(), c->AgeMs());
             c->SetState(CircuitState::Destroyed);
+        }
     }
 
     // 3. v0.71 P0.A — cover traffic emission. For each Active originator

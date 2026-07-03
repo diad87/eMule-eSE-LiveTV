@@ -87,6 +87,7 @@ namespace Kademlia
 		void SendValidSourceResult(const CUInt128 &uKeyID, uint32 uIP, uint16 uPort, uint16 uStartPosition, uint64 uFileSize, const CKadUDPKey &senderUDPKey);
 		void SendValidNoteResult(const CUInt128 &uKeyID, uint32 uIP, uint16 uPort, uint64 uFileSize, const CKadUDPKey &senderUDPKey);
 		bool SendStoreRequest(const CUInt128 &uKeyID);
+		void Clean(); //self-limited to one pass per 30 min; safe to call from the Kad timer
 		uint32 m_uTotalIndexSource;
 		uint32 m_uTotalIndexKeyword;
 		uint32 m_uTotalIndexNotes;
@@ -94,7 +95,6 @@ namespace Kademlia
 
 	private:
 		void ReadFile();
-		void Clean();
 		time_t m_tNextClean;
 		CKeyHashMap m_mapKeyword;
 		CSrcHashMap m_mapSources;

@@ -30,6 +30,12 @@ public:
     void Stop();
     bool IsRunning() const { return m_bRunning; }
 
+    // Thread-safe activation control. The /api keepalive endpoint (or the firewall
+    // prober) flips this from another thread; the real Start()/Stop() runs on the Kad
+    // thread inside Tick(), so m_supernodes is never touched cross-thread.
+    void RequestStart();
+    void RequestStop();
+
     // Called every Process() tick from the main loop (~1 s).
     void Tick();
 
@@ -37,6 +43,10 @@ public:
     // misses too many PINGs in a row.
     void AddSupernode(const CAddress& addr, uint16 port);
     void BlacklistSupernode(const CAddress& addr, uint16 port);
+
+    // R.2: a supernode replied to our ping — refresh its health (called from the
+    // KADEMLIA3_PING_RES handler in the Kad UDP listener). uIP is host-order.
+    void OnPong(uint32 uIP, uint16 port);
 
     // Telemetry: how many keepalives went out / how many got a reply in the
     // last 5-minute window. Used by /api/live/debug.
@@ -49,7 +59,7 @@ public:
     Stats GetStats() const { return m_stats; }
 
 private:
-    CKadKeepalive() : m_bRunning(false), m_dwLastTick(0) { memset(&m_stats, 0, sizeof m_stats); }
+    CKadKeepalive() : m_bRunning(false), m_dwLastTick(0), m_ctrlRequest(0) { memset(&m_stats, 0, sizeof m_stats); }
     ~CKadKeepalive() = default;
     CKadKeepalive(const CKadKeepalive&) = delete;
 
@@ -61,8 +71,9 @@ private:
         int      consecutiveMisses;
     };
 
-    bool                 m_bRunning;
+    volatile bool        m_bRunning;      // read cross-thread by IsRunning() from webserver workers
     DWORD                m_dwLastTick;
+    volatile LONG        m_ctrlRequest;   // 0=none, 1=start, 2=stop (cross-thread control)
     std::vector<Supernode> m_supernodes;
     Stats                m_stats;
 };

@@ -378,12 +378,22 @@
     <ClCompile Include="SubscriberPinScheduler.cpp" />
     <ClCompile Include="LiveTunnel.cpp" />
     <ClCompile Include="LiveCircuit.cpp" />
+    <ClCompile Include="LiveFec.cpp">
+      <PrecompiledHeader />
+    </ClCompile>
+    <ClCompile Include="LiveBulk.cpp">
+      <PrecompiledHeader />
+    </ClCompile>
+    <ClCompile Include="NodeIdentity.cpp" />
+    <ClCompile Include="NodeIdentityStorage.cpp">
+      <PrecompiledHeader />
+    </ClCompile>
     <ClCompile Include="LiveCellQueue.cpp" />
     <ClCompile Include="LiveCoverTraffic.cpp" />
     <ClCompile Include="LiveMigrationV7.cpp" />
     <ClCompile Include="FirewallProberV6.cpp" />
     <ClCompile Include="KadKeepalive.cpp" />
-    <ClCompile Include="HolePuncher.cpp" />
+    <ClCompile Include="HolePunchCookie.cpp" />
     <ClCompile Include="LiveBuddyRelay.cpp" />
     <ClCompile Include="LiveStreamDlg.cpp" />
     <ClCompile Include="LiveStreamDlgUI.cpp" />
@@ -414,6 +424,7 @@
     <ClCompile Include="PartFile.cpp" />
     <ClCompile Include="PartFileConvert.cpp" />
     <ClCompile Include="PartFileWriteThread.cpp" />
+    <ClCompile Include="PartHashThread.cpp" />
     <ClCompile Include="PerfLog.cpp" />
     <ClCompile Include="Pinger.cpp" />
     <ClCompile Include="PPgConnection.cpp" />
@@ -703,6 +714,8 @@
     <ClInclude Include="LiveKadBridge.h" />
     <ClInclude Include="LiveMeshManager.h" />
     <ClInclude Include="LiveCrypto.h" />
+    <ClInclude Include="INodeIdentityStorage.h" />
+    <ClInclude Include="NodeIdentity.h" />
     <ClInclude Include="LiveOnionCrypto.h" />
     <ClInclude Include="LiveChannel.h" />
     <ClInclude Include="LiveSubscriptionStore.h" />
@@ -712,12 +725,15 @@
     <ClInclude Include="SubscriberPinScheduler.h" />
     <ClInclude Include="LiveTunnel.h" />
     <ClInclude Include="LiveCircuit.h" />
+    <ClInclude Include="LiveFec.h" />
+    <ClInclude Include="LiveBulk.h" />
     <ClInclude Include="LiveCellQueue.h" />
     <ClInclude Include="LiveCoverTraffic.h" />
     <ClInclude Include="LiveMigrationV7.h" />
     <ClInclude Include="FirewallProberV6.h" />
     <ClInclude Include="KadKeepalive.h" />
-    <ClInclude Include="HolePuncher.h" />
+    <ClInclude Include="HolePunchCookie.h" />
+    <ClInclude Include="HolePunchCookieCore.h" />
     <ClInclude Include="LiveBuddyRelay.h" />
     <ClInclude Include="LivePackets.h" />
     <ClInclude Include="LiveProtocol.h" />
@@ -749,6 +765,7 @@
     <ClInclude Include="PartFile.h" />
     <ClInclude Include="PartFileConvert.h" />
     <ClInclude Include="PartFileWriteThread.h" />
+    <ClInclude Include="PartHashThread.h" />
     <ClInclude Include="PerfLog.h" />
     <ClInclude Include="Pinger.h" />
     <ClInclude Include="PPgConnection.h" />

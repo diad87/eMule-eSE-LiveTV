@@ -32,6 +32,8 @@ their client on the eMule forum.
 
 #include "stdafx.h"
 #include "../../LiveDebugLog.h"
+#include "../../KadKeepalive.h"     // R.2: CKadKeepalive::OnPong (PONG -> supernode health)
+#include "HolePunchCookie.h"        // eSE P0: return-routability cookie (anti-reflection)
 #include "clientlist.h"
 #include "ClientUDPSocket.h"
 #include "emule.h"
@@ -61,6 +63,8 @@ their client on the eMule forum.
 #include "kademlia/kademlia/UDPFirewallTester.h"
 #include "kademlia/routing/RoutingZone.h"
 #include "kademlia/routing/Contact.h"
+#include "FirewallProberV6.h"   // [eSE v9] root link: GetDetectedV6IP() for the HELLO v6 tag
+#include "eMuleAI/Address.h"     // [eSE v9] CAddress::Data()/GetType()/IsPublicIP()
 #include "kademlia/utils/KadUDPKey.h"
 #include "kademlia/utils/KadClientSearcher.h"
 #include "LiveProtocol.h"
@@ -82,6 +86,7 @@ struct SEsePendingHolePunch {
 	uint16 uUDPPort;
 	uint32 uNonce;
 	DWORD dwCreated;
+	uint8 byChallengeResends;   // eSE P0: CHALLENGEs answered for this punch (anti-flood cap)
 };
 
 static CArray<SEsePendingHolePunch, SEsePendingHolePunch&> s_esePendingHolePunches;
@@ -91,6 +96,19 @@ static const DWORD ESE_HOLEPUNCH_NONCE_TTL_MS = 30000;
 // eSE 8.12.1: CSPRNG for hole-punch nonce generation (anti-Sybil prediction).
 // Dedicated static instance to avoid lock contention with EncryptedDatagramSocket's cryptRandomGen.
 static CryptoPP::AutoSeededRandomPool s_eseHolePunchRng;
+
+// eSE P0 — thread-safe wrapper for the shared hole-punch CSPRNG. CryptoPP's
+// AutoSeededRandomPool is NOT thread-safe, yet SendEseHolePunchReq can be reached
+// off the Kad/main thread (e.g. the WebServer worker in WebServer.cpp). Serialise
+// EVERY GenerateBlock under the lock that already guards the pending-nonce list:
+// the RNG's single call site is co-located with EseRememberHolePunchNonce, so a
+// dedicated mutex would only add a second back-to-back acquisition for no benefit.
+// All future randomness from this pool MUST go through here, never the raw object.
+static void EseHolePunchRandomBlock(byte* pOut, size_t nLen)
+{
+	CSingleLock lock(&s_eseHolePunchLock, TRUE);
+	s_eseHolePunchRng.GenerateBlock(pOut, nLen);
+}
 
 static void EsePrunePendingHolePunches(DWORD now)
 {
@@ -128,6 +146,102 @@ static bool EseConsumeHolePunchNonce(uint32 uIP, uint32 uNonce)
 		const SEsePendingHolePunch& entry = s_esePendingHolePunches[i];
 		if (entry.uIP == uIP && entry.uNonce == uNonce) {
 			s_esePendingHolePunches.RemoveAt(i);
+			return true;
+		}
+	}
+	return false;
+}
+
+// eSE P0: authorize acting on a CHALLENGE for (uIP, uNonce). Returns true iff we
+// have a matching pending punch WE started AND have not already answered too many
+// CHALLENGEs for it. Does NOT remove the entry — the final ACK consumes it
+// (EseConsumeHolePunchNonce). The bounded resend budget lets a lost expanded-REQ
+// be re-driven by a duplicate CHALLENGE without letting a spoofed/duplicated
+// CHALLENGE make us spam expanded REQs.
+static const uint8 ESE_HOLEPUNCH_MAX_CHALLENGE_RESENDS = 3;
+static bool EseAuthorizeHolePunchChallenge(uint32 uIP, uint32 uNonce)
+{
+	CSingleLock lock(&s_eseHolePunchLock, TRUE);
+	const DWORD now = GetTickCount();
+	EsePrunePendingHolePunches(now);
+
+	for (INT_PTR i = s_esePendingHolePunches.GetCount() - 1; i >= 0; --i) {
+		SEsePendingHolePunch& entry = s_esePendingHolePunches[i];
+		if (entry.uIP == uIP && entry.uNonce == uNonce) {
+			if (entry.byChallengeResends >= ESE_HOLEPUNCH_MAX_CHALLENGE_RESENDS)
+				return false;
+			++entry.byChallengeResends;
+			return true;
+		}
+	}
+	return false;
+}
+
+// ─── R.1 (3-way rendezvous) — A-side pending state ────────────────────────────
+// Mirrors s_esePendingHolePunches but also remembers the TARGET (B), so that when
+// rendezvous R answers with a CHALLENGE (re-send REQ+cookie) or a PROCEED (start
+// punching B), A knows whom it was trying to reach. Keyed by (R's IP, nonce). R and
+// B are STATELESS — only the initiator A keeps state. Shares the 2-way lock + TTL.
+struct SKad3RdvPending {
+	uint32 uRdvIP;
+	uint16 uRdvPort;
+	uint32 uNonce;
+	uint32 uTargetIP;
+	uint16 uTargetPort;
+	DWORD  dwCreated;
+	uint8  byChallengeResends;
+};
+static CArray<SKad3RdvPending, SKad3RdvPending&> s_kad3RdvPending;
+
+static void Kad3PruneRdv(DWORD now)
+{
+	for (INT_PTR i = s_kad3RdvPending.GetCount() - 1; i >= 0; --i)
+		if (now - s_kad3RdvPending[i].dwCreated > ESE_HOLEPUNCH_NONCE_TTL_MS)
+			s_kad3RdvPending.RemoveAt(i);
+}
+
+static void Kad3RememberRdv(uint32 uRdvIP, uint16 uRdvPort, uint32 uNonce, uint32 uTargetIP, uint16 uTargetPort)
+{
+	CSingleLock lock(&s_eseHolePunchLock, TRUE);
+	const DWORD now = GetTickCount();
+	Kad3PruneRdv(now);
+	SKad3RdvPending e = {};
+	e.uRdvIP = uRdvIP; e.uRdvPort = uRdvPort; e.uNonce = uNonce;
+	e.uTargetIP = uTargetIP; e.uTargetPort = uTargetPort; e.dwCreated = now;
+	s_kad3RdvPending.Add(e);
+}
+
+// CHALLENGE: confirm WE started this punch (bounded resends), return the target so A
+// re-sends REQ+cookie. Does NOT remove — the later PROCEED still needs the entry.
+static bool Kad3AuthorizeRdvChallenge(uint32 uRdvIP, uint32 uNonce, uint32 &uOutTargetIP, uint16 &uOutTargetPort)
+{
+	CSingleLock lock(&s_eseHolePunchLock, TRUE);
+	const DWORD now = GetTickCount();
+	Kad3PruneRdv(now);
+	for (INT_PTR i = s_kad3RdvPending.GetCount() - 1; i >= 0; --i) {
+		SKad3RdvPending &e = s_kad3RdvPending[i];
+		if (e.uRdvIP == uRdvIP && e.uNonce == uNonce) {
+			if (e.byChallengeResends >= ESE_HOLEPUNCH_MAX_CHALLENGE_RESENDS)
+				return false;
+			++e.byChallengeResends;
+			uOutTargetIP = e.uTargetIP; uOutTargetPort = e.uTargetPort;
+			return true;
+		}
+	}
+	return false;
+}
+
+// PROCEED: consume the entry, return the target so A punches B directly.
+static bool Kad3ConsumeRdvProceed(uint32 uRdvIP, uint32 uNonce, uint32 &uOutTargetIP, uint16 &uOutTargetPort)
+{
+	CSingleLock lock(&s_eseHolePunchLock, TRUE);
+	const DWORD now = GetTickCount();
+	Kad3PruneRdv(now);
+	for (INT_PTR i = s_kad3RdvPending.GetCount() - 1; i >= 0; --i) {
+		const SKad3RdvPending &e = s_kad3RdvPending[i];
+		if (e.uRdvIP == uRdvIP && e.uNonce == uNonce) {
+			uOutTargetIP = e.uTargetIP; uOutTargetPort = e.uTargetPort;
+			s_kad3RdvPending.RemoveAt(i);
 			return true;
 		}
 	}
@@ -188,6 +302,16 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 		{
 			++byTagCount;
 		}
+		// [eSE v9] root link: optionally emit our detected public IPv6 as an additive BSOB tag.
+		// TX gated behind EseKadV6Tag (DEFAULT OFF) so the HELLO is byte-identical until validated.
+		// Compute ONCE (myV6 captured once — re-calling GetDetectedV6IP would be racy w.r.t. the
+		// ++byTagCount / WriteTag pair). v8+ only; upstream ignores the unknown tag (additive).
+		const CAddress myV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+		const bool bSendV6 = thePrefs.GetEseKadV6Tag()
+			&& byKadVersion >= KADEMLIA_VERSION8_49b
+			&& myV6.GetType() == CAddress::IPv6 && myV6.IsPublicIP();
+		if (bSendV6)
+			++byTagCount;
 		byteIOResponse.WriteUInt8(byTagCount);
 		if (!CKademlia::GetPrefs()->GetUseExternKadPort())
 			byteIOResponse.WriteTag(CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
@@ -206,6 +330,8 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 			const uint8 byMiscOptions = (uRequestACK << 2) | (uTCPFirewalled << 1) | (uUDPFirewalled << 0);
 			byteIOResponse.WriteTag(CKadTagUInt8(TAG_KADMISCOPTIONS, byMiscOptions));
 		}
+		if (bSendV6)   // [eSE v9] root link: 16 raw network-order bytes of our public IPv6
+			byteIOResponse.WriteTag(CKadTagBsob(TAG_ESE_KADIP_V6, myV6.Data(), 16));
 		//byteIOResponse.WriteTag(&CKadTagUInt(TAG_USER_COUNT, CKademlia::GetPrefs()->GetKademliaUsers()));
 		//byteIOResponse.WriteTag(&CKadTagUInt(TAG_FILE_COUNT, CKademlia::GetPrefs()->GetKademliaFiles()));
 
@@ -470,6 +596,11 @@ void CKademliaUDPListener::ProcessPacket(const byte *pbyData, uint32 uLenData, u
 			DebugRecv("KADEMLIA_ESE_HOLEPUNCH_ACK", uIP, uUDPPort);
 		Process_ESE_HOLEPUNCH_ACK(pbyPacketData, uLenData, uIP, uUDPPort, senderUDPKey);
 		break;
+	case KADEMLIA_ESE_HOLEPUNCH_CHALLENGE:
+		if (thePrefs.GetDebugClientKadUDPLevel() > 0)
+			DebugRecv("KADEMLIA_ESE_HOLEPUNCH_CHALLENGE", uIP, uUDPPort);
+		Process_ESE_HOLEPUNCH_CHALLENGE(pbyPacketData, uLenData, uIP, uUDPPort, senderUDPKey);
+		break;
 
 	// v0.71 IPv6 Sprint 4 — Kad3 v6-aware opcodes (parse-and-drop until
 	// a v6 routing zone exists). See KademliaUDPListener.h comment block.
@@ -491,19 +622,37 @@ void CKademliaUDPListener::ProcessPacket(const byte *pbyData, uint32 uLenData, u
 	case KADEMLIA3_RES:
 		Process_KADEMLIA3_GENERIC("KADEMLIA3_RES", pbyPacketData, uLenData, uIP, uUDPPort);
 		break;
-	case KADEMLIA3_PING_REQ:
-		Process_KADEMLIA3_GENERIC("KADEMLIA3_PING_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+	case KADEMLIA3_PING_REQ:   // R.2 keepalive: a peer holds its conntrack open — answer a PONG.
+		Process_KADEMLIA3_PING_REQ(pbyPacketData, uLenData, uIP, uUDPPort, senderUDPKey);
 		break;
-	case KADEMLIA3_PING_RES:
-		Process_KADEMLIA3_GENERIC("KADEMLIA3_PING_RES", pbyPacketData, uLenData, uIP, uUDPPort);
+	case KADEMLIA3_PING_RES:   // R.2 keepalive: our supernode replied — refresh its health.
+		Process_KADEMLIA3_PING_RES(pbyPacketData, uLenData, uIP, uUDPPort, senderUDPKey);
 		break;
+	// R.1 (3-way rendezvous) — real handlers (replace the parse-and-drop stubs).
 	case KADEMLIA3_HOLEPUNCH_REQ:
-		Process_KADEMLIA3_GENERIC("KADEMLIA3_HOLEPUNCH_REQ", pbyPacketData, uLenData, uIP, uUDPPort);
+		if (thePrefs.GetDebugClientKadUDPLevel() > 0)
+			DebugRecv("KADEMLIA3_HOLEPUNCH_REQ", uIP, uUDPPort);
+		Process_KADEMLIA3_HOLEPUNCH_REQ(pbyPacketData, uLenData, uIP, uUDPPort, senderUDPKey);
 		break;
 	case KADEMLIA3_HOLEPUNCH_FWD:
-		Process_KADEMLIA3_GENERIC("KADEMLIA3_HOLEPUNCH_FWD", pbyPacketData, uLenData, uIP, uUDPPort);
+		if (thePrefs.GetDebugClientKadUDPLevel() > 0)
+			DebugRecv("KADEMLIA3_HOLEPUNCH_FWD", uIP, uUDPPort);
+		Process_KADEMLIA3_HOLEPUNCH_FWD(pbyPacketData, uLenData, uIP, uUDPPort, senderUDPKey);
+		break;
+	case KADEMLIA3_HOLEPUNCH_CHALLENGE:
+		if (thePrefs.GetDebugClientKadUDPLevel() > 0)
+			DebugRecv("KADEMLIA3_HOLEPUNCH_CHALLENGE", uIP, uUDPPort);
+		Process_KADEMLIA3_HOLEPUNCH_CHALLENGE(pbyPacketData, uLenData, uIP, uUDPPort, senderUDPKey);
+		break;
+	case KADEMLIA3_HOLEPUNCH_PROCEED:
+		if (thePrefs.GetDebugClientKadUDPLevel() > 0)
+			DebugRecv("KADEMLIA3_HOLEPUNCH_PROCEED", uIP, uUDPPort);
+		Process_KADEMLIA3_HOLEPUNCH_PROCEED(pbyPacketData, uLenData, uIP, uUDPPort, senderUDPKey);
 		break;
 	case KADEMLIA3_HOLEPUNCH_ACK:
+		// Not sent in the current design — the hole is confirmed by the reused 2-way
+		// 0x63/0x64 exchange between A and B. Kept registered (parse-and-drop) so the
+		// opcode never falls through to the flood 'default'.
 		Process_KADEMLIA3_GENERIC("KADEMLIA3_HOLEPUNCH_ACK", pbyPacketData, uLenData, uIP, uUDPPort);
 		break;
 
@@ -600,6 +749,7 @@ bool CKademliaUDPListener::AddContact_KADEMLIA2(const byte *pbyData, uint32 uLen
 
 	bool bUDPFirewalled = false;
 	bool bTCPFirewalled = false;
+	bool bHasV6 = false; uint8 byV6[16];   // [eSE v9] root link: peer-observed public IPv6 (network order)
 	for (unsigned uTags = byteIO.ReadByte(); uTags > 0; --uTags) {
 		const CKadTag *pTag = byteIO.ReadTag();
 
@@ -620,6 +770,12 @@ bool CKademliaUDPListener::AddContact_KADEMLIA2(const byte *pbyData, uint32 uLen
 				}
 			} else
 				ASSERT(0);
+		} else if (!pTag->m_name.Compare(TAG_ESE_KADIP_V6)) {
+			// [eSE v9] root link: a peer-observed public IPv6 (BSOB 16, network order).
+			if (pTag->IsBsob() && pTag->GetBsobSize() == 16) {
+				memcpy(byV6, pTag->GetBsob(), 16);
+				bHasV6 = true;
+			}
 		}
 
 		delete pTag;
@@ -650,7 +806,7 @@ bool CKademliaUDPListener::AddContact_KADEMLIA2(const byte *pbyData, uint32 uLen
 	}
 
 	if (!bUDPFirewalled) // do not add (or update) UDP firewalled sources to our routing table
-		return CKademlia::GetRoutingZone()->Add(uID, uIP, uUDPPort, uTCPPort, uVersion, cUDPKey, rbIPVerified, bUpdate, false, true);
+		return CKademlia::GetRoutingZone()->Add(uID, uIP, uUDPPort, uTCPPort, uVersion, cUDPKey, rbIPVerified, bUpdate, false, true, bHasV6 ? byV6 : NULL);
 
 	//DEBUG_ONLY( AddDebugLogLine(DLP_LOW, false, _T("Kad: Not adding firewalled client to routing table (%s)"), (LPCTSTR)ipstr(htonl(uIP))) );
 	return false;
@@ -1441,6 +1597,16 @@ void CKademliaUDPListener::Process_KADEMLIA2_PUBLISH_KEY_REQ(const byte *pbyPack
 		if (bEseLiveEntry && uIP != 0)
 			pEntry->AddTag(new CKadTagUInt(TAG_SOURCEIP, htonl(uIP)));
 
+		// H8 fix (2026-06-11): v8.1 clean-namespace publishes carry no
+		// TAG_FILENAME at all, and CIndexed::AddKeyword rejects entries
+		// whose common filename is empty — those publishes were silently
+		// dropped here (and on every upstream holder). Synthesize the same
+		// constant name current publishers send so prior-fork broadcasters
+		// stay indexable by us. The constant carries nothing stream-derived,
+		// so the title leak H8 closed stays closed.
+		if (bEseLiveEntry && pEntry->GetCommonFileName().IsEmpty())
+			pEntry->SetFileName(Kademlia::CKadTagValueString(ESE_LIVE_CLEAN_NS_FILENAME));
+
 		if (!CKademlia::GetIndexed()->AddKeyword(uFile, uTarget, pEntry, uLoad)) {
 			//We already indexed the maximum number of keywords.
 			//We do not index any more but we still send a success.
@@ -2176,7 +2342,15 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_REQ(const byte *pbyPacketData, 
 		return;
 	}
 
-	if (uLenPacket != 22) {
+	// Two on-wire shapes, discriminated purely by length (back-compat: a 0.70b /
+	// pre-cookie peer only ever sends the classic 22-byte form):
+	//   classic  : <KadID 16><port 2><nonce 4>            = 22
+	//   expanded : <KadID 16><port 2><nonce 4><cookie 16> = 38  (return-routability echo)
+	// Exact-equality length gate FIRST, before reading any field. CSafeMemFile
+	// then bounds every read and throws CFileException on over-read (caught by the
+	// dispatch guard), so an OOB walk is structurally impossible — no pointer math.
+	const bool bExpanded = (uLenPacket == 38);
+	if (uLenPacket != 22 && !bExpanded) {
 		CString strError;
 		strError.Format(_T("***NOTE: Received wrong size (%u) packet in %hs"), uLenPacket, __FUNCTION__);
 		throw strError;
@@ -2188,7 +2362,87 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_REQ(const byte *pbyPacketData, 
 	uint16 uSenderUDPPort = fileIO.ReadUInt16();
 	uint32 uNonce = fileIO.ReadUInt32();
 
-	DebugLog(_T("eSE: HOLEPUNCH_REQ from %s:%u nonce=0x%08X"), (LPCTSTR)ipstr(htonl(uIP)), uSenderUDPPort, uNonce);
+	// Our 16-byte Kad ID binds the cookie to this node identity.
+	uint8 abyNodeHash[16];
+	CKademlia::GetPrefs()->GetKadID().ToByteArray(abyNodeHash);
+
+	if (bExpanded) {
+		// P0 return-routability: an echoed cookie is present. Verify it (epoch e /
+		// e-1) BEFORE doing any work; a mismatch is dropped with ZERO state (no
+		// ACK, no seed). The cookie is read LAST, at a fixed 16 bytes, bounded.
+		uint8 abyCookie[eSE::HP_COOKIE_SIZE];
+		fileIO.Read(abyCookie, eSE::HP_COOKIE_SIZE);
+		if (!eSE::EseHolePunchCookie::Verify(abyNodeHash, ::GetTickCount(), uIP, uNonce, abyCookie)) {
+			DebugLogWarning(_T("eSE: HOLEPUNCH_REQ from %s:%u — cookie MISMATCH, dropped (no seed)"),
+				(LPCTSTR)ipstr(htonl(uIP)), uSenderUDPPort);
+			return;
+		}
+		DebugLog(_T("eSE: HOLEPUNCH_REQ from %s:%u nonce=0x%08X — cookie OK (return-routability proven)"),
+			(LPCTSTR)ipstr(htonl(uIP)), uSenderUDPPort, uNonce);
+		// verified -> fall through to ACK + seed
+	} else {
+		// Classic 22B REQ. UNIFIED RETURN-ROUTABILITY GATE (PUNTO 1.1, 2026-06) — a
+		// two-tier guard that reconciles strict anti-reflection with the mandatory
+		// back-compat for legacy peers:
+		//   TIER 1 (fast path): the sender is a routing-zone contact whose IP we have
+		//     already verified in-band (IsIpVerified()). Reachability is proven, so go
+		//     straight to the legacy ACK+seed — no extra RTT.
+		//   TIER 2 (gray zone): unknown source OR a known-but-UNVERIFIED contact (these
+		//     enter via third-party HELLO_RES referrals, and a spoofed source can also
+		//     collide with a known endpoint's IP:port). We have no IP proof, so:
+		//       - if the sender advertised ESE_CAP_HOLEPUNCH_COOKIE, escalate to a
+		//         stateless CHALLENGE and seed NOTHING; only the echoed cookie (38B REQ)
+		//         earns the ACK+seed;
+		//       - otherwise it is a legacy/vanilla peer that cannot answer a 0x65
+		//         CHALLENGE (forcing it would break their hole-punch), so fall through
+		//         to the legacy ACK+seed — floored against spoofed floods by the per-IP
+		//         token bucket (PacketTracking) and the g_expectedPeers per-IP/global cap.
+		// bit 19 (ESE_CAP_HOLEPUNCH_COOKIE) is LOAD-BEARING here: it gates the stateless
+		// challenge for unverified entries (informational only for verified ones).
+		CContact* pKnownContact = NULL;
+		if (CKademlia::GetRoutingZone() != NULL)
+			pKnownContact = CKademlia::GetRoutingZone()->GetContact(uIP, uUDPPort, false); // host-order uIP (Kad convention)
+		const bool bIsSafeLegacy = (pKnownContact != NULL && pKnownContact->IsIpVerified());
+
+		if (!bIsSafeLegacy) {
+			// Gray zone: only challenge a peer we can POSITIVELY confirm speaks the
+			// cookie protocol; legacy peers fall through to the floored ACK+seed.
+			bool bSenderCookieCapable = false;
+			if (theApp.clientlist != NULL) {
+				// Kad UDP runs on the main thread, so this clientlist read is race-free
+				// (pointer used synchronously, never stored). htonl: uIP is host-order
+				// (Kad), FindClientByIP_KadPort wants network-order.
+				CUpDownClient* pSender = theApp.clientlist->FindClientByIP_KadPort(htonl(uIP), uUDPPort);
+				bSenderCookieCapable = (pSender != NULL && pSender->SupportsEseHolePunchCookie());
+			}
+			if (bSenderCookieCapable) {
+				uint8 abyCookie[eSE::HP_COOKIE_SIZE];
+				eSE::EseHolePunchCookie::Compute(abyNodeHash, uIP, uNonce, abyCookie);
+				SendEseHolePunchChallenge(uIP, uUDPPort, uNonce, abyCookie, senderUDPKey);
+				InterlockedIncrement(&CStatistics::m_dwHolePunchChallengeSent);
+				CLiveDebugLog::Get().Append("HOLE",
+					"CHALLENGE -> %S:%u nonce=0x%08X  (cookie return-routability, no seed)",
+					(LPCWSTR)ipstr(htonl(uIP)), (unsigned)uSenderUDPPort, (unsigned)uNonce);
+				DebugLog(_T("eSE: HOLEPUNCH_REQ from UNVERIFIED cookie-capable %s:%u nonce=0x%08X — sent CHALLENGE (no seed yet)"),
+					(LPCTSTR)ipstr(htonl(uIP)), uSenderUDPPort, uNonce);
+				return;
+			}
+		}
+		DebugLog(_T("eSE: HOLEPUNCH_REQ from %hs %s:%u nonce=0x%08X — legacy ACK+seed (floored)"),
+			bIsSafeLegacy ? "verified-known" : "legacy/unverified",
+			(LPCTSTR)ipstr(htonl(uIP)), uSenderUDPPort, uNonce);
+		// TIER 1 verified-known, OR TIER 2 non-cookie-capable -> legacy ACK + seed
+	}
+
+	// eSE v9 GATE telemetry: we have committed to ACK+seed. Count the inbound REQ on the
+	// RESPONDER side — the outbound-only m_dwHolePunchAttempts never fires here, so without
+	// this a 2-PC test sees Attempts:0/Success:0 on PC-B and can't tell whether the REQ even
+	// arrived (A->B path) vs the ACK getting lost (B->A path). The always-on LiveDebugLog line
+	// timestamps the inbound REQ on PC-B's snapshot for exactly that localization.
+	InterlockedIncrement(&CStatistics::m_dwHolePunchReqRecv);
+	CLiveDebugLog::Get().Append("HOLE",
+		"REQ recv from %S:%u nonce=0x%08X -> ACK+seed",
+		(LPCWSTR)ipstr(htonl(uIP)), (unsigned)uSenderUDPPort, (unsigned)uNonce);
 
 	// Respond with ACK containing our own KadID and the echoed nonce
 	CSafeMemFile fileIOResp(22);
@@ -2222,6 +2476,105 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_REQ(const byte *pbyPacketData, 
 		theApp.clientudp->SeedNatTraversalExpectation(NULL, uIP, uSenderUDPPort);
 }
 
+// eSE P0: responder -> initiator return-routability CHALLENGE. Carries the echoed
+// nonce + a stateless cookie bound to (our node id, initiator IP, nonce) for the
+// current epoch. We do NOT seed any NAT state here — only once the initiator proves
+// return-routability by echoing the cookie in a 38-byte REQ.
+// Packet: <Nonce 4><Cookie 16> = 20 bytes.
+void CKademliaUDPListener::SendEseHolePunchChallenge(uint32 uIP, uint16 uUDPPort, uint32 uNonce, const uint8 *pbyCookie, const CKadUDPKey &senderUDPKey)
+{
+	CSafeMemFile fileIO(4 + eSE::HP_COOKIE_SIZE);
+	fileIO.WriteUInt32(uNonce);                       // echo for correlation
+	fileIO.Write(pbyCookie, eSE::HP_COOKIE_SIZE);
+
+	if (thePrefs.GetDebugClientKadUDPLevel() > 0)
+		DebugSend("KADEMLIA_ESE_HOLEPUNCH_CHALLENGE", uIP, uUDPPort);
+	// Same encryption tiering as the ACK path (the sender is unknown by definition
+	// here, so this is normally the receiver-key or plaintext branch).
+	CContact* pSenderContact = NULL;
+	if (CKademlia::GetRoutingZone() != NULL)
+		pSenderContact = CKademlia::GetRoutingZone()->GetContact(uIP, uUDPPort, false);
+	if (pSenderContact != NULL) {
+		CKadUDPKey replyKey = pSenderContact->GetUDPKey();
+		CUInt128 senderCryptID = pSenderContact->GetClientID();
+		SendPacket(fileIO, KADEMLIA_ESE_HOLEPUNCH_CHALLENGE, uIP, uUDPPort, replyKey, &senderCryptID);
+	} else if (!senderUDPKey.IsEmpty()) {
+		SendPacket(fileIO, KADEMLIA_ESE_HOLEPUNCH_CHALLENGE, uIP, uUDPPort, senderUDPKey, NULL);
+	} else {
+		SendPacket(fileIO, KADEMLIA_ESE_HOLEPUNCH_CHALLENGE, uIP, uUDPPort, CKadUDPKey(), NULL);
+	}
+}
+
+// eSE P0: initiator side — we sent a REQ and got a CHALLENGE back. Echo the cookie
+// in a 38-byte expanded REQ so the responder can prove our return-routability and
+// then ACK + seed. We only act if we actually have a pending punch for this
+// (IP, nonce) — a peek (EseAuthorizeHolePunchChallenge), NOT a consume: the eventual
+// ACK still needs the entry. The authorize call also bounds resends (anti-flood).
+void CKademliaUDPListener::Process_ESE_HOLEPUNCH_CHALLENGE(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey & /*senderUDPKey*/)
+{
+	if (!thePrefs.GetUtpHolePunchEnabled())
+		return;
+
+	if (uLenPacket != 4 + eSE::HP_COOKIE_SIZE) {
+		CString strError;
+		strError.Format(_T("***NOTE: Received wrong size (%u) packet in %hs"), uLenPacket, __FUNCTION__);
+		throw strError;
+	}
+
+	CSafeMemFile fileIO(pbyPacketData, uLenPacket);
+	uint32 uNonce = fileIO.ReadUInt32();
+	uint8 abyCookie[eSE::HP_COOKIE_SIZE];
+	fileIO.Read(abyCookie, eSE::HP_COOKIE_SIZE);
+
+	// Anti-injection + anti-flood: only respond to a CHALLENGE for a punch WE
+	// started, and only a bounded number of times per pending entry.
+	if (!EseAuthorizeHolePunchChallenge(uIP, uNonce)) {
+		DebugLogWarning(_T("eSE: Dropping unsolicited/overused HOLEPUNCH_CHALLENGE from %s:%u nonce=0x%08X"),
+			(LPCTSTR)ipstr(htonl(uIP)), uUDPPort, uNonce);
+		return;
+	}
+
+	DebugLog(_T("eSE: HOLEPUNCH_CHALLENGE from %s:%u nonce=0x%08X — echoing cookie in expanded REQ"),
+		(LPCTSTR)ipstr(htonl(uIP)), uUDPPort, uNonce);
+	SendEseHolePunchReqWithCookie(uIP, uUDPPort, uNonce, abyCookie);
+}
+
+// eSE P0: re-send our REQ as a 38-byte expanded packet echoing the cookie the
+// responder handed us. Reuses the existing pending nonce (already remembered by
+// SendEseHolePunchReq), so we do NOT re-remember or re-seed.
+void CKademliaUDPListener::SendEseHolePunchReqWithCookie(uint32 uIP, uint16 uUDPPort, uint32 uNonce, const uint8 *pbyCookie)
+{
+	if (!thePrefs.GetUtpHolePunchEnabled())
+		return;
+	if (uIP == 0 || uUDPPort == 0)
+		return;
+
+	// <OurKadID 16><OurUDPPort 2><Nonce 4><Cookie 16> = 38 bytes
+	CSafeMemFile fileIO(38);
+	fileIO.WriteUInt128(CKademlia::GetPrefs()->GetKadID());
+	fileIO.WriteUInt16(thePrefs.GetUDPPort());
+	fileIO.WriteUInt32(uNonce);
+	fileIO.Write(pbyCookie, eSE::HP_COOKIE_SIZE);
+
+	if (thePrefs.GetDebugClientKadUDPLevel() > 0)
+		DebugSend("KADEMLIA_ESE_HOLEPUNCH_REQ", uIP, uUDPPort);
+
+	CContact* pContact = NULL;
+	if (CKademlia::GetRoutingZone() != NULL)
+		pContact = CKademlia::GetRoutingZone()->GetContact(uIP, uUDPPort, false);
+
+	if (pContact != NULL && pContact->GetUDPKey().GetKeyValue(theApp.GetPublicIP()) != 0) {
+		CKadUDPKey targetKey = pContact->GetUDPKey();
+		CUInt128 targetCryptID = pContact->GetClientID();
+		SendPacket(fileIO, KADEMLIA_ESE_HOLEPUNCH_REQ, uIP, uUDPPort, targetKey, &targetCryptID);
+	} else {
+		CKadUDPKey emptyKey;
+		SendPacket(fileIO, KADEMLIA_ESE_HOLEPUNCH_REQ, uIP, uUDPPort, emptyKey, NULL);
+	}
+	DebugLog(_T("eSE: Sent expanded HOLEPUNCH_REQ (cookie) to %s:%u nonce=0x%08X"),
+		(LPCTSTR)ipstr(htonl(uIP)), uUDPPort, uNonce);
+}
+
 // eSE: Initiate a uTP hole-punch toward a known Kad peer.
 // Called from CUpDownClient::TryToConnect when we know the peer's IP:port
 // but cannot do a direct TCP connection (both behind NAT).
@@ -2238,8 +2591,10 @@ void CKademliaUDPListener::SendEseHolePunchReq(uint32 uIP, uint16 uUDPPort)
 	fileIO.WriteUInt128(CKademlia::GetPrefs()->GetKadID());
 	fileIO.WriteUInt16(thePrefs.GetUDPPort());
 	// eSE 8.12.1: Cryptographically secure nonce (anti-Sybil prediction attack)
+	// eSE P0: via the thread-safe wrapper (AutoSeededRandomPool is not thread-safe;
+	// this site is reachable from the WebServer worker as well as the Kad thread).
 	uint32 uNonce;
-	s_eseHolePunchRng.GenerateBlock(reinterpret_cast<byte*>(&uNonce), sizeof(uNonce));
+	EseHolePunchRandomBlock(reinterpret_cast<byte*>(&uNonce), sizeof(uNonce));
 	fileIO.WriteUInt32(uNonce);
 	EseRememberHolePunchNonce(uIP, uUDPPort, uNonce);
 
@@ -2278,6 +2633,309 @@ void CKademliaUDPListener::SendEseHolePunchReq(uint32 uIP, uint16 uUDPPort)
 	DebugLog(_T("eSE: Sent HOLEPUNCH_REQ to %s:%u nonce=0x%08X (encrypted=%s)"),
 		(LPCTSTR)ipstr(htonl(uIP)), uUDPPort, uNonce,
 		(pContact != NULL && pContact->GetUDPKey().GetKeyValue(theApp.GetPublicIP()) != 0) ? _T("yes") : _T("no"));
+}
+
+// eSE v9 (anti-CGNAT port prediction / "birthday spray"): a symmetric NAT assigns a
+// different external port per destination, so the peer's advertised Kad port is NOT the
+// port its NAT opens toward us. Fire the REQ at a small window of candidate ports around
+// the observed one to raise the odds one lands on the real mapping. Each sprayed REQ is a
+// full SendEseHolePunchReq: it carries its own nonce, is remembered per-(IP,nonce), and
+// seeds a uTP accept expectation for that port. The CHALLENGE/ACK match is IP+nonce and
+// port-agnostic (EseAuthorizeHolePunchChallenge / EseConsumeHolePunchNonce), so a hit on
+// ANY sprayed port completes the punch even though the reply arrives from a third port.
+// uSpread==0 (default; pref EseHolePunchPortPredict OFF) => exact single-shot legacy path.
+// Forward-biased (sequential-allocation NATs step upward), clamped so a misconfig can't
+// flood: at most ESE_HP_SPRAY_MAX ports each side (2*8+1 = 17 packets worst case).
+void CKademliaUDPListener::SendEseHolePunchReqSpray(uint32 uIP, uint16 uBasePort, uint16 uSpread)
+{
+	if (!thePrefs.GetUtpHolePunchEnabled() || uIP == 0 || uBasePort == 0)
+		return;
+
+	// The base port is always tried (this is the unchanged legacy behavior).
+	SendEseHolePunchReq(uIP, uBasePort);
+	if (uSpread == 0)
+		return;
+
+	const uint16 ESE_HP_SPRAY_MAX = 8;
+	if (uSpread > ESE_HP_SPRAY_MAX)
+		uSpread = ESE_HP_SPRAY_MAX;
+
+	for (uint16 d = 1; d <= uSpread; ++d) {
+		if ((uint32)uBasePort + d <= 65535) {
+			SendEseHolePunchReq(uIP, (uint16)(uBasePort + d));
+			InterlockedIncrement(&CStatistics::m_dwHolePunchSprayReqs);
+		}
+		if ((int)uBasePort - (int)d >= 1) {
+			SendEseHolePunchReq(uIP, (uint16)(uBasePort - d));
+			InterlockedIncrement(&CStatistics::m_dwHolePunchSprayReqs);
+		}
+	}
+	DebugLog(_T("eSE: HOLEPUNCH port-predict spray base=%u spread=%u to %s"),
+		uBasePort, uSpread, (LPCTSTR)ipstr(htonl(uIP)));
+}
+
+// ─── R.1 (3-way rendezvous) outbound — Kad3 hole-punch send primitives ────────
+// IPv4 wire (uint32 host-order), mirroring the validated 2-way path; a v6/CAddress
+// variant is a later increment. Kill-switch gated; the CALLER gates on the peer
+// advertising ESE_CAP_HOLEPUNCH_RDV. Encryption tiering mirrors SendEseHolePunchReq.
+// NOTE: not yet called by anyone — the receive handlers + dispatch that drive these
+// land in R.1 increment 2b-recv (they need A-side pending-rendezvous state).
+
+void CKademliaUDPListener::SendKad3HolepunchPacket(CSafeMemFile &fileIO, byte byOpcode, uint32 uIP, uint16 uUDPPort)
+{
+	CContact* pContact = NULL;
+	if (CKademlia::GetRoutingZone() != NULL)
+		pContact = CKademlia::GetRoutingZone()->GetContact(uIP, uUDPPort, false);
+	if (pContact != NULL && pContact->GetUDPKey().GetKeyValue(theApp.GetPublicIP()) != 0) {
+		CKadUDPKey targetKey = pContact->GetUDPKey();
+		CUInt128 targetCryptID = pContact->GetClientID();
+		SendPacket(fileIO, byOpcode, uIP, uUDPPort, targetKey, &targetCryptID);
+	} else {
+		CKadUDPKey emptyKey;
+		SendPacket(fileIO, byOpcode, uIP, uUDPPort, emptyKey, NULL);
+	}
+}
+
+// A -> R: ask rendezvous R to help reach target B. Classic 10B; expanded 26B echoes
+// R's CHALLENGE cookie to prove A's return-routability (only then does R forward).
+void CKademliaUDPListener::SendKad3HolepunchReq(uint32 uRdvIP, uint16 uRdvPort, uint32 uNonce, uint32 uTargetIP, uint16 uTargetPort, const uint8 *pbyCookie /*=NULL*/)
+{
+	if (!thePrefs.GetUtpHolePunchEnabled() || uRdvIP == 0 || uRdvPort == 0)
+		return;
+	CSafeMemFile fileIO(pbyCookie ? 26 : 10);
+	fileIO.WriteUInt32(uNonce);
+	fileIO.WriteUInt32(uTargetIP);
+	fileIO.WriteUInt16(uTargetPort);
+	if (pbyCookie != NULL)
+		fileIO.Write(pbyCookie, eSE::HP_COOKIE_SIZE);
+	SendKad3HolepunchPacket(fileIO, KADEMLIA3_HOLEPUNCH_REQ, uRdvIP, uRdvPort);
+	InterlockedIncrement(&CStatistics::m_dwKad3RdvReqSent);
+}
+
+// R -> A: anti-reflection cookie. A must echo it (expanded REQ) before R forwards to B.
+void CKademliaUDPListener::SendKad3HolepunchChallenge(uint32 uIP, uint16 uUDPPort, uint32 uNonce, const uint8 *pbyCookie)
+{
+	if (!thePrefs.GetUtpHolePunchEnabled())
+		return;
+	CSafeMemFile fileIO(4 + eSE::HP_COOKIE_SIZE);
+	fileIO.WriteUInt32(uNonce);
+	fileIO.Write(pbyCookie, eSE::HP_COOKIE_SIZE);
+	SendKad3HolepunchPacket(fileIO, KADEMLIA3_HOLEPUNCH_CHALLENGE, uIP, uUDPPort);
+	InterlockedIncrement(&CStatistics::m_dwKad3RdvChallengeSent);
+}
+
+// R -> B: A (origin) wants to punch; B should start sending toward A.
+void CKademliaUDPListener::SendKad3HolepunchFwd(uint32 uIP_B, uint16 uPort_B, uint32 uNonce, uint32 uOriginIP, uint16 uOriginPort)
+{
+	if (!thePrefs.GetUtpHolePunchEnabled() || uIP_B == 0 || uPort_B == 0)
+		return;
+	CSafeMemFile fileIO(10);
+	fileIO.WriteUInt32(uNonce);
+	fileIO.WriteUInt32(uOriginIP);
+	fileIO.WriteUInt16(uOriginPort);
+	SendKad3HolepunchPacket(fileIO, KADEMLIA3_HOLEPUNCH_FWD, uIP_B, uPort_B);
+	InterlockedIncrement(&CStatistics::m_dwKad3RdvFwd);
+}
+
+// R -> A: FWD relayed to B; A may start punching toward B now.
+void CKademliaUDPListener::SendKad3HolepunchProceed(uint32 uIP_A, uint16 uPort_A, uint32 uNonce)
+{
+	if (!thePrefs.GetUtpHolePunchEnabled())
+		return;
+	CSafeMemFile fileIO(4);
+	fileIO.WriteUInt32(uNonce);
+	SendKad3HolepunchPacket(fileIO, KADEMLIA3_HOLEPUNCH_PROCEED, uIP_A, uPort_A);
+}
+
+// R.2 keepalive: send a minimal KADEMLIA3_PING_REQ to a supernode so the stateful
+// firewall conntrack on our outbound flow stays open. IPv4 path (the validated Kad
+// UDP socket); a 0 IP is skipped (e.g. a v6-only CAddress reduced to 0). Reuses the
+// R.1 encryption-tiered send helper. The far side answers via Process_KADEMLIA3_PING_REQ
+// (PONG below); the supernode pool is filled from the routing table in CKadKeepalive::Tick().
+void CKademliaUDPListener::SendKad3PingReq(uint32 uIP, uint16 uUDPPort)
+{
+	// uIP==0xFFFFFFFF guards a v6-only CAddress whose ToUInt32 collapses to UINT_MAX
+	// (adversarial review 2026-06-14, latent finding) — never ping 255.255.255.255.
+	if (uIP == 0 || uIP == 0xFFFFFFFF || uUDPPort == 0)
+		return;
+	// Minimal tickle: <OurKadID 16> so the responder can correlate a PONG.
+	CSafeMemFile fileIO(16);
+	fileIO.WriteUInt128(CKademlia::GetPrefs()->GetKadID());
+	SendKad3HolepunchPacket(fileIO, KADEMLIA3_PING_REQ, uIP, uUDPPort);
+}
+
+// R.2 keepalive: reply a KADEMLIA3_PING_RES (PONG) to a peer that pinged us, so the
+// round trip completes and they can keep us in their active set. Carries <OurKadID 16>
+// for symmetry with the REQ. Reuses the R.1 encryption-tiered send helper.
+void CKademliaUDPListener::SendKad3PingRes(uint32 uIP, uint16 uUDPPort)
+{
+	if (uIP == 0 || uIP == 0xFFFFFFFF || uUDPPort == 0)
+		return;
+	CSafeMemFile fileIO(16);
+	fileIO.WriteUInt128(CKademlia::GetPrefs()->GetKadID());
+	SendKad3HolepunchPacket(fileIO, KADEMLIA3_PING_RES, uIP, uUDPPort);
+}
+
+// R.2 keepalive responder: an inbound ping just refreshed the sender's NAT mapping
+// toward us — answer with a PONG. The payload (<SenderKadID 16>) is advisory; we reply
+// to the socket source (uIP), which is the return-routable address.
+void CKademliaUDPListener::Process_KADEMLIA3_PING_REQ(const byte * /*pbyPacketData*/, uint32 /*uLenPacket*/, uint32 uIP, uint16 uUDPPort, const CKadUDPKey & /*senderUDPKey*/)
+{
+	SendKad3PingRes(uIP, uUDPPort);
+}
+
+// R.2 keepalive receiver: a supernode answered our ping. Refresh its health so Tick()'s
+// miss-detector keeps it active. Matched on the socket source IP (host-order), never on
+// anything self-reported in the payload.
+void CKademliaUDPListener::Process_KADEMLIA3_PING_RES(const byte * /*pbyPacketData*/, uint32 /*uLenPacket*/, uint32 uIP, uint16 uUDPPort, const CKadUDPKey & /*senderUDPKey*/)
+{
+	CKadKeepalive::Instance().OnPong(uIP, uUDPPort);
+}
+
+// ─── R.1 (3-way rendezvous) — A-side initiator ────────────────────────────────
+// Begin a rendezvous to reach (uTargetIP:uTargetPort) via R. Remembers the pending
+// punch so the CHALLENGE/PROCEED from R can be matched, then sends the classic REQ.
+// The caller chose R (must advertise ESE_CAP_HOLEPUNCH_RDV); this is the entry point
+// the manual /api endpoint and the auto-selector (increment 3) call.
+void CKademliaUDPListener::InitiateKad3Rendezvous(uint32 uRdvIP, uint16 uRdvPort, uint32 uTargetIP, uint16 uTargetPort)
+{
+	if (!thePrefs.GetUtpHolePunchEnabled() || uRdvIP == 0 || uRdvPort == 0 || uTargetIP == 0)
+		return;
+	uint32 uNonce;
+	EseHolePunchRandomBlock(reinterpret_cast<byte*>(&uNonce), sizeof(uNonce));
+	Kad3RememberRdv(uRdvIP, uRdvPort, uNonce, uTargetIP, uTargetPort);
+	SendKad3HolepunchReq(uRdvIP, uRdvPort, uNonce, uTargetIP, uTargetPort);  // classic (no cookie yet)
+	CLiveDebugLog::Get().Append("KAD3", "RDV: initiating via R %S -> target %S",
+		(LPCWSTR)ipstr(htonl(uRdvIP)), (LPCWSTR)ipstr(htonl(uTargetIP)));
+}
+
+// R role: A asks us to help it reach B. ANTI-REFLECTION: we never forward to B until
+// A proves return-routability by echoing our cookie. A's address is OBSERVED
+// (uIP,uUDPPort) — never self-reported — so a spoofed A never receives the cookie.
+void CKademliaUDPListener::Process_KADEMLIA3_HOLEPUNCH_REQ(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey & /*senderUDPKey*/)
+{
+	if (!thePrefs.GetUtpHolePunchEnabled())
+		return;
+	// classic <nonce 4><targetIP 4><targetPort 2> = 10; expanded +<cookie 16> = 26.
+	const bool bExpanded = (uLenPacket == 26);
+	if (uLenPacket != 10 && !bExpanded) {
+		CString strError;
+		strError.Format(_T("***NOTE: Received wrong size (%u) packet in %hs"), uLenPacket, __FUNCTION__);
+		throw strError;
+	}
+	CSafeMemFile fileIO(pbyPacketData, uLenPacket);
+	uint32 uNonce = fileIO.ReadUInt32();
+	uint32 uTargetIP = fileIO.ReadUInt32();
+	uint16 uTargetPort = fileIO.ReadUInt16();
+	InterlockedIncrement(&CStatistics::m_dwKad3RdvReqRecv);
+
+	uint8 abyNodeHash[16];
+	CKademlia::GetPrefs()->GetKadID().ToByteArray(abyNodeHash);
+
+	if (bExpanded) {
+		uint8 abyCookie[eSE::HP_COOKIE_SIZE];
+		fileIO.Read(abyCookie, eSE::HP_COOKIE_SIZE);
+		if (!eSE::EseHolePunchCookie::Verify(abyNodeHash, ::GetTickCount(), uIP, uNonce, abyCookie)) {
+			DebugLogWarning(_T("R.1: HOLEPUNCH_REQ from %s — cookie MISMATCH, NOT forwarding"),
+				(LPCTSTR)ipstr(htonl(uIP)));
+			return;
+		}
+		// Return-routability proven → relay to B + tell A to start punching.
+		SendKad3HolepunchFwd(uTargetIP, uTargetPort, uNonce, uIP, uUDPPort);
+		SendKad3HolepunchProceed(uIP, uUDPPort, uNonce);
+		CLiveDebugLog::Get().Append("KAD3", "RDV(as R): A %S proven -> FWD to B %S",
+			(LPCWSTR)ipstr(htonl(uIP)), (LPCWSTR)ipstr(htonl(uTargetIP)));
+		return;
+	}
+	// Classic REQ — we have no proof A owns its IP yet. Send a CHALLENGE; A must echo
+	// the cookie in an expanded REQ before we forward (mirrors the 2-way 0x65 path).
+	uint8 abyCookie[eSE::HP_COOKIE_SIZE];
+	eSE::EseHolePunchCookie::Compute(abyNodeHash, uIP, uNonce, abyCookie);
+	SendKad3HolepunchChallenge(uIP, uUDPPort, uNonce, abyCookie);
+}
+
+// B role: rendezvous R forwarded A's request. Punch toward A (open our NAT) so A's
+// simultaneous punch lands. Reflection floor: only act on a FWD from a KNOWN Kad
+// contact (R), and the punch goes to the FWD-stated origin — per-IP rate-limited.
+void CKademliaUDPListener::Process_KADEMLIA3_HOLEPUNCH_FWD(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey & /*senderUDPKey*/)
+{
+	if (!thePrefs.GetUtpHolePunchEnabled())
+		return;
+	if (uLenPacket != 10) {
+		CString strError;
+		strError.Format(_T("***NOTE: Received wrong size (%u) packet in %hs"), uLenPacket, __FUNCTION__);
+		throw strError;
+	}
+	// Only honor a forward vouched for by a rendezvous we already know in our routing
+	// table — bounds who can make us punch an arbitrary origin.
+	if (CKademlia::GetRoutingZone() == NULL || CKademlia::GetRoutingZone()->GetContact(uIP, uUDPPort, false) == NULL) {
+		DebugLogWarning(_T("R.1: HOLEPUNCH_FWD from UNKNOWN rendezvous %s — ignored"),
+			(LPCTSTR)ipstr(htonl(uIP)));
+		return;
+	}
+	CSafeMemFile fileIO(pbyPacketData, uLenPacket);
+	uint32 uNonce = fileIO.ReadUInt32();
+	uint32 uOriginIP = fileIO.ReadUInt32();
+	uint16 uOriginPort = fileIO.ReadUInt16();
+	// Punch toward A (origin) — reuse the validated 2-way primitive (opens our NAT,
+	// seeds the uTP accept expectation). The 0x63/0x64 exchange then confirms the hole.
+	SendEseHolePunchReq(uOriginIP, uOriginPort);
+	CLiveDebugLog::Get().Append("KAD3", "RDV(as B): FWD from R %S -> punching A %S nonce=0x%08X",
+		(LPCWSTR)ipstr(htonl(uIP)), (LPCWSTR)ipstr(htonl(uOriginIP)), (unsigned)uNonce);
+}
+
+// A role: R challenged us. Re-send the REQ echoing the cookie (proves we own our IP).
+void CKademliaUDPListener::Process_KADEMLIA3_HOLEPUNCH_CHALLENGE(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey & /*senderUDPKey*/)
+{
+	if (!thePrefs.GetUtpHolePunchEnabled())
+		return;
+	if (uLenPacket != 4 + eSE::HP_COOKIE_SIZE) {
+		CString strError;
+		strError.Format(_T("***NOTE: Received wrong size (%u) packet in %hs"), uLenPacket, __FUNCTION__);
+		throw strError;
+	}
+	CSafeMemFile fileIO(pbyPacketData, uLenPacket);
+	uint32 uNonce = fileIO.ReadUInt32();
+	uint8 abyCookie[eSE::HP_COOKIE_SIZE];
+	fileIO.Read(abyCookie, eSE::HP_COOKIE_SIZE);
+
+	// Anti-injection: only act on a CHALLENGE for a rendezvous WE started (matched by
+	// R's IP + nonce), bounded resends. Returns the remembered target.
+	uint32 uTargetIP = 0; uint16 uTargetPort = 0;
+	if (!Kad3AuthorizeRdvChallenge(uIP, uNonce, uTargetIP, uTargetPort)) {
+		DebugLogWarning(_T("R.1: unsolicited/overused HOLEPUNCH_CHALLENGE from %s nonce=0x%08X"),
+			(LPCTSTR)ipstr(htonl(uIP)), uNonce);
+		return;
+	}
+	SendKad3HolepunchReq(uIP, uUDPPort, uNonce, uTargetIP, uTargetPort, abyCookie);  // expanded, cookie echoed
+}
+
+// A role: R relayed our REQ to B and says go. Start punching B (open our NAT toward
+// B); B is doing the same after its FWD, so the same packet pair opens both NATs.
+void CKademliaUDPListener::Process_KADEMLIA3_HOLEPUNCH_PROCEED(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 /*uUDPPort*/, const CKadUDPKey & /*senderUDPKey*/)
+{
+	if (!thePrefs.GetUtpHolePunchEnabled())
+		return;
+	if (uLenPacket != 4) {
+		CString strError;
+		strError.Format(_T("***NOTE: Received wrong size (%u) packet in %hs"), uLenPacket, __FUNCTION__);
+		throw strError;
+	}
+	CSafeMemFile fileIO(pbyPacketData, uLenPacket);
+	uint32 uNonce = fileIO.ReadUInt32();
+
+	uint32 uTargetIP = 0; uint16 uTargetPort = 0;
+	if (!Kad3ConsumeRdvProceed(uIP, uNonce, uTargetIP, uTargetPort)) {
+		DebugLogWarning(_T("R.1: unsolicited HOLEPUNCH_PROCEED from %s nonce=0x%08X"),
+			(LPCTSTR)ipstr(htonl(uIP)), uNonce);
+		return;
+	}
+	// Punch B directly via the validated 2-way primitive (the 0x63/0x64 exchange
+	// between A and B confirms the hole and increments m_dwHolePunchSuccess).
+	SendEseHolePunchReq(uTargetIP, uTargetPort);
+	InterlockedIncrement(&CStatistics::m_dwKad3RdvSuccess);  // rendezvous reached the punch stage
+	CLiveDebugLog::Get().Append("KAD3", "RDV(as A): PROCEED -> punching B %S nonce=0x%08X",
+		(LPCWSTR)ipstr(htonl(uTargetIP)), (unsigned)uNonce);
 }
 
 // eSE Fase 3: Process an incoming uTP Hole Punch Acknowledgement

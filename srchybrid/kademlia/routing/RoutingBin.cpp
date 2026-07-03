@@ -53,7 +53,14 @@ using namespace Kademlia;
 CMap<uint32, uint32, uint32, uint32> CRoutingBin::s_mapGlobalContactIPs;
 CMap<uint32, uint32, uint32, uint32> CRoutingBin::s_mapGlobalContactSubnets;
 
-#define MAX_CONTACTS_SUBNET			10
+// eSE fork (threat-model vector #1, eclipse): upstream eMule allows 10 contacts
+// per /24 globally, tuned for a million-node network where that is a negligible
+// slice. On the much smaller eSE network 10 from one /24 is a meaningful foothold
+// for a targeted eclipse (~5% of a 200-node table), so we tighten to 6. This is
+// LOCAL admission policy only — it does NOT touch the wire, so it is fully
+// backward-compatible with vanilla 0.70b and prior fork builds. 6 still leaves
+// headroom for legitimate CGNAT clustering. Revert to 10 to restore upstream.
+#define MAX_CONTACTS_SUBNET			6
 #define MAX_CONTACTS_IP				1
 
 CRoutingBin::CRoutingBin()

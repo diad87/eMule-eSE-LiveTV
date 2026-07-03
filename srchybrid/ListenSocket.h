@@ -38,6 +38,7 @@ class CClientReqSocket : public CEMSocket
 public:
 	class CUtpSocket* GetUtpLayer() const { return m_pUtpLayer; }
 	class CUtpSocket* InitUtpSupport();
+	virtual void RemoveAllLayers();  // eSE: also delete the owned uTP layer (mirror of CEMSocket); fixes per-connection CUtpSocket leak + g_UtpSockets orphan
 
 	explicit CClientReqSocket(CUpDownClient *in_client = NULL);
 

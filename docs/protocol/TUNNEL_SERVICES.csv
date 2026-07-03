@@ -1,0 +1,17 @@
+name,value,namespace,intro_version,status,capability_gate,format,compat,file,line
+TUN_OP_PING,0x01,TUNNEL-CELL,v8.1,stable,ESE_CAP_PRIVACY_TUNNELING,"liveness ping inside onion cell",internal-tunnel,srchybrid/LiveTunnel.h,152
+TUN_OP_PING_REPLY,0x02,TUNNEL-CELL,v8.1,stable,ESE_CAP_PRIVACY_TUNNELING,"ping reply",internal-tunnel,srchybrid/LiveTunnel.h,153
+TUN_OP_KAD_SEARCH,0x10,TUNNEL-CELL,v8.1,deprecated,ESE_CAP_PRIVACY_TUNNELING,"legacy demo search (exit reads local cache) -- superseded by V2",internal-tunnel,srchybrid/LiveTunnel.h,155
+TUN_OP_KAD_RESULT,0x11,TUNNEL-CELL,v8.1,deprecated,ESE_CAP_PRIVACY_TUNNELING,"legacy demo result",internal-tunnel,srchybrid/LiveTunnel.h,156
+TUN_OP_LIVE_SUBSCRIBE,0x20,TUNNEL-CELL,v8.1,stable,ESE_CAP_PRIVACY_TUNNELING,"V->exit forward subscribe to broadcaster",internal-tunnel,srchybrid/LiveTunnel.h,157
+TUN_OP_LIVE_SUB_ACK,0x21,TUNNEL-CELL,v8.1,stable,ESE_CAP_PRIVACY_TUNNELING,"exit->V ack / broadcaster contact",internal-tunnel,srchybrid/LiveTunnel.h,158
+TUN_OP_LIVE_HEARTBEAT,0x22,TUNNEL-CELL,v8.1,stable,ESE_CAP_PRIVACY_TUNNELING,"exit->V relay heartbeat/announce (C3)",internal-tunnel,srchybrid/LiveTunnel.h,159
+TUN_OP_LIVE_PEER_LIST,0x23,TUNNEL-CELL,v8.1,stable,ESE_CAP_PRIVACY_TUNNELING,"exit->V relay alt sources (C2/C3)",internal-tunnel,srchybrid/LiveTunnel.h,160
+TUN_OP_ECHO_LARGE,0x40,TUNNEL-CELL,v8.1,stable,ESE_CAP_PRIVACY_TUNNELING,"A1.7 test: arbitrary-size echo",internal-tunnel,srchybrid/LiveTunnel.h,164
+TUN_OP_ECHO_LARGE_REPLY,0x41,TUNNEL-CELL,v8.1,stable,ESE_CAP_PRIVACY_TUNNELING,"A1.7 test: echoed payload",internal-tunnel,srchybrid/LiveTunnel.h,165
+TUN_OP_KAD_SEARCH_V2,0x42,TUNNEL-CELL,v8.1,stable,ESE_CAP_PRIVACY_TUNNELING,"V->exit run real Kad CSearch",internal-tunnel,srchybrid/LiveTunnel.h,167
+TUN_OP_KAD_RESULT_V2,0x43,TUNNEL-CELL,v8.1,stable,ESE_CAP_PRIVACY_TUNNELING,"exit->V rich results (multi-cell)",internal-tunnel,srchybrid/LiveTunnel.h,168
+TUN_OP_KAD_CANCEL,0x44,TUNNEL-CELL,v8.1,stable,ESE_CAP_PRIVACY_TUNNELING,"V->exit abort search by req_id",internal-tunnel,srchybrid/LiveTunnel.h,169
+TUN_OP_BULK_SUBSCRIBE,0x50,TUNNEL-CELL,v8.1.1,stable,ESE_CAP_TUNNEL_BULK,"V->exit start bulk push for a stream",internal-tunnel,srchybrid/LiveTunnel.h,174
+TUN_OP_BULK_NACK,0x52,TUNNEL-CELL,v8.1.1,stable,ESE_CAP_TUNNEL_BULK,"V->exit re-push missing (seq, block): stream_key 16 + count 1 + (seq 4 + block_idx 1)*count",internal-tunnel,srchybrid/LiveTunnel.h,177
+TUN_OP_BULK_UNSUB,0x54,TUNNEL-CELL,v8.1.1,stable,ESE_CAP_TUNNEL_BULK,"V->exit stop bulk push",internal-tunnel,srchybrid/LiveTunnel.h,175

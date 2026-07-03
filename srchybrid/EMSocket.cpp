@@ -255,8 +255,13 @@ BOOL CEMSocket::AsyncSelect(long lEvent)
 
 void CEMSocket::OnReceive(int nErrorCode)
 {
-	// BUG-001 FIX: thread_local prevents data corruption under concurrent access
-	static thread_local char GlobalReadBuffer[2000000];
+	// BUG-001 FIX: thread_local prevents data corruption under concurrent access.
+	// Heap-backed: an implicit-TLS array this size gets committed in EVERY thread
+	// of the process at creation; allocate only in threads that actually receive.
+	constexpr size_t uReadBufferSize = 2000000;
+	static thread_local char *GlobalReadBuffer = NULL;
+	if (GlobalReadBuffer == NULL)
+		GlobalReadBuffer = new char[uReadBufferSize];
 
 	// Check for an error code
 	if (nErrorCode != 0 && nErrorCode != WSAESHUTDOWN) {
@@ -278,7 +283,7 @@ void CEMSocket::OnReceive(int nErrorCode)
 	}
 
 	// Remark: an overflow can not occur here
-	size_t readMax = sizeof GlobalReadBuffer - pendingHeaderSize;
+	size_t readMax = uReadBufferSize - pendingHeaderSize;
 	if (downloadLimitEnable && readMax > downloadLimit && nErrorCode != WSAESHUTDOWN)
 		readMax = downloadLimit;
 
@@ -350,7 +355,7 @@ void CEMSocket::OnReceive(int nErrorCode)
 			}
 
 			// Security: Check for buffer overflow (2MB)
-			if (reinterpret_cast<Header_Struct*>(rptr)->packetlength - 1 > sizeof GlobalReadBuffer) {
+			if (reinterpret_cast<Header_Struct*>(rptr)->packetlength - 1 > uReadBufferSize) {
 				OnError(ERR_TOOBIG);
 				return;
 			}

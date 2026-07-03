@@ -69,6 +69,39 @@ BEGIN_MESSAGE_MAP(CPPgConnection, CPropertyPage)
 	ON_BN_CLICKED(IDC_PREF_ENABLE_IPV6, OnSettingsChange)   // v0.71 IPv6 Sprint 9
 END_MESSAGE_MAP()
 
+// The capacity edit boxes take Mbit/s, but storage stays in kB/s
+// (preferences.ini "DownloadCapacity"/"UploadCapacityNew", graph scale,
+// slider ranges) so the ini remains compatible with 0.70b and older fork
+// versions. 1 Mbit/s = 125 kB/s, hence kB/s * 8 = exact thousandths of
+// Mbit/s: both conversions are lossless integer math at 3 decimals.
+static CString CapacityToMbpsText(uint32 kBps)
+{
+	uint64 thousandths = (uint64)kBps * 8;
+	CString s;
+	s.Format(_T("%I64u.%03u"), thousandths / 1000, (unsigned)(thousandths % 1000));
+	s.TrimRight(_T('0'));
+	s.TrimRight(_T('.'));
+	return s;
+}
+
+static uint32 MbpsTextToCapacity(const CString &sText)
+{
+	CString s(sText);
+	s.Trim();
+	uint64 whole = 0;
+	uint32 frac = 0, fracDiv = 1;
+	int i = 0;
+	while (i < s.GetLength() && _istdigit(s[i]))
+		whole = whole * 10 + (s[i++] - _T('0'));
+	if (i < s.GetLength() && (s[i] == _T('.') || s[i] == _T(',')))
+		for (++i; i < s.GetLength() && _istdigit(s[i]) && fracDiv < 1000; ++i) {
+			frac = frac * 10 + (s[i] - _T('0'));
+			fracDiv *= 10;
+		}
+	uint64 kBps = whole * 125 + (uint64)frac * 125 / fracDiv;
+	return (kBps < UNLIMITED) ? (uint32)kBps : UNLIMITED;
+}
+
 CPPgConnection::CPPgConnection()
 	: CPropertyPage(CPPgConnection::IDD)
 	, m_lastudp()
@@ -142,6 +175,8 @@ BOOL CPPgConnection::OnInitDialog()
 
 	static_cast<CEdit*>(GetDlgItem(IDC_PORT))->SetLimitText(5);
 	static_cast<CEdit*>(GetDlgItem(IDC_UDPPORT))->SetLimitText(5);
+	static_cast<CEdit*>(GetDlgItem(IDC_DOWNLOAD_CAP))->SetLimitText(10);
+	static_cast<CEdit*>(GetDlgItem(IDC_UPLOAD_CAP))->SetLimitText(10);
 
 	LoadSettings();
 	Localize();
@@ -161,12 +196,12 @@ void CPPgConnection::LoadSettings()
 		CheckDlgButton(IDC_UDPDISABLE, !m_lastudp); //before the port number!
 		SetDlgItemInt(IDC_UDPPORT, m_lastudp, FALSE);
 
-		SetDlgItemInt(IDC_DOWNLOAD_CAP, thePrefs.maxGraphDownloadRate);
+		SetDlgItemText(IDC_DOWNLOAD_CAP, CapacityToMbpsText(thePrefs.maxGraphDownloadRate));
 
 		m_ctlMaxDown.SetRange(1, thePrefs.maxGraphDownloadRate);
 		SetRateSliderTicks(m_ctlMaxDown);
 
-		SetDlgItemInt(IDC_UPLOAD_CAP, (thePrefs.maxGraphUploadRate != UNLIMITED ? thePrefs.maxGraphUploadRate : 0));
+		SetDlgItemText(IDC_UPLOAD_CAP, thePrefs.maxGraphUploadRate != UNLIMITED ? (LPCTSTR)CapacityToMbpsText(thePrefs.maxGraphUploadRate) : _T("0"));
 
 		m_ctlMaxUp.SetRange(1, thePrefs.GetMaxGraphUploadRate(true));
 		SetRateSliderTicks(m_ctlMaxUp);
@@ -225,12 +260,15 @@ void CPPgConnection::LoadSettings()
 
 BOOL CPPgConnection::OnApply()
 {
-	UINT v = GetDlgItemInt(IDC_DOWNLOAD_CAP, NULL, FALSE);
+	CString sCap;
+	GetDlgItemText(IDC_DOWNLOAD_CAP, sCap);
+	UINT v = MbpsTextToCapacity(sCap);
 	if (v >= UNLIMITED) {
 		GetDlgItem(IDC_DOWNLOAD_CAP)->SetFocus();
 		return FALSE;
 	}
-	UINT u = GetDlgItemInt(IDC_UPLOAD_CAP, NULL, FALSE);
+	GetDlgItemText(IDC_UPLOAD_CAP, sCap);
+	UINT u = MbpsTextToCapacity(sCap);
 	if (u >= UNLIMITED) {
 		GetDlgItem(IDC_UPLOAD_CAP)->SetFocus();
 		return FALSE;
@@ -380,8 +418,8 @@ void CPPgConnection::Localize()
 		SetDlgItemText(IDC_DLIMIT_LBL, GetResString(IDS_PW_DOWNL));
 		SetDlgItemText(IDC_ULIMIT_LBL, GetResString(IDS_PW_UPL));
 		SetDlgItemText(IDC_CONNECTION_NETWORK, GetResString(IDS_NETWORK));
-		SetDlgItemText(IDC_KBS2, GetResString(IDS_KBYTESPERSEC));
-		SetDlgItemText(IDC_KBS3, GetResString(IDS_KBYTESPERSEC));
+		SetDlgItemText(IDC_KBS2, _T("Mbit/s"));
+		SetDlgItemText(IDC_KBS3, _T("Mbit/s"));
 		SetDlgItemText(IDC_MAXCONN_FRM, GetResString(IDS_PW_CONLIMITS));
 		SetDlgItemText(IDC_MAXCONLABEL, GetResString(IDS_PW_MAXC));
 		SetDlgItemText(IDC_SHOWOVERHEAD, GetResString(IDS_SHOWOVERHEAD));

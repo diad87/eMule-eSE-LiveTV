@@ -43,12 +43,17 @@ function Info($msg) { Write-Host "[build_ese_server] $msg" }
 function Warn($msg) { Write-Warning "[build_ese_server] $msg" }
 
 # ── 1) Node availability ────────────────────────────────────────────────────
-$node = Get-Command node -ErrorAction SilentlyContinue
-$npx  = Get-Command npx  -ErrorAction SilentlyContinue
-if (-not $node -or -not $npx) {
-    Warn 'Node 18+ / npx not on PATH - skipping ese-server.exe rebuild. Install Node to enable auto-rebuild.'
+# Resolve npm.cmd explicitly: a bare `& npm` resolves to npm.ps1 (PowerShell
+# prefers .ps1 over .cmd), and that shim mis-parses call-operator invocations,
+# stripping the first character of the command line (`npm run build` reaches
+# npm as `pm run build` -> 'Unknown command: "pm"').
+$node = Get-Command node    -ErrorAction SilentlyContinue
+$npm  = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if (-not $node -or -not $npm) {
+    Warn 'Node 18+ / npm not on PATH - skipping ese-server.exe rebuild. Install Node to enable auto-rebuild.'
     exit 0
 }
+$npmCmd = $npm.Source
 
 # ── 2) Compare timestamps ───────────────────────────────────────────────────
 if (-not (Test-Path $ese)) {
@@ -85,7 +90,7 @@ try {
     # Install pkg if devDependencies/pkg is missing (first run on a clean clone).
     if (-not (Test-Path (Join-Path $ese 'node_modules\pkg'))) {
         Info 'pkg not installed - running npm install --no-audit --no-fund...'
-        & npm install --no-audit --no-fund 2>&1 | ForEach-Object { Write-Host "  [npm] $_" }
+        & $npmCmd install --no-audit --no-fund 2>&1 | ForEach-Object { Write-Host "  [npm] $_" }
         if ($LASTEXITCODE -ne 0) {
             Warn 'npm install failed; aborting rebuild but allowing C++ build to continue.'
             exit 0
@@ -93,7 +98,7 @@ try {
     }
 
     Info 'Running npm run build...'
-    & npm run build 2>&1 | ForEach-Object { Write-Host "  [pkg] $_" }
+    & $npmCmd run build 2>&1 | ForEach-Object { Write-Host "  [pkg] $_" }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $src)) {
         Warn 'pkg build failed or produced no ese-server.exe; existing bundle (if any) remains in place.'
         # Don't fail the C++ build - old exe still works.

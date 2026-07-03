@@ -62,6 +62,20 @@
 #define ESE_BAN_RESPONSE_RATE       0.20f               // < 20% after 10+ requests = ban
 #define ESE_DEGRADE_RESPONSE_RATE   0.50f               // < 50% after 5+ requests = degrade
 
+// Live-edge punctuality (anti piece-starvation — threat-model vector #3).
+// A request that times out for a segment within ESE_LIVE_EDGE_GUARD of the
+// playback head is a CRITICAL miss: the player is about to stall on it. A
+// timeout on a far-ahead segment is recoverable and is NOT charged. This wires
+// up failCount, which upstream already penalised (CalculateTrustLevel: >2 -> leaf;
+// SelectPeerForSegment: score -= failCount*20) but never actually incremented.
+// A peer works the penalty off ONLY by delivering critical blocks on time
+// (failCount-- on edge-critical receipt), so it cannot mask edge defection
+// behind cheap backfill volume — the volume-based response rate can't detect
+// "serves segs 1-4 fast, drops the imminent seg 5".
+#define ESE_LIVE_EDGE_GUARD         3       // segments from the playhead treated as "critical"
+#define ESE_EDGE_FAIL_WEIGHT        2       // failCount added per critical-block timeout
+#define ESE_FAIL_COUNT_CAP          10      // upper bound so failCount can't run away
+
 // Subnet limits (anti-Sybil)
 #define ESE_MAX_SUPER_PER_SUBNET24  5       // Max super-seeders from same /24
 #define ESE_MAX_SUPER_PCT_SUBNET16  20      // Max % of super-seeders from same /16

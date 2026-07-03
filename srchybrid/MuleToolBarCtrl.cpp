@@ -156,7 +156,7 @@ void CMuleToolbarCtrl::Init()
 		case TBBTN_OPTIONS:
 		case TBBTN_TOOLS:
 		case TBBTN_HELP:
-		case TBBTN_ESE:					// ESE is a toggle action, not a view-switcher
+		case TBBTN_ESE:					// ESE opens the dashboard, not a view-switcher
 			TBButtons[i].fsStyle = TBSTYLE_BUTTON;
 			break;
 		default:

@@ -70,6 +70,22 @@ namespace Kademlia
 		// eSE: Initiate a uTP hole-punch by sending HOLEPUNCH_REQ to a remote peer.
 		// uIP = host-order (Kad convention), uUDPPort = host-order.
 		void SendEseHolePunchReq(uint32 uIP, uint16 uUDPPort);
+		// [eSE v9] anti-CGNAT: fire the REQ at a small window of ports around uBasePort
+		// (birthday spray) so a symmetric NAT's per-destination external port can be hit.
+		// uSpread==0 => single-shot (exact SendEseHolePunchReq behavior). Clamped internally.
+		void SendEseHolePunchReqSpray(uint32 uIP, uint16 uBasePort, uint16 uSpread);
+		// R.1 (3-way rendezvous) outbound primitives — IPv4 wire, kill-switch gated.
+		// The CALLER gates on the peer advertising ESE_CAP_HOLEPUNCH_RDV (bit 15).
+		void SendKad3HolepunchReq(uint32 uRdvIP, uint16 uRdvPort, uint32 uNonce, uint32 uTargetIP, uint16 uTargetPort, const uint8 *pbyCookie = NULL);
+		void SendKad3HolepunchChallenge(uint32 uIP, uint16 uUDPPort, uint32 uNonce, const uint8 *pbyCookie);
+		void SendKad3HolepunchFwd(uint32 uIP_B, uint16 uPort_B, uint32 uNonce, uint32 uOriginIP, uint16 uOriginPort);
+		void SendKad3HolepunchProceed(uint32 uIP_A, uint16 uPort_A, uint32 uNonce);
+		// R.1 A-side initiator: begin a 3-way rendezvous to reach (uTargetIP) via R.
+		void InitiateKad3Rendezvous(uint32 uRdvIP, uint16 uRdvPort, uint32 uTargetIP, uint16 uTargetPort);
+		// R.2 keepalive: minimal KADEMLIA3_PING_REQ to a supernode (holds NAT conntrack open).
+		void SendKad3PingReq(uint32 uIP, uint16 uUDPPort);
+		// R.2 keepalive: reply a KADEMLIA3_PING_RES (PONG) to a peer that pinged us.
+		void SendKad3PingRes(uint32 uIP, uint16 uUDPPort);
 	private:
 		bool AddContact_KADEMLIA2(const byte *pbyData, uint32 uLenData, uint32 uIP, uint16 &uUDPPort, uint8 *pnOutVersion, const CKadUDPKey &cUDPKey, bool &rbIPVerified, bool bUpdate, bool bFromHelloReq, bool *pbOutRequestsACK, CUInt128 *puOutContactID);
 		void SendLegacyChallenge(uint32 uIP, uint16 uUDPPort, const CUInt128 &uContactID);
@@ -107,6 +123,22 @@ namespace Kademlia
 		// eSE Fase 3: uTP Hole Punching
 		void Process_ESE_HOLEPUNCH_REQ(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
 		void Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
+		// eSE P0: return-routability cookie handshake (anti-reflection hardening).
+		void Process_ESE_HOLEPUNCH_CHALLENGE(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
+		void SendEseHolePunchChallenge(uint32 uIP, uint16 uUDPPort, uint32 uNonce, const uint8 *pbyCookie, const CKadUDPKey &senderUDPKey);
+		void SendEseHolePunchReqWithCookie(uint32 uIP, uint16 uUDPPort, uint32 uNonce, const uint8 *pbyCookie);
+		// R.1: encryption-tiered Kad3 send helper (contact key if known, else plaintext).
+		void SendKad3HolepunchPacket(CSafeMemFile &fileIO, byte byOpcode, uint32 uIP, uint16 uUDPPort);
+		// R.1: 3-way rendezvous receive handlers. R/B are stateless; A keeps the
+		// pending table (Kad3*Rdv* in the .cpp). Hole confirmation reuses 2-way 0x63/0x64.
+		void Process_KADEMLIA3_HOLEPUNCH_REQ(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
+		void Process_KADEMLIA3_HOLEPUNCH_FWD(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
+		void Process_KADEMLIA3_HOLEPUNCH_CHALLENGE(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
+		void Process_KADEMLIA3_HOLEPUNCH_PROCEED(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
+		// R.2 keepalive PING/PONG: an inbound ping is answered with a PONG; an inbound
+		// PONG refreshes the supernode health in CKadKeepalive (out of the GENERIC drop).
+		void Process_KADEMLIA3_PING_REQ(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
+		void Process_KADEMLIA3_PING_RES(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
 
 		// v0.71 IPv6 Sprint 4 — Kad3 (v6-aware) opcode handlers.
 		// Currently shallow: parse just enough to consume the bytes, log

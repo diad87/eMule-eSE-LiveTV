@@ -1,5 +1,6 @@
 'use strict';
 const https  = require('https');
+const http   = require('http');   // local eMule API (127.0.0.1:4711) — no third parties
 const fs     = require('fs');
 const path   = require('path');
 const crypto = require('crypto');
@@ -178,20 +179,25 @@ setInterval(() => {
 // ─── UPnP ────────────────────────────────────────────────────────────────────
 
 function getPublicIP() {
+  // No third parties: ask eMule's own /api/live/preflight for the public IP it
+  // detected (Kad firewall test for v4; in-band OP_PUBLICIP_ANSWER_V6 for v6).
+  // If eMule hasn't determined it yet, resolve null and the caller degrades to
+  // a LAN / overlay URL — we never query a commercial echo service.
   return new Promise((resolve) => {
-    const services = ['https://api.ipify.org', 'https://icanhazip.com', 'https://ifconfig.me/ip'];
-    let tried = 0;
-    for (const svc of services) {
-      https.get(svc, { timeout: 5000 }, (res) => {
-        let data = '';
-        res.on('data', d => data += d);
-        res.on('end', () => {
-          const ip = data.trim();
-          if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) resolve(ip);
-          else { tried++; if (tried >= services.length) resolve(null); }
-        });
-      }).on('error', () => { tried++; if (tried >= services.length) resolve(null); });
-    }
+    const req = http.get('http://127.0.0.1:4711/api/live/preflight', { timeout: 3000 }, (res) => {
+      let data = '';
+      res.on('data', d => data += d);
+      res.on('end', () => {
+        try {
+          const j  = JSON.parse(data);
+          const ip = (j.public_ip || '').trim();
+          if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return resolve(ip);
+        } catch (e) { /* fall through to null */ }
+        resolve(null);
+      });
+    });
+    req.on('error',   () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
   });
 }
 

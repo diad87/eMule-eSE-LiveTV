@@ -1,0 +1,7 @@
+# Build artifacts for libreach standalone tests / objects.
+build/
+*.obj
+*.exe
+*.pdb
+*.ilk
+compile.log

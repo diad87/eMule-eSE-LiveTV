@@ -71,6 +71,7 @@
 #include "VisualStylesXP.h"
 #include "UploadDiskIOThread.h"
 #include "PartFileWriteThread.h"
+#include "PartHashThread.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -649,6 +650,7 @@ BOOL CemuleApp::InitInstance()
 
 	m_pUploadDiskIOThread = new CUploadDiskIOThread();
 	m_pPartFileWriteThread = new CPartFileWriteThread();
+	m_pPartHashThread = new CPartHashThread(); // eSE H1
 
 	thePerfLog.Startup();
 	emuledlg->DoModal();

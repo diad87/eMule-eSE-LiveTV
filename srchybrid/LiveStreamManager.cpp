@@ -6,9 +6,12 @@
 #include "LiveDebugLog.h"
 #include "LivePackets.h"
 #include "LiveTunnel.h"        // v8.1 Sprint C — C5 mode handoff (CLiveTunnel)
+#include "LiveBuddyRelay.h"    // R.3 — relay egress (buddy push: StartAsBroadcaster/GetActiveBuddy)
 #include "kademlia/kademlia/KadV2ModeSelector.h"  // v8.1 D3 — fallback policy
 #include "kademlia/kademlia/Kademlia.h"           // Milestone 1 — CKademlia::IsConnected/GetUDPListener
 #include "kademlia/net/KademliaUDPListener.h"     // Milestone 1 — SendEseHolePunchReq (LowID hole-punch)
+#include "kademlia/routing/RoutingZone.h"         // [eSE v9] selector — GetRandomContact (R-node pick)
+#include "kademlia/routing/Contact.h"             // [eSE v9] selector — CContact (IsIpVerified/GetIPAddress)
 #include "emule.h"
 #include "opcodes.h"
 #include "OtherFunctions.h"
@@ -32,6 +35,17 @@
 #define new DEBUG_NEW
 #undef THIS_FILE
 static char THIS_FILE[] = __FILE__;
+#endif
+
+#ifdef ESE_TEST_HOOKS
+// eSE TEST-ONLY (rogue node R) — selective live-edge sabotage switches, toggled
+// at runtime via /api/live/test/edge_sabotage. Default OFF. Compiled ONLY when
+// ESE_TEST_HOOKS is defined project-wide for the attacker build; the honest /
+// production binary never defines it and is byte-for-byte unaffected. See
+// docs/VALIDATION_3PC_EDGE_PUNCTUALITY.md.
+bool  g_eseTestSabotageOn      = false;
+int   g_eseTestSabotageMode    = 0;     // 0 = drop, 1 = delay
+DWORD g_eseTestSabotageDelayMs = 6000;
 #endif
 
 
@@ -95,10 +109,15 @@ bool CLiveStreamManager::GetPinnedPubkey(const uchar streamKey[16], uchar outPub
 }
 
 
+// R.3 egress + reachability selector gates are now driven by the runtime prefs EseRelayEgress /
+// EseReachSelector (default OFF) — see thePrefs. Byte-for-byte dormant until an operator opts in.
+
 CLiveStreamManager::CLiveStreamManager()
     : m_bBroadcasting(false)
     , m_bViewing(false)
     , m_nNextSeqNum(0)
+    , m_lastRelayedSeq(UINT_MAX)   // R.3: nothing relayed yet
+    , m_dwLastRelaySetup(0)        // R.3
     , m_dwLastBitmapSend(0)
     , m_dwLastAnnounceSend(0)
     , m_dwLastKadPublish(0)
@@ -214,6 +233,11 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     m_chunkBuffer.Clear();
     m_bBroadcasting = true;
     m_dwLastKadPublish = 0;
+    // R.3: fresh relay-egress state for this broadcast (clears any stale buddy from a
+    // previous stream so RelayPushNewSegments re-negotiates before pushing).
+    m_lastRelayedSeq = UINT_MAX;
+    m_dwLastRelaySetup = 0;
+    CLiveBuddyRelay::Instance().ResetBroadcasterEgress();
 
     // Make the stream visible immediately; RepublishIfNeeded handles Kad timing.
     InterlockedIncrement(&m_counters.kadPublishes);  // Phase 0: OBS-1 (atomic)
@@ -411,6 +435,7 @@ void CLiveStreamManager::StopBroadcast()
     m_bBroadcasting = false;
     m_chunkBuffer.Clear();
     m_broadcastPeers.RemoveAll();
+    CLiveBuddyRelay::Instance().ResetBroadcasterEgress();   // R.3: drop the relay buddy on stop
     m_peerTrust.RemoveAll();
     m_peerBitmaps.RemoveAll();
 
@@ -436,7 +461,17 @@ void CLiveStreamManager::FeedSegment(const BYTE* data, uint32 dataSize)
     }
 
     uint32 seqNum = m_nNextSeqNum++;
-    uint32 timestamp = (uint32)time(NULL);
+    // Threat-model vector #4 (clock-skew / wall-clock leak): do NOT stamp the
+    // broadcaster's UNIX wall clock onto the wire. seqNum already provides a
+    // monotonic, frame-relative ordering. The ts field is kept on the wire
+    // (4 bytes — wire compat with vanilla 0.70b-eSE and prior fork builds) but
+    // zeroed. Receivers gate the V2-S05 arrival-latency telemetry on
+    // `timestamp > 0` (OnChunkReceived), so 0 cleanly self-disables that metric
+    // on every version instead of poisoning it with a huge bogus delta — no
+    // misbehaviour on old receivers. Cost: chunk-arrival latency telemetry goes
+    // dark for new broadcasters; seqNum lag + RTT EWMA still cover liveness. The
+    // hardware wall clock no longer leaks to the wire at all.
+    uint32 timestamp = 0;
 
     if (m_chunkBuffer.AddSegment(m_streamInfo.streamKey, seqNum, timestamp,
             data, dataSize, m_streamInfo.bitrate))
@@ -741,25 +776,46 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     const bool hpIsOverlay = ((hpHostIP >> 24) == 100u)
         && (((hpHostIP >> 16) & 0xFFu) >= 64u)
         && (((hpHostIP >> 16) & 0xFFu) <= 127u);
+    // [eSE v9] selector key: HOST-order ip (hpHostIP), matching m_escalation / the tick.
+    const uint64 escKey = ((uint64)hpHostIP << 16) | port;
     if (udpPort != 0 && !hpIsOverlay
         && Kademlia::CKademlia::IsConnected()
         && Kademlia::CKademlia::GetUDPListener() != NULL
         && thePrefs.GetUtpHolePunchEnabled())
     {
-        const uint8 ESE_LIVE_SYM_NAT_GIVEUP = 4;
-        if (client->m_uNatRendezvousAttempts >= ESE_LIVE_SYM_NAT_GIVEUP) {
-            InterlockedIncrement(&CStatistics::m_dwHolePunchSymNATFail);
-            LIVE_LOG("HOLE", "Live dial GIVE UP on %S:%u after %u attempts (symmetric NAT?)",
-                (LPCWSTR)ipstr(ip), udpPort, (unsigned)client->m_uNatRendezvousAttempts);
+        if (!thePrefs.GetEseReachSelector()) {
+            // LEGACY (pref EseReachSelector OFF) — unchanged parallel 2-way punch. Byte-identical.
+            const uint8 ESE_LIVE_SYM_NAT_GIVEUP = 4;
+            if (client->m_uNatRendezvousAttempts >= ESE_LIVE_SYM_NAT_GIVEUP) {
+                InterlockedIncrement(&CStatistics::m_dwHolePunchSymNATFail);
+                LIVE_LOG("HOLE", "Live dial GIVE UP on %S:%u after %u attempts (symmetric NAT?)",
+                    (LPCWSTR)ipstr(ip), udpPort, (unsigned)client->m_uNatRendezvousAttempts);
+            } else {
+                // ip is NETWORK order here; SendEseHolePunchReq wants HOST order
+                // (cf. WebServer.cpp / BaseClient.cpp:1596). udpPort is host order.
+                if (client->m_uNatRendezvousAttempts < 255) client->m_uNatRendezvousAttempts++;
+                client->m_uLastNatRendezvousTick = ::GetTickCount();
+                uint16 hpSpread = thePrefs.GetEseHolePunchPortPredict() ? (uint16)thePrefs.GetEseHolePunchPortSpread() : 0;
+                Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(ntohl(ip), udpPort, hpSpread);
+                LIVE_LOG("HOLE", "Live dial hole-punch attempt #%u to %S:%u",
+                    (unsigned)client->m_uNatRendezvousAttempts, (LPCWSTR)ipstr(ip), udpPort);
+            }
         } else {
-            // ip is NETWORK order here; SendEseHolePunchReq wants HOST order
-            // (cf. WebServer.cpp / BaseClient.cpp:1596). udpPort is host order.
-            if (client->m_uNatRendezvousAttempts < 255) client->m_uNatRendezvousAttempts++;
-            client->m_uLastNatRendezvousTick = ::GetTickCount();
-            Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReq(ntohl(ip), udpPort);
-            LIVE_LOG("HOLE", "Live dial hole-punch attempt #%u to %S:%u",
-                (unsigned)client->m_uNatRendezvousAttempts, (LPCWSTR)ipstr(ip), udpPort);
+            // SELECTOR (kill-switch ON) — arm the escalation machine at DIRECT (the direct
+            // TCP connect below IS stage 0's action). TickReachabilitySelector then drives
+            // punch2->punch3->relay on later Process() ticks. Seed once per source.
+            ReachState st;
+            if (!m_escalation.Lookup(escKey, st)) {
+                st.stage = REACH_DIRECT; st.stageEnteredTick = ::GetTickCount(); st.udpPort = udpPort;
+                m_escalation[escKey] = st;
+                LIVE_LOG("REACH", "selector arm %S:%u stage=DIRECT udp=%u", (LPCWSTR)ipstr(ip), port, udpPort);
+            }
         }
+    } else if (hpIsOverlay && thePrefs.GetEseReachSelector()) {
+        // Overlay (100.64/10) is already routable — never punch/rdv it; mark DONE so the
+        // selector ignores it (the cut-at-8000kbps-over-Tailscale lesson).
+        ReachState st; st.stage = REACH_DONE; st.stageEnteredTick = ::GetTickCount(); st.udpPort = udpPort;
+        m_escalation[escKey] = st;
     }
 
     bool subSent = false;
@@ -1548,6 +1604,33 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
     trust.requestsReceived++;
     trust.requestsServed++;
 
+#ifdef ESE_TEST_HOOKS
+    // TEST-ONLY: selective live-edge sabotage. Drops or defers serving any
+    // segment within ESE_LIVE_EDGE_GUARD of OUR live edge — exactly the blocks
+    // the victim needs imminently — while serving backfill normally so we keep
+    // earning trust. Reproduces the "earn trust, then drop the critical block"
+    // attack (threat-model vector #3) for the 3-PC validation recipe.
+    if (chunkPkt && g_eseTestSabotageOn) {
+        const uint32 myEdge = m_chunkBuffer.GetNewestSeq();
+        if (seqNum + ESE_LIVE_EDGE_GUARD >= myEdge) {           // edge-critical
+            if (g_eseTestSabotageMode == 0) {                   // DROP
+                LIVE_LOG("TEST", "SABOTAGE-DROP edge seq=%u -> %S", seqNum,
+                    peer ? (LPCWSTR)ipstr(peer->GetIP()) : L"?");
+                delete chunkPkt;                                // we still own it here
+                return;
+            }
+            // DELAY: hand ownership to the deferred queue (flushed in Process()).
+            TestDeferredSend d;
+            d.peer = peer; d.pkt = chunkPkt;
+            d.fireTick = GetTickCount() + g_eseTestSabotageDelayMs;
+            m_testDeferredSends.push_back(d);
+            LIVE_LOG("TEST", "SABOTAGE-DELAY edge seq=%u +%ums -> %S", seqNum,
+                g_eseTestSabotageDelayMs, peer ? (LPCWSTR)ipstr(peer->GetIP()) : L"?");
+            return;
+        }
+    }
+#endif
+
     // Send the chunk data to the peer. v7.5.0: chunkPkt was built inside the
     // WithSegment lambda above using a now-released copy of the bytes, so it's
     // safe to use without any buffer lock; chunkSize is a captured uint32.
@@ -1591,6 +1674,20 @@ void CLiveStreamManager::IngestChunkPayload(CUpDownClient* peer, uint8 innerOpco
     const BYTE* body, uint32 bodyLen)
 {
     if (body == NULL) return;
+
+    // v8.1.2 E3.1 — if we exit-proxy this stream for tunneled viewers, capture the WHOLE
+    // signed record and hand it to the bulk data plane (FEC-encode + push) instead of the
+    // viewer/HLS path. streamKey is the first 16 bytes of the record (both V1 and V2). The
+    // exit forwards opaque bytes — the verify runs once on the viewer (IngestChunkPayload).
+    // GUARD: do NOT divert a stream WE are viewing ourselves — otherwise the viewer's own
+    // bulk re-inject (DeliverBulkData -> IngestChunkPayload) would re-divert in an infinite
+    // loop, AND a node that is both exit+viewer would stop playing. Only PURE exits divert.
+    if (bodyLen >= 16
+        && !(m_bViewing && memcmp(m_streamInfo.streamKey, body, 16) == 0)
+        && eSELive::CLiveTunnel::Get().IsExitProxying(body)) {
+        eSELive::CLiveTunnel::Get().ExitProxyOnWholeChunk(body, body, bodyLen);
+        return;
+    }
 
     if (innerOpcode == OP_LIVE_CHUNK) {
         // V1: streamKey(16)+seqNum(4)+ts(4)+chunkSize(4)+data
@@ -1660,6 +1757,19 @@ void CLiveStreamManager::OnChunkFragmentReceived(CUpDownClient* peer, const ucha
     uint32 totalLen, const BYTE* fragData, uint32 fragLen)
 {
     CSingleLock lock(&m_lock, TRUE);
+
+    // v8.1.2 E3.1 — exit-proxy divert BEFORE the viewer gate: a fragment for a stream we
+    // exit-proxy goes to the tunnel's own headless reassembler (the viewer path below is
+    // m_bViewing-gated + single-stream). Touches only the tunnel's leaf-locked queue, so the
+    // documented tunnel->manager lock order is preserved (no tunnel m_lock taken here).
+    // GUARD: never divert a stream WE are viewing (see OnChunkReceived/IngestChunkPayload) —
+    // a node that is both exit+viewer keeps playing normally; only PURE exits divert.
+    if (!(m_bViewing && memcmp(m_streamInfo.streamKey, streamKey, 16) == 0)
+        && eSELive::CLiveTunnel::Get().IsExitProxying(streamKey)) {
+        eSELive::CLiveTunnel::Get().ExitProxyOnFragment(streamKey, seqNum, fragIndex, fragCount,
+            totalLen, fragData, fragLen);
+        return;
+    }
 
     if (!m_bViewing) return;
     if (memcmp(m_streamInfo.streamKey, streamKey, 16) != 0) {
@@ -1780,6 +1890,14 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
     // Phase-1 fix #2: whatever pull was pending for this seq is now moot —
     // the chunk arrived (requested or pushed). Clear it so the next
     // RequestMissingSegments cycle doesn't count it as in flight.
+    // Threat-model vector #3: snapshot whether this segment was edge-critical
+    // before we drop the in-flight record, so we can reward on-time delivery.
+    bool wasEdgeCritical = false;
+    {
+        InflightSegReq doneReq;
+        if (m_inflightSegReqs.Lookup(seqNum, doneReq))
+            wasEdgeCritical = doneReq.edgeCritical;
+    }
     m_inflightSegReqs.RemoveKey(seqNum);
 
     // Phase-1 fix #3: AddSegment now reports whether the chunk was actually
@@ -1799,6 +1917,14 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
     // Update trust for the sending peer
     PeerTrust& trust = GetOrCreateTrust(peer);
     trust.bytesServed += dataSize;  // Peer served us these bytes
+
+    // Threat-model vector #3: reward on-time delivery of a CRITICAL (near-
+    // playhead) block — the ONLY way a peer works off accumulated punctuality
+    // failures. Backfill deliveries earn nothing, so a peer that serves cheap
+    // far-ahead blocks but keeps dropping the imminent one cannot decay its way
+    // back to a clean failCount.
+    if (wasEdgeCritical && trust.failCount > 0)
+        trust.failCount--;
 
     // V2-S01/S02: per-peer counters (we already hold m_lock).
     PeerCounters& pc = m_peerCounters[PeerId(peer)];
@@ -1873,6 +1999,15 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
                 CUpDownClient* child = m_broadcastPeers.GetNext(cpos);
                 if (!child) continue;
                 if (child == peer) continue;  // do not bounce back to source
+                // v8.1.1 dedup — skip the proactive relay-push to a child that is
+                // ALSO one of OUR sources (m_viewPeers). In a mutual mesh (V<->X both
+                // pull from each other) that child independently PULLs the same stream,
+                // so this push just races its own pull and lands as a "REJECT duplicate"
+                // — about half the bandwidth wasted at high bitrate. It still PULLs from
+                // us anything it genuinely lacks (failover intact), so data is never
+                // withheld. Children that are NOT our sources (pure leaves) still get
+                // the proactive push.
+                if (m_viewPeers.Find(child) != NULL) continue;
                 // v7.7.0 — sign if we own this stream; else V1 for relays.
                 Packet* pkt = NULL;
                 if (m_bBroadcasting &&
@@ -2653,6 +2788,22 @@ void CLiveStreamManager::Process()
 
     DWORD now = GetTickCount();
 
+#ifdef ESE_TEST_HOOKS
+    // TEST-ONLY: flush delayed sabotage sends whose timer elapsed (DELAY mode).
+    for (std::vector<TestDeferredSend>::iterator it = m_testDeferredSends.begin();
+         it != m_testDeferredSends.end(); ) {
+        if ((int)(now - it->fireTick) >= 0) {
+            if (it->peer && it->pkt) {
+                theStats.AddUpDataOverheadOther(it->pkt->size);
+                it->peer->SendPacket(it->pkt);      // takes ownership of pkt
+            }
+            it = m_testDeferredSends.erase(it);
+        } else {
+            ++it;
+        }
+    }
+#endif
+
     // v7.2.0 — prune expired tombstones once a minute. Cheap; the map
     // is small (a tombstone per dead stream we've personally heard
     // about, capped naturally by ESE_TOMBSTONE_TTL_MS=30 min).
@@ -2873,6 +3024,9 @@ void CLiveStreamManager::Process()
         // Request missing segments
         RequestMissingSegments();
 
+        // [eSE v9] reachability escalation (dormant unless m_bReachSelectorOn)
+        TickReachabilitySelector(now);
+
         // Phase 3.3 ROB-Failover: if we haven't received a chunk in 20 s,
         // either our broadcaster died or our peers all dropped us. Re-trigger
         // Kad discovery and dial any known mesh peer for the same streamKey
@@ -3019,6 +3173,14 @@ void CLiveStreamManager::Process()
 
     // Mesh topology maintenance
     m_meshManager.Process();
+
+    // R.3 egress (dormant unless s_relayEgressEnabled): release the manager lock, then
+    // proactively forward any new segments to the active relay buddy on this (main) thread.
+    // Lock-free by design — WithSegment guards the chunk buffer with its own lock, and
+    // m_streamInfo / the buddy pointer are main-thread-only. Unlock-before-send mirrors the
+    // initial-push pattern (~:1396) so a big relay drain never blocks FeedSegment on m_lock.
+    lock.Unlock();
+    RelayPushNewSegments();
 }
 
 
@@ -3107,6 +3269,191 @@ void CLiveStreamManager::SendAnnounceToAll()
             peer->SendPacket(pkt);
         }
     }
+}
+
+// R.3 egress: forward every NEW segment to the active relay buddy as OP_LIVE_RELAY_FWD/
+// CHUNK. Runs on the main thread AFTER Process() released m_lock (so a big relay drain
+// never blocks FeedSegment). Lock-free: WithSegment provides chunk-buffer safety; the
+// buddy pointer + m_streamInfo are main-thread-only. Dormant unless s_relayEgressEnabled.
+void CLiveStreamManager::RelayPushNewSegments()
+{
+    if (!thePrefs.GetEseRelayEgress() || !m_bBroadcasting)   // gate: pref EseRelayEgress (default OFF)
+        return;
+    CUpDownClient* buddy = CLiveBuddyRelay::Instance().GetActiveBuddy();
+    if (buddy == NULL) {
+        // No active relay yet — (re)negotiate one (sends SETUP; non-blocking). Throttled so
+        // we don't spam SETUP every tick while a candidate is still connecting / replying.
+        if (GetTickCount() - m_dwLastRelaySetup > 5000) {
+            CLiveBuddyRelay::Instance().StartAsBroadcaster();
+            m_dwLastRelaySetup = GetTickCount();
+        }
+        return;
+    }
+    // Build the relay packets UNDER m_lock so the chunk-buffer window (GetOldest/NewestSeq)
+    // + WithSegment read are consistent against FeedSegment's AddSegment/eviction on the
+    // FFmpeg watcher thread; then RELEASE m_lock and send — a big relay drain must never run
+    // under m_lock (mirrors the initial-push pattern ~:1396). `buddy` is main-thread-stable:
+    // the main loop is run-to-completion and SendPacket only queues to the socket buffer (it
+    // does NOT pump the message loop), so g_activeBuddy cannot change across this call.
+    CArray<Packet*> outBatch;
+    {
+        CSingleLock lock(&m_lock, TRUE);
+        if (!m_bBroadcasting || m_chunkBuffer.GetCount() == 0)
+            return;
+        const uint32 newest = m_chunkBuffer.GetNewestSeq();
+        const uint32 oldest = m_chunkBuffer.GetOldestSeq();
+        uint32 from = (m_lastRelayedSeq == UINT_MAX) ? oldest : (m_lastRelayedSeq + 1);
+        if (from < oldest) from = oldest;        // segments before `oldest` were already evicted
+        for (uint32 seq = from; seq <= newest; ++seq) {
+            Packet* v2 = NULL;
+            m_chunkBuffer.WithSegment(seq, [&](const LiveChunk& c) {
+                if (memcmp(c.streamKey, m_streamInfo.streamKey, 16) == 0)
+                    v2 = eSELive::CreateChunkPacketV2(&c, m_broadcasterPrivkey, m_streamInfo.pubkey);
+            });
+            if (v2 == NULL)
+                continue;
+            // RELAY_FWD/CHUNK payload = the V2 record body verbatim: the relay ingests it via
+            // ExitProxyOnWholeChunk and re-emits it to its 0xCE downstream as OP_LIVE_CHUNK_V2.
+            Packet* fwd = eSELive::CreateRelayFwdPacket(CLiveBuddyRelay::RELAY_SUB_CHUNK,
+                              m_streamInfo.streamKey, (const uint8*)v2->pBuffer, v2->size);
+            delete v2;
+            if (fwd != NULL)
+                outBatch.Add(fwd);
+        }
+        m_lastRelayedSeq = newest;
+    }   // m_lock released before the socket drain
+    for (INT_PTR i = 0; i < outBatch.GetCount(); ++i) {
+        theStats.AddUpDataOverheadOther(outBatch[i]->size);
+        buddy->SendPacket(outBatch[i], true);   // bVerifyConnection: drops cleanly if the buddy died
+    }
+}
+
+// [eSE v9] R-node auto-picker for the 3-way rendezvous (punch3). Prefer a connected fork
+// peer that ADVERTISED the RDV cap (known-capable); else a verified Kad v6 contact. Returns
+// HOST-order R ip + Kad UDP port. Skips R==target and R==self.
+bool CLiveStreamManager::PickRendezvous(uint32 targetIpHost, uint16 /*targetUdp*/, uint32& outRipHost, uint16& outRport)
+{
+    outRipHost = 0; outRport = 0;
+    const uint32 myIpHost = ntohl(theApp.GetPublicIP());   // GetPublicIP() is NET order
+    // Preferred R: a connected fork peer with the RDV cap + a known Kad UDP port.
+    std::vector<CUpDownClient*> cands;
+    if (theApp.clientlist != NULL)
+        theApp.clientlist->GetConnectedSnapshot(cands, 10, false);
+    for (size_t i = 0; i < cands.size(); ++i) {
+        CUpDownClient* c = cands[i];
+        if (c == NULL || !c->SupportsEseHolePunchRdv() || c->GetKadPort() == 0) continue;
+        const uint32 cipHost = ntohl(c->GetIP());          // GetIP() is NET order
+        if (cipHost == 0 || cipHost == targetIpHost || cipHost == myIpHost) continue;
+        outRipHost = cipHost; outRport = c->GetKadPort();
+        return true;
+    }
+    // Fallback R: a verified Kad v6 contact (proven recipe, Kademlia.cpp:308).
+    if (Kademlia::CKademlia::GetRoutingZone() == NULL)
+        return false;
+    for (int tries = 0; tries < 8; ++tries) {
+        Kademlia::CContact* pR = Kademlia::CKademlia::GetRoutingZone()->GetRandomContact(3, KADEMLIA_VERSION6_49aBETA);
+        if (pR == NULL) break;
+        if (!pR->IsIpVerified()) continue;
+        const uint32 ripHost = pR->GetIPAddress();         // GetIPAddress() is HOST order
+        if (ripHost == 0 || ripHost == targetIpHost || ripHost == myIpHost) continue;
+        outRipHost = ripHost; outRport = pR->GetUDPPort();
+        return true;
+    }
+    return false;
+}
+
+// [eSE v9] reachability escalation driver. Per tracked source, after STAGE_TIMEOUT_MS in the
+// current stage with no live socket, advance to the next mechanism: Direct->2way-punch->
+// 3way-rdv->relay. Runs under Process()'s m_lock (control sends are small). Dormant unless
+// m_bReachSelectorOn. Prunes settled / no-longer-wanted entries.
+void CLiveStreamManager::TickReachabilitySelector(DWORD now)
+{
+    if (!thePrefs.GetEseReachSelector() || !thePrefs.GetUtpHolePunchEnabled())
+        return;
+    if (!Kademlia::CKademlia::IsConnected() || Kademlia::CKademlia::GetUDPListener() == NULL)
+        return;
+    // < 5s/stage so all 4 stages (Direct->punch2->punch3->relay = 18s) complete within one
+    // 20s stall-failover window (~:3028) — every reachability method is tried before failover
+    // re-discovers the source.
+    const DWORD STAGE_TIMEOUT_MS = 4500;
+    // CMap iteration safety: below we only update the value of the CURRENT (already-present)
+    // key via m_escalation[key]=st. operator[] on an EXISTING key returns the node's value ref
+    // WITHOUT inserting/rehashing, so the POSITION stays valid. No new keys are added during
+    // iteration; removals are deferred to toErase and applied after the loop.
+    CList<uint64, uint64> toErase;
+    for (POSITION p = m_escalation.GetStartPosition(); p != NULL; ) {
+        uint64 key; ReachState st;
+        m_escalation.GetNextAssoc(p, key, st);
+        const uint32 ipHost = (uint32)(key >> 16);
+        const uint16 port   = (uint16)(key & 0xFFFF);
+        // Reachable once the source has a live socket -> done.
+        CUpDownClient* c = (theApp.clientlist != NULL)
+            ? theApp.clientlist->FindClientByIP(htonl(ipHost), port) : NULL;   // FindClientByIP wants NET order
+        if (c != NULL && c->socket != NULL && c->socket->IsConnected()) {
+            if (st.stage != REACH_DONE) {
+                // Record WHICH mechanism actually won at the connect edge (once per source) before
+                // collapsing to DONE, so a 2-3 PC run can attribute the connect to Direct/Punch2/
+                // Punch3/Relay instead of guessing from interleaved logs.
+                switch (st.stage) {
+                    case REACH_DIRECT: InterlockedIncrement(&CStatistics::m_dwReachConnDirect); break;
+                    case REACH_PUNCH2: InterlockedIncrement(&CStatistics::m_dwReachConnPunch2); break;
+                    case REACH_PUNCH3: InterlockedIncrement(&CStatistics::m_dwReachConnPunch3); break;
+                    case REACH_RELAY:  InterlockedIncrement(&CStatistics::m_dwReachConnRelay);  break;
+                }
+                LIVE_LOG("REACH", "%S:%u CONNECTED at stage=%s", (LPCWSTR)ipstr(htonl(ipHost)), port,
+                    st.stage == REACH_DIRECT ? "DIRECT" : st.stage == REACH_PUNCH2 ? "PUNCH2"
+                    : st.stage == REACH_PUNCH3 ? "PUNCH3" : "RELAY");
+                st.stage = REACH_DONE; st.stageEnteredTick = now; m_escalation[key] = st;
+            }
+        }
+        if (st.stage == REACH_DONE) {
+            if ((DWORD)(now - st.stageEnteredTick) > 60000) toErase.AddTail(key);   // GC long-settled
+            continue;
+        }
+        // Drop tracking for sources we are no longer trying to view.
+        bool stillWanted = false;
+        for (POSITION vp = m_viewPeers.GetHeadPosition(); vp != NULL; ) {
+            CUpDownClient* v = m_viewPeers.GetNext(vp);
+            if (v != NULL && ntohl(v->GetIP()) == ipHost && v->GetUserPort() == port) { stillWanted = true; break; }
+        }
+        if (!stillWanted) { toErase.AddTail(key); continue; }
+        if ((DWORD)(now - st.stageEnteredTick) < STAGE_TIMEOUT_MS) continue;   // give the stage its window
+        // Advance to the next mechanism.
+        if (st.stage == REACH_DIRECT) {
+            st.stage = REACH_PUNCH2; st.stageEnteredTick = now;
+            uint16 hpSpread = thePrefs.GetEseHolePunchPortPredict() ? (uint16)thePrefs.GetEseHolePunchPortSpread() : 0;
+            Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(ipHost, st.udpPort, hpSpread);   // HOST order
+            if (c != NULL && c->m_uNatRendezvousAttempts < 255) c->m_uNatRendezvousAttempts++;
+            LIVE_LOG("REACH", "%S:%u DIRECT->PUNCH2 (2-way punch)", (LPCWSTR)ipstr(htonl(ipHost)), port);
+        } else if (st.stage == REACH_PUNCH2) {
+            st.stage = REACH_PUNCH3; st.stageEnteredTick = now;
+            uint32 rIP = 0; uint16 rPort = 0;
+            if (PickRendezvous(ipHost, st.udpPort, rIP, rPort)) {
+                Kademlia::CKademlia::GetUDPListener()->InitiateKad3Rendezvous(rIP, rPort, ipHost, st.udpPort);
+                LIVE_LOG("REACH", "%S:%u PUNCH2->PUNCH3 via R %S", (LPCWSTR)ipstr(htonl(ipHost)), port, (LPCWSTR)ipstr(htonl(rIP)));
+            } else {
+                LIVE_LOG("REACH", "%S:%u PUNCH2->PUNCH3 (no R available)", (LPCWSTR)ipstr(htonl(ipHost)), port);
+            }
+        } else if (st.stage == REACH_PUNCH3) {
+            st.stage = REACH_RELAY; st.stageEnteredTick = now;
+            // R.3: route the SUBSCRIBE through an active onion circuit (an exit peer subscribes
+            // on our behalf). Reuses the proven tunnel path; bIP is NET order (cf. :617). If no
+            // circuit, fall through to DONE and let the 20 s stall failover re-discover.
+            eSELive::CLiveTunnel& tun = eSELive::CLiveTunnel::Get();
+            if (tun.ActiveCircuitCount() > 0) {
+                tun.SendLiveSubscribeNoWait(m_streamInfo.streamKey, htonl(ipHost), port, st.udpPort, 0);
+                LIVE_LOG("REACH", "%S:%u PUNCH3->RELAY (tunneled subscribe)", (LPCWSTR)ipstr(htonl(ipHost)), port);
+            } else {
+                st.stage = REACH_DONE;
+                LIVE_LOG("REACH", "%S:%u RELAY skipped (no circuit) -> DONE", (LPCWSTR)ipstr(htonl(ipHost)), port);
+            }
+        } else {   // REACH_RELAY window elapsed -> give up; the failover re-discovers
+            st.stage = REACH_DONE;
+        }
+        m_escalation[key] = st;
+    }
+    for (POSITION ep = toErase.GetHeadPosition(); ep != NULL; )
+        m_escalation.RemoveKey(toErase.GetNext(ep));
 }
 
 void CLiveStreamManager::RequestMissingSegments()
@@ -3200,6 +3547,16 @@ void CLiveStreamManager::RequestMissingSegments()
                 suppressed++;
                 continue;  // request outstanding — don't duplicate it
             }
+            // Timed out. If this was a CRITICAL (near-playhead) block, charge a
+            // punctuality failure to the peer we asked — exactly once per
+            // outstanding request. failCharged guards against re-charging on
+            // later ticks when no replacement peer is found and the entry below
+            // is not overwritten (threat-model vector #3).
+            if (prev.edgeCritical && !prev.failCharged) {
+                ChargePunctualityFailure(prev.peerIp, prev.peerPort);
+                prev.failCharged = true;
+                m_inflightSegReqs[seq] = prev;  // persist the flag
+            }
             excludeIp = prev.peerIp;   // timed out: prefer another peer
             attempts  = prev.attempts;
         }
@@ -3216,10 +3573,17 @@ void CLiveStreamManager::RequestMissingSegments()
                 peer->SendPacket(pkt);
                 InterlockedIncrement(&m_counters.chunksRequested);
                 InflightSegReq req;
-                req.sentTick = now;
-                req.peerIp   = peer->GetIP();
-                req.peerPort = peer->GetUserPort();
-                req.attempts = attempts + 1;
+                req.sentTick     = now;
+                req.peerIp       = peer->GetIP();
+                req.peerPort     = peer->GetUserPort();
+                req.attempts     = attempts + 1;
+                // Critical = close to the playback head (the low end of the
+                // request window). The player consumes oldest-first, so a late
+                // block here is what actually freezes playback; far-ahead blocks
+                // are recoverable. Classified at request time and read back on
+                // both timeout (charge) and receipt (reward).
+                req.edgeCritical = (seq < oldestSeq + ESE_LIVE_EDGE_GUARD);
+                req.failCharged  = false;
                 m_inflightSegReqs[seq] = req;
                 requested++;
                 LIVE_LOG("REQ", "ASK seq=%u -> %S:%u (attempt %d)",
@@ -3277,6 +3641,33 @@ void CLiveStreamManager::BanPeer(CUpDownClient* peer)
     }
 }
 
+// Threat-model vector #3 (piece starvation / malicious churn): a peer that
+// times out on a block the player needs imminently is sabotaging the live edge,
+// whether maliciously or via a genuinely bad link — either way we should stop
+// asking it for critical blocks. Charge failCount (weighted), which demotes it
+// (CalculateTrustLevel: >2 -> leaf) and tanks its selection score
+// (SelectPeerForSegment: -= failCount*20). It recovers only by serving critical
+// blocks on time (failCount-- in OnChunkReceived). Caller (RequestMissingSegments
+// via Process) holds m_lock.
+void CLiveStreamManager::ChargePunctualityFailure(uint32 ip, uint16 port)
+{
+    if (ip == 0) return;
+    CUpDownClient* peer = NULL;
+    POSITION pos = m_viewPeers.GetHeadPosition();
+    while (pos != NULL) {
+        CUpDownClient* p = m_viewPeers.GetNext(pos);
+        if (p != NULL && p->GetIP() == ip && p->GetUserPort() == port) { peer = p; break; }
+    }
+    if (peer == NULL) return;  // peer already gone — nothing left to penalise
+
+    PeerTrust& trust = GetOrCreateTrust(peer);
+    trust.failCount += ESE_EDGE_FAIL_WEIGHT;
+    if (trust.failCount > ESE_FAIL_COUNT_CAP) trust.failCount = ESE_FAIL_COUNT_CAP;
+    trust.lastSeen = GetTickCount();
+    LIVE_LOG("TRUST", "edge-miss ip=%S port=%u failCount=%d",
+        (LPCWSTR)ipstr(ip), (unsigned)port, trust.failCount);
+}
+
 // ============================================================
 // C6 (2026-06) — durable peer identity + keyed accessors.
 // ============================================================
@@ -3308,6 +3699,18 @@ LivePeerId CLiveStreamManager::PeerId(CUpDownClient* peer) const
 bool CLiveStreamManager::GetPeerBitmap(CUpDownClient* peer, PeerBitmapInfo& outInfo) const
 {
     return m_peerBitmaps.Lookup(PeerId(peer), outInfo) != FALSE;
+}
+
+// v8.1.2 B6 — co-seeder check for the tunnel's 2-hop builder. m_viewPeers are the peers we
+// pull THIS stream from; routing a circuit through one of them would let it learn we watch
+// the channel. Main-thread read (no lock — m_viewPeers is mutated on the main thread too).
+bool CLiveStreamManager::IsStreamSourcePeer(CUpDownClient* peer) const
+{
+    if (!peer || !m_bViewing) return false;
+    POSITION pos = m_viewPeers.GetHeadPosition();
+    while (pos != NULL)
+        if (m_viewPeers.GetNext(pos) == peer) return true;
+    return false;
 }
 
 bool CLiveStreamManager::GetPeerTrust(CUpDownClient* peer, PeerTrust& outTrust) const
@@ -3427,6 +3830,29 @@ uint32 CLiveStreamManager::GetMinUploadRequired() const
 // THREAD-SAFE DEBUG SNAPSHOT (Fix 1)
 // ============================================================
 
+#ifdef ESE_TEST_HOOKS
+// TEST-ONLY: format a Live-mesh peer's address into a fixed worst-case buffer
+// for the /api/live/debug peerDetail array. Overflow-safety BY CONSTRUCTION:
+//   * 'out' is sized 46 (== INET6_ADDRSTRLEN) by the caller — the worst-case
+//     IPv6 textual form (<=45 visible chars) + NUL fits; we NEVER size for the
+//     IPv4 max (16). So the buffer cannot be too small even for a full v6 string.
+//   * _snprintf_s(..., _TRUNCATE, ...) is a BOUNDED writer: it writes at most
+//     outLen-1 chars and always NUL-terminates, so it physically cannot overflow
+//     regardless of address family or string length.
+// The Live mesh peer identity is IPv4 today (CUpDownClient::GetIP() -> uint32,
+// network byte order — same as ipstr()/inet_ntoa), so we emit dotted-quad here.
+// When dual-stack reaches the mesh, swap the body for eMuleAI's
+// _inet_ntop(AF_INET6, &addr, out, outLen) (Address.h) — also bounded by outLen —
+// and nothing else changes: the HTTP response is an auto-growing CStringA, so
+// there is no fixed-size response buffer anywhere in the chain to overrun.
+static void FillPeerIpSafe(char* out, size_t outLen, uint32 ipv4)
+{
+    _snprintf_s(out, outLen, _TRUNCATE, "%u.%u.%u.%u",
+        (unsigned)(ipv4 & 0xFF),         (unsigned)((ipv4 >> 8)  & 0xFF),
+        (unsigned)((ipv4 >> 16) & 0xFF), (unsigned)((ipv4 >> 24) & 0xFF));
+}
+#endif
+
 LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
 {
     // Snapshot the KadBridge BEFORE taking our m_lock. BuildDebugKadSnapshot
@@ -3480,6 +3906,34 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
             }
         }
     }
+
+#ifdef ESE_TEST_HOOKS
+    // TEST-ONLY: per-peer trust detail (bounded by MAX_PEER_DBG). Iterate
+    // m_viewPeers (gives CUpDownClient* -> IP/port) under the m_lock we already
+    // hold. snap.peerDetail layout is unconditional; only this fill is gated, so
+    // production keeps peerDetailCount == 0 and emits nothing.
+    snap.peerDetailCount = 0;
+    {
+        POSITION vpos = m_viewPeers.GetHeadPosition();
+        while (vpos && snap.peerDetailCount < LiveDebugSnapshot::MAX_PEER_DBG) {
+            CUpDownClient* p = m_viewPeers.GetNext(vpos);
+            if (p == NULL) continue;
+            LiveDebugSnapshot::PeerDbg& d = snap.peerDetail[snap.peerDetailCount++];
+            FillPeerIpSafe(d.ip, sizeof(d.ip), p->GetIP());   // bounded, v4/v6-safe
+            d.port = p->GetUserPort();
+            PeerTrust t;
+            if (m_peerTrust.Lookup(PeerId(p), t)) {
+                d.level    = t.currentLevel;
+                d.failCount = t.failCount;
+                d.respPct  = (int)(t.GetResponseRate() * 100.0f);
+            } else {
+                d.level = ESE_TRUST_LEAF; d.failCount = 0; d.respPct = 100;
+            }
+            PeerCounters pc;
+            d.rttMs = m_peerCounters.Lookup(PeerId(p), pc) ? pc.rtt_ms_ewma : 0;
+        }
+    }
+#endif
 
     // Chunk buffer
     snap.bufCount  = m_chunkBuffer.GetCount();

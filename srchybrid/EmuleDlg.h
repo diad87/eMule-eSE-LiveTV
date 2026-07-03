@@ -165,11 +165,15 @@ public:
 
 	// eSE Server process control.
 	// bOpenBrowser=true (default, called by toolbar button click) opens
-	// http://localhost:8080 after the spawn. bOpenBrowser=false is used
-	// by the OnInitDialog auto-spawn so the dashboard is ready in the
-	// background but no browser pop-up appears at every eMule launch.
-	void  ToggleEseServer(bool bOpenBrowser = true);
+	// http://localhost:8080 once the dashboard answers on the port.
+	// bOpenBrowser=false is used by the OnInitDialog auto-spawn so the
+	// dashboard is ready in the background but no browser pop-up appears
+	// at every eMule launch. If the server is already running, the call
+	// just opens the browser — it never stops the process (that happens
+	// on eMule shutdown only).
+	void  LaunchEseServer(bool bOpenBrowser = true);
 	bool  IsEseServerRunning() const;
+	void  OpenEseDashboardWhenReady();
 
 protected:
 	WINDOWPLACEMENT m_wpFirstRestore;
@@ -218,6 +222,12 @@ protected:
 
 	// eSE Server process handle
 	HANDLE m_hEseProcess;
+	// Polls localhost:8080 after a spawn and opens the browser when the
+	// dashboard is actually accepting connections (avoids the "localhost
+	// rechazó la conexión" tab when the browser raced the Node boot).
+	UINT_PTR m_hEseProbeTimer;
+	int m_iEseProbeAttempts;
+	static void CALLBACK EseDashboardProbeTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
 
 	// Mini Mule
 	CMiniMule	*m_pMiniMule;
@@ -310,6 +320,7 @@ protected:
 	afx_msg LRESULT OnFileCompleted(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnFileOpProgress(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnImportPart(WPARAM wParam,LPARAM lParam);
+	afx_msg LRESULT OnPartHashed(WPARAM wParam, LPARAM lParam); // eSE H1
 
 	//Frame grabbing
 	afx_msg LRESULT OnFrameGrabFinished(WPARAM wParam, LPARAM lParam);
@@ -363,6 +374,7 @@ enum EEMuleAppMsgs
 	TM_FILEALLOCEXC,
 	TM_FILECOMPLETED,
 	TM_FILEOPPROGRESS,
+	TM_PARTHASHED,		// eSE H1: async completed-part hash verdict (CPartHashThread)
 	TM_CONSOLETHREADEVENT
 };
 

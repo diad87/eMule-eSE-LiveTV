@@ -52,6 +52,7 @@ class CFirewallOpener;
 class CUPnPImplWrapper;
 class CUploadDiskIOThread;
 class CPartFileWriteThread;
+class CPartHashThread;
 class CCacheNodeList;
 class CCacheDownloadThread;
 class CLiveStreamManager;
@@ -101,6 +102,7 @@ public:
 	CUPnPImplWrapper	*m_pUPnPFinder;
 	CUploadDiskIOThread	*m_pUploadDiskIOThread;
 	CPartFileWriteThread *m_pPartFileWriteThread;
+	CPartHashThread		*m_pPartHashThread;		// eSE H1: completed-part verification off the main thread
 	CCacheNodeList		*m_pCacheNodeList;
 	CCacheDownloadThread *m_pCacheDownloadThread;
 	CLiveStreamManager	*liveStreamManager;

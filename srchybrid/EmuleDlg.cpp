@@ -52,6 +52,7 @@
 #include "KnownFileList.h"
 #include "ServerList.h"
 #include "Opcodes.h"
+#include "NodeIdentity.h"   // v8.x Phase 1 — eSE node identity init at startup
 #include "SharedFileList.h"
 #include "ED2KLink.h"
 #include "LiveStreamManager.h"
@@ -121,6 +122,7 @@
 #include "ExitBox.h"
 #include "UploadDiskIOThread.h"
 #include "PartFileWriteThread.h"
+#include "PartHashThread.h"
 #include "ImportParts.h"
 
 #ifdef _DEBUG
@@ -223,6 +225,7 @@ BEGIN_MESSAGE_MAP(CemuleDlg, CTrayDialog)
 	ON_MESSAGE(TM_FRAMEGRABFINISHED, OnFrameGrabFinished)
 	ON_MESSAGE(TM_FILEALLOCEXC, OnFileAllocExc)
 	ON_MESSAGE(TM_FILECOMPLETED, OnFileCompleted)
+	ON_MESSAGE(TM_PARTHASHED, OnPartHashed)
 	ON_MESSAGE(TM_CONSOLETHREADEVENT, OnConsoleThreadEvent)
 
 #ifdef HAVE_WIN7_SDK_H
@@ -287,6 +290,8 @@ CemuleDlg::CemuleDlg(CWnd *pParent /*=NULL*/)
 	statusbar = new CMuleStatusBarCtrl;
 	m_pDropTarget = new CMainFrameDropTarget;
 	m_hEseProcess = NULL;   // eSE server process (null = not running)
+	m_hEseProbeTimer = 0;
+	m_iEseProbeAttempts = 0;
 }
 
 void CemuleDlg::SetClientIconList()
@@ -692,14 +697,14 @@ BOOL CemuleDlg::OnInitDialog()
 	// http://localhost:8080/live and got "site unreachable" because Node
 	// was never spawned. Spawning here makes the dashboard available the
 	// moment eMule is up — same 3-tier fallback (ese-server.exe / node +
-	// server.js / well-known paths) used by ToggleEseServer().
+	// server.js / well-known paths) used by LaunchEseServer().
 	//
 	// We pass bOpenBrowser=false so the user is not bombarded with a
 	// browser tab on every eMule launch. They can still click the eSE
-	// toolbar button anytime to open the dashboard manually (since it's
-	// already running, that click will STOP the dashboard — toggle
-	// behaviour preserved). On startup-failure we just log; no popups.
-	ToggleEseServer(/*bOpenBrowser=*/false);
+	// toolbar button anytime to open the dashboard in the browser (the
+	// click never stops the server; it dies with eMule on shutdown).
+	// On startup-failure we just log; no popups.
+	LaunchEseServer(/*bOpenBrowser=*/false);
 
 	// V2-S06/S27: only schedule the headless one-shot if there's actual work
 	// (a JoinStream or selftest). Plain --headless --metrics-port (= "expose
@@ -910,11 +915,13 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				}
 
 				// v0.71 IPv6 Sprint 3 follow-up — kick the v6 firewall
-				// probe right after the listener binds. Synchronous with
-				// 5s timeout: blocks startup briefly but only once, and
-				// only when IPv6 is enabled in prefs. Populates
-				// CFirewallProberV6::Instance().GetDetectedV6IP() for the
-				// Network Info panel + status bar.
+				// probe right after the listener binds. Runs on a worker
+				// thread for headroom (future PCP/UPnP layers can block).
+				// The public v6 address shown in the Network Info panel +
+				// status bar is no longer fetched here: it is detected
+				// in-band when a CAP_FORK_IPV6_WIRE peer answers our
+				// OP_PUBLICIP_REQ (CFirewallProberV6::SetDetectedV6IP), which
+				// replaced the old api6.ipify.org third-party HTTPS probe.
 				if (thePrefs.IsIPv6Enabled())
 					CFirewallProberV6::Instance().ProbeAsync();
 
@@ -994,9 +1001,29 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				// (LiveChannel/LiveGossip/LiveOnionCrypto) and keep their bits.
 				// PRIVACY_TUNNELING/COVER/DATAPLANE are set below from the
 				// user's mode policy.
+				// v8.x Phase 1 — bring up the persistent eSE node identity (Ed25519)
+				// BEFORE the first HELLO so peers receive TAG_ESE_NODE_PUB (0x6D).
+				// Load-or-generate; generation persists via INodeIdentityStorage
+				// (DPAPI on Win, 0600 file on POSIX). ESE_CAP_TUNNEL_AUTH stays OFF
+				// until Phase 2 lands the v2 handshake (precedent: M1 caps below).
+				if (!eSELive::NodeIdentityInit())
+					AddDebugLogLine(false, _T("Privacy: eSE node identity init FAILED (TAG_ESE_NODE_PUB absent this session)"));
 				g_uEseCapsRuntime = ESE_CAP_SEALED_RECORDS
 				                  | ESE_CAP_GOSSIP_PROTOCOL
-				                  | ESE_CAP_LIVE_CHUNK_FRAG;  // v8.1.x — pure transport feature, always advertised
+				                  | ESE_CAP_LIVE_CHUNK_FRAG   // v8.1.x — pure transport feature, always advertised
+				                  | ESE_CAP_TUNNEL_BULK;      // v8.1.2 — bulk data-plane carrier (0xD9); any node can relay a bulk cell as hop1, so advertise always
+				// R.1 (3-way Kad rendezvous): advertise participation only when the hole-punch
+				// path is enabled — the responder + R-relay handlers gate on the same pref,
+				// so a peer that sees this bit can safely use us as rendezvous R or target B.
+				// Validated 3-PC. The auto-initiator (Live reachability selector) lands later.
+				if (thePrefs.GetUtpHolePunchEnabled())
+					g_uEseCapsRuntime |= ESE_CAP_HOLEPUNCH_RDV;
+				// R.3 buddy relay: advertise relay capability ONLY when we actually accept relay
+				// duty (pref EseRelayAccept, default OFF). A peer seeing this bit may pick us as its
+				// relay buddy; gating on the pref means we advertise only when we will honor an
+				// incoming 0xCF SETUP — so a node that never relays stays byte-identical on the wire.
+				if (thePrefs.GetEseRelayAccept())
+					g_uEseCapsRuntime |= ESE_CAP_LIVE_RELAY;
 				// Re-enable each Kad v2 cap at its phase exit, e.g.:
 				//   if (Kademlia::CKadV2SubscriberPin::Get().IsRepublishingLive())
 				//       g_uEseCapsRuntime |= ESE_CAP_M1_SUBSCRIBER_PIN;
@@ -1952,6 +1979,17 @@ LRESULT CemuleDlg::OnImportPart(WPARAM wParam, LPARAM lParam)
 	return 0;
 }
 
+// eSE H1: verdict of an asynchronously hashed completed part (CPartHashThread)
+LRESULT CemuleDlg::OnPartHashed(WPARAM wParam, LPARAM lParam)
+{
+	PartHashVerdict_Struct *pVerdict = reinterpret_cast<PartHashVerdict_Struct*>(wParam);
+	CPartFile *partfile = reinterpret_cast<CPartFile*>(lParam);
+	if (!theApp.IsClosing() && theApp.downloadqueue && theApp.downloadqueue->IsPartFile(partfile)) // could have been cancelled
+		partfile->ProcessPartHashVerdict(*pVerdict);
+	delete pVerdict;
+	return 0;
+}
+
 #ifdef _DEBUG
 void BeBusy(UINT uSeconds, LPCSTR pszCaller)
 {
@@ -2161,8 +2199,41 @@ void CemuleDlg::OnClose()
 	CSingleLock sLock1(&theApp.hashing_mut); // only one file hash at a time
 	sLock1.Lock(SEC2MS(2));
 
+	// perf-audit lote 2: commit all buffered partfile data BEFORE ending the write
+	// thread. Gaps are filled at buffering time (CPartFile::WriteToBuffer), so any
+	// buffer dropped at shutdown leaves the final .met claiming data the .part file
+	// never received (silent corruption of up to ~FileBufferTimeLimit per file).
+	// ~CPartFile runs after EndThread and cannot enqueue (IsRunning()==false), so
+	// flush here and wait (bounded) until the write thread drains: m_iWrites is
+	// counted at queue time and reaches 0 only when every write completed or failed.
+	if (theApp.downloadqueue && theApp.m_pPartFileWriteThread->IsRunning()) {
+		bool bPendingWrites = false;
+		for (POSITION pos = NULL;;) {
+			CPartFile *pFile = theApp.downloadqueue->GetFileNext(pos);
+			if (pFile && (HANDLE)pFile->m_hpartfile != INVALID_HANDLE_VALUE) {
+				pFile->FlushBuffer(false, true, true); //mirrors the flush in ~CPartFile
+				bPendingWrites |= pFile->m_iWrites > 0;
+			}
+			if (pos == NULL)
+				break;
+		}
+		for (const DWORD dwDrainStart = ::GetTickCount(); bPendingWrites && ::GetTickCount() - dwDrainStart < SEC2MS(10);) {
+			::Sleep(10);
+			bPendingWrites = false;
+			for (POSITION pos = NULL;;) {
+				CPartFile *pFile = theApp.downloadqueue->GetFileNext(pos);
+				bPendingWrites |= pFile && pFile->m_iWrites > 0;
+				if (pos == NULL)
+					break;
+			}
+		}
+	}
+
 	theApp.m_pUploadDiskIOThread->EndThread();
 	theApp.m_pPartFileWriteThread->EndThread();
+	// eSE H1: stop BEFORE the downloadqueue dtor (below) so ~CPartFile re-verifies
+	// leftover parts synchronously and the final .met never holds unverified parts
+	theApp.m_pPartHashThread->EndThread();
 
 	// saving data & stuff
 	theApp.emuledlg->preferenceswnd->m_wndSecurity.DeleteDDB();
@@ -2235,6 +2306,7 @@ void CemuleDlg::OnClose()
 	delete theApp.m_pUPnPFinder;			theApp.m_pUPnPFinder = NULL;
 	delete theApp.m_pUploadDiskIOThread;	theApp.m_pUploadDiskIOThread = NULL;
 	delete theApp.m_pPartFileWriteThread;	theApp.m_pPartFileWriteThread = NULL;
+	delete theApp.m_pPartHashThread;		theApp.m_pPartHashThread = NULL;
 
 	thePrefs.Uninit();
 	theApp.m_app_state = APP_STATE_DONE;
@@ -2968,7 +3040,7 @@ BOOL CemuleDlg::OnCommand(WPARAM wParam, LPARAM lParam)
 		break;
 	case TBBTN_ESE:
 	case MP_HM_ESE:
-		ToggleEseServer();
+		LaunchEseServer();
 		break;
 	case TBBTN_OPTIONS:
 	case MP_HM_PREFS:
@@ -3619,19 +3691,67 @@ bool CemuleDlg::IsEseServerRunning() const
 	       WaitForSingleObject(m_hEseProcess, 0) == WAIT_TIMEOUT;
 }
 
-void CemuleDlg::ToggleEseServer(bool bOpenBrowser)
+// Returns true when the eSE dashboard is accepting connections on
+// localhost:8080. A loopback connect resolves instantly both ways
+// (refused while nothing listens, accepted once the server is up),
+// so this is safe to call from the UI thread.
+static bool IsEseDashboardListening()
 {
-	// If already running => stop it.
-	// (Auto-spawn from OnInitDialog passes bOpenBrowser=false; if the user
-	// then clicks the toolbar button, IsEseServerRunning is true and we
-	// stop — this is the expected toggle behaviour.)
+	SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (s == INVALID_SOCKET)
+		return false;
+	sockaddr_in sa = {};
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(8080);
+	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	bool bListening = connect(s, (sockaddr*)&sa, sizeof(sa)) == 0;
+	closesocket(s);
+	return bListening;
+}
+
+void CemuleDlg::OpenEseDashboardWhenReady()
+{
+	if (IsEseDashboardListening()) {
+		ShellExecute(NULL, _T("open"), _T("http://localhost:8080"),
+		             NULL, NULL, SW_SHOWNORMAL);
+		return;
+	}
+	// Server still booting — poll until the port answers, then open.
+	m_iEseProbeAttempts = 0;
+	if (!m_hEseProbeTimer)
+		VERIFY((m_hEseProbeTimer = ::SetTimer(NULL, 0, 400, EseDashboardProbeTimer)) != 0);
+}
+
+void CALLBACK CemuleDlg::EseDashboardProbeTimer(HWND /*hwnd*/, UINT /*uiMsg*/,
+	UINT_PTR idEvent, DWORD /*dwTime*/) noexcept
+{
+	CemuleDlg *dlg = theApp.emuledlg;
+	if (dlg == NULL || theApp.IsClosing()) {
+		::KillTimer(NULL, idEvent);
+		return;
+	}
+	if (IsEseDashboardListening()) {
+		::KillTimer(NULL, idEvent);
+		dlg->m_hEseProbeTimer = 0;
+		ShellExecute(NULL, _T("open"), _T("http://localhost:8080"),
+		             NULL, NULL, SW_SHOWNORMAL);
+		return;
+	}
+	if (++dlg->m_iEseProbeAttempts >= 50) { // ~20 s
+		::KillTimer(NULL, idEvent);
+		dlg->m_hEseProbeTimer = 0;
+		LogError(LOG_STATUSBAR, _T("eSE: el dashboard no respondió en localhost:8080 tras 20 s — revisa el log de eSE"));
+	}
+}
+
+void CemuleDlg::LaunchEseServer(bool bOpenBrowser)
+{
+	// Already running (usually the OnInitDialog auto-spawn): the button
+	// just opens the dashboard. The process is only stopped on eMule
+	// shutdown (OnClose) — clicking never kills it.
 	if (IsEseServerRunning()) {
-		TerminateProcess(m_hEseProcess, 0);
-		CloseHandle(m_hEseProcess);
-		m_hEseProcess = NULL;
-		// Uncheck the toolbar button visually
-		if (toolbar && toolbar->m_hWnd)
-			toolbar->CheckButton(TBBTN_ESE, FALSE);
+		if (bOpenBrowser)
+			OpenEseDashboardWhenReady();
 		return;
 	}
 
@@ -3768,16 +3888,14 @@ void CemuleDlg::ToggleEseServer(bool bOpenBrowser)
 	if (ok) {
 		CloseHandle(pi.hThread);
 		m_hEseProcess = pi.hProcess;
-		if (toolbar && toolbar->m_hWnd)
-			toolbar->CheckButton(TBBTN_ESE, TRUE);
-		SetTimer(1972, 2500, NULL);
 		// Only open the browser when the user explicitly asked for it
 		// (toolbar button click). Auto-spawn from OnInitDialog skips this
 		// to avoid popping up a window every time eMule launches.
-		if (bOpenBrowser) {
-			ShellExecute(NULL, _T("open"), _T("http://localhost:8080"),
-			             NULL, NULL, SW_SHOWNORMAL);
-		}
+		// The probe waits until the port actually answers — the Node boot
+		// takes a few seconds and an immediate ShellExecute used to land
+		// on "localhost rechazó la conexión".
+		if (bOpenBrowser)
+			OpenEseDashboardWhenReady();
 		AddDebugLogLine(false, _T("eSE launcher: started %s (browser=%d)"),
 			(LPCTSTR)launchExe, bOpenBrowser ? 1 : 0);
 	} else {

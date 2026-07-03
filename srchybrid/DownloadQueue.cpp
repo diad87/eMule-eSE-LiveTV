@@ -361,8 +361,8 @@ void CDownloadQueue::Process()
 	} else
 		downspeed = 0;
 
-	DWORD curTick = ::GetTickCount() - SEC2MS(10);
-	while (!average_dr_list.IsEmpty() && curTick >= average_dr_list.GetHead().timestamp)
+	DWORD curTick = ::GetTickCount();
+	while (!average_dr_list.IsEmpty() && curTick - average_dr_list.GetHead().timestamp >= SEC2MS(10))
 		m_datarateMS -= average_dr_list.RemoveHead().datalen;
 
 	if (average_dr_list.GetCount() > 1)
@@ -402,7 +402,7 @@ void CDownloadQueue::Process()
 
 	if (m_udcounter == 5) {
 		if (theApp.serverconnect->IsUDPSocketAvailable()
-			&& (!m_lastudpstattime || curTick >= m_lastudpstattime + UDPSERVERSTATTIME))
+			&& (!m_lastudpstattime || curTick - m_lastudpstattime >= UDPSERVERSTATTIME))
 		{
 			m_lastudpstattime = curTick;
 			theApp.serverlist->ServerStats();
@@ -410,14 +410,14 @@ void CDownloadQueue::Process()
 	} else if (m_udcounter >= 10) {
 		m_udcounter = 0;
 		if (theApp.serverconnect->IsUDPSocketAvailable())
-			if (!m_lastudpsearchtime || curTick >= m_lastudpsearchtime + UDPSERVERREASKTIME)
+			if (!m_lastudpsearchtime || curTick - m_lastudpsearchtime >= UDPSERVERREASKTIME)
 				SendNextUDPPacket();
 	}
 
 	CheckDiskspaceTimed();
 
 	// ZZ:DownloadManager -->
-	if (!m_dwLastA4AFtime || curTick >= m_dwLastA4AFtime + MIN2MS(8)) {
+	if (!m_dwLastA4AFtime || curTick - m_dwLastA4AFtime >= MIN2MS(8)) {
 		theApp.clientlist->ProcessA4AFClients();
 		m_dwLastA4AFtime = curTick;
 	}
@@ -665,10 +665,9 @@ bool CDownloadQueue::RemoveSource(CUpDownClient *toremove, bool bDoStatsUpdate)
 			if (bDoStatsUpdate) {
 				cur_file->RemoveDownloadingSource(toremove);
 				cur_file->UpdatePartsInfo();
+				cur_file->UpdateAvailablePartsCount();
 			}
 		}
-		if (bDoStatsUpdate)
-			cur_file->UpdateAvailablePartsCount();
 	}
 
 	// remove this source on all files in the download queue who link this source
@@ -919,9 +918,11 @@ bool CDownloadQueue::SendNextUDPPacket()
 			Debug(_T("Rotating file list\n"));
 
 		// move the last 35 files to the head
-		if (filelist.GetCount() > MAX_REQUESTS_PER_SERVER)
+		if (filelist.GetCount() > MAX_REQUESTS_PER_SERVER) {
+			CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE);
 			for (int i = MAX_REQUESTS_PER_SERVER; --i >= 0;)
 				filelist.AddHead(filelist.RemoveTail());
+		}
 
 		m_cRequestsSentToServer = 0;
 		// and next server
@@ -989,6 +990,7 @@ void CDownloadQueue::HeapSort(UINT first, UINT last)
 
 void CDownloadQueue::SortByPriority()
 {
+	CSingleLock lock(&m_csFilelistMainThrdWriteOtherThrdsRead, TRUE); //webserver workers read filelist under this lock
 	UINT n = (UINT)filelist.GetCount();
 	if (!n)
 		return;
@@ -1002,7 +1004,7 @@ void CDownloadQueue::SortByPriority()
 
 void CDownloadQueue::CheckDiskspaceTimed()
 {
-	if (!m_lastcheckdiskspacetime || ::GetTickCount() >= m_lastcheckdiskspacetime + DISKSPACERECHECKTIME)
+	if (!m_lastcheckdiskspacetime || ::GetTickCount() - m_lastcheckdiskspacetime >= DISKSPACERECHECKTIME)
 		CheckDiskspace();
 }
 

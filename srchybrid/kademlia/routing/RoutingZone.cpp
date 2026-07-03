@@ -253,6 +253,24 @@ void CRoutingZone::ReadFile(const CString &strSpecialNodesdate)
 				DebugLogWarning(_T("No verified contacts found in nodes.dat - might be an old file version. Setting all contacts verified for this time to speed up Kad bootstrapping"));
 				SetAllContactsVerified();
 			}
+			// [eSE v9] root link: read the ADDITIVE ESV6 trailer (if present) and back-patch the v6
+			// address onto the just-loaded contacts. Absent/foreign tail = clean no-op (magic-guarded).
+			if (file.GetLength() - file.GetPosition() >= 9) {
+				uint32 uMagic = file.ReadUInt32();
+				if (uMagic == 0x36565345 /*'ESV6'*/) {
+					uint8 byTrailerVer = file.ReadUInt8(); (void)byTrailerVer;
+					uint32 uV6Count = file.ReadUInt32();
+					if (uV6Count <= 1000 && (uint64)uV6Count * 32ull <= (file.GetLength() - file.GetPosition())) {
+						CUInt128 uPatchID; uint8 byV6[16];
+						while (uV6Count--) {
+							file.ReadUInt128(uPatchID);
+							for (int b = 0; b < 16; ++b) byV6[b] = file.ReadUInt8();
+							CContact *pC = GetContact(uPatchID);
+							if (pC != NULL) pC->SetIPv6Address(byV6);
+						}
+					}
+				}
+			}
 		}
 		file.Close();
 	} catch (CFileException *ex) {
@@ -375,6 +393,24 @@ void CRoutingZone::WriteFile()
 			contact.GetUDPKey().StoreToFile(file);
 			file.WriteUInt8(static_cast<uint8>(contact.IsIpVerified()));
 		}
+		// [eSE v9] root link: ADDITIVE trailer AFTER the count-driven v2 records. Vanilla 0.70b
+		// + prior forks read exactly N records then Close(), so they never see it. Only written
+		// when a contact actually carries a v6 (dormant-by-consequence while the TX pref is off).
+		uint32 uV6Count = 0;
+		for (ContactArray::const_iterator it = listContacts.begin(); it != listContacts.end(); ++it)
+			if ((*it)->HasIPv6()) ++uV6Count;
+		if (uV6Count) {
+			file.WriteUInt32(0x36565345);   // 'ESV6' magic (bytes E,S,V,6 on disk)
+			file.WriteUInt8(1);             // trailer version
+			file.WriteUInt32(uV6Count);
+			for (ContactArray::const_iterator it = listContacts.begin(); it != listContacts.end(); ++it) {
+				const CContact &c(**it);
+				if (!c.HasIPv6()) continue;
+				file.WriteUInt128(c.GetClientID());
+				const uint8 *pV6 = c.GetIPv6Address();
+				for (int b = 0; b < 16; ++b) file.WriteUInt8(pV6[b]);
+			}
+		}
 		file.Close();
 		AddDebugLogLine(false, _T("Wrote %ld contact%s to file."), listContacts.size(), ((listContacts.size() == 1) ? _T("") : _T("s")));
 	} catch (CFileException *ex) {
@@ -448,12 +484,12 @@ bool CRoutingZone::CanSplit() const
 }
 
 // Returns true if a contact was added or updated, false if the routing table was not touched
-bool CRoutingZone::Add(const CUInt128 &uID, uint32 uIP, uint16 uUDPPort, uint16 uTCPPort, uint8 uVersion, const CKadUDPKey &cUDPKey, bool &bIPVerified, bool bUpdate, bool bFromNodesDat, bool bFromHello)
+bool CRoutingZone::Add(const CUInt128 &uID, uint32 uIP, uint16 uUDPPort, uint16 uTCPPort, uint8 uVersion, const CKadUDPKey &cUDPKey, bool &bIPVerified, bool bUpdate, bool bFromNodesDat, bool bFromHello, const uint8* pV6Ip /*=NULL*/)
 {
 	uint32 uhostIP = htonl(uIP);
 	if (IsGoodIPPort(uhostIP, uUDPPort)) {
 		if (!theApp.ipfilter->IsFiltered(uhostIP) && !(uUDPPort == 53 && uVersion <= KADEMLIA_VERSION5_48a)  /*No DNS Port without encryption*/)
-			return AddUnfiltered(uID, uIP, uUDPPort, uTCPPort, uVersion, cUDPKey, bIPVerified, bUpdate, bFromNodesDat, bFromHello);
+			return AddUnfiltered(uID, uIP, uUDPPort, uTCPPort, uVersion, cUDPKey, bIPVerified, bUpdate, bFromNodesDat, bFromHello, pV6Ip);
 
 		if (thePrefs.GetLogFilteredIPs())
 			if (uUDPPort != 53 || uVersion > KADEMLIA_VERSION5_48a)
@@ -467,10 +503,12 @@ bool CRoutingZone::Add(const CUInt128 &uID, uint32 uIP, uint16 uUDPPort, uint16 
 }
 
 // Returns true if a contact was added or updated, false if the routing table was not touched
-bool CRoutingZone::AddUnfiltered(const CUInt128 &uID, uint32 uIP, uint16 uUDPPort, uint16 uTCPPort, uint8 uVersion, const CKadUDPKey &cUDPKey, bool &bIPVerified, bool bUpdate, bool /*bFromNodesDat*/, bool bFromHello)
+bool CRoutingZone::AddUnfiltered(const CUInt128 &uID, uint32 uIP, uint16 uUDPPort, uint16 uTCPPort, uint8 uVersion, const CKadUDPKey &cUDPKey, bool &bIPVerified, bool bUpdate, bool /*bFromNodesDat*/, bool bFromHello, const uint8* pV6Ip /*=NULL*/)
 {
 	if (uID != uMe && uVersion > 1) {
 		CContact *pContact = new CContact(uID, uIP, uUDPPort, uTCPPort, uVersion, cUDPKey, bIPVerified);
+		if (pV6Ip)   // [eSE v9] root link: stash the peer-observed public IPv6 on the fresh contact
+			pContact->SetIPv6Address(pV6Ip);
 		if (bFromHello)
 			pContact->SetReceivedHelloPacket();
 
@@ -553,6 +591,10 @@ bool CRoutingZone::Add(CContact *pContact, bool &bUpdate, bool &bOutIPVerified)
 					pContactUpdate->SetUDPKey(pContact->GetUDPKey());
 					if (!pContactUpdate->IsIpVerified()) // don't unset the verified flag (will clear itself on ip change)
 						pContactUpdate->SetIpVerified(pContact->IsIpVerified());
+					// [eSE v9] root link: carry the peer's IPv6 forward on a verified full update
+					// (this branch already passed the UDPKey anti-hijack gate above).
+					if (pContact->HasIPv6())
+						pContactUpdate->SetIPv6Address(pContact->GetIPv6Address());
 					bOutIPVerified = pContactUpdate->IsIpVerified();
 					m_pBin->SetAlive(pContactUpdate);
 					theApp.emuledlg->kademliawnd->ContactRef(pContactUpdate);
@@ -683,8 +725,8 @@ void CRoutingZone::Split()
 
 	for (ContactArray::const_iterator itContact = listEntries.begin(); itContact != listEntries.end(); ++itContact) {
 		int iSuperZone = (*itContact)->m_uDistance.GetBitNumber(m_uLevel);
-		if (!m_pSubZones[iSuperZone]->m_pBin->AddContact(*itContact))
-			delete *itContact;
+		if (!m_pSubZones[iSuperZone]->m_pBin->AddContact(*itContact) && !(*itContact)->InUse())
+			delete *itContact; //a contact still referenced by a running search must leak rather than be freed under it
 	}
 }
 
@@ -716,11 +758,11 @@ uint32 CRoutingZone::Consolidate()
 		m_pSubZones[1] = NULL;
 
 		for (ContactArray::const_iterator itContact = list0.begin(); itContact != list0.end(); ++itContact)
-			if (!m_pBin->AddContact(*itContact))
-				delete *itContact;
+			if (!m_pBin->AddContact(*itContact) && !(*itContact)->InUse())
+				delete *itContact; //a contact still referenced by a running search must leak rather than be freed under it
 
 		for (ContactArray::const_iterator itContact = list1.begin(); itContact != list1.end(); ++itContact)
-			if (!m_pBin->AddContact(*itContact))
+			if (!m_pBin->AddContact(*itContact) && !(*itContact)->InUse())
 				delete *itContact;
 
 		StartTimer();

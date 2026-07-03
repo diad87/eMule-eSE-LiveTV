@@ -283,10 +283,12 @@ function refreshPreflight() {
     paintCheck('pf-ff', d.ffmpeg_found ? 'ok' : 'fail', 'FFmpeg');
     var ipEl = document.getElementById('pf-ip');
     if (ipEl) {
-      var src = d.public_ip_source === 'ipify' ? ' (via ipify)'
-              : d.public_ip_source === 'kad'   ? ''
-              : '';
-      ipEl.textContent = (d.public_ip ? d.public_ip + ':' + d.port + src : '');
+      // No third parties: show whatever eMule itself detected (v4 via Kad,
+      // v6 via in-band peer observation). While neither is known, say so
+      // honestly instead of leaking a query to a commercial echo service.
+      if (d.public_ip)          ipEl.textContent = d.public_ip + ':' + d.port;
+      else if (d.public_ip_v6)  ipEl.textContent = '[' + d.public_ip_v6 + ']:' + d.port;
+      else                      ipEl.textContent = 'detectando…';
     }
   }).catch(function(){
     paintCheck('pf-kad', 'fail', 'Kad', 'eMule offline');

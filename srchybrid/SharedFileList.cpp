@@ -217,12 +217,12 @@ void CPublishKeywordList::AddKeywords(CKnownFile *pFile)
 			m_lstKeywords.AddTail(pPubKw);
 			SetNextPublishTime(0);
 		}
-		if (pPubKw->AddRef(pFile) && pPubKw->GetNextPublishTime() > MIN2S(30)) {
+		if (pPubKw->AddRef(pFile) && pPubKw->GetNextPublishTime() > time(NULL) + MIN2S(30)) {
 			// User may be adding and removing files, so if this is a keyword that
 			// has already been published, we reduce the time, but still give the user
 			// enough time to finish what they are doing.
 			// If this is a hot node, the Load list will prevent from republishing.
-			pPubKw->SetNextPublishTime(MIN2S(30));
+			pPubKw->SetNextPublishTime(time(NULL) + MIN2S(30));
 		}
 	}
 }
@@ -1303,7 +1303,7 @@ void CSharedFileList::Publish()
 
 							//Only publish complete files as someone else should have the full file to publish these keywords.
 							//As a side effect, this may help reduce people finding incomplete files in the network.
-							if (!aFiles[f]->IsPartFile() && IsFilePtrInList(aFiles[f])) {
+							if (IsFilePtrInList(aFiles[f]) && !aFiles[f]->IsPartFile()) {
 								//We only publish up to 150 files per keyword, then rotate the list.
 								if (++count >= 150) {
 									pPubKw->RotateReferences(f);

@@ -4,6 +4,10 @@
 #include "KadKeepalive.h"
 #include "LiveDebugLog.h"
 #include "Preferences.h"
+#include "kademlia/kademlia/Kademlia.h"        // R.2: CKademlia::GetUDPListener() / GetRoutingZone()
+#include "kademlia/net/KademliaUDPListener.h"  // R.2: SendKad3PingReq
+#include "kademlia/routing/RoutingZone.h"      // R.2: GetBootstrapContacts / ContactArray
+#include "kademlia/routing/Contact.h"          // R.2: CContact (GetNetIP/GetUDPPort)
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -43,6 +47,9 @@ void CKadKeepalive::Stop()
     LIVE_LOG("KAD3", "Keepalive stopped");
 }
 
+void CKadKeepalive::RequestStart() { InterlockedExchange(&m_ctrlRequest, 1); }
+void CKadKeepalive::RequestStop()  { InterlockedExchange(&m_ctrlRequest, 2); }
+
 void CKadKeepalive::AddSupernode(const CAddress& addr, uint16 port)
 {
     if (m_supernodes.size() >= KEEPALIVE_MAX_SUPERNODES) {
@@ -58,7 +65,10 @@ void CKadKeepalive::AddSupernode(const CAddress& addr, uint16 port)
     s.addr = addr;
     s.port = port;
     s.lastPingTick = 0;
-    s.lastPongTick = 0;
+    // Seed the pong clock to "now" so a node that NEVER answers (e.g. a vanilla 0.70b
+    // peer that drops our 0x66) still enters the miss-detector after PONG_TIMEOUT and is
+    // rotated out, instead of being pinged forever. A real PONG resets it in OnPong().
+    s.lastPongTick = GetTickCount();
     s.consecutiveMisses = 0;
     m_supernodes.push_back(s);
     m_stats.supernodesActive = (uint32)m_supernodes.size();
@@ -81,7 +91,31 @@ void CKadKeepalive::BlacklistSupernode(const CAddress& addr, uint16 port)
 
 void CKadKeepalive::Tick()
 {
+    // Honor a cross-thread start/stop request here on the Kad thread, so Start()/Stop()
+    // (which touch m_supernodes) never race the /api worker that flipped the flag.
+    const LONG ctrl = InterlockedExchange(&m_ctrlRequest, 0);
+    if (ctrl == 1) Start();
+    else if (ctrl == 2) Stop();
+
     if (!m_bRunning) return;
+
+    // R.2 pool population: stock the supernode set straight from the live Kad
+    // routing table. GetBootstrapContacts returns the stable, long-lived contacts
+    // (the same set used to seed nodes.dat), which is exactly what we want holding
+    // our NAT conntrack open. Size-gated so it's a no-op once full. GetNetIP() is
+    // network-order, so CAddress(...,false) stores it verbatim (Tick's ToUInt32(true)
+    // converts back to host-order for the send).
+    if (m_supernodes.size() < 5 && Kademlia::CKademlia::GetRoutingZone() != NULL) {
+        Kademlia::ContactArray contacts;
+        Kademlia::CKademlia::GetRoutingZone()->GetBootstrapContacts(contacts, 20);
+        for (Kademlia::ContactArray::const_iterator it = contacts.begin();
+             it != contacts.end() && m_supernodes.size() < KEEPALIVE_MAX_SUPERNODES; ++it) {
+            Kademlia::CContact* c = *it;
+            if (c == NULL || c->GetNetIP() == 0 || c->GetUDPPort() == 0) continue;
+            AddSupernode(CAddress(c->GetNetIP(), false), c->GetUDPPort());
+        }
+    }
+
     DWORD now = GetTickCount();
     m_stats.lastTickMs = now;
 
@@ -90,11 +124,10 @@ void CKadKeepalive::Tick()
     if (now - m_dwLastTick < KEEPALIVE_PING_INTERVAL_MS) return;
     m_dwLastTick = now;
 
-    // For each supernode: send a ping (or count it as missed if last pong
-    // is too old). The actual send happens via the Kad UDP listener when
-    // Sprint 4 implements KADEMLIA3_PING_REQ. Until then we just track
-    // the schedule + maintain pool health; misses are simulated as 0
-    // because no pings are emitted.
+    // For each supernode: drop it if it has gone (or always been) silent past the
+    // timeout for 3 batches, otherwise emit a PING_REQ via the Kad UDP listener. The
+    // far side answers 0x67 -> OnPong() refreshes lastPongTick. lastPongTick is seeded
+    // at add time (AddSupernode) so never-responders also age out.
     auto it = m_supernodes.begin();
     while (it != m_supernodes.end()) {
         if (it->lastPongTick != 0 && (now - it->lastPongTick) > KEEPALIVE_PONG_TIMEOUT_MS) {
@@ -107,9 +140,30 @@ void CKadKeepalive::Tick()
             }
         }
         it->lastPingTick = now;
-        // TODO Sprint 4: theApp.kadudpListener->SendKad3PingReq(it->addr, it->port);
-        m_stats.pingsSent++;
+        if (Kademlia::CKademlia::GetUDPListener() != NULL) {
+            Kademlia::CKademlia::GetUDPListener()->SendKad3PingReq(it->addr.ToUInt32(true), it->port);
+            m_stats.pingsSent++;   // only count pings we actually emitted
+        }
         ++it;
     }
     m_stats.supernodesActive = (uint32)m_supernodes.size();
+}
+
+// R.2: a supernode answered our KADEMLIA3_PING_REQ with a PONG (0x67). Mark it
+// healthy so the miss-detector in Tick() keeps it in the active set. Matched by
+// host-order IP (uIP from the UDP dispatch); port is informational. Called from
+// CKademliaUDPListener::Process_KADEMLIA3_PING_RES on the Kad Process thread —
+// same thread as Tick(), so m_supernodes needs no lock.
+void CKadKeepalive::OnPong(uint32 uIP, uint16 /*port*/)
+{
+    if (uIP == 0) return;
+    const DWORD now = GetTickCount();
+    for (auto& s : m_supernodes) {
+        if (s.addr.ToUInt32(true) == uIP) {
+            s.lastPongTick = now;
+            s.consecutiveMisses = 0;
+            m_stats.pongsReceived++;
+            return;
+        }
+    }
 }

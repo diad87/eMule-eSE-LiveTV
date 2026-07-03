@@ -147,6 +147,38 @@ int CPacketTracking::InTrackListIsAllowedPacket(uint32 uIP, uint8 byOpcode, bool
 	case KADEMLIA2_PING:
 		token = MIN2MS(1) / 2;
 		break;
+	// eSE 8.12.x — UDP reflector hardening (PUNTO 1.1).
+	// Hole-punch REQ/ACK previously fell through to the default 'return 0',
+	// bypassing the per-IP flood token-bucket entirely. A flood of 0x63 from a
+	// real source made any patched node reflect a (possibly plaintext) ACK and
+	// seed an expensive NAT expectation, with no rate cap. Give them the same
+	// per-IP budget as FINDBUDDY/FIREWALLED (~2/min/IP): legitimate hole-punching
+	// is rare (one exchange per stalled peer), so this is far above normal usage
+	// but bounds a non-spoofed flood and reuses the existing ban path below.
+	// NOTE: this per-IP bucket does NOT stop a SPOOFED-source flood (each forged
+	// IP is "new"); closing that fully needs return-routability (cookie), now
+	// wired via eSE::EseHolePunchCookie (Process_ESE_HOLEPUNCH_CHALLENGE).
+	case KADEMLIA_ESE_HOLEPUNCH_REQ:
+	case KADEMLIA_ESE_HOLEPUNCH_ACK:
+	// 0x65 CHALLENGE shares the budget so an inbound challenge flood can't bypass
+	// the per-IP choke (same ~2/min/IP + massive-flood ban path as REQ/ACK).
+	case KADEMLIA_ESE_HOLEPUNCH_CHALLENGE:
+	// Reserve the Kad3 (IPv6) hole-punch band too, so it never silently falls to
+	// 'return 0' once those handlers are wired (currently inert
+	// Process_KADEMLIA3_GENERIC stubs).
+	// R.2: keepalive ping band — same per-IP choke so an inbound 0x66/0x67 flood
+	// can't bypass it (adversarial review 2026-06-14, finding #3).
+	case KADEMLIA3_PING_REQ:
+	case KADEMLIA3_PING_RES:
+	case KADEMLIA3_HOLEPUNCH_REQ:
+	case KADEMLIA3_HOLEPUNCH_FWD:
+	case KADEMLIA3_HOLEPUNCH_ACK:
+	// R.1 inc.2: the cookie/proceed band shares the same per-IP choke so an
+	// inbound 0x6B/0x6C flood can't bypass it once the handlers are wired.
+	case KADEMLIA3_HOLEPUNCH_CHALLENGE:
+	case KADEMLIA3_HOLEPUNCH_PROCEED:
+		token = MIN2MS(1) / 2;
+		break;
 	default:
 		// not a request packets, but a response - no further checks at this point
 		return 0;

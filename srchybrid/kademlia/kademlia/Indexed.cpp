@@ -270,7 +270,7 @@ void CIndexed::Clean()
 	if (::InterlockedExchange(&cleaning, 1))
 		return; //already cleaning
 	time_t tNow = time(NULL);
-	if (tNow < m_tNextClean) {
+	if (!m_bDataLoaded || tNow < m_tNextClean) {
 		::InterlockedExchange(&cleaning, 0);
 		return;
 	}
@@ -339,6 +339,36 @@ void CIndexed::Clean()
 				delete pCurrSrcHash;
 			}
 		}
+
+		uint32 uRemovedNote = 0;
+		uint32 uTotalNote = 0;
+		for (POSITION pos = m_mapNotes.GetStartPosition(); pos != NULL;) {
+			SrcHash *pCurrNoteHash;
+			m_mapNotes.GetNextAssoc(pos, key1, pCurrNoteHash);
+			for (POSITION pos2 = pCurrNoteHash->ptrlistSource.GetHeadPosition(); pos2 != NULL;) {
+				POSITION pos3 = pos2;
+				Source *pCurrNote = pCurrNoteHash->ptrlistSource.GetNext(pos2);
+				for (POSITION pos4 = pCurrNote->ptrlEntryList.GetHeadPosition(); pos4 != NULL;) {
+					POSITION pos5 = pos4;
+					CEntry *pCurrName = pCurrNote->ptrlEntryList.GetNext(pos4);
+					++uTotalNote;
+					if (pCurrName->m_tLifetime && tNow >= pCurrName->m_tLifetime) {
+						++uRemovedNote;
+						pCurrNote->ptrlEntryList.RemoveAt(pos5);
+						delete pCurrName;
+					}
+				}
+				if (pCurrNote->ptrlEntryList.IsEmpty()) {
+					pCurrNoteHash->ptrlistSource.RemoveAt(pos3);
+					delete pCurrNote;
+				}
+			}
+			if (pCurrNoteHash->ptrlistSource.IsEmpty()) {
+				m_mapNotes.RemoveKey(key1);
+				delete pCurrNoteHash;
+			}
+		}
+		m_uTotalIndexNotes = uTotalNote - uRemovedNote;
 
 		m_uTotalIndexSource = uTotalSource - uRemovedSource;
 		m_uTotalIndexKeyword = uTotalKey - uRemovedKey;
@@ -461,6 +491,11 @@ bool CIndexed::AddSources(const CUInt128 &uKeyID, const CUInt128 &uSourceID, Kad
 		return false;
 	}
 
+	if (m_uTotalIndexSource > KADEMLIAMAXENTRIES) { //mirror the keyword cap: remotes must not grow the source index without bound
+		uLoad = 100;
+		return false;
+	}
+
 	SrcHash *pCurrSrcHash;
 	if (!m_mapSources.Lookup(CCKey(uKeyID.GetData()), pCurrSrcHash)) {
 		Source *pCurrSource = new Source;
@@ -526,6 +561,8 @@ bool CIndexed::AddNotes(const CUInt128 &uKeyID, const CUInt128 &uSourceID, Kadem
 		return false;
 	if (pEntry->m_uIP == 0 || pEntry->GetTagCount() == 0)
 		return false;
+	if (pEntry->m_tLifetime == 0) //notes used to be stored forever: give them the standard lifetime so Clean() can expire them
+		pEntry->m_tLifetime = time(NULL) + KADEMLIAREPUBLISHTIMEN;
 
 	SrcHash *pCurrNoteHash;
 	if (!m_mapNotes.Lookup(CCKey(uKeyID.GetData()), pCurrNoteHash)) {

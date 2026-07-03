@@ -63,7 +63,7 @@ public:
     void SetUtpWritable(bool bWritable);
     void ResetUtpFlowControl();
     bool IsHelloAnswerPending() const { return false; }
-    void ResetConnectingState() {}
+    void ResetConnectingState() { m_eConnectingState = CCS_NONE; }
     bool IsEServerRelayNatTGuardActive() const { return false; }
     bool RegisterEServerRelayTransientError() { return false; }
     void ClearHelloAnswerPending() {}
@@ -84,6 +84,7 @@ public:
     // peer has clearly proven hard-to-reach. Without this, a fresh "connect to
     // peer X" attempt has to wait 30 s after each previous attempt — terrible UX.
     uint8  m_uNatRendezvousAttempts = 0;
+    bool   m_bNatRdvTried = false;   // [eSE v9] fired the one 3-way rendezvous (punch3) escalation for this peer? Reset on uTP accept.
     // A.3: high-water mark of attempts since last successful uTP connect with
     // this peer. Resets to 0 when the punch succeeds (in CUtpSocket on_accept).
     bool SupportsUTP() const;
@@ -159,6 +160,15 @@ public:
 	bool            SupportsEseSealedRecords()    const { return (m_uEseCapabilities & 0x00000200) != 0; }
 	bool            SupportsEseGossip()           const { return (m_uEseCapabilities & 0x00000400) != 0; }
 	bool            SupportsEseTunnelDataplane()  const { return (m_uEseCapabilities & 0x00001000) != 0; }  // v8.1 multi-cell
+	bool            SupportsEseTunnelBulk()       const { return (m_uEseCapabilities & 0x00004000) != 0; }  // v8.1.2 bulk data plane (ESE_CAP_TUNNEL_BULK)
+	bool            SupportsEseTunnelAuth()       const { return (m_uEseCapabilities & 0x00040000) != 0; }  // v8.x authenticated handshake (ESE_CAP_TUNNEL_AUTH, bit 18)
+	bool            SupportsEseHolePunchCookie()  const { return (m_uEseCapabilities & 0x00080000) != 0; }  // P0 return-routability cookie (ESE_CAP_HOLEPUNCH_COOKIE, bit 19)
+	bool            SupportsEseHolePunchRdv()     const { return (m_uEseCapabilities & 0x00008000) != 0; }  // R.1 3-way rendezvous (ESE_CAP_HOLEPUNCH_RDV, bit 15)
+	bool            SupportsLiveRelay()           const { return (m_uEseCapabilities & 0x00200000) != 0; }  // R.3 buddy relay (ESE_CAP_LIVE_RELAY, bit 21)
+	// v8.x Phase 1 — peer's 32-byte Ed25519 node identity from TAG_ESE_NODE_PUB (0x6D).
+	// Valid only when m_bEseNodePubSet; pinned later for the CREATE/CREATED v2 handshake.
+	const uint8*    GetEseNodePub()  const { return m_eseNodePub; }
+	bool            HasEseNodePub()  const { return m_bEseNodePubSet; }
 	uint8			GetMuleVersion() const							{ return m_byEmuleVersion; }
 	bool			ExtProtocolAvailable() const					{ return m_bEmuleProtocol; }
 	bool			SupportMultiPacket() const						{ return m_bMultiPacket; }
@@ -212,6 +222,12 @@ public:
 	void			SetSentCancelTransfer(bool bVal)				{ m_fSentCancelTransfer = bVal; }
 	void			ProcessPublicIPAnswer(const BYTE *pbyData, UINT uSize);
 	void			SendPublicIPRequest();
+	// v0.71 IPv6 Sprint 6 — in-band public v6 detection (replaces api6.ipify.org).
+	// SendPublicIPRequestV6 reuses OP_PUBLICIP_REQ but flags that we want a v6
+	// answer; the peer replies OP_PUBLICIP_ANSWER_V6 with the v6 source address it
+	// observes for us. Only used with peers that advertise CAP_FORK_IPV6_WIRE.
+	void			SendPublicIPRequestV6();
+	void			ProcessPublicIPAnswerV6(const BYTE *pbyData, UINT uSize);
 	uint8			GetKadVersion()	const							{ return m_byKadVersion; }
 	bool			SendBuddyPingPong()								{ return ::GetTickCount() >= m_dwLastBuddyPingPongTime; }
 	bool			AllowIncomeingBuddyPingPong()					{ return ::GetTickCount() >= m_dwLastBuddyPingPongTime + MIN2MS(3); }
@@ -520,6 +536,9 @@ protected:
 	// v0.71 P3.5 — eSE privacy capability bits from TAG_ESE_CAPS (0x6C).
 	// 0 = legacy / no privacy support. See Opcodes.h ESE_CAP_* bits.
 	uint32  m_uEseCapabilities;
+	// v8.x Phase 1 — peer's Ed25519 node identity pubkey from TAG_ESE_NODE_PUB (0x6D).
+	uint8   m_eseNodePub[32];
+	bool    m_bEseNodePubSet;
 	bool	m_bFriendSlot;
 	bool	m_bCommentDirty;
 	bool	m_bIsML;
@@ -680,6 +699,7 @@ protected:
 		 m_fUnaskQueueRankRecv: 2,
 		 m_fFailedFileIdReqs  : 4, // nr. of failed file-id related requests per connection
 		 m_fNeedOurPublicIP	  : 1, // we requested our IP from this client
+		 m_fNeedOurPublicIPV6 : 1, // v0.71 IPv6 Sprint 6 — we requested our public v6 IP from this client
 		 m_fSupportsAICH	  : 3,
 		 m_fAICHRequested	  : 1,
 		 m_fSentOutOfPartReqs : 1,

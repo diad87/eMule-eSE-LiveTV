@@ -61,8 +61,8 @@ namespace Kademlia
 			uint32		Consolidate();
 			bool		OnBigTimer();
 			void		OnSmallTimer();
-			bool		Add(const CUInt128 &uID, uint32 uIP, uint16 uUDPPort, uint16 uTCPPort, uint8 uVersion, const CKadUDPKey &cUDPKey, bool &bIPVerified, bool bUpdate, bool bFromNodesDat, bool bFromHello);
-			bool		AddUnfiltered(const CUInt128 &uID, uint32 uIP, uint16 uUDPPort, uint16 uTCPPort, uint8 uVersion, const CKadUDPKey &cUDPKey, bool &bIPVerified, bool bUpdate, bool bFromNodesDat, bool bFromHello);
+			bool		Add(const CUInt128 &uID, uint32 uIP, uint16 uUDPPort, uint16 uTCPPort, uint8 uVersion, const CKadUDPKey &cUDPKey, bool &bIPVerified, bool bUpdate, bool bFromNodesDat, bool bFromHello, const uint8* pV6Ip = NULL);
+			bool		AddUnfiltered(const CUInt128 &uID, uint32 uIP, uint16 uUDPPort, uint16 uTCPPort, uint8 uVersion, const CKadUDPKey &cUDPKey, bool &bIPVerified, bool bUpdate, bool bFromNodesDat, bool bFromHello, const uint8* pV6Ip = NULL);
 			bool		Add(CContact *pContact, bool &bUpdate, bool &bOutIPVerified);
 			void		ReadFile(const CString &strSpecialNodesdate = CString());
 			bool		VerifyContact(const CUInt128 &uID, uint32 uIP) const;

@@ -181,6 +181,32 @@ public:
     uint8_t  m_ephemeral_priv[32] = {0};
     bool     m_have_ephemeral = false;
 
+    // v8.x Phase 2 — authenticated handshake (CREATE/CREATED v2) state.
+    //   m_ephemeral_pub   : V's OWN ephemeral public, kept so the originator can
+    //                       rebuild the signed transcript when CREATED returns
+    //                       (reused for the EXTEND leg, like m_ephemeral_priv).
+    //   m_create_nonce    : 128-bit CSPRNG anti-replay anchor V put in CREATE v2.
+    //   m_expectedNodePub : the hop's Ed25519 identity V learned from its OWN HELLO
+    //                       with that hop (no relay in between) — pinned to defeat
+    //                       key-substitution by an intermediate.
+    //   m_auth_ok         : true once a v2 CREATED signature verified against the pin.
+    uint8_t  m_ephemeral_pub[32]   = {0};
+    uint8_t  m_create_nonce[16]    = {0};
+    uint8_t  m_expectedNodePub[32] = {0};
+    bool     m_expectedNodePubSet  = false;
+    uint8_t  m_expectedHash[16]    = {0};
+    bool     m_auth_ok             = false;
+
+    // v8.x Phase 2 — SECOND-hop (exit) authenticated-handshake state, kept STRICTLY
+    // separate from the hop1 block above (no overwrite footgun on the EXTEND leg).
+    // Harvested from V's OWN direct HELLO with hop2, so an intermediate hop1 cannot
+    // substitute the exit's identity or ephemeral without breaking the transcript.
+    uint8_t  m_ephemeral_pub2[32]   = {0};   // V's X25519 ephemeral for the V↔hop2 leg
+    uint8_t  m_create_nonce2[16]    = {0};   // CSPRNG anti-replay anchor for hop2's transcript
+    uint8_t  m_expectedNodePub2[32] = {0};   // pinned Ed25519 identity of hop2 (the exit)
+    bool     m_expectedNodePub2Set  = false;
+    uint8_t  m_expectedHash2[16]    = {0};   // hop2 MD4 user-hash (target binding)
+
     // v8.1 D5 - best-effort Kad node-ID of the EXIT (last hop), resolved from our routing
     // table at build time (originator side). Lets CKadV2TunnelPool::Acquire pick the circuit
     // whose exit is XOR-closest to a Kad search target. m_haveExitKadKey is the validity flag

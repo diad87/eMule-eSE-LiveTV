@@ -141,7 +141,7 @@ public:
 	CCollection *m_pCollection;
 	//overlapped disk reads
 	HANDLE		m_hRead;
-	int			nInUse; //count outstanding I/O (reads) to know if the file is in use
+	int			nInUse; //outstanding reads in the upload disk I/O thread; CPartFile deletion is delayed while > 0
 	bool		bCompress;
 	bool		bNoNewReads; //blocks new overlapped reads
 #ifdef _DEBUG
@@ -149,6 +149,8 @@ public:
 	virtual void AssertValid() const;
 	virtual void Dump(CDumpContext &dc) const;
 #endif
+
+	friend class CPartHashThread; // eSE H1: uses the static CreateHash(CFile*, ...)
 
 protected:
 	//preview

@@ -52,6 +52,7 @@ CServerList::CServerList()
 	, delservercount()
 	, m_nLastSaved(::GetTickCount())
 	, version()
+	, m_bLoadingMet()
 {
 }
 
@@ -150,6 +151,7 @@ bool CServerList::AddServerMetToList(const CString &strFile, bool bMerge)
 
 		ServerMet_Struct sbuffer;
 		UINT iAddCount = 0;
+		m_bLoadingMet = true; //the eSE zero-config trigger must not fire mid-parse on the first entry
 		for (uint32 j = 0; j < fservercount; ++j) {
 			// get server
 			servermet.Read(&sbuffer, sizeof(ServerMet_Struct));
@@ -194,6 +196,7 @@ bool CServerList::AddServerMetToList(const CString &strFile, bool bMerge)
 			LogError(LOG_STATUSBAR, GetResString(IDS_ERR_FILEERROR_SERVERMET), (LPCTSTR)CExceptionStr(*ex));
 		ex->Delete();
 	}
+	m_bLoadingMet = false;
 	theApp.emuledlg->serverwnd->serverlistctrl.SetRedraw(true);
 	theApp.emuledlg->serverwnd->serverlistctrl.Visible();
 	return true;
@@ -244,6 +247,7 @@ bool CServerList::AddServer(const CServer *pServer, bool bAddTail)
 		&& thePrefs.GetNetworkED2K()
 		&& !theApp.serverconnect->IsConnected()
 		&& !theApp.serverconnect->IsConnecting()
+		&& !m_bLoadingMet // bulk server.met load must use the priority-sorted connect path, not fire here
 		&& list.GetCount() == 1) // Only trigger on the very first server added
 	{
 		AddLogLine(true, _T("eSE: First server discovered via Kad peer exchange - auto-connecting to ED2K..."));
@@ -352,6 +356,8 @@ void CServerList::RemoveServer(const CServer *pServer)
 
 void CServerList::RemoveAllServers()
 {
+	if (theApp.downloadqueue) //same invariant RemoveServer keeps: SendNextUDPPacket must not see a dangling server
+		theApp.downloadqueue->cur_udpserver = NULL;
 	while (!list.IsEmpty()) {
 		delete list.RemoveHead();
 		++delservercount;
@@ -873,7 +879,7 @@ bool CServerList::SaveStaticServers()
 
 void CServerList::Process()
 {
-	if (::GetTickCount() >= m_nLastSaved + MIN2MS(17))
+	if (::GetTickCount() - m_nLastSaved >= MIN2MS(17))
 		SaveServermetToFile();
 }
 

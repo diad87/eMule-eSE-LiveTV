@@ -68,6 +68,7 @@ protected:
 
 private:
 	int		SendTo(uchar *lpBuf, int nBufLen, uint32 dwIP, uint16 nPort);
+	int		SendToV6(uchar *lpBuf, int nBufLen, const uint8 v6Addr[16], uint16 nPort);   // [eSE v9] R.4 Phase B (dormant): v6 send primitive; unused until the dual-stack socket (Phase A) lands
 	bool	IsBusy() const			{ return m_bWouldBlock; }
 
 	CTypedPtrList<CPtrList, UDPPack*> controlpacket_queue;

@@ -141,6 +141,15 @@ class CAICHHashTree
 public:
 	CAICHHashTree(uint64 nDataSize, bool bLeftBranch, uint64 nBaseSize);
 	~CAICHHashTree();
+	// nodes come from a dedicated fixed-size slab pool: a fully populated tree keeps one
+	// node per 180 KB block (millions for very large files), and the general heap adds
+	// ~16 bytes of bookkeeping per node and keeps the pages after the tree is freed
+	static void*	operator new(size_t size);
+	static void		operator delete(void *ptr, size_t size);
+#ifdef _DEBUG
+	static void*	operator new(size_t size, LPCSTR file, int line);
+	static void		operator delete(void *ptr, LPCSTR file, int line);
+#endif
 	void			SetBlockHash(uint64 nSize, uint64 nStartPos, CAICHHashAlgo *pHashAlg);
 	bool			ReCalculateHash(CAICHHashAlgo *hashalg, bool bDontReplace );
 	bool			VerifyHashTree(CAICHHashAlgo *hashalg, bool bDeleteBadTrees);

@@ -67,6 +67,129 @@ void CAICHHash::Write(CFileDataIO &file) const
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
+///CAICHHashTree slab pool
+//
+// A fully populated AICH tree keeps one node per 180 KB block, so hashing a very large
+// file creates millions of small allocations at once. Serving them from the general
+// heap costs ~16 bytes of bookkeeping per node, and once the tree is freed the
+// fragmented pages stay committed in the process. Nodes therefore come from 64 KB
+// slabs dedicated to this class; a slab whose last node is freed is returned to the
+// OS immediately. Slabs are allocated aligned to their own size, so a node finds its
+// slab by masking its address. The pool is shared by every thread that builds trees
+// (main thread, file hashing thread, part hash thread), hence the lock.
+
+#pragma push_macro("new")
+#undef new
+
+struct AICHTreeSlab
+{
+	AICHTreeSlab *pPrevAvail;	// links in the list of slabs with room left
+	AICHTreeSlab *pNextAvail;
+	void		 *pFreeSlots;	// freed slots, chained through their first pointer
+	UINT		  nLive;		// slots currently allocated
+	UINT		  nCarved;		// slots handed out at least once
+};
+
+#define AICH_TREE_SLAB_SIZE		0x10000		// 64 KB; also the slab alignment
+static const size_t AICH_TREE_SLOT_SIZE = (sizeof(CAICHHashTree) + 7) & ~(size_t)7;
+static const size_t AICH_TREE_SLOTS_OFFSET = (sizeof(AICHTreeSlab) + 7) & ~(size_t)7;
+static const UINT AICH_TREE_SLOTS_PER_SLAB = (UINT)((AICH_TREE_SLAB_SIZE - AICH_TREE_SLOTS_OFFSET) / AICH_TREE_SLOT_SIZE);
+static_assert(AICH_TREE_SLOT_SIZE >= sizeof(void*) && AICH_TREE_SLOTS_PER_SLAB > 0, "AICH slab layout");
+
+static AICHTreeSlab *s_pAvailAICHSlabs = NULL;	// slabs with at least one free slot
+
+static CCriticalSection& AICHTreePoolLock()
+{
+	// intentionally leaked: trees may still be freed while statics are being destroyed
+	static CCriticalSection *pLock = new CCriticalSection;
+	return *pLock;
+}
+
+void* CAICHHashTree::operator new(size_t size)
+{
+	if (size != sizeof(CAICHHashTree)) // a derived class must use the default heap
+		return ::operator new(size);
+
+	CSingleLock lock(&AICHTreePoolLock(), TRUE);
+	AICHTreeSlab *pSlab = s_pAvailAICHSlabs;
+	if (pSlab == NULL) {
+		// VirtualAlloc regions are aligned to the 64 KB allocation granularity by design,
+		// so a 64 KB slab comes back exactly slab-aligned with no over-reservation
+		pSlab = static_cast<AICHTreeSlab*>(::VirtualAlloc(NULL, AICH_TREE_SLAB_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+		if (pSlab == NULL)
+			AfxThrowMemoryException();
+		pSlab->pPrevAvail = NULL;
+		pSlab->pNextAvail = NULL;
+		pSlab->pFreeSlots = NULL;
+		pSlab->nLive = 0;
+		pSlab->nCarved = 0;
+		s_pAvailAICHSlabs = pSlab;
+	}
+	void *pSlot = pSlab->pFreeSlots;
+	if (pSlot != NULL)
+		pSlab->pFreeSlots = *static_cast<void**>(pSlot);
+	else
+		pSlot = reinterpret_cast<BYTE*>(pSlab) + AICH_TREE_SLOTS_OFFSET + (size_t)pSlab->nCarved++ * AICH_TREE_SLOT_SIZE;
+	++pSlab->nLive;
+	if (pSlab->pFreeSlots == NULL && pSlab->nCarved >= AICH_TREE_SLOTS_PER_SLAB) {
+		// full - drop it from the available list (allocation always uses the head);
+		// operator delete finds it again by masking the node address
+		s_pAvailAICHSlabs = pSlab->pNextAvail;
+		if (pSlab->pNextAvail != NULL) {
+			pSlab->pNextAvail->pPrevAvail = NULL;
+			pSlab->pNextAvail = NULL;
+		}
+	}
+	return pSlot;
+}
+
+void CAICHHashTree::operator delete(void *ptr, size_t size)
+{
+	if (ptr == NULL)
+		return;
+	if (size != sizeof(CAICHHashTree)) {
+		::operator delete(ptr);
+		return;
+	}
+	CSingleLock lock(&AICHTreePoolLock(), TRUE);
+	AICHTreeSlab *pSlab = reinterpret_cast<AICHTreeSlab*>(reinterpret_cast<ULONG_PTR>(ptr) & ~(ULONG_PTR)(AICH_TREE_SLAB_SIZE - 1));
+	const bool bWasFull = pSlab->pFreeSlots == NULL && pSlab->nCarved >= AICH_TREE_SLOTS_PER_SLAB;
+	*static_cast<void**>(ptr) = pSlab->pFreeSlots;
+	pSlab->pFreeSlots = ptr;
+	if (--pSlab->nLive == 0) {
+		if (!bWasFull) {
+			if (pSlab->pPrevAvail != NULL)
+				pSlab->pPrevAvail->pNextAvail = pSlab->pNextAvail;
+			else
+				s_pAvailAICHSlabs = pSlab->pNextAvail;
+			if (pSlab->pNextAvail != NULL)
+				pSlab->pNextAvail->pPrevAvail = pSlab->pPrevAvail;
+		}
+		::VirtualFree(pSlab, 0, MEM_RELEASE);
+	} else if (bWasFull) {
+		pSlab->pPrevAvail = NULL;
+		pSlab->pNextAvail = s_pAvailAICHSlabs;
+		if (s_pAvailAICHSlabs != NULL)
+			s_pAvailAICHSlabs->pPrevAvail = pSlab;
+		s_pAvailAICHSlabs = pSlab;
+	}
+}
+
+#ifdef _DEBUG
+void* CAICHHashTree::operator new(size_t size, LPCSTR, int)
+{
+	return operator new(size);
+}
+
+void CAICHHashTree::operator delete(void *ptr, LPCSTR, int)
+{
+	operator delete(ptr, sizeof(CAICHHashTree));
+}
+#endif
+
+#pragma pop_macro("new")
+
+/////////////////////////////////////////////////////////////////////////////////////////
 ///CAICHHashTree
 
 CAICHHashTree::CAICHHashTree(uint64 nDataSize, bool bLeftBranch, uint64 nBaseSize)

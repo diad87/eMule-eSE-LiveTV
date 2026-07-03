@@ -5530,7 +5530,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				}
 				CStringA line;
 				line.Format("{\"pubkey\":\"%s\",\"name\":\"%s\",\"added\":%llu}",
-					(LPCSTR)pkHex, (LPCSTR)all[i].name,
+					(LPCSTR)pkHex, (LPCSTR)EseJsonEscapeA(all[i].name),
 					(unsigned long long)all[i].added_unix_ts);
 				arr += line;
 			}

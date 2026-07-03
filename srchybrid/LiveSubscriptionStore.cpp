@@ -171,6 +171,7 @@ bool CLiveSubscriptionStore::Load()
 bool CLiveSubscriptionStore::Save() const
 {
     CSingleLock lock(&m_lock, TRUE);
+    if (!m_loaded) return false;   // never clobber good on-disk data with an un-loaded (empty) store; Load() runs at startup (EmuleDlg OnInitDialog) before any Save() reaches here
     std::vector<uint8_t> plain;
     if (!SerializeUnencrypted(plain)) return false;
     std::vector<uint8_t> cipher;

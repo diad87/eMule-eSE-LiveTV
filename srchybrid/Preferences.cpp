@@ -399,6 +399,12 @@ bool	CPreferences::m_bEseHolePunchPortPredict;	// [eSE v9] anti-CGNAT port-predi
 int		CPreferences::m_iEseHolePunchPortSpread;	// [eSE v9] port-prediction window half-width
 bool	CPreferences::m_bEseEd2kPunch3;		// [eSE v9] eD2K punch3 escalation pref
 int		CPreferences::m_iEseRelayMaxKBps;	// [eSE v9] R.3 relay egress byte-budget pref
+bool	CPreferences::m_bEseDvrEnabled;		// [eSE v9] DVR enable (dormant reservation)
+int		CPreferences::m_iEseDvrMinutes;		// [eSE v9] DVR retention window minutes
+int		CPreferences::m_iEseDvrRetentionMB;	// [eSE v9] DVR on-disk budget MB
+int		CPreferences::m_iEseDvrUpKBps;		// [eSE v9] DVR serve upload budget KB/s
+bool	CPreferences::m_bEseChannelIdentity;// [eSE v9] persist channel identity (dormant)
+bool	CPreferences::m_bEseChannelPublish;	// [eSE v9] publish channel record (dormant)
 int		CPreferences::m_iKadV2PrivacyMode;      // D2
 int		CPreferences::m_iKadV2FallbackPolicy;   // D2
 CString	CPreferences::m_strKadV2SensitiveKeywords; // D2
@@ -2536,6 +2542,21 @@ void CPreferences::LoadPreferences()
 	m_iEseRelayMaxKBps = ini.GetInt(_T("EseRelayMaxKBps"), 4096, _T("eSE"));
 	if (m_iEseRelayMaxKBps < 64)    m_iEseRelayMaxKBps = 64;
 	if (m_iEseRelayMaxKBps > 65536) m_iEseRelayMaxKBps = 65536;
+	// [eSE v9] Swarm DVR (SWARM_DVR_PLAN.md) + channel manifest (CHANNEL_MANIFEST_PLAN.md): DORMANT
+	// reservations. No consumer reads these yet; they exist so the future implementation lands without
+	// re-touching Preferences. All default OFF/dormant -> zero behavior change. Load-only (no Save),
+	// like the other eSE-v9 prefs above -> only settable via a hand-edited [eSE] ini section.
+	m_bEseDvrEnabled = ini.GetBool(_T("EseDvrEnabled"), false, _T("eSE"));
+	m_iEseDvrMinutes = ini.GetInt(_T("EseDvrMinutes"), 10, _T("eSE"));
+	if (m_iEseDvrMinutes < 1)  m_iEseDvrMinutes = 1;
+	if (m_iEseDvrMinutes > 30) m_iEseDvrMinutes = 30;
+	m_iEseDvrRetentionMB = ini.GetInt(_T("EseDvrRetentionMB"), 512, _T("eSE"));
+	if (m_iEseDvrRetentionMB < 64)   m_iEseDvrRetentionMB = 64;
+	if (m_iEseDvrRetentionMB > 4096) m_iEseDvrRetentionMB = 4096;
+	m_iEseDvrUpKBps = ini.GetInt(_T("EseDvrUpKBps"), 0, _T("eSE"));
+	if (m_iEseDvrUpKBps < 0) m_iEseDvrUpKBps = 0;
+	m_bEseChannelIdentity = ini.GetBool(_T("EseChannelIdentity"), false, _T("eSE"));
+	m_bEseChannelPublish = ini.GetBool(_T("EseChannelPublish"), false, _T("eSE"));
 
 	// D2 (Sprint D): persisted privacy-routing mode. Before this, the mode
 	// selector reset to its Adaptive default every launch, which kept the

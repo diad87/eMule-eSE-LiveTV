@@ -659,6 +659,14 @@ public:
 	static int		m_iEseHolePunchPortSpread;	// [eSE v9] port-prediction window half-width (ports each side of the observed port). Clamped [0,8].
 	static bool		m_bEseEd2kPunch3;			// [eSE v9] eD2K downloads: escalate to 3-way rendezvous (punch3) when the 2-way punch fails. Default OFF.
 	static int		m_iEseRelayMaxKBps;			// [eSE v9] R.3 hard relay egress byte-budget (KB/s of donated bandwidth). Clamped [64,65536].
+	// [eSE v9] Swarm DVR (SWARM_DVR_PLAN.md) — DORMANT reservations, no consumers yet. All default OFF.
+	static bool		m_bEseDvrEnabled;			// [eSE v9] DVR: retain Live history for rewind. Default OFF.
+	static int		m_iEseDvrMinutes;			// [eSE v9] DVR retention window (minutes). Clamped [1,30].
+	static int		m_iEseDvrRetentionMB;		// [eSE v9] DVR on-disk budget (MB). Clamped [64,4096].
+	static int		m_iEseDvrUpKBps;			// [eSE v9] DVR serve upload budget (KB/s; 0=auto). Clamped >=0.
+	// [eSE v9] Channel manifest (CHANNEL_MANIFEST_PLAN.md) — DORMANT reservations. Default OFF.
+	static bool		m_bEseChannelIdentity;		// [eSE v9] persist an Ed25519 channel identity across sessions. Default OFF.
+	static bool		m_bEseChannelPublish;		// [eSE v9] publish the channel record to Kad discovery. Default OFF.
 	// D2 (Sprint D): persisted privacy-routing mode. Stored as plain ints so this
 	// header doesn't have to pull in the kademlia mode-selector headers; the glue
 	// at startup casts them to the real enums. Defaults: Adaptive / Balanced.
@@ -1292,6 +1300,18 @@ public:
 	static void		SetEseEd2kPunch3(bool b)			{ m_bEseEd2kPunch3 = b; }
 	static int		GetEseRelayMaxKBps()				{ return m_iEseRelayMaxKBps; }
 	static void		SetEseRelayMaxKBps(int n)			{ m_iEseRelayMaxKBps = n; }
+	static bool		GetEseDvrEnabled()					{ return m_bEseDvrEnabled; }
+	static void		SetEseDvrEnabled(bool b)			{ m_bEseDvrEnabled = b; }
+	static int		GetEseDvrMinutes()					{ return m_iEseDvrMinutes; }
+	static void		SetEseDvrMinutes(int n)				{ if (n < 1) n = 1; if (n > 30) n = 30; m_iEseDvrMinutes = n; }
+	static int		GetEseDvrRetentionMB()				{ return m_iEseDvrRetentionMB; }
+	static void		SetEseDvrRetentionMB(int n)			{ if (n < 64) n = 64; if (n > 4096) n = 4096; m_iEseDvrRetentionMB = n; }
+	static int		GetEseDvrUpKBps()					{ return m_iEseDvrUpKBps; }
+	static void		SetEseDvrUpKBps(int n)				{ if (n < 0) n = 0; m_iEseDvrUpKBps = n; }
+	static bool		GetEseChannelIdentity()				{ return m_bEseChannelIdentity; }
+	static void		SetEseChannelIdentity(bool b)		{ m_bEseChannelIdentity = b; }
+	static bool		GetEseChannelPublish()				{ return m_bEseChannelPublish; }
+	static void		SetEseChannelPublish(bool b)		{ m_bEseChannelPublish = b; }
 	// D2 (Sprint D): privacy-routing mode persistence accessors (plain int).
 	static int		GetKadV2PrivacyMode()				{ return m_iKadV2PrivacyMode; }
 	static void		SetKadV2PrivacyMode(int m)			{ m_iKadV2PrivacyMode = m; }

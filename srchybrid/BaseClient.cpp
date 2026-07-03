@@ -656,6 +656,7 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 					m_strHelloInfo.AppendFormat(_T("\n  EseNodePub set (32B)"));
 			}
 			break;
+		default:
 			// Since eDonkeyHybrid 1.3 is no longer sending the additional Int32 at the end of
 			// the Hello packet, we use the "pr=1" tag to determine them.
 			if (temptag.GetName() && temptag.GetName()[0] == 'p' && temptag.GetName()[1] == 'r')

@@ -138,6 +138,14 @@ public:
     {
         int fd = ::open(m_path.c_str(), O_RDONLY);
         if (fd < 0) return false;
+        // Exact-size contract (INodeIdentityStorage.h): reject a blob whose stored size
+        // != len, mirroring the DPAPI backend's cbData==len check. ReadAll already rejects
+        // a short/truncated file (EOF before len); this fstat also rejects an over-long one.
+        struct stat st;
+        if (::fstat(fd, &st) != 0 || st.st_size < 0 || (std::size_t)st.st_size != len) {
+            ::close(fd);
+            return false;
+        }
         bool ok = ReadAll(fd, out, len);
         ::close(fd);
         return ok;

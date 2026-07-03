@@ -56,3 +56,7 @@ KADEMLIA2_SEARCH_TRIGRAM_REQ,0xCC,KADEMLIA-UDP,v8.1,experimental,ESE_CAP_M4_TRIG
 KADEMLIA2_BLOOM_DIGEST_REQ,0xCD,KADEMLIA-UDP,v8.1,experimental,ESE_CAP_M5_BLOOM_GOSSIP,"32KB bloom blob",additive,srchybrid/Opcodes.h,800
 KADEMLIA2_LOCAL_QUERY_REQ,0xCE,KADEMLIA-UDP,v8.1,experimental,ESE_CAP_M5_BLOOM_GOSSIP,"query terms",additive,srchybrid/Opcodes.h,801
 KADEMLIA2_LOCAL_QUERY_RES,0xCF,KADEMLIA-UDP,v8.1,experimental,ESE_CAP_M5_BLOOM_GOSSIP,"query results",additive,srchybrid/Opcodes.h,802
+OP_LIVE_DVR_OFFER,0xB5,EMULEPROT-CC,DESIGN,reserved-proposed,ESE_CAP_LIVE_DVR,"<StreamKey 16><Epoch 4 =0><Flags 1><RangeCount 1 <=4><{StartSeq 4}{Count 2}>xN -- announce retained SIGNED DVR ranges; 10s cadence; never PEX/gossip; ceases on END/tombstone. NOT in code yet.",additive,docs/SWARM_DVR_PLAN.md,0
+OP_LIVE_DVR_REQ,0xB6,EMULEPROT-CC,DESIGN,reserved-proposed,ESE_CAP_LIVE_DVR,"<StreamKey 16><FromSeq 4><Count 1 (server clamp <=4)> -- historical chunk fetch request. NOT in code yet.",additive,docs/SWARM_DVR_PLAN.md,0
+OP_LIVE_DVR_DATA,0xB7,EMULEPROT-CC,DESIGN,reserved-proposed,ESE_CAP_LIVE_DVR,"body = literal OP_LIVE_CHUNK_V2/V3 record (self-authenticating vs pinned pubkey); >1.8MB via OP_LIVE_CHUNK_FRAG InnerOpcode=0xB7. NOT in code yet.",additive,docs/SWARM_DVR_PLAN.md,0
+OP_LIVE_DVR_NACK,0xB8,EMULEPROT-CC,DESIGN,reserved-proposed,ESE_CAP_LIVE_DVR,"<StreamKey 16><FromSeq 4><Count 1><Reason 1: 0=not-retained 1=busy 2=throttled 3=ended>. NOT in code yet.",additive,docs/SWARM_DVR_PLAN.md,0

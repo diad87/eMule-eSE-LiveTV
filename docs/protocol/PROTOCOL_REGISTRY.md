@@ -151,6 +151,62 @@ BLAKE3 solo abarata el hasheo por segmento a bitrate alto, con SIMD). `status = 
   es la *visibilidad* per-peer con la que el broadcaster decide si el swarm entero soporta V3. Por
   defecto el broadcaster sigue emitiendo V2 (compat máxima).
 
+### 2.6 🟢 RESERVA (opcodes + cap + sub-ops túnel) — Swarm DVR (`SWARM_DVR_PLAN.md`)
+
+Retención de segmentos históricos en disco (viewer + enjambre) para rebobinar 10-30 min de un directo.
+Cuatro opcodes en la banda `EMULEPROT-CC` liberada (0xB5-0xB8, tras 0xB3/0xB4), un cap bit 22 y tres
+sub-ops de túnel (0x60-0x62). `status = reserved-proposed`, **sin símbolo en código** (regla §5).
+
+| Símbolo | Valor | Namespace | Notas |
+|---|---|---|---|
+| `OP_LIVE_DVR_OFFER` | `0xB5` | `EMULEPROT-CC` | Anuncio de rangos retenidos firmados (cadencia 10 s; nunca PEX/gossip) |
+| `OP_LIVE_DVR_REQ` | `0xB6` | `EMULEPROT-CC` | Petición de chunk histórico |
+| `OP_LIVE_DVR_DATA` | `0xB7` | `EMULEPROT-CC` | Cuerpo = record `OP_LIVE_CHUNK_V2/V3` LITERAL; >1,8 MB vía `OP_LIVE_CHUNK_FRAG` (`InnerOpcode=0xB7`) |
+| `OP_LIVE_DVR_NACK` | `0xB8` | `EMULEPROT-CC` | 0=no-retenido 1=ocupado 2=throttled 3=terminado |
+| `ESE_CAP_LIVE_DVR` | bit 22 (`0x00400000`) | `CAP-ESE` | Dormante; **implica bit 13** (`LIVE_CHUNK_FRAG`) en el emisor |
+| `TUN_OP_DVR_FETCH` | `0x60` | `TUNNEL-CELL` | Viewer→exit (respuesta por plano bulk `0xD9` + `FLAG_DVR`) |
+| `TUN_OP_DVR_NACK` | `0x61` | `TUNNEL-CELL` | Exit→viewer |
+| `TUN_OP_DVR_OFFER` | `0x62` | `TUNNEL-CELL` | Exit→viewer: rangos alcanzables por el exit |
+
+- **`FLAG_DVR` = bit 0 de `BulkDataHeader.flags`** (u8 sin uso, `LiveBulk.h`). **El linter NO lo gobierna**
+  (no es una fila del registro, igual que `0xC5`/`0xD4`): esta prosa ES su registro. Enruta el plano bulk
+  al sink DVR en vez de al pipeline vivo.
+- **Autenticidad histórica reutiliza la firma existente:** `0xB7` transporta el record V2/V3 firmado tal
+  cual (Ed25519 sobre `StreamKey‖SeqNum‖digest`), auto-autenticante contra la pubkey pineada. No se
+  inventa cripto nueva. El agujero de replay entre sesiones (firma sin `epoch`) bloquea el default-on
+  hasta que el `epoch` viaje con Live V3 (0xB4).
+
+### 2.7 🟢 RESERVA (tags + cap + sub-ops túnel) — Manifiesto de canal (`CHANNEL_MANIFEST_PLAN.md`)
+
+Canales estilo YouTube anclados a la pubkey Ed25519 ya existente (`streamKey = SHA1(pubkey)[:16]`):
+manifiesto firmado + catálogo VOD como colecciones `.emulecollection` firmadas. Cuatro tags `TAG-ED2K`
+(0x6F-0x72), un cap bit 23 y dos sub-ops de túnel de **celda-única** (0x24/0x25, banda 0x24-0x3F por
+debajo del umbral multi-celda 0x40 — un fetch de manifiesto es diminuto). `status = reserved-proposed`.
+
+| Símbolo | Valor | Namespace | Notas |
+|---|---|---|---|
+| `TAG_ESE_CHANNEL_PK` | `0x6F` | `TAG-ED2K` | Pubkey del canal (BSOB 32) en cabecera de colección |
+| `TAG_ESE_COLL_SIG` | `0x70` | `TAG-ED2K` | Firma Ed25519 (BSOB 64) del transcript canónico de la colección |
+| `TAG_ESE_COLL_REV` | `0x71` | `TAG-ED2K` | uint32 revisión del catálogo (anti-rollback) |
+| `TAG_ESE_VOD_META` | `0x72` | `TAG-ED2K` | Blob por-fichero {ver,kind,date,duration,order,thumb} |
+| `ESE_CAP_CHANNEL_MANIFEST` | bit 23 (`0x00800000`) | `CAP-ESE` | Gatea payload v2 de `0xD1/0xD2`. Dormante |
+| `TUN_OP_CHANNEL_FETCH` | `0x24` | `TUNNEL-CELL` | Viewer→exit: fetch de manifiesto por pubkey (celda-única) |
+| `TUN_OP_CHANNEL_DATA` | `0x25` | `TUNNEL-CELL` | Exit→viewer: bytes del manifiesto |
+
+- **Por qué 0x24/0x25 y NO 0x63/0x64:** el dispatcher trata todo `sub_cmd >= 0x40` como **multi-celda**
+  (exige cabecera de fragmento de 8 B + reensamblado). Un `CHANNEL_FETCH` es diminuto → pertenece a la
+  banda de celda-única 0x24-0x3F. (Los DVR 0x60-0x62 sí van multi-celda: sus payloads son grandes.)
+- **Tres secretos, no uno** (fallo fatal corregido en el plan): `sk_channel` (firma, solo emisor) ≠
+  `read_secret` simétrico (sella/localiza, emisor+suscriptores privados) ≠ nada (público = claro firmado).
+  El código actual confunde clave de firma y de lectura — ver `CHANNEL_MANIFEST_PLAN.md` §2.
+
+### 2.8 Desconflicto DVR ↔ Canales (reservados el mismo día, 2026-07-03)
+
+Ambos planes verificaron el cap bit 22 libre de forma independiente y ambos lo iban a reservar. Resuelto:
+**DVR = bit 22**, **Canales = bit 23**. Siguiente cap-ESE libre: **bit 24**. Banda `EMULEPROT-CC` restante:
+**0xB9-0xBF**. Túnel: DVR 0x60-0x62 + Canales 0x24/0x25 (no solapan). Verificado a mano contra `Opcodes.h`
+y `LiveTunnel.h` (el linter ignora ~200 símbolos upstream y los bytes-cabecera: registro-libre ≠ wire-libre).
+
 ---
 
 ## 3. Esquema de los CSV

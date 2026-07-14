@@ -1,16 +1,13 @@
 'use strict';
 const https  = require('https');
-const http   = require('http');   // local eMule API (127.0.0.1:4711) — no third parties
 const fs     = require('fs');
-const path   = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
 const runtimeDir = require('./runtime_dir');
 
 // Puerto del servidor — se configura con init()
 let PORT = 8080;
 
-/** Configura el puerto. Llamar antes de setupUPnP. */
+/** Configura el puerto local del dashboard. */
 function init(port) { PORT = port; }
 
 // ─── Config / secrets ────────────────────────────────────────────────────────
@@ -115,7 +112,6 @@ function encryptMsg(text) {
 // reachability or LAN for trusted networks; users wanting cross-NAT access
 // over a third-party overlay are expected to set up Tailscale or Tor
 // manually (see README).
-let upnpClient    = null;
 let publicUrl     = null;
 
 // ─── Publicación de URL (ntfy.sh + Telegram) ─────────────────────────────────
@@ -176,66 +172,6 @@ setInterval(() => {
   if (publicUrl) publishUrl(publicUrl, true);
 }, 5 * 60 * 1000);
 
-// ─── UPnP ────────────────────────────────────────────────────────────────────
-
-function getPublicIP() {
-  // No third parties: ask eMule's own /api/live/preflight for the public IP it
-  // detected (Kad firewall test for v4; in-band OP_PUBLICIP_ANSWER_V6 for v6).
-  // If eMule hasn't determined it yet, resolve null and the caller degrades to
-  // a LAN / overlay URL — we never query a commercial echo service.
-  return new Promise((resolve) => {
-    const req = http.get('http://127.0.0.1:4711/api/live/preflight', { timeout: 3000 }, (res) => {
-      let data = '';
-      res.on('data', d => data += d);
-      res.on('end', () => {
-        try {
-          const j  = JSON.parse(data);
-          const ip = (j.public_ip || '').trim();
-          if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return resolve(ip);
-        } catch (e) { /* fall through to null */ }
-        resolve(null);
-      });
-    });
-    req.on('error',   () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-  });
-}
-
-async function setupUPnP() {
-  try {
-    const natupnp = require('nat-upnp-2');
-    upnpClient = natupnp.createClient();
-    await new Promise((resolve, reject) => {
-      upnpClient.portMapping({ public: PORT, private: PORT, ttl: 0, description: 'eSE Streaming' },
-        (err) => err ? reject(err) : resolve());
-    });
-    console.log('[UPnP] Port ' + PORT + ' mapped on router');
-    const ip = await getPublicIP();
-    if (ip) {
-      publicUrl = 'http://' + ip + ':' + PORT;
-      console.log('');
-      console.log('  ==========================================');
-      console.log('  PUBLIC URL (P2P): ' + publicUrl);
-      console.log('  ==========================================');
-      console.log('  No third parties. Direct connection.');
-      console.log('');
-    } else {
-      console.log('[UPnP] Port mapped but could not detect public IP');
-    }
-  } catch (e) {
-    console.log('[UPnP] Failed: ' + e.message);
-    console.log('[UPnP] No public URL available. Use LAN (http://localhost:' + PORT + '),');
-    console.log('[UPnP] Tailscale, or a Tor onion service set up manually.');
-  }
-}
-
-function removeUPnP() {
-  if (upnpClient) {
-    try { upnpClient.portUnmapping({ public: PORT }); console.log('[UPnP] Port ' + PORT + ' unmapped'); } catch (e) {}
-    upnpClient = null;
-  }
-}
-
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -245,8 +181,6 @@ module.exports = {
   LOOKUP_URL,
   encryptMsg,
   publishUrl,
-  setupUPnP,
-  removeUPnP,
   get tunnelUrl()  { return null; },   // legacy stub — no third-party tunnel anymore
   get publicUrl()  { return publicUrl; },
   get active()     { return !!publicUrl; },

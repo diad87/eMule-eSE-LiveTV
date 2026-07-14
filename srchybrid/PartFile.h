@@ -238,6 +238,11 @@ public:
 	// Barry - Added to prevent list containing deleted blocks on shutdown
 	void	RemoveAllRequestedBlocks()					{ requestedblocks_list.RemoveAll(); }
 	bool	RemoveBlockFromList(uint64 start, uint64 end);
+	// eSE endgame: remove a reservation by pointer identity. The range overload above
+	// matches the FIRST list entry that covers [start,end], which is ambiguous once
+	// endgame mode allows two sources to reserve the same block. Deleting a block must
+	// unlist THAT exact object, or a freed pointer would be left in requestedblocks_list.
+	bool	RemoveBlockFromList(const Requested_Block_Struct *block);
 	void	RemoveAllSources(bool bTryToSwap);
 
 	bool	CanOpenFile() const;

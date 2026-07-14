@@ -71,9 +71,9 @@ BOOL CNetworkInfoDlg::OnInitDialog()
 	// 3 items map 1:1 to CKadV2Mode (Direct=0, Tunneled=1, Adaptive=2).
 	AddAnchor(IDC_NETINFO_KADMODE, TOP_LEFT, TOP_RIGHT);
 	m_cbKadMode.ResetContent();
-	m_cbKadMode.AddString(_T("Directo — sin túnel (tu IP visible al emisor)"));
-	m_cbKadMode.AddString(_T("Tunelizado — control por túnel onion"));
-	m_cbKadMode.AddString(_T("Adaptativo — túnel solo para canales/keywords sensibles"));
+	m_cbKadMode.AddString(GetResString(IDS_NETINFO_KADMODE_DIRECT));
+	m_cbKadMode.AddString(GetResString(IDS_NETINFO_KADMODE_TUNNELED));
+	m_cbKadMode.AddString(GetResString(IDS_NETINFO_KADMODE_ADAPTIVE));
 	m_cbKadMode.SetCurSel((int)Kademlia::CKadV2ModeSelector::Get().GetDefaultMode());
 
 	EnableSaveRestore(PREF_INI_SECTION);
@@ -201,18 +201,16 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 	// v0.71 IPv6 Sprint 9 — Connectivity (IPv4 / IPv6)
 	///////////////////////////////////////////////////////////////////////////
 	rCtrl.SetSelectionCharFormat(rcfBold);
-	rCtrl << _T("Conectividad\r\n");
+	rCtrl << GetResString(IDS_NETINFO_CONNECTIVITY_HDR) << _T("\r\n");
 	rCtrl.SetSelectionCharFormat(rcfDef);
 
-	// Modo (pref del usuario). Texto con escapes \u00xx para tildes y
-	// — (em-dash) porque el .cpp está en Windows-1252 sin BOM y
-	// MSVC interpretaría los UTF-8 raw como mojibake (pública -> pÃºblica).
-	rCtrl << _T("Modo:\t");
+	// Modo (pref del usuario).
+	rCtrl << GetResString(IDS_NETINFO_MODE_LABEL);
 	switch (thePrefs.GetIPv6Mode()) {
-		case CPreferences::IPv6OffMode:       rCtrl << _T("IPv4 (IPv6 desactivado)"); break;
-		case CPreferences::IPv6AutoMode:      rCtrl << _T("Auto (v4 listener + v6 prober)"); break;
-		case CPreferences::IPv6PreferredMode: rCtrl << _T("IPv6 preferido (dual-stack experimental)"); break;
-		default:                              rCtrl << _T("?"); break;
+		case CPreferences::IPv6OffMode:       rCtrl << GetResString(IDS_NETINFO_IPV6_OFF); break;
+		case CPreferences::IPv6AutoMode:      rCtrl << GetResString(IDS_NETINFO_IPV6_AUTO); break;
+		case CPreferences::IPv6PreferredMode: rCtrl << GetResString(IDS_NETINFO_IPV6_PREFERRED); break;
+		default:                              rCtrl << GetResString(IDS_NETINFO_UNKNOWN_Q); break;
 	}
 	rCtrl << _T("\r\n");
 
@@ -220,29 +218,30 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 	// listener en v4 puro (HighID estable) y solo corre el prober v6
 	// para mostrar la IP pública v6. Dual-stack TCP es opt-in en modo
 	// "IPv6 preferido" — ver comentario en ListenSocket::StartListening.
-	rCtrl << _T("Listener:\t");
-	if (theApp.listensocket && theApp.listensocket->IsDualStack()) {
-		rCtrl << _T("Dual-stack ([::]:") << thePrefs.GetPort() << _T(", IPV6_V6ONLY=0)");
-	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
-		// "AF_INET6 fallo - ver log" con escapes Unicode (ó = o-acute, — = em-dash).
-		rCtrl << _T("IPv4 solo (dual-stack pedido pero AF_INET6 falló — ver log)");
-	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6AutoMode) {
-		rCtrl << _T("IPv4 (0.0.0.0:") << thePrefs.GetPort() << _T(") + prober v6 activo");
-	} else {
-		rCtrl << _T("IPv4 solo (0.0.0.0:") << thePrefs.GetPort() << _T(")");
+	rCtrl << GetResString(IDS_NETINFO_LISTENER_LABEL);
+	{
+		CString s;
+		if (theApp.listensocket && theApp.listensocket->IsDualStack()) {
+			s.Format(GetResString(IDS_NETINFO_LISTENER_DUALSTACK), thePrefs.GetPort());
+		} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
+			s = GetResString(IDS_NETINFO_LISTENER_V6FAIL);
+		} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6AutoMode) {
+			s.Format(GetResString(IDS_NETINFO_LISTENER_AUTO), thePrefs.GetPort());
+		} else {
+			s.Format(GetResString(IDS_NETINFO_LISTENER_V4ONLY), thePrefs.GetPort());
+		}
+		rCtrl << s;
 	}
 	rCtrl << _T("\r\n");
 
-	// "IP pública v4" con escape para la "ú" (ú).
 	if (theApp.GetPublicIP() != 0) {
-		rCtrl << _T("IP pública v4:\t") << ipstr(theApp.GetPublicIP()) << _T("\r\n");
+		rCtrl << GetResString(IDS_NETINFO_PUBIP4_LABEL) << ipstr(theApp.GetPublicIP()) << _T("\r\n");
 	}
-	// "IP pública v6" + mensaje con escapes para "público", "—", "aún".
-	rCtrl << _T("IP pública v6:\t");
+	rCtrl << GetResString(IDS_NETINFO_PUBIP6_LABEL);
 	{
 		CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
 		if (v6.IsNull())
-			rCtrl << _T("(sin IPv6 público — ISP no provee o probe aún corriendo)");
+			rCtrl << GetResString(IDS_NETINFO_PUBIP6_NONE);
 		else
 			rCtrl << v6.ToStringC();
 	}
@@ -259,7 +258,7 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 	// código pero nadie los instanciaba en runtime. P0 los enchufa al
 	// arranque; este bloque hace visible que están vivos.
 	rCtrl.SetSelectionCharFormat(rcfBold);
-	rCtrl << _T("Privacidad (eSE V1)\r\n");
+	rCtrl << GetResString(IDS_NETINFO_PRIVACY_HDR) << _T("\r\n");
 	rCtrl.SetSelectionCharFormat(rcfDef);
 
 	{
@@ -267,35 +266,35 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 		CKadV2ModeSelector& sel = CKadV2ModeSelector::Get();
 
 		// Modo activo (preferencia del usuario)
-		rCtrl << _T("Modo:\t");
+		rCtrl << GetResString(IDS_NETINFO_MODE_LABEL);
 		switch (sel.GetDefaultMode()) {
-			case CKadV2Mode::Direct:   rCtrl << _T("Directo (sin onion routing)"); break;
-			case CKadV2Mode::Tunneled: rCtrl << _T("Tunelizado (todo a través de 2-hop onion)"); break;
-			case CKadV2Mode::Adaptive: rCtrl << _T("Adaptativo (decide por consulta)"); break;
-			default:                   rCtrl << _T("?"); break;
+			case CKadV2Mode::Direct:   rCtrl << GetResString(IDS_NETINFO_PRIV_DIRECT); break;
+			case CKadV2Mode::Tunneled: rCtrl << GetResString(IDS_NETINFO_PRIV_TUNNELED); break;
+			case CKadV2Mode::Adaptive: rCtrl << GetResString(IDS_NETINFO_PRIV_ADAPTIVE); break;
+			default:                   rCtrl << GetResString(IDS_NETINFO_UNKNOWN_Q); break;
 		}
 		rCtrl << _T("\r\n");
 
 		// Política de fallback si faltan relays
-		rCtrl << _T("Fallback:\t");
+		rCtrl << GetResString(IDS_NETINFO_FALLBACK_LABEL);
 		switch (sel.GetFallbackPolicy()) {
-			case CKadV2ModeSelector::STRICT_PRIVACY: rCtrl << _T("Estricto (aborta si no hay relays)"); break;
-			case CKadV2ModeSelector::BALANCED:       rCtrl << _T("Equilibrado (reduce fanout)"); break;
-			case CKadV2ModeSelector::BEST_EFFORT:    rCtrl << _T("Best effort (cae a Directo y avisa)"); break;
-			default:                                 rCtrl << _T("?"); break;
+			case CKadV2ModeSelector::STRICT_PRIVACY: rCtrl << GetResString(IDS_NETINFO_FALLBACK_STRICT); break;
+			case CKadV2ModeSelector::BALANCED:       rCtrl << GetResString(IDS_NETINFO_FALLBACK_BALANCED); break;
+			case CKadV2ModeSelector::BEST_EFFORT:    rCtrl << GetResString(IDS_NETINFO_FALLBACK_BESTEFFORT); break;
+			default:                                 rCtrl << GetResString(IDS_NETINFO_UNKNOWN_Q); break;
 		}
 		rCtrl << _T("\r\n");
 
 		// Capabilities runtime — bitmap TAG_ESE_CAPS. Refleja qué módulos
 		// reales se han instanciado al arranque (P0.3). 0x00000000 sería
 		// señal de stack apagado.
-		rCtrl << _T("Capabilities:\t");
+		rCtrl << GetResString(IDS_NETINFO_CAPS_LABEL);
 		{
 			CString cs;
 			cs.Format(_T("0x%08X"), (unsigned)g_uEseCapsRuntime);
 			rCtrl << cs;
 			if (g_uEseCapsRuntime == 0) {
-				rCtrl << _T("  (stack apagado — privacy code no inicializado)");
+				rCtrl << GetResString(IDS_NETINFO_CAPS_OFF);
 			} else {
 				rCtrl << _T("  [");
 				bool first = true;
@@ -347,39 +346,39 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 
 		{
 			CString cs;
-			cs.Format(_T("%u activos / %u negociando / pool PST %u"),
+			cs.Format(GetResString(IDS_NETINFO_TUNNELS_COUNT_FMT),
 				(unsigned)circuitsActive, (unsigned)circuitsPending, (unsigned)pool);
-			rCtrl << _T("Onion tunnels:\t") << cs;
+			rCtrl << GetResString(IDS_NETINFO_ONIONTUNNELS_LABEL) << cs;
 			if (circuitsActive == 0 && circuitsPending == 0
 			    && sel.GetDefaultMode() != CKadV2Mode::Direct)
 			{
 				// P3 done: TCP send wired. No circuits anywhere means
 				// no fork peer has been encountered yet and no manual
 				// test has run.
-				rCtrl << _T("  (esperando peer eSE V1; prueba /api/live/privacy/test_circuit)");
+				rCtrl << GetResString(IDS_NETINFO_TUNNELS_WAITING);
 			} else if (circuitsActive == 0 && circuitsPending > 0) {
 				// Pending only — handshake in flight or doomed to time
 				// out against a legacy peer. Visible proof that send
 				// pipeline is working.
-				rCtrl << _T("  (negociando handshake — si el peer no es eSE V1, expira en ~6s)");
+				rCtrl << GetResString(IDS_NETINFO_TUNNELS_NEGOTIATING);
 			}
 			rCtrl << _T("\r\n");
 
 			// v8.1 D8 — tunnel wire-byte/cell telemetry (honest: counts only cells
 			// carried by the onion tunnel, not direct eD2K traffic). 0/0 until a
 			// circuit is built + used.
-			cs.Format(_T("TX %I64u cells / %I64u KB   RX %I64u cells / %I64u KB"),
+			cs.Format(GetResString(IDS_NETINFO_TRAFFIC_FMT),
 				cellsSent, bytesSent / 1024, cellsRecv, bytesRecv / 1024);
-			rCtrl << _T("Tunnel traffic:\t") << cs << _T("\r\n");
+			rCtrl << GetResString(IDS_NETINFO_TRAFFIC_LABEL) << cs << _T("\r\n");
 
 			// v8.1 D8 - mean end-to-end tunnel RTT (only shown once a probe round-trips).
 			if (meanRtt > 0) {
-				cs.Format(_T("~%u ms (media EWMA, ida y vuelta por el tunel)"), meanRtt);
-				rCtrl << _T("Tunnel RTT:\t") << cs << _T("\r\n");
+				cs.Format(GetResString(IDS_NETINFO_RTT_FMT), meanRtt);
+				rCtrl << GetResString(IDS_NETINFO_RTT_LABEL) << cs << _T("\r\n");
 			}
 
-			cs.Format(_T("%u canales (DPAPI)"), (unsigned)subs);
-			rCtrl << _T("Suscripciones:\t") << cs << _T("\r\n");
+			cs.Format(GetResString(IDS_NETINFO_SUBS_FMT), (unsigned)subs);
+			rCtrl << GetResString(IDS_NETINFO_SUBS_LABEL) << cs << _T("\r\n");
 		}
 	}
 

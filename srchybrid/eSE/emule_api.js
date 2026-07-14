@@ -14,7 +14,7 @@ let _emuleExePath = null;
 function getEmuleExePath() {
   if (_emuleExePath) return _emuleExePath;
   // Same folder as server.js
-  const localPath = path.join(__dirname, 'emule.exe');
+  const localPath = path.join(__dirname, 'emule' + '.exe');
   if (fs.existsSync(localPath)) { _emuleExePath = localPath; return localPath; }
   // Fallback: known build path
   const buildPath = path.join(__dirname, '..', '..', 'srchybrid', 'x64', 'Release', 'emule.exe');
@@ -127,6 +127,42 @@ const EMULE_WS_PORT = 4711;
 
 let emuleSession = null;
 let emulePassword = null;
+
+// ─── SEARCH-RESULT METADATA CACHE ──────────────────────────────
+// Maps ed2k hash → { name, size } for every result eMule has ever returned to
+// us. This is the Node process's OWN memory of what was found, INDEPENDENT of
+// eMule's volatile in-app search list.
+//
+// Why this exists: eMule's `w=search&downloads=<hash>` command only works while
+// <hash> is still present in eMule's current search results. But SmartSearch
+// runs several query variants back-to-back, and every new `tosearch` wipes the
+// previous results (WEBGUIIA_DELETEALLSEARCHES). So by the time the user picks a
+// source, its hash is usually gone from eMule's list → the download silently
+// never starts (AddFileToDownloadByHash is a no-op on a miss). Symptom: the UI
+// sits on "Esperando que eMule reciba datos…" until it gives up.
+//
+// With this cache we can rebuild the full ed2k link (name+exact size+hash) and
+// add it via `w=transfer&ed2k=<link>`, which does NOT depend on the search list.
+const _resultMetaCache = new Map();   // HASH(upper) → { name, size }
+const _RESULT_META_CACHE_MAX = 4000;  // hard cap; oldest entries evicted (LRU-ish)
+
+function cacheResultMeta(hash, name, size) {
+  const key = String(hash || '').toUpperCase();
+  if (!/^[A-F0-9]{32}$/.test(key) || !size || size <= 0) return;
+  if (_resultMetaCache.has(key)) _resultMetaCache.delete(key); // refresh recency
+  _resultMetaCache.set(key, { name: name || '', size });
+  if (_resultMetaCache.size > _RESULT_META_CACHE_MAX) {
+    _resultMetaCache.delete(_resultMetaCache.keys().next().value); // evict oldest
+  }
+}
+
+// Build a canonical ed2k link from parts. The name is URL-encoded so eMule's
+// CED2KFileLink (which URLDecodes it back) reconstructs it exactly, including
+// Unicode. encodeURIComponent also escapes '|', keeping the link tokenizable.
+function buildEd2kLink(name, size, hash) {
+  const encName = encodeURIComponent(String(name || hash));
+  return 'ed2k://|file|' + encName + '|' + size + '|' + String(hash).toUpperCase() + '|/';
+}
 
 // External dependency: settings (injected)
 let _loadSettings = () => ({});
@@ -408,10 +444,16 @@ function parseEmuleSearchResults(html, settings, searchQuery) {
     let sizeMB = entry.fileSize ? Math.round(entry.fileSize / (1024 * 1024)) : 0;
     if (sizeMB === 0 && sizeIdx < sizeData.length) { sizeMB = Math.round(sizeData[sizeIdx].sizeMB); sizeIdx++; }
     
+    // Remember this file's exact metadata regardless of score — a later
+    // /api/emule/download by hash needs the exact byte size to build a valid
+    // ed2k link, and eMule's own search list may no longer hold it by then.
+    cacheResultMeta(entry.hash || hash, entry.fileName, entry.fileSize);
+
     const score = scoreResult(entry.fileName, sizeMB, sources, completeSources, settings, searchQuery);
     if (score > -900) {
       results.push({
-        fileName: entry.fileName, sizeMB, sources, completeSources,
+        fileName: entry.fileName, sizeMB, sizeBytes: entry.fileSize || 0,
+        sources, completeSources,
         hash: entry.hash || hash, score,
         quality: detectQuality(entry.fileName),
         language: detectLanguage(entry.fileName),
@@ -538,9 +580,27 @@ function detectLanguage(fileName) {
 
 // ─── DOWNLOAD ──────────────────────────────────────────────────
 
-function emuleDownload(hash, callback) {
+function emuleDownload(hash, callback, meta) {
   if (!emuleSession) { callback(new Error('Not logged in')); return; }
-  emuleRequest('?ses=' + emuleSession + '&w=search&downloads=' + hash, (err, html) => {
+  const key = String(hash || '').toUpperCase();
+
+  // Prefer explicit metadata from the caller, else our own result cache.
+  const m = (meta && meta.size > 0) ? meta : _resultMetaCache.get(key);
+
+  if (m && m.size > 0) {
+    // Robust path: add by full ed2k link. Independent of eMule's search list,
+    // so it works even after later searches wiped this hash from it.
+    const link = buildEd2kLink(m.name, m.size, key);
+    emuleRequest('?ses=' + emuleSession + '&w=transfer&ed2k=' + encodeURIComponent(link), (err, html) => {
+      if (!err && html && html.includes('w=password')) { emuleSession = null; }
+      callback(err, !err);
+    });
+    return;
+  }
+
+  // Fallback: legacy by-hash add. Only succeeds while the hash is still present
+  // in eMule's current search results.
+  emuleRequest('?ses=' + emuleSession + '&w=search&downloads=' + key, (err, html) => {
     callback(err, !err);
   });
 }
@@ -651,10 +711,17 @@ function emuleAddEd2kLink(ed2kLink, callback) {
 
   console.log('[eMule] Adding ed2k link — file: "' + fileName + '", size: ' + Math.round(fileSize / (1024*1024)) + ' MB, hash: ' + hash);
 
+  // We already have the full link (name+size+hash) — remember it so a later
+  // by-hash download of the same file also works.
+  cacheResultMeta(hash, fileName, fileSize);
+
   const doAdd = () => {
     if (!emuleSession) { return callback(new Error('Sin sesión activa en eMule')); }
-    // eMule WebServer accepts downloads by hash via the search page
-    emuleRequest('?ses=' + emuleSession + '&w=search&downloads=' + hash, (err, html) => {
+    // Add via the full ed2k link (w=transfer&ed2k=…), NOT w=search&downloads=hash.
+    // The by-hash path only works when the hash is still in eMule's live search
+    // list; a freshly-pasted link never is, so it would silently do nothing.
+    const link = buildEd2kLink(fileName, fileSize, hash);
+    emuleRequest('?ses=' + emuleSession + '&w=transfer&ed2k=' + encodeURIComponent(link), (err, html) => {
       if (err) { return callback(err); }
       if (html && html.includes('w=password')) {
         emuleSession = null;

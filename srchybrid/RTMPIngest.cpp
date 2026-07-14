@@ -197,17 +197,21 @@ static int RTMPProbePort(uint16 port)
 static int RTMPCleanOutputDir(const CString& outputDir)
 {
 	int deleted = 0;
-	CString pattern = outputDir + _T("\\*.ts");
-	WIN32_FIND_DATA fd;
-	HANDLE hFind = FindFirstFile(pattern, &fd);
-	if (hFind != INVALID_HANDLE_VALUE) {
-		do {
-			CString full = outputDir + _T("\\") + fd.cFileName;
-			if (DeleteFile(full)) deleted++;
-		} while (FindNextFile(hFind, &fd));
-		FindClose(hFind);
+	const LPCTSTR patterns[] = { _T("\\*.ts"), _T("\\*.m3u8") };
+	for (int i = 0; i < _countof(patterns); ++i) {
+		CString pattern = outputDir + patterns[i];
+		WIN32_FIND_DATA fd;
+		HANDLE hFind = FindFirstFile(pattern, &fd);
+		if (hFind != INVALID_HANDLE_VALUE) {
+			do {
+				if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+					continue;
+				CString full = outputDir + _T("\\") + fd.cFileName;
+				if (DeleteFile(full)) deleted++;
+			} while (FindNextFile(hFind, &fd));
+			FindClose(hFind);
+		}
 	}
-	DeleteFile(outputDir + _T("\\stream.m3u8"));
 	return deleted;
 }
 
@@ -1111,6 +1115,10 @@ void CRTMPIngest::Stop()
 	}
 
 	m_bRunning = false;
+	const int cleaned = RTMPCleanOutputDir(m_strOutputDir);
+	if (cleaned > 0)
+		LIVE_LOG("RTMP", "Removed %d generated HLS files from %S on stop",
+			cleaned, (LPCWSTR)m_strOutputDir);
 	AddLogLine(false, _T("eSE RTMP: Stopped."));
 }
 

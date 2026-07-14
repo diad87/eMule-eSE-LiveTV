@@ -33,6 +33,7 @@ their client on the eMule forum.
 #include "kademlia/net/PacketTracking.h"
 
 class CSafeMemFile;
+class CUpDownClient;
 struct SSearchTerm;
 
 namespace Kademlia
@@ -69,11 +70,13 @@ namespace Kademlia
 
 		// eSE: Initiate a uTP hole-punch by sending HOLEPUNCH_REQ to a remote peer.
 		// uIP = host-order (Kad convention), uUDPPort = host-order.
-		void SendEseHolePunchReq(uint32 uIP, uint16 uUDPPort);
+		void SendEseHolePunchReq(uint32 uIP, uint16 uUDPPort, bool bAdvertiseCookie = false,
+			CUpDownClient* pExpectedClient = NULL);
 		// [eSE v9] anti-CGNAT: fire the REQ at a small window of ports around uBasePort
 		// (birthday spray) so a symmetric NAT's per-destination external port can be hit.
 		// uSpread==0 => single-shot (exact SendEseHolePunchReq behavior). Clamped internally.
-		void SendEseHolePunchReqSpray(uint32 uIP, uint16 uBasePort, uint16 uSpread);
+		void SendEseHolePunchReqSpray(uint32 uIP, uint16 uBasePort, uint16 uSpread, bool bAdvertiseCookie = false,
+			CUpDownClient* pExpectedClient = NULL);
 		// R.1 (3-way rendezvous) outbound primitives — IPv4 wire, kill-switch gated.
 		// The CALLER gates on the peer advertising ESE_CAP_HOLEPUNCH_RDV (bit 15).
 		void SendKad3HolepunchReq(uint32 uRdvIP, uint16 uRdvPort, uint32 uNonce, uint32 uTargetIP, uint16 uTargetPort, const uint8 *pbyCookie = NULL);

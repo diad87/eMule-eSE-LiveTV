@@ -44,6 +44,7 @@
 #include "kademlia/kademlia/UDPFirewallTester.h"
 #include "md5sum.h"
 #include "ImportParts.h"
+#include "FirewallProberV6.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -1259,6 +1260,7 @@ void CSharedFileList::Publish()
 			&& theApp.clientlist->GetBuddyStatus() != Connected
 			//direct callback
 			&& (Kademlia::CUDPFirewallTester::IsFirewalledUDP(true) || !Kademlia::CUDPFirewallTester::IsVerified())
+			&& !CFirewallProberV6::CanAdvertiseModernKadSource()
 		   )
 		|| !GetCount()
 		|| !Kademlia::CKademlia::GetPublish())

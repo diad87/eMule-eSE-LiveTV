@@ -50,8 +50,10 @@ void CKadKeepalive::Stop()
 void CKadKeepalive::RequestStart() { InterlockedExchange(&m_ctrlRequest, 1); }
 void CKadKeepalive::RequestStop()  { InterlockedExchange(&m_ctrlRequest, 2); }
 
-void CKadKeepalive::AddSupernode(const CAddress& addr, uint16 port)
+void CKadKeepalive::AddSupernode(const CAddress& addr, uint16 port, const Kademlia::CUInt128& kadID)
 {
+	if (port == 0 || kadID == 0)
+		return;
     if (m_supernodes.size() >= KEEPALIVE_MAX_SUPERNODES) {
         // Pool full — silently ignore. Sprint 4 will replace the worst
         // candidate based on RTT/uptime once the routing table is wired.
@@ -64,6 +66,7 @@ void CKadKeepalive::AddSupernode(const CAddress& addr, uint16 port)
     Supernode s;
     s.addr = addr;
     s.port = port;
+	s.kadID = kadID;
     s.lastPingTick = 0;
     // Seed the pong clock to "now" so a node that NEVER answers (e.g. a vanilla 0.70b
     // peer that drops our 0x66) still enters the miss-detector after PONG_TIMEOUT and is
@@ -112,7 +115,7 @@ void CKadKeepalive::Tick()
              it != contacts.end() && m_supernodes.size() < KEEPALIVE_MAX_SUPERNODES; ++it) {
             Kademlia::CContact* c = *it;
             if (c == NULL || c->GetNetIP() == 0 || c->GetUDPPort() == 0) continue;
-            AddSupernode(CAddress(c->GetNetIP(), false), c->GetUDPPort());
+            AddSupernode(CAddress(c->GetNetIP(), false), c->GetUDPPort(), c->GetClientID());
         }
     }
 
@@ -139,8 +142,8 @@ void CKadKeepalive::Tick()
                 continue;
             }
         }
-        it->lastPingTick = now;
         if (Kademlia::CKademlia::GetUDPListener() != NULL) {
+            it->lastPingTick = now;
             Kademlia::CKademlia::GetUDPListener()->SendKad3PingReq(it->addr.ToUInt32(true), it->port);
             m_stats.pingsSent++;   // only count pings we actually emitted
         }
@@ -150,20 +153,24 @@ void CKadKeepalive::Tick()
 }
 
 // R.2: a supernode answered our KADEMLIA3_PING_REQ with a PONG (0x67). Mark it
-// healthy so the miss-detector in Tick() keeps it in the active set. Matched by
-// host-order IP (uIP from the UDP dispatch); port is informational. Called from
+// healthy so the miss-detector in Tick() keeps it in the active set. The exact
+// endpoint, Kad identity and a recent outstanding ping must all match. Called from
 // CKademliaUDPListener::Process_KADEMLIA3_PING_RES on the Kad Process thread —
 // same thread as Tick(), so m_supernodes needs no lock.
-void CKadKeepalive::OnPong(uint32 uIP, uint16 /*port*/)
+bool CKadKeepalive::OnPong(uint32 uIP, uint16 port, const Kademlia::CUInt128& kadID)
 {
-    if (uIP == 0) return;
+    if (uIP == 0 || port == 0 || kadID == 0) return false;
     const DWORD now = GetTickCount();
     for (auto& s : m_supernodes) {
-        if (s.addr.ToUInt32(true) == uIP) {
+        if (s.addr.ToUInt32(true) == uIP && s.port == port && s.kadID == kadID
+            && s.lastPingTick != 0
+            && now - s.lastPingTick <= KEEPALIVE_PONG_TIMEOUT_MS) {
             s.lastPongTick = now;
+            s.lastPingTick = 0;
             s.consecutiveMisses = 0;
             m_stats.pongsReceived++;
-            return;
+            return true;
         }
     }
+    return false;
 }

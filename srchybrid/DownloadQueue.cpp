@@ -31,6 +31,7 @@
 #include "Server.h"
 #include "Packets.h"
 #include "Kademlia/Kademlia/Kademlia.h"
+#include "Kademlia/Kademlia/Prefs.h"
 #include "kademlia/utils/uint128.h"
 #include "ipfilter.h"
 #include "emuledlg.h"
@@ -38,6 +39,9 @@
 #include "TaskbarNotifier.h"
 #include "MenuCmds.h"
 #include "Log.h"
+#include "FirewallProberV6.h"
+#include "ReachabilityWire.h"
+#include "ClientUDPSocket.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -530,6 +534,7 @@ bool CDownloadQueue::CheckAndAddSource(CPartFile *sender, CUpDownClient *source)
 		for (POSITION pos2 = cur_file->srclist.GetHeadPosition(); pos2 != NULL;) {
 			CUpDownClient *cur_client = cur_file->srclist.GetNext(pos2);
 			if (cur_client->Compare(source, true) || cur_client->Compare(source, false)) {
+				cur_client->MergeReachabilityFrom(*source);
 				// if this file has not this source already, set request for this source
 				if (cur_file != sender && cur_client->AddRequestForAnotherFile(sender)) {
 					theApp.emuledlg->transferwnd->GetDownloadList()->AddSource(sender, cur_client, true);
@@ -1555,7 +1560,7 @@ bool CDownloadQueue::DoKademliaFileRequest() const
 	return (::GetTickCount() >= m_lastkademliafilerequest + KADEMLIAASKTIME);
 }
 
-void CDownloadQueue::KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt128 *pcontactID, const Kademlia::CUInt128 *pbuddyID, uint8 type, uint32 ip, uint16 tcp, uint16 udp, uint32 dwBuddyIP, uint16 dwBuddyPort, uint8 byCryptOptions)
+void CDownloadQueue::KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt128 *pcontactID, const Kademlia::CUInt128 *pbuddyID, uint8 type, uint32 ip, uint16 tcp, uint16 udp, uint32 dwBuddyIP, uint16 dwBuddyPort, uint8 byCryptOptions, uint16 uReachCaps, const CAddress *pIPv6)
 {
 	//Safety measure to make sure we are looking for these sources
 	CPartFile *temp = GetFileByKadFileSearchID(nSearchID);
@@ -1566,13 +1571,30 @@ void CDownloadQueue::KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt1
 		return;
 
 	uint32 ED2Kip = htonl(ip);
-	if (theApp.ipfilter->IsFiltered(ED2Kip)) {
+	if (ED2Kip != 0 && theApp.ipfilter->IsFiltered(ED2Kip)) {
 		if (thePrefs.GetLogFilteredIPs())
 			AddDebugLogLine(false, _T("IPfiltered source IP=%s (%s) received from Kademlia"), (LPCTSTR)ipstr(ED2Kip), (LPCTSTR)theApp.ipfilter->GetLastHit());
 		return;
 	}
-	if ((ip == Kademlia::CKademlia::GetIPAddress() || ED2Kip == theApp.serverconnect->GetClientID()) && tcp == thePrefs.GetPort())
+	// Public-IP/port equality is not identity behind CGNAT: two users can share
+	// both. Kad source IDs are exact and do not produce that false self-match.
+	if (pcontactID != NULL
+		&& *pcontactID == Kademlia::CKademlia::GetPrefs()->GetClientHash())
 		return;
+
+	const bool bReachPunch = (uReachCaps & KAD_REACH_CAP_PUNCH_2W) != 0
+		&& ED2Kip != 0 && udp != 0
+		&& thePrefs.GetUtpHolePunchEnabled()
+		&& theApp.clientudp != NULL && theApp.clientudp->IsUtpReady()
+		&& Kademlia::CKademlia::IsConnected()
+		&& Kademlia::CKademlia::GetUDPListener() != NULL;
+	const CAddress localV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+	const bool bReachV6 = (uReachCaps & KAD_REACH_CAP_V6_IN) != 0
+		&& pIPv6 != NULL && pIPv6->GetType() == CAddress::IPv6
+		&& pIPv6->IsPublicIP() && tcp != 0
+		&& thePrefs.IsIPv6Enabled() && !thePrefs.GetProxySettings().bUseProxy
+		&& localV6.GetType() == CAddress::IPv6 && localV6.IsPublicIP();
+	const bool bHasModernRoute = bReachPunch || bReachV6;
 	CUpDownClient *ctemp = NULL;
 	//DEBUG_ONLY( DebugLog(_T("Kad source received, type %u, IP %s"), type, (LPCTSTR)ipstr(ED2Kip)) );
 	switch (type) {
@@ -1602,16 +1624,16 @@ void CDownloadQueue::KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt1
 	case 5:
 	case 3:
 		//This will be a firewalled client connected to Kad only.
-		// if we are firewalled ourself, the source is useless to us
-		if (theApp.IsFirewalled())
+		// A firewalled local client can still use a validated v6 or punch route.
+		if (theApp.IsFirewalled() && !bHasModernRoute)
 			break;
 
-		if (theApp.ipfilter->IsFiltered(dwBuddyIP)) {
+		if (dwBuddyIP != 0 && theApp.ipfilter->IsFiltered(dwBuddyIP)) {
 			if (thePrefs.GetLogFilteredIPs())
 				AddDebugLogLine(false, _T("Source with an IP-filtered buddy IP=%s (%s) received from Kademlia"), (LPCTSTR)ipstr(dwBuddyIP), (LPCTSTR)theApp.ipfilter->GetLastHit());
 			break;
 		}
-		if (theApp.clientlist->IsBannedClient(dwBuddyIP)) {
+		if (dwBuddyIP != 0 && theApp.clientlist->IsBannedClient(dwBuddyIP)) {
 			if (thePrefs.GetLogBannedClients())
 				AddDebugLogLine(false, _T("Source with a Banned buddy IP=%s received from Kademlia"), (LPCTSTR)ipstr(dwBuddyIP));
 		} else {
@@ -1621,6 +1643,8 @@ void CDownloadQueue::KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt1
 			//from this firewalled source, the compare method will match them.
 			ctemp->SetSourceFrom(SF_KADEMLIA);
 			ctemp->SetKadPort(udp);
+			if (bHasModernRoute)
+				ctemp->SetConnectIP(ED2Kip);
 			byte cID[16];
 			pcontactID->ToByteArray(cID);
 			ctemp->SetUserHash(cID);
@@ -1632,11 +1656,11 @@ void CDownloadQueue::KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt1
 		break;
 	case 6:
 		// firewalled source which supports direct UDP callback
-		// if we are firewalled ourselves, the source is useless to us
-		if (theApp.IsFirewalled())
+		// Modern peers do not require either side to have classic HighID.
+		if (theApp.IsFirewalled() && !bHasModernRoute)
 			break;
 
-		if ((byCryptOptions & 0x08) == 0)
+		if ((byCryptOptions & 0x08) == 0 && !bHasModernRoute)
 			DebugLogWarning(_T("Received Kad source type 6 (direct callback) which has the direct callback flag not set (%s)"), (LPCTSTR)ipstr(ED2Kip));
 		else {
 			ctemp = new CUpDownClient(temp, tcp, 1, 0, 0, false);
@@ -1650,6 +1674,9 @@ void CDownloadQueue::KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt1
 	}
 
 	if (ctemp != NULL) {
+		ctemp->SetReachCaps(uReachCaps);
+		if (pIPv6 != NULL)
+			ctemp->SetIPv6Address(*pIPv6);
 		// add encryption settings
 		ctemp->SetConnectOptions(byCryptOptions);
 		CheckAndAddSource(temp, ctemp);

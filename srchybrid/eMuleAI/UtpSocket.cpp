@@ -358,7 +358,10 @@ static void AddExpectedPeer(CUtpSocket* owner, const sockaddr* to, socklen_t tol
 	// evict a live one. Hole-punch hints are IPv4 (SeedNatTraversalExpectation).
 	{
 		static const size_t kMaxExpectedTotal = 512; // global hard cap (transient 20s hints)
-		static const size_t kMaxExpectedPerIP = 4;   // concurrent hints per source IP
+		// One symmetric-NAT prediction attempt legitimately registers up to 17
+		// endpoints. Leave room for another client behind the same CGNAT address,
+		// while the global cap and the 20 s TTL still bound spoofed state.
+		static const size_t kMaxExpectedPerIP = 32;
 		if (g_expectedPeers.size() >= kMaxExpectedTotal) {
 			g_expectedPeersLock.Unlock();
 			if (thePrefs.GetVerbose())
@@ -960,42 +963,65 @@ static uint64 on_utp_accept(utp_callback_arguments* a)
 			uint16 peerPort = 0;
 			peerIP.FromSA((sockaddr*)&peer, peerlen, &peerPort);
 
-			// MatchNatExpectation expects host-order IP (uint32), Kad convention
 			uint32 peerIPv4 = peerIP.ToUInt32(true); // true = convert from network to host order
-			CUpDownClient* natClient = theApp.clientudp->MatchNatExpectation(peerIPv4, peerPort);
 
 			// Check if there's at least a registered expectation for this IP
 			// (even without a client — hole-punch REQ handlers seed with NULL owner)
-			bool bHasExpectation = false;
+			bool bExactExpectation = false;
+			unsigned uSameIPExpectations = 0;
+			int iBestPortDiff = INT_MAX;
+			size_t uBestExpectationIndex = static_cast<size_t>(-1);
+			bool bBestPortAmbiguous = false;
 			g_expectedPeersLock.Lock();
-			for (size_t i = 0; i < g_expectedPeers.size(); ++i) {
-				if (SockaddrEqualIPOnly((sockaddr*)&g_expectedPeers[i].addr, g_expectedPeers[i].len, (sockaddr*)&peer, peerlen)) {
-					bHasExpectation = true;
-					break;
+			for (size_t i = 0; i < g_expectedPeers.size();) {
+				if ((int)(now - g_expectedPeers[i].expires) >= 0) {
+					g_expectedPeers.erase(g_expectedPeers.begin() + i);
+					continue;
 				}
+				if (SockaddrEqualIPOnly((sockaddr*)&g_expectedPeers[i].addr, g_expectedPeers[i].len, (sockaddr*)&peer, peerlen)) {
+					++uSameIPExpectations;
+					if (SockaddrEqualIPAndPort((sockaddr*)&g_expectedPeers[i].addr,
+						g_expectedPeers[i].len, (sockaddr*)&peer, peerlen)) {
+						bExactExpectation = true;
+						iBestPortDiff = 0;
+						uBestExpectationIndex = i;
+						bBestPortAmbiguous = false;
+					} else {
+						uint16 expectedPort = 0;
+						if (g_expectedPeers[i].addr.ss_family == AF_INET)
+							expectedPort = ntohs(reinterpret_cast<const sockaddr_in*>(&g_expectedPeers[i].addr)->sin_port);
+						if (expectedPort != 0) {
+							int diff = (int)peerPort - (int)expectedPort;
+							if (diff < 0)
+								diff = -diff;
+							if (diff < iBestPortDiff) {
+								iBestPortDiff = diff;
+								uBestExpectationIndex = i;
+								bBestPortAmbiguous = false;
+							} else if (diff == iBestPortDiff) {
+								bBestPortAmbiguous = true;
+							}
+						}
+					}
+				}
+				++i;
 			}
+			const bool bHasExpectation = uBestExpectationIndex != static_cast<size_t>(-1)
+				&& (bExactExpectation || (!bBestPortAmbiguous && iBestPortDiff <= 120));
+			if (bHasExpectation)
+				g_expectedPeers.erase(g_expectedPeers.begin() + uBestExpectationIndex);
 			g_expectedPeersLock.Unlock();
 
-			if (natClient != NULL || bHasExpectation) {
+			if (bHasExpectation) {
 				if (thePrefs.GetVerbose())
-					DebugLog(_T("[NatTraversal][uTP] ACCEPT via NatExpectation fallback: %s client %s"),
-						natClient ? _T("found") : _T("no client, bare accept for"),
-						natClient ? (LPCTSTR)(natClient->DbgGetClientInfo()) : (LPCTSTR)ipstr(htonl(peerIPv4)));
+					DebugLog(_T("[NatTraversal][uTP] ACCEPT bare pending HELLO for %s:%u (exact=%u candidates=%u)"),
+						(LPCTSTR)ipstr(htonl(peerIPv4)), (unsigned)peerPort,
+						(unsigned)bExactExpectation, uSameIPExpectations);
 
-				CClientReqSocket* pNewSocket = NULL;
-
-				if (natClient != NULL && natClient->socket != NULL) {
-					// Client already has a socket — use it
-					pNewSocket = natClient->socket;
-				} else {
-					// Create bare socket (client may or may not exist).
-					// For bare accepts (no client), OP_HELLO will create the CUpDownClient
-					// automatically via ListenSocket.cpp L258-261 pattern.
-					pNewSocket = new CClientReqSocket(natClient); // natClient may be NULL — that's OK
-					if (natClient != NULL)
-						natClient->socket = pNewSocket;
-					theApp.listensocket->AddConnection();
-				}
+				// Keep the accepted transport unowned until OP_HELLO authenticates
+				// the user hash. Associating by public IP is unsafe behind CGNAT.
+				CClientReqSocket* pNewSocket = new CClientReqSocket(NULL);
+				theApp.listensocket->AddConnection();
 
 				// Get or create uTP layer on the socket
 				CUtpSocket* utpLayer = pNewSocket->GetUtpLayer();
@@ -1011,10 +1037,7 @@ static uint64 on_utp_accept(utp_callback_arguments* a)
 				} else {
 					if (thePrefs.GetVerbose())
 						DebugLog(_T("[NatTraversal][uTP] ACCEPT via NatExpectation: failed to create uTP layer"));
-					if (natClient == NULL) {
-						// We created a bare socket — clean up since uTP layer failed
-						pNewSocket->Safe_Delete();
-					}
+					pNewSocket->Safe_Delete();
 				}
 			}
 		}
@@ -1446,8 +1469,9 @@ void CUtpSocket::ExpectPeer(const struct sockaddr* to, socklen_t tolen)
 
 // Static bridge: register an expected peer without a CUtpSocket instance.
 // Used by hole-punch signaling where we know the remote endpoint (from Kad ACK)
-// but don't have a CUtpSocket yet. The on_utp_accept fallback path matches
-// by IP-only (SockaddrEqualIPOnly) and creates socket infrastructure on demand.
+// but don't have a CUtpSocket yet. The on_utp_accept fallback consumes one
+// exact endpoint, or one uniquely-nearest remapped port, and then waits for
+// OP_HELLO to authenticate the peer before attaching a client identity.
 /*static*/ void CUtpSocket::RegisterExpectedPeer(const struct sockaddr* to, socklen_t tolen)
 {
 	if (!to || tolen <= 0)

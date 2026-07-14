@@ -49,6 +49,7 @@
 #include "id3/tag.h"
 #include "id3/misc_support.h"
 #include "uploaddiskiothread.h"
+#include "FirewallProberV6.h"
 extern wchar_t* ID3_GetStringW(const ID3_Frame *frame, ID3_FieldID fldName);
 
 #ifdef _DEBUG
@@ -1564,7 +1565,8 @@ bool CKnownFile::PublishSrc()
 	uint32 lastBuddyIP;
 	time_t tNow = time(NULL);
 	if (theApp.IsFirewalled()
-		&& (Kademlia::CUDPFirewallTester::IsFirewalledUDP(true) || !Kademlia::CUDPFirewallTester::IsVerified()))
+		&& (Kademlia::CUDPFirewallTester::IsFirewalledUDP(true) || !Kademlia::CUDPFirewallTester::IsVerified())
+		&& !CFirewallProberV6::CanAdvertiseModernKadSource())
 	{
 		CUpDownClient *buddy = theApp.clientlist->GetBuddy();
 		if (!buddy)

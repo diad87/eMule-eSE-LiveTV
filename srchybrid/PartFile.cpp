@@ -2321,7 +2321,9 @@ uint32 CPartFile::Process(uint32 reducedownload, UINT icounter/*in percent*/)
 				// To Mods, please stop instantly removing these sources.
 				// This causes sources to pop in and out creating extra overhead!
 				//Make sure this source is still a LowID Client, and we still cannot callback to this Client.
-				if (cur_src->HasLowID() && !theApp.CanDoCallback(cur_src)) {
+				if (cur_src->HasLowID() && !theApp.CanDoCallback(cur_src)
+					&& !cur_src->CanUseEseHolePunch()
+					&& !cur_src->CanUseIPv6Direct()) {
 					//If we are almost maxed on sources, slowly remove these client to see if we can find a better source.
 					if ((curTick >= m_lastpurgetime + SEC2MS(30)) && (GetSourceCount() >= GetMaxSources() * 4 / 5)) {
 						theApp.downloadqueue->RemoveSource(cur_src);
@@ -2460,6 +2462,13 @@ bool CPartFile::CanAddSource(uint32 userid, uint16 port, uint32 serverip, uint16
 		if (!Kademlia::CKademlia::IsFirewalled())
 			if (Kademlia::CKademlia::GetIPAddress() == hybridID && thePrefs.GetPort() == port)
 				return false;
+
+	// A LowID of 0 is not a routable callback id (no server callback slot, no direct
+	// UDP-callback target) — reject it regardless of our own reachability (aMule PR #790
+	// parity). This does NOT affect a legacy HighID peer that connects without sending
+	// its id and whose address is taken from the socket: that path never yields IsLowID(0).
+	if (::IsLowID(hybridID) && hybridID == 0)
+		return false;
 
 	//This allows *.*.*.0 clients to not be removed if Ed2kID == false
 	if (::IsLowID(hybridID) && theApp.IsFirewalled()) {
@@ -2688,6 +2697,20 @@ bool CPartFile::RemoveBlockFromList(uint64 start, uint64 end)
 		POSITION posLast = pos;
 		const Requested_Block_Struct *block = requestedblocks_list.GetNext(pos);
 		if (block->StartOffset <= start && block->EndOffset >= end) {
+			requestedblocks_list.RemoveAt(posLast);
+			return true;
+		}
+	}
+	return false;
+}
+
+// eSE endgame: unlist a reservation by identity (see header). Safe with duplicate
+// same-range reservations because it removes exactly the object being retired.
+bool CPartFile::RemoveBlockFromList(const Requested_Block_Struct *block)
+{
+	for (POSITION pos = requestedblocks_list.GetHeadPosition(); pos != NULL;) {
+		POSITION posLast = pos;
+		if (requestedblocks_list.GetNext(pos) == block) {
 			requestedblocks_list.RemoveAt(posLast);
 			return true;
 		}
@@ -5129,6 +5152,79 @@ bool CPartFile::GetNextRequestedBlock(CUpDownClient *sender, Requested_Block_Str
 		sender->m_lastPartAsked = tempLastPartAsked = chunksList.GetAt(pos).part;
 		chunksList.RemoveAt(pos);
 	}
+
+	// ---- eSE endgame mode ---------------------------------------------------
+	// Classic eMule "last-MB crawl": near completion, every remaining ~180 KB block
+	// has already been reserved to exactly one source (GetNextEmptyBlockInPart skips
+	// anything IsAlreadyRequested()). If that owner is slow, queued or stalling, the
+	// other fast sources have nothing left to ask for and sit out the tail.
+	//
+	// When enabled and the file is within its final stretch, let a source that came up
+	// empty above reserve a block already requested elsewhere, choosing the one held by
+	// the FEWEST sources so fast idle sources spread across the last blocks and race the
+	// slow owners. WriteToBuffer() already drops the copy that loses the race (IsComplete
+	// guard) and RemoveBlockFromList(block*) retires each duplicate reservation by
+	// identity, so this needs no wire change and adds no lifetime hazard.
+	if (newBlockCount == 0 && thePrefs.GetEseEndgame() && sender->GetPartStatus() != NULL) {
+		// Only engage in the tail: bounded sum of remaining gap bytes (cheap near the end).
+		const uint64 endgameLimit = 2 * PARTSIZE; // final ~18.5 MB
+		uint64 remaining = 0;
+		bool nearTail = true;
+		for (POSITION pos = m_gaplist.GetHeadPosition(); pos != NULL;) {
+			const Gap_Struct &gap = m_gaplist.GetNext(pos);
+			remaining += gap.end - gap.start + 1;
+			if (remaining > endgameLimit) { nearTail = false; break; }
+		}
+		while (nearTail && remaining > 0 && newBlockCount < iCount) {
+			// Least-duplicated gap block among the parts this source actually has, skipping
+			// any block already handed out earlier in this same batch.
+			uint64 bestStart = 0, bestEnd = 0;
+			int bestCover = 0;
+			bool haveBest = false;
+			for (POSITION pos = m_gaplist.GetHeadPosition(); pos != NULL;) {
+				const Gap_Struct &gap = m_gaplist.GetNext(pos);
+				for (uint64 bStart = gap.start; bStart <= gap.end;) {
+					const UINT part = (UINT)(bStart / PARTSIZE);
+					const uint64 partStart = (uint64)part * PARTSIZE;
+					const uint64 blockLimit = partStart + ((bStart - partStart) / EMBLOCKSIZE + 1) * EMBLOCKSIZE - 1;
+					const uint64 bEnd = min(gap.end, blockLimit);
+					if (sender->IsPartAvailable(part)) {
+						bool inBatch = false;
+						for (int k = 0; k < newBlockCount; ++k)
+							if (newblocks[k]->StartOffset == bStart && newblocks[k]->EndOffset == bEnd) {
+								inBatch = true;
+								break;
+							}
+						if (!inBatch) {
+							int cover = 0;
+							for (POSITION rp = requestedblocks_list.GetHeadPosition(); rp != NULL;) {
+								const Requested_Block_Struct *rb = requestedblocks_list.GetNext(rp);
+								if (rb->EndOffset >= bStart && rb->StartOffset <= bEnd)
+									++cover;
+							}
+							if (!haveBest || cover < bestCover) {
+								haveBest = true;
+								bestCover = cover;
+								bestStart = bStart;
+								bestEnd = bEnd;
+							}
+						}
+					}
+					bStart = bEnd + 1;
+				}
+			}
+			if (!haveBest)
+				break; // no available part has a remaining, not-yet-picked gap -> nothing to do
+			Requested_Block_Struct *pBlock = new Requested_Block_Struct;
+			pBlock->StartOffset = bestStart;
+			pBlock->EndOffset = bestEnd;
+			md4cpy(pBlock->FileID, GetFileHash());
+			pBlock->transferred = 0;
+			requestedblocks_list.AddTail(pBlock);
+			newblocks[newBlockCount++] = pBlock;
+		}
+	}
+
 	// Return the number of the blocks
 	iCount = newBlockCount;
 

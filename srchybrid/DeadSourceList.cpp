@@ -53,7 +53,8 @@ CDeadSource::CDeadSource(const CUpDownClient &client)
 		m_nPort = client.GetUserPort();
 		m_nKadPort = (client.HasLowID() ? 0 : client.GetKadPort());
 	} else {
-		if (client.HasValidBuddyID() || client.SupportsDirectUDPCallback())
+		if (client.HasValidBuddyID() || client.SupportsDirectUDPCallback()
+			|| client.GetReachCaps() != 0 || client.HasIPv6Address())
 			md4cpy(m_aucHash, client.GetUserHash());
 		else
 			md4clr(m_aucHash);

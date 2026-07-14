@@ -12,8 +12,12 @@ const char* ReachStatusName(ReachStatus s) noexcept {
         case ReachStatus::Ok:              return "Ok";
         case ReachStatus::Truncated:       return "Truncated";
         case ReachStatus::BadVersionZero:  return "BadVersionZero";
+        case ReachStatus::UnsupportedVersion: return "UnsupportedVersion";
         case ReachStatus::TooManyRdv:      return "TooManyRdv";
         case ReachStatus::ReservedBitsSet: return "ReservedBitsSet";
+        case ReachStatus::InvalidReservation: return "InvalidReservation";
+        case ReachStatus::MalformedTlv:    return "MalformedTlv";
+        case ReachStatus::TooLarge:        return "TooLarge";
         case ReachStatus::BufferTooSmall:  return "BufferTooSmall";
         case ReachStatus::NullArgument:    return "NullArgument";
     }
@@ -35,6 +39,53 @@ inline std::uint16_t get_u16le(const Byte* p) noexcept {
         (static_cast<std::uint16_t>(p[1]) << 8));
 }
 
+inline void put_u32le(Byte*& p, std::uint32_t v) noexcept {
+    p[0] = static_cast<Byte>(v);
+    p[1] = static_cast<Byte>(v >> 8);
+    p[2] = static_cast<Byte>(v >> 16);
+    p[3] = static_cast<Byte>(v >> 24);
+    p += 4;
+}
+
+inline std::uint32_t get_u32le(const Byte* p) noexcept {
+    return static_cast<std::uint32_t>(p[0]) |
+        (static_cast<std::uint32_t>(p[1]) << 8) |
+        (static_cast<std::uint32_t>(p[2]) << 16) |
+        (static_cast<std::uint32_t>(p[3]) << 24);
+}
+
+inline std::size_t rdvWireSize(Byte version) noexcept {
+    return version == kReachLegacyVersion ? kRdvWireSizeV1 : kRdvWireSizeV2;
+}
+
+inline bool supportedVersion(Byte version) noexcept {
+    return version == kReachLegacyVersion || version == kReachVersion;
+}
+
+inline bool validReservation(const RdvEntry& e) noexcept {
+    if (e.udpPort == 0 || e.expiresAt == 0)
+        return false;
+    Byte any = 0;
+    for (Byte b : e.token)
+        any |= b;
+    return any != 0;
+}
+
+// Extension area is an actual TLV sequence: <type:u8><len:u16le><value:len>.
+// Unknown types are preserved, but malformed lengths are never guessed.
+inline bool validTlvs(const Byte* p, std::size_t len) noexcept {
+    while (len != 0) {
+        if (len < 3)
+            return false;
+        const std::size_t valueLen = get_u16le(p + 1);
+        if (valueLen > len - 3)
+            return false;
+        p += 3 + valueLen;
+        len -= 3 + valueLen;
+    }
+    return true;
+}
+
 } // namespace
 
 std::size_t ReachEncodedSize(const ReachVector& v) noexcept {
@@ -42,7 +93,7 @@ std::size_t ReachEncodedSize(const ReachVector& v) noexcept {
     // checked path that rejects an over-long vector outright.
     const std::size_t n =
         v.rdv.size() < kMaxRdv ? v.rdv.size() : kMaxRdv;
-    return kReachHeaderSize + n * kRdvWireSize + v.trailing.size();
+    return kReachHeaderSize + n * rdvWireSize(v.version) + v.trailing.size();
 }
 
 ReachStatus EncodeReachVector(const ReachVector& v,
@@ -54,16 +105,27 @@ ReachStatus EncodeReachVector(const ReachVector& v,
     // ── Producer validation (strict) ──────────────────────────────────────
     if (v.version == 0)
         return ReachStatus::BadVersionZero;
+    if (!supportedVersion(v.version))
+        return ReachStatus::UnsupportedVersion;
     if (v.rdv.size() > kMaxRdv)
         return ReachStatus::TooManyRdv;
     // Reserved bits must be clear when we emit a v1 vector. A producer that
     // wants to set a future bit must bump the version byte first.
-    if (v.version == kReachVersion &&
-        (v.capFlags & ~kKadCapKnownMask) != 0)
+    const std::uint16_t knownMask = v.version == kReachLegacyVersion
+        ? kKadCapV1KnownMask : kKadCapKnownMask;
+    if ((v.capFlags & ~knownMask) != 0)
         return ReachStatus::ReservedBitsSet;
+    if (v.version >= kReachVersion)
+        for (const RdvEntry& e : v.rdv)
+            if (!validReservation(e))
+                return ReachStatus::InvalidReservation;
+    if (!v.trailing.empty() && !validTlvs(v.trailing.data(), v.trailing.size()))
+        return ReachStatus::MalformedTlv;
 
     const std::size_t need =
-        kReachHeaderSize + v.rdv.size() * kRdvWireSize + v.trailing.size();
+        kReachHeaderSize + v.rdv.size() * rdvWireSize(v.version) + v.trailing.size();
+    if (need > kReachMaxWireSize)
+        return ReachStatus::TooLarge;
 
     if (out == nullptr) {
         // Pure size probe is only legal with zero capacity; any non-zero
@@ -88,6 +150,11 @@ ReachStatus EncodeReachVector(const ReachVector& v,
             *p++ = e.ipv4[i];
         // UDP port: little-endian u16.
         put_u16le(p, e.udpPort);
+        if (v.version >= kReachVersion) {
+            for (Byte b : e.token)
+                *p++ = b;
+            put_u32le(p, e.expiresAt);
+        }
     }
     // Optional trailing TLV bytes (e.g. signature) verbatim.
     for (Byte b : v.trailing)
@@ -103,14 +170,25 @@ ReachStatus EncodeReachVector(const ReachVector& v, std::vector<Byte>& out) {
     // Pre-validate so we don't size a buffer for an invalid vector.
     if (v.version == 0)
         return ReachStatus::BadVersionZero;
+    if (!supportedVersion(v.version))
+        return ReachStatus::UnsupportedVersion;
     if (v.rdv.size() > kMaxRdv)
         return ReachStatus::TooManyRdv;
-    if (v.version == kReachVersion &&
-        (v.capFlags & ~kKadCapKnownMask) != 0)
+    const std::uint16_t knownMask = v.version == kReachLegacyVersion
+        ? kKadCapV1KnownMask : kKadCapKnownMask;
+    if ((v.capFlags & ~knownMask) != 0)
         return ReachStatus::ReservedBitsSet;
+    if (v.version >= kReachVersion)
+        for (const RdvEntry& e : v.rdv)
+            if (!validReservation(e))
+                return ReachStatus::InvalidReservation;
+    if (!v.trailing.empty() && !validTlvs(v.trailing.data(), v.trailing.size()))
+        return ReachStatus::MalformedTlv;
 
     const std::size_t need =
-        kReachHeaderSize + v.rdv.size() * kRdvWireSize + v.trailing.size();
+        kReachHeaderSize + v.rdv.size() * rdvWireSize(v.version) + v.trailing.size();
+    if (need > kReachMaxWireSize)
+        return ReachStatus::TooLarge;
     out.resize(need);
     std::size_t written = 0;
     const ReachStatus st =
@@ -139,6 +217,8 @@ ReachStatus DecodeReachVector(const Byte* in, std::size_t len,
     const Byte version = in[0];
     if (version == 0)
         return ReachStatus::BadVersionZero;
+    if (!supportedVersion(version))
+        return ReachStatus::UnsupportedVersion;
 
     const std::uint16_t capFlags = get_u16le(in + 1);
     const Byte nRdv = in[3];
@@ -146,9 +226,13 @@ ReachStatus DecodeReachVector(const Byte* in, std::size_t len,
         return ReachStatus::TooManyRdv;
 
     const std::size_t bodyLen =
-        kReachHeaderSize + static_cast<std::size_t>(nRdv) * kRdvWireSize;
+        kReachHeaderSize + static_cast<std::size_t>(nRdv) * rdvWireSize(version);
     if (len < bodyLen)
         return ReachStatus::Truncated;
+    if (len > kReachMaxWireSize)
+        return ReachStatus::TooLarge;
+    if (len > bodyLen && !validTlvs(in + bodyLen, len - bodyLen))
+        return ReachStatus::MalformedTlv;
 
     // All structural checks passed — commit to `out`.
     out.version  = version;
@@ -164,6 +248,14 @@ ReachStatus DecodeReachVector(const Byte* in, std::size_t len,
             e.ipv4[j] = *p++;
         e.udpPort = get_u16le(p);
         p += 2;
+        if (version >= kReachVersion) {
+            for (std::size_t j = 0; j < kRdvTokenSize; ++j)
+                e.token[j] = *p++;
+            e.expiresAt = get_u32le(p);
+            p += 4;
+            if (!validReservation(e))
+                return ReachStatus::InvalidReservation;
+        }
         out.rdv.push_back(e);
     }
 

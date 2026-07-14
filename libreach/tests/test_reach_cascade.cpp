@@ -31,8 +31,13 @@ static int g_fails  = 0;
 static ReachVector peer(std::uint16_t caps, std::size_t nRdv = 0) {
     ReachVector v;
     v.capFlags = caps;
-    for (std::size_t i = 0; i < nRdv; ++i)
-        v.rdv.push_back(RdvEntry{});
+    for (std::size_t i = 0; i < nRdv; ++i) {
+        RdvEntry e;
+        e.udpPort = static_cast<std::uint16_t>(9000 + i);
+        e.token[0] = static_cast<Byte>(i + 1);
+        e.expiresAt = 2000000000u;
+        v.rdv.push_back(e);
+    }
     return v;
 }
 
@@ -48,16 +53,16 @@ int main() {
     CHECK(first(kNone, peer(0)) == REACH_LAYER_CLASSIC);
     CHECK(first(0xFFFF, peer(0)) == REACH_LAYER_CLASSIC);   // I'm capable, B is a blank
 
-    // ── DIRECT_V6: needs BOTH sides v6 (mutual) ───────────────────────────
-    CHECK(first(KAD_CAP_V6_IN, peer(KAD_CAP_V6_IN)) == REACH_LAYER_DIRECT_V6);
-    CHECK(first(kNone,          peer(KAD_CAP_V6_IN)) != REACH_LAYER_DIRECT_V6); // I lack v6
-    CHECK(first(KAD_CAP_V6_IN,  peer(0))             == REACH_LAYER_CLASSIC);   // B lacks v6
+    // ── DIRECT_V6: local egress + peer inbound ────────────────────────────
+    CHECK(first(KAD_CAP_V6_OUT, peer(KAD_CAP_V6_IN)) == REACH_LAYER_DIRECT_V6);
+    CHECK(first(kNone,          peer(KAD_CAP_V6_IN)) != REACH_LAYER_DIRECT_V6); // I lack egress
+    CHECK(first(KAD_CAP_V6_OUT, peer(0))             == REACH_LAYER_CLASSIC);   // B lacks inbound
 
     // ── DIRECT_V4: needs only B inbound-TCP (we connect out) ──────────────
     CHECK(first(kNone, peer(KAD_CAP_V4_TCP_IN)) == REACH_LAYER_DIRECT_V4);
     // v6 outranks v4 when both apply (attempt order).
-    CHECK(first(KAD_CAP_V6_IN, peer(KAD_CAP_V6_IN | KAD_CAP_V4_TCP_IN)) == REACH_LAYER_DIRECT_V6);
-    CHECK(NextApplicableLayer(KAD_CAP_V6_IN,
+    CHECK(first(KAD_CAP_V6_OUT, peer(KAD_CAP_V6_IN | KAD_CAP_V4_TCP_IN)) == REACH_LAYER_DIRECT_V6);
+    CHECK(NextApplicableLayer(KAD_CAP_V6_OUT,
                               peer(KAD_CAP_V6_IN | KAD_CAP_V4_TCP_IN),
                               REACH_LAYER_DIRECT_V6) == REACH_LAYER_DIRECT_V4);
 
@@ -71,9 +76,10 @@ int main() {
     // A reachable but B not signalable (no UDP, no rdv) → no callback.
     CHECK(first(KAD_CAP_V4_TCP_IN, peer(0)) == REACH_LAYER_CLASSIC);
     // A reachable only via v6, B v6-capable + signalable → CALLBACK.
-    CHECK(first(KAD_CAP_V6_IN, peer(KAD_CAP_V6_IN | KAD_CAP_V4_UDP_IN)) == REACH_LAYER_DIRECT_V6); // v6 wins first
+    CHECK(first(KAD_CAP_V6_OUT | KAD_CAP_V6_IN,
+                peer(KAD_CAP_V6_IN | KAD_CAP_V6_OUT | KAD_CAP_V4_UDP_IN)) == REACH_LAYER_DIRECT_V6);
     CHECK(NextApplicableLayer(KAD_CAP_V6_IN,
-                              peer(KAD_CAP_V6_IN | KAD_CAP_V4_UDP_IN),
+                              peer(KAD_CAP_V6_OUT | KAD_CAP_V4_UDP_IN),
                               REACH_LAYER_DIRECT_V6) == REACH_LAYER_CALLBACK);
 
     // ── PUNCH_2W: mutual cap (invariant 1) ────────────────────────────────
@@ -86,19 +92,20 @@ int main() {
     CHECK(first(KAD_CAP_PUNCH_3W, peer(KAD_CAP_PUNCH_3W, 0)) == REACH_LAYER_CLASSIC); // no rdv
     CHECK(first(KAD_CAP_PUNCH_3W, peer(0, 1))                == REACH_LAYER_CLASSIC); // not mutual
 
-    // ── RELAY: rdv present AND mutual relay-offer ─────────────────────────
-    CHECK(first(KAD_CAP_RELAY_OFFER, peer(KAD_CAP_RELAY_OFFER, 1)) == REACH_LAYER_RELAY);
-    CHECK(first(KAD_CAP_RELAY_OFFER, peer(KAD_CAP_RELAY_OFFER, 0)) == REACH_LAYER_CLASSIC); // no rdv
-    CHECK(first(kNone,               peer(KAD_CAP_RELAY_OFFER, 1)) == REACH_LAYER_CLASSIC); // not mutual
+    // ── RELAY: reserved rdv + mutual relay-client consent ─────────────────
+    CHECK(first(KAD_CAP_RELAY_CLIENT, peer(KAD_CAP_RELAY_CLIENT, 1)) == REACH_LAYER_RELAY);
+    CHECK(first(KAD_CAP_RELAY_CLIENT, peer(KAD_CAP_RELAY_CLIENT, 0)) == REACH_LAYER_CLASSIC);
+    CHECK(first(kNone,                peer(KAD_CAP_RELAY_CLIENT, 1)) == REACH_LAYER_CLASSIC);
+    CHECK(first(KAD_CAP_RELAY_OFFER,  peer(KAD_CAP_RELAY_OFFER, 1)) == REACH_LAYER_CLASSIC);
 
     // ── Full ladder walk: a maximally-capable pair visits every layer in order ──
     {
         const std::uint16_t allMine =
-            KAD_CAP_V6_IN | KAD_CAP_V4_TCP_IN | KAD_CAP_PUNCH_2W |
-            KAD_CAP_PUNCH_3W | KAD_CAP_RELAY_OFFER;
+            KAD_CAP_V6_OUT | KAD_CAP_V6_IN | KAD_CAP_V4_TCP_IN | KAD_CAP_PUNCH_2W |
+            KAD_CAP_PUNCH_3W | KAD_CAP_RELAY_CLIENT;
         const std::uint16_t allPeer =
-            KAD_CAP_V6_IN | KAD_CAP_V4_TCP_IN | KAD_CAP_V4_UDP_IN |
-            KAD_CAP_PUNCH_2W | KAD_CAP_PUNCH_3W | KAD_CAP_RELAY_OFFER;
+            KAD_CAP_V6_IN | KAD_CAP_V6_OUT | KAD_CAP_V4_TCP_IN | KAD_CAP_V4_UDP_IN |
+            KAD_CAP_PUNCH_2W | KAD_CAP_PUNCH_3W | KAD_CAP_RELAY_CLIENT;
         const ReachVector p = peer(allPeer, /*rdv*/1);
         reach_layer seq[REACH_LAYER_COUNT];
         int n = 0;

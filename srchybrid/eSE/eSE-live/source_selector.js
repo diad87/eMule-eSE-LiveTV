@@ -138,6 +138,16 @@ function validateSource(source) {
     if (!source.id) {
       return { valid: false, error: 'Device name is required' };
     }
+    if (!isSafeDshowName(source.id)) {
+      return { valid: false, error: 'Device name rejected by safety check' };
+    }
+    if (source.audioDevice && !isSafeDshowName(source.audioDevice)) {
+      return { valid: false, error: 'Audio device name rejected by safety check' };
+    }
+  }
+
+  if (source.type === 'screen' && source.audioDevice && !isSafeDshowName(source.audioDevice)) {
+    return { valid: false, error: 'Audio device name rejected by safety check' };
   }
 
   return { valid: true };
@@ -273,4 +283,11 @@ function isAllowedRtmpUrl(value) {
   }
 }
 
-module.exports = { buildInputArgs, validateSource, findLoopbackDevice };
+module.exports = {
+  buildInputArgs,
+  validateSource,
+  findLoopbackDevice,
+  isAllowedInputUrl,
+  isAllowedRtmpUrl,
+  isSafeDshowName
+};

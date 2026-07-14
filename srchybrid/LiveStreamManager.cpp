@@ -29,6 +29,7 @@
 #include <deque>
 #include <shlobj.h>     // Capa 3: SHGetFolderPath for %APPDATA%
 #include "ClientList.h"
+#include "ClientUDPSocket.h"
 #include "eMuleAI/Address.h"  // v0.71 IPv6 Sprint 7 — CAddress in OnPeerListReceivedV6
 
 #ifdef _DEBUG
@@ -204,7 +205,7 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     CSingleLock lock(&m_lock, TRUE);
 
     if (m_bBroadcasting) {
-        AddLogLine(true, _T("eSE Live: Already broadcasting"));
+        AddLogLine(true, GetResString(IDS_LIVEMGR_ALREADY_BROADCASTING));
         return false;
     }
 
@@ -215,7 +216,7 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     // predictable: attacker pre-computes streamKey for popular titles and
     // races the legitimate broadcaster to claim the Kad slot.
     if (!eSELive::GenerateBroadcasterKeypair(m_streamInfo.pubkey, m_broadcasterPrivkey)) {
-        AddLogLine(true, _T("eSE Live: Failed to generate Ed25519 keypair"));
+        AddLogLine(true, GetResString(IDS_LIVEMGR_KEYGEN_FAILED));
         return false;
     }
     eSELive::DeriveStreamKey(m_streamInfo.pubkey, m_streamInfo.streamKey);
@@ -243,7 +244,7 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     InterlockedIncrement(&m_counters.kadPublishes);  // Phase 0: OBS-1 (atomic)
     m_kadBridge.PublishStream(m_streamInfo);
 
-    AddLogLine(true, _T("eSE Live: Broadcasting \"%s\" [%s] %ukbps"),
+    AddLogLine(true, GetResString(IDS_LIVEMGR_BROADCASTING_FMT),
         (LPCTSTR)title, (LPCTSTR)category, bitrate);
 
     char keyHex[33] = {0};
@@ -267,11 +268,11 @@ bool CLiveStreamManager::StartBroadcastWithSource(const CString& sourceType,
     // Order: FFmpeg first (PRE-WARM), 2 s liveness probe, then Kad publish.
 
     if (m_bBroadcasting) {
-        AddLogLine(true, _T("eSE Live: Broadcast already running"));
+        AddLogLine(true, GetResString(IDS_LIVEMGR_BC_ALREADY_RUNNING));
         return false;
     }
     if (m_rtmpIngest.IsRunning()) {
-        AddLogLine(true, _T("eSE Live: FFmpeg ingest already running"));
+        AddLogLine(true, GetResString(IDS_LIVEMGR_FFMPEG_ALREADY_RUNNING));
         return false;
     }
 
@@ -296,7 +297,7 @@ bool CLiveStreamManager::StartBroadcastWithSource(const CString& sourceType,
     } else if (sourceType.CompareNoCase(_T("file")) == 0) {
         if (mediaFilePath.IsEmpty()
             || GetFileAttributes(mediaFilePath) == INVALID_FILE_ATTRIBUTES) {
-            AddLogLine(true, _T("eSE Live: Media file not found: %s"),
+            AddLogLine(true, GetResString(IDS_LIVEMGR_MEDIA_NOT_FOUND_FMT),
                 (LPCTSTR)mediaFilePath);
             return false;
         }
@@ -304,13 +305,13 @@ bool CLiveStreamManager::StartBroadcastWithSource(const CString& sourceType,
     } else if (sourceType.CompareNoCase(_T("rtmp")) == 0) {
         started = m_rtmpIngest.Start(1935, bitrate, tempDir, chunkCb);
     } else {
-        AddLogLine(true, _T("eSE Live: Unknown source type \"%s\""),
+        AddLogLine(true, GetResString(IDS_LIVEMGR_UNKNOWN_SOURCE_FMT),
             (LPCTSTR)sourceType);
         return false;
     }
 
     if (!started) {
-        AddLogLine(true, _T("eSE Live: FFmpeg failed to start (check ffmpeg.exe and source)"));
+        AddLogLine(true, GetResString(IDS_LIVEMGR_FFMPEG_START_FAILED));
         LIVE_LOG("MGR", "StartBroadcastWithSource FAIL: FFmpeg refused source=%S",
             (LPCWSTR)sourceType);
         return false;
@@ -323,7 +324,7 @@ bool CLiveStreamManager::StartBroadcastWithSource(const CString& sourceType,
     // we were trying to prevent (VLC starves at live edge).
     if (!StartBroadcast(title, category, language, bitrate)) {
         m_rtmpIngest.Stop();
-        AddLogLine(true, _T("eSE Live: P2P StartBroadcast failed; rolling back FFmpeg"));
+        AddLogLine(true, GetResString(IDS_LIVEMGR_P2P_START_FAILED));
         return false;
     }
     LIVE_LOG("MGR", "FFmpeg launched source=%S bitrate=%u, broadcast state ARMED, waiting up to 14s for prebuffer",
@@ -339,22 +340,40 @@ bool CLiveStreamManager::StartBroadcastWithSource(const CString& sourceType,
     // dies (early crash) OR the ring buffer has >= 3 chunks (~12 s of
     // content) so when VLC connects it always finds segments ready to play.
     DWORD t0 = GetTickCount();
-    const DWORD kMaxWaitMs   = 14000;
+    const bool  isRtmpInput  = sourceType.CompareNoCase(_T("rtmp")) == 0;
+    const DWORD kMaxWaitMs   = isRtmpInput ? 1500 : 14000;
     const int   kMinChunks   = 3;
     while (GetTickCount() - t0 < kMaxWaitMs && m_rtmpIngest.IsRunning()) {
         if ((int)m_chunkBuffer.GetCount() >= kMinChunks) break;
         Sleep(100);
     }
     if (!m_rtmpIngest.IsRunning()) {
-        AddLogLine(true, _T("eSE Live: FFmpeg died within liveness window (codec/port/file error)"));
+        AddLogLine(true, GetResString(IDS_LIVEMGR_FFMPEG_DIED));
         LIVE_LOG("MGR", "FFmpeg DIED in liveness window — abort broadcast");
         StopBroadcast();
         return false;
     }
-    LIVE_LOG("MGR", "Prebuffer ready: %d chunks in buffer after %u ms",
-        (int)m_chunkBuffer.GetCount(), GetTickCount() - t0);
+    const int bufferedChunks = (int)m_chunkBuffer.GetCount();
+    if (bufferedChunks < kMinChunks) {
+        if (isRtmpInput) {
+            // RTMP is a listener: being alive without chunks means it is
+            // correctly armed and waiting for OBS, not that playback is ready.
+            LIVE_LOG("MGR", "RTMP ingest armed; waiting for OBS (chunks=%d)", bufferedChunks);
+            AddLogLine(true, GetResString(IDS_LIVEMGR_RTMP_WAITING_OBS));
+            return true;
+        }
 
-    AddLogLine(true, _T("eSE Live: Broadcast started (source=%s, bitrate=%u kbps, title=\"%s\")"),
+        LIVE_LOG("MGR", "Prebuffer TIMEOUT: only %d/%d chunks after %u ms; rolling back",
+            bufferedChunks, kMinChunks, GetTickCount() - t0);
+        AddLogLine(true, GetResString(IDS_LIVEMGR_PREBUFFER_TIMEOUT));
+        m_rtmpIngest.Stop();
+        StopBroadcast();
+        return false;
+    }
+    LIVE_LOG("MGR", "Prebuffer ready: %d chunks in buffer after %u ms",
+        bufferedChunks, GetTickCount() - t0);
+
+    AddLogLine(true, GetResString(IDS_LIVEMGR_BROADCAST_STARTED_FMT),
         (LPCTSTR)sourceType, bitrate, (LPCTSTR)title);
     return true;
 }
@@ -432,6 +451,11 @@ void CLiveStreamManager::StopBroadcast()
 
     m_kadBridge.UnpublishStream(m_streamInfo.streamKey);
 
+    // Remove the per-stream HLS mirror before the stream key is reused.
+    // ResetViewerHlsOutput used to delete only the files and leaked one
+    // directory per session under %TEMP%\eMule_RTMP.
+    ResetViewerHlsOutput(true);
+
     m_bBroadcasting = false;
     m_chunkBuffer.Clear();
     m_broadcastPeers.RemoveAll();
@@ -448,7 +472,7 @@ void CLiveStreamManager::StopBroadcast()
     // means there's no ghost to clean up on next start.
     theApp.WriteProfileString(_T("eMule"), _T("LiveLastStreamKey"), _T(""));
 
-    AddLogLine(true, _T("eSE Live: Broadcast stopped"));
+    AddLogLine(true, GetResString(IDS_LIVEMGR_BROADCAST_STOPPED));
 }
 
 void CLiveStreamManager::FeedSegment(const BYTE* data, uint32 dataSize)
@@ -511,7 +535,7 @@ bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title
     // buffering time never counts as player silence.
     InterlockedExchange(&m_bWebPlayerSession, 0);
     InterlockedExchange(&m_lastPlayerFetchTick, (LONG)GetTickCount());
-    ResetViewerHlsOutput();
+    ResetViewerHlsOutput(true);
 
     // DISC-S05: reset re-search counters for the new JoinStream session.
     m_dwLastJoinSearchTick = GetTickCount();
@@ -529,7 +553,7 @@ bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title
     // viewer hanging on "Buscando…" forever.
     m_dwLastLiveActivity = m_dwJoinTick;
 
-    AddLogLine(true, _T("eSE Live: Joining stream \"%s\""), (LPCTSTR)title);
+    AddLogLine(true, GetResString(IDS_LIVEMGR_JOINING_FMT), (LPCTSTR)title);
 
     char keyHex[33] = {0};
     for (int i = 0; i < 16; ++i) sprintf_s(keyHex + i*2, 3, "%02x", streamKey[i]);
@@ -584,9 +608,9 @@ void CLiveStreamManager::LeaveStream()
     m_tunnelResubCount = 0;
     InterlockedExchange(&m_bWebPlayerSession, 0);   // ghost-viewer watchdog
     InterlockedExchange(&m_lastPlayerFetchTick, 0);
-    ResetViewerHlsOutput();
+    ResetViewerHlsOutput(true);
 
-    AddLogLine(true, _T("eSE Live: Left stream"));
+    AddLogLine(true, GetResString(IDS_LIVEMGR_LEFT_STREAM));
     LIVE_LOG("MGR", "LeaveStream");
 }
 
@@ -622,11 +646,11 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
                 Kademlia::CKadV2ModeSelector::FallbackPolicy fb =
                     Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy();
                 if (fb == Kademlia::CKadV2ModeSelector::STRICT_PRIVACY) {
-                    AddLogLine(true, _T("eSE Live: Privacidad ESTRICTA — sin circuito túnel, no me conecto (tu IP no se expone)"));
+                    AddLogLine(true, GetResString(IDS_LIVEMGR_STRICT_NO_TUNNEL));
                     LIVE_LOG("TUN", "D3 STRICT: no tunnel circuit -> abort subscribe (privacy)");
                     return false;
                 }
-                AddLogLine(true, _T("eSE Live: Tunelizado pedido pero sin circuito — Directo (tu IP es visible al emisor)"));
+                AddLogLine(true, GetResString(IDS_LIVEMGR_TUNNELED_FALLBACK_DIRECT));
                 LIVE_LOG("TUN", "D3 %s: no tunnel circuit -> direct fallback (warned)",
                     fb == Kademlia::CKadV2ModeSelector::BALANCED ? "BALANCED" : "BEST_EFFORT");
             }
@@ -655,7 +679,7 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     // V2-S07+: in headless mode (stress test on one host) we allow loopback
     // and LAN so all spawned viewers can reach the local broadcaster.
     if (!IsGoodIPPort(ip, port) && !theApp.m_bHeadless) {
-        AddLogLine(false, _T("eSE Live: Rejected non-routable source %s:%u"),
+        AddLogLine(false, GetResString(IDS_LIVEMGR_REJECTED_NONROUTABLE_FMT),
             (LPCTSTR)ipstr(ip), port);
         return false;
     }
@@ -778,10 +802,11 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
         && (((hpHostIP >> 16) & 0xFFu) <= 127u);
     // [eSE v9] selector key: HOST-order ip (hpHostIP), matching m_escalation / the tick.
     const uint64 escKey = ((uint64)hpHostIP << 16) | port;
-    if (udpPort != 0 && !hpIsOverlay
-        && Kademlia::CKademlia::IsConnected()
-        && Kademlia::CKademlia::GetUDPListener() != NULL
-        && thePrefs.GetUtpHolePunchEnabled())
+	if (udpPort != 0 && !hpIsOverlay
+		&& Kademlia::CKademlia::IsConnected()
+		&& Kademlia::CKademlia::GetUDPListener() != NULL
+		&& thePrefs.GetUtpHolePunchEnabled()
+		&& theApp.clientudp != NULL && theApp.clientudp->IsUtpReady())
     {
         if (!thePrefs.GetEseReachSelector()) {
             // LEGACY (pref EseReachSelector OFF) — unchanged parallel 2-way punch. Byte-identical.
@@ -796,7 +821,8 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
                 if (client->m_uNatRendezvousAttempts < 255) client->m_uNatRendezvousAttempts++;
                 client->m_uLastNatRendezvousTick = ::GetTickCount();
                 uint16 hpSpread = thePrefs.GetEseHolePunchPortPredict() ? (uint16)thePrefs.GetEseHolePunchPortSpread() : 0;
-                Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(ntohl(ip), udpPort, hpSpread);
+				Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(ntohl(ip), udpPort, hpSpread,
+					client->SupportsReachPunch2() || client->SupportsEseHolePunchCookie(), client);
                 LIVE_LOG("HOLE", "Live dial hole-punch attempt #%u to %S:%u",
                     (unsigned)client->m_uNatRendezvousAttempts, (LPCWSTR)ipstr(ip), udpPort);
             }
@@ -837,7 +863,7 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     // IMPORTANT: `client` may have been freed by the connect above; do NOT touch
     // it past this point. The logging below uses ip/port/udpPort locals only.
 
-    AddLogLine(false, _T("eSE Live: Dialing discovered source %s:%u (kadUDP=%u)"),
+    AddLogLine(false, GetResString(IDS_LIVEMGR_DIALING_FMT),
         (LPCTSTR)ipstr(ip), port, udpPort);
     LIVE_LOG("DIAL", "src %S:%u kadUDP=%u  subscribePkt=%s",
         (LPCWSTR)ipstr(ip), port, udpPort, subSent ? "sent" : "FAILED-to-create");
@@ -992,10 +1018,11 @@ static void EseEnsureDirectoryTree(const CString& dir)
     CreateDirectory(dir, NULL);
 }
 
-void CLiveStreamManager::ResetViewerHlsOutput()
+void CLiveStreamManager::ResetViewerHlsOutput(bool removeDirectory)
 {
     CString dir = GetLiveHlsDir();
-    EseEnsureDirectoryTree(dir);
+    if (!removeDirectory)
+        EseEnsureDirectoryTree(dir);
 
     CString pattern;
     pattern.Format(_T("%s\\seg_*.ts"), (LPCTSTR)dir);
@@ -1013,6 +1040,13 @@ void CLiveStreamManager::ResetViewerHlsOutput()
     CString playlist;
     playlist.Format(_T("%s\\stream.m3u8"), (LPCTSTR)dir);
     DeleteFile(playlist);
+
+    if (removeDirectory) {
+        // The directory should now contain only files unknown to this version
+        // (if any). In that case RemoveDirectory safely fails and preserves
+        // them; normal LiveTV directories are removed completely.
+        RemoveDirectory(dir);
+    }
 
     // Phase-1 fix #1: new session, re-arm the startup-only buffer gate.
     m_bHlsPlaylistStarted = false;
@@ -1276,7 +1310,7 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     m_streamInfo.viewerCount = (uint32)m_broadcastPeers.GetCount();
     InterlockedIncrement(&m_counters.subscribeAccepted);  // Phase 0: OBS-1 (atomic)
 
-    AddLogLine(false, _T("eSE Live: Peer joined/relayed (upload=%u KB/s, viewers=%u)"),
+    AddLogLine(false, GetResString(IDS_LIVEMGR_PEER_JOINED_FMT),
         uploadCapacity / 1024, m_streamInfo.viewerCount);
     LIVE_LOG("PEER", "JOIN viewer=%S:%u upload=%uKB/s  total_viewers=%u",
         peer ? (LPCWSTR)ipstr(peer->GetIP()) : L"?",
@@ -1442,7 +1476,7 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     }
     if (pushed > 0) {
         AddLogLine(false,
-            _T("eSE Live: Pushed %d initial seg(s) [%u..%u] to new viewer"),
+            GetResString(IDS_LIVEMGR_PUSHED_INITIAL_FMT),
             pushed, startSeq, newest);
         LIVE_LOG("PUSH", "PUSH %d seg(s) [%u..%u] to viewer %S:%u (initial)",
             pushed, startSeq, newest,
@@ -1524,7 +1558,7 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
         static DWORD s_lastDdosLog = 0;
         if (::GetTickCount() - s_lastDdosLog > 30000) {
             s_lastDdosLog = ::GetTickCount();
-            AddLogLine(false, _T("eSE Live: rate-limit hit for subnet of %s (DDoS protection)"),
+            AddLogLine(false, GetResString(IDS_LIVEMGR_RATELIMIT_FMT),
                 (LPCTSTR)ipstr(peer->GetIP()));
         }
         return;
@@ -1727,7 +1761,7 @@ void CLiveStreamManager::IngestChunkPayload(CUpDownClient* peer, uint8 innerOpco
             uchar computed[32];
             hash.CalculateDigest(computed, chunkData, chunkSize);
             if (memcmp(computed, digest, 32) != 0) {
-                AddLogLine(true, _T("eSE Live: chunk seq=%u digest mismatch — dropping"), seqNum);
+                AddLogLine(true, GetResString(IDS_LIVEMGR_DIGEST_MISMATCH_FMT), seqNum);
                 return;
             }
         }
@@ -1738,7 +1772,7 @@ void CLiveStreamManager::IngestChunkPayload(CUpDownClient* peer, uint8 innerOpco
             memcpy(signMsg + 16, &seqNum, 4);
             memcpy(signMsg + 20, digest, 32);
             if (!eSELive::VerifySignature(pubkey, signMsg, sizeof signMsg, sig)) {
-                AddLogLine(true, _T("eSE Live: chunk seq=%u bad signature — dropping"), seqNum);
+                AddLogLine(true, GetResString(IDS_LIVEMGR_BAD_SIGNATURE_FMT), seqNum);
                 return;
             }
         }
@@ -2129,7 +2163,7 @@ void CLiveStreamManager::OnPeerBitmap(CUpDownClient* peer, const uchar* streamKe
     // live edge as advertised by this peer.
     if (m_bViewing && m_chunkBuffer.GetCount() == 0 && bitmap != 0) {
         AddLogLine(false,
-            _T("eSE Live: Bootstrap from peer bitmap (oldestSeq=%u, bitmap=0x%04x)"),
+            GetResString(IDS_LIVEMGR_BOOTSTRAP_FMT),
             oldestSeq, bitmap);
     }
     LIVE_LOG("BMP", "from %S:%u  oldest=%u bitmap=0x%04x",
@@ -2204,12 +2238,13 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
         // Skip our own IP
         if (ip == theApp.GetPublicIP()) continue;
 
-        // Skip if already connected to this peer
+        // Skip only this exact endpoint. Several independent peers may share
+        // one public address behind CGNAT; IP alone is not an identity.
         bool alreadyConnected = false;
         POSITION pos2 = m_viewPeers.GetHeadPosition();
         while (pos2) {
             CUpDownClient* existing = m_viewPeers.GetNext(pos2);
-            if (existing && existing->GetIP() == ip) {
+            if (existing && existing->GetIP() == ip && existing->GetUserPort() == port) {
                 alreadyConnected = true;
                 break;
             }
@@ -2252,8 +2287,8 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
             }
         }
         // do NOT touch newClient past this point (it may have been freed by the connect)
-        AddLogLine(false, _T("eSE Live: Subscribed to peer %s:%u from peer list (%s)"),
-            (LPCTSTR)ipstr(ip), port, tunMode ? _T("tunneled") : _T("direct"));
+        AddLogLine(false, GetResString(IDS_LIVEMGR_SUBSCRIBED_FMT),
+            (LPCTSTR)ipstr(ip), port, tunMode ? (LPCTSTR)GetResString(IDS_LIVEMGR_MODE_TUNNELED) : (LPCTSTR)GetResString(IDS_LIVEMGR_MODE_DIRECT));
     }
 }
 
@@ -2483,13 +2518,14 @@ void CLiveStreamManager::OnStreamEnded(const uchar* streamKey, uint8 reason, CUp
     // tombstone the same stream key on their side via their own watchdog
     // or via the gossip below.
     if (m_bViewing && memcmp(m_streamInfo.streamKey, streamKey, 16) == 0) {
-        AddLogLine(true, _T("eSE Live: stream ended, leaving"));
+        AddLogLine(true, GetResString(IDS_LIVEMGR_STREAM_ENDED));
         // Inline-leave so we don't recurse OnStreamEnded.
         m_bViewing = false;
         m_chunkBuffer.Clear();
         m_viewPeers.RemoveAll();
         m_peerBitmaps.RemoveAll();
         m_dwLastLiveActivity = 0;
+        ResetViewerHlsOutput(true);
     }
 
     // Gossip to OUR mesh peers (anyone we exchange chunks with for this
@@ -2596,7 +2632,7 @@ void CLiveStreamManager::MeasurePeerRatio(CUpDownClient* peer)
     if (newLevel < trust.currentLevel) {
         trust.currentLevel = newLevel;
         trust.lastPromotionTime = GetTickCount();
-        AddLogLine(false, _T("eSE Live: Peer promoted to level %d (response rate: %.0f%%)"),
+        AddLogLine(false, GetResString(IDS_LIVEMGR_PEER_PROMOTED_FMT),
             newLevel, responseRate * 100.0f);
     }
 }
@@ -2664,14 +2700,14 @@ bool CLiveStreamManager::CanPromoteToSuperSeeder(CUpDownClient* peer)
 
     // Rule 1: Max 5 super-seeders per /24
     if (sameSubnet24 >= 5) {
-        AddLogLine(false, _T("eSE Anti-Sybil: Blocked promotion — too many super-seeders in /24 (%d)"),
+        AddLogLine(false, GetResString(IDS_LIVEMGR_SYBIL_BLOCKED24_FMT),
             sameSubnet24);
         return false;
     }
 
     // Rule 2: Max 20% of super-seeders per /16
     if (totalSuper > 10 && sameSubnet16 > totalSuper / 5) {
-        AddLogLine(false, _T("eSE Anti-Sybil: Blocked promotion — /16 concentration too high (%d/%d)"),
+        AddLogLine(false, GetResString(IDS_LIVEMGR_SYBIL_BLOCKED16_FMT),
             sameSubnet16, totalSuper);
         return false;
     }
@@ -2711,7 +2747,7 @@ void CLiveStreamManager::MonitorPeerHealth()
     if (dropRate > ESE_EMERGENCY_DROP_THRESHOLD && !m_bEmergencyMode) {
         m_bEmergencyMode = true;
         m_dwEmergencyStart = GetTickCount();
-        AddLogLine(true, _T("eSE Live: EMERGENCY — %.0f%% super-seeders dropped (%d/%d)"),
+        AddLogLine(true, GetResString(IDS_LIVEMGR_EMERGENCY_DROP_FMT),
             dropRate * 100.0f, totalSuper - aliveSuper, totalSuper);
 
         // === Emergency Action 1: Promote trusted middle-tier peers ===
@@ -2732,7 +2768,7 @@ void CLiveStreamManager::MonitorPeerHealth()
                 trust.lastPromotionTime = GetTickCount();
                 m_peerTrust[PeerId(peer)] = trust;
                 promoted++;
-                AddLogLine(false, _T("eSE Emergency: Promoted peer to super-seeder (emergency promotion #%d)"),
+                AddLogLine(false, GetResString(IDS_LIVEMGR_EMERGENCY_PROMOTED_FMT),
                     promoted);
             }
         }
@@ -2754,7 +2790,7 @@ void CLiveStreamManager::MonitorPeerHealth()
             subnetDropCounts.GetNextAssoc(mapPos, subnet, count);
             if (count >= 2) {
                 // 2+ super-seeders from same /24 dropped → ban others from that subnet
-                AddLogLine(true, _T("eSE Anti-Sybil: Banning peers from suspicious /24 subnet (%d drops)"),
+                AddLogLine(true, GetResString(IDS_LIVEMGR_SYBIL_BANNING_FMT),
                     count);
                 pos = m_broadcastPeers.GetHeadPosition();
                 while (pos) {
@@ -2773,7 +2809,7 @@ void CLiveStreamManager::MonitorPeerHealth()
         GetTickCount() - m_dwEmergencyStart > ESE_EMERGENCY_DURATION)
     {
         m_bEmergencyMode = false;
-        AddLogLine(true, _T("eSE Live: Emergency mode ended (recovered)"));
+        AddLogLine(true, GetResString(IDS_LIVEMGR_EMERGENCY_ENDED));
     }
 }
 
@@ -2889,7 +2925,7 @@ void CLiveStreamManager::Process()
             && lastFetch != 0
             && (now - lastFetch) > ESE_PLAYER_IDLE_LEAVE_MS)
         {
-            AddLogLine(true, _T("eSE Live: no player activity for %u s — leaving stream"),
+            AddLogLine(true, GetResString(IDS_LIVEMGR_GHOST_VIEWER_FMT),
                 (now - lastFetch) / 1000);
             LIVE_LOG("MGR", "Ghost-viewer watchdog: %u ms without player fetch/heartbeat, auto LeaveStream",
                 now - lastFetch);
@@ -3042,7 +3078,7 @@ void CLiveStreamManager::Process()
             if (now - s_lastFailoverRun > STALL_THRESHOLD_MS) {
                 s_lastFailoverRun = now;
                 AddLogLine(true,
-                    _T("eSE Live: Stream stalled %u s, attempting failover"),
+                    GetResString(IDS_LIVEMGR_STALLED_FMT),
                     (DWORD)((LONG)now - lastChunk) / 1000);
 
                 // 1. Re-search Kad (cooldown was set to 5 s in LAT-1).
@@ -3368,8 +3404,10 @@ bool CLiveStreamManager::PickRendezvous(uint32 targetIpHost, uint16 /*targetUdp*
 // m_bReachSelectorOn. Prunes settled / no-longer-wanted entries.
 void CLiveStreamManager::TickReachabilitySelector(DWORD now)
 {
-    if (!thePrefs.GetEseReachSelector() || !thePrefs.GetUtpHolePunchEnabled())
-        return;
+	if (!thePrefs.GetEseReachSelector() || !thePrefs.GetUtpHolePunchEnabled())
+		return;
+	if (theApp.clientudp == NULL || !theApp.clientudp->IsUtpReady())
+		return;
     if (!Kademlia::CKademlia::IsConnected() || Kademlia::CKademlia::GetUDPListener() == NULL)
         return;
     // < 5s/stage so all 4 stages (Direct->punch2->punch3->relay = 18s) complete within one
@@ -3422,13 +3460,14 @@ void CLiveStreamManager::TickReachabilitySelector(DWORD now)
         if (st.stage == REACH_DIRECT) {
             st.stage = REACH_PUNCH2; st.stageEnteredTick = now;
             uint16 hpSpread = thePrefs.GetEseHolePunchPortPredict() ? (uint16)thePrefs.GetEseHolePunchPortSpread() : 0;
-            Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(ipHost, st.udpPort, hpSpread);   // HOST order
+			Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(ipHost, st.udpPort, hpSpread,
+				c != NULL && (c->SupportsReachPunch2() || c->SupportsEseHolePunchCookie()), c);   // HOST order
             if (c != NULL && c->m_uNatRendezvousAttempts < 255) c->m_uNatRendezvousAttempts++;
             LIVE_LOG("REACH", "%S:%u DIRECT->PUNCH2 (2-way punch)", (LPCWSTR)ipstr(htonl(ipHost)), port);
         } else if (st.stage == REACH_PUNCH2) {
             st.stage = REACH_PUNCH3; st.stageEnteredTick = now;
             uint32 rIP = 0; uint16 rPort = 0;
-            if (PickRendezvous(ipHost, st.udpPort, rIP, rPort)) {
+			if (thePrefs.GetEseKad3Rendezvous() && PickRendezvous(ipHost, st.udpPort, rIP, rPort)) {
                 Kademlia::CKademlia::GetUDPListener()->InitiateKad3Rendezvous(rIP, rPort, ipHost, st.udpPort);
                 LIVE_LOG("REACH", "%S:%u PUNCH2->PUNCH3 via R %S", (LPCWSTR)ipstr(htonl(ipHost)), port, (LPCWSTR)ipstr(htonl(rIP)));
             } else {
@@ -3621,7 +3660,7 @@ void CLiveStreamManager::DemotePeer(CUpDownClient* peer)
     PeerTrust& trust = GetOrCreateTrust(peer);
     if (trust.currentLevel < ESE_TRUST_LEAF) {
         trust.currentLevel++;
-        AddLogLine(false, _T("eSE Live: Peer demoted to level %d (response: %.0f%%)"),
+        AddLogLine(false, GetResString(IDS_LIVEMGR_PEER_DEMOTED_FMT),
             trust.currentLevel, trust.GetResponseRate() * 100.0f);
     }
 }
@@ -3630,7 +3669,7 @@ void CLiveStreamManager::BanPeer(CUpDownClient* peer)
 {
     PeerTrust& trust = GetOrCreateTrust(peer);
     trust.isBanned = true;
-    AddLogLine(true, _T("eSE Live: Peer banned (response rate: %.0f%% after %u requests)"),
+    AddLogLine(true, GetResString(IDS_LIVEMGR_PEER_BANNED_FMT),
         trust.GetResponseRate() * 100.0f, trust.requestsReceived);
 
     // Send deny packet and disconnect
@@ -3965,8 +4004,11 @@ LiveChannelSnapshot CLiveStreamManager::GetChannelSnapshot() const
     s.broadcasting = m_bBroadcasting;
     memcpy(s.streamKey, m_streamInfo.streamKey, sizeof s.streamKey);
     s.title        = m_streamInfo.title;
+    s.category     = m_streamInfo.category;
+    s.language     = m_streamInfo.language;
     s.bitrate      = m_streamInfo.bitrate;
     s.viewerCount  = GetViewerCount();
+    s.startedAt    = m_streamInfo.startedAt;
     return s;
 }
 

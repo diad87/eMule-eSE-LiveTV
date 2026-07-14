@@ -46,13 +46,15 @@ namespace Kademlia
 		};
 
 		TrackPacketsIn_Struct()
-			: m_dwLastExpire()
+			: m_dwLastActivity()
 			, m_uIP()
+			, m_uUDPPort()
 		{
 		}
 
-		DWORD	m_dwLastExpire;
+		DWORD	m_dwLastActivity;
 		uint32	m_uIP;
+		uint16	m_uUDPPort;
 		CArray<TrackedRequestIn_Struct> m_aTrackedRequests;
 	};
 
@@ -65,8 +67,10 @@ namespace Kademlia
 	protected:
 		void AddTrackedOutPacket(uint32 dwIP, uint8 byOpcode);
 		bool IsOnOutTrackList(uint32 dwIP, uint8 byOpcode, bool bDontRemove = false);
-		int InTrackListIsAllowedPacket(uint32 uIP, uint8 byOpcode, bool bValidReceiverkey);
+		int InTrackListIsAllowedPacket(uint32 uIP, uint16 uUDPPort, uint8 byOpcode, bool bValidReceiverkey);
 		void InTrackListCleanup();
+		int ChargeIncomingBucket(ULONGLONG uTrackKey, uint32 uIP, uint16 uUDPPort,
+			uint8 byOpcode, int token, bool bAllowIPBan, bool bExpireEndpointOnMassive);
 		void AddLegacyChallenge(const CUInt128 &uContactID, const CUInt128 &uChallengeID, uint32 uIP, uint8 byOpcode);
 		bool IsLegacyChallenge(const CUInt128 &uChallengeID, uint32 uIP, uint8 byOpcode, CUInt128 &ruContactID);
 		bool HasActiveLegacyChallenge(uint32 uIP) const;
@@ -76,7 +80,7 @@ namespace Kademlia
 		CList<TrackPackets_Struct> listTrackedRequests;
 		CList<TrackChallenge_Struct> listChallengeRequests;
 		CTypedPtrList<CPtrList, TrackPacketsIn_Struct*>	m_liTrackPacketsIn;
-		CMap<int, int, TrackPacketsIn_Struct*, TrackPacketsIn_Struct*> m_mapTrackPacketsIn;
+		CMap<ULONGLONG, ULONGLONG, TrackPacketsIn_Struct*, TrackPacketsIn_Struct*> m_mapTrackPacketsIn;
 		DWORD dwLastTrackInCleanup;
 	};
 }

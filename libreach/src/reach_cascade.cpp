@@ -11,17 +11,33 @@ inline bool has(std::uint16_t caps, KadCap bit) noexcept {
     return (caps & static_cast<std::uint16_t>(bit)) != 0;
 }
 
+inline bool validReservedRdv(const ReachVector& peer) noexcept {
+    if (peer.version < kReachVersion || peer.rdv.empty())
+        return false;
+    for (const RdvEntry& e : peer.rdv) {
+        if (e.udpPort == 0 || e.expiresAt == 0)
+            return false;
+        Byte any = 0;
+        for (Byte b : e.token)
+            any |= b;
+        if (any == 0)
+            return false;
+    }
+    return true;
+}
+
 // Appendix-B applicability predicate for a single layer.
 //   A = me (myCaps), B = peer (peer.capFlags + peer.rdv).
 bool layerApplicable(reach_layer layer, std::uint16_t myCaps,
                      const ReachVector& peer) noexcept {
     const std::uint16_t bc = peer.capFlags;
-    const bool bHasRdv = !peer.rdv.empty();
+    const bool bHasReservedRdv = validReservedRdv(peer);
 
     switch (layer) {
     case REACH_LAYER_DIRECT_V6:
-        // 1. DIRECTO_V6 — B reachable on v6 AND I have v6 (mutual, §7.1).
-        return has(bc, KAD_CAP_V6_IN) && has(myCaps, KAD_CAP_V6_IN);
+        // 1. DIRECTO_V6 — B accepts inbound v6 and I can originate v6.
+        // Local inbound reachability is irrelevant for an outbound dial.
+        return has(bc, KAD_CAP_V6_IN) && has(myCaps, KAD_CAP_V6_OUT);
 
     case REACH_LAYER_DIRECT_V4:
         // 2. DIRECTO_V4 — B accepts inbound v4 TCP (HighID-equivalent). No "mutual"
@@ -35,8 +51,8 @@ bool layerApplicable(reach_layer layer, std::uint16_t myCaps,
         //    (3a, direct callback) OR B has an rdv to relay the request (3b).
         const bool aCanAccept =
             has(myCaps, KAD_CAP_V4_TCP_IN) ||
-            (has(myCaps, KAD_CAP_V6_IN) && has(bc, KAD_CAP_V6_IN));
-        const bool bSignalable = has(bc, KAD_CAP_V4_UDP_IN) || bHasRdv;
+            (has(myCaps, KAD_CAP_V6_IN) && has(bc, KAD_CAP_V6_OUT));
+        const bool bSignalable = has(bc, KAD_CAP_V4_UDP_IN) || bHasReservedRdv;
         return aCanAccept && bSignalable;
     }
 
@@ -47,14 +63,15 @@ bool layerApplicable(reach_layer layer, std::uint16_t myCaps,
 
     case REACH_LAYER_PUNCH_3W:
         // 5. PUNCH_3W — mutual 3-way punch support AND B has an rdv to coordinate.
-        return has(bc, KAD_CAP_PUNCH_3W) && has(myCaps, KAD_CAP_PUNCH_3W) && bHasRdv;
+        return has(bc, KAD_CAP_PUNCH_3W) && has(myCaps, KAD_CAP_PUNCH_3W)
+            && bHasReservedRdv;
 
     case REACH_LAYER_RELAY:
-        // 6. RELAY — terminal eSE path: a relay-capable rdv exists and both sides
-        //    accept relay circuits. The precise data-plane cap is an eSE-layer
-        //    concern carried in my_cap_flags; KAD_CAP_RELAY_OFFER is the
-        //    brand-neutral proxy for "participates in capped relay".
-        return bHasRdv && has(bc, KAD_CAP_RELAY_OFFER) && has(myCaps, KAD_CAP_RELAY_OFFER);
+        // 6. RELAY — using a relay and volunteering relay service are distinct
+        // permissions. A v2 reservation identifies the service; both endpoints
+        // only need to consent as relay clients.
+        return bHasReservedRdv && has(bc, KAD_CAP_RELAY_CLIENT)
+            && has(myCaps, KAD_CAP_RELAY_CLIENT);
 
     default:
         // REACH_LAYER_NONE / REACH_LAYER_CLASSIC are not applicability candidates.

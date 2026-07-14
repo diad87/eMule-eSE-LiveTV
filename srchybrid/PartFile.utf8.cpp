@@ -2296,7 +2296,9 @@ uint32 CPartFile::Process(uint32 reducedownload, UINT icounter/*in percent*/)
 				// To Mods, please stop instantly removing these sources.
 				// This causes sources to pop in and out creating extra overhead!
 				//Make sure this source is still a LowID Client, and we still cannot callback to this Client.
-				if (cur_src->HasLowID() && !theApp.CanDoCallback(cur_src)) {
+				if (cur_src->HasLowID() && !theApp.CanDoCallback(cur_src)
+					&& !cur_src->CanUseEseHolePunch()
+					&& !cur_src->CanUseIPv6Direct()) {
 					//If we are almost maxed on sources, slowly remove these client to see if we can find a better source.
 					if ((curTick >= m_lastpurgetime + SEC2MS(30)) && (GetSourceCount() >= GetMaxSources() * 4 / 5)) {
 						theApp.downloadqueue->RemoveSource(cur_src);

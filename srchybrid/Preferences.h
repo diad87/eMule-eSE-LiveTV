@@ -650,6 +650,8 @@ public:
 	// eSE: Network State & Feature Flags
 	static bool		m_bUPnPCriticalError;	// Fase 2: Indica fallo absoluto de UPnP/NAT-PMP
 	static bool		m_bEnableUtpHolePunch;	// Fase 4: Kill-switch maestro para Hole Punching uTP
+	static bool		m_bEseKad3Rendezvous;	// Secure 3-way Kad rendezvous participation. Separate, default-OFF opt-in.
+	static bool		m_bEseEndgame;			// Endgame mode: race the last outstanding blocks across sources so one slow owner cannot stall the final MB. Default ON.
 	static bool		m_bEseAutoKeepalive;	// R.2 auto-activation: when firewalled+Kad-connected, autonomously RequestStart() the Kad keepalive (was /api-only). Default OFF -> dormant-safe.
 	static bool		m_bEseKadV6Tag;			// [eSE v9] root link: emit our public IPv6 as an additive Kad-HELLO tag (TX). Default OFF -> no HELLO wire change until validated.
 	static bool		m_bEseRelayAccept;		// [eSE v9] R.3: act as a relay buddy (accept 0xCF SETUP + serve 0xCE viewers). Default OFF.
@@ -1282,6 +1284,10 @@ public:
 	static void		SetUPnPCriticalError(bool b)		{ m_bUPnPCriticalError = b; }
 	static bool		GetUtpHolePunchEnabled()			{ return m_bEnableUtpHolePunch; }
 	static void		SetUtpHolePunchEnabled(bool b)		{ m_bEnableUtpHolePunch = b; }
+	static bool		GetEseKad3Rendezvous()			{ return m_bEseKad3Rendezvous; }
+	static void		SetEseKad3Rendezvous(bool b)		{ m_bEseKad3Rendezvous = b; }
+	static bool		GetEseEndgame()					{ return m_bEseEndgame; }
+	static void		SetEseEndgame(bool b)				{ m_bEseEndgame = b; }
 	static bool		GetEseAutoKeepalive()				{ return m_bEseAutoKeepalive; }
 	static void		SetEseAutoKeepalive(bool b)			{ m_bEseAutoKeepalive = b; }
 	static bool		GetEseKadV6Tag()					{ return m_bEseKadV6Tag; }

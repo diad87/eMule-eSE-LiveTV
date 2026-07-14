@@ -49,12 +49,12 @@ static KadId seqId() {
 
 // ── 1. Exact byte layout (the normative pin) ──────────────────────────────
 static void test_byte_layout() {
-    // Empty v1 vector: version 01, capflags 00 00, nRdv 00.
+    // Empty current vector: version 02, capflags 00 00, nRdv 00.
     {
-        ReachVector v;                 // defaults: version=1, caps=0, no rdv
+        ReachVector v;
         std::vector<Byte> w;
         CHECK(EncodeReachVector(v, w) == ReachStatus::Ok, "empty encode ok");
-        const std::vector<Byte> want = {0x01, 0x00, 0x00, 0x00};
+        const std::vector<Byte> want = {0x02, 0x00, 0x00, 0x00};
         CHECK(eq(w, want), ("empty layout " + hex(w)).c_str());
     }
     // caps = V4_TCP_IN | PUNCH_2W = 0x0009 (little-endian → 09 00), nRdv 0.
@@ -63,11 +63,11 @@ static void test_byte_layout() {
         v.capFlags = KAD_CAP_V4_TCP_IN | KAD_CAP_PUNCH_2W;
         std::vector<Byte> w;
         CHECK(EncodeReachVector(v, w) == ReachStatus::Ok, "caps encode ok");
-        const std::vector<Byte> want = {0x01, 0x09, 0x00, 0x00};
+        const std::vector<Byte> want = {0x02, 0x09, 0x00, 0x00};
         CHECK(eq(w, want), ("caps layout " + hex(w)).c_str());
     }
     // One rdv: caps KEEPALIVE|RELAY_OFFER = 0x60, NodeID 00..0F,
-    // ipv4 = 10.0.0.1, udpPort = 0x1234 (LE → 34 12). Total 26 bytes.
+    // ipv4 = 10.0.0.1, udpPort = 0x1234, token and expiry. Total 46 bytes.
     {
         ReachVector v;
         v.capFlags = KAD_CAP_KEEPALIVE | KAD_CAP_RELAY_OFFER; // 0x60
@@ -75,13 +75,18 @@ static void test_byte_layout() {
         e.nodeId = seqId();
         e.ipv4 = {10, 0, 0, 1};
         e.udpPort = 0x1234;
+        for (std::size_t i = 0; i < e.token.size(); ++i)
+            e.token[i] = static_cast<Byte>(0xA0 + i);
+        e.expiresAt = 0x12345678;
         v.rdv.push_back(e);
         std::vector<Byte> w;
         CHECK(EncodeReachVector(v, w) == ReachStatus::Ok, "1-rdv encode ok");
-        std::vector<Byte> want = {0x01, 0x60, 0x00, 0x01};
+        std::vector<Byte> want = {0x02, 0x60, 0x00, 0x01};
         for (std::size_t i = 0; i < 16; ++i) want.push_back(static_cast<Byte>(i));
         want.insert(want.end(), {0x0A, 0x00, 0x00, 0x01, 0x34, 0x12});
-        CHECK(w.size() == kReachHeaderSize + kRdvWireSize, "1-rdv size 26");
+        for (std::size_t i = 0; i < 16; ++i) want.push_back(static_cast<Byte>(0xA0 + i));
+        want.insert(want.end(), {0x78, 0x56, 0x34, 0x12});
+        CHECK(w.size() == kReachHeaderSize + kRdvWireSizeV2, "1-rdv size 46");
         CHECK(eq(w, want), ("1-rdv layout " + hex(w)).c_str());
     }
 }
@@ -97,6 +102,8 @@ static void test_roundtrip() {
             e.nodeId[0] = static_cast<Byte>(0xE0 + i);
             e.ipv4 = {static_cast<Byte>(192), 168, 0, static_cast<Byte>(i + 1)};
             e.udpPort = static_cast<std::uint16_t>(4660 + i);
+            e.token[0] = static_cast<Byte>(i + 1);
+            e.expiresAt = 2000000000u + static_cast<std::uint32_t>(i);
             v.rdv.push_back(e);
         }
         std::vector<Byte> w;
@@ -114,28 +121,36 @@ static void test_roundtrip() {
             CHECK(back.rdv[i].nodeId == v.rdv[i].nodeId, "grid rdv nodeId");
             CHECK(back.rdv[i].ipv4 == v.rdv[i].ipv4, "grid rdv ipv4");
             CHECK(back.rdv[i].udpPort == v.rdv[i].udpPort, "grid rdv port");
+            CHECK(back.rdv[i].token == v.rdv[i].token, "grid rdv token");
+            CHECK(back.rdv[i].expiresAt == v.rdv[i].expiresAt, "grid rdv expiry");
         }
         // Re-encode is byte-identical.
         std::vector<Byte> w2;
         CHECK(EncodeReachVector(back, w2) == ReachStatus::Ok, "grid re-encode ok");
         CHECK(eq(w, w2), "grid re-encode stable");
     }
-    // Max vector is exactly 70 bytes.
+    // Max v2 vector is exactly 130 bytes.
     ReachVector vmax;
     vmax.rdv.resize(kMaxRdv);
+    for (std::size_t i = 0; i < vmax.rdv.size(); ++i) {
+        vmax.rdv[i].udpPort = static_cast<std::uint16_t>(9000 + i);
+        vmax.rdv[i].token[0] = static_cast<Byte>(i + 1);
+        vmax.rdv[i].expiresAt = 2000000000u;
+    }
     std::vector<Byte> wmax;
     CHECK(EncodeReachVector(vmax, wmax) == ReachStatus::Ok, "max encode ok");
-    CHECK(wmax.size() == kReachMaxKnownSize, "max size 70");
+    CHECK(wmax.size() == kReachMaxKnownSize, "max size 130");
 }
 
 // ── 3. Forward-compat: newer version + trailing TLV preserved ─────────────
 static void test_forward_compat() {
-    // Hand-craft a "v2" buffer: version 02, caps, nRdv 1, one rdv, then 5
-    // trailing bytes a v1 parser doesn't understand.
+    // Hand-craft a v2 buffer with one reserved rdv and one unknown well-formed TLV.
     std::vector<Byte> buf = {0x02, 0x09, 0x00, 0x01};
     for (std::size_t i = 0; i < 16; ++i) buf.push_back(static_cast<Byte>(i));
     buf.insert(buf.end(), {0x0A, 0x00, 0x00, 0x02, 0x78, 0x56}); // ip 10.0.0.2 port 0x5678
-    const std::vector<Byte> tail = {0xDE, 0xAD, 0xBE, 0xEF, 0x99};
+    for (int i = 0; i < 16; ++i) buf.push_back(static_cast<Byte>(0x80 + i));
+    buf.insert(buf.end(), {0x00, 0x94, 0x35, 0x77}); // expiry 2000000000 LE
+    const std::vector<Byte> tail = {0xDE, 0x02, 0x00, 0xBE, 0xEF};
     buf.insert(buf.end(), tail.begin(), tail.end());
 
     ReachVector v;
@@ -151,6 +166,10 @@ static void test_forward_compat() {
     std::vector<Byte> w;
     CHECK(EncodeReachVector(v, w) == ReachStatus::Ok, "v2 re-encode ok");
     CHECK(eq(w, buf), "v2 re-encode byte-identical");
+
+    const std::vector<Byte> future = {0x03, 0x00, 0x00, 0x00};
+    CHECK(DecodeReachVector(future.data(), future.size(), v) == ReachStatus::UnsupportedVersion,
+          "unknown version rejected");
 }
 
 // ── 4. Decode rejection (malformed wire) ──────────────────────────────────
@@ -182,6 +201,9 @@ static void test_decode_rejection() {
     CHECK(DecodeReachVector(ok.data(), ok.size(), v) == ReachStatus::Ok, "ok decode");
     CHECK(DecodeReachVector(too.data(), too.size(), v) == ReachStatus::TooManyRdv, "re-reject");
     CHECK(v.rdv.empty() && v.trailing.empty(), "out cleared after failure");
+    const std::vector<Byte> badTlv = {0x02, 0x00, 0x00, 0x00, 0xAA, 0x05, 0x00, 0x01};
+    CHECK(DecodeReachVector(badTlv.data(), badTlv.size(), v) == ReachStatus::MalformedTlv,
+          "malformed TLV rejected");
 }
 
 // ── 5. Encode validation (strict producer) ────────────────────────────────
@@ -197,7 +219,8 @@ static void test_encode_validation() {
     // Reserved capflag bit on a v1 vector.
     {
         ReachVector v;
-        v.capFlags = 0x0080; // bit7 reserved
+        v.version = kReachLegacyVersion;
+        v.capFlags = KAD_CAP_V6_OUT; // bit7 reserved in v1
         CHECK(EncodeReachVector(v, w) == ReachStatus::ReservedBitsSet, "emit reserved bit");
     }
     // version 0.
@@ -236,7 +259,7 @@ static void test_cap_helpers() {
     CHECK(!ReachHasCaps(v, KAD_CAP_PUNCH_2W | KAD_CAP_RELAY_OFFER), "lacks one of two");
     // Known-cap mask strips reserved bits a future peer might set.
     v.capFlags = 0xFFFF;
-    CHECK(ReachKnownCaps(v) == kKadCapKnownMask, "known-cap mask 0x7F");
+    CHECK(ReachKnownCaps(v) == kKadCapKnownMask, "known-cap mask 0x03FF");
 }
 
 int main() {

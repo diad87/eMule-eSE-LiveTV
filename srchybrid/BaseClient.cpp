@@ -102,7 +102,71 @@ bool CUpDownClient::SupportsLiveP2P() const
 
 bool CUpDownClient::SupportsUTP() const
 {
-	return IsEseClient() && m_nUDPPort != 0 && m_nKadPort != 0;
+	// A source-result reach vector is available before HELLO/mod-version
+	// negotiation. Requiring IsEseClient() here made the advertised punch route
+	// impossible to use for the very first connection.
+	return (IsEseClient() || SupportsReachPunch2()) && m_nKadPort != 0;
+}
+
+bool CUpDownClient::CanUseEseHolePunch() const
+{
+	if (!thePrefs.GetUtpHolePunchEnabled() || !SupportsUTP()
+		|| !Kademlia::CKademlia::IsConnected()
+		|| Kademlia::CKademlia::GetUDPListener() == NULL
+		|| theApp.clientudp == NULL || !theApp.clientudp->IsUtpReady()
+		|| GetConnectIP() == 0 || GetKadPort() == 0
+		|| IsIPv6OnlyEndpoint())
+		return false;
+	if (SupportsEseHolePunchCookie())
+		return true;
+	// TAG_ESE_REACH is stamped next to the indexer's observed source endpoint.
+	// A modern sender always performs the stateless cookie exchange, so an
+	// unverified routing-table contact is not required for this first dial.
+	if (SupportsReachPunch2())
+		return true;
+	Kademlia::CContact* pContact = Kademlia::CKademlia::GetRoutingZone() != NULL
+		? Kademlia::CKademlia::GetRoutingZone()->GetContact(ntohl(GetConnectIP()), GetKadPort(), false)
+		: NULL;
+	return pContact != NULL && pContact->IsIpVerified();
+}
+
+bool CUpDownClient::CanUseIPv6Direct() const
+{
+	// The DUALSTACK bit is deliberately required for LowID replacement: WIRE
+	// means that the peer can parse IPv6 extensions, while DUALSTACK means its
+	// listener has actually observed an inbound native-v6 connection.  This
+	// avoids replacing a working legacy callback with an unverified v6 route.
+	const CAddress localV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+	const bool bV6Backoff = m_dwIPv6DirectFailed != 0
+		&& (::GetTickCount() - m_dwIPv6DirectFailed) < MIN2MS(5);
+	return thePrefs.IsIPv6Enabled()
+		&& !bV6Backoff
+		&& !thePrefs.GetProxySettings().bUseProxy
+		&& ((SupportsIPv6Wire() && HasV6DualStack()) || SupportsReachV6Inbound())
+		&& localV6.GetType() == CAddress::IPv6 && localV6.IsPublicIP()
+		&& HasIPv6Address() && m_ipv6Address.IsPublicIP()
+		&& GetUserPort() != 0;
+}
+
+void CUpDownClient::MergeReachabilityFrom(const CUpDownClient& other)
+{
+	if (other.GetReachCaps() != 0)
+		SetReachCaps(GetReachCaps() | other.GetReachCaps());
+
+	// Never replace the endpoint of an established authenticated transport with
+	// unconnected Kad metadata. For a pending/dormant source, however, the most
+	// recent indexer-observed mapping is the useful one after a NAT remap.
+	const bool bTransportEstablished = socket != NULL && socket->IsConnected();
+	if (!bTransportEstablished) {
+		if (other.HasIPv6Address())
+			SetIPv6Address(other.GetIPv6Address());
+		if (other.GetConnectIP() != 0)
+			SetConnectIP(other.GetConnectIP());
+		if (other.GetKadPort() != 0)
+			SetKadPort(other.GetKadPort());
+		if (other.GetUserPort() != 0)
+			SetUserPort(other.GetUserPort());
+	}
 }
 
 void CUpDownClient::SetUtpWritable(bool bWritable)
@@ -163,7 +227,16 @@ void CUpDownClient::Init()
 	// v0.71 IPv6 — GetPeerAddressV4 handles v6-family sockets from the
 	// dual-stack listener; the legacy SOCKADDR_IN buffer failed there and
 	// every inbound client was born with IP=0 (May-2026 revert root cause).
-	SetIP(socket ? socket->GetPeerAddressV4() : 0);
+	m_ipv6Address = CAddress();
+	if (socket != NULL) {
+		const CAddress peerAddress = socket->GetPeerCAddress();
+		if (peerAddress.GetType() == CAddress::IPv6 && peerAddress.IsPublicIP()) {
+			m_ipv6Address = peerAddress;
+			SetIP(peerAddress.ToSyntheticUInt32());
+		} else
+			SetIP(socket->GetPeerAddressV4());
+	} else
+		SetIP(0);
 	m_dwServerIP = 0;
 	m_nUserIDHybrid = 0;
 	m_nUserPort = 0;
@@ -188,6 +261,8 @@ void CUpDownClient::Init()
 	m_byCompatibleClient = 0;
 	m_dwForkCaps = 0;  // v0.71 IPv6 Sprint 6 — unset until peer sends CT_FORK_CAPABILITIES
 	m_uEseCapabilities = 0;  // v0.71 P3.5 — unset until peer sends TAG_ESE_CAPS
+	m_uReachCaps = 0;  // no Kad reach vector until a validated source result supplies one
+	m_dwIPv6DirectFailed = 0;
 	memset(m_eseNodePub, 0, sizeof m_eseNodePub);  // v8.x Phase 1 — TAG_ESE_NODE_PUB (0x6D)
 	m_bEseNodePubSet = false;
 	m_bFriendSlot = false;
@@ -438,6 +513,15 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 	m_bIsML = false;
 	m_fNoViewSharedFiles = 0;
 	m_bUnicodeSupport = false;
+	// Optional extension tags must not survive a second HELLO which omits them.
+	// Keeping stale capabilities would let a downgraded/replaced connection use
+	// routes or identities which the current peer did not advertise.
+	m_strModVersion.Empty();
+	m_dwForkCaps = 0;
+	m_uEseCapabilities = 0;
+	m_bEseNodePubSet = false;
+	memset(m_eseNodePub, 0, sizeof m_eseNodePub);
+	m_ipv6Address = CAddress();
 
 	data.ReadHash16(m_achUserHash);
 	if (bDbgInfo)
@@ -617,6 +701,16 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 			} else if (bDbgInfo)
 				m_strHelloInfo.AppendFormat(_T("\n  ***UnkType=%s"), (LPCTSTR)temptag.GetFullInfo());
 			break;
+		case 0x66:   // TAG_SOURCEIP_V6: additive public-v6 candidate
+			if (temptag.IsBlob() && temptag.GetBlobSize() == 16) {
+				CAddress candidate((const byte*)temptag.GetBlob());
+				if (candidate.GetType() == CAddress::IPv6 && candidate.IsPublicIP()) {
+					m_ipv6Address = candidate;
+					if (bDbgInfo)
+						m_strHelloInfo.AppendFormat(_T("\n  IPv6=%s"), candidate.ToStringC().GetString());
+				}
+			}
+			break;
 		case CT_FORK_CAPABILITIES:
 			// v0.71 IPv6 Sprint 6 — fork capability bits.
 			// Bits: 0x01 IPV6_WIRE, 0x02 IPV6_KAD, 0x04 IPV6_DUALSTACK, 0x08 ED25519.
@@ -700,7 +794,13 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 		}
 	}
 
-	SetIP(socket->GetPeerAddressV4());
+	const CAddress peerAddress = socket->GetPeerCAddress();
+	const bool bNativeV6Endpoint = peerAddress.GetType() == CAddress::IPv6 && peerAddress.IsPublicIP();
+	if (bNativeV6Endpoint) {
+		m_ipv6Address = peerAddress;
+		SetIP(peerAddress.ToSyntheticUInt32());
+	} else
+		SetIP(socket->GetPeerAddressV4());
 
 	if (thePrefs.GetAddServersFromClients() && m_dwServerIP && m_nServerPort) {
 		CServer *addsrv = new CServer(m_nServerPort, ipstr(m_dwServerIP));
@@ -714,7 +814,7 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 	//(b)Some older clients will not send an ID, these client are HighID users that are not connected to a server.
 	//(c)Kad users with a *.*.*.0 IPs will look like a lowID user they are actually a highID user. They can be detected easily
 	//because they will send an ID that is the same as their IP.
-	if (!HasLowID() || m_nUserIDHybrid == 0 || m_nUserIDHybrid == m_dwUserIP)
+	if (!bNativeV6Endpoint && (!HasLowID() || m_nUserIDHybrid == 0 || m_nUserIDHybrid == m_dwUserIP))
 		m_nUserIDHybrid = ntohl(m_dwUserIP);
 
 	CClientCredits *pFoundCredits = theApp.clientcredits->GetCredit(m_achUserHash);
@@ -1029,6 +1129,11 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	data.WriteUInt16(thePrefs.GetPort());
 
 	uint32 tagcount = 7;
+	const CAddress helloV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+	const bool bSendHelloV6 = thePrefs.IsIPv6Enabled()
+		&& helloV6.GetType() == CAddress::IPv6 && helloV6.IsPublicIP();
+	if (bSendHelloV6)
+		++tagcount;
 
 	if (theApp.clientlist->GetBuddy() && theApp.IsFirewalled())
 		tagcount += 2;
@@ -1174,7 +1279,8 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	uint32 forkCaps = CAP_FORK_ED25519;
 	if (thePrefs.IsIPv6Enabled()) {
 		forkCaps |= CAP_FORK_IPV6_WIRE;
-		forkCaps |= CAP_FORK_IPV6_KAD;
+		// CAP_FORK_IPV6_KAD remains clear until native-v6 UDP receive and
+		// routing are complete. Advertising it early creates a black-hole route.
 		// CAP_FORK_IPV6_DUALSTACK is set by the firewall prober once it has
 		// confirmed v6 reachability; the bit is OR-ed in below if set.
 		extern uint32 g_uForkCapsRuntime;  // defined in FirewallProberV6.cpp
@@ -1182,6 +1288,10 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	}
 	CTag tagForkCaps(CT_FORK_CAPABILITIES, forkCaps);
 	tagForkCaps.WriteTagToFile(data);
+	if (bSendHelloV6) {
+		CTag tagV6((uint8)0x66, (size_t)16, (const BYTE*)helloV6.Data());
+		tagV6.WriteTagToFile(data);
+	}
 
 	// v0.71 P3.5 — TAG_ESE_CAPS (single-byte name 0x6C, see Opcodes.h
 	// for the kad-style string form "\x6C"). Carries the runtime privacy
@@ -1507,10 +1617,14 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 		return true;
 	}
 
+	const bool bCanIPv6Direct = CanUseIPv6Direct();
+	const bool bUseIPv6Direct = bCanIPv6Direct
+		&& (HasLowID() || IsIPv6OnlyEndpoint()
+			|| thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode);
 	uint32 uClientIP = (GetIP() != 0) ? GetIP() : GetConnectIP();
 	if (uClientIP == 0 && !HasLowID())
 		uClientIP = htonl(m_nUserIDHybrid);
-	if (uClientIP) {
+	if (uClientIP && !IsIPv6OnlyEndpoint()) {
 		// although we filter all received IPs (server sources, source exchange) and all incoming connection attempts,
 		// we do have to filter outgoing connection attempts here too, because we may have updated the ip filter list
 		if (theApp.ipfilter->IsFiltered(uClientIP)) {
@@ -1535,10 +1649,18 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 			return true;
 		}
 	}
+	const bool bCanEseHolePunch = CanUseEseHolePunch();
+	const bool bClientUdpReady = theApp.clientudp != NULL
+		&& theApp.clientudp->GetConnectedPort() != 0;
+	const bool bHasLegacyCallback =
+		(SupportsDirectUDPCallback() && bClientUdpReady && GetConnectIP() != 0)
+		|| (HasValidBuddyID() && Kademlia::CKademlia::IsConnected()
+			&& ((GetBuddyIP() && GetBuddyPort()) || m_reqfile != NULL))
+		|| theApp.serverconnect->IsLocalServer(GetServerIP(), GetServerPort());
 
 	if (HasLowID() && GetKadState() != KS_CONNECTING_FWCHECK) {
 		ASSERT(pClassSocket == NULL);
-		if (!theApp.CanDoCallback(this)) { // lowid2lowid check used for the whole function, don't remove
+		if (!theApp.CanDoCallback(this) && !bCanEseHolePunch && !bCanIPv6Direct) {
 			// We cannot reach this client, so we hard fail to connect, if this client should be kept,
 			// for example, because we might want to wait a bit and hope we get a high ID,
 			// this check has to be done before calling this function
@@ -1550,7 +1672,7 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 		}
 
 		// are callbacks disallowed?
-		if (bNoCallbacks) {
+		if (bNoCallbacks && !bCanEseHolePunch && !bCanIPv6Direct) {
 			DebugLogError(_T("TryToConnect: Would like to do callback on a no-callback client, %s"), (LPCTSTR)DbgGetClientInfo());
 			if (Disconnected(_T("LowID: No Callback Option allowed"))) {
 				delete this;
@@ -1560,9 +1682,7 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 		}
 
 		// Is any callback available?
-		if (!((SupportsDirectUDPCallback() && thePrefs.GetUDPPort() != 0 && GetConnectIP() != 0) // Direct Callback
-			|| (HasValidBuddyID() && Kademlia::CKademlia::IsConnected() && ((GetBuddyIP() && GetBuddyPort()) || m_reqfile != NULL)) // Kad Callback
-			|| theApp.serverconnect->IsLocalServer(GetServerIP(), GetServerPort()))) // Server Callback
+		if (!bHasLegacyCallback && !bCanEseHolePunch && !bCanIPv6Direct)
 		{
 			// Nope
 			if (Disconnected(_T("LowID: No Callback Option available"))) {
@@ -1580,13 +1700,15 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 
 	////////////////////////////////////////////////////////////
 	// 3) Normal Outgoing TCP Connection
-	if (!HasLowID() || GetKadState() == KS_CONNECTING_FWCHECK) {
+	if (!HasLowID() || GetKadState() == KS_CONNECTING_FWCHECK || bUseIPv6Direct) {
 		m_eConnectingState = CCS_DIRECTTCP;
 		if (pClassSocket == NULL)
 			pClassSocket = RUNTIME_CLASS(CClientReqSocket);
 		socket = static_cast<CClientReqSocket*>(pClassSocket->CreateObject());
 		socket->SetClient(this);
-		if (!socket->Create()) {
+		if (!socket->Create(bUseIPv6Direct ? AF_INET6 : AF_INET)) {
+			if (bUseIPv6Direct)
+				MarkIPv6DirectFailed();
 			socket->Safe_Delete();
 			// we let the timeout handle the cleanup in this case
 			DebugLogError(_T("TryToConnect: Failed to create socket for outgoing connection, %s"), (LPCTSTR)DbgGetClientInfo());
@@ -1596,7 +1718,7 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 	}
 	////////////////////////////////////////////////////////////
 	// 4) Direct Callback Connections
-	if (SupportsDirectUDPCallback() && thePrefs.GetUDPPort() != 0 && GetConnectIP() != 0) {
+	if (!bNoCallbacks && SupportsDirectUDPCallback() && bClientUdpReady && GetConnectIP() != 0) {
 		m_eConnectingState = CCS_DIRECTCALLBACK;
 		//DebugLog(_T("Direct Callback on port %u to client %s (%s) "), GetKadPort(), (LPCTSTR)DbgGetClientInfo(), (LPCTSTR)md4str(GetUserHash()));
 		CSafeMemFile data;
@@ -1623,9 +1745,7 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 	// just as slow as repeated retries against an unreachable peer. We now use
 	// 5 s for the first 3 attempts per peer (fast-arrival path) and 30 s after
 	// (back-off for stubborn peers). Counter resets on successful uTP accept.
-	if (Kademlia::CKademlia::IsConnected() && GetConnectIP() != 0 && GetKadPort() != 0
-		&& thePrefs.GetUtpHolePunchEnabled()
-		&& SupportsUTP())
+	if (bCanEseHolePunch)
 	{
 		// A.2 Sprint 1: heuristic symmetric-NAT detection.
 		// After 4 hole-punch attempts without a successful uTP accept (which
@@ -1640,7 +1760,8 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 			// forwards our REQ so B punches back even when a plain 2-way punch can't reach B's
 			// per-destination external port. Reuses the R.1 machinery validated for Live. One shot
 			// per peer (m_bNatRdvTried), reset on a successful uTP accept.
-			if (thePrefs.GetEseEd2kPunch3() && !m_bNatRdvTried && SupportsEseHolePunchRdv()
+			if (thePrefs.GetEseEd2kPunch3() && thePrefs.GetEseKad3Rendezvous()
+				&& !m_bNatRdvTried && SupportsEseHolePunchRdv()
 				&& Kademlia::CKademlia::GetUDPListener() != NULL) {
 				const uint32 uTargetIpHost = ntohl(GetConnectIP());
 				uint32 uRipHost = 0; uint16 uRport = 0;
@@ -1687,7 +1808,9 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 				// [eSE v9] anti-CGNAT: when port-prediction is on, spray a window of ports
 				// (symmetric NAT opens a different external port toward us than its Kad port).
 				uint16 hpSpread = thePrefs.GetEseHolePunchPortPredict() ? (uint16)thePrefs.GetEseHolePunchPortSpread() : 0;
-				Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(kadIP, GetKadPort(), hpSpread);
+				Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(kadIP,
+					GetKadPort(), hpSpread,
+					SupportsReachPunch2() || SupportsEseHolePunchCookie(), this);
 				// Don't return — fall through to Server/Kad callback as backup.
 				// The hole-punch is opportunistic; if it works, on_utp_accept will handle it.
 				DebugLog(_T("eSE: TryToConnect — hole-punch attempt #%u to %s:%u (cooldown=%us)"),
@@ -1702,6 +1825,8 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 	}
 	////////////////////////////////////////////////////////////
 	// 6) Server Callback + 7) Kad Callback
+	if (bCanEseHolePunch && (bNoCallbacks || !theApp.CanDoCallback(this) || !bHasLegacyCallback))
+		return true; // uTP completion is asynchronous; no valid legacy fallback exists
 	if (GetDownloadState() == DS_CONNECTING)
 		SetDownloadState(DS_WAITCALLBACK);
 
@@ -1776,11 +1901,18 @@ void CUpDownClient::Connect()
 
 	//Try to always tell the socket to WaitForOnConnect before you call Connect.
 	socket->WaitForOnConnect();
-	SOCKADDR_IN sockAddr = {};
-	sockAddr.sin_family = AF_INET;
-	sockAddr.sin_port = htons(GetUserPort());
-	sockAddr.sin_addr.s_addr = GetConnectIP();
-	socket->Connect((LPSOCKADDR)&sockAddr, sizeof sockAddr);
+	if (socket->GetFamily() == AF_INET6 && HasIPv6Address()) {
+		SOCKADDR_STORAGE sockAddr = {};
+		int sockAddrLen = sizeof sockAddr;
+		m_ipv6Address.ToSA((LPSOCKADDR)&sockAddr, &sockAddrLen, GetUserPort());
+		socket->Connect((LPSOCKADDR)&sockAddr, sockAddrLen);
+	} else {
+		SOCKADDR_IN sockAddr = {};
+		sockAddr.sin_family = AF_INET;
+		sockAddr.sin_port = htons(GetUserPort());
+		sockAddr.sin_addr.s_addr = GetConnectIP();
+		socket->Connect((LPSOCKADDR)&sockAddr, sizeof sockAddr);
+	}
 	SendHelloPacket();
 }
 
@@ -1814,7 +1946,9 @@ void CUpDownClient::ConnectionEstablished()
 	if (thePrefs.IsIPv6Enabled()
 		&& SupportsIPv6Wire()
 		&& !m_fNeedOurPublicIPV6
-		&& CFirewallProberV6::Instance().GetDetectedV6IP().IsNull())
+		&& !CFirewallProberV6::Instance().HasExternallyObservedV6()
+		&& socket != NULL
+		&& socket->GetPeerCAddress().GetType() == CAddress::IPv6)
 	{
 		SendPublicIPRequestV6();
 	}
@@ -2864,12 +2998,27 @@ void CUpDownClient::ProcessPublicIPAnswerV6(const BYTE *pbyData, UINT uSize)
 {
 	CSafeMemFile data(pbyData, uSize);
 	CAddress addr;
-	if (!addr.ReadFromBuffer(&data))
+	if (!addr.ReadFromBuffer(&data) || data.GetPosition() != data.GetLength())
 		throw GetResString(IDS_ERR_WRONGPACKETSIZE);
 	if (m_fNeedOurPublicIPV6 == 1) { // did we ask this peer?
 		m_fNeedOurPublicIPV6 = 0;
-		// SetDetectedV6IP re-validates (native v6 + public) and keeps the first answer.
-		CFirewallProberV6::Instance().SetDetectedV6IP(addr);
+		// A peer answer is advisory. Pin it to the actual local endpoint of this
+		// established v6 socket so a malicious peer cannot poison our HELLO/Kad
+		// candidate with an arbitrary victim address.
+		SOCKADDR_STORAGE local = {};
+		int localLength = sizeof local;
+		CAddress localAddress;
+		const bool bHaveLocal = socket != NULL
+			&& socket->GetSockName((SOCKADDR*)&local, &localLength);
+		if (bHaveLocal)
+			localAddress.FromSA((SOCKADDR*)&local, localLength);
+		if (bHaveLocal && localAddress == addr)
+		{
+			CFirewallProberV6::Instance().SetDetectedV6IP(addr);
+		} else {
+			DebugLogWarning(_T("Ignored mismatched OP_PUBLICIP_ANSWER_V6 from %s"),
+				(LPCTSTR)DbgGetClientInfo());
+		}
 	}
 }
 

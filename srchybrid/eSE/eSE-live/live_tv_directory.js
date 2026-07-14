@@ -101,13 +101,13 @@ function renderFilters() {
 </div>
 <select id="dir-category" onchange="filterChannels()">
 <option value="all">Todas las categor&#237;as</option>
-<option value="deportes">Deportes</option>
+<option value="sports">Deportes</option>
 <option value="gaming">Gaming</option>
-<option value="cine">Cine</option>
-<option value="musica">M&#250;sica</option>
-<option value="educacion">Educaci&#243;n</option>
-<option value="webcam">Webcam</option>
-<option value="24h">24/7</option>
+<option value="movies">Cine</option>
+<option value="music">M&#250;sica</option>
+<option value="education">Educaci&#243;n</option>
+<option value="talk">Charlas / Webcam</option>
+<option value="24/7">24/7</option>
 <option value="general">General</option>
 </select>
 <select id="dir-lang" onchange="filterChannels()">

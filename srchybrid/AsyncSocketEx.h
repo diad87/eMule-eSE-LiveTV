@@ -132,7 +132,8 @@ public:
 			, long lEvent = FD_DEFAULT
 			, const CString &sSocketAddress = CString()
 			, ADDRESS_FAMILY nFamily = AF_INET
-			, bool reusable = false);
+			, bool reusable = false
+			, bool dualStack = false);
 
 	//Attributes
 	//----------

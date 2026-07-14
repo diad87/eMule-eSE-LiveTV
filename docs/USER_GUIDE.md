@@ -36,7 +36,7 @@ to map the eD2K ports on your router. If Windows Firewall asks about
 |---|---|
 | `%APPDATA%\eMule\` | Config, server.met, nodes.dat, `last_streams.json` (bootstrap cache) |
 | `%APPDATA%\eSE\` | Node-side config, tunnel URL, telegram bot key |
-| `%TEMP%\eSE-live\` | Transient HLS chunks while a broadcast is active |
+| `%TEMP%\eMule_RTMP\` | Transient HLS playlists and chunks while a broadcast is active |
 
 To uninstall, delete the install folder + both `%APPDATA%` folders.
 
@@ -52,23 +52,29 @@ To uninstall, delete the install folder + both `%APPDATA%` folders.
    - **PEX gossip** from your connected peers
    - **LAN multicast** from anyone on the same Wi-Fi / LAN
    - **Bootstrap cache** of streams you recently watched
-3. Click any tile → cinema player opens at `/live/cinema?key=<hash>`.
-4. The player buffers ~12 s (3 HLS chunks) then starts.
+3. Click any tile → the player opens at `/live/watch/<hash>`.
+4. The player waits for the local receiver to reconstruct enough HLS data, then starts. Initial buffering depends on discovery and network conditions.
 
 ### 2.2 From a paste link
 
-If a friend sent you an `ed2k://|live|...|/` URL or an `ese://` link,
-paste it into the search box at the top of `/live`. The page calls
-`/api/live/direct_join` which bypasses Kad and dials the broadcaster
-IP:port directly. First chunk usually arrives in 1-3 s.
+If a friend sent you an `ed2k://|live|...|/` URL, paste it into the
+search box at the top of `/live`. A link containing `IP:port` can dial
+the broadcaster directly. The privacy-preserving form has an empty
+endpoint (`ed2k://|live|KEY||TITLE|/`) and resolves the broadcaster
+through Kad instead, which normally takes longer.
 
 ### 2.3 In VLC / any HLS player
 
-Once eMule has started receiving chunks for a stream, the local HLS
-playlist is at:
+For the broadcaster's own output, use:
 
 ```
-http://127.0.0.1:8080/live/play/<hash>/master.m3u8
+http://127.0.0.1:8080/hls/stream.m3u8
+```
+
+For a stream being received from the P2P mesh, use:
+
+```
+http://127.0.0.1:8080/hls-local/<hash>/stream.m3u8
 ```
 
 Paste it into VLC → Media → Open Network Stream. Useful if you want
@@ -80,7 +86,7 @@ hardware-accelerated decode or PiP.
 
 ### 3.1 Quick start — push from OBS
 
-1. In eMule eSE, click the **Live** tab → **Start Broadcast** (or hit `POST /api/live/broadcast/start` from anywhere on the LAN). This:
+1. In eMule eSE, click the **Live** tab → **Start Broadcast**. The local API equivalent is `GET /api/live/broadcast/start?source=rtmp&title=My%20Channel`. This:
    - Opens the RTMP ingest listener on **port 1935**
    - Generates the stream key
    - Publishes a Kad keyword for the title
@@ -88,12 +94,13 @@ hardware-accelerated decode or PiP.
 2. In OBS → Settings → Stream:
    - **Service:** Custom
    - **Server:** `rtmp://127.0.0.1:1935/live`
-   - **Stream key:** anything (eMule accepts any key during a session)
-3. OBS → **Start Streaming**. Within ~3 s the dashboard shows your
-   stream tile with a live thumbnail.
+   - **Stream key:** `stream`
+3. OBS → **Start Streaming**. The API can initially report
+   `waiting_input` while the RTMP listener waits for OBS; the channel is
+   ready after FFmpeg has produced HLS chunks.
 4. Verify viewers can find you:
    - On the same machine: open the cinema player from `/live`.
-   - On the LAN: open <http://OTHER_PC:8080/live> on another laptop — your stream should appear within 1 s via mDNS.
+   - On the LAN: open <http://OTHER_PC:8080/live> on another laptop — LAN discovery should advertise the stream without waiting for Kad propagation.
    - WAN: share the `ed2k://|live|...|/` link from the cinema player URL bar.
 
 ### 3.2 Recommended OBS settings
@@ -101,31 +108,23 @@ hardware-accelerated decode or PiP.
 | Setting | Value | Reason |
 |---|---|---|
 | Output mode | Advanced | Lets you set keyframe interval explicitly |
-| Encoder | x264 / NVENC / QSV — whichever you have | We re-encode anyway but giving us I-frames every 2 s improves chunk boundaries |
+| Encoder | H.264 (x264 / NVENC / QSV) | RTMP ingest remuxes the OBS stream, so use a browser-compatible H.264 source |
 | Keyframe interval | **2 s** | Aligns with `-hls_time 2` so chunks are independent |
 | Rate control | CBR | Steadier bitrate → smoother viewer experience |
 | Bitrate | 2500–6000 kbps for 1080p, 1500–3000 for 720p | Upload bandwidth permitting |
 | Audio | AAC, 128 kbps, 48 kHz, stereo | Wider device support than 44.1 |
 
-### 3.3 ABR variants produced
+### 3.3 Output variants
 
-When ABR is enabled (default), the bundled FFmpeg auto-detects your
-hardware encoder and produces up to four variants:
-
-| Variant | Resolution | Bitrate (video) | Notes |
-|---|---|---|---|
-| 360p | 640×360 | ~600 kbps | Mobile / low-bandwidth fallback |
-| 540p | 960×540 | ~1200 kbps | Tablet sweet spot |
-| 720p | 1280×720 | ~2500 kbps | Default for most viewers |
-| 1080p | 1920×1080 | ~5000 kbps | Capped at OBS source resolution |
-
-Detection order: **NVENC** (NVIDIA) → **QSV** (Intel iGPU) → **AMF**
-(AMD) → **x264** (CPU). The choice is logged at broadcast start —
-look for `[RTMP] selected encoder: ...` in the eMule log.
+RTMP/OBS, screen capture and test-pattern sources currently produce a
+single HLS rendition. Broadcasting a media file can produce an ABR
+ladder selected from the encoders FFmpeg actually exposes: NVENC can
+produce up to five variants, QSV/AMF up to three, and the CPU fallback
+two. The P2P watcher sends one selected rendition to the mesh.
 
 ### 3.4 Stop broadcasting
 
-- Stop OBS, **then** click **Stop Broadcast** in the dashboard (or `POST /api/live/broadcast/stop`).
+- Stop OBS, **then** click **Stop Broadcast** in the dashboard (or call `GET /api/live/broadcast/stop`).
 - The Kad tombstone is published so other peers stop seeing your
   ghost entry immediately. (`Kad unpublish` is best-effort but the
   tombstone is propagated via the next PEX heartbeat.)
@@ -145,7 +144,9 @@ look for `[RTMP] selected encoder: ...` in the eMule log.
 
 UPnP is enabled by default (`EnableUPnP=1` in `preferences.ini`).
 Check `Options → Connection → "UPnP NAT traversal: OK"` in the eMule
-UI. If your router refuses UPnP, manually forward 4662/TCP + 4672/UDP.
+UI. This maps eMule's P2P ports, not the dashboard. Port 8080 is never
+auto-exposed; forward it only deliberately and with an access token. If your
+router refuses UPnP, manually forward 4662/TCP + 4672/UDP.
 
 ---
 
@@ -157,7 +158,7 @@ Check, in order:
 
 1. **Kad status** — bottom-right of the eMule UI must say `Kad: Connected`. If it says `Firewalled` or `Searching`, viewer-only mode still works but discovery is slower. Wait 1-5 min for first Kad bootstrap.
 2. **Run `/api/live/diagnose`** — open <http://localhost:4711/api/live/diagnose> in the browser. The response tells you whether each layer (Kad, PEX, LAN, bootstrap) is functioning and how many peers each sees.
-3. **Verify port 5354 is bound** — in PowerShell: `netstat -an | findstr 5354` should show `UDP 0.0.0.0:5354`. If not, `ese-server.exe` failed to start. Kill it and re-run `eSE.vbs`.
+3. **Verify port 5354 is bound** — in PowerShell: `netstat -an | findstr 5354` should show the LAN discovery socket. If the dashboard is also unavailable, restart eMule and open eSE again from the toolbar.
 4. **Check `last_streams.json`** at `%APPDATA%\eMule\last_streams.json`. If empty, this is your first run — no bootstrap cache yet. Watch something for 30 s, then restart eMule; the second boot should ping cached streams in <5 s.
 
 ### "Black screen in cinema player"
@@ -193,14 +194,14 @@ during Release|x64 builds — see the script header for details.
 ### Logs
 
 - **eMule log** — bottom pane of the eMule UI, or `%APPDATA%\eMule\logs\`.
-- **eSE / Node log** — `ese-server.exe` writes to stdout (visible if you launch it from a console instead of `eSE.vbs`).
-- **HLS chunks** — `%TEMP%\eSE-live\<hash>\` while a stream is live. Files cleaned up when the stream stops.
+- **eSE / Node log** — `ese-server.exe` writes to stdout when launched from a console.
+- **HLS chunks** — `%TEMP%\eMule_RTMP\` while a broadcast is live; received streams use per-stream subdirectories. Generated files are removed when the corresponding stream stops.
 
 ---
 
 ## 6. Stress / dev features (CLI flags)
 
-These are for testing only; the launcher (`eSE.vbs`) doesn't use them.
+These are for testing only and apply to `emule.exe` when launched from a console.
 
 | Flag | Purpose |
 |---|---|
@@ -208,9 +209,9 @@ These are for testing only; the launcher (`eSE.vbs`) doesn't use them.
 | `--viewer=<key>` | Auto-join a stream on startup. |
 | `--tcp-port=N --udp-port=N` | Override ports (needed for multi-instance same-host). |
 | `--metrics-port=N` | Bind `/api/live/metrics` on a separate port. |
-| `--selftest` | Run a one-shot self-broadcast → self-join → assert chunks received, exit code 0/1. |
+| `--selftest` | Start a test-pattern broadcast for about five seconds and stop it. This is a launch/stop smoke test, not a multi-peer end-to-end assertion. |
 | `--ignoreinstances` | Skip the single-instance mutex check. |
 
 ---
 
-_Last updated: 2026-05-16._
+_Last updated: 2026-07-14._

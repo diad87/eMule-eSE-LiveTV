@@ -111,7 +111,7 @@ function handle(url, req, res) {
 
   if (url.pathname === '/remote') {
     // Serve the redirect HTML for download
-    const rPath = path.join(__dirname, 'eSE_Remote.html');
+    const rPath = path.join(__dirname, '..', 'eSE_Remote.html');
     if (fs.existsSync(rPath)) {
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',

@@ -221,8 +221,11 @@ struct LiveChannelSnapshot {
     bool    broadcasting;
     uchar   streamKey[16];
     CString title;
+    CString category;
+    CString language;
     uint32  bitrate;
     uint32  viewerCount;
+    uint32  startedAt;
 };
 
 // eSE: worker -> main-thread marshaling block for /api/live/join and
@@ -776,7 +779,7 @@ private:
     void RequestMissingSegments();
     void PublishToKad();
     CString GetLiveHlsDir() const;
-    void ResetViewerHlsOutput();
+    void ResetViewerHlsOutput(bool removeDirectory = false);
     void WriteViewerHlsSegment(uint32 seqNum, const BYTE* data, uint32 dataSize);
     void RefreshViewerHlsPlaylist();
     void DemotePeer(CUpDownClient* peer);

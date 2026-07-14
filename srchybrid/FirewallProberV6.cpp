@@ -6,6 +6,11 @@
 #include "Preferences.h"
 #include "emule.h"          // theApp.IsClosing() — shutdown guard for the worker
 #include "OtherFunctions.h" // DbgSetThreadName
+#include "Opcodes.h"
+#include "ClientUDPSocket.h"
+#include "kademlia/kademlia/Kademlia.h"
+#include "kademlia/kademlia/Prefs.h"
+#include <iphlpapi.h>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -40,8 +45,10 @@ CFirewallProberV6& CFirewallProberV6::Instance()
 
 CFirewallProberV6::CFirewallProberV6()
     : m_eLayer(LayerUnknown)
-    , m_eOverrideLayer(LayerUnknown)
-    , m_lProbeStarted(0)
+	, m_eOverrideLayer(LayerUnknown)
+	, m_lProbeStarted(0)
+	, m_lDetectedV6ExternallyObserved(0)
+	, m_lInboundV6Observed(0)
     , m_dwLastProbeTick(0)
 {
 }
@@ -84,6 +91,7 @@ UINT AFX_CDECL CFirewallProberV6::ProbeThreadProc(LPVOID pParam)
 
 void CFirewallProberV6::RunCascade()
 {
+    DetectLocalPublicV6();
     ECascadeLayer verdict = LayerUnreachable;
     if (TryHighID())          verdict = LayerHighID;
     else if (TryPCP())        verdict = LayerPCP;
@@ -91,6 +99,10 @@ void CFirewallProberV6::RunCascade()
     else if (TryKeepalive())  verdict = LayerKeepalive;
     else if (TryHolePunch())  verdict = LayerHolePunch;
     else if (TryBuddyRelay()) verdict = LayerBuddyRelay;
+
+    // An accept may race the worker while slower cascade layers run.
+    if (::InterlockedCompareExchange(&m_lInboundV6Observed, 0, 0) != 0)
+        verdict = LayerHighID;
 
     // Past this point we only touch our own singleton (static storage) and the
     // thread-safe live log — but skip the log if the app is tearing down statics.
@@ -124,7 +136,7 @@ const TCHAR* CFirewallProberV6::GetLayerLabel() const
 }
 
 // v0.71 IPv6 Sprint 6 — record our public v6 address as observed by a peer.
-// See header. Thread-safe (network thread calls in); first public-v6 wins.
+// See header. Thread-safe; an inbound-proven exact address always wins.
 void CFirewallProberV6::SetDetectedV6IP(const CAddress& addr)
 {
     // Only a genuine, public, native-v6 address is worth recording. FromSA (the
@@ -136,13 +148,107 @@ void CFirewallProberV6::SetDetectedV6IP(const CAddress& addr)
         return;
     {
         CSingleLock l(&m_lock, TRUE);
-        if (!m_detectedIP.IsNull())
+        if (HasInboundV6Observation() && m_detectedIP != addr)
             return;             // first answer wins — ignore later peers
         m_detectedIP = addr;
     }
     if (!theApp.IsClosing())
         LIVE_LOG("NETV6", "detected public v6 = %hs (peer connect-back, egress OK, inbound unconfirmed)",
             addr.ToString().c_str());
+}
+
+bool CFirewallProberV6::CanAdvertiseModernKadSource()
+{
+	const bool bPunch2 = thePrefs.GetUtpHolePunchEnabled()
+		&& theApp.clientudp != NULL && theApp.clientudp->IsUtpReady()
+		&& Kademlia::CKademlia::IsConnected()
+		&& Kademlia::CKademlia::GetUDPListener() != NULL
+		&& Kademlia::CKademlia::GetPrefs()->GetInternKadPort() != 0;
+	if (bPunch2)
+		return true;
+
+	CFirewallProberV6& prober = Instance();
+	const CAddress address = prober.GetDetectedV6IP();
+	return thePrefs.IsIPv6Enabled()
+		&& address.GetType() == CAddress::IPv6 && address.IsPublicIP()
+		&& prober.HasInboundV6Observation();
+}
+
+void CFirewallProberV6::DetectLocalPublicV6()
+{
+    // A configured bind address is authoritative and avoids selecting a
+    // privacy/temporary address when the host has several global addresses.
+    const CString configured(thePrefs.GetIPv6BindAddr());
+    if (!configured.IsEmpty() && configured != _T("::")) {
+        CAddress addr(configured, false);
+        if (addr.GetType() == CAddress::IPv6 && addr.IsPublicIP()) {
+            CSingleLock l(&m_lock, TRUE);
+            if (m_detectedIP.IsNull())
+                m_detectedIP = addr;
+            return;
+        }
+    }
+
+    ULONG bytes = 16 * 1024;
+    std::vector<BYTE> storage(bytes);
+    ULONG result = GetAdaptersAddresses(AF_INET6,
+        GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+        NULL, reinterpret_cast<PIP_ADAPTER_ADDRESSES>(&storage[0]), &bytes);
+    if (result == ERROR_BUFFER_OVERFLOW) {
+        storage.resize(bytes);
+        result = GetAdaptersAddresses(AF_INET6,
+            GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+            NULL, reinterpret_cast<PIP_ADAPTER_ADDRESSES>(&storage[0]), &bytes);
+    }
+    if (result != NO_ERROR)
+        return;
+
+    PIP_ADAPTER_ADDRESSES adapter = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(&storage[0]);
+    for (; adapter != NULL; adapter = adapter->Next) {
+        if (adapter->OperStatus != IfOperStatusUp
+            || adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK
+            || adapter->IfType == IF_TYPE_TUNNEL)
+            continue;
+        for (PIP_ADAPTER_UNICAST_ADDRESS uni = adapter->FirstUnicastAddress;
+            uni != NULL; uni = uni->Next)
+        {
+            if (uni->Address.lpSockaddr == NULL || uni->Address.lpSockaddr->sa_family != AF_INET6)
+                continue;
+            CAddress addr;
+            addr.FromSA(uni->Address.lpSockaddr, uni->Address.iSockaddrLength);
+            if (addr.GetType() == CAddress::IPv6 && addr.IsPublicIP()) {
+                {
+                    CSingleLock l(&m_lock, TRUE);
+                    if (!m_detectedIP.IsNull())
+                        return;
+                    m_detectedIP = addr;
+                }
+                if (!theApp.IsClosing())
+                    LIVE_LOG("NETV6", "local public v6 candidate = %hs", addr.ToString().c_str());
+                return;
+            }
+        }
+    }
+}
+
+void CFirewallProberV6::ReportInboundV6Reachable(const CAddress& localAddress)
+{
+	if (localAddress.GetType() != CAddress::IPv6 || !localAddress.IsPublicIP())
+		return;
+    {
+        CSingleLock l(&m_lock, TRUE);
+		m_detectedIP = localAddress;
+        m_eLayer = LayerHighID;
+		// Publish the proof while holding the same lock used by SetDetectedV6IP.
+		// This prevents a late advisory answer from replacing the exact local
+		// destination address of the accepted native-v6 connection.
+		::InterlockedExchange(&m_lInboundV6Observed, 1);
+		::InterlockedExchange(&m_lDetectedV6ExternallyObserved, 1);
+	}
+    ::InterlockedOr(reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+        (LONG)CAP_FORK_IPV6_DUALSTACK);
+    if (!theApp.IsClosing())
+        LIVE_LOG("NETV6", "native IPv6 inbound TCP observed; direct route confirmed");
 }
 
 // ── Cascade layer stubs ──────────────────────────────────────────────────
@@ -170,7 +276,7 @@ bool CFirewallProberV6::TryHighID()
         return false;
     }
     ::closesocket(s);
-    return false;
+    return ::InterlockedCompareExchange(&m_lInboundV6Observed, 0, 0) != 0;
 }
 
 bool CFirewallProberV6::TryPCP()        { return false; /* Sprint 6 */ }

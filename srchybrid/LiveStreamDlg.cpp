@@ -86,44 +86,44 @@ BOOL CLiveStreamDlg::OnInitDialog()
 	CResizableDialog::OnInitDialog();
 
 	// Title placeholder
-	m_editTitle.SendMessage(EM_SETCUEBANNER, TRUE, (LPARAM)_T("Enter your stream title here..."));
+	m_editTitle.SendMessage(EM_SETCUEBANNER, TRUE, (LPARAM)(LPCTSTR)GetResString(IDS_LIVE_TITLE_PLACEHOLDER));
 
 	// Source combo
-	m_comboSource.AddString(_T("OBS Studio (RTMP)"));
-	m_comboSource.AddString(_T("Media File (FFmpeg)"));
-	m_comboSource.AddString(_T("Screen Capture (FFmpeg)"));
-	m_comboSource.AddString(_T("Test Pattern"));
+	m_comboSource.AddString(GetResString(IDS_LIVE_SRC_OBS));
+	m_comboSource.AddString(GetResString(IDS_LIVE_SRC_FILE));
+	m_comboSource.AddString(GetResString(IDS_LIVE_SRC_SCREEN));
+	m_comboSource.AddString(GetResString(IDS_LIVE_SRC_TESTPATTERN));
 	m_comboSource.SetCurSel(0);
 
 	// Category combo
-	m_comboCategory.AddString(_T("General"));
-	m_comboCategory.AddString(_T("Sports"));
-	m_comboCategory.AddString(_T("Gaming"));
-	m_comboCategory.AddString(_T("Movies"));
-	m_comboCategory.AddString(_T("Music"));
-	m_comboCategory.AddString(_T("Education"));
-	m_comboCategory.AddString(_T("Talk"));
-	m_comboCategory.AddString(_T("24/7"));
+	m_comboCategory.AddString(GetResString(IDS_LIVE_CAT_GENERAL));
+	m_comboCategory.AddString(GetResString(IDS_LIVE_CAT_SPORTS));
+	m_comboCategory.AddString(GetResString(IDS_LIVE_CAT_GAMING));
+	m_comboCategory.AddString(GetResString(IDS_LIVE_CAT_MOVIES));
+	m_comboCategory.AddString(GetResString(IDS_LIVE_CAT_MUSIC));
+	m_comboCategory.AddString(GetResString(IDS_LIVE_CAT_EDUCATION));
+	m_comboCategory.AddString(GetResString(IDS_LIVE_CAT_TALK));
+	m_comboCategory.AddString(GetResString(IDS_LIVE_CAT_247));
 	m_comboCategory.SetCurSel(0);
 
 	// Language combo
-	m_comboLanguage.AddString(_T("English"));
-	m_comboLanguage.AddString(_T("Spanish"));
-	m_comboLanguage.AddString(_T("French"));
-	m_comboLanguage.AddString(_T("German"));
-	m_comboLanguage.AddString(_T("Portuguese"));
+	m_comboLanguage.AddString(GetResString(IDS_LIVE_LANG_EN));
+	m_comboLanguage.AddString(GetResString(IDS_LIVE_LANG_ES));
+	m_comboLanguage.AddString(GetResString(IDS_LIVE_LANG_FR));
+	m_comboLanguage.AddString(GetResString(IDS_LIVE_LANG_DE));
+	m_comboLanguage.AddString(GetResString(IDS_LIVE_LANG_PT));
 	m_comboLanguage.SetCurSel(0);
 
 	// Bitrate combo — v7.3.0: 6 tiers including a real 4K option and a
 	// low-bitrate 360p option for slow uploads. The previous "8000 kbps
 	// (4K)" label was misleading: ffmpeg only encoded up to 1080p so
 	// selecting it just wasted bits. Now index 5 is truly 4K (3840×2160).
-	m_comboBitrate.AddString(_T("800 kbps — 360p (lento / 4G)"));
-	m_comboBitrate.AddString(_T("1500 kbps — 540p (ADSL)"));
-	m_comboBitrate.AddString(_T("3000 kbps — 720p HD (fibra básica)"));
-	m_comboBitrate.AddString(_T("5000 kbps — 1080p Full HD"));
-	m_comboBitrate.AddString(_T("8000 kbps — 1080p (alta tasa)"));
-	m_comboBitrate.AddString(_T("12000 kbps — 4K UHD (NVENC)"));
+	m_comboBitrate.AddString(GetResString(IDS_LIVE_BR_360P));
+	m_comboBitrate.AddString(GetResString(IDS_LIVE_BR_540P));
+	m_comboBitrate.AddString(GetResString(IDS_LIVE_BR_720P));
+	m_comboBitrate.AddString(GetResString(IDS_LIVE_BR_1080P));
+	m_comboBitrate.AddString(GetResString(IDS_LIVE_BR_1080P_HIGH));
+	m_comboBitrate.AddString(GetResString(IDS_LIVE_BR_4K));
 	// Default to 720p HD — equilibrio razonable. Quien tenga upload <2 Mbps
 	// debería bajar a 360p o 540p manualmente. v7.3.0 idealmente añadiría
 	// un pre-flight que sugiera el tier según la subida medida.
@@ -239,7 +239,7 @@ void CLiveStreamDlg::StartBroadcast()
 	CString title;
 	m_editTitle.GetWindowText(title);
 	if (title.IsEmpty())
-		title = _T("My Stream");
+		title = GetResString(IDS_LIVE_DEFAULT_TITLE);
 
 	uint8 category = (uint8)m_comboCategory.GetCurSel();
 
@@ -272,13 +272,7 @@ void CLiveStreamDlg::StartBroadcast()
 		bool reallyFirewalled = (fwVerified && kadFw) || lowId;
 		if (reallyFirewalled) {
 			CString warn;
-			warn.Format(_T("Tu puerto TCP %u está cerrado (LowID/firewalled).\n\n")
-				_T("Los viewers remotos NO podrán conectar a tu emisión.\n")
-				_T("Para que funcione necesitas:\n")
-				_T("  • Abrir el puerto TCP %u en tu router (port forwarding), o\n")
-				_T("  • Activar UPnP en tu router, o\n")
-				_T("  • Probar con el panel hole-punch test (si el otro peer también es LowID)\n\n")
-				_T("¿Quieres continuar de todas formas?"),
+			warn.Format(GetResString(IDS_LIVE_WARN_PORT_CLOSED),
 				thePrefs.GetPort(), thePrefs.GetPort());
 			if (AfxMessageBox(warn, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
 				return;
@@ -302,7 +296,7 @@ void CLiveStreamDlg::StartBroadcast()
 
 	if (sourceIdx == 1) {
 		CFileDialog fdlg(TRUE, NULL, NULL, OFN_FILEMUSTEXIST | OFN_HIDEREADONLY,
-			_T("Video Files (*.mkv;*.mp4;*.avi;*.ts;*.flv;*.wmv)|*.mkv;*.mp4;*.avi;*.ts;*.flv;*.wmv|All Files (*.*)|*.*||"),
+			GetResString(IDS_LIVE_FILEDLG_FILTER),
 			this);
 		if (fdlg.DoModal() != IDOK)
 			return;
@@ -331,20 +325,10 @@ void CLiveStreamDlg::StartBroadcast()
 			detail += w + _T("\r\n");
 		}
 		if (detail.IsEmpty())
-			detail = _T("(no relevant log entries)");
+			detail = GetResString(IDS_LIVE_LOG_EMPTY);
 
 		CString msg;
-		msg.Format(
-			_T("No se pudo iniciar la emisión.\r\n\r\n")
-			_T("Últimas entradas del log:\r\n")
-			_T("---------------------------------\r\n")
-			_T("%s\r\n")
-			_T("Pistas habituales:\r\n")
-			_T("  • ffmpeg.exe debe estar junto a emule.exe\r\n")
-			_T("  • Si dice PORT 1935 BUSY, mata el ffmpeg.exe huérfano:\r\n")
-			_T("      Get-Process ffmpeg | Stop-Process -Force\r\n")
-			_T("  • El log completo está en la pestaña Live Stream"),
-			(LPCTSTR)detail);
+		msg.Format(GetResString(IDS_LIVE_ERR_START_FAILED), (LPCTSTR)detail);
 		AfxMessageBox(msg, MB_ICONERROR);
 		return;
 	}
@@ -352,19 +336,19 @@ void CLiveStreamDlg::StartBroadcast()
 	// Show source-specific status string.
 	CString statusMsg;
 	if (sourceIdx == 0) {
-		statusMsg.Format(_T("Status: Waiting for OBS on %s"),
+		statusMsg.Format(GetResString(IDS_LIVE_STATUS_WAITING_OBS),
 			(LPCTSTR)mgr->GetRTMPIngest().GetRTMPUrl());
 	} else if (sourceIdx == 1) {
-		statusMsg = _T("Status: Broadcasting Media File (looping)");
+		statusMsg = GetResString(IDS_LIVE_STATUS_BC_FILE);
 	} else if (sourceIdx == 2) {
-		statusMsg = _T("Status: Broadcasting Screen Capture");
+		statusMsg = GetResString(IDS_LIVE_STATUS_BC_SCREEN);
 	} else {
-		statusMsg = _T("Status: Broadcasting Test Pattern");
+		statusMsg = GetResString(IDS_LIVE_STATUS_BC_TESTPATTERN);
 	}
 	m_staticStatus.SetWindowText(statusMsg);
 
 	m_bBroadcasting = true;
-	m_btnStartStop.SetWindowText(_T("STOP BROADCAST"));
+	m_btnStartStop.SetWindowText(GetResString(IDS_LIVE_BTN_STOP));
 	m_btnStartStop.Invalidate();
 	PopulateSharePanel();
 	UpdateStatusBar();
@@ -375,7 +359,7 @@ void CLiveStreamDlg::StopBroadcast()
 	if (theApp.liveStreamManager)
 		theApp.liveStreamManager->StopBroadcastFull();
 	m_bBroadcasting = false;
-	m_btnStartStop.SetWindowText(_T("START BROADCAST"));
+	m_btnStartStop.SetWindowText(GetResString(IDS_LIVE_BTN_START));
 	m_btnStartStop.Invalidate();
 	ClearSharePanel();
 	UpdateStatusBar();

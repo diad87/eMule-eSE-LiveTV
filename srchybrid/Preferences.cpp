@@ -390,6 +390,8 @@ uint16	CPreferences::m_nWebPort;
 bool	CPreferences::m_bWebUseUPnP;
 bool	CPreferences::m_bUPnPCriticalError;
 bool	CPreferences::m_bEnableUtpHolePunch;
+bool	CPreferences::m_bEseKad3Rendezvous;
+bool	CPreferences::m_bEseEndgame;
 bool	CPreferences::m_bEseAutoKeepalive;	// R.2 auto-activation pref
 bool	CPreferences::m_bEseKadV6Tag;		// [eSE v9] Kad-HELLO v6 tag TX pref
 bool	CPreferences::m_bEseRelayAccept;	// [eSE v9] R.3 relay accept pref
@@ -1852,6 +1854,7 @@ void CPreferences::SavePreferences()
 	ini.WriteBool(_T("EnableUPnP"), m_bEnableUPnP, _T("UPnP"));
 	// v0.71 IPv6 Sprint 9 — persist the IPv6 mode (0=Off, 1=Auto, 2=Preferred).
 	ini.WriteInt(_T("IPv6Mode"), (int)m_eIPv6Mode, _T("Connection"));
+	ini.WriteString(_T("IPv6BindAddr"), m_strIPv6BindAddr, _T("Connection"));
 	ini.WriteBool(_T("SkipWANIPSetup"), m_bSkipWANIPSetup);
 	ini.WriteBool(_T("SkipWANPPPSetup"), m_bSkipWANPPPSetup);
 	ini.WriteBool(_T("CloseUPnPOnExit"), m_bCloseUPnPOnExit);
@@ -1863,6 +1866,9 @@ void CPreferences::SavePreferences()
 	ini.WriteInt(_T("KadV2PrivacyMode"), m_iKadV2PrivacyMode, _T("eSE"));
 	ini.WriteInt(_T("KadV2FallbackPolicy"), m_iKadV2FallbackPolicy, _T("eSE"));
 	ini.WriteString(_T("KadV2SensitiveKeywords"), m_strKadV2SensitiveKeywords, _T("eSE"));
+	ini.WriteBool(_T("EnableUtpHolePunch"), m_bEnableUtpHolePunch, _T("eSE"));
+	ini.WriteBool(_T("EseKad3Rendezvous"), m_bEseKad3Rendezvous, _T("eSE"));
+	ini.WriteBool(_T("EseEndgame"), m_bEseEndgame, _T("eSE"));
 }
 
 void CPreferences::ResetStatsColor(int index)
@@ -2499,6 +2505,13 @@ void CPreferences::LoadPreferences()
 		if (v < 0 || v > 2) v = (int)IPv6AutoMode;
 		m_eIPv6Mode = (EIPv6Mode)v;
 	}
+	m_strIPv6BindAddr = ini.GetString(_T("IPv6BindAddr"), _T(""), _T("Connection"));
+	m_strIPv6BindAddr.Trim();
+	if (!m_strIPv6BindAddr.IsEmpty() && m_strIPv6BindAddr != _T("::")) {
+		CAddress bindV6(m_strIPv6BindAddr, false);
+		if (bindV6.GetType() != CAddress::IPv6)
+			m_strIPv6BindAddr.Empty();
+	}
 	m_bSkipWANIPSetup = ini.GetBool(_T("SkipWANIPSetup"), false);
 	m_bSkipWANPPPSetup = ini.GetBool(_T("SkipWANPPPSetup"), false);
 	m_bCloseUPnPOnExit = ini.GetBool(_T("CloseUPnPOnExit"), true);
@@ -2510,6 +2523,13 @@ void CPreferences::LoadPreferences()
 	// Section: "eSE"
 	//
 	m_bEnableUtpHolePunch = ini.GetBool(_T("EnableUtpHolePunch"), true, _T("eSE"));
+	// Three-way rendezvous has a larger trust surface than direct two-way punching.
+	// Keep it independently opt-in so old configurations do not silently become relays.
+	m_bEseKad3Rendezvous = ini.GetBool(_T("EseKad3Rendezvous"), false, _T("eSE"));
+	// Endgame mode: near the end of a download let several sources race for the last
+	// still-outstanding blocks so one slow owner can no longer stall the final MB.
+	// DEFAULT TRUE (conservative double gate: last ~18.5 MB AND the source is starved).
+	m_bEseEndgame = ini.GetBool(_T("EseEndgame"), true, _T("eSE"));
 	// R.2 auto-activation. DEFAULT FALSE: until set, keepalive only starts via
 	// /api/keepalive/start exactly as before (zero behavior change). When TRUE,
 	// CKademlia::Process() autonomously RequestStart()s the keepalive whenever we

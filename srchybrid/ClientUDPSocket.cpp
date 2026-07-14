@@ -39,6 +39,7 @@
 #include "kademlia/utils/KadUDPKey.h"
 #include "zlib/zlib.h"
 #include "eMuleAI/UtpSocket.h" // eSE: uTP NAT traversal bridge
+#include "Opcodes.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -48,6 +49,18 @@ static char THIS_FILE[] = __FILE__;
 
 
 // CClientUDPSocket
+
+static void UpdateHolePunchRuntimeCaps(bool bReady)
+{
+	volatile LONG* pCaps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
+	const LONG mask = (LONG)(ESE_CAP_HOLEPUNCH_COOKIE | ESE_CAP_HOLEPUNCH_RDV);
+	::InterlockedAnd(pCaps, ~mask);
+	if (bReady && thePrefs.GetUtpHolePunchEnabled()) {
+		::InterlockedOr(pCaps, (LONG)ESE_CAP_HOLEPUNCH_COOKIE);
+		if (thePrefs.GetEseKad3Rendezvous())
+			::InterlockedOr(pCaps, (LONG)ESE_CAP_HOLEPUNCH_RDV);
+	}
+}
 
 CClientUDPSocket::CClientUDPSocket()
 {
@@ -573,8 +586,10 @@ bool CClientUDPSocket::SendPacket(Packet *packet, uint32 dwIP, uint16 nPort, boo
 bool CClientUDPSocket::Create()
 {
 	if (thePrefs.GetUDPPort()) {
-		if (!CAsyncSocket::Create(thePrefs.GetUDPPort(), SOCK_DGRAM, FD_READ | FD_WRITE, thePrefs.GetBindAddr()))
+		if (!CAsyncSocket::Create(thePrefs.GetUDPPort(), SOCK_DGRAM, FD_READ | FD_WRITE, thePrefs.GetBindAddr())) {
+			UpdateHolePunchRuntimeCaps(false);
 			return false;
+		}
 		m_port = thePrefs.GetUDPPort();
 		// the default socket size seems to be insufficient for this UDP socket
 		// because we tend to drop packets if several arrived at the same time
@@ -607,6 +622,7 @@ bool CClientUDPSocket::Create()
 		}
 	} else
 		m_port = 0;
+	UpdateHolePunchRuntimeCaps(IsUtpReady());
 	return true;
 }
 
@@ -661,39 +677,27 @@ void CClientUDPSocket::SeedNatTraversalExpectation(CUpDownClient* /*pClient*/, u
 	sa.sin_port = htons(nPort);
 
 	// Register the peer endpoint in g_expectedPeers via the static bridge.
-	// on_utp_accept will match incoming SYN packets against this table,
-	// first by exact IP:port, then by IP-only fallback with port window.
+	// on_utp_accept consumes one incoming SYN from this exact endpoint, or from
+	// the uniquely-nearest endpoint inside its small NAT-remap port window.
 	CUtpSocket::RegisterExpectedPeer(reinterpret_cast<const sockaddr*>(&sa), sizeof(sa));
 
 	DebugLog(_T("eSE: SeedNatTraversalExpectation — registered peer %s:%u for uTP accept matching"),
 		(LPCTSTR)ipstr(htonl(dwIP)), nPort);
 }
 
-CUpDownClient* CClientUDPSocket::MatchNatExpectation(uint32 dwIP, uint16 /*nPort*/)
-{
-	// Look up a client by IP in the client list that might be waiting for a
-	// NAT-traversed connection. This is used by the streaming/download layer
-	// to find the CUpDownClient associated with a hole-punched endpoint.
-	// dwIP is in host byte order (Kad convention).
-	if (dwIP == 0)
-		return NULL;
-
-	// FindClientByIP expects network byte order (as stored internally)
-	return theApp.clientlist->FindClientByIP(htonl(dwIP));
-}
-
-bool CClientUDPSocket::InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort)
+bool CClientUDPSocket::InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort, const uchar* pClientHash)
 {
 	// Called from Process_ESE_HOLEPUNCH_ACK on the INITIATOR side.
 	// After the REQ→ACK handshake punched NAT pinholes on both sides,
 	// this function actively sends a uTP SYN through the pinhole.
 	// dwIP = host byte order (Kad convention), nUDPPort = host byte order.
-	if (dwIP == 0 || nUDPPort == 0)
+	if (dwIP == 0 || nUDPPort == 0 || pClientHash == NULL || isnulmd4(pClientHash)
+		|| !IsUtpReady())
 		return false;
 
 	// 1. Find the client we're trying to reach
 	// FindClientByIP expects network byte order
-	CUpDownClient* pClient = theApp.clientlist->FindClientByIP(htonl(dwIP));
+	CUpDownClient* pClient = theApp.clientlist->FindClientByUserHash(pClientHash);
 	if (pClient == NULL) {
 		if (thePrefs.GetVerbose())
 			DebugLog(_T("eSE: InitiateUtpConnect — no client found for IP %s"), (LPCTSTR)ipstr(htonl(dwIP)));

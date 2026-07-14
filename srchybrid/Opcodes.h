@@ -505,8 +505,9 @@
 #define TAG_SERVERIP			"\xFB"	// <uint32>
 // v0.71 IPv6 Sprint 8 — known.met v0x10 IPv6 source/server tags.
 // Upstream readers skip tags whose names they don't recognise; safe to add.
-#define TAG_SOURCEIP_V6			"\x66"	// <CAddress> alongside legacy uint32
+#define TAG_SOURCEIP_V6			"\x66"	// HELLO: raw IPv6 blob 16B; Kad source: CAddress 18B; always additive
 #define TAG_SERVERIP_V6			"\x67"	// <CAddress> alongside legacy uint32
+#define TAG_ESE_REACH               "\x68"   // <BSOB> versioned libreach vector; additive Kad source metadata
 
 // === Tags eSE unificados — F0 unified plan (2026-05-18) ===
 // Audit del namespace 0x68-0xCF realizado: estos slots están libres.
@@ -553,7 +554,9 @@
 #define ESE_CAP_TUNNEL_DATAPLANE     0x00001000  // bit 12 -- v8.1 multi-cell tunnel data plane
 #define ESE_CAP_LIVE_CHUNK_FRAG      0x00002000  // bit 13 -- v8.1.x Live segment fragmentation (>1.8MB chunks split into sub-2MB packets)
 #define ESE_CAP_TUNNEL_BULK          0x00004000  // bit 14 -- v8.1.1 Sprint E bulk data plane (OP_LIVE_BULK_CELL 0xD9; FEC+stripe). Gate: exit AND every hop must advertise it.
-#define ESE_CAP_HOLEPUNCH_RDV        0x00008000  // bit 15 -- R.1 3-way Kad rendezvous (responder + R-relay validated 3-PC). Advertised iff GetUtpHolePunchEnabled(); the responder/R-relay handlers are gated on the same pref. bit 16/17 keepalive/reach-v2 still RESERVED (see CAPABILITIES.csv) — do NOT reuse.
+#define ESE_CAP_HOLEPUNCH_RDV        0x00008000  // bit 15 -- opt-in 3-way Kad rendezvous. Advertised/handled only when both direct punching and EseKad3Rendezvous are enabled.
+#define ESE_CAP_KAD_KEEPALIVE        0x00010000  // bit 16 -- versioned Kad keepalive support; advertise only while its service is live
+#define ESE_CAP_REACH_V2             0x00020000  // bit 17 -- strict TAG_ESE_REACH v2 codec + route projection
 #define ESE_CAP_TUNNEL_AUTH          0x00040000  // bit 18 -- authenticated tunnel handshake (CREATE/CREATED v2, Ed25519). Advertised from Phase 2; Phase 1 only ships TAG_ESE_NODE_PUB.
 #define ESE_CAP_LIVE_RELAY           0x00200000  // bit 21 -- R.3 buddy relay egress (broadcaster connect-out + 0xCF SETUP/CHUNK + 0xCE downstream). Advertised iff GetEseRelayAccept() (default OFF) — a node that does not accept relay duty keeps its caps byte-identical to before. bit 20 (0x00100000) is reserved for ESE_CAP_LIVE_BLAKE3 (see CAPABILITIES.csv) — do NOT reuse.
 #define ESE_CAP_HOLEPUNCH_COOKIE     0x00080000  // bit 19 -- return-routability cookie for eSE hole-punch (anti-reflection). LOAD-BEARING in the two-tier gate of Process_ESE_HOLEPUNCH_REQ: TIER1 (IP-verified known contact) -> legacy ACK+seed (bit informational here); TIER2 (unknown / known-but-unverified "gray zone") -> stateless 0x65 CHALLENGE ONLY if the sender advertises this bit, else legacy ACK+seed floored by the per-IP token bucket (back-compat: a legacy peer that cannot answer a CHALLENGE keeps its hole-punch). Initiator echoes the cookie in a 38B REQ. See HolePunchCookieCore.h / HolePunchCookie.h.
@@ -812,14 +815,13 @@ extern uint32 g_uEseCapsRuntime;
 
 // eSE: uTP Hole Punching signaling via Kademlia (Fase 3)
 // Both peers exchange these before initiating a uTP session through CG-NAT/symmetric NAT
-#define KADEMLIA_ESE_HOLEPUNCH_REQ		0x63	// <SenderKadID 16><SenderUDPPort 2><Nonce 4>  (legacy); cookie-capable: +<Cookie 16> = 38B
+#define KADEMLIA_ESE_HOLEPUNCH_REQ		0x63	// classic 22B; cookie-cap advert 26B (+caps4); cookie echo 38B (+cookie16)
 #define KADEMLIA_ESE_HOLEPUNCH_ACK		0x64	// <ResponderKadID 16><ResponderUDPPort 2><Nonce 4>
 // eSE P0 — return-routability cookie challenge (anti-reflection hardening).
-// The RESPONDER sends this when it gets a cookie-capable REQ (38B) whose cookie
-// does NOT verify (first attempt or forged). The initiator must echo the cookie
-// in a second 38B REQ before any NAT state is seeded — proving it receives
-// datagrams at the claimed IP. Gated by ESE_CAP_HOLEPUNCH_COOKIE; legacy 22B
-// REQs keep today's path. Cookie math: HolePunchCookieCore.h (HMAC-SHA256).
+// The RESPONDER sends this for the 26B capability-advertising first request.
+// The initiator must echo the cookie in a 38B request before NAT state is seeded,
+// proving return-routability. Invalid 38B echoes are dropped. Gated by
+// ESE_CAP_HOLEPUNCH_COOKIE; legacy 22B requests keep the compatible path.
 #define KADEMLIA_ESE_HOLEPUNCH_CHALLENGE	0x65	// <Nonce(echo) 4><Cookie 16> = 20B
 
 // === Kad Search v2 — reservado 0xCA-0xCF en OP_KADEMLIAHEADER subspace ==

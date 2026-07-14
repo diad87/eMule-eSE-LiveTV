@@ -115,10 +115,16 @@ function handle(url, req, res) {
   if (url.pathname === '/api/emule/download') {
     const hash = url.searchParams.get('hash') || '';
     if (!hash) { res.writeHead(400); res.end('{}'); return true; }
+    // Optional exact metadata from the caller. When present it lets eMule add
+    // the file by full ed2k link (works even if the hash is no longer in eMule's
+    // live search list) without relying on the server-side result cache.
+    const name = url.searchParams.get('name') || '';
+    const size = parseInt(url.searchParams.get('size'), 10);
+    const meta = (Number.isFinite(size) && size > 0) ? { name, size } : undefined;
     _ctx.emuleDownload(hash, (err, ok) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: ok, error: err ? err.message : null }));
-    });
+    }, meta);
     return true;
   }
 

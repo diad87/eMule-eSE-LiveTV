@@ -77,25 +77,25 @@ void CLiveStreamDlg::UpdateStatusBar()
 	// Source file encoding is UTF-8 without BOM; MFC reads literals as ANSI
 	// and special chars get mangled. Use \uXXXX escapes for the LED/dot glyphs.
 	if (!theApp.liveStreamManager) {
-		m_staticStatus.SetWindowText(_T("\u25CF  No disponible"));
-		m_staticViewers.SetWindowText(_T("Viewers: 0"));
-		m_staticUptime.SetWindowText(_T("Uptime: --"));
-		m_staticPeerVal.SetWindowText(_T("Peers: 0"));
-		m_staticUploadVal.SetWindowText(_T("Upload: 0 KB/s"));
-		m_staticBitrateVal.SetWindowText(_T("Bitrate: --"));
+		m_staticStatus.SetWindowText(GetResString(IDS_LIVE_STATUS_UNAVAILABLE));
+		m_staticViewers.SetWindowText(GetResString(IDS_LIVE_VIEWERS_IDLE));
+		m_staticUptime.SetWindowText(GetResString(IDS_LIVE_UPTIME_IDLE));
+		m_staticPeerVal.SetWindowText(GetResString(IDS_LIVE_PEERS_IDLE));
+		m_staticUploadVal.SetWindowText(GetResString(IDS_LIVE_UPLOAD_IDLE));
+		m_staticBitrateVal.SetWindowText(GetResString(IDS_LIVE_BITRATE_IDLE));
 		m_progressMesh.SetPos(0);
 		return;
 	}
 
 	if (m_bBroadcasting && theApp.liveStreamManager->IsBroadcasting()) {
-		m_staticStatus.SetWindowText(_T("\u25CF  EMITIENDO EN DIRECTO"));
+		m_staticStatus.SetWindowText(GetResString(IDS_LIVE_STATUS_BROADCASTING));
 
 		CString viewers;
-		viewers.Format(_T("Viewers: %u"), theApp.liveStreamManager->GetViewerCount());
+		viewers.Format(GetResString(IDS_LIVE_VIEWERS_FMT), theApp.liveStreamManager->GetViewerCount());
 		m_staticViewers.SetWindowText(viewers);
 
 		CString upStr;
-		upStr.Format(_T("Uptime: %s"),
+		upStr.Format(GetResString(IDS_LIVE_UPTIME_FMT),
 			(LPCTSTR)FormatUptime((uint32)(time(nullptr)
 				- theApp.liveStreamManager->GetBroadcastStartTime())));
 		m_staticUptime.SetWindowText(upStr);
@@ -104,17 +104,17 @@ void CLiveStreamDlg::UpdateStatusBar()
 		auto* mgr = theApp.liveStreamManager;
 		uint32 peerCount = (uint32)mgr->GetMeshManager().GetMeshPeerCount();
 		CString peers;
-		peers.Format(_T("Peers: %u"), peerCount);
+		peers.Format(GetResString(IDS_LIVE_PEERS_FMT), peerCount);
 		m_staticPeerVal.SetWindowText(peers);
 
 		// Upload estimate — GetMinUploadRequired() returns bytes/s
 		CString upload;
-		upload.Format(_T("Upload: %u KB/s"), mgr->GetMinUploadRequired() / 1024);
+		upload.Format(GetResString(IDS_LIVE_UPLOAD_FMT), mgr->GetMinUploadRequired() / 1024);
 		m_staticUploadVal.SetWindowText(upload);
 
 		// Bitrate — from stream info (always available after StartBroadcast)
 		CString bitrate;
-		bitrate.Format(_T("Bitrate: %u kbps"), mgr->GetBitrate());
+		bitrate.Format(GetResString(IDS_LIVE_BITRATE_FMT), mgr->GetBitrate());
 		m_staticBitrateVal.SetWindowText(bitrate);
 
 		// Mesh health proxy: min(peers*12, 100)
@@ -122,12 +122,12 @@ void CLiveStreamDlg::UpdateStatusBar()
 	}
 	else {
 		// A6 — empty state: friendlier prompt instead of bare "Inactivo".
-		m_staticStatus.SetWindowText(_T("\u25CF  Inactivo \u00B7 pulsa START BROADCAST"));
-		m_staticViewers.SetWindowText(_T("Viewers: 0"));
-		m_staticUptime.SetWindowText(_T("Uptime: --"));
-		m_staticPeerVal.SetWindowText(_T("Peers: 0"));
-		m_staticUploadVal.SetWindowText(_T("Upload: 0 KB/s"));
-		m_staticBitrateVal.SetWindowText(_T("Bitrate: --"));
+		m_staticStatus.SetWindowText(GetResString(IDS_LIVE_STATUS_IDLE));
+		m_staticViewers.SetWindowText(GetResString(IDS_LIVE_VIEWERS_IDLE));
+		m_staticUptime.SetWindowText(GetResString(IDS_LIVE_UPTIME_IDLE));
+		m_staticPeerVal.SetWindowText(GetResString(IDS_LIVE_PEERS_IDLE));
+		m_staticUploadVal.SetWindowText(GetResString(IDS_LIVE_UPLOAD_IDLE));
+		m_staticBitrateVal.SetWindowText(GetResString(IDS_LIVE_BITRATE_IDLE));
 		m_progressMesh.SetPos(0);
 	}
 
@@ -137,14 +137,14 @@ void CLiveStreamDlg::UpdateStatusBar()
 	DWORD symFail  = CStatistics::m_dwHolePunchSymNATFail;
 
 	CString sAttempts, sSuccess, sSymFail, sRate;
-	sAttempts.Format(_T("Attempts: %lu"), attempts);
-	sSuccess.Format(_T("Success: %lu"), success);
-	sSymFail.Format(_T("SymNAT: %lu"), symFail);
+	sAttempts.Format(GetResString(IDS_LIVE_HP_ATTEMPTS_FMT), attempts);
+	sSuccess.Format(GetResString(IDS_LIVE_HP_SUCCESS_FMT), success);
+	sSymFail.Format(GetResString(IDS_LIVE_HP_SYMNAT_FMT), symFail);
 
 	if (attempts > 0)
-		sRate.Format(_T("Rate: %.0f%%"), (double)success / (double)attempts * 100.0);
+		sRate.Format(GetResString(IDS_LIVE_HP_RATE_FMT), (double)success / (double)attempts * 100.0);
 	else
-		sRate = _T("Rate: --");
+		sRate = GetResString(IDS_LIVE_HP_RATE_IDLE);
 
 	m_staticHpAttempts.SetWindowText(sAttempts);
 	m_staticHpSuccess.SetWindowText(sSuccess);
@@ -168,9 +168,11 @@ void CLiveStreamDlg::UpdateStatusBar()
 		CWnd* w = GetDlgItem(id);
 		if (!w) return;
 		CString s;
-		LPCTSTR led = ok ? _T("\u25CF") : (checking ? _T("\u25CF") : _T("\u25CF"));
-		LPCTSTR state = ok ? _T("OK") : (checking ? _T("\u2026") : _T("KO"));
-		s.Format(_T("%s %s: %s"), led, label, state);
+		CString state;
+		if (ok)            state = GetResString(IDS_LIVE_PF_OK);
+		else if (checking) state = _T("\u2026");
+		else                state = GetResString(IDS_LIVE_PF_KO);
+		s.Format(_T("%s %s: %s"), _T("\u25CF"), label, (LPCTSTR)state);
 		w->SetWindowText(s);
 	};
 	Pf(IDC_LIVE_PF_KAD,    kadConn, false, _T("Kad"));
@@ -181,9 +183,9 @@ void CLiveStreamDlg::UpdateStatusBar()
 	if (ip) {
 		CString s;
 		if (pubIP != 0)
-			s.Format(_T("\u25CF IP: %s:%u"), (LPCTSTR)ipstr(pubIP), thePrefs.GetPort());
+			s.Format(GetResString(IDS_LIVE_IP_FMT), (LPCTSTR)ipstr(pubIP), thePrefs.GetPort());
 		else
-			s = _T("\u25CF IP: detectando\u2026");
+			s = GetResString(IDS_LIVE_IP_DETECTING);
 		ip->SetWindowText(s);
 	}
 
@@ -198,17 +200,17 @@ void CLiveStreamDlg::UpdateStatusBar()
 		auto snap = theApp.liveStreamManager->BuildDebugSnapshot();
 		CString s;
 		if (snap.broadcasting) {
-			s.Format(_T("Buffer: %d segs [%u..%u]  \u00B7  written: %ld  \u00B7  Kad publishes: %ld"),
+			s.Format(GetResString(IDS_LIVE_BUFFER_BC_FMT),
 				snap.bufCount, snap.oldestSeq, snap.newestSeq,
 				(long)snap.counters.hlsSegmentsWritten,
 				(long)snap.counters.kadPublishes);
 		} else if (snap.viewing) {
-			s.Format(_T("Viewing  \u00B7  Buffer: %d segs  \u00B7  received: %ld  \u00B7  missing: %ld"),
+			s.Format(GetResString(IDS_LIVE_BUFFER_VIEW_FMT),
 				snap.bufCount,
 				(long)snap.counters.chunksReceived,
 				(long)snap.counters.chunksMissing);
 		} else {
-			s = _T("Buffer: -- (no broadcasting)");
+			s = GetResString(IDS_LIVE_BUFFER_IDLE);
 		}
 		chunks->SetWindowText(s);
 	}
@@ -264,7 +266,7 @@ void CLiveStreamDlg::PopulateSharePanel()
 			hexKey.AppendFormat(_T("%02X"), key[i]);
 		CString title;
 		m_editTitle.GetWindowText(title);
-		if (title.IsEmpty()) title = _T("Live Stream");
+		if (title.IsEmpty()) title = GetResString(IDS_LIVE_LINK_DEFAULT_TITLE);
 		title.Replace(_T(" "), _T("+"));
 
 		// 16 May 2026 — Privacy default: MFC generates the ANONYMOUS link.
@@ -301,9 +303,9 @@ void CLiveStreamDlg::UpdateRTMPUrlField()
 	CWnd* hint = GetDlgItem(IDC_LIVE_LBL_RTMPHINT);
 	if (hint) {
 		if (src == 0) {
-			hint->SetWindowText(_T("(OBS Studio: configura tu OBS para emitir a esta URL)"));
+			hint->SetWindowText(GetResString(IDS_LIVE_HINT_OBS));
 		} else {
-			hint->SetWindowText(_T("(RTMP URL solo se usa si Source = OBS Studio. Aquí mostramos la URL HLS local.)"));
+			hint->SetWindowText(GetResString(IDS_LIVE_HINT_NOTOBS));
 		}
 	}
 
@@ -401,13 +403,14 @@ CString CLiveStreamDlg::FormatUptime(uint32 seconds)
 
 CString CLiveStreamDlg::GetCategoryName(uint8 cat)
 {
-	static const LPCTSTR names[] = {
-		_T("General"), _T("Deportes"), _T("Gaming"), _T("Cine"),
-		_T("Música"), _T("Educación"), _T("Webcam"), _T("24/7")
+	// Same 8 categories/order as the combo box in OnInitDialog — keep in sync.
+	static const UINT ids[] = {
+		IDS_LIVE_CAT_GENERAL, IDS_LIVE_CAT_SPORTS, IDS_LIVE_CAT_GAMING, IDS_LIVE_CAT_MOVIES,
+		IDS_LIVE_CAT_MUSIC, IDS_LIVE_CAT_EDUCATION, IDS_LIVE_CAT_TALK, IDS_LIVE_CAT_247
 	};
-	if (cat < _countof(names))
-		return names[cat];
-	return _T("Otro");
+	if (cat < _countof(ids))
+		return GetResString(ids[cat]);
+	return GetResString(IDS_LIVE_CAT_OTHER);
 }
 
 void CLiveStreamDlg::JoinStream(const uchar* /*streamHash*/)

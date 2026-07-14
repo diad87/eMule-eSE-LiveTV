@@ -201,7 +201,7 @@ bool CUpDownClient::AskForDownload()
 				return true;
 			}
 			// if we are lowid <-> lowid but contacted the source before already, keep it in the hope that we might turn highid again
-			if (!theApp.CanDoCallback(this)) {
+			if (!theApp.CanDoCallback(this) && !CanUseEseHolePunch() && !CanUseIPv6Direct()) {
 				if (GetDownloadState() != DS_LOWTOLOWIP)
 					SetDownloadState(DS_LOWTOLOWIP);
 				m_bReaskPending = true;
@@ -593,7 +593,7 @@ bool CUpDownClient::AddRequestForAnotherFile(CPartFile *file)
 void CUpDownClient::ClearPendingBlockRequest(const Pending_Block_Struct *pending)
 {
 	if (m_reqfile)
-		m_reqfile->RemoveBlockFromList(pending->block->StartOffset, pending->block->EndOffset);
+		m_reqfile->RemoveBlockFromList(pending->block); // by identity: endgame-safe (see PartFile.h)
 
 	delete pending->block;
 	// Not always allocated
@@ -1015,7 +1015,7 @@ void CUpDownClient::ProcessBlockPacket(const uchar *packet, uint32 size, bool pa
 		if (cur_block->fZStreamError) {
 			if (thePrefs.GetVerbose())
 				AddDebugLogLine(false, _T("PrcBlkPkt: Ignoring %u bytes of block starting at %I64u because of erroneous zstream state for file \"%s\" - %s"), uTransferredFileDataSize, nStartPos, (LPCTSTR)m_reqfile->GetFileName(), (LPCTSTR)DbgGetClientInfo());
-			m_reqfile->RemoveBlockFromList(cur_block->block->StartOffset, cur_block->block->EndOffset);
+			m_reqfile->RemoveBlockFromList(cur_block->block);
 			return;
 		}
 
@@ -1032,7 +1032,7 @@ void CUpDownClient::ProcessBlockPacket(const uchar *packet, uint32 size, bool pa
 			if (nEndPos > cur_block->block->EndOffset) {
 				DebugLogError(_T("Received Blockpacket exceeds requested boundaries (requested end: %I64u, Part %u, received end  %I64u, Part %u), file %s, client %s"), cur_block->block->EndOffset
 					, (uint32)(cur_block->block->EndOffset / PARTSIZE), nEndPos, (uint32)(nEndPos / PARTSIZE), (LPCTSTR)m_reqfile->GetFileName(), (LPCTSTR)DbgGetClientInfo());
-				m_reqfile->RemoveBlockFromList(cur_block->block->StartOffset, cur_block->block->EndOffset);
+				m_reqfile->RemoveBlockFromList(cur_block->block);
 				return;
 			}
 			// Write to disk (will be buffered in part file class)
@@ -1063,7 +1063,7 @@ void CUpDownClient::ProcessBlockPacket(const uchar *packet, uint32 size, bool pa
 
 					if (nStartPos > cur_block->block->EndOffset || nEndPos > cur_block->block->EndOffset) {
 						DebugLogError(_T("PrcBlkPkt: ") + GetResString(IDS_ERR_CORRUPTCOMPRPKG), (LPCTSTR)m_reqfile->GetFileName(), 666);
-						m_reqfile->RemoveBlockFromList(cur_block->block->StartOffset, cur_block->block->EndOffset);
+						m_reqfile->RemoveBlockFromList(cur_block->block);
 						// There is no chance to recover from this error
 					} else {
 						// Write uncompressed data to file
@@ -1089,7 +1089,7 @@ void CUpDownClient::ProcessBlockPacket(const uchar *packet, uint32 size, bool pa
 					}
 					DebugLogError(_T("PrcBlkPkt: ") + GetResString(IDS_ERR_CORRUPTCOMPRPKG) + strZipError, (LPCTSTR)m_reqfile->GetFileName(), result);
 				}
-				m_reqfile->RemoveBlockFromList(cur_block->block->StartOffset, cur_block->block->EndOffset);
+				m_reqfile->RemoveBlockFromList(cur_block->block);
 
 				// If we had a zstream error, there is no chance that we could recover from it,
 				// nor that we could use the current zstream (which is in error state) any longer.

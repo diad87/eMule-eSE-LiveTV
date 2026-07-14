@@ -51,6 +51,7 @@
 #include "SHAHashSet.h"
 #include "Log.h"
 #include "eMuleAI/UtpSocket.h"
+#include "FirewallProberV6.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -2465,6 +2466,36 @@ void CClientReqSocket::DbgAppendClientInfo(CString &str)
 
 void CClientReqSocket::OnConnect(int nErrorCode)
 {
+	if (nErrorCode != 0 && GetFamily() == AF_INET6 && client != NULL)
+		client->MarkIPv6DirectFailed();
+
+	// Preferred IPv6 is opportunistic for dual-stack HighID peers.  If it
+	// fails, retry the same queued HELLO once over the peer's real IPv4 route
+	// before declaring the client unreachable.  IPv6-only and LowID peers do
+	// not have a valid direct-v4 fallback and therefore keep the normal error
+	// path (callbacks/hole-punch are selected before this socket is created).
+	if (nErrorCode != 0 && GetFamily() == AF_INET6 && client != NULL
+		&& !client->HasLowID() && !client->IsIPv6OnlyEndpoint()
+		&& client->GetConnectIP() != 0)
+	{
+		const int nV6Error = nErrorCode;
+		Close();
+		if (Create(AF_INET)) {
+			SOCKADDR_IN sa4 = {};
+			sa4.sin_family = AF_INET;
+			sa4.sin_port = htons(client->GetUserPort());
+			sa4.sin_addr.s_addr = client->GetConnectIP();
+			WaitForOnConnect();
+			if (Connect((LPSOCKADDR)&sa4, sizeof sa4)
+				|| WSAGetLastError() == WSAEWOULDBLOCK)
+			{
+				DebugLog(_T("IPv6 connect failed (%d); retrying %s over IPv4"),
+					nV6Error, (LPCTSTR)client->DbgGetClientInfo());
+				return;
+			}
+		}
+		nErrorCode = nV6Error;
+	}
 	SetConState(SS_Complete);
 	CEMSocket::OnConnect(nErrorCode);
 	if (nErrorCode) {
@@ -2595,10 +2626,18 @@ void CClientReqSocket::OnReceive(int nErrorCode)
 	CEMSocket::OnReceive(nErrorCode);
 }
 
-bool CClientReqSocket::Create()
+bool CClientReqSocket::Create(ADDRESS_FAMILY nFamily)
 {
 	theApp.listensocket->AddConnection();
-	return CAsyncSocketEx::Create(0, SOCK_STREAM, FD_WRITE | FD_READ | FD_CLOSE | FD_CONNECT, thePrefs.GetBindAddr());
+	if (nFamily == AF_INET6) {
+		LPCTSTR pszBind = thePrefs.GetIPv6BindAddr();
+		if (pszBind == NULL || pszBind[0] == 0)
+			pszBind = _T("::");
+		return CAsyncSocketEx::Create(0, SOCK_STREAM,
+			FD_WRITE | FD_READ | FD_CLOSE | FD_CONNECT, pszBind, AF_INET6);
+	}
+	return CAsyncSocketEx::Create(0, SOCK_STREAM,
+		FD_WRITE | FD_READ | FD_CLOSE | FD_CONNECT, thePrefs.GetBindAddr(), AF_INET);
 }
 
 SocketSentBytes CClientReqSocket::SendControlData(uint32 maxNumberOfBytesToSend, uint32 overchargeMaxBytesToSend)
@@ -2685,8 +2724,8 @@ bool CListenSocket::StartListening()
 	// to that socket leading to the situation that 2 applications are listening on the same
 	// port!
 
-	// v0.71 IPv6 Sprint 3 + Sprint 9 hotfix — dual-stack AF_INET6 listener is
-	// OPT-IN (only IPv6PreferredMode). The May-2026 failure ("Tras
+	// v0.71 IPv6 — Auto and Preferred use a dual-stack AF_INET6 listener, with
+	// an immediate v4-only fallback if the OS cannot create it. The May-2026 failure ("Tras
 	// cortafuegos" with the router port open) was root-caused in June 2026:
 	// the OnAccept SOCKADDR_STORAGE fix was not enough because every later
 	// GetPeerName() on the accepted v6-family socket still used a 16-byte
@@ -2694,12 +2733,9 @@ bool CListenSocket::StartListening()
 	// so the obfuscation gate rejected server/Kad firewall probes and every
 	// inbound client was born with IP=0. Those call sites now go through
 	// CEncryptedStreamSocket::GetPeerAddressV4 (storage-sized + v4-mapped
-	// normalization + loud "IPv6 guard" logging). Auto stays on AF_INET
-	// until the helper soaks under IPv6PreferredMode on real hardware; the
-	// v6 prober (FirewallProberV6) still runs in Auto so the panel shows
-	// the detected public v6 address either way.
+	// normalization + loud "IPv6 guard" logging), so mapped-v4 accepts are safe.
 	bool bUsingV6 = false;
-	if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
+	if (thePrefs.IsIPv6Enabled()) {
 		// Bind address NULL means "[::]" — listen on all v6 interfaces. We
 		// don't pass thePrefs.GetBindAddr() because it's the v4 bind addr
 		// (TCHAR* dotted-quad) and would fail an AF_INET6 parse. If the user
@@ -2707,13 +2743,9 @@ bool CListenSocket::StartListening()
 		LPCTSTR v6Bind = thePrefs.GetIPv6BindAddr();
 		if (v6Bind == NULL || v6Bind[0] == 0)
 			v6Bind = _T("::");
-		if (Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, v6Bind, AF_INET6)) {
-			// Disable V6ONLY so v4 connections via IPv4-mapped addresses also
-			// land on this listener.
-			DWORD v6only = 0;
-			VERIFY( SetSockOpt(IPV6_V6ONLY, &v6only, sizeof v6only, IPPROTO_IPV6) );
+		if (Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, v6Bind, AF_INET6, false, true)) {
 			bUsingV6 = true;
-			AddDebugLogLine(false, _T("ListenSocket: dual-stack v6 bound on [%s]:%u (IPV6_V6ONLY=0, opt-in IPv6PreferredMode)"),
+			AddDebugLogLine(false, _T("ListenSocket: dual-stack v6 bound on [%s]:%u (IPV6_V6ONLY=0)"),
 				v6Bind, (unsigned)thePrefs.GetPort());
 		} else {
 			AddDebugLogLine(false, _T("ListenSocket: AF_INET6 Create failed err=%u, falling back to v4-only"),
@@ -2794,8 +2826,38 @@ static int s_iAcceptConnectionCondRejected;
 int CALLBACK AcceptConnectionCond(LPWSABUF lpCallerId, LPWSABUF /*lpCallerData*/, LPQOS /*lpSQOS*/, LPQOS /*lpGQOS*/,
 	LPWSABUF /*lpCalleeId*/, LPWSABUF /*lpCalleeData*/, GROUP FAR* /*g*/, DWORD_PTR /*dwCallbackData*/) noexcept
 {
-	if (lpCallerId && lpCallerId->buf && lpCallerId->len >= sizeof SOCKADDR_IN) {
-		LPSOCKADDR_IN pSockAddr = (LPSOCKADDR_IN)lpCallerId->buf;
+	if (lpCallerId && lpCallerId->buf && lpCallerId->len >= sizeof(SOCKADDR)) {
+		const SOCKADDR* pRaw = (const SOCKADDR*)lpCallerId->buf;
+		SOCKADDR_IN mappedV4 = {};
+		const SOCKADDR_IN* pSockAddr = NULL;
+		if (pRaw->sa_family == AF_INET && lpCallerId->len >= sizeof(SOCKADDR_IN)) {
+			pSockAddr = (const SOCKADDR_IN*)pRaw;
+		} else if (pRaw->sa_family == AF_INET6 && lpCallerId->len >= sizeof(SOCKADDR_IN6)) {
+			const SOCKADDR_IN6* p6 = (const SOCKADDR_IN6*)pRaw;
+			if (IN6_IS_ADDR_V4MAPPED(&p6->sin6_addr)) {
+				mappedV4.sin_family = AF_INET;
+				mappedV4.sin_port = p6->sin6_port;
+				memcpy(&mappedV4.sin_addr.s_addr, &p6->sin6_addr.u.Byte[12], 4);
+				pSockAddr = &mappedV4;
+			} else {
+				CAddress addr;
+				addr.FromSA(pRaw, (int)lpCallerId->len);
+				if (addr.GetType() != CAddress::IPv6 || !addr.IsPublicIP()) {
+					s_iAcceptConnectionCondRejected = 3;
+					return CF_REJECT;
+				}
+				if (theApp.clientlist->IsBannedClient(addr.ToSyntheticUInt32())) {
+					s_iAcceptConnectionCondRejected = 2;
+					return CF_REJECT;
+				}
+				return CF_ACCEPT;
+			}
+		} else {
+			s_iAcceptConnectionCondRejected = 3;
+			return CF_REJECT;
+		}
+
+		ASSERT(pSockAddr != NULL);
 		ASSERT(pSockAddr->sin_addr.s_addr != 0 && pSockAddr->sin_addr.s_addr != INADDR_NONE);
 
 		if (theApp.ipfilter->IsFiltered(pSockAddr->sin_addr.s_addr)) {
@@ -2814,8 +2876,12 @@ int CALLBACK AcceptConnectionCond(LPWSABUF lpCallerId, LPWSABUF /*lpCallerData*/
 			s_iAcceptConnectionCondRejected = 2;
 			return CF_REJECT;
 		}
-	} else if (thePrefs.GetVerbose())
-		DebugLogError(_T("Client TCP socket: AcceptConnectionCond unexpected lpCallerId"));
+	} else {
+		if (thePrefs.GetVerbose())
+			DebugLogError(_T("Client TCP socket: AcceptConnectionCond unexpected lpCallerId"));
+		s_iAcceptConnectionCondRejected = 3;
+		return CF_REJECT;
+	}
 
 	return CF_ACCEPT;
 }
@@ -2855,6 +2921,8 @@ void CListenSocket::OnAccept(int nErrorCode)
 			// future work.
 			SOCKADDR_STORAGE SockStorage = {};
 			SOCKADDR_IN SockAddr = {};
+			CAddress NativeV6;
+			bool bNativeV6 = false;
 			int iSockAddrLen = (int)sizeof SockStorage;
 			if (thePrefs.GetConditionalTCPAccept() && !thePrefs.GetProxySettings().bUseProxy) {
 				s_iAcceptConnectionCondRejected = 0;
@@ -2889,6 +2957,7 @@ void CListenSocket::OnAccept(int nErrorCode)
 				VERIFY(newclient->InitAsyncSocketExInstance());
 				newclient->m_SocketData.hSocket = sNew;
 				newclient->AttachHandle();
+				VERIFY(newclient->SetFamily((ADDRESS_FAMILY)SockStorage.ss_family));
 
 				// Normalize address: v4 → SOCKADDR_IN direct;
 				// v6 v4-mapped → extract last 4 bytes; v6 native → drop.
@@ -2903,11 +2972,12 @@ void CListenSocket::OnAccept(int nErrorCode)
 						memcpy(&SockAddr.sin_addr.s_addr,
 							   &p6->sin6_addr.u.Byte[12], 4);
 					} else {
-						// Native v6 peer — no upper-layer handling yet.
-						DebugLogWarning(_T("Native v6 peer dropped (upper-layer is v4-only): %hs"),
-							"::");
-						newclient->Safe_Delete();
-						continue;
+						NativeV6.FromSA((const sockaddr*)p6, sizeof *p6);
+						bNativeV6 = NativeV6.GetType() == CAddress::IPv6 && NativeV6.IsPublicIP();
+						if (!bNativeV6) {
+							newclient->Safe_Delete();
+							continue;
+						}
 					}
 				} else {
 					newclient->Safe_Delete();
@@ -2954,16 +3024,19 @@ void CListenSocket::OnAccept(int nErrorCode)
 						memcpy(&SockAddr.sin_addr.s_addr,
 							   &p6->sin6_addr.u.Byte[12], 4);
 					} else {
-						DebugLogWarning(_T("Native v6 peer dropped (upper-layer is v4-only)"));
-						newclient->Safe_Delete();
-						continue;
+						NativeV6.FromSA((const sockaddr*)p6, sizeof *p6);
+						bNativeV6 = NativeV6.GetType() == CAddress::IPv6 && NativeV6.IsPublicIP();
+						if (!bNativeV6) {
+							newclient->Safe_Delete();
+							continue;
+						}
 					}
 				} else {
 					newclient->Safe_Delete();
 					continue;
 				}
 
-				if (SockAddr.sin_addr.s_addr == INADDR_ANY) { // for safety.
+				if (!bNativeV6 && SockAddr.sin_addr.s_addr == INADDR_ANY) { // for safety.
 					// v0.71 IPv6 — the old SOCKADDR_IN re-query failed with
 					// WSAEFAULT on v6-family sockets, so this "for safety"
 					// fallback returned 0 exactly when it was needed.
@@ -2971,9 +3044,9 @@ void CListenSocket::OnAccept(int nErrorCode)
 					DebugLogWarning(_T("SockAddr.sin_addr.s_addr == 0;  GetPeerAddressV4 returned %s"), (LPCTSTR)ipstr(SockAddr.sin_addr.s_addr));
 				}
 
-				ASSERT(SockAddr.sin_addr.s_addr != INADDR_ANY && SockAddr.sin_addr.s_addr != INADDR_NONE);
+				ASSERT(bNativeV6 || (SockAddr.sin_addr.s_addr != INADDR_ANY && SockAddr.sin_addr.s_addr != INADDR_NONE));
 
-				if (theApp.ipfilter->IsFiltered(SockAddr.sin_addr.s_addr)) {
+				if (!bNativeV6 && theApp.ipfilter->IsFiltered(SockAddr.sin_addr.s_addr)) {
 					if (thePrefs.GetLogFilteredIPs())
 						AddDebugLogLine(false, _T("Rejecting connection attempt (IP=%s) - IP filter (%s)"), (LPCTSTR)ipstr(SockAddr.sin_addr.s_addr), (LPCTSTR)theApp.ipfilter->GetLastHit());
 					newclient->Safe_Delete();
@@ -2981,7 +3054,8 @@ void CListenSocket::OnAccept(int nErrorCode)
 					continue;
 				}
 
-				if (theApp.clientlist->IsBannedClient(SockAddr.sin_addr.s_addr)) {
+				const uint32 banKey = bNativeV6 ? NativeV6.ToSyntheticUInt32() : SockAddr.sin_addr.s_addr;
+				if (theApp.clientlist->IsBannedClient(banKey)) {
 					if (thePrefs.GetLogBannedClients()) {
 						CUpDownClient *pClient = theApp.clientlist->FindClientByIP(SockAddr.sin_addr.s_addr);
 						if (pClient)
@@ -2990,6 +3064,15 @@ void CListenSocket::OnAccept(int nErrorCode)
 					newclient->Safe_Delete();
 					continue;
 				}
+			}
+			if (bNativeV6) {
+				SOCKADDR_STORAGE localStorage = {};
+				int localLength = sizeof localStorage;
+				CAddress localV6;
+				if (newclient->GetSockName((SOCKADDR*)&localStorage, &localLength))
+					localV6.FromSA((SOCKADDR*)&localStorage, localLength);
+				CFirewallProberV6::Instance().ReportInboundV6Reachable(localV6);
+				DebugLog(_T("Accepted native IPv6 client [%s]"), (LPCTSTR)NativeV6.ToStringC());
 			}
 			newclient->AsyncSelect(FD_WRITE | FD_READ | FD_CLOSE);
 		}

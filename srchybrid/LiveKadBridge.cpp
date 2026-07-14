@@ -111,7 +111,7 @@ bool CLiveKadBridge::PublishStream(const LiveStreamInfo& info)
     CSingleLock lock(&m_lock, TRUE);
 
 #if 0
-        AddLogLine(false, _T("eSE Kad: Cannot publish — Kad not connected"));
+        AddLogLine(false, GetResString(IDS_LIVEKAD_CANNOT_PUBLISH));
 
 #endif
     LiveStreamInfo previousInfo = m_publishedInfo;
@@ -168,7 +168,7 @@ bool CLiveKadBridge::PublishStream(const LiveStreamInfo& info)
     m_streamDirectory[strKey] = entry;
 
     if (!Kademlia::CKademlia::IsConnected()) {
-        AddLogLine(false, _T("eSE Kad: Stream \"%s\" queued; Kad is not connected yet"),
+        AddLogLine(false, GetResString(IDS_LIVEKAD_QUEUED_FMT),
             (LPCTSTR)info.title);
         CLiveDebugLog::Get().Append("KAD",
             "PublishStream QUEUED \"%S\" — Kad not connected", (LPCWSTR)info.title);
@@ -183,10 +183,10 @@ bool CLiveKadBridge::PublishStream(const LiveStreamInfo& info)
     // (overlay endpoint and/or UDP hole-punch port).
     uint32 altIP = GetLocalOverlayIP();
     if (altIP != 0) {
-        AddLogLine(true, _T("eSE Kad: Publishing stream \"%s\" to Kad DHT (overlay endpoint %s)"),
+        AddLogLine(true, GetResString(IDS_LIVEKAD_PUBLISHING_OVERLAY_FMT),
             (LPCTSTR)info.title, (LPCTSTR)ipstr(altIP));
     } else {
-        AddLogLine(true, _T("eSE Kad: Publishing stream \"%s\" to Kad DHT"),
+        AddLogLine(true, GetResString(IDS_LIVEKAD_PUBLISHING_FMT),
             (LPCTSTR)info.title);
     }
     CLiveDebugLog::Get().Append("KAD",
@@ -220,7 +220,7 @@ void CLiveKadBridge::UnpublishStream(const uchar* streamKey)
         int nPublished = 0;
         Kademlia::CUInt128 uClean;
         EseLiveGetKeywordHash(wstrKw, &uClean);
-        if (StartKeywordPublish(uClean, _T("eSE Live tombstone [clean]"),
+        if (StartKeywordPublish(uClean, GetResString(IDS_LIVEKAD_GUI_TOMBSTONE_CLEAN),
                 streamKey, m_publishedInfo.title,
                 m_publishedInfo.category, m_publishedInfo.language,
                 /*bitrate=*/0, /*viewerCount=*/0, m_publishedInfo.startedAt,
@@ -229,7 +229,7 @@ void CLiveKadBridge::UnpublishStream(const uchar* streamKey)
         if (thePrefs.GetEseLivePublishLegacy()) {
             Kademlia::CUInt128 uLegacy;
             KadGetKeywordHash(wstrKw, &uLegacy);
-            if (StartKeywordPublish(uLegacy, _T("eSE Live tombstone [legacy]"),
+            if (StartKeywordPublish(uLegacy, GetResString(IDS_LIVEKAD_GUI_TOMBSTONE_LEGACY),
                     streamKey, m_publishedInfo.title,
                     m_publishedInfo.category, m_publishedInfo.language,
                     /*bitrate=*/0, /*viewerCount=*/0, m_publishedInfo.startedAt,
@@ -237,7 +237,7 @@ void CLiveKadBridge::UnpublishStream(const uchar* streamKey)
                 nPublished++;
         }
         AddLogLine(false,
-            _T("eSE Kad: Stream tombstone published (bitrate=0, %d namespace(s))"),
+            GetResString(IDS_LIVEKAD_TOMBSTONE_PUBLISHED_FMT),
             nPublished);
     }
 
@@ -248,7 +248,7 @@ void CLiveKadBridge::UnpublishStream(const uchar* streamKey)
     m_nPublishBurstCount = 0;
     m_dwBurstStartTime   = 0;
 
-    AddLogLine(true, _T("eSE Kad: Stream unpublished from directory"));
+    AddLogLine(true, GetResString(IDS_LIVEKAD_UNPUBLISHED));
 }
 
 bool CLiveKadBridge::PublishTombstoneFor(const uchar* streamKey)
@@ -271,7 +271,7 @@ bool CLiveKadBridge::PublishTombstoneFor(const uchar* streamKey)
     int nPublished = 0;
     Kademlia::CUInt128 uClean;
     EseLiveGetKeywordHash(wstrKw, &uClean);
-    if (StartKeywordPublish(uClean, _T("eSE Live ghost-tombstone [clean]"),
+    if (StartKeywordPublish(uClean, GetResString(IDS_LIVEKAD_GUI_GHOST_TOMBSTONE_CLEAN),
             streamKey, L"", L"", L"",
             /*bitrate=*/0, /*viewerCount=*/0, /*startedAt=*/now,
             /*bCleanNs=*/true))
@@ -279,14 +279,14 @@ bool CLiveKadBridge::PublishTombstoneFor(const uchar* streamKey)
     if (thePrefs.GetEseLivePublishLegacy()) {
         Kademlia::CUInt128 uLegacy;
         KadGetKeywordHash(wstrKw, &uLegacy);
-        if (StartKeywordPublish(uLegacy, _T("eSE Live ghost-tombstone [legacy]"),
+        if (StartKeywordPublish(uLegacy, GetResString(IDS_LIVEKAD_GUI_GHOST_TOMBSTONE_LEGACY),
                 streamKey, L"", L"", L"",
                 /*bitrate=*/0, /*viewerCount=*/0, /*startedAt=*/now,
                 /*bCleanNs=*/false))
             nPublished++;
     }
     AddLogLine(false,
-        _T("eSE Kad: Ghost tombstone published for streamKey %s (%d namespace(s))"),
+        GetResString(IDS_LIVEKAD_GHOST_TOMBSTONE_FMT),
         (LPCTSTR)hashKeyword, nPublished);
     return nPublished > 0;
 }
@@ -317,7 +317,7 @@ bool CLiveKadBridge::PublishAsRelay(const uchar* streamKey, LPCWSTR title,
     int nPublished = 0;
     Kademlia::CUInt128 uClean;
     EseLiveGetKeywordHash(wstrKw, &uClean);
-    CString guiClean; guiClean.Format(_T("eSE Live (relay) [clean]: %s"), (LPCTSTR)hashKeyword);
+    CString guiClean; guiClean.Format(GetResString(IDS_LIVEKAD_GUI_RELAY_CLEAN_FMT), (LPCTSTR)hashKeyword);
     if (StartKeywordPublish(uClean, guiClean,
             streamKey, sTitle, sCategory, sLanguage,
             bitrate, /*viewerCount*/ 0, /*startedAt*/ now,
@@ -326,7 +326,7 @@ bool CLiveKadBridge::PublishAsRelay(const uchar* streamKey, LPCWSTR title,
     if (thePrefs.GetEseLivePublishLegacy()) {
         Kademlia::CUInt128 uLegacy;
         KadGetKeywordHash(wstrKw, &uLegacy);
-        CString guiLegacy; guiLegacy.Format(_T("eSE Live (relay) [legacy]: %s"), (LPCTSTR)hashKeyword);
+        CString guiLegacy; guiLegacy.Format(GetResString(IDS_LIVEKAD_GUI_RELAY_LEGACY_FMT), (LPCTSTR)hashKeyword);
         if (StartKeywordPublish(uLegacy, guiLegacy,
                 streamKey, sTitle, sCategory, sLanguage,
                 bitrate, /*viewerCount*/ 0, /*startedAt*/ now,
@@ -334,7 +334,7 @@ bool CLiveKadBridge::PublishAsRelay(const uchar* streamKey, LPCWSTR title,
             nPublished++;
     }
     AddLogLine(false,
-        _T("eSE Kad: Secondary-source publish under %s (%d namespace(s))"),
+        GetResString(IDS_LIVEKAD_SECONDARY_PUBLISH_FMT),
         (LPCTSTR)hashKeyword, nPublished);
     return nPublished > 0;
 }
@@ -457,7 +457,7 @@ void CLiveKadBridge::RepublishIfNeeded()
     }
 
     AddLogLine(false,
-        _T("eSE Kad: Published stream under %d clean + %d legacy keywords [burst %d]"),
+        GetResString(IDS_LIVEKAD_PUBLISHED_KEYWORDS_FMT),
         publishCleanCount, publishLegacyCount, m_nPublishBurstCount);
 
     m_dwLastPublishTime = now;
@@ -562,7 +562,7 @@ bool CLiveKadBridge::StartLivePublishSearch(const Kademlia::CUInt128& uTarget,
 {
     const bool bCleanNs = (_tcscmp(namespaceTag, _T("clean")) == 0);
     CString guiName;
-    guiName.Format(_T("eSE Live: %s [%s]"), keyword, namespaceTag);
+    guiName.Format(GetResString(IDS_LIVEKAD_GUI_SEARCH_FMT), keyword, namespaceTag);
     return StartKeywordPublish(uTarget, guiName,
         m_publishedInfo.streamKey,
         m_publishedInfo.title, m_publishedInfo.category, m_publishedInfo.language,
@@ -587,7 +587,7 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword,
         // ASCII hyphen instead of em-dash to avoid CP1252/UTF-8 mojibake
         // ("â€"") when the log is rendered by a CP1252-decoding viewer.
         if (!m_bLoggedKadNotConnected) {
-            AddLogLine(false, _T("eSE Kad: Cannot search - Kad not connected"));
+            AddLogLine(false, GetResString(IDS_LIVEKAD_CANNOT_SEARCH));
             m_bLoggedKadNotConnected = true;
         }
         CLiveDebugLog::Get().Append("KAD",
@@ -644,7 +644,7 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword,
         // every event for diagnostics.
         if (!m_bLoggedSearchCooldown) {
             AddLogLine(false,
-                _T("eSE Kad: Search cooldown active (%ums), waiting"),
+                GetResString(IDS_LIVEKAD_SEARCH_COOLDOWN_FMT),
                 cooldown - (now - m_dwLastSearchTime));
             m_bLoggedSearchCooldown = true;
         }
@@ -700,7 +700,7 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword,
                 tun.SendKadSearchV2NoWait(kwUtf8);
                 m_dwLastSearchTime = now;
                 m_strLastSearchKeyword = searchWord;
-                AddLogLine(true, _T("eSE Kad: Searching live streams [TUNNELED] (keyword=\"%s\")"),
+                AddLogLine(true, GetResString(IDS_LIVEKAD_SEARCH_TUNNELED_FMT),
                     (LPCTSTR)searchWord);
                 CLiveDebugLog::Get().Append("KAD", "Search BEGIN [tunneled] keyword=\"%S\"",
                     (LPCWSTR)searchWord);
@@ -711,13 +711,13 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword,
             const Kademlia::CKadV2ModeSelector::FallbackPolicy fb =
                 Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy();
             if (fb == Kademlia::CKadV2ModeSelector::STRICT_PRIVACY) {
-                AddLogLine(false, _T("eSE Kad: Privacidad ESTRICTA - sin circuito tunel, no busco (tu IP no se expone)"));
+                AddLogLine(false, GetResString(IDS_LIVEKAD_SEARCH_STRICT_ABORT));
                 CLiveDebugLog::Get().Append("KAD",
                     "Search ABORT [strict] keyword=\"%S\" - no tunnel circuit", (LPCWSTR)searchWord);
                 return false;
             }
             // BALANCED / BEST_EFFORT -> fall through to the direct search below (warn IP visible).
-            AddLogLine(false, _T("eSE Kad: Tunelizado pedido pero sin circuito - busqueda directa (tu IP es visible)"));
+            AddLogLine(false, GetResString(IDS_LIVEKAD_SEARCH_DIRECT_FALLBACK));
         }
     }
 
@@ -746,7 +746,7 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword,
     if (pSearchClean == NULL && pSearchLegacy == NULL) {
         // v0.71 P3.8 — throttle: log once per "already in progress" stretch.
         if (!m_bLoggedAlreadyInProgress) {
-            AddLogLine(false, _T("eSE Kad: Search already in progress for \"%s\""),
+            AddLogLine(false, GetResString(IDS_LIVEKAD_SEARCH_IN_PROGRESS_FMT),
                 (LPCTSTR)searchWord);
             m_bLoggedAlreadyInProgress = true;
         }
@@ -765,7 +765,7 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword,
 
     if (pSearchClean != NULL) {
         AddLogLine(true,
-            _T("eSE Kad: Searching live streams [clean] (keyword=\"%s\", SearchID=%u)"),
+            GetResString(IDS_LIVEKAD_SEARCH_CLEAN_FMT),
             (LPCTSTR)searchWord, pSearchClean->GetSearchID());
         CLiveDebugLog::Get().Append("KAD",
             "Search BEGIN [clean] keyword=\"%S\" SearchID=%u",
@@ -776,7 +776,7 @@ bool CLiveKadBridge::SearchStreams(const CString& keyword,
     }
     if (pSearchLegacy != NULL) {
         AddLogLine(true,
-            _T("eSE Kad: Searching live streams [legacy] (keyword=\"%s\", SearchID=%u)"),
+            GetResString(IDS_LIVEKAD_SEARCH_LEGACY_FMT),
             (LPCTSTR)searchWord, pSearchLegacy->GetSearchID());
         CLiveDebugLog::Get().Append("KAD",
             "Search BEGIN [legacy] keyword=\"%S\" SearchID=%u",
@@ -942,7 +942,7 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     // === Phase 1 KAD-3: Strict IP/port validation ===
     // Reject results with missing endpoint data — they can't be connected to.
     if (broadcasterIP == 0 || broadcasterPort == 0) {
-        AddLogLine(false, _T("eSE Kad: REJECTED result — invalid endpoint (IP=%u, port=%u, title=\"%s\")"),
+        AddLogLine(false, GetResString(IDS_LIVEKAD_REJECTED_INVALID_FMT),
             broadcasterIP, broadcasterPort, (LPCTSTR)title);
         if (theApp.liveStreamManager != NULL)
             InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsRejected);
@@ -956,7 +956,7 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     if (bitrate == 0) {
         CString strKey = StreamKeyToString(streamKey);
         m_streamDirectory.RemoveKey(strKey);
-        AddLogLine(false, _T("eSE Kad: TOMBSTONE received for %s:%u — evicting local entry"),
+        AddLogLine(false, GetResString(IDS_LIVEKAD_TOMBSTONE_RECEIVED_FMT),
             (LPCTSTR)ipstr(broadcasterIP), broadcasterPort);
         if (theApp.liveStreamManager != NULL)
             InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsRejected);
@@ -971,7 +971,7 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     if (theApp.liveStreamManager != NULL
         && theApp.liveStreamManager->IsStreamTombstoned(streamKey))
     {
-        AddLogLine(false, _T("eSE Kad: ignored Kad echo for tombstoned stream \"%s\""), (LPCTSTR)title);
+        AddLogLine(false, GetResString(IDS_LIVEKAD_IGNORED_ECHO_FMT), (LPCTSTR)title);
         InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsRejected);
         return;
     }
@@ -982,7 +982,7 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     // must ALWAYS be rejected since Kad is a public network.
     // Use IsGoodIP(ip, true) to force the LAN check regardless of preferences.
     if (!IsGoodIP(broadcasterIP, true) || broadcasterPort == 0) {
-        AddLogLine(false, _T("eSE Kad: REJECTED result — non-routable IP (%s:%u, title=\"%s\")"),
+        AddLogLine(false, GetResString(IDS_LIVEKAD_REJECTED_NONROUTABLE_FMT),
             (LPCTSTR)ipstr(broadcasterIP), broadcasterPort, (LPCTSTR)title);
         if (theApp.liveStreamManager != NULL)
             InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsRejected);
@@ -992,7 +992,7 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     // === Phase 1 KAD-4: IPFilter check ===
     // Reject IPs blocked by the user's IPFilter configuration.
     if (theApp.ipfilter->IsFiltered(broadcasterIP)) {
-        AddLogLine(false, _T("eSE Kad: REJECTED result — IP filtered (%s, title=\"%s\")"),
+        AddLogLine(false, GetResString(IDS_LIVEKAD_REJECTED_FILTERED_FMT),
             (LPCTSTR)ipstr(broadcasterIP), (LPCTSTR)title);
         if (theApp.liveStreamManager != NULL)
             InterlockedIncrement(&theApp.liveStreamManager->GetCountersMut().kadResultsRejected);
@@ -1004,7 +1004,7 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     // spam or a malformed publish. ViewerCount > 100k is clamped because
     // pure-P2P v2 isn't expected to exceed that — V3+ may raise the cap.
     if (bitrate > 50000) {
-        AddLogLine(false, _T("eSE Kad: REJECTED result — bogus bitrate %u kbps from %s"),
+        AddLogLine(false, GetResString(IDS_LIVEKAD_REJECTED_BITRATE_FMT),
             bitrate, (LPCTSTR)ipstr(broadcasterIP));
         CLiveDebugLog::Get().Append("KAD",
             "DISC-S14: discard result %S:%u bogus bitrate=%u",
@@ -1062,12 +1062,12 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
         entry.startedAt = (uint32)time(NULL);
         entry.isOwnStream = false;
 
-        AddLogLine(false, _T("eSE Kad: Discovered stream \"%s\" from %s:%u (%u viewers, %ukbps) [%s]"),
+        AddLogLine(false, GetResString(IDS_LIVEKAD_DISCOVERED_FMT),
             (LPCTSTR)title, (LPCTSTR)ipstr(broadcasterIP), broadcasterPort,
             viewerCount, bitrate,
-            nsTag == ESE_NS_CLEAN  ? _T("clean")
-          : nsTag == ESE_NS_LEGACY ? _T("legacy")
-          :                          _T("synthetic"));
+            nsTag == ESE_NS_CLEAN  ? (LPCTSTR)GetResString(IDS_LIVEKAD_TAG_CLEAN)
+          : nsTag == ESE_NS_LEGACY ? (LPCTSTR)GetResString(IDS_LIVEKAD_TAG_LEGACY)
+          :                          (LPCTSTR)GetResString(IDS_LIVEKAD_TAG_SYNTHETIC));
         CLiveDebugLog::Get().Append("KAD",
             "Discovered \"%S\" src=%S:%u udp=%u alt=%S %ukbps ns=%u",
             (LPCWSTR)title, (LPCWSTR)ipstr(broadcasterIP),
@@ -1163,7 +1163,7 @@ void CLiveKadBridge::Process()
     {
         bool kadNow = Kademlia::CKademlia::IsConnected();
         if (kadNow && !m_bKadWasConnectedLastTick && m_bDeferredFirstPublish && m_bPublished) {
-            AddLogLine(false, _T("eSE Kad: connected — flushing deferred publish for \"%s\""),
+            AddLogLine(false, GetResString(IDS_LIVEKAD_FLUSH_DEFERRED_FMT),
                 (LPCTSTR)m_publishedInfo.title);
             CLiveDebugLog::Get().Append("KAD",
                 "Kad ONLINE — deferred publish flush, resetting burst");
@@ -1290,7 +1290,7 @@ void CLiveKadBridge::PruneStaleEntries()
     }
 
     if (toRemove.GetCount() > 0) {
-        AddLogLine(false, _T("eSE Kad: Pruned %d stale stream entries"),
+        AddLogLine(false, GetResString(IDS_LIVEKAD_PRUNED_FMT),
             (int)toRemove.GetCount());
     }
 }
@@ -1476,7 +1476,7 @@ void CLiveKadBridge::LoadDirectoryFromDisk()
             loaded++;
         }
         file.Close();
-        AddLogLine(false, _T("eSE Kad: Loaded %d cached stream entries from disk (%d skipped)"),
+        AddLogLine(false, GetResString(IDS_LIVEKAD_LOADED_CACHE_FMT),
             loaded, skipped);
     } catch (CFileException* fex) {
         fex->Delete();

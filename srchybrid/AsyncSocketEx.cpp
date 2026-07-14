@@ -634,7 +634,7 @@ CAsyncSocketEx::~CAsyncSocketEx()
 	FreeAsyncSocketExInstance();
 }
 
-bool CAsyncSocketEx::Create(UINT nSocketPort /*=0*/, int nSocketType /*=SOCK_STREAM*/, long lEvent /*=FD_DEFAULT*/, const CString &sSocketAddress /*=CString()*/, ADDRESS_FAMILY nFamily /*=AF_INET*/, bool reusable /*=false*/)
+bool CAsyncSocketEx::Create(UINT nSocketPort /*=0*/, int nSocketType /*=SOCK_STREAM*/, long lEvent /*=FD_DEFAULT*/, const CString &sSocketAddress /*=CString()*/, ADDRESS_FAMILY nFamily /*=AF_INET*/, bool reusable /*=false*/, bool dualStack /*=false*/)
 {
 	//Close the socket, although this should not happen
 	if (GetSocketHandle() != INVALID_SOCKET) {
@@ -652,6 +652,10 @@ bool CAsyncSocketEx::Create(UINT nSocketPort /*=0*/, int nSocketType /*=SOCK_STR
 	m_SocketData.nFamily = nFamily;
 
 	if (m_pFirstLayer) {
+		if (dualStack) {
+			WSASetLastError(WSAEOPNOTSUPP);
+			return false;
+		}
 		bool res = m_pFirstLayer->Create(nSocketPort, nSocketType, lEvent, sSocketAddress, nFamily, reusable);
 #ifndef NOSOCKETSTATES
 		if (res)
@@ -675,6 +679,21 @@ bool CAsyncSocketEx::Create(UINT nSocketPort /*=0*/, int nSocketType /*=SOCK_STR
 		return false;
 	m_SocketData.hSocket = hSocket;
 	AttachHandle();
+	if (dualStack) {
+		if (m_SocketData.nFamily != AF_INET6) {
+			Close();
+			WSASetLastError(WSAEAFNOSUPPORT);
+			return false;
+		}
+		DWORD v6only = 0;
+		if (setsockopt(m_SocketData.hSocket, IPPROTO_IPV6, IPV6_V6ONLY,
+			reinterpret_cast<const char*>(&v6only), sizeof v6only) == SOCKET_ERROR) {
+			const int nError = WSAGetLastError();
+			Close();
+			WSASetLastError(nError);
+			return false;
+		}
+	}
 
 	if (m_pFirstLayer) {
 		m_lEvent = lEvent;

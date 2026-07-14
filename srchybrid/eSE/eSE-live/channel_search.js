@@ -1,7 +1,6 @@
 /**
  * eSE Live — Channel Search
- * Bridge between Kad DHT channel discovery and webapp search.
- * For now uses local channel registry; will connect to Kad via C++ later.
+ * Bridge between C++/Kad channel discovery and webapp search.
  * Max ~200 lines.
  */
 'use strict';
@@ -9,9 +8,39 @@
 const rating = require('./channel_rating');
 const pipeline = require('./ffmpeg_pipeline');
 
-// Local channel registry (will be populated by Kad in Phase 4)
-// For now, the local broadcaster's own stream is registered here
+// In-memory view of channels polled from the C++ Kad/discovery backend.
 let channels = {};
+
+function normalizedKey(value) {
+  return String(value || '').trim().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function canonicalCategory(value) {
+  const key = normalizedKey(value);
+  const aliases = {
+    general: 'general', sports: 'sports', sport: 'sports', deportes: 'sports',
+    gaming: 'gaming', games: 'gaming', videojuegos: 'gaming',
+    movies: 'movies', movie: 'movies', cine: 'movies', peliculas: 'movies',
+    music: 'music', musica: 'music',
+    education: 'education', educacion: 'education',
+    talk: 'talk', talks: 'talk', charla: 'talk', charlas: 'talk', webcam: 'talk',
+    '24/7': '24/7', '24h': '24/7', '24x7': '24/7'
+  };
+  return aliases[key] || key || 'general';
+}
+
+function canonicalLanguage(value) {
+  const key = normalizedKey(value);
+  const aliases = {
+    es: 'es', espanol: 'es', spanish: 'es',
+    en: 'en', ingles: 'en', english: 'en',
+    fr: 'fr', frances: 'fr', francais: 'fr', french: 'fr',
+    de: 'de', aleman: 'de', deutsch: 'de', german: 'de',
+    pt: 'pt', portugues: 'pt', portuguese: 'pt'
+  };
+  return aliases[key] || key || 'es';
+}
 
 /**
  * Register a channel (called when broadcaster starts streaming).
@@ -35,8 +64,8 @@ function registerChannel(info) {
   channels[info.streamKey] = {
     streamKey: info.streamKey,
     title: info.title || 'Sin titulo',
-    category: info.category || 'general',
-    language: info.language || 'es',
+    category: canonicalCategory(info.category),
+    language: canonicalLanguage(info.language),
     bitrate: info.bitrate || 3000,
     viewers: info.viewers || 0,
     started: info.started || new Date().toISOString(),
@@ -63,6 +92,11 @@ function unregisterChannel(streamKey) {
  */
 function addRemoteChannel(info) {
   if (!info || !info.streamKey) return;
+  const normalizedInfo = {
+    ...info,
+    category: canonicalCategory(info.category),
+    language: canonicalLanguage(info.language)
+  };
   if (channels[info.streamKey]) {
     // v7.1.9 — preserve the original `started` across updates. The C++ Kad
     // side doesn't emit a stable start timestamp; each poll passed
@@ -70,9 +104,9 @@ function addRemoteChannel(info) {
     // every refresh. Honor the existing one if we already have it.
     const preserved = { lastUpdate: Date.now() };
     if (channels[info.streamKey].started) preserved.started = channels[info.streamKey].started;
-    Object.assign(channels[info.streamKey], info, preserved);
+    Object.assign(channels[info.streamKey], normalizedInfo, preserved);
   } else {
-    channels[info.streamKey] = { ...info, isLocal: false, lastUpdate: Date.now() };
+    channels[info.streamKey] = { ...normalizedInfo, isLocal: false, lastUpdate: Date.now() };
   }
 }
 
@@ -137,12 +171,14 @@ function search(filters) {
 
   // Category filter
   if (f.category && f.category !== 'all') {
-    results = results.filter(ch => ch.category === f.category);
+    const category = canonicalCategory(f.category);
+    results = results.filter(ch => canonicalCategory(ch.category) === category);
   }
 
   // Language filter
   if (f.language && f.language !== 'all') {
-    results = results.filter(ch => ch.language === f.language);
+    const language = canonicalLanguage(f.language);
+    results = results.filter(ch => canonicalLanguage(ch.language) === language);
   }
 
   // Quality filter
@@ -209,5 +245,7 @@ module.exports = {
   unregisterChannel,
   addRemoteChannel,
   search,
-  getCount
+  getCount,
+  canonicalCategory,
+  canonicalLanguage
 };

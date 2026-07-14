@@ -4,17 +4,18 @@
   "main": "server.js",
   "bin": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run test:live",
+    "test:live": "node --test test/live_tv_regression.test.js",
     "start": "node server.js",
     "prebuild": "node tools/bundle_client.js",
-    "build": "pkg . --targets node18-win-x64 --output ese-server.exe --compress GZip"
+    "build": "pkg . --targets node22-win-x64 --output ese-server.exe --compress GZip"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "nat-upnp-2": "^3.0.3"
+    "hls.js": "^1.6.16"
   },
   "pkg": {
     "scripts": [
@@ -27,16 +28,19 @@
     "assets": [
       "emule_mascot.svg",
       "favicon.ico",
+      "eSE_Remote.html",
+      "eSE-live/vendor/hls.min.js",
+      "eSE-live/vendor/hls.LICENSE",
       "eSE-live/thumbs/**/*",
       "eSE-live/live/.gitkeep",
       "_player_bundle.js"
     ],
     "targets": [
-      "node18-win-x64"
+      "node22-win-x64"
     ],
     "outputPath": "dist"
   },
   "devDependencies": {
-    "pkg": "^5.8.1"
+    "@yao-pkg/pkg": "^6.21.0"
   }
 }

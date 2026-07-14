@@ -558,7 +558,7 @@ fetch('/api/eSE/update/check').then(function(r){return r.json();}).then(function
                   '<details style="margin-top:10px;font-size:11px;color:#9ca3af"><summary style="cursor:pointer">Link directo (incluye tu IP — solo necesario en LAN sin Kad)</summary>' +
                   '<input value="' + directLink + '" readonly style="width:100%;padding:6px;margin-top:6px;background:#0e0e10;border:1px solid #2a2a2e;border-radius:4px;color:#fff;font-family:monospace;font-size:10px" onclick="this.select()"></details>'
                   : '') +
-                '<div style="margin-top:14px;display:flex;gap:8px"><button onclick="window.location.href=\\'/player\\'" style="padding:8px 18px;background:#ff6b35;color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer">▶ Ver tu propia emisión</button>' +
+                '<div style="margin-top:14px;display:flex;gap:8px"><button onclick="window.location.href=\\'/live/watch/local\\'" style="padding:8px 18px;background:#ff6b35;color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer">▶ Ver tu propia emisión</button>' +
                 '<button onclick="document.getElementById(\\'ese-wizard\\').remove();fetch(\\'/api/live/first_run/dismiss\\',{method:\\'POST\\'})" style="padding:8px 18px;background:#374151;color:#fff;border:none;border-radius:6px;cursor:pointer">Cerrar wizard</button></div>';
             }
           } else {

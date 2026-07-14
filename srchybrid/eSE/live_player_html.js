@@ -7,9 +7,8 @@ module.exports = function getLivePlayerHTML() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>eSE Live — P2P Stream</title>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1"><\/script>
+<script src="/live/vendor/hls.min.js"><\/script>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
   * { margin:0; padding:0; box-sizing:border-box; }
   body {
     font-family:'Inter',sans-serif;
@@ -150,7 +149,7 @@ module.exports = function getLivePlayerHTML() {
     } catch(e) {}
   }
 
-  if (Hls.isSupported()) {
+  if (window.Hls && Hls.isSupported()) {
     // Sprint 2 E.2 — Auto-reconnect with exponential backoff (no full page reload),
     // rewritten 2026-06. The old version created the player as a \`const hls\` and
     // the reconnect timer did \`hls = newHls\` → TypeError: Assignment to constant
@@ -265,6 +264,9 @@ module.exports = function getLivePlayerHTML() {
     video.src = '/hls/stream.m3u8';
     statusEl.textContent = 'Native HLS playback';
     statusEl.className = 'connected';
+  } else {
+    statusEl.textContent = 'HLS player unavailable';
+    statusEl.className = 'error';
   }
 <\/script>
 </body>

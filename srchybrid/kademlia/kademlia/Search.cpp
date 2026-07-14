@@ -59,6 +59,10 @@ their client on the eMule forum.
 #include "kademlia/utils/LookupHistory.h"
 #include "LiveStreamManager.h"
 #include "eMuleAI/FastKad.h" // eSE: Adaptive Kad response time estimation
+#include "eMuleAI/Address.h"
+#include "FirewallProberV6.h"
+#include "ReachabilityWire.h"
+#include "ClientUDPSocket.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -701,10 +705,46 @@ void CSearch::StorePacket()
 			//5 >4GB file Firewalled Kad source.
 			//6 Firewalled Source with Direct Callback (supports >4GB)
 
+			// Reachability is published as additive metadata.  The classic source
+			// type below remains present for byte-level compatibility with eMule and
+			// aMule; modern readers can select a route before HELLO exists.
+			uint16 uReachCaps = 0;
+			const bool bUdpVerified = Kademlia::CKademlia::IsRunning()
+				&& !Kademlia::CUDPFirewallTester::IsFirewalledUDP(true)
+				&& Kademlia::CUDPFirewallTester::IsVerified();
+			if (!theApp.IsFirewalled())
+				uReachCaps |= KAD_REACH_CAP_V4_TCP_IN;
+			if (bUdpVerified)
+				uReachCaps |= KAD_REACH_CAP_V4_UDP_IN;
+
+			const CAddress publicV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+			const bool bHasPublicV6 = thePrefs.IsIPv6Enabled()
+				&& publicV6.GetType() == CAddress::IPv6 && publicV6.IsPublicIP();
+			const bool bV6Inbound = bHasPublicV6
+				&& CFirewallProberV6::Instance().HasInboundV6Observation();
+			if (bHasPublicV6)
+				uReachCaps |= KAD_REACH_CAP_V6_OUT;
+			if (bV6Inbound)
+				uReachCaps |= KAD_REACH_CAP_V6_IN;
+
+			const bool bPunch2 = thePrefs.GetUtpHolePunchEnabled()
+				&& theApp.clientudp != NULL && theApp.clientudp->IsUtpReady()
+				&& Kademlia::CKademlia::IsConnected()
+				&& Kademlia::CKademlia::GetUDPListener() != NULL
+				&& CKademlia::GetPrefs()->GetInternKadPort() != 0;
+			if (bPunch2)
+				uReachCaps |= KAD_REACH_CAP_PUNCH_2W;
+			const bool bHasModernRoute = bPunch2 || bV6Inbound;
+			// A punch-capable source must let each indexer stamp the UDP port it
+			// actually observes. This stays correct with a buddy or open TCP and is
+			// the useful value for endpoint-dependent CGNAT mappings.
+			const bool bPublishInternalKadPort = !bPunch2
+				&& !CKademlia::GetPrefs()->GetUseExternKadPort();
+
 			TagList listTag;
 			if (theApp.IsFirewalled()) {
-				bool bDirectCallback = (Kademlia::CKademlia::IsRunning() && !Kademlia::CUDPFirewallTester::IsFirewalledUDP(true) && Kademlia::CUDPFirewallTester::IsVerified());
-				if (!bDirectCallback && !theApp.clientlist->GetBuddy()) {
+				const bool bDirectCallback = bUdpVerified;
+				if (!bDirectCallback && !theApp.clientlist->GetBuddy() && !bHasModernRoute) {
 					// We are firewalled, no direct callback and no buddy. Stop everything.
 					PrepareToStop();
 					break;
@@ -714,11 +754,11 @@ void CSearch::StorePacket()
 					// firewalled, but direct UDP callback is possible without buddies
 					listTag.push_back(new CKadTagUInt(TAG_SOURCETYPE, 6));
 					listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, thePrefs.GetPort()));
-					if (!CKademlia::GetPrefs()->GetUseExternKadPort())
+					if (bPublishInternalKadPort)
 						listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
 					if (pFromContact->GetVersion() >= KADEMLIA_VERSION2_47a)
 						listTag.push_back(new CKadTagUInt(TAG_FILESIZE, pFile->GetFileSize()));
-				} else { // We are firewalled, but do have a buddy.
+				} else if (theApp.clientlist->GetBuddy() != NULL) { // We are firewalled, but do have a buddy.
 					// We send the ID to our buddy so they can do a callback.
 					CUInt128 uBuddyID(true);
 					uBuddyID.Xor(CKademlia::GetPrefs()->GetKadID());
@@ -727,9 +767,23 @@ void CSearch::StorePacket()
 					listTag.push_back(new CKadTagUInt(TAG_SERVERPORT, theApp.clientlist->GetBuddy()->GetUDPPort()));
 					listTag.push_back(new CKadTagStr(TAG_BUDDYHASH, (CStringW)md4str(uBuddyID.GetData())));
 					listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, thePrefs.GetPort()));
-					if (!CKademlia::GetPrefs()->GetUseExternKadPort())
+					if (bPublishInternalKadPort)
 						listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
 
+					if (pFromContact->GetVersion() >= KADEMLIA_VERSION2_47a)
+						listTag.push_back(new CKadTagUInt(TAG_FILESIZE, pFile->GetFileSize()));
+				} else {
+					// Modern-only source. Type 6 is the least surprising classic shell for
+					// punch-capable peers; type 3/5 makes an IPv6-only source harmlessly
+					// unusable to old clients while retaining it for modern readers.
+					if (bPunch2)
+						listTag.push_back(new CKadTagUInt(TAG_SOURCETYPE, 6));
+					else
+						listTag.push_back(new CKadTagUInt8(TAG_SOURCETYPE,
+							(pFile->GetFileSize() > OLD_MAX_EMULE_FILE_SIZE ? 5 : 3)));
+					listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, thePrefs.GetPort()));
+					// Do not send TAG_SOURCEUPORT here: the indexing node will add the
+					// actually observed UDP source port, which is essential behind CGNAT.
 					if (pFromContact->GetVersion() >= KADEMLIA_VERSION2_47a)
 						listTag.push_back(new CKadTagUInt(TAG_FILESIZE, pFile->GetFileSize()));
 				}
@@ -740,11 +794,27 @@ void CSearch::StorePacket()
 				else
 					listTag.push_back(new CKadTagUInt(TAG_SOURCETYPE, 1));
 				listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, thePrefs.GetPort()));
-				if (!CKademlia::GetPrefs()->GetUseExternKadPort())
+				if (bPublishInternalKadPort)
 					listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
 
 				if (pFromContact->GetVersion() >= KADEMLIA_VERSION2_47a)
 					listTag.push_back(new CKadTagUInt(TAG_FILESIZE, pFile->GetFileSize()));
+			}
+
+			BYTE reachWire[255];
+			uint8 reachWireLength = 0;
+			if (uReachCaps != 0 && EseEncodeReachVectorV2(uReachCaps,
+				reachWire, sizeof reachWire, &reachWireLength))
+			{
+				listTag.push_back(new CKadTagBsob(TAG_ESE_REACH,
+					reachWire, reachWireLength));
+			}
+			if (bHasPublicV6) {
+				CSafeMemFile v6Wire(18);
+				publicV6.WriteToBuffer(&v6Wire);
+				if (v6Wire.GetLength() == 18)
+					listTag.push_back(new CKadTagBsob(TAG_SOURCEIP_V6,
+						v6Wire.GetBuffer(), (uint8)v6Wire.GetLength()));
 			}
 
 			listTag.push_back(new CKadTagUInt8(TAG_ENCRYPTION, CKademlia::GetPrefs()->GetMyConnectOptions(true, true)));
@@ -1011,6 +1081,12 @@ void CSearch::ProcessResultFile(const CUInt128 &uAnswer, TagList &rlistInfo)
 	//uint32 uClientID = 0;
 	CUInt128 uBuddy;
 	uint8 byCryptOptions = 0; // 0 = not supported
+	uint16 uReachCaps = 0;
+	bool bReachTagSeen = false;
+	bool bReachValid = false;
+	CAddress sourceV6;
+	bool bV6TagSeen = false;
+	bool bV6Valid = false;
 
 	for (TagList::const_iterator itInfoList = rlistInfo.begin(); itInfoList != rlistInfo.end(); ++itInfoList) {
 		const CKadTag &cTag(**itInfoList);
@@ -1026,6 +1102,37 @@ void CSearch::ProcessResultFile(const CUInt128 &uAnswer, TagList &rlistInfo)
 			uBuddyIP = (uint32)cTag.GetInt();
 		else if (cTag.m_name == TAG_SERVERPORT)
 			uBuddyPort = (uint16)cTag.GetInt();
+		else if (cTag.m_name == TAG_ESE_REACH) {
+			// Duplicate route metadata is ambiguous and therefore ignored as a
+			// whole. Structural/version/TLV checks live in libreach.
+			if (bReachTagSeen) {
+				bReachValid = false;
+				uReachCaps = 0;
+			} else {
+				bReachTagSeen = true;
+				uint8 version = 0;
+				bReachValid = cTag.IsBsob()
+					&& EseDecodeReachVector(cTag.GetBsob(), cTag.GetBsobSize(),
+						&version, &uReachCaps);
+			}
+		} else if (cTag.m_name == TAG_SOURCEIP_V6) {
+			if (bV6TagSeen) {
+				bV6Valid = false;
+				sourceV6 = CAddress();
+			} else {
+				bV6TagSeen = true;
+				if (cTag.IsBsob() && cTag.GetBsobSize() == 18) {
+					CSafeMemFile wire(cTag.GetBsob(), cTag.GetBsobSize());
+					CAddress candidate;
+					bV6Valid = candidate.ReadFromBuffer(&wire)
+						&& wire.GetPosition() == wire.GetLength()
+						&& candidate.GetType() == CAddress::IPv6
+						&& candidate.IsPublicIP();
+					if (bV6Valid)
+						sourceV6 = candidate;
+				}
+			}
+		}
 		//else if (cTag.m_name == TAG_CLIENTLOWID)
 		//  uClientID = cTag.GetInt();
 		else if (cTag.m_name == TAG_BUDDYHASH) {
@@ -1047,7 +1154,9 @@ void CSearch::ProcessResultFile(const CUInt128 &uAnswer, TagList &rlistInfo)
 	case 6:
 		++m_uAnswers;
 		theApp.emuledlg->kademliawnd->searchList->SearchRef(this);
-		theApp.downloadqueue->KademliaSearchFile(m_uSearchID, &uAnswer, &uBuddy, uType, uIP, uTCPPort, uUDPPort, uBuddyIP, uBuddyPort, byCryptOptions);
+		theApp.downloadqueue->KademliaSearchFile(m_uSearchID, &uAnswer, &uBuddy,
+			uType, uIP, uTCPPort, uUDPPort, uBuddyIP, uBuddyPort, byCryptOptions,
+			bReachValid ? uReachCaps : 0, bV6Valid ? &sourceV6 : NULL);
 		break;
 	}
 }

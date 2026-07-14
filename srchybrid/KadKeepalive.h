@@ -18,6 +18,7 @@
 #pragma once
 
 #include "eMuleAI/Address.h"
+#include "kademlia/utils/UInt128.h"
 #include <vector>
 
 class CKadKeepalive {
@@ -41,12 +42,12 @@ public:
 
     // Register / blacklist supernodes. m_supernodes is rotated when a member
     // misses too many PINGs in a row.
-    void AddSupernode(const CAddress& addr, uint16 port);
+    void AddSupernode(const CAddress& addr, uint16 port, const Kademlia::CUInt128& kadID);
     void BlacklistSupernode(const CAddress& addr, uint16 port);
 
     // R.2: a supernode replied to our ping — refresh its health (called from the
     // KADEMLIA3_PING_RES handler in the Kad UDP listener). uIP is host-order.
-    void OnPong(uint32 uIP, uint16 port);
+    bool OnPong(uint32 uIP, uint16 port, const Kademlia::CUInt128& kadID);
 
     // Telemetry: how many keepalives went out / how many got a reply in the
     // last 5-minute window. Used by /api/live/debug.
@@ -66,6 +67,7 @@ private:
     struct Supernode {
         CAddress addr;
         uint16   port;
+        Kademlia::CUInt128 kadID;
         DWORD    lastPingTick;
         DWORD    lastPongTick;
         int      consecutiveMisses;

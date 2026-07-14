@@ -5,6 +5,7 @@
 #include "ClientStateDefs.h"
 #include "opcodes.h"
 #include "OtherFunctions.h"
+#include "eMuleAI/Address.h"
 
 class CClientReqSocket;
 class CFriend;
@@ -88,6 +89,9 @@ public:
     // A.3: high-water mark of attempts since last successful uTP connect with
     // this peer. Resets to 0 when the punch succeeds (in CUtpSocket on_accept).
     bool SupportsUTP() const;
+	bool CanUseEseHolePunch() const;
+	bool CanUseIPv6Direct() const;
+	void MarkIPv6DirectFailed() { m_dwIPv6DirectFailed = ::GetTickCount(); }
 
 
 //	void PrintUploadStatus();
@@ -114,6 +118,10 @@ public:
 	LPCTSTR			GetUserName() const								{ return m_pszUsername; }
 	void			SetUserName(LPCTSTR pszNewName);
 	uint32			GetIP() const									{ return m_dwUserIP; }
+	bool			HasIPv6Address() const						{ return m_ipv6Address.GetType() == CAddress::IPv6 && !m_ipv6Address.IsNull(); }
+	const CAddress& GetIPv6Address() const						{ return m_ipv6Address; }
+	void			SetIPv6Address(const CAddress& addr)			{ m_ipv6Address = (addr.GetType() == CAddress::IPv6 && addr.IsPublicIP()) ? addr : CAddress(); }
+	bool			IsIPv6OnlyEndpoint() const					{ return HasIPv6Address() && m_nConnectIP == m_ipv6Address.ToSyntheticUInt32(); }
 	//Only use this when you know the real IP or when your clearing it.
 	void			SetIP(uint32 val)								{ m_dwUserIP = val; m_nConnectIP = val; }
 
@@ -165,6 +173,14 @@ public:
 	bool            SupportsEseHolePunchCookie()  const { return (m_uEseCapabilities & 0x00080000) != 0; }  // P0 return-routability cookie (ESE_CAP_HOLEPUNCH_COOKIE, bit 19)
 	bool            SupportsEseHolePunchRdv()     const { return (m_uEseCapabilities & 0x00008000) != 0; }  // R.1 3-way rendezvous (ESE_CAP_HOLEPUNCH_RDV, bit 15)
 	bool            SupportsLiveRelay()           const { return (m_uEseCapabilities & 0x00200000) != 0; }  // R.3 buddy relay (ESE_CAP_LIVE_RELAY, bit 21)
+	// Strictly decoded TAG_ESE_REACH metadata obtained with a Kad source result.
+	// It is independent of HELLO capabilities because it must select a route
+	// before a TCP HELLO can exist. Unknown future bits are intentionally masked.
+	void            SetReachCaps(uint16 caps)            { m_uReachCaps = caps & 0x03FF; }
+	uint16          GetReachCaps() const                  { return m_uReachCaps; }
+	bool            SupportsReachV6Inbound() const        { return (m_uReachCaps & 0x0004) != 0; }
+	bool            SupportsReachPunch2() const           { return (m_uReachCaps & 0x0008) != 0; }
+	void            MergeReachabilityFrom(const CUpDownClient& other);
 	// v8.x Phase 1 — peer's 32-byte Ed25519 node identity from TAG_ESE_NODE_PUB (0x6D).
 	// Valid only when m_bEseNodePubSet; pinned later for the CREATE/CREATED v2 handshake.
 	const uint8*    GetEseNodePub()  const { return m_eseNodePub; }
@@ -507,6 +523,7 @@ protected:
 
 	uint32	m_nConnectIP;	// holds the supposed IP or (after we had a connection) the real IP
 	uint32	m_dwUserIP;		// holds 0 (real IP not yet available) or the real IP (after we had a connection)
+	CAddress m_ipv6Address;	// native public IPv6 candidate; legacy uint32 fields remain for v4 compatibility
 	uint32	m_dwServerIP;
 	uint32	m_nUserIDHybrid;
 	uint16	m_nUserPort;
@@ -536,6 +553,8 @@ protected:
 	// v0.71 P3.5 — eSE privacy capability bits from TAG_ESE_CAPS (0x6C).
 	// 0 = legacy / no privacy support. See Opcodes.h ESE_CAP_* bits.
 	uint32  m_uEseCapabilities;
+	uint16  m_uReachCaps;
+	DWORD   m_dwIPv6DirectFailed;
 	// v8.x Phase 1 — peer's Ed25519 node identity pubkey from TAG_ESE_NODE_PUB (0x6D).
 	uint8   m_eseNodePub[32];
 	bool    m_bEseNodePubSet;

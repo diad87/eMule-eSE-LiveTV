@@ -6,14 +6,17 @@
 //
 // Wire layout (all multi-byte scalars little-endian):
 //   offset size  field
-//   0      1     version (=1)
+//   0      1     version (=1 legacy, =2 current)
 //   1      2     capflags (KadCap bitfield, LE)
 //   3      1     nRdv (0..3)
 //   4      22×n  rdv[n] = NodeID(16) ++ IPv4(4) ++ udpPort(2 LE)
 //   4+22n  ...   optional trailing TLV(s), preserved opaquely (e.g. signature)
 //
-// Producer is strict (rejects reserved capflag bits, > 3 rdv); consumer is
-// lenient (tolerates higher version bytes, preserves unknown trailing bytes).
+// v1 rendezvous entries are 22 bytes. v2 entries are 42 bytes: the v1 fields
+// plus reservationToken(16) and expiresAt(4 LE). The extension area is a real
+// <type:u8><len:u16le><value> TLV sequence.
+// Producer and consumer reject unsupported major versions and malformed tails;
+// well-formed unknown TLVs are preserved.
 #pragma once
 
 #include "reach/reach_types.h"
@@ -39,8 +42,7 @@ ReachStatus EncodeReachVector(const ReachVector& v, std::vector<Byte>& out);
 
 // Parse a `TAG_REACH` payload from [in, in+len).
 //   - Requires len >= kReachHeaderSize and a complete rdv array.
-//   - version 0 is rejected; version >= 1 is accepted (forward-compatible:
-//     the v1 prefix is parsed regardless and any tail is kept in out.trailing).
+//   - version 0 and unsupported major versions are rejected.
 //   - On success `out` is fully overwritten; on failure `out` is cleared.
 //   - (in == null, len == 0) is treated as an empty input → Truncated; a null
 //     buffer with a non-zero len is a caller bug → NullArgument.

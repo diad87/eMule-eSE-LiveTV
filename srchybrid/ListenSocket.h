@@ -50,7 +50,7 @@ public:
 	virtual void Safe_Delete();
 	//virtual void Close()				{ CAsyncSocketEx::Close(); }
 
-	bool	Create();
+	bool	Create(ADDRESS_FAMILY nFamily = AF_INET);
 	virtual void SendPacket(Packet *packet, bool controlpacket = true, uint32 actualPayloadSize = 0, bool bForceImmediateSend = false);
 	virtual SocketSentBytes SendControlData(uint32 maxNumberOfBytesToSend, uint32 overchargeMaxBytesToSend);
 	virtual SocketSentBytes SendFileAndControlData(uint32 maxNumberOfBytesToSend, uint32 overchargeMaxBytesToSend);

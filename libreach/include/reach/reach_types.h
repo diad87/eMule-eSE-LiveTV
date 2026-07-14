@@ -22,16 +22,20 @@ namespace reach {
 using Byte = std::uint8_t;
 
 // ── Fixed wire constants (Appendix A) ─────────────────────────────────────
-inline constexpr Byte        kReachVersion   = 1;   // version byte emitted by v1
+inline constexpr Byte        kReachLegacyVersion = 1;
+inline constexpr Byte        kReachVersion   = 2;   // v2 adds egress + reserved-rdv semantics
 inline constexpr std::size_t kKadIdSize      = 16;  // NodeID width (128-bit Kad ID)
 inline constexpr std::size_t kIPv4Size       = 4;   // raw IPv4 address octets
 inline constexpr std::size_t kMaxRdv         = 3;   // nRdv ∈ [0,3]
-inline constexpr std::size_t kRdvWireSize    = kKadIdSize + kIPv4Size + 2; // 22
+inline constexpr std::size_t kRdvTokenSize   = 16;
+inline constexpr std::size_t kRdvWireSizeV1  = kKadIdSize + kIPv4Size + 2; // 22
+inline constexpr std::size_t kRdvWireSizeV2  = kRdvWireSizeV1 + kRdvTokenSize + 4; // 42
 inline constexpr std::size_t kReachHeaderSize = 4;  // version(1) + capflags(2) + nRdv(1)
 // Largest *known* v1 vector, excluding any optional trailing TLV (e.g. the
 // optional vector signature, appended after the known prefix — Appendix A).
 inline constexpr std::size_t kReachMaxKnownSize =
-    kReachHeaderSize + kMaxRdv * kRdvWireSize;       // 4 + 66 = 70
+    kReachHeaderSize + kMaxRdv * kRdvWireSizeV2;      // 4 + 126 = 130
+inline constexpr std::size_t kReachMaxWireSize = 255; // Kad BSOB length is uint8
 
 // A 128-bit Kademlia NodeID as 16 opaque bytes (big-endian on the wire — the
 // same byte order the host's Kad already uses for NodeIDs; libreach never
@@ -47,14 +51,18 @@ enum KadCap : std::uint16_t {
     KAD_CAP_PUNCH_2W    = 1u << 3,  // supports 2-way hole-punch (OP_ESE_HOLEPUNCH_REQ/ACK)
     KAD_CAP_PUNCH_3W    = 1u << 4,  // supports being the target of 3-way rendezvous punch
     KAD_CAP_KEEPALIVE   = 1u << 5,  // maintains a pinhole (reachable via rendezvous)
-    KAD_CAP_RELAY_OFFER = 1u << 6,  // accepts capped data-relay circuits
-    // bits 7..15 reserved (=0) in v1
+    KAD_CAP_RELAY_OFFER = 1u << 6,  // v1 legacy: service offer (never means client consent)
+    KAD_CAP_V6_OUT      = 1u << 7,  // can originate native IPv6 connections
+    KAD_CAP_RELAY_CLIENT  = 1u << 8, // consents to using a reserved relay circuit
+    KAD_CAP_RELAY_SERVICE = 1u << 9, // volunteers bounded relay service
+    // bits 10..15 reserved (=0) in v2
 };
 
 // Mask of the bits defined by v1. Used to enforce "reserved bits = 0" on emit
 // (strict producer) while preserving unknown bits on decode (lenient consumer,
 // Postel's law — a future minor version may light reserved bits).
-inline constexpr std::uint16_t kKadCapKnownMask = 0x007F; // bits 0..6
+inline constexpr std::uint16_t kKadCapV1KnownMask = 0x007F; // bits 0..6
+inline constexpr std::uint16_t kKadCapKnownMask   = 0x03FF; // bits 0..9
 
 // ── Rendezvous anchor (Appendix A: KadID(16) + IPv4(4) + udpPort(2)) ───────
 // A `verified` open node with which the publisher holds a live keepalived
@@ -63,11 +71,11 @@ inline constexpr std::uint16_t kKadCapKnownMask = 0x007F; // bits 0..6
 // definition an open node, and open v4 nodes are plentiful (Appendix A).
 struct RdvEntry {
     KadId                         nodeId{};   // 16 opaque NodeID bytes
-    std::array<Byte, kIPv4Size>   ipv4{};     // 4 raw address octets, host-convention
-                                              // (anchored to TAG_SOURCEIP; libreach
-                                              //  never reorders them)
+    std::array<Byte, kIPv4Size>   ipv4{};     // 4 raw address octets, network order
     std::uint16_t                 udpPort = 0; // Kad UDP port; serialized little-endian
                                                // (TAG_SOURCEPORT convention)
+    std::array<Byte, kRdvTokenSize> token{};   // opaque reservation voucher, CSPRNG
+    std::uint32_t                 expiresAt = 0; // absolute Unix seconds, little-endian
 };
 
 // ── The reachability vector ───────────────────────────────────────────────
@@ -89,8 +97,12 @@ enum class ReachStatus : int {
     Ok = 0,
     Truncated,        // input shorter than the structure it declares
     BadVersionZero,   // version byte 0 is invalid in any wire version
+    UnsupportedVersion,
     TooManyRdv,       // nRdv > kMaxRdv
     ReservedBitsSet,  // (emit) a reserved capflag bit was set on a v1 vector
+    InvalidReservation,
+    MalformedTlv,
+    TooLarge,
     BufferTooSmall,   // (emit) output capacity < required serialized length
     NullArgument,     // (emit/decode) a required pointer argument was null
 };

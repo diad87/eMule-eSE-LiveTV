@@ -22,13 +22,21 @@ const updateNotifier = require('./update_notifier');  // D6: GitHub release poll
 
 const HLS_LIVE_DIR = path.join(os.tmpdir(), 'eMule_RTMP');
 const LIVE_DIR = HLS_LIVE_DIR;
+let HLS_JS_BUNDLE = path.join(__dirname, 'vendor', 'hls.min.js');
+if (!fs.existsSync(HLS_JS_BUNDLE)) {
+  try {
+    HLS_JS_BUNDLE = require.resolve('hls.js/dist/hls.min.js');
+  } catch (e) {
+    HLS_JS_BUNDLE = '';
+    console.warn('[eSE Live] Bundled hls.js not found:', e.message);
+  }
+}
 
 // Ensure live segment directory exists
 try { if (!fs.existsSync(LIVE_DIR)) fs.mkdirSync(LIVE_DIR, { recursive: true }); } catch (e) { console.warn('[eSE Live] Failed to create live dir:', e.message); }
 
 // Stream metadata (title, category, language)
 let streamMeta = { title: '', category: 'general', language: 'es' };
-let localStreamKey = null;
 
 // Ghost-viewer fix (2026-06) — player-alive heartbeat relay.
 // The watch pages fetch HLS from THIS server (/hls-local, /hls), so eMule's
@@ -204,37 +212,50 @@ function detectExternalStream() {
     const pipelineStatus = pipeline.getStatus().status;
     const pipelineActive = pipelineStatus === 'streaming' || pipelineStatus === 'starting';
 
-    if (fresh && !pipelineActive && !localStreamKey) {
-      // FFmpeg externo activo — registrar canal
-      localStreamKey = 'external_' + Date.now().toString(36);
-      channelSearch.registerChannel({
-        streamKey: localStreamKey,
-        title: streamMeta.title || 'Emisi\u00f3n local',
-        category: streamMeta.category || 'general',
-        language: streamMeta.language || 'es',
-        bitrate: 8000,
-        viewers: 0
-      });
+    if (fresh && !pipelineActive && !externalStreamDetected) {
+      // The canonical C++ broadcaster writes into this same directory and is
+      // imported with its real stream key by pollEmuleChannels(). Older code
+      // also registered a synthetic external_<timestamp> channel here, so one
+      // broadcast appeared twice and the fake entry could never be joined.
       externalStreamDetected = true;
-      console.log('[eSE Live] Stream externo detectado, registrado como', localStreamKey);
-    } else if (!fresh && externalStreamDetected && localStreamKey) {
+      console.log('[eSE Live] HLS output detected; waiting for canonical eMule channel metadata');
+    } else if (!fresh && externalStreamDetected) {
       // El .m3u8 no se actualiza — el stream ha muerto
-      channelSearch.unregisterChannel(localStreamKey);
-      localStreamKey = null;
       externalStreamDetected = false;
-      console.log('[eSE Live] Stream externo finalizado (m3u8 obsoleto), desregistrado');
+      console.log('[eSE Live] HLS output ended');
       cleanHLSFiles(); // evitar redetección en el próximo ciclo
     }
   } catch (e) { console.warn('[eSE Live] External stream detection error:', e.message); }
 }
-setInterval(detectExternalStream, 5000);
-// Al arrancar: limpiar archivos HLS viejos antes de la primera detección
-cleanHLSFiles({ staleOnly: true, maxAgeMs: STREAM_STALE_MS });
-detectExternalStream();
+if (process.env.ESE_TEST_MODE !== '1') {
+  setInterval(detectExternalStream, 5000);
+  // Al arrancar: limpiar archivos HLS viejos antes de la primera detección
+  cleanHLSFiles({ staleOnly: true, maxAgeMs: STREAM_STALE_MS });
+  detectExternalStream();
+}
 
 
 function handleRoute(url, req, res, ctx) {
   const p = url.pathname;
+
+  // Keep browser playback independent from Internet/CDN availability.  The
+  // file is packaged with ese-server.exe and also works from a source checkout.
+  if (p === '/live/vendor/hls.min.js') {
+    if (!HLS_JS_BUNDLE || !fs.existsSync(HLS_JS_BUNDLE)) {
+      res.writeHead(503, { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end('/* bundled hls.js unavailable */');
+      return true;
+    }
+    const stat = fs.statSync(HLS_JS_BUNDLE);
+    res.writeHead(200, {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Content-Length': stat.size,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'X-Content-Type-Options': 'nosniff'
+    });
+    fs.createReadStream(HLS_JS_BUNDLE).pipe(res);
+    return true;
+  }
 
   // --- eSE HLS Segment Serving ---
   // Two flavors:
@@ -719,33 +740,13 @@ function handleRoute(url, req, res, ctx) {
   // Source: testpattern (default) | screen | file | rtmp
   if (p === '/api/live/broadcast/start') {
     const qs = url.search || '';
-    const proxyReq = http.get('http://127.0.0.1:4711/api/live/broadcast/start' + qs,
-      { timeout: 8000 }, (proxyRes) => {
-      let body = '';
-      proxyRes.on('data', d => body += d);
-      proxyRes.on('end', () => {
-        try { jsonResponse(res, proxyRes.statusCode || 200, JSON.parse(body)); }
-        catch (e) { jsonResponse(res, 200, { success: false, error: 'parse_error' }); }
-      });
-    });
-    proxyReq.on('error',   () => jsonResponse(res, 200, { success: false, error: 'eMule offline' }));
-    proxyReq.on('timeout', () => { proxyReq.destroy(); jsonResponse(res, 200, { success: false, error: 'timeout' }); });
+    proxyEmuleJson(res, '/api/live/broadcast/start' + qs, 20000);
     return true;
   }
 
   // === GET /api/live/broadcast/stop — Proxy: stop broadcast ===
   if (p === '/api/live/broadcast/stop') {
-    const proxyReq = http.get('http://127.0.0.1:4711/api/live/broadcast/stop',
-      { timeout: 5000 }, (proxyRes) => {
-      let body = '';
-      proxyRes.on('data', d => body += d);
-      proxyRes.on('end', () => {
-        try { jsonResponse(res, 200, JSON.parse(body)); }
-        catch (e) { jsonResponse(res, 200, { success: false }); }
-      });
-    });
-    proxyReq.on('error',   () => jsonResponse(res, 200, { success: false, error: 'eMule offline' }));
-    proxyReq.on('timeout', () => { proxyReq.destroy(); jsonResponse(res, 200, { success: false, error: 'timeout' }); });
+    proxyEmuleJson(res, '/api/live/broadcast/stop', 5000);
     return true;
   }
 
@@ -881,8 +882,15 @@ function handleRoute(url, req, res, ctx) {
   }
 
   if (p === '/api/live/status') {
-    const status = pipeline.getStatus();
-    jsonResponse(res, 200, { ...status, meta: streamMeta });
+    proxyEmuleJson(res, '/api/live/debug', 3000, (data) => ({
+      status: data.broadcasting ? 'streaming' : (data.viewing ? 'viewing' : 'idle'),
+      segments: data.chunks && Number.isFinite(data.chunks.count) ? data.chunks.count : 0,
+      uptime: data.uptime || 0,
+      broadcasting: !!data.broadcasting,
+      viewing: !!data.viewing,
+      backend: 'emule',
+      meta: streamMeta
+    }));
     return true;
   }
 
@@ -893,55 +901,34 @@ function handleRoute(url, req, res, ctx) {
     return true;
   }
 
-  // === POST /api/live/start ===
+  // Compatibility endpoint.  The old implementation launched a second,
+  // Node-only FFmpeg pipeline and reported a channel that never entered the
+  // eMule P2P mesh.  Route supported sources through the canonical C++ engine.
   if (p === '/api/live/start' && req.method === 'POST') {
-    // Guard: eMule must be running to publish on the P2P network
-    const emuleApi = require('../emule_api');
-    if (!emuleApi.isEmuleRunning()) {
-      jsonResponse(res, 503, {
-        success: false,
-        error: 'eMule no está activo. Inicia eMule antes de emitir para que el broadcast sea visible en la red P2P.'
-      });
-      return true;
-    }
-
     readBody(req, (body) => {
       try {
         const config = JSON.parse(body);
-        // Update metadata
+        const source = String(config.sourceType || 'screen').toLowerCase();
+        const supported = new Set(['testpattern', 'screen', 'file', 'rtmp']);
+        if (!supported.has(source)) {
+          return jsonResponse(res, 422, {
+            success: false,
+            error: 'source_not_supported_by_p2p',
+            detail: 'Usa screen, file, rtmp o testpattern. Para webcam/capturadora, envía la señal mediante OBS a RTMP.'
+          });
+        }
         streamMeta.title = config.title || 'Sin t\u00edtulo';
         streamMeta.category = config.category || 'general';
         streamMeta.language = config.language || 'es';
-
-        const result = pipeline.start({
-          source: {
-            type: config.sourceType || 'screen',
-            id: config.sourceId || 'desktop',
-            audioDevice: config.audioDevice || null,
-            width: config.width || 0,
-            height: config.height || 0,
-            fps: config.fps || 30
-          },
-          ffmpegPath: ctx.ffmpegPath,
-          outputDir: LIVE_DIR,
-          hwEncoder: ctx.hwEncoder,
-          hwEncoderOpts: ctx.hwEncoderOpts,
-          bitrate: config.bitrate || 3000,
-          segmentDuration: 4
-        });
-
-        // Register channel in directory
-        localStreamKey = 'local_' + Date.now().toString(36);
-        channelSearch.registerChannel({
-          streamKey: localStreamKey,
+        const params = new URLSearchParams({
+          source,
           title: streamMeta.title,
           category: streamMeta.category,
           language: streamMeta.language,
-          bitrate: config.bitrate || 3000,
-          viewers: 0
+          bitrate: String(config.bitrate || 3000)
         });
-
-        jsonResponse(res, result.success ? 200 : 400, result);
+        if (source === 'file') params.set('file', config.sourceId || '');
+        proxyEmuleJson(res, '/api/live/broadcast/start?' + params.toString(), 20000);
       } catch (e) {
         jsonResponse(res, 400, { success: false, error: 'Invalid JSON: ' + e.message });
       }
@@ -960,22 +947,13 @@ function handleRoute(url, req, res, ctx) {
       console.log('[eSE Live] Sent END signal to', tunnelStatus.connections, 'tunnel peers');
     }
 
-    // Stop Node.js pipeline
-    const result = pipeline.stop();
-    if (localStreamKey) {
-      channelSearch.unregisterChannel(localStreamKey);
-      localStreamKey = null;
-    }
+    // Clean any legacy local process left by a previous version, then stop the
+    // canonical C++ broadcaster (which also sends OP_LIVE_END to P2P peers).
+    pipeline.stop();
+    rtmpServer.stop();
     streamMeta = { title: '', category: 'general', language: 'es' };
 
-    // Also kill any eMule-spawned FFmpeg orphans and clean HLS files
-    const emuleApi = require('../emule_api');
-    if (typeof emuleApi.killEmuleFFmpegOrphans === 'function') {
-      emuleApi.killEmuleFFmpegOrphans();
-    }
-    cleanHLSFiles();
-
-    jsonResponse(res, 200, result);
+    proxyEmuleJson(res, '/api/live/broadcast/stop', 5000);
     return true;
   }
 
@@ -1030,7 +1008,7 @@ function handleRoute(url, req, res, ctx) {
           quality: s.bitrate >= 5000 ? 'FHD' : (s.bitrate >= 3000 ? 'HD' : 'SD'),
           isLocal: !!s.own,
           source: 'kad',
-          ed2kLink: `ed2k://|stream|${encodeURIComponent(s.title || 'Live')}|${key}|/`
+          ed2kLink: buildAnonymousLiveLink(key, s.title || 'Live')
         });
       });
 
@@ -1108,28 +1086,22 @@ function handleRoute(url, req, res, ctx) {
         streamMeta.category = config.category || 'general';
         streamMeta.language = config.language || 'es';
 
-        const result = rtmpServer.start({
-          ffmpegPath: ctx.ffmpegPath,
-          outputDir: LIVE_DIR,
-          hwEncoder: ctx.hwEncoder,
-          hwEncoderOpts: ctx.hwEncoderOpts,
-          port: config.port || 1935,
-          bitrate: config.reencode ? (config.bitrate || 3000) : 0,
-          onStatus: (status) => {
-            if (status === 'receiving' && !localStreamKey) {
-              localStreamKey = 'obs_' + Date.now().toString(36);
-              channelSearch.registerChannel({
-                streamKey: localStreamKey,
-                title: streamMeta.title,
-                category: streamMeta.category,
-                language: streamMeta.language,
-                bitrate: config.bitrate || 6000
-              });
-            }
-          }
+        if (config.port && Number(config.port) !== 1935) {
+          return jsonResponse(res, 422, {
+            success: false,
+            error: 'unsupported_rtmp_port',
+            detail: 'La ingesta P2P usa el puerto RTMP 1935.'
+          });
+        }
+        const params = new URLSearchParams({
+          source: 'rtmp',
+          title: streamMeta.title,
+          category: streamMeta.category,
+          language: streamMeta.language,
+          bitrate: String(config.bitrate || 3000)
         });
-
-        jsonResponse(res, result.success ? 200 : 400, result);
+        proxyEmuleJson(res, '/api/live/broadcast/start?' + params.toString(), 5000,
+          data => ({ ...data, rtmpUrl: 'rtmp://127.0.0.1:1935/live/stream' }));
       } catch (e) {
         jsonResponse(res, 400, { success: false, error: e.message });
       }
@@ -1140,18 +1112,20 @@ function handleRoute(url, req, res, ctx) {
   // === POST /api/live/rtmp/stop ===
   if (p === '/api/live/rtmp/stop' && req.method === 'POST') {
     rtmpServer.stop();
-    if (localStreamKey) {
-      channelSearch.unregisterChannel(localStreamKey);
-      localStreamKey = null;
-    }
     streamMeta = { title: '', category: 'general', language: 'es' };
-    jsonResponse(res, 200, { success: true });
+    proxyEmuleJson(res, '/api/live/broadcast/stop', 5000);
     return true;
   }
 
   // === GET /api/live/rtmp/status ===
   if (p === '/api/live/rtmp/status') {
-    jsonResponse(res, 200, rtmpServer.getStatus());
+    proxyEmuleJson(res, '/api/live/debug', 3000, data => ({
+      running: !!data.broadcasting,
+      status: data.broadcasting ? ((data.chunks && data.chunks.count > 0) ? 'receiving' : 'waiting') : 'stopped',
+      segments: data.chunks ? data.chunks.count : 0,
+      rtmpUrl: 'rtmp://127.0.0.1:1935/live/stream',
+      backend: 'emule'
+    }));
     return true;
   }
 
@@ -1275,8 +1249,7 @@ function handleRoute(url, req, res, ctx) {
     });
     res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>eSE Live</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="/live/vendor/hls.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#000;font-family:"Inter",sans-serif;overflow:hidden}
@@ -1429,7 +1402,7 @@ function checkJoinRetry() {
 const joinPollId = setInterval(() => { pollJoinState(); checkJoinRetry(); }, 3000);
 pollJoinState();
 
-if(Hls.isSupported()){
+if(window.Hls&&Hls.isSupported()){
 const h=new Hls({liveSyncDurationCount:3,liveMaxLatencyDurationCount:8,liveDurationInfinity:true,maxBufferLength:30,maxMaxBufferLength:60,maxBufferHole:2,manifestLoadingMaxRetry:50,levelLoadingMaxRetry:50,fragLoadingMaxRetry:50});
 h.loadSource(src);h.attachMedia(v);
 // Phase 3: Transition to PLAYING only on FRAG_BUFFERED (actual data), not MANIFEST_PARSED (existence)
@@ -1456,7 +1429,8 @@ h.on(Hls.Events.AUDIO_TRACKS_UPDATED,()=>{
   sel.selectedIndex=h.audioTrack>=0?h.audioTrack:0;
   sel.onchange=()=>{h.audioTrack=parseInt(sel.value)};
 });
-}else if(v.canPlayType('application/vnd.apple.mpegurl')){v.src=src}
+}else if(v.canPlayType('application/vnd.apple.mpegurl')){v.src=src
+}else{updateJoinOverlay('FAILED',0,0,'OFF');document.getElementById('join-detail').textContent='Reproductor HLS no disponible'}
 
 setInterval(()=>{if(v.paused&&v.readyState>=2)v.play()},2000);
 setInterval(()=>{const t=Math.floor(v.currentTime);const m=Math.floor(t/60);const s=t%60;document.getElementById('time').textContent=m+':'+String(s).padStart(2,'0')},500);
@@ -1521,9 +1495,8 @@ addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBe
   // === GET /api/live/p2p/stats — P2P mesh topology stats ===
   if (p === '/api/live/p2p/stats') {
     // Query eMule WebServer for live stream manager state
-    const needle = require('needle');
-    needle.get('http://127.0.0.1:4711/api/live/mesh', { timeout: 2000 }, (err, resp) => {
-      if (err || !resp || resp.statusCode !== 200) {
+    requestEmuleJson('/api/live/mesh', 2000, (err, data, statusCode) => {
+      if (err || statusCode !== 200) {
         // Fallback: return local-only stats
         const tunnel = wsTunnel.getStatus();
         jsonResponse(res, 200, {
@@ -1536,7 +1509,7 @@ addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBe
           source: 'local-tunnel'
         });
       } else {
-        jsonResponse(res, 200, resp.body);
+        jsonResponse(res, 200, data);
       }
     });
     return true;
@@ -1544,25 +1517,23 @@ addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBe
 
   // === GET /api/live/p2p/streams — Kad-discovered P2P streams ===
   if (p === '/api/live/p2p/streams') {
-    const needle = require('needle');
-    needle.get('http://127.0.0.1:4711/api/live/kad/streams', { timeout: 3000 }, (err, resp) => {
-      if (err || !resp || resp.statusCode !== 200) {
+    requestEmuleJson('/api/live/kad/streams', 3000, (err, data, statusCode) => {
+      if (err || statusCode !== 200) {
         // Fallback: return local channel directory
         const channels = channelSearch.search({});
         jsonResponse(res, 200, {
           streams: channels.map(ch => ({
             ...ch,
             source: 'local',
-            ed2kLink: `ed2k://|stream|${encodeURIComponent(ch.title)}|${ch.streamKey}|/`
+            ed2kLink: buildAnonymousLiveLink(ch.streamKey, ch.title)
           })),
           kadConnected: false
         });
       } else {
-        const data = resp.body;
         // Add ed2k links to Kad streams
         if (data.streams) {
           data.streams.forEach(s => {
-            s.ed2kLink = `ed2k://|stream|${encodeURIComponent(s.title || 'Live')}|${s.streamKey}|/`;
+            s.ed2kLink = buildAnonymousLiveLink(s.streamKey, s.title || 'Live');
           });
         }
         jsonResponse(res, 200, data);
@@ -1573,11 +1544,25 @@ addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBe
 
   // === GET /api/live/p2p/share — Generate share link ===
   if (p === '/api/live/p2p/share') {
-    const key = url.searchParams.get('key') || localStreamKey || '';
-    const title = url.searchParams.get('title') || streamMeta.title || 'Live';
-    const ed2kLink = `ed2k://|stream|${encodeURIComponent(title)}|${key}|/`;
-    const webLink = `http://localhost:${url.port || 8080}/live/watch/${key}`;
-    jsonResponse(res, 200, { ed2kLink, webLink, streamKey: key });
+    const requestedKey = url.searchParams.get('key') || '';
+    const requestedTitle = url.searchParams.get('title') || streamMeta.title || 'Live';
+    const buildShare = (key, title) => ({
+      success: !!key,
+      ed2kLink: buildAnonymousLiveLink(key, title),
+      webLink: key ? `http://localhost:8080/live/watch/${encodeURIComponent(key)}` : '',
+      streamKey: key,
+      title
+    });
+    if (requestedKey) {
+      jsonResponse(res, 200, buildShare(requestedKey, requestedTitle));
+    } else {
+      proxyEmuleJson(res, '/api/live/channels', 3000, data => {
+        const channel = data.channels && data.channels[0];
+        return channel
+          ? buildShare(channel.hash || channel.streamKey || '', channel.title || requestedTitle)
+          : { success: false, error: 'no_active_broadcast', ed2kLink: '', webLink: '', streamKey: '' };
+      });
+    }
     return true;
   }
 
@@ -1600,7 +1585,7 @@ addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBe
                 language: ch.language || 'es',
                 bitrate: ch.bitrate || 3000,
                 viewers: ch.viewers || 0,
-                started: ch.started || new Date().toISOString()
+                started: ch.started || (ch.startedAt ? new Date(ch.startedAt * 1000).toISOString() : new Date().toISOString())
               });
             });
           }
@@ -1687,8 +1672,64 @@ addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBe
 // --- Helpers ---
 
 function jsonResponse(res, code, data) {
+  if (res.writableEnded) return;
   res.writeHead(code, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
+}
+
+function buildAnonymousLiveLink(key, title) {
+  return key ? `ed2k://|live|${key}||${encodeURIComponent(title || 'Live')}|/` : '';
+}
+
+function proxyEmuleJson(res, endpoint, timeoutMs, transform) {
+  let completed = false;
+  const finish = (code, data) => {
+    if (completed) return;
+    completed = true;
+    jsonResponse(res, code, data);
+  };
+  requestEmuleJson(endpoint, timeoutMs || 5000, (err, data, statusCode) => {
+    if (err) {
+      const error = err.message || 'eMule offline';
+      return finish(error === 'timeout' ? 504 : 502, { success: false, error });
+    }
+    try {
+      finish(statusCode || 200, transform ? transform(data) : data);
+    } catch (e) {
+      finish(502, { success: false, error: 'transform_error' });
+    }
+  });
+}
+
+function requestEmuleJson(endpoint, timeoutMs, callback) {
+  let completed = false;
+  const finish = (err, data, statusCode) => {
+    if (completed) return;
+    completed = true;
+    callback(err, data, statusCode);
+  };
+  const request = http.get('http://127.0.0.1:4711' + endpoint,
+    { timeout: timeoutMs || 5000 }, (response) => {
+      let body = '';
+      response.on('data', chunk => {
+        body += chunk;
+        if (body.length > 1024 * 1024) request.destroy(new Error('response_too_large'));
+      });
+      response.on('end', () => {
+        try {
+          finish(null, JSON.parse(body), response.statusCode || 200);
+        } catch (e) {
+          finish(new Error('parse_error'));
+        }
+      });
+    });
+  request.on('error', err => finish(new Error(
+    err && err.message === 'response_too_large' ? 'response_too_large' : 'eMule offline'
+  )));
+  request.on('timeout', () => {
+    finish(new Error('timeout'));
+    request.destroy();
+  });
 }
 
 function readBody(req, cb) {
@@ -1714,7 +1755,7 @@ function pollEmuleChannels() {
               language: ch.language || 'es',
               bitrate: ch.bitrate || 3000,
               viewers: ch.viewers || 0,
-              started: ch.started || new Date().toISOString()
+              started: ch.started || (ch.startedAt ? new Date(ch.startedAt * 1000).toISOString() : new Date().toISOString())
             });
           });
         }

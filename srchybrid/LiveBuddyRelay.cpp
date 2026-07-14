@@ -94,7 +94,9 @@ void CLiveBuddyRelay::StartAsBroadcaster()
     CUpDownClient* buddy = NULL;
     for (size_t i = 0; i < cands.size(); ++i) {
         CUpDownClient* c = cands[i];
-        if (c == NULL || c->HasLowID())                       continue;  // need a reachable relay
+		if (c == NULL)                                           continue;
+		// GetConnectedSnapshot already proves a live transport. The numeric
+		// LowID/HighID label must not veto an established v6/punched relay.
         if (!c->SupportsLiveRelay())                          continue;  // [eSE v9] only ask peers that advertise relay duty (cap bit 21)
         if (theApp.liveStreamManager->IsStreamSourcePeer(c))  continue;  // not one of our sources
         buddy = c; break;

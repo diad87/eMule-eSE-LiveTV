@@ -1,7 +1,7 @@
 # Índice maestro de documentación — eMule eSE LiveTV
 
 > **Qué es esto:** el mapa único de toda la documentación del proyecto. Si no sabes por dónde
-> empezar o dónde está algo, empieza aquí. Última actualización: **2026-06-14**.
+> empezar o dónde está algo, empieza aquí. Última actualización: **2026-07-14**.
 >
 > **Leyenda de estado:** 🎓 tesis/paper · 🧭 roadmap/estrategia viva · 📐 plan/spec ·
 > ✅ implementado/final · 🔬 auditoría/análisis · 🔀 consolidado/comparativa · ♻️ a refrescar ·
@@ -16,6 +16,7 @@
 | [MODERNIZATION_ROADMAP.md](MODERNIZATION_ROADMAP.md) | **El plan director vivo.** Los 5 ejes de modernización (headless/API, buffer, IPTV, Kad-live, multiplataforma) + Track R (alcanzabilidad). Por aquí se decide qué se hace. |
 | [MASTER_PLAN.md](MASTER_PLAN.md) | Visión de producto y escalabilidad (de ~20 a 5000+ viewers); arquitectura actual y cuellos de botella. |
 | [USER_GUIDE.md](USER_GUIDE.md) | Cómo se usa: instalar, ver un stream, emitir, troubleshooting. |
+| [LIVETV_STATUS.md](LIVETV_STATUS.md) | **Estado operativo LiveTV:** qué está implementado y validado, qué pruebas físicas faltan y qué pertenece a roadmaps separados. |
 | [CHANGELOG_vanilla0.70b_to_v8.1.0.md](CHANGELOG_vanilla0.70b_to_v8.1.0.md) | Qué cambia este fork frente a eMule 0.70b vanilla (la divergencia completa). |
 
 ---
@@ -62,6 +63,9 @@
 | [IPV6_PLAN.md](IPV6_PLAN.md) | 📌 **canónico IPv6** (~25% hecho) | Plan maestro IPv6 (8 fases). Sprints 0-3 hechos, 4 scaffold, 5-11 sin iniciar. Scope: cliente↔servidor queda v4; v6 en cliente↔cliente, Kad, eSE/Live. |
 | [IPV6_ANALYSIS.md](IPV6_ANALYSIS.md) | 🔀 comparativa | Por qué IPv6 es crítico + comparativa de enfoques. El elegido vive en IPV6_PLAN. |
 | [IPV6_SPRINT_PLAN.md](IPV6_SPRINT_PLAN.md) | 🔀 operativo | Ejecución anti-regresión (flags, opcodes paralelos, smoke matrix). Canónico: IPV6_PLAN. |
+| [SPEC_KAD6_ANONYMOUS_COMPAT.md](SPEC_KAD6_ANONYMOUS_COMPAT.md) | 📐 v0.2 draft normativo (2026-07-14) | **Kad6:** overlay IPv6-first con anonimato asimétrico y gateways retrocompatibles Kad2/eD2K. Define circuitos 2/3-hop, wire lógico, cohortes/VEP, PEX autorizado, economía de exits, bootstrap privado, shaping anti-watermark, antiabuso, gates y rollout sin asignar aún números globales. |
+| [KAD6_IMPLEMENTATION_PLAN.md](KAD6_IMPLEMENTATION_PLAN.md) | 🧭 plan de ejecución (2026-07-15) | **Cómo construir Kad6.** Política de orquestación de modelos (Haiku=mecánica / Sonnet=estándar / Opus=cripto+estado+revisión; regla dura: Tier C no lo primero-borradorea un modelo tonto), invariantes globales, K6-0/K6-1 a resolución de ticket (arrancables ya, sin runtime), K6-2..K6-8 a paquete con ADRs bloqueantes, camino crítico y realidad multi-PC. |
+| [KAD6_TICKETS.md](KAD6_TICKETS.md) | 🎫 tickets listos (2026-07-15) | **16 tickets K6-0/K6-1 refinados a prompts copiables** para pegar a Haiku/Sonnet/Opus. Arquitectura `libkad6/` (patrón libreach: MIT, sin MFC, cripto por IoC), ADR-02 resuelto (bit 24 discovery + u64 firmado), asignaciones `TUN_OP_KAD6_GATEWAY`=0x70 / `ESE_CAP_KAD6`=0x01000000, preámbulo de invariantes, orden de ejecución. |
 | [ANONYMOUS_BROADCAST.md](ANONYMOUS_BROADCAST.md) | 📐 plan | Emitir sin publicar la IP del broadcaster en Kad (relay-protegido). Non-goal: no es Tor. |
 
 ---

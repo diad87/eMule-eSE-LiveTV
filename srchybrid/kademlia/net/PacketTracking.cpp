@@ -97,7 +97,26 @@ bool CPacketTracking::IsOnOutTrackList(uint32 dwIP, uint8 byOpcode, bool bDontRe
 }
 
 //return codes: 0 - no error; 1 - flood; 2 - massive flood
-int CPacketTracking::InTrackListIsAllowedPacket(uint32 uIP, uint8 byOpcode, bool /*bValidSenderkey*/)
+static bool IsEndpointScopedEseOpcode(uint8 byOpcode)
+{
+	switch (byOpcode) {
+	case KADEMLIA_ESE_HOLEPUNCH_REQ:
+	case KADEMLIA_ESE_HOLEPUNCH_ACK:
+	case KADEMLIA_ESE_HOLEPUNCH_CHALLENGE:
+	case KADEMLIA3_PING_REQ:
+	case KADEMLIA3_PING_RES:
+	case KADEMLIA3_HOLEPUNCH_REQ:
+	case KADEMLIA3_HOLEPUNCH_FWD:
+	case KADEMLIA3_HOLEPUNCH_ACK:
+	case KADEMLIA3_HOLEPUNCH_CHALLENGE:
+	case KADEMLIA3_HOLEPUNCH_PROCEED:
+		return true;
+	default:
+		return false;
+	}
+}
+
+int CPacketTracking::InTrackListIsAllowedPacket(uint32 uIP, uint16 uUDPPort, uint8 byOpcode, bool /*bValidSenderkey*/)
 {
 	// this tracklist monitors _incoming_ request packets and acts as a general flood protection
 	// by dropping too frequent requests from a single IP, thus avoiding response floods, saving CPU time,
@@ -110,7 +129,6 @@ int CPacketTracking::InTrackListIsAllowedPacket(uint32 uIP, uint8 byOpcode, bool
 	//
 	// Tokens are calculated as the number of milliseconds corresponding to the allowed quantity of packets per minute.
 	int token;
-	const byte byDbgOrgOpcode = byOpcode;
 	switch (byOpcode) {
 	case KADEMLIA2_BOOTSTRAP_REQ:
 		token = MIN2MS(1) / 2;
@@ -163,21 +181,30 @@ int CPacketTracking::InTrackListIsAllowedPacket(uint32 uIP, uint8 byOpcode, bool
 	// 0x65 CHALLENGE shares the budget so an inbound challenge flood can't bypass
 	// the per-IP choke (same ~2/min/IP + massive-flood ban path as REQ/ACK).
 	case KADEMLIA_ESE_HOLEPUNCH_CHALLENGE:
-	// Reserve the Kad3 (IPv6) hole-punch band too, so it never silently falls to
-	// 'return 0' once those handlers are wired (currently inert
-	// Process_KADEMLIA3_GENERIC stubs).
-	// R.2: keepalive ping band — same per-IP choke so an inbound 0x66/0x67 flood
-	// can't bypass it (adversarial review 2026-06-14, finding #3).
-	case KADEMLIA3_PING_REQ:
-	case KADEMLIA3_PING_RES:
+	// Kad3 (IPv6) hole-punch band — same ~2/min/IP choke so it never silently falls
+	// to 'return 0' once those handlers are wired. Punching is rare (one exchange per
+	// stalled peer), so 2/min is far above normal usage but bounds a non-spoofed flood
+	// and reuses the ban path below. (Cookie/proceed included: an inbound 0x6B/0x6C
+	// flood can't bypass the choke either.)
 	case KADEMLIA3_HOLEPUNCH_REQ:
 	case KADEMLIA3_HOLEPUNCH_FWD:
 	case KADEMLIA3_HOLEPUNCH_ACK:
-	// R.1 inc.2: the cookie/proceed band shares the same per-IP choke so an
-	// inbound 0x6B/0x6C flood can't bypass it once the handlers are wired.
 	case KADEMLIA3_HOLEPUNCH_CHALLENGE:
 	case KADEMLIA3_HOLEPUNCH_PROCEED:
 		token = MIN2MS(1) / 2;
+		break;
+	// R.2 keepalive ping band. Unlike punching, these flow CONTINUOUSLY at the
+	// keepalive cadence: one PING_REQ per supernode every 25s (= 2.4/min) plus the
+	// matching PONG. That is ABOVE the 2/min punch budget, so once the InTrackList
+	// lookup below is fixed (== -> !=) a shared 2/min bucket would throttle and then
+	// ban a legitimate sustained keepalive after ~18 min. Give the ping band its own
+	// ~8/min bucket: still a hard flood ceiling for a 16-byte packet, but comfortably
+	// above the real cadence + jitter. (See KadKeepalive.cpp KEEPALIVE_PING_INTERVAL_MS;
+	// a semantic "PING_RES only if it matches a pending ping" belongs in the keepalive
+	// layer, not here.)
+	case KADEMLIA3_PING_REQ:
+	case KADEMLIA3_PING_RES:
+		token = MIN2MS(1) / 8;
 		break;
 	default:
 		// not a request packets, but a response - no further checks at this point
@@ -185,32 +212,70 @@ int CPacketTracking::InTrackListIsAllowedPacket(uint32 uIP, uint8 byOpcode, bool
 	}
 	const DWORD curTick = ::GetTickCount();
 	// time for cleaning up?
-	if (curTick >= dwLastTrackInCleanup + MIN2MS(12))
+	// Unsigned subtraction is wrap-safe as long as the interval is < 2^31 ms.
+	if (curTick - dwLastTrackInCleanup >= MIN2MS(12))
 		InTrackListCleanup();
+
+	const bool bEndpointScoped = IsEndpointScopedEseOpcode(byOpcode);
+	if (bEndpointScoped) {
+		// Keep a generous aggregate ceiling per public IP to stop source-port hopping,
+		// but never ban a whole household/CGNAT address for one endpoint's behaviour.
+		// 120/min/opcode supports many legitimate clients sharing one public address.
+		const ULONGLONG uAggregateKey = (static_cast<ULONGLONG>(uIP) << 16);
+		if (ChargeIncomingBucket(uAggregateKey, uIP, 0, byOpcode,
+			MIN2MS(1) / 120, false, false) != 0)
+			return 1;
+
+		const ULONGLONG uEndpointKey = uAggregateKey | uUDPPort;
+		return ChargeIncomingBucket(uEndpointKey, uIP, uUDPPort, byOpcode,
+			token, false, true);
+	}
+
+	// Preserve the established stock behaviour for legacy Kad opcodes: a bucket
+	// is shared by the public IP and massive floods may still trigger an IP ban.
+	const ULONGLONG uLegacyKey = (static_cast<ULONGLONG>(uIP) << 16);
+	return ChargeIncomingBucket(uLegacyKey, uIP, 0, byOpcode, token, true, false);
+}
+
+int CPacketTracking::ChargeIncomingBucket(ULONGLONG uTrackKey, uint32 uIP, uint16 uUDPPort,
+	uint8 byOpcode, int token, bool bAllowIPBan, bool bExpireEndpointOnMassive)
+{
+	const DWORD curTick = ::GetTickCount();
 
 	// check for existing entries
 	TrackPacketsIn_Struct *pTrackEntry;
-	if (!m_mapTrackPacketsIn.Lookup(uIP, pTrackEntry)) {
+	if (!m_mapTrackPacketsIn.Lookup(uTrackKey, pTrackEntry)) {
 		pTrackEntry = new TrackPacketsIn_Struct();
 		pTrackEntry->m_uIP = uIP;
-		m_mapTrackPacketsIn[uIP] = pTrackEntry;
+		pTrackEntry->m_uUDPPort = uUDPPort;
+		pTrackEntry->m_dwLastActivity = curTick;
+		m_mapTrackPacketsIn[uTrackKey] = pTrackEntry;
 		m_liTrackPacketsIn.AddHead(pTrackEntry);
 	}
+	pTrackEntry->m_dwLastActivity = curTick;
 
 	INT_PTR i = pTrackEntry->m_aTrackedRequests.GetCount();
-	// search for the specific request track
-	while (--i >= 0 && pTrackEntry->m_aTrackedRequests[i].m_byOpcode == byOpcode);
+	// Search backwards for THIS opcode's tracked entry: keep going while the opcode
+	// does NOT match, stop on the first match (or i == -1 if none). The '==' here was a
+	// long-standing fork regression (stock eMule uses a forward for-loop + break): it
+	// stopped on the first NON-match, so it charged one opcode's tokens against another
+	// entry and, for a repeated same-opcode flood, spawned a fresh duplicate entry every
+	// packet — meaning the per-opcode limiter never accumulated and never actually fired.
+	while (--i >= 0 && pTrackEntry->m_aTrackedRequests[i].m_byOpcode != byOpcode);
 
 	if (i >= 0) {
 		// already tracking requests with this opcode
 		TrackPacketsIn_Struct::TrackedRequestIn_Struct &TrackedRequest = pTrackEntry->m_aTrackedRequests[i];
-		TrackedRequest.m_tokens += curTick - TrackedRequest.m_dwLatest;
-		if (TrackedRequest.m_tokens > MIN2MS(1))
+		const DWORD dwElapsed = curTick - TrackedRequest.m_dwLatest;
+		if (dwElapsed >= (DWORD)MIN2MS(1))
 			TrackedRequest.m_tokens = MIN2MS(1);
+		else {
+			TrackedRequest.m_tokens += (int)dwElapsed;
+			if (TrackedRequest.m_tokens > MIN2MS(1))
+				TrackedRequest.m_tokens = MIN2MS(1);
+		}
 		TrackedRequest.m_tokens -= token;
 		TrackedRequest.m_dwLatest = curTick;
-		// remember only for easier cleanup
-		pTrackEntry->m_dwLastExpire = max(pTrackEntry->m_dwLastExpire, curTick + abs(TrackedRequest.m_tokens) + token);
 
 		if (CKademlia::IsRunningInLANMode() && IsLANIP(ntohl(uIP))) // no flood detection in LanMode
 			return 0;
@@ -218,16 +283,24 @@ int CPacketTracking::InTrackListIsAllowedPacket(uint32 uIP, uint8 byOpcode, bool
 		// now the actual check if this request is allowed
 		if (TrackedRequest.m_tokens < 0) {
 			if (TrackedRequest.m_tokens < MIN2MS(-3)) {
-				// this is so far above the limit that has to be an intentional flood / misuse
-				// so we take higher level of punishment and ban the IP
-				DebugLogWarning(_T("Kad: Massive request flood detected for opcode 0x%X (0x%X) from IP %s - Banning IP"), byOpcode, byDbgOrgOpcode, (LPCTSTR)ipstr(htonl(uIP)));
-				theApp.clientlist->AddBannedClient(ntohl(uIP));
-				return 2; // drop the packet, remove the contact from routing
+				if (bAllowIPBan) {
+					DebugLogWarning(_T("Kad: Massive request flood detected for opcode 0x%X from IP %s - Banning IP"), byOpcode, (LPCTSTR)ipstr(htonl(uIP)));
+					theApp.clientlist->AddBannedClient(ntohl(uIP));
+					return 2;
+				}
+				DebugLogWarning(_T("Kad: Massive endpoint flood detected for opcode 0x%X from %s:%u - dropping endpoint traffic"),
+					byOpcode, (LPCTSTR)ipstr(htonl(uIP)), (unsigned)uUDPPort);
+				return bExpireEndpointOnMassive ? 2 : 1;
 			}
 			// over the limit, drop the packet but do nothing else
 			if (!TrackedRequest.m_bDbgLogged) {
 				TrackedRequest.m_bDbgLogged = true;
-				DebugLog(_T("Kad: Request flood detected for opcode 0x%X (0x%X) from IP %s - Dropping packets with this opcode"), byOpcode, byDbgOrgOpcode, (LPCTSTR)ipstr(htonl(uIP)));
+				if (uUDPPort != 0)
+					DebugLog(_T("Kad: Request flood detected for opcode 0x%X from %s:%u - Dropping endpoint packets"),
+						byOpcode, (LPCTSTR)ipstr(htonl(uIP)), (unsigned)uUDPPort);
+				else
+					DebugLog(_T("Kad: Request flood detected for opcode 0x%X from IP %s - Dropping packets"),
+						byOpcode, (LPCTSTR)ipstr(htonl(uIP)));
 			}
 			return 1; // drop the packet
 		}
@@ -248,8 +321,9 @@ void CPacketTracking::InTrackListCleanup()
 	for (POSITION pos = m_liTrackPacketsIn.GetHeadPosition(); pos != NULL;) {
 		POSITION pos2 = pos;
 		const TrackPacketsIn_Struct *curEntry = m_liTrackPacketsIn.GetNext(pos);
-		if (curTick >= curEntry->m_dwLastExpire) {
-			VERIFY(m_mapTrackPacketsIn.RemoveKey(curEntry->m_uIP));
+		if (curTick - curEntry->m_dwLastActivity >= MIN2MS(12)) {
+			const ULONGLONG uTrackKey = (static_cast<ULONGLONG>(curEntry->m_uIP) << 16) | curEntry->m_uUDPPort;
+			VERIFY(m_mapTrackPacketsIn.RemoveKey(uTrackKey));
 			m_liTrackPacketsIn.RemoveAt(pos2);
 			delete curEntry;
 		}

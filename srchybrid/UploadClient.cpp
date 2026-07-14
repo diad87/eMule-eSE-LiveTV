@@ -196,7 +196,8 @@ uint32 CUpDownClient::GetScore(bool sysvalue, bool isdownloading, bool onlybasev
 	if (credits->GetCurrentIdentState(GetIP()) == IS_IDBADGUY)
 		return 0;
 	// friend slot
-	if (IsFriend() && GetFriendSlot() && !HasLowID())
+	if (IsFriend() && GetFriendSlot()
+		&& (!HasLowID() || (socket && socket->IsConnected())))
 		return 0x0FFFFFFFu;
 
 	if (IsBanned() || m_bGPLEvildoer)

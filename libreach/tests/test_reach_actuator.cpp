@@ -73,16 +73,19 @@ static reach_endpoint ep(uint8_t family, uint8_t a0, uint16_t port) {
 // KadCap bits (brand-neutral, mirror reach_types.h — kept local so the test only
 // needs the C ABI header).
 enum { CAP_V4_TCP = 1u<<0, CAP_V4_UDP = 1u<<1, CAP_V6 = 1u<<2,
-       CAP_PUNCH2 = 1u<<3, CAP_PUNCH3 = 1u<<4, CAP_KEEPALIVE = 1u<<5, CAP_RELAY = 1u<<6 };
+       CAP_PUNCH2 = 1u<<3, CAP_PUNCH3 = 1u<<4, CAP_KEEPALIVE = 1u<<5,
+       CAP_RELAY = 1u<<6, CAP_V6_OUT = 1u<<7 };
 
 static std::vector<uint8_t> vec(uint16_t caps) {
-    return { 0x01, (uint8_t)(caps & 0xFF), (uint8_t)(caps >> 8), 0x00 };
+    return { 0x02, (uint8_t)(caps & 0xFF), (uint8_t)(caps >> 8), 0x00 };
 }
 static std::vector<uint8_t> vecRdv(uint16_t caps, uint8_t rdvA0, uint16_t rdvPort) {
-    std::vector<uint8_t> v = { 0x01, (uint8_t)(caps & 0xFF), (uint8_t)(caps >> 8), 0x01 };
+    std::vector<uint8_t> v = { 0x02, (uint8_t)(caps & 0xFF), (uint8_t)(caps >> 8), 0x01 };
     for (int i = 0; i < 16; ++i) v.push_back((uint8_t)(0xA0 + i));     // rdv nodeId
     v.push_back(rdvA0); v.push_back(0); v.push_back(0); v.push_back(0); // ipv4 = rdvA0.0.0.0
     v.push_back((uint8_t)(rdvPort & 0xFF)); v.push_back((uint8_t)(rdvPort >> 8)); // udpPort LE
+    for (int i = 0; i < 16; ++i) v.push_back((uint8_t)(0xC0 + i)); // reservation token
+    v.push_back(0x00); v.push_back(0x94); v.push_back(0x35); v.push_back(0x77); // expiry
     return v;
 }
 
@@ -109,7 +112,7 @@ static void test_direct_v4() {
 
 // ── 2. DIRECT_V6 fails → falls back to DIRECT_V4 ────────────────────────────
 static void test_fallback() {
-    MockHost h; auto cb = makeCb(); auto c = cfg(CAP_V6);
+    MockHost h; auto cb = makeCb(); auto c = cfg(CAP_V6_OUT);
     reach_context* ctx = reach_context_create(&cb, &c, &h);
     uint8_t id[16]; fillId(id, 2);
     reach_peer_id p = REACH_PEER_NONE; auto v = vec(CAP_V6 | CAP_V4_TCP);
@@ -216,7 +219,7 @@ static void test_rdv_layer() {
 
 // ── 7. per-layer budget timeout advances without a host result ───────────────
 static void test_budget_timeout() {
-    MockHost h; auto cb = makeCb(); auto c = cfg(CAP_V6);
+    MockHost h; auto cb = makeCb(); auto c = cfg(CAP_V6_OUT);
     reach_context* ctx = reach_context_create(&cb, &c, &h);
     uint8_t id[16]; fillId(id, 7);
     reach_peer_id p = REACH_PEER_NONE; auto v = vec(CAP_V6 | CAP_V4_TCP);

@@ -25,6 +25,7 @@ class CPartFile;
 class CSharedFileList;
 class CKnownFile;
 class CED2KFileLink;
+class CAddress;
 struct SUnresolvedHostname;
 
 namespace Kademlia
@@ -153,7 +154,7 @@ public:
 	// searching in Kad
 	void	SetLastKademliaFileRequest()					{ m_lastkademliafilerequest = ::GetTickCount(); }
 	bool	DoKademliaFileRequest() const;
-	void	KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt128 *pcontactID, const Kademlia::CUInt128 *pbuddyID, uint8 type, uint32 ip, uint16 tcp, uint16 udp, uint32 dwBuddyIP, uint16 dwBuddyPort, uint8 byCryptOptions);
+	void	KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt128 *pcontactID, const Kademlia::CUInt128 *pbuddyID, uint8 type, uint32 ip, uint16 tcp, uint16 udp, uint32 dwBuddyIP, uint16 dwBuddyPort, uint8 byCryptOptions, uint16 uReachCaps, const CAddress *pIPv6);
 
 	// searching on global servers
 	void	StopUDPRequests();

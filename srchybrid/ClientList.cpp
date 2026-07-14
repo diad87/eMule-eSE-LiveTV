@@ -230,6 +230,7 @@ bool CClientList::AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket 
 		//we found the same client instance (client may have sent more than one OP_HELLO). Do not delete this client!
 		return true;
 	}
+	found_client->MergeReachabilityFrom(*tocheck);
 	if (sender) {
 		if (found_client->socket) {
 			if (found_client->socket->IsConnected()
@@ -790,8 +791,9 @@ void CClientList::AddToKadList(CUpDownClient *toadd)
 
 bool CClientList::DoRequestFirewallCheckUDP(const Kademlia::CContact &contact)
 {
-	// first make sure we don't know this IP already from somewhere
-	if (FindClientByIP(contact.GetNetIP()) != NULL)
+	// Avoid duplicating this exact checker endpoint. IP alone is insufficient:
+	// independent Kad clients commonly share one public address behind CGNAT.
+	if (FindClientByIP(contact.GetNetIP(), contact.GetTCPPort()) != NULL)
 		return false;
 	// fine, just create the client object, set the state and wait
 	// TODO: We don't know the clients user hash, this means we cannot build an obfuscated connection,

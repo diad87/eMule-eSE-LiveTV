@@ -42,10 +42,10 @@ class CClientUDPSocket : public CAsyncSocket, public CEncryptedDatagramSocket, p
 public:
 	void* m_pUtpContext = NULL;
 	void* GetUtpContext() const { return m_pUtpContext; }
+	bool IsUtpReady() const { return m_port != 0 && m_pUtpContext != NULL; }
 	void SendUtpPacket(const byte* pData, size_t nDataLen, const sockaddr* to, int tolen);
 	void SeedNatTraversalExpectation(CUpDownClient* pClient, uint32 dwIP, uint16 nPort);
-	CUpDownClient* MatchNatExpectation(uint32 dwIP, uint16 nPort);
-	bool InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort);
+	bool InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort, const uchar* pClientHash);
 
 
 

@@ -2418,7 +2418,7 @@ function smartDownload(movieTitle, movieYear) {
 setTimeout(loadTrendingMovies, 500);
 
 
-// ==== smart_play.js (22555 bytes) ====
+// ==== smart_play.js (22857 bytes) ====
 // smart_play.js — smartPlay, trySmartSource, monitorForFile
 
 // ── Smart Play: evalúa → decide → actúa ───────────────────────────────────────
@@ -2722,7 +2722,11 @@ function trySmartSource(index) {
 
   setTimeout(function() {
     if (statusEl) statusEl.textContent = 'Iniciando descarga: ' + best.fileName.substring(0, 50) + '...';
-    fetch('/api/emule/download?hash=' + encodeURIComponent(best.hash))
+    // Pass exact name+size so eMule can add by full ed2k link even if this hash
+    // is no longer in its live search list (multi-variant search wipes it).
+    var dlUrl = '/api/emule/download?hash=' + encodeURIComponent(best.hash);
+    if (best.sizeBytes > 0) dlUrl += '&size=' + best.sizeBytes + '&name=' + encodeURIComponent(best.fileName || '');
+    fetch(dlUrl)
       .then(function(r) { return r.json(); })
       .then(function(dlData) {
         if (dlData.success) {

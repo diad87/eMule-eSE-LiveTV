@@ -359,16 +359,25 @@ const bool CAddress::IsPublicIP() const
             m_IP[8] == 0 && m_IP[9] == 0 && m_IP[10] == 0xff && m_IP[11] == 0xff)
             return false;
 
-        // IPv4/IPv6 translation (64:ff9b::/96)
-        if (m_IP[0] == 0x64 && m_IP[1] == 0xff && m_IP[2] == 0x9b)
+        // NAT64 well-known prefix (64:ff9b::/96) — bytes 00 64 ff 9b then 8 zero bytes.
+        // The previous checks were shifted one byte (started at 0x64) and so never
+        // matched a real NAT64 address; both the /96 and the /48 below share the first
+        // four bytes 00 64 ff 9b.
+        if (m_IP[0] == 0x00 && m_IP[1] == 0x64 && m_IP[2] == 0xff && m_IP[3] == 0x9b &&
+            m_IP[4] == 0x00 && m_IP[5] == 0x00 && m_IP[6] == 0x00 && m_IP[7] == 0x00 &&
+            m_IP[8] == 0x00 && m_IP[9] == 0x00 && m_IP[10] == 0x00 && m_IP[11] == 0x00)
             return false;
 
-        // IPv4/IPv6 translation (64:ff9b:1::/48)
-        if (m_IP[0] == 0x64 && m_IP[1] == 0xff && m_IP[2] == 0x9b && m_IP[3] == 0x01)
+        // NAT64 local-use prefix (64:ff9b:1::/48) — bytes 00 64 ff 9b 00 01.
+        if (m_IP[0] == 0x00 && m_IP[1] == 0x64 && m_IP[2] == 0xff && m_IP[3] == 0x9b &&
+            m_IP[4] == 0x00 && m_IP[5] == 0x01)
             return false;
 
-        // Discard prefix (100::/64)
-        if (m_IP[0] == 0x01 && m_IP[1] == 0x00)
+        // Discard-only prefix (100::/64) — bytes 01 00 then 6 zero bytes. The previous
+        // check tested only the first two bytes, i.e. a /16, over-matching 0100::/16.
+        if (m_IP[0] == 0x01 && m_IP[1] == 0x00 &&
+            m_IP[2] == 0x00 && m_IP[3] == 0x00 && m_IP[4] == 0x00 && m_IP[5] == 0x00 &&
+            m_IP[6] == 0x00 && m_IP[7] == 0x00)
             return false;
 
         // Teredo tunneling (2001::/32)
@@ -691,5 +700,8 @@ uint32 CAddress::ToSyntheticUInt32() const
     // 24-bit suffix, which is acceptable for CMap probing.
     uint32 h = 2166136261u;
     for (int i = 0; i < 16; ++i) { h ^= (uint32)m_IP[i]; h *= 16777619u; }
-    return (uint32)((h & 0x00FFFFFFu) | 0xFE000000u);
+    // All legacy client IP fields contain network-order values.  Keep the
+    // synthetic marker in that same representation; otherwise little-endian
+    // hosts see 0.x.x.254 and the value can accidentally pass IPv4 filters.
+    return htonl((uint32)((h & 0x00FFFFFFu) | 0xFE000000u));
 }

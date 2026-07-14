@@ -9,6 +9,7 @@
 #include <vector>
 #include "emule.h"
 #include "StringConversion.h"
+#include "OtherFunctions.h"
 #include "WebServer.h"
 #include "ClientCredits.h"
 #include "ClientList.h"
@@ -30,6 +31,7 @@
 #include "LiveTunnel.h"
 #include "LiveSubscriptionStore.h"
 #include "FirewallProberV6.h"
+#include "ClientUDPSocket.h"
 #include "Opcodes.h"   // g_uEseCapsRuntime extern
 #include "KademliaWnd.h"
 #include "KadSearchListCtrl.h"
@@ -4803,6 +4805,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		// The ~14 s prebuffer wait then runs HERE on this worker thread; it
 		// polls a lock-correct liveness status, so the main thread never blocks.
 		bool ok = false;
+		bool ready = false;
+		bool waitingInput = false;
+		int finalChunks = 0;
 		if (theApp.liveStreamManager != NULL && theApp.emuledlg != NULL) {
 			LiveWebBroadcastReq req;
 			req.action        = LIVE_WEB_BC_LAUNCH;
@@ -4816,11 +4821,14 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			theApp.emuledlg->SendMessage(UM_LIVE_WEB_BROADCAST, 0, (LPARAM)&req);
 			ok = req.ok;
 			if (ok) {
+				const bool isRtmpInput = sourceT.CompareNoCase(_T("rtmp")) == 0;
+				const DWORD maxWaitMs = isRtmpInput ? 1500 : 14000;
 				DWORD t0 = GetTickCount();
 				for (;;) {
 					bool alive = false;
 					int  chunks = 0;
 					theApp.liveStreamManager->GetBroadcastLivenessStatus(alive, chunks);
+					finalChunks = chunks;
 					if (!alive) {
 						// FFmpeg died early — abort; marshal the stop.
 						LiveWebBroadcastReq stopReq;
@@ -4836,10 +4844,31 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 						ok = false;
 						break;
 					}
-					if (chunks >= 3)
+					if (chunks >= 3) {
+						ready = true;
 						break;
-					if (GetTickCount() - t0 >= 14000)
+					}
+					if (GetTickCount() - t0 >= maxWaitMs) {
+						if (isRtmpInput) {
+							waitingInput = true;
+						} else {
+							// FFmpeg stayed alive but never produced a playable
+							// prebuffer. Roll the armed broadcast back instead of
+							// returning a false success to the dashboard.
+							LiveWebBroadcastReq stopReq;
+							stopReq.action        = LIVE_WEB_BC_STOP;
+							stopReq.sourceType    = _T("");
+							stopReq.title         = _T("");
+							stopReq.category      = _T("");
+							stopReq.language      = _T("");
+							stopReq.mediaFilePath = _T("");
+							stopReq.bitrate       = 0;
+							stopReq.ok            = false;
+							theApp.emuledlg->SendMessage(UM_LIVE_WEB_BROADCAST, 0, (LPARAM)&stopReq);
+							ok = false;
+						}
 						break;
+					}
 					Sleep(100);
 				}
 			}
@@ -4853,8 +4882,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			uint16 port  = thePrefs.GetPort();
 			if (key) {
 				CStringA hex = EseHexKey16A(key);
-				CString titleEnc = titleT;
-				titleEnc.Replace(_T(" "), _T("+"));
+				CString titleEnc = EncodeURLQueryParam(titleT);
 
 				// 17 May 2026 — anonymous is now the DEFAULT for share links.
 				// Both variants are still emitted in the JSON so any caller can
@@ -4876,17 +4904,24 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				CString directT(_ParseURL(Data.sURL, _T("direct")));
 				bool wantDirect = (directT == _T("1") || directT.CompareNoCase(_T("true")) == 0);
 				linkA = (wantDirect && !linkDirect.IsEmpty()) ? linkDirect : linkAnon;
+				CStringA sourceJson = EseJsonEscapeA(CStringA(CT2A(sourceT)));
+				CStringA linkJson = EseJsonEscapeA(linkA);
+				CStringA linkAnonJson = EseJsonEscapeA(linkAnon);
+				CStringA linkDirectJson = EseJsonEscapeA(linkDirect.IsEmpty() ? linkAnon : linkDirect);
+				const char* state = ready ? "ready" : (waitingInput ? "waiting_input" : "failed");
 
 				// Both variants get exposed in the JSON so a smart caller
 				// can show a "switch to anonymous" toggle to its user.
 				CStringA jsonLinks;
 				jsonLinks.Format(
-					"{\"success\":%s,\"source\":\"%s\",\"bitrate\":%u,"
+					"{\"success\":%s,\"ready\":%s,\"state\":\"%s\",\"chunks\":%d,"
+					"\"source\":\"%s\",\"bitrate\":%u,"
 					"\"link\":\"%s\",\"link_anonymous\":\"%s\",\"link_direct\":\"%s\"}",
 					ok ? "true" : "false",
-					(LPCSTR)CT2A(sourceT), (unsigned)bitrate,
-					(LPCSTR)linkA, (LPCSTR)linkAnon,
-					(LPCSTR)(linkDirect.IsEmpty() ? linkAnon : linkDirect));
+					ready ? "true" : "false", state, finalChunks,
+					(LPCSTR)sourceJson, (unsigned)bitrate,
+					(LPCSTR)linkJson, (LPCSTR)linkAnonJson,
+					(LPCSTR)linkDirectJson);
 
 				CStringA header;
 				header.Format(
@@ -4904,11 +4939,16 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		}
 
 		CStringA json;
+		CStringA sourceJson = EseJsonEscapeA(CStringA(CT2A(sourceT)));
+		CStringA linkJson = EseJsonEscapeA(linkA);
+		const char* state = ready ? "ready" : (waitingInput ? "waiting_input" : "failed");
 		json.Format(
-			"{\"success\":%s,\"source\":\"%s\",\"bitrate\":%u,\"link\":\"%s\"}",
+			"{\"success\":%s,\"ready\":%s,\"state\":\"%s\",\"chunks\":%d,"
+			"\"source\":\"%s\",\"bitrate\":%u,\"link\":\"%s\"}",
 			ok ? "true" : "false",
-			(LPCSTR)CT2A(sourceT), (unsigned)bitrate,
-			(LPCSTR)linkA);
+			ready ? "true" : "false", state, finalChunks,
+			(LPCSTR)sourceJson, (unsigned)bitrate,
+			(LPCSTR)linkJson);
 		CStringA header;
 		header.Format(
 			"HTTP/1.1 %s\r\n"
@@ -5123,6 +5163,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			errCode = "kad_not_ready";
 		} else if (!thePrefs.GetUtpHolePunchEnabled()) {
 			errCode = "holepunch_disabled";
+		} else if (!thePrefs.GetEseKad3Rendezvous()) {
+			errCode = "rendezvous_disabled";
 		} else {
 			// InitiateKad3Rendezvous wants host-order IP/port (Kad convention).
 			Kademlia::CKademlia::GetUDPListener()->InitiateKad3Rendezvous(ntohl(rIpNet), rPort, ntohl(tIpNet), tPort);
@@ -5212,12 +5254,17 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		thePrefs.SetEseAutoKeepalive(bOn);
 		thePrefs.SetEseHolePunchPortPredict(bOn);   // anti-CGNAT port spray (both eD2K + Live)
 		thePrefs.SetEseEd2kPunch3(bOn);             // eD2K downloads escalate to 3-way rendezvous
+		thePrefs.SetEseKad3Rendezvous(bOn);         // advertise/handle the separately gated 3-way protocol
+		if (bOn && thePrefs.GetUtpHolePunchEnabled())
+			g_uEseCapsRuntime |= ESE_CAP_HOLEPUNCH_RDV;
+		else
+			g_uEseCapsRuntime &= ~ESE_CAP_HOLEPUNCH_RDV;
 		if (bOn) CKadKeepalive::Instance().RequestStart();
 		else     CKadKeepalive::Instance().RequestStop();
 		CStringA json;
 		json.Format("{\"success\":true,\"on\":%s,"
 			"\"v9\":{\"selector\":%s,\"relay_accept\":%s,\"relay_egress\":%s,\"auto_keepalive\":%s,"
-			"\"port_predict\":%s,\"ed2k_punch3\":%s,"
+			"\"port_predict\":%s,\"ed2k_punch3\":%s,\"kad3_rendezvous\":%s,"
 			"\"keepalive_running\":%s,\"hole_punch_master\":%s},"
 			"\"reach_connects\":{\"direct\":%u,\"punch2\":%u,\"punch3\":%u,\"relay\":%u}}",
 			bOn ? "true" : "false",
@@ -5227,6 +5274,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			thePrefs.GetEseAutoKeepalive() ? "true" : "false",
 			thePrefs.GetEseHolePunchPortPredict() ? "true" : "false",
 			thePrefs.GetEseEd2kPunch3() ? "true" : "false",
+			thePrefs.GetEseKad3Rendezvous() ? "true" : "false",
 			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
 			thePrefs.GetUtpHolePunchEnabled() ? "true" : "false",
 			(unsigned)CStatistics::m_dwReachConnDirect, (unsigned)CStatistics::m_dwReachConnPunch2,
@@ -5322,6 +5370,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			errCode = "kad_not_ready";
 		} else if (!thePrefs.GetUtpHolePunchEnabled()) {
 			errCode = "holepunch_disabled";
+		} else if (theApp.clientudp == NULL || !theApp.clientudp->IsUtpReady()) {
+			errCode = "utp_not_ready";
 		} else {
 			// SendEseHolePunchReq expects host-order IP, host-order port.
 			// [eSE v9] optional ?spread=N (0-8) exercises anti-CGNAT port prediction straight
@@ -6361,6 +6411,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			// Single broadcast model â€” expose our current stream
 				CStringA hashHex = EseHexKey16A(ch.streamKey);
 				CStringA titleA = EseJsonEscapeA(CStringA(CT2A((LPCTSTR)ch.title)));
+				CStringA categoryA = EseJsonEscapeA(CStringA(CT2A((LPCTSTR)ch.category)));
+				CStringA languageA = EseJsonEscapeA(CStringA(CT2A((LPCTSTR)ch.language)));
 				uint32 br = ch.bitrate;
 				const char* quality = "SD";
 				if (br >= 8000) quality = "4K";
@@ -6368,9 +6420,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				else if (br >= 3000) quality = "HD";
 
 				json.AppendFormat(
-					"{\"hash\":\"%s\",\"title\":\"%s\",\"category\":\"General\","
+					"{\"hash\":\"%s\",\"title\":\"%s\",\"category\":\"%s\","
+					"\"language\":\"%s\",\"startedAt\":%u,"
 					"\"viewers\":%u,\"bitrate\":%u,\"quality\":\"%s\"}",
-					(LPCSTR)hashHex, (LPCSTR)titleA,
+					(LPCSTR)hashHex, (LPCSTR)titleA, (LPCSTR)categoryA,
+					(LPCSTR)languageA, ch.startedAt,
 					ch.viewerCount,
 					br, quality);
 			}

@@ -53,7 +53,7 @@ void CLiveMeshManager::AddMeshPeer(CUpDownClient* peer)
 
     if (!IsMeshPeer(peer)) {
         m_meshPeers.AddTail(peer);
-        AddLogLine(false, _T("eSE Mesh: Peer added (total=%d)"),
+        AddLogLine(false, GetResString(IDS_LIVEMESH_PEER_ADDED_FMT),
             (int)m_meshPeers.GetCount());
     }
 }
@@ -74,7 +74,7 @@ void CLiveMeshManager::RemoveMeshPeer(CUpDownClient* peer)
             }
         }
 
-        AddLogLine(false, _T("eSE Mesh: Peer removed (total=%d)"),
+        AddLogLine(false, GetResString(IDS_LIVEMESH_PEER_REMOVED_FMT),
             (int)m_meshPeers.GetCount());
     }
 }
@@ -318,7 +318,7 @@ void CLiveMeshManager::CheckTimeouts()
                     req.peer = newPeer;
                     req.sentAt = now;
                     req.retryCount++;
-                    AddLogLine(false, _T("eSE Mesh: Retry #%d for seg %u → new peer"),
+                    AddLogLine(false, GetResString(IDS_LIVEMESH_RETRY_FMT),
                         req.retryCount, req.seqNum);
                     continue;
                 }
@@ -326,7 +326,7 @@ void CLiveMeshManager::CheckTimeouts()
         }
 
         // Max retries exceeded or no alternative peer: give up
-        AddLogLine(false, _T("eSE Mesh: Gave up on seg %u after %d retries"),
+        AddLogLine(false, GetResString(IDS_LIVEMESH_GAVEUP_FMT),
             req.seqNum, req.retryCount);
         m_pendingRequests.RemoveAt(i);
     }
@@ -409,7 +409,7 @@ void CLiveMeshManager::RequestMorePeers()
         if (pkt) {
             theStats.AddUpDataOverheadOther(pkt->size);
             peer->SendPacket(pkt);
-            AddLogLine(false, _T("eSE Mesh: Requesting more peers (currently %d)"),
+            AddLogLine(false, GetResString(IDS_LIVEMESH_REQUESTING_MORE_FMT),
                 (int)m_meshPeers.GetCount());
         }
     }

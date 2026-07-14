@@ -765,13 +765,8 @@ void CemuleDlg::CheckForPreviousCrashDumps()
 	if (nNew == 0) return;
 
 	CString sMsg;
-	sMsg.Format(
-		_T("eMule has detected %d unsent crash dump(s) from a previous session.\n\n")
-		_T("Newest: %s\n\n")
-		_T("Open the crash-dump folder so you can attach the .dmp to a GitHub issue?\n")
-		_T("(Helps the maintainer reproduce and fix the crash.)"),
-		nNew, (LPCTSTR)sNewestPath);
-	int r = MessageBox(sMsg, _T("eMule eSE — Previous crash detected"),
+	sMsg.Format(GetResString(IDS_ESE_CRASH_BODY_FMT), nNew, (LPCTSTR)sNewestPath);
+	int r = MessageBox(sMsg, GetResString(IDS_ESE_CRASH_TITLE),
 		MB_ICONINFORMATION | MB_YESNO | MB_DEFBUTTON1);
 	if (r == IDYES)
 		ShellExecute(NULL, _T("open"), sCrashDir, NULL, NULL, SW_SHOWNORMAL);
@@ -1011,12 +1006,15 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				g_uEseCapsRuntime = ESE_CAP_SEALED_RECORDS
 				                  | ESE_CAP_GOSSIP_PROTOCOL
 				                  | ESE_CAP_LIVE_CHUNK_FRAG   // v8.1.x — pure transport feature, always advertised
-				                  | ESE_CAP_TUNNEL_BULK;      // v8.1.2 — bulk data-plane carrier (0xD9); any node can relay a bulk cell as hop1, so advertise always
+				                  | ESE_CAP_TUNNEL_BULK       // v8.1.2 — bulk data-plane carrier (0xD9); any node can relay a bulk cell as hop1, so advertise always
+				                  | ESE_CAP_REACH_V2;         // additive Kad source vector, decoded by the strict libreach codec
+				if (thePrefs.GetUtpHolePunchEnabled())
+					g_uEseCapsRuntime |= ESE_CAP_HOLEPUNCH_COOKIE;
 				// R.1 (3-way Kad rendezvous): advertise participation only when the hole-punch
 				// path is enabled — the responder + R-relay handlers gate on the same pref,
 				// so a peer that sees this bit can safely use us as rendezvous R or target B.
 				// Validated 3-PC. The auto-initiator (Live reachability selector) lands later.
-				if (thePrefs.GetUtpHolePunchEnabled())
+				if (thePrefs.GetUtpHolePunchEnabled() && thePrefs.GetEseKad3Rendezvous())
 					g_uEseCapsRuntime |= ESE_CAP_HOLEPUNCH_RDV;
 				// R.3 buddy relay: advertise relay capability ONLY when we actually accept relay
 				// duty (pref EseRelayAccept, default OFF). A peer seeing this bit may pick us as its
@@ -1365,16 +1363,16 @@ void CemuleDlg::UpdatePrivacyStatusPane()
 	};
 	switch (m) {
 	case CKadV2Mode::Direct:
-		privText = (g_uEseCapsRuntime != 0) ? _T("P:Direct") : _T("P:Off");
+		privText = (g_uEseCapsRuntime != 0) ? GetResString(IDS_ESE_PRIV_DIRECT) : GetResString(IDS_ESE_PRIV_OFF);
 		break;
 	case CKadV2Mode::Tunneled:
-		privText = countSuffix(_T("P:Tunneled"));
+		privText = countSuffix(GetResString(IDS_ESE_PRIV_TUNNELED));
 		break;
 	case CKadV2Mode::Adaptive:
-		privText = countSuffix(_T("P:Adaptive"));
+		privText = countSuffix(GetResString(IDS_ESE_PRIV_ADAPTIVE));
 		break;
 	default:
-		privText = _T("P:?");
+		privText = GetResString(IDS_ESE_PRIV_UNKNOWN);
 		break;
 	}
 	statusbar->SetText(privText, SBarPrivacy, 0);
@@ -3740,7 +3738,7 @@ void CALLBACK CemuleDlg::EseDashboardProbeTimer(HWND /*hwnd*/, UINT /*uiMsg*/,
 	if (++dlg->m_iEseProbeAttempts >= 50) { // ~20 s
 		::KillTimer(NULL, idEvent);
 		dlg->m_hEseProbeTimer = 0;
-		LogError(LOG_STATUSBAR, _T("eSE: el dashboard no respondió en localhost:8080 tras 20 s — revisa el log de eSE"));
+		LogError(LOG_STATUSBAR, GetResString(IDS_ESE_DASHBOARD_TIMEOUT));
 	}
 }
 
@@ -3816,15 +3814,7 @@ void CemuleDlg::LaunchEseServer(bool bOpenBrowser)
 		// hasn't even seen eMule yet. Just log it; if they later click the
 		// toolbar button, they'll get the message.
 		if (bOpenBrowser) {
-			AfxMessageBox(
-				_T("No se encontró el dashboard eSE.\n\n")
-				_T("Buscado:\n")
-				_T("  1. ese-server.exe junto a emule.exe\n")
-				_T("  2. node\\node.exe + eSE\\server.js junto a emule.exe\n")
-				_T("  3. Carpetas conocidas en %USERPROFILE%\n\n")
-				_T("Descarga el paquete completo desde GitHub o copia ese-server.exe\n")
-				_T("a la carpeta de emule.exe."),
-				MB_ICONERROR);
+			AfxMessageBox(GetResString(IDS_ESE_NOTFOUND_ERR), MB_ICONERROR);
 		} else {
 			AddDebugLogLine(true, _T("eSE auto-spawn: dashboard not found in any known location"));
 		}
@@ -3901,11 +3891,7 @@ void CemuleDlg::LaunchEseServer(bool bOpenBrowser)
 	} else {
 		DWORD err = GetLastError();
 		CString msg;
-		msg.Format(
-			_T("No se pudo iniciar el dashboard eSE.\n\n")
-			_T("Comando: %s\n")
-			_T("Error CreateProcess: %u"),
-			(LPCTSTR)cmdLine, err);
+		msg.Format(GetResString(IDS_ESE_LAUNCH_FAILED_FMT), (LPCTSTR)cmdLine, err);
 		if (bOpenBrowser)
 			AfxMessageBox(msg, MB_ICONERROR);
 		else

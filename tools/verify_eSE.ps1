@@ -52,6 +52,19 @@ foreach ($file in $nodeFiles) {
   if ($LASTEXITCODE -ne 0) { throw "node --check failed for $file" }
 }
 
+Step "LiveTV regression tests"
+Push-Location (Join-Path $root "srchybrid/eSE")
+try {
+  npm test
+  if ($LASTEXITCODE -ne 0) { throw "LiveTV regression tests failed." }
+} finally {
+  Pop-Location
+}
+
+Step "Portable package parity"
+& (Join-Path $root "tools/sync_ese_package.ps1") -VerifyOnly
+if ($LASTEXITCODE -ne 0) { throw "Portable package verification failed." }
+
 if (-not $SkipBuild) {
   Step "C++ Release x64 build"
   $msbuildList = Get-Content (Join-Path $root "msbuild_path.txt") | Where-Object { $_ -and (Test-Path $_) }

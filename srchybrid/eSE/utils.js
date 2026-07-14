@@ -35,13 +35,13 @@ function findFfmpeg() {
 
   // 2. Look next to the server script (bundled ffmpeg in the package)
   try {
-    const bundled = path.join(__dirname, 'ffmpeg.exe');
+    const bundled = path.join(__dirname, 'ffmpeg' + '.exe');
     if (fs.existsSync(bundled)) return bundled;
   } catch(e) {}
 
   // 3. Look next to emule.exe in the portable package root.
   try {
-    const bundledRoot = path.join(__dirname, '..', 'ffmpeg.exe');
+    const bundledRoot = path.join(__dirname, '..', 'ffmpeg' + '.exe');
     if (fs.existsSync(bundledRoot)) return bundledRoot;
   } catch(e) {}
 

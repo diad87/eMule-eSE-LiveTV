@@ -54,18 +54,32 @@ public:
     // returns LayerUnknown. Locked: the worker thread writes the verdict
     // while the UI / webserver read it.
     ECascadeLayer GetCurrentLayer() const { CSingleLock l(&m_lock, TRUE); return m_eLayer; }
-    bool          IsReachable()     const { ECascadeLayer e = GetCurrentLayer(); return e >= LayerHighID && e <= LayerHolePunch; }
-    CAddress      GetDetectedV6IP() const { CSingleLock l(&m_lock, TRUE); return m_detectedIP; }
+    bool          IsReachable()     const { ECascadeLayer e = GetCurrentLayer(); return e >= LayerHighID && e <= LayerBuddyRelay; }
+	CAddress      GetDetectedV6IP() const { CSingleLock l(&m_lock, TRUE); return m_detectedIP; }
+	bool          HasExternallyObservedV6() const { return ::InterlockedCompareExchange(
+		const_cast<volatile LONG*>(&m_lDetectedV6ExternallyObserved), 0, 0) != 0; }
+	bool          HasInboundV6Observation() const { return ::InterlockedCompareExchange(
+		const_cast<volatile LONG*>(&m_lInboundV6Observed), 0, 0) != 0; }
     const TCHAR*  GetLayerLabel()   const;
+
+	// True when this process can publish a Kad source that has at least one
+	// non-classic route (native inbound v6 or the v2 punch path). Centralizing
+	// this keeps the scheduler and CKnownFile from reintroducing HighID gates.
+	static bool     CanAdvertiseModernKadSource();
 
     // v0.71 IPv6 Sprint 6 — record our public v6 address as observed by a peer
     // via the in-band OP_PUBLICIP_ANSWER_V6 connect-back (replaces the old
     // api6.ipify.org HTTPS probe — no third party, no correlation point). Called
     // from the network thread when a CAP_FORK_IPV6_WIRE peer answers our
-    // OP_PUBLICIP_REQ. First public-v6 answer wins (matches theApp.SetPublicIP);
+    // OP_PUBLICIP_REQ. Peer observation may refine an unconfirmed local candidate;
     // non-public / non-v6 / null addresses are ignored. Egress proof only — does
     // NOT change the cascade verdict (inbound HighID is separate, later work).
     void          SetDetectedV6IP(const CAddress& addr);
+
+    // Called only after the dual-stack TCP listener accepted a native public
+    // IPv6 connection and obtained its exact local destination address. Accept is evidence that
+    // the host firewall permits unsolicited IPv6 on the eMule port.
+	void          ReportInboundV6Reachable(const CAddress& localAddress);
 
     // Manual override from preferences (Sprint 9 UI exposes this).
     void SetOverrideLayer(ECascadeLayer layer);
@@ -79,6 +93,7 @@ private:
     // Worker-thread entry: runs the cascade and publishes the verdict.
     static UINT AFX_CDECL ProbeThreadProc(LPVOID pParam);
     void RunCascade();
+    void DetectLocalPublicV6();
 
     // Sprint 3 stubs — return early with Unreachable. Sprints 5/6/9 fill in.
     bool TryHighID();
@@ -92,6 +107,8 @@ private:
     ECascadeLayer m_eLayer;
     ECascadeLayer m_eOverrideLayer;
     CAddress      m_detectedIP;
-    volatile LONG m_lProbeStarted;   // InterlockedExchange re-entry guard
+	volatile LONG m_lProbeStarted;   // InterlockedExchange re-entry guard
+	volatile LONG m_lDetectedV6ExternallyObserved;
+	volatile LONG m_lInboundV6Observed;
     DWORD         m_dwLastProbeTick;
 };

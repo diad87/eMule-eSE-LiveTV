@@ -206,7 +206,7 @@ void CKadKeepalive::Tick()
 // same thread as Tick(), so m_supernodes needs no lock.
 bool CKadKeepalive::OnPong(uint32 uIP, uint16 port, const Kademlia::CUInt128& nonce)
 {
-    if (uIP == 0 || port == 0 || nonce == 0) return false;
+    if (!IsRunning() || uIP == 0 || port == 0 || nonce == 0) return false;
     const DWORD now = GetTickCount();
     for (auto& s : m_supernodes) {
         if (s.addr.ToUInt32(true) == uIP && s.pendingNonce == nonce

@@ -3551,7 +3551,7 @@ void CKademliaUDPListener::SendKad3HolepunchProceed(uint32 uIP_A, uint16 uPort_A
 // firewall conntrack on our outbound flow stays open. IPv4 path (the validated Kad
 // UDP socket); a 0 IP is skipped (e.g. a v6-only CAddress reduced to 0). Reuses the
 // R.1 encryption-tiered send helper. The far side answers via Process_KADEMLIA3_PING_REQ
-// (PONG below); the supernode pool is filled from the routing table in CKadKeepalive::Tick().
+// (PONG below); CKadKeepalive::Tick selects only connected peers that advertised R.2.
 void CKademliaUDPListener::SendKad3PingReq(uint32 uIP, uint16 uUDPPort,
                                            const CUInt128& nonce)
 {
@@ -3568,8 +3568,8 @@ void CKademliaUDPListener::SendKad3PingReq(uint32 uIP, uint16 uUDPPort,
 }
 
 // R.2 keepalive: reply a KADEMLIA3_PING_RES (PONG) to a peer that pinged us, so the
-// round trip completes and they can keep us in their active set. Carries <OurKadID 16>
-// for symmetry with the REQ. Reuses the R.1 encryption-tiered send helper.
+// round trip completes and they can keep us in their active set. It echoes the
+// request's unpredictable nonce and reuses the R.1 encryption-tiered send helper.
 void CKademliaUDPListener::SendKad3PingRes(uint32 uIP, uint16 uUDPPort,
                                            const CUInt128& nonce)
 {
@@ -3581,7 +3581,7 @@ void CKademliaUDPListener::SendKad3PingRes(uint32 uIP, uint16 uUDPPort,
 }
 
 // R.2 keepalive responder: an inbound ping just refreshed the sender's NAT mapping
-// toward us — answer with a PONG. The payload (<SenderKadID 16>) is advisory; we reply
+// toward us — answer with a PONG. The payload is an unpredictable nonce; we reply
 // to the socket source (uIP), which is the return-routable address.
 void CKademliaUDPListener::Process_KADEMLIA3_PING_REQ(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey & /*senderUDPKey*/)
 {
@@ -3620,7 +3620,7 @@ void CKademliaUDPListener::Process_KADEMLIA3_PING_REQ(const byte *pbyPacketData,
 // anything self-reported in the payload.
 void CKademliaUDPListener::Process_KADEMLIA3_PING_RES(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey & /*senderUDPKey*/)
 {
-	if (uLenPacket != 16)
+	if ((g_uEseCapsRuntime & ESE_CAP_KAD_KEEPALIVE) == 0 || uLenPacket != 16)
 		return;
 	CSafeMemFile fileIO(pbyPacketData, uLenPacket);
 	CUInt128 nonce;

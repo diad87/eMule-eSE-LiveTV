@@ -907,9 +907,21 @@ void CClientList::ProcessConnectingClientsList()
 	for (POSITION pos = m_liConnectingClients.GetHeadPosition(); pos != NULL;) {
 		POSITION pos2 = pos;
 		const CONNECTINGCLIENT cc = m_liConnectingClients.GetNext(pos);
+		if (cc.pClient->ShouldRetryEseNatTraversal(curTick)) {
+			// Hole-punch is asynchronous and has its own short, bounded cascade.
+			// Treating it as a normal 45-second TCP attempt used to delete the
+			// source after punch2 #1, so punch3 was unreachable in practice.
+			m_liConnectingClients.RemoveAt(pos2);
+			cc.pClient->FinishEseNatTraversalAttempt(true);
+			continue;
+		}
 		if (curTick >= cc.dwInserted + SEC2MS(45)) {
 			ASSERT(cc.pClient->GetConnectingState() != CCS_NONE);
 			m_liConnectingClients.RemoveAt(pos2);
+			if (cc.pClient->IsEseNatTraversalConnectPending()) {
+				cc.pClient->FinishEseNatTraversalAttempt(false);
+				continue;
+			}
 			if (cc.pClient->Disconnected(_T("Connection try timeout")))
 				delete cc.pClient;
 		}

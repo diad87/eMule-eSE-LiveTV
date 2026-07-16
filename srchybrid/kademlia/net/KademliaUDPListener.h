@@ -71,6 +71,8 @@ namespace Kademlia
 		virtual void ProcessPacket(const byte *pbyData, uint32 uLenData, uint32 uIP, uint16 uUDPPort, bool bValidReceiverKey, const CKadUDPKey &senderUDPKey);
 		void ProcessPacketV6(const byte *pbyData, uint32 uLenData,
 			const byte uAddress[16], uint16 uUDPPort);
+		void ProcessPacketV4(const byte *pbyData, uint32 uLenData,
+			uint32 uIP, uint16 uUDPPort);
 		void ProcessKad6();
 		bool PublishKad6SourceRecord(uint64 uPublishLeaseId,
 			const kad6::K6SourceRecord& record);
@@ -105,9 +107,9 @@ namespace Kademlia
 		// R.1 A-side initiator: begin a 3-way rendezvous to reach (uTargetIP) via R.
 		void InitiateKad3Rendezvous(uint32 uRdvIP, uint16 uRdvPort, uint32 uTargetIP, uint16 uTargetPort);
 		// R.2 keepalive: minimal KADEMLIA3_PING_REQ to a supernode (holds NAT conntrack open).
-		void SendKad3PingReq(uint32 uIP, uint16 uUDPPort);
+		void SendKad3PingReq(uint32 uIP, uint16 uUDPPort, const CUInt128& nonce);
 		// R.2 keepalive: reply a KADEMLIA3_PING_RES (PONG) to a peer that pinged us.
-		void SendKad3PingRes(uint32 uIP, uint16 uUDPPort);
+		void SendKad3PingRes(uint32 uIP, uint16 uUDPPort, const CUInt128& nonce);
 	private:
 		enum EKad6AfterVerify {
 			K6_AFTER_NONE = 0,
@@ -118,7 +120,7 @@ namespace Kademlia
 		struct SKad6Pending {
 			uint32 txid;
 			byte expectedOpcode;
-			byte address[16];
+			kad6::Kad6Address address;
 			uint16 port;
 			kad6::KadId expectedNode;
 			bool hasExpectedNode;
@@ -132,37 +134,42 @@ namespace Kademlia
 			uint32 sourceCircuitId;
 			uint32 sourceRequestId;
 			byte sourceAlpha;
+			bool hasFallback;
+			bool fallbackSent;
+			kad6::Kad6Address fallbackAddress;
+			uint16 fallbackPort;
+			byte requestOpcode;
+			std::vector<kad6::Byte> requestPayload;
 		};
-		struct SKad6StoredSource {
-			kad6::K6SourceRecord record;
-			std::vector<kad6::Byte> canonicalWire;
-		};
-
-		bool BuildKad6Header(uint32 txid, kad6::K6RouteHeader& out);
+		bool BuildKad6Header(uint32 txid, kad6::K6RouteHeader& out,
+			kad6::Kad6Address::Family preferredFamily =
+				kad6::Kad6Address::Family::None);
 		uint32 NextKad6Transaction();
 		bool SendKad6Payload(byte opcode, const std::vector<kad6::Byte>& payload,
-			const byte address[16], uint16 port);
+			const kad6::Kad6Address& address, uint16 port);
 		bool SendKad6HelloChallenge(const kad6::K6RouteContact& contact,
 			EKad6AfterVerify afterVerify = K6_AFTER_NONE,
 			uint32 originalTxid = 0, const kad6::KadId* target = NULL,
 			byte maximum = 0);
-		void SendKad6BootstrapResponse(uint32 txid, const byte address[16],
+		void SendKad6BootstrapResponse(uint32 txid, const kad6::Kad6Address& address,
 			uint16 port);
 		void SendKad6FindResponse(uint32 txid, const kad6::KadId& target,
-			byte maximum, const byte address[16], uint16 port);
+			byte maximum, const kad6::Kad6Address& address, uint16 port);
 		void SendKad6SourceResponse(uint32 txid, const kad6::Hash16& target,
-			byte maximum, const byte address[16], uint16 port);
+			byte maximum, const kad6::Kad6Address& address, uint16 port);
 		bool DispatchKad6MaintenanceRound();
 		bool DispatchKad6SourceRound(uint64 lookupKey);
 		int FindKad6Pending(uint32 txid, byte expectedOpcode,
-			const byte address[16], uint16 port) const;
+			const kad6::Kad6Address& address, uint16 port) const;
+		void ProcessPacketKad6(byte opcode, const byte* payload,
+			uint32 payloadLength, const kad6::Kad6Address& source, uint16 port);
 		bool HasKad6PendingFor(const kad6::KadId& nodeId) const;
 		void RememberKad6Pending(const SKad6Pending& pending);
 		static kad6::K6RouteContact Kad6ContactFromHeader(
 			const kad6::K6RouteHeader& header);
 
 		std::vector<SKad6Pending> m_kad6Pending;
-		std::map<std::string, SKad6StoredSource> m_kad6StoredSources;
+		kad6::K6SourceRecordTable m_kad6StoredSources;
 		struct SKad6AdaptiveLookup {
 			bool active = false;
 			kad6::KadId target{};

@@ -493,6 +493,14 @@ void CKademlia::ProcessPacketV6(const byte *pbyData, uint32 uLenData,
 			pbyData, uLenData, uAddress, uPort);
 }
 
+void CKademlia::ProcessPacketV4(const byte *pbyData, uint32 uLenData,
+	uint32 uIP, uint16 uPort)
+{
+	if (m_pInstance && m_pInstance->m_pUDPListener)
+		m_pInstance->m_pUDPListener->ProcessPacketV4(
+			pbyData, uLenData, uIP, uPort);
+}
+
 bool CKademlia::GetPublish()
 {
 	if (m_pInstance && m_pInstance->m_pPrefs)

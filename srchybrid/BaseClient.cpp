@@ -132,6 +132,53 @@ bool CUpDownClient::CanUseEseHolePunch() const
 	return pContact != NULL && pContact->IsIpVerified();
 }
 
+bool CUpDownClient::IsEseNatTraversalConnectPending() const
+{
+	return m_eConnectingState == CCS_PRECONDITIONS
+		&& m_reqfile != NULL
+		&& GetDownloadState() == DS_CONNECTING
+		&& CanUseEseHolePunch();
+}
+
+bool CUpDownClient::ShouldRetryEseNatTraversal(DWORD now) const
+{
+	if (!IsEseNatTraversalConnectPending())
+		return false;
+	const uint8 SYM_NAT_THRESHOLD = 4;
+	if (m_uNatRendezvousAttempts < SYM_NAT_THRESHOLD) {
+		const DWORD cooldown = SEC2MS(m_uNatRendezvousAttempts < 3 ? 5 : 30);
+		return m_uLastNatRendezvousTick == 0
+			|| now - m_uLastNatRendezvousTick >= cooldown;
+	}
+	// Once punch2 is exhausted, give the connected-peer set a bounded window
+	// to acquire a real rendezvous.  This is what lets a cold source reach
+	// punch3 without turning the client-list timeout into an infinite spin.
+	return thePrefs.GetEseEd2kPunch3() && thePrefs.GetEseKad3Rendezvous()
+		&& SupportsEseHolePunchRdv() && !m_bNatRdvTried
+		&& m_uNatRdvLookupAttempts < 6
+		&& (m_uLastNatRendezvousTick == 0
+			|| now - m_uLastNatRendezvousTick >= SEC2MS(5));
+}
+
+void CUpDownClient::FinishEseNatTraversalAttempt(bool retryNow)
+{
+	ASSERT(m_eConnectingState == CCS_PRECONDITIONS);
+	m_eConnectingState = CCS_NONE;
+	SetDownloadState(DS_ONQUEUE, retryNow
+		? _T("eSE NAT traversal stage retry")
+		: _T("eSE NAT traversal exhausted; source retained"));
+	if (retryNow) {
+		// CPartFile normally protects sources with a 20-minute reconnect floor.
+		// The NAT cascade owns its much shorter bounded cooldown, so make the
+		// next Process() tick eligible without deleting/recreating the source.
+		m_dwLastTriedToConnect = GetTickCount() - MIN2MS(20);
+	} else {
+		// Preserve the source for a normal future reask or an inbound callback.
+		SetLastAskedTime();
+		m_bReaskPending = true;
+	}
+}
+
 bool CUpDownClient::CanUseIPv6Direct() const
 {
 	// The DUALSTACK bit is deliberately required for LowID replacement: WIRE
@@ -917,7 +964,7 @@ void CUpDownClient::SendMuleInfoPacket(bool bAnswer)
 	CSafeMemFile data(128);
 	data.WriteUInt8((uint8)theApp.m_uCurVersionShort);
 	data.WriteUInt8(EMULE_PROTOCOL);
-	data.WriteUInt32(8); // nr. of tags
+	data.WriteUInt32(9); // nr. of tags
 	CTag tag(ET_COMPRESSION, 1);
 	tag.WriteTagToFile(data);
 	CTag tag2(ET_UDPVER, 4);
@@ -938,6 +985,12 @@ void CUpDownClient::SendMuleInfoPacket(bool bAnswer)
 	tag7.WriteTagToFile(data);
 	CTag tag8(ET_MOD_VERSION, _T("eSE/0.70b"));
 	tag8.WriteTagToFile(data);
+	// Runtime capability refresh. HELLO remains the initial source of truth;
+	// carrying the same additive tag in OP_EMULEINFO lets an already-connected
+	// peer observe a keepalive/relay kill-switch change without reconnecting.
+	const uint8 kEseCapsTagName = 0x6C;
+	CTag tag9(kEseCapsTagName, (uint64)g_uEseCapsRuntime);
+	tag9.WriteTagToFile(data);
 
 	Packet *packet = new Packet(data, OP_EMULEPROT);
 	packet->opcode = bAnswer ? OP_EMULEINFOANSWER : OP_EMULEINFO;
@@ -1007,6 +1060,10 @@ void CUpDownClient::ProcessMuleInfoPacket(const uchar *pachPacket, uint32 nSize)
 					m_strMuleInfo.AppendFormat(_T("\n  UDPPort=%u"), temptag.GetInt());
 			} else if (bDbgInfo)
 				m_strMuleInfo.AppendFormat(_T("\n  ***UnkType=%s"), (LPCTSTR)temptag.GetFullInfo());
+			break;
+		case 0x6C: // TAG_ESE_CAPS runtime refresh
+			if (temptag.IsInt())
+				m_uEseCapabilities = (uint32)temptag.GetInt();
 			break;
 		case ET_UDPVER:
 			// Bits 31- 8: 0 - reserved
@@ -1283,8 +1340,9 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	if (thePrefs.IsIPv6Enabled()) {
 		forkCaps |= CAP_FORK_IPV6_WIRE;
 		// Runtime bits are fail-safe: DUALSTACK comes from the firewall prober;
-		// IPV6_KAD is set only while K6-2 has a dual-stack UDP bind and a
-		// detected public IPv6 endpoint. Neither is advertised speculatively.
+		// the historically named IPV6_KAD bit now denotes the family-neutral
+		// native Kad6 plane and is set only while a signed public v4 or v6
+		// endpoint can be built. Neither bit is advertised speculatively.
 		extern uint32 g_uForkCapsRuntime;  // defined in FirewallProberV6.cpp
 		forkCaps |= g_uForkCapsRuntime;
 	}
@@ -1830,6 +1888,8 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 					CLiveDebugLog::Get().Append("HOLE", "eD2K PUNCH2->PUNCH3 %S:%u via R %S",
 						(LPCWSTR)ipstr(GetConnectIP()), (unsigned)GetKadPort(), (LPCWSTR)ipstr(htonl(uRipHost)));
 				} else {
+					if (m_uNatRdvLookupAttempts < 255) ++m_uNatRdvLookupAttempts;
+					m_uLastNatRendezvousTick = ::GetTickCount();
 					static uint32 s_lastNoRdvLog = 0;   // throttle: this branch can run every tick until an R connects
 					if (::GetTickCount() - s_lastNoRdvLog > 60000) {
 						s_lastNoRdvLog = ::GetTickCount();

@@ -41,7 +41,8 @@ uint32 g_uEseCapsRuntime = 0;
 void RefreshEseV9PreviewCaps()
 {
     const LONG previewMask = static_cast<LONG>(
-        ESE_CAP_TUNNEL_BULK | ESE_CAP_REACH_V2 | ESE_CAP_TUNNEL_AUTH |
+        ESE_CAP_TUNNEL_BULK | ESE_CAP_REACH_V2 | ESE_CAP_KAD_KEEPALIVE |
+        ESE_CAP_TUNNEL_AUTH |
         ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED |
         ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY);
     volatile LONG* caps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
@@ -50,6 +51,8 @@ void RefreshEseV9PreviewCaps()
         return;
 
     LONG enabled = static_cast<LONG>(ESE_CAP_TUNNEL_BULK | ESE_CAP_REACH_V2);
+    if (CPreferences::GetEseAutoKeepalive())
+        enabled |= static_cast<LONG>(ESE_CAP_KAD_KEEPALIVE);
     if (eSELive::NodeIdentityIsPersistent()) {
         enabled |= static_cast<LONG>(ESE_CAP_TUNNEL_AUTH |
             ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED);

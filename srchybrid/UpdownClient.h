@@ -88,10 +88,14 @@ public:
     // peer X" attempt has to wait 30 s after each previous attempt — terrible UX.
     uint8  m_uNatRendezvousAttempts = 0;
     bool   m_bNatRdvTried = false;   // [eSE v9] fired the one 3-way rendezvous (punch3) escalation for this peer? Reset on uTP accept.
+    uint8  m_uNatRdvLookupAttempts = 0; // bounded retries while waiting for a capable rendezvous peer
     // A.3: high-water mark of attempts since last successful uTP connect with
     // this peer. Resets to 0 when the punch succeeds (in CUtpSocket on_accept).
     bool SupportsUTP() const;
 	bool CanUseEseHolePunch() const;
+	bool IsEseNatTraversalConnectPending() const;
+	bool ShouldRetryEseNatTraversal(DWORD now) const;
+	void FinishEseNatTraversalAttempt(bool retryNow);
 	bool CanUseIPv6Direct() const;
 	void MarkIPv6DirectFailed() { m_dwIPv6DirectFailed = ::GetTickCount(); }
 
@@ -176,6 +180,7 @@ public:
 	bool            SupportsEseTunnelShaped()     const { return (m_uEseCapabilities & 0x04000000) != 0; }  // K6-6 class-5 fixed-record link shaping
 	bool            SupportsEseHolePunchCookie()  const { return (m_uEseCapabilities & 0x00080000) != 0; }  // P0 return-routability cookie (ESE_CAP_HOLEPUNCH_COOKIE, bit 19)
 	bool            SupportsEseHolePunchRdv()     const { return (m_uEseCapabilities & 0x00008000) != 0; }  // R.1 3-way rendezvous (ESE_CAP_HOLEPUNCH_RDV, bit 15)
+	bool            SupportsEseKadKeepalive()     const { return (m_uEseCapabilities & 0x00010000) != 0; }  // R.2 nonce-correlated Kad keepalive (bit 16)
 	bool            SupportsLiveRelay()           const { return (m_uEseCapabilities & 0x00200000) != 0; }  // R.3 buddy relay (ESE_CAP_LIVE_RELAY, bit 21)
 	// Strictly decoded TAG_ESE_REACH metadata obtained with a Kad source result.
 	// It is independent of HELLO capabilities because it must select a route

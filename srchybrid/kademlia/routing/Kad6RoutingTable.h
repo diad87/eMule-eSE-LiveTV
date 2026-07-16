@@ -6,6 +6,8 @@
 #include "kad6/kad6_routing.h"
 #include "kad6/kad6_asn.h"
 #include "kad6/kad6_bootstrap.h"
+#include "kad6/kad6_path.h"
+#include "kad6/kad6_role.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +20,13 @@ namespace Kademlia
 	public:
 		struct Entry
 		{
+			struct Candidate
+			{
+				kad6::K6Endpoint endpoint;
+				std::uint64_t lastSeen = 0;
+				bool verified = false;
+				kad6::Byte failures = 0;
+			};
 			kad6::K6RouteContact contact;
 			std::uint64_t lastSeen = 0;
 			bool verified = false;
@@ -26,6 +35,8 @@ namespace Kademlia
 			kad6::Ed25519Pub nodePub{};
 			std::uint64_t signedEpoch = 0;
 			kad6::Ed25519Sig routerSignature{};
+			kad6::K6EndpointSet endpointSet;
+			std::vector<Candidate> candidates;
 		};
 
 		CKad6RoutingTable();
@@ -49,11 +60,22 @@ namespace Kademlia
 		// classify its public IPv6 endpoint.
 		bool LookupVerifiedIdentity(const kad6::Byte nodePub[32],
 			kad6::Kad6Address& address, kad6::K6AsnInfo& asn) const;
+		// Offline-only lookup used by local admission policy. Unknown addresses
+		// are grouped fail-closed by the caller and are never sent to a service.
+		bool LookupAddressAsn(const kad6::Kad6Address& address,
+			kad6::K6AsnInfo& asn) const;
+		bool ApplyPathEvidence(const kad6::Byte nodePub[32],
+			std::uint64_t nowSeconds, kad6::K6PathCandidate& candidate) const;
 		void NoteFailure(const kad6::KadId& nodeId);
+		void NoteFailure(const kad6::KadId& nodeId,
+			const kad6::Kad6Address& address, std::uint16_t port);
 
 		std::vector<kad6::K6RouteContact> Closest(
 			const kad6::KadId& target, std::size_t maximum,
 			bool verifiedOnly = true) const;
+		bool BuildEndpointRace(const kad6::KadId& nodeId,
+			std::uint64_t nowSeconds,
+			std::vector<kad6::K6EndpointAttempt>& attempts) const;
 		bool NextProbation(Entry& out) const;
 		void Expire(std::uint64_t nowSeconds);
 
@@ -62,9 +84,11 @@ namespace Kademlia
 		bool Load();
 		bool Save() const;
 		bool LoadAsnDatabase();
+		bool LoadPathEvidence();
 		bool LoadPrivateBootstrap();
 		bool HasAsnDatabase() const { return !m_asnDatabase.empty(); }
 		std::size_t AsnEntryCount() const { return m_asnDatabase.entry_count(); }
+		std::uint64_t PathEvidenceSequence() const { return m_pathEvidence.sequence; }
 
 	private:
 		bool AddOrUpdate(const kad6::K6RouteContact& contact,
@@ -78,6 +102,7 @@ namespace Kademlia
 		std::vector<Entry> m_entries;
 		kad6::KadId m_localId;
 		kad6::K6AsnDatabase m_asnDatabase;
+		kad6::K6PathEvidenceSnapshot m_pathEvidence;
 		std::uint64_t m_bootstrapSequence = 0;
 	};
 }

@@ -430,15 +430,6 @@ namespace
 			&& a.valid_until == b.valid_until;
 	}
 
-	std::string Kad6StoredSourceKey(const kad6::K6SourceRecord& record)
-	{
-		std::string key(reinterpret_cast<const char*>(record.object_hash.data()),
-			record.object_hash.size());
-		key.append(reinterpret_cast<const char*>(record.source_pseudonym.data()),
-			record.source_pseudonym.size());
-		return key;
-	}
-
 	std::string Kad6NodeKey(const kad6::KadId& nodeId)
 	{
 		return std::string(reinterpret_cast<const char*>(nodeId.data()),
@@ -447,39 +438,68 @@ namespace
 }
 
 bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
-	kad6::K6RouteHeader& out)
+	kad6::K6RouteHeader& out, kad6::Kad6Address::Family preferredFamily)
 {
 	out = kad6::K6RouteHeader{};
-	if (txid == 0 || !thePrefs.IsIPv6Enabled() || theApp.clientudp == NULL
-		|| !theApp.clientudp->IsDualStack() || CKademlia::GetPrefs() == NULL
+	if (txid == 0 || theApp.clientudp == NULL || CKademlia::GetPrefs() == NULL
 		|| !eSELive::NodeIdentityIsPersistent()
 		|| eSELive::NodeIdentityPub() == NULL)
-		return false;
-	const CAddress publicV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
-	if (publicV6.GetType() != CAddress::IPv6 || !publicV6.IsPublicIP())
-		return false;
-	const uint16 kadPort = CPrefs::GetInternKadPort();
-	if (kadPort == 0)
 		return false;
 
 	const std::uint64_t now = static_cast<std::uint64_t>(time(NULL));
 	if (now == 0)
 		return false;
-	kad6::K6Endpoint endpoint;
-	endpoint.addr.family = kad6::Kad6Address::Family::IPv6;
-	std::memcpy(endpoint.addr.addr.data(), publicV6.Data(), 16);
-	endpoint.udp_port = kadPort;
-	endpoint.tcp_port = theApp.GetAdvertisedV6TcpPort();
-	endpoint.transport_flags = kad6::kK6EpUdpKad6;
-	endpoint.observed = 0;
+	std::vector<kad6::K6Endpoint> endpoints;
+	const uint16 internalKadPort = CPrefs::GetInternKadPort();
+	if (thePrefs.IsIPv6Enabled() && theApp.clientudp->IsDualStack()
+		&& internalKadPort != 0) {
+		const CAddress publicV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+		if (publicV6.GetType() == CAddress::IPv6 && publicV6.IsPublicIP()) {
+			kad6::K6Endpoint endpoint;
+			endpoint.addr.family = kad6::Kad6Address::Family::IPv6;
+			std::memcpy(endpoint.addr.addr.data(), publicV6.Data(), 16);
+			endpoint.udp_port = internalKadPort;
+			endpoint.tcp_port = theApp.GetAdvertisedV6TcpPort();
+			endpoint.transport_flags = kad6::kK6EpUdpKad6;
+			endpoint.observed = 0;
+			endpoints.push_back(endpoint);
+		}
+	}
+	const uint32 publicV4 = theApp.GetPublicIP();
+	if (publicV4 != 0) {
+		const CAddress addressV4(publicV4, false);
+		if (addressV4.GetType() == CAddress::IPv4 && addressV4.IsPublicIP()) {
+			uint16 publicKadPort = internalKadPort;
+			if (CKademlia::GetPrefs()->GetUseExternKadPort()
+				&& CKademlia::GetPrefs()->GetExternalKadPort() != 0)
+				publicKadPort = CKademlia::GetPrefs()->GetExternalKadPort();
+			if (publicKadPort != 0) {
+				kad6::K6Endpoint endpoint;
+				endpoint.addr.family = kad6::Kad6Address::Family::IPv4;
+				std::memcpy(endpoint.addr.addr.data(), &publicV4, sizeof publicV4);
+				endpoint.udp_port = publicKadPort;
+				endpoint.tcp_port = theApp.GetAdvertisedTcpPort();
+				endpoint.transport_flags = kad6::kK6EpUdpKad6;
+				endpoint.observed = 0;
+				endpoint.priority = 1; // prefer native IPv6 when both are healthy
+				endpoints.push_back(endpoint);
+			}
+		}
+	}
+	if (endpoints.empty())
+		return false;
+	if (m_kad6LocalRecordReady)
+		for (kad6::K6Endpoint& endpoint : endpoints)
+			endpoint.valid_until = m_kad6LocalRecord.valid_until;
 
-	const bool endpointChanged = !m_kad6LocalRecordReady
-		|| m_kad6LocalRecord.endpoints.empty()
-		|| m_kad6LocalRecord.endpoints[0].addr != endpoint.addr
-		|| m_kad6LocalRecord.endpoints[0].udp_port != endpoint.udp_port
-		|| m_kad6LocalRecord.endpoints[0].tcp_port != endpoint.tcp_port
-		|| m_kad6LocalRecord.endpoints[0].transport_flags
-			!= endpoint.transport_flags;
+	bool endpointChanged = !m_kad6LocalRecordReady
+		|| m_kad6LocalRecord.endpoints.size() != endpoints.size();
+	if (!endpointChanged)
+		for (std::size_t i = 0; i < endpoints.size(); ++i)
+			if (!SameKad6Endpoint(m_kad6LocalRecord.endpoints[i], endpoints[i])) {
+				endpointChanged = true;
+				break;
+			}
 	const bool expiring = !m_kad6LocalRecordReady
 		|| m_kad6LocalRecord.valid_until <= now + 10 * 60;
 	if (endpointChanged || expiring) {
@@ -497,8 +517,9 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 		m_kad6LocalRecord.caps = CAP_FORK_IPV6_WIRE | CAP_FORK_IPV6_KAD;
 		m_kad6LocalRecord.valid_from = now > 60 ? now - 60 : 1;
 		m_kad6LocalRecord.valid_until = now + 2 * 60 * 60;
-		endpoint.valid_until = m_kad6LocalRecord.valid_until;
-		m_kad6LocalRecord.endpoints.push_back(endpoint);
+		for (kad6::K6Endpoint& endpoint : endpoints)
+			endpoint.valid_until = m_kad6LocalRecord.valid_until;
+		m_kad6LocalRecord.endpoints = endpoints;
 		std::vector<kad6::Byte> signedWire;
 		if (kad6::SignK6RouterRecord(MakeKad6HostCryptoHooks(), NULL, 0,
 			m_kad6LocalRecord, signedWire) != kad6::Kad6Status::Ok) {
@@ -507,9 +528,17 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 			return false;
 		}
 		m_kad6LocalRecordReady = true;
-	} else {
-		endpoint = m_kad6LocalRecord.endpoints[0];
 	}
+	kad6::K6Endpoint endpoint = m_kad6LocalRecord.endpoints[0];
+	if (preferredFamily != kad6::Kad6Address::Family::None)
+		for (const kad6::K6Endpoint& candidate : m_kad6LocalRecord.endpoints)
+			if (candidate.addr.family == preferredFamily) {
+				endpoint = candidate;
+				break;
+			}
+	if (preferredFamily != kad6::Kad6Address::Family::None
+		&& endpoint.addr.family != preferredFamily)
+		return false;
 
 	out.txid = txid;
 	CUInt128 localId = CKademlia::GetPrefs()->GetKadID();
@@ -518,8 +547,10 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 	out.sender_epoch = m_kad6LocalRecord.epoch;
 	out.sender_endpoint = endpoint;
 	out.sender_record = m_kad6LocalRecord;
-	return SameKad6Endpoint(out.sender_endpoint,
-		out.sender_record.endpoints[0]);
+	for (const kad6::K6Endpoint& candidate : out.sender_record.endpoints)
+		if (SameKad6Endpoint(out.sender_endpoint, candidate))
+			return true;
+	return false;
 }
 
 uint32 CKademliaUDPListener::NextKad6Transaction()
@@ -542,19 +573,29 @@ uint32 CKademliaUDPListener::NextKad6Transaction()
 }
 
 bool CKademliaUDPListener::SendKad6Payload(byte opcode,
-	const std::vector<kad6::Byte>& payload, const byte address[16], uint16 port)
+	const std::vector<kad6::Byte>& payload,
+	const kad6::Kad6Address& address, uint16 port)
 {
-	if (theApp.clientudp == NULL || address == NULL || port == 0
+	if (theApp.clientudp == NULL || port == 0
 		|| payload.size() > kad6::kK6StoreMaxPayloadSize)
 		return false;
-	Packet* packet = new Packet(OP_KADEMLIAHEADER);
+	Packet* packet = new Packet(OP_KAD6HEADER);
 	packet->opcode = opcode;
 	packet->size = static_cast<uint32>(payload.size());
 	packet->pBuffer = new char[payload.size()];
 	if (!payload.empty())
 		std::memcpy(packet->pBuffer, payload.data(), payload.size());
 	theStats.AddUpDataOverheadKad(packet->size);
-	return theApp.clientudp->SendPacketV6(packet, address, port);
+	if (address.family == kad6::Kad6Address::Family::IPv6)
+		return theApp.clientudp->SendPacketV6(packet, address.addr.data(), port);
+	if (address.family == kad6::Kad6Address::Family::IPv4) {
+		uint32 networkAddress = 0;
+		std::memcpy(&networkAddress, address.addr.data(), sizeof networkAddress);
+		return theApp.clientudp->SendPacket(packet, networkAddress, port,
+			false, NULL, true, 0);
+	}
+	delete packet;
+	return false;
 }
 
 void CKademliaUDPListener::RememberKad6Pending(const SKad6Pending& pending)
@@ -565,13 +606,15 @@ void CKademliaUDPListener::RememberKad6Pending(const SKad6Pending& pending)
 }
 
 int CKademliaUDPListener::FindKad6Pending(uint32 txid, byte expectedOpcode,
-	const byte address[16], uint16 port) const
+	const kad6::Kad6Address& address, uint16 port) const
 {
 	for (std::size_t i = 0; i < m_kad6Pending.size(); ++i) {
 		const SKad6Pending& pending = m_kad6Pending[i];
 		if (pending.txid == txid && pending.expectedOpcode == expectedOpcode
-			&& pending.port == port
-			&& std::memcmp(pending.address, address, 16) == 0)
+			&& ((pending.port == port && pending.address == address)
+				|| (pending.hasFallback && pending.fallbackSent
+					&& pending.fallbackPort == port
+					&& pending.fallbackAddress == address)))
 			return static_cast<int>(i);
 	}
 	return -1;
@@ -604,18 +647,18 @@ bool CKademliaUDPListener::SendKad6HelloChallenge(
 		return false;
 	const uint32 txid = NextKad6Transaction();
 	kad6::K6HelloRequest request;
-	if (!BuildKad6Header(txid, request.header))
+	if (!BuildKad6Header(txid, request.header, contact.endpoint.addr.family))
 		return false;
 	std::vector<kad6::Byte> wire;
 	if (kad6::EncodeK6HelloRequest(request, wire) != kad6::Kad6Status::Ok
 		|| !SendKad6Payload(KADEMLIA3_HELLO_REQ, wire,
-			contact.endpoint.addr.addr.data(), contact.endpoint.udp_port))
+			contact.endpoint.addr, contact.endpoint.udp_port))
 		return false;
 
 	SKad6Pending pending = {};
 	pending.txid = txid;
 	pending.expectedOpcode = KADEMLIA3_HELLO_RES;
-	std::memcpy(pending.address, contact.endpoint.addr.addr.data(), 16);
+	pending.address = contact.endpoint.addr;
 	pending.port = contact.endpoint.udp_port;
 	pending.expectedNode = contact.node_id;
 	pending.hasExpectedNode = true;
@@ -630,10 +673,10 @@ bool CKademliaUDPListener::SendKad6HelloChallenge(
 }
 
 void CKademliaUDPListener::SendKad6BootstrapResponse(uint32 txid,
-	const byte address[16], uint16 port)
+	const kad6::Kad6Address& address, uint16 port)
 {
 	kad6::K6BootstrapResponse response;
-	if (!BuildKad6Header(txid, response.header))
+	if (!BuildKad6Header(txid, response.header, address.family))
 		return;
 	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
 	if (table == NULL)
@@ -646,10 +689,11 @@ void CKademliaUDPListener::SendKad6BootstrapResponse(uint32 txid,
 }
 
 void CKademliaUDPListener::SendKad6FindResponse(uint32 txid,
-	const kad6::KadId& target, byte maximum, const byte address[16], uint16 port)
+	const kad6::KadId& target, byte maximum,
+	const kad6::Kad6Address& address, uint16 port)
 {
 	kad6::K6FindNodeResponse response;
-	if (!BuildKad6Header(txid, response.header))
+	if (!BuildKad6Header(txid, response.header, address.family))
 		return;
 	response.target_id = target;
 	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
@@ -663,28 +707,19 @@ void CKademliaUDPListener::SendKad6FindResponse(uint32 txid,
 }
 
 void CKademliaUDPListener::SendKad6SourceResponse(uint32 txid,
-	const kad6::Hash16& target, byte maximum, const byte address[16], uint16 port)
+	const kad6::Hash16& target, byte maximum,
+	const kad6::Kad6Address& address, uint16 port)
 {
 	kad6::K6FindSourceResponse response;
-	if (!BuildKad6Header(txid, response.header)) return;
+	if (!BuildKad6Header(txid, response.header, address.family)) return;
 	response.target_hash = target;
 	const std::uint64_t now = static_cast<std::uint64_t>(time(NULL));
-	std::vector<const SKad6StoredSource*> matches;
-	for (const auto& item : m_kad6StoredSources)
-		if (item.second.record.object_hash == target &&
-			item.second.record.expires_at > now)
-			matches.push_back(&item.second);
-	std::sort(matches.begin(), matches.end(),
-		[](const SKad6StoredSource* a, const SKad6StoredSource* b) {
-			if (a->record.source_epoch != b->record.source_epoch)
-				return a->record.source_epoch > b->record.source_epoch;
-			return a->record.expires_at > b->record.expires_at;
-		});
-	const size_t limit = (std::min<size_t>)(matches.size(),
-		(std::min<size_t>)(maximum, kad6::kK6FindSourceMaxRecords));
+	std::vector<kad6::K6SourceRecord> matches;
+	m_kad6StoredSources.Find(target, now,
+		(std::min<size_t>)(maximum, kad6::kK6FindSourceMaxRecords), matches);
 	std::vector<kad6::Byte> wire;
-	for (size_t i = 0; i < limit; ++i) {
-		response.records.push_back(matches[i]->record);
+	for (size_t i = 0; i < matches.size(); ++i) {
+		response.records.push_back(matches[i]);
 		if (kad6::EncodeK6FindSourceResponse(response, wire) ==
 				kad6::Kad6Status::TooLarge) {
 			response.records.pop_back();
@@ -714,23 +749,43 @@ bool CKademliaUDPListener::DispatchKad6MaintenanceRound()
 		kad6::K6FindNodeRequest request;
 		request.target_id = m_kad6AdaptiveLookup.target;
 		request.max_results = static_cast<byte>(KAD6_ROUTING_K);
+		std::vector<kad6::K6EndpointAttempt> attempts;
+		table->BuildEndpointRace(destination.node_id,
+			static_cast<std::uint64_t>(time(NULL)), attempts);
+		const kad6::K6Endpoint primary = attempts.empty()
+			? destination.endpoint : attempts.front().endpoint;
 		std::vector<kad6::Byte> wire;
-		if (!BuildKad6Header(txid, request.header) ||
+		if (!BuildKad6Header(txid, request.header,
+				primary.addr.family) ||
 			kad6::EncodeK6FindNodeRequest(request, wire) != kad6::Kad6Status::Ok ||
 			!SendKad6Payload(KADEMLIA3_REQ, wire,
-				destination.endpoint.addr.addr.data(), destination.endpoint.udp_port))
+				primary.addr, primary.udp_port))
 			continue;
 		SKad6Pending pending = {};
 		pending.txid = txid;
 		pending.expectedOpcode = KADEMLIA3_RES;
-		std::memcpy(pending.address, destination.endpoint.addr.addr.data(), 16);
-		pending.port = destination.endpoint.udp_port;
+		pending.address = primary.addr;
+		pending.port = primary.udp_port;
 		pending.expectedNode = destination.node_id;
 		pending.hasExpectedNode = true;
 		pending.created = GetTickCount();
 		pending.target = request.target_id;
 		pending.maximum = request.max_results;
 		pending.adaptiveLookup = true;
+		if (attempts.size() > 1) {
+			kad6::K6FindNodeRequest fallbackRequest = request;
+			std::vector<kad6::Byte> fallbackWire;
+			if (BuildKad6Header(txid, fallbackRequest.header,
+					attempts[1].endpoint.addr.family)
+				&& kad6::EncodeK6FindNodeRequest(fallbackRequest, fallbackWire)
+					== kad6::Kad6Status::Ok) {
+				pending.hasFallback = true;
+				pending.fallbackAddress = attempts[1].endpoint.addr;
+				pending.fallbackPort = attempts[1].endpoint.udp_port;
+				pending.requestOpcode = KADEMLIA3_REQ;
+				pending.requestPayload = std::move(fallbackWire);
+			}
+		}
 		RememberKad6Pending(pending);
 		m_kad6AdaptiveLookup.queried.insert(key);
 		++m_kad6AdaptiveLookup.totalSent;
@@ -761,19 +816,25 @@ bool CKademliaUDPListener::DispatchKad6SourceRound(uint64 lookupKey)
 		request.max_records = static_cast<byte>((std::min<uint16>)(
 			kad6::kK6FindSourceMaxRecords,
 			(std::max<uint16>)(1, lookup.maximum - lookup.received)));
+		std::vector<kad6::K6EndpointAttempt> attempts;
+		table->BuildEndpointRace(destination.node_id,
+			static_cast<std::uint64_t>(time(NULL)), attempts);
+		const kad6::K6Endpoint primary = attempts.empty()
+			? destination.endpoint : attempts.front().endpoint;
 		std::vector<kad6::Byte> wire;
-		if (!BuildKad6Header(txid, request.header) ||
+		if (!BuildKad6Header(txid, request.header,
+				primary.addr.family) ||
 			kad6::EncodeK6FindSourceRequest(request, wire) != kad6::Kad6Status::Ok ||
 			!SendKad6Payload(KADEMLIA3_FIND_SOURCE_REQ, wire,
-				destination.endpoint.addr.addr.data(), destination.endpoint.udp_port)) {
+				primary.addr, primary.udp_port)) {
 			eSELive::CLiveTunnel::Get().OnKad6SourceLookupRpc(lookup.alpha, 2);
 			continue;
 		}
 		SKad6Pending pending = {};
 		pending.txid = txid;
 		pending.expectedOpcode = KADEMLIA3_FIND_SOURCE_RES;
-		std::memcpy(pending.address, destination.endpoint.addr.addr.data(), 16);
-		pending.port = destination.endpoint.udp_port;
+		pending.address = primary.addr;
+		pending.port = primary.udp_port;
 		pending.expectedNode = destination.node_id;
 		pending.hasExpectedNode = true;
 		pending.created = GetTickCount();
@@ -782,6 +843,20 @@ bool CKademliaUDPListener::DispatchKad6SourceRound(uint64 lookupKey)
 		pending.sourceCircuitId = lookup.circuitId;
 		pending.sourceRequestId = lookup.requestId;
 		pending.sourceAlpha = lookup.alpha;
+		if (attempts.size() > 1) {
+			kad6::K6FindSourceRequest fallbackRequest = request;
+			std::vector<kad6::Byte> fallbackWire;
+			if (BuildKad6Header(txid, fallbackRequest.header,
+					attempts[1].endpoint.addr.family)
+				&& kad6::EncodeK6FindSourceRequest(fallbackRequest, fallbackWire)
+					== kad6::Kad6Status::Ok) {
+				pending.hasFallback = true;
+				pending.fallbackAddress = attempts[1].endpoint.addr;
+				pending.fallbackPort = attempts[1].endpoint.udp_port;
+				pending.requestOpcode = KADEMLIA3_FIND_SOURCE_REQ;
+				pending.requestPayload = std::move(fallbackWire);
+			}
+		}
 		RememberKad6Pending(pending);
 		lookup.queried.insert(nodeKey);
 		++lookup.totalSent;
@@ -837,22 +912,42 @@ bool CKademliaUDPListener::PublishKad6SourceRecord(uint64 publishLeaseId,
 		kad6::K6StoreSourceRequest request;
 		request.target_hash = record.object_hash;
 		request.record = record;
+		std::vector<kad6::K6EndpointAttempt> attempts;
+		table->BuildEndpointRace(destination.node_id,
+			static_cast<std::uint64_t>(time(NULL)), attempts);
+		const kad6::K6Endpoint primary = attempts.empty()
+			? destination.endpoint : attempts.front().endpoint;
 		std::vector<kad6::Byte> wire;
-		if (!BuildKad6Header(txid, request.header) ||
+		if (!BuildKad6Header(txid, request.header,
+				primary.addr.family) ||
 			kad6::EncodeK6StoreSourceRequest(request, wire) != kad6::Kad6Status::Ok ||
 			!SendKad6Payload(KADEMLIA3_STORE_SOURCE_REQ, wire,
-				destination.endpoint.addr.addr.data(), destination.endpoint.udp_port))
+				primary.addr, primary.udp_port))
 			continue;
 		SKad6Pending pending = {};
 		pending.txid = txid;
 		pending.expectedOpcode = KADEMLIA3_STORE_SOURCE_RES;
-		std::memcpy(pending.address, destination.endpoint.addr.addr.data(), 16);
-		pending.port = destination.endpoint.udp_port;
+		pending.address = primary.addr;
+		pending.port = primary.udp_port;
 		pending.expectedNode = destination.node_id;
 		pending.hasExpectedNode = true;
 		pending.created = GetTickCount();
 		pending.publishLeaseId = publishLeaseId;
 		pending.target = record.object_hash;
+		if (attempts.size() > 1) {
+			kad6::K6StoreSourceRequest fallbackRequest = request;
+			std::vector<kad6::Byte> fallbackWire;
+			if (BuildKad6Header(txid, fallbackRequest.header,
+					attempts[1].endpoint.addr.family)
+				&& kad6::EncodeK6StoreSourceRequest(fallbackRequest, fallbackWire)
+					== kad6::Kad6Status::Ok) {
+				pending.hasFallback = true;
+				pending.fallbackAddress = attempts[1].endpoint.addr;
+				pending.fallbackPort = attempts[1].endpoint.udp_port;
+				pending.requestOpcode = KADEMLIA3_STORE_SOURCE_REQ;
+				pending.requestPayload = std::move(fallbackWire);
+			}
+		}
 		RememberKad6Pending(pending);
 		sent = true;
 	}
@@ -866,19 +961,23 @@ bool CKademliaUDPListener::BootstrapV6(const byte address[16], uint16 port)
 	CAddress hostAddress(address);
 	if (hostAddress.GetType() != CAddress::IPv6 || !hostAddress.IsPublicIP())
 		return false;
+	kad6::Kad6Address destination;
+	destination.family = kad6::Kad6Address::Family::IPv6;
+	std::memcpy(destination.addr.data(), address, 16);
 	const uint32 txid = NextKad6Transaction();
 	kad6::K6BootstrapRequest request;
-	if (!BuildKad6Header(txid, request.header))
+	if (!BuildKad6Header(txid, request.header,
+		kad6::Kad6Address::Family::IPv6))
 		return false;
 	std::vector<kad6::Byte> wire;
 	if (kad6::EncodeK6BootstrapRequest(request, wire) != kad6::Kad6Status::Ok
-		|| !SendKad6Payload(KADEMLIA3_BOOTSTRAP_REQ, wire, address, port))
+		|| !SendKad6Payload(KADEMLIA3_BOOTSTRAP_REQ, wire, destination, port))
 		return false;
 
 	SKad6Pending pending = {};
 	pending.txid = txid;
 	pending.expectedOpcode = KADEMLIA3_BOOTSTRAP_RES;
-	std::memcpy(pending.address, address, 16);
+	pending.address = destination;
 	pending.port = port;
 	pending.created = GetTickCount();
 	pending.afterVerify = K6_AFTER_NONE;
@@ -3453,27 +3552,31 @@ void CKademliaUDPListener::SendKad3HolepunchProceed(uint32 uIP_A, uint16 uPort_A
 // UDP socket); a 0 IP is skipped (e.g. a v6-only CAddress reduced to 0). Reuses the
 // R.1 encryption-tiered send helper. The far side answers via Process_KADEMLIA3_PING_REQ
 // (PONG below); the supernode pool is filled from the routing table in CKadKeepalive::Tick().
-void CKademliaUDPListener::SendKad3PingReq(uint32 uIP, uint16 uUDPPort)
+void CKademliaUDPListener::SendKad3PingReq(uint32 uIP, uint16 uUDPPort,
+                                           const CUInt128& nonce)
 {
 	// uIP==0xFFFFFFFF guards a v6-only CAddress whose ToUInt32 collapses to UINT_MAX
 	// (adversarial review 2026-06-14, latent finding) — never ping 255.255.255.255.
-	if (uIP == 0 || uIP == 0xFFFFFFFF || uUDPPort == 0)
+	if (uIP == 0 || uIP == 0xFFFFFFFF || uUDPPort == 0 || nonce == 0)
 		return;
-	// Minimal tickle: <OurKadID 16> so the responder can correlate a PONG.
+	// Versioned R.2 tickle: an unpredictable nonce is echoed by the responder.
+	// It works before the eD2K peer has supplied a trustworthy KadID and also
+	// lets the caller learn a NAT-translated response port safely.
 	CSafeMemFile fileIO(16);
-	fileIO.WriteUInt128(CKademlia::GetPrefs()->GetKadID());
+	fileIO.WriteUInt128(nonce);
 	SendKad3HolepunchPacket(fileIO, KADEMLIA3_PING_REQ, uIP, uUDPPort);
 }
 
 // R.2 keepalive: reply a KADEMLIA3_PING_RES (PONG) to a peer that pinged us, so the
 // round trip completes and they can keep us in their active set. Carries <OurKadID 16>
 // for symmetry with the REQ. Reuses the R.1 encryption-tiered send helper.
-void CKademliaUDPListener::SendKad3PingRes(uint32 uIP, uint16 uUDPPort)
+void CKademliaUDPListener::SendKad3PingRes(uint32 uIP, uint16 uUDPPort,
+                                           const CUInt128& nonce)
 {
-	if (uIP == 0 || uIP == 0xFFFFFFFF || uUDPPort == 0)
+	if (uIP == 0 || uIP == 0xFFFFFFFF || uUDPPort == 0 || nonce == 0)
 		return;
 	CSafeMemFile fileIO(16);
-	fileIO.WriteUInt128(CKademlia::GetPrefs()->GetKadID());
+	fileIO.WriteUInt128(nonce);
 	SendKad3HolepunchPacket(fileIO, KADEMLIA3_PING_RES, uIP, uUDPPort);
 }
 
@@ -3482,17 +3585,34 @@ void CKademliaUDPListener::SendKad3PingRes(uint32 uIP, uint16 uUDPPort)
 // to the socket source (uIP), which is the return-routable address.
 void CKademliaUDPListener::Process_KADEMLIA3_PING_REQ(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey & /*senderUDPKey*/)
 {
-	if (uLenPacket != 16 || CKademlia::GetRoutingZone() == NULL)
+	// The responder is part of the runtime capability, not a passive legacy
+	// service. A stale/malicious peer must not keep it alive after the operator
+	// stops R.2 or when a fresh profile leaves it disabled.
+	if ((g_uEseCapsRuntime & ESE_CAP_KAD_KEEPALIVE) == 0)
 		return;
-	CContact* pContact = CKademlia::GetRoutingZone()->GetContact(uIP, uUDPPort, false);
-	if (pContact == NULL)
+	if (uLenPacket != 16)
 		return;
 	CSafeMemFile fileIO(pbyPacketData, uLenPacket);
-	CUInt128 uSenderKadID;
-	fileIO.ReadUInt128(uSenderKadID);
-	if (uSenderKadID != pContact->GetClientID())
+	CUInt128 nonce;
+	fileIO.ReadUInt128(nonce);
+	if (nonce == 0)
 		return;
-	SendKad3PingRes(uIP, uUDPPort);
+
+	// Accept only a verified Kad contact or an eD2K peer that advertised the
+	// keepalive capability.  The response is the same size as the request and
+	// echoes an unpredictable nonce, so this stays non-amplifying and correlated.
+	CContact* pContact = CKademlia::GetRoutingZone() != NULL
+		? CKademlia::GetRoutingZone()->GetContact(uIP, uUDPPort, false) : NULL;
+	bool authorized = pContact != NULL && pContact->IsIpVerified();
+	if (!authorized && theApp.clientlist != NULL) {
+		CUpDownClient* peer = theApp.clientlist->FindClientByIP_KadPort(
+			htonl(uIP), uUDPPort);
+		if (peer == NULL)
+			peer = theApp.clientlist->FindClientByIP(htonl(uIP));
+		authorized = peer != NULL && peer->SupportsEseKadKeepalive();
+	}
+	if (authorized)
+		SendKad3PingRes(uIP, uUDPPort, nonce);
 }
 
 // R.2 keepalive receiver: a supernode answered our ping. Refresh its health so Tick()'s
@@ -3500,17 +3620,12 @@ void CKademliaUDPListener::Process_KADEMLIA3_PING_REQ(const byte *pbyPacketData,
 // anything self-reported in the payload.
 void CKademliaUDPListener::Process_KADEMLIA3_PING_RES(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey & /*senderUDPKey*/)
 {
-	if (uLenPacket != 16 || CKademlia::GetRoutingZone() == NULL)
-		return;
-	CContact* pContact = CKademlia::GetRoutingZone()->GetContact(uIP, uUDPPort, false);
-	if (pContact == NULL)
+	if (uLenPacket != 16)
 		return;
 	CSafeMemFile fileIO(pbyPacketData, uLenPacket);
-	CUInt128 uResponderKadID;
-	fileIO.ReadUInt128(uResponderKadID);
-	if (uResponderKadID != pContact->GetClientID())
-		return;
-	CKadKeepalive::Instance().OnPong(uIP, uUDPPort, uResponderKadID);
+	CUInt128 nonce;
+	fileIO.ReadUInt128(nonce);
+	CKadKeepalive::Instance().OnPong(uIP, uUDPPort, nonce);
 }
 
 // ─── R.1 (3-way rendezvous) — A-side initiator ────────────────────────────────
@@ -3740,24 +3855,49 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, 
 	}
 }
 
-// Native K6-2 routing dispatch. This entry point is reached only for native
-// public-IPv6 datagrams selected by CClientUDPSocket. IPv4 packets carrying
-// the same numeric opcodes remain isolated in Process_KADEMLIA3_GENERIC.
+// Native Kad6 routing dispatch. Rev3 uses OP_KAD6HEADER as a family-neutral
+// discriminator; the old OP_KADEMLIAHEADER form remains v6-read-only during
+// migration and is never accepted on IPv4.
 void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
 	const byte address[16], uint16 port)
 {
 	if (data == NULL || address == NULL || length < 2
-		|| data[0] != OP_KADEMLIAHEADER || port == 0)
+		|| (data[0] != OP_KAD6HEADER && data[0] != OP_KADEMLIAHEADER)
+		|| port == 0)
+		return;
+	ProcessPacketKad6(data[1], data + 2, length - 2,
+		Kad6AddressFromRaw(address), port);
+}
+
+void CKademliaUDPListener::ProcessPacketV4(const byte* data, uint32 length,
+	uint32 ip, uint16 port)
+{
+	if (data == NULL || length < 2 || data[0] != OP_KAD6HEADER || port == 0)
+		return;
+	kad6::Kad6Address source;
+	source.family = kad6::Kad6Address::Family::IPv4;
+	const uint32 networkAddress = htonl(ip);
+	std::memcpy(source.addr.data(), &networkAddress, sizeof networkAddress);
+	ProcessPacketKad6(data[1], data + 2, length - 2, source, port);
+}
+
+void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
+	uint32 payloadLength, const kad6::Kad6Address& source, uint16 port)
+{
+	// The classic Kad UDP socket is always open, so the native discriminator
+	// alone is not an activation gate. Fresh profiles and kill-switch changes
+	// must drop Kad6 before parsing or emitting even a same-sized HELLO reply.
+	if (!thePrefs.GetEseV9Experimental()
+		|| (g_uEseCapsRuntime & ESE_CAP_KAD6) == 0)
+		return;
+	if (payload == NULL || payloadLength == 0 || port == 0)
 		return;
 	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
 	if (table == NULL)
 		return;
-	const kad6::Kad6Address source = Kad6AddressFromRaw(address);
-	const kad6::Byte* payload = data + 2;
-	const std::size_t payloadLength = length - 2;
 	const std::uint64_t now = static_cast<std::uint64_t>(time(NULL));
 
-	switch (data[1]) {
+	switch (opcode) {
 		case KADEMLIA3_HELLO_REQ: {
 			kad6::K6HelloRequest request;
 			if (kad6::DecodeK6HelloRequest(payload, payloadLength, request)
@@ -3771,10 +3911,11 @@ void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
 				return;
 
 			kad6::K6HelloResponse response;
-			if (BuildKad6Header(request.header.txid, response.header)) {
+			if (BuildKad6Header(request.header.txid, response.header,
+				source.family)) {
 				std::vector<kad6::Byte> wire;
 				if (kad6::EncodeK6HelloResponse(response, wire) == kad6::Kad6Status::Ok)
-					SendKad6Payload(KADEMLIA3_HELLO_RES, wire, address, port);
+					SendKad6Payload(KADEMLIA3_HELLO_RES, wire, source, port);
 			}
 			// Exactly one same-sized response. A reciprocal challenge is left to
 			// the paced probation scheduler so spoofed HELLOs cannot cause 2x
@@ -3790,7 +3931,7 @@ void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
 				|| response.header.version != kad6::kK6RouteWireVersion)
 				return;
 			const int index = FindKad6Pending(response.header.txid,
-				KADEMLIA3_HELLO_RES, address, port);
+				KADEMLIA3_HELLO_RES, source, port);
 			if (index < 0)
 				return;
 			const SKad6Pending pending = m_kad6Pending[index];
@@ -3803,13 +3944,13 @@ void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
 				return;
 			m_kad6Pending.erase(m_kad6Pending.begin() + index);
 			if (pending.afterVerify == K6_AFTER_BOOTSTRAP_RESPONSE)
-				SendKad6BootstrapResponse(pending.originalTxid, address, port);
+				SendKad6BootstrapResponse(pending.originalTxid, source, port);
 			else if (pending.afterVerify == K6_AFTER_FIND_RESPONSE)
 				SendKad6FindResponse(pending.originalTxid, pending.target,
-					pending.maximum, address, port);
+					pending.maximum, source, port);
 			else if (pending.afterVerify == K6_AFTER_FIND_SOURCE_RESPONSE)
 				SendKad6SourceResponse(pending.originalTxid, pending.target,
-					pending.maximum, address, port);
+					pending.maximum, source, port);
 			break;
 		}
 
@@ -3841,7 +3982,7 @@ void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
 				|| response.header.version != kad6::kK6RouteWireVersion)
 				return;
 			const int index = FindKad6Pending(response.header.txid,
-				KADEMLIA3_BOOTSTRAP_RES, address, port);
+				KADEMLIA3_BOOTSTRAP_RES, source, port);
 			if (index < 0)
 				return;
 			const SKad6Pending pending = m_kad6Pending[index];
@@ -3898,58 +4039,22 @@ void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
 					!= kad6::Kad6Status::Ok)
 				return;
 
-			for (auto it = m_kad6StoredSources.begin(); it != m_kad6StoredSources.end(); )
-				it = it->second.record.expires_at <= now
-					? m_kad6StoredSources.erase(it) : std::next(it);
-
 			kad6::K6StoreStatus storeStatus = kad6::K6StoreStatus::Rejected;
 			std::uint64_t acceptedEpoch = 0;
-			std::vector<kad6::Byte> canonical;
-			if (kad6::EncodeK6SourceRecord(request.record, canonical) == kad6::Kad6Status::Ok) {
-				const std::string key = Kad6StoredSourceKey(request.record);
-				auto existing = m_kad6StoredSources.find(key);
-				if (existing != m_kad6StoredSources.end()) {
-					if (request.record.source_epoch < existing->second.record.source_epoch ||
-						(request.record.source_epoch == existing->second.record.source_epoch &&
-						 canonical != existing->second.canonicalWire)) {
-						storeStatus = kad6::K6StoreStatus::Stale;
-						acceptedEpoch = existing->second.record.source_epoch;
-					} else {
-						existing->second.record = request.record;
-						existing->second.canonicalWire = canonical;
-						storeStatus = kad6::K6StoreStatus::Stored;
-						acceptedEpoch = request.record.source_epoch;
-					}
-				} else if (m_kad6StoredSources.size() >= 4096) {
-					storeStatus = kad6::K6StoreStatus::Overloaded;
-				} else {
-					std::size_t sameHash = 0;
-					for (const auto& pair : m_kad6StoredSources)
-						if (pair.second.record.object_hash == request.record.object_hash)
-							++sameHash;
-					if (sameHash >= 1000) {
-						storeStatus = kad6::K6StoreStatus::Overloaded;
-					} else {
-						SKad6StoredSource stored;
-						stored.record = request.record;
-						stored.canonicalWire = canonical;
-						m_kad6StoredSources[key] = std::move(stored);
-						storeStatus = kad6::K6StoreStatus::Stored;
-						acceptedEpoch = request.record.source_epoch;
-					}
-				}
-			}
+			storeStatus = m_kad6StoredSources.Put(MakeKad6HostCryptoHooks(),
+				request.record, now, &acceptedEpoch);
 
 			kad6::K6StoreSourceResponse response;
 			response.target_hash = request.target_hash;
 			response.status = storeStatus;
 			response.load = static_cast<byte>((std::min<std::size_t>)(100,
-				(m_kad6StoredSources.size() * 100u) / 4096u));
+				(m_kad6StoredSources.Size() * 100u) / 4096u));
 			response.accepted_epoch = acceptedEpoch;
-			if (BuildKad6Header(request.header.txid, response.header)) {
+			if (BuildKad6Header(request.header.txid, response.header,
+				source.family)) {
 				std::vector<kad6::Byte> wire;
 				if (kad6::EncodeK6StoreSourceResponse(response, wire) == kad6::Kad6Status::Ok)
-					SendKad6Payload(KADEMLIA3_STORE_SOURCE_RES, wire, address, port);
+					SendKad6Payload(KADEMLIA3_STORE_SOURCE_RES, wire, source, port);
 			}
 			break;
 		}
@@ -3980,7 +4085,7 @@ void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
 				response.header.version != kad6::kK6RouteWireVersion)
 				return;
 			const int index = FindKad6Pending(response.header.txid,
-				KADEMLIA3_FIND_SOURCE_RES, address, port);
+				KADEMLIA3_FIND_SOURCE_RES, source, port);
 			if (index < 0) return;
 			const SKad6Pending pending = m_kad6Pending[index];
 			if ((pending.hasExpectedNode &&
@@ -4025,7 +4130,7 @@ void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
 				response.header.version != kad6::kK6RouteWireVersion)
 				return;
 			const int index = FindKad6Pending(response.header.txid,
-				KADEMLIA3_STORE_SOURCE_RES, address, port);
+				KADEMLIA3_STORE_SOURCE_RES, source, port);
 			if (index < 0)
 				return;
 			const SKad6Pending pending = m_kad6Pending[index];
@@ -4050,7 +4155,7 @@ void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
 				|| response.header.version != kad6::kK6RouteWireVersion)
 				return;
 			const int index = FindKad6Pending(response.header.txid,
-				KADEMLIA3_RES, address, port);
+				KADEMLIA3_RES, source, port);
 			if (index < 0)
 				return;
 			const SKad6Pending pending = m_kad6Pending[index];
@@ -4086,6 +4191,18 @@ void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
 void CKademliaUDPListener::ProcessKad6()
 {
 	const DWORD tick = GetTickCount();
+	// Bounded Happy Eyeballs fallback is serviced independently of the
+	// one-second DHT maintenance cadence. The first authenticated response wins;
+	// any later response from the losing family no longer has a pending txid.
+	for (SKad6Pending& pending : m_kad6Pending) {
+		if (!pending.hasFallback || pending.fallbackSent
+			|| tick - pending.created < kad6::kK6HappyEyeballsDefaultDelayMs)
+			continue;
+		SendKad6Payload(pending.requestOpcode, pending.requestPayload,
+			pending.fallbackAddress, pending.fallbackPort);
+		pending.fallbackSent = true;
+		pending.requestPayload.clear();
+	}
 	if (tick - m_lastKad6Maintenance < 1000)
 		return;
 	m_lastKad6Maintenance = tick;
@@ -4105,9 +4222,7 @@ void CKademliaUDPListener::ProcessKad6()
 
 	const std::uint64_t now = static_cast<std::uint64_t>(time(NULL));
 	table->Expire(now);
-	for (auto it = m_kad6StoredSources.begin(); it != m_kad6StoredSources.end(); )
-		it = it->second.record.expires_at <= now
-			? m_kad6StoredSources.erase(it) : std::next(it);
+	m_kad6StoredSources.Prune(now);
 	for (std::size_t i = m_kad6Pending.size(); i > 0; --i) {
 		const SKad6Pending& pending = m_kad6Pending[i - 1];
 		if (tick - pending.created > 10000) {
@@ -4115,7 +4230,12 @@ void CKademliaUDPListener::ProcessKad6()
 				eSELive::CLiveTunnel::Get().OnKad6SourceLookupRpc(
 					pending.sourceAlpha, 3);
 			if (pending.hasExpectedNode)
-				table->NoteFailure(pending.expectedNode);
+				table->NoteFailure(pending.expectedNode,
+					pending.address, pending.port);
+			if (pending.hasExpectedNode && pending.hasFallback
+				&& pending.fallbackSent)
+				table->NoteFailure(pending.expectedNode,
+					pending.fallbackAddress, pending.fallbackPort);
 			if (pending.publishLeaseId != 0)
 				eSELive::CLiveTunnel::Get().OnKad6NativePublishAck(
 					pending.publishLeaseId, kad6::K6StoreStatus::Overloaded, 100, 0);
@@ -4232,6 +4352,6 @@ void CKademliaUDPListener::Process_KADEMLIA3_GENERIC(const char *szOpcodeName,
     if (thePrefs.GetDebugClientKadUDPLevel() > 0) {
         DebugRecv(szOpcodeName, uIP, uUDPPort);
     }
-    DebugLog(_T("Kad3: %hs from %s:%u (len=%u) - native K6-2 is IPv6-only; dropping IPv4-carried routing opcode"),
-        szOpcodeName, (LPCTSTR)ipstr(htonl(uIP)), uUDPPort, uLenPacket);
+	DebugLog(_T("Kad3: %hs from %s:%u (len=%u) - legacy OP_KADEMLIAHEADER form is not accepted over IPv4; use OP_KAD6HEADER"),
+		szOpcodeName, (LPCTSTR)ipstr(htonl(uIP)), uUDPPort, uLenPacket);
 }

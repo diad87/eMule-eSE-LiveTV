@@ -64,6 +64,65 @@ namespace
 			&& hostAddress.IsPublicIP();
 	}
 
+	bool IsPublicV4(const kad6::Kad6Address& address)
+	{
+		if (address.family != kad6::Kad6Address::Family::IPv4)
+			return false;
+		uint32 networkAddress = 0;
+		std::memcpy(&networkAddress, address.addr.data(), sizeof networkAddress);
+		const CAddress hostAddress(networkAddress, false);
+		return hostAddress.GetType() == CAddress::IPv4
+			&& hostAddress.IsPublicIP();
+	}
+
+	bool IsPublicAddress(const kad6::Kad6Address& address)
+	{
+		kad6::Kad6Address normalized = address;
+		kad6::Kad6AddressNormalize(normalized);
+		return IsPublicV6(normalized) || IsPublicV4(normalized);
+	}
+
+	CKad6RoutingTable::Entry::Candidate* FindCandidate(
+		CKad6RoutingTable::Entry& entry, const kad6::K6Endpoint& endpoint)
+	{
+		for (CKad6RoutingTable::Entry::Candidate& candidate : entry.candidates)
+			if (SameEndpoint(candidate.endpoint, endpoint))
+				return &candidate;
+		return NULL;
+	}
+
+	const CKad6RoutingTable::Entry::Candidate* FindCandidate(
+		const CKad6RoutingTable::Entry& entry, const kad6::K6Endpoint& endpoint)
+	{
+		for (const CKad6RoutingTable::Entry::Candidate& candidate : entry.candidates)
+			if (SameEndpoint(candidate.endpoint, endpoint))
+				return &candidate;
+		return NULL;
+	}
+
+	void SelectBestVerifiedCandidate(CKad6RoutingTable::Entry& entry)
+	{
+		const CKad6RoutingTable::Entry::Candidate* best = NULL;
+		for (const CKad6RoutingTable::Entry::Candidate& candidate : entry.candidates) {
+			if (!candidate.verified)
+				continue;
+			if (best == NULL
+				|| (candidate.endpoint.addr.family == kad6::Kad6Address::Family::IPv6
+					&& best->endpoint.addr.family != kad6::Kad6Address::Family::IPv6)
+				|| (candidate.endpoint.addr.family == best->endpoint.addr.family
+					&& (candidate.failures < best->failures
+						|| (candidate.failures == best->failures
+							&& candidate.endpoint.priority < best->endpoint.priority))))
+				best = &candidate;
+		}
+		entry.verified = best != NULL;
+		if (best != NULL) {
+			entry.contact.endpoint = best->endpoint;
+			entry.lastSeen = best->lastSeen;
+			entry.failures = best->failures;
+		}
+	}
+
 	CString SnapshotPath()
 	{
 		return thePrefs.GetMuleDirectory(EMULE_CONFIGDIR) + _T("nodes_v6.dat");
@@ -72,6 +131,11 @@ namespace
 	CString AsnPath()
 	{
 		return thePrefs.GetMuleDirectory(EMULE_CONFIGDIR) + _T("kad6_asn.dat");
+	}
+
+	CString PathEvidencePath()
+	{
+		return thePrefs.GetMuleDirectory(EMULE_CONFIGDIR) + _T("kad6_path_evidence.dat");
 	}
 
 	CString BootstrapPath()
@@ -179,6 +243,7 @@ CKad6RoutingTable::CKad6RoutingTable()
 	if (CKademlia::GetPrefs() != NULL)
 		CKademlia::GetPrefs()->GetKadID().ToByteArray(m_localId.data());
 	LoadAsnDatabase();
+	LoadPathEvidence();
 	Load();
 	LoadPrivateBootstrap();
 }
@@ -210,7 +275,7 @@ std::size_t CKad6RoutingTable::BucketFor(const kad6::KadId& nodeId) const
 bool CKad6RoutingTable::PassesDiversity(
 	const kad6::K6RouteContact& contact, std::size_t ignoreIndex) const
 {
-	if (!IsPublicV6(contact.endpoint.addr))
+	if (!IsPublicAddress(contact.endpoint.addr))
 		return false;
 
 	std::size_t same128 = 0;
@@ -233,12 +298,15 @@ bool CKad6RoutingTable::PassesDiversity(
 			++same128;
 		if (BucketFor(m_entries[i].contact.node_id) != candidateBucket)
 			continue;
-		if (kad6::Kad6AddressInSameSubnet(existing, contact.endpoint.addr, 64))
-			++same64;
-		if (kad6::Kad6AddressInSameSubnet(existing, contact.endpoint.addr, 56))
-			++same56;
-		if (kad6::Kad6AddressInSameSubnet(existing, contact.endpoint.addr, 48))
-			++same48;
+		if (existing.family == contact.endpoint.addr.family) {
+			const bool ipv4 = existing.family == kad6::Kad6Address::Family::IPv4;
+			if (kad6::Kad6AddressInSameSubnet(existing, contact.endpoint.addr,
+					ipv4 ? 32 : 64)) ++same64;
+			if (kad6::Kad6AddressInSameSubnet(existing, contact.endpoint.addr,
+					ipv4 ? 24 : 56)) ++same56;
+			if (kad6::Kad6AddressInSameSubnet(existing, contact.endpoint.addr,
+					ipv4 ? 20 : 48)) ++same48;
+		}
 		kad6::K6AsnInfo existingInfo;
 		const bool existingAsnKnown = m_asnDatabase.Lookup(existing, existingInfo);
 		if ((candidateAsnKnown && existingAsnKnown
@@ -267,7 +335,7 @@ bool CKad6RoutingTable::AddOrUpdate(const kad6::K6RouteContact& contact,
 		|| contact.endpoint.observed > 1
 		|| (contact.endpoint.valid_until != 0
 			&& contact.endpoint.valid_until < nowSeconds)
-		|| !IsPublicV6(contact.endpoint.addr))
+		|| !IsPublicAddress(contact.endpoint.addr))
 		return false;
 	if (verified && record == NULL)
 		return false;
@@ -278,6 +346,18 @@ bool CKad6RoutingTable::AddOrUpdate(const kad6::K6RouteContact& contact,
 			|| kad6::K6RouterRecordCheckFresh(*record, nowSeconds)
 				!= kad6::Kad6Status::Ok)
 			return false;
+		for (std::size_t i = 0; i < record->endpoints.size(); ++i) {
+			const kad6::K6Endpoint& candidate = record->endpoints[i];
+			if (!IsPublicAddress(candidate.addr) || candidate.udp_port == 0
+				|| (candidate.transport_flags & kad6::kK6EpUdpKad6) == 0
+				|| (candidate.transport_flags & kad6::kK6EpReservedMask) != 0
+				|| candidate.observed > 1 || candidate.valid_until < nowSeconds)
+				return false;
+			for (std::size_t j = i + 1; j < record->endpoints.size(); ++j)
+				if (record->endpoints[j].addr == candidate.addr
+					&& record->endpoints[j].udp_port == candidate.udp_port)
+					return false;
+		}
 	}
 
 	const std::size_t index = FindById(contact.node_id);
@@ -286,10 +366,13 @@ bool CKad6RoutingTable::AddOrUpdate(const kad6::K6RouteContact& contact,
 		const bool endpointChanged =
 			!SameEndpoint(contact.endpoint, entry.contact.endpoint);
 		if (entry.hasSignedIdentity && record == NULL) {
-			// An indirect unsigned hint can schedule a probe for the endpoint we
-			// already know, but can never advance epoch/caps, rotate address or
-			// refresh a signed identity's lifetime.
-			return !endpointChanged && contact.epoch == entry.contact.epoch;
+			// An unsigned hint may schedule a challenge only for an endpoint
+			// already covered by the pinned signed EndpointSet.
+			Entry::Candidate* candidate = FindCandidate(entry, contact.endpoint);
+			if (candidate == NULL || contact.epoch != entry.signedEpoch)
+				return false;
+			candidate->lastSeen = nowSeconds;
+			return true;
 		}
 		if (record != NULL) {
 			if (entry.hasSignedIdentity
@@ -298,8 +381,7 @@ bool CKad6RoutingTable::AddOrUpdate(const kad6::K6RouteContact& contact,
 			if (entry.hasSignedIdentity && record->epoch < entry.signedEpoch)
 				return false;
 			if (entry.hasSignedIdentity && record->epoch == entry.signedEpoch
-				&& (!SameSignature(entry.routerSignature, record->signature)
-					|| endpointChanged))
+				&& !SameSignature(entry.routerSignature, record->signature))
 				return false; // same epoch is an exact signed-record replay only
 		} else {
 			if (contact.epoch < entry.contact.epoch)
@@ -311,21 +393,42 @@ bool CKad6RoutingTable::AddOrUpdate(const kad6::K6RouteContact& contact,
 		}
 		if (!PassesDiversity(contact, index))
 			return false;
-		entry.contact = contact;
-		entry.lastSeen = nowSeconds;
-		// A signature authenticates the owner of an endpoint declaration, but
-		// does not prove return routability for a newly declared address.  Never
-		// carry verification across an endpoint rotation received as an
-		// unsolicited signed hint; the HELLO response path will promote it again.
-		entry.verified = verified || (entry.verified && !endpointChanged);
 		if (record != NULL) {
+			const bool replaceSet = !entry.hasSignedIdentity
+				|| record->epoch > entry.signedEpoch
+				|| entry.endpointSet.endpoints.empty();
+			if (replaceSet) {
+				entry.endpointSet = *record;
+				entry.candidates.clear();
+				entry.verified = false;
+				entry.contact.endpoint = contact.endpoint;
+				entry.candidates.reserve(record->endpoints.size());
+				for (const kad6::K6Endpoint& endpoint : record->endpoints) {
+					Entry::Candidate candidate;
+					candidate.endpoint = endpoint;
+					entry.candidates.push_back(candidate);
+				}
+			}
 			entry.hasSignedIdentity = true;
 			entry.nodePub = record->node_pub;
 			entry.signedEpoch = record->epoch;
 			entry.routerSignature = record->signature;
 		}
-		if (verified)
-			entry.failures = 0;
+		entry.contact.node_id = contact.node_id;
+		entry.contact.caps = contact.caps;
+		entry.contact.epoch = contact.epoch;
+		Entry::Candidate* candidate = FindCandidate(entry, contact.endpoint);
+		if (candidate == NULL)
+			return false;
+		candidate->lastSeen = nowSeconds;
+		if (verified) {
+			candidate->verified = true;
+			candidate->failures = 0;
+		}
+		if (!entry.verified)
+			entry.contact.endpoint = contact.endpoint;
+		entry.lastSeen = nowSeconds;
+		SelectBestVerifiedCandidate(entry);
 		return true;
 	}
 
@@ -366,12 +469,23 @@ bool CKad6RoutingTable::AddOrUpdate(const kad6::K6RouteContact& contact,
 	Entry entry;
 	entry.contact = contact;
 	entry.lastSeen = nowSeconds;
-	entry.verified = verified;
+	entry.verified = false;
 	if (record != NULL) {
 		entry.hasSignedIdentity = true;
 		entry.nodePub = record->node_pub;
 		entry.signedEpoch = record->epoch;
 		entry.routerSignature = record->signature;
+		entry.endpointSet = *record;
+		for (const kad6::K6Endpoint& endpoint : record->endpoints) {
+			Entry::Candidate candidate;
+			candidate.endpoint = endpoint;
+			if (SameEndpoint(endpoint, contact.endpoint)) {
+				candidate.lastSeen = nowSeconds;
+				candidate.verified = verified;
+			}
+			entry.candidates.push_back(candidate);
+		}
+		SelectBestVerifiedCandidate(entry);
 	}
 	m_entries.push_back(entry);
 	return true;
@@ -400,10 +514,13 @@ bool CKad6RoutingTable::IsVerified(const kad6::KadId& nodeId,
 	const kad6::Kad6Address& address, std::uint16_t port) const
 {
 	const std::size_t index = FindById(nodeId);
-	return index != KAD6_NO_INDEX && m_entries[index].verified
-		&& m_entries[index].hasSignedIdentity
-		&& m_entries[index].contact.endpoint.addr == address
-		&& m_entries[index].contact.endpoint.udp_port == port;
+	if (index == KAD6_NO_INDEX || !m_entries[index].hasSignedIdentity)
+		return false;
+	for (const Entry::Candidate& candidate : m_entries[index].candidates)
+		if (candidate.verified && candidate.endpoint.addr == address
+			&& candidate.endpoint.udp_port == port)
+			return true;
+	return false;
 }
 
 bool CKad6RoutingTable::LookupVerifiedIdentity(const kad6::Byte nodePub[32],
@@ -418,7 +535,7 @@ bool CKad6RoutingTable::LookupVerifiedIdentity(const kad6::Byte nodePub[32],
 			|| !kad6::Kad6CtEqual(entry.nodePub.data(), nodePub,
 				entry.nodePub.size()))
 			continue;
-		if (!IsPublicV6(entry.contact.endpoint.addr)
+		if (!IsPublicAddress(entry.contact.endpoint.addr)
 			|| !m_asnDatabase.Lookup(entry.contact.endpoint.addr, asn)
 			|| asn.asn == 0)
 			return false;
@@ -428,20 +545,48 @@ bool CKad6RoutingTable::LookupVerifiedIdentity(const kad6::Byte nodePub[32],
 	return false;
 }
 
+bool CKad6RoutingTable::LookupAddressAsn(const kad6::Kad6Address& address,
+		kad6::K6AsnInfo& asn) const
+{
+	asn = kad6::K6AsnInfo();
+	return m_asnDatabase.Lookup(address, asn) && asn.asn != 0;
+}
+
+bool CKad6RoutingTable::ApplyPathEvidence(const kad6::Byte nodePub[32],
+	std::uint64_t nowSeconds, kad6::K6PathCandidate& candidate) const
+{
+	return kad6::ApplyK6PathEvidence(m_pathEvidence, nodePub, nowSeconds, candidate);
+}
+
 void CKad6RoutingTable::NoteFailure(const kad6::KadId& nodeId)
 {
 	const std::size_t index = FindById(nodeId);
 	if (index == KAD6_NO_INDEX)
 		return;
+	NoteFailure(nodeId, m_entries[index].contact.endpoint.addr,
+		m_entries[index].contact.endpoint.udp_port);
+}
+
+void CKad6RoutingTable::NoteFailure(const kad6::KadId& nodeId,
+	const kad6::Kad6Address& address, std::uint16_t port)
+{
+	const std::size_t index = FindById(nodeId);
+	if (index == KAD6_NO_INDEX)
+		return;
 	Entry& entry = m_entries[index];
-	if (entry.failures < 255)
-		++entry.failures;
-	if (entry.failures >= 3) {
-		if (entry.hasSignedIdentity)
-			entry.verified = false; // retain the TOFU pin during probation TTL
-		else
-			m_entries.erase(m_entries.begin() + index);
+	for (Entry::Candidate& candidate : entry.candidates) {
+		if (candidate.endpoint.addr != address || candidate.endpoint.udp_port != port)
+			continue;
+		if (candidate.failures < 255)
+			++candidate.failures;
+		if (candidate.failures >= 3)
+			candidate.verified = false;
+		SelectBestVerifiedCandidate(entry);
+		return;
 	}
+	if (entry.failures < 255) ++entry.failures;
+	if (entry.failures >= 3 && !entry.hasSignedIdentity)
+		m_entries.erase(m_entries.begin() + index);
 }
 
 std::vector<kad6::K6RouteContact> CKad6RoutingTable::Closest(
@@ -472,29 +617,88 @@ std::vector<kad6::K6RouteContact> CKad6RoutingTable::Closest(
 	return result;
 }
 
+bool CKad6RoutingTable::BuildEndpointRace(const kad6::KadId& nodeId,
+	std::uint64_t nowSeconds,
+	std::vector<kad6::K6EndpointAttempt>& attempts) const
+{
+	attempts.clear();
+	const std::size_t index = FindById(nodeId);
+	if (index == KAD6_NO_INDEX)
+		return false;
+	const Entry& entry = m_entries[index];
+	std::vector<kad6::K6EndpointCandidateHealth> health;
+	health.reserve(entry.candidates.size());
+	for (const Entry::Candidate& candidate : entry.candidates) {
+		kad6::K6EndpointCandidateHealth state;
+		state.endpoint = candidate.endpoint;
+		state.verified = candidate.verified;
+		state.consecutive_failures = candidate.failures;
+		state.last_success = candidate.lastSeen;
+		health.push_back(state);
+	}
+	return !entry.endpointSet.endpoints.empty()
+		&& kad6::BuildK6EndpointRace(entry.endpointSet, health, nowSeconds,
+			kad6::kK6HappyEyeballsDefaultDelayMs, attempts)
+			== kad6::Kad6Status::Ok;
+}
+
 bool CKad6RoutingTable::NextProbation(Entry& out) const
 {
 	const Entry* oldest = NULL;
+	const Entry::Candidate* oldestCandidate = NULL;
 	for (const Entry& entry : m_entries) {
-		if (!entry.verified && (oldest == NULL
-			|| entry.lastSeen < oldest->lastSeen))
+		if (entry.hasSignedIdentity) {
+			for (const Entry::Candidate& candidate : entry.candidates)
+				if (!candidate.verified && (oldestCandidate == NULL
+					|| candidate.lastSeen < oldestCandidate->lastSeen)) {
+					oldest = &entry;
+					oldestCandidate = &candidate;
+				}
+		} else if (!entry.verified && oldestCandidate == NULL &&
+			(oldest == NULL || entry.lastSeen < oldest->lastSeen))
 			oldest = &entry;
 	}
 	if (oldest == NULL)
 		return false;
 	out = *oldest;
+	if (oldestCandidate != NULL)
+		out.contact.endpoint = oldestCandidate->endpoint;
 	return true;
 }
 
 void CKad6RoutingTable::Expire(std::uint64_t nowSeconds)
 {
-	m_entries.erase(std::remove_if(m_entries.begin(), m_entries.end(),
-		[nowSeconds](const Entry& entry) {
-			const std::uint64_t ttl = entry.verified
-				? KAD6_VERIFIED_TTL : KAD6_PROBATION_TTL;
-			return nowSeconds < entry.lastSeen
-				|| nowSeconds - entry.lastSeen > ttl;
-		}), m_entries.end());
+	for (std::vector<Entry>::iterator entry = m_entries.begin();
+		entry != m_entries.end(); ) {
+		if (entry->hasSignedIdentity) {
+			for (std::vector<Entry::Candidate>::iterator candidate =
+				entry->candidates.begin(); candidate != entry->candidates.end(); ) {
+				const std::uint64_t ttl = candidate->verified
+					? KAD6_VERIFIED_TTL : KAD6_PROBATION_TTL;
+				if (candidate->endpoint.valid_until <= nowSeconds
+					|| nowSeconds < candidate->lastSeen
+					|| (candidate->lastSeen != 0
+						&& nowSeconds - candidate->lastSeen > ttl))
+					candidate = entry->candidates.erase(candidate);
+				else
+					++candidate;
+			}
+			if (entry->candidates.empty()
+				|| entry->endpointSet.valid_until <= nowSeconds) {
+				entry = m_entries.erase(entry);
+				continue;
+			}
+			SelectBestVerifiedCandidate(*entry);
+			++entry;
+			continue;
+		}
+		const std::uint64_t ttl = entry->verified
+			? KAD6_VERIFIED_TTL : KAD6_PROBATION_TTL;
+		if (nowSeconds < entry->lastSeen || nowSeconds - entry->lastSeen > ttl)
+			entry = m_entries.erase(entry);
+		else
+			++entry;
+	}
 }
 
 std::size_t CKad6RoutingTable::VerifiedSize() const
@@ -527,6 +731,32 @@ bool CKad6RoutingTable::LoadAsnDatabase()
 	}
 	AddDebugLogLine(false, _T("Kad6: loaded offline ASN DB sequence=%I64u entries=%u"),
 		sequence, static_cast<unsigned>(entries.size()));
+	return true;
+}
+
+bool CKad6RoutingTable::LoadPathEvidence()
+{
+	std::vector<kad6::Byte> bytes;
+	if (!ReadBoundedFile(PathEvidencePath(), 32u * 1024u * 1024u, bytes))
+		return false;
+	kad6::K6PathEvidenceSnapshot decoded;
+	const kad6::Kad6Status status = kad6::DecodeK6PathEvidenceSnapshot(
+		bytes.data(), bytes.size(), decoded);
+	const std::uint64_t nowSeconds = static_cast<std::uint64_t>(time(NULL));
+	if (status != kad6::Kad6Status::Ok
+		|| decoded.generated_at > nowSeconds || decoded.valid_until <= nowSeconds
+		|| (m_pathEvidence.sequence != 0
+			&& decoded.sequence <= m_pathEvidence.sequence)) {
+		AddDebugLogLine(false,
+			_T("Kad6: rejected kad6_path_evidence.dat (status=%hs, sequence=%I64u)"),
+			kad6::Kad6StatusName(status), decoded.sequence);
+		return false;
+	}
+	m_pathEvidence = std::move(decoded);
+	AddDebugLogLine(false,
+		_T("Kad6: loaded offline AS/IXP path evidence sequence=%I64u records=%u"),
+		m_pathEvidence.sequence,
+		static_cast<unsigned>(m_pathEvidence.records.size()));
 	return true;
 }
 
@@ -695,6 +925,11 @@ bool CKad6RoutingTable::Load()
 					entry.nodePub = stored.node_pub;
 					entry.signedEpoch = stored.signed_epoch;
 					entry.routerSignature = stored.router_signature;
+					Entry::Candidate candidate;
+					candidate.endpoint = stored.contact.endpoint;
+					candidate.lastSeen = stored.last_seen;
+					candidate.failures = stored.failures;
+					entry.candidates.push_back(candidate);
 				}
 			}
 		}

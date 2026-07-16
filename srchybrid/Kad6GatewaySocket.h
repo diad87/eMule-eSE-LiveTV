@@ -26,6 +26,8 @@ public:
     void InitializeInboundFrontDoor();
     bool BindInboundStream(std::uint64_t streamId);
     bool SendRawFrame(const uint8_t* frame,std::size_t length);
+    bool SetKad6ReadPaused(bool paused);
+    bool Kad6ReadPaused() const { return m_kad6ReadPaused; }
     void OnConnect(int error) override;
     void OnClose(int error) override;
 protected:
@@ -36,6 +38,7 @@ private:
     bool m_inboundBypass = false;
     std::vector<std::vector<uint8_t>> m_inboundFrames;
     std::size_t m_inboundFrameBytes = 0;
+    bool m_kad6ReadPaused = false;
 };
 
 // Origin-side virtual eD2K socket. It is marked connected but never owns a
@@ -53,12 +56,15 @@ public:
     void Disconnect(LPCTSTR reason) override;
     void SendPacket(Packet* packet,bool controlpacket=true,uint32 actualPayloadSize=0,
                     bool forceImmediate=false) override;
+    bool IsBusyQuickCheck() const override;
+    void SetKad6FlowBlocked(bool blocked) { m_kad6FlowBlocked = blocked; }
     bool InjectRawFrame(const uint8_t* frame,std::size_t length,
                         bool suppressReplies=false);
 private:
     std::uint64_t m_streamId = 0;
     bool m_suppressReplies = false;
     uint32 m_pseudonymousPeerV4 = 0;
+    bool m_kad6FlowBlocked = false;
 };
 
 bool SanitizeK6HelloFrame(const uint8_t* frame,std::size_t length,

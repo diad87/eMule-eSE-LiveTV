@@ -424,6 +424,7 @@ static uint64 on_utp_state_change(utp_callback_arguments* a)
 			// 5 s cooldown (instead of stuck at 30 s back-off).
 			natClient->m_uNatRendezvousAttempts = 0;
 			natClient->m_bNatRdvTried = false;   // [eSE v9] allow a fresh punch3 escalation on the next dial cycle
+			natClient->m_uNatRdvLookupAttempts = 0;
 		}
 		break;
 	case UTP_STATE_WRITABLE:

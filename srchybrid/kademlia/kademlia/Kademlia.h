@@ -74,6 +74,8 @@ namespace Kademlia
 		static void	ProcessPacket(const byte *pbyData, uint32 uLenData, uint32 uIP, uint16 uPort, bool bValidReceiverKey, const CKadUDPKey &senderUDPKey);
 		static void	ProcessPacketV6(const byte *pbyData, uint32 uLenData,
 			const byte uAddress[16], uint16 uPort);
+		static void	ProcessPacketV4(const byte *pbyData, uint32 uLenData,
+			uint32 uIP, uint16 uPort);
 		static void	AddEvent(CRoutingZone *pZone);
 		static void	RemoveEvent(CRoutingZone *pZone);
 		static void	Process();

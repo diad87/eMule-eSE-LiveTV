@@ -39,6 +39,15 @@ bool CKad6ExitSocket::SendRawFrame(const uint8_t* frame,std::size_t length){
     return true;
 }
 
+bool CKad6ExitSocket::SetKad6ReadPaused(bool paused){
+    if(m_kad6ReadPaused==paused)return true;
+    const long events=FD_WRITE|FD_CLOSE|FD_CONNECT|(paused?0:FD_READ);
+    if(!AsyncSelect(events))return false;
+    m_kad6ReadPaused=paused;
+    if(!paused)OnReceive(0);
+    return true;
+}
+
 void CKad6ExitSocket::OnConnect(int error){
     const std::uint64_t stream=m_streamId;
     if(error!=0&&stream)CLiveTunnel::Get().OnK6ExitSocketConnect(stream,this,error);
@@ -125,6 +134,10 @@ void CKad6OriginSocket::SendPacket(Packet* packet,bool controlpacket,uint32 actu
         reinterpret_cast<const uint8_t*>(bytes),length);
     delete packet;
     if(!ok)Disconnect(_T("Kad6 stream send failed"));
+}
+
+bool CKad6OriginSocket::IsBusyQuickCheck() const{
+    return m_kad6FlowBlocked||CClientReqSocket::IsBusyQuickCheck();
 }
 
 bool CKad6OriginSocket::InjectRawFrame(const uint8_t* frame,std::size_t length,

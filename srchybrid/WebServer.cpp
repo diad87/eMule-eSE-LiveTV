@@ -5917,6 +5917,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		if (circId == 0) {
 			result = hops == 3
 				? "{\"ok\":false,\"reason\":\"strict3 unavailable: need 3 authenticated shaped IPv6 peers with verified /48+ASN diversity and no repeated known operator group - check /api/live/privacy/peers\"}"
+				: hops == 2
+				? "{\"ok\":false,\"reason\":\"two-hop circuit unavailable: need 2 distinct connected fork-capable peers - no loopback downgrade\"}"
 				: "{\"ok\":false,\"reason\":\"no connected fork-capable peers - check /api/live/privacy/peers\"}";
 		} else {
 			CStringA tmp;

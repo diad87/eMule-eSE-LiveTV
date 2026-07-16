@@ -63,6 +63,25 @@ static void UpdateHolePunchRuntimeCaps(bool bReady)
 	}
 }
 
+static bool IsNativeKad6Opcode(BYTE opcode)
+{
+	switch (opcode) {
+	case KADEMLIA3_BOOTSTRAP_REQ:
+	case KADEMLIA3_BOOTSTRAP_RES:
+	case KADEMLIA3_HELLO_REQ:
+	case KADEMLIA3_HELLO_RES:
+	case KADEMLIA3_REQ:
+	case KADEMLIA3_RES:
+	case KADEMLIA3_STORE_SOURCE_REQ:
+	case KADEMLIA3_STORE_SOURCE_RES:
+	case KADEMLIA3_FIND_SOURCE_REQ:
+	case KADEMLIA3_FIND_SOURCE_RES:
+		return true;
+	default:
+		return false;
+	}
+}
+
 CClientUDPSocket::CClientUDPSocket()
 {
 	m_bWouldBlock = false;
@@ -124,21 +143,13 @@ void CClientUDPSocket::OnReceive(int nErrorCode)
 		if (nRealLen > 0 && CUtpSocket::FeedRawUdp(buffer, nRealLen,
 				(const sockaddr*)&rawSockAddr, iRawSockAddrLen))
 			return;
-		if (nRealLen < 2 || buffer[0] != OP_KADEMLIAHEADER)
+		if (nRealLen < 2 || (buffer[0] != OP_KAD6HEADER
+			&& buffer[0] != OP_KADEMLIAHEADER))
 			return;
-		switch (buffer[1]) {
-			case KADEMLIA3_BOOTSTRAP_REQ:
-			case KADEMLIA3_BOOTSTRAP_RES:
-			case KADEMLIA3_HELLO_REQ:
-			case KADEMLIA3_HELLO_RES:
-			case KADEMLIA3_REQ:
-			case KADEMLIA3_RES:
-				theStats.AddDownDataOverheadKad(nRealLen);
-				Kademlia::CKademlia::ProcessPacketV6(buffer, nRealLen,
-					sourceAddress.Data(), sourcePort);
-				break;
-			default:
-				break;
+		if (IsNativeKad6Opcode(buffer[1])) {
+			theStats.AddDownDataOverheadKad(nRealLen);
+			Kademlia::CKademlia::ProcessPacketV6(buffer, nRealLen,
+				sourceAddress.Data(), sourcePort);
 		}
 		return;
 	}
@@ -162,6 +173,16 @@ void CClientUDPSocket::OnReceive(int nErrorCode)
 	// If libutp recognizes this as a uTP packet, it handles it internally and we're done.
 	if (nRealLen > 0 && CUtpSocket::FeedRawUdp(buffer, nRealLen, (const sockaddr*)&sockAddr, iSockAddrLen))
 		return; // consumed by libutp
+
+	// Rev3 native Kad6 has its own outer discriminator, so IPv4 transport can
+	// share the listener without entering legacy Kad2 decryption or routing.
+	if (nRealLen >= 2 && buffer[0] == OP_KAD6HEADER
+		&& IsNativeKad6Opcode(buffer[1])) {
+		theStats.AddDownDataOverheadKad(nRealLen);
+		Kademlia::CKademlia::ProcessPacketV4(buffer, nRealLen,
+			ntohl(sockAddr.sin_addr.s_addr), sourcePort);
+		return;
+	}
 
 	BYTE *pBuffer;
 	uint32 nReceiverVerifyKey;

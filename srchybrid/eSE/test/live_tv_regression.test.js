@@ -128,26 +128,57 @@ test('hole-punch keeps Kad identity separate from the eD2K user hash', () => {
   assert.match(udp, /FindClientByIP_KadPort\(uIPNetwork, nUDPPort\)/);
 });
 
-test('v9 alpha capabilities and remote administration fail closed by default', () => {
+test('v9 capabilities and remote administration fail closed by default', () => {
   const prefs = read(repoRoot, 'srchybrid', 'Preferences.cpp');
   const dlg = read(repoRoot, 'srchybrid', 'EmuleDlg.cpp');
+  const base = read(repoRoot, 'srchybrid', 'BaseClient.cpp');
+  const keepalive = read(repoRoot, 'srchybrid', 'KadKeepalive.cpp');
   const prober = read(repoRoot, 'srchybrid', 'FirewallProberV6.cpp');
   const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
+  const relay = read(repoRoot, 'srchybrid', 'RelayClient.cpp');
+  const kadUdp = read(repoRoot, 'srchybrid', 'kademlia', 'net', 'KademliaUDPListener.cpp');
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
   const packaging = read(repoRoot, 'build_package.ps1');
 
   assert.match(prefs, /EseV9Experimental"\), false, _T\("eSE"\)/);
+  assert.match(prefs, /EseKad3Rendezvous"\), false, _T\("eSE"\)/);
+  assert.match(prefs, /EseAutoKeepalive"\), false, _T\("eSE"\)/);
+  assert.match(prefs, /EseRelayAccept"\),\s+false, _T\("eSE"\)/);
+  assert.match(prefs, /EseRelayEgress"\),\s+false, _T\("eSE"\)/);
+  assert.match(prefs, /EseReachSelector"\), false, _T\("eSE"\)/);
+  assert.match(prefs, /KrpRelayEnabled"\), false, _T\("KRPRelay"\)/);
+  assert.match(prefs, /EseHolePunchPortPredict"\), false, _T\("eSE"\)/);
+  assert.match(prefs, /EseEd2kPunch3"\), false, _T\("eSE"\)/);
+  assert.match(prefs, /Kad6PublicExitOptIn"\), false, _T\("eSE"\)/);
   assert.match(prefs, /WriteBool\(_T\("EseV9Experimental"\)/);
   assert.match(dlg, /RefreshEseV9PreviewCaps\(\)/);
   assert.doesNotMatch(dlg, /g_uEseCapsRuntime\s*=\s*[^;]*ESE_CAP_TUNNEL_BULK/s);
+  assert.match(prober, /uint32 g_uEseCapsRuntime = 0;/);
   assert.match(prober, /if \(!CPreferences::GetEseV9Experimental\(\)\)\s*return;/);
   assert.match(prober, /ESE_CAP_KAD6 \| ESE_CAP_KAD6_ECONOMY/);
+  assert.match(base, /GetEseEd2kPunch3\(\) && thePrefs\.GetEseKad3Rendezvous\(\)/);
   assert.match(tunnel, /!thePrefs\.GetEseV9Experimental\(\)[\s\S]{0,100}ESE_CAP_KAD6/);
+  assert.match(tunnel, /!optIn \? kad6::K6ReleaseGateStatus::OperatorOptOut/);
+  assert.match(relay, /config\.enabled = thePrefs\.GetKrpRelayEnabled\(\)/);
+  assert.match(relay, /m_initialized && config\.enabled && !config\.kill_switch/);
+  assert.match(relay, /thePrefs\.GetKrpRelayEnabled\(\)[\s\S]{0,100}GetKrpRelayExperimentalTcp\(\)/);
+  assert.match(kadUdp, /Process_KADEMLIA3_PING_REQ[\s\S]{0,500}g_uEseCapsRuntime & ESE_CAP_KAD_KEEPALIVE/);
+  assert.match(kadUdp, /Process_KADEMLIA3_PING_RES[\s\S]{0,300}g_uEseCapsRuntime & ESE_CAP_KAD_KEEPALIVE/);
+  assert.match(keepalive, /OnPong[\s\S]{0,300}!IsRunning\(\)/);
+  assert.match(kadUdp, /ProcessPacketKad6[\s\S]{0,500}!thePrefs\.GetEseV9Experimental\(\)[\s\S]{0,100}ESE_CAP_KAD6/);
   assert.match(web, /SetEseV9Experimental\(bOn\)/);
 
   assert.match(packaging, /"\[UPnP\]"[\s\S]{0,80}"EnableUPnP=1"/);
   assert.match(packaging, /"\[WebServer\]"[\s\S]{0,120}"WebUseUPnP=0"/);
   assert.match(packaging, /"\[eSE\]"[\s\S]{0,100}"EseV9Experimental=0"/);
+  for (const safeDefault of [
+    'EseKad3Rendezvous=0', 'EseAutoKeepalive=0', 'EseRelayAccept=0',
+    'EseRelayEgress=0', 'EseReachSelector=0', 'EseHolePunchPortPredict=0',
+    'EseEd2kPunch3=0', 'Kad6PublicExitOptIn=0', 'KrpRelayEnabled=0',
+    'KrpRelayKillSwitch=0', 'ExperimentalTcpDataPlane=0'
+  ]) {
+    assert.ok(packaging.includes(safeDefault), `missing fail-closed package default: ${safeDefault}`);
+  }
   assert.doesNotMatch(packaging, /WebServerUseUPnP=1/);
 });
 
@@ -346,14 +377,35 @@ test('Adaptive is Kad6-first, auto-seeds, and reports the real route state', () 
   assert.match(selector, /case CKadV2Mode::Adaptive:[\s\S]{0,900}return CKadV2Mode::Tunneled;/);
   assert.match(pool, /privateActive == 0[\s\S]{0,1200}BuildSuccessorCircuit\(\)/);
   assert.match(pool, /AUTO_SEED_RETRY_MAX_MS = 5u \* 60u \* 1000u/);
-  assert.match(tunnel, /one-hop exit[\s\S]{0,500}ESE_CAP_KAD6/);
-  assert.match(tunnel, /Prefer a Kad6-capable EXIT/);
+  assert.match(tunnel, /Prefer a Kad6-capable EXIT[\s\S]{0,300}ESE_CAP_KAD6/);
+  assert.match(tunnel, /HasEseNodePub\(\)[\s\S]{0,180}Kad6CtEqual/);
+  assert.match(tunnel, /kK6FlagStrict[\s\S]{0,100}minimumHops = 3;[\s\S]{0,100}else if \(quotaMessage\)/);
   assert.ok(web.includes('\\\"kad6CircuitActive\\\":%s'));
   assert.ok(web.includes('\\\"routeState\\\":\\\"%s\\\"'));
   for (const state of ['kad6', 'tunnel_kad2_compat', 'kad2_fallback',
                        'kad2_direct', 'blocked_waiting_kad6']) {
     assert.match(api, new RegExp(state));
   }
+});
+
+test('Kad6 Private and Strict paths fail closed at their declared hop counts', () => {
+  const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
+  const circuit = read(repoRoot, 'srchybrid', 'LiveCircuit.h');
+  const keepalive = read(repoRoot, 'srchybrid', 'KadKeepalive.cpp');
+  const successor = tunnel.slice(
+    tunnel.indexOf('bool CLiveTunnel::BuildSuccessorCircuit()'),
+    tunnel.indexOf('bool CLiveTunnel::BuildQuotaGuardCircuit()'));
+
+  assert.match(successor, /if \(BuildSuccessor3Hop\(\)\) return true;[\s\S]{0,80}return BuildSuccessor2Hop\(\);/);
+  assert.doesNotMatch(successor, /BuildPool|1-hop fallback/);
+  assert.match(circuit, /bool m_private2 = false;/);
+  assert.match(tunnel, /c->m_private2 = true;[\s\S]{0,80}m_pendingHopClients\.push_back\(hop2\)/);
+  assert.match(tunnel, /Kad6CtEqual\(a->GetEseNodePub\(\), b->GetEseNodePub\(\), 32\)/);
+  assert.match(tunnel, /circ->m_private2 \|\| circ->m_strict3[\s\S]{0,500}DestroyCircuitFailClosed\(circ\)/);
+  assert.match(tunnel, /minimumHops = sub_cmd == TUN_OP_KAD6_GATEWAY \? 2 : 1;/);
+  assert.match(tunnel, /quotaMessage[\s\S]{0,500}minimumHops = 3;[\s\S]{0,300}minimumHops = 1;/);
+  assert.match(keepalive, /InterlockedCompareExchange[\s\S]{0,200}m_running/);
+  assert.match(keepalive, /InterlockedIncrement\(&m_statPingsSent\)/);
 });
 
 test('--selftest verifies signed chunk ingest and returns failure to the caller', () => {

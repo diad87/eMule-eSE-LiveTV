@@ -1,7 +1,7 @@
 # Índice maestro de documentación — eMule eSE LiveTV
 
 > **Qué es esto:** el mapa único de toda la documentación del proyecto. Si no sabes por dónde
-> empezar o dónde está algo, empieza aquí. Última actualización: **2026-07-16**.
+> empezar o dónde está algo, empieza aquí. Última actualización: **2026-07-17**.
 >
 > **Leyenda de estado:** 🎓 tesis/paper · 🧭 roadmap/estrategia viva · 📐 plan/spec ·
 > ✅ implementado/final · 🔬 auditoría/análisis · 🔀 consolidado/comparativa · ♻️ a refrescar ·
@@ -14,6 +14,7 @@
 | Documento | Para qué |
 |---|---|
 | [MODERNIZATION_ROADMAP.md](MODERNIZATION_ROADMAP.md) | **El plan director vivo.** Los 5 ejes de modernización (headless/API, buffer, IPTV, Kad-live, multiplataforma) + Track R (alcanzabilidad). Por aquí se decide qué se hace. |
+| [RELEASE_NOTES_v9.0.0-beta.1.md](RELEASE_NOTES_v9.0.0-beta.1.md) | **Corte beta.1:** alcance, defaults seguros, funciones LAB/OFF, límites, rollback y formato de reporte. |
 | [V9_ALPHA_RELEASE_PLAN.md](V9_ALPHA_RELEASE_PLAN.md) | **Próxima entrega:** alcance, bloqueantes, defaults, gates y promoción de `v0.70b-eSE9.0.0-alpha.1` a beta/RC. |
 | [MASTER_PLAN.md](MASTER_PLAN.md) | Visión de producto y escalabilidad (de ~20 a 5000+ viewers); arquitectura actual y cuellos de botella. |
 | [USER_GUIDE.md](USER_GUIDE.md) | Cómo se usa: instalar, ver un stream, emitir, troubleshooting. |
@@ -73,6 +74,9 @@
 | [IPV6_ANALYSIS.md](IPV6_ANALYSIS.md) | 🔀 comparativa | Por qué IPv6 es crítico + comparativa de enfoques. El elegido vive en IPV6_PLAN. |
 | [IPV6_SPRINT_PLAN.md](IPV6_SPRINT_PLAN.md) | 🔀 operativo | Ejecución anti-regresión (flags, opcodes paralelos, smoke matrix). Canónico: IPV6_PLAN. |
 | [SPEC_KAD6_ANONYMOUS_COMPAT.md](SPEC_KAD6_ANONYMOUS_COMPAT.md) | 📐 v0.3 draft normativo (2026-07-15) | **Kad6:** overlay IPv6-first con anonimato asimétrico y gateways retrocompatibles Kad2/eD2K. Wire/caps experimentales registrados; cuota RFC 9474, rendimiento, descubrimiento dual-plane, métricas y frontera de claims sincronizados. |
+| [Kad6_Paper_EN_Rev3.docx](Kad6_Paper_EN_Rev3.docx) · [Rev3A auditada](Kad6_Paper_EN_Rev3A_Audited.docx) | 🎓 Rev3 normativa · 🔬 auditoría post-implementación (2026-07-16) | Rev3 sustituye a Rev2 como referencia. Rev3A conserva el snapshot histórico y añade la correspondencia actual L1–L6, resultados locales y fronteras de evidencia aún abiertas. |
+| [KAD6_REV3_COMPLIANCE_MATRIX.md](KAD6_REV3_COMPLIANCE_MATRIX.md) | 🔬 matriz viva Rev3 | Trazabilidad requisito→código→prueba para L1–L6, fuzz, concurrencia, transición dual-stack y evidencia externa; separa `IMPLEMENTADO`, `PARCIAL` y `DISEÑADO`. |
+| [Kad6_Paper_EN.docx](Kad6_Paper_EN.docx) · [Kad6_Hardening_Spec_EN.docx](Kad6_Hardening_Spec_EN.docx) | 📄 preprint EN + 🛠️ spec de endurecimiento (2026-07-16) | El preprint IEEE-style de Kad6 y su **respuesta a la revisión de 22 puntos**: cada observación → solución verificada adversarialmente (compat C1 / fail-closed C2 / split libkad6 C3 / sin de-anon C4 / registro C5), con tabla maestra de asignación sin colisiones, hoja de ruta (3 wording / 16 mecanismos / 3 experimentos) y ediciones exactas al SPEC. |
 | [KAD6_K0_K8_AUDIT_2026-07-15.md](KAD6_K0_K8_AUDIT_2026-07-15.md) | 🔎 **auditoría viva K6-0..K6-8** | Estado consolidado hasta K6-8, con fuente/build y gates físicos/externos separados. |
 | [KAD6_K6_0_CLOSURE_2026-07-15.md](KAD6_K6_0_CLOSURE_2026-07-15.md) | ✅ **K6-0 cerrada** | Evidencia reproducible del gate: 12 suites, fuzz Release+ASan, RSS/allocations, 17 vectores externos, Crypto++ contra RFC 4231/5869/8032/8439 y símbolos aún dormantes. |
 | [KAD6_K6_1_CLOSURE_2026-07-15.md](KAD6_K6_1_CLOSURE_2026-07-15.md) | ✅ **K6-1A cerrada en fuente** | Evidencia de implementación: gateway `K6Frame` Live, cap firmada, fallback legacy, tags canónicos, procedencia de privacidad, `STRICT` sin dial directo, tests y build. G0 multi-PC queda explícitamente pendiente. |
@@ -99,12 +103,12 @@
 ## 🔢 Registro de protocolo (P0)
 
 > Fuente única de verdad de los números de cable **del fork** (opcodes/tags/caps/tunnel). Antes de
-> añadir un número nuevo: añade la fila y pasa el linter. **Gate actual verde: 168 entradas y 151 símbolos del fork.**
+> añadir un número nuevo: añade la fila y pasa el linter. **Gate actual verde: 196 entradas y 179 símbolos de código.**
 
 | Documento | Estado | Qué cubre |
 |---|---|---|
 | [protocol/PROTOCOL_REGISTRY.md](protocol/PROTOCOL_REGISTRY.md) | 🔢 gobierno | Registro + informe de conflictos + propuesta de migración. |
-| [OPCODES](protocol/OPCODES.csv) · [TAGS](protocol/TAGS.csv) · [CAPABILITIES](protocol/CAPABILITIES.csv) · [TUNNEL_SERVICES](protocol/TUNNEL_SERVICES.csv) | 🔢 datos | CSV por namespace (168 entradas); el linter los valida. |
+| [OPCODES](protocol/OPCODES.csv) · [TAGS](protocol/TAGS.csv) · [CAPABILITIES](protocol/CAPABILITIES.csv) · [TUNNEL_SERVICES](protocol/TUNNEL_SERVICES.csv) · [KAD6_MESSAGES](protocol/KAD6_MESSAGES.csv) | 🔢 datos | CSV por namespace (196 entradas); el linter valida 179 símbolos de código. |
 | [tools/check_protocol_registry.py](../tools/check_protocol_registry.py) | ✅ funciona | Gate de CI: duplicados, sin-registrar, drift doc-vs-código. |
 
 ---

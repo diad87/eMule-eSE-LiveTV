@@ -27,7 +27,8 @@ Require-File 'srchybrid\config\nodes.dat.b64'
 Require-File 'srchybrid\config\nodes.dat.sha256'
 Require-File 'srchybrid\eMule.tmpl'
 Require-File 'tools\release_inputs.json'
-Require-File 'docs\RELEASE_NOTES_v9.0.0-alpha.1.md'
+$releaseNotesPath = "docs\RELEASE_NOTES_v$tagVersion.md"
+Require-File $releaseNotesPath
 
 $versionHeader = Get-Content (Join-Path $RepoRoot 'srchybrid\Version.h') -Raw
 if ($versionHeader -notmatch '#define\s+ESE_RELEASE_VERSION\s+_T\("(?<version>[^"]+)"\)') {
@@ -42,7 +43,21 @@ if ($packageVersion -ne $tagVersion) {
 }
 
 $packageScript = Get-Content (Join-Path $RepoRoot 'build_package.ps1') -Raw
-foreach ($requiredDefault in @('EseV9Experimental=0', 'WebUseUPnP=0', 'KrpRelayEnabled=0', 'Kad6PublicExitOptIn=0')) {
+foreach ($requiredDefault in @(
+    'EseV9Experimental=0',
+    'EseKad3Rendezvous=0',
+    'EseAutoKeepalive=0',
+    'EseRelayAccept=0',
+    'EseRelayEgress=0',
+    'EseReachSelector=0',
+    'EseHolePunchPortPredict=0',
+    'EseEd2kPunch3=0',
+    'Kad6PublicExitOptIn=0',
+    'KrpRelayEnabled=0',
+    'KrpRelayKillSwitch=0',
+    'ExperimentalTcpDataPlane=0',
+    'WebUseUPnP=0'
+)) {
     if ($packageScript -notmatch [regex]::Escape($requiredDefault)) {
         Fail "safe package default missing: $requiredDefault"
     }

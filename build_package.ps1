@@ -15,6 +15,12 @@ $preflightArgs = @{ ReleaseTag = $ReleaseTag; RepoRoot = $RepoRoot }
 if ($AllowDirty) { $preflightArgs.AllowDirty = $true }
 & (Join-Path $RepoRoot 'tools\release_preflight.ps1') @preflightArgs
 
+# release_preflight has already validated this exact tag grammar. Derive the
+# matching notes filename here so alpha, beta and RC packages cannot silently
+# copy the notes from a different prerelease.
+$ReleaseTag -match '^v0\.70b-eSE(?<version>.+)$' | Out-Null
+$releaseNotesRelativePath = "docs\RELEASE_NOTES_v$($Matches.version).md"
+
 $distRoot = Join-Path $RepoRoot 'dist'
 $releaseRoot = Join-Path $distRoot $ReleaseTag
 $packageDir = Join-Path $releaseRoot 'package'
@@ -133,7 +139,7 @@ foreach ($mapping in @(
     @('license.txt','license.txt'),
     @('THIRD_PARTY_LICENSES.md','THIRD_PARTY_LICENSES.md'),
     @('docs\USER_GUIDE.md','USER_GUIDE.md'),
-    @('docs\RELEASE_NOTES_v9.0.0-alpha.1.md','RELEASE_NOTES.md'),
+    @($releaseNotesRelativePath,'RELEASE_NOTES.md'),
     @('docs\V9_VALIDATION_CHECKLIST.md','docs\V9_VALIDATION_CHECKLIST.md'),
     @('docs\LIVETV_STATUS.md','docs\LIVETV_STATUS.md'),
     @('docs\LIVETV_HARDENING_2026-07-16.md','docs\LIVETV_HARDENING_2026-07-16.md')

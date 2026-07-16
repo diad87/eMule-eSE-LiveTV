@@ -15,6 +15,7 @@
 //along with this program; if not, write to the Free Software
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #include "stdafx.h"
+#include "Version.h"
 //#ifdef _DEBUG
 //#define _CRTDBG_MAP_ALLOC
 //#include <crtdbg.h>
@@ -26,6 +27,8 @@
 #include <atlimage.h>
 #include "emule.h"
 #include "LiveStreamManager.h"
+#include "RelayClient.h"
+#include "DirectReachabilityManager.h"
 #include "opcodes.h"
 #include "mdump.h"
 #include "Scheduler.h"
@@ -282,6 +285,8 @@ END_MESSAGE_MAP()
 CemuleApp::CemuleApp(LPCTSTR lpszAppName)
 	: CWinApp(lpszAppName)
 	, emuledlg()
+	, relayclient()
+	, directreachability()
 	, m_iDfltImageListColorFlags(ILC_COLOR)
 	, m_ullComCtrlVer(MAKEDLLVERULL(4, 0, 0, 0))
 	, m_app_state(APP_STATE_STARTING)
@@ -293,6 +298,7 @@ CemuleApp::CemuleApp(LPCTSTR lpszAppName)
 	, m_dwPublicIP()
 	, m_bGuardClipboardPrompt()
 	, m_bAutoStart()
+	, m_nSelfTestExitCode()
 	, m_bStandbyOff()
 {
 	// Initialize Windows security features.
@@ -322,7 +328,8 @@ CemuleApp::CemuleApp(LPCTSTR lpszAppName)
 	m_strCurVersionLong.Format(_T("%u.%u%c"), CemuleApp::m_nVersionMjr, CemuleApp::m_nVersionMin, _T('a') + CemuleApp::m_nVersionUpd);
 #endif
 	m_strCurVersionLong += CemuleApp::m_sPlatform;
-	m_strCurVersionLong += _T(" - eSE");
+	m_strCurVersionLong += _T(" - eSE ");
+	m_strCurVersionLong += ESE_RELEASE_VERSION;
 
 #if defined( _DEBUG) && !defined(_BOOTSTRAPNODESDAT)
 	m_strCurVersionLong += _T(" DEBUG");
@@ -626,6 +633,8 @@ BOOL CemuleApp::InitInstance()
 		}
 	}
 
+	directreachability = new CDirectReachabilityManager();
+	directreachability->Initialize(thePrefs.GetLocalTcpPort(), thePrefs.GetLocalUdpPort());
 	clientlist = new CClientList();
 	friendlist = new CFriendList();
 	searchlist = new CSearchList();
@@ -642,6 +651,7 @@ BOOL CemuleApp::InitInstance()
 	webserver = new CWebServer(); // Web Server [kuchin]
 	scheduler = new CScheduler();
 	liveStreamManager = new CLiveStreamManager();
+	relayclient = new CRelayClient();
 
 	// ZZ:UploadSpeedSense -->
 	lastCommonRouteFinder = new LastCommonRouteFinder();
@@ -654,6 +664,17 @@ BOOL CemuleApp::InitInstance()
 
 	thePerfLog.Startup();
 	emuledlg->DoModal();
+	// Normal OnCancel tears this down before WebServer/TLS. Keep a fallback for
+	// early modal termination paths so no relay worker survives the main window.
+	if (relayclient != NULL) {
+		relayclient->Shutdown();
+		delete relayclient;
+		relayclient = NULL;
+	}
+	if (directreachability != NULL) {
+		delete directreachability;
+		directreachability = NULL;
+	}
 
 	DisableRTLWindowsLayout();
 
@@ -697,7 +718,8 @@ int CemuleApp::ExitInstance()
 	if (m_wTimerRes != 0)
 		timeEndPeriod(m_wTimerRes);
 
-	return CWinApp::ExitInstance();
+	const int baseExitCode = CWinApp::ExitInstance();
+	return m_bSelfTest ? m_nSelfTestExitCode : baseExitCode;
 }
 
 #ifdef _DEBUG
@@ -741,6 +763,7 @@ bool CemuleApp::ProcessCommandline()
 	// V2-S06/S07: defaults
 	m_bHeadless           = false;
 	m_bSelfTest           = false;
+	m_nSelfTestExitCode   = 0;
 	m_uHeadlessMetricsPort = 0;
 	m_uHeadlessTcpPort    = 0;
 	m_uHeadlessUdpPort    = 0;
@@ -1234,6 +1257,42 @@ uint32 CemuleApp::GetPublicIP() const
 	return m_dwPublicIP;
 }
 
+uint16 CemuleApp::GetLocalTcpPort() const
+{
+	return directreachability != NULL
+		? directreachability->GetLocalTcpPort() : thePrefs.GetLocalTcpPort();
+}
+
+uint16 CemuleApp::GetLocalUdpPort() const
+{
+	return directreachability != NULL
+		? directreachability->GetLocalUdpPort() : thePrefs.GetLocalUdpPort();
+}
+
+uint16 CemuleApp::GetAdvertisedTcpPort() const
+{
+	return directreachability != NULL
+		? directreachability->GetAdvertisedTcpPort() : thePrefs.GetLocalTcpPort();
+}
+
+uint16 CemuleApp::GetAdvertisedUdpPort() const
+{
+	return directreachability != NULL
+		? directreachability->GetAdvertisedUdpPort() : thePrefs.GetLocalUdpPort();
+}
+
+uint16 CemuleApp::GetAdvertisedV6TcpPort() const
+{
+	return directreachability != NULL
+		? directreachability->GetAdvertisedV6TcpPort() : thePrefs.GetLocalTcpPort();
+}
+
+uint16 CemuleApp::GetAdvertisedV6UdpPort() const
+{
+	return directreachability != NULL
+		? directreachability->GetAdvertisedV6UdpPort() : thePrefs.GetLocalUdpPort();
+}
+
 void CemuleApp::SetPublicIP(const uint32 dwIP)
 {
 	if (dwIP != 0) {
@@ -1256,7 +1315,12 @@ void CemuleApp::SetPublicIP(const uint32 dwIP)
 
 bool CemuleApp::IsFirewalled()
 {
-	if (theApp.serverconnect->IsConnected() && !theApp.serverconnect->IsLowID())
+	const bool bDirectMappingVerified = theApp.serverconnect->IsConnectedViaRelay()
+		|| directreachability == NULL
+		|| !directreachability->IsEnabled()
+		|| directreachability->HasVerifiedEd2kReachability();
+	if (theApp.serverconnect->IsConnected() && !theApp.serverconnect->IsLowID()
+		&& bDirectMappingVerified)
 		return false; // we have an eD2K HighID -> not firewalled
 
 	if (Kademlia::CKademlia::IsConnected() && !Kademlia::CKademlia::IsFirewalled())
@@ -1269,6 +1333,10 @@ bool CemuleApp::CanDoCallback(CUpDownClient *client)
 {
 	bool ed2k = theApp.serverconnect->IsConnected();
 	bool eLow = theApp.serverconnect->IsLowID();
+	if (!theApp.serverconnect->IsConnectedViaRelay()
+		&& directreachability != NULL && directreachability->IsEnabled()
+		&& !directreachability->HasVerifiedEd2kReachability())
+		eLow = true;
 
 	if (!Kademlia::CKademlia::IsConnected() || Kademlia::CKademlia::IsFirewalled())
 		return ed2k && !eLow; //callback for high ID server connection

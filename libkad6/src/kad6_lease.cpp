@@ -350,9 +350,12 @@ Kad6Status SignK6SourceBound(const Kad6CryptoHooks& hooks,
 
 Kad6Status VerifyK6SourceBound(const Kad6CryptoHooks& hooks,
                                const K6SourceBind& bind,
-                               const K6SourceBound& bound) {
-    if (!hooks.ed25519_verify) return Kad6Status::NullArgument;
+                               const K6SourceBound& bound,
+                               const Byte expected_exit_pub[kEd25519PubSize]) {
+    if (!hooks.ed25519_verify || !expected_exit_pub) return Kad6Status::NullArgument;
     if (AllZero(bound.exit_node_pub) ||
+        !Kad6CtEqual(expected_exit_pub, bound.exit_node_pub.data(),
+                     bound.exit_node_pub.size()) ||
         !Kad6CtEqual(bind.bind_nonce.data(), bound.bind_nonce.data(), bind.bind_nonce.size()))
         return Kad6Status::AuthFailed;
     const Kad6Status semantic = ValidateSuccessfulBound(bind, bound);

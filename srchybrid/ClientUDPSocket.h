@@ -25,8 +25,10 @@ struct UDPPack
 {
 	Packet	*packet;
 	uint32	dwIP;
+	uint8	abyIPv6[16];
 	uint16	nPort;
 	DWORD	dwTime;
+	bool	bIPv6;
 	bool	bEncrypt;
 	bool	bKad;
 	uint32	nReceiverVerifyKey;
@@ -45,7 +47,7 @@ public:
 	bool IsUtpReady() const { return m_port != 0 && m_pUtpContext != NULL; }
 	void SendUtpPacket(const byte* pData, size_t nDataLen, const sockaddr* to, int tolen);
 	void SeedNatTraversalExpectation(CUpDownClient* pClient, uint32 dwIP, uint16 nPort);
-	bool InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort, const uchar* pClientHash);
+	bool InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort, CUpDownClient* pExpectedClient);
 
 
 
@@ -57,7 +59,9 @@ public:
 	bool	Create();
 	bool	Rebind();
 	uint16	GetConnectedPort()		{ return m_port; }
+	bool	IsDualStack() const		{ return m_bDualStack; }
 	bool	SendPacket(Packet *packet, uint32 dwIP, uint16 nPort, bool bEncrypt, const uchar *pachTargetClientHashORKadID, bool bKad, uint32 nReceiverVerifyKey);
+	bool	SendPacketV6(Packet *packet, const uint8 v6Addr[16], uint16 nPort);
 	SocketSentBytes  SendControlData(uint32 maxNumberOfBytesToSend, uint32 /*minFragSize*/); // ZZ:UploadBandWithThrottler (UDP)
 
 protected:
@@ -68,7 +72,7 @@ protected:
 
 private:
 	int		SendTo(uchar *lpBuf, int nBufLen, uint32 dwIP, uint16 nPort);
-	int		SendToV6(uchar *lpBuf, int nBufLen, const uint8 v6Addr[16], uint16 nPort);   // [eSE v9] R.4 Phase B (dormant): v6 send primitive; unused until the dual-stack socket (Phase A) lands
+	int		SendToV6(uchar *lpBuf, int nBufLen, const uint8 v6Addr[16], uint16 nPort);
 	bool	IsBusy() const			{ return m_bWouldBlock; }
 
 	CTypedPtrList<CPtrList, UDPPack*> controlpacket_queue;
@@ -77,4 +81,8 @@ private:
 
 	uint16	m_port;
 	bool	m_bWouldBlock;
+	bool	m_bDualStack;
+	// Preference state used for this bind attempt. This is separate from
+	// m_bDualStack because an IPv6 request may safely fall back to IPv4.
+	bool	m_bIPv6BindRequested;
 };

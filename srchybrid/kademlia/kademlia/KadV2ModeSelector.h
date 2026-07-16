@@ -2,7 +2,8 @@
 //
 // Cap 6 §6.3 monograph. Decides per-query whether to use Direct, Tunneled
 // or Adaptive mode. The user picks the default (Direct/Tunneled/Adaptive)
-// in the UI; Adaptive uses the rules below.
+// in the UI; Adaptive prefers Kad6 and leaves any Kad2 compatibility fallback
+// to the explicit fallback policy at the operation call site.
 #pragma once
 
 #include "KadV2Defines.h"
@@ -25,8 +26,8 @@ public:
         OperationClass operationClass;        // caller sets; see Decide()
     };
 
-    // Decide the mode for `q`. The user-selected default mode is applied
-    // first; Adaptive then refines via the 4 rules of Cap 6 §6.3 Modo C.
+    // Decide the preferred mode for `q`. Direct and Tunneled are forced modes;
+    // Adaptive is Kad6-first. This method does not claim circuit availability.
     CKadV2Mode Decide(const QueryContext& q) const;
 
     // === User-controlled defaults ===

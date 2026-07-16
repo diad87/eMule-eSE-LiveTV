@@ -13,6 +13,7 @@ int main()
     CHECK(s.Configure(63, 2000, 1000, 0) == Kad6Status::BadValue);
     CHECK(s.Configure(64, 1999, 1000, 0) == Kad6Status::BadValue);
     CHECK(s.Configure(4096, 5001, 1000, 0) == Kad6Status::BadValue);
+    CHECK(s.Configure(64, 2000, 1000, 0) == Kad6Status::BadValue);
     CHECK(s.Configure(64, 2000, 1000, 7) == Kad6Status::Ok);
     CHECK(s.configured());
     CHECK(s.slot_interval_us() == 259400);
@@ -56,7 +57,7 @@ int main()
     CHECK(s.Configure(96, 3000, 0, 0) == Kad6Status::BadValue);
 
     // Stream cardinality is bounded independently of reservoir bytes.
-    CHECK(s.Configure(4096, 5000, 0, 0) == Kad6Status::Ok);
+    CHECK(s.Configure(4096, 5000, 0, 1) == Kad6Status::Ok);
     for (std::uint64_t id = 1; id <= kK6ShapeMaxStreams; ++id) CHECK(s.Enqueue(id));
     CHECK(!s.Enqueue(999)); CHECK(s.exposed());
 

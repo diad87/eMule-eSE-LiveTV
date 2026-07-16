@@ -120,9 +120,12 @@ Kad6Status SignK6SourceBound(const Kad6CryptoHooks& hooks,
                              const Byte* secret, std::size_t secret_len,
                              const K6SourceBind& bind, K6SourceBound& bound,
                              std::vector<Byte>& out);
+// expected_exit_pub must come from the authenticated last hop of the pinned
+// circuit. The public key carried by K6SourceBound is not a trust anchor.
 Kad6Status VerifyK6SourceBound(const Kad6CryptoHooks& hooks,
                                const K6SourceBind& bind,
-                               const K6SourceBound& bound);
+                               const K6SourceBound& bound,
+                               const Byte expected_exit_pub[kEd25519PubSize]);
 
 Kad6Status EncodeK6SourceUnbind(const K6SourceUnbind& value, std::vector<Byte>& out);
 Kad6Status DecodeK6SourceUnbind(const Byte* in, std::size_t len, K6SourceUnbind& out,

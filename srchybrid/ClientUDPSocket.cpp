@@ -39,6 +39,7 @@
 #include "kademlia/utils/KadUDPKey.h"
 #include "zlib/zlib.h"
 #include "eMuleAI/UtpSocket.h" // eSE: uTP NAT traversal bridge
+#include "eMuleAI/Address.h"
 #include "Opcodes.h"
 
 #ifdef _DEBUG
@@ -65,6 +66,8 @@ static void UpdateHolePunchRuntimeCaps(bool bReady)
 CClientUDPSocket::CClientUDPSocket()
 {
 	m_bWouldBlock = false;
+	m_bDualStack = false;
+	m_bIPv6BindRequested = false;
 	m_port = 0;
 }
 
@@ -93,9 +96,63 @@ void CClientUDPSocket::OnReceive(int nErrorCode)
 	}
 
 	BYTE buffer[8192]; //5000 was too low sometimes
+	SOCKADDR_STORAGE rawSockAddr = {};
+	int iRawSockAddrLen = sizeof rawSockAddr;
+	int nRealLen = ReceiveFrom(buffer, sizeof buffer,
+		(LPSOCKADDR)&rawSockAddr, &iRawSockAddrLen);
+	if (nRealLen == SOCKET_ERROR) {
+		const DWORD dwError = (DWORD)CAsyncSocket::GetLastError();
+		if (dwError != WSAEWOULDBLOCK && dwError != WSAECONNRESET
+			&& thePrefs.GetVerbose())
+			DebugLogError(_T("Error: Client UDP socket receive failed: %s"),
+				(LPCTSTR)GetErrorMessage(dwError, 1));
+		return;
+	}
+
+	CAddress sourceAddress;
+	uint16 sourcePort = 0;
+	sourceAddress.FromSA((const sockaddr*)&rawSockAddr, iRawSockAddrLen,
+		&sourcePort);
+	if (sourcePort == 0 || sourceAddress.IsNull())
+		return;
+
+	// Native IPv6 never enters legacy UDP obfuscation or the uint32-keyed Kad2
+	// routing table. K6-2 owns only these bounded plaintext routing opcodes.
+	if (sourceAddress.GetType() == CAddress::IPv6) {
+		if (!sourceAddress.IsPublicIP())
+			return;
+		if (nRealLen > 0 && CUtpSocket::FeedRawUdp(buffer, nRealLen,
+				(const sockaddr*)&rawSockAddr, iRawSockAddrLen))
+			return;
+		if (nRealLen < 2 || buffer[0] != OP_KADEMLIAHEADER)
+			return;
+		switch (buffer[1]) {
+			case KADEMLIA3_BOOTSTRAP_REQ:
+			case KADEMLIA3_BOOTSTRAP_RES:
+			case KADEMLIA3_HELLO_REQ:
+			case KADEMLIA3_HELLO_RES:
+			case KADEMLIA3_REQ:
+			case KADEMLIA3_RES:
+				theStats.AddDownDataOverheadKad(nRealLen);
+				Kademlia::CKademlia::ProcessPacketV6(buffer, nRealLen,
+					sourceAddress.Data(), sourcePort);
+				break;
+			default:
+				break;
+		}
+		return;
+	}
+	if (sourceAddress.GetType() != CAddress::IPv4)
+		return;
+
+	// AF_INET6 dual-stack sockets report IPv4 senders as mapped addresses.
+	// Normalize those to the exact sockaddr_in form expected by all existing
+	// uTP, IP-filter, encryption and Kad2 code below.
 	SOCKADDR_IN sockAddr = {};
+	sockAddr.sin_family = AF_INET;
+	sockAddr.sin_port = htons(sourcePort);
+	sockAddr.sin_addr.s_addr = sourceAddress.ToUInt32(false);
 	int iSockAddrLen = sizeof sockAddr;
-	int nRealLen = ReceiveFrom(buffer, sizeof buffer, (LPSOCKADDR)&sockAddr, &iSockAddrLen);
 	if (theApp.ipfilter->IsFiltered(sockAddr.sin_addr.s_addr) || theApp.clientlist->IsBannedClient(sockAddr.sin_addr.s_addr) || !sockAddr.sin_port)
 		return;
 
@@ -467,7 +524,8 @@ SocketSentBytes CClientUDPSocket::SendControlData(uint32 maxNumberOfBytesToSend,
 		UDPPack *cur_packet = controlpacket_queue.RemoveHead();
 		if (curTick < cur_packet->dwTime + UDPMAXQUEUETIME) {
 			int nLen = (int)cur_packet->packet->size + 2;
-			int iLen = cur_packet->bEncrypt && (theApp.GetPublicIP() > 0 || cur_packet->bKad)
+			int iLen = cur_packet->bEncrypt && !cur_packet->bIPv6
+				&& (theApp.GetPublicIP() > 0 || cur_packet->bKad)
 				? EncryptOverheadSize(cur_packet->bKad) : 0;
 			uchar *sendbuffer = new uchar[nLen + iLen];
 			memcpy(sendbuffer + iLen, cur_packet->packet->GetUDPHeader(), 2);
@@ -477,7 +535,9 @@ SocketSentBytes CClientUDPSocket::SendControlData(uint32 maxNumberOfBytesToSend,
 				nLen = EncryptSendClient(sendbuffer, nLen, cur_packet->pachTargetClientHashORKadID, cur_packet->bKad, cur_packet->nReceiverVerifyKey, (cur_packet->bKad ? Kademlia::CPrefs::GetUDPVerifyKey(cur_packet->dwIP) : 0u));
 				//DEBUG_ONLY(  AddDebugLogLine(DLP_VERYLOW, false, _T("Sent obfuscated UDP packet to clientIP: %s, Kad: %s, ReceiverKey: %u"), (LPCTSTR)ipstr(cur_packet->dwIP), cur_packet->bKad ? _T("Yes") : _T("No"), cur_packet->nReceiverVerifyKey) );
 			}
-			iLen = SendTo(sendbuffer, nLen, cur_packet->dwIP, cur_packet->nPort);
+			iLen = cur_packet->bIPv6
+				? SendToV6(sendbuffer, nLen, cur_packet->abyIPv6, cur_packet->nPort)
+				: SendTo(sendbuffer, nLen, cur_packet->dwIP, cur_packet->nPort);
 			if (iLen >= 0) {
 				sentBytes += iLen; // ZZ:UploadBandWithThrottler (UDP)
 				delete cur_packet->packet;
@@ -508,7 +568,19 @@ int CClientUDPSocket::SendTo(uchar *lpBuf, int nBufLen, uint32 dwIP, uint16 nPor
 {
 	// NOTE: *** This function is invoked from a *different* thread!
 	//Currently called only locally; sendLocker must be locked by the caller
-	int result = CAsyncSocket::SendTo(lpBuf, nBufLen, nPort, ipstr(dwIP));
+	int result;
+	if (m_bDualStack) {
+		SOCKADDR_IN6 sa6 = {};
+		sa6.sin6_family = AF_INET6;
+		sa6.sin6_port = htons(nPort);
+		sa6.sin6_addr.u.Byte[10] = 0xFF;
+		sa6.sin6_addr.u.Byte[11] = 0xFF;
+		memcpy(&sa6.sin6_addr.u.Byte[12], &dwIP, 4);
+		result = CAsyncSocket::SendTo(lpBuf, nBufLen,
+			(const SOCKADDR*)&sa6, sizeof sa6);
+	} else {
+		result = CAsyncSocket::SendTo(lpBuf, nBufLen, nPort, ipstr(dwIP));
+	}
 	if (result == SOCKET_ERROR) {
 		DWORD dwError = (DWORD)CAsyncSocket::GetLastError();
 		if (dwError == WSAEWOULDBLOCK) {
@@ -522,17 +594,12 @@ int CClientUDPSocket::SendTo(uchar *lpBuf, int nBufLen, uint32 dwIP, uint16 nPor
 	return result; //success
 }
 
-// [eSE v9] R.4 PHASE B (DORMANT groundwork): raw IPv6 send primitive. Builds a sockaddr_in6
+// K6-2 native IPv6 send primitive. Builds a sockaddr_in6
 // from the 16-byte NETWORK-order address (as stored in CContact::GetIPv6Address / the
 // TAG_ESE_KADIP_V6 HELLO root-link) and transmits UNOBFUSCATED via the sockaddr form of SendTo
 // (the obfuscation layer keys on the uint32 v4 IP, which a native-v6 peer lacks).
-//
-// NOT CALLED by anything yet. It requires the dual-stack AF_INET6 socket (R.4 Phase A, gated on
-// IPv6PreferredMode) to actually transmit — on today's v4-only socket a v6 sendto returns
-// WSAEAFNOSUPPORT. And a v6 datagram it sends has no working receiver until native-v6 Kad RX
-// (Phase C: ProcessPacket keyed on the payload KadID, not the uint32 source) lands. This is
-// pure additive scaffolding so the v6 send half is ready; deferred per the shelved-Kad-v6
-// thesis until there is real v6-only-user demand. See docs / project_ipv6_kad_shelved.
+// SendPacketV6 is the active queueing call site. Receive dispatch is keyed by
+// the payload KadID and remains outside the uint32-addressed Kad2 path.
 int CClientUDPSocket::SendToV6(uchar *lpBuf, int nBufLen, const uint8 v6Addr[16], uint16 nPort)
 {
 	sockaddr_in6 sa6 = {};
@@ -557,9 +624,11 @@ bool CClientUDPSocket::SendPacket(Packet *packet, uint32 dwIP, uint16 nPort, boo
 {
 	UDPPack *newpending = new UDPPack;
 	newpending->dwIP = dwIP;
+	memset(newpending->abyIPv6, 0, sizeof newpending->abyIPv6);
 	newpending->nPort = nPort;
 	newpending->packet = packet;
 	newpending->dwTime = ::GetTickCount();
+	newpending->bIPv6 = false;
 	newpending->bEncrypt = bEncrypt && (pachTargetClientHashORKadID != NULL || (bKad && nReceiverVerifyKey != 0));
 	newpending->bKad = bKad;
 	newpending->nReceiverVerifyKey = nReceiverVerifyKey;
@@ -583,13 +652,79 @@ bool CClientUDPSocket::SendPacket(Packet *packet, uint32 dwIP, uint16 nPort, boo
 // <-- ZZ:UploadBandWithThrottler (UDP)
 }
 
+bool CClientUDPSocket::SendPacketV6(Packet *packet, const uint8 v6Addr[16], uint16 nPort)
+{
+	if (packet == NULL || v6Addr == NULL || nPort == 0 || !m_bDualStack) {
+		delete packet;
+		return false;
+	}
+
+	UDPPack *newpending = new UDPPack;
+	newpending->packet = packet;
+	newpending->dwIP = 0;
+	memcpy(newpending->abyIPv6, v6Addr, sizeof newpending->abyIPv6);
+	newpending->nPort = nPort;
+	newpending->dwTime = ::GetTickCount();
+	newpending->bIPv6 = true;
+	newpending->bEncrypt = false;
+	newpending->bKad = true;
+	newpending->nReceiverVerifyKey = 0;
+	md4clr(newpending->pachTargetClientHashORKadID);
+
+#ifdef _DEBUG
+	if (newpending->packet->size > UDP_KAD_MAXFRAGMENT)
+		DebugLogWarning(_T("Sending native-v6 UDP packet > UDP_KAD_MAXFRAGMENT, opcode: %X, size: %u"),
+			packet->opcode, packet->size);
+#endif
+
+	sendLocker.Lock();
+	controlpacket_queue.AddTail(newpending);
+	sendLocker.Unlock();
+	theApp.uploadBandwidthThrottler->QueueForSendingControlPacket(this);
+	return true;
+}
+
 bool CClientUDPSocket::Create()
 {
+	m_bIPv6BindRequested = thePrefs.IsIPv6Enabled();
 	if (thePrefs.GetUDPPort()) {
-		if (!CAsyncSocket::Create(thePrefs.GetUDPPort(), SOCK_DGRAM, FD_READ | FD_WRITE, thePrefs.GetBindAddr())) {
+		m_bDualStack = false;
+		if (thePrefs.IsIPv6Enabled()
+			&& CAsyncSocket::Socket(SOCK_DGRAM, FD_READ | FD_WRITE,
+				IPPROTO_UDP, AF_INET6)) {
+			DWORD v6Only = 0;
+			if (SetSockOpt(IPV6_V6ONLY, &v6Only, sizeof v6Only, IPPROTO_IPV6)) {
+				SOCKADDR_IN6 bindAddress = {};
+				bindAddress.sin6_family = AF_INET6;
+				bindAddress.sin6_port = htons(thePrefs.GetUDPPort());
+				LPCTSTR configured = thePrefs.GetIPv6BindAddr();
+				bool validBind = configured == NULL || configured[0] == 0
+					|| _tcscmp(configured, _T("::")) == 0;
+				if (!validBind) {
+					CAddress configuredAddress(configured, false);
+					if (configuredAddress.GetType() == CAddress::IPv6) {
+						memcpy(&bindAddress.sin6_addr, configuredAddress.Data(), 16);
+						validBind = true;
+					}
+				}
+				if (validBind) {
+					m_bDualStack = CAsyncSocket::Bind(
+						(const SOCKADDR*)&bindAddress, sizeof bindAddress) != FALSE;
+				}
+			}
+			if (!m_bDualStack)
+				Close();
+		}
+		if (!m_bDualStack
+			&& !CAsyncSocket::Create(thePrefs.GetUDPPort(), SOCK_DGRAM,
+				FD_READ | FD_WRITE, thePrefs.GetBindAddr())) {
 			UpdateHolePunchRuntimeCaps(false);
 			return false;
 		}
+		if (m_bDualStack && thePrefs.GetVerbose())
+			AddDebugLogLine(DLP_LOW, false,
+				_T("Client UDP socket: dual-stack IPv6 bound on port %u"),
+				(UINT)thePrefs.GetUDPPort());
 		m_port = thePrefs.GetUDPPort();
 		// the default socket size seems to be insufficient for this UDP socket
 		// because we tend to drop packets if several arrived at the same time
@@ -620,15 +755,18 @@ bool CClientUDPSocket::Create()
 				DebugLogError(_T("[NAT-T][uTP] utp_init(2) FAILED - uTP disabled"));
 			}
 		}
-	} else
+	} else {
 		m_port = 0;
+		m_bDualStack = false;
+	}
 	UpdateHolePunchRuntimeCaps(IsUtpReady());
 	return true;
 }
 
 bool CClientUDPSocket::Rebind()
 {
-	if (thePrefs.GetUDPPort() == m_port)
+	if (thePrefs.GetUDPPort() == m_port
+		&& thePrefs.IsIPv6Enabled() == m_bIPv6BindRequested)
 		return false;
 	// Destroy old uTP context before recreating the socket on a new port
 	if (m_pUtpContext) {
@@ -637,6 +775,7 @@ bool CClientUDPSocket::Rebind()
 		m_pUtpContext = NULL;
 	}
 	Close();
+	m_bDualStack = false;
 	return Create();
 }
 
@@ -656,6 +795,14 @@ void CClientUDPSocket::SendUtpPacket(const byte* pData, size_t nDataLen, const s
 		sendLocker.Lock();
 		SendTo(const_cast<uchar*>(pData), (int)nDataLen,
 			pAddr->sin_addr.s_addr, ntohs(pAddr->sin_port));
+		sendLocker.Unlock();
+	}
+	else if (to->sa_family == AF_INET6 && tolen >= (int)sizeof(SOCKADDR_IN6)) {
+		const SOCKADDR_IN6* pAddr = reinterpret_cast<const SOCKADDR_IN6*>(to);
+		sendLocker.Lock();
+		SendToV6(const_cast<uchar*>(pData), (int)nDataLen,
+			reinterpret_cast<const uint8*>(&pAddr->sin6_addr),
+			ntohs(pAddr->sin6_port));
 		sendLocker.Unlock();
 	}
 }
@@ -685,22 +832,36 @@ void CClientUDPSocket::SeedNatTraversalExpectation(CUpDownClient* /*pClient*/, u
 		(LPCTSTR)ipstr(htonl(dwIP)), nPort);
 }
 
-bool CClientUDPSocket::InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort, const uchar* pClientHash)
+bool CClientUDPSocket::InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort, CUpDownClient* pExpectedClient)
 {
 	// Called from Process_ESE_HOLEPUNCH_ACK on the INITIATOR side.
 	// After the REQ→ACK handshake punched NAT pinholes on both sides,
 	// this function actively sends a uTP SYN through the pinhole.
 	// dwIP = host byte order (Kad convention), nUDPPort = host byte order.
-	if (dwIP == 0 || nUDPPort == 0 || pClientHash == NULL || isnulmd4(pClientHash)
-		|| !IsUtpReady())
+	if (dwIP == 0 || nUDPPort == 0 || !IsUtpReady() || theApp.clientlist == NULL)
 		return false;
 
-	// 1. Find the client we're trying to reach
-	// FindClientByIP expects network byte order
-	CUpDownClient* pClient = theApp.clientlist->FindClientByUserHash(pClientHash);
+	// 1. Resolve the eD2K client independently from the Kad identity carried
+	// by HOLEPUNCH_ACK.  Prefer the pointer captured with the nonce (validated
+	// again against the live list and endpoint), then use exact endpoint
+	// lookups for manual/rendezvous requests.  Never interpret a Kad node ID
+	// as an eD2K user hash.
+	const uint32 uIPNetwork = htonl(dwIP);
+	CUpDownClient* pClient = NULL;
+	if (pExpectedClient != NULL && theApp.clientlist->IsValidClient(pExpectedClient)) {
+		const uint32 uExpectedIP = pExpectedClient->GetConnectIP() != 0
+			? pExpectedClient->GetConnectIP() : pExpectedClient->GetIP();
+		if (uExpectedIP == uIPNetwork)
+			pClient = pExpectedClient;
+	}
+	if (pClient == NULL)
+		pClient = theApp.clientlist->FindClientByIP_KadPort(uIPNetwork, nUDPPort);
+	if (pClient == NULL)
+		pClient = theApp.clientlist->FindClientByIP_UDP(uIPNetwork, nUDPPort);
 	if (pClient == NULL) {
 		if (thePrefs.GetVerbose())
-			DebugLog(_T("eSE: InitiateUtpConnect — no client found for IP %s"), (LPCTSTR)ipstr(htonl(dwIP)));
+			DebugLog(_T("eSE: InitiateUtpConnect — no client found for endpoint %s:%u"),
+				(LPCTSTR)ipstr(uIPNetwork), nUDPPort);
 		return false;
 	}
 

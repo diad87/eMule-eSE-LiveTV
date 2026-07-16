@@ -31,6 +31,8 @@
 #include <HtmlHelp.h>
 #include <share.h>
 #include <dbt.h>
+#include <iphlpapi.h>
+#include <vector>
 #include "emule.h"
 #include "emuleDlg.h"
 #include "otherfunctions.h"
@@ -56,6 +58,8 @@
 #include "SharedFileList.h"
 #include "ED2KLink.h"
 #include "LiveStreamManager.h"
+#include "RelayClient.h"
+#include "DirectReachabilityManager.h"
 #include "Splashscreen.h"
 #include "PartFileConvert.h"
 #include "EnBitmap.h"
@@ -137,6 +141,56 @@ extern BOOL FirstTimeWizard();
 
 UINT g_uMainThreadId = 0;
 static const UINT UWM_ARE_YOU_EMULE = RegisterWindowMessage(EMULE_GUID);
+static UINT AFX_CDECL HeadlessActionDelayThread(LPVOID param);
+static UINT AFX_CDECL SelfTestExitThread(LPVOID param);
+static void ScheduleSelfTestExit(int exitCode);
+
+static uint64 GetUPnPNetworkSignature()
+{
+	MIB_IPFORWARDROW route = {};
+	if (::GetBestRoute(0, 0, &route) != NO_ERROR
+		|| route.dwForwardIfIndex == 0 || route.dwForwardNextHop == 0)
+		return 0;
+
+	ULONG bytes = 0;
+	if (::GetAdaptersInfo(NULL, &bytes) != ERROR_BUFFER_OVERFLOW || bytes == 0)
+		return 0;
+	std::vector<BYTE> storage(bytes);
+	PIP_ADAPTER_INFO adapters =
+		reinterpret_cast<PIP_ADAPTER_INFO>(&storage[0]);
+	if (::GetAdaptersInfo(adapters, &bytes) != NO_ERROR)
+		return 0;
+
+	DWORD localAddress = 0;
+	for (PIP_ADAPTER_INFO adapter = adapters; adapter != NULL;
+		adapter = adapter->Next) {
+		if (adapter->Index != route.dwForwardIfIndex)
+			continue;
+		for (PIP_ADDR_STRING address = &adapter->IpAddressList;
+			address != NULL; address = address->Next) {
+			const DWORD candidate = ::inet_addr(address->IpAddress.String);
+			if (candidate != INADDR_NONE && candidate != INADDR_ANY) {
+				localAddress = candidate;
+				break;
+			}
+		}
+		break;
+	}
+	if (localAddress == 0)
+		return 0;
+
+	// A small FNV-1a mix is sufficient here: this value is only a process-local
+	// change detector, not a persistent identity or security boundary.
+	uint64 signature = 1469598103934665603ull;
+	const DWORD parts[] = {
+		route.dwForwardIfIndex, route.dwForwardNextHop, localAddress
+	};
+	for (size_t i = 0; i < _countof(parts); ++i) {
+		signature ^= parts[i];
+		signature *= 1099511628211ull;
+	}
+	return signature != 0 ? signature : 1;
+}
 
 #ifdef HAVE_WIN7_SDK_H
 static const UINT UWM_TASK_BUTTON_CREATED = RegisterWindowMessage(_T("TaskbarButtonCreated"));
@@ -208,6 +262,8 @@ BEGIN_MESSAGE_MAP(CemuleDlg, CTrayDialog)
 	ON_MESSAGE(UM_LIVE_WEB_JOIN, OnLiveWebJoin)
 	ON_MESSAGE(UM_LIVE_WEB_BROADCAST, OnLiveWebBroadcast)
 	ON_MESSAGE(UM_LIVE_WEB_LEAVE, OnLiveWebLeave)
+	ON_MESSAGE(UM_LIVE_HEADLESS_ACTION, OnLiveHeadlessAction)
+	ON_MESSAGE(UM_KRP_CLIENT_EVENT, OnKrpClientEvent)
 
 	// Version Check DNS
 	ON_MESSAGE(UM_VERSIONCHECK_RESPONSE, OnVersionCheckResponse)
@@ -271,7 +327,9 @@ CemuleDlg::CemuleDlg(CWnd *pParent /*=NULL*/)
 	, m_pMiniMule()
 	, m_hTimer()
 	, m_hUPnPTimeOutTimer()
-	, m_hHeadlessActionTimer()  // V2-S06
+	, m_bUPnPTimeoutForRefresh()
+	, m_hUPnPLeaseTimer()
+	, m_uUPnPNetworkSignature()
 	, notifierenabled()
 {
 	g_uMainThreadId = GetCurrentThreadId();
@@ -652,6 +710,28 @@ BOOL CemuleDlg::OnInitDialog()
 	}
 	SetWindowPlacement(&wp);
 
+	// --selftest is deliberately network-free. Run it before WebServer,
+	// startup timers and UPnP are armed; those subsystems are irrelevant to
+	// signed local ingest and can block or contend with a user's normal ports.
+	// RunHeadlessAction schedules WM_QUIT after the modal loop becomes active.
+	if (theApp.m_bSelfTest) {
+		LIVE_LOG("HEADLESS", "Running isolated selftest before network startup");
+		RunHeadlessAction();
+		return TRUE;
+	}
+
+	// The P4 handshake signs HELLO immediately, so make the persistent identity
+	// available before the relay worker starts. NodeIdentityInit is idempotent;
+	// the normal privacy startup below can safely call it again.
+	if (theApp.relayclient != NULL && CPreferences::GetKrpRelayExperimentalTcp()
+		&& (!eSELive::NodeIdentityInit() || !eSELive::NodeIdentityIsPersistent()))
+		AddDebugLogLine(false, _T("KRP relay: persistent node identity init failed; P4 authentication will remain closed"));
+
+	// Relay initialization occurs only after the HWND exists. Default OFF leaves
+	// classic eMule networking byte-for-byte on its existing path.
+	if (theApp.relayclient != NULL)
+		theApp.relayclient->Initialize(GetSafeHwnd());
+
 	// V2-S07: headless mode can override the WebServer port so multiple
 	// stress instances on the same host expose /api/live/metrics on
 	// different ports without colliding. Forces enable too.
@@ -704,17 +784,31 @@ BOOL CemuleDlg::OnInitDialog()
 	// toolbar button anytime to open the dashboard in the browser (the
 	// click never stops the server; it dies with eMule on shutdown).
 	// On startup-failure we just log; no popups.
-	LaunchEseServer(/*bOpenBrowser=*/false);
+	// --selftest validates the native ingest/receive path and has no dashboard
+	// dependency. Do not spawn ese-server.exe here: PostQuitMessage ends the
+	// one-shot without the normal OnClose path, which previously orphaned the
+	// child and also made it contend for the user's normal dashboard/Web ports.
+	if (!theApp.m_bSelfTest)
+		LaunchEseServer(/*bOpenBrowser=*/false);
+	else
+		LIVE_LOG("HEADLESS", "Selftest isolation: dashboard auto-spawn skipped");
 
-	// V2-S06/S27: only schedule the headless one-shot if there's actual work
-	// (a JoinStream or selftest). Plain --headless --metrics-port (= "expose
+	// V2-S06/S27: only schedule the viewer one-shot if there's actual work.
+	// Plain --headless --metrics-port (= "expose
 	// metrics, do nothing else") doesn't need the timer at all and skipping
 	// it avoids a TIMERPROC dispatch that previously crashed.
 	const bool bHeadlessHasWork =
-		theApp.m_bSelfTest ||
-		(theApp.m_bHeadless && !theApp.m_strHeadlessJoinKey.IsEmpty());
+		theApp.m_bHeadless && !theApp.m_strHeadlessJoinKey.IsEmpty();
 	if (bHeadlessHasWork) {
-		m_hHeadlessActionTimer = ::SetTimer(NULL, 0, 8000, HeadlessActionTimer);
+		// Do not rely on a window or thread TIMERPROC here. During heavy hidden
+		// startup those callbacks can be starved indefinitely. The worker only
+		// waits and posts a message; the actual LiveTV action remains main-thread.
+		CWinThread *delayThread = AfxBeginThread(HeadlessActionDelayThread,
+			(LPVOID)GetSafeHwnd(), THREAD_PRIORITY_NORMAL, 0, 0, NULL);
+		if (delayThread == NULL) {
+			LIVE_LOG("HEADLESS", "Delay worker creation failed; posting action immediately");
+			PostMessage(UM_LIVE_HEADLESS_ACTION, 0, 0);
+		}
 		LIVE_LOG("HEADLESS", "Scheduled headless action in 8 s (selftest=%d viewer=%S)",
 			theApp.m_bSelfTest ? 1 : 0,
 			(LPCWSTR)theApp.m_strHeadlessJoinKey);
@@ -728,7 +822,6 @@ BOOL CemuleDlg::OnInitDialog()
 
 	return TRUE;
 }
-
 // D7: scan %APPDATA%\eMule\crashdumps\ for .dmp files newer than
 // "LastCrashAck" timestamp. On match, ask the user once whether to open
 // the folder. Headless and silent on first-ever launch.
@@ -796,26 +889,87 @@ static bool HexToKey16(const CString& hex, uchar out[16])
 	return true;
 }
 
-void CALLBACK CemuleDlg::HeadlessActionTimer(HWND /*hwnd*/, UINT /*uiMsg*/,
-	UINT_PTR idEvent, DWORD /*dwTime*/) noexcept
+static UINT AFX_CDECL HeadlessActionDelayThread(LPVOID param)
 {
-	::KillTimer(NULL, idEvent);
-	if (theApp.emuledlg)
-		theApp.emuledlg->m_hHeadlessActionTimer = 0;
+	const HWND hwnd = (HWND)param;
+	::Sleep(8000);
+	if (::IsWindow(hwnd))
+		::PostMessage(hwnd, UM_LIVE_HEADLESS_ACTION, 0, 0);
+	return 0;
+}
 
+static UINT AFX_CDECL SelfTestExitThread(LPVOID param)
+{
+	const int exitCode = (int)(INT_PTR)param;
+	// OnInitDialog runs before CDialog::RunModalLoop. Posting WM_QUIT there
+	// directly can be consumed during modal-loop setup, so wait until the
+	// dialog has returned control to the normal main-thread message pump.
+	::Sleep(100);
+	::PostThreadMessage(g_uMainThreadId, WM_QUIT, (WPARAM)exitCode, 0);
+	return 0;
+}
+
+static void ScheduleSelfTestExit(int exitCode)
+{
+	theApp.m_nSelfTestExitCode = exitCode;
+	if (AfxBeginThread(SelfTestExitThread, (LPVOID)(INT_PTR)exitCode,
+		THREAD_PRIORITY_NORMAL, 0, 0, NULL) == NULL) {
+		// Extremely low-memory fallback. This retains the intended exit code;
+		// the delayed path above is what makes pre-modal-loop delivery reliable.
+		::PostThreadMessage(g_uMainThreadId, WM_QUIT, (WPARAM)exitCode, 0);
+	}
+}
+
+LRESULT CemuleDlg::OnLiveHeadlessAction(WPARAM, LPARAM)
+{
+	RunHeadlessAction();
+	return 0;
+}
+
+LRESULT CemuleDlg::OnKrpClientEvent(WPARAM, LPARAM)
+{
+	if (theApp.relayclient != NULL && !theApp.IsClosing())
+		theApp.relayclient->ProcessMainThreadEvents();
+	return 0;
+}
+
+void CemuleDlg::RunHeadlessAction() noexcept
+{
 	try {
-		// V2-S27: smoke test — start a 5 s testpattern broadcast then exit clean.
+		// LiveTV selftest: require a real FFmpeg prebuffer, then feed one signed
+		// V2 segment through an isolated viewer's production ingest path.
 		if (theApp.m_bSelfTest) {
-			LIVE_LOG("HEADLESS", "Selftest: 5 s testpattern broadcast");
+			LIVE_LOG("HEADLESS", "Selftest: testpattern + signed chunk loopback");
+			bool passed = false;
+			CString failure;
 			if (theApp.liveStreamManager) {
-				theApp.liveStreamManager->StartBroadcastWithSource(
+				const bool started = theApp.liveStreamManager->StartBroadcastWithSource(
 					_T("testpattern"), _T("Selftest"),
 					_T(""), _T("en"), 1500);
-				::Sleep(5000);
+				if (!started) {
+					failure = _T("test-pattern broadcast failed to start or prebuffer");
+				} else {
+					bool ffmpegRunning = false;
+					int chunkCount = 0;
+					theApp.liveStreamManager->GetBroadcastLivenessStatus(
+						ffmpegRunning, chunkCount);
+					if (!ffmpegRunning || chunkCount < 3) {
+						failure.Format(_T("prebuffer invariant failed (ffmpeg=%d chunks=%d)"),
+							ffmpegRunning ? 1 : 0, chunkCount);
+					} else {
+						passed = theApp.liveStreamManager->RunIsolatedLoopbackSelfTest(failure);
+					}
+				}
 				theApp.liveStreamManager->StopBroadcastFull();
+			} else {
+				failure = _T("LiveStreamManager is unavailable");
 			}
-			LIVE_LOG("HEADLESS", "Selftest done — quitting");
-			::PostQuitMessage(0);
+			if (passed)
+				LIVE_LOG("HEADLESS", "Selftest PASS — quitting with code 0");
+			else
+				LIVE_LOG("HEADLESS", "Selftest FAIL: %S — quitting with code 2",
+					(LPCWSTR)failure);
+			ScheduleSelfTestExit(passed ? 0 : 2);
 			return;
 		}
 
@@ -832,7 +986,12 @@ void CALLBACK CemuleDlg::HeadlessActionTimer(HWND /*hwnd*/, UINT /*uiMsg*/,
 			theApp.liveStreamManager->JoinStream(key, _T("Headless Viewer"));
 		}
 	}
-	CATCH_DFLT_EXCEPTIONS(_T("HeadlessActionTimer"))
+	CATCH_DFLT_EXCEPTIONS(_T("RunHeadlessAction"))
+	// The normal selftest branch returns immediately after posting its result.
+	// Reaching here in selftest mode means an exception was caught by the MFC
+	// safety macro, so make the failure observable instead of hanging forever.
+	if (theApp.m_bSelfTest)
+		ScheduleSelfTestExit(2);
 }
 
 // modders: don't remove or change the original version check! (additional are OK)
@@ -1008,16 +1167,13 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 					AddDebugLogLine(false, _T("Privacy: eSE node identity init FAILED (TAG_ESE_NODE_PUB absent this session)"));
 				g_uEseCapsRuntime = ESE_CAP_SEALED_RECORDS
 				                  | ESE_CAP_GOSSIP_PROTOCOL
-				                  | ESE_CAP_LIVE_CHUNK_FRAG   // v8.1.x — pure transport feature, always advertised
-				                  | ESE_CAP_TUNNEL_BULK       // v8.1.2 — bulk data-plane carrier (0xD9); any node can relay a bulk cell as hop1, so advertise always
-				                  | ESE_CAP_REACH_V2;         // additive Kad source vector, decoded by the strict libreach codec
+				                  | ESE_CAP_LIVE_CHUNK_FRAG;  // v8.1.x — validated transport feature
 				if (thePrefs.GetUtpHolePunchEnabled())
 					g_uEseCapsRuntime |= ESE_CAP_HOLEPUNCH_COOKIE;
-				if (nodeIdentityReady) {
-					g_uEseCapsRuntime |= ESE_CAP_TUNNEL_AUTH;
-					g_uEseCapsRuntime |= ESE_CAP_TUNNEL_STRICT3;
-					g_uEseCapsRuntime |= ESE_CAP_TUNNEL_SHAPED;
-				}
+				// Alpha boundary: bulk/reach-v2/auth/strict/shaping remain invisible
+				// until the operator enables EseV9Experimental. Kad6 has a separate
+				// signed service-release gate and is never enabled by this helper.
+				RefreshEseV9PreviewCaps();
 				// R.1 (3-way Kad rendezvous): advertise participation only when the hole-punch
 				// path is enabled — the responder + R-relay handlers gate on the same pref,
 				// so a peer that sees this bit can safely use us as rendezvous R or target B.
@@ -1047,8 +1203,6 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 						g_uEseCapsRuntime |= ESE_CAP_PRIVACY_TUNNELING;
 						g_uEseCapsRuntime |= ESE_CAP_COVER_TRAFFIC;
 						g_uEseCapsRuntime |= ESE_CAP_TUNNEL_DATAPLANE;  // v8.1 -- multi-cell tunnel transport
-						if (nodeIdentityReady)
-							g_uEseCapsRuntime |= ESE_CAP_KAD6; // K6-1 canonical search gateway
 					}
 				}
 				AddDebugLogLine(false, _T("Privacy: TAG_ESE_CAPS runtime = 0x%08X"), g_uEseCapsRuntime);
@@ -1311,7 +1465,13 @@ UINT CemuleDlg::GetConnectionStateIconIndex() const
 	if (idx)
 		idx += static_cast<UINT>(!Kademlia::CKademlia::IsFirewalled());
 	if (theApp.serverconnect->IsConnected())
-		idx += theApp.serverconnect->IsLowID() ? 3 : 6;
+	{
+		const bool bVerifiedDirect = theApp.serverconnect->IsConnectedViaRelay()
+			|| theApp.directreachability == NULL
+			|| !theApp.directreachability->IsEnabled()
+			|| theApp.directreachability->HasVerifiedEd2kReachability();
+		idx += theApp.serverconnect->IsLowID() || !bVerifiedDirect ? 3 : 6;
+	}
 	return idx;
 }
 
@@ -2258,6 +2418,10 @@ void CemuleDlg::OnClose()
 		theApp.searchlist->StoreSearches();
 
 	// close uPnP Ports
+	if (m_hUPnPLeaseTimer != 0) {
+		VERIFY(::KillTimer(NULL, m_hUPnPLeaseTimer));
+		m_hUPnPLeaseTimer = 0;
+	}
 	theApp.m_pUPnPFinder->GetImplementation()->StopAsyncFind();
 	if (thePrefs.CloseUPnPOnExit())
 		theApp.m_pUPnPFinder->GetImplementation()->DeletePorts();
@@ -2307,6 +2471,12 @@ void CemuleDlg::OnClose()
 	delete theApp.friendlist;				theApp.friendlist = NULL;		// CFriendList::SaveList
 	delete theApp.scheduler;				theApp.scheduler = NULL;
 	delete theApp.ipfilter;					theApp.ipfilter = NULL;			// CIPFilter::SaveToDefaultFile
+	// Stop/join KRP before WebServer releases the process-wide mbedTLS runtime.
+	if (theApp.relayclient != NULL) {
+		theApp.relayclient->Shutdown();
+		delete theApp.relayclient;
+		theApp.relayclient = NULL;
+	}
 	delete theApp.webserver;				theApp.webserver = NULL;
 	delete theApp.m_pFirewallOpener;		theApp.m_pFirewallOpener = NULL;
 	delete theApp.uploadBandwidthThrottler;	theApp.uploadBandwidthThrottler = NULL;
@@ -2315,6 +2485,7 @@ void CemuleDlg::OnClose()
 	delete theApp.m_pUploadDiskIOThread;	theApp.m_pUploadDiskIOThread = NULL;
 	delete theApp.m_pPartFileWriteThread;	theApp.m_pPartFileWriteThread = NULL;
 	delete theApp.m_pPartHashThread;		theApp.m_pPartHashThread = NULL;
+	delete theApp.directreachability;		theApp.directreachability = NULL;
 
 	thePrefs.Uninit();
 	theApp.m_app_state = APP_STATE_DONE;
@@ -4174,21 +4345,93 @@ void CemuleDlg::SetToolTipsDelay(UINT uMilliseconds)
 
 void CALLBACK CemuleDlg::UPnPTimeOutTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*idEvent*/, DWORD /*dwTime*/) noexcept
 {
-	theApp.emuledlg->PostMessage(UM_UPNP_RESULT, (WPARAM)CUPnPImpl::UPNP_TIMEOUT, 0);
+	if (theApp.emuledlg != NULL)
+		theApp.emuledlg->PostMessage(UM_UPNP_RESULT,
+			(WPARAM)CUPnPImpl::UPNP_TIMEOUT,
+			theApp.emuledlg->m_bUPnPTimeoutForRefresh ? 1 : 0);
+}
+
+void CALLBACK CemuleDlg::UPnPLeaseTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*idEvent*/, DWORD /*dwTime*/) noexcept
+{
+	try {
+		if (theApp.emuledlg != NULL)
+			theApp.emuledlg->CheckUPnPLease();
+	} catch (...) {
+		DebugLogError(_T("Unexpected exception while scheduling UPnP lease renewal"));
+	}
+}
+
+void CemuleDlg::CheckUPnPLease()
+{
+	if (!theApp.IsRunning() || !thePrefs.IsUPnPEnabled()
+		|| theApp.m_pUPnPFinder == NULL || m_hUPnPTimeOutTimer != 0)
+		return;
+
+	CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
+	if (impl == NULL)
+		return;
+
+	const uint64 networkSignature = GetUPnPNetworkSignature();
+	if (networkSignature != 0 && m_uUPnPNetworkSignature == 0)
+		m_uUPnPNetworkSignature = networkSignature;
+	else if (networkSignature != 0
+		&& networkSignature != m_uUPnPNetworkSignature) {
+		if (!impl->IsReady())
+			return;
+		const uint64 previous = m_uUPnPNetworkSignature;
+		m_uUPnPNetworkSignature = networkSignature;
+		LIVE_LOG("NATMAP", "network topology changed signature=%llu->%llu; restarting mapper discovery",
+			(unsigned long long)previous,
+			(unsigned long long)networkSignature);
+		StartUPnP(true);
+		return;
+	}
+
+	if (!impl->IsReady())
+		return;
+
+	if (impl->IsLeaseExpired()) {
+		LIVE_LOG("NATMAP", "finite lease expired; restarting mapper discovery (impl=%d)",
+			impl->GetImplementationID());
+		StartUPnP(true);
+		return;
+	}
+	if (impl->IsLeaseRefreshDue()) {
+		impl->BeginLeaseRefreshAttempt();
+		if (impl->GetMappingLeaseLifetime() != 0)
+			LIVE_LOG("NATMAP", "45%% lease renewal attempt=%u (impl=%d)",
+				impl->GetLeaseRefreshAttemptCount(), impl->GetImplementationID());
+		else
+			LIVE_LOG("NATMAP", "permanent mapping health probe attempt=%u (impl=%d)",
+				impl->GetLeaseRefreshAttemptCount(), impl->GetImplementationID());
+		RefreshUPnP(true);
+	}
 }
 
 LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 {
 	bool bWasRefresh = lParam != 0;
 	CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
+	LIVE_LOG("NATMAP", "impl=%d result=%u refresh=%u stage=%s(%ld) local=%u/%u external=%u/%u ip=%u lease=%u epoch=%u",
+		impl->GetImplementationID(), (unsigned)wParam, (unsigned)bWasRefresh,
+		impl->GetDiagnosticStageName(), impl->GetDiagnosticStage(),
+		impl->GetUsedTCPPort(), impl->GetUsedUDPPort(),
+		impl->GetExternalTCPPort(), impl->GetExternalUDPPort(),
+		impl->GetMappingExternalIP(), impl->GetMappingLeaseLifetime(),
+		impl->GetMapperEpoch());
+	if (m_hUPnPTimeOutTimer != 0) {
+		VERIFY(::KillTimer(NULL, m_hUPnPTimeOutTimer));
+		m_hUPnPTimeOutTimer = 0;
+	}
+	m_bUPnPTimeoutForRefresh = false;
+	if (wParam == CUPnPImpl::UPNP_TIMEOUT)
+		impl->StopAsyncFind();
 
 //>>> WiZaRd - handle "UPNP_TIMEOUT" events!
 	if (!bWasRefresh && wParam != CUPnPImpl::UPNP_OK) {
 		//just to be sure, stop any running services and also delete the forwarded ports (if necessary)
-		if (wParam == CUPnPImpl::UPNP_TIMEOUT) {
-			impl->StopAsyncFind();
+		if (wParam == CUPnPImpl::UPNP_TIMEOUT)
 			impl->DeletePorts();
-		}
 		// UPnP failed, check if we can retry it with another implementation
 		if (theApp.m_pUPnPFinder->SwitchImplentation()) {
 			StartUPnP(false);
@@ -4200,9 +4443,42 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		thePrefs.SetUPnPCriticalError(true);
 	}
 
-	if (m_hUPnPTimeOutTimer != 0) {
-		VERIFY(::KillTimer(NULL, m_hUPnPTimeOutTimer));
-		m_hUPnPTimeOutTimer = 0;
+	if (wParam == CUPnPImpl::UPNP_OK) {
+		impl->RecordLeaseSuccess();
+		if (impl->GetMappingLeaseLifetime() != 0) {
+			LIVE_LOG("NATMAP", "finite lease scheduler armed lifetime=%u renew_in=%llu seconds",
+				impl->GetMappingLeaseLifetime(),
+				(unsigned long long)impl->GetLeaseRefreshSecondsUntilDue());
+		} else if (impl->SupportsMappingHealthCheck())
+			LIVE_LOG("NATMAP", "permanent mapping; health probe armed interval=900 seconds, network-change recovery remains armed");
+		else
+			LIVE_LOG("NATMAP", "permanent mapping; mapper has no safe refresh operation, network-change recovery remains armed");
+	}
+	if (wParam == CUPnPImpl::UPNP_OK && theApp.directreachability != NULL) {
+		const uint64 previousGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		natmap::MapperKind mapper = natmap::MapperKind::None;
+		if (impl->GetImplementationID() == UPNP_IMPL_NATPMP)
+			mapper = natmap::MapperKind::NatPmp;
+		else if (impl->GetImplementationID() == UPNP_IMPL_PCP)
+			mapper = natmap::MapperKind::Pcp;
+		else if (impl->GetImplementationID() == UPNP_IMPL_MINIUPNPLIB
+			|| impl->GetImplementationID() == UPNP_IMPL_WINDOWSERVICE)
+			mapper = natmap::MapperKind::UpnpIgd;
+		const bool observed = theApp.directreachability->ObserveMappedPorts(mapper,
+			impl->GetMappingExternalIP(), impl->GetUsedTCPPort(),
+			impl->GetExternalTCPPort(), impl->GetUsedUDPPort(),
+			impl->GetExternalUDPPort(), impl->GetMappingLeaseLifetime(),
+			impl->GetMapperEpoch(), bWasRefresh);
+		if (observed && bWasRefresh
+			&& theApp.directreachability->GetTopologyGeneration()
+				!= previousGeneration
+			&& theApp.serverconnect->IsConnected()
+			&& !theApp.serverconnect->IsConnectedViaRelay()) {
+			LogWarning(_T("Direct reachability endpoint changed; reconnecting to advertise the new port"));
+			theApp.serverconnect->Disconnect();
+			theApp.serverconnect->ConnectToAnyServer();
+		}
 	}
 	if (!bWasRefresh)
 		if (wParam == CUPnPImpl::UPNP_OK) {
@@ -4253,6 +4529,10 @@ LRESULT CemuleDlg::OnPowerBroadcast(WPARAM wParam, LPARAM lParam)
 
 void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort, uint16 nForceUDPPort)
 {
+	if (m_hUPnPLeaseTimer == 0)
+		VERIFY((m_hUPnPLeaseTimer = ::SetTimer(NULL, 0, SEC2MS(30), UPnPLeaseTimer)) != 0);
+	if (m_uUPnPNetworkSignature == 0)
+		m_uUPnPNetworkSignature = GetUPnPNetworkSignature();
 	if (theApp.m_pUPnPFinder != NULL && (m_hUPnPTimeOutTimer == 0 || !bReset)) {
 		if (bReset) {
 			theApp.m_pUPnPFinder->Reset();
@@ -4262,11 +4542,14 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort, uint16 nForceUDPPor
 			CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
 			if (impl->IsReady()) {
 				impl->SetMessageOnResult(this, UM_UPNP_RESULT);
-				if (bReset)
+				m_bUPnPTimeoutForRefresh = false;
+				if (m_hUPnPTimeOutTimer == 0)
 					VERIFY((m_hUPnPTimeOutTimer = ::SetTimer(NULL, 0, SEC2MS(40), (TIMERPROC)UPnPTimeOutTimer)) != 0);
 				impl->StartDiscovery((nForceTCPPort ? nForceTCPPort : thePrefs.GetPort())
 					, (nForceUDPPort ? nForceUDPPort : thePrefs.GetUDPPort())
-					, (thePrefs.GetWSUseUPnP() ? thePrefs.GetWSPort() : 0));
+					// Automatic direct reachability is only for eD2K TCP and Kad
+					// UDP. Never expose the WebServer through the router.
+					, 0);
 			} else
 				/*theApp.emuledlg->*/PostMessage(UM_UPNP_RESULT, (WPARAM)CUPnPImpl::UPNP_FAILED, 0);
 		} catch (const CUPnPImpl::UPnPError&) {
@@ -4288,9 +4571,10 @@ void CemuleDlg::RefreshUPnP(bool bRequestAnswer)
 			if (impl->IsReady()) {
 				if (bRequestAnswer)
 					impl->SetMessageOnResult(this, UM_UPNP_RESULT);
-				if (impl->CheckAndRefresh() && bRequestAnswer)
+				if (impl->CheckAndRefresh() && bRequestAnswer) {
+					m_bUPnPTimeoutForRefresh = true;
 					VERIFY((m_hUPnPTimeOutTimer = ::SetTimer(NULL, 0, SEC2MS(10), UPnPTimeOutTimer)) != 0);
-				else
+				} else
 					impl->SetMessageOnResult(NULL, 0);
 			} else
 				DebugLogWarning(_T("RefreshUPnP, implementation not ready"));

@@ -53,6 +53,7 @@
 #include "eMuleAI/UtpSocket.h"
 #include "FirewallProberV6.h"
 #include "Kad6GatewaySocket.h"
+#include "DirectReachabilityManager.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -3095,6 +3096,14 @@ void CListenSocket::OnAccept(int nErrorCode)
 					localV6.FromSA((SOCKADDR*)&localStorage, localLength);
 				CFirewallProberV6::Instance().ReportInboundV6Reachable(localV6);
 				DebugLog(_T("Accepted native IPv6 client [%s]"), (LPCTSTR)NativeV6.ToStringC());
+			} else if (IsGoodIP(SockAddr.sin_addr.s_addr, true)
+				&& theApp.directreachability != NULL) {
+				const bool wasVerified =
+					theApp.directreachability->HasVerifiedEd2kReachability();
+				if (theApp.directreachability->ObserveInboundTcpAccept()
+					&& !wasVerified
+					&& theApp.directreachability->HasVerifiedEd2kReachability())
+					theApp.emuledlg->ShowConnectionState();
 			}
 			newclient->AsyncSelect(FD_WRITE | FD_READ | FD_CLOSE);
 		}

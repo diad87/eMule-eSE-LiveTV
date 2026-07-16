@@ -65,23 +65,26 @@ int main() {
 
     K6SourceBound bound=Bound(b); Byte exitKey[32]; std::memcpy(exitKey,bound.exit_node_pub.data(),32);
     CHECK(SignK6SourceBound(Hooks(),exitKey,32,b,bound,wire)==Kad6Status::Ok,"sign bound");
-    CHECK(VerifyK6SourceBound(Hooks(),b,bound)==Kad6Status::Ok,"verify bound");
+    CHECK(VerifyK6SourceBound(Hooks(),b,bound,exitKey)==Kad6Status::Ok,"verify bound");
+    Byte wrongExit[32];std::memset(wrongExit,0xE1,sizeof wrongExit);
+    CHECK(VerifyK6SourceBound(Hooks(),b,bound,wrongExit)==Kad6Status::AuthFailed,
+          "bound rejects self-asserted exit key not pinned by path");
     K6SourceBound bd; used=0; CHECK(DecodeK6SourceBound(wire.data(),wire.size(),bd,&used)==Kad6Status::Ok && used==wire.size(),"decode bound");
     CHECK(bd.source_lease_id==99 && bd.virtual_endpoint.tcp_port==4662,"bound round trip");
-    bd.lifetime_s++; CHECK(VerifyK6SourceBound(Hooks(),b,bd)==Kad6Status::AuthFailed,"bound limits signed");
-    bd=bound; K6SourceBind changed=b; changed.source_epoch++; CHECK(VerifyK6SourceBound(Hooks(),changed,bd)==Kad6Status::AuthFailed,"bound epoch signed");
+    bd.lifetime_s++; CHECK(VerifyK6SourceBound(Hooks(),b,bd,exitKey)==Kad6Status::AuthFailed,"bound limits signed");
+    bd=bound; K6SourceBind changed=b; changed.source_epoch++; CHECK(VerifyK6SourceBound(Hooks(),changed,bd,exitKey)==Kad6Status::AuthFailed,"bound epoch signed");
     K6SourceBind strict=Bind(K6BindingMode::Cohort);strict.requested_mode=K6BindingMode::DedicatedVep;
     K6SourceBound downgrade=Bound(strict,K6BindingMode::Cohort);
     CHECK(SignK6SourceBound(Hooks(),exitKey,32,strict,downgrade,wire)==Kad6Status::Ok &&
-        VerifyK6SourceBound(Hooks(),strict,downgrade)==Kad6Status::BadValue,
+        VerifyK6SourceBound(Hooks(),strict,downgrade,exitKey)==Kad6Status::BadValue,
         "signed binding-mode downgrade rejected");
     K6SourceBound extraTransport=bound;extraTransport.transport_mask|=kK6TransportUtp;
     CHECK(SignK6SourceBound(Hooks(),exitKey,32,b,extraTransport,wire)==Kad6Status::Ok &&
-        VerifyK6SourceBound(Hooks(),b,extraTransport)==Kad6Status::BadValue,
+        VerifyK6SourceBound(Hooks(),b,extraTransport,exitKey)==Kad6Status::BadValue,
         "signed transport expansion rejected");
     K6SourceBound wrongApparent=bound;wrongApparent.exit_apparent_ip.addr[0]^=1;
     CHECK(SignK6SourceBound(Hooks(),exitKey,32,b,wrongApparent,wire)==Kad6Status::Ok &&
-        VerifyK6SourceBound(Hooks(),b,wrongApparent)==Kad6Status::BadValue,
+        VerifyK6SourceBound(Hooks(),b,wrongApparent,exitKey)==Kad6Status::BadValue,
         "signed apparent-address mismatch rejected");
 
     K6SourceUnbind u; u.source_lease_id=99;u.source_epoch=8;u.bind_nonce=b.bind_nonce;

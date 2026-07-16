@@ -386,7 +386,7 @@ void CLiveMeshManager::Process()
 
     // Check if we need more peers
     if (now - m_dwLastPeerCheck >= PEER_CHECK_MS) {
-        if (m_meshPeers.GetCount() < MIN_MESH_PEERS) {
+        if (GetMeshPeerCount() < MIN_MESH_PEERS) {
             RequestMorePeers();
         }
         m_dwLastPeerCheck = now;
@@ -397,22 +397,11 @@ void CLiveMeshManager::RequestMorePeers()
 {
     if (!m_pManager || !m_pManager->IsViewingLive()) return;
 
-    // Ask the broadcaster/known peers for more peers
-    const LiveStreamInfo& info = m_pManager->GetStreamInfo();
-
-    POSITION pos = m_meshPeers.GetHeadPosition();
-    if (pos) {
-        // Ask the first known peer for a peer list
-        CUpDownClient* peer = m_meshPeers.GetHead();
-        Packet* pkt = eSELive::CreateSubscribePacket(
-            info.streamKey, thePrefs.GetUserHash(), 0);  // 0 = unknown capacity
-        if (pkt) {
-            theStats.AddUpDataOverheadOther(pkt->size);
-            peer->SendPacket(pkt);
-            AddLogLine(false, GetResString(IDS_LIVEMESH_REQUESTING_MORE_FMT),
-                (int)m_meshPeers.GetCount());
-        }
-    }
+    // The stream manager owns the canonical source list, privacy decision,
+    // pointer-swap grace, cooldown and candidate rotation. Keeping that logic
+    // in one place prevents the periodic path and disconnect path from sending
+    // duplicate SUBSCRIBEs with different rules.
+    m_pManager->RequestMorePeers();
 }
 
 

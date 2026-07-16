@@ -7,6 +7,7 @@
 #include "LiveChunkBuffer.h"
 #include "LiveKadBridge.h"
 #include "LiveMeshManager.h"
+#include "LivePeerRefreshPolicy.h"
 #include "LiveDebugLog.h"        // V2-S05: LatencyHistogram
 #include "RTMPIngest.h"
 #include <map>      // v8.1.x — fragment reassembly map
@@ -50,6 +51,7 @@ struct LiveStreamCounters {
     // v7.3.0 — observability for the security/efficiency passes.
     LONG skippedInitialPushes;  // Initial pushes skipped by (IP,port) cooldown (v7.2.2)
     LONG subscribesRateLimited; // SUBSCRIBE rejects by per-IP rate limit (v7.3.0)
+    LONG requestsRateLimited;   // OP_LIVE_REQUEST rejects by bounded /24/global limiter
     LONG endsRejectedNoAuth;    // OP_LIVE_END rejected because sender wasn't in our mesh
     LONG tombstonesEvicted;     // Tombstones forcibly evicted to keep map under cap
     // DISC-S11: visibility into Kad discovery health
@@ -72,7 +74,7 @@ struct LiveStreamCounters {
         , chunksRequested(0), chunksReceived(0), chunksMissing(0)
         , hlsSegmentsWritten(0), hlsPlaylistRefresh(0)
         , peerDisconnects(0), lastChunkReceivedAt(0)
-        , skippedInitialPushes(0), subscribesRateLimited(0)
+        , skippedInitialPushes(0), subscribesRateLimited(0), requestsRateLimited(0)
         , endsRejectedNoAuth(0), tombstonesEvicted(0)
         , kadSearchesEmpty(0), kadSearchesRateLimited(0)
         , pendingDialsDropped(0)
@@ -299,6 +301,10 @@ public:
     void GetBroadcastLivenessStatus(bool& outFFmpegRunning, int& outChunkCount);
     // Stop both the FFmpeg ingest AND the P2P broadcast in one call.
     void StopBroadcastFull();
+    // --selftest: serialize a real signed V2 segment from the broadcaster into
+    // an isolated viewer, assert storage/duplicate handling/tamper rejection.
+    // Returns false with a diagnostic instead of silently exiting with code 0.
+    bool RunIsolatedLoopbackSelfTest(CString& outFailure);
     // Read access to the shared ingest (MFC dialog uses it for status text).
     CRTMPIngest& GetRTMPIngest() { return m_rtmpIngest; }
 
@@ -390,6 +396,9 @@ public:
                               const CArray<uint16>& ports);
     // Called when a peer disconnects
     void OnPeerDisconnected(CUpDownClient* peer);
+    // Ask one surviving source (rotated, grace/cooldown bounded) for a fresh
+    // peer list. Used by disconnect recovery and the periodic mesh check.
+    bool RequestMorePeers();
 
     // v7.2.0 — Called when a peer sends OP_LIVE_END (or when the local
     // watchdog declares a stream dead). Tombstones the streamKey for
@@ -645,6 +654,11 @@ private:
     // Pruned in Process(); cleared on Join/Leave.
     CMap<uint64, uint64, DWORD, DWORD&> m_recentDials;
 
+    // Source replenishment policy. A 2 s loss grace absorbs the common
+    // AttachToAlreadyKnown pointer swap; retries are limited and rotate among
+    // surviving sources. The policy is deterministic and independently tested.
+    CLivePeerRefreshPolicy m_peerRefreshPolicy;
+
     // [eSE v9] Reachability SELECTOR — per-source escalation state. Endpoint-keyed
     // (ip<<16|port, HOST-order ip) like m_recentDials so it survives the LowID
     // AttachToAlreadyKnown pointer swap. Drives Direct(R.0)->2way-punch->3way-rdv(R.1)
@@ -752,6 +766,9 @@ private:
     // until the FIRST playlist write of the session. Set true after the
     // first successful stream.m3u8 write; reset in ResetViewerHlsOutput().
     bool                m_bHlsPlaylistStarted;
+    // Isolated --selftest viewers exercise the real ingest path without
+    // touching the broadcaster's live HLS files in the shared temp directory.
+    bool                m_bSuppressHlsOutput;
 
     // Ghost-viewer watchdog state (see NotePlayerFetch/MarkWebPlayerSession).
     // LONG + Interlocked because writers include webserver worker threads.

@@ -1,0 +1,23 @@
+# P4 single-host experimental relay. EDIT every path/address before use.
+# This mode is still default-OFF and accepts only clients possessing the token.
+mode=experimental-public
+explicit_lab_enable=false
+explicit_public_enable=true
+bind_address=0.0.0.0
+port=443
+public_ipv4=203.0.113.10
+certificate_path=C:\path\to\fullchain.pem
+private_key_path=C:\path\to\private-key.pem
+auth_token_path=C:\path\to\krp-auth-token.hex
+max_sessions=32
+max_flows_per_session=256
+max_leases_per_session=1
+max_preauth_bytes=16384
+preauth_timeout_ms=10000
+idle_timeout_ms=90000
+reuse_delay_ms=120000
+lease_first_port=40000
+lease_last_port=40031
+
+# Required firewall exposure on the public edge:
+# TCP 443 and TCP 40000-40031. The eMule user's home router stays closed.

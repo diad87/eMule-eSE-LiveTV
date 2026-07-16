@@ -1,0 +1,38 @@
+name,value,namespace,intro_version,status,capability_gate,format,compat,file,line
+KRP_HELLO,0x00,KRP-CONTROL,KRP-v1,reserved-proposed,none,"version range; NodeID32; client nonce; capabilities hash",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_WELCOME,0x01,KRP-CONTROL,KRP-v1,reserved-proposed,none,"relay identity; relay nonce; preliminary limits",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_AUTH_CHALLENGE,0x02,KRP-CONTROL,KRP-v1,reserved-proposed,none,"challenge; carrier binding; timestamp/policy context",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_AUTH_RESPONSE,0x03,KRP-CONTROL,KRP-v1,reserved-proposed,none,"NodeID32; transcript signature; optional service binding",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_AUTH_OK,0x04,KRP-CONTROL,KRP-v1,reserved-proposed,none,"SessionID16; SessionEpoch; negotiated limits",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_CAPABILITIES,0x05,KRP-CONTROL,KRP-v1,reserved-proposed,none,"versioned extension identifiers; criticality explicit",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_SETTINGS,0x06,KRP-CONTROL,KRP-v1,reserved-proposed,none,"bounded limits; unknown critical setting rejects",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_RESUME_PROBE,0x07,KRP-CONTROL,KRP-v1,reserved-proposed,none,"token envelope; client nonce; observation-only and 0-RTT idempotent",client-edge-new,docs/relay/RELAY_P1_INCREMENT_2_2026-07-16.md,0
+KRP_RESUME_COMMIT,0x08,KRP-CONTROL,KRP-v1,reserved-proposed,none,"SessionID16; SessionEpoch; RouteGeneration; token use id; requires confirmed 1-RTT",client-edge-new,docs/relay/RELAY_P1_INCREMENT_2_2026-07-16.md,0
+KRP_RESUME_RESULT,0x09,KRP-CONTROL,KRP-v1,reserved-proposed,none,"resumed/recreated/rejected result; current epochs; bounded reason",client-edge-new,docs/relay/RELAY_P1_INCREMENT_2_2026-07-16.md,0
+KRP_PRIORITY_GRANT,0x0A,KRP-CONTROL,KRP-v1,reserved-proposed,none,"bounded priority class grant; expiry; no client-selected escalation",client-edge-new,librelaycore/include/relay/krp_control.h,25
+KRP_LEASE_REQUEST,0x10,KRP-CONTROL,KRP-v1,reserved-proposed,none,"requested class/resources; no arbitrary public address",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_LEASE_GRANTED,0x11,KRP-CONTROL,KRP-v1,reserved-proposed,none,"EprLease; generation; address; optional TCP/UDP ports; limits",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_LEASE_RENEW,0x12,KRP-CONTROL,KRP-v1,reserved-proposed,none,"LeaseID; generation; proof; requested extension",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_LEASE_STATUS,0x13,KRP-CONTROL,KRP-v1,reserved-proposed,none,"state; reason; expiry; probe health",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_LEASE_RELEASE,0x14,KRP-CONTROL,KRP-v1,reserved-proposed,none,"LeaseID; generation; voluntary release",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_LEASE_REVOKED,0x15,KRP-CONTROL,KRP-v1,reserved-proposed,none,"LeaseID; generation; terminal/drain reason",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_FLOW_OPEN,0x20,KRP-CONTROL,KRP-v1,reserved-proposed,none,"service type; authority/ticket; requested limits; never raw OPEN host-port",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_FLOW_ACCEPT,0x21,KRP-CONTROL,KRP-v1,reserved-proposed,none,"FlowID; effective service/class/limits",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_FLOW_REJECT,0x22,KRP-CONTROL,KRP-v1,reserved-proposed,none,"reason; retry-after bucket",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_FLOW_CLOSE,0x23,KRP-CONTROL,KRP-v1,reserved-proposed,none,"FlowID; final sequence/counters; orderly close",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_FLOW_RESET,0x24,KRP-CONTROL,KRP-v1,reserved-proposed,none,"FlowID; bounded error reason",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_FLOW_PRESSURE,0x25,KRP-CONTROL,KRP-v1,reserved-proposed,none,"FlowID; soft limit; deadline; no priority escalation",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_FLOW_DATA,0x26,KRP-CONTROL,KRP-v1,reserved-proposed,none,"FlowID; bounded opaque bytes; streamless carriers only",client-edge-new,librelaycore/include/relay/krp_control.h,43
+KRP_SERVER_BIND,0x40,KRP-CONTROL,KRP-v1,reserved-proposed,none,"server identity; authorized listener binding; generation",client-edge-new,librelaycore/include/relay/krp_control.h,45
+KRP_SERVER_STATUS,0x41,KRP-CONTROL,KRP-v1,reserved-proposed,none,"server binding state; generation; bounded reason",client-edge-new,librelaycore/include/relay/krp_control.h,46
+KRP_LEGACY_ENDPOINT_UPDATE,0x42,KRP-CONTROL,KRP-v1,reserved-proposed,none,"authorized legacy endpoint set; generation; expiry",client-edge-new,librelaycore/include/relay/krp_control.h,47
+KRP_CLASSIC_REACHABILITY,0x43,KRP-CONTROL,KRP-v1,reserved-proposed,none,"classic reachability observation; transport; freshness",client-edge-new,librelaycore/include/relay/krp_control.h,48
+KRP_PEER_PROBE_CHALLENGE,0x44,KRP-CONTROL,KRP-v1,reserved-proposed,none,"bounded peer probe nonce; target authority; expiry",client-edge-new,librelaycore/include/relay/krp_control.h,49
+KRP_PEER_PROBE_RESPONSE,0x45,KRP-CONTROL,KRP-v1,reserved-proposed,none,"challenge binding; observed reachability; proof",client-edge-new,librelaycore/include/relay/krp_control.h,50
+KRP_REACHABILITY_STATUS,0x46,KRP-CONTROL,KRP-v1,reserved-proposed,none,"effective reachability state; evidence class; freshness",client-edge-new,librelaycore/include/relay/krp_control.h,51
+KRP_SERVER_CANDIDATE_SET,0x47,KRP-CONTROL,KRP-v1,reserved-proposed,none,"bounded authorized server candidates; generation",client-edge-new,librelaycore/include/relay/krp_control.h,52
+KRP_PING,0x50,KRP-CONTROL,KRP-v1,reserved-proposed,none,"nonce; monotonic timestamp; no mutable operation",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_PONG,0x51,KRP-CONTROL,KRP-v1,reserved-proposed,none,"echo nonce/timestamp; bounded health",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_STATS,0x52,KRP-CONTROL,KRP-v1,reserved-proposed,none,"bounded aggregate counters; no peer identifiers or payload echo",client-edge-new,librelaycore/include/relay/krp_control.h,56
+KRP_GOAWAY,0x60,KRP-CONTROL,KRP-v1,reserved-proposed,none,"last accepted FlowID; deadline; reason; optional alternatives",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0
+KRP_ERROR,0x61,KRP-CONTROL,KRP-v1,reserved-proposed,none,"scope; bounded reason; no payload echo",client-edge-new,docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md,0

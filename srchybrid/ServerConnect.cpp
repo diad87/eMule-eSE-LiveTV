@@ -33,6 +33,8 @@
 #include "ServerWnd.h"
 #include "TaskbarNotifier.h"
 #include "Log.h"
+#include "DirectReachabilityManager.h"
+#include "RelayClient.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -114,6 +116,19 @@ void CServerConnect::ConnectToAnyServer(INT_PTR startAt, bool prioSort, bool isA
 
 void CServerConnect::ConnectToServer(CServer *server, bool multiconnect, bool bNoCrypt)
 {
+	if (theApp.relayclient != NULL &&
+		theApp.relayclient->IsTcpDataPlaneEnabled() &&
+		!theApp.relayclient->IsTcpDataPlaneReady()) {
+		LogWarning(_T("KRP relay: waiting for authenticated ACTIVE TCP lease before connecting to eD2K"));
+		connecting = true;
+		singleconnecting = !multiconnect;
+		if (m_idRetryTimer == 0) {
+			m_uStartAutoConnectPos = 0;
+			m_idRetryTimer = ::SetTimer(NULL, 0, 1000, RetryConnectTimer);
+		}
+		theApp.emuledlg->ShowConnectionState();
+		return;
+	}
 	if (!multiconnect) {
 		StopConnectionTry();
 		Disconnect();
@@ -125,7 +140,16 @@ void CServerConnect::ConnectToServer(CServer *server, bool multiconnect, bool bN
 	CServerSocket *newsocket = new CServerSocket(this, !multiconnect);
 	m_lstOpenSockets.AddTail((void*)newsocket);
 	newsocket->Create(0, SOCK_STREAM, FD_READ | FD_WRITE | FD_CLOSE | FD_CONNECT, thePrefs.GetBindAddr());
-	newsocket->ConnectTo(server, bNoCrypt);
+	if (!newsocket->ConnectTo(server, bNoCrypt)) {
+		DestroySocket(newsocket);
+		if (multiconnect)
+			TryAnotherConnectionRequest();
+		else {
+			connecting = false;
+			singleconnecting = false;
+		}
+		return;
+	}
 	connectionattempts[::GetTickCount()] = newsocket;
 }
 
@@ -169,10 +193,14 @@ void CServerConnect::ConnectionEstablished(CServerSocket *sender)
 		}
 
 		// Send login packet
+		if (!sender->IsRelayRouted() && theApp.directreachability != NULL)
+			theApp.directreachability->BeginEd2kVerification();
 		CSafeMemFile data(256);
 		data.WriteHash16(thePrefs.GetUserHash());
 		data.WriteUInt32(GetClientID());
-		data.WriteUInt16(thePrefs.GetPort());
+		data.WriteUInt16(sender->IsRelayRouted() && theApp.relayclient != NULL
+			? theApp.relayclient->GetAdvertisedTcpPort(theApp.GetAdvertisedTcpPort())
+			: theApp.GetAdvertisedTcpPort());
 
 		UINT tagcount = 4;
 		data.WriteUInt32(tagcount);
@@ -597,4 +625,9 @@ bool CServerConnect::AwaitingTestFromIP(uint32 dwIP) const
 bool CServerConnect::IsConnectedObfuscated() const
 {
 	return connectedsocket != NULL && connectedsocket->IsObfusicating();
+}
+
+bool CServerConnect::IsConnectedViaRelay() const
+{
+	return connected && connectedsocket != NULL && connectedsocket->IsRelayRouted();
 }

@@ -65,21 +65,17 @@ CKadV2Mode CKadV2ModeSelector::Decide(const QueryContext& q) const
         case CKadV2Mode::Direct:    return CKadV2Mode::Direct;
         case CKadV2Mode::Tunneled:  return CKadV2Mode::Tunneled;
         case CKadV2Mode::Adaptive: {
-            // v8.1 D7 - Cap 6 §6.3 Modo C rules, now per operation class so each class
-            // weighs only the inputs it actually carries:
-            //  - KAD_SEARCH tunnels iff its keyword is sensitive (a search has no channel hash).
-            //  - KAD_PUBLISH / LIVE_CONTROL tunnel for a private channel, or a sensitive keyword.
-            // LIVE_CONTROL reproduces the pre-D7 behaviour exactly (existing callers pass it).
-            bool keywordSensitive = false;
-            if (!q.keywordLowercase.IsEmpty()) {
-                for (const auto& k : m_sensitive)
-                    if (q.keywordLowercase.Find(k) >= 0) { keywordSensitive = true; break; }
-            }
-            if (q.operationClass == QueryContext::KAD_SEARCH)
-                return keywordSensitive ? CKadV2Mode::Tunneled : CKadV2Mode::Direct;
-            // KAD_PUBLISH + LIVE_CONTROL:
-            if (q.includesPrivateChannelHash) return CKadV2Mode::Tunneled;
-            return keywordSensitive ? CKadV2Mode::Tunneled : CKadV2Mode::Direct;
+            // Adoption policy: Adaptive is Kad6-first for every supported operation.
+            // Availability remains a caller concern: if no authenticated circuit exists,
+            // STRICT aborts while BALANCED/BEST_EFFORT may use the explicit Kad2 fallback.
+            // Keeping that choice at the call site prevents the selector from mistaking a
+            // configured preference for proof that a usable circuit is actually Active.
+            //
+            // The query context and sensitive-keyword list remain part of the stable API;
+            // they can tighten a future per-operation fallback without changing the
+            // Direct/Tunneled/Adaptive wire-independent enum.
+            (void)q;
+            return CKadV2Mode::Tunneled;
         }
     }
     return CKadV2Mode::Direct;

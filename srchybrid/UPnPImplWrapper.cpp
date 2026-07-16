@@ -19,6 +19,7 @@
 #include "UPnPImpl.h"
 #include "UPnPImplWinServ.h"
 #include "UPnPImplMiniLib.h"
+#include "UPnPImplPCP.h"
 #include "UPnPImplNATPMP.h"
 #include "Preferences.h"
 
@@ -34,6 +35,9 @@ CUPnPImplWrapper::CUPnPImplWrapper()
 		m_liAvailable.AddTail(new CUPnPImplWinServ());
 	if (!thePrefs.IsMinilibUPnPImplDisabled())
 		m_liAvailable.AddTail(new CUPnPImplMiniLib());
+	// PCP can preserve a granted lease and an external port explicitly. Try it
+	// before the older NAT-PMP fallback while keeping legacy implementation IDs.
+	m_liAvailable.AddTail(new CUPnPImplPCP());
 	// NAT-PMP as fallback - works with Apple AirPort, OpenWrt, pfSense, etc.
 	m_liAvailable.AddTail(new CUPnPImplNATPMP());
 	if (m_liAvailable.IsEmpty())

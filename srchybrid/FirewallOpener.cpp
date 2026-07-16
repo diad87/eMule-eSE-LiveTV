@@ -93,7 +93,9 @@ void CFirewallOpener::UnInit()
 
 	for (INT_PTR i = m_liAddedRules.GetCount(); --i >= 0;)
 		if (m_liAddedRules[i].m_bRemoveOnExit)
-			RemoveRule(m_liAddedRules[i]);
+			// Avoid the public removal wrapper here: it also updates the
+			// tracking list and would mutate the array while we iterate it.
+			DoAction(FOC_DELETERULEEXCACT, m_liAddedRules[i]);
 
 	m_liAddedRules.RemoveAll();
 
@@ -313,7 +315,16 @@ bool CFirewallOpener::FindRule(const EFOCAction eAction, const CICSRuleInfo &riP
 
 bool CFirewallOpener::RemoveRule(const CString &strName)
 {
-	return DoAction(FOC_DELETERULEBYNAME, CICSRuleInfo(0, 0, strName));
+	const bool result = DoAction(FOC_DELETERULEBYNAME,
+		CICSRuleInfo(0, 0, strName));
+	// An explicit remove-by-name is also used before replacing a temporary
+	// startup rule with a persistent user rule. Forget the old cleanup token,
+	// otherwise shutdown would delete the replacement merely because it shares
+	// the same name.
+	for (INT_PTR i = m_liAddedRules.GetCount(); --i >= 0;)
+		if (m_liAddedRules[i].m_strRuleName == strName)
+			m_liAddedRules.RemoveAt(i);
+	return result;
 }
 
 bool CFirewallOpener::RemoveRule(const CICSRuleInfo &riPortRule)

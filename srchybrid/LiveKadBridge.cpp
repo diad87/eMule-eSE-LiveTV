@@ -159,7 +159,7 @@ bool CLiveKadBridge::PublishStream(const LiveStreamInfo& info)
     // not this field). 0 if the public IP isn't known yet — no worse than
     // before; SerializeSearchResults has a serialize-time fallback for that.
     entry.broadcasterIP = theApp.GetPublicIP();
-    entry.broadcasterPort = thePrefs.GetPort();
+    entry.broadcasterPort = theApp.GetAdvertisedTcpPort();
     entry.lastSeen = GetTickCount();
     entry.startedAt = info.startedAt;
     entry.isOwnStream = true;
@@ -191,7 +191,7 @@ bool CLiveKadBridge::PublishStream(const LiveStreamInfo& info)
     }
     CLiveDebugLog::Get().Append("KAD",
         "PublishStream OK \"%S\" port=%u alt=%S",
-        (LPCWSTR)info.title, (unsigned)thePrefs.GetPort(),
+        (LPCWSTR)info.title, (unsigned)theApp.GetAdvertisedTcpPort(),
         altIP ? (LPCWSTR)ipstr(altIP) : L"-");
 
     return true;
@@ -546,7 +546,7 @@ bool CLiveKadBridge::StartKeywordPublish(const Kademlia::CUInt128& uTarget,
         return false;
     pSearch->SetGUIName(displayName);
     pSearch->SetLiveStreamPublish(streamKey, title, category, language,
-        bitrate, viewerCount, startedAt, thePrefs.GetPort(),
+        bitrate, viewerCount, startedAt, theApp.GetAdvertisedTcpPort(),
         GetLocalOverlayIP());   // NAT-reach: advertise overlay endpoint too
     pSearch->SetLivePublishCleanNs(bCleanNs);
     Kademlia::CSearchManager::StartSearch(pSearch);
@@ -949,6 +949,8 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     uint8 privacyOrigin)
 {
     CSingleLock lock(&m_lock, TRUE);
+    const bool opaqueKad6Endpoint = privacyOrigin == ESE_PRIV_ORIGIN_KAD6_TUNNEL &&
+        broadcasterIP == 0 && broadcasterPort == 0;
 
     // NAT-reach: sanitize the optional overlay endpoint up front. It is a
     // bonus dial target, never a reason to reject the whole result — zero
@@ -973,7 +975,7 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
 
     // === Phase 1 KAD-3: Strict IP/port validation ===
     // Reject results with missing endpoint data — they can't be connected to.
-    if (broadcasterIP == 0 || broadcasterPort == 0) {
+    if (!opaqueKad6Endpoint && (broadcasterIP == 0 || broadcasterPort == 0)) {
         AddLogLine(false, GetResString(IDS_LIVEKAD_REJECTED_INVALID_FMT),
             broadcasterIP, broadcasterPort, (LPCTSTR)title);
         if (theApp.liveStreamManager != NULL)
@@ -1013,7 +1015,8 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     // For Kad-discovered broadcasters, LAN IPs (10.x, 192.168.x, 172.16-31.x)
     // must ALWAYS be rejected since Kad is a public network.
     // Use IsGoodIP(ip, true) to force the LAN check regardless of preferences.
-    if (!IsGoodIP(broadcasterIP, true) || broadcasterPort == 0) {
+    if (!opaqueKad6Endpoint &&
+        (!IsGoodIP(broadcasterIP, true) || broadcasterPort == 0)) {
         AddLogLine(false, GetResString(IDS_LIVEKAD_REJECTED_NONROUTABLE_FMT),
             (LPCTSTR)ipstr(broadcasterIP), broadcasterPort, (LPCTSTR)title);
         if (theApp.liveStreamManager != NULL)
@@ -1023,7 +1026,7 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
 
     // === Phase 1 KAD-4: IPFilter check ===
     // Reject IPs blocked by the user's IPFilter configuration.
-    if (theApp.ipfilter->IsFiltered(broadcasterIP)) {
+    if (!opaqueKad6Endpoint && theApp.ipfilter->IsFiltered(broadcasterIP)) {
         AddLogLine(false, GetResString(IDS_LIVEKAD_REJECTED_FILTERED_FMT),
             (LPCTSTR)ipstr(broadcasterIP), (LPCTSTR)title);
         if (theApp.liveStreamManager != NULL)
@@ -1155,7 +1158,10 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
         // piles up and keeps re-triggering dials). The dial-time cooldown in
         // TryConnectToStreamSource is the second line of defense.
         for (INT_PTR i = 0; i < m_pendingDials.GetCount(); ++i) {
-            if (m_pendingDials[i].ip == broadcasterIP && m_pendingDials[i].port == broadcasterPort)
+            if ((opaqueKad6Endpoint &&
+                 memcmp(m_pendingDials[i].streamKey, streamKey, 16) == 0) ||
+                (!opaqueKad6Endpoint && m_pendingDials[i].ip == broadcasterIP &&
+                 m_pendingDials[i].port == broadcasterPort))
                 return;
         }
         if (m_pendingDials.GetCount() >= kMaxPendingDials) {

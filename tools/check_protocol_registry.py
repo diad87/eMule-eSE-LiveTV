@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROTO = ROOT / "docs" / "protocol"
 OPCODES_H = ROOT / "srchybrid" / "Opcodes.h"
 TUNNEL_H = ROOT / "srchybrid" / "LiveTunnel.h"
+KRP_CONTROL_H = ROOT / "librelaycore" / "include" / "relay" / "krp_control.h"
 
 # Statuses that are allowed to exist in the registry without a code symbol yet.
 RESERVED_STATES = {"reserved-proposed", "design"}
@@ -40,7 +41,7 @@ def is_fork_symbol(name: str) -> bool:
                 "KADEMLIA2_LOCAL_QUERY_REQ", "KADEMLIA2_LOCAL_QUERY_RES"):
         return True
     for pre in ("OP_LIVE_", "KADEMLIA3_", "KADEMLIA_ESE_HOLEPUNCH_",
-                "ESE_CAP_", "CAP_FORK_", "TAG_ESE_", "TUN_OP_"):
+                "ESE_CAP_", "CAP_FORK_", "TAG_ESE_", "TUN_OP_", "KRP_"):
         if name.startswith(pre):
             return True
     return False
@@ -48,6 +49,7 @@ def is_fork_symbol(name: str) -> bool:
 DEF_NUM = re.compile(r'#define\s+([A-Z0-9_]+)\s+(0x[0-9A-Fa-f]+|\d+)\b')
 DEF_TAG = re.compile(r'#define\s+([A-Z0-9_]+)\s+"\\x([0-9A-Fa-f]{2})"')
 ENUM_VAL = re.compile(r'\b(TUN_OP_[A-Z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)')
+KRP_ENUM_VAL = re.compile(r'\b(KRP_[A-Z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)')
 
 
 def norm(v: str):
@@ -58,12 +60,13 @@ def norm(v: str):
 def parse_code():
     """Return {name: (value:int, file:str, line:int)} for fork-owned symbols."""
     out = {}
-    for path in (OPCODES_H, TUNNEL_H):
+    for path in (OPCODES_H, TUNNEL_H, KRP_CONTROL_H):
         if not path.exists():
             print(f"  ! cannot read {path}", file=sys.stderr)
             continue
         for i, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-            for rx, base in ((DEF_NUM, None), (DEF_TAG, 16), (ENUM_VAL, None)):
+            for rx, base in ((DEF_NUM, None), (DEF_TAG, 16), (ENUM_VAL, None),
+                             (KRP_ENUM_VAL, None)):
                 m = rx.search(line)
                 if not m:
                     continue
@@ -78,7 +81,8 @@ def parse_code():
 
 def load_registry():
     rows = []
-    for csv_name in ("OPCODES.csv", "TAGS.csv", "CAPABILITIES.csv", "TUNNEL_SERVICES.csv"):
+    for csv_name in ("OPCODES.csv", "TAGS.csv", "CAPABILITIES.csv", "TUNNEL_SERVICES.csv",
+                     "KRP_MESSAGES.csv"):
         p = PROTO / csv_name
         if not p.exists():
             print(f"  ! missing registry file {p}", file=sys.stderr)

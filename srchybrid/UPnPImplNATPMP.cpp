@@ -35,6 +35,7 @@
 #include "UPnPImplNATPMP.h"
 #include "Log.h"
 #include "OtherFunctions.h"
+#include "natmap/natpmp_codec.h"
 
 #include <iphlpapi.h>  // for GetBestRoute / GetAdaptersInfo
 
@@ -96,6 +97,12 @@ void CUPnPImplNATPMP::DeletePorts()
 	m_nUDPPort = 0;
 	m_nTCPPort = 0;
 	m_nTCPWebPort = 0;
+	m_nExternalUDPPort = 0;
+	m_nExternalTCPPort = 0;
+	m_nExternalTCPWebPort = 0;
+	m_dwMappingExternalIP = 0;
+	m_dwMappingLeaseLifetime = 0;
+	m_dwMapperEpoch = 0;
 	m_bUPnPPortsForwarded = TRIS_FALSE;
 	DeletePorts(false);
 }
@@ -136,6 +143,12 @@ void CUPnPImplNATPMP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nT
 	m_nUDPPort = nUDPPort;
 	m_nTCPPort = nTCPPort;
 	m_nTCPWebPort = nTCPWebPort;
+	m_nExternalUDPPort = nUDPPort;
+	m_nExternalTCPPort = nTCPPort;
+	m_nExternalTCPWebPort = nTCPWebPort;
+	m_dwMappingExternalIP = 0;
+	m_dwMappingLeaseLifetime = 0;
+	m_dwMapperEpoch = 0;
 	m_bUPnPPortsForwarded = TRIS_UNKNOWN;
 	m_bCheckAndRefresh = false;
 
@@ -185,7 +198,9 @@ uint32 CUPnPImplNATPMP::GetDefaultGateway()
 bool CUPnPImplNATPMP::SendExternalAddrRequest(SOCKET sock, uint32 gatewayIP)
 {
 	// External address request: [version=0, opcode=0]
-	uint8 request[2] = { NATPMP_VERSION, NATPMP_OP_EXTERNALADDR };
+	uint8 request[2];
+	if (!natmap::EncodeNatPmpExternalAddressRequest(request, sizeof(request)))
+		return false;
 
 	sockaddr_in addr;
 	memset(&addr, 0, sizeof(addr));
@@ -198,7 +213,8 @@ bool CUPnPImplNATPMP::SendExternalAddrRequest(SOCKET sock, uint32 gatewayIP)
 	return (nSent == sizeof(request));
 }
 
-bool CUPnPImplNATPMP::ReceiveExternalAddrResponse(SOCKET sock, uint32 &nExternalIP)
+bool CUPnPImplNATPMP::ReceiveExternalAddrResponse(SOCKET sock, uint32 gatewayIP,
+	uint32 &nExternalIP, uint32 &nEpoch)
 {
 	// Response: [version(1), opcode(1), resultcode(2), epoch(4), externalIP(4)] = 12 bytes
 	uint8 response[12];
@@ -215,47 +231,37 @@ bool CUPnPImplNATPMP::ReceiveExternalAddrResponse(SOCKET sock, uint32 &nExternal
 	if (nReady <= 0)
 		return false;
 
-	int nRecv = recvfrom(sock, (char*)response, sizeof(response), 0, NULL, NULL);
+	sockaddr_in source;
+	memset(&source, 0, sizeof(source));
+	int sourceLen = sizeof(source);
+	int nRecv = recvfrom(sock, (char*)response, sizeof(response), 0,
+		(sockaddr*)&source, &sourceLen);
 	if (nRecv < 12)
 		return false;
-
-	uint8 version = response[0];
-	uint8 opcode = response[1];
-	uint16 resultCode = (uint16)(response[2] << 8 | response[3]);
-
-	if (version != 0 || opcode != NATPMP_RESP_EXTERNALADDR || resultCode != NATPMP_RESULT_SUCCESS)
+	if (source.sin_addr.s_addr != gatewayIP || source.sin_port != htons(NATPMP_PORT))
 		return false;
 
-	// External IP is at bytes 8-11
-	memcpy(&nExternalIP, &response[8], 4);
+	natmap::NatPmpExternalAddressResponse decoded;
+	if (natmap::DecodeNatPmpExternalAddressResponse(response,
+		static_cast<size_t>(nRecv), decoded) != natmap::NatPmpDecodeStatus::Ok
+		|| decoded.result_code != NATPMP_RESULT_SUCCESS)
+		return false;
+	nExternalIP = decoded.external_ip_network_order;
+	nEpoch = decoded.epoch;
 	return true;
 }
 
 bool CUPnPImplNATPMP::SendMapRequest(SOCKET sock, uint32 gatewayIP,
-	uint16 nPrivatePort, bool bTCP, uint32 nLifetime)
+	uint16 nPrivatePort, uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime)
 {
 	// Map request: [version(1), opcode(1), reserved(2), internal_port(2),
 	//               suggested_external_port(2), lifetime(4)] = 12 bytes
 	uint8 request[12];
-	memset(request, 0, sizeof(request));
-
-	request[0] = NATPMP_VERSION;
-	request[1] = bTCP ? NATPMP_OP_MAP_TCP : NATPMP_OP_MAP_UDP;
-	// bytes 2-3: reserved (zero)
-
-	// Internal (private) port - big endian
-	request[4] = (uint8)(nPrivatePort >> 8);
-	request[5] = (uint8)(nPrivatePort & 0xFF);
-
-	// Suggested external port (same as internal) - big endian
-	request[6] = (uint8)(nPrivatePort >> 8);
-	request[7] = (uint8)(nPrivatePort & 0xFF);
-
-	// Lifetime in seconds - big endian
-	request[8]  = (uint8)((nLifetime >> 24) & 0xFF);
-	request[9]  = (uint8)((nLifetime >> 16) & 0xFF);
-	request[10] = (uint8)((nLifetime >> 8)  & 0xFF);
-	request[11] = (uint8)(nLifetime & 0xFF);
+	const natmap::NatPmpTransport transport = bTCP
+		? natmap::NatPmpTransport::Tcp : natmap::NatPmpTransport::Udp;
+	if (!natmap::EncodeNatPmpMapRequest(transport, nPrivatePort,
+		nSuggestedExternalPort, nLifetime, request, sizeof(request)))
+		return false;
 
 	sockaddr_in addr;
 	memset(&addr, 0, sizeof(addr));
@@ -268,7 +274,8 @@ bool CUPnPImplNATPMP::SendMapRequest(SOCKET sock, uint32 gatewayIP,
 	return (nSent == sizeof(request));
 }
 
-bool CUPnPImplNATPMP::ReceiveMapResponse(SOCKET sock, uint16 &nMappedPort, uint32 &nLifetime)
+bool CUPnPImplNATPMP::ReceiveMapResponse(SOCKET sock, uint32 gatewayIP,
+	uint16 nPrivatePort, bool bTCP, natmap::NatPmpMapResponse &decoded)
 {
 	// Response: [version(1), opcode(1), resultcode(2), epoch(4),
 	//            internal_port(2), mapped_external_port(2), lifetime(4)] = 16 bytes
@@ -285,31 +292,33 @@ bool CUPnPImplNATPMP::ReceiveMapResponse(SOCKET sock, uint16 &nMappedPort, uint3
 	if (nReady <= 0)
 		return false;
 
-	int nRecv = recvfrom(sock, (char*)response, sizeof(response), 0, NULL, NULL);
+	sockaddr_in source;
+	memset(&source, 0, sizeof(source));
+	int sourceLen = sizeof(source);
+	int nRecv = recvfrom(sock, (char*)response, sizeof(response), 0,
+		(sockaddr*)&source, &sourceLen);
 	if (nRecv < 16)
 		return false;
+	if (source.sin_addr.s_addr != gatewayIP || source.sin_port != htons(NATPMP_PORT))
+		return false;
 
-	uint8 version = response[0];
-	uint8 opcode = response[1];
-	uint16 resultCode = (uint16)(response[2] << 8 | response[3]);
-
-	if (version != 0 || (opcode != NATPMP_RESP_MAP_TCP && opcode != NATPMP_RESP_MAP_UDP)
-		|| resultCode != NATPMP_RESULT_SUCCESS)
-	{
-		DebugLogWarning(_T("NAT-PMP: Map response error - opcode=%u result=%u"),
-			(unsigned)opcode, (unsigned)resultCode);
+	const natmap::NatPmpTransport transport = bTCP
+		? natmap::NatPmpTransport::Tcp : natmap::NatPmpTransport::Udp;
+	const natmap::NatPmpDecodeStatus status = natmap::DecodeNatPmpMapResponse(
+		response, static_cast<size_t>(nRecv), transport, nPrivatePort, decoded);
+	if (status != natmap::NatPmpDecodeStatus::Ok)
+		return false;
+	if (decoded.result_code != NATPMP_RESULT_SUCCESS) {
+		DebugLogWarning(_T("NAT-PMP: Map response error - result=%u"),
+			(unsigned)decoded.result_code);
 		return false;
 	}
-
-	// Mapped external port at bytes 10-11
-	nMappedPort = (uint16)(response[10] << 8 | response[11]);
-	// Lifetime at bytes 12-15
-	nLifetime = (uint32)(response[12] << 24 | response[13] << 16 | response[14] << 8 | response[15]);
-
-	return true;
+	return decoded.external_port != 0 && decoded.lifetime_seconds != 0;
 }
 
-bool CUPnPImplNATPMP::MapPort(uint32 gatewayIP, uint16 nPort, bool bTCP, uint32 nLifetime)
+bool CUPnPImplNATPMP::MapPort(uint32 gatewayIP, uint16 nPrivatePort,
+	uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime,
+	natmap::NatPmpMapResponse &response)
 {
 	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (sock == INVALID_SOCKET) {
@@ -322,17 +331,19 @@ bool CUPnPImplNATPMP::MapPort(uint32 gatewayIP, uint16 nPort, bool bTCP, uint32 
 	// RFC 6886 Section 3.3: Retry with doubling timeout (250ms, 500ms, 1s, 2s, 4s...)
 	// We try up to 3 times
 	for (int retry = 0; retry < 3 && !m_bAbortDiscovery; ++retry) {
-		if (!SendMapRequest(sock, gatewayIP, nPort, bTCP, nLifetime)) {
+		if (!SendMapRequest(sock, gatewayIP, nPrivatePort,
+			nSuggestedExternalPort, bTCP, nLifetime)) {
 			DebugLogWarning(_T("NAT-PMP: Failed to send map request for %s port %hu (attempt %d)"),
-				bTCP ? _T("TCP") : _T("UDP"), nPort, retry + 1);
+				bTCP ? _T("TCP") : _T("UDP"), nPrivatePort, retry + 1);
 			continue;
 		}
 
-		uint16 nMappedPort = 0;
-		uint32 nGrantedLifetime = 0;
-		if (ReceiveMapResponse(sock, nMappedPort, nGrantedLifetime)) {
+		natmap::NatPmpMapResponse candidate;
+		if (ReceiveMapResponse(sock, gatewayIP, nPrivatePort, bTCP, candidate)) {
 			DebugLog(_T("NAT-PMP: Successfully mapped %s port %hu -> %hu (lifetime %us)"),
-				bTCP ? _T("TCP") : _T("UDP"), nPort, nMappedPort, nGrantedLifetime);
+				bTCP ? _T("TCP") : _T("UDP"), nPrivatePort,
+				candidate.external_port, candidate.lifetime_seconds);
+			response = candidate;
 			bResult = true;
 			break;
 		}
@@ -354,10 +365,28 @@ bool CUPnPImplNATPMP::UnmapPort(uint32 gatewayIP, uint16 nPort, bool bTCP)
 		return false;
 
 	bool bResult = false;
-	if (SendMapRequest(sock, gatewayIP, nPort, bTCP, 0)) {
-		uint16 nMappedPort = 0;
-		uint32 nLifetime = 0;
-		bResult = ReceiveMapResponse(sock, nMappedPort, nLifetime);
+	if (SendMapRequest(sock, gatewayIP, nPort, 0, bTCP, 0)) {
+		natmap::NatPmpMapResponse response;
+		// Deletion success intentionally returns external port/lifetime zero,
+		// so validate structure here instead of using ReceiveMapResponse().
+		uint8 raw[16];
+		fd_set fds; FD_ZERO(&fds); FD_SET(sock, &fds);
+		timeval tv; tv.tv_sec = 3; tv.tv_usec = 0;
+		if (select(0, &fds, NULL, NULL, &tv) > 0) {
+			sockaddr_in source; memset(&source, 0, sizeof(source));
+			int sourceLen = sizeof(source);
+			const int nRecv = recvfrom(sock, (char*)raw, sizeof(raw), 0,
+				(sockaddr*)&source, &sourceLen);
+			const natmap::NatPmpTransport transport = bTCP
+				? natmap::NatPmpTransport::Tcp : natmap::NatPmpTransport::Udp;
+			bResult = source.sin_addr.s_addr == gatewayIP
+				&& source.sin_port == htons(NATPMP_PORT)
+				&& nRecv >= 16
+				&& natmap::DecodeNatPmpMapResponse(raw, static_cast<size_t>(nRecv),
+					transport, nPort, response) == natmap::NatPmpDecodeStatus::Ok
+				&& response.result_code == NATPMP_RESULT_SUCCESS
+				&& response.external_port == 0 && response.lifetime_seconds == 0;
+		}
 		if (bResult)
 			DebugLog(_T("NAT-PMP: Successfully unmapped %s port %hu"), bTCP ? _T("TCP") : _T("UDP"), nPort);
 	}
@@ -418,9 +447,13 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 		if (sock != INVALID_SOCKET) {
 			if (m_pOwner->SendExternalAddrRequest(sock, m_pOwner->m_dwGatewayIP)) {
 				uint32 nExternalIP = 0;
-				if (m_pOwner->ReceiveExternalAddrResponse(sock, nExternalIP)) {
+				uint32 nEpoch = 0;
+				if (m_pOwner->ReceiveExternalAddrResponse(sock,
+					m_pOwner->m_dwGatewayIP, nExternalIP, nEpoch)) {
 					IN_ADDR extAddr;
 					extAddr.S_un.S_addr = nExternalIP;
+					m_pOwner->m_dwMappingExternalIP = nExternalIP;
+					m_pOwner->m_dwMapperEpoch = nEpoch;
 					DebugLog(_T("NAT-PMP: Gateway supports NAT-PMP! External IP: %S"), inet_ntoa(extAddr));
 				} else {
 					DebugLog(_T("NAT-PMP: Gateway did not respond to external address request - NAT-PMP may not be supported"));
@@ -443,12 +476,41 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 	// Step 3: Map ports (2-hour lease, will be refreshed by CheckAndRefresh)
 	const uint32 nLeaseTime = 7200; // 2 hours
 
-	bSucceeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP, m_pOwner->m_nTCPPort, true, nLeaseTime);
-	if (bSucceeded && m_pOwner->m_nUDPPort != 0)
-		bSucceeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP, m_pOwner->m_nUDPPort, false, nLeaseTime);
+	natmap::NatPmpMapResponse tcpResponse;
+	const uint16 nSuggestedTCP = m_pOwner->m_bCheckAndRefresh
+		? m_pOwner->m_nExternalTCPPort : m_pOwner->m_nTCPPort;
+	bSucceeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
+		m_pOwner->m_nTCPPort, nSuggestedTCP, true, nLeaseTime, tcpResponse);
+	if (bSucceeded) {
+		m_pOwner->m_nExternalTCPPort = tcpResponse.external_port;
+		m_pOwner->m_dwMappingLeaseLifetime = tcpResponse.lifetime_seconds;
+		m_pOwner->m_dwMapperEpoch = tcpResponse.epoch;
+	}
+	if (bSucceeded && m_pOwner->m_nUDPPort != 0) {
+		natmap::NatPmpMapResponse udpResponse;
+		const uint16 nSuggestedUDP = m_pOwner->m_bCheckAndRefresh
+			? m_pOwner->m_nExternalUDPPort : m_pOwner->m_nUDPPort;
+		bSucceeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
+			m_pOwner->m_nUDPPort, nSuggestedUDP, false, nLeaseTime, udpResponse);
+		if (bSucceeded) {
+			m_pOwner->m_nExternalUDPPort = udpResponse.external_port;
+			m_pOwner->m_dwMappingLeaseLifetime = min(
+				m_pOwner->m_dwMappingLeaseLifetime, udpResponse.lifetime_seconds);
+			m_pOwner->m_dwMapperEpoch = udpResponse.epoch;
+		} else {
+			m_pOwner->UnmapPort(m_pOwner->m_dwGatewayIP, m_pOwner->m_nTCPPort, true);
+			m_pOwner->m_nExternalTCPPort = 0;
+		}
+	}
 
-	if (bSucceeded && m_pOwner->m_nTCPWebPort != 0)
-		m_pOwner->MapPort(m_pOwner->m_dwGatewayIP, m_pOwner->m_nTCPWebPort, true, nLeaseTime);
+	if (bSucceeded && m_pOwner->m_nTCPWebPort != 0) {
+		natmap::NatPmpMapResponse webResponse;
+		const uint16 nSuggestedWeb = m_pOwner->m_bCheckAndRefresh
+			? m_pOwner->m_nExternalTCPWebPort : m_pOwner->m_nTCPWebPort;
+		if (m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
+			m_pOwner->m_nTCPWebPort, nSuggestedWeb, true, nLeaseTime, webResponse))
+			m_pOwner->m_nExternalTCPWebPort = webResponse.external_port;
+	}
 
 	if (!m_pOwner->m_bAbortDiscovery) {
 		if (bSucceeded) {

@@ -38,8 +38,8 @@ int main() {
     CHECK(BuildK6LiveSearchResult(source, result) == Kad6Status::Ok, "build");
     CHECK(result.result_kind == kK6SearchKindLive, "live result kind");
     CHECK(result.network_origin == kK6NetOriginKad2, "Kad2 origin");
-    CHECK(result.tags.size() == 10, "ten canonical tags");
-    CHECK(result.tickets.empty(), "Option A emits no dial tickets");
+    CHECK(result.tags.size() == 7, "seven endpoint-free canonical tags");
+    CHECK(result.tickets.empty(), "native live result emits no visible dial ticket");
 
     std::vector<Byte> wire;
     CHECK(EncodeK6SearchResult(result, wire) == Kad6Status::Ok, "encode result");
@@ -52,8 +52,9 @@ int main() {
     K6LiveSearchMetadata parsed;
     CHECK(ParseK6LiveSearchResult(decoded, parsed) == Kad6Status::Ok, "parse mapping");
     CHECK(parsed.result_id == source.result_id, "result id round trip");
-    CHECK(parsed.ipv4 == source.ipv4, "IPv4 network-byte order round trip");
-    CHECK(parsed.tcp_port == 4662 && parsed.udp_port == 4672, "ports round trip");
+    const std::array<Byte,4> noEndpoint{};
+    CHECK(parsed.ipv4 == noEndpoint && parsed.tcp_port == 0 && parsed.udp_port == 0,
+          "native result does not disclose broadcaster endpoint");
     CHECK(parsed.bitrate_kbps == 2500, "bitrate round trip");
     CHECK(parsed.viewer_count == 0x78563412u, "u32 LE viewers round trip");
     CHECK(parsed.started_at == 0x10203040u, "u32 LE started round trip");
@@ -80,13 +81,15 @@ int main() {
     wrong_kind.result_kind = kK6SearchKindKeyword;
     CHECK(ParseK6LiveSearchResult(wrong_kind, parsed) == Kad6Status::Malformed, "wrong result kind rejected");
 
+    K6SearchResult leaked = result;
+    K6Tag srcip;srcip.name_kind=kK6NameKindUtf8;srcip.name=Bytes("SRCIP");
+    srcip.value_kind=kK6ValCAddress;srcip.value={1,4,203,0,113,9};leaked.tags.push_back(srcip);
+    CHECK(ParseK6LiveSearchResult(leaked,parsed)==Kad6Status::Malformed,
+          "endpoint-bearing SRCIP tag rejected");
+    leaked=result;leaked.tickets.push_back(K6TargetTicket{});
+    CHECK(ParseK6LiveSearchResult(leaked,parsed)==Kad6Status::Malformed,
+          "endpoint-bearing live ticket rejected");
     K6LiveSearchMetadata bad = source;
-    bad.ipv4 = {};
-    CHECK(BuildK6LiveSearchResult(bad, result) == Kad6Status::BadValue, "zero IPv4 rejected");
-    bad = source;
-    bad.tcp_port = 0;
-    CHECK(BuildK6LiveSearchResult(bad, result) == Kad6Status::BadValue, "zero TCP port rejected");
-    bad = source;
     bad.title_utf8 = {0xC0, 0xAF};
     CHECK(BuildK6LiveSearchResult(bad, result) == Kad6Status::Malformed, "invalid UTF-8 rejected");
 

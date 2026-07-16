@@ -65,5 +65,12 @@ enum EUserWndMessages
 	// eSE Live — webserver worker -> main thread: LeaveStream for
 	// /api/live/leave (ghost-viewer fix 2026-06). LeaveStream sends
 	// OP_LIVE_UNSUBSCRIBE over eD2K sockets — main-thread only.
-	UM_LIVE_WEB_LEAVE //+34
+	UM_LIVE_WEB_LEAVE, //+34
+
+	// eSE Live — delayed headless-viewer action posted by a short-lived worker.
+	// The receiver executes all LiveTV mutations on the main thread.
+	UM_LIVE_HEADLESS_ACTION, //+35
+
+	// P3 KRP worker/timer -> main thread. Carries no object pointer or payload.
+	UM_KRP_CLIENT_EVENT //+36
 };

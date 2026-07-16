@@ -43,6 +43,8 @@ UX_UI_AUDIT_REPORT.md
 # Build logs and temp outputs
 build*.txt
 changelog_full.txt
+analysis/
+docs/.~lock.*#
 
 # Local eSE runtime/config/secrets
 srchybrid/eSE/node_modules/

@@ -15,9 +15,12 @@ namespace kad6 {
 
 struct K6LiveSearchMetadata {
     std::array<Byte, kHash16Size> result_id{};
-    std::array<Byte, 4> ipv4{}; // network byte order
-    std::uint16_t tcp_port = 0;
-    std::uint16_t udp_port = 0;
+    // Host-only discovery endpoint. Build deliberately never serializes these
+    // fields into a Kad6 result; the exit retains them behind result_id and the
+    // originator asks that same exit to subscribe over its pinned circuit.
+    std::array<Byte, 4> ipv4{}; // network byte order, absent after Parse
+    std::uint16_t tcp_port = 0; // absent after Parse
+    std::uint16_t udp_port = 0; // absent after Parse
     std::uint16_t bitrate_kbps = 0;
     std::uint32_t viewer_count = 0;
     std::uint32_t started_at = 0;
@@ -28,16 +31,17 @@ struct K6LiveSearchMetadata {
     std::vector<Byte> language_utf8;
 };
 
-// Build the exact K6-1 Live result tag set:
-// SRCIP(CADDRESS), PORT/UDPPORT/BITRATE(U16), VIEWERS/STARTED(U32),
-// NS(U8), TITLE/CAT/LANG(UTF8).  The output is canonical-sortable and is
-// validated through the real K6SearchResult encoder before success.
+// Build the privacy-preserving K6-1 Live result tag set:
+// BITRATE(U16), VIEWERS/STARTED(U32), NS(U8), TITLE/CAT/LANG(UTF8).
+// SRCIP/PORT/UDPPORT are forbidden on Kad6 wire. The output is canonical-
+// sortable and validated through the real K6SearchResult encoder.
 Kad6Status BuildK6LiveSearchResult(const K6LiveSearchMetadata& live,
                                     K6SearchResult& out);
 
 // Parse the recognized Live tags from an already-decoded K6SearchResult.
 // Unknown tags are ignored for forward compatibility.  Missing, repeated or
-// wrong-typed recognized tags are rejected; CADDRESS must be exactly IPv4.
+// wrong-typed recognized tags are rejected. Endpoint-bearing legacy tags are
+// rejected rather than ignored so a native result cannot silently regress.
 Kad6Status ParseK6LiveSearchResult(const K6SearchResult& result,
                                     K6LiveSearchMetadata& out) noexcept;
 

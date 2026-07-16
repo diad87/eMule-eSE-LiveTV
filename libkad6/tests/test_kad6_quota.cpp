@@ -279,6 +279,11 @@ static void TestRateAndSpentBounds() {
           "spent set rejects stale epoch");
     CHECK(spent.Consume(31, two, 31) == K6QuotaStatus::Ok && spent.size(30) == 0,
           "spent set prunes prior epoch");
+    spent.Prune(30);
+    CHECK(spent.Consume(30, one, 30) == K6QuotaStatus::WrongEpoch,
+          "spent set rejects replay after wall-clock rollback");
+    CHECK(spent.Consume(31, two, 31) == K6QuotaStatus::AlreadySpent,
+          "rollback attempt does not erase current nullifiers");
 }
 
 static void TestBlindLifecycleAndSingleUse() {

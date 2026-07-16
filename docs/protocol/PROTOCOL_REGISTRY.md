@@ -15,7 +15,7 @@
 
 ```
 $ python tools/check_protocol_registry.py
-protocol registry: 154 entries, 137 fork symbols in code
+protocol registry: 168 entries, 151 fork symbols in code
 OK: registry is internally consistent and matches code.
 exit=0
 ```
@@ -47,7 +47,9 @@ agrupa por `namespace`, y el linter solo marca duplicados dentro del mismo names
 y el linter los ignora por diseño (solo gobierna prefijos del fork: `OP_LIVE_*`, `*_V6`,
 `KADEMLIA3_*`, `TUN_OP_*`, `ESE_CAP_*`, `CAP_FORK_*`, `TAG_ESE_*`…). Los mensajes
 `KRP_*` permanecen en `reserved-proposed`; desde P1 sus valores también se contrastan con el enum
-de `librelaycore`, aunque ningún transporte de red los emite todavía.
+de `librelaycore`. El gate local P2 transporta `KRP_PING/PONG` canónicos sobre WSS/TLS, pero el
+runtime de producto no los emite todavía: la activación cliente↔edge empieza en P3 y no cambia el
+estado del registro hasta superar su gate.
 
 ---
 

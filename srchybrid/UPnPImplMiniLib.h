@@ -16,6 +16,7 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
 #include "UPnPImpl.h"
+#include "natmap/ownership_ledger.h"
 
 struct UPNPUrls;
 struct IGDdatas;
@@ -57,6 +58,16 @@ private:
 	void DeletePort(uint16 port, LPCTSTR prot);
 	void GetOldPorts();
 	void StartThread();
+	void LoadOwnershipLedger();
+	bool SaveOwnershipLedger();
+	void RecoverOwnedMappings();
+	bool RecordOwnedMapping(uint16 nLocalPort, uint16 nExternalPort,
+		bool bTCP, const char* pachLANIP, uint32 nLifetimeSeconds,
+		const natmap::OwnershipDescription& description);
+	void RemoveOwnershipRecord(std::size_t index);
+	std::uint64_t CurrentGatewayFingerprint() const;
+	static bool GenerateOwnerToken(std::uint64_t& token);
+	static bool ParseIPv4(const char* text, natmap::IpAddress& address);
 
 	static CMutex m_mutBusy;
 
@@ -65,6 +76,10 @@ private:
 	HANDLE m_hThreadHandle;
 	char m_achLanIP[40];
 	char m_achWanIP[40];
+	natmap::OwnershipLedger m_ownershipLedger;
+	std::uint64_t m_ownerToken;
+	std::uint64_t m_mappingGeneration;
+	bool m_bOwnershipLedgerLoaded;
 
 	bool m_bSucceededOnce;
 	volatile bool m_bAbortDiscovery;

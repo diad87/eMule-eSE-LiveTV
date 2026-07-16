@@ -49,7 +49,8 @@ Kad6Status K6Class5Scheduler::Configure(std::uint32_t bucket_kib_per_second,
     interval_sequence_ = 0;
     if (!ValidBucket(bucket_kib_per_second)
         || reservoir_ms < kK6ShapeMinReservoirMs
-        || reservoir_ms > kK6ShapeMaxReservoirMs)
+        || reservoir_ms > kK6ShapeMaxReservoirMs
+        || independent_phase_seed == 0)
         return Kad6Status::BadValue;
     const std::uint64_t bytes_per_second =
         static_cast<std::uint64_t>(bucket_kib_per_second) * 1024;

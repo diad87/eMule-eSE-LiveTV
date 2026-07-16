@@ -209,6 +209,11 @@ static void test_nodebind() {
     CHECK(d.epoch == 7 && d.caps == 0xDEADBEEFull, "nodebind fields round-trip");
     CHECK(d.node_pub == pub, "nodebind pub round-trip");
     CHECK(VerifyK6NodeBind(h, d) == Kad6Status::Ok, "nodebind verify ok");
+    std::vector<Byte> trailing = wire; trailing.push_back(0xA5); consumed = 99;
+    K6NodeBind trailingDecoded;
+    CHECK(DecodeK6NodeBind(trailing.data(), trailing.size(), trailingDecoded, &consumed) ==
+          Kad6Status::Malformed && consumed == 0,
+          "nodebind rejects trailing bytes");
 
     // Tamper a signed byte (kad_id[0]) -> AuthFailed.
     std::vector<Byte> t = wire; t[0] ^= 0x01;
@@ -320,6 +325,11 @@ static void test_rotate() {
     CHECK(d.rotation_epoch == 12 && d.not_after == 50000, "rotate fields round-trip");
     CHECK(d.old_pub == oldPub && d.new_pub == newPub, "rotate keys round-trip");
     CHECK(VerifyK6Rotate(h, d) == Kad6Status::Ok, "rotate verify ok (both sigs)");
+    std::vector<Byte> trailing = wire; trailing.push_back(0xA5); consumed = 99;
+    K6Rotate trailingDecoded;
+    CHECK(DecodeK6Rotate(trailing.data(), trailing.size(), trailingDecoded, &consumed) ==
+          Kad6Status::Malformed && consumed == 0,
+          "rotate rejects trailing bytes");
 
     // Tamper a signed byte -> both recomputations change -> AuthFailed.
     std::vector<Byte> t = wire; t[0] ^= 0x01;
@@ -383,6 +393,11 @@ static void test_router() {
         CHECK(d.node_pub == pub && d.epoch == 5, "router fields round-trip");
         CHECK(d.endpoints[0].tcp_port == 4600, "router endpoint round-trip");
         CHECK(VerifyK6RouterRecord(h, d) == Kad6Status::Ok, "router verify ok");
+        std::vector<Byte> trailing = wire; trailing.push_back(0xA5); consumed = 99;
+        K6RouterRecord trailingDecoded;
+        CHECK(DecodeK6RouterRecord(trailing.data(), trailing.size(), trailingDecoded, &consumed) ==
+              Kad6Status::Malformed && consumed == 0,
+              "router rejects trailing bytes");
     }
 
     K6RouterRecord r = MakeRouter(pub, 2);
@@ -521,6 +536,11 @@ static void test_source() {
         CHECK(d.exits[0].endpoint.udp_port == 5000, "source exit endpoint round-trip");
         CHECK(d.expires_at == 2000 + 3600, "source expires round-trip");
         CHECK(VerifyK6SourceRecord(h, d) == Kad6Status::Ok, "source verify ok");
+        std::vector<Byte> trailing = wire; trailing.push_back(0xA5); consumed = 99;
+        K6SourceRecord trailingDecoded;
+        CHECK(DecodeK6SourceRecord(trailing.data(), trailing.size(), trailingDecoded, &consumed) ==
+              Kad6Status::Malformed && consumed == 0,
+              "source rejects trailing bytes");
     }
 
     K6SourceRecord s = MakeSource(pub, 2, true);

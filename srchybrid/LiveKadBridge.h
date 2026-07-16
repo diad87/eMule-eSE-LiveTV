@@ -275,7 +275,7 @@ private:
     void EncodeStreamTags(const LiveStreamInfo& info, CByteArray& outData) const;
 
     // eSE Live dual-namespace publish helper. Builds a CSearch::STOREKEYWORD
-    // for `uTarget` and seeds it with m_publishedInfo + thePrefs.GetPort().
+    // for `uTarget` and seeds it with m_publishedInfo + the advertised TCP port.
     // `keyword` is only used for the GUI name and log line; the actual
     // Kad target is `uTarget` (caller picks clean vs legacy hash).
     // `namespaceTag` is a short literal ("clean" | "legacy") that ends up
@@ -288,7 +288,7 @@ private:
     // parameters explicit. Used by tombstones, ghost-cleanup, and relay
     // announcements where the params don't come from m_publishedInfo and
     // can't share StartLivePublishSearch's m_publishedInfo bindings.
-    // Port is always thePrefs.GetPort(). Returns true on success.
+    // Port is always the current advertised TCP port. Returns true on success.
     // bCleanNs (H8): when true, the publish targets the eSE-dedicated
     // namespace and TAG_FILENAME/TAG_FILETYPE will be omitted to deny a
     // human-readable title to eSE-aware crawlers.

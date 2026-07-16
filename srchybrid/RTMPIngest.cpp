@@ -547,11 +547,12 @@ bool CRTMPIngest::StartScreenCapture(UINT bitrate, const CString& outputDir, Chu
 	cmdLine.Format(
 		_T("\"%s\" -loglevel warning ")
 		_T("-f gdigrab -framerate 30 -i desktop ")
-		_T("-c:v libx264 -preset ultrafast -tune zerolatency -g 120 ")
+		_T("-c:v libx264 -preset ultrafast -tune zerolatency ")
+		_T("-g 60 -keyint_min 60 -sc_threshold 0 ")
 		_T("-crf %u -maxrate %uk -bufsize %uk ")
 		_T("-an ")
 		_T("-f hls -hls_time 2 -hls_list_size 12 ")
-		_T("-hls_flags delete_segments ")
+		_T("-hls_flags delete_segments+independent_segments+program_date_time ")
 		_T("-hls_segment_filename \"%s\\seg_%%05d.ts\" ")
 		_T("\"%s\\stream.m3u8\""),
 		(LPCTSTR)ffmpegExe,
@@ -1044,11 +1045,12 @@ bool CRTMPIngest::StartTestPattern(UINT bitrate, const CString& outputDir, Chunk
 		_T("\"%s\" -loglevel warning -re ")
 		_T("-f lavfi -i testsrc2=size=%s:rate=30 ")
 		_T("-f lavfi -i sine=frequency=440:sample_rate=44100 ")
-		_T("-c:v libx264 -preset ultrafast -tune zerolatency -g 120 ")
+		_T("-c:v libx264 -preset ultrafast -tune zerolatency ")
+		_T("-g 60 -keyint_min 60 -sc_threshold 0 ")
 		_T("-b:v %uk -maxrate %uk -bufsize %uk ")
 		_T("-c:a aac -b:a 128k ")
 		_T("-f hls -hls_time 2 -hls_list_size 12 ")
-		_T("-hls_flags delete_segments ")
+		_T("-hls_flags delete_segments+independent_segments+program_date_time ")
 		_T("-hls_segment_filename \"%s\\seg_%%05d.ts\" ")
 		_T("\"%s\\stream.m3u8\""),
 		(LPCTSTR)ffmpegExe, resolution,
@@ -1263,6 +1265,9 @@ void CRTMPIngest::WatcherLoop()
 	}
 
 	UINT bufferSeq = 0; // Our own counter starting at 0 for the LiveChunkBuffer
+	DWORD lastRtmpSegmentTick = 0;
+	UINT longRtmpIntervals = 0;
+	bool rtmpCadenceWarned = false;
 	AddLogLine(false, _T("eSE Watcher: Starting at FFmpeg segment %u"), lastSeg);
 	LIVE_LOG("RTMP", "Watcher started; out=%S, baseSeg=%u",
 		(LPCWSTR)m_strOutputDir, lastSeg);
@@ -1354,6 +1359,23 @@ void CRTMPIngest::WatcherLoop()
 					BYTE* buffer = new BYTE[fileSize];
 					DWORD bytesRead = 0;
 					if (ReadFile(hFile, buffer, fileSize, &bytesRead, NULL) && bytesRead == fileSize) {
+						// RTMP is remuxed with codec copy, so OBS owns the keyframe cadence.
+						// Warn after two consecutive slow segment completions instead of
+						// silently accepting a 4+ second GOP that doubles startup latency.
+						if (m_nLastSourceMode == 0 && !rtmpCadenceWarned) {
+							DWORD segmentTick = ::GetTickCount();
+							if (lastRtmpSegmentTick != 0) {
+								DWORD elapsed = segmentTick - lastRtmpSegmentTick;
+								longRtmpIntervals = (elapsed >= 3000 && elapsed < 30000)
+									? longRtmpIntervals + 1 : 0;
+								if (longRtmpIntervals >= 2) {
+									rtmpCadenceWarned = true;
+									AddLogLine(true, _T("eSE RTMP: HLS segments are arriving more than 3 s apart. Set the OBS keyframe interval to 2 s."));
+									LIVE_LOG("RTMP", "Slow OBS keyframe cadence detected (%u ms); expected 2 s", elapsed);
+								}
+							}
+							lastRtmpSegmentTick = segmentTick;
+						}
 						m_nSegments++;
 						if (m_callback) {
 							// Use bufferSeq (0-based) not lastSeg (FFmpeg's raw number)

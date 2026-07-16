@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "kad6/kad6_live_search.h"
 
-#include "kad6/kad6_address.h"
 #include "kad6/kad6_tags.h"
 
 #include <algorithm>
@@ -25,10 +24,6 @@ bool IsAllZero(const std::array<Byte, kHash16Size>& v) noexcept {
     Byte any = 0;
     for (Byte b : v) any = static_cast<Byte>(any | b);
     return any == 0;
-}
-
-bool IsAllZero4(const std::array<Byte, 4>& v) noexcept {
-    return (v[0] | v[1] | v[2] | v[3]) == 0;
 }
 
 std::vector<Byte> U16(std::uint16_t v) {
@@ -76,8 +71,7 @@ bool ValidUtf8(const std::vector<Byte>& v) noexcept {
 Kad6Status BuildK6LiveSearchResult(const K6LiveSearchMetadata& live,
                                     K6SearchResult& out) {
     out = K6SearchResult{};
-    if (IsAllZero(live.result_id) || IsAllZero4(live.ipv4) || live.tcp_port == 0 ||
-        live.discovery_namespace > 2 ||
+    if (IsAllZero(live.result_id) || live.discovery_namespace > 2 ||
         (live.network_origin != kK6NetOriginKad2 &&
          live.network_origin != kK6NetOriginKad6))
         return Kad6Status::BadValue;
@@ -85,20 +79,10 @@ Kad6Status BuildK6LiveSearchResult(const K6LiveSearchMetadata& live,
         !ValidUtf8(live.language_utf8))
         return Kad6Status::Malformed;
 
-    Kad6Address address;
-    address.family = Kad6Address::Family::IPv4;
-    std::copy(live.ipv4.begin(), live.ipv4.end(), address.addr.begin());
-    std::vector<Byte> address_wire;
-    const Kad6Status as = EncodeKad6Address(address, address_wire);
-    if (as != Kad6Status::Ok) return as;
-
     K6SearchResult tmp;
     tmp.result_id = live.result_id;
     tmp.result_kind = kK6SearchKindLive;
     tmp.network_origin = live.network_origin;
-    tmp.tags.push_back(Tag(kSrcIp,   kK6ValCAddress, std::move(address_wire)));
-    tmp.tags.push_back(Tag(kPort,    kK6ValU16, U16(live.tcp_port)));
-    tmp.tags.push_back(Tag(kUdpPort, kK6ValU16, U16(live.udp_port)));
     tmp.tags.push_back(Tag(kBitrate, kK6ValU16, U16(live.bitrate_kbps)));
     tmp.tags.push_back(Tag(kViewers, kK6ValU32, U32(live.viewer_count)));
     tmp.tags.push_back(Tag(kStarted, kK6ValU32, U32(live.started_at)));
@@ -120,6 +104,7 @@ Kad6Status ParseK6LiveSearchResult(const K6SearchResult& result,
                                     K6LiveSearchMetadata& out) noexcept {
     out = K6LiveSearchMetadata{};
     if (IsAllZero(result.result_id) || result.result_kind != kK6SearchKindLive ||
+        !result.tickets.empty() ||
         (result.network_origin != kK6NetOriginKad2 &&
          result.network_origin != kK6NetOriginKad6))
         return Kad6Status::Malformed;
@@ -128,62 +113,48 @@ Kad6Status ParseK6LiveSearchResult(const K6SearchResult& result,
     tmp.result_id = result.result_id;
     tmp.network_origin = result.network_origin;
     unsigned seen = 0;
-    constexpr unsigned kAll = (1u << 10) - 1u;
+    constexpr unsigned kAll = (1u << 7) - 1u;
 
     for (const K6Tag& tag : result.tags) {
         unsigned bit = 0;
-        if (NameIs(tag, kSrcIp)) bit = 1u << 0;
-        else if (NameIs(tag, kPort)) bit = 1u << 1;
-        else if (NameIs(tag, kUdpPort)) bit = 1u << 2;
-        else if (NameIs(tag, kBitrate)) bit = 1u << 3;
-        else if (NameIs(tag, kViewers)) bit = 1u << 4;
-        else if (NameIs(tag, kStarted)) bit = 1u << 5;
-        else if (NameIs(tag, kNs)) bit = 1u << 6;
-        else if (NameIs(tag, kTitle)) bit = 1u << 7;
-        else if (NameIs(tag, kCat)) bit = 1u << 8;
-        else if (NameIs(tag, kLang)) bit = 1u << 9;
+        if (NameIs(tag, kSrcIp) || NameIs(tag, kPort) || NameIs(tag, kUdpPort))
+            return Kad6Status::Malformed;
+        if (NameIs(tag, kBitrate)) bit = 1u << 0;
+        else if (NameIs(tag, kViewers)) bit = 1u << 1;
+        else if (NameIs(tag, kStarted)) bit = 1u << 2;
+        else if (NameIs(tag, kNs)) bit = 1u << 3;
+        else if (NameIs(tag, kTitle)) bit = 1u << 4;
+        else if (NameIs(tag, kCat)) bit = 1u << 5;
+        else if (NameIs(tag, kLang)) bit = 1u << 6;
         else continue; // additive future tag
 
         if ((seen & bit) != 0) return Kad6Status::Malformed;
         seen |= bit;
 
         if (bit == (1u << 0)) {
-            if (tag.value_kind != kK6ValCAddress) return Kad6Status::Malformed;
-            Kad6Address address;
-            std::size_t consumed = 0;
-            if (DecodeKad6Address(tag.value.data(), tag.value.size(), address,
-                                  &consumed) != Kad6Status::Ok ||
-                consumed != tag.value.size() ||
-                address.family != Kad6Address::Family::IPv4)
-                return Kad6Status::Malformed;
-            std::copy_n(address.addr.begin(), 4, tmp.ipv4.begin());
-        } else if (bit == (1u << 1) || bit == (1u << 2) || bit == (1u << 3)) {
             if (tag.value_kind != kK6ValU16 || tag.value.size() != 2)
                 return Kad6Status::Malformed;
-            const std::uint16_t value = ReadU16(tag.value);
-            if (bit == (1u << 1)) tmp.tcp_port = value;
-            else if (bit == (1u << 2)) tmp.udp_port = value;
-            else tmp.bitrate_kbps = value;
-        } else if (bit == (1u << 4) || bit == (1u << 5)) {
+            tmp.bitrate_kbps = ReadU16(tag.value);
+        } else if (bit == (1u << 1) || bit == (1u << 2)) {
             if (tag.value_kind != kK6ValU32 || tag.value.size() != 4)
                 return Kad6Status::Malformed;
             const std::uint32_t value = ReadU32(tag.value);
-            if (bit == (1u << 4)) tmp.viewer_count = value;
+            if (bit == (1u << 1)) tmp.viewer_count = value;
             else tmp.started_at = value;
-        } else if (bit == (1u << 6)) {
+        } else if (bit == (1u << 3)) {
             if (tag.value_kind != kK6ValU8 || tag.value.size() != 1 || tag.value[0] > 2)
                 return Kad6Status::Malformed;
             tmp.discovery_namespace = tag.value[0];
         } else {
             if (tag.value_kind != kK6ValUtf8 || !ValidUtf8(tag.value))
                 return Kad6Status::Malformed;
-            if (bit == (1u << 7)) tmp.title_utf8 = tag.value;
-            else if (bit == (1u << 8)) tmp.category_utf8 = tag.value;
+            if (bit == (1u << 4)) tmp.title_utf8 = tag.value;
+            else if (bit == (1u << 5)) tmp.category_utf8 = tag.value;
             else tmp.language_utf8 = tag.value;
         }
     }
 
-    if (seen != kAll || IsAllZero4(tmp.ipv4) || tmp.tcp_port == 0)
+    if (seen != kAll)
         return Kad6Status::Malformed;
     out = std::move(tmp);
     return Kad6Status::Ok;

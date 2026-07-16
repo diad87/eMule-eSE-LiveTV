@@ -116,6 +116,9 @@ public:
     bool Admit(const K6PublishBudgetKey& key, std::uint64_t now_seconds);
     void NoteOverload(std::uint64_t now_seconds);
     std::uint32_t AdmissionPermille(std::uint64_t now_seconds) const noexcept;
+    // Bounded-state telemetry/test hook. At most four keys are retained per
+    // admitted operation in the active window; denied probes never allocate.
+    std::size_t TrackedKeyCount() const noexcept;
     void Reset();
 private:
     struct Counter { std::uint64_t window = 0; std::uint32_t used = 0; };
@@ -128,6 +131,8 @@ private:
     std::map<std::string, Counter> hash_;
     std::map<std::string, Counter> custodian_;
     std::map<std::string, Counter> record_class_;
+    std::uint64_t active_window_ = 0;
+    bool have_active_window_ = false;
     std::uint64_t overload_until_ = 0;
 };
 

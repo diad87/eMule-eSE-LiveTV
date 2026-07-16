@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "Kad6GatewaySocket.h"
+#include "emule.h"
 
 #include "LiveTunnel.h"
 #include "Packets.h"
@@ -167,7 +168,7 @@ bool SanitizeK6HelloFrame(const uint8_t* frame,std::size_t length,
         }
         // Advertise only the exit's UDP endpoint; Kad/callback reachability is
         // intentionally zero because this outgoing K6-4 stream grants TCP only.
-        CTag udp(CT_EMULE_UDPPORTS,static_cast<uint32>(thePrefs.GetUDPPort()));
+        CTag udp(CT_EMULE_UDPPORTS,static_cast<uint32>(theApp.GetAdvertisedUdpPort()));
         if(!udp.WriteTagToFile(body)){return false;}++kept;
         if(apparent.addr.family==kad6::Kad6Address::Family::IPv6){
             CTag v6(static_cast<uint8>(0x66),static_cast<size_t>(16),

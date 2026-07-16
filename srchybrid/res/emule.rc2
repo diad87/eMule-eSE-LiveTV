@@ -23,6 +23,8 @@ VS_VERSION_INFO VERSIONINFO
         FILEFLAGSMASK       VS_FFI_FILEFLAGSMASK
 #ifdef _DEBUG
         FILEFLAGS           VS_FF_DEBUG | VS_FF_PRIVATEBUILD | VS_FF_PRERELEASE
+#elif defined(ESE_PRERELEASE)
+        FILEFLAGS           VS_FF_PRIVATEBUILD | VS_FF_PRERELEASE
 #else
         FILEFLAGS           0x0L // final version
 #endif
@@ -35,13 +37,13 @@ BEGIN
         BLOCK "040904B0" // Lang=US English, CharSet=Unicode
         BEGIN
             VALUE "CompanyName", "https://www.emule-project.net"
-            VALUE "FileDescription", "eMule"
-            VALUE "FileVersion", SZ_VERSION_NAME " Unicode"
+            VALUE "FileDescription", "eMule eSE v9 alpha"
+            VALUE "FileVersion", SZ_ESE_PRODUCT_VERSION " Unicode"
             VALUE "InternalName", "emule.exe"
             VALUE "LegalCopyright", "Copyright © 2002-2024 Merkur - Read license.txt for more infos."
             VALUE "OriginalFilename", "emule.exe"
-            VALUE "ProductName", "eMule"
-            VALUE "ProductVersion", SZ_VERSION_NAME " Unicode"
+            VALUE "ProductName", "eMule eSE"
+            VALUE "ProductVersion", SZ_ESE_PRODUCT_VERSION " Unicode"
         END
     END
     BLOCK "VarFileInfo"

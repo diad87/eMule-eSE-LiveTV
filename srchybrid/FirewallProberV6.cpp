@@ -7,6 +7,7 @@
 #include "emule.h"          // theApp.IsClosing() — shutdown guard for the worker
 #include "OtherFunctions.h" // DbgSetThreadName
 #include "Opcodes.h"
+#include "NodeIdentity.h"
 #include "ClientUDPSocket.h"
 #include "kademlia/kademlia/Kademlia.h"
 #include "kademlia/kademlia/Prefs.h"
@@ -36,6 +37,25 @@ uint32 g_uForkCapsRuntime = 0;
 // skeleton (cover traffic, tunneling) stay at 0 until F5 P3 wires the
 // actual TCP send path.
 uint32 g_uEseCapsRuntime = 0;
+
+void RefreshEseV9PreviewCaps()
+{
+    const LONG previewMask = static_cast<LONG>(
+        ESE_CAP_TUNNEL_BULK | ESE_CAP_REACH_V2 | ESE_CAP_TUNNEL_AUTH |
+        ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED |
+        ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY);
+    volatile LONG* caps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
+    ::InterlockedAnd(caps, ~previewMask);
+    if (!CPreferences::GetEseV9Experimental())
+        return;
+
+    LONG enabled = static_cast<LONG>(ESE_CAP_TUNNEL_BULK | ESE_CAP_REACH_V2);
+    if (eSELive::NodeIdentityIsPersistent()) {
+        enabled |= static_cast<LONG>(ESE_CAP_TUNNEL_AUTH |
+            ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED);
+    }
+    ::InterlockedOr(caps, enabled);
+}
 
 CFirewallProberV6& CFirewallProberV6::Instance()
 {
@@ -100,14 +120,15 @@ void CFirewallProberV6::RunCascade()
     else if (TryHolePunch())  verdict = LayerHolePunch;
     else if (TryBuddyRelay()) verdict = LayerBuddyRelay;
 
-    // An accept may race the worker while slower cascade layers run.
-    if (::InterlockedCompareExchange(&m_lInboundV6Observed, 0, 0) != 0)
-        verdict = LayerHighID;
-
     // Past this point we only touch our own singleton (static storage) and the
-    // thread-safe live log — but skip the log if the app is tearing down statics.
+    // thread-safe live log. Re-check the inbound proof while holding the same
+    // lock used by ReportInboundV6Reachable: otherwise an accept between the
+    // old pre-lock check and this assignment could be overwritten as
+    // Unreachable by the one-shot worker.
     {
         CSingleLock l(&m_lock, TRUE);
+        if (::InterlockedCompareExchange(&m_lInboundV6Observed, 0, 0) != 0)
+            verdict = LayerHighID;
         m_eLayer = verdict;
     }
     if (!theApp.IsClosing())
@@ -148,8 +169,8 @@ void CFirewallProberV6::SetDetectedV6IP(const CAddress& addr)
         return;
     {
         CSingleLock l(&m_lock, TRUE);
-        if (HasInboundV6Observation() && m_detectedIP != addr)
-            return;             // first answer wins — ignore later peers
+        if (!m_detectedIP.IsNull())
+            return;             // first validated candidate wins — ignore later peers
         m_detectedIP = addr;
     }
     if (!theApp.IsClosing())
@@ -203,6 +224,7 @@ void CFirewallProberV6::DetectLocalPublicV6()
     if (result != NO_ERROR)
         return;
 
+    CAddress randomSuffixFallback;
     PIP_ADAPTER_ADDRESSES adapter = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(&storage[0]);
     for (; adapter != NULL; adapter = adapter->Next) {
         if (adapter->OperStatus != IfOperStatusUp
@@ -214,9 +236,20 @@ void CFirewallProberV6::DetectLocalPublicV6()
         {
             if (uni->Address.lpSockaddr == NULL || uni->Address.lpSockaddr->sa_family != AF_INET6)
                 continue;
+            // Do not latch tentative, duplicate or deprecated addresses. Prefer
+            // a stable suffix; RFC4941/privacy addresses (Random suffix origin)
+            // rotate and are only a fallback when the interface exposes no
+            // preferred stable global address.
+            if (uni->DadState != IpDadStatePreferred || uni->PreferredLifetime == 0)
+                continue;
             CAddress addr;
             addr.FromSA(uni->Address.lpSockaddr, uni->Address.iSockaddrLength);
             if (addr.GetType() == CAddress::IPv6 && addr.IsPublicIP()) {
+                if (uni->SuffixOrigin == IpSuffixOriginRandom) {
+                    if (randomSuffixFallback.IsNull())
+                        randomSuffixFallback = addr;
+                    continue;
+                }
                 {
                     CSingleLock l(&m_lock, TRUE);
                     if (!m_detectedIP.IsNull())
@@ -228,6 +261,17 @@ void CFirewallProberV6::DetectLocalPublicV6()
                 return;
             }
         }
+    }
+    if (!randomSuffixFallback.IsNull()) {
+        {
+            CSingleLock l(&m_lock, TRUE);
+            if (!m_detectedIP.IsNull())
+                return;
+            m_detectedIP = randomSuffixFallback;
+        }
+        if (!theApp.IsClosing())
+            LIVE_LOG("NETV6", "local public v6 privacy fallback = %hs",
+                randomSuffixFallback.ToString().c_str());
     }
 }
 

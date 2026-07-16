@@ -365,6 +365,9 @@ public:
     void SendLiveSubscribeNoWait(const uint8_t streamKey[16],
                                  uint32_t bIP, uint16_t bPort, uint16_t bUDP,
                                  uint32_t bAltIP);
+    // Kad6-native Live result: the endpoint stays at the exit. Resolve the
+    // result_id on the exact circuit that returned it and subscribe opaquely.
+    bool SendK6LiveSubscribeNoWait(const uint8_t streamKey[16]);
 
     // v8.1 D1 - fire-and-forget tunneled Kad keyword search (keyword UTF-8, lowercased).
     // Like SendLiveSubscribeNoWait: throwaway req_id, no waiter; the TUN_OP_KAD_RESULT_V2
@@ -1084,8 +1087,13 @@ private:
     void FinishK6OriginAdvertise(const std::string& key, bool success,
                                  uint64 sourceLeaseId, uint64 publishLeaseId,
                                  uint32 refreshAfter);
-    struct K6OriginTargetRoute { uint32 circ_id = 0; uint64 expires_at = 0; };
+    struct K6OriginTargetRoute {
+        uint32 circ_id = 0;
+        uint32 source_request_id = 0;
+        uint64 expires_at = 0;
+    };
     std::map<std::string, K6OriginTargetRoute> m_k6OriginTargetRoutes;
+    std::map<std::string, K6OriginTargetRoute> m_k6OriginLiveRoutes;
     static std::string K6AuthorizedTargetKey(uint32 circId, uint32 requestId,
                                              const kad6::Hash16& resultId);
     static bool K6AllowTicketTarget(void* context, kad6::Byte service,

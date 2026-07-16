@@ -27,7 +27,8 @@ public:
 	CServerSocket(CServerConnect *in_serverconnect, bool bManualSingleConnect);
 	~CServerSocket();
 
-	void ConnectTo(CServer *server, bool bNoCrypt = false);
+	bool ConnectTo(CServer *server, bool bNoCrypt = false);
+	bool IsRelayRouted() const							{ return m_bRelayRouted; }
 	int GetConnectionState() const							{ return connectionstate; }
 	DWORD GetLastTransmission() const						{ return m_dwLastTransmission; }
 	virtual void SendPacket(Packet *packet, bool controlpacket = true, uint32 actualPayloadSize = 0, bool bForceImmediateSend = false);
@@ -52,4 +53,5 @@ private:
 	bool m_bIsDeleting;	// true: socket is already in deletion phase, don't destroy it in ::StopConnectionTry
 	bool m_bStartNewMessageLog;
 	bool m_bManualSingleConnect;
+	bool m_bRelayRouted;
 };

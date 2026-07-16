@@ -51,7 +51,13 @@ int main(){
     CHECK(!budget.Admit(key,4),"hash cap enforced");key.target_hash[0]=9;key.custodian[0]=4;CHECK(budget.Admit(key,4),"fourth total admitted");
     key.endpoint[0]=3;key.target_hash[0]=8;key.custodian[0]=7;CHECK(!budget.Admit(key,4),"total cap enforced");
     CHECK(budget.Admit(key,11),"window resets");budget.NoteOverload(11);CHECK(budget.AdmissionPermille(12)==250,"overload lowers admission");
+    CHECK(budget.TrackedKeyCount()==4,"window transition prunes stale budget identities");
     K6PublishBudget overload(cfg);overload.NoteOverload(1);CHECK(overload.Admit(key,1)&&!overload.Admit(key,2),"overload quarters total budget");
+    K6PublishBudgetConfig denyCfg=cfg;denyCfg.total_per_window=10000;denyCfg.hash_per_window=0;
+    K6PublishBudget denied(denyCfg);
+    for(std::uint32_t i=0;i<5000;++i){K6PublishBudgetKey probe;std::memcpy(probe.endpoint.data(),&i,sizeof i);probe.target_hash[0]=1;probe.custodian[0]=1;probe.record_class=1;CHECK(!denied.Admit(probe,1),"denied publish remains denied");}
+    CHECK(denied.TrackedKeyCount()==0,"denied high-cardinality probes allocate no budget state");
+    CHECK(!budget.Admit(key,1),"publish budget rejects clock rollback");
 
     K6PublishCoalescer c;std::uint64_t effective=0;CHECK(c.Enqueue(Item(1),0,effective)&&effective==1,"first publish queued");
     CHECK(!c.Enqueue(Item(2),0,effective)&&effective==1&&c.Size()==1,"identical publish coalesced");

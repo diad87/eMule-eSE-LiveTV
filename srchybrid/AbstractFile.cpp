@@ -17,6 +17,7 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #include "stdafx.h"
 #include "AbstractFile.h"
+#include "emule.h"
 #include "Kademlia/Kademlia/Entry.h"
 #include "ini2.h"
 #include "Preferences.h"
@@ -438,9 +439,9 @@ CString CAbstractFile::GetED2kLink(bool bHashset, bool bHTML, bool bHostname, bo
 
 	strLink += _T('/');
 	if (bHostname && thePrefs.GetYourHostname().Find(_T('.')) >= 0)
-		strLink.AppendFormat(_T("|sources,%s:%i|/"), (LPCTSTR)thePrefs.GetYourHostname(), thePrefs.GetPort());
+		strLink.AppendFormat(_T("|sources,%s:%i|/"), (LPCTSTR)thePrefs.GetYourHostname(), theApp.GetAdvertisedTcpPort());
 	else if (bSource && dwSourceIP != 0)
-		strLink.AppendFormat(_T("|sources,%i.%i.%i.%i:%i|/"), (uint8)dwSourceIP, (uint8)(dwSourceIP >> 8), (uint8)(dwSourceIP >> 16), (uint8)(dwSourceIP >> 24), thePrefs.GetPort());
+		strLink.AppendFormat(_T("|sources,%i.%i.%i.%i:%i|/"), (uint8)dwSourceIP, (uint8)(dwSourceIP >> 8), (uint8)(dwSourceIP >> 16), (uint8)(dwSourceIP >> 24), theApp.GetAdvertisedTcpPort());
 
 	if (bHTML)
 		strLink.AppendFormat(_T("\">%s</a>"), (LPCTSTR)StripInvalidFilenameChars(GetFileName()));

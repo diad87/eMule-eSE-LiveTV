@@ -80,6 +80,10 @@ http://127.0.0.1:8080/hls-local/<hash>/stream.m3u8
 Paste it into VLC → Media → Open Network Stream. Useful if you want
 hardware-accelerated decode or PiP.
 
+These localhost URLs remain zero-setup. If port 8080 is deliberately exposed
+to another machine, `/hls-local/` playlists and segments require the dashboard
+access token or an authenticated browser session.
+
 ---
 
 ## 3. Broadcast your own stream
@@ -161,11 +165,17 @@ Check, in order:
 3. **Verify port 5354 is bound** — in PowerShell: `netstat -an | findstr 5354` should show the LAN discovery socket. If the dashboard is also unavailable, restart eMule and open eSE again from the toolbar.
 4. **Check `last_streams.json`** at `%APPDATA%\eMule\last_streams.json`. If empty, this is your first run — no bootstrap cache yet. Watch something for 30 s, then restart eMule; the second boot should ping cached streams in <5 s.
 
+Release packages include a reviewed, SHA-256-pinned `nodes.dat`. The dashboard
+does not refresh it from third-party sites in the background. Developers who
+need to test a different snapshot must set all three variables
+`ESE_NODES_DAT_URL` (HTTPS), `ESE_NODES_DAT_SHA256` and the absolute
+`ESE_NODES_DAT_DEST`; partial or unverifiable configuration is rejected.
+
 ### "Black screen in cinema player"
 
 Two failure modes:
 
-- **Live edge / no buffer** — wait 15 s. The prebuffer is 3 chunks (~12 s); if your network is slow the first chunk takes longer.
+- **Live edge / no buffer** — wait 15 s. Controlled sources prebuffer 3 chunks (~6 s); RTMP duration follows the OBS keyframe cadence, and a slow network can delay the first chunk further.
 - **HLS reconstruction stuck** — check `/api/live/metrics` for `live_chunks_received_total`. If it's stuck at 0, the broadcaster isn't reachable. Either they're firewalled (Kad LowID) or your peer-routing has no path yet.
 
 ### "Audio cuts out after a few seconds"
@@ -209,9 +219,9 @@ These are for testing only and apply to `emule.exe` when launched from a console
 | `--viewer=<key>` | Auto-join a stream on startup. |
 | `--tcp-port=N --udp-port=N` | Override ports (needed for multi-instance same-host). |
 | `--metrics-port=N` | Bind `/api/live/metrics` on a separate port. |
-| `--selftest` | Start a test-pattern broadcast for about five seconds and stop it. This is a launch/stop smoke test, not a multi-peer end-to-end assertion. |
+| `--selftest` | Start a test-pattern broadcast, wait for three real HLS chunks, and verify signed V2 ingest plus duplicate/tamper rejection in an isolated local viewer. Returns a non-zero exit code on failure; it is not a multi-machine/NAT test. |
 | `--ignoreinstances` | Skip the single-instance mutex check. |
 
 ---
 
-_Last updated: 2026-07-14._
+_Last updated: 2026-07-16._

@@ -1,6 +1,7 @@
 // this file is part of eMule eSE — Persistent Search Tunnel pool impl (F4b)
 #include "stdafx.h"
 #include "KadV2TunnelPool.h"
+#include "KadV2ModeSelector.h"
 #include "LiveCircuit.h"
 #include "LiveTunnel.h"
 
@@ -14,6 +15,13 @@ namespace {
 // BASE_MS) and would have evicted still-Active circuits; retire is now driven by the
 // circuit's OWN state (Destroyed) instead — see Tick().
 const size_t PRIVATE_POOL_TARGET = 3;
+
+// Empty-pool discovery is deliberately patient. A fresh node may spend a long
+// time connected only to vanilla peers; retrying every CKademlia::Process tick
+// would add needless scans and handshake churn. An Active registration resets
+// the interval immediately.
+const DWORD AUTO_SEED_RETRY_MIN_MS = 5u * 1000u;
+const DWORD AUTO_SEED_RETRY_MAX_MS = 5u * 60u * 1000u;
 
 }  // namespace
 
@@ -57,12 +65,16 @@ void CKadV2TunnelPool::RegisterTunnel(std::shared_ptr<eSELive::CLiveCircuit> tun
     PoolEntry pe;
     pe.tunnel = tunnel;
     m_entries.push_back(pe);
+    m_lastAutoSeedAttempt = GetTickCount();
+    m_autoSeedRetryMs = AUTO_SEED_RETRY_MIN_MS;
 }
 
 void CKadV2TunnelPool::Clear()
 {
     CSingleLock lock(&m_lock, TRUE);
     m_entries.clear();   // drop our shared_ptr aliases (called from CLiveTunnel::Stop)
+    m_lastAutoSeedAttempt = 0;
+    m_autoSeedRetryMs = AUTO_SEED_RETRY_MIN_MS;
 }
 
 void CKadV2TunnelPool::Tick()
@@ -83,7 +95,7 @@ void CKadV2TunnelPool::Tick()
                         m_entries.end());
 
         // Count Active pool entries (originator circuits that reached Active and
-        // registered) — the make-before-break target bound + the "seeded" guard below.
+        // registered) for adoption bootstrap and the warm-pool target below.
         for (auto& e : m_entries)
             if (e.tunnel && e.tunnel->State() == eSELive::CircuitState::Active) {
                 if (e.tunnel->m_k6QuotaIssuerCircuit) ++quotaIssuerActive;
@@ -92,23 +104,48 @@ void CKadV2TunnelPool::Tick()
     }   // release m_lock BEFORE calling CLiveTunnel — RegisterTunnel runs UNDER the
         // tunnel lock (tunnel->pool), so we must never nest pool->tunnel here.
 
-    // Step 2: D4 make-before-break (outside the pool lock). Build ONE warm spare only if
-    // the pool is already SEEDED (poolActive >= 1 — a circuit was built deliberately via
-    // test_circuit or a prior successor) AND below target. The seeded guard means we NEVER
-    // build from an empty pool, so a node that never opted into tunneling (no manual
-    // circuit; default Adaptive->Direct) builds nothing here and the C5 control plane is
-    // never auto-engaged on a working stream. The PendingCircuitCount()==0 IN-FLIGHT guard
-    // stops Tick from re-firing every second while a successor is still mid-handshake (it
-    // is Pending, not yet pool-Active) — otherwise it would burst a pile of Pending
-    // circuits. BuildSuccessorCircuit is itself a no-op when no fork peer is connected.
-    if (privateActive >= 1) {
-        eSELive::CLiveTunnel& tun = eSELive::CLiveTunnel::Get();
-        if (tun.PendingCircuitCount() == 0) {
-            if (quotaIssuerActive == 0 && tun.BuildQuotaGuardCircuit())
-                return;
-            if (privateActive < PRIVATE_POOL_TARGET)
-                tun.BuildSuccessorCircuit();
+    // Step 2: adoption bootstrap (outside the pool lock). Adaptive/Tunneled nodes
+    // use Kad2 as the compatibility root-link and seed Kad6 as soon as one capable,
+    // authenticated peer is connected. Direct mode never auto-engages this plane.
+    eSELive::CLiveTunnel& tun = eSELive::CLiveTunnel::Get();
+    if (privateActive == 0) {
+        if (CKadV2ModeSelector::Get().GetDefaultMode() == CKadV2Mode::Direct ||
+            tun.PendingCircuitCount() != 0)
+            return;
+
+        const DWORD now = GetTickCount();
+        DWORD lastAttempt = 0;
+        DWORD retryMs = AUTO_SEED_RETRY_MIN_MS;
+        {
+            CSingleLock lock(&m_lock, TRUE);
+            lastAttempt = m_lastAutoSeedAttempt;
+            retryMs = m_autoSeedRetryMs;
         }
+        if (lastAttempt != 0 && now - lastAttempt < retryMs)
+            return;
+
+        // This is tunnelOnly-STRICT: without a compatible peer the attempt is
+        // a local no-op. Back off until RegisterTunnel proves a circuit Active.
+        tun.BuildSuccessorCircuit();
+        {
+            CSingleLock lock(&m_lock, TRUE);
+            m_lastAutoSeedAttempt = now;
+            if (m_autoSeedRetryMs < AUTO_SEED_RETRY_MAX_MS) {
+                const DWORD doubled = m_autoSeedRetryMs * 2u;
+                m_autoSeedRetryMs = doubled > AUTO_SEED_RETRY_MAX_MS
+                    ? AUTO_SEED_RETRY_MAX_MS : doubled;
+            }
+        }
+        return;
+    }
+
+    // Step 3: once seeded, keep the quota path and private warm spares ready.
+    // The in-flight guard prevents bursts during CREATE/CREATED handshakes.
+    if (tun.PendingCircuitCount() == 0) {
+        if (quotaIssuerActive == 0 && tun.BuildQuotaGuardCircuit())
+            return;
+        if (privateActive < PRIVATE_POOL_TARGET)
+            tun.BuildSuccessorCircuit();
     }
 }
 

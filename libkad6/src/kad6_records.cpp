@@ -117,7 +117,11 @@ Kad6Status DecodeK6NodeBind(const Byte* in, std::size_t len, K6NodeBind& out,
         out = K6NodeBind{};
         return Kad6Status::Truncated;
     }
-    if (consumed) *consumed = r.pos();
+    if (r.pos() != len) {
+        out = K6NodeBind{};
+        return Kad6Status::Malformed;
+    }
+    if (consumed) *consumed = len;
     return Kad6Status::Ok;
 }
 
@@ -190,7 +194,11 @@ Kad6Status DecodeK6Rotate(const Byte* in, std::size_t len, K6Rotate& out,
         out = K6Rotate{};
         return Kad6Status::Truncated;
     }
-    if (consumed) *consumed = r.pos();
+    if (r.pos() != len) {
+        out = K6Rotate{};
+        return Kad6Status::Malformed;
+    }
+    if (consumed) *consumed = len;
     return Kad6Status::Ok;
 }
 
@@ -378,7 +386,11 @@ Kad6Status DecodeK6RouterRecord(const Byte* in, std::size_t len, K6RouterRecord&
         return complete == Kad6Status::UnsupportedVersion
             ? complete : Kad6Status::Malformed;
     }
-    if (consumed) *consumed = r.pos();
+    if (r.pos() != len) {
+        out = K6RouterRecord{};
+        return Kad6Status::Malformed;
+    }
+    if (consumed) *consumed = len;
     return Kad6Status::Ok;
 }
 
@@ -576,7 +588,11 @@ Kad6Status DecodeK6SourceRecord(const Byte* in, std::size_t len, K6SourceRecord&
         out = K6SourceRecord{};
         return Kad6Status::Truncated;
     }
-    if (consumed) *consumed = r.pos();
+    if (r.pos() != len) {
+        out = K6SourceRecord{};
+        return Kad6Status::Malformed;
+    }
+    if (consumed) *consumed = len;
     return Kad6Status::Ok;
 }
 

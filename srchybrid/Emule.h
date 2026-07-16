@@ -56,6 +56,8 @@ class CPartHashThread;
 class CCacheNodeList;
 class CCacheDownloadThread;
 class CLiveStreamManager;
+class CRelayClient;
+class CDirectReachabilityManager;
 
 struct SLogItem;
 
@@ -106,6 +108,8 @@ public:
 	CCacheNodeList		*m_pCacheNodeList;
 	CCacheDownloadThread *m_pCacheDownloadThread;
 	CLiveStreamManager	*liveStreamManager;
+	CRelayClient		*relayclient;
+	CDirectReachabilityManager *directreachability;
 
 
 	static const UINT	m_nVersionMjr;
@@ -174,6 +178,12 @@ public:
 	uint32		GetED2KPublicIP() const;	// return current (valid) public IP or 0 if unknown (ignore KAD connection)
 	uint32		GetPublicIP() const;		// return current (valid) public IP or 0 if unknown
 	void		SetPublicIP(const uint32 dwIP);
+	uint16		GetLocalTcpPort() const;
+	uint16		GetLocalUdpPort() const;
+	uint16		GetAdvertisedTcpPort() const;
+	uint16		GetAdvertisedUdpPort() const;
+	uint16		GetAdvertisedV6TcpPort() const;
+	uint16		GetAdvertisedV6UdpPort() const;
 	void		ResetStandByIdleTimer();
 
 	// because nearly all icons we are loading are 16x16, the default size is specified as 16 and not as 32 nor LR_DEFAULTSIZE
@@ -248,9 +258,10 @@ public:
 	// --metrics-port=<port>       -> override WebServer port (S07)
 	// --tcp-port=<N>              -> override eD2K TCP listen port (multi-instance)
 	// --udp-port=<N>              -> override eD2K UDP/Kad listen port (multi-instance)
-	// --selftest                  -> run a 5s broadcast+stop smoke test then exit
+	// --selftest                  -> testpattern prebuffer + signed chunk loopback
 	bool		m_bHeadless;
 	bool		m_bSelfTest;
+	int			m_nSelfTestExitCode;
 	uint16		m_uHeadlessMetricsPort;
 	uint16		m_uHeadlessTcpPort;
 	uint16		m_uHeadlessUdpPort;

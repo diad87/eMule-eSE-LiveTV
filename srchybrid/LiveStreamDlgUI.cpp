@@ -183,7 +183,7 @@ void CLiveStreamDlg::UpdateStatusBar()
 	if (ip) {
 		CString s;
 		if (pubIP != 0)
-			s.Format(GetResString(IDS_LIVE_IP_FMT), (LPCTSTR)ipstr(pubIP), thePrefs.GetPort());
+			s.Format(GetResString(IDS_LIVE_IP_FMT), (LPCTSTR)ipstr(pubIP), theApp.GetAdvertisedTcpPort());
 		else
 			s = GetResString(IDS_LIVE_IP_DETECTING);
 		ip->SetWindowText(s);

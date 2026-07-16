@@ -290,7 +290,7 @@ void CIrcMain::ParseMessage(const CString &sRawMessage)
 					}
 					//Create our response.
 					CString sBuild;
-					sBuild.Format(_T("PRIVMSG %s :\001REPFRIEND eMule%s%s|%s|%u:%u|%s:%s|%s|\001"), (LPCTSTR)sTarget, (LPCTSTR)theApp.m_strCurVersionLong, Irc_Version, (LPCTSTR)sVerify, theApp.IsFirewalled() ? 0 : theApp.GetID(), thePrefs.GetPort(), (LPCTSTR)sIP, (LPCTSTR)sPort, (LPCTSTR)md4str(thePrefs.GetUserHash()));
+					sBuild.Format(_T("PRIVMSG %s :\001REPFRIEND eMule%s%s|%s|%u:%u|%s:%s|%s|\001"), (LPCTSTR)sTarget, (LPCTSTR)theApp.m_strCurVersionLong, Irc_Version, (LPCTSTR)sVerify, theApp.IsFirewalled() ? 0 : theApp.GetID(), theApp.GetAdvertisedTcpPort(), (LPCTSTR)sIP, (LPCTSTR)sPort, (LPCTSTR)md4str(thePrefs.GetUserHash()));
 					m_pIRCSocket->SendString(sBuild);
 					sBuild.Format(_T("%s %s"), (LPCTSTR)sTarget, (LPCTSTR)GetResString(IDS_IRC_ADDASFRIEND));
 					if (!thePrefs.GetIRCIgnoreEmuleAddFriendMsgs())

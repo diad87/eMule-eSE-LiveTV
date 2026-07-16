@@ -248,6 +248,11 @@ void CUPnPImplWinServ::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 n
 		m_nTCPPort = nTCPPort;
 		m_nUDPPort = nUDPPort;
 		m_nTCPWebPort = nTCPWebPort;
+		m_nExternalTCPPort = nTCPPort;
+		m_nExternalUDPPort = nUDPPort;
+		m_nExternalTCPWebPort = nTCPWebPort;
+		m_dwMappingLeaseLifetime = 0;
+		m_dwMapperEpoch = 0;
 	}
 
 	m_bSecondTry = bSecondTry;
@@ -593,6 +598,8 @@ CString CUPnPImplWinServ::GetLocalRoutableIP(ServicePointer pService)
 
 	DWORD nInterfaceIndex = 0;
 	DWORD ip = inet_addr((CStringA)strExternalIP);
+	if (ip != INADDR_NONE)
+		m_dwMappingExternalIP = ip;
 
 	// Get the interface through which the UPnP device has a route
 	hr = GetBestInterface(ip, &nInterfaceIndex);
@@ -757,12 +764,24 @@ void CUPnPImplWinServ::CreatePortMappings(ServicePointer pService)
 		hr = InvokeAction(pService, _T("AddPortMapping"), strInArgs, strResult);
 		if (FAILED(hr))
 			return (void)UPnPMessage(hr);
+		if (!VerifyPortMapping(pService, m_nUDPPort, _T("UDP"))) {
+			DeleteExistingPortMappings(pService);
+			return;
+		}
 	}
 
 	strInArgs.Format(strFormatString, m_nTCPPort, _T("TCP"), m_nTCPPort, (LPCTSTR)m_sLocalIP, _T("TCP"));
 	hr = InvokeAction(pService, _T("AddPortMapping"), strInArgs, strResult);
-	if (FAILED(hr))
+	if (FAILED(hr)) {
+		// UDP was created first. Roll it back if the required TCP half cannot
+		// be proven, so this implementation never reports a partial success.
+		DeleteExistingPortMappings(pService);
 		return (void)UPnPMessage(hr);
+	}
+	if (!VerifyPortMapping(pService, m_nTCPPort, _T("TCP"))) {
+		DeleteExistingPortMappings(pService);
+		return;
+	}
 
 	if (m_nTCPWebPort != 0) {
 		strInArgs.Format(strFormatString, m_nTCPWebPort, _T("TCP"), m_nTCPWebPort, (LPCTSTR)m_sLocalIP, _T("TCP"));
@@ -778,6 +797,33 @@ void CUPnPImplWinServ::CreatePortMappings(ServicePointer pService)
 	// Assuming that the user doesn't use several devices
 
 	m_bAsyncFindRunning = false;
+}
+
+bool CUPnPImplWinServ::VerifyPortMapping(ServicePointer pService,
+	uint16 nPort, LPCTSTR pszProtocol)
+{
+	CString strInArgs;
+	strInArgs.Format(_T("|VT_BSTR=|VT_UI2=%hu|VT_BSTR=%s|"),
+		nPort, pszProtocol);
+	CString strResult;
+	const HRESULT hr = InvokeAction(pService, _T("GetSpecificPortMappingEntry"),
+		strInArgs, strResult);
+	if (FAILED(hr) || strResult.IsEmpty()) {
+		DebugLogWarning(_T("UPnP WinServ: cannot verify %s mapping for external port %hu"),
+			pszProtocol, nPort);
+		return false;
+	}
+
+	CString strPortTag;
+	strPortTag.Format(_T("|VT_UI2=%hu|"), nPort);
+	CString strClientTag;
+	strClientTag.Format(_T("|VT_BSTR=%s|"), (LPCTSTR)m_sLocalIP);
+	const bool bVerified = strResult.Find(strPortTag) >= 0
+		&& strResult.Find(strClientTag) >= 0;
+	if (!bVerified)
+		DebugLogWarning(_T("UPnP WinServ: mapping verification returned a different target for %s/%hu"),
+			pszProtocol, nPort);
+	return bVerified;
 }
 
 // Invoke the action for the selected service.

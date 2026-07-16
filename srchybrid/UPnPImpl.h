@@ -16,6 +16,7 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
 #include <exception>
+#include "natmap/natmap_policy.h"
 
 enum TRISTATE
 {
@@ -29,7 +30,25 @@ enum UPNP_IMPLEMENTATION
 	UPNP_IMPL_WINDOWSERVICE = 0,
 	UPNP_IMPL_MINIUPNPLIB,
 	UPNP_IMPL_NATPMP,
+	// Appended to preserve the persisted IDs of the three legacy mappers.
+	UPNP_IMPL_PCP,
 	UPNP_IMPL_NONE	/*last*/
+};
+
+enum UPNP_DIAGNOSTIC_STAGE
+{
+	UPNP_DIAG_NOT_RUN = 0,
+	UPNP_DIAG_DISCOVERING,
+	UPNP_DIAG_NO_GATEWAY,
+	UPNP_DIAG_PROTOCOL_UNAVAILABLE,
+	UPNP_DIAG_EXTERNAL_ADDRESS,
+	UPNP_DIAG_TCP_MAPPING,
+	UPNP_DIAG_UDP_MAPPING,
+	UPNP_DIAG_VERIFY_MAPPING,
+	UPNP_DIAG_TABLE_FULL,
+	UPNP_DIAG_SUCCESS,
+	// Append only: numeric stages are emitted in diagnostics.
+	UPNP_DIAG_OWNERSHIP_PERSISTENCE
 };
 
 
@@ -55,6 +74,7 @@ public:
 	virtual void DeletePorts() = 0;
 	virtual bool IsReady() = 0;
 	virtual int GetImplementationID() = 0;
+	virtual bool SupportsMappingHealthCheck() const { return true; }
 
 	void LateEnableWebServerPort(uint16 nPort);	// Add Web Server port to already existing port mapping
 
@@ -63,6 +83,20 @@ public:
 	uint16 GetUsedTCPPort() const						{ return m_nTCPPort; }
 	uint16 GetUsedUDPPort() const						{ return m_nUDPPort; }
 	uint16 GetUsedTCPWebPort() const					{ return m_nTCPWebPort; }
+	uint16 GetExternalTCPPort() const					{ return m_nExternalTCPPort; }
+	uint16 GetExternalUDPPort() const					{ return m_nExternalUDPPort; }
+	uint16 GetExternalTCPWebPort() const				{ return m_nExternalTCPWebPort; }
+	uint32 GetMappingExternalIP() const				{ return m_dwMappingExternalIP; }
+	uint32 GetMappingLeaseLifetime() const			{ return m_dwMappingLeaseLifetime; }
+	uint32 GetMapperEpoch() const						{ return m_dwMapperEpoch; }
+	LONG GetDiagnosticStage() const						{ return m_nDiagnosticStage; }
+	LPCSTR GetDiagnosticStageName() const;
+	void RecordLeaseSuccess();
+	bool IsLeaseRefreshDue() const;
+	bool IsLeaseExpired() const;
+	void BeginLeaseRefreshAttempt();
+	uint64 GetLeaseRefreshSecondsUntilDue() const;
+	uint32 GetLeaseRefreshAttemptCount() const;
 
 // Implementation
 protected:
@@ -74,7 +108,16 @@ protected:
 	uint16 m_nTCPPort;
 	uint16 m_nTCPWebPort;
 	uint16 m_nUDPPort;
+	uint16 m_nExternalTCPPort;
+	uint16 m_nExternalTCPWebPort;
+	uint16 m_nExternalUDPPort;
+	uint32 m_dwMappingExternalIP;
+	uint32 m_dwMappingLeaseLifetime;
+	uint32 m_dwMapperEpoch;
+	volatile LONG m_nDiagnosticStage;
 	bool m_bCheckAndRefresh;
+	natmap::LeaseRefreshSchedule m_leaseRefreshSchedule;
+	natmap::PermanentMappingProbeSchedule m_permanentProbeSchedule;
 };
 
 // Dummy Implementation to be used when no other implementation is available

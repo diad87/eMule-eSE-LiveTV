@@ -226,15 +226,33 @@ K6PublishBudget::K6PublishBudget(K6PublishBudgetConfig config) : config_(config)
 bool K6PublishBudget::CheckAndTake(std::map<std::string, Counter>& counters,
                                    const std::string& key, std::uint32_t limit,
                                    std::uint64_t window, bool commit) {
-    Counter& c = counters[key];
-    const std::uint32_t used = c.window == window ? c.used : 0;
+    const auto found = counters.find(key);
+    const std::uint32_t used = found != counters.end() && found->second.window == window
+        ? found->second.used : 0;
     if (used >= limit || limit == 0) return false;
-    if (commit) { if (c.window != window) { c.window = window; c.used = 0; } ++c.used; }
+    if (commit) {
+        Counter& c = counters[key];
+        if (c.window != window) { c.window = window; c.used = 0; }
+        ++c.used;
+    }
     return true;
 }
 
 bool K6PublishBudget::Admit(const K6PublishBudgetKey& key, std::uint64_t now) {
     const std::uint64_t window = now / config_.window_seconds;
+    // All dimensions use the same fixed window. Clear stale identities on an
+    // advance and fail closed on a wall-clock rollback; this both bounds state
+    // by total_per_window and prevents a rollback from resetting the budget.
+    if (!have_active_window_) {
+        active_window_ = window;
+        have_active_window_ = true;
+    } else if (window < active_window_) {
+        return false;
+    } else if (window > active_window_) {
+        total_ = Counter{};
+        endpoint_.clear(); hash_.clear(); custodian_.clear(); record_class_.clear();
+        active_window_ = window;
+    }
     const std::uint32_t total_used = total_.window == window ? total_.used : 0;
     const std::uint32_t effective_total = overload_until_ > now
         ? (std::max)(1u, config_.total_per_window / 4u) : config_.total_per_window;
@@ -259,9 +277,13 @@ void K6PublishBudget::NoteOverload(std::uint64_t now) {
 std::uint32_t K6PublishBudget::AdmissionPermille(std::uint64_t now) const noexcept {
     return overload_until_ > now ? 250u : 1000u;
 }
+std::size_t K6PublishBudget::TrackedKeyCount() const noexcept {
+    return endpoint_.size() + hash_.size() + custodian_.size() + record_class_.size();
+}
 void K6PublishBudget::Reset() {
     total_ = Counter{}; endpoint_.clear(); hash_.clear(); custodian_.clear();
-    record_class_.clear(); overload_until_ = 0;
+    record_class_.clear(); active_window_ = 0; have_active_window_ = false;
+    overload_until_ = 0;
 }
 
 std::string K6PublishCoalescer::Key(const K6PublishSchedule& item) {

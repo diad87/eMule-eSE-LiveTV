@@ -35,6 +35,8 @@
 #include "SearchDlg.h"
 #include "IPFilter.h"
 #include "Log.h"
+#include "RelayClient.h"
+#include "DirectReachabilityManager.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -59,6 +61,7 @@ CServerSocket::CServerSocket(CServerConnect *in_serverconnect, bool bManualSingl
 	, m_bIsDeleting()
 	, m_bStartNewMessageLog(true)
 	, m_bManualSingleConnect(bManualSingleConnect)
+	, m_bRelayRouted(false)
 {
 }
 
@@ -69,6 +72,8 @@ CServerSocket::~CServerSocket()
 
 bool CServerSocket::OnHostNameResolved(const SOCKADDR_IN *pSockAddr)
 {
+	if (m_bRelayRouted)
+		return true;
 	// If we are connecting to a dynIP-server by DN, we will get this callback after the
 	// DNS query finished.
 	//
@@ -345,7 +350,12 @@ bool CServerSocket::ProcessPacket(const BYTE *packet, uint32 size, uint8 opcode)
 					SetConnectionState(CS_CONNECTED);
 					theApp.OnlineSig();       // Added By Bouc7
 				}
+				if (!m_bRelayRouted && theApp.directreachability != NULL)
+					theApp.directreachability->ObserveServerIdChange(
+						!::IsLowID(la->clientid));
 				serverconnect->SetClientID(la->clientid);
+				if (m_bRelayRouted && theApp.relayclient != NULL)
+					theApp.relayclient->OnEd2kIdChange(la->clientid, true);
 				if (::IsLowID(la->clientid) && dwServerReportedIP != 0)
 					theApp.SetPublicIP(dwServerReportedIP);
 				AddLogLine(false, GetResString(IDS_NEWCLIENTID), la->clientid);
@@ -628,7 +638,7 @@ void CServerSocket::ProcessPacketError(UINT size, UINT opcode, LPCTSTR pszError)
 	}
 }
 
-void CServerSocket::ConnectTo(CServer *server, bool bNoCrypt)
+bool CServerSocket::ConnectTo(CServer *server, bool bNoCrypt)
 {
 	if (cur_server) {
 		ASSERT(0);
@@ -660,14 +670,36 @@ void CServerSocket::ConnectTo(CServer *server, bool bNoCrypt)
 	//		is done in OnConnect. For outgoing UDP packets this is done when explicitly
 	//		resolving the DN right before sending the UDP packet.
 	//
+	LPCTSTR connectAddress = server->GetAddress();
+	uint16 connectPort = nPort;
+	if (theApp.relayclient != NULL &&
+		theApp.relayclient->IsTcpDataPlaneEnabled()) {
+		CString numericAddress;
+		if (server->GetIP() != 0)
+			numericAddress = ipstr(server->GetIP());
+		else
+			numericAddress = server->GetAddress();
+		uint16 proxyPort = 0;
+		if (!theApp.relayclient->PrepareEd2kServerRoute(
+			numericAddress, nPort, proxyPort)) {
+			LogError(_T("KRP relay: server route is not ready or target is not numeric (%s:%u)"),
+				(LPCTSTR)numericAddress, nPort);
+			return false;
+		}
+		m_bRelayRouted = true;
+		connectAddress = _T("127.0.0.1");
+		connectPort = proxyPort;
+	}
+
 	SetConnectionState(CS_CONNECTING);
-	if (!Connect(server->GetAddress(), nPort)) {
+	if (!Connect(connectAddress, connectPort)) {
 		DWORD dwError = CAsyncSocket::GetLastError();
 		if (dwError != WSAEWOULDBLOCK) {
 			LogError(GetResString(IDS_ERR_CONNECTIONERROR), (LPCTSTR)cur_server->GetListName(), cur_server->GetAddress(), nPort, (LPCTSTR)GetFullErrorMessage(dwError));
 			SetConnectionState(CS_FATALERROR);
 		}
 	}
+	return true;
 }
 
 void CServerSocket::OnError(int nErrorCode)

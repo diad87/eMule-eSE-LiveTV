@@ -80,6 +80,7 @@ public:
 	{
 		return UPNP_IMPL_WINDOWSERVICE;
 	}
+	virtual bool SupportsMappingHealthCheck() const { return false; }
 
 	// No Support for Refreshing in this (fallback) implementation yet - in many cases where it would be needed (router reset etc)
 	// the windows side of the implementation tends to get bugged until reboot anyway. Still might get added later
@@ -93,6 +94,7 @@ protected:
 	void AddDevice(DevicePointer device, bool bAddChildren, int nLevel = 0);
 	void RemoveDevice(CComBSTR bsUDN);
 	bool OnSearchComplete();
+	bool VerifyPortMapping(ServicePointer pService, uint16 nPort, LPCTSTR pszProtocol);
 	void Init();
 
 	inline bool IsAsyncFindRunning()

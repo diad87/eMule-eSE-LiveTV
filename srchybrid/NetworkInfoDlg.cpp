@@ -442,7 +442,7 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 		if (theApp.serverconnect->IsLowID() && theApp.GetED2KPublicIP() == 0)
 			buffer = GetResString(IDS_UNKNOWN);
 		else
-			buffer.Format(_T("%s:%u"), (LPCTSTR)ipstr(theApp.GetED2KPublicIP()), thePrefs.GetPort());
+			buffer.Format(_T("%s:%u"), (LPCTSTR)ipstr(theApp.GetED2KPublicIP()), theApp.GetAdvertisedTcpPort());
 		rCtrl << _T("\t") << buffer << _T("\r\n");
 
 		rCtrl << GetResString(IDS_ID) << _T(":\t");
@@ -548,7 +548,7 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 		}
 		rCtrl << _T("\r\n");
 
-		buffer.Format(_T("%s:%i"), (LPCTSTR)ipstr(htonl(Kademlia::CKademlia::GetPrefs()->GetIPAddress())), thePrefs.GetUDPPort());
+		buffer.Format(_T("%s:%i"), (LPCTSTR)ipstr(htonl(Kademlia::CKademlia::GetPrefs()->GetIPAddress())), theApp.GetAdvertisedUdpPort());
 		rCtrl << GetResString(IDS_IP) << _T(":") << GetResString(IDS_PORT) << _T(":\t") << buffer << _T("\r\n");
 
 		buffer.Format(_T("%u"), Kademlia::CKademlia::GetPrefs()->GetIPAddress());

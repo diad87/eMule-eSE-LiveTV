@@ -273,7 +273,7 @@ void CLiveStreamDlg::StartBroadcast()
 		if (reallyFirewalled) {
 			CString warn;
 			warn.Format(GetResString(IDS_LIVE_WARN_PORT_CLOSED),
-				thePrefs.GetPort(), thePrefs.GetPort());
+				theApp.GetAdvertisedTcpPort(), theApp.GetAdvertisedTcpPort());
 			if (AfxMessageBox(warn, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
 				return;
 		}

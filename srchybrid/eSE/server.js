@@ -306,6 +306,7 @@ load(); startTimer();
   // the same PC failed silently with a generic 404. Use '/hls' to catch both.
   if (url.pathname.startsWith('/api/live/') || url.pathname.startsWith('/live') || url.pathname.startsWith('/hls') || url.pathname === '/privacy') {
     const handled = liveApi.handleRoute(url, req, res, {
+      port: PORT,
       ffmpegPath: FFMPEG_PATH,
       hwEncoder: HW_ENCODER,
       hwEncoderOpts: HW_ENCODER_OPTS

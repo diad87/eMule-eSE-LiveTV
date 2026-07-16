@@ -173,10 +173,10 @@ static void testSegment() {
     };
     for (Case c : cases) {
         char m[96];
-        sprintf(m, "segment len=%d r=%d random drops", c.len, c.r);
+        sprintf_s(m, sizeof(m), "segment len=%d r=%d random drops", c.len, c.r);
         CHECK(segmentRoundTrip(c.len, c.r, rng, /*dropMax*/false), m);
         if (c.r > 0) {
-            sprintf(m, "segment len=%d r=%d WORST drops (exactly r/block)", c.len, c.r);
+            sprintf_s(m, sizeof(m), "segment len=%d r=%d WORST drops (exactly r/block)", c.len, c.r);
             CHECK(segmentRoundTrip(c.len, c.r, rng, /*dropMax*/true), m);
         }
     }

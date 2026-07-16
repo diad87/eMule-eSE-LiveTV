@@ -74,6 +74,7 @@ public:
 
 	bool	AwaitingTestFromIP(uint32 dwIP) const;
 	bool	IsConnectedObfuscated() const;
+	bool	IsConnectedViaRelay() const;
 
 	uint32	m_clientid;
 	uint32	m_curuser;

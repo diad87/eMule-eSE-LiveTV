@@ -239,6 +239,9 @@ public:
 private:
     std::size_t capacity_per_epoch_;
     std::map<std::uint64_t, std::map<std::string, bool> > epochs_;
+    // Monotonic floor independent of wall-clock regressions. Once an exit has
+    // observed epoch N it never admits or prunes as if it were in N-1.
+    std::uint64_t epoch_floor_ = 0;
 };
 
 // Full verifier, including certificate, application structure, context and

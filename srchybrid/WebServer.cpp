@@ -59,6 +59,7 @@
 #include "Statistics.h"
 #include "KadKeepalive.h"      // R.2: keepalive control + stats for /api/keepalive and /api/status
 #include "LiveBuddyRelay.h"    // R.3: relay accept/egress/viewer-connect for /api/relay/*
+#include "RelayClient.h"       // P3: read-only KRP state cache; no worker-thread eMule access
 #include "QArray.h"
 #include "TransferDlg.h"
 #include "UploadQueue.h"
@@ -4582,6 +4583,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		|| (sURL.Left(15) == "/api/holepunch/")
 		|| (sURL.Left(15) == "/api/keepalive/")
 		|| (sURL.Left(11) == "/api/relay/")
+		|| (sURL.Left(9) == "/api/krp/")
 		|| (sURL.Left(11) == "/api/ese/v9")
 		|| (sURL == "/api/status")
 		|| (sURL == "/dashboard") || (sURL == "/dashboard/")
@@ -4880,7 +4882,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		if (ok) {
 			const uchar* key = theApp.liveStreamManager->GetStreamKey();
 			uint32 pubIP = theApp.GetPublicIP();
-			uint16 port  = thePrefs.GetPort();
+			uint16 port  = theApp.GetAdvertisedTcpPort();
 			if (key) {
 				CStringA hex = EseHexKey16A(key);
 				CString titleEnc = EncodeURLQueryParam(titleT);
@@ -5249,6 +5251,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// intentionally NOT touched here — this lever governs only the dormant v9 cascade layers.
 	if (sURL.Left(11) == "/api/ese/v9") {
 		const bool bOn = (_ParseURL(Data.sURL, _T("on")) != _T("0"));   // default ON unless on=0
+		thePrefs.SetEseV9Experimental(bOn);
 		thePrefs.SetEseReachSelector(bOn);
 		thePrefs.SetEseRelayAccept(bOn);
 		thePrefs.SetEseRelayEgress(bOn);
@@ -5261,15 +5264,21 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			::InterlockedOr(pEseCaps, (LONG)ESE_CAP_HOLEPUNCH_RDV);
 		else
 			::InterlockedAnd(pEseCaps, ~(LONG)ESE_CAP_HOLEPUNCH_RDV);
+		if (bOn && thePrefs.GetEseRelayAccept())
+			::InterlockedOr(pEseCaps, (LONG)ESE_CAP_LIVE_RELAY);
+		else
+			::InterlockedAnd(pEseCaps, ~(LONG)ESE_CAP_LIVE_RELAY);
+		RefreshEseV9PreviewCaps();
 		if (bOn) CKadKeepalive::Instance().RequestStart();
 		else     CKadKeepalive::Instance().RequestStop();
 		CStringA json;
 		json.Format("{\"success\":true,\"on\":%s,"
-			"\"v9\":{\"selector\":%s,\"relay_accept\":%s,\"relay_egress\":%s,\"auto_keepalive\":%s,"
+			"\"v9\":{\"experimental\":%s,\"selector\":%s,\"relay_accept\":%s,\"relay_egress\":%s,\"auto_keepalive\":%s,"
 			"\"port_predict\":%s,\"ed2k_punch3\":%s,\"kad3_rendezvous\":%s,"
 			"\"keepalive_running\":%s,\"hole_punch_master\":%s},"
 			"\"reach_connects\":{\"direct\":%u,\"punch2\":%u,\"punch3\":%u,\"relay\":%u}}",
 			bOn ? "true" : "false",
+			thePrefs.GetEseV9Experimental() ? "true" : "false",
 			thePrefs.GetEseReachSelector() ? "true" : "false",
 			thePrefs.GetEseRelayAccept() ? "true" : "false",
 			thePrefs.GetEseRelayEgress() ? "true" : "false",
@@ -5288,6 +5297,25 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
+	// P3 KRP status is deliberately read-only and separate from /api/relay/*,
+	// which belongs to the older Live/Buddy relay. The JSON is a mutex-protected
+	// main-thread snapshot and contains no endpoint, certificate, identity or payload.
+	if (sURL == "/api/krp/status") {
+		CStringA json;
+		if (theApp.relayclient != NULL)
+			theApp.relayclient->GetStatusJson(json);
+		else
+			json = "{\"enabled\":false,\"kill_switch\":false,\"display\":\"Low ID\",\"carrier\":\"Disabled\"}";
+		CStringA hdr;
+		hdr.Format(
+			"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+			"Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"
+			"Content-Length: %d\r\n\r\n", json.GetLength());
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
 	// --- /api/relay/{accept|egress|selector|connect} --- R.3 relay floor + selector test/activation.
 	//   accept?on=1   (relay buddy X): flip EseRelayAccept  — accept 0xCF SETUP + serve 0xCE viewers.
 	//   egress?on=1   (broadcaster B): flip EseRelayEgress  — push my stream to a connected HighID buddy.
@@ -5298,7 +5326,13 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		const bool bOn = (_ParseURL(Data.sURL, _T("on")) != _T("0"));   // default ON unless on=0
 		const char* action = "unknown";
 		bool ok = true;
-		if (sURL.Left(17) == "/api/relay/accept")        { thePrefs.SetEseRelayAccept(bOn);   action = "accept"; }
+		if (sURL.Left(17) == "/api/relay/accept") {
+			thePrefs.SetEseRelayAccept(bOn);
+			volatile LONG* caps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
+			if (bOn) ::InterlockedOr(caps, (LONG)ESE_CAP_LIVE_RELAY);
+			else     ::InterlockedAnd(caps, ~(LONG)ESE_CAP_LIVE_RELAY);
+			action = "accept";
+		}
 		else if (sURL.Left(17) == "/api/relay/egress")   { thePrefs.SetEseRelayEgress(bOn);   action = "egress"; }
 		else if (sURL.Left(19) == "/api/relay/selector") { thePrefs.SetEseReachSelector(bOn); action = "selector"; }
 		else if (sURL.Left(18) == "/api/relay/connect") {
@@ -5447,7 +5481,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		bool highId  = !kadFw && !ed2kFw;
 		bool fwChecking = !fwVerified && kadConn && !ed2kFw;  // still measuring
 		uint32 maxUpKBs = thePrefs.GetMaxUpload();   // KB/s, 0 = unlimited
-		uint16 port = thePrefs.GetPort();
+		uint16 port = theApp.GetAdvertisedTcpPort();
 		uint32 pubIP = theApp.GetPublicIP();
 		CString ffPath = CRTMPIngest::FindFFmpeg();
 		bool ffmpegFound = (GetFileAttributes(ffPath) != INVALID_FILE_ATTRIBUTES);
@@ -6217,21 +6251,30 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		// ActiveCircuitCount below — a momentary torn read just yields a slightly stale count).
 		uint64_t cellsSent = 0, cellsRecv = 0, bytesSent = 0, bytesRecv = 0;
 		uint32 meanRttMs = 0;
+		bool kad6CircuitActive = false;
 		try {
-			circuitsActive    = eSELive::CLiveTunnel::Get().ActiveCircuitCount();
-			circuitsPending   = eSELive::CLiveTunnel::Get().PendingCircuitCount();
+			eSELive::CLiveTunnel& tunnel = eSELive::CLiveTunnel::Get();
+			circuitsActive    = tunnel.ActiveCircuitCount();
+			circuitsPending   = tunnel.PendingCircuitCount();
 			tunnelPoolSize    = Kademlia::CKadV2TunnelPool::Get().Size();
 			subscriptionCount = eSELive::CLiveSubscriptionStore::Get().Count();
 			CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
 			if (!v6.IsNull()) proberV6Str = CStringA(v6.ToStringC());
-			cellsSent  = eSELive::CLiveTunnel::Get().CellsSentTotal();   // v8.1 D8-web
-			cellsRecv  = eSELive::CLiveTunnel::Get().CellsRecvTotal();
-			bytesSent  = eSELive::CLiveTunnel::Get().BytesSentTotal();
-			bytesRecv  = eSELive::CLiveTunnel::Get().BytesRecvTotal();
-			meanRttMs  = eSELive::CLiveTunnel::Get().MeanRttMs();
+			kad6CircuitActive = tunnel.HasActiveCircuitWithExitCaps(ESE_CAP_KAD6);
+			cellsSent  = tunnel.CellsSentTotal();   // v8.1 D8-web
+			cellsRecv  = tunnel.CellsRecvTotal();
+			bytesSent  = tunnel.BytesSentTotal();
+			bytesRecv  = tunnel.BytesRecvTotal();
+			meanRttMs  = tunnel.MeanRttMs();
 		} catch (...) {
 			// keep zeros; this endpoint must never throw
 		}
+		const bool kad6Preferred = sel.GetDefaultMode() != CKadV2Mode::Direct;
+		const char* routeState = !kad6Preferred ? "kad2_direct" :
+			kad6CircuitActive ? "kad6" :
+			circuitsActive != 0 ? "tunnel_kad2_compat" :
+			sel.GetFallbackPolicy() == CKadV2ModeSelector::STRICT_PRIVACY
+				? "blocked_waiting_kad6" : "kad2_fallback";
 
 		// Build the human-readable caps array cleanly (no printf comma games).
 		CStringA capsArr;
@@ -6249,6 +6292,10 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		if (capsRuntime & ESE_CAP_SEALED_RECORDS)      appendCap("sealed_records");
 		if (capsRuntime & ESE_CAP_GOSSIP_PROTOCOL)     appendCap("gossip_protocol");
 		if (capsRuntime & ESE_CAP_COVER_TRAFFIC)       appendCap("cover_traffic");
+		if (capsRuntime & ESE_CAP_TUNNEL_AUTH)         appendCap("tunnel_auth");
+		if (capsRuntime & ESE_CAP_KAD6)                appendCap("kad6");
+		if (capsRuntime & ESE_CAP_TUNNEL_STRICT3)      appendCap("tunnel_strict3");
+		if (capsRuntime & ESE_CAP_TUNNEL_SHAPED)       appendCap("tunnel_shaped");
 
 		CStringA json;
 		json.Format(
@@ -6259,6 +6306,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		    "\"runtime\":{"
 		        "\"capsBits\":\"0x%08X\","
 		        "\"capsHumanReadable\":[%s],"
+		        "\"kad6Preferred\":%s,"
+		        "\"kad6CircuitActive\":%s,"
+		        "\"routeState\":\"%s\","
 		        "\"circuitsActive\":%u,"
 		        "\"circuitsPending\":%u,"
 		        "\"tunnelPoolSize\":%u,"
@@ -6272,6 +6322,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		    modeStr, fbStr, (LPCSTR)kwJson,
 		    capsRuntime,
 		    (LPCSTR)capsArr,
+		    kad6Preferred ? "true" : "false",
+		    kad6CircuitActive ? "true" : "false",
+		    routeState,
 		    (unsigned)circuitsActive,
 		    (unsigned)circuitsPending,
 		    (unsigned)tunnelPoolSize,
@@ -6477,7 +6530,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		bool isViewing = (theApp.liveStreamManager
 			&& theApp.liveStreamManager->IsViewingLive());
 		uint32 publicIP = theApp.GetPublicIP();
-		uint16 tcpPort = thePrefs.GetPort();
+		uint16 tcpPort = theApp.GetAdvertisedTcpPort();
 
 		LiveStreamEntry entry;
 		bool inDirectory = false;
@@ -6965,6 +7018,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				"\"peerDisconnects\":%u,"
 				"\"skippedInitialPushes\":%u,"
 				"\"subscribesRateLimited\":%u,"
+				"\"requestsRateLimited\":%u,"
 				"\"endsRejectedNoAuth\":%u,"
 				"\"tombstonesEvicted\":%u}",
 				s.counters.kadPublishes, s.counters.kadSearches,
@@ -6976,6 +7030,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				s.counters.duplicateChunksReceived, s.counters.requestsSuppressedInflight,
 				s.counters.peerDisconnects,
 				s.counters.skippedInitialPushes, s.counters.subscribesRateLimited,
+				s.counters.requestsRateLimited,
 				s.counters.endsRejectedNoAuth, s.counters.tombstonesEvicted);
 
 			CStringA peerDetailJson;   // empty unless snapshot was populated (ESE_TEST_HOOKS build)
@@ -7025,7 +7080,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				"\"chunks\":{\"count\":0,\"oldestSeq\":0,\"newestSeq\":0,"
 				"\"bitmap\":0,\"missing\":0,\"maxCapacity\":15},"
 				"\"hls\":{\"segmentsWritten\":0,\"playlistRefreshes\":0,"
-				"\"lastChunkAgeMs\":0,\"segmentDurationSec\":4},"
+				"\"lastChunkAgeMs\":0,\"segmentDurationSec\":2},"
 				"\"counters\":{\"kadPublishes\":0,\"kadSearches\":0,"
 				"\"kadResultsAccepted\":0,\"kadResultsRejected\":0,"
 				"\"sourceDialAttempts\":0,"

@@ -1,0 +1,16 @@
+# P2 laboratory mode. There is deliberately no public/wildcard mode.
+mode=lab-loopback
+explicit_lab_enable=true
+bind_address=127.0.0.1
+port=0
+certificate_path=../mbedtls/framework/data_files/server2-sha256.crt
+private_key_path=../mbedtls/framework/data_files/server2.key
+max_sessions=256
+max_flows_per_session=256
+max_leases_per_session=1
+max_preauth_bytes=16384
+preauth_timeout_ms=10000
+idle_timeout_ms=90000
+reuse_delay_ms=120000
+lease_first_port=40000
+lease_last_port=40031

@@ -579,6 +579,8 @@ K6QuotaStatus K6QuotaSpentSet::Consume(
     std::uint64_t current_epoch) noexcept {
     if (epoch == 0 || current_epoch == 0 || !Any(unit.data(), unit.size()))
         return K6QuotaStatus::BadRequest;
+    if (epoch_floor_ != 0 && current_epoch < epoch_floor_)
+        return K6QuotaStatus::WrongEpoch;
     if (epoch != current_epoch) return K6QuotaStatus::WrongEpoch;
     Prune(current_epoch);
     std::map<std::string, bool>& entries = epochs_[epoch];
@@ -590,6 +592,9 @@ K6QuotaStatus K6QuotaSpentSet::Consume(
 }
 
 void K6QuotaSpentSet::Prune(std::uint64_t current_epoch) noexcept {
+    if (current_epoch == 0 || (epoch_floor_ != 0 && current_epoch < epoch_floor_))
+        return;
+    epoch_floor_ = current_epoch;
     for (auto it = epochs_.begin(); it != epochs_.end();) {
         if (it->first != current_epoch) it = epochs_.erase(it);
         else ++it;

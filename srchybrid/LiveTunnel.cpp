@@ -665,9 +665,9 @@ uint32_t CLiveTunnel::BuildTestCircuit(CUpDownClient* clientHint)
 // path), this builds ONLY through a peer that advertised privacy-tunneling, so on a
 // single-PC node with no fork peer it is a pure no-op (GetConnectedSnapshot returns
 // empty -> BuildPool builds nothing -> returns false). Builds EXACTLY ONE 1-hop circuit:
-// BuildPool floors `count` up to TUNNEL_POOL_MIN(3), so we instead cap the CANDIDATE
-// snapshot to 1 — BuildPool's build loop is bounded by relayCandidates.size(), so a
-// 1-candidate snapshot yields exactly 1 circuit regardless of the floor.
+// BuildPool floors `count` up to TUNNEL_POOL_MIN(3), so after preferring a Kad6-capable
+// candidate we reduce the candidate vector to 1. BuildPool's loop is bounded by
+// relayCandidates.size(), so this still yields exactly 1 circuit regardless of the floor.
 // Called from CKadV2TunnelPool::Tick (main thread, with the pool lock NOT held).
 bool CLiveTunnel::BuildSuccessorCircuit()
 {
@@ -687,8 +687,18 @@ bool CLiveTunnel::BuildSuccessorCircuit()
     // 1-hop fallback (degraded: broadcaster-anonymity only, exit sees V).
     std::vector<CUpDownClient*> cands;
     if (theApp.clientlist)
-        theApp.clientlist->GetConnectedSnapshot(cands, 1, /*tunnelOnly=*/true);
+        theApp.clientlist->GetConnectedSnapshot(cands, 16, /*tunnelOnly=*/true);
     if (cands.empty()) return false;
+    // Adoption preference: if any compatible peer advertises the authenticated
+    // K6 gateway, make it the one-hop exit. Preserve the legacy tunnel peer as
+    // fallback when Kad6 has not reached this connected set yet.
+    CUpDownClient* selected = cands.front();
+    for (CUpDownClient* candidate : cands)
+        if (candidate && (candidate->GetEseCapabilities() & ESE_CAP_KAD6) != 0) {
+            selected = candidate;
+            break;
+        }
+    cands.assign(1, selected);
     return BuildPool(NULL, cands, 1) > 0;
 }
 
@@ -772,21 +782,44 @@ bool CLiveTunnel::BuildSuccessor2Hop()
     if (theApp.clientlist)
         theApp.clientlist->GetConnectedSnapshot(cands, 5, /*tunnelOnly=*/true);
 
-    CUpDownClient* hop1 = NULL;
-    CUpDownClient* hop2 = NULL;
+    std::vector<CUpDownClient*> eligible;
     for (CUpDownClient* p : cands) {
         if (!p) continue;
         // v8.1.2 B6 (co-seeder filter) — never route a circuit through a peer that serves us
         // the channel we're viewing: it would learn (by being our hop) that this IP watches
         // that stream, defeating G1. Applies to hop1 AND the exit.
         if (theApp.liveStreamManager && theApp.liveStreamManager->IsStreamSourcePeer(p)) continue;
-        if (!hop1) { hop1 = p; continue; }
-        if (p == hop1) continue;
-        // require a DISTINCT node (different user hash) -> never an effective loopback
-        const uchar* h1 = hop1->GetUserHash();
-        const uchar* h2 = p->GetUserHash();
-        if (h1 && h2 && memcmp(h1, h2, 16) == 0) continue;
-        hop2 = p; break;
+        eligible.push_back(p);
+    }
+    auto distinctNode = [](CUpDownClient* a, CUpDownClient* b) {
+        if (!a || !b || a == b) return false;
+        const uchar* ha = a->GetUserHash();
+        const uchar* hb = b->GetUserHash();
+        return !(ha && hb && memcmp(ha, hb, 16) == 0);
+    };
+
+    CUpDownClient* hop1 = NULL;
+    CUpDownClient* hop2 = NULL;
+    // Prefer a Kad6-capable EXIT; the guard may be any distinct authenticated
+    // tunnel peer. This makes Kad6 win whenever it is present without removing
+    // the legacy two-hop compatibility path during early adoption.
+    for (CUpDownClient* exitCandidate : eligible) {
+        if ((exitCandidate->GetEseCapabilities() & ESE_CAP_KAD6) == 0) continue;
+        for (CUpDownClient* guardCandidate : eligible)
+            if (distinctNode(guardCandidate, exitCandidate)) {
+                hop1 = guardCandidate;
+                hop2 = exitCandidate;
+                break;
+            }
+        if (hop1) break;
+    }
+    if (!hop1) {
+        for (CUpDownClient* p : eligible) {
+            if (!hop1) { hop1 = p; continue; }
+            if (!distinctNode(hop1, p)) continue;
+            hop2 = p;
+            break;
+        }
     }
     if (!hop1 || !hop2) return false;   // < 2 distinct tunnel peers -> no real 2-hop
 
@@ -2965,7 +2998,9 @@ std::string K6WideToUtf8(const wchar_t* value)
 
 bool CLiveTunnel::EnsureK6QuotaAuthority(uint64 nowSeconds)
 {
-    if (nowSeconds == 0 || !NodeIdentityIsPersistent() || NodeIdentityPub() == NULL)
+    if (!thePrefs.GetEseV9Experimental() ||
+        (g_uEseCapsRuntime & ESE_CAP_KAD6) == 0 ||
+        nowSeconds == 0 || !NodeIdentityIsPersistent() || NodeIdentityPub() == NULL)
         return false;
     if (!m_k6QuotaCrypto.Ready()) {
         if (m_k6QuotaInitAttempted) return false;
@@ -3473,7 +3508,7 @@ bool CLiveTunnel::ApplyK6ServiceSwitch(kad6::K6Service service, bool enabled,
     volatile LONG* caps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
     if (snapshot.admission_mask == 0) {
         ::InterlockedAnd(caps, ~static_cast<LONG>(ESE_CAP_KAD6));
-    } else if (NodeIdentityIsPersistent() &&
+    } else if (thePrefs.GetEseV9Experimental() && NodeIdentityIsPersistent() &&
                Kademlia::CKadV2ModeSelector::Get().GetDefaultMode() !=
                    Kademlia::CKadV2Mode::Direct) {
         ::InterlockedOr(caps, static_cast<LONG>(ESE_CAP_KAD6));
@@ -4511,7 +4546,8 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
         }
 
         kad6::K6LiveSearchMetadata live;
-        if (kad6::ParseK6LiveSearchResult(result, live) != kad6::Kad6Status::Ok)
+        if (kad6::ParseK6LiveSearchResult(result, live) != kad6::Kad6Status::Ok ||
+            !result.tickets.empty())
             return false;
 
         std::vector<uint8_t> one;
@@ -4533,8 +4569,12 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
             agg.legacy.insert(agg.legacy.end(), one.begin() + 4, one.end());
             ++agg.count;
             K6OriginTargetRoute route; route.circ_id = circ->Id();
-            route.expires_at = static_cast<uint64>(time(NULL)) + kad6::kK6TicketMaxTtlSeconds;
+            route.source_request_id = req_id;
+            // Native Live results are opaque route handles, not reusable target
+            // tickets. Keep their exit/origin correlation window deliberately short.
+            route.expires_at = static_cast<uint64>(time(NULL)) + 120;
             m_k6OriginTargetRoutes[K6AuthorizedTargetKey(0, req_id, result.result_id)] = route;
+            m_k6OriginLiveRoutes[K6BinaryKey(result.result_id.data(), result.result_id.size())] = route;
         }
         if (theApp.liveStreamManager)
             theApp.liveStreamManager->GetKadBridge().FeedTunneledSearchResults(one);
@@ -4928,7 +4968,9 @@ void CLiveTunnel::ExitHandle_KadCancel(const TunnelRequestCtx& ctx)
 // authenticated CREATED-v2 snapshot advertised ESE_CAP_KAD6.
 void CLiveTunnel::ExitHandle_Kad6Gateway(const TunnelRequestCtx& ctx)
 {
-    if (!ctx.circ || !ctx.body || ctx.bodyLen == 0)
+    if (!thePrefs.GetEseV9Experimental() ||
+        (g_uEseCapsRuntime & ESE_CAP_KAD6) == 0 ||
+        !ctx.circ || !ctx.body || ctx.bodyLen == 0)
         return;
 
     kad6::K6Frame frame;
@@ -5762,7 +5804,7 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
     uint16_t udpPort = Kademlia::CKademlia::GetPrefs()->GetUseExternKadPort()
         ? Kademlia::CKademlia::GetPrefs()->GetExternalKadPort() : 0;
     if (udpPort == 0) udpPort = Kademlia::CKademlia::GetPrefs()->GetInternKadPort();
-    if (publicIp == 0 || thePrefs.GetPort() == 0 || udpPort == 0) {
+    if (publicIp == 0 || theApp.GetAdvertisedTcpPort() == 0 || udpPort == 0) {
         finish(kad6::K6SourceBoundStatus::Overloaded, NULL);
         return;
     }
@@ -5806,7 +5848,7 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
     bound.virtual_endpoint.addr.addr = {
         static_cast<uint8_t>(publicIp), static_cast<uint8_t>(publicIp >> 8),
         static_cast<uint8_t>(publicIp >> 16), static_cast<uint8_t>(publicIp >> 24)};
-    bound.virtual_endpoint.tcp_port = thePrefs.GetPort();
+    bound.virtual_endpoint.tcp_port = theApp.GetAdvertisedTcpPort();
     bound.virtual_endpoint.udp_port = udpPort;
     bound.virtual_endpoint.transport_flags = kad6::kK6EpTcpEd2k |
         kad6::kK6EpKad2Gateway | kad6::kK6EpEd2kGateway;
@@ -6372,8 +6414,8 @@ void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
         reject(kad6::K6DialStatus::TicketRejected); return;
     }
 
-    kad6::K6Endpoint apparent; apparent.tcp_port = thePrefs.GetPort();
-    apparent.udp_port = thePrefs.GetUDPPort(); apparent.transport_flags = kad6::kK6EpEd2kGateway;
+    kad6::K6Endpoint apparent; apparent.tcp_port = theApp.GetAdvertisedTcpPort();
+    apparent.udp_port = theApp.GetAdvertisedUdpPort(); apparent.transport_flags = kad6::kK6EpEd2kGateway;
     apparent.valid_until = static_cast<uint64>(time(NULL)) + kad6::kK6VepMaxTtlSeconds;
     if (ticket.target_endpoint.addr.family == kad6::Kad6Address::Family::IPv4) {
         const uint32 publicIp = theApp.GetPublicIP();
@@ -7510,6 +7552,11 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
                 activeCircuits.find(it->second.circ_id) == activeCircuits.end())
                 it = m_k6OriginTargetRoutes.erase(it);
             else ++it;
+        for (auto it = m_k6OriginLiveRoutes.begin(); it != m_k6OriginLiveRoutes.end(); )
+            if (it->second.expires_at <= nowSeconds ||
+                activeCircuits.find(it->second.circ_id) == activeCircuits.end())
+                it = m_k6OriginLiveRoutes.erase(it);
+            else ++it;
 
         std::set<uint64> lostSourceLeases;
         for (auto it = m_k6OriginSourceLeaseRoutes.begin();
@@ -7752,15 +7799,45 @@ void CLiveTunnel::SweepK6SourceLeases(const std::set<uint32_t>& activeCircuits,
 // what matters is V's identity never touches the broadcaster or the DHT.
 void CLiveTunnel::ExitHandle_LiveSubscribe(const TunnelRequestCtx& ctx)
 {
-    // body = [streamKey 16][bIP u32 LE][bPort u16 LE][bUDP u16 LE][bAltIP u32 LE] = 28
+    // Legacy v1 carries the endpoint (28 bytes). Kad6-native v2 keeps it at
+    // the exit: [result_id 16][source_request_id u32][version=2][reserved 3].
     uint8_t status = 1;            // 1 = bad request (default)
     uint8_t streamKey[16] = {0};
-    if (ctx.body && ctx.bodyLen >= 28) {
+    uint32_t bIP = 0, bAltIP = 0;
+    uint16_t bPort = 0, bUDP = 0;
+    bool resolved = false;
+    if (ctx.body && ctx.bodyLen == 24 && ctx.body[20] == 2 &&
+        ctx.body[21] == 0 && ctx.body[22] == 0 && ctx.body[23] == 0 && ctx.circ) {
         memcpy(streamKey, ctx.body, 16);
-        uint32_t bIP    = eseRdU32LE(ctx.body + 16);
-        uint16_t bPort  = eseRdU16LE(ctx.body + 20);
-        uint16_t bUDP   = eseRdU16LE(ctx.body + 22);
-        uint32_t bAltIP = eseRdU32LE(ctx.body + 24);
+        kad6::Hash16 resultId{};
+        memcpy(resultId.data(), streamKey, resultId.size());
+        const uint32 sourceRequestId = eseRdU32LE(ctx.body + 16);
+        K6AuthorizedTarget target;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            const auto found = m_k6AuthorizedTargets.find(K6AuthorizedTargetKey(
+                ctx.circ->Id(), sourceRequestId, resultId));
+            if (found != m_k6AuthorizedTargets.end() &&
+                found->second.expires_at > static_cast<uint64>(time(NULL)))
+                target = found->second;
+        }
+        if (target.expires_at != 0 && target.result_id == resultId &&
+            target.endpoint.addr.family == kad6::Kad6Address::Family::IPv4 &&
+            target.endpoint.tcp_port != 0) {
+            memcpy(&bIP, target.endpoint.addr.addr.data(), 4);
+            bPort = target.endpoint.tcp_port;
+            bUDP = target.endpoint.udp_port;
+            resolved = bIP != 0;
+        }
+    } else if (ctx.body && ctx.bodyLen == 28) {
+        memcpy(streamKey, ctx.body, 16);
+        bIP    = eseRdU32LE(ctx.body + 16);
+        bPort  = eseRdU16LE(ctx.body + 20);
+        bUDP   = eseRdU16LE(ctx.body + 22);
+        bAltIP = eseRdU32LE(ctx.body + 24);
+        resolved = bIP != 0 && bPort != 0;
+    }
+    if (resolved) {
         // C7 — exit as multicast proxy: if we ALREADY hold a proxy subscription
         // for this stream (another tunneled viewer arrived first), do NOT dial /
         // re-subscribe to the broadcaster. One subscription per channel is enough
@@ -8126,25 +8203,22 @@ uint16_t CLiveTunnel::SendK6SearchResults(const TunnelSearchJob& job)
             authorized.endpoint.tcp_port = live.tcp_port;
             authorized.endpoint.udp_port = live.udp_port;
             authorized.endpoint.transport_flags = kad6::kK6EpTcpEd2k;
-            authorized.endpoint.valid_until = static_cast<uint64>(time(NULL)) + kad6::kK6TicketMaxTtlSeconds;
+            // Match the origin's opaque Live route lifetime; the endpoint never
+            // leaves exit-local authorized state.
+            authorized.endpoint.valid_until = static_cast<uint64>(time(NULL)) + 120;
             authorized.expires_at = authorized.endpoint.valid_until;
             const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
-            if (crypto.sha256 && crypto.sha256(resultBody.data(), resultBody.size(), authorized.digest.data()) &&
-                K6AllowTicketTarget(this, static_cast<kad6::Byte>(kad6::K6TicketService::Ed2kTcp),
-                                    authorized.endpoint)) {
-                std::vector<uint8_t> ticketWire;
-                if (IssueK6RuntimeTicket(authorized, 4ull * 1024ull * 1024ull * 1024ull,
-                        kad6::K6Provenance::KadResult, job.circ_id, job.req_id, sent,
-                        ticketWire)) {
-                    kad6::K6TargetTicket ticket; size_t ticketUsed = 0;
-                    if (kad6::DecodeK6TargetTicket(ticketWire.data(), ticketWire.size(), ticket,
-                            &ticketUsed) == kad6::Kad6Status::Ok && ticketUsed == ticketWire.size()) {
-                        result.tickets.push_back(ticket);
-                        resultBody.clear();
-                        if (kad6::EncodeK6SearchResult(result, resultBody) != kad6::Kad6Status::Ok)
-                            continue;
-                    }
-                }
+            if (!crypto.sha256 ||
+                !crypto.sha256(resultBody.data(), resultBody.size(), authorized.digest.data()) ||
+                !K6AllowTicketTarget(this,
+                    static_cast<kad6::Byte>(kad6::K6TicketService::Ed2kTcp),
+                    authorized.endpoint))
+                continue;
+            // Live endpoints stay exit-local. Unlike file-source results, no
+            // target ticket is embedded: its endpoint would be plaintext to A.
+            // The later v2 LIVE_SUBSCRIBE resolves this authorized result_id on
+            // this exact circuit and never returns the broadcaster address.
+            {
                 CSingleLock pl(&m_pendingLock, TRUE);
                 m_k6AuthorizedTargets[K6AuthorizedTargetKey(job.circ_id, job.req_id,
                     authorized.result_id)] = authorized;
@@ -8477,11 +8551,32 @@ bool CLiveTunnel::K6BindSource(const kad6::K6SourceBind& bind,
             kad6::Kad6Status::Ok || consumed != reply.size() ||
         response.msg_type != kad6::kK6MsgSourceBound || response.request_id != reqId ||
         kad6::DecodeK6SourceBound(response.body.data(), response.body.size(), boundOut,
-            &consumed) != kad6::Kad6Status::Ok || consumed != response.body.size() ||
-        kad6::VerifyK6SourceBound(MakeKad6HostCryptoHooks(), bind, boundOut) !=
-            kad6::Kad6Status::Ok)
+            &consumed) != kad6::Kad6Status::Ok || consumed != response.body.size())
         return false;
     if (boundOut.status != kad6::K6SourceBoundStatus::Ok || pinnedCircuit == 0)
+        return false;
+    std::array<uint8_t, kad6::kEd25519PubSize> expectedExit{};
+    bool exitPinned = false;
+    {
+        CSingleLock lock(&m_lock, TRUE);
+        for (const auto& circuit : m_circuits) {
+            if (!circuit || circuit->Id() != pinnedCircuit ||
+                circuit->m_role != CircuitRole::Originator ||
+                circuit->State() != CircuitState::Active || !circuit->m_auth_ok ||
+                circuit->HopCount() == 0)
+                continue;
+            memcpy(expectedExit.data(),
+                   circuit->Hop(circuit->HopCount() - 1).pub_long,
+                   expectedExit.size());
+            exitPinned = true;
+            break;
+        }
+    }
+    // The signature alone authenticates only the key embedded by the sender.
+    // Bind it to the last authenticated hop of the exact response circuit.
+    if (!exitPinned ||
+        kad6::VerifyK6SourceBound(MakeKad6HostCryptoHooks(), bind, boundOut,
+            expectedExit.data()) != kad6::Kad6Status::Ok)
         return false;
     {
         CSingleLock pl(&m_pendingLock, TRUE);
@@ -9120,8 +9215,8 @@ bool CLiveTunnel::TunneledLiveSubscribe(const uint8_t streamKey[16],
 // tolerates a missing slot (it just skips retry tracking), and the SUB_ACK
 // reply finds no waiter in SignalReply (no-op). No leak, no block.
 void CLiveTunnel::SendLiveSubscribeNoWait(const uint8_t streamKey[16],
-                                          uint32_t bIP, uint16_t bPort, uint16_t bUDP,
-                                          uint32_t bAltIP)
+                                           uint32_t bIP, uint16_t bPort, uint16_t bUDP,
+                                           uint32_t bAltIP)
 {
     const uint32_t req_id = NewCircuitId();   // random, collision-irrelevant here
     std::vector<uint8_t> body(28);
@@ -9131,6 +9226,32 @@ void CLiveTunnel::SendLiveSubscribeNoWait(const uint8_t streamKey[16],
     eseWrU16LE(body.data() + 22, bUDP);
     eseWrU32LE(body.data() + 24, bAltIP);
     EnqueueSendMsg(req_id, TUN_OP_LIVE_SUBSCRIBE, body.data(), body.size());
+}
+
+bool CLiveTunnel::SendK6LiveSubscribeNoWait(const uint8_t streamKey[16])
+{
+    if (!streamKey) return false;
+    K6OriginTargetRoute route;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        const auto found = m_k6OriginLiveRoutes.find(K6BinaryKey(streamKey, 16));
+        if (found == m_k6OriginLiveRoutes.end() ||
+            found->second.expires_at <= static_cast<uint64>(time(NULL)))
+            return false;
+        route = found->second;
+    }
+    if (route.circ_id == 0 || route.source_request_id == 0 ||
+        K6SelectOriginCircuit(ESE_CAP_KAD6, route.circ_id) != route.circ_id)
+        return false;
+
+    const uint32_t reqId = NewCircuitId();
+    std::vector<uint8_t> body(24, 0);
+    memcpy(body.data(), streamKey, 16);
+    eseWrU32LE(body.data() + 16, route.source_request_id);
+    body[20] = 2;
+    EnqueueSendMsg(reqId, TUN_OP_LIVE_SUBSCRIBE, body.data(), body.size(),
+                   ESE_CAP_KAD6, route.circ_id);
+    return true;
 }
 
 // v8.1 D1 - non-blocking tunneled Kad keyword search. Like SendLiveSubscribeNoWait, uses a

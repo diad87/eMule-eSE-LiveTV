@@ -1,0 +1,22 @@
+; P4 KRP relay client preferences. Copy these keys into preferences.ini only
+; for a controlled test with a public edge. The feature remains OFF until
+; explicitly enabled.
+[KRPRelay]
+KrpRelayEnabled=0
+KrpRelayKillSwitch=0
+EndpointHost=relay.example.invalid
+EndpointPort=443
+ExpectedServerName=relay.example.invalid
+CaBundlePath=C:\path\to\relay-ca.pem
+; 0 = only the selected eD2K server may consume relay evidence.
+; 1 = explicitly allow any currently connected server (less restrictive).
+AllowAnyConnectedServer=0
+
+; P4 classic TCP data plane. Keep OFF unless relayedge P4 is deployed.
+ExperimentalTcpDataPlane=0
+; File containing exactly 64 hexadecimal characters (32 random bytes).
+; Copy the same protected file to the edge; the token itself never goes on wire.
+AuthTokenPath=C:\path\to\krp-auth-token.hex
+
+; The WSS path and subprotocol are fixed by KRP v1:
+; /krp/v1 and krp.v1. No identity key or other secret is stored here.

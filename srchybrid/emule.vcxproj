@@ -67,7 +67,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>..\\libutp;..\libreach\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:throwingNew</AdditionalOptions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -93,7 +93,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>..\\libutp;..\libreach\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:throwingNew</AdditionalOptions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -117,7 +117,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>..\\libutp;..\libreach\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:throwingNew</AdditionalOptions>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -144,7 +144,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>..\\libutp;..\libreach\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:throwingNew</AdditionalOptions>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -180,7 +180,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='_SpecialBootstrapNodes|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>..\\libutp;..\libreach\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:throwingNew</AdditionalOptions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -206,7 +206,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='_SpecialBootstrapNodes|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>..\\libutp;..\libreach\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\\libutp;..\librelayclient\include;..\librelaycore\include;..\relayedge\include;..\libreach\include;..\libnatmap\include;..\libkad6\include;.;..;..\CxImage\CxImage;..\id3lib\include;..\mbedtls\include;..\mbedtls\tf-psa-crypto\include;..\mbedtls\tf-psa-crypto\drivers\builtin\include;$(VC_ATLMFC_SourcePath);$(UniversalCRTSdkDir)Include\10.0.26100.0\um\;$(UniversalCRTSdkDir)Include\10.0.26100.0\shared;</AdditionalIncludeDirectories>
       <AdditionalOptions>/Zc:throwingNew</AdditionalOptions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -269,6 +269,7 @@
     <ClCompile Include="CreditsThread.cpp" />
     <ClCompile Include="CustomAutoComplete.cpp" />
     <ClCompile Include="DeadSourceList.cpp" />
+	<ClCompile Include="DirectReachabilityManager.cpp" />
     <ClCompile Include="DialogMinTrayBtn.cpp" />
     <ClCompile Include="DirectDownloadDlg.cpp" />
     <ClCompile Include="DirectoryTreeCtrl.cpp" />
@@ -283,6 +284,53 @@
     <ClCompile Include="EditDelayed.cpp" />
     <ClCompile Include="EditX.cpp" />
     <ClCompile Include="EMSocket.cpp" />
+    <ClCompile Include="RelayClient.cpp" />
+    <ClCompile Include="..\librelayclient\src\relay_client.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\librelayclient\src\relay_wss_transport.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\librelaycore\src\krp_control.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\librelaycore\src\krp_tcp_wire.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\librelaycore\src\krp_auth.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\relayedge\src\krp_p4_crypto.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\relayedge\src\tls_tcp_carrier.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>RELAYEDGE_EXTERNAL_MBEDTLS_RUNTIME;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="..\relayedge\src\wss_h1.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\relayedge\src\wss_carrier.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
     <ClCompile Include="Emule.cpp" />
     <ClCompile Include="EmuleDlg.cpp" />
     <ClCompile Include="eSEHelpers.cpp" />
@@ -360,6 +408,36 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+	<ClCompile Include="..\libnatmap\src\natmap_state.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\natmap_policy.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+		<LanguageStandard>stdcpp17</LanguageStandard>
+		<WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\natmap_chain.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+		<LanguageStandard>stdcpp17</LanguageStandard>
+		<WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\natpmp_codec.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\pcp_codec.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\ownership_ledger.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
     <ClCompile Include="..\libreach\src\reach_codec.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -682,6 +760,7 @@
     <ClCompile Include="UPnPImpl.cpp" />
     <ClCompile Include="UPnPImplMiniLib.cpp" />
     <ClCompile Include="UPnPImplNATPMP.cpp" />
+	<ClCompile Include="UPnPImplPCP.cpp" />
     <ClCompile Include="UPnPImplWinServ.cpp" />
     <ClCompile Include="UPnPImplWrapper.cpp" />
     <ClCompile Include="URLClient.cpp" />
@@ -724,6 +803,7 @@
   <ItemGroup>
     <ClInclude Include="3DPreviewControl.h" />
     <ClInclude Include="AbstractFile.h" />
+    <ClInclude Include="RelayClient.h" />
     <ClInclude Include="AddFriend.h" />
     <ClInclude Include="AddSourceDlg.h" />
     <ClInclude Include="AICHSyncThread.h" />
@@ -870,6 +950,14 @@
     <ClInclude Include="ListCtrlX.h" />
     <ClInclude Include="ListenSocket.h" />
     <ClInclude Include="LiveChunkBuffer.h" />
+	<ClInclude Include="DirectReachabilityManager.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\natmap_state.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\natmap_policy.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\natmap_chain.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\natmap_types.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\natpmp_codec.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\pcp_codec.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\ownership_ledger.h" />
     <ClInclude Include="LiveDebugLog.h" />
     <ClInclude Include="LiveKadBridge.h" />
     <ClInclude Include="LiveMeshManager.h" />
@@ -1020,6 +1108,7 @@
     <ClInclude Include="UPnPImpl.h" />
     <ClInclude Include="UPnPImplMiniLib.h" />
     <ClInclude Include="UPnPImplNATPMP.h" />
+	<ClInclude Include="UPnPImplPCP.h" />
     <ClInclude Include="UPnPImplWinServ.h" />
     <ClInclude Include="UPnPImplWrapper.h" />
     <ClInclude Include="URLClient.h" />

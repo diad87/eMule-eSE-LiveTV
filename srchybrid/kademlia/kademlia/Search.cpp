@@ -829,7 +829,7 @@ void CSearch::StorePacket()
 				if (bDirectCallback) {
 					// firewalled, but direct UDP callback is possible without buddies
 					listTag.push_back(new CKadTagUInt(TAG_SOURCETYPE, 6));
-					listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, thePrefs.GetPort()));
+					listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, theApp.GetAdvertisedTcpPort()));
 					if (bPublishInternalKadPort)
 						listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
 					if (pFromContact->GetVersion() >= KADEMLIA_VERSION2_47a)
@@ -842,7 +842,7 @@ void CSearch::StorePacket()
 					listTag.push_back(new CKadTagUInt(TAG_SERVERIP, theApp.clientlist->GetBuddy()->GetIP()));
 					listTag.push_back(new CKadTagUInt(TAG_SERVERPORT, theApp.clientlist->GetBuddy()->GetUDPPort()));
 					listTag.push_back(new CKadTagStr(TAG_BUDDYHASH, (CStringW)md4str(uBuddyID.GetData())));
-					listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, thePrefs.GetPort()));
+					listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, theApp.GetAdvertisedTcpPort()));
 					if (bPublishInternalKadPort)
 						listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
 
@@ -857,7 +857,7 @@ void CSearch::StorePacket()
 					else
 						listTag.push_back(new CKadTagUInt8(TAG_SOURCETYPE,
 							(pFile->GetFileSize() > OLD_MAX_EMULE_FILE_SIZE ? 5 : 3)));
-					listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, thePrefs.GetPort()));
+					listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, theApp.GetAdvertisedTcpPort()));
 					// Do not send TAG_SOURCEUPORT here: the indexing node will add the
 					// actually observed UDP source port, which is essential behind CGNAT.
 					if (pFromContact->GetVersion() >= KADEMLIA_VERSION2_47a)
@@ -869,7 +869,7 @@ void CSearch::StorePacket()
 					listTag.push_back(new CKadTagUInt(TAG_SOURCETYPE, 4));
 				else
 					listTag.push_back(new CKadTagUInt(TAG_SOURCETYPE, 1));
-				listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, thePrefs.GetPort()));
+				listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, theApp.GetAdvertisedTcpPort()));
 				if (bPublishInternalKadPort)
 					listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
 
@@ -1058,7 +1058,7 @@ void CSearch::StorePacket()
 			// Send client hash so they can do a callback.
 			m_pfileSearchTerms.WriteUInt128(CKademlia::GetPrefs()->GetClientHash());
 			// Send client port so they can do a callback
-			m_pfileSearchTerms.WriteUInt16(thePrefs.GetPort());
+			m_pfileSearchTerms.WriteUInt16(theApp.GetAdvertisedTcpPort());
 
 			// Do a keyword/source search request to this Node.
 			// Send packet
@@ -1094,7 +1094,7 @@ void CSearch::StorePacket()
 			// Currently, we limit they type of callbacks for sources. We must know a file it person has for it to work.
 			fileIO.WriteUInt128(m_listFileIDs[0]);
 			// Send our port so the callback works.
-			fileIO.WriteUInt16(thePrefs.GetPort());
+			fileIO.WriteUInt16(theApp.GetAdvertisedTcpPort());
 			// Send packet
 			if (thePrefs.GetDebugClientKadUDPLevel() > 0)
 				DebugSend("KADEMLIA_CALLBACK_REQ", pFromContact->GetIPAddress(), pFromContact->GetUDPPort());

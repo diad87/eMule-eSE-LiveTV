@@ -243,12 +243,18 @@ protected:
 
 	// UPnP TimeOutTimer
 	UINT_PTR m_hUPnPTimeOutTimer;
+	bool m_bUPnPTimeoutForRefresh;
 	static void CALLBACK UPnPTimeOutTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
+	// Finite UPnP/PCP/NAT-PMP leases are renewed independently of Kad's
+	// hourly firewall-check cadence.
+	UINT_PTR m_hUPnPLeaseTimer;
+	uint64 m_uUPnPNetworkSignature;
+	static void CALLBACK UPnPLeaseTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
+	void CheckUPnPLease();
 
-	// V2-S06/S27: headless one-shot timer. Fires ~8 s after init to trigger
-	// either JoinStream(streamKey) or the SelfTest broadcast smoke (then exit).
-	UINT_PTR m_hHeadlessActionTimer;
-	static void CALLBACK HeadlessActionTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
+	// V2-S06/S27: runs viewer auto-join from UM_LIVE_HEADLESS_ACTION, or the
+	// signed-chunk selftest directly during isolated pre-network startup.
+	void RunHeadlessAction() noexcept;
 
 	// D7: scan %APPDATA%\eMule\crashdumps\ for unsent .dmp files and
 	// offer the user a one-time prompt. Called from OnInitDialog.
@@ -342,6 +348,8 @@ protected:
 	afx_msg LRESULT OnLiveWebJoin(WPARAM, LPARAM);
 	afx_msg LRESULT OnLiveWebBroadcast(WPARAM, LPARAM);
 	afx_msg LRESULT OnLiveWebLeave(WPARAM, LPARAM);
+	afx_msg LRESULT OnLiveHeadlessAction(WPARAM, LPARAM);
+	afx_msg LRESULT OnKrpClientEvent(WPARAM, LPARAM);
 	// VersionCheck DNS
 	afx_msg LRESULT OnVersionCheckResponse(WPARAM, LPARAM lParam);
 	// MiniMule

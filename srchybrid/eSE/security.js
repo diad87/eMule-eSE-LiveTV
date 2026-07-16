@@ -1,15 +1,29 @@
 'use strict';
 
 const crypto = require('crypto');
+const net = require('net');
 
 let _ctx = {};
 const buckets = new Map();
+const overflowBuckets = new Map();
+let trustedProxies = new Set();
+let rateChecks = 0;
+let maxRateBuckets = 4096;
+
+const RATE_PRUNE_EVERY = 64;
 
 const SENSITIVE_KEY_RE = /(password|passwd|api[_-]?key|token|secret|client[_-]?secret|refresh|access[_-]?token|enc[_-]?key|chat[_-]?id)/i;
 const REDACTED = '********';
 
 function init(ctx) {
   _ctx = ctx || {};
+  const configuredProxies = Object.prototype.hasOwnProperty.call(_ctx, 'trustedProxies')
+    ? _ctx.trustedProxies
+    : process.env.ESE_TRUST_PROXY;
+  trustedProxies = new Set(parseTrustedProxies(configuredProxies));
+  maxRateBuckets = Number.isInteger(_ctx.maxRateBuckets)
+    ? Math.max(1, Math.min(_ctx.maxRateBuckets, 65536))
+    : 4096;
 }
 
 function getAccessToken() {
@@ -106,7 +120,8 @@ function isLocalRequest(req) {
 }
 
 function isSecureRequest(req) {
-  return !!req.socket.encrypted || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+  return !!req.socket.encrypted
+    || (isTrustedProxy(req) && String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https');
 }
 
 function cookieFor(req) {
@@ -136,6 +151,8 @@ function cleanUrl(url) {
 function isProtectedPath(pathname) {
   return pathname.startsWith('/api/')
     || pathname.startsWith('/hls/')
+    || pathname === '/hls-local'
+    || pathname.startsWith('/hls-local/')
     || pathname.startsWith('/api/stream/')
     || pathname.startsWith('/api/live/');
 }
@@ -149,9 +166,91 @@ function isBootstrapPath(pathname) {
     || pathname === '/favicon.ico';
 }
 
+function expandIpv6(address) {
+  let value = String(address || '').toLowerCase().split('%')[0];
+  if (net.isIP(value) !== 6) return null;
+
+  // Convert an embedded IPv4 tail (for example ::ffff:192.0.2.1) into two
+  // hextets before expanding the compressed IPv6 notation.
+  const ipv4Tail = value.match(/(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (ipv4Tail) {
+    const octets = ipv4Tail[1].split('.').map(Number);
+    value = value.slice(0, -ipv4Tail[1].length)
+      + ((octets[0] << 8) | octets[1]).toString(16)
+      + ':' + ((octets[2] << 8) | octets[3]).toString(16);
+  }
+
+  const halves = value.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || missing < 0) return null;
+  const full = left.concat(new Array(missing).fill('0'), right);
+  if (full.length !== 8 || full.some(part => !/^[0-9a-f]{1,4}$/.test(part))) return null;
+  return full.map(part => parseInt(part, 16).toString(16));
+}
+
+function normalizeIp(value) {
+  let address = String(value || '').trim();
+  if (address.startsWith('[') && address.endsWith(']')) address = address.slice(1, -1);
+  address = address.split('%')[0];
+
+  const mapped = address.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i);
+  if (mapped && net.isIP(mapped[1]) === 4) address = mapped[1];
+
+  const family = net.isIP(address);
+  if (family === 4) return address.split('.').map(part => String(Number(part))).join('.');
+  if (family === 6) {
+    const full = expandIpv6(address);
+    return full ? full.join(':') : '';
+  }
+  return '';
+}
+
+function rateIdentity(address) {
+  const normalized = normalizeIp(address);
+  if (!normalized) return 'unknown';
+  if (normalized.includes(':')) return normalized.split(':').slice(0, 4).join(':') + '::/64';
+  return normalized;
+}
+
+function parseTrustedProxies(value) {
+  const items = Array.isArray(value) ? value : String(value || '').split(',');
+  return items.map(normalizeIp).filter(Boolean);
+}
+
+function directPeer(req) {
+  return normalizeIp(req.socket && req.socket.remoteAddress);
+}
+
+function isTrustedProxy(req) {
+  const direct = directPeer(req);
+  return !!direct && trustedProxies.has(direct);
+}
+
+function parseForwardedChain(req) {
+  const raw = String(req.headers['x-forwarded-for'] || '');
+  if (!raw || raw.length > 1024) return null;
+  const parts = raw.split(',');
+  if (parts.length > 16) return null;
+  const normalized = parts.map(normalizeIp);
+  return normalized.every(Boolean) ? normalized : null;
+}
+
 function clientKey(req) {
-  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return forwarded || (req.socket && req.socket.remoteAddress) || 'unknown';
+  const direct = directPeer(req);
+  if (!direct || !trustedProxies.has(direct)) return rateIdentity(direct);
+
+  const chain = parseForwardedChain(req);
+  if (!chain || chain.length === 0) return rateIdentity(direct);
+
+  // Walk from the socket towards the original client. We only advance while
+  // the current hop is explicitly trusted, so an attacker-controlled value at
+  // the left of X-Forwarded-For cannot override the nearest untrusted address.
+  let current = direct;
+  for (let i = chain.length - 1; i >= 0 && trustedProxies.has(current); i--) current = chain[i];
+  return rateIdentity(current);
 }
 
 function rateRule(pathname) {
@@ -168,11 +267,24 @@ function checkRate(url, req, res) {
   const rule = rateRule(url.pathname);
   if (!rule) return true;
   const now = Date.now();
+  rateChecks++;
+  if ((rateChecks % RATE_PRUNE_EVERY) === 0) {
+    for (const [bucketKey, value] of buckets) {
+      if (now >= value.resetAt) buckets.delete(bucketKey);
+    }
+  }
+
   const key = rule.name + ':' + clientKey(req);
   let bucket = buckets.get(key);
+  let isOverflow = false;
+  if (!bucket && buckets.size >= maxRateBuckets) {
+    isOverflow = true;
+    bucket = overflowBuckets.get(rule.name);
+  }
   if (!bucket || now >= bucket.resetAt) bucket = { count: 0, resetAt: now + rule.windowMs };
   bucket.count++;
-  buckets.set(key, bucket);
+  if (isOverflow) overflowBuckets.set(rule.name, bucket);
+  else buckets.set(key, bucket);
   if (bucket.count <= rule.limit) return true;
 
   res.writeHead(429, {
@@ -312,5 +424,17 @@ module.exports = {
   isValidToken,
   // v7.5.0 — exported for unit tests and any caller that needs the DNS-rebinding-aware check.
   isLocalRequest,
-  _hostIsLocal
+  _hostIsLocal,
+  _test: {
+    clientKey,
+    isProtectedPath,
+    checkRate,
+    bucketCount: () => buckets.size,
+    overflowBucketCount: () => overflowBuckets.size,
+    resetRateState: () => {
+      buckets.clear();
+      overflowBuckets.clear();
+      rateChecks = 0;
+    }
+  }
 };

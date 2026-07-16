@@ -19,6 +19,7 @@ const wsTunnel = require('./ws_tunnel');
 const thumbExtractor = require('./thumbnail_extractor');
 const cfTunnel = require('./cloudflare_tunnel');
 const updateNotifier = require('./update_notifier');  // D6: GitHub release polling
+const nodesBootstrap = require('./nodes_bootstrap');
 
 const HLS_LIVE_DIR = path.join(os.tmpdir(), 'eMule_RTMP');
 const LIVE_DIR = HLS_LIVE_DIR;
@@ -55,69 +56,18 @@ function relayPlayerAlive() {
   } catch (e) { /* ignore */ }
 }
 
-// B.2 Sprint 1 — Auto-fetch nodes.dat watchdog
-// If eMule's Kad layer is still not connected after 60 s of dashboard uptime,
-// the user almost certainly has no nodes.dat or it's stale. We fetch a fresh
-// one from a well-known mirror and drop it in the eMule config dir, then nudge
-// the user to restart Kad. This is the recovery path when the bundled
-// nodes.dat (added in Tier 1.2) didn't help.
-const NODES_DAT_URL = 'https://www.nodes-dat.com/dl.php?load=nodes&trusted&clients';
-const NODES_DAT_DEST_CANDIDATES = [
-  path.join(os.homedir(), 'AppData', 'Local',   'eMule', 'config', 'nodes.dat'),
-  path.join(os.homedir(), 'AppData', 'Roaming', 'eMule', 'config', 'nodes.dat'),
-];
-let _nodesDatFetched = false;  // single-fire per process lifetime
-let _bootStartedAt = Date.now();
-function tryAutoFetchNodesDat() {
-  if (_nodesDatFetched) return;
-  _nodesDatFetched = true;  // even if it fails, don't loop
-  console.log('[eSE Boot] Kad still not connected after 60 s, fetching fresh nodes.dat...');
-  https.get(NODES_DAT_URL, { timeout: 30000 }, (r) => {
-    if (r.statusCode !== 200) {
-      console.warn('[eSE Boot] nodes.dat fetch HTTP ' + r.statusCode);
-      return;
-    }
-    const chunks = [];
-    r.on('data', d => chunks.push(d));
-    r.on('end', () => {
-      const buf = Buffer.concat(chunks);
-      if (buf.length < 100 || buf.length > 5 * 1024 * 1024) {
-        console.warn('[eSE Boot] nodes.dat size suspicious: ' + buf.length + ' bytes, skipping');
-        return;
-      }
-      // Write to the FIRST writable destination (Local first; eMule typically uses one of these)
-      for (const dest of NODES_DAT_DEST_CANDIDATES) {
-        try {
-          fs.mkdirSync(path.dirname(dest), { recursive: true });
-          fs.writeFileSync(dest, buf);
-          console.log('[eSE Boot] nodes.dat written to ' + dest + ' (' + buf.length + ' bytes). Restart Kad to apply.');
-          return;
-        } catch (e) {
-          console.warn('[eSE Boot] cannot write ' + dest + ': ' + e.message);
-        }
-      }
-    });
-  }).on('error', (e) => console.warn('[eSE Boot] nodes.dat fetch error: ' + String(e.message).replace(/[\r\n]/g, ' ')))
-    .on('timeout', function() { this.destroy(); console.warn('[eSE Boot] nodes.dat fetch timeout'); });
-}
-// Periodic check: every 15 s, if uptime > 60 s and Kad still down, fetch.
-setInterval(() => {
-  if (_nodesDatFetched) return;
-  if ((Date.now() - _bootStartedAt) < 60000) return;
-  // Probe eMule for Kad status
-  http.get('http://127.0.0.1:4711/api/status', { timeout: 2000 }, (r) => {
-    let body = '';
-    r.on('data', d => body += d);
-    r.on('end', () => {
-      try {
-        const s = JSON.parse(body);
-        if (s.kad_connected === false || s.kad_connected === 'false')
-          tryAutoFetchNodesDat();
-      } catch(e) { /* ignore */ }
-    });
-  }).on('error', () => {/* eMule offline, can't help */})
-    .on('timeout', function() { this.destroy(); });
-}, 15000);
+// nodes.dat supply-chain hardening
+// Hardened nodes.dat bootstrap. No third-party request or config write happens
+// by default. Developers can
+// opt in only by providing an HTTPS URL, its exact SHA-256 and an absolute
+// destination. The helper validates the binary format before replacing it.
+nodesBootstrap.startFromEnv().then(result => {
+  if (result.status === 'installed') {
+    console.log('[eSE Boot] Verified nodes.dat installed at ' + result.destination);
+  }
+}).catch(error => {
+  console.warn('[eSE Boot] Explicit nodes.dat install rejected: ' + String(error.message).replace(/[\r\n]/g, ' '));
+});
 
 // Sprint 3 I.2 — Tiny semver comparator. Returns >0 if a > b, <0 if a < b, 0 equal.
 // Handles "x.y.z" and "x.y.z-suffix" robustly enough for our release tags.
@@ -154,7 +104,7 @@ function markFirstRunSeen() {
 // hasn't determined the address yet, the UI shows "detecting…" — we never
 // fall back to a commercial echo service (api.ipify.org etc.), per the
 // project's "100% free, discovery via IP/overlay only" constraint.
-const https = require('https');  // still used: nodes.dat watchdog + GitHub update check
+const https = require('https');  // GitHub update check
 
 /**
  * Handle all /api/live/* routes.
@@ -493,7 +443,7 @@ function handleRoute(url, req, res, ctx) {
       '<li><b>Tu IP pública</b> es visible para los peers a los que te conectes (igual que en BitTorrent o eD2K). Los peers que descarguen tu emisión saben tu IP.</li>' +
       '<li>Si emites, tu <b>IP + puertos TCP/UDP</b> se publican en la red Kad (DHT pública). Cualquiera buscando "eselive" puede encontrarte.</li>' +
       '<li>Si usas un overlay externo (Tailscale, Tor, etc.) para acceso público, ese proveedor verá metadatos según su política.</li>' +
-      '<li>El watchdog de auto-fetch de <code>nodes.dat</code> contacta con <code>nodes-dat.com</code> (solo si tu Kad no tiene nodos). Tu IP pública se detecta sin terceros: vía Kad (v4) y observación de peer in-band (v6).</li>' +
+      '<li><code>nodes.dat</code> no se descarga en segundo plano. Una instalación de desarrollo solo puede habilitarla indicando explícitamente URL HTTPS, SHA-256 y destino. Tu IP pública se detecta sin terceros: vía Kad (v4) y observación de peer in-band (v6).</li>' +
       '<li>El check de auto-update contacta con <code>api.github.com</code>.</li>' +
       '</ul>' +
       '<h2>Datos que NO se recogen</h2>' +
@@ -530,14 +480,15 @@ function handleRoute(url, req, res, ctx) {
       // eMule endpoint parses query params on any method, so a GET suffices.
       '<script>(function(){' +
       'var sel=document.getElementById("ese-mode");var st=document.getElementById("ese-mode-status");' +
-      'function show(d){if(d&&d.mode){sel.value=d.mode;var r=d.runtime||{};var c=r.circuitsActive||0;' +
-      'st.textContent="Modo: "+d.mode+" · fallback: "+(d.fallback||"?")+" · circuitos túnel activos: "+c+(c===0?" (el modo Tunelizado no surtirá efecto hasta que haya circuitos)":"")' +
+      'function show(d){if(d&&d.mode){sel.value=d.mode;var r=d.runtime||{};var c=r.circuitsActive||0;var rs=r.routeState||"?";' +
+      'var rl=({kad6:"Kad6 activo",tunnel_kad2_compat:"túnel Kad2 compatible",kad2_fallback:"fallback Kad2",kad2_direct:"Kad2 directo",blocked_waiting_kad6:"bloqueado esperando Kad6"})[rs]||rs;' +
+      'st.textContent="Modo: "+d.mode+" · fallback: "+(d.fallback||"?")+" · ruta: "+rl+" · circuitos túnel activos: "+c' +
       '+" · celdas TX/RX: "+(r.cellsSent||0)+"/"+(r.cellsRecv||0)+" · bytes túnel TX/RX: "+(r.bytesSent||0)+"/"+(r.bytesRecv||0)+" · RTT medio: "+(r.meanRttMs?r.meanRttMs+" ms":"—")}' +
       'else{st.textContent="No se pudo leer el estado (¿eMule abierto en este equipo?)"}}' +
       'function load(){fetch("/api/live/privacy").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="eMule no responde"})}' +
       'sel.addEventListener("change",function(){st.textContent="Aplicando…";' +
       'fetch("/api/live/privacy?mode="+encodeURIComponent(sel.value)).then(function(r){return r.json()}).then(function(d){show(d);if(d&&d.mode)st.textContent="Guardado: "+d.mode+" — persiste al cerrar eMule"}).catch(function(){st.textContent="eMule no responde"})});' +
-      // Tunnel-circuit tester wiring (manual, observable). Builds nothing on its own.
+      // Tunnel-circuit tester remains a manual diagnostic; Adaptive/Tunneled now auto-seed.
       'var tc=document.getElementById("ese-test-circ");var rc=document.getElementById("ese-refresh-circ");' +
       'var cstat=document.getElementById("ese-circ-status");var clist=document.getElementById("ese-circ-list");' +
       'function stES(s){return s==="Active"?"ACTIVO":s==="Pending"?"Pendiente":s==="HalfBuilt"?"Medio-construido":s==="Built"?"Construido":s==="Destroyed"?"Destruido":s}' +
@@ -1546,10 +1497,11 @@ addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBe
   if (p === '/api/live/p2p/share') {
     const requestedKey = url.searchParams.get('key') || '';
     const requestedTitle = url.searchParams.get('title') || streamMeta.title || 'Live';
+    const dashboardPort = url.port || String(ctx.port || 8080);
     const buildShare = (key, title) => ({
       success: !!key,
       ed2kLink: buildAnonymousLiveLink(key, title),
-      webLink: key ? `http://localhost:8080/live/watch/${encodeURIComponent(key)}` : '',
+      webLink: key ? `http://localhost:${dashboardPort}/live/watch/${encodeURIComponent(key)}` : '',
       streamKey: key,
       title
     });

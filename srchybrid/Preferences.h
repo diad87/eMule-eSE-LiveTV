@@ -650,6 +650,7 @@ public:
 	// eSE: Network State & Feature Flags
 	static bool		m_bUPnPCriticalError;	// Fase 2: Indica fallo absoluto de UPnP/NAT-PMP
 	static bool		m_bEnableUtpHolePunch;	// Fase 4: Kill-switch maestro para Hole Punching uTP
+	static bool		m_bEseV9Experimental;	// v9 alpha master opt-in for unvalidated wire capabilities. Default OFF.
 	static bool		m_bEseKad3Rendezvous;	// Secure 3-way Kad rendezvous participation. Separate, default-OFF opt-in.
 	static bool		m_bEseEndgame;			// Endgame mode: race the last outstanding blocks across sources so one slow owner cannot stall the final MB. Default ON.
 	static bool		m_bEseAutoKeepalive;	// R.2 auto-activation: when firewalled+Kad-connected, autonomously RequestStart() the Kad keepalive (was /api-only). Default OFF -> dormant-safe.
@@ -657,6 +658,16 @@ public:
 	static bool		m_bEseRelayAccept;		// [eSE v9] R.3: act as a relay buddy (accept 0xCF SETUP + serve 0xCE viewers). Default OFF.
 	static bool		m_bEseRelayEgress;		// [eSE v9] R.3: as an unreachable broadcaster, push my stream to a relay buddy. Default OFF.
 	static bool		m_bEseReachSelector;	// [eSE v9] reachability selector: escalate Direct->punch2->punch3->relay on the Live dial. Default OFF.
+	// KRP relay client; independent from the Live/Buddy relay above.
+	static bool		m_bKrpRelayEnabled;
+	static bool		m_bKrpRelayKillSwitch;
+	static CString	m_strKrpRelayEndpointHost;
+	static uint16	m_uKrpRelayEndpointPort;
+	static CString	m_strKrpRelayExpectedServerName;
+	static CString	m_strKrpRelayCaBundlePath;
+	static bool		m_bKrpRelayAllowAnyServer;
+	static bool		m_bKrpRelayExperimentalTcp;
+	static CString	m_strKrpRelayAuthTokenPath;
 	static bool		m_bEseHolePunchPortPredict;	// [eSE v9] anti-CGNAT: birthday-spray REQs across a port window (symmetric NAT / CGNAT). Default OFF.
 	static int		m_iEseHolePunchPortSpread;	// [eSE v9] port-prediction window half-width (ports each side of the observed port). Clamped [0,8].
 	static bool		m_bEseEd2kPunch3;			// [eSE v9] eD2K downloads: escalate to 3-way rendezvous (punch3) when the 2-way punch fails. Default OFF.
@@ -739,6 +750,8 @@ public:
 
 	static uint16	GetPort()							{ return port; }
 	static uint16	GetUDPPort()						{ return udpport; }
+	static uint16	GetLocalTcpPort()					{ return port; }
+	static uint16	GetLocalUdpPort()					{ return udpport; }
 
 	// v0.71 IPv6 Sprint 2 — IPv6 preferences. Enum hoisted to class top.
 	// IPv6Mode:
@@ -1285,6 +1298,8 @@ public:
 	static void		SetUPnPCriticalError(bool b)		{ m_bUPnPCriticalError = b; }
 	static bool		GetUtpHolePunchEnabled()			{ return m_bEnableUtpHolePunch; }
 	static void		SetUtpHolePunchEnabled(bool b)		{ m_bEnableUtpHolePunch = b; }
+	static bool		GetEseV9Experimental()				{ return m_bEseV9Experimental; }
+	static void		SetEseV9Experimental(bool b)			{ m_bEseV9Experimental = b; }
 	static bool		GetEseKad3Rendezvous()			{ return m_bEseKad3Rendezvous; }
 	static void		SetEseKad3Rendezvous(bool b)		{ m_bEseKad3Rendezvous = b; }
 	static bool		GetEseEndgame()					{ return m_bEseEndgame; }
@@ -1297,6 +1312,17 @@ public:
 	static void		SetEseRelayAccept(bool b)			{ m_bEseRelayAccept = b; }
 	static bool		GetEseRelayEgress()					{ return m_bEseRelayEgress; }
 	static void		SetEseRelayEgress(bool b)			{ m_bEseRelayEgress = b; }
+	static bool		GetKrpRelayEnabled()				{ return m_bKrpRelayEnabled; }
+	static void		SetKrpRelayEnabled(bool b)			{ m_bKrpRelayEnabled = b; }
+	static bool		GetKrpRelayKillSwitch()			{ return m_bKrpRelayKillSwitch; }
+	static void		SetKrpRelayKillSwitch(bool b)		{ m_bKrpRelayKillSwitch = b; }
+	static const CString& GetKrpRelayEndpointHost()		{ return m_strKrpRelayEndpointHost; }
+	static uint16	GetKrpRelayEndpointPort()			{ return m_uKrpRelayEndpointPort; }
+	static const CString& GetKrpRelayExpectedServerName()	{ return m_strKrpRelayExpectedServerName; }
+	static const CString& GetKrpRelayCaBundlePath()		{ return m_strKrpRelayCaBundlePath; }
+	static bool		GetKrpRelayAllowAnyServer()			{ return m_bKrpRelayAllowAnyServer; }
+	static bool		GetKrpRelayExperimentalTcp()		{ return m_bKrpRelayExperimentalTcp; }
+	static const CString& GetKrpRelayAuthTokenPath()	{ return m_strKrpRelayAuthTokenPath; }
 	static bool		GetEseReachSelector()				{ return m_bEseReachSelector; }
 	static void		SetEseReachSelector(bool b)			{ m_bEseReachSelector = b; }
 	static bool		GetEseHolePunchPortPredict()		{ return m_bEseHolePunchPortPredict; }

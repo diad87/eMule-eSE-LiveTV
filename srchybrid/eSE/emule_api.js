@@ -584,6 +584,17 @@ function emuleDownload(hash, callback, meta) {
   if (!emuleSession) { callback(new Error('Not logged in')); return; }
   const key = String(hash || '').toUpperCase();
 
+  function finishDownloadRequest(err, html) {
+    if (err) { callback(err, false); return; }
+    if (!html) { callback(new Error('Empty response from eMule'), false); return; }
+    if (html.includes('w=password')) {
+      emuleSession = null;
+      callback(new Error('eMule session expired before the download was queued'), false);
+      return;
+    }
+    callback(null, true);
+  }
+
   // Prefer explicit metadata from the caller, else our own result cache.
   const m = (meta && meta.size > 0) ? meta : _resultMetaCache.get(key);
 
@@ -591,18 +602,13 @@ function emuleDownload(hash, callback, meta) {
     // Robust path: add by full ed2k link. Independent of eMule's search list,
     // so it works even after later searches wiped this hash from it.
     const link = buildEd2kLink(m.name, m.size, key);
-    emuleRequest('?ses=' + emuleSession + '&w=transfer&ed2k=' + encodeURIComponent(link), (err, html) => {
-      if (!err && html && html.includes('w=password')) { emuleSession = null; }
-      callback(err, !err);
-    });
+    emuleRequest('?ses=' + emuleSession + '&w=transfer&ed2k=' + encodeURIComponent(link), finishDownloadRequest);
     return;
   }
 
   // Fallback: legacy by-hash add. Only succeeds while the hash is still present
   // in eMule's current search results.
-  emuleRequest('?ses=' + emuleSession + '&w=search&downloads=' + key, (err, html) => {
-    callback(err, !err);
-  });
+  emuleRequest('?ses=' + emuleSession + '&w=search&downloads=' + key, finishDownloadRequest);
 }
 
 function withEmuleSession(callback) {

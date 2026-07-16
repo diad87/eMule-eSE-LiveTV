@@ -570,6 +570,11 @@
 // (same file as g_uForkCapsRuntime — both are runtime cap accumulators
 // updated as modules go live; both are read by the UI for visibility).
 extern uint32 g_uEseCapsRuntime;
+
+// v9 alpha capability boundary. Recomputes the unvalidated capability subset
+// from EseV9Experimental and the persistent node-identity state. Kad6 is not
+// enabled here: its signed public-release/service gate controls that bit.
+void RefreshEseV9PreviewCaps();
 #define TAG_SOURCEUPORT			"\xFC"	// <uint16>
 #define TAG_SOURCEPORT			"\xFD"	// <uint16>
 #define TAG_SOURCEIP			"\xFE"	// <uint32>

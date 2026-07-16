@@ -922,7 +922,7 @@ void CUpDownClient::SendMuleInfoPacket(bool bAnswer)
 	tag.WriteTagToFile(data);
 	CTag tag2(ET_UDPVER, 4);
 	tag2.WriteTagToFile(data);
-	CTag tag3(ET_UDPPORT, thePrefs.GetUDPPort());
+	CTag tag3(ET_UDPPORT, theApp.GetAdvertisedUdpPort());
 	tag3.WriteTagToFile(data);
 	CTag tag4(ET_SOURCEEXCHANGE, 3);
 	tag4.WriteTagToFile(data);
@@ -1129,7 +1129,7 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 {
 	data.WriteHash16(thePrefs.GetUserHash());
 	data.WriteUInt32(theApp.GetID());
-	data.WriteUInt16(thePrefs.GetPort());
+	data.WriteUInt16(theApp.GetAdvertisedTcpPort());
 
 	uint32 tagcount = 7;
 	const CAddress helloV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
@@ -1187,7 +1187,7 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 		kadUDPPort = 0;
 	CTag tagUdpPorts(CT_EMULE_UDPPORTS,
 				((uint32)kadUDPPort			   << 16) |
-				((uint32)thePrefs.GetUDPPort() <<  0)
+				((uint32)theApp.GetAdvertisedUdpPort() <<  0)
 				);
 	tagUdpPorts.WriteTagToFile(data);
 
@@ -1775,7 +1775,7 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 		m_eConnectingState = CCS_DIRECTCALLBACK;
 		//DebugLog(_T("Direct Callback on port %u to client %s (%s) "), GetKadPort(), (LPCTSTR)DbgGetClientInfo(), (LPCTSTR)md4str(GetUserHash()));
 		CSafeMemFile data;
-		data.WriteUInt16(thePrefs.GetPort()); // needs to know our port
+		data.WriteUInt16(theApp.GetAdvertisedTcpPort()); // needs to know our public port
 		data.WriteHash16(thePrefs.GetUserHash()); // and userhash
 		// our connection settings
 		data.WriteUInt8(GetMyConnectOptions(true, false));
@@ -1903,7 +1903,7 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 			CSafeMemFile bio(34);
 			bio.WriteUInt128(Kademlia::CUInt128(GetBuddyID()));
 			bio.WriteUInt128(Kademlia::CUInt128(m_reqfile->GetFileHash()));
-			bio.WriteUInt16(thePrefs.GetPort());
+			bio.WriteUInt16(theApp.GetAdvertisedTcpPort());
 			if (thePrefs.GetDebugClientKadUDPLevel() > 0 || thePrefs.GetDebugClientUDPLevel() > 0)
 				DebugSend("KadCallbackReq", this);
 			Packet *packet = new Packet(bio, OP_KADEMLIAHEADER);

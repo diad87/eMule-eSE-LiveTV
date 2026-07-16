@@ -68,17 +68,17 @@ bool FuzzRecords(const Config& config, Report& report) {
         kad6::K6SourceRecord source;
         const kad6::Kad6Status sb = kad6::DecodeK6NodeBind(data, input.size(), bind, &consumed);
         if (sb == kad6::Kad6Status::Ok)
-            Require(report, consumed <= input.size(), "node-bind consumed bound");
+            Require(report, consumed == input.size(), "node-bind consumes exact input");
         consumed = 0;
         const kad6::Kad6Status sr = kad6::DecodeK6Rotate(data, input.size(), rotate, &consumed);
         if (sr == kad6::Kad6Status::Ok)
-            Require(report, consumed <= input.size(), "rotation consumed bound");
+            Require(report, consumed == input.size(), "rotation consumes exact input");
         consumed = 0;
         const kad6::Kad6Status srr = kad6::DecodeK6RouterRecord(data, input.size(), router, &consumed);
         if (srr == kad6::Kad6Status::Ok) {
             Require(report, router.endpoints.size() <= kad6::kK6RouterMaxEndpoints,
                     "router endpoint cap");
-            Require(report, consumed <= input.size(), "router consumed bound");
+            Require(report, consumed == input.size(), "router consumes exact input");
         }
         consumed = 0;
         const kad6::Kad6Status ss = kad6::DecodeK6SourceRecord(data, input.size(), source, &consumed);
@@ -86,7 +86,7 @@ bool FuzzRecords(const Config& config, Report& report) {
             Require(report, source.exits.size() <= kad6::kK6SourceMaxExits, "source exit cap");
             Require(report, source.compat_pub.size() <= kad6::kK6SourceMaxCompatPubLen,
                     "source compatibility blob cap");
-            Require(report, consumed <= input.size(), "source consumed bound");
+            Require(report, consumed == input.size(), "source consumes exact input");
         }
         report.max_input = std::max(report.max_input, input.size());
         report.max_output = std::max(report.max_output,

@@ -390,6 +390,7 @@ uint16	CPreferences::m_nWebPort;
 bool	CPreferences::m_bWebUseUPnP;
 bool	CPreferences::m_bUPnPCriticalError;
 bool	CPreferences::m_bEnableUtpHolePunch;
+bool	CPreferences::m_bEseV9Experimental;
 bool	CPreferences::m_bEseKad3Rendezvous;
 bool	CPreferences::m_bEseEndgame;
 bool	CPreferences::m_bEseAutoKeepalive;	// R.2 auto-activation pref
@@ -397,6 +398,15 @@ bool	CPreferences::m_bEseKadV6Tag;		// [eSE v9] Kad-HELLO v6 tag TX pref
 bool	CPreferences::m_bEseRelayAccept;	// [eSE v9] R.3 relay accept pref
 bool	CPreferences::m_bEseRelayEgress;	// [eSE v9] R.3 relay egress pref
 bool	CPreferences::m_bEseReachSelector;	// [eSE v9] reachability selector pref
+bool	CPreferences::m_bKrpRelayEnabled;
+bool	CPreferences::m_bKrpRelayKillSwitch;
+CString	CPreferences::m_strKrpRelayEndpointHost;
+uint16	CPreferences::m_uKrpRelayEndpointPort;
+CString	CPreferences::m_strKrpRelayExpectedServerName;
+CString	CPreferences::m_strKrpRelayCaBundlePath;
+bool	CPreferences::m_bKrpRelayAllowAnyServer;
+bool	CPreferences::m_bKrpRelayExperimentalTcp;
+CString	CPreferences::m_strKrpRelayAuthTokenPath;
 bool	CPreferences::m_bEseHolePunchPortPredict;	// [eSE v9] anti-CGNAT port-prediction pref
 int		CPreferences::m_iEseHolePunchPortSpread;	// [eSE v9] port-prediction window half-width
 bool	CPreferences::m_bEseEd2kPunch3;		// [eSE v9] eD2K punch3 escalation pref
@@ -1869,8 +1879,18 @@ void CPreferences::SavePreferences()
 	ini.WriteString(_T("KadV2SensitiveKeywords"), m_strKadV2SensitiveKeywords, _T("eSE"));
 	ini.WriteBool(_T("Kad6PublicExitOptIn"), m_bKad6PublicExitOptIn, _T("eSE"));
 	ini.WriteBool(_T("EnableUtpHolePunch"), m_bEnableUtpHolePunch, _T("eSE"));
+	ini.WriteBool(_T("EseV9Experimental"), m_bEseV9Experimental, _T("eSE"));
 	ini.WriteBool(_T("EseKad3Rendezvous"), m_bEseKad3Rendezvous, _T("eSE"));
 	ini.WriteBool(_T("EseEndgame"), m_bEseEndgame, _T("eSE"));
+	ini.WriteBool(_T("KrpRelayEnabled"), m_bKrpRelayEnabled, _T("KRPRelay"));
+	ini.WriteBool(_T("KrpRelayKillSwitch"), m_bKrpRelayKillSwitch, _T("KRPRelay"));
+	ini.WriteString(_T("EndpointHost"), m_strKrpRelayEndpointHost, _T("KRPRelay"));
+	ini.WriteInt(_T("EndpointPort"), m_uKrpRelayEndpointPort, _T("KRPRelay"));
+	ini.WriteString(_T("ExpectedServerName"), m_strKrpRelayExpectedServerName, _T("KRPRelay"));
+	ini.WriteString(_T("CaBundlePath"), m_strKrpRelayCaBundlePath, _T("KRPRelay"));
+	ini.WriteBool(_T("AllowAnyConnectedServer"), m_bKrpRelayAllowAnyServer, _T("KRPRelay"));
+	ini.WriteBool(_T("ExperimentalTcpDataPlane"), m_bKrpRelayExperimentalTcp, _T("KRPRelay"));
+	ini.WriteString(_T("AuthTokenPath"), m_strKrpRelayAuthTokenPath, _T("KRPRelay"));
 }
 
 void CPreferences::ResetStatsColor(int index)
@@ -2525,6 +2545,10 @@ void CPreferences::LoadPreferences()
 	// Section: "eSE"
 	//
 	m_bEnableUtpHolePunch = ini.GetBool(_T("EnableUtpHolePunch"), true, _T("eSE"));
+	// v9 alpha release boundary. This is the master gate for capabilities whose
+	// wire/runtime matrix is not stable yet (bulk, reach-v2, authenticated/strict
+	// tunnels and Kad6). Individual feature prefs remain additional, narrower gates.
+	m_bEseV9Experimental = ini.GetBool(_T("EseV9Experimental"), false, _T("eSE"));
 	// Three-way rendezvous has a larger trust surface than direct two-way punching.
 	// Keep it independently opt-in so old configurations do not silently become relays.
 	m_bEseKad3Rendezvous = ini.GetBool(_T("EseKad3Rendezvous"), false, _T("eSE"));
@@ -2544,6 +2568,23 @@ void CPreferences::LoadPreferences()
 	m_bEseRelayAccept   = ini.GetBool(_T("EseRelayAccept"),   false, _T("eSE"));
 	m_bEseRelayEgress   = ini.GetBool(_T("EseRelayEgress"),   false, _T("eSE"));
 	m_bEseReachSelector = ini.GetBool(_T("EseReachSelector"), false, _T("eSE"));
+	// P3 KRP client. Enabling it without an explicit endpoint, verified server
+	// name and CA bundle fails closed in CRelayClient.
+	m_bKrpRelayEnabled = ini.GetBool(_T("KrpRelayEnabled"), false, _T("KRPRelay"));
+	m_bKrpRelayKillSwitch = ini.GetBool(_T("KrpRelayKillSwitch"), false, _T("KRPRelay"));
+	m_strKrpRelayEndpointHost = ini.GetString(_T("EndpointHost"), _T(""), _T("KRPRelay"));
+	m_strKrpRelayEndpointHost.Trim();
+	int krpPort = ini.GetInt(_T("EndpointPort"), 443, _T("KRPRelay"));
+	if (krpPort < 1 || krpPort > 65535) krpPort = 443;
+	m_uKrpRelayEndpointPort = static_cast<uint16>(krpPort);
+	m_strKrpRelayExpectedServerName = ini.GetString(_T("ExpectedServerName"), _T(""), _T("KRPRelay"));
+	m_strKrpRelayExpectedServerName.Trim();
+	m_strKrpRelayCaBundlePath = ini.GetString(_T("CaBundlePath"), _T(""), _T("KRPRelay"));
+	m_strKrpRelayCaBundlePath.Trim();
+	m_bKrpRelayAllowAnyServer = ini.GetBool(_T("AllowAnyConnectedServer"), false, _T("KRPRelay"));
+	m_bKrpRelayExperimentalTcp = ini.GetBool(_T("ExperimentalTcpDataPlane"), false, _T("KRPRelay"));
+	m_strKrpRelayAuthTokenPath = ini.GetString(_T("AuthTokenPath"), _T(""), _T("KRPRelay"));
+	m_strKrpRelayAuthTokenPath.Trim();
 	// [eSE v9] anti-CGNAT port prediction ("birthday spray"). DEFAULT OFF -> the punch fires a
 	// single REQ at the observed port exactly as before. When ON, it also sprays a small window of
 	// ports (helps symmetric NAT / CGNAT that randomizes the external port). Spread clamped [0,8]
@@ -3079,6 +3120,19 @@ CString CPreferences::GetDefaultDirectory(EDefaultDirectory eDirectory, bool bCr
 			rkEMuleRegKey.QueryDWORDValue(_T("UsePublicUserDirectories"), nRegistrySetting);
 			rkEMuleRegKey.Close();
 		}
+		// LiveTV --selftest isolation: a portable test bundle with its own
+		// config/preferences.ini must never inherit the machine-wide directory
+		// mode and overwrite the user's normal ports, user hash or Kad state.
+		// Command-line parsing happens later in CemuleApp::InitInstance, so detect
+		// this one exact flag here while the directory table is being initialized.
+		bool bPortableSelfTest = false;
+		for (int arg = 1; arg < __argc && !bPortableSelfTest; ++arg) {
+			LPCTSTR value = __targv[arg];
+			while (*value == _T('-') || *value == _T('/')) ++value;
+			bPortableSelfTest = (_tcsicmp(value, _T("selftest")) == 0);
+		}
+		if (bPortableSelfTest && bConfigAvailableExecutable)
+			nRegistrySetting = 2; // executable-directory mode for this process only
 		if (nRegistrySetting > 2)
 			nRegistrySetting = _UI32_MAX;
 

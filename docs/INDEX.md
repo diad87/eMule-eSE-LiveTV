@@ -1,7 +1,7 @@
 # Índice maestro de documentación — eMule eSE LiveTV
 
 > **Qué es esto:** el mapa único de toda la documentación del proyecto. Si no sabes por dónde
-> empezar o dónde está algo, empieza aquí. Última actualización: **2026-07-15**.
+> empezar o dónde está algo, empieza aquí. Última actualización: **2026-07-16**.
 >
 > **Leyenda de estado:** 🎓 tesis/paper · 🧭 roadmap/estrategia viva · 📐 plan/spec ·
 > ✅ implementado/final · 🔬 auditoría/análisis · 🔀 consolidado/comparativa · ♻️ a refrescar ·
@@ -14,9 +14,11 @@
 | Documento | Para qué |
 |---|---|
 | [MODERNIZATION_ROADMAP.md](MODERNIZATION_ROADMAP.md) | **El plan director vivo.** Los 5 ejes de modernización (headless/API, buffer, IPTV, Kad-live, multiplataforma) + Track R (alcanzabilidad). Por aquí se decide qué se hace. |
+| [V9_ALPHA_RELEASE_PLAN.md](V9_ALPHA_RELEASE_PLAN.md) | **Próxima entrega:** alcance, bloqueantes, defaults, gates y promoción de `v0.70b-eSE9.0.0-alpha.1` a beta/RC. |
 | [MASTER_PLAN.md](MASTER_PLAN.md) | Visión de producto y escalabilidad (de ~20 a 5000+ viewers); arquitectura actual y cuellos de botella. |
 | [USER_GUIDE.md](USER_GUIDE.md) | Cómo se usa: instalar, ver un stream, emitir, troubleshooting. |
 | [LIVETV_STATUS.md](LIVETV_STATUS.md) | **Estado operativo LiveTV:** qué está implementado y validado, qué pruebas físicas faltan y qué pertenece a roadmaps separados. |
+| [LIVETV_HARDENING_2026-07-16.md](LIVETV_HARDENING_2026-07-16.md) | Cierre de los cuatro endurecimientos: GOP/HLS, autenticación de `/hls-local`, limitadores acotados y `nodes.dat` reproducible. |
 | [CHANGELOG_vanilla0.70b_to_v8.1.0.md](CHANGELOG_vanilla0.70b_to_v8.1.0.md) | Qué cambia este fork frente a eMule 0.70b vanilla (la divergencia completa). |
 
 ---
@@ -25,7 +27,7 @@
 
 | Documento | Estado | Qué cubre |
 |---|---|---|
-| [THESIS_KAD_SIN_LOWID.md](THESIS_KAD_SIN_LOWID.md) | 🎓 v9, no implementado | Abolir el par LowID/HighID: identidad ≠ alcanzabilidad (vector `R` + cascada ICE). Capstone del Track R. |
+| [THESIS_KAD_SIN_LOWID.md](THESIS_KAD_SIN_LOWID.md) | 🎓 v9 · implementación parcial | Abolir el par LowID/HighID: identidad ≠ alcanzabilidad. `TAG_ESE_REACH` y varias ramas están en fuente; selector único, UI y matriz física siguen pendientes. |
 | [PAPER_eSE_Live_ES.md](PAPER_eSE_Live_ES.md) · [_EN](PAPER_eSE_Live_EN.md) | 🎓 pre-print v1.0 | Paper sobre streaming en vivo P2P descentralizado sobre eD2K+Kad, sin trackers ni CDN (ES y EN). |
 
 **Fuera del checkout principal** (viven en worktrees / ramas aparte — pueden no estar en `main`):
@@ -41,7 +43,8 @@
 
 | Documento | Estado | Qué cubre |
 |---|---|---|
-| [MODERNIZATION_ROADMAP.md](MODERNIZATION_ROADMAP.md) | 🧭 vivo (2026-06-13) | **Director de ejecución.** 5 ejes en fases F0-F5 + Track R (R.0-R.5). Reglas: estabilizar primero, compat obligatoria. |
+| [MODERNIZATION_ROADMAP.md](MODERNIZATION_ROADMAP.md) | 🧭 vivo (revisado 2026-07-16) | **Director de ejecución.** 5 ejes F0-F5 + Tracks R/P y escalera alpha→beta→RC→v9 estable. |
+| [V9_ALPHA_RELEASE_PLAN.md](V9_ALPHA_RELEASE_PLAN.md) | 📦 plan operativo (2026-07-16) | Auditoría del checkout y camino mínimo a `9.0.0-alpha.1`: BASE/LAB/HOLD/OUT, Git, caps/defaults, seguridad, build reproducible, tests y smoke. |
 | [MASTER_PLAN.md](MASTER_PLAN.md) | 🧭 vivo | Plan de escalabilidad/producto: niveles de carga, puntos de ruptura, estado ideal. |
 | [MODERNIZATION.md](MODERNIZATION.md) | 🔬 referencia | Inventario táctico de componentes vetustos (id3lib, CxImage, IE WebBrowser, CSocket…) con ROI y archivo:línea. 1/16 hecho (v143). *Complementa al ROADMAP, no lo sustituye.* |
 
@@ -54,10 +57,16 @@
 
 | Documento | Estado | Qué cubre |
 |---|---|---|
+| [DIRECT_HIGHID_AUTOMATIC_PLAN.md](DIRECT_HIGHID_AUTOMATIC_PLAN.md) | 🧭 **objetivo primario** | High ID local-first sin configuración manual: endpoint interno≠público, UPnP/PCP/NAT-PMP, doble NAT, 443/80 como fallback y Track Y para eliminar amarillos mediante PCP de operador, ICE directo y callback robusto; relay de payload sólo opcional. |
+| [DIRECT_REACHABILITY_D0_AUDIT.md](DIRECT_REACHABILITY_D0_AUDIT.md) | ✅ **D0/Y0 cerrado** | 96 lecturas de puerto clasificadas, ADR de endpoints/evidencia, fake IGD/PCP/NAT-PMP/eD2K, 25 checks y build x64 reproducible; ruta nueva aún default-OFF. |
+| [DIRECT_REACHABILITY_D1_CLOSURE.md](DIRECT_REACHABILITY_D1_CLOSURE.md) | ✅ **D1 cerrado** | Endpoint local/anunciado separado en 43 rutas wire/API, tres planos independientes, atomics de lectura, 178.074 checks con ASan y build x64; mapping aún default-OFF. |
+| [DIRECT_REACHABILITY_D4_CLOSURE.md](DIRECT_REACHABILITY_D4_CLOSURE.md) | ✅ **D4 físico cerrado** | Doble NAT Deco→Movistar validado: tabla UPnP agotada por 63 duplicados de Tailscale, reparación transaccional, reglas 4662/4672 verificadas e ID alta real 68553560. |
+| [DIRECT_REACHABILITY_D5_D6_IMPLEMENTATION.md](DIRECT_REACHABILITY_D5_D6_IMPLEMENTATION.md) | 🧪 **desplegado; fases en progreso** | Scheduler al 45 %, renovación real, journal de propiedad y recuperación tras crash validados físicamente con ID alta; cambio real de red, ciclos prolongados y lifecycle/UX siguen pendientes. |
 | [LOWID_NAT_TRAVERSAL_PLAN.md](LOWID_NAT_TRAVERSAL_PLAN.md) | 📐 propuesta | El *mecanismo*: 5 fases (R.0 validar 2-vías → R.1 rendezvous 3-vías → R.2 keepalive → R.3 relay onion → R.4 IPv6). |
+| [RELAY_KRP_V05_DEVELOPMENT_PLAN.md](RELAY_KRP_V05_DEVELOPMENT_PLAN.md) · [cierre P4](relay/RELAY_P4_CLOSURE_2026-07-16.md) | ✅ P0–P4 G4-LAB | Relay KRP experimental conservado como fallback opcional; la prueba pública G-HID sigue pendiente. |
 | [HOLEPUNCH_2PC_GATE_VALIDATION.md](HOLEPUNCH_2PC_GATE_VALIDATION.md) | 🧪 receta · ✅ GATE pasado (parcial) | **Gate R.0.** Receta 2-PC + resultado real: 2-vías PROBADO en NAT real (B→X success), pero NAT simétrica (B) no se abre ni con timing → relay. Contadores responder-side + matriz A→B vs B→A. |
 | [R1_RENDEZVOUS_IMPL.md](R1_RENDEZVOUS_IMPL.md) | 📐 spec · ✅ implementado + validado 3-PC | **R.1 (3-vías).** Wire 0x68/69/6A/6B/6C + anti-reflexión por cookie. **COMPLETO Y RUNTIME-VALIDADO** (3-PC Tailscale: A→R REQ→CHALLENGE→cookie→FWD ejecutó, `fwd=1`/`success=1`). Cierre B-side E2E pendiente (known-contact gate + simétrica→relay). |
-| [R3_RELAY_FLOOR_PLAN.md](R3_RELAY_FLOOR_PLAN.md) | 📐 spec · inc.1 hecho | **R.3 (relay floor).** El suelo de simétricas/CGNAT: el mecanismo onion YA existe (reusar exit-proxy+forward), falta `CLiveBuddyRelay` (100% stub) + fallthrough. Seguridad de relay (aceptación/ancho de banda/no-open-relay). Inc.1 (Tick+telemetría) hecho; inc.2-5 = accept/connect-out/cascade/3-PC. |
+| [R3_RELAY_FLOOR_PLAN.md](R3_RELAY_FLOOR_PLAN.md) | ♻️ spec original · código adelantado | **R.3 Live buddy relay.** `CLiveBuddyRelay`, connect-out, SETUP/CHUNK, downstream, presupuesto y selector existen default-OFF; falta cierre E2E físico. No confundirlo con KRP TCP ni con un relay universal de descarga eD2K. |
 | [THESIS_KAD_SIN_LOWID.md](THESIS_KAD_SIN_LOWID.md) | 🎓 v9 | El *modelo*: registro de fuente v2 (`TAG_ESE_REACH`) + cascada `CReachPipeline` + muerte del concepto. |
 | [REACH_HOST_ADAPTER_PLAN.md](REACH_HOST_ADAPTER_PLAN.md) | 📐 spec ejecutable | Puente `libreach`⇄eMule: `ReachHostAdapter` (C-ABI vtable, identidad por user-hash + late-bind anti-UAF, gancho en `RemoveClient`, transacción de ingest HELLO, reglas de byte-order, gate `ENABLE_ESE_LIBREACH_V9`). libreach L1+L2+L3 ya verde (190 checks); el adaptador es el siguiente paso MFC. |
 | [IPV6_PLAN.md](IPV6_PLAN.md) | 📌 **canónico IPv6** (~25% hecho) | Plan maestro IPv6 (8 fases). Sprints 0-3 hechos, 4 scaffold, 5-11 sin iniciar. Scope: cliente↔servidor queda v4; v6 en cliente↔cliente, Kad, eSE/Live. |
@@ -90,12 +99,12 @@
 ## 🔢 Registro de protocolo (P0)
 
 > Fuente única de verdad de los números de cable **del fork** (opcodes/tags/caps/tunnel). Antes de
-> añadir un número nuevo: añade la fila y pasa el linter. **Gate actual verde: 129 entradas y 112 símbolos del fork.**
+> añadir un número nuevo: añade la fila y pasa el linter. **Gate actual verde: 168 entradas y 151 símbolos del fork.**
 
 | Documento | Estado | Qué cubre |
 |---|---|---|
 | [protocol/PROTOCOL_REGISTRY.md](protocol/PROTOCOL_REGISTRY.md) | 🔢 gobierno | Registro + informe de conflictos + propuesta de migración. |
-| [OPCODES](protocol/OPCODES.csv) · [TAGS](protocol/TAGS.csv) · [CAPABILITIES](protocol/CAPABILITIES.csv) · [TUNNEL_SERVICES](protocol/TUNNEL_SERVICES.csv) | 🔢 datos | CSV por namespace (129 entradas); el linter los valida. |
+| [OPCODES](protocol/OPCODES.csv) · [TAGS](protocol/TAGS.csv) · [CAPABILITIES](protocol/CAPABILITIES.csv) · [TUNNEL_SERVICES](protocol/TUNNEL_SERVICES.csv) | 🔢 datos | CSV por namespace (168 entradas); el linter los valida. |
 | [tools/check_protocol_registry.py](../tools/check_protocol_registry.py) | ✅ funciona | Gate de CI: duplicados, sin-registrar, drift doc-vs-código. |
 
 ---
@@ -137,7 +146,7 @@
 | [PART_HASH_THREAD_PLAN.md](PART_HASH_THREAD_PLAN.md) | 📐 H0+H1 hecho (sin validar) | Track H: hashing de partes fuera del hilo UI (mata congelones en picos de velocidad). |
 | [SWARM_DVR_PLAN.md](SWARM_DVR_PLAN.md) | 📐 plan (2026-07-03) | **Swarm DVR (track D)**: rebobinar 10-30 min de un directo desde el enjambre, sin servidores. Dos niveles (ring intocado + `CLiveDvrStore` en disco), opcodes 0xB5-0xB8 + cap bit 22 + TUN_OP 0x60-0x62 (reservas verificadas). D1+D2 = MVP local sin wire; D3+ = plano de enjambre subordinado al borde vivo. Post-v9; D0 (reservas) puede aterrizar antes. |
 | [CHANNEL_MANIFEST_PLAN.md](CHANNEL_MANIFEST_PLAN.md) | 📐 plan (2026-07-03) | **Canales pubkey estilo YouTube**: manifiesto de canal firmado (ChannelRecord v2 + TLV), catálogo VOD como colecciones firmadas (tags 0x6F-0x72), página de canal + suscripciones + notificación en-directo. TRES secretos (sk_channel ≠ read_secret); privado = sellado, assets jamás por eD2K. Cap bit 23 + TUN 0x24/0x25. C0-C1 local; C5 depende de OFFLINE_INVISIBILITY F0+F1. |
-| [V9_VALIDATION_CHECKLIST.md](V9_VALIDATION_CHECKLIST.md) | 🧪 receta lista (2026-07-03) | **"Día de validación" v9**: checklist llave-en-mano que consolida las 5 puertas de validación en runtime pendientes (R.2 keepalive, IPv6 in-band, dual-stack GetPeerAddressV4, H1 hashing, handshake túnel auth 1-hop). Cada una: prerequisito/activación/topología/pasos/PASS-FAIL. El cuello de botella real del proyecto = validación multi-PC. |
+| [V9_VALIDATION_CHECKLIST.md](V9_VALIDATION_CHECKLIST.md) | 🧪 receta de promoción (revisada 2026-07-16) | **"Día de validación" v9**: cinco puertas runtime multi-PC. Promueve la alpha hacia beta; no sustituye los gates Git/defaults/build/paquete de la alpha. |
 | [V1_UI_MFC_SKELETON.md](V1_UI_MFC_SKELETON.md) | ⏳ pendiente | Spec de 4 tabs MFC (Subscriptions/Browse/MyChannel/Search) para implementación manual. |
 
 ---

@@ -469,7 +469,7 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 	endpoint.addr.family = kad6::Kad6Address::Family::IPv6;
 	std::memcpy(endpoint.addr.addr.data(), publicV6.Data(), 16);
 	endpoint.udp_port = kadPort;
-	endpoint.tcp_port = thePrefs.GetPort();
+	endpoint.tcp_port = theApp.GetAdvertisedV6TcpPort();
 	endpoint.transport_flags = kad6::kK6EpUdpKad6;
 	endpoint.observed = 0;
 
@@ -958,7 +958,7 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 		byteIOResponse.WriteByte(OP_KADEMLIAHEADER);
 		byteIOResponse.WriteByte(byOpcode);
 		byteIOResponse.WriteUInt128(CKademlia::GetPrefs()->GetKadID());
-		byteIOResponse.WriteUInt16(thePrefs.GetPort());
+		byteIOResponse.WriteUInt16(theApp.GetAdvertisedTcpPort());
 		byteIOResponse.WriteUInt8(KADEMLIA_VERSION);
 
 		// Tag Count.
@@ -1027,7 +1027,7 @@ void CKademliaUDPListener::FirewalledCheck(uint32 uIP, uint16 uUDPPort, const CK
 	if (byKadVersion > KADEMLIA_VERSION6_49aBETA) {
 		// new Opcode since 0.49a with extended informations to support obfuscated connections properly
 		CSafeMemFile fileIO(19);
-		fileIO.WriteUInt16(thePrefs.GetPort());
+		fileIO.WriteUInt16(theApp.GetAdvertisedTcpPort());
 		fileIO.WriteUInt128(CKademlia::GetPrefs()->GetClientHash());
 		fileIO.WriteUInt8(CKademlia::GetPrefs()->GetMyConnectOptions(true, false));
 		if (thePrefs.GetDebugClientKadUDPLevel() > 0)
@@ -1035,7 +1035,7 @@ void CKademliaUDPListener::FirewalledCheck(uint32 uIP, uint16 uUDPPort, const CK
 		SendPacket(fileIO, KADEMLIA_FIREWALLED2_REQ, uIP, uUDPPort, senderUDPKey, NULL);
 	} else {
 		CSafeMemFile fileIO(2);
-		fileIO.WriteUInt16(thePrefs.GetPort());
+		fileIO.WriteUInt16(theApp.GetAdvertisedTcpPort());
 		if (thePrefs.GetDebugClientKadUDPLevel() > 0)
 			DebugSend("KADEMLIA_FIREWALLED_REQ", uIP, uUDPPort);
 		SendPacket(fileIO, KADEMLIA_FIREWALLED_REQ, uIP, uUDPPort, senderUDPKey, NULL);
@@ -1498,7 +1498,7 @@ void CKademliaUDPListener::Process_KADEMLIA2_BOOTSTRAP_REQ(uint32 uIP, uint16 uU
 	CSafeMemFile fileIO(521);
 
 	fileIO.WriteUInt128(CKademlia::GetPrefs()->GetKadID());
-	fileIO.WriteUInt16(thePrefs.GetPort());
+	fileIO.WriteUInt16(theApp.GetAdvertisedTcpPort());
 	fileIO.WriteUInt8(KADEMLIA_VERSION);
 
 	// Write packet info
@@ -2736,7 +2736,7 @@ void CKademliaUDPListener::Process_KADEMLIA_FINDBUDDY_REQ(const byte *pbyPacketD
 	CSafeMemFile fileIO2(34);
 	fileIO2.WriteUInt128(BuddyID);
 	fileIO2.WriteUInt128(CKademlia::GetPrefs()->GetClientHash());
-	fileIO2.WriteUInt16(thePrefs.GetPort());
+	fileIO2.WriteUInt16(theApp.GetAdvertisedTcpPort());
 	if (!senderUDPKey.IsEmpty()) // remove check for later versions
 		fileIO2.WriteUInt8(CKademlia::GetPrefs()->GetMyConnectOptions(true, false)); // new since 0.49a, old mules will ignore it (hopefully ;) )
 	if (thePrefs.GetDebugClientKadUDPLevel() > 0)
@@ -3141,7 +3141,7 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_REQ(const byte *pbyPacketData, 
 	// Respond with ACK containing our own KadID and the echoed nonce
 	CSafeMemFile fileIOResp(22);
 	fileIOResp.WriteUInt128(CKademlia::GetPrefs()->GetKadID());
-	fileIOResp.WriteUInt16(thePrefs.GetUDPPort());
+	fileIOResp.WriteUInt16(theApp.GetAdvertisedUdpPort());
 	fileIOResp.WriteUInt32(uNonce); // Echo the nonce for correlation
 
 	if (thePrefs.GetDebugClientKadUDPLevel() > 0)
@@ -3246,7 +3246,7 @@ void CKademliaUDPListener::SendEseHolePunchReqWithCookie(uint32 uIP, uint16 uUDP
 	// <OurKadID 16><OurUDPPort 2><Nonce 4><Cookie 16> = 38 bytes
 	CSafeMemFile fileIO(38);
 	fileIO.WriteUInt128(CKademlia::GetPrefs()->GetKadID());
-	fileIO.WriteUInt16(thePrefs.GetUDPPort());
+	fileIO.WriteUInt16(theApp.GetAdvertisedUdpPort());
 	fileIO.WriteUInt32(uNonce);
 	fileIO.Write(pbyCookie, eSE::HP_COOKIE_SIZE);
 
@@ -3285,7 +3285,7 @@ void CKademliaUDPListener::SendEseHolePunchReq(uint32 uIP, uint16 uUDPPort,
 	// remains byte-identical for older peers and receives the bounded legacy ACK.
 	CSafeMemFile fileIO(bAdvertiseCookie ? 26 : 22);
 	fileIO.WriteUInt128(CKademlia::GetPrefs()->GetKadID());
-	fileIO.WriteUInt16(thePrefs.GetUDPPort());
+	fileIO.WriteUInt16(theApp.GetAdvertisedUdpPort());
 	// eSE 8.12.1: Cryptographically secure nonce (anti-Sybil prediction attack)
 	// eSE P0: via the thread-safe wrapper (AutoSeededRandomPool is not thread-safe;
 	// this site is reachable from the WebServer worker as well as the Kad thread).

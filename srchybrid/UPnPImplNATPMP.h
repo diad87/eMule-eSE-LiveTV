@@ -21,6 +21,7 @@
 
 #pragma once
 #include "UPnPImpl.h"
+#include "natmap/natpmp_codec.h"
 
 class CUPnPImplNATPMP : public CUPnPImpl
 {
@@ -76,12 +77,17 @@ private:
 
     // Internal helpers
     static uint32 GetDefaultGateway();
-    bool SendMapRequest(SOCKET sock, uint32 gatewayIP, uint16 nPrivatePort, bool bTCP, uint32 nLifetime);
-    bool ReceiveMapResponse(SOCKET sock, uint16 &nMappedPort, uint32 &nLifetime);
+    bool SendMapRequest(SOCKET sock, uint32 gatewayIP, uint16 nPrivatePort,
+        uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime);
+    bool ReceiveMapResponse(SOCKET sock, uint32 gatewayIP, uint16 nPrivatePort,
+        bool bTCP, natmap::NatPmpMapResponse &response);
     bool SendExternalAddrRequest(SOCKET sock, uint32 gatewayIP);
-    bool ReceiveExternalAddrResponse(SOCKET sock, uint32 &nExternalIP);
+    bool ReceiveExternalAddrResponse(SOCKET sock, uint32 gatewayIP,
+        uint32 &nExternalIP, uint32 &nEpoch);
 
-    bool MapPort(uint32 gatewayIP, uint16 nPort, bool bTCP, uint32 nLifetime);
+    bool MapPort(uint32 gatewayIP, uint16 nPrivatePort,
+        uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime,
+        natmap::NatPmpMapResponse &response);
     bool UnmapPort(uint32 gatewayIP, uint16 nPort, bool bTCP);
 
     void StartThread();

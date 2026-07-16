@@ -135,6 +135,7 @@
 #define OP_EDONKEYHEADER		0xE3
 #define OP_KADEMLIAHEADER		0xE4
 #define OP_KADEMLIAPACKEDPROT	0xE5
+#define OP_KAD6HEADER			0xE6 // family-neutral native Kad6 discriminator
 #define OP_EDONKEYPROT			OP_EDONKEYHEADER
 #define OP_PACKEDPROT			0xD4
 #define OP_EMULEPROT			0xC5
@@ -750,19 +751,17 @@ void RefreshEseV9PreviewCaps();
 
 #define KADEMLIA2_HELLO_RES_ACK			0x22	// <NodeID><uint8 tags>
 
-// v0.71 IPv6 Sprint 4 — reserve Kad3 opcodes (IPv6-aware) per IPV6_PLAN.md §5.
-// Payload format mirrors Kad2 but PEER blocks carry CAddress (1+1+N bytes)
-// instead of fixed uint32. Kad2 opcodes are kept intact — v4 peers continue
-// to speak Kad2 byte-identical to upstream; only v6-aware peers see Kad3.
-#define KADEMLIA3_BOOTSTRAP_REQ			0x02	// K6RouteHeaderV1 (native IPv6 only)
+// Kad6 native RPCs are family-neutral and use OP_KAD6HEADER on IPv4 or IPv6.
+// Kad2 opcodes and OP_KADEMLIAHEADER remain byte-identical for vanilla peers.
+#define KADEMLIA3_BOOTSTRAP_REQ			0x02	// K6RouteHeaderV1 (native Kad6)
 #define KADEMLIA3_BOOTSTRAP_RES			0x0A	// header + count:u8 + K6RouteContactV1[count]
 #define KADEMLIA3_HELLO_REQ				0x12	// K6RouteHeaderV1 return-routability challenge
 #define KADEMLIA3_HELLO_RES				0x1A	// K6RouteHeaderV1 transaction-bound response
 #define KADEMLIA3_REQ					0x23	// header + target:16 + max:u8 + reserved:3
 #define KADEMLIA3_RES					0x2A	// header + target:16 + count:u8 + contacts[count]
-#define KADEMLIA3_STORE_SOURCE_REQ		0x46	// K6StoreSourceRequest, native IPv6 only
+#define KADEMLIA3_STORE_SOURCE_REQ		0x46	// K6StoreSourceRequest, IPv4 or IPv6
 #define KADEMLIA3_STORE_SOURCE_RES		0x47	// K6StoreSourceResponse, tx-bound
-#define KADEMLIA3_FIND_SOURCE_REQ		0x48	// signed native source query, IPv6 only
+#define KADEMLIA3_FIND_SOURCE_REQ		0x48	// signed native source query, IPv4 or IPv6
 #define KADEMLIA3_FIND_SOURCE_RES		0x49	// bounded signed K6SourceRecord list
 
 // v0.71 IPv6 Sprint 5 — Kad keepalive + hole-punch opcodes.

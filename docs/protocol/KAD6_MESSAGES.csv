@@ -1,0 +1,28 @@
+name,value,namespace,intro_version,status,capability_gate,format,compat,file,line
+kK6MsgSearchStart,0x10,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"search id; target; mode; bounded parameters",internal-tunnel,libkad6/include/kad6/kad6_search.h,57
+kK6MsgSearchResult,0x11,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"search id; result sequence; typed bounded result",internal-tunnel,libkad6/include/kad6/kad6_search.h,58
+kK6MsgSearchEnd,0x12,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"search id; terminal status; counters",internal-tunnel,libkad6/include/kad6/kad6_search.h,59
+kK6MsgPublish,0x18,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"authenticated bounded publish request",internal-tunnel,libkad6/include/kad6/kad6_publish.h,16
+kK6MsgPublishAck,0x19,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"publish status; bounded receipt",internal-tunnel,libkad6/include/kad6/kad6_publish.h,17
+kK6MsgUnpublish,0x1A,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"authenticated record removal",internal-tunnel,libkad6/include/kad6/kad6_publish.h,18
+kK6MsgSourceBind,0x20,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"circuit-bound source lease request",internal-tunnel,libkad6/include/kad6/kad6_lease.h,18
+kK6MsgSourceBound,0x21,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"signed source lease and virtual endpoint",internal-tunnel,libkad6/include/kad6/kad6_lease.h,19
+kK6MsgSourceUnbind,0x22,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"lease id; circuit teardown binding",internal-tunnel,libkad6/include/kad6/kad6_lease.h,20
+kK6MsgTargetTicketReq,0x28,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"provenance-bound target authorization request",internal-tunnel,libkad6/include/kad6/kad6_gateway.h,15
+kK6MsgTargetTicket,0x29,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"status; bounded authenticated target ticket",internal-tunnel,libkad6/include/kad6/kad6_gateway.h,16
+kK6MsgSourceHints,0x2A,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"ticketed source-exchange hints",internal-tunnel,libkad6/include/kad6/kad6_gateway.h,17
+kK6MsgVep,0x2B,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"signed virtual endpoint proof",internal-tunnel,libkad6/include/kad6/kad6_gateway.h,18
+kK6MsgDial,0x30,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"target ticket; bounded initial application data",internal-tunnel,libkad6/include/kad6/kad6_gateway.h,19
+kK6MsgDialOk,0x31,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"stream id; status; endpoint and quota",internal-tunnel,libkad6/include/kad6/kad6_gateway.h,20
+kK6MsgAccept,0x32,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"inbound stream acceptance metadata",internal-tunnel,libkad6/include/kad6/kad6_gateway.h,21
+kK6MsgStreamData,0x33,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"stream id; direction; sequence; bounded bytes",internal-tunnel,libkad6/include/kad6/kad6_gateway.h,22
+kK6MsgStreamHalfClose,0x34,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"stream id; direction; final sequence",internal-tunnel,libkad6/include/kad6/kad6_gateway.h,23
+kK6MsgStreamClose,0x35,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"stream id; exact final sequences and counters",internal-tunnel,libkad6/include/kad6/kad6_gateway.h,24
+kK6MsgQuotaKeyReq,0x36,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"issuer discovery and epoch request",internal-tunnel,libkad6/include/kad6/kad6_quota.h,20
+kK6MsgQuotaKey,0x37,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"issuer id; epoch; verification key",internal-tunnel,libkad6/include/kad6/kad6_quota.h,21
+kK6MsgQuotaIssue,0x38,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"blinded token request; service and slot",internal-tunnel,libkad6/include/kad6/kad6_quota.h,22
+kK6MsgQuotaIssued,0x39,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"blind signature issuance result",internal-tunnel,libkad6/include/kad6/kad6_quota.h,23
+kK6MsgQuotaPresent,0x3A,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"anonymous token presentation",internal-tunnel,libkad6/include/kad6/kad6_quota.h,24
+kK6MsgQuotaStatus,0x3B,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"admission result; bounded retry slot",internal-tunnel,libkad6/include/kad6/kad6_quota.h,25
+kK6MsgMaxStreamData,0x3C,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"stream id; direction; monotonic absolute byte limit",internal-tunnel,libkad6/include/kad6/kad6_gateway.h,25
+kK6MsgMaxData,0x3D,KAD6-INNER,Kad6-v1,experimental,ESE_CAP_KAD6,"direction; monotonic circuit byte limit",internal-tunnel,libkad6/include/kad6/kad6_gateway.h,26

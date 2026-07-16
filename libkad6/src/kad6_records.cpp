@@ -13,8 +13,10 @@ namespace kad6 {
 static const char kNodeBindDomain[] = "eSE-Kad6-NodeBind-v1";
 static const char kRotateDomain[]   = "eSE-Kad6-Rotate-v1";
 static const char kRouterDomain[]   = "eSE-Kad6-RouterRecord-v1";
-static const char kSourceDomain[]   = "eSE-Kad6-SourceRecord-v1";
+static const char kSourceDomainV1[] = "eSE-Kad6-SourceRecord-v1";
+static const char kSourceDomainV2[] = "eSE-Kad6-SourceRecord-v2";
 static const char kSourcePseudonymDomain[] = "eSE-Kad6-SourcePseudonym-v1";
+static const char kSourceOwnerDomain[] = "eSE-Kad6-SourceKey-v2";
 
 // msg = domain || body. This is exactly what the Ed25519 signature covers.
 static void BuildSignedMessage(const char* domain, std::size_t domainLen,
@@ -65,7 +67,8 @@ static Kad6Status ValidateRouterFields(const K6RouterRecord& r) noexcept {
 }
 
 static Kad6Status ValidateSourceFields(const K6SourceRecord& s) noexcept {
-    if (s.version != kK6RecordVersion)
+    if (s.version != kK6SourceRecordVersionV1 &&
+        s.version != kK6SourceRecordVersionV2)
         return Kad6Status::UnsupportedVersion;
     const std::size_t n = s.exits.size();
     if (n < kK6SourceMinExits || n > kK6SourceMaxExits)
@@ -76,6 +79,19 @@ static Kad6Status ValidateSourceFields(const K6SourceRecord& s) noexcept {
         s.expires_at - s.created_at > kK6SourceMaxTtlSeconds)
         return Kad6Status::BadValue;
     return Kad6Status::Ok;
+}
+
+static const char* SourceDomain(Byte version, std::size_t& length) noexcept {
+    if (version == kK6SourceRecordVersionV1) {
+        length = sizeof(kSourceDomainV1) - 1;
+        return kSourceDomainV1;
+    }
+    if (version == kK6SourceRecordVersionV2) {
+        length = sizeof(kSourceDomainV2) - 1;
+        return kSourceDomainV2;
+    }
+    length = 0;
+    return nullptr;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -608,7 +624,10 @@ Kad6Status SignK6SourceRecord(const Kad6CryptoHooks& h, const Byte* sk, std::siz
     const Kad6Status ss = K6SourceRecordSerializeSigned(s, body);
     if (ss != Kad6Status::Ok) return ss;
     std::vector<Byte> msg;
-    BuildSignedMessage(kSourceDomain, sizeof(kSourceDomain) - 1, body, msg);
+    std::size_t domainLength = 0;
+    const char* domain = SourceDomain(s.version, domainLength);
+    if (!domain) return Kad6Status::UnsupportedVersion;
+    BuildSignedMessage(domain, domainLength, body, msg);
     Byte sig[kEd25519SigSize];
     if (!h.ed25519_sign(sk, skLen, msg.data(), msg.size(), sig))
         return Kad6Status::AuthFailed;
@@ -633,6 +652,34 @@ Kad6Status K6DeriveSourcePseudonym(const Kad6CryptoHooks& h,
     return Kad6Status::Ok;
 }
 
+Kad6Status K6DeriveSourceOwnerDigest(const Kad6CryptoHooks& h,
+                                     const Ed25519Pub& pubKey,
+                                     Hash32& out) {
+    out.fill(0);
+    if (!h.sha256) return Kad6Status::BadValue;
+    std::vector<Byte> msg;
+    const Byte* domain = reinterpret_cast<const Byte*>(kSourceOwnerDomain);
+    msg.insert(msg.end(), domain, domain + sizeof(kSourceOwnerDomain) - 1);
+    msg.insert(msg.end(), pubKey.begin(), pubKey.end());
+    if (!h.sha256(msg.data(), msg.size(), out.data())) {
+        out.fill(0);
+        return Kad6Status::AuthFailed;
+    }
+    return Kad6Status::Ok;
+}
+
+Kad6Status K6MakeSourceStorageKey(const Kad6CryptoHooks& h,
+                                  const K6SourceRecord& source,
+                                  K6SourceStorageKey& out) {
+    out.fill(0);
+    Hash32 owner{};
+    const Kad6Status status = K6DeriveSourceOwnerDigest(h, source.pub_key, owner);
+    if (status != Kad6Status::Ok) return status;
+    std::copy(source.object_hash.begin(), source.object_hash.end(), out.begin());
+    std::copy(owner.begin(), owner.end(), out.begin() + source.object_hash.size());
+    return Kad6Status::Ok;
+}
+
 Kad6Status VerifyK6SourceRecord(const Kad6CryptoHooks& h, const K6SourceRecord& s) {
     if (!h.ed25519_verify || !h.sha256) return Kad6Status::BadValue;
     // ── cheap structural gate, BEFORE the expensive Ed25519 (spec K6-NATIVE-003)
@@ -649,7 +696,10 @@ Kad6Status VerifyK6SourceRecord(const Kad6CryptoHooks& h, const K6SourceRecord& 
     const Kad6Status ss = K6SourceRecordSerializeSigned(s, body);
     if (ss != Kad6Status::Ok) return ss;
     std::vector<Byte> msg;
-    BuildSignedMessage(kSourceDomain, sizeof(kSourceDomain) - 1, body, msg);
+    std::size_t domainLength = 0;
+    const char* domain = SourceDomain(s.version, domainLength);
+    if (!domain) return Kad6Status::UnsupportedVersion;
+    BuildSignedMessage(domain, domainLength, body, msg);
     if (!h.ed25519_verify(s.pub_key.data(), msg.data(), msg.size(), s.signature.data()))
         return Kad6Status::AuthFailed;
     return Kad6Status::Ok;

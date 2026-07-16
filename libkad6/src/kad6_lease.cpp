@@ -469,7 +469,12 @@ Kad6Status K6SourceLeaseTable::AddBound(std::uint32_t circuit_id,
     lease.created_at = now;
     lease.expires_at = now + bound.lifetime_s;
     lease.next_refresh_at = now + bound.refresh_after_s;
-    leases_.emplace(lease.lease_id, std::move(lease));
+    const std::uint64_t leaseId = lease.lease_id;
+    const std::uint64_t expiresAt = lease.expires_at;
+    leases_.emplace(leaseId, std::move(lease));
+    circuit_index_[circuit_id].insert(leaseId);
+    const ExpiryIndex::iterator expiry = expiry_index_.emplace(expiresAt, leaseId);
+    expiry_refs_.emplace(leaseId, expiry);
     return Kad6Status::Ok;
 }
 
@@ -512,37 +517,118 @@ Kad6Status K6SourceLeaseTable::BeginDrain(std::uint64_t id) {
     if (!l || l->state == K6SourceLeaseState::Closed) return Kad6Status::BadValue;
     l->state = K6SourceLeaseState::Draining;
     l->accept_new_sessions = false;
+    RemoveCircuitIndex(*l);
     return Kad6Status::Ok;
 }
-std::size_t K6SourceLeaseTable::DrainCircuit(std::uint32_t circuit_id) {
+std::size_t K6SourceLeaseTable::DrainCircuit(std::uint32_t circuit_id,
+                                              std::vector<std::uint64_t>* transitioned) {
+    return DrainCircuitSome(circuit_id,
+        (std::numeric_limits<std::size_t>::max)(), transitioned);
+}
+std::size_t K6SourceLeaseTable::DrainCircuitSome(
+        std::uint32_t circuit_id, std::size_t maxTransitions,
+        std::vector<std::uint64_t>* transitioned) {
+    if (maxTransitions == 0) return 0;
+    auto circuit = circuit_index_.find(circuit_id);
+    if (circuit == circuit_index_.end()) return 0;
     std::size_t count = 0;
-    for (auto& pair : leases_) if (pair.second.circuit_id == circuit_id &&
-        pair.second.state != K6SourceLeaseState::Closed) {
-        pair.second.state = K6SourceLeaseState::Draining;
-        pair.second.accept_new_sessions = false;
+    while (circuit != circuit_index_.end() && !circuit->second.empty() &&
+           count < maxTransitions) {
+        const std::uint64_t leaseId = *circuit->second.begin();
+        circuit->second.erase(circuit->second.begin());
+        K6SourceLease* lease = Find(leaseId);
+        if (!lease || lease->state == K6SourceLeaseState::Closed ||
+            lease->state == K6SourceLeaseState::Draining)
+            continue;
+        lease->state = K6SourceLeaseState::Draining;
+        lease->accept_new_sessions = false;
+        if (transitioned) transitioned->push_back(leaseId);
         ++count;
+    }
+    if (circuit != circuit_index_.end() && circuit->second.empty())
+        circuit_index_.erase(circuit);
+    return count;
+}
+void K6SourceLeaseTable::QueueCircuitTeardown(std::uint32_t circuit_id) {
+    if (circuit_id != 0) teardown_queue_.insert(circuit_id);
+}
+std::size_t K6SourceLeaseTable::DrainQueuedCircuits(
+        std::size_t maxTransitions, std::vector<std::uint64_t>* transitioned) {
+    std::size_t count = 0;
+    while (!teardown_queue_.empty() && count < maxTransitions) {
+        const std::uint32_t circuitId = *teardown_queue_.begin();
+        // This queue is fed only after the transport has disappeared. Closing
+        // directly avoids retaining a dead-circuit lease until its publication
+        // TTL and lets 4,096 independent losses finish in sixteen 256-item
+        // ticks. Explicit UNBIND and service drains remain graceful.
+        const std::size_t changed = CloseCircuitSome(
+            circuitId, maxTransitions - count, transitioned);
+        count += changed;
+        if (circuit_index_.find(circuitId) == circuit_index_.end())
+            teardown_queue_.erase(teardown_queue_.begin());
+        else if (changed == 0)
+            break;
+    }
+    return count;
+}
+std::size_t K6SourceLeaseTable::CloseCircuitSome(
+        std::uint32_t circuit_id, std::size_t maxTransitions,
+        std::vector<std::uint64_t>* transitioned) {
+    if (maxTransitions == 0) return 0;
+    auto circuit = circuit_index_.find(circuit_id);
+    if (circuit == circuit_index_.end()) return 0;
+    std::size_t count = 0;
+    while (circuit != circuit_index_.end() && !circuit->second.empty() &&
+           count < maxTransitions) {
+        const std::uint64_t leaseId = *circuit->second.begin();
+        K6SourceLease* lease = Find(leaseId);
+        if (!lease || lease->state == K6SourceLeaseState::Closed) {
+            circuit->second.erase(circuit->second.begin());
+            continue;
+        }
+        MarkClosed(*lease);
+        if (transitioned) transitioned->push_back(leaseId);
+        ++count;
+        circuit = circuit_index_.find(circuit_id);
     }
     return count;
 }
 std::size_t K6SourceLeaseTable::Expire(std::uint64_t now) {
+    return ExpireSome(now, (std::numeric_limits<std::size_t>::max)(), nullptr);
+}
+std::size_t K6SourceLeaseTable::ExpireSome(
+        std::uint64_t now, std::size_t maxTransitions,
+        std::vector<std::uint64_t>* transitioned) {
+    if (maxTransitions == 0) return 0;
     std::size_t count = 0;
-    for (auto& pair : leases_) if (pair.second.expires_at <= now &&
-        pair.second.state != K6SourceLeaseState::Closed) {
-        pair.second.state = K6SourceLeaseState::Closed;
-        pair.second.accept_new_sessions = false;
+    while (!expiry_index_.empty() && expiry_index_.begin()->first <= now &&
+           count < maxTransitions) {
+        const ExpiryIndex::iterator expiry = expiry_index_.begin();
+        const std::uint64_t leaseId = expiry->second;
+        expiry_refs_.erase(leaseId);
+        expiry_index_.erase(expiry);
+        K6SourceLease* lease = Find(leaseId);
+        if (!lease || lease->state == K6SourceLeaseState::Closed)
+            continue;
+        MarkClosed(*lease);
+        if (transitioned) transitioned->push_back(leaseId);
         ++count;
     }
     return count;
 }
 std::size_t K6SourceLeaseTable::EraseClosed() {
+    return EraseClosedSome((std::numeric_limits<std::size_t>::max)());
+}
+std::size_t K6SourceLeaseTable::EraseClosedSome(std::size_t maxErase) {
     std::size_t count = 0;
-    for (auto it = leases_.begin(); it != leases_.end(); ) {
-        if (it->second.state == K6SourceLeaseState::Closed) {
-            it = leases_.erase(it);
-            ++count;
-        } else {
-            ++it;
-        }
+    while (!closed_index_.empty() && count < maxErase) {
+        const std::uint64_t leaseId = *closed_index_.begin();
+        closed_index_.erase(closed_index_.begin());
+        const auto lease = leases_.find(leaseId);
+        if (lease == leases_.end()) continue;
+        RemoveIndexes(lease->second);
+        leases_.erase(lease);
+        ++count;
     }
     return count;
 }
@@ -556,9 +642,44 @@ std::size_t K6SourceLeaseTable::ActiveSize() const noexcept {
 bool K6SourceLeaseTable::Close(std::uint64_t id) {
     K6SourceLease* l = Find(id);
     if (!l) return false;
-    l->state = K6SourceLeaseState::Closed;
-    l->accept_new_sessions = false;
+    MarkClosed(*l);
     return true;
+}
+
+std::vector<std::uint32_t> K6SourceLeaseTable::TrackedCircuits() const {
+    std::vector<std::uint32_t> result;
+    result.reserve(circuit_index_.size());
+    for (const auto& circuit : circuit_index_)
+        result.push_back(circuit.first);
+    return result;
+}
+
+void K6SourceLeaseTable::MarkClosed(K6SourceLease& lease) {
+    lease.state = K6SourceLeaseState::Closed;
+    lease.accept_new_sessions = false;
+    closed_index_.insert(lease.lease_id);
+    RemoveCircuitIndex(lease);
+    const auto expiry = expiry_refs_.find(lease.lease_id);
+    if (expiry != expiry_refs_.end()) {
+        expiry_index_.erase(expiry->second);
+        expiry_refs_.erase(expiry);
+    }
+}
+
+void K6SourceLeaseTable::RemoveCircuitIndex(const K6SourceLease& lease) {
+    const auto circuit = circuit_index_.find(lease.circuit_id);
+    if (circuit == circuit_index_.end()) return;
+    circuit->second.erase(lease.lease_id);
+    if (circuit->second.empty()) circuit_index_.erase(circuit);
+}
+
+void K6SourceLeaseTable::RemoveIndexes(const K6SourceLease& lease) {
+    RemoveCircuitIndex(lease);
+    const auto expiry = expiry_refs_.find(lease.lease_id);
+    if (expiry != expiry_refs_.end()) {
+        expiry_index_.erase(expiry->second);
+        expiry_refs_.erase(expiry);
+    }
 }
 
 } // namespace kad6

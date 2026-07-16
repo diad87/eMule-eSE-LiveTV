@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Offline, versioned IPv6 prefix -> ASN/operator database for Kad6 routing
+// Offline, versioned IPv4/IPv6 prefix -> ASN/operator database for Kad6 routing
 // diversity (ADR-08). The library performs no network lookup. Hosts load a
 // local K6AS snapshot and may replace it atomically after release/update
 // verification performed by their packaging layer.
@@ -15,15 +15,16 @@
 
 namespace kad6 {
 
-constexpr std::uint16_t kK6AsnSnapshotVersion = 1;
+constexpr std::uint16_t kK6AsnSnapshotLegacyVersion = 1;
+constexpr std::uint16_t kK6AsnSnapshotVersion = 2;
 constexpr std::size_t kK6AsnSnapshotHeaderSize = 24;
 constexpr std::size_t kK6AsnSnapshotEntrySize = 28;
 constexpr std::size_t kK6AsnMaxEntries = 500000;
 constexpr std::size_t kK6AsnMaxTrieNodes = 8000000;
 
 struct K6AsnPrefix {
-    Kad6Address prefix;          // canonical IPv6 network address
-    Byte prefix_length = 0;      // 1..128
+    Kad6Address prefix;          // canonical IPv4 or IPv6 network address
+    Byte prefix_length = 0;      // IPv4 1..32; IPv6 1..128
     std::uint32_t asn = 0;       // non-zero
     std::uint32_t operator_group = 0; // 0 = unknown/unclassified
 };

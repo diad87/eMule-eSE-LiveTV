@@ -118,6 +118,34 @@ int main() {
     CHECK(table.ActiveSize()==0&&table.Size()==3,"closed leases excluded from active count");
     CHECK(table.EraseClosed()==3&&table.Size()==0,"closed leases purged");
 
+    // L2/Q27 laboratory: 4096 leases on distinct circuits must not trigger a
+    // lease-table sweep for every retired circuit.  Teardown is indexed and
+    // expiry is capped at 256 state transitions per host tick.
+    K6SourceLeaseTable large;
+    for (std::uint32_t i=0;i<4096;++i) {
+        K6SourceBind lb=Bind(); lb.source_epoch=100+i;
+        K6SourceBound lv=Bound(lb); lv.source_lease_id=10000+i;
+        Hash16 lp{}; lp[0]=1; lp[1]=static_cast<Byte>(i); lp[2]=static_cast<Byte>(i>>8);
+        CHECK(large.AddBound(1000+i,lp,lb,lv,1000)==Kad6Status::Ok,
+              "4096-lease setup");
+    }
+    CHECK(large.TrackedCircuits().size()==4096,"secondary circuit index complete");
+    std::vector<std::uint64_t> leaseTransitions;
+    for(std::uint32_t i=0;i<4096;++i)large.QueueCircuitTeardown(1000+i);
+    std::size_t closed=0,erased=0;
+    for (int tick=0;tick<16;++tick) {
+        leaseTransitions.clear();
+        const std::size_t step=large.DrainQueuedCircuits(256,&leaseTransitions);
+        CHECK(step<=256 && leaseTransitions.size()==step,"teardown transition cap 256");
+        closed+=step;
+        const std::size_t reclaimed=large.EraseClosedSome(256);
+        CHECK(reclaimed<=256,"same-tick reclamation cap 256");
+        erased+=reclaimed;
+    }
+    CHECK(closed==4096 && erased==4096 && large.ActiveSize()==0 &&
+          large.Size()==0 && large.TrackedCircuits().empty(),
+          "4096 simultaneous circuit losses reclaimed in 16 bounded ticks");
+
     std::printf("test_kad6_lease: %d passed, %d failed\n",g_pass,g_fail);
     return g_fail?1:0;
 }

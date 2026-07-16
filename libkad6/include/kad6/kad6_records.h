@@ -18,7 +18,7 @@
 //   K6NodeBind      §6.2  "eSE-Kad6-NodeBind-v1"      one sig (node_pub)
 //   K6Rotate        §6.3  "eSE-Kad6-Rotate-v1"        two sigs (old_pub+new_pub)
 //   K6RouterRecord  §17.2 "eSE-Kad6-RouterRecord-v1"  one sig (node_pub)
-//   K6SourceRecord  §17.5 "eSE-Kad6-SourceRecord-v1"  one sig (pub_key — see below)
+//   K6SourceRecord  §17.5 "eSE-Kad6-SourceRecord-v1/v2" one sig (pub_key — see below)
 //
 // SOURCE-RECORD SIGNER BINDING. §17.5's 16-byte `source_pseudonym` cannot itself
 // be an Ed25519 verify key, so the wire carries pub_key[32] immediately before
@@ -45,6 +45,8 @@ namespace kad6 {
 
 // ── shared limits (all checked before the Ed25519 verify) ────────────────────
 constexpr Byte          kK6RecordVersion         = 1;
+constexpr Byte          kK6SourceRecordVersionV1 = 1;
+constexpr Byte          kK6SourceRecordVersionV2 = 2;
 constexpr std::size_t   kK6RouterMinEndpoints    = 1;
 constexpr std::size_t   kK6RouterMaxEndpoints    = 4;   // §17.2 endpoint_count 1..4
 constexpr std::size_t   kK6SourceMinExits        = 1;
@@ -202,7 +204,7 @@ Kad6Status AcceptK6RouterRecord(const Kad6CryptoHooks& h,
 
 // ════════════════════════════════════════════════════════════════════════════
 // 4) K6SourceRecord (§17.5). Where/how to reach a content object via exit nodes.
-//    Domain "eSE-Kad6-SourceRecord-v1". Carries NO originator IP (by design).
+//    Domains "eSE-Kad6-SourceRecord-v1/v2". Carries NO originator IP.
 //    Wire: version u8=1 | flags u8 | exit_count u8(1..3) | reserved u8=0 |
 //          object_hash[16] | source_pseudonym[16] | source_epoch u64 |
 //          created_at u64 | expires_at u64 | service_token[16] |
@@ -222,7 +224,9 @@ struct K6ExitDescriptor {
 };
 
 struct K6SourceRecord {
-    Byte          version = kK6RecordVersion;
+    // Producers write v2.  Decoders/verifiers retain v1 until its signed TTL
+    // expires, so rolling upgrades never invalidate an existing publication.
+    Byte          version = kK6SourceRecordVersionV2;
     Byte          flags = 0;
     Hash16        object_hash{};
     Hash16        source_pseudonym{};   // 16-byte pseudonym; NOT the signing key
@@ -247,6 +251,16 @@ Kad6Status SignK6SourceRecord(const Kad6CryptoHooks& h, const Byte* sk, std::siz
 Kad6Status K6DeriveSourcePseudonym(const Kad6CryptoHooks& h,
                                    const Ed25519Pub& pubKey,
                                    Hash16& out);
+// L2/Q23 storage identity.  The 128-bit pseudonym remains display-only; DHT
+// ownership is keyed by the full signer identity:
+//   SHA-256("eSE-Kad6-SourceKey-v2" || pub_key).
+using K6SourceStorageKey = std::array<Byte, kHash16Size + kHash32Size>;
+Kad6Status K6DeriveSourceOwnerDigest(const Kad6CryptoHooks& h,
+                                     const Ed25519Pub& pubKey,
+                                     Hash32& out);
+Kad6Status K6MakeSourceStorageKey(const Kad6CryptoHooks& h,
+                                  const K6SourceRecord& source,
+                                  K6SourceStorageKey& out);
 // Cheap gate (version, exit count, compat_pub cap, created..expires window)
 // then ed25519_verify(pub_key, ...). Does NOT consult the clock.
 Kad6Status VerifyK6SourceRecord(const Kad6CryptoHooks& h, const K6SourceRecord& s);

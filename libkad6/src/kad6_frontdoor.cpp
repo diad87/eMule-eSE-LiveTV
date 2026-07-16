@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "kad6/kad6_frontdoor.h"
+#include "kad6/kad6_bytes.h"
 
 #include <algorithm>
 
@@ -25,9 +26,114 @@ bool SameHash(const Hash16& a, const Hash16& b) noexcept {
     return different == 0;
 }
 
+void RetryMessage(const K6RemoteGroup& group, std::uint64_t epoch,
+                  const std::array<Byte, kNonce16Size>& nonce,
+                  std::vector<Byte>& message) {
+    static const char domain[] = "eSE-Kad6-FrontDoorRetry-v1";
+    const Byte* prefix = reinterpret_cast<const Byte*>(domain);
+    message.assign(prefix, prefix + sizeof(domain) - 1);
+    ByteWriter writer(message); writer.u8(group.family);
+    writer.bytes(group.address.data(), group.family == 4 ? 4 : 8);
+    writer.u64le(epoch); writer.bytes(nonce.data(), nonce.size());
+}
+
+bool NonZero(const Byte* bytes, std::size_t size) noexcept {
+    Byte aggregate = 0; for (std::size_t i=0;i<size;++i) aggregate=static_cast<Byte>(aggregate|bytes[i]);
+    return aggregate != 0;
+}
+
 } // namespace
 
+Kad6Status IssueK6RetryCookie(const Kad6CryptoHooks& hooks,
+        const Byte* secret, std::size_t secretLen, const K6RemoteGroup& group,
+        std::uint64_t nowMs, K6RetryCookie& out) noexcept {
+    out = {};
+    if (!hooks.hmac_sha256 || !secret || secretLen < 16 || !ValidGroup(group))
+        return Kad6Status::BadValue;
+    out.family = group.family; out.epoch = nowMs / kK6RetryCookieEpochMs;
+    std::vector<Byte> seed;
+    static const char nonceDomain[] = "eSE-Kad6-FrontDoorNonce-v1";
+    const Byte* domain = reinterpret_cast<const Byte*>(nonceDomain);
+    seed.assign(domain, domain + sizeof(nonceDomain) - 1);
+    ByteWriter seedWriter(seed); seedWriter.u8(group.family);
+    seedWriter.bytes(group.address.data(), group.family == 4 ? 4 : 8);
+    seedWriter.u64le(out.epoch);
+    Hash32 digest{};
+    if (!hooks.hmac_sha256(secret, secretLen, seed.data(), seed.size(), digest.data()))
+        return Kad6Status::AuthFailed;
+    std::copy(digest.begin(), digest.begin() + out.nonce.size(), out.nonce.begin());
+    std::vector<Byte> message; RetryMessage(group, out.epoch, out.nonce, message);
+    if (!hooks.hmac_sha256(secret, secretLen, message.data(), message.size(), out.mac.data())) {
+        out = {}; return Kad6Status::AuthFailed;
+    }
+    return Kad6Status::Ok;
+}
+
+Kad6Status VerifyK6RetryCookie(const Kad6CryptoHooks& hooks,
+        const Byte* secret, std::size_t secretLen, const K6RemoteGroup& group,
+        std::uint64_t nowMs, const K6RetryCookie& cookie) noexcept {
+    if (!hooks.hmac_sha256 || !secret || secretLen < 16 || !ValidGroup(group) ||
+        cookie.version != 1 || cookie.family != group.family ||
+        !NonZero(cookie.nonce.data(), cookie.nonce.size()) ||
+        !NonZero(cookie.mac.data(), cookie.mac.size())) return Kad6Status::BadValue;
+    const std::uint64_t current = nowMs / kK6RetryCookieEpochMs;
+    if (cookie.epoch > current || current - cookie.epoch > 1) return Kad6Status::Expired;
+    std::vector<Byte> message; RetryMessage(group, cookie.epoch, cookie.nonce, message);
+    Hash32 expected{};
+    if (!hooks.hmac_sha256(secret, secretLen, message.data(), message.size(), expected.data()))
+        return Kad6Status::AuthFailed;
+    return Kad6CtEqual(expected.data(), cookie.mac.data(), expected.size())
+        ? Kad6Status::Ok : Kad6Status::AuthFailed;
+}
+
+Kad6Status EncodeK6RetryCookie(const K6RetryCookie& cookie, std::vector<Byte>& out) {
+    out.clear();
+    if (cookie.version != 1 || (cookie.family != 4 && cookie.family != 6) ||
+        !NonZero(cookie.nonce.data(), cookie.nonce.size()) ||
+        !NonZero(cookie.mac.data(), cookie.mac.size())) return Kad6Status::BadValue;
+    ByteWriter writer(out); writer.u8(cookie.version); writer.u8(cookie.family); writer.u16le(0);
+    writer.u64le(cookie.epoch); writer.bytes(cookie.nonce.data(), cookie.nonce.size());
+    writer.bytes(cookie.mac.data(), cookie.mac.size()); return Kad6Status::Ok;
+}
+
+Kad6Status DecodeK6RetryCookie(const Byte* in, std::size_t len, K6RetryCookie& out,
+        std::size_t* consumed) noexcept {
+    out = {}; if (consumed) *consumed = 0; if (!in && len) return Kad6Status::NullArgument;
+    ByteReader reader(in, len); out.version=reader.u8();out.family=reader.u8();
+    const std::uint16_t reserved=reader.u16le();out.epoch=reader.u64le();
+    reader.bytes(out.nonce.data(),out.nonce.size());reader.bytes(out.mac.data(),out.mac.size());
+    if(!reader.ok()){out={};return Kad6Status::Truncated;}
+    if(reader.pos()!=len||reserved||out.version!=1||(out.family!=4&&out.family!=6)||
+       !NonZero(out.nonce.data(),out.nonce.size())||!NonZero(out.mac.data(),out.mac.size())){
+        out={};return Kad6Status::Malformed;}
+    if(consumed)*consumed=len;return Kad6Status::Ok;
+}
+
 int K6PreAuthGate::Admit(const K6RemoteGroup& group, std::uint64_t now_ms) noexcept {
+    return AdmitLane(group, now_ms, true);
+}
+
+int K6PreAuthGate::AdmitAfterRetry(const K6RemoteGroup& group,
+        const K6RetryCookie& cookie, const Kad6CryptoHooks& hooks,
+        const Byte* secret, std::size_t secretLen, std::uint64_t now_ms) noexcept {
+    if (VerifyK6RetryCookie(hooks, secret, secretLen, group, now_ms, cookie) !=
+            Kad6Status::Ok) {
+        ++stats_.rejected_cookie;
+        return -1;
+    }
+    ++stats_.retry_validated;
+    return AdmitLane(group, now_ms, false);
+}
+
+int K6PreAuthGate::AdmitAuthenticated(const K6RemoteGroup& group,
+                                      std::uint64_t now_ms) noexcept {
+    const int slot = AdmitLane(group, now_ms, true);
+    if (slot >= 0) ++stats_.reserved_admitted;
+    return slot;
+}
+
+int K6PreAuthGate::AdmitLane(const K6RemoteGroup& group, std::uint64_t now_ms,
+                             bool reservedLane) noexcept {
     if (!ValidGroup(group)) {
         ++stats_.rejected_protocol;
         return -1;
@@ -47,7 +153,7 @@ int K6PreAuthGate::Admit(const K6RemoteGroup& group, std::uint64_t now_ms) noexc
         ++stats_.rejected_group;
         return -1;
     }
-    if (free_slot < 0) {
+    if (free_slot < 0 || (!reservedLane && stats_.active >= kK6PreAuthAnonymousSlots)) {
         ++stats_.rejected_capacity;
         return -1;
     }

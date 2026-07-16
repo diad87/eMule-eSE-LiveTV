@@ -26,6 +26,13 @@ PROTO = ROOT / "docs" / "protocol"
 OPCODES_H = ROOT / "srchybrid" / "Opcodes.h"
 TUNNEL_H = ROOT / "srchybrid" / "LiveTunnel.h"
 KRP_CONTROL_H = ROOT / "librelaycore" / "include" / "relay" / "krp_control.h"
+KAD6_HEADERS = (
+    ROOT / "libkad6" / "include" / "kad6" / "kad6_search.h",
+    ROOT / "libkad6" / "include" / "kad6" / "kad6_publish.h",
+    ROOT / "libkad6" / "include" / "kad6" / "kad6_lease.h",
+    ROOT / "libkad6" / "include" / "kad6" / "kad6_gateway.h",
+    ROOT / "libkad6" / "include" / "kad6" / "kad6_quota.h",
+)
 
 # Statuses that are allowed to exist in the registry without a code symbol yet.
 RESERVED_STATES = {"reserved-proposed", "design"}
@@ -33,7 +40,9 @@ RESERVED_STATES = {"reserved-proposed", "design"}
 # A symbol in code is "fork-owned" (and therefore must be registered) when its
 # name matches one of these. Everything else is classic/upstream and ignored.
 def is_fork_symbol(name: str) -> bool:
-    if name in ("OP_PUBLICIP_ANSWER_V6", "OP_CALLBACK_V6", "OP_FOUNDSOURCES_V6",
+    if name.startswith("kK6Msg"):
+        return True
+    if name in ("OP_KAD6HEADER", "OP_PUBLICIP_ANSWER_V6", "OP_CALLBACK_V6", "OP_FOUNDSOURCES_V6",
                 "ST_IPV6", "TAG_K_EFFECTIVE", "TAG_SHARD_DEGREE",
                 "TAG_PINNED_BY_SUBSCRIBER", "TAG_SOURCEIP_V6", "TAG_SERVERIP_V6",
                 "KADEMLIA2_KEY_SHARD_ANNOUNCE", "KADEMLIA2_PUBLISH_TRIGRAM_REQ",
@@ -50,6 +59,7 @@ DEF_NUM = re.compile(r'#define\s+([A-Z0-9_]+)\s+(0x[0-9A-Fa-f]+|\d+)\b')
 DEF_TAG = re.compile(r'#define\s+([A-Z0-9_]+)\s+"\\x([0-9A-Fa-f]{2})"')
 ENUM_VAL = re.compile(r'\b(TUN_OP_[A-Z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)')
 KRP_ENUM_VAL = re.compile(r'\b(KRP_[A-Z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)')
+KAD6_CONST_VAL = re.compile(r'\b(kK6Msg[A-Za-z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)')
 
 
 def norm(v: str):
@@ -60,13 +70,13 @@ def norm(v: str):
 def parse_code():
     """Return {name: (value:int, file:str, line:int)} for fork-owned symbols."""
     out = {}
-    for path in (OPCODES_H, TUNNEL_H, KRP_CONTROL_H):
+    for path in (OPCODES_H, TUNNEL_H, KRP_CONTROL_H, *KAD6_HEADERS):
         if not path.exists():
             print(f"  ! cannot read {path}", file=sys.stderr)
             continue
         for i, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
             for rx, base in ((DEF_NUM, None), (DEF_TAG, 16), (ENUM_VAL, None),
-                             (KRP_ENUM_VAL, None)):
+                             (KRP_ENUM_VAL, None), (KAD6_CONST_VAL, None)):
                 m = rx.search(line)
                 if not m:
                     continue
@@ -82,7 +92,7 @@ def parse_code():
 def load_registry():
     rows = []
     for csv_name in ("OPCODES.csv", "TAGS.csv", "CAPABILITIES.csv", "TUNNEL_SERVICES.csv",
-                     "KRP_MESSAGES.csv"):
+                     "KRP_MESSAGES.csv", "KAD6_MESSAGES.csv"):
         p = PROTO / csv_name
         if not p.exists():
             print(f"  ! missing registry file {p}", file=sys.stderr)

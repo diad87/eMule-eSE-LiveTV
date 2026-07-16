@@ -6,7 +6,7 @@
 >
 > **CSV asociados:** [OPCODES.csv](OPCODES.csv) · [TAGS.csv](TAGS.csv) ·
 > [CAPABILITIES.csv](CAPABILITIES.csv) · [TUNNEL_SERVICES.csv](TUNNEL_SERVICES.csv) ·
-> [KRP_MESSAGES.csv](KRP_MESSAGES.csv)
+> [KRP_MESSAGES.csv](KRP_MESSAGES.csv) · [KAD6_MESSAGES.csv](KAD6_MESSAGES.csv)
 > **Linter de CI:** [`tools/check_protocol_registry.py`](../../tools/check_protocol_registry.py)
 
 ---
@@ -15,7 +15,7 @@
 
 ```
 $ python tools/check_protocol_registry.py
-protocol registry: 168 entries, 151 fork symbols in code
+protocol registry: 196 entries, 179 fork symbols in code
 OK: registry is internally consistent and matches code.
 exit=0
 ```
@@ -23,8 +23,8 @@ exit=0
 **El CI está en VERDE**: 0 colisiones, 0 sin registrar, 0 desajustes doc-vs-código — el registro
 es un espejo fiel del código. La última colisión (`0xE0`, §2.1) quedó **resuelta**: el código movió
 `OP_PUBLICIP_ANSWER_V6` de `0xE0` a `0xB3` (slot ratificado en §2.1) y el registro se sincronizó
-con ese valor. El brinco de 96→99 entradas refleja además las reservas Kad3 IPv6 (`KADEMLIA3_*`)
-añadidas en paralelo; ninguna colisiona.
+con ese valor. Los 27 mensajes interiores Kad6 (`kK6Msg*`) también están gobernados por
+`KAD6_MESSAGES.csv`; ninguna entrada colisiona con otro namespace.
 
 ---
 
@@ -37,6 +37,7 @@ agrupa por `namespace`, y el linter solo marca duplicados dentro del mismo names
 |---|---|---|
 | `EMULEPROT-CC` | opcodes cliente↔cliente de protocolo extendido | `OP_EMULEPROT` (0xC5) |
 | `KADEMLIA-UDP` | opcodes Kad por UDP | `OP_KADEMLIAHEADER` (0xE4) |
+| `KAD6-INNER` | mensajes autenticados dentro del gateway/circuito Kad6 | `K6Frame.msg_type` |
 | `TUNNEL-CELL` | sub-comandos `TUN_OP_*` multiplexados dentro de `OP_LIVE_TUNNEL_CELL` (0xD5) | onion cell |
 | `TAG-ED2K` | tags dentro de payloads (no el byte de opcode) | — |
 | `SERVER-MET` | tags de `server.met` | — |

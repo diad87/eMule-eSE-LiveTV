@@ -8,7 +8,9 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace kad6 {
@@ -165,9 +167,19 @@ public:
     Kad6Status MarkPublished(std::uint64_t lease_id);
     Kad6Status MarkServing(std::uint64_t lease_id);
     Kad6Status BeginDrain(std::uint64_t lease_id);
-    std::size_t DrainCircuit(std::uint32_t circuit_id);
+    std::size_t DrainCircuit(std::uint32_t circuit_id,
+                             std::vector<std::uint64_t>* transitioned = nullptr);
+    std::size_t DrainCircuitSome(std::uint32_t circuit_id,
+                                 std::size_t maxTransitions,
+                                 std::vector<std::uint64_t>* transitioned = nullptr);
+    void QueueCircuitTeardown(std::uint32_t circuit_id);
+    std::size_t DrainQueuedCircuits(std::size_t maxTransitions,
+                                    std::vector<std::uint64_t>* transitioned = nullptr);
     std::size_t Expire(std::uint64_t now);
+    std::size_t ExpireSome(std::uint64_t now, std::size_t maxTransitions,
+                           std::vector<std::uint64_t>* transitioned = nullptr);
     std::size_t EraseClosed();
+    std::size_t EraseClosedSome(std::size_t maxErase);
     bool Close(std::uint64_t lease_id);
     K6SourceLease* Find(std::uint64_t lease_id);
     const K6SourceLease* Find(std::uint64_t lease_id) const;
@@ -175,9 +187,24 @@ public:
     bool CanAccept(std::uint64_t lease_id) const;
     std::size_t Size() const noexcept { return leases_.size(); }
     std::size_t ActiveSize() const noexcept;
+    std::vector<std::uint32_t> TrackedCircuits() const;
     const std::map<std::uint64_t, K6SourceLease>& Entries() const noexcept { return leases_; }
 private:
+    using ExpiryIndex = std::multimap<std::uint64_t, std::uint64_t>;
+
+    void MarkClosed(K6SourceLease& lease);
+    std::size_t CloseCircuitSome(std::uint32_t circuit_id,
+                                 std::size_t maxTransitions,
+                                 std::vector<std::uint64_t>* transitioned);
+    void RemoveCircuitIndex(const K6SourceLease& lease);
+    void RemoveIndexes(const K6SourceLease& lease);
+
     std::map<std::uint64_t, K6SourceLease> leases_;
+    std::map<std::uint32_t, std::set<std::uint64_t>> circuit_index_;
+    ExpiryIndex expiry_index_;
+    std::map<std::uint64_t, ExpiryIndex::iterator> expiry_refs_;
+    std::set<std::uint64_t> closed_index_;
+    std::set<std::uint32_t> teardown_queue_;
 };
 
 } // namespace kad6

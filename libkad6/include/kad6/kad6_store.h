@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <vector>
 
 namespace kad6 {
@@ -70,5 +71,43 @@ Kad6Status EncodeK6FindSourceResponse(const K6FindSourceResponse& message,
                                       std::vector<Byte>& out);
 Kad6Status DecodeK6FindSourceResponse(const Byte* in, std::size_t len,
                                       K6FindSourceResponse& message) noexcept;
+
+// Custodian-side production storage for SourceRecord v1/v2.  The short
+// pseudonym is never part of the ownership key: records are isolated by
+// object_hash || SHA-256("eSE-Kad6-SourceKey-v2" || node_pub).  Both wire
+// versions therefore share one owner namespace during a rolling upgrade,
+// while a forced collision of the 128-bit presentation value cannot evict a
+// different full key.
+class K6SourceRecordTable {
+public:
+    explicit K6SourceRecordTable(std::size_t capacity = 4096,
+                                 std::size_t per_object_capacity = 1000) noexcept;
+
+    K6StoreStatus Put(const Kad6CryptoHooks& crypto,
+                      const K6SourceRecord& record,
+                      std::uint64_t now,
+                      std::uint64_t* accepted_epoch = nullptr);
+    bool EraseOwner(const Kad6CryptoHooks& crypto,
+                    const K6SourceRecord& owner_record);
+    std::size_t Prune(std::uint64_t now) noexcept;
+    void Find(const Hash16& object_hash, std::uint64_t now,
+              std::size_t maximum, std::vector<K6SourceRecord>& out) const;
+
+    std::size_t Size() const noexcept { return entries_.size(); }
+    std::size_t ObjectSize(const Hash16& object_hash) const noexcept;
+
+private:
+    struct Entry {
+        K6SourceRecord record;
+        std::vector<Byte> canonical_wire;
+    };
+
+    void Erase(std::map<K6SourceStorageKey, Entry>::iterator entry) noexcept;
+
+    std::size_t capacity_;
+    std::size_t per_object_capacity_;
+    std::map<K6SourceStorageKey, Entry> entries_;
+    std::map<Hash16, std::size_t> object_counts_;
+};
 
 } // namespace kad6

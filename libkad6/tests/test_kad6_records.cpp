@@ -568,7 +568,7 @@ static void test_source() {
     forged.source_pseudonym[0] ^= 0x80;
     std::vector<Byte> forgedBody;
     (void)K6SourceRecordSerializeSigned(forged, forgedBody);
-    static const char kSourceDomain[] = "eSE-Kad6-SourceRecord-v1";
+    static const char kSourceDomain[] = "eSE-Kad6-SourceRecord-v2";
     std::vector<Byte> forgedMsg;
     forgedMsg.insert(forgedMsg.end(),
                      reinterpret_cast<const Byte*>(kSourceDomain),
@@ -577,6 +577,33 @@ static void test_source() {
     (void)mock_sign(pub.data(), pub.size(), forgedMsg.data(), forgedMsg.size(), forged.signature.data());
     CHECK(VerifyK6SourceRecord(h, forged) == Kad6Status::AuthFailed,
           "source self-signed arbitrary pseudonym rejected");
+
+    // L2/Q23: v2 is the write format, while signed v1 records remain readable
+    // for their existing TTL.  Both versions map the same full key to one
+    // owner namespace.
+    K6SourceRecord legacy = MakeSource(pub, 1, false);
+    legacy.version = kK6SourceRecordVersionV1;
+    std::vector<Byte> legacyWire;
+    CHECK(SignK6SourceRecord(h, pub.data(), pub.size(), legacy, legacyWire) == Kad6Status::Ok,
+          "source v1 migration record signs");
+    K6SourceRecord legacyDecoded;
+    CHECK(DecodeK6SourceRecord(legacyWire.data(), legacyWire.size(), legacyDecoded) ==
+              Kad6Status::Ok && VerifyK6SourceRecord(h, legacyDecoded) == Kad6Status::Ok,
+          "source v1 dual-read remains valid");
+    K6SourceStorageKey v1Key{}, v2Key{};
+    CHECK(K6MakeSourceStorageKey(h, legacyDecoded, v1Key) == Kad6Status::Ok &&
+          K6MakeSourceStorageKey(h, s, v2Key) == Kad6Status::Ok && v1Key == v2Key,
+          "v1 and v2 same signer share full-key namespace");
+
+    K6SourceRecord collisionA = s;
+    K6SourceRecord collisionB = s;
+    collisionB.pub_key = MakeKey(77);
+    collisionB.source_pseudonym = collisionA.source_pseudonym; // forced short collision
+    K6SourceStorageKey collisionKeyA{}, collisionKeyB{};
+    CHECK(K6MakeSourceStorageKey(h, collisionA, collisionKeyA) == Kad6Status::Ok &&
+          K6MakeSourceStorageKey(h, collisionB, collisionKeyB) == Kad6Status::Ok &&
+          collisionKeyA != collisionKeyB,
+          "forced 128-bit pseudonym collision cannot overwrite full-key owner");
 
     // exit_count byte (offset 2) out of range -> Malformed, before exits.
     std::vector<Byte> z = wire; z[2] = 0;

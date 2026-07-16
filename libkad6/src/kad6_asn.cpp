@@ -12,9 +12,11 @@ namespace kad6 {
 namespace {
 
 bool IsCanonicalPrefix(const K6AsnPrefix& entry) noexcept {
-    if (entry.prefix.family != Kad6Address::Family::IPv6 ||
-        entry.prefix_length == 0 || entry.prefix_length > 128 ||
-        entry.asn == 0)
+    const std::size_t addressBytes = entry.prefix.family == Kad6Address::Family::IPv4
+        ? 4 : entry.prefix.family == Kad6Address::Family::IPv6 ? 16 : 0;
+    const std::size_t addressBits = addressBytes * 8;
+    if (addressBytes == 0 || entry.prefix_length == 0 ||
+        entry.prefix_length > addressBits || entry.asn == 0)
         return false;
     const std::size_t fullBytes = entry.prefix_length / 8;
     const unsigned remainder = entry.prefix_length % 8;
@@ -24,16 +26,20 @@ bool IsCanonicalPrefix(const K6AsnPrefix& entry) noexcept {
             return false;
     }
     const std::size_t firstHostByte = fullBytes + (remainder != 0 ? 1 : 0);
-    for (std::size_t i = firstHostByte; i < entry.prefix.addr.size(); ++i)
+    for (std::size_t i = firstHostByte; i < addressBytes; ++i)
+        if (entry.prefix.addr[i] != 0)
+            return false;
+    for (std::size_t i = addressBytes; i < entry.prefix.addr.size(); ++i)
         if (entry.prefix.addr[i] != 0)
             return false;
     return true;
 }
 
-std::array<Byte, 17> PrefixKey(const K6AsnPrefix& entry) noexcept {
-    std::array<Byte, 17> key{};
+std::array<Byte, 18> PrefixKey(const K6AsnPrefix& entry) noexcept {
+    std::array<Byte, 18> key{};
     std::copy(entry.prefix.addr.begin(), entry.prefix.addr.end(), key.begin());
     key[16] = entry.prefix_length;
+    key[17] = static_cast<Byte>(entry.prefix.family);
     return key;
 }
 
@@ -51,7 +57,7 @@ Kad6Status EncodeK6AsnSnapshot(std::uint64_t sequence,
         return Kad6Status::BadValue;
     if (entries.size() > kK6AsnMaxEntries)
         return Kad6Status::TooLarge;
-    std::set<std::array<Byte, 17>> unique;
+    std::set<std::array<Byte, 18>> unique;
     for (const K6AsnPrefix& entry : entries) {
         if (!IsCanonicalPrefix(entry))
             return Kad6Status::BadValue;
@@ -76,7 +82,7 @@ Kad6Status EncodeK6AsnSnapshot(std::uint64_t sequence,
     for (const K6AsnPrefix& entry : entries) {
         writer.bytes(entry.prefix.addr.data(), entry.prefix.addr.size());
         writer.u8(entry.prefix_length);
-        writer.u8(0);
+        writer.u8(static_cast<Byte>(entry.prefix.family));
         writer.u16le(0);
         writer.u32le(entry.asn);
         writer.u32le(entry.operator_group);
@@ -105,7 +111,8 @@ Kad6Status DecodeK6AsnSnapshot(const Byte* in, std::size_t len,
     if (std::memcmp(magic, expectedMagic, sizeof magic) != 0 ||
         flags != 0 || reserved != 0 || decodedSequence == 0)
         return Kad6Status::Malformed;
-    if (version != kK6AsnSnapshotVersion)
+    if (version != kK6AsnSnapshotLegacyVersion &&
+        version != kK6AsnSnapshotVersion)
         return Kad6Status::UnsupportedVersion;
     if (count > kK6AsnMaxEntries)
         return Kad6Status::TooLarge;
@@ -116,13 +123,13 @@ Kad6Status DecodeK6AsnSnapshot(const Byte* in, std::size_t len,
             ? Kad6Status::Truncated : Kad6Status::Malformed;
 
     entries.reserve(count);
-    std::set<std::array<Byte, 17>> unique;
+    std::set<std::array<Byte, 18>> unique;
     for (std::uint32_t i = 0; i < count; ++i) {
         K6AsnPrefix entry;
         entry.prefix.family = Kad6Address::Family::IPv6;
         reader.bytes(entry.prefix.addr.data(), entry.prefix.addr.size());
         entry.prefix_length = reader.u8();
-        const Byte reserved8 = reader.u8();
+        const Byte familyOrReserved = reader.u8();
         const std::uint16_t reserved16 = reader.u16le();
         entry.asn = reader.u32le();
         entry.operator_group = reader.u32le();
@@ -130,7 +137,20 @@ Kad6Status DecodeK6AsnSnapshot(const Byte* in, std::size_t len,
             entries.clear();
             return Kad6Status::Truncated;
         }
-        if (reserved8 != 0 || reserved16 != 0 || !IsCanonicalPrefix(entry)) {
+        if (version == kK6AsnSnapshotVersion) {
+            if (familyOrReserved == static_cast<Byte>(Kad6Address::Family::IPv4))
+                entry.prefix.family = Kad6Address::Family::IPv4;
+            else if (familyOrReserved == static_cast<Byte>(Kad6Address::Family::IPv6))
+                entry.prefix.family = Kad6Address::Family::IPv6;
+            else {
+                entries.clear();
+                return Kad6Status::Malformed;
+            }
+        } else if (familyOrReserved != 0) {
+            entries.clear();
+            return Kad6Status::Malformed;
+        }
+        if (reserved16 != 0 || !IsCanonicalPrefix(entry)) {
             entries.clear();
             return Kad6Status::Malformed;
         }
@@ -146,10 +166,12 @@ Kad6Status DecodeK6AsnSnapshot(const Byte* in, std::size_t len,
 
 K6AsnDatabase::K6AsnDatabase() {
     nodes_.push_back(Node{});
+    nodes_.push_back(Node{});
 }
 
 void K6AsnDatabase::Clear() {
     nodes_.clear();
+    nodes_.push_back(Node{});
     nodes_.push_back(Node{});
     sequence_ = 0;
     entry_count_ = 0;
@@ -164,10 +186,11 @@ Kad6Status K6AsnDatabase::LoadEntries(
 
     std::vector<Node> candidate;
     candidate.push_back(Node{});
+    candidate.push_back(Node{});
     for (const K6AsnPrefix& entry : entries) {
         if (!IsCanonicalPrefix(entry))
             return Kad6Status::BadValue;
-        std::size_t nodeIndex = 0;
+        std::size_t nodeIndex = entry.prefix.family == Kad6Address::Family::IPv4 ? 0 : 1;
         for (std::size_t bit = 0; bit < entry.prefix_length; ++bit) {
             const unsigned branch = AddressBit(entry.prefix, bit);
             std::uint32_t next = candidate[nodeIndex].child[branch];
@@ -197,9 +220,10 @@ Kad6Status K6AsnDatabase::LoadEntries(
 bool K6AsnDatabase::Lookup(const Kad6Address& address,
                            K6AsnInfo& out) const noexcept {
     out = K6AsnInfo{};
-    if (address.family != Kad6Address::Family::IPv6 || nodes_.empty())
+    if ((address.family != Kad6Address::Family::IPv4 &&
+         address.family != Kad6Address::Family::IPv6) || nodes_.size() < 2)
         return false;
-    std::size_t nodeIndex = 0;
+    std::size_t nodeIndex = address.family == Kad6Address::Family::IPv4 ? 0 : 1;
     bool found = false;
     if (nodes_[nodeIndex].has_value) {
         out.asn = nodes_[nodeIndex].asn;
@@ -207,7 +231,8 @@ bool K6AsnDatabase::Lookup(const Kad6Address& address,
         out.matched_prefix_length = nodes_[nodeIndex].prefix_length;
         found = true;
     }
-    for (std::size_t bit = 0; bit < 128; ++bit) {
+    const std::size_t addressBits = address.family == Kad6Address::Family::IPv4 ? 32 : 128;
+    for (std::size_t bit = 0; bit < addressBits; ++bit) {
         const unsigned branch = AddressBit(address, bit);
         const std::uint32_t next = nodes_[nodeIndex].child[branch];
         if (next == 0)

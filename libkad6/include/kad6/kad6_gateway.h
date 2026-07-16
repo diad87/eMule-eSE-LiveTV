@@ -5,7 +5,9 @@
 #include "kad6/kad6_endpoint.h"
 #include "kad6/kad6_ticket.h"
 
+#include <array>
 #include <cstdint>
+#include <map>
 #include <vector>
 
 namespace kad6 {
@@ -20,6 +22,8 @@ constexpr Byte kK6MsgAccept          = 0x32;
 constexpr Byte kK6MsgStreamData      = 0x33;
 constexpr Byte kK6MsgStreamHalfClose = 0x34;
 constexpr Byte kK6MsgStreamClose     = 0x35;
+constexpr Byte kK6MsgMaxStreamData   = 0x3C;
+constexpr Byte kK6MsgMaxData         = 0x3D;
 
 constexpr std::size_t kK6DialMaxInitialData = 64u * 1024u;
 constexpr std::size_t kK6StreamMaxFrameData = 256u * 1024u;
@@ -27,6 +31,15 @@ constexpr std::uint32_t kK6DialMinConnectTimeoutMs = 1000;
 constexpr std::uint32_t kK6DialMaxConnectTimeoutMs = 30000;
 constexpr std::uint32_t kK6DialMinIdleTimeoutMs = 10000;
 constexpr std::uint32_t kK6DialMaxIdleTimeoutMs = 30u * 60u * 1000u;
+constexpr std::uint64_t kK6DefaultReceiveBuffer = 2u * 1024u * 1024u;
+// Initial credit ends exactly at the 75% high watermark. A stalled receiver
+// therefore stops the sender before the final quarter of bounded headroom.
+constexpr std::uint64_t kK6DefaultStreamCredit =
+    kK6DefaultReceiveBuffer * 3u / 4u;
+constexpr std::uint64_t kK6DefaultCircuitCredit =
+    kK6DefaultReceiveBuffer * 3u / 4u;
+constexpr std::uint64_t kK6ReservedControlBytes = 64u * 1024u;
+constexpr std::uint64_t kK6CreditStallDeadlineMs = 30u * 1000u;
 
 enum class K6GatewayTransport : Byte { TcpEd2k = 1, UdpEd2k = 2, UdpKad2 = 3 };
 enum class K6TargetTicketStatus : Byte {
@@ -97,6 +110,19 @@ struct K6StreamClose {
     std::uint64_t total_rx_bytes = 0;
 };
 
+// Authenticated by the enclosing onion/circuit frame.  Offsets are absolute
+// and monotonic, so replay cannot create additional credit.
+struct K6MaxStreamData {
+    std::uint64_t stream_id = 0;
+    Byte direction = 0;
+    std::uint64_t absolute_offset = 0;
+};
+
+struct K6MaxData {
+    Byte direction = 0;
+    std::uint64_t absolute_offset = 0;
+};
+
 Kad6Status EncodeK6TargetTicketRequest(const K6TargetTicketRequest&, std::vector<Byte>&);
 Kad6Status DecodeK6TargetTicketRequest(const Byte*, std::size_t, K6TargetTicketRequest&,
                                         std::size_t* consumed = nullptr) noexcept;
@@ -118,12 +144,21 @@ Kad6Status DecodeK6StreamHalfClose(const Byte*, std::size_t, K6StreamHalfClose&,
 Kad6Status EncodeK6StreamClose(const K6StreamClose&, std::vector<Byte>&);
 Kad6Status DecodeK6StreamClose(const Byte*, std::size_t, K6StreamClose&,
                                 std::size_t* consumed = nullptr) noexcept;
+Kad6Status EncodeK6MaxStreamData(const K6MaxStreamData&, std::vector<Byte>&);
+Kad6Status DecodeK6MaxStreamData(const Byte*, std::size_t, K6MaxStreamData&,
+                                  std::size_t* consumed = nullptr) noexcept;
+Kad6Status EncodeK6MaxData(const K6MaxData&, std::vector<Byte>&);
+Kad6Status DecodeK6MaxData(const Byte*, std::size_t, K6MaxData&,
+                            std::size_t* consumed = nullptr) noexcept;
 
 // Side-effect-free sequence/quota state used by both tunnel endpoints. Data is
 // accepted only in exact order, before half-close, and while byte quotas fit.
 class K6StreamFlowState {
 public:
     explicit K6StreamFlowState(std::uint64_t maxBytes = 0) : max_bytes_(maxBytes) {}
+    Kad6Status CanAccept(const K6StreamData& data) const noexcept;
+    Kad6Status CanAcceptFrame(Byte direction, std::uint64_t sequence,
+                              std::size_t dataBytes) const noexcept;
     Kad6Status Accept(const K6StreamData& data) noexcept;
     Kad6Status AcceptFrame(Byte direction, std::uint64_t sequence,
                            std::size_t dataBytes) noexcept;
@@ -139,6 +174,99 @@ private:
     bool half_[2] = {false, false};
     bool closed_ = false;
     std::uint64_t max_bytes_ = 0;
+};
+
+// Sender-side credit ledger.  One instance is scoped to one circuit and may
+// contain many streams.  CommitSend succeeds only when stream credit, circuit
+// credit, ticket quota, scheduler allocation and local queue headroom all fit.
+class K6SendCreditLedger {
+public:
+    Kad6Status RegisterStream(std::uint64_t streamId);
+    void RemoveStream(std::uint64_t streamId);
+    Kad6Status Grant(const K6MaxStreamData& credit) noexcept;
+    Kad6Status Grant(const K6MaxData& credit) noexcept;
+    std::uint64_t Available(std::uint64_t streamId, Byte direction,
+                            std::uint64_t ticketRemaining,
+                            std::uint64_t schedulerCredit,
+                            std::uint64_t queueHeadroom) const noexcept;
+    Kad6Status CommitSend(std::uint64_t streamId, Byte direction,
+                          std::uint64_t bytes, std::uint64_t ticketRemaining,
+                          std::uint64_t schedulerCredit,
+                          std::uint64_t queueHeadroom) noexcept;
+    std::uint64_t stream_sent(std::uint64_t streamId, Byte direction) const noexcept;
+    std::uint64_t circuit_sent(Byte direction) const noexcept;
+private:
+    struct StreamState {
+        std::uint64_t limit[2] = {0, 0};
+        std::uint64_t sent[2] = {0, 0};
+    };
+    std::map<std::uint64_t, StreamState> streams_;
+    std::uint64_t circuit_limit_[2] = {0, 0};
+    std::uint64_t circuit_sent_[2] = {0, 0};
+};
+
+// Receiver-side sliding window.  Credit advances only through Consume(),
+// which the host calls after bytes leave the downstream socket/application
+// queue.  The 75/25 percent hysteresis is exposed as reads_paused().
+class K6ReceiveCreditWindow {
+public:
+    explicit K6ReceiveCreditWindow(
+        std::uint64_t streamWindow = kK6DefaultStreamCredit,
+        std::uint64_t circuitWindow = kK6DefaultCircuitCredit,
+        std::uint64_t maxBuffered = kK6DefaultReceiveBuffer);
+    Kad6Status RegisterStream(std::uint64_t streamId);
+    void RemoveStream(std::uint64_t streamId);
+    Kad6Status InitialCredit(std::uint64_t streamId, Byte direction,
+                             K6MaxStreamData& streamCredit,
+                             K6MaxData& circuitCredit) const noexcept;
+    Kad6Status CanAccept(std::uint64_t streamId, Byte direction,
+                         std::uint64_t bytes) const noexcept;
+    Kad6Status Accept(std::uint64_t streamId, Byte direction,
+                      std::uint64_t bytes, std::uint64_t nowMs) noexcept;
+    Kad6Status Consume(std::uint64_t streamId, Byte direction,
+                       std::uint64_t bytes, std::uint64_t nowMs,
+                       K6MaxStreamData& streamCredit,
+                       K6MaxData& circuitCredit) noexcept;
+    bool reads_paused() const noexcept { return reads_paused_; }
+    bool stalled(std::uint64_t nowMs,
+                 std::uint64_t deadlineMs = kK6CreditStallDeadlineMs) const noexcept;
+    std::uint64_t buffered_bytes() const noexcept { return buffered_bytes_; }
+    std::uint64_t max_buffered_bytes() const noexcept { return max_buffered_; }
+private:
+    struct StreamState {
+        std::uint64_t received[2] = {0, 0};
+        std::uint64_t consumed[2] = {0, 0};
+        std::uint64_t advertised[2] = {0, 0};
+    };
+    void UpdateWatermark(std::uint64_t nowMs) noexcept;
+    std::map<std::uint64_t, StreamState> streams_;
+    std::uint64_t circuit_received_[2] = {0, 0};
+    std::uint64_t circuit_consumed_[2] = {0, 0};
+    std::uint64_t circuit_advertised_[2] = {0, 0};
+    std::uint64_t stream_window_ = 0;
+    std::uint64_t circuit_window_ = 0;
+    std::uint64_t max_buffered_ = 0;
+    std::uint64_t buffered_bytes_ = 0;
+    std::uint64_t paused_since_ms_ = 0;
+    bool reads_paused_ = false;
+};
+
+// Data cannot consume the reserved control lane.  MAX_*, CLOSE and DESTROY
+// may therefore make progress even when the ordinary data queue is full.
+class K6GatewayQueueBudget {
+public:
+    explicit K6GatewayQueueBudget(std::uint64_t dataBytes,
+        std::uint64_t controlBytes = kK6ReservedControlBytes)
+        : data_capacity_(dataBytes), control_capacity_(controlBytes) {}
+    bool ReserveData(std::uint64_t bytes) noexcept;
+    bool ReserveControl(std::uint64_t bytes) noexcept;
+    void ReleaseData(std::uint64_t bytes) noexcept;
+    void ReleaseControl(std::uint64_t bytes) noexcept;
+    std::uint64_t data_used() const noexcept { return data_used_; }
+    std::uint64_t control_used() const noexcept { return control_used_; }
+private:
+    std::uint64_t data_capacity_ = 0, control_capacity_ = 0;
+    std::uint64_t data_used_ = 0, control_used_ = 0;
 };
 
 } // namespace kad6

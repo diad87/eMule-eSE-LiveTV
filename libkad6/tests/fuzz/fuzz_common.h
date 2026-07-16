@@ -103,6 +103,7 @@ bool FuzzBootstrap(const Config&, Report&);
 bool FuzzFrame(const Config&, Report&);
 bool FuzzGateway(const Config&, Report&);
 bool FuzzLease(const Config&, Report&);
+bool FuzzPath(const Config&, Report&);
 bool FuzzPublish(const Config&, Report&);
 bool FuzzStore(const Config&, Report&);
 bool FuzzTags(const Config&, Report&);

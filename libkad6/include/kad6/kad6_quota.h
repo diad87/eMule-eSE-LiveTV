@@ -25,11 +25,19 @@ constexpr Byte kK6MsgQuotaPresent = 0x3A;
 constexpr Byte kK6MsgQuotaStatus = 0x3B;
 
 constexpr std::uint64_t kK6QuotaEpochSeconds = 15u * 60u;
+constexpr std::uint64_t kK6QuotaSubepochSeconds = 60u;
+constexpr std::uint16_t kK6QuotaSubepochsPerEpoch =
+    static_cast<std::uint16_t>(kK6QuotaEpochSeconds / kK6QuotaSubepochSeconds);
 constexpr std::size_t kK6QuotaRandomizerSize = 32;
 constexpr std::size_t kK6QuotaUnitSize = 32;
-constexpr std::size_t kK6QuotaTokenBodySize = 80;
-constexpr std::size_t kK6QuotaPreparedSize =
-    kK6QuotaRandomizerSize + kK6QuotaTokenBodySize;
+constexpr std::size_t kK6QuotaTokenV1BodySize = 80;
+constexpr std::size_t kK6QuotaTokenV2BodySize = 116;
+constexpr std::size_t kK6QuotaTokenBodySize = kK6QuotaTokenV2BodySize;
+constexpr std::size_t kK6QuotaPreparedV1Size =
+    kK6QuotaRandomizerSize + kK6QuotaTokenV1BodySize;
+constexpr std::size_t kK6QuotaPreparedV2Size =
+    kK6QuotaRandomizerSize + kK6QuotaTokenV2BodySize;
+constexpr std::size_t kK6QuotaPreparedSize = kK6QuotaPreparedV2Size;
 constexpr std::size_t kK6QuotaMinModulusBytes = 256; // RSA-2048 floor
 constexpr std::size_t kK6QuotaMaxModulusBytes = 512; // RSA-4096 profile ceiling
 constexpr std::size_t kK6QuotaMaxBatch = 16;
@@ -86,18 +94,26 @@ struct K6QuotaIssuerCertificate {
 // a 32-byte prefix before this exact body, as required by the recommended RFC
 // 9474 randomized variants.
 struct K6QuotaToken {
-    Byte version = 1;
+    // Producers write v2. V1 remains readable for rolling compatibility, but
+    // only v2 binds issuance to one issuer certificate and one short slot.
+    Byte version = 2;
     K6QuotaSuite suite = K6QuotaSuite::RsabssaSha384PssRandomized;
     K6QuotaService service = K6QuotaService::ExitEd2kFull;
     Byte reserved = 0;
     std::uint32_t policy_id = 1;
     std::uint64_t valid_epoch = 0;
+    std::uint16_t subepoch_slot = 0;
+    std::uint16_t reserved2 = 0;
+    Hash32 issuer_key_id{};
     std::array<Byte, kK6QuotaUnitSize> admission_unit{};
     Hash32 presentation_context_hash{};
 };
 
 struct K6QuotaBlindRequest {
+    Byte version = 2;
     Hash32 issuer_key_id{};
+    K6QuotaService service = K6QuotaService::Control;
+    std::uint16_t subepoch_slot = 0;
     std::vector<std::vector<Byte> > blinded_messages;
 };
 
@@ -143,6 +159,9 @@ struct K6QuotaCryptoHooks {
 
 bool K6QuotaCryptoReady(const K6QuotaCryptoHooks& hooks) noexcept;
 std::uint64_t K6QuotaEpoch(std::uint64_t unix_seconds) noexcept;
+std::uint16_t K6QuotaSubepoch(std::uint64_t unix_seconds) noexcept;
+std::size_t K6QuotaTokenBodySize(Byte version) noexcept;
+std::size_t K6QuotaPreparedSize(Byte version) noexcept;
 bool K6QuotaServiceValid(K6QuotaService service) noexcept;
 Kad6Status K6QuotaContextHash(const Kad6CryptoHooks& crypto, Byte msg_type,
                               const Byte* body, std::size_t body_size,
@@ -225,6 +244,78 @@ private:
     std::map<std::string, Entry> entries_;
 };
 
+// L6/Q28 continuously-refilled, fail-closed issuance budgets. One reservation
+// atomically debits every scope; an epoch boundary never replenishes capacity.
+struct K6QuotaBucketPolicy {
+    std::uint32_t capacity_units = 1;
+    std::uint32_t refill_units_per_epoch = 1;
+};
+
+struct K6QuotaHierarchyPolicy {
+    K6QuotaBucketPolicy principal{16, 16};
+    K6QuotaBucketPolicy prefix48{64, 64};
+    K6QuotaBucketPolicy issuer{256, 256};
+    K6QuotaBucketPolicy asn{512, 512};
+    K6QuotaBucketPolicy service{1024, 1024};
+    K6QuotaBucketPolicy global{2048, 2048};
+    std::size_t max_principals = 4096;
+    std::size_t max_prefixes = 4096;
+    std::size_t max_issuers = 64;
+    std::size_t max_asns = 1024;
+};
+
+struct K6QuotaHierarchyRequest {
+    Hash32 principal{};             // guard-local, never serialized
+    std::array<Byte, 6> prefix48{}; // canonical network-order /48
+    Hash32 issuer_key_id{};
+    std::uint32_t asn = 0;
+    K6QuotaService service = K6QuotaService::Control;
+    std::uint64_t now_ms = 0;       // monotonic host clock
+    std::size_t units = 1;
+};
+
+class K6QuotaHierarchy {
+public:
+    explicit K6QuotaHierarchy(const K6QuotaHierarchyPolicy& policy = {}) noexcept;
+    K6QuotaStatus Reserve(const K6QuotaHierarchyRequest& request) noexcept;
+    void Prune(std::uint64_t now_ms, std::uint64_t idle_ms =
+               2u * kK6QuotaEpochSeconds * 1000u) noexcept;
+    std::size_t principal_count() const noexcept { return principals_.size(); }
+    std::size_t prefix_count() const noexcept { return prefixes_.size(); }
+    std::size_t issuer_count() const noexcept { return issuers_.size(); }
+    std::size_t asn_count() const noexcept { return asns_.size(); }
+private:
+    static constexpr std::uint64_t kScale = 1024;
+    struct Bucket {
+        std::uint64_t tokens = 0;
+        std::uint64_t updated_ms = 0;
+        std::uint64_t last_used_ms = 0;
+        // Numerator remainder for sub-token refill. Without this accumulator,
+        // frequent probes could repeatedly truncate progress and starve an
+        // otherwise continuously refilled bucket.
+        std::uint64_t refill_remainder = 0;
+    };
+    using BucketMap = std::map<std::string, Bucket>;
+
+    bool PolicyValid() const noexcept;
+    Bucket* Get(BucketMap& buckets, const std::string& key,
+                std::size_t maximum, const K6QuotaBucketPolicy& policy,
+                std::uint64_t now_ms) noexcept;
+    static void Refill(Bucket& bucket, const K6QuotaBucketPolicy& policy,
+                       std::uint64_t now_ms) noexcept;
+    static bool Has(const Bucket& bucket, std::size_t units) noexcept;
+    static void Debit(Bucket& bucket, std::size_t units,
+                      std::uint64_t now_ms) noexcept;
+    static void PruneMap(BucketMap& buckets, std::uint64_t now_ms,
+                         std::uint64_t idle_ms) noexcept;
+
+    K6QuotaHierarchyPolicy policy_;
+    BucketMap principals_, prefixes_, issuers_, asns_;
+    std::array<Bucket, 4> services_{};
+    Bucket global_{};
+    std::uint64_t monotonic_floor_ms_ = 0;
+};
+
 // Exit-side bounded nullifier set. Consume is intentionally a single operation:
 // callers verify signature/context first and then atomically decide first-use.
 class K6QuotaSpentSet {
@@ -255,6 +346,7 @@ K6QuotaStatus VerifyAndSpendK6Quota(
     K6QuotaService expected_service,
     std::uint32_t expected_policy,
     std::uint64_t current_epoch,
+    std::uint16_t current_subepoch,
     const Hash32& expected_context,
     bool issuer_trusted,
     K6QuotaToken* token_out = nullptr,

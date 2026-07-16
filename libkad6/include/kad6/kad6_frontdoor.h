@@ -2,11 +2,13 @@
 // K6-5 bounded pre-authentication gate and single-backend cohort scheduler.
 #pragma once
 
+#include "kad6/kad6_crypto.h"
 #include "kad6/kad6_types.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace kad6 {
 
@@ -17,11 +19,39 @@ constexpr std::size_t kK6PreAuthMaxV6Per64 = 8;
 constexpr std::uint64_t kK6PreAuthDeadlineMs = 10000;
 constexpr std::uint64_t kK6PreAuthRateGraceMs = 2000;
 constexpr std::uint64_t kK6PreAuthMinBytesPerSecond = 128;
+constexpr std::size_t kK6PreAuthReservedSlots = 32;
+constexpr std::size_t kK6PreAuthAnonymousSlots =
+    kK6PreAuthMaxSlots - kK6PreAuthReservedSlots;
+constexpr std::uint64_t kK6RetryCookieEpochMs = 30000;
 
 struct K6RemoteGroup {
     Byte family = 0; // 4 or 6
     std::array<Byte, 16> address{};
 };
+
+struct K6RetryCookie {
+    Byte version = 1;
+    Byte family = 0;
+    std::uint64_t epoch = 0;
+    std::array<Byte, kNonce16Size> nonce{};
+    Hash32 mac{};
+};
+
+Kad6Status IssueK6RetryCookie(const Kad6CryptoHooks& hooks,
+                              const Byte* secret, std::size_t secretLen,
+                              const K6RemoteGroup& group,
+                              std::uint64_t nowMs,
+                              K6RetryCookie& out) noexcept;
+Kad6Status VerifyK6RetryCookie(const Kad6CryptoHooks& hooks,
+                               const Byte* secret, std::size_t secretLen,
+                               const K6RemoteGroup& group,
+                               std::uint64_t nowMs,
+                               const K6RetryCookie& cookie) noexcept;
+Kad6Status EncodeK6RetryCookie(const K6RetryCookie& cookie,
+                               std::vector<Byte>& out);
+Kad6Status DecodeK6RetryCookie(const Byte* in, std::size_t len,
+                               K6RetryCookie& out,
+                               std::size_t* consumed = nullptr) noexcept;
 
 enum class K6PreAuthDecision : Byte { NeedMore = 0, Ready = 1, Reject = 2 };
 
@@ -32,6 +62,9 @@ struct K6PreAuthStats {
     std::uint64_t rejected_protocol = 0;
     std::uint64_t timed_out = 0;
     std::uint64_t promoted = 0;
+    std::uint64_t retry_validated = 0;
+    std::uint64_t rejected_cookie = 0;
+    std::uint64_t reserved_admitted = 0;
     std::size_t active = 0;
     std::size_t peak = 0;
 };
@@ -41,6 +74,16 @@ public:
     // Returns a stable slot index or -1. The class has fixed storage and does
     // not allocate per connection.
     int Admit(const K6RemoteGroup& group, std::uint64_t now_ms) noexcept;
+    // Stateless-retry path: anonymous callers cannot consume the reserved
+    // authenticated lane.  No Slot is touched until cookie verification has
+    // succeeded.
+    int AdmitAfterRetry(const K6RemoteGroup& group,
+                        const K6RetryCookie& cookie,
+                        const Kad6CryptoHooks& hooks,
+                        const Byte* secret, std::size_t secretLen,
+                        std::uint64_t now_ms) noexcept;
+    int AdmitAuthenticated(const K6RemoteGroup& group,
+                           std::uint64_t now_ms) noexcept;
     K6PreAuthDecision Observe(std::size_t slot, const Byte* peeked,
                               std::size_t peeked_len, std::uint64_t now_ms,
                               std::size_t* hello_frame_size = nullptr) noexcept;
@@ -57,6 +100,8 @@ private:
         bool active = false;
     };
     K6PreAuthDecision CheckTime(Slot& slot, std::uint64_t now_ms) noexcept;
+    int AdmitLane(const K6RemoteGroup& group, std::uint64_t now_ms,
+                  bool reservedLane) noexcept;
     std::array<Slot, kK6PreAuthMaxSlots> slots_{};
     K6PreAuthStats stats_{};
 };

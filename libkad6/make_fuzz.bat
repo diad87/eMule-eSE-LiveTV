@@ -24,13 +24,13 @@ if not exist build mkdir build
 cl /nologo /EHsc /W4 /std:c++17 %EXTRA% /Iinclude /Febuild\fuzz_runner%SUFFIX%.exe ^
   tests\fuzz\fuzz_runner.cpp tests\fuzz\fuzz_address.cpp ^
   tests\fuzz\fuzz_asn.cpp tests\fuzz\fuzz_bootstrap.cpp ^
-  tests\fuzz\fuzz_frame.cpp tests\fuzz\fuzz_gateway.cpp tests\fuzz\fuzz_lease.cpp tests\fuzz\fuzz_publish.cpp tests\fuzz\fuzz_store.cpp ^
+  tests\fuzz\fuzz_frame.cpp tests\fuzz\fuzz_gateway.cpp tests\fuzz\fuzz_lease.cpp tests\fuzz\fuzz_path.cpp tests\fuzz\fuzz_publish.cpp tests\fuzz\fuzz_store.cpp ^
   tests\fuzz\fuzz_tags.cpp ^
   tests\fuzz\fuzz_ticket.cpp tests\fuzz\fuzz_records.cpp ^
   tests\fuzz\fuzz_routing.cpp tests\fuzz\fuzz_shaped.cpp ^
   src\kad6_address.cpp src\kad6_asn.cpp src\kad6_bootstrap.cpp src\kad6_endpoint.cpp ^
   src\kad6_frame.cpp src\kad6_gateway.cpp src\kad6_hints.cpp src\kad6_vep.cpp src\kad6_ed2k_policy.cpp ^
-  src\kad6_lease.cpp src\kad6_publish.cpp src\kad6_store.cpp ^
+  src\kad6_lease.cpp src\kad6_path.cpp src\kad6_publish.cpp src\kad6_store.cpp ^
   src\kad6_tags.cpp src\kad6_ticket.cpp ^
   src\kad6_records.cpp src\kad6_routing.cpp src\kad6_shaped_bulk.cpp psapi.lib
 if errorlevel 1 (echo FUZZ BUILD FAILED & exit /b 1)

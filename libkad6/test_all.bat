@@ -12,6 +12,8 @@ call make.bat test_kad6_asn tests\test_kad6_asn.cpp src\kad6_asn.cpp src\kad6_ad
 if errorlevel 1 exit /b 1
 call make.bat test_kad6_bootstrap tests\test_kad6_bootstrap.cpp src\kad6_bootstrap.cpp src\kad6_records.cpp src\kad6_endpoint.cpp src\kad6_address.cpp
 if errorlevel 1 exit /b 1
+call make.bat test_kad6_role tests\test_kad6_role.cpp src\kad6_role.cpp src\kad6_records.cpp src\kad6_endpoint.cpp src\kad6_address.cpp
+if errorlevel 1 exit /b 1
 call make.bat test_kad6_frame tests\test_kad6_frame.cpp src\kad6_frame.cpp
 if errorlevel 1 exit /b 1
 call make.bat test_kad6_gateway tests\test_kad6_gateway.cpp src\kad6_gateway.cpp src\kad6_hints.cpp src\kad6_vep.cpp src\kad6_ed2k_policy.cpp src\kad6_ticket.cpp src\kad6_endpoint.cpp src\kad6_address.cpp

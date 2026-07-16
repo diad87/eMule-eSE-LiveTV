@@ -111,7 +111,8 @@ static bool FakeFinalize(void* opaque, const K6QuotaPublicKey& key,
                          std::vector<Byte>& signature) {
     FakeQuotaContext* context = static_cast<FakeQuotaContext*>(opaque);
     if (!context || context->fail || !prepared || !blind_signature || !inverse ||
-        prepared_size != kK6QuotaPreparedSize ||
+        prepared_size < kK6QuotaRandomizerSize + 1 ||
+        prepared_size != K6QuotaPreparedSize(prepared[kK6QuotaRandomizerSize]) ||
         blind_signature_size != context->width || inverse_size != context->width)
         return false;
     FakeQuotaSignature(key, prepared, prepared_size, signature);
@@ -123,7 +124,9 @@ static bool FakeVerify(void* opaque, const K6QuotaPublicKey& key,
                        const Byte* signature, std::size_t signature_size) {
     FakeQuotaContext* context = static_cast<FakeQuotaContext*>(opaque);
     if (!context || context->fail || !prepared || !signature ||
-        prepared_size != kK6QuotaPreparedSize || signature_size != context->width)
+        prepared_size < kK6QuotaRandomizerSize + 1 ||
+        prepared_size != K6QuotaPreparedSize(prepared[kK6QuotaRandomizerSize]) ||
+        signature_size != context->width)
         return false;
     std::vector<Byte> expected;
     FakeQuotaSignature(key, prepared, prepared_size, expected);
@@ -159,10 +162,13 @@ static K6QuotaIssuerCertificate Certificate(std::uint64_t epoch,
     return certificate;
 }
 
-static K6QuotaToken Token(std::uint64_t epoch) {
+static K6QuotaToken Token(std::uint64_t epoch, const Hash32& issuer_key_id,
+                          std::uint16_t slot = 4) {
     K6QuotaToken token;
     token.policy_id = 7;
     token.valid_epoch = epoch;
+    token.subepoch_slot = slot;
+    token.issuer_key_id = issuer_key_id;
     for (std::size_t i = 0; i < token.admission_unit.size(); ++i)
         token.admission_unit[i] = static_cast<Byte>(0x40 + i);
     for (std::size_t i = 0; i < token.presentation_context_hash.size(); ++i)
@@ -174,6 +180,9 @@ static void TestEpochAndCanonicalObjects() {
     CHECK(K6QuotaEpoch(0) == 0, "epoch zero");
     CHECK(K6QuotaEpoch(899) == 0, "epoch lower boundary");
     CHECK(K6QuotaEpoch(900) == 1, "epoch is fifteen minutes");
+    CHECK(K6QuotaSubepoch(0) == 0 && K6QuotaSubepoch(59) == 0 &&
+          K6QuotaSubepoch(60) == 1 && K6QuotaSubepoch(899) == 14 &&
+          K6QuotaSubepoch(900) == 0, "subepochs are sixty-second epoch slots");
     CHECK(K6QuotaServiceValid(K6QuotaService::Control), "control service valid");
     CHECK(!K6QuotaServiceValid(static_cast<K6QuotaService>(4)), "unknown service rejected");
 
@@ -201,23 +210,39 @@ static void TestEpochAndCanonicalObjects() {
     CHECK(VerifyK6QuotaIssuerCertificate(identity, decoded, 100) == Kad6Status::AuthFailed,
           "issuer certificate tamper rejected");
 
-    K6QuotaToken token = Token(100);
+    K6QuotaToken token = Token(100, certificate.key_id);
     CHECK(EncodeK6QuotaToken(token, encoded) == Kad6Status::Ok &&
           encoded.size() == kK6QuotaTokenBodySize, "token has fixed canonical size");
     K6QuotaToken parsed;
     used = 0;
     CHECK(DecodeK6QuotaToken(encoded.data(), encoded.size(), parsed, &used) == Kad6Status::Ok &&
-          used == encoded.size(), "token round trip");
+          used == encoded.size() && parsed.issuer_key_id == certificate.key_id &&
+          parsed.subepoch_slot == 4, "v2 token round trip and issuer/slot binding");
     encoded[3] = 1;
     CHECK(DecodeK6QuotaToken(encoded.data(), encoded.size(), parsed) == Kad6Status::BadValue,
           "reserved token bits fail closed");
     CHECK(DecodeK6QuotaToken(encoded.data(), 10, parsed) == Kad6Status::Truncated,
           "truncated token rejected");
+
+    token.version = 1;
+    token.subepoch_slot = 0;
+    token.issuer_key_id.fill(0);
+    CHECK(EncodeK6QuotaToken(token, encoded) == Kad6Status::Ok &&
+          encoded.size() == kK6QuotaTokenV1BodySize,
+          "v1 token remains readable during rolling migration");
+    CHECK(DecodeK6QuotaToken(encoded.data(), encoded.size(), parsed, &used) ==
+          Kad6Status::Ok && parsed.version == 1 && used == encoded.size(),
+          "v1 token round trip");
+    encoded.push_back(0xA5);
+    CHECK(DecodeK6QuotaToken(encoded.data(), encoded.size(), parsed) ==
+          Kad6Status::Malformed, "token decoder rejects trailing bytes without consumed");
 }
 
 static void TestWireMessages() {
     K6QuotaBlindRequest request;
     request.issuer_key_id.fill(0x33);
+    request.service = K6QuotaService::ExitEd2kFull;
+    request.subepoch_slot = 4;
     request.blinded_messages.assign(2, std::vector<Byte>(256, 0x44));
     std::vector<Byte> wire;
     CHECK(EncodeK6QuotaBlindRequest(request, wire) == Kad6Status::Ok,
@@ -225,9 +250,12 @@ static void TestWireMessages() {
     K6QuotaBlindRequest decoded_request;
     std::size_t used = 0;
     CHECK(DecodeK6QuotaBlindRequest(wire.data(), wire.size(), decoded_request, &used) ==
-          Kad6Status::Ok && used == wire.size() && decoded_request.blinded_messages.size() == 2,
+          Kad6Status::Ok && used == wire.size() && decoded_request.blinded_messages.size() == 2 &&
+          decoded_request.version == 2 &&
+          decoded_request.service == K6QuotaService::ExitEd2kFull &&
+          decoded_request.subepoch_slot == 4,
           "blind request round trip");
-    wire[0] = 2;
+    wire[0] = 3;
     CHECK(DecodeK6QuotaBlindRequest(wire.data(), wire.size(), decoded_request) ==
           Kad6Status::UnsupportedVersion, "blind request version guarded");
 
@@ -292,7 +320,7 @@ static void TestBlindLifecycleAndSingleUse() {
     FakeQuotaContext context;
     const K6QuotaCryptoHooks quota = QuotaHooks(context);
     const K6QuotaIssuerCertificate certificate = Certificate(epoch, identity);
-    const K6QuotaToken token = Token(epoch);
+    const K6QuotaToken token = Token(epoch, certificate.key_id);
 
     K6QuotaBlindState state;
     CHECK(BlindK6QuotaToken(quota, certificate.key, token, state) == Kad6Status::Ok,
@@ -319,33 +347,128 @@ static void TestBlindLifecycleAndSingleUse() {
     K6QuotaSpentSet spent(8);
     K6QuotaToken verified;
     CHECK(VerifyAndSpendK6Quota(identity, quota, spent, decoded,
-          K6QuotaService::ExitEd2kFull, 7, epoch, token.presentation_context_hash,
+          K6QuotaService::ExitEd2kFull, 7, epoch, token.subepoch_slot,
+          token.presentation_context_hash,
           true, &verified) == K6QuotaStatus::Ok, "valid proof admits and spends");
     CHECK(verified.admission_unit == token.admission_unit, "verified token returned");
     CHECK(VerifyAndSpendK6Quota(identity, quota, spent, decoded,
-          K6QuotaService::ExitEd2kFull, 7, epoch, token.presentation_context_hash,
+          K6QuotaService::ExitEd2kFull, 7, epoch, token.subepoch_slot,
+          token.presentation_context_hash,
           true) == K6QuotaStatus::AlreadySpent, "replay rejected after verification");
 
     K6QuotaSpentSet fresh(8);
     Hash32 wrong_context = token.presentation_context_hash;
     wrong_context[0] ^= 1;
     CHECK(VerifyAndSpendK6Quota(identity, quota, fresh, decoded,
-          K6QuotaService::ExitEd2kFull, 7, epoch, wrong_context, true) ==
+          K6QuotaService::ExitEd2kFull, 7, epoch, token.subepoch_slot,
+          wrong_context, true) ==
           K6QuotaStatus::WrongContext, "operation context is bound");
     CHECK(VerifyAndSpendK6Quota(identity, quota, fresh, decoded,
-          K6QuotaService::ExitEd2kDial, 7, epoch, token.presentation_context_hash,
+          K6QuotaService::ExitEd2kDial, 7, epoch, token.subepoch_slot,
+          token.presentation_context_hash,
           true) == K6QuotaStatus::PolicyDenied, "service substitution rejected");
     CHECK(VerifyAndSpendK6Quota(identity, quota, fresh, decoded,
-          K6QuotaService::ExitEd2kFull, 7, epoch, token.presentation_context_hash,
+          K6QuotaService::ExitEd2kFull, 7, epoch, token.subepoch_slot,
+          token.presentation_context_hash,
           false) == K6QuotaStatus::UnknownIssuer, "unknown issuer fails closed");
+    CHECK(VerifyAndSpendK6Quota(identity, quota, fresh, decoded,
+          K6QuotaService::ExitEd2kFull, 7, epoch,
+          static_cast<std::uint16_t>((token.subepoch_slot + 1) %
+                                     kK6QuotaSubepochsPerEpoch),
+          token.presentation_context_hash, true) == K6QuotaStatus::WrongEpoch,
+          "v2 token cannot move to another subepoch slot");
     decoded.signature[0] ^= 1;
     CHECK(VerifyAndSpendK6Quota(identity, quota, fresh, decoded,
-          K6QuotaService::ExitEd2kFull, 7, epoch, token.presentation_context_hash,
+          K6QuotaService::ExitEd2kFull, 7, epoch, token.subepoch_slot,
+          token.presentation_context_hash,
           true) == K6QuotaStatus::InvalidProof, "signature tamper rejected");
+
+    K6QuotaToken wrong_issuer = token;
+    wrong_issuer.issuer_key_id[0] ^= 1;
+    CHECK(BlindK6QuotaToken(quota, certificate.key, wrong_issuer, state) == Kad6Status::Ok,
+          "blind provider cannot inspect issuer binding");
+    CHECK(quota.blind_sign(quota.context, certificate.key_id,
+          state.blinded_message.data(), state.blinded_message.size(), blind_signature) &&
+          FinalizeK6QuotaToken(quota, certificate, state, blind_signature, presentation) ==
+              Kad6Status::BadValue,
+          "finalization anchors token issuer to selected certificate");
 
     context.fail = true;
     CHECK(BlindK6QuotaToken(quota, certificate.key, token, state) == Kad6Status::AuthFailed,
           "provider failure is fail closed");
+}
+
+static K6QuotaHierarchyRequest HierarchyRequest(std::uint64_t now_ms,
+                                                 Byte discriminator = 1) {
+    K6QuotaHierarchyRequest request;
+    request.principal.fill(discriminator);
+    request.prefix48.fill(static_cast<Byte>(0x20 + discriminator));
+    request.issuer_key_id.fill(static_cast<Byte>(0x40 + discriminator));
+    request.asn = 64512u + discriminator;
+    request.service = K6QuotaService::ExitEd2kFull;
+    request.now_ms = now_ms;
+    return request;
+}
+
+static void TestHierarchicalContinuousQuota() {
+    K6QuotaHierarchyPolicy attack_policy;
+    attack_policy.principal = {16, 16};
+    attack_policy.prefix48 = {16, 16};
+    attack_policy.issuer = {32, 32};
+    attack_policy.asn = {64, 64};
+    attack_policy.service = {128, 128};
+    attack_policy.global = {256, 256};
+    K6QuotaHierarchy attack(attack_policy);
+    K6QuotaHierarchyRequest request = HierarchyRequest(1000);
+    std::size_t admitted = 0;
+    for (std::size_t i = 0; i < 1000000; ++i)
+        if (attack.Reserve(request) == K6QuotaStatus::Ok) ++admitted;
+    CHECK(admitted == 16 && attack.principal_count() == 1 &&
+          attack.prefix_count() == 1,
+          "one million rotating addresses in one /48 share bounded state and budget");
+
+    K6QuotaHierarchyPolicy boundary_policy;
+    boundary_policy.principal = {2, 2};
+    boundary_policy.prefix48 = {2, 2};
+    boundary_policy.issuer = {2, 2};
+    boundary_policy.asn = {2, 2};
+    boundary_policy.service = {2, 2};
+    boundary_policy.global = {2, 2};
+    K6QuotaHierarchy boundary(boundary_policy);
+    request = HierarchyRequest(899999);
+    request.units = 2;
+    CHECK(boundary.Reserve(request) == K6QuotaStatus::Ok,
+          "hierarchy atomically consumes all six scopes");
+    request.now_ms = 900001;
+    request.units = 1;
+    CHECK(boundary.Reserve(request) == K6QuotaStatus::RateLimited,
+          "epoch boundary creates no capacity reset spike");
+    request.now_ms = 1349999;
+    CHECK(boundary.Reserve(request) == K6QuotaStatus::Ok,
+          "continuous refill restores fractional capacity over time");
+    request.now_ms = 1349998;
+    CHECK(boundary.Reserve(request) == K6QuotaStatus::WrongEpoch,
+          "hierarchy rejects monotonic-clock rollback");
+
+    K6QuotaHierarchyPolicy asn_policy;
+    asn_policy.principal = {16, 16};
+    asn_policy.prefix48 = {16, 16};
+    asn_policy.issuer = {16, 16};
+    asn_policy.asn = {3, 3};
+    asn_policy.service = {64, 64};
+    asn_policy.global = {64, 64};
+    K6QuotaHierarchy asn_limited(asn_policy);
+    std::size_t asn_admitted = 0;
+    for (Byte i = 1; i <= 8; ++i) {
+        request = HierarchyRequest(2000, i);
+        request.asn = 64520;
+        if (asn_limited.Reserve(request) == K6QuotaStatus::Ok) ++asn_admitted;
+    }
+    CHECK(asn_admitted == 3 && asn_limited.principal_count() == 8,
+          "many prefixes and issuers cannot exceed the shared ASN bucket");
+    asn_limited.Prune(2u * kK6QuotaEpochSeconds * 1000u + 3000u);
+    CHECK(asn_limited.principal_count() == 0 && asn_limited.prefix_count() == 0,
+          "idle hierarchy state is bounded and prunable");
 }
 
 int main() {
@@ -353,6 +476,7 @@ int main() {
     TestWireMessages();
     TestRateAndSpentBounds();
     TestBlindLifecycleAndSingleUse();
+    TestHierarchicalContinuousQuota();
     std::printf("test_kad6_quota: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

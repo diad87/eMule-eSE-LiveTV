@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdint>
 #include <iostream>
+#include <vector>
 
 namespace {
 
@@ -33,6 +34,12 @@ kad6::Hash16 Hash(std::uint8_t seed) {
         hash[i] = static_cast<kad6::Byte>(seed + i);
     return hash;
 }
+
+bool Hmac(const kad6::Byte* key,std::size_t keyLen,const kad6::Byte* msg,
+          std::size_t msgLen,kad6::Byte out[32]){
+    std::uint64_t state=1469598103934665603ull;for(std::size_t i=0;i<keyLen;++i){state^=key[i];state*=1099511628211ull;}
+    for(std::size_t i=0;i<msgLen;++i){state^=msg[i];state*=1099511628211ull;}
+    for(int i=0;i<32;++i){state^=static_cast<std::uint64_t>(i)+0x9e;state*=1099511628211ull;out[i]=static_cast<kad6::Byte>(state>>(8*(i%8)));}return true;}
 
 std::array<kad6::Byte, 10> Hello() {
     // E3, packet length=5 (opcode + 4-byte payload), OP_HELLO.
@@ -123,6 +130,43 @@ void GateG10() {
               << " slowloris_timed_out=" << gate.Stats().timed_out << "\n";
 }
 
+void StatelessRetryGate() {
+    kad6::Kad6CryptoHooks hooks;hooks.hmac_sha256=&Hmac;
+    const kad6::Byte secret[32]={1,2,3,4,5,6,7,8,9};
+    kad6::K6RetryCookie cookie;
+    const kad6::K6RemoteGroup group=V4(0xCB007101u);
+    assert(kad6::IssueK6RetryCookie(hooks,secret,sizeof secret,group,30000,cookie)==
+           kad6::Kad6Status::Ok);
+    std::vector<kad6::Byte> wire;assert(kad6::EncodeK6RetryCookie(cookie,wire)==kad6::Kad6Status::Ok&&wire.size()==60);
+    kad6::K6RetryCookie decoded;assert(kad6::DecodeK6RetryCookie(wire.data(),wire.size(),decoded)==kad6::Kad6Status::Ok);
+    assert(kad6::VerifyK6RetryCookie(hooks,secret,sizeof secret,group,59999,decoded)==kad6::Kad6Status::Ok);
+    assert(kad6::VerifyK6RetryCookie(hooks,secret,sizeof secret,V4(0xCB007102u),59999,decoded)==kad6::Kad6Status::AuthFailed);
+    assert(kad6::VerifyK6RetryCookie(hooks,secret,sizeof secret,group,90000,decoded)==kad6::Kad6Status::Expired);
+
+    kad6::K6PreAuthGate gate;
+    // Invalid/no return-routability proofs allocate no fixed slot at all.
+    kad6::K6RetryCookie invalid=decoded;invalid.mac[0]^=1;
+    for(std::uint32_t i=0;i<5000;++i)
+        assert(gate.AdmitAfterRetry(V4(0x0A000000u+i),invalid,hooks,secret,sizeof secret,30000)<0);
+    assert(gate.Stats().active==0&&gate.Stats().rejected_cookie==5000);
+
+    std::array<int,kad6::kK6PreAuthAnonymousSlots> anonymous{};
+    for(std::size_t i=0;i<anonymous.size();++i){const auto remote=V4(0x0B000000u+static_cast<std::uint32_t>(i));
+        kad6::K6RetryCookie proof;assert(kad6::IssueK6RetryCookie(hooks,secret,sizeof secret,remote,30000,proof)==kad6::Kad6Status::Ok);
+        anonymous[i]=gate.AdmitAfterRetry(remote,proof,hooks,secret,sizeof secret,30000);assert(anonymous[i]>=0);}
+    const auto overflow=V4(0x0C000001u);kad6::K6RetryCookie overflowProof;
+    assert(kad6::IssueK6RetryCookie(hooks,secret,sizeof secret,overflow,30000,overflowProof)==kad6::Kad6Status::Ok);
+    assert(gate.AdmitAfterRetry(overflow,overflowProof,hooks,secret,sizeof secret,30000)<0);
+    std::array<int,kad6::kK6PreAuthReservedSlots> reserved{};
+    for(std::size_t i=0;i<reserved.size();++i){reserved[i]=gate.AdmitAuthenticated(V4(0x0D000000u+static_cast<std::uint32_t>(i)),30000);assert(reserved[i]>=0);}
+    assert(gate.Stats().active==kad6::kK6PreAuthMaxSlots&&
+           gate.Stats().reserved_admitted==kad6::kK6PreAuthReservedSlots);
+    for(int slot:anonymous)gate.Release(static_cast<std::size_t>(slot));
+    for(int slot:reserved)gate.Release(static_cast<std::size_t>(slot));
+    std::cout<<"G10-retry: invalid_attempts=5000 pre_cookie_slots=0 anonymous="
+             <<kad6::kK6PreAuthAnonymousSlots<<" reserved="<<kad6::kK6PreAuthReservedSlots<<"\n";
+}
+
 void SchedulerG11() {
     kad6::K6CohortScheduler scheduler;
     const kad6::Hash16 file = Hash(1);
@@ -169,6 +213,7 @@ void SchedulerG11() {
 
 int main() {
     GateG10();
+    StatelessRetryGate();
     SchedulerG11();
     std::cout << "K6-5 front-door gates G10/G11: PASS\n";
     return 0;

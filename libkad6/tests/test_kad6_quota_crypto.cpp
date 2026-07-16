@@ -153,6 +153,8 @@ static void TestRealRoundTrip() {
     K6QuotaToken token;
     token.policy_id = 9;
     token.valid_epoch = epoch;
+    token.subepoch_slot = 6;
+    token.issuer_key_id = certificate.key_id;
     token.admission_unit.fill(0xA4);
     token.presentation_context_hash.fill(0x5B);
     K6QuotaBlindState state;
@@ -167,10 +169,12 @@ static void TestRealRoundTrip() {
           Kad6Status::Ok, "real Finalize verifies before returning");
     K6QuotaSpentSet spent(16);
     CHECK(VerifyAndSpendK6Quota(identity, quota, spent, presentation,
-          K6QuotaService::ExitEd2kFull, 9, epoch, token.presentation_context_hash, true) ==
+          K6QuotaService::ExitEd2kFull, 9, epoch, token.subepoch_slot,
+          token.presentation_context_hash, true) ==
           K6QuotaStatus::Ok, "real token verifies and spends");
     CHECK(VerifyAndSpendK6Quota(identity, quota, spent, presentation,
-          K6QuotaService::ExitEd2kFull, 9, epoch, token.presentation_context_hash, true) ==
+          K6QuotaService::ExitEd2kFull, 9, epoch, token.subepoch_slot,
+          token.presentation_context_hash, true) ==
           K6QuotaStatus::AlreadySpent, "real token cannot be spent twice");
 }
 

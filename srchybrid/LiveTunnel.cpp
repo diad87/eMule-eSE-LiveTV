@@ -660,46 +660,15 @@ uint32_t CLiveTunnel::BuildTestCircuit(CUpDownClient* clientHint)
     return 0;
 }
 
-// v8.1 D4 - tunnelOnly-STRICT successor build for the PST pool's make-before-break.
-// Unlike BuildTestCircuit (which falls back to ANY connected peer for the manual test
-// path), this builds ONLY through a peer that advertised privacy-tunneling, so on a
-// single-PC node with no fork peer it is a pure no-op (GetConnectedSnapshot returns
-// empty -> BuildPool builds nothing -> returns false). Builds EXACTLY ONE 1-hop circuit:
-// BuildPool floors `count` up to TUNNEL_POOL_MIN(3), so after preferring a Kad6-capable
-// candidate we reduce the candidate vector to 1. BuildPool's loop is bounded by
-// relayCandidates.size(), so this still yields exactly 1 circuit regardless of the floor.
-// Called from CKadV2TunnelPool::Tick (main thread, with the pool lock NOT held).
+// Production successor build for the PST pool's make-before-break. A requested
+// privacy profile never degrades to one hop: Strict tries exactly three relays,
+// then Private tries exactly two authenticated distinct relays. Direct mode and
+// one-hop diagnostics use separate explicit paths.
 bool CLiveTunnel::BuildSuccessorCircuit()
 {
     // K6-6: prefer a fully diverse, authenticated guard->middle->exit circuit.
-    // Failure is local to this attempt; legacy PRIVATE callers may still use
-    // the established two-hop path below, while STRICT sends filter it out.
     if (BuildSuccessor3Hop()) return true;
-
-    // v8.1.1 F-2: prefer a TRUE 2-hop circuit (hop1 != exit) so the exit never has
-    // a direct socket to V and never sees V's IP (real anonymity / G1). Only if
-    // fewer than 2 distinct tunnel peers are connected do we fall back to a 1-hop
-    // circuit — which has NO exit-anonymity (the exit is directly connected to V).
-    // hop_count is exposed in GetCircuitsSnapshot so the mode/policy + UI can refuse
-    // a 1-hop circuit under STRICT max-privacy.
-    if (BuildSuccessor2Hop()) return true;
-
-    // 1-hop fallback (degraded: broadcaster-anonymity only, exit sees V).
-    std::vector<CUpDownClient*> cands;
-    if (theApp.clientlist)
-        theApp.clientlist->GetConnectedSnapshot(cands, 16, /*tunnelOnly=*/true);
-    if (cands.empty()) return false;
-    // Adoption preference: if any compatible peer advertises the authenticated
-    // K6 gateway, make it the one-hop exit. Preserve the legacy tunnel peer as
-    // fallback when Kad6 has not reached this connected set yet.
-    CUpDownClient* selected = cands.front();
-    for (CUpDownClient* candidate : cands)
-        if (candidate && (candidate->GetEseCapabilities() & ESE_CAP_KAD6) != 0) {
-            selected = candidate;
-            break;
-        }
-    cands.assign(1, selected);
-    return BuildPool(NULL, cands, 1) > 0;
+    return BuildSuccessor2Hop();
 }
 
 bool CLiveTunnel::BuildQuotaGuardCircuit()
@@ -784,7 +753,10 @@ bool CLiveTunnel::BuildSuccessor2Hop()
 
     std::vector<CUpDownClient*> eligible;
     for (CUpDownClient* p : cands) {
-        if (!p) continue;
+        if (!p || !p->socket || !p->socket->IsConnected() || !p->HasValidHash()
+            || !p->HasEseNodePub() || !p->SupportsEseTunnelAuth()
+            || !p->SupportsEseTunnelDataplane())
+            continue;
         // v8.1.2 B6 (co-seeder filter) — never route a circuit through a peer that serves us
         // the channel we're viewing: it would learn (by being our hop) that this IP watches
         // that stream, defeating G1. Applies to hop1 AND the exit.
@@ -834,6 +806,7 @@ bool CLiveTunnel::BuildSuccessor2Hop()
     auto& c = m_circuits.back();
     // Pre-stage the exit: HandleCreated_Originator auto-extends to it after hop1's
     // CELL_CREATED, producing a real V -> hop1 -> exit circuit (hop1 forwards via F-1).
+    c->m_private2 = true;
     c->m_pendingHopClients.push_back(hop2);
     return true;
 }
@@ -841,16 +814,19 @@ bool CLiveTunnel::BuildSuccessor2Hop()
 void CLiveTunnel::Stop()
 {
     m_k6ExitNoticeServer.Stop();
+    std::set<uint32_t> retiredCircuits;
     {
         CSingleLock lock(&m_lock, TRUE);
         StopK6ShapeTimerLocked();
         m_k6ShapeReverse.clear();
         m_k6ShapeReplay.clear();
+        for (const auto& circuit : m_circuits)
+            if (circuit) retiredCircuits.insert(circuit->Id());
         m_circuits.clear();
         m_rrNextIdx = 0;
     }
     const uint64 now = static_cast<uint64_t>(time(NULL));
-    SweepK6SourceLeases(std::set<uint32_t>(), now);
+    SweepK6SourceLeases(std::set<uint32_t>(), retiredCircuits, now);
     SweepK6Gateway(now, std::set<uint32_t>());
     {
         CSingleLock pl(&m_pendingLock, TRUE);
@@ -861,7 +837,11 @@ void CLiveTunnel::Stop()
         m_k6FairPayloadBytes = 0;
         m_k6FairScheduler.Reset();
         m_k6QuotaIssuerLimiter = kad6::K6QuotaIssuerLimiter();
+        m_k6QuotaHierarchy = kad6::K6QuotaHierarchy();
         m_k6QuotaSpent = kad6::K6QuotaSpentSet();
+        m_k6SendCredits.clear();
+        m_k6ReceiveCredits.clear();
+        m_k6FlowStreamsByCircuit.clear();
     }
     // v8.1 D4 - the PST pool holds a 2nd shared_ptr alias per circuit. Clearing
     // m_circuits without clearing the pool would keep those circuits alive (and
@@ -933,7 +913,7 @@ bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
     const bool v3 = (payloadLen >= 133 && payload[0] == 0x03);
     const bool v2 = (payloadLen >= 133 && payload[0] == 0x02);
     const bool authenticated = v3 || v2;
-    if ((TunnelAuthStrict() || circ->m_strict3) && !authenticated) {
+    if ((TunnelAuthStrict() || circ->m_private2 || circ->m_strict3) && !authenticated) {
         // Distinct, greppable abort reasons (the rogue-relay test reads these to prove
         // the rejection was CRYPTO, not a network timeout — cf. the Tick reap logs).
         AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop1 circ=0x%08x reason=STRICT_V1 (unsigned CREATED rejected in strict mode)"), circ->Id());
@@ -968,7 +948,7 @@ bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
         // (2) Strict caps floor.
         const uint32_t capsFloor = ESE_CAP_TUNNEL_AUTH
             | (circ->m_strict3 ? (ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED) : 0);
-        if ((TunnelAuthStrict() || circ->m_strict3)
+        if ((TunnelAuthStrict() || circ->m_private2 || circ->m_strict3)
             && (signedCaps & capsFloor) != capsFloor) {
             AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop1 circ=0x%08x reason=CAPS_FLOOR (signed_caps lacks TUNNEL_AUTH)"), circ->Id());
             DestroyCircuitFailClosed(circ);
@@ -1208,16 +1188,26 @@ bool CLiveTunnel::BuildSuccessor3Hop(uint32_t* circuitId)
     for (CUpDownClient* peer : peers) {
         if (!peer || !peer->socket || !peer->socket->IsConnected()
             || !peer->HasValidHash() || !peer->HasEseNodePub()
-            || !peer->HasIPv6Address()
             || quotaIssuerNodes.find(K6BinaryKey(peer->GetEseNodePub(), 32)) !=
                 quotaIssuerNodes.end())
             continue;
         kad6::Kad6Address verifiedAddress;
         kad6::K6AsnInfo asn;
         if (!routes->LookupVerifiedIdentity(peer->GetEseNodePub(),
-                                            verifiedAddress, asn)
-            || memcmp(peer->GetIPv6Address().Data(), verifiedAddress.addr.data(), 16) != 0)
+                                            verifiedAddress, asn))
             continue;
+		bool endpointMatches = false;
+		if (verifiedAddress.family == kad6::Kad6Address::Family::IPv6) {
+			endpointMatches = peer->HasIPv6Address()
+				&& memcmp(peer->GetIPv6Address().Data(),
+					verifiedAddress.addr.data(), 16) == 0;
+		} else if (verifiedAddress.family == kad6::Kad6Address::Family::IPv4) {
+			const uint32 peerIp = peer->GetIP();
+			endpointMatches = peerIp != 0
+				&& memcmp(&peerIp, verifiedAddress.addr.data(), 4) == 0;
+		}
+		if (!endpointMatches)
+			continue;
         kad6::K6PathCandidate candidate;
         memcpy(candidate.node_pub.data(), peer->GetEseNodePub(), 32);
         memcpy(candidate.user_hash.data(), peer->GetUserHash(), 16);
@@ -1239,15 +1229,20 @@ bool CLiveTunnel::BuildSuccessor3Hop(uint32_t* circuitId)
         candidate.has_capacity = queued < TUNNEL_EGRESS_MAX_QUEUED_CELLS / 2;
         candidate.current_content_peer = theApp.liveStreamManager
             && theApp.liveStreamManager->IsStreamSourcePeer(peer);
+		routes->ApplyPathEvidence(candidate.node_pub.data(),
+			static_cast<std::uint64_t>(time(NULL)), candidate);
         candidates.push_back(candidate);
         candidatePeers.push_back(peer);
     }
 
     const bool havePinnedGuard = LoadK6Guard();
     kad6::K6StrictPath selected;
-    const kad6::K6PathStatus status = kad6::SelectK6StrictPath(
+    kad6::K6NetworkPathPolicy networkPolicy;
+    networkPolicy.require_multi_vantage = true;
+    networkPolicy.fail_closed = true;
+    const kad6::K6PathStatus status = kad6::SelectK6StrictPathV2(
         candidates, havePinnedGuard ? m_k6GuardNodePub.data() : NULL,
-        EseK6PathRandom, NULL, selected);
+        networkPolicy, EseK6PathRandom, NULL, selected);
     if (status != kad6::K6PathStatus::Ok) {
         AddDebugLogLine(false, _T("Kad6 K6-6: STRICT path blocked (%hs) -- no diversity relaxation/fallback"),
                         kad6::K6PathStatusName(status));
@@ -1305,14 +1300,15 @@ bool CLiveTunnel::ContinueOriginatorBuild(std::shared_ptr<CLiveCircuit>& circ)
         if (BuildExtend(circ, target))
             return true;
 
-        if (circ->m_strict3) {
-            AddDebugLogLine(false, _T("Kad6 K6-6: STRICT circ=0x%08x build aborted at hop %u -- prefix is never reusable"),
+        if (circ->m_private2 || circ->m_strict3) {
+            AddDebugLogLine(false, _T("Kad6: %s circ=0x%08x build aborted at hop %u -- prefix is never reusable"),
+                            circ->m_strict3 ? _T("STRICT") : _T("PRIVATE"),
                             circ->Id(), static_cast<unsigned>(circ->HopCount() + 1));
             DestroyCircuitFailClosed(circ);
             return false;
         }
-        // Legacy PRIVATE compatibility: an optional extension may degrade to
-        // the authenticated prefix. STRICT never reaches this arm.
+        // Explicit diagnostic/legacy construction may retain its authenticated
+        // prefix. Production Private and Strict never reach this arm.
         circ->SetState(CircuitState::Active);
         circ->m_haveExitKadKey = false;
         EseTryResolveExitKadKey(circ->m_firstHopClient, *circ);
@@ -1320,10 +1316,12 @@ bool CLiveTunnel::ContinueOriginatorBuild(std::shared_ptr<CLiveCircuit>& circ)
         return true;
     }
 
-    if (circ->m_strict3
-        && (circ->HopCount() != 3 || !circ->m_auth_ok || !circ->m_path_diverse
-            || !circ->m_shaped_ok || !K6ShapeValidBucket(circ->m_shape_bucket_kib))) {
-        AddDebugLogLine(false, _T("Kad6 K6-6: STRICT circ=0x%08x activation refused (hops=%u auth=%u diverse=%u)"),
+    if ((circ->m_private2 && (circ->HopCount() != 2 || !circ->m_auth_ok)) ||
+        (circ->m_strict3
+         && (circ->HopCount() != 3 || !circ->m_auth_ok || !circ->m_path_diverse
+             || !circ->m_shaped_ok || !K6ShapeValidBucket(circ->m_shape_bucket_kib)))) {
+        AddDebugLogLine(false, _T("Kad6: %s circ=0x%08x activation refused (hops=%u auth=%u diverse=%u)"),
+                        circ->m_strict3 ? _T("STRICT") : _T("PRIVATE"),
                         circ->Id(), static_cast<unsigned>(circ->HopCount()),
                         circ->m_auth_ok ? 1 : 0, circ->m_path_diverse ? 1 : 0);
         DestroyCircuitFailClosed(circ);
@@ -1475,8 +1473,6 @@ bool CLiveTunnel::HandleCreate_Relay(uint32_t circId,
     hop.nonce_send = 0;
     hop.nonce_recv = 0;
     c->AddHop(hop);
-    c->SetState(CircuitState::Active);
-    m_circuits.push_back(c);
 
     SecureWipe(shared, sizeof shared);
     SecureWipe(okm, sizeof okm);
@@ -1513,7 +1509,15 @@ bool CLiveTunnel::HandleCreate_Relay(uint32_t circId,
         if (!CellPack(circId, CELL_CREATED, erPub, sizeof erPub, cell))
             return false;
     }
-    SendCellToPeer(fromPeer, cell);
+    if (!SendCellToPeer(fromPeer, cell))
+        return false;
+
+    // This relay leg completed the signed CREATED-v2/v3 protocol. Publish
+    // it only after the response was queued so snapshots cannot show an
+    // ACTIVE ghost or strict3=true/auth_ok=false for an authenticated leg.
+    c->m_auth_ok = v3 || v2;
+    c->SetState(CircuitState::Active);
+    m_circuits.push_back(c);
     return true;
 }
 
@@ -1838,7 +1842,7 @@ bool CLiveTunnel::BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
     const bool targetAuth = target->SupportsEseTunnelAuth()
         && target->HasEseNodePub() && NodeIdentityPub() != NULL;
     const bool targetV3 = targetAuth && target->SupportsEseTunnelStrict3();
-    if ((TunnelAuthStrict() || circ->m_strict3) && !targetAuth) {
+    if ((TunnelAuthStrict() || circ->m_private2 || circ->m_strict3) && !targetAuth) {
         SecureWipe(circ->m_ephemeral_priv, sizeof circ->m_ephemeral_priv);
         circ->m_have_ephemeral = false;
         return false;
@@ -2346,7 +2350,7 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
     const bool v3 = (plainLen >= 133 && plain[0] == 0x03);
     const bool v2 = (plainLen >= 133 && plain[0] == 0x02);
     const bool authenticated = v3 || v2;
-    if ((TunnelAuthStrict() || circ->m_strict3) && !authenticated) {
+    if ((TunnelAuthStrict() || circ->m_private2 || circ->m_strict3) && !authenticated) {
         AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop2 circ=0x%08x reason=STRICT_V1 (unsigned EXTENDED rejected in strict mode)"), circ->Id());
         DestroyCircuitFailClosed(circ); // strict: refuse an unsigned hop2
         SecureWipe(plain, sizeof plain);
@@ -2394,7 +2398,7 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
         // (2) Strict caps floor.
         const uint32_t capsFloor = ESE_CAP_TUNNEL_AUTH
             | (circ->m_strict3 ? (ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED) : 0);
-        if ((TunnelAuthStrict() || circ->m_strict3)
+        if ((TunnelAuthStrict() || circ->m_private2 || circ->m_strict3)
             && (signedCaps2 & capsFloor) != capsFloor) {
             AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop2 circ=0x%08x reason=CAPS_FLOOR (exit signed_caps lacks TUNNEL_AUTH)"), circ->Id());
             DestroyCircuitFailClosed(circ);
@@ -2497,18 +2501,26 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
 
 uint32_t CLiveTunnel::BuildTestCircuit2Hop()
 {
-    // Pick up to 2 distinct fork peers for the circuit. If only 1 fork
-    // peer is available we loop hop2 back to the same peer — semantically
-    // weird (a real circuit wants distinct hops for anonymity) but valid
-    // for protocol/state-machine testing on a 2-PC dev setup. With 3+
-    // fork nodes in the wild, the picker chooses 2 distinct ones.
+    // A two-hop request is fail-closed: it requires two distinct fork
+    // identities. Never silently collapse it into the old self-loop test.
     std::vector<CUpDownClient*> forkCands;
     if (theApp.clientlist)
         theApp.clientlist->GetConnectedSnapshot(forkCands, 5, /*tunnelOnly=*/true);
-    if (forkCands.empty()) return 0;
+    if (forkCands.size() < 2) return 0;
 
     CUpDownClient* hop1 = forkCands[0];
-    CUpDownClient* hop2 = (forkCands.size() >= 2) ? forkCands[1] : forkCands[0];
+    CUpDownClient* hop2 = NULL;
+    for (size_t i = 1; i < forkCands.size(); ++i) {
+        CUpDownClient* candidate = forkCands[i];
+        if (!candidate || candidate == hop1) continue;
+        const uchar* firstHash = hop1->GetUserHash();
+        const uchar* candidateHash = candidate->GetUserHash();
+        if (firstHash && candidateHash && memcmp(firstHash, candidateHash, 16) == 0)
+            continue;
+        hop2 = candidate;
+        break;
+    }
+    if (!hop2) return 0;
 
     std::vector<CUpDownClient*> hop1Vec = { hop1 };
     size_t built = BuildPool(NULL, hop1Vec, 1);
@@ -3040,9 +3052,15 @@ bool CLiveTunnel::EnsureK6QuotaAuthority(uint64 nowSeconds)
 }
 
 bool CLiveTunnel::K6QuotaPrincipal(const TunnelRequestCtx& ctx,
-                                   kad6::Hash32& principal) const
+                                   kad6::Hash32& principal,
+                                   std::array<uint8_t, 6>& prefix48,
+                                   uint32& asn) const
 {
     principal.fill(0);
+    prefix48.fill(0);
+    // Unknown ASNs share one deliberately conservative local bucket. This is
+    // not an asserted ASN and never appears on wire or in public telemetry.
+    asn = (std::numeric_limits<uint32>::max)();
     // Only v3 proves this terminal is hop 0. A terminal v2 circuit could be the
     // last hop of a longer path, in which case its direct neighbour is not A.
     if (!ctx.circ || ctx.circ->m_originCircContext == 0 ||
@@ -3065,12 +3083,22 @@ bool CLiveTunnel::K6QuotaPrincipal(const TunnelRequestCtx& ctx,
         message.push_back(4);
         message.push_back(32);
         message.insert(message.end(), address.Data(), address.Data() + 4);
+        prefix48[0] = 4;
+        prefix48[1] = 32;
+        memcpy(prefix48.data() + 2, address.Data(), 4);
     } else {
         // Aggregate at /48 so rotating /64s cannot multiply issuance. The raw
         // address and this local hash never leave the guard.
         message.push_back(6);
         message.push_back(48);
         message.insert(message.end(), address.Data(), address.Data() + 6);
+        memcpy(prefix48.data(), address.Data(), prefix48.size());
+        kad6::Kad6Address kadAddress;
+        kadAddress.family = kad6::Kad6Address::Family::IPv6;
+        memcpy(kadAddress.addr.data(), address.Data(), kadAddress.addr.size());
+        Kademlia::CKad6RoutingTable* table = Kademlia::CKademlia::GetKad6RoutingTable();
+        kad6::K6AsnInfo info;
+        if (table && table->LookupAddressAsn(kadAddress, info)) asn = info.asn;
     }
     const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
     return crypto.hmac_sha256 && crypto.hmac_sha256(m_k6TicketSecret.data(),
@@ -3090,14 +3118,16 @@ bool CLiveTunnel::K6QuotaIssuerTrusted(const uint8_t nodePub[32]) const
 }
 
 uint32 CLiveTunnel::K6SelectOriginCircuit(uint32 requiredCaps,
-                                          uint32 pinnedCircId) const
+                                          uint32 pinnedCircId,
+                                          size_t minimumHops) const
 {
     CSingleLock lock(&m_lock, TRUE);
     for (const auto& circuit : m_circuits) {
         if (!circuit || (pinnedCircId != 0 && circuit->Id() != pinnedCircId) ||
             circuit->m_role != CircuitRole::Originator ||
             circuit->m_k6QuotaIssuerCircuit ||
-            circuit->State() != CircuitState::Active || circuit->HopCount() == 0 ||
+            circuit->State() != CircuitState::Active ||
+            circuit->HopCount() < minimumHops ||
             circuit->m_firstHopClient == NULL || !circuit->m_multicell_ok ||
             !circuit->m_auth_ok ||
             (circuit->m_exit_signed_caps & requiredCaps) != requiredCaps ||
@@ -3111,9 +3141,11 @@ uint32 CLiveTunnel::K6SelectOriginCircuit(uint32 requiredCaps,
 }
 
 bool CLiveTunnel::K6CircuitHasExitCaps(uint32 circId,
-                                       uint32 requiredCaps) const
+                                       uint32 requiredCaps,
+                                       size_t minimumHops) const
 {
-    return circId != 0 && K6SelectOriginCircuit(requiredCaps, circId) == circId;
+    return circId != 0 &&
+        K6SelectOriginCircuit(requiredCaps, circId, minimumHops) == circId;
 }
 
 bool CLiveTunnel::K6QuotaRoundTrip(uint32 circId, uint8 msgType,
@@ -3162,7 +3194,7 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
 {
     if (targetCircId == 0 || timeoutMs < 3 ||
         !K6CircuitHasExitCaps(targetCircId,
-            ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY))
+            ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY, 2))
         return false;
 
     uint32 guardCircId = 0;
@@ -3212,7 +3244,10 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
     kad6::K6QuotaToken token;
     token.service = service;
     token.policy_id = certificate.policy_id;
-    token.valid_epoch = kad6::K6QuotaEpoch(static_cast<uint64>(time(NULL)));
+    const uint64 now = static_cast<uint64>(time(NULL));
+    token.valid_epoch = kad6::K6QuotaEpoch(now);
+    token.subepoch_slot = kad6::K6QuotaSubepoch(now);
+    token.issuer_key_id = certificate.key_id;
     const kad6::Kad6CryptoHooks identity = MakeKad6HostCryptoHooks();
     if (!identity.random_bytes ||
         !identity.random_bytes(token.admission_unit.data(), token.admission_unit.size()) ||
@@ -3227,6 +3262,8 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
 
     kad6::K6QuotaBlindRequest issue;
     issue.issuer_key_id = certificate.key_id;
+    issue.service = service;
+    issue.subepoch_slot = token.subepoch_slot;
     issue.blinded_messages.push_back(blind.blinded_message);
     std::vector<uint8_t> issueBody;
     if (kad6::EncodeK6QuotaBlindRequest(issue, issueBody) != kad6::Kad6Status::Ok)
@@ -3306,7 +3343,8 @@ bool CLiveTunnel::ConsumeK6QuotaGrant(const TunnelRequestCtx& ctx,
 }
 
 bool CLiveTunnel::QueueK6FairPayloadLocked(uint64 streamId, uint8 direction,
-                                           std::vector<uint8_t>&& bytes)
+                                           std::vector<uint8_t>&& bytes,
+                                           size_t creditBytes)
 {
     if (streamId == 0 || direction > 1 || bytes.empty() ||
         m_k6FairAllocationByStream.find(streamId) == m_k6FairAllocationByStream.end())
@@ -3329,6 +3367,7 @@ bool CLiveTunnel::QueueK6FairPayloadLocked(uint64 streamId, uint8 direction,
     if (!m_k6FairScheduler.Enqueue(streamId, bytes.size())) return false;
     K6FairPayload payload;
     payload.direction = direction;
+    payload.credit_bytes = creditBytes;
     payload.bytes = std::move(bytes);
     m_k6FairPayloadBytes += payload.bytes.size();
     queue.push_back(std::move(payload));
@@ -3355,7 +3394,12 @@ void CLiveTunnel::ReleaseK6FairStreamLocked(uint64 streamId)
 
 bool CLiveTunnel::ProcessK6FairTick()
 {
-    struct Ready { uint64 stream_id = 0; uint8 direction = 0; std::vector<uint8_t> bytes; };
+    struct Ready {
+        uint64 stream_id = 0;
+        uint8 direction = 0;
+        size_t credit_bytes = 0;
+        std::vector<uint8_t> bytes;
+    };
     std::vector<Ready> ready;
     {
         CSingleLock pl(&m_pendingLock, TRUE);
@@ -3382,6 +3426,7 @@ bool CLiveTunnel::ProcessK6FairTick()
                 Ready item;
                 item.stream_id = streamId;
                 item.direction = payload.direction;
+                item.credit_bytes = payload.credit_bytes;
                 item.bytes = std::move(payload.bytes);
                 ready.push_back(std::move(item));
             }
@@ -3420,8 +3465,13 @@ bool CLiveTunnel::ProcessK6FairTick()
         m_k6Metrics.Add(kad6::K6MetricFamily::TransportBytesTotal,
             0, item.direction == 0 ? 1 : 0, 0,
             static_cast<uint64>(item.bytes.size()), static_cast<uint64>(time(NULL)));
-        CSingleLock pl(&m_pendingLock, TRUE);
-        m_k6EconomyUsefulBytes += static_cast<uint64>(item.bytes.size());
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            m_k6EconomyUsefulBytes += static_cast<uint64>(item.bytes.size());
+        }
+        if (item.credit_bytes != 0)
+            ConsumeK6ReceiveCredit(runtime.circ_id, item.stream_id, 0,
+                item.credit_bytes, runtime.circuit, true);
     }
     for (uint64 streamId : failed) {
         CKad6ExitSocket* socket = NULL;
@@ -3435,6 +3485,249 @@ bool CLiveTunnel::ProcessK6FairTick()
     }
     CSingleLock pl(&m_pendingLock, TRUE);
     return m_k6FairPayloadBytes != 0 || m_k6FairScheduler.queued_bytes() != 0;
+}
+
+bool CLiveTunnel::RegisterK6FlowControlLocked(uint32 circId, uint64 streamId)
+{
+    if (circId == 0 || streamId == 0) return false;
+    const auto existing = m_k6FlowStreamsByCircuit.find(circId);
+    if (existing != m_k6FlowStreamsByCircuit.end() &&
+        existing->second.find(streamId) != existing->second.end()) return false;
+    std::set<uint64>& members = m_k6FlowStreamsByCircuit[circId];
+    kad6::K6SendCreditLedger& sender = m_k6SendCredits[circId];
+    kad6::K6ReceiveCreditWindow& receiver = m_k6ReceiveCredits[circId];
+    if (sender.RegisterStream(streamId) != kad6::Kad6Status::Ok ||
+        receiver.RegisterStream(streamId) != kad6::Kad6Status::Ok) {
+        sender.RemoveStream(streamId);
+        receiver.RemoveStream(streamId);
+        if (members.empty()) {
+            m_k6FlowStreamsByCircuit.erase(circId);
+            m_k6SendCredits.erase(circId);
+            m_k6ReceiveCredits.erase(circId);
+        }
+        return false;
+    }
+    members.insert(streamId);
+    return true;
+}
+
+void CLiveTunnel::RemoveK6FlowControlLocked(uint32 circId, uint64 streamId)
+{
+    auto streams = m_k6FlowStreamsByCircuit.find(circId);
+    if (streams == m_k6FlowStreamsByCircuit.end()) return;
+    auto sender = m_k6SendCredits.find(circId);
+    if (sender != m_k6SendCredits.end()) sender->second.RemoveStream(streamId);
+    auto receiver = m_k6ReceiveCredits.find(circId);
+    if (receiver != m_k6ReceiveCredits.end()) receiver->second.RemoveStream(streamId);
+    streams->second.erase(streamId);
+    if (streams->second.empty()) {
+        m_k6FlowStreamsByCircuit.erase(streams);
+        m_k6SendCredits.erase(circId);
+        m_k6ReceiveCredits.erase(circId);
+    }
+}
+
+bool CLiveTunnel::SendK6FlowCredit(
+    uint32 circId, const std::weak_ptr<CLiveCircuit>& circuit, bool fromExit,
+    const kad6::K6MaxStreamData& streamCredit,
+    const kad6::K6MaxData& circuitCredit)
+{
+    auto sendOne = [&](uint8 msgType, const std::vector<uint8_t>& body) -> bool {
+        if (fromExit)
+            return SendK6GatewayPush(circuit, circId, 0, msgType,
+                kad6::kK6FlagFinal, body);
+        kad6::K6Frame frame;
+        frame.msg_type = msgType;
+        frame.request_id = NewCircuitId();
+        frame.body = body;
+        std::vector<uint8_t> wire;
+        return kad6::EncodeK6Frame(frame, wire) == kad6::Kad6Status::Ok &&
+            SendMessagePinned(frame.request_id, TUN_OP_KAD6_GATEWAY,
+                wire.data(), wire.size(), ESE_CAP_KAD6, circId) == circId;
+    };
+    std::vector<uint8_t> streamBody, circuitBody;
+    return kad6::EncodeK6MaxStreamData(streamCredit, streamBody) ==
+               kad6::Kad6Status::Ok &&
+        kad6::EncodeK6MaxData(circuitCredit, circuitBody) ==
+               kad6::Kad6Status::Ok &&
+        sendOne(kad6::kK6MsgMaxStreamData, streamBody) &&
+        sendOne(kad6::kK6MsgMaxData, circuitBody);
+}
+
+bool CLiveTunnel::SendK6InitialCredit(
+    uint32 circId, uint64 streamId, uint8 direction,
+    const std::weak_ptr<CLiveCircuit>& circuit, bool fromExit)
+{
+    kad6::K6MaxStreamData streamCredit;
+    kad6::K6MaxData circuitCredit;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        const auto receiver = m_k6ReceiveCredits.find(circId);
+        if (receiver == m_k6ReceiveCredits.end() ||
+            receiver->second.InitialCredit(streamId, direction, streamCredit,
+                circuitCredit) != kad6::Kad6Status::Ok)
+            return false;
+    }
+    return SendK6FlowCredit(circId, circuit, fromExit, streamCredit, circuitCredit);
+}
+
+bool CLiveTunnel::ConsumeK6ReceiveCredit(
+    uint32 circId, uint64 streamId, uint8 direction, size_t bytes,
+    const std::weak_ptr<CLiveCircuit>& circuit, bool fromExit)
+{
+    kad6::K6MaxStreamData streamCredit;
+    kad6::K6MaxData circuitCredit;
+    bool stillPaused = false;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        const auto receiver = m_k6ReceiveCredits.find(circId);
+        if (receiver == m_k6ReceiveCredits.end() ||
+            receiver->second.Consume(streamId, direction, bytes,
+                K6ShapeNowUs() / 1000u, streamCredit, circuitCredit) !=
+                    kad6::Kad6Status::Ok)
+            return false;
+        stillPaused = receiver->second.reads_paused();
+    }
+    // Hysteresis is operational, not cosmetic: while occupancy remains above
+    // the 25% low watermark, do not reopen the sender's read side.
+    if (stillPaused) return true;
+    return SendK6FlowCredit(circId, circuit, fromExit, streamCredit, circuitCredit);
+}
+
+void CLiveTunnel::FlushK6OriginCredit(uint32 circId)
+{
+    std::vector<CKad6OriginSocket*> resumed;
+    CSingleLock pl(&m_pendingLock, TRUE);
+    auto ledger = m_k6SendCredits.find(circId);
+    if (ledger == m_k6SendCredits.end()) return;
+    CSingleLock ql(&m_mtLock, TRUE);
+    for (auto& pair : m_k6OriginStreams) {
+        K6OriginStreamRuntime& stream = pair.second;
+        if (stream.circ_id != circId) continue;
+        while (!stream.pending_credit_frames.empty()) {
+            K6QueuedOriginFrame& queued = stream.pending_credit_frames.front();
+            const uint64 sent = ledger->second.stream_sent(pair.first, 0);
+            const uint64 received = stream.flow.total_bytes(1);
+            const uint64 remaining = stream.dial.max_bytes == 0 ||
+                    sent + received >= stream.dial.max_bytes
+                ? (stream.dial.max_bytes == 0 ? (std::numeric_limits<uint64>::max)() : 0)
+                : stream.dial.max_bytes - sent - received;
+            if (ledger->second.CommitSend(pair.first, 0, queued.data_bytes,
+                    remaining, (std::numeric_limits<uint64>::max)(),
+                    2u * 1024u * 1024u) != kad6::Kad6Status::Ok)
+                break;
+            MainThreadReq request;
+            request.op = MT_SEND_MSG;
+            request.reqId = queued.request_id;
+            request.subCmd = TUN_OP_KAD6_GATEWAY;
+            request.requiredExitCaps = ESE_CAP_KAD6;
+            request.pinnedCircId = circId;
+            request.k6StreamId = pair.first;
+            request.k6FlowBytes = queued.wire.size();
+            request.k6Sequence = queued.sequence;
+            request.k6DataBytes = queued.data_bytes;
+            request.payload = std::move(queued.wire);
+            stream.pending_credit_bytes -= (std::min)(stream.pending_credit_bytes,
+                queued.data_bytes);
+            stream.pending_credit_frames.pop_front();
+            m_mtQueue.push_back(std::move(request));
+        }
+        if (stream.pending_credit_frames.empty()) {
+            stream.credit_stall_since_ms = 0;
+            if (stream.socket) resumed.push_back(stream.socket);
+        }
+    }
+    ql.Unlock();
+    pl.Unlock();
+    for (CKad6OriginSocket* socket : resumed)
+        if (socket) socket->SetKad6FlowBlocked(false);
+}
+
+void CLiveTunnel::FlushK6ExitCredit(uint32 circId)
+{
+    struct Push {
+        std::weak_ptr<CLiveCircuit> circuit;
+        uint32 circ_id = 0;
+        uint64 stream_id = 0;
+        std::vector<uint8_t> body;
+    };
+    std::vector<Push> pushes;
+    std::vector<CKad6ExitSocket*> resumed;
+    std::vector<CKad6ExitSocket*> failed;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        auto ledger = m_k6SendCredits.find(circId);
+        if (ledger == m_k6SendCredits.end()) return;
+        for (auto& pair : m_k6ExitStreams) {
+            K6ExitStreamRuntime& stream = pair.second;
+            if (stream.circ_id != circId || !stream.connected) continue;
+            while (!stream.pending_credit_frames.empty()) {
+                const std::vector<uint8_t>& raw = stream.pending_credit_frames.front();
+                const uint64 sent = ledger->second.stream_sent(pair.first, 1);
+                const uint64 received = stream.flow.total_bytes(0);
+                const uint64 remaining = stream.stream_max_bytes == 0 ||
+                        sent + received >= stream.stream_max_bytes
+                    ? (stream.stream_max_bytes == 0
+                        ? (std::numeric_limits<uint64>::max)() : 0)
+                    : stream.stream_max_bytes - sent - received;
+                if (ledger->second.Available(pair.first, 1, remaining,
+                        (std::numeric_limits<uint64>::max)(),
+                        2u * 1024u * 1024u) < raw.size())
+                    break;
+                kad6::K6StreamData data;
+                data.stream_id = pair.first;
+                data.sequence = stream.tx_sequence;
+                data.direction = 1;
+                data.flags = 0x02;
+                data.data = raw;
+                std::vector<uint8_t> body;
+                if (kad6::EncodeK6StreamData(data, body) != kad6::Kad6Status::Ok ||
+                    stream.flow.CanAccept(data) != kad6::Kad6Status::Ok)
+                    break;
+                bool queued = false;
+                if (stream.quota_allocation_id != 0) {
+                    queued = QueueK6FairPayloadLocked(pair.first, 1, std::move(body));
+                    if (!queued) break;
+                }
+                if (ledger->second.CommitSend(pair.first, 1, raw.size(), remaining,
+                        (std::numeric_limits<uint64>::max)(),
+                        2u * 1024u * 1024u) != kad6::Kad6Status::Ok ||
+                    stream.flow.Accept(data) != kad6::Kad6Status::Ok) {
+                    if (queued) ReleaseK6FairStreamLocked(pair.first);
+                    break;
+                }
+                ++stream.tx_sequence;
+                if (stream.quota_allocation_id == 0) {
+                    Push push;
+                    push.circuit = stream.circuit;
+                    push.circ_id = stream.circ_id;
+                    push.stream_id = pair.first;
+                    push.body = std::move(body);
+                    pushes.push_back(std::move(push));
+                    queued = true;
+                }
+                stream.pending_credit_bytes -= (std::min)(stream.pending_credit_bytes,
+                    raw.size());
+                stream.pending_credit_frames.pop_front();
+            }
+            if (stream.pending_credit_frames.empty()) {
+                stream.credit_stall_since_ms = 0;
+                if (stream.socket) resumed.push_back(stream.socket);
+            }
+        }
+    }
+    for (const Push& push : pushes)
+        if (!SendK6GatewayPush(push.circuit, push.circ_id, 0,
+                kad6::kK6MsgStreamData, kad6::kK6FlagFinal, push.body)) {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            const auto stream = m_k6ExitStreams.find(push.stream_id);
+            if (stream != m_k6ExitStreams.end() && stream->second.socket)
+                failed.push_back(stream->second.socket);
+        }
+    for (CKad6ExitSocket* socket : failed)
+        if (socket) socket->Disconnect(_T("Kad6 credit flush failed"));
+    for (CKad6ExitSocket* socket : resumed)
+        if (socket) socket->SetKad6ReadPaused(false);
 }
 
 bool CLiveTunnel::ApplyK6ServiceSwitch(kad6::K6Service service, bool enabled,
@@ -3464,9 +3757,11 @@ bool CLiveTunnel::ApplyK6ServiceSwitch(kad6::K6Service service, bool enabled,
             active[static_cast<size_t>(service)]))
         return false;
 
+    std::vector<uint64> stoppedLeases;
     if (!enabled) {
-        CSingleLock pl(&m_pendingLock, TRUE);
-        if (service == kad6::K6Service::ExitKad) {
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            if (service == kad6::K6Service::ExitKad) {
             std::vector<uint64> leases;
             leases.reserve(m_k6SourceLeases.Entries().size());
             for (const auto& pair : m_k6SourceLeases.Entries())
@@ -3474,7 +3769,7 @@ bool CLiveTunnel::ApplyK6ServiceSwitch(kad6::K6Service service, bool enabled,
                     leases.push_back(pair.first);
             for (uint64 lease : leases) {
                 m_k6SourceLeases.BeginDrain(lease);
-                m_k6CohortScheduler.SetServing(lease, false);
+                stoppedLeases.push_back(lease);
                 if (drainSeconds == 0) m_k6SourceLeases.Close(lease);
             }
             for (auto& pair : m_k6Publishes) {
@@ -3486,19 +3781,22 @@ bool CLiveTunnel::ApplyK6ServiceSwitch(kad6::K6Service service, bool enabled,
                 m_k6ShadowPrimary.clear();
                 m_k6SourceLeases.EraseClosed();
             }
-        } else if (drainSeconds == 0 &&
-                   (service == kad6::K6Service::ExitEd2kDial ||
-                    service == kad6::K6Service::ExitEd2kFull)) {
-            for (auto& pair : m_k6ExitStreams) {
-                const bool matches = pair.second.inbound
-                    ? service == kad6::K6Service::ExitEd2kFull
-                    : service == kad6::K6Service::ExitEd2kDial;
-                if (matches) {
-                    pair.second.kill_switch_close = true;
-                    pair.second.idle_deadline = now;
+            } else if (drainSeconds == 0 &&
+                       (service == kad6::K6Service::ExitEd2kDial ||
+                        service == kad6::K6Service::ExitEd2kFull)) {
+                for (auto& pair : m_k6ExitStreams) {
+                    const bool matches = pair.second.inbound
+                        ? service == kad6::K6Service::ExitEd2kFull
+                        : service == kad6::K6Service::ExitEd2kDial;
+                    if (matches) {
+                        pair.second.kill_switch_close = true;
+                        pair.second.idle_deadline = now;
+                    }
                 }
             }
         }
+        for (uint64 lease : stoppedLeases)
+            m_k6CohortScheduler.SetServing(lease, false);
     }
 
     // ESE_CAP_KAD6 is only the coarse discovery bit. Stop advertising it when
@@ -3624,6 +3922,7 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
     // The K6Frame STRICT bit is a transport invariant, not merely an exit
     // hint: it may only ride a completed diverse three-hop circuit.
     bool quotaMessage = false;
+    size_t minimumHops = sub_cmd == TUN_OP_KAD6_GATEWAY ? 2 : 1;
     if (sub_cmd == TUN_OP_KAD6_GATEWAY && msg && msgLen) {
         kad6::K6Frame frame;
         size_t consumed = 0;
@@ -3633,6 +3932,10 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
                 requiredExitCaps |= ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED;
             quotaMessage = frame.msg_type == kad6::kK6MsgQuotaKeyReq ||
                 frame.msg_type == kad6::kK6MsgQuotaIssue;
+            if (quotaMessage)
+                minimumHops = 1; // dedicated issuer circuit; never carries user work
+            else if ((frame.flags & kad6::kK6FlagStrict) != 0)
+                minimumHops = 3;
         }
     }
     CSingleLock lock(&m_lock, TRUE);
@@ -3648,7 +3951,7 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
         auto& c = m_circuits[idx];
         if ((!pinnedCircId || c->Id() == pinnedCircId) &&
             (!c->m_k6QuotaIssuerCircuit || quotaMessage) &&
-            c->State() == CircuitState::Active && c->HopCount() >= 1
+            c->State() == CircuitState::Active && c->HopCount() >= minimumHops
             && c->m_firstHopClient
             // v8.1 D8 - only ORIGINATOR circuits can be pinned: we hold the full onion
             // key stack to reach the exit. Today m_firstHopClient is set only on the
@@ -4153,7 +4456,8 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
         {
             CSingleLock pl(&m_pendingLock, TRUE);
             if (m_k6OriginStreams.size() >= 512 ||
-                m_k6OriginStreams.find(accepted.stream_id) != m_k6OriginStreams.end()) {
+                m_k6OriginStreams.find(accepted.stream_id) != m_k6OriginStreams.end() ||
+                !RegisterK6FlowControlLocked(circ->Id(), accepted.stream_id)) {
                 pl.Unlock(); socket->Safe_Delete(); return false;
             }
             K6OriginStreamRuntime runtime;
@@ -4166,6 +4470,14 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
             runtime.idle_deadline = runtime.last_activity +
                 ((accepted.idle_timeout_ms + 999u) / 1000u);
             m_k6OriginStreams[accepted.stream_id] = runtime;
+        }
+        if (!SendK6InitialCredit(circ->Id(), accepted.stream_id, 1, circ, false)) {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            m_k6OriginStreams.erase(accepted.stream_id);
+            RemoveK6FlowControlLocked(circ->Id(), accepted.stream_id);
+            pl.Unlock();
+            socket->Safe_Delete();
+            return false;
         }
         LIVE_LOG("K6", "inbound ACCEPT stream=%llu circuit=%u",
             static_cast<unsigned long long>(accepted.stream_id), circ->Id());
@@ -4259,6 +4571,44 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
         return true;
     }
 
+    if (frame.msg_type == kad6::kK6MsgMaxStreamData) {
+        kad6::K6MaxStreamData credit;
+        consumed = 0;
+        if (kad6::DecodeK6MaxStreamData(frame.body.data(), frame.body.size(), credit,
+                &consumed) != kad6::Kad6Status::Ok || consumed != frame.body.size() ||
+            credit.direction != 0)
+            return false;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            const auto stream = m_k6OriginStreams.find(credit.stream_id);
+            const auto ledger = m_k6SendCredits.find(circ->Id());
+            if (stream == m_k6OriginStreams.end() || stream->second.circ_id != circ->Id() ||
+                ledger == m_k6SendCredits.end() ||
+                ledger->second.Grant(credit) != kad6::Kad6Status::Ok)
+                return false;
+        }
+        FlushK6OriginCredit(circ->Id());
+        return true;
+    }
+
+    if (frame.msg_type == kad6::kK6MsgMaxData) {
+        kad6::K6MaxData credit;
+        consumed = 0;
+        if (kad6::DecodeK6MaxData(frame.body.data(), frame.body.size(), credit,
+                &consumed) != kad6::Kad6Status::Ok || consumed != frame.body.size() ||
+            credit.direction != 0)
+            return false;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            const auto ledger = m_k6SendCredits.find(circ->Id());
+            if (ledger == m_k6SendCredits.end() ||
+                ledger->second.Grant(credit) != kad6::Kad6Status::Ok)
+                return false;
+        }
+        FlushK6OriginCredit(circ->Id());
+        return true;
+    }
+
     if (frame.msg_type == kad6::kK6MsgStreamData) {
         kad6::K6StreamData data;
         consumed = 0;
@@ -4280,10 +4630,24 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
             const uint64 maxBytes = stream->second.dial.max_bytes;
             const uint64 txBytes = stream->second.flow.total_bytes(0);
             const uint64 rxBytes = stream->second.flow.total_bytes(1);
+            auto receiver = m_k6ReceiveCredits.find(circ->Id());
+            const bool bufferForAttach = stream->second.socket == NULL;
             if ((maxBytes && (txBytes > maxBytes || rxBytes > maxBytes - txBytes ||
                     stream->second.queued_tx_bytes > maxBytes - txBytes - rxBytes ||
                     data.data.size() > maxBytes - txBytes - rxBytes -
                         stream->second.queued_tx_bytes)) ||
+                receiver == m_k6ReceiveCredits.end() ||
+                (bufferForAttach && (stream->second.pending_frames.size() >= 64 ||
+                    stream->second.pending_frame_bytes + data.data.size() >
+                        256u * 1024u)) ||
+                receiver->second.CanAccept(data.stream_id, 1, data.data.size()) !=
+                    kad6::Kad6Status::Ok ||
+                stream->second.flow.CanAccept(data) != kad6::Kad6Status::Ok)
+                return false;
+            // Both preflights are side-effect free. Under m_pendingLock no
+            // peer can invalidate either decision between the two commits.
+            if (receiver->second.Accept(data.stream_id, 1, data.data.size(),
+                    K6ShapeNowUs() / 1000u) != kad6::Kad6Status::Ok ||
                 stream->second.flow.Accept(data) != kad6::Kad6Status::Ok)
                 return false;
             const uint64 now = static_cast<uint64>(time(NULL));
@@ -4292,9 +4656,6 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
             stream->second.idle_deadline = now + idle;
             socket = stream->second.socket;
             if (!socket) {
-                if (stream->second.pending_frames.size() >= 64 ||
-                    stream->second.pending_frame_bytes + data.data.size() > 256u * 1024u)
-                    return false;
                 stream->second.pending_frame_bytes += data.data.size();
                 stream->second.pending_frames.push_back(std::move(data.data));
                 return true;
@@ -4302,13 +4663,18 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
         }
         const bool injected = socket->InjectRawFrame(data.data.data(), data.data.size(),
             suppressHandshakeReply);
+        if (!injected) {
+            socket->Disconnect(_T("Kad6 downstream application rejected frame"));
+            return false;
+        }
         if (injected) {
             CSingleLock pl(&m_pendingLock, TRUE);
             auto stream = m_k6OriginStreams.find(data.stream_id);
             if (stream != m_k6OriginStreams.end() && stream->second.socket == socket)
                 stream->second.client = socket->client;
         }
-        return injected;
+        return ConsumeK6ReceiveCredit(circ->Id(), data.stream_id, 1,
+            data.data.size(), circ, false);
     }
 
     if (frame.msg_type == kad6::kK6MsgStreamHalfClose) {
@@ -4338,6 +4704,7 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
                 stream->second.flow.Close(close) != kad6::Kad6Status::Ok) return false;
             socket = stream->second.socket;
             client = stream->second.client;
+            RemoveK6FlowControlLocked(stream->second.circ_id, close.stream_id);
             m_k6OriginStreams.erase(stream);
         }
         if (client) client->ClearK6SecureIdentVep();
@@ -4368,7 +4735,8 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
         if (result.status == kad6::K6DialStatus::Ok) {
             CSingleLock pl(&m_pendingLock, TRUE);
             if (m_k6OriginStreams.size() < 512 && result.stream_id != 0 &&
-                m_k6OriginStreams.find(result.stream_id) == m_k6OriginStreams.end()) {
+                m_k6OriginStreams.find(result.stream_id) == m_k6OriginStreams.end() &&
+                RegisterK6FlowControlLocked(circ->Id(), result.stream_id)) {
                 K6OriginStreamRuntime runtime;
                 runtime.circ_id = circ->Id();
                 runtime.dial = result;
@@ -4379,6 +4747,13 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
                 m_k6OriginStreams[result.stream_id] = runtime;
                 streamRegistered = true;
             }
+        }
+        if (result.status == kad6::K6DialStatus::Ok && streamRegistered &&
+            !SendK6InitialCredit(circ->Id(), result.stream_id, 1, circ, false)) {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            m_k6OriginStreams.erase(result.stream_id);
+            RemoveK6FlowControlLocked(circ->Id(), result.stream_id);
+            streamRegistered = false;
         }
         if (hasActivation) {
             if (activationClient != NULL && result.status == kad6::K6DialStatus::Ok &&
@@ -4399,6 +4774,8 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
                     if (stream != m_k6OriginStreams.end() &&
                         stream->second.socket == NULL) {
                         orphan = stream->second;
+                        RemoveK6FlowControlLocked(stream->second.circ_id,
+                            result.stream_id);
                         m_k6OriginStreams.erase(stream);
                         found = true;
                     }
@@ -5025,6 +5402,12 @@ void CLiveTunnel::ExitHandle_Kad6Gateway(const TunnelRequestCtx& ctx)
     case kad6::kK6MsgStreamClose:
         ExitHandle_Kad6StreamClose(ctx, frame);
         return;
+    case kad6::kK6MsgMaxStreamData:
+        ExitHandle_Kad6MaxStreamData(ctx, frame);
+        return;
+    case kad6::kK6MsgMaxData:
+        ExitHandle_Kad6MaxData(ctx, frame);
+        return;
     case kad6::kK6MsgSearchStart:
         break;
     default:
@@ -5574,17 +5957,34 @@ void CLiveTunnel::ExitHandle_Kad6QuotaIssue(const TunnelRequestCtx& ctx,
     response.status = kad6::K6QuotaStatus::PolicyDenied;
     const uint64 now = static_cast<uint64>(time(NULL));
     kad6::Hash32 principal;
+    std::array<uint8_t, 6> prefix48{};
+    uint32 asn = 0;
     if (!EnsureK6QuotaAuthority(now))
         response.status = kad6::K6QuotaStatus::CryptoFailure;
     else if (!kad6::Kad6CtEqual(request.issuer_key_id.data(),
              m_k6QuotaCertificate.key_id.data(), request.issuer_key_id.size()))
         response.status = kad6::K6QuotaStatus::UnknownIssuer;
-    else if (!K6QuotaPrincipal(ctx, principal))
+    else if (!K6QuotaPrincipal(ctx, principal, prefix48, asn))
         response.status = kad6::K6QuotaStatus::PolicyDenied;
+    else if (request.version == 2 &&
+             request.subepoch_slot != kad6::K6QuotaSubepoch(now))
+        response.status = kad6::K6QuotaStatus::WrongEpoch;
     else {
         const uint64 epoch = kad6::K6QuotaEpoch(now);
-        response.status = m_k6QuotaIssuerLimiter.Reserve(principal, epoch,
-            request.blinded_messages.size());
+        if (request.version == 1) {
+            response.status = m_k6QuotaIssuerLimiter.Reserve(principal, epoch,
+                request.blinded_messages.size());
+        } else {
+            kad6::K6QuotaHierarchyRequest budget;
+            budget.principal = principal;
+            budget.prefix48 = prefix48;
+            budget.issuer_key_id = request.issuer_key_id;
+            budget.asn = asn;
+            budget.service = request.service;
+            budget.now_ms = (std::max<uint64>)(1, K6ShapeNowUs() / 1000u);
+            budget.units = request.blinded_messages.size();
+            response.status = m_k6QuotaHierarchy.Reserve(budget);
+        }
         if (response.status == kad6::K6QuotaStatus::Ok) {
             const kad6::K6QuotaCryptoHooks hooks = m_k6QuotaCrypto.Hooks();
             response.blind_signatures.reserve(request.blinded_messages.size());
@@ -5635,7 +6035,8 @@ void CLiveTunnel::ExitHandle_Kad6QuotaPresent(const TunnelRequestCtx& ctx,
     else {
         result.status = kad6::VerifyAndSpendK6Quota(MakeKad6HostCryptoHooks(),
             m_k6QuotaCrypto.Hooks(), m_k6QuotaSpent, presentation, token.service,
-            token.policy_id, kad6::K6QuotaEpoch(now), token.presentation_context_hash,
+            token.policy_id, kad6::K6QuotaEpoch(now), kad6::K6QuotaSubepoch(now),
+            token.presentation_context_hash,
             K6QuotaIssuerTrusted(certificate.issuer_node_pub.data()), &token, &certificate);
         if (result.status == kad6::K6QuotaStatus::Ok) {
             const kad6::Kad6CryptoHooks identity = MakeKad6HostCryptoHooks();
@@ -5662,7 +6063,11 @@ void CLiveTunnel::ExitHandle_Kad6QuotaPresent(const TunnelRequestCtx& ctx,
                     grant.context = token.presentation_context_hash;
                     grant.issuer = certificate.key_id;
                     grant.allocation_id = allocation;
-                    grant.expires_at = (token.valid_epoch + 1) * kad6::kK6QuotaEpochSeconds;
+                    grant.expires_at = token.version == 2
+                        ? token.valid_epoch * kad6::kK6QuotaEpochSeconds +
+                          (static_cast<uint64>(token.subepoch_slot) + 1) *
+                              kad6::kK6QuotaSubepochSeconds
+                        : (token.valid_epoch + 1) * kad6::kK6QuotaEpochSeconds;
                     m_k6QuotaGrants[grantKey] = grant;
                     result.valid_epoch = token.valid_epoch;
                 }
@@ -5927,18 +6332,21 @@ void CLiveTunnel::ExitHandle_Kad6SourceUnbind(const TunnelRequestCtx& ctx,
     size_t consumed = 0;
     if (kad6::DecodeK6SourceUnbind(frame.body.data(), frame.body.size(), unbind,
             &consumed) != kad6::Kad6Status::Ok || consumed != frame.body.size()) return;
-    CSingleLock pl(&m_pendingLock, TRUE);
-    kad6::K6SourceLease* lease = m_k6SourceLeases.Find(unbind.source_lease_id);
-    if (!lease || lease->circuit_id != ctx.circ->Id() ||
-        unbind.source_epoch < lease->bind.source_epoch ||
-        !kad6::Kad6CtEqual(unbind.bind_nonce.data(), lease->bind.bind_nonce.data(), 16))
-        return;
-    m_k6SourceLeases.BeginDrain(unbind.source_lease_id);
-    m_k6CohortScheduler.SetServing(unbind.source_lease_id, false);
-    for (auto& pair : m_k6Publishes) if (pair.second.source_lease_id == unbind.source_lease_id) {
-        pair.second.refresh_enabled = false;
-        m_k6PublishCoalescer.Remove(pair.first);
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        kad6::K6SourceLease* lease = m_k6SourceLeases.Find(unbind.source_lease_id);
+        if (!lease || lease->circuit_id != ctx.circ->Id() ||
+            unbind.source_epoch < lease->bind.source_epoch ||
+            !kad6::Kad6CtEqual(unbind.bind_nonce.data(), lease->bind.bind_nonce.data(), 16))
+            return;
+        m_k6SourceLeases.BeginDrain(unbind.source_lease_id);
+        for (auto& pair : m_k6Publishes)
+            if (pair.second.source_lease_id == unbind.source_lease_id) {
+                pair.second.refresh_enabled = false;
+                m_k6PublishCoalescer.Remove(pair.first);
+            }
     }
+    m_k6CohortScheduler.SetServing(unbind.source_lease_id, false);
 }
 
 void CLiveTunnel::ExitHandle_Kad6Publish(const TunnelRequestCtx& ctx,
@@ -6013,6 +6421,8 @@ void CLiveTunnel::ExitHandle_Kad6Publish(const TunnelRequestCtx& ctx,
     }
 
     kad6::K6SourceLease leaseCopy;
+    kad6::K6CohortBackend servingBackend;
+    bool registerServing = false;
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         const kad6::K6SourceLease* lease = m_k6SourceLeases.Find(sourceLeaseId);
@@ -6169,9 +6579,11 @@ void CLiveTunnel::ExitHandle_Kad6Publish(const TunnelRequestCtx& ctx,
             if (stored->second.auto_refresh)
                 stored->second.next_native_refresh_at = now + (std::max<uint64>)(
                     kad6::kK6PublishMinTtlSeconds, ttl / 2u);
-            MarkK6SourceServingLocked(sourceLeaseId);
+            registerServing = MarkK6SourceServingLocked(sourceLeaseId,
+                servingBackend);
         }
     }
+    if (registerServing) m_k6CohortScheduler.Register(servingBackend);
     if (!queuedKad2 && !queuedNative) {
         CSingleLock pl(&m_pendingLock, TRUE);
         m_k6Publishes.erase(publishLeaseId);
@@ -6209,19 +6621,23 @@ void CLiveTunnel::ExitHandle_Kad6Unpublish(const TunnelRequestCtx& ctx,
     size_t consumed = 0;
     if (kad6::DecodeK6Unpublish(frame.body.data(), frame.body.size(), value,
             &consumed) != kad6::Kad6Status::Ok || consumed != frame.body.size()) return;
-    CSingleLock pl(&m_pendingLock, TRUE);
-    auto it = m_k6Publishes.find(value.publish_lease_id);
-    const kad6::K6SourceLease* source = it == m_k6Publishes.end() ? NULL
-        : m_k6SourceLeases.Find(it->second.source_lease_id);
-    if (it == m_k6Publishes.end() || !source ||
-        source->circuit_id != ctx.circ->Id() ||
-        it->second.request.record_epoch > value.record_epoch ||
-        !kad6::Kad6CtEqual(it->second.request.target_hash.data(), value.target_hash.data(), 16) ||
-        !kad6::Kad6CtEqual(it->second.request.source_id.data(), value.source_id.data(), 16)) return;
-    it->second.refresh_enabled = false;
-    m_k6PublishCoalescer.Remove(value.publish_lease_id);
-    m_k6SourceLeases.BeginDrain(it->second.source_lease_id);
-    m_k6CohortScheduler.SetServing(it->second.source_lease_id, false);
+    uint64 sourceLeaseId = 0;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        auto it = m_k6Publishes.find(value.publish_lease_id);
+        const kad6::K6SourceLease* source = it == m_k6Publishes.end() ? NULL
+            : m_k6SourceLeases.Find(it->second.source_lease_id);
+        if (it == m_k6Publishes.end() || !source ||
+            source->circuit_id != ctx.circ->Id() ||
+            it->second.request.record_epoch > value.record_epoch ||
+            !kad6::Kad6CtEqual(it->second.request.target_hash.data(), value.target_hash.data(), 16) ||
+            !kad6::Kad6CtEqual(it->second.request.source_id.data(), value.source_id.data(), 16)) return;
+        it->second.refresh_enabled = false;
+        m_k6PublishCoalescer.Remove(value.publish_lease_id);
+        sourceLeaseId = it->second.source_lease_id;
+        m_k6SourceLeases.BeginDrain(sourceLeaseId);
+    }
+    m_k6CohortScheduler.SetServing(sourceLeaseId, false);
 }
 
 std::string CLiveTunnel::K6AuthorizedTargetKey(uint32 circId, uint32 requestId,
@@ -6518,12 +6934,21 @@ void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
     runtime.connect_deadline = runtime.created_at + ((dial.connect_timeout_ms + 999u) / 1000u);
     runtime.idle_deadline = runtime.created_at + ((dial.idle_timeout_ms + 999u) / 1000u);
     {
-        CSingleLock pl(&m_pendingLock, TRUE); m_k6ExitStreams[streamId] = runtime;
+        CSingleLock pl(&m_pendingLock, TRUE);
+        if (!RegisterK6FlowControlLocked(runtime.circ_id, streamId)) {
+            pl.Unlock();
+            ReleaseK6FairStreamLocked(streamId);
+            reject(kad6::K6DialStatus::Overloaded);
+            if (client->Disconnected(_T("Kad6 flow-control capacity"))) delete client;
+            return;
+        }
+        m_k6ExitStreams[streamId] = runtime;
     }
     const bool connecting = client->TryToConnect(true, true, RUNTIME_CLASS(CKad6ExitSocket));
     CKad6ExitSocket* socket = connecting ? DYNAMIC_DOWNCAST(CKad6ExitSocket, client->socket) : NULL;
     if (!socket) {
         CSingleLock pl(&m_pendingLock, TRUE); m_k6ExitStreams.erase(streamId);
+        RemoveK6FlowControlLocked(runtime.circ_id, streamId);
         K6SourceScore& score = m_k6SourceScores[K6SourceScoreKey(
             runtime.ticket.target_endpoint, runtime.network_origin)];
         if (score.failures != (std::numeric_limits<uint32>::max)()) ++score.failures;
@@ -6560,7 +6985,11 @@ void CLiveTunnel::OnK6ExitSocketConnect(uint64 streamId, CKad6ExitSocket* socket
                 it->second.idle_deadline = now +
                     ((it->second.idle_timeout_ms + 999u) / 1000u);
             }
-            else { ReleaseK6FairStreamLocked(streamId); m_k6ExitStreams.erase(it); }
+            else {
+                ReleaseK6FairStreamLocked(streamId);
+                RemoveK6FlowControlLocked(it->second.circ_id, streamId);
+                m_k6ExitStreams.erase(it);
+            }
         }
     }
     if (!found) return;
@@ -6572,6 +7001,7 @@ void CLiveTunnel::OnK6ExitSocketConnect(uint64 streamId, CKad6ExitSocket* socket
     std::vector<uint8_t> body;
     if (kad6::EncodeK6DialResult(result, body) != kad6::Kad6Status::Ok) {
         CSingleLock pl(&m_pendingLock, TRUE); m_k6ExitStreams.erase(streamId);
+        RemoveK6FlowControlLocked(runtime.circ_id, streamId);
         ReleaseK6FairStreamLocked(streamId); pl.Unlock();
         AbortExitOperation(runtime.circ_id, runtime.dial_request_id);
         if (socket) socket->Disconnect(_T("Kad6 DIAL result encode failed"));
@@ -6606,6 +7036,7 @@ void CLiveTunnel::OnK6ExitSocketConnect(uint64 streamId, CKad6ExitSocket* socket
         static_cast<uint64>(time(NULL)));
     if (result.status != kad6::K6DialStatus::Ok) {
         CSingleLock pl(&m_pendingLock, TRUE); m_k6ExitStreams.erase(streamId);
+        RemoveK6FlowControlLocked(runtime.circ_id, streamId);
         ReleaseK6FairStreamLocked(streamId);
     }
     kad6::K6Frame response; response.msg_type = kad6::kK6MsgDialOk;
@@ -6616,6 +7047,7 @@ void CLiveTunnel::OnK6ExitSocketConnect(uint64 streamId, CKad6ExitSocket* socket
         !CompleteExitOperation(runtime.circ_id, runtime.dial_request_id,
                                wire.data(), wire.size())) {
         CSingleLock pl(&m_pendingLock, TRUE); m_k6ExitStreams.erase(streamId);
+        RemoveK6FlowControlLocked(runtime.circ_id, streamId);
         ReleaseK6FairStreamLocked(streamId); pl.Unlock();
         if (socket) socket->Disconnect(_T("Kad6 DIAL reply failed"));
         return;
@@ -6627,6 +7059,11 @@ void CLiveTunnel::OnK6ExitSocketConnect(uint64 streamId, CKad6ExitSocket* socket
     }
 
     if (result.status == kad6::K6DialStatus::Ok) {
+        if (!SendK6InitialCredit(runtime.circ_id, streamId, 0,
+                runtime.circuit, true)) {
+            if (socket) socket->Disconnect(_T("Kad6 initial credit failed"));
+            return;
+        }
         const uint64 metricNow = static_cast<uint64>(time(NULL));
         m_k6Metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 2, 0, 0, 1,
                         metricNow);
@@ -6657,6 +7094,7 @@ void CLiveTunnel::OnK6ExitSocketClosed(uint64 streamId, CKad6ExitSocket* socket,
             runtime = stream->second;
             m_k6CohortScheduler.ReleaseStream(streamId);
             ReleaseK6FairStreamLocked(streamId);
+            RemoveK6FlowControlLocked(stream->second.circ_id, streamId);
             m_k6ExitStreams.erase(stream);
             found = true;
         }
@@ -6684,6 +7122,7 @@ void CLiveTunnel::OnK6OriginSocketClosed(uint64 streamId, CKad6OriginSocket* soc
         auto stream = m_k6OriginStreams.find(streamId);
         if (stream != m_k6OriginStreams.end() && stream->second.socket == socket) {
             runtime = stream->second;
+            RemoveK6FlowControlLocked(stream->second.circ_id, streamId);
             m_k6OriginStreams.erase(stream);
             found = true;
         }
@@ -6721,7 +7160,8 @@ bool CLiveTunnel::HasK6ServingLeases() const
     return false;
 }
 
-void CLiveTunnel::MarkK6SourceServingLocked(uint64 sourceLeaseId)
+bool CLiveTunnel::MarkK6SourceServingLocked(uint64 sourceLeaseId,
+                                            kad6::K6CohortBackend& backend)
 {
     // MarkPublished is intentionally attempted first. If a second network
     // confirms an already-serving lease it returns BadValue, while
@@ -6729,16 +7169,15 @@ void CLiveTunnel::MarkK6SourceServingLocked(uint64 sourceLeaseId)
     m_k6SourceLeases.MarkPublished(sourceLeaseId);
     if (m_k6SourceLeases.MarkServing(sourceLeaseId) != kad6::Kad6Status::Ok ||
         !m_k6SourceLeases.CanAccept(sourceLeaseId))
-        return;
+        return false;
     const kad6::K6SourceLease* lease = m_k6SourceLeases.Find(sourceLeaseId);
-    if (!lease) return;
-    kad6::K6CohortBackend backend;
+    if (!lease) return false;
     backend.lease_id = lease->lease_id;
     backend.circuit_id = lease->circuit_id;
     backend.file_hash = lease->bind.file_hash;
     backend.cohort_id = lease->bound.cohort_id;
     backend.serving = true;
-    m_k6CohortScheduler.Register(backend);
+    return true;
 }
 
 bool CLiveTunnel::ActivateK6Inbound(CKad6ExitSocket* socket,
@@ -6863,6 +7302,11 @@ bool CLiveTunnel::ActivateK6Inbound(CKad6ExitSocket* socket,
     runtime.inbound = true;
     {
         CSingleLock pl(&m_pendingLock, TRUE);
+        if (!RegisterK6FlowControlLocked(runtime.circ_id, streamId)) {
+            pl.Unlock();
+            socket->Disconnect(_T("Kad6 flow-control capacity"));
+            return false;
+        }
         m_k6ExitStreams[streamId] = runtime;
     }
     m_k6Metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 3, 0, 0, 1,
@@ -6888,10 +7332,12 @@ bool CLiveTunnel::ActivateK6Inbound(CKad6ExitSocket* socket,
     if (kad6::EncodeK6DialResult(accept, body) != kad6::Kad6Status::Ok ||
         !SendK6GatewayPush(circuit, selected.circuit_id, 0,
             kad6::kK6MsgAccept, kad6::kK6FlagFinal, body) ||
+        !SendK6InitialCredit(selected.circuit_id, streamId, 0, circuit, true) ||
         !OnK6ExitPacket(streamId, hello->data(), hello->size()) ||
         !OnK6ExitPacket(streamId, request.data(), request.size())) {
         CSingleLock pl(&m_pendingLock, TRUE);
         m_k6ExitStreams.erase(streamId);
+        RemoveK6FlowControlLocked(selected.circuit_id, streamId);
         m_k6CohortScheduler.ReleaseStream(streamId);
         ReleaseK6FairStreamLocked(streamId);
         pl.Unlock();
@@ -6918,8 +7364,15 @@ void CLiveTunnel::ExitHandle_Kad6StreamData(const TunnelRequestCtx& ctx,
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         auto stream = m_k6ExitStreams.find(data.stream_id);
+        auto receiver = m_k6ReceiveCredits.find(ctx.circ->Id());
         if (stream == m_k6ExitStreams.end() || stream->second.circ_id != ctx.circ->Id() ||
             !stream->second.connected ||
+            receiver == m_k6ReceiveCredits.end() ||
+            receiver->second.CanAccept(data.stream_id, 0, data.data.size()) !=
+                kad6::Kad6Status::Ok ||
+            stream->second.flow.CanAccept(data) != kad6::Kad6Status::Ok) return;
+        if (receiver->second.Accept(data.stream_id, 0, data.data.size(),
+                K6ShapeNowUs() / 1000u) != kad6::Kad6Status::Ok ||
             stream->second.flow.Accept(data) != kad6::Kad6Status::Ok) return;
         socket = stream->second.socket; apparent = stream->second.apparent;
         const uint64 now = static_cast<uint64>(time(NULL));
@@ -6937,11 +7390,20 @@ void CLiveTunnel::ExitHandle_Kad6StreamData(const TunnelRequestCtx& ctx,
         const bool ok = (view.opcode == OP_HELLO || view.opcode == OP_HELLOANSWER)
             ? SanitizeK6HelloFrame(data.data.data(), data.data.size(), apparent, rewritten)
             : kad6::RewriteK6Ed2kPublicIpAnswer(view, apparent.addr, rewritten) == kad6::Kad6Status::Ok;
-        if (!ok) return;
-    } else if (disposition == kad6::K6Ed2kDisposition::Drop)
+        if (!ok) {
+            ConsumeK6ReceiveCredit(ctx.circ->Id(), data.stream_id, 0,
+                data.data.size(), ctx.circ, true);
+            return;
+        }
+    } else if (disposition == kad6::K6Ed2kDisposition::Drop) {
+        ConsumeK6ReceiveCredit(ctx.circ->Id(), data.stream_id, 0,
+            data.data.size(), ctx.circ, true);
         return;
-    else
+    } else {
+        ConsumeK6ReceiveCredit(ctx.circ->Id(), data.stream_id, 0,
+            data.data.size(), ctx.circ, true);
         return;
+    }
     bool fairStream = false;
     bool fairQueued = false;
     {
@@ -6950,7 +7412,7 @@ void CLiveTunnel::ExitHandle_Kad6StreamData(const TunnelRequestCtx& ctx,
             m_k6FairAllocationByStream.end();
         if (fairStream)
             fairQueued = QueueK6FairPayloadLocked(data.stream_id, 0,
-                std::move(rewritten));
+                std::move(rewritten), data.data.size());
         if (fairStream && !fairQueued) ReleaseK6FairStreamLocked(data.stream_id);
     }
     if (fairStream) {
@@ -6970,8 +7432,14 @@ void CLiveTunnel::ExitHandle_Kad6StreamData(const TunnelRequestCtx& ctx,
             static_cast<uint64>(time(NULL)));
         m_k6Metrics.Add(kad6::K6MetricFamily::TransportBytesTotal, 0, 1, 0,
             static_cast<uint64>(rewritten.size()), static_cast<uint64>(time(NULL)));
-        CSingleLock pl(&m_pendingLock, TRUE);
-        m_k6EconomyUsefulBytes += static_cast<uint64>(rewritten.size());
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            m_k6EconomyUsefulBytes += static_cast<uint64>(rewritten.size());
+        }
+        ConsumeK6ReceiveCredit(ctx.circ->Id(), data.stream_id, 0,
+            data.data.size(), ctx.circ, true);
+    } else if (socket) {
+        socket->Disconnect(_T("Kad6 downstream socket rejected frame"));
     }
 }
 
@@ -6999,11 +7467,54 @@ void CLiveTunnel::ExitHandle_Kad6StreamClose(const TunnelRequestCtx& ctx,
         auto stream = m_k6ExitStreams.find(close.stream_id);
         if (stream == m_k6ExitStreams.end() || stream->second.circ_id != ctx.circ->Id() ||
             stream->second.flow.Close(close) != kad6::Kad6Status::Ok) return;
-        socket = stream->second.socket; m_k6ExitStreams.erase(stream);
+        socket = stream->second.socket;
+        RemoveK6FlowControlLocked(stream->second.circ_id, close.stream_id);
+        m_k6ExitStreams.erase(stream);
         m_k6CohortScheduler.ReleaseStream(close.stream_id);
         ReleaseK6FairStreamLocked(close.stream_id);
     }
     if (socket) socket->Disconnect(_T("Kad6 stream closed"));
+}
+
+void CLiveTunnel::ExitHandle_Kad6MaxStreamData(const TunnelRequestCtx& ctx,
+                                                const kad6::K6Frame& frame)
+{
+    kad6::K6MaxStreamData credit;
+    size_t consumed = 0;
+    if (kad6::DecodeK6MaxStreamData(frame.body.data(), frame.body.size(), credit,
+            &consumed) != kad6::Kad6Status::Ok || consumed != frame.body.size() ||
+        credit.direction != 1)
+        return;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        const auto stream = m_k6ExitStreams.find(credit.stream_id);
+        const auto ledger = m_k6SendCredits.find(ctx.circ->Id());
+        if (stream == m_k6ExitStreams.end() ||
+            stream->second.circ_id != ctx.circ->Id() ||
+            ledger == m_k6SendCredits.end() ||
+            ledger->second.Grant(credit) != kad6::Kad6Status::Ok)
+            return;
+    }
+    FlushK6ExitCredit(ctx.circ->Id());
+}
+
+void CLiveTunnel::ExitHandle_Kad6MaxData(const TunnelRequestCtx& ctx,
+                                          const kad6::K6Frame& frame)
+{
+    kad6::K6MaxData credit;
+    size_t consumed = 0;
+    if (kad6::DecodeK6MaxData(frame.body.data(), frame.body.size(), credit,
+            &consumed) != kad6::Kad6Status::Ok || consumed != frame.body.size() ||
+        credit.direction != 1)
+        return;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        const auto ledger = m_k6SendCredits.find(ctx.circ->Id());
+        if (ledger == m_k6SendCredits.end() ||
+            ledger->second.Grant(credit) != kad6::Kad6Status::Ok)
+            return;
+    }
+    FlushK6ExitCredit(ctx.circ->Id());
 }
 
 bool CLiveTunnel::OnK6ExitPacket(uint64 streamId, const uint8_t* raw, size_t length)
@@ -7067,6 +7578,40 @@ bool CLiveTunnel::OnK6ExitPacket(uint64 streamId, const uint8_t* raw, size_t len
     }
     if (disposition == kad6::K6Ed2kDisposition::Drop) return true;
     if (disposition != kad6::K6Ed2kDisposition::Pass) return false;
+    CKad6ExitSocket* pauseSocket = NULL;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        auto stream = m_k6ExitStreams.find(streamId);
+        auto ledger = stream == m_k6ExitStreams.end()
+            ? m_k6SendCredits.end() : m_k6SendCredits.find(stream->second.circ_id);
+        if (stream == m_k6ExitStreams.end() || ledger == m_k6SendCredits.end())
+            return false;
+        const uint64 sent = ledger->second.stream_sent(streamId, 1);
+        const uint64 received = stream->second.flow.total_bytes(0);
+        const uint64 remaining = stream->second.stream_max_bytes == 0 ||
+                sent + received >= stream->second.stream_max_bytes
+            ? (stream->second.stream_max_bytes == 0
+                ? (std::numeric_limits<uint64>::max)() : 0)
+            : stream->second.stream_max_bytes - sent - received;
+        const bool waitForCredit = !stream->second.pending_credit_frames.empty() ||
+            ledger->second.Available(streamId, 1, remaining,
+                (std::numeric_limits<uint64>::max)(),
+                2u * 1024u * 1024u - stream->second.pending_credit_bytes) < length;
+        if (waitForCredit) {
+            if (stream->second.pending_credit_frames.size() >= 64 ||
+                length > 2u * 1024u * 1024u - stream->second.pending_credit_bytes)
+                return false;
+            stream->second.pending_credit_frames.emplace_back(raw, raw + length);
+            stream->second.pending_credit_bytes += length;
+            if (stream->second.credit_stall_since_ms == 0)
+                stream->second.credit_stall_since_ms = K6ShapeNowUs() / 1000u;
+            pauseSocket = stream->second.socket;
+        }
+    }
+    if (pauseSocket) {
+        pauseSocket->SetKad6ReadPaused(true);
+        return true;
+    }
     kad6::K6StreamData data; data.stream_id = streamId; data.sequence = sequence;
     data.direction = 1; data.flags = 0x02; data.data.assign(raw, raw + length);
     std::vector<uint8_t> body;
@@ -7074,24 +7619,64 @@ bool CLiveTunnel::OnK6ExitPacket(uint64 streamId, const uint8_t* raw, size_t len
     if (runtime.quota_allocation_id != 0) {
         CSingleLock pl(&m_pendingLock, TRUE);
         auto stream = m_k6ExitStreams.find(streamId);
-        if (stream == m_k6ExitStreams.end() ||
-            stream->second.flow.Accept(data) != kad6::Kad6Status::Ok)
+        auto ledger = stream == m_k6ExitStreams.end()
+            ? m_k6SendCredits.end() : m_k6SendCredits.find(stream->second.circ_id);
+        if (stream == m_k6ExitStreams.end() || ledger == m_k6SendCredits.end() ||
+            stream->second.flow.CanAccept(data) != kad6::Kad6Status::Ok)
             return false;
-        ++stream->second.tx_sequence;
         if (!QueueK6FairPayloadLocked(streamId, 1, std::move(body))) {
             ReleaseK6FairStreamLocked(streamId);
             return false;
         }
+        const uint64 sent = ledger->second.stream_sent(streamId, 1);
+        const uint64 received = stream->second.flow.total_bytes(0);
+        const uint64 remaining = stream->second.stream_max_bytes == 0 ||
+                sent + received >= stream->second.stream_max_bytes
+            ? (stream->second.stream_max_bytes == 0
+                ? (std::numeric_limits<uint64>::max)() : 0)
+            : stream->second.stream_max_bytes - sent - received;
+        if (ledger->second.CommitSend(streamId, 1, length, remaining,
+                (std::numeric_limits<uint64>::max)(), 2u * 1024u * 1024u) !=
+                    kad6::Kad6Status::Ok ||
+            stream->second.flow.Accept(data) != kad6::Kad6Status::Ok) {
+            ReleaseK6FairStreamLocked(streamId);
+            return false;
+        }
+        ++stream->second.tx_sequence;
         return true;
     }
-    if (!SendK6GatewayPush(runtime.circuit, runtime.circ_id, 0,
-            kad6::kK6MsgStreamData, kad6::kK6FlagFinal, body)) return false;
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         auto stream = m_k6ExitStreams.find(streamId);
-        if (stream == m_k6ExitStreams.end() ||
-            stream->second.flow.Accept(data) != kad6::Kad6Status::Ok) return false;
+        auto ledger = stream == m_k6ExitStreams.end()
+            ? m_k6SendCredits.end() : m_k6SendCredits.find(stream->second.circ_id);
+        if (stream == m_k6ExitStreams.end() || ledger == m_k6SendCredits.end() ||
+            stream->second.flow.CanAccept(data) != kad6::Kad6Status::Ok)
+            return false;
+        const uint64 sent = ledger->second.stream_sent(streamId, 1);
+        const uint64 received = stream->second.flow.total_bytes(0);
+        const uint64 remaining = stream->second.stream_max_bytes == 0 ||
+                sent + received >= stream->second.stream_max_bytes
+            ? (stream->second.stream_max_bytes == 0
+                ? (std::numeric_limits<uint64>::max)() : 0)
+            : stream->second.stream_max_bytes - sent - received;
+        if (ledger->second.CommitSend(streamId, 1, length, remaining,
+                (std::numeric_limits<uint64>::max)(), 2u * 1024u * 1024u) !=
+                    kad6::Kad6Status::Ok ||
+            stream->second.flow.Accept(data) != kad6::Kad6Status::Ok)
+            return false;
         ++stream->second.tx_sequence;
+    }
+    if (!SendK6GatewayPush(runtime.circuit, runtime.circ_id, 0,
+            kad6::kK6MsgStreamData, kad6::kK6FlagFinal, body)) {
+        CKad6ExitSocket* socket = NULL;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            const auto stream = m_k6ExitStreams.find(streamId);
+            if (stream != m_k6ExitStreams.end()) socket = stream->second.socket;
+        }
+        if (socket) socket->Disconnect(_T("Kad6 tunnel rejected accepted frame"));
+        return false;
     }
     m_k6Metrics.Add(kad6::K6MetricFamily::ExitBytesTotal, 0,
         runtime.inbound ? 3 : 2, 0, static_cast<uint64>(length),
@@ -7131,16 +7716,24 @@ bool CLiveTunnel::AllowKad6ShadowPublishContact(uint64 publishLeaseId,
 
 void CLiveTunnel::OnKad6ShadowPublishSent(uint64 publishLeaseId)
 {
-    CSingleLock pl(&m_pendingLock, TRUE);
-    auto primary = m_k6Publishes.find(publishLeaseId);
-    if (primary == m_k6Publishes.end()) return;
-    const uint64_t primaryId = primary->second.primary_publish_lease_id;
-    for (auto& pair : m_k6Publishes) if (pair.second.primary_publish_lease_id == primaryId) {
-        if (pair.second.status == kad6::K6PublishStatus::Queued)
-            pair.second.status = kad6::K6PublishStatus::Sent;
-        pair.second.published_networks |= kad6::kK6PublishNetKad2;
-        MarkK6SourceServingLocked(pair.second.source_lease_id);
+    std::vector<kad6::K6CohortBackend> serving;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        auto primary = m_k6Publishes.find(publishLeaseId);
+        if (primary == m_k6Publishes.end()) return;
+        const uint64_t primaryId = primary->second.primary_publish_lease_id;
+        for (auto& pair : m_k6Publishes)
+            if (pair.second.primary_publish_lease_id == primaryId) {
+                if (pair.second.status == kad6::K6PublishStatus::Queued)
+                    pair.second.status = kad6::K6PublishStatus::Sent;
+                pair.second.published_networks |= kad6::kK6PublishNetKad2;
+                kad6::K6CohortBackend backend;
+                if (MarkK6SourceServingLocked(pair.second.source_lease_id, backend))
+                    serving.push_back(backend);
+            }
     }
+    for (const kad6::K6CohortBackend& backend : serving)
+        m_k6CohortScheduler.Register(backend);
 }
 
 void CLiveTunnel::OnKad6ShadowPublishAck(uint64 publishLeaseId, uint8_t load,
@@ -7493,7 +8086,10 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
     std::vector<ExpiredOrigin> origins;
     std::vector<uint32_t> sourceLookups;
     std::vector<ExpiredActivation> activations;
+    std::vector<uint64> stoppedLeases;
+    std::vector<uint64> releasedCohortStreams;
     const DWORD nowTick = GetTickCount();
+    const uint64 nowFlowMs = K6ShapeNowUs() / 1000u;
     std::array<uint64, static_cast<size_t>(kad6::K6Service::Count)> serviceActive{};
     double streamProfiles[4][3] = {};
     std::set<uint32> strictCircuits;
@@ -7529,7 +8125,7 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
                     leases.push_back(pair.first);
             for (uint64 lease : leases) {
                 m_k6SourceLeases.Close(lease);
-                m_k6CohortScheduler.SetServing(lease, false);
+                stoppedLeases.push_back(lease);
             }
             m_k6Publishes.clear();
             m_k6ShadowPrimary.clear();
@@ -7611,24 +8207,36 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
             else if (activeCircuits.find(it->second.circ_id) == activeCircuits.end()) reason = 3;
             else if (!it->second.connected && it->second.connect_deadline &&
                      it->second.connect_deadline <= nowSeconds) reason = 4;
+            else if (it->second.credit_stall_since_ms != 0 &&
+                     nowFlowMs >= it->second.credit_stall_since_ms &&
+                     nowFlowMs - it->second.credit_stall_since_ms >=
+                         kad6::kK6CreditStallDeadlineMs) reason = 6;
             else if (it->second.idle_deadline && it->second.idle_deadline <= nowSeconds) reason = 2;
             if (!reason) { ++it; continue; }
             ExpiredExit expired; expired.stream_id = it->first;
             expired.runtime = it->second; expired.reason = reason;
             exits.push_back(std::move(expired));
-            m_k6CohortScheduler.ReleaseStream(it->first);
+            releasedCohortStreams.push_back(it->first);
             ReleaseK6FairStreamLocked(it->first);
+            RemoveK6FlowControlLocked(it->second.circ_id, it->first);
             it = m_k6ExitStreams.erase(it);
         }
         for (auto it = m_k6OriginStreams.begin(); it != m_k6OriginStreams.end(); ) {
-            if (activeCircuits.find(it->second.circ_id) != activeCircuits.end() &&
+            const bool creditStalled = it->second.credit_stall_since_ms != 0 &&
+                nowFlowMs >= it->second.credit_stall_since_ms &&
+                nowFlowMs - it->second.credit_stall_since_ms >=
+                    kad6::kK6CreditStallDeadlineMs;
+            if (!creditStalled &&
+                activeCircuits.find(it->second.circ_id) != activeCircuits.end() &&
                 (!it->second.idle_deadline || it->second.idle_deadline > nowSeconds)) {
                 ++it; continue;
             }
             ExpiredOrigin expired; expired.stream_id = it->first;
             expired.runtime = it->second;
-            expired.reason = activeCircuits.find(it->second.circ_id) == activeCircuits.end() ? 3 : 2;
+            expired.reason = activeCircuits.find(it->second.circ_id) ==
+                activeCircuits.end() ? 3 : creditStalled ? 6 : 2;
             origins.push_back(std::move(expired));
+            RemoveK6FlowControlLocked(it->second.circ_id, it->first);
             it = m_k6OriginStreams.erase(it);
         }
         for (auto it = m_k6SourceScores.begin(); it != m_k6SourceScores.end(); )
@@ -7643,6 +8251,10 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
 
     // Never hold m_pendingLock while notifying a circuit or disconnecting an
     // eD2K socket: both paths can synchronously re-enter tunnel/client code.
+    for (uint64 lease : stoppedLeases)
+        m_k6CohortScheduler.SetServing(lease, false);
+    for (uint64 stream : releasedCohortStreams)
+        m_k6CohortScheduler.ReleaseStream(stream);
     for (uint32_t requestId : sourceLookups) {
         if (theApp.downloadqueue == NULL) continue;
         CPartFile* file = theApp.downloadqueue->GetFileByKadFileSearchID(requestId);
@@ -7762,28 +8374,46 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
 }
 
 void CLiveTunnel::SweepK6SourceLeases(const std::set<uint32_t>& activeCircuits,
+                                      const std::set<uint32_t>& teardownQueue,
                                       uint64 nowSeconds)
 {
-    CSingleLock pl(&m_pendingLock, TRUE);
-    for (const auto& pair : m_k6SourceLeases.Entries())
-        if (pair.second.state != kad6::K6SourceLeaseState::Closed &&
-            activeCircuits.find(pair.second.circuit_id) == activeCircuits.end())
-            m_k6SourceLeases.DrainCircuit(pair.second.circuit_id);
-    m_k6SourceLeases.Expire(nowSeconds);
-    for (const auto& pair : m_k6SourceLeases.Entries())
-        if (!m_k6SourceLeases.CanAccept(pair.first))
-            m_k6CohortScheduler.SetServing(pair.first, false);
-    m_k6PublishCoalescer.Expire(nowSeconds);
-    for (auto it = m_k6Publishes.begin(); it != m_k6Publishes.end(); ) {
-        const kad6::K6SourceLease* source =
-            m_k6SourceLeases.Find(it->second.source_lease_id);
-        if (it->second.expires_at <= nowSeconds || !source ||
-            source->state == kad6::K6SourceLeaseState::Draining ||
-            source->state == kad6::K6SourceLeaseState::Closed) {
-            it = m_k6Publishes.erase(it);
-        } else ++it;
+    // L1/Q27: process teardown/expiry incrementally.  The persistent table
+    // queue is populated from circuit lifecycle events.
+    const uint64 startedUs = K6ShapeNowUs();
+    const size_t transitionCap = 256;
+    size_t remaining = transitionCap;
+    std::vector<uint64_t> stoppedLeases;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        for (uint32_t circuitId : teardownQueue)
+            if (activeCircuits.find(circuitId) == activeCircuits.end())
+                m_k6SourceLeases.QueueCircuitTeardown(circuitId);
+        if (remaining != 0 && K6ShapeNowUs() - startedUs < 2000) {
+            const size_t changed = m_k6SourceLeases.DrainQueuedCircuits(
+                remaining, &stoppedLeases);
+            remaining -= changed;
+        }
+        if (remaining != 0 && K6ShapeNowUs() - startedUs < 2000) {
+            const size_t changed = m_k6SourceLeases.ExpireSome(
+                nowSeconds, remaining, &stoppedLeases);
+            remaining -= changed;
+        }
+        m_k6PublishCoalescer.Expire(nowSeconds);
+        for (auto it = m_k6Publishes.begin(); it != m_k6Publishes.end(); ) {
+            const kad6::K6SourceLease* source =
+                m_k6SourceLeases.Find(it->second.source_lease_id);
+            if (it->second.expires_at <= nowSeconds || !source ||
+                source->state == kad6::K6SourceLeaseState::Draining ||
+                source->state == kad6::K6SourceLeaseState::Closed) {
+                it = m_k6Publishes.erase(it);
+            } else ++it;
+        }
+        m_k6SourceLeases.EraseClosedSome(transitionCap);
     }
-    m_k6SourceLeases.EraseClosed();
+    // Scheduler notification is deliberately outside m_pendingLock: a future
+    // scheduler/socket implementation may call back into host code.
+    for (uint64_t leaseId : stoppedLeases)
+        m_k6CohortScheduler.SetServing(leaseId, false);
 }
 
 // === v8.1 Sprint C - tunneled LiveTV subscribe ===========================
@@ -8454,7 +9084,7 @@ bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
         }
         op = TUN_OP_KAD6_GATEWAY;
         requiredCaps = ESE_CAP_KAD6;
-        pinnedCircuit = K6SelectOriginCircuit(requiredCaps);
+        pinnedCircuit = K6SelectOriginCircuit(requiredCaps, 0, 2);
         kad6::K6Frame quotaOperation;
         size_t quotaUsed = 0;
         if (pinnedCircuit == 0 ||
@@ -8464,7 +9094,7 @@ bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
             WaitPending(req_id, pr, 0, ignored, NULL);
             return false;
         }
-        if (K6CircuitHasExitCaps(pinnedCircuit, ESE_CAP_KAD6_ECONOMY) &&
+        if (K6CircuitHasExitCaps(pinnedCircuit, ESE_CAP_KAD6_ECONOMY, 2) &&
             !K6AcquireAnonymousQuota(pinnedCircuit, kad6::K6QuotaService::Control,
                 quotaOperation.msg_type, quotaOperation.body,
                 (std::max<uint32>)(3, timeoutMs / 2)) && IsK6PublicReleaseEnabled()) {
@@ -8511,11 +9141,11 @@ bool CLiveTunnel::K6BindSource(const kad6::K6SourceBind& bind,
     const uint32_t requiredCaps = ESE_CAP_KAD6
         | ((bind.flags & kad6::kK6SourceStrict)
             ? (ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED) : 0);
-    const uint32 targetCircuit = K6SelectOriginCircuit(requiredCaps);
+    const uint32 targetCircuit = K6SelectOriginCircuit(requiredCaps, 0, 2);
     if (targetCircuit == 0) return false;
     std::vector<uint8_t> body, wire;
     if (kad6::EncodeK6SourceBind(bind, body) != kad6::Kad6Status::Ok) return false;
-    if (K6CircuitHasExitCaps(targetCircuit, ESE_CAP_KAD6_ECONOMY) &&
+    if (K6CircuitHasExitCaps(targetCircuit, ESE_CAP_KAD6_ECONOMY, 2) &&
         !K6AcquireAnonymousQuota(targetCircuit, kad6::K6QuotaService::ExitKad,
             kad6::kK6MsgSourceBind, body,
             (std::max<uint32>)(3, timeoutMs / 2)) && IsK6PublicReleaseEnabled())
@@ -8620,7 +9250,7 @@ bool CLiveTunnel::K6PublishRecord(const kad6::K6Publish& publish,
     }
     if (sourceLeaseId == 0 || pinnedCircuit == 0) return false;
 
-    if (K6CircuitHasExitCaps(pinnedCircuit, ESE_CAP_KAD6_ECONOMY) &&
+    if (K6CircuitHasExitCaps(pinnedCircuit, ESE_CAP_KAD6_ECONOMY, 2) &&
         !K6AcquireAnonymousQuota(pinnedCircuit, kad6::K6QuotaService::ExitKad,
             kad6::kK6MsgPublish, body,
             (std::max<uint32>)(3, timeoutMs / 2)) && IsK6PublicReleaseEnabled())
@@ -9036,7 +9666,7 @@ bool CLiveTunnel::K6DialEd2k(const std::vector<uint8_t>& ticket,
     dial.idle_timeout_ms = 120000; dial.initial_data = initialData;
     std::vector<uint8_t> body, wire;
     if (kad6::EncodeK6Dial(dial, body) != kad6::Kad6Status::Ok) return false;
-    if (K6CircuitHasExitCaps(pinnedCircId, ESE_CAP_KAD6_ECONOMY) &&
+    if (K6CircuitHasExitCaps(pinnedCircId, ESE_CAP_KAD6_ECONOMY, 2) &&
         !K6AcquireAnonymousQuota(pinnedCircId,
             kad6::K6QuotaService::ExitEd2kDial, kad6::kK6MsgDial, body,
             (std::max<uint32>)(3, timeoutMs / 2)) && IsK6PublicReleaseEnabled())
@@ -9078,6 +9708,7 @@ bool CLiveTunnel::K6AttachOriginClient(uint64 streamId, CUpDownClient* client)
     if (!socket->Initialize(streamId, client)) { socket->Safe_Delete(); return false; }
     std::deque<std::vector<uint8_t>> pendingFrames;
     bool sendHello = true;
+    uint32 flowCircId = 0;
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         auto stream = m_k6OriginStreams.find(streamId);
@@ -9085,6 +9716,7 @@ bool CLiveTunnel::K6AttachOriginClient(uint64 streamId, CUpDownClient* client)
             pl.Unlock(); socket->Safe_Delete(); return false;
         }
         stream->second.socket = socket; stream->second.client = client;
+        flowCircId = stream->second.circ_id;
         sendHello = !stream->second.initial_data_sent;
         pendingFrames.swap(stream->second.pending_frames);
         stream->second.pending_frame_bytes = 0;
@@ -9096,7 +9728,9 @@ bool CLiveTunnel::K6AttachOriginClient(uint64 streamId, CUpDownClient* client)
     }
     if (sendHello) client->SendHelloPacket();
     for (const std::vector<uint8_t>& frame : pendingFrames)
-        if (!socket->InjectRawFrame(frame.data(), frame.size())) {
+        if (!socket->InjectRawFrame(frame.data(), frame.size()) ||
+            !ConsumeK6ReceiveCredit(flowCircId, streamId, 1, frame.size(),
+                std::weak_ptr<CLiveCircuit>(), false)) {
             socket->Disconnect(_T("Kad6 buffered frame rejected"));
             return false;
         }
@@ -9133,6 +9767,15 @@ bool CLiveTunnel::K6SendEd2kFrameNoWait(uint64 streamId, const uint8_t* raw, siz
             streamBytes += queued.k6FlowBytes;
         }
     }
+    for (const auto& origin : m_k6OriginStreams) {
+        for (const K6QueuedOriginFrame& queued : origin.second.pending_credit_frames) {
+            globalBytes += queued.wire.size();
+            if (origin.first == streamId) {
+                ++streamMessages;
+                streamBytes += queued.wire.size();
+            }
+        }
+    }
     const size_t perStreamLimit = 2u * 1024u * 1024u;
     const size_t globalLimit = 32u * 1024u * 1024u;
     if (wire.size() > perStreamLimit || wire.size() > globalLimit ||
@@ -9148,6 +9791,34 @@ bool CLiveTunnel::K6SendEd2kFrameNoWait(uint64 streamId, const uint8_t* raw, siz
                 stream->second.queued_tx_bytes))) return false;
     ++stream->second.next_tx_sequence;
     stream->second.queued_tx_bytes += data.data.size();
+
+    auto ledger = m_k6SendCredits.find(stream->second.circ_id);
+    if (ledger == m_k6SendCredits.end()) {
+        --stream->second.next_tx_sequence;
+        stream->second.queued_tx_bytes -= data.data.size();
+        return false;
+    }
+    const uint64 sent = ledger->second.stream_sent(streamId, 0);
+    const uint64 remaining = maxBytes == 0 || sent + rxBytes >= maxBytes
+        ? (maxBytes == 0 ? (std::numeric_limits<uint64>::max)() : 0)
+        : maxBytes - sent - rxBytes;
+    const bool waitForCredit = !stream->second.pending_credit_frames.empty() ||
+        ledger->second.CommitSend(streamId, 0, data.data.size(), remaining,
+            (std::numeric_limits<uint64>::max)(),
+            perStreamLimit - streamBytes) != kad6::Kad6Status::Ok;
+    if (waitForCredit) {
+        K6QueuedOriginFrame queued;
+        queued.request_id = reqId;
+        queued.sequence = data.sequence;
+        queued.data_bytes = data.data.size();
+        queued.wire = std::move(wire);
+        stream->second.pending_credit_bytes += queued.data_bytes;
+        stream->second.pending_credit_frames.push_back(std::move(queued));
+        if (stream->second.credit_stall_since_ms == 0)
+            stream->second.credit_stall_since_ms = K6ShapeNowUs() / 1000u;
+        if (stream->second.socket) stream->second.socket->SetKad6FlowBlocked(true);
+        return true;
+    }
 
     MainThreadReq request;
     request.op = MT_SEND_MSG;
@@ -9241,7 +9912,7 @@ bool CLiveTunnel::SendK6LiveSubscribeNoWait(const uint8_t streamKey[16])
         route = found->second;
     }
     if (route.circ_id == 0 || route.source_request_id == 0 ||
-        K6SelectOriginCircuit(ESE_CAP_KAD6, route.circ_id) != route.circ_id)
+        K6SelectOriginCircuit(ESE_CAP_KAD6, route.circ_id, 2) != route.circ_id)
         return false;
 
     const uint32_t reqId = NewCircuitId();
@@ -10473,12 +11144,15 @@ bool CLiveTunnel::TunnelEchoLarge(const std::vector<uint8_t>& payload,
 void CLiveTunnel::Tick()
 {
     CSingleLock lock(&m_lock, TRUE);
+    std::set<uint32_t> retiredCircuits;
     // Emit one terminal build sample per strict origin circuit before dead
     // entries are reaped. Success means the complete authenticated 3-hop path
     // reached Active; every fail-closed teardown is a failed build unless a
     // success was already recorded earlier in the circuit lifetime.
     const uint64_t buildMetricNow = static_cast<uint64_t>(time(NULL));
     for (const auto& circuit : m_circuits) {
+        if (circuit && circuit->State() == CircuitState::Destroyed)
+            retiredCircuits.insert(circuit->Id());
         if (!circuit || !circuit->m_strict3 ||
             circuit->m_role != CircuitRole::Originator ||
             circuit->m_k6BuildMetricEmitted ||
@@ -10535,6 +11209,10 @@ void CLiveTunnel::Tick()
     // K6-3: SourceLeases are circuit-bound. Rotation, DESTROY or timeout
     // drains their publishes; wall-clock expiry closes them independently of
     // GetTickCount wraparound.
+    for (const auto& circuit : m_circuits)
+        if (circuit && circuit->State() == CircuitState::Destroyed)
+            retiredCircuits.insert(circuit->Id());
+
     {
         double circuitCounts[5][4] = {};
         for (const auto& circuit : m_circuits) {
@@ -10554,7 +11232,7 @@ void CLiveTunnel::Tick()
         for (const auto& c : m_circuits)
             if (c->State() == CircuitState::Active) active.insert(c->Id());
         const uint64 k6Now = static_cast<uint64_t>(time(NULL));
-        SweepK6SourceLeases(active, k6Now);
+        SweepK6SourceLeases(active, retiredCircuits, k6Now);
         SweepK6Gateway(k6Now, active);
         StartK6VisibilityProbes(k6Now);
         QueueK6ShadowRefreshes(k6Now);
@@ -10799,10 +11477,12 @@ size_t CLiveTunnel::ActiveCircuitCount() const
 bool CLiveTunnel::HasActiveCircuitWithExitCaps(uint32_t requiredCaps) const
 {
     if (requiredCaps == 0) return ActiveCircuitCount() != 0;
+    const size_t minimumHops = (requiredCaps & ESE_CAP_KAD6) != 0 ? 2 : 1;
     CSingleLock lock(&m_lock, TRUE);
     for (const auto& c : m_circuits) {
-        if (c->m_role == CircuitRole::Originator &&
-            c->State() == CircuitState::Active && c->HopCount() >= 1 &&
+        if (!c->m_k6QuotaIssuerCircuit &&
+            c->m_role == CircuitRole::Originator &&
+            c->State() == CircuitState::Active && c->HopCount() >= minimumHops &&
             c->m_firstHopClient && c->m_multicell_ok && c->m_auth_ok &&
             (c->m_exit_signed_caps & requiredCaps) == requiredCaps &&
             ((requiredCaps & ESE_CAP_TUNNEL_STRICT3) == 0

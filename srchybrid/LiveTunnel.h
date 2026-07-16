@@ -167,9 +167,9 @@ public:
     // assigned, or 0 on failure.
     uint32_t BuildTestCircuit(CUpDownClient* clientHint);
 
-    // v8.1 D4 — PST pool make-before-break successor. tunnelOnly-STRICT (no
-    // any-peer fallback), so it builds NOTHING when no fork peer is connected
-    // (single-PC no-op). At most one 1-hop circuit. Called from CKadV2TunnelPool::Tick.
+    // PST pool make-before-break successor. Production privacy is fail-closed:
+    // it builds either an exact 3-hop Strict path or an exact 2-hop Private path.
+    // One-hop paths are reserved for explicit diagnostics and quota issuance.
     bool BuildSuccessorCircuit();
 
     // Build the dedicated direct issuer circuit used by anonymous quota
@@ -529,11 +529,9 @@ private:
     // v8.1.1 F-2 — build a TRUE 2-hop circuit V -> hop1 -> exit with hop1 != exit
     // (DISTINCT nodes by user-hash), so the exit never has a direct socket to V and
     // never sees V's IP (real anonymity / G1). Picks two distinct tunnel-capable
-    // peers; pre-stages hop2 on the originator so HandleCreated_Originator auto-
-    // extends after hop1's CREATED. NO loopback / 1-hop fallback here — returns
-    // false if fewer than 2 distinct tunnel peers are connected (the caller decides
-    // whether a degraded 1-hop circuit is acceptable). The loopback degenerate case
-    // stays confined to BuildTestCircuit2Hop (manual 2-PC dev test only).
+    // authenticated peers; pre-stages hop2 on the originator so
+    // HandleCreated_Originator auto-extends after hop1's CREATED. No loopback or
+    // one-hop fallback exists: fewer than two eligible identities fails closed.
     bool BuildSuccessor2Hop();
 
     bool ContinueOriginatorBuild(std::shared_ptr<CLiveCircuit>& circ);
@@ -856,7 +854,11 @@ private:
     void ExitHandle_Kad6StreamHalfClose(const TunnelRequestCtx& ctx,
                                         const kad6::K6Frame& frame);
     void ExitHandle_Kad6StreamClose(const TunnelRequestCtx& ctx,
-                                    const kad6::K6Frame& frame);
+                                     const kad6::K6Frame& frame);
+    void ExitHandle_Kad6MaxStreamData(const TunnelRequestCtx& ctx,
+                                      const kad6::K6Frame& frame);
+    void ExitHandle_Kad6MaxData(const TunnelRequestCtx& ctx,
+                                const kad6::K6Frame& frame);
     void ExitHandle_Kad6QuotaKey(const TunnelRequestCtx& ctx,
                                  const kad6::K6Frame& frame);
     void ExitHandle_Kad6QuotaIssue(const TunnelRequestCtx& ctx,
@@ -874,7 +876,8 @@ private:
     bool OnK6ExitPacket(uint64 streamId, const uint8_t* frame, size_t length);
     bool ActivateK6Inbound(CKad6ExitSocket* socket, const kad6::Hash16& fileHash,
                            const std::vector<std::vector<uint8_t>>& initialFrames);
-    void MarkK6SourceServingLocked(uint64 sourceLeaseId);
+    bool MarkK6SourceServingLocked(uint64 sourceLeaseId,
+                                   kad6::K6CohortBackend& backend);
 
     struct K6ExitPublishRuntime {
         kad6::K6Publish request;
@@ -941,6 +944,15 @@ private:
         bool connected = false;
         bool inbound = false;
         bool kill_switch_close = false;
+        std::deque<std::vector<uint8_t>> pending_credit_frames;
+        size_t pending_credit_bytes = 0;
+        uint64 credit_stall_since_ms = 0;
+    };
+    struct K6QueuedOriginFrame {
+        uint32 request_id = 0;
+        uint64 sequence = 0;
+        size_t data_bytes = 0;
+        std::vector<uint8_t> wire;
     };
     struct K6OriginStreamRuntime {
         uint32 circ_id = 0;
@@ -958,6 +970,9 @@ private:
         size_t pending_frame_bytes = 0;
         uint64 last_activity = 0;
         uint64 idle_deadline = 0;
+        std::deque<K6QueuedOriginFrame> pending_credit_frames;
+        size_t pending_credit_bytes = 0;
+        uint64 credit_stall_since_ms = 0;
     };
     std::array<uint8_t, 32> m_k6TicketSecret{};
     bool m_k6TicketSecretReady = false;
@@ -965,6 +980,25 @@ private:
     std::map<std::string, K6UsedTicket> m_k6UsedTickets;
     std::map<uint64, K6ExitStreamRuntime> m_k6ExitStreams;
     std::map<uint64, K6OriginStreamRuntime> m_k6OriginStreams;
+    std::map<uint32, kad6::K6SendCreditLedger> m_k6SendCredits;
+    std::map<uint32, kad6::K6ReceiveCreditWindow> m_k6ReceiveCredits;
+    std::map<uint32, std::set<uint64>> m_k6FlowStreamsByCircuit;
+    bool RegisterK6FlowControlLocked(uint32 circId, uint64 streamId);
+    void RemoveK6FlowControlLocked(uint32 circId, uint64 streamId);
+    bool SendK6FlowCredit(uint32 circId,
+                          const std::weak_ptr<CLiveCircuit>& circuit,
+                          bool fromExit,
+                          const kad6::K6MaxStreamData& streamCredit,
+                          const kad6::K6MaxData& circuitCredit);
+    bool SendK6InitialCredit(uint32 circId, uint64 streamId, uint8 direction,
+                             const std::weak_ptr<CLiveCircuit>& circuit,
+                             bool fromExit);
+    bool ConsumeK6ReceiveCredit(uint32 circId, uint64 streamId, uint8 direction,
+                                size_t bytes,
+                                const std::weak_ptr<CLiveCircuit>& circuit,
+                                bool fromExit);
+    void FlushK6OriginCredit(uint32 circId);
+    void FlushK6ExitCredit(uint32 circId);
     struct K6SourceScore {
         uint32 successes = 0;
         uint32 failures = 0;
@@ -993,10 +1027,12 @@ private:
     uint64 m_k6QuotaCertificateEpoch = 0;
     bool m_k6QuotaInitAttempted = false;
     kad6::K6QuotaIssuerLimiter m_k6QuotaIssuerLimiter;
+    kad6::K6QuotaHierarchy m_k6QuotaHierarchy;
     kad6::K6QuotaSpentSet m_k6QuotaSpent;
     kad6::K6FairScheduler m_k6FairScheduler;
     struct K6FairPayload {
         uint8 direction = 0; // 0 origin->remote raw eD2K; 1 remote->origin K6 body
+        size_t credit_bytes = 0; // receiver bytes released after downstream consumption
         std::vector<uint8_t> bytes;
     };
     std::map<uint64, std::deque<K6FairPayload>> m_k6FairPayloads;
@@ -1023,11 +1059,15 @@ private:
     bool m_k6ReleaseChallengeReady = false;
     bool IsK6PublicReleaseEnabled() const;
     bool EnsureK6QuotaAuthority(uint64 nowSeconds);
-    bool K6QuotaPrincipal(const TunnelRequestCtx& ctx, kad6::Hash32& principal) const;
+    bool K6QuotaPrincipal(const TunnelRequestCtx& ctx, kad6::Hash32& principal,
+                          std::array<uint8_t, 6>& prefix48,
+                          uint32& asn) const;
     bool K6QuotaIssuerTrusted(const uint8_t nodePub[32]) const;
     uint32 K6SelectOriginCircuit(uint32 requiredCaps,
-                                 uint32 pinnedCircId = 0) const;
-    bool K6CircuitHasExitCaps(uint32 circId, uint32 requiredCaps) const;
+                                 uint32 pinnedCircId = 0,
+                                 size_t minimumHops = 1) const;
+    bool K6CircuitHasExitCaps(uint32 circId, uint32 requiredCaps,
+                              size_t minimumHops = 1) const;
     bool K6QuotaRoundTrip(uint32 circId, uint8 msgType,
                           const std::vector<uint8_t>& body,
                           uint8 expectedMsgType, uint32 timeoutMs,
@@ -1043,7 +1083,8 @@ private:
                              uint64* allocationId = nullptr);
     static std::string K6QuotaGrantKey(uint32 circId, const kad6::Hash32& context);
     bool QueueK6FairPayloadLocked(uint64 streamId, uint8 direction,
-                                  std::vector<uint8_t>&& bytes);
+                                  std::vector<uint8_t>&& bytes,
+                                  size_t creditBytes = 0);
     void ReleaseK6FairStreamLocked(uint64 streamId);
     bool ProcessK6FairTick();
     CKad6ExitNoticeServer m_k6ExitNoticeServer;
@@ -1113,6 +1154,7 @@ private:
     bool EnsureK6SourceEpochsLoaded();
     bool SaveK6SourceEpochs() const;
     void SweepK6SourceLeases(const std::set<uint32_t>& activeCircuits,
+                             const std::set<uint32_t>& teardownQueue,
                              uint64 nowSeconds);
     void QueueK6ShadowRefreshes(uint64 nowSeconds);
     void StartDueK6ShadowPublishes(uint64 nowSeconds);

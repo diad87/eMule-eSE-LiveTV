@@ -186,6 +186,9 @@ public:
     // each authenticated CREATED/EXTENDED.  Relay mappings continue to use
     // m_nextHopClient/m_nextCircId and never inspect this vector.
     std::vector<CUpDownClient*> m_pendingHopClients;
+    // Production Private profile: exactly two authenticated remote relays.
+    // A failed extension destroys the circuit instead of activating hop 1.
+    bool m_private2 = false;
     bool m_strict3 = false;
     bool m_path_diverse = false;
     // Dedicated one-hop quota issuer path. It deliberately exposes the

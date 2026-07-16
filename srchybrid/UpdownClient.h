@@ -7,6 +7,8 @@
 #include "OtherFunctions.h"
 #include "eMuleAI/Address.h"
 
+#include <vector>
+
 class CClientReqSocket;
 class CFriend;
 class CPartFile;
@@ -170,6 +172,8 @@ public:
 	bool            SupportsEseTunnelDataplane()  const { return (m_uEseCapabilities & 0x00001000) != 0; }  // v8.1 multi-cell
 	bool            SupportsEseTunnelBulk()       const { return (m_uEseCapabilities & 0x00004000) != 0; }  // v8.1.2 bulk data plane (ESE_CAP_TUNNEL_BULK)
 	bool            SupportsEseTunnelAuth()       const { return (m_uEseCapabilities & 0x00040000) != 0; }  // v8.x authenticated handshake (ESE_CAP_TUNNEL_AUTH, bit 18)
+	bool            SupportsEseTunnelStrict3()    const { return (m_uEseCapabilities & 0x02000000) != 0; }  // K6-6 authenticated iterative 3-hop extension
+	bool            SupportsEseTunnelShaped()     const { return (m_uEseCapabilities & 0x04000000) != 0; }  // K6-6 class-5 fixed-record link shaping
 	bool            SupportsEseHolePunchCookie()  const { return (m_uEseCapabilities & 0x00080000) != 0; }  // P0 return-routability cookie (ESE_CAP_HOLEPUNCH_COOKIE, bit 19)
 	bool            SupportsEseHolePunchRdv()     const { return (m_uEseCapabilities & 0x00008000) != 0; }  // R.1 3-way rendezvous (ESE_CAP_HOLEPUNCH_RDV, bit 15)
 	bool            SupportsLiveRelay()           const { return (m_uEseCapabilities & 0x00200000) != 0; }  // R.3 buddy relay (ESE_CAP_LIVE_RELAY, bit 21)
@@ -259,6 +263,20 @@ public:
 	uint8			GetSecureIdentState() const						{ return (uint8)m_SecureIdentState; }
 	void			SendSecIdentStatePacket();
 	void			ProcessSecIdentStatePacket(const uchar *pachPacket, uint32 nSize);
+	// K6-4: SecureIdent v2 must sign the IPv4 the vanilla peer observes at
+	// the exit, not A's real/public ID. Set only after a signed VEP verifies.
+	void            SetK6SecureIdentVepIPv4(uint32 apparentIP) { m_dwK6SecureIdentIP = apparentIP; m_bK6SecureIdentVep = apparentIP != 0; }
+	void            ClearK6SecureIdentVep() { m_dwK6SecureIdentIP = 0; m_bK6SecureIdentVep = false; }
+	// K6-4: opaque, single-use authority emitted by the exit for this exact
+	// source endpoint and requested file. A client carrying this value must
+	// never fall through to a direct TCP dial.
+	void            SetK6TargetTicket(const std::vector<uint8>& ticket) { m_k6TargetTicket = ticket; }
+	bool            HasK6TargetTicket() const { return !m_k6TargetTicket.empty(); }
+	bool            TakeK6TargetTicket(std::vector<uint8>& ticket) {
+		if (m_k6TargetTicket.empty()) return false;
+		ticket.swap(m_k6TargetTicket);
+		return true;
+	}
 	uint8			GetInfoPacketsReceived() const					{ return m_byInfopacketsReceived; }
 	void			InfoPacketsReceived();
 	bool			HasPassedSecureIdent(bool bPassIfUnavailable) const;
@@ -609,6 +627,9 @@ protected:
 	EChatState			m_eChatstate;
 	EKadState			m_eKadState;
 	ESecureIdentState	m_SecureIdentState;
+	uint32                  m_dwK6SecureIdentIP = 0;
+	bool                    m_bK6SecureIdentVep = false;
+	std::vector<uint8>      m_k6TargetTicket;
 	EUploadState		m_eUploadState;
 	EDownloadState		m_eDownloadState;
 	ESourceFrom			m_eSourceFrom;

@@ -31,6 +31,13 @@ their client on the eMule forum.
 #pragma once
 #include "kademlia/routing/Maps.h"
 #include "kademlia/net/PacketTracking.h"
+#include "kad6/kad6_routing.h"
+#include "kad6/kad6_store.h"
+
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
 
 class CSafeMemFile;
 class CUpDownClient;
@@ -53,6 +60,7 @@ namespace Kademlia
 	{
 		friend class CSearch;
 	public:
+		CKademliaUDPListener();
 		~CKademliaUDPListener();
 		void Bootstrap(LPCTSTR szHost, uint16 uUDPPort);
 		void Bootstrap(uint32 uIP, uint16 uUDPPort, uint8 byKadVersion = 0, const CUInt128 *uCryptTargetID = NULL);
@@ -61,6 +69,17 @@ namespace Kademlia
 		void SendPublishSourcePacket(CContact *pContact, const CUInt128 &uTargetID, const CUInt128 &uContactID, const TagList &tags);
 		void SendNullPacket(byte byOpcode, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &targetUDPKey, const CUInt128 *uCryptTargetID);
 		virtual void ProcessPacket(const byte *pbyData, uint32 uLenData, uint32 uIP, uint16 uUDPPort, bool bValidReceiverKey, const CKadUDPKey &senderUDPKey);
+		void ProcessPacketV6(const byte *pbyData, uint32 uLenData,
+			const byte uAddress[16], uint16 uUDPPort);
+		void ProcessKad6();
+		bool PublishKad6SourceRecord(uint64 uPublishLeaseId,
+			const kad6::K6SourceRecord& record);
+		// Exit-side dual-plane discovery. Native results are returned to the
+		// tunnel job identified by (circuit, request), while Kad2 runs in
+		// parallel through the existing CSearch path.
+		bool StartKad6SourceLookup(const kad6::Hash16& targetHash,
+			uint32 circuitId, uint32 requestId, uint16 maximum);
+		bool BootstrapV6(const byte uAddress[16], uint16 uUDPPort);
 		void SendPacket(const byte *pbyData, uint32 uLenData, uint32 uDestinationHost, uint16 uDestinationPort, const CKadUDPKey &targetUDPKey, const CUInt128 *uCryptTargetID);
 		void SendPacket(const byte *pbyData, uint32 uLenData, byte byOpcode, uint32 uDestinationHost, uint16 uDestinationPort, const CKadUDPKey &targetUDPKey, const CUInt128 *uCryptTargetID);
 		void SendPacket(CSafeMemFile &pbyData, byte byOpcode, uint32 uDestinationHost, uint16 uDestinationPort, const CKadUDPKey &targetUDPKey, const CUInt128 *uCryptTargetID);
@@ -90,6 +109,95 @@ namespace Kademlia
 		// R.2 keepalive: reply a KADEMLIA3_PING_RES (PONG) to a peer that pinged us.
 		void SendKad3PingRes(uint32 uIP, uint16 uUDPPort);
 	private:
+		enum EKad6AfterVerify {
+			K6_AFTER_NONE = 0,
+			K6_AFTER_BOOTSTRAP_RESPONSE,
+			K6_AFTER_FIND_RESPONSE,
+			K6_AFTER_FIND_SOURCE_RESPONSE
+		};
+		struct SKad6Pending {
+			uint32 txid;
+			byte expectedOpcode;
+			byte address[16];
+			uint16 port;
+			kad6::KadId expectedNode;
+			bool hasExpectedNode;
+			DWORD created;
+			EKad6AfterVerify afterVerify;
+			uint32 originalTxid;
+			kad6::KadId target;
+			byte maximum;
+			uint64 publishLeaseId;
+			bool adaptiveLookup;
+			uint32 sourceCircuitId;
+			uint32 sourceRequestId;
+			byte sourceAlpha;
+		};
+		struct SKad6StoredSource {
+			kad6::K6SourceRecord record;
+			std::vector<kad6::Byte> canonicalWire;
+		};
+
+		bool BuildKad6Header(uint32 txid, kad6::K6RouteHeader& out);
+		uint32 NextKad6Transaction();
+		bool SendKad6Payload(byte opcode, const std::vector<kad6::Byte>& payload,
+			const byte address[16], uint16 port);
+		bool SendKad6HelloChallenge(const kad6::K6RouteContact& contact,
+			EKad6AfterVerify afterVerify = K6_AFTER_NONE,
+			uint32 originalTxid = 0, const kad6::KadId* target = NULL,
+			byte maximum = 0);
+		void SendKad6BootstrapResponse(uint32 txid, const byte address[16],
+			uint16 port);
+		void SendKad6FindResponse(uint32 txid, const kad6::KadId& target,
+			byte maximum, const byte address[16], uint16 port);
+		void SendKad6SourceResponse(uint32 txid, const kad6::Hash16& target,
+			byte maximum, const byte address[16], uint16 port);
+		bool DispatchKad6MaintenanceRound();
+		bool DispatchKad6SourceRound(uint64 lookupKey);
+		int FindKad6Pending(uint32 txid, byte expectedOpcode,
+			const byte address[16], uint16 port) const;
+		bool HasKad6PendingFor(const kad6::KadId& nodeId) const;
+		void RememberKad6Pending(const SKad6Pending& pending);
+		static kad6::K6RouteContact Kad6ContactFromHeader(
+			const kad6::K6RouteHeader& header);
+
+		std::vector<SKad6Pending> m_kad6Pending;
+		std::map<std::string, SKad6StoredSource> m_kad6StoredSources;
+		struct SKad6AdaptiveLookup {
+			bool active = false;
+			kad6::KadId target{};
+			byte alpha = 3;
+			uint16 totalSent = 0;
+			uint16 roundAccepted = 0;
+			DWORD started = 0;
+			DWORD roundStarted = 0;
+			DWORD deadline = 0;
+			std::set<std::string> queried;
+		};
+		struct SKad6SourceLookup {
+			kad6::Hash16 target{};
+			uint32 circuitId = 0;
+			uint32 requestId = 0;
+			uint16 maximum = 0;
+			uint16 received = 0;
+			uint16 totalSent = 0;
+			uint16 roundReceived = 0;
+			byte alpha = 3;
+			DWORD started = 0;
+			DWORD roundStarted = 0;
+			DWORD deadline = 0;
+			std::set<std::string> queried;
+		};
+		SKad6AdaptiveLookup m_kad6AdaptiveLookup;
+		std::map<uint64, SKad6SourceLookup> m_kad6SourceLookups;
+		std::uint64_t m_kad6Epoch;
+		kad6::K6RouterRecord m_kad6LocalRecord;
+		bool m_kad6LocalRecordReady;
+		DWORD m_lastKad6Maintenance;
+		DWORD m_lastKad6Import;
+		DWORD m_lastKad6Challenge;
+		DWORD m_lastKad6Lookup;
+
 		bool AddContact_KADEMLIA2(const byte *pbyData, uint32 uLenData, uint32 uIP, uint16 &uUDPPort, uint8 *pnOutVersion, const CKadUDPKey &cUDPKey, bool &rbIPVerified, bool bUpdate, bool bFromHelloReq, bool *pbOutRequestsACK, CUInt128 *puOutContactID);
 		void SendLegacyChallenge(uint32 uIP, uint16 uUDPPort, const CUInt128 &uContactID);
 		static SSearchTerm* CreateSearchExpressionTree(CSafeMemFile &fileIO, int iLevel);
@@ -143,15 +251,9 @@ namespace Kademlia
 		void Process_KADEMLIA3_PING_REQ(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
 		void Process_KADEMLIA3_PING_RES(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey);
 
-		// v0.71 IPv6 Sprint 4 — Kad3 (v6-aware) opcode handlers.
-		// Currently shallow: parse just enough to consume the bytes, log
-		// the contact, and drop the packet. Adding the contact to the v4
-		// routing zone would corrupt its v4 view; a real v6 routing zone
-		// is a larger subsystem that ships in a follow-up sprint. Wire is
-		// reserved, dispatch is non-crashing, upstream 0.70b doesn't know
-		// these opcodes so packets never reach unsuspecting upstream nodes
-		// (we never send 0x12..0x65 in this band unless we know the peer
-		// advertises CAP_FORK_IPV6_WIRE).
+		// IPv4-carried Kad3 routing opcodes are deliberately inert. Native
+		// K6-2 routing enters through ProcessPacketV6 and a separate IPv6
+		// table, so these paths can never contaminate Kad2 routing state.
 		static void Process_KADEMLIA3_GENERIC(const char *szOpcodeName,
 			const byte *pbyPacketData, uint32 uLenPacket,
 			uint32 uIP, uint16 uUDPPort);

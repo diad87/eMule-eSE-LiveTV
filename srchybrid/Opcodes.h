@@ -533,6 +533,7 @@
 #define TAG_SHARD_DEGREE             "\x6A"   // M3 (uint8 [0..6])
 #define TAG_PINNED_BY_SUBSCRIBER     "\x6B"   // M1 (uint8 flag 0/1)
 #define TAG_ESE_CAPS                 "\x6C"   // global capabilities bitmap (uint32)
+#define TAG_ESE_NODE_PUB             0x6D     // HELLO TAGTYPE_BLOB: Ed25519 node identity public key (32 B)
 #define TAG_ESE_KADIP_V6             "\x6E"   // [eSE v9] root link: contact's public IPv6 (BSOB 16, network order), additive Kad-HELLO tag
 
 // v0.71 P0.3 — bit constants for the TAG_ESE_CAPS bitmap. Used at runtime
@@ -557,9 +558,13 @@
 #define ESE_CAP_HOLEPUNCH_RDV        0x00008000  // bit 15 -- opt-in 3-way Kad rendezvous. Advertised/handled only when both direct punching and EseKad3Rendezvous are enabled.
 #define ESE_CAP_KAD_KEEPALIVE        0x00010000  // bit 16 -- versioned Kad keepalive support; advertise only while its service is live
 #define ESE_CAP_REACH_V2             0x00020000  // bit 17 -- strict TAG_ESE_REACH v2 codec + route projection
-#define ESE_CAP_TUNNEL_AUTH          0x00040000  // bit 18 -- authenticated tunnel handshake (CREATE/CREATED v2, Ed25519). Advertised from Phase 2; Phase 1 only ships TAG_ESE_NODE_PUB.
+#define ESE_CAP_TUNNEL_AUTH          0x00040000  // bit 18 -- authenticated tunnel handshake (CREATE/CREATED v2, Ed25519). Advertised only while the persistent node identity is available.
 #define ESE_CAP_LIVE_RELAY           0x00200000  // bit 21 -- R.3 buddy relay egress (broadcaster connect-out + 0xCF SETUP/CHUNK + 0xCE downstream). Advertised iff GetEseRelayAccept() (default OFF) — a node that does not accept relay duty keeps its caps byte-identical to before. bit 20 (0x00100000) is reserved for ESE_CAP_LIVE_BLAKE3 (see CAPABILITIES.csv) — do NOT reuse.
 #define ESE_CAP_HOLEPUNCH_COOKIE     0x00080000  // bit 19 -- return-routability cookie for eSE hole-punch (anti-reflection). LOAD-BEARING in the two-tier gate of Process_ESE_HOLEPUNCH_REQ: TIER1 (IP-verified known contact) -> legacy ACK+seed (bit informational here); TIER2 (unknown / known-but-unverified "gray zone") -> stateless 0x65 CHALLENGE ONLY if the sender advertises this bit, else legacy ACK+seed floored by the per-IP token bucket (back-compat: a legacy peer that cannot answer a CHALLENGE keeps its hole-punch). Initiator echoes the cookie in a 38B REQ. See HolePunchCookieCore.h / HolePunchCookie.h.
+#define ESE_CAP_KAD6                 0x01000000  // bit 24 -- Kad6 anonymity/compat gateway service (coarse discovery only; fine-grained K6_CAP_* live in the signed handshake u64, NOT this bitmap). K6-1 advertises it only with a persistent node identity and a non-Direct privacy mode; canonical requests require the signed exit snapshot. See docs/KAD6_SEARCH_WIRE_MAPPING.md.
+#define ESE_CAP_TUNNEL_STRICT3       0x02000000  // bit 25 -- authenticated CREATE/EXTEND v3 + iterative 3-hop forwarding. STRICT selects only paths where every signed hop advertises it.
+#define ESE_CAP_TUNNEL_SHAPED        0x04000000  // bit 26 -- K6-6 class-5 fixed 17 KB bulk records + independent per-link shaping. STRICT requires this signed bit at every hop.
+#define ESE_CAP_KAD6_ECONOMY         0x08000000  // bit 27 -- K6-8 RFC 9474 anonymous quota protocol and measured admission support; not a claim that public-release gates passed.
 
 // Runtime accumulator for TAG_ESE_CAPS. Defined in FirewallProberV6.cpp
 // (same file as g_uForkCapsRuntime — both are runtime cap accumulators
@@ -744,12 +749,16 @@ extern uint32 g_uEseCapsRuntime;
 // Payload format mirrors Kad2 but PEER blocks carry CAddress (1+1+N bytes)
 // instead of fixed uint32. Kad2 opcodes are kept intact — v4 peers continue
 // to speak Kad2 byte-identical to upstream; only v6-aware peers see Kad3.
-#define KADEMLIA3_BOOTSTRAP_REQ			0x02	//
-#define KADEMLIA3_BOOTSTRAP_RES			0x0A	//
-#define KADEMLIA3_HELLO_REQ				0x12	// <NodeID><CAddress><Port><…>
-#define KADEMLIA3_HELLO_RES				0x1A	//
-#define KADEMLIA3_REQ					0x23	// <TYPE><HASH target><HASH receiver-CAddress>
-#define KADEMLIA3_RES					0x2A	// <HASH target><CNT><PEER3>*(CNT)  PEER3 = NodeID + CAddress
+#define KADEMLIA3_BOOTSTRAP_REQ			0x02	// K6RouteHeaderV1 (native IPv6 only)
+#define KADEMLIA3_BOOTSTRAP_RES			0x0A	// header + count:u8 + K6RouteContactV1[count]
+#define KADEMLIA3_HELLO_REQ				0x12	// K6RouteHeaderV1 return-routability challenge
+#define KADEMLIA3_HELLO_RES				0x1A	// K6RouteHeaderV1 transaction-bound response
+#define KADEMLIA3_REQ					0x23	// header + target:16 + max:u8 + reserved:3
+#define KADEMLIA3_RES					0x2A	// header + target:16 + count:u8 + contacts[count]
+#define KADEMLIA3_STORE_SOURCE_REQ		0x46	// K6StoreSourceRequest, native IPv6 only
+#define KADEMLIA3_STORE_SOURCE_RES		0x47	// K6StoreSourceResponse, tx-bound
+#define KADEMLIA3_FIND_SOURCE_REQ		0x48	// signed native source query, IPv6 only
+#define KADEMLIA3_FIND_SOURCE_RES		0x49	// bounded signed K6SourceRecord list
 
 // v0.71 IPv6 Sprint 5 — Kad keepalive + hole-punch opcodes.
 // PING/RES: minimal "tickle" packet, 25 s tick, holds NAT conntrack open.

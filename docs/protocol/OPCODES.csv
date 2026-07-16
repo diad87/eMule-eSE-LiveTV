@@ -34,12 +34,16 @@ OP_LIVE_CHUNK_FRAG,0xE0,EMULEPROT-CC,v8.1.x,stable,ESE_CAP_LIVE_CHUNK_FRAG,"<Str
 OP_LIVE_CHUNK_V3,0xB4,EMULEPROT-CC,DESIGN,reserved-proposed,ESE_CAP_LIVE_BLAKE3,"<StreamKey 16><SeqNum 4><Ts 4><DataSize 4><Bitrate 2><blake3 32><Sig 64><Data> -- BLAKE3-256 variant of OP_LIVE_CHUNK_V2 (0xCC); Sig over StreamKey+SeqNum+blake3. In freed 0xB3-0xB9 band (Live 0xC0-0xCF exhausted; 0xC5=OP_EMULEPROT header). NOT in code yet.",additive,docs/protocol/PROTOCOL_REGISTRY.md,0
 OP_CALLBACK_V6,0xE1,EMULEPROT-CC,v0.71,reserved,CAP_FORK_IPV6_WIRE,"v6 callback variant",additive,srchybrid/Opcodes.h,284
 OP_FOUNDSOURCES_V6,0xE2,EMULEPROT-CC,v0.71,reserved,CAP_FORK_IPV6_WIRE,"v6 foundsources variant",additive,srchybrid/Opcodes.h,285
-KADEMLIA3_BOOTSTRAP_REQ,0x02,KADEMLIA-UDP,v0.71,reserved,CAP_FORK_IPV6_KAD,"Kad3 bootstrap req (CAddress peers)",additive,srchybrid/Opcodes.h,725
-KADEMLIA3_BOOTSTRAP_RES,0x0A,KADEMLIA-UDP,v0.71,reserved,CAP_FORK_IPV6_KAD,"Kad3 bootstrap res",additive,srchybrid/Opcodes.h,726
-KADEMLIA3_HELLO_REQ,0x12,KADEMLIA-UDP,v0.71,reserved,CAP_FORK_IPV6_KAD,"<NodeID><CAddress><Port>",additive,srchybrid/Opcodes.h,727
-KADEMLIA3_HELLO_RES,0x1A,KADEMLIA-UDP,v0.71,reserved,CAP_FORK_IPV6_KAD,"Kad3 hello res",additive,srchybrid/Opcodes.h,728
-KADEMLIA3_REQ,0x23,KADEMLIA-UDP,v0.71,reserved,CAP_FORK_IPV6_KAD,"<TYPE><HASH target><HASH receiver-CAddress>",additive,srchybrid/Opcodes.h,729
-KADEMLIA3_RES,0x2A,KADEMLIA-UDP,v0.71,reserved,CAP_FORK_IPV6_KAD,"<HASH target><CNT><PEER3>xCNT",additive,srchybrid/Opcodes.h,730
+KADEMLIA3_BOOTSTRAP_REQ,0x02,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"K6RouteHeaderV1:74 native-v6",additive,srchybrid/Opcodes.h,748
+KADEMLIA3_BOOTSTRAP_RES,0x0A,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"header:74 count:u8 contacts:66xN N<=16",additive,srchybrid/Opcodes.h,749
+KADEMLIA3_HELLO_REQ,0x12,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"K6RouteHeaderV1:74 RR challenge",additive,srchybrid/Opcodes.h,750
+KADEMLIA3_HELLO_RES,0x1A,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"K6RouteHeaderV1:74 transaction-bound",additive,srchybrid/Opcodes.h,751
+KADEMLIA3_REQ,0x23,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"header:74 target:16 max:u8 reserved:3",additive,srchybrid/Opcodes.h,752
+KADEMLIA3_RES,0x2A,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"header:74 target:16 count:u8 contacts:66xN N<=16",additive,srchybrid/Opcodes.h,753
+KADEMLIA3_STORE_SOURCE_REQ,0x46,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"K6RouteHeaderV2 target_hash:16 record_len:u16 signed_K6SourceRecord",additive,srchybrid/Opcodes.h,755
+KADEMLIA3_STORE_SOURCE_RES,0x47,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"K6RouteHeaderV2 target_hash:16 status:u8 load:u8 reserved:u16 accepted_epoch:u64",additive,srchybrid/Opcodes.h,756
+KADEMLIA3_FIND_SOURCE_REQ,0x48,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"K6RouteHeaderV2 target_hash:16 max:u8 reserved:3",additive,srchybrid/Opcodes.h,760
+KADEMLIA3_FIND_SOURCE_RES,0x49,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"K6RouteHeaderV2 target_hash:16 count:u8 reserved:3 repeated(record_len:u16 signed_K6SourceRecord)",additive,srchybrid/Opcodes.h,761
 KADEMLIA_ESE_HOLEPUNCH_REQ,0x63,KADEMLIA-UDP,v7.x,stable,none,"<SenderKadID 16><SenderUDPPort 2><Nonce 4>",additive,srchybrid/Opcodes.h,790
 KADEMLIA_ESE_HOLEPUNCH_ACK,0x64,KADEMLIA-UDP,v7.x,stable,none,"<ResponderKadID 16><ResponderUDPPort 2><Nonce 4>",additive,srchybrid/Opcodes.h,791
 KADEMLIA3_PING_REQ,0x66,KADEMLIA-UDP,v0.71,reserved,ESE_CAP_KAD_KEEPALIVE,"keepalive tickle",additive,srchybrid/Opcodes.h,740

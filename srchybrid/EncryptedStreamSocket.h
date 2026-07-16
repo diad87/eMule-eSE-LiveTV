@@ -99,14 +99,14 @@ public:
 	// IP 0.0.0.0 (root cause of the May-2026 dual-stack revert, 5de5126).
 	// Returns the address in network byte order (as sin_addr.s_addr);
 	// 0 if unconnected or for a native-v6 peer (logged, upper layer is v4-only).
-	uint32	GetPeerAddressV4();
+	virtual uint32	GetPeerAddressV4();
 
 	// v0.71 IPv6 Sprint 6 — family-agnostic peer address as a CAddress (v4 or
 	// native v6). Used by the in-band public-v6 detection: the OP_PUBLICIP_REQ
 	// handler reads the requester's observed v6 source address from here to fill
 	// OP_PUBLICIP_ANSWER_V6. FromSA normalises v4-mapped v6 back to IPv4, so a
 	// CAddress::IPv6 result here is a genuine native-v6 peer. None if unconnected.
-	class CAddress	GetPeerCAddress();
+	virtual class CAddress	GetPeerCAddress();
 
 	uint8	m_dbgbyEncryptionSupported;
 	uint8	m_dbgbyEncryptionRequested;

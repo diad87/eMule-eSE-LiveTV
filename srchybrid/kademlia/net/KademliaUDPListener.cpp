@@ -63,6 +63,10 @@ their client on the eMule forum.
 #include "kademlia/kademlia/UDPFirewallTester.h"
 #include "kademlia/routing/RoutingZone.h"
 #include "kademlia/routing/Contact.h"
+#include "kademlia/routing/Kad6RoutingTable.h"
+#include "Kad6CryptoHost.h"
+#include "LiveTunnel.h"
+#include "NodeIdentity.h"
 #include "FirewallProberV6.h"   // [eSE v9] root link: GetDetectedV6IP() for the HELLO v6 tag
 #include "eMuleAI/Address.h"     // [eSE v9] CAddress::Data()/GetType()/IsPublicIP()
 #include "kademlia/utils/KadUDPKey.h"
@@ -157,8 +161,18 @@ static void EseRememberHolePunchNonce(uint32 uIP, uint16 uUDPPort, uint32 uNonce
 		entry.uExpectedClientIP = pExpectedClient->GetConnectIP() != 0
 			? pExpectedClient->GetConnectIP() : pExpectedClient->GetIP();
 		entry.uExpectedClientTCPPort = pExpectedClient->GetUserPort();
-		if (pExpectedClient->HasValidHash()) {
-			md4cpy(entry.abyExpectedKadID, pExpectedClient->GetUserHash());
+	}
+	// The ACK carries the responder's Kad node ID, never its eD2K user hash.
+	// Bind that identity only when the routing table can supply it for the
+	// target endpoint.  A CUpDownClient has no Kad-ID field: copying its user
+	// hash here made every legitimate ACK fail because the two 128-bit
+	// identities are independently generated.
+	if (CKademlia::GetRoutingZone() != NULL) {
+		const uint16 uIdentityPort = pExpectedClient != NULL && pExpectedClient->GetKadPort() != 0
+			? pExpectedClient->GetKadPort() : uUDPPort;
+		CContact* pIdentityContact = CKademlia::GetRoutingZone()->GetContact(uIP, uIdentityPort, false);
+		if (pIdentityContact != NULL) {
+			pIdentityContact->GetClientID().ToByteArray(entry.abyExpectedKadID);
 			entry.bHasExpectedKadID = true;
 		}
 	}
@@ -296,6 +310,582 @@ static bool Kad3ConsumeRdvProceed(uint32 uRdvIP, uint16 uRdvPort, uint32 uNonce,
 	return false;
 }
 
+static CString Kad6RouterEpochPath()
+{
+	return thePrefs.GetMuleDirectory(EMULE_CONFIGDIR) + _T("kad6_router_epoch.dat");
+}
+
+static bool LoadKad6RouterEpoch(std::uint64_t& epoch)
+{
+	epoch = 0;
+	try {
+		CFile file;
+		if (!file.Open(Kad6RouterEpochPath(), CFile::modeRead | CFile::shareDenyWrite))
+			return false;
+		if (file.GetLength() != 16) {
+			file.Close();
+			return false;
+		}
+		byte bytes[16] = {};
+		const bool ok = file.Read(bytes, sizeof bytes) == sizeof bytes;
+		file.Close();
+		if (!ok || bytes[0] != 'K' || bytes[1] != '6' || bytes[2] != 'E'
+			|| bytes[3] != 'P' || bytes[4] != 1 || bytes[5] != 0
+			|| bytes[6] != 0 || bytes[7] != 0)
+			return false;
+		for (std::size_t i = 0; i < 8; ++i)
+			epoch |= static_cast<std::uint64_t>(bytes[8 + i]) << (8 * i);
+		return epoch != 0;
+	}
+	catch (CFileException* error) {
+		error->Delete();
+		return false;
+	}
+}
+
+static bool SaveKad6RouterEpoch(std::uint64_t epoch)
+{
+	if (epoch == 0)
+		return false;
+	byte bytes[16] = {'K', '6', 'E', 'P', 1, 0, 0, 0};
+	for (std::size_t i = 0; i < 8; ++i)
+		bytes[8 + i] = static_cast<byte>(epoch >> (8 * i));
+	const CString path = Kad6RouterEpochPath();
+	const CString temporary = path + _T(".new");
+	try {
+		CFile file(temporary, CFile::modeCreate | CFile::modeWrite
+			| CFile::shareExclusive);
+		file.Write(bytes, sizeof bytes);
+		file.Flush();
+		file.Close();
+		if (!MoveFileEx(temporary, path,
+			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+			DeleteFile(temporary);
+			return false;
+		}
+		return true;
+	}
+	catch (CFileException* error) {
+		error->Delete();
+		DeleteFile(temporary);
+		return false;
+	}
+}
+
+CKademliaUDPListener::CKademliaUDPListener()
+	: m_kad6Epoch(static_cast<std::uint64_t>(time(NULL)))
+	, m_kad6LocalRecordReady(false)
+	, m_lastKad6Maintenance(0)
+	, m_lastKad6Import(0)
+	, m_lastKad6Challenge(0)
+	, m_lastKad6Lookup(0)
+{
+	if (m_kad6Epoch == 0)
+		m_kad6Epoch = 1;
+	std::uint64_t persistedEpoch = 0;
+	if (LoadKad6RouterEpoch(persistedEpoch))
+		m_kad6Epoch = (std::max)(m_kad6Epoch, persistedEpoch);
+}
+
+namespace
+{
+	const std::size_t KAD6_ROUTING_K = 10;
+	const std::size_t KAD6_LOOKUP_ALPHA = 3;
+	const std::size_t KAD6_RESPONSE_PROBATION_LIMIT = KAD6_ROUTING_K / 2;
+
+	kad6::Kad6Address Kad6AddressFromRaw(const byte address[16])
+	{
+		kad6::Kad6Address result;
+		result.family = kad6::Kad6Address::Family::IPv6;
+		std::memcpy(result.addr.data(), address, result.addr.size());
+		return result;
+	}
+
+	bool Kad6IsLocalId(const kad6::KadId& nodeId)
+	{
+		CPrefs* prefs = CKademlia::GetPrefs();
+		if (prefs == NULL)
+			return true;
+		kad6::KadId localId;
+		prefs->GetKadID().ToByteArray(localId.data());
+		return localId == nodeId;
+	}
+
+	bool Kad6HeaderMatchesSource(const kad6::K6RouteHeader& header,
+		const kad6::Kad6Address& source, uint16 port)
+	{
+		if (header.sender_endpoint.addr != source
+			|| header.sender_endpoint.udp_port != port)
+			return false;
+		return !Kad6IsLocalId(header.sender_id);
+	}
+
+	bool SameKad6Endpoint(const kad6::K6Endpoint& a,
+		const kad6::K6Endpoint& b)
+	{
+		return a.addr == b.addr && a.udp_port == b.udp_port
+			&& a.tcp_port == b.tcp_port
+			&& a.transport_flags == b.transport_flags
+			&& a.priority == b.priority && a.observed == b.observed
+			&& a.valid_until == b.valid_until;
+	}
+
+	std::string Kad6StoredSourceKey(const kad6::K6SourceRecord& record)
+	{
+		std::string key(reinterpret_cast<const char*>(record.object_hash.data()),
+			record.object_hash.size());
+		key.append(reinterpret_cast<const char*>(record.source_pseudonym.data()),
+			record.source_pseudonym.size());
+		return key;
+	}
+
+	std::string Kad6NodeKey(const kad6::KadId& nodeId)
+	{
+		return std::string(reinterpret_cast<const char*>(nodeId.data()),
+			nodeId.size());
+	}
+}
+
+bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
+	kad6::K6RouteHeader& out)
+{
+	out = kad6::K6RouteHeader{};
+	if (txid == 0 || !thePrefs.IsIPv6Enabled() || theApp.clientudp == NULL
+		|| !theApp.clientudp->IsDualStack() || CKademlia::GetPrefs() == NULL
+		|| !eSELive::NodeIdentityIsPersistent()
+		|| eSELive::NodeIdentityPub() == NULL)
+		return false;
+	const CAddress publicV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+	if (publicV6.GetType() != CAddress::IPv6 || !publicV6.IsPublicIP())
+		return false;
+	const uint16 kadPort = CPrefs::GetInternKadPort();
+	if (kadPort == 0)
+		return false;
+
+	const std::uint64_t now = static_cast<std::uint64_t>(time(NULL));
+	if (now == 0)
+		return false;
+	kad6::K6Endpoint endpoint;
+	endpoint.addr.family = kad6::Kad6Address::Family::IPv6;
+	std::memcpy(endpoint.addr.addr.data(), publicV6.Data(), 16);
+	endpoint.udp_port = kadPort;
+	endpoint.tcp_port = thePrefs.GetPort();
+	endpoint.transport_flags = kad6::kK6EpUdpKad6;
+	endpoint.observed = 0;
+
+	const bool endpointChanged = !m_kad6LocalRecordReady
+		|| m_kad6LocalRecord.endpoints.empty()
+		|| m_kad6LocalRecord.endpoints[0].addr != endpoint.addr
+		|| m_kad6LocalRecord.endpoints[0].udp_port != endpoint.udp_port
+		|| m_kad6LocalRecord.endpoints[0].tcp_port != endpoint.tcp_port
+		|| m_kad6LocalRecord.endpoints[0].transport_flags
+			!= endpoint.transport_flags;
+	const bool expiring = !m_kad6LocalRecordReady
+		|| m_kad6LocalRecord.valid_until <= now + 10 * 60;
+	if (endpointChanged || expiring) {
+		const std::uint64_t nextEpoch =
+			std::max<std::uint64_t>(m_kad6Epoch + 1, now);
+		if (nextEpoch <= m_kad6Epoch || !SaveKad6RouterEpoch(nextEpoch))
+			return false;
+		m_kad6Epoch = nextEpoch;
+		m_kad6LocalRecord = kad6::K6RouterRecord{};
+		CUInt128 localId = CKademlia::GetPrefs()->GetKadID();
+		localId.ToByteArray(m_kad6LocalRecord.kad_id.data());
+		std::memcpy(m_kad6LocalRecord.node_pub.data(),
+			eSELive::NodeIdentityPub(), m_kad6LocalRecord.node_pub.size());
+		m_kad6LocalRecord.epoch = m_kad6Epoch;
+		m_kad6LocalRecord.caps = CAP_FORK_IPV6_WIRE | CAP_FORK_IPV6_KAD;
+		m_kad6LocalRecord.valid_from = now > 60 ? now - 60 : 1;
+		m_kad6LocalRecord.valid_until = now + 2 * 60 * 60;
+		endpoint.valid_until = m_kad6LocalRecord.valid_until;
+		m_kad6LocalRecord.endpoints.push_back(endpoint);
+		std::vector<kad6::Byte> signedWire;
+		if (kad6::SignK6RouterRecord(MakeKad6HostCryptoHooks(), NULL, 0,
+			m_kad6LocalRecord, signedWire) != kad6::Kad6Status::Ok) {
+			m_kad6LocalRecord = kad6::K6RouterRecord{};
+			m_kad6LocalRecordReady = false;
+			return false;
+		}
+		m_kad6LocalRecordReady = true;
+	} else {
+		endpoint = m_kad6LocalRecord.endpoints[0];
+	}
+
+	out.txid = txid;
+	CUInt128 localId = CKademlia::GetPrefs()->GetKadID();
+	localId.ToByteArray(out.sender_id.data());
+	out.sender_caps = CAP_FORK_IPV6_WIRE | CAP_FORK_IPV6_KAD;
+	out.sender_epoch = m_kad6LocalRecord.epoch;
+	out.sender_endpoint = endpoint;
+	out.sender_record = m_kad6LocalRecord;
+	return SameKad6Endpoint(out.sender_endpoint,
+		out.sender_record.endpoints[0]);
+}
+
+uint32 CKademliaUDPListener::NextKad6Transaction()
+{
+	for (unsigned attempt = 0; attempt < 16; ++attempt) {
+		uint32 txid = 0;
+		EseHolePunchRandomBlock(reinterpret_cast<byte*>(&txid), sizeof txid);
+		if (txid == 0)
+			continue;
+		bool collision = false;
+		for (const SKad6Pending& pending : m_kad6Pending)
+			if (pending.txid == txid) {
+				collision = true;
+				break;
+			}
+		if (!collision)
+			return txid;
+	}
+	return 0;
+}
+
+bool CKademliaUDPListener::SendKad6Payload(byte opcode,
+	const std::vector<kad6::Byte>& payload, const byte address[16], uint16 port)
+{
+	if (theApp.clientudp == NULL || address == NULL || port == 0
+		|| payload.size() > kad6::kK6StoreMaxPayloadSize)
+		return false;
+	Packet* packet = new Packet(OP_KADEMLIAHEADER);
+	packet->opcode = opcode;
+	packet->size = static_cast<uint32>(payload.size());
+	packet->pBuffer = new char[payload.size()];
+	if (!payload.empty())
+		std::memcpy(packet->pBuffer, payload.data(), payload.size());
+	theStats.AddUpDataOverheadKad(packet->size);
+	return theApp.clientudp->SendPacketV6(packet, address, port);
+}
+
+void CKademliaUDPListener::RememberKad6Pending(const SKad6Pending& pending)
+{
+	if (m_kad6Pending.size() >= 256)
+		m_kad6Pending.erase(m_kad6Pending.begin());
+	m_kad6Pending.push_back(pending);
+}
+
+int CKademliaUDPListener::FindKad6Pending(uint32 txid, byte expectedOpcode,
+	const byte address[16], uint16 port) const
+{
+	for (std::size_t i = 0; i < m_kad6Pending.size(); ++i) {
+		const SKad6Pending& pending = m_kad6Pending[i];
+		if (pending.txid == txid && pending.expectedOpcode == expectedOpcode
+			&& pending.port == port
+			&& std::memcmp(pending.address, address, 16) == 0)
+			return static_cast<int>(i);
+	}
+	return -1;
+}
+
+bool CKademliaUDPListener::HasKad6PendingFor(const kad6::KadId& nodeId) const
+{
+	for (const SKad6Pending& pending : m_kad6Pending)
+		if (pending.hasExpectedNode && pending.expectedNode == nodeId)
+			return true;
+	return false;
+}
+
+kad6::K6RouteContact CKademliaUDPListener::Kad6ContactFromHeader(
+	const kad6::K6RouteHeader& header)
+{
+	kad6::K6RouteContact contact;
+	contact.node_id = header.sender_id;
+	contact.endpoint = header.sender_endpoint;
+	contact.caps = header.sender_caps;
+	contact.epoch = header.sender_epoch;
+	return contact;
+}
+
+bool CKademliaUDPListener::SendKad6HelloChallenge(
+	const kad6::K6RouteContact& contact, EKad6AfterVerify afterVerify,
+	uint32 originalTxid, const kad6::KadId* target, byte maximum)
+{
+	if (HasKad6PendingFor(contact.node_id))
+		return false;
+	const uint32 txid = NextKad6Transaction();
+	kad6::K6HelloRequest request;
+	if (!BuildKad6Header(txid, request.header))
+		return false;
+	std::vector<kad6::Byte> wire;
+	if (kad6::EncodeK6HelloRequest(request, wire) != kad6::Kad6Status::Ok
+		|| !SendKad6Payload(KADEMLIA3_HELLO_REQ, wire,
+			contact.endpoint.addr.addr.data(), contact.endpoint.udp_port))
+		return false;
+
+	SKad6Pending pending = {};
+	pending.txid = txid;
+	pending.expectedOpcode = KADEMLIA3_HELLO_RES;
+	std::memcpy(pending.address, contact.endpoint.addr.addr.data(), 16);
+	pending.port = contact.endpoint.udp_port;
+	pending.expectedNode = contact.node_id;
+	pending.hasExpectedNode = true;
+	pending.created = GetTickCount();
+	pending.afterVerify = afterVerify;
+	pending.originalTxid = originalTxid;
+	if (target != NULL)
+		pending.target = *target;
+	pending.maximum = maximum;
+	RememberKad6Pending(pending);
+	return true;
+}
+
+void CKademliaUDPListener::SendKad6BootstrapResponse(uint32 txid,
+	const byte address[16], uint16 port)
+{
+	kad6::K6BootstrapResponse response;
+	if (!BuildKad6Header(txid, response.header))
+		return;
+	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
+	if (table == NULL)
+		return;
+	response.contacts = table->Closest(response.header.sender_id,
+		KAD6_ROUTING_K, true);
+	std::vector<kad6::Byte> wire;
+	if (kad6::EncodeK6BootstrapResponse(response, wire) == kad6::Kad6Status::Ok)
+		SendKad6Payload(KADEMLIA3_BOOTSTRAP_RES, wire, address, port);
+}
+
+void CKademliaUDPListener::SendKad6FindResponse(uint32 txid,
+	const kad6::KadId& target, byte maximum, const byte address[16], uint16 port)
+{
+	kad6::K6FindNodeResponse response;
+	if (!BuildKad6Header(txid, response.header))
+		return;
+	response.target_id = target;
+	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
+	if (table == NULL)
+		return;
+	response.contacts = table->Closest(target,
+		maximum < KAD6_ROUTING_K ? maximum : KAD6_ROUTING_K, true);
+	std::vector<kad6::Byte> wire;
+	if (kad6::EncodeK6FindNodeResponse(response, wire) == kad6::Kad6Status::Ok)
+		SendKad6Payload(KADEMLIA3_RES, wire, address, port);
+}
+
+void CKademliaUDPListener::SendKad6SourceResponse(uint32 txid,
+	const kad6::Hash16& target, byte maximum, const byte address[16], uint16 port)
+{
+	kad6::K6FindSourceResponse response;
+	if (!BuildKad6Header(txid, response.header)) return;
+	response.target_hash = target;
+	const std::uint64_t now = static_cast<std::uint64_t>(time(NULL));
+	std::vector<const SKad6StoredSource*> matches;
+	for (const auto& item : m_kad6StoredSources)
+		if (item.second.record.object_hash == target &&
+			item.second.record.expires_at > now)
+			matches.push_back(&item.second);
+	std::sort(matches.begin(), matches.end(),
+		[](const SKad6StoredSource* a, const SKad6StoredSource* b) {
+			if (a->record.source_epoch != b->record.source_epoch)
+				return a->record.source_epoch > b->record.source_epoch;
+			return a->record.expires_at > b->record.expires_at;
+		});
+	const size_t limit = (std::min<size_t>)(matches.size(),
+		(std::min<size_t>)(maximum, kad6::kK6FindSourceMaxRecords));
+	std::vector<kad6::Byte> wire;
+	for (size_t i = 0; i < limit; ++i) {
+		response.records.push_back(matches[i]->record);
+		if (kad6::EncodeK6FindSourceResponse(response, wire) ==
+				kad6::Kad6Status::TooLarge) {
+			response.records.pop_back();
+			break;
+		}
+	}
+	if (kad6::EncodeK6FindSourceResponse(response, wire) == kad6::Kad6Status::Ok)
+		SendKad6Payload(KADEMLIA3_FIND_SOURCE_RES, wire, address, port);
+}
+
+bool CKademliaUDPListener::DispatchKad6MaintenanceRound()
+{
+	if (!m_kad6AdaptiveLookup.active || m_kad6AdaptiveLookup.totalSent >= 24)
+		return false;
+	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
+	if (!table) return false;
+	const std::vector<kad6::K6RouteContact> contacts = table->Closest(
+		m_kad6AdaptiveLookup.target, 64, true);
+	byte sent = 0;
+	for (const kad6::K6RouteContact& destination : contacts) {
+		if (sent >= m_kad6AdaptiveLookup.alpha ||
+			m_kad6AdaptiveLookup.totalSent >= 24) break;
+		const std::string key = Kad6NodeKey(destination.node_id);
+		if (m_kad6AdaptiveLookup.queried.find(key) !=
+				m_kad6AdaptiveLookup.queried.end()) continue;
+		const uint32 txid = NextKad6Transaction();
+		kad6::K6FindNodeRequest request;
+		request.target_id = m_kad6AdaptiveLookup.target;
+		request.max_results = static_cast<byte>(KAD6_ROUTING_K);
+		std::vector<kad6::Byte> wire;
+		if (!BuildKad6Header(txid, request.header) ||
+			kad6::EncodeK6FindNodeRequest(request, wire) != kad6::Kad6Status::Ok ||
+			!SendKad6Payload(KADEMLIA3_REQ, wire,
+				destination.endpoint.addr.addr.data(), destination.endpoint.udp_port))
+			continue;
+		SKad6Pending pending = {};
+		pending.txid = txid;
+		pending.expectedOpcode = KADEMLIA3_RES;
+		std::memcpy(pending.address, destination.endpoint.addr.addr.data(), 16);
+		pending.port = destination.endpoint.udp_port;
+		pending.expectedNode = destination.node_id;
+		pending.hasExpectedNode = true;
+		pending.created = GetTickCount();
+		pending.target = request.target_id;
+		pending.maximum = request.max_results;
+		pending.adaptiveLookup = true;
+		RememberKad6Pending(pending);
+		m_kad6AdaptiveLookup.queried.insert(key);
+		++m_kad6AdaptiveLookup.totalSent;
+		++sent;
+	}
+	m_kad6AdaptiveLookup.roundStarted = GetTickCount();
+	return sent != 0;
+}
+
+bool CKademliaUDPListener::DispatchKad6SourceRound(uint64 lookupKey)
+{
+	auto found = m_kad6SourceLookups.find(lookupKey);
+	if (found == m_kad6SourceLookups.end() || found->second.totalSent >= 24)
+		return false;
+	SKad6SourceLookup& lookup = found->second;
+	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
+	if (!table) return false;
+	const std::vector<kad6::K6RouteContact> contacts = table->Closest(
+		lookup.target, 64, true);
+	byte sent = 0;
+	for (const kad6::K6RouteContact& destination : contacts) {
+		if (sent >= lookup.alpha || lookup.totalSent >= 24) break;
+		const std::string nodeKey = Kad6NodeKey(destination.node_id);
+		if (lookup.queried.find(nodeKey) != lookup.queried.end()) continue;
+		const uint32 txid = NextKad6Transaction();
+		kad6::K6FindSourceRequest request;
+		request.target_hash = lookup.target;
+		request.max_records = static_cast<byte>((std::min<uint16>)(
+			kad6::kK6FindSourceMaxRecords,
+			(std::max<uint16>)(1, lookup.maximum - lookup.received)));
+		std::vector<kad6::Byte> wire;
+		if (!BuildKad6Header(txid, request.header) ||
+			kad6::EncodeK6FindSourceRequest(request, wire) != kad6::Kad6Status::Ok ||
+			!SendKad6Payload(KADEMLIA3_FIND_SOURCE_REQ, wire,
+				destination.endpoint.addr.addr.data(), destination.endpoint.udp_port)) {
+			eSELive::CLiveTunnel::Get().OnKad6SourceLookupRpc(lookup.alpha, 2);
+			continue;
+		}
+		SKad6Pending pending = {};
+		pending.txid = txid;
+		pending.expectedOpcode = KADEMLIA3_FIND_SOURCE_RES;
+		std::memcpy(pending.address, destination.endpoint.addr.addr.data(), 16);
+		pending.port = destination.endpoint.udp_port;
+		pending.expectedNode = destination.node_id;
+		pending.hasExpectedNode = true;
+		pending.created = GetTickCount();
+		pending.target = lookup.target;
+		pending.maximum = request.max_records;
+		pending.sourceCircuitId = lookup.circuitId;
+		pending.sourceRequestId = lookup.requestId;
+		pending.sourceAlpha = lookup.alpha;
+		RememberKad6Pending(pending);
+		lookup.queried.insert(nodeKey);
+		++lookup.totalSent;
+		++sent;
+	}
+	lookup.roundStarted = GetTickCount();
+	return sent != 0;
+}
+
+bool CKademliaUDPListener::StartKad6SourceLookup(
+	const kad6::Hash16& targetHash, uint32 circuitId, uint32 requestId,
+	uint16 maximum)
+{
+	if (circuitId == 0 || requestId == 0 || maximum == 0 ||
+		m_kad6SourceLookups.size() >= 64) return false;
+	kad6::Byte any = 0;
+	for (kad6::Byte value : targetHash) any = static_cast<kad6::Byte>(any | value);
+	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
+	if (any == 0 || !table || table->VerifiedSize() == 0) return false;
+	const uint64 key = (static_cast<uint64>(circuitId) << 32) | requestId;
+	if (m_kad6SourceLookups.find(key) != m_kad6SourceLookups.end()) return false;
+	SKad6SourceLookup lookup;
+	lookup.target = targetHash;
+	lookup.circuitId = circuitId;
+	lookup.requestId = requestId;
+	lookup.maximum = (std::min<uint16>)(maximum, 100);
+	lookup.started = GetTickCount();
+	lookup.deadline = lookup.started + 12000;
+	m_kad6SourceLookups[key] = lookup;
+	if (!DispatchKad6SourceRound(key)) {
+		m_kad6SourceLookups.erase(key);
+		return false;
+	}
+	return true;
+}
+
+bool CKademliaUDPListener::PublishKad6SourceRecord(uint64 publishLeaseId,
+	const kad6::K6SourceRecord& record)
+{
+	if (publishLeaseId == 0 ||
+		kad6::VerifyK6SourceRecord(MakeKad6HostCryptoHooks(), record) != kad6::Kad6Status::Ok ||
+		kad6::K6SourceRecordCheckFresh(record,
+			static_cast<std::uint64_t>(time(NULL))) != kad6::Kad6Status::Ok)
+		return false;
+	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
+	if (table == NULL)
+		return false;
+	const std::vector<kad6::K6RouteContact> contacts = table->Closest(
+		record.object_hash, KAD6_ROUTING_K, true);
+	bool sent = false;
+	for (const kad6::K6RouteContact& destination : contacts) {
+		const uint32 txid = NextKad6Transaction();
+		kad6::K6StoreSourceRequest request;
+		request.target_hash = record.object_hash;
+		request.record = record;
+		std::vector<kad6::Byte> wire;
+		if (!BuildKad6Header(txid, request.header) ||
+			kad6::EncodeK6StoreSourceRequest(request, wire) != kad6::Kad6Status::Ok ||
+			!SendKad6Payload(KADEMLIA3_STORE_SOURCE_REQ, wire,
+				destination.endpoint.addr.addr.data(), destination.endpoint.udp_port))
+			continue;
+		SKad6Pending pending = {};
+		pending.txid = txid;
+		pending.expectedOpcode = KADEMLIA3_STORE_SOURCE_RES;
+		std::memcpy(pending.address, destination.endpoint.addr.addr.data(), 16);
+		pending.port = destination.endpoint.udp_port;
+		pending.expectedNode = destination.node_id;
+		pending.hasExpectedNode = true;
+		pending.created = GetTickCount();
+		pending.publishLeaseId = publishLeaseId;
+		pending.target = record.object_hash;
+		RememberKad6Pending(pending);
+		sent = true;
+	}
+	return sent;
+}
+
+bool CKademliaUDPListener::BootstrapV6(const byte address[16], uint16 port)
+{
+	if (address == NULL || port == 0)
+		return false;
+	CAddress hostAddress(address);
+	if (hostAddress.GetType() != CAddress::IPv6 || !hostAddress.IsPublicIP())
+		return false;
+	const uint32 txid = NextKad6Transaction();
+	kad6::K6BootstrapRequest request;
+	if (!BuildKad6Header(txid, request.header))
+		return false;
+	std::vector<kad6::Byte> wire;
+	if (kad6::EncodeK6BootstrapRequest(request, wire) != kad6::Kad6Status::Ok
+		|| !SendKad6Payload(KADEMLIA3_BOOTSTRAP_REQ, wire, address, port))
+		return false;
+
+	SKad6Pending pending = {};
+	pending.txid = txid;
+	pending.expectedOpcode = KADEMLIA3_BOOTSTRAP_RES;
+	std::memcpy(pending.address, address, 16);
+	pending.port = port;
+	pending.created = GetTickCount();
+	pending.afterVerify = K6_AFTER_NONE;
+	RememberKad6Pending(pending);
+	return true;
+}
+
 CKademliaUDPListener::~CKademliaUDPListener()
 {
 // report timeout to all pending FetchNodeIDRequests
@@ -306,17 +896,45 @@ CKademliaUDPListener::~CKademliaUDPListener()
 // Used by Kad1.0 and Kad 2.0
 void CKademliaUDPListener::Bootstrap(LPCTSTR szHost, uint16 uUDPPort)
 {
+	if (szHost == NULL || szHost[0] == 0 || uUDPPort == 0)
+		return;
+	if (_tcschr(szHost, _T(':')) != NULL) {
+		CAddress literal(szHost, false);
+		if (literal.GetType() == CAddress::IPv6) {
+			BootstrapV6(literal.Data(), uUDPPort);
+			return;
+		}
+	}
 	const CStringA sHost(szHost);
 	uint32 uRetVal = inet_addr(sHost);
 	if (uRetVal == INADDR_NONE) {
 		addrinfo hints = {};
-		hints.ai_family = AF_INET;
+		hints.ai_family = AF_UNSPEC;
 		hints.ai_socktype = SOCK_DGRAM;
-		addrinfo *ipv4;
-		if (getaddrinfo(sHost, NULL, &hints, &ipv4))
+		addrinfo *resolved = NULL;
+		if (getaddrinfo(sHost, NULL, &hints, &resolved) != 0)
 			return;
-		uRetVal = reinterpret_cast<LPSOCKADDR_IN>(ipv4->ai_addr)->sin_addr.s_addr;
-		freeaddrinfo(ipv4);
+		bool kad6Started = false;
+		for (const addrinfo* candidate = resolved; candidate != NULL;
+			candidate = candidate->ai_next) {
+			if (candidate->ai_family == AF_INET && uRetVal == INADDR_NONE) {
+				uRetVal = reinterpret_cast<const SOCKADDR_IN*>(
+					candidate->ai_addr)->sin_addr.s_addr;
+			} else if (candidate->ai_family == AF_INET6
+				&& thePrefs.IsIPv6Enabled() && !kad6Started) {
+				const SOCKADDR_IN6* address =
+					reinterpret_cast<const SOCKADDR_IN6*>(candidate->ai_addr);
+				kad6Started = BootstrapV6(
+					reinterpret_cast<const byte*>(&address->sin6_addr), uUDPPort);
+			}
+		}
+		freeaddrinfo(resolved);
+		if (uRetVal == INADDR_NONE) {
+			if (!kad6Started && thePrefs.GetVerbose())
+				DebugLogWarning(_T("Kad6 bootstrap rejected for %s:%u"),
+					szHost, uUDPPort);
+			return;
+		}
 	}
 	Bootstrap(ntohl(uRetVal), uUDPPort);
 }
@@ -350,12 +968,16 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 		{
 			++byTagCount;
 		}
-		// [eSE v9] root link: optionally emit our detected public IPv6 as an additive BSOB tag.
-		// TX gated behind EseKadV6Tag (DEFAULT OFF) so the HELLO is byte-identical until validated.
+		// Kad6 root link: emit our public IPv6 once the native K6-2 runtime is
+		// live. The old preference remains as a manual developer override.
 		// Compute ONCE (myV6 captured once — re-calling GetDetectedV6IP would be racy w.r.t. the
 		// ++byTagCount / WriteTag pair). v8+ only; upstream ignores the unknown tag (additive).
 		const CAddress myV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
-		const bool bSendV6 = thePrefs.GetEseKadV6Tag()
+		extern uint32 g_uForkCapsRuntime;
+		const LONG forkCaps = ::InterlockedCompareExchange(
+			reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime), 0, 0);
+		const bool bSendV6 = (thePrefs.GetEseKadV6Tag()
+				|| (forkCaps & CAP_FORK_IPV6_KAD) != 0)
 			&& byKadVersion >= KADEMLIA_VERSION8_49b
 			&& myV6.GetType() == CAddress::IPv6 && myV6.IsPublicIP();
 		if (bSendV6)
@@ -3092,19 +3714,6 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, 
 			(LPCTSTR)ipstr(htonl(uIP)), uResponderUDPPort, uNonce);
 		return;
 	}
-	uchar abyResponderKadID[16];
-	uResponderKadID.ToByteArray(abyResponderKadID);
-	if (pExpectedClient != NULL) {
-		if (pExpectedClient->HasValidHash()
-			&& !md4equ(pExpectedClient->GetUserHash(), abyResponderKadID))
-		{
-			DebugLogWarning(_T("eSE: HOLEPUNCH_ACK changed identity for expected client - dropped"));
-			return;
-		}
-		if (!pExpectedClient->HasValidHash())
-			pExpectedClient->SetUserHash(abyResponderKadID);
-	}
-
 	InterlockedIncrement(&CStatistics::m_dwHolePunchSuccess);
 	DebugLog(_T("eSE: HOLEPUNCH_ACK from %s:%u nonce=0x%08X — pinhole ready (total: %u/%u)"),
 		(LPCTSTR)ipstr(htonl(uIP)), uUDPPort, uNonce,
@@ -3118,7 +3727,7 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, 
 	// Hint the UtpSocket layer that we expect a uTP connection from this endpoint.
 	// This allows the uTP accept logic to match the incoming SYN to this peer.
 	if (theApp.clientudp != NULL) {
-		theApp.clientudp->SeedNatTraversalExpectation(NULL, uIP, uUDPPort);
+		theApp.clientudp->SeedNatTraversalExpectation(pExpectedClient, uIP, uUDPPort);
 		DebugLog(_T("eSE: HOLEPUNCH_ACK — seeded NAT expectation for %s:%u"),
 			(LPCTSTR)ipstr(htonl(uIP)), uUDPPort);
 
@@ -3126,23 +3735,496 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, 
 		// The REQ→ACK exchange punched NAT pinholes on both sides.
 		// The INITIATOR (us) must send the uTP SYN to complete the connection.
 		// The RESPONDER is passively waiting via on_utp_accept.
-		theApp.clientudp->InitiateUtpConnect(uIP, uUDPPort, abyResponderKadID);
+		if (!theApp.clientudp->InitiateUtpConnect(uIP, uUDPPort, pExpectedClient))
+			DebugLogWarning(_T("eSE: HOLEPUNCH_ACK opened the pinhole but no matching eD2K client was available for uTP"));
 	}
 }
 
-// v0.71 IPv6 Sprint 4 — Kad3 (v6-aware) generic stub handler.
-// Logs the receipt of any 0x02/0x0A/0x12/0x1A/0x23/0x2A/0x61/0x62/0x63/0x64/0x65
-// packet at debug level and drops the body. We deliberately do NOT:
-//   - Parse the CAddress payload (would require careful malformed-input
-//     handling that's not justified until a real v6 routing zone exists).
-//   - Insert any contact into the existing v4 routing zone (would
-//     pollute its bucket invariants).
-//   - Send a v3 response (would require us to have a v6 socket bound
-//     and an identity to advertise; Sprint 6/9 work).
-// The packet is therefore wire-reserved but inert. Older 0.70b nodes
-// don't know these opcodes at all, so this fork sending v3 packets to
-// non-fork peers would just be dropped — which is why we gate any
-// sending behind CAP_FORK_IPV6_WIRE handshake (Sprint 6).
+// Native K6-2 routing dispatch. This entry point is reached only for native
+// public-IPv6 datagrams selected by CClientUDPSocket. IPv4 packets carrying
+// the same numeric opcodes remain isolated in Process_KADEMLIA3_GENERIC.
+void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
+	const byte address[16], uint16 port)
+{
+	if (data == NULL || address == NULL || length < 2
+		|| data[0] != OP_KADEMLIAHEADER || port == 0)
+		return;
+	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
+	if (table == NULL)
+		return;
+	const kad6::Kad6Address source = Kad6AddressFromRaw(address);
+	const kad6::Byte* payload = data + 2;
+	const std::size_t payloadLength = length - 2;
+	const std::uint64_t now = static_cast<std::uint64_t>(time(NULL));
+
+	switch (data[1]) {
+		case KADEMLIA3_HELLO_REQ: {
+			kad6::K6HelloRequest request;
+			if (kad6::DecodeK6HelloRequest(payload, payloadLength, request)
+				!= kad6::Kad6Status::Ok
+				|| !Kad6HeaderMatchesSource(request.header, source, port)
+				|| request.header.version != kad6::kK6RouteWireVersion)
+				return;
+			const kad6::K6RouteContact contact = Kad6ContactFromHeader(request.header);
+			if (!table->AddSignedProbation(contact,
+				request.header.sender_record, now))
+				return;
+
+			kad6::K6HelloResponse response;
+			if (BuildKad6Header(request.header.txid, response.header)) {
+				std::vector<kad6::Byte> wire;
+				if (kad6::EncodeK6HelloResponse(response, wire) == kad6::Kad6Status::Ok)
+					SendKad6Payload(KADEMLIA3_HELLO_RES, wire, address, port);
+			}
+			// Exactly one same-sized response. A reciprocal challenge is left to
+			// the paced probation scheduler so spoofed HELLOs cannot cause 2x
+			// immediate reflection.
+			break;
+		}
+
+		case KADEMLIA3_HELLO_RES: {
+			kad6::K6HelloResponse response;
+			if (kad6::DecodeK6HelloResponse(payload, payloadLength, response)
+				!= kad6::Kad6Status::Ok
+				|| !Kad6HeaderMatchesSource(response.header, source, port)
+				|| response.header.version != kad6::kK6RouteWireVersion)
+				return;
+			const int index = FindKad6Pending(response.header.txid,
+				KADEMLIA3_HELLO_RES, address, port);
+			if (index < 0)
+				return;
+			const SKad6Pending pending = m_kad6Pending[index];
+			if (pending.hasExpectedNode
+				&& pending.expectedNode != response.header.sender_id)
+				return;
+			const kad6::K6RouteContact contact = Kad6ContactFromHeader(response.header);
+			if (!table->MarkVerified(contact,
+				response.header.sender_record, now))
+				return;
+			m_kad6Pending.erase(m_kad6Pending.begin() + index);
+			if (pending.afterVerify == K6_AFTER_BOOTSTRAP_RESPONSE)
+				SendKad6BootstrapResponse(pending.originalTxid, address, port);
+			else if (pending.afterVerify == K6_AFTER_FIND_RESPONSE)
+				SendKad6FindResponse(pending.originalTxid, pending.target,
+					pending.maximum, address, port);
+			else if (pending.afterVerify == K6_AFTER_FIND_SOURCE_RESPONSE)
+				SendKad6SourceResponse(pending.originalTxid, pending.target,
+					pending.maximum, address, port);
+			break;
+		}
+
+		case KADEMLIA3_BOOTSTRAP_REQ: {
+			kad6::K6BootstrapRequest request;
+			if (kad6::DecodeK6BootstrapRequest(payload, payloadLength, request)
+				!= kad6::Kad6Status::Ok
+				|| !Kad6HeaderMatchesSource(request.header, source, port)
+				|| request.header.version != kad6::kK6RouteWireVersion)
+				return;
+			const kad6::K6RouteContact contact = Kad6ContactFromHeader(request.header);
+			if (!table->AddSignedProbation(contact,
+				request.header.sender_record, now))
+				return;
+			// The response is larger than the request. Require a fresh,
+			// transaction-bound return-routability proof even for a contact which
+			// was verified earlier; historical state is not packet authentication.
+			if (!HasKad6PendingFor(contact.node_id))
+				SendKad6HelloChallenge(contact, K6_AFTER_BOOTSTRAP_RESPONSE,
+					request.header.txid);
+			break;
+		}
+
+		case KADEMLIA3_BOOTSTRAP_RES: {
+			kad6::K6BootstrapResponse response;
+			if (kad6::DecodeK6BootstrapResponse(payload, payloadLength, response)
+				!= kad6::Kad6Status::Ok
+				|| !Kad6HeaderMatchesSource(response.header, source, port)
+				|| response.header.version != kad6::kK6RouteWireVersion)
+				return;
+			const int index = FindKad6Pending(response.header.txid,
+				KADEMLIA3_BOOTSTRAP_RES, address, port);
+			if (index < 0)
+				return;
+			const SKad6Pending pending = m_kad6Pending[index];
+			if (pending.hasExpectedNode
+				&& pending.expectedNode != response.header.sender_id)
+				return;
+			if (!table->MarkVerified(Kad6ContactFromHeader(response.header),
+				response.header.sender_record, now))
+				return;
+			m_kad6Pending.erase(m_kad6Pending.begin() + index);
+			std::size_t accepted = 0;
+			for (const kad6::K6RouteContact& contact : response.contacts) {
+				if (accepted >= KAD6_RESPONSE_PROBATION_LIMIT)
+					break;
+				if (!Kad6IsLocalId(contact.node_id)
+					&& table->AddProbation(contact, now))
+					++accepted;
+			}
+			break;
+		}
+
+		case KADEMLIA3_REQ: {
+			kad6::K6FindNodeRequest request;
+			if (kad6::DecodeK6FindNodeRequest(payload, payloadLength, request)
+				!= kad6::Kad6Status::Ok
+				|| !Kad6HeaderMatchesSource(request.header, source, port)
+				|| request.header.version != kad6::kK6RouteWireVersion)
+				return;
+			const kad6::K6RouteContact contact = Kad6ContactFromHeader(request.header);
+			if (!table->AddSignedProbation(contact,
+				request.header.sender_record, now))
+				return;
+			// FIND responses are amplified too, so every request gets a fresh
+			// return-routability challenge before a contact list is emitted.
+			if (!HasKad6PendingFor(contact.node_id))
+				SendKad6HelloChallenge(contact, K6_AFTER_FIND_RESPONSE,
+					request.header.txid, &request.target_id, request.max_results);
+			break;
+		}
+
+		case KADEMLIA3_STORE_SOURCE_REQ: {
+			kad6::K6StoreSourceRequest request;
+			if (kad6::DecodeK6StoreSourceRequest(payload, payloadLength, request)
+				!= kad6::Kad6Status::Ok ||
+				!Kad6HeaderMatchesSource(request.header, source, port) ||
+				request.header.version != kad6::kK6RouteWireVersion ||
+				!table->IsVerified(request.header.sender_id, source, port))
+				return;
+			const kad6::K6RouteContact sender = Kad6ContactFromHeader(request.header);
+			if (!table->MarkVerified(sender, request.header.sender_record, now) ||
+				kad6::VerifyK6SourceRecord(MakeKad6HostCryptoHooks(), request.record)
+					!= kad6::Kad6Status::Ok ||
+				kad6::K6SourceRecordCheckFresh(request.record, now)
+					!= kad6::Kad6Status::Ok)
+				return;
+
+			for (auto it = m_kad6StoredSources.begin(); it != m_kad6StoredSources.end(); )
+				it = it->second.record.expires_at <= now
+					? m_kad6StoredSources.erase(it) : std::next(it);
+
+			kad6::K6StoreStatus storeStatus = kad6::K6StoreStatus::Rejected;
+			std::uint64_t acceptedEpoch = 0;
+			std::vector<kad6::Byte> canonical;
+			if (kad6::EncodeK6SourceRecord(request.record, canonical) == kad6::Kad6Status::Ok) {
+				const std::string key = Kad6StoredSourceKey(request.record);
+				auto existing = m_kad6StoredSources.find(key);
+				if (existing != m_kad6StoredSources.end()) {
+					if (request.record.source_epoch < existing->second.record.source_epoch ||
+						(request.record.source_epoch == existing->second.record.source_epoch &&
+						 canonical != existing->second.canonicalWire)) {
+						storeStatus = kad6::K6StoreStatus::Stale;
+						acceptedEpoch = existing->second.record.source_epoch;
+					} else {
+						existing->second.record = request.record;
+						existing->second.canonicalWire = canonical;
+						storeStatus = kad6::K6StoreStatus::Stored;
+						acceptedEpoch = request.record.source_epoch;
+					}
+				} else if (m_kad6StoredSources.size() >= 4096) {
+					storeStatus = kad6::K6StoreStatus::Overloaded;
+				} else {
+					std::size_t sameHash = 0;
+					for (const auto& pair : m_kad6StoredSources)
+						if (pair.second.record.object_hash == request.record.object_hash)
+							++sameHash;
+					if (sameHash >= 1000) {
+						storeStatus = kad6::K6StoreStatus::Overloaded;
+					} else {
+						SKad6StoredSource stored;
+						stored.record = request.record;
+						stored.canonicalWire = canonical;
+						m_kad6StoredSources[key] = std::move(stored);
+						storeStatus = kad6::K6StoreStatus::Stored;
+						acceptedEpoch = request.record.source_epoch;
+					}
+				}
+			}
+
+			kad6::K6StoreSourceResponse response;
+			response.target_hash = request.target_hash;
+			response.status = storeStatus;
+			response.load = static_cast<byte>((std::min<std::size_t>)(100,
+				(m_kad6StoredSources.size() * 100u) / 4096u));
+			response.accepted_epoch = acceptedEpoch;
+			if (BuildKad6Header(request.header.txid, response.header)) {
+				std::vector<kad6::Byte> wire;
+				if (kad6::EncodeK6StoreSourceResponse(response, wire) == kad6::Kad6Status::Ok)
+					SendKad6Payload(KADEMLIA3_STORE_SOURCE_RES, wire, address, port);
+			}
+			break;
+		}
+
+		case KADEMLIA3_FIND_SOURCE_REQ: {
+			kad6::K6FindSourceRequest request;
+			if (kad6::DecodeK6FindSourceRequest(payload, payloadLength, request)
+					!= kad6::Kad6Status::Ok ||
+				!Kad6HeaderMatchesSource(request.header, source, port) ||
+				request.header.version != kad6::kK6RouteWireVersion)
+				return;
+			const kad6::K6RouteContact contact = Kad6ContactFromHeader(request.header);
+			if (!table->AddSignedProbation(contact, request.header.sender_record, now))
+				return;
+			// The answer can be much larger than the request. Require a fresh,
+			// transaction-bound return-routability proof before emitting records.
+			if (!HasKad6PendingFor(contact.node_id))
+				SendKad6HelloChallenge(contact, K6_AFTER_FIND_SOURCE_RESPONSE,
+					request.header.txid, &request.target_hash, request.max_records);
+			break;
+		}
+
+		case KADEMLIA3_FIND_SOURCE_RES: {
+			kad6::K6FindSourceResponse response;
+			if (kad6::DecodeK6FindSourceResponse(payload, payloadLength, response)
+					!= kad6::Kad6Status::Ok ||
+				!Kad6HeaderMatchesSource(response.header, source, port) ||
+				response.header.version != kad6::kK6RouteWireVersion)
+				return;
+			const int index = FindKad6Pending(response.header.txid,
+				KADEMLIA3_FIND_SOURCE_RES, address, port);
+			if (index < 0) return;
+			const SKad6Pending pending = m_kad6Pending[index];
+			if ((pending.hasExpectedNode &&
+				 pending.expectedNode != response.header.sender_id) ||
+				pending.target != response.target_hash ||
+				response.records.size() > pending.maximum)
+				return;
+			if (!table->MarkVerified(Kad6ContactFromHeader(response.header),
+				response.header.sender_record, now))
+				return;
+			m_kad6Pending.erase(m_kad6Pending.begin() + index);
+			uint16 accepted = 0;
+			for (const kad6::K6SourceRecord& record : response.records) {
+				if (record.object_hash != pending.target ||
+					kad6::VerifyK6SourceRecord(MakeKad6HostCryptoHooks(), record) !=
+						kad6::Kad6Status::Ok ||
+					kad6::K6SourceRecordCheckFresh(record, now) != kad6::Kad6Status::Ok)
+					continue;
+				if (eSELive::CLiveTunnel::Get().OnKad6NativeSourceRecord(
+						pending.sourceCircuitId, pending.sourceRequestId, record))
+					++accepted;
+			}
+			eSELive::CLiveTunnel::Get().OnKad6SourceLookupRpc(
+				pending.sourceAlpha, accepted != 0 ? 0 : 1);
+			const uint64 lookupKey = (static_cast<uint64>(pending.sourceCircuitId) << 32) |
+				pending.sourceRequestId;
+			auto lookup = m_kad6SourceLookups.find(lookupKey);
+			if (lookup != m_kad6SourceLookups.end()) {
+				lookup->second.received = static_cast<uint16>((std::min<unsigned>)(
+					lookup->second.maximum, lookup->second.received + accepted));
+				lookup->second.roundReceived = static_cast<uint16>(
+					lookup->second.roundReceived + accepted);
+			}
+			break;
+		}
+
+		case KADEMLIA3_STORE_SOURCE_RES: {
+			kad6::K6StoreSourceResponse response;
+			if (kad6::DecodeK6StoreSourceResponse(payload, payloadLength, response)
+				!= kad6::Kad6Status::Ok ||
+				!Kad6HeaderMatchesSource(response.header, source, port) ||
+				response.header.version != kad6::kK6RouteWireVersion)
+				return;
+			const int index = FindKad6Pending(response.header.txid,
+				KADEMLIA3_STORE_SOURCE_RES, address, port);
+			if (index < 0)
+				return;
+			const SKad6Pending pending = m_kad6Pending[index];
+			if ((pending.hasExpectedNode && pending.expectedNode != response.header.sender_id) ||
+				pending.target != response.target_hash)
+				return;
+			if (!table->MarkVerified(Kad6ContactFromHeader(response.header),
+				response.header.sender_record, now))
+				return;
+			m_kad6Pending.erase(m_kad6Pending.begin() + index);
+			eSELive::CLiveTunnel::Get().OnKad6NativePublishAck(
+				pending.publishLeaseId, response.status, response.load,
+				response.accepted_epoch);
+			break;
+		}
+
+		case KADEMLIA3_RES: {
+			kad6::K6FindNodeResponse response;
+			if (kad6::DecodeK6FindNodeResponse(payload, payloadLength, response)
+				!= kad6::Kad6Status::Ok
+				|| !Kad6HeaderMatchesSource(response.header, source, port)
+				|| response.header.version != kad6::kK6RouteWireVersion)
+				return;
+			const int index = FindKad6Pending(response.header.txid,
+				KADEMLIA3_RES, address, port);
+			if (index < 0)
+				return;
+			const SKad6Pending pending = m_kad6Pending[index];
+			if ((pending.hasExpectedNode
+				&& pending.expectedNode != response.header.sender_id)
+				|| pending.target != response.target_id)
+				return;
+			if (response.contacts.size() > pending.maximum) {
+				table->NoteFailure(response.header.sender_id);
+				m_kad6Pending.erase(m_kad6Pending.begin() + index);
+				return;
+			}
+			if (!table->MarkVerified(Kad6ContactFromHeader(response.header),
+				response.header.sender_record, now))
+				return;
+			m_kad6Pending.erase(m_kad6Pending.begin() + index);
+			std::size_t accepted = 0;
+			for (const kad6::K6RouteContact& contact : response.contacts) {
+				if (accepted >= KAD6_RESPONSE_PROBATION_LIMIT)
+					break;
+				if (!Kad6IsLocalId(contact.node_id)
+					&& table->AddProbation(contact, now))
+					++accepted;
+			}
+			if (pending.adaptiveLookup && m_kad6AdaptiveLookup.active)
+				m_kad6AdaptiveLookup.roundAccepted = static_cast<uint16>(
+					m_kad6AdaptiveLookup.roundAccepted + accepted);
+			break;
+		}
+	}
+}
+
+void CKademliaUDPListener::ProcessKad6()
+{
+	const DWORD tick = GetTickCount();
+	if (tick - m_lastKad6Maintenance < 1000)
+		return;
+	m_lastKad6Maintenance = tick;
+	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
+	if (table == NULL)
+		return;
+
+	extern uint32 g_uForkCapsRuntime;
+	::InterlockedAnd(reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+		~static_cast<LONG>(CAP_FORK_IPV6_KAD));
+	kad6::K6RouteHeader localHeader;
+	if (BuildKad6Header(1, localHeader))
+		::InterlockedOr(reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+			static_cast<LONG>(CAP_FORK_IPV6_KAD));
+	else
+		return;
+
+	const std::uint64_t now = static_cast<std::uint64_t>(time(NULL));
+	table->Expire(now);
+	for (auto it = m_kad6StoredSources.begin(); it != m_kad6StoredSources.end(); )
+		it = it->second.record.expires_at <= now
+			? m_kad6StoredSources.erase(it) : std::next(it);
+	for (std::size_t i = m_kad6Pending.size(); i > 0; --i) {
+		const SKad6Pending& pending = m_kad6Pending[i - 1];
+		if (tick - pending.created > 10000) {
+			if (pending.sourceCircuitId != 0 && pending.sourceRequestId != 0)
+				eSELive::CLiveTunnel::Get().OnKad6SourceLookupRpc(
+					pending.sourceAlpha, 3);
+			if (pending.hasExpectedNode)
+				table->NoteFailure(pending.expectedNode);
+			if (pending.publishLeaseId != 0)
+				eSELive::CLiveTunnel::Get().OnKad6NativePublishAck(
+					pending.publishLeaseId, kad6::K6StoreStatus::Overloaded, 100, 0);
+			m_kad6Pending.erase(m_kad6Pending.begin() + (i - 1));
+		}
+	}
+
+	// Advance every native source lookup only after its current alpha-sized
+	// round has settled. No-progress rounds widen 3 -> 5 -> 8, while the
+	// overall 24-RPC/12-second budget prevents amplification and queue growth.
+	for (auto it = m_kad6SourceLookups.begin(); it != m_kad6SourceLookups.end(); ) {
+		const uint64 lookupKey = it->first;
+		SKad6SourceLookup& lookup = it->second;
+		bool pendingRound = false;
+		for (const SKad6Pending& pending : m_kad6Pending)
+			if (pending.sourceCircuitId == lookup.circuitId &&
+				pending.sourceRequestId == lookup.requestId) {
+				pendingRound = true;
+				break;
+			}
+		if ((int)(tick - lookup.deadline) >= 0 ||
+			lookup.received >= lookup.maximum || lookup.totalSent >= 24) {
+			it = m_kad6SourceLookups.erase(it);
+			continue;
+		}
+		if (!pendingRound && tick - lookup.roundStarted >= 1000) {
+			if (lookup.roundReceived == 0)
+				lookup.alpha = lookup.alpha < 5 ? 5 : 8;
+			else
+				lookup.alpha = static_cast<byte>(KAD6_LOOKUP_ALPHA);
+			lookup.roundReceived = 0;
+			if (!DispatchKad6SourceRound(lookupKey)) {
+				it = m_kad6SourceLookups.erase(it);
+				continue;
+			}
+		}
+		++it;
+	}
+
+	// Classic contacts carrying an additive v6 address are hints only. They
+	// enter probation and require a native HELLO round trip before use.
+	if (tick - m_lastKad6Import >= 60000 && CKademlia::GetRoutingZone() != NULL) {
+		m_lastKad6Import = tick;
+		ContactArray contacts;
+		CKademlia::GetRoutingZone()->GetAllEntries(contacts);
+		for (CContact* legacy : contacts) {
+			if (legacy == NULL || !legacy->HasIPv6())
+				continue;
+			kad6::K6RouteContact contact;
+			legacy->GetClientID().ToByteArray(contact.node_id.data());
+			if (Kad6IsLocalId(contact.node_id))
+				continue;
+			contact.endpoint.addr.family = kad6::Kad6Address::Family::IPv6;
+			std::memcpy(contact.endpoint.addr.addr.data(),
+				legacy->GetIPv6Address(), 16);
+			contact.endpoint.udp_port = legacy->GetUDPPort();
+			contact.endpoint.tcp_port = legacy->GetTCPPort();
+			contact.endpoint.transport_flags = kad6::kK6EpUdpKad6;
+			contact.endpoint.valid_until = now + 60 * 60;
+			contact.caps = CAP_FORK_IPV6_WIRE | CAP_FORK_IPV6_KAD;
+			contact.epoch = std::max<std::uint64_t>(1,
+				static_cast<std::uint64_t>(legacy->GetCreatedTime()));
+			table->AddProbation(contact, now);
+		}
+	}
+
+	if (tick - m_lastKad6Challenge >= 5000) {
+		CKad6RoutingTable::Entry probation;
+		if (table->NextProbation(probation)
+			&& !HasKad6PendingFor(probation.contact.node_id)) {
+			m_lastKad6Challenge = tick;
+			SendKad6HelloChallenge(probation.contact);
+		}
+	}
+
+	bool adaptivePending = false;
+	for (const SKad6Pending& pending : m_kad6Pending)
+		if (pending.adaptiveLookup) { adaptivePending = true; break; }
+	if (m_kad6AdaptiveLookup.active && !adaptivePending &&
+		tick - m_kad6AdaptiveLookup.roundStarted >= 1000) {
+		if ((int)(tick - m_kad6AdaptiveLookup.deadline) >= 0 ||
+			m_kad6AdaptiveLookup.totalSent >= 24) {
+			m_kad6AdaptiveLookup = SKad6AdaptiveLookup{};
+		} else {
+			m_kad6AdaptiveLookup.alpha = m_kad6AdaptiveLookup.roundAccepted == 0
+				? (m_kad6AdaptiveLookup.alpha < 5 ? 5 : 8)
+				: static_cast<byte>(KAD6_LOOKUP_ALPHA);
+			m_kad6AdaptiveLookup.roundAccepted = 0;
+			if (!DispatchKad6MaintenanceRound())
+				m_kad6AdaptiveLookup = SKad6AdaptiveLookup{};
+		}
+	}
+
+	if (!m_kad6AdaptiveLookup.active &&
+		tick - m_lastKad6Lookup >= 5 * 60 * 1000 &&
+		table->VerifiedSize() != 0) {
+		m_lastKad6Lookup = tick;
+		m_kad6AdaptiveLookup = SKad6AdaptiveLookup{};
+		m_kad6AdaptiveLookup.active = true;
+		CKademlia::GetPrefs()->GetKadID().ToByteArray(
+			m_kad6AdaptiveLookup.target.data());
+		m_kad6AdaptiveLookup.alpha = static_cast<byte>(KAD6_LOOKUP_ALPHA);
+		m_kad6AdaptiveLookup.started = tick;
+		m_kad6AdaptiveLookup.deadline = tick + 12000;
+		if (!DispatchKad6MaintenanceRound())
+			m_kad6AdaptiveLookup = SKad6AdaptiveLookup{};
+	}
+}
+
 void CKademliaUDPListener::Process_KADEMLIA3_GENERIC(const char *szOpcodeName,
     const byte * /*pbyPacketData*/, uint32 uLenPacket,
     uint32 uIP, uint16 uUDPPort)
@@ -3150,6 +4232,6 @@ void CKademliaUDPListener::Process_KADEMLIA3_GENERIC(const char *szOpcodeName,
     if (thePrefs.GetDebugClientKadUDPLevel() > 0) {
         DebugRecv(szOpcodeName, uIP, uUDPPort);
     }
-    DebugLog(_T("Kad3: %hs from %s:%u (len=%u) — v6 routing zone not yet integrated, dropping"),
+    DebugLog(_T("Kad3: %hs from %s:%u (len=%u) - native K6-2 is IPv6-only; dropping IPv4-carried routing opcode"),
         szOpcodeName, (LPCTSTR)ipstr(htonl(uIP)), uUDPPort, uLenPacket);
 }

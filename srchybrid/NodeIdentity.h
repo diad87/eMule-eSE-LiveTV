@@ -21,6 +21,11 @@ namespace eSELive {
 // first HELLO is built.
 bool NodeIdentityInit();
 
+// True only if the active identity was loaded from or successfully written to
+// durable storage. Security-sensitive capabilities (AUTH/KAD6 routing) must
+// not be advertised for a session-only key.
+bool NodeIdentityIsPersistent();
+
 // 32-byte Ed25519 public key, or nullptr if NodeIdentityInit() has not produced
 // an identity yet. Stable for the process lifetime.
 const uint8_t* NodeIdentityPub();

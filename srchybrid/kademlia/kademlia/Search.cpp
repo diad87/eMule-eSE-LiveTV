@@ -58,6 +58,7 @@ their client on the eMule forum.
 #include "kademlia/utils/KadClientSearcher.h"
 #include "kademlia/utils/LookupHistory.h"
 #include "LiveStreamManager.h"
+#include "LiveTunnel.h"
 #include "eMuleAI/FastKad.h" // eSE: Adaptive Kad response time estimation
 #include "eMuleAI/Address.h"
 #include "FirewallProberV6.h"
@@ -130,12 +131,56 @@ CSearch::CSearch()
 	, m_uLiveStartedAt()
 	, m_uLiveAltIP()
 	, m_uLiveBroadcasterPort()
+	, m_uK6PublishLeaseId()
+	, m_uK6ShadowFileSize()
+	, m_uK6CompatUserHash()
+	, m_uK6ShadowTcpPort()
+	, m_uK6ShadowUdpPort()
+	, m_uK6VisibilityIP()
+	, m_uK6GatewayCircuitId()
+	, m_uK6GatewayRequestId()
 	, m_bStoping()
 	, m_bLiveStreamPublish()
+	, m_bK6ShadowSource(false)
+	, m_bK6VisibilityProbe(false)
+	, m_bK6GatewaySourceLookup(false)
 	, m_bLivePublishCleanNs(false)   // H8 — opt-in for clean-namespace publishes
 {
 	m_pLookupHistory = new CLookupHistory();
 	theApp.emuledlg->kademliawnd->searchList->SearchAdd(this);
+}
+
+void CSearch::SetK6ShadowSource(uint64 publishLeaseId, uint64 fileSize,
+	const uchar compatUserHash[16], uint16 tcpPort, uint16 udpPort)
+{
+	m_uK6PublishLeaseId = publishLeaseId;
+	m_uK6ShadowFileSize = fileSize;
+	if (compatUserHash != NULL)
+	m_uK6CompatUserHash = CUInt128(compatUserHash);
+	m_uK6ShadowTcpPort = tcpPort;
+	m_uK6ShadowUdpPort = udpPort;
+	m_bK6ShadowSource = publishLeaseId != 0 && fileSize != 0 &&
+		compatUserHash != NULL && tcpPort != 0;
+}
+
+void CSearch::SetK6VisibilityProbe(uint64 publishLeaseId,
+	const uchar compatUserHash[16], uint32 ip, uint16 tcpPort, uint16 udpPort)
+{
+	m_uK6PublishLeaseId = publishLeaseId;
+	if (compatUserHash != NULL)
+		m_uK6CompatUserHash = CUInt128(compatUserHash);
+	m_uK6VisibilityIP = ip;
+	m_uK6ShadowTcpPort = tcpPort;
+	m_uK6ShadowUdpPort = udpPort;
+	m_bK6VisibilityProbe = publishLeaseId != 0 && compatUserHash != NULL &&
+		ip != 0 && tcpPort != 0;
+}
+
+void CSearch::SetK6GatewaySourceLookup(uint32 circuitId, uint32 requestId)
+{
+	m_uK6GatewayCircuitId = circuitId;
+	m_uK6GatewayRequestId = requestId;
+	m_bK6GatewaySourceLookup = circuitId != 0 && requestId != 0 && m_uType == FILE;
 }
 
 CSearch::~CSearch()
@@ -682,6 +727,37 @@ void CSearch::StorePacket()
 				break;
 			}
 
+			// K6-3 shadow source: the backing file belongs to a SourceLease,
+			// not this exit's SharedFiles. The Kad2 holder stamps the datagram's
+			// source IP (the exit), while the lease supplies the only permitted
+			// UserHash, size and virtual endpoint ports.
+			if (m_bK6ShadowSource) {
+				uint8 custodian[16];
+				pFromContact->GetClientID().ToByteArray(custodian);
+				if (!eSELive::CLiveTunnel::Get().AllowKad6ShadowPublishContact(
+					m_uK6PublishLeaseId, custodian)) {
+					PrepareToStop();
+					break;
+				}
+				TagList tags;
+				tags.push_back(new CKadTagUInt(TAG_SOURCETYPE,
+					m_uK6ShadowFileSize > OLD_MAX_EMULE_FILE_SIZE ? 4 : 1));
+				tags.push_back(new CKadTagUInt(TAG_SOURCEPORT, m_uK6ShadowTcpPort));
+				if (m_uK6ShadowUdpPort != 0)
+					tags.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, m_uK6ShadowUdpPort));
+				if (pFromContact->GetVersion() >= KADEMLIA_VERSION2_47a)
+					tags.push_back(new CKadTagUInt(TAG_FILESIZE, m_uK6ShadowFileSize));
+				tags.push_back(new CKadTagUInt8(TAG_ENCRYPTION,
+					CKademlia::GetPrefs()->GetMyConnectOptions(true, true)));
+				CKademlia::GetUDPListener()->SendPublishSourcePacket(
+					pFromContact, m_uTarget, m_uK6CompatUserHash, tags);
+				++m_uTotalRequestAnswers;
+				eSELive::CLiveTunnel::Get().OnKad6ShadowPublishSent(m_uK6PublishLeaseId);
+				theApp.emuledlg->kademliawnd->searchList->SearchRef(this);
+				deleteTagListEntries(tags);
+				break;
+			}
+
 			// Find the file we are trying to store as a source too.
 			uchar ucharFileid[MDX_DIGEST_SIZE];
 			m_uTarget.ToByteArray(ucharFileid);
@@ -1048,6 +1124,24 @@ void CSearch::StorePacket()
 
 void CSearch::ProcessResult(const CUInt128 &uAnswer, TagList &rlistInfo, uint32 uFromIP, uint16 uFromPort)
 {
+	if (m_bK6VisibilityProbe) {
+		uint32 sourceIP = 0;
+		uint16 sourceTCP = 0, sourceUDP = 0;
+		for (TagList::const_iterator it = rlistInfo.begin(); it != rlistInfo.end(); ++it) {
+			const CKadTag& tag(**it);
+			if (tag.m_name == TAG_SOURCEIP) sourceIP = static_cast<uint32>(tag.GetInt());
+			else if (tag.m_name == TAG_SOURCEPORT) sourceTCP = static_cast<uint16>(tag.GetInt());
+			else if (tag.m_name == TAG_SOURCEUPORT) sourceUDP = static_cast<uint16>(tag.GetInt());
+		}
+		if (uAnswer == m_uK6CompatUserHash && sourceIP == m_uK6VisibilityIP &&
+			sourceTCP == m_uK6ShadowTcpPort &&
+			(m_uK6ShadowUdpPort == 0 || sourceUDP == m_uK6ShadowUdpPort)) {
+			++m_uAnswers;
+			eSELive::CLiveTunnel::Get().OnKad6ShadowVerified(m_uK6PublishLeaseId);
+			PrepareToStop();
+		}
+		return; // a visibility probe never materializes a download-queue source
+	}
 	// We received a result, process it based on type.
 	uint32 iAnswerBefore = m_uAnswers;
 	switch (m_uType) {
@@ -1143,6 +1237,22 @@ void CSearch::ProcessResultFile(const CUInt128 &uAnswer, TagList &rlistInfo)
 				TRACE("+++ Invalid TAG_BUDDYHASH tag\n");
 		} else if (cTag.m_name == TAG_ENCRYPTION)
 			byCryptOptions = (uint8)cTag.GetInt();
+	}
+
+	// A K6 exit lookup must not materialize the discovered source in X's own
+	// download queue. It hands the normalized result to the exact circuit/job;
+	// LiveTunnel then issues destination authority and returns it to A.
+	if (m_bK6GatewaySourceLookup) {
+		byte userHash[16];
+		uAnswer.ToByteArray(userHash);
+		const uint8* sourceV6Bytes = bV6Valid ? sourceV6.Data() : NULL;
+		if (eSELive::CLiveTunnel::Get().OnKad6GatewaySourceResult(
+				m_uK6GatewayCircuitId, m_uK6GatewayRequestId, userHash, uType,
+				uIP, uTCPPort, uUDPPort, byCryptOptions,
+				bReachValid ? uReachCaps : 0, sourceV6Bytes)) {
+			++m_uAnswers;
+		}
+		return;
 	}
 
 	// Process source based on its type. Currently only one method is needed to process all types.

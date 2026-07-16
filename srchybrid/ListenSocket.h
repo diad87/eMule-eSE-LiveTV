@@ -16,6 +16,9 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
 #include "EMSocket.h"
+#include "kad6/kad6_frontdoor.h"
+
+#include <array>
 
 class CUpDownClient;
 class CPacket;
@@ -43,7 +46,7 @@ public:
 	explicit CClientReqSocket(CUpDownClient *in_client = NULL);
 
 	void	SetClient(CUpDownClient *pClient);
-	void	Disconnect(LPCTSTR pszReason);
+	virtual void Disconnect(LPCTSTR pszReason);
 	void	WaitForOnConnect();
 	void	ResetTimeOutTimer();
 	bool	CheckTimeOut();
@@ -104,7 +107,8 @@ public:
 	void	Process();
 	void	RemoveSocket(CClientReqSocket *todel);
 	void	AddSocket(CClientReqSocket *toadd);
-	UINT	GetOpenSockets()			{ return static_cast<UINT>(socket_list.GetCount()); }
+	UINT	GetOpenSockets()			{ return static_cast<UINT>(socket_list.GetCount() + m_k6PreAuthGate.Stats().active); }
+	const kad6::K6PreAuthStats& GetK6PreAuthStats() const { return m_k6PreAuthGate.Stats(); }
 	void	KillAllSockets();
 	bool	TooManySockets(bool bIgnoreInterval = false);
 	uint32	GetMaxConnectionReached()	{ return maxconnectionreached; }
@@ -127,6 +131,15 @@ public:
 	uint32	GetTotalComp()				{ return m_nComp; }
 
 private:
+	struct K6PreAuthNativeSlot {
+		SOCKET socket = INVALID_SOCKET;
+		ADDRESS_FAMILY family = AF_UNSPEC;
+	};
+	bool AcceptK6PreAuth();
+	void ProcessK6PreAuth();
+	void CloseK6PreAuth();
+	kad6::K6PreAuthGate m_k6PreAuthGate;
+	std::array<K6PreAuthNativeSlot, kad6::kK6PreAuthMaxSlots> m_k6PreAuthSockets{};
 	bool bListening;
 	bool m_bDualStack = false;   // v0.71 IPv6 Sprint 9
 	CTypedPtrList<CPtrList, CClientReqSocket*> socket_list;

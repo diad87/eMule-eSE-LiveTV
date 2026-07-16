@@ -316,7 +316,9 @@ public:
     // siblingIP: the OTHER address of the SAME broadcaster from one Kad record
     // (public IP <-> overlay alt IP, TAG_ESE_LIVE_ALTIP). When we are already
     // connected on the sibling, this dial is suppressed (dual-dial churn fix).
-    bool TryConnectToStreamSource(const uchar* streamKey, uint32 ip, uint16 port, uint16 udpPort = 0, uint32 siblingIP = 0);
+    bool TryConnectToStreamSource(const uchar* streamKey, uint32 ip, uint16 port,
+                                  uint16 udpPort = 0, uint32 siblingIP = 0,
+                                  bool discoveredViaKad6Tunnel = false);
 
     // v8.1 Sprint C (C2) — exit-side proxy subscribe. Called on the main thread
     // by the tunnel exit handler (ExitHandle_LiveSubscribe) when a tunneled
@@ -825,6 +827,9 @@ private:
     // JoinStream/LeaveStream.
     uint32              m_tunnelSourceIP;
     uint16              m_tunnelSourcePort;
+    // K6-1.5: sticky for the current viewing session.  When true, neither the
+    // primary result nor tunneled peer-list fanout may create a direct socket.
+    bool                m_strictTunnelOnly;
     // C5/C6 review fix: self-heal a lost tunneled subscribe (dropped send,
     // broadcaster DENY of the exit, or a circuit-death TOCTOU). Re-issue the
     // tunneled subscribe from Process() if no live edge appears within a grace

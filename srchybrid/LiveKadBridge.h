@@ -34,6 +34,14 @@ enum EseLiveNamespace : uint8 {
     ESE_NS_LEGACY  = 2
 };
 
+// Local-only provenance. It is never accepted from an untrusted Kad tag: the
+// tunnel receiver sets KAD6_TUNNEL after authenticating/decrypting a gateway
+// reply. STRICT_PRIVACY uses it to prevent a later direct endpoint dial.
+enum EseLivePrivacyOrigin : uint8 {
+    ESE_PRIV_ORIGIN_DIRECT      = 0,
+    ESE_PRIV_ORIGIN_KAD6_TUNNEL = 1
+};
+
 // Discovery entry for a found live stream
 struct LiveStreamEntry {
     uchar       streamKey[16] = {};
@@ -53,6 +61,7 @@ struct LiveStreamEntry {
     // entry has been seen on the clean namespace we keep that tag even
     // if a later legacy result for the same streamKey arrives.
     uint8       discoveryNamespace = ESE_NS_UNKNOWN;
+    uint8       privacyOrigin = ESE_PRIV_ORIGIN_DIRECT;
 };
 
 class CLiveKadBridge
@@ -106,6 +115,13 @@ public:
     // Lookup a specific stream by key
     bool GetStreamInfo(const uchar* streamKey, LiveStreamEntry& outEntry) const;
 
+    // K6-1A stateful target authorization for the existing Live subscribe
+    // service. True only for the exact, fresh (streamKey, public endpoint)
+    // learned by this exit's own directory; no caller-supplied alternate IP.
+    bool AuthorizesExitProxy(const uchar* streamKey, uint32 broadcasterIP,
+                             uint16 broadcasterPort,
+                             uint16 broadcasterUDPPort) const;
+
     // === Network Callbacks ===
 
     // Called when we receive a Kad search result that's a live stream.
@@ -124,7 +140,8 @@ public:
         uint16 broadcasterUDPPort,
         uint16 bitrate, uint32 viewerCount,
         uint32 fromSearchID = 0,
-        uint32 broadcasterAltIP = 0);
+        uint32 broadcasterAltIP = 0,
+        uint8 privacyOrigin = ESE_PRIV_ORIGIN_DIRECT);
 
     // v8.1 D1 - parse a tunneled TUN_OP_KAD_RESULT_V2 wire body and feed each record into
     // the directory via OnKadSearchResult (the SAME sink the direct Kad search uses), so a
@@ -211,6 +228,7 @@ private:
         uint16 port;
         uint16 udpPort;
         uint32 altIP;     // NAT-reach: overlay endpoint, dialed alongside ip (0 = none)
+        uint8  privacyOrigin;
     };
     CArray<PendingDial> m_pendingDials;
     static const int    kMaxPendingDials   = 50;   // FIFO drop beyond this

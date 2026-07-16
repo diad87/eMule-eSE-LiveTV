@@ -40,6 +40,7 @@ namespace Kademlia
 	class CIndexed;
 	class CKadUDPKey;
 	class CKadClientSearcher;
+	class CKad6RoutingTable;
 	class CKademlia
 	{
 #ifdef _BOOTSTRAPNODESDAT
@@ -53,6 +54,7 @@ namespace Kademlia
 		static void	Stop();
 		static CPrefs* GetPrefs();
 		static CRoutingZone* GetRoutingZone();
+		static CKad6RoutingTable* GetKad6RoutingTable();
 		static CKademliaUDPListener* GetUDPListener();
 		static CIndexed* GetIndexed();
 		static bool	IsRunning();
@@ -70,6 +72,8 @@ namespace Kademlia
 		static void	Bootstrap(uint32 uIP, uint16 uPort);
 		static void	Bootstrap(LPCTSTR szHost, uint16 uPort);
 		static void	ProcessPacket(const byte *pbyData, uint32 uLenData, uint32 uIP, uint16 uPort, bool bValidReceiverKey, const CKadUDPKey &senderUDPKey);
+		static void	ProcessPacketV6(const byte *pbyData, uint32 uLenData,
+			const byte uAddress[16], uint16 uPort);
 		static void	AddEvent(CRoutingZone *pZone);
 		static void	RemoveEvent(CRoutingZone *pZone);
 		static void	Process();
@@ -106,6 +110,7 @@ namespace Kademlia
 
 		CPrefs *m_pPrefs;
 		CRoutingZone *m_pRoutingZone;
+		CKad6RoutingTable *m_pKad6RoutingTable;
 		CKademliaUDPListener *m_pUDPListener;
 		CIndexed *m_pIndexed;
 	};

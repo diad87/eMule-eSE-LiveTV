@@ -20,6 +20,7 @@
 #endif
 #include "LiveDebugLog.h"
 #include "LiveStreamManager.h"  // v7.1.8 — for OnPeerDisconnected from dtor
+#include "LiveTunnel.h"         // circuit teardown when an adjacent peer disconnects
 #include "LiveBuddyRelay.h"      // R.3 — free relay slot/downstream/buddy on teardown
 #include "emule.h"
 #include "UpDownClient.h"
@@ -35,6 +36,7 @@
 #include "Server.h"
 #include "ClientCredits.h"
 #include "FirewallProberV6.h"   // v0.71 IPv6 Sprint 6 — in-band public v6 detection
+#include "kademlia/kademlia/KadV2ModeSelector.h"
 #include "IPFilter.h"
 #include "Friend.h"
 #include "Statistics.h"
@@ -421,6 +423,7 @@ CUpDownClient::~CUpDownClient()
 	// paths and is idempotent if the peer was never on a LIVE peer list.
 	if (theApp.liveStreamManager != NULL)
 		theApp.liveStreamManager->OnPeerDisconnected(this);
+	eSELive::CLiveTunnel::Get().OnPeerDisconnected(this);
 	CLiveBuddyRelay::Instance().OnPeerDisconnected(this);   // R.3: free relay slot / downstream / buddy
 
 	theApp.clientlist->RemoveClient(this, _T("Destructing client object"));
@@ -738,7 +741,7 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 			} else if (bDbgInfo)
 				m_strHelloInfo.AppendFormat(_T("\n  ***UnkType=%s"), (LPCTSTR)temptag.GetFullInfo());
 			break;
-		case 0x6D:   // TAG_ESE_NODE_PUB — v8.x Phase 1 (authenticated tunnel handshake)
+		case TAG_ESE_NODE_PUB:   // v8.x authenticated tunnel handshake identity
 			// Peer's 32-byte Ed25519 node identity (TAGTYPE_BLOB). Stored now;
 			// pinned in Phase 2 for the CREATE/CREATED v2 handshake
 			// (docs/AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md). Absent / wrong
@@ -1279,10 +1282,9 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	uint32 forkCaps = CAP_FORK_ED25519;
 	if (thePrefs.IsIPv6Enabled()) {
 		forkCaps |= CAP_FORK_IPV6_WIRE;
-		// CAP_FORK_IPV6_KAD remains clear until native-v6 UDP receive and
-		// routing are complete. Advertising it early creates a black-hole route.
-		// CAP_FORK_IPV6_DUALSTACK is set by the firewall prober once it has
-		// confirmed v6 reachability; the bit is OR-ed in below if set.
+		// Runtime bits are fail-safe: DUALSTACK comes from the firewall prober;
+		// IPV6_KAD is set only while K6-2 has a dual-stack UDP bind and a
+		// detected public IPv6 endpoint. Neither is advertised speculatively.
 		extern uint32 g_uForkCapsRuntime;  // defined in FirewallProberV6.cpp
 		forkCaps |= g_uForkCapsRuntime;
 	}
@@ -1312,7 +1314,7 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	// handshake. Same eseNodePub captured above -> count and write stay in sync.
 	// Legacy peers ignore the unknown tag (TLV-additive contract).
 	if (eseNodePub != NULL) {
-		CTag tagNodePub((uint8)0x6D, (size_t)32, (const BYTE*)eseNodePub);
+		CTag tagNodePub((uint8)TAG_ESE_NODE_PUB, (size_t)32, (const BYTE*)eseNodePub);
 		tagNodePub.WriteTagToFile(data);
 	}
 
@@ -1386,6 +1388,11 @@ void CUpDownClient::ProcessMuleCommentPacket(const uchar *pachPacket, uint32 nSi
 bool CUpDownClient::Disconnected(LPCTSTR pszReason, bool bFromSocket)
 {
 	ASSERT(theApp.clientlist->IsValidClient(this));
+
+	// Circuits are connection-bound, not client-object-bound. A client may be
+	// retained for queues/retry after its socket closes, so destructor-only
+	// cleanup leaves a dead circuit advertised as Active indefinitely.
+	eSELive::CLiveTunnel::Get().OnPeerDisconnected(this);
 
 	/*// TODO LOGREMOVE
 	if (m_nConnectingState == CCS_DIRECTCALLBACK)
@@ -1592,6 +1599,40 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 		}
 		socket->Safe_Delete();
 	}
+
+	// K6-4 sources carry a single-use ticket emitted by the authenticated exit.
+	// Start the gateway DIAL before any LowID/direct-route branch can run. This
+	// path is asynchronous: DIAL_OK attaches CKad6OriginSocket on the main thread
+	// and the normal HELLO/ConnectionEstablished machinery continues unchanged.
+	if (HasK6TargetTicket()) {
+		m_eConnectingState = CCS_DIRECTTCP;
+		theApp.clientlist->AddConnectingClient(this);
+		if (eSELive::CLiveTunnel::Get().BeginK6Download(this))
+			return true;
+		theApp.clientlist->RemoveConnectingClient(this);
+		m_eConnectingState = CCS_NONE;
+		if (Disconnected(_T("Kad6 gateway unavailable"))) {
+			delete this;
+			return false;
+		}
+		return true;
+	}
+
+	// A hash/source operation explicitly configured STRICT may never silently
+	// reuse an ordinary source as a direct TCP fallback. Only a K6-authorized
+	// source above is eligible while the tunneled policy is active.
+	if (m_reqfile != NULL &&
+		eSELive::CLiveTunnel::Get().ShouldRouteThroughTunnel(NULL,
+			Kademlia::CKadV2ModeSelector::QueryContext::KAD_SEARCH) &&
+		Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy() ==
+			Kademlia::CKadV2ModeSelector::STRICT_PRIVACY) {
+		m_eConnectingState = CCS_PRECONDITIONS;
+		if (Disconnected(_T("Kad6 STRICT: no exit-issued target ticket"))) {
+			delete this;
+			return false;
+		}
+		return true;
+	}
 	m_eConnectingState = CCS_PRECONDITIONS; // We now officially try to connect :)
 
 	////////////////////////////////////////////////////////////
@@ -1621,6 +1662,15 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 	const bool bUseIPv6Direct = bCanIPv6Direct
 		&& (HasLowID() || IsIPv6OnlyEndpoint()
 			|| thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode);
+	if (IsIPv6OnlyEndpoint() && !bCanIPv6Direct && !HasLowID()) {
+		DebugLogWarning(_T("TryToConnect: IPv6-only endpoint has no validated native-v6 route; skipping synthetic IPv4 dial (%s)"),
+			(LPCTSTR)DbgGetClientInfo());
+		if (Disconnected(_T("IPv6-only route unavailable"))) {
+			delete this;
+			return false;
+		}
+		return true;
+	}
 	uint32 uClientIP = (GetIP() != 0) ? GetIP() : GetConnectIP();
 	if (uClientIP == 0 && !HasLowID())
 		uClientIP = htonl(m_nUserIDHybrid);
@@ -1700,7 +1750,9 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 
 	////////////////////////////////////////////////////////////
 	// 3) Normal Outgoing TCP Connection
-	if (!HasLowID() || GetKadState() == KS_CONNECTING_FWCHECK || bUseIPv6Direct) {
+	if ((!HasLowID() && !IsIPv6OnlyEndpoint())
+		|| (GetKadState() == KS_CONNECTING_FWCHECK && !IsIPv6OnlyEndpoint())
+		|| bUseIPv6Direct) {
 		m_eConnectingState = CCS_DIRECTTCP;
 		if (pClassSocket == NULL)
 			pClassSocket = RUNTIME_CLASS(CClientReqSocket);
@@ -1718,7 +1770,8 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 	}
 	////////////////////////////////////////////////////////////
 	// 4) Direct Callback Connections
-	if (!bNoCallbacks && SupportsDirectUDPCallback() && bClientUdpReady && GetConnectIP() != 0) {
+	if (!bNoCallbacks && !IsIPv6OnlyEndpoint()
+		&& SupportsDirectUDPCallback() && bClientUdpReady && GetConnectIP() != 0) {
 		m_eConnectingState = CCS_DIRECTCALLBACK;
 		//DebugLog(_T("Direct Callback on port %u to client %s (%s) "), GetKadPort(), (LPCTSTR)DbgGetClientInfo(), (LPCTSTR)md4str(GetUserHash()));
 		CSafeMemFile data;
@@ -2299,7 +2352,12 @@ void CUpDownClient::SendSignaturePacket()
 	uint8 byChaIPKind;
 	uint32 ChallengeIP;
 	if (bUseV2) {
-		if (theApp.serverconnect->GetClientID() == 0 || theApp.serverconnect->IsLowID()) {
+		if (m_bK6SecureIdentVep && m_dwK6SecureIdentIP != 0) {
+			// The remote verifier sees the exit's address. The VEP was signed by
+			// that exit and is bound to this K6 stream; A keeps its RSA key.
+			ChallengeIP = m_dwK6SecureIdentIP;
+			byChaIPKind = CRYPT_CIP_LOCALCLIENT;
+		} else if (theApp.serverconnect->GetClientID() == 0 || theApp.serverconnect->IsLowID()) {
 			// we cannot do not know for sure our public ip, so use the remote clients one
 			ChallengeIP = GetIP();
 			byChaIPKind = CRYPT_CIP_REMOTECLIENT;

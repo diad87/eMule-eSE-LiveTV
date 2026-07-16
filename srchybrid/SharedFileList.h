@@ -135,8 +135,10 @@ private:
 #endif
 
 	INT_PTR	m_currFileSrc;
+	INT_PTR	m_currFileK6;
 	INT_PTR	m_currFileNotes;
 	time_t	m_lastPublishKadSrc;
+	time_t	m_lastPublishK6Src;
 	time_t	m_lastPublishKadNotes;
 	DWORD	m_lastPublishED2K;
 	bool	m_lastPublishED2KFlag;

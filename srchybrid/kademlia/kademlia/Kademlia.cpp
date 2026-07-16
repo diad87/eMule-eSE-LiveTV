@@ -46,6 +46,7 @@ their client on the eMule forum.
 #include "kademlia/kademlia/UDPFirewallTester.h"
 #include "kademlia/net/KademliaUDPListener.h"
 #include "kademlia/routing/RoutingZone.h"
+#include "kademlia/routing/Kad6RoutingTable.h"
 #include "kademlia/routing/contact.h"
 #include "kademlia/utils/KadUDPKey.h"
 #include "kademlia/utils/KadClientSearcher.h"
@@ -92,6 +93,7 @@ bool		CKademlia::m_bootstrapping = false;
 CKademlia::CKademlia()
 	: m_pPrefs()
 	, m_pRoutingZone()
+	, m_pKad6RoutingTable()
 	, m_pUDPListener()
 	, m_pIndexed()
 {
@@ -148,6 +150,7 @@ void CKademlia::Start(CPrefs *pPrefs)
 		m_pInstance->m_pPrefs = pPrefs;
 		m_pInstance->m_pIndexed = new CIndexed();
 		m_pInstance->m_pRoutingZone = new CRoutingZone();
+		m_pInstance->m_pKad6RoutingTable = new CKad6RoutingTable();
 		m_pInstance->m_pUDPListener = new CKademliaUDPListener();
 		// Mark Kad as running state.
 		m_bRunning = true;
@@ -158,6 +161,8 @@ void CKademlia::Start(CPrefs *pPrefs)
 		if (m_pInstance) {
 			delete m_pInstance->m_pUDPListener;
 			m_pInstance->m_pUDPListener = NULL;
+			delete m_pInstance->m_pKad6RoutingTable;
+			m_pInstance->m_pKad6RoutingTable = NULL;
 			delete m_pInstance->m_pRoutingZone;
 			m_pInstance->m_pRoutingZone = NULL;
 			delete m_pInstance->m_pIndexed;
@@ -192,6 +197,9 @@ void CKademlia::Stop()
 	delete m_pInstance->m_pUDPListener;
 	m_pInstance->m_pUDPListener = NULL;
 
+	delete m_pInstance->m_pKad6RoutingTable;
+	m_pInstance->m_pKad6RoutingTable = NULL;
+
 	delete m_pInstance->m_pRoutingZone;
 	m_pInstance->m_pRoutingZone = NULL;
 
@@ -222,6 +230,8 @@ void CKademlia::Process()
 	// Clean() self-limits to one pass per 30 min and to loaded data
 	if (m_pInstance->m_pIndexed != NULL)
 		m_pInstance->m_pIndexed->Clean();
+	if (m_pInstance->m_pUDPListener != NULL)
+		m_pInstance->m_pUDPListener->ProcessKad6();
 
 	// v0.71 P0.2 — privacy stack heartbeat. Wrapped in try/catch because
 	// the privacy modules are best-effort and must NEVER bring down the
@@ -475,6 +485,14 @@ void CKademlia::ProcessPacket(const byte *pbyData, uint32 uLenData, uint32 uIP, 
 		m_pInstance->m_pUDPListener->ProcessPacket(pbyData, uLenData, uIP, uPort, bValidReceiverKey, senderUDPKey);
 }
 
+void CKademlia::ProcessPacketV6(const byte *pbyData, uint32 uLenData,
+	const byte uAddress[16], uint16 uPort)
+{
+	if (m_pInstance && m_pInstance->m_pUDPListener)
+		m_pInstance->m_pUDPListener->ProcessPacketV6(
+			pbyData, uLenData, uAddress, uPort);
+}
+
 bool CKademlia::GetPublish()
 {
 	if (m_pInstance && m_pInstance->m_pPrefs)
@@ -543,6 +561,13 @@ CRoutingZone* CKademlia::GetRoutingZone()
 		return NULL;
 	}
 	return m_pInstance->m_pRoutingZone;
+}
+
+CKad6RoutingTable* CKademlia::GetKad6RoutingTable()
+{
+	if (m_pInstance == NULL || m_pInstance->m_pKad6RoutingTable == NULL)
+		return NULL;
+	return m_pInstance->m_pKad6RoutingTable;
 }
 
 CIndexed* CKademlia::GetIndexed()

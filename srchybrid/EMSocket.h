@@ -52,6 +52,7 @@ public:
 	virtual bool IsEnoughFileDataQueued(uint32 nMinFilePayloadBytes) const;
 	virtual bool UseBigSendBuffer();
 	INT_PTR	DbgGetStdQueueCount() const		{ return standardpacket_queue.GetCount(); }
+	INT_PTR	GetControlQueueCount() const		{ return controlpacket_queue.GetCount(); }
 
 	virtual DWORD GetTimeOut() const		{ return m_uTimeOut; }
 	virtual void SetTimeOut(DWORD uTimeOut) { m_uTimeOut = uTimeOut; }

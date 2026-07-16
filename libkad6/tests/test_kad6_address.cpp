@@ -183,6 +183,15 @@ static void TestRejects() {
         CHECK(st == Kad6Status::TooLarge, "encode too-small buffer");
         CHECK(written == 0, "encode written reset on failure");
     }
+    // Two manually-constructed invalid families must not collapse to the same
+    // address identity merely because both have zero meaningful bytes.
+    {
+        Kad6Address a;
+        Kad6Address b;
+        a.family = static_cast<Kad6Address::Family>(5);
+        b.family = static_cast<Kad6Address::Family>(5);
+        CHECK(!(a == b), "invalid address families never compare equal");
+    }
 }
 
 static void TestNormalization() {

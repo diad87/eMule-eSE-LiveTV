@@ -38,6 +38,8 @@ constexpr std::uint16_t kK6EpReservedMask    = 0xFF00; // bits 8..15 reserved
 
 // Fixed tail after the variable-length address: udp+tcp+flags(6) + prio+obs(2) + valid(8).
 constexpr std::size_t kK6EndpointTailSize = 16;
+constexpr std::size_t kK6EndpointMinEncodedSize = 2 + kK6EndpointTailSize;
+constexpr std::size_t kK6EndpointMaxEncodedSize = 18 + kK6EndpointTailSize;
 
 struct K6Endpoint {
     Kad6Address   addr;
@@ -60,6 +62,8 @@ Kad6Status EncodeK6Endpoint(const K6Endpoint& e, std::vector<Byte>& out);
 // fixed tail, so a short or malformed buffer never reads out of bounds.
 //   - address decode failure propagates (Malformed / Truncated / NullArgument)
 //   - fewer than 16 tail bytes after the address => Truncated
+//   - observed outside the canonical boolean range 0..1 => Malformed
+// Reserved transport bits are preserved on decode for forward compatibility.
 // `consumed`, if non-null, receives addressSize + 16 on success, 0 otherwise.
 Kad6Status DecodeK6Endpoint(const Byte* in, std::size_t len, K6Endpoint& out,
                             std::size_t* consumed = nullptr) noexcept;

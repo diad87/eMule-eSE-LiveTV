@@ -675,6 +675,7 @@ public:
 	static int		m_iKadV2PrivacyMode;		// 0=Direct,1=Tunneled,2=Adaptive
 	static int		m_iKadV2FallbackPolicy;		// 0=Strict,1=Balanced,2=BestEffort
 	static CString	m_strKadV2SensitiveKeywords;// '|'-delimited lowercase keywords
+	static bool		m_bKad6PublicExitOptIn;	// explicit persistent operator consent; gate evidence is separate
 
 	// Spam
 	static bool		m_bEnableSearchResultFilter;
@@ -1325,6 +1326,8 @@ public:
 	static void		SetKadV2FallbackPolicy(int p)		{ m_iKadV2FallbackPolicy = p; }
 	static const CString& GetKadV2SensitiveKeywords()			{ return m_strKadV2SensitiveKeywords; }
 	static void		SetKadV2SensitiveKeywords(const CString &s)	{ m_strKadV2SensitiveKeywords = s; }
+	static bool		GetKad6PublicExitOptIn()			{ return m_bKad6PublicExitOptIn; }
+	static void		SetKad6PublicExitOptIn(bool enabled)	{ m_bKad6PublicExitOptIn = enabled; }
 	static bool		GetWSIsEnabled()					{ return m_bWebEnabled; }
 	static void		SetWSIsEnabled(bool bEnable)		{ m_bWebEnabled = bEnable; }
 	static bool		GetWebUseGzip()						{ return m_bWebUseGzip; }

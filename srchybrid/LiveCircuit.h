@@ -148,6 +148,12 @@ public:
     // in BuildPool, AND-ed with hop2 in BuildExtend (any non-bulk hop -> false).
     bool m_bulk_ok = false;
 
+    // K6-6 class-5 is available only while every authenticated hop carries
+    // the signed SHAPED capability. It is never inferred from BULK alone.
+    bool m_shaped_ok = false;
+    uint16_t m_shape_bucket_kib = 0; // signed CREATE-v3 reservation (0 = none)
+    bool m_traffic_shaping_exposed = false;
+
     // v8.1.2 (B2) — explicit per-cell AEAD nonce for the bulk data plane. The sender
     // increments this per bulk cell it originates on this circuit (send direction);
     // the value travels on the wire (BulkCellHeader.nonce_seq) so a dropped/reordered
@@ -163,6 +169,8 @@ public:
     // CREATED back through it and forward any RELAY cells from the
     // forward direction back here.
     CUpDownClient* m_prevHopClient = NULL;
+    uint32_t       m_originCircContext = 0;
+    uint8_t        m_remoteHopIndex = 0;
 
     // v0.71 B — relay-side forwarding state for 2-hop. When V sends
     // CELL_EXTEND through this relay (us = hop1), we pick a new outbound
@@ -172,6 +180,19 @@ public:
     // wrap with our K_send_r_to_v key, and send as CELL_EXTENDED to V.
     CUpDownClient* m_nextHopClient = NULL;
     uint32_t       m_nextCircId    = 0;
+
+    // Originator-only construction queue.  Legacy two-hop stages one entry;
+    // K6-6 STRICT stages middle+exit and consumes exactly one entry after
+    // each authenticated CREATED/EXTENDED.  Relay mappings continue to use
+    // m_nextHopClient/m_nextCircId and never inspect this vector.
+    std::vector<CUpDownClient*> m_pendingHopClients;
+    bool m_strict3 = false;
+    bool m_path_diverse = false;
+    // Dedicated one-hop quota issuer path. It deliberately exposes the
+    // origin network prefix to the issuer for per-prefix admission control,
+    // and therefore MUST NOT carry searches, publishes, dials or stream data.
+    bool m_k6QuotaIssuerCircuit = false;
+    bool m_k6BuildMetricEmitted = false;
 
     // Ephemeral X25519 private key used during the CREATE/CREATED
     // handshake. Wiped after the shared secret is derived. For the
@@ -196,6 +217,14 @@ public:
     bool     m_expectedNodePubSet  = false;
     uint8_t  m_expectedHash[16]    = {0};
     bool     m_auth_ok             = false;
+    uint8_t  m_createPrefixHash[32] = {0};
+    uint8_t  m_createHopIndex = 0;
+
+    // Capability snapshot of the actual exit, authenticated by CREATED-v2.
+    // For a one-hop circuit this is hop1's signed_caps; after EXTEND it is
+    // replaced by hop2's signed_caps.  A v1/unsigned path leaves it zero, so
+    // cap-gated services can never be selected from an unauthenticated HELLO.
+    uint32_t m_exit_signed_caps    = 0;
 
     // v8.x Phase 2 — SECOND-hop (exit) authenticated-handshake state, kept STRICTLY
     // separate from the hop1 block above (no overwrite footgun on the EXTEND leg).
@@ -206,6 +235,19 @@ public:
     uint8_t  m_expectedNodePub2[32] = {0};   // pinned Ed25519 identity of hop2 (the exit)
     bool     m_expectedNodePub2Set  = false;
     uint8_t  m_expectedHash2[16]    = {0};   // hop2 MD4 user-hash (target binding)
+
+    // Generic in-flight EXTEND context (hop index 1 or 2).  The old *2
+    // fields above remain populated for diagnostic/backward compatibility;
+    // protocol v3 uses this single bounded slot because extension is strictly
+    // sequential and never has more than one target in flight.
+    uint8_t  m_extendEphemeralPub[32] = {0};
+    uint8_t  m_extendNonce[16] = {0};
+    uint8_t  m_extendExpectedNodePub[32] = {0};
+    uint8_t  m_extendExpectedHash[16] = {0};
+    uint8_t  m_extendPrefixHash[32] = {0};
+    uint8_t  m_extendHopIndex = 0;
+    bool     m_extendExpectedNodePubSet = false;
+    DWORD    m_extendStartedTick = 0;
 
     // v8.1 D5 - best-effort Kad node-ID of the EXIT (last hop), resolved from our routing
     // table at build time (originator side). Lets CKadV2TunnelPool::Acquire pick the circuit

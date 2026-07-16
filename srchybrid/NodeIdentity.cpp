@@ -22,6 +22,7 @@ static char THIS_FILE[] = __FILE__;
 namespace {
 
 bool    s_ready    = false;
+bool    s_persistent = false;
 uint8_t s_pub[32]  = {0};
 uint8_t s_priv[32] = {0};      // kept in memory for the process lifetime (sign path)
 
@@ -46,6 +47,20 @@ std::string IdentityFilePath()
     return WideToUtf8((LPCWSTR)dir);
 }
 
+bool IdentityKeypairValid(const uint8_t pub[32], const uint8_t priv[32])
+{
+    static const uint8_t challenge[] = {
+        'e', 'S', 'E', '-', 'N', 'o', 'd', 'e', 'I', 'd', '-', 'C', 'h', 'e', 'c', 'k'
+    };
+    uint8_t signature[64] = {};
+    const bool valid = eSELive::SignMessage(
+            priv, pub, challenge, sizeof challenge, signature)
+        && eSELive::VerifySignature(
+            pub, challenge, sizeof challenge, signature);
+    ::SecureZeroMemory(signature, sizeof signature);
+    return valid;
+}
+
 } // namespace
 
 namespace eSELive {
@@ -62,20 +77,24 @@ bool NodeIdentityInit()
 
     // Stored blob = pub(32) || priv(32). Loading both avoids re-deriving the pub.
     uint8_t blob[64];
-    if (store->LoadKey(blob, sizeof blob)) {
+    if (store->LoadKey(blob, sizeof blob)
+        && IdentityKeypairValid(blob, blob + 32)) {
         memcpy(s_pub,  blob,      32);
         memcpy(s_priv, blob + 32, 32);
         ::SecureZeroMemory(blob, sizeof blob);
         s_ready = true;
+        s_persistent = true;
         return true;
     }
+	::SecureZeroMemory(blob, sizeof blob);
 
     // First run (or unreadable / foreign blob): generate a fresh identity.
     if (!GenerateBroadcasterKeypair(s_pub, s_priv))
         return false;
     memcpy(blob,      s_pub,  32);
     memcpy(blob + 32, s_priv, 32);
-    if (!store->SaveKey(blob, sizeof blob)) {
+    s_persistent = store->SaveKey(blob, sizeof blob);
+    if (!s_persistent) {
         // Persist failed (e.g. read-only config dir). We still run this session
         // with the in-memory key; a fresh one is generated next launch.
         AddDebugLogLine(false, _T("eSE node identity: generated but PERSIST FAILED (ephemeral this session)"));
@@ -88,6 +107,11 @@ bool NodeIdentityInit()
 const uint8_t* NodeIdentityPub()
 {
     return s_ready ? s_pub : NULL;
+}
+
+bool NodeIdentityIsPersistent()
+{
+    return s_ready && s_persistent;
 }
 
 bool NodeIdentitySign(const uint8_t* msg, std::size_t msgLen, uint8_t sig[64])

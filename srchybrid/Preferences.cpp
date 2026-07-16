@@ -410,6 +410,7 @@ bool	CPreferences::m_bEseChannelPublish;	// [eSE v9] publish channel record (dor
 int		CPreferences::m_iKadV2PrivacyMode;      // D2
 int		CPreferences::m_iKadV2FallbackPolicy;   // D2
 CString	CPreferences::m_strKadV2SensitiveKeywords; // D2
+bool	CPreferences::m_bKad6PublicExitOptIn;
 bool	CPreferences::m_bWebEnabled;
 bool	CPreferences::m_bWebUseGzip;
 int		CPreferences::m_nWebPageRefresh;
@@ -1866,6 +1867,7 @@ void CPreferences::SavePreferences()
 	ini.WriteInt(_T("KadV2PrivacyMode"), m_iKadV2PrivacyMode, _T("eSE"));
 	ini.WriteInt(_T("KadV2FallbackPolicy"), m_iKadV2FallbackPolicy, _T("eSE"));
 	ini.WriteString(_T("KadV2SensitiveKeywords"), m_strKadV2SensitiveKeywords, _T("eSE"));
+	ini.WriteBool(_T("Kad6PublicExitOptIn"), m_bKad6PublicExitOptIn, _T("eSE"));
 	ini.WriteBool(_T("EnableUtpHolePunch"), m_bEnableUtpHolePunch, _T("eSE"));
 	ini.WriteBool(_T("EseKad3Rendezvous"), m_bEseKad3Rendezvous, _T("eSE"));
 	ini.WriteBool(_T("EseEndgame"), m_bEseEndgame, _T("eSE"));
@@ -2590,6 +2592,7 @@ void CPreferences::LoadPreferences()
 		if (fb < 0 || fb > 2) fb = 1;
 		m_iKadV2FallbackPolicy = fb;
 		m_strKadV2SensitiveKeywords = ini.GetString(_T("KadV2SensitiveKeywords"), _T(""), _T("eSE"));
+		m_bKad6PublicExitOptIn = ini.GetBool(_T("Kad6PublicExitOptIn"), false, _T("eSE"));
 	}
 
 	LoadCats();

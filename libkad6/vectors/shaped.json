@@ -1,0 +1,25 @@
+{
+  "schema": "kad6-vector-v1",
+  "codec": "K6ShapedBulk carrier",
+  "representation": "Exact bytes are header_hex || prefix_hex repeated prefix_repeat times || tail_hex repeated tail_repeat times.",
+  "vectors": [
+    {
+      "id": "shaped-one-layer-fixed-17000",
+      "input": "remaining_layers=1,circ_id=0x11223344,link_nonce_seq=0x1122334455667788,prefix byte=0xa5,CSPRNG byte=0x5a",
+      "expected_header_hex": "4433221101887766554433221157420000",
+      "expected_prefix_hex": "a5",
+      "expected_prefix_repeat": "16462",
+      "expected_tail_hex": "5a",
+      "expected_tail_repeat": "521",
+      "expected_status": "Ok",
+      "reason": "exact 17000-byte carrier with compact exact-hex run representation"
+    },
+    {
+      "id": "shaped-invalid-bcmd",
+      "input": "golden carrier with bcmd changed from 0x01 to 0x02",
+      "expected_hex": "",
+      "expected_status": "Malformed",
+      "reason": "outer carrier command is fixed"
+    }
+  ]
+}

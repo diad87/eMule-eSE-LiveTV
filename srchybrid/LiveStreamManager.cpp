@@ -146,6 +146,7 @@ CLiveStreamManager::CLiveStreamManager()
     , m_dwLastPeerPrune(0)         // C6 durable-state TTL sweep
     , m_tunnelSourceIP(0)          // C5/C3 tunneled-source endpoint
     , m_tunnelSourcePort(0)
+    , m_strictTunnelOnly(false)     // K6-1.5: no direct primary/secondary dials
     , m_tunnelSubscribeTick(0)     // C5/C6 self-heal
     , m_tunnelResubCount(0)
 {
@@ -528,6 +529,7 @@ bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title
     m_recentDials.RemoveAll();      // churn fix: fresh dial-cooldown table
     m_tunnelSourceIP = 0;           // C3 fix: fresh session, no tunneled source yet
     m_tunnelSourcePort = 0;
+    m_strictTunnelOnly = false;
     m_tunnelSubscribeTick = 0;      // C5/C6 self-heal
     m_tunnelResubCount = 0;
     // Ghost-viewer watchdog: fresh session — disarm (OnLiveWebJoin re-arms
@@ -604,6 +606,7 @@ void CLiveStreamManager::LeaveStream()
     m_recentDials.RemoveAll();      // churn fix
     m_tunnelSourceIP = 0;           // C3 fix
     m_tunnelSourcePort = 0;
+    m_strictTunnelOnly = false;
     m_tunnelSubscribeTick = 0;      // C5/C6 self-heal
     m_tunnelResubCount = 0;
     InterlockedExchange(&m_bWebPlayerSession, 0);   // ghost-viewer watchdog
@@ -614,18 +617,19 @@ void CLiveStreamManager::LeaveStream()
     LIVE_LOG("MGR", "LeaveStream");
 }
 
-bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32 ip, uint16 port, uint16 udpPort, uint32 siblingIP)
+bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32 ip,
+                                                   uint16 port, uint16 udpPort,
+                                                   uint32 siblingIP,
+                                                   bool discoveredViaKad6Tunnel)
 {
     // v8.1 Sprint C (C5) — privacy-mode handoff. Decide BEFORE taking m_lock:
     // these tunnel calls take the TUNNEL lock with NO manager lock held, so the
     // only cross-lock order in the system stays tunnel->manager (no A-B/B-A).
     // In Tunelizado (and a circuit is up) the SUBSCRIBE is sent through the
     // tunnel — the broadcaster sees the exit, not us — and we suppress the
-    // direct subscribe. The chunk DATA plane stays DIRECT in Tunelizado (full
-    // data-plane tunneling is Máxima privacidad / Sprint E): we still open a
-    // direct socket for OP_LIVE_REQUEST, and the live edge arrives via the C3
-    // tunneled-heartbeat relay. Default mode is Adaptive with no keyword ->
-    // Direct, so this path is dormant until the Sprint D mode UI enables it.
+    // direct subscribe. BALANCED/BEST_EFFORT may still use the direct chunk
+    // plane; STRICT keeps control and the existing bulk push on the circuit and
+    // never creates a source socket. The live edge arrives via the C3 relay.
     // v8.1 D3 — fallback policy when the mode wants a tunnel. Separating "want"
     // from "can" (a circuit is Active) gives the fallback its meaning:
     //   STRICT      -> no circuit means abort (never expose the viewer directly)
@@ -634,25 +638,29 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     //                  viewer's IP reaches far fewer sources than BEST_EFFORT's full mesh
     //   BEST_EFFORT -> fall to a direct subscribe, but WARN (IP visible to emisor)
     bool useTunnel = false;
+    bool strictNoDirect = false;
+    const Kademlia::CKadV2ModeSelector::FallbackPolicy fallback =
+        Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy();
     {
         eSELive::CLiveTunnel& tun = eSELive::CLiveTunnel::Get();
         const bool wantTunnel = (streamKey != NULL && ip != 0 && port != 0
-                                 && tun.ShouldRouteThroughTunnel(NULL));
+                                 && (discoveredViaKad6Tunnel ||
+                                     tun.ShouldRouteThroughTunnel(NULL)));
         if (wantTunnel) {
             if (tun.ActiveCircuitCount() > 0) {
                 useTunnel = true;
                 tun.SendLiveSubscribeNoWait(streamKey, ip, port, udpPort, /*altIP*/0);
+                strictNoDirect = fallback ==
+                    Kademlia::CKadV2ModeSelector::STRICT_PRIVACY;
             } else {
-                Kademlia::CKadV2ModeSelector::FallbackPolicy fb =
-                    Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy();
-                if (fb == Kademlia::CKadV2ModeSelector::STRICT_PRIVACY) {
+                if (fallback == Kademlia::CKadV2ModeSelector::STRICT_PRIVACY) {
                     AddLogLine(true, GetResString(IDS_LIVEMGR_STRICT_NO_TUNNEL));
                     LIVE_LOG("TUN", "D3 STRICT: no tunnel circuit -> abort subscribe (privacy)");
                     return false;
                 }
                 AddLogLine(true, GetResString(IDS_LIVEMGR_TUNNELED_FALLBACK_DIRECT));
                 LIVE_LOG("TUN", "D3 %s: no tunnel circuit -> direct fallback (warned)",
-                    fb == Kademlia::CKadV2ModeSelector::BALANCED ? "BALANCED" : "BEST_EFFORT");
+                    fallback == Kademlia::CKadV2ModeSelector::BALANCED ? "BALANCED" : "BEST_EFFORT");
             }
         }
     }
@@ -674,6 +682,16 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     if (ip == 0 || port == 0) return false;
     if (ip == theApp.GetPublicIP()) return false;
     if (theApp.ipfilter->IsFiltered(ip)) return false;
+    m_strictTunnelOnly = strictNoDirect;
+
+    // K6-1.5: in STRICT_PRIVACY the endpoint remains discovery-only. Control
+    // and the existing bulk push stay on the onion circuit; opening the TCP
+    // data socket here would reveal V to the source and silently undo the
+    // search's privacy provenance. Availability is intentionally secondary.
+    if (strictNoDirect) {
+        LIVE_LOG("TUN", "K6-1 STRICT: tunneled provenance retained; direct dial suppressed");
+        return true;
+    }
 
     // Fix 2 (ALTA): Block loopback, LAN, multicast, broadcast via IsGoodIPPort.
     // V2-S07+: in headless mode (stress test on one host) we allow loopback
@@ -873,6 +891,17 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
 bool CLiveStreamManager::ExitProxySubscribe(const uchar* streamKey, uint32 ip,
     uint16 port, uint16 udpPort, uint32 altIP)
 {
+    // K6-1A anti-open-proxy gate. Live uses stateful authorization instead of
+    // a portable TargetTicket: this exit must have learned the exact, fresh
+    // streamKey+endpoint itself. Alternate endpoints are not present in the
+    // canonical result and therefore cannot be supplied by the originator.
+    // Run before m_lock because AuthorizesExitProxy performs a tombstone read.
+    if (altIP != 0 || !m_kadBridge.AuthorizesExitProxy(
+            streamKey, ip, port, udpPort)) {
+        LIVE_LOG("TUN", "K6-1 target denied: endpoint absent/stale/mismatched in exit directory");
+        return false;
+    }
+
     CSingleLock lock(&m_lock, TRUE);
 
     if (streamKey == NULL || ip == 0 || port == 0) return false;
@@ -2204,14 +2233,15 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
     // primary path — otherwise we would hand every secondary source a direct
     // user-hash<->stream<->IP association that the primary deliberately withholds.
     // SendLiveSubscribeNoWait only takes the leaf m_mtLock, so it is safe to call
-    // under m_lock (exactly as the C5 self-heal does). NOTE: the DATA plane stays
-    // DIRECT in Tunelizado, so V's IP is still visible to every source it fetches
-    // chunks from (primary and secondary) — full data-plane tunneling is Sprint E.
+    // under m_lock (exactly as the C5 self-heal does). BALANCED/BEST_EFFORT may
+    // use the direct data plane; a STRICT session sends only the tunneled
+    // subscribe and deliberately creates no primary or secondary source socket.
     // In Direct mode this is unchanged (direct subscribe).
     auto& tun = eSELive::CLiveTunnel::Get();
     const bool wantTunnel  = tun.ShouldRouteThroughTunnel(NULL);
     const bool haveCircuit = tun.ActiveCircuitCount() > 0;
     const bool tunMode = wantTunnel && haveCircuit;
+    const bool strictTunnelOnly = m_strictTunnelOnly;
     // v8.1 D3 BALANCED - "Tunelizado wanted, no circuit, BALANCED fallback policy": the
     // viewer must still watch (direct primary), but must NOT amplify its IP exposure across
     // the whole peer-list. Cap the secondary fanout to the resilience floor so BALANCED stays
@@ -2254,6 +2284,19 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
         // Check IPFilter
         if (theApp.ipfilter->IsFiltered(ip)) continue;
 
+        // K6-1.5: a peer-list received through the tunnel is another discovery
+        // result, not permission to bypass STRICT. Keep the subscription on the
+        // circuit and do not even materialize a CUpDownClient for a direct dial.
+        if (strictTunnelOnly) {
+            if (haveCircuit) {
+                tun.SendLiveSubscribeNoWait(m_streamInfo.streamKey, ip, port, 0, 0);
+                LIVE_LOG("TUN", "K6-1 STRICT: secondary subscribe tunneled; direct dial suppressed");
+            } else {
+                LIVE_LOG("TUN", "K6-1 STRICT: no circuit; secondary source skipped");
+            }
+            continue;
+        }
+
         // Try to find or create a client for this peer. Peer-list IPs are stored in network order.
         CUpDownClient* newClient = theApp.clientlist->FindClientByIP(ip, port);
         if (newClient == NULL) {
@@ -2272,8 +2315,8 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
 
         if (tunMode) {
             // Tunelizado: tunnel the subscribe to this secondary source (exit
-            // subscribes on our behalf — the source sees the exit, not us), then open
-            // the direct data socket so chunks can be pulled (data plane direct).
+            // subscribes on our behalf — the source sees the exit, not us). In
+            // non-STRICT profiles the direct data socket may then pull chunks.
             eSELive::CLiveTunnel::Get().SendLiveSubscribeNoWait(
                 m_streamInfo.streamKey, ip, port, 0, 0);
             newClient->TryToConnect(true);   // may delete newClient -> destructor scrubs lists
@@ -2295,8 +2338,8 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
 // v8.1 Sprint C (C2/C3 finish) — a tunneled viewer received the broadcaster's
 // peer-list relayed by the exit (TUN_OP_LIVE_PEER_LIST). Reuse the single-sourced
 // OnPeerListReceived dial/IPFilter/clientlist path (it takes m_lock itself). The
-// peer arg is unused, so NULL is safe; chunks then flow DIRECT per the Tunelizado
-// contract. Re-entering OnPeerListReceived runs its exit-relay hook again, but a
+// peer arg is unused, so NULL is safe; chunks may flow direct only outside a
+// STRICT session. Re-entering OnPeerListReceived runs its exit-relay hook again, but a
 // viewer is not an exit for this stream so that is a cheap no-op (no relay loop).
 void CLiveStreamManager::OnTunneledPeerList(const uchar* streamKey,
     const uint32_t* ips, const uint16_t* ports, uint8_t count)
@@ -3123,12 +3166,14 @@ void CLiveStreamManager::Process()
                     // inner backstop drops the redundant dial once one connects.
                     TryConnectToStreamSource(m_streamInfo.streamKey,
                         known[i].broadcasterIP, known[i].broadcasterPort,
-                        known[i].broadcasterUDPPort, known[i].broadcasterAltIP);
+                        known[i].broadcasterUDPPort, known[i].broadcasterAltIP,
+                        known[i].privacyOrigin == ESE_PRIV_ORIGIN_KAD6_TUNNEL);
                     if (known[i].broadcasterAltIP != 0
                         && known[i].broadcasterAltIP != known[i].broadcasterIP)
                         TryConnectToStreamSource(m_streamInfo.streamKey,
                             known[i].broadcasterAltIP, known[i].broadcasterPort,
-                            known[i].broadcasterUDPPort, known[i].broadcasterIP);
+                            known[i].broadcasterUDPPort, known[i].broadcasterIP,
+                            known[i].privacyOrigin == ESE_PRIV_ORIGIN_KAD6_TUNNEL);
                     lock.Lock();
                 }
             }
@@ -4416,12 +4461,14 @@ void CLiveStreamManager::EnsureMultiParent()
         // other (belt-and-braces with the pair-aware pre-check above).
         TryConnectToStreamSource(m_streamInfo.streamKey,
             known[i].broadcasterIP, known[i].broadcasterPort,
-            known[i].broadcasterUDPPort, known[i].broadcasterAltIP);
+            known[i].broadcasterUDPPort, known[i].broadcasterAltIP,
+            known[i].privacyOrigin == ESE_PRIV_ORIGIN_KAD6_TUNNEL);
         if (known[i].broadcasterAltIP != 0
             && known[i].broadcasterAltIP != known[i].broadcasterIP)
             TryConnectToStreamSource(m_streamInfo.streamKey,
                 known[i].broadcasterAltIP, known[i].broadcasterPort,
-                known[i].broadcasterUDPPort, known[i].broadcasterIP);
+                known[i].broadcasterUDPPort, known[i].broadcasterIP,
+                known[i].privacyOrigin == ESE_PRIV_ORIGIN_KAD6_TUNNEL);
         m_lock.Lock();
         dialed++;
     }

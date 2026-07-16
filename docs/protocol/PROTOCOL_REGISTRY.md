@@ -5,7 +5,8 @@
 > aquí *antes* de tocar `Opcodes.h`. Creado en P0 (Entregable 2), 2026-06-13.
 >
 > **CSV asociados:** [OPCODES.csv](OPCODES.csv) · [TAGS.csv](TAGS.csv) ·
-> [CAPABILITIES.csv](CAPABILITIES.csv) · [TUNNEL_SERVICES.csv](TUNNEL_SERVICES.csv)
+> [CAPABILITIES.csv](CAPABILITIES.csv) · [TUNNEL_SERVICES.csv](TUNNEL_SERVICES.csv) ·
+> [KRP_MESSAGES.csv](KRP_MESSAGES.csv)
 > **Linter de CI:** [`tools/check_protocol_registry.py`](../../tools/check_protocol_registry.py)
 
 ---
@@ -14,7 +15,7 @@
 
 ```
 $ python tools/check_protocol_registry.py
-protocol registry: 105 entries, 96 fork symbols in code
+protocol registry: 154 entries, 137 fork symbols in code
 OK: registry is internally consistent and matches code.
 exit=0
 ```
@@ -44,7 +45,9 @@ agrupa por `namespace`, y el linter solo marca duplicados dentro del mismo names
 
 **El clásico no se registra**: ~200 opcodes eD2K/Kad de upstream son de Merkur, están congelados
 y el linter los ignora por diseño (solo gobierna prefijos del fork: `OP_LIVE_*`, `*_V6`,
-`KADEMLIA3_*`, `TUN_OP_*`, `ESE_CAP_*`, `CAP_FORK_*`, `TAG_ESE_*`…).
+`KADEMLIA3_*`, `TUN_OP_*`, `ESE_CAP_*`, `CAP_FORK_*`, `TAG_ESE_*`…). Los mensajes
+`KRP_*` permanecen en `reserved-proposed`; desde P1 sus valores también se contrastan con el enum
+de `librelaycore`, aunque ningún transporte de red los emite todavía.
 
 ---
 

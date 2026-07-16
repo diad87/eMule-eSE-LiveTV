@@ -194,7 +194,8 @@ bool operator==(const Kad6Address& a, const Kad6Address& b) noexcept {
     if (na.family != nb.family)
         return false;
     std::size_t len = 0;
-    addrLenForFamily(na.family, len); // unrecognized family (rare/manual): len=0, family-only compare
+    if (!addrLenForFamily(na.family, len))
+        return false; // invalid/manual families are never valid identity keys
     return Kad6CtEqual(na.addr.data(), nb.addr.data(), len);
 }
 

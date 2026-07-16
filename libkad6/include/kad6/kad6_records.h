@@ -20,14 +20,12 @@
 //   K6RouterRecord  §17.2 "eSE-Kad6-RouterRecord-v1"  one sig (node_pub)
 //   K6SourceRecord  §17.5 "eSE-Kad6-SourceRecord-v1"  one sig (pub_key — see below)
 //
-// DESIGN DECISION (source-record signer key). §17.5 lists a 16-byte
-// `source_pseudonym` and leaves the signing key implicit. 16 bytes is NOT an
-// Ed25519 public key, so it cannot be the verify key. We make the signer key
-// EXPLICIT: an added `pub_key[32]` field placed on the wire immediately before
-// the signature (and therefore inside the signed bytes). VerifyK6SourceRecord
-// verifies with `pub_key`. A deployment that binds pub_key -> pseudonym does so
-// one layer up (e.g. pseudonym = H(pub_key)[0..16)); this codec only guarantees
-// the record is self-consistently signed by the key it carries.
+// SOURCE-RECORD SIGNER BINDING. §17.5's 16-byte `source_pseudonym` cannot itself
+// be an Ed25519 verify key, so the wire carries pub_key[32] immediately before
+// the signature. The pseudonym is NOT caller-chosen: it is canonically derived
+// as SHA-256("eSE-Kad6-SourcePseudonym-v1" || pub_key)[0..16). Sign overwrites it
+// and Verify rejects any mismatch before Ed25519. Rotating pub_key therefore
+// rotates the unlinkable pseudonym; keeping it preserves the stable policy.
 //
 // The on-wire endpoint_count / exit_count / compat_pub_len are DERIVED from the
 // corresponding container sizes (endpoints, exits, compat_pub) — there is no
@@ -54,6 +52,11 @@ constexpr std::size_t   kK6SourceMaxExits        = 3;   // §17.5 exit_count 1..
 constexpr std::uint16_t kK6SourceMaxCompatPubLen = 256; // policy cap on compat_pub
 constexpr std::uint64_t kK6RouterMaxTtlSeconds   = 7ull * 24 * 3600; // valid window cap
 constexpr std::uint64_t kK6SourceMaxTtlSeconds   = 7ull * 24 * 3600; // created..expires cap
+constexpr std::size_t   kK6RouterRecordFixedSize = 148; // fields + signature, no endpoints
+constexpr std::size_t   kK6RouterRecordMinSize =
+    kK6RouterRecordFixedSize + kK6EndpointMinEncodedSize;
+constexpr std::size_t   kK6RouterRecordMaxSize =
+    kK6RouterRecordFixedSize + kK6RouterMaxEndpoints * kK6EndpointMaxEncodedSize;
 
 using Ed25519Pub = std::array<Byte, kEd25519PubSize>;
 using Ed25519Sig = std::array<Byte, kEd25519SigSize>;
@@ -81,6 +84,19 @@ struct K6NodeBind {
     Ed25519Sig    signature{};
 };
 
+struct K6Rotate;
+
+// Locally pinned identity state used to make replay/key-transition checks part
+// of one verification call instead of an easy-to-forget side helper. An empty
+// state permits first-seen TOFU; an initialized state requires epoch advance,
+// the same KadID, and (for a key change) a matching dual-signed rotation cert.
+struct K6IdentityState {
+    bool           initialized = false;
+    KadId          kad_id{};
+    Ed25519Pub     node_pub{};
+    std::uint64_t  epoch = 0;
+};
+
 // Serialize the signed portion (all fields EXCEPT signature) — exactly the byte
 // string the signature is taken over, after the domain prefix.
 Kad6Status K6NodeBindSerializeSigned(const K6NodeBind& b, std::vector<Byte>& out);
@@ -92,8 +108,15 @@ Kad6Status DecodeK6NodeBind(const Byte* in, std::size_t len, K6NodeBind& out,
 // sig = Ed25519(sk, domain||signed); stores it into b.signature, then encodes.
 Kad6Status SignK6NodeBind(const Kad6CryptoHooks& h, const Byte* sk, std::size_t skLen,
                           K6NodeBind& b, std::vector<Byte>& out);
-// Ok iff version==1 and ed25519_verify(node_pub, domain||signed, signature).
+// Ok iff ed25519_verify(node_pub, domain||signed, signature).
 Kad6Status VerifyK6NodeBind(const Kad6CryptoHooks& h, const K6NodeBind& b);
+// Stateful acceptance: on Ok, advances `state` to b; on every failure leaves it
+// unchanged. The host must serialize calls for the same KadID.
+Kad6Status AcceptK6NodeBind(const Kad6CryptoHooks& h,
+                            const K6NodeBind& b,
+                            K6IdentityState& state,
+                            const K6Rotate* rotation,
+                            std::uint64_t nowUnix);
 
 // ════════════════════════════════════════════════════════════════════════════
 // 2) K6Rotate (§6.3). Authorizes old_pub -> new_pub; signed by BOTH keys.
@@ -163,12 +186,19 @@ Kad6Status SignK6RouterRecord(const Kad6CryptoHooks& h, const Byte* sk, std::siz
 // Cheap gate (version, endpoint count, valid window <= cap and non-inverted)
 // then ed25519_verify(node_pub, ...). Does NOT consult the clock.
 Kad6Status VerifyK6RouterRecord(const Kad6CryptoHooks& h, const K6RouterRecord& r);
-// now >= valid_until => Expired, else Ok (a "not yet valid" now < valid_from is
-// NOT flagged here — this call answers only "has the window elapsed?").
+// Full validity window: now < valid_from -> BadValue; now >= valid_until ->
+// Expired; otherwise Ok.
 inline Kad6Status K6RouterRecordCheckFresh(const K6RouterRecord& r,
                                            std::uint64_t now) noexcept {
+    if (now < r.valid_from) return Kad6Status::BadValue;
     return now >= r.valid_until ? Kad6Status::Expired : Kad6Status::Ok;
 }
+// Stateful acceptance; advances seenEpoch only on Ok. Serialize access per
+// record identity in the host.
+Kad6Status AcceptK6RouterRecord(const Kad6CryptoHooks& h,
+                                const K6RouterRecord& r,
+                                std::uint64_t& seenEpoch,
+                                std::uint64_t nowUnix);
 
 // ════════════════════════════════════════════════════════════════════════════
 // 4) K6SourceRecord (§17.5). Where/how to reach a content object via exit nodes.
@@ -203,7 +233,7 @@ struct K6SourceRecord {
     std::vector<K6ExitDescriptor> exits;  // 1..3, validated
     Hash32        metadata_hash{};
     std::vector<Byte> compat_pub;         // 0..kK6SourceMaxCompatPubLen bytes
-    Ed25519Pub    pub_key{};              // explicit signer key (our addition)
+    Ed25519Pub    pub_key{};              // signer; pseudonym is derived from this key
     Ed25519Sig    signature{};
 };
 
@@ -213,13 +243,25 @@ Kad6Status DecodeK6SourceRecord(const Byte* in, std::size_t len, K6SourceRecord&
                                 std::size_t* consumed = nullptr) noexcept;
 Kad6Status SignK6SourceRecord(const Kad6CryptoHooks& h, const Byte* sk, std::size_t skLen,
                               K6SourceRecord& s, std::vector<Byte>& out);
+// SHA-256(domain || pub_key)[0..16). Requires h.sha256.
+Kad6Status K6DeriveSourcePseudonym(const Kad6CryptoHooks& h,
+                                   const Ed25519Pub& pubKey,
+                                   Hash16& out);
 // Cheap gate (version, exit count, compat_pub cap, created..expires window)
 // then ed25519_verify(pub_key, ...). Does NOT consult the clock.
 Kad6Status VerifyK6SourceRecord(const Kad6CryptoHooks& h, const K6SourceRecord& s);
-// now >= expires_at => Expired, else Ok.
+// Full validity window: before created_at -> BadValue; at/after expires_at ->
+// Expired; otherwise Ok.
 inline Kad6Status K6SourceRecordCheckFresh(const K6SourceRecord& s,
                                            std::uint64_t now) noexcept {
+    if (now < s.created_at) return Kad6Status::BadValue;
     return now >= s.expires_at ? Kad6Status::Expired : Kad6Status::Ok;
 }
+// Stateful acceptance; advances seenEpoch only on Ok. Serialize access per
+// (source identity, object) in the host.
+Kad6Status AcceptK6SourceRecord(const Kad6CryptoHooks& h,
+                                const K6SourceRecord& s,
+                                std::uint64_t& seenEpoch,
+                                std::uint64_t nowUnix);
 
 } // namespace kad6

@@ -1,0 +1,20 @@
+{
+  "schema": "kad6-vector-v1",
+  "codec": "K6 signed records",
+  "vectors": [
+    {
+      "id": "node-bind-canonical",
+      "input": "kad_id=00..0f,node_pub=20..3f,epoch=1,caps=0,signature=64 zero bytes",
+      "expected_hex": "000102030405060708090a0b0c0d0e0f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expected_status": "Ok",
+      "reason": "canonical K6NodeBind field order and little-endian epoch/caps"
+    },
+    {
+      "id": "node-bind-truncated",
+      "input_hex": "000102030405060708090a0b0c0d0e0f",
+      "expected_hex": "",
+      "expected_status": "Truncated",
+      "reason": "a KadID alone is not a complete signed binding"
+    }
+  ]
+}

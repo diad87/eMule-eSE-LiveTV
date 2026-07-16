@@ -999,9 +999,12 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				// v8.x Phase 1 — bring up the persistent eSE node identity (Ed25519)
 				// BEFORE the first HELLO so peers receive TAG_ESE_NODE_PUB (0x6D).
 				// Load-or-generate; generation persists via INodeIdentityStorage
-				// (DPAPI on Win, 0600 file on POSIX). ESE_CAP_TUNNEL_AUTH stays OFF
-				// until Phase 2 lands the v2 handshake (precedent: M1 caps below).
-				if (!eSELive::NodeIdentityInit())
+				// (DPAPI on Win, 0600 file on POSIX). K6-1 requires the exit's
+				// capability snapshot to be authenticated, so AUTH/KAD6 are emitted
+				// only when the persistent identity is actually available.
+				const bool nodeIdentityReady = eSELive::NodeIdentityInit()
+					&& eSELive::NodeIdentityIsPersistent();
+				if (!nodeIdentityReady)
 					AddDebugLogLine(false, _T("Privacy: eSE node identity init FAILED (TAG_ESE_NODE_PUB absent this session)"));
 				g_uEseCapsRuntime = ESE_CAP_SEALED_RECORDS
 				                  | ESE_CAP_GOSSIP_PROTOCOL
@@ -1010,6 +1013,11 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				                  | ESE_CAP_REACH_V2;         // additive Kad source vector, decoded by the strict libreach codec
 				if (thePrefs.GetUtpHolePunchEnabled())
 					g_uEseCapsRuntime |= ESE_CAP_HOLEPUNCH_COOKIE;
+				if (nodeIdentityReady) {
+					g_uEseCapsRuntime |= ESE_CAP_TUNNEL_AUTH;
+					g_uEseCapsRuntime |= ESE_CAP_TUNNEL_STRICT3;
+					g_uEseCapsRuntime |= ESE_CAP_TUNNEL_SHAPED;
+				}
 				// R.1 (3-way Kad rendezvous): advertise participation only when the hole-punch
 				// path is enabled — the responder + R-relay handlers gate on the same pref,
 				// so a peer that sees this bit can safely use us as rendezvous R or target B.
@@ -1039,6 +1047,8 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 						g_uEseCapsRuntime |= ESE_CAP_PRIVACY_TUNNELING;
 						g_uEseCapsRuntime |= ESE_CAP_COVER_TRAFFIC;
 						g_uEseCapsRuntime |= ESE_CAP_TUNNEL_DATAPLANE;  // v8.1 -- multi-cell tunnel transport
+						if (nodeIdentityReady)
+							g_uEseCapsRuntime |= ESE_CAP_KAD6; // K6-1 canonical search gateway
 					}
 				}
 				AddDebugLogLine(false, _T("Privacy: TAG_ESE_CAPS runtime = 0x%08X"), g_uEseCapsRuntime);

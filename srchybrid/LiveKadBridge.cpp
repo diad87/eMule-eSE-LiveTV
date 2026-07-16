@@ -53,7 +53,7 @@ static char THIS_FILE[] = __FILE__;
 // format — additive, never breaks older readers.
 #define ESE_KAD_DISK_SAVE_INTERVAL  (5 * 60 * 1000)    // every 5 min
 #define ESE_KAD_DIRECTORY_FILENAME  _T("eselive_directory.dat")
-#define ESE_KAD_DIRECTORY_VERSION   1
+#define ESE_KAD_DIRECTORY_VERSION   2
 
 // Tag names for live stream metadata in Kad
 // Using non-conflicting custom tag IDs above 0xF0
@@ -852,7 +852,8 @@ void CLiveKadBridge::FeedTunneledSearchResults(const std::vector<uint8_t>& in)
         // validation / tombstone / clamp / dedupe logic and writes m_streamDirectory.
         // fromSearchID/altIP default to 0 (UNKNOWN namespace; no overlay endpoint over the tunnel).
         OnKadSearchResult(streamKey, Ese_Utf8ToCString(title), Ese_Utf8ToCString(cat),
-                          ip, port, uport, brate, views);
+                          ip, port, uport, brate, views, 0, 0,
+                          ESE_PRIV_ORIGIN_KAD6_TUNNEL);
         ++fed;
         p = recEnd;
     }
@@ -903,6 +904,36 @@ bool CLiveKadBridge::GetStreamInfo(const uchar* streamKey, LiveStreamEntry& outE
     return m_streamDirectory.Lookup(strKey, outEntry) != FALSE;
 }
 
+bool CLiveKadBridge::AuthorizesExitProxy(const uchar* streamKey,
+    uint32 broadcasterIP, uint16 broadcasterPort,
+    uint16 broadcasterUDPPort) const
+{
+    if (streamKey == NULL || broadcasterIP == 0 || broadcasterPort == 0)
+        return false;
+
+    LiveStreamEntry entry;
+    {
+        CSingleLock lock(&m_lock, TRUE);
+        const CString strKey = StreamKeyToString(streamKey);
+        if (!m_streamDirectory.Lookup(strKey, entry)) return false;
+    }
+
+    // Check expiry after releasing m_lock.  The unsigned subtraction is
+    // GetTickCount-wrap safe for this short (120 s) authorization window.
+    if ((DWORD)(GetTickCount() - entry.lastSeen) > ESE_KAD_ENTRY_TTL)
+        return false;
+    if (theApp.liveStreamManager &&
+        theApp.liveStreamManager->IsStreamTombstoned(entry.streamKey))
+        return false;
+
+    uint32 expectedIP = entry.broadcasterIP;
+    if (expectedIP == 0 && entry.isOwnStream)
+        expectedIP = theApp.GetPublicIP();
+    return expectedIP != 0 && broadcasterIP == expectedIP &&
+           broadcasterPort == entry.broadcasterPort &&
+           broadcasterUDPPort == entry.broadcasterUDPPort;
+}
+
 
 // ============================================================
 // NETWORK CALLBACKS
@@ -914,7 +945,8 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
     uint16 broadcasterUDPPort,
     uint16 bitrate, uint32 viewerCount,
     uint32 fromSearchID,
-    uint32 broadcasterAltIP)
+    uint32 broadcasterAltIP,
+    uint8 privacyOrigin)
 {
     CSingleLock lock(&m_lock, TRUE);
 
@@ -1046,6 +1078,11 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
         // (legacy / synthetic) sighting lacked — merge them in.
         if (broadcasterUDPPort != 0) entry.broadcasterUDPPort = broadcasterUDPPort;
         if (broadcasterAltIP  != 0) entry.broadcasterAltIP  = broadcasterAltIP;
+        // Privacy provenance is upgrade-only: once an endpoint was learned via
+        // Kad6, a later direct/cache echo must not silently authorize a STRICT
+        // direct dial of the same result.
+        if (privacyOrigin == ESE_PRIV_ORIGIN_KAD6_TUNNEL)
+            entry.privacyOrigin = privacyOrigin;
     } else {
         // New stream discovered
         memcpy(entry.streamKey, streamKey, 16);
@@ -1061,6 +1098,8 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
         entry.lastSeen = GetTickCount();
         entry.startedAt = (uint32)time(NULL);
         entry.isOwnStream = false;
+        entry.privacyOrigin = privacyOrigin == ESE_PRIV_ORIGIN_KAD6_TUNNEL
+            ? ESE_PRIV_ORIGIN_KAD6_TUNNEL : ESE_PRIV_ORIGIN_DIRECT;
 
         AddLogLine(false, GetResString(IDS_LIVEKAD_DISCOVERED_FMT),
             (LPCTSTR)title, (LPCTSTR)ipstr(broadcasterIP), broadcasterPort,
@@ -1132,6 +1171,7 @@ void CLiveKadBridge::OnKadSearchResult(const uchar* streamKey,
         // NAT-reach: use the merged entry value so a legacy echo without the
         // tag still dials the overlay endpoint learned from an earlier result.
         pd.altIP   = entry.broadcasterAltIP;
+        pd.privacyOrigin = entry.privacyOrigin;
         m_pendingDials.Add(pd);
     }
 }
@@ -1197,7 +1237,8 @@ void CLiveKadBridge::Process()
             m_pendingDials.RemoveAt(0);
             dialLock.Unlock();   // TryConnectToStreamSource takes its own lock
             theApp.liveStreamManager->TryConnectToStreamSource(
-                pd.streamKey, pd.ip, pd.port, pd.udpPort, pd.altIP);
+                pd.streamKey, pd.ip, pd.port, pd.udpPort, pd.altIP,
+                pd.privacyOrigin == ESE_PRIV_ORIGIN_KAD6_TUNNEL);
             // NAT-reach: race the overlay endpoint too (happy-eyeballs). A
             // NATed broadcaster's public IP never answers; its 100.64/10
             // overlay address does. Whichever TCP connect lands first sends
@@ -1208,7 +1249,8 @@ void CLiveKadBridge::Process()
             // Dedupe/caps inside TryConnectToStreamSource keep this bounded.
             if (pd.altIP != 0 && pd.altIP != pd.ip)
                 theApp.liveStreamManager->TryConnectToStreamSource(
-                    pd.streamKey, pd.altIP, pd.port, pd.udpPort, pd.ip);
+                    pd.streamKey, pd.altIP, pd.port, pd.udpPort, pd.ip,
+                    pd.privacyOrigin == ESE_PRIV_ORIGIN_KAD6_TUNNEL);
             dialLock.Lock();
             drained++;
         }
@@ -1374,10 +1416,12 @@ KadDebugSnapshot CLiveKadBridge::BuildDebugKadSnapshot() const
 // On-disk format (versioned, plain-text, one record per line so a future
 // version can read older snapshots without breaking compatibility):
 //
-//   ESELIVE_DIR v1
+//   ESELIVE_DIR v2
 //   <streamKey-hex32>\t<title>\t<category>\t<language>\t<bitrate>\t
 //                <viewerCount>\t<broadcasterIP>\t<broadcasterPort>\t
-//                <broadcasterUDPPort>\t<startedAt>\t<lastSeenUnix>\n
+//                <broadcasterUDPPort>\t<startedAt>\t<lastSeenUnix>\t
+//                <privacyOrigin>\n
+// v1 (11 fields) remains readable and defaults privacyOrigin to DIRECT.
 //
 // Own-stream entries are skipped on save (they get repopulated at runtime
 // when the broadcaster starts again). Entries older than 2x the TTL are
@@ -1416,17 +1460,18 @@ void CLiveKadBridge::LoadDirectoryFromDisk()
             line.TrimRight(_T("\r\n"));
             if (line.IsEmpty()) continue;
 
-            // Tab-separated fields (11 in v1).
-            CString fields[11];
+            // Tab-separated fields: 11 in v1, 12 in v2.
+            CString fields[12];
+            const int expectedFields = version >= 2 ? 12 : 11;
             int fIdx = 0;
             int pos = 0;
             CString tok;
-            while (fIdx < 11) {
+            while (fIdx < expectedFields) {
                 tok = line.Tokenize(_T("\t"), pos);
                 if (tok.IsEmpty() && pos < 0) break;
                 fields[fIdx++] = tok;
             }
-            if (fIdx < 11) { skipped++; continue; }
+            if (fIdx < expectedFields) { skipped++; continue; }
 
             if (fields[0].GetLength() != 32) { skipped++; continue; }
 
@@ -1459,6 +1504,9 @@ void CLiveKadBridge::LoadDirectoryFromDisk()
             entry.startedAt          = (uint32)_ttoi64(fields[9]);
             uint32 lastSeenUnix      = (uint32)_ttoi64(fields[10]);
             entry.isOwnStream        = false;  // broadcaster repopulates on start
+            entry.privacyOrigin      = (version >= 2 && _ttoi(fields[11]) ==
+                                         ESE_PRIV_ORIGIN_KAD6_TUNNEL)
+                ? ESE_PRIV_ORIGIN_KAD6_TUNNEL : ESE_PRIV_ORIGIN_DIRECT;
 
             // Drop anything older than 2x the TTL — almost certainly gone.
             if (nowUnix > lastSeenUnix
@@ -1527,11 +1575,11 @@ void CLiveKadBridge::SaveDirectoryToDisk()
             CString hex = StreamKeyToString(entry.streamKey);
 
             CString row;
-            row.Format(_T("%s\t%s\t%s\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\n"),
+            row.Format(_T("%s\t%s\t%s\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\n"),
                 (LPCTSTR)hex, (LPCTSTR)title, (LPCTSTR)category, (LPCTSTR)language,
                 entry.bitrate, entry.viewerCount,
                 entry.broadcasterIP, entry.broadcasterPort, entry.broadcasterUDPPort,
-                entry.startedAt, lastSeenUnix);
+                entry.startedAt, lastSeenUnix, entry.privacyOrigin);
             file.WriteString(row);
             written++;
         }

@@ -1,0 +1,20 @@
+{
+  "schema": "kad6-vector-v1",
+  "codec": "K6TargetTicketV1",
+  "vectors": [
+    {
+      "id": "ticket-canonical-zero-mac",
+      "input": "deterministic public IPv4 ticket fixture; MAC bytes intentionally pre-filled with zero for codec-only pinning",
+      "expected_hex": "0102000001000000000000000100000002000000000000000300000000000000040000000000000000000000000000000000000000000000000000000000000000000000000000000404080808084012361200000000d00700000000000000000000000000000000000000000000e803000000000000140500000000000001000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expected_status": "Ok",
+      "reason": "pins every integer, endpoint, nonce and MAC byte in canonical order"
+    },
+    {
+      "id": "ticket-reserved-byte-set",
+      "input": "canonical fixture with reserved byte at offset 13 changed to 1",
+      "expected_hex": "",
+      "expected_status": "Malformed",
+      "reason": "reserved byte must be zero"
+    }
+  ]
+}

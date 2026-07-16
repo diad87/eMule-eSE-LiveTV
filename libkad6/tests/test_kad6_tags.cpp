@@ -8,7 +8,8 @@
 // the two functions validate independently and the decoder is the one
 // facing attacker-controlled input.
 //
-//   from libkad6/:  make.bat test_kad6_tags tests\test_kad6_tags.cpp src\kad6_tags.cpp
+//   from libkad6/:  make.bat test_kad6_tags tests\test_kad6_tags.cpp ^
+//                   src\kad6_tags.cpp src\kad6_address.cpp
 #include "kad6/kad6_tags.h"
 #include "kad6/kad6_bytes.h"
 #include "kad6/kad6_types.h"
@@ -74,6 +75,28 @@ std::vector<Byte> RawOneTag(Byte name_kind, const std::vector<Byte>& name,
     return out;
 }
 
+// Hand-build a complete list while preserving caller order. This deliberately
+// bypasses EncodeK6TagList's canonical sort for negative decoder tests.
+std::vector<Byte> RawTagList(const K6TagList& list) {
+    std::vector<Byte> body;
+    ByteWriter bw(body);
+    for (const K6Tag& tag : list) {
+        bw.u8(tag.name_kind);
+        bw.u8(static_cast<Byte>(tag.name.size()));
+        bw.bytes(tag.name.data(), tag.name.size());
+        bw.u8(tag.value_kind);
+        bw.u32le(static_cast<std::uint32_t>(tag.value.size()));
+        bw.bytes(tag.value.data(), tag.value.size());
+    }
+    std::vector<Byte> out;
+    ByteWriter w(out);
+    w.u8(kK6TagListVersion);
+    w.u16le(static_cast<std::uint16_t>(list.size()));
+    w.u32le(static_cast<std::uint32_t>(7 + body.size()));
+    w.bytes(body.data(), body.size());
+    return out;
+}
+
 } // namespace
 
 int main() {
@@ -106,15 +129,17 @@ int main() {
             CHECK(decoded[0].value == std::vector<Byte>({0x01, 0x02, 0x03, 0x04}),
                   "tag0 value bytes");
 
-            CHECK(decoded[1].name_kind == kK6NameKindUtf8, "tag1 name kind");
-            CHECK(std::string(decoded[1].name.begin(), decoded[1].name.end()) == "greeting",
-                  "tag1 name bytes");
-            CHECK(decoded[1].value_kind == kK6ValUtf8 &&
-                  std::string(decoded[1].value.begin(), decoded[1].value.end()) == "hi",
-                  "tag1 value");
+            CHECK(decoded[1].name_kind == kK6NameKindNumericU8 &&
+                  decoded[1].name[0] == 0x20, "tag1 canonical numeric name");
+            CHECK(decoded[1].value_kind == kK6ValHash16 && decoded[1].value.size() == 16,
+                  "tag1 hash16 shape");
 
-            CHECK(decoded[2].value_kind == kK6ValHash16 && decoded[2].value.size() == 16,
-                  "tag2 hash16 shape");
+            CHECK(decoded[2].name_kind == kK6NameKindUtf8, "tag2 name kind");
+            CHECK(std::string(decoded[2].name.begin(), decoded[2].name.end()) == "greeting",
+                  "tag2 name bytes");
+            CHECK(decoded[2].value_kind == kK6ValUtf8 &&
+                  std::string(decoded[2].value.begin(), decoded[2].value.end()) == "hi",
+                  "tag2 value");
         }
     }
 
@@ -127,7 +152,16 @@ int main() {
         list.push_back(MakeNumericTag(0x02, kK6ValU8, {0x09}));
         list.push_back(MakeUtf8Tag("aaa", kK6ValU8, {0x03}));
 
+        std::vector<Byte> encodedFromUnsorted;
+        CHECK(EncodeK6TagList(list, encodedFromUnsorted) == Kad6Status::Ok,
+              "encoder canonicalizes unsorted input");
+
         Kad6TagsCanonicalSort(list);
+        std::vector<Byte> encodedFromSorted;
+        CHECK(EncodeK6TagList(list, encodedFromSorted) == Kad6Status::Ok,
+              "encoder accepts sorted input");
+        CHECK(encodedFromUnsorted == encodedFromSorted,
+              "sorted and unsorted inputs have identical canonical wire");
 
         // Documented order: (name_kind asc, name bytes lexicographic asc,
         // value_kind asc, value bytes lexicographic asc). numeric_u8(0) < utf8(1);
@@ -148,6 +182,59 @@ int main() {
                   std::string(list[4].name.begin(), list[4].name.end()) == "zzz",
                   "sort[4] = (utf8 \"zzz\")");
         }
+    }
+
+    // Decoder accepts only the canonical wire order; this prevents multiple
+    // signed/hash transcripts for the same semantic list.
+    {
+        K6TagList descending;
+        descending.push_back(MakeNumericTag(0x02, kK6ValU8, {0x01}));
+        descending.push_back(MakeNumericTag(0x01, kK6ValU8, {0x01}));
+        const std::vector<Byte> raw = RawTagList(descending);
+        K6TagList decoded;
+        CHECK(DecodeK6TagList(raw.data(), raw.size(), decoded) == Kad6Status::Malformed,
+              "decode rejects non-canonical tag order");
+    }
+
+    // Exact duplicate tags are ambiguous/redundant even though a repeated name
+    // with different values may be valid for a classic multivalue tag.
+    {
+        const K6Tag duplicate = MakeNumericTag(0x07, kK6ValU8, {0x42});
+        K6TagList list{duplicate, duplicate};
+        std::vector<Byte> wire;
+        CHECK(EncodeK6TagList(list, wire) == Kad6Status::BadValue,
+              "encode rejects exact duplicate tags");
+        const std::vector<Byte> raw = RawTagList(list);
+        K6TagList decoded;
+        CHECK(DecodeK6TagList(raw.data(), raw.size(), decoded) == Kad6Status::Malformed,
+              "decode rejects exact duplicate tags");
+    }
+
+    // CADDRESS is an embedded canonical address, not an arbitrary byte blob.
+    {
+        K6Tag valid = MakeNumericTag(0x30, kK6ValCAddress,
+                                     {0x04, 0x04, 203, 0, 113, 9});
+        std::vector<Byte> wire;
+        CHECK(EncodeK6TagList({valid}, wire) == Kad6Status::Ok,
+              "encode accepts structurally valid CADDRESS");
+        K6TagList decoded;
+        CHECK(DecodeK6TagList(wire.data(), wire.size(), decoded) == Kad6Status::Ok,
+              "decode accepts structurally valid CADDRESS");
+
+        K6Tag invalid = MakeNumericTag(0x30, kK6ValCAddress, {0x04, 0x10, 1, 2, 3, 4});
+        CHECK(EncodeK6TagList({invalid}, wire) == Kad6Status::Malformed,
+              "encode rejects malformed CADDRESS");
+        const std::vector<Byte> badRaw = RawOneTag(
+            kK6NameKindNumericU8, {0x30}, kK6ValCAddress, 6,
+            {0x04, 0x10, 1, 2, 3, 4});
+        CHECK(DecodeK6TagList(badRaw.data(), badRaw.size(), decoded) == Kad6Status::Malformed,
+              "decode rejects malformed CADDRESS");
+
+        const std::vector<Byte> trailingRaw = RawOneTag(
+            kK6NameKindNumericU8, {0x30}, kK6ValCAddress, 3, {0x00, 0x00, 0xAA});
+        CHECK(DecodeK6TagList(trailingRaw.data(), trailingRaw.size(), decoded) ==
+                  Kad6Status::Malformed,
+              "decode rejects trailing bytes in CADDRESS");
     }
 
     // ── Reject: 129 tags -> TooLarge (encode) ──────────────────────────────

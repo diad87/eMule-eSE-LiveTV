@@ -5,6 +5,7 @@
 // crypto — see kad6_tags.h for the wire layout and the invariants each
 // check below enforces.
 #include "kad6/kad6_tags.h"
+#include "kad6/kad6_address.h"
 #include "kad6/kad6_bytes.h"
 
 #include <algorithm>
@@ -79,11 +80,41 @@ Kad6Status ValidateTagShape(const K6Tag& t) noexcept {
         if (!Kad6IsValidUtf8NoNul(t.value.data(), t.value.size()))
             return Kad6Status::Malformed;
     }
+    if (t.value_kind == kK6ValCAddress) {
+        Kad6Address address;
+        std::size_t consumed = 0;
+        const Kad6Status st = DecodeKad6Address(t.value.data(), t.value.size(),
+                                                address, &consumed);
+        if (st != Kad6Status::Ok || consumed != t.value.size())
+            return Kad6Status::Malformed;
+    }
     return Kad6Status::Ok;
 }
 
 std::size_t TagWireSize(const K6Tag& t) noexcept {
     return kTagFixedOverhead + t.name.size() + t.value.size();
+}
+
+bool TagLess(const K6Tag& a, const K6Tag& b) noexcept {
+    if (a.name_kind != b.name_kind)
+        return a.name_kind < b.name_kind;
+    if (a.name != b.name)
+        return a.name < b.name;
+    if (a.value_kind != b.value_kind)
+        return a.value_kind < b.value_kind;
+    return a.value < b.value;
+}
+
+bool TagEqual(const K6Tag& a, const K6Tag& b) noexcept {
+    return !TagLess(a, b) && !TagLess(b, a);
+}
+
+bool IsCanonicalUnique(const K6TagList& list) noexcept {
+    for (std::size_t i = 1; i < list.size(); ++i) {
+        if (!TagLess(list[i - 1], list[i]))
+            return false; // descending or exact duplicate
+    }
+    return true;
 }
 
 } // namespace
@@ -157,13 +188,20 @@ Kad6Status EncodeK6TagList(const K6TagList& list, std::vector<Byte>& out) {
     if (total > kK6MaxTagListBytes)
         return Kad6Status::TooLarge;
 
+    K6TagList canonical = list;
+    Kad6TagsCanonicalSort(canonical);
+    for (std::size_t i = 1; i < canonical.size(); ++i) {
+        if (TagEqual(canonical[i - 1], canonical[i]))
+            return Kad6Status::BadValue;
+    }
+
     // Pass 2: everything validated -- now it is safe to allocate and write.
     out.reserve(total);
     ByteWriter w(out);
     w.u8(kK6TagListVersion);
-    w.u16le(static_cast<std::uint16_t>(list.size()));
+    w.u16le(static_cast<std::uint16_t>(canonical.size()));
     w.u32le(static_cast<std::uint32_t>(total));
-    for (const K6Tag& t : list) {
+    for (const K6Tag& t : canonical) {
         w.u8(t.name_kind);
         w.u8(static_cast<Byte>(t.name.size()));
         w.bytes(t.name.data(), t.name.size());
@@ -250,6 +288,15 @@ Kad6Status DecodeK6TagList(const Byte* in, std::size_t len, K6TagList& out,
         if (value_kind == kK6ValUtf8 && !Kad6IsValidUtf8NoNul(valPtr, value_len))
             return Kad6Status::Malformed;
 
+        if (value_kind == kK6ValCAddress) {
+            Kad6Address address;
+            std::size_t addressConsumed = 0;
+            const Kad6Status addressStatus = DecodeKad6Address(
+                valPtr, value_len, address, &addressConsumed);
+            if (addressStatus != Kad6Status::Ok || addressConsumed != value_len)
+                return Kad6Status::Malformed;
+        }
+
         K6Tag tag;
         tag.name_kind = name_kind;
         tag.name.assign(namePtr, namePtr + name_len);
@@ -262,6 +309,8 @@ Kad6Status DecodeK6TagList(const Byte* in, std::size_t len, K6TagList& out,
         return Kad6Status::Truncated;
     if (r.pos() != total_len)
         return Kad6Status::Malformed; // producer's declared length disagrees with reality
+    if (!IsCanonicalUnique(tmp))
+        return Kad6Status::Malformed;
 
     out = std::move(tmp);
     if (consumed != nullptr)
@@ -269,16 +318,8 @@ Kad6Status DecodeK6TagList(const Byte* in, std::size_t len, K6TagList& out,
     return Kad6Status::Ok;
 }
 
-void Kad6TagsCanonicalSort(K6TagList& list) noexcept {
-    std::stable_sort(list.begin(), list.end(), [](const K6Tag& a, const K6Tag& b) noexcept {
-        if (a.name_kind != b.name_kind)
-            return a.name_kind < b.name_kind;
-        if (a.name != b.name)
-            return a.name < b.name;
-        if (a.value_kind != b.value_kind)
-            return a.value_kind < b.value_kind;
-        return a.value < b.value;
-    });
+void Kad6TagsCanonicalSort(K6TagList& list) {
+    std::sort(list.begin(), list.end(), TagLess);
 }
 
 } // namespace kad6

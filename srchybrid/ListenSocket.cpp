@@ -52,12 +52,28 @@
 #include "Log.h"
 #include "eMuleAI/UtpSocket.h"
 #include "FirewallProberV6.h"
+#include "Kad6GatewaySocket.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #undef THIS_FILE
 static char THIS_FILE[] = __FILE__;
 #endif
+
+namespace {
+uint64 K6MonotonicMilliseconds()
+{
+	// The project still targets an SDK baseline without GetTickCount64. Extend
+	// the 32-bit counter on the main thread so the 10 s pre-auth deadline also
+	// remains correct across the 49.7-day wrap.
+	static DWORD previous = 0;
+	static uint64 epoch = 0;
+	const DWORD current = GetTickCount();
+	if (current < previous) epoch += (1ull << 32);
+	previous = current;
+	return epoch + current;
+}
+}
 
 // CClientReqSocket
 
@@ -2700,6 +2716,7 @@ CListenSocket::CListenSocket()
 CListenSocket::~CListenSocket()
 {
 	CListenSocket::Close();
+	CloseK6PreAuth();
 	KillAllSockets();
 }
 
@@ -2709,6 +2726,7 @@ bool CListenSocket::Rebind()
 		return false;
 
 	Close();
+	CloseK6PreAuth();
 	KillAllSockets();
 
 	return StartListening();
@@ -2904,6 +2922,10 @@ void CListenSocket::OnAccept(int nErrorCode)
 		uint32 nFataErrors = 0;
 		while (m_nPendingConnections > 0) {
 			--m_nPendingConnections;
+			if (eSELive::CLiveTunnel::Get().HasK6ServingLeases()) {
+				AcceptK6PreAuth();
+				continue;
+			}
 
 			CClientReqSocket *newclient;
 			// v0.71 IPv6 Sprint 9 hotfix — when the listener is bound as
@@ -3084,6 +3106,7 @@ void CListenSocket::OnAccept(int nErrorCode)
 void CListenSocket::Process()
 {
 	m_OpenSocketsInterval = 0;
+	ProcessK6PreAuth();
 	for (POSITION pos = socket_list.GetHeadPosition(); pos != NULL;) {
 		CClientReqSocket *cur_sock = socket_list.GetNext(pos);
 		if (cur_sock->deletethis) {
@@ -3097,6 +3120,140 @@ void CListenSocket::Process()
 
 	if ((GetOpenSockets() + 5 < thePrefs.GetMaxConnections() || theApp.serverconnect->IsConnecting()) && !bListening)
 		ReStartListening();
+}
+
+bool CListenSocket::AcceptK6PreAuth()
+{
+	SOCKADDR_STORAGE remote = {};
+	int remoteLength = sizeof remote;
+	SOCKET accepted = ::accept(m_SocketData.hSocket, reinterpret_cast<sockaddr*>(&remote),
+		&remoteLength);
+	if (accepted == INVALID_SOCKET) {
+		const int error = WSAGetLastError();
+		if (error == WSAEWOULDBLOCK)
+			m_nPendingConnections = 0;
+		else
+			DebugLogWarning(_T("K6-5 pre-auth accept failed: %s"),
+				(LPCTSTR)GetErrorMessage(error, 1));
+		return false;
+	}
+
+	kad6::K6RemoteGroup group;
+	uint32 v4 = 0;
+	uint32 banKey = 0;
+	if (remote.ss_family == AF_INET) {
+		const SOCKADDR_IN* in = reinterpret_cast<const SOCKADDR_IN*>(&remote);
+		group.family = 4;
+		memcpy(group.address.data(), &in->sin_addr, 4);
+		v4 = in->sin_addr.s_addr;
+		banKey = v4;
+	} else if (remote.ss_family == AF_INET6) {
+		const SOCKADDR_IN6* in6 = reinterpret_cast<const SOCKADDR_IN6*>(&remote);
+		if (IN6_IS_ADDR_V4MAPPED(&in6->sin6_addr)) {
+			group.family = 4;
+			memcpy(group.address.data(), &in6->sin6_addr.u.Byte[12], 4);
+			memcpy(&v4, &in6->sin6_addr.u.Byte[12], 4);
+			banKey = v4;
+		} else {
+			CAddress native;
+			native.FromSA(reinterpret_cast<const sockaddr*>(in6), sizeof *in6);
+			if (native.GetType() != CAddress::IPv6 || !native.IsPublicIP()) {
+				closesocket(accepted);
+				return false;
+			}
+			group.family = 6;
+			memcpy(group.address.data(), &in6->sin6_addr, 16);
+			banKey = native.ToSyntheticUInt32();
+		}
+	} else {
+		closesocket(accepted);
+		return false;
+	}
+
+	const bool filtered = group.family == 4 && theApp.ipfilter->IsFiltered(v4);
+	if ((group.family == 4 && (v4 == INADDR_ANY || v4 == INADDR_NONE || filtered)) ||
+		theApp.clientlist->IsBannedClient(banKey)) {
+		if (filtered)
+			++theStats.filteredclients;
+		closesocket(accepted);
+		return false;
+	}
+
+	u_long nonBlocking = 1;
+	if (ioctlsocket(accepted, FIONBIO, &nonBlocking) != 0) {
+		closesocket(accepted);
+		return false;
+	}
+	const int slot = m_k6PreAuthGate.Admit(group, K6MonotonicMilliseconds());
+	if (slot < 0) {
+		// Pre-auth failures are deliberately silent: no protocol oracle and no
+		// variable error allocation before a valid classic HELLO.
+		closesocket(accepted);
+		return false;
+	}
+	m_k6PreAuthSockets[static_cast<size_t>(slot)].socket = accepted;
+	m_k6PreAuthSockets[static_cast<size_t>(slot)].family =
+		static_cast<ADDRESS_FAMILY>(remote.ss_family);
+	AddConnection();
+	return true;
+}
+
+void CListenSocket::ProcessK6PreAuth()
+{
+	uint8 peeked[kad6::kK6PreAuthMaxHelloBytes + 1];
+	const uint64 now = K6MonotonicMilliseconds();
+	for (size_t i = 0; i < m_k6PreAuthSockets.size(); ++i) {
+		K6PreAuthNativeSlot& native = m_k6PreAuthSockets[i];
+		if (native.socket == INVALID_SOCKET) continue;
+		const int received = recv(native.socket, reinterpret_cast<char*>(peeked),
+			static_cast<int>(sizeof peeked), MSG_PEEK);
+		kad6::K6PreAuthDecision decision = kad6::K6PreAuthDecision::NeedMore;
+		if (received > 0)
+			decision = m_k6PreAuthGate.Observe(i, peeked,
+				static_cast<size_t>(received), now);
+		else if (received == 0)
+			decision = kad6::K6PreAuthDecision::Reject;
+		else {
+			const int error = WSAGetLastError();
+			decision = error == WSAEWOULDBLOCK
+				? m_k6PreAuthGate.Tick(i, now) : kad6::K6PreAuthDecision::Reject;
+		}
+		if (decision == kad6::K6PreAuthDecision::NeedMore) continue;
+
+		SOCKET socket = native.socket;
+		const ADDRESS_FAMILY family = native.family;
+		native = K6PreAuthNativeSlot{};
+		m_k6PreAuthGate.Release(i);
+		if (decision != kad6::K6PreAuthDecision::Ready) {
+			closesocket(socket);
+			continue;
+		}
+
+		eSELive::CKad6ExitSocket* promoted = new eSELive::CKad6ExitSocket();
+		if (!promoted->InitAsyncSocketExInstance()) {
+			closesocket(socket);
+			promoted->Safe_Delete();
+			continue;
+		}
+		promoted->m_SocketData.hSocket = socket;
+		promoted->AttachHandle();
+		VERIFY(promoted->SetFamily(family));
+		promoted->InitializeInboundFrontDoor();
+		promoted->AsyncSelect(FD_WRITE | FD_READ | FD_CLOSE);
+		// Data was observed with MSG_PEEK and remains in the kernel buffer. Feed
+		// it immediately so promotion does not depend on a second FD_READ edge.
+		promoted->OnReceive(0);
+	}
+}
+
+void CListenSocket::CloseK6PreAuth()
+{
+	for (size_t i = 0; i < m_k6PreAuthSockets.size(); ++i) {
+		if (m_k6PreAuthSockets[i].socket != INVALID_SOCKET)
+			closesocket(m_k6PreAuthSockets[i].socket);
+		m_k6PreAuthSockets[i] = K6PreAuthNativeSlot{};
+		m_k6PreAuthGate.Release(i);
+	}
 }
 
 void CListenSocket::RecalculateStats()

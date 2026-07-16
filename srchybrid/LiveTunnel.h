@@ -14,6 +14,24 @@
 #include "LiveOnionCrypto.h"
 #include "LiveCellQueue.h"   // v8.1 A2 - ReassemblyEntry, fragment helpers
 #include "LiveBulk.h"        // v8.1.2 E1.2/E3.4 - bulk cell wire + multi-block FEC + replay window
+#include "kad6/kad6_lease.h"
+#include "kad6/kad6_publish.h"
+#include "kad6/kad6_frame.h"
+#include "kad6/kad6_search.h"
+#include "kad6/kad6_store.h"
+#include "kad6/kad6_gateway.h"
+#include "kad6/kad6_hints.h"
+#include "kad6/kad6_vep.h"
+#include "kad6/kad6_frontdoor.h"
+#include "kad6/kad6_shaped_bulk.h"
+#include "kad6/kad6_shaper.h"
+#include "kad6/kad6_hardening.h"
+#include "kad6/kad6_economy.h"
+#include "kad6/kad6_quota.h"
+#include "kad6/kad6_exit_notice.h"
+#include "kad6/kad6_release.h"
+#include "Kad6QuotaCrypto.h"
+#include "Kad6ExitNoticeServer.h"
 
 #include <memory>
 #include <vector>
@@ -24,9 +42,14 @@
 #include <functional> // v8.1 A2 - std::function handler registry
 #include <set>     // v8.1.2 E3.1 — exit-proxy stream-key set
 
+#include <array>
+
 class CUpDownClient;
 
 namespace eSELive {
+
+class CKad6ExitSocket;
+class CKad6OriginSocket;
 
 // Pool size limits from §5.5.5 thesis
 const size_t TUNNEL_POOL_MIN = 3;
@@ -119,10 +142,19 @@ public:
     // Periodic tick (rotation, cover traffic, dead circuit cleanup).
     void Tick();
 
+    // K6-6 class-5 has a dedicated 10 ms UI-thread heartbeat. The ordinary
+    // Kad Tick is ~1 Hz and cannot preserve fixed record slots.
+    void ProcessClass5Tick();
+
     size_t ActiveCircuitCount() const;
     size_t PendingCircuitCount() const;      // v0.71 P3.8 — circuits in CREATE/CREATED handshake
     size_t RelayCircuitCount() const;        // v0.71 P3.3 — circuits we relay (intermediate)
     size_t TotalCircuitCount() const;        // v0.71 P3.3 — for UI / metrics
+
+    // True only when an Active originator circuit terminates at an
+    // authenticated exit whose signed CREATED-v2 capability snapshot contains
+    // every requested bit.  Used by K6-1 to choose K6Frame vs legacy wire.
+    bool HasActiveCircuitWithExitCaps(uint32_t requiredCaps) const;
 
     // v0.71 P3.6 — self-loop test: build a single-hop circuit to a peer
     // identified by clientHint. If clientHint == NULL, picks the first
@@ -139,6 +171,15 @@ public:
     // any-peer fallback), so it builds NOTHING when no fork peer is connected
     // (single-PC no-op). At most one 1-hop circuit. Called from CKadV2TunnelPool::Tick.
     bool BuildSuccessorCircuit();
+
+    // Build the dedicated direct issuer circuit used by anonymous quota
+    // acquisition.  It is kept outside the private circuit pool and is never
+    // eligible for ordinary origin traffic.
+    bool BuildQuotaGuardCircuit();
+
+    // K6-6: build one fail-closed STRICT circuit with exactly three remote
+    // identities (guard, middle, exit).  No one/two-hop fallback occurs here.
+    bool BuildSuccessor3Hop(uint32_t* circuitId = NULL);
 
     // v0.71 B (2-hop) — extended test: builds a 1-hop circuit AND, once
     // CREATED arrives, requests a 2nd hop. Returns the V-side circ_id.
@@ -182,7 +223,12 @@ public:
         // NACK body: stream_key 16 + count 1 + (seq 4 + block_idx 1)*count. Requests a re-push
         // of specific (seq, block) the viewer could not reassemble (E3.5 gap-fill).
         TUN_OP_BULK_NACK        = 0x52,   // V -> exit: re-push missing (seq, block)
-        TUN_OP_BULK_UNSUB       = 0x54    // V -> exit: stop the bulk push on this circuit
+        TUN_OP_BULK_UNSUB       = 0x54,   // V -> exit: stop the bulk push on this circuit
+        // K6-1A — Kad6 anonymity/compat gateway service (docs/KAD6_SEARCH_
+        // WIRE_MAPPING.md).  Multi-cell (>= TUN_MULTICELL_OP_MIN): the
+        // reassembled body is a K6FrameV1.  SEARCH_* is active for Live
+        // discovery; later message families remain independently gated.
+        TUN_OP_KAD6_GATEWAY     = 0x70
     };
 
     // === v8.1 A2 - generic exit-side dispatcher ============================
@@ -225,6 +271,64 @@ public:
     bool TunneledKadSearch(const std::string& keywordLower,
                            std::string& resultsJsonOut,
                            uint32_t timeoutMs);
+
+    // K6-3 source gateway. Blocking calls are worker-thread APIs, mirroring
+    // TunneledKadSearch; unbind/unpublish are idempotent fire-and-forget.
+    bool K6BindSource(const kad6::K6SourceBind& bind,
+                      kad6::K6SourceBound& boundOut, uint32_t timeoutMs);
+    bool K6PublishRecord(const kad6::K6Publish& publish,
+                         kad6::K6PublishAck& ackOut, uint32_t timeoutMs);
+    void K6SourceUnbindNoWait(const kad6::K6SourceUnbind& unbind);
+    void K6UnpublishNoWait(const kad6::K6Unpublish& unpublish);
+
+    // K6-4 outbound legacy gateway. Blocking methods are worker-thread APIs;
+    // attach/send use the normal main-thread client engine and never open a
+    // destination that is not covered by an exit-issued target ticket.
+    bool K6RequestTargetTicket(const kad6::K6TargetTicketRequest& request,
+                               std::vector<uint8_t>& ticketOut, uint32_t timeoutMs);
+    bool K6DialEd2k(const std::vector<uint8_t>& ticket,
+                    const std::vector<uint8_t>& initialData,
+                    kad6::K6DialResult& resultOut, uint32_t timeoutMs);
+    bool K6AttachOriginClient(uint64 streamId, CUpDownClient* client);
+    bool K6SendEd2kFrameNoWait(uint64 streamId, const uint8_t* frame, size_t length);
+    bool K6TakeSourceHints(uint64 streamId, kad6::K6SourceHints& hintsOut);
+    bool K6GetVirtualIdentity(uint64 streamId,
+                              kad6::K6VirtualIdentityEndpoint& vepOut) const;
+
+    // K6-4 production activation. Source-hash lookup is fire-and-forget on
+    // the main thread; matching results materialize ordinary download clients
+    // carrying an opaque exit ticket. BeginK6Download consumes that ticket and
+    // starts an asynchronous DIAL pinned to its issuing circuit.
+    bool StartK6SourceLookup(const uint8_t fileHash[16], uint32_t& requestIdOut);
+    bool BeginK6Download(CUpDownClient* client);
+    void QueueK6SourceAdvertise(const uint8_t fileHash[16], uint64 fileSize,
+                                kad6::K6CommitmentKind commitmentKind,
+                                const uint8_t commitment[32]);
+
+    // K6-5 inbound cohort front-door. The listener enables bounded pre-auth
+    // only while at least one published source lease can accept sessions.
+    bool HasK6ServingLeases() const;
+    bool OnKad6GatewaySourceResult(uint32_t circuitId, uint32_t requestId,
+                                   const uint8_t userHash[16], uint8_t sourceType,
+                                   uint32_t ip, uint16_t tcpPort, uint16_t udpPort,
+                                   uint8_t cryptOptions, uint16_t reachCaps,
+                                   const uint8_t* ipv6OrNull);
+    bool OnKad6NativeSourceRecord(uint32_t circuitId, uint32_t requestId,
+                                  const kad6::K6SourceRecord& record);
+    // MAIN THREAD. Native lookup transport reports only fixed alpha/result
+    // buckets; no peer or target identity reaches the public metric registry.
+    void OnKad6SourceLookupRpc(uint8_t alpha, uint8_t result);
+
+    // Main-thread callbacks from the real Kad2 CSearch::STOREFILE path.
+    bool AllowKad6ShadowPublishContact(uint64 publishLeaseId,
+                                       const uint8_t custodianId[16]);
+    void OnKad6ShadowPublishSent(uint64 publishLeaseId);
+    void OnKad6ShadowPublishAck(uint64 publishLeaseId, uint8_t load,
+                                bool hasLoadResponse);
+    void OnKad6ShadowVerified(uint64 publishLeaseId);
+    void OnKad6NativePublishAck(uint64 publishLeaseId,
+                                kad6::K6StoreStatus status, uint8_t load,
+                                uint64 acceptedEpoch);
 
     // v0.71 C — synchronous tunnel ping. Sends a PING through any
     // active circuit, blocks up to timeoutMs waiting for the reply.
@@ -287,8 +391,58 @@ public:
         uint8_t  next_hop_set;  // relay-side: 1 if forwarding to hop2
         uint32_t next_circ_id;
         uint8_t  auth_ok;       // v8.x Phase 2: 1 if ALL hops completed the authenticated v2 handshake
+        uint8_t  strict3;
+        uint8_t  shaped;
+        uint8_t  shaping_exposed;
     };
     void GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const;
+
+    // K6-7 local beta controls. Mutations are marshaled to the main thread so
+    // a Web UI worker never touches sockets or lease state. The snapshot and
+    // sealed metrics contain only aggregate, fixed-cardinality values.
+    struct K6HardeningRuntimeSnapshot {
+        kad6::K6HardeningSnapshot control;
+        kad6::K6MetricsWindowInfo metrics;
+        uint64 active_leases = 0;
+        uint64 active_publishes = 0;
+        uint64 dial_streams = 0;
+        uint64 full_streams = 0;
+        uint32 shaping_exposed_circuits = 0;
+        bool source_epoch_store_failed = false;
+        bool economy_measurement_ready = false;
+        bool strict_recommended = false;
+        std::array<double, static_cast<size_t>(kad6::K6Service::Count)> rho{};
+        std::array<kad6::K6EconomyWindowSnapshot,
+                   static_cast<size_t>(kad6::K6Service::Count)> economy{};
+    };
+    bool RequestK6ServiceSwitch(kad6::K6Service service, bool enabled,
+                                uint32 drainSeconds, uint32 timeoutMs);
+    void GetK6HardeningSnapshot(K6HardeningRuntimeSnapshot& out);
+    struct K6ReleaseRuntimeSnapshot {
+        bool operator_opt_in = false;
+        bool evidence_present = false;
+        bool evidence_valid = false;
+        bool runtime_healthy = false;
+        bool public_exit_enabled = false;
+        kad6::K6ReleaseGateStatus status = kad6::K6ReleaseGateStatus::Missing;
+        kad6::K6ReleaseEvidence evidence;
+    };
+    bool RequestK6PublicRelease(bool enable,
+                                const kad6::K6ReleaseEvidence* evidence,
+                                uint32 drainSeconds, uint32 timeoutMs);
+    void GetK6ReleaseSnapshot(K6ReleaseRuntimeSnapshot& out);
+    bool GetK6ReleaseOperatorChallenge(std::string& challenge);
+    bool ConsumeK6ReleaseOperatorChallenge(const std::string& challenge);
+    std::string GetK6PrometheusMetrics();
+    bool StartK6ExitNotice(uint16 port, kad6::K6ExitNotice notice);
+    void StopK6ExitNotice() noexcept;
+    K6ExitNoticeServerSnapshot GetK6ExitNoticeSnapshot() const noexcept;
+
+    // MAIN THREAD ONLY. A circuit is bound to the concrete eD2K client
+    // connection used for each adjacent hop. Tear it down as soon as that
+    // client disconnects so the API/pool cannot keep reporting or selecting
+    // an Active circuit whose transport has already disappeared.
+    void OnPeerDisconnected(CUpDownClient* peer);
 
     // === v0.72 — main-thread marshaling ====================================
     // The embedded webserver answers each HTTP request on its own worker
@@ -301,7 +455,8 @@ public:
     // are served from caches the main thread keeps refreshed.
 
     // Worker-thread safe. Builds a test circuit ON THE MAIN THREAD and waits
-    // up to timeoutMs for the resulting circuit id. hops is 1 or 2. Returns
+    // up to timeoutMs for the resulting circuit id. hops is 1, 2 or strict 3.
+    // Three-hop construction never loops back or degrades. Returns
     // the circuit id, or 0 on failure / timeout.
     uint32_t RequestTestCircuit(int hops, uint32_t timeoutMs);
 
@@ -335,6 +490,8 @@ public:
     uint32_t MeanRttMs() const { return m_meanRttMs; }
 
 private:
+    friend class CKad6ExitSocket;
+    friend class CKad6OriginSocket;
     CLiveTunnel();
     CLiveTunnel(const CLiveTunnel&) = delete;
     CLiveTunnel& operator=(const CLiveTunnel&) = delete;
@@ -345,6 +502,7 @@ private:
     // its existing CClientReqSocket, wrapped as OP_LIVE_TUNNEL_CELL.
     // Returns true if the packet was queued for send. Increments stats.
     bool SendCellToPeer(CUpDownClient* peer, const uint8_t cell[CELL_TOTAL_BYTES]);
+    void DestroyCircuitFailClosed(std::shared_ptr<CLiveCircuit>& circ);
 
     // Originator-side CREATED handler: complete handshake on hop 1.
     bool HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
@@ -375,6 +533,8 @@ private:
     // stays confined to BuildTestCircuit2Hop (manual 2-PC dev test only).
     bool BuildSuccessor2Hop();
 
+    bool ContinueOriginatorBuild(std::shared_ptr<CLiveCircuit>& circ);
+
     // v0.71 B — relay side: a CELL_EXTEND cell arrived on a relay-side
     // circuit. Peel V→hop1 layer, parse hop2 endpoint + new ephemeral,
     // pick new outbound circ_id, send CELL_CREATE to hop2. Store
@@ -388,6 +548,14 @@ private:
     // CELL_EXTENDED back to V on V's circ_id.
     bool ForwardCreatedAsExtended_Relay(uint32_t outboundCircId,
                                         const uint8_t* payload, uint16_t payloadLen);
+
+    // Iterative extension forwarding for the second EXTEND/EXTENDED pair.
+    bool ForwardExtendCell_Forward(std::shared_ptr<CLiveCircuit>& circ,
+                                   const uint8_t* payload, uint16_t payloadLen);
+    bool ForwardPaddingCell_Forward(std::shared_ptr<CLiveCircuit>& circ,
+                                    const uint8_t* payload, uint16_t payloadLen);
+    bool ForwardExtendedCell_Reverse(std::shared_ptr<CLiveCircuit>& circ,
+                                     const uint8_t* payload, uint16_t payloadLen);
 
     // v0.71 B — originator side: a CELL_EXTENDED cell arrived on a
     // V-side originator circuit. Peel V→hop1 layer to reveal hop2's
@@ -456,6 +624,45 @@ private:
     //   whole CHUNK_V2 record (E3.4) and deliver it to the chunk pipeline.
     void DeliverBulkData(std::shared_ptr<CLiveCircuit>& circ, uint64_t nonce_seq,
                          const uint8_t* payload, size_t payloadLen);
+    void DeliverBulkPlain(const uint8_t* plain, size_t plainLen);
+
+    // K6-6.2 fixed-record reverse path. Every relay mapping owns an
+    // independent scheduler, nonce space and bounded per-stream reservoir.
+    struct K6ShapedQueuedRecord {
+        uint64_t incoming_nonce = 0; // zero only for terminal plaintext
+        bool terminal = false;
+        std::vector<uint8_t> bytes;  // encoded terminal plain or opaque lower prefix
+    };
+    struct K6ShapedLinkState {
+        kad6::K6Class5Scheduler scheduler;
+        std::map<uint64_t, std::deque<K6ShapedQueuedRecord>> records;
+        uint32_t bucket_kib = 0;
+        int output_layers = 0;
+        uint64_t nonce_epoch = 0;
+        uint32_t nonce_epoch_high_base = 0;
+        uint32_t nonce_epoch_low_base = 0;
+        uint32_t nonce_in_epoch = 0;
+        uint64_t padding_sequence = 0;
+        uint64_t last_input_us = 0;
+        uint8_t idle_tail_epochs = 1;
+        bool nonce_epoch_ready = false;
+        bool exposed = false;
+    };
+    bool EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ,
+                              int outputLayers, uint32_t bucketKiB);
+    bool QueueK6ShapedRecordLocked(const std::shared_ptr<CLiveCircuit>& circ,
+                                   uint64_t streamId, K6ShapedQueuedRecord&& record);
+    bool HandleK6ShapedCellLocked(const uint8_t* pkt, size_t size,
+                                  CUpDownClient* fromPeer);
+    bool EmitK6ShapedSlotLocked(const std::shared_ptr<CLiveCircuit>& circ,
+                                K6ShapedLinkState& state,
+                                const kad6::K6ShapeSlot& slot);
+    void DeliverK6ShapedOriginLocked(const std::shared_ptr<CLiveCircuit>& circ,
+                                     const uint8_t* pkt, size_t size);
+    void StopK6ShapeTimerLocked();
+    std::map<uint32_t, K6ShapedLinkState> m_k6ShapeReverse;
+    std::map<uint64_t, Bulk::BulkReplayWindow> m_k6ShapeReplay;
+    UINT_PTR m_k6ShapeTimer = 0;
 
     // E3.4 reassembly: symbols of a (streamKey, seq) segment arrive STRIPED across the
     // viewer's bulk circuits, so this is keyed globally by (streamKey, seq), not per
@@ -508,7 +715,14 @@ private:
     // viewer's circuits and STRIPE a segment's symbols across them. When a stream has explicit
     // bulk subs, ProcessProxyIngest pushes to THESE (grouped + striped); otherwise it falls
     // back to the C7 control subs (full k+r per circuit). Under m_pendingLock.
-    struct BulkSub { uint32_t circ_id = 0; uint32_t session_id = 0; uint8_t r_pref = 0; DWORD lastSeen = 0; };
+    struct BulkSub {
+        uint32_t circ_id = 0;
+        uint32_t session_id = 0;
+        uint16_t shape_bucket_kib = 0;
+        uint8_t r_pref = 0;
+        bool shaped = false;
+        DWORD lastSeen = 0;
+    };
     std::map<std::string, std::vector<BulkSub>> m_bulkSubs;   // streamKeyHex -> subs
     void ExitHandle_BulkSubscribe(const TunnelRequestCtx& ctx);   // register/refresh a bulk sub
     void ExitHandle_BulkUnsub(const TunnelRequestCtx& ctx);       // drop a bulk sub
@@ -571,6 +785,10 @@ private:
     // Returns false if the op is unknown or its circuit has gone.
     bool CompleteExitOperation(uint32_t circ_id, uint32_t req_id,
                                const uint8_t* payload, size_t payloadLen);
+    // Send one non-final response for a deferred operation without consuming
+    // it. K6 searches use this for each SEARCH_RESULT, then Complete... for END.
+    bool SendExitOperationPart(uint32_t circ_id, uint32_t req_id,
+                               const uint8_t* payload, size_t payloadLen);
     // Discard a deferred op without replying (e.g. cancelled / circuit dead).
     void AbortExitOperation(uint32_t circ_id, uint32_t req_id);
 
@@ -584,12 +802,314 @@ private:
         uint32_t              circ_id  = 0;
         uint32_t              req_id   = 0;
         std::string           keyword;          // normalized (lowercase)
+        bool                  canonicalK6 = false;
+        bool                  kadReachable = false;
+        bool                  lookupStarted = false;
+        bool                  kad2LookupStarted = false;
+        bool                  kad6LookupStarted = false;
+        uint8_t               networkMask = 0;
+        uint16_t              maxResults = (uint16_t)TUN_SEARCH_MAX_RESULTS;
+        uint8_t               searchKind = kad6::kK6SearchKindLive;
+        kad6::Hash16          targetHash{};
+        struct SourceCandidate {
+            kad6::Hash16 userHash{};
+            kad6::K6Endpoint endpoint;
+            uint8_t sourceType = 0;
+            uint8_t cryptOptions = 0;
+            uint16_t reachCaps = 0;
+            uint8_t networkOrigin = kad6::kK6NetOriginKad2;
+            kad6::K6Provenance provenance = kad6::K6Provenance::KadResult;
+            kad6::Hash32 provenanceDigest{};
+            uint32_t score = 0;
+        };
+        std::vector<SourceCandidate> sourceCandidates;
+        bool                  firstSourceMetric = false;
+        bool                  fiveSourceMetric = false;
+        DWORD                 started = 0;
         DWORD                 deadline = 0;      // GetTickCount() when to reply
         std::vector<uint32_t> kadSearchIds;     // CSearch ids to StopSearch on finish
     };
     std::map<uint64_t, TunnelSearchJob> m_searchJobs;   // key = ExitOpKey, under m_pendingLock
     void ExitHandle_KadSearchV2(const TunnelRequestCtx& ctx);   // B1
     void ExitHandle_KadCancel(const TunnelRequestCtx& ctx);     // B7
+
+    // K6-1A gateway: validates K6FrameV1 and dispatches canonical Live
+    // SEARCH_START/RESULT/END. Unsupported message families fail closed.
+    void ExitHandle_Kad6Gateway(const TunnelRequestCtx& ctx);
+    void ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
+                                   const kad6::K6Frame& frame);
+    void ExitHandle_Kad6SourceUnbind(const TunnelRequestCtx& ctx,
+                                     const kad6::K6Frame& frame);
+    void ExitHandle_Kad6Publish(const TunnelRequestCtx& ctx,
+                                const kad6::K6Frame& frame);
+    void ExitHandle_Kad6Unpublish(const TunnelRequestCtx& ctx,
+                                  const kad6::K6Frame& frame);
+    void ExitHandle_Kad6TargetTicketReq(const TunnelRequestCtx& ctx,
+                                        const kad6::K6Frame& frame);
+    void ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
+                             const kad6::K6Frame& frame);
+    void ExitHandle_Kad6StreamData(const TunnelRequestCtx& ctx,
+                                   const kad6::K6Frame& frame);
+    void ExitHandle_Kad6StreamHalfClose(const TunnelRequestCtx& ctx,
+                                        const kad6::K6Frame& frame);
+    void ExitHandle_Kad6StreamClose(const TunnelRequestCtx& ctx,
+                                    const kad6::K6Frame& frame);
+    void ExitHandle_Kad6QuotaKey(const TunnelRequestCtx& ctx,
+                                 const kad6::K6Frame& frame);
+    void ExitHandle_Kad6QuotaIssue(const TunnelRequestCtx& ctx,
+                                   const kad6::K6Frame& frame);
+    void ExitHandle_Kad6QuotaPresent(const TunnelRequestCtx& ctx,
+                                     const kad6::K6Frame& frame);
+    bool SendK6GatewayResponse(const TunnelRequestCtx& ctx, uint8_t msgType,
+                               const std::vector<uint8_t>& body);
+    bool SendK6GatewayPush(const std::weak_ptr<CLiveCircuit>& circuit,
+                           uint32 circId, uint32 requestId, uint8 msgType,
+                           uint16 flags, const std::vector<uint8_t>& body);
+    void OnK6ExitSocketConnect(uint64 streamId, CKad6ExitSocket* socket, int error);
+    void OnK6ExitSocketClosed(uint64 streamId, CKad6ExitSocket* socket, int error);
+    void OnK6OriginSocketClosed(uint64 streamId, CKad6OriginSocket* socket);
+    bool OnK6ExitPacket(uint64 streamId, const uint8_t* frame, size_t length);
+    bool ActivateK6Inbound(CKad6ExitSocket* socket, const kad6::Hash16& fileHash,
+                           const std::vector<std::vector<uint8_t>>& initialFrames);
+    void MarkK6SourceServingLocked(uint64 sourceLeaseId);
+
+    struct K6ExitPublishRuntime {
+        kad6::K6Publish request;
+        uint64 publish_lease_id = 0;
+        uint64 source_lease_id = 0;
+        uint64 expires_at = 0;
+        kad6::K6PublishStatus status = kad6::K6PublishStatus::Queued;
+        uint8_t published_networks = 0;
+        uint16_t replicas = 0;
+        uint8_t max_load = 0;
+        uint64 primary_publish_lease_id = 0;
+        uint64 next_refresh_at = 0;
+        uint64 next_native_refresh_at = 0;
+        uint64 visibility_probe_at = 0;
+        uint64 visibility_probe_deadline = 0;
+        uint32 refresh_backoff_s = 60;
+        uint32 native_backoff_s = 60;
+        bool kad2_queued = false;
+        bool kad2_search_active = false;
+        bool visibility_probe_started = false;
+        bool auto_refresh = false;
+        bool refresh_enabled = true;
+    };
+    kad6::K6SourceLeaseTable m_k6SourceLeases;
+    kad6::K6CohortScheduler m_k6CohortScheduler;
+    kad6::K6PublishBudget m_k6PublishBudget;
+    kad6::K6PublishCoalescer m_k6PublishCoalescer;
+    std::map<uint64, K6ExitPublishRuntime> m_k6Publishes;
+    std::map<std::string, uint64> m_k6ShadowPrimary;
+    std::map<std::string, uint64> m_k6SourceEpochs;
+    bool m_k6SourceEpochsLoaded = false;
+    bool m_k6SourceEpochsLoadFailed = false;
+    struct K6AuthorizedTarget {
+        uint32 circ_id = 0;
+        uint32 source_request_id = 0;
+        kad6::Hash16 result_id{};
+        kad6::Hash16 object_hash{};
+        kad6::Hash32 digest{};
+        kad6::K6Endpoint endpoint;
+        uint8 network_origin = kad6::kK6NetOriginKad2;
+        uint64 expires_at = 0;
+    };
+    struct K6UsedTicket { uint16 used = 0; uint64 expires_at = 0; };
+    struct K6ExitStreamRuntime {
+        uint32 circ_id = 0;
+        uint32 dial_request_id = 0;
+        std::weak_ptr<CLiveCircuit> circuit;
+        kad6::K6TargetTicket ticket;
+        kad6::K6Endpoint apparent;
+        CKad6ExitSocket* socket = nullptr;
+        CUpDownClient* client = nullptr;
+        kad6::K6StreamFlowState flow;
+        std::vector<uint8_t> initial_data;
+        uint64 created_at = 0;
+        uint64 last_activity = 0;
+        uint64 connect_deadline = 0;
+        uint64 idle_deadline = 0;
+        uint32 idle_timeout_ms = 0;
+        uint64 stream_max_bytes = 0;
+        uint64 tx_sequence = 0;
+        uint64 pex_sequence = 0;
+        uint64 quota_allocation_id = 0;
+        uint8 network_origin = kad6::kK6NetOriginKad2;
+        bool connected = false;
+        bool inbound = false;
+        bool kill_switch_close = false;
+    };
+    struct K6OriginStreamRuntime {
+        uint32 circ_id = 0;
+        kad6::K6DialResult dial;
+        CKad6OriginSocket* socket = nullptr;
+        CUpDownClient* client = nullptr;
+        kad6::K6StreamFlowState flow;
+        kad6::K6VirtualIdentityEndpoint vep;
+        bool has_vep = false;
+        bool initial_data_sent = false;
+        uint64 next_tx_sequence = 0;
+        uint64 queued_tx_bytes = 0;
+        std::deque<kad6::K6SourceHints> hints;
+        std::deque<std::vector<uint8_t>> pending_frames;
+        size_t pending_frame_bytes = 0;
+        uint64 last_activity = 0;
+        uint64 idle_deadline = 0;
+    };
+    std::array<uint8_t, 32> m_k6TicketSecret{};
+    bool m_k6TicketSecretReady = false;
+    std::map<std::string, K6AuthorizedTarget> m_k6AuthorizedTargets;
+    std::map<std::string, K6UsedTicket> m_k6UsedTickets;
+    std::map<uint64, K6ExitStreamRuntime> m_k6ExitStreams;
+    std::map<uint64, K6OriginStreamRuntime> m_k6OriginStreams;
+    struct K6SourceScore {
+        uint32 successes = 0;
+        uint32 failures = 0;
+        uint64 last_seen = 0;
+    };
+    std::map<std::string, K6SourceScore> m_k6SourceScores;
+    kad6::K6HardeningController m_k6Hardening;
+    kad6::K6Metrics m_k6Metrics;
+    kad6::K6EconomyTelemetry m_k6EconomyTelemetry;
+    std::array<kad6::K6SaturationInputs,
+               static_cast<size_t>(kad6::K6Service::Count)> m_k6EconomyInputs{};
+    bool m_k6EconomyReady = false;
+    uint64 m_k6EconomyUsefulBytes = 0;
+    uint64 m_k6EconomyPublishAttempts = 0;
+    uint64 m_k6EconomyLastUsefulBytes = 0;
+    uint64 m_k6EconomyLastPublishAttempts = 0;
+    uint64 m_k6EconomyLastSampleAt = 0;
+    uint64 m_k6EconomyLastProcessCpu = 0;
+    uint64 m_k6EconomyLastSystemCpu = 0;
+    bool K6EconomyAdmit(kad6::K6Service service);
+    void RefreshK6EconomyMeasurements(uint64 nowSeconds,
+        const std::array<uint64, static_cast<size_t>(kad6::K6Service::Count)>& active);
+    CKad6QuotaCrypto m_k6QuotaCrypto;
+    kad6::K6QuotaIssuerCertificate m_k6QuotaCertificate;
+    std::vector<uint8_t> m_k6QuotaCertificateWire;
+    uint64 m_k6QuotaCertificateEpoch = 0;
+    bool m_k6QuotaInitAttempted = false;
+    kad6::K6QuotaIssuerLimiter m_k6QuotaIssuerLimiter;
+    kad6::K6QuotaSpentSet m_k6QuotaSpent;
+    kad6::K6FairScheduler m_k6FairScheduler;
+    struct K6FairPayload {
+        uint8 direction = 0; // 0 origin->remote raw eD2K; 1 remote->origin K6 body
+        std::vector<uint8_t> bytes;
+    };
+    std::map<uint64, std::deque<K6FairPayload>> m_k6FairPayloads;
+    std::map<uint64, uint64> m_k6FairCredits;
+    std::map<uint64, uint64> m_k6FairAllocationByStream;
+    uint64 m_k6FairPayloadBytes = 0;
+    struct K6QuotaGrant {
+        kad6::K6QuotaService service = kad6::K6QuotaService::Control;
+        kad6::Hash32 context{};
+        kad6::Hash32 issuer{};
+        uint64 allocation_id = 0;
+        uint64 expires_at = 0;
+    };
+    std::map<std::string, K6QuotaGrant> m_k6QuotaGrants;
+    bool m_k6PublicStableEnabled = false; // external release gates must enable it.
+    bool m_k6ReleaseEvidenceLoaded = false;
+    bool m_k6ReleaseEvidencePresent = false;
+    bool m_k6ReleaseRuntimeHealthy = false;
+    kad6::K6ReleaseGateStatus m_k6ReleaseStatus = kad6::K6ReleaseGateStatus::Missing;
+    kad6::K6ReleaseEvidence m_k6ReleaseEvidence;
+    mutable CCriticalSection m_k6ReleaseLock;
+    std::array<uint8_t, 32> m_k6ReleaseChallenge{};
+    uint64 m_k6ReleaseChallengeExpires = 0;
+    bool m_k6ReleaseChallengeReady = false;
+    bool IsK6PublicReleaseEnabled() const;
+    bool EnsureK6QuotaAuthority(uint64 nowSeconds);
+    bool K6QuotaPrincipal(const TunnelRequestCtx& ctx, kad6::Hash32& principal) const;
+    bool K6QuotaIssuerTrusted(const uint8_t nodePub[32]) const;
+    uint32 K6SelectOriginCircuit(uint32 requiredCaps,
+                                 uint32 pinnedCircId = 0) const;
+    bool K6CircuitHasExitCaps(uint32 circId, uint32 requiredCaps) const;
+    bool K6QuotaRoundTrip(uint32 circId, uint8 msgType,
+                          const std::vector<uint8_t>& body,
+                          uint8 expectedMsgType, uint32 timeoutMs,
+                          kad6::K6Frame& response);
+    bool K6AcquireAnonymousQuota(uint32 targetCircId,
+                                 kad6::K6QuotaService service,
+                                 uint8 operationMsgType,
+                                 const std::vector<uint8_t>& operationBody,
+                                 uint32 timeoutMs);
+    bool ConsumeK6QuotaGrant(const TunnelRequestCtx& ctx,
+                             kad6::K6QuotaService service,
+                             const kad6::K6Frame& frame,
+                             uint64* allocationId = nullptr);
+    static std::string K6QuotaGrantKey(uint32 circId, const kad6::Hash32& context);
+    bool QueueK6FairPayloadLocked(uint64 streamId, uint8 direction,
+                                  std::vector<uint8_t>&& bytes);
+    void ReleaseK6FairStreamLocked(uint64 streamId);
+    bool ProcessK6FairTick();
+    CKad6ExitNoticeServer m_k6ExitNoticeServer;
+    bool ApplyK6ServiceSwitch(kad6::K6Service service, bool enabled,
+                              uint32 drainSeconds);
+    bool ApplyK6PublicRelease(bool enable,
+                              const kad6::K6ReleaseEvidence* evidence,
+                              uint32 drainSeconds);
+    bool LoadK6ReleaseEvidence();
+    bool SaveK6ReleaseEvidence(const std::vector<uint8_t>& wire) const;
+    void RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds = 300);
+    struct K6OriginSourceLookup {
+        kad6::Hash16 file_hash{};
+        uint32 circ_id = 0;
+        DWORD deadline = 0;
+        uint16 received = 0;
+    };
+    struct K6DownloadActivation {
+        CUpDownClient* client = nullptr;
+        uint32 circ_id = 0;
+        DWORD deadline = 0;
+    };
+    std::map<uint32_t, K6OriginSourceLookup> m_k6OriginSourceLookups;
+    std::map<uint32_t, K6DownloadActivation> m_k6DownloadActivations;
+    std::map<uint64, uint32> m_k6OriginSourceLeaseRoutes;
+    std::map<uint64, uint32> m_k6OriginPublishLeaseRoutes;
+    struct K6OriginAdvertiseState {
+        bool in_flight = false;
+        uint64 next_attempt = 0;
+        uint64 source_lease_id = 0;
+        uint64 publish_lease_id = 0;
+    };
+    struct K6OriginAdvertiseWork {
+        CLiveTunnel* owner = nullptr;
+        std::string key;
+        kad6::K6SourceBind bind;
+    };
+    std::map<std::string, K6OriginAdvertiseState> m_k6OriginAdvertisements;
+    uint64 m_k6OriginSourceEpoch = 0;
+    static UINT AFX_CDECL K6OriginAdvertiseWorker(LPVOID context);
+    void FinishK6OriginAdvertise(const std::string& key, bool success,
+                                 uint64 sourceLeaseId, uint64 publishLeaseId,
+                                 uint32 refreshAfter);
+    struct K6OriginTargetRoute { uint32 circ_id = 0; uint64 expires_at = 0; };
+    std::map<std::string, K6OriginTargetRoute> m_k6OriginTargetRoutes;
+    static std::string K6AuthorizedTargetKey(uint32 circId, uint32 requestId,
+                                             const kad6::Hash16& resultId);
+    static bool K6AllowTicketTarget(void* context, kad6::Byte service,
+                                    const kad6::K6Endpoint& endpoint);
+    static bool K6ConsumeTicket(void* context, const kad6::K6TargetTicket& ticket);
+    kad6::K6TargetPolicy K6TicketPolicy();
+    bool IssueK6RuntimeTicket(const K6AuthorizedTarget& target, uint64 maxBytes,
+                              kad6::K6Provenance provenance, uint64 session,
+                              uint64 stream, uint64 sequence,
+                              std::vector<uint8_t>& wire);
+    void SweepK6Gateway(uint64 nowSeconds,
+                        const std::set<uint32_t>& activeCircuits);
+    static std::string K6BinaryKey(const uint8_t* bytes, size_t length);
+    static std::string K6SourceScoreKey(const kad6::K6Endpoint& endpoint,
+                                        uint8 networkOrigin);
+    static std::string K6ShadowKey(const kad6::K6SourceLease& lease);
+    bool EnsureK6SourceEpochsLoaded();
+    bool SaveK6SourceEpochs() const;
+    void SweepK6SourceLeases(const std::set<uint32_t>& activeCircuits,
+                             uint64 nowSeconds);
+    void QueueK6ShadowRefreshes(uint64 nowSeconds);
+    void StartDueK6ShadowPublishes(uint64 nowSeconds);
+    void StartK6VisibilityProbes(uint64 nowSeconds);
+    void RefreshK6NativePublishes(uint64 nowSeconds);
     // v8.1 Sprint C (C2) — exit forwards a tunneled subscribe to the broadcaster
     // on the viewer's behalf, then acks. Runs on the main thread (OnCellReceived).
     void ExitHandle_LiveSubscribe(const TunnelRequestCtx& ctx);
@@ -636,6 +1156,9 @@ private:
     // Serialize matching known streams into the TUN_OP_KAD_RESULT_V2 wire body.
     void SerializeSearchResults(const std::string& keyword,
                                 std::vector<uint8_t>& out) const;
+    // Build and stream canonical K6M_SEARCH_RESULT frames. Returns the number
+    // successfully sent; FinishDueSearchJobs emits the matching SEARCH_END.
+    uint16_t SendK6SearchResults(const TunnelSearchJob& job);
     // StopSearch on the job's CSearch ids (main thread only).
     void StopSearchJobKad(const TunnelSearchJob& job);
 
@@ -659,6 +1182,7 @@ private:
         // another (up to retries_left) by re-enqueuing from request_msg.
         uint32_t circ_id      = 0;     // circuit this request was pinned to (0 = not sent yet)
         uint8_t  sub_cmd      = 0;     // op to resend with
+        uint32_t required_exit_caps = 0; // authenticated exit cap filter
         int      retries_left = 0;     // remaining retries on circuit death
         std::vector<uint8_t> request_msg;  // original logical message body (for resend)
     };
@@ -669,7 +1193,8 @@ private:
     // two concurrent requests can never share a slot.
     PendingRequest* RegisterPending(uint32_t& req_id);
     bool WaitPending(uint32_t req_id, PendingRequest* pr, uint32_t timeoutMs,
-                     std::vector<uint8_t>& outReply, uint32_t* outResult);
+                     std::vector<uint8_t>& outReply, uint32_t* outResult,
+                     uint32_t* outCircuitId = NULL);
     void SignalReply(uint32_t req_id, const uint8_t* reply, size_t replyLen,
                      uint32_t result);
 
@@ -678,18 +1203,33 @@ private:
     // < 0x40 is a single legacy cell. Returns the circuit id used, or 0 if no
     // Active circuit was available. MAIN THREAD ONLY (touches sockets).
     uint32_t SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
-                               const uint8_t* msg, size_t msgLen);
+                               const uint8_t* msg, size_t msgLen,
+                               uint32_t requiredExitCaps = 0,
+                               uint32_t pinnedCircId = 0);
 
     // v0.72 — marshaled-work queue: webserver worker threads push, the main
     // thread drains it in ProcessMainThreadWork().
     // A4 adds MT_SEND_MSG: marshal a whole logical message (req_id + sub_cmd +
     // body) so the main thread picks one circuit and pins all its cells to it.
     enum MtOp : uint8_t { MT_SEND = 1, MT_BUILD_1HOP = 2, MT_BUILD_2HOP = 3,
-                          MT_SEND_MSG = 4 };
+                          MT_SEND_MSG = 4, MT_BUILD_3HOP = 5,
+                          MT_K6_SERVICE_SWITCH = 6,
+                          MT_K6_RELEASE_SWITCH = 7 };
     struct MainThreadReq {
         MtOp                 op     = MT_SEND;
         uint32_t             reqId  = 0;   // MT_BUILD_*/MT_SEND_MSG key
         uint8_t              subCmd = 0;   // MT_SEND_MSG op
+        uint32_t             requiredExitCaps = 0;
+        uint32_t             pinnedCircId = 0; // 0=select; nonzero=stream-bound circuit
+        uint64_t             k6StreamId = 0; // nonzero only for bounded K6 stream data
+        size_t               k6FlowBytes = 0;
+        uint64_t             k6Sequence = 0;
+        size_t               k6DataBytes = 0;
+        kad6::K6Service      k6Service = kad6::K6Service::Control;
+        bool                 k6Enable = true;
+        uint32_t             k6DrainSeconds = 0;
+        bool                 k6HasReleaseEvidence = false;
+        kad6::K6ReleaseEvidence k6ReleaseEvidence;
         std::vector<uint8_t> payload;      // MT_SEND payload / MT_SEND_MSG body
     };
     mutable CCriticalSection  m_mtLock;
@@ -708,7 +1248,22 @@ private:
     // thread (see SendMessagePinned). Replaces the per-cell EnqueueSend path
     // for tunnel ops so all cells of one message ride one circuit.
     void EnqueueSendMsg(uint32_t req_id, uint8_t sub_cmd,
-                        const uint8_t* msg, size_t msgLen);
+                        const uint8_t* msg, size_t msgLen,
+                        uint32_t requiredExitCaps = 0,
+                        uint32_t pinnedCircId = 0);
+
+    // Origin-side accumulator for the ordered sequence of canonical
+    // SEARCH_RESULT frames that ends with SEARCH_END.  `legacy` is the old
+    // rich-result body solely for the existing directory/JSON consumers; it
+    // never goes back onto the K6 wire.
+    struct K6SearchReplyAggregate {
+        std::vector<uint8_t> legacy;
+        uint16_t count = 0;
+        DWORD started = 0;
+    };
+    std::map<uint64_t, K6SearchReplyAggregate> m_k6SearchReplies; // m_pendingLock
+    bool HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
+                             uint32_t req_id, const std::vector<uint8_t>& wire);
     // v0.72 — MAIN THREAD: refresh m_peersCache* from the live ClientList.
     void RebuildPeersCache();
 
@@ -716,6 +1271,11 @@ private:
     std::vector<std::shared_ptr<CLiveCircuit>> m_circuits;
     size_t m_rrNextIdx;
     DWORD m_lastTickMs;
+    std::array<uint8_t, 32> m_k6GuardNodePub{};
+    uint64_t m_k6GuardExpiresAt = 0;
+    bool m_k6GuardLoaded = false;
+    bool LoadK6Guard();
+    bool SaveK6Guard(const uint8_t nodePub[32], uint64_t expiresAt);
     uint64_t m_cellsSentTotal = 0;
     uint64_t m_cellsRecvTotal = 0;
     uint64_t m_bytesSentTotal = 0;   // v8.1 D8 - tunnel wire-byte telemetry

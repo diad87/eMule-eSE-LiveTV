@@ -313,13 +313,20 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 				APPEND_CAP(ESE_CAP_GOSSIP_PROTOCOL,   "Gossip");
 				APPEND_CAP(ESE_CAP_PRIVACY_TUNNELING, "Tunneling");
 				APPEND_CAP(ESE_CAP_COVER_TRAFFIC,     "Cover");
+				APPEND_CAP(ESE_CAP_TUNNEL_AUTH,       "TunnelAuth");
 				APPEND_CAP(ESE_CAP_HOLEPUNCH_RDV,     "RDV");
 				APPEND_CAP(ESE_CAP_LIVE_RELAY,        "Relay");
+				APPEND_CAP(ESE_CAP_KAD6,              "Kad6");
+				APPEND_CAP(ESE_CAP_TUNNEL_STRICT3,    "Strict3");
+				APPEND_CAP(ESE_CAP_TUNNEL_SHAPED,     "Class5");
 				#undef APPEND_CAP
 				rCtrl << _T("]");
 			}
 		}
 		rCtrl << _T("\r\n");
+		if (g_uEseCapsRuntime & ESE_CAP_KAD6) {
+			rCtrl << _T("Kad6 discovery:\tDISCOVERY_ONLY — origin hidden from DHT; exit sees keyword; transfer privacy is separate\r\n");
+		}
 
 		// Circuitos onion. Mostramos pending + active separadamente
 		// porque un test_circuit contra peer legacy crea un Pending que
@@ -330,6 +337,9 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 		size_t circuitsPending = 0;
 		size_t pool = 0;
 		size_t subs = 0;
+		size_t strict3Circuits = 0;
+		size_t shapedCircuits = 0;
+		size_t shapingExposed = 0;
 		uint64_t cellsSent = 0, cellsRecv = 0, bytesSent = 0, bytesRecv = 0;  // v8.1 D8
 		uint32_t meanRtt = 0;                                                 // v8.1 D8
 		try {
@@ -342,6 +352,14 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 			bytesSent       = eSELive::CLiveTunnel::Get().BytesSentTotal();
 			bytesRecv       = eSELive::CLiveTunnel::Get().BytesRecvTotal();
 			meanRtt         = eSELive::CLiveTunnel::Get().MeanRttMs();
+			std::vector<eSELive::CLiveTunnel::CircuitSnapshot> snapshots;
+			eSELive::CLiveTunnel::Get().GetCircuitsSnapshot(snapshots);
+			for (const auto& circuit : snapshots) {
+				if (circuit.state != (uint8_t)eSELive::CircuitState::Active) continue;
+				if (circuit.strict3) ++strict3Circuits;
+				if (circuit.shaped) ++shapedCircuits;
+				if (circuit.shaping_exposed) ++shapingExposed;
+			}
 		} catch (...) {}
 
 		{
@@ -370,6 +388,12 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 			cs.Format(GetResString(IDS_NETINFO_TRAFFIC_FMT),
 				cellsSent, bytesSent / 1024, cellsRecv, bytesRecv / 1024);
 			rCtrl << GetResString(IDS_NETINFO_TRAFFIC_LABEL) << cs << _T("\r\n");
+			if (strict3Circuits || shapedCircuits || shapingExposed) {
+				cs.Format(_T("Kad6 STRICT:\t%u strict3 / %u class-5%s\r\n"),
+					(unsigned)strict3Circuits, (unsigned)shapedCircuits,
+					shapingExposed ? _T(" — DEGRADED: TRAFFIC_SHAPING_EXPOSED") : _T(""));
+				rCtrl << cs;
+			}
 
 			// v8.1 D8 - mean end-to-end tunnel RTT (only shown once a probe round-trips).
 			if (meanRtt > 0) {

@@ -1,0 +1,20 @@
+{
+  "schema": "kad6-vector-v1",
+  "codec": "K6TagListV1",
+  "vectors": [
+    {
+      "id": "tags-one-u8",
+      "input": "one numeric-u8 tag name=0x10,value=0x42",
+      "expected_hex": "01010010000000000110000100000042",
+      "expected_status": "Ok",
+      "reason": "canonical single-tag list"
+    },
+    {
+      "id": "tags-unsupported-version",
+      "input_hex": "02000007000000",
+      "expected_hex": "",
+      "expected_status": "UnsupportedVersion",
+      "reason": "only tag-list version 1 is defined"
+    }
+  ]
+}

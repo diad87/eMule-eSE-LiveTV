@@ -6,6 +6,7 @@
 #include "../cryptopp/sha.h"   // eSE 8.14: SHA256 for challenge-response
 #include <locale.h>
 #include <algorithm>
+#include <cmath>
 #include <vector>
 #include "emule.h"
 #include "StringConversion.h"
@@ -5255,10 +5256,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		thePrefs.SetEseHolePunchPortPredict(bOn);   // anti-CGNAT port spray (both eD2K + Live)
 		thePrefs.SetEseEd2kPunch3(bOn);             // eD2K downloads escalate to 3-way rendezvous
 		thePrefs.SetEseKad3Rendezvous(bOn);         // advertise/handle the separately gated 3-way protocol
+		volatile LONG* pEseCaps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
 		if (bOn && thePrefs.GetUtpHolePunchEnabled())
-			g_uEseCapsRuntime |= ESE_CAP_HOLEPUNCH_RDV;
+			::InterlockedOr(pEseCaps, (LONG)ESE_CAP_HOLEPUNCH_RDV);
 		else
-			g_uEseCapsRuntime &= ~ESE_CAP_HOLEPUNCH_RDV;
+			::InterlockedAnd(pEseCaps, ~(LONG)ESE_CAP_HOLEPUNCH_RDV);
 		if (bOn) CKadKeepalive::Instance().RequestStart();
 		else     CKadKeepalive::Instance().RequestStop();
 		CStringA json;
@@ -5639,13 +5641,19 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				if (c == '"' || c == '\\') kwSafe += '\\';
 				kwSafe += c;
 			}
-			json = "{\"ok\":true,\"keyword\":\"";
+			// K6-1 (Kad6 DISCOVERY_ONLY): label the operation honestly. The
+			// originator's IP never touches the DHT (the exit queries Kad from its
+			// OWN IP), but the exit DOES see the keyword in clear (spec K6-SEARCH-010),
+			// and this is discovery ONLY — transfer privacy is a separate policy
+			// (STRICT suppresses direct dials; other profiles may permit them). These are additive
+			// JSON fields; existing consumers of ok/keyword/results are unaffected.
+			json = "{\"ok\":true,\"privacy\":\"DISCOVERY_ONLY\",\"originator_hidden_from_dht\":true,\"exit_sees_keyword\":true,\"keyword\":\"";
 			json += kwSafe;
 			json += "\",\"results\":";
 			json += reply.c_str();
 			json += "}";
 		} else {
-			json = "{\"ok\":false,\"reason\":\"no active circuit or timeout - build a circuit first via test_circuit\"}";
+			json = "{\"ok\":false,\"privacy\":\"DISCOVERY_ONLY\",\"reason\":\"no active circuit or timeout - build a circuit first via test_circuit\"}";
 		}
 		CStringA header;
 		header.Format(
@@ -5754,7 +5762,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			    "{\"circ_id\":\"0x%08X\",\"role\":\"%s\","
 			    "\"state\":\"%s\",\"age_ms\":%u,"
 			    "\"hop_count\":%u,\"forwarding\":%s,"
-			    "\"next_circ_id\":\"0x%08X\",\"auth_ok\":%s}",
+			    "\"next_circ_id\":\"0x%08X\",\"auth_ok\":%s,"
+			    "\"strict3\":%s,\"class5_shaped\":%s,"
+			    "\"traffic_shaping_exposed\":%s}",
 			    s.circ_id,
 			    s.role == 0 ? "Originator" : "Relay",
 			    (s.state == 0 ? "Pending"
@@ -5766,7 +5776,10 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			    s.hop_count,
 			    s.next_hop_set ? "true" : "false",
 			    s.next_circ_id,
-			    s.auth_ok ? "true" : "false");
+			    s.auth_ok ? "true" : "false",
+			    s.strict3 ? "true" : "false",
+			    s.shaped ? "true" : "false",
+			    s.shaping_exposed ? "true" : "false");
 			arr += line;
 		}
 
@@ -5854,8 +5867,12 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		// v0.71 B — optional ?hops=2 to build a 2-hop circuit. Default
 		// is 1-hop (backward compat). 2-hop picks 2 fork peers if
 		// available; with 1 fork peer it loops hop2 back (testing aid).
+		// hops=3 invokes K6-6 STRICT3: three authenticated/shaped IPv6
+		// identities with verified /48+ASN diversity and no repeated known
+		// operator group, with no fallback.
 		const CString hopsArg = _ParseURL(Data.sURL, _T("hops"));
-		const int hops = (hopsArg == _T("2")) ? 2 : 1;
+		const int hops = hopsArg == _T("3") ? 3
+		               : hopsArg == _T("2") ? 2 : 1;
 		uint32_t circId = 0;
 		CStringA result;
 		try {
@@ -5864,7 +5881,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			circId = eSELive::CLiveTunnel::Get().RequestTestCircuit(hops, 2500);
 		} catch (...) {}
 		if (circId == 0) {
-			result = "{\"ok\":false,\"reason\":\"no connected fork-capable peers - check /api/live/privacy/peers\"}";
+			result = hops == 3
+				? "{\"ok\":false,\"reason\":\"strict3 unavailable: need 3 authenticated shaped IPv6 peers with verified /48+ASN diversity and no repeated known operator group - check /api/live/privacy/peers\"}"
+				: "{\"ok\":false,\"reason\":\"no connected fork-capable peers - check /api/live/privacy/peers\"}";
 		} else {
 			CStringA tmp;
 			tmp.Format("{\"ok\":true,\"circuit_id\":\"0x%08x\",\"hops_requested\":%d,\"note\":\"poll /api/live/privacy and /api/live/privacy/circuits to watch handshake progress\"}",
@@ -5880,6 +5899,245 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			result.GetLength());
 		Data.pSocket->SendData(header, header.GetLength());
 		Data.pSocket->SendData(result, result.GetLength());
+		return;
+	}
+
+	// --- /api/live/privacy/kad6/release --- explicit public-exit release gate.
+	// Installation and mutation are loopback-only. The host signs the evidence
+	// with its persistent NodeIdentity; callers never supply a private key.
+	if (sURL.Left(30) == "/api/live/privacy/kad6/release") {
+		const CString enabledArg = _ParseURL(Data.sURL, _T("enabled"));
+		bool mutationOk = true;
+		CStringA mutationError;
+		if (!enabledArg.IsEmpty()) {
+			const bool local = Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK);
+			const bool validEnabled = enabledArg == _T("0") || enabledArg == _T("1");
+			const CString challengeArg = _ParseURL(Data.sURL, _T("challenge"));
+			if (!local) { mutationOk = false; mutationError = "local_only"; }
+			else if (!validEnabled) { mutationOk = false; mutationError = "bad_enabled"; }
+			else if (!eSELive::CLiveTunnel::Get().ConsumeK6ReleaseOperatorChallenge(
+				std::string(CT2A(challengeArg, CP_UTF8)))) {
+				mutationOk = false; mutationError = "challenge_required_or_expired";
+			}
+			else {
+				kad6::K6ReleaseEvidence evidence;
+				const kad6::K6ReleaseEvidence* evidencePtr = NULL;
+				if (enabledArg == _T("1")) {
+					const CString confirm = _ParseURL(Data.sURL, _T("confirm"));
+					const CString fieldHex = _ParseURL(Data.sURL, _T("field_sha256"));
+					const CString auditHex = _ParseURL(Data.sURL, _T("audit_sha256"));
+					if (confirm != _T("ENABLE_KAD6_PUBLIC_EXIT")) {
+						mutationOk = false; mutationError = "confirmation_required";
+					} else if (!fieldHex.IsEmpty() || !auditHex.IsEmpty()) {
+						auto parseDigest = [](const CString& text,
+							kad6::Hash32& digest) -> bool {
+							if (text.GetLength() != 64) return false;
+							for (int i = 0; i < 32; ++i) {
+								auto nibble = [](TCHAR c) -> int {
+									if (c >= _T('0') && c <= _T('9')) return c - _T('0');
+									if (c >= _T('a') && c <= _T('f')) return c - _T('a') + 10;
+									if (c >= _T('A') && c <= _T('F')) return c - _T('A') + 10;
+									return -1;
+								};
+								const int hi = nibble(text[i * 2]);
+								const int lo = nibble(text[i * 2 + 1]);
+								if (hi < 0 || lo < 0) return false;
+								digest[i] = static_cast<uint8_t>((hi << 4) | lo);
+							}
+							return true;
+						};
+						const CString fromArg = _ParseURL(Data.sURL, _T("observed_from"));
+						const CString toArg = _ParseURL(Data.sURL, _T("observed_to"));
+						const CString attemptsArg = _ParseURL(Data.sURL, _T("admission_attempts"));
+						const CString ppmArg = _ParseURL(Data.sURL, _T("admission_ppm"));
+						const CString headroomArg = _ParseURL(Data.sURL, _T("headroom_bps"));
+						const CString gatesArg = _ParseURL(Data.sURL, _T("gate_mask"));
+						const CString validArg = _ParseURL(Data.sURL, _T("valid_until"));
+						evidence.observed_from = _tcstoui64(fromArg, NULL, 10);
+						evidence.observed_to = _tcstoui64(toArg, NULL, 10);
+						evidence.admission_attempts = _tcstoui64(attemptsArg, NULL, 10);
+						evidence.admission_success_ppm = static_cast<uint32>(
+							_tcstoul(ppmArg, NULL, 10));
+						evidence.useful_headroom_bps = _tcstoui64(headroomArg, NULL, 10);
+						evidence.gate_mask = static_cast<uint16>(_tcstoul(gatesArg, NULL, 0));
+						evidence.valid_until = _tcstoui64(validArg, NULL, 10);
+						if (!parseDigest(fieldHex, evidence.field_digest) ||
+							!parseDigest(auditHex, evidence.external_audit_digest) ||
+							fromArg.IsEmpty() || toArg.IsEmpty() || attemptsArg.IsEmpty() ||
+							ppmArg.IsEmpty() || headroomArg.IsEmpty() || gatesArg.IsEmpty()) {
+							mutationOk = false; mutationError = "incomplete_or_bad_evidence";
+						} else {
+							evidencePtr = &evidence;
+						}
+					}
+				}
+				if (mutationOk) {
+					int drain = _ttoi(_ParseURL(Data.sURL, _T("drain_seconds")));
+					if (drain <= 0) drain = 300;
+					if (drain > static_cast<int>(kad6::kK6MaxDrainSeconds))
+						drain = static_cast<int>(kad6::kK6MaxDrainSeconds);
+					try {
+						mutationOk = eSELive::CLiveTunnel::Get().RequestK6PublicRelease(
+							enabledArg == _T("1"), evidencePtr,
+							static_cast<uint32>(drain), 5000);
+					} catch (...) { mutationOk = false; }
+					if (!mutationOk) mutationError = "gate_rejected_or_runtime_unhealthy";
+				}
+			}
+		}
+		eSELive::CLiveTunnel::K6ReleaseRuntimeSnapshot release;
+		try { eSELive::CLiveTunnel::Get().GetK6ReleaseSnapshot(release); } catch (...) {}
+		std::string operatorChallenge;
+		if (Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK))
+			try { eSELive::CLiveTunnel::Get().GetK6ReleaseOperatorChallenge(
+				operatorChallenge); } catch (...) { operatorChallenge.clear(); }
+		const CStringA challengeJson(operatorChallenge.c_str());
+		CStringA json;
+		json.Format(
+			"{\"ok\":%s,\"error\":\"%s\",\"status\":\"%s\",\"challenge\":\"%s\","
+			"\"operator_opt_in\":%s,\"evidence_present\":%s,\"evidence_valid\":%s,"
+			"\"runtime_healthy\":%s,\"public_exit_enabled\":%s,"
+			"\"gate_mask\":%u,\"observed_from\":%llu,\"observed_to\":%llu,"
+			"\"valid_until\":%llu,\"admission_attempts\":%llu,"
+			"\"admission_ppm\":%u,\"headroom_bps\":%llu}",
+			mutationOk ? "true" : "false", (LPCSTR)mutationError,
+			kad6::K6ReleaseGateStatusName(release.status),
+			(LPCSTR)challengeJson,
+			release.operator_opt_in ? "true" : "false",
+			release.evidence_present ? "true" : "false",
+			release.evidence_valid ? "true" : "false",
+			release.runtime_healthy ? "true" : "false",
+			release.public_exit_enabled ? "true" : "false",
+			static_cast<unsigned>(release.evidence.gate_mask),
+			static_cast<unsigned long long>(release.evidence.observed_from),
+			static_cast<unsigned long long>(release.evidence.observed_to),
+			static_cast<unsigned long long>(release.evidence.valid_until),
+			static_cast<unsigned long long>(release.evidence.admission_attempts),
+			static_cast<unsigned>(release.evidence.admission_success_ppm),
+			static_cast<unsigned long long>(release.evidence.useful_headroom_bps));
+		CStringA header;
+		header.Format("HTTP/1.1 200 OK\r\n" HTTPInit
+			"Content-Type: application/json\r\nCache-Control: no-store\r\n"
+			"Content-Length: %d\r\n\r\n", json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// --- /api/live/privacy/kad6/hardening --- K6-7 local incident control.
+	// A mutation is loopback-only even when a remote Web UI token is valid: the
+	// operator stop is intentionally local and never becomes a remote kill switch.
+	if (sURL.Left(32) == "/api/live/privacy/kad6/hardening") {
+		const CString serviceArg = _ParseURL(Data.sURL, _T("service"));
+		const CString enabledArg = _ParseURL(Data.sURL, _T("enabled"));
+		const CString drainArg = _ParseURL(Data.sURL, _T("drain_seconds"));
+		bool mutationOk = true;
+		CStringA mutationError;
+		if (!serviceArg.IsEmpty() || !enabledArg.IsEmpty()) {
+			kad6::K6Service service = kad6::K6Service::Count;
+			if (serviceArg == _T("control")) service = kad6::K6Service::Control;
+			else if (serviceArg == _T("exit_kad")) service = kad6::K6Service::ExitKad;
+			else if (serviceArg == _T("exit_ed2k_dial")) service = kad6::K6Service::ExitEd2kDial;
+			else if (serviceArg == _T("exit_ed2k_full")) service = kad6::K6Service::ExitEd2kFull;
+			const bool validEnabled = enabledArg == _T("0") || enabledArg == _T("1");
+			const bool local = Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK);
+			if (!local) { mutationOk = false; mutationError = "local_only"; }
+			else if (service == kad6::K6Service::Count || !validEnabled) {
+				mutationOk = false; mutationError = "bad_service_or_enabled";
+			} else {
+				int requestedDrain = drainArg.IsEmpty() ? 300 : _ttoi(drainArg);
+				if (requestedDrain < 0) requestedDrain = 0;
+				if (requestedDrain > static_cast<int>(kad6::kK6MaxDrainSeconds))
+					requestedDrain = static_cast<int>(kad6::kK6MaxDrainSeconds);
+				try {
+					mutationOk = eSELive::CLiveTunnel::Get().RequestK6ServiceSwitch(
+						service, enabledArg == _T("1"), static_cast<uint32>(requestedDrain), 3500);
+				} catch (...) { mutationOk = false; }
+				if (!mutationOk) mutationError = "release_gate_or_main_thread_timeout";
+			}
+		}
+
+		eSELive::CLiveTunnel::K6HardeningRuntimeSnapshot snap;
+		try { eSELive::CLiveTunnel::Get().GetK6HardeningSnapshot(snap); } catch (...) {}
+		K6ExitNoticeServerSnapshot notice;
+		try { notice = eSELive::CLiveTunnel::Get().GetK6ExitNoticeSnapshot(); } catch (...) {}
+		CStringA services;
+		for (size_t i = 0; i < snap.control.services.size(); ++i) {
+			if (i != 0) services += ",";
+			const kad6::K6ServiceSnapshot& s = snap.control.services[i];
+			CStringA item;
+			item.Format("{\"service\":\"%s\",\"state\":\"%s\","
+				"\"changed_at\":%llu,\"drain_deadline\":%llu,\"admitting\":%s}",
+				kad6::K6ServiceName(s.service), kad6::K6ServiceStateName(s.state),
+				static_cast<unsigned long long>(s.changed_at),
+				static_cast<unsigned long long>(s.drain_deadline),
+				(snap.control.admission_mask & kad6::K6ServiceBit(s.service)) ? "true" : "false");
+			services += item;
+		}
+		const bool degraded = snap.source_epoch_store_failed || snap.shaping_exposed_circuits != 0;
+		auto occupancyBand = [](uint64 value) -> const char* {
+			return value == 0 ? "zero" : value <= 4 ? "1_4" :
+				value <= 16 ? "5_16" : value <= 64 ? "17_64" : "65_plus";
+		};
+		CStringA economy;
+		for (size_t i = 0; i < snap.economy.size(); ++i) {
+			if (i != 0) economy += ",";
+			const kad6::K6EconomyWindowSnapshot& window = snap.economy[i];
+			CStringA rho;
+			if (snap.economy_measurement_ready && std::isfinite(snap.rho[i]))
+				rho.Format("%.6f", snap.rho[i]);
+			else
+				rho = "null";
+			CStringA item;
+			item.Format("{\"service\":\"%s\",\"rho\":%s,\"sealed\":%s,"
+				"\"starts_at\":%llu,\"ends_at\":%llu,\"samples\":%llu,"
+				"\"admission_attempts\":%llu,\"admission_successes\":%llu,"
+				"\"admission_ratio\":%.6f,\"rho_p50\":%.6f,\"rho_p95\":%.6f}",
+				kad6::K6ServiceName(static_cast<kad6::K6Service>(i)), (LPCSTR)rho,
+				window.sealed ? "true" : "false",
+				static_cast<unsigned long long>(window.starts_at),
+				static_cast<unsigned long long>(window.ends_at),
+				static_cast<unsigned long long>(window.samples),
+				static_cast<unsigned long long>(window.admission_attempts),
+				static_cast<unsigned long long>(window.admission_successes),
+				window.admission_ratio, window.rho_p50, window.rho_p95);
+			economy += item;
+		}
+		CStringA json;
+		json.Format("{\"ok\":%s,\"error\":\"%s\",\"health\":\"%s\","
+			"\"revision\":%llu,\"services\":[%s],"
+			"\"occupancy\":{\"leases\":\"%s\",\"publishes\":\"%s\","
+			"\"dial_streams\":\"%s\",\"full_streams\":\"%s\",\"shaping_exposed\":%s},"
+			"\"source_epoch_store_failed\":%s,"
+			"\"metrics\":{\"window_ready\":%s,\"window_start\":%llu,\"window_end\":%llu,"
+			"\"fixed_series\":%u,\"exported_series\":%u},"
+			"\"economy\":{\"measurement_ready\":%s,\"strict_recommended\":%s,"
+			"\"services\":[%s]},"
+			"\"exit_notice\":{\"running\":%s,\"port\":%u,\"requests\":\"%s\","
+			"\"rejected\":\"%s\",\"bytes_sent\":\"%s\"}}",
+			mutationOk ? "true" : "false", (LPCSTR)mutationError,
+			degraded ? "degraded" : "healthy",
+			static_cast<unsigned long long>(snap.control.revision), (LPCSTR)services,
+			occupancyBand(snap.active_leases), occupancyBand(snap.active_publishes),
+			occupancyBand(snap.dial_streams), occupancyBand(snap.full_streams),
+			snap.shaping_exposed_circuits != 0 ? "true" : "false",
+			snap.source_epoch_store_failed ? "true" : "false",
+			snap.metrics.ready ? "true" : "false",
+			static_cast<unsigned long long>(snap.metrics.start),
+			static_cast<unsigned long long>(snap.metrics.end),
+			static_cast<unsigned>(snap.metrics.fixed_series),
+			static_cast<unsigned>(snap.metrics.exported_series),
+			snap.economy_measurement_ready ? "true" : "false",
+			snap.strict_recommended ? "true" : "false", (LPCSTR)economy,
+			notice.running ? "true" : "false", static_cast<unsigned>(notice.port),
+			occupancyBand(notice.requests), occupancyBand(notice.rejected),
+			occupancyBand(notice.bytes_sent));
+		CStringA header;
+		header.Format("HTTP/1.1 200 OK\r\n" HTTPInit
+			"Content-Type: application/json\r\nCache-Control: no-store\r\n"
+			"Content-Length: %d\r\n\r\n", json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
 		return;
 	}
 
@@ -6140,6 +6398,10 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			haveSnap ? snap.counters.pendingDialsDropped : 0L,
 			haveSnap ? snap.counters.joinToFirstChunkSamples : 0L,
 			haveSnap ? snap.counters.joinToFirstChunkSumMs : 0L);
+		try {
+			const std::string kad6Metrics = eSELive::CLiveTunnel::Get().GetK6PrometheusMetrics();
+			body += CStringA(kad6Metrics.c_str());
+		} catch (...) {}
 
 		CStringA hdr;
 		hdr.Format(
@@ -6528,6 +6790,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				"\"startedAt\":%u,"
 				"\"lastSeenAgeMs\":%u,"
 				"\"own\":%s,"
+				"\"privacyOrigin\":\"%s\","
 				"\"source\":\"kad\"}",
 				(LPCSTR)streamKey,
 				(LPCSTR)title,
@@ -6539,7 +6802,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				entry.broadcasterPort,
 				entry.startedAt,
 				GetTickCount() - entry.lastSeen,
-				entry.isOwnStream ? "true" : "false");
+				entry.isOwnStream ? "true" : "false",
+				entry.privacyOrigin == ESE_PRIV_ORIGIN_KAD6_TUNNEL
+					? "kad6_tunnel" : "direct");
 		}
 		json += "]}";
 

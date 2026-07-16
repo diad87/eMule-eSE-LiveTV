@@ -13,7 +13,7 @@ namespace {
 // The old fixed 30s/25s pool TTL predated the 300s circuit rotation (TUNNEL_ROTATION_
 // BASE_MS) and would have evicted still-Active circuits; retire is now driven by the
 // circuit's OWN state (Destroyed) instead — see Tick().
-const size_t POOL_TARGET = 2;
+const size_t PRIVATE_POOL_TARGET = 3;
 
 }  // namespace
 
@@ -36,7 +36,8 @@ std::shared_ptr<eSELive::CLiveCircuit> CKadV2TunnelPool::Acquire(const CUInt128&
     CUInt128 bestDist;   // meaningful only once bestXor is set
     std::shared_ptr<eSELive::CLiveCircuit> firstActive;
     for (auto& e : m_entries) {
-        if (!e.tunnel || e.tunnel->State() != eSELive::CircuitState::Active) continue;
+        if (!e.tunnel || e.tunnel->State() != eSELive::CircuitState::Active ||
+            e.tunnel->m_k6QuotaIssuerCircuit) continue;
         if (!firstActive) firstActive = e.tunnel;
         if (!e.tunnel->m_haveExitKadKey) continue;
         CUInt128 dist = destinationKey;
@@ -50,6 +51,9 @@ void CKadV2TunnelPool::RegisterTunnel(std::shared_ptr<eSELive::CLiveCircuit> tun
 {
     if (!tunnel) return;
     CSingleLock lock(&m_lock, TRUE);
+    for (const PoolEntry& existing : m_entries)
+        if (existing.tunnel && existing.tunnel->Id() == tunnel->Id())
+            return;
     PoolEntry pe;
     pe.tunnel = tunnel;
     m_entries.push_back(pe);
@@ -63,7 +67,8 @@ void CKadV2TunnelPool::Clear()
 
 void CKadV2TunnelPool::Tick()
 {
-    size_t poolActive = 0;
+    size_t privateActive = 0;
+    size_t quotaIssuerActive = 0;
     {
         CSingleLock lock(&m_lock, TRUE);
 
@@ -80,8 +85,10 @@ void CKadV2TunnelPool::Tick()
         // Count Active pool entries (originator circuits that reached Active and
         // registered) — the make-before-break target bound + the "seeded" guard below.
         for (auto& e : m_entries)
-            if (e.tunnel && e.tunnel->State() == eSELive::CircuitState::Active)
-                ++poolActive;
+            if (e.tunnel && e.tunnel->State() == eSELive::CircuitState::Active) {
+                if (e.tunnel->m_k6QuotaIssuerCircuit) ++quotaIssuerActive;
+                else ++privateActive;
+            }
     }   // release m_lock BEFORE calling CLiveTunnel — RegisterTunnel runs UNDER the
         // tunnel lock (tunnel->pool), so we must never nest pool->tunnel here.
 
@@ -94,10 +101,14 @@ void CKadV2TunnelPool::Tick()
     // stops Tick from re-firing every second while a successor is still mid-handshake (it
     // is Pending, not yet pool-Active) — otherwise it would burst a pile of Pending
     // circuits. BuildSuccessorCircuit is itself a no-op when no fork peer is connected.
-    if (poolActive >= 1 && poolActive < POOL_TARGET) {
+    if (privateActive >= 1) {
         eSELive::CLiveTunnel& tun = eSELive::CLiveTunnel::Get();
-        if (tun.PendingCircuitCount() == 0)
-            tun.BuildSuccessorCircuit();
+        if (tun.PendingCircuitCount() == 0) {
+            if (quotaIssuerActive == 0 && tun.BuildQuotaGuardCircuit())
+                return;
+            if (privateActive < PRIVATE_POOL_TARGET)
+                tun.BuildSuccessorCircuit();
+        }
     }
 }
 

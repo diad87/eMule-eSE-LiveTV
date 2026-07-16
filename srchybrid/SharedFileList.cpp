@@ -45,6 +45,9 @@
 #include "md5sum.h"
 #include "ImportParts.h"
 #include "FirewallProberV6.h"
+#include "LiveTunnel.h"
+#include "Kad6CryptoHost.h"
+#include "SHAHashSet.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -55,6 +58,44 @@ static char THIS_FILE[] = __FILE__;
 
 typedef CSimpleArray<CKnownFile*> CSimpleKnownFileArray;
 #define	SHAREDFILES_FILE	_T("sharedfiles.dat")
+
+namespace {
+bool BuildK6ContentCommitment(const CKnownFile* file,
+                              kad6::K6CommitmentKind& kind,
+                              kad6::Hash32& commitment)
+{
+	kind = kad6::K6CommitmentKind::None;
+	commitment = kad6::Hash32{};
+	if (!file) return false;
+	const CFileIdentifier& identifier = file->GetFileIdentifierC();
+	std::vector<uint8> material;
+	if (identifier.HasAICHHash()) {
+		static const char label[] = "Kad6-AICH-root-v1";
+		material.insert(material.end(), label, label + sizeof label - 1);
+		const uchar* root = identifier.GetAICHHash().GetRawHashC();
+		material.insert(material.end(), root, root + CAICHHash::GetHashSize());
+		kind = kad6::K6CommitmentKind::AichRoot;
+	} else if (identifier.HasExpectedMD4HashCount()) {
+		static const char label[] = "Kad6-MD4-hashset-v1";
+		material.insert(material.end(), label, label + sizeof label - 1);
+		material.insert(material.end(), file->GetFileHash(), file->GetFileHash() + 16);
+		const uint64 size = file->GetFileSize();
+		for (size_t i = 0; i < 8; ++i)
+			material.push_back(static_cast<uint8>(size >> (8 * i)));
+		for (uint16 i = 0; i < identifier.GetAvailableMD4PartHashCount(); ++i) {
+			const uchar* part = identifier.GetMD4PartHash(i);
+			if (!part) return false;
+			material.insert(material.end(), part, part + 16);
+		}
+		kind = kad6::K6CommitmentKind::Sha256Hashset;
+	} else {
+		return false;
+	}
+	const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
+	return crypto.sha256 && crypto.sha256(material.data(), material.size(),
+		commitment.data());
+}
+}
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -484,8 +525,10 @@ CSharedFileList::CSharedFileList(CServerConnect *in_server)
 	: server(in_server)
 	, output()
 	, m_currFileSrc()
+	, m_currFileK6()
 	, m_currFileNotes()
 	, m_lastPublishKadSrc()
+	, m_lastPublishK6Src()
 	, m_lastPublishKadNotes()
 	, m_lastPublishED2K()
 	, m_lastPublishED2KFlag(true)
@@ -1255,6 +1298,22 @@ void CSharedFileList::Process()
 
 void CSharedFileList::Publish()
 {
+	// K6 source publication is deliberately independent of classic HighID,
+	// buddy and direct UDP reachability. Its endpoint is the exit X, so using
+	// the old early-return conditions here would reintroduce the CGNAT problem
+	// K6-3/K6-5 are intended to remove.
+	const time_t k6Now = time(NULL);
+	if (GetCount() != 0 && k6Now >= m_lastPublishK6Src) {
+		if (m_currFileK6 >= GetCount()) m_currFileK6 = 0;
+		CKnownFile* k6File = GetFileByIndex(m_currFileK6++);
+		kad6::K6CommitmentKind commitmentKind;
+		kad6::Hash32 commitment;
+		if (BuildK6ContentCommitment(k6File, commitmentKind, commitment))
+			eSELive::CLiveTunnel::Get().QueueK6SourceAdvertise(k6File->GetFileHash(),
+				k6File->GetFileSize(), commitmentKind, commitment.data());
+		m_lastPublishK6Src = k6Now + KADEMLIAPUBLISHTIME;
+	}
+
 	if (!Kademlia::CKademlia::IsConnected()
 		|| (theApp.IsFirewalled()
 			&& theApp.clientlist->GetBuddyStatus() != Connected
@@ -1335,9 +1394,11 @@ void CSharedFileList::Publish()
 			if (m_currFileSrc >= GetCount())
 				m_currFileSrc = 0;
 			CKnownFile *pCurKnownFile = GetFileByIndex(m_currFileSrc);
-			if (pCurKnownFile && pCurKnownFile->PublishSrc())
-				if (Kademlia::CSearchManager::PrepareLookup(Kademlia::CSearch::STOREFILE, true, Kademlia::CUInt128(pCurKnownFile->GetFileHash())) == NULL)
+			if (pCurKnownFile && pCurKnownFile->PublishSrc()) {
+				if (Kademlia::CSearchManager::PrepareLookup(Kademlia::CSearch::STOREFILE,
+						true, Kademlia::CUInt128(pCurKnownFile->GetFileHash())) == NULL)
 					pCurKnownFile->SetLastPublishTimeKadSrc(0, 0);
+			}
 
 			++m_currFileSrc;
 

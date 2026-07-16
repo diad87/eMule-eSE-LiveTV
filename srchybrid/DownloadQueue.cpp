@@ -1560,7 +1560,7 @@ bool CDownloadQueue::DoKademliaFileRequest() const
 	return (::GetTickCount() >= m_lastkademliafilerequest + KADEMLIAASKTIME);
 }
 
-void CDownloadQueue::KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt128 *pcontactID, const Kademlia::CUInt128 *pbuddyID, uint8 type, uint32 ip, uint16 tcp, uint16 udp, uint32 dwBuddyIP, uint16 dwBuddyPort, uint8 byCryptOptions, uint16 uReachCaps, const CAddress *pIPv6)
+void CDownloadQueue::KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt128 *pcontactID, const Kademlia::CUInt128 *pbuddyID, uint8 type, uint32 ip, uint16 tcp, uint16 udp, uint32 dwBuddyIP, uint16 dwBuddyPort, uint8 byCryptOptions, uint16 uReachCaps, const CAddress *pIPv6, const std::vector<uint8>* pK6TargetTicket)
 {
 	//Safety measure to make sure we are looking for these sources
 	CPartFile *temp = GetFileByKadFileSearchID(nSearchID);
@@ -1674,6 +1674,8 @@ void CDownloadQueue::KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt1
 	}
 
 	if (ctemp != NULL) {
+		if (pK6TargetTicket != NULL && !pK6TargetTicket->empty())
+			ctemp->SetK6TargetTicket(*pK6TargetTicket);
 		ctemp->SetReachCaps(uReachCaps);
 		if (pIPv6 != NULL)
 			ctemp->SetIPv6Address(*pIPv6);

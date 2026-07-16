@@ -1,0 +1,20 @@
+{
+  "schema": "kad6-vector-v1",
+  "codec": "K6FrameV1",
+  "vectors": [
+    {
+      "id": "frame-minimal-v1",
+      "input": "version=1,msg_type=0,flags=0,request_id=0,session_id=0,body=empty",
+      "expected_hex": "0100000000000000000000000000000000000000",
+      "expected_status": "Ok",
+      "reason": "canonical empty K6FrameV1"
+    },
+    {
+      "id": "frame-unsupported-version",
+      "input_hex": "0200000000000000000000000000000000000000",
+      "expected_hex": "",
+      "expected_status": "UnsupportedVersion",
+      "reason": "decoders do not guess future frame versions"
+    }
+  ]
+}

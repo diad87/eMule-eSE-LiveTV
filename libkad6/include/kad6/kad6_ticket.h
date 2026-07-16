@@ -4,8 +4,9 @@
 // capability: an exit issues one ticket per destination it is authorized to
 // dial, MAC'd with its own secret and bound to provenance + object + expiry +
 // a single connection. A ticket is opaque to the originator; only the issuing
-// exit can mint or check it. libkad6 owns the canonical serialization and the
-// forbidden-target policy; the HMAC-SHA256 primitive is injected (IoC).
+// exit can mint or check it. libkad6 owns canonical serialization and a
+// conservative special-purpose-address deny gate; the host injects both the
+// current IPFilter/admin-port policy and HMAC-SHA256.
 //
 // Wire layout (little-endian; target_endpoint is itself variable-length):
 //   version u8=1 | service u8 | flags u16 | lease_id u64 | provenance_kind u8 |
@@ -34,6 +35,12 @@ enum class K6Provenance     : Byte { KadResult = 1, Routing = 2, Pex = 3, Invite
 // flags bit 0: reusable. Default (bit clear) = single-use (spec K6-TKT-003).
 constexpr std::uint16_t kK6TicketFlagReusable = 0x0001;
 
+// Fixed provenance flag: the signed discovery result originated on native
+// Kad6. Clear means the compatibility Kad2 plane (or non-search provenance).
+// This lets an exit keep bounded success statistics without adding endpoint
+// identities to exported telemetry.
+constexpr std::uint16_t kK6ProvenanceFlagNativeKad6 = 0x0001;
+
 // A dial ticket lives at most 5 minutes (spec K6-TKT-001).
 constexpr std::uint64_t kK6TicketMaxTtlSeconds = 300;
 
@@ -58,11 +65,34 @@ struct K6TargetTicket {
     Hash32        mac{};           // filled by Issue; read by Decode
 };
 
-// True iff the ticket's target is non-routable / policy-forbidden: the address
-// is loopback, RFC1918/ULA LAN, link-local, multicast, broadcast or unspecified
-// (IPv4-mapped IPv6 is normalized first), OR the port used by `service` is 0.
-// (spec K6-TKT-004.)
+// Host policy gate for the part a standalone codec cannot decide safely:
+// IPFilter/operator deny-lists and service-specific administrative ports.
+// Returning false denies the target. Issue/Verify fail closed when this hook
+// is absent; a target ticket must never silently become a generic proxy grant.
+struct K6TargetPolicy {
+    void* context = nullptr;
+    bool (*allow_target)(void* context, Byte service,
+                         const K6Endpoint& endpoint) = nullptr;
+    // Called exactly once after canonical decode, MAC, time and target policy
+    // all pass. The host must atomically reserve one use keyed by the issuing
+    // secret scope + ticket nonce/lease and enforce max_connections. False
+    // means replay/exhausted authority. Required by Verify, unused by Issue.
+    bool (*consume_use)(void* context, const K6TargetTicket& ticket) = nullptr;
+};
+
+// Baseline, side-effect-free deny gate. True iff the target is not an ordinary
+// globally reachable unicast endpoint according to the IANA special-purpose
+// registries (including TEST-NET/benchmark/CGNAT/translation ranges), or the
+// port used by `service` is 0. IPv4-mapped IPv6 is normalized first.
+//
+// This deliberately does NOT replace K6TargetPolicy: the host must additionally
+// apply its current IPFilter and service/admin-port policy at issue and use time.
 bool K6TicketTargetForbidden(const K6TargetTicket& t) noexcept;
+
+// Baseline gate + mandatory host policy. Missing policy -> BadValue (fail
+// closed); denied target -> TargetForbidden.
+Kad6Status K6TicketCheckTarget(const K6TargetTicket& t,
+                               const K6TargetPolicy& policy) noexcept;
 
 // Serialize the signed portion (every field EXCEPT mac). Deterministic; this is
 // exactly the byte string the MAC is taken over (after the domain prefix).
@@ -74,9 +104,10 @@ Kad6Status K6TicketComputeMac(const Kad6CryptoHooks& h,
                               const Byte* secret, std::size_t secretLen,
                               const K6TargetTicket& t, Byte macOut[kMacSize]);
 
-// Validate ranges (service, provenance_kind, TTL <= 300, forbidden target),
-// compute mac into t.mac, then serialize the full ticket (signed || mac) to out.
+// Validate ranges (service, provenance, quotas, TTL <= 300, endpoint lifetime,
+// target policy), compute mac into t.mac, then serialize signed || mac to out.
 Kad6Status IssueK6TargetTicket(const Kad6CryptoHooks& h,
+                               const K6TargetPolicy& policy,
                                const Byte* secret, std::size_t secretLen,
                                K6TargetTicket& t, std::vector<Byte>& out);
 
@@ -89,11 +120,13 @@ Kad6Status DecodeK6TargetTicket(const Byte* in, std::size_t len,
                                 K6TargetTicket& out, std::size_t* consumed = nullptr) noexcept;
 
 // Full check on receipt: decode, reject version != 1 (UnsupportedVersion),
-// recompute the mac and constant-time compare (AuthFailed on mismatch), reject
-// an elapsed window nowUnix >= expires_at (Expired), and reject a forbidden
-// target (TargetForbidden). Returns Ok only if every check passes; `out` holds
-// the decoded ticket on Ok.
+// recompute the mac and constant-time compare (AuthFailed on mismatch), enforce
+// issued_at <= nowUnix < expires_at, re-evaluate target policy, then atomically
+// consume one authorized use through policy.consume_use. Exact input
+// consumption is required: trailing bytes are Malformed. Missing consume hook
+// fails closed; a replay/exhausted ticket returns AuthFailed.
 Kad6Status VerifyK6TargetTicket(const Kad6CryptoHooks& h,
+                                const K6TargetPolicy& policy,
                                 const Byte* secret, std::size_t secretLen,
                                 const Byte* in, std::size_t len,
                                 std::uint64_t nowUnix, K6TargetTicket& out);

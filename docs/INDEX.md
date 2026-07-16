@@ -1,7 +1,7 @@
 # Índice maestro de documentación — eMule eSE LiveTV
 
 > **Qué es esto:** el mapa único de toda la documentación del proyecto. Si no sabes por dónde
-> empezar o dónde está algo, empieza aquí. Última actualización: **2026-07-14**.
+> empezar o dónde está algo, empieza aquí. Última actualización: **2026-07-15**.
 >
 > **Leyenda de estado:** 🎓 tesis/paper · 🧭 roadmap/estrategia viva · 📐 plan/spec ·
 > ✅ implementado/final · 🔬 auditoría/análisis · 🔀 consolidado/comparativa · ♻️ a refrescar ·
@@ -63,9 +63,26 @@
 | [IPV6_PLAN.md](IPV6_PLAN.md) | 📌 **canónico IPv6** (~25% hecho) | Plan maestro IPv6 (8 fases). Sprints 0-3 hechos, 4 scaffold, 5-11 sin iniciar. Scope: cliente↔servidor queda v4; v6 en cliente↔cliente, Kad, eSE/Live. |
 | [IPV6_ANALYSIS.md](IPV6_ANALYSIS.md) | 🔀 comparativa | Por qué IPv6 es crítico + comparativa de enfoques. El elegido vive en IPV6_PLAN. |
 | [IPV6_SPRINT_PLAN.md](IPV6_SPRINT_PLAN.md) | 🔀 operativo | Ejecución anti-regresión (flags, opcodes paralelos, smoke matrix). Canónico: IPV6_PLAN. |
-| [SPEC_KAD6_ANONYMOUS_COMPAT.md](SPEC_KAD6_ANONYMOUS_COMPAT.md) | 📐 v0.2 draft normativo (2026-07-14) | **Kad6:** overlay IPv6-first con anonimato asimétrico y gateways retrocompatibles Kad2/eD2K. Define circuitos 2/3-hop, wire lógico, cohortes/VEP, PEX autorizado, economía de exits, bootstrap privado, shaping anti-watermark, antiabuso, gates y rollout sin asignar aún números globales. |
-| [KAD6_IMPLEMENTATION_PLAN.md](KAD6_IMPLEMENTATION_PLAN.md) | 🧭 plan de ejecución (2026-07-15) | **Cómo construir Kad6.** Política de orquestación de modelos (Haiku=mecánica / Sonnet=estándar / Opus=cripto+estado+revisión; regla dura: Tier C no lo primero-borradorea un modelo tonto), invariantes globales, K6-0/K6-1 a resolución de ticket (arrancables ya, sin runtime), K6-2..K6-8 a paquete con ADRs bloqueantes, camino crítico y realidad multi-PC. |
-| [KAD6_TICKETS.md](KAD6_TICKETS.md) | 🎫 tickets listos (2026-07-15) | **16 tickets K6-0/K6-1 refinados a prompts copiables** para pegar a Haiku/Sonnet/Opus. Arquitectura `libkad6/` (patrón libreach: MIT, sin MFC, cripto por IoC), ADR-02 resuelto (bit 24 discovery + u64 firmado), asignaciones `TUN_OP_KAD6_GATEWAY`=0x70 / `ESE_CAP_KAD6`=0x01000000, preámbulo de invariantes, orden de ejecución. |
+| [SPEC_KAD6_ANONYMOUS_COMPAT.md](SPEC_KAD6_ANONYMOUS_COMPAT.md) | 📐 v0.3 draft normativo (2026-07-15) | **Kad6:** overlay IPv6-first con anonimato asimétrico y gateways retrocompatibles Kad2/eD2K. Wire/caps experimentales registrados; cuota RFC 9474, rendimiento, descubrimiento dual-plane, métricas y frontera de claims sincronizados. |
+| [KAD6_K0_K8_AUDIT_2026-07-15.md](KAD6_K0_K8_AUDIT_2026-07-15.md) | 🔎 **auditoría viva K6-0..K6-8** | Estado consolidado hasta K6-8, con fuente/build y gates físicos/externos separados. |
+| [KAD6_K6_0_CLOSURE_2026-07-15.md](KAD6_K6_0_CLOSURE_2026-07-15.md) | ✅ **K6-0 cerrada** | Evidencia reproducible del gate: 12 suites, fuzz Release+ASan, RSS/allocations, 17 vectores externos, Crypto++ contra RFC 4231/5869/8032/8439 y símbolos aún dormantes. |
+| [KAD6_K6_1_CLOSURE_2026-07-15.md](KAD6_K6_1_CLOSURE_2026-07-15.md) | ✅ **K6-1A cerrada en fuente** | Evidencia de implementación: gateway `K6Frame` Live, cap firmada, fallback legacy, tags canónicos, procedencia de privacidad, `STRICT` sin dial directo, tests y build. G0 multi-PC queda explícitamente pendiente. |
+| [KAD6_K6_2_IMPLEMENTATION_2026-07-15.md](KAD6_K6_2_IMPLEMENTATION_2026-07-15.md) | 🌐 **K6-2 implementado** | Resumen del wire v2 firmado, UDP dual-stack, tabla, ASN, `nodes_v6.dat`, bootstrap privado, compatibilidad y gate pendiente. |
+| [KAD6_K6_2_CLOSURE_2026-07-15.md](KAD6_K6_2_CLOSURE_2026-07-15.md) | ✅ **K6-2 cerrada en fuente/build** | Evidencia detallada: router records, trust state, ASN/operador, bundle anti-rollback, persistencia, 20.719 checks, 1,8 M fuzz y frontera exacta de `G-K6-2`. |
+| [KAD6_K6_3_CLOSURE_2026-07-15.md](KAD6_K6_3_CLOSURE_2026-07-15.md) | ✅ **K6-3 activación compat cerrada** | Leases, shadow Kad2, STORE Kad6, caller automático y pin de circuito; G3/G11/G15 físicos pendientes. |
+| [KAD6_K6_4_ED2K_IP_INVENTORY_2026-07-15.md](KAD6_K6_4_ED2K_IP_INVENTORY_2026-07-15.md) | 🔎 **inventario eD2K K6-4** | Todos los locators/control relevantes: HELLO/tags, public-IP, PEX, callbacks, buddy, shared locators y política allow-list. |
+| [KAD6_K6_4_CLOSURE_2026-07-15.md](KAD6_K6_4_CLOSURE_2026-07-15.md) | ✅ **K6-4 activada** | Tickets/DIAL, proxy, PEX, VEP y caller de descarga integrados; G4 físico pendiente. |
+| [KAD6_K6_5_IMPLEMENTATION_2026-07-15.md](KAD6_K6_5_IMPLEMENTATION_2026-07-15.md) | ✅ **K6-5 fuente/build** | Front-door acotado, demux, scheduler justo sin fanout, `K6M_ACCEPT`, subida clásica y evidencia G10/G11 determinista; gates físicos pendientes. |
+| [KAD6_K6_6_IMPLEMENTATION_2026-07-15.md](KAD6_K6_6_IMPLEMENTATION_2026-07-15.md) | ✅ **K6-6 fuente/build** | STRICT3 real, handshake v3, guard/diversidad, clase 5 por enlace, jitter/replay/fail-closed y entrada `hops=3`; G2/G6/G9/correlación físicos pendientes. |
+| [KAD6_K6_7_IMPLEMENTATION_2026-07-15.md](KAD6_K6_7_IMPLEMENTATION_2026-07-15.md) | ✅ **K6-7 fuente/build** | Telemetría sellada de cardinalidad fija, health agregado, kill switches locales con drenaje y runner de beta; 30 días/revisión externa pendientes. |
+| [KAD6_K6_8_IMPLEMENTATION_2026-07-15.md](KAD6_K6_8_IMPLEMENTATION_2026-07-15.md) | ✅ **K6-8 fuente/build** | Economía `ρ`, DRR, cuota RFC 9474 guard→A→exit y notice JCS/listener separados; auditoría, G10–G15 y 30 días pendientes. |
+| [KAD6_RELEASE_POINTS_1_2_CLOSURE_2026-07-15.md](KAD6_RELEASE_POINTS_1_2_CLOSURE_2026-07-15.md) | ✅ **puntos release 1/2 en código** | Gate firmado/fail-closed, pool 3+issuer, prioridad control, lookup adaptativo, dual-plane/ranking, métricas y matriz CGNAT; evidencia externa pendiente. |
+| [KAD6_GATES_K6_1_K6_4_EXECUTION_2026-07-15.md](KAD6_GATES_K6_1_K6_4_EXECUTION_2026-07-15.md) | 🧪 **ejecución real K6-1…K6-4** | G0 físico/fallback, K6 firmado y STRICT fail-closed; addendum con activación K6-3/K6-4 y blockers físicos actuales. |
+| [KAD6_IMPLEMENTATION_PLAN.md](KAD6_IMPLEMENTATION_PLAN.md) | 🧭 plan de ejecución (2026-07-15) | **Cómo construir Kad6.** K6-0..K6-8 cerradas en fuente/build; gates de despliegue y backlog post-K6-8 delimitados. |
+| [KAD6_TICKETS.md](KAD6_TICKETS.md) | 🎫 K6-0 / K6-1A cerradas en fuente (2026-07-15) | Resolución de los tickets K6-1 bajo la Opción A Live. Conserva los briefs genéricos como Opción B y deja G0 multi-PC como evidencia pendiente. Arquitectura `libkad6/` MIT, sin MFC y cripto por IoC. |
+| [KAD6_SEARCH_WIRE_MAPPING.md](KAD6_SEARCH_WIRE_MAPPING.md) | 🔌 K6-1 Opción A implementada (2026-07-15) | Búsqueda Live bajo `K6Frame`/`K6M_SEARCH_*`, migración cap-gated retrocompatible, tags canónicos y semántica `DISCOVERY_ONLY`; fuente/build cerrados, G0 multi-PC pendiente. |
+| [KAD6_RUNTIME_INTEGRATION.md](KAD6_RUNTIME_INTEGRATION.md) | 🔧 mapa runtime K6-2..K6-8 (2026-07-15) | Routing, leases, gateways, STRICT3, hardening y economía/cuota/notice integrados; gates externos delimitados. |
+| [KAD6_RUNTIME_TICKETS.md](KAD6_RUNTIME_TICKETS.md) | 🎫 tickets runtime (2026-07-15) | K6-2…K6-8 cerradas en fuente/build según su frontera; evidencia pública/física pendiente. |
 | [ANONYMOUS_BROADCAST.md](ANONYMOUS_BROADCAST.md) | 📐 plan | Emitir sin publicar la IP del broadcaster en Kad (relay-protegido). Non-goal: no es Tor. |
 
 ---
@@ -73,12 +90,12 @@
 ## 🔢 Registro de protocolo (P0)
 
 > Fuente única de verdad de los números de cable **del fork** (opcodes/tags/caps/tunnel). Antes de
-> añadir un número nuevo: añade la fila y pasa el linter. **CI rojo hoy: 1 colisión real (`0xE0`).**
+> añadir un número nuevo: añade la fila y pasa el linter. **Gate actual verde: 129 entradas y 112 símbolos del fork.**
 
 | Documento | Estado | Qué cubre |
 |---|---|---|
 | [protocol/PROTOCOL_REGISTRY.md](protocol/PROTOCOL_REGISTRY.md) | 🔢 gobierno | Registro + informe de conflictos + propuesta de migración. |
-| [OPCODES](protocol/OPCODES.csv) · [TAGS](protocol/TAGS.csv) · [CAPABILITIES](protocol/CAPABILITIES.csv) · [TUNNEL_SERVICES](protocol/TUNNEL_SERVICES.csv) | 🔢 datos | CSV por namespace (96 entradas); el linter los valida. |
+| [OPCODES](protocol/OPCODES.csv) · [TAGS](protocol/TAGS.csv) · [CAPABILITIES](protocol/CAPABILITIES.csv) · [TUNNEL_SERVICES](protocol/TUNNEL_SERVICES.csv) | 🔢 datos | CSV por namespace (129 entradas); el linter los valida. |
 | [tools/check_protocol_registry.py](../tools/check_protocol_registry.py) | ✅ funciona | Gate de CI: duplicados, sin-registrar, drift doc-vs-código. |
 
 ---
@@ -114,8 +131,8 @@
 | [DECENTRALIZED_DISCOVERY.md](DECENTRALIZED_DISCOVERY.md) | ✅ final (E2E pend.) | 3 capas implementadas: PEX gossip + mDNS LAN + bootstrap cache. La estrategia vigente. |
 | [DISCOVERY_STRATEGIES.md](DISCOVERY_STRATEGIES.md) | 🔀 brainstorm/backlog | 26 estrategias; ideas vivas (tracker A1, friend-lists, aliases) no implementadas. Elegida: DECENTRALIZED. |
 | [OFFLINE_INVISIBILITY_PLAN.md](OFFLINE_INVISIBILITY_PLAN.md) | 📐 plan (2026-06-13) | Que los streams **apagados** no sean descubribles: cierra el residuo Kad de 24 h + auto-deanon del bootstrap (Fase 0), luego descubrimiento sellado por `pubkey` + liveness oculta + cover traffic (Fases 1-2). Capa de descubrimiento de la arquitectura de privacidad. |
-| [AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md](AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md) | 🟢 IMPLEMENTADO dormante (2026-06-14) | Handshake de túnel **autenticado** (CREATE/CREATED v2): firma Ed25519 de nodo + binding de transcript en HKDF. 1+2 saltos picados+compilan; gated dormante (cap sin anunciar → emite v1, cero cambio). Cierra el MITM activo V↔hop2 (rendezvous malicioso) y la degradación. `INodeIdentityStorage` (DPAPI/POSIX, Fase 5-ready). Pendiente runtime. |
-| [protocol/AUTH_TUNNEL_3PC_VALIDATION.md](protocol/AUTH_TUNNEL_3PC_VALIDATION.md) | 🧪 receta lista | Validación runtime 3-PC del handshake v2: activación (encender cap), topología V/hop1/hop2, curl exactos (4711), **rogue-relay test** (hop1 altera ev_pub2 → `SIG_FAIL`) + matriz de diagnóstico (rechazo-cripto vs timeout, trazas mutuamente excluyentes). |
+| [AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md](AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md) | 🟢 IMPLEMENTADO experimental (2026-07-15) | Handshake CREATE/CREATED v2 con Ed25519 + transcript HKDF. AUTH se anuncia solo con identidad persistente; peers anteriores conservan v1. Pendiente gate runtime 2/3-PC. |
+| [protocol/AUTH_TUNNEL_3PC_VALIDATION.md](protocol/AUTH_TUNNEL_3PC_VALIDATION.md) | 🧪 receta lista | Validación runtime 3-PC del handshake v2 ya activado condicionalmente: topología V/hop1/hop2, curl y rogue-relay `SIG_FAIL`. |
 | [MOBILE_VIEWER_PLAN.md](MOBILE_VIEWER_PLAN.md) | 📐 M1 hecho (sin validar) | Track M: ver streams en móvil/TV sin carga P2P (el PC es el cerebro). |
 | [PART_HASH_THREAD_PLAN.md](PART_HASH_THREAD_PLAN.md) | 📐 H0+H1 hecho (sin validar) | Track H: hashing de partes fuera del hilo UI (mata congelones en picos de velocidad). |
 | [SWARM_DVR_PLAN.md](SWARM_DVR_PLAN.md) | 📐 plan (2026-07-03) | **Swarm DVR (track D)**: rebobinar 10-30 min de un directo desde el enjambre, sin servidores. Dos niveles (ring intocado + `CLiveDvrStore` en disco), opcodes 0xB5-0xB8 + cap bit 22 + TUN_OP 0x60-0x62 (reservas verificadas). D1+D2 = MVP local sin wire; D3+ = plano de enjambre subordinado al borde vivo. Post-v9; D0 (reservas) puede aterrizar antes. |
@@ -130,6 +147,7 @@
 | Documento | Estado | Qué cubre |
 |---|---|---|
 | [SECURITY_AUDIT.md](SECURITY_AUDIT.md) | ♻️ completada (parcial) | Auditoría de `/api/live/*`, HLS (C++ :4711 + Node :8080). XSS legacy FIJOS. **No cubre `/api/live/privacy/*` ni metrics/diagnose/mesh.** |
+| [WIP_AUDIT_FIXES_2026-07-15.md](WIP_AUDIT_FIXES_2026-07-15.md) | ✅ reparado + validado local | Cierre de los 10 hallazgos post-LiveTV: identidad Kad/eD2K, uTP, sesión de descarga, IPv6, atomics y puerto dinámico. |
 | [VALIDATION_3PC_EDGE_PUNCTUALITY.md](VALIDATION_3PC_EDGE_PUNCTUALITY.md) | 🧪 diseñada, sin ejecutar | Receta 3-PC para validar el endurecimiento de 3 vectores: puntualidad de borde (①, peer rogue que gana confianza y sabotea el bloque crítico), zero-ts (②) y tuneo /24 (③). Hook de fault-injection `ESE_TEST_HOOKS` + qué contadores API monitorizar + control anti falso-positivo. |
 | [PERF_AUDIT.md](PERF_AUDIT.md) | 🔬 en progreso | Revisión perf cpp-a-cpp (~290 .cpp por tiers); estados APLICADO/PENDIENTE/DOC/WONTFIX. |
 | [OBJECIONES_Y_RESPUESTAS.md](OBJECIONES_Y_RESPUESTAS.md) | 🔬 adversarial | Objeciones nivel-revisor contra el diseño, con estado: ✅ resuelto / 📐 en plan / ⚠️ abierto / ✗ premisa falsa. |

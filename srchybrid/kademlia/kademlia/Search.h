@@ -75,6 +75,16 @@ namespace Kademlia
 		// those tags for back-compat with 0.70b parsers).
 		void	SetLivePublishCleanNs(bool bClean)						{ m_bLivePublishCleanNs = bClean; }
 		bool	IsLivePublishCleanNs() const							{ return m_bLivePublishCleanNs; }
+		void	SetK6ShadowSource(uint64 publishLeaseId, uint64 fileSize,
+							 const uchar compatUserHash[16], uint16 tcpPort, uint16 udpPort);
+		bool	IsK6ShadowSource() const							{ return m_bK6ShadowSource; }
+		uint64	GetK6PublishLeaseId() const						{ return m_uK6PublishLeaseId; }
+		void	SetK6VisibilityProbe(uint64 publishLeaseId,
+							 const uchar compatUserHash[16], uint32 ip,
+							 uint16 tcpPort, uint16 udpPort);
+		// K6-4 source-hash lookup executed by an exit. Results are returned to
+		// the exact tunnel request instead of entering the exit's download queue.
+		void	SetK6GatewaySourceLookup(uint32 circuitId, uint32 requestId);
 		static CString GetTypeName(uint32 uType);
 
 		void	AddFileID(const CUInt128 &uID);
@@ -159,8 +169,19 @@ namespace Kademlia
 		uint32 m_uLiveStartedAt;
 		uint32 m_uLiveAltIP;          // NAT-reach: overlay IPv4 for TAG_ESE_LIVE_ALTIP (0 = omit)
 		uint16 m_uLiveBroadcasterPort;
+		uint64 m_uK6PublishLeaseId;
+		uint64 m_uK6ShadowFileSize;
+		CUInt128 m_uK6CompatUserHash;
+		uint16 m_uK6ShadowTcpPort;
+		uint16 m_uK6ShadowUdpPort;
+		uint32 m_uK6VisibilityIP;
+		uint32 m_uK6GatewayCircuitId;
+		uint32 m_uK6GatewayRequestId;
 		bool m_bStoping;
 		bool m_bLiveStreamPublish;
+		bool m_bK6ShadowSource;
+		bool m_bK6VisibilityProbe;
+		bool m_bK6GatewaySourceLookup;
 		bool m_bLivePublishCleanNs;   // H8 — see SetLivePublishCleanNs
 	};
 }

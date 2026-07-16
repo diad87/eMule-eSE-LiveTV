@@ -34,10 +34,10 @@
 namespace kad6 {
 
 // ── Wire constants ─────────────────────────────────────────────────────────
-inline constexpr std::size_t kKad6AddressHeaderSize   = 2;  // family(1) + addr_len(1)
-inline constexpr std::size_t kKad6AddressLenIPv4       = 4;
-inline constexpr std::size_t kKad6AddressLenIPv6       = 16;
-inline constexpr std::size_t kKad6AddressMaxWireSize   =
+constexpr std::size_t kKad6AddressHeaderSize   = 2;  // family(1) + addr_len(1)
+constexpr std::size_t kKad6AddressLenIPv4       = 4;
+constexpr std::size_t kKad6AddressLenIPv6       = 16;
+constexpr std::size_t kKad6AddressMaxWireSize   =
     kKad6AddressHeaderSize + kKad6AddressLenIPv6;            // 18
 
 // ── The address value ───────────────────────────────────────────────────────

@@ -77,9 +77,10 @@ struct K6Tag {
 };
 using K6TagList = std::vector<K6Tag>;
 
-// Serialize `list` into `out`. Validates every rule in the file header
-// comment (fixed-width exactness, name_len ranges, UTF-8 validity, and all
-// three size limits) BEFORE writing a single byte. Clears `out` on failure.
+// Serialize `list` into `out` in canonical order. Validates every rule in the
+// file header comment (fixed-width exactness, name_len ranges, UTF-8 validity,
+// structurally valid CAddress values, no exact duplicate tags, and all three
+// size limits) BEFORE writing a single byte. Clears `out` on failure.
 Kad6Status EncodeK6TagList(const K6TagList& list, std::vector<Byte>& out);
 
 // Parse a K6TagListV1 from [in, in+len) using ByteReader (bounded cursor —
@@ -98,6 +99,8 @@ Kad6Status EncodeK6TagList(const K6TagList& list, std::vector<Byte>& out);
 //     outside 1..64) -> BadValue
 //   - unknown name_kind / value_kind -> BadValue
 //   - invalid UTF-8 or an interior NUL in a utf8 name/value -> Malformed
+//   - malformed/trailing bytes in a CADDRESS value -> Malformed
+//   - non-canonical ordering or an exact duplicate tag -> Malformed
 //   - declared total_len does not match bytes actually consumed -> Malformed
 Kad6Status DecodeK6TagList(const Byte* in, std::size_t len, K6TagList& out,
                            std::size_t* consumed = nullptr) noexcept;
@@ -107,9 +110,10 @@ Kad6Status DecodeK6TagList(const Byte* in, std::size_t len, K6TagList& out,
 //   2. name bytes, lexicographic (unsigned byte-wise)
 //   3. value_kind ascending
 //   4. value bytes, lexicographic (unsigned byte-wise)
-// Sort is stable, so tags that compare equal on all four keys keep their
-// relative input order.
-void Kad6TagsCanonicalSort(K6TagList& list) noexcept;
+// Exact duplicates are adjacent after sorting and are rejected by the wire
+// encoder/decoder because they would otherwise admit multiple encodings of the
+// same signed semantic value.
+void Kad6TagsCanonicalSort(K6TagList& list);
 
 // Minimal UTF-8 validator: rejects any 0x00 byte (Postel-strict — a tag
 // name/value has no separate terminator, so every NUL in the buffer is

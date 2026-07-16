@@ -32,6 +32,7 @@
 #include "Kademlia/Kademlia/Kademlia.h"
 #include "kademlia/kademlia/search.h"
 #include "kademlia/kademlia/SearchManager.h"
+#include "kademlia/kademlia/KadV2ModeSelector.h"
 #include "kademlia/utils/MiscUtils.h"
 #include "kademlia/kademlia/prefs.h"
 #include "kademlia/kademlia/Entry.h"
@@ -42,6 +43,7 @@
 #include "SafeFile.h"
 #include "SharedFileList.h"
 #include "ListenSocket.h"
+#include "LiveTunnel.h"
 #include "ServerConnect.h"
 #include "Server.h"
 #include "KnownFileList.h"
@@ -2393,15 +2395,37 @@ uint32 CPartFile::Process(uint32 reducedownload, UINT icounter/*in percent*/)
 				//Kademlia
 				theApp.downloadqueue->SetLastKademliaFileRequest();
 				if (!GetKadFileSearchID()) {
-					Kademlia::CSearch *pSearch = Kademlia::CSearchManager::PrepareLookup(Kademlia::CSearch::FILE, true, Kademlia::CUInt128(GetFileHash()));
-					if (pSearch) {
+					const bool wantTunnel = eSELive::CLiveTunnel::Get().ShouldRouteThroughTunnel(
+						NULL, Kademlia::CKadV2ModeSelector::QueryContext::KAD_SEARCH);
+					uint32 k6RequestId = 0;
+					const bool k6Started = wantTunnel &&
+						eSELive::CLiveTunnel::Get().StartK6SourceLookup(GetFileHash(), k6RequestId);
+					if (k6Started) {
 						if (m_TotalSearchesKad < 7)
 							++m_TotalSearchesKad;
 						m_LastSearchTimeKad = curTick + (KADEMLIAREASKTIME * m_TotalSearchesKad);
-						pSearch->SetGUIName((CStringW)GetFileName());
-						SetKadFileSearchID(pSearch->GetSearchID());
-					} else
-						SetKadFileSearchID(0);
+						SetKadFileSearchID(k6RequestId);
+					} else {
+						const bool strict = wantTunnel &&
+							Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy() ==
+								Kademlia::CKadV2ModeSelector::STRICT_PRIVACY;
+						if (!strict) {
+							Kademlia::CSearch *pSearch = Kademlia::CSearchManager::PrepareLookup(Kademlia::CSearch::FILE, true, Kademlia::CUInt128(GetFileHash()));
+							if (pSearch) {
+								if (m_TotalSearchesKad < 7)
+									++m_TotalSearchesKad;
+								m_LastSearchTimeKad = curTick + (KADEMLIAREASKTIME * m_TotalSearchesKad);
+								pSearch->SetGUIName((CStringW)GetFileName());
+								SetKadFileSearchID(pSearch->GetSearchID());
+							} else
+								SetKadFileSearchID(0);
+						} else {
+							// Retry after the ordinary Kad pacing interval, without exposing
+							// the file hash from A while no authenticated K6 exit exists.
+							m_LastSearchTimeKad = curTick + KADEMLIAASKTIME;
+							SetKadFileSearchID(0);
+						}
+					}
 				}
 			}
 		} else if (GetKadFileSearchID())

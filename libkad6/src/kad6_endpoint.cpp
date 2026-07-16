@@ -11,6 +11,8 @@ std::size_t K6EndpointEncodedSize(const K6Endpoint& e) noexcept {
 
 Kad6Status EncodeK6Endpoint(const K6Endpoint& e, std::vector<Byte>& out) {
     out.clear();
+    if ((e.transport_flags & kK6EpReservedMask) != 0 || e.observed > 1)
+        return Kad6Status::BadValue;
     std::vector<Byte> a;
     const Kad6Status s = EncodeKad6Address(e.addr, a); // validates family
     if (s != Kad6Status::Ok)
@@ -50,6 +52,14 @@ Kad6Status DecodeK6Endpoint(const Byte* in, std::size_t len, K6Endpoint& out,
     if (!r.ok()) {
         out = K6Endpoint{};
         return Kad6Status::Truncated;
+    }
+    // `observed` is a canonical boolean. Reserved transport bits are retained
+    // for forward-compatible authenticated transcripts, as required by the
+    // spec, but values 2..255 would give different implementations different
+    // truth semantics and are therefore malformed.
+    if (out.observed > 1) {
+        out = K6Endpoint{};
+        return Kad6Status::Malformed;
     }
     if (consumed)
         *consumed = addrConsumed + kK6EndpointTailSize;

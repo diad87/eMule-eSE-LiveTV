@@ -44,6 +44,7 @@ their client on the eMule forum.
 #include "kademlia/kademlia/Indexed.h"
 #include "kademlia/kademlia/prefs.h"
 #include "kademlia/io/IOException.h"
+#include "LiveTunnel.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -401,6 +402,9 @@ void CSearchManager::ProcessPublishResult(const CUInt128 &uTarget, const uint8 u
 	// Result could be very late and search deleted, abort.
 	if (pSearch == NULL)
 		return;
+	if (pSearch->GetSearchType() == CSearch::STOREFILE && pSearch->IsK6ShadowSource())
+		eSELive::CLiveTunnel::Get().OnKad6ShadowPublishAck(
+			pSearch->GetK6PublishLeaseId(), uLoad, bLoadResponse);
 
 	switch (pSearch->GetSearchType()) {
 	case CSearch::STOREKEYWORD:

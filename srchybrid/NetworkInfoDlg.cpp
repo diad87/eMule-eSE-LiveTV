@@ -37,6 +37,7 @@ BEGIN_MESSAGE_MAP(CNetworkInfoDlg, CResizableDialog)
 	ON_WM_TIMER()        // v0.71 P3.9 — periodic refresh
 	ON_WM_DESTROY()
 	ON_CBN_SELCHANGE(IDC_NETINFO_KADMODE, &CNetworkInfoDlg::OnKadModeChanged)   // v8.1 D6
+	ON_BN_CLICKED(IDC_NETINFO_COPY, &CNetworkInfoDlg::OnCopyInfo)
 END_MESSAGE_MAP()
 
 CNetworkInfoDlg::CNetworkInfoDlg(CWnd *pParent /*=NULL*/)
@@ -64,6 +65,7 @@ BOOL CNetworkInfoDlg::OnInitDialog()
 	InitWindowStyles(this);
 
 	AddAnchor(IDC_NETWORK_INFO, TOP_LEFT, BOTTOM_RIGHT);
+	AddAnchor(IDC_NETINFO_COPY, BOTTOM_RIGHT);
 	AddAnchor(IDOK, BOTTOM_RIGHT);
 
 	// v8.1 D6 - native privacy-mode dropdown (parity with the web /privacy selector). Populate
@@ -79,6 +81,7 @@ BOOL CNetworkInfoDlg::OnInitDialog()
 	EnableSaveRestore(PREF_INI_SECTION);
 
 	SetWindowText(GetResString(IDS_NETWORK_INFO));
+	SetDlgItemText(IDC_NETINFO_COPY, GetResString(IDS_COPY));
 	SetDlgItemText(IDOK, GetResString(IDS_TREEOPTIONS_OK));
 
 	SetDlgItemText(IDC_NETWORK_INFO_LABEL, GetResString(IDS_NETWORK_INFO));
@@ -136,6 +139,13 @@ void CNetworkInfoDlg::OnKadModeChanged()
 	s.SetDefaultMode((Kademlia::CKadV2Mode)sel);
 	thePrefs.SetKadV2PrivacyMode((int)s.GetDefaultMode());
 	RefreshNow();
+}
+
+void CNetworkInfoDlg::OnCopyInfo()
+{
+	CString report;
+	m_info.GetWindowText(report);
+	theApp.CopyTextToClipboard(report);
 }
 
 // v0.71 P3.9 — full re-render of the rich-edit content, preserving the

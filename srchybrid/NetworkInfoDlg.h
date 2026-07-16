@@ -30,6 +30,7 @@ protected:
 	afx_msg void OnTimer(UINT_PTR nIDEvent);            // v0.71 P3.9 — periodic refresh
 	afx_msg void OnDestroy();                           // v0.71 P3.9 — KillTimer
 	afx_msg void OnKadModeChanged();                    // v8.1 D6 — dropdown -> SetDefaultMode
+	afx_msg void OnCopyInfo();                          // Copies the complete report to the clipboard
 
 	void RefreshNow();   // v0.71 P3.9 — re-render the panel, preserve scroll
 

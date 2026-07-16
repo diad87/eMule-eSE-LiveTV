@@ -90,6 +90,20 @@ Stage 'tests-integration' {
     & (Join-Path $RepoRoot 'tools\run_alpha_tests.ps1') -RepoRoot $RepoRoot -Suite Integration
 }
 
+Stage 'cleanup-libutp' {
+    # libutp is a pinned submodule whose upstream .gitignore predates VS2022.
+    # Its x64 output has already been linked into emule.exe; remove only that
+    # verified generated directory so the package provenance remains clean.
+    $submoduleRoot = (Resolve-Path (Join-Path $RepoRoot 'libutp')).Path.TrimEnd('\') + '\'
+    $generated = [IO.Path]::GetFullPath((Join-Path $submoduleRoot 'x64'))
+    if (-not $generated.StartsWith($submoduleRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "unsafe libutp cleanup target: $generated"
+    }
+    if (Test-Path -LiteralPath $generated) { Remove-Item -LiteralPath $generated -Recurse -Force }
+    $submoduleStatus = @(& git -C (Join-Path $RepoRoot 'libutp') status --porcelain=v1)
+    if ($submoduleStatus.Count -gt 0) { throw 'libutp is dirty after generated-output cleanup' }
+}
+
 Stage 'ese' {
     $eseDir = Join-Path $RepoRoot 'srchybrid\eSE'
     Push-Location $eseDir

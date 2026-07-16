@@ -765,6 +765,9 @@ bool CLiveTunnel::BuildSuccessor2Hop()
     }
     auto distinctNode = [](CUpDownClient* a, CUpDownClient* b) {
         if (!a || !b || a == b) return false;
+        if (a->HasEseNodePub() && b->HasEseNodePub()
+            && kad6::Kad6CtEqual(a->GetEseNodePub(), b->GetEseNodePub(), 32))
+            return false;
         const uchar* ha = a->GetUserHash();
         const uchar* hb = b->GetUserHash();
         return !(ha && hb && memcmp(ha, hb, 16) == 0);
@@ -3932,10 +3935,10 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
                 requiredExitCaps |= ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED;
             quotaMessage = frame.msg_type == kad6::kK6MsgQuotaKeyReq ||
                 frame.msg_type == kad6::kK6MsgQuotaIssue;
-            if (quotaMessage)
-                minimumHops = 1; // dedicated issuer circuit; never carries user work
-            else if ((frame.flags & kad6::kK6FlagStrict) != 0)
+            if ((frame.flags & kad6::kK6FlagStrict) != 0)
                 minimumHops = 3;
+            else if (quotaMessage)
+                minimumHops = 1; // dedicated issuer circuit; never carries user work
         }
     }
     CSingleLock lock(&m_lock, TRUE);

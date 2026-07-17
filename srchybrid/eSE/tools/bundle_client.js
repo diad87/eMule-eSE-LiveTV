@@ -36,8 +36,8 @@ let missing = 0;
 for (const mod of modules) {
   const p = path.join(root, mod);
   if (fs.existsSync(p)) {
-    const content = fs.readFileSync(p, 'utf8');
-    combined += '\n// ==== ' + mod + ' (' + content.length + ' bytes) ====\n' + content + '\n';
+    const content = fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
+    combined += '\n// ==== ' + mod + ' ====\n' + content + '\n';
     bytes += content.length;
   } else {
     console.warn('  [bundle_client] missing:', mod);

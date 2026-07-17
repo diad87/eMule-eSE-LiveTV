@@ -1541,60 +1541,50 @@ CString CWebServer::_GetTransferList(const ThreadData &Data)
 				uchar FileHash[MDX_DIGEST_SIZE];
 				bool bHash = strmd4(sFile, FileHash);
 				if (bHash) {
-					// v7.4.0 — WithFileByID runs under the DownloadQueue lock; the
-					// lambda mutates state but never re-enters DownloadQueue, so the
-					// lock-order invariant holds. SendMessage callouts to the main
-					// thread happen INSIDE the lock here — that's safe because the
-					// main thread is the only one that mutates filelist, and it can't
-					// re-enter WithFileByID while it's waiting on the SendMessage to
-					// be processed by... wait, it IS the main thread. So we cache
-					// what's needed and SendMessage AFTER the lock releases below.
-					bool needsCatTabsUpdate = false;
-					CPartFile *renamedFile = NULL;
-					CString renameTo;
-					theApp.downloadqueue->WithFileByID(FileHash, [&](CPartFile *found_file) {
-						if (sOp == _T("stop"))
-							found_file->StopFile();
-						else if (sOp == _T("pause"))
-							found_file->PauseFile();
-						else if (sOp == _T("resume"))
-							found_file->ResumeFile();
-						else if (sOp == _T("cancel")) {
-							found_file->DeletePartFile();
-							needsCatTabsUpdate = true;
-						} else if (sOp == _T("getflc"))
-							found_file->GetPreviewPrio();
-						else if (sOp == _T("rename")) {
-							renamedFile = found_file;
-							renameTo = _ParseURL(Data.sURL, _T("name"));
-						} else if (sOp == _T("priolow")) {
-							found_file->SetAutoDownPriority(false);
-							found_file->SetDownPriority(PR_LOW);
-						} else if (sOp == _T("prionormal")) {
-							found_file->SetAutoDownPriority(false);
-							found_file->SetDownPriority(PR_NORMAL);
-						} else if (sOp == _T("priohigh")) {
-							found_file->SetAutoDownPriority(false);
-							found_file->SetDownPriority(PR_HIGH);
-						} else if (sOp == _T("prioauto")) {
-							found_file->SetAutoDownPriority(true);
-							found_file->SetDownPriority(PR_HIGH);
-						} else if (sOp == _T("setcat")) {
-							const CString &newcat(_ParseURL(Data.sURL, _T("filecat")));
-							if (!newcat.IsEmpty())
-								found_file->SetCategory(_tstol(newcat));
-						} else if (sOp == _T("streamseek")) {
-							const CString &sPart(_ParseURL(Data.sURL, _T("part")));
-							if (!sPart.IsEmpty()) {
-								uint16 seekPart = (uint16)_tstol(sPart);
-								found_file->SetStreamSeekPart(seekPart);
-							}
-						}
-					});
-					if (needsCatTabsUpdate)
-						SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPD_CATTABS, 0);
-					if (renamedFile)
-						theApp.emuledlg->SendMessage(WEB_FILE_RENAME, (WPARAM)renamedFile, (LPARAM)(LPCTSTR)renameTo);
+					// CPartFile and MFC mutations belong to the GUI thread. Calling
+					// DeletePartFile from this WebServer worker can make the GUI wait
+					// on the file-list lock while cleanup waits for the GUI pump.
+					// Transfer only immutable arguments and resolve the file again
+					// on the main thread, so no CPartFile* crosses threads.
+					WebFileOperationRequest *request = new WebFileOperationRequest;
+					memcpy(request->fileHash, FileHash, sizeof request->fileHash);
+					bool validOperation = true;
+					if (sOp == _T("stop"))
+						request->operation = WEBFILEOP_STOP;
+					else if (sOp == _T("pause"))
+						request->operation = WEBFILEOP_PAUSE;
+					else if (sOp == _T("resume"))
+						request->operation = WEBFILEOP_RESUME;
+					else if (sOp == _T("cancel"))
+						request->operation = WEBFILEOP_CANCEL;
+					else if (sOp == _T("getflc"))
+						request->operation = WEBFILEOP_GETFLC;
+					else if (sOp == _T("rename")) {
+						request->operation = WEBFILEOP_RENAME;
+						request->text = _ParseURL(Data.sURL, _T("name"));
+					} else if (sOp == _T("priolow"))
+						request->operation = WEBFILEOP_PRIOLOW;
+					else if (sOp == _T("prionormal"))
+						request->operation = WEBFILEOP_PRIONORMAL;
+					else if (sOp == _T("priohigh"))
+						request->operation = WEBFILEOP_PRIOHIGH;
+					else if (sOp == _T("prioauto"))
+						request->operation = WEBFILEOP_PRIOAUTO;
+					else if (sOp == _T("setcat")) {
+						request->operation = WEBFILEOP_SETCAT;
+						const CString &newcat(_ParseURL(Data.sURL, _T("filecat")));
+						request->value = newcat.IsEmpty() ? -1 : _tstol(newcat);
+					} else if (sOp == _T("streamseek")) {
+						request->operation = WEBFILEOP_STREAMSEEK;
+						const CString &sPart(_ParseURL(Data.sURL, _T("part")));
+						request->value = sPart.IsEmpty() ? -1 : _tstol(sPart);
+					} else
+						validOperation = false;
+
+					if (validOperation)
+						SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_FILE_OPERATION, (LPARAM)request);
+					else
+						delete request;
 				}
 			}
 		}

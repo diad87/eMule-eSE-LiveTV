@@ -208,6 +208,9 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(web, /sURL\.Left\(13\) == "\/api\/network\/"/);
   assert.match(web, /\/api\/network\/connect[\s\S]{0,1800}WEBGUIIA_CONNECTTOSERVER/);
   assert.match(web, /\/api\/network\/connect[\s\S]{0,2200}WEBGUIIA_KAD_START/);
+  assert.match(web, /WebFileOperationRequest \*request[\s\S]{0,2200}WEBGUIIA_FILE_OPERATION/);
+  assert.doesNotMatch(web, /WithFileByID\(FileHash,[\s\S]{0,900}DeletePartFile\(\)/);
+  assert.match(dlg, /WEBGUIIA_FILE_OPERATION[\s\S]{0,500}WithFileByID[\s\S]{0,650}WEBFILEOP_CANCEL[\s\S]{0,120}DeletePartFile\(\)/);
 
   assert.match(packaging, /"\[UPnP\]"[\s\S]{0,80}"EnableUPnP=1"/);
   assert.match(packaging, /"\[WebServer\]"[\s\S]{0,120}"WebUseUPnP=0"/);

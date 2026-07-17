@@ -4373,6 +4373,68 @@ LRESULT CemuleDlg::OnWebGUIInteraction(WPARAM wParam, LPARAM lParam)
 		break;
 	case WEBGUIIA_KAD_RCFW:
 		Kademlia::CKademlia::RecheckFirewalled();
+		break;
+	case WEBGUIIA_FILE_OPERATION:
+		{
+			WebFileOperationRequest *request = reinterpret_cast<WebFileOperationRequest*>(lParam);
+			bool needsCatTabsUpdate = false;
+			if (request != NULL) {
+				theApp.downloadqueue->WithFileByID(request->fileHash, [&](CPartFile *found_file) {
+					switch (request->operation) {
+					case WEBFILEOP_STOP:
+						found_file->StopFile();
+						break;
+					case WEBFILEOP_PAUSE:
+						found_file->PauseFile();
+						break;
+					case WEBFILEOP_RESUME:
+						found_file->ResumeFile();
+						break;
+					case WEBFILEOP_CANCEL:
+						found_file->DeletePartFile();
+						needsCatTabsUpdate = true;
+						break;
+					case WEBFILEOP_GETFLC:
+						found_file->GetPreviewPrio();
+						break;
+					case WEBFILEOP_RENAME:
+						found_file->SetFileName(request->text);
+						found_file->SavePartFile();
+						found_file->UpdateDisplayedInfo();
+						sharedfileswnd->sharedfilesctrl.UpdateFile(found_file);
+						break;
+					case WEBFILEOP_PRIOLOW:
+						found_file->SetAutoDownPriority(false);
+						found_file->SetDownPriority(PR_LOW);
+						break;
+					case WEBFILEOP_PRIONORMAL:
+						found_file->SetAutoDownPriority(false);
+						found_file->SetDownPriority(PR_NORMAL);
+						break;
+					case WEBFILEOP_PRIOHIGH:
+						found_file->SetAutoDownPriority(false);
+						found_file->SetDownPriority(PR_HIGH);
+						break;
+					case WEBFILEOP_PRIOAUTO:
+						found_file->SetAutoDownPriority(true);
+						found_file->SetDownPriority(PR_HIGH);
+						break;
+					case WEBFILEOP_SETCAT:
+						if (request->value >= 0)
+							found_file->SetCategory(request->value);
+						break;
+					case WEBFILEOP_STREAMSEEK:
+						if (request->value >= 0)
+							found_file->SetStreamSeekPart((uint16)request->value);
+						break;
+					}
+				});
+				delete request;
+			}
+			if (needsCatTabsUpdate)
+				transferwnd->UpdateCatTabTitles();
+		}
+		break;
 	}
 
 	return 0;

@@ -406,5 +406,33 @@ enum EWebinterfaceOrders
 	WEBGUIIA_KAD_BOOTSTRAP,
 	WEBGUIIA_KAD_START,
 	WEBGUIIA_KAD_STOP,
-	WEBGUIIA_KAD_RCFW
+	WEBGUIIA_KAD_RCFW,
+	WEBGUIIA_FILE_OPERATION
+};
+
+enum EWebFileOperation
+{
+	WEBFILEOP_STOP = 1,
+	WEBFILEOP_PAUSE,
+	WEBFILEOP_RESUME,
+	WEBFILEOP_CANCEL,
+	WEBFILEOP_GETFLC,
+	WEBFILEOP_RENAME,
+	WEBFILEOP_PRIOLOW,
+	WEBFILEOP_PRIONORMAL,
+	WEBFILEOP_PRIOHIGH,
+	WEBFILEOP_PRIOAUTO,
+	WEBFILEOP_SETCAT,
+	WEBFILEOP_STREAMSEEK
+};
+
+// Owned by WEBGUIIA_FILE_OPERATION. The WebServer allocates the request and
+// CemuleDlg deletes it after executing the mutation on the GUI/main thread.
+// Keeping CPartFile* out of this cross-thread payload avoids stale pointers.
+struct WebFileOperationRequest
+{
+	uchar fileHash[16] = {}; // eD2K MD4
+	EWebFileOperation operation = WEBFILEOP_STOP;
+	int value = 0;
+	CString text;
 };

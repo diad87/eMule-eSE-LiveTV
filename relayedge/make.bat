@@ -14,7 +14,9 @@ set "BASE_SOURCES=src\edge_runtime.cpp src\edge_session_table.cpp src\edge_auth.
 set "P4_SOURCES=src\krp_p4_crypto.cpp src\krp_tcp_session.cpp"
 set "SOURCES=%BASE_SOURCES% %P4_SOURCES%"
 set "BASE_LIBS=..\srchybrid\x64\Release\mbedTLS.lib bcrypt.lib ws2_32.lib"
-set "LIBS=%BASE_LIBS% ..\srchybrid\x64\Release\cryptlib.lib"
+set "CRYPTLIB=..\cryptopp\x64\Output\Release\cryptlib.lib"
+if not exist "%CRYPTLIB%" (echo ERROR: canonical Crypto++ Release library missing & exit /b 2)
+set "LIBS=%BASE_LIBS% %CRYPTLIB%"
 set "CERT=..\mbedtls\framework\data_files\server2-sha256.crt"
 set "KEY=..\mbedtls\framework\data_files\server2.key"
 set "CA=..\mbedtls\framework\data_files\test-ca.crt"

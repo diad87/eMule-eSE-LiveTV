@@ -27,6 +27,7 @@
 #pragma once
 
 #include "eMuleAI/Address.h"
+#include <array>
 
 class CFirewallProberV6 {
 public:
@@ -60,6 +61,10 @@ public:
 		const_cast<volatile LONG*>(&m_lDetectedV6ExternallyObserved), 0, 0) != 0; }
 	bool          HasInboundV6Observation() const { return ::InterlockedCompareExchange(
 		const_cast<volatile LONG*>(&m_lInboundV6Observed), 0, 0) != 0; }
+	bool          IsPcpMapped() const;
+	bool          IsPcpInboundConfirmed() const;
+	CAddress      GetPcpExternalIP() const;
+	uint16        GetPcpExternalPort() const;
     const TCHAR*  GetLayerLabel()   const;
 
 	// True when this process can publish a Kad source that has at least one
@@ -84,7 +89,24 @@ public:
     // Manual override from preferences (Sprint 9 UI exposes this).
     void SetOverrideLayer(ECascadeLayer layer);
 
+	// Called from the existing mapping lease timer and from graceful shutdown.
+	// Both are idempotent; no work is performed unless a PCP-v6 lease exists.
+	void OnTimerTick();
+	void DeletePcpMappingsBestEffort();
+
 private:
+	struct PcpLeaseV6 {
+		bool active = false;
+		std::array<uint8, 12> nonce{};
+		uint8 protocol = 0;
+		uint16 internalPort = 0;
+		uint16 externalPort = 0;
+		CAddress externalIP;
+		uint32 lifetimeSeconds = 0;
+		uint32 mapperEpoch = 0;
+		DWORD acquiredTick = 0;
+	};
+
     CFirewallProberV6();
     ~CFirewallProberV6() = default;
     CFirewallProberV6(const CFirewallProberV6&) = delete;
@@ -92,8 +114,11 @@ private:
 
     // Worker-thread entry: runs the cascade and publishes the verdict.
     static UINT AFX_CDECL ProbeThreadProc(LPVOID pParam);
+	static UINT AFX_CDECL PcpRefreshThreadProc(LPVOID pParam);
     void RunCascade();
     void DetectLocalPublicV6();
+	void RefreshPcpMappings();
+	bool ConfirmPcpInboundV6();
 
     // Sprint 3 stubs — return early with Unreachable. Sprints 5/6/9 fill in.
     bool TryHighID();
@@ -110,5 +135,13 @@ private:
 	volatile LONG m_lProbeStarted;   // InterlockedExchange re-entry guard
 	volatile LONG m_lDetectedV6ExternallyObserved;
 	volatile LONG m_lInboundV6Observed;
+	volatile LONG m_lPcpOperationActive;
+	CAddress      m_pcpGatewayV6;
+	CAddress      m_pcpClientV6;
+	ULONG         m_pcpIfIndex;
+	PcpLeaseV6    m_pcpTcp;
+	PcpLeaseV6    m_pcpUdp;
+	unsigned      m_pcpRefreshFailures;
+	bool          m_pcpInboundConfirmed;
     DWORD         m_dwLastProbeTick;
 };

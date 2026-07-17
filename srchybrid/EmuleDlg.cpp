@@ -1076,8 +1076,12 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				// in-band when a CAP_FORK_IPV6_WIRE peer answers our
 				// OP_PUBLICIP_REQ (CFirewallProberV6::SetDetectedV6IP), which
 				// replaced the old api6.ipify.org third-party HTTPS probe.
-				if (thePrefs.IsIPv6Enabled())
+				if (thePrefs.IsIPv6Enabled()) {
+					if (theApp.emuledlg->m_hUPnPLeaseTimer == 0)
+						VERIFY((theApp.emuledlg->m_hUPnPLeaseTimer = ::SetTimer(NULL, 0,
+							SEC2MS(30), UPnPLeaseTimer)) != 0);
 					CFirewallProberV6::Instance().ProbeAsync();
+				}
 
 				// === v0.71 P0 — privacy stack wiring ============================
 				// F2-F5 modules existed as compiled code but were NEVER
@@ -2422,6 +2426,7 @@ void CemuleDlg::OnClose()
 		VERIFY(::KillTimer(NULL, m_hUPnPLeaseTimer));
 		m_hUPnPLeaseTimer = 0;
 	}
+	CFirewallProberV6::Instance().DeletePcpMappingsBestEffort();
 	theApp.m_pUPnPFinder->GetImplementation()->StopAsyncFind();
 	if (thePrefs.CloseUPnPOnExit())
 		theApp.m_pUPnPFinder->GetImplementation()->DeletePorts();
@@ -4354,6 +4359,7 @@ void CALLBACK CemuleDlg::UPnPTimeOutTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PT
 void CALLBACK CemuleDlg::UPnPLeaseTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*idEvent*/, DWORD /*dwTime*/) noexcept
 {
 	try {
+		CFirewallProberV6::Instance().OnTimerTick();
 		if (theApp.emuledlg != NULL)
 			theApp.emuledlg->CheckUPnPLease();
 	} catch (...) {

@@ -11,13 +11,231 @@
 #include "ClientUDPSocket.h"
 #include "kademlia/kademlia/Kademlia.h"
 #include "kademlia/kademlia/Prefs.h"
+#include "natmap/pcp_codec.h"
+#include <bcrypt.h>
 #include <iphlpapi.h>
+#include <netioapi.h>
+#include <ws2tcpip.h>
+
+#pragma comment(lib, "bcrypt.lib")
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #undef THIS_FILE
 static char THIS_FILE[] = __FILE__;
 #endif
+
+namespace {
+
+const uint16 kPcpPort = 5351;
+const uint8 kPcpProtocolTcp = 6;
+const uint8 kPcpProtocolUdp = 17;
+const uint32 kPcpRequestedLifetime = 7200;
+
+uint32 EffectivePcpLifetime(uint32 lifetime)
+{
+	const uint32 maximumLifetime = 24 * 60 * 60;
+	return lifetime > maximumLifetime ? maximumLifetime : lifetime;
+}
+
+bool GeneratePcpNonce(std::array<uint8, 12>& nonce)
+{
+	if (BCryptGenRandom(NULL, nonce.data(), static_cast<ULONG>(nonce.size()),
+		BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
+		return false;
+	for (size_t i = 0; i < nonce.size(); ++i)
+		if (nonce[i] != 0)
+			return true;
+	return false;
+}
+
+bool GetDefaultGatewayV6(const CAddress& clientAddress, CAddress& gateway,
+	ULONG& interfaceIndex)
+{
+	if (clientAddress.GetType() != CAddress::IPv6)
+		return false;
+
+	HMODULE ipHelper = GetModuleHandleW(L"iphlpapi.dll");
+	if (ipHelper == NULL)
+		ipHelper = LoadLibraryW(L"iphlpapi.dll");
+	if (ipHelper == NULL)
+		return false;
+
+	typedef NETIO_STATUS (WINAPI *GetBestRoute2Fn)(
+		NET_LUID*, NET_IFINDEX, const SOCKADDR_INET*, const SOCKADDR_INET*,
+		ULONG, PMIB_IPFORWARD_ROW2, SOCKADDR_INET*);
+	GetBestRoute2Fn getBestRoute2 = reinterpret_cast<GetBestRoute2Fn>(
+		GetProcAddress(ipHelper, "GetBestRoute2"));
+	if (getBestRoute2 == NULL)
+		return false;
+
+	SOCKADDR_INET source;
+	memset(&source, 0, sizeof(source));
+	source.Ipv6.sin6_family = AF_INET6;
+	memcpy(&source.Ipv6.sin6_addr, clientAddress.Data(), 16);
+
+	SOCKADDR_INET destination;
+	memset(&destination, 0, sizeof(destination));
+	destination.Ipv6.sin6_family = AF_INET6;
+	// This is only a routing-table lookup; no packet is sent to this address.
+	// Avoid InetPton because eMule still targets Windows versions whose SDK
+	// declarations do not expose it.
+	const uint8 routeProbe[16] = {
+		0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x88
+	};
+	memcpy(&destination.Ipv6.sin6_addr, routeProbe, sizeof(routeProbe));
+
+	MIB_IPFORWARD_ROW2 route;
+	SOCKADDR_INET bestSource;
+	memset(&route, 0, sizeof(route));
+	memset(&bestSource, 0, sizeof(bestSource));
+	if (getBestRoute2(NULL, 0, &source, &destination, 0, &route,
+		&bestSource) != NO_ERROR
+		|| route.NextHop.si_family != AF_INET6
+		|| route.InterfaceIndex == 0)
+		return false;
+
+	const IN6_ADDR& nextHop = route.NextHop.Ipv6.sin6_addr;
+	static const IN6_ADDR unspecified = IN6ADDR_ANY_INIT;
+	if (memcmp(&nextHop, &unspecified, sizeof(nextHop)) == 0)
+		return false;
+
+	gateway = CAddress(reinterpret_cast<const byte*>(&nextHop));
+	if (gateway.GetType() != CAddress::IPv6 || gateway.IsNull())
+		return false;
+	interfaceIndex = route.InterfaceIndex;
+	return true;
+}
+
+bool ExchangePcpMapV6(const CAddress& gateway, ULONG interfaceIndex,
+	const CAddress& clientAddress, uint16 internalPort,
+	uint16 suggestedExternalPort, const CAddress& suggestedExternalIP,
+	uint8 protocol, uint32 lifetime, const std::array<uint8, 12>& nonce,
+	natmap::PcpMapResponse& response, bool fastDelete)
+{
+	if (gateway.GetType() != CAddress::IPv6 || gateway.IsNull()
+		|| clientAddress.GetType() != CAddress::IPv6
+		|| clientAddress.IsNull() || interfaceIndex == 0
+		|| internalPort == 0 || (protocol != kPcpProtocolTcp
+			&& protocol != kPcpProtocolUdp))
+		return false;
+
+	natmap::PcpMapRequest request;
+	request.lifetime_seconds = lifetime;
+	memcpy(request.client_ip.data(), clientAddress.Data(),
+		request.client_ip.size());
+	request.nonce = nonce;
+	request.protocol = protocol;
+	request.internal_port = internalPort;
+	request.suggested_external_port = suggestedExternalPort;
+	if (suggestedExternalIP.GetType() == CAddress::IPv6)
+		memcpy(request.suggested_external_ip.data(),
+			suggestedExternalIP.Data(), request.suggested_external_ip.size());
+
+	uint8 packet[natmap::kPcpMaximumMessageSize];
+	const size_t packetSize = natmap::EncodePcpMapRequest(request, packet,
+		sizeof(packet));
+	if (packetSize == 0)
+		return false;
+
+	SOCKET sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+	if (sock == INVALID_SOCKET)
+		return false;
+
+	sockaddr_in6 local;
+	memset(&local, 0, sizeof(local));
+	local.sin6_family = AF_INET6;
+	memcpy(&local.sin6_addr, clientAddress.Data(), 16);
+	if (bind(sock, reinterpret_cast<sockaddr*>(&local), sizeof(local)) != 0) {
+		LIVE_LOG("NETV6", "PCP-v6 bind failed err=%d", WSAGetLastError());
+		closesocket(sock);
+		return false;
+	}
+
+	sockaddr_in6 destinationAddress;
+	memset(&destinationAddress, 0, sizeof(destinationAddress));
+	destinationAddress.sin6_family = AF_INET6;
+	destinationAddress.sin6_port = htons(kPcpPort);
+	destinationAddress.sin6_scope_id = interfaceIndex;
+	memcpy(&destinationAddress.sin6_addr, gateway.Data(), 16);
+
+	const DWORD normalTimeouts[] = { 700, 1400, 2800 };
+	const size_t attemptCount = fastDelete ? 1 : _countof(normalTimeouts);
+	for (size_t attempt = 0; attempt < attemptCount; ++attempt) {
+		if (!fastDelete && theApp.IsClosing())
+			break;
+		if (sendto(sock, reinterpret_cast<const char*>(packet),
+			static_cast<int>(packetSize), 0,
+			reinterpret_cast<sockaddr*>(&destinationAddress),
+			sizeof(destinationAddress)) != static_cast<int>(packetSize))
+			continue;
+
+		const DWORD waitTime = fastDelete ? 150 : normalTimeouts[attempt];
+		const DWORD started = GetTickCount();
+		while (fastDelete || !theApp.IsClosing()) {
+			const DWORD elapsed = GetTickCount() - started;
+			if (elapsed >= waitTime)
+				break;
+			const DWORD remaining = waitTime - elapsed;
+			fd_set readSet;
+			FD_ZERO(&readSet);
+			FD_SET(sock, &readSet);
+			timeval timeout;
+			timeout.tv_sec = remaining / 1000;
+			timeout.tv_usec = (remaining % 1000) * 1000;
+			if (select(0, &readSet, NULL, NULL, &timeout) <= 0)
+				break;
+
+			uint8 raw[natmap::kPcpMaximumMessageSize + 1];
+			sockaddr_in6 sourceAddress;
+			memset(&sourceAddress, 0, sizeof(sourceAddress));
+			int sourceLength = sizeof(sourceAddress);
+			const int received = recvfrom(sock,
+				reinterpret_cast<char*>(raw), sizeof(raw), 0,
+				reinterpret_cast<sockaddr*>(&sourceAddress), &sourceLength);
+			if (received <= 0 || sourceAddress.sin6_family != AF_INET6
+				|| sourceAddress.sin6_port != htons(kPcpPort)
+				|| memcmp(&sourceAddress.sin6_addr, gateway.Data(), 16) != 0)
+				continue;
+
+			natmap::PcpMapResponse candidate;
+			const natmap::PcpDecodeStatus status =
+				natmap::DecodePcpMapResponse(raw,
+					static_cast<size_t>(received), request, candidate);
+			if (status != natmap::PcpDecodeStatus::Ok) {
+				LIVE_LOG("NETV6", "PCP-v6 ignored invalid response status=%u",
+					static_cast<unsigned>(status));
+				continue;
+			}
+			response = candidate;
+			if (candidate.result != natmap::PcpResultCode::Success) {
+				closesocket(sock);
+				return false;
+			}
+			if (lifetime == 0) {
+				const bool deleted = candidate.lifetime_seconds == 0;
+				closesocket(sock);
+				return deleted;
+			}
+
+			CAddress external(candidate.external_ip.data());
+			const bool mapped = candidate.lifetime_seconds != 0
+				&& candidate.external_port != 0
+				&& external.GetType() == CAddress::IPv6
+				&& external.IsPublicIP();
+			if (mapped) {
+				closesocket(sock);
+				return true;
+			}
+		}
+	}
+
+	closesocket(sock);
+	return false;
+}
+
+} // namespace
 
 // v0.71 IPv6 Sprint 6 — runtime fork capability bits OR-ed into every
 // CT_FORK_CAPABILITIES emit. The prober updates this once it settles on a
@@ -72,6 +290,10 @@ CFirewallProberV6::CFirewallProberV6()
 	, m_lProbeStarted(0)
 	, m_lDetectedV6ExternallyObserved(0)
 	, m_lInboundV6Observed(0)
+	, m_lPcpOperationActive(0)
+	, m_pcpIfIndex(0)
+	, m_pcpRefreshFailures(0)
+	, m_pcpInboundConfirmed(false)
     , m_dwLastProbeTick(0)
 {
 }
@@ -102,7 +324,12 @@ void CFirewallProberV6::ProbeAsync()
 
     m_dwLastProbeTick = GetTickCount();
     LIVE_LOG("NETV6", "starting IPv6 firewall probe cascade (worker thread)");
-    AfxBeginThread(ProbeThreadProc, this, THREAD_PRIORITY_BELOW_NORMAL);
+	CWinThread* thread = AfxBeginThread(ProbeThreadProc, this,
+		THREAD_PRIORITY_BELOW_NORMAL);
+	if (thread == NULL) {
+		::InterlockedExchange(&m_lProbeStarted, 0);
+		LIVE_LOG("NETV6", "IPv6 firewall probe thread creation failed");
+	}
 }
 
 UINT AFX_CDECL CFirewallProberV6::ProbeThreadProc(LPVOID pParam)
@@ -131,7 +358,8 @@ void CFirewallProberV6::RunCascade()
     {
         CSingleLock l(&m_lock, TRUE);
         if (::InterlockedCompareExchange(&m_lInboundV6Observed, 0, 0) != 0)
-            verdict = LayerHighID;
+			verdict = m_pcpInboundConfirmed && m_pcpTcp.active
+				? LayerPCP : LayerHighID;
         m_eLayer = verdict;
     }
     if (!theApp.IsClosing())
@@ -157,6 +385,30 @@ const TCHAR* CFirewallProberV6::GetLayerLabel() const
     case LayerUnknown:
     default:                return _T("Probing...");
     }
+}
+
+bool CFirewallProberV6::IsPcpMapped() const
+{
+	CSingleLock l(&m_lock, TRUE);
+	return m_pcpTcp.active;
+}
+
+bool CFirewallProberV6::IsPcpInboundConfirmed() const
+{
+	CSingleLock l(&m_lock, TRUE);
+	return m_pcpInboundConfirmed;
+}
+
+CAddress CFirewallProberV6::GetPcpExternalIP() const
+{
+	CSingleLock l(&m_lock, TRUE);
+	return m_pcpTcp.externalIP;
+}
+
+uint16 CFirewallProberV6::GetPcpExternalPort() const
+{
+	CSingleLock l(&m_lock, TRUE);
+	return m_pcpTcp.externalPort;
 }
 
 // v0.71 IPv6 Sprint 6 — record our public v6 address as observed by a peer.
@@ -282,10 +534,13 @@ void CFirewallProberV6::ReportInboundV6Reachable(const CAddress& localAddress)
 {
 	if (localAddress.GetType() != CAddress::IPv6 || !localAddress.IsPublicIP())
 		return;
+	bool pcpConfirmed = false;
     {
         CSingleLock l(&m_lock, TRUE);
 		m_detectedIP = localAddress;
-        m_eLayer = LayerHighID;
+		pcpConfirmed = m_pcpTcp.active;
+		m_pcpInboundConfirmed = pcpConfirmed;
+        m_eLayer = pcpConfirmed ? LayerPCP : LayerHighID;
 		// Publish the proof while holding the same lock used by SetDetectedV6IP.
 		// This prevents a late advisory answer from replacing the exact local
 		// destination address of the accepted native-v6 connection.
@@ -295,13 +550,14 @@ void CFirewallProberV6::ReportInboundV6Reachable(const CAddress& localAddress)
     ::InterlockedOr(reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
         (LONG)CAP_FORK_IPV6_DUALSTACK);
     if (!theApp.IsClosing())
-        LIVE_LOG("NETV6", "native IPv6 inbound TCP observed; direct route confirmed");
+        LIVE_LOG("NETV6", pcpConfirmed
+			? "native IPv6 inbound TCP observed; PCP pinhole confirmed"
+			: "native IPv6 inbound TCP observed; direct route confirmed");
 }
 
 // ── Cascade layer stubs ──────────────────────────────────────────────────
-// Each returns true if the layer establishes reachability. Sprint 3 only
-// has the OS-can-make-a-v6-socket check in TryHighID; the rest are wired
-// up in later sprints.
+// HighID consumes inbound evidence and PCP can now create IPv6 firewall
+// state. The lower-priority fallbacks are still implemented incrementally.
 
 bool CFirewallProberV6::TryHighID()
 {
@@ -326,7 +582,315 @@ bool CFirewallProberV6::TryHighID()
     return ::InterlockedCompareExchange(&m_lInboundV6Observed, 0, 0) != 0;
 }
 
-bool CFirewallProberV6::TryPCP()        { return false; /* Sprint 6 */ }
+bool CFirewallProberV6::TryPCP()
+{
+	if (!CPreferences::IsIPv6Enabled()
+		|| ::InterlockedExchange(&m_lPcpOperationActive, 1) != 0)
+		return false;
+
+	CAddress clientAddress;
+	{
+		CSingleLock l(&m_lock, TRUE);
+		clientAddress = m_detectedIP;
+	}
+	if (clientAddress.GetType() != CAddress::IPv6
+		|| !clientAddress.IsPublicIP()) {
+		::InterlockedExchange(&m_lPcpOperationActive, 0);
+		LIVE_LOG("NETV6", "PCP-v6 skipped: no stable public client address");
+		return false;
+	}
+
+	CAddress gateway;
+	ULONG interfaceIndex = 0;
+	if (!GetDefaultGatewayV6(clientAddress, gateway, interfaceIndex)) {
+		::InterlockedExchange(&m_lPcpOperationActive, 0);
+		LIVE_LOG("NETV6", "PCP-v6 skipped: no IPv6 default gateway");
+		return false;
+	}
+
+	PcpLeaseV6 tcp;
+	PcpLeaseV6 udp;
+	tcp.protocol = kPcpProtocolTcp;
+	tcp.internalPort = thePrefs.GetPort();
+	udp.protocol = kPcpProtocolUdp;
+	udp.internalPort = thePrefs.GetUDPPort();
+	if (tcp.internalPort == 0 || !GeneratePcpNonce(tcp.nonce)
+		|| (udp.internalPort != 0 && !GeneratePcpNonce(udp.nonce))) {
+		::InterlockedExchange(&m_lPcpOperationActive, 0);
+		LIVE_LOG("NETV6", "PCP-v6 skipped: invalid port or nonce generation failed");
+		return false;
+	}
+
+	natmap::PcpMapResponse tcpResponse;
+	const bool tcpMapped = ExchangePcpMapV6(gateway, interfaceIndex,
+		clientAddress, tcp.internalPort, tcp.internalPort, CAddress(),
+		tcp.protocol, kPcpRequestedLifetime, tcp.nonce, tcpResponse, false);
+	if (!tcpMapped) {
+		::InterlockedExchange(&m_lPcpOperationActive, 0);
+		LIVE_LOG("NETV6", "PCP-v6 TCP MAP failed result=%u",
+			static_cast<unsigned>(tcpResponse.result));
+		return false;
+	}
+
+	natmap::PcpMapResponse udpResponse;
+	bool udpMapped = true;
+	if (udp.internalPort != 0) {
+		udpMapped = ExchangePcpMapV6(gateway, interfaceIndex,
+			clientAddress, udp.internalPort, udp.internalPort, CAddress(),
+			udp.protocol, kPcpRequestedLifetime, udp.nonce, udpResponse, false);
+	}
+	if (!udpMapped && udp.internalPort != 0)
+		LIVE_LOG("NETV6",
+			"PCP-v6 UDP MAP unavailable result=%u; keeping TCP mapping",
+			static_cast<unsigned>(udpResponse.result));
+
+	const DWORD acquired = GetTickCount();
+	tcp.active = true;
+	tcp.externalPort = tcpResponse.external_port;
+	tcp.externalIP = CAddress(tcpResponse.external_ip.data());
+	tcp.lifetimeSeconds = EffectivePcpLifetime(
+		tcpResponse.lifetime_seconds);
+	tcp.mapperEpoch = tcpResponse.epoch;
+	tcp.acquiredTick = acquired;
+	if (udp.internalPort != 0) {
+		udp.active = udpMapped;
+		if (udpMapped) {
+			udp.externalPort = udpResponse.external_port;
+			udp.externalIP = CAddress(udpResponse.external_ip.data());
+			udp.lifetimeSeconds = EffectivePcpLifetime(
+				udpResponse.lifetime_seconds);
+			udp.mapperEpoch = udpResponse.epoch;
+		}
+		udp.acquiredTick = acquired;
+	}
+	{
+		CSingleLock l(&m_lock, TRUE);
+		m_pcpGatewayV6 = gateway;
+		m_pcpClientV6 = clientAddress;
+		m_pcpIfIndex = interfaceIndex;
+		m_pcpTcp = tcp;
+		m_pcpUdp = udp;
+		m_pcpRefreshFailures = 0;
+		m_pcpInboundConfirmed = false;
+	}
+	::InterlockedExchange(&m_lPcpOperationActive, 0);
+
+	LIVE_LOG("NETV6",
+		"PCP-v6 MAP active gateway=%hs%%%lu TCP=%u->%u UDP=%u->%u lease=%us; inbound unconfirmed",
+		gateway.ToString().c_str(), interfaceIndex, tcp.internalPort,
+		tcp.externalPort, udp.internalPort, udp.externalPort,
+		tcp.lifetimeSeconds);
+	return ConfirmPcpInboundV6();
+}
+
+bool CFirewallProberV6::ConfirmPcpInboundV6()
+{
+	const bool inbound = ::InterlockedCompareExchange(
+		&m_lInboundV6Observed, 0, 0) != 0;
+	if (inbound) {
+		CSingleLock l(&m_lock, TRUE);
+		m_pcpInboundConfirmed = true;
+		return true;
+	}
+	LIVE_LOG("NETV6",
+		"PCP-v6 MAP accepted; waiting for native inbound observation before promoting reachability");
+	return false;
+}
+
+void CFirewallProberV6::OnTimerTick()
+{
+	if (!CPreferences::IsIPv6Enabled() || theApp.IsClosing())
+		return;
+
+	bool renewalDue = false;
+	const DWORD now = GetTickCount();
+	{
+		CSingleLock l(&m_lock, TRUE);
+		if (m_pcpTcp.active && m_pcpTcp.lifetimeSeconds != 0) {
+			const DWORD renewAfter = static_cast<DWORD>(
+				static_cast<uint64>(m_pcpTcp.lifetimeSeconds) * 1000 / 2);
+			renewalDue = now - m_pcpTcp.acquiredTick >= renewAfter;
+		}
+		if (!renewalDue && m_pcpUdp.active
+			&& m_pcpUdp.lifetimeSeconds != 0) {
+			const DWORD renewAfter = static_cast<DWORD>(
+				static_cast<uint64>(m_pcpUdp.lifetimeSeconds) * 1000 / 2);
+			renewalDue = now - m_pcpUdp.acquiredTick >= renewAfter;
+		}
+		// UDP is useful for Kad but not required to make the TCP listener
+		// reachable. Retry a failed optional UDP MAP at a low rate.
+		if (!renewalDue && m_pcpTcp.active && !m_pcpUdp.active
+			&& m_pcpUdp.internalPort != 0)
+			renewalDue = now - m_pcpUdp.acquiredTick >= MIN2MS(5);
+	}
+	if (!renewalDue
+		|| ::InterlockedExchange(&m_lPcpOperationActive, 1) != 0)
+		return;
+
+	CWinThread* thread = AfxBeginThread(PcpRefreshThreadProc, this,
+		THREAD_PRIORITY_BELOW_NORMAL);
+	if (thread == NULL) {
+		::InterlockedExchange(&m_lPcpOperationActive, 0);
+		LIVE_LOG("NETV6", "PCP-v6 refresh thread creation failed");
+	}
+}
+
+UINT AFX_CDECL CFirewallProberV6::PcpRefreshThreadProc(LPVOID pParam)
+{
+	DbgSetThreadName("PCP-v6 refresh");
+	static_cast<CFirewallProberV6*>(pParam)->RefreshPcpMappings();
+	return 0;
+}
+
+void CFirewallProberV6::RefreshPcpMappings()
+{
+	CAddress gateway;
+	CAddress clientAddress;
+	ULONG interfaceIndex = 0;
+	PcpLeaseV6 tcp;
+	PcpLeaseV6 udp;
+	{
+		CSingleLock l(&m_lock, TRUE);
+		gateway = m_pcpGatewayV6;
+		clientAddress = m_pcpClientV6;
+		interfaceIndex = m_pcpIfIndex;
+		tcp = m_pcpTcp;
+		udp = m_pcpUdp;
+	}
+
+	natmap::PcpMapResponse tcpResponse;
+	const bool tcpSucceeded = tcp.active && ExchangePcpMapV6(gateway, interfaceIndex,
+		clientAddress, tcp.internalPort, tcp.externalPort, tcp.externalIP,
+		tcp.protocol, kPcpRequestedLifetime, tcp.nonce, tcpResponse, false);
+	natmap::PcpMapResponse udpResponse;
+	bool udpSucceeded = true;
+	if (udp.internalPort != 0) {
+		udpSucceeded = ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+			udp.internalPort, udp.externalPort, udp.externalIP, udp.protocol,
+			kPcpRequestedLifetime, udp.nonce, udpResponse, false);
+	}
+	const bool tcpEndpointChanged = tcpSucceeded
+		&& (tcp.externalPort != tcpResponse.external_port
+			|| memcmp(tcp.externalIP.Data(), tcpResponse.external_ip.data(),
+				tcpResponse.external_ip.size()) != 0);
+
+	bool restartProbe = false;
+	{
+		CSingleLock l(&m_lock, TRUE);
+		// Shutdown/delete may have invalidated the snapshot while I/O ran.
+		if (!m_pcpTcp.active || m_pcpTcp.nonce != tcp.nonce) {
+			::InterlockedExchange(&m_lPcpOperationActive, 0);
+			return;
+		}
+		const DWORD acquired = GetTickCount();
+		if (tcpSucceeded) {
+			if (tcpEndpointChanged && m_pcpInboundConfirmed) {
+				m_pcpInboundConfirmed = false;
+				if (m_eLayer == LayerPCP)
+					m_eLayer = LayerUnreachable;
+				::InterlockedExchange(&m_lInboundV6Observed, 0);
+				::InterlockedAnd(
+					reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+					~static_cast<LONG>(CAP_FORK_IPV6_DUALSTACK));
+			}
+			m_pcpTcp.externalPort = tcpResponse.external_port;
+			m_pcpTcp.externalIP = CAddress(tcpResponse.external_ip.data());
+			m_pcpTcp.lifetimeSeconds = EffectivePcpLifetime(
+				tcpResponse.lifetime_seconds);
+			m_pcpTcp.mapperEpoch = tcpResponse.epoch;
+			m_pcpTcp.acquiredTick = acquired;
+			m_pcpRefreshFailures = 0;
+		} else {
+			++m_pcpRefreshFailures;
+			if (m_pcpRefreshFailures >= 3) {
+				m_pcpTcp.active = false;
+				m_pcpUdp.active = false;
+				if (m_pcpInboundConfirmed) {
+					m_pcpInboundConfirmed = false;
+					::InterlockedExchange(&m_lInboundV6Observed, 0);
+					::InterlockedAnd(
+						reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+						~static_cast<LONG>(CAP_FORK_IPV6_DUALSTACK));
+				}
+				if (m_eLayer == LayerPCP)
+					m_eLayer = LayerUnreachable;
+				restartProbe = true;
+			}
+		}
+		if (!restartProbe && udpSucceeded && m_pcpUdp.internalPort != 0) {
+			m_pcpUdp.active = true;
+			m_pcpUdp.externalPort = udpResponse.external_port;
+			m_pcpUdp.externalIP = CAddress(udpResponse.external_ip.data());
+			m_pcpUdp.lifetimeSeconds = EffectivePcpLifetime(
+				udpResponse.lifetime_seconds);
+			m_pcpUdp.mapperEpoch = udpResponse.epoch;
+			m_pcpUdp.acquiredTick = acquired;
+		} else if (!restartProbe && tcpSucceeded
+			&& m_pcpUdp.internalPort != 0) {
+			m_pcpUdp.acquiredTick = acquired;
+		}
+	}
+	::InterlockedExchange(&m_lPcpOperationActive, 0);
+
+	if (tcpSucceeded)
+		LIVE_LOG("NETV6", tcpEndpointChanged
+			? "PCP-v6 TCP endpoint changed; inbound proof invalidated"
+			: (udp.internalPort == 0 || udpSucceeded
+				? "PCP-v6 leases refreshed"
+				: "PCP-v6 TCP refreshed; optional UDP MAP still unavailable"));
+	else
+		LIVE_LOG("NETV6", "PCP-v6 TCP lease refresh failed");
+	if (restartProbe && !theApp.IsClosing()) {
+		::InterlockedExchange(&m_lProbeStarted, 0);
+		ProbeAsync();
+	}
+}
+
+void CFirewallProberV6::DeletePcpMappingsBestEffort()
+{
+	CAddress gateway;
+	CAddress clientAddress;
+	ULONG interfaceIndex = 0;
+	PcpLeaseV6 tcp;
+	PcpLeaseV6 udp;
+	{
+		CSingleLock l(&m_lock, TRUE);
+		if (!m_pcpTcp.active && !m_pcpUdp.active)
+			return;
+		gateway = m_pcpGatewayV6;
+		clientAddress = m_pcpClientV6;
+		interfaceIndex = m_pcpIfIndex;
+		tcp = m_pcpTcp;
+		udp = m_pcpUdp;
+		m_pcpTcp.active = false;
+		m_pcpUdp.active = false;
+		if (m_pcpInboundConfirmed) {
+			m_pcpInboundConfirmed = false;
+			::InterlockedExchange(&m_lInboundV6Observed, 0);
+			::InterlockedAnd(
+				reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+				~static_cast<LONG>(CAP_FORK_IPV6_DUALSTACK));
+		}
+		if (m_eLayer == LayerPCP)
+			m_eLayer = LayerUnreachable;
+	}
+
+	const bool ownsOperationGuard =
+		::InterlockedCompareExchange(&m_lPcpOperationActive, 1, 0) == 0;
+	natmap::PcpMapResponse ignored;
+	if (tcp.active)
+		ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+			tcp.internalPort, 0, CAddress(), tcp.protocol, 0, tcp.nonce,
+			ignored, true);
+	if (udp.active)
+		ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+			udp.internalPort, 0, CAddress(), udp.protocol, 0, udp.nonce,
+			ignored, true);
+	if (ownsOperationGuard)
+		::InterlockedExchange(&m_lPcpOperationActive, 0);
+	LIVE_LOG("NETV6", "PCP-v6 delete requests sent");
+}
+
 bool CFirewallProberV6::TryIGDv2()      { return false; /* Sprint 9 */ }
 bool CFirewallProberV6::TryKeepalive()  { return false; /* Sprint 5 */ }
 bool CFirewallProberV6::TryHolePunch()  { return false; /* Sprint 5 */ }

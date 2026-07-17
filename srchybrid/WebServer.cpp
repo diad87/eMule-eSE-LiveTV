@@ -4584,6 +4584,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		|| (sURL.Left(15) == "/api/keepalive/")
 		|| (sURL.Left(11) == "/api/relay/")
 		|| (sURL.Left(9) == "/api/krp/")
+		|| (sURL.Left(13) == "/api/network/")
 		|| (sURL.Left(11) == "/api/ese/v9")
 		|| (sURL == "/api/status")
 		|| (sURL == "/dashboard") || (sURL == "/dashboard/")
@@ -4619,6 +4620,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	if (bTokenAuth && !bTokenAdmin && (
 		(sURL.Left(20) == "/api/live/broadcast/")
 		|| (sURL.Left(15) == "/api/holepunch/")
+		|| (sURL.Left(13) == "/api/network/")
 		|| (sURL.Left(18) == "/api/live/privacy/"))) {
 		CStringA body = "{\"error\":\"forbidden\",\"hint\":\"admin session required\"}";
 		CStringA hdr;
@@ -4630,6 +4632,75 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			body.GetLength());
 		Data.pSocket->SendData(hdr, hdr.GetLength());
 		Data.pSocket->SendData(body, body.GetLength());
+		return;
+	}
+
+	// --- /api/network/connect?ed2k=1&kad=1 ---
+	// Local diagnostic control for headless/minimized multi-PC validation. The
+	// endpoint is covered by the localhost/session gate above and guest sessions
+	// are explicitly denied. SendMessage marshals both requests onto the GUI
+	// thread, matching the authenticated classic WebServer controls.
+	if (sURL.Left(20) == "/api/network/connect") {
+		const CString ed2kArg(_ParseURL(Data.sURL, _T("ed2k")));
+		const CString kadArg(_ParseURL(Data.sURL, _T("kad")));
+		const bool requestEd2k = ed2kArg.IsEmpty() || ed2kArg != _T("0");
+		const bool requestKad = kadArg.IsEmpty() || kadArg != _T("0");
+
+		static DWORD s_lastNetworkConnect = 0;
+		const DWORD nowConnect = ::GetTickCount();
+		if (s_lastNetworkConnect != 0 && (nowConnect - s_lastNetworkConnect) < 2000) {
+			CStringA json = "{\"success\":false,\"error\":\"rate_limited\",\"retry_after_ms\":";
+			CStringA retry;
+			retry.Format("%u}", 2000 - (nowConnect - s_lastNetworkConnect));
+			json += retry;
+			CStringA hdr;
+			hdr.Format(
+				"HTTP/1.1 429 Too Many Requests\r\n"
+				"Content-Type: application/json\r\n"
+				"Cache-Control: no-store\r\n"
+				"Content-Length: %d\r\n\r\n",
+				json.GetLength());
+			Data.pSocket->SendData(hdr, hdr.GetLength());
+			Data.pSocket->SendData(json, json.GetLength());
+			return;
+		}
+		s_lastNetworkConnect = nowConnect;
+
+		bool ed2kRequested = false;
+		bool kadRequested = false;
+		if (requestEd2k && theApp.serverconnect != NULL
+			&& !theApp.serverconnect->IsConnected()
+			&& !theApp.serverconnect->IsConnecting()) {
+			SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_CONNECTTOSERVER, 0);
+			ed2kRequested = true;
+		}
+		if (requestKad && !Kademlia::CKademlia::IsRunning()) {
+			SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_KAD_START, 0);
+			kadRequested = true;
+		}
+
+		CStringA json;
+		json.Format(
+			"{\"success\":true,\"requested\":{\"ed2k\":%s,\"kad\":%s},"
+			"\"state\":{\"ed2k_connected\":%s,\"ed2k_connecting\":%s,"
+			"\"kad_running\":%s,\"kad_connected\":%s}}",
+			ed2kRequested ? "true" : "false",
+			kadRequested ? "true" : "false",
+			(theApp.serverconnect != NULL && theApp.serverconnect->IsConnected()) ? "true" : "false",
+			(theApp.serverconnect != NULL && theApp.serverconnect->IsConnecting()) ? "true" : "false",
+			Kademlia::CKademlia::IsRunning() ? "true" : "false",
+			Kademlia::CKademlia::IsConnected() ? "true" : "false");
+		CStringA hdr;
+		hdr.Format(
+			"HTTP/1.1 200 OK\r\n"
+			"Content-Type: application/json\r\n"
+			"Cache-Control: no-store\r\n"
+			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
+			"X-Content-Type-Options: nosniff\r\n"
+			"Content-Length: %d\r\n\r\n",
+			json.GetLength());
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
 		return;
 	}
 
@@ -5887,20 +5958,14 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 	// --- /api/live/privacy/test_circuit --- v0.71 P3.6 — solo testing helper.
-	// Builds a single-hop test circuit through any currently connected peer
-	// (or a specific peer if &peerip= is supplied). The originator code
-	// path runs end-to-end (X25519 keygen → CELL_CREATE → TCP send). If
-	// the chosen peer runs this fork, the handshake completes and the
-	// circuit reaches Active; if not, the circuit stays Pending until
-	// the ~6 s timeout reaps it. Either way the user gets visible proof
-	// the SEND path is wired (Privacidad panel shows circuit count +1
-	// briefly even on failure).
+	// Builds a single-hop test circuit through a connected peer that
+	// advertised ESE_CAP_PRIVACY_TUNNELING. Legacy peers are rejected
+	// fail-closed instead of creating an unfinishable Pending circuit.
 	// Length of "/api/live/privacy/test_circuit" is exactly 30 chars.
 	// Left(30) matches both bare URL and URL with ?query suffix.
 	if (sURL.Left(30) == "/api/live/privacy/test_circuit") {
 		// v0.71 B — optional ?hops=2 to build a 2-hop circuit. Default
-		// is 1-hop (backward compat). 2-hop picks 2 fork peers if
-		// available; with 1 fork peer it loops hop2 back (testing aid).
+		// is 1-hop (backward compat). 2-hop requires 2 distinct fork peers.
 		// hops=3 invokes K6-6 STRICT3: three authenticated/shaped IPv6
 		// identities with verified /48+ASN diversity and no repeated known
 		// operator group, with no fallback.

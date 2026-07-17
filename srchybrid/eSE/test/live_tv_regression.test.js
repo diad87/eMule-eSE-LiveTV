@@ -122,8 +122,8 @@ test('hole-punch keeps Kad identity separate from the eD2K user hash', () => {
   assert.doesNotMatch(kad, /md4cpy\(entry\.abyExpectedKadID,\s*pExpectedClient->GetUserHash\(\)\)/);
   assert.match(kad, /pIdentityContact->GetClientID\(\)\.ToByteArray\(entry\.abyExpectedKadID\)/);
   assert.doesNotMatch(kad, /SetUserHash\(abyResponderKadID\)/);
-  assert.match(kad, /InitiateUtpConnect\(uIP, uUDPPort, pExpectedClient\)/);
-  assert.match(udpHeader, /InitiateUtpConnect\([^;]+CUpDownClient\* pExpectedClient\)/);
+  assert.match(kad, /InitiateUtpConnect\([\s\S]{0,120}pExpectedClient, bViaRendezvous\)/);
+  assert.match(udpHeader, /InitiateUtpConnect\([^;]+CUpDownClient\* pExpectedClient,\s*bool bViaRendezvous/);
   assert.doesNotMatch(udp, /FindClientByUserHash\(pClientHash\)/);
   assert.match(udp, /FindClientByIP_KadPort\(uIPNetwork, nUDPPort\)/);
 });
@@ -159,6 +159,8 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(base, /GetEseEd2kPunch3\(\) && thePrefs\.GetEseKad3Rendezvous\(\)/);
   assert.match(tunnel, /!thePrefs\.GetEseV9Experimental\(\)[\s\S]{0,100}ESE_CAP_KAD6/);
   assert.match(tunnel, /!optIn \? kad6::K6ReleaseGateStatus::OperatorOptOut/);
+  assert.match(tunnel, /BuildTestCircuit\(CUpDownClient\* clientHint\)[\s\S]{0,900}GetConnectedSnapshot\(cands, 3, \/\*tunnelOnly=\*\/true\)/);
+  assert.doesNotMatch(tunnel, /BuildTestCircuit\(CUpDownClient\* clientHint\)[\s\S]{0,1200}GetConnectedSnapshot\(cands, 3, \/\*tunnelOnly=\*\/false\)/);
   assert.match(relay, /config\.enabled = thePrefs\.GetKrpRelayEnabled\(\)/);
   assert.match(relay, /m_initialized && config\.enabled && !config\.kill_switch/);
   assert.match(relay, /thePrefs\.GetKrpRelayEnabled\(\)[\s\S]{0,100}GetKrpRelayExperimentalTcp\(\)/);
@@ -167,6 +169,9 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(keepalive, /OnPong[\s\S]{0,300}!IsRunning\(\)/);
   assert.match(kadUdp, /ProcessPacketKad6[\s\S]{0,500}!thePrefs\.GetEseV9Experimental\(\)[\s\S]{0,100}ESE_CAP_KAD6/);
   assert.match(web, /SetEseV9Experimental\(bOn\)/);
+  assert.match(web, /sURL\.Left\(13\) == "\/api\/network\/"/);
+  assert.match(web, /\/api\/network\/connect[\s\S]{0,1800}WEBGUIIA_CONNECTTOSERVER/);
+  assert.match(web, /\/api\/network\/connect[\s\S]{0,2200}WEBGUIIA_KAD_START/);
 
   assert.match(packaging, /"\[UPnP\]"[\s\S]{0,80}"EnableUPnP=1"/);
   assert.match(packaging, /"\[WebServer\]"[\s\S]{0,120}"WebUseUPnP=0"/);
@@ -193,6 +198,11 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   const base = read(repoRoot, 'srchybrid', 'BaseClient.cpp');
   const prober = read(repoRoot, 'srchybrid', 'FirewallProberV6.cpp');
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const client = read(repoRoot, 'srchybrid', 'UpdownClient.h');
+  const clientUdp = read(repoRoot, 'srchybrid', 'ClientUDPSocket.cpp');
+  const utp = read(repoRoot, 'srchybrid', 'eMuleAI', 'UtpSocket.cpp');
+  const kadSearch = read(repoRoot, 'srchybrid', 'kademlia', 'kademlia', 'Search.cpp');
+  const kadUdp = read(repoRoot, 'srchybrid', 'kademlia', 'net', 'KademliaUDPListener.cpp');
   const channelApi = read(eseRoot, 'eSE-live', 'channel_api.js');
   const server = read(eseRoot, 'server.js');
 
@@ -203,6 +213,15 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   assert.match(prober, /first validated candidate wins/);
   assert.match(web, /InterlockedOr\(pEseCaps, \(LONG\)ESE_CAP_HOLEPUNCH_RDV\)/);
   assert.match(web, /InterlockedAnd\(pEseCaps, ~\(LONG\)ESE_CAP_HOLEPUNCH_RDV\)/);
+  assert.match(client, /SupportsEseHolePunchRdvTarget\(\)[\s\S]{0,120}SupportsReachPunch3\(\)/);
+  assert.match(kadSearch, /bPunch3[\s\S]{0,300}KAD_REACH_CAP_PUNCH_3W/);
+  assert.match(base, /SupportsEseHolePunchRdvTarget\(\)/);
+  assert.match(base, /InitiateKad3Rendezvous\([\s\S]{0,120}GetKadPort\(\), this\)/);
+  assert.match(kadUdp, /EseRememberHolePunchNonce\(uTargetIP, uTargetPort, uNonce, pExpectedClient, true\)/);
+  assert.match(kadUdp, /InitiateUtpConnect\([\s\S]{0,120}pExpectedClient, bViaRendezvous\)/);
+  assert.match(kadUdp, /EseFindAuthenticatedRdvPeer[\s\S]{0,500}HasPassedSecureIdent\(false\)/);
+  assert.match(clientUdp, /SetEseRdvTransport\(bViaRendezvous\)/);
+  assert.match(utp, /IsEseRdvTransport\(\)[\s\S]{0,400}m_dwReachConnPunch3/);
   assert.match(server, /port: PORT/);
   assert.match(channelApi, /localhost:\$\{dashboardPort\}\/live\/watch/);
   assert.doesNotMatch(channelApi, /localhost:8080\/live\/watch/);

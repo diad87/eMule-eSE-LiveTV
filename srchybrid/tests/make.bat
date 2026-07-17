@@ -25,8 +25,9 @@ if errorlevel 1 exit /b 1
 tests\build\test_liveratelimiter.exe
 if errorlevel 1 exit /b 1
 
-if not exist x64\Release\cryptlib.lib (echo ERROR: cryptlib.lib missing; build emule first & exit /b 2)
-cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /I.. /Fetests\build\test_holepunch_cookie.exe tests\test_holepunch_cookie.cpp x64\Release\cryptlib.lib
+set "CRYPTLIB=%ROOT%\..\cryptopp\x64\Output\Release\cryptlib.lib"
+if not exist "%CRYPTLIB%" (echo ERROR: cryptlib.lib missing; run the core gate or build emule first & exit /b 2)
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /I.. /Fetests\build\test_holepunch_cookie.exe tests\test_holepunch_cookie.cpp "%CRYPTLIB%"
 if errorlevel 1 exit /b 1
 tests\build\test_holepunch_cookie.exe
 if errorlevel 1 exit /b 1

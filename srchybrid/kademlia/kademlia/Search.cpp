@@ -810,6 +810,20 @@ void CSearch::StorePacket()
 				&& CKademlia::GetPrefs()->GetInternKadPort() != 0;
 			if (bPunch2)
 				uReachCaps |= KAD_REACH_CAP_PUNCH_2W;
+			// A source result exists before any TCP HELLO, so the reach vector
+			// must carry the target-side R.1 capability. Without this bit the
+			// downloader can never escalate punch2 -> punch3: the HELLO which
+			// previously supplied ESE_CAP_HOLEPUNCH_RDV only exists after a
+			// successful connection. Advertise only while the complete
+			// target-side protocol and its kill switches are live.
+			const bool bPunch3 = bPunch2
+				&& thePrefs.GetEseEd2kPunch3()
+				&& thePrefs.GetEseKad3Rendezvous()
+				&& (g_uEseCapsRuntime & ESE_CAP_HOLEPUNCH_RDV) != 0;
+			if (bPunch3)
+				uReachCaps |= KAD_REACH_CAP_PUNCH_3W;
+			if (bPunch3 && (g_uEseCapsRuntime & ESE_CAP_KAD_KEEPALIVE) != 0)
+				uReachCaps |= KAD_REACH_CAP_KEEPALIVE;
 			const bool bHasModernRoute = bPunch2 || bV6Inbound;
 			// A punch-capable source must let each indexer stamp the UDP port it
 			// actually observes. This stays correct with a buddy or open TCP and is

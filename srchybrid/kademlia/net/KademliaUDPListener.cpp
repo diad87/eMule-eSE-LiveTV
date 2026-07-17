@@ -102,6 +102,7 @@ struct SEsePendingHolePunch {
 	CUpDownClient* pExpectedClient; // compared against the live client list before dereference
 	uint32 uExpectedClientIP;
 	uint16 uExpectedClientTCPPort;
+	bool bViaRendezvous; // nonce was issued by R.1, not by the direct punch2 path
 };
 
 static CArray<SEsePendingHolePunch, SEsePendingHolePunch&> s_esePendingHolePunches;
@@ -140,7 +141,7 @@ static void EsePrunePendingHolePunches(DWORD now)
 }
 
 static void EseRememberHolePunchNonce(uint32 uIP, uint16 uUDPPort, uint32 uNonce,
-	CUpDownClient* pExpectedClient)
+	CUpDownClient* pExpectedClient, bool bViaRendezvous = false)
 {
 	CSingleLock lock(&s_eseHolePunchLock, TRUE);
 	const DWORD now = GetTickCount();
@@ -157,6 +158,7 @@ static void EseRememberHolePunchNonce(uint32 uIP, uint16 uUDPPort, uint32 uNonce
 	entry.uNonce = uNonce;
 	entry.dwCreated = now;
 	entry.pExpectedClient = pExpectedClient;
+	entry.bViaRendezvous = bViaRendezvous;
 	if (pExpectedClient != NULL) {
 		entry.uExpectedClientIP = pExpectedClient->GetConnectIP() != 0
 			? pExpectedClient->GetConnectIP() : pExpectedClient->GetIP();
@@ -180,10 +182,13 @@ static void EseRememberHolePunchNonce(uint32 uIP, uint16 uUDPPort, uint32 uNonce
 }
 
 static bool EseConsumeHolePunchNonce(uint32 uIP, uint32 uNonce,
-	const CUInt128& uResponderKadID, CUpDownClient** ppExpectedClient)
+	const CUInt128& uResponderKadID, CUpDownClient** ppExpectedClient,
+	bool* pbViaRendezvous)
 {
 	if (ppExpectedClient != NULL)
 		*ppExpectedClient = NULL;
+	if (pbViaRendezvous != NULL)
+		*pbViaRendezvous = false;
 	CSingleLock lock(&s_eseHolePunchLock, TRUE);
 	const DWORD now = GetTickCount();
 	EsePrunePendingHolePunches(now);
@@ -205,6 +210,8 @@ static bool EseConsumeHolePunchNonce(uint32 uIP, uint32 uNonce,
 			{
 				*ppExpectedClient = entry.pExpectedClient;
 			}
+			if (pbViaRendezvous != NULL)
+				*pbViaRendezvous = entry.bViaRendezvous;
 			s_esePendingHolePunches.RemoveAt(i);
 			return true;
 		}
@@ -3634,7 +3641,8 @@ void CKademliaUDPListener::Process_KADEMLIA3_PING_RES(const byte *pbyPacketData,
 // punch so the CHALLENGE/PROCEED from R can be matched, then sends the classic REQ.
 // The caller chose R (must advertise ESE_CAP_HOLEPUNCH_RDV); this is the entry point
 // the manual /api endpoint and the auto-selector (increment 3) call.
-void CKademliaUDPListener::InitiateKad3Rendezvous(uint32 uRdvIP, uint16 uRdvPort, uint32 uTargetIP, uint16 uTargetPort)
+void CKademliaUDPListener::InitiateKad3Rendezvous(uint32 uRdvIP, uint16 uRdvPort,
+	uint32 uTargetIP, uint16 uTargetPort, CUpDownClient* pExpectedClient)
 {
 	if (!EseHolePunchTransportReady() || !thePrefs.GetEseKad3Rendezvous()
 		|| uRdvIP == 0 || uRdvPort == 0 || uTargetIP == 0 || uTargetPort == 0)
@@ -3644,10 +3652,32 @@ void CKademliaUDPListener::InitiateKad3Rendezvous(uint32 uRdvIP, uint16 uRdvPort
 	uint32 uNonce;
 	EseHolePunchRandomBlock(reinterpret_cast<byte*>(&uNonce), sizeof(uNonce));
 	Kad3RememberRdv(uRdvIP, uRdvPort, uNonce, uTargetIP, uTargetPort);
-	EseRememberHolePunchNonce(uTargetIP, uTargetPort, uNonce, NULL);
+	// Preserve the eD2K source across the rendezvous exchange. The eventual
+	// direct ACK comes from B (not R) and must initiate uTP against this exact
+	// CUpDownClient. Remembering NULL made manual pinhole telemetry succeed
+	// while every organic eD2K punch3 stopped before the uTP SYN.
+	EseRememberHolePunchNonce(uTargetIP, uTargetPort, uNonce, pExpectedClient, true);
 	SendKad3HolepunchReq(uRdvIP, uRdvPort, uNonce, uTargetIP, uTargetPort);  // classic (no cookie yet)
 	CLiveDebugLog::Get().Append("KAD3", "RDV: initiating via R %S -> target %S",
 		(LPCWSTR)ipstr(htonl(uRdvIP)), (LPCWSTR)ipstr(htonl(uTargetIP)));
+}
+
+// R.1 signaling may legitimately involve a fork peer which is connected and
+// SecureIdent-verified but is not present in this node's Kad routing table.
+// Requiring a routing-table entry exclusively made the connected-peer selector
+// unusable in practice. Keep the fallback strict: exact observed IP+Kad port,
+// live TCP transport, negotiated R.1 capability and successful SecureIdent.
+static CUpDownClient* EseFindAuthenticatedRdvPeer(uint32 uIP, uint16 uUDPPort)
+{
+	if (theApp.clientlist == NULL || uIP == 0 || uUDPPort == 0)
+		return NULL;
+	CUpDownClient* pPeer = theApp.clientlist->FindClientByIP_KadPort(
+		htonl(uIP), uUDPPort);
+	if (pPeer == NULL || pPeer->socket == NULL || !pPeer->socket->IsConnected()
+		|| !pPeer->SupportsEseHolePunchRdv()
+		|| !pPeer->HasPassedSecureIdent(false))
+		return NULL;
+	return pPeer;
 }
 
 // R role: A asks us to help it reach B. ANTI-REFLECTION: we never forward to B until
@@ -3673,7 +3703,9 @@ void CKademliaUDPListener::Process_KADEMLIA3_HOLEPUNCH_REQ(const byte *pbyPacket
 	CContact* pTargetContact = NULL;
 	if (CKademlia::GetRoutingZone() != NULL)
 		pTargetContact = CKademlia::GetRoutingZone()->GetContact(uTargetIP, uTargetPort, false);
-	if (pTargetContact == NULL || !pTargetContact->IsIpVerified()) {
+	const bool bTargetAuthorized = (pTargetContact != NULL && pTargetContact->IsIpVerified())
+		|| EseFindAuthenticatedRdvPeer(uTargetIP, uTargetPort) != NULL;
+	if (!bTargetAuthorized) {
 		DebugLogWarning(_T("R.1: refusing rendezvous to unknown/unverified target %s:%u"),
 			(LPCTSTR)ipstr(htonl(uTargetIP)), (unsigned)uTargetPort);
 		return;
@@ -3721,7 +3753,9 @@ void CKademliaUDPListener::Process_KADEMLIA3_HOLEPUNCH_FWD(const byte *pbyPacket
 	// table — bounds who can make us punch an arbitrary origin.
 	CContact* pRendezvous = CKademlia::GetRoutingZone() != NULL
 		? CKademlia::GetRoutingZone()->GetContact(uIP, uUDPPort, false) : NULL;
-	if (pRendezvous == NULL || !pRendezvous->IsIpVerified()) {
+	const bool bRendezvousAuthorized = (pRendezvous != NULL && pRendezvous->IsIpVerified())
+		|| EseFindAuthenticatedRdvPeer(uIP, uUDPPort) != NULL;
+	if (!bRendezvousAuthorized) {
 		DebugLogWarning(_T("R.1: HOLEPUNCH_FWD from UNKNOWN rendezvous %s — ignored"),
 			(LPCTSTR)ipstr(htonl(uIP)));
 		return;
@@ -3825,7 +3859,9 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, 
 	}
 
 	CUpDownClient* pExpectedClient = NULL;
-	if (!EseConsumeHolePunchNonce(uIP, uNonce, uResponderKadID, &pExpectedClient)) {
+	bool bViaRendezvous = false;
+	if (!EseConsumeHolePunchNonce(uIP, uNonce, uResponderKadID,
+		&pExpectedClient, &bViaRendezvous)) {
 		DebugLogWarning(_T("eSE: Dropping unsolicited HOLEPUNCH_ACK from %s:%u nonce=0x%08X"),
 			(LPCTSTR)ipstr(htonl(uIP)), uResponderUDPPort, uNonce);
 		return;
@@ -3851,7 +3887,8 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, 
 		// The REQ→ACK exchange punched NAT pinholes on both sides.
 		// The INITIATOR (us) must send the uTP SYN to complete the connection.
 		// The RESPONDER is passively waiting via on_utp_accept.
-		if (!theApp.clientudp->InitiateUtpConnect(uIP, uUDPPort, pExpectedClient))
+		if (!theApp.clientudp->InitiateUtpConnect(
+			uIP, uUDPPort, pExpectedClient, bViaRendezvous))
 			DebugLogWarning(_T("eSE: HOLEPUNCH_ACK opened the pinhole but no matching eD2K client was available for uTP"));
 	}
 }

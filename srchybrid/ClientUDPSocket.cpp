@@ -853,7 +853,8 @@ void CClientUDPSocket::SeedNatTraversalExpectation(CUpDownClient* /*pClient*/, u
 		(LPCTSTR)ipstr(htonl(dwIP)), nPort);
 }
 
-bool CClientUDPSocket::InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort, CUpDownClient* pExpectedClient)
+bool CClientUDPSocket::InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort,
+	CUpDownClient* pExpectedClient, bool bViaRendezvous)
 {
 	// Called from Process_ESE_HOLEPUNCH_ACK on the INITIATOR side.
 	// After the REQ→ACK handshake punched NAT pinholes on both sides,
@@ -922,6 +923,10 @@ bool CClientUDPSocket::InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort, CUpDownC
 		pClient->socket = NULL;
 		return false;
 	}
+	// Bind the transport attribution to this socket, not to the long-lived
+	// client object. A failed R.1 dial must never make a later direct uTP
+	// connection increment the punch3 counter.
+	utpLayer->SetEseRdvTransport(bViaRendezvous);
 
 	// 6. Override the peer's connect port to use the UDP port (for uTP)
 	// The Kad port is what we hole-punched, not the TCP port.

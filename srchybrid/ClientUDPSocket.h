@@ -47,7 +47,8 @@ public:
 	bool IsUtpReady() const { return m_port != 0 && m_pUtpContext != NULL; }
 	void SendUtpPacket(const byte* pData, size_t nDataLen, const sockaddr* to, int tolen);
 	void SeedNatTraversalExpectation(CUpDownClient* pClient, uint32 dwIP, uint16 nPort);
-	bool InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort, CUpDownClient* pExpectedClient);
+	bool InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort,
+		CUpDownClient* pExpectedClient, bool bViaRendezvous = false);
 
 
 

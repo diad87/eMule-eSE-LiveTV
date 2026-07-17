@@ -61,6 +61,8 @@ class CUtpSocket : public CAsyncSocketExLayer
 	virtual bool IsUtpLayer() { return true; }
 	void Setup(utp_socket* Socket, bool bAcceptedSocket = false);
 	void Destroy();
+	void SetEseRdvTransport(bool bViaRendezvous) { m_bEseRdvTransport = bViaRendezvous; }
+	bool IsEseRdvTransport() const { return m_bEseRdvTransport; }
 	AsyncSocketExState GetState() const { return GetLayerState(); }
 	//Attributes
 	BOOL GetSockOpt(int nOptionName, void* lpOptionValue, int* lpOptionLen);
@@ -81,6 +83,7 @@ class CUtpSocket : public CAsyncSocketExLayer
 	mutable CCriticalSection m_csReadBuffer;
 	mutable CCriticalSection m_csWriteBuffer;
 	bool				m_bConnectNotified;
+	bool				m_bEseRdvTransport;
 	CUpDownClient*		m_pOwnerClient;
 	uint8				m_uZeroWriteBurst;
 	bool				m_bAppSendBlocked;

@@ -13,6 +13,8 @@
 #include "../ClientUDPSocket.h"
 #include "../ListenSocket.h"
 #include "../Log.h"
+#include "../LiveDebugLog.h"
+#include "../Statistics.h"
 #include "../UpdownClient.h"
 #include "../OtherFunctions.h"
 #include "../Opcodes.h"
@@ -419,6 +421,16 @@ static uint64 on_utp_state_change(utp_callback_arguments* a)
 			AddDebugLogLine(DLP_LOW, false, _T("[NAT-T][uTP] CONNECT state"));
 		if (natClient) {
 			natClient->SetUtpWritable(false);
+			if (pSocket->IsEseRdvTransport()) {
+				// The eD2K path reached this transport through R.1. Record the
+				// connection only now, when libutp confirms the session after
+				// consuming the ACK for an R.1-tagged nonce. A KAD3 PROCEED or
+				// an unrelated direct punch2 proves no punch3 transport.
+				InterlockedIncrement(&CStatistics::m_dwReachConnPunch3);
+				CLiveDebugLog::Get().Append("KAD3",
+					"eD2K PUNCH3 CONNECTED %S",
+					(LPCWSTR)natClient->DbgGetClientInfo());
+			}
 			// A.3 Sprint 1: hole-punch succeeded — reset the per-peer attempt
 			// counter so the next time we want to dial we start with the fast
 			// 5 s cooldown (instead of stuck at 30 s back-off).
@@ -1219,6 +1231,7 @@ CUtpSocket::CUtpSocket()
 	m_bBufferGrown = false;
 	
 	m_bConnectNotified = false;
+	m_bEseRdvTransport = false;
 	m_pOwnerClient = NULL;
 	m_uZeroWriteBurst = 0;
 	m_bAppSendBlocked = false;

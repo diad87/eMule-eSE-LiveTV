@@ -154,7 +154,7 @@ bool CUpDownClient::ShouldRetryEseNatTraversal(DWORD now) const
 	// to acquire a real rendezvous.  This is what lets a cold source reach
 	// punch3 without turning the client-list timeout into an infinite spin.
 	return thePrefs.GetEseEd2kPunch3() && thePrefs.GetEseKad3Rendezvous()
-		&& SupportsEseHolePunchRdv() && !m_bNatRdvTried
+		&& SupportsEseHolePunchRdvTarget() && !m_bNatRdvTried
 		&& m_uNatRdvLookupAttempts < 6
 		&& (m_uLastNatRendezvousTick == 0
 			|| now - m_uLastNatRendezvousTick >= SEC2MS(5));
@@ -1596,7 +1596,8 @@ static bool EsePickRdvForDownload(uint32 uTargetIpHost, uint32& uOutRipHost, uin
 	theApp.clientlist->GetConnectedSnapshot(cands, 10, false);
 	for (size_t i = 0; i < cands.size(); ++i) {
 		CUpDownClient* c = cands[i];
-		if (c == NULL || !c->SupportsEseHolePunchRdv() || c->GetKadPort() == 0)
+		if (c == NULL || !c->SupportsEseHolePunchRdv()
+			|| !c->HasPassedSecureIdent(false) || c->GetKadPort() == 0)
 			continue;
 		const uint32 uCipHost = ntohl(c->GetIP());          // GetIP() is NET order
 		if (uCipHost == 0 || uCipHost == uTargetIpHost || uCipHost == uMyIpHost)
@@ -1872,7 +1873,7 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 			// per-destination external port. Reuses the R.1 machinery validated for Live. One shot
 			// per peer (m_bNatRdvTried), reset on a successful uTP accept.
 			if (thePrefs.GetEseEd2kPunch3() && thePrefs.GetEseKad3Rendezvous()
-				&& !m_bNatRdvTried && SupportsEseHolePunchRdv()
+				&& !m_bNatRdvTried && SupportsEseHolePunchRdvTarget()
 				&& Kademlia::CKademlia::GetUDPListener() != NULL) {
 				const uint32 uTargetIpHost = ntohl(GetConnectIP());
 				uint32 uRipHost = 0; uint16 uRport = 0;
@@ -1882,7 +1883,8 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 					// can still escalate once a suitable R appears (else a transient empty peer-pool
 					// would lock this peer out of punch3 forever — the reset needs a uTP accept).
 					m_bNatRdvTried = true;
-					Kademlia::CKademlia::GetUDPListener()->InitiateKad3Rendezvous(uRipHost, uRport, uTargetIpHost, GetKadPort());
+					Kademlia::CKademlia::GetUDPListener()->InitiateKad3Rendezvous(
+						uRipHost, uRport, uTargetIpHost, GetKadPort(), this);
 					DebugLog(_T("eSE: eD2K punch2->punch3 for %s:%u via rendezvous %s"),
 						(LPCTSTR)ipstr(GetConnectIP()), GetKadPort(), (LPCTSTR)ipstr(htonl(uRipHost)));
 					CLiveDebugLog::Get().Append("HOLE", "eD2K PUNCH2->PUNCH3 %S:%u via R %S",

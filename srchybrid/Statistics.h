@@ -175,7 +175,7 @@ public:
 	static volatile DWORD	m_dwKad3RdvReqRecv;			// R: REQ received from A
 	static volatile DWORD	m_dwKad3RdvChallengeSent;	// R: CHALLENGE issued to A (anti-reflection)
 	static volatile DWORD	m_dwKad3RdvFwd;				// R: FWD relayed to B (after A proved return-routability)
-	static volatile DWORD	m_dwKad3RdvSuccess;			// hole opened (ACK received)
+	static volatile DWORD	m_dwKad3RdvSuccess;			// A received PROCEED: rendezvous signaling reached punch stage
 	// R.3 relay floor (buddy relay) telemetry — incremented via InterlockedIncrement.
 	static volatile DWORD	m_dwRelayReqRecv;			// buddy: OP_LIVE_RELAY_REQ received
 	static volatile DWORD	m_dwRelayAccepted;			// buddy: relay sessions accepted (policy passed)

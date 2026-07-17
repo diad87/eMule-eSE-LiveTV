@@ -189,6 +189,14 @@ public:
 	uint16          GetReachCaps() const                  { return m_uReachCaps; }
 	bool            SupportsReachV6Inbound() const        { return (m_uReachCaps & 0x0004) != 0; }
 	bool            SupportsReachPunch2() const           { return (m_uReachCaps & 0x0008) != 0; }
+	bool            SupportsReachPunch3() const           { return (m_uReachCaps & 0x0010) != 0; }
+	bool            SupportsReachKeepalive() const        { return (m_uReachCaps & 0x0020) != 0; }
+	// A cold Kad source has not exchanged HELLO yet. Its strictly decoded
+	// reach vector is therefore the only way to learn that it accepts R.1
+	// rendezvous signaling before the connection which R.1 is meant to create.
+	bool            SupportsEseHolePunchRdvTarget() const {
+		return SupportsEseHolePunchRdv() || SupportsReachPunch3();
+	}
 	void            MergeReachabilityFrom(const CUpDownClient& other);
 	// v8.x Phase 1 — peer's 32-byte Ed25519 node identity from TAG_ESE_NODE_PUB (0x6D).
 	// Valid only when m_bEseNodePubSet; pinned later for the CREATE/CREATED v2 handshake.

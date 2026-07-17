@@ -105,7 +105,8 @@ namespace Kademlia
 		void SendKad3HolepunchFwd(uint32 uIP_B, uint16 uPort_B, uint32 uNonce, uint32 uOriginIP, uint16 uOriginPort);
 		void SendKad3HolepunchProceed(uint32 uIP_A, uint16 uPort_A, uint32 uNonce);
 		// R.1 A-side initiator: begin a 3-way rendezvous to reach (uTargetIP) via R.
-		void InitiateKad3Rendezvous(uint32 uRdvIP, uint16 uRdvPort, uint32 uTargetIP, uint16 uTargetPort);
+		void InitiateKad3Rendezvous(uint32 uRdvIP, uint16 uRdvPort, uint32 uTargetIP,
+			uint16 uTargetPort, CUpDownClient* pExpectedClient = NULL);
 		// R.2 keepalive: minimal KADEMLIA3_PING_REQ to a supernode (holds NAT conntrack open).
 		void SendKad3PingReq(uint32 uIP, uint16 uUDPPort, const CUInt128& nonce);
 		// R.2 keepalive: reply a KADEMLIA3_PING_RES (PONG) to a peer that pinged us.

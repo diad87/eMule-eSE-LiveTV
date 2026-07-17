@@ -626,23 +626,17 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
 
 uint32_t CLiveTunnel::BuildTestCircuit(CUpDownClient* clientHint)
 {
-    // v0.71 P3.6 — solo testing helper. Picks a peer (provided or first
-    // available from ClientList) and starts a single-hop circuit build.
-    // If the peer doesn't speak this fork, the CELL_CREATE drops silently
-    // on their side and the circuit times out after rotation — but the
-    // user has visible proof in the panel that the SEND path is wired.
+    // Solo testing helper. A circuit is meaningful only through a peer that
+    // advertised ESE_CAP_PRIVACY_TUNNELING in its HELLO. Do not
+    // fall back to a legacy peer: that used to return ok=true and emit a
+    // CREATE cell that could never complete.
     std::vector<CUpDownClient*> cands;
     if (clientHint) {
-        cands.push_back(clientHint);
+        if (clientHint->socket && clientHint->socket->IsConnected()
+            && clientHint->SupportsEsePrivacyTunneling())
+            cands.push_back(clientHint);
     } else if (theApp.clientlist) {
-        // v0.71 P3.5 — PREFER peers that advertised ESE_CAP_PRIVACY_TUNNELING.
-        // If we find any, use only those (handshake will actually succeed).
-        // Fallback: any connected peer (test path still works — circuit
-        // goes Pending until ~6 s timeout, demonstrates the send pipeline).
         theApp.clientlist->GetConnectedSnapshot(cands, 3, /*tunnelOnly=*/true);
-        if (cands.empty()) {
-            theApp.clientlist->GetConnectedSnapshot(cands, 3, /*tunnelOnly=*/false);
-        }
     }
     if (cands.empty()) return 0;
 

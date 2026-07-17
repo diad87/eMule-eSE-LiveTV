@@ -19,7 +19,14 @@ if ($AllowDirty) { $preflightArgs.AllowDirty = $true }
 # matching notes filename here so alpha, beta and RC packages cannot silently
 # copy the notes from a different prerelease.
 $ReleaseTag -match '^v0\.70b-eSE(?<version>.+)$' | Out-Null
-$releaseNotesRelativePath = "docs\RELEASE_NOTES_v$($Matches.version).md"
+$releaseVersion = $Matches.version
+$releaseNotesRelativePath = "docs\RELEASE_NOTES_v$releaseVersion.md"
+$testerNick = switch -Regex ($releaseVersion) {
+    '-alpha\.' { 'eSE-Alpha-Tester'; break }
+    '-beta\.'  { 'eSE-Beta-Tester'; break }
+    '-rc\.'    { 'eSE-RC-Tester'; break }
+    default    { 'eSE-Tester' }
+}
 
 $distRoot = Join-Path $RepoRoot 'dist'
 $releaseRoot = Join-Path $distRoot $ReleaseTag
@@ -104,7 +111,7 @@ if ($nodesBytes.Length -lt 100 -or $nodesBytes.Length -gt 5MB) { throw 'Pinned n
 
 @(
     '[eMule]',
-    'Nick=eSE-Alpha-Tester',
+    "Nick=$testerNick",
     'Port=4662',
     'UDPPort=4672',
     'Autoconnect=1',

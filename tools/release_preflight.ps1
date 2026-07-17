@@ -43,6 +43,10 @@ if ($packageVersion -ne $tagVersion) {
 }
 
 $packageScript = Get-Content (Join-Path $RepoRoot 'build_package.ps1') -Raw
+if ($packageScript -notmatch [regex]::Escape('"Nick=$testerNick"') -or
+    $packageScript -notmatch [regex]::Escape("'eSE-Beta-Tester'")) {
+    Fail 'package tester nickname is not derived from the release channel'
+}
 foreach ($requiredDefault in @(
     'EseNetLabConsent=0',
     'EseNetLabEnabled=0',

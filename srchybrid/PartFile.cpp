@@ -4198,15 +4198,28 @@ void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH, bool bSyncHash)
 			if (uIncrease >= uFreeDiskSpace)
 				AfxThrowFileException(CFileException::diskFull, 0, m_hpartfile.GetFileName());
 		}
-		// Ensure file is big enough for asynchronous writes
+		// Ensure file is big enough for asynchronous writes. Extending a large
+		// normal part file may zero/allocate metadata for tens of milliseconds,
+		// so serialize that operation with the writes instead of stalling the GUI.
+		CPartFileWriteThread *pThread = theApp.m_pPartFileWriteThread;
 		if (newsize) {
-			const DWORD dwAllocT0 = ::GetTickCount(); // eSE H0
-			m_hpartfile.SetLength(newsize); // may throw 'diskFull'
-			dwAllocMs = ::GetTickCount() - dwAllocT0; // eSE H0
+			if (pThread && pThread->IsRunning()) {
+				pThread->m_lockFlushList.Lock();
+				pThread->m_FlushList.AddHead(ToWrite{
+					this,
+					new PartFileBufferedData{ newsize, newsize },
+					PART_WRITE_SET_LENGTH
+				});
+				::InterlockedIncrement(&m_iWrites);
+				pThread->m_lockFlushList.Unlock();
+			} else {
+				const DWORD dwAllocT0 = ::GetTickCount(); // eSE H0
+				m_hpartfile.SetLength(newsize); // may throw 'diskFull'
+				dwAllocMs = ::GetTickCount() - dwAllocT0; // eSE H0
+			}
 		}
 
 		//pass data to the writing thread
-		CPartFileWriteThread *pThread = theApp.m_pPartFileWriteThread;
 		if (pThread && pThread->IsRunning()) {
 			bool bLocked = false;
 			for (POSITION pos = m_BufferedData_list.GetHeadPosition(); pos != NULL;) {

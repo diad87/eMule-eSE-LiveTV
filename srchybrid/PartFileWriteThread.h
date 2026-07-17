@@ -18,10 +18,17 @@
 
 struct PartFileBufferedData;
 
+enum EPartFileWriteAction
+{
+	PART_WRITE_BUFFER = 0,
+	PART_WRITE_SET_LENGTH
+};
+
 struct ToWrite
 {
 	CPartFile *pFile;
 	PartFileBufferedData *pBuffer;
+	EPartFileWriteAction action = PART_WRITE_BUFFER;
 };
 
 struct OverlappedWrite_Struct

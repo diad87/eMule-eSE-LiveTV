@@ -162,6 +162,30 @@ void CPartFileWriteThread::WriteBuffers()
 		ASSERT(pBuffer->end >= pBuffer->start && (pBuffer->data || pBuffer->end == pBuffer->start)); //verifies allocation requests too
 
 		CPartFile *pFile = item.pFile;
+		if (item.action == PART_WRITE_SET_LENGTH) {
+			DWORD dwError = ERROR_SUCCESS;
+			if (AddFile(pFile)) {
+				LARGE_INTEGER currentLength = {};
+				LARGE_INTEGER targetLength = {};
+				targetLength.QuadPart = (LONGLONG)pBuffer->start;
+				if (!::GetFileSizeEx(pFile->m_hWrite, &currentLength))
+					dwError = ::GetLastError();
+				else if (targetLength.QuadPart > currentLength.QuadPart
+					&& (!::SetFilePointerEx(pFile->m_hWrite, targetLength, NULL, FILE_BEGIN)
+						|| !::SetEndOfFile(pFile->m_hWrite)))
+					dwError = ::GetLastError();
+			} else
+				dwError = ERROR_OPEN_FAILED;
+
+			if (dwError != ERROR_SUCCESS)
+				theApp.QueueDebugLogLineEx(LOG_WARNING, _T("Part file async SetLength(%I64u) failed: %s"),
+					pBuffer->start, (LPCTSTR)GetErrorMessage(dwError, 1));
+			delete pBuffer;
+			if (pFile)
+				::InterlockedDecrement(&pFile->m_iWrites);
+			continue;
+		}
+
 		if (AddFile(pFile)) {
 			//initiate write
 			OverlappedWrite_Struct *pOvWrite = new OverlappedWrite_Struct;

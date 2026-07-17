@@ -143,6 +143,8 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   const relay = read(repoRoot, 'srchybrid', 'RelayClient.cpp');
   const kadUdp = read(repoRoot, 'srchybrid', 'kademlia', 'net', 'KademliaUDPListener.cpp');
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const partFile = read(repoRoot, 'srchybrid', 'PartFile.cpp');
+  const partWriteThread = read(repoRoot, 'srchybrid', 'PartFileWriteThread.cpp');
   const packaging = read(repoRoot, 'build_package.ps1');
 
   assert.match(prefs, /EseV9Experimental"\), false, _T\("eSE"\)/);
@@ -211,6 +213,9 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(web, /WebFileOperationRequest \*request[\s\S]{0,2200}WEBGUIIA_FILE_OPERATION/);
   assert.doesNotMatch(web, /WithFileByID\(FileHash,[\s\S]{0,900}DeletePartFile\(\)/);
   assert.match(dlg, /WEBGUIIA_FILE_OPERATION[\s\S]{0,500}WithFileByID[\s\S]{0,650}WEBFILEOP_CANCEL[\s\S]{0,120}DeletePartFile\(\)/);
+  assert.match(partFile, /m_FlushList\.AddHead\(ToWrite\{[\s\S]{0,220}PART_WRITE_SET_LENGTH/);
+  assert.doesNotMatch(partFile, /if \(newsize\) \{\s*const DWORD dwAllocT0/);
+  assert.match(partWriteThread, /PART_WRITE_SET_LENGTH[\s\S]{0,1000}GetFileSizeEx[\s\S]{0,500}SetEndOfFile/);
 
   assert.match(packaging, /"\[UPnP\]"[\s\S]{0,80}"EnableUPnP=1"/);
   assert.match(packaging, /"\[WebServer\]"[\s\S]{0,120}"WebUseUPnP=0"/);

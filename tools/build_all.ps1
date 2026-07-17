@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ReleaseTag,
     [string[]]$Skip = @(),
     [string]$FfmpegPath = '',
+    [ValidateRange(0, 64)][int]$MaxCpuCount = 0,
     [switch]$AllowDirty,
     [switch]$DryRun
 )
@@ -47,11 +48,13 @@ function Find-MSBuild {
 
 $msbuild = Find-MSBuild
 if (-not $msbuild -and -not $DryRun) { throw 'MSBuild not found (Visual Studio 2022 C++ workload is required).' }
+$msbuildParallelArg = if ($MaxCpuCount -gt 0) { "/m:$MaxCpuCount" } else { '/m' }
 $env:ESE_RELEASE_TAG = $ReleaseTag
 
 Header "eMule eSE $ReleaseTag"
 Write-Host "Repo:      $RepoRoot"
 Write-Host "MSBuild:   $msbuild"
+Write-Host "MSBuild parallelism: $msbuildParallelArg"
 Write-Host "Skip:      $($Skip -join ', ')"
 if ($AllowDirty) { Write-Host 'WARNING: dirty-worktree development mode' -ForegroundColor Yellow }
 
@@ -81,7 +84,7 @@ Stage 'emule' {
     $log = Join-Path $logDir "emule-$stamp.log"
     & $msbuild (Join-Path $RepoRoot 'srchybrid\emule.sln') /t:Rebuild `
         /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 `
-        /m /v:minimal /nologo /fl /flp:"LogFile=$log;Verbosity=normal"
+        $msbuildParallelArg /v:minimal /nologo /fl /flp:"LogFile=$log;Verbosity=normal"
     if ($LASTEXITCODE -ne 0) { throw "emule build failed; see $log" }
     if (-not (Test-Path (Join-Path $RepoRoot 'srchybrid\x64\Release\emule.exe'))) { throw 'emule.exe was not produced' }
 }
@@ -124,7 +127,7 @@ Stage 'langs' {
         # project delete the previous project's .res file; Build is the safe
         # deterministic operation once the source tree is clean.
         & $msbuild $project.FullName /t:Build /p:Configuration=Dynamic /p:Platform=x64 `
-            /p:PlatformToolset=v143 /m /v:quiet /nologo /fl /flp:"LogFile=$log;ErrorsOnly"
+            /p:PlatformToolset=v143 $msbuildParallelArg /v:quiet /nologo /fl /flp:"LogFile=$log;ErrorsOnly"
         if ($LASTEXITCODE -ne 0) { throw "language build failed: $($project.Name); see $log" }
     }
     $dlls = @(Get-ChildItem (Join-Path $RepoRoot 'srchybrid\x64\lang\*.dll') -ErrorAction SilentlyContinue)

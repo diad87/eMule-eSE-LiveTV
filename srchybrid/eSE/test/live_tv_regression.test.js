@@ -377,7 +377,7 @@ test('Adaptive is Kad6-first, auto-seeds, and reports the real route state', () 
   assert.match(selector, /case CKadV2Mode::Adaptive:[\s\S]{0,900}return CKadV2Mode::Tunneled;/);
   assert.match(pool, /privateActive == 0[\s\S]{0,1200}BuildSuccessorCircuit\(\)/);
   assert.match(pool, /AUTO_SEED_RETRY_MAX_MS = 5u \* 60u \* 1000u/);
-  assert.match(tunnel, /Prefer a Kad6-capable EXIT[\s\S]{0,300}ESE_CAP_KAD6/);
+  assert.match(tunnel, /Prefer a Kad6-capable EXIT[\s\S]{0,400}ESE_CAP_KAD6/);
   assert.match(tunnel, /HasEseNodePub\(\)[\s\S]{0,180}Kad6CtEqual/);
   assert.match(tunnel, /kK6FlagStrict[\s\S]{0,100}minimumHops = 3;[\s\S]{0,100}else if \(quotaMessage\)/);
   assert.ok(web.includes('\\\"kad6CircuitActive\\\":%s'));

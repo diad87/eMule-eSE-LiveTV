@@ -248,7 +248,9 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   assert.match(prober, /uni->DadState != IpDadStatePreferred/);
   assert.match(prober, /uni->SuffixOrigin == IpSuffixOriginRandom/);
   assert.match(prober, /first validated candidate wins/);
-  assert.match(web, /SetEseNetLabEnabled\(false\)[\s\S]{0,420}RequestStop\(\)/);
+  // Leave enough room for CRLF checkouts while keeping both operations in the
+  // same compact kill-switch branch.
+  assert.match(web, /SetEseNetLabEnabled\(false\)[\s\S]{0,480}RequestStop\(\)/);
   assert.match(web, /capability_advertised/);
   assert.match(client, /SupportsEseHolePunchRdvTarget\(\)[\s\S]{0,120}SupportsReachPunch3\(\)/);
   assert.match(kadSearch, /bPunch3[\s\S]{0,300}KAD_REACH_CAP_PUNCH_3W/);

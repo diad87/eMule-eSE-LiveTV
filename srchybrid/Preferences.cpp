@@ -3131,18 +3131,20 @@ CString CPreferences::GetDefaultDirectory(EDefaultDirectory eDirectory, bool bCr
 			rkEMuleRegKey.QueryDWORDValue(_T("UsePublicUserDirectories"), nRegistrySetting);
 			rkEMuleRegKey.Close();
 		}
-		// LiveTV --selftest isolation: a portable test bundle with its own
+		// LiveTV portable isolation: a bundle with its own
 		// config/preferences.ini must never inherit the machine-wide directory
 		// mode and overwrite the user's normal ports, user hash or Kad state.
 		// Command-line parsing happens later in CemuleApp::InitInstance, so detect
-		// this one exact flag here while the directory table is being initialized.
-		bool bPortableSelfTest = false;
-		for (int arg = 1; arg < __argc && !bPortableSelfTest; ++arg) {
+		// --portable and --selftest here while the directory table is initialized.
+		bool bPortableCommandLine = false;
+		for (int arg = 1; arg < __argc && !bPortableCommandLine; ++arg) {
 			LPCTSTR value = __targv[arg];
 			while (*value == _T('-') || *value == _T('/')) ++value;
-			bPortableSelfTest = (_tcsicmp(value, _T("selftest")) == 0);
+			bPortableCommandLine =
+				(_tcsicmp(value, _T("portable")) == 0)
+				|| (_tcsicmp(value, _T("selftest")) == 0);
 		}
-		if (bPortableSelfTest && bConfigAvailableExecutable)
+		if (bPortableCommandLine && bConfigAvailableExecutable)
 			nRegistrySetting = 2; // executable-directory mode for this process only
 		if (nRegistrySetting > 2)
 			nRegistrySetting = _UI32_MAX;

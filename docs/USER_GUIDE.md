@@ -220,6 +220,7 @@ These are for testing only and apply to `emule.exe` when launched from a console
 | `--tcp-port=N --udp-port=N` | Override ports (needed for multi-instance same-host). |
 | `--metrics-port=N` | Bind `/api/live/metrics` on a separate port. |
 | `--selftest` | Start a test-pattern broadcast, wait for three real HLS chunks, and verify signed V2 ingest plus duplicate/tamper rejection in an isolated local viewer. Returns a non-zero exit code on failure; it is not a multi-machine/NAT test. |
+| `--portable` | Force this process to use the extracted `config` directory even when Windows has a directory-mode setting from another eMule installation. |
 | `--ignoreinstances` | Skip the single-instance mutex check. |
 
 ---

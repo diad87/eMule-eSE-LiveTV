@@ -22,6 +22,8 @@ los gates bloqueantes de `V9_RELEASE_MASTER_CHECKLIST.md`.
   emisiones reales para pruebas limitadas con otros participantes de la beta.
 - Paquete reproducible con FFmpeg/ffprobe fijados por SHA-256, registro de protocolo,
   manifiesto por fichero y checksum externo del ZIP.
+- `emule.exe --portable` permite probar el ZIP con su propio perfil sin reutilizar
+  la configuración de otra instalación de eMule en el mismo Windows.
 
 Si una ruta BASE no supera su gate antes del tag, se demota explícitamente a LAB/OFF;
 no se publica parcialmente ni se debilita el criterio de aceptación.

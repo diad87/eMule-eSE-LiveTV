@@ -488,6 +488,7 @@ test('--selftest verifies signed chunk ingest and returns failure to the caller'
   assert.match(manager, /tampered\.back\(\) \^= 0x01/);
   assert.match(manager, /m_bSuppressHlsOutput = true/);
   assert.match(manager, /Selftest loopback PASS/);
-  assert.match(preferences, /bPortableSelfTest && bConfigAvailableExecutable/);
+  assert.match(preferences, /bPortableCommandLine && bConfigAvailableExecutable/);
+  assert.match(preferences, /_tcsicmp\(value, _T\("portable"\)\)/);
   assert.match(preferences, /nRegistrySetting = 2/);
 });

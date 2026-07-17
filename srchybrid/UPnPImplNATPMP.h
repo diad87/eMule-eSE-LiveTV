@@ -56,6 +56,14 @@ protected:
     void DeletePorts(bool bSkipLock);
 
 private:
+    enum EReceiveResult
+    {
+        RECEIVE_TIMEOUT,
+        RECEIVE_SUCCESS,
+        RECEIVE_REJECTED,
+        RECEIVE_ABORTED
+    };
+
     // NAT-PMP protocol constants (RFC 6886)
     static const uint16 NATPMP_PORT = 5351;
     static const uint8  NATPMP_VERSION = 0;
@@ -79,23 +87,28 @@ private:
     static uint32 GetDefaultGateway();
     bool SendMapRequest(SOCKET sock, uint32 gatewayIP, uint16 nPrivatePort,
         uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime);
-    bool ReceiveMapResponse(SOCKET sock, uint32 gatewayIP, uint16 nPrivatePort,
-        bool bTCP, natmap::NatPmpMapResponse &response);
+    EReceiveResult ReceiveMapResponse(SOCKET sock, uint32 gatewayIP,
+        uint16 nPrivatePort, bool bTCP, bool bDeletion, DWORD nTimeoutMs,
+        natmap::NatPmpMapResponse &response);
     bool SendExternalAddrRequest(SOCKET sock, uint32 gatewayIP);
-    bool ReceiveExternalAddrResponse(SOCKET sock, uint32 gatewayIP,
-        uint32 &nExternalIP, uint32 &nEpoch);
+    EReceiveResult ReceiveExternalAddrResponse(SOCKET sock, uint32 gatewayIP,
+        DWORD nTimeoutMs, uint32 &nExternalIP, uint32 &nEpoch);
+    bool QueryExternalAddress(uint32 gatewayIP, uint32 &nExternalIP,
+        uint32 &nEpoch);
 
     bool MapPort(uint32 gatewayIP, uint16 nPrivatePort,
         uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime,
         natmap::NatPmpMapResponse &response);
     bool UnmapPort(uint32 gatewayIP, uint16 nPort, bool bTCP);
 
-    void StartThread();
+    bool StartThread();
+    void ReleaseFinishedThread();
 
     static CMutex m_mutBusy;
 
     uint32 m_dwGatewayIP;
-    HANDLE m_hThreadHandle;
+    uint32 m_dwOldGatewayIP;
+    CStartDiscoveryThread *m_pThread;
 
     bool m_bSucceededOnce;
     volatile bool m_bAbortDiscovery;

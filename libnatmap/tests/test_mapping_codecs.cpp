@@ -49,6 +49,16 @@ void TestNatPmpVectors() {
         NatPmpTransport::Udp, 4662, decoded) == NatPmpDecodeStatus::BadOpcode);
     CHECK(DecodeNatPmpMapResponse(response.data(), response.size(),
         NatPmpTransport::Tcp, 4672, decoded) == NatPmpDecodeStatus::WrongInternalPort);
+    Put16(response.data() + 2, 4);
+    Put16(response.data() + 10, 0);
+    Put32(response.data() + 12, 0);
+    CHECK(DecodeNatPmpMapResponse(response.data(), response.size(),
+        NatPmpTransport::Tcp, 4662, decoded) == NatPmpDecodeStatus::Ok);
+    CHECK(decoded.result_code == 4 && decoded.external_port == 0
+        && decoded.lifetime_seconds == 0);
+    CHECK(NatPmpEpochAppearsReset(100, 97));
+    CHECK(!NatPmpEpochAppearsReset(100, 98));
+    CHECK(!NatPmpEpochAppearsReset(100, 101));
 
 	std::array<std::uint8_t, 12> externalResponse{};
 	externalResponse[1] = 128;
@@ -77,6 +87,12 @@ PcpMapRequest Request() {
     return request;
 }
 
+std::array<std::uint8_t, 16> NativeV6(std::uint8_t host) {
+    return std::array<std::uint8_t, 16>{
+        0x20, 0x01, 0x0d, 0xb8, 0, 1, 0, 2,
+        0, 0, 0, 0, 0, 0, 0, host};
+}
+
 void TestPcpRequestVectors() {
     std::array<std::uint8_t, 128> bytes{};
     PcpMapRequest request = Request();
@@ -87,6 +103,22 @@ void TestPcpRequestVectors() {
     CHECK(bytes[20] == 192 && bytes[23] == 20);
     CHECK(bytes[36] == 6 && bytes[40] == 0x12 && bytes[41] == 0x36);
     CHECK(bytes[42] == 0x01 && bytes[43] == 0xBB);
+
+    const auto renewal_address = PcpIpv4Mapped(88, 11, 22, 4);
+    request.suggested_external_ip = renewal_address;
+    size = EncodePcpMapRequest(request, bytes.data(), bytes.size());
+    CHECK(size == 60 && std::memcmp(bytes.data() + 44,
+        renewal_address.data(), renewal_address.size()) == 0);
+
+    const auto native_client = NativeV6(0x20);
+    const auto native_external = NativeV6(0x40);
+    request.client_ip = native_client;
+    request.suggested_external_ip = native_external;
+    size = EncodePcpMapRequest(request, bytes.data(), bytes.size());
+    CHECK(size == 60 && std::memcmp(bytes.data() + 8,
+        native_client.data(), native_client.size()) == 0);
+    CHECK(std::memcmp(bytes.data() + 44, native_external.data(),
+        native_external.size()) == 0);
 
     request.prefer_failure = true;
     size = EncodePcpMapRequest(request, bytes.data(), bytes.size());
@@ -136,6 +168,12 @@ void TestPcpResponseValidation() {
     CHECK(decoded.external_port == 52144 && decoded.epoch == 1234);
     CHECK(decoded.has_port_set && decoded.port_set_size == 32);
     CHECK(decoded.external_ip == external);
+	const auto native_external = NativeV6(0x55);
+	std::memcpy(response.data() + 44, native_external.data(),
+		native_external.size());
+	CHECK(DecodePcpMapResponse(response.data(), response.size(), request, decoded)
+		== PcpDecodeStatus::Ok);
+	CHECK(decoded.external_ip == native_external);
 	response[3] = static_cast<std::uint8_t>(PcpResultCode::CannotProvideExternal);
 	CHECK(DecodePcpMapResponse(response.data(), response.size(), request, decoded)
 		== PcpDecodeStatus::Ok);

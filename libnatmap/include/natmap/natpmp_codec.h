@@ -47,5 +47,7 @@ NatPmpDecodeStatus DecodeNatPmpMapResponse(
     const std::uint8_t* data, std::size_t size,
     NatPmpTransport expected_transport, std::uint16_t expected_internal_port,
     NatPmpMapResponse& out) noexcept;
+bool NatPmpEpochAppearsReset(std::uint32_t previous_epoch,
+                            std::uint32_t current_epoch) noexcept;
 
 } // namespace natmap

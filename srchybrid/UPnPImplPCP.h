@@ -51,7 +51,9 @@ private:
 
 	bool MapPort(uint32 nGatewayIP,
 		const std::array<uint8, 16>& clientAddress, uint16 nPrivatePort,
-		uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime,
+		uint16 nSuggestedExternalPort,
+		const std::array<uint8, 16>& suggestedExternalAddress,
+		bool bTCP, uint32 nLifetime,
 		std::array<uint8, 12>& nonce, natmap::PcpMapResponse& response);
 	bool UnmapPort(uint32 nGatewayIP,
 		const std::array<uint8, 16>& clientAddress, uint16 nPrivatePort,
@@ -63,7 +65,12 @@ private:
 	static CMutex m_mutBusy;
 
 	uint32 m_dwGatewayIP;
+	uint32 m_dwOldGatewayIP;
 	std::array<uint8, 16> m_clientAddress;
+	std::array<uint8, 16> m_oldClientAddress;
+	std::array<uint8, 16> m_tcpExternalAddress;
+	std::array<uint8, 16> m_udpExternalAddress;
+	std::array<uint8, 16> m_webExternalAddress;
 	std::array<uint8, 12> m_tcpNonce;
 	std::array<uint8, 12> m_udpNonce;
 	std::array<uint8, 12> m_webNonce;

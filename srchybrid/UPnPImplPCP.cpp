@@ -28,14 +28,47 @@ bool IsZeroNonce(const std::array<uint8, 12>& nonce)
 	return true;
 }
 
+DWORD JitteredTimeout(DWORD timeout)
+{
+	ULONG random = 0;
+	if (BCryptGenRandom(NULL, reinterpret_cast<PUCHAR>(&random),
+		sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
+		random = GetTickCount();
+	const LONG spread = static_cast<LONG>(timeout / 10);
+	const LONG adjustment = spread == 0 ? 0
+		: static_cast<LONG>(random % (2 * spread + 1)) - spread;
+	return static_cast<DWORD>(static_cast<LONG>(timeout) + adjustment);
+}
+
+uint32 EffectiveLifetime(uint32 grantedLifetime)
+{
+	// RFC 6887 section 15 recommends treating absurdly long leases as a
+	// saner value (for example 24 hours) so removed static mappings recover.
+	const uint32 maximumLifetime = 24 * 60 * 60;
+	return grantedLifetime > maximumLifetime ? maximumLifetime
+		: grantedLifetime;
+}
+
 } // namespace
 
 CUPnPImplPCP::CUPnPImplPCP()
 	: m_dwGatewayIP(0)
+	, m_dwOldGatewayIP(0)
 	, m_hThreadHandle(NULL)
 	, m_bSucceededOnce(false)
 	, m_bAbortDiscovery(false)
 {
+	m_clientAddress.fill(0);
+	m_oldClientAddress.fill(0);
+	m_tcpExternalAddress.fill(0);
+	m_udpExternalAddress.fill(0);
+	m_webExternalAddress.fill(0);
+	m_tcpNonce.fill(0);
+	m_udpNonce.fill(0);
+	m_webNonce.fill(0);
+	m_oldTCPNonce.fill(0);
+	m_oldUDPNonce.fill(0);
+	m_oldWebNonce.fill(0);
 }
 
 CUPnPImplPCP::~CUPnPImplPCP()
@@ -77,15 +110,20 @@ void CUPnPImplPCP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort,
 		m_nOldTCPPort = m_nTCPPort;
 		m_nOldUDPPort = m_nUDPPort;
 		m_nOldTCPWebPort = m_nTCPWebPort;
+		m_dwOldGatewayIP = m_dwGatewayIP;
+		m_oldClientAddress = m_clientAddress;
 		m_oldTCPNonce = m_tcpNonce;
 		m_oldUDPNonce = m_udpNonce;
 		m_oldWebNonce = m_webNonce;
 	} else {
 		m_nOldTCPPort = m_nOldUDPPort = m_nOldTCPWebPort = 0;
+		m_dwOldGatewayIP = 0;
+		m_oldClientAddress.fill(0);
 		m_oldTCPNonce.fill(0);
 		m_oldUDPNonce.fill(0);
 		m_oldWebNonce.fill(0);
 	}
+	m_bSucceededOnce = false;
 
 	m_nTCPPort = nTCPPort;
 	m_nUDPPort = nUDPPort;
@@ -96,10 +134,14 @@ void CUPnPImplPCP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort,
 	m_dwMappingExternalIP = 0;
 	m_dwMappingLeaseLifetime = 0;
 	m_dwMapperEpoch = 0;
+	m_tcpExternalAddress.fill(0);
+	m_udpExternalAddress.fill(0);
+	m_webExternalAddress.fill(0);
 	m_tcpNonce.fill(0);
 	m_udpNonce.fill(0);
 	m_webNonce.fill(0);
 	m_bUPnPPortsForwarded = TRIS_UNKNOWN;
+	m_nDiagnosticStage = UPNP_DIAG_DISCOVERING;
 	m_bCheckAndRefresh = false;
 
 	if (!m_bAbortDiscovery)
@@ -119,6 +161,7 @@ bool CUPnPImplPCP::CheckAndRefresh()
 	}
 
 	m_bCheckAndRefresh = true;
+	m_nDiagnosticStage = UPNP_DIAG_DISCOVERING;
 	StartThread();
 	return true;
 }
@@ -129,15 +172,21 @@ void CUPnPImplPCP::DeletePorts()
 		m_nOldTCPPort = m_nTCPPort;
 		m_nOldUDPPort = m_nUDPPort;
 		m_nOldTCPWebPort = m_nTCPWebPort;
+		m_dwOldGatewayIP = m_dwGatewayIP;
+		m_oldClientAddress = m_clientAddress;
 		m_oldTCPNonce = m_tcpNonce;
 		m_oldUDPNonce = m_udpNonce;
 		m_oldWebNonce = m_webNonce;
 	}
+	m_bSucceededOnce = false;
 	m_nTCPPort = m_nUDPPort = m_nTCPWebPort = 0;
 	m_nExternalTCPPort = m_nExternalUDPPort = m_nExternalTCPWebPort = 0;
 	m_dwMappingExternalIP = 0;
 	m_dwMappingLeaseLifetime = 0;
 	m_dwMapperEpoch = 0;
+	m_tcpExternalAddress.fill(0);
+	m_udpExternalAddress.fill(0);
+	m_webExternalAddress.fill(0);
 	m_bUPnPPortsForwarded = TRIS_FALSE;
 	DeletePorts(false);
 }
@@ -146,18 +195,21 @@ void CUPnPImplPCP::DeletePorts(bool bSkipLock)
 {
 	CSingleLock lockTest(&m_mutBusy);
 	if (bSkipLock || lockTest.Lock(0)) {
-		if (m_dwGatewayIP != 0) {
+		if (m_dwOldGatewayIP != 0) {
 			if (m_nOldTCPPort != 0 && !IsZeroNonce(m_oldTCPNonce))
-				UnmapPort(m_dwGatewayIP, m_clientAddress, m_nOldTCPPort,
+				UnmapPort(m_dwOldGatewayIP, m_oldClientAddress, m_nOldTCPPort,
 					true, m_oldTCPNonce);
 			if (m_nOldUDPPort != 0 && !IsZeroNonce(m_oldUDPNonce))
-				UnmapPort(m_dwGatewayIP, m_clientAddress, m_nOldUDPPort,
+				UnmapPort(m_dwOldGatewayIP, m_oldClientAddress, m_nOldUDPPort,
 					false, m_oldUDPNonce);
 			if (m_nOldTCPWebPort != 0 && !IsZeroNonce(m_oldWebNonce))
-				UnmapPort(m_dwGatewayIP, m_clientAddress, m_nOldTCPWebPort,
+				UnmapPort(m_dwOldGatewayIP, m_oldClientAddress,
+					m_nOldTCPWebPort,
 					true, m_oldWebNonce);
 		}
 		m_nOldTCPPort = m_nOldUDPPort = m_nOldTCPWebPort = 0;
+		m_dwOldGatewayIP = 0;
+		m_oldClientAddress.fill(0);
 		m_oldTCPNonce.fill(0);
 		m_oldUDPNonce.fill(0);
 		m_oldWebNonce.fill(0);
@@ -235,6 +287,22 @@ bool CUPnPImplPCP::ExchangeMap(uint32 nGatewayIP,
 	if (sock == INVALID_SOCKET)
 		return false;
 
+	uint32 clientIP = 0;
+	if (!ExtractIPv4(request.client_ip, clientIP)) {
+		closesocket(sock);
+		return false;
+	}
+	sockaddr_in local;
+	memset(&local, 0, sizeof(local));
+	local.sin_family = AF_INET;
+	local.sin_addr.s_addr = clientIP;
+	if (bind(sock, reinterpret_cast<sockaddr*>(&local), sizeof(local)) != 0) {
+		DebugLogWarning(_T("PCP: Unable to bind request to selected interface (error %u)"),
+			WSAGetLastError());
+		closesocket(sock);
+		return false;
+	}
+
 	sockaddr_in destination;
 	memset(&destination, 0, sizeof(destination));
 	destination.sin_family = AF_INET;
@@ -242,7 +310,9 @@ bool CUPnPImplPCP::ExchangeMap(uint32 nGatewayIP,
 	destination.sin_addr.s_addr = nGatewayIP;
 
 	bool succeeded = false;
-	const DWORD timeouts[] = { 300, 600, 1200 };
+	// Bounded variant of RFC 6887 section 8.1.1 exponential
+	// retransmission. Seven seconds worst case still fits the refresh timer.
+	const DWORD timeouts[] = { 1000, 2000, 4000 };
 	for (size_t attempt = 0; attempt < _countof(timeouts)
 		&& !m_bAbortDiscovery; ++attempt) {
 		if (sendto(sock, reinterpret_cast<const char*>(packet),
@@ -251,55 +321,76 @@ bool CUPnPImplPCP::ExchangeMap(uint32 nGatewayIP,
 			!= static_cast<int>(packetSize))
 			continue;
 
-		fd_set fds;
-		FD_ZERO(&fds);
-		FD_SET(sock, &fds);
-		timeval timeout;
-		timeout.tv_sec = timeouts[attempt] / 1000;
-		timeout.tv_usec = (timeouts[attempt] % 1000) * 1000;
-		if (select(0, &fds, NULL, NULL, &timeout) <= 0)
-			continue;
+		const DWORD waitTime = JitteredTimeout(timeouts[attempt]);
+		const DWORD started = GetTickCount();
+		while (!m_bAbortDiscovery) {
+			const DWORD elapsed = GetTickCount() - started;
+			if (elapsed >= waitTime)
+				break;
+			const DWORD remaining = waitTime - elapsed;
+			fd_set fds;
+			FD_ZERO(&fds);
+			FD_SET(sock, &fds);
+			timeval timeout;
+			timeout.tv_sec = remaining / 1000;
+			timeout.tv_usec = (remaining % 1000) * 1000;
+			if (select(0, &fds, NULL, NULL, &timeout) <= 0)
+				break;
 
-		uint8 raw[natmap::kPcpMaximumMessageSize + 1];
-		sockaddr_in source;
-		memset(&source, 0, sizeof(source));
-		int sourceLength = sizeof(source);
-		const int received = recvfrom(sock, reinterpret_cast<char*>(raw),
-			sizeof(raw), 0, reinterpret_cast<sockaddr*>(&source), &sourceLength);
-		if (received <= 0 || source.sin_addr.s_addr != nGatewayIP
-			|| source.sin_port != htons(PCP_PORT))
-			continue;
+			uint8 raw[natmap::kPcpMaximumMessageSize + 1];
+			sockaddr_in source;
+			memset(&source, 0, sizeof(source));
+			int sourceLength = sizeof(source);
+			const int received = recvfrom(sock, reinterpret_cast<char*>(raw),
+				sizeof(raw), 0, reinterpret_cast<sockaddr*>(&source),
+				&sourceLength);
+			if (received <= 0 || source.sin_addr.s_addr != nGatewayIP
+				|| source.sin_port != htons(PCP_PORT))
+				continue;
 
-		natmap::PcpMapResponse candidate;
-		if (natmap::DecodePcpMapResponse(raw, static_cast<size_t>(received),
-			request, candidate) != natmap::PcpDecodeStatus::Ok)
-			continue;
-		if (candidate.result != natmap::PcpResultCode::Success) {
-			DebugLogWarning(_T("PCP: MAP rejected, result=%u"),
-				static_cast<unsigned>(candidate.result));
-			break;
-		}
-		if (bDeletion) {
-			succeeded = candidate.lifetime_seconds == 0;
-		} else {
-			uint32 externalIP = 0;
-			succeeded = candidate.lifetime_seconds != 0
-				&& candidate.external_port != 0
-				&& ExtractIPv4(candidate.external_ip, externalIP);
-		}
-		if (succeeded) {
-			response = candidate;
-			break;
+			natmap::PcpMapResponse candidate;
+			const natmap::PcpDecodeStatus decodeStatus =
+				natmap::DecodePcpMapResponse(raw,
+					static_cast<size_t>(received), request, candidate);
+			if (decodeStatus != natmap::PcpDecodeStatus::Ok) {
+				DebugLogWarning(_T("PCP: Ignoring invalid MAP response, status=%u"),
+					static_cast<unsigned>(decodeStatus));
+				continue;
+			}
+			if (candidate.result != natmap::PcpResultCode::Success) {
+				DebugLogWarning(_T("PCP: MAP rejected, result=%u hold=%us"),
+					static_cast<unsigned>(candidate.result),
+					candidate.lifetime_seconds);
+				closesocket(sock);
+				return false;
+			}
+			if (bDeletion) {
+				succeeded = candidate.lifetime_seconds == 0;
+			} else {
+				uint32 externalIP = 0;
+				succeeded = candidate.lifetime_seconds != 0
+					&& candidate.external_port != 0
+					&& ExtractIPv4(candidate.external_ip, externalIP);
+			}
+			if (succeeded) {
+				response = candidate;
+				closesocket(sock);
+				return true;
+			}
 		}
 	}
 
+	if (!m_bAbortDiscovery)
+		DebugLogWarning(_T("PCP: MAP timed out after bounded retransmissions"));
 	closesocket(sock);
-	return succeeded;
+	return false;
 }
 
 bool CUPnPImplPCP::MapPort(uint32 nGatewayIP,
 	const std::array<uint8, 16>& clientAddress, uint16 nPrivatePort,
-	uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime,
+	uint16 nSuggestedExternalPort,
+	const std::array<uint8, 16>& suggestedExternalAddress,
+	bool bTCP, uint32 nLifetime,
 	std::array<uint8, 12>& nonce, natmap::PcpMapResponse& response)
 {
 	if (IsZeroNonce(nonce) && !GenerateNonce(nonce))
@@ -312,6 +403,7 @@ bool CUPnPImplPCP::MapPort(uint32 nGatewayIP,
 	request.protocol = bTCP ? PCP_PROTOCOL_TCP : PCP_PROTOCOL_UDP;
 	request.internal_port = nPrivatePort;
 	request.suggested_external_port = nSuggestedExternalPort;
+	request.suggested_external_ip = suggestedExternalAddress;
 	if (!ExchangeMap(nGatewayIP, request, response, false))
 		return false;
 
@@ -367,6 +459,7 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 		if (m_pOwner->m_dwGatewayIP == 0
 			|| !CUPnPImplPCP::GetClientAddress(m_pOwner->m_dwGatewayIP,
 				m_pOwner->m_clientAddress)) {
+			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
 			m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
 			m_pOwner->SendResultMessage();
 			return 0;
@@ -379,12 +472,19 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 	natmap::PcpMapResponse tcpResponse;
 	const uint16 suggestedTCP = m_pOwner->m_bCheckAndRefresh
 		? m_pOwner->m_nExternalTCPPort : m_pOwner->m_nTCPPort;
+	const std::array<uint8, 16> suggestedTCPAddress =
+		m_pOwner->m_bCheckAndRefresh ? m_pOwner->m_tcpExternalAddress
+			: std::array<uint8, 16>();
+	m_pOwner->m_nDiagnosticStage = UPNP_DIAG_TCP_MAPPING;
 	succeeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
-		m_pOwner->m_clientAddress, m_pOwner->m_nTCPPort, suggestedTCP, true,
-		leaseTime, m_pOwner->m_tcpNonce, tcpResponse);
+		m_pOwner->m_clientAddress, m_pOwner->m_nTCPPort, suggestedTCP,
+		suggestedTCPAddress, true, leaseTime, m_pOwner->m_tcpNonce,
+		tcpResponse);
 	if (succeeded) {
 		m_pOwner->m_nExternalTCPPort = tcpResponse.external_port;
-		m_pOwner->m_dwMappingLeaseLifetime = tcpResponse.lifetime_seconds;
+		m_pOwner->m_tcpExternalAddress = tcpResponse.external_ip;
+		m_pOwner->m_dwMappingLeaseLifetime =
+			EffectiveLifetime(tcpResponse.lifetime_seconds);
 		m_pOwner->m_dwMapperEpoch = tcpResponse.epoch;
 		CUPnPImplPCP::ExtractIPv4(tcpResponse.external_ip,
 			m_pOwner->m_dwMappingExternalIP);
@@ -394,19 +494,27 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 		natmap::PcpMapResponse udpResponse;
 		const uint16 suggestedUDP = m_pOwner->m_bCheckAndRefresh
 			? m_pOwner->m_nExternalUDPPort : m_pOwner->m_nUDPPort;
+		const std::array<uint8, 16> suggestedUDPAddress =
+			m_pOwner->m_bCheckAndRefresh ? m_pOwner->m_udpExternalAddress
+				: std::array<uint8, 16>();
+		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_UDP_MAPPING;
 		succeeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
 			m_pOwner->m_clientAddress, m_pOwner->m_nUDPPort, suggestedUDP,
-			false, leaseTime, m_pOwner->m_udpNonce, udpResponse);
+			suggestedUDPAddress, false, leaseTime, m_pOwner->m_udpNonce,
+			udpResponse);
 		if (succeeded) {
 			m_pOwner->m_nExternalUDPPort = udpResponse.external_port;
+			m_pOwner->m_udpExternalAddress = udpResponse.external_ip;
 			m_pOwner->m_dwMappingLeaseLifetime = min(
-				m_pOwner->m_dwMappingLeaseLifetime, udpResponse.lifetime_seconds);
+				m_pOwner->m_dwMappingLeaseLifetime,
+				EffectiveLifetime(udpResponse.lifetime_seconds));
 			m_pOwner->m_dwMapperEpoch = udpResponse.epoch;
 		} else {
 			m_pOwner->UnmapPort(m_pOwner->m_dwGatewayIP,
 				m_pOwner->m_clientAddress, m_pOwner->m_nTCPPort, true,
 				m_pOwner->m_tcpNonce);
 			m_pOwner->m_nExternalTCPPort = 0;
+			m_pOwner->m_tcpExternalAddress.fill(0);
 		}
 	}
 
@@ -414,16 +522,25 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 		natmap::PcpMapResponse webResponse;
 		const uint16 suggestedWeb = m_pOwner->m_bCheckAndRefresh
 			? m_pOwner->m_nExternalTCPWebPort : m_pOwner->m_nTCPWebPort;
+		const std::array<uint8, 16> suggestedWebAddress =
+			m_pOwner->m_bCheckAndRefresh ? m_pOwner->m_webExternalAddress
+				: std::array<uint8, 16>();
 		if (m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
 			m_pOwner->m_clientAddress, m_pOwner->m_nTCPWebPort, suggestedWeb,
-			true, leaseTime, m_pOwner->m_webNonce, webResponse))
+			suggestedWebAddress, true, leaseTime, m_pOwner->m_webNonce,
+			webResponse)) {
 			m_pOwner->m_nExternalTCPWebPort = webResponse.external_port;
+			m_pOwner->m_webExternalAddress = webResponse.external_ip;
+		}
 	}
 
 	if (!m_pOwner->m_bAbortDiscovery) {
 		m_pOwner->m_bUPnPPortsForwarded = succeeded ? TRIS_TRUE : TRIS_FALSE;
-		if (succeeded)
+		if (succeeded) {
 			m_pOwner->m_bSucceededOnce = true;
+			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_SUCCESS;
+		} else if (m_pOwner->m_nDiagnosticStage == UPNP_DIAG_TCP_MAPPING)
+			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
 		m_pOwner->SendResultMessage();
 	}
 	return 0;
@@ -434,6 +551,14 @@ void CUPnPImplPCP::StartThread()
 	CStartDiscoveryThread* thread = static_cast<CStartDiscoveryThread*>(
 		AfxBeginThread(RUNTIME_CLASS(CStartDiscoveryThread),
 			THREAD_PRIORITY_NORMAL, 0, CREATE_SUSPENDED));
+	if (thread == NULL) {
+		m_hThreadHandle = NULL;
+		m_bUPnPPortsForwarded = TRIS_FALSE;
+		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		DebugLogError(_T("PCP: Unable to create discovery thread"));
+		SendResultMessage();
+		return;
+	}
 	m_hThreadHandle = thread->m_hThread;
 	thread->SetValues(this);
 	thread->ResumeThread();

@@ -100,4 +100,13 @@ NatPmpDecodeStatus DecodeNatPmpMapResponse(
     return NatPmpDecodeStatus::Ok;
 }
 
+bool NatPmpEpochAppearsReset(std::uint32_t previous_epoch,
+                            std::uint32_t current_epoch) noexcept {
+    // RFC 6886 section 3.6 allows a two-second tolerance for minor clock
+    // inconsistencies. A larger backwards jump means the mapping table was
+    // reset (normally because the gateway rebooted).
+    return current_epoch < previous_epoch &&
+           previous_epoch - current_epoch > 2;
+}
+
 } // namespace natmap

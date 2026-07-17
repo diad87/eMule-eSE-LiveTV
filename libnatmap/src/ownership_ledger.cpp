@@ -98,9 +98,7 @@ bool SameRuleIdentity(const UpnpOwnershipRecord& left,
         left.external_port == right.external_port;
 }
 
-} // namespace
-
-OwnershipDescription BuildOwnershipDescription(
+OwnershipDescription BuildLegacyOwnershipDescription(
     std::uint64_t owner_token, Transport transport) noexcept {
     OwnershipDescription result{};
     const char protocol = transport == Transport::Udp ? 'U' : 'T';
@@ -114,6 +112,24 @@ OwnershipDescription BuildOwnershipDescription(
     return result;
 }
 
+} // namespace
+
+OwnershipDescription BuildOwnershipDescription(
+    std::uint64_t owner_token, Transport transport) noexcept {
+    OwnershipDescription result{};
+    result[0] = 'e';
+    result[1] = transport == Transport::Udp ? 'U' : 'T';
+    // Several otherwise functional consumer IGDs truncate descriptions to
+    // 15 characters. Crockford base32 keeps the complete 64-bit ownership
+    // token in that limit and avoids punctuation rejected by older parsers.
+    static const char base32[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    for (unsigned i = 0; i < 13; ++i) {
+        const unsigned shift = (12u - i) * 5u;
+        result[2 + i] = base32[(owner_token >> shift) & 0x1fu];
+    }
+    return result;
+}
+
 bool UpnpOwnershipRecord::IsStructurallyValid() const noexcept {
     return owner_token != 0 && gateway_fingerprint != 0 &&
         ValidTransport(transport) &&
@@ -121,8 +137,13 @@ bool UpnpOwnershipRecord::IsStructurallyValid() const noexcept {
         !local_address.IsUnspecified() && local_port != 0 &&
         external_port != 0 && acquired_unix_seconds != 0 &&
         generation != 0 && IsTerminatedPrintable(description) &&
-        SameDescription(description,
-                        BuildOwnershipDescription(owner_token, transport));
+        (SameDescription(description,
+                         BuildOwnershipDescription(owner_token, transport)) ||
+         // Journals written before the compact-description change remain
+         // valid so their mappings can still be removed after an upgrade.
+         SameDescription(description,
+                         BuildLegacyOwnershipDescription(owner_token,
+                                                         transport)));
 }
 
 bool ObservedUpnpMapping::IsStructurallyValid() const noexcept {

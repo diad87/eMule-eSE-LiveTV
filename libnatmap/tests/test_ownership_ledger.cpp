@@ -66,8 +66,9 @@ void TestDescriptionAndRecordValidation() {
         BuildOwnershipDescription(kToken, Transport::Tcp);
     const OwnershipDescription udp =
         BuildOwnershipDescription(kToken, Transport::Udp);
-    CHECK(std::strcmp(tcp.data(), "eMuleT-0123456789ABCDEF") == 0);
-    CHECK(std::strcmp(udp.data(), "eMuleU-0123456789ABCDEF") == 0);
+    CHECK(std::strcmp(tcp.data(), "eT028T5CY4TQKFF") == 0);
+    CHECK(std::strcmp(udp.data(), "eU028T5CY4TQKFF") == 0);
+    CHECK(std::strlen(tcp.data()) <= 15);
     CHECK(Record().IsStructurallyValid());
 
     UpnpOwnershipRecord invalid = Record();
@@ -79,6 +80,12 @@ void TestDescriptionAndRecordValidation() {
     invalid = Record();
     invalid.local_address = IpAddress::V4(0, 0, 0, 0);
     CHECK(!invalid.IsStructurallyValid());
+
+    UpnpOwnershipRecord legacy = Record();
+    const char legacyDescription[] = "eMuleT-0123456789ABCDEF";
+    std::memcpy(legacy.description.data(), legacyDescription,
+                sizeof(legacyDescription));
+    CHECK(legacy.IsStructurallyValid());
 }
 
 void TestDeletionGateFailsClosed() {
@@ -107,7 +114,7 @@ void TestDeletionGateFailsClosed() {
     CHECK(EvaluateOwnershipForDeletion(record, kGateway, observed) ==
           OwnershipDecision::InternalPortMismatch);
     observed = Observation(record);
-    observed.description[22] = '0';
+    observed.description[14] = '0';
     CHECK(EvaluateOwnershipForDeletion(record, kGateway, observed) ==
           OwnershipDecision::DescriptionMismatch);
     observed = Observation(record);
@@ -143,7 +150,7 @@ void TestCodecRoundTripAndCorruption() {
     CHECK(decoded.records[1].transport == Transport::Udp);
     CHECK(decoded.records[1].local_port == 4672);
     CHECK(std::strcmp(decoded.records[1].description.data(),
-                      "eMuleU-0123456789ABCDEF") == 0);
+                      "eU028T5CY4TQKFF") == 0);
 
     std::array<std::uint8_t, kOwnershipLedgerMaxEncodedSize> corrupt = bytes;
     corrupt[40] ^= 0x80;

@@ -27,6 +27,8 @@
 
 #include <bcrypt.h>
 #include <ctime>
+#include <iphlpapi.h>
+#include <vector>
 
 #pragma comment(lib, "bcrypt.lib")
 
@@ -42,6 +44,220 @@ static LPCSTR const sTCPa = "TCP";
 static LPCSTR const sUDPa = "UDP";
 static LPCTSTR const sTCP = _T("TCP");
 static LPCTSTR const sUDP = _T("UDP");
+
+namespace {
+
+constexpr uint32 kPreferredLeaseSeconds = 7200;
+constexpr unsigned kMaximumDiscoveryInterfaces = 5;
+
+struct DiscoveryTarget {
+	CStringA address;
+};
+
+class SelectedIgd {
+public:
+	SelectedIgd()
+		: state()
+	{
+		memset(&urls, 0, sizeof urls);
+		memset(&data, 0, sizeof data);
+		lanAddress[0] = 0;
+		wanAddress[0] = 0;
+	}
+
+	~SelectedIgd()
+	{
+		FreeUPNPUrls(&urls);
+	}
+
+	void ReleaseUrls(UPNPUrls& destination)
+	{
+		destination = urls;
+		memset(&urls, 0, sizeof urls);
+	}
+
+	UPNPUrls urls;
+	IGDdatas data;
+	char lanAddress[40];
+	char wanAddress[40];
+	int state;
+};
+
+static bool IsBetterIgdState(int candidate, int current)
+{
+	return candidate >= UPNP_CONNECTED_IGD
+		&& candidate <= UPNP_UNKNOWN_DEVICE
+		&& (current == UPNP_NO_IGD || candidate < current);
+}
+
+static void ConsiderDiscoveredDevices(UPNPDev* devices,
+	SelectedIgd& selected)
+{
+	if (devices == NULL)
+		return;
+
+	DebugLog(_T("List of UPnP devices found on the network:"));
+	for (UPNPDev* device = devices; device != NULL; device = device->pNext)
+		DebugLog(_T("Desc: %S, st: %S"), device->descURL, device->st);
+
+	UPNPUrls candidateUrls = {};
+	IGDdatas candidateData = {};
+	char candidateLan[40] = {};
+	char candidateWan[40] = {};
+	const int candidateState = UPNP_GetValidIGD(devices, &candidateUrls,
+		&candidateData, candidateLan, sizeof candidateLan,
+		candidateWan, sizeof candidateWan);
+	const bool usable = candidateState != UPNP_NO_IGD
+		&& candidateUrls.controlURL != NULL
+		&& candidateData.first.servicetype[0] != 0;
+	if (usable && IsBetterIgdState(candidateState, selected.state)) {
+		FreeUPNPUrls(&selected.urls);
+		selected.urls = candidateUrls;
+		memset(&candidateUrls, 0, sizeof candidateUrls);
+		selected.data = candidateData;
+		strncpy_s(selected.lanAddress, candidateLan, _TRUNCATE);
+		strncpy_s(selected.wanAddress, candidateWan, _TRUNCATE);
+		selected.state = candidateState;
+	}
+	FreeUPNPUrls(&candidateUrls);
+}
+
+static UPNPDev* DiscoverIgdDevices(const char* multicastInterface,
+	int delayMilliseconds, int localPort, bool searchAll, int& error)
+{
+	if (searchAll)
+		return upnpDiscoverAll(delayMilliseconds, multicastInterface, NULL,
+			localPort, 0, 2, &error);
+
+	// Some IGDv2-only devices do not answer the legacy IGD:1 search used by
+	// upnpDiscover(). Query both generations and both WAN services explicitly.
+	static const char* const deviceTypes[] = {
+		"urn:schemas-upnp-org:device:InternetGatewayDevice:2",
+		"urn:schemas-upnp-org:service:WANIPConnection:2",
+		"urn:schemas-upnp-org:device:InternetGatewayDevice:1",
+		"urn:schemas-upnp-org:service:WANIPConnection:1",
+		"urn:schemas-upnp-org:service:WANPPPConnection:1",
+		"upnp:rootdevice",
+		NULL
+	};
+	return upnpDiscoverDevices(deviceTypes, delayMilliseconds,
+		multicastInterface, NULL, localPort, 0, 2, &error, 1);
+}
+
+static void AddDiscoveryTarget(std::vector<DiscoveryTarget>& targets,
+	const char* address)
+{
+	if (address == NULL || address[0] == 0)
+		return;
+	for (const DiscoveryTarget& target : targets) {
+		if (target.address.CompareNoCase(address) == 0)
+			return;
+	}
+	DiscoveryTarget target;
+	target.address = address;
+	targets.push_back(target);
+}
+
+static std::vector<DiscoveryTarget> GetDiscoveryTargets()
+{
+	std::vector<DiscoveryTarget> targets;
+	const char* const configuredAddress = thePrefs.GetBindAddrA();
+	if (configuredAddress != NULL && configuredAddress[0] != 0) {
+		AddDiscoveryTarget(targets, configuredAddress);
+		return targets;
+	}
+
+	// An empty first target lets Windows select its preferred/default route.
+	targets.push_back(DiscoveryTarget());
+
+	ULONG bytes = 16 * 1024;
+	std::vector<BYTE> storage(bytes);
+	ULONG result = GetAdaptersAddresses(AF_INET,
+		GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST
+			| GAA_FLAG_SKIP_DNS_SERVER,
+		NULL, reinterpret_cast<PIP_ADAPTER_ADDRESSES>(storage.data()), &bytes);
+	if (result == ERROR_BUFFER_OVERFLOW) {
+		storage.resize(bytes);
+		result = GetAdaptersAddresses(AF_INET,
+			GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST
+				| GAA_FLAG_SKIP_DNS_SERVER,
+			NULL, reinterpret_cast<PIP_ADAPTER_ADDRESSES>(storage.data()),
+			&bytes);
+	}
+	if (result != NO_ERROR)
+		return targets;
+
+	for (PIP_ADAPTER_ADDRESSES adapter =
+		reinterpret_cast<PIP_ADAPTER_ADDRESSES>(storage.data());
+		adapter != NULL; adapter = adapter->Next) {
+		if (adapter->OperStatus != IfOperStatusUp
+			|| adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK
+			|| adapter->IfType == IF_TYPE_TUNNEL)
+			continue;
+		for (PIP_ADAPTER_UNICAST_ADDRESS unicast =
+			adapter->FirstUnicastAddress; unicast != NULL;
+			unicast = unicast->Next) {
+			if (unicast->Address.lpSockaddr == NULL
+				|| unicast->Address.lpSockaddr->sa_family != AF_INET)
+				continue;
+			const sockaddr_in* address = reinterpret_cast<const sockaddr_in*>(
+				unicast->Address.lpSockaddr);
+			if (address->sin_addr.s_addr == INADDR_ANY
+				|| (ntohl(address->sin_addr.s_addr) >> 24) == 127)
+				continue;
+			const char* const text = inet_ntoa(address->sin_addr);
+			if (text != NULL)
+				AddDiscoveryTarget(targets, text);
+		}
+	}
+
+	if (targets.size() > kMaximumDiscoveryInterfaces)
+		targets.resize(kMaximumDiscoveryInterfaces);
+	return targets;
+}
+
+static bool SameIPv4Address(const char* left, const char* right)
+{
+	if (left == NULL || right == NULL || left[0] == 0 || right[0] == 0)
+		return false;
+	if (strcmp(left, right) == 0)
+		return true;
+	const unsigned long leftAddress = inet_addr(left);
+	const unsigned long rightAddress = inet_addr(right);
+	return leftAddress != INADDR_NONE && rightAddress != INADDR_NONE
+		&& leftAddress == rightAddress;
+}
+
+static bool MappingTargetsLocalSocket(const char* internalClient,
+	const char* internalPort, const char* enabled, const char* lanAddress,
+	uint16 localPort)
+{
+	char* end = NULL;
+	const unsigned long parsedPort = strtoul(internalPort, &end, 10);
+	const bool mappingEnabled = enabled == NULL || enabled[0] == 0
+		|| (strcmp(enabled, "0") != 0 && _stricmp(enabled, "false") != 0);
+	return end != internalPort && *end == 0 && parsedPort == localPort
+		&& mappingEnabled && SameIPv4Address(internalClient, lanAddress);
+}
+
+static uint32 ParseLeaseDuration(const char* text, uint32 fallback)
+{
+	if (text == NULL || text[0] == 0)
+		return fallback;
+	char* end = NULL;
+	const unsigned long value = strtoul(text, &end, 10);
+	return end != text && *end == 0
+		? static_cast<uint32>(value) : fallback;
+}
+
+static bool IsTransientUpnpError(int result)
+{
+	return result == UPNPCOMMAND_HTTP_ERROR
+		|| result == UPNPCOMMAND_UNKNOWN_ERROR
+		|| result == UPNPCOMMAND_INVALID_RESPONSE;
+}
+
+} // namespace
 
 static unsigned CountReadablePortMappings(const UPNPUrls *pURLs,
 	const IGDdatas *pIGDData)
@@ -544,41 +760,78 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 #endif
 	{
 		if (!m_pOwner->m_bCheckAndRefresh) {
-			int error = 0;
-			// Increased discovery timeout from 2000ms to 4000ms for slower routers
-			// Many modern routers (especially mesh/WiFi 6) need more time to respond
-			UPNPDev *structDeviceList = upnpDiscover(4000, thePrefs.GetBindAddrA(), NULL, 0, 0, 2, &error);
-			if (structDeviceList == NULL) {
-				// Retry with longer timeout before giving up
-				DebugLog(_T("UPNP: First discovery attempt failed (error %d), retrying with longer timeout..."), error);
-				if (!m_pOwner->m_bAbortDiscovery)
-					structDeviceList = upnpDiscover(6000, thePrefs.GetBindAddrA(), NULL, 0, 0, 2, &error);
+			const std::vector<DiscoveryTarget> targets =
+				GetDiscoveryTargets();
+			SelectedIgd selected;
+			int lastError = UPNPDISCOVER_UNKNOWN_ERROR;
+
+			// First use an ephemeral SSDP source port. It avoids colliding with
+			// the Windows SSDP service and is accepted by standards-compliant
+			// IGD v1/v2 devices.
+			for (size_t i = 0; i < targets.size()
+				&& (selected.state == UPNP_NO_IGD
+					|| selected.state > UPNP_PRIVATEIP_IGD)
+				&& !m_pOwner->m_bAbortDiscovery; ++i) {
+				const char* const multicastInterface =
+					targets[i].address.IsEmpty()
+					? NULL : targets[i].address.GetString();
+				const int delay = i == 0 ? 2500 : 1200;
+				UPNPDev* devices = DiscoverIgdDevices(multicastInterface,
+					delay, UPNP_LOCAL_PORT_ANY, false, lastError);
+				ConsiderDiscoveredDevices(devices, selected);
+				freeUPNPDevlist(devices);
 			}
-			if (structDeviceList == NULL) {
-				DebugLog(_T("UPNP: No Internet Gateway Devices found after retry, aborting: %d"), error);
+
+			// A minority of old IGDs reply only when M-SEARCH originates from
+			// UDP/1900. Retry that exact legacy behavior on every useful LAN
+			// interface, but only when no connected gateway was selected.
+			for (size_t i = 0; i < targets.size()
+				&& (selected.state == UPNP_NO_IGD
+					|| selected.state > UPNP_PRIVATEIP_IGD)
+				&& !m_pOwner->m_bAbortDiscovery; ++i) {
+				const char* const multicastInterface =
+					targets[i].address.IsEmpty()
+					? NULL : targets[i].address.GetString();
+				UPNPDev* devices = DiscoverIgdDevices(multicastInterface,
+					1200, UPNP_LOCAL_PORT_SAME, false, lastError);
+				ConsiderDiscoveredDevices(devices, selected);
+				freeUPNPDevlist(devices);
+			}
+
+			// Broken firmware sometimes ignores every targeted ST while still
+			// answering ssdp:all. Keep this as the final, broader discovery
+			// pass so normal networks do not download unrelated descriptions.
+			for (size_t i = 0; i < targets.size()
+				&& (selected.state == UPNP_NO_IGD
+					|| selected.state > UPNP_PRIVATEIP_IGD)
+				&& !m_pOwner->m_bAbortDiscovery; ++i) {
+				const char* const multicastInterface =
+					targets[i].address.IsEmpty()
+					? NULL : targets[i].address.GetString();
+				UPNPDev* devices = DiscoverIgdDevices(multicastInterface,
+					1200, UPNP_LOCAL_PORT_ANY, true, lastError);
+				ConsiderDiscoveredDevices(devices, selected);
+				freeUPNPDevlist(devices);
+			}
+
+			if (m_pOwner->m_bAbortDiscovery)
+				return 0;
+			if (selected.state == UPNP_NO_IGD) {
+				DebugLog(_T("UPNP: No Internet Gateway Device found across %u interface candidate(s), last error %d"),
+					static_cast<unsigned>(targets.size()), lastError);
 				m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
 				m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
 				m_pOwner->SendResultMessage();
 				return 0;
 			}
 
-			if (m_pOwner->m_bAbortDiscovery) {	// requesting to abort ASAP?
-				freeUPNPDevlist(structDeviceList);
-				return 0;
-			}
-
-			DebugLog(_T("List of UPNP devices found on the network:"));
-			for (UPNPDev *pDevice = structDeviceList; pDevice != NULL; pDevice = pDevice->pNext)
-				DebugLog(_T("Desc: %S, st: %S"), pDevice->descURL, pDevice->st);
-
 			m_pOwner->m_pURLs = new UPNPUrls();
 			m_pOwner->m_pIGDData = new IGDdatas();
-			*m_pOwner->m_achLanIP = 0;
-			*m_pOwner->m_achWanIP = 0;
-			int iResult = UPNP_GetValidIGD(structDeviceList, m_pOwner->m_pURLs, m_pOwner->m_pIGDData
-							, m_pOwner->m_achLanIP, sizeof m_pOwner->m_achLanIP
-							, m_pOwner->m_achWanIP, sizeof m_pOwner->m_achWanIP);
-			freeUPNPDevlist(structDeviceList);
+			selected.ReleaseUrls(*m_pOwner->m_pURLs);
+			*m_pOwner->m_pIGDData = selected.data;
+			strncpy_s(m_pOwner->m_achLanIP, selected.lanAddress, _TRUNCATE);
+			strncpy_s(m_pOwner->m_achWanIP, selected.wanAddress, _TRUNCATE);
+			const int iResult = selected.state;
 			bool bNotFound = false;
 			switch (iResult) {
 			case 1:
@@ -696,80 +949,149 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 	_snprintf_s(achExternalPort, _countof(achExternalPort), _TRUNCATE,
 		"%hu", *pExternalPort != 0 ? *pExternalPort : nPort);
 
-	int nResult;
-	// if we are refreshing ports, check first if the mapping is still fine and only try to open if not
-	char achOutIP[20] = {};
+	char achOutIP[40] = {};
 	char achOutPort[8] = {};
 	char achOutDescription[80] = {};
+	char achEnabled[8] = {};
 	char achLeaseDuration[16] = {};
-	if (bCheckAndRefresh) {
-		nResult = UPNP_GetSpecificPortMappingEntry(m_pOwner->m_pURLs->controlURL, m_pOwner->m_pIGDData->first.servicetype
-												 , achExternalPort
-												 , (bTCP ? sTCPa : sUDPa)
-												 , NULL
-												 , achOutIP, achOutPort
-												 , achOutDescription, NULL, achLeaseDuration);
+	const auto noteFiniteLease = [this](uint32 lifetime) {
+		if (lifetime != 0
+			&& (m_pOwner->m_dwMappingLeaseLifetime == 0
+				|| lifetime < m_pOwner->m_dwMappingLeaseLifetime))
+			m_pOwner->m_dwMappingLeaseLifetime = lifetime;
+	};
+	const auto queryMapping = [&]() {
+		achOutIP[0] = 0;
+		achOutPort[0] = 0;
+		achOutDescription[0] = 0;
+		achEnabled[0] = 0;
+		achLeaseDuration[0] = 0;
+		return UPNP_GetSpecificPortMappingEntry(
+			m_pOwner->m_pURLs->controlURL,
+			m_pOwner->m_pIGDData->first.servicetype, achExternalPort,
+			(bTCP ? sTCPa : sUDPa), NULL, achOutIP, achOutPort,
+			achOutDescription, achEnabled, achLeaseDuration);
+	};
+	const auto observedTargetMatches = [&]() {
+		return MappingTargetsLocalSocket(achOutIP, achOutPort, achEnabled,
+			pachLANIP, nPort);
+	};
 
-		if (nResult == UPNPCOMMAND_SUCCESS && achOutIP[0] != 0
-			&& atoi(achOutPort) == nPort && strcmp(achOutIP, pachLANIP) == 0
-			&& strcmp(achOutDescription, pachDescription) == 0) {
-			const unsigned long remaining = strtoul(achLeaseDuration, NULL, 10);
-			if (remaining == 0) {
-				// Do not clear the aggregate lifetime here: TCP, UDP and the web
-				// mapping may have different lease semantics. If any sibling is
-				// finite, the shared scheduler must remain armed.
-				DebugLog(_T("Checking UPnP: Permanent mapping %hu -> %hu (%s) on local IP %S still exists"), *pExternalPort, nPort, (bTCP ? sTCP : sUDP), achOutIP);
-				return true;
-			}
-			// Merely observing a finite mapping does not extend it. Continue to
-			// AddPortMapping with the same tuple so the router grants a fresh lease.
-			DebugLog(_T("Checking UPnP: Finite mapping %hu -> %hu (%s) has %lu seconds left; renewing it now"), *pExternalPort, nPort, (bTCP ? sTCP : sUDP), remaining);
+	// Look before adding, not only during refresh. A manual rule or a mapping
+	// left by another eMule instance is already sufficient when it targets the
+	// exact same local socket. Adopting it avoids false 718 conflicts and never
+	// grants this process permission to delete that foreign rule.
+	int nResult = queryMapping();
+	if (nResult == UPNPCOMMAND_SUCCESS && observedTargetMatches()) {
+		const uint32 remaining = ParseLeaseDuration(achLeaseDuration, 0);
+		const bool ownedDescription =
+			strcmp(achOutDescription, pachDescription) == 0;
+		if (!bCheckAndRefresh || !ownedDescription || remaining == 0) {
+			noteFiniteLease(remaining);
+			DebugLog(_T("UPNP: Reusing compatible mapping %hu -> %hu (%s) on %S%s"),
+				*pExternalPort, nPort, (bTCP ? sTCP : sUDP), achOutIP,
+				ownedDescription ? _T("") : _T(" (router-managed description)"));
+			return true;
 		}
-		else
-			DebugLogWarning(_T("Checking UPnP: Mapping for port %hu (%s) on local IP %S is gone, trying to reopen port"), nPort, (bTCP ? sTCP : sUDP), achOutIP);
+		// Observing a finite rule does not renew it. Only renew rules whose
+		// ownership description survived the router unchanged.
+		DebugLog(_T("Checking UPnP: Owned finite mapping %hu -> %hu (%s) has %u seconds left; renewing it now"),
+			*pExternalPort, nPort, (bTCP ? sTCP : sUDP), remaining);
+	} else if (bCheckAndRefresh) {
+		DebugLogWarning(_T("Checking UPnP: Mapping for port %hu (%s) is absent or incompatible (result %d); reopening"),
+			nPort, (bTCP ? sTCP : sUDP), nResult);
 	}
 
+	const auto addFixedMapping = [&](const char* leaseDuration) {
+		return UPNP_AddPortMapping(m_pOwner->m_pURLs->controlURL,
+			m_pOwner->m_pIGDData->first.servicetype, achExternalPort,
+			achPort, pachLANIP, pachDescription, (bTCP ? sTCPa : sUDPa),
+			NULL, leaseDuration);
+	};
+	const auto adoptMappingAfterFailedAdd = [&]() {
+		const int queryResult = queryMapping();
+		if (queryResult != UPNPCOMMAND_SUCCESS || !observedTargetMatches())
+			return false;
+		const uint32 remaining = ParseLeaseDuration(achLeaseDuration, 0);
+		noteFiniteLease(remaining);
+		DebugLog(_T("UPNP: Add returned an error but the requested mapping %hu -> %hu (%s) already exists; reusing it"),
+			*pExternalPort, nPort, (bTCP ? sTCP : sUDP));
+		return true;
+	};
 
-	// Try with a 2-hour lease first. Many routers reject permanent (0) mappings
-	// but accept time-limited ones. The lease will be refreshed by CheckAndRefresh().
-	nResult = UPNP_AddPortMapping(m_pOwner->m_pURLs->controlURL
-								, m_pOwner->m_pIGDData->first.servicetype
-								, achExternalPort, achPort, pachLANIP
-								, pachDescription
-								, (bTCP ? sTCPa : sUDPa)
-								, NULL, "7200"); // 2 hour lease duration
+	// Prefer a finite lease. A retry of the same fixed tuple is idempotent and
+	// covers routers which apply the SOAP action but lose the HTTP response.
+	uint32 requestedLifetime = kPreferredLeaseSeconds;
+	nResult = addFixedMapping("7200");
+	if (IsTransientUpnpError(nResult) && !m_pOwner->m_bAbortDiscovery) {
+		::Sleep(150);
+		nResult = addFixedMapping("7200");
+	}
+	if (nResult != UPNPCOMMAND_SUCCESS && adoptMappingAfterFailedAdd())
+		return true;
 
 	if (nResult != UPNPCOMMAND_SUCCESS) {
-		// Some routers only accept permanent mappings (lease=0), retry without lease
-		DebugLog(_T("Adding PortMapping with lease failed (%d: %S), retrying with permanent mapping..."),
+		// Error 725 explicitly requires this, while a number of non-compliant
+		// IGD v1 routers report only 402/501 for the same lease restriction.
+		DebugLog(_T("Adding finite PortMapping failed (%d: %S), retrying with lease 0..."),
 			nResult, strupnperror(nResult));
-		nResult = UPNP_AddPortMapping(m_pOwner->m_pURLs->controlURL
-									, m_pOwner->m_pIGDData->first.servicetype
-									, achExternalPort, achPort, pachLANIP
-									, pachDescription
-									, (bTCP ? sTCPa : sUDPa)
-									, NULL, NULL); // permanent (no lease)
+		requestedLifetime = 0;
+		nResult = addFixedMapping("0");
+		if (IsTransientUpnpError(nResult) && !m_pOwner->m_bAbortDiscovery) {
+			::Sleep(150);
+			nResult = addFixedMapping("0");
+		}
+		if (nResult != UPNPCOMMAND_SUCCESS && adoptMappingAfterFailedAdd())
+			return true;
 	}
 
-	// IGDv2 can reserve a different free external port. This is preferable to
-	// declaring failure merely because the listener port is occupied upstream.
+	// IGDv2 can reserve a different free external port. Try both a suggested
+	// port and a true wildcard because deployed IGDv2 firmware disagrees on
+	// which form AddAnyPortMapping accepts.
 	const bool bDirectMapping = bTCP
 		? nPort == m_pOwner->m_nTCPPort : nPort == m_pOwner->m_nUDPPort;
 	if (nResult != UPNPCOMMAND_SUCCESS && bDirectMapping) {
-		char achReservedPort[8] = {};
 		DebugLog(_T("Adding fixed UPnP mapping failed (%d: %S), trying IGDv2 AddAnyPortMapping..."),
 			nResult, strupnperror(nResult));
-		nResult = UPNP_AddAnyPortMapping(m_pOwner->m_pURLs->controlURL,
-			m_pOwner->m_pIGDData->first.servicetype, achExternalPort, achPort,
-			pachLANIP, pachDescription,
-			(bTCP ? sTCPa : sUDPa), NULL, "7200", achReservedPort);
-		const unsigned long reserved = strtoul(achReservedPort, NULL, 10);
-		if (nResult == UPNPCOMMAND_SUCCESS && reserved > 0 && reserved <= 65535) {
-			*pExternalPort = static_cast<uint16>(reserved);
-			_snprintf_s(achExternalPort, _countof(achExternalPort), _TRUNCATE,
-				"%hu", *pExternalPort);
-		} else if (nResult == UPNPCOMMAND_SUCCESS)
-			nResult = UPNPCOMMAND_INVALID_RESPONSE;
+		const CStringA suggestedExternalPort(achExternalPort);
+		const auto addAnyMapping = [&](const char* externalPort,
+			const char* leaseDuration, uint32 lifetime) {
+			char reservedPort[8] = {};
+			int result = UPNP_AddAnyPortMapping(
+				m_pOwner->m_pURLs->controlURL,
+				m_pOwner->m_pIGDData->first.servicetype, externalPort,
+				achPort, pachLANIP, pachDescription,
+				(bTCP ? sTCPa : sUDPa), NULL, leaseDuration, reservedPort);
+			char* end = NULL;
+			const unsigned long reserved = strtoul(reservedPort, &end, 10);
+			if (result == UPNPCOMMAND_SUCCESS
+				&& end != reservedPort && *end == 0
+				&& reserved > 0 && reserved <= 65535) {
+				*pExternalPort = static_cast<uint16>(reserved);
+				_snprintf_s(achExternalPort, _countof(achExternalPort),
+					_TRUNCATE, "%hu", *pExternalPort);
+				requestedLifetime = lifetime;
+			} else if (result == UPNPCOMMAND_SUCCESS)
+				result = UPNPCOMMAND_INVALID_RESPONSE;
+			return result;
+		};
+
+		requestedLifetime = kPreferredLeaseSeconds;
+		nResult = addAnyMapping(suggestedExternalPort, "7200",
+			kPreferredLeaseSeconds);
+		if (nResult != UPNPCOMMAND_SUCCESS
+			&& !IsTransientUpnpError(nResult)) {
+			nResult = addAnyMapping(suggestedExternalPort, "0", 0);
+		}
+		if (nResult != UPNPCOMMAND_SUCCESS
+			&& !IsTransientUpnpError(nResult)
+			&& suggestedExternalPort != "0") {
+			nResult = addAnyMapping("0", "7200",
+				kPreferredLeaseSeconds);
+			if (nResult != UPNPCOMMAND_SUCCESS
+				&& !IsTransientUpnpError(nResult))
+				nResult = addAnyMapping("0", "0", 0);
+		}
 	}
 
 	if (nResult != UPNPCOMMAND_SUCCESS) {
@@ -787,29 +1109,35 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 	if (m_pOwner->m_bAbortDiscovery)
 		return false;
 
-	// make sure it really worked
+	// Query up to three times: some routers acknowledge AddPortMapping before
+	// their mapping table becomes readable. Description changes are tolerated
+	// for reachability, but only an exact ownership description is journalled
+	// and later eligible for deletion.
 	m_pOwner->m_nDiagnosticStage = UPNP_DIAG_VERIFY_MAPPING;
-	achOutIP[0] = 0;
-	achOutPort[0] = 0;
-	achOutDescription[0] = 0;
-	achLeaseDuration[0] = 0;
-	nResult = UPNP_GetSpecificPortMappingEntry(m_pOwner->m_pURLs->controlURL
-											 , m_pOwner->m_pIGDData->first.servicetype
-											 , achExternalPort
-											 , (bTCP ? sTCPa : sUDPa)
-											 , NULL
-											 , achOutIP, achOutPort
-												 , achOutDescription, NULL, achLeaseDuration);
+	bool querySucceeded = false;
+	bool targetMatches = false;
+	for (unsigned attempt = 0; attempt < 3; ++attempt) {
+		nResult = queryMapping();
+		if (nResult == UPNPCOMMAND_SUCCESS) {
+			querySucceeded = true;
+			targetMatches = observedTargetMatches();
+			break;
+		}
+		if (attempt != 2 && !m_pOwner->m_bAbortDiscovery)
+			::Sleep(150u + attempt * 200u);
+	}
 
-	if (nResult == UPNPCOMMAND_SUCCESS && achOutIP[0] != 0
-		&& atoi(achOutPort) == nPort && strcmp(achOutIP, pachLANIP) == 0
-		&& strcmp(achOutDescription, pachDescription) == 0) {
-		const uint32 verifiedLifetime = static_cast<uint32>(
-			strtoul(achLeaseDuration, NULL, 10));
-		if (verifiedLifetime != 0
-			&& (m_pOwner->m_dwMappingLeaseLifetime == 0
-				|| verifiedLifetime < m_pOwner->m_dwMappingLeaseLifetime))
-			m_pOwner->m_dwMappingLeaseLifetime = verifiedLifetime;
+	if (querySucceeded && targetMatches) {
+		const uint32 verifiedLifetime = ParseLeaseDuration(achLeaseDuration,
+			requestedLifetime);
+		noteFiniteLease(verifiedLifetime);
+		if (strcmp(achOutDescription, pachDescription) != 0) {
+			DebugLogWarning(_T("UPNP: Router changed or omitted the mapping description for %hu (%s); mapping accepted but excluded from ownership-based deletion"),
+				*pExternalPort, (bTCP ? sTCP : sUDP));
+			DebugLog(_T("Successfully added compatible mapping %hu -> %hu (%s) on local IP %S"),
+				*pExternalPort, nPort, (bTCP ? sTCP : sUDP), achOutIP);
+			return true;
+		}
 		if (!m_pOwner->RecordOwnedMapping(nPort, *pExternalPort, bTCP,
 			pachLANIP, verifiedLifetime, ownershipDescription)) {
 			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_OWNERSHIP_PERSISTENCE;
@@ -824,10 +1152,22 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 		return true;
 	}
 
-	DebugLogWarning(_T("Failed to verify mapping for port %hu (%s) on local IP %S - considering as failed"), nPort, (bTCP ? sTCP : sUDP), achOutIP);
-	// maybe counting this as error is a bit harsh as this may lead to false negatives, however if we would risk false positives
-	// this would mean that the fallback implementations are not tried because eMule thinks it worked out fine
-	return false;
+	if (querySucceeded) {
+		DebugLogWarning(_T("UPNP: Router acknowledged AddPortMapping but reports a different target for external port %hu (%s); rejecting it"),
+			*pExternalPort, (bTCP ? sTCP : sUDP));
+		return false;
+	}
+
+	// GetSpecificPortMappingEntry is optional in practice: a substantial set
+	// of ISP routers implements AddPortMapping but returns 401/501 or malformed
+	// XML for the readback action. The successful Add SOAP response remains the
+	// authoritative result. Such a rule is usable but deliberately not written
+	// to the ownership journal, so eMule can never delete an unverified rule.
+	noteFiniteLease(requestedLifetime);
+	DebugLogWarning(_T("UPNP: AddPortMapping succeeded for %hu -> %hu (%s), but readback is unsupported (%d: %S); accepting without deletion ownership"),
+		*pExternalPort, nPort, (bTCP ? sTCP : sUDP), nResult,
+		strupnperror(nResult));
+	return true;
 }
 
 void CUPnPImplMiniLib::Cleanup()

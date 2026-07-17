@@ -19,6 +19,7 @@ EXPECTED = {
     "DownloadClient.cpp": 1,
     "Emule.cpp": 7,
     "EmuleDlg.cpp": 4,
+    "FirewallProberV6.cpp": 2,
     "ListenSocket.cpp": 5,
     "kademlia/kademlia/Prefs.cpp": 1,
     "LiveTunnel.cpp": 1,
@@ -56,10 +57,10 @@ def main() -> int:
             failures.append(f"{key}: expected {EXPECTED.get(key, 0)}, found {found.get(key, 0)}")
 
     total = sum(found.values())
-    if total != 51:
-        failures.append(f"total: expected 51, found {total}")
-    if line_count != 50:
-        failures.append(f"lines: expected 50, found {line_count}")
+    if total != 53:
+        failures.append(f"total: expected 53, found {total}")
+    if line_count != 52:
+        failures.append(f"lines: expected 52, found {line_count}")
 
     if failures:
         print("Direct-port inventory drift detected:")

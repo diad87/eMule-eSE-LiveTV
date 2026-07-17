@@ -3,18 +3,17 @@
 //
 // Per docs/IPV6_PLAN.md §8.5: stateful residential firewalls drop unsolicited
 // inbound after the conntrack expires (typically 30-60 s). We rotate a small
-// pool of supernodes (5-10) and send a tiny outbound KADEMLIA3_PING_REQ
-// to each every 25 s. The supernode replies, the conntrack stays open, and
-// any peer wishing to contact us via that supernode arrives during the
-// remaining window.
+// pool of connected, capability-confirmed fork peers (up to 10) and send a tiny
+// outbound KADEMLIA3_PING_REQ to each every 25 s. The peer replies, keeping the
+// endpoint-specific conntrack mapping warm for subsequent traffic to that peer.
 //
 // This is the cheapest of the three "make me reachable" layers — under
 // 1 KB/s, no router involvement, works on every consumer network including
 // CGNAT (as long as outbound v6 works at all).
 //
-// Sprint 5 ships the SKELETON. Real supernode selection (latency-based, with
-// trust scoring) lands in S5.3. KADEMLIA3_PING_REQ/RES handlers live in
-// the Kad UDP listener (Sprint 4).
+// Selection is deliberately fail-closed: vanilla routing-table contacts are
+// excluded because they do not understand the R.2 wire. KADEMLIA3_PING_REQ/RES
+// handlers live in the Kad UDP listener.
 #pragma once
 
 #include "eMuleAI/Address.h"
@@ -40,12 +39,12 @@ public:
     // Called every Process() tick from the main loop (~1 s).
     void Tick();
 
-    // Register / blacklist supernodes. m_supernodes is rotated when a member
+    // Register / blacklist keepalive targets. m_supernodes is rotated when a member
     // misses too many PINGs in a row.
     void AddSupernode(const CAddress& addr, uint16 port);
     void BlacklistSupernode(const CAddress& addr, uint16 port);
 
-    // R.2: a supernode replied to our ping — refresh its health (called from the
+    // R.2: a capability-confirmed target replied to our ping — refresh its health (called from the
     // KADEMLIA3_PING_RES handler in the Kad UDP listener). uIP is host-order.
     bool OnPong(uint32 uIP, uint16 port, const Kademlia::CUInt128& nonce);
 

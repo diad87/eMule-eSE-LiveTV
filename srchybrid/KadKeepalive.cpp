@@ -19,12 +19,13 @@
 static char THIS_FILE[] = __FILE__;
 #endif
 
-// Send a KADEMLIA3_PING_REQ to each supernode every PING_INTERVAL_MS so that
+// Send a KADEMLIA3_PING_REQ to each capability-confirmed fork peer every
+// PING_INTERVAL_MS so that
 // stateful firewall conntrack on the outbound flow stays open. If we miss
-// PONG_TIMEOUT_MS pongs in a row from a supernode, we rotate it out of the
-// active set. The supernode pool is rebuilt from Kad routing table entries
-// once that lands in Sprint 4; until then AddSupernode() is called manually
-// by the prober.
+// PONG_TIMEOUT_MS pongs in a row from a target, we rotate it out of the
+// active set. Tick() discovers targets from connected eD2K peers that have
+// explicitly advertised ESE_CAP_KAD_KEEPALIVE; vanilla Kad contacts are not
+// eligible.
 static const DWORD KEEPALIVE_PING_INTERVAL_MS = 25u * 1000u;   // 25 s
 static const DWORD KEEPALIVE_PONG_TIMEOUT_MS  = 90u * 1000u;   // 3 missed pings
 static const size_t KEEPALIVE_MAX_SUPERNODES   = 10;
@@ -99,8 +100,8 @@ void CKadKeepalive::AddSupernode(const CAddress& addr, uint16 port)
 	if (port == 0 || addr.GetType() != CAddress::IPv4 || addr.IsNull())
 		return;
     if (m_supernodes.size() >= KEEPALIVE_MAX_SUPERNODES) {
-        // Pool full — silently ignore. Sprint 4 will replace the worst
-        // candidate based on RTT/uptime once the routing table is wired.
+        // Pool full: keep the bounded active set. Ranking/replacement by
+        // measured health can be added without admitting vanilla Kad nodes.
         return;
     }
     // Dedup: same (addr, port) pair never added twice.
@@ -199,9 +200,11 @@ void CKadKeepalive::Tick()
         static_cast<LONG>(m_supernodes.size()));
 }
 
-// R.2: a supernode answered our KADEMLIA3_PING_REQ with a PONG (0x67). Mark it
+// R.2: a capability-confirmed target answered our KADEMLIA3_PING_REQ with a
+// PONG (0x67). Mark it
 // healthy so the miss-detector in Tick() keeps it in the active set. The exact
-// endpoint, Kad identity and a recent outstanding ping must all match. Called from
+// source IP, unpredictable outstanding nonce and freshness window must match;
+// the source port may legitimately be NAT-translated and is learned. Called from
 // CKademliaUDPListener::Process_KADEMLIA3_PING_RES on the Kad Process thread —
 // same thread as Tick(), so m_supernodes needs no lock.
 bool CKadKeepalive::OnPong(uint32 uIP, uint16 port, const Kademlia::CUInt128& nonce)

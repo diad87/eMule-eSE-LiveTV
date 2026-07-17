@@ -32,7 +32,7 @@ their client on the eMule forum.
 
 #include "stdafx.h"
 #include "../../LiveDebugLog.h"
-#include "../../KadKeepalive.h"     // R.2: CKadKeepalive::OnPong (PONG -> supernode health)
+#include "../../KadKeepalive.h"     // R.2: CKadKeepalive::OnPong (PONG -> target health)
 #include "HolePunchCookie.h"        // eSE P0: return-routability cookie (anti-reflection)
 #include "clientlist.h"
 #include "ClientUDPSocket.h"
@@ -1394,7 +1394,7 @@ void CKademliaUDPListener::ProcessPacket(const byte *pbyData, uint32 uLenData, u
 	case KADEMLIA3_PING_REQ:   // R.2 keepalive: a peer holds its conntrack open — answer a PONG.
 		Process_KADEMLIA3_PING_REQ(pbyPacketData, uLenData, uIP, uUDPPort, senderUDPKey);
 		break;
-	case KADEMLIA3_PING_RES:   // R.2 keepalive: our supernode replied — refresh its health.
+	case KADEMLIA3_PING_RES:   // R.2 keepalive: our capability-confirmed target replied.
 		Process_KADEMLIA3_PING_RES(pbyPacketData, uLenData, uIP, uUDPPort, senderUDPKey);
 		break;
 	// R.1 (3-way rendezvous) — real handlers (replace the parse-and-drop stubs).
@@ -3547,7 +3547,8 @@ void CKademliaUDPListener::SendKad3HolepunchProceed(uint32 uIP_A, uint16 uPort_A
 	SendKad3HolepunchPacket(fileIO, KADEMLIA3_HOLEPUNCH_PROCEED, uIP_A, uPort_A);
 }
 
-// R.2 keepalive: send a minimal KADEMLIA3_PING_REQ to a supernode so the stateful
+// R.2 keepalive: send a minimal KADEMLIA3_PING_REQ to a capability-confirmed
+// fork peer so the stateful
 // firewall conntrack on our outbound flow stays open. IPv4 path (the validated Kad
 // UDP socket); a 0 IP is skipped (e.g. a v6-only CAddress reduced to 0). Reuses the
 // R.1 encryption-tiered send helper. The far side answers via Process_KADEMLIA3_PING_REQ
@@ -3615,7 +3616,7 @@ void CKademliaUDPListener::Process_KADEMLIA3_PING_REQ(const byte *pbyPacketData,
 		SendKad3PingRes(uIP, uUDPPort, nonce);
 }
 
-// R.2 keepalive receiver: a supernode answered our ping. Refresh its health so Tick()'s
+// R.2 keepalive receiver: a capability-confirmed target answered our ping. Refresh its health so Tick()'s
 // miss-detector keeps it active. Matched on the socket source IP (host-order), never on
 // anything self-reported in the payload.
 void CKademliaUDPListener::Process_KADEMLIA3_PING_RES(const byte *pbyPacketData, uint32 uLenPacket, uint32 uIP, uint16 uUDPPort, const CKadUDPKey & /*senderUDPKey*/)

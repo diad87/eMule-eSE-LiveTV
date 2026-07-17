@@ -155,11 +155,11 @@ public:
 	static DWORD	starttime;
 
 	// eSE: NAT Traversal / Hole-Punch telemetry
-	// Thread-safe DWORD counters incremented from uTP callbacks via InterlockedIncrement.
+	// Thread-safe DWORD counters incremented from the Kad/uTP paths via InterlockedIncrement.
 	// These track the real-time success rate of NAT hole-punching, enabling operators to
 	// detect CG-NAT/symmetric NAT environments that degrade mesh connectivity.
 	static volatile DWORD	m_dwHolePunchAttempts;		// Total hole-punch attempts initiated
-	static volatile DWORD	m_dwHolePunchSuccess;		// Successful NAT traversals (bidirectional link established)
+	static volatile DWORD	m_dwHolePunchSuccess;		// Correlated ACKs received: UDP pinhole confirmed, not necessarily a uTP session
 	static volatile DWORD	m_dwHolePunchSymNATFail;	// Failures attributed to symmetric NAT (port prediction miss)
 	static volatile DWORD	m_dwHolePunchEncrypted;		// eSE 8.12.2: Hole-punch REQs sent with Kad encryption
 	static volatile DWORD	m_dwHolePunchPlaintext;		// eSE 8.12.2: Hole-punch REQs sent unencrypted (peer not in routing table)

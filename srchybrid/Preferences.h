@@ -650,6 +650,8 @@ public:
 	// eSE: Network State & Feature Flags
 	static bool		m_bUPnPCriticalError;	// Fase 2: Indica fallo absoluto de UPnP/NAT-PMP
 	static bool		m_bEnableUtpHolePunch;	// Fase 4: Kill-switch maestro para Hole Punching uTP
+	static int		m_iEseNetLabConsent;	// v9 beta NetLab cohort: 0 undecided, 1 declined, 2 explicitly accepted.
+	static bool		m_bEseNetLabEnabled;	// Immediate cohort kill switch. Effective only after explicit acceptance.
 	static bool		m_bEseV9Experimental;	// v9 alpha master opt-in for unvalidated wire capabilities. Default OFF.
 	static bool		m_bEseKad3Rendezvous;	// Secure 3-way Kad rendezvous participation. Separate, default-OFF opt-in.
 	static bool		m_bEseEndgame;			// Endgame mode: race the last outstanding blocks across sources so one slow owner cannot stall the final MB. Default ON.
@@ -1298,6 +1300,21 @@ public:
 	static void		SetUPnPCriticalError(bool b)		{ m_bUPnPCriticalError = b; }
 	static bool		GetUtpHolePunchEnabled()			{ return m_bEnableUtpHolePunch; }
 	static void		SetUtpHolePunchEnabled(bool b)		{ m_bEnableUtpHolePunch = b; }
+	enum EEseNetLabConsent {
+		EseNetLabUndecided = 0,
+		EseNetLabDeclined = 1,
+		EseNetLabAccepted = 2
+	};
+	static int		GetEseNetLabConsent()				{ return m_iEseNetLabConsent; }
+	static void		SetEseNetLabConsent(int state)		{
+		m_iEseNetLabConsent = state < EseNetLabUndecided || state > EseNetLabAccepted
+			? EseNetLabUndecided : state;
+		if (m_iEseNetLabConsent != EseNetLabAccepted)
+			m_bEseNetLabEnabled = false;
+	}
+	static bool		GetEseNetLabEnabled()				{ return m_bEseNetLabEnabled; }
+	static void		SetEseNetLabEnabled(bool b)			{ m_bEseNetLabEnabled = b && m_iEseNetLabConsent == EseNetLabAccepted; }
+	static bool		IsEseNetLabActive()					{ return m_iEseNetLabConsent == EseNetLabAccepted && m_bEseNetLabEnabled; }
 	static bool		GetEseV9Experimental()				{ return m_bEseV9Experimental; }
 	static void		SetEseV9Experimental(bool b)			{ m_bEseV9Experimental = b; }
 	static bool		GetEseKad3Rendezvous()			{ return m_bEseKad3Rendezvous; }

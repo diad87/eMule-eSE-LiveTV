@@ -182,15 +182,24 @@ public:
 	bool            SupportsEseHolePunchRdv()     const { return (m_uEseCapabilities & 0x00008000) != 0; }  // R.1 3-way rendezvous (ESE_CAP_HOLEPUNCH_RDV, bit 15)
 	bool            SupportsEseKadKeepalive()     const { return (m_uEseCapabilities & 0x00010000) != 0; }  // R.2 nonce-correlated Kad keepalive (bit 16)
 	bool            SupportsLiveRelay()           const { return (m_uEseCapabilities & 0x00200000) != 0; }  // R.3 buddy relay (ESE_CAP_LIVE_RELAY, bit 21)
+	bool            SupportsEseNetLabV1()         const { return (m_uEseCapabilities & 0x10000000) != 0; }  // explicit active cohort consent, not mere build support
 	// Strictly decoded TAG_ESE_REACH metadata obtained with a Kad source result.
 	// It is independent of HELLO capabilities because it must select a route
 	// before a TCP HELLO can exist. Unknown future bits are intentionally masked.
-	void            SetReachCaps(uint16 caps)            { m_uReachCaps = caps & 0x03FF; }
+	void            SetReachCaps(uint16 caps)            { m_uReachCaps = caps & 0x07FF; }
 	uint16          GetReachCaps() const                  { return m_uReachCaps; }
 	bool            SupportsReachV6Inbound() const        { return (m_uReachCaps & 0x0004) != 0; }
 	bool            SupportsReachPunch2() const           { return (m_uReachCaps & 0x0008) != 0; }
 	bool            SupportsReachPunch3() const           { return (m_uReachCaps & 0x0010) != 0; }
 	bool            SupportsReachKeepalive() const        { return (m_uReachCaps & 0x0020) != 0; }
+	bool            SupportsReachNetLabV1() const         { return (m_uReachCaps & 0x0400) != 0; }
+	bool            SupportsEseNetLabV1Target() const     {
+		// Before HELLO, a cold Kad source can only express participation in its
+		// signed reach vector. Once the client is identified, require its current
+		// HELLO bit so stale Kad metadata cannot stand in for active consent.
+		return SupportsEseNetLabV1()
+			|| (GetClientSoft() == SO_UNKNOWN && SupportsReachNetLabV1());
+	}
 	// A cold Kad source has not exchanged HELLO yet. Its strictly decoded
 	// reach vector is therefore the only way to learn that it accepts R.1
 	// rendezvous signaling before the connection which R.1 is meant to create.

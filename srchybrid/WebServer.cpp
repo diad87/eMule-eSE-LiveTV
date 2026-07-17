@@ -33,6 +33,7 @@
 #include "LiveSubscriptionStore.h"
 #include "FirewallProberV6.h"
 #include "ClientUDPSocket.h"
+#include "eMuleAI/UtpSocket.h"
 #include "Opcodes.h"   // g_uEseCapsRuntime extern
 #include "KademliaWnd.h"
 #include "KadSearchListCtrl.h"
@@ -4586,6 +4587,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		|| (sURL.Left(9) == "/api/krp/")
 		|| (sURL.Left(13) == "/api/network/")
 		|| (sURL.Left(11) == "/api/ese/v9")
+		|| (sURL.Left(15) == "/api/ese/netlab")
 		|| (sURL == "/api/status")
 		|| (sURL == "/dashboard") || (sURL == "/dashboard/")
 		|| (sURL.Left(5) == "/hls/")
@@ -4736,7 +4738,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"\"keepalive_running\":%s,"
 			"\"keepalive_pings_sent\":%u,"
 			"\"keepalive_pongs_recv\":%u,"
-			"\"keepalive_supernodes\":%u}",
+			"\"keepalive_supernodes\":%u,"
+			"\"netlab_consent\":\"%s\","
+			"\"netlab_enabled\":%s}",
 			thePrefs.GetUPnPCriticalError() ? "true" : "false",
 			thePrefs.GetUtpHolePunchEnabled() ? "true" : "false",
 			thePrefs.GetWSUseUPnP() ? "true" : "false",
@@ -4758,7 +4762,10 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
 			ksKeepalive.pingsSent,
 			ksKeepalive.pongsReceived,
-			ksKeepalive.supernodesActive
+			ksKeepalive.supernodesActive,
+			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
+				thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided",
+			thePrefs.IsEseNetLabActive() ? "true" : "false"
 		);
 		CStringA header;
 		header.Format(
@@ -5152,6 +5159,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 "<h1>🎬 eSE Live <span style=font-size:13px;color:#6b7280>mini dashboard (sin Node.js)</span></h1>"
 "<p style=font-size:13px;color:#9ca3af>Esta es la versión embebida en <code>emule.exe</code>. Para la experiencia completa abre <a href=http://localhost:8080/live>http://localhost:8080/live</a> (requiere ese-server.exe).</p>"
 "<div class=box><h3 style=margin-top:0>🔍 Pre-flight</h3><div class=pf id=pf>cargando...</div></div>"
+"<div class=box><h3 style=margin-top:0>NetLab beta</h3><div id=nl-state style=font-size:12px;color:#94a3b8>cargando...</div>"
+"<div class=row><button id=nl-toggle class=warn>Activar / desactivar</button><button id=nl-copy>Copiar informe saneado</button></div></div>"
 "<div class=box><h3 style=margin-top:0>🎬 Emisión</h3>"
 "<div class=row><label>Título: <input id=br-title placeholder='Mi Stream' value='eSE Demo'></label>"
 "<select id=br-source style=padding:8px;background:#0e0e10;color:#ddd;border:1px solid #2a2a2e;border-radius:5px>"
@@ -5176,7 +5185,10 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 "function L(t){var l=document.getElementById('log');l.textContent+=new Date().toLocaleTimeString()+' '+t+'\\n';l.scrollTop=l.scrollHeight;}"
 "function PF(){fetch('/api/live/preflight').then(function(r){return r.json();}).then(function(d){var p=document.getElementById('pf');var f=function(ok,t){var c=ok===true?'ok':(ok==='checking'?'warn-c':'err');var i=ok===true?'✅':(ok==='checking'?'⏳':'❌');return '<div class='+c+'>'+i+' '+t+'</div>';};p.innerHTML=f(d.kad_connected,'Kad')+f(d.high_id?true:(d.firewall_checking?'checking':false),d.high_id?'HighID':(d.firewall_checking?'NAT…':'LowID'))+f(d.ffmpeg_found,'FFmpeg')+f(!!d.public_ip,'IP '+(d.public_ip||'?')+':'+d.port);}).catch(function(){});}"
 "function MON(){fetch('/api/live/debug').then(function(r){return r.json();}).then(function(d){var m=document.getElementById('mon');if(!d){m.textContent='-';return;}m.innerHTML='broadcasting='+d.broadcasting+' viewing='+d.viewing+'<br>buffer='+(d.chunks?d.chunks.count+' segs ['+d.chunks.oldestSeq+'..'+d.chunks.newestSeq+']':'')+'<br>peers: view='+(d.peers?d.peers.viewPeers:0)+' broadcast='+(d.peers?d.peers.broadcastPeers:0)+' mesh='+(d.peers?d.peers.meshPeers:0)+'<br>kad: '+(d.discovery?'connected='+d.discovery.kadConnected+' streams='+d.discovery.knownStreams:'?');}).catch(function(){});}"
-"PF();MON();setInterval(PF,8000);setInterval(MON,2000);"
+"function NL(){fetch('/api/ese/v9').then(function(r){return r.json();}).then(function(d){var n=d.netlab||{};var s=document.getElementById('nl-state');s.dataset.on=n.enabled?'1':'0';s.textContent='Consentimiento: '+(n.consent||'?')+' | cohorte: '+(n.enabled?'ACTIVA':'OFF')+' | relay/KRP/Kad6 public exit: autorizacion independiente';document.getElementById('nl-toggle').disabled=n.consent!=='accepted';}).catch(function(){});}"
+"PF();MON();NL();setInterval(PF,8000);setInterval(MON,2000);setInterval(NL,5000);"
+"document.getElementById('nl-toggle').onclick=function(){var on=document.getElementById('nl-state').dataset.on==='1'?'0':'1';fetch('/api/ese/v9?on='+on).then(function(){NL();});};"
+"document.getElementById('nl-copy').onclick=function(){fetch('/api/ese/netlab/report').then(function(r){return r.text();}).then(function(t){if(navigator.clipboard&&navigator.clipboard.writeText){return navigator.clipboard.writeText(t);}var x=document.createElement('textarea');x.value=t;document.body.appendChild(x);x.select();document.execCommand('copy');x.remove();}).then(function(){L('Informe NetLab saneado copiado');}).catch(function(){L('No se pudo copiar el informe');});};"
 "document.getElementById('br-start').onclick=function(){var t=encodeURIComponent(document.getElementById('br-title').value||'eSE');var s=document.getElementById('br-source').value;var b=document.getElementById('br-bitrate').value;L('Iniciando broadcast '+s+' '+b+'k…');fetch('/api/live/broadcast/start?source='+s+'&title='+t+'&bitrate='+b).then(function(r){return r.json();}).then(function(d){if(d.success){document.getElementById('br-status').textContent='✅ Emitiendo: '+d.source+' @ '+d.bitrate+' kbps';if(d.link){document.getElementById('br-link').style.display='';document.getElementById('br-link-input').value=d.link;}L('OK link='+d.link);}else{document.getElementById('br-status').textContent='❌ '+(d.error||'fallo');L('FAIL '+d.error);}});};"
 "document.getElementById('br-stop').onclick=function(){fetch('/api/live/broadcast/stop').then(function(r){return r.json();}).then(function(d){document.getElementById('br-status').textContent='Detenido';document.getElementById('br-link').style.display='none';L('Stopped');});};"
 "document.getElementById('join-btn').onclick=function(){var l=document.getElementById('join-link').value.trim();if(!l){return;}L('Joining '+l);fetch('/api/live/direct_join?link='+encodeURIComponent(l)).then(function(r){return r.json();}).then(function(d){var m=document.getElementById('join-msg');if(d.success){m.innerHTML='✅ Conectado a '+d.ip+':'+d.port+'. <a href=/hls/stream.m3u8>Abre el HLS</a>';m.className='ok';L('Joined');}else{m.textContent='❌ '+(d.error||'fallo');m.className='err';}});};"
@@ -5290,7 +5302,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		}
 		const char* errCode = "ok";
 		bool ok = true;
-		if (bStart)      { CKadKeepalive::Instance().RequestStart(); s_lastKeepaliveToggle = nowKa; }
+		if (bStart && !thePrefs.IsEseNetLabActive()) {
+			ok = false;
+			errCode = "netlab_consent_required";
+		}
+		else if (bStart) { CKadKeepalive::Instance().RequestStart(); s_lastKeepaliveToggle = nowKa; }
 		else if (bStop)  { CKadKeepalive::Instance().RequestStop();  s_lastKeepaliveToggle = nowKa; }
 		else { ok = false; errCode = "unknown_action"; }
 
@@ -5312,48 +5328,83 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
-	// --- /api/ese/v9?on=1 --- One-command v9 reachability bring-up / soft kill-switch.
-	// Flips ALL four default-OFF v9 prefs together (reach selector + relay accept + relay egress +
-	// auto-keepalive) so a multi-PC test needs ONE call instead of four scattered /api/relay and
-	// /api/keepalive toggles; on=0 reverts the node to vanilla reachability in one shot. Also
-	// starts/stops the Kad keepalive to match (RequestStart/Stop are atomic flag-flips, idempotent
-	// and safe from this worker thread — same contract the /api/keepalive handler relies on).
-	// NOTE: the master 2-way hole-punch (EnableUtpHolePunch) is a SEPARATE, default-ON pref and is
-	// intentionally NOT touched here — this lever governs only the dormant v9 cascade layers.
+	// --- /api/ese/v9[?on=0|1] --- NetLab status + immediate cohort kill switch.
+	// A GET without "on" is read-only. Enabling is rejected unless the native
+	// first-start notice was explicitly accepted. The base cohort never toggles
+	// relay duty, relay egress, KRP, Kad6 public exit, punch3 or port prediction.
 	if (sURL.Left(11) == "/api/ese/v9") {
-		const bool bOn = (_ParseURL(Data.sURL, _T("on")) != _T("0"));   // default ON unless on=0
-		thePrefs.SetEseV9Experimental(bOn);
-		thePrefs.SetEseReachSelector(bOn);
-		thePrefs.SetEseRelayAccept(bOn);
-		thePrefs.SetEseRelayEgress(bOn);
-		thePrefs.SetEseAutoKeepalive(bOn);
-		thePrefs.SetEseHolePunchPortPredict(bOn);   // anti-CGNAT port spray (both eD2K + Live)
-		thePrefs.SetEseEd2kPunch3(bOn);             // eD2K downloads escalate to 3-way rendezvous
-		thePrefs.SetEseKad3Rendezvous(bOn);         // advertise/handle the separately gated 3-way protocol
-		volatile LONG* pEseCaps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
-		if (bOn && thePrefs.GetUtpHolePunchEnabled())
-			::InterlockedOr(pEseCaps, (LONG)ESE_CAP_HOLEPUNCH_RDV);
-		else
-			::InterlockedAnd(pEseCaps, ~(LONG)ESE_CAP_HOLEPUNCH_RDV);
-		if (bOn && thePrefs.GetEseRelayAccept())
-			::InterlockedOr(pEseCaps, (LONG)ESE_CAP_LIVE_RELAY);
-		else
-			::InterlockedAnd(pEseCaps, ~(LONG)ESE_CAP_LIVE_RELAY);
-		RefreshEseV9PreviewCaps();
-		if (bOn) CKadKeepalive::Instance().RequestStart();
-		else     CKadKeepalive::Instance().RequestStop();
+		const CString onArg = _ParseURL(Data.sURL, _T("on"));
+		bool ok = true;
+		bool changed = false;
+		const char* error = "";
+		if (!onArg.IsEmpty()) {
+			changed = true;
+			if (onArg == _T("0")) {
+				thePrefs.SetEseNetLabEnabled(false);
+				thePrefs.SetEseAutoKeepalive(false);
+				thePrefs.SetEseReachSelector(false);
+				thePrefs.SetEseHolePunchPortPredict(false);
+				thePrefs.SetEseEd2kPunch3(false);
+				thePrefs.SetEseKad3Rendezvous(false);
+				volatile LONG* pEseCaps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
+				::InterlockedAnd(pEseCaps, ~(LONG)ESE_CAP_HOLEPUNCH_RDV);
+				RefreshEseV9PreviewCaps();
+				CKadKeepalive::Instance().RequestStop();
+			} else if (onArg == _T("1")) {
+				if (thePrefs.GetEseNetLabConsent() != CPreferences::EseNetLabAccepted) {
+					ok = false;
+					error = "explicit_consent_required";
+				} else {
+					thePrefs.SetEseNetLabEnabled(true);
+					thePrefs.SetEseAutoKeepalive(true);
+					// A base re-enable never escalates into the staged cohort.
+					thePrefs.SetEseReachSelector(false);
+					thePrefs.SetEseHolePunchPortPredict(false);
+					thePrefs.SetEseEd2kPunch3(false);
+					thePrefs.SetEseKad3Rendezvous(false);
+					volatile LONG* pEseCaps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
+					::InterlockedAnd(pEseCaps, ~(LONG)ESE_CAP_HOLEPUNCH_RDV);
+					RefreshEseV9PreviewCaps();
+					CKadKeepalive::Instance().RequestStart();
+				}
+			} else {
+				ok = false;
+				error = "invalid_on_value";
+			}
+		}
+		const char* consent =
+			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
+			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided";
 		CStringA json;
-		json.Format("{\"success\":true,\"on\":%s,"
-			"\"v9\":{\"experimental\":%s,\"selector\":%s,\"relay_accept\":%s,\"relay_egress\":%s,\"auto_keepalive\":%s,"
+		json.Format("{\"success\":%s,\"changed\":%s,\"error\":\"%s\","
+			"\"netlab\":{\"consent\":\"%s\",\"enabled\":%s,\"capability_advertised\":%s,"
+			"\"base\":{\"ipv6_auto\":%s,\"mappings\":true,\"hole_punch\":%s,\"auto_keepalive\":%s},"
+			"\"staged\":{\"selector\":%s,\"port_predict\":%s,\"ed2k_punch3\":%s,\"kad3_rendezvous\":%s},"
+			"\"independent\":{\"relay_accept\":%s,\"relay_egress\":%s,\"krp\":%s,\"kad6_public_exit\":%s},"
+			"\"keepalive_running\":%s},"
+			"\"v9\":{\"experimental\":%s,"
 			"\"port_predict\":%s,\"ed2k_punch3\":%s,\"kad3_rendezvous\":%s,"
 			"\"keepalive_running\":%s,\"hole_punch_master\":%s},"
 			"\"reach_connects\":{\"direct\":%u,\"punch2\":%u,\"punch3\":%u,\"relay\":%u}}",
-			bOn ? "true" : "false",
-			thePrefs.GetEseV9Experimental() ? "true" : "false",
+			ok ? "true" : "false",
+			changed ? "true" : "false",
+			error,
+			consent,
+			thePrefs.IsEseNetLabActive() ? "true" : "false",
+			(g_uEseCapsRuntime & ESE_CAP_NETLAB_V1) != 0 ? "true" : "false",
+			thePrefs.GetIPv6Mode() == CPreferences::IPv6AutoMode ? "true" : "false",
+			thePrefs.GetUtpHolePunchEnabled() ? "true" : "false",
+			thePrefs.GetEseAutoKeepalive() ? "true" : "false",
 			thePrefs.GetEseReachSelector() ? "true" : "false",
+			thePrefs.GetEseHolePunchPortPredict() ? "true" : "false",
+			thePrefs.GetEseEd2kPunch3() ? "true" : "false",
+			thePrefs.GetEseKad3Rendezvous() ? "true" : "false",
 			thePrefs.GetEseRelayAccept() ? "true" : "false",
 			thePrefs.GetEseRelayEgress() ? "true" : "false",
-			thePrefs.GetEseAutoKeepalive() ? "true" : "false",
+			thePrefs.GetKrpRelayEnabled() ? "true" : "false",
+			thePrefs.GetKad6PublicExitOptIn() ? "true" : "false",
+			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
+			thePrefs.GetEseV9Experimental() ? "true" : "false",
 			thePrefs.GetEseHolePunchPortPredict() ? "true" : "false",
 			thePrefs.GetEseEd2kPunch3() ? "true" : "false",
 			thePrefs.GetEseKad3Rendezvous() ? "true" : "false",
@@ -5362,7 +5413,68 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			(unsigned)CStatistics::m_dwReachConnDirect, (unsigned)CStatistics::m_dwReachConnPunch2,
 			(unsigned)CStatistics::m_dwReachConnPunch3, (unsigned)CStatistics::m_dwReachConnRelay);
 		CStringA hdr;
-		hdr.Format("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n", json.GetLength());
+		hdr.Format("HTTP/1.1 %s\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n",
+			ok ? "200 OK" : "409 Conflict", json.GetLength());
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
+	// Local, sanitized cohort report. It deliberately contains no address,
+	// node ID, peer identifier, filename, stream key or central upload hook.
+	if (sURL == "/api/ese/netlab/report") {
+		const CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+		const bool hasV4 = theApp.GetPublicIP() != 0;
+		const bool hasV6 = v6.GetType() == CAddress::IPv6 && v6.IsPublicIP();
+		const char* natEstimate = !theApp.IsFirewalled() ? "open_or_mapped" :
+			CStatistics::m_dwHolePunchSymNATFail != 0 ? "symmetric_or_cgnat_suspected" :
+			"lowid_or_double_nat";
+		const CKadKeepalive::Stats ka = CKadKeepalive::Instance().GetStats();
+		const size_t utpConnected = CUtpSocket::GetConnectedSocketCount();
+		const char* layer = CStatistics::m_dwKad3RdvReqSent != 0 ? "punch3" :
+			CStatistics::m_dwHolePunchAttempts != 0 ? "punch2" :
+			ka.pingsSent != 0 ? "keepalive" : hasV6 ? "ipv6" : "direct";
+		const char* fallback = CStatistics::m_dwHolePunchSuccess != 0 ? "none" :
+			CStatistics::m_dwHolePunchSymNATFail != 0 ? "punch_timeout_or_nat_mapping_changed" :
+			!Kademlia::CKademlia::IsConnected() ? "kad_disconnected" : "not_observed";
+		CStringA version = CT2A(theApp.m_strCurVersionLong);
+		version.Replace("\\", "\\\\");
+		version.Replace("\"", "\\\"");
+		CStringA json;
+		json.Format(
+			"{\"schema\":\"ESE_NETLAB_REPORT_V1\",\"version\":\"%s\","
+			"\"cohort\":{\"consent\":\"%s\",\"enabled\":%s},"
+			"\"network\":{\"ipv4\":%s,\"ipv6\":%s,\"nat_estimated\":\"%s\"},"
+			"\"last_layer_attempted\":\"%s\",\"fallback_reason\":\"%s\","
+			"\"punch2\":{\"attempts\":%u,\"pinhole_confirmed\":%u,\"nat_failures\":%u,\"spray_extra_packets\":%u},"
+			"\"punch3\":{\"requests\":%u,\"forwarded\":%u,\"signaling_success\":%u},"
+			"\"keepalive\":{\"running\":%s,\"pings\":%u,\"pongs\":%u,\"peers\":%u},"
+			"\"utp_connected\":%s,\"utp_connected_sockets\":%u,"
+			"\"bytes\":{\"session_received\":%I64u,\"session_sent\":%I64u,\"relay_forwarded_kb\":%u},"
+			"\"privacy\":{\"full_ip_stored\":false,\"central_telemetry\":false}}",
+			(LPCSTR)version,
+			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
+				thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided",
+			thePrefs.IsEseNetLabActive() ? "true" : "false",
+			hasV4 ? "true" : "false", hasV6 ? "true" : "false", natEstimate,
+			layer, fallback,
+			(unsigned)CStatistics::m_dwHolePunchAttempts,
+			(unsigned)CStatistics::m_dwHolePunchSuccess,
+			(unsigned)CStatistics::m_dwHolePunchSymNATFail,
+			(unsigned)CStatistics::m_dwHolePunchSprayReqs,
+			(unsigned)CStatistics::m_dwKad3RdvReqSent,
+			(unsigned)CStatistics::m_dwKad3RdvFwd,
+			(unsigned)CStatistics::m_dwKad3RdvSuccess,
+			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
+			(unsigned)ka.pingsSent, (unsigned)ka.pongsReceived, (unsigned)ka.supernodesActive,
+			utpConnected != 0 ? "true" : "false",
+			(unsigned)utpConnected,
+			(unsigned __int64)theStats.sessionReceivedBytes,
+			(unsigned __int64)theStats.sessionSentBytes,
+			(unsigned)CStatistics::m_dwRelayBytesFwdKB);
+		CStringA hdr;
+		hdr.Format("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n",
+			json.GetLength());
 		Data.pSocket->SendData(hdr, hdr.GetLength());
 		Data.pSocket->SendData(json, json.GetLength());
 		return;
@@ -5470,9 +5582,17 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		const char* errCode = "ok";
 		DWORD attemptsBefore = CStatistics::m_dwHolePunchAttempts;
 		uint16 hpSpread = 0;   // [eSE v9] port-predict spread actually used (0 = single-shot); reported in JSON
+		CUpDownClient* targetPeer = theApp.clientlist != NULL
+			? theApp.clientlist->FindClientByIP_KadPort(ipNet, udpPort) : NULL;
+		if (targetPeer == NULL && theApp.clientlist != NULL)
+			targetPeer = theApp.clientlist->FindClientByIP(ipNet);
 
 		if (ipNet == INADDR_NONE || ipNet == 0 || udpPort == 0) {
 			errCode = "invalid_ip_port";
+		} else if (!thePrefs.IsEseNetLabActive()) {
+			errCode = "netlab_consent_required";
+		} else if (targetPeer == NULL || !targetPeer->SupportsEseNetLabV1Target()) {
+			errCode = "netlab_target_required";
 		} else if (!Kademlia::CKademlia::IsConnected() || Kademlia::CKademlia::GetUDPListener() == NULL) {
 			errCode = "kad_not_ready";
 		} else if (!thePrefs.GetUtpHolePunchEnabled()) {
@@ -5488,7 +5608,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			hpSpread = (spreadReq > 0)
 				? (uint16)(spreadReq > 8 ? 8 : spreadReq)
 				: (thePrefs.GetEseHolePunchPortPredict() ? (uint16)thePrefs.GetEseHolePunchPortSpread() : 0);
-			Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(ntohl(ipNet), udpPort, hpSpread);
+			Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(
+				ntohl(ipNet), udpPort, hpSpread, true, targetPeer);
 			s_lastManualHolePunch = now;
 			ok = true;
 		}
@@ -6363,6 +6484,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		if (capsRuntime & ESE_CAP_KAD6)                appendCap("kad6");
 		if (capsRuntime & ESE_CAP_TUNNEL_STRICT3)      appendCap("tunnel_strict3");
 		if (capsRuntime & ESE_CAP_TUNNEL_SHAPED)       appendCap("tunnel_shaped");
+		if (capsRuntime & ESE_CAP_NETLAB_V1)           appendCap("netlab_v1");
 
 		CStringA json;
 		json.Format(

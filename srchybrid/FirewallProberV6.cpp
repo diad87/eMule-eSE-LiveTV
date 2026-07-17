@@ -262,15 +262,24 @@ void RefreshEseV9PreviewCaps()
         ESE_CAP_TUNNEL_BULK | ESE_CAP_REACH_V2 | ESE_CAP_KAD_KEEPALIVE |
         ESE_CAP_TUNNEL_AUTH |
         ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED |
-        ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY);
+        ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY | ESE_CAP_NETLAB_V1);
     volatile LONG* caps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
     ::InterlockedAnd(caps, ~previewMask);
+
+    // NetLab is a separate beta-consent boundary, not an alias for the broad
+    // v9 experimental switch. Installing the beta or supporting these code
+    // paths does not advertise participation.
+    if (CPreferences::IsEseNetLabActive()) {
+        LONG netlab = static_cast<LONG>(ESE_CAP_NETLAB_V1 | ESE_CAP_REACH_V2);
+        if (CPreferences::GetEseAutoKeepalive())
+            netlab |= static_cast<LONG>(ESE_CAP_KAD_KEEPALIVE);
+        ::InterlockedOr(caps, netlab);
+    }
+
     if (!CPreferences::GetEseV9Experimental())
         return;
 
     LONG enabled = static_cast<LONG>(ESE_CAP_TUNNEL_BULK | ESE_CAP_REACH_V2);
-    if (CPreferences::GetEseAutoKeepalive())
-        enabled |= static_cast<LONG>(ESE_CAP_KAD_KEEPALIVE);
     if (eSELive::NodeIdentityIsPersistent()) {
         enabled |= static_cast<LONG>(ESE_CAP_TUNNEL_AUTH |
             ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED);

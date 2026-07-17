@@ -134,6 +134,11 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   const base = read(repoRoot, 'srchybrid', 'BaseClient.cpp');
   const keepalive = read(repoRoot, 'srchybrid', 'KadKeepalive.cpp');
   const prober = read(repoRoot, 'srchybrid', 'FirewallProberV6.cpp');
+  const utp = read(repoRoot, 'srchybrid', 'eMuleAI', 'UtpSocket.cpp');
+  const prefsHeader = read(repoRoot, 'srchybrid', 'Preferences.h');
+  const client = read(repoRoot, 'srchybrid', 'UpdownClient.h');
+  const downloads = read(repoRoot, 'srchybrid', 'DownloadQueue.cpp');
+  const kadSearch = read(repoRoot, 'srchybrid', 'kademlia', 'kademlia', 'Search.cpp');
   const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
   const relay = read(repoRoot, 'srchybrid', 'RelayClient.cpp');
   const kadUdp = read(repoRoot, 'srchybrid', 'kademlia', 'net', 'KademliaUDPListener.cpp');
@@ -141,6 +146,11 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   const packaging = read(repoRoot, 'build_package.ps1');
 
   assert.match(prefs, /EseV9Experimental"\), false, _T\("eSE"\)/);
+  assert.match(prefs, /EseNetLabConsent"\), EseNetLabUndecided, _T\("eSE"\)/);
+  assert.match(prefs, /EseNetLabEnabled"\), false, _T\("eSE"\)/);
+  assert.match(prefs, /WriteInt\(_T\("EseNetLabConsent"\)/);
+  assert.match(prefs, /WriteBool\(_T\("EseNetLabEnabled"\)/);
+  assert.match(prefsHeader, /IsEseNetLabActive\(\)[\s\S]{0,160}EseNetLabAccepted/);
   assert.match(prefs, /EseKad3Rendezvous"\), false, _T\("eSE"\)/);
   assert.match(prefs, /EseAutoKeepalive"\), false, _T\("eSE"\)/);
   assert.match(prefs, /EseRelayAccept"\),\s+false, _T\("eSE"\)/);
@@ -152,11 +162,26 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(prefs, /Kad6PublicExitOptIn"\), false, _T\("eSE"\)/);
   assert.match(prefs, /WriteBool\(_T\("EseV9Experimental"\)/);
   assert.match(dlg, /RefreshEseV9PreviewCaps\(\)/);
+  assert.match(dlg, /Esta es una beta de laboratorio de red/);
+  assert.match(dlg, /SetEseNetLabConsent\(accepted/);
+  assert.match(dlg, /SetEseV9Experimental\(false\)/);
+  assert.match(dlg, /SetEseRelayAccept\(false\)/);
+  assert.match(dlg, /SetKrpRelayEnabled\(false\)/);
+  assert.match(dlg, /SetKad6PublicExitOptIn\(false\)/);
   assert.doesNotMatch(dlg, /g_uEseCapsRuntime\s*=\s*[^;]*ESE_CAP_TUNNEL_BULK/s);
   assert.match(prober, /uint32 g_uEseCapsRuntime = 0;/);
   assert.match(prober, /if \(!CPreferences::GetEseV9Experimental\(\)\)\s*return;/);
   assert.match(prober, /ESE_CAP_KAD6 \| ESE_CAP_KAD6_ECONOMY/);
+  assert.match(prober, /IsEseNetLabActive\(\)[\s\S]{0,180}ESE_CAP_NETLAB_V1/);
   assert.match(base, /GetEseEd2kPunch3\(\) && thePrefs\.GetEseKad3Rendezvous\(\)/);
+  assert.match(base, /CanUseEseHolePunch\(\)[\s\S]{0,220}IsEseNetLabActive\(\)[\s\S]{0,120}SupportsEseNetLabV1Target\(\)/);
+  assert.match(client, /SupportsEseNetLabV1Target\(\)[\s\S]{0,420}SupportsReachNetLabV1\(\)/);
+  assert.match(downloads, /bNetLabPeer[\s\S]{0,180}KAD_REACH_CAP_NETLAB_V1/);
+  assert.match(kadSearch, /bNetLab[\s\S]{0,120}KAD_REACH_CAP_NETLAB_V1/);
+  assert.match(kadUdp, /Process_ESE_HOLEPUNCH_REQ[\s\S]{0,500}IsEseNetLabActive\(\)/);
+  assert.match(kadUdp, /uSenderCaps & \(ESE_CAP_HOLEPUNCH_COOKIE \| ESE_CAP_NETLAB_V1\)/);
+  assert.match(kadUdp, /SendEseHolePunchReq\([\s\S]{0,500}SupportsEseNetLabV1Target\(\)/);
+  assert.match(utp, /on_utp_accept[\s\S]{0,300}IsEseNetLabActive\(\)/);
   assert.match(tunnel, /!thePrefs\.GetEseV9Experimental\(\)[\s\S]{0,100}ESE_CAP_KAD6/);
   assert.match(tunnel, /!optIn \? kad6::K6ReleaseGateStatus::OperatorOptOut/);
   assert.match(tunnel, /BuildTestCircuit\(CUpDownClient\* clientHint\)[\s\S]{0,900}GetConnectedSnapshot\(cands, 3, \/\*tunnelOnly=\*\/true\)/);
@@ -165,10 +190,21 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(relay, /m_initialized && config\.enabled && !config\.kill_switch/);
   assert.match(relay, /thePrefs\.GetKrpRelayEnabled\(\)[\s\S]{0,100}GetKrpRelayExperimentalTcp\(\)/);
   assert.match(kadUdp, /Process_KADEMLIA3_PING_REQ[\s\S]{0,500}g_uEseCapsRuntime & ESE_CAP_KAD_KEEPALIVE/);
+  assert.match(kadUdp, /Process_KADEMLIA3_PING_REQ[\s\S]{0,900}senderCaps & \(ESE_CAP_NETLAB_V1 \| ESE_CAP_KAD_KEEPALIVE\)/);
   assert.match(kadUdp, /Process_KADEMLIA3_PING_RES[\s\S]{0,300}g_uEseCapsRuntime & ESE_CAP_KAD_KEEPALIVE/);
   assert.match(keepalive, /OnPong[\s\S]{0,300}!IsRunning\(\)/);
   assert.match(kadUdp, /ProcessPacketKad6[\s\S]{0,500}!thePrefs\.GetEseV9Experimental\(\)[\s\S]{0,100}ESE_CAP_KAD6/);
-  assert.match(web, /SetEseV9Experimental\(bOn\)/);
+  assert.match(web, /explicit_consent_required/);
+  assert.match(web, /SetEseNetLabEnabled\(false\)/);
+  assert.match(web, /SetEseNetLabEnabled\(true\)/);
+  assert.match(web, /sURL\.Left\(15\) == "\/api\/ese\/netlab"/);
+  assert.match(web, /InterlockedAnd\(pEseCaps, ~\(LONG\)ESE_CAP_HOLEPUNCH_RDV\)/);
+  assert.match(web, /netlab_target_required/);
+  assert.doesNotMatch(web, /\/api\/ese\/v9[\s\S]{0,1800}SetEseRelayAccept\(bOn\)/);
+  assert.doesNotMatch(web, /\/api\/ese\/v9[\s\S]{0,1800}SetEseRelayEgress\(bOn\)/);
+  assert.match(web, /ESE_NETLAB_REPORT_V1/);
+  assert.match(web, /GetConnectedSocketCount\(\)/);
+  assert.match(web, /\\"central_telemetry\\":false/);
   assert.match(web, /sURL\.Left\(13\) == "\/api\/network\/"/);
   assert.match(web, /\/api\/network\/connect[\s\S]{0,1800}WEBGUIIA_CONNECTTOSERVER/);
   assert.match(web, /\/api\/network\/connect[\s\S]{0,2200}WEBGUIIA_KAD_START/);
@@ -177,6 +213,7 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(packaging, /"\[WebServer\]"[\s\S]{0,120}"WebUseUPnP=0"/);
   assert.match(packaging, /"\[eSE\]"[\s\S]{0,100}"EseV9Experimental=0"/);
   for (const safeDefault of [
+    'EseNetLabConsent=0', 'EseNetLabEnabled=0',
     'EseKad3Rendezvous=0', 'EseAutoKeepalive=0', 'EseRelayAccept=0',
     'EseRelayEgress=0', 'EseReachSelector=0', 'EseHolePunchPortPredict=0',
     'EseEd2kPunch3=0', 'Kad6PublicExitOptIn=0', 'KrpRelayEnabled=0',
@@ -211,8 +248,8 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   assert.match(prober, /uni->DadState != IpDadStatePreferred/);
   assert.match(prober, /uni->SuffixOrigin == IpSuffixOriginRandom/);
   assert.match(prober, /first validated candidate wins/);
-  assert.match(web, /InterlockedOr\(pEseCaps, \(LONG\)ESE_CAP_HOLEPUNCH_RDV\)/);
-  assert.match(web, /InterlockedAnd\(pEseCaps, ~\(LONG\)ESE_CAP_HOLEPUNCH_RDV\)/);
+  assert.match(web, /SetEseNetLabEnabled\(false\)[\s\S]{0,420}RequestStop\(\)/);
+  assert.match(web, /capability_advertised/);
   assert.match(client, /SupportsEseHolePunchRdvTarget\(\)[\s\S]{0,120}SupportsReachPunch3\(\)/);
   assert.match(kadSearch, /bPunch3[\s\S]{0,300}KAD_REACH_CAP_PUNCH_3W/);
   assert.match(base, /SupportsEseHolePunchRdvTarget\(\)/);

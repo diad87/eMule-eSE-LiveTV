@@ -58,7 +58,7 @@ static void UpdateHolePunchRuntimeCaps(bool bReady)
 	::InterlockedAnd(pCaps, ~mask);
 	if (bReady && thePrefs.GetUtpHolePunchEnabled()) {
 		::InterlockedOr(pCaps, (LONG)ESE_CAP_HOLEPUNCH_COOKIE);
-		if (thePrefs.GetEseKad3Rendezvous())
+		if (thePrefs.IsEseNetLabActive() && thePrefs.GetEseKad3Rendezvous())
 			::InterlockedOr(pCaps, (LONG)ESE_CAP_HOLEPUNCH_RDV);
 	}
 }

@@ -17,6 +17,9 @@ los gates bloqueantes de `V9_RELEASE_MASTER_CHECKLIST.md`.
   los gates de red del candidato.
 - Dashboard y API local con autenticación, observabilidad y administración remota
   cerrada por defecto.
+- Cohorte opcional `ESE_NETLAB_V1`: el primer inicio solicita aceptación explícita
+  antes de anunciar participación. Si se acepta, usa únicamente descargas y
+  emisiones reales para pruebas limitadas con otros participantes de la beta.
 - Paquete reproducible con FFmpeg/ffprobe fijados por SHA-256, registro de protocolo,
   manifiesto por fichero y checksum externo del ZIP.
 
@@ -43,6 +46,8 @@ El paquete crea estas preferencias en `0`:
 WebUseUPnP=0
 
 [eSE]
+EseNetLabConsent=0
+EseNetLabEnabled=0
 EseV9Experimental=0
 EseKad3Rendezvous=0
 EseAutoKeepalive=0
@@ -62,18 +67,31 @@ ExperimentalTcpDataPlane=0
 El servidor web no se publica mediante UPnP y no acepta administración remota sin
 autenticación. No reutilice un perfil de laboratorio para evaluar estos defaults.
 
-## Activación para pruebas controladas
+## Cohorte NetLab y activación controlada
 
-La puerta maestra v9 solo se activa deliberadamente desde la máquina local:
+Instalar la beta no equivale a participar. En el primer inicio se muestra un aviso
+con elección Sí/No; hasta aceptar, el cliente no anuncia `ESE_NETLAB_V1` ni realiza
+intentos automáticos de la cohorte. La participación base puede apagarse de inmediato
+desde el dashboard o desde la máquina local:
+
+```text
+http://127.0.0.1:4711/api/ese/v9?on=0
+```
+
+Tras haber aceptado el aviso, puede reactivarse la capa base con:
 
 ```text
 http://127.0.0.1:4711/api/ese/v9?on=1
 ```
 
-Las capacidades LAB conservan además sus preferencias y kill switches individuales.
-Actívelas únicamente siguiendo `V9_VALIDATION_CHECKLIST.md`, anotando SHA, equipos,
-topología, tipo de NAT y logs. Apagar la puerta maestra no sustituye apagar también
-KRP/Kad6 cuando hayan sido habilitados durante una sesión de laboratorio.
+La capa base cubre IPv6 Auto, mappings existentes, keepalive y punch2 sobre intentos
+naturales; no hace escaneos aleatorios. Punch3, predicción y selector siguen
+escalonados y OFF. Relay, donación de ancho de banda, KRP y Kad6 public exit requieren
+autorizaciones independientes y no se encienden ni se apagan con este endpoint.
+
+El dashboard muestra el estado, ofrece desactivación inmediata y permite copiar un
+informe local saneado. El informe no incluye IP completa ni se sube mediante
+telemetría central implícita.
 
 ## Límites y claims que esta beta no hace
 

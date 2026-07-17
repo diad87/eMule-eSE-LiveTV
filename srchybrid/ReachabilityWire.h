@@ -16,7 +16,8 @@ enum KadReachCapability {
 	KAD_REACH_CAP_RELAY_OFFER = 1u << 6,
 	KAD_REACH_CAP_V6_OUT      = 1u << 7,
 	KAD_REACH_CAP_RELAY_CLIENT = 1u << 8,
-	KAD_REACH_CAP_RELAY_SERVICE = 1u << 9
+	KAD_REACH_CAP_RELAY_SERVICE = 1u << 9,
+	KAD_REACH_CAP_NETLAB_V1     = 1u << 10
 };
 
 bool EseEncodeReachVectorV2(unsigned short capFlags,

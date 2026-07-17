@@ -785,6 +785,9 @@ void CSearch::StorePacket()
 			// type below remains present for byte-level compatibility with eMule and
 			// aMule; modern readers can select a route before HELLO exists.
 			uint16 uReachCaps = 0;
+			const bool bNetLab = thePrefs.IsEseNetLabActive();
+			if (bNetLab)
+				uReachCaps |= KAD_REACH_CAP_NETLAB_V1;
 			const bool bUdpVerified = Kademlia::CKademlia::IsRunning()
 				&& !Kademlia::CUDPFirewallTester::IsFirewalledUDP(true)
 				&& Kademlia::CUDPFirewallTester::IsVerified();
@@ -803,7 +806,7 @@ void CSearch::StorePacket()
 			if (bV6Inbound)
 				uReachCaps |= KAD_REACH_CAP_V6_IN;
 
-			const bool bPunch2 = thePrefs.GetUtpHolePunchEnabled()
+			const bool bPunch2 = bNetLab && thePrefs.GetUtpHolePunchEnabled()
 				&& theApp.clientudp != NULL && theApp.clientudp->IsUtpReady()
 				&& Kademlia::CKademlia::IsConnected()
 				&& Kademlia::CKademlia::GetUDPListener() != NULL
@@ -816,7 +819,7 @@ void CSearch::StorePacket()
 			// previously supplied ESE_CAP_HOLEPUNCH_RDV only exists after a
 			// successful connection. Advertise only while the complete
 			// target-side protocol and its kill switches are live.
-			const bool bPunch3 = bPunch2
+			const bool bPunch3 = bNetLab && bPunch2
 				&& thePrefs.GetEseEd2kPunch3()
 				&& thePrefs.GetEseKad3Rendezvous()
 				&& (g_uEseCapsRuntime & ESE_CAP_HOLEPUNCH_RDV) != 0;

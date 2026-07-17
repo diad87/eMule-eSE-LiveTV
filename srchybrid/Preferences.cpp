@@ -390,6 +390,8 @@ uint16	CPreferences::m_nWebPort;
 bool	CPreferences::m_bWebUseUPnP;
 bool	CPreferences::m_bUPnPCriticalError;
 bool	CPreferences::m_bEnableUtpHolePunch;
+int		CPreferences::m_iEseNetLabConsent;
+bool	CPreferences::m_bEseNetLabEnabled;
 bool	CPreferences::m_bEseV9Experimental;
 bool	CPreferences::m_bEseKad3Rendezvous;
 bool	CPreferences::m_bEseEndgame;
@@ -1879,6 +1881,8 @@ void CPreferences::SavePreferences()
 	ini.WriteString(_T("KadV2SensitiveKeywords"), m_strKadV2SensitiveKeywords, _T("eSE"));
 	ini.WriteBool(_T("Kad6PublicExitOptIn"), m_bKad6PublicExitOptIn, _T("eSE"));
 	ini.WriteBool(_T("EnableUtpHolePunch"), m_bEnableUtpHolePunch, _T("eSE"));
+	ini.WriteInt(_T("EseNetLabConsent"), m_iEseNetLabConsent, _T("eSE"));
+	ini.WriteBool(_T("EseNetLabEnabled"), m_bEseNetLabEnabled, _T("eSE"));
 	ini.WriteBool(_T("EseV9Experimental"), m_bEseV9Experimental, _T("eSE"));
 	ini.WriteBool(_T("EseKad3Rendezvous"), m_bEseKad3Rendezvous, _T("eSE"));
 	ini.WriteBool(_T("EseEndgame"), m_bEseEndgame, _T("eSE"));
@@ -2545,6 +2549,13 @@ void CPreferences::LoadPreferences()
 	// Section: "eSE"
 	//
 	m_bEnableUtpHolePunch = ini.GetBool(_T("EnableUtpHolePunch"), true, _T("eSE"));
+	// v9 beta public NetLab cohort. Installing/running a beta is not consent:
+	// absence remains Undecided so the native first-start notice must be answered.
+	m_iEseNetLabConsent = ini.GetInt(_T("EseNetLabConsent"), EseNetLabUndecided, _T("eSE"));
+	if (m_iEseNetLabConsent < EseNetLabUndecided || m_iEseNetLabConsent > EseNetLabAccepted)
+		m_iEseNetLabConsent = EseNetLabUndecided;
+	m_bEseNetLabEnabled = ini.GetBool(_T("EseNetLabEnabled"), false, _T("eSE"))
+		&& m_iEseNetLabConsent == EseNetLabAccepted;
 	// v9 alpha release boundary. This is the master gate for capabilities whose
 	// wire/runtime matrix is not stable yet (bulk, reach-v2, authenticated/strict
 	// tunnels and Kad6). Individual feature prefs remain additional, narrower gates.

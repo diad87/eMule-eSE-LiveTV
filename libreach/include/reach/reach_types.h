@@ -55,14 +55,15 @@ enum KadCap : std::uint16_t {
     KAD_CAP_V6_OUT      = 1u << 7,  // can originate native IPv6 connections
     KAD_CAP_RELAY_CLIENT  = 1u << 8, // consents to using a reserved relay circuit
     KAD_CAP_RELAY_SERVICE = 1u << 9, // volunteers bounded relay service
-    // bits 10..15 reserved (=0) in v2
+    KAD_CAP_NETLAB_V1     = 1u << 10, // explicitly joined the bounded beta connectivity cohort
+    // bits 11..15 reserved (=0) in v2
 };
 
 // Mask of the bits defined by v1. Used to enforce "reserved bits = 0" on emit
 // (strict producer) while preserving unknown bits on decode (lenient consumer,
 // Postel's law — a future minor version may light reserved bits).
 inline constexpr std::uint16_t kKadCapV1KnownMask = 0x007F; // bits 0..6
-inline constexpr std::uint16_t kKadCapKnownMask   = 0x03FF; // bits 0..9
+inline constexpr std::uint16_t kKadCapKnownMask   = 0x07FF; // bits 0..10
 
 // ── Rendezvous anchor (Appendix A: KadID(16) + IPv4(4) + udpPort(2)) ───────
 // A `verified` open node with which the publisher holds a live keepalived

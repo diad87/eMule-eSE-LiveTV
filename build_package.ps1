@@ -118,6 +118,8 @@ if ($nodesBytes.Length -lt 100 -or $nodesBytes.Length -gt 5MB) { throw 'Pinned n
     'Password=',
     "WebUseUPnP=0",
     "[eSE]",
+    'EseNetLabConsent=0',
+    'EseNetLabEnabled=0',
     "EseV9Experimental=0",
     'EseKad3Rendezvous=0',
     'EseAutoKeepalive=0',

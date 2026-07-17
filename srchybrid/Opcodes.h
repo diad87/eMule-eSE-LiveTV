@@ -566,15 +566,16 @@
 #define ESE_CAP_TUNNEL_STRICT3       0x02000000  // bit 25 -- authenticated CREATE/EXTEND v3 + iterative 3-hop forwarding. STRICT selects only paths where every signed hop advertises it.
 #define ESE_CAP_TUNNEL_SHAPED        0x04000000  // bit 26 -- K6-6 class-5 fixed 17 KB bulk records + independent per-link shaping. STRICT requires this signed bit at every hop.
 #define ESE_CAP_KAD6_ECONOMY         0x08000000  // bit 27 -- K6-8 RFC 9474 anonymous quota protocol and measured admission support; not a claim that public-release gates passed.
+#define ESE_CAP_NETLAB_V1            0x10000000  // bit 28 -- explicit v9 beta network-lab cohort participation. Build support alone MUST NOT set this bit.
 
 // Runtime accumulator for TAG_ESE_CAPS. Defined in FirewallProberV6.cpp
 // (same file as g_uForkCapsRuntime — both are runtime cap accumulators
 // updated as modules go live; both are read by the UI for visibility).
 extern uint32 g_uEseCapsRuntime;
 
-// v9 alpha capability boundary. Recomputes the unvalidated capability subset
-// from EseV9Experimental and the persistent node-identity state. Kad6 is not
-// enabled here: its signed public-release/service gate controls that bit.
+// v9 capability boundaries. Recomputes the explicit NetLab cohort bit and the
+// separately opted-in preview subset. Kad6 public exit remains controlled by
+// its independent signed service-release gate.
 void RefreshEseV9PreviewCaps();
 #define TAG_SOURCEUPORT			"\xFC"	// <uint16>
 #define TAG_SOURCEPORT			"\xFD"	// <uint16>

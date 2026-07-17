@@ -252,14 +252,15 @@ static void test_encode_validation() {
 // ── 6. Pure cap helpers ───────────────────────────────────────────────────
 static void test_cap_helpers() {
     ReachVector v;
-    v.capFlags = KAD_CAP_PUNCH_2W | KAD_CAP_KEEPALIVE; // 0x28
+    v.capFlags = KAD_CAP_PUNCH_2W | KAD_CAP_KEEPALIVE | KAD_CAP_NETLAB_V1;
     CHECK(ReachHasCaps(v, KAD_CAP_PUNCH_2W), "has punch2w");
     CHECK(ReachHasCaps(v, KAD_CAP_PUNCH_2W | KAD_CAP_KEEPALIVE), "has both");
+    CHECK(ReachHasCaps(v, KAD_CAP_NETLAB_V1), "has explicit netlab cohort consent");
     CHECK(!ReachHasCaps(v, KAD_CAP_RELAY_OFFER), "lacks relay");
     CHECK(!ReachHasCaps(v, KAD_CAP_PUNCH_2W | KAD_CAP_RELAY_OFFER), "lacks one of two");
     // Known-cap mask strips reserved bits a future peer might set.
     v.capFlags = 0xFFFF;
-    CHECK(ReachKnownCaps(v) == kKadCapKnownMask, "known-cap mask 0x03FF");
+    CHECK(ReachKnownCaps(v) == kKadCapKnownMask, "known-cap mask 0x07FF");
 }
 
 int main() {

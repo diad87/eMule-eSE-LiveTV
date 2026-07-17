@@ -1582,14 +1582,18 @@ void CDownloadQueue::KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt1
 		&& *pcontactID == Kademlia::CKademlia::GetPrefs()->GetClientHash())
 		return;
 
-	const bool bReachPunch = (uReachCaps & KAD_REACH_CAP_PUNCH_2W) != 0
+	const bool bNetLabPeer = thePrefs.IsEseNetLabActive()
+		&& (uReachCaps & KAD_REACH_CAP_NETLAB_V1) != 0;
+	const bool bReachPunch = bNetLabPeer
+		&& (uReachCaps & KAD_REACH_CAP_PUNCH_2W) != 0
 		&& ED2Kip != 0 && udp != 0
 		&& thePrefs.GetUtpHolePunchEnabled()
 		&& theApp.clientudp != NULL && theApp.clientudp->IsUtpReady()
 		&& Kademlia::CKademlia::IsConnected()
 		&& Kademlia::CKademlia::GetUDPListener() != NULL;
 	const CAddress localV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
-	const bool bReachV6 = (uReachCaps & KAD_REACH_CAP_V6_IN) != 0
+	const bool bReachV6 = bNetLabPeer
+		&& (uReachCaps & KAD_REACH_CAP_V6_IN) != 0
 		&& pIPv6 != NULL && pIPv6->GetType() == CAddress::IPv6
 		&& pIPv6->IsPublicIP() && tcp != 0
 		&& thePrefs.IsIPv6Enabled() && !thePrefs.GetProxySettings().bUseProxy

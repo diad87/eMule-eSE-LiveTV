@@ -44,6 +44,8 @@ if ($packageVersion -ne $tagVersion) {
 
 $packageScript = Get-Content (Join-Path $RepoRoot 'build_package.ps1') -Raw
 foreach ($requiredDefault in @(
+    'EseNetLabConsent=0',
+    'EseNetLabEnabled=0',
     'EseV9Experimental=0',
     'EseKad3Rendezvous=0',
     'EseAutoKeepalive=0',

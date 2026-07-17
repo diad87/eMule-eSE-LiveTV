@@ -21,6 +21,7 @@ class CUtpSocket : public CAsyncSocketExLayer
 	static void EnsureCallbacks(utp_context* ctx); // Ensure libutp callbacks are configured on the given context once.
 	static void OnContextDestroyed(utp_context* ctx); // Notify that a context is being destroyed to clear internal tracking.
 	static CCriticalSection& GetRuntimeLock();
+	static size_t GetConnectedSocketCount();
 	bool ProcessUtpPacket(const byte *data, size_t len, const struct sockaddr *from, socklen_t fromlen);
 	// Static bridge: feed raw UDP data to libutp before eMule decryption.
 	// Returns true if the packet was consumed by libutp (caller should stop processing).

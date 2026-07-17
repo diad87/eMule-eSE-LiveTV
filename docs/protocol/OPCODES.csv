@@ -45,9 +45,9 @@ KADEMLIA3_STORE_SOURCE_REQ,0x46,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KA
 KADEMLIA3_STORE_SOURCE_RES,0x47,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"K6RouteHeaderV2 target_hash:16 status:u8 load:u8 reserved:u16 accepted_epoch:u64",additive,srchybrid/Opcodes.h,756
 KADEMLIA3_FIND_SOURCE_REQ,0x48,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"family-neutral K6RouteHeaderV2 target_hash:16 max:u8 reserved:3",additive,srchybrid/Opcodes.h,760
 KADEMLIA3_FIND_SOURCE_RES,0x49,KADEMLIA-UDP,v0.71,experimental,CAP_FORK_IPV6_KAD,"K6RouteHeaderV2 target_hash:16 count:u8 reserved:3 repeated(record_len:u16 signed_K6SourceRecord)",additive,srchybrid/Opcodes.h,761
-KADEMLIA_ESE_HOLEPUNCH_REQ,0x63,KADEMLIA-UDP,v7.x,stable,none,"<SenderKadID 16><SenderUDPPort 2><Nonce 4>",additive,srchybrid/Opcodes.h,790
+KADEMLIA_ESE_HOLEPUNCH_REQ,0x63,KADEMLIA-UDP,v7.x,stable,ESE_CAP_NETLAB_V1 for v9 beta cohort,"legacy v7/v8 shape remains <SenderKadID 16><SenderUDPPort 2><Nonce 4> = 22B and is never emitted or answered by the v9 public cohort; v9 NetLab initial request uses the existing capability-aware 26B shape <KadID 16><port 2><nonce 4><ESE caps 4> and requires active ESE_CAP_NETLAB_V1+ESE_CAP_HOLEPUNCH_COOKIE; the stateless cookie echo remains 38B",additive,srchybrid/Opcodes.h,790
 KADEMLIA_ESE_HOLEPUNCH_ACK,0x64,KADEMLIA-UDP,v7.x,stable,none,"<ResponderKadID 16><ResponderUDPPort 2><Nonce 4>",additive,srchybrid/Opcodes.h,791
-KADEMLIA3_PING_REQ,0x66,KADEMLIA-UDP,v9,experimental,ESE_CAP_KAD_KEEPALIVE,"<nonce 16>; sent only to a connected peer advertising R.2",additive,srchybrid/Opcodes.h,775
+KADEMLIA3_PING_REQ,0x66,KADEMLIA-UDP,v9,experimental,ESE_CAP_NETLAB_V1+ESE_CAP_KAD_KEEPALIVE,"<nonce 16><ESE caps 4> = 20B; beta cohort emitter and responder both require active NETLAB_V1+R.2; the former 16B laboratory shape is dropped",additive,srchybrid/Opcodes.h,775
 KADEMLIA3_PING_RES,0x67,KADEMLIA-UDP,v9,experimental,ESE_CAP_KAD_KEEPALIVE,"<nonce 16> exact echo; correlates the probe and permits safe observed-port learning",additive,srchybrid/Opcodes.h,776
 KADEMLIA3_HOLEPUNCH_REQ,0x68,KADEMLIA-UDP,v0.71,reserved,ESE_CAP_HOLEPUNCH_RDV,"3-way rendezvous req",additive,srchybrid/Opcodes.h,742
 KADEMLIA3_HOLEPUNCH_FWD,0x69,KADEMLIA-UDP,v0.71,reserved,ESE_CAP_HOLEPUNCH_RDV,"3-way rendezvous fwd",additive,srchybrid/Opcodes.h,743

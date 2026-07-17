@@ -959,6 +959,8 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     // [eSE v9] selector key: HOST-order ip (hpHostIP), matching m_escalation / the tick.
     const uint64 escKey = ((uint64)hpHostIP << 16) | port;
 	if (udpPort != 0 && !hpIsOverlay
+		&& thePrefs.IsEseNetLabActive()
+		&& client->SupportsEseNetLabV1Target()
 		&& Kademlia::CKademlia::IsConnected()
 		&& Kademlia::CKademlia::GetUDPListener() != NULL
 		&& thePrefs.GetUtpHolePunchEnabled()
@@ -3600,24 +3602,15 @@ bool CLiveStreamManager::PickRendezvous(uint32 targetIpHost, uint16 /*targetUdp*
         theApp.clientlist->GetConnectedSnapshot(cands, 10, false);
     for (size_t i = 0; i < cands.size(); ++i) {
         CUpDownClient* c = cands[i];
-        if (c == NULL || !c->SupportsEseHolePunchRdv() || c->GetKadPort() == 0) continue;
+        if (c == NULL || !c->SupportsEseNetLabV1()
+			|| !c->SupportsEseHolePunchRdv() || c->GetKadPort() == 0) continue;
         const uint32 cipHost = ntohl(c->GetIP());          // GetIP() is NET order
         if (cipHost == 0 || cipHost == targetIpHost || cipHost == myIpHost) continue;
         outRipHost = cipHost; outRport = c->GetKadPort();
         return true;
     }
-    // Fallback R: a verified Kad v6 contact (proven recipe, Kademlia.cpp:308).
-    if (Kademlia::CKademlia::GetRoutingZone() == NULL)
-        return false;
-    for (int tries = 0; tries < 8; ++tries) {
-        Kademlia::CContact* pR = Kademlia::CKademlia::GetRoutingZone()->GetRandomContact(3, KADEMLIA_VERSION6_49aBETA);
-        if (pR == NULL) break;
-        if (!pR->IsIpVerified()) continue;
-        const uint32 ripHost = pR->GetIPAddress();         // GetIPAddress() is HOST order
-        if (ripHost == 0 || ripHost == targetIpHost || ripHost == myIpHost) continue;
-        outRipHost = ripHost; outRport = pR->GetUDPPort();
-        return true;
-    }
+    // An arbitrary Kad contact may support rendezvous without having joined
+    // the beta cohort. Never use it as a laboratory R without NETLAB consent.
     return false;
 }
 
@@ -3627,7 +3620,8 @@ bool CLiveStreamManager::PickRendezvous(uint32 targetIpHost, uint16 /*targetUdp*
 // m_bReachSelectorOn. Prunes settled / no-longer-wanted entries.
 void CLiveStreamManager::TickReachabilitySelector(DWORD now)
 {
-	if (!thePrefs.GetEseReachSelector() || !thePrefs.GetUtpHolePunchEnabled())
+	if (!thePrefs.IsEseNetLabActive()
+		|| !thePrefs.GetEseReachSelector() || !thePrefs.GetUtpHolePunchEnabled())
 		return;
 	if (theApp.clientudp == NULL || !theApp.clientudp->IsUtpReady())
 		return;
@@ -3650,6 +3644,10 @@ void CLiveStreamManager::TickReachabilitySelector(DWORD now)
         // Reachable once the source has a live socket -> done.
         CUpDownClient* c = (theApp.clientlist != NULL)
             ? theApp.clientlist->FindClientByIP(htonl(ipHost), port) : NULL;   // FindClientByIP wants NET order
+        if (c == NULL || !c->SupportsEseNetLabV1Target()) {
+            toErase.AddTail(key);
+            continue;
+        }
         if (c != NULL && c->socket != NULL && c->socket->IsConnected()) {
             if (st.stage != REACH_DONE) {
                 // Record WHICH mechanism actually won at the connect edge (once per source) before
@@ -3690,7 +3688,9 @@ void CLiveStreamManager::TickReachabilitySelector(DWORD now)
         } else if (st.stage == REACH_PUNCH2) {
             st.stage = REACH_PUNCH3; st.stageEnteredTick = now;
             uint32 rIP = 0; uint16 rPort = 0;
-			if (thePrefs.GetEseKad3Rendezvous() && PickRendezvous(ipHost, st.udpPort, rIP, rPort)) {
+			if (thePrefs.GetEseKad3Rendezvous()
+				&& c->SupportsEseHolePunchRdvTarget()
+				&& PickRendezvous(ipHost, st.udpPort, rIP, rPort)) {
                 Kademlia::CKademlia::GetUDPListener()->InitiateKad3Rendezvous(rIP, rPort, ipHost, st.udpPort);
                 LIVE_LOG("REACH", "%S:%u PUNCH2->PUNCH3 via R %S", (LPCWSTR)ipstr(htonl(ipHost)), port, (LPCWSTR)ipstr(htonl(rIP)));
             } else {

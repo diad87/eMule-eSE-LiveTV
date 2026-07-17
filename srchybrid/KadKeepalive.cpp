@@ -68,6 +68,12 @@ CKadKeepalive::Stats CKadKeepalive::GetStats() const
 
 void CKadKeepalive::Start()
 {
+    if (!thePrefs.IsEseNetLabActive()) {
+        if (IsRunning())
+            Stop();
+        LIVE_LOG("KAD3", "Keepalive start rejected (NetLab consent inactive)");
+        return;
+    }
     const bool started = ::InterlockedExchange(&m_running, 1) == 0;
     volatile LONG* caps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
     const LONG previousCaps = ::InterlockedOr(
@@ -147,6 +153,11 @@ void CKadKeepalive::Tick()
     if (ctrl == 1) Start();
     else if (ctrl == 2) Stop();
 
+    if (!thePrefs.IsEseNetLabActive()) {
+        if (IsRunning())
+            Stop();
+        return;
+    }
     if (!IsRunning()) return;
 
     // Only peers that explicitly advertised the R.2 capability understand the
@@ -156,7 +167,8 @@ void CKadKeepalive::Tick()
         std::vector<CUpDownClient*> peers;
         theApp.clientlist->GetConnectedSnapshot(peers, 32, false);
         for (CUpDownClient* peer : peers) {
-            if (!peer || !peer->SupportsEseKadKeepalive()
+            if (!peer || !peer->SupportsEseNetLabV1()
+                || !peer->SupportsEseKadKeepalive()
                 || peer->GetConnectIP() == 0 || peer->GetKadPort() == 0)
                 continue;
             AddSupernode(CAddress(peer->GetConnectIP(), false), peer->GetKadPort());

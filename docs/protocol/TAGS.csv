@@ -1,7 +1,7 @@
 name,value,namespace,intro_version,status,capability_gate,format,compat,file,line
 TAG_SOURCEIP_V6,0x66,TAG-ED2K,v9,experimental,CAP_FORK_IPV6_WIRE,"HELLO uses raw IPv6 blob 16B; Kad source publication uses CAddress 18B; consumers require a valid TAG_ESE_REACH V6_IN route before dialing",additive-ignorable,srchybrid/Opcodes.h,508
 TAG_SERVERIP_V6,0x67,TAG-ED2K,v0.71,reserved,CAP_FORK_IPV6_WIRE,"<CAddress> alongside legacy uint32 server IP",additive-ignorable,srchybrid/Opcodes.h,495
-TAG_ESE_REACH,0x68,TAG-ED2K,v9,experimental,ESE_CAP_REACH_V2,"strict libreach v2 BSOB: version u8 + capflags u16le + nRdv u8 + reserved rendezvous entries/TLV tail; source publication keeps classic tags",additive-ignorable,srchybrid/Opcodes.h,510
+TAG_ESE_REACH,0x68,TAG-ED2K,v9,experimental,ESE_CAP_REACH_V2,"strict libreach v2 BSOB: version u8 + capflags u16le + nRdv u8 + reserved rendezvous entries/TLV tail; capflags bit10 is explicit ESE_NETLAB_V1 cohort participation and is absent without consent; source publication keeps classic tags",additive-ignorable,srchybrid/Opcodes.h,510
 TAG_K_EFFECTIVE,0x69,TAG-ED2K,v8.1,experimental,ESE_CAP_M6_K_EFFECTIVE,"uint8 [4..24]",additive-ignorable,srchybrid/Opcodes.h,517
 TAG_SHARD_DEGREE,0x6A,TAG-ED2K,v8.1,experimental,ESE_CAP_M3_SHARDING,"uint8 [0..6]",additive-ignorable,srchybrid/Opcodes.h,518
 TAG_PINNED_BY_SUBSCRIBER,0x6B,TAG-ED2K,v8.1,experimental,ESE_CAP_M1_SUBSCRIBER_PIN,"uint8 flag 0/1",additive-ignorable,srchybrid/Opcodes.h,519

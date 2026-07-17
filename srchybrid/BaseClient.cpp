@@ -112,7 +112,8 @@ bool CUpDownClient::SupportsUTP() const
 
 bool CUpDownClient::CanUseEseHolePunch() const
 {
-	if (!thePrefs.GetUtpHolePunchEnabled() || !SupportsUTP()
+	if (!thePrefs.IsEseNetLabActive() || !SupportsEseNetLabV1Target()
+		|| !thePrefs.GetUtpHolePunchEnabled() || !SupportsUTP()
 		|| !Kademlia::CKademlia::IsConnected()
 		|| Kademlia::CKademlia::GetUDPListener() == NULL
 		|| theApp.clientudp == NULL || !theApp.clientudp->IsUtpReady()
@@ -153,7 +154,9 @@ bool CUpDownClient::ShouldRetryEseNatTraversal(DWORD now) const
 	// Once punch2 is exhausted, give the connected-peer set a bounded window
 	// to acquire a real rendezvous.  This is what lets a cold source reach
 	// punch3 without turning the client-list timeout into an infinite spin.
-	return thePrefs.GetEseEd2kPunch3() && thePrefs.GetEseKad3Rendezvous()
+	return thePrefs.IsEseNetLabActive()
+		&& thePrefs.GetEseEd2kPunch3() && thePrefs.GetEseKad3Rendezvous()
+		&& SupportsEseNetLabV1Target()
 		&& SupportsEseHolePunchRdvTarget() && !m_bNatRdvTried
 		&& m_uNatRdvLookupAttempts < 6
 		&& (m_uLastNatRendezvousTick == 0
@@ -188,7 +191,8 @@ bool CUpDownClient::CanUseIPv6Direct() const
 	const CAddress localV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
 	const bool bV6Backoff = m_dwIPv6DirectFailed != 0
 		&& (::GetTickCount() - m_dwIPv6DirectFailed) < MIN2MS(5);
-	return thePrefs.IsIPv6Enabled()
+	return thePrefs.IsEseNetLabActive() && SupportsEseNetLabV1Target()
+		&& thePrefs.IsIPv6Enabled()
 		&& !bV6Backoff
 		&& !thePrefs.GetProxySettings().bUseProxy
 		&& ((SupportsIPv6Wire() && HasV6DualStack()) || SupportsReachV6Inbound())
@@ -1596,7 +1600,7 @@ static bool EsePickRdvForDownload(uint32 uTargetIpHost, uint32& uOutRipHost, uin
 	theApp.clientlist->GetConnectedSnapshot(cands, 10, false);
 	for (size_t i = 0; i < cands.size(); ++i) {
 		CUpDownClient* c = cands[i];
-		if (c == NULL || !c->SupportsEseHolePunchRdv()
+		if (c == NULL || !c->SupportsEseNetLabV1() || !c->SupportsEseHolePunchRdv()
 			|| !c->HasPassedSecureIdent(false) || c->GetKadPort() == 0)
 			continue;
 		const uint32 uCipHost = ntohl(c->GetIP());          // GetIP() is NET order
@@ -1872,7 +1876,8 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 			// forwards our REQ so B punches back even when a plain 2-way punch can't reach B's
 			// per-destination external port. Reuses the R.1 machinery validated for Live. One shot
 			// per peer (m_bNatRdvTried), reset on a successful uTP accept.
-			if (thePrefs.GetEseEd2kPunch3() && thePrefs.GetEseKad3Rendezvous()
+			if (thePrefs.IsEseNetLabActive() && SupportsEseNetLabV1Target()
+				&& thePrefs.GetEseEd2kPunch3() && thePrefs.GetEseKad3Rendezvous()
 				&& !m_bNatRdvTried && SupportsEseHolePunchRdvTarget()
 				&& Kademlia::CKademlia::GetUDPListener() != NULL) {
 				const uint32 uTargetIpHost = ntohl(GetConnectIP());

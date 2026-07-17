@@ -688,9 +688,9 @@ static uint64 on_utp_accept(utp_callback_arguments* a)
 	
 	if (a && a->socket) {
 		// Gate acceptance by NAT-T enable and resource limits
-		if (!thePrefs.GetUtpHolePunchEnabled()) {
+		if (!thePrefs.IsEseNetLabActive() || !thePrefs.GetUtpHolePunchEnabled()) {
 			if (thePrefs.GetVerbose())
-				DebugLog(_T("[NatTraversal][uTP] on_utp_accept: NAT-T disabled, rejecting"));
+				DebugLog(_T("[NatTraversal][uTP] on_utp_accept: NetLab/NAT-T disabled, rejecting"));
 			utp_close(a->socket);
 			return 0;
 		}
@@ -1258,6 +1258,19 @@ CUtpSocket::~CUtpSocket()
 CCriticalSection& CUtpSocket::GetRuntimeLock()
 {
 	return g_utpRuntimeLock;
+}
+
+size_t CUtpSocket::GetConnectedSocketCount()
+{
+	size_t count = 0;
+	g_utpSocketsLock.Lock();
+	for (std::set<CUtpSocket*>::const_iterator it = theApp.g_UtpSockets.begin();
+		it != theApp.g_UtpSockets.end(); ++it) {
+		if (*it != NULL && (*it)->GetState() == connected)
+			++count;
+	}
+	g_utpSocketsLock.Unlock();
+	return count;
 }
 
 void CUtpSocket::OnReceive(int nErrorCode)

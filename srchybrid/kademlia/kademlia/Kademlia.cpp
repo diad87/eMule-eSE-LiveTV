@@ -253,7 +253,7 @@ void CKademlia::Process()
 				// When ON: RequestStart the keepalive once we are firewalled/LowID + Kad-connected
 				// (the pool is sourced from the live routing table), and RequestStop when HighID.
 				// Idempotent atomic flag writes honored in ka.Tick() below (same thread).
-				if (thePrefs.GetEseAutoKeepalive()) {
+				if (thePrefs.IsEseNetLabActive() && thePrefs.GetEseAutoKeepalive()) {
 					static DWORD s_lastAutoKaCheck = 0;
 					const DWORD nowKa = ::GetTickCount();
 					if (nowKa - s_lastAutoKaCheck >= 5000) {

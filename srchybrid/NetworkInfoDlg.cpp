@@ -328,6 +328,7 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 				APPEND_CAP(ESE_CAP_LIVE_RELAY,        "Relay");
 				APPEND_CAP(ESE_CAP_KAD6,              "Kad6");
 				APPEND_CAP(ESE_CAP_TUNNEL_STRICT3,    "Strict3");
+				APPEND_CAP(ESE_CAP_NETLAB_V1,         "NetLab");
 				APPEND_CAP(ESE_CAP_TUNNEL_SHAPED,     "Class5");
 				#undef APPEND_CAP
 				rCtrl << _T("]");

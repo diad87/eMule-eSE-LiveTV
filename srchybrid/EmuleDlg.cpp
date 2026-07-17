@@ -1050,6 +1050,52 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				++theApp.emuledlg->status;
 				bool bError = false;
 
+				// v9 beta public network-lab cohort. A beta installation is not
+				// consent: no cohort capability is computed or advertised until
+				// the user answers this first-start notice. Riskier services are
+				// reset here because older alpha builds exposed a bulk switch
+				// which could not prove separate relay/Kad6 authorization.
+				if (thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabUndecided
+					&& theApp.m_strCurVersionLong.Find(_T("9.0.0-beta")) >= 0)
+				{
+					CString notice =
+						_T("Esta es una beta de laboratorio de red.\r\n\r\n")
+						_T("Al continuar, eSE podra realizar automaticamente pruebas limitadas ")
+						_T("de IPv6, LowID, hole punching y CGNAT con otros usuarios de la beta ")
+						_T("durante descargas y emisiones reales. No solicitara confirmacion en ")
+						_T("cada intento.\r\n\r\n")
+						_T("No se utilizara su equipo como relay ni como salida publica salvo ")
+						_T("autorizacion independiente. Los resultados permaneceran localmente ")
+						_T("y el modo experimental podra desactivarse en cualquier momento.\r\n\r\n")
+						_T("Desea participar en ESE_NETLAB_V1?");
+					const int answer = AfxMessageBox(notice,
+						MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2);
+
+					// Fail closed for every authorization which the former bulk
+					// v9 switch could have enabled without a dedicated decision.
+					thePrefs.SetEseKad3Rendezvous(false);
+					thePrefs.SetEseHolePunchPortPredict(false);
+					thePrefs.SetEseEd2kPunch3(false);
+					thePrefs.SetEseReachSelector(false);
+					thePrefs.SetEseV9Experimental(false);
+					thePrefs.SetEseRelayAccept(false);
+					thePrefs.SetEseRelayEgress(false);
+					thePrefs.SetKrpRelayEnabled(false);
+					thePrefs.SetKad6PublicExitOptIn(false);
+
+					const bool accepted = answer == IDYES;
+					thePrefs.SetEseNetLabConsent(accepted
+						? CPreferences::EseNetLabAccepted
+						: CPreferences::EseNetLabDeclined);
+					thePrefs.SetEseNetLabEnabled(accepted);
+					thePrefs.SetEseAutoKeepalive(accepted);
+					if (CPreferences::Save())
+						AddDebugLogLine(false, _T("NetLab: failed to persist first-start consent"));
+					AddLogLine(true, accepted
+						? _T("eSE NetLab: participacion activa; relay, KRP, punch3 y Kad6 public exit siguen desactivados.")
+						: _T("eSE NetLab: participacion rechazada; no se anunciaran pruebas de cohorte."));
+				}
+
 				// NOTE: If we have an unhandled exception in CDownloadQueue::Init, MFC will silently catch it
 				// and the creation of the TCP and the UDP socket will not be done -> client will get a LowID!
 				try {
@@ -1182,7 +1228,8 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				// path is enabled — the responder + R-relay handlers gate on the same pref,
 				// so a peer that sees this bit can safely use us as rendezvous R or target B.
 				// Validated 3-PC. The auto-initiator (Live reachability selector) lands later.
-				if (thePrefs.GetUtpHolePunchEnabled() && thePrefs.GetEseKad3Rendezvous())
+				if (thePrefs.IsEseNetLabActive()
+					&& thePrefs.GetUtpHolePunchEnabled() && thePrefs.GetEseKad3Rendezvous())
 					g_uEseCapsRuntime |= ESE_CAP_HOLEPUNCH_RDV;
 				// R.3 buddy relay: advertise relay capability ONLY when we actually accept relay
 				// duty (pref EseRelayAccept, default OFF). A peer seeing this bit may pick us as its
@@ -1549,6 +1596,8 @@ void CemuleDlg::UpdatePrivacyStatusPane()
 		privText = GetResString(IDS_ESE_PRIV_UNKNOWN);
 		break;
 	}
+	if (thePrefs.IsEseNetLabActive())
+		privText += _T(" LAB");
 	statusbar->SetText(privText, SBarPrivacy, 0);
 }
 

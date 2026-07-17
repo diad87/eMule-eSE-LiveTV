@@ -477,7 +477,14 @@ test('--selftest verifies signed chunk ingest and returns failure to the caller'
   assert.match(dialog, /m_nSelfTestExitCode = exitCode/);
   const app = read(repoRoot, 'srchybrid', 'Emule.cpp');
   assert.match(app, /return m_bSelfTest \? m_nSelfTestExitCode : baseExitCode/);
-  assert.match(dialog, /if \(!theApp\.m_bSelfTest\)[\s\S]{0,80}LaunchEseServer/);
+  assert.match(dialog, /if \(!theApp\.m_bSelfTest && theApp\.m_uHeadlessMetricsPort == 0\)[\s\S]{0,80}LaunchEseServer/);
+  assert.match(dialog, /Metrics isolation: dashboard auto-spawn skipped \(port=%u\)/);
+  const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const netlabSwitch = web.slice(
+    web.indexOf('if (sURL.Left(11) == "/api/ese/v9")'),
+    web.indexOf('// Local, sanitized cohort report'));
+  assert.match(netlabSwitch, /if \(ok && CPreferences::Save\(\)\)/);
+  assert.match(netlabSwitch, /error = "persist_failed"/);
   assert.match(dialog, /AfxBeginThread\(HeadlessActionDelayThread/);
   assert.match(dialog, /PostMessage\(hwnd, UM_LIVE_HEADLESS_ACTION/);
   assert.match(dialog, /ON_MESSAGE\(UM_LIVE_HEADLESS_ACTION, OnLiveHeadlessAction\)/);
@@ -491,4 +498,14 @@ test('--selftest verifies signed chunk ingest and returns failure to the caller'
   assert.match(preferences, /bPortableCommandLine && bConfigAvailableExecutable/);
   assert.match(preferences, /_tcsicmp\(value, _T\("portable"\)\)/);
   assert.match(preferences, /nRegistrySetting = 2/);
+  for (const persistedGate of [
+    'EseAutoKeepalive',
+    'EseRelayAccept',
+    'EseRelayEgress',
+    'EseReachSelector',
+    'EseHolePunchPortPredict',
+    'EseEd2kPunch3'
+  ]) {
+    assert.match(preferences, new RegExp(`WriteBool\\(_T\\("${persistedGate}"\\)`));
+  }
 });

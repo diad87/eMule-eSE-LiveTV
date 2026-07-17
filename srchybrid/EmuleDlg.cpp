@@ -785,13 +785,18 @@ BOOL CemuleDlg::OnInitDialog()
 	// click never stops the server; it dies with eMule on shutdown).
 	// On startup-failure we just log; no popups.
 	// --selftest validates the native ingest/receive path and has no dashboard
-	// dependency. Do not spawn ese-server.exe here: PostQuitMessage ends the
-	// one-shot without the normal OnClose path, which previously orphaned the
-	// child and also made it contend for the user's normal dashboard/Web ports.
-	if (!theApp.m_bSelfTest)
+	// dependency. --metrics-port exposes the native WebServer on an isolated
+	// port for smoke/stress runs; the Node dashboard only speaks to 4711 and
+	// LaunchEseServer would reset the override back to 4711. Do not spawn the
+	// child in either mode: selftest exits outside normal OnClose, while a
+	// metrics run must retain its explicitly selected port.
+	if (!theApp.m_bSelfTest && theApp.m_uHeadlessMetricsPort == 0)
 		LaunchEseServer(/*bOpenBrowser=*/false);
 	else
-		LIVE_LOG("HEADLESS", "Selftest isolation: dashboard auto-spawn skipped");
+		LIVE_LOG("HEADLESS", theApp.m_bSelfTest
+			? "Selftest isolation: dashboard auto-spawn skipped"
+			: "Metrics isolation: dashboard auto-spawn skipped (port=%u)",
+			(unsigned)theApp.m_uHeadlessMetricsPort);
 
 	// V2-S06/S27: only schedule the viewer one-shot if there's actual work.
 	// Plain --headless --metrics-port (= "expose

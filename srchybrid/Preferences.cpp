@@ -1886,6 +1886,15 @@ void CPreferences::SavePreferences()
 	ini.WriteBool(_T("EseV9Experimental"), m_bEseV9Experimental, _T("eSE"));
 	ini.WriteBool(_T("EseKad3Rendezvous"), m_bEseKad3Rendezvous, _T("eSE"));
 	ini.WriteBool(_T("EseEndgame"), m_bEseEndgame, _T("eSE"));
+	ini.WriteBool(_T("EseAutoKeepalive"), m_bEseAutoKeepalive, _T("eSE"));
+	ini.WriteBool(_T("EseKadV6Tag"), m_bEseKadV6Tag, _T("eSE"));
+	ini.WriteBool(_T("EseRelayAccept"), m_bEseRelayAccept, _T("eSE"));
+	ini.WriteBool(_T("EseRelayEgress"), m_bEseRelayEgress, _T("eSE"));
+	ini.WriteBool(_T("EseReachSelector"), m_bEseReachSelector, _T("eSE"));
+	ini.WriteBool(_T("EseHolePunchPortPredict"), m_bEseHolePunchPortPredict, _T("eSE"));
+	ini.WriteInt(_T("EseHolePunchPortSpread"), m_iEseHolePunchPortSpread, _T("eSE"));
+	ini.WriteBool(_T("EseEd2kPunch3"), m_bEseEd2kPunch3, _T("eSE"));
+	ini.WriteInt(_T("EseRelayMaxKBps"), m_iEseRelayMaxKBps, _T("eSE"));
 	ini.WriteBool(_T("KrpRelayEnabled"), m_bKrpRelayEnabled, _T("KRPRelay"));
 	ini.WriteBool(_T("KrpRelayKillSwitch"), m_bKrpRelayKillSwitch, _T("KRPRelay"));
 	ini.WriteString(_T("EndpointHost"), m_strKrpRelayEndpointHost, _T("KRPRelay"));

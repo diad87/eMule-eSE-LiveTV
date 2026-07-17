@@ -5371,6 +5371,13 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				ok = false;
 				error = "invalid_on_value";
 			}
+			// A cohort kill switch must survive a crash or forced restart, not
+			// merely the next graceful OnClose. Persist the accepted state
+			// transition before replying; Save() returns true on failure.
+			if (ok && CPreferences::Save()) {
+				ok = false;
+				error = "persist_failed";
+			}
 		}
 		const char* consent =
 			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted ? "accepted" :

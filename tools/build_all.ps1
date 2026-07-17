@@ -134,6 +134,33 @@ Stage 'langs' {
     if ($dlls.Count -eq 0) { throw 'no language DLLs were produced' }
 }
 
+Stage 'cleanup-generated-metadata' {
+    if ($AllowDirty) { return }
+
+    # The legacy language projects append the current absolute output path to
+    # tracked FileListAbsolute metadata on every build. Restore those generated
+    # inventories so the packaging preflight still sees the original clean
+    # source commit.
+    $fileLists = @(& git -C $RepoRoot ls-files -- `
+        'srchybrid/lang/x64/Dynamic/*.vcxproj.FileListAbsolute.txt')
+    if ($LASTEXITCODE -ne 0) { throw 'failed to enumerate tracked language metadata' }
+    if ($fileLists.Count -gt 0) {
+        & git -C $RepoRoot restore --worktree -- $fileLists
+        if ($LASTEXITCODE -ne 0) { throw 'failed to restore generated language metadata' }
+    }
+
+    # bundle_client.js is deterministic, but autocrlf can leave its tracked
+    # bundle stat-dirty even when the normalized blob is unchanged. Refresh the
+    # index and reject any real generated-source drift.
+    & git -C $RepoRoot add -- 'srchybrid/eSE/_player_bundle.js'
+    if ($LASTEXITCODE -ne 0) { throw 'failed to refresh generated player bundle' }
+    $staged = @(& git -C $RepoRoot diff --cached --name-only)
+    if ($LASTEXITCODE -ne 0) { throw 'failed to inspect generated metadata' }
+    if ($staged.Count -gt 0) {
+        throw "generated source drifted during build: $($staged -join ', ')"
+    }
+}
+
 Stage 'package' {
     $args = @{ ReleaseTag = $ReleaseTag; RepoRoot = $RepoRoot }
     if ($FfmpegPath) { $args.FfmpegPath = $FfmpegPath }

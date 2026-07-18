@@ -98,61 +98,73 @@ CRTMPIngest::HwEncoder CRTMPIngest::DetectHwEncoder()
 	if (s_cached != HWENC_UNKNOWN) return s_cached;
 
 	CString ffmpegExe = FindFFmpeg();
-	CString cmdLine; cmdLine.Format(_T("\"%s\" -hide_banner -encoders"), (LPCTSTR)ffmpegExe);
 
-	// Pipe stdout+stderr to a single anonymous pipe.
-	HANDLE hRead = NULL, hWrite = NULL;
-	SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
-	if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
-		s_cached = HWENC_CPU_X264;
-		return s_cached;
+	// FFmpeg's `-encoders` output only says which backends were compiled in.
+	// A generic Windows build normally lists NVENC, QSV and AMF even when the
+	// corresponding GPU/driver is absent. Selecting from that list made every
+	// non-NVIDIA machine try NVENC first and fail before QSV/AMF/CPU could run.
+	//
+	// Instead, initialize each encoder with one real 640x360 frame. This is
+	// deliberately the same minimum shape/pixel format used by the live
+	// ladders, so exit code 0 means the installed driver can actually create
+	// an encoding session. Each probe is bounded to avoid delaying startup on
+	// a broken driver.
+	struct EncoderProbe {
+		HwEncoder encoder;
+		LPCTSTR ffmpegName;
+		LPCTSTR pixelFormat;
+		const char* logName;
+	};
+	static const EncoderProbe probes[] = {
+		{ HWENC_NVENC, _T("h264_nvenc"), _T("yuv420p"), "h264_nvenc (NVIDIA)" },
+		{ HWENC_QSV,   _T("h264_qsv"),   _T("nv12"),    "h264_qsv (Intel)" },
+		{ HWENC_AMF,   _T("h264_amf"),   _T("yuv420p"), "h264_amf (AMD)" },
+	};
+
+	for (size_t i = 0; i < _countof(probes); ++i) {
+		CString cmdLine;
+		cmdLine.Format(
+			_T("\"%s\" -hide_banner -loglevel error ")
+			_T("-f lavfi -i \"color=c=black:s=640x360:r=24\" ")
+			_T("-frames:v 1 -an -c:v %s -pix_fmt %s -f null NUL"),
+			(LPCTSTR)ffmpegExe, probes[i].ffmpegName, probes[i].pixelFormat);
+
+		STARTUPINFO si = {};
+		si.cb = sizeof(si);
+		si.dwFlags = STARTF_USESHOWWINDOW;
+		si.wShowWindow = SW_HIDE;
+		PROCESS_INFORMATION pi = {};
+
+		BOOL launched = CreateProcess(NULL, cmdLine.GetBuffer(), NULL, NULL, FALSE,
+			CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+		cmdLine.ReleaseBuffer();
+		if (!launched) {
+			LIVE_LOG("HWENC", "Probe could not launch %s", probes[i].logName);
+			continue;
+		}
+
+		DWORD waitResult = WaitForSingleObject(pi.hProcess, 10000);
+		DWORD exitCode = STILL_ACTIVE;
+		if (waitResult == WAIT_OBJECT_0)
+			GetExitCodeProcess(pi.hProcess, &exitCode);
+		else {
+			TerminateProcess(pi.hProcess, ERROR_TIMEOUT);
+			WaitForSingleObject(pi.hProcess, 2000);
+		}
+		CloseHandle(pi.hProcess);
+		CloseHandle(pi.hThread);
+
+		if (waitResult == WAIT_OBJECT_0 && exitCode == 0) {
+			s_cached = probes[i].encoder;
+			LIVE_LOG("HWENC", "Detected and initialized: %s", probes[i].logName);
+			return s_cached;
+		}
+		LIVE_LOG("HWENC", "Unavailable (probe exit=%lu): %s", exitCode, probes[i].logName);
 	}
-	SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
 
-	STARTUPINFO si = {};
-	si.cb = sizeof(si);
-	si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
-	si.wShowWindow = SW_HIDE;
-	si.hStdOutput = hWrite;
-	si.hStdError  = hWrite;
-	PROCESS_INFORMATION pi = {};
-
-	BOOL ok = CreateProcess(NULL, cmdLine.GetBuffer(), NULL, NULL, TRUE,
-		CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
-	cmdLine.ReleaseBuffer();
-	CloseHandle(hWrite);
-	if (!ok) {
-		CloseHandle(hRead);
-		s_cached = HWENC_CPU_X264;
-		LIVE_LOG("HWENC", "Probe failed (CreateProcess) — falling back to libx264");
-		return s_cached;
-	}
-
-	// Read all output (it's a few KB — fits easily in the pipe).
-	std::string output;
-	char buf[4096];
-	DWORD got = 0;
-	while (ReadFile(hRead, buf, sizeof(buf), &got, NULL) && got > 0)
-		output.append(buf, got);
-	CloseHandle(hRead);
-	WaitForSingleObject(pi.hProcess, 5000);
-	CloseHandle(pi.hProcess);
-	CloseHandle(pi.hThread);
-
-	// Priority: NVENC > QSV > AMF > x264. NVENC tends to give the best
-	// quality + most concurrent sessions per chip.
-	HwEncoder result = HWENC_CPU_X264;
-	const char* tag = "libx264";
-	if (output.find("h264_nvenc") != std::string::npos) {
-		result = HWENC_NVENC; tag = "h264_nvenc (NVIDIA)";
-	} else if (output.find("h264_qsv") != std::string::npos) {
-		result = HWENC_QSV;   tag = "h264_qsv (Intel)";
-	} else if (output.find("h264_amf") != std::string::npos) {
-		result = HWENC_AMF;   tag = "h264_amf (AMD)";
-	}
-	s_cached = result;
-	LIVE_LOG("HWENC", "Detected: %s", tag);
-	return result;
+	s_cached = HWENC_CPU_X264;
+	LIVE_LOG("HWENC", "No usable hardware encoder — falling back to libx264");
+	return s_cached;
 }
 
 CString CRTMPIngest::GetRTMPUrl() const

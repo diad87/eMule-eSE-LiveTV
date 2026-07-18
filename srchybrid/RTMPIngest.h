@@ -56,10 +56,10 @@ public:
 	static CString FindFFmpeg();
 
 	// V2-S07+ ABR: detect which hardware H.264 encoder this machine offers.
-	// Probes FFmpeg's -encoders output once and caches the result. The chosen
-	// encoder drives both quality strategy and how many concurrent variants
-	// we generate, so weak laptops get a light 2-variant ladder while
-	// machines with NVENC/QSV/AMF get the full 4-variant ladder.
+	// Initializes one real frame on each backend and caches the first usable
+	// result. Merely being listed by FFmpeg does not prove that the matching
+	// GPU and driver are installed. The chosen encoder drives both quality
+	// strategy and how many concurrent variants we generate.
 	enum HwEncoder {
 		HWENC_UNKNOWN = -1,
 		HWENC_CPU_X264 = 0,   // libx264 fallback (always available)

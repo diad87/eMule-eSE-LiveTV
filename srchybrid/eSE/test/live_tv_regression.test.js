@@ -103,6 +103,18 @@ test('controlled 30 fps sources align two-second GOPs with independent HLS segme
   assert.doesNotMatch(web, /segmentDurationSec\\\":4/);
 });
 
+test('hardware encoder selection proves the GPU can initialize and falls back safely', () => {
+  const ingest = read(repoRoot, 'srchybrid', 'RTMPIngest.cpp');
+
+  assert.doesNotMatch(ingest, /-hide_banner -encoders/);
+  assert.match(ingest, /color=c=black:s=640x360:r=24/);
+  assert.match(ingest, /-frames:v 1 -an -c:v %s -pix_fmt %s -f null NUL/);
+  assert.match(ingest, /WaitForSingleObject\(pi\.hProcess, 10000\)/);
+  assert.match(ingest, /waitResult == WAIT_OBJECT_0 && exitCode == 0/);
+  assert.match(ingest, /HWENC_NVENC[\s\S]*HWENC_QSV[\s\S]*HWENC_AMF/);
+  assert.match(ingest, /s_cached = HWENC_CPU_X264/);
+});
+
 test('package manifest includes every offline player asset', () => {
   const pkg = JSON.parse(read(eseRoot, 'package.json'));
   assert.ok(pkg.pkg.assets.includes('eSE-live/vendor/hls.min.js'));

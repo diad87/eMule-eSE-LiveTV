@@ -5098,6 +5098,20 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		fp.Format(_T("%seMule_RTMP\\%hs"), tmp, (LPCSTR)req);
 		HANDLE hF = CreateFile(fp, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
 			NULL, OPEN_EXISTING, 0, NULL);
+		// Viewers reconstruct HLS into a per-stream subdirectory so concurrent
+		// streams cannot collide. Keep the legacy /hls/<file> URL working by
+		// falling back to the active stream namespace when the root file is not
+		// present. Broadcasters still take the root fast path above.
+		if (hF == INVALID_HANDLE_VALUE && theApp.liveStreamManager != NULL) {
+			const uchar* key = theApp.liveStreamManager->GetStreamKey();
+			if (key != NULL) {
+				CStringA keyHex = EseHexKey16A(key);
+				fp.Format(_T("%seMule_RTMP\\%hs\\%hs"), tmp,
+					(LPCSTR)keyHex, (LPCSTR)req);
+				hF = CreateFile(fp, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+					NULL, OPEN_EXISTING, 0, NULL);
+			}
+		}
 		if (hF == INVALID_HANDLE_VALUE) {
 			const char* hdr = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
 			Data.pSocket->SendData(hdr, (int)strlen(hdr));

@@ -70,6 +70,7 @@ if (-not $SkipBuild) {
   $msbuildList = Get-Content (Join-Path $root "msbuild_path.txt") | Where-Object { $_ -and (Test-Path $_) }
   if (-not $msbuildList) { throw "MSBuild not found. Check msbuild_path.txt." }
   & $msbuildList[0] (Join-Path $root "srchybrid/emule.vcxproj") /m /p:Configuration=Release /p:Platform=x64 /t:Build /v:minimal /clp:ErrorsOnly
+  if ($LASTEXITCODE -ne 0) { throw "C++ Release x64 build failed (exit $LASTEXITCODE)." }
 }
 
 Step "Optional HTTP smoke"

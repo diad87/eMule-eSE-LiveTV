@@ -85,6 +85,14 @@ test('C++ broadcaster rolls back failed prebuffer and removes HLS output', () =>
   assert.match(web, /ch\.startedAt/);
 });
 
+test('legacy C++ HLS route falls back to the active viewer stream namespace', () => {
+  const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+
+  assert.match(web, /hF == INVALID_HANDLE_VALUE && theApp\.liveStreamManager != NULL/);
+  assert.match(web, /GetStreamKey\(\)/);
+  assert.match(web, /eMule_RTMP\\\\%hs\\\\%hs/);
+});
+
 test('controlled 30 fps sources align two-second GOPs with independent HLS segments', () => {
   const ingest = read(repoRoot, 'srchybrid', 'RTMPIngest.cpp');
   assert.match(ingest, /gdigrab[\s\S]{0,260}-g 60 -keyint_min 60 -sc_threshold 0/);

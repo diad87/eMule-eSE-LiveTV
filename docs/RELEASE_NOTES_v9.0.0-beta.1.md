@@ -22,6 +22,10 @@ los gates bloqueantes de `V9_RELEASE_MASTER_CHECKLIST.md`.
   emisiones reales para pruebas limitadas con otros participantes de la beta.
 - Paquete reproducible con FFmpeg/ffprobe fijados por SHA-256, registro de protocolo,
   manifiesto por fichero y checksum externo del ZIP.
+- Emisión de archivos con selección automática de encoder: cada backend se acepta
+  sólo si inicializa un frame real, en orden NVIDIA NVENC, Intel QSV y AMD AMF. Si
+  ninguno está disponible, usa CPU/libx264 y limita la escalera a 720p para mantener
+  tiempo real en equipos modestos.
 - `emule.exe --portable` permite probar el ZIP con su propio perfil sin reutilizar
   la configuración de otra instalación de eMule en el mismo Windows.
 

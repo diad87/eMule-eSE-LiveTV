@@ -20,6 +20,7 @@
 #include <iphlpapi.h>
 #include "emule.h"
 #include "Preferences.h"
+#include "UploadLimitPolicy.h"
 #include "Opcodes.h"
 #include "UpDownClient.h"
 #include "Ini2.h"
@@ -2995,6 +2996,11 @@ void CPreferences::EstimateMaxUploadCap(uint32 nCurrentUpload)
 void CPreferences::SetMaxGraphUploadRate(uint32 in)
 {
 	maxGraphUploadRate = (in ? in : UNLIMITED);
+}
+
+uint32 CPreferences::GetEffectiveMaxUpload()
+{
+	return UploadLimitPolicy::EffectiveMaximum(m_maxupload, GetMaxGraphUploadRate(false), UNLIMITED);
 }
 
 bool CPreferences::IsDynUpEnabled()

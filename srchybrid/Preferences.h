@@ -1042,6 +1042,7 @@ public:
 	static void		SetMaxGraphDownloadRate(uint32 in)	{ maxGraphDownloadRate = (in ? in : 96); }
 	static uint32	GetMaxGraphUploadRate(bool bEstimateIfUnlimited);
 	static void		SetMaxGraphUploadRate(uint32 in);
+	static uint32	GetEffectiveMaxUpload();
 
 	static uint32	GetMaxDownload();
 	static uint64	GetMaxDownloadInBytesPerSec(bool dynamic = false);

@@ -143,6 +143,9 @@ static SLanguage s_aLanguages[] =
 
 static void InitLanguages(const CString &rstrLangDir1, const CString &rstrLangDir2)
 {
+	for (SLanguage *pLang = s_aLanguages; pLang->lid; ++pLang)
+		pLang->bSupported = pLang->lid == LANGID_EN_US;
+
 	bool bFirstDir = rstrLangDir1.CompareNoCase(rstrLangDir2) != 0;
 	CFileFind ff;
 	for (BOOL bFound = ff.FindFile(rstrLangDir1 + _T("*.dll")); bFound;) {
@@ -163,6 +166,37 @@ static void InitLanguages(const CString &rstrLangDir1, const CString &rstrLangDi
 			bFirstDir = false;
 		}
 	}
+}
+
+static bool LoadLangLib(const CString &rstrLangDir1, const CString &rstrLangDir2, LANGID lid);
+
+static bool LoadBestLangLib(const CString &rstrLangDir1, const CString &rstrLangDir2, LANGID lidRequested, LANGID &rlidLoaded)
+{
+	if (LoadLangLib(rstrLangDir1, rstrLangDir2, lidRequested)) {
+		rlidLoaded = lidRequested;
+		return true;
+	}
+
+	// Windows has many regional LANGIDs for the same primary language while
+	// eMule ships one or two canonical translations. Prefer SUBLANG_DEFAULT
+	// and then any installed translation with the same primary language.
+	const WORD wPrimary = PRIMARYLANGID(lidRequested);
+	const LANGID lidDefault = MAKELANGID(wPrimary, SUBLANG_DEFAULT);
+	if (lidDefault != lidRequested && LoadLangLib(rstrLangDir1, rstrLangDir2, lidDefault)) {
+		rlidLoaded = lidDefault;
+		return true;
+	}
+
+	for (const SLanguage *pLang = s_aLanguages; pLang->lid; ++pLang) {
+		if (pLang->lid != lidRequested && pLang->lid != lidDefault
+			&& PRIMARYLANGID(pLang->lid) == wPrimary
+			&& LoadLangLib(rstrLangDir1, rstrLangDir2, pLang->lid))
+		{
+			rlidLoaded = pLang->lid;
+			return true;
+		}
+	}
+	return false;
 }
 
 static void FreeLangDLL()
@@ -255,20 +289,9 @@ void CPreferences::SetLanguage()
 		bFoundLang = LoadLangLib(GetMuleDirectory(EMULE_INSTLANGDIR), GetMuleDirectory(EMULE_ADDLANGDIR, false), m_wLanguageID);
 
 	if (!bFoundLang) {
-		LANGID lidLocale = (LANGID)GetThreadLocale();
-		//LANGID lidLocalePri = PRIMARYLANGID(GetThreadLocale());
-		//LANGID lidLocaleSub = SUBLANGID(GetThreadLocale());
-
-		// Also try the primary language alone (e.g. "es" matches es_AS / es_ES_T)
-		// before giving up on the user's region.
-		bFoundLang = LoadLangLib(GetMuleDirectory(EMULE_INSTLANGDIR), GetMuleDirectory(EMULE_ADDLANGDIR, false), lidLocale);
-		if (!bFoundLang) {
-			const LANGID priOnly = MAKELANGID(PRIMARYLANGID(lidLocale), SUBLANG_DEFAULT);
-			if (priOnly != lidLocale)
-				bFoundLang = LoadLangLib(GetMuleDirectory(EMULE_INSTLANGDIR), GetMuleDirectory(EMULE_ADDLANGDIR, false), priOnly);
-			if (bFoundLang)
-				lidLocale = priOnly;
-		}
+		LANGID lidLocale = ::GetUserDefaultUILanguage();
+		LANGID lidLoaded = 0;
+		bFoundLang = LoadBestLangLib(GetMuleDirectory(EMULE_INSTLANGDIR), GetMuleDirectory(EMULE_ADDLANGDIR, false), lidLocale, lidLoaded);
 		if (!bFoundLang) {
 			LoadLangLib(GetMuleDirectory(EMULE_INSTLANGDIR), GetMuleDirectory(EMULE_ADDLANGDIR, false), LANGID_EN_US);
 			m_wLanguageID = LANGID_EN_US;
@@ -278,7 +301,7 @@ void CPreferences::SetLanguage()
 			// pick a language in Preferences if they care.
 			TRACE(_T("[I18n] no DLL for OS locale 0x%04X, falling back to en_US\n"), lidLocale);
 		} else
-			m_wLanguageID = lidLocale;
+			m_wLanguageID = lidLoaded;
 	}
 
 	// if loading a string fails, set language to English

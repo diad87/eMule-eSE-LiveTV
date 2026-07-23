@@ -36,6 +36,7 @@
 #include "SearchDlg.h"
 #include "SearchListCtrl.h"
 #include "Log.h"
+#include "UserMsgs.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -65,6 +66,7 @@ namespace
 
 CSearchList::CSearchList()
 	: outputwnd()
+	, m_pStoredSearchLoadJob()
 	, m_nCurED2KSearchID()
 	, m_bSpamFilterLoaded()
 {
@@ -72,6 +74,7 @@ CSearchList::CSearchList()
 
 CSearchList::~CSearchList()
 {
+	CancelStoredSearchLoad();
 	Clear();
 	for (POSITION pos = m_mUDPServerRecords.GetStartPosition(); pos != NULL;) {
 		uint32 dwIP;
@@ -1477,63 +1480,162 @@ void CSearchList::StoreSearches()
 void CSearchList::LoadSearches()
 {
 	ASSERT(m_listFileLists.IsEmpty());
-	CSafeBufferedFile file;
-	if (!CFileOpenD(file
+	CancelStoredSearchLoad();
+
+	SStoredSearchLoadJob *pJob = new SStoredSearchLoadJob();
+	pJob->pFile = new CSafeBufferedFile();
+	if (!CFileOpenD(*pJob->pFile
 		, thePrefs.GetMuleDirectory(EMULE_CONFIGDIR) + STOREDSEARCHES_FILENAME
 		, CFile::modeRead | CFile::osSequentialScan | CFile::typeBinary | CFile::shareDenyWrite
 		, _T("Failed to load ") STOREDSEARCHES_FILENAME))
 	{
+		delete pJob->pFile;
+		delete pJob;
 		return;
 	}
 
-	::setvbuf(file.m_pStream, NULL, _IOFBF, 16384);
+	::setvbuf(pJob->pFile->m_pStream, NULL, _IOFBF, 16384);
 	try {
-		uint8 header = file.ReadUInt8();
+		uint8 header = pJob->pFile->ReadUInt8();
 		if (header != MET_HEADER_I64TAGS) {
-			file.Close();
+			pJob->pFile->Close();
 			DebugLogError(_T("Failed to load %s, invalid first byte"), STOREDSEARCHES_FILENAME);
+			delete pJob->pFile;
+			delete pJob;
 			return;
 		}
-		uint8 byVersion = file.ReadUInt8();
+		uint8 byVersion = pJob->pFile->ReadUInt8();
 		if (byVersion != STOREDSEARCHES_VERSION) {
-			file.Close();
+			pJob->pFile->Close();
+			delete pJob->pFile;
+			delete pJob;
 			return;
 		}
 
-		uint32 nID = (uint32)-1;
-		for (unsigned nCount = (unsigned)file.ReadUInt16(); nCount > 0; --nCount) {
-			SSearchParams *pParams = new SSearchParams(file);
-			pParams->dwSearchID = ++nID; //renumber
-
-			// create a new tab
-			const CString &strResultType(pParams->strFileType);
-			NewSearch(NULL, (strResultType == _T(ED2KFTSTR_PROGRAM) ? CString() : strResultType), pParams);
-
-			bool bDeleteParams = !theApp.emuledlg->searchwnd->CreateNewTab(pParams, false);
-			if (!bDeleteParams) {
-				m_foundFilesCount[pParams->dwSearchID] = 0;
-				m_foundSourcesCount[pParams->dwSearchID] = 0;
-			} else
-				ASSERT(0); //failed to create tab
-
-			// fill the list using stored data
-			for (uint32 nFileCount = file.ReadUInt32(); nFileCount > 0; --nFileCount) {
-				CSearchFile *toadd = new CSearchFile(file, true, pParams->dwSearchID, 0, 0, NULL, pParams->eType == SearchTypeKademlia);
-				AddToList(toadd, pParams->bClientSharedFiles);
-			}
-			if (outputwnd)
-				outputwnd->UpdateTabHeader(pParams->dwSearchID);
-
-			if (bDeleteParams)
-				delete pParams;
+		pJob->nSearchesRemaining = (unsigned)pJob->pFile->ReadUInt16();
+		m_pStoredSearchLoadJob = pJob;
+		QueueStoredSearchLoad();
+		if (!pJob->bMessagePending) {
+			while (ProcessStoredSearchLoad(50))
+				;
 		}
-		file.Close();
-		// adjust the starting values for search IDs to avoid reused IDs in loaded searches
-		Kademlia::CSearchManager::SetNextSearchID(++nID);
-		theApp.emuledlg->searchwnd->SetNextSearchID(0x80000000u + nID);
 	} catch (CFileException *ex) {
 		DebugLogError(_T("Failed to load %s%s"), STOREDSEARCHES_FILENAME
 			, (ex->m_cause == CFileException::endOfFile) ? _T(" - corrupt") : (LPCTSTR)CExceptionStrDash(*ex));
 		ex->Delete();
+		if (m_pStoredSearchLoadJob == pJob)
+			CancelStoredSearchLoad();
+		else {
+			if (pJob->pFile != NULL) {
+				pJob->pFile->Close();
+				delete pJob->pFile;
+			}
+			delete pJob;
+		}
 	}
+}
+
+void CSearchList::QueueStoredSearchLoad()
+{
+	if (m_pStoredSearchLoadJob == NULL || m_pStoredSearchLoadJob->bMessagePending
+		|| theApp.emuledlg == NULL || !::IsWindow(theApp.emuledlg->GetSafeHwnd()))
+	{
+		return;
+	}
+	m_pStoredSearchLoadJob->bMessagePending =
+		theApp.emuledlg->PostMessage(UM_PROCESS_STORED_SEARCHES) != FALSE;
+}
+
+bool CSearchList::ProcessStoredSearchLoad(DWORD dwTimeBudgetMs)
+{
+	if (m_pStoredSearchLoadJob == NULL)
+		return false;
+
+	SStoredSearchLoadJob *pJob = m_pStoredSearchLoadJob;
+	pJob->bMessagePending = false;
+	const DWORD dwStarted = ::GetTickCount();
+	UINT uProcessed = 0;
+
+	try {
+		while (pJob->nSearchesRemaining > 0 || pJob->pCurrentParams != NULL) {
+			if (pJob->pCurrentParams == NULL) {
+				pJob->pCurrentParams = new SSearchParams(*pJob->pFile);
+				pJob->pCurrentParams->dwSearchID = ++pJob->nNextSearchID;
+
+				const CString &strResultType(pJob->pCurrentParams->strFileType);
+				NewSearch(NULL, (strResultType == _T(ED2KFTSTR_PROGRAM) ? CString() : strResultType), pJob->pCurrentParams);
+
+				pJob->bDeleteCurrentParams = !theApp.emuledlg->searchwnd->CreateNewTab(pJob->pCurrentParams, false);
+				if (!pJob->bDeleteCurrentParams) {
+					m_foundFilesCount[pJob->pCurrentParams->dwSearchID] = 0;
+					m_foundSourcesCount[pJob->pCurrentParams->dwSearchID] = 0;
+				} else
+					ASSERT(0);
+				pJob->nFilesRemaining = pJob->pFile->ReadUInt32();
+			}
+
+			while (pJob->nFilesRemaining > 0) {
+				CSearchFile *pToAdd = new CSearchFile(*pJob->pFile, true,
+					pJob->pCurrentParams->dwSearchID, 0, 0, NULL,
+					pJob->pCurrentParams->eType == SearchTypeKademlia);
+				AddToList(pToAdd, pJob->pCurrentParams->bClientSharedFiles);
+				--pJob->nFilesRemaining;
+				++uProcessed;
+				if (uProcessed >= 128 || static_cast<DWORD>(::GetTickCount() - dwStarted) >= dwTimeBudgetMs) {
+					QueueStoredSearchLoad();
+					return true;
+				}
+			}
+
+			if (outputwnd)
+				outputwnd->UpdateTabHeader(pJob->pCurrentParams->dwSearchID);
+			if (pJob->bDeleteCurrentParams)
+				delete pJob->pCurrentParams;
+			pJob->pCurrentParams = NULL;
+			pJob->bDeleteCurrentParams = false;
+			--pJob->nSearchesRemaining;
+		}
+	} catch (CFileException *ex) {
+		DebugLogError(_T("Failed to load %s%s"), STOREDSEARCHES_FILENAME
+			, (ex->m_cause == CFileException::endOfFile) ? _T(" - corrupt") : (LPCTSTR)CExceptionStrDash(*ex));
+		ex->Delete();
+		CancelStoredSearchLoad();
+		return false;
+	}
+
+	FinishStoredSearchLoad();
+	return false;
+}
+
+void CSearchList::FinishStoredSearchLoad()
+{
+	if (m_pStoredSearchLoadJob == NULL)
+		return;
+	SStoredSearchLoadJob *pJob = m_pStoredSearchLoadJob;
+	m_pStoredSearchLoadJob = NULL;
+	if (pJob->pFile != NULL) {
+		pJob->pFile->Close();
+		delete pJob->pFile;
+	}
+
+	const uint32 nNextID = pJob->nNextSearchID + 1;
+	Kademlia::CSearchManager::SetNextSearchID(nNextID);
+	theApp.emuledlg->searchwnd->SetNextSearchID(0x80000000u + nNextID);
+	delete pJob;
+}
+
+void CSearchList::CancelStoredSearchLoad()
+{
+	if (m_pStoredSearchLoadJob == NULL)
+		return;
+	SStoredSearchLoadJob *pJob = m_pStoredSearchLoadJob;
+	m_pStoredSearchLoadJob = NULL;
+	if (pJob->bDeleteCurrentParams)
+		delete pJob->pCurrentParams;
+	pJob->pCurrentParams = NULL;
+	if (pJob->pFile != NULL) {
+		pJob->pFile->Close();
+		delete pJob->pFile;
+	}
+	delete pJob;
 }

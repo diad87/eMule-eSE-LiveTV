@@ -25,6 +25,7 @@ class CPreferencesDlg : public CTreePropSheet
 	DECLARE_DYNAMIC(CPreferencesDlg)
 
 	void LocalizeItemText(int i, UINT strid);
+	void KeepDialogInsideWorkArea();
 public:
 	CPreferencesDlg();
 	virtual BOOL OnInitDialog();

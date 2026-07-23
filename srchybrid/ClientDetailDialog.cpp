@@ -199,10 +199,10 @@ void CClientDetailPage::Localize()
 	SetDlgItemText(IDC_STATIC40, GetResString(IDS_CD_TRANS));
 	SetDlgItemText(IDC_STATIC41, GetResString(IDS_CD_CDOWN));
 	SetDlgItemText(IDC_STATIC42, GetResString(IDS_CD_DOWN));
-	SetDlgItemText(IDC_STATIC43, GetResString(IDS_CD_ADOWN));
+	SetDlgItemText(IDC_STATIC43, GetResString(IDS_CD_DOWNRATE));
 	SetDlgItemText(IDC_STATIC44, GetResString(IDS_CD_TDOWN));
 	SetDlgItemText(IDC_STATIC45, GetResString(IDS_CD_UP));
-	SetDlgItemText(IDC_STATIC46, GetResString(IDS_CD_AUP));
+	SetDlgItemText(IDC_STATIC46, GetResString(IDS_CD_UPRATE));
 	SetDlgItemText(IDC_STATIC47, GetResString(IDS_CD_TUP));
 	SetDlgItemText(IDC_STATIC48, GetResString(IDS_CD_UPLOADREQ));
 

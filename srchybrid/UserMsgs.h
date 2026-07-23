@@ -72,5 +72,12 @@ enum EUserWndMessages
 	UM_LIVE_HEADLESS_ACTION, //+35
 
 	// P3 KRP worker/timer -> main thread. Carries no object pointer or payload.
-	UM_KRP_CLIENT_EVENT //+36
+	UM_KRP_CLIENT_EVENT, //+36
+
+	// Time-budgeted main-thread work. Each handler processes a small slice and
+	// reposts itself so large imports and persistence jobs keep the UI alive.
+	UM_PROCESS_ED2K_LINKS, //+37
+	UM_PROCESS_STORED_SEARCHES, //+38
+	UM_PROCESS_KNOWN_MET_SAVE, //+39
+	UM_SHARED_FILES_ADJUST_DETAILS_PANEL //+40
 };

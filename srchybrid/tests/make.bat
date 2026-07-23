@@ -24,6 +24,14 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_liveratelimiter.exe 
 if errorlevel 1 exit /b 1
 tests\build\test_liveratelimiter.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_upload_limit_policy.exe tests\test_upload_limit_policy.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_upload_limit_policy.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_known2_offsets.exe tests\test_known2_offsets.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_known2_offsets.exe
+if errorlevel 1 exit /b 1
 
 set "CRYPTLIB=%ROOT%\..\cryptopp\x64\Output\Release\cryptlib.lib"
 if not exist "%CRYPTLIB%" (echo ERROR: cryptlib.lib missing; run the core gate or build emule first & exit /b 2)

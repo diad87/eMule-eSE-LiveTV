@@ -130,8 +130,10 @@ Stage 'langs' {
             /p:PlatformToolset=v143 $msbuildParallelArg /v:quiet /nologo /fl /flp:"LogFile=$log;ErrorsOnly"
         if ($LASTEXITCODE -ne 0) { throw "language build failed: $($project.Name); see $log" }
     }
-    $dlls = @(Get-ChildItem (Join-Path $RepoRoot 'srchybrid\x64\lang\*.dll') -ErrorAction SilentlyContinue)
+    $dlls = @(Get-ChildItem (Join-Path $RepoRoot 'srchybrid\x64\Release\lang\*.dll') -ErrorAction SilentlyContinue)
     if ($dlls.Count -eq 0) { throw 'no language DLLs were produced' }
+    & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot `
+        -RuntimeDir (Join-Path $RepoRoot 'srchybrid\x64\Release')
 }
 
 Stage 'cleanup-generated-metadata' {
@@ -173,6 +175,7 @@ Stage 'package-smoke' {
     foreach ($required in @('emule.exe','ese-server.exe','ffmpeg.exe','ffprobe.exe','config\preferences.ini','config\nodes.dat','BUILD_INFO.txt','SHA256SUMS.txt')) {
         if (-not (Test-Path (Join-Path $packageDir $required) -PathType Leaf)) { throw "package smoke missing $required" }
     }
+    & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot -RuntimeDir $packageDir
     $oldTestMode = $env:ESE_TEST_MODE
     $oldPort = $env:ESE_PORT
     $serverProcess = $null

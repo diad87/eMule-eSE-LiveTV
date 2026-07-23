@@ -96,6 +96,8 @@ public:
 	void	UpdateItem(void *toupdate);
 	void	Init();
 	void	AddFile(CPartFile *toadd);
+	void	BeginBulkUpdate();
+	void	EndBulkUpdate();
 	void	AddSource(CPartFile *owner, CUpDownClient *source, bool notavailable);
 	void	RemoveSource(CUpDownClient *source, CPartFile *owner);
 	bool	RemoveFile(const CPartFile *toremove);
@@ -138,6 +140,7 @@ protected:
 	CToolTipCtrlX m_tooltip;
 	DWORD		m_dwLastAvailableCommandsCheck;
 	bool		m_availableCommandsDirty;
+	UINT		m_uBulkUpdateDepth;
 
 	void ShowFileDialog(UINT uInvokePage);
 	void ShowClientDialog(CUpDownClient *pClient);

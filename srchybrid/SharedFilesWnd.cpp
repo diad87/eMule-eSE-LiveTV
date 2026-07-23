@@ -38,6 +38,28 @@ static char THIS_FILE[] = __FILE__;
 #define	SPLITTER_MARGIN			0
 #define	SPLITTER_WIDTH			4
 
+namespace
+{
+	int GetPageBottomOverflow(const CWnd *pPage)
+	{
+		if (pPage == NULL || !::IsWindow(pPage->GetSafeHwnd()))
+			return 0;
+
+		CRect rcClient;
+		pPage->GetClientRect(rcClient);
+		int iContentBottom = rcClient.top;
+		for (CWnd *pChild = pPage->GetWindow(GW_CHILD); pChild != NULL; pChild = pChild->GetNextWindow()) {
+			if (!pChild->IsWindowVisible())
+				continue;
+			CRect rcChild;
+			pChild->GetWindowRect(rcChild);
+			pPage->ScreenToClient(rcChild);
+			iContentBottom = max(iContentBottom, rcChild.bottom);
+		}
+		return max(0, iContentBottom + 2 - rcClient.bottom);
+	}
+}
+
 
 // CSharedFilesWnd dialog
 
@@ -55,6 +77,7 @@ BEGIN_MESSAGE_MAP(CSharedFilesWnd, CResizableDialog)
 	ON_WM_SYSCOLORCHANGE()
 	ON_BN_CLICKED(IDC_SF_HIDESHOWDETAILS, OnBnClickedSfHideshowdetails)
 	ON_NOTIFY(LVN_ITEMCHANGED, IDC_SFLIST, OnLvnItemchangedSflist)
+	ON_MESSAGE(UM_SHARED_FILES_ADJUST_DETAILS_PANEL, OnAdjustDetailsPanelHeight)
 	ON_WM_SHOWWINDOW()
 END_MESSAGE_MAP()
 
@@ -63,6 +86,7 @@ CSharedFilesWnd::CSharedFilesWnd(CWnd *pParent /*=NULL*/)
 	, icon_files()
 	, m_nFilterColumn()
 	, m_bDetailsVisible(true)
+	, m_bDetailsHeightAdjustmentPending(false)
 {
 }
 
@@ -132,6 +156,7 @@ BOOL CSharedFilesWnd::OnInitDialog()
 	ShowDetailsPanel(thePrefs.GetShowSharedFilesDetails());
 
 	Localize();
+	RequestDetailsPanelHeightAdjustment();
 	return TRUE;
 }
 
@@ -286,6 +311,7 @@ void CSharedFilesWnd::Localize()
 	sharedfilesctrl.SetDirectoryFilter(NULL, true);
 	SetDlgItemText(IDC_RELOADSHAREDFILES, GetResString(IDS_SF_RELOAD));
 	m_dlgDetails.Localize();
+	RequestDetailsPanelHeightAdjustment();
 }
 
 void CSharedFilesWnd::OnTvnSelChangedSharedDirsTree(LPNMHDR, LRESULT *pResult)
@@ -329,6 +355,7 @@ LRESULT CSharedFilesWnd::DefWindowProc(UINT message, WPARAM wParam, LPARAM lPara
 			ScreenToClient(&rcWnd);
 			m_wndSplitter.SetRange(rcWnd.left + SPLITTER_RANGE_MIN, rcWnd.left + SPLITTER_RANGE_MAX);
 		}
+		RequestDetailsPanelHeightAdjustment();
 	}
 	return CResizableDialog::DefWindowProc(message, wParam, lParam);
 }
@@ -422,6 +449,15 @@ void CSharedFilesWnd::ShowDetailsPanel(bool bShow)
 {
 	m_bDetailsVisible = bShow;
 	thePrefs.SetShowSharedFilesDetails(bShow);
+	UpdateDetailsPanelLayout();
+	sharedfilesctrl.SetFocus();
+	ShowSelectedFilesDetails();
+	if (bShow)
+		RequestDetailsPanelHeightAdjustment();
+}
+
+void CSharedFilesWnd::UpdateDetailsPanelLayout()
+{
 	RemoveAnchor(sharedfilesctrl);
 	RemoveAnchor(IDC_SF_HIDESHOWDETAILS);
 
@@ -440,7 +476,7 @@ void CSharedFilesWnd::ShowDetailsPanel(bool bShow)
 	m_wndSplitter.GetWindowRect(&rcSpl);
 	ScreenToClient(&rcSpl);
 
-	if (bShow) {
+	if (m_bDetailsVisible) {
 		sharedfilesctrl.SetWindowPos(NULL, 0, 0, rcFiles.Width(), rcSpl.bottom - rcFiles.top - rcDetailDlg.Height() - 2, SWP_NOMOVE | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE);
 		m_dlgDetails.ShowWindow(SW_SHOW);
 		GetDlgItem(IDC_SF_FICON)->ShowWindow(SW_HIDE);
@@ -458,8 +494,56 @@ void CSharedFilesWnd::ShowDetailsPanel(bool bShow)
 
 	AddAnchor(sharedfilesctrl, TOP_LEFT, BOTTOM_RIGHT);
 	AddAnchor(IDC_SF_HIDESHOWDETAILS, BOTTOM_RIGHT);
-	sharedfilesctrl.SetFocus();
-	ShowSelectedFilesDetails();
+}
+
+void CSharedFilesWnd::RequestDetailsPanelHeightAdjustment()
+{
+	if (!m_bDetailsVisible || !::IsWindow(m_dlgDetails.GetSafeHwnd()) || m_bDetailsHeightAdjustmentPending)
+		return;
+	m_bDetailsHeightAdjustmentPending = true;
+	PostMessage(UM_SHARED_FILES_ADJUST_DETAILS_PANEL);
+}
+
+void CSharedFilesWnd::AdjustDetailsPanelHeightForPageOverflow()
+{
+	if (!m_bDetailsVisible)
+		return;
+
+	// A newly activated page can create its controls after the first size pass.
+	// Recheck a few times, because resizing the sheet may expose another row.
+	for (int iPass = 0; iPass < 6; ++iPass) {
+		const int iOverflow = m_dlgDetails.GetRequiredHeightCompensation();
+		if (iOverflow <= 0)
+			break;
+
+		CRect rcFiles;
+		sharedfilesctrl.GetWindowRect(rcFiles);
+		ScreenToClient(rcFiles);
+
+		CRect rcDetails;
+		m_dlgDetails.GetWindowRect(rcDetails);
+		ScreenToClient(rcDetails);
+
+		const int iMinimumListHeight = 80;
+		const int iAvailable = rcDetails.top - (rcFiles.top + iMinimumListHeight);
+		const int iGrow = min(iOverflow, max(0, iAvailable));
+		if (iGrow <= 0)
+			break;
+
+		RemoveAnchor(m_dlgDetails);
+		rcDetails.top -= iGrow;
+		m_dlgDetails.MoveWindow(rcDetails);
+		AddAnchor(m_dlgDetails, BOTTOM_LEFT, BOTTOM_RIGHT);
+		UpdateDetailsPanelLayout();
+		m_dlgDetails.RedrawWindow(NULL, NULL, RDW_INVALIDATE | RDW_ALLCHILDREN);
+	}
+}
+
+LRESULT CSharedFilesWnd::OnAdjustDetailsPanelHeight(WPARAM, LPARAM)
+{
+	m_bDetailsHeightAdjustmentPending = false;
+	AdjustDetailsPanelHeightForPageOverflow();
+	return 0;
 }
 
 void CSharedFilesWnd::OnBnClickedSfHideshowdetails()
@@ -475,8 +559,10 @@ void CSharedFilesWnd::OnLvnItemchangedSflist(LPNMHDR, LRESULT *pResult)
 
 void CSharedFilesWnd::OnShowWindow(BOOL bShow, UINT)
 {
-	if (bShow)
+	if (bShow) {
 		ShowSelectedFilesDetails(true);
+		RequestDetailsPanelHeightAdjustment();
+	}
 }
 
 
@@ -557,7 +643,32 @@ BOOL CSharedFileDetailsModelessSheet::OnInitDialog()
 	BOOL bResult = CListViewPropertySheet::OnInitDialog();
 	HighColorTab::UpdateImageList(*this);
 	InitWindowStyles(this);
+	if (GetParent() != NULL)
+		static_cast<CSharedFilesWnd*>(GetParent())->RequestDetailsPanelHeightAdjustment();
 	return bResult;
+}
+
+BOOL CSharedFileDetailsModelessSheet::OnNotify(WPARAM wParam, LPARAM lParam, LRESULT *pResult)
+{
+	BOOL bResult = CListViewPropertySheet::OnNotify(wParam, lParam, pResult);
+	const NMHDR *pNMHDR = reinterpret_cast<const NMHDR*>(lParam);
+	if (pNMHDR != NULL && pNMHDR->code == PSN_SETACTIVE && GetParent() != NULL)
+		static_cast<CSharedFilesWnd*>(GetParent())->RequestDetailsPanelHeightAdjustment();
+	return bResult;
+}
+
+int CSharedFileDetailsModelessSheet::GetRequiredHeightCompensation() const
+{
+	int iCompensation = 0;
+	const CPropertyPage *pActivePage = GetActivePage();
+	iCompensation = GetPageBottomOverflow(pActivePage);
+
+	for (int iPage = 0; iPage < GetPageCount(); ++iPage) {
+		const CPropertyPage *pPage = GetPage(iPage);
+		if (pPage != pActivePage)
+			iCompensation = max(iCompensation, GetPageBottomOverflow(pPage));
+	}
+	return iCompensation;
 }
 
 void  CSharedFileDetailsModelessSheet::SetFiles(CTypedPtrList<CPtrList, CShareableFile*> &aFiles)
@@ -580,6 +691,8 @@ void CSharedFileDetailsModelessSheet::Localize()
 	SetTabTitle(IDS_CONTENT_INFO, &m_wndMediaInfo, this);
 	m_wndMetaData.Localize();
 	SetTabTitle(IDS_META_DATA, &m_wndMetaData, this);
+	if (GetParent() != NULL)
+		static_cast<CSharedFilesWnd*>(GetParent())->RequestDetailsPanelHeightAdjustment();
 }
 
 LRESULT CSharedFileDetailsModelessSheet::OnDataChanged(WPARAM, LPARAM)
@@ -589,5 +702,7 @@ LRESULT CSharedFileDetailsModelessSheet::OnDataChanged(WPARAM, LPARAM)
 	UpdateFileDetailsPages(this, &m_wndArchiveInfo, &m_wndMediaInfo, &m_wndFileLink);
 	if (pFocused) //try to stay in file list
 		pFocused->SetFocus();
+	if (GetParent() != NULL)
+		static_cast<CSharedFilesWnd*>(GetParent())->RequestDetailsPanelHeightAdjustment();
 	return TRUE;
 }

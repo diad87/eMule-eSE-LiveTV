@@ -84,6 +84,7 @@ CDownloadListCtrl::CDownloadListCtrl()
 	, m_pFontBold()
 	, m_dwLastAvailableCommandsCheck()
 	, m_availableCommandsDirty(true)
+	, m_uBulkUpdateDepth()
 {
 	SetGeneralPurposeFind(true);
 	SetSkinKey(_T("DownloadsLv"));
@@ -255,7 +256,27 @@ void CDownloadListCtrl::AddFile(CPartFile *toadd)
 	if (toadd->CheckShowItemInGivenCat(curTab))
 		InsertItem(LVIF_PARAM | LVIF_TEXT, itemnr, LPSTR_TEXTCALLBACK, 0, 0, 0, (LPARAM)newitem);
 
-	ShowFilesCount();
+	if (m_uBulkUpdateDepth == 0)
+		ShowFilesCount();
+}
+
+void CDownloadListCtrl::BeginBulkUpdate()
+{
+	if (m_uBulkUpdateDepth++ == 0 && ::IsWindow(m_hWnd))
+		SetRedraw(FALSE);
+}
+
+void CDownloadListCtrl::EndBulkUpdate()
+{
+	if (m_uBulkUpdateDepth == 0)
+		return;
+	if (--m_uBulkUpdateDepth == 0) {
+		ShowFilesCount();
+		if (::IsWindow(m_hWnd)) {
+			SetRedraw(TRUE);
+			Invalidate(FALSE);
+		}
+	}
 }
 
 void CDownloadListCtrl::AddSource(CPartFile *owner, CUpDownClient *source, bool notavailable)

@@ -46,6 +46,7 @@ function Ensure-CryptoPP {
 }
 
 if ($Suite -eq 'Core' -or $Suite -eq 'All') {
+    Run 'language resources' { & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot }
     Run 'protocol registry' { & python (Join-Path $RepoRoot 'tools\check_protocol_registry.py') }
     Run 'direct port ownership linter' { & python (Join-Path $RepoRoot 'tools\check_direct_port_usage.py') }
     Run 'address wire tests' { & python (Join-Path $RepoRoot 'tests\test_address_wire.py') }

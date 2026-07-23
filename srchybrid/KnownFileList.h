@@ -15,10 +15,12 @@
 //along with this program; if not, write to the Free Software
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
+#include <vector>
 #include "MapKey.h"
 #include "SHAHashset.h"
 
 class CKnownFile;
+class CSafeMemFile;
 typedef CMap<CCKey, const CCKey&, CKnownFile*, CKnownFile*> CKnownFilesMap;
 typedef CMap<CSKey, const CSKey&, int, int> CancelledFilesMap;
 typedef CMap<CAICHHash, const CAICHHash&, const CKnownFile*, const CKnownFile*> KnonwFilesByAICHMap;
@@ -34,6 +36,7 @@ public:
 	bool	SafeAddKFile(CKnownFile *toadd);
 	bool	Init();
 	void	Save();
+	bool	ProcessKnownMetSaveJob(DWORD dwTimeBudgetMs = 8);
 	void	Clear();
 	void	Process();
 
@@ -72,4 +75,37 @@ private:
 	DWORD	m_nLastSaved;
 	uint16	requested;
 	uint16	accepted;
+
+	struct SKnownMetSaveJob
+	{
+		SKnownMetSaveJob()
+			: pData(NULL), uNextHash(), iRecordsNumber(), bMessagePending(false) {}
+		~SKnownMetSaveJob();
+
+		CSafeMemFile *pData;
+		std::vector<CSKey> vecHashes;
+		size_t uNextHash;
+		INT_PTR iRecordsNumber;
+		bool bMessagePending;
+	};
+
+	struct SKnownMetDiskWriteJob
+	{
+		CSafeMemFile *pData;
+		CString strTempPath;
+		CString strFinalPath;
+	};
+
+	SKnownMetSaveJob *m_pKnownMetSaveJob;
+	CWinThread *m_pKnownMetWriterThread;
+	bool m_bKnownMetSaveRerunRequested;
+
+	void	StartKnownMetSaveJob();
+	void	QueueKnownMetSaveSlice();
+	void	CancelKnownMetSaveJob();
+	void	FinishKnownMetSaveJob();
+	void	ReapKnownMetWriter(DWORD dwTimeout);
+	void	SaveKnownFilesSynchronously();
+	void	SaveCancelledFilesSynchronously();
+	static UINT AFX_CDECL KnownMetWriterThread(LPVOID pParam);
 };

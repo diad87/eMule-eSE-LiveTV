@@ -42,6 +42,7 @@ public:
 
 	void SetFiles(CTypedPtrList<CPtrList, CShareableFile*> &aFiles);
 	void Localize();
+	int GetRequiredHeightCompensation() const;
 protected:
 	CArchivePreviewDlg			m_wndArchiveInfo;
 	CED2kLinkDlg				m_wndFileLink;
@@ -50,6 +51,7 @@ protected:
 	CMetaDataDlg				m_wndMetaData;
 
 	DECLARE_MESSAGE_MAP()
+	virtual BOOL OnNotify(WPARAM wParam, LPARAM lParam, LRESULT *pResult);
 	afx_msg int OnCreate(LPCREATESTRUCT lpCreateStruct);
 	afx_msg LRESULT OnDataChanged(WPARAM, LPARAM);
 };
@@ -76,6 +78,7 @@ public:
 	void OnSingleFileShareStatusChanged()		{ m_ctlSharedDirTree.FileSystemTreeUpdateBoldState(NULL); }
 	void ShowSelectedFilesDetails(bool bForce = false);
 	void ShowDetailsPanel(bool bShow);
+	void RequestDetailsPanelHeightAdjustment();
 
 	CSharedFilesCtrl sharedfilesctrl;
 	CStringArray m_astrFilter;
@@ -89,11 +92,14 @@ private:
 	CHeaderCtrl		m_ctlSharedListHeader;
 	uint32			m_nFilterColumn;
 	bool			m_bDetailsVisible;
+	bool			m_bDetailsHeightAdjustmentPending;
 	CSharedFileDetailsModelessSheet	m_dlgDetails;
 
 protected:
 	void SetAllIcons();
 	void DoResize(int iDelta);
+	void UpdateDetailsPanelLayout();
+	void AdjustDetailsPanelHeightForPageOverflow();
 
 	virtual void DoDataExchange(CDataExchange *pDX);    // DDX/DDV support
 	virtual BOOL PreTranslateMessage(MSG *pMsg);
@@ -112,4 +118,5 @@ protected:
 	afx_msg void OnShowWindow(BOOL bShow, UINT);
 	afx_msg void OnBnClickedSfHideshowdetails();
 	afx_msg void OnLvnItemchangedSflist(LPNMHDR, LRESULT *pResult);
+	afx_msg LRESULT OnAdjustDetailsPanelHeight(WPARAM, LPARAM);
 };

@@ -26,6 +26,7 @@
 #include "knownfilelist.h"
 #include "sharedfileswnd.h"
 #include "Log.h"
+#include "Known2MetOffset.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -80,7 +81,8 @@ int CAICHSyncThread::Run()
 				aKnown2HashesFilePos.Add(file.GetPosition());
 				aKnown2Hashes.Add(CAICHHash(file));
 				uint32 nHashCount = file.ReadUInt32();
-				if (file.GetPosition() + nHashCount * (ULONGLONG)CAICHHash::GetHashSize() > nExistingSize)
+				if (!Known2MetOffset::IsHashBlockWithinFile(file.GetPosition(), nHashCount,
+					nExistingSize, CAICHHash::GetHashSize()))
 					AfxThrowFileException(CFileException::endOfFile, 0, file.GetFileName());
 
 				// skip the rest of this hashset

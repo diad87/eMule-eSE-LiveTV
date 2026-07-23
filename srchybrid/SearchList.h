@@ -52,6 +52,7 @@ typedef struct
 
 class CFileDataIO;
 class CAbstractFile;
+class CSafeBufferedFile;
 struct SSearchTerm;
 
 class CSearchList
@@ -88,6 +89,8 @@ public:
 
 	void	StoreSearches();
 	void	LoadSearches();
+	bool	ProcessStoredSearchLoad(DWORD dwTimeBudgetMs = 8);
+	void	CancelStoredSearchLoad();
 
 	void	DoSpamRating(CSearchFile *pSearchFile, bool bIsClientFile = false, bool bMarkAsNoSpam = false, bool bRecalculateAll = false, bool bUpdate = false, uint32 dwFromUDPServerIP = 0);
 	void	MarkFileAsSpam(CSearchFile *pSpamFile, bool bRecalculateAll = false, bool bUpdate = false);
@@ -117,6 +120,26 @@ private:
 	CMap<uint32, uint32, UINT, UINT> m_RequestedUDPAnswersCount;
 	CSearchListCtrl *outputwnd;
 	CString	m_strResultFileType;
+
+	struct SStoredSearchLoadJob
+	{
+		SStoredSearchLoadJob()
+			: pFile(NULL), nSearchesRemaining(), nNextSearchID((uint32)-1)
+			, pCurrentParams(NULL), nFilesRemaining(), bDeleteCurrentParams(false)
+			, bMessagePending(false) {}
+
+		CSafeBufferedFile *pFile;
+		unsigned nSearchesRemaining;
+		uint32 nNextSearchID;
+		SSearchParams *pCurrentParams;
+		uint32 nFilesRemaining;
+		bool bDeleteCurrentParams;
+		bool bMessagePending;
+	};
+	SStoredSearchLoadJob *m_pStoredSearchLoadJob;
+
+	void	QueueStoredSearchLoad();
+	void	FinishStoredSearchLoad();
 
 	// spam filter
 	typedef CMap<uint32, uint32, bool, bool> CSpammerIPMap;

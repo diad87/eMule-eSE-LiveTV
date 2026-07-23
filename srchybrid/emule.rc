@@ -947,13 +947,13 @@ BEGIN
     CONTROL         "Static",IDC_DDOWNLOADING,"Static",SS_LEFTNOWORDWRAP | SS_NOPREFIX | WS_GROUP,110,91,202,8
     RTEXT           "Downloaded (this session):",IDC_STATIC42,19,113,87,8,0
     CONTROL         "Static",IDC_DDOWN,"Static",SS_LEFTNOWORDWRAP | SS_NOPREFIX | WS_GROUP,110,113,53,8
-    RTEXT           "Average Downloadrate:",IDC_STATIC43,19,124,87,8,0
+    RTEXT           "Download rate:",IDC_STATIC43,19,124,87,8,0
     CONTROL         "Static",IDC_DAVDR,"Static",SS_LEFTNOWORDWRAP | SS_NOPREFIX | WS_GROUP,110,124,53,8
     RTEXT           "Downloaded total:",IDC_STATIC44,19,135,87,8,0
     CONTROL         "Static",IDC_DDOWNTOTAL,"Static",SS_LEFTNOWORDWRAP | SS_NOPREFIX | WS_GROUP,110,135,53,8
     RTEXT           "Uploaded (this session):",IDC_STATIC45,163,113,90,8,0
     CONTROL         "Static",IDC_DDUP,"Static",SS_LEFTNOWORDWRAP | SS_NOPREFIX | WS_GROUP,256,113,51,8
-    RTEXT           "Average Upload rate:",IDC_STATIC46,163,124,90,8,0
+    RTEXT           "Upload rate:",IDC_STATIC46,163,124,90,8,0
     CONTROL         "Static",IDC_DAVUR,"Static",SS_LEFTNOWORDWRAP | SS_NOPREFIX | WS_GROUP,256,124,50,8
     RTEXT           "Uploaded total:",IDC_STATIC47,163,135,90,8,0
     CONTROL         "Static",IDC_DUPTOTAL,"Static",SS_LEFTNOWORDWRAP | SS_NOPREFIX | WS_GROUP,256,135,50,8
@@ -3913,6 +3913,8 @@ BEGIN
     IDS_LIVEMGR_PEER_BANNED_FMT "eSE Live: Peer banned (response rate: %.0f%% after %u requests)"
     IDS_LIVEMGR_RTMP_WAITING_OBS "eSE Live: RTMP ingest ready; waiting for the OBS signal"
     IDS_LIVEMGR_PREBUFFER_TIMEOUT "eSE Live: startup timed out without enough playable buffer"
+    IDS_CD_DOWNRATE         "Download rate:"
+    IDS_CD_UPRATE           "Upload rate:"
 END
 
 STRINGTABLE

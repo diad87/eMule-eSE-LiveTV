@@ -946,6 +946,7 @@
     <ClInclude Include="KadSearchListCtrl.h" />
     <ClInclude Include="KnownFile.h" />
     <ClInclude Include="KnownFileList.h" />
+    <ClInclude Include="Known2MetOffset.h" />
     <ClInclude Include="langids.h" />
     <ClInclude Include="LastCommonRouteFinder.h" />
     <ClInclude Include="LayeredWindowHelperST.h" />
@@ -1107,6 +1108,7 @@
     <ClInclude Include="UDPSocket.h" />
     <ClInclude Include="UpdownClient.h" />
     <ClInclude Include="UploadBandwidthThrottler.h" />
+    <ClInclude Include="UploadLimitPolicy.h" />
     <ClInclude Include="UploadDiskIOThread.h" />
     <ClInclude Include="UploadListCtrl.h" />
     <ClInclude Include="UploadQueue.h" />

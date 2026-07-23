@@ -1,0 +1,16 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    Language projects historically copied to srchybrid\x64\lang, while the
+    development executable lives in srchybrid\x64\Release.  The packaged build
+    worked, but a freshly built emule.exe could not discover any translation.
+    Keep the legacy output for compatibility and also mirror each x64 DLL into
+    the exact runtime layout used by the executable.
+  -->
+  <Target Name="CopyLanguageNextToEmule" AfterTargets="Build" Condition="'$(Platform)' == 'x64'">
+    <PropertyGroup>
+      <EmuleRuntimeLangDir>$(MSBuildThisFileDirectory)..\x64\Release\lang\</EmuleRuntimeLangDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(EmuleRuntimeLangDir)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(EmuleRuntimeLangDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

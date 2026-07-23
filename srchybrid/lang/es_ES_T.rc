@@ -2161,6 +2161,8 @@ BEGIN
     IDS_LIVEMGR_PEER_BANNED_FMT "eSE Live: peer baneado (tasa de respuesta: %.0f%% tras %u peticiones)"
     IDS_LIVEMGR_RTMP_WAITING_OBS "eSE Live: ingesta RTMP lista; esperando la señal de OBS"
     IDS_LIVEMGR_PREBUFFER_TIMEOUT "eSE Live: tiempo de arranque agotado sin búfer reproducible suficiente"
+    IDS_CD_DOWNRATE         "Tasa de descarga:"
+    IDS_CD_UPRATE           "Tasa de subida:"
 END
 
 STRINGTABLE

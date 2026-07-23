@@ -264,6 +264,9 @@ BEGIN_MESSAGE_MAP(CemuleDlg, CTrayDialog)
 	ON_MESSAGE(UM_LIVE_WEB_LEAVE, OnLiveWebLeave)
 	ON_MESSAGE(UM_LIVE_HEADLESS_ACTION, OnLiveHeadlessAction)
 	ON_MESSAGE(UM_KRP_CLIENT_EVENT, OnKrpClientEvent)
+	ON_MESSAGE(UM_PROCESS_ED2K_LINKS, OnProcessEd2kLinks)
+	ON_MESSAGE(UM_PROCESS_STORED_SEARCHES, OnProcessStoredSearches)
+	ON_MESSAGE(UM_PROCESS_KNOWN_MET_SAVE, OnProcessKnownMetSave)
 
 	// Version Check DNS
 	ON_MESSAGE(UM_VERSIONCHECK_RESPONSE, OnVersionCheckResponse)
@@ -935,6 +938,27 @@ LRESULT CemuleDlg::OnKrpClientEvent(WPARAM, LPARAM)
 {
 	if (theApp.relayclient != NULL && !theApp.IsClosing())
 		theApp.relayclient->ProcessMainThreadEvents();
+	return 0;
+}
+
+LRESULT CemuleDlg::OnProcessEd2kLinks(WPARAM, LPARAM)
+{
+	if (!theApp.IsClosing())
+		theApp.ProcessPendingEd2kLinks();
+	return 0;
+}
+
+LRESULT CemuleDlg::OnProcessStoredSearches(WPARAM, LPARAM)
+{
+	if (!theApp.IsClosing() && theApp.searchlist != NULL)
+		theApp.searchlist->ProcessStoredSearchLoad();
+	return 0;
+}
+
+LRESULT CemuleDlg::OnProcessKnownMetSave(WPARAM, LPARAM)
+{
+	if (!theApp.IsClosing() && theApp.knownfiles != NULL)
+		theApp.knownfiles->ProcessKnownMetSaveJob();
 	return 0;
 }
 

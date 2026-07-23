@@ -145,6 +145,8 @@ public:
 
 	// ed2k link functions
 	void		AddEd2kLinksToDownload(const CString &strLinks, int cat);
+	bool		ProcessPendingEd2kLinks(DWORD dwTimeBudgetMs = 8);
+	void		ClearPendingEd2kLinks();
 	void		SearchClipboard();
 	void		IgnoreClipboardLinks(const CString &strLinks)	{ m_strLastClipboardContents = strLinks; }
 	void		PasteClipboard(int cat = 0);
@@ -250,6 +252,18 @@ protected:
 	uint32		m_dwPublicIP;
 	bool		m_bGuardClipboardPrompt;
 	bool		m_bAutoStart;
+
+	struct SQueuedEd2kLinks
+	{
+		SQueuedEd2kLinks(const CString &rstrLinks, int iCategory)
+			: strLinks(rstrLinks), iCategory(iCategory), iTokenPos(0) {}
+
+		CString strLinks;
+		int iCategory;
+		int iTokenPos;
+	};
+	CTypedPtrList<CPtrList, SQueuedEd2kLinks*> m_liPendingEd2kLinks;
+	bool		m_bEd2kLinksMessagePending;
 
 public:
 	// V2-S06/S07: headless viewer mode for stress testing.

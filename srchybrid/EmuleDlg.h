@@ -350,6 +350,9 @@ protected:
 	afx_msg LRESULT OnLiveWebLeave(WPARAM, LPARAM);
 	afx_msg LRESULT OnLiveHeadlessAction(WPARAM, LPARAM);
 	afx_msg LRESULT OnKrpClientEvent(WPARAM, LPARAM);
+	afx_msg LRESULT OnProcessEd2kLinks(WPARAM, LPARAM);
+	afx_msg LRESULT OnProcessStoredSearches(WPARAM, LPARAM);
+	afx_msg LRESULT OnProcessKnownMetSave(WPARAM, LPARAM);
 	// VersionCheck DNS
 	afx_msg LRESULT OnVersionCheckResponse(WPARAM, LPARAM lParam);
 	// MiniMule

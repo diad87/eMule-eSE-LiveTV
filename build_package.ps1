@@ -57,12 +57,13 @@ Write-Host '[1/7] Fresh binaries'
 Require-Copy (Join-Path $RepoRoot 'srchybrid\x64\Release\emule.exe') (Join-Path $packageDir 'emule.exe')
 Require-Copy (Join-Path $RepoRoot 'srchybrid\eSE\ese-server.exe') (Join-Path $packageDir 'ese-server.exe')
 
-$langSource = Join-Path $RepoRoot 'srchybrid\x64\lang'
+$langSource = Join-Path $RepoRoot 'srchybrid\x64\Release\lang'
 $langDlls = @(Get-ChildItem (Join-Path $langSource '*.dll') -ErrorAction SilentlyContinue)
 if ($langDlls.Count -eq 0) { throw 'No freshly built language DLLs found.' }
 $langDir = Join-Path $packageDir 'lang'
 New-Item -ItemType Directory $langDir -Force | Out-Null
 foreach ($dll in $langDlls) { Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $langDir $dll.Name) -Force }
+& (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot -RuntimeDir (Split-Path -Parent $langDir)
 
 Write-Host '[2/7] Pinned media toolchain'
 $inputs = Get-Content (Join-Path $RepoRoot 'tools\release_inputs.json') -Raw | ConvertFrom-Json

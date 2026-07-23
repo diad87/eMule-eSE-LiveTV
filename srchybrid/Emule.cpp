@@ -62,6 +62,9 @@
 #include "secrunasuser.h"
 #include "SafeFile.h"
 #include "emuleDlg.h"
+#include "UserMsgs.h"
+#include "TransferDlg.h"
+#include "DownloadListCtrl.h"
 #include "SearchDlg.h"
 #include "enbitmap.h"
 #include "FirewallOpener.h"
@@ -298,6 +301,7 @@ CemuleApp::CemuleApp(LPCTSTR lpszAppName)
 	, m_dwPublicIP()
 	, m_bGuardClipboardPrompt()
 	, m_bAutoStart()
+	, m_bEd2kLinksMessagePending()
 	, m_nSelfTestExitCode()
 	, m_bStandbyOff()
 {
@@ -707,6 +711,7 @@ BOOL CemuleApp::InitInstance()
 int CemuleApp::ExitInstance()
 {
 	AddDebugLogLine(DLP_VERYLOW, _T("%hs"), __FUNCTION__);
+	ClearPendingEd2kLinks();
 
 	// DISC-S01: explicit broadcast teardown BEFORE the manager destructor
 	// runs. StopBroadcastFull() invokes UnpublishStream(), which now
@@ -1591,10 +1596,48 @@ CTempIconLoader::~CTempIconLoader()
 
 void CemuleApp::AddEd2kLinksToDownload(const CString &strLinks, int cat)
 {
-	for (int iPos = 0; iPos >= 0;) {
-		const CString &sToken(strLinks.Tokenize(_T(" \t\r\n"), iPos)); //tokenize by whitespace
-		if (sToken.IsEmpty())
-			break;
+	if (strLinks.IsEmpty())
+		return;
+
+	m_liPendingEd2kLinks.AddTail(new SQueuedEd2kLinks(strLinks, cat));
+	if (!m_bEd2kLinksMessagePending && emuledlg != NULL && ::IsWindow(emuledlg->GetSafeHwnd())) {
+		m_bEd2kLinksMessagePending = emuledlg->PostMessage(UM_PROCESS_ED2K_LINKS) != FALSE;
+	}
+
+	// Unit tests and very early startup paths may not have a window yet.
+	if (!m_bEd2kLinksMessagePending) {
+		while (ProcessPendingEd2kLinks(50)) {
+			if (emuledlg != NULL && ::IsWindow(emuledlg->GetSafeHwnd()))
+				break;
+		}
+	}
+}
+
+bool CemuleApp::ProcessPendingEd2kLinks(DWORD dwTimeBudgetMs)
+{
+	m_bEd2kLinksMessagePending = false;
+	const DWORD dwStarted = ::GetTickCount();
+	UINT uProcessed = 0;
+	CDownloadListCtrl *pDownloadList = emuledlg != NULL && emuledlg->transferwnd != NULL
+		? emuledlg->transferwnd->GetDownloadList() : NULL;
+	if (pDownloadList != NULL)
+		pDownloadList->BeginBulkUpdate();
+
+	while (!m_liPendingEd2kLinks.IsEmpty()) {
+		SQueuedEd2kLinks *pBatch = m_liPendingEd2kLinks.GetHead();
+		if (pBatch->iTokenPos < 0) {
+			m_liPendingEd2kLinks.RemoveHead();
+			delete pBatch;
+			continue;
+		}
+
+		const CString sToken(pBatch->strLinks.Tokenize(_T(" \t\r\n"), pBatch->iTokenPos));
+		if (sToken.IsEmpty()) {
+			m_liPendingEd2kLinks.RemoveHead();
+			delete pBatch;
+			continue;
+		}
+
 		bool bSlash = (sToken[sToken.GetLength() - 1] == _T('/'));
 		CED2KLink *pLink = NULL;
 		try {
@@ -1602,7 +1645,7 @@ void CemuleApp::AddEd2kLinksToDownload(const CString &strLinks, int cat)
 			if (pLink) {
 				if (pLink->GetKind() != CED2KLink::kFile)
 					throwCStr(_T("bad link"));
-				downloadqueue->AddFileLinkToDownload(*pLink->GetFileLink(), cat);
+				downloadqueue->AddFileLinkToDownload(*pLink->GetFileLink(), pBatch->iCategory);
 				delete pLink;
 				pLink = NULL;
 			}
@@ -1611,9 +1654,28 @@ void CemuleApp::AddEd2kLinksToDownload(const CString &strLinks, int cat)
 			CString sBuffer;
 			sBuffer.Format(GetResString(IDS_ERR_INVALIDLINK), (LPCTSTR)error);
 			LogError(LOG_STATUSBAR, GetResString(IDS_ERR_LINKERROR), (LPCTSTR)sBuffer);
-			return;
+			m_liPendingEd2kLinks.RemoveHead();
+			delete pBatch;
 		}
+
+		++uProcessed;
+		if (uProcessed >= 64 || static_cast<DWORD>(::GetTickCount() - dwStarted) >= dwTimeBudgetMs)
+			break;
 	}
+
+	if (pDownloadList != NULL)
+		pDownloadList->EndBulkUpdate();
+
+	if (!m_liPendingEd2kLinks.IsEmpty() && emuledlg != NULL && ::IsWindow(emuledlg->GetSafeHwnd()))
+		m_bEd2kLinksMessagePending = emuledlg->PostMessage(UM_PROCESS_ED2K_LINKS) != FALSE;
+	return !m_liPendingEd2kLinks.IsEmpty();
+}
+
+void CemuleApp::ClearPendingEd2kLinks()
+{
+	while (!m_liPendingEd2kLinks.IsEmpty())
+		delete m_liPendingEd2kLinks.RemoveHead();
+	m_bEd2kLinksMessagePending = false;
 }
 
 void CemuleApp::SearchClipboard()

@@ -2647,6 +2647,8 @@
 #define IDS_LIVEKAD_GUI_SEARCH_FMT             1804
 #define IDS_LIVEMGR_RTMP_WAITING_OBS           1805
 #define IDS_LIVEMGR_PREBUFFER_TIMEOUT           1806
+#define IDS_CD_DOWNRATE                         1807
+#define IDS_CD_UPRATE                           1808
 
 #define IDA_ENTER                       32771
 

@@ -123,7 +123,35 @@ BOOL CPreferencesDlg::OnInitDialog()
 		}
 
 	Localize();
+	KeepDialogInsideWorkArea();
 	return bResult;
+}
+
+void CPreferencesDlg::KeepDialogInsideWorkArea()
+{
+	CRect rcWindow;
+	GetWindowRect(rcWindow);
+
+	MONITORINFO monitorInfo = {};
+	monitorInfo.cbSize = sizeof monitorInfo;
+	const HMONITOR hMonitor = MonitorFromWindow(GetSafeHwnd(), MONITOR_DEFAULTTONEAREST);
+	if (!GetMonitorInfo(hMonitor, &monitorInfo))
+		return;
+
+	const CRect rcWork(monitorInfo.rcWork);
+	int iX = rcWindow.left;
+	int iY = rcWindow.top;
+	if (rcWindow.Width() <= rcWork.Width())
+		iX = min(max(iX, rcWork.left), rcWork.right - rcWindow.Width());
+	else
+		iX = rcWork.left;
+	if (rcWindow.Height() <= rcWork.Height())
+		iY = min(max(iY, rcWork.top), rcWork.bottom - rcWindow.Height());
+	else
+		iY = rcWork.top;
+
+	if (iX != rcWindow.left || iY != rcWindow.top)
+		SetWindowPos(NULL, iX, iY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
 }
 
 void CPreferencesDlg::LocalizeItemText(int i, UINT strid)

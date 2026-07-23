@@ -32,6 +32,7 @@
 #include "MD5Sum.h"
 #include "SharedFilesWnd.h"
 #include "SharedFilesCtrl.h"
+#include "UserMsgs.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -41,6 +42,7 @@ static char THIS_FILE[] = __FILE__;
 
 
 #define KNOWN_MET_FILENAME		_T("known.met")
+#define KNOWN_MET_FILENAME_TMP	_T("known.met.tmp")
 #define CANCELLED_MET_FILENAME	_T("cancelled.met")
 
 #define CANCELLED_HEADER_OLD	MET_HEADER
@@ -55,6 +57,9 @@ CKnownFileList::CKnownFileList()
 	, m_dwCancelledFilesSeed()
 	, requested()
 	, accepted()
+	, m_pKnownMetSaveJob()
+	, m_pKnownMetWriterThread()
+	, m_bKnownMetSaveRerunRequested()
 {
 	m_Files_map.InitHashTable(2063);
 	m_mapCancelledFiles.InitHashTable(1031);
@@ -64,7 +69,14 @@ CKnownFileList::CKnownFileList()
 
 CKnownFileList::~CKnownFileList()
 {
+	CancelKnownMetSaveJob();
+	ReapKnownMetWriter(INFINITE);
 	Clear();
+}
+
+CKnownFileList::SKnownMetSaveJob::~SKnownMetSaveJob()
+{
+	delete pData;
 }
 
 bool CKnownFileList::Init()
@@ -190,9 +202,23 @@ bool CKnownFileList::LoadCancelledFiles()
 
 void CKnownFileList::Save()
 {
+	m_nLastSaved = ::GetTickCount();
+	if (theApp.IsClosing()) {
+		CancelKnownMetSaveJob();
+		ReapKnownMetWriter(INFINITE);
+		SaveKnownFilesSynchronously();
+		SaveCancelledFilesSynchronously();
+		return;
+	}
+
+	StartKnownMetSaveJob();
+	SaveCancelledFilesSynchronously();
+}
+
+void CKnownFileList::SaveKnownFilesSynchronously()
+{
 	if (thePrefs.GetLogFileSaving())
 		AddDebugLogLine(false, _T("Saving known files list in \"%s\""), KNOWN_MET_FILENAME);
-	m_nLastSaved = ::GetTickCount();
 	const CString &sConfDir(thePrefs.GetMuleDirectory(EMULE_CONFIGDIR));
 	CSafeBufferedFile file;
 	if (CFileOpen(file
@@ -224,7 +250,12 @@ void CKnownFileList::Save()
 			ex->Delete();
 		}
 	}
+}
 
+void CKnownFileList::SaveCancelledFilesSynchronously()
+{
+	const CString &sConfDir(thePrefs.GetMuleDirectory(EMULE_CONFIGDIR));
+	CSafeBufferedFile file;
 	if (thePrefs.GetLogFileSaving())
 		AddDebugLogLine(false, _T("Saving cancelled files list in \"%s\""), CANCELLED_MET_FILENAME);
 	if (CFileOpen(file
@@ -255,6 +286,175 @@ void CKnownFileList::Save()
 	}
 }
 
+void CKnownFileList::StartKnownMetSaveJob()
+{
+	ReapKnownMetWriter(0);
+	if (m_pKnownMetSaveJob != NULL || m_pKnownMetWriterThread != NULL) {
+		m_bKnownMetSaveRerunRequested = true;
+		return;
+	}
+
+	if (thePrefs.GetLogFileSaving())
+		AddDebugLogLine(false, _T("Preparing asynchronous known files list save"));
+
+	SKnownMetSaveJob *pJob = new SKnownMetSaveJob();
+	pJob->pData = new CSafeMemFile(64 * 1024);
+	pJob->pData->WriteUInt8(MET_HEADER_I64TAGS);
+	pJob->pData->WriteUInt32(0);
+
+	const INT_PTR iCount = m_Files_map.GetCount();
+	if (iCount > 0)
+		pJob->vecHashes.reserve(static_cast<size_t>(iCount));
+	for (const CKnownFilesMap::CPair *pair = m_Files_map.PGetFirstAssoc(); pair != NULL; pair = m_Files_map.PGetNextAssoc(pair))
+		pJob->vecHashes.push_back(CSKey(pair->key.m_key));
+
+	m_pKnownMetSaveJob = pJob;
+	m_bKnownMetSaveRerunRequested = false;
+	QueueKnownMetSaveSlice();
+}
+
+void CKnownFileList::QueueKnownMetSaveSlice()
+{
+	if (m_pKnownMetSaveJob == NULL || m_pKnownMetSaveJob->bMessagePending
+		|| theApp.emuledlg == NULL || !::IsWindow(theApp.emuledlg->GetSafeHwnd()))
+	{
+		return;
+	}
+	m_pKnownMetSaveJob->bMessagePending =
+		theApp.emuledlg->PostMessage(UM_PROCESS_KNOWN_MET_SAVE) != FALSE;
+}
+
+bool CKnownFileList::ProcessKnownMetSaveJob(DWORD dwTimeBudgetMs)
+{
+	if (m_pKnownMetSaveJob == NULL)
+		return false;
+
+	SKnownMetSaveJob *pJob = m_pKnownMetSaveJob;
+	pJob->bMessagePending = false;
+	const DWORD dwStarted = ::GetTickCount();
+	UINT uProcessed = 0;
+
+	try {
+		while (pJob->uNextHash < pJob->vecHashes.size()) {
+			const CSKey &hash = pJob->vecHashes[pJob->uNextHash++];
+			CKnownFile *pFile = NULL;
+			if (m_Files_map.Lookup(CCKey(hash.m_key), pFile) && pFile != NULL
+				&& (thePrefs.IsRememberingDownloadedFiles()
+					|| (theApp.sharedfiles != NULL && theApp.sharedfiles->IsFilePtrInList(pFile))))
+			{
+				pFile->WriteToFile(*pJob->pData);
+				++pJob->iRecordsNumber;
+			}
+
+			++uProcessed;
+			if (uProcessed >= 64 || static_cast<DWORD>(::GetTickCount() - dwStarted) >= dwTimeBudgetMs) {
+				QueueKnownMetSaveSlice();
+				return true;
+			}
+		}
+	} catch (CFileException *ex) {
+		LogError(LOG_STATUSBAR, _T("%s %s%s"), (LPCTSTR)GetResString(IDS_ERROR_SAVEFILE),
+			KNOWN_MET_FILENAME, (LPCTSTR)CExceptionStrDash(*ex));
+		ex->Delete();
+		CancelKnownMetSaveJob();
+		return false;
+	}
+
+	FinishKnownMetSaveJob();
+	return false;
+}
+
+void CKnownFileList::FinishKnownMetSaveJob()
+{
+	if (m_pKnownMetSaveJob == NULL)
+		return;
+
+	SKnownMetSaveJob *pJob = m_pKnownMetSaveJob;
+	m_pKnownMetSaveJob = NULL;
+	pJob->pData->Seek(1, CFile::begin);
+	pJob->pData->WriteUInt32(static_cast<uint32>(pJob->iRecordsNumber));
+
+	SKnownMetDiskWriteJob *pWrite = new SKnownMetDiskWriteJob();
+	pWrite->pData = pJob->pData;
+	pJob->pData = NULL;
+	const CString &strConfigDir = thePrefs.GetMuleDirectory(EMULE_CONFIGDIR);
+	pWrite->strTempPath = strConfigDir + KNOWN_MET_FILENAME_TMP;
+	pWrite->strFinalPath = strConfigDir + KNOWN_MET_FILENAME;
+	delete pJob;
+
+	CWinThread *pThread = AfxBeginThread(KnownMetWriterThread, pWrite,
+		THREAD_PRIORITY_BELOW_NORMAL, 0, CREATE_SUSPENDED);
+	if (pThread == NULL) {
+		KnownMetWriterThread(pWrite);
+	} else {
+		pThread->m_bAutoDelete = FALSE;
+		m_pKnownMetWriterThread = pThread;
+		pThread->ResumeThread();
+	}
+}
+
+UINT AFX_CDECL CKnownFileList::KnownMetWriterThread(LPVOID pParam)
+{
+	SKnownMetDiskWriteJob *pJob = static_cast<SKnownMetDiskWriteJob*>(pParam);
+	bool bSuccess = false;
+	HANDLE hFile = ::CreateFile(pJob->strTempPath, GENERIC_WRITE, 0, NULL,
+		CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+	if (hFile != INVALID_HANDLE_VALUE) {
+		const BYTE *pBytes = pJob->pData->GetBuffer();
+		ULONGLONG uRemaining = pJob->pData->GetLength();
+		bSuccess = true;
+		while (uRemaining > 0) {
+			const DWORD dwChunk = static_cast<DWORD>(uRemaining > 1024 * 1024 ? 1024 * 1024 : uRemaining);
+			DWORD dwWritten = 0;
+			if (!::WriteFile(hFile, pBytes, dwChunk, &dwWritten, NULL) || dwWritten != dwChunk) {
+				bSuccess = false;
+				break;
+			}
+			pBytes += dwWritten;
+			uRemaining -= dwWritten;
+		}
+		if (bSuccess)
+			bSuccess = ::FlushFileBuffers(hFile) != FALSE;
+		::CloseHandle(hFile);
+	}
+
+	if (bSuccess) {
+		bSuccess = ::MoveFileEx(pJob->strTempPath, pJob->strFinalPath,
+			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+	}
+	if (!bSuccess) {
+		const DWORD dwError = ::GetLastError();
+		::DeleteFile(pJob->strTempPath);
+		theApp.QueueLogLine(false, _T("Failed to save known.met asynchronously (error %u)"), dwError);
+	}
+
+	delete pJob->pData;
+	delete pJob;
+	return bSuccess ? 0 : 1;
+}
+
+void CKnownFileList::CancelKnownMetSaveJob()
+{
+	delete m_pKnownMetSaveJob;
+	m_pKnownMetSaveJob = NULL;
+	m_bKnownMetSaveRerunRequested = false;
+}
+
+void CKnownFileList::ReapKnownMetWriter(DWORD dwTimeout)
+{
+	if (m_pKnownMetWriterThread == NULL)
+		return;
+	const DWORD dwWait = ::WaitForSingleObject(m_pKnownMetWriterThread->m_hThread, dwTimeout);
+	if (dwWait == WAIT_OBJECT_0) {
+		delete m_pKnownMetWriterThread;
+		m_pKnownMetWriterThread = NULL;
+		if (m_bKnownMetSaveRerunRequested && !theApp.IsClosing()) {
+			m_bKnownMetSaveRerunRequested = false;
+			StartKnownMetSaveJob();
+		}
+	}
+}
+
 void CKnownFileList::Clear()
 {
 	m_mapKnownFilesByAICH.RemoveAll();
@@ -269,6 +469,7 @@ void CKnownFileList::Clear()
 
 void CKnownFileList::Process()
 {
+	ReapKnownMetWriter(0);
 	if (::GetTickCount() >= m_nLastSaved + MIN2MS(11))
 		Save();
 }

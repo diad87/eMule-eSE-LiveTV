@@ -410,8 +410,11 @@ UINT UploadBandwidthThrottler::RunInternal()
 		//if (theApp.uploadqueue)
 		//   nCanSend = max(nCanSend, GetSlotLimit(theApp.uploadqueue->GetDatarate()));
 
-		// When no upload limit has been set in options, try to guess a good upload limit.
-		if (thePrefs.GetMaxUpload() == UNLIMITED) {
+		// Only estimate when neither a manual limit nor a configured line
+		// capacity is available. Treating "limit disabled" as "capacity
+		// unknown" made the legacy estimator ratchet a healthy upload down to
+		// 1 KiB/s after transient WSAEWOULDBLOCK bursts.
+		if (thePrefs.GetEffectiveMaxUpload() == UNLIMITED) {
 			++loopsCount;
 			//if (lotsOfLog)
 			//	theApp.QueueDebugLogLine(false,_T("Throttler: busy: %i/%i nSlotsBusyLevel: %i Guessed limit: %0.5f changesCount: %i loopsCount: %i"), nBusy, nCanSend, nSlotsBusyLevel, nEstiminatedLimit/1024.0f, changesCount, loopsCount);

@@ -23,6 +23,19 @@ enum class CircuitState : uint8_t {
     Destroyed  = 4    // being torn down
 };
 
+// Local, sanitized reason retained after a fail-closed teardown. This contains
+// no peer address or key material and lets the LAB API distinguish a synchronous
+// protocol/crypto rejection from a later handshake timeout.
+enum class CircuitAbortReason : uint8_t {
+    None             = 0,
+    StrictV1         = 1,
+    PinMismatch      = 2,
+    CapsFloor        = 3,
+    SigFail          = 4,
+    HandshakeTimeout = 5,
+    ExtendTimeout    = 6
+};
+
 // v0.71 P3.3 — circuit role. The same node can be:
 //   Originator: it built the circuit (knows full path)
 //   Relay:      it's an intermediate hop (knows only neighbours)
@@ -220,6 +233,7 @@ public:
     bool     m_expectedNodePubSet  = false;
     uint8_t  m_expectedHash[16]    = {0};
     bool     m_auth_ok             = false;
+    CircuitAbortReason m_abort_reason = CircuitAbortReason::None;
     uint8_t  m_createPrefixHash[32] = {0};
     uint8_t  m_createHopIndex = 0;
 

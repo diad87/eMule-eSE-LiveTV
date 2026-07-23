@@ -6001,7 +6001,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			    "\"hop_count\":%u,\"forwarding\":%s,"
 			    "\"next_circ_id\":\"0x%08X\",\"auth_ok\":%s,"
 			    "\"strict3\":%s,\"class5_shaped\":%s,"
-			    "\"traffic_shaping_exposed\":%s}",
+			    "\"traffic_shaping_exposed\":%s,\"abort_reason\":\"%s\"}",
 			    s.circ_id,
 			    s.role == 0 ? "Originator" : "Relay",
 			    (s.state == 0 ? "Pending"
@@ -6016,7 +6016,13 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			    s.auth_ok ? "true" : "false",
 			    s.strict3 ? "true" : "false",
 			    s.shaped ? "true" : "false",
-			    s.shaping_exposed ? "true" : "false");
+			    s.shaping_exposed ? "true" : "false",
+			    s.abort_reason == 1 ? "STRICT_V1"
+			      : s.abort_reason == 2 ? "PIN_MISMATCH"
+			      : s.abort_reason == 3 ? "CAPS_FLOOR"
+			      : s.abort_reason == 4 ? "SIG_FAIL"
+			      : s.abort_reason == 5 ? "HANDSHAKE_TIMEOUT"
+			      : s.abort_reason == 6 ? "EXTEND_TIMEOUT" : "NONE");
 			arr += line;
 		}
 

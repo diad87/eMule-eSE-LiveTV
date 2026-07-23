@@ -914,6 +914,7 @@ bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
         // Distinct, greppable abort reasons (the rogue-relay test reads these to prove
         // the rejection was CRYPTO, not a network timeout — cf. the Tick reap logs).
         AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop1 circ=0x%08x reason=STRICT_V1 (unsigned CREATED rejected in strict mode)"), circ->Id());
+        circ->m_abort_reason = CircuitAbortReason::StrictV1;
         DestroyCircuitFailClosed(circ); // strict: refuse the unsigned v1 downgrade
         return false;
     }
@@ -939,6 +940,7 @@ bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
         // HELLO (set in BuildPool, independent of any relay). Mismatch = substitution.
         if (!circ->m_expectedNodePubSet || memcmp(node_pub, circ->m_expectedNodePub, 32) != 0) {
             AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop1 circ=0x%08x reason=PIN_MISMATCH (node_pub != pinned hop1 identity)"), circ->Id());
+            circ->m_abort_reason = CircuitAbortReason::PinMismatch;
             DestroyCircuitFailClosed(circ);
             return false;
         }
@@ -948,6 +950,7 @@ bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
         if ((TunnelAuthStrict() || circ->m_private2 || circ->m_strict3)
             && (signedCaps & capsFloor) != capsFloor) {
             AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop1 circ=0x%08x reason=CAPS_FLOOR (signed_caps lacks TUNNEL_AUTH)"), circ->Id());
+            circ->m_abort_reason = CircuitAbortReason::CapsFloor;
             DestroyCircuitFailClosed(circ);
             return false;
         }
@@ -969,6 +972,7 @@ bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
         }
         if (!VerifySignature(node_pub, transcript, transcriptLen, sig)) {
             AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop1 circ=0x%08x reason=SIG_FAIL (Ed25519 verify-before-derive tripped — forged/rogue CREATED)"), circ->Id());
+            circ->m_abort_reason = CircuitAbortReason::SigFail;
             DestroyCircuitFailClosed(circ);
             return false;
         }
@@ -1077,6 +1081,8 @@ void CLiveTunnel::DestroyCircuitFailClosed(std::shared_ptr<CLiveCircuit>& circ)
     }
     circ->SetState(CircuitState::Destroyed);
     circ->WipeKeys();
+    circ->m_auth_ok = false;
+    circ->m_exit_signed_caps = 0;
 }
 
 bool CLiveTunnel::LoadK6Guard()
@@ -2349,6 +2355,7 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
     const bool authenticated = v3 || v2;
     if ((TunnelAuthStrict() || circ->m_private2 || circ->m_strict3) && !authenticated) {
         AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop2 circ=0x%08x reason=STRICT_V1 (unsigned EXTENDED rejected in strict mode)"), circ->Id());
+        circ->m_abort_reason = CircuitAbortReason::StrictV1;
         DestroyCircuitFailClosed(circ); // strict: refuse an unsigned hop2
         SecureWipe(plain, sizeof plain);
         return false;
@@ -2388,6 +2395,7 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
             || (v3 && (circ->m_extendHopIndex != expectedHopIndex
                        || !prefixMatches))) {
             AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop2 circ=0x%08x reason=PIN_MISMATCH (exit node_pub != pinned hop2 identity — hop1 impersonation?)"), circ->Id());
+            circ->m_abort_reason = CircuitAbortReason::PinMismatch;
             DestroyCircuitFailClosed(circ);
             SecureWipe(plain, sizeof plain);
             return false;
@@ -2398,6 +2406,7 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
         if ((TunnelAuthStrict() || circ->m_private2 || circ->m_strict3)
             && (signedCaps2 & capsFloor) != capsFloor) {
             AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop2 circ=0x%08x reason=CAPS_FLOOR (exit signed_caps lacks TUNNEL_AUTH)"), circ->Id());
+            circ->m_abort_reason = CircuitAbortReason::CapsFloor;
             DestroyCircuitFailClosed(circ);
             SecureWipe(plain, sizeof plain);
             return false;
@@ -2420,6 +2429,7 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
         }
         if (!VerifySignature(node_pub2, transcript, transcriptLen, sig2)) {
             AddDebugLogLine(false, _T("LiveTunnel: v2 AUTH-ABORT hop2 circ=0x%08x reason=SIG_FAIL (exit Ed25519 verify-before-derive tripped — hop1 tampered ev_pub2 or forged CREATED)"), circ->Id());
+            circ->m_abort_reason = CircuitAbortReason::SigFail;
             DestroyCircuitFailClosed(circ);
             SecureWipe(plain, sizeof plain);
             return false;
@@ -2498,8 +2508,9 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
 
 uint32_t CLiveTunnel::BuildTestCircuit2Hop()
 {
-    // A two-hop request is fail-closed: it requires two distinct fork
-    // identities. Never silently collapse it into the old self-loop test.
+    // A LAB two-hop request models the production Private profile: it requires
+    // two distinct fork identities and every hop must authenticate. Never
+    // silently collapse it into the old self-loop or Mixed-mode test.
     std::vector<CUpDownClient*> forkCands;
     if (theApp.clientlist)
         theApp.clientlist->GetConnectedSnapshot(forkCands, 5, /*tunnelOnly=*/true);
@@ -2534,6 +2545,7 @@ uint32_t CLiveTunnel::BuildTestCircuit2Hop()
     auto& c = m_circuits.back();
     // Re-use m_nextHopClient on the ORIGINATOR side to mean "after
     // CREATED, extend to this peer". HandleCreated_Originator will check.
+    c->m_private2 = true;
     c->m_pendingHopClients.push_back(hop2);
     return c->Id();
 }
@@ -2557,6 +2569,7 @@ void CLiveTunnel::GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const
         s.strict3      = c->m_strict3 ? 1 : 0;
         s.shaped       = (c->m_shaped_ok || c->m_shape_bucket_kib != 0) ? 1 : 0;
         s.shaping_exposed = c->m_traffic_shaping_exposed ? 1 : 0;
+        s.abort_reason = static_cast<uint8_t>(c->m_abort_reason);
         out.push_back(s);
     }
 }
@@ -11183,7 +11196,8 @@ void CLiveTunnel::Tick()
             // probably isn't running the fork. Distinct from a crypto reject:
             // this is a TIMED reap from Tick (with age), not a synchronous AUTH-ABORT.
             AddDebugLogLine(false, _T("LiveTunnel: circ=0x%08x REAP reason=HANDSHAKE_TIMEOUT (CREATED never arrived, age=%u ms) — NOT a crypto reject"), c->Id(), c->AgeMs());
-            if (c->m_strict3) DestroyCircuitFailClosed(c);
+            c->m_abort_reason = CircuitAbortReason::HandshakeTimeout;
+            if (c->m_private2 || c->m_strict3) DestroyCircuitFailClosed(c);
             else c->SetState(CircuitState::Destroyed);
         } else if (c->State() == CircuitState::HalfBuilt
                    && c->m_extendStartedTick != 0
@@ -11193,7 +11207,8 @@ void CLiveTunnel::Tick()
             // leak forever. Time it out, with a longer budget since it
             // is waiting on a second handshake leg.
             AddDebugLogLine(false, _T("LiveTunnel: circ=0x%08x REAP reason=EXTEND_TIMEOUT (EXTENDED never arrived, age=%u ms) — NOT a crypto reject"), c->Id(), c->AgeMs());
-            if (c->m_strict3) DestroyCircuitFailClosed(c);
+            c->m_abort_reason = CircuitAbortReason::ExtendTimeout;
+            if (c->m_private2 || c->m_strict3) DestroyCircuitFailClosed(c);
             else c->SetState(CircuitState::Destroyed);
         }
     }

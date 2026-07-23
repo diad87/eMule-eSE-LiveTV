@@ -397,6 +397,7 @@ public:
         uint8_t  strict3;
         uint8_t  shaped;
         uint8_t  shaping_exposed;
+        uint8_t  abort_reason;  // CircuitAbortReason; sanitized, local-only diagnostic
     };
     void GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const;
 

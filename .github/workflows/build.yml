@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
           # libutp is a real submodule (160000 mode); cryptopp/mbedtls/etc.
@@ -30,7 +30,7 @@ jobs:
         uses: microsoft/setup-msbuild@v2
 
       - name: Setup Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '22'
 
@@ -108,7 +108,7 @@ jobs:
           Get-ChildItem $dst | Select-Object Name, @{N='SizeMB';E={[math]::Round($_.Length/1MB,1)}}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: emule-ese-${{ github.sha }}
           path: build_output/

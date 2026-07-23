@@ -30,7 +30,7 @@ jobs:
     name: POSIX backend (ubuntu, g++)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
       - name: Compile + run (exercises PosixFileStorage + factory + 0600)
@@ -45,7 +45,7 @@ jobs:
     name: DPAPI backend (windows, cl)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
       - name: Set up MSVC dev environment

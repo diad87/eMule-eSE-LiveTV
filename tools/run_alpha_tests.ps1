@@ -50,6 +50,7 @@ if ($Suite -eq 'Core' -or $Suite -eq 'All') {
     Run 'protocol registry' { & python (Join-Path $RepoRoot 'tools\check_protocol_registry.py') }
     Run 'direct port ownership linter' { & python (Join-Path $RepoRoot 'tools\check_direct_port_usage.py') }
     Run 'address wire tests' { & python (Join-Path $RepoRoot 'tests\test_address_wire.py') }
+    Run 'server IPv6 source wire tests' { & python (Join-Path $RepoRoot 'tests\test_foundsources_v6_wire.py') }
     Run 'tunnel framing tests' { & python (Join-Path $RepoRoot 'tests\test_tunnel_framing.py') }
     Run 'libreach' { & cmd /d /c (Join-Path $RepoRoot 'libreach\make.bat') }
     Run 'libnatmap' { & cmd /d /c (Join-Path $RepoRoot 'libnatmap\make.bat') }

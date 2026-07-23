@@ -284,8 +284,15 @@
 // next free byte in OP_EMULEPROT space (the old 0xB3-0xB9 duplicate Live block
 // was removed; see line ~820).
 #define	OP_PUBLICIP_ANSWER_V6	0xB3
-// v0.71 IPv6 Sprint 6 — reserve callback + foundsources v6 variants.
+// v0.71 IPv6 Sprint 6 — callback + server found-sources v6 variants.
 #define	OP_CALLBACK_V6			0xE1
+// Server UDP response, always under OP_EMULEPROT (0xC5), never under the
+// legacy OP_EDONKEYPROT (0xE3) namespace:
+//   <HASH 16><count 1>(<CAddress family=6,length=16><PORT 2>)[count]
+// PORT is little-endian (CSafeMemFile::ReadUInt16). Servers must emit this
+// only after the client advertised CAP_FORK_IPV6_WIRE in the
+// CT_FORK_CAPABILITIES OP_LOGINREQUEST tag. OP_GLOBFOUNDSOURCES (0xE3:0x9B)
+// remains the parallel IPv4 response.
 #define	OP_FOUNDSOURCES_V6		0xE2
 #define OP_CALLBACK				0x99	// <HASH 16><HASH 16><uint 16>
 #define OP_REASKCALLBACKTCP		0x9A
@@ -682,9 +689,9 @@ void RefreshEseV9PreviewCaps();
 #define CT_EMULE_RESERVED13		0xff
 #define CT_SERVER_UDPSEARCH_FLAGS 0x0E
 
-// v0.71 IPv6 Sprint 6 — fork-private capability bits in OP_HELLO[ANSWER].
-// Upstream eMule ignores unknown CT_ tags, so this is wire-additive and
-// safe vs the baseline. Value: <uint32 capability bits>.
+// v0.71 IPv6 Sprint 6 — fork-private capability bits in OP_HELLO[ANSWER] and
+// OP_LOGINREQUEST. Upstream eMule/servers ignore unknown CT_ tags, so this is
+// wire-additive and safe vs the baseline. Value: <uint32 capability bits>.
 #define CT_FORK_CAPABILITIES	0xF0
 // Capability bits:
 #define CAP_FORK_IPV6_WIRE      0x00000001  // peer speaks _V6 opcodes

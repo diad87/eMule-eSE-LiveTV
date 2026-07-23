@@ -43,6 +43,7 @@
 #include "SafeFile.h"
 #include "SharedFileList.h"
 #include "ListenSocket.h"
+#include "FirewallProberV6.h"
 #include "LiveTunnel.h"
 #include "ServerConnect.h"
 #include "Server.h"
@@ -2583,6 +2584,82 @@ void CPartFile::AddSources(CSafeMemFile *sources, uint32 serverip, uint16 server
 	}
 	if (thePrefs.GetDebugSourceExchange())
 		AddDebugLogLine(false, _T("SXRecv: Server source response; Count=%u, Dropped=%u, PossibleSources=%u, File=\"%s\""), ucount, debug_lowiddropped, debug_possiblesources, (LPCTSTR)GetFileName());
+}
+
+void CPartFile::AddSourcesV6(CSafeMemFile *sources, uint32 serverip, uint16 serverport)
+{
+	if (sources == NULL)
+		throw CString(_T("OP_FOUNDSOURCES_V6 has no source buffer"));
+
+	const UINT ucount = sources->ReadUInt8();
+	const CAddress localV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+	UINT debug_invalid = 0;
+	UINT debug_self = 0;
+	UINT debug_possiblesources = 0;
+	bool bSkip = false;
+
+	for (UINT i = 0; i < ucount; ++i) {
+		CAddress address;
+		if (!address.ReadFromBuffer(sources)
+			|| address.GetType() != CAddress::IPv6)
+		{
+			throw CString(_T("OP_FOUNDSOURCES_V6 contains a malformed/non-IPv6 CAddress"));
+		}
+
+		if (sources->GetLength() - sources->GetPosition() < sizeof(uint16))
+			throw CString(_T("OP_FOUNDSOURCES_V6 contains a truncated source port"));
+		const uint16 port = sources->ReadUInt16();
+
+		// Consume every entry even when the file is stopped/full so concatenated
+		// UDP responses remain aligned for the outer packet parser.
+		if (m_stopped || bSkip)
+			continue;
+
+		if (port == 0 || !address.IsPublicIP()) {
+			++debug_invalid;
+			continue;
+		}
+
+		// Do not add our own listener as a source. Unlike legacy HighID, an
+		// IPv6 address has no 32-bit client ID which CanAddSource can compare.
+		if (localV6.GetType() == CAddress::IPv6
+			&& address == localV6
+			&& port == theApp.GetAdvertisedTcpPort())
+		{
+			++debug_self;
+			continue;
+		}
+
+		const uint32 syntheticIP = address.ToSyntheticUInt32();
+		if (theApp.clientlist->IsBannedClient(syntheticIP)) {
+			++debug_invalid;
+			continue;
+		}
+
+		if (GetMaxSources() > GetSourceCount()) {
+			++debug_possiblesources;
+			// The synthetic value is internal-only and deliberately used for
+			// duplicate/dead-source maps. It never replaces the CAddress on wire.
+			CUpDownClient *newsource = new CUpDownClient(this, port, syntheticIP,
+				serverip, serverport, false);
+			newsource->SetIPv6Address(address);
+			newsource->SetIP(syntheticIP);
+			newsource->SetServerIPv6Source();
+			newsource->SetConnectOptions(0, true, false);
+			theApp.downloadqueue->CheckAndAddSource(this, newsource);
+		} else {
+			bSkip = true;
+			if (GetKadFileSearchID())
+				Kademlia::CSearchManager::StopSearch(GetKadFileSearchID(), false);
+		}
+	}
+
+	if (thePrefs.GetDebugSourceExchange()) {
+		AddDebugLogLine(false,
+			_T("SXRecv: Server IPv6 source response; Count=%u, Invalid=%u, Self=%u, PossibleSources=%u, File=\"%s\""),
+			ucount, debug_invalid, debug_self, debug_possiblesources,
+			(LPCTSTR)GetFileName());
+	}
 }
 
 void CPartFile::AddSource(LPCTSTR pszURL, uint32 nIP)

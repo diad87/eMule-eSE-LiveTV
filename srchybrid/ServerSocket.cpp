@@ -265,9 +265,24 @@ bool CServerSocket::ProcessPacket(const BYTE *packet, uint32 size, uint8 opcode)
 
 				// save TCP flags in 'cur_server'
 				uint32 dwFlags = 0;
+				bool bHasObfuscationPort = false;
+				uint16 nObfuscationPort = 0;
 				if (cur_server) {
 					if (size >= sizeof(LoginAnswer_Struct) + 4) {
 						dwFlags = PeekUInt32(packet + sizeof(LoginAnswer_Struct));
+						// Modern servers may append their obfuscated TCP port to
+						// OP_IDCHANGE after the reported client IP. Keep the field
+						// optional for compatibility with older servers and reject
+						// values which would otherwise be truncated to uint16.
+						if (size >= 20) {
+							const uint32 uObfuscationPort = PeekUInt32(packet + 16);
+							if (uObfuscationPort <= _UI16_MAX) {
+								nObfuscationPort = static_cast<uint16>(uObfuscationPort);
+								bHasObfuscationPort = true;
+							} else if (thePrefs.GetVerbose()) {
+								DebugLogWarning(_T("Ignored invalid server TCP obfuscation port %u"), uObfuscationPort);
+							}
+						}
 						if (thePrefs.GetDebugServerTCPLevel() > 0) {
 							CString strInfo;
 							strInfo.Format(_T("  TCP Flags=0x%08x"), dwFlags);
@@ -288,22 +303,30 @@ bool CServerSocket::ProcessPacket(const BYTE *packet, uint32 size, uint8 opcode)
 								strInfo.AppendFormat(_T("  LargeFiles=1"));
 							if (dwFlags & SRV_TCPFLG_TCPOBFUSCATION)
 								strInfo.AppendFormat(_T("  TCP_Obfscation=1"));
+							if (bHasObfuscationPort)
+								strInfo.AppendFormat(_T("  TCP_ObfuscationPort=%u"), nObfuscationPort);
 							Debug(_T("%s\n"), (LPCTSTR)strInfo);
 						}
 					}
 					if (IsObfusicating())
 						dwFlags |= SRV_TCPFLG_TCPOBFUSCATION;
 					cur_server->SetTCPFlags(dwFlags);
+					if (bHasObfuscationPort)
+						cur_server->SetObfuscationPortTCP(nObfuscationPort);
+					if (IsObfusicating() && !cur_server->GetObfuscationPortTCP())
+						cur_server->SetObfuscationPortTCP(cur_server->GetPort());
 
-					// copy TCP flags into the entry in the server list
+					// copy TCP capabilities into the entry in the server list
 					CServer *pServer = theApp.serverlist->GetServerByAddress(cur_server->GetAddress(), cur_server->GetPort());
 					if (pServer) {
+						pServer->SetTCPFlags(dwFlags);
+						if (bHasObfuscationPort)
+							pServer->SetObfuscationPortTCP(nObfuscationPort);
 						if (IsObfusicating()) {
 							pServer->SetTriedCrypt(false);
 							if (!pServer->GetObfuscationPortTCP()) //obfuscated connection with the default port
 								pServer->SetObfuscationPortTCP(pServer->GetPort());
 						}
-						pServer->SetTCPFlags(dwFlags);
 					}
 				} else
 					ASSERT(0);
@@ -458,7 +481,7 @@ bool CServerSocket::ProcessPacket(const BYTE *packet, uint32 size, uint8 opcode)
 								strInfo.AppendFormat(_T("  Desc=%s"), (LPCTSTR)strDescription);
 						}
 					} else if (thePrefs.GetDebugServerTCPLevel() > 0)
-						strInfo.AppendFormat(_T("  ***UnkTag: 0x%02x=%u"), tag.GetNameID(), tag.GetInt());
+						strInfo.AppendFormat(_T("  ***UnkTag: %s"), (LPCTSTR)tag.GetFullInfo());
 				}
 				if (thePrefs.GetDebugServerTCPLevel() > 0) {
 					Debug(_T("%s\n"), (LPCTSTR)strInfo);

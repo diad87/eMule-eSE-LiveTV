@@ -34,6 +34,7 @@
 #include "SearchDlg.h"
 #include "Log.h"
 #include "ServerConnect.h"
+#include "eMuleAI/Address.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -149,7 +150,9 @@ void CUDPSocket::OnReceive(int nErrorCode)
 			DebugLogError(_T("Error: Server UDP socket: Receive failed - %s"), (LPCTSTR)GetErrorMessage(nErrorCode, 1));
 	}
 
-	BYTE buffer[5000];
+	// OP_FOUNDSOURCES_V6 may contain 255 20-byte entries plus its header.
+	// Keep enough room for the complete negotiated response datagram.
+	BYTE buffer[8192];
 	BYTE *pBuffer = buffer;
 	SOCKADDR_IN sockAddr = {};
 	int iSockAddrLen = sizeof sockAddr;
@@ -175,10 +178,24 @@ void CUDPSocket::OnReceive(int nErrorCode)
 				DEBUG_ONLY(DebugLog(_T("Received encrypted packet from server %s, UDPKey %u, Challenge: %u"), (LPCTSTR)pServer->GetListName(), pServer->GetServerKeyUDP(), pServer->GetChallenge()));
 		}
 
-		if (pBuffer[0] == OP_EDONKEYPROT)
+		if (nPayLoadLen >= 2 && pBuffer[0] == OP_EDONKEYPROT)
 			ProcessPacket(pBuffer + 2, nPayLoadLen - 2, pBuffer[1], sockAddr.sin_addr.s_addr, ntohs(sockAddr.sin_port));
+		else if (nPayLoadLen >= 2
+			&& pBuffer[0] == OP_EMULEPROT
+			&& pBuffer[1] == OP_FOUNDSOURCES_V6
+			&& pServer != NULL
+			&& thePrefs.IsIPv6Enabled())
+		{
+			// The extension is accepted only from a server already present in
+			// our server list. Unknown hosts cannot inject native-v6 sources.
+			ProcessPacket(pBuffer + 2, nPayLoadLen - 2, pBuffer[1],
+				sockAddr.sin_addr.s_addr, ntohs(sockAddr.sin_port));
+		}
 		else if (thePrefs.GetDebugServerUDPLevel() > 0)
-			Debug(_T("***NOTE: ServerUDPMessage from %s:%u - Unknown protocol 0x%02x, Encrypted: %s\n"), (LPCTSTR)ipstr(sockAddr.sin_addr), ntohs(sockAddr.sin_port) - 4, pBuffer[0], (nPayLoadLen == length) ? _T("Yes") : _T("No"));
+			Debug(_T("***NOTE: ServerUDPMessage from %s:%u - Unknown/disabled protocol 0x%02x, Encrypted: %s\n"),
+				(LPCTSTR)ipstr(sockAddr.sin_addr), ntohs(sockAddr.sin_port) - 4,
+				nPayLoadLen > 0 ? pBuffer[0] : 0,
+				(nPayLoadLen == length) ? _T("Yes") : _T("No"));
 	} else {
 		DWORD dwError = WSAGetLastError();
 		if (thePrefs.GetDebugServerUDPLevel() > 0) {
@@ -307,6 +324,66 @@ bool CUDPSocket::ProcessPacket(const BYTE *packet, UINT size, UINT opcode, uint3
 
 				if (iLeft > 0 && thePrefs.GetDebugServerUDPLevel() > 0) {
 					Debug(_T("***NOTE: OP_GlobFoundSources contains %d additional bytes\n"), iLeft);
+					if (thePrefs.GetDebugServerUDPLevel() > 1)
+						DebugHexDump(data);
+				}
+			}
+			break;
+		case OP_FOUNDSOURCES_V6:	// negotiated OP_EMULEPROT server source response
+			{
+				CSafeMemFile data(packet, size);
+				int iLeft;
+				int iDbgPacket = 1;
+				do {
+					if (data.GetLength() - data.GetPosition() < MDX_DIGEST_SIZE + 1)
+						throw CString(_T("Truncated OP_FOUNDSOURCES_V6 header"));
+
+					uchar fileid[MDX_DIGEST_SIZE];
+					data.ReadHash16(fileid);
+					if (thePrefs.GetDebugServerUDPLevel() > 0) {
+						Debug(_T("ServerUDPMessage from %-21s - OP_FoundSourcesV6(%u); %s\n"),
+							(LPCTSTR)ipstr(nIP, nUDPPort - 4), iDbgPacket++,
+							(LPCTSTR)DbgGetFileInfo(fileid));
+					}
+
+					CPartFile *file = theApp.downloadqueue->GetFileByID(fileid);
+					if (file)
+						file->AddSourcesV6(&data, nIP, nUDPPort - 4);
+					else {
+						// Validate and consume unknown-file entries as well, so
+						// a malformed count cannot desynchronise concatenated
+						// packets in the same UDP datagram.
+						const UINT count = data.ReadUInt8();
+						for (UINT i = 0; i < count; ++i) {
+							CAddress address;
+							if (!address.ReadFromBuffer(&data)
+								|| address.GetType() != CAddress::IPv6)
+							{
+								throw CString(_T("Malformed OP_FOUNDSOURCES_V6 CAddress"));
+							}
+							if (data.GetLength() - data.GetPosition() < sizeof(uint16))
+								throw CString(_T("Truncated OP_FOUNDSOURCES_V6 port"));
+							data.ReadUInt16();
+						}
+					}
+
+					iLeft = static_cast<int>(data.GetLength() - data.GetPosition());
+					if (iLeft >= 2) {
+						const uint8 protocol = data.ReadUInt8();
+						const uint8 nextOpcode = data.ReadUInt8();
+						iLeft -= 2;
+						if (protocol != OP_EMULEPROT
+							|| nextOpcode != OP_FOUNDSOURCES_V6)
+						{
+							data.Seek(-2, CFile::current);
+							iLeft += 2;
+							break;
+						}
+					}
+				} while (iLeft > 0);
+
+				if (iLeft > 0 && thePrefs.GetDebugServerUDPLevel() > 0) {
+					Debug(_T("***NOTE: OP_FoundSourcesV6 contains %d additional bytes\n"), iLeft);
 					if (thePrefs.GetDebugServerUDPLevel() > 1)
 						DebugHexDump(data);
 				}
@@ -523,13 +600,15 @@ bool CUDPSocket::ProcessPacket(const BYTE *packet, UINT size, UINT opcode, uint3
 		ProcessPacketError(size, opcode, nIP, nUDPPort, CExceptionStr(*ex));
 		ex->Delete();
 		//ASSERT(0);
-		if (opcode == OP_GLOBSEARCHRES || opcode == OP_GLOBFOUNDSOURCES)
+		if (opcode == OP_GLOBSEARCHRES || opcode == OP_GLOBFOUNDSOURCES
+			|| opcode == OP_FOUNDSOURCES_V6)
 			return true;
 	} catch (CMemoryException *ex) {
 		ProcessPacketError(size, opcode, nIP, nUDPPort, (LPCTSTR)CExceptionStr(*ex));
 		ex->Delete();
 		//ASSERT(0);
-		if (opcode == OP_GLOBSEARCHRES || opcode == OP_GLOBFOUNDSOURCES)
+		if (opcode == OP_GLOBSEARCHRES || opcode == OP_GLOBFOUNDSOURCES
+			|| opcode == OP_FOUNDSOURCES_V6)
 			return true;
 	} catch (const CString &ex) {
 		ProcessPacketError(size, opcode, nIP, nUDPPort, ex);

@@ -128,6 +128,12 @@ public:
 	const CAddress& GetIPv6Address() const						{ return m_ipv6Address; }
 	void			SetIPv6Address(const CAddress& addr)			{ m_ipv6Address = (addr.GetType() == CAddress::IPv6 && addr.IsPublicIP()) ? addr : CAddress(); }
 	bool			IsIPv6OnlyEndpoint() const					{ return HasIPv6Address() && m_nConnectIP == m_ipv6Address.ToSyntheticUInt32(); }
+	// A known eD2K server supplied this native-v6 endpoint through the
+	// negotiated OP_FOUNDSOURCES_V6 response. This is sufficient provenance
+	// for a direct TCP attempt without pretending the peer advertised Kad/eSE
+	// reachability capabilities before HELLO.
+	void			SetServerIPv6Source(bool bValue = true)		{ m_bServerIPv6Source = bValue && HasIPv6Address(); }
+	bool			IsServerIPv6Source() const					{ return m_bServerIPv6Source; }
 	//Only use this when you know the real IP or when your clearing it.
 	void			SetIP(uint32 val)								{ m_dwUserIP = val; m_nConnectIP = val; }
 
@@ -564,6 +570,7 @@ protected:
 	uint32	m_nConnectIP;	// holds the supposed IP or (after we had a connection) the real IP
 	uint32	m_dwUserIP;		// holds 0 (real IP not yet available) or the real IP (after we had a connection)
 	CAddress m_ipv6Address;	// native public IPv6 candidate; legacy uint32 fields remain for v4 compatibility
+	bool	m_bServerIPv6Source; // endpoint came from negotiated server source discovery
 	uint32	m_dwServerIP;
 	uint32	m_nUserIDHybrid;
 	uint16	m_nUserPort;

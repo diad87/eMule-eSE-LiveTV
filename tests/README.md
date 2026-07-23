@@ -65,6 +65,7 @@ Address and tunnel framing:
 
 ```powershell
 python tests\test_address_wire.py
+python tests\test_foundsources_v6_wire.py
 python tests\test_tunnel_framing.py
 ```
 

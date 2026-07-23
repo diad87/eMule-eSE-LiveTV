@@ -202,7 +202,8 @@ void CServerConnect::ConnectionEstablished(CServerSocket *sender)
 			? theApp.relayclient->GetAdvertisedTcpPort(theApp.GetAdvertisedTcpPort())
 			: theApp.GetAdvertisedTcpPort());
 
-		UINT tagcount = 4;
+		const bool bAdvertiseIPv6Wire = thePrefs.IsIPv6Enabled();
+		UINT tagcount = bAdvertiseIPv6Wire ? 5 : 4;
 		data.WriteUInt32(tagcount);
 
 		CTag tagName(CT_NAME, thePrefs.GetUserNick());
@@ -230,6 +231,15 @@ void CServerConnect::ConnectionEstablished(CServerSocket *sender)
 			(CemuleApp::m_nVersionMin << 10) |
 			(CemuleApp::m_nVersionUpd << 7));
 		tagMuleVersion.WriteTagToFile(data);
+
+		// Advertise the server-facing IPv6 extension only when it is enabled
+		// locally. A supporting server may then send OP_EMULEPROT:
+		// OP_FOUNDSOURCES_V6 in addition to the legacy IPv4 source response.
+		if (bAdvertiseIPv6Wire) {
+			CTag tagForkCapabilities(CT_FORK_CAPABILITIES,
+				static_cast<uint32>(CAP_FORK_IPV6_WIRE));
+			tagForkCapabilities.WriteTagToFile(data);
+		}
 
 		Packet *packet = new Packet(data);
 		packet->opcode = OP_LOGINREQUEST;

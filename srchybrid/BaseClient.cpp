@@ -188,14 +188,19 @@ bool CUpDownClient::CanUseIPv6Direct() const
 	// means that the peer can parse IPv6 extensions, while DUALSTACK means its
 	// listener has actually observed an inbound native-v6 connection.  This
 	// avoids replacing a working legacy callback with an unverified v6 route.
+	// A native-v6 endpoint supplied by a known server is a separate route:
+	// it can be attempted directly without forging peer/Kad capability bits.
 	const CAddress localV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
 	const bool bV6Backoff = m_dwIPv6DirectFailed != 0
 		&& (::GetTickCount() - m_dwIPv6DirectFailed) < MIN2MS(5);
-	return thePrefs.IsEseNetLabActive() && SupportsEseNetLabV1Target()
-		&& thePrefs.IsIPv6Enabled()
+	const bool bValidatedEseRoute = thePrefs.IsEseNetLabActive()
+		&& SupportsEseNetLabV1Target()
+		&& ((SupportsIPv6Wire() && HasV6DualStack()) || SupportsReachV6Inbound());
+	const bool bServerRoute = m_bServerIPv6Source && IsIPv6OnlyEndpoint();
+	return thePrefs.IsIPv6Enabled()
 		&& !bV6Backoff
 		&& !thePrefs.GetProxySettings().bUseProxy
-		&& ((SupportsIPv6Wire() && HasV6DualStack()) || SupportsReachV6Inbound())
+		&& (bServerRoute || bValidatedEseRoute)
 		&& localV6.GetType() == CAddress::IPv6 && localV6.IsPublicIP()
 		&& HasIPv6Address() && m_ipv6Address.IsPublicIP()
 		&& GetUserPort() != 0;
@@ -213,6 +218,8 @@ void CUpDownClient::MergeReachabilityFrom(const CUpDownClient& other)
 	if (!bTransportEstablished) {
 		if (other.HasIPv6Address())
 			SetIPv6Address(other.GetIPv6Address());
+		if (other.IsServerIPv6Source())
+			SetServerIPv6Source();
 		if (other.GetConnectIP() != 0)
 			SetConnectIP(other.GetConnectIP());
 		if (other.GetKadPort() != 0)
@@ -316,6 +323,7 @@ void CUpDownClient::Init()
 	m_uEseCapabilities = 0;  // v0.71 P3.5 — unset until peer sends TAG_ESE_CAPS
 	m_uReachCaps = 0;  // no Kad reach vector until a validated source result supplies one
 	m_dwIPv6DirectFailed = 0;
+	m_bServerIPv6Source = false;
 	memset(m_eseNodePub, 0, sizeof m_eseNodePub);  // v8.x Phase 1 — TAG_ESE_NODE_PUB (0x6D)
 	m_bEseNodePubSet = false;
 	m_bFriendSlot = false;

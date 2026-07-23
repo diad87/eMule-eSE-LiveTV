@@ -12,8 +12,25 @@ body:
     id: version
     attributes:
       label: eMule version
-      description: Top-left of the eMule window, e.g. "v0.70b eSE 7.0"
-      placeholder: "v0.70b eSE 7.0"
+      description: Copy the version shown in the eMule window.
+      placeholder: "eSE 9.0.0-beta.1"
+    validations:
+      required: true
+
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2 x64"
+    validations:
+      required: true
+
+  - type: input
+    id: enabled-features
+    attributes:
+      label: Experimental features enabled
+      description: List NetLab, privacy mode, relay or other non-default settings, or write "none".
+      placeholder: "NetLab; Adaptive privacy mode"
     validations:
       required: true
 

@@ -9,10 +9,10 @@ body:
         ## ⚠️ Sensitive vulnerabilities
 
         If the bug lets an attacker read files, run code, or steal data, please
-        **DO NOT post it here publicly**. Instead, email it to **i.unanue@kluppy.com**
-        or use GitHub's [private vulnerability reporting](https://github.com/diad87/eMule-eSE-LiveTV/security/advisories/new).
+        **do not post it here publicly**. Use GitHub's
+        [private vulnerability reporting](https://github.com/diad87/eMule-eSE-LiveTV/security/advisories/new).
 
-        Use this template only for low-severity stuff that's OK to disclose openly.
+        Use this template only for concerns that are safe to disclose openly.
 
   - type: input
     id: severity

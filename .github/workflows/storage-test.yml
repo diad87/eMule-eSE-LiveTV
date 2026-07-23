@@ -1,14 +1,9 @@
 # Standalone unit test for the node-identity storage abstraction
 # (INodeIdentityStorage + CreateNodeIdentityStorage factory).
 #
-# Unlike build.yml (manual-only: the vendored libpng/zlib/cryptopp/mbedtls/libutp
-# chain is flaky from a clean runner), this job compiles only TWO self-contained,
-# MFC-free, dependency-free files, so it is safe to run on every push/PR. It is the
-# first automated unit test in CI; it follows the libreach standalone discipline.
-#
-# Linux job answers the design question directly: it validates that the factory
-# picks the POSIX backend off-Win32 and that the key file is persisted chmod 0600.
-# Windows job validates the DPAPI backend + factory dispatch.
+# This self-contained target is independent of the vendored native build chain.
+# Linux validates the POSIX backend and 0600 persistence; Windows validates the
+# DPAPI backend and factory dispatch.
 
 name: storage-test
 

@@ -1,7 +1,6 @@
 # 🐴 eMule eSE — Live TV Edition
 
 [![Public beta](https://img.shields.io/badge/public%20beta-9.0.0--beta.1-orange)](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.0.0-beta.1)
-[![Windows build](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/build.yml/badge.svg)](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/build.yml)
 [![CodeQL](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/codeql.yml/badge.svg)](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/codeql.yml)
 [![License: GPL-2.0](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](license.txt)
 

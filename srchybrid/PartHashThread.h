@@ -21,8 +21,8 @@
 
 class CPartFile;
 
-// eSE H1 (docs/PART_HASH_THREAD_PLAN.md): MD4+AICH verification of completed parts off
-// the main thread. A job is a snapshot taken on the main thread; the worker never touches
+// MD4+AICH verification of completed parts off the main thread. A job is a
+// snapshot taken on the main thread; the worker never touches
 // CPartFile state and reads the .part through its own handle. The verdict goes back to
 // the main thread via TM_PARTHASHED (CemuleDlg::OnPartHashed), where it is compared
 // against the file's current hashsets and validated by generation.

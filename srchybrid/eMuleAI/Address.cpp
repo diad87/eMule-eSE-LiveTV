@@ -584,8 +584,7 @@ inline const int _inet_pton(const int af, const char *src, const void *dst)
 
 
 // ────────────────────────────────────────────────────────────────────────
-// v0.71 IPv6 Sprint 1 — wire serialization, hashing, subnet ops.
-// Reference: docs/IPV6_PLAN.md §5.1.
+// IPv6 wire serialization, hashing and subnet operations.
 // ────────────────────────────────────────────────────────────────────────
 
 void CAddress::WriteToBuffer(CSafeMemFile* file) const

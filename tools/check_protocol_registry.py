@@ -148,8 +148,8 @@ def main():
     for e in errors:
         print(f"  FAIL  {e}")
     if errors:
-        print(f"\n{len(errors)} conflict(s). See docs/protocol/PROTOCOL_REGISTRY.md for the "
-              f"migration proposal. CI is red until they are resolved.")
+        print(f"\n{len(errors)} registry/code mismatch(es). See "
+              "docs/protocol/PROTOCOL_REGISTRY.md. CI is red until they are resolved.")
         return 1
     print("OK: registry is internally consistent and matches code.")
     return 0

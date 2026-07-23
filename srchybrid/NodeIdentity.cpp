@@ -4,7 +4,6 @@
 // platform-specific bytes-on-disk work is delegated to INodeIdentityStorage; the
 // Ed25519 primitives are reused from LiveCrypto (generic ed25519 gen/sign).
 //
-// See docs/AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md §1.
 #include "stdafx.h"
 #include "NodeIdentity.h"
 #include "INodeIdentityStorage.h"

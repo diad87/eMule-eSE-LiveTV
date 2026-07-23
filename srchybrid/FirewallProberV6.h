@@ -1,8 +1,8 @@
 //this file is part of eMule
 // v0.71 IPv6 Sprint 3 — Firewall probe cascade for IPv6 reachability.
 //
-// Per docs/IPV6_PLAN.md §8.5: an IPv6 host on a residential network is rarely
-// reachable on inbound TCP "directly" — most consumer firewalls drop
+// An IPv6 host on a residential network is rarely reachable on inbound TCP
+// "directly" — most consumer firewalls drop
 // unsolicited inbound by default. To classify reachability, we cascade
 // through six layers, from cheapest to most invasive:
 //

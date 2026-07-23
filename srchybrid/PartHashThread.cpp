@@ -53,7 +53,7 @@ void CPartHashThread::EndThread()
 	//the job in flight (at most one part) is allowed to finish; its verdict will simply
 	//never be processed. Everything still queued is discarded - on a clean shutdown the
 	//leftover parts stay marked in CPartFile::m_aChangedPart and are re-verified
-	//synchronously by the destructors (docs/PART_HASH_THREAD_PLAN.md, plan section 2.6)
+	//synchronously by the destructors.
 	m_Run = 0;
 	m_eventWakeUp.SetEvent();
 	m_eventThreadEnded.Lock();

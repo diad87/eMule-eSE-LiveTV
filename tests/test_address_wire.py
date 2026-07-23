@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # tests/test_address_wire.py — IPv6 Sprint 1 spec regression.
 #
-# Locks down the CAddress wire format (see docs/IPV6_PLAN.md §5.1) by
-# replicating the byte layout, HashKey/subnet/synthetic-uint32 logic in
+# Locks down the CAddress wire format by replicating the byte layout,
+# HashKey/subnet/synthetic-uint32 logic in
 # Python and asserting against fixed test vectors. The eventual C++ unit
 # test (--tool=test-address, planned for Sprint 10 hardening) MUST agree
 # with these vectors byte-for-byte; any drift is a regression.

@@ -148,10 +148,7 @@ foreach ($mapping in @(
     @('license.txt','license.txt'),
     @('THIRD_PARTY_LICENSES.md','THIRD_PARTY_LICENSES.md'),
     @('docs\USER_GUIDE.md','USER_GUIDE.md'),
-    @($releaseNotesRelativePath,'RELEASE_NOTES.md'),
-    @('docs\V9_VALIDATION_CHECKLIST.md','docs\V9_VALIDATION_CHECKLIST.md'),
-    @('docs\LIVETV_STATUS.md','docs\LIVETV_STATUS.md'),
-    @('docs\LIVETV_HARDENING_2026-07-16.md','docs\LIVETV_HARDENING_2026-07-16.md')
+    @($releaseNotesRelativePath,'RELEASE_NOTES.md')
 )) {
     Require-Copy (Join-Path $RepoRoot $mapping[0]) (Join-Path $packageDir $mapping[1])
 }

@@ -4,8 +4,8 @@
 // %APPDATA%\eMule\ese\subscriptions.dat, encrypted via Windows DPAPI so
 // only the local user account can decrypt (no key material in the file).
 //
-// Sources: docs/thesis/05-protocol-architecture.md §5.2 (channel id =
-// pubkey) and the privacy architecture memory (DPAPI-encrypted file).
+// Channel IDs are public keys. Private subscription state is stored in a
+// DPAPI-encrypted file.
 #pragma once
 
 #include <vector>

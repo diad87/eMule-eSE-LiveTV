@@ -224,8 +224,8 @@ public:
         // of specific (seq, block) the viewer could not reassemble (E3.5 gap-fill).
         TUN_OP_BULK_NACK        = 0x52,   // V -> exit: re-push missing (seq, block)
         TUN_OP_BULK_UNSUB       = 0x54,   // V -> exit: stop the bulk push on this circuit
-        // K6-1A — Kad6 anonymity/compat gateway service (docs/KAD6_SEARCH_
-        // WIRE_MAPPING.md).  Multi-cell (>= TUN_MULTICELL_OP_MIN): the
+        // Kad6 anonymity/compatibility gateway service. Multi-cell
+        // (>= TUN_MULTICELL_OP_MIN): the
         // reassembled body is a K6FrameV1.  SEARCH_* is active for Live
         // discovery; later message families remain independently gated.
         TUN_OP_KAD6_GATEWAY     = 0x70

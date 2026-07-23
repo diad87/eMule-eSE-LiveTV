@@ -17,6 +17,11 @@ srchybrid/Win32/
 *.lastbuildstate
 *.Build.CppClean.log
 *.log
+*.res
+*.sbr
+*.bsc
+*.exp
+*.vcxproj.FileListAbsolute.txt
 
 # Packaged binaries and generated runtime files
 *.exe
@@ -24,33 +29,24 @@ srchybrid/Win32/
 *.lib
 *.zip
 
-# Internal development docs (not for public repo)
-CHANGELOG_eSE.md
-CHANGELOG_KLUPPY.md
-CHANGELOG_WEB.md
-ARCHITECTURE_eSE_NETWORK.md
-DISTRIBUTION_GUIDE.md
-FOROCOCHES_POST.md
-FUNCTIONAL_BUG_AUDIT_PLAN.md
-FUNCTIONAL_BUG_AUDIT_REPORT.md
-IDEAS.md
-LIVE_TV_STABILIZATION_PLAN.md
-PUBLIC_RELEASE_CHECKLIST.md
-PUBLIC_RELEASE_README.md
-UX_UI_AUDIT_PLAN.md
-UX_UI_AUDIT_REPORT.md
-
-# Build logs and temp outputs
+# Build logs and temporary working material
 build*.txt
 changelog_full.txt
 analysis/
+audit-tools/
+labs/
+docs/archive/
+docs/*.docx
+docs/*_PLAN*.md
+docs/*_AUDIT*.md
+docs/*_CLOSURE*.md
+docs/*_CHECKLIST*.md
+docs/*_ROADMAP*.md
+docs/*_TICKET*.md
+docs/*_VALIDATION*.md
+docs/*_PAPER*.md
+docs/*_THESIS*.md
 docs/.~lock.*#
-
-# Generated Kad6 editorial artifacts (kept locally, excluded from release commits)
-docs/Kad6_Hardening_Spec_EN.docx
-docs/Kad6_Paper_EN_Rev3.docx
-docs/Kad6_Paper_EN_Rev3A_Audited.docx
-docs/Kad6_Paper_EN_Rev3B_Verified.docx
 
 # Local eSE runtime/config/secrets
 srchybrid/eSE/node_modules/
@@ -67,11 +63,10 @@ srchybrid/eSE/*.bak
 mbedtls_old_2.7.0/
 miniupnp_temp/
 
-# Local IDE/agent files
+# Local IDE files
 .vs/
 .vscode/
 .idea/
-.claude/
 *.user
 *.suo
 *.aps
@@ -83,6 +78,3 @@ node_modules/
 
 # Dist folder (binaries go in GitHub Releases, not in repo)
 dist/
-
-# Audit tools (internal)
-audit-tools/

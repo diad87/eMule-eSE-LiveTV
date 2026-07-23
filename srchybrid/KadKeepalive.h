@@ -1,8 +1,8 @@
 //this file is part of eMule
 // v0.71 IPv6 Sprint 5 — Kad keepalive (anti-firewall layer C).
 //
-// Per docs/IPV6_PLAN.md §8.5: stateful residential firewalls drop unsolicited
-// inbound after the conntrack expires (typically 30-60 s). We rotate a small
+// Stateful residential firewalls drop unsolicited inbound after the conntrack
+// expires (typically 30-60 s). We rotate a small
 // pool of connected, capability-confirmed fork peers (up to 10) and send a tiny
 // outbound KADEMLIA3_PING_REQ to each every 25 s. The peer replies, keeping the
 // endpoint-specific conntrack mapping warm for subsequent traffic to that peer.

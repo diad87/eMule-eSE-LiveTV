@@ -674,12 +674,12 @@ public:
 	static int		m_iEseHolePunchPortSpread;	// [eSE v9] port-prediction window half-width (ports each side of the observed port). Clamped [0,8].
 	static bool		m_bEseEd2kPunch3;			// [eSE v9] eD2K downloads: escalate to 3-way rendezvous (punch3) when the 2-way punch fails. Default OFF.
 	static int		m_iEseRelayMaxKBps;			// [eSE v9] R.3 hard relay egress byte-budget (KB/s of donated bandwidth). Clamped [64,65536].
-	// [eSE v9] Swarm DVR (SWARM_DVR_PLAN.md) — DORMANT reservations, no consumers yet. All default OFF.
+	// [eSE v9] Swarm DVR: dormant reservations, no consumers yet. All default OFF.
 	static bool		m_bEseDvrEnabled;			// [eSE v9] DVR: retain Live history for rewind. Default OFF.
 	static int		m_iEseDvrMinutes;			// [eSE v9] DVR retention window (minutes). Clamped [1,30].
 	static int		m_iEseDvrRetentionMB;		// [eSE v9] DVR on-disk budget (MB). Clamped [64,4096].
 	static int		m_iEseDvrUpKBps;			// [eSE v9] DVR serve upload budget (KB/s; 0=auto). Clamped >=0.
-	// [eSE v9] Channel manifest (CHANNEL_MANIFEST_PLAN.md) — DORMANT reservations. Default OFF.
+	// [eSE v9] Channel manifest: dormant reservations. Default OFF.
 	static bool		m_bEseChannelIdentity;		// [eSE v9] persist an Ed25519 channel identity across sessions. Default OFF.
 	static bool		m_bEseChannelPublish;		// [eSE v9] publish the channel record to Kad discovery. Default OFF.
 	// D2 (Sprint D): persisted privacy-routing mode. Stored as plain ints so this

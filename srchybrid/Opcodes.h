@@ -274,7 +274,7 @@
 // OP_PUBLICIP_REQ/OP_PUBLICIP_ANSWER pair). Only emitted to peers that advertise
 // CAP_FORK_IPV6_WIRE; old peers hit the harmless default dispatch case.
 //
-// MOVED 0xE0 -> 0xB3 (docs/protocol/PROTOCOL_REGISTRY.md §2.1): 0xE0 had been
+// MOVED 0xE0 -> 0xB3: 0xE0 had been
 // shipped + 2-PC-validated as OP_LIVE_CHUNK_FRAG (Opcodes.h:331), so emitting
 // this opcode at 0xE0 would make v8.1.x peers misparse it as a Live chunk
 // fragment. The define had never been emitted AT 0xE0, which is what made the
@@ -562,7 +562,7 @@
 #define ESE_CAP_TUNNEL_AUTH          0x00040000  // bit 18 -- authenticated tunnel handshake (CREATE/CREATED v2, Ed25519). Advertised only while the persistent node identity is available.
 #define ESE_CAP_LIVE_RELAY           0x00200000  // bit 21 -- R.3 buddy relay egress (broadcaster connect-out + 0xCF SETUP/CHUNK + 0xCE downstream). Advertised iff GetEseRelayAccept() (default OFF) — a node that does not accept relay duty keeps its caps byte-identical to before. bit 20 (0x00100000) is reserved for ESE_CAP_LIVE_BLAKE3 (see CAPABILITIES.csv) — do NOT reuse.
 #define ESE_CAP_HOLEPUNCH_COOKIE     0x00080000  // bit 19 -- return-routability cookie for eSE hole-punch (anti-reflection). LOAD-BEARING in the two-tier gate of Process_ESE_HOLEPUNCH_REQ: TIER1 (IP-verified known contact) -> legacy ACK+seed (bit informational here); TIER2 (unknown / known-but-unverified "gray zone") -> stateless 0x65 CHALLENGE ONLY if the sender advertises this bit, else legacy ACK+seed floored by the per-IP token bucket (back-compat: a legacy peer that cannot answer a CHALLENGE keeps its hole-punch). Initiator echoes the cookie in a 38B REQ. See HolePunchCookieCore.h / HolePunchCookie.h.
-#define ESE_CAP_KAD6                 0x01000000  // bit 24 -- Kad6 anonymity/compat gateway service (coarse discovery only; fine-grained K6_CAP_* live in the signed handshake u64, NOT this bitmap). K6-1 advertises it only with a persistent node identity and a non-Direct privacy mode; canonical requests require the signed exit snapshot. See docs/KAD6_SEARCH_WIRE_MAPPING.md.
+#define ESE_CAP_KAD6                 0x01000000  // bit 24 -- Kad6 anonymity/compat gateway service (coarse discovery only; fine-grained K6_CAP_* live in the signed handshake u64, NOT this bitmap). K6-1 advertises it only with a persistent node identity and a non-Direct privacy mode; canonical requests require the signed exit snapshot.
 #define ESE_CAP_TUNNEL_STRICT3       0x02000000  // bit 25 -- authenticated CREATE/EXTEND v3 + iterative 3-hop forwarding. STRICT selects only paths where every signed hop advertises it.
 #define ESE_CAP_TUNNEL_SHAPED        0x04000000  // bit 26 -- K6-6 class-5 fixed 17 KB bulk records + independent per-link shaping. STRICT requires this signed bit at every hop.
 #define ESE_CAP_KAD6_ECONOMY         0x08000000  // bit 27 -- K6-8 RFC 9474 anonymous quota protocol and measured admission support; not a claim that public-release gates passed.

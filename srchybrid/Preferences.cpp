@@ -2625,8 +2625,8 @@ void CPreferences::LoadPreferences()
 	m_iEseRelayMaxKBps = ini.GetInt(_T("EseRelayMaxKBps"), 4096, _T("eSE"));
 	if (m_iEseRelayMaxKBps < 64)    m_iEseRelayMaxKBps = 64;
 	if (m_iEseRelayMaxKBps > 65536) m_iEseRelayMaxKBps = 65536;
-	// [eSE v9] Swarm DVR (SWARM_DVR_PLAN.md) + channel manifest (CHANNEL_MANIFEST_PLAN.md): DORMANT
-	// reservations. No consumer reads these yet; they exist so the future implementation lands without
+	// [eSE v9] Swarm DVR and channel manifest: dormant reservations.
+	// No consumer reads these yet; they exist so the future implementation lands without
 	// re-touching Preferences. All default OFF/dormant -> zero behavior change. Load-only (no Save),
 	// like the other eSE-v9 prefs above -> only settable via a hand-edited [eSE] ini section.
 	m_bEseDvrEnabled = ini.GetBool(_T("EseDvrEnabled"), false, _T("eSE"));

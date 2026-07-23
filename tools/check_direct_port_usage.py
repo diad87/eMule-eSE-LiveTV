@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Freeze the D0 inventory of legacy local-port reads.
+"""Freeze the inventory of legacy local-port reads.
 
 The direct-reachability work must replace each public-advertisement read
 deliberately. A new direct call to CPreferences::GetPort/GetUDPPort is therefore
-an audit failure until docs/DIRECT_REACHABILITY_D0_AUDIT.md is updated.
+a failure until it is reviewed and added to the explicit allowlist below.
 """
 
 from __future__ import annotations

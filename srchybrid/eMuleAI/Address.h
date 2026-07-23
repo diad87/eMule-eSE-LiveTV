@@ -58,7 +58,7 @@ class CAddress
     // CMap<CAddress, ...> support — collides only on weak (full-byte) flips.
     UINT			HashKey() const;
 
-    // Subnet ops for anti-Sybil and PeX diversity (per IPV6_PLAN.md ADR-05).
+    // Subnet ops for anti-Sybil and PeX diversity.
     // prefixBits is 0..32 for IPv4 and 0..128 for IPv6.
     CAddress		GetSubnet(int prefixBits) const;
     bool			InSameSubnet(const CAddress& other, int prefixBits) const;

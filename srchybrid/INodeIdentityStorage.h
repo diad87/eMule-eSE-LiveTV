@@ -5,7 +5,8 @@
 // (the CI unit test + the Phase-5 Linux daemon, file-perms backend). Do NOT add
 // MFC / eMule headers here — that would break the cross-platform contract.
 //
-// See docs/AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md §1.2.
+// Implementations persist the Ed25519 seed without exposing storage details to
+// the tunnel protocol.
 #pragma once
 
 #include <cstddef>

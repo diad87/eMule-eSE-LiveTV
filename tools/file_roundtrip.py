@@ -53,7 +53,7 @@ FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "configs"
 # Files we expect to roundtrip. The "max_tail_growth" is the number of bytes
 # the new build is allowed to APPEND to the file beyond the baseline body —
 # meant to tolerate optional tags added in later sprints (per ADR-04 / ADR-06
-# in IPV6_PLAN.md). Setting it to 0 means strict byte-equality.
+# by a future file-format version). Setting it to 0 means strict byte-equality.
 FIXTURES = [
     # name                       max_tail_growth      description
     ("nodes_v2.dat",              0, "Kad routing zone v2 — must read/write strictly"),

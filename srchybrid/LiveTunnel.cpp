@@ -63,8 +63,8 @@
 namespace eSELive {
 
 // ===== v8.x Phase 2 — authenticated CREATE/CREATED v2 (signed handshake) =====
-// docs/AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md §4/§5. Byte-exact, little-endian,
-// fixed widths. The transcript serializer MUST be identical on the signer (relay)
+// Byte-exact, little-endian, fixed widths. The transcript serializer MUST be
+// identical on the signer (relay)
 // and the verifier (originator) — a single byte of drift makes the HKDF keys
 // diverge and the circuit dies on its first AEAD cell.
 static inline void PutU32LE(uint8_t* p, uint32_t v) {

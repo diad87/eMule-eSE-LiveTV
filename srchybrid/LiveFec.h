@@ -4,7 +4,7 @@
 // Sprint E-alpha (v8.1.1), task E8.1. Self-contained: depends only on <cstdint>.
 // No eMule, STL container, threading or socket dependency — pure arithmetic, so the
 // unit tests (E8.4) run with no network and the encode/decode can live on the main
-// thread (see V8.1.1_SPRINT_E_BREAKDOWN.md gotchas: ~2-5 ms per 500 KB segment).
+// thread; encoding costs roughly 2-5 ms per 500 KB segment.
 //
 // Model: systematic RS(k, r). Encode takes k data symbols and produces r parity
 // symbols. The k+r symbols are transported as bulk cells (one symbol = one cell,

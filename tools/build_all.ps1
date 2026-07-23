@@ -1,4 +1,4 @@
-# build_all.ps1 -- v9 alpha release pipeline (PowerShell 5.1 compatible).
+# build_all.ps1 -- v9 prerelease pipeline (PowerShell 5.1 compatible).
 [CmdletBinding()]
 param(
     [string]$RepoRoot = '',

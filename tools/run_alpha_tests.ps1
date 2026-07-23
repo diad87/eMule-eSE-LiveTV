@@ -76,4 +76,4 @@ if ($Suite -eq 'Integration' -or $Suite -eq 'All') {
     Run 'librelayclient release and ASan' { & cmd /d /c (Join-Path $RepoRoot 'librelayclient\make.bat') }
 }
 
-Write-Host "`nAlpha test suite PASS: $Suite" -ForegroundColor Green
+Write-Host "`neSE test suite PASS: $Suite" -ForegroundColor Green

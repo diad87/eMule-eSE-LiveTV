@@ -1,7 +1,6 @@
 // this file is part of eMule eSE — Kad Search v2 (F1 unified plan)
 //
-// Central constants for Kad Search v2 mechanisms. Header-only.
-// Spec source: docs/thesis/kad-search-v2/04-diseno-kad-v2.md (M0-M6).
+// Central constants for capability-gated Kad Search v2 mechanisms. Header-only.
 //
 // F1 implements M3 + M5 + M6 in Modo Direct. The Tunneled mode of each
 // mechanism is added in F4b together with PST. Direct mode is enabled by

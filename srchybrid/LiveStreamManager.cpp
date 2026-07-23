@@ -43,8 +43,7 @@ static char THIS_FILE[] = __FILE__;
 // eSE TEST-ONLY (rogue node R) — selective live-edge sabotage switches, toggled
 // at runtime via /api/live/test/edge_sabotage. Default OFF. Compiled ONLY when
 // ESE_TEST_HOOKS is defined project-wide for the attacker build; the honest /
-// production binary never defines it and is byte-for-byte unaffected. See
-// docs/VALIDATION_3PC_EDGE_PUNCTUALITY.md.
+// production binary never defines it and is byte-for-byte unaffected.
 bool  g_eseTestSabotageOn      = false;
 int   g_eseTestSabotageMode    = 0;     // 0 = drop, 1 = delay
 DWORD g_eseTestSabotageDelayMs = 6000;

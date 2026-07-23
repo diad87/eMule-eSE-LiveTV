@@ -4,7 +4,7 @@
 // Public records are serialised plaintext; private records are AEAD-sealed
 // with a key derived from the channel secret (Cap 5 §5.3 thesis).
 //
-// Wire format spec: docs/thesis/05-protocol-architecture.md §5.2.2.
+// Signed channel-manifest wire model.
 #pragma once
 
 #include <vector>

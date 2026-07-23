@@ -4147,7 +4147,7 @@ void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH, bool bSyncHash)
 	//	AddDebugLogLine(false, _T("Flushing file %s - buffer size = %ld bytes (%ld queued items) transferred = %ld [time = %ld]"), (LPCTSTR)GetFileName(), m_nTotalBufferData, m_BufferedData_list.GetCount(), m_uTransferred, m_nLastBufferFlushTime);
 
 	try {
-		// eSE H0: temporary timing instrumentation, remove in H1 (docs/PART_HASH_THREAD_PLAN.md)
+		// Measure flush latency for the diagnostics counter.
 		const DWORD dwFlushStart = ::GetTickCount();
 		DWORD dwHashMs = 0, dwAllocMs = 0, dwMetMs = 0;
 		UINT nHashedParts = 0;
@@ -4392,7 +4392,7 @@ void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH, bool bSyncHash)
 				}
 			}
 		}
-		// eSE H0: temporary timing instrumentation, remove in H1 (docs/PART_HASH_THREAD_PLAN.md)
+		// Record total flush latency.
 		const DWORD dwFlushTotal = ::GetTickCount() - dwFlushStart;
 		if (thePrefs.GetVerbose() && dwFlushTotal >= 50)
 			AddDebugLogLine(false, _T("eSE H0: FlushBuffer %u ms (hash %u ms / %u parts, alloc %u ms, met %u ms) - %s")

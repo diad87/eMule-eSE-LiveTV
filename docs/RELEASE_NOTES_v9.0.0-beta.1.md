@@ -1,59 +1,68 @@
-# v0.70b-eSE9.0.0-beta.1
+# eMule eSE 9.0.0-beta.1
 
-Fecha de corte prevista: 2026-07-17.
+Published on 2026-07-23 as a **public network-lab beta** for Windows x64.
+This is not the stable channel.
 
-Esta es una **beta pública para validación**, no la versión estable. Este documento
-define el alcance prometido; la beta no se considera publicada hasta que el tag,
-`BUILD_INFO.txt`, el ZIP y su checksum apunten al mismo SHA limpio y estén cerrados
-los gates bloqueantes de `V9_RELEASE_MASTER_CHECKLIST.md`.
+## Download
 
-## Qué incluye la beta
+- [Portable x64 ZIP](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.0.0-beta.1/eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip)
+- [SHA-256 checksum](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.0.0-beta.1/eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip.sha256)
 
-- Compatibilidad eD2K/Kad y LiveTV de v8.1, con correcciones del cierre de sesión,
-  identidad eD2K y ciclo punch2 `ACK -> uTP`.
-- Keepalive Kad R.2, reachability D5/D6, detección IPv6 in-band y fallback v4,
-  condicionados a sus pruebas físicas documentadas.
-- Túnel autenticado, Bulk/FEC, límites antiabuso y kill switches, condicionados a
-  los gates de red del candidato.
-- Dashboard y API local con autenticación, observabilidad y administración remota
-  cerrada por defecto.
-- Cohorte opcional `ESE_NETLAB_V1`: el primer inicio solicita aceptación explícita
-  antes de anunciar participación. Si se acepta, usa únicamente descargas y
-  emisiones reales para pruebas limitadas con otros participantes de la beta.
-- Paquete reproducible con FFmpeg/ffprobe fijados por SHA-256, registro de protocolo,
-  manifiesto por fichero y checksum externo del ZIP.
-- Emisión de archivos con selección automática de encoder: cada backend se acepta
-  sólo si inicializa un frame real, en orden NVIDIA NVENC, Intel QSV y AMD AMF. Si
-  ninguno está disponible, usa CPU/libx264 y limita la escalera a 720p para mantener
-  tiempo real en equipos modestos.
-- `emule.exe --portable` permite probar el ZIP con su propio perfil sin reutilizar
-  la configuración de otra instalación de eMule en el mismo Windows.
+The package is portable and contains `emule.exe`, `ese-server.exe`, FFmpeg,
+ffprobe, the local web assets, language DLLs, a pinned `nodes.dat`, per-file
+hashes and `BUILD_INFO.txt`.
 
-Si una ruta BASE no supera su gate antes del tag, se demota explícitamente a LAB/OFF;
-no se publica parcialmente ni se debilita el criterio de aceptación.
+## Included in this beta
 
-## Funciones experimentales que permanecen OFF
+- The eD2K/Kad and LiveTV feature set from eSE 8.1.
+- RTMP/OBS, screen, media-file and test-pattern broadcasting.
+- Live HLS distribution through the peer mesh and local browser/VLC playback.
+- Hardware encoder verification with NVENC, Intel QSV and AMD AMF selection,
+  plus a safe CPU/x264 fallback.
+- Source replenishment, signed-chunk verification, bounded request handling
+  and HLS cleanup.
+- Kad keepalive and reachability lifecycle improvements.
+- In-band IPv6 detection with IPv4 fallback.
+- Authenticated tunnel framing, Bulk/FEC support and abuse-control switches.
+- A reproducible release pipeline with pinned media inputs, manifests,
+  external ZIP checksum and embedded build provenance.
 
-- Punch3 y predicción de puerto anti-CGNAT.
-- KRP relay y su plano de datos experimental.
-- Kad6 Rev3, gateway y public exit.
-- Rutas/cohortes experimentales que no tengan acta física PASS.
+## Consent-based NetLab
 
-La presencia de código experimental en el binario no equivale a soporte público. Con
-las puertas apagadas no debe anunciar capability, responder al protocolo experimental
-ni abrir una salida pública.
+On a fresh profile, eSE asks for explicit consent before advertising
+`ESE_NETLAB_V1`. If accepted, the beta may perform bounded measurements of
+IPv6, LowID, hole punching and CGNAT behavior with other consenting beta
+participants during real transfers or broadcasts.
 
-## Defaults seguros del perfil nuevo
+- It does not scan random Internet hosts.
+- It does not require confirmation before every individual attempt after
+  consent has been granted.
+- NetLab can be disabled immediately.
+- Sanitized reports stay local; no implicit central telemetry is uploaded.
+- Full IP addresses and private keys are not part of the report.
 
-El paquete crea estas preferencias en `0`:
+## Experimental functions that remain OFF
+
+These functions require separate activation and are not enabled by NetLab
+consent:
+
+- Punch3 and anti-CGNAT port prediction.
+- Relay acceptance and relay bandwidth donation.
+- KRP relay service.
+- Kad6 public exit.
+- Any experimental data plane without its own opt-in and kill switch.
+
+The presence of code in the executable is not a support claim.
+
+## Safe defaults
+
+Fresh beta profiles use fail-closed defaults:
 
 ```ini
 [WebServer]
 WebUseUPnP=0
 
 [eSE]
-EseNetLabConsent=0
-EseNetLabEnabled=0
 EseV9Experimental=0
 EseKad3Rendezvous=0
 EseAutoKeepalive=0
@@ -70,72 +79,57 @@ KrpRelayKillSwitch=0
 ExperimentalTcpDataPlane=0
 ```
 
-El servidor web no se publica mediante UPnP y no acepta administración remota sin
-autenticación. No reutilice un perfil de laboratorio para evaluar estos defaults.
+The dashboard is local by default, port 8080 is not automatically mapped with
+UPnP, and remote dashboard/HLS access requires explicit authentication.
 
-## Cohorte NetLab y activación controlada
+## Privacy limits
 
-Instalar la beta no equivale a participar. En el primer inicio se muestra un aviso
-con elección Sí/No; hasta aceptar, el cliente no anuncia `ESE_NETLAB_V1` ni realiza
-intentos automáticos de la cohorte. La participación base puede apagarse de inmediato
-desde el dashboard o desde la máquina local:
+This beta does not claim:
 
-```text
-http://127.0.0.1:4711/api/ese/v9?on=0
-```
+- strong anonymity;
+- universal High ID;
+- complete IPv6 support across every socket and topology;
+- traversal of every NAT or CGNAT;
+- a public relay or Kad6 exit service.
 
-Tras haber aceptado el aviso, puede reactivarse la capa base con:
+Endpoint-free LiveTV links do not contain an IP address, but resolving and
+transferring a stream can still expose network endpoints to participating
+peers. The production control tunnel inherited from 8.1 uses one relay hop, so
+the exit can identify the viewer; the media path may also remain direct.
 
-```text
-http://127.0.0.1:4711/api/ese/v9?on=1
-```
+## Compatibility and profile safety
 
-La capa base cubre IPv6 Auto, mappings existentes, keepalive y punch2 sobre intentos
-naturales; no hace escaneos aleatorios. Punch3, predicción y selector siguen
-escalonados y OFF. Relay, donación de ancho de banda, KRP y Kad6 public exit requieren
-autorizaciones independientes y no se encienden ni se apagan con este endpoint.
+The fork uses additive capability negotiation for eSE-owned protocol
+extensions. Before testing the beta:
 
-El dashboard muestra el estado, ofrece desactivación inmediata y permite copiar un
-informe local saneado. El informe no incluye IP completa ni se sube mediante
-telemetría central implícita.
-
-## Límites y claims que esta beta no hace
-
-- No se declara que LowID haya desaparecido en cualquier NAT o CGNAT.
-- No se declara soporte IPv6 completo en todos los sockets y topologías.
-- No se promete High ID universal ni relay público general.
-- Kad6 public exit y KRP permanecen cerrados.
-- No se ofrece anonimato fuerte ni resistencia demostrada frente a adversarios.
-- Los resultados de una topología no se extrapolan a NAT simétrica, doble NAT,
-  IPv6-only u otros ISP sin evidencia separada.
-
-## Compatibilidad y datos
-
-Antes de publicar se prueba beta frente a eSE 8.1.0 y eMule vanilla 0.70b, además de
-upgrade y rollback con copia del perfil. Haga copia de `config`, ficheros `.met`,
-preferencias y claves antes de probar. No comparta un perfil simultáneamente entre
-beta y una versión anterior.
+1. Back up the eMule `config` directory, `.met` files, preferences and keys.
+2. Do not run 8.1 and 9.0.0-beta.1 against the same profile simultaneously.
+3. Keep `emule.exe` and `ese-server.exe` from the same package together.
+4. Use Release x64 builds only.
 
 ## Rollback
 
-1. Desactive la puerta maestra con `/api/ese/v9?on=0`.
-2. Desactive por separado KRP, relay, Kad6 y cualquier ruta LAB activada.
-3. Cierre eMule y conserve `ese-live.log`, `preferences.ini` y los logs del gate.
-4. Restaure la copia del perfil y vuelva a eSE 8.1.0 si aparece corrupción o una
-   regresión bloqueante.
-5. No reutilice como perfil limpio uno que haya activado experimentos.
+1. Disable NetLab.
+2. Disable every separately enabled experimental feature.
+3. Close eMule and keep the logs needed for a bug report.
+4. Restore the saved profile.
+5. Reinstall the
+   [eSE 8.1.0 package](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE8.1.0).
 
-## Cómo reportar un fallo
+Do not reuse a laboratory profile as a fresh-profile safety test.
 
-Incluya siempre:
+## Reporting a problem
 
-- tag y SHA de `BUILD_INFO.txt` y SHA-256 del ZIP;
-- Windows, CPU/GPU y versión del driver cuando intervenga LiveTV;
-- número de PCs, ISP, topología, IPv4/IPv6 y tipo de NAT;
-- preferencias v9 activadas y estado de cada kill switch;
-- pasos, hora exacta, resultado esperado/real y si el fallo se reproduce;
-- `ese-live.log`, logs de eMule y captura `/api/status`, eliminando claves, tokens,
-  hashes privados y direcciones que no desee publicar.
+Open a
+[GitHub issue](https://github.com/diad87/eMule-eSE-LiveTV/issues/new/choose)
+and include:
 
-La evidencia consolidada de aceptación se registra en
-`V9_RELEASE_MASTER_CHECKLIST.md`; un PASS verbal no promociona el candidato.
+- the release and commit from `BUILD_INFO.txt`;
+- Windows version and hardware/driver details;
+- the number of PCs, network topology, IPv4/IPv6 and known NAT type;
+- the experimental switches that were enabled;
+- exact reproduction steps and timestamps;
+- relevant eMule/eSE logs and `/api/status` output.
+
+Remove tokens, keys, private hashes and addresses that you do not want to
+publish.

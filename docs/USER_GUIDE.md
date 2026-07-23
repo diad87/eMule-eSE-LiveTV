@@ -3,14 +3,16 @@
 This guide covers the end-user workflow: install, watch a stream,
 broadcast your own, troubleshoot.
 
-For the design / architecture see [MASTER_PLAN.md](MASTER_PLAN.md) and
-[DECENTRALIZED_DISCOVERY.md](DECENTRALIZED_DISCOVERY.md).
+For the runtime design see [the architecture overview](../ARCHITECTURE.md).
+The current public-beta limits are in
+[the 9.0.0-beta.1 release notes](RELEASE_NOTES_v9.0.0-beta.1.md).
 
 ---
 
 ## 1. Install
 
-1. Download `eSE-LiveTV-x64-*.zip` from the [Releases](../../../releases) page.
+1. Download the
+   [9.0.0-beta.1 portable ZIP](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.0.0-beta.1).
 2. Extract anywhere (e.g. `C:\eSE\`).
 3. Double-click **`emule.exe`**.
 4. Wait for eD2K + Kad to connect (status icons go green/yellow).
@@ -25,6 +27,11 @@ That triggers:
 If a UAC prompt appears the first time, accept it — needed for UPnP
 to map the eD2K ports on your router. If Windows Firewall asks about
 `emule.exe`, `ese-server.exe`, or `ffmpeg.exe`, allow all three.
+
+The beta may ask whether you want to join the consent-based NetLab cohort.
+Declining does not block normal eD2K, Kad or LiveTV use. Accepting permits
+bounded interoperability measurements; it does not enable relay bandwidth
+donation, KRP or Kad6 public exit.
 
 > **Note:** earlier releases used a `eSE.vbs` launcher. That was
 > dropped — you now launch `emule.exe` directly and the eSE button
@@ -59,9 +66,10 @@ To uninstall, delete the install folder + both `%APPDATA%` folders.
 
 If a friend sent you an `ed2k://|live|...|/` URL, paste it into the
 search box at the top of `/live`. A link containing `IP:port` can dial
-the broadcaster directly. The privacy-preserving form has an empty
+the broadcaster directly. The endpoint-free form has an empty
 endpoint (`ed2k://|live|KEY||TITLE|/`) and resolves the broadcaster
-through Kad instead, which normally takes longer.
+through Kad instead, which normally takes longer. Omitting the endpoint from
+the link is not a strong-anonymity guarantee.
 
 ### 2.3 In VLC / any HLS player
 
@@ -139,7 +147,7 @@ two. The P2P watcher sends one selected rendition to the mesh.
 
 | Port | Protocol | Direction | Required? |
 |---|---|---|---|
-| 4662 | TCP | inbound | **Yes** — without it you stay LowID and viewers can't reach you over WAN. UPnP usually opens this automatically. |
+| 4662 | TCP | inbound | Recommended for a direct HighID path. Gated fallback paths are not guaranteed on every NAT. |
 | 4672 | UDP | inbound | Yes — Kad discovery. |
 | 4711 | TCP | inbound | Optional — only if you want to expose `/api/*` to external machines. |
 | 8080 | TCP | inbound | Optional — only if you want remote browsers on the dashboard. |
@@ -180,7 +188,6 @@ Two failure modes:
 
 ### "Audio cuts out after a few seconds"
 
-This was the keyframe-misalignment bug fixed in `1657cf` / `9c1adfe`.
 Confirm with `ffmpeg -i master.m3u8` — every variant playlist should
 have `#EXT-X-INDEPENDENT-SEGMENTS`. If yours doesn't, you're on an
 old `ese-server.exe` — rebuild via `tools\build_ese_server.ps1` or
@@ -193,7 +200,7 @@ If it's missing, either re-extract the ZIP or rebuild:
 
 ```powershell
 cd srchybrid\eSE
-npm install
+npm ci
 npm run build
 # Copy dist\ese-server.exe next to emule.exe
 ```
@@ -225,4 +232,4 @@ These are for testing only and apply to `emule.exe` when launched from a console
 
 ---
 
-_Last updated: 2026-07-16._
+_Last updated: 2026-07-23._

@@ -6,7 +6,8 @@
 // POSIX). The public key is advertised in HELLO as TAG_ESE_NODE_PUB (0x6D) so
 // peers can pin it for the authenticated CREATE/CREATED v2 handshake.
 //
-// See docs/AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md §1.
+// The public key is advertised only to peers that understand the authenticated
+// tunnel handshake.
 #pragma once
 
 #include <cstddef>

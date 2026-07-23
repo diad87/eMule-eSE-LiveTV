@@ -7,7 +7,7 @@
 #
 # We do NOT run --selftest in CI because it needs UDP multicast + a
 # functioning eD2K mesh, neither of which exist on the hosted runner.
-# The hardware-required E2E tests live in docs/ACCEPTANCE_CHECKLIST.md.
+# Hardware-required E2E checks are run manually on release candidates.
 
 name: build
 

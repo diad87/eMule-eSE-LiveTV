@@ -1,42 +1,45 @@
 # librelaycore
 
-Core C++17, MFC-free, del relay público/KRP.
+`librelaycore` is the MFC-free C++17 core of the experimental KRP relay
+protocol.
 
-Estado: P1 cerrado, Gate G1 `source/build-complete`:
+It provides:
 
-- scaffold y códecs compilables con `/W4 /WX`;
-- tamaños de identidad/sesión fijados;
-- cursor acotado y varints unsigned LEB128 canónicos;
-- envelope `ControlFrame` KRP con payload máximo de 64 KiB;
-- valores `KRP_*` contrastados automáticamente con el registro;
-- golden vectors, casos adversariales y fuzz determinista bajo Release/ASan;
-- state machine `Session` con ocho estados, `SessionEpoch` y `RouteGeneration`;
-- fencing de migración y reanudación mutable solo después de 1-RTT;
-- consumo de token de reanudación atómico mediante interfaz inyectable;
-- transcript de autenticación ligado a carrier exporter y `NodeIdentity` persistente;
-- `Flow` con secuencia, half-close, pressure deadline y presupuestos de memoria;
-- registro acotado que impide reutilizar `FlowID` dentro de `SessionEpoch`;
-- `EprLease` TCP/UDP opcional con generation, bind, probe, grace, drain y revoke;
-- autoridad estricta por servicio, sin destino host/port crudo;
-- adaptador real para consumir `K6TargetTicket` mediante `libkad6`;
-- wire y apertura de red desactivados de forma explícita;
-- ningún mensaje `KRP_*` está activo en un transporte;
-- sin sockets, threads, MFC, UI ni claves privadas.
+- canonical unsigned LEB128 parsing;
+- bounded KRP control frames;
+- session and route-generation state;
+- authenticated transcript binding;
+- resumption-token consumption hooks;
+- flow sequencing, half-close and memory budgets;
+- optional endpoint-lease state;
+- adapters for validated Kad6 target tickets.
 
-Build local:
+The core does not open sockets, start threads, own UI state or store private
+keys. Network transports and persistent policy belong to the host process.
+
+## Runtime boundary
+
+KRP is disabled by default in eSE 9.0.0-beta.1. A build containing this library
+does not advertise or operate a public relay unless the independent runtime
+preferences, authorization and kill switches allow it.
+
+Raw arbitrary host/port forwarding is not part of the authority model.
+
+## Build and test
+
+From a Visual Studio developer prompt:
 
 ```bat
 cd librelaycore
 make.bat
 ```
 
-El build genera `build/relaycore.lib` y enlaza toda la suite contra ese archivo;
-`RELAY_ASAN=1` genera la variante instrumentada `relaycore_asan.lib`.
+For the sanitizer build:
 
-La evolución del core está gobernada por:
+```bat
+set RELAY_ASAN=1
+make.bat
+```
 
-- `docs/relay/RELAY_KRP_ADR_001_CORE_CONTRACTS.md`;
-- `docs/protocol/KRP_MESSAGES.csv`;
-- `docs/RELAY_KRP_V05_DEVELOPMENT_PLAN.md`.
-
-La evidencia final está en `docs/relay/RELAY_P1_CLOSURE_2026-07-16.md`.
+The protocol values are registered in
+[`docs/protocol/KRP_MESSAGES.csv`](../docs/protocol/KRP_MESSAGES.csv).

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
 // libreach — reference library for KEP-1 (reachability vector + connection
-// cascade), the abolition of the LowID/HighID binary in Kademlia-derived
-// networks. See docs/THESIS_KAD_SIN_LOWID.md §13 and Appendix A.
+// cascade), and representing reachability as capabilities instead of a single
+// LowID/HighID binary in Kademlia-derived networks.
 //
 // reach_types.h — the normative on-wire types for the reachability vector
 // (`TAG_REACH`, Appendix A). Pure C++17: no MFC, no wxWidgets, no sockets,

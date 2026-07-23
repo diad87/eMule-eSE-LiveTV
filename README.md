@@ -1,195 +1,195 @@
 # 🐴 eMule eSE — Live TV Edition
 
-> **eMule Streaming Engine (eSE)** — A heavily modified eMule 0.70b fork
-> that adds **P2P live streaming** over the eD2K + Kad network. No CDN,
-> no central trackers, no operating cost beyond your own connection.
+[![Public beta](https://img.shields.io/badge/public%20beta-9.0.0--beta.1-orange)](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.0.0-beta.1)
+[![Windows build](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/build.yml/badge.svg)](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/build.yml)
+[![CodeQL](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/codeql.yml/badge.svg)](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/codeql.yml)
+[![License: GPL-2.0](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](license.txt)
 
----
+**eMule Streaming Engine (eSE)** is an eMule 0.70b fork for decentralized
+P2P live streaming over eD2K and Kad. It combines the native Windows client,
+FFmpeg-based HLS broadcasting and a local web dashboard in one portable
+Windows x64 package.
 
-## 🆕 What's new in v0.70b-eSE7.0 (2026-05-17)
+## Download
 
-- **🔒 Anonymous broadcast links by default** — share without leaking your IP. The viewer resolves the broadcaster via Kad at click time; the URL string carries nothing identifiable.
-- **🛰️ 100% decentralized discovery** — three independent layers (PEX gossip, mDNS LAN multicast, bootstrap cache). Sub-second on LAN, ~3 s on a warm mesh, <5 s cold-start with cache.
-- **⚡ Adaptive bitrate (ABR)** with NVENC / QSV / AMF / x264 hardware encoder auto-detection + YouTube-style 3-chunk prebuffer.
-- **🔄 Auto-update** — toast in the dashboard when a new GitHub release is published; one-click update via bundled PowerShell installer.
-- **💥 Crash dump auto-prompt** — minidumps to `%APPDATA%\eMule\crashdumps\`, next-launch dialog offers to open the folder for issue reporting.
-- **🔐 First formal security audit** + 2 medium XSS fixes in legacy inline pages.
-- **🛠️ CI builds** (GitHub Actions) on every push/PR.
+### [Download eSE 9.0.0-beta.1 for Windows x64](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.0.0-beta.1/eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip)
 
-Full release notes: [docs/RELEASE_NOTES_v0.70b-eSE7.0.md](docs/RELEASE_NOTES_v0.70b-eSE7.0.md).
-Diff vs upstream eMule 0.70b: [CHANGES_FROM_EMULE_0.70b.md](CHANGES_FROM_EMULE_0.70b.md).
+[SHA-256 checksum](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.0.0-beta.1/eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip.sha256)
+· [Release notes](docs/RELEASE_NOTES_v9.0.0-beta.1.md)
+· [All releases](https://github.com/diad87/eMule-eSE-LiveTV/releases)
 
----
+> [!IMPORTANT]
+> 9.0.0-beta.1 is a public network-lab beta, not the stable channel. The latest
+> stable build remains
+> [eSE 8.1.0](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE8.1.0).
 
-## ⬇️ Download
+### Run it
 
-### 📦 [Download latest release — Portable x64 ZIP (~170 MB)](https://github.com/diad87/eMule-eSE-LiveTV/releases/latest)
+1. Extract the ZIP to a writable folder such as `C:\eSE\`.
+2. Run `emule.exe`.
+3. Connect to eD2K and Kad.
+4. Press the **eSE** toolbar button.
+5. The dashboard opens at
+   [http://localhost:8080/live](http://localhost:8080/live).
 
-Click the link, then download the `.zip` asset from the latest release page. The releases page always reflects what's current — no broken hardcoded URLs to maintain.
+The portable package already includes the dashboard server, FFmpeg, ffprobe,
+the local HLS player and language DLLs. User data is stored under
+`%APPDATA%\eMule\` and `%APPDATA%\eSE\`.
 
-> All historical builds are on the [Releases](../../releases) page.
+- [Quick start in Spanish](GUIA-RAPIDA.md)
+- [Full user guide](docs/USER_GUIDE.md)
 
-**How to run:**
+## What the beta includes
 
-1. Extract the ZIP anywhere (e.g. `C:\eSE\`)
-2. Double-click `emule.exe` — connect to ed2k + Kad as usual, then press the **eSE** button in the toolbar. The embedded Node.js server starts in the background and your browser opens to `http://localhost:8080/live`.
+### P2P Live TV
 
-No installer required. No external dependencies. 100% portable. Settings live under `%APPDATA%\eMule\`.
+- Broadcast from OBS/RTMP, screen capture, a media file or a test pattern.
+- Distribute live HLS chunks through the eD2K/Kad peer mesh.
+- Watch in the bundled browser player or through a local HLS URL.
+- Select NVENC, Intel QSV or AMD AMF when the encoder is usable, with a safe
+  CPU/x264 fallback.
+- Recover sources after peer loss and reject duplicate or tampered chunks.
+- Browse streams with search, thumbnails, favorites and cinema playback.
 
-> Spanish quickstart (5 steps, with screenshots): [GUIA-RAPIDA.md](GUIA-RAPIDA.md)
-> Full broadcast / watch / troubleshoot walkthrough: [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+```text
+OBS / screen / media
+         │
+         ▼
+ emule.exe + FFmpeg ── eD2K/Kad mesh ── viewer's emule.exe
+         │                                  │
+         ▼                                  ▼
+  local HLS preview                 localhost HLS playback
+```
 
----
+### Decentralized discovery
 
-## ✨ Key features
+Stream discovery does not require a central tracker:
 
-### 🔴 P2P live TV
-- **Broadcast & watch** live streams over the existing eD2K / Kad mesh
-- RTMP ingest (port 1935) → FFmpeg HLS transcoding → eD2K chunk distribution
-- Adaptive bitrate ladder: **360p / 540p / 720p / 1080p** with HW encoder
-- YouTube-style 3-chunk prebuffer (~12 s) avoids the "live edge / black screen" failure mode
-- Per-stream HLS isolation, gap recovery, Prometheus `/api/live/metrics`
-- Stream browser at [`localhost:8080/live`](http://localhost:8080/live) with thumbnails, search, favorites, cinema player
-- Cross-host broadcast verified end-to-end (PC1 → PC2 different ISPs, 2026-05-15)
+- Kad publishes and resolves stream records.
+- PEX gossip shares recent announcements between connected peers.
+- LAN multicast discovers nearby streams on `224.0.0.251:5354`.
+- A local cache remembers recently seen streams.
 
-### 🛰️ 100% decentralized discovery (no trackers, no servers)
-Three independent P2P layers run in parallel:
+The release package contains a structurally checked and SHA-256-pinned
+`nodes.dat`; it does not fetch a mutable bootstrap file while building or
+starting.
 
-1. **PEX gossip** piggy-backed in `OP_LIVE_HEARTBEAT` — every peer relays its top-5 recent streams. Viral propagation in `O(log N)` heartbeats.
-2. **mDNS-style LAN multicast** on `224.0.0.251:5354` — sub-second discovery between peers on the same Wi-Fi/Ethernet. Works fully offline.
-3. **Bootstrap cache** at `%APPDATA%\eMule\last_streams.json` — last 20 streams pinged at startup (~5 s) before Kad is ready.
+### Reachability and IPv6
 
-No HTTPS trackers, no Cloudflare workers, no central service that can be taken down. See [docs/DECENTRALIZED_DISCOVERY.md](docs/DECENTRALIZED_DISCOVERY.md) for the design.
+The beta adds consent-based NetLab measurements for real-world IPv6, LowID,
+hole-punching and CGNAT behavior. On first run, eSE asks before advertising the
+NetLab capability. Reports stay local and are sanitized; there is no implicit
+central telemetry.
 
-### 🔒 Privacy-by-default share links
-- The link the broadcaster shares is `ed2k://|live|HEX||TITLE|/` — **no IP, no port** in the URL string
-- Survives dynamic IP changes — the link doesn't bind to a specific address
-- Viewer does a Kad lookup at click time to find the current broadcaster
-- The classic direct link (with IP) is still available behind a collapsible toggle for LAN-only use cases
+NetLab participation does not enable every experimental transport. Punch3,
+port prediction, relay bandwidth donation, KRP and Kad6 public exit remain
+separately gated and **OFF by default**.
 
-A future "relay-protected" mode (planned, single-hop) will hide the broadcaster's IP from Kad entirely. See [docs/ANONYMOUS_BROADCAST.md](docs/ANONYMOUS_BROADCAST.md).
+### Local dashboard and hardening
 
-### 🌐 Modern web dashboard
-- Full-featured UI at `:8080` replacing the legacy Win32 interface (64 JS modules)
-- Stream browser with cross-peer thumbnails fetched over HTTP
-- Cinema player (HLS.js + multi-audio track picker)
-- TMDB integration for movie posters & metadata
-- First-run wizard with Kad / NAT / FFmpeg / public-IP checks + actionable tips
-- Real-time `/api/live/metrics` Prometheus exposition for Grafana
+- Dashboard and stream browser on `127.0.0.1:8080`.
+- Native status/control API on `127.0.0.1:4711`.
+- Remote dashboard and received-HLS access require explicit authentication.
+- Port 8080 is never exposed automatically through UPnP.
+- Request limits, path validation, signed chunks and protocol capability
+  checks fail closed.
+- Release artifacts include file hashes and build provenance.
 
-### 🔐 Security hardening
-- Localhost-only gate on `/api/live/*`, `/api/holepunch/*`, `/api/status`, `/dashboard`, `/hls/*`
-- XSS fixes in legacy inline pages — broadcaster-controlled `title` / `category` / `quality` always HTML-escaped
-- HLS chunk-path allowlist (no `..` / `/` / `\` permitted)
-- Challenge-Response authentication (SHA-256 + CSPRNG nonces)
-- Encrypted Kad hole-punch payloads (CryptoPP)
-- Sybil defenses on Kad search results (viewer count clamped at 100k, bitrate rejected above 50 Mbps)
-- Full audit: [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md)
+## Privacy limits
 
-### ⚡ Network improvements
-- **uTP / LEDBAT** streaming-optimized (300 ms target delay)
-- NAT traversal with UDP hole-punching + 15 s keepalive
-- NAT health telemetry exposed via `/api/live/diagnose`
-- Multi-parent topology (≥3 active sources per viewer) with RTT-biased mesh fallback
-- Tier classification (LEAF / MID / SUPER_SEEDER / MEGA_SEEDER) for ratio enforcement and fair upload sharing
+Endpoint-free links use:
 
-### 🛡️ Code quality
-- 80+ functional bugs remediated (P0–P3 audit)
-- Thread-safe atomic counters throughout the new live subsystem
-- Silent catch blocks eliminated with `LIVE_LOG` diagnostic logging
-- Modern crypto (CryptoPP CSPRNG replacing `rand()` / `srand()` in security-critical paths)
-- 16 modernization candidates documented for future work: [docs/MODERNIZATION.md](docs/MODERNIZATION.md)
+```text
+ed2k://|live|KEY||TITLE|/
+```
 
----
+The link does not contain an IP address or port; the viewer resolves a source
+through Kad. This does not make either endpoint anonymous by itself.
 
-## 📚 Documentation
+The 8.1 control tunnel hides the viewer from the broadcaster and Kad search
+path, but its production circuit has one relay hop: the exit can identify the
+viewer, and the media path can still be direct. The 9.0.0 beta therefore makes
+no claim of strong anonymity, universal High ID, complete IPv6 support or
+traversal of every NAT.
 
-| Doc | What's in it |
-|---|---|
-| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | Install, watch, broadcast workflow + troubleshooting |
-| [docs/MASTER_PLAN.md](docs/MASTER_PLAN.md) | Architecture, sprint roadmap, scalability targets (2909 lines) |
-| [docs/DECENTRALIZED_DISCOVERY.md](docs/DECENTRALIZED_DISCOVERY.md) | The 3-layer discovery design |
-| [docs/ANONYMOUS_BROADCAST.md](docs/ANONYMOUS_BROADCAST.md) | Relay-protected broadcast spec (planned) |
-| [docs/IPV6_ANALYSIS.md](docs/IPV6_ANALYSIS.md) | IPv6 dual-stack roadmap, threat model |
-| [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md) | First formal security review |
-| [docs/MODERNIZATION.md](docs/MODERNIZATION.md) | 16 candidates for 2026 upgrades (id3lib → TagLib, IE → WebView2, etc.) |
-| [docs/ACCEPTANCE_CHECKLIST.md](docs/ACCEPTANCE_CHECKLIST.md) | D4 / D5 hardware-required test matrices |
-| [docs/DISTRIBUTION_ANALYSIS.md](docs/DISTRIBUTION_ANALYSIS.md) | Release pipeline inventory |
-| [docs/RELEASE_NOTES_v0.70b-eSE7.0.md](docs/RELEASE_NOTES_v0.70b-eSE7.0.md) | This release's notes |
-| [docs/PAPER_eSE_Live_EN.md](docs/PAPER_eSE_Live_EN.md) / [ES](docs/PAPER_eSE_Live_ES.md) | Academic paper (~6 k words each) |
-| [CHANGES_FROM_EMULE_0.70b.md](CHANGES_FROM_EMULE_0.70b.md) | Full diff vs upstream eMule 0.70b (GPL §2(a) notice) |
-| [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) | Attribution for every bundled binary |
+## Network ports
 
----
+| Service | Default | Protocol | Exposure |
+|---|---:|---|---|
+| eMule client | 4662 | TCP | Inbound P2P |
+| eMule/Kad | 4672 | UDP | Kad and UDP transport |
+| Native WebServer/API | 4711 | TCP | Local control by default |
+| eSE dashboard | 8080 | TCP | Local by default; never auto-mapped |
+| RTMP ingest | 1935 | TCP | Needed remotely only when OBS is on another PC |
+| LAN discovery | 5354 | UDP multicast | TTL 1; local subnet only |
 
-## 🏗️ Building from source
+Only expose the dashboard, API or RTMP ports when the use case requires it.
+
+## Build from source
 
 ### Requirements
-- **Visual Studio 2022** (Community or BuildTools) with `C++ Desktop development` + MFC / ATL workloads
-- **Node.js 18+** (for `ese-server.exe` rebuild)
-- **Windows 10 / 11 x64**
-- For `v141_xp` language DLLs (optional): the `MSVC v141 - VS 2017 C++ x64/x86 build tools (v14.16)` individual component + the `Windows XP support for C++` component
 
-### One-shot full build (recommended)
-```powershell
-.\tools\build_all.ps1
-```
-Builds `emule.exe` (Release|x64) + `ese-server.exe` (Node + pkg) + 43 language DLLs, then packages everything into a portable ZIP on your Desktop. ~15–20 min total.
+- Windows 10 or 11 x64.
+- Visual Studio 2022 with Desktop development with C++, MFC and ATL.
+- Node.js 22 and npm.
+- Python 3.
+- The pinned `libutp` submodule.
 
-Useful flags:
 ```powershell
-.\tools\build_all.ps1 -Skip langs              # skip language DLLs (if v141_xp toolset missing)
-.\tools\build_all.ps1 -Skip emule,langs        # reuse existing emule.exe, just rebuild Node + package
-.\tools\build_all.ps1 -ReleaseTag v0.70b-eSE7.1  # override release tag in the ZIP filename + BUILD_INFO
-.\tools\build_all.ps1 -DryRun                  # print the plan, don't execute
+git clone --recurse-submodules https://github.com/diad87/eMule-eSE-LiveTV.git
+Set-Location eMule-eSE-LiveTV
 ```
 
-### Individual steps
+For a local developer build:
+
 ```powershell
-# Just emule.exe
-msbuild srchybrid/emule.sln /p:Configuration=Release /p:Platform=x64 /m
-
-# Just ese-server.exe (requires npm install first)
-cd srchybrid/eSE
-npm install
-npm run build
-
-# Just the portable ZIP (uses whatever's already built)
-.\build_package.ps1
+.\tools\build_all.ps1 `
+  -ReleaseTag v0.70b-eSE9.0.0-beta.1 `
+  -AllowDirty `
+  -MaxCpuCount 1
 ```
 
-Output binary: `srchybrid/x64/Release/emule.exe` · Output ZIP: `Desktop/eSE-LiveTV-v{TAG}-{DATE}-x64.zip`.
+`-AllowDirty` is a development override. Release artifacts must be built from a
+clean tagged commit without that switch. The full pipeline runs preflight,
+core tests, C++ and Node builds, integration tests, language builds,
+deterministic packaging and package smoke tests.
 
----
+Artifacts are written under:
 
-## 📡 Network ports
+```text
+dist\<release-tag>\
+├── package\
+├── eSE-LiveTV-<release-tag>-x64.zip
+└── eSE-LiveTV-<release-tag>-x64.zip.sha256
+```
 
-| Service | Port | Protocol | Notes |
-|---------|------|----------|-------|
-| eMule TCP | 4662 | TCP | Inbound — opened via UPnP if available. |
-| eMule UDP | 4672 | UDP | Kad / extended search. |
-| WebServer | 4711 | TCP | Legacy eMule webserver + `/api/live/*` (localhost-only gate). |
-| eSE Dashboard | 8080 | TCP | Modern Node.js UI (`/live`). |
-| Live RTMP Ingest | 1935 | TCP | OBS / FFmpeg push target for broadcasters. |
-| LAN Discovery | 5354 | UDP multicast (`224.0.0.251`) | mDNS-style announce, TTL=1 (subnet-only). Coexists with Bonjour on 5353. |
+Run the complete local test set with:
 
----
+```powershell
+.\tools\run_alpha_tests.ps1 -Suite All
+```
 
-## 📜 License
+## Documentation
 
-eMule is released under the **GNU General Public License v2**. See [license.txt](license.txt).
+| Document | Purpose |
+|---|---|
+| [User guide](docs/USER_GUIDE.md) | Install, watch, broadcast and troubleshoot |
+| [Beta release notes](docs/RELEASE_NOTES_v9.0.0-beta.1.md) | Safety defaults, limitations and rollback |
+| [Architecture](ARCHITECTURE.md) | Runtime processes, data flow and code layout |
+| [Changes from eMule 0.70b](CHANGES_FROM_EMULE_0.70b.md) | Implemented fork changes |
+| [Protocol registry](docs/protocol/PROTOCOL_REGISTRY.md) | Fork wire namespaces and compatibility rules |
+| [Documentation index](docs/INDEX.md) | Complete first-party documentation list |
+| [Third-party licenses](THIRD_PARTY_LICENSES.md) | Bundled component attribution |
 
-This fork inherits the same licensing terms. All source modifications are public in this repository.
+## License and credits
 
-Third-party components bundled in the binary distribution (FFmpeg, Node.js, cloudflared, statically-linked native libraries, npm modules) are documented in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) — required reading for downstream redistributors.
+eMule and this fork are licensed under the
+[GNU General Public License v2](license.txt).
 
----
+- Original client: [eMule Project](https://www.emule-project.net/).
+- Native dependencies include CryptoPP, mbedTLS, miniupnpc, libutp, zlib,
+  libpng, id3lib, CxImage and ResizableLib.
+- The portable runtime includes Node.js, FFmpeg and packaged npm modules.
 
-## 🙏 Credits
-
-- **eMule Project** — Original client ([emule-project.net](https://www.emule-project.net)). This is a fork of eMule **0.70b**.
-- **eSE modifications** — P2P live streaming, decentralized 3-layer discovery, web dashboard, security hardening, uTP streaming, auto-update lifecycle.
-- **Native libraries** — CryptoPP, mbedTLS, miniupnpc, libutp, zlib, libpng, id3lib, CxImage, ResizableLib.
-- **Runtime** — Node.js (packaged via [pkg](https://github.com/vercel/pkg)), FFmpeg, UPnP (via `nat-upnp-2`) for public-port discovery.
-
-Full attribution: [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Detailed diff vs upstream: [CHANGES_FROM_EMULE_0.70b.md](CHANGES_FROM_EMULE_0.70b.md).
+Downstream distributors must preserve the GPL notices and the attributions in
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

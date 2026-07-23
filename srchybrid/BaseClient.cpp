@@ -794,8 +794,7 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 			break;
 		case TAG_ESE_NODE_PUB:   // v8.x authenticated tunnel handshake identity
 			// Peer's 32-byte Ed25519 node identity (TAGTYPE_BLOB). Stored now;
-			// pinned in Phase 2 for the CREATE/CREATED v2 handshake
-			// (docs/AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md). Absent / wrong
+			// pinned for the CREATE/CREATED v2 authenticated handshake. Absent / wrong
 			// size = legacy or pre-Phase-1 peer (no node identity).
 			if (temptag.IsBlob() && temptag.GetBlobSize() == 32) {
 				memcpy(m_eseNodePub, temptag.GetBlob(), 32);

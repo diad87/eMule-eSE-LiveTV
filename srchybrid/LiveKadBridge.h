@@ -12,16 +12,10 @@ struct KadDebugSnapshot;  // Forward declaration (defined in LiveStreamManager.h
 class CUpDownClient;
 namespace Kademlia { class CUInt128; }  // for StartLivePublishSearch helper
 
-// DISC-S15 NOTE (deferred to V3): a true wire-level "role" tag distinguishing
-// broadcaster origin from secondary relay requires extending the Kad core
-// (new TAG_ESE_LIVE_ROLE, new field in CSearch::SetLiveStreamPublish, new
-// read path in OnKadSearchResult inside Search.cpp). The change touches the
-// Kad serialization format and risks breaking compatibility with non-eSE Kad
-// nodes. Better tackled together with the V3 protocol versioning sprint
-// (SPRINTS_V3.md A.* and Search.cpp restructure). For v2 we live with the
-// minor cost: the parent selector (V2-S20 RTT-bias + V2-S19 multi-parent)
-// already prefers low-RTT peers regardless of role, so the absence of an
-// explicit "origin" preference is functionally invisible in practice.
+// A wire-level role tag distinguishing a broadcaster from a secondary relay
+// would change the Kad serialization format and risk compatibility with
+// non-eSE nodes. The current parent selector instead prefers low-latency peers
+// and supports multiple parents without requiring an explicit origin role.
 
 // eSE Live keyword-namespace attribution tags. Carried on each
 // LiveStreamEntry to track which hash domain it was discovered through.

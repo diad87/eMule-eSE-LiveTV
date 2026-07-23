@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # tests/test_tunnel_framing.py - v8.1 Sprint A spec regression.
 #
-# Locks down the v8.1 onion-tunnel sub-protocol framing (see
-# docs/V8.1_SPRINT_A_BREAKDOWN.md SS1) by replicating the byte layout of the
-# 7-byte sub-header and the 8-byte fragment header in Python and asserting
+# Locks down the v8.1 tunnel sub-protocol framing by replicating the byte layout
+# of the 7-byte sub-header and the 8-byte fragment header in Python and asserting
 # against fixed test vectors. The C++ helpers PackSubHeader / ParseSubHeader /
 # PackFragHeader / ParseFragHeader (srchybrid/LiveCellQueue.cpp) MUST agree
 # with these vectors byte-for-byte; any drift is a regression.

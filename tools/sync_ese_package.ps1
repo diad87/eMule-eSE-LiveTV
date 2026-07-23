@@ -42,7 +42,6 @@ Add-Mapping (Join-Path $sourceRoot "ese-server.exe") (Join-Path $root "srchybrid
 Add-Mapping (Join-Path $sourceRoot "ese-server.exe") (Join-Path $packageRoot "ese-server.exe")
 Add-Mapping (Join-Path $root "srchybrid\x64\Release\emule.exe") (Join-Path $packageRoot "emule.exe")
 Add-Mapping (Join-Path $root "docs\USER_GUIDE.md") (Join-Path $packageRoot "USER_GUIDE.md")
-Add-Mapping (Join-Path $root "docs\LIVETV_STATUS.md") (Join-Path $packageRoot "docs\LIVETV_STATUS.md")
 
 foreach ($mapping in $mappings) {
   if (-not (Test-Path -LiteralPath $mapping.Source -PathType Leaf)) {

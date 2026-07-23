@@ -10,7 +10,7 @@
 //   _WIN32  -> WinDpapiStorage   (DPAPI, user-bound encryption at rest)
 //   else    -> PosixFileStorage  (raw bytes, protected by 0600 file perms)
 //
-// See docs/AUTHENTICATED_TUNNEL_HANDSHAKE_PLAN.md §1.2.
+// Storage is selected at runtime without changing the handshake wire format.
 
 #include "INodeIdentityStorage.h"
 

@@ -1,127 +1,73 @@
-# 🍿 Guía rápida — Tu Netflix P2P en 5 minutos
+# Guía rápida de eMule eSE 9.0.0-beta.1
 
-> Esta guía es para usuarios que **no quieren complicarse**. No hay que compilar nada, no hay que instalar nada. Solo descargar, descomprimir y pulsar un botón.
+Esta beta pública funciona como una aplicación portable para Windows 10/11
+x64. No hace falta compilar ni instalar nada.
 
----
+## 1. Descargar
 
-## 1️⃣ Descarga el paquete desde GitHub
+Descarga el paquete oficial:
 
-Abre tu navegador y entra aquí:
+[eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.0.0-beta.1/eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip)
 
-👉 **https://github.com/diad87/eMule-eSE-LiveTV/releases**
+La [página de la versión](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.0.0-beta.1)
+incluye también el fichero SHA-256 para comprobar la descarga.
 
-Verás una lista de versiones. La de arriba del todo es la más reciente. Busca el fichero que termina en **`.zip`** (pesa unos 84 MB) y haz clic para descargarlo.
+## 2. Extraer
 
-![Página de releases en GitHub con el ZIP destacado](docs/screenshots/01-github-releases.png)
+Haz clic derecho en el ZIP, elige **Extraer todo** y usa una carpeta con
+permisos de escritura, por ejemplo `C:\eSE\`.
 
-> 💡 *Captura sugerida: la página de Releases de GitHub con una flecha apuntando al fichero `eSE-LiveTV-x64-XXXX-XX-XX.zip`.*
+No ejecutes el programa desde dentro del ZIP ni separes sus archivos. El
+paquete ya contiene `emule.exe`, `ese-server.exe`, FFmpeg, el panel web, los
+idiomas y la configuración inicial.
 
----
+## 3. Iniciar y conectar
 
-## 2️⃣ Descomprime el ZIP
+1. Abre `emule.exe`.
+2. Autoriza el acceso en el cortafuegos de Windows si lo solicita.
+3. Pulsa **Conectar** y espera a que eD2K y Kad se conecten.
+4. Pulsa el botón **eSE** de la barra de herramientas.
+5. Se abrirá el panel en
+   [http://localhost:8080/live](http://localhost:8080/live).
 
-Una vez descargado, haz **clic derecho** sobre el ZIP → **Extraer todo…**
+La primera ejecución muestra una decisión sobre **NetLab**. Actívalo solo si
+quieres participar en mediciones de conectividad. Rechazarlo no impide usar
+eMule ni Live TV.
 
-Elige una carpeta donde te sea fácil acceder (por ejemplo `C:\eSE` o el Escritorio). Cuando termine, abre la carpeta extraída — verás algo así:
+## 4. Ver o emitir
 
-![Contenido de la carpeta extraída](docs/screenshots/02-carpeta-extraida.png)
+Desde el panel eSE puedes:
 
-> 💡 *Captura sugerida: el Explorador de Windows mostrando los ficheros dentro de la carpeta. El protagonista es `emule.exe` (con icono del burrito).*
+- descubrir y ver emisiones P2P disponibles;
+- abrir una URL HLS local para reproducir una emisión;
+- crear una emisión desde OBS/RTMP, pantalla, archivo o patrón de prueba;
+- elegir codificación por GPU cuando esté disponible, con alternativa
+  automática por CPU.
 
-Los ficheros clave son:
-- **`emule.exe`** ← este es el que vas a abrir
-- **`ese-server.exe`** ← el motor del panel web (no toques, pero tiene que estar al lado de `emule.exe`)
-- carpeta `eSE\` — los recursos del panel web
-- carpeta `node\` — Node.js portable (no toques nada)
+## Solución rápida de problemas
 
-> ⚠️ **No muevas ningún fichero ni carpeta.** `emule.exe` y `ese-server.exe` **tienen que estar siempre en la misma carpeta**; si no, el botón eSE dará error.
+### El botón eSE no abre el panel
 
----
+Espera unos segundos y abre manualmente
+[http://localhost:8080/live](http://localhost:8080/live). Si no responde,
+comprueba que `ese-server.exe` continúa junto a `emule.exe` y que el
+cortafuegos no lo ha bloqueado.
 
-## 3️⃣ Arranca eMule
+### eD2K o Kad no conectan
 
-Haz **doble clic** en `emule.exe`.
+Espera unos minutos y revisa el cortafuegos y el router. Los valores habituales
+son TCP `4662`, UDP `4672` y el panel local TCP `8080`, pero los puertos P2P
+pueden cambiarse en Preferencias.
 
-La primera vez Windows puede pedirte permiso para abrir el cortafuegos — **acepta** (es para que eMule pueda conectarse a la red P2P).
+### Windows muestra SmartScreen
 
-> 🛡️ Si ves un aviso de Windows SmartScreen ("Se impidió el inicio de una aplicación no reconocida"), haz clic en **Más información → Ejecutar de todas formas**.
+Verifica que el ZIP procede de la versión oficial y comprueba su SHA-256. Si
+confías en el archivo, usa **Más información > Ejecutar de todas formas**.
 
-Se abrirá la ventana clásica de eMule:
+### Quiero cerrar eSE
 
-![Ventana principal de eMule recién abierta](docs/screenshots/03-emule-abierto.png)
+Vuelve a pulsar el botón **eSE** para detener el panel. Salir de eMule detiene
+también los procesos auxiliares.
 
-> 💡 *Captura sugerida: ventana principal de eMule en la pantalla de inicio, con la barra de herramientas arriba y la barra de estado abajo.*
-
----
-
-## 4️⃣ Conéctate a ed2k y Kad
-
-En la barra de herramientas de arriba, pulsa el botón **Conectar**:
-
-![Botón Conectar en la barra de herramientas de eMule](docs/screenshots/04-boton-conectar.png)
-
-> 💡 *Captura sugerida: la barra de herramientas de eMule con el botón "Conectar" rodeado en rojo.*
-
-Espera unos segundos. En la parte de abajo a la derecha (la barra de estado) tienen que aparecer **dos bolitas verdes** 🟢🟢:
-
-- **ed2k:** verde = conectado al servidor de la red eDonkey
-- **Kad:** verde = conectado a la red Kademlia (la descentralizada)
-
-![Indicadores ed2k y Kad en verde](docs/screenshots/05-conectado-verde.png)
-
-> 💡 *Captura sugerida: esquina inferior derecha de eMule mostrando los dos indicadores en verde.*
-
-Si alguna queda en amarillo o rojo, espera 1-2 minutos más — a veces tarda en encontrar nodos. Si pasados 5 minutos siguen sin ponerse en verde, revisa tu cortafuegos o el router.
-
----
-
-## 5️⃣ Pulsa el botón **eSE** — y a disfrutar
-
-Ya con eMule conectado, busca en la barra de herramientas el botón con el logo **eSE**:
-
-![Botón eSE en la barra de herramientas](docs/screenshots/06-boton-ese.png)
-
-> 💡 *Captura sugerida: la barra de herramientas de eMule con el botón eSE resaltado.*
-
-Púlsalo. eMule arranca el servidor web internamente y se abre tu navegador en el **panel eSE** — tu Netflix P2P:
-
-![Panel principal de eSE en el navegador](docs/screenshots/07-panel-ese.png)
-
-> 💡 *Captura sugerida: la interfaz web en `http://localhost:8080` con la sección Live TV, posters de películas, etc.*
-
-Desde ahí puedes:
-- 📺 **Ver canales en directo** que otros usuarios estén emitiendo
-- 🎬 **Buscar películas** con carátulas (vía TMDB) y reproducirlas mientras se descargan
-- 📡 **Emitir tu propio canal** vía RTMP (por ejemplo desde OBS)
-
-> 💡 Para parar el panel sin cerrar eMule, vuelve a pulsar el botón eSE: hace toggle (arranca/para el servidor).
-
----
-
-## ❓ Problemas frecuentes
-
-**Al pulsar el botón eSE sale "No se encontró ese-server.exe junto a emule.exe"**
-→ Has movido `emule.exe` o `ese-server.exe` a carpetas distintas. Tienen que estar **siempre en la misma carpeta**. Si extrajiste mal el ZIP, vuelve a extraer y deja la estructura intacta.
-
-**Windows SmartScreen bloquea `emule.exe`**
-→ Clic derecho sobre el ZIP original **antes** de extraer → Propiedades → marca "Desbloquear" → Aplicar. Vuelve a extraer.
-
-**El navegador abre `localhost:8080` pero la página no carga**
-→ Espera 10 segundos más y refresca con F5. La primera vez tarda en arrancar el servidor.
-
-**eMule no se pone en verde (ed2k/Kad)**
-→ Comprueba que tu router no está bloqueando los puertos **4662 TCP** y **4672 UDP**. Si tu ISP usa CGNAT, abre el panel eSE y entra en **Settings → NAT** para ver el diagnóstico.
-
-**Falta FFmpeg para emitir en directo**
-→ Solo lo necesitas si vas a **emitir** un canal (no para ver). Descarga `ffmpeg.exe` de https://ffmpeg.org y déjalo al lado de `emule.exe`.
-
----
-
-## 📂 Para cerrarlo todo
-
-- **Cerrar el panel web (sin cerrar eMule):** pulsa otra vez el botón **eSE** en la barra de herramientas.
-- **Cerrar eMule del todo:** clic derecho en el burrito de la bandeja del sistema → **Salir**. Eso cierra eMule, el servidor web y libera los puertos.
-
----
-
-¿Listo? Pues ya tienes tu Netflix descentralizado funcionando 🎉
+Para configuración avanzada, emisión con OBS y diagnóstico consulta la
+[guía de usuario](docs/USER_GUIDE.md).

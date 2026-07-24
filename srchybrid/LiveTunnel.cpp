@@ -2714,6 +2714,8 @@ void CLiveTunnel::RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds)
     if (!evidenceLoaded) LoadK6ReleaseEvidence();
 
     const bool optIn = thePrefs.GetKad6PublicExitOptIn();
+    const bool betaOptIn = thePrefs.IsEseNetLabContributionActive()
+        && thePrefs.GetKad6BetaExitOptIn();
     bool evidencePresent = false;
     kad6::K6ReleaseEvidence evidence;
     {
@@ -2748,18 +2750,25 @@ void CLiveTunnel::RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds)
             }
     }
 
-    const kad6::K6ReleaseGateStatus status =
+    const kad6::K6ReleaseGateStatus stableStatus =
         !optIn ? kad6::K6ReleaseGateStatus::OperatorOptOut
         : evidenceStatus != kad6::K6ReleaseGateStatus::Ok ? evidenceStatus
         : !runtimeHealthy ? kad6::K6ReleaseGateStatus::RuntimeUnhealthy
         : kad6::K6ReleaseGateStatus::Ok;
-    const bool shouldEnable = status == kad6::K6ReleaseGateStatus::Ok;
+    // The beta cohort bypasses only the stable signed-evidence requirement.
+    // It still requires explicit contribution consent and every runtime gate.
+    const bool betaEnable = betaOptIn && runtimeHealthy;
+    const bool shouldEnable = stableStatus == kad6::K6ReleaseGateStatus::Ok
+        || betaEnable;
+    const kad6::K6ReleaseGateStatus status = betaEnable
+        ? kad6::K6ReleaseGateStatus::Ok : stableStatus;
     bool previouslyEnabled = false;
     {
         CSingleLock release(&m_k6ReleaseLock, TRUE);
         m_k6ReleaseRuntimeHealthy = runtimeHealthy;
         m_k6ReleaseStatus = status;
         previouslyEnabled = m_k6PublicStableEnabled;
+        m_k6PublicBetaEnabled = betaEnable;
     }
     if (shouldEnable == previouslyEnabled) return;
 
@@ -2775,6 +2784,7 @@ void CLiveTunnel::RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds)
             {
                 CSingleLock release(&m_k6ReleaseLock, TRUE);
                 m_k6PublicStableEnabled = false;
+                m_k6PublicBetaEnabled = false;
                 m_k6ReleaseStatus = kad6::K6ReleaseGateStatus::RuntimeUnhealthy;
             }
             for (size_t i = 0; i < static_cast<size_t>(kad6::K6Service::Count); ++i)
@@ -2784,6 +2794,7 @@ void CLiveTunnel::RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds)
         {
             CSingleLock release(&m_k6ReleaseLock, TRUE);
             m_k6PublicStableEnabled = false;
+            m_k6PublicBetaEnabled = false;
         }
         for (size_t i = 0; i < static_cast<size_t>(kad6::K6Service::Count); ++i)
             ApplyK6ServiceSwitch(static_cast<kad6::K6Service>(i), false,
@@ -2832,11 +2843,14 @@ void CLiveTunnel::GetK6ReleaseSnapshot(K6ReleaseRuntimeSnapshot& out)
 {
     out = K6ReleaseRuntimeSnapshot{};
     out.operator_opt_in = thePrefs.GetKad6PublicExitOptIn();
+    out.beta_exit_opt_in = thePrefs.GetKad6BetaExitOptIn()
+        && thePrefs.IsEseNetLabContributionActive();
     {
         CSingleLock release(&m_k6ReleaseLock, TRUE);
         out.evidence_present = m_k6ReleaseEvidencePresent;
         out.runtime_healthy = m_k6ReleaseRuntimeHealthy;
         out.public_exit_enabled = m_k6PublicStableEnabled;
+        out.beta_exit_enabled = m_k6PublicBetaEnabled;
         out.status = m_k6ReleaseStatus;
         out.evidence = m_k6ReleaseEvidence;
     }

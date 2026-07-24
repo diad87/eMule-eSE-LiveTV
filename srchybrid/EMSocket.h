@@ -83,6 +83,10 @@ public:
 	virtual SocketSentBytes SendFileAndControlData(uint32 maxNumberOfBytesToSend, uint32 minFragSize)	{ return SendEM(maxNumberOfBytesToSend, minFragSize, false); }
 
 	uint32	GetNeededBytes();
+	// Total bytes waiting in the socket send path (queued packets plus the
+	// partially-sent buffer). Live streaming uses this for per-peer
+	// backpressure so a slow receiver cannot grow the process without bound.
+	uint32	GetQueuedDataBytes() const;
 #ifdef _DEBUG
 	// Diagnostic Support
 	virtual void AssertValid() const;

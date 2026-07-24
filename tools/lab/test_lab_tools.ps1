@@ -110,12 +110,17 @@ KrpRelayEnabled=1
         'Nick=eSE-v9-lab-wp0-smoke-B',
         'Port=4762',
         'UDPPort=4772',
+        'AppVersion=eSE v9 lab prepared profile',
+        'MaxUpload=-1',
+        'MaxDownload=-1',
         'WebUseUPnP=0',
         'EseNetLabConsent=0',
+        'EseNetLabAdvancedConsent=0',
+        'EseNetLabContributionConsent=0',
         'EseNetLabEnabled=0',
         'EseV9Experimental=0',
         'KrpRelayEnabled=0',
-        'KrpRelayKillSwitch=0',
+        'KrpRelayKillSwitch=1',
         'ExperimentalTcpDataPlane=0'
     )) {
         Assert-LabTest -Condition $preferences.Contains($requiredSetting) `

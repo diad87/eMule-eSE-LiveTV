@@ -239,7 +239,7 @@ struct LiveChannelSnapshot {
 struct LiveWebJoinReq {
     const uchar *streamKey;   // -> caller's uchar[16], stable during SendMessage
     LPCTSTR      title;       // -> caller's CString buffer
-    uint32       ip;          // 0 => Kad-only join, no direct dial
+    CAddress     address;     // None => Kad-only join, no direct dial
     uint16       port;        // 0 => Kad-only join, no direct dial
     bool         joined;      // [out] JoinStream accepted the request
     bool         dialed;      // [out] TryConnectToStreamSource dialed a source
@@ -326,6 +326,10 @@ public:
     bool TryConnectToStreamSource(const uchar* streamKey, uint32 ip, uint16 port,
                                   uint16 udpPort = 0, uint32 siblingIP = 0,
                                   bool discoveredViaKad6Tunnel = false);
+    // Direct native-address seed used by IPv6 Live links and the laboratory
+    // IPv6-only gate. IPv4 delegates to the legacy overload above.
+    bool TryConnectToStreamSource(const uchar* streamKey,
+                                  const CAddress& address, uint16 port);
 
     // v8.1 Sprint C (C2) — exit-side proxy subscribe. Called on the main thread
     // by the tunnel exit handler (ExitHandle_LiveSubscribe) when a tunneled

@@ -34,10 +34,10 @@ int main()
 
 	CHECK(!ClientTransferPolicy::CanUseDownloadQueueFile(false, 0, partSize),
 		"a missing requested file must receive File Not Found");
-	CHECK(!ClientTransferPolicy::CanUseDownloadQueueFile(true, partSize, partSize),
-		"a one-part download-queue file must receive File Not Found");
-	CHECK(ClientTransferPolicy::CanUseDownloadQueueFile(true, partSize + 1, partSize),
-		"a multi-part download-queue file may answer SetReqFileID");
+	CHECK(ClientTransferPolicy::CanUseDownloadQueueFile(true, partSize, partSize),
+		"a one-part download-queue file may answer SetReqFileID");
+	CHECK(!ClientTransferPolicy::CanUseDownloadQueueFile(true, partSize + 1, partSize),
+		"a multi-part download-queue file must receive File Not Found");
 	CHECK(ClientTransferPolicy::ClassifyPostBlock(true, false)
 		== ClientTransferPolicy::PostBlockAction::Cancel,
 		"a stopped file must cancel the transfer");

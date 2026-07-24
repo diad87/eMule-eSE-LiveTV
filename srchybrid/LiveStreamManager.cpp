@@ -1028,6 +1028,69 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     return true;
 }
 
+bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey,
+    const CAddress& address, uint16 port)
+{
+    if (address.GetType() == CAddress::IPv4) {
+        uint32 ip = 0;
+        return address.TryToUInt32(ip)
+            && TryConnectToStreamSource(streamKey, ip, port);
+    }
+    if (address.GetType() != CAddress::IPv6 || !address.IsUsablePublic()
+        || port == 0 || !thePrefs.IsIPv6Enabled())
+        return false;
+
+    CSingleLock lock(&m_lock, TRUE);
+    if (!m_bViewing || streamKey == NULL
+        || memcmp(m_streamInfo.streamKey, streamKey, 16) != 0)
+        return false;
+
+    POSITION pos = m_viewPeers.GetHeadPosition();
+    while (pos) {
+        CUpDownClient* existing = m_viewPeers.GetNext(pos);
+        if (existing != NULL && existing->HasIPv6Address()
+            && existing->GetIPv6Address() == address
+            && existing->GetUserPort() == port)
+            return true;
+    }
+
+    static const int kMaxViewPeers = 8;
+    if ((int)m_viewPeers.GetCount() >= kMaxViewPeers) {
+        LIVE_LOG("CAP", "IPv6 direct join skipped: viewPeers full (%d/%d)",
+            (int)m_viewPeers.GetCount(), kMaxViewPeers);
+        return false;
+    }
+
+    CUpDownClient* client = theApp.clientlist->FindClientByAddress(address, port);
+    if (client == NULL) {
+        client = new CUpDownClient(NULL, port, 0, 0, 0, false);
+        client->SetIPv6Address(address);
+        client->SetIP(address.ToSyntheticUInt32());
+        theApp.clientlist->AddClient(client);
+    } else {
+        client->SetIPv6Address(address);
+    }
+    client->SetDirectIPv6Source();
+
+    // Add before connecting: SafeConnectAndSendPacket may delete the client,
+    // whose destructor then removes it from both lists.
+    m_viewPeers.AddTail(client);
+    m_meshManager.AddMeshPeer(client);
+    InterlockedIncrement(&m_counters.sourceDialAttempts);
+
+    Packet* pkt = eSELive::CreateSubscribePacket(
+        m_streamInfo.streamKey, thePrefs.GetUserHash(), 0);
+    if (pkt == NULL)
+        return false;
+    theStats.AddUpDataOverheadOther(pkt->size);
+    client->SafeConnectAndSendPacket(pkt);
+    InterlockedIncrement(&m_counters.subscribeSent);
+
+    LIVE_LOG("DIAL", "native IPv6 Live source %S:%u",
+        (LPCWSTR)address.ToStringC(), (unsigned)port);
+    return true;
+}
+
 bool CLiveStreamManager::ExitProxySubscribe(const uchar* streamKey, uint32 ip,
     uint16 port, uint16 udpPort, uint32 altIP)
 {
@@ -1528,6 +1591,7 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
 	if (peer->SupportsIPv6Wire()) {
 		CArray<CAddress> peerAddrs;
 		CArray<uint16> peerAddrPorts;
+		CArray<uint8> peerScores;
 		POSITION v2pos = m_broadcastPeers.GetHeadPosition();
 		while (v2pos && peerAddrs.GetCount() < ESE_LIVE_MAX_PEERS) {
 			CUpDownClient* existing = m_broadcastPeers.GetNext(v2pos);
@@ -1538,6 +1602,7 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
 			if (address.IsUsablePublic() && existing->GetUserPort() != 0) {
 				peerAddrs.Add(address);
 				peerAddrPorts.Add(existing->GetUserPort());
+				peerScores.Add(100); // upstream/broadcaster peer
 			}
 		}
 		v2pos = m_viewPeers.GetHeadPosition();
@@ -1550,11 +1615,13 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
 			if (address.IsUsablePublic() && existing->GetUserPort() != 0) {
 				peerAddrs.Add(address);
 				peerAddrPorts.Add(existing->GetUserPort());
+				peerScores.Add(50); // viewer/mesh peer
 			}
 		}
 		if (peerAddrs.GetCount() > 0) {
 			Packet* peerListV2 = eSELive::CreatePeerListPacketV2(
 				m_streamInfo.streamKey, peerAddrs.GetData(), peerAddrPorts.GetData(),
+				peerScores.GetData(),
 				static_cast<uint16>(peerAddrs.GetCount()));
 			if (peerListV2) {
 				theStats.AddUpDataOverheadOther(peerListV2->size);
@@ -1680,6 +1747,12 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
             lock.Unlock();
             for (INT_PTR i = 0; i < pushBatch.GetCount(); ++i) {
                 Packet* pkt = pushBatch[i];
+                if (peer->GetSocketQueuedBytes() > ESE_LIVE_MAX_PEER_QUEUE_BYTES) {
+                    LIVE_LOG("PUSH", "DROP initial segment: viewer queue exceeds %u KB",
+                        ESE_LIVE_MAX_PEER_QUEUE_BYTES / 1024);
+                    delete pkt;
+                    continue;
+                }
                 theStats.AddUpDataOverheadOther(pkt->size);
                 // bVerifyConnection=true → SendPacket deletes the packet and
                 // returns false if the socket died between SUBSCRIBE and now.
@@ -1743,6 +1816,12 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
         return;
     }
 
+    if (peer != NULL && peer->GetSocketQueuedBytes() > ESE_LIVE_MAX_PEER_QUEUE_BYTES) {
+        LIVE_LOG("REQ", "DROP seq=%u: requester queue exceeds %u KB",
+            seqNum, ESE_LIVE_MAX_PEER_QUEUE_BYTES / 1024);
+        return;
+    }
+
     // v7.5.0 — snapshot what we need from the chunk under the buffer's lock.
     // The legacy GetSegment() returned a raw pointer that could be freed
     // before we finished using it (UAF #7).
@@ -1798,6 +1877,7 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
                     seqNum,
                     (LPCWSTR)ipstr(peer->GetIP()), peer->GetUserPort(),
                     ratio, required);
+                delete chunkPkt;
                 return;
             }
         } else if (ratio < required) {
@@ -1807,6 +1887,7 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
                     seqNum,
                     (LPCWSTR)ipstr(peer->GetIP()), peer->GetUserPort(),
                     ratio, required);
+                delete chunkPkt;
                 return;
             }
         }
@@ -2222,6 +2303,11 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
                 // withheld. Children that are NOT our sources (pure leaves) still get
                 // the proactive push.
                 if (m_viewPeers.Find(child) != NULL) continue;
+                if (child->GetSocketQueuedBytes() > ESE_LIVE_MAX_PEER_QUEUE_BYTES) {
+                    LIVE_LOG("RELAY", "DROP seq=%u: child queue exceeds %u KB",
+                        seqNum, ESE_LIVE_MAX_PEER_QUEUE_BYTES / 1024);
+                    continue;
+                }
                 // v7.7.0 — sign if we own this stream; else V1 for relays.
                 Packet* pkt = NULL;
                 if (m_bBroadcasting &&

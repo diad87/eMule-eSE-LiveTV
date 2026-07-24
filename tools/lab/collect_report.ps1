@@ -103,7 +103,7 @@ $safeReport = ConvertTo-LabSanitizedValue -InputObject $report `
 $writtenPath = Write-LabJson -Value $safeReport -Path $outFullPath
 
 $markdownLines = @(
-    ('# eSE v9 lab report — {0}' -f $CaseId),
+    ('# eSE v9 lab report - {0}' -f $CaseId),
     '',
     ('- Outcome: **{0}**' -f $Outcome),
     ('- Version: `{0}`' -f $(if ($Version) { $Version } else { 'unspecified' })),
@@ -119,7 +119,7 @@ $markdownLines = @(
     ''
 )
 foreach ($item in $evidence) {
-    $markdownLines += '- `{0}` — {1} bytes — SHA-256 `{2}`' -f $item.path, $item.bytes, $item.sha256
+    $markdownLines += '- `{0}` - {1} bytes - SHA-256 `{2}`' -f $item.path, $item.bytes, $item.sha256
 }
 if ($parseWarnings.Count -gt 0) {
     $markdownLines += @('', '## Warnings', '')

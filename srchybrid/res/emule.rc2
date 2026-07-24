@@ -37,7 +37,7 @@ BEGIN
         BLOCK "040904B0" // Lang=US English, CharSet=Unicode
         BEGIN
             VALUE "CompanyName", "https://www.emule-project.net"
-            VALUE "FileDescription", "eMule eSE v9 alpha"
+            VALUE "FileDescription", "eMule eSE"
             VALUE "FileVersion", SZ_ESE_PRODUCT_VERSION " Unicode"
             VALUE "InternalName", "emule.exe"
             VALUE "LegalCopyright", "Copyright © 2002-2024 Merkur - Read license.txt for more infos."

@@ -51,6 +51,8 @@ foreach ($requiredDefault in @(
     'NetworkKademlia=1',
     'KadNetworkMask=3',
     'EseNetLabConsent=0',
+    'EseNetLabAdvancedConsent=0',
+    'EseNetLabContributionConsent=0',
     'EseNetLabEnabled=0',
     'EseV9Experimental=0',
     'EseKad3Rendezvous=0',
@@ -61,8 +63,9 @@ foreach ($requiredDefault in @(
     'EseHolePunchPortPredict=0',
     'EseEd2kPunch3=0',
     'Kad6PublicExitOptIn=0',
+    'Kad6BetaExitOptIn=0',
     'KrpRelayEnabled=0',
-    'KrpRelayKillSwitch=0',
+    'KrpRelayKillSwitch=1',
     'ExperimentalTcpDataPlane=0',
     'WebUseUPnP=0'
 )) {

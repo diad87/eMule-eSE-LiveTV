@@ -29,9 +29,18 @@ It consolidates the post-beta.1 core work without claiming that the planned
 - Added standalone address, wire, routing, quota, lease and deterministic fuzz
   gates.
 
+The native Kad6 client is intentionally selected together with Kad2 in a
+fresh or migrated profile (`KadNetworkMask=3`). This forms an eSE beta
+population for routing and source-discovery validation. It does not enable a
+Kad6 public exit, gateway/carrier service, relay duty or bandwidth
+contribution. Those surfaces remain separately gated and off.
+
 These paths remain beta laboratory functionality. Beta.2 does **not** claim
 complete IPv6-only support; that promotion belongs to eSE 9.1 after its
 topology and compatibility gates pass.
+
+The detailed boundary and beta wire-evolution policy are documented in
+[`KAD6_IMPLEMENTATION_PLAN.md`](KAD6_IMPLEMENTATION_PLAN.md).
 
 ### LiveTV and local dashboard hardening
 

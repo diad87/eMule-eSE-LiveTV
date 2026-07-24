@@ -47,6 +47,28 @@ void CALLBACK KrpRetryTimerProc(HWND hwnd, UINT, UINT_PTR timer, DWORD) noexcept
 	::PostMessage(hwnd, UM_KRP_CLIENT_EVENT, 0, 0);
 }
 
+relayclient::RelayClientConfig RelayConfigFromPreferences()
+{
+	relayclient::RelayClientConfig config;
+	config.enabled = thePrefs.GetKrpRelayEnabled();
+	config.kill_switch = thePrefs.GetKrpRelayKillSwitch();
+	config.endpoint_host = CStringA(thePrefs.GetKrpRelayEndpointHost()).GetString();
+	config.endpoint_port = thePrefs.GetKrpRelayEndpointPort();
+	config.expected_server_name =
+		CStringA(thePrefs.GetKrpRelayExpectedServerName()).GetString();
+	config.ca_bundle_path =
+		CStringA(thePrefs.GetKrpRelayCaBundlePath()).GetString();
+	config.experimental_tcp_data_plane =
+		thePrefs.GetKrpRelayExperimentalTcp();
+	config.auth_token_path =
+		CStringA(thePrefs.GetKrpRelayAuthTokenPath()).GetString();
+	config.local_tcp_port = thePrefs.GetPort();
+	config.server_policy = thePrefs.GetKrpRelayAllowAnyServer()
+		? relayclient::RelayServerPolicy::AnyConnectedServer
+		: relayclient::RelayServerPolicy::SelectedServerOnly;
+	return config;
+}
+
 class CRelayNodeIdentitySigner final : public relay::INodeIdentitySigner
 {
 public:
@@ -104,6 +126,8 @@ CRelayClient::CRelayClient()
 	, m_hMainWindow(NULL)
 	, m_initialized(false)
 	, m_shutdown(false)
+	, m_appliedEnabled(false)
+	, m_appliedKillSwitch(true)
 	, m_tlsRuntimeInUse(false)
 	, m_relayHighIdObserved(false)
 	, m_relayHighIdSelectedServer(false)
@@ -123,35 +147,69 @@ bool CRelayClient::Initialize(HWND hMainWindow) noexcept
 	m_hMainWindow = hMainWindow;
 	m_notifier->Attach(hMainWindow);
 
-	relayclient::RelayClientConfig config;
-	config.enabled = thePrefs.GetKrpRelayEnabled();
-	config.kill_switch = thePrefs.GetKrpRelayKillSwitch();
-	config.endpoint_host = CStringA(thePrefs.GetKrpRelayEndpointHost()).GetString();
-	config.endpoint_port = thePrefs.GetKrpRelayEndpointPort();
-	config.expected_server_name = CStringA(thePrefs.GetKrpRelayExpectedServerName()).GetString();
-	config.ca_bundle_path = CStringA(thePrefs.GetKrpRelayCaBundlePath()).GetString();
-	config.experimental_tcp_data_plane = thePrefs.GetKrpRelayExperimentalTcp();
-	config.auth_token_path = CStringA(thePrefs.GetKrpRelayAuthTokenPath()).GetString();
-	config.local_tcp_port = thePrefs.GetPort();
-	config.server_policy = thePrefs.GetKrpRelayAllowAnyServer()
-		? relayclient::RelayServerPolicy::AnyConnectedServer
-		: relayclient::RelayServerPolicy::SelectedServerOnly;
-
+	const relayclient::RelayClientConfig config = RelayConfigFromPreferences();
 	const relay::RelayStatus configured = m_manager->Configure(config);
-	m_initialized = configured == relay::RelayStatus::Ok;
-	if (m_initialized && config.enabled && !config.kill_switch) {
+	// Keep the shell alive even when an opted-in profile is temporarily
+	// incomplete; a later local reconfiguration can recover without restart.
+	m_initialized = true;
+	if (configured == relay::RelayStatus::Ok) {
+		m_appliedEnabled = config.enabled;
+		m_appliedKillSwitch = config.kill_switch;
+	}
+	if (configured == relay::RelayStatus::Ok && config.enabled && !config.kill_switch) {
 		m_tlsRuntimeInUse.store(true, std::memory_order_release);
 		(void)m_manager->Start(KrpMonotonicMilliseconds());
 	}
 	UpdateStatusCache();
 	ScheduleMainThreadWake();
-	return m_initialized;
+	return configured == relay::RelayStatus::Ok;
+}
+
+bool CRelayClient::ApplyPreferences() noexcept
+{
+	if (!m_initialized || m_shutdown)
+		return false;
+
+	const bool enabled = thePrefs.GetKrpRelayEnabled();
+	const bool killSwitch = thePrefs.GetKrpRelayKillSwitch();
+	if (enabled == m_appliedEnabled && killSwitch == m_appliedKillSwitch)
+		return true;
+
+	if (!enabled || killSwitch) {
+		const relay::RelayStatus status = killSwitch
+			? m_manager->SetKillSwitch(true)
+			: m_manager->Disable();
+		if (status != relay::RelayStatus::Ok)
+			return false;
+		m_appliedEnabled = enabled;
+		m_appliedKillSwitch = killSwitch;
+		m_tlsRuntimeInUse.store(false, std::memory_order_release);
+		UpdateStatusCache();
+		return true;
+	}
+
+	(void)m_manager->SetKillSwitch(false);
+	(void)m_manager->Disable();
+	const relayclient::RelayClientConfig config = RelayConfigFromPreferences();
+	if (m_manager->Configure(config) != relay::RelayStatus::Ok) {
+		UpdateStatusCache();
+		return false;
+	}
+	m_appliedEnabled = true;
+	m_appliedKillSwitch = false;
+	m_tlsRuntimeInUse.store(true, std::memory_order_release);
+	const bool started =
+		m_manager->Start(KrpMonotonicMilliseconds()) == relay::RelayStatus::Ok;
+	UpdateStatusCache();
+	ScheduleMainThreadWake();
+	return started;
 }
 
 void CRelayClient::ProcessMainThreadEvents() noexcept
 {
 	if (!m_initialized || m_shutdown)
 		return;
+	(void)ApplyPreferences();
 	(void)m_manager->Tick(KrpMonotonicMilliseconds());
 	if (m_relayHighIdObserved) {
 		const relayclient::RelayClientSnapshot& state = m_manager->Snapshot();

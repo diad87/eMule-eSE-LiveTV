@@ -129,10 +129,12 @@ public:
 	// Tracked clients
 	void	AddTrackClient(CUpDownClient *toadd);
 	bool	ComparePriorUserhash(uint32 dwIP, uint16 nPort, const void *pNewHash);
+	bool	ComparePriorUserhash(const CAddress& address, uint16 nPort, const void *pNewHash);
 	INT_PTR	GetClientsFromIP(uint32 dwIP) const;
+	INT_PTR	GetClientsFromSubnet(const CAddress& address, int prefixBits) const;
 	void	TrackBadRequest(const CUpDownClient *upcClient, int nIncreaseCounter);
 	uint32	GetBadRequests(const CUpDownClient *upcClient) const;
-	INT_PTR	GetTrackedCount() const						{ return m_trackedClientsMap.GetCount(); }
+	INT_PTR	GetTrackedCount() const						{ return m_trackedClientsMap.GetCount() + (INT_PTR)m_trackedAddressMap.size(); }
 	void	RemoveAllTrackedClients();
 
 	// Kad client list, buddy handling
@@ -179,6 +181,7 @@ private:
 	std::map<CAddress, DWORD> m_bannedAddressList;
 	typedef CMap<uint32, uint32, CDeletedClient*, CDeletedClient*> CDeletedClientMap;
 	CDeletedClientMap m_trackedClientsMap;
+	std::map<CAddress, CDeletedClient*> m_trackedAddressMap;
 	CUpDownClient *m_pBuddy;
 	CList<IPANDTICS> listFirewallCheckRequests;
 	CList<IPANDTICS> listDirectCallbackRequests;

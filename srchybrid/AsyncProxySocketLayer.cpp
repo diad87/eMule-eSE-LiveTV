@@ -588,7 +588,8 @@ void CAsyncProxySocketLayer::OnReceive(int nErrorCode)
 						break;
 					case 3: //FQDN
 						{
-							m_nRecvBufferLen += m_pRecvBuffer[4] + 2;
+							m_nRecvBufferLen +=
+								static_cast<unsigned char>(m_pRecvBuffer[4]) + 2;
 							char *tmp = new char[m_nRecvBufferLen];
 							memcpy(tmp, m_pRecvBuffer, 5);
 							delete[] m_pRecvBuffer;
@@ -617,8 +618,18 @@ void CAsyncProxySocketLayer::OnReceive(int nErrorCode)
 					TriggerEvent(FD_WRITE, 0, TRUE);
 				} else {
 					//Listen socket created
+					if (m_pRecvBuffer[3] != 1) {
+						// The listen callback API below exposes only an IPv4
+						// address. Reject an IPv6/FQDN BIND result instead of
+						// interpreting its first bytes as an IPv4 address.
+						DoLayerCallback(LAYERCALLBACK_LAYERSPECIFIC,
+							PROXYERROR_REQUESTFAILED, 0);
+						TriggerEvent(FD_ACCEPT, WSAEAFNOSUPPORT, TRUE);
+						Reset();
+						ClearBuffer();
+						return;
+					}
 					++m_nProxyOpState;
-					ASSERT(m_pRecvBuffer[3] == 1);
 					t_ListenSocketCreatedStruct data;
 					data.ip = *(unsigned long*)&m_pRecvBuffer[4];
 					data.nPort = (UINT)*(unsigned short*)&m_pRecvBuffer[8];
@@ -648,7 +659,8 @@ void CAsyncProxySocketLayer::OnReceive(int nErrorCode)
 					break;
 				case 3: //FQDN
 					{
-						m_nRecvBufferLen += m_pRecvBuffer[4] + 2;
+						m_nRecvBufferLen +=
+							static_cast<unsigned char>(m_pRecvBuffer[4]) + 2;
 						char *tmp = new char[m_nRecvBufferLen];
 						memcpy(tmp, m_pRecvBuffer, 5);
 						delete[] m_pRecvBuffer;

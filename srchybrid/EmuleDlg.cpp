@@ -145,6 +145,87 @@ static UINT AFX_CDECL HeadlessActionDelayThread(LPVOID param);
 static UINT AFX_CDECL SelfTestExitThread(LPVOID param);
 static void ScheduleSelfTestExit(int exitCode);
 
+static void ConfigureEseNetLabConsentAtStartup()
+{
+	if (theApp.m_strCurVersionLong.Find(_T("-beta.")) < 0)
+		return;
+
+	// Automated/headless nodes cannot answer modal questions. Their prepared
+	// profile remains authoritative and an undecided profile stays closed.
+	if (theApp.m_bHeadless) {
+		thePrefs.ApplyEseNetLabPreferenceState(
+			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted);
+		return;
+	}
+
+	if (thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabUndecided) {
+		const CString notice =
+			_T("Esta es una beta de laboratorio de red.\r\n\r\n")
+			_T("Al aceptar, eSE puede realizar automaticamente pruebas limitadas ")
+			_T("de IPv6, LowID, hole punching y CGNAT con otros usuarios de la beta ")
+			_T("durante descargas y emisiones reales. No pedira confirmacion en ")
+			_T("cada intento.\r\n\r\n")
+			_T("Este nivel no dona ancho de banda ni convierte el equipo en relay ")
+			_T("o salida publica. Los resultados permanecen localmente y el ")
+			_T("laboratorio puede apagarse en cualquier momento.\r\n\r\n")
+			_T("Desea participar en ESE_NETLAB_V1?");
+		thePrefs.SetEseNetLabConsent(
+			AfxMessageBox(notice, MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) == IDYES
+				? CPreferences::EseNetLabAccepted
+				: CPreferences::EseNetLabDeclined);
+	}
+
+	if (thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted
+		&& thePrefs.GetEseNetLabAdvancedConsent() == CPreferences::EseNetLabUndecided) {
+		const CString notice =
+			_T("Nivel avanzado del laboratorio\r\n\r\n")
+			_T("Activa Punch3, prediccion acotada de puertos, selector automatico ")
+			_T("Directo -> Punch2 -> Punch3, funciones avanzadas de Kad6, tuneles ")
+			_T("autenticados, Bulk y FEC. El cliente Kad6 nativo sigue siendo una ")
+			_T("seleccion de red independiente. ")
+			_T("Solo se intenta tras el fallo de una ruta normal y aplica limites ")
+			_T("de frecuencia y backoff.\r\n\r\n")
+			_T("Este nivel aun no dona ancho de banda ni convierte el equipo en ")
+			_T("relay o salida publica.\r\n\r\n")
+			_T("Desea activar el nivel avanzado?");
+		thePrefs.SetEseNetLabAdvancedConsent(
+			AfxMessageBox(notice, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES
+				? CPreferences::EseNetLabAccepted
+				: CPreferences::EseNetLabDeclined);
+	}
+
+	if (thePrefs.GetEseNetLabAdvancedConsent() == CPreferences::EseNetLabAccepted
+		&& thePrefs.GetEseNetLabContributionConsent() == CPreferences::EseNetLabUndecided) {
+		const CString notice =
+			_T("Contribucion de recursos beta\r\n\r\n")
+			_T("Activa la prueba de relay Live y Kad6 Beta Exit; tambien KRP cuando ")
+			_T("el paquete tenga una cohorte y credenciales configuradas. El equipo ")
+			_T("puede reenviar trafico limitado de otros participantes beta, consumir ")
+			_T("subida y exponer su IP publica a los peers que utilicen el servicio. ")
+			_T("Se aplican cuotas estrictas, limites de tasa y apagado inmediato.\r\n\r\n")
+			_T("Kad6 Beta Exit no habilita ni sustituye el gate estable de salida ")
+			_T("publica.\r\n\r\n")
+			_T("Desea contribuir recursos y activar estas pruebas?");
+		thePrefs.SetEseNetLabContributionConsent(
+			AfxMessageBox(notice, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES
+				? CPreferences::EseNetLabAccepted
+				: CPreferences::EseNetLabDeclined);
+	}
+
+	thePrefs.ApplyEseNetLabPreferenceState(
+		thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted);
+	if (CPreferences::Save())
+		AddDebugLogLine(false, _T("NetLab: failed to persist startup consent"));
+
+	AddLogLine(true, thePrefs.IsEseNetLabContributionActive()
+		? _T("eSE NetLab: laboratorio completo activo (contribucion beta autorizada).")
+		: thePrefs.IsEseNetLabAdvancedActive()
+			? _T("eSE NetLab: nivel avanzado activo; contribucion de recursos OFF.")
+			: thePrefs.IsEseNetLabActive()
+				? _T("eSE NetLab: nivel base activo.")
+				: _T("eSE NetLab: OFF; no se anunciaran pruebas de cohorte."));
+}
+
 static uint64 GetUPnPNetworkSignature()
 {
 	MIB_IPFORWARDROW route = {};
@@ -723,6 +804,10 @@ BOOL CemuleDlg::OnInitDialog()
 		return TRUE;
 	}
 
+	// Resolve every consent boundary before listeners, KRP and capability
+	// advertising consume the configuration.
+	ConfigureEseNetLabConsentAtStartup();
+
 	// The P4 handshake signs HELLO immediately, so make the persistent identity
 	// available before the relay worker starts. NodeIdentityInit is idempotent;
 	// the normal privacy startup below can safely call it again.
@@ -1078,52 +1163,6 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 			{
 				++theApp.emuledlg->status;
 				bool bError = false;
-
-				// v9 beta public network-lab cohort. A beta installation is not
-				// consent: no cohort capability is computed or advertised until
-				// the user answers this first-start notice. Riskier services are
-				// reset here because older alpha builds exposed a bulk switch
-				// which could not prove separate relay/Kad6 authorization.
-				if (thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabUndecided
-					&& theApp.m_strCurVersionLong.Find(_T("9.0.0-beta")) >= 0)
-				{
-					CString notice =
-						_T("Esta es una beta de laboratorio de red.\r\n\r\n")
-						_T("Al continuar, eSE podra realizar automaticamente pruebas limitadas ")
-						_T("de IPv6, LowID, hole punching y CGNAT con otros usuarios de la beta ")
-						_T("durante descargas y emisiones reales. No solicitara confirmacion en ")
-						_T("cada intento.\r\n\r\n")
-						_T("No se utilizara su equipo como relay ni como salida publica salvo ")
-						_T("autorizacion independiente. Los resultados permaneceran localmente ")
-						_T("y el modo experimental podra desactivarse en cualquier momento.\r\n\r\n")
-						_T("Desea participar en ESE_NETLAB_V1?");
-					const int answer = AfxMessageBox(notice,
-						MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2);
-
-					// Fail closed for every authorization which the former bulk
-					// v9 switch could have enabled without a dedicated decision.
-					thePrefs.SetEseKad3Rendezvous(false);
-					thePrefs.SetEseHolePunchPortPredict(false);
-					thePrefs.SetEseEd2kPunch3(false);
-					thePrefs.SetEseReachSelector(false);
-					thePrefs.SetEseV9Experimental(false);
-					thePrefs.SetEseRelayAccept(false);
-					thePrefs.SetEseRelayEgress(false);
-					thePrefs.SetKrpRelayEnabled(false);
-					thePrefs.SetKad6PublicExitOptIn(false);
-
-					const bool accepted = answer == IDYES;
-					thePrefs.SetEseNetLabConsent(accepted
-						? CPreferences::EseNetLabAccepted
-						: CPreferences::EseNetLabDeclined);
-					thePrefs.SetEseNetLabEnabled(accepted);
-					thePrefs.SetEseAutoKeepalive(accepted);
-					if (CPreferences::Save())
-						AddDebugLogLine(false, _T("NetLab: failed to persist first-start consent"));
-					AddLogLine(true, accepted
-						? _T("eSE NetLab: participacion activa; relay, KRP, punch3 y Kad6 public exit siguen desactivados.")
-						: _T("eSE NetLab: participacion rechazada; no se anunciaran pruebas de cohorte."));
-				}
 
 				// NOTE: If we have an unhandled exception in CDownloadQueue::Init, MFC will silently catch it
 				// and the creation of the TCP and the UDP socket will not be done -> client will get a LowID!
@@ -2028,8 +2067,9 @@ LRESULT CemuleDlg::OnLiveWebJoin(WPARAM, LPARAM lParam)
 	if (r == NULL || theApp.liveStreamManager == NULL || theApp.IsClosing())
 		return 0;
 	r->joined = theApp.liveStreamManager->JoinStream(r->streamKey, CString(r->title));
-	if (r->joined && r->ip != 0 && r->port != 0)
-		r->dialed = theApp.liveStreamManager->TryConnectToStreamSource(r->streamKey, r->ip, r->port);
+	if (r->joined && r->address.GetType() != CAddress::None && r->port != 0)
+		r->dialed = theApp.liveStreamManager->TryConnectToStreamSource(
+			r->streamKey, r->address, r->port);
 	// Ghost-viewer watchdog: this join came from the web API, so an HTTP
 	// player will be polling HLS — arm the player-idle auto-leave.
 	if (r->joined)

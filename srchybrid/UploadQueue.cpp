@@ -606,9 +606,14 @@ void CUploadQueue::AddClientToQueue(CUpDownClient *client, bool bIgnoreTimelimit
 			RemoveFromWaitingQueue(pos2, true);
 			if (!cur_client->socket && cur_client->Disconnected(_T("AddClientToQueue - same userhash 1")))
 				delete cur_client;
-		} else if (!clientIPv6Only && !cur_client->IsIPv6OnlyEndpoint() && client->GetIP() == cur_client->GetIP()) {
-			// same IP, different port, different userhash
+		} else if (clientIPv6Only && cur_client->IsIPv6OnlyEndpoint()
+			&& client->GetIPv6Address().InSameSubnet(cur_client->GetIPv6Address(), 64)) {
+			// IPv6 privacy addresses can rotate cheaply; apply the legacy
+			// per-host queue cap to the public /64 instead of one address.
 			++cSameIP;
+		} else if (!clientIPv6Only && !cur_client->IsIPv6OnlyEndpoint()
+			&& client->GetIP() == cur_client->GetIP()) {
+			++cSameIP; // same IPv4, different port and userhash
 		}
 	}
 	if (cSameIP >= 3) {
@@ -617,7 +622,10 @@ void CUploadQueue::AddClientToQueue(CUpDownClient *client, bool bIgnoreTimelimit
 			DEBUG_ONLY(AddDebugLogLine(false, _T("%s's (%s) request to enter the queue was rejected, because of too many clients with the same IP"), client->GetUserName(), (LPCTSTR)ipstr(client->GetConnectIP())));
 		return;
 	}
-	if (!clientIPv6Only && theApp.clientlist->GetClientsFromIP(client->GetIP()) >= 3) {
+	const bool bTrackedLimit = clientIPv6Only
+		? theApp.clientlist->GetClientsFromSubnet(client->GetIPv6Address(), 64) >= 3
+		: theApp.clientlist->GetClientsFromIP(client->GetIP()) >= 3;
+	if (bTrackedLimit) {
 		if (thePrefs.GetVerbose())
 			DEBUG_ONLY(AddDebugLogLine(false, _T("%s's (%s) request to enter the queue was rejected, because of too many clients with the same IP (found in TrackedClientsList)"), client->GetUserName(), (LPCTSTR)ipstr(client->GetConnectIP())));
 		return;

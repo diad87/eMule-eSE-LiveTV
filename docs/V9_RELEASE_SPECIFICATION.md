@@ -4,7 +4,7 @@ Estado: borrador normativo para desarrollo y publicación
 
 Ámbito: eSE 9.0, 9.1, 9.2, 9.3 y 9.4
 
-Base inspeccionada: `0285c76`
+Base inspeccionada: `35264bb` (candidato binario beta.2: `ab1ad6b`)
 
 Fecha de referencia del laboratorio: 2026-07-24
 
@@ -53,11 +53,21 @@ Ninguna versión estable se publica con un caso obligatorio en estado `FAIL` o
 6. Kad6 NO DEBE insertar contactos ni direcciones sintéticas en Kad2.
 7. Una dirección IPv6 NO DEBE convertirse en un supuesto IPv4 para satisfacer
    una API heredada.
+8. El cliente Kad6 nativo PUEDE ejecutarse sobre IPv4 o IPv6, pero solo DEBE
+   intercambiar su wire propio con nodos eSE que participen en ese plano.
+9. Durante las betas anteriores al RC de 9.1, un cambio incompatible del wire
+   Kad6 DEBE incrementar su versión. Un cliente que no reconozca esa versión
+   DEBE rechazarla sin degradar Kad2 ni enviar el formato a peers antiguos.
+10. El wire Kad6 se considera estable únicamente después de congelarse para el
+    RC de 9.1; distribuir una beta no convierte por sí solo su wire experimental
+    en una promesa de compatibilidad permanente.
 
 ### 3.2 Seguridad, consentimiento y privacidad
 
-1. Toda función de laboratorio DEBE comenzar desactivada en un perfil nuevo.
-2. La participación DEBE requerir una decisión afirmativa y persistente.
+1. Toda medición NetLab y toda función que preste recursos, actúe como relay,
+   gateway o salida pública DEBE comenzar desactivada en un perfil nuevo.
+2. La participación en NetLab y la contribución de recursos DEBEN requerir una
+   decisión afirmativa y persistente.
 3. La aceptación de NetLab básico NO DEBE activar Punch3, predicción de puertos,
    relay, KRP, donación de ancho de banda ni salida pública Kad6.
 4. Cada contribución de recursos DEBE tener consentimiento independiente.
@@ -70,6 +80,11 @@ Ninguna versión estable se publica con un caso obligatorio en estado `FAIL` o
    explícita del operador.
 9. El panel web y la API permanecerán ligados a loopback por defecto.
 10. El puerto web NO DEBE publicarse mediante UPnP.
+
+El cliente Kad6 nativo es una selección de red, no una contribución NetLab:
+puede estar seleccionado junto a Kad2 en una beta pública siempre que se
+etiquete como experimental, sea desactivable de forma independiente y no
+active por ello salida pública, relay, gateway ni donación de recursos.
 
 ### 3.3 Integridad
 
@@ -101,7 +116,7 @@ tokens y credenciales no deben incorporarse a informes públicos.
 | `H1` | Equipo Windows x64 principal | Compilación, nodo principal, origen LiveTV, captura, router doméstico y posible KRP edge |
 | `H2` | Segundo equipo Windows | Peer físico en otra ubicación, rendezvous o cliente detrás de otra red |
 | `H3` | Portátil Windows | Peer móvil, peer de compatibilidad y cliente conectado al hotspot |
-| `N1` | Teléfono Android | Hotspot/USB tether, red móvil con IPv6, control y agente de eco; no ejecuta el cliente eSE de Windows |
+| `N1` | Teléfono Android | Solo hotspot/USB tether y observación de la red móvil; las pruebas 9.1 no requieren instalar software en el teléfono |
 | `V1` | VM Hyper-V en `H1` | eMule 0.70b, eSE 8.1 o versión anterior |
 | `V2` | Segunda VM o segundo perfil aislado | Peer eSE adicional, gateway simulado o prueba de fallo |
 | `H4` | Cuarto equipo Windows, cuando esté disponible | Capacidad adicional; nunca es requisito único de salida |
@@ -145,7 +160,7 @@ Tailscale.
 | `T2` | Dos redes físicas | `H1` + `H2` | Internet real, NAT distinto y comportamiento remoto |
 | `T3` | Hogar frente a red móvil | `H1` + `H3` mediante `N1` | CGNAT móvil, cambio de red y IPv6 delegado si existe |
 | `T4` | Tres redes/roles | `H1` + `H2` + `H3/N1` | Rendezvous, relay, caída de un tercero y malla LiveTV |
-| `T5` | IPv6 aislado sin IPv4 | `H1` + `H3` o `V1/V2` | Correctitud IPv6-only sin depender de un ISP |
+| `T5` | IPv6 aislado sin IPv4 | `H1` + `H2/H3` o `V1/V2` | Correctitud IPv6-only sin depender de un ISP ni de software Android |
 | `T6` | IPv6 entre redes mediante overlay | Dos Windows físicos | Transporte IPv6 remoto; no prueba entrada IPv6 pública |
 | `T7` | Router doméstico | `H1` | UPnP real, renovación, cambio de puerto y limpieza |
 | `T8` | NAT/gateway simulado | `H1` + Hyper-V | PCP, NAT-PMP, doble NAT, expiración y fallos reproducibles |
@@ -296,6 +311,18 @@ rompa ni reciba wire incompatible.
 obtener evidencia real sin convertir funciones experimentales en promesas de
 soporte.
 
+Decisión de release: 9.0 incluye el **cliente Kad6 nativo experimental
+seleccionado por defecto junto a Kad2**. Un perfil nuevo usa máscara `3`
+(`Kad2|Kad6`) y un perfil antiguo con `NetworkKademlia=1` migra a esa misma
+máscara. Esta decisión permite formar una población beta suficiente para
+validar el plano sin confundirlo con una función ya soportada.
+
+La selección anterior activa únicamente el plano UDP Kad6 nativo: routing
+firmado, bootstrap, mantenimiento y registros de fuentes sobre endpoints
+elegibles IPv4 o IPv6. No activa una salida pública Kad6, KRP, relay,
+contribución de ancho de banda ni el gateway/carrier anónimo. Estas superficies
+mantienen preferencias, capacidades y gates de consentimiento independientes.
+
 ### 7.2 Requisitos funcionales
 
 | ID | Requisito |
@@ -312,6 +339,9 @@ soporte.
 | `V90-F10` | Mantener API y HLS remotos protegidos por autenticación |
 | `V90-F11` | Producir un paquete reproducible con rollback comprobado |
 | `V90-F12` | Mantener integridad de descargas, hashing, part files y LiveTV |
+| `V90-F13` | Seleccionar Kad2+Kad6 en perfiles nuevos y al migrar un `NetworkKademlia=1`, con controles independientes |
+| `V90-F14` | Persistir Kad6 en `nodes_v6.dat`, separado de `nodes.dat`, y recargar todos los contactos en probation |
+| `V90-F15` | Rechazar versiones Kad6 desconocidas sin afectar a Kad2; el wire continúa explícitamente experimental hasta el RC de 9.1 |
 
 ### 7.3 Fuera de alcance
 
@@ -338,6 +368,8 @@ soporte.
 | `V90-L01` | `T4` | Emisor y dos viewers LiveTV a 12 Mbps durante 2 h | Sin crash; reproducción continua y chunks válidos |
 | `V90-L02` | `T4` | Retirar un viewer y después el emisor | Limpieza de suscripción, FFmpeg y HLS sin afectar al otro viewer |
 | `V90-K01` | `T1/T2` | Mantener Kad 12 h con keepalive consentido | Pings/pongs acotados, sin bucle ni crecimiento de contactos inválidos |
+| `V90-K02` | `T0/T1` | Arrancar perfil nuevo y perfil migrado con Kad conectado | Máscara `3`; Kad2 y Kad6 observables; salida pública, gateway y contribución continúan apagados |
+| `V90-K03` | `T0/T1` | Guardar contactos Kad6, reiniciar y observar su promoción | `nodes_v6.dat` se conserva; ningún contacto se considera verificado hasta completar un nuevo challenge |
 | `V90-U01` | perfiles | Ejecutar `G-UPGRADE` desde 8.1 y beta anterior | Configuración conservada y rollback documentado |
 | `V90-B01` | `V1` | Ejecutar `G-COMPAT` con 0.70b | Sin wire nuevo hacia el peer antiguo |
 | `V90-B02` | `H3/V1` | Ejecutar `G-COMPAT` con 8.1 | Descarga y Live directo correctos |
@@ -351,7 +383,10 @@ soporte.
 - no existe `S0`–`S2`;
 - los controles de consentimiento y kill switch pasan dos veces;
 - LiveTV de tres nodos pasa en el laboratorio actual;
-- las funciones posteriores siguen apagadas en el paquete;
+- el cliente Kad6 experimental cumple `V90-K02/K03`;
+- las funciones de servicio, salida y contribución de 9.1–9.4 siguen apagadas
+  en el paquete; la selección por defecto del cliente Kad6 nativo es la
+  excepción explícita descrita en 7.1;
 - la documentación no afirma IPv6 completo, HighID universal ni anonimato
   fuerte.
 
@@ -359,9 +394,27 @@ soporte.
 
 ### 8.1 Objetivo
 
-9.1 convierte el trabajo dual-stack de 9.0 en una función soportada. IPv6 deja
-de ser únicamente una medición y pasa a ser una ruta real para conexión,
-fuentes, callbacks, LiveTV y descubrimiento eSE.
+9.1 promociona a función soportada el trabajo dual-stack y el cliente Kad6
+experimental ya distribuido en 9.0. IPv6 deja de ser únicamente una superficie
+beta y pasa a ser una ruta real para conexión, fuentes, callbacks, LiveTV y
+descubrimiento eSE.
+
+La promoción se completa en el RC, no en la primera beta. Las betas 9.1 pueden
+exponer funciones adelantadas del runtime para obtener evidencia real si se
+cumplen simultáneamente estas condiciones:
+
+- el usuario acepta por separado el laboratorio base, el laboratorio avanzado
+  y cualquier contribución de recursos;
+- los tres niveles parten apagados y la ausencia de decisión equivale a
+  rechazo;
+- un kill switch general detiene las superficies experimentales;
+- la UI, API, logs y notas distinguen una **Beta Exit** de la salida pública
+  estable;
+- la evidencia obtenida con una Beta Exit no satisface por sí sola el gate de
+  salida estable del RC.
+
+Esto permite mejorar y probar Kad6 sin ocultarlo ni reducir sus requisitos de
+seguridad, interoperabilidad o estabilidad.
 
 ### 8.2 Requisitos funcionales
 
@@ -375,23 +428,29 @@ fuentes, callbacks, LiveTV y descubrimiento eSE.
 | `V91-F06` | SOCKS5 `ATYP=4` y HTTP CONNECT con `[IPv6]:puerto` |
 | `V91-F07` | SOCKS4 debe rechazar IPv6 explícitamente |
 | `V91-F08` | Bans, dead sources y deduplicación por `(familia,dirección,puerto)` |
-| `V91-F09` | Live peer-list v2 y conexión LiveTV IPv6 |
-| `V91-F10` | Kad2 y Kad6 aislados, seleccionables y observables |
-| `V91-F11` | Kad6 cliente básico: routing firmado, fuentes y persistencia separada |
+| `V91-F09` | Live peer-list v2, direct-join `[IPv6]:puerto` y conexión LiveTV IPv6 |
+| `V91-F10` | Promocionar y volver a validar el aislamiento, selección y observabilidad de Kad2 y Kad6 |
+| `V91-F11` | Promocionar el cliente Kad6 básico ya presente: routing firmado, fuentes y persistencia separada con revalidación tras reinicio |
 | `V91-F12` | Nunca usar un IPv4 sintético como identidad, crédito o seguridad |
 | `V91-F13` | Definir tratamiento de créditos IPv6-only: identidad eSE o estado neutral, nunca atribución incorrecta |
 | `V91-F14` | Cambio de dirección temporal sin duplicar ni banear al mismo nodo por error |
 | `V91-F15` | UI y API deben mostrar familia y ruta realmente empleadas |
 | `V91-F16` | Desactivar IPv6 debe restaurar un baseline IPv4 puro |
+| `V91-F17` | Separar consentimiento base, avanzado y contribución; cada nivel debe partir apagado, persistir y poder revocarse |
+| `V91-F18` | Una `Kad6BetaExitOptIn` consentida debe permanecer separada de `Kad6PublicExitOptIn` y no eludir el gate firmado de salida estable |
 
-### 8.3 Decisión obligatoria sobre identidad y créditos
+### 8.3 Política de identidad y créditos
 
-Antes de RC debe elegirse y documentarse una de estas dos políticas:
+`9.1.0-beta.1` adopta **neutralidad IPv6-only**: un endpoint IPv6-only puede
+transferir, pero no recibe ni utiliza créditos IPv4 heredados y su tiempo de
+espera se mantiene local al cliente. No se atribuye actividad mediante una
+dirección IPv4 sintética.
 
-1. **Identidad eSE**: créditos eSE-eSE ligados a la clave pública persistente
-   del nodo, con registros separados de los créditos IPv4 clásicos.
-2. **Neutralidad IPv6-only**: el peer puede transferir, pero no recibe ni usa
-   créditos heredados hasta disponer de una identidad compatible.
+Antes de RC esta política debe superar la matriz completa o ser reemplazada,
+con migración y pruebas, por:
+
+- **Identidad eSE**: créditos eSE-eSE ligados a la clave pública persistente
+  del nodo, con registros separados de los créditos IPv4 clásicos.
 
 Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 
@@ -399,14 +458,18 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 
 - Punch3 y predicción de puertos como comportamiento estable.
 - KRP.
-- Salida pública Kad6.
+- Salida pública Kad6 estable. Una **Kad6 Beta Exit** puede probarse en una
+  beta únicamente con consentimiento de contribución y gates runtime; nunca se
+  anuncia ni contabiliza como salida estable.
 - Garantizar entrada IPv6 en todos los ISP.
 - NAT64/464XLAT como ruta oficialmente soportada, aunque no debe provocar
   crash ni corrupción.
+- Cliente eSE para Android; su portabilidad pertenece a una versión posterior.
 
 ### 8.5 Herramientas de laboratorio que deben existir
 
-- `ipv6_echo` para `N1` o Termux: TCP/UDP echo con log de dirección observada.
+- `ipv6_echo` para Windows x64 (`H1`/`H2` o `V1`/`V2`): TCP/UDP echo con log
+  de la dirección observada. No debe depender de Android ni de Termux.
 - Script de configuración `T5` que active una red ULA y retire IPv4 en los
   nodos de prueba sin alterar permanentemente la red del usuario.
 - Proxy SOCKS5/HTTP CONNECT local reproducible.
@@ -425,7 +488,7 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | `V91-I05` | `T1` | Desactivar IPv6 y repetir transferencia | Wire y comportamiento IPv4 heredados |
 | `V91-I06` | `T6` | Dos Windows físicos usando direcciones IPv6 del overlay | Transferencia remota funcional; informe marcado como overlay |
 | `V91-I07` | `T3` | Portátil mediante hotspot; comprobar IPv6 global delegado | Si existe, conexión eSE directa; si no, registrar limitación sin falsear PASS público |
-| `V91-I08` | `N1` | Agente echo Android con IPv6 global | Cliente abre TCP/UDP y conserva los 128 bits observados |
+| `V91-I08` | `T5` | Endpoint echo Windows independiente por IPv6 | Cliente abre TCP/UDP y conserva los 128 bits observados |
 | `V91-D01` | `T1` | Hostname con A y AAAA | Ambas respuestas se conservan; falla AAAA y funciona A |
 | `V91-P01` | `T0/T1` | SOCKS5 IPv6 | `ATYP=4`, destino y puerto correctos |
 | `V91-P02` | `T0/T1` | HTTP CONNECT IPv6 | Autoridad `[IPv6]:puerto` correcta |
@@ -433,9 +496,14 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | `V91-K01` | `T5` | Kad6-only: bootstrap, routing, publish y source find | Contacto autenticado y fuente recuperada |
 | `V91-K02` | `T1` | Kad2+Kad6, apagar uno durante ejecución | El otro continúa y no recibe paquetes del plano apagado |
 | `V91-K03` | perfiles | Abrir un perfil Kad6 con build anterior sobre copia | Kad2 no se reactiva indebidamente |
+| `V91-K04` | `T1/T5` | Reiniciar ambos nodos con `nodes_v6.dat` poblado | Contactos cargados en probation; re-verificación acotada y sin confianza heredada |
 | `V91-C01` | `V1` | Peer nuevo frente a 0.70b | Solo formatos IPv4 heredados |
+| `V91-C02` | `T0` | Rechazar sucesivamente base, avanzado y contribución | Ninguna superficie del nivel rechazado se inicia; KRP y Beta Exit permanecen cerrados |
+| `V91-C03` | `T0/T1` | Aceptar los tres niveles y revocar el general durante actividad | El estado persiste y relay, KRP y Beta Exit se detienen en menos de 5 s |
+| `V91-C04` | `T0` | Aceptar contribución con configuración KRP incompleta | KRP falla cerrado; no abre listener ni conexión |
 | `V91-S01` | `T5` | Introducir dos IPv6 que colisionarían en un hash de 32 bits | Se mantienen como endpoints diferentes |
 | `V91-S02` | `T5` | Reutilizar temporal IPv6 de otro epoch | Registro viejo rechazado; nodo legítimo no recibe crédito ajeno |
+| `V91-S03` | `T1/T5` | Enviar `BOOTSTRAP_REQ`, `REQ` y `FIND_SOURCE_REQ` desde un endpoint no verificado | Solo se emite challenge acotado; ninguna respuesta amplificada sale antes de una prueba transaction-bound |
 | `V91-R01` | `T3` | Cambiar portátil de LAN a hotspot durante sesión | Reconexión limpia, endpoint anterior caduca |
 | `V91-O01` | `T1/T5` | Soak dual-stack 12 h | Sin fuga, duplicados crecientes ni corrupción |
 
@@ -445,6 +513,10 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 - Existe una política explícita y probada para identidad/créditos IPv6-only.
 - Un peer antiguo no recibe formatos nuevos.
 - Kad6 básico funciona sin salida pública ni contaminación de Kad2.
+- Los tres niveles de consentimiento y su revocación pasan dos veces; una Beta
+  Exit nunca satisface ni modifica el gate de salida estable.
+- El reinicio no conserva confianza Kad6 y la protección anti-amplificación
+  pasa para todas las respuestas mayores que su petición.
 - Se ha realizado al menos una prueba entre Windows físicos por IPv6.
 - Si no fue posible una entrada IPv6 pública real, las notas dicen
   **transporte IPv6 validado en laboratorio y overlay**, no “funciona con todos
@@ -767,7 +839,7 @@ Entregables:
 5. `tools/lab/collect_report.ps1`: genera JSON sanitizado común.
 6. `tools/lab/soak_monitor.ps1`: memoria, handles, threads, sockets y contadores.
 7. Gateway NAT simulado de 9.2.
-8. Agente IPv6 echo para Android/Termux.
+8. Agente IPv6 echo reproducible para Windows x64.
 9. Generador de CA y configuración KRP de laboratorio.
 10. Índice de casos y resultados por commit.
 
@@ -789,10 +861,12 @@ pueden añadirse antes de la versión que las necesita.
 1. Cerrar auditoría de todos los `uint32` de dirección.
 2. Resolver identidad/créditos IPv6-only.
 3. Completar callback, server source, Live y proxy matrices.
-4. Estabilizar Kad6 cliente básico y persistencia separada.
-5. Crear topologías `T5/T6` y agente Android.
+4. Promocionar el cliente Kad6 experimental y validar `nodes_v6.dat`,
+   probation, re-verificación, anti-amplificación y churn de reinicio.
+5. Crear topologías `T5/T6` y agente echo Windows.
 6. Ejecutar cambio de dirección, fallback y soak.
-7. Congelar wire antes del RC.
+7. Incrementar la versión del wire si una beta requiere un cambio incompatible
+   y congelarlo antes del RC.
 
 ### 12.4 WP92: promover mapping directo
 

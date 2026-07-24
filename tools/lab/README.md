@@ -88,6 +88,23 @@ The monitor writes append-only JSON Lines while the test is running and an
 working-set growth and 256 handles. API failure is fatal unless
 `-AllowUnavailable` is explicitly selected.
 
+For the normative `V91-I02` LiveTV case, use the dedicated monitor after the
+viewer has joined the broadcaster directly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\lab\live_ipv6_soak_monitor.ps1 `
+  -BaseUrl http://127.0.0.1:4811 -TargetProcessId 1234 `
+  -ExpectedRemotePort 4662 -DurationSeconds 7200 -IntervalSeconds 15 `
+  -OutFile C:\tmp\v91-run\live-summary.json `
+  -SamplesFile C:\tmp\v91-run\live-samples.jsonl
+```
+
+It sends the same player-alive signal as an open web player, fetches and
+validates the HLS playlist, requires the chunk counter to advance, and records
+the established Live data socket family on every sample. Any IPv4 connection
+to the expected Live port, missing playlist, missing buffer chunk, stopped
+viewer, or unavailable process makes the final verdict fail.
+
 ### 6. Build the canonical case report
 
 ```powershell
@@ -136,6 +153,7 @@ separate GUI observation.
 ## WP0 boundary
 
 These scripts are the common WP0 foundation. Version-specific fixtures remain
-separate work packages: the configurable NAT gateway for 9.2, the Android IPv6
-echo fixture for 9.1/9.3, and the private KRP CA/edge configuration for 9.4.
-They should reuse these artifact schemas and the canonical report collector.
+separate work packages: the Windows x64 IPv6 echo fixture for 9.1/9.3, the
+configurable NAT gateway for 9.2, and the private KRP CA/edge configuration for
+9.4. No Android installation is required by the v9.1 test plan. These fixtures
+should reuse the artifact schemas and the canonical report collector.

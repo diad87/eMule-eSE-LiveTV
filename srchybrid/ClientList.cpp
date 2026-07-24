@@ -431,8 +431,26 @@ void CClientList::RemoveAllBannedClients()
 
 void CClientList::AddTrackClient(CUpDownClient *toadd)
 {
-	if (toadd->IsIPv6OnlyEndpoint())
+	if (toadd->IsIPv6OnlyEndpoint()) {
+		const CAddress address = toadd->GetIPv6Address();
+		if (!address.IsUsablePublic())
+			return;
+		std::map<CAddress, CDeletedClient*>::iterator it = m_trackedAddressMap.find(address);
+		if (it != m_trackedAddressMap.end()) {
+			CDeletedClient* const tracked = it->second;
+			tracked->m_dwInserted = ::GetTickCount();
+			for (INT_PTR i = tracked->m_ItemsList.GetCount(); --i >= 0;) {
+				if (tracked->m_ItemsList[i].nPort == toadd->GetUserPort()) {
+					tracked->m_ItemsList[i].pHash = toadd->Credits();
+					return;
+				}
+			}
+			tracked->m_ItemsList.Add(PORTANDHASH{ toadd->GetUserPort(), toadd->Credits() });
+		} else {
+			m_trackedAddressMap[address] = new CDeletedClient(toadd);
+		}
 		return;
+	}
 	CDeletedClient *pResult;
 	if (m_trackedClientsMap.Lookup(toadd->GetIP(), pResult)) {
 		pResult->m_dwInserted = ::GetTickCount();
@@ -465,16 +483,54 @@ bool CClientList::ComparePriorUserhash(uint32 dwIP, uint16 nPort, const void *pN
 	return true;
 }
 
+bool CClientList::ComparePriorUserhash(const CAddress& address, uint16 nPort,
+	const void *pNewHash)
+{
+	std::map<CAddress, CDeletedClient*>::const_iterator it =
+		m_trackedAddressMap.find(address);
+	if (it != m_trackedAddressMap.end()) {
+		for (INT_PTR i = it->second->m_ItemsList.GetCount(); --i >= 0;) {
+			if (it->second->m_ItemsList[i].nPort == nPort)
+				return it->second->m_ItemsList[i].pHash == pNewHash;
+		}
+	}
+	return true;
+}
+
 INT_PTR CClientList::GetClientsFromIP(uint32 dwIP) const
 {
 	const CDeletedClientMap::CPair *pair = m_trackedClientsMap.PLookup(dwIP);
 	return pair ? pair->value->m_ItemsList.GetCount() : 0;
 }
 
+INT_PTR CClientList::GetClientsFromSubnet(const CAddress& address, int prefixBits) const
+{
+	INT_PTR count = 0;
+	for (std::map<CAddress, CDeletedClient*>::const_iterator it =
+			m_trackedAddressMap.begin(); it != m_trackedAddressMap.end(); ++it) {
+		if (address.InSameSubnet(it->first, prefixBits))
+			count += it->second->m_ItemsList.GetCount();
+	}
+	return count;
+}
+
 void CClientList::TrackBadRequest(const CUpDownClient *upcClient, int nIncreaseCounter)
 {
-	if (upcClient->IsIPv6OnlyEndpoint())
+	if (upcClient->IsIPv6OnlyEndpoint()) {
+		const CAddress address = upcClient->GetIPv6Address();
+		if (!address.IsUsablePublic())
+			return;
+		std::map<CAddress, CDeletedClient*>::iterator it = m_trackedAddressMap.find(address);
+		if (it != m_trackedAddressMap.end()) {
+			it->second->m_dwInserted = ::GetTickCount();
+			it->second->m_cBadRequest += nIncreaseCounter;
+		} else {
+			CDeletedClient *ccToAdd = new CDeletedClient(upcClient);
+			ccToAdd->m_cBadRequest = nIncreaseCounter;
+			m_trackedAddressMap[address] = ccToAdd;
+		}
 		return;
+	}
 	if (upcClient->GetIP() == 0) {
 		ASSERT(0);
 		return;
@@ -492,8 +548,11 @@ void CClientList::TrackBadRequest(const CUpDownClient *upcClient, int nIncreaseC
 
 uint32 CClientList::GetBadRequests(const CUpDownClient *upcClient) const
 {
-	if (upcClient->IsIPv6OnlyEndpoint())
-		return 0;
+	if (upcClient->IsIPv6OnlyEndpoint()) {
+		std::map<CAddress, CDeletedClient*>::const_iterator it =
+			m_trackedAddressMap.find(upcClient->GetIPv6Address());
+		return it != m_trackedAddressMap.end() ? it->second->m_cBadRequest : 0;
+	}
 	ASSERT(upcClient->GetIP());
 	const CDeletedClientMap::CPair *pair = m_trackedClientsMap.PLookup(upcClient->GetIP());
 	return pair ? pair->value->m_cBadRequest : 0;
@@ -508,6 +567,10 @@ void CClientList::RemoveAllTrackedClients()
 		m_trackedClientsMap.RemoveKey(nKey);
 		delete pResult;
 	}
+	for (std::map<CAddress, CDeletedClient*>::iterator it =
+			m_trackedAddressMap.begin(); it != m_trackedAddressMap.end(); ++it)
+		delete it->second;
+	m_trackedAddressMap.clear();
 }
 
 void CClientList::Process()
@@ -541,7 +604,7 @@ void CClientList::Process()
 	if (curTick >= m_dwLastTrackedCleanUp + TRACKED_CLEANUP_TIME) {
 		m_dwLastTrackedCleanUp = curTick;
 		if (thePrefs.GetLogBannedClients())
-			AddDebugLogLine(false, _T("Cleaning up TrackedClientList, %u clients on List..."), (unsigned)m_trackedClientsMap.GetCount());
+			AddDebugLogLine(false, _T("Cleaning up TrackedClientList, %u clients on List..."), (unsigned)GetTrackedCount());
 		for (POSITION pos = m_trackedClientsMap.GetStartPosition(); pos != NULL;) {
 			uint32 nKey;
 			CDeletedClient *pResult;
@@ -551,8 +614,17 @@ void CClientList::Process()
 				delete pResult;
 			}
 		}
+		for (std::map<CAddress, CDeletedClient*>::iterator it =
+				m_trackedAddressMap.begin(); it != m_trackedAddressMap.end();) {
+			if (curTick >= it->second->m_dwInserted + KEEPTRACK_TIME) {
+				delete it->second;
+				it = m_trackedAddressMap.erase(it);
+			} else {
+				++it;
+			}
+		}
 		if (thePrefs.GetLogBannedClients())
-			AddDebugLogLine(false, _T("...done, %u clients left on list"), (unsigned)m_trackedClientsMap.GetCount());
+			AddDebugLogLine(false, _T("...done, %u clients left on list"), (unsigned)GetTrackedCount());
 	}
 
 	///////////////////////////////////////////////////////////////////////////

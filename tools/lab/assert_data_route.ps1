@@ -25,36 +25,23 @@ if ($null -eq $process) {
 
 $expectedNormalized = $ExpectedRemoteAddress.Trim('[', ']').Split('%')[0]
 $connections = @()
-foreach ($line in @(& netstat -ano -p tcp)) {
-    $trimmed = $line.Trim()
-    if (-not $trimmed.StartsWith('TCP', [StringComparison]::OrdinalIgnoreCase)) { continue }
-    $fields = @($trimmed -split '\s+')
-    if ($fields.Count -lt 5) { continue }
+foreach ($socket in @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)) {
+    if ($socket.OwningProcess -ne $TargetProcessId) { continue }
 
-    $ownerId = 0
-    if (-not [int]::TryParse($fields[4], [ref]$ownerId)) { continue }
-    if ($ownerId -ne $TargetProcessId) { continue }
-    if ($fields[3] -ne 'ESTABLISHED') { continue }
-
-    try {
-        $local = Split-LabEndpoint -Endpoint $fields[1]
-        $remote = Split-LabEndpoint -Endpoint $fields[2]
-    } catch {
-        continue
-    }
-
-    $remoteNormalized = $remote.address.Trim('[', ']').Split('%')[0]
+    $localAddress = $socket.LocalAddress.Trim('[', ']').Split('%')[0]
+    $remoteAddress = $socket.RemoteAddress.Trim('[', ']').Split('%')[0]
+    $remoteNormalized = $remoteAddress
     if ($ExpectedRemoteAddress -and
         -not $remoteNormalized.Equals($expectedNormalized, [StringComparison]::OrdinalIgnoreCase)) {
         continue
     }
-    if ($ExpectedRemotePort -gt 0 -and $remote.port -ne $ExpectedRemotePort) { continue }
+    if ($ExpectedRemotePort -gt 0 -and $socket.RemotePort -ne $ExpectedRemotePort) { continue }
 
-    $localClass = Get-LabAddressClass -Address $local.address
+    $localClass = Get-LabAddressClass -Address $localAddress
     $family = if ($localClass.EndsWith('-v6')) { 'IPv6' } else { 'IPv4' }
     if ($RequiredFamily -ne 'Any' -and $family -ne $RequiredFamily) { continue }
 
-    $adapter = Get-LabInterfaceForAddress -Address $local.address
+    $adapter = Get-LabInterfaceForAddress -Address $localAddress
     $adapterText = if ($null -eq $adapter) {
         '<unmapped>'
     } else {
@@ -63,12 +50,12 @@ foreach ($line in @(& netstat -ano -p tcp)) {
     $forbidden = $null -eq $adapter -or $adapterText -match $ForbiddenInterfacePattern
 
     $item = [ordered]@{
-        state = $fields[3]
+        state = 'ESTABLISHED'
         family = $family
         local_address_class = $localClass
-        local_port = $local.port
-        remote_address_class = Get-LabAddressClass -Address $remote.address
-        remote_port = $remote.port
+        local_port = $socket.LocalPort
+        remote_address_class = Get-LabAddressClass -Address $remoteAddress
+        remote_port = $socket.RemotePort
         interface_id = if ($null -eq $adapter) {
             $null
         } else {
@@ -78,8 +65,8 @@ foreach ($line in @(& netstat -ano -p tcp)) {
         interface_forbidden = [bool]$forbidden
     }
     if ($IncludeSensitive) {
-        $item.local_address = $local.address
-        $item.remote_address = $remote.address
+        $item.local_address = $localAddress
+        $item.remote_address = $remoteAddress
         $item.interface_name = if ($null -eq $adapter) { $null } else { $adapter.name }
         $item.interface_description = if ($null -eq $adapter) { $null } else { $adapter.description }
     }

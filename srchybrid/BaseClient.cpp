@@ -200,11 +200,19 @@ bool CUpDownClient::CanUseIPv6Direct() const
 	const bool bCallbackRoute = m_bIPv6CallbackSource && HasIPv6Address();
 	const bool bLiveRoute = m_bLiveIPv6Source && HasIPv6Address();
 	const bool bDirectRoute = m_bDirectIPv6Source && HasIPv6Address();
+	const ProxySettings& proxy = thePrefs.GetProxySettings();
+	const bool bIPv6CapableProxy = proxy.bUseProxy
+		&& (proxy.type == PROXYTYPE_SOCKS5
+			|| proxy.type == PROXYTYPE_HTTP10
+			|| proxy.type == PROXYTYPE_HTTP11);
 	return thePrefs.IsIPv6Enabled()
 		&& !bV6Backoff
-		&& !thePrefs.GetProxySettings().bUseProxy
+		&& (!proxy.bUseProxy || bIPv6CapableProxy)
 		&& (bServerRoute || bCallbackRoute || bLiveRoute || bDirectRoute || bValidatedEseRoute)
-		&& localV6.GetType() == CAddress::IPv6 && localV6.IsPublicIP()
+		// SOCKS5 and HTTP CONNECT carry the native IPv6 destination through
+		// an IPv4 proxy connection; only a direct route needs local public v6.
+		&& (bIPv6CapableProxy
+			|| (localV6.GetType() == CAddress::IPv6 && localV6.IsPublicIP()))
 		&& HasIPv6Address() && m_ipv6Address.IsPublicIP()
 		&& GetUserPort() != 0;
 }
@@ -386,6 +394,7 @@ void CUpDownClient::Init()
 
 	m_nTransferredUp = 0;
 	m_dwUploadTime = 0;
+	m_dwIPv6WaitStartTime = 0;
 	m_cAsked = 0;
 	m_dwLastUpRequest = 0;
 	m_nCurSessionUp = 0;
@@ -913,12 +922,15 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 	CClientCredits *pFoundCredits = theApp.clientcredits->GetCredit(m_achUserHash);
 	if (credits == NULL) {
 		credits = pFoundCredits;
-		// The historical tracked-client table is keyed by IPv4. A native
-		// IPv6 endpoint carries a synthetic value only for legacy fields, so
-		// do not use that value for userhash anti-hijack decisions.
-		if (!IsIPv6OnlyEndpoint() && !theApp.clientlist->ComparePriorUserhash(m_dwUserIP, m_nUserPort, pFoundCredits)) {
+		const bool bPriorHashMatches = IsIPv6OnlyEndpoint()
+			? theApp.clientlist->ComparePriorUserhash(GetIPv6Address(), m_nUserPort, pFoundCredits)
+			: theApp.clientlist->ComparePriorUserhash(m_dwUserIP, m_nUserPort, pFoundCredits);
+		if (!bPriorHashMatches) {
 			if (thePrefs.GetLogBannedClients())
-				AddDebugLogLine(false, _T("Clients: %s (%s), Ban reason: Userhash changed (Found in TrackedClientsList)"), GetUserName(), (LPCTSTR)ipstr(GetConnectIP()));
+				AddDebugLogLine(false, _T("Clients: %s (%s), Ban reason: Userhash changed (Found in TrackedClientsList)"),
+					GetUserName(), IsIPv6OnlyEndpoint()
+						? (LPCTSTR)GetIPv6Address().ToStringC()
+						: (LPCTSTR)ipstr(GetConnectIP()));
 			Ban();
 		}
 	} else if (credits != pFoundCredits) {
@@ -1774,6 +1786,7 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 	const bool bCanIPv6Direct = CanUseIPv6Direct();
 	const bool bUseIPv6Direct = bCanIPv6Direct
 		&& (HasLowID() || IsIPv6OnlyEndpoint()
+			|| IsLiveIPv6Source() || IsDirectIPv6Source()
 			|| thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode);
 	if (IsIPv6OnlyEndpoint() && !bCanIPv6Direct && !HasLowID()) {
 		DebugLogWarning(_T("TryToConnect: IPv6-only endpoint has no validated native-v6 route; skipping synthetic IPv4 dial (%s)"),
@@ -2832,6 +2845,11 @@ bool CUpDownClient::SendPacket(Packet *packet, bool bVerifyConnection)
 	DebugLogError(_T("Outgoing packet (0x%X) discarded because expected socket or connection does not exist %s"), packet->opcode, (LPCTSTR)DbgGetClientInfo());
 	delete packet;
 	return false;
+}
+
+uint32 CUpDownClient::GetSocketQueuedBytes() const
+{
+	return socket != NULL ? socket->GetQueuedDataBytes() : 0;
 }
 
 #ifdef _DEBUG

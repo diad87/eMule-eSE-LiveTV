@@ -254,7 +254,7 @@ void TestAuthAllocatorAndPolicy(TestState& test) {
                "carrier-bound KRP auth activates session");
 
     relayedge::EdgeTcpAllocator allocator;
-    test.Check(allocator.Initialize(40000, 40001, config.reuse_delay_ms, &metrics) ==
+    test.Check(allocator.Initialize(40000, 40000, config.reuse_delay_ms, &metrics) ==
                    relay::RelayStatus::Ok,
                "allocator initializes");
     relayedge::EdgePortLease lease;
@@ -291,8 +291,18 @@ void TestAuthAllocatorAndPolicy(TestState& test) {
     test.Check(allocator.Release(lease.lease_id, lease.generation, 105) ==
                    relay::RelayStatus::Ok,
                "active lease released");
-    test.Check(allocator.Tick(1104) == 0, "reuse delay enforced");
-    test.Check(allocator.Tick(1105) == 1, "port reclaimed after delay");
+    relayedge::EdgePortLease early_reuse;
+    test.Check(allocator.Allocate(authenticated, sessions, 2, 1104, early_reuse) ==
+                   relay::RelayStatus::QuotaExceeded,
+               "allocation still enforces reuse delay");
+    relayedge::EdgePortLease reclaimed;
+    test.Check(allocator.Allocate(authenticated, sessions, 2, 1105, reclaimed) ==
+                   relay::RelayStatus::Ok,
+               "allocation reclaims an expired reuse-delay port without an external tick");
+    test.Check(allocator.Release(reclaimed.lease_id, reclaimed.generation, 1106) ==
+                   relay::RelayStatus::Ok &&
+                   allocator.Tick(2106) == 1,
+               "reclaimed test lease is released");
 
     relayedge::EdgeSessionHandle failed{};
     test.Check(sessions.Admit(200, failed) == relay::RelayStatus::Ok,

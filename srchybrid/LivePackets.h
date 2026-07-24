@@ -71,12 +71,14 @@ Packet* CreatePeerListPacket(const uchar* streamKey,
 
 // v0.71 IPv6 Sprint 7 — OP_LIVE_PEER_LIST_V2 (0xCD) with CAddress payload.
 // Each peer is serialized via CAddress::WriteToBuffer (6 or 18 bytes) +
-// port (2 bytes) instead of the legacy 4+2 fixed format. Count is still
+// port (2 bytes) + suitability score (1 byte), instead of the legacy 4+2
+// fixed format. Count is still
 // uint16 but receiver caps to ESE_LIVE_MAX_PEER_LIST=16 (v7.5.0 §16) to
 // prevent FD exhaustion / SYN-flood reflection. Sent only to peers that
 // advertise CAP_FORK_IPV6_WIRE. CAddress is in global namespace.
 Packet* CreatePeerListPacketV2(const uchar* streamKey,
-    const ::CAddress* addrs, const uint16* ports, uint16 count);
+    const ::CAddress* addrs, const uint16* ports, const uint8* scores,
+    uint16 count);
 
 // PEX entry piggy-backed inside OP_LIVE_HEARTBEAT (Decentralized Capa 1).
 // Each entry advertises a stream the sender has recently seen so receivers

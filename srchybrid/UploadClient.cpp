@@ -671,7 +671,9 @@ DWORD CUpDownClient::GetWaitStartTime() const
 		ASSERT(0);
 		return 0;
 	}
-	DWORD dwResult = IsIPv6OnlyEndpoint() ? 0 : credits->GetSecureWaitStartTime(GetIP());
+	DWORD dwResult = IsIPv6OnlyEndpoint()
+		? m_dwIPv6WaitStartTime
+		: credits->GetSecureWaitStartTime(GetIP());
 	if (dwResult > m_dwUploadTime && IsDownloading()) {
 		//this happens only if two clients with invalid securehash are in the queue - if at all
 		dwResult = (m_dwUploadTime > 0) ? m_dwUploadTime - 1 : 0; // BUG-028 FIX: prevent DWORD underflow
@@ -684,12 +686,17 @@ DWORD CUpDownClient::GetWaitStartTime() const
 
 void CUpDownClient::SetWaitStartTime()
 {
-	if (credits != NULL && !IsIPv6OnlyEndpoint())
+	if (IsIPv6OnlyEndpoint()) {
+		if (m_dwIPv6WaitStartTime == 0)
+			m_dwIPv6WaitStartTime = ::GetTickCount();
+	} else if (credits != NULL) {
 		credits->SetSecWaitStartTime(GetIP());
+	}
 }
 
 void CUpDownClient::ClearWaitStartTime()
 {
+	m_dwIPv6WaitStartTime = 0;
 	if (credits != NULL)
 		credits->ClearWaitStartTime();
 }

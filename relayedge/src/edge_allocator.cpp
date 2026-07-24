@@ -42,12 +42,15 @@ relay::RelayStatus EdgeTcpAllocator::Initialize(std::uint16_t first_port,
 relay::RelayStatus EdgeTcpAllocator::Allocate(EdgeSessionHandle owner,
                                                EdgeSessionTable& sessions,
                                                std::uint64_t lease_id,
-                                               std::uint64_t,
+                                               std::uint64_t now_ms,
                                                EdgePortLease& lease) noexcept {
     const EdgeSessionSnapshot* const session = sessions.Get(owner);
     if (!initialized_ || lease_id == 0 || session == nullptr ||
         session->phase != EdgeSessionPhase::Active)
         return relay::RelayStatus::AuthFailed;
+    // A reconnect may arrive before the daemon's next periodic Tick. Reclaim
+    // leases whose reuse delay has already elapsed as part of allocation.
+    (void)Tick(now_ms);
     for (const EdgePortLease& item : leases_) {
         if (item.state != EdgePortState::Free && item.lease_id == lease_id)
             return relay::RelayStatus::ReplayDetected;

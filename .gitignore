@@ -38,6 +38,7 @@ labs/
 docs/archive/
 docs/*.docx
 docs/*_PLAN*.md
+!docs/KAD6_IMPLEMENTATION_PLAN.md
 docs/*_AUDIT*.md
 docs/*_CLOSURE*.md
 docs/*_CHECKLIST*.md

@@ -428,6 +428,8 @@ public:
         bool evidence_valid = false;
         bool runtime_healthy = false;
         bool public_exit_enabled = false;
+        bool beta_exit_opt_in = false;
+        bool beta_exit_enabled = false;
         kad6::K6ReleaseGateStatus status = kad6::K6ReleaseGateStatus::Missing;
         kad6::K6ReleaseEvidence evidence;
     };
@@ -1053,6 +1055,7 @@ private:
     };
     std::map<std::string, K6QuotaGrant> m_k6QuotaGrants;
     bool m_k6PublicStableEnabled = false; // external release gates must enable it.
+    bool m_k6PublicBetaEnabled = false; // explicit NetLab contribution; never stable evidence.
     bool m_k6ReleaseEvidenceLoaded = false;
     bool m_k6ReleaseEvidencePresent = false;
     bool m_k6ReleaseRuntimeHealthy = false;

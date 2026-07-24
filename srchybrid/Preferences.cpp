@@ -392,6 +392,8 @@ bool	CPreferences::m_bWebUseUPnP;
 bool	CPreferences::m_bUPnPCriticalError;
 bool	CPreferences::m_bEnableUtpHolePunch;
 int		CPreferences::m_iEseNetLabConsent;
+int		CPreferences::m_iEseNetLabAdvancedConsent;
+int		CPreferences::m_iEseNetLabContributionConsent;
 bool	CPreferences::m_bEseNetLabEnabled;
 bool	CPreferences::m_bEseV9Experimental;
 bool	CPreferences::m_bEseKad3Rendezvous;
@@ -424,6 +426,7 @@ int		CPreferences::m_iKadV2PrivacyMode;      // D2
 int		CPreferences::m_iKadV2FallbackPolicy;   // D2
 CString	CPreferences::m_strKadV2SensitiveKeywords; // D2
 bool	CPreferences::m_bKad6PublicExitOptIn;
+bool	CPreferences::m_bKad6BetaExitOptIn;
 bool	CPreferences::m_bWebEnabled;
 bool	CPreferences::m_bWebUseGzip;
 int		CPreferences::m_nWebPageRefresh;
@@ -1884,8 +1887,11 @@ void CPreferences::SavePreferences()
 	ini.WriteInt(_T("KadV2FallbackPolicy"), m_iKadV2FallbackPolicy, _T("eSE"));
 	ini.WriteString(_T("KadV2SensitiveKeywords"), m_strKadV2SensitiveKeywords, _T("eSE"));
 	ini.WriteBool(_T("Kad6PublicExitOptIn"), m_bKad6PublicExitOptIn, _T("eSE"));
+	ini.WriteBool(_T("Kad6BetaExitOptIn"), m_bKad6BetaExitOptIn, _T("eSE"));
 	ini.WriteBool(_T("EnableUtpHolePunch"), m_bEnableUtpHolePunch, _T("eSE"));
 	ini.WriteInt(_T("EseNetLabConsent"), m_iEseNetLabConsent, _T("eSE"));
+	ini.WriteInt(_T("EseNetLabAdvancedConsent"), m_iEseNetLabAdvancedConsent, _T("eSE"));
+	ini.WriteInt(_T("EseNetLabContributionConsent"), m_iEseNetLabContributionConsent, _T("eSE"));
 	ini.WriteBool(_T("EseNetLabEnabled"), m_bEseNetLabEnabled, _T("eSE"));
 	ini.WriteBool(_T("EseV9Experimental"), m_bEseV9Experimental, _T("eSE"));
 	ini.WriteBool(_T("EseKad3Rendezvous"), m_bEseKad3Rendezvous, _T("eSE"));
@@ -2581,6 +2587,16 @@ void CPreferences::LoadPreferences()
 	m_iEseNetLabConsent = ini.GetInt(_T("EseNetLabConsent"), EseNetLabUndecided, _T("eSE"));
 	if (m_iEseNetLabConsent < EseNetLabUndecided || m_iEseNetLabConsent > EseNetLabAccepted)
 		m_iEseNetLabConsent = EseNetLabUndecided;
+	m_iEseNetLabAdvancedConsent = ini.GetInt(
+		_T("EseNetLabAdvancedConsent"), EseNetLabUndecided, _T("eSE"));
+	if (m_iEseNetLabAdvancedConsent < EseNetLabUndecided
+		|| m_iEseNetLabAdvancedConsent > EseNetLabAccepted)
+		m_iEseNetLabAdvancedConsent = EseNetLabUndecided;
+	m_iEseNetLabContributionConsent = ini.GetInt(
+		_T("EseNetLabContributionConsent"), EseNetLabUndecided, _T("eSE"));
+	if (m_iEseNetLabContributionConsent < EseNetLabUndecided
+		|| m_iEseNetLabContributionConsent > EseNetLabAccepted)
+		m_iEseNetLabContributionConsent = EseNetLabUndecided;
 	m_bEseNetLabEnabled = ini.GetBool(_T("EseNetLabEnabled"), false, _T("eSE"))
 		&& m_iEseNetLabConsent == EseNetLabAccepted;
 	// v9 alpha release boundary. This is the master gate for capabilities whose
@@ -2619,10 +2635,16 @@ void CPreferences::LoadPreferences()
 	m_strKrpRelayExpectedServerName.Trim();
 	m_strKrpRelayCaBundlePath = ini.GetString(_T("CaBundlePath"), _T(""), _T("KRPRelay"));
 	m_strKrpRelayCaBundlePath.Trim();
+	if (!m_strKrpRelayCaBundlePath.IsEmpty() && ::PathIsRelative(m_strKrpRelayCaBundlePath))
+		m_strKrpRelayCaBundlePath =
+			GetMuleDirectory(EMULE_EXECUTABLEDIR) + m_strKrpRelayCaBundlePath;
 	m_bKrpRelayAllowAnyServer = ini.GetBool(_T("AllowAnyConnectedServer"), false, _T("KRPRelay"));
 	m_bKrpRelayExperimentalTcp = ini.GetBool(_T("ExperimentalTcpDataPlane"), false, _T("KRPRelay"));
 	m_strKrpRelayAuthTokenPath = ini.GetString(_T("AuthTokenPath"), _T(""), _T("KRPRelay"));
 	m_strKrpRelayAuthTokenPath.Trim();
+	if (!m_strKrpRelayAuthTokenPath.IsEmpty() && ::PathIsRelative(m_strKrpRelayAuthTokenPath))
+		m_strKrpRelayAuthTokenPath =
+			GetMuleDirectory(EMULE_EXECUTABLEDIR) + m_strKrpRelayAuthTokenPath;
 	// [eSE v9] anti-CGNAT port prediction ("birthday spray"). DEFAULT OFF -> the punch fires a
 	// single REQ at the observed port exactly as before. When ON, it also sprays a small window of
 	// ports (helps symmetric NAT / CGNAT that randomizes the external port). Spread clamped [0,8]
@@ -2672,10 +2694,50 @@ void CPreferences::LoadPreferences()
 		m_iKadV2FallbackPolicy = fb;
 		m_strKadV2SensitiveKeywords = ini.GetString(_T("KadV2SensitiveKeywords"), _T(""), _T("eSE"));
 		m_bKad6PublicExitOptIn = ini.GetBool(_T("Kad6PublicExitOptIn"), false, _T("eSE"));
+		m_bKad6BetaExitOptIn = ini.GetBool(_T("Kad6BetaExitOptIn"), false, _T("eSE"));
 	}
+
+	// Normalize old alpha/beta profiles before any network component consumes
+	// broad experimental flags. Upgrades never inherit a consent level.
+	ApplyEseNetLabPreferenceState(m_bEseNetLabEnabled);
 
 	LoadCats();
 	SetLanguage();
+}
+
+void CPreferences::ApplyEseNetLabPreferenceState(bool active)
+{
+	const bool base = active && m_iEseNetLabConsent == EseNetLabAccepted;
+	const bool advanced = base
+		&& m_iEseNetLabAdvancedConsent == EseNetLabAccepted;
+	const bool contribution = advanced
+		&& m_iEseNetLabContributionConsent == EseNetLabAccepted;
+
+	SetEseNetLabEnabled(base);
+	SetEseAutoKeepalive(base);
+	if (base)
+		SetIPv6Mode(IPv6AutoMode);
+
+	SetEseV9Experimental(advanced);
+	SetEseKad3Rendezvous(advanced);
+	SetEseKadV6Tag(advanced);
+	SetEseReachSelector(advanced);
+	SetEseHolePunchPortPredict(advanced);
+	SetEseEd2kPunch3(advanced);
+	if (advanced)
+		SetEseHolePunchPortSpread(4);
+
+	SetEseRelayAccept(contribution);
+	SetEseRelayEgress(contribution);
+	const bool krpConfigured = contribution
+		&& !m_strKrpRelayEndpointHost.IsEmpty()
+		&& !m_strKrpRelayExpectedServerName.IsEmpty()
+		&& !m_strKrpRelayCaBundlePath.IsEmpty()
+		&& !m_strKrpRelayAuthTokenPath.IsEmpty();
+	SetKrpRelayEnabled(krpConfigured);
+	SetKrpRelayKillSwitch(!krpConfigured);
+	SetKrpRelayExperimentalTcp(krpConfigured);
+	SetKad6BetaExitOptIn(contribution);
 }
 
 WORD CPreferences::GetWindowsVersion()

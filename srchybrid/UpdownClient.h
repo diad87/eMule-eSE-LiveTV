@@ -360,6 +360,7 @@ public:
 	bool			GetViewSharedFilesSupport() const				{ return m_fNoViewSharedFiles==0; }
 	bool			SafeConnectAndSendPacket(Packet *packet);
 	bool			SendPacket(Packet *packet, bool bVerifyConnection = false);
+	uint32			GetSocketQueuedBytes() const;
 	void			CheckForGPLEvilDoer();
 	// Encryption / Obfuscation / Connect options
 	bool			SupportsCryptLayer() const						{ return m_fSupportsCryptLayer; }
@@ -727,6 +728,7 @@ protected:
 	uint64		m_nCurQueueSessionPayloadUp;
 	uint64		m_addedPayloadQueueSession;
 	DWORD		m_dwUploadTime;
+	DWORD		m_dwIPv6WaitStartTime;
 	DWORD		m_dwLastUpRequest;
 	UINT		m_cAsked;
 	UINT		m_slotNumber;

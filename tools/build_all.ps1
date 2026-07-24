@@ -95,14 +95,20 @@ Stage 'tests-integration' {
 
 Stage 'cleanup-libutp' {
     # libutp is a pinned submodule whose upstream .gitignore predates VS2022.
-    # Its x64 output has already been linked into emule.exe; remove only that
-    # verified generated directory so the package provenance remains clean.
+    # Its x64 output has already been linked into emule.exe. Historical VS
+    # property sheets and command-line OutDir overrides have used three
+    # different generated roots; remove only those verified roots so stale
+    # output from an earlier build cannot make package provenance fail.
     $submoduleRoot = (Resolve-Path (Join-Path $RepoRoot 'libutp')).Path.TrimEnd('\') + '\'
-    $generated = [IO.Path]::GetFullPath((Join-Path $submoduleRoot 'x64'))
-    if (-not $generated.StartsWith($submoduleRoot, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "unsafe libutp cleanup target: $generated"
+    foreach ($relativeGenerated in @('x64', 'Build\x64', 'libutp\x64')) {
+        $generated = [IO.Path]::GetFullPath((Join-Path $submoduleRoot $relativeGenerated))
+        if (-not $generated.StartsWith($submoduleRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "unsafe libutp cleanup target: $generated"
+        }
+        if (Test-Path -LiteralPath $generated) {
+            Remove-Item -LiteralPath $generated -Recurse -Force
+        }
     }
-    if (Test-Path -LiteralPath $generated) { Remove-Item -LiteralPath $generated -Recurse -Force }
     $submoduleStatus = @(& git -C (Join-Path $RepoRoot 'libutp') status --porcelain=v1)
     if ($submoduleStatus.Count -gt 0) { throw 'libutp is dirty after generated-output cleanup' }
 }
@@ -175,6 +181,29 @@ Stage 'package-smoke' {
     foreach ($required in @('emule.exe','ese-server.exe','ffmpeg.exe','ffprobe.exe','config\preferences.ini','config\nodes.dat','BUILD_INFO.txt','SHA256SUMS.txt')) {
         if (-not (Test-Path (Join-Path $packageDir $required) -PathType Leaf)) { throw "package smoke missing $required" }
     }
+    $packageRootPrefix = [IO.Path]::GetFullPath($packageDir).TrimEnd('\') + '\'
+    $verifiedHashes = 0
+    foreach ($line in Get-Content -LiteralPath (Join-Path $packageDir 'SHA256SUMS.txt')) {
+        if ($line -notmatch '^([0-9A-Fa-f]{64})  (.+)$') {
+            throw "package smoke malformed SHA256SUMS line: $line"
+        }
+        $expectedHash = $matches[1].ToUpperInvariant()
+        $relativePath = $matches[2].Replace('/', '\')
+        $candidatePath = [IO.Path]::GetFullPath((Join-Path $packageDir $relativePath))
+        if (-not $candidatePath.StartsWith($packageRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "package smoke SHA256SUMS path escapes package: $relativePath"
+        }
+        if (-not (Test-Path -LiteralPath $candidatePath -PathType Leaf)) {
+            throw "package smoke SHA256SUMS entry is missing: $relativePath"
+        }
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $candidatePath).Hash
+        if ($actualHash -ne $expectedHash) {
+            throw "package smoke hash mismatch: $relativePath"
+        }
+        $verifiedHashes++
+    }
+    if ($verifiedHashes -eq 0) { throw 'package smoke SHA256SUMS is empty' }
+    Write-Host "Package hashes: $verifiedHashes verified"
     & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot -RuntimeDir $packageDir
     $oldTestMode = $env:ESE_TEST_MODE
     $oldPort = $env:ESE_PORT

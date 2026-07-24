@@ -262,7 +262,8 @@ void RefreshEseV9PreviewCaps()
         ESE_CAP_TUNNEL_BULK | ESE_CAP_REACH_V2 | ESE_CAP_KAD_KEEPALIVE |
         ESE_CAP_TUNNEL_AUTH |
         ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED |
-        ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY | ESE_CAP_NETLAB_V1);
+        ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY | ESE_CAP_NETLAB_V1 |
+        ESE_CAP_HOLEPUNCH_RDV | ESE_CAP_LIVE_RELAY);
     volatile LONG* caps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
     ::InterlockedAnd(caps, ~previewMask);
 
@@ -273,6 +274,12 @@ void RefreshEseV9PreviewCaps()
         LONG netlab = static_cast<LONG>(ESE_CAP_NETLAB_V1 | ESE_CAP_REACH_V2);
         if (CPreferences::GetEseAutoKeepalive())
             netlab |= static_cast<LONG>(ESE_CAP_KAD_KEEPALIVE);
+        if (CPreferences::GetUtpHolePunchEnabled()
+            && CPreferences::GetEseKad3Rendezvous())
+            netlab |= static_cast<LONG>(ESE_CAP_HOLEPUNCH_RDV);
+        if (CPreferences::IsEseNetLabContributionActive()
+            && CPreferences::GetEseRelayAccept())
+            netlab |= static_cast<LONG>(ESE_CAP_LIVE_RELAY);
         ::InterlockedOr(caps, netlab);
     }
 
@@ -283,6 +290,9 @@ void RefreshEseV9PreviewCaps()
     if (eSELive::NodeIdentityIsPersistent()) {
         enabled |= static_cast<LONG>(ESE_CAP_TUNNEL_AUTH |
             ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED);
+        if (CPreferences::IsEseNetLabContributionActive()
+            && CPreferences::GetKad6BetaExitOptIn())
+            enabled |= static_cast<LONG>(ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY);
     }
     ::InterlockedOr(caps, enabled);
 }

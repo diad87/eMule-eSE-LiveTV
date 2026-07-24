@@ -115,6 +115,8 @@ if ($nodesBytes.Length -lt 100 -or $nodesBytes.Length -gt 5MB) { throw 'Pinned n
     "Nick=$testerNick",
     'Port=4662',
     'UDPPort=4672',
+    'MaxUpload=-1',
+    'MaxDownload=-1',
     'Autoconnect=1',
     'AutoStart=1',
     'Networks=eD2K|Kad',
@@ -130,6 +132,8 @@ if ($nodesBytes.Length -lt 100 -or $nodesBytes.Length -gt 5MB) { throw 'Pinned n
     "WebUseUPnP=0",
     "[eSE]",
     'EseNetLabConsent=0',
+    'EseNetLabAdvancedConsent=0',
+    'EseNetLabContributionConsent=0',
     'EseNetLabEnabled=0',
     "EseV9Experimental=0",
     'EseKad3Rendezvous=0',
@@ -140,9 +144,10 @@ if ($nodesBytes.Length -lt 100 -or $nodesBytes.Length -gt 5MB) { throw 'Pinned n
     'EseHolePunchPortPredict=0',
     'EseEd2kPunch3=0',
     'Kad6PublicExitOptIn=0',
+    'Kad6BetaExitOptIn=0',
     '[KRPRelay]',
     'KrpRelayEnabled=0',
-    'KrpRelayKillSwitch=0',
+    'KrpRelayKillSwitch=1',
     'ExperimentalTcpDataPlane=0'
 ) | Out-File (Join-Path $configDir 'preferences.ini') -Encoding ASCII
 
@@ -190,6 +195,14 @@ Write-Host '[7/7] ZIP and external checksum'
 Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $zipPath -CompressionLevel Optimal -Force
 $zipHash = Hash $zipPath
 "$zipHash  $([IO.Path]::GetFileName($zipPath))" | Out-File "$zipPath.sha256" -Encoding ASCII
+$forumDraftSource = Join-Path $RepoRoot "docs\FORUM_POST_v$releaseVersion.md"
+if (Test-Path -LiteralPath $forumDraftSource -PathType Leaf) {
+    $forumDraft = (Get-Content -LiteralPath $forumDraftSource -Raw).Replace('<ZIP_SHA256>', $zipHash)
+    [IO.File]::WriteAllText(
+        (Join-Path $releaseRoot 'FORUM_POST.md'),
+        $forumDraft,
+        (New-Object Text.UTF8Encoding($false)))
+}
 Write-Host "Package: $packageDir" -ForegroundColor Green
 Write-Host "ZIP:     $zipPath" -ForegroundColor Green
 Write-Host "SHA256:  $zipHash" -ForegroundColor Green

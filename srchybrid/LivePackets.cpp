@@ -205,12 +205,13 @@ Packet* CreatePeerListPacket(const uchar* streamKey,
 }
 
 // v0.71 IPv6 Sprint 7 — peer list V2 with CAddress. Each entry is variable-
-// width: 6 bytes for v4 (1 family + 1 length + 4 addr) + 2 port = 8 bytes,
-// or 18+2=20 bytes for v6. Max payload assuming all v6 + cap = 16:
-// 16+2 (header) + 16 entries * 20 bytes = 338 bytes. Well under any
+// width: 6 bytes for v4 (1 family + 1 length + 4 addr) + 2 port + 1 score,
+// or 18+2+1=21 bytes for v6. Max payload assuming all v6 + cap = 16:
+// 16+2 (header) + 16 entries * 21 bytes = 354 bytes. Well under any
 // reasonable packet ceiling.
 Packet* CreatePeerListPacketV2(const uchar* streamKey,
-    const ::CAddress* addrs, const uint16* ports, uint16 count)
+    const ::CAddress* addrs, const uint16* ports, const uint8* scores,
+    uint16 count)
 {
     // Pre-compute size to size the SafeMemFile correctly. Each addr is
     // 6 or 18 bytes via WriteToBuffer; we walk once for sizing then again
@@ -223,7 +224,7 @@ Packet* CreatePeerListPacketV2(const uchar* streamKey,
             case ::CAddress::IPv6: addrBytes += 16; break;
             case ::CAddress::None:                  break;
         }
-        totalBytes += addrBytes + 2;  // port
+        totalBytes += addrBytes + 3;  // port + score
     }
     CSafeMemFile data(totalBytes);
     data.WriteHash16(streamKey);
@@ -231,6 +232,7 @@ Packet* CreatePeerListPacketV2(const uchar* streamKey,
     for (uint16 i = 0; i < count; ++i) {
         addrs[i].WriteToBuffer(&data);
         data.WriteUInt16(ports[i]);
+        data.WriteUInt8(scores != NULL ? scores[i] : 0);
     }
     Packet* pkt = new Packet(data, OP_EMULEPROT);
     pkt->opcode = OP_LIVE_PEER_LIST_V2;

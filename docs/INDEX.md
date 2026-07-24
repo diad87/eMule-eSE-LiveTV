@@ -5,6 +5,9 @@ maintain eMule eSE.
 
 ## User documentation
 
+- [eSE 9.1.0-beta.1 release notes](RELEASE_NOTES_v9.1.0-beta.1.md)
+  — IPv6/Kad6 between eSE peers, staged laboratory consent, current evidence
+  and known beta limitations.
 - [eSE 9.0.0-beta.2 candidate release notes](RELEASE_NOTES_v9.0.0-beta.2.md)
   — post-beta.1 reliability, laboratory and security scope under validation.
 - [User guide](USER_GUIDE.md) — installation, playback, broadcasting,
@@ -19,6 +22,11 @@ maintain eMule eSE.
 - [eSE 9.x release specification and test plan](V9_RELEASE_SPECIFICATION.md)
   - normative scope, current lab topology, acceptance matrices and development
   plan for versions 9.0 through 9.4.
+- [Kad6 design, boundaries and promotion policy](KAD6_IMPLEMENTATION_PLAN.md)
+  - default-on experimental client decision, native/gateway/exit separation,
+  persistence, wire evolution and 9.0/9.1 gates.
+- [Kad2 and Kad6 network selection](KAD_NETWORK_SELECTION.md)
+  - masks, profile migration, hot switching and observable state.
 - [WP0 laboratory toolkit](../tools/lab/README.md) - isolated node profiles,
   sanitized evidence, data-route assertions, soak monitoring and reports.
 

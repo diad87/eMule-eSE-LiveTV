@@ -137,6 +137,10 @@ try {
     $declinedPreferences = Join-Path $declinedNode 'config\preferences.ini'
     Set-LabIniValue -Path $declinedPreferences -Section 'eSE' `
         -Key 'EseNetLabConsent' -Value '1'
+    Set-LabIniValue -Path $declinedPreferences -Section 'eSE' `
+        -Key 'EseNetLabAdvancedConsent' -Value '1'
+    Set-LabIniValue -Path $declinedPreferences -Section 'eSE' `
+        -Key 'EseNetLabContributionConsent' -Value '1'
     # Deliberately inconsistent input: load must fail closed because consent is declined.
     Set-LabIniValue -Path $declinedPreferences -Section 'eSE' `
         -Key 'EseNetLabEnabled' -Value '1'
@@ -204,33 +208,39 @@ try {
         Add-V90Case -Id 'V90-S01' -Verdict 'BLOCKED' `
             -Reason 'No non-overlay LAN address was available for the remote-access negative control'
     } else {
-        $remoteBlocked = $false
-        $remoteResult = 'unknown'
-        try {
-            $response = Invoke-WebRequest `
-                -Uri ("http://{0}:{1}/api/status" -f $remoteAddress, $declinedPorts.web) `
-                -UseBasicParsing -TimeoutSec 5
-            $remoteResult = "unexpected_http_$([int]$response.StatusCode)"
-        } catch {
-            if ($_.Exception.Response) {
-                $statusCode = [int]$_.Exception.Response.StatusCode
-                $remoteBlocked = $statusCode -eq 401 -or $statusCode -eq 403
-                $remoteResult = "http_$statusCode"
-            } else {
-                $remoteBlocked = $true
-                $remoteResult = 'connection_rejected'
+        $remoteBlocked = $true
+        $remoteChecks = [ordered]@{}
+        foreach ($remotePath in @('/api/status', '/hls/stream.m3u8', '/live')) {
+            $remoteResult = 'unknown'
+            $pathBlocked = $false
+            try {
+                $response = Invoke-WebRequest `
+                    -Uri ("http://{0}:{1}{2}" -f $remoteAddress, $declinedPorts.web, $remotePath) `
+                    -UseBasicParsing -TimeoutSec 5
+                $remoteResult = "unexpected_http_$([int]$response.StatusCode)"
+            } catch {
+                if ($_.Exception.Response) {
+                    $statusCode = [int]$_.Exception.Response.StatusCode
+                    $pathBlocked = $statusCode -eq 401 -or $statusCode -eq 403
+                    $remoteResult = "http_$statusCode"
+                } else {
+                    $pathBlocked = $true
+                    $remoteResult = 'connection_rejected'
+                }
             }
+            $remoteChecks[$remotePath] = $remoteResult
+            if (-not $pathBlocked) { $remoteBlocked = $false }
         }
         Add-V90Case -Id 'V90-S01' `
             -Verdict $(if ($remoteBlocked) { 'PASS' } else { 'FAIL' }) `
             -Reason $(if ($remoteBlocked) {
-                'Unauthenticated non-loopback API access was rejected'
+                'Unauthenticated non-loopback API, HLS and dashboard access were rejected'
             } else {
-                'Unauthenticated non-loopback API access unexpectedly succeeded'
+                'At least one unauthenticated non-loopback API, HLS or dashboard request succeeded'
             }) `
             -Details ([ordered]@{
                 address_class = Get-LabAddressClass -Address $remoteAddress
-                result = $remoteResult
+                results = $remoteChecks
             })
     }
 
@@ -253,6 +263,10 @@ try {
     $acceptedPreferences = Join-Path $acceptedNode 'config\preferences.ini'
     Set-LabIniValue -Path $acceptedPreferences -Section 'eSE' `
         -Key 'EseNetLabConsent' -Value '2'
+    Set-LabIniValue -Path $acceptedPreferences -Section 'eSE' `
+        -Key 'EseNetLabAdvancedConsent' -Value '1'
+    Set-LabIniValue -Path $acceptedPreferences -Section 'eSE' `
+        -Key 'EseNetLabContributionConsent' -Value '1'
     Set-LabIniValue -Path $acceptedPreferences -Section 'eSE' `
         -Key 'EseNetLabEnabled' -Value '1'
     Set-LabIniValue -Path $acceptedPreferences -Section 'eSE' `

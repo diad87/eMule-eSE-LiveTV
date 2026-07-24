@@ -24,6 +24,7 @@ public:
 	CRelayClient& operator=(const CRelayClient&) = delete;
 
 	bool Initialize(HWND hMainWindow) noexcept;
+	bool ApplyPreferences() noexcept;
 	void ProcessMainThreadEvents() noexcept;
 	void Shutdown() noexcept;
 	void GetStatusJson(CStringA& json) const;
@@ -49,6 +50,8 @@ private:
 	HWND m_hMainWindow;
 	bool m_initialized;
 	bool m_shutdown;
+	bool m_appliedEnabled;
+	bool m_appliedKillSwitch;
 	std::atomic<bool> m_tlsRuntimeInUse;
 	bool m_relayHighIdObserved;
 	bool m_relayHighIdSelectedServer;

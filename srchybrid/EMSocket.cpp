@@ -475,6 +475,30 @@ void CEMSocket::SendPacket(Packet *packet, bool controlpacket, uint32 actualPayl
 	}
 }
 
+uint32 CEMSocket::GetQueuedDataBytes() const
+{
+	CEMSocket* self = const_cast<CEMSocket*>(this);
+	uint64 total = 0;
+	CSingleLock lock(&self->sendLocker, TRUE);
+
+	if (self->sendbuffer != NULL && self->sendblen > self->sent)
+		total += (uint64)(self->sendblen - self->sent);
+
+	for (POSITION pos = self->controlpacket_queue.GetHeadPosition(); pos != NULL;) {
+		const Packet* packet = self->controlpacket_queue.GetNext(pos);
+		if (packet != NULL)
+			total += packet->size;
+	}
+
+	for (POSITION pos = self->standardpacket_queue.GetHeadPosition(); pos != NULL;) {
+		const StandardPacketQueueEntry& entry = self->standardpacket_queue.GetNext(pos);
+		if (entry.packet != NULL)
+			total += entry.packet->size;
+	}
+
+	return total > 0xFFFFFFFFULL ? 0xFFFFFFFFU : (uint32)total;
+}
+
 uint64 CEMSocket::GetSentBytesCompleteFileSinceLastCallAndReset()
 {
 	return (uint64)::InterlockedExchange64((LONG64*)&m_numberOfSentBytesCompleteFile, 0);

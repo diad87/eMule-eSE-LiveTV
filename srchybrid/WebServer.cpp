@@ -4831,7 +4831,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			LiveWebJoinReq req;
 			req.streamKey = streamKey;
 			req.title     = title;
-			req.ip        = 0;
+			req.address   = CAddress();
 			req.port      = 0;
 			req.joined    = false;
 			req.dialed    = false;
@@ -5209,7 +5209,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 "<p style=font-size:13px;color:#9ca3af>Esta es la versión embebida en <code>emule.exe</code>. Para la experiencia completa abre <a href=http://localhost:8080/live>http://localhost:8080/live</a> (requiere ese-server.exe).</p>"
 "<div class=box><h3 style=margin-top:0>🔍 Pre-flight</h3><div class=pf id=pf>cargando...</div></div>"
 "<div class=box><h3 style=margin-top:0>NetLab beta</h3><div id=nl-state style=font-size:12px;color:#94a3b8>cargando...</div>"
-"<div class=row><button id=nl-toggle class=warn>Activar / desactivar</button><button id=nl-copy>Copiar informe saneado</button></div></div>"
+"<div class=row><button id=nl-toggle class=warn>Desactivar todo</button><button id=nl-copy>Copiar informe saneado</button></div></div>"
 "<div class=box><h3 style=margin-top:0>🎬 Emisión</h3>"
 "<div class=row><label>Título: <input id=br-title placeholder='Mi Stream' value='eSE Demo'></label>"
 "<select id=br-source style=padding:8px;background:#0e0e10;color:#ddd;border:1px solid #2a2a2e;border-radius:5px>"
@@ -5234,7 +5234,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 "function L(t){var l=document.getElementById('log');l.textContent+=new Date().toLocaleTimeString()+' '+t+'\\n';l.scrollTop=l.scrollHeight;}"
 "function PF(){fetch('/api/live/preflight').then(function(r){return r.json();}).then(function(d){var p=document.getElementById('pf');var f=function(ok,t){var c=ok===true?'ok':(ok==='checking'?'warn-c':'err');var i=ok===true?'✅':(ok==='checking'?'⏳':'❌');return '<div class='+c+'>'+i+' '+t+'</div>';};p.innerHTML=f(d.kad_connected,'Kad')+f(d.high_id?true:(d.firewall_checking?'checking':false),d.high_id?'HighID':(d.firewall_checking?'NAT…':'LowID'))+f(d.ffmpeg_found,'FFmpeg')+f(!!d.public_ip,'IP '+(d.public_ip||'?')+':'+d.port);}).catch(function(){});}"
 "function MON(){fetch('/api/live/debug').then(function(r){return r.json();}).then(function(d){var m=document.getElementById('mon');if(!d){m.textContent='-';return;}m.innerHTML='broadcasting='+d.broadcasting+' viewing='+d.viewing+'<br>buffer='+(d.chunks?d.chunks.count+' segs ['+d.chunks.oldestSeq+'..'+d.chunks.newestSeq+']':'')+'<br>peers: view='+(d.peers?d.peers.viewPeers:0)+' broadcast='+(d.peers?d.peers.broadcastPeers:0)+' mesh='+(d.peers?d.peers.meshPeers:0)+'<br>kad: '+(d.discovery?'connected='+d.discovery.kadConnected+' streams='+d.discovery.knownStreams:'?');}).catch(function(){});}"
-"function NL(){fetch('/api/ese/v9').then(function(r){return r.json();}).then(function(d){var n=d.netlab||{};var s=document.getElementById('nl-state');s.dataset.on=n.enabled?'1':'0';s.textContent='Consentimiento: '+(n.consent||'?')+' | cohorte: '+(n.enabled?'ACTIVA':'OFF')+' | relay/KRP/Kad6 public exit: autorizacion independiente';document.getElementById('nl-toggle').disabled=n.consent!=='accepted';}).catch(function(){});}"
+"function NL(){fetch('/api/ese/v9').then(function(r){return r.json();}).then(function(d){var n=d.netlab||{};var i=n.independent||{};var s=document.getElementById('nl-state');s.dataset.on=n.enabled?'1':'0';s.textContent='Laboratorio: '+(n.enabled?'ACTIVO':'OFF')+' | base '+(n.consent||'?')+' | avanzado '+(n.advanced_consent||'?')+' | contribucion '+(n.contribution_consent||'?')+' | Punch3 '+((n.staged||{}).ed2k_punch3?'ON':'OFF')+' | KRP '+(i.krp?'ON':'OFF')+' | Kad6 Beta Exit '+(i.kad6_beta_exit?'ON':'OFF');var b=document.getElementById('nl-toggle');b.disabled=n.consent!=='accepted';b.textContent=n.enabled?'Desactivar todo':'Reactivar niveles aceptados';b.className=n.enabled?'stop':'warn';}).catch(function(){});}"
 "PF();MON();NL();setInterval(PF,8000);setInterval(MON,2000);setInterval(NL,5000);"
 "document.getElementById('nl-toggle').onclick=function(){var on=document.getElementById('nl-state').dataset.on==='1'?'0':'1';fetch('/api/ese/v9?on='+on).then(function(){NL();});};"
 "document.getElementById('nl-copy').onclick=function(){fetch('/api/ese/netlab/report').then(function(r){return r.text();}).then(function(t){if(navigator.clipboard&&navigator.clipboard.writeText){return navigator.clipboard.writeText(t);}var x=document.createElement('textarea');x.value=t;document.body.appendChild(x);x.select();document.execCommand('copy');x.remove();}).then(function(){L('Informe NetLab saneado copiado');}).catch(function(){L('No se pudo copiar el informe');});};"
@@ -5378,9 +5378,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 	// --- /api/ese/v9[?on=0|1] --- NetLab status + immediate cohort kill switch.
-	// A GET without "on" is read-only. Enabling is rejected unless the native
-	// first-start notice was explicitly accepted. The base cohort never toggles
-	// relay duty, relay egress, KRP, Kad6 public exit, punch3 or port prediction.
+	// A GET without "on" is read-only. Enabling restores only levels already
+	// accepted in the native notices. "on=0" atomically closes every lab level.
 	if (sURL.Left(11) == "/api/ese/v9") {
 		const CString onArg = _ParseURL(Data.sURL, _T("on"));
 		bool ok = true;
@@ -5389,30 +5388,19 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		if (!onArg.IsEmpty()) {
 			changed = true;
 			if (onArg == _T("0")) {
-				thePrefs.SetEseNetLabEnabled(false);
-				thePrefs.SetEseAutoKeepalive(false);
-				thePrefs.SetEseReachSelector(false);
-				thePrefs.SetEseHolePunchPortPredict(false);
-				thePrefs.SetEseEd2kPunch3(false);
-				thePrefs.SetEseKad3Rendezvous(false);
-				volatile LONG* pEseCaps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
-				::InterlockedAnd(pEseCaps, ~(LONG)ESE_CAP_HOLEPUNCH_RDV);
+				thePrefs.ApplyEseNetLabPreferenceState(false);
 				RefreshEseV9PreviewCaps();
 				CKadKeepalive::Instance().RequestStop();
+				try {
+					(void)eSELive::CLiveTunnel::Get().RequestK6PublicRelease(
+						false, NULL, 0, 5000);
+				} catch (...) {}
 			} else if (onArg == _T("1")) {
 				if (thePrefs.GetEseNetLabConsent() != CPreferences::EseNetLabAccepted) {
 					ok = false;
 					error = "explicit_consent_required";
 				} else {
-					thePrefs.SetEseNetLabEnabled(true);
-					thePrefs.SetEseAutoKeepalive(true);
-					// A base re-enable never escalates into the staged cohort.
-					thePrefs.SetEseReachSelector(false);
-					thePrefs.SetEseHolePunchPortPredict(false);
-					thePrefs.SetEseEd2kPunch3(false);
-					thePrefs.SetEseKad3Rendezvous(false);
-					volatile LONG* pEseCaps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
-					::InterlockedAnd(pEseCaps, ~(LONG)ESE_CAP_HOLEPUNCH_RDV);
+					thePrefs.ApplyEseNetLabPreferenceState(true);
 					RefreshEseV9PreviewCaps();
 					CKadKeepalive::Instance().RequestStart();
 				}
@@ -5427,16 +5415,28 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				ok = false;
 				error = "persist_failed";
 			}
+			if (theApp.emuledlg != NULL
+				&& ::IsWindow(theApp.emuledlg->GetSafeHwnd()))
+				::PostMessage(theApp.emuledlg->GetSafeHwnd(),
+					UM_KRP_CLIENT_EVENT, 0, 0);
 		}
 		const char* consent =
 			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
 			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided";
+		const char* advancedConsent =
+			thePrefs.GetEseNetLabAdvancedConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
+			thePrefs.GetEseNetLabAdvancedConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided";
+		const char* contributionConsent =
+			thePrefs.GetEseNetLabContributionConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
+			thePrefs.GetEseNetLabContributionConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided";
 		CStringA json;
 		json.Format("{\"success\":%s,\"changed\":%s,\"error\":\"%s\","
-			"\"netlab\":{\"consent\":\"%s\",\"enabled\":%s,\"capability_advertised\":%s,"
+			"\"netlab\":{\"consent\":\"%s\",\"advanced_consent\":\"%s\","
+			"\"contribution_consent\":\"%s\",\"enabled\":%s,\"capability_advertised\":%s,"
 			"\"base\":{\"ipv6_auto\":%s,\"mappings\":true,\"hole_punch\":%s,\"auto_keepalive\":%s},"
 			"\"staged\":{\"selector\":%s,\"port_predict\":%s,\"ed2k_punch3\":%s,\"kad3_rendezvous\":%s},"
-			"\"independent\":{\"relay_accept\":%s,\"relay_egress\":%s,\"krp\":%s,\"kad6_public_exit\":%s},"
+			"\"independent\":{\"relay_accept\":%s,\"relay_egress\":%s,\"krp\":%s,"
+			"\"kad6_beta_exit\":%s,\"kad6_stable_public_exit\":%s},"
 			"\"keepalive_running\":%s},"
 			"\"v9\":{\"experimental\":%s,"
 			"\"port_predict\":%s,\"ed2k_punch3\":%s,\"kad3_rendezvous\":%s,"
@@ -5446,6 +5446,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			changed ? "true" : "false",
 			error,
 			consent,
+			advancedConsent,
+			contributionConsent,
 			thePrefs.IsEseNetLabActive() ? "true" : "false",
 			(g_uEseCapsRuntime & ESE_CAP_NETLAB_V1) != 0 ? "true" : "false",
 			thePrefs.IsIPv6Enabled() ? "true" : "false",
@@ -5458,6 +5460,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			thePrefs.GetEseRelayAccept() ? "true" : "false",
 			thePrefs.GetEseRelayEgress() ? "true" : "false",
 			thePrefs.GetKrpRelayEnabled() ? "true" : "false",
+			thePrefs.GetKad6BetaExitOptIn() ? "true" : "false",
 			thePrefs.GetKad6PublicExitOptIn() ? "true" : "false",
 			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
 			thePrefs.GetEseV9Experimental() ? "true" : "false",
@@ -6279,6 +6282,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"{\"ok\":%s,\"error\":\"%s\",\"status\":\"%s\",\"challenge\":\"%s\","
 			"\"operator_opt_in\":%s,\"evidence_present\":%s,\"evidence_valid\":%s,"
 			"\"runtime_healthy\":%s,\"public_exit_enabled\":%s,"
+			"\"beta_exit_opt_in\":%s,\"beta_exit_enabled\":%s,"
 			"\"gate_mask\":%u,\"observed_from\":%llu,\"observed_to\":%llu,"
 			"\"valid_until\":%llu,\"admission_attempts\":%llu,"
 			"\"admission_ppm\":%u,\"headroom_bps\":%llu}",
@@ -6290,6 +6294,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			release.evidence_valid ? "true" : "false",
 			release.runtime_healthy ? "true" : "false",
 			release.public_exit_enabled ? "true" : "false",
+			release.beta_exit_opt_in ? "true" : "false",
+			release.beta_exit_enabled ? "true" : "false",
 			static_cast<unsigned>(release.evidence.gate_mask),
 			static_cast<unsigned long long>(release.evidence.observed_from),
 			static_cast<unsigned long long>(release.evidence.observed_to),
@@ -6846,6 +6852,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// --- /api/live/direct_join --- Bypass Kad: connect directly to a known peer.
 	// Accepts either:
 	//   ?link=ed2k://|live|HEXKEY|IP:PORT|TITLE|/
+	//   ?link=ed2k://|live|HEXKEY|[IPv6]:PORT|TITLE|/
 	//   ?key=HEXKEY&ip=1.2.3.4&port=4662&title=My+Stream
 	// The "live" link is the format the broadcaster's Share panel produces when
 	// its public IP is known. Direct Join skips the 30s Kad search cooldown and
@@ -6874,10 +6881,19 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			{
 				keyT = parts[2];
 				CString ipPort = parts[3];
-				int colon = ipPort.Find(_T(':'));
-				if (colon > 0) {
-					ipT   = ipPort.Left(colon);
-					portT = ipPort.Mid(colon + 1);
+				if (!ipPort.IsEmpty() && ipPort[0] == _T('[')) {
+					const int closeBracket = ipPort.Find(_T(']'));
+					if (closeBracket > 1 && closeBracket + 1 < ipPort.GetLength()
+						&& ipPort[closeBracket + 1] == _T(':')) {
+						ipT   = ipPort.Mid(1, closeBracket - 1);
+						portT = ipPort.Mid(closeBracket + 2);
+					}
+				} else {
+					const int colon = ipPort.ReverseFind(_T(':'));
+					if (colon > 0) {
+						ipT   = ipPort.Left(colon);
+						portT = ipPort.Mid(colon + 1);
+					}
 				}
 				if (titleT.IsEmpty() && parts.GetCount() >= 5)
 					titleT = parts[4];
@@ -6898,14 +6914,21 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		// back to a Kad-only join so the viewer searches the DHT for the
 		// broadcaster's IP. The previous code returned 400 Bad Request and
 		// the UI just showed "no hace nada".
-		uint32 ipNet = 0;
+		CAddress directAddress;
 		uint16 port  = 0;
 		if (keyOk && !ipT.IsEmpty() && !portT.IsEmpty()) {
-			CStringA ipA = CT2A(ipT);
-			ipNet = (uint32)inet_addr((LPCSTR)ipA);
 			port  = (uint16)_ttoi(portT);
-			if (ipNet == INADDR_NONE || ipNet == 0 || port == 0) {
-				ipNet = 0; port = 0;  // treat as anonymous
+			CAddress parsed(ipT, false);
+			uint32 ipv4 = 0;
+			const bool validIPv4 = parsed.GetType() == CAddress::IPv4
+				&& parsed.TryToUInt32(ipv4) && ipv4 != 0 && ipv4 != INADDR_NONE;
+			const bool validIPv6 = parsed.GetType() == CAddress::IPv6
+				&& parsed.IsUsablePublic();
+			if (port != 0 && (validIPv4 || validIPv6)) {
+				directAddress = parsed;
+			} else {
+				directAddress = CAddress();
+				port = 0;  // treat as anonymous
 			}
 		}
 
@@ -6921,7 +6944,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			LiveWebJoinReq req;
 			req.streamKey = streamKey;
 			req.title     = titleT;
-			req.ip        = ipNet;
+			req.address   = directAddress;
 			req.port      = port;
 			req.joined    = false;
 			req.dialed    = false;
@@ -6946,9 +6969,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			(LPCSTR)CStringA(CT2A(keyT)),
 			(LPCSTR)CStringA(CT2A(ipT)),
 			(unsigned)port,
-			(ipNet != 0 && port != 0) ? "direct" : "kad-search",
+			(directAddress.GetType() != CAddress::None && port != 0) ? "direct" : "kad-search",
 			overall
-				? ((ipNet != 0 && port != 0)
+				? ((directAddress.GetType() != CAddress::None && port != 0)
 					? "Dialing broadcaster directly"
 					: "Anonymous link — searching Kad for the broadcaster (5-30 s)")
 				: (keyOk ? "JoinStream rejected" : "Bad streamKey or eMule not ready"));

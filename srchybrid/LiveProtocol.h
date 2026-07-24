@@ -20,6 +20,11 @@
 #define ESE_LIVE_PROBE_TIMEOUT      5000    // Probe test timeout (ms)
 #define ESE_LIVE_REQUEST_TIMEOUT    2000    // Chunk request timeout before retry (ms)
 
+// A slow viewer must not turn the otherwise unbounded socket queues into
+// unbounded RAM use. Above this per-peer backlog, live chunks are dropped and
+// recovered later through the normal missing-segment request path.
+#define ESE_LIVE_MAX_PEER_QUEUE_BYTES   (8u * 1024u * 1024u)
+
 // Kad keyword tags for eSE Live entries.
 // Use multi-byte names to avoid collisions with standard one-byte eD2K/Kad tags.
 #define TAG_ESE_LIVE_MARKER         "ese.live.marker"      // <uint32> 1

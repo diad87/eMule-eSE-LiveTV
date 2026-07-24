@@ -61,11 +61,19 @@ try {
         -Value ('eSE-v9-lab-{0}-{1}' -f $RunId, $NodeRole)
     Set-LabIniValue -Path $preferencesPath -Section 'eMule' -Key 'Port' -Value ([string]$ports.tcp)
     Set-LabIniValue -Path $preferencesPath -Section 'eMule' -Key 'UDPPort' -Value ([string]$ports.udp)
+    Set-LabIniValue -Path $preferencesPath -Section 'eMule' -Key 'AppVersion' `
+        -Value 'eSE v9 lab prepared profile'
+    Set-LabIniValue -Path $preferencesPath -Section 'eMule' -Key 'MaxUpload' -Value '-1'
+    Set-LabIniValue -Path $preferencesPath -Section 'eMule' -Key 'MaxDownload' -Value '-1'
+    Set-LabIniValue -Path $preferencesPath -Section 'eMule' -Key 'UploadCapacityNew' -Value '100000'
+    Set-LabIniValue -Path $preferencesPath -Section 'eMule' -Key 'DownloadCapacity' -Value '100000'
     Set-LabIniValue -Path $preferencesPath -Section 'WebServer' -Key 'Port' -Value ([string]$ports.web)
     Set-LabIniValue -Path $preferencesPath -Section 'WebServer' -Key 'WebUseUPnP' -Value '0'
 
     $safeDefaults = [ordered]@{
         EseNetLabConsent = '0'
+        EseNetLabAdvancedConsent = '0'
+        EseNetLabContributionConsent = '0'
         EseNetLabEnabled = '0'
         EseV9Experimental = '0'
         EseKad3Rendezvous = '0'
@@ -76,12 +84,13 @@ try {
         EseHolePunchPortPredict = '0'
         EseEd2kPunch3 = '0'
         Kad6PublicExitOptIn = '0'
+        Kad6BetaExitOptIn = '0'
     }
     foreach ($key in $safeDefaults.Keys) {
         Set-LabIniValue -Path $preferencesPath -Section 'eSE' -Key $key -Value $safeDefaults[$key]
     }
     Set-LabIniValue -Path $preferencesPath -Section 'KRPRelay' -Key 'KrpRelayEnabled' -Value '0'
-    Set-LabIniValue -Path $preferencesPath -Section 'KRPRelay' -Key 'KrpRelayKillSwitch' -Value '0'
+    Set-LabIniValue -Path $preferencesPath -Section 'KRPRelay' -Key 'KrpRelayKillSwitch' -Value '1'
     Set-LabIniValue -Path $preferencesPath -Section 'KRPRelay' -Key 'ExperimentalTcpDataPlane' -Value '0'
 
     $hashes = [ordered]@{}

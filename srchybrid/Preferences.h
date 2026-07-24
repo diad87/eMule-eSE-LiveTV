@@ -656,6 +656,8 @@ public:
 	static bool		m_bUPnPCriticalError;	// Fase 2: Indica fallo absoluto de UPnP/NAT-PMP
 	static bool		m_bEnableUtpHolePunch;	// Fase 4: Kill-switch maestro para Hole Punching uTP
 	static int		m_iEseNetLabConsent;	// v9 beta NetLab cohort: 0 undecided, 1 declined, 2 explicitly accepted.
+	static int		m_iEseNetLabAdvancedConsent;	// Punch3/prediction/Kad6 client plane; independent explicit consent.
+	static int		m_iEseNetLabContributionConsent;	// Relay/KRP/Kad6 beta-exit resource contribution; independent explicit consent.
 	static bool		m_bEseNetLabEnabled;	// Immediate cohort kill switch. Effective only after explicit acceptance.
 	static bool		m_bEseV9Experimental;	// v9 alpha master opt-in for unvalidated wire capabilities. Default OFF.
 	static bool		m_bEseKad3Rendezvous;	// Secure 3-way Kad rendezvous participation. Separate, default-OFF opt-in.
@@ -694,6 +696,7 @@ public:
 	static int		m_iKadV2FallbackPolicy;		// 0=Strict,1=Balanced,2=BestEffort
 	static CString	m_strKadV2SensitiveKeywords;// '|'-delimited lowercase keywords
 	static bool		m_bKad6PublicExitOptIn;	// explicit persistent operator consent; gate evidence is separate
+	static bool		m_bKad6BetaExitOptIn;	// beta cohort only; never satisfies the stable signed-release gate
 
 	// Spam
 	static bool		m_bEnableSearchResultFilter;
@@ -1321,6 +1324,26 @@ public:
 	static bool		GetEseNetLabEnabled()				{ return m_bEseNetLabEnabled; }
 	static void		SetEseNetLabEnabled(bool b)			{ m_bEseNetLabEnabled = b && m_iEseNetLabConsent == EseNetLabAccepted; }
 	static bool		IsEseNetLabActive()					{ return m_iEseNetLabConsent == EseNetLabAccepted && m_bEseNetLabEnabled; }
+	static int		GetEseNetLabAdvancedConsent()		{ return m_iEseNetLabAdvancedConsent; }
+	static void		SetEseNetLabAdvancedConsent(int state) {
+		m_iEseNetLabAdvancedConsent = state < EseNetLabUndecided || state > EseNetLabAccepted
+			? EseNetLabUndecided : state;
+	}
+	static int		GetEseNetLabContributionConsent()	{ return m_iEseNetLabContributionConsent; }
+	static void		SetEseNetLabContributionConsent(int state) {
+		m_iEseNetLabContributionConsent = state < EseNetLabUndecided || state > EseNetLabAccepted
+			? EseNetLabUndecided : state;
+	}
+	static bool		IsEseNetLabAdvancedActive()			{
+		return IsEseNetLabActive()
+			&& m_iEseNetLabAdvancedConsent == EseNetLabAccepted;
+	}
+	static bool		IsEseNetLabContributionActive()		{
+		return IsEseNetLabAdvancedActive()
+			&& m_iEseNetLabContributionConsent == EseNetLabAccepted;
+	}
+	// Applies only decisions already persisted; it never grants consent.
+	static void		ApplyEseNetLabPreferenceState(bool active);
 	static bool		GetEseV9Experimental()				{ return m_bEseV9Experimental; }
 	static void		SetEseV9Experimental(bool b)			{ m_bEseV9Experimental = b; }
 	static bool		GetEseKad3Rendezvous()			{ return m_bEseKad3Rendezvous; }
@@ -1345,6 +1368,7 @@ public:
 	static const CString& GetKrpRelayCaBundlePath()		{ return m_strKrpRelayCaBundlePath; }
 	static bool		GetKrpRelayAllowAnyServer()			{ return m_bKrpRelayAllowAnyServer; }
 	static bool		GetKrpRelayExperimentalTcp()		{ return m_bKrpRelayExperimentalTcp; }
+	static void		SetKrpRelayExperimentalTcp(bool b)	{ m_bKrpRelayExperimentalTcp = b; }
 	static const CString& GetKrpRelayAuthTokenPath()	{ return m_strKrpRelayAuthTokenPath; }
 	static bool		GetEseReachSelector()				{ return m_bEseReachSelector; }
 	static void		SetEseReachSelector(bool b)			{ m_bEseReachSelector = b; }
@@ -1377,6 +1401,8 @@ public:
 	static void		SetKadV2SensitiveKeywords(const CString &s)	{ m_strKadV2SensitiveKeywords = s; }
 	static bool		GetKad6PublicExitOptIn()			{ return m_bKad6PublicExitOptIn; }
 	static void		SetKad6PublicExitOptIn(bool enabled)	{ m_bKad6PublicExitOptIn = enabled; }
+	static bool		GetKad6BetaExitOptIn()				{ return m_bKad6BetaExitOptIn; }
+	static void		SetKad6BetaExitOptIn(bool enabled)	{ m_bKad6BetaExitOptIn = enabled; }
 	static bool		GetWSIsEnabled()					{ return m_bWebEnabled; }
 	static void		SetWSIsEnabled(bool bEnable)		{ m_bWebEnabled = bEnable; }
 	static bool		GetWebUseGzip()						{ return m_bWebUseGzip; }

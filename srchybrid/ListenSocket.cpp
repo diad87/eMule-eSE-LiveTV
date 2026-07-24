@@ -1672,22 +1672,19 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				if (!endpoint.ReadFromBuffer(&data)
 					|| endpoint.GetType() != CAddress::IPv6
 					|| !endpoint.IsUsablePublic()
-					|| data.GetLength() - data.GetPosition() < sizeof(uint16))
+					|| data.GetLength() - data.GetPosition() != sizeof(uint16))
 					throw GetResString(IDS_ERR_WRONGPACKETSIZE);
 				const uint16 tcp = data.ReadUInt16();
 				if (tcp == 0)
 					break;
 
 				CUpDownClient *callback = theApp.clientlist->FindClientByAddress(endpoint, tcp);
-				if (callback == NULL) {
-					// Keep the synthetic value strictly inside legacy fields. The
-					// address-aware lookup and connect path remain authoritative.
-					callback = new CUpDownClient(NULL, tcp, 0, 0, 0);
-					callback->SetIPv6Address(endpoint);
-					callback->SetIP(endpoint.ToSyntheticUInt32());
-					callback->SetIPv6CallbackSource();
-					theApp.clientlist->AddClient(callback);
-				}
+				// Unlike the legacy IPv4 callback, never turn an endpoint
+				// supplied by a third-party buddy into a new arbitrary dial.
+				// Native-v6 callback is only a reconnect hint for an endpoint
+				// already learned through an authenticated/validated route.
+				if (callback == NULL)
+					break;
 				callback->SetIPv6CallbackSource();
 				callback->TryToConnect(true);
 			}
@@ -2220,7 +2217,8 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 		case OP_LIVE_PEER_LIST_V2:
 			{
 				// v0.71 IPv6 Sprint 7 — peer list with CAddress payload.
-				// Layout: <StreamKey 16><Count 2>(<CAddress 6 or 18><Port 2>) × Count
+				// Layout: <StreamKey 16><Count 2>
+				//         (<CAddress 6 or 18><Port 2><Score 1>) x Count
 				// Receiver cap is identical to OP_LIVE_PEER_LIST (16 entries).
 				if (thePrefs.GetDebugClientTCPLevel() > 0)
 					DebugRecv("OP_LivePeerListV2", client);
@@ -2229,25 +2227,44 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				CSafeMemFile data(packet, size);
 				uchar streamKey[16];
 				data.ReadHash16(streamKey);
-				uint16 count = data.ReadUInt16();
+				const uint16 count = data.ReadUInt16();
 				const uint16 ESE_LIVE_MAX_PEER_LIST_V2 = 16;
 				if (count > ESE_LIVE_MAX_PEER_LIST_V2)
-					count = ESE_LIVE_MAX_PEER_LIST_V2;
+					break;
 
 				// Sprint 7 follow-up: pass CAddress entries through to the
 				// V6-aware receiver. IPv4 peers use the legacy path; native-v6
 				// peers use address-keyed clients and the native TCP path.
 				CArray<CAddress> addrs;
 				CArray<uint16> ports;
-				for (uint16 i = 0; i < count && data.GetPosition() + 4 <= data.GetLength(); ++i) {
-					CAddress addr;
-					if (!addr.ReadFromBuffer(&data)) break;
-					if (data.GetPosition() + 2 > data.GetLength()) break;
-					uint16 port = data.ReadUInt16();
-					addrs.Add(addr);
-					ports.Add(port);
-				}
-				if (theApp.liveStreamManager)
+				// beta.2 emitted an early draft without Score. Parse the
+				// normative scored format first, then accept that exact old
+				// shape as an explicit compatibility fallback.
+				auto parsePeerListV2 = [&](bool hasScore) -> bool {
+					addrs.RemoveAll();
+					ports.RemoveAll();
+					CSafeMemFile input(packet, size);
+					uchar ignoredKey[16];
+					input.ReadHash16(ignoredKey);
+					if (input.ReadUInt16() != count)
+						return false;
+					for (uint16 i = 0; i < count; ++i) {
+						CAddress addr;
+						const ULONGLONG trailer = 2 + (hasScore ? 1 : 0);
+						if (!addr.ReadFromBuffer(&input)
+							|| input.GetPosition() + trailer > input.GetLength())
+							return false;
+						const uint16 port = input.ReadUInt16();
+						if (hasScore)
+							(void)input.ReadUInt8();
+						addrs.Add(addr);
+						ports.Add(port);
+					}
+					return input.GetPosition() == input.GetLength();
+				};
+				const bool parsed = parsePeerListV2(true)
+					|| parsePeerListV2(false);
+				if (parsed && theApp.liveStreamManager)
 					theApp.liveStreamManager->OnPeerListReceivedV6(client, streamKey, addrs, ports);
 			}
 			break;
@@ -2846,7 +2863,9 @@ bool CListenSocket::StartListening()
 	// CEncryptedStreamSocket::GetPeerAddressV4 (storage-sized + v4-mapped
 	// normalization + loud "IPv6 guard" logging), so mapped-v4 accepts are safe.
 	bool bUsingV6 = false;
-	if (thePrefs.IsIPv6Enabled()) {
+	// A legacy BindAddr is an explicit request to listen only on that IPv4
+	// interface. Do not silently widen it to every interface through [::].
+	if (thePrefs.IsIPv6Enabled() && thePrefs.GetBindAddr() == NULL) {
 		// Bind address NULL means "[::]" — listen on all v6 interfaces. We
 		// don't pass thePrefs.GetBindAddr() because it's the v4 bind addr
 		// (TCHAR* dotted-quad) and would fail an AF_INET6 parse. If the user

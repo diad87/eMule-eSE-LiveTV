@@ -63,6 +63,7 @@ BEGIN_MESSAGE_MAP(CPPgConnection, CPropertyPage)
 	ON_BN_CLICKED(IDC_DLIMIT_LBL, OnLimiterChange)
 	ON_WM_HSCROLL()
 	ON_BN_CLICKED(IDC_NETWORK_KADEMLIA, OnSettingsChange)
+	ON_BN_CLICKED(IDC_NETWORK_KAD6, OnSettingsChange)
 	ON_WM_HELPINFO()
 	ON_BN_CLICKED(IDC_OPENPORTS, OnBnClickedOpenports)
 	ON_BN_CLICKED(IDC_PREF_UPNPONSTART, OnSettingsChange)
@@ -164,8 +165,8 @@ void CPPgConnection::OnEnChangeUDPDisable()
 {
 	SetModified();
 	bool bDisabled = ChangeUDP();
-	CheckDlgButton(IDC_NETWORK_KADEMLIA, static_cast<UINT>(thePrefs.networkkademlia && !bDisabled)); // don't use GetNetworkKademlia here
 	GetDlgItem(IDC_NETWORK_KADEMLIA)->EnableWindow(!bDisabled);
+	GetDlgItem(IDC_NETWORK_KAD6)->EnableWindow(!bDisabled);
 }
 
 BOOL CPPgConnection::OnInitDialog()
@@ -226,8 +227,10 @@ void CPPgConnection::LoadSettings()
 		CheckDlgButton(IDC_RECONN, static_cast<UINT>(thePrefs.reconnect));
 		CheckDlgButton(IDC_SHOWOVERHEAD, static_cast<UINT>(thePrefs.m_bshowoverhead));
 		CheckDlgButton(IDC_AUTOCONNECT, static_cast<UINT>(thePrefs.autoconnect));
-		CheckDlgButton(IDC_NETWORK_KADEMLIA, static_cast<UINT>(thePrefs.GetNetworkKademlia()));
+		CheckDlgButton(IDC_NETWORK_KADEMLIA, static_cast<UINT>(thePrefs.IsKad2Configured()));
+		CheckDlgButton(IDC_NETWORK_KAD6, static_cast<UINT>(thePrefs.IsKad6Configured()));
 		GetDlgItem(IDC_NETWORK_KADEMLIA)->EnableWindow(thePrefs.GetUDPPort() > 0);
+		GetDlgItem(IDC_NETWORK_KAD6)->EnableWindow(thePrefs.GetUDPPort() > 0);
 		CheckDlgButton(IDC_NETWORK_ED2K, static_cast<UINT>(thePrefs.networked2k));
 
 		WORD wv = thePrefs.GetWindowsVersion();
@@ -242,15 +245,12 @@ void CPPgConnection::LoadSettings()
 		CheckDlgButton(IDC_PREF_UPNPONSTART, static_cast<UINT>(thePrefs.IsUPnPEnabled()));
 
 		// v0.71 IPv6 Sprint 9 + IPv6 hotfix — IPv6 enable checkbox now
-		// maps cleanly to {Off, Auto}. Auto = the safe production mode
-		// (v4 listener + v6 egress prober). The third mode Preferido
-		// (real dual-stack listener AF_INET6 + V6ONLY=0) is confirmed
-		// to break eD2K server callbacks on Windows across multiple
-		// networks (home Telefónica fija + 4G Movistar), and is therefore
-		// hidden from the GUI to avoid users accidentally breaking
-		// HighID. Power users can still set IPv6Mode=2 in preferences.ini
-		// for testing/debugging the dual-stack code path. The hint text
-		// in the .rc warns about this.
+		// maps cleanly to the dual-stack policy. Both Auto and Preferred try
+		// an AF_INET6 listener with V6ONLY=0, preserving IPv4 on the same
+		// socket. If the operating system cannot bind IPv6, StartListening()
+		// falls back to an IPv4 listener and keeps IPv4 connectivity intact.
+		// IPv6PreferredMode remains available in preferences.ini for users
+		// who want IPv6-first outbound selection.
 		CheckDlgButton(IDC_PREF_ENABLE_IPV6, static_cast<UINT>(thePrefs.IsIPv6Enabled()));
 
 		//ShowLimitValues(); - will be called in OnLimiterChange()
@@ -343,7 +343,15 @@ BOOL CPPgConnection::OnApply()
 		theStats.ResetUpDatarateOverhead();
 	}
 
-	thePrefs.SetNetworkKademlia(IsDlgButtonChecked(IDC_NETWORK_KADEMLIA) != 0);
+	const bool bKadWasRunning = Kademlia::CKademlia::IsRunning();
+	uint8 uKadNetworkMask = KadNetworkPolicy::None;
+	if (IsDlgButtonChecked(IDC_NETWORK_KADEMLIA) != 0)
+		uKadNetworkMask |= KadNetworkPolicy::Kad2;
+	if (IsDlgButtonChecked(IDC_NETWORK_KAD6) != 0)
+		uKadNetworkMask |= KadNetworkPolicy::Kad6;
+	thePrefs.SetKadNetworkMask(uKadNetworkMask);
+	if (bKadWasRunning)
+		Kademlia::CKademlia::ApplyNetworkMask(thePrefs.GetEffectiveKadNetworkMask());
 
 	thePrefs.SetNetworkED2K(IsDlgButtonChecked(IDC_NETWORK_ED2K) != 0);
 
@@ -385,7 +393,7 @@ BOOL CPPgConnection::OnApply()
 	}
 
 	// v0.71 IPv6 Sprint 9 — IPv6 mode toggle. Off ↔ Auto. Change requires
-	// restart to re-create the listener as dual-stack (or fallback to v4).
+	// restart to re-create the dual-stack listener (or its IPv4 fallback).
 	const bool wantIPv6 = (IsDlgButtonChecked(IDC_PREF_ENABLE_IPV6) != 0);
 	if (thePrefs.IsIPv6Enabled() != wantIPv6) {
 		thePrefs.SetIPv6Mode(wantIPv6 ? CPreferences::IPv6AutoMode
@@ -418,6 +426,8 @@ void CPPgConnection::Localize()
 		SetDlgItemText(IDC_DLIMIT_LBL, GetResString(IDS_PW_DOWNL));
 		SetDlgItemText(IDC_ULIMIT_LBL, GetResString(IDS_PW_UPL));
 		SetDlgItemText(IDC_CONNECTION_NETWORK, GetResString(IDS_NETWORK));
+		SetDlgItemText(IDC_NETWORK_KADEMLIA, GetResString(IDS_NETWORK_KAD2));
+		SetDlgItemText(IDC_NETWORK_KAD6, GetResString(IDS_NETWORK_KAD6));
 		SetDlgItemText(IDC_KBS2, _T("Mbit/s"));
 		SetDlgItemText(IDC_KBS3, _T("Mbit/s"));
 		SetDlgItemText(IDC_MAXCONN_FRM, GetResString(IDS_PW_CONLIMITS));

@@ -166,6 +166,8 @@ public:
 	EPartFileLoadResult	ImportShareazaTempfile(LPCTSTR in_directory, LPCTSTR in_filename, EPartFileFormat *pOutCheckFileFormat = NULL);
 
 	bool	SavePartFile(bool bDontOverrideBak = false);
+	void	MarkPartMetDirty()							{ m_bPartMetDirty = true; }
+	void	MarkPartMetStatsDirty()						{ m_bPartMetStatsDirty = true; }
 	void	PartFileHashFinished(CKnownFile *result);
 	bool	HashSinglePart(UINT partnumber, bool *pbAICHReportedOK = NULL); // true = OK, false = corrupted
 
@@ -195,6 +197,9 @@ public:
 	void	AddSources(CSafeMemFile *sources, uint32 serverip, uint16 serverport, bool bWithObfuscationAndHash);
 	void	AddSourcesV6(CSafeMemFile *sources, uint32 serverip, uint16 serverport);
 	void	AddSource(LPCTSTR pszURL, uint32 nIP);
+	// URL sources may resolve to a native IPv6 endpoint. The uint32 overload
+	// remains unchanged for legacy IPv4 links.
+	void	AddSource(LPCTSTR pszURL, const CAddress& address);
 	static bool CanAddSource(uint32 userid, uint16 port, uint32 serverip, uint16 serverport, UINT *pdebug_lowiddropped = NULL, bool ed2kID = true);
 
 	EPartFileStatus	GetStatus(bool ignorepause = false) const;
@@ -211,7 +216,12 @@ public:
 	uint8	GetDownPriority() const						{ return m_iDownPriority; }
 	void	SetDownPriority(uint8 NewPriority, bool resort = true);
 	bool	IsAutoDownPriority() const					{ return m_bAutoDownPriority; }
-	void	SetAutoDownPriority(bool NewAutoDownPriority) { m_bAutoDownPriority = NewAutoDownPriority; }
+	void	SetAutoDownPriority(bool NewAutoDownPriority) {
+		if (m_bAutoDownPriority != NewAutoDownPriority) {
+			m_bAutoDownPriority = NewAutoDownPriority;
+			MarkPartMetDirty();
+		}
+	}
 	void	UpdateAutoDownPriority();
 
 	UINT	GetSourceCount() const						{ return static_cast<UINT>(srclist.GetCount()); }
@@ -261,7 +271,12 @@ public:
 	void	StopPausedFile();
 	void	ResumeFile(bool resort = true);
 	void	ResumeFileInsufficient();
-	void	SetPauseOnPreview(bool bVal)				{ m_bPauseOnPreview = bVal; }
+	void	SetPauseOnPreview(bool bVal) {
+		if (m_bPauseOnPreview != bVal) {
+			m_bPauseOnPreview = bVal;
+			MarkPartMetDirty();
+		}
+	}
 
 	virtual Packet* CreateSrcInfoPacket(const CUpDownClient *forClient, uint8 byRequestedVersion, uint16 nRequestedOptions) const;
 	void	AddClientSources(CSafeMemFile *sources, uint8 uClientSXVersion, bool bSourceExchange2, const CUpDownClient *pClient = NULL);
@@ -329,14 +344,25 @@ public:
 	bool	AllowSwapForSourceExchange(DWORD dwTick) const { return dwTick >= lastSwapForSourceExchangeTick + SEC2MS(30); } // ZZ:DownloadManager
 	void	SetSwapForSourceExchangeTick()				{ lastSwapForSourceExchangeTick = ::GetTickCount(); } // ZZ:DownloadManager
 
-	UINT	SetPrivateMaxSources(uint32 in)				{ return m_uMaxSources = in; }
+	UINT	SetPrivateMaxSources(uint32 in) {
+		if (m_uMaxSources != in) {
+			m_uMaxSources = in;
+			MarkPartMetDirty();
+		}
+		return m_uMaxSources;
+	}
 	UINT	GetPrivateMaxSources() const				{ return m_uMaxSources; }
 	UINT	GetMaxSources() const;
 	UINT	GetMaxSourcePerFileSoft() const;
 	UINT	GetMaxSourcePerFileUDP() const;
 
 	bool	GetPreviewPrio() const						{ return m_bpreviewprio; }
-	void	SetPreviewPrio(bool in)						{ m_bpreviewprio = in; }
+	void	SetPreviewPrio(bool in) {
+		if (m_bpreviewprio != in) {
+			m_bpreviewprio = in;
+			MarkPartMetDirty();
+		}
+	}
 
 	static bool RightFileHasHigherPrio(CPartFile *left, CPartFile *right);
 	bool	IsDeleting() const							{ return m_bDelayDelete; }
@@ -415,6 +441,7 @@ private:
 	DWORD	m_lastRefreshedDLDisplay;
 	DWORD	m_nLastBufferFlushTime;
 	DWORD	m_nNextMetFlushTime; //update .part.met file
+	DWORD	m_nLastPartMetSaveTime;
 	DWORD	m_nFileFlushTime; //if file is idle long enough, flush new data to disk
 	DWORD	m_dwFileAttributes;
 	DWORD	m_random_update_wait;
@@ -440,5 +467,7 @@ private:
 	bool	m_bAutoDownPriority;
 	bool	m_bDelayDelete;
 	bool	m_bpreviewprio;
+	bool	m_bPartMetDirty;
+	bool	m_bPartMetStatsDirty;
 	uint16	m_nStreamSeekPart;	// eSE: target part for streaming seek (_UI16_MAX = disabled)
 };

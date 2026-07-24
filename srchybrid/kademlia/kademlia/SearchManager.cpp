@@ -100,6 +100,12 @@ void CSearchManager::StopAllSearches()
 
 bool CSearchManager::StartSearch(CSearch *pSearch)
 {
+	if (pSearch == NULL)
+		return false;
+	if (!CKademlia::IsKad2Running()) {
+		delete pSearch;
+		return false;
+	}
 	// A search object was created, now try to start the search.
 	if (AlreadySearchingFor(pSearch->m_uTarget)) {
 		// There was already a search in progress with this target.
@@ -166,6 +172,8 @@ CSearch* CSearchManager::PrepareFindKeywords(LPCWSTR szKeyword, UINT uSearchTerm
 
 CSearch* CSearchManager::PrepareLookup(uint32 uType, bool bStart, const CUInt128 &uID)
 {
+	if (!CKademlia::IsKad2Running())
+		return NULL;
 	// Prepare a kad lookup.
 	// Make sure this target is not already in progress.
 	if (AlreadySearchingFor(uID))

@@ -18,6 +18,7 @@
 #include "DebugHelpers.h"
 #include "emule.h"
 #include "ListenSocket.h"
+#include "ClientTransferPolicy.h"
 #include "opcodes.h"
 #include "LiveStreamManager.h"
 #include "LiveCrypto.h"        // v7.6.0 — StreamKeyMatchesPubkey
@@ -347,7 +348,8 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 				if (client->GetInfoPacketsReceived() == IP_BOTH)
 					client->InfoPacketsReceived();
 
-				if (client->GetKadPort() && client->GetKadVersion() >= KADEMLIA_VERSION2_47a)
+				if (!client->IsIPv6OnlyEndpoint() && client->GetKadPort()
+					&& client->GetKadVersion() >= KADEMLIA_VERSION2_47a)
 					Kademlia::CKademlia::Bootstrap(ntohl(client->GetIP()), client->GetKadPort());
 			}
 		}
@@ -431,9 +433,8 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 				CKnownFile *reqfile = theApp.sharedfiles->GetFileByID(packet);
 				if (reqfile == NULL) {
 					reqfile = theApp.downloadqueue->GetFileByID(packet);
-					if (reqfile == NULL)
-						break;
-					if (reqfile->GetFileSize() > PARTSIZE) {
+					if (!ClientTransferPolicy::CanUseDownloadQueueFile(reqfile != NULL,
+						reqfile != NULL ? (uint64)reqfile->GetFileSize() : 0, PARTSIZE)) {
 					 // send file request no such file packet (0x48)
 						if (thePrefs.GetDebugClientTCPLevel() > 0)
 							DebugSend("OP_FileReqAnsNoFil", client, packet);
@@ -644,10 +645,12 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 			if (creqfile) {
 				if (!creqfile->IsStopped() && (creqfile->GetStatus() == PS_READY || creqfile->GetStatus() == PS_EMPTY)) {
 					client->ProcessBlockPacket(packet, size, false, false);
-					// BUG-006 FIX: Added parentheses to fix operator precedence
-					if (!creqfile->IsStopped() && (creqfile->GetStatus() == PS_PAUSED || creqfile->GetStatus() == PS_ERROR))
+					const ClientTransferPolicy::PostBlockAction action =
+						ClientTransferPolicy::ClassifyPostBlock(creqfile->IsStopped(),
+							creqfile->GetStatus() == PS_PAUSED || creqfile->GetStatus() == PS_ERROR);
+					if (action == ClientTransferPolicy::PostBlockAction::Requeue)
 						newDS = DS_ONQUEUE;
-					else
+					else if (action == ClientTransferPolicy::PostBlockAction::KeepConnected)
 						newDS = DS_CONNECTED; //any state but DS_NONE or DS_ONQUEUE
 				}
 			}
@@ -932,23 +935,42 @@ bool CClientReqSocket::ProcessPacket(const BYTE *packet, uint32 size, UINT opcod
 //     main thread absorbs without noticing.
 // Main thread only (MFC message pump delivers all client TCP) — no lock.
 namespace {
+	CAddress RatePeerAddress(const CUpDownClient* client)
+	{
+		if (client == NULL)
+			return CAddress();
+		if (client->socket != NULL) {
+			const CAddress socketAddress = client->socket->GetPeerCAddress();
+			if (socketAddress.GetType() != CAddress::None && !socketAddress.IsNull())
+				return socketAddress;
+		}
+		if (client->IsIPv6OnlyEndpoint())
+			return client->GetIPv6Address();
+		if (client->GetIP() != 0 && client->GetIP() != INADDR_NONE)
+			return CAddress::FromIPv4NetworkOrder(client->GetIP());
+		return CAddress();
+	}
+
 	struct TunnelCellRate {
-		uint32 srcIp;          // full source IP (network order)
+		CAddress srcAddress;   // full source endpoint (IPv4 or native IPv6)
 		uint32 count;
 		DWORD  windowStart;    // 0 = slot free
 	};
 	static TunnelCellRate s_tunnelCellRates[64] = {};
-	bool IsTunnelCellRateLimited(uint32 ipNet)
+	bool IsTunnelCellRateLimited(const CAddress& source)
 	{
+		if (source.GetType() == CAddress::None)
+			return false;
 		const DWORD  WINDOW_MS = 5000;
 		const uint32 MAX_CELLS = 6000;
 		DWORD now = ::GetTickCount();
 		// Find slot: hash + linear probe (cache is tiny, O(1) amortized)
 		int slot = -1, freeSlot = -1;
-		uint32 h = (ipNet * 0x9E3779B1u) % _countof(s_tunnelCellRates);
+		uint32 h = (source.HashKey() * 0x9E3779B1u) % _countof(s_tunnelCellRates);
 		for (uint32 i = 0; i < _countof(s_tunnelCellRates); ++i) {
 			uint32 idx = (h + i) % _countof(s_tunnelCellRates);
-			if (s_tunnelCellRates[idx].srcIp == ipNet && s_tunnelCellRates[idx].windowStart != 0) {
+			if (s_tunnelCellRates[idx].srcAddress == source
+				&& s_tunnelCellRates[idx].windowStart != 0) {
 				slot = (int)idx; break;
 			}
 			if (s_tunnelCellRates[idx].windowStart == 0 && freeSlot == -1) freeSlot = (int)idx;
@@ -967,7 +989,7 @@ namespace {
 				if (s_tunnelCellRates[slot].count > MAX_CELLS) limited = true;
 			}
 		} else if (freeSlot >= 0) {
-			s_tunnelCellRates[freeSlot].srcIp = ipNet;
+			s_tunnelCellRates[freeSlot].srcAddress = source;
 			s_tunnelCellRates[freeSlot].windowStart = now;
 			s_tunnelCellRates[freeSlot].count = 1;
 		}
@@ -980,18 +1002,21 @@ namespace {
 	// ~1.7 MB/s on one circuit; cap at ~5 MB/s (25 MB / 5 s) per source IP — generous for
 	// the validated bitrate yet bounds a flooder's main-thread AEAD/forward work. Same
 	// sliding-window open-addressed cache. Main thread only.
-	struct BulkByteRate { uint32 srcIp; uint64 bytes; DWORD windowStart; };
+	struct BulkByteRate { CAddress srcAddress; uint64 bytes; DWORD windowStart; };
 	static BulkByteRate s_bulkByteRates[64] = {};
-	bool IsBulkByteRateLimited(uint32 ipNet, uint32 addBytes)
+	bool IsBulkByteRateLimited(const CAddress& source, uint32 addBytes)
 	{
+		if (source.GetType() == CAddress::None)
+			return false;
 		const DWORD  WINDOW_MS = 5000;
 		const uint64 MAX_BYTES = 25ull * 1024 * 1024;   // 25 MB / 5 s = 5 MB/s ~= 40 Mbit/s per source IP
 		DWORD now = ::GetTickCount();
 		int slot = -1, freeSlot = -1;
-		uint32 h = (ipNet * 0x9E3779B1u) % _countof(s_bulkByteRates);
+		uint32 h = (source.HashKey() * 0x9E3779B1u) % _countof(s_bulkByteRates);
 		for (uint32 i = 0; i < _countof(s_bulkByteRates); ++i) {
 			uint32 idx = (h + i) % _countof(s_bulkByteRates);
-			if (s_bulkByteRates[idx].srcIp == ipNet && s_bulkByteRates[idx].windowStart != 0) { slot = (int)idx; break; }
+			if (s_bulkByteRates[idx].srcAddress == source
+				&& s_bulkByteRates[idx].windowStart != 0) { slot = (int)idx; break; }
 			if (s_bulkByteRates[idx].windowStart == 0 && freeSlot == -1) freeSlot = (int)idx;
 			if (s_bulkByteRates[idx].windowStart != 0 && now - s_bulkByteRates[idx].windowStart > WINDOW_MS * 4) {
 				if (freeSlot == -1) freeSlot = (int)idx;
@@ -1007,7 +1032,7 @@ namespace {
 				if (s_bulkByteRates[slot].bytes > MAX_BYTES) limited = true;
 			}
 		} else if (freeSlot >= 0) {
-			s_bulkByteRates[freeSlot].srcIp = ipNet;
+			s_bulkByteRates[freeSlot].srcAddress = source;
 			s_bulkByteRates[freeSlot].windowStart = now;
 			s_bulkByteRates[freeSlot].bytes = addBytes;
 		}
@@ -1041,7 +1066,8 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				theStats.AddDownDataOverheadFileRequest(uRawSize);
 				client->CheckHandshakeFinished();
 
-				if (client->GetKadPort() && client->GetKadVersion() >= KADEMLIA_VERSION2_47a)
+				if (!client->IsIPv6OnlyEndpoint() && client->GetKadPort()
+					&& client->GetKadVersion() >= KADEMLIA_VERSION2_47a)
 					Kademlia::CKademlia::Bootstrap(ntohl(client->GetIP()), client->GetKadPort());
 
 				CSafeMemFile data_in(packet, size);
@@ -1232,7 +1258,8 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				theStats.AddDownDataOverheadFileRequest(uRawSize);
 				client->CheckHandshakeFinished();
 
-				if (client->GetKadPort() && client->GetKadVersion() >= KADEMLIA_VERSION2_47a)
+				if (!client->IsIPv6OnlyEndpoint() && client->GetKadPort()
+					&& client->GetKadVersion() >= KADEMLIA_VERSION2_47a)
 					Kademlia::CKademlia::Bootstrap(ntohl(client->GetIP()), client->GetKadPort());
 
 				CSafeMemFile data_in(packet, size);
@@ -1527,12 +1554,17 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 					DebugRecv("OP_PublicIPReq", client);
 				theStats.AddDownDataOverheadOther(uRawSize);
 
-				if (thePrefs.GetDebugClientTCPLevel() > 0)
-					DebugSend("OP_PublicIPAns", client);
-				Packet *pPacket = new Packet(OP_PUBLICIP_ANSWER, 4, OP_EMULEPROT);
-				PokeUInt32(pPacket->pBuffer, client->GetIP());
-				theStats.AddUpDataOverheadOther(pPacket->size);
-				SendPacket(pPacket);
+				// Native IPv6-only clients have no meaningful legacy uint32
+				// public-IP answer. Send the additive v6 answer below instead of
+				// leaking the synthetic compatibility value into old wire fields.
+				if (!client->IsIPv6OnlyEndpoint()) {
+					if (thePrefs.GetDebugClientTCPLevel() > 0)
+						DebugSend("OP_PublicIPAns", client);
+					Packet *pPacket = new Packet(OP_PUBLICIP_ANSWER, 4, OP_EMULEPROT);
+					PokeUInt32(pPacket->pBuffer, client->GetIP());
+					theStats.AddUpDataOverheadOther(pPacket->size);
+					SendPacket(pPacket);
+				}
 
 				// v0.71 IPv6 Sprint 6 — also answer the requester's public v6
 				// address when (a) it advertised CAP_FORK_IPV6_WIRE so it can
@@ -1577,7 +1609,7 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 					DebugRecv("OP_Callback", client);
 				theStats.AddDownDataOverheadFileRequest(uRawSize);
 
-				if (!Kademlia::CKademlia::IsRunning())
+				if (!Kademlia::CKademlia::IsKad2Running())
 					break;
 				CSafeMemFile data(packet, size);
 				Kademlia::CUInt128 check;
@@ -1605,6 +1637,59 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 
 					callback->TryToConnect(true);
 				}
+			}
+			break;
+		case OP_CALLBACK_V6:
+			{
+				// Native-v6 callback is additive and is accepted only from a peer
+				// which negotiated the fork wire capability. The check/file-id
+				// prefix is identical to OP_CALLBACK; only the endpoint changes to
+				// <CAddress><port>.
+				if (!thePrefs.IsIPv6Enabled() || !client->SupportsIPv6Wire()
+					|| !Kademlia::CKademlia::IsKad6Running())
+					break;
+				if (size < MDX_DIGEST_SIZE * 2 + 18 + sizeof(uint16))
+					throw GetResString(IDS_ERR_WRONGPACKETSIZE);
+
+				CSafeMemFile data(packet, size);
+				Kademlia::CUInt128 check;
+				data.ReadUInt128(check);
+				check.Xor(Kademlia::CUInt128(true));
+				if (check != Kademlia::CKademlia::GetPrefs()->GetKadID())
+					break;
+
+				Kademlia::CUInt128 fileid;
+				data.ReadUInt128(fileid);
+				uchar fileid2[MDX_DIGEST_SIZE];
+				fileid.ToByteArray(fileid2);
+				if (theApp.sharedfiles->GetFileByID(fileid2) == NULL
+					&& theApp.downloadqueue->GetFileByID(fileid2) == NULL) {
+					client->CheckFailedFileIdReqs(fileid2);
+					break;
+				}
+
+				CAddress endpoint;
+				if (!endpoint.ReadFromBuffer(&data)
+					|| endpoint.GetType() != CAddress::IPv6
+					|| !endpoint.IsUsablePublic()
+					|| data.GetLength() - data.GetPosition() < sizeof(uint16))
+					throw GetResString(IDS_ERR_WRONGPACKETSIZE);
+				const uint16 tcp = data.ReadUInt16();
+				if (tcp == 0)
+					break;
+
+				CUpDownClient *callback = theApp.clientlist->FindClientByAddress(endpoint, tcp);
+				if (callback == NULL) {
+					// Keep the synthetic value strictly inside legacy fields. The
+					// address-aware lookup and connect path remain authoritative.
+					callback = new CUpDownClient(NULL, tcp, 0, 0, 0);
+					callback->SetIPv6Address(endpoint);
+					callback->SetIP(endpoint.ToSyntheticUInt32());
+					callback->SetIPv6CallbackSource();
+					theApp.clientlist->AddClient(callback);
+				}
+				callback->SetIPv6CallbackSource();
+				callback->TryToConnect(true);
 			}
 			break;
 		case OP_BUDDYPING:
@@ -1840,10 +1925,12 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				if (creqfile) {
 					if (!creqfile->IsStopped() && (creqfile->GetStatus() == PS_READY || creqfile->GetStatus() == PS_EMPTY)) {
 						client->ProcessBlockPacket(packet, size, bCompress, b64);
-						// BUG-006 FIX: Added parentheses to fix operator precedence
-						if (!creqfile->IsStopped() && (creqfile->GetStatus() == PS_PAUSED || creqfile->GetStatus() == PS_ERROR))
+						const ClientTransferPolicy::PostBlockAction action =
+							ClientTransferPolicy::ClassifyPostBlock(creqfile->IsStopped(),
+								creqfile->GetStatus() == PS_PAUSED || creqfile->GetStatus() == PS_ERROR);
+						if (action == ClientTransferPolicy::PostBlockAction::Requeue)
 							newDS = DS_ONQUEUE;
-						else
+						else if (action == ClientTransferPolicy::PostBlockAction::KeepConnected)
 							newDS = DS_CONNECTED; //any state but DS_NONE or DS_ONQUEUE
 					}
 				}
@@ -1884,8 +1971,9 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 			// Kad related packet, replaces KADEMLIA_FIREWALLED_ACK_RES
 			if (thePrefs.GetDebugClientTCPLevel() > 0)
 				DebugRecv("OP_KAD_FWTCPCHECK_ACK", client);
-			if (theApp.clientlist->IsKadFirewallCheckIP(client->GetIP())) {
-				if (Kademlia::CKademlia::IsRunning())
+			if (!client->IsIPv6OnlyEndpoint()
+				&& theApp.clientlist->IsKadFirewallCheckIP(client->GetIP())) {
+				if (Kademlia::CKademlia::IsKad2Running())
 					Kademlia::CKademlia::GetPrefs()->IncFirewalled();
 			} else
 				DebugLogWarning(_T("Unrequested OP_KAD_FWTCPCHECK_ACK packet from client %s"), (LPCTSTR)client->DbgGetClientInfo());
@@ -2147,10 +2235,8 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 					count = ESE_LIVE_MAX_PEER_LIST_V2;
 
 				// Sprint 7 follow-up: pass CAddress entries through to the
-				// V6-aware receiver, which splits v4 and v6 internally. v4
-				// peers reach the existing dial path; v6 peers are logged
-				// and counted until Sprint-4 Kad-v6 wires a real v6 socket
-				// helper to CUpDownClient (see OnPeerListReceivedV6 notes).
+				// V6-aware receiver. IPv4 peers use the legacy path; native-v6
+				// peers use address-keyed clients and the native TCP path.
 				CArray<CAddress> addrs;
 				CArray<uint16> ports;
 				for (uint16 i = 0; i < count && data.GetPosition() + 4 <= data.GetLength(); ++i) {
@@ -2345,6 +2431,7 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 		//   - If unknown: drop with debug log (could be late from a
 		//     destroyed circuit, not necessarily malicious).
 		case OP_LIVE_TUNNEL_CELL:
+		{
 			theStats.AddDownDataOverheadOther(uRawSize);
 			if (size != eSELive::CELL_TOTAL_BYTES) {
 				DebugLog(_T("OP_LIVE_TUNNEL_CELL: wrong size %u (expected %u) from %s — dropping"),
@@ -2356,12 +2443,13 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 			// CLiveTunnel crypto. Silent at protocol level (no reply, no new
 			// opcode — a vanilla 0.70b peer never sends cells anyway); debug
 			// log throttled so the flood can't also flood the log.
-			if (client && IsTunnelCellRateLimited(client->GetIP())) {
+			const CAddress rateAddress = client == NULL ? CAddress() : RatePeerAddress(client);
+			if (client && IsTunnelCellRateLimited(rateAddress)) {
 				static DWORD s_lastCellRateLog = 0;
 				if (::GetTickCount() - s_lastCellRateLog > 30000) {
 					s_lastCellRateLog = ::GetTickCount();
 					DebugLog(_T("OP_LIVE_TUNNEL_CELL: cell-rate cap exceeded for %s — dropping (DoS protection)"),
-						(LPCTSTR)ipstr(client->GetIP()));
+						(LPCTSTR)rateAddress.ToStringC());
 				}
 				break;
 			}
@@ -2382,6 +2470,7 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				}
 			}
 			break;
+		}
 
 		// === F0 (unified plan) — remaining eSE Live Tunneled opcodes ==
 		// Stub handlers for opcodes whose data plane (F5 P3+) is not yet
@@ -2415,6 +2504,7 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 		// FEC reassembly). Gated by ESE_CAP_TUNNEL_BULK, so vanilla/v8.0.x never
 		// send one (the old 0xD9 stub dropped it -> backward-compatible).
 		case OP_LIVE_BULK_CELL:
+		{
 			theStats.AddDownDataOverheadOther(uRawSize);
 			if (size < 17 || size > 17000) {   // header(17) .. one symbol + headers + 2 AEAD layers
 				DebugLog(_T("OP_LIVE_BULK_CELL: bad size %u — dropping"), size);
@@ -2422,17 +2512,19 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 			}
 			// DoS: per-source-IP BYTE-rate cap (E1.3/major16) — accounts in bytes, not
 			// cells, BEFORE any AEAD/forward. ~5 MB/s per IP (covers 12000 kbps + FEC).
-			if (client && IsBulkByteRateLimited(client->GetIP(), size)) {
+			const CAddress rateAddress = client == NULL ? CAddress() : RatePeerAddress(client);
+			if (client && IsBulkByteRateLimited(rateAddress, size)) {
 				static DWORD s_lastBulkRateLog = 0;
 				if (::GetTickCount() - s_lastBulkRateLog > 30000) {
 					s_lastBulkRateLog = ::GetTickCount();
 					DebugLog(_T("OP_LIVE_BULK_CELL: rate cap exceeded for %s — dropping (DoS protection)"),
-						(LPCTSTR)ipstr(client->GetIP()));
+						(LPCTSTR)rateAddress.ToStringC());
 				}
 				break;
 			}
 			eSELive::CLiveTunnel::Get().OnBulkCellReceived(packet, size, client);
 			break;
+		}
 
 		default:
 			theStats.AddDownDataOverheadOther(uRawSize);
@@ -2865,7 +2957,7 @@ int CALLBACK AcceptConnectionCond(LPWSABUF lpCallerId, LPWSABUF /*lpCallerData*/
 					s_iAcceptConnectionCondRejected = 3;
 					return CF_REJECT;
 				}
-				if (theApp.clientlist->IsBannedClient(addr.ToSyntheticUInt32())) {
+				if (theApp.clientlist->IsBannedClient(addr)) {
 					s_iAcceptConnectionCondRejected = 2;
 					return CF_REJECT;
 				}
@@ -3077,8 +3169,10 @@ void CListenSocket::OnAccept(int nErrorCode)
 					continue;
 				}
 
-				const uint32 banKey = bNativeV6 ? NativeV6.ToSyntheticUInt32() : SockAddr.sin_addr.s_addr;
-				if (theApp.clientlist->IsBannedClient(banKey)) {
+				const bool bBanned = bNativeV6
+					? theApp.clientlist->IsBannedClient(NativeV6)
+					: theApp.clientlist->IsBannedClient(SockAddr.sin_addr.s_addr);
+				if (bBanned) {
 					if (thePrefs.GetLogBannedClients()) {
 						CUpDownClient *pClient = theApp.clientlist->FindClientByIP(SockAddr.sin_addr.s_addr);
 						if (pClient)
@@ -3150,6 +3244,7 @@ bool CListenSocket::AcceptK6PreAuth()
 	kad6::K6RemoteGroup group;
 	uint32 v4 = 0;
 	uint32 banKey = 0;
+	CAddress nativeAddress;
 	if (remote.ss_family == AF_INET) {
 		const SOCKADDR_IN* in = reinterpret_cast<const SOCKADDR_IN*>(&remote);
 		group.family = 4;
@@ -3164,15 +3259,14 @@ bool CListenSocket::AcceptK6PreAuth()
 			memcpy(&v4, &in6->sin6_addr.u.Byte[12], 4);
 			banKey = v4;
 		} else {
-			CAddress native;
-			native.FromSA(reinterpret_cast<const sockaddr*>(in6), sizeof *in6);
-			if (native.GetType() != CAddress::IPv6 || !native.IsPublicIP()) {
+			nativeAddress.FromSA(reinterpret_cast<const sockaddr*>(in6), sizeof *in6);
+			if (nativeAddress.GetType() != CAddress::IPv6 || !nativeAddress.IsPublicIP()) {
 				closesocket(accepted);
 				return false;
 			}
 			group.family = 6;
 			memcpy(group.address.data(), &in6->sin6_addr, 16);
-			banKey = native.ToSyntheticUInt32();
+			banKey = nativeAddress.ToSyntheticUInt32();
 		}
 	} else {
 		closesocket(accepted);
@@ -3181,7 +3275,8 @@ bool CListenSocket::AcceptK6PreAuth()
 
 	const bool filtered = group.family == 4 && theApp.ipfilter->IsFiltered(v4);
 	if ((group.family == 4 && (v4 == INADDR_ANY || v4 == INADDR_NONE || filtered)) ||
-		theApp.clientlist->IsBannedClient(banKey)) {
+		 (group.family == 6 ? theApp.clientlist->IsBannedClient(nativeAddress)
+			: theApp.clientlist->IsBannedClient(banKey))) {
 		if (filtered)
 			++theStats.filteredclients;
 		closesocket(accepted);

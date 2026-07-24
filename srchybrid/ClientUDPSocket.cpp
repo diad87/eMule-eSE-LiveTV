@@ -146,7 +146,8 @@ void CClientUDPSocket::OnReceive(int nErrorCode)
 		if (nRealLen < 2 || (buffer[0] != OP_KAD6HEADER
 			&& buffer[0] != OP_KADEMLIAHEADER))
 			return;
-		if (IsNativeKad6Opcode(buffer[1])) {
+		if (Kademlia::CKademlia::IsKad6Running()
+			&& IsNativeKad6Opcode(buffer[1])) {
 			theStats.AddDownDataOverheadKad(nRealLen);
 			Kademlia::CKademlia::ProcessPacketV6(buffer, nRealLen,
 				sourceAddress.Data(), sourcePort);
@@ -178,9 +179,11 @@ void CClientUDPSocket::OnReceive(int nErrorCode)
 	// share the listener without entering legacy Kad2 decryption or routing.
 	if (nRealLen >= 2 && buffer[0] == OP_KAD6HEADER
 		&& IsNativeKad6Opcode(buffer[1])) {
-		theStats.AddDownDataOverheadKad(nRealLen);
-		Kademlia::CKademlia::ProcessPacketV4(buffer, nRealLen,
-			ntohl(sockAddr.sin_addr.s_addr), sourcePort);
+		if (Kademlia::CKademlia::IsKad6Running()) {
+			theStats.AddDownDataOverheadKad(nRealLen);
+			Kademlia::CKademlia::ProcessPacketV4(buffer, nRealLen,
+				ntohl(sockAddr.sin_addr.s_addr), sourcePort);
+		}
 		return;
 	}
 
@@ -199,6 +202,8 @@ void CClientUDPSocket::OnReceive(int nErrorCode)
 					ProcessPacket(pBuffer + 2, nPacketLen - 2, pBuffer[1], sockAddr.sin_addr.s_addr, ntohs(sockAddr.sin_port));
 				break;
 			case OP_KADEMLIAPACKEDPROT:
+				if (!Kademlia::CKademlia::IsKad2Running())
+					break;
 				theStats.AddDownDataOverheadKad(nPacketLen);
 				if (nPacketLen < 2)
 					strError = _T("Kad packet (compressed) too short");
@@ -235,6 +240,8 @@ void CClientUDPSocket::OnReceive(int nErrorCode)
 				}
 				break;
 			case OP_KADEMLIAHEADER:
+				if (!Kademlia::CKademlia::IsKad2Running())
+					break;
 				theStats.AddDownDataOverheadKad(nPacketLen);
 				if (nPacketLen < 2)
 					strError = _T("Kad packet too short");
@@ -478,7 +485,7 @@ bool CClientUDPSocket::ProcessPacket(const BYTE *packet, UINT size, uint8 opcode
 				break;
 			}
 			// do we accept callback requests at all?
-			if (Kademlia::CKademlia::IsRunning() && Kademlia::CKademlia::IsFirewalled()) {
+			if (Kademlia::CKademlia::IsKad2Running() && Kademlia::CKademlia::IsFirewalled()) {
 				theApp.clientlist->AddTrackCallbackRequests(ip);
 				CSafeMemFile data(packet, size);
 				uint16 nRemoteTCPPort = data.ReadUInt16();
@@ -871,6 +878,13 @@ bool CClientUDPSocket::InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort,
 	const uint32 uIPNetwork = htonl(dwIP);
 	CUpDownClient* pClient = NULL;
 	if (pExpectedClient != NULL && theApp.clientlist->IsValidClient(pExpectedClient)) {
+		// This rendezvous entry point is the legacy IPv4 hole-punch protocol.
+		// Native IPv6 peers use the K6 transport and must not be matched through
+		// the synthetic uint32 compatibility value.
+		if (pExpectedClient->IsIPv6OnlyEndpoint())
+			pExpectedClient = NULL;
+	}
+	if (pExpectedClient != NULL && theApp.clientlist->IsValidClient(pExpectedClient)) {
 		const uint32 uExpectedIP = pExpectedClient->GetConnectIP() != 0
 			? pExpectedClient->GetConnectIP() : pExpectedClient->GetIP();
 		if (uExpectedIP == uIPNetwork)
@@ -880,6 +894,8 @@ bool CClientUDPSocket::InitiateUtpConnect(uint32 dwIP, uint16 nUDPPort,
 		pClient = theApp.clientlist->FindClientByIP_KadPort(uIPNetwork, nUDPPort);
 	if (pClient == NULL)
 		pClient = theApp.clientlist->FindClientByIP_UDP(uIPNetwork, nUDPPort);
+	if (pClient != NULL && pClient->IsIPv6OnlyEndpoint())
+		pClient = NULL;
 	if (pClient == NULL) {
 		if (thePrefs.GetVerbose())
 			DebugLog(_T("eSE: InitiateUtpConnect — no client found for endpoint %s:%u"),

@@ -80,6 +80,10 @@ void CCorruptionBlackBox::TransferredData(uint64 nStartPos, uint64 nEndPos, cons
 
 	if (!pSender) //importing parts
 		return;
+	// The corruption ledger is keyed by the historical uint32 IPv4 identity.
+	// Do not merge native IPv6 transfers under a synthetic compatibility value.
+	if (pSender->IsIPv6OnlyEndpoint())
+		return;
 	uint32 dwSenderIP = pSender->GetIP();
 	// we store records separated for each part, so we don't have to search all entries every time
 

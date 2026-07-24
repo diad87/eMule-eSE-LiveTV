@@ -278,13 +278,29 @@ CED2KFileLink::CED2KFileLink(LPCTSTR pszName, LPCTSTR pszSize, LPCTSTR pszHash
 		else
 			pNext = pCh = pEnd;
 
-		LPCTSTR pPort = _tcschr(pIP, _T(':'));
+		LPCTSTR pPort = NULL;
+		CStringA sIPa;
+		if (*pIP == _T('[')) {
+			// IPv6 source literals use the URI-safe form [addr]:port.  The
+			// brackets make the port separator unambiguous and preserve the
+			// original IPv4/hostname syntax below.
+			LPCTSTR pClose = _tcschr(pIP, _T(']'));
+			if (pClose == NULL || pClose + 1 >= pNext || pClose[1] != _T(':')) {
+				++nInvalid;
+				continue;
+			}
+			sIPa = CStringA(pIP + 1, static_cast<int>(pClose - pIP - 1));
+			pPort = pClose + 1;
+		} else {
+			pPort = _tcschr(pIP, _T(':'));
+			if (pPort != NULL && pPort < pNext)
+				sIPa = CStringA(pIP, static_cast<int>(pPort - pIP));
+		}
 		// if port is not present for this ip, skip to the next ip
 		if (pPort == NULL || pPort >= pNext) {
 			++nInvalid;
 			continue;
 		}
-		CStringA sIPa(pIP, static_cast<int>(pPort - pIP));
 		++pPort;	// move to port string
 		unsigned long uPort = _tcstoul(pPort, NULL, 10);
 		// skip bad ips and ports

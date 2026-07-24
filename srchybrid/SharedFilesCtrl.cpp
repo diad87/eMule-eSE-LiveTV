@@ -1484,7 +1484,7 @@ bool CSharedFilesCtrl::IsSharedInKad(const CKnownFile *file) const
 	if (!Kademlia::CKademlia::IsFirewalled())
 		return true;
 	return (theApp.clientlist->GetBuddy() && (file->GetLastPublishBuddy() == theApp.clientlist->GetBuddy()->GetIP()))
-		|| (Kademlia::CKademlia::IsRunning() && !Kademlia::CUDPFirewallTester::IsFirewalledUDP(true) && Kademlia::CUDPFirewallTester::IsVerified())
+		|| (Kademlia::CKademlia::IsKad2Running() && !Kademlia::CUDPFirewallTester::IsFirewalledUDP(true) && Kademlia::CUDPFirewallTester::IsVerified())
 		|| CFirewallProberV6::CanAdvertiseModernKadSource();
 }
 

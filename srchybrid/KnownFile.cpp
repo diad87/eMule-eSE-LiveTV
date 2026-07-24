@@ -24,6 +24,7 @@
 #endif
 #include "emule.h"
 #include "KnownFile.h"
+#include "KnownFileHashPolicy.h"
 #include "KnownFileList.h"
 #include "SharedFileList.h"
 #include "UpDownClient.h"
@@ -393,6 +394,8 @@ bool CKnownFile::CreateFromFile(LPCTSTR in_directory, LPCTSTR in_filename, LPVOI
 	// create hashset
 	CAICHRecoveryHashSet cAICHHashSet(this, m_nFileSize);
 	uint64 togo = (uint64)m_nFileSize;
+	const bool bUseDirectFileHash = KnownFileHashPolicy::UsesDirectFileHash(
+		(uint64)m_nFileSize, PARTSIZE);
 	UINT hashcount;
 	for (hashcount = 0; ; ++hashcount) {
 		UINT uSize = (UINT)min(togo, PARTSIZE);
@@ -417,18 +420,18 @@ bool CKnownFile::CreateFromFile(LPCTSTR in_directory, LPCTSTR in_filename, LPVOI
 			return false;
 		}
 
-		if (!hashcount && uSize < PARTSIZE) {
+		if (!hashcount && bUseDirectFileHash) {
 			m_FileIdentifier.SetMD4Hash(newhash); //one and only part
 			delete[] newhash;
 		} else
 			m_FileIdentifier.GetRawMD4HashSet().Add(newhash);
 
 		togo -= uSize;
-		if (!togo)
-			if (uSize == PARTSIZE)
+		if (!togo) {
+			if (KnownFileHashPolicy::NeedsTrailingEmptyPart(togo, uSize, PARTSIZE))
 				continue;
-			else
-				break;
+			break;
+		}
 
 		if (pvProgressParam) {
 			if (theApp.IsClosing()) {
@@ -1118,6 +1121,10 @@ Packet*	CKnownFile::CreateSrcInfoPacket(const CUpDownClient *forClient, uint8 by
 		}
 
 		if (bNeeded) {
+			// Legacy source-exchange records carry only a uint32 IPv4 identity;
+			// native IPv6 sources are advertised through the additive V6 path.
+			if (cur_src->IsIPv6OnlyEndpoint())
+				continue;
 			++nCount;
 			uint32 dwID = (byUsedVersion >= 3) ? cur_src->GetUserIDHybrid() : cur_src->GetIP();
 			data.WriteUInt32(dwID);
@@ -1206,11 +1213,26 @@ void CKnownFile::UpdateAutoUpPriority()
 
 void CKnownFile::SetUpPriority(uint8 iNewUpPriority, bool bSave)
 {
+	const bool bChanged = m_iUpPriority != iNewUpPriority;
 	m_iUpPriority = iNewUpPriority;
 	ASSERT(m_iUpPriority == PR_VERYLOW || m_iUpPriority == PR_LOW || m_iUpPriority == PR_NORMAL || m_iUpPriority == PR_HIGH || m_iUpPriority == PR_VERYHIGH);
 
-	if (IsPartFile() && bSave)
-		static_cast<CPartFile*>(this)->SavePartFile();
+	if (IsPartFile()) {
+		CPartFile *partFile = static_cast<CPartFile*>(this);
+		if (bChanged)
+			partFile->MarkPartMetDirty();
+		if (bSave)
+			partFile->SavePartFile();
+	}
+}
+
+void CKnownFile::SetAutoUpPriority(bool NewAutoUpPriority)
+{
+	if (m_bAutoUpPriority == NewAutoUpPriority)
+		return;
+	m_bAutoUpPriority = NewAutoUpPriority;
+	if (IsPartFile())
+		static_cast<CPartFile*>(this)->MarkPartMetDirty();
 }
 
 void CKnownFile::RemoveMetaDataTags(UINT uTagType)
@@ -1550,11 +1572,29 @@ void CKnownFile::SetPublishedED2K(bool val)
 	theApp.emuledlg->sharedfileswnd->sharedfilesctrl.UpdateFile(this);
 }
 
+void CKnownFile::SetLastPublishTimeKadSrc(time_t time, uint32 buddyip)
+{
+	const bool bChanged = m_lastPublishTimeKadSrc != time || m_lastBuddyIP != buddyip;
+	m_lastPublishTimeKadSrc = time;
+	m_lastBuddyIP = buddyip;
+	if (bChanged && IsPartFile())
+		static_cast<CPartFile*>(this)->MarkPartMetStatsDirty();
+}
+
+void CKnownFile::SetLastPublishTimeKadNotes(time_t time)
+{
+	if (m_lastPublishTimeKadNotes == time)
+		return;
+	m_lastPublishTimeKadNotes = time;
+	if (IsPartFile())
+		static_cast<CPartFile*>(this)->MarkPartMetStatsDirty();
+}
+
 bool CKnownFile::PublishNotes()
 {
 	time_t tNow = time(NULL);
 	if (tNow >= m_lastPublishTimeKadNotes && (!GetFileComment().IsEmpty() || GetFileRating() > 0)) {
-		m_lastPublishTimeKadNotes = tNow + KADEMLIAREPUBLISHTIMEN;
+		SetLastPublishTimeKadNotes(tNow + KADEMLIAREPUBLISHTIMEN);
 		return true;
 	}
 	return false;
@@ -1569,7 +1609,7 @@ bool CKnownFile::PublishSrc()
 		&& !CFirewallProberV6::CanAdvertiseModernKadSource())
 	{
 		CUpDownClient *buddy = theApp.clientlist->GetBuddy();
-		if (!buddy)
+		if (!buddy || buddy->IsIPv6OnlyEndpoint())
 			return false;
 		lastBuddyIP = buddy->GetIP();
 		if (lastBuddyIP != m_lastBuddyIP) {

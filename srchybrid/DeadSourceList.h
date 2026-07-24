@@ -16,6 +16,7 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
 #include "otherfunctions.h"
+#include "eMuleAI/Address.h"
 
 ///////////////////////////////////////////////////////////////////////////////////////
 //// CDeadSource
@@ -35,10 +36,16 @@ public:
 	uint32			m_dwID;
 	uint16			m_nPort;
 	uint16			m_nKadPort;
+	// Native IPv6-only sources have no lossless uint32 identity. Keep their
+	// address in the dead-source key; IPv4 clients continue using the legacy
+	// ID/server/hash fields unchanged.
+	CAddress		m_address;
 };
 
 template<> inline UINT AFXAPI HashKey(const CDeadSource &ds)
 {
+	if (ds.m_address.GetType() != CAddress::None)
+		return ds.m_address.HashKey() ^ ds.m_nPort;
 	uint32 hash = ds.m_dwID;
 	if (hash != 0) {
 		if (::IsLowID(hash))

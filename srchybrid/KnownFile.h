@@ -66,7 +66,7 @@ public:
 	uint8	GetUpPriority() const						{ return m_iUpPriority; }
 	void	SetUpPriority(uint8 iNewUpPriority, bool bSave = true);
 	bool	IsAutoUpPriority() const					{ return m_bAutoUpPriority; }
-	void	SetAutoUpPriority(bool NewAutoUpPriority)	{ m_bAutoUpPriority = NewAutoUpPriority; }
+	void	SetAutoUpPriority(bool NewAutoUpPriority);
 	void	UpdateAutoUpPriority();
 
 	// This has lost its meaning here. This is the total clients we know that want this file.
@@ -93,9 +93,9 @@ public:
 	const Kademlia::WordList &GetKadKeywords() const	{ return wordlist; }
 
 	time_t	GetLastPublishTimeKadSrc() const			{ return m_lastPublishTimeKadSrc; }
-	void	SetLastPublishTimeKadSrc(time_t time, uint32 buddyip)	{ m_lastPublishTimeKadSrc = time; m_lastBuddyIP = buddyip; }
+	void	SetLastPublishTimeKadSrc(time_t time, uint32 buddyip);
 	uint32	GetLastPublishBuddy() const					{ return m_lastBuddyIP; }
-	void	SetLastPublishTimeKadNotes(time_t time)		{ m_lastPublishTimeKadNotes = time; }
+	void	SetLastPublishTimeKadNotes(time_t time);
 	time_t	GetLastPublishTimeKadNotes() const			{ return m_lastPublishTimeKadNotes; }
 
 	bool	PublishSrc();

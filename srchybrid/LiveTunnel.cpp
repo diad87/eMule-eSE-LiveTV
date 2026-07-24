@@ -885,9 +885,9 @@ bool CLiveTunnel::SendThrough(const uint8_t* payload, size_t payloadLen)
 // is value-copied (a CContact* can be evicted from the routing bin). Main thread only.
 static void EseTryResolveExitKadKey(CUpDownClient* exit, CLiveCircuit& c)
 {
-    if (!exit || c.m_haveExitKadKey) return;
+    if (!exit || c.m_haveExitKadKey || exit->IsIPv6OnlyEndpoint()) return;
     if (exit->GetConnectIP() == 0) return;   // D5 - avoid GetContact(0,...) matching a 0-IP contact
-    if (!Kademlia::CKademlia::IsRunning()) return;
+    if (!Kademlia::CKademlia::IsKad2Running()) return;
     Kademlia::CRoutingZone* rz = Kademlia::CKademlia::GetRoutingZone();
     if (!rz) return;
     Kademlia::CContact* pc = rz->GetContact(ntohl(exit->GetConnectIP()), 0, false);
@@ -1204,10 +1204,11 @@ bool CLiveTunnel::BuildSuccessor3Hop(uint32_t* circuitId)
 			endpointMatches = peer->HasIPv6Address()
 				&& memcmp(peer->GetIPv6Address().Data(),
 					verifiedAddress.addr.data(), 16) == 0;
-		} else if (verifiedAddress.family == kad6::Kad6Address::Family::IPv4) {
-			const uint32 peerIp = peer->GetIP();
-			endpointMatches = peerIp != 0
-				&& memcmp(&peerIp, verifiedAddress.addr.data(), 4) == 0;
+		} else if (verifiedAddress.family == kad6::Kad6Address::Family::IPv4
+                   && !peer->IsIPv6OnlyEndpoint()) {
+			const uint32 peerIPv4 = peer->GetIP();
+			endpointMatches = peerIPv4 != 0
+				&& memcmp(&peerIPv4, verifiedAddress.addr.data(), 4) == 0;
 		}
 		if (!endpointMatches)
 			continue;
@@ -1552,7 +1553,7 @@ const uint32_t CREATE_GATE_MAX_GLOBAL = 100;
 const size_t CREATE_GATE_MAX_RELAY_CIRCS = 512;
 
 struct CreateRateSlot {
-    uint32_t srcIp;        // full source IP (network order)
+    CAddress srcAddress;   // full source endpoint (IPv4 or native IPv6)
     uint32_t count;
     DWORD    windowStart;  // 0 = slot free
 };
@@ -1564,7 +1565,7 @@ static DWORD    s_createGlobalWindow = 0;
 // it may proceed to the X25519 handshake. Main thread only (called from
 // OnCellReceived). Sliding-window open-addressed cache, same pattern as the
 // /24 OP_LIVE_REQUEST limiter in LiveStreamManager.cpp.
-bool CreateGateAdmit(uint32_t ipNet)
+bool CreateGateAdmit(const CAddress& source)
 {
     const DWORD now = ::GetTickCount();
     if (now - s_createGlobalWindow > CREATE_GATE_WINDOW_MS) {
@@ -1574,10 +1575,11 @@ bool CreateGateAdmit(uint32_t ipNet)
     if (++s_createGlobalCount > CREATE_GATE_MAX_GLOBAL)
         return false;
     int slot = -1, freeSlot = -1;
-    uint32_t h = (ipNet * 0x9E3779B1u) % _countof(s_createRates);
+    const uint32_t h = (source.HashKey() * 0x9E3779B1u) % _countof(s_createRates);
     for (uint32_t i = 0; i < _countof(s_createRates); ++i) {
         uint32_t idx = (h + i) % _countof(s_createRates);
-        if (s_createRates[idx].srcIp == ipNet && s_createRates[idx].windowStart != 0) {
+        if (s_createRates[idx].srcAddress == source
+            && s_createRates[idx].windowStart != 0) {
             slot = (int)idx; break;
         }
         if (s_createRates[idx].windowStart == 0 && freeSlot == -1) freeSlot = (int)idx;
@@ -1594,13 +1596,31 @@ bool CreateGateAdmit(uint32_t ipNet)
             return false;
         }
     } else if (freeSlot >= 0) {
-        s_createRates[freeSlot].srcIp = ipNet;
+        s_createRates[freeSlot].srcAddress = source;
         s_createRates[freeSlot].windowStart = now;
         s_createRates[freeSlot].count = 1;
     }
     return true;
 }
 }  // namespace
+
+static CAddress CreatePeerAddress(const CUpDownClient* peer)
+{
+    if (peer == NULL)
+        return CAddress();
+    if (peer->socket != NULL) {
+        const CAddress socketAddress = peer->socket->GetPeerCAddress();
+        if (socketAddress.GetType() != CAddress::None && !socketAddress.IsNull())
+            return socketAddress;
+    }
+    if (peer->IsIPv6OnlyEndpoint())
+        return peer->GetIPv6Address();
+    if (peer->GetIP() != 0 && peer->GetIP() != INADDR_NONE)
+        return CAddress::FromIPv4NetworkOrder(peer->GetIP());
+    if (peer->HasIPv6Address())
+        return peer->GetIPv6Address();
+    return CAddress();
+}
 
 bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
                                  const uint8_t* payload, uint16_t payloadLen,
@@ -1619,7 +1639,8 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
         // constants above). Drops are silent on the wire — V's circuit just
         // times out, exactly as if we were a vanilla 0.70b peer ignoring the
         // opcode — and the debug log is throttled so a flood can't flood it.
-        bool admit = CreateGateAdmit(fromPeer->GetIP());
+        const CAddress sourceAddress = CreatePeerAddress(fromPeer);
+        bool admit = CreateGateAdmit(sourceAddress);
         if (admit) {
             size_t relayCircs = 0;
             for (const auto& c : m_circuits)
@@ -1630,10 +1651,11 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
             static DWORD s_lastGateLog = 0;
             if (::GetTickCount() - s_lastGateLog > 30000) {
                 s_lastGateLog = ::GetTickCount();
-                const uint32_t ip = fromPeer->GetIP();
+                const std::string sourceText = sourceAddress.GetType() != CAddress::None
+                    ? sourceAddress.ToString() : std::string("unknown");
                 AddDebugLogLine(false,
-                    _T("LiveTunnel: CREATE admission gate dropping handshake(s), last from %u.%u.%u.%u (DoS protection)"),
-                    ip & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF, (ip >> 24) & 0xFF);
+                    _T("LiveTunnel: CREATE admission gate dropping handshake(s), last from %hs (DoS protection)"),
+                    sourceText.c_str());
             }
             return true;   // consumed: silently dropped
         }
@@ -1898,7 +1920,9 @@ bool CLiveTunnel::BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
         }
     } else {
         // Legacy one-to-two-hop EXTEND remains byte-for-byte unchanged.
-        if (hopIndex != 1) {
+        // Its endpoint field is uint32 IPv4; an IPv6-only target must use the
+        // authenticated V3 address-bearing extension or be rejected.
+        if (hopIndex != 1 || target->IsIPv6OnlyEndpoint()) {
             SecureWipe(circ->m_ephemeral_priv, sizeof circ->m_ephemeral_priv);
             circ->m_have_ephemeral = false;
             return false;
@@ -2019,7 +2043,8 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
                 SecureWipe(extendPlain, sizeof extendPlain);
                 return false;
             }
-        } else if (target->GetIP() != eseRdU32LE(extendPlain + 6)) {
+        } else if (target->IsIPv6OnlyEndpoint()
+                   || target->GetIP() != eseRdU32LE(extendPlain + 6)) {
             SecureWipe(extendPlain, sizeof extendPlain);
             return false;
         }
@@ -3082,7 +3107,8 @@ bool CLiveTunnel::K6QuotaPrincipal(const TunnelRequestCtx& ctx,
     if (peer->socket != NULL) address = peer->socket->GetPeerCAddress();
     if (address.GetType() == CAddress::None && peer->HasIPv6Address())
         address = peer->GetIPv6Address();
-    if (address.GetType() == CAddress::None && peer->GetConnectIP() != 0)
+    if (address.GetType() == CAddress::None && !peer->IsIPv6OnlyEndpoint()
+        && peer->GetConnectIP() != 0)
         address = CAddress(peer->GetConnectIP(), false);
     if (address.GetType() != CAddress::IPv4 && address.GetType() != CAddress::IPv6)
         return false;
@@ -4273,6 +4299,14 @@ void CLiveTunnel::RebuildPeersCache()
             p.port      = c->GetUserPort();
             p.fork_caps = c->GetForkCaps();
             p.ese_caps  = c->GetEseCapabilities();
+            p.has_ipv4  = !c->IsIPv6OnlyEndpoint()
+                       && c->GetIP() != 0
+                       && c->GetIP() != 0xFFFFFFFFu;
+            if (c->HasIPv6Address()) {
+                p.address = c->GetIPv6Address().ToString();
+            } else {
+                p.address = CAddress::FromIPv4NetworkOrder(c->GetIP()).ToString();
+            }
             all.push_back(p);
         }
     }
@@ -6536,7 +6570,8 @@ void CLiveTunnel::ExitHandle_Kad6Publish(const TunnelRequestCtx& ctx,
     }
 
     bool queuedKad2 = false;
-    if ((publish.network_mask & kad6::kK6PublishNetKad2) != 0) {
+    if ((publish.network_mask & kad6::kK6PublishNetKad2) != 0
+        && Kademlia::CKademlia::IsKad2Connected()) {
         const std::string shadowKey = K6ShadowKey(leaseCopy);
         CSingleLock pl(&m_pendingLock, TRUE);
         auto primary = m_k6ShadowPrimary.find(shadowKey);
@@ -7811,6 +7846,8 @@ void CLiveTunnel::OnKad6NativePublishAck(uint64 publishLeaseId,
 
 void CLiveTunnel::RefreshK6NativePublishes(uint64 nowSeconds)
 {
+    if (!Kademlia::CKademlia::IsKad6Running())
+        return;
     struct NativeRefresh {
         uint64 publishLeaseId;
         kad6::K6SourceRecord record;
@@ -7866,6 +7903,8 @@ void CLiveTunnel::RefreshK6NativePublishes(uint64 nowSeconds)
 
 void CLiveTunnel::QueueK6ShadowRefreshes(uint64 nowSeconds)
 {
+    if (!Kademlia::CKademlia::IsKad2Running())
+        return;
     CSingleLock pl(&m_pendingLock, TRUE);
 
     // Re-elect one stable exterior publisher per (endpoint, hash). This also
@@ -7944,6 +7983,8 @@ void CLiveTunnel::QueueK6ShadowRefreshes(uint64 nowSeconds)
 
 void CLiveTunnel::StartDueK6ShadowPublishes(uint64 nowSeconds)
 {
+    if (!Kademlia::CKademlia::IsKad2Running())
+        return;
     std::vector<kad6::K6PublishSchedule> due;
     {
         CSingleLock pl(&m_pendingLock, TRUE);
@@ -9361,6 +9402,7 @@ void CLiveTunnel::QueueK6SourceAdvertise(const uint8_t fileHash[16], uint64 file
                                          const uint8_t commitment[32])
 {
     if (!fileHash || !commitment || fileSize == 0 || theApp.IsClosing() ||
+        !thePrefs.IsKad2Enabled() ||
         commitmentKind == kad6::K6CommitmentKind::None ||
         !NodeIdentityIsPersistent() || !HasActiveCircuitWithExitCaps(ESE_CAP_KAD6))
         return;
@@ -9511,7 +9553,14 @@ bool CLiveTunnel::StartK6SourceLookup(const uint8_t fileHash[16],
 
     kad6::K6SearchStart start;
     start.search_kind = kad6::kK6SearchKindSourceHash;
-    start.network_mask = kad6::kK6NetMaskKad2 | kad6::kK6NetMaskKad6;
+    start.network_mask = 0;
+    const uint8 selectedNetworks = thePrefs.GetEffectiveKadNetworkMask();
+    if (KadNetworkPolicy::HasKad2(selectedNetworks))
+        start.network_mask |= kad6::kK6NetMaskKad2;
+    if (KadNetworkPolicy::HasKad6(selectedNetworks))
+        start.network_mask |= kad6::kK6NetMaskKad6;
+    if (start.network_mask == 0)
+        return false;
     start.max_results = 100;
     start.deadline_ms = TUN_SEARCH_WINDOW_MS;
     memcpy(start.target_hash.data(), fileHash, start.target_hash.size());
@@ -9519,7 +9568,11 @@ bool CLiveTunnel::StartK6SourceLookup(const uint8_t fileHash[16],
     if (kad6::EncodeK6SearchStart(start, body) != kad6::Kad6Status::Ok) return false;
     kad6::K6Frame frame;
     frame.msg_type = kad6::kK6MsgSearchStart;
-    frame.flags = kad6::kK6FlagCancelable | kad6::kK6FlagLegacyKad2;
+    frame.flags = kad6::kK6FlagCancelable |
+        ((start.network_mask & kad6::kK6NetMaskKad2)
+            ? kad6::kK6FlagLegacyKad2 : 0) |
+        ((start.network_mask & kad6::kK6NetMaskKad6)
+            ? kad6::kK6FlagNativeKad6 : 0);
     frame.request_id = reqId;
     frame.body = std::move(body);
     if (kad6::EncodeK6Frame(frame, wire) != kad6::Kad6Status::Ok) return false;

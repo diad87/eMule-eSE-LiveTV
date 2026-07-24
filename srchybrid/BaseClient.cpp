@@ -197,10 +197,13 @@ bool CUpDownClient::CanUseIPv6Direct() const
 		&& SupportsEseNetLabV1Target()
 		&& ((SupportsIPv6Wire() && HasV6DualStack()) || SupportsReachV6Inbound());
 	const bool bServerRoute = m_bServerIPv6Source && IsIPv6OnlyEndpoint();
+	const bool bCallbackRoute = m_bIPv6CallbackSource && HasIPv6Address();
+	const bool bLiveRoute = m_bLiveIPv6Source && HasIPv6Address();
+	const bool bDirectRoute = m_bDirectIPv6Source && HasIPv6Address();
 	return thePrefs.IsIPv6Enabled()
 		&& !bV6Backoff
 		&& !thePrefs.GetProxySettings().bUseProxy
-		&& (bServerRoute || bValidatedEseRoute)
+		&& (bServerRoute || bCallbackRoute || bLiveRoute || bDirectRoute || bValidatedEseRoute)
 		&& localV6.GetType() == CAddress::IPv6 && localV6.IsPublicIP()
 		&& HasIPv6Address() && m_ipv6Address.IsPublicIP()
 		&& GetUserPort() != 0;
@@ -220,6 +223,12 @@ void CUpDownClient::MergeReachabilityFrom(const CUpDownClient& other)
 			SetIPv6Address(other.GetIPv6Address());
 		if (other.IsServerIPv6Source())
 			SetServerIPv6Source();
+		if (other.IsIPv6CallbackSource())
+			SetIPv6CallbackSource();
+		if (other.IsLiveIPv6Source())
+			SetLiveIPv6Source();
+		if (other.IsDirectIPv6Source())
+			SetDirectIPv6Source();
 		if (other.GetConnectIP() != 0)
 			SetConnectIP(other.GetConnectIP());
 		if (other.GetKadPort() != 0)
@@ -283,15 +292,18 @@ void CUpDownClient::Init()
 	m_abyUpPartStatus = NULL;
 	m_lastPartAsked = _UI16_MAX;
 	m_bAddNextConnect = false;
+	m_nConnectIP = 0;
+	m_dwUserIP = 0;
+	m_bIPv6OnlyEndpoint = false;
 
 	// v0.71 IPv6 — GetPeerAddressV4 handles v6-family sockets from the
 	// dual-stack listener; the legacy SOCKADDR_IN buffer failed there and
 	// every inbound client was born with IP=0 (May-2026 revert root cause).
-	m_ipv6Address = CAddress();
+	SetIPv6Address(CAddress());
 	if (socket != NULL) {
 		const CAddress peerAddress = socket->GetPeerCAddress();
 		if (peerAddress.GetType() == CAddress::IPv6 && peerAddress.IsPublicIP()) {
-			m_ipv6Address = peerAddress;
+			SetIPv6Address(peerAddress);
 			SetIP(peerAddress.ToSyntheticUInt32());
 		} else
 			SetIP(socket->GetPeerAddressV4());
@@ -324,6 +336,9 @@ void CUpDownClient::Init()
 	m_uReachCaps = 0;  // no Kad reach vector until a validated source result supplies one
 	m_dwIPv6DirectFailed = 0;
 	m_bServerIPv6Source = false;
+	m_bIPv6CallbackSource = false;
+	m_bLiveIPv6Source = false;
+	m_bDirectIPv6Source = false;
 	memset(m_eseNodePub, 0, sizeof m_eseNodePub);  // v8.x Phase 1 — TAG_ESE_NODE_PUB (0x6D)
 	m_bEseNodePubSet = false;
 	m_bFriendSlot = false;
@@ -583,7 +598,12 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 	m_uEseCapabilities = 0;
 	m_bEseNodePubSet = false;
 	memset(m_eseNodePub, 0, sizeof m_eseNodePub);
-	m_ipv6Address = CAddress();
+	const CAddress previousV6 = m_ipv6Address;
+	const bool wasLiveIPv6Source = m_bLiveIPv6Source;
+	const bool wasServerIPv6Source = m_bServerIPv6Source;
+	const bool wasCallbackIPv6Source = m_bIPv6CallbackSource;
+	const bool wasDirectIPv6Source = m_bDirectIPv6Source;
+	SetIPv6Address(CAddress());
 
 	data.ReadHash16(m_achUserHash);
 	if (bDbgInfo)
@@ -767,7 +787,13 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 			if (temptag.IsBlob() && temptag.GetBlobSize() == 16) {
 				CAddress candidate((const byte*)temptag.GetBlob());
 				if (candidate.GetType() == CAddress::IPv6 && candidate.IsPublicIP()) {
-					m_ipv6Address = candidate;
+					SetIPv6Address(candidate);
+					if (candidate == previousV6) {
+						if (wasLiveIPv6Source) SetLiveIPv6Source();
+						if (wasServerIPv6Source) SetServerIPv6Source();
+						if (wasCallbackIPv6Source) SetIPv6CallbackSource();
+						if (wasDirectIPv6Source) SetDirectIPv6Source();
+					}
 					if (bDbgInfo)
 						m_strHelloInfo.AppendFormat(_T("\n  IPv6=%s"), candidate.ToStringC().GetString());
 				}
@@ -858,8 +884,14 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 	const CAddress peerAddress = socket->GetPeerCAddress();
 	const bool bNativeV6Endpoint = peerAddress.GetType() == CAddress::IPv6 && peerAddress.IsPublicIP();
 	if (bNativeV6Endpoint) {
-		m_ipv6Address = peerAddress;
+		SetIPv6Address(peerAddress);
 		SetIP(peerAddress.ToSyntheticUInt32());
+		if (peerAddress == previousV6) {
+			if (wasLiveIPv6Source) SetLiveIPv6Source();
+			if (wasServerIPv6Source) SetServerIPv6Source();
+			if (wasCallbackIPv6Source) SetIPv6CallbackSource();
+			if (wasDirectIPv6Source) SetDirectIPv6Source();
+		}
 	} else
 		SetIP(socket->GetPeerAddressV4());
 
@@ -881,7 +913,10 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 	CClientCredits *pFoundCredits = theApp.clientcredits->GetCredit(m_achUserHash);
 	if (credits == NULL) {
 		credits = pFoundCredits;
-		if (!theApp.clientlist->ComparePriorUserhash(m_dwUserIP, m_nUserPort, pFoundCredits)) {
+		// The historical tracked-client table is keyed by IPv4. A native
+		// IPv6 endpoint carries a synthetic value only for legacy fields, so
+		// do not use that value for userhash anti-hijack decisions.
+		if (!IsIPv6OnlyEndpoint() && !theApp.clientlist->ComparePriorUserhash(m_dwUserIP, m_nUserPort, pFoundCredits)) {
 			if (thePrefs.GetLogBannedClients())
 				AddDebugLogLine(false, _T("Clients: %s (%s), Ban reason: Userhash changed (Found in TrackedClientsList)"), GetUserName(), (LPCTSTR)ipstr(GetConnectIP()));
 			Ban();
@@ -904,7 +939,11 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 
 	// do not replace friend objects which have no userhash, but the fitting ip with another friend object with the
 	// fitting user hash (both objects would fit to this instance), as this could lead to unwanted results
-	if (GetFriend() == NULL || GetFriend()->HasUserhash() || GetFriend()->m_dwLastUsedIP != GetConnectIP()
+	if (IsIPv6OnlyEndpoint()) {
+		// Friend records are keyed by the legacy IPv4 address; do not look up
+		// or overwrite one using the synthetic IPv6 compatibility value.
+		SetFriendSlot(false);
+	} else if (GetFriend() == NULL || GetFriend()->HasUserhash() || GetFriend()->m_dwLastUsedIP != GetConnectIP()
 		|| GetFriend()->m_nLastUsedPort != GetUserPort())
 	{
 		m_Friend = theApp.friendlist->SearchFriend(m_achUserHash, m_dwUserIP, m_nUserPort);
@@ -1187,7 +1226,8 @@ void CUpDownClient::SendHelloAnswer()
 	theStats.AddUpDataOverheadOther(packet->size);
 
 	// Servers send a FIN right in the data packet on check connection, so we need to force the response immediate
-	bool bForceSend = theApp.serverconnect->AwaitingTestFromIP(GetConnectIP());
+	bool bForceSend = !IsIPv6OnlyEndpoint()
+		&& theApp.serverconnect->AwaitingTestFromIP(GetConnectIP());
 	socket->SendPacket(packet, true, 0, bForceSend);
 
 	m_bHelloAnswerPending = false;
@@ -1206,7 +1246,8 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	if (bSendHelloV6)
 		++tagcount;
 
-	if (theApp.clientlist->GetBuddy() && theApp.IsFirewalled())
+	if (theApp.clientlist->GetBuddy() && theApp.IsFirewalled()
+		&& !theApp.clientlist->GetBuddy()->IsIPv6OnlyEndpoint())
 		tagcount += 2;
 
 	// v0.71 IPv6 Sprint 6 — always advertise CT_FORK_CAPABILITIES so peers
@@ -1259,7 +1300,8 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 				);
 	tagUdpPorts.WriteTagToFile(data);
 
-	if (theApp.clientlist->GetBuddy() && theApp.IsFirewalled()) {
+	if (theApp.clientlist->GetBuddy() && theApp.IsFirewalled()
+		&& !theApp.clientlist->GetBuddy()->IsIPv6OnlyEndpoint()) {
 		CTag tagBuddyIP(CT_EMULE_BUDDYIP, theApp.clientlist->GetBuddy()->GetIP());
 		tagBuddyIP.WriteTagToFile(data);
 
@@ -1311,7 +1353,7 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	const UINT uSupportsSourceEx2 = 1;
 	const UINT uSupportsCaptcha = 1;
 	// direct callback is only possible if connected to kad, TCP firewalled and verified UDP open (for example on a full cone NAT)
-	const UINT uDirectUDPCallback = static_cast<int>(Kademlia::CKademlia::IsRunning() && Kademlia::CKademlia::IsFirewalled()
+	const UINT uDirectUDPCallback = static_cast<int>(Kademlia::CKademlia::IsKad2Running() && Kademlia::CKademlia::IsFirewalled()
 		&& !Kademlia::CUDPFirewallTester::IsFirewalledUDP(true) && Kademlia::CUDPFirewallTester::IsVerified());
 	const UINT uFileIdentifiers = 1;
 
@@ -1467,9 +1509,9 @@ bool CUpDownClient::Disconnected(LPCTSTR pszReason, bool bFromSocket)
 	if (m_nConnectingState == CCS_DIRECTCALLBACK)
 		DebugLog(_T("Direct Callback failed - %s"), (LPCTSTR)DbgGetClientInfo());*/
 
-	if (GetKadState() == KS_QUEUED_FWCHECK_UDP || GetKadState() == KS_CONNECTING_FWCHECK_UDP)
+	if (!IsIPv6OnlyEndpoint() && (GetKadState() == KS_QUEUED_FWCHECK_UDP || GetKadState() == KS_CONNECTING_FWCHECK_UDP))
 		Kademlia::CUDPFirewallTester::SetUDPFWCheckResult(false, true, ntohl(GetConnectIP()), 0); // inform the tester that this test was cancelled
-	else if (GetKadState() == KS_FWCHECK_UDP)
+	else if (!IsIPv6OnlyEndpoint() && GetKadState() == KS_FWCHECK_UDP)
 		Kademlia::CUDPFirewallTester::SetUDPFWCheckResult(false, false, ntohl(GetConnectIP()), 0); // inform the tester that this test has failed
 	else if (GetKadState() == KS_CONNECTED_BUDDY)
 		DebugLogWarning(_T("Buddy client disconnected - %s, %s"), pszReason, (LPCTSTR)DbgGetClientInfo());
@@ -1608,7 +1650,8 @@ static bool EsePickRdvForDownload(uint32 uTargetIpHost, uint32& uOutRipHost, uin
 	for (size_t i = 0; i < cands.size(); ++i) {
 		CUpDownClient* c = cands[i];
 		if (c == NULL || !c->SupportsEseNetLabV1() || !c->SupportsEseHolePunchRdv()
-			|| !c->HasPassedSecureIdent(false) || c->GetKadPort() == 0)
+			|| c->IsIPv6OnlyEndpoint() || !c->HasPassedSecureIdent(false)
+			|| c->GetKadPort() == 0)
 			continue;
 		const uint32 uCipHost = ntohl(c->GetIP());          // GetIP() is NET order
 		if (uCipHost == 0 || uCipHost == uTargetIpHost || uCipHost == uMyIpHost)
@@ -1772,11 +1815,11 @@ bool CUpDownClient::TryToConnect(bool bIgnoreMaxCon, bool bNoCallbacks, CRuntime
 	const bool bCanEseHolePunch = CanUseEseHolePunch();
 	const bool bClientUdpReady = theApp.clientudp != NULL
 		&& theApp.clientudp->GetConnectedPort() != 0;
-	const bool bHasLegacyCallback =
-		(SupportsDirectUDPCallback() && bClientUdpReady && GetConnectIP() != 0)
-		|| (HasValidBuddyID() && Kademlia::CKademlia::IsConnected()
-			&& ((GetBuddyIP() && GetBuddyPort()) || m_reqfile != NULL))
-		|| theApp.serverconnect->IsLocalServer(GetServerIP(), GetServerPort());
+	const bool bHasLegacyCallback = !IsIPv6OnlyEndpoint()
+		&& ((SupportsDirectUDPCallback() && bClientUdpReady && GetConnectIP() != 0)
+			|| (HasValidBuddyID() && Kademlia::CKademlia::IsConnected()
+				&& ((GetBuddyIP() && GetBuddyPort()) || m_reqfile != NULL))
+			|| theApp.serverconnect->IsLocalServer(GetServerIP(), GetServerPort()));
 
 	if (HasLowID() && GetKadState() != KS_CONNECTING_FWCHECK) {
 		ASSERT(pClassSocket == NULL);
@@ -2028,16 +2071,31 @@ void CUpDownClient::Connect()
 
 	//Try to always tell the socket to WaitForOnConnect before you call Connect.
 	socket->WaitForOnConnect();
-	if (socket->GetFamily() == AF_INET6 && HasIPv6Address()) {
+	CAddress connectAddress;
+	const bool bPreferIPv6 = socket->GetFamily() == AF_INET6;
+	if (TryGetConnectAddress(connectAddress, bPreferIPv6)
+		&& connectAddress.GetType() == CAddress::IPv6 && bPreferIPv6) {
 		SOCKADDR_STORAGE sockAddr = {};
 		int sockAddrLen = sizeof sockAddr;
-		m_ipv6Address.ToSA((LPSOCKADDR)&sockAddr, &sockAddrLen, GetUserPort());
-		socket->Connect((LPSOCKADDR)&sockAddr, sockAddrLen);
+		if (connectAddress.TryToSA((LPSOCKADDR)&sockAddr, &sockAddrLen, GetUserPort()))
+			socket->Connect((LPSOCKADDR)&sockAddr, sockAddrLen);
+		else
+			return;
 	} else {
 		SOCKADDR_IN sockAddr = {};
 		sockAddr.sin_family = AF_INET;
 		sockAddr.sin_port = htons(GetUserPort());
-		sockAddr.sin_addr.s_addr = GetConnectIP();
+		if (connectAddress.GetType() == CAddress::IPv4) {
+			uint32 addressValue = 0;
+			connectAddress.TryToUInt32(addressValue);
+			sockAddr.sin_addr.s_addr = addressValue;
+		} else if (connectAddress.GetType() == CAddress::IPv6) {
+			// An AF_INET socket cannot carry a native IPv6 endpoint. Never fall
+			// back to the synthetic uint32 compatibility value here.
+			DebugLogWarning(_T("Connect: IPv6 endpoint selected for an IPv4 socket; aborting safe fallback"));
+			return;
+		} else
+			sockAddr.sin_addr.s_addr = GetConnectIP();
 		socket->Connect((LPSOCKADDR)&sockAddr, sizeof sockAddr);
 	}
 	SendHelloPacket();
@@ -2095,7 +2153,8 @@ void CUpDownClient::ConnectionEstablished()
 		SendFirewallCheckUDPRequest();
 	}
 
-	if (GetChatState() == MS_CONNECTING || GetChatState() == MS_CHATTING)
+	if ((GetChatState() == MS_CONNECTING || GetChatState() == MS_CHATTING)
+		&& !IsIPv6OnlyEndpoint())
 		if (GetFriend() != NULL && GetFriend()->IsTryingToConnect()) {
 			GetFriend()->UpdateFriendConnectionState(FCR_ESTABLISHED); // for friends any connection update is handled in the friend class
 			if (credits != NULL && credits->GetCurrentIdentState(GetConnectIP()) == IS_IDFAILED)
@@ -2384,6 +2443,8 @@ void CUpDownClient::SetBuddyID(const uchar *pucBuddyID)
 
 void CUpDownClient::SendPublicKeyPacket()
 {
+	if (IsIPv6OnlyEndpoint())
+		return;
 	// send our public key to the client who requested it
 	if (socket == NULL || credits == NULL || m_SecureIdentState != IS_KEYANDSIGNEEDED) {
 		ASSERT(0);
@@ -2404,6 +2465,10 @@ void CUpDownClient::SendPublicKeyPacket()
 
 void CUpDownClient::SendSignaturePacket()
 {
+	// SecureIdent v1/v2 binds the signature to a 32-bit IPv4 challenge. A
+	// synthetic IPv6 value must never be sent as if it were a real address.
+	if (IsIPv6OnlyEndpoint())
+		return;
 	// sign the public key of this client and send it
 	if (socket == NULL || credits == NULL || m_SecureIdentState == 0) {
 		ASSERT(0);
@@ -2464,6 +2529,8 @@ void CUpDownClient::SendSignaturePacket()
 
 void CUpDownClient::ProcessPublicKeyPacket(const uchar *pachPacket, uint32 nSize)
 {
+	if (IsIPv6OnlyEndpoint())
+		return;
 	theApp.clientlist->AddTrackClient(this);
 
 	if (socket == NULL || credits == NULL || pachPacket[0] != nSize - 1 || nSize < 10 || nSize > 250) {
@@ -2488,6 +2555,8 @@ void CUpDownClient::ProcessPublicKeyPacket(const uchar *pachPacket, uint32 nSize
 
 void CUpDownClient::ProcessSignaturePacket(const uchar *pachPacket, uint32 nSize)
 {
+	if (IsIPv6OnlyEndpoint())
+		return;
 	// here we spread the good guys from the bad ones ;)
 
 	if (socket == NULL || credits == NULL || nSize > 250 || nSize < 10) {
@@ -2546,6 +2615,8 @@ void CUpDownClient::ProcessSignaturePacket(const uchar *pachPacket, uint32 nSize
 
 void CUpDownClient::SendSecIdentStatePacket()
 {
+	if (IsIPv6OnlyEndpoint())
+		return;
 	// check if we need public key and signature
 	if (credits) {
 		if (!theApp.clientcredits->CryptoAvailable())
@@ -2623,6 +2694,8 @@ void CUpDownClient::ResetFileStatusInfo()
 
 bool CUpDownClient::IsBanned() const
 {
+	if (IsIPv6OnlyEndpoint())
+		return theApp.clientlist->IsBannedClient(GetIPv6Address());
 	return theApp.clientlist->IsBannedClient(GetIP());
 }
 
@@ -2943,6 +3016,27 @@ CString CUpDownClient::DbgGetClientInfo(bool bFormatIP) const
 {
 	CString str;
 	try {
+		// Native IPv6 is the authoritative endpoint for diagnostics.  Do not
+		// render the synthetic uint32 compatibility value as a fake dotted IPv4
+		// address in logs or error messages.
+		if (HasIPv6Address()) {
+			const CString addressText = GetIPv6Address().ToStringC();
+			if (HasLowID()) {
+				str.Format(_T("%u@%s (%s) '%s' (%s,%s/%s/%s)")
+					, GetUserIDHybrid(), (LPCTSTR)ipstr(GetServerIP())
+					, (LPCTSTR)addressText
+					, GetUserName()
+					, (LPCTSTR)DbgGetFullClientSoftVer()
+					, DbgGetDownloadState(), DbgGetUploadState(), DbgGetKadState());
+			} else {
+				str.Format(bFormatIP ? _T("%-45s '%s' (%s,%s/%s/%s)") : _T("%s '%s' (%s,%s/%s/%s)")
+					, (LPCTSTR)addressText
+					, GetUserName()
+					, (LPCTSTR)DbgGetFullClientSoftVer()
+					, DbgGetDownloadState(), DbgGetUploadState(), DbgGetKadState());
+			}
+			return str;
+		}
 		if (HasLowID()) {
 			if (GetConnectIP()) {
 				str.Format(_T("%u@%s (%s) '%s' (%s,%s/%s/%s)")
@@ -3200,7 +3294,8 @@ bool  CUpDownClient::IsObfuscatedConnectionEstablished() const
 
 bool CUpDownClient::ShouldReceiveCryptUDPPackets() const
 {
-	return thePrefs.IsCryptLayerEnabled() && SupportsCryptLayer() && theApp.GetPublicIP() != 0
+	return !IsIPv6OnlyEndpoint() && thePrefs.IsCryptLayerEnabled()
+		&& SupportsCryptLayer() && theApp.GetPublicIP() != 0
 		&& HasValidHash() && (thePrefs.IsCryptLayerPreferred() || RequestsCryptLayer());
 }
 
@@ -3448,7 +3543,7 @@ void CUpDownClient::SendChatMessage(const CString &strMessage)
 
 bool CUpDownClient::HasPassedSecureIdent(bool bPassIfUnavailable) const
 {
-	return credits != NULL
+	return !IsIPv6OnlyEndpoint() && credits != NULL
 		&& (credits->GetCurrentIdentState(GetConnectIP()) == IS_IDENTIFIED
 			|| (credits->GetCurrentIdentState(GetConnectIP()) == IS_NOTAVAILABLE && bPassIfUnavailable));
 }
@@ -3456,7 +3551,11 @@ bool CUpDownClient::HasPassedSecureIdent(bool bPassIfUnavailable) const
 void CUpDownClient::SendFirewallCheckUDPRequest()
 {
 	ASSERT(GetKadState() == KS_FWCHECK_UDP);
-	if (!Kademlia::CKademlia::IsRunning()) {
+	if (IsIPv6OnlyEndpoint()) {
+		SetKadState(KS_NONE);
+		return;
+	}
+	if (!Kademlia::CKademlia::IsKad2Running()) {
 		SetKadState(KS_NONE);
 		return;
 	}
@@ -3478,7 +3577,9 @@ void CUpDownClient::SendFirewallCheckUDPRequest()
 
 void CUpDownClient::ProcessFirewallCheckUDPRequest(CSafeMemFile &data)
 {
-	if (!Kademlia::CKademlia::IsRunning() || Kademlia::CKademlia::GetUDPListener() == NULL) {
+	if (IsIPv6OnlyEndpoint())
+		return;
+	if (!Kademlia::CKademlia::IsKad2Running() || Kademlia::CKademlia::GetUDPListener() == NULL) {
 		DebugLogWarning(_T("Ignored Kad Firewall request UDP because Kad is not running (%s)"), (LPCTSTR)DbgGetClientInfo());
 		return;
 	}

@@ -471,6 +471,10 @@ public:
         uint16_t port;
         uint32_t fork_caps;
         uint32_t ese_caps;
+        // Printable native endpoint. IPv6 must never be exposed as the
+        // synthetic legacy uint32 identity stored in `ip`.
+        std::string address;
+        bool has_ipv4;
     };
     // Worker-thread safe. Copies the peer snapshot the main thread refreshes
     // in ProcessMainThreadWork(). outTunnelingCount = connected peers that

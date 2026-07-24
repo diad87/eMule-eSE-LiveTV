@@ -20,6 +20,7 @@
 #include "PartFile.h"
 #include "UpDownClient.h"
 #include "DownloadQueue.h"
+#include "eMuleAI/Address.h"
 #include <wininet.h>
 
 #ifdef _DEBUG
@@ -121,8 +122,17 @@ void CAddSourceDlg::OnBnClickedButton1()
 
 			// if the port is specified with the IP, ignore any possible specified port in the port control
 			uint16 port;
-			int iColon = sip.Find(_T(':'));
-			if (iColon >= 0) {
+			int iColon = -1;
+			bool bBracketedIPv6 = !sip.IsEmpty() && sip[0] == _T('[');
+			if (bBracketedIPv6) {
+				int iClose = sip.Find(_T(']'));
+				if (iClose <= 1 || iClose + 1 >= sip.GetLength() || sip[iClose + 1] != _T(':'))
+					return;
+				iColon = iClose + 1;
+				CString addressText = sip.Mid(1, iClose - 1);
+				port = (uint16)_tstoi(sip.Mid(iColon + 1));
+				sip = addressText;
+			} else if ((iColon = sip.Find(_T(':'))) >= 0) {
 				port = (uint16)_tstoi(CPTR(sip, iColon + 1));
 				sip.Truncate(iColon);
 			} else {
@@ -132,11 +142,24 @@ void CAddSourceDlg::OnBnClickedButton1()
 					return;
 			}
 
-			uint32 ip = inet_addr((CStringA)sip);
-			if (ip != INADDR_NONE && IsGoodIPPort(ip, port)) {
+			if (bBracketedIPv6) {
+				CAddress address;
+				if (address.FromString(sip, false) && address.IsUsablePublic() && port != 0) {
+					const uint32 syntheticIP = address.ToSyntheticUInt32();
+					CUpDownClient *toadd = new CUpDownClient(m_pFile, port, syntheticIP, 0, 0, false);
+					toadd->SetIPv6Address(address);
+					toadd->SetIP(syntheticIP);
+					toadd->SetDirectIPv6Source();
+					toadd->SetSourceFrom(SF_PASSIVE);
+					theApp.downloadqueue->CheckAndAddSource(m_pFile, toadd);
+				}
+			} else {
+				uint32 ip = inet_addr((CStringA)sip);
+				if (ip != INADDR_NONE && IsGoodIPPort(ip, port)) {
 				CUpDownClient *toadd = new CUpDownClient(m_pFile, port, ntohl(ip), 0, 0);
 				toadd->SetSourceFrom(SF_PASSIVE);
 				theApp.downloadqueue->CheckAndAddSource(m_pFile, toadd);
+				}
 			}
 		}
 		break;

@@ -411,7 +411,7 @@ void CQueueListCtrl::OnContextMenu(CWnd*, CPoint point)
 	ClientMenu.AppendMenu(MF_STRING | ((is_ed2k && client->GetViewSharedFilesSupport()) ? MF_ENABLED : MF_GRAYED), MP_SHOWLIST, GetResString(IDS_VIEWFILES), _T("VIEWFILES"));
 	if (thePrefs.IsExtControlsEnabled())
 		ClientMenu.AppendMenu(MF_STRING | ((is_ed2k && client->IsBanned()) ? MF_ENABLED : MF_GRAYED), MP_UNBAN, GetResString(IDS_UNBAN));
-	if (Kademlia::CKademlia::IsRunning() && !Kademlia::CKademlia::IsConnected())
+	if (Kademlia::CKademlia::IsKad2Running() && !Kademlia::CKademlia::IsConnected())
 		ClientMenu.AppendMenu(MF_STRING | ((is_ed2k && client->GetKadPort() != 0 && client->GetKadVersion() >= KADEMLIA_VERSION2_47a) ? MF_ENABLED : MF_GRAYED), MP_BOOT, GetResString(IDS_BOOTSTRAP));
 	ClientMenu.AppendMenu(MF_STRING | (GetItemCount() > 0 ? MF_ENABLED : MF_GRAYED), MP_FIND, GetResString(IDS_FIND), _T("Search"));
 	GetPopupMenuPos(*this, point);
@@ -457,7 +457,8 @@ BOOL CQueueListCtrl::OnCommand(WPARAM wParam, LPARAM)
 			}
 			break;
 		case MP_BOOT:
-			if (client->GetKadPort() && client->GetKadVersion() >= KADEMLIA_VERSION2_47a)
+			if (!client->IsIPv6OnlyEndpoint() && client->GetKadPort()
+				&& client->GetKadVersion() >= KADEMLIA_VERSION2_47a)
 				Kademlia::CKademlia::Bootstrap(ntohl(client->GetIP()), client->GetKadPort());
 		}
 	}

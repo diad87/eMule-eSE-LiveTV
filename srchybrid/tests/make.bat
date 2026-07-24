@@ -32,6 +32,22 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_known2_offsets.exe t
 if errorlevel 1 exit /b 1
 tests\build\test_known2_offsets.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_partfile_io_policy.exe tests\test_partfile_io_policy.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_partfile_io_policy.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_core_regression_policy.exe tests\test_core_regression_policy.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_core_regression_policy.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_kad_protocol_policy.exe tests\test_kad_protocol_policy.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_kad_protocol_policy.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_kad_network_policy.exe tests\test_kad_network_policy.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_kad_network_policy.exe
+if errorlevel 1 exit /b 1
 
 set "CRYPTLIB=%ROOT%\..\cryptopp\x64\Output\Release\cryptlib.lib"
 if not exist "%CRYPTLIB%" (echo ERROR: cryptlib.lib missing; run the core gate or build emule first & exit /b 2)

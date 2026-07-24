@@ -356,8 +356,9 @@ BEGIN
     CONTROL         "Reconnect on loss",IDC_RECONN,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,4,188,140,10
     CONTROL         "Show overhead bandwidth",IDC_SHOWOVERHEAD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,4,198,139,10
     PUSHBUTTON      "Wizard...",IDC_WIZARD,4,211,50,14
-    CONTROL         "Kad",IDC_NETWORK_KADEMLIA,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,184,57,10
-    CONTROL         "eD2K",IDC_NETWORK_ED2K,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,194,58,10
+    CONTROL         "Kad2",IDC_NETWORK_KADEMLIA,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,181,57,10
+    CONTROL         "Kad6",IDC_NETWORK_KAD6,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,191,57,10
+    CONTROL         "eD2K",IDC_NETWORK_ED2K,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,201,58,10
     GROUPBOX        "Client Port:",IDC_CLIENTPORT_FRM,4,74,223,57
     GROUPBOX        "Max. Sources/File",IDC_MAXSRC_FRM,4,132,100,40
     GROUPBOX        "Max. connections:",IDC_MAXCONN_FRM,110,132,117,40
@@ -373,13 +374,13 @@ BEGIN
     LTEXT           "UDP",IDC_UDPPORTLABEL,11,103,16,8
     LTEXT           "Static",IDC_MAXCONLABEL,117,143,86,8
     LTEXT           "TCP",IDC_STATIC,11,86,17,8
-    GROUPBOX        "Network",IDC_CONNECTION_NETWORK,153,174,74,34
+    GROUPBOX        "Network",IDC_CONNECTION_NETWORK,153,174,74,45
     PUSHBUTTON      "Setup ports on WinXP SP1 firewall",IDC_OPENPORTS,83,84,137,12,WS_DISABLED
     CONTROL         "Use UPnP to Setup Port Forwarding",IDC_PREF_UPNPONSTART,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,11,116,208,10
-    CONTROL         "Enable IPv6 (v4 listener + v6 egress detection)",IDC_PREF_ENABLE_IPV6,
+    CONTROL         "Enable IPv6 dual-stack (IPv4 fallback)",IDC_PREF_ENABLE_IPV6,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,11,128,208,10
-    LTEXT           "Restart required. Experimental dual-stack: set IPv6Mode=2 in preferences.ini (may break eD2K).",IDC_PREF_IPV6_HINT,11,140,250,16
+    LTEXT           "Restart required. Auto/Preferred try dual-stack; IPv4 fallback is automatic.",IDC_PREF_IPV6_HINT,11,140,250,16
 END
 
 IDD_WIZARD DIALOGEX 0, 0, 257, 223
@@ -3823,13 +3824,13 @@ BEGIN
     IDS_NETINFO_CONNECTIVITY_HDR "Connectivity"
     IDS_NETINFO_MODE_LABEL  "Mode:\t"
     IDS_NETINFO_IPV6_OFF    "IPv4 (IPv6 disabled)"
-    IDS_NETINFO_IPV6_AUTO   "Auto (v4 listener + v6 prober)"
-    IDS_NETINFO_IPV6_PREFERRED "IPv6 preferred (experimental dual-stack)"
+    IDS_NETINFO_IPV6_AUTO   "Auto (dual-stack, IPv4 fallback)"
+    IDS_NETINFO_IPV6_PREFERRED "IPv6 preferred (dual-stack, IPv4 fallback)"
     IDS_NETINFO_UNKNOWN_Q   "?"
     IDS_NETINFO_LISTENER_LABEL "Listener:\t"
     IDS_NETINFO_LISTENER_DUALSTACK "Dual-stack ([::]:%u, IPV6_V6ONLY=0)"
-    IDS_NETINFO_LISTENER_V6FAIL "IPv4 only (dual-stack requested but AF_INET6 failed — see log)"
-    IDS_NETINFO_LISTENER_AUTO "IPv4 (0.0.0.0:%u) + active v6 prober"
+    IDS_NETINFO_LISTENER_V6FAIL "IPv4 only (dual-stack requested but AF_INET6 failed — see log; 0.0.0.0:%u)"
+    IDS_NETINFO_LISTENER_AUTO "IPv4 fallback (0.0.0.0:%u) + active v6 prober"
     IDS_NETINFO_LISTENER_V4ONLY "IPv4 only (0.0.0.0:%u)"
     IDS_NETINFO_PUBIP4_LABEL "Public IPv4:\t"
     IDS_NETINFO_PUBIP6_LABEL "Public IPv6:\t"
@@ -3915,12 +3916,14 @@ BEGIN
     IDS_LIVEMGR_PREBUFFER_TIMEOUT "eSE Live: startup timed out without enough playable buffer"
     IDS_CD_DOWNRATE         "Download rate:"
     IDS_CD_UPRATE           "Upload rate:"
+    IDS_NETWORK_KAD2        "Kad2"
+    IDS_NETWORK_KAD6        "Kad6"
 END
 
 STRINGTABLE
 BEGIN
-    IDS_LIVEKAD_CANNOT_PUBLISH "eSE Kad: Cannot publish — Kad not connected"
-    IDS_LIVEKAD_QUEUED_FMT   "eSE Kad: Stream ""%s"" queued; Kad is not connected yet"
+    IDS_LIVEKAD_CANNOT_PUBLISH "eSE Kad2: Cannot publish — Kad2 is not connected"
+    IDS_LIVEKAD_QUEUED_FMT   "eSE Kad2: Stream ""%s"" queued; Kad2 is not connected yet"
     IDS_LIVEKAD_PUBLISHING_OVERLAY_FMT "eSE Kad: Publishing stream ""%s"" to Kad DHT (overlay endpoint %s)"
     IDS_LIVEKAD_PUBLISHING_FMT "eSE Kad: Publishing stream ""%s"" to Kad DHT"
     IDS_LIVEKAD_TOMBSTONE_PUBLISHED_FMT "eSE Kad: Stream tombstone published (bitrate=0, %d namespace(s))"
@@ -3928,7 +3931,7 @@ BEGIN
     IDS_LIVEKAD_GHOST_TOMBSTONE_FMT "eSE Kad: Ghost tombstone published for streamKey %s (%d namespace(s))"
     IDS_LIVEKAD_SECONDARY_PUBLISH_FMT "eSE Kad: Secondary-source publish under %s (%d namespace(s))"
     IDS_LIVEKAD_PUBLISHED_KEYWORDS_FMT "eSE Kad: Published stream under %d clean + %d legacy keywords [burst %d]"
-    IDS_LIVEKAD_CANNOT_SEARCH "eSE Kad: Cannot search - Kad not connected"
+    IDS_LIVEKAD_CANNOT_SEARCH "eSE Kad2: Cannot search — Kad2 is not connected"
     IDS_LIVEKAD_SEARCH_COOLDOWN_FMT "eSE Kad: Search cooldown active (%ums), waiting"
     IDS_LIVEKAD_SEARCH_TUNNELED_FMT "eSE Kad: Searching live streams [TUNNELED] (keyword=""%s"")"
     IDS_LIVEKAD_SEARCH_STRICT_ABORT "eSE Kad: STRICT privacy - no tunnel circuit, not searching (your IP is not exposed)"
@@ -3946,7 +3949,7 @@ BEGIN
     IDS_LIVEKAD_TAG_CLEAN   "clean"
     IDS_LIVEKAD_TAG_LEGACY  "legacy"
     IDS_LIVEKAD_TAG_SYNTHETIC "synthetic"
-    IDS_LIVEKAD_FLUSH_DEFERRED_FMT "eSE Kad: connected — flushing deferred publish for ""%s"""
+    IDS_LIVEKAD_FLUSH_DEFERRED_FMT "eSE Kad2: connected — flushing deferred publish for ""%s"""
     IDS_LIVEKAD_PRUNED_FMT  "eSE Kad: Pruned %d stale stream entries"
     IDS_LIVEKAD_LOADED_CACHE_FMT "eSE Kad: Loaded %d cached stream entries from disk (%d skipped)"
 END

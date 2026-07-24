@@ -6,6 +6,7 @@
 #include "opcodes.h"
 #include "OtherFunctions.h"
 #include "eMuleAI/Address.h"
+#include "kademlia/kademlia/KadProtocolPolicy.h"
 
 #include <vector>
 
@@ -126,20 +127,62 @@ public:
 	uint32			GetIP() const									{ return m_dwUserIP; }
 	bool			HasIPv6Address() const						{ return m_ipv6Address.GetType() == CAddress::IPv6 && !m_ipv6Address.IsNull(); }
 	const CAddress& GetIPv6Address() const						{ return m_ipv6Address; }
-	void			SetIPv6Address(const CAddress& addr)			{ m_ipv6Address = (addr.GetType() == CAddress::IPv6 && addr.IsPublicIP()) ? addr : CAddress(); }
-	bool			IsIPv6OnlyEndpoint() const					{ return HasIPv6Address() && m_nConnectIP == m_ipv6Address.ToSyntheticUInt32(); }
+	void			SetIPv6Address(const CAddress& addr)			{ const CAddress next = (addr.GetType() == CAddress::IPv6 && addr.IsUsablePublic()) ? addr : CAddress(); const bool changed = next != m_ipv6Address; m_ipv6Address = next; RefreshIPv6OnlyEndpoint(); if (changed) { m_bServerIPv6Source = false; m_bIPv6CallbackSource = false; m_bLiveIPv6Source = false; m_bDirectIPv6Source = false; } }
+	bool			IsIPv6OnlyEndpoint() const					{ return m_bIPv6OnlyEndpoint && HasIPv6Address(); }
+	// Keep the legacy uint32 fields as compatibility storage without using
+	// them to decide whether a real IPv4 route exists. Constructors historically
+	// pass synthetic values in either byte order, so recognize both forms.
+	void			RefreshIPv6OnlyEndpoint()
+	{
+		if (!HasIPv6Address()) {
+			m_bIPv6OnlyEndpoint = false;
+			return;
+		}
+		const uint32 synthetic = m_ipv6Address.ToSyntheticUInt32();
+		const bool userIsSynthetic = m_dwUserIP == 0 || m_dwUserIP == synthetic;
+		const bool connectIsSynthetic = m_nConnectIP == 0
+			|| m_nConnectIP == INADDR_NONE
+			|| m_nConnectIP == synthetic
+			|| m_nConnectIP == ntohl(synthetic);
+		m_bIPv6OnlyEndpoint = userIsSynthetic && connectIsSynthetic;
+	}
+	// Returns the endpoint without erasing the legacy IPv4 fields. When
+	// preferIPv6 is true a validated native-v6 candidate wins; otherwise the
+	// caller gets the historical IPv4 endpoint first.
+	bool			TryGetConnectAddress(CAddress& out, bool preferIPv6) const {
+			if (preferIPv6 && HasIPv6Address()) { out = m_ipv6Address; return true; }
+			if (m_nConnectIP != 0 && m_nConnectIP != INADDR_NONE) {
+				out = CAddress::FromIPv4NetworkOrder(m_nConnectIP);
+				return true;
+			}
+			if (HasIPv6Address()) { out = m_ipv6Address; return true; }
+			out = CAddress();
+			return false;
+	}
 	// A known eD2K server supplied this native-v6 endpoint through the
 	// negotiated OP_FOUNDSOURCES_V6 response. This is sufficient provenance
 	// for a direct TCP attempt without pretending the peer advertised Kad/eSE
 	// reachability capabilities before HELLO.
 	void			SetServerIPv6Source(bool bValue = true)		{ m_bServerIPv6Source = bValue && HasIPv6Address(); }
 	bool			IsServerIPv6Source() const					{ return m_bServerIPv6Source; }
+	void			SetIPv6CallbackSource(bool bValue = true)			{ m_bIPv6CallbackSource = bValue && HasIPv6Address(); }
+	bool			IsIPv6CallbackSource() const					{ return m_bIPv6CallbackSource; }
+	// A native endpoint learned from an authenticated Live peer-list is a
+	// separate provenance from server discovery and callbacks. It may use the
+	// native TCP path, but never the legacy uint32 path.
+	void			SetLiveIPv6Source(bool bValue = true) { m_bLiveIPv6Source = bValue && HasIPv6Address(); }
+	bool			IsLiveIPv6Source() const { return m_bLiveIPv6Source; }
+	// Explicit source links/manual entries carry a validated native endpoint,
+	// but no server/callback/Live provenance. This flag authorizes direct TCP
+	// only; it never enables legacy UDP/Kad identity fields.
+	void			SetDirectIPv6Source(bool bValue = true) { m_bDirectIPv6Source = bValue && HasIPv6Address(); }
+	bool			IsDirectIPv6Source() const { return m_bDirectIPv6Source; }
 	//Only use this when you know the real IP or when your clearing it.
-	void			SetIP(uint32 val)								{ m_dwUserIP = val; m_nConnectIP = val; }
+	void			SetIP(uint32 val)								{ m_dwUserIP = val; m_nConnectIP = val; RefreshIPv6OnlyEndpoint(); }
 
 	inline bool		HasLowID() const								{ return ::IsLowID(m_nUserIDHybrid); }
 	uint32			GetConnectIP() const							{ return m_nConnectIP; }
-	void			SetConnectIP(uint32 val)						{ m_nConnectIP = val; }
+	void			SetConnectIP(uint32 val)						{ m_nConnectIP = val; RefreshIPv6OnlyEndpoint(); }
 	uint16			GetUserPort() const								{ return m_nUserPort; }
 	void			SetUserPort(uint16 val)							{ m_nUserPort = val; }
 	uint64			GetTransferredUp() const						{ return m_nTransferredUp; }
@@ -277,8 +320,8 @@ public:
 	void			SendPublicIPRequestV6();
 	void			ProcessPublicIPAnswerV6(const BYTE *pbyData, UINT uSize);
 	uint8			GetKadVersion()	const							{ return m_byKadVersion; }
-	bool			SendBuddyPingPong()								{ return ::GetTickCount() >= m_dwLastBuddyPingPongTime; }
-	bool			AllowIncomeingBuddyPingPong()					{ return ::GetTickCount() >= m_dwLastBuddyPingPongTime + MIN2MS(3); }
+	bool			SendBuddyPingPong()								{ return KadProtocolPolicy::HasReachedTick(::GetTickCount(), m_dwLastBuddyPingPongTime); }
+	bool			AllowIncomeingBuddyPingPong()					{ return KadProtocolPolicy::HasReachedTick(::GetTickCount(), m_dwLastBuddyPingPongTime + MIN2MS(3)); }
 	void			SetLastBuddyPingPongTime()						{ m_dwLastBuddyPingPongTime = ::GetTickCount() + MIN2MS(10); }
 	void			ProcessFirewallCheckUDPRequest(CSafeMemFile &data);
 	void			SendSharedDirectories();
@@ -570,7 +613,11 @@ protected:
 	uint32	m_nConnectIP;	// holds the supposed IP or (after we had a connection) the real IP
 	uint32	m_dwUserIP;		// holds 0 (real IP not yet available) or the real IP (after we had a connection)
 	CAddress m_ipv6Address;	// native public IPv6 candidate; legacy uint32 fields remain for v4 compatibility
+	bool	m_bIPv6OnlyEndpoint; // true only when the uint32 fields are a synthetic v6 compatibility value
 	bool	m_bServerIPv6Source; // endpoint came from negotiated server source discovery
+	bool	m_bIPv6CallbackSource; // endpoint came from an authenticated v6 callback request
+	bool	m_bLiveIPv6Source; // endpoint came from an authenticated Live peer-list
+	bool	m_bDirectIPv6Source; // endpoint came from a validated link/manual source
 	uint32	m_dwServerIP;
 	uint32	m_nUserIDHybrid;
 	uint16	m_nUserPort;

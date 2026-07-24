@@ -111,7 +111,7 @@ void CClientList::GetStatistics(uint32 &ruTotalClients
 			++stats[0];
 		}
 
-		if (cur_client->Credits() != NULL) {
+		if (cur_client->Credits() != NULL && !cur_client->IsIPv6OnlyEndpoint()) {
 			switch (cur_client->Credits()->GetCurrentIdentState(cur_client->GetIP())) {
 			case IS_IDENTIFIED:
 				++stats[12];
@@ -214,12 +214,14 @@ bool CClientList::AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket 
 {
 	CUpDownClient *tocheck = *client;
 	CUpDownClient *found_client = NULL;
+	if (tocheck->IsIPv6OnlyEndpoint())
+		found_client = FindClientByAddress(tocheck->GetIPv6Address(), tocheck->GetUserPort());
 	for (POSITION pos = list.GetHeadPosition(); pos != NULL;) {
 		CUpDownClient *pclient = list.GetNext(pos);
 		if (found_client == NULL && tocheck->Compare(pclient, false)) //matching user hash
 			found_client = pclient;
 
-		if (tocheck->Compare(pclient, true)) { //matching IP
+		if (found_client == NULL && tocheck->Compare(pclient, true)) { //matching IP
 			found_client = pclient;
 			break;
 		}
@@ -266,7 +268,8 @@ CUpDownClient *CClientList::FindClientByConnIP(uint32 clientip, UINT port) const
 {
 	for (POSITION pos = list.GetHeadPosition(); pos != NULL;) {
 		CUpDownClient *cur_client = list.GetNext(pos);
-		if (cur_client->GetConnectIP() == clientip && cur_client->GetUserPort() == port)
+		if (!cur_client->IsIPv6OnlyEndpoint()
+			&& cur_client->GetConnectIP() == clientip && cur_client->GetUserPort() == port)
 			return cur_client;
 	}
 	return NULL;
@@ -276,7 +279,8 @@ CUpDownClient* CClientList::FindClientByIP(uint32 clientip, UINT port) const
 {
 	for (POSITION pos = list.GetHeadPosition(); pos != NULL;) {
 		CUpDownClient *cur_client = list.GetNext(pos);
-		if (cur_client->GetIP() == clientip && cur_client->GetUserPort() == port)
+		if (!cur_client->IsIPv6OnlyEndpoint()
+			&& cur_client->GetIP() == clientip && cur_client->GetUserPort() == port)
 			return cur_client;
 	}
 	return NULL;
@@ -288,9 +292,11 @@ CUpDownClient* CClientList::FindClientByUserHash(const uchar *clienthash, uint32
 	for (POSITION pos = list.GetHeadPosition(); pos != NULL;) {
 		CUpDownClient *cur_client = list.GetNext(pos);
 		if (md4equ(cur_client->GetUserHash(), clienthash)) {
-			if ((dwIP == 0 || dwIP == cur_client->GetConnectIP()) && (nTCPPort == 0 || nTCPPort == cur_client->GetUserPort()))
+			if ((dwIP == 0 || (!cur_client->IsIPv6OnlyEndpoint()
+				&& dwIP == cur_client->GetConnectIP()))
+				&& (nTCPPort == 0 || nTCPPort == cur_client->GetUserPort()))
 				return cur_client;
-			if (pFound == NULL)
+			if (pFound == NULL && (dwIP == 0 || !cur_client->IsIPv6OnlyEndpoint()))
 				pFound = cur_client;
 		}
 	}
@@ -301,7 +307,7 @@ CUpDownClient* CClientList::FindClientByIP(uint32 clientip) const
 {
 	for (POSITION pos = list.GetHeadPosition(); pos != NULL;) {
 		CUpDownClient *cur_client = list.GetNext(pos);
-		if (cur_client->GetIP() == clientip)
+		if (!cur_client->IsIPv6OnlyEndpoint() && cur_client->GetIP() == clientip)
 			return cur_client;
 	}
 	return NULL;
@@ -311,7 +317,30 @@ CUpDownClient* CClientList::FindClientByIP_UDP(uint32 clientip, UINT nUDPport) c
 {
 	for (POSITION pos = list.GetHeadPosition(); pos != NULL;) {
 		CUpDownClient *cur_client = list.GetNext(pos);
-		if (cur_client->GetIP() == clientip && cur_client->GetUDPPort() == nUDPport)
+		if (!cur_client->IsIPv6OnlyEndpoint()
+			&& cur_client->GetIP() == clientip && cur_client->GetUDPPort() == nUDPport)
+			return cur_client;
+	}
+	return NULL;
+}
+
+CUpDownClient* CClientList::FindClientByAddress(const CAddress& address, uint16 port) const
+{
+	if (address.GetType() != CAddress::IPv4 && address.GetType() != CAddress::IPv6)
+		return NULL;
+	for (POSITION pos = list.GetHeadPosition(); pos != NULL;) {
+		CUpDownClient *cur_client = list.GetNext(pos);
+		if (cur_client->GetUserPort() != port)
+			continue;
+		CAddress candidate;
+		if (cur_client->HasIPv6Address() && address.GetType() == CAddress::IPv6)
+			candidate = cur_client->GetIPv6Address();
+		else if (address.GetType() == CAddress::IPv4 && !cur_client->IsIPv6OnlyEndpoint()) {
+			const uint32 legacyIP = cur_client->GetConnectIP() != 0
+				? cur_client->GetConnectIP() : cur_client->GetIP();
+			candidate = CAddress::FromIPv4NetworkOrder(legacyIP);
+		}
+		if (candidate == address)
 			return cur_client;
 	}
 	return NULL;
@@ -331,7 +360,8 @@ CUpDownClient* CClientList::FindClientByIP_KadPort(uint32 ip, uint16 port) const
 {
 	for (POSITION pos = list.GetHeadPosition(); pos != NULL;) {
 		CUpDownClient *cur_client = list.GetNext(pos);
-		if (cur_client->GetIP() == ip && cur_client->GetKadPort() == port)
+		if (!cur_client->IsIPv6OnlyEndpoint()
+			&& cur_client->GetIP() == ip && cur_client->GetKadPort() == port)
 			return cur_client;
 	}
 	return NULL;
@@ -368,9 +398,31 @@ void CClientList::RemoveBannedClient(uint32 dwIP)
 	m_bannedList.RemoveKey(dwIP);
 }
 
+void CClientList::AddBannedClient(const CAddress& address)
+{
+	if (!address.IsUsablePublic())
+		return;
+	m_bannedAddressList[address] = ::GetTickCount();
+}
+
+bool CClientList::IsBannedClient(const CAddress& address) const
+{
+	if (!address.IsUsablePublic())
+		return false;
+	std::map<CAddress, DWORD>::const_iterator it = m_bannedAddressList.find(address);
+	return it != m_bannedAddressList.end()
+		&& ::GetTickCount() < it->second + CLIENTBANTIME;
+}
+
+void CClientList::RemoveBannedClient(const CAddress& address)
+{
+	m_bannedAddressList.erase(address);
+}
+
 void CClientList::RemoveAllBannedClients()
 {
 	m_bannedList.RemoveAll();
+	m_bannedAddressList.clear();
 }
 
 
@@ -379,6 +431,8 @@ void CClientList::RemoveAllBannedClients()
 
 void CClientList::AddTrackClient(CUpDownClient *toadd)
 {
+	if (toadd->IsIPv6OnlyEndpoint())
+		return;
 	CDeletedClient *pResult;
 	if (m_trackedClientsMap.Lookup(toadd->GetIP(), pResult)) {
 		pResult->m_dwInserted = ::GetTickCount();
@@ -419,6 +473,8 @@ INT_PTR CClientList::GetClientsFromIP(uint32 dwIP) const
 
 void CClientList::TrackBadRequest(const CUpDownClient *upcClient, int nIncreaseCounter)
 {
+	if (upcClient->IsIPv6OnlyEndpoint())
+		return;
 	if (upcClient->GetIP() == 0) {
 		ASSERT(0);
 		return;
@@ -436,6 +492,8 @@ void CClientList::TrackBadRequest(const CUpDownClient *upcClient, int nIncreaseC
 
 uint32 CClientList::GetBadRequests(const CUpDownClient *upcClient) const
 {
+	if (upcClient->IsIPv6OnlyEndpoint())
+		return 0;
 	ASSERT(upcClient->GetIP());
 	const CDeletedClientMap::CPair *pair = m_trackedClientsMap.PLookup(upcClient->GetIP());
 	return pair ? pair->value->m_cBadRequest : 0;
@@ -467,6 +525,13 @@ void CClientList::Process()
 			m_bannedList.GetNextAssoc(pos, nKey, dwBantime);
 			if (curTick >= dwBantime + CLIENTBANTIME)
 				RemoveBannedClient(nKey);
+		}
+		for (std::map<CAddress, DWORD>::iterator it = m_bannedAddressList.begin();
+			it != m_bannedAddressList.end();) {
+			if (curTick >= it->second + CLIENTBANTIME)
+				it = m_bannedAddressList.erase(it);
+			else
+				++it;
 		}
 	}
 
@@ -503,7 +568,7 @@ void CClientList::Process()
 
 	for (POSITION pos = m_KadList.GetHeadPosition(); pos != NULL;) {
 		CUpDownClient *cur_client = m_KadList.GetNext(pos);
-		if (!Kademlia::CKademlia::IsRunning()) {
+		if (!Kademlia::CKademlia::IsKad2Running()) {
 			//Clear out this list if we stop running Kad.
 			//Setting the Kad state to KS_NONE causes it to be removed in the switch below.
 			cur_client->SetKadState(KS_NONE);
@@ -532,10 +597,13 @@ void CClientList::Process()
 				Packet *pPacket = new Packet(OP_KAD_FWTCPCHECK_ACK, 0, OP_EMULEPROT);
 				if (!cur_client->SafeConnectAndSendPacket(pPacket))
 					break;
-			} else {
+			} else if (!cur_client->IsIPv6OnlyEndpoint()) {
 				if (thePrefs.GetDebugClientKadUDPLevel() > 0)
 					DebugSend("KADEMLIA_FIREWALLED_ACK_RES", cur_client->GetIP(), cur_client->GetKadPort());
 				Kademlia::CKademlia::GetUDPListener()->SendNullPacket(KADEMLIA_FIREWALLED_ACK_RES, ntohl(cur_client->GetIP()), cur_client->GetKadPort(), Kademlia::CKadUDPKey(), NULL);
+			} else {
+				// Native IPv6 has no uint32 Kad2 firewall-check wire format.
+				cur_client->SetKadState(KS_NONE);
 			}
 			//We are done with this client. Set Kad status to KS_NONE and it will be removed in the next cycle.
 			cur_client->SetKadState(KS_NONE);
@@ -603,7 +671,7 @@ void CClientList::Process()
 	//We either never had a buddy, or lost our buddy.
 	if (buddy == Disconnected) {
 		if (m_nBuddyStatus != Disconnected || m_pBuddy) {
-			if (Kademlia::CKademlia::IsRunning() && theApp.IsFirewalled() && Kademlia::CUDPFirewallTester::IsFirewalledUDP(true)) {
+			if (Kademlia::CKademlia::IsKad2Running() && theApp.IsFirewalled() && Kademlia::CUDPFirewallTester::IsFirewalledUDP(true)) {
 				//We are a lowID client and we just lost our buddy.
 				//Go ahead and instantly try to find a new buddy.
 				Kademlia::CKademlia::GetPrefs()->SetFindBuddy();

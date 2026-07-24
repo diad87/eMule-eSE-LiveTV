@@ -54,6 +54,7 @@ namespace Kademlia
 		void	IncRecheckIP();
 		bool	HasHadContact() const;
 		void	SetLastContact();
+		void	ResetLastContact();
 		bool	HasLostConnection() const;
 		time_t	GetLastContact() const;
 		bool	GetFirewalled() const;

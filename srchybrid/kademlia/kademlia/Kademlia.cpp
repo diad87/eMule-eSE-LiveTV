@@ -85,6 +85,7 @@ time_t		CKademlia::m_tConsolidate;
 time_t		CKademlia::m_tExternPortLookup;
 time_t		CKademlia::m_tLANModeCheck = 0;
 volatile bool	CKademlia::m_bRunning = false;
+volatile LONG	CKademlia::m_lRunningNetworkMask = KadNetworkPolicy::None;
 bool		CKademlia::m_bLANMode = false;
 CList<uint32, uint32> CKademlia::m_liStatsEstUsersProbes;
 _ContactList CKademlia::s_liBootstrapList;
@@ -107,6 +108,11 @@ void CKademlia::Start()
 
 void CKademlia::Start(CPrefs *pPrefs)
 {
+	const uint8 networkMask = thePrefs.GetEffectiveKadNetworkMask();
+	if (networkMask == KadNetworkPolicy::None) {
+		delete pPrefs;
+		return;
+	}
 	try {
 		// If we already have an instance, something is wrong.
 		if (m_pInstance) {
@@ -120,7 +126,8 @@ void CKademlia::Start(CPrefs *pPrefs)
 		if (!pPrefs)
 			return;
 
-		AddDebugLogLine(false, _T("Starting Kademlia"));
+		AddDebugLogLine(false, _T("Starting Kademlia (mask=%u)"),
+			static_cast<unsigned>(networkMask));
 
 		time_t tNow = time(NULL);
 		// Init jump start timer.
@@ -153,7 +160,10 @@ void CKademlia::Start(CPrefs *pPrefs)
 		m_pInstance->m_pKad6RoutingTable = new CKad6RoutingTable();
 		m_pInstance->m_pUDPListener = new CKademliaUDPListener();
 		// Mark Kad as running state.
+		::InterlockedExchange(&m_lRunningNetworkMask, networkMask);
 		m_bRunning = true;
+		m_pInstance->m_pUDPListener->OnKad6NetworkStateChanged(
+			KadNetworkPolicy::HasKad6(networkMask));
 	} catch (CException *ex) {
 		// BUG-040 FIX: Clean up partially initialized Kademlia objects on failure
 		AddDebugLogLine(false, _T("%s"), (LPCTSTR)CExceptionStr(*ex));
@@ -172,8 +182,70 @@ void CKademlia::Start(CPrefs *pPrefs)
 			delete m_pInstance;
 			m_pInstance = NULL;
 		}
+		::InterlockedExchange(&m_lRunningNetworkMask, KadNetworkPolicy::None);
 		m_bRunning = false;
 	}
+}
+
+bool CKademlia::ApplyNetworkMask(uint8 networkMask)
+{
+	if (!KadNetworkPolicy::IsValid(networkMask))
+		return false;
+	networkMask = static_cast<uint8>(KadNetworkPolicy::Effective(
+		networkMask, thePrefs.GetUDPPort() > 0));
+
+	if (m_pInstance == NULL || !m_bRunning) {
+		if (networkMask == KadNetworkPolicy::None)
+			return true;
+		Start();
+		return GetRunningNetworkMask() == networkMask;
+	}
+
+	const uint8 oldMask = GetRunningNetworkMask();
+	if (oldMask == networkMask)
+		return true;
+	if (networkMask == KadNetworkPolicy::None) {
+		Stop();
+		return true;
+	}
+
+	const uint8 removed = static_cast<uint8>(
+		KadNetworkPolicy::Removed(oldMask, networkMask));
+	const uint8 added = static_cast<uint8>(
+		KadNetworkPolicy::Added(oldMask, networkMask));
+
+	// Publish the new mask before cleanup/start callbacks. Packet entry points
+	// consult this value, so a removed plane is closed before its queues drain
+	// and an added plane is visible before it starts sending.
+	::InterlockedExchange(&m_lRunningNetworkMask, networkMask);
+
+	if (KadNetworkPolicy::HasKad6(removed) && m_pInstance->m_pUDPListener != NULL)
+		m_pInstance->m_pUDPListener->OnKad6NetworkStateChanged(false);
+	if (KadNetworkPolicy::HasKad2(removed)) {
+		CSearchManager::StopAllSearches();
+		CUDPFirewallTester::Reset();
+		CKadKeepalive::Instance().RequestStop();
+		if (m_pInstance->m_pPrefs != NULL) {
+			m_pInstance->m_pPrefs->ResetLastContact();
+			m_pInstance->m_pPrefs->SetKademliaUsers(0);
+			m_pInstance->m_pPrefs->SetKademliaFiles();
+		}
+	}
+
+	const time_t now = time(NULL);
+	if (KadNetworkPolicy::HasKad2(added)) {
+		m_tNextSearchJumpStart = now;
+		m_tNextSelfLookup = now + MIN2S(3);
+		m_tNextFirewallCheck = now + HR2S(1);
+		m_tNextFindBuddy = now + MIN2S(5);
+		m_tBootstrap = 0;
+	}
+	if (KadNetworkPolicy::HasKad6(added) && m_pInstance->m_pUDPListener != NULL)
+		m_pInstance->m_pUDPListener->OnKad6NetworkStateChanged(true);
+
+	AddDebugLogLine(false, _T("Kademlia network mask changed %u -> %u"),
+		static_cast<unsigned>(oldMask), static_cast<unsigned>(networkMask));
+	return true;
 }
 
 void CKademlia::Stop()
@@ -184,6 +256,7 @@ void CKademlia::Stop()
 
 	// Mark Kad as being in the stop state to make sure nothing else is used.
 	m_bRunning = false;
+	::InterlockedExchange(&m_lRunningNetworkMask, KadNetworkPolicy::None);
 
 	AddDebugLogLine(false, _T("Stopping Kademlia"));
 
@@ -194,6 +267,8 @@ void CKademlia::Stop()
 	CSearchManager::StopAllSearches();
 
 	// Delete all Kad Objects.
+	if (m_pInstance->m_pUDPListener != NULL)
+		m_pInstance->m_pUDPListener->OnKad6NetworkStateChanged(false);
 	delete m_pInstance->m_pUDPListener;
 	m_pInstance->m_pUDPListener = NULL;
 
@@ -228,9 +303,9 @@ void CKademlia::Process()
 
 	// the index otherwise only cleans when search requests arrive;
 	// Clean() self-limits to one pass per 30 min and to loaded data
-	if (m_pInstance->m_pIndexed != NULL)
+	if (IsKad2Running() && m_pInstance->m_pIndexed != NULL)
 		m_pInstance->m_pIndexed->Clean();
-	if (m_pInstance->m_pUDPListener != NULL)
+	if (IsKad6Running() && m_pInstance->m_pUDPListener != NULL)
 		m_pInstance->m_pUDPListener->ProcessKad6();
 
 	// v0.71 P0.2 — privacy stack heartbeat. Wrapped in try/catch because
@@ -296,6 +371,9 @@ void CKademlia::Process()
 			} catch (...) {}
 		}
 	}
+
+	if (!IsKad2Running())
+		return;
 
 	uint32 uMaxUsers = 0;
 	time_t tNow = time(NULL);
@@ -418,9 +496,34 @@ void CKademlia::RemoveEvent(CRoutingZone *pZone)
 
 bool CKademlia::IsConnected()
 {
+	return IsKad2Connected();
+}
+
+bool CKademlia::IsKad2Connected()
+{
+	if (!IsKad2Running())
+		return false;
 	if (m_pInstance && m_pInstance->m_pPrefs)
 		return m_pInstance->m_pPrefs->HasHadContact();
 	return false;
+}
+
+bool CKademlia::IsKad6Connected()
+{
+	return IsKad6Running() && m_pInstance != NULL
+		&& m_pInstance->m_pUDPListener != NULL
+		&& m_pInstance->m_pUDPListener->IsKad6Connected();
+}
+
+bool CKademlia::IsAnyConnected()
+{
+	return IsKad2Connected() || IsKad6Connected();
+}
+
+uint32 CKademlia::GetKad6VerifiedContacts()
+{
+	CKad6RoutingTable* table = GetKad6RoutingTable();
+	return table != NULL ? static_cast<uint32>(table->VerifiedSize()) : 0;
 }
 
 bool CKademlia::IsFirewalled()
@@ -481,14 +584,14 @@ uint32 CKademlia::GetIPAddress()
 
 void CKademlia::ProcessPacket(const byte *pbyData, uint32 uLenData, uint32 uIP, uint16 uPort, bool bValidReceiverKey, const CKadUDPKey &senderUDPKey)
 {
-	if (m_pInstance && m_pInstance->m_pUDPListener)
+	if (IsKad2Running() && m_pInstance && m_pInstance->m_pUDPListener)
 		m_pInstance->m_pUDPListener->ProcessPacket(pbyData, uLenData, uIP, uPort, bValidReceiverKey, senderUDPKey);
 }
 
 void CKademlia::ProcessPacketV6(const byte *pbyData, uint32 uLenData,
 	const byte uAddress[16], uint16 uPort)
 {
-	if (m_pInstance && m_pInstance->m_pUDPListener)
+	if (IsKad6Running() && m_pInstance && m_pInstance->m_pUDPListener)
 		m_pInstance->m_pUDPListener->ProcessPacketV6(
 			pbyData, uLenData, uAddress, uPort);
 }
@@ -496,7 +599,7 @@ void CKademlia::ProcessPacketV6(const byte *pbyData, uint32 uLenData,
 void CKademlia::ProcessPacketV4(const byte *pbyData, uint32 uLenData,
 	uint32 uIP, uint16 uPort)
 {
-	if (m_pInstance && m_pInstance->m_pUDPListener)
+	if (IsKad6Running() && m_pInstance && m_pInstance->m_pUDPListener)
 		m_pInstance->m_pUDPListener->ProcessPacketV4(
 			pbyData, uLenData, uIP, uPort);
 }
@@ -510,7 +613,8 @@ bool CKademlia::GetPublish()
 
 void CKademlia::Bootstrap(LPCTSTR szHost, uint16 uPort)
 {
-	if (m_pInstance && m_pInstance->m_pUDPListener && !IsConnected() && time(NULL) >= m_tBootstrap + 10) {
+	if (IsKad2Running() && m_pInstance && m_pInstance->m_pUDPListener
+		&& !IsConnected() && time(NULL) >= m_tBootstrap + 10) {
 		m_tBootstrap = time(NULL);
 		m_pInstance->m_pUDPListener->Bootstrap(szHost, uPort);
 	}
@@ -518,7 +622,8 @@ void CKademlia::Bootstrap(LPCTSTR szHost, uint16 uPort)
 
 void CKademlia::Bootstrap(uint32 uIP, uint16 uPort)
 {
-	if (m_pInstance && m_pInstance->m_pUDPListener && !IsConnected() && time(NULL) >= m_tBootstrap + 10) {
+	if (IsKad2Running() && m_pInstance && m_pInstance->m_pUDPListener
+		&& !IsConnected() && time(NULL) >= m_tBootstrap + 10) {
 		m_tBootstrap = time(NULL);
 		m_pInstance->m_pUDPListener->Bootstrap(uIP, uPort);
 	}
@@ -526,7 +631,8 @@ void CKademlia::Bootstrap(uint32 uIP, uint16 uPort)
 
 void CKademlia::RecheckFirewalled()
 {
-	if (m_pInstance && m_pInstance->GetPrefs() && !IsRunningInLANMode()) {
+	if (IsKad2Running() && m_pInstance && m_pInstance->GetPrefs()
+		&& !IsRunningInLANMode()) {
 		// Something is forcing a new firewall check
 		// Stop any new buddy requests, and tell the client
 		// to recheck it's IP which in turns rechecks firewall.
@@ -592,9 +698,25 @@ bool CKademlia::IsRunning()
 	return m_bRunning;
 }
 
+uint8 CKademlia::GetRunningNetworkMask()
+{
+	return static_cast<uint8>(::InterlockedCompareExchange(
+		&m_lRunningNetworkMask, 0, 0));
+}
+
+bool CKademlia::IsKad2Running()
+{
+	return m_bRunning && KadNetworkPolicy::HasKad2(GetRunningNetworkMask());
+}
+
+bool CKademlia::IsKad6Running()
+{
+	return m_bRunning && KadNetworkPolicy::HasKad6(GetRunningNetworkMask());
+}
+
 bool CKademlia::FindNodeIDByIP(CKadClientSearcher &rRequester, uint32 dwIP, uint16 nTCPPort, uint16 nUDPPort)
 {
-	if (!IsRunning() || m_pInstance == NULL || GetUDPListener() == NULL || GetRoutingZone() == NULL) {
+	if (!IsKad2Running() || m_pInstance == NULL || GetUDPListener() == NULL || GetRoutingZone() == NULL) {
 		ASSERT(0);
 		return false;
 	}
@@ -611,7 +733,7 @@ bool CKademlia::FindNodeIDByIP(CKadClientSearcher &rRequester, uint32 dwIP, uint
 
 bool CKademlia::FindIPByNodeID(CKadClientSearcher &rRequester, const uchar *pachNodeID)
 {
-	if (!IsRunning() || m_pInstance == NULL || GetRoutingZone() == NULL) {
+	if (!IsKad2Running() || m_pInstance == NULL || GetRoutingZone() == NULL) {
 		ASSERT(0);
 		return false;
 	}
@@ -758,7 +880,7 @@ uint32 CKademlia::CalculateKadUsersNew()
 
 bool CKademlia::IsRunningInLANMode()
 {
-	if (thePrefs.FilterLANIPs() || !IsRunning() || GetRoutingZone() == NULL)
+	if (thePrefs.FilterLANIPs() || !IsKad2Running() || GetRoutingZone() == NULL)
 		return false;
 	if (time(NULL) >= m_tLANModeCheck + 10) {
 		m_tLANModeCheck = time(NULL);

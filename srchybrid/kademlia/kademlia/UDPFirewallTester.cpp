@@ -78,7 +78,7 @@ bool CUDPFirewallTester::GetUDPCheckClientsNeeded()
 
 void CUDPFirewallTester::SetUDPFWCheckResult(bool bSucceeded, bool bTestCancelled, uint32 uFromIP, uint16 nIncomingPort)
 {
-	if (!CKademlia::IsRunning())
+	if (!CKademlia::IsKad2Running())
 		return;
 	// see if we actually requested a firewall check from this client
 	bool bRequested = false;
@@ -192,7 +192,9 @@ void CUDPFirewallTester::Connected()
 
 bool CUDPFirewallTester::IsFWCheckUDPRunning()
 {
-	return m_byFWChecksFinishedUDP < UDP_FIREWALLTEST_CLIENTSTOASK && !CKademlia::IsRunningInLANMode();
+	return CKademlia::IsKad2Running()
+		&& m_byFWChecksFinishedUDP < UDP_FIREWALLTEST_CLIENTSTOASK
+		&& !CKademlia::IsRunningInLANMode();
 }
 
 void CUDPFirewallTester::Reset()
@@ -226,7 +228,7 @@ void CUDPFirewallTester::QueryNextClient() // try the next available client for 
 	if (!IsFWCheckUDPRunning() || !GetUDPCheckClientsNeeded() || CKademlia::GetPrefs()->FindExternKadPort(false))
 		return; // check if more tests are needed and wait till we know our extern port
 
-	if (!CKademlia::IsRunning() || CKademlia::GetRoutingZone() == NULL) {
+	if (!CKademlia::IsKad2Running() || CKademlia::GetRoutingZone() == NULL) {
 		ASSERT(0);
 		return;
 	}

@@ -2285,7 +2285,7 @@ void CStatisticsDlg::ShowStatistics(bool forceUpdate)
 
 		// CLIENTS -> FIREWALLED (KAD) SECTION
 		if (forceUpdate || m_stattree.IsExpanded(hclifirewalled)) {
-			if (!Kademlia::CKademlia::IsRunning() || Kademlia::CUDPFirewallTester::IsFirewalledUDP(true)) {
+			if (!Kademlia::CKademlia::IsKad2Running() || Kademlia::CUDPFirewallTester::IsFirewalledUDP(true)) {
 				sText.Format(_T("UDP: %s"), (LPCTSTR)GetResString(IDS_KAD_UNKNOWN));
 				m_stattree.SetItemText(clifirewalled[0], sText);
 				sText.Format(_T("TCP: %s"), (LPCTSTR)GetResString(IDS_KAD_UNKNOWN));

@@ -580,7 +580,12 @@ static uint64 on_utp_error(utp_callback_arguments* a)
 			if (!peerIP.IsNull() && peerPort != 0) {
 				retryIP = peerIP;
 				retryPort = peerPort;
-				theApp.clientudp->SeedNatTraversalExpectation(natClient, peerIP.ToUInt32(true), peerPort);
+				// The eSE hole-punch expectation table has a legacy uint32
+				// signalling format.  Keep native IPv6 in the retry address, but
+				// never collapse it to the synthetic uint32 value for matching.
+				if (peerIP.GetType() == CAddress::IPv4)
+					theApp.clientudp->SeedNatTraversalExpectation(natClient,
+						peerIP.ToUInt32(true), peerPort);
 				if (thePrefs.GetVerbose())
 					DebugLog(_T("[NatTraversal][uTP] ERROR recovery: re-seeded NAT expectation for %s:%u"), (LPCTSTR)"IP", (UINT)peerPort);
 			}
@@ -615,9 +620,12 @@ static uint64 on_utp_error(utp_callback_arguments* a)
 
 			if (bNeedNatRetry && bRetryAllowed) {
 				if (retryIP.IsNull() || retryPort == 0) {
-					retryIP = CAddress(natClient->GetConnectIP(), false);
+					if (natClient->IsIPv6OnlyEndpoint())
+						retryIP = natClient->GetIPv6Address();
+					else
+						retryIP = CAddress::FromIPv4NetworkOrder(natClient->GetConnectIP());
 					if (retryIP.IsNull())
-						retryIP = CAddress(natClient->GetIP(), false);
+						retryIP = CAddress::FromIPv4NetworkOrder(natClient->GetIP());
 					retryPort = natClient->GetKadPort();
 					if (retryPort == 0)
 						retryPort = natClient->GetUDPPort();
@@ -976,7 +984,9 @@ static uint64 on_utp_accept(utp_callback_arguments* a)
 			uint16 peerPort = 0;
 			peerIP.FromSA((sockaddr*)&peer, peerlen, &peerPort);
 
-			uint32 peerIPv4 = peerIP.ToUInt32(true); // true = convert from network to host order
+			uint32 peerIPv4 = 0;
+			if (peerIP.GetType() == CAddress::IPv4)
+				peerIP.TryToUInt32(peerIPv4, true); // network to host order
 
 			// Check if there's at least a registered expectation for this IP
 			// (even without a client — hole-punch REQ handlers seed with NULL owner)
@@ -1026,10 +1036,16 @@ static uint64 on_utp_accept(utp_callback_arguments* a)
 			g_expectedPeersLock.Unlock();
 
 			if (bHasExpectation) {
-				if (thePrefs.GetVerbose())
-					DebugLog(_T("[NatTraversal][uTP] ACCEPT bare pending HELLO for %s:%u (exact=%u candidates=%u)"),
-						(LPCTSTR)ipstr(htonl(peerIPv4)), (unsigned)peerPort,
-						(unsigned)bExactExpectation, uSameIPExpectations);
+				if (thePrefs.GetVerbose()) {
+					if (peerIP.GetType() == CAddress::IPv6)
+						DebugLog(_T("[NatTraversal][uTP] ACCEPT bare pending HELLO for %s:%u (exact=%u candidates=%u)"),
+							(LPCTSTR)peerIP.ToStringC(), (unsigned)peerPort,
+							(unsigned)bExactExpectation, uSameIPExpectations);
+					else
+						DebugLog(_T("[NatTraversal][uTP] ACCEPT bare pending HELLO for %s:%u (exact=%u candidates=%u)"),
+							(LPCTSTR)ipstr(htonl(peerIPv4)), (unsigned)peerPort,
+							(unsigned)bExactExpectation, uSameIPExpectations);
+				}
 
 				// Keep the accepted transport unowned until OP_HELLO authenticates
 				// the user hash. Associating by public IP is unsafe behind CGNAT.

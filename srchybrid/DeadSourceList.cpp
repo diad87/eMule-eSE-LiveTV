@@ -41,11 +41,21 @@ CDeadSource::CDeadSource()
 	, m_dwID()
 	, m_nPort()
 	, m_nKadPort()
+	, m_address()
 {
 }
 
 CDeadSource::CDeadSource(const CUpDownClient &client)
 {
+	m_address = client.IsIPv6OnlyEndpoint() ? client.GetIPv6Address() : CAddress();
+	if (m_address.GetType() != CAddress::None) {
+		md4clr(m_aucHash);
+		m_dwServerIP = 0;
+		m_dwID = 0;
+		m_nPort = client.GetUserPort();
+		m_nKadPort = 0;
+		return;
+	}
 	if (!client.HasLowID() || client.GetServerIP() != 0) {
 		md4clr(m_aucHash);
 		m_dwServerIP = client.GetServerIP();
@@ -67,6 +77,8 @@ CDeadSource::CDeadSource(const CUpDownClient &client)
 
 bool operator==(const CDeadSource &ds1, const CDeadSource &ds2)
 {
+	if (ds1.m_address.GetType() != CAddress::None || ds2.m_address.GetType() != CAddress::None)
+		return ds1.m_address == ds2.m_address && ds1.m_nPort == ds2.m_nPort;
 	//ASSERT((ds1.m_dwID + ds1.m_dwServerIP) ^ isnulmd4(ds1.m_aucHash));
 	//ASSERT((ds2.m_dwID + ds2.m_dwServerIP) ^ isnulmd4(ds2.m_aucHash));
 	return (
@@ -83,6 +95,7 @@ CDeadSource& CDeadSource::operator=(const CDeadSource &ds)
 	m_dwID = ds.m_dwID;
 	m_nPort = ds.m_nPort;
 	m_nKadPort = ds.m_nKadPort;
+	m_address = ds.m_address;
 	return *this;
 }
 

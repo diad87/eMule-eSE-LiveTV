@@ -55,8 +55,14 @@ function parseCookies(req) {
       // Only accept RFC6265 token cookie names as keys (CodeQL js/remote-property-injection):
       // keeps a hostile property name out of the map. Object.create(null) above also blocks
       // any prototype pollution.
-      if (/^[!#$%&'*+\-.0-9A-Z^_`a-z|~]+$/.test(name))
-        out[name] = decodeURIComponent(part.slice(idx + 1).trim());
+      if (/^[!#$%&'*+\-.0-9A-Z^_`a-z|~]+$/.test(name)) {
+        try {
+          out[name] = decodeURIComponent(part.slice(idx + 1).trim());
+        } catch (_) {
+          // A malformed percent escape is an invalid cookie value, not a server
+          // exception. Ignore only that cookie so authentication fails closed.
+        }
+      }
     }
   });
   return out;
@@ -110,8 +116,51 @@ function _hostIsLocal(hostHeader) {
   return false;
 }
 
+function _expectedRequestOrigin(req) {
+  const host = String(req.headers.host || '').trim();
+  if (!host) return '';
+  try {
+    const protocol = isSecureRequest(req) ? 'https:' : 'http:';
+    return new URL(protocol + '//' + host).origin;
+  } catch (_) {
+    return '';
+  }
+}
+
+function _originMatchesRequest(req, value) {
+  if (!value || value === 'null') return false;
+  const expected = _expectedRequestOrigin(req);
+  if (!expected) return false;
+  try {
+    return new URL(String(value)).origin === expected;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Browsers can reach a loopback HTTP service from an unrelated web page. CORS
+// controls whether that page can read the response; it does not stop the
+// request itself. Fetch Metadata is checked as well as Origin/Referer so
+// subresource requests such as <img src=http://127.0.0.1:8080/api/...> are
+// rejected before localhost trust or route dispatch.
+function isCrossSiteBrowserRequest(req) {
+  const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') return true;
+
+  const origin = req.headers.origin;
+  if (origin) return !_originMatchesRequest(req, origin);
+
+  const referer = req.headers.referer;
+  if (referer) return !_originMatchesRequest(req, referer);
+
+  // Native clients and address-bar requests do not send browser provenance
+  // headers. They remain eligible for the existing loopback-only trust path.
+  return false;
+}
+
 function isLocalRequest(req) {
   if (req.headers['x-forwarded-for'] || req.headers['cf-connecting-ip']) return false;
+  if (isCrossSiteBrowserRequest(req)) return false;
   const addr = req.socket && req.socket.remoteAddress;
   const peerIsLoopback = addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
   if (!peerIsLoopback) return false;
@@ -303,6 +352,14 @@ function sendUnauthorized(res) {
   res.end(JSON.stringify({ error: 'unauthorized' }));
 }
 
+function sendCrossSiteDenied(res) {
+  res.writeHead(403, {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store'
+  });
+  res.end(JSON.stringify({ error: 'cross_site_request_denied' }));
+}
+
 // BUG-052 FIX: CORS origin whitelist instead of reflection.
 // v7.4.0: trycloudflare.com entry removed (Cloudflare Quick Tunnel gone).
 function isAllowedOrigin(origin) {
@@ -337,6 +394,11 @@ function apply(url, req, res) {
   if (handleCorsPreflight(req, res)) return false;
 
   if (!checkRate(url, req, res)) return false;
+
+  if (isProtectedPath(url.pathname) && isCrossSiteBrowserRequest(req)) {
+    sendCrossSiteDenied(res);
+    return false;
+  }
 
   if (url.pathname === '/api/auth/session') {
     if (!isValidToken(url, req)) {
@@ -424,6 +486,7 @@ module.exports = {
   isValidToken,
   // v7.5.0 — exported for unit tests and any caller that needs the DNS-rebinding-aware check.
   isLocalRequest,
+  isCrossSiteBrowserRequest,
   _hostIsLocal,
   _test: {
     clientKey,

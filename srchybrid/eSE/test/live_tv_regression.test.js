@@ -134,6 +134,52 @@ test('restarting the dashboard does not delete C++-owned HLS output', () => {
   assert.match(server, /process\.env\.ESE_PORT/);
 });
 
+test('Kad2 and Kad6 are independently selectable with dual mode as the default', () => {
+  const policy = read(repoRoot, 'srchybrid', 'kademlia', 'kademlia', 'KadNetworkPolicy.h');
+  const prefs = read(repoRoot, 'srchybrid', 'Preferences.cpp');
+  const prefsHeader = read(repoRoot, 'srchybrid', 'Preferences.h');
+  const kad = read(repoRoot, 'srchybrid', 'kademlia', 'kademlia', 'Kademlia.cpp');
+  const kadUdp = read(repoRoot, 'srchybrid', 'kademlia', 'net', 'KademliaUDPListener.cpp');
+  const clientUdp = read(repoRoot, 'srchybrid', 'ClientUDPSocket.cpp');
+  const connectionPage = read(repoRoot, 'srchybrid', 'PPgConnection.cpp');
+  const resources = read(repoRoot, 'srchybrid', 'emule.rc');
+  const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const natHealth = read(eseRoot, 'pages', 'misc_pages.js');
+
+  assert.match(policy, /Kad2\s*=\s*1u\s*<<\s*0/);
+  assert.match(policy, /Kad6\s*=\s*1u\s*<<\s*1/);
+  assert.match(policy, /Both\s*=\s*Kad2\s*\|\s*Kad6/);
+  assert.match(policy, /legacyKadEnabled\s*\?\s*static_cast<std::uint8_t>\(Both\)/);
+  assert.match(policy, /LegacyKad2Enabled[\s\S]{0,160}return HasKad2\(mask\)/);
+
+  assert.match(prefs, /m_uKadNetworkMask\s*=\s*KadNetworkPolicy::Both/);
+  assert.match(prefs, /Migrate\(persistedMask,\s*networkkademlia\)/);
+  assert.match(prefs, /WriteInt\(_T\("KadNetworkMask"\),\s*m_uKadNetworkMask,\s*_T\("Connection"\)\)/);
+  assert.match(prefsHeader, /GetEffectiveKadNetworkMask\(\)[\s\S]{0,140}udpport\s*>\s*0/);
+
+  assert.match(connectionPage, /ON_BN_CLICKED\(IDC_NETWORK_KADEMLIA/);
+  assert.match(connectionPage, /ON_BN_CLICKED\(IDC_NETWORK_KAD6/);
+  assert.match(connectionPage, /SetKadNetworkMask\(uKadNetworkMask\)/);
+  assert.match(connectionPage, /ApplyNetworkMask\(thePrefs\.GetEffectiveKadNetworkMask\(\)\)/);
+  assert.match(resources, /"Kad2",IDC_NETWORK_KADEMLIA[\s\S]{0,180}"Kad6",IDC_NETWORK_KAD6/);
+
+  assert.match(kad, /ProcessPacket\([\s\S]{0,240}IsKad2Running\(\)/);
+  assert.match(kad, /ProcessPacketV6\([\s\S]{0,220}IsKad6Running\(\)/);
+  assert.match(kad, /ProcessPacketV4\([\s\S]{0,220}IsKad6Running\(\)/);
+  assert.match(kadUdp, /ProcessPacketKad6[\s\S]{0,500}!CKademlia::IsKad6Running\(\)/);
+  assert.match(clientUdp, /OP_KAD6HEADER[\s\S]{0,180}IsKad6Running\(\)/);
+  assert.match(clientUdp, /OP_KADEMLIAPACKEDPROT[\s\S]{0,180}!Kademlia::CKademlia::IsKad2Running\(\)/);
+
+  for (const field of [
+    'kad_configured_mask', 'kad_running_mask',
+    'kad2_running', 'kad2_connected',
+    'kad6_running', 'kad6_connected', 'kad6_verified_contacts'
+  ]) {
+    assert.ok(web.includes(`\\"${field}\\"`), `missing C++ network status field: ${field}`);
+    assert.ok(natHealth.includes(field), `missing dashboard network status field: ${field}`);
+  }
+});
+
 test('hole-punch keeps Kad identity separate from the eD2K user hash', () => {
   const kad = read(repoRoot, 'srchybrid', 'kademlia', 'net', 'KademliaUDPListener.cpp');
   const udp = read(repoRoot, 'srchybrid', 'ClientUDPSocket.cpp');
@@ -215,7 +261,9 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(kadUdp, /Process_KADEMLIA3_PING_REQ[\s\S]{0,900}senderCaps & \(ESE_CAP_NETLAB_V1 \| ESE_CAP_KAD_KEEPALIVE\)/);
   assert.match(kadUdp, /Process_KADEMLIA3_PING_RES[\s\S]{0,300}g_uEseCapsRuntime & ESE_CAP_KAD_KEEPALIVE/);
   assert.match(keepalive, /OnPong[\s\S]{0,300}!IsRunning\(\)/);
-  assert.match(kadUdp, /ProcessPacketKad6[\s\S]{0,500}!thePrefs\.GetEseV9Experimental\(\)[\s\S]{0,100}ESE_CAP_KAD6/);
+  // Native DHT participation is an ordinary user-selected network plane.
+  // Experimental service/exit capabilities remain fail-closed elsewhere.
+  assert.match(kadUdp, /ProcessPacketKad6[\s\S]{0,500}!CKademlia::IsKad6Running\(\)/);
   assert.match(web, /explicit_consent_required/);
   assert.match(web, /SetEseNetLabEnabled\(false\)/);
   assert.match(web, /SetEseNetLabEnabled\(true\)/);
@@ -244,6 +292,7 @@ test('v9 capabilities and remote administration fail closed by default', () => {
     'EseNetLabConsent=0', 'EseNetLabEnabled=0',
     'EseKad3Rendezvous=0', 'EseAutoKeepalive=0', 'EseRelayAccept=0',
     'EseRelayEgress=0', 'EseReachSelector=0', 'EseHolePunchPortPredict=0',
+    'NetworkKademlia=1', 'KadNetworkMask=3',
     'EseEd2kPunch3=0', 'Kad6PublicExitOptIn=0', 'KrpRelayEnabled=0',
     'KrpRelayKillSwitch=0', 'ExperimentalTcpDataPlane=0'
   ]) {

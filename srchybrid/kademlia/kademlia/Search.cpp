@@ -48,6 +48,7 @@ their client on the eMule forum.
 #include "kademlia/kademlia/Defines.h"
 #include "kademlia/kademlia/Entry.h"
 #include "kademlia/kademlia/Indexed.h"
+#include "kademlia/kademlia/KadProtocolPolicy.h"
 #include "kademlia/kademlia/Kademlia.h"
 #include "kademlia/kademlia/Prefs.h"
 #include "kademlia/kademlia/Search.h"
@@ -247,7 +248,7 @@ CSearch::~CSearch()
 			delete *itContact;
 
 	// Check if this search was contacting an overloaded node and adjust time of next time we use that node.
-	if (CKademlia::IsRunning() && GetNodeLoad() > 20 && GetSearchType() == CSearch::STOREKEYWORD)
+	if (CKademlia::IsKad2Running() && GetNodeLoad() > 20 && GetSearchType() == CSearch::STOREKEYWORD)
 		Kademlia::CKademlia::GetIndexed()->AddLoad(GetTarget(), time(NULL) + (time_t)(DAY2S(7) * (GetNodeLoad() / 100.0)));
 	delete[] m_pucSearchTermsData;
 
@@ -425,7 +426,8 @@ void CSearch::ProcessResponse(uint32 uFromIP, uint16 uFromPort, const ContactArr
 	CContact *pFromContact = NULL;
 	for (ContactMap::const_iterator itTriedMap = m_mapTried.begin(); itTriedMap != m_mapTried.end(); ++itTriedMap) {
 		CContact *pTmpContact = itTriedMap->second;
-		if ((pTmpContact->GetIPAddress() == uFromIP) && (pTmpContact->GetUDPPort() == uFromPort)) {
+		if (KadProtocolPolicy::IsExpectedResponseEndpoint(pTmpContact->GetIPAddress(),
+			pTmpContact->GetUDPPort(), uFromIP, uFromPort)) {
 			uFromDistance = itTriedMap->first;
 			pFromContact = pTmpContact;
 			break;
@@ -788,7 +790,7 @@ void CSearch::StorePacket()
 			const bool bNetLab = thePrefs.IsEseNetLabActive();
 			if (bNetLab)
 				uReachCaps |= KAD_REACH_CAP_NETLAB_V1;
-			const bool bUdpVerified = Kademlia::CKademlia::IsRunning()
+			const bool bUdpVerified = Kademlia::CKademlia::IsKad2Running()
 				&& !Kademlia::CUDPFirewallTester::IsFirewalledUDP(true)
 				&& Kademlia::CUDPFirewallTester::IsVerified();
 			if (!theApp.IsFirewalled())
@@ -837,7 +839,10 @@ void CSearch::StorePacket()
 			TagList listTag;
 			if (theApp.IsFirewalled()) {
 				const bool bDirectCallback = bUdpVerified;
-				if (!bDirectCallback && !theApp.clientlist->GetBuddy() && !bHasModernRoute) {
+				if (!bDirectCallback
+					&& (theApp.clientlist->GetBuddy() == NULL
+						|| theApp.clientlist->GetBuddy()->IsIPv6OnlyEndpoint())
+					&& !bHasModernRoute) {
 					// We are firewalled, no direct callback and no buddy. Stop everything.
 					PrepareToStop();
 					break;
@@ -851,7 +856,8 @@ void CSearch::StorePacket()
 						listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
 					if (pFromContact->GetVersion() >= KADEMLIA_VERSION2_47a)
 						listTag.push_back(new CKadTagUInt(TAG_FILESIZE, pFile->GetFileSize()));
-				} else if (theApp.clientlist->GetBuddy() != NULL) { // We are firewalled, but do have a buddy.
+				} else if (theApp.clientlist->GetBuddy() != NULL
+					&& !theApp.clientlist->GetBuddy()->IsIPv6OnlyEndpoint()) { // We are firewalled, but do have an IPv4 buddy.
 					// We send the ID to our buddy so they can do a callback.
 					CUInt128 uBuddyID(true);
 					uBuddyID.Xor(CKademlia::GetPrefs()->GetKadID());
@@ -1367,7 +1373,8 @@ void CSearch::ProcessResultKeyword(const CUInt128 &uAnswer, TagList &rlistInfo, 
 	CContact *pFromContact = NULL;
 	for (ContactMap::const_iterator itTriedMap = m_mapTried.begin(); itTriedMap != m_mapTried.end(); ++itTriedMap) {
 		CContact *pTmpContact = itTriedMap->second;
-		if (pTmpContact->GetIPAddress() == uFromIP && pTmpContact->GetUDPPort() == uFromPort) {
+		if (KadProtocolPolicy::IsExpectedResponseEndpoint(pTmpContact->GetIPAddress(),
+			pTmpContact->GetUDPPort(), uFromIP, uFromPort)) {
 			pFromContact = pTmpContact;
 			break;
 		}

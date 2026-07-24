@@ -1,0 +1,1126 @@
+TOPIC TITLE:
+0.70b.eSE9.0.0-beta.1 (23 July 2026)
+
+TOPIC DESCRIPTION:
+LiveTV, privacy tunnels, IPv6/uTP, NetLab and core improvements
+
+POST BODY:
+
+[b][size=5]eMule eSE 9.0.0-beta.1 released[/size][/b]
+
+Hello everyone,
+
+[b]eMule eSE 9.0.0-beta.1[/b] is now available.
+
+eMule eSE - Streaming Engine is an experimental fork of eMule 0.70b Community focused on decentralized P2P live streaming over the existing eD2K and Kad networks, while preserving normal eMule file-sharing compatibility.
+
+It combines the native Windows client, FFmpeg-based HLS broadcasting, decentralized stream discovery, optional privacy/tunnel controls and a local web dashboard in one portable Windows x64 package.
+
+This release is a [b]public network-lab beta[/b]. It is intended for testing real-world IPv6, LowID, NAT and CGNAT conditions. The current stable eSE release remains 8.1.0.
+
+[b]This is an unofficial derivative project and not an official eMule Project release.[/b]
+
+[b]GitHub repository and complete GPL source:[/b]
+[url=https://github.com/diad87/eMule-eSE-LiveTV]https://github.com/diad87/eMule-eSE-LiveTV[/url]
+
+[b]eSE 9.0.0-beta.1 release:[/b]
+[url=https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.0.0-beta.1]https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.0.0-beta.1[/url]
+
+[b]Direct Windows x64 download:[/b]
+[url=https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.0.0-beta.1/eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip]eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip[/url]
+
+[b]SHA-256 checksum:[/b]
+[url=https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.0.0-beta.1/eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip.sha256]Download checksum[/url]
+
+[b]Changes from original eMule 0.70b:[/b]
+[url=https://github.com/diad87/eMule-eSE-LiveTV/blob/v0.70b-eSE9.0.0-beta.1/CHANGES_FROM_EMULE_0.70b.md]Source-level overview[/url]
+
+[b]Bug reports:[/b]
+[url=https://github.com/diad87/eMule-eSE-LiveTV/issues]https://github.com/diad87/eMule-eSE-LiveTV/issues[/url]
+
+
+[b][size=4]Development update after beta.1 - 24 July 2026[/size][/b]
+
+[b]The tagged beta.1 source and ZIP above remain unchanged.[/b] The following work was implemented or prepared after the release tag and is [b]not contained in the published beta.1 binary[/b]. It is documented here so the project history and upcoming technical-review request remain complete.
+
+[b]Post-beta.1 core and reliability work[/b]
+
+[list]
+[*]Added time-sliced restoration of stored searches so large [code]StoredSearches.met[/code] files no longer monopolize the UI thread.
+[*]Added time-sliced [code]known.met[/code] serialization followed by a below-normal-priority disk writer.
+[*]The asynchronous [code]known.met[/code] writer uses a temporary file, flushes it and performs a write-through replacement of the final file.
+[*]Coalesced repeated save requests and retained a synchronous shutdown path.
+[*]Added bulk update suppression while importing large batches of eD2K links.
+[*]Added 64-bit-safe [code]known2.met[/code] bounds checks, including files and offsets above 4 GiB and arithmetic-overflow rejection.
+[*]Corrected upload auto-estimation so a configured line capacity is not treated as unknown and transient [code]WSAEWOULDBLOCK[/code] events do not ratchet a healthy upload toward 1 KiB/s.
+[*]Improved language selection through the Windows user-interface language and same-primary-language fallback.
+[*]Added build/package checks for all 43 declared translations and their version-matched DLLs.
+[*]Improved shared-file details layout and several inherited localization/UI issues.
+[*]Added explicit regression policies for empty, sub-part and exact-one-part MD4/hashset behavior, including the required trailing empty-part hash.
+[*]Corrected post-block transfer decisions so stopped files cancel, paused/error files requeue and healthy files remain connected.
+[*]Hardened Kad fast-refresh classification against backwards wall-clock changes and interval arithmetic underflow.
+[*]Added a standalone core-regression suite for the inherited eMule hashing, transfer-state and Kad publication boundary cases.
+[/list]
+
+[b]Negotiated IPv6 server-source discovery[/b]
+
+[list]
+[*]Added parsing and storage of the optional 32-bit TCP obfuscation port in extended [code]OP_IDCHANGE[/code] responses.
+[*]Unknown non-integer [code]SERVER_IDENT[/code] tags are now skipped and diagnosed instead of triggering a debug assertion.
+[*]Validated the extended [code]OP_IDCHANGE[/code] path against JEmuleServer's 20-byte response carrying its obfuscation flag and port.
+[*]Added [code]CAP_FORK_IPV6_WIRE[/code] advertisement through the additive numeric [code]CT_FORK_CAPABILITIES[/code] login tag.
+[*]Added [code]OP_FOUNDSOURCES_V6 = 0xE2[/code] under [code]OP_EMULEPROT (0xC5)[/code].
+[*]The independent response contains [code]<HASH 16><count 1>(<CAddress family=6,length=16><TCP port u16-le>)[count][/code].
+[*]The legacy [code]0xE3:0x9B[/code] IPv4 response remains separate and unchanged.
+[*]The old JEmuleServer experiment at [code]0xE3:0x9C[/code] is rejected because that value collides with the standard [code]OP_GLOBCALLBACKREQ[/code].
+[*]Only usable native IPv6 addresses and non-zero ports are accepted.
+[*]Added an interoperability document and strict wire-layout, truncation, family, count and port tests.
+[/list]
+
+[b]Native IPv6 connection work in progress[/b]
+
+[list]
+[*]Auto and Preferred modes now attempt a dual-stack TCP listener and fall back automatically to IPv4 if the IPv6 bind fails.
+[*]Added address-aware client lookup, de-duplication, bans and dead-source tracking for native IPv6 endpoints.
+[*]Kept the complete [code]CAddress[/code] authoritative and confined synthetic 32-bit compatibility values to legacy storage fields.
+[*]Added separate provenance for server-discovered, callback-discovered and LiveTV-discovered IPv6 endpoints.
+[*]Added bracketed [code][IPv6]:port[/code] source literals to eD2K links and manual source entry.
+[*]Added AF_UNSPEC source-host resolution with A and AAAA result retention.
+[*]Added native IPv6 targets to SOCKS5 and HTTP CONNECT; SOCKS4/4A reject IPv6 explicitly.
+[*]Added direct native-IPv6 dialing for capability-negotiated Live peer-list v2 entries.
+[*]Added an experimental [code]OP_CALLBACK_V6 = 0xE1[/code] layout: [code]<KadCheck 16><FileHash 16><CAddress><TCPPort 2>[/code].
+[*]Prevented IPv6 compatibility values from entering IPv4-only SecureIdent, credit, buddy, Kad firewall-check, hole-punch and uTP expectation formats.
+[*]Native-IPv6-only identity/credit equivalents remain unfinished; this path is development work and is not claimed as complete support.
+[/list]
+
+[b]What Kad6 means, and why it exists alongside Kad2[/b]
+
+The name is literal: [b]Kad6 means Kad over IPv6[/b]. The "6" refers to IPv6, not to a sixth official Kademlia revision. It is the project's first IPv6-native Kad generation.
+
+The public name deliberately skips [b]Kad3[/b]. That name would naturally suggest a direct third revision and successor to Kad2 on the existing Kad network. Leaving it unused as an overlay name keeps it available if this project or anyone else eventually designs a genuine Kad2 successor. Kad6 instead identifies a separate IPv6-native branch which coexists with Kad2.
+
+Its wire format is family-neutral and can also represent IPv4. That permits dual-stack migration, verified IPv4 fallback and gateway use, but native IPv6 is the reason the separate overlay and the Kad6 name exist.
+
+[b]Why Kad2 cannot simply be switched to an IPv6 socket:[/b]
+
+[list]
+[*]Kad2 contacts, packets, routing maps, firewall checks, buddy/callback paths and several security decisions assume a 32-bit IPv4 endpoint.
+[*]The original Kad2 routing table and anti-Sybil/diversity maps are keyed by [code]uint32[/code] IPv4 addresses.
+[*]Enlarging an existing packet field would make its layout incompatible with vanilla peers on the public Kad network.
+[*]Replacing IPv6 with a synthetic 32-bit value would introduce collisions and could misroute or misidentify a peer.
+[*]IPv6 nodes may have several temporary or changing endpoints and may move between native IPv6, dual stack, NAT64/DNS64, 464XLAT and IPv4 fallback.
+[/list]
+
+[b]Kad2 compatibility plane retained by eSE:[/b]
+
+[list]
+[*]The public Kad2 network, original packets, 128-bit IDs, XOR routing, searches, publications and [code]nodes.dat[/code] remain available.
+[*]FastKad changes timeout selection, not Kad2's routing model.
+[*]Cookie, keepalive and Punch3/rendezvous messages are separately capability and consent gated; vanilla nodes do not receive them.
+[*]Hot-key sharding, trigram, Bloom and local-query forms remain experimental definitions.
+[*]IPv6-only contacts are rejected from inherited IPv4-only firewall, buddy, hole-punch and uTP-expectation paths.
+[*]When Kad6 source discovery is enabled, the original Kad2 [code]CSearch[/code] lookup continues independently and validated results are merged above the two protocol planes.
+[/list]
+
+[b]Separate Kad6 IPv6 plane:[/b]
+
+[list]
+[*]Uses the experimental [code]OP_KAD6HEADER = 0xE6[/code] discriminator and [code]CAP_FORK_IPV6_KAD[/code]; unsupported peers never receive its packets.
+[*]Uses a separate routing table and persistence so native endpoints cannot contaminate Kad2 state.
+[*]Carries explicit IPv4 or full 128-bit IPv6 addresses with no synthetic address on the wire.
+[*]Binds Kad ID, persistent Ed25519 node identity, capabilities and up to four endpoints in signed, expiring records with monotonic epochs.
+[*]Keeps indirectly learned contacts in probation until a transaction-bound reply verifies the exact endpoint.
+[*]Adds IPv6-first dual-stack endpoint racing with bounded IPv4 fallback.
+[*]Adds dedicated bootstrap, hello, route, signed source-store and source-find RPCs.
+[*]Applies bounded packet/contact counts, replay and expiry checks, subnet diversity, deterministic vectors and fuzz-tested parsers.
+[*]Keeps gateway, tunnel, Strict-path, shaped-carrier and anonymous-quota research behind additional gates; these are optional research layers, not requirements for basic Kad-over-IPv6 and not an anonymity promise.
+[/list]
+
+Some internal RPC constants still use the historical [code]KADEMLIA3_*[/code] implementation prefix to distinguish the newer wire generation. Those source identifiers do not announce a public network named Kad3. The public overlay name remains Kad6 because the purpose of this branch is native IPv6.
+
+[b]Prepared beta.2 laboratory cohort[/b]
+
+The beta.2 development branch replaces one broad switch with three dependent native consent decisions. All three prompts default to [b]No[/b]:
+
+[list=1]
+[*][b]Base NetLab:[/b] IPv6 Auto, owned router mappings, Punch2 and consent-gated keepalive.
+[*][b]Advanced laboratory:[/b] Direct -> Punch2 -> Punch3 selection, bounded port prediction, Kad6 client paths, authenticated tunnels, Bulk and FEC.
+[*][b]Resource contribution:[/b] Live relay duty, KRP client operation and a capacity-limited Kad6 Beta Exit.
+[/list]
+
+[list]
+[*]Each level requires the previous consent.
+[*]Old profiles with broad feature bits but no new consent records are normalized to non-participation.
+[*]Punch3 and prediction run only after an ordinary direct connection has failed and remain rate-limited, window-bounded and backoff-controlled.
+[*]Rejected Punch3 attempts now report an authentication failure instead of a false success.
+[*]KRP uses TLS hostname verification, a cohort CA and a rotating token; no private server key is packaged.
+[*]Kad6 Beta Exit is distinct from the stable [code]Kad6PublicExitOptIn[/code] signed gate.
+[*]The local kill switch disables every laboratory level, stops keepalive and KRP, and requests Kad6 Beta Exit release.
+[*]Reactivation restores only levels previously accepted by the user.
+[*]No universal HighID, relay-capacity or anonymity claim is made.
+[/list]
+
+[b]Current development validation[/b]
+
+[list]
+[*]Family-neutral address wire tests: 6/6 passed.
+[*]Negotiated server IPv6 source-response tests: 5/5 passed.
+[*]Additive IPv6 callback wire tests: 2/2 passed.
+[*]Native IPv6 transport wire tests covering SOCKS5, HTTP CONNECT and Live peer-list v2: 6/6 passed.
+[*]Protocol registry checker: 180 entries matched to 180 fork symbols.
+[*]Language declaration check: 43 translations.
+[*]beta.2 web/network regression tests: 22/22 passed.
+[*]The frozen local beta.2 candidate at [code]e26424d[/code] completed the clean x64 pipeline in 10.9 minutes, including native build, integration/ASan gates, packaging and smoke tests.
+[*]The candidate package manifest verified 146/146 entries, contained no private server keys and passed the portable executable self-test.
+[*]Authenticated tunnel success and synchronous rogue-relay/downgrade rejection passed; public-NAT, public-IPv6, external KRP and Kad6 multi-host validation remain incomplete.
+[/list]
+
+[b]Protocol-review note:[/b] the registry rows for [code]OP_CALLBACK_V6[/code] and [code]OP_FOUNDSOURCES_V6[/code] still carry their earlier [code]reserved[/code] status. The implementation/status mismatch must be resolved and one coherent public review tag must be produced before these post-beta.1 changes are released or announced as available.
+
+
+[b][size=4]How large is the fork?[/size][/b]
+
+This is not a small UI patch or an external wrapper. A direct Git tree comparison with the [code]eMule_v0.70b-community[/code] tag gives:
+
+[list]
+[*][b]669 first-party files changed[/b], with approximately [b]131,241 inserted lines[/b] and 2,906 removed lines. This scope excludes vendored dependencies, node_modules, generated package copies and deprecated dashboard copies.
+[*][b]247 native-core files changed[/b], with approximately [b]56,736 inserted lines[/b] and 2,902 removed lines. This narrower scope excludes dashboard code, browser assets, language resources and generated copies.
+[*][b]120 original upstream source/project files were modified[/b], in addition to the newly introduced files.
+[*]The native LiveTV and RTMP implementation contains approximately [b]26,000 source lines in 52 files[/b].
+[*]The principal active dashboard runtime contains approximately [b]15,000 source lines in 43 files[/b], before packaged browser libraries.
+[*]The standalone reachability, NAT mapping, Kad6 and relay libraries add more than [b]35,000 lines[/b] of first-party C/C++ implementation and tests.
+[*]The complete tracked tree, including new third-party source dependencies, changes more than 6,000 files and adds over 1.7 million lines. That larger number is not used as the first-party code claim.
+[/list]
+
+The list below describes implemented behavior. Experimental, reserved and non-shipped work is identified separately.
+
+
+[b][size=4]Installation[/size][/b]
+
+This is a portable Windows 10/11 x64 package.
+
+[list]
+[*]Extract the ZIP to a writable directory, for example [code]C:\eSE\[/code].
+[*]Do not extract it under Program Files unless the required permissions have been configured.
+[*]Run [code]emule.exe[/code].
+[*]Connect to eD2K and Kad normally.
+[*]Press the [b]eSE[/b] button in the eMule toolbar.
+[*]The local dashboard opens at [code]http://localhost:8080/live[/code].
+[/list]
+
+The package contains [code]emule.exe[/code], [code]ese-server.exe[/code], FFmpeg, ffprobe, the local HLS player, language DLLs, a pinned [code]nodes.dat[/code], per-file hashes and [code]BUILD_INFO.txt[/code].
+
+
+[b][size=4]Migration note[/size][/b]
+
+[list]
+[*]Back up the complete eMule [code]config[/code] directory, preferences, keys and all relevant [code].met[/code] files.
+[*]Do not run original eMule, eSE 8.1 and eSE 9.0.0-beta.1 against the same profile at the same time.
+[*]Keep [code]emule.exe[/code] and [code]ese-server.exe[/code] from the same package together.
+[*]Use the supplied Release x64 build.
+[*]Use eSE 8.1.0 if you need the established stable channel.
+[/list]
+
+
+[b][size=5]Changes in 9.0.0-beta.1 since eSE 8.1.0[/size][/b]
+
+[b]1. Consent-based public Network Lab[/b]
+
+[list]
+[*]Added an explicit first-run consent decision before the client can advertise [code]ESE_NETLAB_V1[/code].
+[*]Installing the beta does not automatically join the test cohort.
+[*]Automatic cohort measurements require both peers to advertise active compatible consent.
+[*]Added bounded real-world measurements for IPv6, LowID, hole-punch and CGNAT behavior.
+[*]Measurements are associated with normal transfers or broadcasts rather than scanning random Internet hosts.
+[*]NetLab can be disabled immediately.
+[*]Reports remain local and are sanitized.
+[*]There is no implicit central telemetry upload.
+[*]Full IP addresses and private keys are excluded from the report format.
+[*]Added a local NetLab report API and native status.
+[*]Separated NetLab consent from all higher-risk switches.
+[*]Accepting NetLab does not enable Punch3, port prediction, relay duty, bandwidth donation, KRP, Kad6 public exit or an experimental data plane.
+[*]Added capability checks which exclude non-consenting eSE 8.1 and vanilla eMule peers from automatic beta-cohort attempts.
+[*]Added public-beta gates which verify the fail-closed preference defaults.
+[/list]
+
+[b]2. Reachability and NAT lifecycle[/b]
+
+[list]
+[*]Added a capability-driven reachability selector which prefers a direct connection.
+[*]Added a standalone C++17 [code]libreach[/code] policy library with a C ABI and generation-safe handles.
+[*]Added a strict reachability-vector codec and explicit classic-eMule fallback.
+[*]Added deterministic NAT mapping policy through [code]libnatmap[/code].
+[*]Added NAT-PMP request/reply codecs, lease tracking, renewal and cleanup.
+[*]Added PCP mapping support.
+[*]Added IPv6 PCP lease lifecycle handling.
+[*]Improved UPnP router interoperability.
+[*]Added a mapping ownership ledger so eSE removes only leases it created.
+[*]Added bounded reachability escalation counters and rejection reasons.
+[*]Completed correlation for the separately gated Punch3 laboratory transport.
+[*]Added in-band public IPv6 detection through compatible peers instead of a public web service.
+[*]Retained IPv4 fallback whenever IPv6 is unavailable or not negotiated.
+[*]Hardened keepalive reply processing so preference or kill-switch changes close both transmit and receive paths.
+[*]Added port-ownership checks to prevent native, dashboard, metrics and laboratory service collisions.
+[*]Added a modern Windows Firewall helper based on [code]INetFwPolicy2[/code] with separate TCP and UDP rule checks.
+[/list]
+
+[b]3. Download and core-client performance[/b]
+
+[list]
+[*]Added [b]download endgame mode[/b], enabled by default.
+[*]Near completion, the final outstanding blocks can be reserved from multiple suitable sources so one slow source does not stall the last part.
+[*]Duplicate endgame reservations are tracked and cancelled when a winning copy arrives.
+[*]The duplicate-request window is deliberately bounded to approximately the final two eMule parts.
+[*]Added a dedicated fixed-size slab allocator for [code]CAICHHashTree[/code] nodes.
+[*]AICH nodes are allocated from aligned 64 KiB slabs.
+[*]An empty slab is returned when its final node is freed.
+[*]The pool reduces allocator overhead and memory fragmentation on large files without changing AICH semantics.
+[*]Moved part-file growth work away from the main UI thread.
+[*]Moved completed-part verification to a dedicated [code]PartHashThread[/code].
+[*]Added cancellation and shutdown handling for queued part-hash jobs.
+[*]Hash verdicts are returned to the owning application thread.
+[*]Marshalled WebServer file operations to the GUI thread where original eMule objects require single-thread ownership.
+[*]Added real-time shared-directory monitoring through [code]ReadDirectoryChangesW[/code].
+[*]Added a pending-file queue so the owning eMule thread performs share-list changes.
+[*]Added FastKad adaptive response timing.
+[*]Kad searches collect real RTT samples by peer IP.
+[*]The timeout is derived from the running mean and deviation instead of always waiting three seconds.
+[*]The adaptive timeout remains hard-capped.
+[/list]
+
+[b]4. Kad6 and relay laboratory core[/b]
+
+[b]Naming and architectural boundary:[/b] Kad6 is named for [b]Kad over IPv6[/b]; the "6" identifies the project's first IPv6-native Kad generation, not a sixth official Kad protocol. The Kad3 name is deliberately left unused publicly for a possible future direct successor to Kad2. Kad6 instead coexists with legacy Kad2 without changing Kad2 packet sizes or inserting synthetic IPv6 values into its IPv4-keyed routing state.
+
+[b]Kad2 remains the compatibility plane:[/b]
+
+[list]
+[*]Original Kad2 packets, 128-bit IDs, XOR routing, source/keyword operations and [code]nodes.dat[/code] remain available to vanilla peers.
+[*]FastKad changes bounded timeout selection without changing Kad2's routing semantics.
+[*]Cookie, keepalive, rendezvous and experimental search forms require their own capability/policy gates.
+[*]Kad2 and Kad6 source lookups can run in parallel; the two routing tables and wire namespaces remain independent.
+[/list]
+
+[b]Kad6 provides the separate IPv6-capable plane:[/b]
+
+[list]
+[*]Added [code]libkad6[/code], a bounded-codec and validation library for the experimental family-neutral Kad6 overlay.
+[*]Added the separate experimental [code]OP_KAD6HEADER = 0xE6[/code] discriminator and [code]CAP_FORK_IPV6_KAD[/code].
+[*]Added a native Kad6 routing table because original Kad2 contact/diversity state is keyed by 32-bit IPv4 addresses.
+[*]Kept Kad6 routing and persistence separate so a native IPv6 contact cannot enter the legacy Kad2 table.
+[*]Added explicit family/length address encoding for complete IPv4 or 128-bit IPv6 endpoints.
+[*]Added signed routing headers, contact validation, replay control, expiry checks and quota validation.
+[*]Added signed Kad-ID/node-identity/endpoint bindings with monotonic epochs.
+[*]Added multi-endpoint records and IPv6-first dual-stack endpoint racing with bounded fallback.
+[*]Indirect contacts remain on probation until the exact endpoint answers a transaction-bound challenge.
+[*]Added experimental Kad6 bootstrap, hello, route, source-store and source-find message families.
+[*]Added signed source records carrying IPv4 or IPv6 endpoints without replacing legacy Kad packets.
+[*]Added search, publish, source-binding, target-ticket, virtual-endpoint, source-hint, stream and flow-control message families.
+[*]Added strict parser bounds, deterministic vectors and fuzz targets.
+[*]Added authenticated tunnel-gateway integration.
+[*]Added distinct-hop enforcement and strict quota-hop checks.
+[*]Private and Strict paths fail closed when their declared hop count or capabilities are unavailable.
+[*]Added shaped-carrier and anonymous-quota research behind separate capability gates.
+[*]Added [code]librelaycore[/code] for bounded KRP framing, sessions, flow sequencing, leases, authentication transcripts, resumption and memory budgets.
+[*]Added [code]librelayclient[/code] for an experimental authenticated WSS client with TLS CA and hostname verification.
+[*]Added a laboratory [code]relayedge[/code] process with explicit certificate, public-address, token and port-range configuration.
+[*]Added loopback-proxy integration for laboratory testing.
+[*]A relay path can report real eD2K HighID only after a valid server IDCHANGE and proven inbound reachability; connecting to a relay never fabricates HighID.
+[*]Added route, bandwidth and endpoint lease limits.
+[*]Added an experimental broadcaster-to-buddy LiveTV relay with bounded egress.
+[*]Added rotating, stateless HMAC-SHA256 return-routability cookies for requests from unverified endpoints.
+[*]Cookie comparison is constant-time and the challenge avoids attacker-controlled heap state.
+[*][b]Relay duty, bandwidth donation, KRP and Kad6 public exit remain OFF by default.[/b]
+[/list]
+
+[b]5. LiveTV, HLS and encoder hardening[/b]
+
+[list]
+[*]Added functional GPU encoder probes before hardware selection.
+[*]An NVENC, Intel QSV or AMD AMF name is no longer accepted as proof that the driver/device can initialize it.
+[*]Failed hardware initialization falls back to CPU/x264.
+[*]Controlled 30 fps sources align a fixed GOP with two-second independent HLS segments.
+[*]Hardened HLS path ownership and cleanup.
+[*]A failed prebuffer rolls back the complete broadcaster state and deletes its transient output.
+[*]Restarting the dashboard does not delete HLS owned by the native broadcaster.
+[*]Received HLS remains local-only unless a remote request passes authentication.
+[*]Hardened private-tunnel rejection diagnostics so policy failures are visible and do not silently fall back to a forbidden direct path.
+[*]Retained a signed-chunk executable self-test in the package.
+[/list]
+
+[b]6. Public-beta release hardening[/b]
+
+[list]
+[*]Added a reproducible Visual Studio 2022/v143 x64 release path.
+[*]Added deterministic single-node build support.
+[*]Pinned FFmpeg, ffprobe, HLS.js and [code]nodes.dat[/code] inputs.
+[*]Added clean-provenance enforcement.
+[*]Added [code]BUILD_INFO.txt[/code] with version, commit and build provenance.
+[*]Added a per-file SHA-256 manifest.
+[*]Added a separate checksum for the final ZIP.
+[*]Added consistency checks between native version, dashboard version, archive name and release metadata.
+[*]Added portable-package smoke tests and executable self-tests.
+[*]Separated beta blockers from optional real-network cohort gates.
+[*]Cleaned generated metadata before packaging.
+[/list]
+
+
+[b][size=5]Complete cumulative changes from original eMule 0.70b[/size][/b]
+
+[b]A. Native P2P LiveTV engine[/b]
+
+[b]LiveTV protocol architecture[/b]
+
+LiveTV is divided into four independent planes:
+
+[list=1]
+[*][b]Production:[/b] FFmpeg converts screen, file, RTMP/OBS or test input into independent two-second HLS segments.
+[*][b]Discovery:[/b] the broadcaster publishes a bounded directory record through Kad2; viewers may also learn it through PEX, TTL-1 LAN discovery, cache or a direct stream-key link.
+[*][b]Control:[/b] compatible eSE peers subscribe, exchange the live-edge bitmap, announce new sequences, measure RTT, exchange alternative sources and signal denial or shutdown.
+[*][b]Media:[/b] viewers request missing sequences and receive complete HLS segment records directly or through optional tunnel/Bulk paths. Broadcaster-originated Chunk V2 records are signed; the legacy Chunk V1 compatibility format is not.
+[/list]
+
+Kad is therefore used for [b]discovery and optional control routing[/b], not as the video payload transport. Ordinary Live chunks travel as additive eD2K extended-protocol packets between compatible peers.
+
+[b]Broadcast identity and segment model:[/b]
+
+[list]
+[*]Every broadcast generates a fresh ephemeral Ed25519 key pair; the private key is never persisted.
+[*][code]streamKey[/code] is the first 16 bytes of SHA-1 over the broadcaster public key.
+[*]A receiver accepts the advertised public key only when it reproduces the expected [code]streamKey[/code].
+[*]The private key signs Chunk V2 and the final END record and is destroyed when broadcasting stops.
+[*]The live ring contains 16 two-second segments, providing approximately 32 seconds of bounded history.
+[/list]
+
+[b]Direct LiveTV wire protocol under [code]OP_EMULEPROT[/code]:[/b]
+
+[code]
+0xC3 SUBSCRIBE   <streamKey 16><viewerHash 16><uploadCapacity u32>
+0xC4 UNSUBSCRIBE <streamKey 16><viewerHash 16>
+0xC0 ANNOUNCE    <streamKey 16><newestSeq u32><bitrate u16>[<pubkey 32>]
+0xC6 HEARTBEAT   <streamKey 16><bitmap u16><oldestSeq u32>[bounded PEX]
+0xC1 REQUEST     <streamKey 16><sequence u32>
+0xC2 CHUNK       <streamKey 16><sequence u32><timestamp u32><size u32><data>
+0xCC CHUNK_V2    <streamKey 16><sequence u32><timestamp u32><size u32>
+                 <bitrate u16><SHA-256 32><Ed25519 signature 64><data>
+0xE0 CHUNK_FRAG  <streamKey 16><sequence u32><fragment index/count>
+                 <inner opcode><total length><fragment>
+0xCA PEER_LIST   <streamKey 16><count u16>(<IPv4 u32><TCP port u16>)[count]
+0xC9/0xCB PING/PONG <streamKey 16><pingId u32><timestamp u64>
+0xC7 DENY        <streamKey 16><reason u8>
+0xC8 END         <streamKey 16><reason u8>[<Ed25519 signature 64>]
+[/code]
+
+The base messages are accepted only from a peer identifying as an eSE client. Fragmentation, IPv6 peer lists, authenticated tunnels, Bulk/FEC and the Kad6 gateway have additional capability gates.
+
+[code]CHUNK[/code] is the original unsigned compatibility record. A broadcaster normally emits signed [code]CHUNK_V2[/code]; however, the present non-owning mesh-relay path can still serialize a relayed segment as V1. The authenticity statements below therefore apply to V2 records, not to every possible compatibility-path segment.
+
+[b]Integrity, scheduling and recovery:[/b]
+
+[list]
+[*]Chunk V2 signs [code]streamKey || sequence || SHA-256(data)[/code].
+[*]For Chunk V2, the receiver verifies the payload hash and pinned Ed25519 identity before writing the segment to the local HLS output.
+[*]Oversized V1 or V2 segments are split below eMule's normal packet ceiling and are reassembled under total-size, count, concurrency and TTL limits. A reassembled V2 record then follows the same hash-and-signature verification path as an unfragmented V2 record.
+[*]Heartbeats carry a 16-bit availability bitmap anchored by [code]oldestSeq[/code] every second; sequence announcements run every two seconds.
+[*]Viewers track outstanding requests, avoid duplicate pulls, retry timed-out segments from another parent and penalize sources which miss segments near the playback edge.
+[*]The viewer targets at least three parents and caps the active set at five, replenishing it through bounded peer lists and PEX.
+[*]Subscribe, segment-request, tunnel-cell and Bulk traffic have separate rate or queue limits.
+[*]Received segments are reconstructed in an isolated local HLS directory for the packaged player, VLC or another local HLS client.
+[/list]
+
+[list]
+[*]Native [code]CLiveStreamManager[/code] inside [code]emule.exe[/code].
+[*]Broadcaster, viewer and stream lifecycle state machines.
+[*]Per-stream keys, metadata, source lists, viewer counts and health state.
+[*]Stream-specific HLS directories to prevent playlist or segment mixing.
+[*]Native FFmpeg process ownership, startup, monitoring and termination.
+[*]OBS/RTMP ingest.
+[*]Screen capture broadcasting.
+[*]Local media-file broadcasting.
+[*]Deterministic test-pattern broadcasting.
+[*]DirectShow discovery for webcams, capture cards and audio devices in the source layer.
+[*]The public page officially exposes screen, file, RTMP/OBS and test-pattern workflows; OBS is the recommended webcam/capture-card bridge in this beta.
+[*]Validation of source paths, URLs and DirectShow device names.
+[*]Automatic screen-capture audio-device detection where available.
+[*]RTMP waiting-for-input state while OBS connects.
+[*]Prebuffer validation for controlled sources.
+[*]All-or-nothing startup rollback.
+[*]Owned-process cleanup on normal stop, failure, application shutdown and dashboard restart.
+[*]FFmpeg crash watchdog.
+[*]Orphan FFmpeg cleanup for every supported broadcaster mode.
+[*]Hardware encoder discovery and functional probing.
+[*]NVIDIA NVENC, Intel QSV and AMD AMF selection only after a successful initialization test.
+[*]Safe CPU/x264 fallback.
+[*]Bitrate-driven rendition selection.
+[*]Fixed-GOP output for independent HLS segments.
+[*]RTMP codec-copy handling for compatible OBS input.
+[*]Two-second HLS segments.
+[*]Native reading and publication of generated playlists and segments.
+[*]Broadcast-end tombstones through [code]OP_LIVE_END[/code].
+[*]Stale and ghost channel cleanup.
+[*]Signed Live Chunk V2 records.
+[*]SHA-256 payload integrity.
+[*]Fresh per-broadcast Ed25519 live identity; the private key is not persisted.
+[*]Chunk V2 signature verification and tampered-chunk rejection before playback; legacy V1 remains an unsigned compatibility format.
+[*]Fragmentation beyond eMule's normal two-megabyte packet limit.
+[*]Fragment count, ordering, total-size and inner-opcode validation.
+[*]Bounded fragment reassembly.
+[*]Fragment capability negotiation.
+[*]Duplicate fragment and completed-chunk suppression.
+[*]Reconstruction into isolated local HLS directories.
+[*]Systematic Reed-Solomon FEC over GF(256).
+[*]High-throughput Bulk data plane with AEAD-wrapped blocks.
+[*]Missing-block NACK and selective re-push.
+[*]Chunk bitmaps and bitmap-aware initial push.
+[*]One unified pull engine to prevent duplicate live-segment requests.
+[*]Fixed-memory live request rate limiting.
+[*]Per-source outstanding request accounting.
+[*]Source rotation, retry and replenishment.
+[*]Bounded recovery when the current source disappears.
+[*]Dual-dial de-duplication.
+[*]Compatible LowID hole-punch on dial.
+[*]No Internet NAT hole-punching for overlay ranges such as 100.64/10.
+[*]Safe peer-disconnect cleanup.
+[*]Fix for an early peer-disconnect use-after-free.
+[*]Heartbeat, ping/pong and liveness timers.
+[*]Self-healing broadcaster peer membership from valid heartbeats.
+[*]Peer-list exchange and alternative-source propagation.
+[*]Mesh gossip and anti-churn tuning.
+[*]Live-edge timeout penalties and promotion thresholds.
+[*]Peer scoring, trust input and mesh-health reporting.
+[*]Category, language, bitrate and flags.
+[*]Viewer-count aggregation.
+[*]Channel rating based on viewers, bitrate, uptime, mesh health, reports and broadcaster reputation.
+[*]Local broadcaster self-view.
+[*]Local browser, VLC and compatible external-player HLS playback.
+[/list]
+
+[b]B. Decentralized discovery[/b]
+
+[b]Current Kad2 discovery path:[/b]
+
+LiveTV already works over the existing Kad2 network. The broadcaster uses Kad2 [code]STOREKEYWORD[/code]; the viewer uses Kad2 [code]KEYWORD[/code]. Two target namespaces are queried during migration:
+
+[list]
+[*][b]Clean:[/b] [code]MD4("\0eSE\0" || UTF-8(keyword))[/code].
+[*][b]Legacy:[/b] ordinary [code]MD4(UTF-8(keyword))[/code] for earlier eSE clients.
+[/list]
+
+The clean record uses a constant [code]TAG_FILENAME = "eselive"[/code] and [code]TAG_FILESIZE = 1[/code] because inherited Kad2 holders reject a keyword record with no filename or zero size. Stream information is carried separately:
+
+[code]
+ese.live.marker       stream-record marker
+ese.live.key          16-byte streamKey rendered as hexadecimal
+ese.live.title        channel title
+ese.live.category     category
+ese.live.language     language
+ese.live.bitrate      kbps
+ese.live.viewers      viewer count
+ese.live.started      Unix start time
+TAG_SOURCEIP          broadcaster IPv4
+TAG_SOURCEPORT        broadcaster TCP port
+TAG_SOURCEUPORT       broadcaster Kad UDP port
+ese.live.altip        optional alternative IPv4 endpoint
+[/code]
+
+Vanilla Kad2 nodes can store and forward the unknown additive tags, but do not interpret the record as a playable channel. The Kad2 directory record itself is not signed; after connection, the receiver authenticates the stream through the self-certifying [code]streamKey[/code], announced Ed25519 public key and signed Chunk V2/END records.
+
+[list]
+[*]Kad2 publication of LiveTV stream records through the inherited keyword-store path.
+[*]Kad2 keyword search for stream titles and metadata.
+[*]Explicit source IPv4, TCP port and Kad UDP port publication.
+[*]Constant legacy filename for channel records, avoiding title disclosure in the old filename tag.
+[*]Fork-owned marker, stream-key, title, category, language, bitrate, viewer-count and start-time tags.
+[*]A clean prefixed namespace plus a legacy namespace for rolling compatibility.
+[*]A bitrate-zero tombstone for a stopped broadcast.
+[*]Token-bucket search limiting, adaptive cooldown, result validation and a bounded dial queue.
+[*]Self-certifying broadcast identity and signed media records after connection; no claim that the Kad2 keyword record itself is signed.
+[*]PEX gossip through connected eSE peers.
+[*]LAN multicast on [code]224.0.0.251:5354[/code] with TTL 1.
+[*]Disk-persistent local cache of recently found channels.
+[*]Background Kad stream polling.
+[*]Automatic refresh when an initially empty directory becomes populated.
+[*]Bounded stale-record cleanup.
+[*]Direct join by stream key.
+[*]Endpoint-bearing links for direct tests.
+[*]Endpoint-free links resolved through discovery:
+[code]ed2k://|live|STREAM_KEY||CHANNEL_TITLE|/[/code]
+[*]Canonical category and language aliases.
+[*]Pinned and structurally verified [code]nodes.dat[/code].
+[*]Automatic download of a mutable third-party bootstrap file disabled by default.
+[*]Diagnostics distinguishing Kad, PEX, LAN, cache and direct-link paths.
+[/list]
+
+[b]Why Kad6 is still needed when LiveTV already works over Kad2[/b]
+
+Kad2 makes compatibility possible, but it has no native Live record or Live search header. A stream must look like a synthetic one-byte file entry, and extra semantics are encoded as unrelated keyword tags. Kad2 has no native fields for:
+
+[list]
+[*]Live versus file/source/notes search kind.
+[*]Kad2 versus Kad6 result origin.
+[*]Request and response correlation.
+[*]Per-request result limit and deadline.
+[*]Cancellation and final completion status.
+[*]Canonical typed Live metadata.
+[*]Authenticated target authorization.
+[*]A signed, expiring IPv4/IPv6 endpoint set.
+[*]A privacy rule requiring an endpoint to remain at the exit.
+[/list]
+
+Changing existing Kad2 packets to add those headers would break their layout for public-network peers.
+
+Two related Kad6 surfaces must be distinguished:
+
+[list]
+[*][b]Native Kad6 UDP overlay:[/b] [code]OP_KAD6HEADER[/code] followed by the capability-gated bootstrap, hello, route, source-store and source-find RPC families. These use family-neutral routing and signed endpoint/source records.
+[*][b]K6 gateway protocol:[/b] a [code]K6FrameV1[/code] carried inside [code]TUN_OP_KAD6_GATEWAY[/code]. This is where the current typed Live search and authorization headers are implemented.
+[/list]
+
+The following are therefore native K6 control/search headers, not video headers and not a claim that a public native Kad6 Live-store RPC is already deployed:
+
+[code]
+K6FrameV1:
+  version | message_type | flags | request_id |
+  session_id | body_length | body
+
+K6 SEARCH_START:
+  search_kind | network_mask | max_results | deadline |
+  target_hash | query | options
+
+K6 SEARCH_RESULT:
+  result_id | result_kind | network_origin |
+  canonical tags | optional target tickets
+
+K6 SEARCH_END:
+  status | result_count | queried_nodes | elapsed | load_hint
+[/code]
+
+For privacy-preserving Live discovery, the K6 result contains the title, category, language, bitrate, viewer count and start time but [b]forbids the broadcaster IP and ports[/b]. Unlike a file-source result, a Live result must not contain a reusable target ticket, because that ticket would expose its endpoint. The exit instead retains a short-lived authorization mapping under:
+
+[code]
+authenticated circuit + source request_id + result_id
+[/code]
+
+The mapping and its matching origin-side route currently expire after 120 seconds. The viewer subscribes later using only [code]<result_id 16><source_request_id u32><version 2>[/code] over that same pinned circuit. The exit resolves and contacts the broadcaster. This gives LiveTV native correlation and endpoint-hiding semantics which cannot be obtained by simply adding another Kad2 metadata tag.
+
+[b]Current boundary:[/b] the implemented K6 Live gateway presently wraps a real Kad2 search at the exit; its Live request explicitly selects the Kad2 network, and its opaque Live-subscribe resolver currently materializes an IPv4 broadcaster endpoint. Thus Kad2 remains the working public directory while the K6 side already provides the typed, correlated and privacy-preserving control headers. Codecs for Kad6-origin results, signed source/endpoint records and a Live-public record class exist, but a complete public LiveTV publication/search path and opaque IPv6 Live endpoint resolution running natively on the Kad6 UDP overlay are not claimed as finished.
+
+Kad6 is therefore not required for basic LiveTV. It is required for the [b]IPv6-native and privacy-preserving evolution of the complete LiveTV control architecture[/b].
+
+[b]C. Local dashboard and cinema player[/b]
+
+[list]
+[*]Packaged Node.js runtime distributed as [code]ese-server.exe[/code].
+[*]Launch from the eSE toolbar action.
+[*]Portable zero-configuration local startup.
+[*]Synchronization of native WebServer settings before dashboard launch.
+[*]Internal proxy fixed to [code]127.0.0.1[/code] where [code]localhost[/code] could resolve to an unbound IPv6 address.
+[*]Home, Explore, Search, My List/library, Live TV and mobile-connect pages.
+[*]Cinema-style player.
+[*]Locally packaged HLS.js without a CDN runtime dependency.
+[*]Guarded fallback when browser HLS support is unavailable.
+[*]Muted autoplay compatible with browser policy.
+[*]Full-screen control and playback recovery.
+[*]Channel cards with metadata, health, bitrate and viewers.
+[*]Favorites/My List persistence.
+[*]Automatic live directory refresh.
+[*]Broadcast start, stop, preflight and source selection.
+[*]Network, NAT, privacy and stream diagnostics.
+[*]Metrics and debug-log views.
+[*]Bounded native proxy response sizes and timeouts.
+[*]eMule search, result filters, download actions and ed2k-link submission.
+[*]Completed-file playback from Incoming.
+[*]Suitable incomplete [code].part/.part.met[/code] media resolution.
+[*]Range streaming, seeking, track selection and subtitle support where the media permits.
+[*]Explicit playback-session termination.
+[*]Movie and series metadata caching.
+[*]Poster, backdrop and trailer integration through restricted TMDB/OMDb routes.
+[*]Metadata credentials kept on the server side rather than the browser bundle.
+[*]Optional AI-assisted query expansion and result re-ranking.
+[*]Optional providers: Google Gemini, OpenAI and Anthropic Claude.
+[*]The AI layer is off until the user selects and configures a provider; normal search does not require it.
+[*]OpenAI and Claude use a user-provided API key.
+[*]Gemini supports a user-configured Google authorization-code flow with PKCE and loopback callback.
+[*]AI connection tests and graceful fallback.
+[*]QR/mobile pairing and lightweight remote-control pages.
+[*]GitHub release update notification.
+[*]Signed live-chunk executable self-test.
+[/list]
+
+[b]D. Dashboard and native WebServer security[/b]
+
+[list]
+[*]Loopback-first native API and dashboard.
+[*]No automatic UPnP mapping of dashboard port 8080.
+[*]Explicit token authentication for remote dashboard access.
+[*]Authenticated received-HLS access outside localhost.
+[*]Timing-safe token comparison.
+[*]HttpOnly, SameSite=Strict cookies; Secure when TLS is used.
+[*]DNS-rebinding defenses using both socket address and Host header.
+[*]Explicit trusted-proxy whitelist.
+[*]Normalized IPv4/IPv6 rate-limit identities.
+[*]Fixed-size rate-limit buckets.
+[*]Fail-closed behavior when a rate table is saturated.
+[*]Separate pairing, login, search, download, tunnel and OAuth limits.
+[*]Localhost-only CORS behavior.
+[*]Sensitive-setting redaction.
+[*]Prototype-pollution guards.
+[*]Remote access token length checks.
+[*]Bounded proxy responses and request timeouts.
+[*]Filesystem and HLS path traversal prevention.
+[*]Validated stream/session path components.
+[*]Per-session native HLS URL prefixes.
+[*]Native challenge-response Web authentication using SHA-256 over a nonce and stored password hash.
+[*]Cryptographically random nonces.
+[*]Challenges bound to the requesting IP.
+[*]Five-minute challenge expiry and maximum 64 pending challenges.
+[*]Authenticated sessions after a valid response.
+[*]Administrator-only sensitive API mutations.
+[*]Main-thread marshalling for MFC-owned state.
+[*]Bounded WebServer worker threads.
+[*]HTML, attribute, JSON and log escaping.
+[*]XSS, SSRF, prototype-pollution, cookie-injection, TOCTOU and log-injection fixes.
+[*]CSPRNG-backed identities, nonces and tokens.
+[*]Native crash-dump support.
+[/list]
+
+[b]E. Privacy tunnel and Bulk/FEC plane[/b]
+
+[list]
+[*]Fixed 512-byte onion cells with padded payloads.
+[*]CREATE, CREATED, EXTEND, EXTENDED, RELAY, DESTROY and PADDING commands.
+[*]Authenticated tunnel handshakes for capable peers.
+[*]One-hop and multi-hop construction code.
+[*]Distinct-hop enforcement.
+[*]Circuit pools, expiry, rotation and failure cleanup.
+[*]Bounded per-circuit queues and quotas.
+[*]Optional cover-cell scheduling.
+[*]Request-ID-based multi-cell framing.
+[*]Fragmentation and reassembly beyond one cell.
+[*]TTL cleanup for abandoned reassembly buffers.
+[*]Asynchronous tunnel API operations.
+[*]Message pinning and deferred exit work.
+[*]Real Kad [code]CSearch[/code] keyword searches through a tunnel exit.
+[*]Rich multi-cell results and cancellation.
+[*]LiveTV subscription forwarding through the exit.
+[*]Subscription acknowledgement, heartbeat and alternative-source forwarding.
+[*]Tunnel RTT, cell and byte telemetry.
+[*]Circuit and compatible-peer diagnostics.
+[*]Direct, Private and policy-driven routing.
+[*]Strict fallback rules: tunnel-only operations never silently become direct.
+[*]Signed persistent-channel record primitives, with the persistence preference still dormant and OFF by default.
+[*]DPAPI-protected subscription storage on Windows.
+[*]Experimental subscriber pinning and cover-record mixing.
+[*]AEAD-protected Bulk blocks.
+[*]FEC block generation/recovery and selective re-push.
+[*]Bounded replay, sequence and memory checks.
+[/list]
+
+[b]Privacy limitation:[/b] the production control path inherited from eSE 8.1 uses one relay hop. The exit can identify the viewer and the media path may remain direct. Endpoint-free links omit an address from the text of the link; they do not provide anonymity. eSE does [b]not[/b] claim strong anonymity.
+
+[b]F. IPv6, uTP and sockets[/b]
+
+[list]
+[*]Family-aware [code]CAddress[/code] abstraction.
+[*]IPv4, IPv6 and mapped-address parsing, formatting, comparison and serialization.
+[*]IPv6 preference/Auto mode in the native UI.
+[*]IPv6 status-bar indicator.
+[*]IPv4/IPv6 details in Network Information.
+[*]In-band public IPv6 discovery.
+[*]Additive IPv6 tags and reserved callback/source layouts without replacing original IPv4 fields.
+[*]Explicit IPv4 fallback.
+[*]Conservative listener activation after an early dual-stack configuration interfered with inbound TCP and Kad firewall detection.
+[*]Pinned [code]libutp[/code].
+[*]C++ uTP socket wrapper integrated with peer state.
+[*]Inbound raw-UDP bridge to libutp.
+[*]Expected-peer matching and connection ownership.
+[*]Socket-count limits.
+[*]Teardown and shutdown cleanup.
+[*]IPv6 firewall probing and reachability reporting.
+[/list]
+
+[b]G. Protocol registry and compatibility[/b]
+
+Fork extensions are additive and capability-negotiated. A gated packet is sent only after the peer advertises support. Legacy IPv4 fields remain when an additive IPv6 field is used. Vanilla eMule peers continue to use the original protocol.
+
+[b]Stable LiveTV wire operations:[/b]
+
+[code]
+0xC0 OP_LIVE_ANNOUNCE
+0xC1 OP_LIVE_REQUEST
+0xC2 OP_LIVE_CHUNK
+0xC3 OP_LIVE_SUBSCRIBE
+0xC4 OP_LIVE_UNSUBSCRIBE
+0xC6 OP_LIVE_HEARTBEAT
+0xC7 OP_LIVE_DENY
+0xC8 OP_LIVE_END
+0xC9 OP_LIVE_PING
+0xCA OP_LIVE_PEER_LIST
+0xCB OP_LIVE_PONG
+0xCC OP_LIVE_CHUNK_V2
+0xD5 OP_LIVE_TUNNEL_CELL
+0xD9 OP_LIVE_BULK_CELL
+0xE0 OP_LIVE_CHUNK_FRAG
+[/code]
+
+[b]Experimental/reserved additive surface:[/b]
+
+[code]
+0xB3 public IPv6 answer          experimental
+0xCD Live peer list v2          reserved
+0xCE/0xCF Live relay forms      reserved
+0xD0-0xD3 channel gossip        experimental
+0xD6-0xDD old tunnel forms      reserved/superseded
+0xDE peer invite                experimental
+0xDF rendezvous peer list       reserved
+0xE1/0xE2 IPv6 callback/sources reserved
+[/code]
+
+[list]
+[*]Added stable legacy eSE hole-punch request/acknowledgement.
+[*]Added capability-gated stateless cookie challenge/echo.
+[*]Added NetLab-gated Kad keepalive ping/correlated pong.
+[*]Added experimental three-way rendezvous challenge/proceed.
+[*]Added experimental Kad hot-key sharding, trigram, Bloom and local-query messages.
+[*]Added a separate family-neutral Kad6 discriminator because the "6" denotes native IPv6 and the original Kad2 routing/contact state is IPv4-keyed.
+[*]Added independent Kad6 routing/persistence, explicit full IPv6 endpoints and signed identity-to-endpoint records.
+[*]Added Kad6 bootstrap, hello, route, store-source and find-source operations without changing Kad2 packet layouts.
+[*]Kept Kad2 and Kad6 source discovery as separate, parallel planes with validation before results are combined.
+[*]Kept the v9 public cohort on the capability-aware cookie-protected shape.
+[*]Added canonical CSV registries for opcodes, tags, capabilities, tunnel services, Kad6 and KRP.
+[*]Each registry row records namespace, value, version, status, capability gate, format, compatibility and implementation location.
+[*]Added an automated duplicate-ownership and code-drift checker.
+[*]The tagged registry contains 180 entries and matches all 180 detected fork symbols.
+[/list]
+
+[b]Stable tunnel services:[/b]
+
+[list]
+[*]Ping/reply.
+[*]Live subscribe, acknowledgement, heartbeat and peer-list forwarding.
+[*]Arbitrary-size framing-test echo.
+[*]Real Kad Search V2, rich results and cancellation.
+[*]Bulk subscribe, missing-block NACK and unsubscribe.
+[/list]
+
+[b]H. Native API and diagnostics[/b]
+
+[code]
+/api/status
+/api/network/connect
+/api/live/join
+/api/live/leave
+/api/live/player-alive
+/api/live/broadcast/start
+/api/live/broadcast/stop
+/api/live/preflight
+/api/live/channels
+/api/live/mesh
+/api/live/kad/streams
+/api/live/direct_join
+/api/live/debug
+/api/live/log
+/api/live/metrics
+/api/live/diagnose
+/api/live/{stream}/stream.m3u8
+
+/api/live/privacy
+/api/live/privacy/circuits
+/api/live/privacy/peers
+/api/live/privacy/subscriptions
+/api/live/privacy/test_circuit
+/api/live/privacy/tunnel_ping
+/api/live/privacy/tunnel_echo
+/api/live/privacy/tunnel_search
+
+/api/ese/v9
+/api/ese/netlab/report
+/api/holepunch/test
+/api/rdv_test
+/api/keepalive/start
+/api/keepalive/stop
+/api/relay/*
+/api/krp/status
+[/code]
+
+[list]
+[*]The native client remains authoritative for eD2K, Kad, peers, stream and experimental-network state.
+[*]Added a Copy button to Network Information.
+[*]Added privacy mode and active/pending circuit panes to the native status bar.
+[*]Added periodic status refresh.
+[*]Added network, route, capability, circuit, peer and stream counters.
+[*]Added bounded log-tail, NAT health and broadcast preflight output.
+[*]Added specific rejection reasons for direct, tunnel, mapping and policy paths.
+[/list]
+
+[b]I. First-party native libraries[/b]
+
+[list]
+[*][code]libreach[/code]: standalone reachability selection, strict vector codec, C API and classic fallback.
+[*][code]libnatmap[/code]: deterministic UPnP/NAT-PMP/PCP policy, codecs, leases and ownership.
+[*][code]libkad6[/code]: bounded experimental family-neutral Kad framing, signed records, routing and validation.
+[*][code]librelaycore[/code]: bounded KRP control, LEB128 framing, sessions, routes, authentication, resumption, leases and budgets.
+[*][code]librelayclient[/code]: experimental WSS/TLS client, Ed25519/HMAC authentication and loopback proxy.
+[*][code]relayedge[/code]: laboratory TLS/WSS edge with explicit address, certificate, token and port range.
+[/list]
+
+[b]J. Build, packaging, testing and CI[/b]
+
+[list]
+[*]Original Visual Studio solution retained as the native entry point.
+[*]Visual Studio 2022 v143 x64 support.
+[*]Relative dependency paths instead of one developer's absolute paths.
+[*]Clean builds for Crypto++, libpng, miniupnpc, libutp and the new libraries.
+[*]Pinned libutp submodule.
+[*]Node packaging into [code]ese-server.exe[/code].
+[*]No node_modules or development copies in the portable release.
+[*]Local HLS.js, FFmpeg, ffprobe, languages and verified nodes.dat.
+[*]One release pipeline for native code, dashboard, languages, tests and packaging.
+[*]Version/preflight consistency checks.
+[*]Per-file hashes, external archive checksum and clean provenance.
+[*]Portable-package smoke tests.
+[*]Third-party license/redistribution documentation.
+[*]Node regression tests.
+[*]Standalone C++ LiveTV, rate-limit, fragmentation, FEC, Bulk and reachability tests.
+[*]Address, uTP and tunnel framing tests.
+[*]NAT-PMP/PCP codec and lease tests.
+[*]Kad6 parser, routing, signed-record and policy tests.
+[*]Relay core/client gates.
+[*]Sanitizer and fuzz targets for isolated parsers.
+[*]Deterministic protocol vectors.
+[*]Protocol namespace/value/implementation checks.
+[*]Direct-port ownership checks.
+[*]Fail-closed preference/kill-switch tests.
+[*]Package manifest and offline-asset checks.
+[*]Executable self-tests.
+[*]GitHub Actions build workflow and CodeQL.
+[*]The tagged tree passes 22 dashboard/LiveTV regression tests covering packaged playback, source validation, rollback, encoder fallback, capability gates, authentication, bootstrap input, routing policy and signed-chunk ingest.
+[/list]
+
+
+[b][size=4]Default runtime ports[/size][/b]
+
+[list]
+[*][b]4662/TCP:[/b] normal configurable eMule peer port.
+[*][b]4672/UDP:[/b] normal configurable eMule UDP/Kad port.
+[*][b]4711/TCP:[/b] native eMule WebServer/API, local control by default.
+[*][b]8080/TCP:[/b] dashboard and local HLS; local by default and never automatically mapped.
+[*][b]1935/TCP:[/b] RTMP ingest.
+[*][b]5354/UDP multicast:[/b] LAN discovery, TTL 1.
+[/list]
+
+
+[b][size=4]Experimental, reserved and non-shipped work[/size][/b]
+
+[b]OFF by default and not enabled merely by accepting NetLab:[/b]
+
+[list]
+[*]Punch3.
+[*]Anti-CGNAT port prediction.
+[*]Relay acceptance, relay egress and bandwidth donation.
+[*]KRP relay service.
+[*]Kad6 public exit.
+[*]Experimental data planes without their own opt-in and kill switch.
+[*]Automatic three-way Kad rendezvous.
+[*]Strict three-hop/shaped Kad6 service without every explicit capability and preference gate.
+[/list]
+
+[b]Source-tree items which are not Windows-package features:[/b]
+
+[list]
+[*]Swarm DVR and channel-manifest identifiers/preferences are reserved or dormant; no completed public runtime is claimed.
+[*]The community HTTP cache-node prototype is not compiled by the release project and is not initialized.
+[*]An Android WebView shell exists in source, but no Android app is shipped in the Windows package.
+[*]Legacy Cloudflare Quick Tunnel code is not an active supported exposure path.
+[*]Reserved IPv6 callback, found-sources and relay opcode values are allocations, not availability claims.
+[/list]
+
+
+[b][size=4]Known limitations and non-claims[/size][/b]
+
+[list]
+[*]This is a beta, not the stable channel.
+[*]No strong anonymity claim.
+[*]No universal HighID guarantee.
+[*]No claim of complete IPv6 support across every original eMule socket, ISP and topology.
+[*]No traversal guarantee for every NAT or CGNAT.
+[*]No public relay or Kad6-exit infrastructure is operated by this release.
+[*]The production privacy control circuit has one relay hop; the exit can identify the viewer.
+[*]The media path may remain direct.
+[*]Endpoint-free links hide the endpoint from the link text, not necessarily from participating peers.
+[*]NetLab reports remain local until a user deliberately attaches a sanitized report.
+[*]The current package is Windows x64 only.
+[*]Optional metadata, trailers and AI assistance depend on third-party services chosen/configured by the user.
+[/list]
+
+
+[b][size=4]Version history[/size][/b]
+
+[b]v9.0.0-beta.1 - 23 July 2026[/b]
+
+[list]
+[*]Consent-based NetLab participation and local sanitized reporting.
+[*]Anti-CGNAT reachability cascade and LowID-agnostic path selection.
+[*]AICH fixed-size slab pool.
+[*]Download endgame mode.
+[*]Bounded Kad6 compatibility/anonymous-overlay laboratory core.
+[*]KRP relay core/client/edge laboratory components.
+[*]UPnP, NAT-PMP, PCP and IPv6 PCP lease lifecycle.
+[*]Modern Windows Firewall integration.
+[*]Keepalive and hole-punch cookie hardening.
+[*]Explicit capability, preference, consent and kill-switch gates.
+[*]Web file work, part growth and completed-part hashing moved away from unsafe/blocking paths.
+[*]Real-time shared-directory watcher and FastKad adaptive timing.
+[*]Functional hardware-encoder probing and CPU fallback.
+[*]HLS ownership, cleanup, authentication and path hardening.
+[*]Private-tunnel rejection diagnostics.
+[*]Reproducible packaging, pinned inputs, provenance and checksums.
+[/list]
+
+[b]v8.1.0 - 12 June 2026[/b]
+
+[list]
+[*]Generic multi-cell tunnel fragmentation/reassembly.
+[*]Abandoned-buffer TTL cleanup.
+[*]Asynchronous tunnel operations, message pinning and deferred exit work.
+[*]Real Kad keyword search through a tunnel exit.
+[*]Rich multi-cell results and cancellation.
+[*]Tunnelled LiveTV subscription and peer-list control.
+[*]Privacy-mode persistence and explicit fallback policy.
+[*]Circuit pool, byte/cell and mean-RTT telemetry.
+[*]Privacy page, native selector and circuit tester.
+[*]Dual-dial de-duplication and LowID hole-punch-on-dial.
+[*]Overlay-address hole-punch suppression.
+[*]Bitmap-aware initial push.
+[*]Fragmentation beyond 2 MB and receive-side caps.
+[*]Two-second HLS segments.
+[*]Unified pull engine and mesh churn tuning.
+[*]AEAD Bulk plane, FEC and selective NACK/re-push.
+[*]Dashboard CodeQL fixes.
+[*]Two/three-PC laboratory validation, including 12 Mbps fragmentation.
+[/list]
+
+[b]v8.0.x - Privacy V1, May 2026[/b]
+
+[list]
+[*]Privacy-mode framework.
+[*]LiveOnionCrypto, channel identity and protected subscriptions.
+[*]512-byte cells and circuit state.
+[*]One-hop authentication and two-hop extension code.
+[*]Direct/privacy/fallback selectors.
+[*]Circuit testing, capability diagnostics and native UI status.
+[*]Channel gossip and Kad v2 research surfaces.
+[*]Subscriber pinning, composite keys, hot-key sharding, trigrams, Bloom gossip and adaptive K.
+[*]v7-to-v8 migration importer.
+[*]Identity and ESE capability tags in the peer handshake.
+[*]Bounded native WebServer workers and main-thread API marshalling.
+[/list]
+
+[b]v7.4-v7.7 / IPv6 alpha work[/b]
+
+[list]
+[*]Family-aware address abstraction.
+[*]IPv6 parsing, public-address detection and UI state.
+[*]Conservative listener/Auto mode.
+[*]uTP integration.
+[*]Keepalive, hole-punch and Live buddy-relay groundwork.
+[*]Peer-list-v2 and fork-capability negotiation groundwork.
+[*]Ed25519 support for signed Live records; per-broadcast media identity remains ephemeral, while separate persistent-channel work is dormant and OFF by default.
+[/list]
+
+[b]v7.2.x[/b]
+
+[list]
+[*]Broadcast-end tombstones.
+[*]Mesh gossip.
+[*]FFmpeg crash watchdog.
+[*]Automatic broadcaster peer-list recovery from heartbeats.
+[/list]
+
+[b]v7.1.x[/b]
+
+[list]
+[*]Release pipeline, asset packaging and language DLL fixes.
+[*]Disk-persistent channel directory and My List fixes.
+[*]Native WebServer synchronization before dashboard startup.
+[*][code]127.0.0.1[/code] internal proxy fix.
+[*]Explicit Kad source-IP publication.
+[*]Preflight syntax and direct-join fixes.
+[*]Orphan FFmpeg termination in all broadcaster modes.
+[*]Bitrate-driven rendition selection and muted autoplay.
+[*]No-cache live pages.
+[*]Peer-disconnect use-after-free fix.
+[*]Ghost-channel and stale-record cleanup.
+[/list]
+
+[b]v7.0 - 17 May 2026[/b]
+
+[list]
+[*]First clean eSE LiveTV release based on eMule 0.70b.
+[*]Native LiveTV engine, FFmpeg orchestration, P2P chunk transport, decentralized discovery and local dashboard.
+[/list]
+
+
+[b][size=4]Safe beta defaults[/size][/b]
+
+[code]
+[WebServer]
+WebUseUPnP=0
+
+[eSE]
+EseV9Experimental=0
+EseKad3Rendezvous=0
+EseAutoKeepalive=0
+EseRelayAccept=0
+EseRelayEgress=0
+EseReachSelector=0
+EseHolePunchPortPredict=0
+EseEd2kPunch3=0
+Kad6PublicExitOptIn=0
+
+[KRPRelay]
+KrpRelayEnabled=0
+KrpRelayKillSwitch=0
+ExperimentalTcpDataPlane=0
+[/code]
+
+
+[b][size=4]Rollback[/size][/b]
+
+[list=1]
+[*]Disable NetLab.
+[*]Disable every experimental function manually enabled.
+[*]Close eMule and preserve relevant logs.
+[*]Restore the saved profile.
+[*]Return to [url=https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE8.1.0]eSE 8.1.0[/url].
+[/list]
+
+Do not reuse a laboratory profile as if it were a clean-profile safety test.
+
+
+[b][size=4]Reporting a problem[/size][/b]
+
+Please include:
+
+[list]
+[*]Release and commit from [code]BUILD_INFO.txt[/code].
+[*]Windows version, CPU/GPU and relevant drivers.
+[*]Number of computers and network topology.
+[*]IPv4/IPv6 availability, NAT type and any overlay/VPN.
+[*]Every experimental switch enabled.
+[*]Exact reproduction steps and timestamps.
+[*]Relevant eMule/eSE logs.
+[*]Local [code]/api/status[/code] output when applicable.
+[*]Whether the failure occurred in direct, private, tunnel, uTP, mapped or fallback mode.
+[/list]
+
+Remove access tokens, API keys, private hashes and addresses which you do not want to publish.
+
+
+[b][size=4]Acknowledgements and source notice[/size][/b]
+
+Thanks to the original eMule developers, the eMule Community maintainers, the Kad/eD2K community, the FFmpeg, HLS.js, Crypto++, libutp, miniupnpc and other upstream projects, and everyone testing multi-PC LiveTV and difficult NAT/IPv6 topologies.
+
+eMule eSE and its modifications are distributed under the [b]GNU General Public License v2[/b]. Original notices are preserved. The complete corresponding modified source and third-party notices are available from the repository linked above.
+
+Please remember: [b]9.0.0-beta.1 is a research-oriented public beta[/b]. Conservative defaults and honest bug reports are more useful than inflated claims about anonymity, IPv6 or universal NAT traversal.

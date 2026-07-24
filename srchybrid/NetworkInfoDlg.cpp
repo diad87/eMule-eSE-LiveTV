@@ -224,19 +224,16 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 	}
 	rCtrl << _T("\r\n");
 
-	// Estado real del listener (independiente de la pref). Auto deja el
-	// listener en v4 puro (HighID estable) y solo corre el prober v6
-	// para mostrar la IP pública v6. Dual-stack TCP es opt-in en modo
-	// "IPv6 preferido" — ver comentario en ListenSocket::StartListening.
+	// Estado real del listener (independiente de la preferencia). Auto y
+	// Preferido intentan dual-stack; si el sistema no permite AF_INET6,
+	// se muestra explícitamente el fallback IPv4.
 	rCtrl << GetResString(IDS_NETINFO_LISTENER_LABEL);
 	{
 		CString s;
 		if (theApp.listensocket && theApp.listensocket->IsDualStack()) {
 			s.Format(GetResString(IDS_NETINFO_LISTENER_DUALSTACK), thePrefs.GetPort());
-		} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
-			s = GetResString(IDS_NETINFO_LISTENER_V6FAIL);
-		} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6AutoMode) {
-			s.Format(GetResString(IDS_NETINFO_LISTENER_AUTO), thePrefs.GetPort());
+		} else if (thePrefs.IsIPv6Enabled()) {
+			s.Format(GetResString(IDS_NETINFO_LISTENER_V6FAIL), thePrefs.GetPort());
 		} else {
 			s.Format(GetResString(IDS_NETINFO_LISTENER_V4ONLY), thePrefs.GetPort());
 		}
@@ -543,8 +540,8 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 	rCtrl << GetResString(IDS_KADEMLIA) << _T(" ") << GetResString(IDS_NETWORK) << _T("\r\n");
 	rCtrl.SetSelectionCharFormat(rcfDef);
 
-	rCtrl << GetResString(IDS_STATUS) << _T(":\t");
-	if (Kademlia::CKademlia::IsConnected()) {
+	rCtrl << _T("Kad2 ") << GetResString(IDS_STATUS) << _T(":\t");
+	if (Kademlia::CKademlia::IsKad2Connected()) {
 		rCtrl << GetResString(Kademlia::CKademlia::IsFirewalled() ? IDS_FIREWALLED : IDS_KADOPEN);
 		if (Kademlia::CKademlia::IsRunningInLANMode())
 			rCtrl << _T(" (") << GetResString(IDS_LANMODE) << _T(")");
@@ -610,7 +607,19 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 			rCtrl << buffer;
 		}
 	} else
-		rCtrl << GetResString(Kademlia::CKademlia::IsRunning() ? IDS_CONNECTING : IDS_DISCONNECTED) << _T("\r\n");
+		rCtrl << GetResString(Kademlia::CKademlia::IsKad2Running()
+			? IDS_CONNECTING : IDS_DISCONNECTED) << _T("\r\n");
+
+	rCtrl << _T("Kad6 ") << GetResString(IDS_STATUS) << _T(":\t")
+		<< GetResString(Kademlia::CKademlia::IsKad6Connected()
+			? IDS_CONNECTED
+			: (Kademlia::CKademlia::IsKad6Running()
+				? IDS_CONNECTING : IDS_DISCONNECTED))
+		<< _T("\r\n");
+	if (Kademlia::CKademlia::IsKad6Running())
+		rCtrl << _T("Kad6 ") << GetResString(IDS_KADCONTACTLAB) << _T(":\t")
+			<< GetFormatedUInt(Kademlia::CKademlia::GetKad6VerifiedContacts())
+			<< _T("\r\n");
 
 	rCtrl << _T("\r\n");
 

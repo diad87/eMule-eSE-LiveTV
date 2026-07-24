@@ -30,6 +30,7 @@ public:
     {
         for (size_t i = 0; i < SLOT_COUNT; ++i) {
             m_slots[i].used = false;
+            m_slots[i].ipv6 = false;
             m_slots[i].subnet24 = 0;
             m_slots[i].windowStart = 0;
             m_slots[i].count = 0;
@@ -42,16 +43,45 @@ public:
 
     Decision Check(uint32_t ipNet, uint32_t now)
     {
+        return CheckKey(ipNet & 0x00FFFFFFu, false, now);
+    }
+
+    // Native-address entry point used by the dual-stack live protocol. IPv4
+    // keeps the historical /24 policy; IPv6 is bucketed by a typed /64 hash,
+    // never by CUpDownClient's lossy synthetic uint32 compatibility value.
+    template <typename AddressT>
+    Decision CheckAddress(const AddressT& address, uint32_t now)
+    {
+        if (address.IsNativeIPv6())
+            return CheckKey(address.GetSubnet(64).HashKey(), true, now);
+        uint32_t ipNet = 0;
+        if (address.TryToUInt32(ipNet))
+            return Check(ipNet, now);
+        return Check(0, now);
+    }
+
+    size_t ActiveSlotCount() const
+    {
+        size_t count = 0;
+        for (size_t i = 0; i < SLOT_COUNT; ++i)
+            if (m_slots[i].used)
+                ++count;
+        return count;
+    }
+
+private:
+    Decision CheckKey(uint32_t subnet, bool ipv6, uint32_t now)
+    {
         StartOrRollWindow(m_global, now);
         SaturatingIncrement(m_global.count);
         if (m_global.count > MAX_GLOBAL_REQUESTS)
             return LIMIT_GLOBAL;
 
-        const uint32_t subnet = ipNet & 0x00FFFFFFu;
+        subnet &= 0x00FFFFFFu;
         int match = -1;
         int reusable = -1;
         for (size_t i = 0; i < SLOT_COUNT; ++i) {
-            if (m_slots[i].used && m_slots[i].subnet24 == subnet) {
+            if (m_slots[i].used && m_slots[i].ipv6 == ipv6 && m_slots[i].subnet24 == subnet) {
                 match = (int)i;
                 break;
             }
@@ -69,6 +99,7 @@ public:
             RateWindow& slot = m_slots[reusable];
             ResetWindow(slot, now);
             slot.used = true;
+            slot.ipv6 = ipv6;
             slot.subnet24 = subnet;
             slot.count = 1;
             return ALLOW;
@@ -82,18 +113,9 @@ public:
         return m_overflow.count > MAX_OVERFLOW_REQUESTS ? LIMIT_OVERFLOW : ALLOW;
     }
 
-    size_t ActiveSlotCount() const
-    {
-        size_t count = 0;
-        for (size_t i = 0; i < SLOT_COUNT; ++i)
-            if (m_slots[i].used)
-                ++count;
-        return count;
-    }
-
-private:
     struct RateWindow {
         bool used;
+        bool ipv6;
         uint32_t subnet24;
         uint32_t windowStart;
         uint32_t count;
@@ -117,6 +139,7 @@ private:
     static void ResetWindow(RateWindow& value, uint32_t now)
     {
         value.used = true;
+        value.ipv6 = false;
         value.subnet24 = 0;
         value.windowStart = now;
         value.count = 0;

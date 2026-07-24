@@ -139,7 +139,9 @@ void CLiveBuddyRelay::ResetBroadcasterEgress()
 // ── VIEWER role ───────────────────────────────────────────────────────────────
 bool CLiveBuddyRelay::ConnectViaBuddy(const uchar streamKey[16], const CAddress& buddy, uint16 buddyPort)
 {
-    if (theApp.clientlist == NULL)
+    // The relay request body is the legacy IPv4 eD2K format. Never collapse
+    // a native IPv6 buddy into the synthetic uint32 compatibility value.
+    if (theApp.clientlist == NULL || buddy.GetType() != CAddress::IPv4)
         return false;
     const uint32 ipNet = buddy.ToUInt32(false);   // network-order, matching the dial recipe
     if (ipNet == 0 || ipNet == 0xFFFFFFFF || buddyPort == 0)
@@ -173,7 +175,9 @@ void CLiveBuddyRelay::RequestViewerConnect(const uchar streamKey[16], uint32 ipN
 // ── RELAY (buddy) role ────────────────────────────────────────────────────────
 bool CLiveBuddyRelay::AcceptRelayFromBroadcaster(CUpDownClient* broadcaster)
 {
-    if (broadcaster == NULL)
+    // Relay quotas and session keys below are IPv4-only legacy fields. Native
+    // IPv6 peers use the V2/tunnel paths and must not enter this table.
+    if (broadcaster == NULL || broadcaster->IsIPv6OnlyEndpoint())
         return false;
     if (g_relaySessions.size() >= RELAY_MAX_STREAMS) {
         LIVE_LOG("RELAY", "BuddyRelay: at capacity (%u streams), rejecting", (unsigned)g_relaySessions.size());
@@ -195,6 +199,8 @@ bool CLiveBuddyRelay::AcceptRelayFromBroadcaster(CUpDownClient* broadcaster)
 // SETUP/CHUNK = relay role (we are the buddy); SETUP_OK/DENY = broadcaster role.
 void CLiveBuddyRelay::OnRelayFwd(CUpDownClient* from, uint8 subop, const uchar streamKey[16], const uint8* payload, uint32 len)
 {
+	if (from != NULL && from->IsIPv6OnlyEndpoint())
+		return;
     // Broadcaster role: a relay replied to our SETUP. NOT behind s_relayAcceptEnabled
     // (a broadcaster must process replies) — but harmless when dormant: g_candidateBuddy
     // is NULL so OnRelayReply early-returns.

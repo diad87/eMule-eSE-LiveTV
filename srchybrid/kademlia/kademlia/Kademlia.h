@@ -52,13 +52,21 @@ namespace Kademlia
 		static void Start();
 		static void	Start(CPrefs *pPrefs);
 		static void	Stop();
+		static bool	ApplyNetworkMask(uint8 uNetworkMask);
 		static CPrefs* GetPrefs();
 		static CRoutingZone* GetRoutingZone();
 		static CKad6RoutingTable* GetKad6RoutingTable();
 		static CKademliaUDPListener* GetUDPListener();
 		static CIndexed* GetIndexed();
 		static bool	IsRunning();
+		static uint8 GetRunningNetworkMask();
+		static bool	IsKad2Running();
+		static bool	IsKad6Running();
 		static bool	IsConnected();
+		static bool	IsKad2Connected();
+		static bool	IsKad6Connected();
+		static bool	IsAnyConnected();
+		static uint32 GetKad6VerifiedContacts();
 		static bool	IsFirewalled();
 		static void	RecheckFirewalled();
 		static uint32 GetKademliaUsers(bool bNewMethod = false);
@@ -106,6 +114,7 @@ namespace Kademlia
 		static time_t m_tExternPortLookup;
 		static time_t m_tLANModeCheck;
 		static volatile bool m_bRunning;
+		static volatile LONG m_lRunningNetworkMask;
 		static CList<uint32, uint32> m_liStatsEstUsersProbes;
 		static bool m_bLANMode;
 		static bool	m_bootstrapping; // used for GUI

@@ -16,6 +16,8 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
 
+#include "kademlia/kademlia/KadNetworkPolicy.h"
+
 extern LPCTSTR const strDefaultToolbar;
 
 enum EViewSharedFilesAccess
@@ -573,7 +575,10 @@ public:
 	static bool		m_bAdvancedSpamfilter;
 	static bool		m_bUseSecureIdent;
 
+	// Legacy preferences.ini compatibility bit: Kad2 only. New code must use
+	// m_uKadNetworkMask/GetNetworkKademlia().
 	static bool		networkkademlia;
+	static uint8	m_uKadNetworkMask;
 	static bool		networked2k;
 
 	// toolbar
@@ -1408,7 +1413,15 @@ public:
 	static bool		IsChatCaptchaEnabled()				{ return IsAdvSpamfilterEnabled() && m_bUseChatCaptchas; }
 	static const CString& GetTemplate()					{ return m_strTemplateFile; }
 	static void		SetTemplate(const CString &in)		{ m_strTemplateFile = in; }
-	static bool		GetNetworkKademlia()				{ return networkkademlia && udpport > 0; }
+	static uint8	GetKadNetworkMask()				{ return m_uKadNetworkMask; }
+	static uint8	GetEffectiveKadNetworkMask()		{ return static_cast<uint8>(
+		KadNetworkPolicy::Effective(m_uKadNetworkMask, udpport > 0)); }
+	static bool		IsKad2Configured()					{ return KadNetworkPolicy::HasKad2(m_uKadNetworkMask); }
+	static bool		IsKad6Configured()					{ return KadNetworkPolicy::HasKad6(m_uKadNetworkMask); }
+	static bool		IsKad2Enabled()						{ return KadNetworkPolicy::HasKad2(GetEffectiveKadNetworkMask()); }
+	static bool		IsKad6Enabled()						{ return KadNetworkPolicy::HasKad6(GetEffectiveKadNetworkMask()); }
+	static bool		GetNetworkKademlia()				{ return GetEffectiveKadNetworkMask() != KadNetworkPolicy::None; }
+	static void		SetKadNetworkMask(uint8 val);
 	static void		SetNetworkKademlia(bool val);
 	static bool		GetNetworkED2K()					{ return networked2k; }
 	static void		SetNetworkED2K(bool val)			{ networked2k = val; }

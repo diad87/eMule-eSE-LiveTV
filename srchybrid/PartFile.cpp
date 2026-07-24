@@ -23,6 +23,7 @@
 #endif
 #include "emule.h"
 #include "PartFile.h"
+#include "PartFileIoPolicy.h"
 #include "UpDownClient.h"
 #include "UrlClient.h"
 #include "ED2KLink.h"
@@ -264,8 +265,9 @@ void CPartFile::Init()
 	m_uFileOpProgress = 0;
 	lastSwapForSourceExchangeTick = m_lastpurgetime = ::GetTickCount();
 	m_lastRefreshedDLDisplay = 0;
-	m_nLastBufferFlushTime = 0;
+	m_nLastBufferFlushTime = lastSwapForSourceExchangeTick;
 	m_nNextMetFlushTime = 0;
+	m_nLastPartMetSaveTime = m_nLastBufferFlushTime;
 	m_nFileFlushTime = 0; //nothing to flush
 	m_dwFileAttributes = 0;
 	m_random_update_wait = (DWORD)(rand() % SEC2MS(1));
@@ -290,6 +292,8 @@ void CPartFile::Init()
 	m_bAutoDownPriority = thePrefs.GetNewAutoDown();
 	m_bDelayDelete = false;
 	m_bpreviewprio = false;
+	m_bPartMetDirty = false;
+	m_bPartMetStatsDirty = false;
 	m_nStreamSeekPart = _UI16_MAX; // eSE: no streaming seek by default
 }
 
@@ -369,6 +373,7 @@ void CPartFile::AssertValid() const
 	(void)m_iLastPausePurge;
 	(void)m_lastRefreshedDLDisplay;
 	(void)m_nLastBufferFlushTime;
+	(void)m_nLastPartMetSaveTime;
 	(void)m_dwFileAttributes;
 	(void)m_anStates;
 	(void)m_category;
@@ -387,6 +392,8 @@ void CPartFile::AssertValid() const
 	CHECK_BOOL(m_bCompletionError);
 	CHECK_BOOL(m_bAICHPartHashsetNeeded);
 	CHECK_BOOL(m_bAutoDownPriority);
+	CHECK_BOOL(m_bPartMetDirty);
+	CHECK_BOOL(m_bPartMetStatsDirty);
 }
 
 void CPartFile::Dump(CDumpContext &dc) const
@@ -1063,11 +1070,20 @@ EPartFileLoadResult CPartFile::LoadPartFile(LPCTSTR in_directory, LPCTSTR in_fil
 		// SLUGFILLER: SafeHash
 	}
 
+	// Everything above reconstructs the state already present in part.met. Start dirty
+	// tracking from that baseline; repairs made by the validation below remain dirty.
+	m_bPartMetDirty = false;
+	m_bPartMetStatsDirty = false;
+	m_nLastPartMetSaveTime = ::GetTickCount();
+	m_nNextMetFlushTime = m_nLastPartMetSaveTime + SEC2MS(29);
+
 	// verify corrupted parts list
 	for (POSITION posCorruptedPart = corrupted_list.GetHeadPosition(); posCorruptedPart != NULL;) {
 		POSITION posLast = posCorruptedPart;
-		if (IsCompleteBD(corrupted_list.GetNext(posCorruptedPart)))
+		if (IsCompleteBD(corrupted_list.GetNext(posCorruptedPart))) {
 			corrupted_list.RemoveAt(posLast);
+			MarkPartMetDirty();
+		}
 	}
 
 	//check if this is a backup
@@ -1411,30 +1427,23 @@ bool CPartFile::SavePartFile(bool bDontOverrideBak)
 
 			++i_pos;
 		}
-		// Add buffered data as gap too - at the time of writing the file, this data
-		// does not exist on the disk, so not adding it as gaps leads to inconsistencies
-		// which cause problems in case of failing to write the buffered data
-		// (for example, on disk full errors)
+		// Add every item still owned by the buffer list as a gap. PB_WRITTEN means
+		// the disk write completed, but only FlushBuffer may harvest it and verify
+		// the affected part. Persisting it as complete here would create a window
+		// where unverified bytes survive a crash as trusted data.
 		// don't bother to merge everything, we do this on the next loading
 //		uint32 dbgMerged = 0;
 		for (POSITION pos = m_BufferedData_list.GetHeadPosition(); pos != NULL;) {
-			POSITION pos2 = pos;
 			const PartFileBufferedData *item = m_BufferedData_list.GetNext(pos);
-			if (item->flushed == PB_WRITTEN) {
-				DeleteWrittenItem(pos2);
-				continue;
-			}
 			const uint64 nStart = item->start;
 			uint64 nEnd = item->end;
 			while (pos != NULL) { // merge if obvious
-				pos2 = pos;
+				POSITION posNext = pos;
 				item = m_BufferedData_list.GetNext(pos);
-				if (item->flushed == PB_WRITTEN) {
-					pos = pos2; //step back; the outer loop will delete this item
+				if (item->start != nEnd + 1) {
+					pos = posNext; //leave this item for the outer loop
 					break;
 				}
-				if (item->start != nEnd + 1)
-					break;
 //				++dbgMerged;
 				nEnd = item->end;
 			}
@@ -1495,6 +1504,11 @@ bool CPartFile::SavePartFile(bool bDontOverrideBak)
 		if (!bDontOverrideBak)
 			DebugLogError(_T("Failed to create backup of %s (%s) - %s"), (LPCTSTR)m_fullname, (LPCTSTR)GetFileName(), (LPCTSTR)GetErrorMessage(::GetLastError()));
 
+	const DWORD now = ::GetTickCount();
+	m_bPartMetDirty = false;
+	m_bPartMetStatsDirty = false;
+	m_nLastPartMetSaveTime = now;
+	m_nNextMetFlushTime = now + SEC2MS(29);
 	return true;
 }
 
@@ -1629,6 +1643,7 @@ void CPartFile::AddGap(uint64 start, uint64 end) //keep the list ordered!
 		m_gaplist.InsertBefore(before, Gap_Struct{ start, end });
 	else
 		m_gaplist.AddTail(Gap_Struct{ start, end });
+	MarkPartMetDirty();
 	UpdateDisplayedInfo();
 }
 
@@ -1883,6 +1898,7 @@ void CPartFile::FillGap(uint64 start, uint64 end)
 {
 	ASSERT(end < (uint64)m_nFileSize && start <= end);
 
+	bool bChanged = false;
 	for (POSITION pos = m_gaplist.GetHeadPosition(); pos != NULL;) {
 		POSITION pos2 = pos;
 		Gap_Struct &gap = m_gaplist.GetNext(pos);
@@ -1891,19 +1907,25 @@ void CPartFile::FillGap(uint64 start, uint64 end)
 		if (gap.end >= start) {
 			if (gap.start >= start && gap.end <= end) {
 				m_gaplist.RemoveAt(pos2); //this gap is fully filled
-			} else if (gap.start >= start)
+				bChanged = true;
+			} else if (gap.start >= start) {
 				gap.start = end + 1; //cut the head of this gap
-			else if (gap.end <= end)
+				bChanged = true;
+			} else if (gap.end <= end) {
 				gap.end = start - 1; //cut the tail of this gap
-			else {
+				bChanged = true;
+			} else {
 				uint64 prev = gap.end; //this gap fully includes the filler
 				gap.end = start - 1;   //cut the tail, then add the rest
 				m_gaplist.InsertAfter(pos2, Gap_Struct{ end + 1, prev });
+				bChanged = true;
 				break; // [Lord KiRon]
 			}
 		}
 	}
 
+	if (bChanged)
+		MarkPartMetDirty();
 	UpdateCompletedInfos();
 	UpdateDisplayedInfo();
 }
@@ -2210,16 +2232,36 @@ uint32 CPartFile::Process(uint32 reducedownload, UINT icounter/*in percent*/)
 
 	UINT nOldTransSourceCount = GetSrcStatisticsValue(DS_DOWNLOADING);
 	const DWORD curTick = ::GetTickCount();
-	if (curTick < m_nLastBufferFlushTime) {
-		ASSERT(0);
-		m_nLastBufferFlushTime = curTick;
-	}
+	if (m_tActivated != 0)
+		MarkPartMetStatsDirty(); //active time advances even when no payload arrives
 
-	// If buffer size exceeds limit, or if not written within time limit, flush data
-	if (m_nTotalBufferData > thePrefs.GetFileBufferSize() || curTick >= m_nLastBufferFlushTime + thePrefs.GetFileBufferTimeLimit())
+	const bool bMetadataSaveDue =
+		PartFileIoPolicy::HasReachedDeadline(curTick, m_nNextMetFlushTime)
+		&& PartFileIoPolicy::ShouldPersistMetadata(m_bPartMetDirty,
+			m_bPartMetStatsDirty, curTick, m_nLastPartMetSaveTime);
+	const bool bNeedsCompletionPolling = GetPartCount() > 0
+		&& m_gaplist.IsEmpty()
+		&& GetStatus() != PS_COMPLETING
+		&& GetStatus() != PS_COMPLETE;
+	const bool bCompletionReady = bNeedsCompletionPolling
+		&& m_iWrites <= 0
+		&& m_BufferedData_list.IsEmpty()
+		&& m_mapPendingHashParts.IsEmpty();
+
+	// Clean, idle part files do not enter FlushBuffer merely because a timer expired.
+	// Buffered data, dirty metadata and asynchronous completion still retain polling.
+	if (PartFileIoPolicy::ShouldRunPeriodicFlush(m_nTotalBufferData,
+		thePrefs.GetFileBufferSize(), bMetadataSaveDue,
+		bNeedsCompletionPolling, bCompletionReady, curTick,
+		m_nLastBufferFlushTime, thePrefs.GetFileBufferTimeLimit()))
+	{
 		FlushBuffer();
+	}
 	//If data keeps arriving, flush to disk sometimes for extra safety
-	if (m_nFileFlushTime && curTick >= m_nFileFlushTime + SEC2MS(31) && m_hWrite != INVALID_HANDLE_VALUE) {
+	if (m_nFileFlushTime
+		&& PartFileIoPolicy::HasElapsed(curTick, m_nFileFlushTime, SEC2MS(31))
+		&& m_hWrite != INVALID_HANDLE_VALUE)
+	{
 		::FlushFileBuffers(m_hWrite);
 		m_nFileFlushTime = 0;
 	}
@@ -2392,14 +2434,17 @@ uint32 CPartFile::Process(uint32 reducedownload, UINT icounter/*in percent*/)
 			NotifyStatusChange();
 
 		if (GetMaxSourcePerFileUDP() > GetSourceCount()) {
-			if (theApp.downloadqueue->DoKademliaFileRequest() && (Kademlia::CKademlia::GetTotalFile() < KADEMLIATOTALFILE) && (curTick >= m_LastSearchTimeKad) && Kademlia::CKademlia::IsConnected() && theApp.IsConnected() && !m_stopped) { //Once we can handle lowID users in Kad, we remove the second IsConnected
+			if (theApp.downloadqueue->DoKademliaFileRequest() && (Kademlia::CKademlia::GetTotalFile() < KADEMLIATOTALFILE) && (curTick >= m_LastSearchTimeKad) && Kademlia::CKademlia::IsAnyConnected() && !m_stopped) {
 				//Kademlia
 				theApp.downloadqueue->SetLastKademliaFileRequest();
 				if (!GetKadFileSearchID()) {
 					const bool wantTunnel = eSELive::CLiveTunnel::Get().ShouldRouteThroughTunnel(
 						NULL, Kademlia::CKadV2ModeSelector::QueryContext::KAD_SEARCH);
+					const bool requireKad6Gateway =
+						!Kademlia::CKademlia::IsKad2Connected()
+						&& Kademlia::CKademlia::IsKad6Running();
 					uint32 k6RequestId = 0;
-					const bool k6Started = wantTunnel &&
+					const bool k6Started = (wantTunnel || requireKad6Gateway) &&
 						eSELive::CLiveTunnel::Get().StartK6SourceLookup(GetFileHash(), k6RequestId);
 					if (k6Started) {
 						if (m_TotalSearchesKad < 7)
@@ -2410,7 +2455,7 @@ uint32 CPartFile::Process(uint32 reducedownload, UINT icounter/*in percent*/)
 						const bool strict = wantTunnel &&
 							Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy() ==
 								Kademlia::CKadV2ModeSelector::STRICT_PRIVACY;
-						if (!strict) {
+						if (!strict && Kademlia::CKademlia::IsKad2Connected()) {
 							Kademlia::CSearch *pSearch = Kademlia::CSearchManager::PrepareLookup(Kademlia::CSearch::FILE, true, Kademlia::CUInt128(GetFileHash()));
 							if (pSearch) {
 								if (m_TotalSearchesKad < 7)
@@ -2630,11 +2675,13 @@ void CPartFile::AddSourcesV6(CSafeMemFile *sources, uint32 serverip, uint16 serv
 			continue;
 		}
 
-		const uint32 syntheticIP = address.ToSyntheticUInt32();
-		if (theApp.clientlist->IsBannedClient(syntheticIP)) {
+		if (theApp.clientlist->IsBannedClient(address)) {
 			++debug_invalid;
 			continue;
 		}
+		if (theApp.clientlist->FindClientByAddress(address, port) != NULL)
+			continue;
+		const uint32 syntheticIP = address.ToSyntheticUInt32();
 
 		if (GetMaxSources() > GetSourceCount()) {
 			++debug_possiblesources;
@@ -2685,6 +2732,33 @@ void CPartFile::AddSource(LPCTSTR pszURL, uint32 nIP)
 		delete client;
 		return;
 	}
+	client->SetRequestFile(this);
+	client->SetSourceFrom(SF_LINK);
+	if (theApp.downloadqueue->CheckAndAddSource(this, client))
+		UpdatePartsInfo();
+}
+
+void CPartFile::AddSource(LPCTSTR pszURL, const CAddress& address)
+{
+	if (m_stopped || !address.IsUsablePublic())
+		return;
+	if (address.GetType() == CAddress::IPv4) {
+		uint32 ipv4 = 0;
+		if (address.TryToUInt32(ipv4, false))
+			AddSource(pszURL, ipv4);
+		return;
+	}
+	if (!address.IsNativeIPv6())
+		return;
+
+	CUrlClient* client = new CUrlClient;
+	if (!client->SetUrl(pszURL, 0)) {
+		delete client;
+		return;
+	}
+	client->SetIPv6Address(address);
+	client->SetIP(address.ToSyntheticUInt32());
+	client->SetDirectIPv6Source();
 	client->SetRequestFile(this);
 	client->SetSourceFrom(SF_LINK);
 	if (theApp.downloadqueue->CheckAndAddSource(this, client))
@@ -3186,6 +3260,10 @@ void CPartFile::PerformFileCompleteEnd(DWORD dwResult)
 				m_pCollection = NULL;
 			}
 		}
+	} else {
+		// The worker set PS_ERROR/paused before posting back. Record the persisted
+		// paused state on the main thread, where part.met tracking is owned.
+		MarkPartMetDirty();
 	}
 
 	theApp.downloadqueue->StartNextFileIfPrefs(GetCategory());
@@ -3416,6 +3494,7 @@ void CPartFile::SetDownPriority(uint8 NewPriority, bool resort)
 		UpdateDisplayedInfo(true);
 		//Save the partfile. We do this so that if we restart eMule before this files does
 		//any transfers, it will remember the new priority.
+		MarkPartMetDirty();
 		SavePartFile();
 	}
 }
@@ -3526,6 +3605,8 @@ void CPartFile::PauseFile(bool bInsufficient, bool resort)
 	else
 		m_paused = true;
 	m_insufficient = bInsufficient;
+	if (!bInsufficient)
+		MarkPartMetDirty();
 
 	NotifyStatusChange();
 	m_datarate = 0;
@@ -3560,6 +3641,7 @@ void CPartFile::ResumeFile(bool resort)
 			ASSERT(0);
 	} else {
 		m_paused = m_stopped = false;
+		MarkPartMetDirty();
 		SetActive(theApp.IsConnected());
 		m_LastSearchTime = 0;
 		if (resort) {
@@ -3807,8 +3889,10 @@ void CPartFile::UpdateAvailablePartsCount()
 				break;
 			}
 
-	if (GetPartCount() == availablecounter && availablePartsCount <= availablecounter) //set lastseencomplete to the latest time, not to the earliest
+	if (GetPartCount() == availablecounter && availablePartsCount <= availablecounter) { //set lastseencomplete to the latest time, not to the earliest
 		lastseencomplete = CTime::GetCurrentTime();
+		MarkPartMetStatsDirty();
+	}
 	availablePartsCount = availablecounter;
 }
 
@@ -3865,7 +3949,8 @@ Packet* CPartFile::CreateSrcInfoPacket(const CUpDownClient *forClient, uint8 byR
 	const uint8 *reqstatus = forClient->GetUpPartStatus();
 	for (POSITION pos = srclist.GetHeadPosition(); pos != NULL;) {
 		const CUpDownClient *cur_src = srclist.GetNext(pos);
-		if (cur_src->HasLowID() || !cur_src->IsValidSource())
+		if (cur_src->HasLowID() || !cur_src->IsValidSource()
+			|| cur_src->IsIPv6OnlyEndpoint())
 			continue;
 		const uint8 *srcstatus = cur_src->GetPartStatus();
 		if (srcstatus && cur_src->GetPartCount() == GetPartCount()) {
@@ -4125,8 +4210,10 @@ uint32 CPartFile::WriteToBuffer(uint64 transize, const BYTE *data, uint64 start,
 {
 	ASSERT((sint64)transize > 0 && end < (uint64)m_nFileSize && start <= end);
 	// Increment transferred bytes counter for this file
-	if (client) //Imported Parts are not counted as transferred
+	if (client) { //Imported Parts are not counted as transferred
 		m_uTransferred += transize;
+		MarkPartMetStatsDirty();
+	}
 
 	// This is needed a few times
 	const size_t lenData = static_cast<size_t>(end - start + 1);
@@ -4135,6 +4222,7 @@ uint32 CPartFile::WriteToBuffer(uint64 transize, const BYTE *data, uint64 start,
 	if (lenData > transize) {
 		m_uCompressionGain += lenData - transize;
 		thePrefs.Add2SavedFromCompression(lenData - transize);
+		MarkPartMetStatsDirty();
 	}
 
 	static LPCTSTR const sImport = _T("(import)");
@@ -4190,6 +4278,11 @@ uint32 CPartFile::WriteToBuffer(uint64 transize, const BYTE *data, uint64 start,
 		m_BufferedData_list.InsertAfter(after, newitem);
 	else
 		m_BufferedData_list.AddHead(newitem);
+
+	// Start the timer when an idle file receives its first buffered byte. Periodic
+	// clean-file scans no longer keep this timestamp artificially fresh.
+	m_nLastBufferFlushTime = PartFileIoPolicy::StartBufferWindow(
+		m_nTotalBufferData, ::GetTickCount(), m_nLastBufferFlushTime);
 
 	// Increment buffer size marker
 	m_nTotalBufferData += lenData;
@@ -4423,11 +4516,16 @@ void CPartFile::FlushBuffer(bool bForceICH, bool bNoAICH, bool bSyncHash)
 
 		// eSE H1: while verdicts are pending, the met save is deferred to the verdict
 		// handler, so the .met never persists a complete-but-unverified part (plan R2)
-		if (m_nNextMetFlushTime < m_nLastBufferFlushTime && m_mapPendingHashParts.IsEmpty()) {
+		if (m_mapPendingHashParts.IsEmpty()
+			&& PartFileIoPolicy::HasReachedDeadline(
+				m_nLastBufferFlushTime, m_nNextMetFlushTime)
+			&& PartFileIoPolicy::ShouldPersistMetadata(m_bPartMetDirty,
+				m_bPartMetStatsDirty, m_nLastBufferFlushTime,
+				m_nLastPartMetSaveTime))
+		{
 			const DWORD dwMetT0 = ::GetTickCount(); // eSE H0
 			SavePartFile();	// Update met file
 			dwMetMs = ::GetTickCount() - dwMetT0; // eSE H0
-			m_nNextMetFlushTime = m_nLastBufferFlushTime + SEC2MS(29);
 		}
 
 		if (!theApp.IsClosing()) { // may be called during shutdown!
@@ -4520,6 +4618,8 @@ void CPartFile::FlushBuffersExceptionHandler(CFileException *ex)
 		m_anStates[DS_DOWNLOADING] = 0;
 	}
 
+	if (m_paused)
+		MarkPartMetDirty();
 	if (!theApp.IsClosing()) { // may be called during shutdown!
 		if (GetStatus() == PS_ERROR && srcarevisible)
 			theApp.emuledlg->transferwnd->GetDownloadList()->HideSources(this);
@@ -4535,6 +4635,7 @@ void CPartFile::FlushBuffersExceptionHandler()
 	LogError(LOG_STATUSBAR, GetResString(IDS_ERR_WRITEERROR), (LPCTSTR)GetFileName(), (LPCTSTR)GetResString(IDS_UNKNOWN));
 	SetStatus(PS_ERROR);
 	m_paused = true;
+	MarkPartMetDirty();
 	m_iLastPausePurge = time(NULL);
 	theApp.downloadqueue->RemoveLocalServerRequest(this);
 	m_datarate = 0;
@@ -4693,9 +4794,12 @@ void CPartFile::ProcessPartHashVerdict(const PartHashVerdict_Struct &verdict)
 
 	if (m_mapPendingHashParts.IsEmpty() && !theApp.IsClosing()) {
 		//deferred met save (plan R2)
-		if (m_nNextMetFlushTime < ::GetTickCount()) {
+		const DWORD now = ::GetTickCount();
+		if (PartFileIoPolicy::HasReachedDeadline(now, m_nNextMetFlushTime)
+			&& PartFileIoPolicy::ShouldPersistMetadata(m_bPartMetDirty,
+				m_bPartMetStatsDirty, now, m_nLastPartMetSaveTime))
+		{
 			SavePartFile();
-			m_nNextMetFlushTime = ::GetTickCount() + SEC2MS(29);
 		}
 		//the last verdict completes the file (mirror of the check in FlushBuffer)
 		if (m_gaplist.IsEmpty() && m_iWrites <= 0 && m_BufferedData_list.IsEmpty() && GetStatus() != PS_COMPLETING)
@@ -4792,8 +4896,10 @@ void CPartFile::UpdateAutoDownPriority()
 
 UINT CPartFile::GetCategory() /*const*/
 {
-	if (m_category > (UINT)(thePrefs.GetCatCount() - 1))
+	if (m_category > (UINT)(thePrefs.GetCatCount() - 1)) {
 		m_category = 0;
+		MarkPartMetDirty();
+	}
 	return m_category;
 }
 
@@ -4881,6 +4987,7 @@ void CPartFile::DeleteWrittenItem(const POSITION pos)
 {
 	const PartFileBufferedData *item = m_BufferedData_list.GetAt(pos);
 	ASSERT(!item->dwError);
+	MarkPartMetDirty(); //the persisted buffered gap may now be removed
 	m_nTotalBufferData -= item->end - item->start + 1;
 	// SLUGFILLER: SafeHash - could be more than one part
 	for (INT_PTR i = (INT_PTR)(item->start / PARTSIZE); i <= (INT_PTR)(item->end / PARTSIZE); ++i)
@@ -4897,7 +5004,10 @@ void CPartFile::DeleteWrittenItem(const POSITION pos)
 
 void CPartFile::SetCategory(UINT cat)
 {
+	if (m_category == cat)
+		return;
 	m_category = cat;
+	MarkPartMetDirty();
 
 // ZZ:DownloadManager -->
 	// set new prio
@@ -5608,7 +5718,10 @@ bool CPartFile::CheckShowItemInGivenCat(INT_PTR inCategory) /*const*/
 
 void CPartFile::SetFileName(LPCTSTR pszFileName, bool bReplaceInvalidFileSystemChars, bool bRemoveControlChars)
 {
+	const CString oldName(GetFileName());
 	CKnownFile::SetFileName(pszFileName, bReplaceInvalidFileSystemChars, bRemoveControlChars);
+	if (oldName != GetFileName())
+		MarkPartMetDirty();
 
 	UpdateDisplayedInfo(true);
 	theApp.emuledlg->transferwnd->GetDownloadList()->UpdateCurrentCategoryView(this);
@@ -5618,11 +5731,14 @@ void CPartFile::SetActive(bool bActive)
 {
 	time_t tNow = time(NULL);
 	if (bActive) {
-		if (theApp.IsConnected() && m_tActivated == 0)
+		if (theApp.IsConnected() && m_tActivated == 0) {
 			m_tActivated = tNow;
+			MarkPartMetStatsDirty();
+		}
 	} else if (m_tActivated != 0) {
 		m_nDlActiveTime += tNow - m_tActivated;
 		m_tActivated = 0;
+		MarkPartMetStatsDirty();
 	}
 }
 
@@ -5876,7 +5992,10 @@ void CPartFile::RefilterFileComments()
 void CPartFile::SetFileSize(EMFileSize nFileSize)
 {
 	ASSERT(m_pAICHRecoveryHashSet != NULL);
+	const bool bChanged = GetFileSize() != nFileSize;
 	m_pAICHRecoveryHashSet->SetFileSize(nFileSize);
 	CKnownFile::SetFileSize(nFileSize);
 	m_aChangedPart.SetSize((INT_PTR)(((uint64)nFileSize + PARTSIZE - 1) / PARTSIZE));
+	if (bChanged)
+		MarkPartMetDirty();
 }

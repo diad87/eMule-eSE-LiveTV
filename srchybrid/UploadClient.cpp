@@ -143,7 +143,8 @@ float CUpDownClient::GetCombinedFilePrioAndCredit()
 		return 0.0F;
 	}
 
-	return 10.0f * credits->GetScoreRatio(GetIP()) * GetFilePrioAsNumber();
+	return 10.0f * (IsIPv6OnlyEndpoint() ? 1.0f : credits->GetScoreRatio(GetIP()))
+		* GetFilePrioAsNumber();
 }
 
 /*
@@ -193,7 +194,7 @@ uint32 CUpDownClient::GetScore(bool sysvalue, bool isdownloading, bool onlybasev
 		return 0;
 
 	// bad clients (see note in function)
-	if (credits->GetCurrentIdentState(GetIP()) == IS_IDBADGUY)
+	if (!IsIPv6OnlyEndpoint() && credits->GetCurrentIdentState(GetIP()) == IS_IDBADGUY)
 		return 0;
 	// friend slot
 	if (IsFriend() && GetFriendSlot()
@@ -222,7 +223,7 @@ uint32 CUpDownClient::GetScore(bool sysvalue, bool isdownloading, bool onlybasev
 		//ASSERT ( m_dwUploadTime - GetWaitStartTime() >= 0 ); //oct 28, 02: changed this from "> 0" to ">= 0" -> // 02-Okt-2006 []: ">=0" is always true!
 	}
 	float fBaseValue = dwBaseValue / SEC2MS(1.0f);
-	if (thePrefs.UseCreditSystem())
+	if (thePrefs.UseCreditSystem() && !IsIPv6OnlyEndpoint())
 		fBaseValue *= credits->GetScoreRatio(GetIP());
 
 	if (!onlybasevalue)
@@ -440,7 +441,8 @@ void CUpDownClient::UpdateUploadingStatisticsData()
 		thePrefs.Add2SessionTransferData(GetClientSoft(), GetUserPort(), true, true, sentBytesPartFile, (IsFriend() && GetFriendSlot()));
 
 		m_nTransferredUp += sentBytesCompleteFile + sentBytesPartFile;
-		credits->AddUploaded(sentBytesCompleteFile + sentBytesPartFile, GetIP());
+		if (!IsIPv6OnlyEndpoint())
+			credits->AddUploaded(sentBytesCompleteFile + sentBytesPartFile, GetIP());
 
 		uint32 sentBytesPayload = sock->GetSentPayloadSinceLastCall(true);
 		m_nCurQueueSessionPayloadUp += sentBytesPayload;
@@ -624,7 +626,10 @@ void CUpDownClient::AddRequestCount(const uchar *fileid)
 void  CUpDownClient::UnBan()
 {
 	theApp.clientlist->AddTrackClient(this);
-	theApp.clientlist->RemoveBannedClient(GetIP());
+	if (IsIPv6OnlyEndpoint())
+		theApp.clientlist->RemoveBannedClient(GetIPv6Address());
+	else
+		theApp.clientlist->RemoveBannedClient(GetIP());
 	SetUploadState(US_NONE);
 	ClearWaitStartTime();
 	theApp.emuledlg->transferwnd->ShowQueueCount(theApp.uploadqueue->GetWaitingUserCount());
@@ -649,7 +654,10 @@ void CUpDownClient::Ban(LPCTSTR pszReason)
 			AddDebugLogLine(false, _T("Banned: (refreshed): %s; %s"), pszReason == NULL ? _T("Aggressive behaviour") : pszReason, (LPCTSTR)DbgGetClientInfo());
 	}
 #endif
-	theApp.clientlist->AddBannedClient(GetIP());
+	if (IsIPv6OnlyEndpoint())
+		theApp.clientlist->AddBannedClient(GetIPv6Address());
+	else
+		theApp.clientlist->AddBannedClient(GetIP());
 	SetUploadState(US_BANNED);
 	theApp.emuledlg->transferwnd->ShowQueueCount(theApp.uploadqueue->GetWaitingUserCount());
 	theApp.emuledlg->transferwnd->GetQueueList()->RefreshClient(this);
@@ -663,7 +671,7 @@ DWORD CUpDownClient::GetWaitStartTime() const
 		ASSERT(0);
 		return 0;
 	}
-	DWORD dwResult = credits->GetSecureWaitStartTime(GetIP());
+	DWORD dwResult = IsIPv6OnlyEndpoint() ? 0 : credits->GetSecureWaitStartTime(GetIP());
 	if (dwResult > m_dwUploadTime && IsDownloading()) {
 		//this happens only if two clients with invalid securehash are in the queue - if at all
 		dwResult = (m_dwUploadTime > 0) ? m_dwUploadTime - 1 : 0; // BUG-028 FIX: prevent DWORD underflow
@@ -676,7 +684,7 @@ DWORD CUpDownClient::GetWaitStartTime() const
 
 void CUpDownClient::SetWaitStartTime()
 {
-	if (credits != NULL)
+	if (credits != NULL && !IsIPv6OnlyEndpoint())
 		credits->SetSecWaitStartTime(GetIP());
 }
 
@@ -688,7 +696,7 @@ void CUpDownClient::ClearWaitStartTime()
 
 bool CUpDownClient::GetFriendSlot() const
 {
-	if (credits && theApp.clientcredits->CryptoAvailable())
+	if (credits && !IsIPv6OnlyEndpoint() && theApp.clientcredits->CryptoAvailable())
 		switch (credits->GetCurrentIdentState(GetIP())) {
 		case IS_IDFAILED:
 		case IS_IDNEEDED:

@@ -48,6 +48,8 @@ if ($packageScript -notmatch [regex]::Escape('"Nick=$testerNick"') -or
     Fail 'package tester nickname is not derived from the release channel'
 }
 foreach ($requiredDefault in @(
+    'NetworkKademlia=1',
+    'KadNetworkMask=3',
     'EseNetLabConsent=0',
     'EseNetLabEnabled=0',
     'EseV9Experimental=0',

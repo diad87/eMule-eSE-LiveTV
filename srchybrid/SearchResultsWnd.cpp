@@ -1134,12 +1134,12 @@ bool CSearchResultsWnd::StartNewSearch(SSearchParams *pParams)
 	if (pParams->eType == SearchTypeAutomatic) {
 		// select between kad and server
 		// its easy if we are connected to one network only
-		if (!theApp.serverconnect->IsConnected() && Kademlia::CKademlia::IsRunning() && Kademlia::CKademlia::IsConnected())
+		if (!theApp.serverconnect->IsConnected() && Kademlia::CKademlia::IsKad2Running() && Kademlia::CKademlia::IsConnected())
 			pParams->eType = SearchTypeKademlia;
-		else if (theApp.serverconnect->IsConnected() && (!Kademlia::CKademlia::IsRunning() || !Kademlia::CKademlia::IsConnected()))
+		else if (theApp.serverconnect->IsConnected() && (!Kademlia::CKademlia::IsKad2Running() || !Kademlia::CKademlia::IsConnected()))
 			pParams->eType = SearchTypeEd2kServer;
 		else {
-			if (!theApp.serverconnect->IsConnected() && (!Kademlia::CKademlia::IsRunning() || !Kademlia::CKademlia::IsConnected())) {
+			if (!theApp.serverconnect->IsConnected() && (!Kademlia::CKademlia::IsKad2Running() || !Kademlia::CKademlia::IsConnected())) {
 				LocMessageBox(IDS_NOTCONNECTEDANY, MB_ICONWARNING, 0);
 				delete pParams;
 				return false;
@@ -1184,7 +1184,7 @@ bool CSearchResultsWnd::StartNewSearch(SSearchParams *pParams)
 		SearchStarted();
 		return true;
 	case SearchTypeKademlia:
-		if (!Kademlia::CKademlia::IsRunning() || !Kademlia::CKademlia::IsConnected()) {
+		if (!Kademlia::CKademlia::IsKad2Running() || !Kademlia::CKademlia::IsConnected()) {
 			LocMessageBox(IDS_ERR_NOTCONNECTEDKAD, MB_ICONWARNING, 0);
 			break;
 		}

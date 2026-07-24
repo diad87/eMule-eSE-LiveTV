@@ -608,7 +608,7 @@ bool CDownloadQueue::CheckAndAddKnownSource(CPartFile *sender, CUpDownClient *so
 	// a client within the internet.
 	//
 	// IP filter is not needed here, because that "known" client was already filtered when receiving OP_HELLO.
-	if (!source->HasLowID()) {
+	if (!source->IsIPv6OnlyEndpoint() && !source->HasLowID()) {
 		uint32 nClientIP = htonl(source->GetUserIDHybrid());
 		if (!IsGoodIP(nClientIP)) { // check for 0-IP, localhost and LAN addresses
 			//if (thePrefs.GetLogFilteredIPs())
@@ -1114,7 +1114,7 @@ CUpDownClient* CDownloadQueue::GetDownloadClientByIP(uint32 dwIP)
 		const CPartFile *cur_file = filelist.GetNext(pos);
 		for (POSITION pos2 = cur_file->srclist.GetHeadPosition(); pos2 != NULL;) {
 			CUpDownClient *cur_client = cur_file->srclist.GetNext(pos2);
-			if (dwIP == cur_client->GetIP())
+			if (!cur_client->IsIPv6OnlyEndpoint() && dwIP == cur_client->GetIP())
 				return cur_client;
 		}
 	}
@@ -1130,9 +1130,9 @@ CUpDownClient* CDownloadQueue::GetDownloadClientByIP_UDP(uint32 dwIP, uint16 nUD
 		const CPartFile *cur_file = filelist.GetNext(pos);
 		for (POSITION pos2 = cur_file->srclist.GetHeadPosition(); pos2 != NULL;) {
 			CUpDownClient *cur_client = cur_file->srclist.GetNext(pos2);
-			if (dwIP == cur_client->GetIP() && nUDPPort == cur_client->GetUDPPort())
+			if (!cur_client->IsIPv6OnlyEndpoint() && dwIP == cur_client->GetIP() && nUDPPort == cur_client->GetUDPPort())
 				return cur_client;
-			if (dwIP == cur_client->GetIP() && bIgnorePortOnUniqueIP && cur_client != pMatchingIPClient) {
+			if (!cur_client->IsIPv6OnlyEndpoint() && dwIP == cur_client->GetIP() && bIgnorePortOnUniqueIP && cur_client != pMatchingIPClient) {
 				pMatchingIPClient = cur_client;
 				++cMatches;
 			}
@@ -1479,6 +1479,42 @@ BEGIN_MESSAGE_MAP(CSourceHostnameResolveWnd, CWnd)
 	ON_MESSAGE(WM_HOSTNAMERESOLVED, OnHostnameResolved)
 END_MESSAGE_MAP()
 
+static void AppendResolvedSourceAddress(std::vector<CAddress>& addresses, const CAddress& address)
+{
+	if (address.GetType() != CAddress::IPv4 && address.GetType() != CAddress::IPv6)
+		return;
+	for (std::vector<CAddress>::const_iterator it = addresses.begin(); it != addresses.end(); ++it) {
+		if (*it == address)
+			return;
+	}
+	addresses.push_back(address);
+}
+
+// WSAAsyncGetHostByName only returns an A record.  Source links use the same
+// resolver for both families, so query the modern AF_UNSPEC API as well and
+// retain every usable A/AAAA answer.  The legacy asynchronous request remains
+// as the wake-up/fallback path and keeps IPv4 behaviour unchanged.
+static void ResolveSourceHostAddresses(const CStringA& hostname, std::vector<CAddress>& addresses)
+{
+	CStringA query(hostname);
+	if (query.GetLength() > 2 && query[0] == '[' && query[query.GetLength() - 1] == ']')
+		query = query.Mid(1, query.GetLength() - 2);
+
+	addrinfo hints = {};
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	addrinfo* result = NULL;
+	if (getaddrinfo(query, NULL, &hints, &result) != 0)
+		return;
+
+	for (addrinfo* current = result; current != NULL; current = current->ai_next) {
+		CAddress address;
+		if (CAddress::TryFromSA(current->ai_addr, static_cast<int>(current->ai_addrlen), address, NULL))
+			AppendResolvedSourceAddress(addresses, address);
+	}
+	freeaddrinfo(result);
+}
+
 CSourceHostnameResolveWnd::CSourceHostnameResolveWnd()
 	: m_aucHostnameBuffer()
 {
@@ -1509,9 +1545,20 @@ void CSourceHostnameResolveWnd::AddToResolve(const uchar *fileid, LPCSTR pszHost
 		return;
 
 	memset(m_aucHostnameBuffer, 0, sizeof m_aucHostnameBuffer);
-	if (!WSAAsyncGetHostByName(m_hWnd, WM_HOSTNAMERESOLVED, entry->strHostname, m_aucHostnameBuffer, sizeof m_aucHostnameBuffer)) {
-		m_toresolve.RemoveTail();
-		delete entry;
+	// WSAAsyncGetHostByName cannot issue an AAAA query.  For an IPv6
+	// literal, skip it and use the AF_UNSPEC path in the message handler.
+	if (entry->strHostname.Find(':') >= 0) {
+		if (!PostMessage(WM_HOSTNAMERESOLVED, 0, 0)) {
+			m_toresolve.RemoveTail();
+			delete entry;
+		}
+	} else if (!WSAAsyncGetHostByName(m_hWnd, WM_HOSTNAMERESOLVED, entry->strHostname, m_aucHostnameBuffer, sizeof m_aucHostnameBuffer)) {
+		// A failed A-only request can still have a valid AAAA record.  Keep
+		// the entry and let the AF_UNSPEC resolver make that decision.
+		if (!PostMessage(WM_HOSTNAMERESOLVED, 0, 0)) {
+			m_toresolve.RemoveTail();
+			delete entry;
+		}
 	}
 }
 
@@ -1520,25 +1567,70 @@ LRESULT CSourceHostnameResolveWnd::OnHostnameResolved(WPARAM, LPARAM lParam)
 	if (m_toresolve.IsEmpty())
 		return TRUE;
 	Hostname_Entry *resolved = m_toresolve.RemoveHead();
+	std::vector<CAddress> addresses;
+	// Preserve the old asynchronous A result even if the modern resolver is
+	// unavailable (for example, a transient DNS service failure).
 	if (WSAGETASYNCERROR(lParam) == 0) {
 		unsigned iBufLen = WSAGETASYNCBUFLEN(lParam);
 		if (iBufLen >= sizeof(HOSTENT)) {
 			LPHOSTENT pHost = (LPHOSTENT)m_aucHostnameBuffer;
 			if (pHost->h_length == 4 && pHost->h_addr_list && pHost->h_addr_list[0]) {
-				uint32 nIP = ((LPIN_ADDR)(pHost->h_addr_list[0]))->s_addr;
+				CAddress address = CAddress::FromIPv4NetworkOrder(((LPIN_ADDR)(pHost->h_addr_list[0]))->s_addr);
+				AppendResolvedSourceAddress(addresses, address);
+			}
+		}
+	}
+	ResolveSourceHostAddresses(resolved->strHostname, addresses);
 
-				CPartFile *file = theApp.downloadqueue->GetFileByID(resolved->fileid);
-				if (file)
-					if (resolved->strURL.IsEmpty()) {
-						CSafeMemFile sources(1 + 4 + 2);
-						sources.WriteUInt8(1);
-						sources.WriteUInt32(nIP);
-						sources.WriteUInt16(resolved->port);
-						sources.SeekToBegin();
-						file->AddSources(&sources, 0, 0, false);
-					} else
-						file->AddSource(resolved->strURL, nIP);
-
+	CPartFile *file = theApp.downloadqueue->GetFileByID(resolved->fileid);
+	if (file && !addresses.empty()) {
+		if (!resolved->strURL.IsEmpty()) {
+			// URL clients already use CAsyncSocketEx AF_UNSPEC resolution.  Use
+			// a known IPv4 address when available for legacy fast paths; with an
+			// AAAA-only result, leave the host name intact so it selects IPv6.
+			uint32 ipv4 = 0;
+			bool hasIPv4 = false;
+			for (std::vector<CAddress>::const_iterator it = addresses.begin(); it != addresses.end(); ++it) {
+				if (it->GetType() == CAddress::IPv4 && it->TryToUInt32(ipv4, false)) {
+					hasIPv4 = true;
+					break;
+				}
+			}
+			if (hasIPv4) {
+				file->AddSource(resolved->strURL, ipv4);
+			} else {
+				for (std::vector<CAddress>::const_iterator it = addresses.begin();
+					it != addresses.end(); ++it) {
+					if (it->IsNativeIPv6()) {
+						file->AddSource(resolved->strURL, *it);
+						break;
+					}
+				}
+			}
+		} else if (resolved->port != 0) {
+			for (std::vector<CAddress>::const_iterator it = addresses.begin(); it != addresses.end(); ++it) {
+				const CAddress& address = *it;
+				if (!address.IsUsablePublic())
+					continue;
+				if (address.GetType() == CAddress::IPv4) {
+					uint32 ipv4 = 0;
+					if (!address.TryToUInt32(ipv4, false))
+						continue;
+					CSafeMemFile sources(1 + 4 + 2);
+					sources.WriteUInt8(1);
+					sources.WriteUInt32(ipv4);
+					sources.WriteUInt16(resolved->port);
+					sources.SeekToBegin();
+					file->AddSources(&sources, 0, 0, false);
+				} else if (address.IsNativeIPv6()) {
+					const uint32 syntheticIP = address.ToSyntheticUInt32();
+					CUpDownClient *source = new CUpDownClient(file, resolved->port, syntheticIP, 0, 0, false);
+					source->SetIPv6Address(address);
+					source->SetIP(syntheticIP);
+					source->SetDirectIPv6Source();
+					source->SetSourceFrom(SF_LINK);
+					theApp.downloadqueue->CheckAndAddSource(file, source);
+				}
 			}
 		}
 	}
@@ -1547,10 +1639,14 @@ LRESULT CSourceHostnameResolveWnd::OnHostnameResolved(WPARAM, LPARAM lParam)
 	while (!m_toresolve.IsEmpty()) {
 		Hostname_Entry *entry = m_toresolve.GetHead();
 		memset(m_aucHostnameBuffer, 0, sizeof m_aucHostnameBuffer);
+		if (entry->strHostname.Find(':') >= 0) {
+			PostMessage(WM_HOSTNAMERESOLVED, 0, 0);
+			break;
+		}
 		if (WSAAsyncGetHostByName(m_hWnd, WM_HOSTNAMERESOLVED, entry->strHostname, m_aucHostnameBuffer, sizeof m_aucHostnameBuffer) != 0)
 			break;
-		m_toresolve.RemoveHead();
-		delete entry;
+		PostMessage(WM_HOSTNAMERESOLVED, 0, 0);
+		break;
 	}
 	return TRUE;
 }
@@ -1681,8 +1777,10 @@ void CDownloadQueue::KademliaSearchFile(uint32 nSearchID, const Kademlia::CUInt1
 		if (pK6TargetTicket != NULL && !pK6TargetTicket->empty())
 			ctemp->SetK6TargetTicket(*pK6TargetTicket);
 		ctemp->SetReachCaps(uReachCaps);
-		if (pIPv6 != NULL)
+		if (pIPv6 != NULL) {
 			ctemp->SetIPv6Address(*pIPv6);
+			ctemp->SetDirectIPv6Source();
+		}
 		// add encryption settings
 		ctemp->SetConnectOptions(byCryptOptions);
 		CheckAndAddSource(temp, ctemp);

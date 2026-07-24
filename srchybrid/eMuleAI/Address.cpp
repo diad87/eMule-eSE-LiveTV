@@ -22,10 +22,12 @@ CAddress::CAddress(EAF eAF)
 CAddress::CAddress(const byte* IP)
 {
     m_eAF = None;
-    memset(m_IP, 0, 16);
-    memcpy(m_IP, IP, 16);
-    if (!Convert(IPv4))
+    memset(m_IP, 0, sizeof m_IP);
+    if (IP != NULL) {
+        memcpy(m_IP, IP, sizeof m_IP);
         m_eAF = IPv6;
+        Convert(IPv4);
+    }
 }
 
 CAddress::CAddress(CString strIP, const bool bCheckForIntegerIPv4)
@@ -44,17 +46,39 @@ CAddress::CAddress(uint32 IP, bool bReverse)
 
 CAddress::CAddress(Kademlia::CUInt128 IP, bool bReverse)
 {
-    m_eAF = None;
+    m_eAF = IPv6;
     if (bReverse)
         IP = ntohl(IP);
     memset(m_IP, 0, 16);
     memcpy(m_IP, &IP, 16);
-    if (!Convert(IPv4))
-        m_eAF = IPv6;
+    Convert(IPv4);
 }
 
 CAddress::~CAddress()
 {
+}
+
+CAddress CAddress::FromIPv4NetworkOrder(uint32 networkOrder)
+{
+    return CAddress(networkOrder, /*bReverse=*/false);
+}
+
+CAddress CAddress::FromIPv4HostOrder(uint32 hostOrder)
+{
+    return CAddress(hostOrder, /*bReverse=*/true);
+}
+
+CAddress CAddress::FromIPv6Bytes(const byte* networkOrderBytes)
+{
+    if (networkOrderBytes == NULL)
+        return CAddress();
+
+    CAddress address(IPv6);
+    memcpy(address.m_IP, networkOrderBytes, sizeof address.m_IP);
+    // Keep the class invariant that mapped IPv4 addresses are represented as
+    // IPv4, regardless of whether they arrived through a v6 socket.
+    address.Convert(IPv4);
+    return address;
 }
 
 bool CAddress::operator < (const CAddress &Other) const
@@ -97,9 +121,11 @@ const uint32 CAddress::ToUInt32(bool bReverse) const
 
 const Kademlia::CUInt128 CAddress::ToUInt128(bool bReverse) const
 {
-    CAddress IP;
-    memcpy(IP.m_IP, m_IP, 16);
-    IP.Convert(IPv6);
+    CAddress IP(*this);
+    if (IP.m_eAF == None)
+        return Kademlia::CUInt128(0ul);
+    if (IP.m_eAF == IPv4 && !IP.Convert(IPv6))
+        return Kademlia::CUInt128(0ul);
     Kademlia::CUInt128 IP128(0ul);
     memcpy(&IP128, IP.m_IP, 16);
 
@@ -107,6 +133,14 @@ const Kademlia::CUInt128 CAddress::ToUInt128(bool bReverse) const
         IP128 = ntohl(IP128);
 
     return IP128;
+}
+
+bool CAddress::TryToUInt32(uint32& out, bool bReverse) const
+{
+    if (m_eAF != IPv4)
+        return false;
+    out = ToUInt32(bReverse);
+    return true;
 }
 
 const size_t CAddress::GetSize() const
@@ -121,7 +155,11 @@ const size_t CAddress::GetSize() const
 
 const int CAddress::GetAF() const 
 {
-    return m_eAF == IPv6 ? AF_INET6 : AF_INET;
+    if (m_eAF == IPv6)
+        return AF_INET6;
+    if (m_eAF == IPv4)
+        return AF_INET;
+    return AF_UNSPEC;
 }
 
 const CAddress::EAF	CAddress::GetType() const
@@ -136,8 +174,11 @@ const unsigned char* CAddress::Data() const
 
 const std::string CAddress::ToString() const
 {
+    if (m_eAF == None)
+        return std::string();
     char Dest[65] = {'\0'};
-    _inet_ntop(GetAF(), m_IP, Dest, 65);
+    if (_inet_ntop(GetAF(), m_IP, Dest, 65) == NULL)
+        return std::string();
     return Dest;
 }
 
@@ -190,6 +231,11 @@ const bool CAddress::FromString(const std::string Str, const bool bCheckForInteg
     }
 
     bool retval = (_inet_pton(GetAF(), Str.c_str(), m_IP) == 1);
+    if (!retval) {
+        m_eAF = None;
+        memset(m_IP, 0, sizeof m_IP);
+        return false;
+    }
 
     if (m_eAF == IPv6)
         Convert(IPv4);
@@ -204,71 +250,92 @@ const bool CAddress::FromString(const CString Str, const bool bCheckForIntegerIP
     return CAddress::FromString(ipstr, bCheckForIntegerIPv4);
 }
 
+bool CAddress::TryFromSA(const sockaddr* sa, int sa_len, CAddress& out, uint16* pPort)
+{
+    if (pPort)
+        *pPort = 0;
+    if (sa == NULL || sa_len < static_cast<int>(sizeof(sa->sa_family)))
+        return false;
+
+    if (sa->sa_family == AF_INET) {
+        if (sa_len < static_cast<int>(sizeof(sockaddr_in)))
+            return false;
+        const sockaddr_in* sa4 = reinterpret_cast<const sockaddr_in*>(sa);
+        out.m_eAF = IPv4;
+        memset(out.m_IP, 0, sizeof out.m_IP);
+        memcpy(out.m_IP, &sa4->sin_addr, sizeof sa4->sin_addr);
+        if (pPort)
+            *pPort = ntohs(sa4->sin_port);
+        return true;
+    }
+
+    if (sa->sa_family == AF_INET6) {
+        if (sa_len < static_cast<int>(sizeof(sockaddr_in6)))
+            return false;
+        const sockaddr_in6* sa6 = reinterpret_cast<const sockaddr_in6*>(sa);
+        out.m_eAF = IPv6;
+        memcpy(out.m_IP, &sa6->sin6_addr, sizeof out.m_IP);
+        if (pPort)
+            *pPort = ntohs(sa6->sin6_port);
+        // Convert mapped IPv4 endpoints to the canonical IPv4 representation.
+        out.Convert(IPv4);
+        return true;
+    }
+
+    return false;
+}
+
 void CAddress::FromSA(const sockaddr* sa, const int sa_len, uint16* pPort)
 {
-    switch (sa->sa_family)
-    {
-        case AF_INET: {
-            ASSERT(sizeof(sockaddr_in) == sa_len);
-            sockaddr_in* sa4 = (sockaddr_in*)sa;
-
-            m_eAF = IPv4;
-            *((uint32*)m_IP) = sa4->sin_addr.s_addr;
-            if (pPort)
-                *pPort = ntohs(sa4->sin_port);
-            break;
-        }
-        case AF_INET6: {
-            ASSERT(sizeof(sockaddr_in6) == sa_len);
-            sockaddr_in6* sa6 = (sockaddr_in6*)sa;
-
-            m_eAF = IPv6;
-            memcpy(m_IP, &sa6->sin6_addr, 16);
-            if (pPort)
-                *pPort  = ntohs(sa6->sin6_port);
-
-            if (!Convert(IPv4))
-                m_eAF = IPv6;
-
-            break;
-        }
-        default: {
-            //WiZaRd: happens e.g. when a disconnect occurs and we don't have the IP, yet
-            m_eAF = None;
-            memset(m_IP, 0, 16);
-            break;
-        }
+    CAddress parsed;
+    if (TryFromSA(sa, sa_len, parsed, pPort))
+        *this = parsed;
+    else {
+        m_eAF = None;
+        memset(m_IP, 0, sizeof m_IP);
+        if (pPort)
+            *pPort = 0;
     }
 }
 
-void CAddress::ToSA(sockaddr* sa, int *sa_len, const uint16 uPort) const
+bool CAddress::TryToSA(sockaddr* sa, int* sa_len, uint16 uPort) const
 {
-    switch (m_eAF)
-    {
-        case IPv4: {
-            ASSERT(sizeof(sockaddr_in) <= *sa_len);
-            sockaddr_in* sa4 = (sockaddr_in*)sa;
-            *sa_len = sizeof(sockaddr_in);
-            memset(sa, 0, *sa_len);
+    if (sa == NULL || sa_len == NULL)
+        return false;
 
-            sa4->sin_family = AF_INET;
-            sa4->sin_addr.s_addr = *((uint32*)m_IP);
-            sa4->sin_port = htons(uPort);
-            break;
-        }
-        case IPv6: {
-            ASSERT(sizeof(sockaddr_in6) <= *sa_len);
-            sockaddr_in6* sa6 = (sockaddr_in6*)sa;
-            *sa_len = sizeof(sockaddr_in6);
-            memset(sa, 0, *sa_len);
+    if (m_eAF == IPv4) {
+        if (*sa_len < static_cast<int>(sizeof(sockaddr_in)))
+            return false;
+        sockaddr_in* sa4 = reinterpret_cast<sockaddr_in*>(sa);
+        memset(sa4, 0, sizeof *sa4);
+        sa4->sin_family = AF_INET;
+        memcpy(&sa4->sin_addr, m_IP, sizeof sa4->sin_addr);
+        sa4->sin_port = htons(uPort);
+        *sa_len = sizeof *sa4;
+        return true;
+    }
 
-            sa6->sin6_family = AF_INET6;
-            memcpy(&sa6->sin6_addr, m_IP, 16);
-            sa6->sin6_port = htons(uPort);
-            break;
-        }
-        default:
-            ASSERT(0);
+    if (m_eAF == IPv6) {
+        if (*sa_len < static_cast<int>(sizeof(sockaddr_in6)))
+            return false;
+        sockaddr_in6* sa6 = reinterpret_cast<sockaddr_in6*>(sa);
+        memset(sa6, 0, sizeof *sa6);
+        sa6->sin6_family = AF_INET6;
+        memcpy(&sa6->sin6_addr, m_IP, sizeof sa6->sin6_addr);
+        sa6->sin6_port = htons(uPort);
+        *sa_len = sizeof *sa6;
+        return true;
+    }
+
+    return false;
+}
+
+void CAddress::ToSA(sockaddr* sa, int* sa_len, const uint16 uPort) const
+{
+    if (!TryToSA(sa, sa_len, uPort)) {
+        ASSERT(0);
+        if (sa_len)
+            *sa_len = 0;
     }
 }
 
@@ -277,8 +344,15 @@ const bool CAddress::IsNull() const
     switch (m_eAF)
     {
         case None:	return true;
-        case IPv4:	return *((uint32*)m_IP) == INADDR_ANY;
-        case IPv6:	return ((uint64*)m_IP)[0] == 0 && ((uint64*)m_IP)[1] == 0;
+        case IPv4: {
+            uint32 ip = 0;
+            memcpy(&ip, m_IP, sizeof ip);
+            return ip == INADDR_ANY;
+        }
+        case IPv6: {
+            static const byte zero[16] = {};
+            return memcmp(m_IP, zero, sizeof zero) == 0;
+        }
     }
     return true;
 }
@@ -288,6 +362,16 @@ const bool CAddress::IsMappedIPv4() const
     if (m_eAF == IPv6 && m_IP[10] == 0xFF && m_IP[11] == 0xFF && !m_IP[0] && !m_IP[1] && !m_IP[2] && !m_IP[3] && !m_IP[4] && !m_IP[5] && !m_IP[6] && !m_IP[7] && !m_IP[8] && !m_IP[9])
         return true;
     return false;
+}
+
+bool CAddress::IsNativeIPv6() const
+{
+    return m_eAF == IPv6 && !IsMappedIPv4();
+}
+
+bool CAddress::IsUsablePublic() const
+{
+    return (m_eAF == IPv4 || IsNativeIPv6()) && !IsNull() && IsPublicIP();
 }
 
 const bool CAddress::IsPublicIP() const
@@ -412,14 +496,14 @@ const bool CAddress::Convert(const EAF eAF)
 {
     if (eAF == m_eAF)
         return true;
-    if (eAF == IPv6) {
+    if (eAF == IPv6 && m_eAF == IPv4) {
         m_IP[12] = m_IP[0];
         m_IP[13] = m_IP[1];
         m_IP[14] = m_IP[2];
         m_IP[15] = m_IP[3];
         m_IP[10] = m_IP[11] = 0xFF;
         m_IP[0] = m_IP[1] = m_IP[2] = m_IP[3] = m_IP[4] = m_IP[5] = m_IP[6] = m_IP[7] = m_IP[8] = m_IP[9] = 0;
-    } else if (m_IP[10] == 0xFF && m_IP[11] == 0xFF && !m_IP[0] && !m_IP[1] && !m_IP[2] && !m_IP[3] && !m_IP[4] && !m_IP[5] && !m_IP[6] && !m_IP[7] && !m_IP[8] && !m_IP[9]) {
+    } else if (eAF == IPv4 && m_eAF == IPv6 && m_IP[10] == 0xFF && m_IP[11] == 0xFF && !m_IP[0] && !m_IP[1] && !m_IP[2] && !m_IP[3] && !m_IP[4] && !m_IP[5] && !m_IP[6] && !m_IP[7] && !m_IP[8] && !m_IP[9]) {
         m_IP[0] = m_IP[12];
         m_IP[1] = m_IP[13];
         m_IP[2] = m_IP[14];

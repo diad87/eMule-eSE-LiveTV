@@ -297,6 +297,11 @@ void CPrefs::SetLastContact()
 	m_tLastContact = time(NULL);
 }
 
+void CPrefs::ResetLastContact()
+{
+	m_tLastContact = 0;
+}
+
 time_t CPrefs::GetLastContact() const
 {
 	return m_tLastContact;

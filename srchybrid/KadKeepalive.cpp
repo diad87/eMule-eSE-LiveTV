@@ -169,6 +169,10 @@ void CKadKeepalive::Tick()
         for (CUpDownClient* peer : peers) {
             if (!peer || !peer->SupportsEseNetLabV1()
                 || !peer->SupportsEseKadKeepalive()
+                // KADEMLIA3_PING_REQ still carries a uint32 IPv4 endpoint.
+                // A native-v6 client has only a synthetic compatibility value;
+                // never turn that value into a real Kad target.
+                || peer->IsIPv6OnlyEndpoint()
                 || peer->GetConnectIP() == 0 || peer->GetKadPort() == 0)
                 continue;
             AddSupernode(CAddress(peer->GetConnectIP(), false), peer->GetKadPort());

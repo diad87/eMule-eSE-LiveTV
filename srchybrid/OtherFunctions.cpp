@@ -3888,7 +3888,7 @@ uint8 GetMyConnectOptions(bool bEncryption, bool bCallback)
 	const uint8 uRequestsCryptLayer = static_cast<uint8>(thePrefs.IsCryptLayerPreferred() && bEncryption);
 	const uint8 uRequiresCryptLayer = static_cast<uint8>(thePrefs.IsCryptLayerRequired() && bEncryption);
 	// direct callback is only possible if connected to kad, TCP firewalled and verified UDP open (for example on a full cone NAT)
-	const uint8 uDirectUDPCallback = static_cast<uint8>(bCallback && theApp.IsFirewalled() && Kademlia::CKademlia::IsRunning() && !Kademlia::CUDPFirewallTester::IsFirewalledUDP(true) && Kademlia::CUDPFirewallTester::IsVerified());
+	const uint8 uDirectUDPCallback = static_cast<uint8>(bCallback && theApp.IsFirewalled() && Kademlia::CKademlia::IsKad2Running() && !Kademlia::CUDPFirewallTester::IsFirewalledUDP(true) && Kademlia::CUDPFirewallTester::IsVerified());
 
 	const uint8 byCryptOptions = (uDirectUDPCallback << 3) | (uRequiresCryptLayer << 2) | (uRequestsCryptLayer << 1) | (uSupportsCryptLayer << 0);
 	return byCryptOptions;

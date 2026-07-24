@@ -260,7 +260,22 @@ pre b{color:#fff}
 <pre id="log">loading...</pre>
 <script>
 let src='emu', timer=null;
-function colorize(s){return s.replace(/\\[(RTMP|CHUNK|RECV|MGR|KAD|DIAL|HOLE|WARN|ERR)\\]/g,'<b class="hl-$1">[$1]</b>');}
+function renderLog(pre,s){
+  const tags=/^\\[(RTMP|CHUNK|RECV|MGR|KAD|DIAL|HOLE|WARN|ERR)\\]$/;
+  const parts=String(s||'(empty)').split(/(\\[(?:RTMP|CHUNK|RECV|MGR|KAD|DIAL|HOLE|WARN|ERR)\\])/);
+  pre.textContent='';
+  for(let i=0;i<parts.length;i++){
+    const match=parts[i].match(tags);
+    if(match){
+      const b=document.createElement('b');
+      b.className='hl-'+match[1];
+      b.textContent=parts[i];
+      pre.appendChild(b);
+    }else{
+      pre.appendChild(document.createTextNode(parts[i]));
+    }
+  }
+}
 async function fetchOne(url, label){
   try{
     const r = await fetch(url, {cache:'no-store'});
@@ -280,7 +295,7 @@ async function load(){
     items = e.concat(s).sort();
   }
   const pre=document.getElementById('log');
-  pre.innerHTML = colorize(items.join('\\n')) || '(empty)';
+  renderLog(pre,items.join('\\n'));
   pre.scrollTop = pre.scrollHeight;
   st.textContent = items.length+' lines · '+new Date().toLocaleTimeString();
 }

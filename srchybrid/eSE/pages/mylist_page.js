@@ -69,14 +69,22 @@ function renderMyList(){
   }
   container.innerHTML='<div class="ml-grid">'+list.map(function(item){
     var poster=item.poster||"";
-    var safeImdbId=_a(item.imdbId||"");
-    var safeTitle=_a(item.title||"");
-    return '<div class="ml-card" onclick="window.location.href=\\'/?detail='+safeImdbId+'&title='+encodeURIComponent(item.title||"")+'\\'">'
+    var detailUrl='/?detail='+encodeURIComponent(item.imdbId||"")+'&title='+encodeURIComponent(item.title||"");
+    return '<div class="ml-card" data-detail-url="'+_a(detailUrl)+'">'
       +(poster?'<img src="'+_a(poster)+'" alt="" loading="lazy">':'<div style="width:100%;aspect-ratio:2/3;background:#1a1a2e"></div>')
-      +'<button class="ml-card-remove" onclick="event.stopPropagation();removeItem(\\''+safeImdbId+'\\')">\u2716</button>'
+      +'<button type="button" class="ml-card-remove" data-remove-imdb="'+_a(item.imdbId||"")+'">\u2716</button>'
       +'<div class="ml-card-info"><div class="ml-card-title">'+_e(item.title||"")+'</div>'
       +'<div class="ml-card-meta">'+_e(item.year||"")+(item.type==="tv"?" \\u00b7 Serie":"")+'</div></div></div>';
   }).join("")+'</div>';
+  container.querySelectorAll('.ml-card').forEach(function(card){
+    card.addEventListener('click',function(){window.location.href=card.getAttribute('data-detail-url')||'/';});
+  });
+  container.querySelectorAll('[data-remove-imdb]').forEach(function(button){
+    button.addEventListener('click',function(event){
+      event.stopPropagation();
+      removeItem(button.getAttribute('data-remove-imdb')||'');
+    });
+  });
 }
 function removeItem(imdbId){
   var KEY="ese_mylist";
@@ -121,15 +129,25 @@ function renderDownloads() {
         '<div class="dl-bar-wrap"><div class="dl-bar" style="width:' + pct + '%"></div></div>' +
         '<div class="dl-meta">' + dl.sizeMB + ' / ' + (fullSize || '?') + ' MB</div>' +
         '<div class="dl-actions">' +
-          '<button onclick="dlAct(\\'' + _a(dl.hash || '') + '\\',\\'pause\\')" title="Pausar">\\u23f8</button>' +
-          '<button onclick="dlAct(\\'' + _a(dl.hash || '') + '\\',\\'resume\\')" title="Reanudar">\\u25b6</button>' +
-          '<button onclick="dlAct(\\'' + _a(dl.hash || '') + '\\',\\'priohigh\\')" title="Prio alta">\\u2b06</button>' +
-          '<button onclick="dlAct(\\'' + _a(dl.hash || '') + '\\',\\'prionormal\\')" title="Prio normal">=</button>' +
-          '<button onclick="dlCancel(\\'' + _a(dl.hash || '') + '\\',\\'' + _a(dl.fileName || '') + '\\')" style="color:#ff6b35" title="Cancelar y borrar">\\u2716</button>' +
+          '<button type="button" data-dl-op="pause" data-hash="' + _a(dl.hash || '') + '" title="Pausar">\\u23f8</button>' +
+          '<button type="button" data-dl-op="resume" data-hash="' + _a(dl.hash || '') + '" title="Reanudar">\\u25b6</button>' +
+          '<button type="button" data-dl-op="priohigh" data-hash="' + _a(dl.hash || '') + '" title="Prio alta">\\u2b06</button>' +
+          '<button type="button" data-dl-op="prionormal" data-hash="' + _a(dl.hash || '') + '" title="Prio normal">=</button>' +
+          '<button type="button" data-dl-cancel data-hash="' + _a(dl.hash || '') + '" data-name="' + _a(dl.fileName || '') + '" style="color:#ff6b35" title="Cancelar y borrar">\\u2716</button>' +
         '</div>' +
       '</div>';
     }).join('');
     host.innerHTML = '<div class="dl-list">' + rows + '</div>';
+    host.querySelectorAll('[data-dl-op]').forEach(function(button){
+      button.addEventListener('click',function(){
+        dlAct(button.getAttribute('data-hash')||'',button.getAttribute('data-dl-op')||'');
+      });
+    });
+    host.querySelectorAll('[data-dl-cancel]').forEach(function(button){
+      button.addEventListener('click',function(){
+        dlCancel(button.getAttribute('data-hash')||'',button.getAttribute('data-name')||'');
+      });
+    });
   });
 }
 function dlAct(hash, op) {

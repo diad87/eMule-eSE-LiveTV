@@ -17,6 +17,8 @@
 #pragma once
 #include "DeadSourceList.h"
 #include <vector>   // v0.71 P3.6 — GetConnectedSnapshot
+#include <map>
+#include "eMuleAI/Address.h"
 
 class CClientReqSocket;
 class CUpDownClient;
@@ -108,6 +110,7 @@ public:
 	CUpDownClient* FindClientByServerID(uint32 uServerIP, uint32 uED2KUserID) const;
 	CUpDownClient* FindClientByUserID_KadPort(uint32 clientID, uint16 kadPort) const;
 	CUpDownClient* FindClientByIP_KadPort(uint32 ip, uint16 port) const;
+	CUpDownClient* FindClientByAddress(const CAddress& address, uint16 port) const;
 
 	// Banned clients
 	void	AddBannedClient(uint32 dwIP);
@@ -115,6 +118,13 @@ public:
 	void	RemoveBannedClient(uint32 dwIP);
 	INT_PTR	GetBannedCount() const						{ return m_bannedList.GetCount(); }
 	void	RemoveAllBannedClients();
+
+	// Family-aware companion APIs. The uint32 overloads remain the canonical
+	// legacy path; native IPv6 callers must use these overloads so an address
+	// hash can never be mistaken for a real IPv4 identity.
+	void AddBannedClient(const CAddress& address);
+	bool IsBannedClient(const CAddress& address) const;
+	void RemoveBannedClient(const CAddress& address);
 
 	// Tracked clients
 	void	AddTrackClient(CUpDownClient *toadd);
@@ -166,6 +176,7 @@ private:
 	CUpDownClientPtrList list;
 	CUpDownClientPtrList m_KadList;
 	CMap<uint32, uint32, DWORD, DWORD> m_bannedList;
+	std::map<CAddress, DWORD> m_bannedAddressList;
 	typedef CMap<uint32, uint32, CDeletedClient*, CDeletedClient*> CDeletedClientMap;
 	CDeletedClientMap m_trackedClientsMap;
 	CUpDownClient *m_pBuddy;

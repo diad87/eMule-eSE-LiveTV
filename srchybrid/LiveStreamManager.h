@@ -10,6 +10,7 @@
 #include "LivePeerRefreshPolicy.h"
 #include "LiveDebugLog.h"        // V2-S05: LatencyHistogram
 #include "RTMPIngest.h"
+#include "eMuleAI/Address.h"
 #include <map>      // v8.1.x — fragment reassembly map
 #include <vector>   // v8.1.x — fragment reassembly buffers
 
@@ -387,10 +388,8 @@ public:
     void OnPeerListReceived(CUpDownClient* peer, const uchar* streamKey,
                             const CArray<DWORD>& ips, const CArray<uint16>& ports);
     // v0.71 IPv6 Sprint 7 follow-up — OP_LIVE_PEER_LIST_V2 receiver path.
-    // The v4 entries are passed through to the uint32 overload; v6 entries
-    // are logged and dropped until CUpDownClient learns a v6 socket path
-    // (Sprint 4 Kad-v6 routing zone integration). When that lands, the
-    // method dials v6 peers directly via TryConnectToStreamSource(CAddress).
+    // The v4 entries are passed through to the uint32 overload; native-v6
+    // entries use an address-keyed client and the validated native TCP path.
     void OnPeerListReceivedV6(CUpDownClient* peer, const uchar* streamKey,
                               const CArray<class CAddress>& addrs,
                               const CArray<uint16>& ports);
@@ -745,7 +744,7 @@ private:
     // pruned at the top of RequestMissingSegments. All access under m_lock.
     struct InflightSegReq {
         DWORD  sentTick;    // GetTickCount() when the request went out
-        uint32 peerIp;      // peer we asked
+        CAddress peerAddress; // peer we asked (IPv4 or native IPv6)
         uint16 peerPort;
         int    attempts;    // total requests sent for this seq this session
         bool   edgeCritical; // seq was within ESE_LIVE_EDGE_GUARD of the playhead
@@ -805,12 +804,13 @@ private:
     void BanPeer(CUpDownClient* peer);
     // Threat-model vector #3 (piece starvation): charge a punctuality failure to
     // the peer (ip+port) we asked when a CRITICAL near-playhead request times out.
-    void ChargePunctualityFailure(uint32 ip, uint16 port);
+    void ChargePunctualityFailure(const CAddress& address, uint16 port);
     PeerTrust& GetOrCreateTrust(CUpDownClient* peer);
 
-    // Select best peer to request a segment from. excludeIp != 0 skips that
+    // Select best peer to request a segment from. A non-None typed address skips that
     // peer — used to retry a timed-out in-flight request somewhere else.
-    CUpDownClient* SelectPeerForSegment(uint32 seqNum, uint32 excludeIp = 0);
+    CUpDownClient* SelectPeerForSegment(uint32 seqNum,
+                                        const CAddress& excludeAddress = CAddress());
 
     // V2-S03 helpers
     void PingAllPeers();           // periodic, called from Process()

@@ -31,6 +31,7 @@
 #include <shlobj.h>     // Capa 3: SHGetFolderPath for %APPDATA%
 #include "ClientList.h"
 #include "ClientUDPSocket.h"
+#include "FirewallProberV6.h"
 #include "eMuleAI/Address.h"  // v0.71 IPv6 Sprint 7 — CAddress in OnPeerListReceivedV6
 
 #ifdef _DEBUG
@@ -1385,12 +1386,14 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     // LowID viewers cycle through CClientList swaps every ~6 s (~10/min)
     // and were being blocked; 30 leaves headroom while still rejecting
     // genuine floods (real attackers fire 100s/sec).
-    if (peer != NULL && peer->GetIP() != 0) {
-        const DWORD SUB_RATE_WINDOW_MS = 60u * 1000u;
-        const int   SUB_RATE_CAP       = 30;
-        DWORD now = GetTickCount();
-        SubRateState st;
-        if (!m_subscribeRate.Lookup(peer->GetIP(), st)) {
+	if (peer != NULL && (peer->IsIPv6OnlyEndpoint() || peer->GetIP() != 0)) {
+		const DWORD SUB_RATE_WINDOW_MS = 60u * 1000u;
+		const int   SUB_RATE_CAP       = 30;
+		const uint32 rateKey = peer->IsIPv6OnlyEndpoint()
+			? peer->GetIPv6Address().HashKey() : peer->GetIP();
+		DWORD now = GetTickCount();
+		SubRateState st;
+		if (!m_subscribeRate.Lookup(rateKey, st)) {
             memset(&st, 0, sizeof(st));
         }
         // Count ticks within the window.
@@ -1415,7 +1418,7 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
         st.ticks[st.nextSlot] = now;
         st.nextSlot = (st.nextSlot + 1) % SUB_RATE_CAP;
         st.lastSeen = now;
-        m_subscribeRate[peer->GetIP()] = st;
+		m_subscribeRate[rateKey] = st;
     }
 
     // V2-S13/S16: enforce concurrent-upload cap (tier-derived + broadcaster
@@ -1438,7 +1441,7 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
         POSITION posA = m_broadcastPeers.GetHeadPosition();
         while (posA && altIPs.GetCount() < ESE_LIVE_MAX_PEERS) {
             CUpDownClient* alt = m_broadcastPeers.GetNext(posA);
-            if (alt && alt != peer && alt->GetIP() != 0) {
+            if (alt && alt != peer && !alt->IsIPv6OnlyEndpoint() && alt->GetIP() != 0) {
                 altIPs.Add(alt->GetIP());
                 altPorts.Add(alt->GetUserPort());
             }
@@ -1446,7 +1449,7 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
         posA = m_viewPeers.GetHeadPosition();
         while (posA && altIPs.GetCount() < ESE_LIVE_MAX_PEERS) {
             CUpDownClient* alt = m_viewPeers.GetNext(posA);
-            if (alt && alt != peer && alt->GetIP() != 0) {
+            if (alt && alt != peer && !alt->IsIPv6OnlyEndpoint() && alt->GetIP() != 0) {
                 altIPs.Add(alt->GetIP());
                 altPorts.Add(alt->GetUserPort());
             }
@@ -1496,7 +1499,7 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     POSITION pos2 = m_broadcastPeers.GetHeadPosition();
     while (pos2 && peerIPs.GetCount() < ESE_LIVE_MAX_PEERS) {
         CUpDownClient* existing = m_broadcastPeers.GetNext(pos2);
-        if (existing != peer && existing->GetIP() != 0) {
+        if (existing != peer && !existing->IsIPv6OnlyEndpoint() && existing->GetIP() != 0) {
             peerIPs.Add(existing->GetIP());
             peerPorts.Add(existing->GetUserPort());
         }
@@ -1504,23 +1507,63 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     pos2 = m_viewPeers.GetHeadPosition();
     while (pos2 && peerIPs.GetCount() < ESE_LIVE_MAX_PEERS) {
         CUpDownClient* existing = m_viewPeers.GetNext(pos2);
-        if (existing != peer && existing->GetIP() != 0) {
+        if (existing != peer && !existing->IsIPv6OnlyEndpoint() && existing->GetIP() != 0) {
             peerIPs.Add(existing->GetIP());
             peerPorts.Add(existing->GetUserPort());
         }
     }
-    if (peerIPs.GetCount() > 0) {
-        Packet* peerListPkt = eSELive::CreatePeerListPacket(
-            m_streamInfo.streamKey,
+	if (peerIPs.GetCount() > 0) {
+		Packet* peerListPkt = eSELive::CreatePeerListPacket(
+			m_streamInfo.streamKey,
             peerIPs.GetData(), peerPorts.GetData(),
             (uint16)peerIPs.GetCount());
         if (peerListPkt) {
             theStats.AddUpDataOverheadOther(peerListPkt->size);
-            peer->SendPacket(peerListPkt);
-        }
-    }
+			peer->SendPacket(peerListPkt);
+		}
+	}
+	// Additive V2 peer list for fork-capable recipients. Legacy recipients
+	// already received the IPv4-only packet above; native IPv6 endpoints never
+	// enter that legacy packet and are serialized with their full CAddress.
+	if (peer->SupportsIPv6Wire()) {
+		CArray<CAddress> peerAddrs;
+		CArray<uint16> peerAddrPorts;
+		POSITION v2pos = m_broadcastPeers.GetHeadPosition();
+		while (v2pos && peerAddrs.GetCount() < ESE_LIVE_MAX_PEERS) {
+			CUpDownClient* existing = m_broadcastPeers.GetNext(v2pos);
+			if (existing == peer) continue;
+			CAddress address = existing->IsIPv6OnlyEndpoint()
+				? existing->GetIPv6Address()
+				: CAddress::FromIPv4NetworkOrder(existing->GetIP());
+			if (address.IsUsablePublic() && existing->GetUserPort() != 0) {
+				peerAddrs.Add(address);
+				peerAddrPorts.Add(existing->GetUserPort());
+			}
+		}
+		v2pos = m_viewPeers.GetHeadPosition();
+		while (v2pos && peerAddrs.GetCount() < ESE_LIVE_MAX_PEERS) {
+			CUpDownClient* existing = m_viewPeers.GetNext(v2pos);
+			if (existing == peer) continue;
+			CAddress address = existing->IsIPv6OnlyEndpoint()
+				? existing->GetIPv6Address()
+				: CAddress::FromIPv4NetworkOrder(existing->GetIP());
+			if (address.IsUsablePublic() && existing->GetUserPort() != 0) {
+				peerAddrs.Add(address);
+				peerAddrPorts.Add(existing->GetUserPort());
+			}
+		}
+		if (peerAddrs.GetCount() > 0) {
+			Packet* peerListV2 = eSELive::CreatePeerListPacketV2(
+				m_streamInfo.streamKey, peerAddrs.GetData(), peerAddrPorts.GetData(),
+				static_cast<uint16>(peerAddrs.GetCount()));
+			if (peerListV2) {
+				theStats.AddUpDataOverheadOther(peerListV2->size);
+				peer->SendPacket(peerListV2);
+			}
+		}
+	}
 
-    Packet* bitmapPkt = eSELive::CreateHeartbeatPacket(
+	Packet* bitmapPkt = eSELive::CreateHeartbeatPacket(
         m_streamInfo.streamKey, m_chunkBuffer.GetBitmap(), m_chunkBuffer.GetOldestSeq());
     if (bitmapPkt) {
         theStats.AddUpDataOverheadOther(bitmapPkt->size);
@@ -1546,7 +1589,10 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     // cooldown is keyed by endpoint (not by CUpDownClient pointer)
     // because the pointer changes on every swap.
     const DWORD ESE_INITIAL_PUSH_COOLDOWN_MS = 10000;
-    uint64 pushKey = ((uint64)(peer ? peer->GetIP() : 0) << 16)
+    const uint32 pushAddressKey = peer == NULL ? 0
+        : (peer->IsIPv6OnlyEndpoint() ? peer->GetIPv6Address().HashKey()
+                                      : peer->GetIP());
+    uint64 pushKey = ((uint64)pushAddressKey << 16)
                    | (uint64)(peer ? peer->GetUserPort() : 0);
     bool skipInitialPush = false;
     if (pushKey != 0) {
@@ -1663,14 +1709,16 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
 // Stops a single IP block from saturating the broadcaster with chunk requests.
 // Limit: 50 requests / 5 s window per /24 (= 10 req/s sustained per subnet).
 // Static so all peer-request paths share the same accounting.
+static CAddress LivePeerEndpoint(const CUpDownClient* peer);
+
 namespace {
     static CCriticalSection s_liveRequestRateLock;
     static CLiveRequestRateLimiter s_liveRequestRateLimiter;
 
-    CLiveRequestRateLimiter::Decision CheckLiveRequestRate(uint32 ipNet)
+    CLiveRequestRateLimiter::Decision CheckLiveRequestRate(const CAddress& address)
     {
         CSingleLock lock(&s_liveRequestRateLock, TRUE);
-        return s_liveRequestRateLimiter.Check(ipNet, (uint32)::GetTickCount());
+        return s_liveRequestRateLimiter.CheckAddress(address, (uint32)::GetTickCount());
     }
 }
 
@@ -1682,13 +1730,15 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
     if (memcmp(m_streamInfo.streamKey, streamKey, 16) != 0) return;
 
     // Sprint 4 F.4 — DDoS rate-limit by /24 subnet.
-    if (peer && CheckLiveRequestRate(peer->GetIP()) != CLiveRequestRateLimiter::ALLOW) {
+    const CAddress peerAddress = peer == NULL ? CAddress() : LivePeerEndpoint(peer);
+    if (peer != NULL && CheckLiveRequestRate(peerAddress) != CLiveRequestRateLimiter::ALLOW) {
         InterlockedIncrement(&m_counters.requestsRateLimited);
         static DWORD s_lastDdosLog = 0;
         if (::GetTickCount() - s_lastDdosLog > 30000) {
             s_lastDdosLog = ::GetTickCount();
+            const CString addressText = peerAddress.ToStringC();
             AddLogLine(false, GetResString(IDS_LIVEMGR_RATELIMIT_FMT),
-                (LPCTSTR)ipstr(peer->GetIP()));
+                (LPCTSTR)addressText);
         }
         return;
     }
@@ -2044,7 +2094,8 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
         // Capa 3: this broadcaster works — remember it for next boot. We use
         // the connecting peer's IP+port (peer->GetIP/GetUserPort) because
         // the local m_streamInfo doesn't carry the broadcaster endpoint.
-        if (peer && peer->GetIP() != 0 && peer->GetUserPort() != 0) {
+        if (peer && !peer->IsIPv6OnlyEndpoint()
+            && peer->GetIP() != 0 && peer->GetUserPort() != 0) {
             RememberStreamForBootstrap(m_streamInfo.streamKey,
                 peer->GetIP(), peer->GetUserPort(),
                 m_streamInfo.title);
@@ -2374,7 +2425,8 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
         POSITION pos2 = m_viewPeers.GetHeadPosition();
         while (pos2) {
             CUpDownClient* existing = m_viewPeers.GetNext(pos2);
-            if (existing && existing->GetIP() == ip && existing->GetUserPort() == port) {
+            if (existing && !existing->IsIPv6OnlyEndpoint()
+                && existing->GetIP() == ip && existing->GetUserPort() == port) {
                 alreadyConnected = true;
                 break;
             }
@@ -2456,16 +2508,10 @@ void CLiveStreamManager::OnTunneledPeerList(const uchar* streamKey,
 }
 
 // v0.71 IPv6 Sprint 7 follow-up — OP_LIVE_PEER_LIST_V2 receiver.
-// Splits CAddress entries: IPv4 ones go through the legacy uint32 path so
-// the dial/IPFilter/clientlist logic stays single-sourced; IPv6 ones are
-// logged and counted but NOT dialed yet. CUpDownClient still keys peers by
-// network-order uint32 (CClientList::FindClientByIP), so wiring a real
-// v6 dial path requires Sprint 4 Kad-v6 to land first (routing zone + a
-// v6-aware connection helper). Until then, advertising v6 peers in v2
+// IPv4 entries continue through the legacy uint32 path; native IPv6 entries
+// are materialized as address-keyed clients and use the validated native TCP
+// route. Older clients never send this additive opcode, so their behavior
 // lists is harmless because the receiver simply ignores them — that's
-// also the back-compat story for upstream 0.70b which never sees these
-// entries because it never asks for OP_LIVE_PEER_LIST_V2 (it has neither
-// the opcode nor the CAP_FORK_IPV6_WIRE handshake).
 void CLiveStreamManager::OnPeerListReceivedV6(CUpDownClient* peer,
     const uchar* streamKey,
     const CArray<CAddress>& addrs, const CArray<uint16>& ports)
@@ -2505,11 +2551,84 @@ void CLiveStreamManager::OnPeerListReceivedV6(CUpDownClient* peer,
     }
     if (v6Count > 0) {
         AddDebugLogLine(false,
-            _T("eSE Live: OP_LIVE_PEER_LIST_V2 carried %d v6 entries (dial deferred until Sprint-4 Kad-v6 lands)"),
+            _T("eSE Live: OP_LIVE_PEER_LIST_V2 carried %d native-v6 entries"),
             v6Count);
     }
     if (v4ips.GetCount() > 0)
         OnPeerListReceived(peer, streamKey, v4ips, v4ports);
+
+    // Native IPv6 entries use an address-keyed client and the validated
+    // native TCP route. The legacy uint32 value remains compatibility-only.
+    if (v6Count > 0 && streamKey != NULL) {
+        CSingleLock lock(&m_lock, TRUE);
+        if (!m_bViewing || memcmp(m_streamInfo.streamKey, streamKey, 16) != 0)
+            return;
+        const CAddress localV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+        const bool wantTunnel = eSELive::CLiveTunnel::Get().ShouldRouteThroughTunnel(NULL);
+        const bool haveCircuit = eSELive::CLiveTunnel::Get().ActiveCircuitCount() > 0;
+        const bool strictTunnelOnly = m_strictTunnelOnly;
+        const bool balancedDegraded = wantTunnel && !haveCircuit
+            && Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy()
+                   == Kademlia::CKadV2ModeSelector::BALANCED;
+        static const int kBalancedFanoutCap = 3;
+
+        for (INT_PTR i = 0; i < addrs.GetCount() && i < ports.GetCount(); ++i) {
+            const CAddress& address = addrs[i];
+            const uint16 port = ports[i];
+            if (address.GetType() != CAddress::IPv6 || !address.IsUsablePublic()
+                || port == 0)
+                continue;
+            if (localV6.GetType() == CAddress::IPv6 && address == localV6)
+                continue;
+            if (balancedDegraded && (int)m_viewPeers.GetCount() >= kBalancedFanoutCap)
+                break;
+
+            bool alreadyConnected = false;
+            POSITION pos2 = m_viewPeers.GetHeadPosition();
+            while (pos2) {
+                CUpDownClient* existing = m_viewPeers.GetNext(pos2);
+                if (existing != NULL && existing->HasIPv6Address()
+                    && existing->GetIPv6Address() == address
+                    && existing->GetUserPort() == port) {
+                    alreadyConnected = true;
+                    break;
+                }
+            }
+            if (alreadyConnected)
+                continue;
+            if (strictTunnelOnly) {
+                LIVE_LOG("MESHv6", "strict tunnel: native-v6 peer %S:%u skipped (tunnel body is IPv4-only)",
+                    (LPCWSTR)address.ToStringC(), (unsigned)port);
+                continue;
+            }
+
+            CUpDownClient* newClient = theApp.clientlist->FindClientByAddress(address, port);
+            if (newClient == NULL) {
+                newClient = new CUpDownClient(NULL, port, 0, 0, 0, false);
+                newClient->SetIPv6Address(address);
+                newClient->SetIP(address.ToSyntheticUInt32());
+                theApp.clientlist->AddClient(newClient);
+            } else {
+                newClient->SetIPv6Address(address);
+                newClient->SetIP(address.ToSyntheticUInt32());
+            }
+            newClient->SetLiveIPv6Source();
+            if (m_viewPeers.Find(newClient) == NULL)
+                m_viewPeers.AddTail(newClient);
+            m_meshManager.AddMeshPeer(newClient);
+
+            Packet* pkt = eSELive::CreateSubscribePacket(
+                m_streamInfo.streamKey, thePrefs.GetUserHash(), 0);
+            if (pkt) {
+                theStats.AddUpDataOverheadOther(pkt->size);
+                newClient->SafeConnectAndSendPacket(pkt);
+            }
+            AddLogLine(false, GetResString(IDS_LIVEMGR_SUBSCRIBED_FMT),
+                (LPCTSTR)address.ToStringC(), port,
+                wantTunnel ? _T("IPv6 direct fallback")
+                           : (LPCTSTR)GetResString(IDS_LIVEMGR_MODE_DIRECT));
+        }
+    }
 }
 
 bool CLiveStreamManager::RequestMorePeers()
@@ -2550,13 +2669,14 @@ bool CLiveStreamManager::RequestMorePeers()
     const uint32_t selected = m_peerRefreshPolicy.TakeCandidate(
         static_cast<uint32_t>(candidates.size()));
     CUpDownClient* peer = candidates[selected];
-    const uint32 ip = peer->GetIP();
+    const bool peerIPv6Only = peer->IsIPv6OnlyEndpoint();
+    const uint32 ip = peerIPv6Only ? 0 : peer->GetIP();
     const uint16 port = peer->GetUserPort();
 
     // Preserve the session privacy mode. A tunneled viewer asks for the fresh
     // list through the active circuit; STRICT never falls back to a direct
     // SUBSCRIBE merely because one circuit disappeared.
-    if (wantTunnel && haveCircuit) {
+    if (wantTunnel && haveCircuit && !peerIPv6Only) {
         tun.SendLiveSubscribeNoWait(m_streamInfo.streamKey, ip, port,
             peer->GetKadPort(), 0);
         LIVE_LOG("MESH", "Peer refresh via tunnel -> %S:%u (sources=%u)",
@@ -2569,8 +2689,14 @@ bool CLiveStreamManager::RequestMorePeers()
         return false;
     theStats.AddUpDataOverheadOther(pkt->size);
     InterlockedIncrement(&m_counters.subscribeSent);
-    LIVE_LOG("MESH", "Peer refresh direct -> %S:%u (sources=%u)",
-        (LPCWSTR)ipstr(ip), (unsigned)port, (unsigned)candidates.size());
+    if (peerIPv6Only) {
+        LIVE_LOG("MESH", "Peer refresh direct IPv6 -> %S:%u (sources=%u)",
+            (LPCWSTR)peer->GetIPv6Address().ToStringC(), (unsigned)port,
+            (unsigned)candidates.size());
+    } else {
+        LIVE_LOG("MESH", "Peer refresh direct -> %S:%u (sources=%u)",
+            (LPCWSTR)ipstr(ip), (unsigned)port, (unsigned)candidates.size());
+    }
     peer->SendPacket(pkt, true);
     return true;
 }
@@ -2887,6 +3013,10 @@ bool CLiveStreamManager::CanPromoteToSuperSeeder(CUpDownClient* peer)
     //   2. Max 20% of super-seeders from the same /16 subnet
 
     if (!peer) return false;
+    // The anti-Sybil limits below are intentionally IPv4 subnet limits.  An
+    // IPv6-only source has no meaningful /24 or /16 here, so do not feed its
+    // synthetic compatibility value into the IPv4 census.
+    if (peer->IsIPv6OnlyEndpoint()) return true;
 
     uint32 peerIP = peer->GetIP();
     if (peerIP == 0) return true;  // Can't check, allow
@@ -2907,6 +3037,7 @@ bool CLiveStreamManager::CanPromoteToSuperSeeder(CUpDownClient* peer)
         if (!m_peerTrust.Lookup(PeerId(other), trust)) continue;
         if (trust.currentLevel != ESE_TRUST_SUPERSEEDER) continue;
 
+        if (other->IsIPv6OnlyEndpoint()) continue;
         totalSuper++;
         uint32 otherIP = other->GetIP();
         if ((otherIP & 0xFFFFFF00) == peer24) sameSubnet24++;
@@ -2945,9 +3076,10 @@ void CLiveStreamManager::MonitorPeerHealth()
             if (trust.currentLevel == ESE_TRUST_SUPERSEEDER) {
                 totalSuper++;
                 // Check if peer is still connected (socket exists and is valid)
-                if (peer->GetIP() != 0 && peer->socket != NULL) {
+                if ((peer->IsIPv6OnlyEndpoint() || peer->GetIP() != 0)
+                    && peer->socket != NULL) {
                     aliveSuper++;
-                } else {
+                } else if (!peer->IsIPv6OnlyEndpoint()) {
                     // Track the subnet of the dropped peer
                     droppedSubnets.Add(peer->GetIP() & 0xFFFFFF00);
                 }
@@ -3011,7 +3143,8 @@ void CLiveStreamManager::MonitorPeerHealth()
                 while (pos) {
                     POSITION curPos = pos;
                     CUpDownClient* peer = m_broadcastPeers.GetNext(pos);
-                    if ((peer->GetIP() & 0xFFFFFF00) == subnet) {
+                    if (!peer->IsIPv6OnlyEndpoint()
+                        && (peer->GetIP() & 0xFFFFFF00) == subnet) {
                         BanPeer(peer);
                     }
                 }
@@ -3601,7 +3734,7 @@ bool CLiveStreamManager::PickRendezvous(uint32 targetIpHost, uint16 /*targetUdp*
         theApp.clientlist->GetConnectedSnapshot(cands, 10, false);
     for (size_t i = 0; i < cands.size(); ++i) {
         CUpDownClient* c = cands[i];
-        if (c == NULL || !c->SupportsEseNetLabV1()
+        if (c == NULL || c->IsIPv6OnlyEndpoint() || !c->SupportsEseNetLabV1()
 			|| !c->SupportsEseHolePunchRdv() || c->GetKadPort() == 0) continue;
         const uint32 cipHost = ntohl(c->GetIP());          // GetIP() is NET order
         if (cipHost == 0 || cipHost == targetIpHost || cipHost == myIpHost) continue;
@@ -3643,7 +3776,7 @@ void CLiveStreamManager::TickReachabilitySelector(DWORD now)
         // Reachable once the source has a live socket -> done.
         CUpDownClient* c = (theApp.clientlist != NULL)
             ? theApp.clientlist->FindClientByIP(htonl(ipHost), port) : NULL;   // FindClientByIP wants NET order
-        if (c == NULL || !c->SupportsEseNetLabV1Target()) {
+        if (c == NULL || c->IsIPv6OnlyEndpoint() || !c->SupportsEseNetLabV1Target()) {
             toErase.AddTail(key);
             continue;
         }
@@ -3672,7 +3805,11 @@ void CLiveStreamManager::TickReachabilitySelector(DWORD now)
         bool stillWanted = false;
         for (POSITION vp = m_viewPeers.GetHeadPosition(); vp != NULL; ) {
             CUpDownClient* v = m_viewPeers.GetNext(vp);
-            if (v != NULL && ntohl(v->GetIP()) == ipHost && v->GetUserPort() == port) { stillWanted = true; break; }
+            if (v != NULL && !v->IsIPv6OnlyEndpoint()
+                && ntohl(v->GetIP()) == ipHost && v->GetUserPort() == port) {
+                stillWanted = true;
+                break;
+            }
         }
         if (!stillWanted) { toErase.AddTail(key); continue; }
         if ((DWORD)(now - st.stageEnteredTick) < STAGE_TIMEOUT_MS) continue;   // give the stage its window
@@ -3715,6 +3852,31 @@ void CLiveStreamManager::TickReachabilitySelector(DWORD now)
     }
     for (POSITION ep = toErase.GetHeadPosition(); ep != NULL; )
         m_escalation.RemoveKey(toErase.GetNext(ep));
+}
+
+// Keep the live pull path keyed by a typed endpoint.  The legacy uint32 fields
+// on CUpDownClient are still populated for source compatibility, but an IPv6
+// endpoint may contain only a synthetic value there.  This helper deliberately
+// chooses native IPv6 first for an IPv6-only peer and otherwise uses a real
+// IPv4 value when one exists.
+static CAddress LivePeerEndpoint(const CUpDownClient* peer)
+{
+    if (peer == NULL)
+        return CAddress();
+    if (peer->IsIPv6OnlyEndpoint())
+        return peer->GetIPv6Address();
+
+    const uint32 ip = peer->GetIP();
+    if (ip != 0 && ip != INADDR_NONE)
+        return CAddress::FromIPv4NetworkOrder(ip);
+
+    if (peer->HasIPv6Address())
+        return peer->GetIPv6Address();
+
+    const uint32 connectIp = peer->GetConnectIP();
+    if (connectIp != 0 && connectIp != INADDR_NONE)
+        return CAddress::FromIPv4NetworkOrder(connectIp);
+    return CAddress();
 }
 
 void CLiveStreamManager::RequestMissingSegments()
@@ -3800,7 +3962,7 @@ void CLiveStreamManager::RequestMissingSegments()
     for (uint32 seq = oldestSeq; seq <= newestSeq + lookahead && requested < maxRequestsPerCycle; seq++) {
         if (m_chunkBuffer.HasSegment(seq)) continue;
 
-        uint32 excludeIp = 0;
+        CAddress excludeAddress;
         int    attempts  = 0;
         InflightSegReq prev;
         if (m_inflightSegReqs.Lookup(seq, prev)) {
@@ -3814,17 +3976,17 @@ void CLiveStreamManager::RequestMissingSegments()
             // later ticks when no replacement peer is found and the entry below
             // is not overwritten (threat-model vector #3).
             if (prev.edgeCritical && !prev.failCharged) {
-                ChargePunctualityFailure(prev.peerIp, prev.peerPort);
+                ChargePunctualityFailure(prev.peerAddress, prev.peerPort);
                 prev.failCharged = true;
                 m_inflightSegReqs[seq] = prev;  // persist the flag
             }
-            excludeIp = prev.peerIp;   // timed out: prefer another peer
+            excludeAddress = prev.peerAddress;   // timed out: prefer another peer
             attempts  = prev.attempts;
         }
 
         InterlockedIncrement(&m_counters.chunksMissing);
-        CUpDownClient* peer = SelectPeerForSegment(seq, excludeIp);
-        if (peer == NULL && excludeIp != 0)
+        CUpDownClient* peer = SelectPeerForSegment(seq, excludeAddress);
+        if (peer == NULL && excludeAddress.GetType() != CAddress::None)
             peer = SelectPeerForSegment(seq);  // only the slow peer has it — re-ask it
         if (peer) {
             Packet* pkt = eSELive::CreateRequestPacket(
@@ -3835,7 +3997,7 @@ void CLiveStreamManager::RequestMissingSegments()
                 InterlockedIncrement(&m_counters.chunksRequested);
                 InflightSegReq req;
                 req.sentTick     = now;
-                req.peerIp       = peer->GetIP();
+                req.peerAddress  = LivePeerEndpoint(peer);
                 req.peerPort     = peer->GetUserPort();
                 req.attempts     = attempts + 1;
                 // Critical = close to the playback head (the low end of the
@@ -3847,11 +4009,10 @@ void CLiveStreamManager::RequestMissingSegments()
                 req.failCharged  = false;
                 m_inflightSegReqs[seq] = req;
                 requested++;
-                LIVE_LOG("REQ", "ASK seq=%u -> %S:%u (attempt %d)",
-                    seq,
-                    (LPCWSTR)ipstr(peer->GetIP()),
-                    (unsigned)peer->GetUserPort(),
-                    req.attempts);
+                const std::string requestAddress = req.peerAddress.GetType() != CAddress::None
+                    ? req.peerAddress.ToString() : std::string("unknown");
+                LIVE_LOG("REQ", "ASK seq=%u -> %s:%u (attempt %d)",
+                    seq, requestAddress.c_str(), (unsigned)peer->GetUserPort(), req.attempts);
             }
         } else {
             AddDebugLogLine(false,
@@ -3910,14 +4071,18 @@ void CLiveStreamManager::BanPeer(CUpDownClient* peer)
 // (SelectPeerForSegment: -= failCount*20). It recovers only by serving critical
 // blocks on time (failCount-- in OnChunkReceived). Caller (RequestMissingSegments
 // via Process) holds m_lock.
-void CLiveStreamManager::ChargePunctualityFailure(uint32 ip, uint16 port)
+void CLiveStreamManager::ChargePunctualityFailure(const CAddress& address, uint16 port)
 {
-    if (ip == 0) return;
+    if (address.GetType() == CAddress::None || port == 0) return;
     CUpDownClient* peer = NULL;
     POSITION pos = m_viewPeers.GetHeadPosition();
     while (pos != NULL) {
         CUpDownClient* p = m_viewPeers.GetNext(pos);
-        if (p != NULL && p->GetIP() == ip && p->GetUserPort() == port) { peer = p; break; }
+        if (p != NULL && p->GetUserPort() == port
+            && LivePeerEndpoint(p) == address) {
+            peer = p;
+            break;
+        }
     }
     if (peer == NULL) return;  // peer already gone — nothing left to penalise
 
@@ -3925,8 +4090,9 @@ void CLiveStreamManager::ChargePunctualityFailure(uint32 ip, uint16 port)
     trust.failCount += ESE_EDGE_FAIL_WEIGHT;
     if (trust.failCount > ESE_FAIL_COUNT_CAP) trust.failCount = ESE_FAIL_COUNT_CAP;
     trust.lastSeen = GetTickCount();
-    LIVE_LOG("TRUST", "edge-miss ip=%S port=%u failCount=%d",
-        (LPCWSTR)ipstr(ip), (unsigned)port, trust.failCount);
+    const std::string text = address.ToString();
+    LIVE_LOG("TRUST", "edge-miss address=%s port=%u failCount=%d",
+        text.c_str(), (unsigned)port, trust.failCount);
 }
 
 // ============================================================
@@ -4030,7 +4196,8 @@ void CLiveStreamManager::PrunePeerState(DWORD now)
         LIVE_LOG("MESH", "C6 prune: reaped %d stale durable peer record(s)", (int)dead.GetCount());
 }
 
-CUpDownClient* CLiveStreamManager::SelectPeerForSegment(uint32 seqNum, uint32 excludeIp)
+CUpDownClient* CLiveStreamManager::SelectPeerForSegment(uint32 seqNum,
+                                                        const CAddress& excludeAddress)
 {
     // V2-S20 — Mesh fallback peer selection.
     // Score = response_rate * 100  - failCount * 20  - RTT_penalty.
@@ -4038,14 +4205,16 @@ CUpDownClient* CLiveStreamManager::SelectPeerForSegment(uint32 seqNum, uint32 ex
     // This biases toward low-latency parents while preserving the existing
     // trust-based ordering. Both broadcaster and any secondary-source viewers
     // are considered (we already added them to m_viewPeers via JoinStream).
-    // Phase-1 fix #2: excludeIp != 0 skips that peer (timed-out request retry).
+    // Phase-1 fix #2: a non-None typed address skips that peer (timed-out retry).
     CUpDownClient* bestPeer = NULL;
     int bestScore = -1;
 
     POSITION pos = m_viewPeers.GetHeadPosition();
     while (pos) {
         CUpDownClient* peer = m_viewPeers.GetNext(pos);
-        if (excludeIp != 0 && peer != NULL && peer->GetIP() == excludeIp) continue;
+        if (peer != NULL && excludeAddress.GetType() != CAddress::None
+            && LivePeerEndpoint(peer) == excludeAddress)
+            continue;
         PeerBitmapInfo info;
         if (!m_peerBitmaps.Lookup(PeerId(peer), info)) continue;
         if (!info.Has(seqNum)) continue;
@@ -4100,14 +4269,21 @@ uint32 CLiveStreamManager::GetMinUploadRequired() const
 //   * _snprintf_s(..., _TRUNCATE, ...) is a BOUNDED writer: it writes at most
 //     outLen-1 chars and always NUL-terminates, so it physically cannot overflow
 //     regardless of address family or string length.
-// The Live mesh peer identity is IPv4 today (CUpDownClient::GetIP() -> uint32,
+// Legacy mesh entries still expose a uint32 IPv4 identity, while native IPv6
 // network byte order — same as ipstr()/inet_ntoa), so we emit dotted-quad here.
-// When dual-stack reaches the mesh, swap the body for eMuleAI's
+// Native IPv6 is rendered directly from CAddress; no legacy uint32 conversion
+// is used for diagnostics. The response itself is an auto-growing CStringA.
 // _inet_ntop(AF_INET6, &addr, out, outLen) (Address.h) — also bounded by outLen —
 // and nothing else changes: the HTTP response is an auto-growing CStringA, so
 // there is no fixed-size response buffer anywhere in the chain to overrun.
-static void FillPeerIpSafe(char* out, size_t outLen, uint32 ipv4)
+static void FillPeerIpSafe(char* out, size_t outLen, const CUpDownClient* peer)
 {
+    if (peer != NULL && peer->HasIPv6Address()) {
+        const std::string text = peer->GetIPv6Address().ToString();
+        _snprintf_s(out, outLen, _TRUNCATE, "%s", text.c_str());
+        return;
+    }
+    const uint32 ipv4 = peer != NULL ? peer->GetIP() : 0;
     _snprintf_s(out, outLen, _TRUNCATE, "%u.%u.%u.%u",
         (unsigned)(ipv4 & 0xFF),         (unsigned)((ipv4 >> 8)  & 0xFF),
         (unsigned)((ipv4 >> 16) & 0xFF), (unsigned)((ipv4 >> 24) & 0xFF));
@@ -4180,7 +4356,7 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
             CUpDownClient* p = m_viewPeers.GetNext(vpos);
             if (p == NULL) continue;
             LiveDebugSnapshot::PeerDbg& d = snap.peerDetail[snap.peerDetailCount++];
-            FillPeerIpSafe(d.ip, sizeof(d.ip), p->GetIP());   // bounded, v4/v6-safe
+            FillPeerIpSafe(d.ip, sizeof(d.ip), p);             // bounded, native v4/v6
             d.port = p->GetUserPort();
             PeerTrust t;
             if (m_peerTrust.Lookup(PeerId(p), t)) {

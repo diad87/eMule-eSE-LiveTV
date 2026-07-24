@@ -74,6 +74,11 @@ namespace Kademlia
 		void ProcessPacketV4(const byte *pbyData, uint32 uLenData,
 			uint32 uIP, uint16 uUDPPort);
 		void ProcessKad6();
+		void OnKad6NetworkStateChanged(bool enabled);
+		bool IsKad6Connected() const;
+		DWORD GetLastKad6AuthenticatedTick() const {
+			return m_lastKad6AuthenticatedTick;
+		}
 		bool PublishKad6SourceRecord(uint64 uPublishLeaseId,
 			const kad6::K6SourceRecord& record);
 		// Exit-side dual-plane discovery. Native results are returned to the
@@ -205,6 +210,10 @@ namespace Kademlia
 		DWORD m_lastKad6Import;
 		DWORD m_lastKad6Challenge;
 		DWORD m_lastKad6Lookup;
+		DWORD m_lastKad6AuthenticatedTick;
+		bool m_kad6ReportedConnected;
+		void NoteKad6Authenticated();
+		void RefreshKad6ConnectionState();
 
 		bool AddContact_KADEMLIA2(const byte *pbyData, uint32 uLenData, uint32 uIP, uint16 &uUDPPort, uint8 *pnOutVersion, const CKadUDPKey &cUDPKey, bool &rbIPVerified, bool bUpdate, bool bFromHelloReq, bool *pbOutRequestsACK, CUInt128 *puOutContactID);
 		void SendLegacyChallenge(uint32 uIP, uint16 uUDPPort, const CUInt128 &uContactID);

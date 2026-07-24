@@ -450,6 +450,7 @@ int		CPreferences::m_iSearchMethod;
 bool	CPreferences::m_bAdvancedSpamfilter;
 bool	CPreferences::m_bUseSecureIdent;
 bool	CPreferences::networkkademlia;
+uint8	CPreferences::m_uKadNetworkMask = KadNetworkPolicy::Both;
 bool	CPreferences::networked2k;
 EToolbarLabelType CPreferences::m_nToolbarLabels;
 CString	CPreferences::m_sToolbarBitmap;
@@ -1746,7 +1747,9 @@ void CPreferences::SavePreferences()
 	ini.WriteBool(_T("AutoFilenameCleanup"), autofilenamecleanup);
 	ini.WriteBool(_T("ShowExtControls"), m_bExtControls);
 	ini.WriteBool(_T("UseAutocompletion"), m_bUseAutocompl);
-	ini.WriteBool(_T("NetworkKademlia"), networkkademlia);
+	ini.WriteBool(_T("NetworkKademlia"),
+		KadNetworkPolicy::LegacyKad2Enabled(m_uKadNetworkMask));
+	ini.WriteInt(_T("KadNetworkMask"), m_uKadNetworkMask, _T("Connection"));
 	ini.WriteBool(_T("NetworkED2K"), networked2k);
 	ini.WriteBool(_T("AutoClearCompleted"), m_bRemoveFinishedDownloads);
 	ini.WriteBool(_T("TransflstRemainOrder"), m_bTransflstRemain);
@@ -2296,6 +2299,20 @@ void CPreferences::LoadPreferences()
 	m_bUseAutocompl = ini.GetBool(_T("UseAutocompletion"), true);
 	m_bShowDwlPercentage = ini.GetBool(_T("ShowDwlPercentage"), false);
 	networkkademlia = ini.GetBool(_T("NetworkKademlia"), true);
+	{
+		const int persistedMask = ini.GetInt(_T("KadNetworkMask"), -1,
+			_T("Connection"));
+		if (persistedMask != -1 && !KadNetworkPolicy::IsValid(persistedMask))
+			AddDebugLogLine(false,
+				_T("Preferences: invalid KadNetworkMask=%d; using legacy NetworkKademlia migration"),
+				persistedMask);
+		m_uKadNetworkMask = static_cast<uint8>(
+			KadNetworkPolicy::Migrate(persistedMask, networkkademlia));
+		// Keep the legacy boolean scoped to Kad2. Older builds then fail
+		// closed (all Kad off) for a Kad6-only profile instead of silently
+		// re-enabling the network the user explicitly disabled.
+		networkkademlia = KadNetworkPolicy::LegacyKad2Enabled(m_uKadNetworkMask);
+	}
 	networked2k = ini.GetBool(_T("NetworkED2K"), true);
 	m_bRemove2bin = ini.GetBool(_T("RemoveFilesToBin"), true);
 	m_bShowCopyEd2kLinkCmd = ini.GetBool(_T("ShowCopyEd2kLinkCmd"), false);
@@ -2877,6 +2894,17 @@ void CPreferences::SetMaxDownload(uint32 val)
 void CPreferences::SetNetworkKademlia(bool val)
 {
 	networkkademlia = val;
+	m_uKadNetworkMask = val
+		? static_cast<uint8>(KadNetworkPolicy::Both)
+		: static_cast<uint8>(KadNetworkPolicy::None);
+}
+
+void CPreferences::SetKadNetworkMask(uint8 val)
+{
+	if (!KadNetworkPolicy::IsValid(val))
+		val = static_cast<uint8>(KadNetworkPolicy::Both);
+	m_uKadNetworkMask = val;
+	networkkademlia = KadNetworkPolicy::LegacyKad2Enabled(val);
 }
 
 CString CPreferences::GetHomepageBaseURLForLevel(int nLevel)

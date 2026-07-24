@@ -286,6 +286,8 @@
 #define	OP_PUBLICIP_ANSWER_V6	0xB3
 // v0.71 IPv6 Sprint 6 — callback + server found-sources v6 variants.
 #define	OP_CALLBACK_V6			0xE1
+// OP_CALLBACK_V6 payload: <KadCheck 16><FileHash 16><CAddress><TCPPort 2>.
+// OP_CALLBACK keeps the legacy <IPv4 4><TCPPort 2> payload.
 // Server UDP response, always under OP_EMULEPROT (0xC5), never under the
 // legacy OP_EDONKEYPROT (0xE3) namespace:
 //   <HASH 16><count 1>(<CAddress family=6,length=16><PORT 2>)[count]

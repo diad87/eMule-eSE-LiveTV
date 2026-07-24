@@ -55,6 +55,7 @@ their client on the eMule forum.
 #include "kademlia/kademlia/Indexed.h"
 #include "kademlia/kademlia/Defines.h"
 #include "kademlia/kademlia/Entry.h"
+#include "kademlia/kademlia/KadProtocolPolicy.h"
 #include "kademlia/kademlia/KadV2Defines.h"    // F1: Kad Search v2 M3/M5/M6
 #include "kademlia/kademlia/KadV2Sharding.h"
 #include "kademlia/kademlia/KadV2BloomFilter.h"
@@ -160,6 +161,8 @@ static void EseRememberHolePunchNonce(uint32 uIP, uint16 uUDPPort, uint32 uNonce
 	entry.pExpectedClient = pExpectedClient;
 	entry.bViaRendezvous = bViaRendezvous;
 	if (pExpectedClient != NULL) {
+		if (pExpectedClient->IsIPv6OnlyEndpoint())
+			return;
 		entry.uExpectedClientIP = pExpectedClient->GetConnectIP() != 0
 			? pExpectedClient->GetConnectIP() : pExpectedClient->GetIP();
 		entry.uExpectedClientTCPPort = pExpectedClient->GetUserPort();
@@ -386,6 +389,8 @@ CKademliaUDPListener::CKademliaUDPListener()
 	, m_lastKad6Import(0)
 	, m_lastKad6Challenge(0)
 	, m_lastKad6Lookup(0)
+	, m_lastKad6AuthenticatedTick(0)
+	, m_kad6ReportedConnected(false)
 {
 	if (m_kad6Epoch == 0)
 		m_kad6Epoch = 1;
@@ -448,7 +453,8 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 	kad6::K6RouteHeader& out, kad6::Kad6Address::Family preferredFamily)
 {
 	out = kad6::K6RouteHeader{};
-	if (txid == 0 || theApp.clientudp == NULL || CKademlia::GetPrefs() == NULL
+	if (!CKademlia::IsKad6Running() || txid == 0 || theApp.clientudp == NULL
+		|| CKademlia::GetPrefs() == NULL
 		|| !eSELive::NodeIdentityIsPersistent()
 		|| eSELive::NodeIdentityPub() == NULL)
 		return false;
@@ -583,7 +589,7 @@ bool CKademliaUDPListener::SendKad6Payload(byte opcode,
 	const std::vector<kad6::Byte>& payload,
 	const kad6::Kad6Address& address, uint16 port)
 {
-	if (theApp.clientudp == NULL || port == 0
+	if (!CKademlia::IsKad6Running() || theApp.clientudp == NULL || port == 0
 		|| payload.size() > kad6::kK6StoreMaxPayloadSize)
 		return false;
 	Packet* packet = new Packet(OP_KAD6HEADER);
@@ -877,7 +883,8 @@ bool CKademliaUDPListener::StartKad6SourceLookup(
 	const kad6::Hash16& targetHash, uint32 circuitId, uint32 requestId,
 	uint16 maximum)
 {
-	if (circuitId == 0 || requestId == 0 || maximum == 0 ||
+	if (!CKademlia::IsKad6Running() || circuitId == 0 || requestId == 0
+		|| maximum == 0 ||
 		m_kad6SourceLookups.size() >= 64) return false;
 	kad6::Byte any = 0;
 	for (kad6::Byte value : targetHash) any = static_cast<kad6::Byte>(any | value);
@@ -903,7 +910,7 @@ bool CKademliaUDPListener::StartKad6SourceLookup(
 bool CKademliaUDPListener::PublishKad6SourceRecord(uint64 publishLeaseId,
 	const kad6::K6SourceRecord& record)
 {
-	if (publishLeaseId == 0 ||
+	if (!CKademlia::IsKad6Running() || publishLeaseId == 0 ||
 		kad6::VerifyK6SourceRecord(MakeKad6HostCryptoHooks(), record) != kad6::Kad6Status::Ok ||
 		kad6::K6SourceRecordCheckFresh(record,
 			static_cast<std::uint64_t>(time(NULL))) != kad6::Kad6Status::Ok)
@@ -963,7 +970,7 @@ bool CKademliaUDPListener::PublishKad6SourceRecord(uint64 publishLeaseId,
 
 bool CKademliaUDPListener::BootstrapV6(const byte address[16], uint16 port)
 {
-	if (address == NULL || port == 0)
+	if (!CKademlia::IsKad6Running() || address == NULL || port == 0)
 		return false;
 	CAddress hostAddress(address);
 	if (hostAddress.GetType() != CAddress::IPv6 || !hostAddress.IsPublicIP())
@@ -994,6 +1001,7 @@ bool CKademliaUDPListener::BootstrapV6(const byte address[16], uint16 port)
 
 CKademliaUDPListener::~CKademliaUDPListener()
 {
+	OnKad6NetworkStateChanged(false);
 // report timeout to all pending FetchNodeIDRequests
 	for (POSITION pos = listFetchNodeIDRequests.GetHeadPosition(); pos != NULL;)
 		listFetchNodeIDRequests.GetNext(pos).pRequester->KadSearchNodeIDByIPResult(KCSR_TIMEOUT, NULL);
@@ -1002,6 +1010,8 @@ CKademliaUDPListener::~CKademliaUDPListener()
 // Used by Kad1.0 and Kad 2.0
 void CKademliaUDPListener::Bootstrap(LPCTSTR szHost, uint16 uUDPPort)
 {
+	if (!CKademlia::IsKad2Running())
+		return;
 	if (szHost == NULL || szHost[0] == 0 || uUDPPort == 0)
 		return;
 	if (_tcschr(szHost, _T(':')) != NULL) {
@@ -1045,9 +1055,67 @@ void CKademliaUDPListener::Bootstrap(LPCTSTR szHost, uint16 uUDPPort)
 	Bootstrap(ntohl(uRetVal), uUDPPort);
 }
 
+void CKademliaUDPListener::OnKad6NetworkStateChanged(bool enabled)
+{
+	const bool wasConnected = m_kad6ReportedConnected;
+	extern uint32 g_uForkCapsRuntime;
+	::InterlockedAnd(reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+		~static_cast<LONG>(CAP_FORK_IPV6_KAD));
+
+	m_kad6Pending.clear();
+	m_kad6SourceLookups.clear();
+	m_kad6AdaptiveLookup = SKad6AdaptiveLookup{};
+	m_lastKad6AuthenticatedTick = 0;
+	m_lastKad6Maintenance = 0;
+	m_lastKad6Import = 0;
+	m_lastKad6Challenge = 0;
+	m_lastKad6Lookup = 0;
+	m_kad6ReportedConnected = false;
+	if (enabled) {
+		// Rebuild the signed record so an endpoint or address change which
+		// happened while Kad6 was disabled cannot be advertised stale.
+		m_kad6LocalRecordReady = false;
+		m_kad6LocalRecord = kad6::K6RouterRecord{};
+	}
+	if (wasConnected && theApp.emuledlg != NULL && !theApp.IsClosing())
+		theApp.emuledlg->ShowConnectionState();
+}
+
+bool CKademliaUDPListener::IsKad6Connected() const
+{
+	if (!CKademlia::IsKad6Running() || m_lastKad6AuthenticatedTick == 0)
+		return false;
+	const DWORD age = GetTickCount() - m_lastKad6AuthenticatedTick;
+	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
+	return age <= 10 * 60 * 1000 && table != NULL
+		&& table->VerifiedSize() != 0;
+}
+
+void CKademliaUDPListener::RefreshKad6ConnectionState()
+{
+	const bool connected = IsKad6Connected();
+	if (connected == m_kad6ReportedConnected)
+		return;
+	m_kad6ReportedConnected = connected;
+	if (theApp.emuledlg != NULL && !theApp.IsClosing())
+		theApp.emuledlg->ShowConnectionState();
+}
+
+void CKademliaUDPListener::NoteKad6Authenticated()
+{
+	m_lastKad6AuthenticatedTick = GetTickCount();
+	if (m_lastKad6AuthenticatedTick == 0)
+		m_lastKad6AuthenticatedTick = 1;
+	if (theApp.emuledlg != NULL && theApp.emuledlg->kademliawnd != NULL)
+		theApp.emuledlg->kademliawnd->UpdateContactCount();
+	RefreshKad6ConnectionState();
+}
+
 // Used by Kad1.0 and Kad 2.0
 void CKademliaUDPListener::Bootstrap(uint32 uIP, uint16 uUDPPort, uint8 byKadVersion, const CUInt128 *uCryptTargetID)
 {
+	if (!CKademlia::IsKad2Running())
+		return;
 	if (thePrefs.GetDebugClientKadUDPLevel() > 0)
 		DebugSend("KADEMLIA2_BOOTSTRAP_REQ", uIP, uUDPPort);
 	CSafeMemFile fileIO(0);
@@ -1058,6 +1126,8 @@ void CKademliaUDPListener::Bootstrap(uint32 uIP, uint16 uUDPPort, uint8 byKadVer
 // Used by Kad1.0 and Kad 2.0
 void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPPort, uint8 byKadVersion, const CKadUDPKey &targetUDPKey, const CUInt128 *uCryptTargetID, bool bRequestAckPackage)
 {
+	if (!CKademlia::IsKad2Running())
+		return;
 	if (byKadVersion > 1) {
 		byte byPacket[1024];
 		CByteIO byteIOResponse(byPacket, sizeof(byPacket));
@@ -1082,7 +1152,8 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 		extern uint32 g_uForkCapsRuntime;
 		const LONG forkCaps = ::InterlockedCompareExchange(
 			reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime), 0, 0);
-		const bool bSendV6 = (thePrefs.GetEseKadV6Tag()
+		const bool bSendV6 = thePrefs.IsKad6Enabled()
+			&& (thePrefs.GetEseKadV6Tag()
 				|| (forkCaps & CAP_FORK_IPV6_KAD) != 0)
 			&& byKadVersion >= KADEMLIA_VERSION8_49b
 			&& myV6.GetType() == CAddress::IPv6 && myV6.IsPublicIP();
@@ -1130,6 +1201,8 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 // Kad1.0 & Kad2.0 currently.
 void CKademliaUDPListener::FirewalledCheck(uint32 uIP, uint16 uUDPPort, const CKadUDPKey &senderUDPKey, uint8 byKadVersion)
 {
+	if (!CKademlia::IsKad2Running())
+		return;
 	if (byKadVersion > KADEMLIA_VERSION6_49aBETA) {
 		// new Opcode since 0.49a with extended informations to support obfuscated connections properly
 		CSafeMemFile fileIO(19);
@@ -1151,12 +1224,16 @@ void CKademliaUDPListener::FirewalledCheck(uint32 uIP, uint16 uUDPPort, const CK
 
 void CKademliaUDPListener::SendNullPacket(byte byOpcode, uint32 uIP, uint16 uUDPPort, const CKadUDPKey &targetUDPKey, const CUInt128 *uCryptTargetID)
 {
+	if (!CKademlia::IsKad2Running())
+		return;
 	CSafeMemFile fileIO(0);
 	SendPacket(fileIO, byOpcode, uIP, uUDPPort, targetUDPKey, uCryptTargetID);
 }
 
 void CKademliaUDPListener::SendPublishSourcePacket(CContact *pContact, const CUInt128 &uTargetID, const CUInt128 &uContactID, const TagList &tags)
 {
+	if (!CKademlia::IsKad2Running())
+		return;
 	//We need to get the tag lists working with CSafeMemFiles.
 	LPCSTR pszOper;
 	byte byPacket[1024];
@@ -1187,6 +1264,8 @@ void CKademliaUDPListener::SendPublishSourcePacket(CContact *pContact, const CUI
 
 void CKademliaUDPListener::ProcessPacket(const byte *pbyData, uint32 uLenData, uint32 uIP, uint16 uUDPPort, bool bValidReceiverKey, const CKadUDPKey &senderUDPKey)
 {
+	if (!CKademlia::IsKad2Running())
+		return;
 	// we do not accept (<= 0.48a) unencrypted incoming packets from port 53 (DNS) to avoid attacks based on DNS protocol confusion
 	if (uUDPPort == 53 && senderUDPKey.IsEmpty()) {
 		DEBUG_ONLY(DebugLog(_T("Dropping incoming unencrypted packet on port 53 (DNS), IP: %s"), (LPCTSTR)ipstr(htonl(uIP))));
@@ -1877,12 +1956,13 @@ void CKademliaUDPListener::Process_KADEMLIA2_RES(const byte *pbyPacketData, uint
 	}
 
 	// Verify that the search is still active and contains no more than the requested numbers of contacts
-	if (uNumContacts > CSearchManager::GetExpectedResponseContactCount(uTarget)) {
-		if (CSearchManager::GetExpectedResponseContactCount(uTarget) == 0)
+	const uint8 uExpectedContacts = CSearchManager::GetExpectedResponseContactCount(uTarget);
+	if (!KadProtocolPolicy::IsResponseContactCountAllowed(uNumContacts, uExpectedContacts)) {
+		if (uExpectedContacts == 0)
 			DebugLogWarning(_T("Kad: KADEMLIA2_RES: Search already expired, ignoring answer (sender: %s)"), (LPCTSTR)ipstr(htonl(uIP)));
 		else
 			DebugLogWarning(_T("Kad: KADEMLIA2_RES: Contact sent more nodes (%u) than requested (%u), ignoring answer (sender: %s)")
-				, uNumContacts, CSearchManager::GetExpectedResponseContactCount(uTarget), (LPCTSTR)ipstr(htonl(uIP)));
+				, uNumContacts, uExpectedContacts, (LPCTSTR)ipstr(htonl(uIP)));
 		return;
 	}
 
@@ -2999,6 +3079,8 @@ void CKademliaUDPListener::Process_KADEMLIA2_FIREWALLUDP(const byte *pbyPacketDa
 
 void CKademliaUDPListener::SendPacket(const byte *pbyData, uint32 uLenData, uint32 uDestinationHost, uint16 uDestinationPort, const CKadUDPKey &targetUDPKey, const CUInt128 *uCryptTargetID)
 {
+	if (!CKademlia::IsKad2Running())
+		return;
 	if (uLenData < 2) {
 		ASSERT(0);
 		return;
@@ -3019,6 +3101,8 @@ void CKademliaUDPListener::SendPacket(const byte *pbyData, uint32 uLenData, uint
 
 void CKademliaUDPListener::SendPacket(const byte *pbyData, uint32 uLenData, byte byOpcode, uint32 uDestinationHost, uint16 uDestinationPort, const CKadUDPKey &targetUDPKey, const CUInt128 *uCryptTargetID)
 {
+	if (!CKademlia::IsKad2Running())
+		return;
 	Packet *pPacket = new Packet(OP_KADEMLIAHEADER);
 	pPacket->opcode = byOpcode;
 	pPacket->pBuffer = new char[uLenData];
@@ -3035,6 +3119,8 @@ void CKademliaUDPListener::SendPacket(const byte *pbyData, uint32 uLenData, byte
 
 void CKademliaUDPListener::SendPacket(CSafeMemFile &pbyData, byte byOpcode, uint32 uDestinationHost, uint16 uDestinationPort, const CKadUDPKey &targetUDPKey, const CUInt128 *uCryptTargetID)
 {
+	if (!CKademlia::IsKad2Running())
+		return;
 	Packet *pPacket = new Packet(pbyData, OP_KADEMLIAHEADER);
 	pPacket->opcode = byOpcode;
 	if (pPacket->size > 200)
@@ -3928,7 +4014,7 @@ void CKademliaUDPListener::Process_ESE_HOLEPUNCH_ACK(const byte *pbyPacketData, 
 void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
 	const byte address[16], uint16 port)
 {
-	if (data == NULL || address == NULL || length < 2
+	if (!CKademlia::IsKad6Running() || data == NULL || address == NULL || length < 2
 		|| (data[0] != OP_KAD6HEADER && data[0] != OP_KADEMLIAHEADER)
 		|| port == 0)
 		return;
@@ -3939,7 +4025,8 @@ void CKademliaUDPListener::ProcessPacketV6(const byte* data, uint32 length,
 void CKademliaUDPListener::ProcessPacketV4(const byte* data, uint32 length,
 	uint32 ip, uint16 port)
 {
-	if (data == NULL || length < 2 || data[0] != OP_KAD6HEADER || port == 0)
+	if (!CKademlia::IsKad6Running() || data == NULL || length < 2
+		|| data[0] != OP_KAD6HEADER || port == 0)
 		return;
 	kad6::Kad6Address source;
 	source.family = kad6::Kad6Address::Family::IPv4;
@@ -3951,11 +4038,10 @@ void CKademliaUDPListener::ProcessPacketV4(const byte* data, uint32 length,
 void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 	uint32 payloadLength, const kad6::Kad6Address& source, uint16 port)
 {
-	// The classic Kad UDP socket is always open, so the native discriminator
-	// alone is not an activation gate. Fresh profiles and kill-switch changes
-	// must drop Kad6 before parsing or emitting even a same-sized HELLO reply.
-	if (!thePrefs.GetEseV9Experimental()
-		|| (g_uEseCapsRuntime & ESE_CAP_KAD6) == 0)
+	// The classic UDP socket is shared, so the discriminator alone is not an
+	// activation gate. Native DHT participation is controlled only by the
+	// user's Kad network mask; gateway and public-exit consent are independent.
+	if (!CKademlia::IsKad6Running())
 		return;
 	if (payload == NULL || payloadLength == 0 || port == 0)
 		return;
@@ -4009,6 +4095,7 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 			if (!table->MarkVerified(contact,
 				response.header.sender_record, now))
 				return;
+			NoteKad6Authenticated();
 			m_kad6Pending.erase(m_kad6Pending.begin() + index);
 			if (pending.afterVerify == K6_AFTER_BOOTSTRAP_RESPONSE)
 				SendKad6BootstrapResponse(pending.originalTxid, source, port);
@@ -4059,6 +4146,7 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 			if (!table->MarkVerified(Kad6ContactFromHeader(response.header),
 				response.header.sender_record, now))
 				return;
+			NoteKad6Authenticated();
 			m_kad6Pending.erase(m_kad6Pending.begin() + index);
 			std::size_t accepted = 0;
 			for (const kad6::K6RouteContact& contact : response.contacts) {
@@ -4105,6 +4193,7 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 				kad6::K6SourceRecordCheckFresh(request.record, now)
 					!= kad6::Kad6Status::Ok)
 				return;
+			NoteKad6Authenticated();
 
 			kad6::K6StoreStatus storeStatus = kad6::K6StoreStatus::Rejected;
 			std::uint64_t acceptedEpoch = 0;
@@ -4163,6 +4252,7 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 			if (!table->MarkVerified(Kad6ContactFromHeader(response.header),
 				response.header.sender_record, now))
 				return;
+			NoteKad6Authenticated();
 			m_kad6Pending.erase(m_kad6Pending.begin() + index);
 			uint16 accepted = 0;
 			for (const kad6::K6SourceRecord& record : response.records) {
@@ -4207,6 +4297,7 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 			if (!table->MarkVerified(Kad6ContactFromHeader(response.header),
 				response.header.sender_record, now))
 				return;
+			NoteKad6Authenticated();
 			m_kad6Pending.erase(m_kad6Pending.begin() + index);
 			eSELive::CLiveTunnel::Get().OnKad6NativePublishAck(
 				pending.publishLeaseId, response.status, response.load,
@@ -4238,6 +4329,7 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 			if (!table->MarkVerified(Kad6ContactFromHeader(response.header),
 				response.header.sender_record, now))
 				return;
+			m_lastKad6AuthenticatedTick = GetTickCount();
 			m_kad6Pending.erase(m_kad6Pending.begin() + index);
 			std::size_t accepted = 0;
 			for (const kad6::K6RouteContact& contact : response.contacts) {
@@ -4257,7 +4349,12 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 
 void CKademliaUDPListener::ProcessKad6()
 {
+	if (!CKademlia::IsKad6Running()) {
+		OnKad6NetworkStateChanged(false);
+		return;
+	}
 	const DWORD tick = GetTickCount();
+	RefreshKad6ConnectionState();
 	// Bounded Happy Eyeballs fallback is serviced independently of the
 	// one-second DHT maintenance cadence. The first authenticated response wins;
 	// any later response from the losing family no longer has a pending txid.

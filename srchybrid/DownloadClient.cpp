@@ -127,6 +127,21 @@ bool CUpDownClient::Compare(const CUpDownClient *tocomp, bool bIgnoreUserhash) c
 	if (!bIgnoreUserhash && HasValidHash() && tocomp->HasValidHash())
 		return md4equ(this->GetUserHash(), tocomp->GetUserHash());
 
+	// A native IPv6-only peer has a synthetic uint32 solely for legacy
+	// structures. Never use that lossy value as the identity of a client.
+	// Prefer the exact address+port when both candidates carry IPv6; if one
+	// candidate is IPv6-only and the exact endpoint did not match, do not let
+	// an unrelated IPv4/synthetic collision merge the clients.
+	const bool bThisIPv6Only = IsIPv6OnlyEndpoint();
+	const bool bOtherIPv6Only = tocomp->IsIPv6OnlyEndpoint();
+	if (HasIPv6Address() && tocomp->HasIPv6Address()
+		&& GetIPv6Address() == tocomp->GetIPv6Address()
+		&& (GetUserPort() != 0 && GetUserPort() == tocomp->GetUserPort()
+			|| (GetKadPort() != 0 && GetKadPort() == tocomp->GetKadPort())))
+		return true;
+	if (bThisIPv6Only || bOtherIPv6Only)
+		return false;
+
 	if (HasLowID()) {
 		//User is firewalled. Must do two checks.
 		if (GetIP() != 0 && GetIP() == tocomp->GetIP()) {
@@ -763,6 +778,9 @@ void CUpDownClient::ProcessHashSet(const uchar *packet, uint32 size, bool bFileI
 			throw GetResString(IDS_ERR_BADHASHSET);
 		}
 	}
+	// The hashsets are part of part.met. Idle files no longer rewrite that file on
+	// every timer tick, so explicitly retain this successful protocol update.
+	m_reqfile->MarkPartMetDirty();
 	m_fHashsetRequestingMD4 = 0;
 	m_fHashsetRequestingAICH = 0;
 	SendStartupLoadReq();
@@ -998,7 +1016,7 @@ void CUpDownClient::ProcessBlockPacket(const uchar *packet, uint32 size, bool pa
 	// <-----khaos-
 
 	m_nDownDataRateMS += uTransferredFileDataSize;
-	if (credits)
+	if (credits && !IsIPv6OnlyEndpoint())
 		credits->AddDownloaded(uTransferredFileDataSize, GetIP());
 
 	// Move end back by one, should be inclusive
@@ -1345,7 +1363,8 @@ void CUpDownClient::UDPReaskForDownload()
 		return;
 
 	if (GetUDPPort() != 0 && GetUDPVersion() != 0 && thePrefs.GetUDPPort() != 0
-		&& !theApp.IsFirewalled() && !(socket && socket->IsConnected()) && !thePrefs.GetProxySettings().bUseProxy)
+		&& !theApp.IsFirewalled() && !(socket && socket->IsConnected())
+		&& !thePrefs.GetProxySettings().bUseProxy && !IsIPv6OnlyEndpoint())
 	{
 		if (!HasLowID()) {
 			//don't use udp to ask for sources
@@ -2153,7 +2172,8 @@ void CUpDownClient::ProcessAICHFileHash(CSafeMemFile *data, CPartFile *file, con
 		ahMasterHash = *pAICHHash;
 	if (pPartFile != NULL && pPartFile == GetRequestFile()) {
 		SetReqFileAICHHash(new CAICHHash(ahMasterHash));
-		pPartFile->GetAICHRecoveryHashSet()->UntrustedHashReceived(ahMasterHash, GetConnectIP());
+		if (!IsIPv6OnlyEndpoint())
+			pPartFile->GetAICHRecoveryHashSet()->UntrustedHashReceived(ahMasterHash, GetConnectIP());
 
 		if (pPartFile->GetFileIdentifierC().HasAICHHash() && pPartFile->GetFileIdentifierC().GetAICHHash() != ahMasterHash) {
 			// this a legacy client and he sent us a hash different from our verified one, which means

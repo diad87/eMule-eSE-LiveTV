@@ -489,9 +489,11 @@ CUpDownClient* CUploadQueue::GetWaitingClientByIP_UDP(uint32 dwIP, uint16 nUDPPo
 	uint32 cMatches = 0;
 	for (POSITION pos = waitinglist.GetHeadPosition(); pos != NULL;) {
 		CUpDownClient *cur_client = waitinglist.GetNext(pos);
-		if (dwIP == cur_client->GetIP() && nUDPPort == cur_client->GetUDPPort())
+		// The legacy lookup is IPv4-only.  Do not let an IPv6-only peer's
+		// compatibility value participate in the lookup or collide with IPv4.
+		if (!cur_client->IsIPv6OnlyEndpoint() && dwIP == cur_client->GetIP() && nUDPPort == cur_client->GetUDPPort())
 			return cur_client;
-		if (dwIP == cur_client->GetIP() && bIgnorePortOnUniqueIP) {
+		if (!cur_client->IsIPv6OnlyEndpoint() && dwIP == cur_client->GetIP() && bIgnorePortOnUniqueIP) {
 			pMatchingIPClient = cur_client;
 			++cMatches;
 		}
@@ -508,7 +510,7 @@ CUpDownClient* CUploadQueue::GetWaitingClientByIP(uint32 dwIP) const
 {
 	for (POSITION pos = waitinglist.GetHeadPosition(); pos != NULL;) {
 		CUpDownClient *cur_client = waitinglist.GetNext(pos);
-		if (dwIP == cur_client->GetIP())
+		if (!cur_client->IsIPv6OnlyEndpoint() && dwIP == cur_client->GetIP())
 			return cur_client;
 	}
 	return NULL;
@@ -551,6 +553,7 @@ void CUploadQueue::AddClientToQueue(CUpDownClient *client, bool bIgnoreTimelimit
 		client->AddRequestCount(client->GetUploadFileID());
 	if (client->IsBanned())
 		return;
+	const bool clientIPv6Only = client->IsIPv6OnlyEndpoint();
 	uint16 cSameIP = 0;
 	// check for duplicates
 	for (POSITION pos = waitinglist.GetHeadPosition(); pos != NULL;) {
@@ -580,13 +583,15 @@ void CUploadQueue::AddClientToQueue(CUpDownClient *client, bool bIgnoreTimelimit
 
 			// another client with same ip:port or hash
 			// this happens only in rare cases, because same userhash / ip:ports are assigned to the right client on connecting in most cases
-			if (cur_client->credits != NULL && cur_client->credits->GetCurrentIdentState(cur_client->GetIP()) == IS_IDENTIFIED) {
+			if (!clientIPv6Only && !cur_client->IsIPv6OnlyEndpoint()
+				&& cur_client->credits != NULL && cur_client->credits->GetCurrentIdentState(cur_client->GetIP()) == IS_IDENTIFIED) {
 				//cur_client has a valid secure hash, don't remove him
 				if (thePrefs.GetVerbose())
 					AddDebugLogLine(false, (LPCTSTR)GetResString(IDS_SAMEUSERHASH), client->GetUserName(), cur_client->GetUserName(), client->GetUserName());
 				return;
 			}
-			if (client->credits == NULL || client->credits->GetCurrentIdentState(client->GetIP()) != IS_IDENTIFIED) {
+			if (clientIPv6Only || cur_client->IsIPv6OnlyEndpoint()
+				|| client->credits == NULL || client->credits->GetCurrentIdentState(client->GetIP()) != IS_IDENTIFIED) {
 				// remove both since we do not know who the bad one is
 				if (thePrefs.GetVerbose())
 					AddDebugLogLine(false, (LPCTSTR)GetResString(IDS_SAMEUSERHASH), client->GetUserName(), cur_client->GetUserName(), _T("Both"));
@@ -601,7 +606,7 @@ void CUploadQueue::AddClientToQueue(CUpDownClient *client, bool bIgnoreTimelimit
 			RemoveFromWaitingQueue(pos2, true);
 			if (!cur_client->socket && cur_client->Disconnected(_T("AddClientToQueue - same userhash 1")))
 				delete cur_client;
-		} else if (client->GetIP() == cur_client->GetIP()) {
+		} else if (!clientIPv6Only && !cur_client->IsIPv6OnlyEndpoint() && client->GetIP() == cur_client->GetIP()) {
 			// same IP, different port, different userhash
 			++cSameIP;
 		}
@@ -612,7 +617,7 @@ void CUploadQueue::AddClientToQueue(CUpDownClient *client, bool bIgnoreTimelimit
 			DEBUG_ONLY(AddDebugLogLine(false, _T("%s's (%s) request to enter the queue was rejected, because of too many clients with the same IP"), client->GetUserName(), (LPCTSTR)ipstr(client->GetConnectIP())));
 		return;
 	}
-	if (theApp.clientlist->GetClientsFromIP(client->GetIP()) >= 3) {
+	if (!clientIPv6Only && theApp.clientlist->GetClientsFromIP(client->GetIP()) >= 3) {
 		if (thePrefs.GetVerbose())
 			DEBUG_ONLY(AddDebugLogLine(false, _T("%s's (%s) request to enter the queue was rejected, because of too many clients with the same IP (found in TrackedClientsList)"), client->GetUserName(), (LPCTSTR)ipstr(client->GetConnectIP())));
 		return;

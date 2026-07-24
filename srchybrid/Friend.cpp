@@ -88,7 +88,7 @@ CFriend::~CFriend()
 		m_LinkedClient = NULL;
 	}
 	// remove any possible pending kad request
-	if (Kademlia::CKademlia::IsRunning())
+	if (Kademlia::CKademlia::IsKad2Running())
 		Kademlia::CKademlia::CancelClientSearch(*this);
 }
 
@@ -300,7 +300,7 @@ void CFriend::UpdateFriendConnectionState(EFriendConnectReport eEvent)
 	case FCR_DISCONNECTED:
 		// disconnected, lets see which state we were in
 		if (m_FriendConnectState == FCS_CONNECTING || m_FriendConnectState == FCS_AUTH) {
-			if (m_FriendConnectState == FCS_CONNECTING && Kademlia::CKademlia::IsRunning()
+			if (m_FriendConnectState == FCS_CONNECTING && Kademlia::CKademlia::IsKad2Running()
 				&& Kademlia::CKademlia::IsConnected() && !isnulmd4(m_abyKadID)
 				&& (m_dwLastKadSearch == 0 || ::GetTickCount() >= m_dwLastKadSearch + MIN2MS(10)))
 			{
@@ -372,7 +372,8 @@ void CFriend::UpdateFriendConnectionState(EFriendConnectReport eEvent)
 
 void CFriend::FindKadID()
 {
-	if (!HasKadID() && Kademlia::CKademlia::IsRunning() && GetLinkedClient(true) != NULL
+	if (!HasKadID() && Kademlia::CKademlia::IsKad2Running() && GetLinkedClient(true) != NULL
+		&& !GetLinkedClient()->IsIPv6OnlyEndpoint()
 		&& !GetLinkedClient()->GetKadPort() && GetLinkedClient()->GetKadVersion() >= KADEMLIA_VERSION2_47a)
 	{
 		DebugLog(_T("Searching KadID for friend %s by IP %s"), m_strName.IsEmpty() ? _T("(Unknown)") : (LPCTSTR)m_strName, (LPCTSTR)ipstr(GetLinkedClient()->GetConnectIP()));

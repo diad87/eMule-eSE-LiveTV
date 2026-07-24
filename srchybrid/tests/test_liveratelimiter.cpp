@@ -12,6 +12,29 @@ static void Expect(bool condition, const char* message)
     }
 }
 
+// Keep the limiter test independent of MFC/Windows headers while exercising
+// the same address-shaped API used by CAddress in the application.
+struct FakeSubnet {
+    uint32_t key;
+    uint32_t HashKey() const { return key; }
+};
+
+struct FakeAddress {
+    bool ipv6;
+    uint32_t ipv4;
+    uint32_t subnetKey;
+
+    bool IsNativeIPv6() const { return ipv6; }
+    FakeSubnet GetSubnet(unsigned) const { return FakeSubnet{subnetKey}; }
+    bool TryToUInt32(uint32_t& out) const
+    {
+        if (ipv6)
+            return false;
+        out = ipv4;
+        return true;
+    }
+};
+
 int main()
 {
     CLiveRequestRateLimiter limiter;
@@ -24,6 +47,20 @@ int main()
         "request 51 from one /24 must be limited");
     Expect(limiter.Check(subnetAHost, 5100) == CLiveRequestRateLimiter::ALLOW,
         "subnet window must reset after five seconds");
+
+    limiter.Reset();
+    const FakeAddress fakeV4 = {false, subnetAHost, subnetAHost};
+    const FakeAddress fakeV6 = {true, 0, subnetAHost};
+    for (int i = 0; i < 50; ++i) {
+        Expect(limiter.CheckAddress(fakeV4, 100) == CLiveRequestRateLimiter::ALLOW,
+            "IPv4 typed address keeps its /24 quota");
+        Expect(limiter.CheckAddress(fakeV6, 100) == CLiveRequestRateLimiter::ALLOW,
+            "IPv6 typed /64 must not collide with an IPv4 bucket");
+    }
+    Expect(limiter.CheckAddress(fakeV4, 100) == CLiveRequestRateLimiter::LIMIT_SUBNET,
+        "IPv4 typed address request 51 must be limited");
+    Expect(limiter.CheckAddress(fakeV6, 100) == CLiveRequestRateLimiter::LIMIT_SUBNET,
+        "IPv6 typed address request 51 must be limited independently");
 
     limiter.Reset();
     for (uint32_t i = 1; i <= CLiveRequestRateLimiter::SLOT_COUNT; ++i)

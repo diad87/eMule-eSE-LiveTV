@@ -164,6 +164,13 @@ function handle(url, req, res) {
             hole_punch_encrypted:    raw.hole_punch_encrypted    || 0,
             hole_punch_plaintext:    raw.hole_punch_plaintext    || 0,
             kad_connected:           raw.kad_connected           || false,
+            kad_configured_mask:     raw.kad_configured_mask     || 0,
+            kad_running_mask:        raw.kad_running_mask        || 0,
+            kad2_running:            raw.kad2_running            || false,
+            kad2_connected:          raw.kad2_connected          || false,
+            kad6_running:            raw.kad6_running            || false,
+            kad6_connected:          raw.kad6_connected          || false,
+            kad6_verified_contacts:  raw.kad6_verified_contacts  || 0,
             upnp_critical_error:     raw.upnp_critical_error     || false,
             upnp_ports_forwarded:    raw.upnp_ports_forwarded    || 'unknown'
           };

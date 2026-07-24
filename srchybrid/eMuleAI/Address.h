@@ -23,6 +23,12 @@ class CAddress
     explicit CAddress(Kademlia::CUInt128 IP, bool bReverse);
     virtual ~CAddress();
 
+    // Named factories make byte order and address family explicit at call
+    // sites. The legacy constructors remain source-compatible.
+    static CAddress FromIPv4NetworkOrder(uint32 networkOrder);
+    static CAddress FromIPv4HostOrder(uint32 hostOrder);
+    static CAddress FromIPv6Bytes(const byte* networkOrderBytes);
+
     bool operator < (const CAddress &Other) const;
     bool operator > (const CAddress &Other) const;
     bool operator == (const CAddress &Other) const;
@@ -38,6 +44,11 @@ class CAddress
     const bool		IsNull() const;
     const bool		IsMappedIPv4() const;
     const bool      IsPublicIP() const;
+    bool TryToUInt32(uint32& out, bool bReverse = false) const;
+    bool IsNativeIPv6() const;
+    bool IsUsablePublic() const;
+    static bool TryFromSA(const sockaddr* sa, int sa_len, CAddress& out, uint16* pPort = NULL);
+    bool TryToSA(sockaddr* sa, int* sa_len, uint16 uPort = 0) const;
     const bool		Convert(const EAF eAF);
     void			FromSA(const sockaddr* sa, const int sa_len, uint16* pPort = NULL) ;
     void			ToSA(sockaddr* sa, int *sa_len, const uint16 uPort = 0) const;

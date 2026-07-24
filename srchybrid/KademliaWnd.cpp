@@ -255,6 +255,9 @@ void CKademliaWnd::OnEnSetfocusBootstrapNodesdat()
 
 void CKademliaWnd::OnBnClickedBootstrapbutton()
 {
+	if (!thePrefs.IsKad2Enabled())
+		return;
+
 	if (IsDlgButtonChecked(IDC_RADIP)) {
 		CString strIP;
 		GetDlgItemText(IDC_BOOTSTRAPIP, strIP);
@@ -279,8 +282,12 @@ void CKademliaWnd::OnBnClickedBootstrapbutton()
 
 		if (m_pacONBSIPs && m_pacONBSIPs->IsBound())
 			m_pacONBSIPs->AddItem(strIP + _T(':') + strPort, 0);
-		if (!Kademlia::CKademlia::IsRunning()) {
-			Kademlia::CKademlia::Start();
+		if (!Kademlia::CKademlia::IsKad2Running()) {
+			if (Kademlia::CKademlia::IsRunning())
+				Kademlia::CKademlia::ApplyNetworkMask(
+					thePrefs.GetEffectiveKadNetworkMask());
+			else
+				Kademlia::CKademlia::Start();
 			theApp.emuledlg->ShowConnectionState();
 		}
 		Kademlia::CKademlia::Bootstrap(strIP, nPort);
@@ -306,7 +313,7 @@ void CKademliaWnd::OnBnClickedFirewallcheckbutton()
 
 void CKademliaWnd::OnBnConnect()
 {
-	if (Kademlia::CKademlia::IsConnected() || Kademlia::CKademlia::IsRunning())
+	if (Kademlia::CKademlia::IsRunning())
 		Kademlia::CKademlia::Stop();
 	else
 		Kademlia::CKademlia::Start();
@@ -364,7 +371,7 @@ void CKademliaWnd::Localize()
 void CKademliaWnd::UpdateControlsState()
 {
 	UINT uid;
-	if (Kademlia::CKademlia::IsConnected())
+	if (Kademlia::CKademlia::IsAnyConnected())
 		uid = IDS_MAIN_BTN_DISCONNECT;
 	else if (Kademlia::CKademlia::IsRunning())
 		uid = IDS_MAIN_BTN_CANCEL;
@@ -372,7 +379,8 @@ void CKademliaWnd::UpdateControlsState()
 		uid = IDS_MAIN_BTN_CONNECT;
 	SetDlgItemText(IDC_KADCONNECT, GetResNoAmp(uid));
 	GetDlgItem(IDC_KADCONNECT)->EnableWindow(theApp.IsRunning());
-	GetDlgItem(IDC_FIREWALLCHECKBUTTON)->EnableWindow(Kademlia::CKademlia::IsConnected());
+	GetDlgItem(IDC_FIREWALLCHECKBUTTON)->EnableWindow(
+		Kademlia::CKademlia::IsKad2Connected());
 
 	CString strBootstrapIP;
 	GetDlgItemText(IDC_BOOTSTRAPIP, strBootstrapIP);
@@ -382,7 +390,8 @@ void CKademliaWnd::UpdateControlsState()
 	GetDlgItemText(IDC_BOOTSTRAPURL, strBootstrapUrl);
 
 	GetDlgItem(IDC_BOOTSTRAPBUTTON)->EnableWindow(
-		!Kademlia::CKademlia::IsConnected()
+		thePrefs.IsKad2Enabled()
+		&& !Kademlia::CKademlia::IsKad2Connected()
 		&& ((IsDlgButtonChecked(IDC_RADIP) && !strBootstrapIP.IsEmpty()
 			&& (strBootstrapIP.Find(_T(':')) >= 0 || !strBootstrapPort.IsEmpty()))
 			|| IsDlgButtonChecked(IDC_RADCLIENTS)
@@ -446,6 +455,9 @@ void CKademliaWnd::ContactRef(const Kademlia::CContact *contact)
 
 void CKademliaWnd::UpdateNodesDatFromURL(const CString &strURL)
 {
+	if (!thePrefs.IsKad2Enabled())
+		return;
+
 	CString strTempFilename(thePrefs.GetMuleDirectory(EMULE_CONFIGDIR));
 	strTempFilename.AppendFormat(_T("temp-%lu-nodes.dat"), ::GetTickCount());
 
@@ -460,11 +472,17 @@ void CKademliaWnd::UpdateNodesDatFromURL(const CString &strURL)
 		return;
 	}
 
-	if (!Kademlia::CKademlia::IsRunning()) {
-		Kademlia::CKademlia::Start();
-		theApp.emuledlg->ShowConnectionState();
+	if (!Kademlia::CKademlia::IsKad2Running()) {
+		if (Kademlia::CKademlia::IsRunning())
+			Kademlia::CKademlia::ApplyNetworkMask(
+				thePrefs.GetEffectiveKadNetworkMask());
+		else
+			Kademlia::CKademlia::Start();
 	}
-	Kademlia::CKademlia::GetRoutingZone()->ReadFile(strTempFilename);
+	if (Kademlia::CKademlia::IsKad2Running()) {
+		theApp.emuledlg->ShowConnectionState();
+		Kademlia::CKademlia::GetRoutingZone()->ReadFile(strTempFilename);
+	}
 	(void)_tremove(strTempFilename);
 }
 
@@ -482,7 +500,7 @@ HBRUSH CKademliaWnd::OnCtlColor(CDC *pDC, CWnd *pWnd, UINT nCtlColor)
 
 void CKademliaWnd::UpdateSearchGraph(Kademlia::CLookupHistory *pLookupHistory)
 {
-	if (Kademlia::CKademlia::IsRunning()) {
+	if (Kademlia::CKademlia::IsKad2Running()) {
 		m_kadLookupGraph->UpdateSearch(pLookupHistory);
 		if (m_kadLookupGraph->GetAutoShowLookups() && !m_kadLookupGraph->HasActiveLookup()) {
 			bool bGraphVisible = m_pbtnWnd->IsButtonChecked(MP_VIEW_KADLOOKUP) != FALSE;
@@ -549,7 +567,9 @@ void CKademliaWnd::UpdateButtonTitle(bool bLookupGraph)
 		if (m_kadLookupGraph->HasLookup())
 			strText.AppendFormat(_T(" (%s)"), (LPCTSTR)m_kadLookupGraph->GetCurrentLookupTitle());
 	} else
-		strText.Format(_T("%s (%u)"), (LPCTSTR)GetResString(IDS_KADCONTACTLAB), GetContactCount());
+		strText.Format(_T("%s (Kad2: %u, Kad6: %u)"),
+			(LPCTSTR)GetResString(IDS_KADCONTACTLAB), GetContactCount(),
+			Kademlia::CKademlia::GetKad6VerifiedContacts());
 	m_pbtnWnd->SetWindowText(strText);
 }
 

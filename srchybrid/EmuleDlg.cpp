@@ -1541,9 +1541,13 @@ UINT CemuleDlg::GetConnectionStateIconIndex() const
 	//Calculate index in 'm_connicons' array
 	//3 KAD states per group: "disconnected", "firewalled", "open"
 	//Groups correspond to ED2K states: "disconnected", "low ID", "high ID"
-	UINT idx = static_cast<UINT>(Kademlia::CKademlia::IsConnected());
-	if (idx)
+	UINT idx = static_cast<UINT>(Kademlia::CKademlia::IsKad2Connected());
+	if (idx) {
 		idx += static_cast<UINT>(!Kademlia::CKademlia::IsFirewalled());
+	} else if (Kademlia::CKademlia::IsKad6Connected()) {
+		// Kad6 has authenticated peers but no legacy IPv4 firewall state.
+		idx = 2;
+	}
 	if (theApp.serverconnect->IsConnected())
 	{
 		const bool bVerifiedDirect = theApp.serverconnect->IsConnectedViaRelay()
@@ -1564,19 +1568,28 @@ void CemuleDlg::ShowConnectionStateIcon()
 
 CString CemuleDlg::GetConnectionStateString()
 {
-	UINT ed2k, kad;
+	UINT ed2k, kad2, kad6;
 	if (theApp.serverconnect->IsConnected())
 		ed2k = IDS_CONNECTED;
 	else
 		ed2k = theApp.serverconnect->IsConnecting() ? IDS_CONNECTING : IDS_DISCONNECTED;
 
-	if (Kademlia::CKademlia::IsConnected())
-		kad = IDS_CONNECTED;
+	if (Kademlia::CKademlia::IsKad2Connected())
+		kad2 = IDS_CONNECTED;
 	else
-		kad = Kademlia::CKademlia::IsRunning() ? IDS_CONNECTING : IDS_DISCONNECTED;
+		kad2 = Kademlia::CKademlia::IsKad2Running()
+			? IDS_CONNECTING : IDS_DISCONNECTED;
+
+	if (Kademlia::CKademlia::IsKad6Connected())
+		kad6 = IDS_CONNECTED;
+	else
+		kad6 = Kademlia::CKademlia::IsKad6Running()
+			? IDS_CONNECTING : IDS_DISCONNECTED;
 
 	CString state;
-	state.Format(_T("eD2K:%s|Kad:%s"), (LPCTSTR)GetResString(ed2k), (LPCTSTR)GetResString(kad));
+	state.Format(_T("eD2K:%s|Kad2:%s|Kad6:%s"),
+		(LPCTSTR)GetResString(ed2k), (LPCTSTR)GetResString(kad2),
+		(LPCTSTR)GetResString(kad6));
 	return state;
 }
 
@@ -1643,19 +1656,17 @@ void CemuleDlg::ShowConnectionState()
 	statusbar->SetText(GetConnectionStateString(), SBarConnected, 0);
 
 	// v0.71 IPv6 Sprint 9 + hotfix — status bar pane.
-	// Auto mode now keeps the TCP listener on AF_INET (HighID stable),
-	// so the pane reads "IPv4 (+v6 prober)" if the v6 prober detected
-	// a public v6 address (egress only). Dual-stack only shows when
-	// the user explicitly opts into IPv6 preferido and AF_INET6 Create
-	// succeeded.
+	// Auto and Preferred both request a dual-stack listener; an IPv4-only
+	// label means the operating system rejected the IPv6 bind and the
+	// compatibility fallback is active.
 	LPCTSTR ipver;
 	if (theApp.listensocket && theApp.listensocket->IsDualStack()) {
 		ipver = _T("IPv6 + v4");
-	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6PreferredMode) {
-		ipver = _T("IPv4 (v6 fb)");   // dual-stack pedido pero Create falló
-	} else if (thePrefs.GetIPv6Mode() == CPreferences::IPv6AutoMode
+	} else if (thePrefs.IsIPv6Enabled()
 	           && !CFirewallProberV6::Instance().GetDetectedV6IP().IsNull()) {
-		ipver = _T("IPv4 +v6 out");   // egress v6 confirmado por prober
+		ipver = _T("IPv4 +v6 out");   // TCP fallback; v6 egress confirmed
+	} else if (thePrefs.IsIPv6Enabled()) {
+		ipver = _T("IPv4 (v6 fb)");   // dual-stack requested but unavailable
 	} else {
 		ipver = _T("IPv4");
 	}
@@ -1670,7 +1681,7 @@ void CemuleDlg::ShowConnectionState()
 	tbbi.cbSize = (UINT)sizeof(TBBUTTONINFO);
 	tbbi.dwMask = TBIF_IMAGE | TBIF_TEXT;
 
-	if (theApp.IsConnected()) {
+	if (theApp.IsConnected() || Kademlia::CKademlia::IsKad6Connected()) {
 		CString strPane(GetResString(IDS_MAIN_BTN_DISCONNECT));
 		tbbi.iImage = 1;
 		tbbi.pszText = const_cast<LPTSTR>((LPCTSTR)strPane);
@@ -4666,7 +4677,7 @@ LRESULT CemuleDlg::OnPowerBroadcast(WPARAM wParam, LPARAM lParam)
 	case PBT_APMSUSPEND:
 		DebugLog(_T("System is going is suspending operation, disconnecting. wParam=%d lPararm=%ld"), wParam, lParam);
 		m_bEd2kSuspendDisconnect = theApp.serverconnect->IsConnected();
-		m_bKadSuspendDisconnect = Kademlia::CKademlia::IsConnected();
+		m_bKadSuspendDisconnect = Kademlia::CKademlia::IsRunning();
 		CloseConnection();
 		return TRUE; // message processed.
 	}

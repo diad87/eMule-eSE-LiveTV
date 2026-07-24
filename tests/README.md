@@ -49,6 +49,7 @@ The core group runs:
 The integration group runs:
 
 - standalone native LiveTV/reachability tests;
+- eMule 0.70b hashing, part-file I/O, transfer-state, Kad publishing and Kad response regressions;
 - `librelaycore` Release and ASan;
 - `relayedge` Release and ASan;
 - `librelayclient` Release and ASan.
@@ -66,6 +67,8 @@ Address and tunnel framing:
 ```powershell
 python tests\test_address_wire.py
 python tests\test_foundsources_v6_wire.py
+python tests\test_callback_v6_wire.py
+python tests\test_ipv6_transport_wire.py
 python tests\test_tunnel_framing.py
 ```
 

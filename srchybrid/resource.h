@@ -2380,6 +2380,7 @@
 // v0.71 IPv6 Sprint 9 — Preferences→Connection IPv6 controls
 #define IDC_PREF_ENABLE_IPV6            3060
 #define IDC_PREF_IPV6_HINT              3061
+#define IDC_NETWORK_KAD6                3062
 // eSE Live — LiveStreamDlg resource IDs
 #define IDD_LIVESTREAM                  3100
 #define IDC_LIVE_TITLE                  3101
@@ -2649,6 +2650,8 @@
 #define IDS_LIVEMGR_PREBUFFER_TIMEOUT           1806
 #define IDS_CD_DOWNRATE                         1807
 #define IDS_CD_UPRATE                           1808
+#define IDS_NETWORK_KAD2                        1809
+#define IDS_NETWORK_KAD6                        1810
 
 #define IDA_ENTER                       32771
 

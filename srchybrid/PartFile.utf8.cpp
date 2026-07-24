@@ -3693,7 +3693,8 @@ Packet* CPartFile::CreateSrcInfoPacket(const CUpDownClient *forClient, uint8 byR
 	const uint8 *reqstatus = forClient->GetUpPartStatus();
 	for (POSITION pos = srclist.GetHeadPosition(); pos != NULL;) {
 		const CUpDownClient *cur_src = srclist.GetNext(pos);
-		if (cur_src->HasLowID() || !cur_src->IsValidSource())
+		if (cur_src->HasLowID() || !cur_src->IsValidSource()
+			|| cur_src->IsIPv6OnlyEndpoint())
 			continue;
 		const uint8 *srcstatus = cur_src->GetPartStatus();
 		if (srcstatus && cur_src->GetPartCount() == GetPartCount()) {

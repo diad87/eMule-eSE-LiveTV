@@ -899,8 +899,9 @@ CString CWebServer::_GetHeader(const ThreadData &Data, long lSession)
 	Out.Replace(_T("[ConState]"), HTTPConState);
 	Out.Replace(_T("[ConText]"), HTTPConText);
 
-	// kad status
-	if (Kademlia::CKademlia::IsConnected()) {
+	// Kad status. Kad2 retains its firewall semantics; Kad6 connectivity is
+	// based on a recent authenticated native exchange.
+	if (Kademlia::CKademlia::IsKad2Connected()) {
 		if (Kademlia::CKademlia::IsFirewalled()) {
 			HTTPConText = GetResString(IDS_FIREWALLED);
 			HTTPConText.AppendFormat(_T(" (<a href=\"?ses=%s&amp;w=kad&amp;c=rcfirewall\">%s</a>"), (LPCTSTR)sSession, (LPCTSTR)GetResString(IDS_KAD_RECHECKFW));
@@ -909,6 +910,10 @@ CString CWebServer::_GetHeader(const ThreadData &Data, long lSession)
 			HTTPConText = GetResString(IDS_CONNECTED);
 			HTTPConText.AppendFormat(_T(" (<a href=\"?ses=%s&amp;w=kad&amp;c=disconnect\">%s</a>)"), (LPCTSTR)sSession, (LPCTSTR)GetResString(IDS_IRC_DISCONNECT));
 		}
+	} else if (Kademlia::CKademlia::IsKad6Connected()) {
+		HTTPConText = GetResString(IDS_CONNECTED);
+		HTTPConText.AppendFormat(_T(" (Kad6, <a href=\"?ses=%s&amp;w=kad&amp;c=disconnect\">%s</a>)"),
+			(LPCTSTR)sSession, (LPCTSTR)GetResString(IDS_IRC_DISCONNECT));
 	} else {
 		if (Kademlia::CKademlia::IsRunning())
 			HTTPConText = GetResString(IDS_CONNECTING);
@@ -3360,36 +3365,51 @@ CString CWebServer::_GetKadDlg(const ThreadData &Data)
 			SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_KAD_RCFW, 0);
 	}
 	// check the condition if bootstrap is possible
-	Out.Replace(_T("[BOOTSTRAPLINE]"), Kademlia::CKademlia::IsConnected() ? _T("") : (LPCTSTR)pThis->m_Templates.sBootstrapLine);
+	Out.Replace(_T("[BOOTSTRAPLINE]"),
+		(!thePrefs.IsKad2Enabled() || Kademlia::CKademlia::IsKad2Connected())
+			? _T("") : (LPCTSTR)pThis->m_Templates.sBootstrapLine);
 
 	// Infos
 	CString buffer;
-	if (Kademlia::CKademlia::IsConnected())
-		if (Kademlia::CKademlia::IsFirewalled()) {
-			Out.Replace(_T("[KADSTATUS]"), GetResString(IDS_FIREWALLED));
-			buffer.Format(_T("<a href=\"?ses=%s&amp;w=kad&amp;c=rcfirewall\">%s</a>"), (LPCTSTR)sSession, (LPCTSTR)GetResString(IDS_KAD_RECHECKFW));
-			buffer.AppendFormat(_T("<br><a href=\"?ses=%s&amp;w=kad&amp;c=disconnect\">%s</a>"), (LPCTSTR)sSession, (LPCTSTR)GetResString(IDS_IRC_DISCONNECT));
-		} else {
-			Out.Replace(_T("[KADSTATUS]"), GetResString(IDS_CONNECTED));
-			buffer.Format(_T("<a href=\"?ses=%s&amp;w=kad&amp;c=disconnect\">%s</a>"), (LPCTSTR)sSession, (LPCTSTR)GetResString(IDS_IRC_DISCONNECT));
-		} else if (Kademlia::CKademlia::IsRunning()) {
-			Out.Replace(_T("[KADSTATUS]"), GetResString(IDS_CONNECTING));
-			buffer.Format(_T("<a href=\"?ses=%s&amp;w=kad&amp;c=disconnect\">%s</a>"), (LPCTSTR)sSession, (LPCTSTR)GetResString(IDS_IRC_DISCONNECT));
-		} else {
-			Out.Replace(_T("[KADSTATUS]"), GetResString(IDS_DISCONNECTED));
-			buffer.Format(_T("<a href=\"?ses=%s&amp;w=kad&amp;c=connect\">%s</a>"), (LPCTSTR)sSession, (LPCTSTR)GetResString(IDS_IRC_CONNECT));
-		}
+	CString kad2State = GetResString(Kademlia::CKademlia::IsKad2Connected()
+		? (Kademlia::CKademlia::IsFirewalled() ? IDS_FIREWALLED : IDS_CONNECTED)
+		: (Kademlia::CKademlia::IsKad2Running() ? IDS_CONNECTING : IDS_DISCONNECTED));
+	CString kad6State = GetResString(Kademlia::CKademlia::IsKad6Connected()
+		? IDS_CONNECTED
+		: (Kademlia::CKademlia::IsKad6Running() ? IDS_CONNECTING : IDS_DISCONNECTED));
+	CString kadState;
+	kadState.Format(_T("Kad2: %s | Kad6: %s"), (LPCTSTR)kad2State,
+		(LPCTSTR)kad6State);
+	Out.Replace(_T("[KADSTATUS]"), kadState);
+	if (Kademlia::CKademlia::IsRunning()) {
+		if (Kademlia::CKademlia::IsKad2Connected()
+			&& Kademlia::CKademlia::IsFirewalled())
+			buffer.Format(_T("<a href=\"?ses=%s&amp;w=kad&amp;c=rcfirewall\">%s</a><br>"),
+				(LPCTSTR)sSession, (LPCTSTR)GetResString(IDS_KAD_RECHECKFW));
+		else
+			buffer.Empty();
+		buffer.AppendFormat(_T("<a href=\"?ses=%s&amp;w=kad&amp;c=disconnect\">%s</a>"),
+			(LPCTSTR)sSession, (LPCTSTR)GetResString(IDS_IRC_DISCONNECT));
+	} else {
+		buffer.Format(_T("<a href=\"?ses=%s&amp;w=kad&amp;c=connect\">%s</a>"),
+			(LPCTSTR)sSession, (LPCTSTR)GetResString(IDS_IRC_CONNECT));
+	}
 
 		Out.Replace(_T("[KADACTION]"), buffer);
 
 		// kadstats
 		// labels
-		buffer.Format(_T("%s<br>%s"), (LPCTSTR)GetResString(IDS_KADCONTACTLAB), (LPCTSTR)GetResString(IDS_KADSEARCHLAB));
+		buffer.Format(_T("Kad2 %s<br>Kad6 %s<br>%s"),
+			(LPCTSTR)GetResString(IDS_KADCONTACTLAB),
+			(LPCTSTR)GetResString(IDS_KADCONTACTLAB),
+			(LPCTSTR)GetResString(IDS_KADSEARCHLAB));
 		Out.Replace(_T("[KADSTATSLABELS]"), buffer);
 
 		// numbers
-		buffer.Format(_T("%u<br>%i"), theApp.emuledlg->kademliawnd->GetContactCount()
-			, theApp.emuledlg->kademliawnd->searchList->GetItemCount());
+		buffer.Format(_T("%u<br>%u<br>%i"),
+			theApp.emuledlg->kademliawnd->GetContactCount(),
+			Kademlia::CKademlia::GetKad6VerifiedContacts(),
+			theApp.emuledlg->kademliawnd->searchList->GetItemCount());
 		Out.Replace(_T("[KADSTATSDATA]"), buffer);
 
 		Out.Replace(_T("[BS_IP]"), GetResString(IDS_IP));
@@ -4675,13 +4695,24 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		json.Format(
 			"{\"success\":true,\"requested\":{\"ed2k\":%s,\"kad\":%s},"
 			"\"state\":{\"ed2k_connected\":%s,\"ed2k_connecting\":%s,"
-			"\"kad_running\":%s,\"kad_connected\":%s}}",
+			"\"kad_running\":%s,\"kad_connected\":%s,"
+			"\"kad_configured_mask\":%u,\"kad_running_mask\":%u,"
+			"\"kad2_running\":%s,\"kad2_connected\":%s,"
+			"\"kad6_running\":%s,\"kad6_connected\":%s,"
+			"\"kad6_verified_contacts\":%u}}",
 			ed2kRequested ? "true" : "false",
 			kadRequested ? "true" : "false",
 			(theApp.serverconnect != NULL && theApp.serverconnect->IsConnected()) ? "true" : "false",
 			(theApp.serverconnect != NULL && theApp.serverconnect->IsConnecting()) ? "true" : "false",
 			Kademlia::CKademlia::IsRunning() ? "true" : "false",
-			Kademlia::CKademlia::IsConnected() ? "true" : "false");
+			Kademlia::CKademlia::IsAnyConnected() ? "true" : "false",
+			static_cast<unsigned>(thePrefs.GetKadNetworkMask()),
+			static_cast<unsigned>(Kademlia::CKademlia::GetRunningNetworkMask()),
+			Kademlia::CKademlia::IsKad2Running() ? "true" : "false",
+			Kademlia::CKademlia::IsKad2Connected() ? "true" : "false",
+			Kademlia::CKademlia::IsKad6Running() ? "true" : "false",
+			Kademlia::CKademlia::IsKad6Connected() ? "true" : "false",
+			Kademlia::CKademlia::GetKad6VerifiedContacts());
 		CStringA hdr;
 		hdr.Format(
 			"HTTP/1.1 200 OK\r\n"
@@ -4712,6 +4743,13 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"\"web_upnp_active\":%s,"
 			"\"upnp_ports_forwarded\":\"%s\","
 			"\"kad_connected\":%s,"
+			"\"kad_configured_mask\":%u,"
+			"\"kad_running_mask\":%u,"
+			"\"kad2_running\":%s,"
+			"\"kad2_connected\":%s,"
+			"\"kad6_running\":%s,"
+			"\"kad6_connected\":%s,"
+			"\"kad6_verified_contacts\":%u,"
 			"\"ed2k_connected\":%s,"
 			"\"hole_punch_attempts\":%u,"
 			"\"hole_punch_success\":%u,"
@@ -4735,7 +4773,14 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			thePrefs.GetUtpHolePunchEnabled() ? "true" : "false",
 			thePrefs.GetWSUseUPnP() ? "true" : "false",
 			szUpnpFwd,
-			Kademlia::CKademlia::IsConnected() ? "true" : "false",
+			Kademlia::CKademlia::IsAnyConnected() ? "true" : "false",
+			static_cast<unsigned>(thePrefs.GetKadNetworkMask()),
+			static_cast<unsigned>(Kademlia::CKademlia::GetRunningNetworkMask()),
+			Kademlia::CKademlia::IsKad2Running() ? "true" : "false",
+			Kademlia::CKademlia::IsKad2Connected() ? "true" : "false",
+			Kademlia::CKademlia::IsKad6Running() ? "true" : "false",
+			Kademlia::CKademlia::IsKad6Connected() ? "true" : "false",
+			Kademlia::CKademlia::GetKad6VerifiedContacts(),
 			(theApp.serverconnect && theApp.serverconnect->IsConnected()) ? "true" : "false",
 			CStatistics::m_dwHolePunchAttempts,
 			CStatistics::m_dwHolePunchSuccess,
@@ -5403,7 +5448,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			consent,
 			thePrefs.IsEseNetLabActive() ? "true" : "false",
 			(g_uEseCapsRuntime & ESE_CAP_NETLAB_V1) != 0 ? "true" : "false",
-			thePrefs.GetIPv6Mode() == CPreferences::IPv6AutoMode ? "true" : "false",
+			thePrefs.IsIPv6Enabled() ? "true" : "false",
 			thePrefs.GetUtpHolePunchEnabled() ? "true" : "false",
 			thePrefs.GetEseAutoKeepalive() ? "true" : "false",
 			thePrefs.GetEseReachSelector() ? "true" : "false",
@@ -6063,13 +6108,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			const eSELive::CLiveTunnel::PeerSnapshot& p = all[i];
 			CStringA line;
 			line.Format(
-			    "{\"ip\":\"%u.%u.%u.%u\",\"port\":%u,"
+			    "{\"ip\":\"%s\",\"address\":\"%s\",\"port\":%u,"
 			    "\"forkCaps\":\"0x%08X\",\"eseCaps\":\"0x%08X\","
 			    "\"isFork\":%s}",
-			    (unsigned)(p.ip & 0xFF),
-			    (unsigned)((p.ip >> 8) & 0xFF),
-			    (unsigned)((p.ip >> 16) & 0xFF),
-			    (unsigned)((p.ip >> 24) & 0xFF),
+			    p.has_ipv4 ? CAddress::FromIPv4NetworkOrder(p.ip).ToString().c_str() : "",
+			    p.address.c_str(),
 			    (unsigned)p.port,
 			    p.fork_caps, p.ese_caps,
 			    (p.ese_caps & 0x00000100) ? "true" : "false");

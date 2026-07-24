@@ -104,7 +104,9 @@ bool LastCommonRouteFinder::AddHostsToCheck(CTypedPtrList<CPtrList, CServer*> &l
 				if (pos == NULL)
 					pos = list.GetHeadPosition();
 				while (needMoreHosts && --cnt >= 0) {
-					AddHostToCheckNoLock(list.GetNext(pos)->GetIP());
+					CServer* server = list.GetNext(pos);
+					if (server != NULL)
+						AddHostToCheckNoLock(server->GetIP());
 					if (pos == NULL)
 						pos = list.GetHeadPosition();
 				}
@@ -133,7 +135,9 @@ bool LastCommonRouteFinder::AddHostsToCheck(CUpDownClientPtrList &list)
 				if (pos == NULL)
 					pos = list.GetHeadPosition();
 				for (cnt = 0; needMoreHosts && cnt < list.GetCount(); ++cnt) {
-					AddHostToCheckNoLock(list.GetNext(pos)->GetIP());
+					CUpDownClient* peer = list.GetNext(pos);
+					if (peer != NULL && !peer->IsIPv6OnlyEndpoint())
+						AddHostToCheckNoLock(peer->GetIP());
 					if (pos == NULL)
 						pos = list.GetHeadPosition();
 				}

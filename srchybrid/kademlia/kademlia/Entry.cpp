@@ -33,6 +33,7 @@ their client on the eMule forum.
 #include "OtherFunctions.h"
 #include "SafeFile.h"
 #include "kademlia/kademlia/Entry.h"
+#include "kademlia/kademlia/KadPublishPolicy.h"
 #include "kademlia/kademlia/Indexed.h"
 #include "kademlia/io/DataIO.h"
 
@@ -387,7 +388,8 @@ void CKeyEntry::MergeIPsAndFilenames(CKeyEntry *pFromEntry)
 			if (Cur.m_uIP == m_uIP) {
 				bRefresh = true;
 				const time_t tNow = time(NULL);
-				if (tNow < Cur.m_tLastPublish + (KADEMLIAREPUBLISHTIMES - HR2S(1))) {
+				if (KadPublishPolicy::IsFastRefresh(tNow, Cur.m_tLastPublish,
+					KADEMLIAREPUBLISHTIMES, HR2S(1))) {
 					DEBUG_ONLY(DebugLog(_T("KadEntryTracking: FastRefresh publish, ip: %s"), (LPCTSTR)ipstr(htonl(m_uIP))));
 					bFastRefresh = true; // refreshed faster than expected, will not count into filename popularity index
 				}

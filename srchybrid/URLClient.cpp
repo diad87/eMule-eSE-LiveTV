@@ -370,7 +370,7 @@ void CUpDownClient::ProcessHttpBlockPacket(const BYTE *pucData, UINT uSize)
 
 	thePrefs.Add2SessionTransferData(GetClientSoft(), (UINT)((GetClientSoft() == SO_URL) ? -2 : -1), false, false, uSize);
 	m_nDownDataRateMS += uSize;
-	if (credits)
+	if (credits && !IsIPv6OnlyEndpoint())
 		credits->AddDownloaded(uSize, GetIP());
 	--nEndPos;
 

@@ -19,6 +19,7 @@
 #include "StatisticFile.h"
 #include "emule.h"
 #include "KnownFileList.h"
+#include "PartFile.h"
 #include "SharedFileList.h"
 
 #ifdef _DEBUG
@@ -26,6 +27,12 @@
 #undef THIS_FILE
 static char THIS_FILE[] = __FILE__;
 #endif
+
+static void MarkPartFileStatsDirty(CKnownFile *file)
+{
+	if (file != NULL && file->IsPartFile())
+		static_cast<CPartFile*>(file)->MarkPartMetStatsDirty();
+}
 
 void CStatisticFile::MergeFileStats(CStatisticFile *toMerge)
 {
@@ -43,6 +50,7 @@ void CStatisticFile::AddRequest()
 	++alltimerequested;
 	++theApp.knownfiles->requested;
 	theApp.sharedfiles->UpdateFile(fileParent);
+	MarkPartFileStatsDirty(fileParent);
 }
 
 void CStatisticFile::AddAccepted()
@@ -51,6 +59,7 @@ void CStatisticFile::AddAccepted()
 	++alltimeaccepted;
 	++theApp.knownfiles->accepted;
 	theApp.sharedfiles->UpdateFile(fileParent);
+	MarkPartFileStatsDirty(fileParent);
 }
 
 void CStatisticFile::AddTransferred(uint64 bytes)
@@ -59,19 +68,26 @@ void CStatisticFile::AddTransferred(uint64 bytes)
 	alltimetransferred += bytes;
 	theApp.knownfiles->transferred += bytes;
 	theApp.sharedfiles->UpdateFile(fileParent);
+	MarkPartFileStatsDirty(fileParent);
 }
 
 void CStatisticFile::SetAllTimeRequests(uint32 nVal)
 {
+	if (alltimerequested != nVal)
+		MarkPartFileStatsDirty(fileParent);
 	alltimerequested = nVal;
 }
 
 void CStatisticFile::SetAllTimeAccepts(uint32 nVal)
 {
+	if (alltimeaccepted != nVal)
+		MarkPartFileStatsDirty(fileParent);
 	alltimeaccepted = nVal;
 }
 
 void CStatisticFile::SetAllTimeTransferred(uint64 nVal)
 {
+	if (alltimetransferred != nVal)
+		MarkPartFileStatsDirty(fileParent);
 	alltimetransferred = nVal;
 }

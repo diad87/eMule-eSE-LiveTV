@@ -5,6 +5,8 @@ maintain eMule eSE.
 
 ## User documentation
 
+- [eSE 9.0.0-beta.2 candidate release notes](RELEASE_NOTES_v9.0.0-beta.2.md)
+  — post-beta.1 reliability, laboratory and security scope under validation.
 - [User guide](USER_GUIDE.md) — installation, playback, broadcasting,
   networking and troubleshooting.
 - [eSE 9.0.0-beta.1 release notes](RELEASE_NOTES_v9.0.0-beta.1.md) — beta
@@ -13,6 +15,12 @@ maintain eMule eSE.
   stable release and its one-hop control-tunnel limitations.
 
 ## Maintainer documentation
+
+- [eSE 9.x release specification and test plan](V9_RELEASE_SPECIFICATION.md)
+  - normative scope, current lab topology, acceptance matrices and development
+  plan for versions 9.0 through 9.4.
+- [WP0 laboratory toolkit](../tools/lab/README.md) - isolated node profiles,
+  sanitized evidence, data-route assertions, soak monitoring and reports.
 
 - [Architecture](../ARCHITECTURE.md) — process boundaries, media flow,
   discovery and source layout.

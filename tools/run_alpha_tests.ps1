@@ -46,6 +46,9 @@ function Ensure-CryptoPP {
 }
 
 if ($Suite -eq 'Core' -or $Suite -eq 'All') {
+    Run 'WP0 laboratory toolkit' {
+        & (Join-Path $RepoRoot 'tools\lab\test_lab_tools.ps1') -RepoRoot $RepoRoot
+    }
     Run 'language resources' { & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot }
     Run 'protocol registry' { & python (Join-Path $RepoRoot 'tools\check_protocol_registry.py') }
     Run 'direct port ownership linter' { & python (Join-Path $RepoRoot 'tools\check_direct_port_usage.py') }

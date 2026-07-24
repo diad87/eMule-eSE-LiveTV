@@ -26,10 +26,15 @@ EXPECTED = {
     "NetworkInfoDlg.cpp": 5,
     "PartFile.cpp": 2,
     "PartFile.utf8.cpp": 2,
-    "PPgConnection.cpp": 6,
+    # D0 reviewed: UI enablement and Windows Firewall rule management only;
+    # these reads never advertise a public endpoint to a peer.
+    "PPgConnection.cpp": 7,
     "PShtWiz1.cpp": 5,
     "RelayClient.cpp": 1,
     "WebServer.cpp": 2,
+    # D0 reviewed: decides whether the selected Kad2/Kad6 instances may start
+    # when no local UDP socket is configured; it is not an advertised port.
+    "kademlia/kademlia/Kademlia.cpp": 1,
 }
 
 PATTERN = re.compile(r"thePrefs\.Get(?:UDP)?Port\(\)")
@@ -57,10 +62,10 @@ def main() -> int:
             failures.append(f"{key}: expected {EXPECTED.get(key, 0)}, found {found.get(key, 0)}")
 
     total = sum(found.values())
-    if total != 53:
-        failures.append(f"total: expected 53, found {total}")
-    if line_count != 52:
-        failures.append(f"lines: expected 52, found {line_count}")
+    if total != 55:
+        failures.append(f"total: expected 55, found {total}")
+    if line_count != 54:
+        failures.append(f"lines: expected 54, found {line_count}")
 
     if failures:
         print("Direct-port inventory drift detected:")

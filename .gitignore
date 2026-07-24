@@ -67,11 +67,14 @@ miniupnp_temp/
 .vs/
 .vscode/
 .idea/
+.claude/settings.local.json
 *.user
 *.suo
 *.aps
 
 # Misc local files
+**/__pycache__/
+*.py[cod]
 cache.met
 msbuild_path.txt
 node_modules/

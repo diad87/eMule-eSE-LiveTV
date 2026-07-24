@@ -45,6 +45,9 @@ function start(opts) {
   if (!validation.valid) {
     return { success: false, error: validation.error };
   }
+  if (opts.source.type === 'url' && !opts.source._resolvedUrl) {
+    return { success: false, error: 'URL source must be DNS-resolved before use' };
+  }
 
   const outputDir = opts.outputDir;
   const playlistPath = path.join(outputDir, 'stream.m3u8');
@@ -135,6 +138,16 @@ function start(opts) {
   });
 
   return { success: true };
+}
+
+/**
+ * Resolve and pin URL sources before handing them to the synchronous starter.
+ * Non-URL sources pass through unchanged.
+ */
+async function startResolved(opts) {
+  const prepared = await sourceSelector.prepareSource(opts.source);
+  if (!prepared.valid) return { success: false, error: prepared.error };
+  return start({ ...opts, source: prepared.source });
 }
 
 /**
@@ -267,4 +280,4 @@ function cleanSegments(dir) {
   } catch (e) { console.warn('[eSE Live] cleanSegments error:', e.message); }
 }
 
-module.exports = { start, stop, getStatus };
+module.exports = { start, startResolved, stop, getStatus };

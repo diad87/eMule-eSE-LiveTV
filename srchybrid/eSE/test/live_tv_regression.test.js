@@ -597,3 +597,120 @@ test('--selftest verifies signed chunk ingest and returns failure to the caller'
     assert.match(preferences, new RegExp(`WriteBool\\(_T\\("${persistedGate}"\\)`));
   }
 });
+
+test('cross-site browser requests cannot inherit localhost trust', () => {
+  const security = require('../security');
+  security.init({ tunnel: { CONFIG: { accessToken: '0123456789abcdef0123456789abcdef' } }, trustedProxies: [] });
+  security._test.resetRateState();
+  const target = new URL('http://localhost:8080/api/settings');
+
+  const crossOrigin = {
+    method: 'POST',
+    headers: { host: 'localhost:8080', origin: 'https://attacker.example' },
+    socket: { remoteAddress: '127.0.0.1', encrypted: false }
+  };
+  const deniedByOrigin = fakeResponse();
+  assert.equal(security.apply(target, crossOrigin, deniedByOrigin), false);
+  assert.equal(deniedByOrigin.statusCode, 403);
+
+  const crossSiteSubresource = {
+    method: 'GET',
+    headers: { host: 'localhost:8080', 'sec-fetch-site': 'cross-site' },
+    socket: { remoteAddress: '::1', encrypted: false }
+  };
+  const deniedByMetadata = fakeResponse();
+  assert.equal(security.apply(target, crossSiteSubresource, deniedByMetadata), false);
+  assert.equal(deniedByMetadata.statusCode, 403);
+
+  const sameOrigin = {
+    method: 'POST',
+    headers: { host: 'localhost:8080', origin: 'http://localhost:8080' },
+    socket: { remoteAddress: '127.0.0.1', encrypted: false }
+  };
+  assert.equal(security.apply(target, sameOrigin, fakeResponse()), true);
+});
+
+test('malformed percent escapes in cookies fail closed instead of throwing', () => {
+  const security = require('../security');
+  security.init({ tunnel: { CONFIG: { accessToken: '0123456789abcdef0123456789abcdef' } }, trustedProxies: [] });
+  security._test.resetRateState();
+  const req = {
+    method: 'GET',
+    headers: { host: 'localhost:8080', cookie: 'ese_access=%E0%A4%A' },
+    socket: { remoteAddress: '203.0.113.50', encrypted: false }
+  };
+  const res = fakeResponse();
+  assert.doesNotThrow(() => security.apply(new URL('http://localhost:8080/api/settings'), req, res));
+  assert.equal(res.statusCode, 401);
+});
+
+test('request body reader enforces its byte limit', async () => {
+  const { PassThrough } = require('node:stream');
+  const utils = require('../utils');
+  const req = new PassThrough();
+  req.headers = {};
+
+  const result = new Promise(resolve => {
+    utils.readBodyLimited(req, { limit: 4 }, (err, body) => resolve({ err, body }));
+  });
+  req.end('12345');
+
+  const { err, body } = await result;
+  assert.equal(err.code, 'BODY_TOO_LARGE');
+  assert.equal(err.statusCode, 413);
+  assert.equal(body, undefined);
+});
+
+test('log and download UI render untrusted text without HTML event handlers', () => {
+  const server = read(eseRoot, 'server.js');
+  const logRoute = read(eseRoot, 'debug_log.js');
+  const myList = read(eseRoot, 'pages', 'mylist_page.js');
+
+  assert.match(server, /document\.createTextNode/);
+  assert.doesNotMatch(server, /pre\.innerHTML\s*=\s*colorize/);
+  assert.doesNotMatch(logRoute, /Access-Control-Allow-Origin['"]?\s*:\s*['"]\*/);
+  assert.match(myList, /data-dl-cancel/);
+  assert.doesNotMatch(myList, /onclick="dlCancel/);
+});
+
+test('download metadata reaches the eMule API adapter', () => {
+  const server = read(eseRoot, 'server.js');
+  assert.match(
+    server,
+    /function emuleDownload\(h, cb, meta\)\s*\{\s*return emuleApi\.emuleDownload\(h, cb, meta\);\s*\}/
+  );
+});
+
+test('URL sources resolve publicly and are pinned before FFmpeg starts', async () => {
+  const selector = require('../eSE-live/source_selector');
+
+  assert.equal(selector.isAllowedInputUrl('http://127.0.0.1/video'), false);
+  assert.equal(selector.isAllowedInputUrl('http://[::1]/video'), false);
+  assert.equal(selector.isAllowedInputUrl('http://[::ffff:127.0.0.1]/video'), false);
+
+  const privateDns = await selector.resolveAndPinInputUrl(
+    'http://media.example/video',
+    async () => [{ address: '192.168.1.8', family: 4 }]
+  );
+  assert.equal(privateDns.valid, false);
+
+  const publicDns = await selector.resolveAndPinInputUrl(
+    'http://media.example:8080/video',
+    async () => [{ address: '93.184.216.34', family: 4 }]
+  );
+  assert.equal(publicDns.valid, true);
+  assert.equal(publicDns.url, 'http://93.184.216.34:8080/video');
+
+  const prepared = await selector.prepareSource(
+    { type: 'url', id: 'http://media.example:8080/video' },
+    async () => [{ address: '93.184.216.34', family: 4 }]
+  );
+  assert.equal(prepared.valid, true);
+  const args = selector.buildInputArgs(prepared.source);
+  assert.ok(args.includes('http://93.184.216.34:8080/video'));
+  assert.ok(args.includes('-max_redirects'));
+  assert.throws(
+    () => selector.buildInputArgs({ type: 'url', id: 'http://media.example/video' }),
+    /DNS-resolved/
+  );
+});

@@ -1439,7 +1439,7 @@ function trySmartSource(index) {
   // Start download
   setTimeout(function() {
     if (statusEl) statusEl.textContent = 'Iniciando descarga: ' + best.fileName.substring(0, 50) + '...';
-    fetch('/api/emule/download?hash=' + encodeURIComponent(best.hash))
+    fetch('/api/emule/download?hash=' + encodeURIComponent(best.hash), { headers: { 'X-Requested-With': 'eSE' } })
       .then(function(r) { return r.json(); })
       .then(function(dlData) {
         if (dlData.success) {
@@ -1732,7 +1732,7 @@ function smartSearchOverlay(title) {
 
 function downloadSource(hash) {
   if (!hash) return;
-  fetch('/api/emule/download?hash=' + encodeURIComponent(hash)).then(function(r) { return r.json(); }).then(function(data) {
+  fetch('/api/emule/download?hash=' + encodeURIComponent(hash), { headers: { 'X-Requested-With': 'eSE' } }).then(function(r) { return r.json(); }).then(function(data) {
     if (data.success) {
       showNotification(' Descarga iniciada en eMule');
     } else {
@@ -1746,7 +1746,7 @@ function downloadSource(hash) {
 function streamSource(hash, movieTitle) {
   // Download + immediately start streaming the specific source the user chose
   if (!hash) return;
-  fetch('/api/emule/download?hash=' + encodeURIComponent(hash)).then(function(r) { return r.json(); }).then(function(data) {
+  fetch('/api/emule/download?hash=' + encodeURIComponent(hash), { headers: { 'X-Requested-With': 'eSE' } }).then(function(r) { return r.json(); }).then(function(data) {
     if (data.success) {
       showNotification(' Descarga iniciada — preparando streaming...');
       

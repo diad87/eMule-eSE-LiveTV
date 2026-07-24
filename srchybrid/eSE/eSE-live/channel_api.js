@@ -20,6 +20,7 @@ const thumbExtractor = require('./thumbnail_extractor');
 const cfTunnel = require('./cloudflare_tunnel');
 const updateNotifier = require('./update_notifier');  // D6: GitHub release polling
 const nodesBootstrap = require('./nodes_bootstrap');
+const utils = require('../utils');
 
 const HLS_LIVE_DIR = path.join(os.tmpdir(), 'eMule_RTMP');
 const LIVE_DIR = HLS_LIVE_DIR;
@@ -359,6 +360,12 @@ function handleRoute(url, req, res, ctx) {
   // endpoint parses query params regardless of method). The change persists on
   // eMule's side (mirrored into prefs, saved on exit).
   if (p === '/api/live/privacy') {
+    const changesPrivacy = url.searchParams.has('mode') || url.searchParams.has('fallback');
+    if (changesPrivacy && req.method !== 'POST') {
+      res.setHeader('Allow', 'POST');
+      jsonResponse(res, 405, { error: 'method_not_allowed', expected: 'POST' });
+      return true;
+    }
     // SSRF hardening (CodeQL js/request-forgery): pin the upstream host/port to the LOCAL
     // eMule via the options object (no user string in the host), and forward only the known
     // params re-encoded — so no user-controlled value can redirect the request.
@@ -487,7 +494,7 @@ function handleRoute(url, req, res, ctx) {
       'else{st.textContent="No se pudo leer el estado (¿eMule abierto en este equipo?)"}}' +
       'function load(){fetch("/api/live/privacy").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="eMule no responde"})}' +
       'sel.addEventListener("change",function(){st.textContent="Aplicando…";' +
-      'fetch("/api/live/privacy?mode="+encodeURIComponent(sel.value)).then(function(r){return r.json()}).then(function(d){show(d);if(d&&d.mode)st.textContent="Guardado: "+d.mode+" — persiste al cerrar eMule"}).catch(function(){st.textContent="eMule no responde"})});' +
+      'fetch("/api/live/privacy?mode="+encodeURIComponent(sel.value),{method:"POST",headers:{"X-Requested-With":"eSE"}}).then(function(r){return r.json()}).then(function(d){show(d);if(d&&d.mode)st.textContent="Guardado: "+d.mode+" — persiste al cerrar eMule"}).catch(function(){st.textContent="eMule no responde"})});' +
       // Tunnel-circuit tester remains a manual diagnostic; Adaptive/Tunneled now auto-seed.
       'var tc=document.getElementById("ese-test-circ");var rc=document.getElementById("ese-refresh-circ");' +
       'var cstat=document.getElementById("ese-circ-status");var clist=document.getElementById("ese-circ-list");' +
@@ -658,6 +665,11 @@ function handleRoute(url, req, res, ctx) {
 
   // === POST /api/live/first_run/dismiss — User clicked "Got it" ===
   if (p === '/api/live/first_run/dismiss') {
+    if (req.method !== 'POST') {
+      res.setHeader('Allow', 'POST');
+      jsonResponse(res, 405, { error: 'method_not_allowed', expected: 'POST' });
+      return true;
+    }
     const ok = markFirstRunSeen();
     jsonResponse(res, 200, { success: ok });
     return true;
@@ -687,16 +699,26 @@ function handleRoute(url, req, res, ctx) {
     return true;
   }
 
-  // === GET /api/live/broadcast/start — Proxy: trigger broadcast from web ===
+  // === POST /api/live/broadcast/start — Proxy: trigger broadcast from web ===
   // Source: testpattern (default) | screen | file | rtmp
   if (p === '/api/live/broadcast/start') {
+    if (req.method !== 'POST') {
+      res.setHeader('Allow', 'POST');
+      jsonResponse(res, 405, { error: 'method_not_allowed', expected: 'POST' });
+      return true;
+    }
     const qs = url.search || '';
     proxyEmuleJson(res, '/api/live/broadcast/start' + qs, 20000);
     return true;
   }
 
-  // === GET /api/live/broadcast/stop — Proxy: stop broadcast ===
+  // === POST /api/live/broadcast/stop — Proxy: stop broadcast ===
   if (p === '/api/live/broadcast/stop') {
+    if (req.method !== 'POST') {
+      res.setHeader('Allow', 'POST');
+      jsonResponse(res, 405, { error: 'method_not_allowed', expected: 'POST' });
+      return true;
+    }
     proxyEmuleJson(res, '/api/live/broadcast/stop', 5000);
     return true;
   }
@@ -856,7 +878,8 @@ function handleRoute(url, req, res, ctx) {
   // Node-only FFmpeg pipeline and reported a channel that never entered the
   // eMule P2P mesh.  Route supported sources through the canonical C++ engine.
   if (p === '/api/live/start' && req.method === 'POST') {
-    readBody(req, (body) => {
+    readBody(req, (bodyErr, body) => {
+      if (bodyErr) return bodyReadError(res, bodyErr);
       try {
         const config = JSON.parse(body);
         const source = String(config.sourceType || 'screen').toLowerCase();
@@ -1012,7 +1035,8 @@ function handleRoute(url, req, res, ctx) {
 
   // === POST /api/live/favorites — Add/remove favorite ===
   if (p === '/api/live/favorites' && req.method === 'POST') {
-    readBody(req, (body) => {
+    readBody(req, (bodyErr, body) => {
+      if (bodyErr) return bodyReadError(res, bodyErr);
       try {
         const data = JSON.parse(body);
         if (data.action === 'add') {
@@ -1030,7 +1054,8 @@ function handleRoute(url, req, res, ctx) {
 
   // === POST /api/live/rtmp/start — Start RTMP ingest for OBS ===
   if (p === '/api/live/rtmp/start' && req.method === 'POST') {
-    readBody(req, (body) => {
+    readBody(req, (bodyErr, body) => {
+      if (bodyErr) return bodyReadError(res, bodyErr);
       try {
         const config = JSON.parse(body);
         streamMeta.title = config.title || 'OBS Stream';
@@ -1082,7 +1107,8 @@ function handleRoute(url, req, res, ctx) {
 
   // === POST /api/live/tunnel/start — Start WebSocket tunnel ===
   if (p === '/api/live/tunnel/start' && req.method === 'POST') {
-    readBody(req, (body) => {
+    readBody(req, (bodyErr, body) => {
+      if (bodyErr) return bodyReadError(res, bodyErr);
       try {
         const config = JSON.parse(body);
         const result = wsTunnel.startServer({
@@ -1685,9 +1711,15 @@ function requestEmuleJson(endpoint, timeoutMs, callback) {
 }
 
 function readBody(req, cb) {
-  let body = '';
-  req.on('data', d => body += d);
-  req.on('end', () => cb(body));
+  utils.readBodyLimited(req, cb);
+}
+
+function bodyReadError(res, err) {
+  const tooLarge = err && err.code === 'BODY_TOO_LARGE';
+  jsonResponse(res, tooLarge ? 413 : 400, {
+    success: false,
+    error: tooLarge ? 'request_body_too_large' : 'invalid_request_body'
+  });
 }
 
 // Background poller to sync eMule channels with our local directory

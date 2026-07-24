@@ -533,7 +533,10 @@ fetch('/api/eSE/update/check').then(function(r){return r.json();}).then(function
       var btn = this;
       btn.disabled = true;
       btn.textContent = '⏳ Iniciando...';
-      fetch('/api/live/broadcast/start?source=testpattern&title=eSE+Demo&bitrate=1500')
+      fetch('/api/live/broadcast/start?source=testpattern&title=eSE+Demo&bitrate=1500', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'eSE' }
+      })
         .then(function(r){return r.json();})
         .then(function(d){
           clearInterval(pollHandle);

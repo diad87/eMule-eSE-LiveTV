@@ -92,7 +92,7 @@ const OMDB_KEY = tmdbApi.OMDB_KEY;
 
 function emuleRequest(url, cb)  { return emuleApi.emuleRequest(url, cb); }
 function emuleSearch(q, s, cb)  { return emuleApi.emuleSearch(q, s, cb); }
-function emuleDownload(h, cb)   { return emuleApi.emuleDownload(h, cb); }
+function emuleDownload(h, cb, meta) { return emuleApi.emuleDownload(h, cb, meta); }
 function emuleTransferAction(params, cb) { return emuleApi.emuleTransferAction(params, cb); }
 function emuleAddEd2kLink(l, cb){ return emuleApi.emuleAddEd2kLink(l, cb); }
 function autoLoginEmule()       { return emuleApi.autoLoginEmule(); }

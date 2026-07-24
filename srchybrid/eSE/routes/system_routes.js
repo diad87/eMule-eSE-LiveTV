@@ -1,6 +1,7 @@
 'use strict';
 const aiAssistant = require('../ai_assistant');
 const aiOAuth     = require('../ai_oauth');
+const utils       = require('../utils');
 
 let _ctx = {};
 
@@ -12,9 +13,15 @@ function init(ctx) {
 function handle(url, req, res) {
   // ── AI: Test API key connectivity ──────────────────────────────────────────
   if (url.pathname === '/api/ai/test' && req.method === 'POST') {
-    let body = '';
-    req.on('data', d => body += d);
-    req.on('end', () => {
+    utils.readBodyLimited(req, (bodyErr, body) => {
+      if (bodyErr) {
+        const code = bodyErr.code === 'BODY_TOO_LARGE' ? 413 : 400;
+        res.writeHead(code, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({
+          ok: false,
+          message: code === 413 ? 'Request body too large' : 'Invalid request body'
+        }));
+      }
       try {
         const { provider, apiKey } = JSON.parse(body);
         if (!provider || !apiKey) {

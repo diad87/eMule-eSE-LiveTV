@@ -6,6 +6,85 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+
+function bodyTooLargeError(limit) {
+  const err = new Error('Request body exceeds ' + limit + ' bytes');
+  err.code = 'BODY_TOO_LARGE';
+  err.statusCode = 413;
+  return err;
+}
+
+function readBodyLimited(req, options, callback) {
+  if (typeof options === 'function') {
+    callback = options;
+    options = {};
+  }
+  options = options || {};
+  const limit = Number.isSafeInteger(options.limit) && options.limit > 0
+    ? options.limit
+    : DEFAULT_MAX_BODY_BYTES;
+  const declaredLength = Number(req.headers && req.headers['content-length']);
+  let settled = false;
+  let total = 0;
+  const chunks = [];
+
+  function cleanup() {
+    req.removeListener('data', onData);
+    req.removeListener('end', onEnd);
+    req.removeListener('error', onError);
+    req.removeListener('aborted', onAborted);
+  }
+
+  function finish(err, body) {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    callback(err, body);
+  }
+
+  function rejectTooLarge() {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    // Drain the socket so keep-alive connections remain usable. Suppress a
+    // late stream error after the response callback has already completed.
+    req.on('error', () => {});
+    req.resume();
+    callback(bodyTooLargeError(limit));
+  }
+
+  function onData(chunk) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > limit) return rejectTooLarge();
+    chunks.push(buffer);
+  }
+
+  function onEnd() {
+    finish(null, Buffer.concat(chunks, total).toString('utf8'));
+  }
+
+  function onError(err) {
+    finish(err);
+  }
+
+  function onAborted() {
+    const err = new Error('Request body aborted');
+    err.code = 'REQUEST_ABORTED';
+    finish(err);
+  }
+
+  if (Number.isFinite(declaredLength) && declaredLength > limit) {
+    return process.nextTick(rejectTooLarge);
+  }
+
+  req.on('data', onData);
+  req.on('end', onEnd);
+  req.on('error', onError);
+  req.on('aborted', onAborted);
+}
+
 // ─── FFMPEG ────────────────────────────────────────────────────
 
 function findFileRecursive(dir, filename) {
@@ -195,6 +274,8 @@ module.exports = {
   loadSettings,
   saveSettings,
   DEFAULT_SETTINGS,
+  DEFAULT_MAX_BODY_BYTES,
+  readBodyLimited,
   safeBasename,
   isPathWithin
 };

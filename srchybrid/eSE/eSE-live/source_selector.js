@@ -8,6 +8,8 @@
 
 const fs = require('fs');   // BUG-067 FIX: hoisted from validateSource()
 const path = require('path');
+const dns = require('dns');
+const net = require('net');
 
 /**
  * @typedef {Object} SourceConfig
@@ -69,11 +71,24 @@ function buildInputArgs(source) {
       break;
 
     case 'url':
-      // External URL (IPTV, webcam IP, etc.)
+      // Hostnames are resolved and pinned before FFmpeg starts. Passing the
+      // original hostname here would re-open the DNS-rebinding/TOCTOU gap.
+      if (!source._resolvedUrl) {
+        throw new Error('URL source must be DNS-resolved before use');
+      }
+      if (/^https?:/i.test(source._resolvedUrl)) {
+        args.push('-max_redirects', '0');
+        if (source._originalHost) {
+          args.push('-headers', 'Host: ' + source._originalHost + '\r\n');
+        }
+        if (/^https:/i.test(source._resolvedUrl) && source._originalHostname) {
+          args.push('-tls_verify', '1', '-verifyhost', source._originalHostname);
+        }
+      }
       args.push('-reconnect', '1');
       args.push('-reconnect_streamed', '1');
       args.push('-reconnect_delay_max', '5');
-      args.push('-i', source.id);
+      args.push('-i', source._resolvedUrl);
       break;
 
     case 'capture':
@@ -239,36 +254,159 @@ function isSafePath(filePath) {
   return true;
 }
 
-// BUG-066 FIX: Validate streaming URLs — block private/internal IPs to prevent SSRF
-function isAllowedInputUrl(value) {
-  const ALLOWED_PROTOCOLS = ['http:', 'https:', 'rtsp:', 'rtmp:', 'rtmps:', 'srt:', 'udp:'];
-  // RFC 1918, loopback, link-local, carrier-grade NAT
-  const PRIVATE_IP_PATTERNS = [
-    /^127\./,
-    /^10\./,
-    /^172\.(1[6-9]|2\d|3[01])\./,
-    /^192\.168\./,
-    /^169\.254\./,
-    /^0\./,
-    /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./,
-    /^::1$/,
-    /^fc00:/i,
-    /^fe80:/i,
-    /^fd/i,
-    /^localhost$/i,
-  ];
-  try {
-    const u = new URL(String(value));
-    if (!ALLOWED_PROTOCOLS.includes(u.protocol)) return false;
-    const host = u.hostname.toLowerCase();
-    if (!host) return false;
-    for (const pattern of PRIVATE_IP_PATTERNS) {
-      if (pattern.test(host)) return false;
-    }
-    return true;
-  } catch (e) {
-    return false;
+const ALLOWED_INPUT_PROTOCOLS = new Set([
+  'http:', 'https:', 'rtsp:', 'rtmp:', 'rtmps:', 'srt:', 'udp:'
+]);
+
+function normalizeHostname(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '')
+    .split('%')[0]
+    .toLowerCase();
+}
+
+function isPrivateIpv4(address) {
+  const parts = address.split('.').map(Number);
+  if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+  const [a, b] = parts;
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    a >= 224
+  );
+}
+
+function ipv6ToBigInt(address) {
+  let input = normalizeHostname(address);
+  if (input.includes('.')) {
+    const lastColon = input.lastIndexOf(':');
+    const v4 = input.slice(lastColon + 1).split('.').map(Number);
+    if (v4.length !== 4 || v4.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+    input = input.slice(0, lastColon) + ':' +
+      ((v4[0] << 8) | v4[1]).toString(16) + ':' +
+      ((v4[2] << 8) | v4[3]).toString(16);
   }
+
+  const halves = input.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || missing < 0) return null;
+  const words = halves.length === 2
+    ? [...left, ...Array(missing).fill('0'), ...right]
+    : left;
+  if (words.length !== 8 || words.some(w => !/^[0-9a-f]{1,4}$/i.test(w))) return null;
+  return words.reduce((acc, word) => (acc << 16n) | BigInt(parseInt(word, 16)), 0n);
+}
+
+function isPrivateOrLocalAddress(value) {
+  const address = normalizeHostname(value);
+  const family = net.isIP(address);
+  if (family === 4) return isPrivateIpv4(address);
+  if (family !== 6) return true;
+
+  const numeric = ipv6ToBigInt(address);
+  if (numeric === null || numeric === 0n || numeric === 1n) return true;
+  if ((numeric >> 120n) === 0xffn) return true;       // multicast
+  if ((numeric >> 121n) === 0x7en) return true;      // fc00::/7 unique-local
+  if ((numeric >> 118n) === 0x3fan) return true;     // fe80::/10 link-local
+  if ((numeric >> 118n) === 0x3fbn) return true;     // fec0::/10 site-local
+
+  if ((numeric >> 32n) === 0xffffn) {
+    const v4 = Number(numeric & 0xffffffffn);
+    return isPrivateIpv4([
+      (v4 >>> 24) & 255,
+      (v4 >>> 16) & 255,
+      (v4 >>> 8) & 255,
+      v4 & 255
+    ].join('.'));
+  }
+  return false;
+}
+
+function parseAllowedInputUrl(value) {
+  try {
+    const parsed = new URL(String(value));
+    if (!ALLOWED_INPUT_PROTOCOLS.has(parsed.protocol)) return null;
+    const hostname = normalizeHostname(parsed.hostname);
+    if (!hostname || hostname === 'localhost') return null;
+    if (net.isIP(hostname) && isPrivateOrLocalAddress(hostname)) return null;
+    return parsed;
+  } catch (e) {
+    return null;
+  }
+}
+
+function isAllowedInputUrl(value) {
+  return !!parseAllowedInputUrl(value);
+}
+
+async function resolveAndPinInputUrl(value, lookup) {
+  const parsed = parseAllowedInputUrl(value);
+  if (!parsed) return { valid: false, error: 'Invalid or private URL' };
+
+  const hostname = normalizeHostname(parsed.hostname);
+  let addresses;
+  try {
+    if (net.isIP(hostname)) {
+      addresses = [{ address: hostname, family: net.isIP(hostname) }];
+    } else {
+      const resolve = lookup || dns.promises.lookup;
+      addresses = await resolve(hostname, { all: true, verbatim: true });
+    }
+  } catch (e) {
+    return { valid: false, error: 'DNS lookup failed: ' + e.message };
+  }
+
+  if (!Array.isArray(addresses)) addresses = [addresses];
+  if (!addresses.length || addresses.some(entry =>
+    !entry || !net.isIP(normalizeHostname(entry.address)) ||
+    isPrivateOrLocalAddress(entry.address)
+  )) {
+    return { valid: false, error: 'URL resolves to a private or invalid address' };
+  }
+
+  const selected = addresses[0];
+  const pinned = new URL(parsed.href);
+  pinned.hostname = Number(selected.family) === 6
+    ? '[' + normalizeHostname(selected.address) + ']'
+    : normalizeHostname(selected.address);
+  return {
+    valid: true,
+    url: pinned.href,
+    address: normalizeHostname(selected.address),
+    originalHost: parsed.host,
+    originalHostname: hostname
+  };
+}
+
+async function prepareSource(source, lookup) {
+  const validation = validateSource(source);
+  if (!validation.valid) return validation;
+  if (source.type !== 'url') return { valid: true, source: { ...source } };
+
+  const resolved = await resolveAndPinInputUrl(source.id, lookup);
+  if (!resolved.valid) return resolved;
+  return {
+    valid: true,
+    source: {
+      ...source,
+      _resolvedUrl: resolved.url,
+      _originalHost: resolved.originalHost,
+      _originalHostname: resolved.originalHostname,
+      _resolvedAddress: resolved.address
+    }
+  };
 }
 
 // BUG-056 FIX: RTMP URLs must be localhost only
@@ -288,6 +426,9 @@ module.exports = {
   validateSource,
   findLoopbackDevice,
   isAllowedInputUrl,
+  isPrivateOrLocalAddress,
+  resolveAndPinInputUrl,
+  prepareSource,
   isAllowedRtmpUrl,
   isSafeDshowName
 };

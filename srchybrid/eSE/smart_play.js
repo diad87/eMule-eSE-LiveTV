@@ -305,7 +305,7 @@ function trySmartSource(index) {
     // is no longer in its live search list (multi-variant search wipes it).
     var dlUrl = '/api/emule/download?hash=' + encodeURIComponent(best.hash);
     if (best.sizeBytes > 0) dlUrl += '&size=' + best.sizeBytes + '&name=' + encodeURIComponent(best.fileName || '');
-    fetch(dlUrl)
+    fetch(dlUrl, { headers: { 'X-Requested-With': 'eSE' } })
       .then(function(r) { return r.json(); })
       .then(function(dlData) {
         if (dlData.success) {

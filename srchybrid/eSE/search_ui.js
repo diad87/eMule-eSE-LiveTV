@@ -449,7 +449,7 @@ function smartSearchOverlay(title) {
 // ── Acciones de descarga/streaming ────────────────────────────────────────────
 function downloadSource(hash) {
   if (!hash) return;
-  fetch('/api/emule/download?hash=' + encodeURIComponent(hash)).then(function(r) { return r.json(); }).then(function(data) {
+  fetch('/api/emule/download?hash=' + encodeURIComponent(hash), { headers: { 'X-Requested-With': 'eSE' } }).then(function(r) { return r.json(); }).then(function(data) {
     if (data.success) {
       showNotification(' Descarga iniciada en eMule');
     } else {
@@ -462,7 +462,7 @@ function downloadSource(hash) {
 
 function streamSource(hash, movieTitle) {
   if (!hash) return;
-  fetch('/api/emule/download?hash=' + encodeURIComponent(hash)).then(function(r) { return r.json(); }).then(function(data) {
+  fetch('/api/emule/download?hash=' + encodeURIComponent(hash), { headers: { 'X-Requested-With': 'eSE' } }).then(function(r) { return r.json(); }).then(function(data) {
     if (data.success) {
       showNotification(' Descarga iniciada — preparando streaming...');
 

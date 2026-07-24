@@ -2,24 +2,38 @@
 const fs           = require('fs');
 const path         = require('path');
 const aiAssistant  = require('../ai_assistant');
+const utils         = require('../utils');
 
 let _ctx = {};
 
 function init(ctx) { _ctx = ctx; }
 
 function readJsonBody(req, callback) {
-  let body = '';
-  req.on('data', d => body += d);
-  req.on('end', () => {
+  utils.readBodyLimited(req, (err, body) => {
+    if (err) return callback(err);
     if (!body.trim()) return callback(null, {});
-    try { callback(null, JSON.parse(body)); }
-    catch (e) { callback(e); }
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    }
+    catch (e) { return callback(e); }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return callback(new Error('JSON body must be an object'));
+    }
+    callback(null, parsed);
   });
 }
 
 function sendJson(res, code, data) {
   res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(data));
+}
+
+function sendBodyError(res, err) {
+  if (err && err.code === 'BODY_TOO_LARGE') {
+    return sendJson(res, 413, { success: false, error: 'request_body_too_large' });
+  }
+  return sendJson(res, 400, { success: false, error: 'Invalid JSON' });
 }
 
 function handle(url, req, res) {
@@ -32,22 +46,14 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/settings' && req.method === 'POST') {
-    let body = '';
-    req.on('data', d => body += d);
-    req.on('end', () => {
-      try {
-        const newSettings = JSON.parse(body);
-        const current = _ctx.loadSettings();
-        if (_ctx.security) _ctx.security.mergeSettings(current, newSettings);
-        else Object.assign(current, newSettings);
-        _ctx.saveSettings(current);
-        const safeSettings = _ctx.security ? _ctx.security.redactSettings(current) : current;
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(safeSettings));
-      } catch(e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON' }));
-      }
+    readJsonBody(req, (err, newSettings) => {
+      if (err) return sendBodyError(res, err);
+      const current = _ctx.loadSettings();
+      if (_ctx.security) _ctx.security.mergeSettings(current, newSettings);
+      else Object.assign(current, newSettings);
+      _ctx.saveSettings(current);
+      const safeSettings = _ctx.security ? _ctx.security.redactSettings(current) : current;
+      sendJson(res, 200, safeSettings);
     });
     return true;
   }
@@ -113,18 +119,28 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/emule/download') {
-    const hash = url.searchParams.get('hash') || '';
-    if (!hash) { res.writeHead(400); res.end('{}'); return true; }
-    // Optional exact metadata from the caller. When present it lets eMule add
-    // the file by full ed2k link (works even if the hash is no longer in eMule's
-    // live search list) without relying on the server-side result cache.
-    const name = url.searchParams.get('name') || '';
-    const size = parseInt(url.searchParams.get('size'), 10);
-    const meta = (Number.isFinite(size) && size > 0) ? { name, size } : undefined;
-    _ctx.emuleDownload(hash, (err, ok) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: ok, error: err ? err.message : null }));
-    }, meta);
+    const run = (params) => {
+      const hash = String(params.hash || '');
+      if (!hash) return sendJson(res, 400, { success: false, error: 'missing_hash' });
+      const name = String(params.name || '');
+      const size = parseInt(params.size, 10);
+      const meta = (Number.isFinite(size) && size > 0) ? { name, size } : undefined;
+      _ctx.emuleDownload(hash, (err, ok) => {
+        sendJson(res, 200, { success: ok, error: err ? err.message : null });
+      }, meta);
+    };
+
+    if (req.method === 'POST') {
+      readJsonBody(req, (err, body) => {
+        if (err) return sendBodyError(res, err);
+        run(body || {});
+      });
+    } else if (req.method === 'GET' && req.headers['x-requested-with']) {
+      run(Object.fromEntries(url.searchParams.entries()));
+    } else {
+      res.writeHead(405, { 'Content-Type': 'application/json', 'Allow': 'POST' });
+      res.end(JSON.stringify({ error: 'method_not_allowed', expected: 'POST or GET with X-Requested-With header' }));
+    }
     return true;
   }
 
@@ -145,7 +161,7 @@ function handle(url, req, res) {
     // while staying same-origin friendly for the existing fetch()-based UI.
     if (req.method === 'POST') {
       readJsonBody(req, (err, body) => {
-        if (err) return sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+        if (err) return sendBodyError(res, err);
         run(body || {});
       });
     } else if (req.method === 'GET' && req.headers['x-requested-with']) {
@@ -304,18 +320,9 @@ function handle(url, req, res) {
   }
 
   if (url.pathname === '/api/emule/ed2klink' && req.method === 'POST') {
-    let body = '';
-    req.on('data', d => body += d);
-    req.on('end', () => {
-      let link = '';
-      try {
-        const parsed = JSON.parse(body);
-        link = (parsed.link || '').trim();
-      } catch(e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, error: 'JSON inválido' }));
-        return;
-      }
+    readJsonBody(req, (bodyErr, body) => {
+      if (bodyErr) return sendBodyError(res, bodyErr);
+      const link = String(body.link || '').trim();
 
       if (!link) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -339,12 +346,10 @@ function handle(url, req, res) {
   // "Mi Biblioteca" panel. Guarded by safeBasename + isPathWithin to refuse
   // any path-traversal attempts; the server is publicly reachable via UPnP.
   if (url.pathname === '/api/emule/completed/delete' && req.method === 'POST') {
-    let body = '';
-    req.on('data', d => body += d);
-    req.on('end', () => {
+    readJsonBody(req, (err, body) => {
+      if (err) return sendBodyError(res, err);
       try {
-        const { fileName } = JSON.parse(body || '{}');
-        const utils = require('../utils');
+        const { fileName } = body || {};
         const safe = utils.safeBasename(fileName);
         if (!safe) return sendJson(res, 400, { success: false, error: 'bad_filename' });
         const incoming = _ctx.EMULE_INCOMING;

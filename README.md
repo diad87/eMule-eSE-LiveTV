@@ -1,6 +1,6 @@
 # 🐴 eMule eSE — Live TV Edition
 
-[![Public beta](https://img.shields.io/badge/public%20beta-9.0.0--beta.1-orange)](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.0.0-beta.1)
+[![Public beta](https://img.shields.io/badge/public%20beta-9.1.0--beta.1-orange)](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0-beta.1)
 [![CodeQL](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/codeql.yml/badge.svg)](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/codeql.yml)
 [![License: GPL-2.0](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](license.txt)
 
@@ -11,15 +11,15 @@ Windows x64 package.
 
 ## Download
 
-### [Download eSE 9.0.0-beta.1 for Windows x64](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.0.0-beta.1/eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip)
+### [Download eSE 9.1.0-beta.1 for Windows x64](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.1.0-beta.1/eSE-LiveTV-v0.70b-eSE9.1.0-beta.1-x64.zip)
 
-[SHA-256 checksum](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.0.0-beta.1/eSE-LiveTV-v0.70b-eSE9.0.0-beta.1-x64.zip.sha256)
-· [Release notes](docs/RELEASE_NOTES_v9.0.0-beta.1.md)
+[SHA-256 checksum](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.1.0-beta.1/eSE-LiveTV-v0.70b-eSE9.1.0-beta.1-x64.zip.sha256)
+· [Release notes](docs/RELEASE_NOTES_v9.1.0-beta.1.md)
 · [All releases](https://github.com/diad87/eMule-eSE-LiveTV/releases)
 
 > [!IMPORTANT]
-> 9.0.0-beta.1 is a public network-lab beta, not the stable channel. The latest
-> stable build remains
+> 9.1.0-beta.1 is a public IPv6/Kad6 network-lab beta, not the stable channel.
+> The latest stable build remains
 > [eSE 8.1.0](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE8.1.0).
 
 ### Run it
@@ -73,16 +73,24 @@ The release package contains a structurally checked and SHA-256-pinned
 `nodes.dat`; it does not fetch a mutable bootstrap file while building or
 starting.
 
-### Reachability and IPv6
+### Reachability, native IPv6 and Kad6
 
-The beta adds consent-based NetLab measurements for real-world IPv6, LowID,
-hole-punching and CGNAT behavior. On first run, eSE asks before advertising the
-NetLab capability. Reports stay local and are sanitized; there is no implicit
-central telemetry.
+The 9.1 beta promotes native IPv6 transport between capable eSE peers. Sources,
+callbacks and LiveTV peer lists preserve the full 128-bit address; LiveTV
+direct join accepts `[IPv6]:port`; and SOCKS5 and HTTP CONNECT support IPv6
+destinations. IPv6-only peers use neutral credits, while queue anti-abuse
+accounting groups endpoints by `/64` instead of synthetic IPv4 identities.
 
-NetLab participation does not enable every experimental transport. Punch3,
-port prediction, relay bandwidth donation, KRP and Kad6 public exit remain
-separately gated and **OFF by default**.
+Kad2 and Kad6 remain independently selectable and keep separate routing state.
+A strict same-host IPv6 LiveTV data-plane soak completed two hours at 12 Mbps
+with 468 valid samples and zero IPv4 fallback. This validates the data plane;
+it is not presented as certification between two physical machines or as
+universal public-IPv6 reachability.
+
+NetLab offers separate consent for base measurements, advanced experiments and
+resource contribution. Reports stay local and sanitized. Punch3, port
+prediction, relay contribution, KRP and Kad6 Beta Exit remain separately gated
+and **OFF by default**.
 
 ### Local dashboard and hardening
 
@@ -107,9 +115,9 @@ through Kad. This does not make either endpoint anonymous by itself.
 
 The 8.1 control tunnel hides the viewer from the broadcaster and Kad search
 path, but its production circuit has one relay hop: the exit can identify the
-viewer, and the media path can still be direct. The 9.0.0 beta therefore makes
-no claim of strong anonymity, universal High ID, complete IPv6 support or
-traversal of every NAT.
+viewer, and the media path can still be direct. The 9.1.0 beta therefore makes
+no claim of strong anonymity, universal High ID, IPv6 support through every
+ISP/router combination or traversal of every NAT.
 
 ## Network ports
 
@@ -143,7 +151,7 @@ For a local developer build:
 
 ```powershell
 .\tools\build_all.ps1 `
-  -ReleaseTag v0.70b-eSE9.0.0-beta.1 `
+  -ReleaseTag v0.70b-eSE9.1.0-beta.1 `
   -AllowDirty `
   -MaxCpuCount 1
 ```
@@ -173,7 +181,7 @@ Run the complete local test set with:
 | Document | Purpose |
 |---|---|
 | [User guide](docs/USER_GUIDE.md) | Install, watch, broadcast and troubleshoot |
-| [Beta release notes](docs/RELEASE_NOTES_v9.0.0-beta.1.md) | Safety defaults, limitations and rollback |
+| [Beta release notes](docs/RELEASE_NOTES_v9.1.0-beta.1.md) | IPv6/Kad6 changes, evidence, safety defaults, limitations and rollback |
 | [Architecture](ARCHITECTURE.md) | Runtime processes, data flow and code layout |
 | [Changes from eMule 0.70b](CHANGES_FROM_EMULE_0.70b.md) | Implemented fork changes |
 | [Protocol registry](docs/protocol/PROTOCOL_REGISTRY.md) | Fork wire namespaces and compatibility rules |

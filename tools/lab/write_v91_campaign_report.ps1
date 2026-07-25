@@ -37,6 +37,31 @@ $summary = [ordered]@{
 $jsonPath = Join-Path $root 'V91-CAMPAIGN-FINAL.json'
 $summary | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $jsonPath -Encoding utf8
 
+$manifestItems = [System.Collections.Generic.List[object]]::new()
+$evidencePaths = @($ledger.cases.evidence | Sort-Object -Unique)
+foreach ($relative in $evidencePaths) {
+    $fullPath = Join-Path $root $relative
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "Ledger evidence is missing while building manifest: $relative"
+    }
+    $item = Get-Item -LiteralPath $fullPath
+    $manifestItems.Add([pscustomobject][ordered]@{
+        path = $relative.Replace('\', '/')
+        bytes = $item.Length
+        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $fullPath).Hash.ToLowerInvariant()
+    })
+}
+$manifest = [ordered]@{
+    schema = 'ese.v91.evidence-manifest/v1'
+    generated_at_utc = [DateTime]::UtcNow.ToString('o')
+    candidate_commit = $ledger.candidate_commit
+    candidate_binary_sha256 = $ledger.candidate_binary_sha256
+    evidence_file_count = $manifestItems.Count
+    files = @($manifestItems)
+}
+$manifestPath = Join-Path $root 'V91-EVIDENCE-MANIFEST.json'
+$manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+
 $lines = [System.Collections.Generic.List[string]]::new()
 $lines.Add('# V9.1 mandatory campaign result')
 $lines.Add('')
@@ -69,3 +94,4 @@ $lines | Set-Content -LiteralPath $markdownPath -Encoding utf8
 
 Write-Host "Campaign final JSON written: $jsonPath"
 Write-Host "Campaign final Markdown written: $markdownPath"
+Write-Host "Evidence SHA-256 manifest written: $manifestPath"

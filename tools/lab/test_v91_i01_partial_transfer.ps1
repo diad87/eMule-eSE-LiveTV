@@ -5,15 +5,17 @@ param(
     [ValidateRange(1, 7200)][int]$TimeoutSeconds = 3600,
     [ValidateRange(1048576, 17179869184)][Int64]$FileSizeBytes = 4294967296,
     [string]$FixtureSeedPath = '',
-    [ValidateSet('IPv6', 'IPv4')][string]$TransportFamily = 'IPv6'
+    [ValidateSet('IPv6', 'IPv4')][string]$TransportFamily = 'IPv6',
+    [string]$Commit = ''
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-$candidateCommit = '72a5a41ebeec1bd08bff7ed17df27782930d96e3'
-$candidateSha256 = '82360915292df613320af889e7680c69efcf422df9d8052b3613041a0a42da14'
-$package = (Resolve-Path -LiteralPath $PackagePath).Path
+$candidate = Get-LabCandidateInfo -PackagePath $PackagePath -ExpectedCommit $Commit
+$candidateCommit = $candidate.commit
+$candidateSha256 = $candidate.emule_sha256
+$package = $candidate.package_path
 $output = New-LabDirectory -Path $OutputRoot
 $evidence = New-LabDirectory -Path (Join-Path $output 'evidence')
 $nodes = New-LabDirectory -Path (Join-Path $output 'nodes')

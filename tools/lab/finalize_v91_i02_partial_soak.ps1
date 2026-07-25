@@ -77,7 +77,12 @@ $summary = [ordered]@{
 Write-LabJson -Value $summary -Path (Join-Path $evidence 'summary.json') | Out-Null
 $outcome = if ($failures.Count -eq 0) { 'BLOCKED' } else { 'FAIL' }
 & (Join-Path $PSScriptRoot 'collect_report.ps1') -RunDirectory $evidence `
-    -CaseId 'V91-I02' -Outcome $outcome -Version '9.1.0-beta.1' `
+    -CaseId 'V91-I02' -Outcome $outcome `
+    -Version $(if ($session.candidate_version) {
+        [string]$session.candidate_version
+    } else {
+        'unknown'
+    }) `
     -Commit $session.candidate_commit `
     -Notes 'Exact two-hour IPv6 LiveTV run on isolated candidate profiles; formal T5 topology remains unavailable.'
 if ($failures.Count -gt 0) {

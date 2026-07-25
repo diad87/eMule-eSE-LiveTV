@@ -29,6 +29,61 @@ function Get-LabSha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-LabCandidateInfo {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackagePath,
+        [string]$ExpectedCommit = ''
+    )
+
+    $package = (Resolve-Path -LiteralPath $PackagePath).Path
+    $buildInfoPath = Join-Path $package 'BUILD_INFO.txt'
+    $binaryPath = Join-Path $package 'emule.exe'
+    if (-not (Test-Path -LiteralPath $buildInfoPath -PathType Leaf)) {
+        throw "Candidate package is missing BUILD_INFO.txt: $package"
+    }
+    if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
+        throw "Candidate package is missing emule.exe: $package"
+    }
+
+    $values = @{}
+    foreach ($line in Get-Content -LiteralPath $buildInfoPath) {
+        if ($line -match '^\s*([^:]+):\s*(.*?)\s*$') {
+            $values[$Matches[1].Trim().ToLowerInvariant()] = $Matches[2].Trim()
+        }
+    }
+    $commit = [string]$values['commit']
+    $release = [string]$values['release']
+    $version = [string]$values['version']
+    if ([string]::IsNullOrWhiteSpace($version) -and
+        $release -match '^v0\.70b-eSE(.+)$') {
+        $version = $Matches[1]
+    }
+    $dirty = [string]$values['dirty']
+    if ($commit -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "BUILD_INFO.txt contains an invalid commit: '$commit'"
+    }
+    if ([string]::IsNullOrWhiteSpace($version)) {
+        throw 'BUILD_INFO.txt does not contain a version'
+    }
+    if ($dirty -ne 'false') {
+        throw "Candidate package is not from a clean worktree (dirty: $dirty)"
+    }
+    if ($ExpectedCommit -and
+        $commit -ne $ExpectedCommit) {
+        throw "Candidate commit mismatch: package=$commit expected=$ExpectedCommit"
+    }
+
+    return [pscustomobject][ordered]@{
+        package_path = $package
+        release = $release
+        version = $version
+        commit = $commit.ToLowerInvariant()
+        emule_sha256 = Get-LabSha256 -Path $binaryPath
+        ese_server_sha256 = Get-LabSha256 -Path (Join-Path $package 'ese-server.exe')
+        build_info_sha256 = Get-LabSha256 -Path $buildInfoPath
+    }
+}
+
 function Get-LabStringSha256 {
     param([AllowEmptyString()][string]$Value)
 

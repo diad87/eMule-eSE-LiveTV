@@ -2,16 +2,24 @@
 param(
     [Parameter(Mandatory = $true)][int]$SourceProcessId,
     [Parameter(Mandatory = $true)][int]$ViewerProcessId,
+    [Parameter(Mandatory = $true)][string]$CandidatePackage,
     [Parameter(Mandatory = $true)][string]$OutputRoot,
-    [ValidateRange(600, 43200)][int]$DurationSeconds = 19800
+    [ValidateRange(600, 86400)][int]$DurationSeconds = 43200,
+    [string]$Commit = ''
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
+$candidate = Get-LabCandidateInfo -PackagePath $CandidatePackage `
+    -ExpectedCommit $Commit
 foreach ($id in $SourceProcessId, $ViewerProcessId) {
-    if (-not (Get-Process -Id $id -ErrorAction SilentlyContinue)) {
+    $process = Get-Process -Id $id -ErrorAction SilentlyContinue
+    if (-not $process) {
         throw "Required eMule process is unavailable: $id"
+    }
+    if ((Get-LabSha256 -Path $process.Path) -ne $candidate.emule_sha256) {
+        throw "Process $id is not running the exact candidate binary"
     }
 }
 
@@ -79,9 +87,14 @@ $session = [ordered]@{
     schema = 'ese.v91.o01-partial-session/v1'
     case_id = 'V91-O01'
     formal_status = 'BLOCKED'
-    formal_limitation = 'V91-O01 requires 12 hours and T1/T5; this is a 5.5-hour continuation on two isolated exact-candidate profiles on dual-stack H1 with an active IPv6 Live route.'
-    candidate_commit = '72a5a41ebeec1bd08bff7ed17df27782930d96e3'
-    candidate_binary_sha256 = '82360915292df613320af889e7680c69efcf422df9d8052b3613041a0a42da14'
+    formal_limitation = if ($DurationSeconds -ge 43200) {
+        'The 12-hour duration is covered, but V91-O01 still requires T1/T5; this run uses two isolated exact-candidate profiles on dual-stack H1 with an active IPv6 Live route.'
+    } else {
+        'V91-O01 requires 12 hours and T1/T5; this shorter run uses two isolated exact-candidate profiles on dual-stack H1 with an active IPv6 Live route.'
+    }
+    candidate_version = $candidate.version
+    candidate_commit = $candidate.commit
+    candidate_binary_sha256 = $candidate.emule_sha256
     started_at_utc = Get-LabUtcTimestamp
     requested_duration_seconds = $DurationSeconds
     source_process_id = $SourceProcessId

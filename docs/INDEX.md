@@ -34,6 +34,11 @@ maintain eMule eSE.
 
 ## Maintainer documentation
 
+- [eSE 9.1.0-rc.1 execution plan](V91_RC1_EXECUTION.md)
+  - exact candidate identity, promotion rules, physical/local campaigns and
+  current execution state.
+- [eSE 9.1.0-rc.1 case results](V91_RC1_CASE_RESULTS.json)
+  - machine-readable reconciliation input for the 27-case RC ledger.
 - [eSE 9.x release specification and test plan](V9_RELEASE_SPECIFICATION.md)
   - normative scope, current lab topology, acceptance matrices and development
   plan for versions 9.0 through 9.4.

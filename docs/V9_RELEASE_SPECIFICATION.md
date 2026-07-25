@@ -512,6 +512,10 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | `V91-R01` | `T3` | Cambiar portátil de LAN a hotspot durante sesión | Reconexión limpia, endpoint anterior caduca |
 | `V91-O01` | `T1/T5` | Soak dual-stack 12 h | Sin fuga, duplicados crecientes ni corrupción |
 
+La matriz normativa vigente contiene **27 casos**. El recuento histórico de
+beta.2 era de 26 porque todavía no incluía `V91-A02`; desde beta.3, cualquier
+ledger de RC que omita `V91-A02` es incompleto.
+
 ### 8.7 Gate de salida 9.1
 
 - Toda la matriz IPv4-only, IPv6-only y dual-stack pasa.

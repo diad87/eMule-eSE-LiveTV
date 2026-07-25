@@ -47,6 +47,9 @@ foreach ($pair in @(
     }
 }
 if ($receivedDelta -le 0) { $failures.Add('chunk counter did not advance') }
+if ([int]$session.requested_duration_seconds -lt 43200) {
+    $failures.Add('Soak did not request the mandatory 12-hour duration')
+}
 if ($duplicateDelta -lt 0) { $failures.Add('duplicate counter moved backwards') }
 if ($deltaRatio -gt 0.25) {
     $failures.Add("duplicate delta ratio exceeded 25%: $([Math]::Round($deltaRatio * 100, 3))%")
@@ -57,6 +60,12 @@ if ($ratioDrift -gt 0.05) {
 if ([Int64]$last.counters.peerDisconnects -
     [Int64]$session.initial_counters.peerDisconnects -gt 0) {
     $failures.Add('peer disconnect counter increased')
+}
+if ([int]$last.ipv4_fallback_count -ne 0) {
+    $failures.Add('an IPv4 fallback was observed on the active IPv6 Live route')
+}
+if ([int]$last.chunks.missing -ne 0) {
+    $failures.Add('final playlist window contains missing chunks')
 }
 
 $summary = [ordered]@{
@@ -96,7 +105,12 @@ $summary = [ordered]@{
 Write-LabJson -Value $summary -Path (Join-Path $evidence 'summary.json') | Out-Null
 $outcome = if ($failures.Count -eq 0) { 'BLOCKED' } else { 'FAIL' }
 & (Join-Path $PSScriptRoot 'collect_report.ps1') -RunDirectory $evidence `
-    -CaseId 'V91-O01' -Outcome $outcome -Version '9.1.0-beta.1' `
+    -CaseId 'V91-O01' -Outcome $outcome `
+    -Version $(if ($session.candidate_version) {
+        [string]$session.candidate_version
+    } else {
+        'unknown'
+    }) `
     -Commit $session.candidate_commit `
     -Notes 'Partial long soak on exact candidate; formal 12-hour T1/T5 topology remains unavailable.'
 if ($failures.Count -gt 0) {

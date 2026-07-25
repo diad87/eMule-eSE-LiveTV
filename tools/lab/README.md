@@ -88,6 +88,10 @@ The monitor writes append-only JSON Lines while the test is running and an
 working-set growth and 256 handles. API failure is fatal unless
 `-AllowUnavailable` is explicitly selected.
 
+Candidate-specific V91 harnesses read `BUILD_INFO.txt` through
+`Get-LabCandidateInfo`. Pass `-Commit` to pin an expected 40-character commit;
+dirty packages and mismatched identities are rejected before a test starts.
+
 For the normative `V91-I02` LiveTV case, use the dedicated monitor after the
 viewer has joined the broadcaster directly:
 
@@ -129,6 +133,24 @@ unavailable loopback API, and a temporary loopback TCP connection. It checks
 redaction, profile isolation, safe defaults, status capture, route attribution,
 short-soak accounting, report hashing, and cleanup. No eMule process or remote
 machine is needed.
+
+## V91 RC ledger
+
+The normative matrix contains 27 cases, including `V91-A02`. Reconcile a
+campaign without hardcoded beta hashes:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\lab\write_v91_campaign_ledger.ps1 `
+  -CandidatePackage C:\tmp\v91-package `
+  -EvidenceRoot C:\tmp\v91-rc-evidence `
+  -ResultsPath C:\tmp\v91-rc-evidence\case-results.json `
+  -Commit 0123456789abcdef0123456789abcdef01234567
+```
+
+`case-results.json` is an array (or an object containing `cases`) with `id`,
+`status`, `executed`, `execution_state`, `reason`, and evidence paths relative
+to `EvidenceRoot`. Missing cases remain `BLOCKED`; the ledger returns `GO` only
+with all 27 cases at `PASS`.
 
 ## eSE 9.0 local runtime gate
 

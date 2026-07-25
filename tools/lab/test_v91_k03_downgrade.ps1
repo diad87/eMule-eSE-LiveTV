@@ -3,14 +3,16 @@ param(
     [Parameter(Mandatory = $true)][string]$CandidatePackage,
     [Parameter(Mandatory = $true)][string]$PreviousPackage,
     [Parameter(Mandatory = $true)][string]$OutputRoot,
-    [ValidateRange(10, 120)][int]$StartupTimeoutSeconds = 60
+    [ValidateRange(10, 120)][int]$StartupTimeoutSeconds = 60,
+    [string]$Commit = ''
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-$candidateCommit = '72a5a41ebeec1bd08bff7ed17df27782930d96e3'
-$candidate = (Resolve-Path -LiteralPath $CandidatePackage).Path
+$candidateInfo = Get-LabCandidateInfo -PackagePath $CandidatePackage -ExpectedCommit $Commit
+$candidateCommit = $candidateInfo.commit
+$candidate = $candidateInfo.package_path
 $previous = (Resolve-Path -LiteralPath $PreviousPackage).Path
 $output = Get-LabFullPath -Path $OutputRoot
 if (Test-Path -LiteralPath $output) {
@@ -184,7 +186,7 @@ Write-LabJson -Value $artifact `
 $outcome = if ($pass) { 'PASS' } else { 'FAIL' }
 & (Join-Path $PSScriptRoot 'collect_report.ps1') `
     -RunDirectory $evidence -CaseId 'V91-K03' -Outcome $outcome `
-    -Version '9.1.0-beta.1' -Commit $candidateCommit `
+    -Version $candidateInfo.version -Commit $candidateCommit `
     -Notes 'Kad6-only profile saved by the candidate, then opened with the exact eSE 8.1 package copy.'
 
 if (-not $pass) {

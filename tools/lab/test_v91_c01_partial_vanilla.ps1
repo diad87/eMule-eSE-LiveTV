@@ -3,14 +3,16 @@ param(
     [Parameter(Mandatory = $true)][string]$PackagePath,
     [Parameter(Mandatory = $true)][string]$VanillaTemplatePath,
     [Parameter(Mandatory = $true)][string]$OutputRoot,
-    [ValidateRange(60, 3600)][int]$TimeoutSeconds = 1200
+    [ValidateRange(60, 3600)][int]$TimeoutSeconds = 1200,
+    [string]$Commit = ''
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-$candidateCommit = '72a5a41ebeec1bd08bff7ed17df27782930d96e3'
-$candidateSha256 = '82360915292df613320af889e7680c69efcf422df9d8052b3613041a0a42da14'
+$candidateInfo = Get-LabCandidateInfo -PackagePath $PackagePath -ExpectedCommit $Commit
+$candidateCommit = $candidateInfo.commit
+$candidateSha256 = $candidateInfo.emule_sha256
 $fixtureName = 'net13-unique-ffmpeg.zip'
 $fixtureBytes = 223394208L
 $fixtureSha256 = 'aac4b00281982e473aab7071b1a593eef3ad22301085d18d26933557b022890c'
@@ -18,7 +20,7 @@ $fixtureEd2k = 'A4140C71628D93D5FD0981FD962C2552'
 $proxyPort = 48711
 $vanillaPort = 48712
 $candidatePorts = [ordered]@{ tcp = 8062; udp = 8072; web = 8111 }
-$package = (Resolve-Path -LiteralPath $PackagePath).Path
+$package = $candidateInfo.package_path
 $template = (Resolve-Path -LiteralPath $VanillaTemplatePath).Path
 $output = New-LabDirectory -Path $OutputRoot
 $nodes = New-LabDirectory -Path (Join-Path $output 'nodes')

@@ -2,14 +2,16 @@
 param(
     [Parameter(Mandatory = $true)][string]$PackagePath,
     [Parameter(Mandatory = $true)][string]$OutputRoot,
-    [ValidateRange(600, 86400)][int]$DurationSeconds = 7200
+    [ValidateRange(600, 86400)][int]$DurationSeconds = 7200,
+    [string]$Commit = ''
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-$candidateCommit = '72a5a41ebeec1bd08bff7ed17df27782930d96e3'
-$package = (Resolve-Path -LiteralPath $PackagePath).Path
+$candidate = Get-LabCandidateInfo -PackagePath $PackagePath -ExpectedCommit $Commit
+$candidateCommit = $candidate.commit
+$package = $candidate.package_path
 $output = Get-LabFullPath -Path $OutputRoot
 if (Test-Path -LiteralPath $output) {
     throw "OutputRoot already exists; refusing to mix evidence: $output"
@@ -231,6 +233,7 @@ try {
 
     $session = [ordered]@{
         schema = 'ese.v91.i02-partial-session/v1'
+        candidate_version = $candidate.version
         candidate_commit = $candidateCommit
         candidate_binary_sha256 = Get-LabSha256 `
             -Path (Join-Path $package 'emule.exe')

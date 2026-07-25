@@ -1,0 +1,208 @@
+{
+  "schema": "ese.v91.rc-results/v1",
+  "candidate_commit": "8d40100df76e735b53f2ae599e104f813c3a6b38",
+  "cases": [
+    {
+      "id": "V91-A01",
+      "status": "PASS",
+      "executed": true,
+      "execution_state": "COMPLETE",
+      "reason": "Core, Integration, Release|x64, package parity and exact packaged self-test passed on the clean candidate.",
+      "evidence": [
+        "v91-beta3-selftest-8d40100\\evidence\\G-SELFTEST-SUMMARY.json",
+        "v91-ai-i03\\docs\\V91_BETA3_GATE_REPORT.md"
+      ]
+    },
+    {
+      "id": "V91-A02",
+      "status": "PASS",
+      "executed": true,
+      "execution_state": "COMPLETE",
+      "reason": "The fixed eMule AI 1.5.2 A/B corpus completed with zero false positives and zero candidate false negatives.",
+      "evidence": [
+        "v91-ai-i03\\docs\\V91_BETA3_GATE_REPORT.md"
+      ]
+    },
+    {
+      "id": "V91-I01",
+      "status": "BLOCKED",
+      "executed": true,
+      "execution_state": "PARTIAL_COMPLETE",
+      "reason": "The exact candidate transferred 4 GiB with matching SHA-256 over an observed IPv6 socket and no IPv4 connection. Formal T5 still requires two physical IPv6-only peers.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\i01-ipv6-4g-attempt2\\evidence\\summary.json"
+      ]
+    },
+    {
+      "id": "V91-I02",
+      "status": "BLOCKED",
+      "executed": true,
+      "execution_state": "IN_PROGRESS",
+      "reason": "The exact two-hour 12 Mbps IPv6 LiveTV run is active on isolated same-host profiles; formal T5 remains pending.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\i02-ipv6-live-2h\\evidence\\session.json",
+        "v91-rc-prep-8d40100\\i02-ipv6-live-2h\\evidence\\route-start.json"
+      ]
+    },
+    {
+      "id": "V91-I05",
+      "status": "BLOCKED",
+      "executed": true,
+      "execution_state": "PARTIAL_INCONCLUSIVE",
+      "reason": "The same-host IPv4-only control observed no peer socket or data progress for more than ten minutes and was stopped. This neither certifies nor falsifies I05; formal T1 requires the second physical Windows node.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\i05-ipv4-4g\\evidence\\samples.jsonl"
+      ]
+    },
+    {
+      "id": "V91-P01",
+      "status": "PASS",
+      "executed": true,
+      "execution_state": "COMPLETE",
+      "reason": "SOCKS5 captured ATYP=4 with the exact IPv6 destination and port.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\proxy\\evidence\\V91-P01-summary.json"
+      ]
+    },
+    {
+      "id": "V91-P02",
+      "status": "PASS",
+      "executed": true,
+      "execution_state": "COMPLETE",
+      "reason": "HTTP CONNECT captured the correctly bracketed IPv6 authority and port.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\proxy\\evidence\\V91-P02-summary.json"
+      ]
+    },
+    {
+      "id": "V91-P03",
+      "status": "PASS",
+      "executed": true,
+      "execution_state": "COMPLETE",
+      "reason": "SOCKS4 rejected IPv6 explicitly without a truncated outbound connection.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\proxy\\evidence\\V91-P03-summary.json"
+      ]
+    },
+    {
+      "id": "V91-K01",
+      "status": "BLOCKED",
+      "executed": true,
+      "execution_state": "PARTIAL_COMPLETE",
+      "reason": "The individual Kad6 executable coverage passed, but formal bootstrap, publish and source recovery still require T5.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\kad6-individual\\summary.json"
+      ]
+    },
+    {
+      "id": "V91-K02",
+      "status": "BLOCKED",
+      "executed": true,
+      "execution_state": "PARTIAL_COMPLETE",
+      "reason": "Plane-isolation executable coverage passed; runtime shutdown of one plane still requires T1.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\kad6-individual\\summary.json"
+      ]
+    },
+    {
+      "id": "V91-K03",
+      "status": "PASS",
+      "executed": true,
+      "execution_state": "COMPLETE",
+      "reason": "A copied Kad6 profile opened under the exact previous eSE 8.1 package without reactivating Kad2.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\k03\\evidence\\V91-K03-SUMMARY.json"
+      ]
+    },
+    {
+      "id": "V91-K04",
+      "status": "BLOCKED",
+      "executed": true,
+      "execution_state": "PARTIAL_COMPLETE",
+      "reason": "Persistence and probation executable coverage passed; a populated two-node restart still requires T1/T5.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\kad6-individual\\summary.json"
+      ]
+    },
+    {
+      "id": "V91-C01",
+      "status": "BLOCKED",
+      "executed": true,
+      "execution_state": "PARTIAL_COMPLETE",
+      "reason": "The candidate transferred 223,394,208 bytes with matching SHA-256 and a classic-only wire verdict. Formal V1 remains pending.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\c01-vanilla-attempt2\\evidence\\summary.json"
+      ]
+    },
+    {
+      "id": "V91-C02",
+      "status": "PASS",
+      "executed": true,
+      "execution_state": "COMPLETE",
+      "reason": "All rejected consent levels kept their surfaces closed in two rounds.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\consent\\evidence\\V91-CONSENT-SUMMARY.json"
+      ]
+    },
+    {
+      "id": "V91-C03",
+      "status": "PASS",
+      "executed": true,
+      "execution_state": "COMPLETE",
+      "reason": "General consent revocation persisted and stopped gated activity within five seconds in two rounds.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\consent\\evidence\\V91-CONSENT-SUMMARY.json"
+      ]
+    },
+    {
+      "id": "V91-C04",
+      "status": "PASS",
+      "executed": true,
+      "execution_state": "COMPLETE",
+      "reason": "Incomplete KRP configuration failed closed without listener or connection in two rounds.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\consent\\evidence\\V91-CONSENT-SUMMARY.json"
+      ]
+    },
+    {
+      "id": "V91-S01",
+      "status": "BLOCKED",
+      "executed": true,
+      "execution_state": "PARTIAL_COMPLETE",
+      "reason": "Native 128-bit identity coverage passed; the formal colliding-endpoint injection still requires T5.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\kad6-individual\\summary.json"
+      ]
+    },
+    {
+      "id": "V91-S02",
+      "status": "BLOCKED",
+      "executed": true,
+      "execution_state": "PARTIAL_COMPLETE",
+      "reason": "Epoch and record coverage passed; temporal-address reuse with credit isolation still requires T5.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\kad6-individual\\summary.json"
+      ]
+    },
+    {
+      "id": "V91-S03",
+      "status": "BLOCKED",
+      "executed": true,
+      "execution_state": "PARTIAL_COMPLETE",
+      "reason": "Challenge and anti-amplification executable coverage passed; a packet capture from an unverified remote endpoint still requires T1/T5.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\kad6-individual\\summary.json"
+      ]
+    },
+    {
+      "id": "V91-O01",
+      "status": "BLOCKED",
+      "executed": true,
+      "execution_state": "IN_PROGRESS",
+      "reason": "The exact 12-hour dual-stack soak is active on isolated same-host profiles; formal T1/T5 remains pending.",
+      "evidence": [
+        "v91-rc-prep-8d40100\\o01-dualstack-12h\\evidence\\session.json"
+      ]
+    }
+  ]
+}

@@ -8,6 +8,9 @@ maintain eMule eSE.
 - [eSE 9.1.0-beta.3 release notes](RELEASE_NOTES_v9.1.0-beta.3.md)
   — safe shared-file intake parity and A/B superiority over the frozen eMule
   AI 1.5.2 filename-policy baseline.
+- [eSE 9.1.0-beta.3 gate report](V91_BETA3_GATE_REPORT.md)
+  — exact candidate provenance, complete release pipeline, package hashes and
+  isolated package self-test.
 - [AI-I03 v9.1 evidence](AI_I03_V9.1_EVIDENCE.md)
   — implementation scope, fixed baseline, reproducible corpus and validation
   gates for the shared-file intake policy.

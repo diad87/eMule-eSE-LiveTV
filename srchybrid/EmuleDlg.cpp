@@ -2091,7 +2091,9 @@ LRESULT CemuleDlg::OnLiveWebLeave(WPARAM, LPARAM lParam)
 	LiveWebLeaveReq *r = (LiveWebLeaveReq *)lParam;
 	if (r == NULL || theApp.liveStreamManager == NULL || theApp.IsClosing())
 		return 0;
-	r->wasViewing = theApp.liveStreamManager->IsViewingLive();
+	r->wasViewing = theApp.liveStreamManager->IsViewingLive()
+		&& (!r->hasStreamKey
+			|| memcmp(r->streamKey, theApp.liveStreamManager->GetViewerStreamKey(), 16) == 0);
 	if (r->wasViewing)
 		theApp.liveStreamManager->LeaveStream();
 	return 1;

@@ -4862,7 +4862,14 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// over eD2K sockets — main-thread only. Idempotent when not viewing.
 	if (sURL.Left(15) == "/api/live/leave") {
 		LiveWebLeaveReq req;
+		memset(req.streamKey, 0, sizeof req.streamKey);
+		req.hasStreamKey = false;
 		req.wasViewing = false;
+		CString keyT(_ParseURL(Data.sURL, _T("key")));
+		if (!keyT.IsEmpty()) {
+			CStringA keyA = CT2A(keyT);
+			req.hasStreamKey = EseHexToKey16A(keyA, req.streamKey);
+		}
 		if (theApp.emuledlg != NULL && theApp.liveStreamManager != NULL)
 			theApp.emuledlg->SendMessage(UM_LIVE_WEB_LEAVE, 0, (LPARAM)&req);
 		CStringA json;
@@ -4886,8 +4893,19 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// tick write only — safe on this worker thread (same class as the OBS-1
 	// Interlocked counters; no Live lock, no marshaling needed).
 	if (sURL.Left(22) == "/api/live/player-alive") {
-		if (theApp.liveStreamManager != NULL)
-			theApp.liveStreamManager->NotePlayerFetch();
+		if (theApp.liveStreamManager != NULL) {
+			CString keyT(_ParseURL(Data.sURL, _T("key")));
+			bool matchesCurrent = keyT.IsEmpty();
+			if (!keyT.IsEmpty() && theApp.liveStreamManager->IsViewingLive()) {
+				uchar requestedKey[16];
+				CStringA keyA = CT2A(keyT);
+				matchesCurrent = EseHexToKey16A(keyA, requestedKey)
+					&& memcmp(requestedKey,
+						theApp.liveStreamManager->GetViewerStreamKey(), 16) == 0;
+			}
+			if (matchesCurrent)
+				theApp.liveStreamManager->NotePlayerFetch();
+		}
 		static const char kAliveResp[] =
 			"HTTP/1.1 200 OK\r\n"
 			"Content-Type: application/json\r\n"
@@ -4993,7 +5011,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		// Build the share link if broadcast started + we know our IP.
 		CStringA linkA;
 		if (ok) {
-			const uchar* key = theApp.liveStreamManager->GetStreamKey();
+			const uchar* key = theApp.liveStreamManager->GetBroadcastStreamKey();
 			uint32 pubIP = theApp.GetPublicIP();
 			uint16 port  = theApp.GetAdvertisedTcpPort();
 			if (key) {
@@ -5136,8 +5154,6 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		}
 		// Ghost-viewer watchdog: any whitelisted HLS fetch proves a player is
 		// alive — including 404 polls while the playlist isn't written yet.
-		if (theApp.liveStreamManager != NULL)
-			theApp.liveStreamManager->NotePlayerFetch();
 		TCHAR tmp[MAX_PATH]; GetTempPath(MAX_PATH, tmp);
 		CString fp;
 		fp.Format(_T("%seMule_RTMP\\%hs"), tmp, (LPCSTR)req);
@@ -5147,14 +5163,18 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		// streams cannot collide. Keep the legacy /hls/<file> URL working by
 		// falling back to the active stream namespace when the root file is not
 		// present. Broadcasters still take the root fast path above.
-		if (hF == INVALID_HANDLE_VALUE && theApp.liveStreamManager != NULL) {
-			const uchar* key = theApp.liveStreamManager->GetStreamKey();
+		if (hF == INVALID_HANDLE_VALUE && theApp.liveStreamManager != NULL
+			&& theApp.liveStreamManager->IsViewingLive()) {
+			const uchar* key = theApp.liveStreamManager->GetViewerStreamKey();
 			if (key != NULL) {
 				CStringA keyHex = EseHexKey16A(key);
 				fp.Format(_T("%seMule_RTMP\\%hs\\%hs"), tmp,
 					(LPCSTR)keyHex, (LPCSTR)req);
 				hF = CreateFile(fp, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
 					NULL, OPEN_EXISTING, 0, NULL);
+				// A validated viewer-namespace poll proves that the remote
+				// player is alive, even while its first playlist is a 404.
+				theApp.liveStreamManager->NotePlayerFetch();
 			}
 		}
 		if (hF == INVALID_HANDLE_VALUE) {
@@ -7402,8 +7422,14 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 
 		// Ghost-viewer watchdog: a validated per-stream HLS fetch proves a
 		// player is alive (404s included — startup polls count).
-		if (theApp.liveStreamManager != NULL)
-			theApp.liveStreamManager->NotePlayerFetch();
+		if (theApp.liveStreamManager != NULL
+			&& theApp.liveStreamManager->IsViewingLive()) {
+			uchar requestedKey[16];
+			if (EseHexToKey16A(hashHex, requestedKey)
+				&& memcmp(requestedKey,
+					theApp.liveStreamManager->GetViewerStreamKey(), 16) == 0)
+				theApp.liveStreamManager->NotePlayerFetch();
+		}
 
 		// Serve HLS files directly from disk â€” no stream hash verification needed
 		// (the hash routes to the correct stream but doesn't gate access)
@@ -7590,7 +7616,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			// away (navigation/close). keepalive lets the request outlive the
 			// page. The 60 s idle watchdog in Process() is the backstop for
 			// killed tabs where this never fires.
-			"addEventListener('pagehide',()=>{try{fetch(B+'/api/live/leave',{keepalive:true})}catch(_){}});"
+			"addEventListener('pagehide',()=>{try{fetch(B+'/api/live/leave?key=%s',{keepalive:true})}catch(_){}});"
 			"const langNames={eng:'English',spa:'Spanish',fre:'French',ger:'German',ita:'Italian',por:'Portuguese',jpn:'Japanese',kor:'Korean',chi:'Chinese',rus:'Russian',ara:'Arabic',und:'Track'};"
 			"const langFlags={eng:'[EN]',spa:'[ES]',fre:'[FR]',ger:'[DE]',ita:'[IT]',por:'[PT]',jpn:'[JP]',rus:'[RU]',kor:'[KR]',chi:'[CN]',ara:'[AR]',und:''};"
 			"function buildAudioSel(tracks,setFn){"
@@ -7629,7 +7655,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"if(ch){document.querySelector('h1').innerHTML='<span class=\"badge\">LIVE</span> '+esc(ch.title);"
 			"document.getElementById('m').textContent=ch.category+' | '+ch.quality+' | '+ch.viewers+' viewers'}});"
 			"</script></body></html>",
-			(LPCSTR)hash, (LPCSTR)hash);
+			(LPCSTR)hash, (LPCSTR)hash, (LPCSTR)hash);
 
 		CStringA header;
 		header.Format(

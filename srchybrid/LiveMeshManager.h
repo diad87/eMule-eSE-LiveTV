@@ -40,6 +40,10 @@ public:
     // Remove a peer from mesh
     void RemoveMeshPeer(CUpDownClient* peer);
 
+    // Drop role-specific topology/request state when the manager switches
+    // between broadcast and viewer sessions. Cumulative counters remain.
+    void ResetSessionPeers();
+
     // Get current mesh peer count
     int GetMeshPeerCount() const;
 

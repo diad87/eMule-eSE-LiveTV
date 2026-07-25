@@ -89,8 +89,91 @@ test('legacy C++ HLS route falls back to the active viewer stream namespace', ()
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
 
   assert.match(web, /hF == INVALID_HANDLE_VALUE && theApp\.liveStreamManager != NULL/);
-  assert.match(web, /GetStreamKey\(\)/);
+  assert.match(web, /IsViewingLive\(\)[\s\S]{0,160}GetViewerStreamKey\(\)/);
   assert.match(web, /eMule_RTMP\\\\%hs\\\\%hs/);
+});
+
+test('simultaneous broadcast and viewing keep native identities and buffers isolated', () => {
+  const header = read(repoRoot, 'srchybrid', 'LiveStreamManager.h');
+  const manager = read(repoRoot, 'srchybrid', 'LiveStreamManager.cpp');
+  const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
+  const buddy = read(repoRoot, 'srchybrid', 'LiveBuddyRelay.cpp');
+  const mesh = read(repoRoot, 'srchybrid', 'LiveMeshManager.cpp');
+
+  assert.match(header, /LiveStreamInfo\s+m_broadcastStreamInfo/);
+  assert.match(header, /CLiveChunkBuffer\s+m_broadcastChunkBuffer/);
+  assert.match(header, /GetBroadcastStreamKey\(\)/);
+  assert.match(header, /GetViewerStreamKey\(\)/);
+
+  const start = manager.slice(
+    manager.indexOf('bool CLiveStreamManager::StartBroadcast('),
+    manager.indexOf('bool CLiveStreamManager::StartBroadcastWithSource(')
+  );
+  assert.match(start, /m_broadcastStreamInfo\.streamKey/);
+  assert.match(start, /m_broadcastChunkBuffer\.Clear\(\)/);
+  assert.doesNotMatch(start, /memcpy\(m_streamInfo\.streamKey/);
+
+  const feed = manager.slice(
+    manager.indexOf('void CLiveStreamManager::FeedSegment('),
+    manager.indexOf('// VIEWER API')
+  );
+  assert.match(feed, /m_broadcastChunkBuffer\.AddSegment\(m_broadcastStreamInfo\.streamKey/);
+  assert.doesNotMatch(feed, /WriteViewerHlsSegment/);
+
+  const join = manager.slice(
+    manager.indexOf('bool CLiveStreamManager::JoinStream('),
+    manager.indexOf('void CLiveStreamManager::LeaveStream(')
+  );
+  assert.match(join, /memcpy\(m_streamInfo\.streamKey/);
+  assert.match(join, /m_chunkBuffer\.Clear\(\)/);
+  assert.doesNotMatch(join, /m_broadcastChunkBuffer\.Clear\(\)/);
+
+  assert.match(manager, /if \(!m_bBroadcasting && !m_broadcastPeers\.IsEmpty\(\)\)/);
+  assert.match(manager, /SendBitmapToAll\(true\)/);
+  assert.match(manager, /SendBitmapToAll\(false\)/);
+  assert.match(manager, /GetChannelSnapshot\(\)[\s\S]{0,450}m_broadcastStreamInfo\.streamKey/);
+  assert.match(join, /m_meshManager\.ResetSessionPeers\(\)/);
+  assert.match(manager, /LeaveStream\(\)[\s\S]{0,1600}ResetSessionPeers\(\)[\s\S]{0,220}m_bBroadcasting/);
+  assert.match(mesh, /ResetSessionPeers\(\)[\s\S]{0,300}m_meshPeers\.RemoveAll\(\)/);
+  assert.match(manager, /simultaneous broadcast\/view state or buffers crossed/);
+  assert.match(manager, /m_broadcastChunkBuffer\.GetNewestSeq\(\) > broadcastNewestBefore/);
+  assert.match(manager, /m_chunkBuffer\.GetCount\(\) == 0/);
+  assert.match(tunnel, /BulkSubscribe\(theApp\.liveStreamManager->GetViewerStreamKey\(\)\)/);
+  assert.match(buddy, /GetBroadcastStreamKey\(\)/);
+});
+
+test('directory deduplicates canonical stream keys and never reuses a local thumbnail for a remote channel', () => {
+  const search = require('../eSE-live/channel_search');
+  const thumb = read(eseRoot, 'eSE-live', 'thumbnail_extractor.js');
+  const player = require('../eSE-live/live_tv_player').getScript();
+  const api = read(eseRoot, 'eSE-live', 'channel_api.js');
+
+  const upper = 'ABCDEF0123456789ABCDEF0123456789';
+  const lower = upper.toLowerCase();
+  search.addRemoteChannel({ streamKey: upper, title: 'First', started: new Date().toISOString() });
+  search.addRemoteChannel({ streamKey: lower, title: 'Updated', started: new Date().toISOString() });
+  const matches = search.search({}).filter(channel => channel.streamKey === lower);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].title, 'Updated');
+  search.unregisterChannel(upper);
+
+  assert.match(thumb, /if \(key !== 'local' && key !== 'emule_broadcast'\) return null/);
+  assert.match(player, /ch\.thumbnailUrl \|\|/);
+  assert.doesNotMatch(player, /<img src="\/live\/thumb\/' \+ encodeURIComponent\(key\)/);
+  assert.match(api, /canonicalStreamKey\(ch\.streamKey \|\| ch\.hash\)/);
+  assert.match(api, /syncEmuleChannels\(emuleChannels\)/);
+});
+
+test('player lifecycle messages are scoped to the viewed stream key', () => {
+  const api = read(eseRoot, 'eSE-live', 'channel_api.js');
+  const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const dlg = read(repoRoot, 'srchybrid', 'EmuleDlg.cpp');
+
+  assert.match(api, /player-alive' \+ suffix/);
+  assert.match(api, /api\/live\/leave\?key=\$\{hash\}/);
+  assert.match(web, /req\.hasStreamKey = EseHexToKey16A/);
+  assert.match(web, /GetViewerStreamKey\(\)/);
+  assert.match(dlg, /!r->hasStreamKey[\s\S]{0,150}GetViewerStreamKey\(\)/);
 });
 
 test('controlled 30 fps sources align two-second GOPs with independent HLS segments', () => {

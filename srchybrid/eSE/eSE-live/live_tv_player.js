@@ -86,6 +86,8 @@ function getScript() {
           var quality = escClass(ch.qualityLabel || 'SD');
           var rColor = rating >= 70 ? '#2ecc71' : rating >= 50 ? '#f39c12' : '#e74c3c';
           var uptime = uptimeMinutes < 60 ? uptimeMinutes + 'min' : Math.floor(uptimeMinutes/60) + 'h';
+          var thumb = String(ch.thumbnailUrl || ('/live/thumb/' + encodeURIComponent(key) + '.jpg'));
+          thumb += thumb.indexOf('?') >= 0 ? '&t=' + t : '?t=' + t;
           
           var count = ch.experienceBars || 3;
           var barsHtml = '';
@@ -98,7 +100,7 @@ function getScript() {
 
           html += '<div class="channel-card" data-key="' + escAttr(key) + '">' +
             '<div class="ch-thumb">' +
-            '<img src="/live/thumb/' + encodeURIComponent(key) + '.jpg?t=' + t + '" alt="" loading="lazy" onerror="this.style.display=\\'none\\'">' +
+            '<img src="' + escAttr(thumb) + '" alt="" loading="lazy" onerror="this.style.display=\\'none\\'">' +
             '<div class="ch-thumb-overlay"><span class="ch-live-dot"></span>' +
             '<span class="ch-viewers">' + escH(ch.viewers || 0) + ' viewers</span>' +
             '<span class="ch-quality badge-' + quality + '">' + escH(ch.qualityLabel || 'SD') + '</span></div></div>' +

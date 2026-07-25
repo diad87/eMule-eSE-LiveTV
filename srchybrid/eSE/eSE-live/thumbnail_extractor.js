@@ -112,7 +112,7 @@ let cachedHash = null;
 let cachedHashAt = 0;
 function fetchOwnStreamKey(cb) {
   const now = Date.now();
-  if (cachedHash && (now - cachedHashAt) < 60000) {
+  if (cachedHash && (now - cachedHashAt) < 5000) {
     cb(cachedHash);
     return;
   }
@@ -128,9 +128,15 @@ function fetchOwnStreamKey(cb) {
           cachedHashAt = now;
           cb(cachedHash);
         } else {
+          cachedHash = null;
+          cachedHashAt = now;
           cb(null);
         }
-      } catch (_) { cb(null); }
+      } catch (_) {
+        cachedHash = null;
+        cachedHashAt = now;
+        cb(null);
+      }
     });
   });
   req.on('error', () => cb(null));
@@ -207,9 +213,15 @@ function extractFrame(tsFile, key) {
  * @returns {string|null} Path to thumbnail file, or null
  */
 function getThumbPath(hash) {
+  const key = String(hash || '').trim().toLowerCase();
+  if (!/^[a-z0-9_-]{1,128}$/.test(key)) return null;
+
   // Try exact hash match first
-  const exact = path.join(THUMB_DIR, hash + '.jpg');
+  const exact = path.join(THUMB_DIR, key + '.jpg');
   if (fs.existsSync(exact)) return exact;
+
+  // Never show this machine's broadcast as an arbitrary remote channel.
+  if (key !== 'local' && key !== 'emule_broadcast') return null;
   
   // Pick the most recently modified between emule_broadcast and local
   const candidates = [

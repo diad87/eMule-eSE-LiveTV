@@ -47,12 +47,14 @@ let streamMeta = { title: '', category: 'general', language: 'es' };
 // idle auto-leave only fires when the browser really stopped fetching.
 // Fire-and-forget; errors ignored (eMule offline just means nothing to do).
 let lastAliveRelayMs = 0;
-function relayPlayerAlive() {
+function relayPlayerAlive(streamKey) {
   const now = Date.now();
   if (now - lastAliveRelayMs < 10000) return;
   lastAliveRelayMs = now;
   try {
-    http.get('http://127.0.0.1:4711/api/live/player-alive', { timeout: 3000 },
+    const key = channelSearch.canonicalStreamKey(streamKey);
+    const suffix = /^[a-f0-9]{32}$/.test(key) ? '?key=' + encodeURIComponent(key) : '';
+    http.get('http://127.0.0.1:4711/api/live/player-alive' + suffix, { timeout: 3000 },
       (r) => r.resume()).on('error', () => {});
   } catch (e) { /* ignore */ }
 }
@@ -221,7 +223,7 @@ function handleRoute(url, req, res, ctx) {
     const fileName = parts[2];
     const ext = require('path').extname(fileName).toLowerCase();
     if (ext !== '.m3u8' && ext !== '.ts') { res.writeHead(403); res.end('Forbidden'); return true; }
-    relayPlayerAlive();  // ghost-viewer fix: fetches here prove the player lives
+    relayPlayerAlive(parts[1]);  // key-scoped proof that this player lives
     const filePath = require('path').join(HLS_LIVE_DIR, parts[1].toLowerCase(), fileName);
     try {
       const fstat = require('fs').statSync(filePath);
@@ -235,7 +237,6 @@ function handleRoute(url, req, res, ctx) {
     const fileName = require('path').basename(p);
     const ext = require('path').extname(fileName).toLowerCase();
     if (ext !== '.m3u8' && ext !== '.ts') { res.writeHead(403); res.end('Forbidden'); return true; }
-    relayPlayerAlive();  // ghost-viewer fix: fetches here prove the player lives
     const filePath = require('path').join(HLS_LIVE_DIR, fileName);
     try {
       const fstat = require('fs').statSync(filePath);
@@ -337,7 +338,10 @@ function handleRoute(url, req, res, ctx) {
   // Hit by the watch pages' pagehide beacon (sendBeacon POSTs; we accept any
   // method). Forwarded as GET to eMule's marshaled /api/live/leave.
   if (p === '/api/live/leave') {
-    const leaveReq = http.get('http://127.0.0.1:4711/api/live/leave', { timeout: 5000 }, (leaveRes) => {
+    const leaveKey = channelSearch.canonicalStreamKey(url.searchParams.get('key'));
+    const leaveSuffix = /^[a-f0-9]{32}$/.test(leaveKey)
+      ? '?key=' + encodeURIComponent(leaveKey) : '';
+    const leaveReq = http.get('http://127.0.0.1:4711/api/live/leave' + leaveSuffix, { timeout: 5000 }, (leaveRes) => {
       let body = '';
       leaveRes.on('data', d => body += d);
       leaveRes.on('end', () => {
@@ -947,7 +951,10 @@ function handleRoute(url, req, res, ctx) {
       if (responded) return;
       responded = true;
       const byKey = new Map();
-      localResults.forEach(ch => byKey.set(ch.streamKey || ch.hash, ch));
+      localResults.forEach(ch => {
+        const key = channelSearch.canonicalStreamKey(ch.streamKey || ch.hash);
+        if (key) byKey.set(key, Object.assign({}, ch, { streamKey: key }));
+      });
       // BROWSE-S01 helpers — defined here so both kad-merge and the final
       // enrichment pass below can use them.
       const ipUintToStr = (n) => {
@@ -964,12 +971,12 @@ function handleRoute(url, req, res, ctx) {
       // whether the entry first appeared via localResults or kadStreams.
       const kadByKey = new Map();
       (kadStreams || []).forEach(s => {
-        const k = s.streamKey || s.hash;
+        const k = channelSearch.canonicalStreamKey(s.streamKey || s.hash);
         if (k) kadByKey.set(k, s);
       });
 
       (kadStreams || []).forEach(s => {
-        const key = s.streamKey || s.hash;
+        const key = channelSearch.canonicalStreamKey(s.streamKey || s.hash);
         if (!key || byKey.has(key)) return;
         byKey.set(key, {
           streamKey: key,
@@ -991,7 +998,7 @@ function handleRoute(url, req, res, ctx) {
       // this single pass, channels that came from localResults skip the
       // kad-only enrichment and the grid shows empty thumbnailUrl.
       const results = Array.from(byKey.values()).map(ch => {
-        const key = ch.streamKey || ch.hash;
+        const key = channelSearch.canonicalStreamKey(ch.streamKey || ch.hash);
         const kad = kadByKey.get(key);
         const isLocal = !!ch.isLocal
           || (kad && !!kad.own)
@@ -1427,7 +1434,7 @@ fetch('/api/live/emule-channels').then(r=>r.json()).then(d=>{
 // (navigation, back button, tab close). sendBeacon survives page unload; the
 // Node /api/live/leave route relays it to eMule. The 60 s player-idle
 // watchdog in eMule is the backstop for killed tabs where this never fires.
-addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBeacon('/api/live/leave'))fetch('/api/live/leave',{keepalive:true}).catch(()=>{})}catch(_){}});
+addEventListener('pagehide',()=>{try{const leave='/api/live/leave?key=${hash}';if(!navigator.sendBeacon||!navigator.sendBeacon(leave))fetch(leave,{keepalive:true}).catch(()=>{})}catch(_){}});
 </script></body></html>`);
     return true;
   }
@@ -1554,9 +1561,7 @@ addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBe
         try {
           const data = JSON.parse(body);
           // Merge into channel search
-          if (data.channels && data.channels.length > 0) {
-            data.channels.forEach(ch => {
-              channelSearch.addRemoteChannel({
+          const emuleChannels = (data.channels || []).map(ch => ({
                 streamKey: ch.hash || ch.streamKey,
                 title: ch.title || 'eMule Broadcast',
                 category: ch.category || 'general',
@@ -1564,9 +1569,8 @@ addEventListener('pagehide',()=>{try{if(!navigator.sendBeacon||!navigator.sendBe
                 bitrate: ch.bitrate || 3000,
                 viewers: ch.viewers || 0,
                 started: ch.started || (ch.startedAt ? new Date(ch.startedAt * 1000).toISOString() : new Date().toISOString())
-              });
-            });
-          }
+              }));
+          channelSearch.syncEmuleChannels(emuleChannels);
           jsonResponse(res, 200, data);
         } catch (e) {
           jsonResponse(res, 200, { channels: [], error: 'parse_error' });
@@ -1730,9 +1734,7 @@ function pollEmuleChannels() {
     res.on('end', () => {
       try {
         const data = JSON.parse(body);
-        if (data.channels && data.channels.length > 0) {
-          data.channels.forEach(ch => {
-            channelSearch.addRemoteChannel({
+        const emuleChannels = (data.channels || []).map(ch => ({
               streamKey: ch.hash || ch.streamKey,
               title: ch.title || 'eMule Broadcast',
               category: ch.category || 'general',
@@ -1740,9 +1742,8 @@ function pollEmuleChannels() {
               bitrate: ch.bitrate || 3000,
               viewers: ch.viewers || 0,
               started: ch.started || (ch.startedAt ? new Date(ch.startedAt * 1000).toISOString() : new Date().toISOString())
-            });
-          });
-        }
+            }));
+        channelSearch.syncEmuleChannels(emuleChannels);
       } catch (e) { console.warn('[eSE Live] pollEmuleChannels parse error:', e.message); }
     });
   });

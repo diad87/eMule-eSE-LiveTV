@@ -104,7 +104,7 @@ void CLiveBuddyRelay::StartAsBroadcaster()
     if (buddy == NULL) { g_relayState = StateLookingForBuddy; return; }
     g_candidateBuddy = buddy;
     g_relayState = StateNegotiating;
-    const uchar* sk = theApp.liveStreamManager->GetStreamKey();
+    const uchar* sk = theApp.liveStreamManager->GetBroadcastStreamKey();
     Packet* setup = eSELive::CreateRelayFwdPacket(RELAY_SUB_SETUP, sk, NULL, 0);
     if (setup != NULL)
         buddy->SafeConnectAndSendPacket(setup);

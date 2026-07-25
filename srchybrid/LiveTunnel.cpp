@@ -11430,7 +11430,7 @@ void CLiveTunnel::Tick()
                 && c->HopCount() >= 1 && c->m_bulk_ok) { haveBulk = true; break; }
         if (haveBulk) {
             m_lastBulkSubTick = now;
-            BulkSubscribe(theApp.liveStreamManager->GetStreamKey());
+            BulkSubscribe(theApp.liveStreamManager->GetViewerStreamKey());
         }
     }
 

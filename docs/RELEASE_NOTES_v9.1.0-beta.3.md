@@ -8,6 +8,24 @@ incompletos o inseguros entren en la biblioteca compartida.
 
 ## Cambios desde beta.2
 
+### LiveTV con emisión y reproducción simultáneas
+
+- Emitir un canal local mientras se reproduce otro canal remoto mantiene
+  identidades, claves, buffers, bitrates y temporizadores independientes.
+- Los anuncios, latidos, publicación Kad, malla, túneles y relays utilizan la
+  identidad correspondiente a cada rol.
+- Los segmentos del canal local no pueden entrar en el HLS del canal remoto,
+  ni los chunks remotos pueden redistribuirse a los espectadores de la emisión
+  local.
+- Las peticiones de actividad y cierre del reproductor quedan vinculadas a la
+  clave que se está visualizando.
+- El directorio deduplica las claves de stream sin distinguir mayúsculas y
+  minúsculas.
+- Las miniaturas remotas nunca reutilizan la captura del canal local como
+  fallback.
+- El self-test reproduce el escenario de doble rol y comprueba que la clave
+  publicada y ambos buffers permanecen aislados.
+
 ### Admisión segura de archivos compartidos
 
 - El escaneo inicial y `DirectoryWatcher` utilizan exactamente la misma

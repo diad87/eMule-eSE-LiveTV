@@ -16,6 +16,10 @@ function normalizedKey(value) {
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
+function canonicalStreamKey(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
 function canonicalCategory(value) {
   const key = normalizedKey(value);
   const aliases = {
@@ -48,6 +52,8 @@ function canonicalLanguage(value) {
  */
 function registerChannel(info) {
   if (!info || !info.streamKey) return;
+  const streamKey = canonicalStreamKey(info.streamKey);
+  if (!streamKey) return;
 
   // v7.1.9 — only one local broadcast at a time on this machine. Sweep any
   // stale isLocal entries (local_<ts>, obs_<ts>, external_<ts>, prior
@@ -56,13 +62,13 @@ function registerChannel(info) {
   // search() pipeline-active flag is global, not per-streamKey, so it kept
   // every stale local entry visible.
   for (const k of Object.keys(channels)) {
-    if (channels[k] && channels[k].isLocal && k !== info.streamKey) {
+    if (channels[k] && channels[k].isLocal && k !== streamKey) {
       delete channels[k];
     }
   }
 
-  channels[info.streamKey] = {
-    streamKey: info.streamKey,
+  channels[streamKey] = {
+    streamKey,
     title: info.title || 'Sin titulo',
     category: canonicalCategory(info.category),
     language: canonicalLanguage(info.language),
@@ -74,8 +80,22 @@ function registerChannel(info) {
     reports: 0,
     broadcasterReputation: 100,
     isLocal: true,
+    source: info.source || 'local',
     lastUpdate: Date.now()
   };
+}
+
+function syncEmuleChannels(items) {
+  const list = Array.isArray(items) ? items : [];
+  const liveKeys = new Set(list
+    .map(item => canonicalStreamKey(item && item.streamKey))
+    .filter(Boolean));
+  for (const key of Object.keys(channels)) {
+    if (channels[key] && channels[key].source === 'emule' && !liveKeys.has(key))
+      delete channels[key];
+  }
+  for (const item of list)
+    registerChannel({ ...item, source: 'emule' });
 }
 
 /**
@@ -83,7 +103,7 @@ function registerChannel(info) {
  * @param {string} streamKey
  */
 function unregisterChannel(streamKey) {
-  delete channels[streamKey];
+  delete channels[canonicalStreamKey(streamKey)];
 }
 
 /**
@@ -92,21 +112,24 @@ function unregisterChannel(streamKey) {
  */
 function addRemoteChannel(info) {
   if (!info || !info.streamKey) return;
+  const streamKey = canonicalStreamKey(info.streamKey);
+  if (!streamKey) return;
   const normalizedInfo = {
     ...info,
+    streamKey,
     category: canonicalCategory(info.category),
     language: canonicalLanguage(info.language)
   };
-  if (channels[info.streamKey]) {
+  if (channels[streamKey]) {
     // v7.1.9 — preserve the original `started` across updates. The C++ Kad
     // side doesn't emit a stable start timestamp; each poll passed
     // new Date().toISOString() through, resetting uptime to "0min" on
     // every refresh. Honor the existing one if we already have it.
     const preserved = { lastUpdate: Date.now() };
-    if (channels[info.streamKey].started) preserved.started = channels[info.streamKey].started;
-    Object.assign(channels[info.streamKey], normalizedInfo, preserved);
+    if (channels[streamKey].started) preserved.started = channels[streamKey].started;
+    Object.assign(channels[streamKey], normalizedInfo, preserved);
   } else {
-    channels[info.streamKey] = { ...normalizedInfo, isLocal: false, lastUpdate: Date.now() };
+    channels[streamKey] = { ...normalizedInfo, isLocal: false, lastUpdate: Date.now() };
   }
 }
 
@@ -244,8 +267,10 @@ module.exports = {
   registerChannel,
   unregisterChannel,
   addRemoteChannel,
+  syncEmuleChannels,
   search,
   getCount,
+  canonicalStreamKey,
   canonicalCategory,
   canonicalLanguage
 };

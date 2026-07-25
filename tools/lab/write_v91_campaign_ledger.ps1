@@ -46,6 +46,7 @@ Add-Case 'V91-A01' 'PASS' 'build' `
       'selftest-attempt5\evidence\G-SELFTEST-SUMMARY.json',
       'release-verification-attempt4\summary.json',
       'release-preflight-attempt2\summary.json',
+      'kad6-individual-attempt3\summary.json',
       'kad6-fuzz-asan-attempt3\summary.json',
       'kad6-fuzz-asan-attempt3\stdout.log',
       'kad6-fuzz-asan-attempt4\summary.json',
@@ -141,6 +142,7 @@ Add-Case 'V91-S01' 'BLOCKED' 'T5' `
     'Unit coverage retains native 128-bit addresses, but the normative two-endpoint collision injection needs unavailable T5.' `
     @('V91-A01\summary.json',
       'kad6-individual-attempt2\summary.json',
+      'kad6-individual-attempt3\summary.json',
       'kad6-fuzz-asan-attempt3\summary.json',
       'kad6-fuzz-asan-attempt4\summary.json',
       'topology-availability.json') $true 'PARTIAL_COMPLETE'
@@ -148,6 +150,7 @@ Add-Case 'V91-S02' 'BLOCKED' 'T5' `
     'Record and epoch unit suites pass, but temporal-address reuse and credit isolation require unavailable T5.' `
     @('V91-A01\summary.json',
       'kad6-individual-attempt2\summary.json',
+      'kad6-individual-attempt3\summary.json',
       'kad6-fuzz-asan-attempt3\summary.json',
       'kad6-fuzz-asan-attempt4\summary.json',
       'topology-availability.json') $true 'PARTIAL_COMPLETE'
@@ -155,6 +158,7 @@ Add-Case 'V91-S03' 'BLOCKED' 'T1/T5' `
     'Front-door challenge unit gates pass, but packet capture against an unverified remote endpoint requires unavailable T1/T5.' `
     @('V91-A01\summary.json',
       'kad6-individual-attempt2\summary.json',
+      'kad6-individual-attempt3\summary.json',
       'kad6-fuzz-asan-attempt3\summary.json',
       'kad6-fuzz-asan-attempt4\summary.json',
       'topology-availability.json') $true 'PARTIAL_COMPLETE'

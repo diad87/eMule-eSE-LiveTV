@@ -1,0 +1,48 @@
+{
+  "schema": "ese.v91.beta2-delta-ledger/v1",
+  "generated_at_utc": "2026-07-25T11:09:56.003Z",
+  "candidate": {
+    "version": "9.1.0-beta.2",
+    "commit": "d773427b9dafb3eba8260d0185a8943b00895798",
+    "dirty": false,
+    "emule_sha256": "59ce052338a458b8f2d0128d02150be139cfe4f4dbb0981e26912441299b3ac1",
+    "ese_server_sha256": "c33687b0d4a0ff9af0f6bb9a7c948cd69265c60f077b1f7fe098b5720a4696d7",
+    "zip_sha256": "dfb372f94b4ec928f1ba7771b677342c0218c5f8ad601b641d8059f1e82d5694"
+  },
+  "campaign_counts": {
+    "pass": 8,
+    "fail": 0,
+    "blocked": 18,
+    "total": 26
+  },
+  "decisions": {
+    "public_beta": "GO_WITH_LIMITATIONS",
+    "full_v91_rc_gate": "NO_GO"
+  },
+  "changed_cases": [
+    {
+      "id": "V91-C03",
+      "previous_verdict": "FAIL",
+      "verdict": "PASS",
+      "executions": 2,
+      "revoke_elapsed_ms": [2462.1, 2258.8],
+      "restart_enabled": [false, false],
+      "stable_kad6_unchanged": true,
+      "summary_sha256": "9877a03cd9153ae69d7ff4c39257bbf0bebc500eda3426f48bb13d904f954e52"
+    },
+    {
+      "id": "V91-P03",
+      "previous_verdict": "FAIL",
+      "verdict": "PASS",
+      "http_status": 400,
+      "error": "ipv6_not_supported_by_socks4",
+      "dialed": false,
+      "proxy_connection_observed": false,
+      "summary_sha256": "11b00b43fa4ed7ccfa1f1f78e1452c2604f40b25ba94f7bc0550a72b27700bd6"
+    }
+  ],
+  "unchanged_blockers": {
+    "count": 18,
+    "reason": "Required physical multi-node, network-transition or IPv6-only topologies were unavailable; none are promoted to PASS."
+  }
+}

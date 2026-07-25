@@ -8,6 +8,10 @@ maintain eMule eSE.
 - [eSE 9.1.0-beta.2 release notes](RELEASE_NOTES_v9.1.0-beta.2.md)
   — IPv6/Kad6 between eSE peers, persistent laboratory revocation, explicit
   proxy-family handling and current beta limitations.
+- [eSE 9.1.0-beta.2 gate report](V91_BETA2_GATE_REPORT.md)
+  — exact candidate provenance, local executable gates and release decision.
+- [eSE 9.1.0-beta.2 forum draft](FORUM_POST_v9.1.0-beta.2.md)
+  — publication text with checksum, scope and honest topology limitations.
 - [eSE 9.1.0-beta.1 release notes](RELEASE_NOTES_v9.1.0-beta.1.md)
   — initial public 9.1 laboratory beta and its recorded limitations.
 - [eSE 9.0.0-beta.2 candidate release notes](RELEASE_NOTES_v9.0.0-beta.2.md)

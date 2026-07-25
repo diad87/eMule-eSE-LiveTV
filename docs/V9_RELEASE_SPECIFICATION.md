@@ -444,7 +444,7 @@ seguridad, interoperabilidad o estabilidad.
 
 ### 8.3 Política de identidad y créditos
 
-`9.1.0-beta.1` adopta **neutralidad IPv6-only**: un endpoint IPv6-only puede
+La serie `9.1.0-beta` adopta **neutralidad IPv6-only**: un endpoint IPv6-only puede
 transferir, pero no recibe ni utiliza créditos IPv4 heredados y su tiempo de
 espera se mantiene local al cliente. No se atribuye actividad mediante una
 dirección IPv4 sintética.
@@ -502,7 +502,7 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | `V91-K04` | `T1/T5` | Reiniciar ambos nodos con `nodes_v6.dat` poblado | Contactos cargados en probation; re-verificación acotada y sin confianza heredada |
 | `V91-C01` | `V1` | Peer nuevo frente a 0.70b | Transferencia íntegra; solo opcodes y payloads clásicos. Se permiten tags `HELLO` aditivos ignorados por 0.70b |
 | `V91-C02` | `T0` | Rechazar sucesivamente base, avanzado y contribución | Ninguna superficie del nivel rechazado se inicia; KRP y Beta Exit permanecen cerrados |
-| `V91-C03` | `T0/T1` | Aceptar los tres niveles y revocar el general durante actividad | El estado persiste y relay, KRP y Beta Exit se detienen en menos de 5 s |
+| `V91-C03` | `T0/T1` | Aceptar los tres niveles y revocar el general durante actividad | El estado persiste y relay, KRP y Beta Exit se detienen en menos de 5 s; el gate estable de Kad6, independiente de NetLab, no cambia |
 | `V91-C04` | `T0` | Aceptar contribución con configuración KRP incompleta | KRP falla cerrado; no abre listener ni conexión |
 | `V91-S01` | `T5` | Introducir dos IPv6 que colisionarían en un hash de 32 bits | Se mantienen como endpoints diferentes |
 | `V91-S02` | `T5` | Reutilizar temporal IPv6 de otro epoch | Registro viejo rechazado; nodo legítimo no recibe crédito ajeno |
@@ -524,6 +524,29 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 - Si no fue posible una entrada IPv6 pública real, las notas dicen
   **transporte IPv6 validado en laboratorio y overlay**, no “funciona con todos
   los ISP”.
+
+#### Cierre de candidata `9.1.0-beta.2`
+
+El commit de candidata
+`d773427b9dafb3eba8260d0185a8943b00895798` cierra los dos fallos reproducibles
+de beta.1:
+
+- `V91-C03`: PASS en dos rondas, con revocación en 2.462,1 ms y 2.258,8 ms,
+  persistencia tras reinicio y Kad6 estable sin cambios.
+- `V91-P03`: PASS con HTTP 400, `success/joined/dialed=false`,
+  `ipv6_not_supported_by_socks4` y ninguna conexión al proxy.
+
+La matriz histórica de 26 casos queda provisionalmente en **8 PASS, 0 FAIL y
+18 BLOCKED**. Los bloqueados necesitan topologías físicas que no estaban
+disponibles; por tanto:
+
+- decisión para publicar una **beta de laboratorio**: `GO_WITH_LIMITATIONS`;
+- gate normativo completo de 9.1/RC: `NO_GO` hasta ejecutar los 18 casos
+  bloqueados.
+
+Esta distinción permite obtener masa de prueba con consentimiento explícito
+sin presentar como certificadas las topologías que todavía no se han podido
+ejecutar.
 
 ## 9. eSE 9.2: alcanzabilidad directa y mappings automáticos
 

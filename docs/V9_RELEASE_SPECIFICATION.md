@@ -46,7 +46,10 @@ Ninguna versión estable se publica con un caso obligatorio en estado `FAIL` o
 ### 3.1 Compatibilidad
 
 1. Las extensiones eSE DEBEN ser aditivas y negociadas mediante capacidades.
-2. Un eMule 0.70b sin soporte eSE NO DEBE recibir opcodes, tags ni formatos eSE.
+2. Un eMule 0.70b sin soporte eSE NO DEBE recibir opcodes ni payloads eSE
+   antes de negociar capacidades. PUEDE recibir tags aditivos en `HELLO` si
+   usa el mecanismo extensible heredado, el peer antiguo los ignora y una
+   captura demuestra que no alteran campos, opcodes ni formatos clásicos.
 3. IPv4 heredado NO DEBE cambiar de tamaño ni significado.
 4. Un peer desconocido o antiguo DEBE degradar al comportamiento clásico.
 5. Kad2 DEBE conservar sus formatos, `nodes.dat`, routing y semántica pública.
@@ -497,7 +500,7 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | `V91-K02` | `T1` | Kad2+Kad6, apagar uno durante ejecución | El otro continúa y no recibe paquetes del plano apagado |
 | `V91-K03` | perfiles | Abrir un perfil Kad6 con build anterior sobre copia | Kad2 no se reactiva indebidamente |
 | `V91-K04` | `T1/T5` | Reiniciar ambos nodos con `nodes_v6.dat` poblado | Contactos cargados en probation; re-verificación acotada y sin confianza heredada |
-| `V91-C01` | `V1` | Peer nuevo frente a 0.70b | Solo formatos IPv4 heredados |
+| `V91-C01` | `V1` | Peer nuevo frente a 0.70b | Transferencia íntegra; solo opcodes y payloads clásicos. Se permiten tags `HELLO` aditivos ignorados por 0.70b |
 | `V91-C02` | `T0` | Rechazar sucesivamente base, avanzado y contribución | Ninguna superficie del nivel rechazado se inicia; KRP y Beta Exit permanecen cerrados |
 | `V91-C03` | `T0/T1` | Aceptar los tres niveles y revocar el general durante actividad | El estado persiste y relay, KRP y Beta Exit se detienen en menos de 5 s |
 | `V91-C04` | `T0` | Aceptar contribución con configuración KRP incompleta | KRP falla cerrado; no abre listener ni conexión |

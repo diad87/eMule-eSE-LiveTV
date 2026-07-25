@@ -61,7 +61,7 @@ Write-LabJson -Value $summary `
 
 & (Join-Path $PSScriptRoot 'collect_report.ps1') `
     -RunDirectory $evidence -CaseId 'G-SELFTEST' -Outcome $verdict `
-    -Version '9.1.0-beta.2' -Commit $candidateCommit `
+    -Version '9.1.0-beta.3' -Commit $candidateCommit `
     -Notes 'Frozen release package self-test in an isolated portable profile.'
 
 if ($verdict -ne 'PASS') {

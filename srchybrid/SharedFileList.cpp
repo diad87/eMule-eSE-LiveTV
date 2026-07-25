@@ -48,6 +48,7 @@
 #include "LiveTunnel.h"
 #include "Kad6CryptoHost.h"
 #include "SHAHashSet.h"
+#include "SharedFileIntakePolicy.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -1547,10 +1548,22 @@ bool CSharedFileList::ExcludeFile(const CString &strFilePath)
 
 void CSharedFileList::CheckAndAddSingleFile(const CFileFind &ff)
 {
-	if (ff.IsDirectory() || ff.IsSystem() || ff.IsTemporary() || ff.GetLength() == 0 || ff.GetLength() > MAX_EMULE_FILE_SIZE)
+	const CString strInitialFileName(ff.GetFileName());
+	SharedFileIntakePolicy::FileFacts intakeFacts;
+	intakeFacts.isDirectory = ff.IsDirectory() != FALSE;
+	intakeFacts.isSystem = ff.IsSystem() != FALSE;
+	intakeFacts.isTemporary = ff.IsTemporary() != FALSE;
+	intakeFacts.size = static_cast<uint64>(ff.GetLength());
+	const SharedFileIntakePolicy::Rejection rejection =
+		SharedFileIntakePolicy::ClassifyFile(
+			static_cast<LPCWSTR>(strInitialFileName),
+			static_cast<size_t>(strInitialFileName.GetLength()),
+			intakeFacts,
+			MAX_EMULE_FILE_SIZE);
+	if (rejection != SharedFileIntakePolicy::Rejection::None)
 		return;
 
-	CString strFoundFileName(ff.GetFileName());
+	CString strFoundFileName(strInitialFileName);
 	CString strFoundFilePath(ff.GetFilePath());
 	CString strFoundDirectory(strFoundFilePath, ff.GetFilePath().ReverseFind(_T('\\')) + 1); //with backslash
 	CString strShellLinkDir;

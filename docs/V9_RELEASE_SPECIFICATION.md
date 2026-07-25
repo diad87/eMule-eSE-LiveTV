@@ -441,6 +441,7 @@ seguridad, interoperabilidad o estabilidad.
 | `V91-F16` | Desactivar IPv6 debe restaurar un baseline IPv4 puro |
 | `V91-F17` | Separar consentimiento base, avanzado y contribución; cada nivel debe partir apagado, persistir y poder revocarse |
 | `V91-F18` | Una `Kad6BetaExitOptIn` consentida debe permanecer separada de `Kad6PublicExitOptIn` y no eludir el gate firmado de salida estable |
+| `V91-F19` | Escaneo inicial y `DirectoryWatcher` deben usar una única política de admisión de compartidos, con motivos de rechazo y comparación ASCII independiente del locale |
 
 ### 8.3 Política de identidad y créditos
 
@@ -484,6 +485,7 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | ID | Topología | Procedimiento | Criterio PASS |
 |---|---|---|---|
 | `V91-A01` | build | Ejecutar wire tests IPv6 y gates comunes | 6/6, 5/5, 2/2, 6/6 y suite completa verde |
+| `V91-A02` | build | Ejecutar la política de admisión y el corpus A/B fijado a eMule AI 1.5.2 `de8e27e` | Cero falsos positivos; menos falsos negativos que el baseline; Core, Integration y `Release|x64` verdes |
 | `V91-I01` | `T5` | Dos peers IPv6-only, sin ruta IPv4 | Hello, fuente y transferencia de 4 GiB por IPv6 |
 | `V91-I02` | `T5` | LiveTV IPv6-only a 12 Mbps durante 2 h | Playlist y chunks válidos; cero fallback IPv4 |
 | `V91-I03` | `T1` | Dual-stack con ambas rutas disponibles | Se usa la política configurada y se registra la ruta real |
@@ -547,6 +549,29 @@ disponibles; por tanto:
 Esta distinción permite obtener masa de prueba con consentimiento explícito
 sin presentar como certificadas las topologías que todavía no se han podido
 ejecutar.
+
+#### Incremento de candidata `9.1.0-beta.3`
+
+Beta.3 incorpora `V91-F19` sin modificar wire, preferencias ni topologías de
+red:
+
+- `SharedFileIntakePolicy` centraliza atributos, tamaño y nombres inseguros;
+- el escaneo inicial y `DirectoryWatcher` llaman a la misma política;
+- los rechazos distinguen directorio, atributos, vacío, exceso de tamaño y
+  nombre inseguro;
+- `thumbs.db` conserva la validación de contenido histórica mediante
+  `IsThumbsDb`, evitando rechazar por nombre un archivo válido;
+- el corpus A/B de 31 casos está fijado al commit
+  `de8e27e2029044d533f7090f173c95856fe4635a` de eMule AI 1.5.2.
+
+El resultado previo a congelación es:
+
+- eMule AI 1.5.2: 0 falsos positivos y 7 falsos negativos;
+- eSE beta.3: 0 falsos positivos y 0 falsos negativos;
+- prueba focalizada, Core, Integration y build limpio `Release|x64`: PASS.
+
+La evidencia reproducible se documenta en
+`AI_I03_V9.1_EVIDENCE.md`.
 
 ## 9. eSE 9.2: alcanzabilidad directa y mappings automáticos
 

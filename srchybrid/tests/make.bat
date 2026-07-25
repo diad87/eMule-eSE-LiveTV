@@ -40,6 +40,14 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_core_regression_poli
 if errorlevel 1 exit /b 1
 tests\build\test_core_regression_policy.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_shared_file_intake_policy.exe tests\test_shared_file_intake_policy.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_shared_file_intake_policy.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_shared_file_intake_policy_ab.exe tests\test_shared_file_intake_policy_ab.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_shared_file_intake_policy_ab.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_kad_protocol_policy.exe tests\test_kad_protocol_policy.cpp
 if errorlevel 1 exit /b 1
 tests\build\test_kad_protocol_policy.exe

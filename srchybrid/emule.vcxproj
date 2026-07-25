@@ -1072,6 +1072,7 @@
     <ClInclude Include="SHAHashSet.h" />
     <ClInclude Include="ShareableFile.h" />
     <ClInclude Include="SharedDirsTreeCtrl.h" />
+    <ClInclude Include="SharedFileIntakePolicy.h" />
     <ClInclude Include="SharedFileList.h" />
     <ClInclude Include="SharedFilesCtrl.h" />
     <ClInclude Include="SharedFilesWnd.h" />

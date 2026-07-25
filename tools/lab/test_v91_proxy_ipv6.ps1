@@ -261,7 +261,7 @@ Write-LabJson -Value $summary `
     -Path (Join-Path $evidence 'V91-PROXY-SUMMARY.json') | Out-Null
 & (Join-Path $PSScriptRoot 'collect_report.ps1') `
     -RunDirectory $evidence -CaseId 'V91-PROXY' -Outcome $overall `
-    -Version '9.1.0-beta.2' -Commit $candidateCommit `
+    -Version '9.1.0-beta.3' -Commit $candidateCommit `
     -Notes 'Runtime SOCKS5, HTTP CONNECT and SOCKS4 IPv6 behavior through loopback mock proxies.'
 
 if ($overall -ne 'PASS') {

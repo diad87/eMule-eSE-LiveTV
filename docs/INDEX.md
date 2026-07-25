@@ -5,6 +5,12 @@ maintain eMule eSE.
 
 ## User documentation
 
+- [eSE 9.1.0-beta.3 release notes](RELEASE_NOTES_v9.1.0-beta.3.md)
+  — safe shared-file intake parity and A/B superiority over the frozen eMule
+  AI 1.5.2 filename-policy baseline.
+- [AI-I03 v9.1 evidence](AI_I03_V9.1_EVIDENCE.md)
+  — implementation scope, fixed baseline, reproducible corpus and validation
+  gates for the shared-file intake policy.
 - [eSE 9.1.0-beta.2 release notes](RELEASE_NOTES_v9.1.0-beta.2.md)
   — IPv6/Kad6 between eSE peers, persistent laboratory revocation, explicit
   proxy-family handling and current beta limitations.

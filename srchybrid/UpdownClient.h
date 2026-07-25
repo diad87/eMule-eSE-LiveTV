@@ -128,6 +128,10 @@ public:
 	bool			HasIPv6Address() const						{ return m_ipv6Address.GetType() == CAddress::IPv6 && !m_ipv6Address.IsNull(); }
 	const CAddress& GetIPv6Address() const						{ return m_ipv6Address; }
 	void			SetIPv6Address(const CAddress& addr)			{ const CAddress next = (addr.GetType() == CAddress::IPv6 && addr.IsUsablePublic()) ? addr : CAddress(); const bool changed = next != m_ipv6Address; m_ipv6Address = next; RefreshIPv6OnlyEndpoint(); if (changed) { m_bServerIPv6Source = false; m_bIPv6CallbackSource = false; m_bLiveIPv6Source = false; m_bDirectIPv6Source = false; } }
+	// Explicit direct joins may target an RFC 4193 overlay address. Keep this
+	// separate from SetIPv6Address so discovery, PeX and server paths remain
+	// restricted to public IPv6 endpoints.
+	void			SetDirectIPv6Address(const CAddress& addr)		{ const CAddress next = (addr.GetType() == CAddress::IPv6 && addr.IsUsableDirectIPv6()) ? addr : CAddress(); const bool changed = next != m_ipv6Address; m_ipv6Address = next; RefreshIPv6OnlyEndpoint(); if (changed) { m_bServerIPv6Source = false; m_bIPv6CallbackSource = false; m_bLiveIPv6Source = false; m_bDirectIPv6Source = false; } }
 	bool			IsIPv6OnlyEndpoint() const					{ return m_bIPv6OnlyEndpoint && HasIPv6Address(); }
 	// Keep the legacy uint32 fields as compatibility storage without using
 	// them to decide whether a real IPv4 route exists. Constructors historically

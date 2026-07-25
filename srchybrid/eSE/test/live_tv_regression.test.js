@@ -447,6 +447,9 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   const server = read(eseRoot, 'server.js');
   const liveManager = read(repoRoot, 'srchybrid', 'LiveStreamManager.cpp');
   const liveManagerHeader = read(repoRoot, 'srchybrid', 'LiveStreamManager.h');
+  const listenSocket = read(repoRoot, 'srchybrid', 'ListenSocket.cpp');
+  const addressHeader = read(repoRoot, 'srchybrid', 'eMuleAI', 'Address.h');
+  const address = read(repoRoot, 'srchybrid', 'eMuleAI', 'Address.cpp');
 
   assert.match(base, /IPv6-only endpoint has no validated native-v6 route/);
   assert.match(base, /!bNoCallbacks && !IsIPv6OnlyEndpoint\(\)/);
@@ -472,10 +475,27 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   assert.match(liveManagerHeader, /const CAddress& address, uint16 port/);
   assert.match(web, /ed2k:\/\/\|live\|HEXKEY\|\[IPv6\]:PORT\|TITLE\|\//);
   assert.match(web, /closeBracket[\s\S]{0,260}ReverseFind\(_T\(':'\)\)/);
-  assert.match(web, /validIPv6[\s\S]{0,180}parsed\.IsUsablePublic\(\)/);
+  assert.match(web, /validIPv6[\s\S]{0,180}parsed\.IsUsableDirectIPv6\(\)/);
+  assert.match(addressHeader, /bool IsUniqueLocalIPv6\(\) const;/);
+  assert.match(addressHeader, /bool IsUsableDirectIPv6\(\) const;/);
+  assert.match(address, /IsUniqueLocalIPv6[\s\S]{0,360}\(m_IP\[0\] & 0xfe\) == 0xfc/);
+  assert.match(address, /IsUsableDirectIPv6[\s\S]{0,360}IsPublicIP\(\) \|\| IsUniqueLocalIPv6\(\)/);
+  assert.match(liveManager, /address\.IsUsableDirectIPv6\(\)/);
+  assert.match(base, /bDirectOverlayRoute[\s\S]{0,900}m_ipv6Address\.IsPublicIP\(\) \|\| bDirectOverlayRoute/);
   assert.match(liveManager, /native IPv6 Live source/);
+  assert.match(client, /SetDirectIPv6Address[\s\S]{0,300}IsUsableDirectIPv6\(\)/);
+  assert.match(liveManager, /SetDirectIPv6Address\(address\)/);
   assert.match(liveManager, /SetDirectIPv6Source\(\)/);
   assert.match(base, /IsLiveIPv6Source\(\) \|\| IsDirectIPv6Source\(\)/);
+  assert.ok(
+    (base.match(/peerAddress\.IsUsableDirectIPv6\(\)/g) || []).length >= 2,
+    'accepted ULA peers must survive both construction and HELLO parsing'
+  );
+  assert.match(base, /SetDirectIPv6Address\(peerAddress\)[\s\S]{0,100}SetDirectIPv6Source\(\)/);
+  assert.ok(
+    (listenSocket.match(/NativeV6\.IsUsableDirectIPv6\(\)|addr\.IsUsableDirectIPv6\(\)/g) || []).length >= 3,
+    'both conditional and fallback TCP accept paths must admit direct ULA peers'
+  );
 });
 
 function fakeResponse() {

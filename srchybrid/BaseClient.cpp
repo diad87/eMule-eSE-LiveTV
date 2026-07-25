@@ -200,21 +200,39 @@ bool CUpDownClient::CanUseIPv6Direct() const
 	const bool bCallbackRoute = m_bIPv6CallbackSource && HasIPv6Address();
 	const bool bLiveRoute = m_bLiveIPv6Source && HasIPv6Address();
 	const bool bDirectRoute = m_bDirectIPv6Source && HasIPv6Address();
+	const bool bDirectOverlayRoute = bDirectRoute
+		&& m_ipv6Address.IsUniqueLocalIPv6();
 	const ProxySettings& proxy = thePrefs.GetProxySettings();
 	const bool bIPv6CapableProxy = proxy.bUseProxy
 		&& (proxy.type == PROXYTYPE_SOCKS5
 			|| proxy.type == PROXYTYPE_HTTP10
 			|| proxy.type == PROXYTYPE_HTTP11);
-	return thePrefs.IsIPv6Enabled()
+	const bool canUse = thePrefs.IsIPv6Enabled()
 		&& !bV6Backoff
 		&& (!proxy.bUseProxy || bIPv6CapableProxy)
 		&& (bServerRoute || bCallbackRoute || bLiveRoute || bDirectRoute || bValidatedEseRoute)
 		// SOCKS5 and HTTP CONNECT carry the native IPv6 destination through
 		// an IPv4 proxy connection; only a direct route needs local public v6.
 		&& (bIPv6CapableProxy
+			|| bDirectOverlayRoute
 			|| (localV6.GetType() == CAddress::IPv6 && localV6.IsPublicIP()))
-		&& HasIPv6Address() && m_ipv6Address.IsPublicIP()
+		&& HasIPv6Address()
+		&& (m_ipv6Address.IsPublicIP() || bDirectOverlayRoute)
 		&& GetUserPort() != 0;
+	if (bDirectRoute) {
+		LIVE_LOG("CONN",
+			"direct IPv6 preflight result=%s enabled=%d backoff=%d proxy=%d proxyV6=%d overlay=%d localPublic=%d hasAddress=%d port=%u",
+			canUse ? "allow" : "deny",
+			thePrefs.IsIPv6Enabled() ? 1 : 0,
+			bV6Backoff ? 1 : 0,
+			proxy.bUseProxy ? 1 : 0,
+			bIPv6CapableProxy ? 1 : 0,
+			bDirectOverlayRoute ? 1 : 0,
+			(localV6.GetType() == CAddress::IPv6 && localV6.IsPublicIP()) ? 1 : 0,
+			HasIPv6Address() ? 1 : 0,
+			(unsigned)GetUserPort());
+	}
+	return canUse;
 }
 
 void CUpDownClient::MergeReachabilityFrom(const CUpDownClient& other)
@@ -310,8 +328,14 @@ void CUpDownClient::Init()
 	SetIPv6Address(CAddress());
 	if (socket != NULL) {
 		const CAddress peerAddress = socket->GetPeerCAddress();
-		if (peerAddress.GetType() == CAddress::IPv6 && peerAddress.IsPublicIP()) {
-			SetIPv6Address(peerAddress);
+		if (peerAddress.GetType() == CAddress::IPv6
+			&& peerAddress.IsUsableDirectIPv6()) {
+			if (peerAddress.IsPublicIP())
+				SetIPv6Address(peerAddress);
+			else {
+				SetDirectIPv6Address(peerAddress);
+				SetDirectIPv6Source();
+			}
 			SetIP(peerAddress.ToSyntheticUInt32());
 		} else
 			SetIP(socket->GetPeerAddressV4());
@@ -891,9 +915,15 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 	}
 
 	const CAddress peerAddress = socket->GetPeerCAddress();
-	const bool bNativeV6Endpoint = peerAddress.GetType() == CAddress::IPv6 && peerAddress.IsPublicIP();
+	const bool bNativeV6Endpoint = peerAddress.GetType() == CAddress::IPv6
+		&& peerAddress.IsUsableDirectIPv6();
 	if (bNativeV6Endpoint) {
-		SetIPv6Address(peerAddress);
+		if (peerAddress.IsPublicIP())
+			SetIPv6Address(peerAddress);
+		else {
+			SetDirectIPv6Address(peerAddress);
+			SetDirectIPv6Source();
+		}
 		SetIP(peerAddress.ToSyntheticUInt32());
 		if (peerAddress == previousV6) {
 			if (wasLiveIPv6Source) SetLiveIPv6Source();
@@ -1511,6 +1541,13 @@ void CUpDownClient::ProcessMuleCommentPacket(const uchar *pachPacket, uint32 nSi
 bool CUpDownClient::Disconnected(LPCTSTR pszReason, bool bFromSocket)
 {
 	ASSERT(theApp.clientlist->IsValidClient(this));
+	if (IsDirectIPv6Source() || IsLiveIPv6Source()) {
+		LIVE_LOG("CONN", "IPv6 Live peer disconnected reason=\"%S\" endpoint=%S:%u fromSocket=%d",
+			pszReason,
+			(LPCWSTR)GetIPv6Address().ToStringC(),
+			(unsigned)GetUserPort(),
+			bFromSocket ? 1 : 0);
+	}
 
 	// Circuits are connection-bound, not client-object-bound. A client may be
 	// retained for queues/retry after its socket closes, so destructor-only

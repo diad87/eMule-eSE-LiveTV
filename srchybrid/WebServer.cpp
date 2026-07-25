@@ -6943,7 +6943,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			const bool validIPv4 = parsed.GetType() == CAddress::IPv4
 				&& parsed.TryToUInt32(ipv4) && ipv4 != 0 && ipv4 != INADDR_NONE;
 			const bool validIPv6 = parsed.GetType() == CAddress::IPv6
-				&& parsed.IsUsablePublic();
+				&& parsed.IsUsableDirectIPv6();
 			if (port != 0 && (validIPv4 || validIPv6)) {
 				directAddress = parsed;
 			} else {

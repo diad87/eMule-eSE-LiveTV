@@ -1114,7 +1114,7 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey,
         return address.TryToUInt32(ip)
             && TryConnectToStreamSource(streamKey, ip, port);
     }
-    if (address.GetType() != CAddress::IPv6 || !address.IsUsablePublic()
+    if (address.GetType() != CAddress::IPv6 || !address.IsUsableDirectIPv6()
         || port == 0 || !thePrefs.IsIPv6Enabled())
         return false;
 
@@ -1142,11 +1142,11 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey,
     CUpDownClient* client = theApp.clientlist->FindClientByAddress(address, port);
     if (client == NULL) {
         client = new CUpDownClient(NULL, port, 0, 0, 0, false);
-        client->SetIPv6Address(address);
+        client->SetDirectIPv6Address(address);
         client->SetIP(address.ToSyntheticUInt32());
         theApp.clientlist->AddClient(client);
     } else {
-        client->SetIPv6Address(address);
+        client->SetDirectIPv6Address(address);
     }
     client->SetDirectIPv6Source();
 

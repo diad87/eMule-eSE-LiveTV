@@ -46,6 +46,8 @@ class CAddress
     const bool      IsPublicIP() const;
     bool TryToUInt32(uint32& out, bool bReverse = false) const;
     bool IsNativeIPv6() const;
+    bool IsUniqueLocalIPv6() const;
+    bool IsUsableDirectIPv6() const;
     bool IsUsablePublic() const;
     static bool TryFromSA(const sockaddr* sa, int sa_len, CAddress& out, uint16* pPort = NULL);
     bool TryToSA(sockaddr* sa, int* sa_len, uint16 uPort = 0) const;

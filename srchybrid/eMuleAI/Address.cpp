@@ -369,6 +369,23 @@ bool CAddress::IsNativeIPv6() const
     return m_eAF == IPv6 && !IsMappedIPv4();
 }
 
+bool CAddress::IsUniqueLocalIPv6() const
+{
+    // RFC 4193 fc00::/7. These addresses are not Internet-public, but an
+    // explicit direct endpoint can be routable over a user-controlled overlay
+    // such as Tailscale. Do not broaden the normal public peer-discovery gate.
+    return IsNativeIPv6() && !IsNull() && (m_IP[0] & 0xfe) == 0xfc;
+}
+
+bool CAddress::IsUsableDirectIPv6() const
+{
+    // Direct joins are an explicit user action. Permit a public IPv6 or an
+    // RFC 4193 overlay address, while still rejecting unspecified, loopback,
+    // link-local, multicast, mapped-v4 and other reserved IPv6 ranges.
+    return IsNativeIPv6() && !IsNull()
+        && (IsPublicIP() || IsUniqueLocalIPv6());
+}
+
 bool CAddress::IsUsablePublic() const
 {
     return (m_eAF == IPv4 || IsNativeIPv6()) && !IsNull() && IsPublicIP();

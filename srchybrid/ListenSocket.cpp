@@ -2972,7 +2972,8 @@ int CALLBACK AcceptConnectionCond(LPWSABUF lpCallerId, LPWSABUF /*lpCallerData*/
 			} else {
 				CAddress addr;
 				addr.FromSA(pRaw, (int)lpCallerId->len);
-				if (addr.GetType() != CAddress::IPv6 || !addr.IsPublicIP()) {
+				if (addr.GetType() != CAddress::IPv6
+					|| !addr.IsUsableDirectIPv6()) {
 					s_iAcceptConnectionCondRejected = 3;
 					return CF_REJECT;
 				}
@@ -3107,7 +3108,8 @@ void CListenSocket::OnAccept(int nErrorCode)
 							   &p6->sin6_addr.u.Byte[12], 4);
 					} else {
 						NativeV6.FromSA((const sockaddr*)p6, sizeof *p6);
-						bNativeV6 = NativeV6.GetType() == CAddress::IPv6 && NativeV6.IsPublicIP();
+						bNativeV6 = NativeV6.GetType() == CAddress::IPv6
+							&& NativeV6.IsUsableDirectIPv6();
 						if (!bNativeV6) {
 							newclient->Safe_Delete();
 							continue;
@@ -3159,7 +3161,8 @@ void CListenSocket::OnAccept(int nErrorCode)
 							   &p6->sin6_addr.u.Byte[12], 4);
 					} else {
 						NativeV6.FromSA((const sockaddr*)p6, sizeof *p6);
-						bNativeV6 = NativeV6.GetType() == CAddress::IPv6 && NativeV6.IsPublicIP();
+						bNativeV6 = NativeV6.GetType() == CAddress::IPv6
+							&& NativeV6.IsUsableDirectIPv6();
 						if (!bNativeV6) {
 							newclient->Safe_Delete();
 							continue;

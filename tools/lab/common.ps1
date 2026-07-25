@@ -32,7 +32,8 @@ function Get-LabSha256 {
 function Get-LabCandidateInfo {
     param(
         [Parameter(Mandatory = $true)][string]$PackagePath,
-        [string]$ExpectedCommit = ''
+        [string]$ExpectedCommit = '',
+        [switch]$AllowDirty
     )
 
     $package = (Resolve-Path -LiteralPath $PackagePath).Path
@@ -65,7 +66,7 @@ function Get-LabCandidateInfo {
     if ([string]::IsNullOrWhiteSpace($version)) {
         throw 'BUILD_INFO.txt does not contain a version'
     }
-    if ($dirty -ne 'false') {
+    if ($dirty -ne 'false' -and -not $AllowDirty) {
         throw "Candidate package is not from a clean worktree (dirty: $dirty)"
     }
     if ($ExpectedCommit -and
@@ -78,6 +79,7 @@ function Get-LabCandidateInfo {
         release = $release
         version = $version
         commit = $commit.ToLowerInvariant()
+        dirty = $dirty
         emule_sha256 = Get-LabSha256 -Path $binaryPath
         ese_server_sha256 = Get-LabSha256 -Path (Join-Path $package 'ese-server.exe')
         build_info_sha256 = Get-LabSha256 -Path $buildInfoPath

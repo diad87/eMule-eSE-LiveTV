@@ -44,6 +44,7 @@ Add-Case 'V91-A01' 'PASS' 'build' `
       'V91-A01-INTEGRATION\summary.json',
       'selftest-attempt4\evidence\G-SELFTEST-SUMMARY.json',
       'selftest-attempt5\evidence\G-SELFTEST-SUMMARY.json',
+      'selftest-attempt6\evidence\G-SELFTEST-SUMMARY.json',
       'release-verification-attempt4\summary.json',
       'release-preflight-attempt2\summary.json',
       'kad6-individual-attempt3\summary.json',
@@ -91,20 +92,23 @@ Add-Case 'V91-D01' 'BLOCKED' 'T1' `
     @('topology-availability.json')
 
 Add-Case 'V91-P01' 'PASS' 'T0/T1' `
-    'SOCKS5 capture contains ATYP=4, the exact 16-byte IPv6 destination, and port 42424.' `
+    'Three independent SOCKS5 captures contain ATYP=4, the exact 16-byte IPv6 destination, and port 42424.' `
     @('proxy-ipv6-attempt3\evidence\V91-P01-summary.json',
       'proxy-ipv6-attempt3\evidence\V91-PROXY-SUMMARY.json',
-      'proxy-ipv6-attempt4\evidence\V91-PROXY-SUMMARY.json') $true 'COMPLETE'
+      'proxy-ipv6-attempt4\evidence\V91-PROXY-SUMMARY.json',
+      'proxy-ipv6-attempt5\evidence\V91-PROXY-SUMMARY.json') $true 'COMPLETE'
 Add-Case 'V91-P02' 'PASS' 'T0/T1' `
-    'HTTP proxy capture contains a correctly bracketed IPv6 CONNECT authority and the expected port.' `
+    'Three independent HTTP proxy captures contain a correctly bracketed IPv6 CONNECT authority and the expected port.' `
     @('proxy-ipv6-attempt3\evidence\V91-P02-summary.json',
       'proxy-ipv6-attempt3\evidence\V91-PROXY-SUMMARY.json',
-      'proxy-ipv6-attempt4\evidence\V91-PROXY-SUMMARY.json') $true 'COMPLETE'
+      'proxy-ipv6-attempt4\evidence\V91-PROXY-SUMMARY.json',
+      'proxy-ipv6-attempt5\evidence\V91-PROXY-SUMMARY.json') $true 'COMPLETE'
 Add-Case 'V91-P03' 'FAIL' 'T0' `
-    'No truncated SOCKS4 connection was emitted, but direct_join returned dialed=true instead of explicitly rejecting an IPv6 destination.' `
+    'Three independent runs emitted no truncated SOCKS4 connection, but direct_join returned dialed=true instead of explicitly rejecting an IPv6 destination.' `
     @('proxy-ipv6-attempt3\evidence\V91-P03-summary.json',
       'proxy-ipv6-attempt3\evidence\V91-PROXY-SUMMARY.json',
-      'proxy-ipv6-attempt4\evidence\V91-PROXY-SUMMARY.json') $true 'COMPLETE'
+      'proxy-ipv6-attempt4\evidence\V91-PROXY-SUMMARY.json',
+      'proxy-ipv6-attempt5\evidence\V91-PROXY-SUMMARY.json') $true 'COMPLETE'
 
 Add-Case 'V91-K01' 'BLOCKED' 'T5' `
     'Kad6-only bootstrap, authenticated routing, publish, and source recovery require a second exact-candidate IPv6-only node.' `
@@ -126,17 +130,20 @@ Add-Case 'V91-C01' 'BLOCKED' 'V1' `
       'c01-exact-partial-attempt6\evidence\summary.json',
       'c01-exact-partial-attempt6\evidence\REPORT-V91-C01.json') $true 'PARTIAL_COMPLETE'
 Add-Case 'V91-C02' 'PASS' 'T0' `
-    'Six of six independent rejection scenarios passed across two rounds; rejected surfaces remained closed.' `
+    'Eighteen of eighteen rejection scenarios passed across three independent two-round campaigns; rejected surfaces remained closed.' `
     @('consent-matrix-attempt3\evidence\V91-CONSENT-SUMMARY.json',
-      'consent-matrix-attempt4\evidence\V91-CONSENT-SUMMARY.json') $true 'COMPLETE'
+      'consent-matrix-attempt4\evidence\V91-CONSENT-SUMMARY.json',
+      'consent-matrix-attempt5\evidence\V91-CONSENT-SUMMARY.json') $true 'COMPLETE'
 Add-Case 'V91-C03' 'FAIL' 'T0/T1' `
-    'Both rounds failed: shutdown exceeded five seconds and a restart re-enabled accepted NetLab levels despite persisted EseNetLabEnabled=0.' `
+    'All six executions across three campaigns failed: shutdown exceeded five seconds and a restart re-enabled accepted NetLab levels despite persisted EseNetLabEnabled=0.' `
     @('consent-matrix-attempt3\evidence\V91-CONSENT-SUMMARY.json',
-      'consent-matrix-attempt4\evidence\V91-CONSENT-SUMMARY.json') $true 'COMPLETE'
+      'consent-matrix-attempt4\evidence\V91-CONSENT-SUMMARY.json',
+      'consent-matrix-attempt5\evidence\V91-CONSENT-SUMMARY.json') $true 'COMPLETE'
 Add-Case 'V91-C04' 'PASS' 'T0' `
-    'Both rounds failed closed with incomplete KRP configuration and opened neither listener nor connection.' `
+    'All six executions across three campaigns failed closed with incomplete KRP configuration and opened neither listener nor connection.' `
     @('consent-matrix-attempt3\evidence\V91-CONSENT-SUMMARY.json',
-      'consent-matrix-attempt4\evidence\V91-CONSENT-SUMMARY.json') $true 'COMPLETE'
+      'consent-matrix-attempt4\evidence\V91-CONSENT-SUMMARY.json',
+      'consent-matrix-attempt5\evidence\V91-CONSENT-SUMMARY.json') $true 'COMPLETE'
 
 Add-Case 'V91-S01' 'BLOCKED' 'T5' `
     'Unit coverage retains native 128-bit addresses, but the normative two-endpoint collision injection needs unavailable T5.' `

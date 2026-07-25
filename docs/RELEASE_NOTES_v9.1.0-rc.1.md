@@ -24,6 +24,10 @@ el desarrollo de funciones nuevas continuará en v9.2.
 
 ### Laboratorio reproducible
 
+- La revocación persiste primero el kill-switch maestro antes de responder,
+  sin esperar a guardar estadísticas ni preferencias ajenas; al reiniciar,
+  todos los niveles derivados se normalizan desde ese marcador y quedan
+  cerrados.
 - El arranque aislado de LiveTV guarda versión, commit, hashes, puertos y clave
   del stream en una sesión de evidencia nueva.
 - Los informes de self-test, proxy y consentimiento toman la versión del

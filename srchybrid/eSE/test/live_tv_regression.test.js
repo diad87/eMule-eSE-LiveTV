@@ -726,7 +726,9 @@ test('--selftest verifies signed chunk ingest and returns failure to the caller'
   const netlabSwitch = web.slice(
     web.indexOf('if (sURL.Left(11) == "/api/ese/v9")'),
     web.indexOf('// Local, sanitized cohort report'));
-  assert.match(netlabSwitch, /if \(ok && CPreferences::Save\(\)\)/);
+  assert.match(netlabSwitch, /onArg == _T\("0"\)[\s\S]{0,360}WriteBool\(_T\("EseNetLabEnabled"\), false, _T\("eSE"\)\)/);
+  assert.match(netlabSwitch, /GetBool\(_T\("EseNetLabEnabled"\), true, _T\("eSE"\)\)/);
+  assert.match(netlabSwitch, /else if \(ok && CPreferences::Save\(\)\)/);
   assert.match(netlabSwitch, /error = "persist_failed"/);
   assert.match(dialog, /AfxBeginThread\(HeadlessActionDelayThread/);
   assert.match(dialog, /PostMessage\(hwnd, UM_LIVE_HEADLESS_ACTION/);

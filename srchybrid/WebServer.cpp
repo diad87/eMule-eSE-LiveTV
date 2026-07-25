@@ -5429,9 +5429,21 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				error = "invalid_on_value";
 			}
 			// A cohort kill switch must survive a crash or forced restart, not
-			// merely the next graceful OnClose. Persist the accepted state
-			// transition before replying; Save() returns true on failure.
-			if (ok && CPreferences::Save()) {
+			// merely the next graceful OnClose. Persist the single master gate
+			// before replying. Startup normalizes every derived NetLab flag from
+			// this value, so a crash after this write still restarts fail-closed.
+			// Avoid the full Save() path on revocation: it serializes unrelated
+			// preferences and statistics and can make an emergency stop miss its
+			// bounded response time. Reactivation still persists the complete
+			// accepted state.
+			if (ok && onArg == _T("0")) {
+				CIni ini(CPreferences::GetConfigFile(), _T("eMule"));
+				ini.WriteBool(_T("EseNetLabEnabled"), false, _T("eSE"));
+				if (ini.GetBool(_T("EseNetLabEnabled"), true, _T("eSE"))) {
+					ok = false;
+					error = "persist_failed";
+				}
+			} else if (ok && CPreferences::Save()) {
 				ok = false;
 				error = "persist_failed";
 			}

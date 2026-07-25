@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputRoot,
     [ValidateRange(1, 7200)][int]$TimeoutSeconds = 3600,
     [ValidateRange(1048576, 17179869184)][Int64]$FileSizeBytes = 4294967296,
-    [string]$FixtureSeedPath = ''
+    [string]$FixtureSeedPath = '',
+    [ValidateSet('IPv6', 'IPv4')][string]$TransportFamily = 'IPv6'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,7 +17,13 @@ $package = (Resolve-Path -LiteralPath $PackagePath).Path
 $output = New-LabDirectory -Path $OutputRoot
 $evidence = New-LabDirectory -Path (Join-Path $output 'evidence')
 $nodes = New-LabDirectory -Path (Join-Path $output 'nodes')
-$fileName = 'v91-i01-partial-4g.bin'
+$caseId = if ($TransportFamily -eq 'IPv6') { 'V91-I01' } else { 'V91-I05' }
+$runId = if ($TransportFamily -eq 'IPv6') {
+    'v91-i01-partial'
+} else {
+    'v91-i05-partial'
+}
+$fileName = "$runId-$FileSizeBytes.bin"
 $password = 'v91-transfer-gate'
 $source = $null
 $downloader = $null
@@ -172,13 +179,13 @@ try {
     }
 
     & (Join-Path $PSScriptRoot 'prepare_node.ps1') -NodeRole A `
-        -SourcePackage $package -OutputRoot $nodes -RunId 'v91-i01-partial' `
+        -SourcePackage $package -OutputRoot $nodes -RunId $runId `
         -PortOffset 3000
     & (Join-Path $PSScriptRoot 'prepare_node.ps1') -NodeRole B `
-        -SourcePackage $package -OutputRoot $nodes -RunId 'v91-i01-partial' `
+        -SourcePackage $package -OutputRoot $nodes -RunId $runId `
         -PortOffset 3100
-    $sourceNode = Join-Path $nodes 'v91-i01-partial-a'
-    $downloaderNode = Join-Path $nodes 'v91-i01-partial-b'
+    $sourceNode = Join-Path $nodes "$runId-a"
+    $downloaderNode = Join-Path $nodes "$runId-b"
     $sourcePorts = [ordered]@{ tcp = 7662; udp = 7672; web = 7711 }
     $downloaderPorts = [ordered]@{ tcp = 7762; udp = 7772; web = 7811 }
 
@@ -191,6 +198,8 @@ try {
         Set-LabIniValue -Path $preferences -Section 'eMule' -Key 'SaveLogToDisk' -Value '1'
         Set-LabIniValue -Path $preferences -Section 'eMule' -Key 'SaveDebugToDisk' -Value '1'
         Set-LabIniValue -Path $preferences -Section 'Connection' -Key 'KadNetworkMask' -Value '1'
+        Set-LabIniValue -Path $preferences -Section 'Connection' -Key 'IPv6Mode' `
+            -Value $(if ($TransportFamily -eq 'IPv6') { '1' } else { '0' })
         Set-LabIniValue -Path $preferences -Section 'UPnP' -Key 'EnableUPnP' -Value '0'
         Set-LabIniValue -Path $preferences -Section 'WebServer' -Key 'Enabled' -Value '1'
         Set-LabIniValue -Path $preferences -Section 'WebServer' -Key 'Password' `
@@ -238,22 +247,44 @@ try {
     }
     $sourceSha256 = Get-LabSha256 -Path $sourceFile
 
-    $globalV6 = @(
-        Get-NetIPAddress -AddressFamily IPv6 -ErrorAction SilentlyContinue |
-            Where-Object {
-                $_.AddressState -eq 'Preferred' -and
-                (Get-LabAddressClass -Address $_.IPAddress) -eq 'global-v6' -and
-                $_.InterfaceAlias -match '(?i)Cloudflare|WARP'
-            }
-    ) | Select-Object -First 1
-    if ($null -eq $globalV6) {
-        throw 'No preferred global IPv6 address is available on Cloudflare WARP'
+    if ($TransportFamily -eq 'IPv6') {
+        $globalV6 = @(
+            Get-NetIPAddress -AddressFamily IPv6 -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.AddressState -eq 'Preferred' -and
+                    (Get-LabAddressClass -Address $_.IPAddress) -eq 'global-v6' -and
+                    $_.InterfaceAlias -match '(?i)Cloudflare|WARP'
+                }
+        ) | Select-Object -First 1
+        if ($null -eq $globalV6) {
+            throw 'No preferred global IPv6 address is available on Cloudflare WARP'
+        }
+        $address = $globalV6.IPAddress
+        # sslip.io gives us an AAAA-only hostname for the current WARP address.
+        # Using a hostname exercises the production A/AAAA resolver and avoids an
+        # immediate literal-resolution callback racing initial AddDownload.
+        $sourceHost = ($address -replace ':', '-') + '.sslip.io'
+        $interfaceClass = 'Cloudflare WARP'
+    } else {
+        # Use the physical LAN address: eMule correctly rejects loopback as a
+        # peer source, so 127.0.0.1 cannot exercise the inherited data plane.
+        $lanV4 = @(
+            Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.AddressState -eq 'Preferred' -and
+                    (Get-LabAddressClass -Address $_.IPAddress) -eq 'private-v4' -and
+                    $_.InterfaceAlias -notmatch '(?i)Cloudflare|WARP|Tailscale|vEthernet'
+                }
+        ) | Select-Object -First 1
+        if ($null -eq $lanV4) {
+            throw 'No preferred private IPv4 address is available on a physical LAN interface'
+        }
+        $address = $lanV4.IPAddress
+        # Keep hostname resolution asynchronous so the source is not discarded
+        # before AddDownload owns the file.
+        $sourceHost = ($address -replace '\.', '-') + '.sslip.io'
+        $interfaceClass = 'physical LAN IPv4'
     }
-    $address = $globalV6.IPAddress
-    # sslip.io gives us an AAAA-only hostname for the current WARP address.
-    # Using a hostname exercises the production A/AAAA resolver and avoids an
-    # immediate literal-resolution callback racing initial AddDownload.
-    $sourceHost = ($address -replace ':', '-') + '.sslip.io'
 
     try {
         New-NetFirewallRule -DisplayName $firewallRule -Direction Inbound `
@@ -374,19 +405,37 @@ try {
     } else {
         ''
     }
+    $expectedFamilyObserved = if ($TransportFamily -eq 'IPv6') {
+        $sawIpv6
+    } else {
+        $sawIpv4
+    }
+    $unexpectedFamilyObserved = if ($TransportFamily -eq 'IPv6') {
+        $sawIpv4
+    } else {
+        $sawIpv6
+    }
     $partialPass = $destinationExists -and
         $destinationSize -eq $FileSizeBytes -and
         $destinationSha256 -eq $sourceSha256 -and
-        $sawIpv6 -and
-        -not $sawIpv4
+        $expectedFamilyObserved -and
+        -not $unexpectedFamilyObserved
 
     $summary = [ordered]@{
-        schema = 'ese.v91.i01-partial-transfer/v1'
-        case_id = 'V91-I01'
+        schema = if ($TransportFamily -eq 'IPv6') {
+            'ese.v91.i01-partial-transfer/v1'
+        } else {
+            'ese.v91.i05-partial-transfer/v1'
+        }
+        case_id = $caseId
         formal_status = 'BLOCKED'
         partial_verdict = if ($partialPass) { 'PASS' } else { 'FAIL' }
-        formal_v91_i01_eligible = $false
-        formal_limitation = 'V91-I01 requires two peers in T5 with IPv4 removed; this run uses two isolated profiles on H1 over WARP IPv6.'
+        formal_eligible = $false
+        formal_limitation = if ($TransportFamily -eq 'IPv6') {
+            'V91-I01 requires two peers in T5 with IPv4 removed; this run uses two isolated profiles on H1 over WARP IPv6.'
+        } else {
+            "V91-I05 requires a controllable second physical T1 node; this run uses two isolated IPv6-disabled profiles on H1 over $interfaceClass."
+        }
         candidate_commit = $candidateCommit
         candidate_binary_sha256 = $candidateSha256
         started_at_utc = $started.ToString('o')
@@ -401,8 +450,8 @@ try {
             destination_bytes = $destinationSize
         }
         route = [ordered]@{
-            family = 'IPv6'
-            interface_class = 'Cloudflare WARP'
+            family = $TransportFamily
+            interface_class = $interfaceClass
             address_sha256 = Get-LabStringSha256 -Value $address
             ipv6_connection_observed = $sawIpv6
             ipv4_connection_to_source_observed = $sawIpv4
@@ -414,9 +463,9 @@ try {
     }
     Write-LabJson -Value $summary -Path (Join-Path $evidence 'summary.json') | Out-Null
     if (-not $partialPass) {
-        throw 'Partial 4 GiB IPv6 transfer did not satisfy its same-host criteria'
+        throw "Partial $FileSizeBytes-byte $TransportFamily transfer did not satisfy its same-host criteria"
     }
-    Write-Host "V91-I01 partial transfer PASS: $output" -ForegroundColor Green
+    Write-Host "$caseId partial transfer PASS: $output" -ForegroundColor Green
 } finally {
     Stop-TestProcess -Process $downloader
     Stop-TestProcess -Process $source

@@ -64,9 +64,24 @@ if ($Suite -eq 'Core' -or $Suite -eq 'All') {
     Run 'eSE npm tests' {
         Push-Location (Join-Path $RepoRoot 'srchybrid\eSE')
         try {
-            & npm.cmd ci --no-audit --no-fund
-            if ($LASTEXITCODE -eq 0) { & npm.cmd test }
-            if ($LASTEXITCODE -eq 0) { & npm.cmd audit --audit-level=high }
+            # Windows PowerShell 5.1 turns any native stderr line into an
+            # ErrorRecord under Stop, even when the process exits zero. Merge
+            # streams inside cmd.exe so npm deprecation warnings remain logged
+            # and gate solely on the native exit code.
+            $npmOutput = @(& cmd.exe /d /s /c 'npm.cmd ci --no-audit --no-fund 2>&1')
+            $npmExit = $LASTEXITCODE
+            $npmOutput | ForEach-Object { Write-Host $_ }
+            if ($npmExit -ne 0) { throw "npm ci failed with exit code $npmExit" }
+
+            $npmOutput = @(& cmd.exe /d /s /c 'npm.cmd test 2>&1')
+            $npmExit = $LASTEXITCODE
+            $npmOutput | ForEach-Object { Write-Host $_ }
+            if ($npmExit -ne 0) { throw "npm test failed with exit code $npmExit" }
+
+            $npmOutput = @(& cmd.exe /d /s /c 'npm.cmd audit --audit-level=high 2>&1')
+            $npmExit = $LASTEXITCODE
+            $npmOutput | ForEach-Object { Write-Host $_ }
+            if ($npmExit -ne 0) { throw "npm audit failed with exit code $npmExit" }
         } finally { Pop-Location }
     }
 }

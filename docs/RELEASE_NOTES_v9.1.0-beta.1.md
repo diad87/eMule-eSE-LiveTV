@@ -23,8 +23,10 @@ IPv6-only.
   mantiene lectura compatible con el borrador emitido por beta.2.
 - `OP_CALLBACK_V6` exige negociación, longitud exacta y un endpoint previamente
   conocido; un buddy no puede provocar una conexión a un destino arbitrario.
-- SOCKS5 y HTTP CONNECT admiten destinos IPv6; SOCKS4/4A los rechazan
-  explícitamente.
+- SOCKS5 y HTTP CONNECT admiten destinos IPv6. SOCKS4/4A no emiten una
+  conexión con la dirección truncada, pero el `direct_join` de esta candidata
+  todavía informa `dialed=true` en vez de rechazar IPv6 explícitamente
+  (`V91-P03`: FAIL).
 - Las respuestas SOCKS5 de longitud variable usan bytes sin signo y un BIND
   no compatible se rechaza sin reinterpretar memoria como IPv4.
 - Una dirección IPv4 de bind explícita conserva el comportamiento IPv4 puro.
@@ -112,8 +114,10 @@ está saneado.
   IPv4. La comprobación final confirmó una conexión TCP IPv6 global directa.
   Esta evidencia valida el plano de datos, pero no sustituye el caso normativo
   `T5` entre dos equipos físicos.
-- Consentimiento rechazado/aceptado, seguridad web local y kill switch:
-  validados.
+- El rechazo jerárquico de consentimiento y el fallo cerrado de una
+  configuración KRP incompleta están validados. La revocación general durante
+  actividad no supera todavía `V91-C03`: excede cinco segundos y un reinicio
+  vuelve a habilitar niveles aceptados aunque `EseNetLabEnabled=0` persista.
 - Camino directo beta.2 -> eSE 8.1: validado.
 
 La prueba física de tres nodos, el cambio LAN -> tethering y las matrices

@@ -157,11 +157,15 @@ Stage 'cleanup-generated-metadata' {
         if ($LASTEXITCODE -ne 0) { throw 'failed to restore generated language metadata' }
     }
 
-    # bundle_client.js is deterministic, but autocrlf can leave its tracked
-    # bundle stat-dirty even when the normalized blob is unchanged. Refresh the
-    # index and reject any real generated-source drift.
-    & git -C $RepoRoot add -- 'srchybrid/eSE/_player_bundle.js'
-    if ($LASTEXITCODE -ne 0) { throw 'failed to refresh generated player bundle' }
+    # bundle_client.js and npm ci are deterministic, but autocrlf can leave the
+    # bundle or package-lock stat-dirty even when the normalized blobs are
+    # unchanged. Refresh the index and reject any real generated-source drift.
+    $generatedSources = @(
+        'srchybrid/eSE/_player_bundle.js',
+        'srchybrid/eSE/package-lock.json'
+    )
+    & git -C $RepoRoot add -- $generatedSources
+    if ($LASTEXITCODE -ne 0) { throw 'failed to refresh generated Node metadata' }
     $staged = @(& git -C $RepoRoot diff --cached --name-only)
     if ($LASTEXITCODE -ne 0) { throw 'failed to inspect generated metadata' }
     if ($staged.Count -gt 0) {

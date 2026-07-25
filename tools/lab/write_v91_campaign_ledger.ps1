@@ -45,8 +45,11 @@ Add-Case 'V91-A01' 'PASS' 'build' `
       'selftest-attempt4\evidence\G-SELFTEST-SUMMARY.json',
       'selftest-attempt5\evidence\G-SELFTEST-SUMMARY.json',
       'release-verification-attempt4\summary.json',
+      'release-preflight-attempt2\summary.json',
       'kad6-fuzz-asan-attempt3\summary.json',
-      'kad6-fuzz-asan-attempt3\stdout.log') $true 'COMPLETE'
+      'kad6-fuzz-asan-attempt3\stdout.log',
+      'kad6-fuzz-asan-attempt4\summary.json',
+      'kad6-fuzz-asan-attempt4\stdout.log') $true 'COMPLETE'
 
 Add-Case 'V91-I01' 'BLOCKED' 'T5' `
     'A deterministic incompressible 4 GiB transfer passed with matching SHA-256, an observed WARP IPv6 data socket and no IPv4 socket to the source. It remains non-normative because both profiles ran on H1 and IPv4 was not removed from the host.' `
@@ -139,18 +142,21 @@ Add-Case 'V91-S01' 'BLOCKED' 'T5' `
     @('V91-A01\summary.json',
       'kad6-individual-attempt2\summary.json',
       'kad6-fuzz-asan-attempt3\summary.json',
+      'kad6-fuzz-asan-attempt4\summary.json',
       'topology-availability.json') $true 'PARTIAL_COMPLETE'
 Add-Case 'V91-S02' 'BLOCKED' 'T5' `
     'Record and epoch unit suites pass, but temporal-address reuse and credit isolation require unavailable T5.' `
     @('V91-A01\summary.json',
       'kad6-individual-attempt2\summary.json',
       'kad6-fuzz-asan-attempt3\summary.json',
+      'kad6-fuzz-asan-attempt4\summary.json',
       'topology-availability.json') $true 'PARTIAL_COMPLETE'
 Add-Case 'V91-S03' 'BLOCKED' 'T1/T5' `
     'Front-door challenge unit gates pass, but packet capture against an unverified remote endpoint requires unavailable T1/T5.' `
     @('V91-A01\summary.json',
       'kad6-individual-attempt2\summary.json',
       'kad6-fuzz-asan-attempt3\summary.json',
+      'kad6-fuzz-asan-attempt4\summary.json',
       'topology-availability.json') $true 'PARTIAL_COMPLETE'
 Add-Case 'V91-R01' 'BLOCKED' 'T3' `
     'The laptop cannot be controlled or upgraded from 9.0.0-beta.1, so LAN-to-hotspot handover cannot run on the exact candidate.' `

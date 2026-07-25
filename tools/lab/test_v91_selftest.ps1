@@ -17,6 +17,8 @@ if ($Commit -notmatch '^[0-9a-fA-F]{40}$') {
 }
 $candidateCommit = $Commit.ToLowerInvariant()
 $package = (Resolve-Path -LiteralPath $PackagePath).Path
+$candidate = Get-LabCandidateInfo -PackagePath $package `
+    -ExpectedCommit $candidateCommit
 $output = Get-LabFullPath -Path $OutputRoot
 if (Test-Path -LiteralPath $output) {
     throw "OutputRoot already exists; refusing to mix evidence: $output"
@@ -61,7 +63,7 @@ Write-LabJson -Value $summary `
 
 & (Join-Path $PSScriptRoot 'collect_report.ps1') `
     -RunDirectory $evidence -CaseId 'G-SELFTEST' -Outcome $verdict `
-    -Version '9.1.0-beta.3' -Commit $candidateCommit `
+    -Version $candidate.version -Commit $candidateCommit `
     -Notes 'Frozen release package self-test in an isolated portable profile.'
 
 if ($verdict -ne 'PASS') {

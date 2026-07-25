@@ -5,6 +5,9 @@ maintain eMule eSE.
 
 ## User documentation
 
+- [eSE 9.1.0-rc.1 release notes](RELEASE_NOTES_v9.1.0-rc.1.md)
+  — candidate release notes for the frozen v9.1 feature set and its direct
+  LiveTV transport over public or RFC 4193 overlay IPv6.
 - [eSE 9.1.0-beta.3 release notes](RELEASE_NOTES_v9.1.0-beta.3.md)
   — safe shared-file intake parity and A/B superiority over the frozen eMule
   AI 1.5.2 filename-policy baseline.

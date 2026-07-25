@@ -18,6 +18,8 @@ if ($Commit -notmatch '^[0-9a-fA-F]{40}$') {
 }
 $candidateCommit = $Commit.ToLowerInvariant()
 $packageFullPath = (Resolve-Path -LiteralPath $PackagePath).Path
+$candidate = Get-LabCandidateInfo -PackagePath $packageFullPath `
+    -ExpectedCommit $candidateCommit
 $outputPath = Get-LabFullPath -Path $OutputRoot
 if (Test-Path -LiteralPath $outputPath) {
     throw "OutputRoot already exists; refusing to mix evidence: $outputPath"
@@ -430,7 +432,7 @@ Write-LabJson -Value $summary `
 
 & (Join-Path $PSScriptRoot 'collect_report.ps1') `
     -RunDirectory $evidencePath -CaseId 'V91-CONSENT' `
-    -Outcome $overall -Version '9.1.0-beta.3' -Commit $candidateCommit `
+    -Outcome $overall -Version $candidate.version -Commit $candidateCommit `
     -Notes 'Two rounds of hierarchical consent rejection, full acceptance, global revocation, restart persistence and incomplete-KRP fail-closed checks.'
 
 if ($overall -ne 'PASS') {

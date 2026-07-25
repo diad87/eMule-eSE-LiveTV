@@ -21,6 +21,8 @@ $targetAddress = '2606:4700:4700::1111'
 $targetPort = 42424
 $streamKey = '00112233445566778899AABBCCDDEEFF'
 $package = (Resolve-Path -LiteralPath $PackagePath).Path
+$candidate = Get-LabCandidateInfo -PackagePath $package `
+    -ExpectedCommit $candidateCommit
 $output = Get-LabFullPath -Path $OutputRoot
 if (Test-Path -LiteralPath $output) {
     throw "OutputRoot already exists; refusing to mix evidence: $output"
@@ -261,7 +263,7 @@ Write-LabJson -Value $summary `
     -Path (Join-Path $evidence 'V91-PROXY-SUMMARY.json') | Out-Null
 & (Join-Path $PSScriptRoot 'collect_report.ps1') `
     -RunDirectory $evidence -CaseId 'V91-PROXY' -Outcome $overall `
-    -Version '9.1.0-beta.3' -Commit $candidateCommit `
+    -Version $candidate.version -Commit $candidateCommit `
     -Notes 'Runtime SOCKS5, HTTP CONNECT and SOCKS4 IPv6 behavior through loopback mock proxies.'
 
 if ($overall -ne 'PASS') {

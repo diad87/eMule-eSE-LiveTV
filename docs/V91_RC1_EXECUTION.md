@@ -17,7 +17,7 @@ dirty, un hash distinto o evidencia atribuida a otro commit detiene el caso.
 
 ## Regla de promoción
 
-`rc.1` solo se crea cuando:
+`rc.1` solo se promueve y publica cuando:
 
 1. los 27 casos de la sección 8.6 de la especificación están reconciliados;
 2. no queda ningún `FAIL`, ningún `BLOCKED` presentado como `PASS` y ningún
@@ -78,10 +78,15 @@ Se despliega el mismo ZIP y se comprueba su SHA-256 antes de arrancar:
 - `R01`: cambio LAN→hotspot durante sesión, reconexión y caducidad del endpoint
   anterior.
 
-## Campaña iniciada el 25 de julio de 2026
+## Campaña beta.3 iniciada el 25 de julio de 2026
 
 Directorio de evidencia:
 `C:\tmp\v91-rc-prep-8d40100`.
+
+Esta campaña queda como evidencia histórica de desarrollo. Sus soaks no se
+atribuyen a rc.1 porque el transporte directo ULA cambió después y la candidata
+debe reconstruirse desde otro commit. Ningún resultado de ese directorio se
+presenta como validación de rc.1.
 
 Ya ejecutados sobre el paquete exacto:
 
@@ -95,7 +100,7 @@ Ya ejecutados sobre el paquete exacto:
 - `I01` local: 4 GiB íntegros por IPv6 y cero conexión IPv4, pendiente de
   `T5`.
 
-En ejecución:
+Ejecuciones locales históricas no válidas para promover rc.1:
 
 - `I02` local, dos horas;
 - `O01` local, doce horas.
@@ -112,6 +117,7 @@ Pendiente de ejecución física exacta:
 ## Cierre
 
 Los resultados se consolidan con `tools/lab/write_v91_campaign_ledger.ps1`.
-El ledger vigente tiene 27 filas y decide `GO` únicamente con 27 `PASS`. Tras
-ese `GO` se cambia la versión a `9.1.0-rc.1`, se reconstruye desde limpio y se
-repite la fase A contra los artefactos RC, no contra los de beta.3.
+El ledger vigente tiene 27 filas y decide `GO` únicamente con 27 `PASS`. Se
+construye primero un artefacto `9.1.0-rc.1` identificable para probar exactamente
+lo que se pretende publicar. Tras el `GO`, ese mismo commit se reconstruye desde
+limpio y se repite la fase A; solo entonces se etiqueta y publica la RC.

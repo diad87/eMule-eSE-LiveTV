@@ -1,6 +1,6 @@
 # Kad6: diseño, fronteras y política de promoción
 
-Estado: especificación viva del runtime presente en eSE 9.1.0-beta.1.
+Estado: especificación viva del runtime presente en eSE 9.1.0-beta.2.
 
 Este documento describe el Kad6 que realmente existe en el árbol. No convierte
 una beta en una promesa de soporte y no autoriza infraestructura pública.

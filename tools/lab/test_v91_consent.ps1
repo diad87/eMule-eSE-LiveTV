@@ -2,13 +2,21 @@
 param(
     [Parameter(Mandatory = $true)][string]$PackagePath,
     [Parameter(Mandatory = $true)][string]$OutputRoot,
+    [string]$Commit = '',
     [ValidateRange(10, 120)][int]$StartupTimeoutSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-$candidateCommit = '72a5a41ebeec1bd08bff7ed17df27782930d96e3'
+if ([string]::IsNullOrWhiteSpace($Commit)) {
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    $Commit = ((& git -C $repoRoot rev-parse HEAD) -join '').Trim()
+}
+if ($Commit -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "Commit must be a full 40-character Git object id: $Commit"
+}
+$candidateCommit = $Commit.ToLowerInvariant()
 $packageFullPath = (Resolve-Path -LiteralPath $PackagePath).Path
 $outputPath = Get-LabFullPath -Path $OutputRoot
 if (Test-Path -LiteralPath $outputPath) {
@@ -422,7 +430,7 @@ Write-LabJson -Value $summary `
 
 & (Join-Path $PSScriptRoot 'collect_report.ps1') `
     -RunDirectory $evidencePath -CaseId 'V91-CONSENT' `
-    -Outcome $overall -Version '9.1.0-beta.1' -Commit $candidateCommit `
+    -Outcome $overall -Version '9.1.0-beta.2' -Commit $candidateCommit `
     -Notes 'Two rounds of hierarchical consent rejection, full acceptance, global revocation, restart persistence and incomplete-KRP fail-closed checks.'
 
 if ($overall -ne 'PASS') {

@@ -5,9 +5,11 @@ maintain eMule eSE.
 
 ## User documentation
 
+- [eSE 9.1.0-beta.2 release notes](RELEASE_NOTES_v9.1.0-beta.2.md)
+  — IPv6/Kad6 between eSE peers, persistent laboratory revocation, explicit
+  proxy-family handling and current beta limitations.
 - [eSE 9.1.0-beta.1 release notes](RELEASE_NOTES_v9.1.0-beta.1.md)
-  — IPv6/Kad6 between eSE peers, staged laboratory consent, current evidence
-  and known beta limitations.
+  — initial public 9.1 laboratory beta and its recorded limitations.
 - [eSE 9.0.0-beta.2 candidate release notes](RELEASE_NOTES_v9.0.0-beta.2.md)
   — post-beta.1 reliability, laboratory and security scope under validation.
 - [User guide](USER_GUIDE.md) — installation, playback, broadcasting,

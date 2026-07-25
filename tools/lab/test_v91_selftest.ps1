@@ -1,13 +1,21 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$PackagePath,
-    [Parameter(Mandatory = $true)][string]$OutputRoot
+    [Parameter(Mandatory = $true)][string]$OutputRoot,
+    [string]$Commit = ''
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-$candidateCommit = '72a5a41ebeec1bd08bff7ed17df27782930d96e3'
+if ([string]::IsNullOrWhiteSpace($Commit)) {
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    $Commit = ((& git -C $repoRoot rev-parse HEAD) -join '').Trim()
+}
+if ($Commit -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "Commit must be a full 40-character Git object id: $Commit"
+}
+$candidateCommit = $Commit.ToLowerInvariant()
 $package = (Resolve-Path -LiteralPath $PackagePath).Path
 $output = Get-LabFullPath -Path $OutputRoot
 if (Test-Path -LiteralPath $output) {
@@ -53,7 +61,7 @@ Write-LabJson -Value $summary `
 
 & (Join-Path $PSScriptRoot 'collect_report.ps1') `
     -RunDirectory $evidence -CaseId 'G-SELFTEST' -Outcome $verdict `
-    -Version '9.1.0-beta.1' -Commit $candidateCommit `
+    -Version '9.1.0-beta.2' -Commit $candidateCommit `
     -Notes 'Frozen release package self-test in an isolated portable profile.'
 
 if ($verdict -ne 'PASS') {

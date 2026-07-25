@@ -236,10 +236,12 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(prefs, /WriteBool\(_T\("EseV9Experimental"\)/);
   assert.match(dlg, /RefreshEseV9PreviewCaps\(\)/);
   assert.match(dlg, /Esta es una beta de laboratorio de red/);
-  assert.match(dlg, /SetEseNetLabConsent\([\s\S]{0,220}AfxMessageBox\(notice/);
+  assert.match(dlg, /bool activateAcceptedLevels = thePrefs\.GetEseNetLabEnabled\(\)/);
+  assert.match(dlg, /const bool accepted =[\s\S]{0,120}AfxMessageBox\(notice[\s\S]{0,180}SetEseNetLabConsent\(accepted/);
+  assert.match(dlg, /if \(theApp\.m_bHeadless\)[\s\S]{0,180}ApplyEseNetLabPreferenceState\(activateAcceptedLevels\)/);
   assert.match(dlg, /SetEseNetLabAdvancedConsent\([\s\S]{0,220}AfxMessageBox\(notice/);
   assert.match(dlg, /SetEseNetLabContributionConsent\([\s\S]{0,220}AfxMessageBox\(notice/);
-  assert.match(dlg, /ApplyEseNetLabPreferenceState\(/);
+  assert.match(dlg, /ApplyEseNetLabPreferenceState\(activateAcceptedLevels\)/);
   assert.match(prefs, /void CPreferences::ApplyEseNetLabPreferenceState\(bool active\)/);
   assert.match(prefs, /SetEseV9Experimental\(advanced\)/);
   assert.match(prefs, /SetEseRelayAccept\(contribution\)/);
@@ -277,6 +279,8 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(kadUdp, /ProcessPacketKad6[\s\S]{0,500}!CKademlia::IsKad6Running\(\)/);
   assert.match(web, /explicit_consent_required/);
   assert.match(web, /ApplyEseNetLabPreferenceState\(false\)/);
+  assert.doesNotMatch(web, /\/api\/ese\/v9[\s\S]{0,900}RequestK6PublicRelease\(/);
+  assert.doesNotMatch(web, /\/api\/ese\/v9[\s\S]{0,900}SetKad6PublicExitOptIn\(false\)/);
   assert.match(web, /ApplyEseNetLabPreferenceState\(true\)/);
   assert.match(web, /advanced_consent/);
   assert.match(web, /contribution_consent/);
@@ -286,6 +290,8 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(web, /netlab_target_required/);
   assert.doesNotMatch(web, /\/api\/ese\/v9[\s\S]{0,1800}SetEseRelayAccept\(bOn\)/);
   assert.doesNotMatch(web, /\/api\/ese\/v9[\s\S]{0,1800}SetEseRelayEgress\(bOn\)/);
+  assert.match(web, /\/api\/live\/direct_join[\s\S]{0,9000}PROXYTYPE_SOCKS4[\s\S]{0,160}PROXYTYPE_SOCKS4A/);
+  assert.match(web, /\/api\/live\/direct_join[\s\S]{0,10000}ipv6_not_supported_by_socks4/);
   assert.match(web, /ESE_NETLAB_REPORT_V1/);
   assert.match(web, /GetConnectedSocketCount\(\)/);
   assert.match(web, /\\"central_telemetry\\":false/);

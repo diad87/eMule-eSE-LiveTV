@@ -5391,10 +5391,10 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				thePrefs.ApplyEseNetLabPreferenceState(false);
 				RefreshEseV9PreviewCaps();
 				CKadKeepalive::Instance().RequestStop();
-				try {
-					(void)eSELive::CLiveTunnel::Get().RequestK6PublicRelease(
-						false, NULL, 0, 5000);
-				} catch (...) {}
+				// The stable Kad6 public-exit gate is an independent operator
+				// choice, not a NetLab level. Revocation closes beta exit via
+				// ApplyEseNetLabPreferenceState(false) and leaves stable Kad6
+				// untouched.
 			} else if (onArg == _T("1")) {
 				if (thePrefs.GetEseNetLabConsent() != CPreferences::EseNetLabAccepted) {
 					ok = false;
@@ -6934,7 +6934,13 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 
 		bool joined = false;
 		bool dialed = false;
-		if (keyOk) {
+		const ProxySettings& proxy = thePrefs.GetProxySettings();
+		const bool unsupportedIPv6Proxy =
+			directAddress.GetType() == CAddress::IPv6
+			&& proxy.bUseProxy
+			&& (proxy.type == PROXYTYPE_SOCKS4
+				|| proxy.type == PROXYTYPE_SOCKS4A);
+		if (keyOk && !unsupportedIPv6Proxy) {
 			// JoinStream + TryConnectToStreamSource mutate Live state and touch
 			// Kad / the eD2K sockets — marshal both to the main thread in one
 			// round-trip. This worker holds no Live lock, so the blocking
@@ -6956,21 +6962,30 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 
 		// SUCCESS = the join was accepted by the manager. For anonymous
 		// links, dialed=false is expected — the search runs in background.
-		bool overall = keyOk && joined;
+		const bool overall = keyOk && joined && !unsupportedIPv6Proxy;
+		const char* error = unsupportedIPv6Proxy
+			? "ipv6_not_supported_by_socks4"
+			: (!keyOk ? "invalid_stream_key"
+				: (!joined ? "join_rejected" : ""));
 
 		CStringA json;
 		json.Format(
-			"{\"success\":%s,\"joined\":%s,\"dialed\":%s,"
+			"{\"success\":%s,\"joined\":%s,\"dialed\":%s,\"error\":\"%s\","
 			"\"streamKey\":\"%s\",\"ip\":\"%s\",\"port\":%u,"
 			"\"mode\":\"%s\",\"hint\":\"%s\"}",
 			overall ? "true" : "false",
 			joined ? "true" : "false",
 			dialed ? "true" : "false",
+			error,
 			(LPCSTR)CStringA(CT2A(keyT)),
 			(LPCSTR)CStringA(CT2A(ipT)),
 			(unsigned)port,
-			(directAddress.GetType() != CAddress::None && port != 0) ? "direct" : "kad-search",
-			overall
+			unsupportedIPv6Proxy ? "rejected"
+				: ((directAddress.GetType() != CAddress::None && port != 0)
+					? "direct" : "kad-search"),
+			unsupportedIPv6Proxy
+				? "SOCKS4/SOCKS4A cannot represent an IPv6 destination; use SOCKS5 or HTTP CONNECT"
+				: overall
 				? ((directAddress.GetType() != CAddress::None && port != 0)
 					? "Dialing broadcaster directly"
 					: "Anonymous link — searching Kad for the broadcaster (5-30 s)")

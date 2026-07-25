@@ -150,11 +150,15 @@ static void ConfigureEseNetLabConsentAtStartup()
 	if (theApp.m_strCurVersionLong.Find(_T("-beta.")) < 0)
 		return;
 
+	// Consent and activation are deliberately separate. A previously accepted
+	// profile may have been disabled by the global kill switch; startup must
+	// preserve that persisted choice instead of treating consent as "enable".
+	bool activateAcceptedLevels = thePrefs.GetEseNetLabEnabled();
+
 	// Automated/headless nodes cannot answer modal questions. Their prepared
 	// profile remains authoritative and an undecided profile stays closed.
 	if (theApp.m_bHeadless) {
-		thePrefs.ApplyEseNetLabPreferenceState(
-			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted);
+		thePrefs.ApplyEseNetLabPreferenceState(activateAcceptedLevels);
 		return;
 	}
 
@@ -169,10 +173,14 @@ static void ConfigureEseNetLabConsentAtStartup()
 			_T("o salida publica. Los resultados permanecen localmente y el ")
 			_T("laboratorio puede apagarse en cualquier momento.\r\n\r\n")
 			_T("Desea participar en ESE_NETLAB_V1?");
-		thePrefs.SetEseNetLabConsent(
-			AfxMessageBox(notice, MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) == IDYES
-				? CPreferences::EseNetLabAccepted
-				: CPreferences::EseNetLabDeclined);
+		const bool accepted =
+			AfxMessageBox(notice, MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2) == IDYES;
+		thePrefs.SetEseNetLabConsent(accepted
+			? CPreferences::EseNetLabAccepted
+			: CPreferences::EseNetLabDeclined);
+		// First-time acceptance enables the base level. Later startups use the
+		// independently persisted EseNetLabEnabled value above.
+		activateAcceptedLevels = accepted;
 	}
 
 	if (thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted
@@ -212,8 +220,7 @@ static void ConfigureEseNetLabConsentAtStartup()
 				: CPreferences::EseNetLabDeclined);
 	}
 
-	thePrefs.ApplyEseNetLabPreferenceState(
-		thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted);
+	thePrefs.ApplyEseNetLabPreferenceState(activateAcceptedLevels);
 	if (CPreferences::Save())
 		AddDebugLogLine(false, _T("NetLab: failed to persist startup consent"));
 

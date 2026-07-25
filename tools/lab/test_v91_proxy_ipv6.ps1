@@ -2,13 +2,21 @@
 param(
     [Parameter(Mandatory = $true)][string]$PackagePath,
     [Parameter(Mandatory = $true)][string]$OutputRoot,
+    [string]$Commit = '',
     [ValidateRange(10, 120)][int]$StartupTimeoutSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-$candidateCommit = '72a5a41ebeec1bd08bff7ed17df27782930d96e3'
+if ([string]::IsNullOrWhiteSpace($Commit)) {
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    $Commit = ((& git -C $repoRoot rev-parse HEAD) -join '').Trim()
+}
+if ($Commit -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "Commit must be a full 40-character Git object id: $Commit"
+}
+$candidateCommit = $Commit.ToLowerInvariant()
 $targetAddress = '2606:4700:4700::1111'
 $targetPort = 42424
 $streamKey = '00112233445566778899AABBCCDDEEFF'
@@ -137,7 +145,25 @@ function Invoke-ProxyScenario {
         $encodedAddress = [Uri]::EscapeDataString($targetAddress)
         $uri = "http://127.0.0.1:$webPort/api/live/direct_join" +
             "?key=$streamKey&ip=$encodedAddress&port=$targetPort&title=ProxyV6"
-        $apiResponse = Invoke-RestMethod -Uri $uri -TimeoutSec 10
+        $apiStatus = 200
+        try {
+            $apiResponse = Invoke-RestMethod -Uri $uri -TimeoutSec 10
+        } catch {
+            if ($null -eq $_.Exception.Response) { throw }
+            $apiStatus = [int]$_.Exception.Response.StatusCode
+            $responseBody = [string]$_.ErrorDetails.Message
+            if ([string]::IsNullOrWhiteSpace($responseBody)) {
+                $stream = $_.Exception.Response.GetResponseStream()
+                $reader = New-Object IO.StreamReader($stream)
+                try { $responseBody = $reader.ReadToEnd() }
+                finally {
+                    $reader.Dispose()
+                    $stream.Dispose()
+                }
+            }
+            if ([string]::IsNullOrWhiteSpace($responseBody)) { throw }
+            $apiResponse = $responseBody | ConvertFrom-Json
+        }
 
         $captureDeadline = [DateTime]::UtcNow.AddSeconds(20)
         do {
@@ -176,7 +202,11 @@ function Invoke-ProxyScenario {
             }
             'V91-P03' {
                 [bool]$proxyCapture.no_connection -and
-                -not [bool]$apiResponse.dialed
+                $apiStatus -eq 400 -and
+                -not [bool]$apiResponse.success -and
+                -not [bool]$apiResponse.joined -and
+                -not [bool]$apiResponse.dialed -and
+                [string]$apiResponse.error -eq 'ipv6_not_supported_by_socks4'
             }
             default { $false }
         }
@@ -190,6 +220,7 @@ function Invoke-ProxyScenario {
                 address_hex = $expectedAddressHex
                 port = $targetPort
             }
+            api_status = $apiStatus
             api_response = ConvertTo-LabSanitizedValue $apiResponse -RedactAddresses
             proxy_capture = ConvertTo-LabSanitizedValue $proxyCapture -RedactAddresses
             verdict = if ($pass) { 'PASS' } else { 'FAIL' }
@@ -230,7 +261,7 @@ Write-LabJson -Value $summary `
     -Path (Join-Path $evidence 'V91-PROXY-SUMMARY.json') | Out-Null
 & (Join-Path $PSScriptRoot 'collect_report.ps1') `
     -RunDirectory $evidence -CaseId 'V91-PROXY' -Outcome $overall `
-    -Version '9.1.0-beta.1' -Commit $candidateCommit `
+    -Version '9.1.0-beta.2' -Commit $candidateCommit `
     -Notes 'Runtime SOCKS5, HTTP CONNECT and SOCKS4 IPv6 behavior through loopback mock proxies.'
 
 if ($overall -ne 'PASS') {

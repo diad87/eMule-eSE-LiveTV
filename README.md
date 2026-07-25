@@ -1,6 +1,6 @@
 # 🐴 eMule eSE — Live TV Edition
 
-[![Public beta](https://img.shields.io/badge/public%20beta-9.1.0--beta.1-orange)](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0-beta.1)
+[![Public beta](https://img.shields.io/badge/public%20beta-9.1.0--beta.2-orange)](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0-beta.2)
 [![CodeQL](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/codeql.yml/badge.svg)](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/codeql.yml)
 [![License: GPL-2.0](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](license.txt)
 
@@ -11,14 +11,14 @@ Windows x64 package.
 
 ## Download
 
-### [Download eSE 9.1.0-beta.1 for Windows x64](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.1.0-beta.1/eSE-LiveTV-v0.70b-eSE9.1.0-beta.1-x64.zip)
+### [Download eSE 9.1.0-beta.2 for Windows x64](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.1.0-beta.2/eSE-LiveTV-v0.70b-eSE9.1.0-beta.2-x64.zip)
 
-[SHA-256 checksum](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.1.0-beta.1/eSE-LiveTV-v0.70b-eSE9.1.0-beta.1-x64.zip.sha256)
-· [Release notes](docs/RELEASE_NOTES_v9.1.0-beta.1.md)
+[SHA-256 checksum](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.1.0-beta.2/eSE-LiveTV-v0.70b-eSE9.1.0-beta.2-x64.zip.sha256)
+· [Release notes](docs/RELEASE_NOTES_v9.1.0-beta.2.md)
 · [All releases](https://github.com/diad87/eMule-eSE-LiveTV/releases)
 
 > [!IMPORTANT]
-> 9.1.0-beta.1 is a public IPv6/Kad6 network-lab beta, not the stable channel.
+> 9.1.0-beta.2 is a public IPv6/Kad6 network-lab beta, not the stable channel.
 > The latest stable build remains
 > [eSE 8.1.0](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE8.1.0).
 
@@ -151,7 +151,7 @@ For a local developer build:
 
 ```powershell
 .\tools\build_all.ps1 `
-  -ReleaseTag v0.70b-eSE9.1.0-beta.1 `
+  -ReleaseTag v0.70b-eSE9.1.0-beta.2 `
   -AllowDirty `
   -MaxCpuCount 1
 ```
@@ -181,7 +181,7 @@ Run the complete local test set with:
 | Document | Purpose |
 |---|---|
 | [User guide](docs/USER_GUIDE.md) | Install, watch, broadcast and troubleshoot |
-| [Beta release notes](docs/RELEASE_NOTES_v9.1.0-beta.1.md) | IPv6/Kad6 changes, evidence, safety defaults, limitations and rollback |
+| [Beta release notes](docs/RELEASE_NOTES_v9.1.0-beta.2.md) | IPv6/Kad6 changes, evidence, safety defaults, limitations and rollback |
 | [Architecture](ARCHITECTURE.md) | Runtime processes, data flow and code layout |
 | [Changes from eMule 0.70b](CHANGES_FROM_EMULE_0.70b.md) | Implemented fork changes |
 | [Protocol registry](docs/protocol/PROTOCOL_REGISTRY.md) | Fork wire namespaces and compatibility rules |

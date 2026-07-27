@@ -1,0 +1,16 @@
+{
+  "name": "ese-v92-nat-gateway-lab",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Offline scenario loader for the v9.2 NAT gateway laboratory fixture",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:coverage": "node --experimental-test-coverage --test"
+  },
+  "dependencies": {
+    "ajv": "8.20.0"
+  }
+}

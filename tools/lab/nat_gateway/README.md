@@ -1,7 +1,7 @@
 # T8 simulated NAT gateway
 
-Design status: `92-1.1` / `B01` only. There is intentionally no executable,
-socket code or production behavior in this directory yet.
+Implementation status: `92-1.2` / `B02` adds an offline-only scenario loader.
+There is intentionally no socket code or production behavior in this directory.
 
 The normative architecture is
 [`docs/V9.2_T8_ARCHITECTURE.md`](../../../docs/V9.2_T8_ARCHITECTURE.md).
@@ -66,6 +66,27 @@ listener/protocol mismatches.
 Scenario files are private test inputs. Use only documentation or isolated lab
 address space; never commit addresses, interface GUIDs or hostnames taken from
 a real environment. The schema has no credential field.
+
+## Offline scenario loader (B02)
+
+`scenario_loader.js` exposes `loadScenarioFromObject`,
+`loadScenarioFromText` and `loadScenarioFromFile`. Each performs, in this
+order, bounded input handling, Draft 2020-12 schema validation with strict
+IPv4/IPv6 checks, cross-field validation and a defensive immutable copy. No
+socket, timer, log or adapter is touched by the loader.
+
+Failures are `ScenarioValidationError` values with stable `reason_code` and
+`field_path`. The loader rejects unknown fields, disabled protocol references,
+invalid ranges or leases, duplicated IDs, external mapping collisions and
+incomplete/incoherent TCP+UDP atomic groups. It accepts a shared PCP/NAT-PMP
+UDP port because their future adapter deliberately demultiplexes the two wire
+protocols; other enabled UDP listener collisions remain invalid.
+
+The only dependency is locked `ajv@8.20.0` (MIT), instantiated via
+`ajv/dist/2020`; address format assertions use Node's `net.isIP`. File loading
+uses only the explicitly supplied path, enforces a 1 MiB byte limit and rejects
+malformed UTF-8. It does not search paths, read environment configuration or
+emit scenario data.
 
 ## Command surface
 

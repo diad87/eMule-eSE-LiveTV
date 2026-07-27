@@ -248,6 +248,7 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.doesNotMatch(server, /eSE v6\.2/);
   assert.doesNotMatch(miscPages, /version:\s*'7\.5\.2'/);
   assert.match(server, /server\.listen\(PORT,\s*'127\.0\.0\.1'/);
+  assert.match(server, /url\.pathname === '\/api\/eSE\/update\/check'/);
   assert.match(legacyPlayer, /server\.listen\(PORT,\s*'127\.0\.0\.1'/);
   assert.match(
     webSocketTunnel,

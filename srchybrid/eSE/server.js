@@ -320,7 +320,11 @@ load(); startTimer();
   // 2026-05-17: '/hls/' (with trailing slash) missed '/hls-local/...' so the
   // per-stream HLS endpoint in channel_api.js never fired and self-viewing on
   // the same PC failed silently with a generic 404. Use '/hls' to catch both.
-  if (url.pathname.startsWith('/api/live/') || url.pathname.startsWith('/live') || url.pathname.startsWith('/hls') || url.pathname === '/privacy') {
+  if (url.pathname.startsWith('/api/live/') ||
+      url.pathname.startsWith('/live') ||
+      url.pathname.startsWith('/hls') ||
+      url.pathname === '/privacy' ||
+      url.pathname === '/api/eSE/update/check') {
     const handled = liveApi.handleRoute(url, req, res, {
       port: PORT,
       ffmpegPath: FFMPEG_PATH,

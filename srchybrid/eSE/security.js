@@ -203,15 +203,19 @@ function isProtectedPath(pathname) {
     || pathname === '/hls-local'
     || pathname.startsWith('/hls-local/')
     || pathname.startsWith('/api/stream/')
-    || pathname.startsWith('/api/live/');
-}
-
-function isBootstrapPath(pathname) {
-  return pathname === '/app'
+    || pathname.startsWith('/api/live/')
+    || pathname === '/app'
     || pathname === '/connect'
     || pathname.startsWith('/pair/')
     || pathname === '/manifest.json'
-    || pathname === '/emule_mascot.svg'
+    || pathname === '/go'
+    || pathname.startsWith('/go/')
+    || pathname === '/remote'
+    || pathname === '/qr';
+}
+
+function isBootstrapPath(pathname) {
+  return pathname === '/emule_mascot.svg'
     || pathname === '/favicon.ico';
 }
 

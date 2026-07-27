@@ -71,6 +71,11 @@ void CHttpClientReqSocket::SendPacket(Packet *packet, bool controlpacket, uint32
 void CHttpClientReqSocket::OnConnect(int nErrorCode)
 {
 	CClientReqSocket::OnConnect(nErrorCode);
+	// The base may have consumed an IPv6 error and started the one-shot IPv4
+	// retry on this same socket. Notify the HTTP client only when that final
+	// attempt completes; reporting the superseded v6 error aborts the transfer.
+	if (IsConnectRetryPending())
+		return;
 	if (GetClient())
 		GetClient()->OnSocketConnected(nErrorCode);
 }

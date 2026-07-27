@@ -73,13 +73,6 @@ ${directory.getCSS()}
   </div>
 </div>`;
 
-  // Sprint 3 I.2 \u2014 Update banner (hidden until check finds a newer release)
-  html += `
-<div id="update-banner" style="display:none;margin:0 0 16px;padding:10px 16px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.35);border-radius:10px;font-size:13px;color:#86efac">
-  <span id="update-text" style="margin-right:12px"></span>
-  <a id="update-link" href="#" target="_blank" style="color:#10b981;font-weight:700;text-decoration:underline">Descargar</a>
-</div>`;
-
   // Pre-flight check panel (Phase 5.1 \u2014 surfaces blockers before broadcasting)
   html += `
 <div id="preflight-panel" style="margin:0 0 16px;padding:12px 16px;background:rgba(20,30,50,.5);border:1px solid #1f2937;border-radius:10px">
@@ -328,18 +321,6 @@ var __ese_channelsPollId = setInterval(function(){
     setInterval(refreshChannels, 10000);
   }
 }, 3000);
-
-// Sprint 3 I.2 — Auto-update check (silent, once per page load)
-fetch('/api/eSE/update/check').then(function(r){return r.json();}).then(function(d){
-  if (!d || !d.update_available || !d.release_url) return;
-  var b = document.getElementById('update-banner');
-  var t = document.getElementById('update-text');
-  var a = document.getElementById('update-link');
-  if (!b || !t || !a) return;
-  t.textContent = '🆕 Nueva versión disponible: ' + d.remote_version + ' (tienes ' + d.local_version + ').';
-  a.href = d.download_url || d.release_url;
-  b.style.display = '';
-}).catch(function(){});
 
 // Sprint 2 D.2 — Browser Notifications
 // Sends a desktop toast when a new viewer joins (broadcaster) or when a watched
@@ -623,41 +604,6 @@ fetch('/api/eSE/update/check').then(function(r){return r.json();}).then(function
   });
 })();
 
-// D6 — Update-available toast. Polls /api/live/update_status every 60 s
-// and shows a non-blocking toast in the bottom-right corner when a newer
-// release is published on GitHub. Click "Update now" -> POSTs to
-// /api/live/update_run, which spawns tools/update_check.ps1 with its own
-// GUI confirmation prompt.
-(function(){
-  var shown = false;
-  function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];});}
-  function show(d) {
-    if (shown) return;
-    shown = true;
-    var t = document.createElement('div');
-    t.id = 'ese-update-toast';
-    t.style.cssText = 'position:fixed;bottom:18px;right:18px;z-index:9998;background:#13141a;border:1px solid #818cf8;border-radius:10px;padding:14px 18px;color:#ddd;box-shadow:0 8px 30px rgba(99,102,241,.25);max-width:340px;font-size:13px;font-family:system-ui,sans-serif';
-    t.innerHTML =
-      '<div style="font-weight:700;color:#a5b4fc;margin-bottom:6px">🆕 Nueva versión disponible</div>' +
-      '<div style="color:#9ca3af;font-size:12px;margin-bottom:10px">' + esc(d.latest_tag || d.latest_sha || 'unknown') + '</div>' +
-      '<div style="display:flex;gap:6px">' +
-      '<button id="upd-now" style="padding:6px 12px;background:#6366f1;color:#fff;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px">Actualizar ahora</button>' +
-      '<button id="upd-skip" style="padding:6px 12px;background:transparent;color:#6b7280;border:none;cursor:pointer;font-size:12px">Más tarde</button></div>';
-    document.body.appendChild(t);
-    document.getElementById('upd-now').onclick = function(){
-      fetch('/api/live/update_run', {method:'POST'}).catch(function(){});
-      t.remove();
-    };
-    document.getElementById('upd-skip').onclick = function(){ t.remove(); };
-  }
-  function poll() {
-    fetch('/api/live/update_status').then(function(r){return r.json();}).then(function(d){
-      if (d && d.has_update) show(d);
-    }).catch(function(){});
-  }
-  setTimeout(poll, 5000);
-  setInterval(poll, 60000);
-})();
 </script>
 </body></html>`;
 

@@ -14,9 +14,26 @@ $ErrorActionPreference = 'Stop'
 $startedAt = Get-Date
 if (-not $RepoRoot) { $RepoRoot = Split-Path -Parent $PSScriptRoot }
 $RepoRoot = (Resolve-Path $RepoRoot).Path
+if ($Skip.Count -gt 0 -and -not $AllowDirty) {
+    throw (
+        'Official release pipeline gates cannot be skipped. ' +
+        'Use -AllowDirty only for an explicitly non-releasable development run.'
+    )
+}
+if ($DryRun -and -not $AllowDirty) {
+    throw (
+        'An official release pipeline cannot be a dry run. ' +
+        'Use -AllowDirty for an explicitly non-releasable preview.'
+    )
+}
+. (Join-Path $RepoRoot 'tools\release_fingerprint.ps1')
 $logDir = Join-Path $RepoRoot 'tools\build_logs'
 New-Item -ItemType Directory $logDir -Force | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$emuleBuildStamp = Join-Path $logDir 'emule-release-build.json.log'
+$eseBuildStamp = Join-Path $logDir 'ese-release-build.json.log'
+$languageBuildStamp = Join-Path $logDir 'languages-release-build.json.log'
+$officialHead = ''
 
 function Header([string]$Title) {
     Write-Host "`n$('=' * 72)" -ForegroundColor Cyan
@@ -27,10 +44,22 @@ function Stage([string]$Name, [scriptblock]$Body) {
     if ($Skip -contains $Name) { Write-Host "[skip] $Name" -ForegroundColor DarkGray; return }
     Header $Name
     if ($DryRun) { Write-Host '[dry-run]'; return }
+    Assert-OfficialHead -Context "before $Name"
     $before = Get-Date
     & $Body
     if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE" }
+    Assert-OfficialHead -Context "after $Name"
     Write-Host ("[PASS] {0} ({1:N1}s)" -f $Name, ((Get-Date) - $before).TotalSeconds) -ForegroundColor Green
+}
+function Assert-OfficialHead([string]$Context) {
+    if (-not $officialHead -or $AllowDirty -or $DryRun) { return }
+    $currentHead = (& git -C $RepoRoot rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $currentHead -ne $officialHead) {
+        throw (
+            "Repository HEAD changed during the official release pipeline " +
+            "($Context): expected $officialHead, found $currentHead"
+        )
+    }
 }
 function Find-MSBuild {
     $cmd = Get-Command MSBuild.exe -ErrorAction SilentlyContinue
@@ -44,6 +73,58 @@ function Find-MSBuild {
         }
     }
     return $null
+}
+function Assert-SafeRepositoryPath([string]$Path) {
+    $root = [IO.Path]::GetFullPath($RepoRoot).TrimEnd('\')
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if ($full -ne $root -and -not $full.StartsWith(
+            $root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Generated-output path escaped the repository: $full"
+    }
+    $cursor = $full
+    while ($cursor) {
+        if (Test-Path -LiteralPath $cursor) {
+            $item = Get-Item -LiteralPath $cursor -Force
+            if (($item.Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Generated-output path traverses a reparse point: $($item.FullName)"
+            }
+        }
+        if ($cursor.Equals($root, [StringComparison]::OrdinalIgnoreCase)) {
+            return
+        }
+        $parent = Split-Path -Parent $cursor
+        if (-not $parent -or $parent -eq $cursor) {
+            throw "Generated-output path has no trusted repository parent: $full"
+        }
+        $cursor = $parent.TrimEnd('\')
+    }
+}
+function Assert-NoReparseTree([string]$Root) {
+    if (-not (Test-Path -LiteralPath $Root)) { return }
+    $rootItem = Get-Item -LiteralPath $Root -Force
+    if (($rootItem.Attributes -band
+            [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Generated-output root is a reparse point: $($rootItem.FullName)"
+    }
+    if (-not $rootItem.PSIsContainer) {
+        throw "Generated-output root is not a directory: $($rootItem.FullName)"
+    }
+    $pending = [Collections.Generic.Stack[IO.DirectoryInfo]]::new()
+    $pending.Push([IO.DirectoryInfo]$rootItem)
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        foreach ($entry in $directory.EnumerateFileSystemInfos()) {
+            if (($entry.Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Generated-output tree contains a reparse point: $($entry.FullName)"
+            }
+            if (($entry.Attributes -band
+                    [IO.FileAttributes]::Directory) -ne 0) {
+                $pending.Push([IO.DirectoryInfo]$entry)
+            }
+        }
+    }
 }
 
 $msbuild = Find-MSBuild
@@ -62,6 +143,13 @@ Stage 'preflight' {
     $args = @{ ReleaseTag = $ReleaseTag; RepoRoot = $RepoRoot }
     if ($AllowDirty) { $args.AllowDirty = $true }
     & (Join-Path $RepoRoot 'tools\release_preflight.ps1') @args
+}
+if (-not $AllowDirty -and -not $DryRun) {
+    $officialHead = (& git -C $RepoRoot rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $officialHead) {
+        throw 'Could not capture the official release commit'
+    }
+    Write-Host "Pinned release commit: $officialHead"
 }
 
 Stage 'tests-core' {
@@ -86,7 +174,15 @@ Stage 'emule' {
         /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 `
         $msbuildParallelArg /v:minimal /nologo /fl /flp:"LogFile=$log;Verbosity=normal"
     if ($LASTEXITCODE -ne 0) { throw "emule build failed; see $log" }
-    if (-not (Test-Path (Join-Path $RepoRoot 'srchybrid\x64\Release\emule.exe'))) { throw 'emule.exe was not produced' }
+    $emuleBinary = Join-Path $RepoRoot 'srchybrid\x64\Release\emule.exe'
+    if (-not (Test-Path $emuleBinary)) { throw 'emule.exe was not produced' }
+    $expectedVersion = $ReleaseTag -replace '^v0\.70b-eSE', ''
+    $fileVersion = (Get-Item -LiteralPath $emuleBinary).VersionInfo.FileVersion
+    if ([string]$fileVersion -notlike "*eSE $expectedVersion*") {
+        throw "emule.exe version '$fileVersion' does not identify $expectedVersion"
+    }
+    Write-ReleaseBinaryStamp -RepoRoot $RepoRoot -ReleaseTag $ReleaseTag `
+        -Component emule -BinaryPath $emuleBinary -StampPath $emuleBuildStamp
 }
 
 Stage 'tests-integration' {
@@ -105,7 +201,9 @@ Stage 'cleanup-libutp' {
         if (-not $generated.StartsWith($submoduleRoot, [StringComparison]::OrdinalIgnoreCase)) {
             throw "unsafe libutp cleanup target: $generated"
         }
+        Assert-SafeRepositoryPath -Path $generated
         if (Test-Path -LiteralPath $generated) {
+            Assert-NoReparseTree -Root $generated
             Remove-Item -LiteralPath $generated -Recurse -Force
         }
     }
@@ -121,12 +219,40 @@ Stage 'ese' {
         if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
         & npm.cmd run build
         if ($LASTEXITCODE -ne 0) { throw 'npm run build failed' }
-        if (-not (Test-Path (Join-Path $eseDir 'ese-server.exe'))) { throw 'ese-server.exe was not produced' }
+        $eseBinary = Join-Path $eseDir 'ese-server.exe'
+        if (-not (Test-Path $eseBinary)) { throw 'ese-server.exe was not produced' }
+        Write-ReleaseBinaryStamp -RepoRoot $RepoRoot -ReleaseTag $ReleaseTag `
+            -Component ese -BinaryPath $eseBinary -StampPath $eseBuildStamp
     } finally { Pop-Location }
 }
 
 Stage 'langs' {
-    $projects = Get-ChildItem (Join-Path $RepoRoot 'srchybrid\lang\*.vcxproj')
+    $projectPaths = @(& git -C $RepoRoot -c core.quotepath=false ls-files -- `
+        'srchybrid/lang/*.vcxproj')
+    if ($LASTEXITCODE -ne 0 -or $projectPaths.Count -eq 0) {
+        throw 'failed to enumerate tracked language projects'
+    }
+    $projects = @($projectPaths | Sort-Object -Unique | ForEach-Object {
+        Get-Item -LiteralPath (Join-Path $RepoRoot $_)
+    })
+    & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot
+    $langOutputDir = Join-Path $RepoRoot 'srchybrid\x64\Release\lang'
+    # The projects share one legacy output/intermediate tree and copy each DLL
+    # into two mirrors. Remove all three generated roots once, before any Build,
+    # so neither MSBuild's incremental checks nor a stale mirror can reuse an
+    # earlier release. Rebuild per project is unsafe because each Clean would
+    # remove outputs produced by the preceding language.
+    foreach ($languageGeneratedRoot in @(
+        (Join-Path $RepoRoot 'srchybrid\lang\x64\Dynamic'),
+        (Join-Path $RepoRoot 'srchybrid\x64\lang'),
+        $langOutputDir
+    )) {
+        Assert-SafeRepositoryPath -Path $languageGeneratedRoot
+        if (Test-Path -LiteralPath $languageGeneratedRoot) {
+            Assert-NoReparseTree -Root $languageGeneratedRoot
+            Remove-Item -LiteralPath $languageGeneratedRoot -Recurse -Force
+        }
+    }
     foreach ($project in $projects) {
         $log = Join-Path $logDir "lang-$($project.BaseName)-$stamp.log"
         # Language projects share a legacy IntDir. Rebuild would let every
@@ -136,26 +262,18 @@ Stage 'langs' {
             /p:PlatformToolset=v143 $msbuildParallelArg /v:quiet /nologo /fl /flp:"LogFile=$log;ErrorsOnly"
         if ($LASTEXITCODE -ne 0) { throw "language build failed: $($project.Name); see $log" }
     }
-    $dlls = @(Get-ChildItem (Join-Path $RepoRoot 'srchybrid\x64\Release\lang\*.dll') -ErrorAction SilentlyContinue)
+    $dlls = @(Get-ChildItem -LiteralPath $langOutputDir -Filter '*.dll' `
+        -File -Force -ErrorAction SilentlyContinue)
     if ($dlls.Count -eq 0) { throw 'no language DLLs were produced' }
     & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot `
         -RuntimeDir (Join-Path $RepoRoot 'srchybrid\x64\Release')
+    Write-ReleaseLanguageStamp -RepoRoot $RepoRoot -ReleaseTag $ReleaseTag `
+        -RuntimeDir (Join-Path $RepoRoot 'srchybrid\x64\Release') `
+        -StampPath $languageBuildStamp
 }
 
 Stage 'cleanup-generated-metadata' {
     if ($AllowDirty) { return }
-
-    # The legacy language projects append the current absolute output path to
-    # tracked FileListAbsolute metadata on every build. Restore those generated
-    # inventories so the packaging preflight still sees the original clean
-    # source commit.
-    $fileLists = @(& git -C $RepoRoot ls-files -- `
-        'srchybrid/lang/x64/Dynamic/*.vcxproj.FileListAbsolute.txt')
-    if ($LASTEXITCODE -ne 0) { throw 'failed to enumerate tracked language metadata' }
-    if ($fileLists.Count -gt 0) {
-        & git -C $RepoRoot restore --worktree -- $fileLists
-        if ($LASTEXITCODE -ne 0) { throw 'failed to restore generated language metadata' }
-    }
 
     # bundle_client.js and npm ci are deterministic, but autocrlf can leave the
     # bundle or package-lock stat-dirty even when the normalized blobs are
@@ -220,11 +338,77 @@ Stage 'package-smoke' {
         for ($attempt = 0; $attempt -lt 30 -and -not $ready; $attempt++) {
             Start-Sleep -Milliseconds 250
             try {
-                $response = Invoke-WebRequest -Uri 'http://127.0.0.1:48123/' -UseBasicParsing -TimeoutSec 2
+                $response = Invoke-WebRequest `
+                    -Uri 'http://127.0.0.1:48123/api/status' `
+                    -UseBasicParsing -TimeoutSec 2
                 $ready = ($response.StatusCode -eq 200)
             } catch { }
         }
         if (-not $ready) { throw 'ese-server.exe startup smoke failed' }
+
+        $status = $response.Content | ConvertFrom-Json
+        $expectedVersion = $ReleaseTag -replace '^v0\.70b-eSE', ''
+        if ([string]$status.version -ne $expectedVersion -or
+            [bool]$status.hasPublicUrl -or [bool]$status.hasTunnel -or
+            [string]$status.remoteAccess -ne 'postponed') {
+            throw 'ese-server.exe runtime identity or local-only status is stale'
+        }
+
+        $listeners = @(Get-NetTCPConnection -State Listen `
+            -OwningProcess $serverProcess.Id -LocalPort 48123 `
+            -ErrorAction Stop)
+        if ($listeners.Count -eq 0) {
+            throw 'ese-server.exe has no inspectable loopback listener'
+        }
+        $unsafeListeners = @($listeners | Where-Object {
+            $_.LocalAddress -notin @('127.0.0.1', '::1')
+        })
+        if ($unsafeListeners.Count -gt 0) {
+            throw (
+                'ese-server.exe exposed a non-loopback listener: ' +
+                (($unsafeListeners.LocalAddress | Sort-Object -Unique) -join ', ')
+            )
+        }
+
+        foreach ($closedRoute in @(
+            @{ Path = '/api/connect-seed'; Method = 'GET' },
+            @{ Path = '/api/tunnel/status'; Method = 'GET' },
+            @{ Path = '/api/live/tunnel/start'; Method = 'POST' },
+            @{ Path = '/api/live/tunnel/stop'; Method = 'POST' },
+            @{ Path = '/api/live/tunnel/status'; Method = 'GET' },
+            @{ Path = '/api/eSE/update/check'; Method = 'GET' },
+            @{ Path = '/api/live/update_check'; Method = 'POST' },
+            @{ Path = '/api/live/update_run'; Method = 'POST' }
+        )) {
+            $code = 0
+            $body = ''
+            try {
+                $closedResponse = Invoke-WebRequest `
+                    -Uri ('http://127.0.0.1:48123' + $closedRoute.Path) `
+                    -Method $closedRoute.Method -UseBasicParsing -TimeoutSec 2
+                $code = [int]$closedResponse.StatusCode
+                $body = [string]$closedResponse.Content
+            } catch {
+                if ($_.Exception.Response) {
+                    $code = [int]$_.Exception.Response.StatusCode
+                    $reader = New-Object IO.StreamReader(
+                        $_.Exception.Response.GetResponseStream()
+                    )
+                    try { $body = $reader.ReadToEnd() }
+                    finally { $reader.Dispose() }
+                } else {
+                    throw
+                }
+            }
+            if ($code -ne 410) {
+                throw "ese-server.exe route did not fail closed: $($closedRoute.Path) ($code)"
+            }
+            $closedPayload = $body | ConvertFrom-Json
+            if ([string]$closedPayload.reason -notin @(
+                    'remote_access_postponed', 'manual_updates_only')) {
+                throw "ese-server.exe returned an unexpected closure reason: $($closedRoute.Path)"
+            }
+        }
     } finally {
         if ($serverProcess -and -not $serverProcess.HasExited) { Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue }
         $env:ESE_TEST_MODE = $oldTestMode
@@ -234,6 +418,13 @@ Stage 'package-smoke' {
     if ($LASTEXITCODE -ne 0) { throw 'ffmpeg smoke failed' }
 }
 
-Header 'Release pipeline complete'
+if ($AllowDirty) {
+    Header 'Development pipeline complete (NOT RELEASABLE)'
+    if ($Skip.Count -gt 0) {
+        Write-Host "Skipped gates: $($Skip -join ', ')" -ForegroundColor Yellow
+    }
+} else {
+    Header 'Release pipeline complete'
+}
 Write-Host ("Total: {0:N1} minutes" -f ((Get-Date) - $startedAt).TotalMinutes)
 Write-Host "Artifacts: $(Join-Path $RepoRoot "dist\$ReleaseTag")" -ForegroundColor Green

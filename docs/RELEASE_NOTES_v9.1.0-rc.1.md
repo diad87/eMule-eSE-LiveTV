@@ -1,10 +1,17 @@
 # eMule eSE 9.1.0-rc.1
 
-Estado: **candidata de publicación para Windows x64**.
+Estado: **RECHAZADA / NO_GO**. Se conserva para trazabilidad y evidencia; no
+debe publicarse ni promoverse.
 
-Esta candidata congela el alcance funcional de v9.1. A partir de este punto
-solo se admitirán correcciones de defectos bloqueantes para la publicación;
-el desarrollo de funciones nuevas continuará en v9.2.
+Durante la reconciliación de `V91-I04` se demostró que esta candidata solo
+caía a IPv4 tras un error IPv6 explícito. Un blackhole silencioso podía esperar
+el timeout global de 45 segundos y, por tanto, incumplía el límite de menos de
+10 segundos. El sucesor que corrige y vuelve a calificar ese camino es
+`9.1.0-rc.2`.
+
+Esta candidata congeló el alcance funcional de v9.1, pero quedó rechazada. El
+texto restante describe el delta histórico que se intentó calificar; no es una
+instrucción para publicar o instalar `rc.1`.
 
 ## Cambios desde beta.3
 
@@ -45,13 +52,13 @@ el desarrollo de funciones nuevas continuará en v9.2.
   defecto.
 - Admisión segura y coherente de archivos compartidos.
 
-## Criterio de promoción
+## Criterio de promoción histórico (no satisfecho)
 
-El binario solo se publicará como RC aprobada cuando el mismo commit y los
-mismos hashes superen el pipeline limpio, la prueba física entre los dos
-Windows disponibles, dos horas de LiveTV IPv6 y el soak dual-stack previsto.
-Una ejecución local de dos procesos sirve como prueba de desarrollo, pero no
-sustituye la topología física.
+Este era el criterio previsto: el mismo commit y los mismos hashes debían
+superar el pipeline limpio, la prueba física entre los dos Windows disponibles,
+dos horas de LiveTV IPv6 y el soak dual-stack. `rc.1` no lo satisfizo porque
+`V91-I04` falló. Una ejecución local de dos procesos sirve como prueba de
+desarrollo, pero no sustituye la topología física.
 
 ## Límites conocidos
 
@@ -59,10 +66,9 @@ sustituye la topología física.
 - No se ofrece infraestructura KRP pública por defecto.
 - No hay cliente Android ni administración remota en v9.1.
 
-## Actualización y rollback
+## Procedimiento histórico de actualización (no ejecutar con rc.1)
 
-1. Guardar el directorio `config` y todos los `.met`.
-2. Extraer rc.1 en un directorio nuevo.
-3. Mantener `emule.exe` y `ese-server.exe` del mismo paquete.
-4. Para volver atrás, cerrar eMule y restaurar beta.3 junto con la copia del
-   perfil. Esta candidata no introduce una migración de datos.
+El procedimiento que se había preparado consistía en guardar `config` y todos
+los `.met`, extraer la candidata en un directorio nuevo y mantener
+`emule.exe`/`ese-server.exe` del mismo paquete. No debe aplicarse a `rc.1`;
+use la candidata sucesora que complete su propia calificación.

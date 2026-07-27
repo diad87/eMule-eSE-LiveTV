@@ -4,9 +4,12 @@ Estado: borrador normativo para desarrollo y publicación
 
 Ámbito: eSE 9.0, 9.1, 9.2, 9.3 y 9.4
 
-Base inspeccionada: `35264bb` (candidato binario beta.2: `ab1ad6b`)
+Base inicial inspeccionada: `35264bb` (candidato binario beta.2: `ab1ad6b`)
 
-Fecha de referencia del laboratorio: 2026-07-24
+Revisión actual: fuente `9.1.0-rc.2` previa a congelación; el commit y los
+hashes definitivos se fijan al construir la candidata limpia.
+
+Fecha de revisión: 2026-07-27
 
 ## 1. Propósito
 
@@ -237,7 +240,7 @@ Estos gates se repiten en 9.0–9.4.
 - Registro de protocolos sin colisiones.
 - No existen claves privadas ni tokens reales en el paquete.
 
-### `G-BUILD`: build reproducible
+### `G-BUILD`: build con inputs fijados y manifiesto verificado
 
 ```powershell
 .\tools\run_alpha_tests.ps1 -Suite All
@@ -250,7 +253,13 @@ Además:
 - lenguaje y recursos de las 43 traducciones;
 - `npm audit --audit-level=high`;
 - ASan de relay y componentes que lo soporten;
-- ZIP y manifiesto reproducibles a partir del commit congelado.
+- inputs externos fijados y verificados antes de empaquetar;
+- manifiesto por archivo y SHA-256 externo del ZIP comprobados contra el
+  paquete congelado.
+
+Hasta implantar y verificar timestamps, orden de entradas y metadatos
+normalizados, este gate no afirma que dos ejecuciones produzcan un ZIP
+idéntico byte a byte.
 
 ### `G-SELFTEST`: paquete extraído
 
@@ -339,8 +348,8 @@ mantienen preferencias, capacidades y gates de consentimiento independientes.
 | `V90-F07` | Proporcionar un kill switch inmediato |
 | `V90-F08` | Mantener relay, KRP, predicción, Punch3 y salida Kad6 apagados |
 | `V90-F09` | Exponer estado y contadores suficientes para diagnosticar las pruebas |
-| `V90-F10` | Mantener API y HLS remotos protegidos por autenticación |
-| `V90-F11` | Producir un paquete reproducible con rollback comprobado |
+| `V90-F10` | Mantener dashboard, API y HLS recibido limitados a loopback; acceso LAN/remoto aplazado |
+| `V90-F11` | Producir un paquete con inputs fijados, manifiesto verificado, SHA-256 externo y rollback comprobado |
 | `V90-F12` | Mantener integridad de descargas, hashing, part files y LiveTV |
 | `V90-F13` | Seleccionar Kad2+Kad6 en perfiles nuevos y al migrar un `NetworkKademlia=1`, con controles independientes |
 | `V90-F14` | Persistir Kad6 en `nodes_v6.dat`, separado de `nodes.dat`, y recargar todos los contactos en probation |
@@ -365,7 +374,7 @@ mantienen preferencias, capacidades y gates de consentimiento independientes.
 | `V90-C03` | `T1` | A acepta y B rechaza | No se ejecuta una medición bilateral |
 | `V90-C04` | `T1` | A y B aceptan | Solo aumentan contadores NetLab permitidos |
 | `V90-C05` | `T1` | Activar NetLab con funciones avanzadas en cero | Punch3, predicción, relay y KRP continúan en cero |
-| `V90-S01` | `T0` | Petición no autenticada a API/HLS remoto | Respuesta 401 o conexión rechazada |
+| `V90-S01` | `T0` | Intentar acceder a dashboard/API/HLS desde una interfaz no loopback | Conexión rechazada; el paquete rc.2 no publica esas superficies |
 | `V90-S02` | `T7` | Arrancar con web local y UPnP general activo | El puerto web no aparece mapeado |
 | `V90-I01` | `T1` | Transferir archivo de 4 GiB, cerrar abruptamente y reanudar | Hash final idéntico; no se pierde estado confirmado |
 | `V90-L01` | `T4` | Emisor y dos viewers LiveTV a 12 Mbps durante 2 h | Sin crash; reproducción continua y chunks válidos |
@@ -419,6 +428,14 @@ cumplen simultáneamente estas condiciones:
 Esto permite mejorar y probar Kad6 sin ocultarlo ni reducir sus requisitos de
 seguridad, interoperabilidad o estabilidad.
 
+El consentimiento NetLab no forma parte de la selección de la ruta IPv6
+ordinaria. Un `HELLO` actual que aporte una dirección IPv6 pública y anuncie
+simultáneamente `IPV6_WIRE` y `IPV6_DUALSTACK` habilita esa ruta soportada sin
+activar el laboratorio. Activar o revocar NetLab tampoco puede modificar la
+preferencia de transporte IPv6 `Off`/`Auto`/`Preferred`. Los vectores de alcance
+Kad previos a `HELLO`, Punch3 y las demás superficies experimentales conservan
+sus gates bilaterales de consentimiento.
+
 ### 8.2 Requisitos funcionales
 
 | ID | Requisito |
@@ -442,6 +459,7 @@ seguridad, interoperabilidad o estabilidad.
 | `V91-F17` | Separar consentimiento base, avanzado y contribución; cada nivel debe partir apagado, persistir y poder revocarse |
 | `V91-F18` | Una `Kad6BetaExitOptIn` consentida debe permanecer separada de `Kad6PublicExitOptIn` y no eludir el gate firmado de salida estable |
 | `V91-F19` | Escaneo inicial y `DirectoryWatcher` deben usar una única política de admisión de compartidos, con motivos de rechazo y comparación ASCII independiente del locale |
+| `V91-F20` | La ruta IPv6 ordinaria negociada por `HELLO` y la preferencia `Off`/`Auto`/`Preferred` deben ser independientes del consentimiento NetLab; el alcance Kad pre-`HELLO` experimental mantiene consentimiento bilateral |
 
 ### 8.3 Política de identidad y créditos
 
@@ -488,19 +506,19 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | `V91-A02` | build | Ejecutar la política de admisión y el corpus A/B fijado a eMule AI 1.5.2 `de8e27e` | Cero falsos positivos; menos falsos negativos que el baseline; Core, Integration y `Release|x64` verdes |
 | `V91-I01` | `T5` | Dos peers IPv6-only, sin ruta IPv4 | Hello, fuente y transferencia de 4 GiB por IPv6 |
 | `V91-I02` | `T5` | LiveTV IPv6-only a 12 Mbps durante 2 h | Playlist y chunks válidos; cero fallback IPv4 |
-| `V91-I03` | `T1` | Dual-stack con ambas rutas disponibles | Se usa la política configurada y se registra la ruta real |
-| `V91-I04` | `T1` | Hacer inalcanzable AAAA manteniendo A | Fallback IPv4 en menos de 10 s y sin bloquear UI |
+| `V91-I03` | `T1/T2` | Un mismo peer eSE HighID conserva IPv4 real e IPv6 pública aprendida por `HELLO`; con ambas rutas disponibles, repetir el dial en `Auto` y `Preferred` | `Auto` usa IPv4 para el peer dual HighID ordinario; `Preferred` usa IPv6; ambas rutas quedan atribuidas al PID/socket real y a una interfaz física |
+| `V91-I04` | `T1/T2` | Sobre ese mismo peer dual, aplicar `DROP` silencioso al TCP IPv6 manteniendo IPv4 operativo | Se observa un SYN IPv6 sin respuesta durante al menos 2,75 s y un único fallback IPv4 entre 2,75 s y menos de 8 s; la conexión termina antes de 10 s, completa un único `HELLO`/`HELLOANSWER`, no duplica la entrada lógica de conexión y mantiene UI/API responsivas |
 | `V91-I05` | `T1` | Desactivar IPv6 y repetir transferencia | Wire y comportamiento IPv4 heredados |
 | `V91-I06` | `T6` | Dos Windows físicos usando direcciones IPv6 del overlay | Transferencia remota funcional; informe marcado como overlay |
 | `V91-I07` | `T3` | Portátil mediante hotspot; comprobar IPv6 global delegado | Si existe, conexión eSE directa; si no, registrar limitación sin falsear PASS público |
 | `V91-I08` | `T5` | Endpoint echo Windows independiente por IPv6 | Cliente abre TCP/UDP y conserva los 128 bits observados |
-| `V91-D01` | `T1` | Hostname con A y AAAA | Ambas respuestas se conservan; falla AAAA y funciona A |
+| `V91-D01` | `T1/T2` | Hostname controlado con A y AAAA válidos, una sola inyección y dos hosts físicos; el Source aplica `DROP` silencioso exacto al TCP IPv6 mientras mantiene operativo el forward IPv4 | El resolver devuelve y el cliente retiene simultáneamente ambos candidatos; la captura atribuida al PID/adaptador/tupla prueba el intento AAAA sin respuesta y la transferencia termina por el candidato A |
 | `V91-P01` | `T0/T1` | SOCKS5 IPv6 | `ATYP=4`, destino y puerto correctos |
 | `V91-P02` | `T0/T1` | HTTP CONNECT IPv6 | Autoridad `[IPv6]:puerto` correcta |
 | `V91-P03` | `T0` | Intentar IPv6 mediante SOCKS4 | Rechazo explícito, sin truncado |
 | `V91-K01` | `T5` | Kad6-only: bootstrap, routing, publish y source find | Contacto autenticado y fuente recuperada |
 | `V91-K02` | `T1` | Kad2+Kad6, apagar uno durante ejecución | El otro continúa y no recibe paquetes del plano apagado |
-| `V91-K03` | perfiles | Abrir un perfil Kad6 con build anterior sobre copia | Kad2 no se reactiva indebidamente |
+| `V91-K03` | perfiles | Guardar un perfil Kad6-only con la candidata y abrir una copia con el paquete eSE 8.1.0 fijado por hashes, con autoconexión activa | Kad2 no se inicia ni se reactiva; evidencia mínima: `NetworkKademlia=0` antes y después, proceso 8.1 vivo y API con `kad_connected=false` continuamente durante al menos 30 s |
 | `V91-K04` | `T1/T5` | Reiniciar ambos nodos con `nodes_v6.dat` poblado | Contactos cargados en probation; re-verificación acotada y sin confianza heredada |
 | `V91-C01` | `V1` | Peer nuevo frente a 0.70b | Transferencia íntegra; solo opcodes y payloads clásicos. Se permiten tags `HELLO` aditivos ignorados por 0.70b |
 | `V91-C02` | `T0` | Rechazar sucesivamente base, avanzado y contribución | Ninguna superficie del nivel rechazado se inicia; KRP y Beta Exit permanecen cerrados |
@@ -515,6 +533,51 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 La matriz normativa vigente contiene **27 casos**. El recuento histórico de
 beta.2 era de 26 porque todavía no incluía `V91-A02`; desde beta.3, cualquier
 ledger de RC que omita `V91-A02` es incompleto.
+
+`V91-I04` valida la conmutación de familia de un único peer dual-stack; no es
+una prueba DNS ni permite sustituir el `DROP` por un puerto cerrado, `RST` o
+`REJECT`, porque esos casos entregan un error inmediato y no detectan un
+blackhole. `V91-D01` cubre por separado la conservación de todas las respuestas
+de un hostname. Para ambos casos, la captura debe demostrar la ruta efectiva y
+no basta con la familia anunciada por la aplicación.
+
+La adjudicación de `V91-I04` separa el fixture de la conducta del producto. Con
+topología, disparador ordinario, `DROP`, captura sin pérdidas y atribución PID
+válidos, la ausencia del SYN IPv6, del fallback IPv4, del `HELLOANSWER` o el
+incumplimiento temporal son `FAIL`, no `BLOCKED`. El API local debe aportar el
+user hash realmente cargado y los contadores de conexiones en curso, altas
+totales, máximo simultáneo y altas duplicadas; el baseline y el cierre deben
+demostrar exactamente una alta para el dial lógico completo, ninguna alta
+adicional durante el fallback y cero altas duplicadas.
+
+Para `V91-I03`, `V91-I04` y `V91-D01`, tanto `T1` como `T2` son válidas solo
+si hay dos hosts Windows físicos distintos, IPv4 real y una ruta IPv6 pública
+nativa directa. La captura debe atribuir cada socket al PID candidato y al
+adaptador físico. WARP, Tailscale, VPN, túnel, proxy, relay o una ruta que
+vuelva al mismo host no satisfacen ninguna de las dos topologías.
+
+`V91-D01` usa los roles Coordinator/Source, un servidor eD2K mínimo controlado,
+Kad apagado, cero terceros y una única inyección del enlace. Antes de inyectar
+se obtiene `sequence` de `GET /api/debug/source-resolutions`; después se pide
+`?after=<sequence>`. Debe existir exactamente un evento nuevo con esquema
+`ese.debug.source-resolutions/v1`, hashes canónicos coincidentes, recuentos
+A=1/AAAA=1 tanto resueltos como materializados,
+`simultaneously_retained=true`, dos candidatos con origen `hostname_link` y
+resultado `added` o `merged_existing`. El API es solo local y no devuelve
+hostname ni direcciones sin hash. Con fixture válido, la ausencia o
+contradicción de esa evidencia es `FAIL`; solo una carencia externa de
+topología/captura puede ser `BLOCKED`.
+
+El Source instala antes del disparo una regla reversible y nonce-scoped de
+`DROP` entrante para la IPv6 y puerto exactos del candidato, sin afectar al
+listener/forward IPv4. La captura solo es adjudicable si cada SYN pertenece al
+PID candidato, al adaptador físico previsto y a la 5-tupla dentro de su ventana
+temporal. La regla, el listener, la captura y cualquier proceso iniciado se
+registran en el inventario y se revierten también en los caminos de excepción.
+
+El hostname controlado de `V91-D01` se expresa en forma ASCII/IDNA A-label
+canónica (minúsculas y sin punto final). Así, el hash calculado por el harness
+y el emitido por el cliente representan exactamente los mismos bytes.
 
 ### 8.7 Gate de salida 9.1
 
@@ -1070,16 +1133,21 @@ Nunca se transforman estos resultados en:
 - “anonimato”;
 - “relay público disponible”.
 
-## 17. Estado actual respecto al plan
+## 17. Estado de referencia de esta especificación
 
-En la base `0285c76`:
+Esta revisión acompaña a la fuente candidata `9.1.0-rc.2`:
 
-- 9.0 está en fase beta y dispone de NetLab y defaults fail-closed.
-- Gran parte del código de 9.1 está integrada y compila.
-- `libreach` y `libnatmap` contienen bases de 9.2/9.3.
-- Punch3, predicción y selector existen pero permanecen desactivados.
-- KRP core/client/edge supera pruebas internas, pero sigue siendo laboratorio.
-- Falta cerrar todos los gates de publicación y ejecutar las matrices físicas.
+- `rc.1` fue rechazada al demostrar `V91-I04` que el blackhole IPv6 carecía de
+  fallback acotado.
+- `rc.2` incorpora la corrección, la conservación simultánea A/AAAA y los
+  harnesses exactos I03/I04/D01; no es promocionable hasta construir el paquete
+  limpio y reconciliar los 27 casos.
+- NetLab y las superficies 9.2–9.4 siguen fail-closed y no forman parte del
+  transporte IPv6 ordinario declarado para 9.1.
+- `libreach`, `libnatmap`, Punch3, predicción, selector y KRP conservan sus gates
+  experimentales y no adquieren estado público por estar presentes en el árbol.
+- El estado formal vigente lo determina exclusivamente el
+  `V91-RC-LEDGER.json` del commit/binario exactos, no este resumen narrativo.
 
 Por tanto, la presencia de código 9.2–9.4 en el binario no cambia el orden de
 promoción: cada capa debe ganarse su versión mediante sus propios tests.

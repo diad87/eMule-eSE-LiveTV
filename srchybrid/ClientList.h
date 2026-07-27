@@ -158,6 +158,10 @@ public:
 	// Connecting Clients
 	void	AddConnectingClient(CUpDownClient *pToAdd);
 	void	RemoveConnectingClient(const CUpDownClient *pToRemove);
+	LONG	GetConnectingClientCount() const				{ return ::InterlockedCompareExchange(&m_nConnectingClientCount, 0, 0); }
+	LONG	GetConnectingClientAdds() const					{ return ::InterlockedCompareExchange(&m_nConnectingClientAdds, 0, 0); }
+	LONG	GetConnectingClientHighWater() const			{ return ::InterlockedCompareExchange(&m_nConnectingClientHighWater, 0, 0); }
+	LONG	GetConnectingClientDuplicateAdds() const		{ return ::InterlockedCompareExchange(&m_nConnectingClientDuplicateAdds, 0, 0); }
 
 	void	Process();
 	bool	IsValidClient(CUpDownClient *tocheck) const;
@@ -186,6 +190,10 @@ private:
 	CList<IPANDTICS> listFirewallCheckRequests;
 	CList<IPANDTICS> listDirectCallbackRequests;
 	CList<CONNECTINGCLIENT> m_liConnectingClients;
+	mutable volatile LONG m_nConnectingClientCount;
+	mutable volatile LONG m_nConnectingClientAdds;
+	mutable volatile LONG m_nConnectingClientHighWater;
+	mutable volatile LONG m_nConnectingClientDuplicateAdds;
 	DWORD	m_dwLastBanCleanUp;
 	DWORD	m_dwLastTrackedCleanUp;
 	DWORD	m_dwLastClientCleanUp;

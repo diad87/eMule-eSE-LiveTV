@@ -6,6 +6,7 @@
 #include "opcodes.h"
 #include "OtherFunctions.h"
 #include "eMuleAI/Address.h"
+#include "IPv6EndpointPolicy.h"
 #include "kademlia/kademlia/KadProtocolPolicy.h"
 
 #include <vector>
@@ -133,30 +134,28 @@ public:
 	// restricted to public IPv6 endpoints.
 	void			SetDirectIPv6Address(const CAddress& addr)		{ const CAddress next = (addr.GetType() == CAddress::IPv6 && addr.IsUsableDirectIPv6()) ? addr : CAddress(); const bool changed = next != m_ipv6Address; m_ipv6Address = next; RefreshIPv6OnlyEndpoint(); if (changed) { m_bServerIPv6Source = false; m_bIPv6CallbackSource = false; m_bLiveIPv6Source = false; m_bDirectIPv6Source = false; } }
 	bool			IsIPv6OnlyEndpoint() const					{ return m_bIPv6OnlyEndpoint && HasIPv6Address(); }
+	uint32			GetRealIPv4Endpoint() const {
+		const bool hasV6 = HasIPv6Address();
+		const uint32 synthetic = hasV6 ? m_ipv6Address.ToSyntheticUInt32() : 0;
+		return IPv6EndpointPolicy::SelectRealIPv4(
+			m_nConnectIP, m_dwUserIP, hasV6, synthetic);
+	}
+	bool			HasRealIPv4Endpoint() const					{ return GetRealIPv4Endpoint() != 0; }
 	// Keep the legacy uint32 fields as compatibility storage without using
 	// them to decide whether a real IPv4 route exists. Constructors historically
 	// pass synthetic values in either byte order, so recognize both forms.
 	void			RefreshIPv6OnlyEndpoint()
 	{
-		if (!HasIPv6Address()) {
-			m_bIPv6OnlyEndpoint = false;
-			return;
-		}
-		const uint32 synthetic = m_ipv6Address.ToSyntheticUInt32();
-		const bool userIsSynthetic = m_dwUserIP == 0 || m_dwUserIP == synthetic;
-		const bool connectIsSynthetic = m_nConnectIP == 0
-			|| m_nConnectIP == INADDR_NONE
-			|| m_nConnectIP == synthetic
-			|| m_nConnectIP == ntohl(synthetic);
-		m_bIPv6OnlyEndpoint = userIsSynthetic && connectIsSynthetic;
+		m_bIPv6OnlyEndpoint = HasIPv6Address() && !HasRealIPv4Endpoint();
 	}
 	// Returns the endpoint without erasing the legacy IPv4 fields. When
 	// preferIPv6 is true a validated native-v6 candidate wins; otherwise the
 	// caller gets the historical IPv4 endpoint first.
 	bool			TryGetConnectAddress(CAddress& out, bool preferIPv6) const {
 			if (preferIPv6 && HasIPv6Address()) { out = m_ipv6Address; return true; }
-			if (m_nConnectIP != 0 && m_nConnectIP != INADDR_NONE) {
-				out = CAddress::FromIPv4NetworkOrder(m_nConnectIP);
+			const uint32 realIPv4 = GetRealIPv4Endpoint();
+			if (realIPv4 != 0) {
+				out = CAddress::FromIPv4NetworkOrder(realIPv4);
 				return true;
 			}
 			if (HasIPv6Address()) { out = m_ipv6Address; return true; }

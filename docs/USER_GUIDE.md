@@ -4,15 +4,17 @@ This guide covers the end-user workflow: install, watch a stream,
 broadcast your own, troubleshoot.
 
 For the runtime design see [the architecture overview](../ARCHITECTURE.md).
-The current public-beta limits are in
-[the 9.0.0-beta.1 release notes](RELEASE_NOTES_v9.0.0-beta.1.md).
+The current candidate limits are in
+[the 9.1.0-rc.2 release notes](RELEASE_NOTES_v9.1.0-rc.2.md).
 
 ---
 
 ## 1. Install
 
-1. Download the
-   [9.0.0-beta.1 portable ZIP](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.0.0-beta.1).
+1. Download the `9.1.0-rc.2` portable ZIP only from the
+   [matching release page](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0-rc.2)
+   and verify its SHA-256. If that tag has no published asset, the candidate
+   has not been released yet; use the latest listed public build instead.
 2. Extract anywhere (e.g. `C:\eSE\`).
 3. Double-click **`emule.exe`**.
 4. Wait for eD2K + Kad to connect (status icons go green/yellow).
@@ -28,10 +30,15 @@ If a UAC prompt appears the first time, accept it — needed for UPnP
 to map the eD2K ports on your router. If Windows Firewall asks about
 `emule.exe`, `ese-server.exe`, or `ffmpeg.exe`, allow all three.
 
-The beta may ask whether you want to join the consent-based NetLab cohort.
+The candidate may ask whether you want to join the consent-based NetLab cohort.
 Declining does not block normal eD2K, Kad or LiveTV use. Accepting permits
 bounded interoperability measurements; it does not enable relay bandwidth
 donation, KRP or Kad6 public exit.
+
+Automatic updating is disabled in 9.1.0-rc.2, and no updater executable or
+installer is packaged or invoked. Download updates manually from the exact
+release page, stop eMule, back up the active profile and download state, and
+follow the update/rollback procedure in the release notes.
 
 > **Note:** earlier releases used a `eSE.vbs` launcher. That was
 > dropped — you now launch `emule.exe` directly and the eSE button
@@ -88,9 +95,9 @@ http://127.0.0.1:8080/hls-local/<hash>/stream.m3u8
 Paste it into VLC → Media → Open Network Stream. Useful if you want
 hardware-accelerated decode or PiP.
 
-These localhost URLs remain zero-setup. If port 8080 is deliberately exposed
-to another machine, `/hls-local/` playlists and segments require the dashboard
-access token or an authenticated browser session.
+These URLs are localhost-only in 9.1.0-rc.2. The dashboard and received-HLS
+server are not a LAN/remote service in this candidate; do not forward port
+8080 or try to open these URLs from another device.
 
 ---
 
@@ -112,7 +119,9 @@ access token or an authenticated browser session.
    ready after FFmpeg has produced HLS chunks.
 4. Verify viewers can find you:
    - On the same machine: open the cinema player from `/live`.
-   - On the LAN: open <http://OTHER_PC:8080/live> on another laptop — LAN discovery should advertise the stream without waiting for Kad propagation.
+   - On another eSE PC on the same LAN: open that PC's own
+     <http://localhost:8080/live>. LAN discovery should advertise the stream
+     without either machine exposing its dashboard.
    - WAN: share the `ed2k://|live|...|/` link from the cinema player URL bar.
 
 ### 3.2 Recommended OBS settings
@@ -143,22 +152,22 @@ two. The P2P watcher sends one selected rendition to the mesh.
 
 ---
 
-## 4. Network ports — open these on your router for best results
+## 4. Network ports
 
 | Port | Protocol | Direction | Required? |
 |---|---|---|---|
 | 4662 | TCP | inbound | Recommended for a direct HighID path. Gated fallback paths are not guaranteed on every NAT. |
 | 4672 | UDP | inbound | Yes — Kad discovery. |
-| 4711 | TCP | inbound | Optional — only if you want to expose `/api/*` to external machines. |
-| 8080 | TCP | inbound | Optional — only if you want remote browsers on the dashboard. |
+| 4711 | TCP | loopback | Native API; localhost-only in rc.2. Do not forward it. |
+| 8080 | TCP | loopback | Dashboard and local HLS; localhost-only in rc.2. Do not forward it. |
 | 1935 | TCP | inbound | Optional — only if your OBS is on a different machine. Keep closed otherwise. |
 | 5354 | UDP multicast | LAN | TTL=1, never escapes your subnet — no router config needed. |
 
 UPnP is enabled by default (`EnableUPnP=1` in `preferences.ini`).
 Check `Options → Connection → "UPnP NAT traversal: OK"` in the eMule
 UI. This maps eMule's P2P ports, not the dashboard. Port 8080 is never
-auto-exposed; forward it only deliberately and with an access token. If your
-router refuses UPnP, manually forward 4662/TCP + 4672/UDP.
+auto-exposed and LAN/remote dashboard access is postponed; do not forward 4711
+or 8080. If your router refuses UPnP, manually forward 4662/TCP + 4672/UDP.
 
 ---
 
@@ -173,11 +182,7 @@ Check, in order:
 3. **Verify port 5354 is bound** — in PowerShell: `netstat -an | findstr 5354` should show the LAN discovery socket. If the dashboard is also unavailable, restart eMule and open eSE again from the toolbar.
 4. **Check `last_streams.json`** at `%APPDATA%\eMule\last_streams.json`. If empty, this is your first run — no bootstrap cache yet. Watch something for 30 s, then restart eMule; the second boot should ping cached streams in <5 s.
 
-Release packages include a reviewed, SHA-256-pinned `nodes.dat`. The dashboard
-does not refresh it from third-party sites in the background. Developers who
-need to test a different snapshot must set all three variables
-`ESE_NODES_DAT_URL` (HTTPS), `ESE_NODES_DAT_SHA256` and the absolute
-`ESE_NODES_DAT_DEST`; partial or unverifiable configuration is rejected.
+Release packages include a reviewed, SHA-256-pinned `nodes.dat`.
 
 ### "Black screen in cinema player"
 
@@ -232,4 +237,4 @@ These are for testing only and apply to `emule.exe` when launched from a console
 
 ---
 
-_Last updated: 2026-07-23._
+_Last updated: 2026-07-27._

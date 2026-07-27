@@ -1,5 +1,39 @@
 # Plan de ejecución eSE 9.1.0-rc.1
 
+## Cierre de rc.1
+
+Decisión: **NO_GO**.
+
+- Commit exacto final:
+  `f4f813d2976ddf4da877771f3f6a6a6d68de7dfd`.
+- `emule.exe` SHA-256:
+  `CD5E05FA930903E2F59C23C2D536824AE31387BC7C86AD32C2949E561FBCD5CF`.
+- Bloqueante: `V91-I04`. La revisión de los blobs exactos demostró que el
+  fallback dependía de un error de socket IPv6 y no tenía temporizador de
+  familia para un `DROP` silencioso; el único límite aplicable era el timeout
+  global de conexión de 45 segundos.
+- Sucesora: `9.1.0-rc.2`.
+
+El soak de rc.1 se completó y archivó bajo su identidad original. No se
+relabela como evidencia exacta de rc.2.
+
+### Resultado histórico de O01
+
+La ejecución local exacta de `f4f813d` terminó el 26 de julio de 2026:
+
+- 43.200 segundos solicitados y 12 h 6 min observados;
+- `source`, `viewer` y LiveTV: `PASS`;
+- 27.632 chunks recibidos durante la ventana, 6.035 duplicados y ratio
+  incremental `0,218406`, por debajo del límite `0,25`;
+- deriva acumulada del ratio de duplicados `0,044456`, por debajo de `0,05`;
+- cero fallback IPv4, cero chunks ausentes al cierre y cero fallos;
+- crecimiento acotado: source `+1.904.640` bytes y `+27` handles; viewer
+  `+5.849.088` bytes y `+9` handles.
+
+El veredicto automatizado es `PASS` parcial. El estado formal permanece
+`BLOCKED` porque esta ejecución usa dos perfiles en un único Windows `H1` y
+`V91-O01` exige `T1/T5`.
+
 ## Candidata de partida
 
 La campaña parte del paquete limpio `9.1.0-beta.3`:
@@ -15,9 +49,9 @@ La campaña parte del paquete limpio `9.1.0-beta.3`:
 Cada harness obtiene commit, versión y hashes de `BUILD_INFO.txt`. Un paquete
 dirty, un hash distinto o evidencia atribuida a otro commit detiene el caso.
 
-## Regla de promoción
+## Regla de promoción histórica (no satisfecha)
 
-`rc.1` solo se promueve y publica cuando:
+`rc.1` solo se habría promovido y publicado si:
 
 1. los 27 casos de la sección 8.6 de la especificación están reconciliados;
 2. no queda ningún `FAIL`, ningún `BLOCKED` presentado como `PASS` y ningún
@@ -114,10 +148,11 @@ Pendiente de ejecución física exacta:
 - la fase C con María;
 - la fase D con el portátil.
 
-## Cierre
+## Cierre histórico
 
 Los resultados se consolidan con `tools/lab/write_v91_campaign_ledger.ps1`.
-El ledger vigente tiene 27 filas y decide `GO` únicamente con 27 `PASS`. Se
-construye primero un artefacto `9.1.0-rc.1` identificable para probar exactamente
-lo que se pretende publicar. Tras el `GO`, ese mismo commit se reconstruye desde
-limpio y se repite la fase A; solo entonces se etiqueta y publica la RC.
+El ledger final de `rc.1` tiene 27 filas y decidió `NO_GO`. El proceso previsto
+era construir primero un artefacto identificable, obtener 27 `PASS`,
+reconstruir el mismo commit desde limpio y repetir la fase A antes de etiquetar.
+Ese tramo no se ejecuta para `rc.1`; la corrección y la nueva calificación
+pertenecen a `rc.2`.

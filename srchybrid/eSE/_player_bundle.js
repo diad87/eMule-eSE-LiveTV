@@ -168,26 +168,6 @@
       '</div></div>';
   }
 
-  /**
-   * Build safe tunnel status HTML.
-   * @param {Object} d - Tunnel status data from /api/tunnel/status
-   * @returns {string} Safe HTML string
-   */
-  function renderSafeTunnelStatus(d) {
-    var parts = [];
-    if (d.url) {
-      var urlDisplay = escapeHTML(String(d.url).replace('https://', ''));
-      var urlAttr = escapeAttr(d.url);
-      parts.push(' <span style="color:#2ecc71;text-decoration:underline;cursor:pointer" onclick="copyUrl(\'' + urlAttr + '\')">' + urlDisplay + '</span>');
-    }
-    if (d.publicUrl) {
-      var pubDisplay = escapeHTML(String(d.publicUrl).replace('http://', ''));
-      var pubAttr = escapeAttr(d.publicUrl);
-      parts.push('• <span style="color:#ff6b35;cursor:pointer" onclick="copyUrl(\'' + pubAttr + '\')">' + pubDisplay + '</span>');
-    }
-    return parts.join(' <span style="color:#444">|</span> ');
-  }
-
   // === Expose all helpers globally ===
   w.SafeDOM = {
     escapeHTML: escapeHTML,
@@ -198,7 +178,6 @@
     clearChildren: clearChildren,
     renderSafeMovieCard: renderSafeMovieCard,
     renderSafeSearchSuggestion: renderSafeSearchSuggestion,
-    renderSafeTunnelStatus: renderSafeTunnelStatus
   };
 
   // Convenience aliases on window for backward-compat in inline scripts
@@ -658,76 +637,6 @@ function showNotification(msg) {
   setTimeout(function() { n.remove(); }, 4000);
 }
 
-// ── Estado del tunnel ──────────────────────────────────────────────────────────
-var savedTunnelUrl = null;
-
-function checkTunnelStatus() {
-  fetch('/api/tunnel/status').then(function(r) { return r.json(); }).then(function(d) {
-    var el = document.getElementById('tunnel-status');
-    var stopBtn = document.getElementById('stop-share-btn');
-    if (!el) return;
-
-    var parts = [];
-    if (d.url) {
-      savedTunnelUrl = d.url;
-      var urlSafe = sanitizeURL(d.url);
-      parts.push(' <span style="color:#2ecc71;text-decoration:underline;cursor:pointer" onclick="copyUrl(\'' + escapeAttr(urlSafe) + '\')">' + escapeHTML(urlSafe.replace('https://', '')) + '</span>');
-    }
-    if (d.publicUrl) {
-      if (!savedTunnelUrl) savedTunnelUrl = d.publicUrl;
-      var pubSafe = sanitizeURL(d.publicUrl);
-      parts.push('• <span style="color:#ff6b35;cursor:pointer" onclick="copyUrl(\'' + escapeAttr(pubSafe) + '\')">' + escapeHTML(pubSafe.replace('http://', '')) + '</span>');
-    }
-
-    if (parts.length > 0) {
-      el.innerHTML = parts.join(' <span style="color:#444">|</span> ');
-      el.title = 'Click en una URL para copiar';
-      if (stopBtn) stopBtn.style.display = 'inline-block';
-    } else if (d.active) {
-      el.textContent = ' Conectando...';
-      setTimeout(checkTunnelStatus, 2000);
-    } else {
-      el.textContent = '• Solo local';
-      if (stopBtn) stopBtn.style.display = 'none';
-    }
-  }).catch(function() {
-    var el = document.getElementById('tunnel-status');
-    if (el) el.textContent = '• Solo local';
-  });
-}
-
-function copyUrl(url) {
-  navigator.clipboard.writeText(url).then(function() {
-    var el = document.getElementById('tunnel-status');
-    var old = el.innerHTML;
-    el.innerHTML = ' <span style="color:#2ecc71">Copiado: ' + escapeHTML(url) + '</span>';
-    setTimeout(function() { el.innerHTML = old; }, 2000);
-  });
-}
-
-function stopSharing() {
-  fetch('/api/tunnel/stop').then(function() {
-    savedTunnelUrl = null;
-    var el = document.getElementById('tunnel-status');
-    if (el) el.textContent = '• Solo local';
-    var stopBtn = document.getElementById('stop-share-btn');
-    if (stopBtn) stopBtn.style.display = 'none';
-  });
-}
-
-function copyTunnelUrl() {
-  if (!savedTunnelUrl) return;
-  navigator.clipboard.writeText(savedTunnelUrl).then(function() {
-    var el = document.getElementById('tunnel-status');
-    var old = el.innerHTML;
-    el.innerHTML = ' <span style="color:#2ecc71">Copiado!</span>';
-    setTimeout(function() { el.innerHTML = old; }, 1500);
-  });
-}
-
-// Check tunnel status on page load
-setTimeout(checkTunnelStatus, 1000);
-
 // ── Panel de ajustes ───────────────────────────────────────────────────────────
 function toggleSettings() {
   var panel = document.getElementById('settings-panel');
@@ -750,11 +659,6 @@ function renderSettingsPanel(settings) {
   panel.className = 'settings-panel active';
 
   panel.innerHTML = '<div class="settings-header"><h2>Ajustes</h2><button class="settings-close" onclick="document.getElementById(\'settings-panel\').remove()">&times;</button></div>' +
-    '<div class="settings-section"><h3>Acceso Remoto</h3>' +
-    '<div class="setting-row"><span class="setting-label">IP Pública (P2P)</span><span id="set-public-ip" class="setting-value" style="color:#2ecc71;font-family:monospace;cursor:pointer;font-size:12px" onclick="navigator.clipboard.writeText(this.textContent);showNotification(\'IP copiada\')">Cargando...</span></div>' +
-    '<div class="setting-row"><span class="setting-label">Acceso público</span><span id="set-tunnel-url" class="setting-value" style="color:#888;font-family:monospace;font-size:12px;word-break:break-all">UPnP / LAN solamente</span></div>' +
-    '<div class="setting-row"><span class="setting-label">Canal ntfy</span><span id="set-ntfy-url" class="setting-value" style="color:#888;font-family:monospace;cursor:pointer;font-size:11px;word-break:break-all" onclick="navigator.clipboard.writeText(this.textContent);showNotification(\'URL copiada\')">—</span></div>' +
-    '</div>' +
     '<div class="settings-section"><h3>Preferencias de Reproducción</h3>' +
     '<div class="setting-row"><span class="setting-label">Calidad</span>' +
     '<select class="setting-select" id="set-quality">' +
@@ -909,18 +813,6 @@ function renderSettingsPanel(settings) {
     '<button class="settings-save" onclick="saveSettingsPanel()"> Guardar Ajustes</button></div>';
 
   document.body.appendChild(panel);
-
-  // Load remote access info
-  fetch('/api/connect-seed').then(function(r){return r.json();}).then(function(seed) {
-    var ipEl = document.getElementById('set-public-ip');
-    var tunnelEl = document.getElementById('set-tunnel-url');
-    var ntfyEl = document.getElementById('set-ntfy-url');
-    if (ipEl && seed.publicIP) ipEl.textContent = 'http://' + seed.publicIP + ':8080';
-    else if (ipEl) ipEl.textContent = 'No disponible';
-    if (tunnelEl && seed.tunnel) tunnelEl.textContent = seed.tunnel;
-    else if (tunnelEl) tunnelEl.textContent = 'No disponible';
-    if (ntfyEl && seed.ntfyTopic) ntfyEl.textContent = 'https://ntfy.sh/' + seed.ntfyTopic;
-  }).catch(function() {});
 
   // Check eMule status on open
   fetch('/api/emule/status').then(function(r) { return r.json(); }).then(function(data) {

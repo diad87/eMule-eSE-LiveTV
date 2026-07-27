@@ -1,6 +1,6 @@
 # Kad6: diseño, fronteras y política de promoción
 
-Estado: especificación viva del runtime presente en eSE 9.1.0-beta.2.
+Estado: especificación viva del runtime presente en eSE 9.1.0-rc.2.
 
 Este documento describe el Kad6 que realmente existe en el árbol. No convierte
 una beta en una promesa de soporte y no autoriza infraestructura pública.
@@ -178,6 +178,6 @@ compatible con eMule clásico.
 - [`IPV6_DUALSTACK_BETA2_RELEASE.md`](IPV6_DUALSTACK_BETA2_RELEASE.md)
 - [`protocol/PROTOCOL_REGISTRY.md`](protocol/PROTOCOL_REGISTRY.md)
 - [`protocol/OPCODES.csv`](protocol/OPCODES.csv)
-- [`../libkad6/README.md`](../libkad6/README.md)
+- [`libkad6/README.md` in the source repository](https://github.com/diad87/eMule-eSE-LiveTV/blob/main/libkad6/README.md)
 - `srchybrid/kademlia/net/KademliaUDPListener.cpp`
 - `srchybrid/kademlia/routing/Kad6RoutingTable.cpp`

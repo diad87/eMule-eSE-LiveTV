@@ -2715,8 +2715,8 @@ void CPreferences::ApplyEseNetLabPreferenceState(bool active)
 
 	SetEseNetLabEnabled(base);
 	SetEseAutoKeepalive(base);
-	if (base)
-		SetIPv6Mode(IPv6AutoMode);
+	// IPv6 Off/Auto/Preferred is an independent stable transport choice.
+	// Consent normalization must neither enable it nor demote Preferred.
 
 	SetEseV9Experimental(advanced);
 	SetEseKad3Rendezvous(advanced);

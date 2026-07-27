@@ -7,6 +7,7 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const APP_VERSION = require('./package.json').version;
 
 // ━━━ REFACTORED MODULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const mediaResolver = require('./media_resolver');
@@ -15,8 +16,7 @@ const tmdbApi = require('./tmdb_api');
 const utils = require('./utils');
 const liveApi = require('./eSE-live/channel_api');
 const thumbExtractor = require('./eSE-live/thumbnail_extractor');
-const lanDiscovery = require('./eSE-live/lan_discovery');  // Capa 2 mDNS LAN
-const updateNotifier = require('./eSE-live/update_notifier');  // D6 auto-update check
+const lanDiscovery = require('./eSE-live/lan_discovery');
 const security = require('./security');
 
 const requestedPort = Number.parseInt(process.env.ESE_PORT || '8080', 10);
@@ -55,8 +55,9 @@ const FFMPEG_PATH = utils.findFfmpeg();
 const TEMP_DIR = process.env.TEMP || process.env.TMP || require('os').tmpdir();
 if (!TEST_MODE) {
   thumbExtractor.start(FFMPEG_PATH);
-  lanDiscovery.start();  // Capa 2 mDNS LAN announce + listener
-  updateNotifier.start();  // D6: poll GitHub releases every 6 h, surface to dashboard
+  // P2P stream discovery only: this advertises the native eMule peer port,
+  // never the loopback-only dashboard/API port.
+  lanDiscovery.start();
 }
 
 // Auto-detect hardware encoder at startup
@@ -363,20 +364,15 @@ load(); startTimer();
   res.writeHead(404); res.end('Not found');
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
   console.log('');
-  console.log('  eSE v6.2 - http://localhost:' + PORT);
+  console.log('  eSE v' + APP_VERSION + ' - http://127.0.0.1:' + PORT);
   console.log('  ffmpeg: ' + FFMPEG_PATH);
   console.log('');
 
   // The dashboard port is deliberately never exposed with UPnP. eMule owns
-  // the P2P port mappings; remote dashboard access requires an explicit,
-  // authenticated LAN/overlay/manual-forwarding setup.
-  if (!TEST_MODE && security.isReady()) {
-    console.log('[security] Dashboard remote exposure requires explicit setup');
-  } else {
-    console.log('[security] Remote exposure disabled: missing access token');
-  }
+  // the P2P port mappings; dashboard remote access is postponed.
+  console.log('[security] Dashboard/API restricted to this PC');
 });
 
 // HLS files belong to the C++ broadcast/view session.  Deleting them when the

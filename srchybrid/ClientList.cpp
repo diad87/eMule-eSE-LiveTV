@@ -17,6 +17,7 @@
 #include "stdafx.h"
 #include "emule.h"
 #include "ClientList.h"
+#include "IPv6FallbackPolicy.h"
 #include "Kademlia/Kademlia/kademlia.h"
 #include "Kademlia/Kademlia/prefs.h"
 #include "Kademlia/Kademlia/search.h"
@@ -49,6 +50,10 @@ static char THIS_FILE[] = __FILE__;
 
 CClientList::CClientList()
 	: m_pBuddy()
+	, m_nConnectingClientCount(0)
+	, m_nConnectingClientAdds(0)
+	, m_nConnectingClientHighWater(0)
+	, m_nConnectingClientDuplicateAdds(0)
 	, m_nBuddyStatus(Disconnected)
 {
 	m_dwLastBanCleanUp = m_dwLastTrackedCleanUp = m_dwLastClientCleanUp = ::GetTickCount();
@@ -1032,12 +1037,23 @@ void CClientList::AddConnectingClient(CUpDownClient *pToAdd)
 {
 	for (POSITION pos = m_liConnectingClients.GetHeadPosition(); pos != NULL;)
 		if (m_liConnectingClients.GetNext(pos).pClient == pToAdd) {
+			::InterlockedIncrement(&m_nConnectingClientDuplicateAdds);
 			ASSERT(0);
 			return;
 		}
 
 	ASSERT(pToAdd->GetConnectingState() != CCS_NONE);
 	m_liConnectingClients.AddTail(CONNECTINGCLIENT{ pToAdd, ::GetTickCount() });
+	::InterlockedIncrement(&m_nConnectingClientAdds);
+	const LONG count = ::InterlockedIncrement(&m_nConnectingClientCount);
+	LONG highWater = ::InterlockedCompareExchange(&m_nConnectingClientHighWater, 0, 0);
+	while (count > highWater) {
+		const LONG observed = ::InterlockedCompareExchange(
+			&m_nConnectingClientHighWater, count, highWater);
+		if (observed == highWater)
+			break;
+		highWater = observed;
+	}
 }
 
 void CClientList::ProcessConnectingClientsList()
@@ -1052,12 +1068,15 @@ void CClientList::ProcessConnectingClientsList()
 			// Treating it as a normal 45-second TCP attempt used to delete the
 			// source after punch2 #1, so punch3 was unreachable in practice.
 			m_liConnectingClients.RemoveAt(pos2);
+			::InterlockedDecrement(&m_nConnectingClientCount);
 			cc.pClient->FinishEseNatTraversalAttempt(true);
 			continue;
 		}
-		if (curTick >= cc.dwInserted + SEC2MS(45)) {
+		if (IPv6FallbackPolicy::HasElapsed(
+			curTick, cc.dwInserted, SEC2MS(45))) {
 			ASSERT(cc.pClient->GetConnectingState() != CCS_NONE);
 			m_liConnectingClients.RemoveAt(pos2);
+			::InterlockedDecrement(&m_nConnectingClientCount);
 			if (cc.pClient->IsEseNatTraversalConnectPending()) {
 				cc.pClient->FinishEseNatTraversalAttempt(false);
 				continue;
@@ -1074,6 +1093,7 @@ void CClientList::RemoveConnectingClient(const CUpDownClient *pToRemove)
 		POSITION pos2 = pos;
 		if (m_liConnectingClients.GetNext(pos).pClient == pToRemove) {
 			m_liConnectingClients.RemoveAt(pos2);
+			::InterlockedDecrement(&m_nConnectingClientCount);
 			return;
 		}
 	}

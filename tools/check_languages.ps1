@@ -16,7 +16,7 @@ $declared = @([regex]::Matches($i18n, '_T\("([a-z]{2}_[A-Z]{2}(?:_[A-Z]+)?)"\)')
     Sort-Object -Unique)
 $declared = @($declared | Where-Object { $_ -ne 'en_US' })
 
-$projects = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'srchybrid\lang') -Filter '*.vcxproj' -File |
+$projects = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'srchybrid\lang') -Filter '*.vcxproj' -File -Force |
     ForEach-Object { $_.BaseName } |
     Sort-Object -Unique)
 
@@ -36,9 +36,16 @@ if ($checkRuntime) {
     }
 
     $exeVersion = (Get-Item -LiteralPath $exePath).VersionInfo
-    $dlls = @(Get-ChildItem -LiteralPath $langDir -Filter '*.dll' -File)
+    $dlls = @(Get-ChildItem -LiteralPath $langDir -Filter '*.dll' -File -Force)
     $missingDlls = @($declared | Where-Object { -not (Test-Path -LiteralPath (Join-Path $langDir "$_.dll")) })
     if ($missingDlls.Count -gt 0) { throw "Runtime language DLLs missing: $($missingDlls -join ', ')" }
+    $unknownDlls = @($dlls | Where-Object { $_.BaseName -notin $declared })
+    if ($unknownDlls.Count -gt 0) {
+        throw "Runtime language DLLs not declared in I18n.cpp: $(($unknownDlls.Name | Sort-Object) -join ', ')"
+    }
+    if ($dlls.Count -ne $declared.Count) {
+        throw "Runtime language DLL set is not exact: expected $($declared.Count), found $($dlls.Count)"
+    }
 
     foreach ($dll in $dlls) {
         $version = $dll.VersionInfo

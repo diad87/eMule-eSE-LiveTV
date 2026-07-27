@@ -97,21 +97,20 @@ function handle(url, req, res) {
   // of a 404. Cloudflare Quick Tunnel is gone; UPnP runs unconditionally
   // at startup. Front-end will be cleaned up to drop these calls in v7.5.
   if (url.pathname === '/api/tunnel/start') {
-    res.writeHead(410, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'gone', reason: 'cloudflare-removed', publicUrl: _ctx.tunnel.publicUrl || null }));
+    res.writeHead(410, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'gone', reason: 'remote_access_postponed' }));
     return true;
   }
 
   if (url.pathname === '/api/tunnel/status') {
-    const t = _ctx.tunnel;
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ url: null, publicUrl: t.publicUrl, active: t.active, lookupUrl: t.LOOKUP_URL }));
+    res.writeHead(410, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'gone', reason: 'remote_access_postponed' }));
     return true;
   }
 
   if (url.pathname === '/api/tunnel/stop') {
-    res.writeHead(410, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'gone', reason: 'cloudflare-removed' }));
+    res.writeHead(410, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'gone', reason: 'remote_access_postponed' }));
     return true;
   }
 

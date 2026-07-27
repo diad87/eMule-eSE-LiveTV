@@ -1,6 +1,6 @@
 # 🐴 eMule eSE — Live TV Edition
 
-[![Public beta](https://img.shields.io/badge/public%20beta-9.1.0--beta.2-orange)](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0-beta.2)
+[![Release candidate](https://img.shields.io/badge/release%20candidate-9.1.0--rc.2-yellow)](docs/RELEASE_NOTES_v9.1.0-rc.2.md)
 [![CodeQL](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/codeql.yml/badge.svg)](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/codeql.yml)
 [![License: GPL-2.0](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](license.txt)
 
@@ -9,16 +9,20 @@ P2P live streaming over eD2K and Kad. It combines the native Windows client,
 FFmpeg-based HLS broadcasting and a local web dashboard in one portable
 Windows x64 package.
 
-## Download
+## Release candidate
 
-### [Download eSE 9.1.0-beta.2 for Windows x64](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.1.0-beta.2/eSE-LiveTV-v0.70b-eSE9.1.0-beta.2-x64.zip)
+### eSE 9.1.0-rc.2 for Windows x64
 
-[SHA-256 checksum](https://github.com/diad87/eMule-eSE-LiveTV/releases/download/v0.70b-eSE9.1.0-beta.2/eSE-LiveTV-v0.70b-eSE9.1.0-beta.2-x64.zip.sha256)
-· [Release notes](docs/RELEASE_NOTES_v9.1.0-beta.2.md)
+This source tree builds the exact `9.1.0-rc.2` qualification candidate. Its
+immutable package is frozen before the physical release matrix runs; check the
+matching release page and 27-case ledger before treating it as promoted.
+
+[RC.2 release notes](docs/RELEASE_NOTES_v9.1.0-rc.2.md)
 · [All releases](https://github.com/diad87/eMule-eSE-LiveTV/releases)
+· [Previous public beta.1](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0-beta.1)
 
 > [!IMPORTANT]
-> 9.1.0-beta.2 is a public IPv6/Kad6 network-lab beta, not the stable channel.
+> 9.1.0-rc.2 is a prerelease IPv6/Kad6 candidate, not the stable channel.
 > The latest stable build remains
 > [eSE 8.1.0](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE8.1.0).
 
@@ -38,7 +42,7 @@ the local HLS player and language DLLs. User data is stored under
 - [Quick start in Spanish](GUIA-RAPIDA.md)
 - [Full user guide](docs/USER_GUIDE.md)
 
-## What the beta includes
+## What the candidate includes
 
 ### P2P Live TV
 
@@ -70,12 +74,11 @@ Stream discovery does not require a central tracker:
 - A local cache remembers recently seen streams.
 
 The release package contains a structurally checked and SHA-256-pinned
-`nodes.dat`; it does not fetch a mutable bootstrap file while building or
-starting.
+`nodes.dat`.
 
 ### Reachability, native IPv6 and Kad6
 
-The 9.1 beta promotes native IPv6 transport between capable eSE peers. Sources,
+The 9.1 candidate promotes native IPv6 transport between capable eSE peers. Sources,
 callbacks and LiveTV peer lists preserve the full 128-bit address; LiveTV
 direct join accepts `[IPv6]:port`; and SOCKS5 and HTTP CONNECT support IPv6
 destinations. IPv6-only peers use neutral credits, while queue anti-abuse
@@ -96,8 +99,14 @@ and **OFF by default**.
 
 - Dashboard and stream browser on `127.0.0.1:8080`.
 - Native status/control API on `127.0.0.1:4711`.
-- Remote dashboard and received-HLS access require explicit authentication.
+- Dashboard, API and received-HLS access are localhost-only in 9.1.0-rc.2.
+  LAN/remote access is postponed to a later version.
+- Legacy pairing/remote routes fail closed and the remote launcher is not
+  shipped in the rc.2 package.
 - Port 8080 is never exposed automatically through UPnP.
+- Automatic updating is disabled. No updater executable or installer is
+  packaged; updates are manual, after a profile/download backup and with the
+  rollback procedure in the release notes.
 - Request limits, path validation, signed chunks and protocol capability
   checks fail closed.
 - Release artifacts include file hashes and build provenance.
@@ -115,7 +124,7 @@ through Kad. This does not make either endpoint anonymous by itself.
 
 The 8.1 control tunnel hides the viewer from the broadcaster and Kad search
 path, but its production circuit has one relay hop: the exit can identify the
-viewer, and the media path can still be direct. The 9.1.0 beta therefore makes
+viewer, and the media path can still be direct. The 9.1.0 candidate therefore makes
 no claim of strong anonymity, universal High ID, IPv6 support through every
 ISP/router combination or traversal of every NAT.
 
@@ -125,12 +134,13 @@ ISP/router combination or traversal of every NAT.
 |---|---:|---|---|
 | eMule client | 4662 | TCP | Inbound P2P |
 | eMule/Kad | 4672 | UDP | Kad and UDP transport |
-| Native WebServer/API | 4711 | TCP | Local control by default |
-| eSE dashboard | 8080 | TCP | Local by default; never auto-mapped |
+| Native WebServer/API | 4711 | TCP | Loopback only in rc.2 |
+| eSE dashboard | 8080 | TCP | Loopback only in rc.2; never auto-mapped |
 | RTMP ingest | 1935 | TCP | Needed remotely only when OBS is on another PC |
 | LAN discovery | 5354 | UDP multicast | TTL 1; local subnet only |
 
-Only expose the dashboard, API or RTMP ports when the use case requires it.
+Do not forward ports 4711 or 8080: remote dashboard/API access is not part of
+9.1.0-rc.2. Expose RTMP only when OBS intentionally runs on another PC.
 
 ## Build from source
 
@@ -151,7 +161,7 @@ For a local developer build:
 
 ```powershell
 .\tools\build_all.ps1 `
-  -ReleaseTag v0.70b-eSE9.1.0-beta.2 `
+  -ReleaseTag v0.70b-eSE9.1.0-rc.2 `
   -AllowDirty `
   -MaxCpuCount 1
 ```
@@ -159,7 +169,9 @@ For a local developer build:
 `-AllowDirty` is a development override. Release artifacts must be built from a
 clean tagged commit without that switch. The full pipeline runs preflight,
 core tests, C++ and Node builds, integration tests, language builds,
-deterministic packaging and package smoke tests.
+pinned-input packaging, manifest verification and package smoke tests. The
+candidate ZIP is identified by its recorded SHA-256; byte-for-byte
+reproducibility is not claimed.
 
 Artifacts are written under:
 
@@ -181,7 +193,7 @@ Run the complete local test set with:
 | Document | Purpose |
 |---|---|
 | [User guide](docs/USER_GUIDE.md) | Install, watch, broadcast and troubleshoot |
-| [Beta release notes](docs/RELEASE_NOTES_v9.1.0-beta.2.md) | IPv6/Kad6 changes, evidence, safety defaults, limitations and rollback |
+| [RC.2 release notes](docs/RELEASE_NOTES_v9.1.0-rc.2.md) | IPv6 fallback changes, qualification gates, safety limits and rollback |
 | [Architecture](ARCHITECTURE.md) | Runtime processes, data flow and code layout |
 | [Changes from eMule 0.70b](CHANGES_FROM_EMULE_0.70b.md) | Implemented fork changes |
 | [Protocol registry](docs/protocol/PROTOCOL_REGISTRY.md) | Fork wire namespaces and compatibility rules |
@@ -196,7 +208,8 @@ eMule and this fork are licensed under the
 - Original client: [eMule Project](https://www.emule-project.net/).
 - Native dependencies include CryptoPP, mbedTLS, miniupnpc, libutp, zlib,
   libpng, id3lib, CxImage and ResizableLib.
-- The portable runtime includes Node.js, FFmpeg and packaged npm modules.
+- The portable runtime includes an embedded Node.js runtime, FFmpeg/ffprobe and
+  hls.js 1.6.16.
 
 Downstream distributors must preserve the GPL notices and the attributions in
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

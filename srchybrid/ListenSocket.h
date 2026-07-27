@@ -50,6 +50,7 @@ public:
 	void	WaitForOnConnect();
 	void	ResetTimeOutTimer();
 	bool	CheckTimeOut();
+	bool	IsConnectRetryPending() const	{ return m_nOnConnect == SS_Half; }
 	virtual void Safe_Delete();
 	//virtual void Close()				{ CAsyncSocketEx::Close(); }
 
@@ -72,6 +73,10 @@ protected:
 	void	Delete_Timed();
 
 	void	 OnError(int nErrorCode);
+	bool	 IsDirectTransportConfigured() const;
+	bool	 HasIPv4FallbackRoute() const;
+	bool	 IsIPv6FallbackDue(DWORD now) const;
+	bool	 TryIPv4Fallback(int nV6Error, LPCTSTR pszTrigger);
 
 	virtual bool PacketReceived(Packet *packet);
 
@@ -85,6 +90,8 @@ protected:
 	uint32	m_nOnConnect;
 	bool	deletethis;
 	bool	m_bPortTestCon;
+	bool	m_bIPv6FallbackArmed;
+	DWORD	m_dwIPv6FallbackStarted;
 	CUtpSocket* m_pUtpLayer;  // eSE: uTP transport layer (owned by CAsyncSocketEx layer chain)
 };
 

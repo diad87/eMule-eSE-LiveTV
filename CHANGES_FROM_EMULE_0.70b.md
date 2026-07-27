@@ -41,8 +41,7 @@ LiveTV discovery uses several complementary mechanisms:
 - a local cache of recently seen streams;
 - direct or endpoint-free `ed2k://|live|...|/` links.
 
-The packaged `nodes.dat` is pinned and structurally verified. Runtime download
-of a mutable third-party bootstrap file is disabled by default.
+The packaged `nodes.dat` input is pinned and structurally verified.
 
 ## Web dashboard
 
@@ -53,12 +52,13 @@ The release includes a packaged Node.js dashboard server:
 - local HLS.js playback without a CDN dependency;
 - status, diagnostics and metrics views;
 - first-run and network configuration;
-- authenticated remote dashboard and received-HLS access;
+- localhost-only dashboard, API proxy and received-HLS access in 9.1.0-rc.2;
 - native API proxying with bounded responses and timeouts.
 
 `emule.exe` starts `ese-server.exe` when the eSE toolbar action is used. The
 dashboard listens on port 8080 and proxies native operations to the eMule
-WebServer on port 4711.
+WebServer on port 4711. Both HTTP surfaces bind to loopback in 9.1.0-rc.2;
+LAN/remote access is postponed.
 
 ## Encoding and media handling
 
@@ -128,7 +128,7 @@ Privacy limits are explicit:
 First-party hardening includes:
 
 - loopback-first API boundaries;
-- explicit authentication for remote dashboard/HLS access;
+- localhost-only dashboard/API/HLS binding for the 9.1.0-rc.2 package;
 - removal of automatic dashboard UPnP exposure;
 - HLS path validation;
 - bounded proxy responses and request timeouts;
@@ -138,6 +138,10 @@ First-party hardening includes:
 - capability checks before experimental dispatch;
 - CSPRNG-backed identity and nonce generation;
 - crash dump support.
+
+Automatic updating is disabled for 9.1.0-rc.2. No updater executable or
+installer is packaged or invoked; update and rollback are manual, with an
+explicit profile/download backup.
 
 ## Native reachability libraries
 
@@ -189,7 +193,9 @@ The repository adds:
 - package and executable self-tests;
 - GitHub Actions build and CodeQL workflows.
 
-See [`tests/README.md`](tests/README.md) for local commands.
+See the
+[`tests/README.md` source guide](https://github.com/diad87/eMule-eSE-LiveTV/blob/main/tests/README.md)
+for local commands.
 
 ## Third-party components
 

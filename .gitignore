@@ -58,7 +58,10 @@ srchybrid/eSE/emule_paths.json
 srchybrid/eSE/telegram.json
 srchybrid/eSE/debug.txt
 srchybrid/eSE/err.txt
+srchybrid/eSE/ese_server.pid
 srchybrid/eSE/*.bak
+srchybrid/eSE/eSE-live/live/*
+!srchybrid/eSE/eSE-live/live/.gitkeep
 
 # Temporary/legacy vendor folders
 mbedtls_old_2.7.0/

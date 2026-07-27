@@ -130,7 +130,7 @@ function startServer(opts) {
       });
     });
 
-    tunnelServer.listen(port, () => {
+    tunnelServer.listen(port, '127.0.0.1', () => {
       tunnelStatus = 'listening';
       console.log('[eSE Tunnel] WebSocket tunnel on port', port);
     });

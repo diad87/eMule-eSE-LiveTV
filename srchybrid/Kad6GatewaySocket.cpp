@@ -50,9 +50,12 @@ bool CKad6ExitSocket::SetKad6ReadPaused(bool paused){
 
 void CKad6ExitSocket::OnConnect(int error){
     const std::uint64_t stream=m_streamId;
-    if(error!=0&&stream)CLiveTunnel::Get().OnK6ExitSocketConnect(stream,this,error);
     CClientReqSocket::OnConnect(error);
-    if(error==0&&stream)CLiveTunnel::Get().OnK6ExitSocketConnect(stream,this,0);
+    // A superseded IPv6 error is not the result of this logical dial. The base
+    // keeps SS_Half while its one-shot IPv4 retry is pending; report only the
+    // final success or error delivered by that attempt.
+    if(IsConnectRetryPending())return;
+    if(stream)CLiveTunnel::Get().OnK6ExitSocketConnect(stream,this,error);
 }
 
 void CKad6ExitSocket::OnClose(int error){

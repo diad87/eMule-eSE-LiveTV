@@ -92,6 +92,110 @@ Candidate-specific V91 harnesses read `BUILD_INFO.txt` through
 `Get-LabCandidateInfo`. Pass `-Commit` to pin an expected 40-character commit;
 dirty packages and mismatched identities are rejected before a test starts.
 
+The supporting source/local reruns additionally require the repository to be
+the exact package commit with no tracked or untracked worktree changes, both
+before and after execution. Keep `OutputRoot` outside the repository:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\lab\test_v91_safe_core.ps1 `
+  -CandidatePackage C:\tmp\v91-package -RepoRoot $PWD `
+  -OutputRoot C:\tmp\v91-safe-core -Commit <40-character-commit>
+
+powershell -ExecutionPolicy Bypass `
+  -File tools\lab\test_v91_local_executables.ps1 `
+  -CandidatePackage C:\tmp\v91-package `
+  -TestRoot "$PWD\srchybrid\tests\build" -RepoRoot $PWD `
+  -OutputRoot C:\tmp\v91-local-executables -Commit <40-character-commit>
+
+powershell -ExecutionPolicy Bypass `
+  -File tools\lab\test_v91_prebuilt_libraries.ps1 `
+  -CandidatePackage C:\tmp\v91-package -RepoRoot $PWD `
+  -OutputRoot C:\tmp\v91-prebuilt-libraries -Commit <40-character-commit>
+```
+
+These are supporting executions. Location constraints do not prove how an
+existing executable was built; the clean compiler/linker pipeline remains the
+authoritative build-provenance gate.
+
+For `V91-K03`, the downgrade target is not operator-selectable. The harness
+accepts only `v0.70b-eSE8.1.0` with the versioned canonical hashes:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File tools\lab\test_v91_k03_downgrade.ps1 `
+  -CandidatePackage C:\tmp\v91-package `
+  -PreviousPackage C:\tmp\v0.70b-eSE8.1.0\package `
+  -OutputRoot C:\tmp\v91-k03 -Commit <40-character-commit> `
+  -ExpectedPreviousEmuleSha256 `
+    3F5F9AD4F305DE15BF345E11A5FE1652969B07AFCDDE136B9277989415CE4187 `
+  -ExpectedPreviousBuildInfoSha256 `
+    26FC4348044868FC65C04F73E78CAFE966D38CB2178C0C093944164C7AAFDFCE
+```
+
+It saves a Kad6-only candidate profile, opens an isolated copy with the pinned
+old package, and requires `NetworkKademlia=0` before/after, a live old process,
+and continuously false `kad_connected` samples for at least 30 seconds. This is
+the minimum observable evidence that Kad2 did not start or reactivate.
+
+### Two-host I03, I04 and D01 campaigns
+
+`V91-I03`, `V91-I04` and `V91-D01` are paired-role harnesses. Start the
+Coordinator role on the downloader first. It creates a nonce-scoped directory
+under the shared `CoordinationRoot` and prints the complete command to run on
+the controlled Peer/Source host. Run that printed command on the second host;
+do not invent or reuse a nonce from another campaign.
+
+All three harnesses require the exact clean candidate package, its commit and
+`emule.exe` SHA-256, two elevated PowerShell sessions, two distinct physical
+Windows hosts and direct native public IPv4/IPv6 routes. Tailscale, WARP,
+VPNs, tunnels, proxies and relays may carry the coordination files but cannot
+be the measured data path. A missing physical prerequisite returns
+`BLOCKED`; once the complete fixture is valid, contradictory product evidence
+returns `FAIL`.
+
+```powershell
+# Route policy: Auto must use IPv4; Preferred must use IPv6.
+powershell -ExecutionPolicy Bypass `
+  -File tools\lab\test_v91_i03_route_selection.ps1 `
+  -Role Coordinator -PackagePath C:\tmp\v91-package `
+  -OutputRoot C:\tmp\v91-i03 -CoordinationRoot \\labshare\v91 `
+  -Commit <40-character-commit> -ExpectedEmuleSha256 <sha256> `
+  -PeerIPv4 <peer-public-v4> -PeerLocalIPv4 <peer-adapter-v4> `
+  -PeerIPv6 <peer-global-v6> -ControlledPeerAcknowledged
+
+# Silent IPv6 DROP: one bounded retry over the retained real IPv4 route.
+powershell -ExecutionPolicy Bypass `
+  -File tools\lab\test_v91_i04_fallback.ps1 `
+  -Role Coordinator -PackagePath C:\tmp\v91-package `
+  -OutputRoot C:\tmp\v91-i04 -CoordinationRoot \\labshare\v91 `
+  -Commit <40-character-commit> -ExpectedEmuleSha256 <sha256> `
+  -PeerIPv4 <peer-public-v4> -PeerLocalIPv4 <peer-adapter-v4> `
+  -PeerIPv6 <peer-global-v6> -ControlledPeerAcknowledged
+
+# Controlled A+AAAA source: exact AAAA-side silent DROP; A completes the transfer.
+powershell -ExecutionPolicy Bypass `
+  -File tools\lab\test_v91_d01_dual_dns.ps1 `
+  -Role Coordinator -PackagePath C:\tmp\v91-package `
+  -PackageZipPath C:\tmp\eSE-v91-rc2-x64.zip `
+  -OutputRoot C:\tmp\v91-d01 -CoordinationRoot \\labshare\v91 `
+  -Commit <40-character-commit> -ExpectedEmuleSha256 <sha256> `
+  -ExpectedPackageZipSha256 <zip-sha256> -Hostname <controlled-hostname> `
+  -SourcePublicIPv4 <source-public-v4> `
+  -SourceLocalIPv4 <source-adapter-v4> -SourceIPv6 <source-global-v6> `
+  -CoordinatorPublicIPv4 <coordinator-public-v4> `
+  -CoordinatorLocalIPv4 <coordinator-adapter-v4> `
+  -CoordinatorIPv6 <coordinator-global-v6> `
+  -ControlledFixtureAcknowledged
+```
+
+I04 changes firewall and packet-capture state only on the controlled peer and
+rolls it back in `finally`. D01 additionally requires an exact, stable DNS
+answer containing one A and one AAAA record, the A-side forward to the Source
+TCP listener, an exact reversible IPv6 `DROP` on that controlled Source, and
+the original candidate ZIP. Its packet evidence is accepted only when the
+candidate PID, physical adapter, full 5-tuple and time window all agree. Never
+point either harness at an uncontrolled third-party peer.
+
 For the normative `V91-I02` LiveTV case, use the dedicated monitor after the
 viewer has joined the broadcaster directly:
 
@@ -149,8 +253,25 @@ powershell -ExecutionPolicy Bypass -File tools\lab\write_v91_campaign_ledger.ps1
 
 `case-results.json` is an array (or an object containing `cases`) with `id`,
 `status`, `executed`, `execution_state`, `reason`, and evidence paths relative
-to `EvidenceRoot`. Missing cases remain `BLOCKED`; the ledger returns `GO` only
-with all 27 cases at `PASS`.
+to `EvidenceRoot`. The bundle or every adjudicated result must bind the exact
+candidate commit and `emule.exe` SHA-256; flat
+`candidate_commit`/`candidate_binary_sha256` and the harnesses' nested
+`candidate.commit`/`candidate.expected_emule_sha256` forms are accepted.
+A `PASS` additionally requires `executed=true`, `execution_state=COMPLETE`, a
+non-empty reason and at least one JSON evidence artifact carrying that same
+exact identity. Missing cases remain `BLOCKED`; the ledger returns `GO` only
+with all 27 cases at admissible `PASS`.
+
+Build the defensive final report from that ledger with:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File tools\lab\write_v91_campaign_report.ps1 `
+  -EvidenceRoot C:\tmp\v91-rc-evidence
+```
+
+The report generator independently verifies all 27 unique IDs, recomputes
+counts and rejects a stale or edited `gate_decision`.
 
 ## eSE 9.0 local runtime gate
 

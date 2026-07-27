@@ -10,6 +10,67 @@ function Get-LabFullPath {
     return [IO.Path]::GetFullPath($Path)
 }
 
+function Resolve-LabContainedFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    $resolvedRoot = (Resolve-Path -LiteralPath $Root).Path
+    $volumeRoot = [IO.Path]::GetPathRoot($resolvedRoot)
+    if ($resolvedRoot.Length -gt $volumeRoot.Length) {
+        $resolvedRoot = $resolvedRoot.TrimEnd([char[]]@('\', '/'))
+    }
+    $rootItem = Get-Item -LiteralPath $resolvedRoot -Force
+    if (($rootItem.Attributes -band
+            [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Containment root cannot be a reparse point: $resolvedRoot"
+    }
+    if ([string]::IsNullOrWhiteSpace($RelativePath) -or
+        [IO.Path]::IsPathRooted($RelativePath) -or
+        $RelativePath.Contains(':')) {
+        throw "Contained path must be a plain relative file path: $RelativePath"
+    }
+
+    $segments = @($RelativePath -split '[\\/]' | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_)
+    })
+    if ($segments.Count -eq 0 -or @($segments | Where-Object {
+            $_ -eq '.' -or $_ -eq '..'
+        }).Count -gt 0) {
+        throw "Contained path contains an unsafe segment: $RelativePath"
+    }
+
+    $candidate = [IO.Path]::GetFullPath(
+        (Join-Path $resolvedRoot $RelativePath))
+    $rootPrefix = $resolvedRoot
+    if (-not $rootPrefix.EndsWith(
+            [string][IO.Path]::DirectorySeparatorChar)) {
+        $rootPrefix += [IO.Path]::DirectorySeparatorChar
+    }
+    if (-not $candidate.StartsWith(
+            $rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Contained path escaped its root: $RelativePath"
+    }
+
+    $current = $resolvedRoot
+    foreach ($segment in $segments) {
+        $current = Join-Path $current $segment
+        if (-not (Test-Path -LiteralPath $current)) {
+            throw "Contained path does not exist: $RelativePath"
+        }
+        $item = Get-Item -LiteralPath $current -Force
+        if (($item.Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Contained path crosses a reparse point: $RelativePath"
+        }
+    }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        throw "Contained path is not a file: $RelativePath"
+    }
+    return $candidate
+}
+
 function New-LabDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -83,6 +144,51 @@ function Get-LabCandidateInfo {
         emule_sha256 = Get-LabSha256 -Path $binaryPath
         ese_server_sha256 = Get-LabSha256 -Path (Join-Path $package 'ese-server.exe')
         build_info_sha256 = Get-LabSha256 -Path $buildInfoPath
+    }
+}
+
+function Get-LabExactSourceInfo {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[0-9a-fA-F]{40}$')][string]$ExpectedCommit
+    )
+
+    $root = (Resolve-Path -LiteralPath $RepoRoot).Path
+    $inside = ((@(
+        & git -C $root rev-parse --is-inside-work-tree 2>$null
+    )) -join '').Trim()
+    if ($LASTEXITCODE -ne 0 -or $inside -ne 'true') {
+        throw "Source root is not a Git worktree: $root"
+    }
+    $head = ((@(& git -C $root rev-parse HEAD)) -join '').Trim()
+    if ($LASTEXITCODE -ne 0 -or
+        $head -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "Cannot resolve the source commit: $root"
+    }
+    $worktreeChanges = @(
+        & git -C $root status --porcelain=v1 --untracked-files=all `
+            --ignore-submodules=none
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "Cannot inspect source worktree state: $root"
+    }
+    $matchesCandidate =
+        $head -eq $ExpectedCommit -and $worktreeChanges.Count -eq 0
+    if (-not $matchesCandidate) {
+        throw (
+            "Source is not the exact clean candidate commit: " +
+            "head=$head expected=$ExpectedCommit " +
+            "worktree_changes=$($worktreeChanges.Count)"
+        )
+    }
+
+    return [pscustomobject][ordered]@{
+        repo_root_sha256 = Get-LabStringSha256 -Value $root
+        head_commit = $head.ToLowerInvariant()
+        worktree_changes = $worktreeChanges.Count
+        untracked_files_gating = $true
+        exact_candidate_source = $true
     }
 }
 

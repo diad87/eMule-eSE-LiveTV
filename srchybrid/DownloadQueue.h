@@ -29,6 +29,42 @@ class CED2KFileLink;
 class CAddress;
 struct SUnresolvedHostname;
 
+struct SSourceResolutionCandidateEvent
+{
+	CStringA family;
+	CStringA endpointSha256;
+	CStringA outcome;
+	CStringA sourceOrigin;
+};
+
+struct SSourceResolutionEvent
+{
+	SSourceResolutionEvent()
+		: sequence(0)
+		, port(0)
+		, resolvedIPv4Count(0)
+		, resolvedIPv6Count(0)
+		, materializedIPv4Count(0)
+		, materializedIPv6Count(0)
+		, simultaneouslyRetained(false)
+	{
+	}
+
+	uint64 sequence;
+	CStringA hostnameSha256;
+	CStringA fileEd2kHash;
+	uint16 port;
+	CStringA resolverResult;
+	uint32 resolvedIPv4Count;
+	uint32 resolvedIPv6Count;
+	CStringA resolvedEndpointSetSha256;
+	uint32 materializedIPv4Count;
+	uint32 materializedIPv6Count;
+	CStringA materializedEndpointSetSha256;
+	bool simultaneouslyRetained;
+	std::vector<SSourceResolutionCandidateEvent> candidates;
+};
+
 namespace Kademlia
 {
 	class CUInt128;
@@ -64,6 +100,7 @@ class CDownloadQueue
 {
 	friend class CAddFileThread;
 	friend class CServerSocket;
+	friend class CSourceHostnameResolveWnd;
 
 public:
 	CDownloadQueue();
@@ -110,6 +147,8 @@ public:
 	mutable CCriticalSection m_csFilelistMainThrdWriteOtherThrdsRead;
 	bool	WithFileByID(const uchar *fileHash, std::function<void(CPartFile*)> fn);
 	bool	HasFileByID(const uchar *fileHash) const;
+	void	GetSourceResolutionEvents(uint64 afterSequence, uint64& currentSequence,
+		std::vector<SSourceResolutionEvent>& events) const;
 
 	void	StartNextFileIfPrefs(int cat);
 	void	StartNextFile(int cat = -1, bool force = false);
@@ -181,11 +220,15 @@ protected:
 	bool	SendGlobGetSourcesUDPPacket(CSafeMemFile &data, bool bExt2Packet, uint32 nFiles, uint32 nIncludedLargeFiles);
 
 private:
+	void	RecordSourceResolutionEvent(const SSourceResolutionEvent& event);
 	bool	CompareParts(POSITION pos1, POSITION pos2);
 	void	SwapParts(POSITION pos1, POSITION pos2);
 	void	HeapSort(UINT first, UINT last);
 	CTypedPtrList<CPtrList, CPartFile*> filelist;
 	CTypedPtrList<CPtrList, CPartFile*> m_localServerReqQueue;
+	mutable CCriticalSection m_csSourceResolutionEvents;
+	std::vector<SSourceResolutionEvent> m_sourceResolutionEvents;
+	uint64	m_sourceResolutionSequence;
 
 	// By BadWolf - Accurate Speed Measurement
 	typedef struct

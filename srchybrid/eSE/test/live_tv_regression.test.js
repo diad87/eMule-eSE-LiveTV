@@ -200,13 +200,184 @@ test('hardware encoder selection proves the GPU can initialize and falls back sa
 
 test('package manifest includes every offline player asset', () => {
   const pkg = JSON.parse(read(eseRoot, 'package.json'));
+  const lock = JSON.parse(read(eseRoot, 'package-lock.json'));
+  for (const asset of pkg.pkg.assets) {
+    const wildcardAt = asset.search(/[*?]/);
+    const relativeRoot = wildcardAt < 0
+      ? asset
+      : asset.slice(0, wildcardAt).replace(/[\\/]+$/, '');
+    assert.ok(
+      fs.existsSync(path.join(eseRoot, relativeRoot)),
+      `package asset does not exist: ${asset}`
+    );
+  }
   assert.ok(pkg.pkg.assets.includes('eSE-live/vendor/hls.min.js'));
   assert.ok(pkg.pkg.assets.includes('eSE-live/vendor/hls.LICENSE'));
-  assert.ok(pkg.pkg.assets.includes('eSE_Remote.html'));
+  assert.deepEqual(
+    fs.readdirSync(path.join(eseRoot, 'eSE-live', 'live')),
+    ['.gitkeep']
+  );
+  assert.ok(!pkg.pkg.assets.includes('eSE_Remote.html'));
   assert.equal(pkg.dependencies['nat-upnp-2'], undefined);
   assert.match(pkg.scripts.build, /node22-win-x64/);
   assert.ok(pkg.devDependencies['@yao-pkg/pkg']);
   assert.equal(pkg.devDependencies.pkg, undefined);
+  assert.equal(pkg.license, 'GPL-2.0-only');
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages[''].version, pkg.version);
+  assert.equal(lock.packages[''].license, pkg.license);
+});
+
+test('release dashboard is loopback-only and legacy updates fail closed', () => {
+  const pkg = JSON.parse(read(eseRoot, 'package.json'));
+  const server = read(eseRoot, 'server.js');
+  const legacyPlayer = read(eseRoot, 'live_player_server.js');
+  const miscPages = read(eseRoot, 'pages', 'misc_pages.js');
+  const channelApi = read(eseRoot, 'eSE-live', 'channel_api.js');
+  const livePage = read(eseRoot, 'eSE-live', 'live_tv_page.js');
+  const notifier = read(eseRoot, 'eSE-live', 'update_notifier.js');
+  const webSocketTunnel = read(eseRoot, 'eSE-live', 'ws_tunnel.js');
+  const packageScript = read(repoRoot, 'build_package.ps1');
+  const buildAll = read(repoRoot, 'tools', 'build_all.ps1');
+  const languageCheck = read(repoRoot, 'tools', 'check_languages.ps1');
+  const updateCheck = read(repoRoot, 'tools', 'update_check.ps1');
+  const preflight = read(repoRoot, 'tools', 'release_preflight.ps1');
+
+  assert.match(server, /require\('\.\/package\.json'\)\.version/);
+  assert.match(miscPages, /require\('\.\.\/package\.json'\)\.version/);
+  assert.doesNotMatch(server, /eSE v6\.2/);
+  assert.doesNotMatch(miscPages, /version:\s*'7\.5\.2'/);
+  assert.match(server, /server\.listen\(PORT,\s*'127\.0\.0\.1'/);
+  assert.match(legacyPlayer, /server\.listen\(PORT,\s*'127\.0\.0\.1'/);
+  assert.match(
+    webSocketTunnel,
+    /tunnelServer\.listen\(port,\s*'127\.0\.0\.1'/
+  );
+  assert.match(server, /lanDiscovery\.start\s*\(\)/);
+  assert.match(server, /advertises the native eMule peer port/);
+
+  assert.match(notifier, /UPDATES_DISABLED\s*=\s*true/);
+  assert.doesNotMatch(notifier, /child_process|powershell(?:\.exe)?/i);
+  assert.doesNotMatch(channelApi, /api\.github\.com|https\.get\s*\(/);
+  assert.match(channelApi, /manual_updates_only/);
+  assert.match(
+    channelApi,
+    /p === '\/api\/live\/tunnel\/start'[\s\S]{0,200}p === '\/api\/live\/tunnel\/stop'[\s\S]{0,200}p === '\/api\/live\/tunnel\/status'[\s\S]{0,300}jsonResponse\(res,\s*410,[\s\S]{0,200}reason:\s*'remote_access_postponed'/
+  );
+  assert.doesNotMatch(
+    channelApi,
+    /jsonResponse\(res,\s*200,\s*wsTunnel\.(?:startServer|stopServer|getStatus)/
+  );
+  assert.doesNotMatch(
+    livePage,
+    /\/api\/(?:eSE\/update\/check|live\/update_(?:status|check|run))/
+  );
+
+  assert.doesNotMatch(packageScript, /update_check\.ps1/);
+  assert.match(packageScript, /Copy-GitTrackedTopLevelFiles/);
+  assert.match(packageScript, /Assert-GitTrackedSource/);
+  assert.match(packageScript, /Assert-ZipMatchesPackage/);
+  assert.doesNotMatch(packageScript, /function\s+Copy-Tree/);
+  assert.match(buildAll, /\$Skip\.Count\s+-gt\s+0\s+-and\s+-not\s+\$AllowDirty/);
+  assert.match(buildAll, /\$DryRun\s+-and\s+-not\s+\$AllowDirty/);
+  assert.match(buildAll, /Assert-OfficialHead -Context "before \$Name"/);
+  assert.match(buildAll, /Assert-OfficialHead -Context "after \$Name"/);
+  assert.match(buildAll, /Development pipeline complete \(NOT RELEASABLE\)/);
+  assert.match(buildAll, /Get-NetTCPConnection[\s\S]{0,500}127\.0\.0\.1/);
+  assert.match(buildAll, /srchybrid\\lang\\x64\\Dynamic/);
+  assert.match(buildAll, /ls-files -- [`\s]+[\r\n]*\s*'srchybrid\/lang\/\*\.vcxproj'/);
+  assert.match(buildAll, /Assert-NoReparseTree -Root \$languageGeneratedRoot/);
+  assert.match(buildAll, /Write-ReleaseLanguageStamp/);
+  assert.match(
+    packageScript,
+    /check_languages\.ps1'[\s\S]{0,250}\$langDlls/
+  );
+  assert.match(packageScript, /Assert-NoHiddenOrSystemEntries -Root \$packageDir/);
+  assert.match(languageCheck, /Runtime language DLLs not declared in I18n\.cpp/);
+  assert.match(preflight, /Assert-ReleaseLanguageStamp/);
+  assert.doesNotMatch(updateCheck, /Stop-Process|Expand-Archive|Invoke-WebRequest/);
+  assert.match(updateCheck, /Automatic installation is disabled/);
+  assert.match(preflight, /package-lock\.json/);
+  assert.match(preflight, /GPL-2\.0-only/);
+  assert.equal(pkg.version, '9.1.0-rc.2');
+});
+
+test('postponed dashboard remote access is inert and leaks no pairing state', () => {
+  const miscPages = require('../pages/misc_pages');
+  const connectPage = require('../pages/connect_page');
+  const appPage = require('../pages/app_page');
+  const systemRoutes = require('../routes/system_routes');
+  const request = { method: 'GET', headers: {} };
+
+  miscPages.init({ HW_ENCODER: 'cpu' });
+  for (const pathname of [
+    '/api/connect-seed', '/manifest.json', '/go', '/go/legacy-id',
+    '/remote', '/qr'
+  ]) {
+    const response = fakeResponse();
+    assert.equal(
+      miscPages.handle(new URL('http://localhost:8080' + pathname), request, response),
+      true
+    );
+    assert.equal(response.statusCode, 410, pathname);
+    assert.equal(JSON.parse(response.body).reason, 'remote_access_postponed');
+    assert.equal(response.headers['Access-Control-Allow-Origin'], undefined);
+  }
+
+  for (const [handler, pathname] of [
+    [connectPage, '/connect'],
+    [connectPage, '/pair/ABC123'],
+    [appPage, '/app'],
+    [systemRoutes, '/api/tunnel/start'],
+    [systemRoutes, '/api/tunnel/status'],
+        [systemRoutes, '/api/tunnel/stop']
+  ]) {
+    const response = fakeResponse();
+    assert.equal(
+      handler.handle(new URL('http://localhost:8080' + pathname), request, response),
+      true
+    );
+    assert.equal(response.statusCode, 410, pathname);
+    assert.equal(JSON.parse(response.body).reason, 'remote_access_postponed');
+  }
+
+  const status = fakeResponse();
+  assert.equal(
+    miscPages.handle(new URL('http://localhost:8080/api/status'), request, status),
+    true
+  );
+  assert.equal(status.statusCode, 200);
+  assert.equal(status.headers['Access-Control-Allow-Origin'], undefined);
+  assert.equal(JSON.parse(status.body).hasPublicUrl, false);
+  assert.equal(JSON.parse(status.body).hasTunnel, false);
+
+  const tunnel = read(eseRoot, 'tunnel.js');
+  assert.match(tunnel, /REMOTE_ACCESS_DISABLED\s*=\s*true/);
+  assert.match(tunnel, /function publishUrl\(\)\s*\{\s*return false;/);
+  assert.doesNotMatch(tunnel, /require\(['"]https['"]\)|setInterval\s*\(/);
+
+  const packagedRuntime = [
+    'tunnel.js', 'player.js', '_player_bundle.js',
+    path.join('pages', 'misc_pages.js'),
+    path.join('pages', 'connect_page.js'),
+    path.join('pages', 'app_page.js'),
+    path.join('routes', 'system_routes.js'),
+    path.join('shared', 'navbar.js')
+  ].map(relative => read(eseRoot, relative)).join('\n');
+  assert.doesNotMatch(
+    packagedRuntime,
+    /ntfy\.sh|api\.telegram\.org|api\.qrserver\.com|eSE_Remote\.html/
+  );
+
+  const pkg = JSON.parse(read(eseRoot, 'package.json'));
+  const packageScript = read(repoRoot, 'build_package.ps1');
+  const mainPage = read(eseRoot, 'pages', 'main_page.js');
+  const navbar = read(eseRoot, 'shared', 'navbar.js');
+  assert.ok(!pkg.pkg.assets.includes('eSE_Remote.html'));
+  assert.doesNotMatch(packageScript, /['"]eSE_Remote\.html['"]/);
+  assert.doesNotMatch(packageScript, /['"]hero_ui\.js['"]/);
+  assert.doesNotMatch(mainPage, /href="\/connect"/);
+  assert.doesNotMatch(navbar, /href="\/connect"|ICONS\.connect|connect:/);
 });
 
 test('restarting the dashboard does not delete C++-owned HLS output', () => {
@@ -436,6 +607,7 @@ test('download session expiry is reported as failure', () => {
 
 test('IPv6, capability and share-link regressions remain guarded', () => {
   const base = read(repoRoot, 'srchybrid', 'BaseClient.cpp');
+  const prefs = read(repoRoot, 'srchybrid', 'Preferences.cpp');
   const prober = read(repoRoot, 'srchybrid', 'FirewallProberV6.cpp');
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
   const client = read(repoRoot, 'srchybrid', 'UpdownClient.h');
@@ -448,11 +620,82 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   const liveManager = read(repoRoot, 'srchybrid', 'LiveStreamManager.cpp');
   const liveManagerHeader = read(repoRoot, 'srchybrid', 'LiveStreamManager.h');
   const listenSocket = read(repoRoot, 'srchybrid', 'ListenSocket.cpp');
+  const clientList = read(repoRoot, 'srchybrid', 'ClientList.cpp');
+  const downloadQueue = read(repoRoot, 'srchybrid', 'DownloadQueue.cpp');
+  const sourceResolutionPolicy = read(
+    repoRoot, 'srchybrid', 'SourceResolutionPolicy.h');
   const addressHeader = read(repoRoot, 'srchybrid', 'eMuleAI', 'Address.h');
   const address = read(repoRoot, 'srchybrid', 'eMuleAI', 'Address.cpp');
 
   assert.match(base, /IPv6-only endpoint has no validated native-v6 route/);
   assert.match(base, /!bNoCallbacks && !IsIPv6OnlyEndpoint\(\)/);
+  assert.match(base, /HasStableHelloRoute\([\s\S]{0,120}SupportsIPv6Wire\(\), HasV6DualStack\(\)/);
+  assert.match(base, /HasNetLabReachRoute\([\s\S]{0,180}IsEseNetLabActive\(\)[\s\S]{0,100}SupportsEseNetLabV1Target\(\)/);
+  assert.match(base, /const uint32 previousIPv4 = GetRealIPv4Endpoint\(\)/);
+  assert.match(base, /SetIP\(previousIPv4 != 0/);
+  assert.match(base,
+    /const uint32 otherIPv4 = other\.GetRealIPv4Endpoint\(\)[\s\S]{0,120}SetConnectIP\(otherIPv4\)/);
+  const netLabApplyStart = prefs.indexOf('void CPreferences::ApplyEseNetLabPreferenceState');
+  const netLabApplyEnd = prefs.indexOf('WORD CPreferences::GetWindowsVersion', netLabApplyStart);
+  assert.ok(netLabApplyStart >= 0 && netLabApplyEnd > netLabApplyStart,
+    'NetLab preference normalization must remain inspectable');
+  assert.doesNotMatch(prefs.slice(netLabApplyStart, netLabApplyEnd), /SetIPv6Mode\(/,
+    'NetLab consent must preserve the independent Off/Auto/Preferred transport choice');
+  assert.match(listenSocket,
+    /IsIPv6FallbackDue\(curTick\)[\s\S]{0,180}TryIPv4Fallback\(WSAETIMEDOUT/);
+  assert.match(listenSocket,
+    /TryIPv4Fallback[\s\S]{0,900}Close\(\)[\s\S]{0,300}Create\(AF_INET\)/);
+  assert.match(listenSocket,
+    /client->GetUpStartTime\(\), 4 \* CONNECTION_TIMEOUT/);
+  assert.match(listenSocket,
+    /GetTickCount\(\), deltimer, SEC2MS\(10\)/);
+  assert.doesNotMatch(
+    listenSocket.slice(
+      listenSocket.indexOf('bool CClientReqSocket::TryIPv4Fallback'),
+      listenSocket.indexOf('void CClientReqSocket::DbgAppendClientInfo')
+    ),
+    /new\s+CClientReqSocket/,
+    'the family retry must reuse the existing logical socket'
+  );
+  assert.match(clientList,
+    /HasElapsed\([\s\S]{0,100}cc\.dwInserted,\s*SEC2MS\(45\)\)/);
+  for (const field of [
+    'connecting_client_count',
+    'connecting_client_adds',
+    'connecting_client_high_water',
+    'connecting_client_duplicate_adds'
+  ]) {
+    assert.match(web, new RegExp(field),
+      `/api/status must retain ${field} for I04 adjudication`);
+  }
+  const statusStart = web.indexOf('// --- /api/status');
+  const localDiagnosticsStart = web.indexOf(
+    'if (Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK))', statusStart);
+  const localDiagnosticsEnd = web.indexOf(
+    'CKadKeepalive::Stats', localDiagnosticsStart);
+  assert.ok(statusStart >= 0 && localDiagnosticsStart > statusStart &&
+    localDiagnosticsEnd > localDiagnosticsStart,
+  'the /api/status loopback diagnostic boundary must remain inspectable');
+  const localDiagnostics = web.slice(localDiagnosticsStart, localDiagnosticsEnd);
+  assert.match(localDiagnostics, /user_hash/);
+  assert.match(localDiagnostics, /user_hash\\":null/);
+  assert.match(localDiagnostics, /connecting_client_count\\":null/);
+  assert.match(web, /\/api\/debug\/source-resolutions/);
+  assert.match(web, /ese\.debug\.source-resolutions\/v1/);
+  assert.match(web,
+    /source-resolutions[\s\S]{0,900}clientIP != htonl\(INADDR_LOOPBACK\)/);
+  assert.match(downloadQueue,
+    /if \(!ResolveSourceHostAddresses\([\s\S]{0,100}addresses\.swap\(legacyAddresses\)/,
+    'one modern DNS answer set must win instead of mixing two resolution instants');
+  assert.match(downloadQueue,
+    /RecordSourceResolutionEvent\(resolutionEvent\)/);
+  assert.match(downloadQueue,
+    /new CUpDownClient\(file, port, ipv4[\s\S]{0,220}SetSourceFrom\(SF_LINK\)/,
+    'IPv4 hostname-link candidates must retain link provenance');
+  assert.match(sourceResolutionPolicy,
+    /endpoint\.port >> 8[\s\S]{0,140}endpoint\.port & 0xff/);
+  assert.match(sourceResolutionPolicy,
+    /std::sort\(encodedEndpoints\.begin\(\), encodedEndpoints\.end\(\)\)/);
   assert.match(prober, /uni->DadState != IpDadStatePreferred/);
   assert.match(prober, /uni->SuffixOrigin == IpSuffixOriginRandom/);
   assert.match(prober, /first validated candidate wins/);

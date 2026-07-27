@@ -4596,6 +4596,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		|| (sURL.Left(11) == "/api/relay/")
 		|| (sURL.Left(9) == "/api/krp/")
 		|| (sURL.Left(13) == "/api/network/")
+		|| (sURL.Left(11) == "/api/debug/")
 		|| (sURL.Left(11) == "/api/ese/v9")
 		|| (sURL.Left(15) == "/api/ese/netlab")
 		|| (sURL == "/api/status")
@@ -4727,6 +4728,110 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
+	// --- /api/debug/source-resolutions?after={sequence} --------------------
+	// Local-only, bounded and privacy-preserving evidence for the D01
+	// dual-stack hostname-source gate. It exposes hashes and outcomes, never a
+	// hostname or address. A baseline sequence lets the harness attribute one
+	// injection without clearing process state.
+	if (sURL.Left(29) == "/api/debug/source-resolutions") {
+		const uint32 clientIP = Data.inadr.S_un.S_addr;
+		if (clientIP != htonl(INADDR_LOOPBACK)) {
+			CStringA json =
+				"{\"error\":\"forbidden\",\"hint\":\"this diagnostic is localhost-only\"}";
+			CStringA header;
+			header.Format(
+				"HTTP/1.1 403 Forbidden\r\n"
+				"Content-Type: application/json\r\n"
+				"Cache-Control: no-store\r\n"
+				"Content-Length: %d\r\n\r\n",
+				json.GetLength());
+			Data.pSocket->SendData(header, header.GetLength());
+			Data.pSocket->SendData(json, json.GetLength());
+			return;
+		}
+
+		uint64 afterSequence = 0;
+		const CString afterArg(_ParseURL(Data.sURL, _T("after")));
+		if (!afterArg.IsEmpty())
+			afterSequence = _tcstoui64(afterArg, NULL, 10);
+
+		uint64 currentSequence = 0;
+		std::vector<SSourceResolutionEvent> events;
+		if (theApp.downloadqueue != NULL) {
+			theApp.downloadqueue->GetSourceResolutionEvents(
+				afterSequence, currentSequence, events);
+		}
+
+		CStringA json;
+		json.Format(
+			"{\"schema\":\"ese.debug.source-resolutions/v1\","
+			"\"sequence\":%I64u,\"events\":[",
+			static_cast<unsigned __int64>(currentSequence));
+		for (size_t eventIndex = 0; eventIndex < events.size(); ++eventIndex) {
+			const SSourceResolutionEvent& event = events[eventIndex];
+			if (eventIndex != 0)
+				json += ',';
+			CStringA eventJson;
+			eventJson.Format(
+				"{\"sequence\":%I64u,"
+				"\"hostname_sha256\":\"%s\","
+				"\"file_ed2k_hash\":\"%s\","
+				"\"port\":%u,"
+				"\"resolver_result\":\"%s\","
+				"\"resolved\":{\"ipv4_count\":%u,\"ipv6_count\":%u,"
+				"\"endpoint_set_sha256\":\"%s\"},"
+				"\"materialized\":{\"ipv4_count\":%u,\"ipv6_count\":%u,"
+				"\"endpoint_set_sha256\":\"%s\","
+				"\"simultaneously_retained\":%s},"
+				"\"candidates\":[",
+				static_cast<unsigned __int64>(event.sequence),
+				(LPCSTR)EseJsonEscapeA(event.hostnameSha256),
+				(LPCSTR)EseJsonEscapeA(event.fileEd2kHash),
+				static_cast<unsigned>(event.port),
+				(LPCSTR)EseJsonEscapeA(event.resolverResult),
+				static_cast<unsigned>(event.resolvedIPv4Count),
+				static_cast<unsigned>(event.resolvedIPv6Count),
+				(LPCSTR)EseJsonEscapeA(event.resolvedEndpointSetSha256),
+				static_cast<unsigned>(event.materializedIPv4Count),
+				static_cast<unsigned>(event.materializedIPv6Count),
+				(LPCSTR)EseJsonEscapeA(event.materializedEndpointSetSha256),
+				event.simultaneouslyRetained ? "true" : "false");
+			json += eventJson;
+			for (size_t candidateIndex = 0;
+				candidateIndex < event.candidates.size(); ++candidateIndex)
+			{
+				const SSourceResolutionCandidateEvent& candidate =
+					event.candidates[candidateIndex];
+				if (candidateIndex != 0)
+					json += ',';
+				CStringA candidateJson;
+				candidateJson.Format(
+					"{\"family\":\"%s\",\"endpoint_sha256\":\"%s\","
+					"\"outcome\":\"%s\",\"source_origin\":\"%s\"}",
+					(LPCSTR)EseJsonEscapeA(candidate.family),
+					(LPCSTR)EseJsonEscapeA(candidate.endpointSha256),
+					(LPCSTR)EseJsonEscapeA(candidate.outcome),
+					(LPCSTR)EseJsonEscapeA(candidate.sourceOrigin));
+				json += candidateJson;
+			}
+			json += "]}";
+		}
+		json += "]}";
+
+		CStringA header;
+		header.Format(
+			"HTTP/1.1 200 OK\r\n"
+			"Content-Type: application/json\r\n"
+			"Cache-Control: no-store\r\n"
+			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
+			"X-Content-Type-Options: nosniff\r\n"
+			"Content-Length: %d\r\n\r\n",
+			json.GetLength());
+		Data.pSocket->SendData(header, header.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
 	// --- /api/status --- eSE Network health for React alerts (Fase 2)
 	if (sURL == "/api/status") {
 		CStringA json;
@@ -4735,6 +4840,32 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		if (theApp.m_pUPnPFinder && theApp.m_pUPnPFinder->GetImplementation()) {
 			TRISTATE ts = theApp.m_pUPnPFinder->GetImplementation()->ArePortsForwarded();
 			szUpnpFwd = (ts == TRIS_TRUE) ? "true" : (ts == TRIS_FALSE) ? "false" : "unknown";
+		}
+		// I03/I04 need stable identity and connecting-list evidence, but those
+		// diagnostics must never make the persistent eD2K identity observable
+		// to a remote dashboard session (including an authenticated guest).
+		// Keep the schema stable and expose values only to a loopback caller.
+		CStringA localDiagnosticJson;
+		if (Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK)) {
+			const CStringA userHashA = CT2A(md4str(thePrefs.GetUserHash()));
+			localDiagnosticJson.Format(
+				"\"user_hash\":\"%s\","
+				"\"connecting_client_count\":%ld,"
+				"\"connecting_client_adds\":%ld,"
+				"\"connecting_client_high_water\":%ld,"
+				"\"connecting_client_duplicate_adds\":%ld,",
+				(LPCSTR)userHashA,
+				theApp.clientlist ? theApp.clientlist->GetConnectingClientCount() : 0,
+				theApp.clientlist ? theApp.clientlist->GetConnectingClientAdds() : 0,
+				theApp.clientlist ? theApp.clientlist->GetConnectingClientHighWater() : 0,
+				theApp.clientlist ? theApp.clientlist->GetConnectingClientDuplicateAdds() : 0);
+		} else {
+			localDiagnosticJson =
+				"\"user_hash\":null,"
+				"\"connecting_client_count\":null,"
+				"\"connecting_client_adds\":null,"
+				"\"connecting_client_high_water\":null,"
+				"\"connecting_client_duplicate_adds\":null,";
 		}
 		CKadKeepalive::Stats ksKeepalive = CKadKeepalive::Instance().GetStats();  // R.2 telemetry snapshot
 		json.Format(
@@ -4751,6 +4882,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"\"kad6_connected\":%s,"
 			"\"kad6_verified_contacts\":%u,"
 			"\"ed2k_connected\":%s,"
+			"%s"
 			"\"hole_punch_attempts\":%u,"
 			"\"hole_punch_success\":%u,"
 			"\"hole_punch_sym_nat_fail\":%u,"
@@ -4768,6 +4900,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"\"keepalive_pongs_recv\":%u,"
 			"\"keepalive_supernodes\":%u,"
 			"\"netlab_consent\":\"%s\","
+			"\"netlab_advanced_consent\":\"%s\","
+			"\"netlab_contribution_consent\":\"%s\","
 			"\"netlab_enabled\":%s}",
 			thePrefs.GetUPnPCriticalError() ? "true" : "false",
 			thePrefs.GetUtpHolePunchEnabled() ? "true" : "false",
@@ -4782,6 +4916,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			Kademlia::CKademlia::IsKad6Connected() ? "true" : "false",
 			Kademlia::CKademlia::GetKad6VerifiedContacts(),
 			(theApp.serverconnect && theApp.serverconnect->IsConnected()) ? "true" : "false",
+			(LPCSTR)localDiagnosticJson,
 			CStatistics::m_dwHolePunchAttempts,
 			CStatistics::m_dwHolePunchSuccess,
 			CStatistics::m_dwHolePunchSymNATFail,
@@ -4800,6 +4935,10 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			ksKeepalive.supernodesActive,
 			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
 				thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided",
+			thePrefs.GetEseNetLabAdvancedConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
+				thePrefs.GetEseNetLabAdvancedConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided",
+			thePrefs.GetEseNetLabContributionConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
+				thePrefs.GetEseNetLabContributionConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided",
 			thePrefs.IsEseNetLabActive() ? "true" : "false"
 		);
 		CStringA header;

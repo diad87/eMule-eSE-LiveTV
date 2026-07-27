@@ -67,8 +67,7 @@ The discovery mechanisms complement one another:
 - **LAN multicast** uses `224.0.0.251:5354` with TTL 1.
 - **Local cache** retries recently seen streams during startup.
 
-The release package carries a pinned `nodes.dat`. Mutable third-party bootstrap
-downloads are disabled by default.
+The release package carries a pinned and structurally verified `nodes.dat`.
 
 ## Protocol compatibility
 
@@ -94,7 +93,9 @@ punch3, port prediction, relay, KRP and Kad6 public-exit paths remain disabled
 unless their individual preferences and safety conditions permit them.
 
 NetLab consent controls participation in bounded interoperability
-measurements. It is not a master switch for relay or bandwidth donation.
+measurements. It is not a master switch for ordinary IPv6/Kad6 transport,
+relay or bandwidth donation. In particular, toggling NetLab does not rewrite
+the independent IPv6 Off/Auto/Preferred choice.
 
 ## Privacy boundaries
 
@@ -113,9 +114,18 @@ the data path may remain direct. The beta does not claim strong anonymity.
 | 8080 | `ese-server.exe` | Dashboard, player and local HLS |
 | 1935 | FFmpeg/native orchestration | RTMP ingest |
 
-Local access is zero-setup. Remote dashboard and received-HLS access require
-explicit authentication. The dashboard is not automatically exposed with
-UPnP.
+For 9.1.0-rc.2 the API, dashboard and received-HLS HTTP surfaces bind to
+loopback only. LAN/remote dashboard access is deliberately postponed and is
+not a supported configuration for this candidate. The dashboard is never
+exposed with UPnP; legacy pairing/remote routes return `410` and the remote
+launcher is excluded from the package.
+
+Automatic updating is disabled in the release runtime. No updater executable
+or installer is packaged or invoked. The compatibility module is inert,
+performs no network/process action and returns `410` from its update routes. An
+update is a manual replacement of the application directory after backing up
+the active profile and download state; rollback restores that snapshot and the
+previous application directory.
 
 ## Source layout
 
@@ -163,5 +173,6 @@ dist\<release-tag>\
 └── eSE-LiveTV-<release-tag>-x64.zip.sha256
 ```
 
-Packaging verifies pinned inputs and refuses version, provenance or checksum
-drift.
+Packaging verifies pinned inputs, records exact build provenance and checks
+the per-file manifest plus the external ZIP checksum. The ZIP is frozen and
+identified by its SHA-256; byte-for-byte reproducibility is not claimed.

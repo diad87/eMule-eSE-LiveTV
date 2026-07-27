@@ -36,6 +36,7 @@
 #include "Server.h"
 #include "ClientCredits.h"
 #include "FirewallProberV6.h"   // v0.71 IPv6 Sprint 6 — in-band public v6 detection
+#include "IPv6RoutePolicy.h"
 #include "kademlia/kademlia/KadV2ModeSelector.h"
 #include "IPFilter.h"
 #include "Friend.h"
@@ -188,14 +189,19 @@ bool CUpDownClient::CanUseIPv6Direct() const
 	// means that the peer can parse IPv6 extensions, while DUALSTACK means its
 	// listener has actually observed an inbound native-v6 connection.  This
 	// avoids replacing a working legacy callback with an unverified v6 route.
+	// That current-HELLO route is supported v9.1 transport and is deliberately
+	// independent of NetLab. Only the cold Kad reach projection remains inside
+	// the bilateral measurement cohort.
 	// A native-v6 endpoint supplied by a known server is a separate route:
 	// it can be attempted directly without forging peer/Kad capability bits.
 	const CAddress localV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
 	const bool bV6Backoff = m_dwIPv6DirectFailed != 0
 		&& (::GetTickCount() - m_dwIPv6DirectFailed) < MIN2MS(5);
-	const bool bValidatedEseRoute = thePrefs.IsEseNetLabActive()
-		&& SupportsEseNetLabV1Target()
-		&& ((SupportsIPv6Wire() && HasV6DualStack()) || SupportsReachV6Inbound());
+	const bool bValidatedHelloRoute = IPv6RoutePolicy::HasStableHelloRoute(
+		SupportsIPv6Wire(), HasV6DualStack());
+	const bool bValidatedReachRoute = IPv6RoutePolicy::HasNetLabReachRoute(
+		SupportsReachV6Inbound(), thePrefs.IsEseNetLabActive(),
+		SupportsEseNetLabV1Target());
 	const bool bServerRoute = m_bServerIPv6Source && IsIPv6OnlyEndpoint();
 	const bool bCallbackRoute = m_bIPv6CallbackSource && HasIPv6Address();
 	const bool bLiveRoute = m_bLiveIPv6Source && HasIPv6Address();
@@ -210,7 +216,8 @@ bool CUpDownClient::CanUseIPv6Direct() const
 	const bool canUse = thePrefs.IsIPv6Enabled()
 		&& !bV6Backoff
 		&& (!proxy.bUseProxy || bIPv6CapableProxy)
-		&& (bServerRoute || bCallbackRoute || bLiveRoute || bDirectRoute || bValidatedEseRoute)
+		&& (bServerRoute || bCallbackRoute || bLiveRoute || bDirectRoute
+			|| bValidatedHelloRoute || bValidatedReachRoute)
 		// SOCKS5 and HTTP CONNECT carry the native IPv6 destination through
 		// an IPv4 proxy connection; only a direct route needs local public v6.
 		&& (bIPv6CapableProxy
@@ -255,8 +262,12 @@ void CUpDownClient::MergeReachabilityFrom(const CUpDownClient& other)
 			SetLiveIPv6Source();
 		if (other.IsDirectIPv6Source())
 			SetDirectIPv6Source();
-		if (other.GetConnectIP() != 0)
-			SetConnectIP(other.GetConnectIP());
+		// An inbound temporary client created from a native IPv6 socket stores
+		// a compatibility-only synthetic uint32. Never let that erase a real
+		// IPv4 route already retained by the authenticated logical peer.
+		const uint32 otherIPv4 = other.GetRealIPv4Endpoint();
+		if (otherIPv4 != 0)
+			SetConnectIP(otherIPv4);
 		if (other.GetKadPort() != 0)
 			SetKadPort(other.GetKadPort());
 		if (other.GetUserPort() != 0)
@@ -632,6 +643,7 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 	m_bEseNodePubSet = false;
 	memset(m_eseNodePub, 0, sizeof m_eseNodePub);
 	const CAddress previousV6 = m_ipv6Address;
+	const uint32 previousIPv4 = GetRealIPv4Endpoint();
 	const bool wasLiveIPv6Source = m_bLiveIPv6Source;
 	const bool wasServerIPv6Source = m_bServerIPv6Source;
 	const bool wasCallbackIPv6Source = m_bIPv6CallbackSource;
@@ -924,7 +936,13 @@ bool CUpDownClient::ProcessHelloTypePacket(CSafeMemFile &data)
 			SetDirectIPv6Address(peerAddress);
 			SetDirectIPv6Source();
 		}
-		SetIP(peerAddress.ToSyntheticUInt32());
+		// A successful IPv6 transport must not turn an already known dual-stack
+		// peer into IPv6-only. Keep the previously authenticated/learned real
+		// IPv4 endpoint for later reconnects and bounded fallback. Only peers
+		// which never had IPv4 use the compatibility synthetic uint32.
+		SetIP(previousIPv4 != 0
+			? previousIPv4
+			: peerAddress.ToSyntheticUInt32());
 		if (peerAddress == previousV6) {
 			if (wasLiveIPv6Source) SetLiveIPv6Source();
 			if (wasServerIPv6Source) SetServerIPv6Source();

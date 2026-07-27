@@ -1,6 +1,6 @@
 {
   "name": "eSE",
-  "version": "9.1.0-rc.1",
+  "version": "9.1.0-rc.2",
   "main": "server.js",
   "bin": "server.js",
   "scripts": {
@@ -12,7 +12,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "GPL-2.0-only",
   "description": "",
   "dependencies": {
     "hls.js": "^1.6.16"
@@ -28,7 +28,6 @@
     "assets": [
       "emule_mascot.svg",
       "favicon.ico",
-      "eSE_Remote.html",
       "eSE-live/vendor/hls.min.js",
       "eSE-live/vendor/hls.LICENSE",
       "eSE-live/thumbs/**/*",

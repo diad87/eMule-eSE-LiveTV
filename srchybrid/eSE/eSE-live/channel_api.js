@@ -17,7 +17,6 @@ const favorites = require('./favorites_manager');
 const rtmpServer = require('./rtmp_server');
 const wsTunnel = require('./ws_tunnel');
 const thumbExtractor = require('./thumbnail_extractor');
-const cfTunnel = require('./cloudflare_tunnel');
 const updateNotifier = require('./update_notifier');  // D6: GitHub release polling
 const nodesBootstrap = require('./nodes_bootstrap');
 const utils = require('../utils');
@@ -72,18 +71,6 @@ nodesBootstrap.startFromEnv().then(result => {
   console.warn('[eSE Boot] Explicit nodes.dat install rejected: ' + String(error.message).replace(/[\r\n]/g, ' '));
 });
 
-// Sprint 3 I.2 — Tiny semver comparator. Returns >0 if a > b, <0 if a < b, 0 equal.
-// Handles "x.y.z" and "x.y.z-suffix" robustly enough for our release tags.
-function cmpSemver(a, b) {
-  var pa = String(a).replace(/^v/, '').split(/[.\-]/).map(function(x){ return parseInt(x,10) || 0; });
-  var pb = String(b).replace(/^v/, '').split(/[.\-]/).map(function(x){ return parseInt(x,10) || 0; });
-  for (var i = 0; i < Math.max(pa.length, pb.length); i++) {
-    var d = (pa[i]||0) - (pb[i]||0);
-    if (d !== 0) return d;
-  }
-  return 0;
-}
-
 // Tier 2.1 — First-run flag persisted next to preferences.ini.
 // The flag file just has to exist; its content is irrelevant. We store it
 // under the user's eMule config dir so reinstalling doesn't reset the flag,
@@ -107,8 +94,6 @@ function markFirstRunSeen() {
 // hasn't determined the address yet, the UI shows "detecting…" — we never
 // fall back to a commercial echo service (api.ipify.org etc.), per the
 // project's "100% free, discovery via IP/overlay only" constraint.
-const https = require('https');  // GitHub update check
-
 /**
  * Handle all /api/live/* routes.
  * @param {URL} url - Parsed URL object.
@@ -455,7 +440,7 @@ function handleRoute(url, req, res, ctx) {
       '<li>Si emites, tu <b>IP + puertos TCP/UDP</b> se publican en la red Kad (DHT pública). Cualquiera buscando "eselive" puede encontrarte.</li>' +
       '<li>Si usas un overlay externo (Tailscale, Tor, etc.) para acceso público, ese proveedor verá metadatos según su política.</li>' +
       '<li><code>nodes.dat</code> no se descarga en segundo plano. Una instalación de desarrollo solo puede habilitarla indicando explícitamente URL HTTPS, SHA-256 y destino. Tu IP pública se detecta sin terceros: vía Kad (v4) y observación de peer in-band (v6).</li>' +
-      '<li>El check de auto-update contacta con <code>api.github.com</code>.</li>' +
+      '<li>La comprobación e instalación de actualizaciones es manual; el panel no consulta servicios de releases en segundo plano.</li>' +
       '</ul>' +
       '<h2>Datos que NO se recogen</h2>' +
       '<div class="ok">' +
@@ -521,43 +506,15 @@ function handleRoute(url, req, res, ctx) {
     return true;
   }
 
-  // === GET /api/eSE/update/check — Sprint 3 I.2: GitHub Releases check ===
-  // Returns whether a newer release exists (compared to bundled package.json
-  // version). Read-only; the actual download is opened in a browser tab.
+  // v9.1 packages are installed manually after the published SHA-256 has
+  // been verified. Keep the legacy route explicit and fail closed without
+  // network access so an older dashboard cannot revive the removed updater.
   if (p === '/api/eSE/update/check') {
-    const localVersion = (function(){
-      try {
-        const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-        return pkg.version || '0.0.0';
-      } catch(e) { return '0.0.0'; }
-    })();
-    const opts = {
-      hostname: 'api.github.com',
-      path: '/repos/diad87/eMule-eSE-LiveTV/releases/latest',
-      headers: { 'User-Agent': 'eSE-Live-AutoUpdate/1.0', 'Accept': 'application/vnd.github+json' },
-      timeout: 5000,
-    };
-    https.get(opts, (r) => {
-      let body = '';
-      r.on('data', d => body += d);
-      r.on('end', () => {
-        try {
-          const rel = JSON.parse(body);
-          const remote = (rel.tag_name || '').replace(/^v/, '');
-          const isNewer = remote && cmpSemver(remote, localVersion) > 0;
-          jsonResponse(res, 200, {
-            local_version: localVersion,
-            remote_version: remote,
-            update_available: isNewer,
-            release_url: rel.html_url || null,
-            download_url: (rel.assets && rel.assets[0]) ? rel.assets[0].browser_download_url : null,
-            published_at: rel.published_at || null,
-            release_notes: (rel.body || '').substring(0, 800),
-          });
-        } catch(e) { jsonResponse(res, 200, { error: 'parse_error', local_version: localVersion }); }
-      });
-    }).on('error', (e) => jsonResponse(res, 200, { error: e.message, local_version: localVersion }))
-      .on('timeout', function() { this.destroy(); jsonResponse(res, 200, { error: 'timeout', local_version: localVersion }); });
+    jsonResponse(res, 410, {
+      update_available: false,
+      disabled: true,
+      reason: 'manual_updates_only',
+    });
     return true;
   }
 
@@ -640,24 +597,16 @@ function handleRoute(url, req, res, ctx) {
     return true;
   }
 
-  // === Tier 3.1 — Cloudflare Tunnel (OPT-IN HTTPS fallback) ===
-  // Requires explicit ?ack_tos=true confirming the user has read the TOS
-  // warning. Cloudflare's AUP prohibits tunnels for P2P file sharing — using
-  // this for sustained content distribution risks URL/IP/account ban.
-  // ALWAYS for personal use / testing / legal content only.
-  // v7.4.0 — Cloudflare Quick Tunnel removed (TOS risk + "100% gratis sin
-  // dominios" project invariant). Endpoints return 410 Gone so existing
-  // front-ends fail gracefully instead of getting 404 + silent breakage.
-  if (p === '/api/live/tunnel/start' || p === '/api/live/tunnel/stop') {
+  // Remote access is postponed for v9.1. Keep every legacy Live TV tunnel
+  // route present but fail closed so old clients receive an explicit answer.
+  if (p === '/api/live/tunnel/start' ||
+      p === '/api/live/tunnel/stop' ||
+      p === '/api/live/tunnel/status') {
     jsonResponse(res, 410, {
       success: false,
-      error: 'cloudflare_removed',
-      message: 'Cloudflare Quick Tunnel was removed in v7.4.0. For cross-NAT broadcasts use UPnP, Tailscale, or a Tor onion service set up manually.'
+      error: 'gone',
+      reason: 'remote_access_postponed'
     });
-    return true;
-  }
-  if (p === '/api/live/tunnel/status') {
-    jsonResponse(res, 200, { status: 'removed', url: null, error: null, startedAt: null });
     return true;
   }
 
@@ -679,26 +628,27 @@ function handleRoute(url, req, res, ctx) {
     return true;
   }
 
-  // === GET /api/live/update_status — D6: latest cached GitHub release check ===
+  // Compatibility status for the updater removed from v9.1.
   if (p === '/api/live/update_status') {
     jsonResponse(res, 200, updateNotifier.getStatus());
     return true;
   }
 
-  // === POST /api/live/update_check — D6: force an immediate re-poll ===
+  // Legacy updater routes fail closed and never spawn a process.
   if (p === '/api/live/update_check' && req.method === 'POST') {
-    updateNotifier.check();
-    // The check is async; the caller should poll /update_status after a few seconds.
-    jsonResponse(res, 202, { triggered: true });
+    jsonResponse(res, 410, {
+      success: false,
+      disabled: true,
+      reason: 'manual_updates_only',
+    });
     return true;
   }
 
-  // === POST /api/live/update_run — D6: spawn the interactive updater script ===
-  // The script opens its own GUI MessageBox; we don't block the request.
   if (p === '/api/live/update_run' && req.method === 'POST') {
-    updateNotifier.runInteractive((err) => {
-      if (err) jsonResponse(res, 500, { success: false, error: err.message });
-      else      jsonResponse(res, 200, { success: true, hint: 'GUI prompt opened' });
+    jsonResponse(res, 410, {
+      success: false,
+      disabled: true,
+      reason: 'manual_updates_only',
     });
     return true;
   }
@@ -1109,39 +1059,6 @@ function handleRoute(url, req, res, ctx) {
       rtmpUrl: 'rtmp://127.0.0.1:1935/live/stream',
       backend: 'emule'
     }));
-    return true;
-  }
-
-  // === POST /api/live/tunnel/start — Start WebSocket tunnel ===
-  if (p === '/api/live/tunnel/start' && req.method === 'POST') {
-    readBody(req, (bodyErr, body) => {
-      if (bodyErr) return bodyReadError(res, bodyErr);
-      try {
-        const config = JSON.parse(body);
-        const result = wsTunnel.startServer({
-          port: config.port || 8443,
-          onConnection: (id) => console.log('[eSE Tunnel] New peer:', id),
-          onMessage: (id, opcode, data) => {
-            console.log('[eSE Tunnel] Message from', id, 'opcode:', opcode);
-          }
-        });
-        jsonResponse(res, result.success ? 200 : 400, result);
-      } catch (e) {
-        jsonResponse(res, 400, { success: false, error: e.message });
-      }
-    });
-    return true;
-  }
-
-  // === POST /api/live/tunnel/stop ===
-  if (p === '/api/live/tunnel/stop' && req.method === 'POST') {
-    jsonResponse(res, 200, wsTunnel.stopServer());
-    return true;
-  }
-
-  // === GET /api/live/tunnel/status ===
-  if (p === '/api/live/tunnel/status') {
-    jsonResponse(res, 200, wsTunnel.getStatus());
     return true;
   }
 

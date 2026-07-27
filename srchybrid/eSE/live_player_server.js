@@ -161,7 +161,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(404); res.end('Not found');
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
     console.log(`\n  eSE Live TV running at:`);
     console.log(`  → http://localhost:${PORT}/live      (directory)`);
     console.log(`  → http://localhost:${PORT}/player     (player)`);

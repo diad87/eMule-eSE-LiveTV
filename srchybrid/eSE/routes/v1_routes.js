@@ -56,9 +56,9 @@ function handle(url, req, res) {
 
   if (p === '/api/v1/capabilities') {
     json(res, 200, {
-      remoteControl: [
+      localControl: [
         'status', 'lifecycle', 'settings', 'search', 'smartsearch', 'download', 'download-actions',
-        'ed2klink', 'downloads', 'completed-library', 'streaming', 'tunnel', 'live-p2p'
+        'ed2klink', 'downloads', 'completed-library', 'streaming', 'live-p2p'
       ],
       compatibility: {
         liveP2P: 'ese-only',
@@ -67,7 +67,7 @@ function handle(url, req, res) {
       },
       pendingNativeCoverage: [
         'server-list mutations', 'kad bootstrap mutations', 'upload queue controls',
-        'friends/messages/irc remote ui'
+        'friends/messages/irc ui', 'remote dashboard access'
       ]
     });
     return true;

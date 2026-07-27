@@ -24,8 +24,8 @@ hashes and `BUILD_INFO.txt`.
 - Kad keepalive and reachability lifecycle improvements.
 - In-band IPv6 detection with IPv4 fallback.
 - Authenticated tunnel framing, Bulk/FEC support and abuse-control switches.
-- A reproducible release pipeline with pinned media inputs, manifests,
-  external ZIP checksum and embedded build provenance.
+- A release pipeline with pinned media inputs, verified manifests, an external
+  ZIP checksum and embedded build provenance.
 
 ## Consent-based NetLab
 

@@ -16,6 +16,8 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #include "stdafx.h"
 #include <io.h>
+#include <algorithm>
+#include "../cryptopp/sha.h"
 #include "emule.h"
 #include "UpDownClient.h"
 #include "DownloadQueue.h"
@@ -42,6 +44,7 @@
 #include "FirewallProberV6.h"
 #include "ReachabilityWire.h"
 #include "ClientUDPSocket.h"
+#include "SourceResolutionPolicy.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -52,6 +55,7 @@ static char THIS_FILE[] = __FILE__;
 
 CDownloadQueue::CDownloadQueue()
 	: cur_udpserver()
+	, m_sourceResolutionSequence(0)
 	, m_datarateMS()
 	, m_lastfile()
 	, m_dwLastA4AFtime()
@@ -485,6 +489,31 @@ bool CDownloadQueue::HasFileByID(const uchar *fileHash) const
 			return true;
 	}
 	return false;
+}
+
+void CDownloadQueue::RecordSourceResolutionEvent(
+	const SSourceResolutionEvent& event)
+{
+	CSingleLock lock(&m_csSourceResolutionEvents, TRUE);
+	SSourceResolutionEvent recorded(event);
+	recorded.sequence = ++m_sourceResolutionSequence;
+	if (m_sourceResolutionEvents.size() >= 32)
+		m_sourceResolutionEvents.erase(m_sourceResolutionEvents.begin());
+	m_sourceResolutionEvents.push_back(recorded);
+}
+
+void CDownloadQueue::GetSourceResolutionEvents(uint64 afterSequence,
+	uint64& currentSequence, std::vector<SSourceResolutionEvent>& events) const
+{
+	CSingleLock lock(&m_csSourceResolutionEvents, TRUE);
+	currentSequence = m_sourceResolutionSequence;
+	events.clear();
+	for (std::vector<SSourceResolutionEvent>::const_iterator it =
+		m_sourceResolutionEvents.begin(); it != m_sourceResolutionEvents.end(); ++it)
+	{
+		if (it->sequence > afterSequence)
+			events.push_back(*it);
+	}
 }
 
 bool CDownloadQueue::IsPartFile(const CKnownFile *file) const
@@ -1490,11 +1519,204 @@ static void AppendResolvedSourceAddress(std::vector<CAddress>& addresses, const 
 	addresses.push_back(address);
 }
 
+static CStringA SourceResolutionHex(const unsigned char* data, size_t length)
+{
+	static const char kHex[] = "0123456789abcdef";
+	CStringA result;
+	for (size_t i = 0; i < length; ++i) {
+		result.AppendChar(kHex[(data[i] >> 4) & 0x0f]);
+		result.AppendChar(kHex[data[i] & 0x0f]);
+	}
+	return result;
+}
+
+static CStringA SourceResolutionSha256(
+	const unsigned char* data, size_t length)
+{
+	unsigned char digest[CryptoPP::SHA256::DIGESTSIZE];
+	const unsigned char empty = 0;
+	CryptoPP::SHA256 hash;
+	hash.CalculateDigest(digest, length == 0 ? &empty : data, length);
+	return SourceResolutionHex(digest, sizeof digest);
+}
+
+static CStringA SourceResolutionSha256(
+	const std::vector<std::uint8_t>& canonical)
+{
+	return SourceResolutionSha256(
+		canonical.empty() ? NULL : &canonical[0], canonical.size());
+}
+
+static SourceResolutionPolicy::Endpoint SourceResolutionEndpoint(
+	const CAddress& address, uint16 port)
+{
+	SourceResolutionPolicy::Endpoint endpoint = {};
+	endpoint.family =
+		address.GetType() == CAddress::IPv4 ? 4 :
+		address.GetType() == CAddress::IPv6 ? 6 : 0;
+	endpoint.port = port;
+	if (endpoint.family != 0)
+		endpoint.address.assign(address.Data(), address.Data() + address.GetSize());
+	return endpoint;
+}
+
+static CStringA SourceResolutionEndpointHash(
+	const CAddress& address, uint16 port)
+{
+	return SourceResolutionSha256(SourceResolutionPolicy::EncodeEndpoint(
+		SourceResolutionEndpoint(address, port)));
+}
+
+static CStringA SourceResolutionEndpointSetHash(
+	const std::vector<CAddress>& addresses, uint16 port)
+{
+	std::vector<SourceResolutionPolicy::Endpoint> endpoints;
+	for (std::vector<CAddress>::const_iterator it = addresses.begin();
+		it != addresses.end(); ++it)
+	{
+		endpoints.push_back(SourceResolutionEndpoint(*it, port));
+	}
+	return SourceResolutionSha256(
+		SourceResolutionPolicy::EncodeEndpointSet(endpoints));
+}
+
+static CStringA SourceResolutionHostnameHash(const CStringA& hostname)
+{
+	const std::string canonical = SourceResolutionPolicy::CanonicalizeHostname(
+		std::string((LPCSTR)hostname));
+	return SourceResolutionSha256(
+		reinterpret_cast<const unsigned char*>(canonical.data()),
+		canonical.size());
+}
+
+static bool SourceResolutionClientMatches(const CUpDownClient* source,
+	const CAddress& address, uint16 port)
+{
+	if (source == NULL || source->GetUserPort() != port)
+		return false;
+	if (address.GetType() == CAddress::IPv6)
+		return source->HasIPv6Address() && source->GetIPv6Address() == address;
+	if (address.GetType() == CAddress::IPv4) {
+		uint32 ipv4 = 0;
+		return address.TryToUInt32(ipv4, false)
+			&& source->GetRealIPv4Endpoint() == ipv4;
+	}
+	return false;
+}
+
+static CUpDownClient* SourceResolutionFindClient(CPartFile* file,
+	const CAddress& address, uint16 port)
+{
+	if (file == NULL)
+		return NULL;
+	for (POSITION pos = file->srclist.GetHeadPosition(); pos != NULL;) {
+		CUpDownClient* source = file->srclist.GetNext(pos);
+		if (SourceResolutionClientMatches(source, address, port))
+			return source;
+	}
+	for (POSITION pos = file->A4AFsrclist.GetHeadPosition(); pos != NULL;) {
+		CUpDownClient* source = file->A4AFsrclist.GetNext(pos);
+		if (SourceResolutionClientMatches(source, address, port))
+			return source;
+	}
+	return NULL;
+}
+
+static CStringA SourceResolutionMaterializeCandidate(CPartFile* file,
+	const CAddress& address, uint16 port)
+{
+	if (file == NULL || file->IsStopped())
+		return "rejected";
+	if (port == 0 || !address.IsUsablePublic())
+		return "rejected_unusable";
+
+	const bool existedBefore =
+		SourceResolutionFindClient(file, address, port) != NULL;
+	if (!existedBefore && file->GetSourceCount() >= file->GetMaxSources())
+		return "source_limit";
+
+	CUpDownClient* source = NULL;
+	if (address.GetType() == CAddress::IPv4) {
+		uint32 ipv4 = 0;
+		if (!address.TryToUInt32(ipv4, false)
+			|| !IsGoodIP(ipv4)
+			|| theApp.ipfilter->IsFiltered(ipv4)
+			|| theApp.clientlist->IsBannedClient(ipv4)
+			|| !CPartFile::CanAddSource(ipv4, port, 0, 0))
+		{
+			return "rejected";
+		}
+		source = new CUpDownClient(file, port, ipv4, 0, 0, true);
+		source->SetConnectOptions(0, true, false);
+		source->SetSourceFrom(SF_LINK);
+	} else if (address.IsNativeIPv6()) {
+		const CAddress localIPv6 =
+			CFirewallProberV6::Instance().GetDetectedV6IP();
+		if ((localIPv6.GetType() == CAddress::IPv6
+				&& address == localIPv6
+				&& port == theApp.GetAdvertisedTcpPort())
+			|| theApp.clientlist->IsBannedClient(address))
+		{
+			return "rejected";
+		}
+		const uint32 syntheticIPv4 = address.ToSyntheticUInt32();
+		source = new CUpDownClient(file, port, syntheticIPv4, 0, 0, false);
+		source->SetIPv6Address(address);
+		source->SetIP(syntheticIPv4);
+		source->SetDirectIPv6Source();
+		source->SetSourceFrom(SF_LINK);
+	} else {
+		return "rejected_unusable";
+	}
+
+	const bool added = theApp.downloadqueue->CheckAndAddSource(file, source);
+	const bool retained =
+		SourceResolutionFindClient(file, address, port) != NULL;
+	if (added)
+		return "added";
+	if (existedBefore || retained)
+		return "merged_existing";
+	return "rejected";
+}
+
+static void SourceResolutionCountFamilies(
+	const std::vector<CAddress>& addresses, uint32& ipv4Count,
+	uint32& ipv6Count)
+{
+	ipv4Count = 0;
+	ipv6Count = 0;
+	for (std::vector<CAddress>::const_iterator it = addresses.begin();
+		it != addresses.end(); ++it)
+	{
+		if (it->GetType() == CAddress::IPv4)
+			++ipv4Count;
+		else if (it->GetType() == CAddress::IPv6)
+			++ipv6Count;
+	}
+}
+
+static std::vector<CAddress> SourceResolutionMaterializedAddresses(
+	CPartFile* file, const std::vector<CAddress>& addresses, uint16 port)
+{
+	std::vector<CAddress> retained;
+	if (file == NULL)
+		return retained;
+	for (std::vector<CAddress>::const_iterator it = addresses.begin();
+		it != addresses.end(); ++it)
+	{
+		if (SourceResolutionFindClient(file, *it, port) != NULL)
+			AppendResolvedSourceAddress(retained, *it);
+	}
+	return retained;
+}
+
 // WSAAsyncGetHostByName only returns an A record.  Source links use the same
 // resolver for both families, so query the modern AF_UNSPEC API as well and
-// retain every usable A/AAAA answer.  The legacy asynchronous request remains
-// as the wake-up/fallback path and keeps IPv4 behaviour unchanged.
-static void ResolveSourceHostAddresses(const CStringA& hostname, std::vector<CAddress>& addresses)
+// retain every A/AAAA answer from that one result. The legacy asynchronous
+// A result is used only when the modern query itself fails; answers from two
+// DNS instants are never mixed into a synthetic dual-stack set.
+static bool ResolveSourceHostAddresses(const CStringA& hostname,
+	std::vector<CAddress>& addresses)
 {
 	CStringA query(hostname);
 	if (query.GetLength() > 2 && query[0] == '[' && query[query.GetLength() - 1] == ']')
@@ -1505,7 +1727,7 @@ static void ResolveSourceHostAddresses(const CStringA& hostname, std::vector<CAd
 	hints.ai_socktype = SOCK_STREAM;
 	addrinfo* result = NULL;
 	if (getaddrinfo(query, NULL, &hints, &result) != 0)
-		return;
+		return false;
 
 	for (addrinfo* current = result; current != NULL; current = current->ai_next) {
 		CAddress address;
@@ -1513,6 +1735,7 @@ static void ResolveSourceHostAddresses(const CStringA& hostname, std::vector<CAd
 			AppendResolvedSourceAddress(addresses, address);
 	}
 	freeaddrinfo(result);
+	return true;
 }
 
 CSourceHostnameResolveWnd::CSourceHostnameResolveWnd()
@@ -1567,7 +1790,7 @@ LRESULT CSourceHostnameResolveWnd::OnHostnameResolved(WPARAM, LPARAM lParam)
 	if (m_toresolve.IsEmpty())
 		return TRUE;
 	Hostname_Entry *resolved = m_toresolve.RemoveHead();
-	std::vector<CAddress> addresses;
+	std::vector<CAddress> legacyAddresses;
 	// Preserve the old asynchronous A result even if the modern resolver is
 	// unavailable (for example, a transient DNS service failure).
 	if (WSAGETASYNCERROR(lParam) == 0) {
@@ -1576,13 +1799,32 @@ LRESULT CSourceHostnameResolveWnd::OnHostnameResolved(WPARAM, LPARAM lParam)
 			LPHOSTENT pHost = (LPHOSTENT)m_aucHostnameBuffer;
 			if (pHost->h_length == 4 && pHost->h_addr_list && pHost->h_addr_list[0]) {
 				CAddress address = CAddress::FromIPv4NetworkOrder(((LPIN_ADDR)(pHost->h_addr_list[0]))->s_addr);
-				AppendResolvedSourceAddress(addresses, address);
+				AppendResolvedSourceAddress(legacyAddresses, address);
 			}
 		}
 	}
-	ResolveSourceHostAddresses(resolved->strHostname, addresses);
+	std::vector<CAddress> addresses;
+	if (!ResolveSourceHostAddresses(resolved->strHostname, addresses))
+		addresses.swap(legacyAddresses);
 
 	CPartFile *file = theApp.downloadqueue->GetFileByID(resolved->fileid);
+	const bool observeDirectSource = resolved->strURL.IsEmpty();
+	SSourceResolutionEvent resolutionEvent;
+	if (observeDirectSource) {
+		resolutionEvent.hostnameSha256 =
+			SourceResolutionHostnameHash(resolved->strHostname);
+		resolutionEvent.fileEd2kHash =
+			SourceResolutionHex(resolved->fileid, MDX_DIGEST_SIZE);
+		resolutionEvent.port = resolved->port;
+		resolutionEvent.resolverResult =
+			addresses.empty() ? "no_addresses" : "success";
+		SourceResolutionCountFamilies(addresses,
+			resolutionEvent.resolvedIPv4Count,
+			resolutionEvent.resolvedIPv6Count);
+		resolutionEvent.resolvedEndpointSetSha256 =
+			SourceResolutionEndpointSetHash(addresses, resolved->port);
+	}
+
 	if (file && !addresses.empty()) {
 		if (!resolved->strURL.IsEmpty()) {
 			// URL clients already use CAsyncSocketEx AF_UNSPEC resolution.  Use
@@ -1607,32 +1849,49 @@ LRESULT CSourceHostnameResolveWnd::OnHostnameResolved(WPARAM, LPARAM lParam)
 					}
 				}
 			}
-		} else if (resolved->port != 0) {
+		} else {
 			for (std::vector<CAddress>::const_iterator it = addresses.begin(); it != addresses.end(); ++it) {
 				const CAddress& address = *it;
-				if (!address.IsUsablePublic())
-					continue;
-				if (address.GetType() == CAddress::IPv4) {
-					uint32 ipv4 = 0;
-					if (!address.TryToUInt32(ipv4, false))
-						continue;
-					CSafeMemFile sources(1 + 4 + 2);
-					sources.WriteUInt8(1);
-					sources.WriteUInt32(ipv4);
-					sources.WriteUInt16(resolved->port);
-					sources.SeekToBegin();
-					file->AddSources(&sources, 0, 0, false);
-				} else if (address.IsNativeIPv6()) {
-					const uint32 syntheticIP = address.ToSyntheticUInt32();
-					CUpDownClient *source = new CUpDownClient(file, resolved->port, syntheticIP, 0, 0, false);
-					source->SetIPv6Address(address);
-					source->SetIP(syntheticIP);
-					source->SetDirectIPv6Source();
-					source->SetSourceFrom(SF_LINK);
-					theApp.downloadqueue->CheckAndAddSource(file, source);
-				}
+				SSourceResolutionCandidateEvent candidate;
+				candidate.family =
+					address.GetType() == CAddress::IPv4 ? "ipv4" : "ipv6";
+				candidate.endpointSha256 =
+					SourceResolutionEndpointHash(address, resolved->port);
+				candidate.outcome = SourceResolutionMaterializeCandidate(
+					file, address, resolved->port);
+				candidate.sourceOrigin = "hostname_link";
+				resolutionEvent.candidates.push_back(candidate);
 			}
 		}
+	}
+	else if (observeDirectSource) {
+		for (std::vector<CAddress>::const_iterator it = addresses.begin();
+			it != addresses.end(); ++it)
+		{
+			SSourceResolutionCandidateEvent candidate;
+			candidate.family =
+				it->GetType() == CAddress::IPv4 ? "ipv4" : "ipv6";
+			candidate.endpointSha256 =
+				SourceResolutionEndpointHash(*it, resolved->port);
+			candidate.outcome = "rejected";
+			candidate.sourceOrigin = "hostname_link";
+			resolutionEvent.candidates.push_back(candidate);
+		}
+	}
+
+	if (observeDirectSource) {
+		const std::vector<CAddress> materialized =
+			SourceResolutionMaterializedAddresses(
+				file, addresses, resolved->port);
+		SourceResolutionCountFamilies(materialized,
+			resolutionEvent.materializedIPv4Count,
+			resolutionEvent.materializedIPv6Count);
+		resolutionEvent.materializedEndpointSetSha256 =
+			SourceResolutionEndpointSetHash(materialized, resolved->port);
+		resolutionEvent.simultaneouslyRetained =
+			resolutionEvent.materializedIPv4Count > 0
+			&& resolutionEvent.materializedIPv6Count > 0;
+		theApp.downloadqueue->RecordSourceResolutionEvent(resolutionEvent);
 	}
 	delete resolved;
 

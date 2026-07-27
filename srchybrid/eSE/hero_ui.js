@@ -39,18 +39,6 @@
   
   document.body.appendChild(panel);
   
-  // Load remote access info
-  fetch('/api/connect-seed').then(function(r){return r.json()}).then(function(seed) {
-    var ipEl = document.getElementById('set-public-ip');
-    var tunnelEl = document.getElementById('set-tunnel-url');
-    var ntfyEl = document.getElementById('set-ntfy-url');
-    if (ipEl && seed.publicIP) ipEl.textContent = 'http://' + seed.publicIP + ':8080';
-    else if (ipEl) ipEl.textContent = 'No disponible';
-    if (tunnelEl && seed.tunnel) tunnelEl.textContent = seed.tunnel;
-    else if (tunnelEl) tunnelEl.textContent = 'No disponible';
-    if (ntfyEl && seed.ntfyTopic) ntfyEl.textContent = 'https://ntfy.sh/' + seed.ntfyTopic;
-  }).catch(function() {});
-  
   // Check eMule status on open
   fetch('/api/emule/status').then(function(r) { return r.json(); }).then(function(data) {
     var el = document.getElementById('emule-test-status');

@@ -19,6 +19,8 @@
 #include "emule.h"
 #include "ListenSocket.h"
 #include "ClientTransferPolicy.h"
+#include "IPv6FallbackPolicy.h"
+#include "Preferences.h"
 #include "opcodes.h"
 #include "LiveStreamManager.h"
 #include "LiveCrypto.h"        // v7.6.0 — StreamKeyMatchesPubkey
@@ -86,6 +88,8 @@ CClientReqSocket::CClientReqSocket(CUpDownClient *in_client)
 	, m_nOnConnect(SS_Other)
 	, deletethis()
 	, m_bPortTestCon()
+	, m_bIPv6FallbackArmed()
+	, m_dwIPv6FallbackStarted()
 	, m_pUtpLayer(NULL)
 {
 	SetClient(in_client);
@@ -184,11 +188,18 @@ bool CClientReqSocket::CheckTimeOut()
 {
 	const DWORD curTick = ::GetTickCount();
 	if (m_nOnConnect == SS_Half) {
+		if (IsIPv6FallbackDue(curTick)) {
+			if (TryIPv4Fallback(WSAETIMEDOUT, _T("bounded blackhole timeout")))
+				return false;
+			Disconnect(_T("IPv6-to-IPv4 fallback could not start"));
+			return true;
+		}
 		//This socket is still in a half connection state. Because of SP2, we don't know
 		//if this socket is actually failing, or if this socket is just queued in SP2's new
 		//protection queue. Therefore we give the socket a chance to either finally report
 		//the connection error, or finally make it through SP2's new queued socket system.
-		if (curTick < timeout_timer + CEMSocket::GetTimeOut() * 4)
+		if (!IPv6FallbackPolicy::HasElapsed(
+			curTick, timeout_timer, CEMSocket::GetTimeOut() * 4))
 			return false;
 		timeout_timer = curTick;
 		CString str;
@@ -200,14 +211,16 @@ bool CClientReqSocket::CheckTimeOut()
 	if (client)
 		if (client->GetKadState() == KS_CONNECTED_BUDDY)
 			uTimeout += MIN2MS(15);
-		else if (client->IsDownloading() && curTick < client->GetUpStartTime() + 4 * CONNECTION_TIMEOUT)
+		else if (client->IsDownloading()
+			&& !IPv6FallbackPolicy::HasElapsed(
+				curTick, client->GetUpStartTime(), 4 * CONNECTION_TIMEOUT))
 			//TCP flow control might need more time to begin throttling for slow peers
 			uTimeout += 4 * CONNECTION_TIMEOUT; //2'30" or slightly more
 		else if (client->GetChatState() != MS_NONE)
 			//We extend the timeout time here to avoid chatting people from disconnecting too fast.
 			uTimeout += CONNECTION_TIMEOUT;
 
-	if (curTick < timeout_timer + uTimeout)
+	if (!IPv6FallbackPolicy::HasElapsed(curTick, timeout_timer, uTimeout))
 		return false;
 	timeout_timer = curTick;
 	CString str;
@@ -250,7 +263,8 @@ void CClientReqSocket::Delete_Timed()
 // it seems that MFC Sockets call socket functions after they are deleted, even if the socket is closed
 // and select(0) is set. So we need to wait some time to make sure this doesn't happen
 // we currently also rely on this for multithreading; rework synchronization if this ever changes
-	if (::GetTickCount() >= deltimer + SEC2MS(10))
+	if (IPv6FallbackPolicy::HasElapsed(
+		::GetTickCount(), deltimer, SEC2MS(10)))
 		delete this;
 }
 
@@ -2583,6 +2597,75 @@ CString CClientReqSocket::DbgGetClientInfo()
 	return str;
 }
 
+bool CClientReqSocket::IsDirectTransportConfigured() const
+{
+	const ProxySettings& proxy = thePrefs.GetProxySettings();
+	return !proxy.bUseProxy || proxy.type == PROXYTYPE_NOPROXY;
+}
+
+bool CClientReqSocket::HasIPv4FallbackRoute() const
+{
+	const bool bClientOwnsSocket = client != NULL && client->socket == this;
+	const bool bHasIPv4 = bClientOwnsSocket
+		&& client->HasRealIPv4Endpoint()
+		&& client->GetUserPort() != 0;
+	const IPv6FallbackPolicy::State state = {
+		m_bIPv6FallbackArmed,
+		m_nOnConnect == SS_Half,
+		bClientOwnsSocket,
+		bClientOwnsSocket && client->HasLowID(),
+		bClientOwnsSocket && client->IsIPv6OnlyEndpoint(),
+		bHasIPv4,
+		GetProxyConnectFailed(),
+		IsDirectTransportConfigured()
+	};
+	return IPv6FallbackPolicy::IsEligible(state);
+}
+
+bool CClientReqSocket::IsIPv6FallbackDue(DWORD now) const
+{
+	return HasIPv4FallbackRoute()
+		&& IPv6FallbackPolicy::HasElapsed(now, m_dwIPv6FallbackStarted);
+}
+
+bool CClientReqSocket::TryIPv4Fallback(int nV6Error, LPCTSTR pszTrigger)
+{
+	if (!HasIPv4FallbackRoute())
+		return false;
+
+	CUpDownClient* const pClient = client;
+	const uint32 uIPv4 = pClient->GetRealIPv4Endpoint();
+	const uint16 uPort = pClient->GetUserPort();
+
+	// Disarm before closing the IPv6 transport. Any delayed notification from
+	// that socket must not start a second fallback. The queued HELLO stays on
+	// this CClientReqSocket and the ClientList deadline remains unchanged.
+	m_bIPv6FallbackArmed = false;
+	pClient->MarkIPv6DirectFailed();
+	Close();
+	m_strLastProxyError.Empty();
+
+	if (Create(AF_INET)) {
+		SOCKADDR_IN sa4 = {};
+		sa4.sin_family = AF_INET;
+		sa4.sin_port = htons(uPort);
+		sa4.sin_addr.s_addr = uIPv4;
+		WaitForOnConnect();
+		ResetTimeOutTimer();
+		const BOOL bStarted = CEMSocket::Connect(
+			reinterpret_cast<LPSOCKADDR>(&sa4), sizeof sa4);
+		const int nStartError = bStarted ? 0 : WSAGetLastError();
+		if (bStarted || nStartError == WSAEWOULDBLOCK) {
+			DebugLog(_T("[IPv6Fallback] IPv6 connect failed (%d, %s); retrying %s over IPv4"),
+				nV6Error, pszTrigger, (LPCTSTR)pClient->DbgGetClientInfo());
+			return true;
+		}
+		DebugLogWarning(_T("[IPv6Fallback] IPv4 retry could not start (%d after v6 error %d, %s); %s"),
+			nStartError, nV6Error, pszTrigger, (LPCTSTR)pClient->DbgGetClientInfo());
+	}
+	return false;
+}
+
 void CClientReqSocket::DbgAppendClientInfo(CString &str)
 {
 	CString strClientInfo(DbgGetClientInfo());
@@ -2592,36 +2675,23 @@ void CClientReqSocket::DbgAppendClientInfo(CString &str)
 
 void CClientReqSocket::OnConnect(int nErrorCode)
 {
-	if (nErrorCode != 0 && GetFamily() == AF_INET6 && client != NULL)
-		client->MarkIPv6DirectFailed();
-
 	// Preferred IPv6 is opportunistic for dual-stack HighID peers.  If it
 	// fails, retry the same queued HELLO once over the peer's real IPv4 route
 	// before declaring the client unreachable.  IPv6-only and LowID peers do
 	// not have a valid direct-v4 fallback and therefore keep the normal error
 	// path (callbacks/hole-punch are selected before this socket is created).
-	if (nErrorCode != 0 && GetFamily() == AF_INET6 && client != NULL
-		&& !client->HasLowID() && !client->IsIPv6OnlyEndpoint()
-		&& client->GetConnectIP() != 0)
-	{
-		const int nV6Error = nErrorCode;
-		Close();
-		if (Create(AF_INET)) {
-			SOCKADDR_IN sa4 = {};
-			sa4.sin_family = AF_INET;
-			sa4.sin_port = htons(client->GetUserPort());
-			sa4.sin_addr.s_addr = client->GetConnectIP();
-			WaitForOnConnect();
-			if (Connect((LPSOCKADDR)&sa4, sizeof sa4)
-				|| WSAGetLastError() == WSAEWOULDBLOCK)
-			{
-				DebugLog(_T("IPv6 connect failed (%d); retrying %s over IPv4"),
-					nV6Error, (LPCTSTR)client->DbgGetClientInfo());
+	if (nErrorCode != 0 && m_bIPv6FallbackArmed) {
+		const bool bProxyConnectFailed = GetProxyConnectFailed();
+		if (!bProxyConnectFailed && IsDirectTransportConfigured()) {
+			if (TryIPv4Fallback(nErrorCode, _T("socket error")))
 				return;
-			}
+			if (m_bIPv6FallbackArmed && client != NULL)
+				client->MarkIPv6DirectFailed();
 		}
-		nErrorCode = nV6Error;
+		m_bIPv6FallbackArmed = false;
 	}
+	else if (nErrorCode == 0)
+		m_bIPv6FallbackArmed = false;
 	SetConState(SS_Complete);
 	CEMSocket::OnConnect(nErrorCode);
 	if (nErrorCode) {
@@ -2754,6 +2824,11 @@ void CClientReqSocket::OnReceive(int nErrorCode)
 
 bool CClientReqSocket::Create(ADDRESS_FAMILY nFamily)
 {
+	// Proxy handshakes have their own transport/authentication failure modes;
+	// arm the bounded address-family retry only for a native direct dial.
+	m_bIPv6FallbackArmed = nFamily == AF_INET6
+		&& IsDirectTransportConfigured();
+	m_dwIPv6FallbackStarted = m_bIPv6FallbackArmed ? ::GetTickCount() : 0;
 	theApp.listensocket->AddConnection();
 	if (nFamily == AF_INET6) {
 		LPCTSTR pszBind = thePrefs.GetIPv6BindAddr();

@@ -165,26 +165,6 @@
       '</div></div>';
   }
 
-  /**
-   * Build safe tunnel status HTML.
-   * @param {Object} d - Tunnel status data from /api/tunnel/status
-   * @returns {string} Safe HTML string
-   */
-  function renderSafeTunnelStatus(d) {
-    var parts = [];
-    if (d.url) {
-      var urlDisplay = escapeHTML(String(d.url).replace('https://', ''));
-      var urlAttr = escapeAttr(d.url);
-      parts.push(' <span style="color:#2ecc71;text-decoration:underline;cursor:pointer" onclick="copyUrl(\'' + urlAttr + '\')">' + urlDisplay + '</span>');
-    }
-    if (d.publicUrl) {
-      var pubDisplay = escapeHTML(String(d.publicUrl).replace('http://', ''));
-      var pubAttr = escapeAttr(d.publicUrl);
-      parts.push('• <span style="color:#ff6b35;cursor:pointer" onclick="copyUrl(\'' + pubAttr + '\')">' + pubDisplay + '</span>');
-    }
-    return parts.join(' <span style="color:#444">|</span> ');
-  }
-
   // === Expose all helpers globally ===
   w.SafeDOM = {
     escapeHTML: escapeHTML,
@@ -195,7 +175,6 @@
     clearChildren: clearChildren,
     renderSafeMovieCard: renderSafeMovieCard,
     renderSafeSearchSuggestion: renderSafeSearchSuggestion,
-    renderSafeTunnelStatus: renderSafeTunnelStatus
   };
 
   // Convenience aliases on window for backward-compat in inline scripts

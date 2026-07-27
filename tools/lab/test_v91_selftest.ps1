@@ -30,6 +30,10 @@ $evidence = New-LabDirectory -Path (Join-Path $output 'evidence')
     -SourcePackage $package -OutputRoot $nodes -RunId 'v91-selftest'
 $node = Join-Path $nodes 'v91-selftest-a'
 $executable = Join-Path $node 'emule.exe'
+$executedBinarySha256 = Get-LabSha256 -Path $executable
+if ($executedBinarySha256 -ne $candidate.emule_sha256) {
+    throw 'Prepared selftest node does not contain the exact candidate emule.exe'
+}
 $stdout = Join-Path $evidence 'selftest.stdout.log'
 $stderr = Join-Path $evidence 'selftest.stderr.log'
 $started = [DateTime]::UtcNow
@@ -48,6 +52,8 @@ $summary = [ordered]@{
     schema = 'ese.v91.selftest/v1'
     case_id = 'G-SELFTEST'
     candidate_commit = $candidateCommit
+    candidate_binary_sha256 = $candidate.emule_sha256
+    executed_binary_sha256 = $executedBinarySha256
     candidate_binary = [ordered]@{
         bytes = (Get-Item -LiteralPath $packageBinary).Length
         sha256 = Get-LabSha256 -Path $packageBinary

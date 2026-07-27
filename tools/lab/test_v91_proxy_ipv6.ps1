@@ -99,6 +99,11 @@ function Invoke-ProxyScenario {
         -SourcePackage $package -OutputRoot $nodes -RunId $runId `
         -PortOffset $PortOffset
     $node = Join-Path $nodes "$runId-a"
+    $nodeBinary = Join-Path $node 'emule.exe'
+    $nodeBinarySha256 = Get-LabSha256 -Path $nodeBinary
+    if ($nodeBinarySha256 -ne $candidate.emule_sha256) {
+        throw "$CaseId prepared node does not contain the exact candidate emule.exe"
+    }
     $proxyPort = 32000 + $PortOffset
     $tcpPort = 4662 + $PortOffset
     $udpPort = 4672 + $PortOffset
@@ -134,7 +139,7 @@ function Invoke-ProxyScenario {
             Start-Sleep -Milliseconds 100
         } while ([DateTime]::UtcNow -lt $readyDeadline)
 
-        $emuleProcess = Start-Process -FilePath (Join-Path $node 'emule.exe') `
+        $emuleProcess = Start-Process -FilePath $nodeBinary `
             -ArgumentList @(
                 '--portable',
                 '--ignoreinstances',
@@ -216,6 +221,8 @@ function Invoke-ProxyScenario {
             schema = 'ese.v91.proxy-case/v1'
             case_id = $CaseId
             candidate_commit = $candidateCommit
+            candidate_binary_sha256 = $candidate.emule_sha256
+            executed_binary_sha256 = $nodeBinarySha256
             captured_at_utc = Get-LabUtcTimestamp
             target = [ordered]@{
                 family = 'IPv6'
@@ -254,6 +261,7 @@ $overall = if (@($results | Where-Object { $_.verdict -ne 'PASS' }).Count -eq 0)
 $summary = [ordered]@{
     schema = 'ese.v91.proxy-summary/v1'
     candidate_commit = $candidateCommit
+    candidate_binary_sha256 = $candidate.emule_sha256
     generated_at_utc = Get-LabUtcTimestamp
     target_family = 'IPv6'
     cases = $results

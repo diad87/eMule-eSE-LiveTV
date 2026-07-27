@@ -150,6 +150,17 @@ function Stop-V91Node {
     }
 }
 
+function Get-VerifiedCandidateNodeHash {
+    param([Parameter(Mandatory = $true)][string]$NodePath)
+
+    $binary = Join-Path $NodePath 'emule.exe'
+    $hash = Get-LabSha256 -Path $binary
+    if ($hash -ne $candidate.emule_sha256) {
+        throw "Prepared node does not contain the exact candidate emule.exe: $NodePath"
+    }
+    return $hash
+}
+
 function Get-TcpSnapshot {
     param([Parameter(Mandatory = $true)][int]$ProcessId)
     return @(
@@ -184,6 +195,7 @@ function Invoke-RejectionScenario {
         -SourcePackage $packageFullPath -OutputRoot $nodesPath `
         -RunId $runId -PortOffset $PortOffset
     $node = Join-Path $nodesPath "$runId-a"
+    $nodeBinarySha256 = Get-VerifiedCandidateNodeHash -NodePath $node
     $preferences = Join-Path $node 'config\preferences.ini'
     Set-ScenarioPreferences -Path $preferences `
         -BaseConsent $BaseConsent -AdvancedConsent $AdvancedConsent `
@@ -235,6 +247,8 @@ function Invoke-RejectionScenario {
         $artifact = [ordered]@{
             schema = 'ese.v91.consent-scenario/v1'
             candidate_commit = $candidateCommit
+            candidate_binary_sha256 = $candidate.emule_sha256
+            executed_binary_sha256 = $nodeBinarySha256
             scenario = $Name
             round = $Round
             captured_at_utc = Get-LabUtcTimestamp
@@ -265,6 +279,7 @@ function Invoke-AcceptAndRevokeScenario {
         -SourcePackage $packageFullPath -OutputRoot $nodesPath `
         -RunId $runId -PortOffset $PortOffset
     $node = Join-Path $nodesPath "$runId-b"
+    $nodeBinarySha256 = Get-VerifiedCandidateNodeHash -NodePath $node
     $preferences = Join-Path $node 'config\preferences.ini'
     Set-ScenarioPreferences -Path $preferences `
         -BaseConsent 2 -AdvancedConsent 2 -ContributionConsent 2
@@ -350,6 +365,8 @@ function Invoke-AcceptAndRevokeScenario {
         $artifact = [ordered]@{
             schema = 'ese.v91.accept-revoke/v1'
             candidate_commit = $candidateCommit
+            candidate_binary_sha256 = $candidate.emule_sha256
+            executed_binary_sha256 = $nodeBinarySha256
             round = $Round
             captured_at_utc = Get-LabUtcTimestamp
             accepted_state = ConvertTo-LabSanitizedValue $before -RedactAddresses
@@ -421,6 +438,7 @@ $overall = if (@($caseSummary | Where-Object { $_.verdict -ne 'PASS' }).Count -e
 $summary = [ordered]@{
     schema = 'ese.v91.consent-summary/v1'
     candidate_commit = $candidateCommit
+    candidate_binary_sha256 = $candidate.emule_sha256
     generated_at_utc = Get-LabUtcTimestamp
     package_name = Split-Path -Leaf $packageFullPath
     cases = $caseSummary

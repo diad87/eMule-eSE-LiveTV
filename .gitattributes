@@ -1,0 +1,3 @@
+# Quality evidence is hashed byte-for-byte by its manifest. Do not apply
+# line-ending conversion or other text filters on checkout.
+quality/** -text

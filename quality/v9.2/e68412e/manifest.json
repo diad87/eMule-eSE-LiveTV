@@ -36,8 +36,10 @@
       "execution_requested": "gpt-5.6-luna/medium",
       "execution_actual": "gpt-5.6-terra/medium",
       "fallback": "LUNA_UNAVAILABLE",
-      "review_requested": "gpt-5.6-terra/high",
-      "review_status": "PENDING"
+      "review_requested": "gpt-5.6-terra/medium",
+      "review_actual": "gpt-5.6-terra/high",
+      "review_escalation": "Independent evidence-integrity audit",
+      "review_status": "FAIL_S2_REMEDIATED_REVIEW_RETRY_PENDING"
     }
   },
   "gates": [
@@ -52,8 +54,8 @@
       "evidence": [
         {
           "path": "wp92-0-baseline/01-libnatmap.log",
-          "bytes": 1336,
-          "sha256": "DAC76425415B22A2B46FEE743270DABF2DDB9D079861BB4CA13E02A15FCBB82A"
+          "bytes": 672,
+          "sha256": "86E08528D329473D29DC01C848B2CDFE5B31D1056E75EB2CEE7EB58FE8A603C5"
         }
       ]
     },
@@ -68,8 +70,8 @@
       "evidence": [
         {
           "path": "wp92-0-baseline/02-direct-port-usage.log",
-          "bytes": 144,
-          "sha256": "EC00ED60A81D04B23C4B7B99BBBDE77BB040BE061B32F39142A265A53E5BB249"
+          "bytes": 71,
+          "sha256": "A47BA1801F5A67E5C178690B8720B031F3D323D13DDBC20E0C080498DD815739"
         }
       ]
     },
@@ -84,8 +86,8 @@
       "evidence": [
         {
           "path": "wp92-0-baseline/03-lab-tools.log",
-          "bytes": 5922,
-          "sha256": "C3A6C0034E6A0A0F06E147BFE584D10504CD931F81F0DF28A961726A7642B8A4"
+          "bytes": 2939,
+          "sha256": "6CAC289B8F5F1A1DAD8F05CC182C6BFC84931719585FC5B4954A8AEB4316459C"
         }
       ]
     },
@@ -100,13 +102,13 @@
       "evidence": [
         {
           "path": "wp92-0-baseline/10-alpha-all-final.stdout.log",
-          "bytes": 27684,
-          "sha256": "40232CAE67035E8912E0010E5FB5ECC2C005C16DE1A40CBE60BC906F6D53AF4A"
+          "bytes": 27837,
+          "sha256": "8659EF954008044AF609CB62C9B68A180A86B30F9953B6ED915F8E2BDD949C1A"
         },
         {
           "path": "wp92-0-baseline/10-alpha-all-final.stderr.log",
-          "bytes": 97631,
-          "sha256": "596D8ED482067EB97597912797ADD5D90188D528863EF2CF98BF076BCC7B2D2F"
+          "bytes": 97356,
+          "sha256": "51C089A9BD5511D89D235008674E6958953A8C68A87FFBC75CA8C52859FD1C80"
         },
         {
           "path": "wp92-0-baseline/10-alpha-all-final.exit.log",
@@ -137,13 +139,13 @@
         },
         {
           "path": "wp92-0-baseline/08-release-x64.stderr.log",
-          "bytes": 398,
-          "sha256": "EB24383BDE2BFD882AD27BBB702F27BBCAA714633B10D6DA8D5C67879B1482BC"
+          "bytes": 400,
+          "sha256": "06A2C257B34F325E15C95753D24D5FCE54CCA035736EDB353272FB5E07278EFA"
         },
         {
           "path": "wp92-0-baseline/08-release-x64.msbuild.log",
-          "bytes": 1768038,
-          "sha256": "3A305A0EDA3C8D48BBA8D5DBE3F7E00A6CC7FA0121252CBE6DE6850883045D78"
+          "bytes": 1782916,
+          "sha256": "8EA79D6EC00F6EA88F0617EF8C450080AFF58B376E67A3A572DAB975FFA5DF7E"
         },
         {
           "path": "wp92-0-baseline/08-release-x64.exit.log",
@@ -222,6 +224,24 @@
       "severity": "warning",
       "counted_warning_lines": 2615,
       "gate_effect": "non-blocking baseline debt; Release x64 completed with exit code 0"
+    }
+  ],
+  "evidence_privacy": {
+    "sanitized_before_versioning": true,
+    "replacements": [
+      "local user profile path",
+      "local account name",
+      "local computer name"
+    ],
+    "credentials_or_private_keys_found": false
+  },
+  "independent_review_history": [
+    {
+      "commit": "5da546c",
+      "verdict": "FAIL",
+      "severity": "S2",
+      "finding": "Ten referenced log/exit artifacts were locally present but ignored by Git.",
+      "remediation": "Version the exact referenced artifacts after local-identity sanitization and refresh every size/hash."
     }
   ],
   "wp92_0_definition_of_done": {

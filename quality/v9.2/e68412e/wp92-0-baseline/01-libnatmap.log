@@ -1,0 +1,25 @@
+test_d0_contracts.cpp
+test_d0_contracts: 25 checks, 0 failures
+test_state_machine.cpp
+natmap_state.cpp
+Generando código...
+test_state_machine: 182789 checks, 0 failures
+test_mapping_codecs.cpp
+natpmp_codec.cpp
+pcp_codec.cpp
+Generando código...
+test_mapping_codecs: 50 checks, 0 failures
+test_lease_policy.cpp
+natmap_policy.cpp
+Generando código...
+test_lease_policy: 73 checks, 0 failures
+test_nat_chain.cpp
+natmap_policy.cpp
+natmap_chain.cpp
+Generando código...
+test_nat_chain: 30 checks, 0 failures
+test_ownership_ledger.cpp
+ownership_ledger.cpp
+Generando código...
+test_ownership_ledger: 42 checks, 0 failures
+libnatmap complete gate: PASS

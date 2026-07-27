@@ -178,3 +178,22 @@ test('C05 validators reject scalar boundaries and response mismatches', async ()
     await assert.rejects(createNatPmpFaultInjector({ type: 'drop' })(packet, command, signal), (error) => error.reason_code === 'NATPMP_FAULT_CONTEXT_INVALID');
   }
 });
+
+test('C05 context rejects MAP/delete responses with opposite success semantics', async () => {
+  const signal = new AbortController().signal;
+  const deleteCommand = decodeNatPmpRequest(Buffer.from(NATPMP_VECTORS.map_tcp_delete_request.hex, 'hex'));
+  const deletePacket = Buffer.from('00820000000000631236000000000000', 'hex');
+  await assert.rejects(
+    createNatPmpFaultInjector({ type: 'change-port', external_port: 9 })(deletePacket, command, signal),
+    (error) => error.reason_code === 'NATPMP_FAULT_CONTEXT_INVALID',
+  );
+  await assert.rejects(
+    createNatPmpFaultInjector({ type: 'drop' })(responsePacket(), deleteCommand, signal),
+    (error) => error.reason_code === 'NATPMP_FAULT_CONTEXT_INVALID',
+  );
+  const rejectedWithLease = responsePacket(); rejectedWithLease.writeUInt16BE(3, 2);
+  await assert.rejects(
+    createNatPmpFaultInjector({ type: 'drop' })(rejectedWithLease, command, signal),
+    (error) => error.reason_code === 'NATPMP_FAULT_CONTEXT_INVALID',
+  );
+});

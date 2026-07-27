@@ -149,7 +149,19 @@ function createNatPmpFaultInjector(actionInput, dependencies = {}) {
     } else {
       fail('NATPMP_FAULT_COMMAND_INVALID');
     }
-    if (snapshot[0] !== 0 || snapshot[1] !== expectedOpcode || snapshot.readUInt16BE(2) > 5) fail('NATPMP_FAULT_CONTEXT_INVALID');
+    const resultCode = snapshot.readUInt16BE(2);
+    if (snapshot[0] !== 0 || snapshot[1] !== expectedOpcode || resultCode > 5) fail('NATPMP_FAULT_CONTEXT_INVALID');
+    if (snapshot.length === 12) {
+      const zeroAddress = snapshot.subarray(8, 12).equals(Buffer.alloc(4));
+      if ((resultCode === 0 && zeroAddress) || (resultCode !== 0 && !zeroAddress)) fail('NATPMP_FAULT_CONTEXT_INVALID');
+    } else {
+      const externalPort = snapshot.readUInt16BE(10); const lifetime = snapshot.readUInt32BE(12);
+      const validSuccess = operation === 'map'
+        ? externalPort > 0 && lifetime > 0
+        : externalPort === 0 && lifetime === 0;
+      if ((resultCode === 0 && !validSuccess) ||
+          (resultCode !== 0 && (externalPort !== 0 || lifetime !== 0))) fail('NATPMP_FAULT_CONTEXT_INVALID');
+    }
     if (!(signal instanceof AbortSignal)) fail('NATPMP_FAULT_SIGNAL_INVALID');
     if (signal.aborted) fail('NATPMP_FAULT_ABORTED');
     if (action.type === 'drop') return null;

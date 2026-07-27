@@ -323,6 +323,14 @@ epoch is rejected as an ineffective fault.
 prefix, from an empty datagram through 15 bytes.  It cannot grow or reuse the
 owned response buffer.
 
+## C06 diagnostic smoke client
+
+`natpmp_diagnostic_client.js` is a loopback-only TCP MAP probe for the smoke
+gate.  It sends one bounded request, accepts a response only from the exact
+configured gateway endpoint, parses the NAT-PMP success fields independently
+and returns a sanitized frozen `mapped` state.  Its timeout is capped at five
+seconds and every exit closes the UDP handle.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

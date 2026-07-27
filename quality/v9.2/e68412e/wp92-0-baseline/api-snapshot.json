@@ -1,0 +1,62 @@
+{
+  "schema": "ese.v92.api-snapshot/v1",
+  "captured_at_utc": "2026-07-27T17:35:00Z",
+  "head_commit": "e68412e1a047df9ce4529420c38d152974961a3f",
+  "code_base_commit": "08aa6521f7d7907edb3584266abc3a9e31693161",
+  "files": [
+    {
+      "path": "libnatmap/include/natmap/natmap_types.h",
+      "bytes": 6699,
+      "sha256": "71BD85365FDB16078932F852816E63B2E5A654B61D80F731775C5E088ECB4C9A"
+    },
+    {
+      "path": "libnatmap/include/natmap/natmap_state.h",
+      "bytes": 1230,
+      "sha256": "7CB139E980C982CF2F929878703F7416F0A7CFD79E4C0CF5B97D8CE15118A0F4"
+    },
+    {
+      "path": "libreach/include/reach/reach.h",
+      "bytes": 10587,
+      "sha256": "385A19C58AC1846967E899BD456E9AFC9B08AB5B56179A6260B8ADB877B8E9D5"
+    },
+    {
+      "path": "libreach/include/reach/reach_types.h",
+      "bytes": 7052,
+      "sha256": "B354A6E9C79355F993A70E648F10C1E022DF64944BCB5BE10426EB31092D7154"
+    },
+    {
+      "path": "srchybrid/DirectReachabilityManager.h",
+      "bytes": 2333,
+      "sha256": "BF46A4015BA260C6A1D097A5BAD567F156F42CB77DE9079AE1F556204D77C69C"
+    },
+    {
+      "path": "srchybrid/ReachabilityWire.h",
+      "bytes": 1014,
+      "sha256": "AB430968C18A9D838D4EC1EDE598A0DCC23B270F235A7DCCE189ADD24E61B87D"
+    }
+  ],
+  "persisted_enum_contract": {
+    "reachability_states": [
+      "Disabled",
+      "Discovering",
+      "Mapping",
+      "CandidateMapped",
+      "Verifying",
+      "Reachable",
+      "Renewing",
+      "Degraded",
+      "BlockedByCgnat",
+      "BlockedByRouter"
+    ],
+    "reason_code_max_name": "RouterRejectedAllCandidates",
+    "reason_code_max_value": 21,
+    "ownership_nonce_bytes": 12
+  },
+  "planned_red_contract_gaps": [
+    "PortLease still exposes owned_by_us as a boolean instead of a typed ownership proof.",
+    "Evidence has no immutable verification-attempt identifier or deadline.",
+    "The public snapshot has no native/overlay/unknown network-kind discriminator.",
+    "Mapper epoch continuity/reset classification is not represented in the public API.",
+    "The public snapshot does not yet expose the complete DirectCandidateSnapshotV1 contract."
+  ]
+}

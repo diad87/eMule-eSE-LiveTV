@@ -88,6 +88,12 @@ function normalizeAction(input) {
     if (!Number.isInteger(lifetime) || lifetime < 1 || lifetime > 0xffffffff) fail('NATPMP_FAULT_INVALID');
     return Object.freeze({ type, lifetime_seconds: lifetime });
   }
+  if (type === 'restart-gateway') {
+    exactDataObject(input, ['type', 'restart_epoch_seconds']);
+    const epoch = ownData(input, 'restart_epoch_seconds');
+    if (!Number.isInteger(epoch) || epoch < 0 || epoch > 0xffffffff) fail('NATPMP_FAULT_INVALID');
+    return Object.freeze({ type, restart_epoch_seconds: epoch });
+  }
   fail('NATPMP_FAULT_UNSUPPORTED');
 }
 
@@ -125,6 +131,10 @@ function createNatPmpFaultInjector(actionInput, dependencies = {}) {
     if (action.type === 'cap-lease') {
       if (snapshot.length !== 16 || snapshot.readUInt16BE(2) !== 0 || ownData(command, 'operation') !== 'map') fail('NATPMP_FAULT_INAPPLICABLE');
       snapshot.writeUInt32BE(Math.min(snapshot.readUInt32BE(12), action.lifetime_seconds), 12);
+      return snapshot;
+    }
+    if (action.type === 'restart-gateway') {
+      snapshot.writeUInt32BE(action.restart_epoch_seconds, 4);
       return snapshot;
     }
     fail('NATPMP_FAULT_UNSUPPORTED');

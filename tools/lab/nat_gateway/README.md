@@ -314,6 +314,9 @@ response; it is rejected for other packet/command combinations.
 `cap-lease` deterministically reduces a successful MAP lifetime to the lower
 of the encoded lease and a positive configured cap.
 
+`restart-gateway` replaces only the response epoch with the configured
+post-restart value, including the normative reset value zero.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

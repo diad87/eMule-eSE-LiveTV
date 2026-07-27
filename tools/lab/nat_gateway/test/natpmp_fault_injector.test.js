@@ -83,3 +83,13 @@ test('C05 short lease: caps only the lease of a successful non-delete MAP', asyn
   assert.deepEqual(result.subarray(0, 12), packet.subarray(0, 12));
   assert.throws(() => createNatPmpFaultInjector({ type: 'cap-lease', lifetime_seconds: 0 }), NatPmpFaultError);
 });
+
+test('C05 epoch reset: replaces only the response epoch, including zero', async () => {
+  const packet = Buffer.from(NATPMP_VECTORS.map_tcp_response.hex, 'hex');
+  const inject = createNatPmpFaultInjector({ type: 'restart-gateway', restart_epoch_seconds: 0 });
+  const result = await inject(packet, command, new AbortController().signal);
+  assert.equal(result.readUInt32BE(4), 0);
+  assert.deepEqual(result.subarray(0, 4), packet.subarray(0, 4));
+  assert.deepEqual(result.subarray(8), packet.subarray(8));
+  assert.throws(() => createNatPmpFaultInjector({ type: 'restart-gateway', restart_epoch_seconds: -1 }), NatPmpFaultError);
+});

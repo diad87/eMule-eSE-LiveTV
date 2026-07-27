@@ -1,6 +1,6 @@
 # T8 simulated NAT gateway
 
-Implementation status: `92-1.2` / `B02` adds an offline-only scenario loader.
+Implementation status: `92-1.2` / `B04` adds the offline-only injectable clock.
 There is intentionally no socket code or production behavior in this directory.
 
 The normative architecture is
@@ -87,6 +87,24 @@ The only dependency is locked `ajv@8.20.0` (MIT), instantiated via
 uses only the explicitly supplied path, enforces a 1 MiB byte limit and rejects
 malformed UTF-8. It does not search paths, read environment configuration or
 emit scenario data.
+
+## Injectable clock (B04)
+
+`clock.js` is the sole time port available to the lab domain. It exports
+`VirtualMonotonicClock` and `RealMonotonicClock`, each with `now_ms()` and
+`advance_ms(delta_ms)`. Values are non-negative safe integers measured in
+milliseconds; neither class uses UTC. The virtual clock is deterministic and
+is the only clock that accepts `advance_ms`. The real clock accepts an
+injected monotonic source (the default wraps the Node standard `performance`
+clock) and fails closed if that source is invalid or regresses.
+
+`ClockError` exposes stable `reason_code` and `field_path`. No reset method is
+provided: reset is a gateway-state operation, not a reversal of monotonic
+time. Unit tests inject every clock source and use no timer, sleep or socket.
+The mapping-model integration test passes `clock.now_ms()` explicitly into
+renewal and expiry operations, proving a lease remains live before its
+deadline, expires exactly at it, renewal moves the deadline, and expiry cannot
+be revived.
 
 ## Command surface
 

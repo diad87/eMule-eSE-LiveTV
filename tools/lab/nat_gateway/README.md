@@ -261,6 +261,36 @@ configuration, normalized states, counters and fault summary before combining
 them with the sanitized mapping projection. Finite leases are checked again for
 exact monotonic expiry arithmetic before projection.
 
+## C04 UDP loopback boundary
+
+`natpmp_udp_server.js` is the deliberately thin UDP fixture boundary.  It only
+binds `udp4` to an explicit IPv4 address (never a wildcard), accepts packets of
+at most 12 bytes, validates an explicit IPv4 source allow-list, then calls the
+injected application exactly once with the frozen decoded command and a frozen
+source snapshot.  The application is the mapping/ownership-policy boundary;
+the UDP adapter neither owns nor reproduces that policy.
+
+The queue is FIFO and fixed at 32 waiting datagrams.  Excess traffic is dropped
+before application work.  `close()` removes reception, discards waiting work,
+aborts the callback signal and returns without waiting for a callback that
+ignores cancellation; any late callback result is observed and cannot send once
+closing begins.
+
+The required `event_sink` receives only the adapter envelope
+`{ protocol, outcome, reason_code }`: it never contains a raw address, port,
+packet or mapping field.  An outer scenario adapter may canonicalize those
+closed labels into the structured log after it has the required context; C04
+does not invent transport for malformed or external-address traffic.
+
+`event_sink` is a trusted, injected, synchronous `void` observer, not a
+scenario-supplied plugin or an asynchronous extension point.  It must return
+`undefined` and must not start detached asynchronous work.  A synchronous
+throw is contained, and an ordinary accidentally returned native Promise is
+observed defensively, but work deliberately hidden by the callback (for
+example, a rejected Promise wrapped in a `Proxy`) is outside the adapter's
+containment boundary: JavaScript cannot safely recover that Proxy's target.
+The production runner must supply the repository-owned structured-log sink.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

@@ -299,6 +299,11 @@ sanitized `response-dropped` event and performs no send.  The injector receives
 only an owned response copy, the frozen decoded command and the lifecycle abort
 signal.  It never mutates the encoder output or mapping state.
 
+The `delay` action uses a cancellable scheduler and returns an owned packet copy
+only after the fixed delay.  C05 accepts `jitter_ms: 0`; seeded jitter selection
+belongs to the shared fault selector, so this protocol edge cannot introduce
+runtime randomness.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

@@ -1,6 +1,7 @@
 'use strict';
 
 const { types } = require('node:util');
+const { setTimeout: delayTimer } = require('node:timers/promises');
 
 const objectPrototype = Object.prototype;
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
@@ -49,19 +50,42 @@ function copyPacket(value) {
   try { return Buffer.from(Buffer.from(buffer, offset, length)); } catch { fail('NATPMP_FAULT_PACKET_INVALID'); }
 }
 function normalizeAction(input) {
-  exactDataObject(input, ['type']);
-  if (ownData(input, 'type') !== 'drop') fail('NATPMP_FAULT_UNSUPPORTED');
-  return Object.freeze({ type: 'drop' });
+  if (!dataObject(input)) fail('NATPMP_FAULT_INVALID');
+  const type = ownData(input, 'type');
+  if (type === 'drop') {
+    exactDataObject(input, ['type']);
+    return Object.freeze({ type });
+  }
+  if (type === 'delay') {
+    exactDataObject(input, ['type', 'delay_ms', 'jitter_ms']);
+    const delayMs = ownData(input, 'delay_ms'); const jitterMs = ownData(input, 'jitter_ms');
+    if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > 0xffffffff ||
+        !Number.isInteger(jitterMs) || jitterMs !== 0) fail('NATPMP_FAULT_INVALID');
+    return Object.freeze({ type, delay_ms: delayMs });
+  }
+  fail('NATPMP_FAULT_UNSUPPORTED');
 }
 
-function createNatPmpFaultInjector(actionInput) {
+function createNatPmpFaultInjector(actionInput, dependencies = {}) {
   const action = normalizeAction(actionInput);
+  if (!dataObject(dependencies)) fail('NATPMP_FAULT_DEPENDENCIES_INVALID');
+  const hasSleep = Object.hasOwn(dependencies, 'sleep');
+  exactDataObject(dependencies, hasSleep ? ['sleep'] : []);
+  const sleep = hasSleep
+    ? ownData(dependencies, 'sleep')
+    : ((milliseconds, signal) => delayTimer(milliseconds, undefined, { signal }));
+  if (typeof sleep !== 'function') fail('NATPMP_FAULT_DEPENDENCIES_INVALID');
   return async function injectNatPmpFault(packet, command, signal) {
-    copyPacket(packet);
+    const snapshot = copyPacket(packet);
     if (!dataObject(command) || !Object.isFrozen(command)) fail('NATPMP_FAULT_COMMAND_INVALID');
     if (!(signal instanceof AbortSignal)) fail('NATPMP_FAULT_SIGNAL_INVALID');
     if (signal.aborted) fail('NATPMP_FAULT_ABORTED');
     if (action.type === 'drop') return null;
+    if (action.type === 'delay') {
+      try { await sleep(action.delay_ms, signal); } catch { fail(signal.aborted ? 'NATPMP_FAULT_ABORTED' : 'NATPMP_FAULT_DELAY_FAILED'); }
+      if (signal.aborted) fail('NATPMP_FAULT_ABORTED');
+      return snapshot;
+    }
     fail('NATPMP_FAULT_UNSUPPORTED');
   };
 }

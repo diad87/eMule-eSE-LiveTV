@@ -109,10 +109,23 @@ void CSplashScreen::OnPaint()
 			lf.lfQuality = ANTIALIASED_QUALITY;
 			_tcscpy(lf.lfFaceName, _T("Arial"));
 			CFont font;
-			font.CreateFontIndirect(&lf);
-			CFont *pOldFont = dc.SelectObject(&font);
 			const CString &strAppVersion(_T("eMule ") + theApp.m_strCurVersionLong);
-			rc.top += dc.DrawText(strAppVersion, &rc, DT_CENTER | DT_NOPREFIX);
+			const int iMaxTextWidth = max(1, rc.Width() - 16);
+			CFont *pOldFont = NULL;
+			// Fork release labels are longer than the legacy eMule version.
+			// Keep the splash text on one line and shrink it only as much as
+			// needed to fit the bitmap, including at non-default DPI.
+			for (int iHeight = lf.lfHeight; iHeight >= 16; --iHeight) {
+				lf.lfHeight = iHeight;
+				VERIFY(font.CreateFontIndirect(&lf));
+				pOldFont = dc.SelectObject(&font);
+				if (dc.GetTextExtent(strAppVersion).cx <= iMaxTextWidth || iHeight == 16)
+					break;
+				dc.SelectObject(pOldFont);
+				pOldFont = NULL;
+				font.DeleteObject();
+			}
+			rc.top += dc.DrawText(strAppVersion, &rc, DT_CENTER | DT_NOPREFIX | DT_SINGLELINE);
 			if (pOldFont)
 				dc.SelectObject(pOldFont);
 			font.DeleteObject();

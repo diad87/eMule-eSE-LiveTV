@@ -1,0 +1,69 @@
+'use strict';
+
+const { types } = require('node:util');
+
+const objectPrototype = Object.prototype;
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+const bufferLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteLength').get;
+const bufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'buffer').get;
+const byteOffsetGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteOffset').get;
+
+class NatPmpFaultError extends Error {
+  constructor(reasonCode) {
+    super(reasonCode);
+    this.name = 'NatPmpFaultError';
+    this.reason_code = reasonCode;
+  }
+}
+
+function fail(code) { throw new NatPmpFaultError(code); }
+function dataObject(value) {
+  return value !== null && typeof value === 'object' &&
+    !types.isProxy(value) && Object.getPrototypeOf(value) === objectPrototype;
+}
+function ownData(object, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  return descriptor && Object.hasOwn(descriptor, 'value') && descriptor.enumerable
+    ? descriptor.value
+    : undefined;
+}
+function exactDataObject(value, keys) {
+  if (!dataObject(value) || Object.getOwnPropertySymbols(value).length) fail('NATPMP_FAULT_INVALID');
+  const names = Object.getOwnPropertyNames(value);
+  if (names.length !== keys.length || names.some((name) => !keys.includes(name))) fail('NATPMP_FAULT_INVALID');
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.enumerable !== true) fail('NATPMP_FAULT_INVALID');
+  }
+}
+function copyPacket(value) {
+  if (types.isProxy(value) || !types.isUint8Array(value)) fail('NATPMP_FAULT_PACKET_INVALID');
+  let length; let buffer; let offset;
+  try {
+    length = bufferLengthGetter.call(value);
+    buffer = bufferGetter.call(value);
+    offset = byteOffsetGetter.call(value);
+  } catch { fail('NATPMP_FAULT_PACKET_INVALID'); }
+  if (length !== 12 && length !== 16) fail('NATPMP_FAULT_PACKET_INVALID');
+  if (types.isSharedArrayBuffer(buffer)) fail('NATPMP_FAULT_PACKET_INVALID');
+  try { return Buffer.from(Buffer.from(buffer, offset, length)); } catch { fail('NATPMP_FAULT_PACKET_INVALID'); }
+}
+function normalizeAction(input) {
+  exactDataObject(input, ['type']);
+  if (ownData(input, 'type') !== 'drop') fail('NATPMP_FAULT_UNSUPPORTED');
+  return Object.freeze({ type: 'drop' });
+}
+
+function createNatPmpFaultInjector(actionInput) {
+  const action = normalizeAction(actionInput);
+  return async function injectNatPmpFault(packet, command, signal) {
+    copyPacket(packet);
+    if (!dataObject(command) || !Object.isFrozen(command)) fail('NATPMP_FAULT_COMMAND_INVALID');
+    if (!(signal instanceof AbortSignal)) fail('NATPMP_FAULT_SIGNAL_INVALID');
+    if (signal.aborted) fail('NATPMP_FAULT_ABORTED');
+    if (action.type === 'drop') return null;
+    fail('NATPMP_FAULT_UNSUPPORTED');
+  };
+}
+
+module.exports = Object.freeze({ NatPmpFaultError, createNatPmpFaultInjector });

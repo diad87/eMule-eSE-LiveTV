@@ -291,6 +291,14 @@ example, a rejected Promise wrapped in a `Proxy`) is outside the adapter's
 containment boundary: JavaScript cannot safely recover that Proxy's target.
 The production runner must supply the repository-owned structured-log sink.
 
+## C05 NAT-PMP deterministic faults
+
+`natpmp_fault_injector.js` is the post-encoder, pre-send fault boundary.  Its
+first closed action, `drop`, returns no packet, so the UDP adapter emits the
+sanitized `response-dropped` event and performs no send.  The injector receives
+only an owned response copy, the frozen decoded command and the lifecycle abort
+signal.  It never mutates the encoder output or mapping state.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

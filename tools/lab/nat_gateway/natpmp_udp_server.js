@@ -65,6 +65,13 @@ function boundedPacket(packet) {
   if (length > MAX_DATAGRAM_BYTES) fail('NATPMP_UDP_PACKET_OVERSIZE');
   return packet;
 }
+function boundedResponse(packet) {
+  if (types.isProxy(packet) || !Buffer.isBuffer(packet)) fail('NATPMP_UDP_RESPONSE_INVALID');
+  let length;
+  try { length = typedArrayByteLengthGetter.call(packet); } catch { fail('NATPMP_UDP_RESPONSE_INVALID'); }
+  if (length > 16) fail('NATPMP_UDP_RESPONSE_INVALID');
+  return Buffer.from(packet);
+}
 function socketAddressSnapshot(socket) {
   let value;
   try { value = socket.address(); } catch { fail('NATPMP_UDP_BIND_INVALID'); }
@@ -133,10 +140,12 @@ function raceWithAbort(start, signal) {
 
 function createNatPmpUdpServer(configInput, dependencies = {}) {
   const config = strictConfig(configInput);
-  if (!dataObject(dependencies) || Object.getOwnPropertySymbols(dependencies).length || Object.getOwnPropertyNames(dependencies).some((name) => name !== 'socket_factory')) fail('NATPMP_UDP_DEPENDENCIES_INVALID');
+  if (!dataObject(dependencies) || Object.getOwnPropertySymbols(dependencies).length || Object.getOwnPropertyNames(dependencies).some((name) => !['socket_factory', 'response_fault'].includes(name))) fail('NATPMP_UDP_DEPENDENCIES_INVALID');
   const hasFactory = Object.hasOwn(dependencies, 'socket_factory');
   const factory = hasFactory ? ownData(dependencies, 'socket_factory') : (() => dgram.createSocket('udp4'));
-  if (hasFactory && typeof factory !== 'function') fail('NATPMP_UDP_DEPENDENCIES_INVALID');
+  const hasResponseFault = Object.hasOwn(dependencies, 'response_fault');
+  const responseFault = hasResponseFault ? ownData(dependencies, 'response_fault') : null;
+  if ((hasFactory && typeof factory !== 'function') || (hasResponseFault && typeof responseFault !== 'function')) fail('NATPMP_UDP_DEPENDENCIES_INVALID');
   let state = 'new'; let socket; let queue = []; let active = false; let closePromise; let idleResolvers = []; const aborter = new AbortController();
   const idle = () => { if (!active && queue.length === 0) { const resolvers = idleResolvers; idleResolvers = []; resolvers.forEach((resolve) => resolve()); } };
   const waitIdle = () => (!active && queue.length === 0 ? Promise.resolve() : new Promise((resolve) => idleResolvers.push(resolve)));
@@ -155,6 +164,16 @@ function createNatPmpUdpServer(configInput, dependencies = {}) {
     if (state !== 'running') { safeEvent(config.eventSink, 'rejected', 'closed'); return; }
     let response;
     try { response = encodeNatPmpResponse(descriptor); } catch { safeEvent(config.eventSink, 'failed', 'model-failure'); return; }
+    if (responseFault) {
+      const injected = await raceWithAbort(
+        () => responseFault(Buffer.from(response), command, aborter.signal),
+        aborter.signal,
+      );
+      if (injected.aborted) { safeEvent(config.eventSink, 'rejected', 'closed'); return; }
+      if (injected.failed) { safeEvent(config.eventSink, 'failed', 'fault-failed'); return; }
+      if (injected.value === null) { safeEvent(config.eventSink, 'succeeded', 'response-dropped'); return; }
+      try { response = boundedResponse(injected.value); } catch { safeEvent(config.eventSink, 'failed', 'fault-failed'); return; }
+    }
     const sent = await raceWithAbort(() => sendSocket(socket, response, item.source), aborter.signal);
     if (sent.aborted) { safeEvent(config.eventSink, 'rejected', 'closed'); return; }
     if (sent.failed) { safeEvent(config.eventSink, 'failed', 'send-failed'); return; }

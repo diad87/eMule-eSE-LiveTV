@@ -170,3 +170,20 @@ test('C04: event observation cannot strand the queue and observes an accidental 
   await closing; await new Promise((resolve) => setImmediate(resolve));
   assert.equal(server.state(), 'closed'); assert.equal(applications, 0);
 });
+
+test('C05 drop: response fault suppresses send and reports the drop', async () => {
+  const socket = new EventEmitter(); const events = []; let sends = 0;
+  socket.bind = () => socket.emit('listening');
+  socket.address = () => ({ address: '127.0.0.1', port: 9028 });
+  socket.send = () => { sends += 1; };
+  socket.close = (done) => done();
+  const server = createNatPmpUdpServer(config({ event_sink: (event) => events.push(event) }), {
+    socket_factory: () => socket,
+    response_fault: async () => null,
+  });
+  await server.start(); socket.emit('message', Buffer.from([0, 0]), { address: '127.0.0.1', port: 1 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sends, 0);
+  assert.ok(events.some((event) => event.reason_code === 'response-dropped'));
+  await server.close();
+});

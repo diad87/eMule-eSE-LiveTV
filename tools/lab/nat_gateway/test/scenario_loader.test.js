@@ -118,25 +118,57 @@ test('never mutates the caller object', () => {
 
 test('accepts only plain, dense JSON data without evaluating object behavior', () => {
   expectError(() => loadScenarioFromObject(null), 'SCENARIO_OBJECT_INVALID', '$');
+  expectError(() => loadScenarioFromObject([]), 'SCENARIO_OBJECT_INVALID', '$');
   expectError(() => loadScenarioFromObject({ toJSON() { return validScenario(); } }), 'SCENARIO_OBJECT_INVALID', '$.toJSON');
   expectError(() => loadScenarioFromObject({ ...validScenario(), extra: undefined }), 'SCENARIO_OBJECT_INVALID', '$.extra');
+  expectError(() => loadScenarioFromObject({ ...validScenario(), extra: 1n }), 'SCENARIO_OBJECT_INVALID', '$.extra');
+  expectError(() => loadScenarioFromObject({ ...validScenario(), extra: Symbol('not-json') }), 'SCENARIO_OBJECT_INVALID', '$.extra');
   expectError(() => loadScenarioFromObject({ ...validScenario(), extra: Number.NaN }), 'SCENARIO_OBJECT_INVALID', '$.extra');
   const accessor = validScenario();
   Object.defineProperty(accessor, 'extra', { enumerable: true, get() { throw new Error('must not execute'); } });
   expectError(() => loadScenarioFromObject(accessor), 'SCENARIO_OBJECT_INVALID', '$.extra');
+  const hidden = validScenario();
+  Object.defineProperty(hidden, 'extra', { enumerable: false, value: true });
+  expectError(() => loadScenarioFromObject(hidden), 'SCENARIO_OBJECT_INVALID', '$.extra');
+  const symbolObject = validScenario();
+  symbolObject[Symbol('not-json')] = true;
+  expectError(() => loadScenarioFromObject(symbolObject), 'SCENARIO_OBJECT_INVALID', '$');
   const sparse = validScenario(); sparse.gateway.lan_addresses = [];
   sparse.gateway.lan_addresses[1] = '192.0.2.10';
   expectError(() => loadScenarioFromObject(sparse), 'SCENARIO_OBJECT_INVALID', '$.gateway.lan_addresses[0]');
+  const customArray = validScenario();
+  customArray.gateway.lan_addresses.extra = true;
+  expectError(() => loadScenarioFromObject(customArray), 'SCENARIO_OBJECT_INVALID', '$.gateway.lan_addresses');
+  const symbolArray = validScenario();
+  symbolArray.gateway.lan_addresses[Symbol('not-json')] = true;
+  expectError(() => loadScenarioFromObject(symbolArray), 'SCENARIO_OBJECT_INVALID', '$.gateway.lan_addresses');
+  const accessorArray = validScenario();
+  Object.defineProperty(accessorArray.gateway.lan_addresses, '0', { enumerable: true, get() { throw new Error('must not execute'); } });
+  expectError(() => loadScenarioFromObject(accessorArray), 'SCENARIO_OBJECT_INVALID', '$.gateway.lan_addresses[0]');
   const custom = Object.create({ inherited: true }); Object.assign(custom, validScenario());
   expectError(() => loadScenarioFromObject(custom), 'SCENARIO_OBJECT_INVALID', '$');
   const cyclic = validScenario(); cyclic.extra = cyclic;
   expectError(() => loadScenarioFromObject(cyclic), 'SCENARIO_OBJECT_INVALID', '$.extra');
+
+  const nullPrototype = Object.assign(Object.create(null), validScenario());
+  assert.equal(loadScenarioFromObject(nullPrototype).scenario_id, 'minimal-scenario');
+
+  const shared = { enabled: false };
+  const repeatedReference = validScenario();
+  repeatedReference.protocols.pcp = shared;
+  repeatedReference.protocols.natpmp = shared;
+  assert.equal(loadScenarioFromObject(repeatedReference).protocols.pcp.enabled, false);
 });
 
 test('reports deterministic parse and size errors', () => {
+  expectError(() => loadScenarioFromText(Buffer.from('{}')), 'SCENARIO_TEXT_INVALID', '$');
   expectError(() => loadScenarioFromText('{'), 'SCENARIO_JSON_INVALID', '$');
   expectError(() => loadScenarioFromText('x'.repeat(1024 * 1024 + 1)), 'SCENARIO_TOO_LARGE', '$');
   expectError(() => loadScenarioFromFile(''), 'SCENARIO_FILE_PATH_INVALID', '$');
+  expectError(() => loadScenarioFromFile(null), 'SCENARIO_FILE_PATH_INVALID', '$');
+  expectError(() => loadScenarioFromFile(`bad${String.fromCharCode(0)}path`), 'SCENARIO_FILE_PATH_INVALID', '$');
+  expectError(() => loadScenarioFromFile(path.join(os.tmpdir(), 'ese-v92-file-that-does-not-exist.json')), 'SCENARIO_FILE_UNREADABLE', '$');
+  expectError(() => loadScenarioFromFile(os.tmpdir()), 'SCENARIO_FILE_UNREADABLE', '$');
 });
 
 test('rejects an oversized or invalid UTF-8 scenario file before parsing it', () => {
@@ -149,6 +181,16 @@ test('rejects an oversized or invalid UTF-8 scenario file before parsing it', ()
     const invalidUtf8 = path.join(directory, 'invalid-utf8.json');
     fs.writeFileSync(invalidUtf8, Buffer.from([0xff, 0xfe]));
     expectError(() => loadScenarioFromFile(invalidUtf8), 'SCENARIO_UTF8_INVALID', '$');
+
+    const unreadableAfterStat = path.join(directory, 'unreadable-after-stat.json');
+    fs.writeFileSync(unreadableAfterStat, '{}', 'utf8');
+    const originalReadFileSync = fs.readFileSync;
+    fs.readFileSync = () => { throw new Error('simulated read failure after successful stat'); };
+    try {
+      expectError(() => loadScenarioFromFile(unreadableAfterStat), 'SCENARIO_FILE_UNREADABLE', '$');
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+    }
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -157,8 +199,15 @@ test('rejects an oversized or invalid UTF-8 scenario file before parsing it', ()
 test('fails closed before effects for missing sections and unknown fields', () => {
   const missing = validScenario(); delete missing.protocols;
   expectError(() => loadScenarioFromObject(missing), 'SCHEMA_REQUIRED', '$.protocols');
+  const twoMissing = validScenario(); delete twoMissing.protocols; delete twoMissing.gateway;
+  expectError(() => loadScenarioFromObject(twoMissing), 'SCHEMA_REQUIRED', '$.gateway');
   const extra = validScenario(); extra.unexpected = true;
   expectError(() => loadScenarioFromObject(extra), 'SCHEMA_ADDITIONAL_PROPERTY', '$.unexpected');
+
+  const twoUncommonKeywords = validScenario();
+  twoUncommonKeywords.scenario_id = '';
+  twoUncommonKeywords.description = 'x'.repeat(513);
+  expectError(() => loadScenarioFromObject(twoUncommonKeywords), 'SCHEMA_PATTERN', '$.scenario_id');
 });
 
 test('selects the active const-discriminated schema branch for required fields', () => {
@@ -253,6 +302,8 @@ test('requires complete and coherent tcp/udp atomic groups', () => {
   for (const [property, value, field] of [
     ['protocol', 'pcp', 'protocol'],
     ['client_id', 'client-2', 'client_id'],
+    ['external_address', '192.0.2.2', 'external_address'],
+    ['epoch', 11, 'epoch'],
     ['generation', 2, 'generation']
   ]) {
     const incoherent = validScenario();

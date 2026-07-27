@@ -309,13 +309,15 @@ response field that cannot be asserted on failure while preserving the request
 opcode and echoed internal port.
 
 `change-port` replaces only the external port of a successful non-delete MAP
-response; it is rejected for other packet/command combinations.
+response; it is rejected for other packet/command combinations and when the
+configured port would not change the wire result.
 
-`cap-lease` deterministically reduces a successful MAP lifetime to the lower
-of the encoded lease and a positive configured cap.
+`cap-lease` deterministically reduces a successful MAP lifetime to a positive
+configured cap strictly below the encoded lease.
 
 `restart-gateway` replaces only the response epoch with the configured
-post-restart value, including the normative reset value zero.
+post-restart value, including the normative reset value zero.  An unchanged
+epoch is rejected as an ineffective fault.
 
 `truncate` produces the malformed mode by returning the exact configured
 prefix, from an empty datagram through 15 bytes.  It cannot grow or reuse the

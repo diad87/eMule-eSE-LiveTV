@@ -7,6 +7,7 @@ const { decodeNatPmpRequest } = require('../natpmp_request_decoder');
 const { NATPMP_VECTORS } = require('../natpmp_vectors');
 
 const command = decodeNatPmpRequest(Buffer.from(NATPMP_VECTORS.map_tcp_request.hex, 'hex'));
+const responsePacket = () => Buffer.from(NATPMP_VECTORS.map_tcp_response.hex, 'hex');
 
 test('C05 drop: deterministically suppresses the response without mutating input', async () => {
   const packet = Buffer.from(NATPMP_VECTORS.map_tcp_response.hex, 'hex');
@@ -24,9 +25,9 @@ test('C05 drop: rejects hostile action, packet, command and signal shapes', asyn
   await assert.rejects(inject(Buffer.alloc(11), command, new AbortController().signal), NatPmpFaultError);
   await assert.rejects(inject(new Proxy(Buffer.alloc(16), {}), command, new AbortController().signal), NatPmpFaultError);
   await assert.rejects(inject(Buffer.alloc(16), { ...command }, new AbortController().signal), NatPmpFaultError);
-  await assert.rejects(inject(Buffer.alloc(16), command, {}), NatPmpFaultError);
+  await assert.rejects(inject(responsePacket(), command, {}), NatPmpFaultError);
   const aborted = new AbortController(); aborted.abort();
-  await assert.rejects(inject(Buffer.alloc(16), command, aborted.signal), (error) => error.reason_code === 'NATPMP_FAULT_ABORTED');
+  await assert.rejects(inject(responsePacket(), command, aborted.signal), (error) => error.reason_code === 'NATPMP_FAULT_ABORTED');
 });
 
 test('C05 delay: waits through the injected cancellable scheduler and returns an owned copy', async () => {
@@ -43,6 +44,7 @@ test('C05 delay: waits through the injected cancellable scheduler and returns an
 
 test('C05 delay: rejects nondeterministic jitter and maps scheduler cancellation', async () => {
   assert.throws(() => createNatPmpFaultInjector({ type: 'delay', delay_ms: 1, jitter_ms: 1 }), NatPmpFaultError);
+  assert.throws(() => createNatPmpFaultInjector({ type: 'delay', delay_ms: 0x80000000, jitter_ms: 0 }), NatPmpFaultError);
   const controller = new AbortController();
   const inject = createNatPmpFaultInjector(
     { type: 'delay', delay_ms: 1, jitter_ms: 0 },
@@ -73,6 +75,8 @@ test('C05 wrong port: changes only a successful MAP external port', async () => 
   assert.deepEqual(result.subarray(0, 10), original.subarray(0, 10));
   assert.deepEqual(result.subarray(12), original.subarray(12));
   assert.throws(() => createNatPmpFaultInjector({ type: 'change-port', external_port: 0 }), NatPmpFaultError);
+  const forged = Buffer.from(original); forged[1] = 128;
+  await assert.rejects(inject(forged, command, new AbortController().signal), (error) => error.reason_code === 'NATPMP_FAULT_CONTEXT_INVALID');
 });
 
 test('C05 short lease: caps only the lease of a successful non-delete MAP', async () => {
@@ -103,4 +107,74 @@ test('C05 malformed: truncates to the exact configured wire length, including ze
     assert.deepEqual(result, packet.subarray(0, length));
   }
   assert.throws(() => createNatPmpFaultInjector({ type: 'truncate', length_bytes: 16 }), NatPmpFaultError);
+});
+
+test('C05 applicability: rejects no-op values, incoherent commands and forged wire headers', async () => {
+  const packet = Buffer.from(NATPMP_VECTORS.map_tcp_response.hex, 'hex');
+  const signal = new AbortController().signal;
+  await assert.rejects(
+    createNatPmpFaultInjector({ type: 'change-port', external_port: packet.readUInt16BE(10) })(packet, command, signal),
+    (error) => error.reason_code === 'NATPMP_FAULT_INAPPLICABLE',
+  );
+  await assert.rejects(
+    createNatPmpFaultInjector({ type: 'cap-lease', lifetime_seconds: packet.readUInt32BE(12) })(packet, command, signal),
+    (error) => error.reason_code === 'NATPMP_FAULT_INAPPLICABLE',
+  );
+  await assert.rejects(
+    createNatPmpFaultInjector({ type: 'restart-gateway', restart_epoch_seconds: packet.readUInt32BE(4) })(packet, command, signal),
+    (error) => error.reason_code === 'NATPMP_FAULT_INAPPLICABLE',
+  );
+  const forged = Buffer.from(packet); forged[0] = 1;
+  await assert.rejects(createNatPmpFaultInjector({ type: 'drop' })(forged, command, signal), (error) => error.reason_code === 'NATPMP_FAULT_CONTEXT_INVALID');
+  const incoherent = Object.freeze({ ...command, lifetime_seconds: 0, suggested_external_port: 1 });
+  await assert.rejects(createNatPmpFaultInjector({ type: 'drop' })(packet, incoherent, signal), (error) => error.reason_code === 'NATPMP_FAULT_COMMAND_INVALID');
+  await assert.rejects(createNatPmpFaultInjector({ type: 'drop' })(packet, null, signal), (error) => error.reason_code === 'NATPMP_FAULT_COMMAND_INVALID');
+});
+
+test('C05 context matrix covers external address, UDP, delete and deterministic failures', async () => {
+  const signal = new AbortController().signal;
+  const externalCommand = decodeNatPmpRequest(Buffer.from(NATPMP_VECTORS.external_address_request.hex, 'hex'));
+  const externalPacket = Buffer.from(NATPMP_VECTORS.external_address_response.hex, 'hex');
+  assert.equal(await createNatPmpFaultInjector({ type: 'drop' })(externalPacket, externalCommand, signal), null);
+  const rejectedExternal = await createNatPmpFaultInjector({ type: 'reject', result_code: 'network-failure' })(externalPacket, externalCommand, signal);
+  assert.equal(rejectedExternal.subarray(8).equals(Buffer.alloc(4)), true);
+
+  const udpCommand = decodeNatPmpRequest(Buffer.from(NATPMP_VECTORS.map_udp_request.hex, 'hex'));
+  const udpPacket = Buffer.from('00810000000000631236cbb000000e10', 'hex');
+  assert.equal(await createNatPmpFaultInjector({ type: 'drop' })(udpPacket, udpCommand, signal), null);
+  const deleteCommand = decodeNatPmpRequest(Buffer.from(NATPMP_VECTORS.map_tcp_delete_request.hex, 'hex'));
+  const deletePacket = Buffer.from('00820000000000631236000000000000', 'hex');
+  await assert.rejects(
+    createNatPmpFaultInjector({ type: 'change-port', external_port: 1 })(deletePacket, deleteCommand, signal),
+    (error) => error.reason_code === 'NATPMP_FAULT_INAPPLICABLE',
+  );
+
+  await createNatPmpFaultInjector({ type: 'delay', delay_ms: 0, jitter_ms: 0 })(responsePacket(), command, signal);
+  await assert.rejects(
+    createNatPmpFaultInjector({ type: 'delay', delay_ms: 1, jitter_ms: 0 }, { sleep: async () => { throw new Error('timer'); } })(responsePacket(), command, signal),
+    (error) => error.reason_code === 'NATPMP_FAULT_DELAY_FAILED',
+  );
+  assert.throws(() => createNatPmpFaultInjector({ type: 'drop' }, new Proxy({}, {})), NatPmpFaultError);
+  assert.throws(() => createNatPmpFaultInjector({ type: 'drop' }, { sleep: null }), NatPmpFaultError);
+});
+
+test('C05 validators reject scalar boundaries and response mismatches', async () => {
+  const invalidActions = [
+    { type: 'delay', delay_ms: -1, jitter_ms: 0 },
+    { type: 'delay', delay_ms: 1.5, jitter_ms: 0 },
+    { type: 'change-port', external_port: 65536 },
+    { type: 'cap-lease', lifetime_seconds: 0x100000000 },
+    { type: 'restart-gateway', restart_epoch_seconds: 0x100000000 },
+    { type: 'truncate', length_bytes: -1 },
+  ];
+  for (const action of invalidActions) assert.throws(() => createNatPmpFaultInjector(action), NatPmpFaultError);
+  const signal = new AbortController().signal;
+  for (const mutate of [
+    (packet) => { packet[1] = 129; },
+    (packet) => { packet.writeUInt16BE(6, 2); },
+    (packet) => { packet.writeUInt16BE(1, 8); },
+  ]) {
+    const packet = responsePacket(); mutate(packet);
+    await assert.rejects(createNatPmpFaultInjector({ type: 'drop' })(packet, command, signal), (error) => error.reason_code === 'NATPMP_FAULT_CONTEXT_INVALID');
+  }
 });

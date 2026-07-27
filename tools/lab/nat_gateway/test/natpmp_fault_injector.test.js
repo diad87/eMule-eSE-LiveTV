@@ -93,3 +93,14 @@ test('C05 epoch reset: replaces only the response epoch, including zero', async 
   assert.deepEqual(result.subarray(8), packet.subarray(8));
   assert.throws(() => createNatPmpFaultInjector({ type: 'restart-gateway', restart_epoch_seconds: -1 }), NatPmpFaultError);
 });
+
+test('C05 malformed: truncates to the exact configured wire length, including zero', async () => {
+  const packet = Buffer.from(NATPMP_VECTORS.map_tcp_response.hex, 'hex');
+  for (const length of [0, 1, 7, 15]) {
+    const inject = createNatPmpFaultInjector({ type: 'truncate', length_bytes: length });
+    const result = await inject(packet, command, new AbortController().signal);
+    assert.equal(result.length, length);
+    assert.deepEqual(result, packet.subarray(0, length));
+  }
+  assert.throws(() => createNatPmpFaultInjector({ type: 'truncate', length_bytes: 16 }), NatPmpFaultError);
+});

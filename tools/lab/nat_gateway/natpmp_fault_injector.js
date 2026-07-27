@@ -94,6 +94,12 @@ function normalizeAction(input) {
     if (!Number.isInteger(epoch) || epoch < 0 || epoch > 0xffffffff) fail('NATPMP_FAULT_INVALID');
     return Object.freeze({ type, restart_epoch_seconds: epoch });
   }
+  if (type === 'truncate') {
+    exactDataObject(input, ['type', 'length_bytes']);
+    const length = ownData(input, 'length_bytes');
+    if (!Number.isInteger(length) || length < 0 || length > 15) fail('NATPMP_FAULT_INVALID');
+    return Object.freeze({ type, length_bytes: length });
+  }
   fail('NATPMP_FAULT_UNSUPPORTED');
 }
 
@@ -136,6 +142,10 @@ function createNatPmpFaultInjector(actionInput, dependencies = {}) {
     if (action.type === 'restart-gateway') {
       snapshot.writeUInt32BE(action.restart_epoch_seconds, 4);
       return snapshot;
+    }
+    if (action.type === 'truncate') {
+      if (action.length_bytes >= snapshot.length) fail('NATPMP_FAULT_INAPPLICABLE');
+      return Buffer.from(snapshot.subarray(0, action.length_bytes));
     }
     fail('NATPMP_FAULT_UNSUPPORTED');
   };

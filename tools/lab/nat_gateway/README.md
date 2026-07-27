@@ -317,6 +317,10 @@ of the encoded lease and a positive configured cap.
 `restart-gateway` replaces only the response epoch with the configured
 post-restart value, including the normative reset value zero.
 
+`truncate` produces the malformed mode by returning the exact configured
+prefix, from an empty datagram through 15 bytes.  It cannot grow or reuse the
+owned response buffer.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

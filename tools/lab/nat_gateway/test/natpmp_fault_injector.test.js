@@ -74,3 +74,12 @@ test('C05 wrong port: changes only a successful MAP external port', async () => 
   assert.deepEqual(result.subarray(12), original.subarray(12));
   assert.throws(() => createNatPmpFaultInjector({ type: 'change-port', external_port: 0 }), NatPmpFaultError);
 });
+
+test('C05 short lease: caps only the lease of a successful non-delete MAP', async () => {
+  const packet = Buffer.from(NATPMP_VECTORS.map_tcp_response.hex, 'hex');
+  const inject = createNatPmpFaultInjector({ type: 'cap-lease', lifetime_seconds: 30 });
+  const result = await inject(packet, command, new AbortController().signal);
+  assert.equal(result.readUInt32BE(12), 30);
+  assert.deepEqual(result.subarray(0, 12), packet.subarray(0, 12));
+  assert.throws(() => createNatPmpFaultInjector({ type: 'cap-lease', lifetime_seconds: 0 }), NatPmpFaultError);
+});

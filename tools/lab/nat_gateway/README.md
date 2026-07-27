@@ -311,6 +311,9 @@ opcode and echoed internal port.
 `change-port` replaces only the external port of a successful non-delete MAP
 response; it is rejected for other packet/command combinations.
 
+`cap-lease` deterministically reduces a successful MAP lifetime to the lower
+of the encoded lease and a positive configured cap.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

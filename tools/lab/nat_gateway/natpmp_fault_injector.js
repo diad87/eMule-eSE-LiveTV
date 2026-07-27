@@ -82,6 +82,12 @@ function normalizeAction(input) {
     if (!Number.isInteger(externalPort) || externalPort < 1 || externalPort > 65535) fail('NATPMP_FAULT_INVALID');
     return Object.freeze({ type, external_port: externalPort });
   }
+  if (type === 'cap-lease') {
+    exactDataObject(input, ['type', 'lifetime_seconds']);
+    const lifetime = ownData(input, 'lifetime_seconds');
+    if (!Number.isInteger(lifetime) || lifetime < 1 || lifetime > 0xffffffff) fail('NATPMP_FAULT_INVALID');
+    return Object.freeze({ type, lifetime_seconds: lifetime });
+  }
   fail('NATPMP_FAULT_UNSUPPORTED');
 }
 
@@ -114,6 +120,11 @@ function createNatPmpFaultInjector(actionInput, dependencies = {}) {
     if (action.type === 'change-port') {
       if (snapshot.length !== 16 || snapshot.readUInt16BE(2) !== 0 || ownData(command, 'operation') !== 'map') fail('NATPMP_FAULT_INAPPLICABLE');
       snapshot.writeUInt16BE(action.external_port, 10);
+      return snapshot;
+    }
+    if (action.type === 'cap-lease') {
+      if (snapshot.length !== 16 || snapshot.readUInt16BE(2) !== 0 || ownData(command, 'operation') !== 'map') fail('NATPMP_FAULT_INAPPLICABLE');
+      snapshot.writeUInt32BE(Math.min(snapshot.readUInt32BE(12), action.lifetime_seconds), 12);
       return snapshot;
     }
     fail('NATPMP_FAULT_UNSUPPORTED');

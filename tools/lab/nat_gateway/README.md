@@ -25,6 +25,13 @@ The fixture is independent of MFC and does not import `libnatmap` codecs as
 its oracle. Interoperability vectors will be copied from the existing codec
 tests in the protocol cards, with an independent response implementation.
 
+## NAT-PMP C01 vectors
+
+`natpmp_vectors.js` contains frozen, literal NAT-PMP goldens with exact native
+file-and-line provenance. It performs no packet behavior and is checked by a
+pure Node test; the table, including the deliberately absent UDP response, is
+documented in [`docs/V9.2_T8_NATPMP_VECTORS.md`](../../../docs/V9.2_T8_NATPMP_VECTORS.md).
+
 ## Planned component layout
 
 The names below reserve responsibilities, not implementation:

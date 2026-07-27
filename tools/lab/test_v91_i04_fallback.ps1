@@ -1925,7 +1925,7 @@ function Stop-I04ControlledEd2kServerInventory {
         [AllowNull()][object]$PrimaryServer = $null
     )
 
-    $owners = New-Object 'Collections.Generic.List[object]'
+    $owners = [System.Collections.Generic.List[object]]::new()
     $seen = New-Object 'Collections.Generic.HashSet[string]' `
         ([StringComparer]::Ordinal)
     foreach ($owner in $OwnerInventory.ToArray()) {
@@ -1947,7 +1947,7 @@ function Stop-I04ControlledEd2kServerInventory {
         if ($seen.Add($key)) { $owners.Add($PrimaryServer) }
     }
 
-    $results = New-Object 'Collections.Generic.List[object]'
+    $results = [System.Collections.Generic.List[object]]::new()
     foreach ($owner in $owners.ToArray()) {
         $results.Add((Stop-I04ControlledEd2kServer -Server $owner))
     }
@@ -3172,7 +3172,7 @@ function Get-I04SamplerClockValidation {
         [ValidateRange(1, [Int64]::MaxValue)][Int64]$BoundaryQpc
     )
 
-    $violations = New-Object 'Collections.Generic.List[object]'
+    $violations = [System.Collections.Generic.List[object]]::new()
     $previousEpoch = $null
     $previousQpc = $null
     $firstEpoch = $null
@@ -3332,11 +3332,11 @@ function Get-I04SocketSamplerEvidence {
 
     $v4Ports = New-Object 'Collections.Generic.HashSet[int]'
     $v6Ports = New-Object 'Collections.Generic.HashSet[int]'
-    $allTargetRows = New-Object 'Collections.Generic.List[object]'
-    $candidateTargetRows = New-Object 'Collections.Generic.List[object]'
-    $otherPidRows = New-Object 'Collections.Generic.List[object]'
-    $preBoundaryRows = New-Object 'Collections.Generic.List[object]'
-    $sampleTimings = New-Object 'Collections.Generic.List[object]'
+    $allTargetRows = [System.Collections.Generic.List[object]]::new()
+    $candidateTargetRows = [System.Collections.Generic.List[object]]::new()
+    $otherPidRows = [System.Collections.Generic.List[object]]::new()
+    $preBoundaryRows = [System.Collections.Generic.List[object]]::new()
+    $sampleTimings = [System.Collections.Generic.List[object]]::new()
     $sampleCount = 0
     $parseErrors = 0
     $v4Established = $false
@@ -3702,7 +3702,7 @@ function Read-I04PcapNg {
     }
     $interfaces = @{}
     $interfaceNumber = 0
-    $packets = New-Object 'Collections.Generic.List[object]'
+    $packets = [System.Collections.Generic.List[object]]::new()
     $offset = 0
     while ($offset + 12 -le $bytes.Length) {
         $type = Read-I04UInt32LE -Bytes $bytes -Offset $offset
@@ -4348,7 +4348,7 @@ function Invoke-I04PeerRole {
     $sourceNode = ''
     $controlledServer = $null
     $controlledServersOwned =
-        New-Object 'Collections.Generic.List[object]'
+        [System.Collections.Generic.List[object]]::new()
     $controlledServerStop = $null
     $allow4Rule = "eSE V91 I04 allow4 $RunNonce"
     $allow6Rule = "eSE V91 I04 allow6 $RunNonce"
@@ -5415,14 +5415,14 @@ function Invoke-I04CoordinatorRole {
 
     $client = $null
     $clientOwnedProcesses =
-        New-Object 'Collections.Generic.List[object]'
+        [System.Collections.Generic.List[object]]::new()
     $clientProcessesStopped = $false
     $clientPassword = 'v91-i04-client'
     $clientNode = ''
     $clientExe = ''
     $clientControlledServer = $null
     $clientControlledServersOwned =
-        New-Object 'Collections.Generic.List[object]'
+        [System.Collections.Generic.List[object]]::new()
     $clientControlledServerStop = $null
     $clientIdentity = $null
     $clientRuntime = $null
@@ -5476,7 +5476,7 @@ function Invoke-I04CoordinatorRole {
     $scenarioV4LocalPorts = New-Object 'Collections.Generic.HashSet[int]'
     $scenarioV6LocalPorts = New-Object 'Collections.Generic.HashSet[int]'
     $otherPidObserved = $false
-    $otherPidConnections = New-Object 'Collections.Generic.List[object]'
+    $otherPidConnections = [System.Collections.Generic.List[object]]::new()
     $scenarioV6SocketObserved = $false
     $scenarioV4SocketObserved = $false
     $scenarioV4Established = $false

@@ -29,7 +29,7 @@ if (Test-Path -LiteralPath $output) {
 }
 $nodes = New-LabDirectory -Path (Join-Path $output 'nodes')
 $evidence = New-LabDirectory -Path (Join-Path $output 'evidence')
-$results = New-Object Collections.Generic.List[object]
+$results = [System.Collections.Generic.List[object]]::new()
 
 function Stop-TestProcess {
     param([AllowNull()][Diagnostics.Process]$Process)

@@ -169,7 +169,7 @@ function Get-I03PackageIdentity {
     param([Parameter(Mandatory = $true)][string]$PackagePath)
 
     $root = Get-LabFullPath -Path $PackagePath
-    $entries = New-Object 'Collections.Generic.List[object]'
+    $entries = [System.Collections.Generic.List[object]]::new()
     $canonical = New-Object Text.StringBuilder
     $totalBytes = 0L
     foreach ($file in @(
@@ -1168,7 +1168,7 @@ function Wait-I03Prewarm {
     $uiCount = 0
     $uiFailures = 0
     $uiMaxMs = 0L
-    $otherPid = New-Object 'Collections.Generic.List[object]'
+    $otherPid = [System.Collections.Generic.List[object]]::new()
     $otherPidKeys = New-Object `
         'Collections.Generic.HashSet[string]' `
         ([StringComparer]::OrdinalIgnoreCase)
@@ -1338,10 +1338,10 @@ function Wait-I03PostRestartRoute {
     $stableSignature = ''
     $stableSince = $null
     $ambiguousSelectionObserved = $false
-    $wrongFamily = New-Object 'Collections.Generic.List[object]'
+    $wrongFamily = [System.Collections.Generic.List[object]]::new()
     $wrongFamilyKeys = New-Object 'Collections.Generic.HashSet[string]' `
         ([StringComparer]::OrdinalIgnoreCase)
-    $otherPid = New-Object 'Collections.Generic.List[object]'
+    $otherPid = [System.Collections.Generic.List[object]]::new()
     $otherPidKeys = New-Object `
         'Collections.Generic.HashSet[string]' `
         ([StringComparer]::OrdinalIgnoreCase)
@@ -2898,8 +2898,8 @@ function Invoke-I03CoordinatorRole {
     $blockedReasons = New-Object 'Collections.Generic.List[string]'
     $productFailures = New-Object 'Collections.Generic.List[string]'
     $cleanupFailures = New-Object 'Collections.Generic.List[string]'
-    $caseResults = New-Object 'Collections.Generic.List[object]'
-    $preparedBinaries = New-Object 'Collections.Generic.List[object]'
+    $caseResults = [System.Collections.Generic.List[object]]::new()
+    $preparedBinaries = [System.Collections.Generic.List[object]]::new()
     $profileIdentityHashes =
         New-Object 'Collections.Generic.HashSet[string]' `
             ([StringComparer]::OrdinalIgnoreCase)
@@ -3923,7 +3923,7 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 }
                 $caseRecord.literal_ipv4_source_link_validated = $true
                 $linkDeliveries =
-                    New-Object 'Collections.Generic.List[object]'
+                    [System.Collections.Generic.List[object]]::new()
                 try {
                     $linkDeliveries.Add(
                         (Send-I03Ed2kLink -Process $activeClient `

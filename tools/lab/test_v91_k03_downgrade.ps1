@@ -22,8 +22,11 @@ $candidateCommit = $candidateInfo.commit
 $candidate = $candidateInfo.package_path
 $previous = (Resolve-Path -LiteralPath $PreviousPackage).Path
 $previousExe = Join-Path $previous 'emule.exe'
+$previousEseServer = Join-Path $previous 'ese-server.exe'
 $previousBuildInfo = Join-Path $previous 'BUILD_INFO.txt'
-foreach ($requiredPreviousFile in @($previousExe, $previousBuildInfo)) {
+foreach ($requiredPreviousFile in @(
+    $previousExe, $previousEseServer, $previousBuildInfo
+)) {
     if (-not (Test-Path -LiteralPath $requiredPreviousFile -PathType Leaf)) {
         throw "The previous package is incomplete: $requiredPreviousFile"
     }
@@ -36,6 +39,8 @@ if ($previousBuildInfoText -notmatch
 }
 $canonicalPreviousExeHash =
     '3f5f9ad4f305de15bf345e11a5fe1652969b07afcdde136b9277989415ce4187'
+$canonicalPreviousEseServerHash =
+    '9563da8e16a8ef3ec05cc58479c0bda2cb0655899b0ce7b10fd9f4c44580a76f'
 $canonicalPreviousBuildInfoHash =
     '26fc4348044868fc65c04f73e78cafe966d38cb2178c0c093944164c7aafdfce'
 $expectedPreviousExeHash =
@@ -50,8 +55,10 @@ if ($expectedPreviousExeHash -ne $canonicalPreviousExeHash -or
     )
 }
 $previousExeHashBefore = Get-LabSha256 -Path $previousExe
+$previousEseServerHashBefore = Get-LabSha256 -Path $previousEseServer
 $previousBuildInfoHashBefore = Get-LabSha256 -Path $previousBuildInfo
 if ($previousExeHashBefore -ne $expectedPreviousExeHash -or
+    $previousEseServerHashBefore -ne $canonicalPreviousEseServerHash -or
     $previousBuildInfoHashBefore -ne $expectedPreviousBuildInfoHash) {
     throw 'PreviousPackage does not match the explicitly pinned eSE 8.1 hashes'
 }
@@ -166,9 +173,11 @@ $candidateExe = Join-Path $candidateNode 'emule.exe'
 $candidatePreferences = Join-Path $candidateNode 'config\preferences.ini'
 $previousNode = Join-Path $nodes 'v91-k03-previous'
 $copiedPreviousExe = Join-Path $previousNode 'emule.exe'
+$copiedPreviousEseServer = Join-Path $previousNode 'ese-server.exe'
 $copiedPreviousBuildInfo = Join-Path $previousNode 'BUILD_INFO.txt'
 $previousConfig = Join-Path $previousNode 'config'
 $previousPreferences = Join-Path $previousConfig 'preferences.ini'
+$previousApiPort = 4711
 $candidateProcess = $null
 $previousProcess = $null
 $candidateStopResult = $null
@@ -182,7 +191,7 @@ $legacyAfterPrevious = $null
 $previousStayedRunning = $false
 $previousTcp = @()
 $previousUdp = @()
-$kadSamples = New-Object 'Collections.Generic.List[object]'
+$kadSamples = [System.Collections.Generic.List[object]]::new()
 $productFailures = New-Object 'Collections.Generic.List[string]'
 $blockedReasons = New-Object 'Collections.Generic.List[string]'
 $cleanupFailures = New-Object 'Collections.Generic.List[string]'
@@ -246,6 +255,8 @@ try {
     Copy-Item -LiteralPath $previous -Destination $previousNode -Recurse
     if ((Get-LabSha256 -Path $copiedPreviousExe) -ne
             $expectedPreviousExeHash -or
+        (Get-LabSha256 -Path $copiedPreviousEseServer) -ne
+            $canonicalPreviousEseServerHash -or
         (Get-LabSha256 -Path $copiedPreviousBuildInfo) -ne
             $expectedPreviousBuildInfoHash) {
         throw 'The isolated eSE 8.1 copy does not match the pinned package'
@@ -256,20 +267,27 @@ try {
     }
     Copy-Item -LiteralPath (Join-Path $candidateNode 'config') `
         -Destination $previousConfig -Recurse
+    # eSE 8.1 predates the --metrics-port override and exposes its native
+    # localhost status API on the legacy WebServer port.
+    Set-LabIniValue -Path $previousPreferences -Section 'WebServer' `
+        -Key 'Enabled' -Value '1'
+    Set-LabIniValue -Path $previousPreferences -Section 'WebServer' `
+        -Key 'Port' -Value ([string]$previousApiPort)
+    Set-LabIniValue -Path $previousPreferences -Section 'WebServer' `
+        -Key 'WebUseUPnP' -Value '0'
     $previousProfileBefore = Get-IniValue -Path $previousPreferences `
         -Section 'eMule' -Key 'NetworkKademlia'
 
-    Assert-PortFree -Port 22911
+    Assert-PortFree -Port $previousApiPort
     $previousProcess = Start-Process -FilePath $copiedPreviousExe `
         -ArgumentList @(
             '--portable',
             '--ignoreinstances',
-            '--metrics-port=22911',
             '--tcp-port=22862',
             '--udp-port=22872'
         ) -WorkingDirectory $previousNode -WindowStyle Hidden -PassThru
-    $null = Wait-Status -Port 22911 -Process $previousProcess
-    Assert-OwnedListener -Port 22911 -Process $previousProcess
+    $null = Wait-Status -Port $previousApiPort -Process $previousProcess
+    Assert-OwnedListener -Port $previousApiPort -Process $previousProcess
     $observationStarted = [DateTime]::UtcNow
     $observationDeadline =
         $observationStarted.AddSeconds($PreviousObservationSeconds)
@@ -290,7 +308,8 @@ try {
         $sampleError = $null
         try {
             $status = Invoke-RestMethod `
-                -Uri 'http://127.0.0.1:22911/api/status' -TimeoutSec 2
+                -Uri "http://127.0.0.1:$previousApiPort/api/status" `
+                -TimeoutSec 2
             $available = $true
             $property = $status.PSObject.Properties['kad_connected']
             $fieldPresent = $null -ne $property
@@ -388,8 +407,10 @@ try {
 $candidateAfter = $null
 $candidateNodeHashAfter = ''
 $previousExeHashAfter = ''
+$previousEseServerHashAfter = ''
 $previousBuildInfoHashAfter = ''
 $copiedPreviousExeHashAfter = ''
+$copiedPreviousEseServerHashAfter = ''
 $copiedPreviousBuildInfoHashAfter = ''
 try {
     $candidateAfter = Get-LabCandidateInfo -PackagePath $CandidatePackage `
@@ -398,10 +419,15 @@ try {
         $candidateNodeHashAfter = Get-LabSha256 -Path $candidateExe
     }
     $previousExeHashAfter = Get-LabSha256 -Path $previousExe
+    $previousEseServerHashAfter = Get-LabSha256 -Path $previousEseServer
     $previousBuildInfoHashAfter = Get-LabSha256 -Path $previousBuildInfo
     if (Test-Path -LiteralPath $copiedPreviousExe -PathType Leaf) {
         $copiedPreviousExeHashAfter =
             Get-LabSha256 -Path $copiedPreviousExe
+    }
+    if (Test-Path -LiteralPath $copiedPreviousEseServer -PathType Leaf) {
+        $copiedPreviousEseServerHashAfter =
+            Get-LabSha256 -Path $copiedPreviousEseServer
     }
     if (Test-Path -LiteralPath $copiedPreviousBuildInfo -PathType Leaf) {
         $copiedPreviousBuildInfoHashAfter =
@@ -419,8 +445,10 @@ $candidateUnchanged = $null -ne $candidateAfter -and
     $candidateNodeHashAfter -eq $candidateInfo.emule_sha256
 $previousUnchanged =
     $previousExeHashAfter -eq $expectedPreviousExeHash -and
+    $previousEseServerHashAfter -eq $canonicalPreviousEseServerHash -and
     $previousBuildInfoHashAfter -eq $expectedPreviousBuildInfoHash -and
     $copiedPreviousExeHashAfter -eq $expectedPreviousExeHash -and
+    $copiedPreviousEseServerHashAfter -eq $canonicalPreviousEseServerHash -and
     $copiedPreviousBuildInfoHashAfter -eq $expectedPreviousBuildInfoHash
 $identitiesUnchanged = $candidateUnchanged -and $previousUnchanged
 if (-not $identitiesUnchanged) {
@@ -503,6 +531,11 @@ $artifact = [ordered]@{
         emule_sha256_before = $previousExeHashBefore
         emule_sha256_after = $previousExeHashAfter
         isolated_emule_sha256_after = $copiedPreviousExeHashAfter
+        expected_ese_server_sha256 = $canonicalPreviousEseServerHash
+        ese_server_sha256_before = $previousEseServerHashBefore
+        ese_server_sha256_after = $previousEseServerHashAfter
+        isolated_ese_server_sha256_after =
+            $copiedPreviousEseServerHashAfter
         unchanged = $previousUnchanged
     }
     candidate_profile_after_save = [ordered]@{

@@ -316,7 +316,7 @@ function Get-D01DirectoryManifest {
     param([Parameter(Mandatory = $true)][string]$RootPath)
 
     $root = Get-LabFullPath -Path $RootPath
-    $entries = New-Object 'Collections.Generic.List[object]'
+    $entries = [System.Collections.Generic.List[object]]::new()
     $canonical = New-Object Text.StringBuilder
     $totalBytes = 0L
     foreach ($file in @(
@@ -382,7 +382,7 @@ function Get-D01ZipManifest {
             $stripPrefix = $firstParts[0] + '/'
         }
 
-        $items = New-Object 'Collections.Generic.List[object]'
+        $items = [System.Collections.Generic.List[object]]::new()
         foreach ($entry in $rawEntries) {
             $relative = ([string]$entry.FullName).Replace('\', '/')
             if ($stripPrefix -and $relative.StartsWith(
@@ -3099,7 +3099,7 @@ function Get-D01PcapNgTcpRecords {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $errors = New-Object 'Collections.Generic.List[string]'
-    $records = New-Object 'Collections.Generic.List[object]'
+    $records = [System.Collections.Generic.List[object]]::new()
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return [pscustomobject][ordered]@{
             valid = $false
@@ -3291,7 +3291,7 @@ function Get-D01SocketSamplerEvidence {
     )
 
     $errors = New-Object 'Collections.Generic.List[string]'
-    $rows = New-Object 'Collections.Generic.List[object]'
+    $rows = [System.Collections.Generic.List[object]]::new()
     $sampleCount = 0
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return [pscustomobject][ordered]@{

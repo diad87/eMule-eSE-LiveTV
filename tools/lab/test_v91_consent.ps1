@@ -26,7 +26,7 @@ if (Test-Path -LiteralPath $outputPath) {
 }
 $nodesPath = New-LabDirectory -Path (Join-Path $outputPath 'nodes')
 $evidencePath = New-LabDirectory -Path (Join-Path $outputPath 'evidence')
-$caseResults = New-Object Collections.Generic.List[object]
+$caseResults = [System.Collections.Generic.List[object]]::new()
 
 function Test-AllValues {
     param(

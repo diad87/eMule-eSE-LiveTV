@@ -117,8 +117,12 @@ These are supporting executions. Location constraints do not prove how an
 existing executable was built; the clean compiler/linker pipeline remains the
 authoritative build-provenance gate.
 
-For `V91-K03`, the downgrade target is not operator-selectable. The harness
-accepts only `v0.70b-eSE8.1.0` with the versioned canonical hashes:
+For `V91-K03`, the downgrade target is not operator-selectable. Use the clean
+official `v0.70b-eSE8.1.0` ZIP
+(`9481C71C7216CECDE82345372C9494F8DDE2FD61601CFB5791D7A2EA9DD18F77`).
+The harness also pins `ese-server.exe` to
+`9563DA8E16A8EF3EC05CC58479C0BDA2CB0655899B0CE7B10FD9F4C44580A76F`
+and rejects rollback copies where it was renamed to `.disabled`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass `
@@ -134,8 +138,9 @@ powershell -ExecutionPolicy Bypass `
 
 It saves a Kad6-only candidate profile, opens an isolated copy with the pinned
 old package, and requires `NetworkKademlia=0` before/after, a live old process,
-and continuously false `kad_connected` samples for at least 30 seconds. This is
-the minimum observable evidence that Kad2 did not start or reactivate.
+and continuously false `kad_connected` samples from the legacy port for at
+least 30 seconds. This is the minimum observable evidence that Kad2 did not
+start or reactivate.
 
 ### Two-host I03, I04 and D01 campaigns
 

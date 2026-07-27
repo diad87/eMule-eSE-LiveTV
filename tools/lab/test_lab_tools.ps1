@@ -42,6 +42,20 @@ $acceptedClient = $null
 $evidenceJunction = $null
 
 try {
+    $objectList = [System.Collections.Generic.List[object]]::new()
+    $objectList.Add([pscustomobject]@{ value = 'powershell-5.1-safe' })
+    Assert-LabTest -Condition (@($objectList).Count -eq 1) `
+        -Message 'generic object lists cannot be materialized as arrays'
+    $unsafeObjectListConstructors = @(
+        Get-ChildItem -LiteralPath $labTools -Filter '*.ps1' -File |
+            Select-String -Pattern (
+                "New-Object\s+(?:'Collections\.Generic\.List\[object\]'|" +
+                'Collections\.Generic\.List\[object\])'
+            )
+    )
+    Assert-LabTest -Condition ($unsafeObjectListConstructors.Count -eq 0) `
+        -Message 'Windows PowerShell 5.1-unsafe List[object] constructor remains'
+
     $null = New-Item -ItemType Directory -Path $sourcePackage
     $null = New-Item -ItemType Directory -Path $runDirectory
     Write-TestFile -Path (Join-Path $sourcePackage 'emule.exe') -Value 'WP0 dummy executable'

@@ -64,17 +64,23 @@ Any failure rejects the candidate before network mutation.
 
 ### K03 downgrade baseline
 
-The only accepted previous package is `v0.70b-eSE8.1.0`, pinned by both
-artifacts:
+The only accepted previous package is the clean official
+`v0.70b-eSE8.1.0` asset, pinned by:
 
 - `emule.exe` SHA-256:
   `3F5F9AD4F305DE15BF345E11A5FE1652969B07AFCDDE136B9277989415CE4187`;
+- `ese-server.exe` SHA-256:
+  `9563DA8E16A8EF3EC05CC58479C0BDA2CB0655899B0CE7B10FD9F4C44580A76F`;
 - `BUILD_INFO.txt` SHA-256:
-  `26FC4348044868FC65C04F73E78CAFE966D38CB2178C0C093944164C7AAFDFCE`.
+  `26FC4348044868FC65C04F73E78CAFE966D38CB2178C0C093944164C7AAFDFCE`;
+- official ZIP SHA-256:
+  `9481C71C7216CECDE82345372C9494F8DDE2FD61601CFB5791D7A2EA9DD18F77`.
 
 `test_v91_k03_downgrade.ps1` rejects operator-supplied hashes that differ from
-this versioned baseline, rechecks the originals and isolated copies after the
-run, and observes the old process/API for at least 30 seconds.
+this versioned baseline, rejects rollback directories where
+`ese-server.exe` was renamed to `.disabled`, rechecks the originals and
+isolated copies after the run, and observes the old process/API for at least
+30 seconds on its legacy port.
 
 ## 4. I03/I04 runtime campaign
 

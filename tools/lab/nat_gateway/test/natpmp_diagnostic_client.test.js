@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const dgram = require('node:dgram');
 const { createNatPmpUdpServer } = require('../natpmp_udp_server');
 const { runNatPmpDiagnostic, NatPmpDiagnosticError } = require('../natpmp_diagnostic_client');
 
@@ -102,4 +103,24 @@ test('C06: diagnostic rejects every malformed success-response field', async () 
     }), (error) => error.reason_code === 'NATPMP_DIAGNOSTIC_RESPONSE_INVALID');
     await server.close();
   }
+});
+
+test('C06: foreign-source datagram cannot consume the exact-gateway response listener', async () => {
+  const gateway = dgram.createSocket('udp4'); const foreign = dgram.createSocket('udp4');
+  const bind = (socket) => new Promise((resolve) => socket.bind(0, '127.0.0.1', resolve));
+  const close = (socket) => new Promise((resolve) => socket.close(resolve));
+  await bind(gateway); await bind(foreign);
+  gateway.once('message', (request, source) => {
+    const response = Buffer.alloc(16); response[1] = 130; response.writeUInt32BE(1, 4);
+    response.writeUInt16BE(request.readUInt16BE(4), 8); response.writeUInt16BE(9, 10); response.writeUInt32BE(10, 12);
+    foreign.send(response, source.port, source.address, () => {
+      setImmediate(() => gateway.send(response, source.port, source.address));
+    });
+  });
+  const state = await runNatPmpDiagnostic({
+    gateway_address: '127.0.0.1', gateway_port: gateway.address().port, internal_port: 4662,
+    suggested_external_port: 0, lifetime_seconds: 60, timeout_ms: 1000,
+  });
+  assert.equal(state.status, 'mapped'); assert.equal(state.external_port, 9);
+  await close(gateway); await close(foreign);
 });

@@ -69,7 +69,7 @@ async function runNatPmpDiagnostic(input) {
     };
     const timer = setTimeout(() => finish(new NatPmpDiagnosticError('NATPMP_DIAGNOSTIC_TIMEOUT')), value.timeout_ms);
     socket.once('error', () => finish(new NatPmpDiagnosticError('NATPMP_DIAGNOSTIC_SOCKET_FAILED')));
-    socket.once('message', (packet, source) => {
+    socket.on('message', (packet, source) => {
       if (!dataObject(source) || ownData(source, 'address') !== value.gateway_address ||
           ownData(source, 'port') !== value.gateway_port) return;
       try { finish(null, parse(packet, value)); } catch (error) { finish(error); }

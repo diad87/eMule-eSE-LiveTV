@@ -308,6 +308,9 @@ runtime randomness.
 response field that cannot be asserted on failure while preserving the request
 opcode and echoed internal port.
 
+`change-port` replaces only the external port of a successful non-delete MAP
+response; it is rejected for other packet/command combinations.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

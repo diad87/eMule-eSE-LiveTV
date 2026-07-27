@@ -76,6 +76,12 @@ function normalizeAction(input) {
     if (!rejectCodes.has(resultCode)) fail('NATPMP_FAULT_INVALID');
     return Object.freeze({ type, result_code: rejectCodes.get(resultCode) });
   }
+  if (type === 'change-port') {
+    exactDataObject(input, ['type', 'external_port']);
+    const externalPort = ownData(input, 'external_port');
+    if (!Number.isInteger(externalPort) || externalPort < 1 || externalPort > 65535) fail('NATPMP_FAULT_INVALID');
+    return Object.freeze({ type, external_port: externalPort });
+  }
   fail('NATPMP_FAULT_UNSUPPORTED');
 }
 
@@ -103,6 +109,11 @@ function createNatPmpFaultInjector(actionInput, dependencies = {}) {
       snapshot.writeUInt16BE(action.result_code, 2);
       if (snapshot.length === 12) snapshot.fill(0, 8, 12);
       else snapshot.fill(0, 10, 16);
+      return snapshot;
+    }
+    if (action.type === 'change-port') {
+      if (snapshot.length !== 16 || snapshot.readUInt16BE(2) !== 0 || ownData(command, 'operation') !== 'map') fail('NATPMP_FAULT_INAPPLICABLE');
+      snapshot.writeUInt16BE(action.external_port, 10);
       return snapshot;
     }
     fail('NATPMP_FAULT_UNSUPPORTED');

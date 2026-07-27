@@ -64,3 +64,13 @@ test('C05 reject: emits each closed NAT-PMP rejection with deterministic zero fi
   }
   assert.throws(() => createNatPmpFaultInjector({ type: 'reject', result_code: 'bogus' }), NatPmpFaultError);
 });
+
+test('C05 wrong port: changes only a successful MAP external port', async () => {
+  const original = Buffer.from(NATPMP_VECTORS.map_tcp_response.hex, 'hex');
+  const inject = createNatPmpFaultInjector({ type: 'change-port', external_port: 65000 });
+  const result = await inject(original, command, new AbortController().signal);
+  assert.equal(result.readUInt16BE(10), 65000);
+  assert.deepEqual(result.subarray(0, 10), original.subarray(0, 10));
+  assert.deepEqual(result.subarray(12), original.subarray(12));
+  assert.throws(() => createNatPmpFaultInjector({ type: 'change-port', external_port: 0 }), NatPmpFaultError);
+});

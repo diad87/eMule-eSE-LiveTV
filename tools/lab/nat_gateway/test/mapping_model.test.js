@@ -55,6 +55,21 @@ function expectError(action, reasonCode, fieldPath) {
   });
 }
 
+function hostileProxy(target, secret = 'proxy-secret') {
+  let traps = 0;
+  const trap = () => { traps += 1; throw new Error(secret); };
+  return {
+    value: new Proxy(target, {
+      get: trap,
+      getOwnPropertyDescriptor: trap,
+      getPrototypeOf: trap,
+      ownKeys: trap,
+      has: trap
+    }),
+    get traps() { return traps; }
+  };
+}
+
 test('RED: creates a mapping without mutating state or its caller input', () => {
   const initial = state();
   const input = mapping('map-1');
@@ -218,6 +233,28 @@ test('RED: hostile or malformed input is rejected without evaluating behavior or
   assert.equal(initial.mappings.length, 0);
 });
 
+test('RED: cloning rejects root and nested proxies before any trap executes', () => {
+  const root = hostileProxy({ epoch: 10, generation: 4, mappings: [] });
+  expectError(() => createMappingState(root.value), 'MAPPING_INPUT_INVALID', '$');
+  assert.equal(root.traps, 0);
+
+  const initial = state();
+  const input = mapping('map-1');
+  const nested = hostileProxy(input.owner);
+  input.owner = nested.value;
+  let error;
+  assert.throws(() => createMapping(initial, input), (caught) => { error = caught; return true; });
+  assert.ok(error instanceof MappingModelError);
+  assert.equal(error.reason_code, 'MAPPING_INPUT_INVALID');
+  assert.equal(error.field_path, '$.owner');
+  assert.equal(nested.traps, 0);
+  assert.ok(!error.message.includes('proxy-secret'));
+
+  const request = hostileProxy({ mapping_id: 'missing', epoch: 10, generation: 4, owner: owner(), lifetime_seconds: 1, now_monotonic_ms: 2000 });
+  expectError(() => renewMapping(initial, request.value), 'MAPPING_INPUT_INVALID', '$');
+  assert.equal(request.traps, 0);
+});
+
 test('RED: input cloning and structural validation fail closed across hostile JSON shapes', () => {
   const base = { epoch: 10, generation: 4, mappings: [] };
   const customArray = []; customArray.extra = true;
@@ -253,6 +290,21 @@ test('RED: mapping validation covers IDs, protocols, ownership variants and prec
   expectError(() => createMapping(initial, mapping('map-1', { owner: { kind: 'natpmp-lease-scope', instance_id_digest: digest, scope_id: 'Bad' } })), 'MAPPING_FIELD_INVALID', '$.owner.scope_id');
   expectError(() => createMapping(initial, mapping('map-1', { lease: { lifetime_seconds: 0, created_monotonic_ms: 1, expires_monotonic_ms: 1 } })), 'LEASE_EXPIRY_MISMATCH', '$.lease.expires_monotonic_ms');
   expectError(() => createMapping(initial, mapping('map-1', { lease: { lifetime_seconds: 1, created_monotonic_ms: Number.MAX_SAFE_INTEGER, expires_monotonic_ms: Number.MAX_SAFE_INTEGER } })), 'LEASE_EXPIRY_OVERFLOW', '$.lease');
+});
+
+test('RED: owner proof is protocol-bound for state, create, renew, and delete while none remains unproven', () => {
+  const initial = state();
+  expectError(() => createMapping(initial, mapping('map-1', { owner: owner('pcp-nonce') })), 'OWNER_PROTOCOL_MISMATCH', '$.owner.kind');
+  expectError(() => createMappingState({ epoch: 10, generation: 4, mappings: [mapping('map-1', { protocol: 'pcp', owner: owner('upnp-journal') })] }), 'OWNER_PROTOCOL_MISMATCH', '$.mappings[0].owner.kind');
+
+  const pcpMapping = mapping('pcp-map', { protocol: 'pcp', owner: owner('pcp-nonce') });
+  const pcpState = state([pcpMapping]);
+  expectError(() => renewMapping(pcpState, { mapping_id: 'pcp-map', epoch: 10, generation: 4, owner: owner('upnp-journal'), lifetime_seconds: 1, now_monotonic_ms: 2000 }), 'OWNER_PROTOCOL_MISMATCH', '$.owner.kind');
+  expectError(() => deleteMapping(pcpState, { mapping_id: 'pcp-map', epoch: 10, generation: 4, owner: owner('natpmp-lease-scope') }), 'OWNER_PROTOCOL_MISMATCH', '$.owner.kind');
+
+  const unproven = createMapping(initial, mapping('none-map', { owner: owner('none') })).state;
+  expectError(() => renewMapping(unproven, { mapping_id: 'none-map', epoch: 10, generation: 4, owner: owner('none'), lifetime_seconds: 1, now_monotonic_ms: 2000 }), 'OWNERSHIP_UNPROVEN', '$.owner');
+  expectError(() => deleteMapping(unproven, { mapping_id: 'none-map', epoch: 10, generation: 4, owner: owner('none') }), 'OWNERSHIP_UNPROVEN', '$.owner');
 });
 
 test('RED: operation error paths stay fail-closed and ownership/delete paths are fully exercised', () => {

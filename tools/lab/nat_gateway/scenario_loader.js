@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { TextDecoder } = require('node:util');
+const { TextDecoder, types } = require('node:util');
 const Ajv2020 = require('ajv/dist/2020');
 const { normalizeAddress } = require('./address');
 
@@ -126,6 +126,9 @@ function cloneJsonData(value, fieldPath, ancestors) {
     if (!Number.isFinite(value)) fail('SCENARIO_OBJECT_INVALID', fieldPath, 'numbers must be finite JSON numbers');
     return value;
   }
+  // Do this before any reflective operation: Proxy traps must never participate
+  // in scenario validation or surface their thrown values in an error.
+  if (types.isProxy(value)) fail('SCENARIO_OBJECT_INVALID', fieldPath, 'proxies are not JSON data');
   if (typeof value !== 'object') fail('SCENARIO_OBJECT_INVALID', fieldPath, 'value is not JSON data');
   if (ancestors.has(value)) fail('SCENARIO_OBJECT_INVALID', fieldPath, 'cyclic input is not JSON data');
   ancestors.add(value);
@@ -173,6 +176,7 @@ function cloneJsonData(value, fieldPath, ancestors) {
 }
 
 function cloneJsonObject(value) {
+  if (types.isProxy(value)) fail('SCENARIO_OBJECT_INVALID', '$', 'proxies are not JSON data');
   if (value === null || typeof value !== 'object' || Array.isArray(value)) fail('SCENARIO_OBJECT_INVALID', '$', 'scenario must be a JSON object');
   return cloneJsonData(value, '$', new WeakSet());
 }
@@ -227,6 +231,13 @@ function assertMappings(scenario) {
     if (!scenario.protocols[mapping.protocol].enabled) {
       fail('MAPPING_PROTOCOL_DISABLED', `${itemPath}.protocol`, 'mapping protocol must be enabled');
     }
+    assertMappingOwnerProtocol(mapping, itemPath);
+    if (mapping.epoch !== scenario.gateway.epoch.initial_seconds) {
+      fail('INITIAL_MAPPING_EPOCH_MISMATCH', `${itemPath}.epoch`, 'must match gateway.epoch.initial_seconds');
+    }
+    if (mapping.generation !== scenario.gateway.initial_generation) {
+      fail('INITIAL_MAPPING_GENERATION_MISMATCH', `${itemPath}.generation`, 'must match gateway.initial_generation');
+    }
     assertLease(mapping.lease, itemPath);
     const collisionKey = `${normalizeAddress(mapping.external_address)}\u0000${mapping.external_port}\u0000${mapping.transport}`;
     if (occupied.has(collisionKey)) fail('MAPPING_COLLISION', itemPath, 'external address, port and transport are already allocated');
@@ -262,6 +273,18 @@ function assertMappings(scenario) {
       }
       fail('ATOMIC_GROUP_INCOHERENT', `$.initial_state.mappings[${second.index}].owner.${ownerField}`, 'tcp and udp members must have the same owner instance identity');
     }
+  }
+}
+
+function assertMappingOwnerProtocol(mapping, itemPath) {
+  if (mapping.owner.kind === 'none') return;
+  const ownerProtocol = {
+    'upnp-journal': 'upnp',
+    'pcp-nonce': 'pcp',
+    'natpmp-lease-scope': 'natpmp'
+  }[mapping.owner.kind];
+  if (ownerProtocol !== mapping.protocol) {
+    fail('OWNER_PROTOCOL_MISMATCH', `${itemPath}.owner.kind`, 'owner kind must match the mapping protocol');
   }
 }
 

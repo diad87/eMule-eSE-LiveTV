@@ -1,5 +1,6 @@
 'use strict';
 
+const { types } = require('node:util');
 const { normalizeAddress } = require('./address');
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
@@ -31,6 +32,8 @@ function cloneJsonData(value, fieldPath, ancestors = new WeakSet()) {
     if (!Number.isFinite(value)) fail('MAPPING_INPUT_INVALID', fieldPath, 'numbers must be finite JSON data');
     return value;
   }
+  // Reject before reflection so no Proxy trap can execute or leak its error.
+  if (types.isProxy(value)) fail('MAPPING_INPUT_INVALID', fieldPath, 'proxies are not JSON data');
   if (typeof value !== 'object' || value === null) fail('MAPPING_INPUT_INVALID', fieldPath, 'value must be JSON data');
   if (ancestors.has(value)) fail('MAPPING_INPUT_INVALID', fieldPath, 'cyclic input is not accepted');
   ancestors.add(value);
@@ -142,6 +145,16 @@ function validateOwner(value, fieldPath) {
   return value;
 }
 
+function assertOwnerProtocol(owner, protocol, fieldPath) {
+  if (owner === undefined || owner.kind === 'none') return;
+  const ownerProtocol = {
+    'upnp-journal': 'upnp',
+    'pcp-nonce': 'pcp',
+    'natpmp-lease-scope': 'natpmp'
+  }[owner.kind];
+  if (ownerProtocol !== protocol) fail('OWNER_PROTOCOL_MISMATCH', `${fieldPath}.kind`, 'owner kind must match the mapping protocol');
+}
+
 function validateLease(value, fieldPath) {
   assertExactKeys(value, ['lifetime_seconds', 'created_monotonic_ms', 'expires_monotonic_ms'], [], fieldPath);
   assertUint(value.lifetime_seconds, 0xffffffff, `${fieldPath}.lifetime_seconds`);
@@ -177,6 +190,7 @@ function normalizeMapping(value, fieldPath = '$') {
   if (value.atomic_group_id !== undefined) assertId(value.atomic_group_id, `${fieldPath}.atomic_group_id`);
   validateLease(value.lease, `${fieldPath}.lease`);
   validateOwner(value.owner, `${fieldPath}.owner`);
+  assertOwnerProtocol(value.owner, value.protocol, `${fieldPath}.owner`);
   return {
     mapping_id: value.mapping_id,
     protocol: value.protocol,
@@ -335,6 +349,7 @@ function findMapping(state, mappingId) {
 
 function assertOwner(mapping, owner) {
   validateOwner(owner, '$.owner');
+  assertOwnerProtocol(owner, mapping.protocol, '$.owner');
   if (mapping.owner === undefined || mapping.owner.kind === 'none' || owner === undefined || owner.kind === 'none') {
     fail('OWNERSHIP_UNPROVEN', '$.owner', 'renewal and deletion require demonstrated ownership');
   }

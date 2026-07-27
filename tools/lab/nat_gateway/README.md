@@ -196,15 +196,25 @@ for stable JSONL independent of caller property insertion order.
 All boundary objects use explicit whitelists. Unknown event, mapping and
 top-level report fields fail closed; unknown fields inside public report
 sections are deliberately omitted, and no unknown field is ever copied.
-Gateway, client and owner identifiers are domain-separated SHA-256 values;
-mappings retain only their stable mapping ID, protocol data, lease/version
-fields and classified/digested addresses.
+The v1 event, outcome and reason-code vocabularies are closed, versioned and
+append-only: they are semantic labels, never caller-controlled free text.
+`event` accepts the documented `map_created`/request/map lifecycle, response,
+fault, restart/time, run and invariant labels only. Allocation strategies are
+likewise restricted to `requested-or-next`, `range` and `forced`.
+
+Every variable identifier that can reach the public channel is projected as a
+stable domain-separated SHA-256 digest: scenario, run, mapping, fault, atomic
+group, gateway, client and owner identifiers all have distinct domains. Thus
+JSONL, mapping projections and canonical reports retain correlation without
+emitting raw IDs; applied fault IDs are sorted digests. Mappings retain only
+protocol data, lease/version fields and classified/digested addresses.
 PCP nonce, owner scope/description, raw IPs, payloads, credentials and error
-details cannot enter event or public-report output.  `createCanonicalReport`
-also whitelists its effective configuration, normalized states, counters and
-fault summary (including sorted unique non-sensitive applied fault IDs) before
-combining them with the sanitized mapping projection. Finite leases are checked
-again for exact monotonic expiry arithmetic before projection.
+details cannot enter event or public-report output. Proxies are rejected before
+any trap can run, and sparse arrays (including `new Array(n)`) are rejected
+before element traversal. `createCanonicalReport` also whitelists its effective
+configuration, normalized states, counters and fault summary before combining
+them with the sanitized mapping projection. Finite leases are checked again for
+exact monotonic expiry arithmetic before projection.
 
 ## Validation planned for the next cards
 

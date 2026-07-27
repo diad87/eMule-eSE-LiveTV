@@ -69,6 +69,21 @@ function expectError(action, code, fieldPath) {
   });
 }
 
+function hostileProxy(target, secret = 'proxy-secret') {
+  let traps = 0;
+  const trap = () => { traps += 1; throw new Error(secret); };
+  return {
+    value: new Proxy(target, {
+      get: trap,
+      getOwnPropertyDescriptor: trap,
+      getPrototypeOf: trap,
+      ownKeys: trap,
+      has: trap
+    }),
+    get traps() { return traps; }
+  };
+}
+
 function mapping(id, transport, group) {
   return {
     mapping_id: id,
@@ -158,6 +173,23 @@ test('accepts only plain, dense JSON data without evaluating object behavior', (
   repeatedReference.protocols.pcp = shared;
   repeatedReference.protocols.natpmp = shared;
   assert.equal(loadScenarioFromObject(repeatedReference).protocols.pcp.enabled, false);
+});
+
+test('rejects root and nested proxies before a trap can run or leak data', () => {
+  const root = hostileProxy(validScenario());
+  expectError(() => loadScenarioFromObject(root.value), 'SCENARIO_OBJECT_INVALID', '$');
+  assert.equal(root.traps, 0);
+
+  const nestedScenario = validScenario();
+  const nested = hostileProxy(nestedScenario.gateway);
+  nestedScenario.gateway = nested.value;
+  let error;
+  assert.throws(() => loadScenarioFromObject(nestedScenario), (caught) => { error = caught; return true; });
+  assert.ok(error instanceof ScenarioValidationError);
+  assert.equal(error.reason_code, 'SCENARIO_OBJECT_INVALID');
+  assert.equal(error.field_path, '$.gateway');
+  assert.equal(nested.traps, 0);
+  assert.ok(!error.message.includes('proxy-secret'));
 });
 
 test('reports deterministic parse and size errors', () => {
@@ -309,9 +341,17 @@ test('requires complete and coherent tcp/udp atomic groups', () => {
     const incoherent = validScenario();
     incoherent.protocols.pcp.enabled = true;
     const first = mapping('map-1', 'tcp', 'pair-1');
-    const second = mapping('map-2', 'udp', 'pair-1'); second[property] = value;
+    const second = mapping('map-2', 'udp', 'pair-1');
+    if (property === 'protocol') {
+      first.protocol = 'pcp';
+      first.owner = { kind: 'pcp-nonce', instance_id_digest: digest, nonce: 'b'.repeat(24) };
+      second.protocol = 'upnp';
+    } else {
+      second[property] = value;
+    }
     incoherent.initial_state.mappings = [first, second];
-    expectError(() => loadScenarioFromObject(incoherent), 'ATOMIC_GROUP_INCOHERENT', `$.initial_state.mappings[1].${field}`);
+    const code = field === 'epoch' ? 'INITIAL_MAPPING_EPOCH_MISMATCH' : field === 'generation' ? 'INITIAL_MAPPING_GENERATION_MISMATCH' : 'ATOMIC_GROUP_INCOHERENT';
+    expectError(() => loadScenarioFromObject(incoherent), code, `$.initial_state.mappings[1].${field}`);
   }
 
   const instanceMismatch = validScenario();
@@ -332,6 +372,26 @@ test('requires complete and coherent tcp/udp atomic groups', () => {
   const gatewaySecond = mapping('map-2', 'udp', 'pair-1'); gatewaySecond.owner.gateway_identity_digest = 'b'.repeat(64);
   gatewayMismatch.initial_state.mappings = [gatewayFirst, gatewaySecond];
   expectError(() => loadScenarioFromObject(gatewayMismatch), 'ATOMIC_GROUP_INCOHERENT', '$.initial_state.mappings[1].owner.gateway_identity_digest');
+});
+
+test('initial mappings bind owner proof and active identity to their protocol and gateway', () => {
+  for (const [protocol, owner] of [
+    ['upnp', { kind: 'pcp-nonce', instance_id_digest: digest, nonce: 'b'.repeat(24) }],
+    ['pcp', { kind: 'natpmp-lease-scope', instance_id_digest: digest, scope_id: 'scope-1' }],
+    ['natpmp', { kind: 'upnp-journal', instance_id_digest: digest, gateway_identity_digest: digest, description: 'lab-map' }]
+  ]) {
+    const input = validScenario();
+    input.protocols[protocol].enabled = true;
+    input.initial_state.mappings = [mapping('map-1', 'tcp')];
+    input.initial_state.mappings[0].protocol = protocol;
+    input.initial_state.mappings[0].owner = owner;
+    expectError(() => loadScenarioFromObject(input), 'OWNER_PROTOCOL_MISMATCH', '$.initial_state.mappings[0].owner.kind');
+  }
+
+  const unproven = validScenario();
+  unproven.initial_state.mappings = [mapping('map-1', 'tcp')];
+  unproven.initial_state.mappings[0].owner = { kind: 'none' };
+  assert.equal(loadScenarioFromObject(unproven).initial_state.mappings[0].owner.kind, 'none');
 });
 
 test('requires coherent enabled protocol listeners and at least one enabled protocol', () => {

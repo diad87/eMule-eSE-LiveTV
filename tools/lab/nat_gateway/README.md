@@ -32,6 +32,19 @@ file-and-line provenance. It performs no packet behavior and is checked by a
 pure Node test; the table, including the deliberately absent UDP response, is
 documented in [`docs/V9.2_T8_NATPMP_VECTORS.md`](../../../docs/V9.2_T8_NATPMP_VECTORS.md).
 
+## NAT-PMP C02 request decoder
+
+`natpmp_request_decoder.js` is a pure, independent request boundary. It accepts
+only non-shared, non-detached `Buffer` or `Uint8Array` input, makes a defensive
+byte copy, and returns a frozen normalized command. Shared views fail closed:
+they cannot provide a snapshot protected from concurrent mutation. It accepts
+exactly the two-byte external-address request or a twelve-byte UDP/TCP MAP
+request, validates version `0`, request opcodes `0`/`1`/`2`, zero reserved bytes
+and a nonzero internal port. Lifetime zero is normalized to `delete` and
+requires a zero suggested external port. Malformed inputs raise
+`NatPmpRequestError` with stable `reason_code` and `field_path`; no socket,
+timer, clock, filesystem or productive codec is used.
+
 ## Planned component layout
 
 The names below reserve responsibilities, not implementation:

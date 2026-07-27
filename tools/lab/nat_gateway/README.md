@@ -1,6 +1,7 @@
 # T8 simulated NAT gateway
 
-Implementation status: `92-1.2` / `B04` adds the offline-only injectable clock.
+Implementation status: `92-1.2` / `B05` adds the pure structured event log and
+canonical public report projection.
 There is intentionally no socket code or production behavior in this directory.
 
 The normative architecture is
@@ -182,6 +183,28 @@ The canonical report always:
 - uses logical adapter names instead of physical NIC identifiers.
 
 No credential or real environment address is embedded in these design files.
+
+## Structured log and report (B05)
+
+`structured_log.js` is a pure boundary: it takes explicit event/state inputs,
+uses no clock, sockets, timers or I/O, and exports `createStructuredLog`,
+`projectPublicMappings` and `createCanonicalReport`.  Events are restricted to
+`ese.v92.t8.event/v1`; `append` assigns a strictly increasing sequence and
+rejects regressing explicit monotonic time.  `canonicalJson` sorts object keys
+for stable JSONL independent of caller property insertion order.
+
+All boundary objects use explicit whitelists. Unknown event, mapping and
+top-level report fields fail closed; unknown fields inside public report
+sections are deliberately omitted, and no unknown field is ever copied.
+Gateway, client and owner identifiers are domain-separated SHA-256 values;
+mappings retain only their stable mapping ID, protocol data, lease/version
+fields and classified/digested addresses.
+PCP nonce, owner scope/description, raw IPs, payloads, credentials and error
+details cannot enter event or public-report output.  `createCanonicalReport`
+also whitelists its effective configuration, normalized states, counters and
+fault summary (including sorted unique non-sensitive applied fault IDs) before
+combining them with the sanitized mapping projection. Finite leases are checked
+again for exact monotonic expiry arithmetic before projection.
 
 ## Validation planned for the next cards
 

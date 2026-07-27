@@ -211,7 +211,11 @@ protocol data, lease/version fields and classified/digested addresses.
 PCP nonce, owner scope/description, raw IPs, payloads, credentials and error
 details cannot enter event or public-report output. Proxies are rejected before
 any trap can run, and sparse arrays (including `new Array(n)`) are rejected
-before element traversal. `createCanonicalReport` also whitelists its effective
+before element traversal. Unknown property names are rendered as `*` in public
+and validation errors so a hostile key cannot become an error-message channel.
+Mapping projection revalidates the complete protocol-specific owner proof and
+exports only domain-separated digests for nonce, gateway identity or lease
+scope. `createCanonicalReport` also whitelists its effective
 configuration, normalized states, counters and fault summary before combining
 them with the sanitized mapping projection. Finite leases are checked again for
 exact monotonic expiry arithmetic before projection.

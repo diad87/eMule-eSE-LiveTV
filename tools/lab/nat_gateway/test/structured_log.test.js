@@ -50,6 +50,7 @@ test('B05: public mapping projection is sorted and removes addresses, nonce and 
   assert.deepEqual(result.map((m) => m.mapping_id_digest), [...result.map((m) => m.mapping_id_digest)].sort()); const text = JSON.stringify(result);
   for (const secret of ['a-map', 'z-map', '192.0.2.10', '2001:db8::7', '10.0.0.3', 'b'.repeat(24), 'client-1', 'scope_id', 'description']) assert.equal(text.includes(secret), false);
   assert.match(text, /sha256:t8\.address\/v1:/); assert.match(text, /sha256:t8\.owner-instance\/v1:/);
+  assert.match(result[0].owner.nonce_digest, /^sha256:t8\.pcp-nonce\/v1:/);
   err(() => projectPublicMappings([mapping({ payload: 'bad' })]), 'STRUCTURED_LOG_FIELD_UNKNOWN', '$.mappings[0].*');
 });
 
@@ -79,9 +80,23 @@ test('B05: privacy branches cover optional fields, address classes and mapping o
   err(() => createStructuredLog().append(event({ transport: 'bad' })), 'STRUCTURED_LOG_FIELD_INVALID', '$.transport');
   const maps = projectPublicMappings([
     mapping({ mapping_id: 'v4-map', internal_address: '10.1.2.3', external_address: '198.51.100.2', owner: { kind: 'none' }, lease: { lifetime_seconds: 0, created_monotonic_ms: 1, expires_monotonic_ms: null } }),
-    mapping({ mapping_id: 'upnp-map', external_port: 4, owner: { kind: 'upnp-journal', instance_id_digest: 'c'.repeat(64), gateway_identity_digest: 'd'.repeat(64), description: 'secret' }, atomic_group_id: 'group-1', atomic_group_status: 'complete' })
+    mapping({ mapping_id: 'upnp-map', protocol: 'upnp', external_port: 4, owner: { kind: 'upnp-journal', instance_id_digest: 'c'.repeat(64), gateway_identity_digest: 'd'.repeat(64), description: 'secret' }, atomic_group_id: 'group-1', atomic_group_status: 'complete' })
   ]);
   assert.equal(maps.find((item) => item.internal_address.classification === 'private-or-loopback').internal_address.classification, 'private-or-loopback'); assert.equal(maps.find((item) => item.owner.kind === 'upnp-journal').owner.kind, 'upnp-journal'); assert.equal(maps.find((item) => item.internal_address.classification === 'private-or-loopback').external_address.classification, 'ipv4');
+  const upnpOwner = maps.find((item) => item.owner.kind === 'upnp-journal').owner;
+  assert.match(upnpOwner.gateway_identity_digest, /^sha256:t8\.owner-gateway\/v1:/);
+  assert.equal(own(upnpOwner, 'description'), false);
+  const natpmpOwner = projectPublicMappings([mapping({ protocol: 'natpmp', owner: { kind: 'natpmp-lease-scope', instance_id_digest: 'e'.repeat(64), scope_id: 'scope-secret-1' } })])[0].owner;
+  assert.match(natpmpOwner.scope_id_digest, /^sha256:t8\.natpmp-scope\/v1:/);
+  assert.equal(JSON.stringify(natpmpOwner).includes('scope-secret-1'), false);
+  err(() => projectPublicMappings([mapping({ protocol: 'pcp', owner: { kind: 'upnp-journal', instance_id_digest: 'c'.repeat(64), gateway_identity_digest: 'd'.repeat(64), description: 'lab-map' } })]), 'STRUCTURED_LOG_OWNER_PROTOCOL_MISMATCH', '$.mappings[0].owner.kind');
+  err(() => projectPublicMappings([mapping({ protocol: 'pcp', owner: { kind: 'pcp-nonce' } })]), 'STRUCTURED_LOG_FIELD_INVALID', '$.mappings[0].owner.instance_id_digest');
+  err(() => projectPublicMappings([mapping({ protocol: 'pcp', owner: { kind: 'pcp-nonce', instance_id_digest: 'e'.repeat(64) } })]), 'STRUCTURED_LOG_FIELD_REQUIRED', '$.mappings[0].owner.nonce');
+  err(() => projectPublicMappings([mapping({ protocol: 'pcp', owner: { kind: 'pcp-nonce', instance_id_digest: 'e'.repeat(64), nonce: 'bad' } })]), 'STRUCTURED_LOG_FIELD_INVALID', '$.mappings[0].owner.nonce');
+  err(() => projectPublicMappings([mapping({ protocol: 'upnp', owner: { kind: 'upnp-journal', instance_id_digest: 'c'.repeat(64), gateway_identity_digest: 'bad', description: 'lab-map' } })]), 'STRUCTURED_LOG_FIELD_INVALID', '$.mappings[0].owner.gateway_identity_digest');
+  err(() => projectPublicMappings([mapping({ protocol: 'upnp', owner: { kind: 'upnp-journal', instance_id_digest: 'c'.repeat(64), gateway_identity_digest: 'd'.repeat(64), description: '' } })]), 'STRUCTURED_LOG_FIELD_INVALID', '$.mappings[0].owner.description');
+  err(() => projectPublicMappings([mapping({ protocol: 'natpmp', owner: { kind: 'natpmp-lease-scope', instance_id_digest: 'e'.repeat(64), scope_id: '' } })]), 'STRUCTURED_LOG_FIELD_INVALID', '$.mappings[0].owner.scope_id');
+  err(() => projectPublicMappings([mapping({ owner: { kind: 'none', nonce: 'secret' } })]), 'STRUCTURED_LOG_FIELD_UNKNOWN', '$.mappings[0].owner.nonce');
   err(() => projectPublicMappings([mapping({ owner: { kind: 'bad' } })]), 'STRUCTURED_LOG_FIELD_INVALID', '$.mappings[0].owner.kind');
   err(() => projectPublicMappings([mapping({ atomic_group_status: 'bad' })]), 'STRUCTURED_LOG_FIELD_INVALID', '$.mappings[0].atomic_group_status');
   err(() => createCanonicalReport({}), 'STRUCTURED_LOG_FIELD_REQUIRED', '$.scenario_id');

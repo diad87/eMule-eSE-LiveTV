@@ -7,6 +7,15 @@ const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 const PROTOCOLS = new Set(['upnp', 'pcp', 'natpmp']);
 const TRANSPORTS = new Set(['tcp', 'udp']);
+const SAFE_FIELD_NAMES = new Set([
+  'epoch', 'generation', 'mappings', 'baseline_mappings', 'mapping_id',
+  'protocol', 'transport', 'client_id', 'internal_address', 'internal_port',
+  'requested_external_port', 'external_address', 'external_port', 'lease',
+  'owner', 'atomic_group_id', 'lifetime_seconds', 'created_monotonic_ms',
+  'expires_monotonic_ms', 'kind', 'instance_id_digest',
+  'gateway_identity_digest', 'description', 'nonce', 'scope_id',
+  'now_monotonic_ms', 'toJSON'
+]);
 const stateBrand = new WeakSet();
 
 class MappingModelError extends Error {
@@ -66,7 +75,7 @@ function cloneJsonData(value, fieldPath, ancestors = new WeakSet()) {
     copy = {};
     for (const key of Object.getOwnPropertyNames(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      const keyPath = `${fieldPath}.${key}`;
+      const keyPath = SAFE_FIELD_NAMES.has(key) ? `${fieldPath}.${key}` : `${fieldPath}.*`;
       if (!descriptor || !descriptor.enumerable || !hasOwn(descriptor, 'value') || key === 'toJSON') {
         ancestors.delete(value);
         fail('MAPPING_INPUT_INVALID', keyPath, 'objects must contain enumerable data properties');
@@ -98,7 +107,7 @@ function assertExactKeys(value, required, optional, fieldPath) {
   }
   const allowed = new Set([...required, ...optional]);
   for (const key of Object.keys(value)) {
-    if (!allowed.has(key)) fail('MAPPING_FIELD_UNKNOWN', `${fieldPath}.${key}`, 'is not allowed');
+    if (!allowed.has(key)) fail('MAPPING_FIELD_UNKNOWN', `${fieldPath}.*`, 'unknown field is not allowed');
   }
 }
 

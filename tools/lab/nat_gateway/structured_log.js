@@ -133,6 +133,43 @@ function createStructuredLog() {
   });
 }
 
+function projectOwner(owner, protocol, path) {
+  exact(owner, ['kind'], ['instance_id_digest', 'gateway_identity_digest', 'description', 'nonce', 'scope_id'], path);
+  const expectedProtocol = {
+    'upnp-journal': 'upnp',
+    'pcp-nonce': 'pcp',
+    'natpmp-lease-scope': 'natpmp'
+  }[owner.kind];
+  if (owner.kind === 'none') {
+    exact(owner, ['kind'], [], path);
+    return frozen({ kind: 'none' });
+  }
+  if (!expectedProtocol) fail('STRUCTURED_LOG_FIELD_INVALID', `${path}.kind`);
+  if (expectedProtocol !== protocol) fail('STRUCTURED_LOG_OWNER_PROTOCOL_MISMATCH', `${path}.kind`);
+  if (typeof owner.instance_id_digest !== 'string' || !/^[a-f0-9]{64}$/.test(owner.instance_id_digest)) {
+    fail('STRUCTURED_LOG_FIELD_INVALID', `${path}.instance_id_digest`);
+  }
+  const projected = {
+    kind: owner.kind,
+    instance_id_digest: digest('t8.owner-instance/v1', owner.instance_id_digest)
+  };
+  if (owner.kind === 'upnp-journal') {
+    exact(owner, ['kind', 'instance_id_digest', 'gateway_identity_digest', 'description'], [], path);
+    if (typeof owner.gateway_identity_digest !== 'string' || !/^[a-f0-9]{64}$/.test(owner.gateway_identity_digest)) fail('STRUCTURED_LOG_FIELD_INVALID', `${path}.gateway_identity_digest`);
+    if (typeof owner.description !== 'string' || owner.description.length === 0 || owner.description.length > 64) fail('STRUCTURED_LOG_FIELD_INVALID', `${path}.description`);
+    projected.gateway_identity_digest = digest('t8.owner-gateway/v1', owner.gateway_identity_digest);
+  } else if (owner.kind === 'pcp-nonce') {
+    exact(owner, ['kind', 'instance_id_digest', 'nonce'], [], path);
+    if (typeof owner.nonce !== 'string' || !/^[a-f0-9]{24}$/.test(owner.nonce)) fail('STRUCTURED_LOG_FIELD_INVALID', `${path}.nonce`);
+    projected.nonce_digest = digest('t8.pcp-nonce/v1', owner.nonce);
+  } else {
+    exact(owner, ['kind', 'instance_id_digest', 'scope_id'], [], path);
+    id(owner.scope_id, `${path}.scope_id`);
+    projected.scope_id_digest = digest('t8.natpmp-scope/v1', owner.scope_id);
+  }
+  return frozen(projected);
+}
+
 function projectPublicMappings(snapshot) {
   const list = data(snapshot, '$.mappings'); if (!Array.isArray(list)) fail('STRUCTURED_LOG_FIELD_INVALID', '$.mappings');
   const sourceIds = [];
@@ -146,7 +183,7 @@ function projectPublicMappings(snapshot) {
     const out = { mapping_id_digest: digest('t8.mapping-id/v1', m.mapping_id), protocol: m.protocol, transport: m.transport, client_id_digest: digest('t8.client-id/v1', m.client_id), internal_address: address(m.internal_address, `${p}.internal_address`), internal_port: m.internal_port, requested_external_port: m.requested_external_port, external_address: address(m.external_address, `${p}.external_address`), external_port: m.external_port, lease: { lifetime_seconds: m.lease.lifetime_seconds, created_monotonic_ms: m.lease.created_monotonic_ms, expires_monotonic_ms: m.lease.expires_monotonic_ms }, epoch: m.epoch, generation: m.generation };
     if (m.atomic_group_id !== undefined) { id(m.atomic_group_id, `${p}.atomic_group_id`); out.atomic_group_id_digest = digest('t8.atomic-group-id/v1', m.atomic_group_id); }
     if (m.atomic_group_status !== undefined) { if (!['partial', 'complete'].includes(m.atomic_group_status)) fail('STRUCTURED_LOG_FIELD_INVALID', `${p}.atomic_group_status`); out.atomic_group_status = m.atomic_group_status; }
-    if (m.owner !== undefined) { exact(m.owner, ['kind'], ['instance_id_digest', 'gateway_identity_digest', 'description', 'nonce', 'scope_id'], `${p}.owner`); if (!['none', 'upnp-journal', 'pcp-nonce', 'natpmp-lease-scope'].includes(m.owner.kind)) fail('STRUCTURED_LOG_FIELD_INVALID', `${p}.owner.kind`); out.owner = { kind: m.owner.kind }; if (typeof m.owner.instance_id_digest === 'string') out.owner.instance_id_digest = digest('t8.owner-instance/v1', m.owner.instance_id_digest); }
+    if (m.owner !== undefined) out.owner = projectOwner(m.owner, m.protocol, `${p}.owner`);
     return frozen(out);
   });
   const ids = new Set();

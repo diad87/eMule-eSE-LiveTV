@@ -23,6 +23,19 @@ const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: true }
 ajv.addFormat('ipv4', { type: 'string', validate: (value) => typeof value === 'string' && normalizeAddress(value) === value && value.includes('.') });
 ajv.addFormat('ipv6', { type: 'string', validate: (value) => typeof value === 'string' && normalizeAddress(value) !== null && value.includes(':') });
 const validateSchema = ajv.compile(schema);
+const SCHEMA_PROPERTY_NAMES = new Set();
+
+function collectSchemaPropertyNames(node, visited = new Set()) {
+  if (!node || typeof node !== 'object' || visited.has(node)) return;
+  visited.add(node);
+  if (node.properties) {
+    for (const key of Object.keys(node.properties)) SCHEMA_PROPERTY_NAMES.add(key);
+  }
+  for (const value of Object.values(node)) collectSchemaPropertyNames(value, visited);
+}
+
+collectSchemaPropertyNames(schema);
+SCHEMA_PROPERTY_NAMES.add('toJSON');
 
 function fail(reasonCode, fieldPath, detail) {
   throw new ScenarioValidationError(reasonCode, fieldPath, detail);
@@ -35,7 +48,7 @@ function displayPath(instancePath) {
 
 function schemaErrorPath(error) {
   if (error.keyword === 'required') return `${displayPath(error.instancePath)}.${error.params.missingProperty}`;
-  if (error.keyword === 'additionalProperties') return `${displayPath(error.instancePath)}.${error.params.additionalProperty}`;
+  if (error.keyword === 'additionalProperties') return `${displayPath(error.instancePath)}.*`;
   return displayPath(error.instancePath);
 }
 
@@ -117,7 +130,7 @@ function parseText(text) {
 }
 
 function childPath(parentPath, key, isArray) {
-  return isArray ? `${parentPath}[${key}]` : `${parentPath}.${key}`;
+  return isArray ? `${parentPath}[${key}]` : SCHEMA_PROPERTY_NAMES.has(key) ? `${parentPath}.${key}` : `${parentPath}.*`;
 }
 
 function cloneJsonData(value, fieldPath, ancestors) {

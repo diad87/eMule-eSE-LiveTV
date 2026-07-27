@@ -135,16 +135,16 @@ test('accepts only plain, dense JSON data without evaluating object behavior', (
   expectError(() => loadScenarioFromObject(null), 'SCENARIO_OBJECT_INVALID', '$');
   expectError(() => loadScenarioFromObject([]), 'SCENARIO_OBJECT_INVALID', '$');
   expectError(() => loadScenarioFromObject({ toJSON() { return validScenario(); } }), 'SCENARIO_OBJECT_INVALID', '$.toJSON');
-  expectError(() => loadScenarioFromObject({ ...validScenario(), extra: undefined }), 'SCENARIO_OBJECT_INVALID', '$.extra');
-  expectError(() => loadScenarioFromObject({ ...validScenario(), extra: 1n }), 'SCENARIO_OBJECT_INVALID', '$.extra');
-  expectError(() => loadScenarioFromObject({ ...validScenario(), extra: Symbol('not-json') }), 'SCENARIO_OBJECT_INVALID', '$.extra');
-  expectError(() => loadScenarioFromObject({ ...validScenario(), extra: Number.NaN }), 'SCENARIO_OBJECT_INVALID', '$.extra');
+  expectError(() => loadScenarioFromObject({ ...validScenario(), extra: undefined }), 'SCENARIO_OBJECT_INVALID', '$.*');
+  expectError(() => loadScenarioFromObject({ ...validScenario(), extra: 1n }), 'SCENARIO_OBJECT_INVALID', '$.*');
+  expectError(() => loadScenarioFromObject({ ...validScenario(), extra: Symbol('not-json') }), 'SCENARIO_OBJECT_INVALID', '$.*');
+  expectError(() => loadScenarioFromObject({ ...validScenario(), extra: Number.NaN }), 'SCENARIO_OBJECT_INVALID', '$.*');
   const accessor = validScenario();
   Object.defineProperty(accessor, 'extra', { enumerable: true, get() { throw new Error('must not execute'); } });
-  expectError(() => loadScenarioFromObject(accessor), 'SCENARIO_OBJECT_INVALID', '$.extra');
+  expectError(() => loadScenarioFromObject(accessor), 'SCENARIO_OBJECT_INVALID', '$.*');
   const hidden = validScenario();
   Object.defineProperty(hidden, 'extra', { enumerable: false, value: true });
-  expectError(() => loadScenarioFromObject(hidden), 'SCENARIO_OBJECT_INVALID', '$.extra');
+  expectError(() => loadScenarioFromObject(hidden), 'SCENARIO_OBJECT_INVALID', '$.*');
   const symbolObject = validScenario();
   symbolObject[Symbol('not-json')] = true;
   expectError(() => loadScenarioFromObject(symbolObject), 'SCENARIO_OBJECT_INVALID', '$');
@@ -163,7 +163,7 @@ test('accepts only plain, dense JSON data without evaluating object behavior', (
   const custom = Object.create({ inherited: true }); Object.assign(custom, validScenario());
   expectError(() => loadScenarioFromObject(custom), 'SCENARIO_OBJECT_INVALID', '$');
   const cyclic = validScenario(); cyclic.extra = cyclic;
-  expectError(() => loadScenarioFromObject(cyclic), 'SCENARIO_OBJECT_INVALID', '$.extra');
+  expectError(() => loadScenarioFromObject(cyclic), 'SCENARIO_OBJECT_INVALID', '$.*');
 
   const nullPrototype = Object.assign(Object.create(null), validScenario());
   assert.equal(loadScenarioFromObject(nullPrototype).scenario_id, 'minimal-scenario');
@@ -234,7 +234,15 @@ test('fails closed before effects for missing sections and unknown fields', () =
   const twoMissing = validScenario(); delete twoMissing.protocols; delete twoMissing.gateway;
   expectError(() => loadScenarioFromObject(twoMissing), 'SCHEMA_REQUIRED', '$.gateway');
   const extra = validScenario(); extra.unexpected = true;
-  expectError(() => loadScenarioFromObject(extra), 'SCHEMA_ADDITIONAL_PROPERTY', '$.unexpected');
+  expectError(() => loadScenarioFromObject(extra), 'SCHEMA_ADDITIONAL_PROPERTY', '$.*');
+  const secretKey = 'token-secret-payload-credential-123456';
+  const secretNamed = validScenario(); secretNamed[secretKey] = true;
+  assert.throws(() => loadScenarioFromObject(secretNamed), (error) => {
+    assert.equal(error.reason_code, 'SCHEMA_ADDITIONAL_PROPERTY');
+    assert.equal(error.field_path, '$.*');
+    assert.equal(error.message.includes(secretKey), false);
+    return true;
+  });
 
   const twoUncommonKeywords = validScenario();
   twoUncommonKeywords.scenario_id = '';

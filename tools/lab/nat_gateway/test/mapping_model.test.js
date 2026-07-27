@@ -268,9 +268,17 @@ test('RED: input cloning and structural validation fail closed across hostile JS
   const toJson = { ...base, toJSON() { return base; } };
   expectError(() => createMappingState(toJson), 'MAPPING_INPUT_INVALID', '$.toJSON');
   const cycle = { ...base }; cycle.self = cycle;
-  expectError(() => createMappingState(cycle), 'MAPPING_INPUT_INVALID', '$.self');
+  expectError(() => createMappingState(cycle), 'MAPPING_INPUT_INVALID', '$.*');
   expectError(() => createMappingState(null), 'MAPPING_FIELD_INVALID', '$');
-  expectError(() => createMappingState({ epoch: 10, generation: 4, mappings: {}, unknown: true }), 'MAPPING_FIELD_UNKNOWN', '$.unknown');
+  expectError(() => createMappingState({ epoch: 10, generation: 4, mappings: {}, unknown: true }), 'MAPPING_FIELD_UNKNOWN', '$.*');
+  const secretKey = 'token-secret-payload-credential-123456';
+  const secretNamed = { epoch: 10, generation: 4, mappings: [], [secretKey]: true };
+  assert.throws(() => createMappingState(secretNamed), (error) => {
+    assert.equal(error.reason_code, 'MAPPING_FIELD_UNKNOWN');
+    assert.equal(error.field_path, '$.*');
+    assert.equal(error.message.includes(secretKey), false);
+    return true;
+  });
 });
 
 test('RED: mapping validation covers IDs, protocols, ownership variants and precise lease arithmetic', () => {

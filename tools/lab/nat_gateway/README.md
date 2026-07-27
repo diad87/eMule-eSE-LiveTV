@@ -45,6 +45,27 @@ requires a zero suggested external port. Malformed inputs raise
 `NatPmpRequestError` with stable `reason_code` and `field_path`; no socket,
 timer, clock, filesystem or productive codec is used.
 
+## NAT-PMP C03 response encoder
+
+`natpmp_response_encoder.js` is a pure response boundary. It accepts one exact
+ordinary-object shape for an external-address response or a UDP/TCP MAP
+response and returns a newly allocated `Buffer` in network byte order. The
+closed result-code set is NAT-PMP `0..5`. Rejected external-address responses
+carry `0.0.0.0`; rejected MAP responses echo their nonzero internal port and
+carry zero external port and lifetime. The epoch remains explicitly
+configurable. A successful external-address response requires a nonzero IPv4
+address, matching the client's usable-address gate. Successful MAP responses require either a nonzero port and
+lease, or both zero for a delete acknowledgement. All wire-integer fields,
+including IPv4 octets, reject JavaScript `-0` so zero has one canonical input
+representation before it is encoded.
+
+Input is read exclusively through data descriptors, so proxies, getters,
+class instances, arrays, unknown keys, sparse IPv4 values and invalid scalar
+ranges fail closed without evaluating hostile values. The module uses no
+socket, timer, clock, filesystem or productive codec. It checks the C01
+external-address and TCP MAP goldens exactly; UDP's response opcode is derived
+only by the protocol rule and is not added to the C01 table.
+
 ## Planned component layout
 
 The names below reserve responsibilities, not implementation:

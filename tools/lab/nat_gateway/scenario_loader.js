@@ -1,10 +1,10 @@
 'use strict';
 
 const fs = require('node:fs');
-const net = require('node:net');
 const path = require('node:path');
 const { TextDecoder } = require('node:util');
 const Ajv2020 = require('ajv/dist/2020');
+const { normalizeAddress } = require('./address');
 
 const MAX_SCENARIO_BYTES = 1024 * 1024;
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
@@ -20,8 +20,8 @@ class ScenarioValidationError extends Error {
 }
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: true });
-ajv.addFormat('ipv4', { type: 'string', validate: (value) => net.isIP(value) === 4 });
-ajv.addFormat('ipv6', { type: 'string', validate: (value) => net.isIP(value) === 6 });
+ajv.addFormat('ipv4', { type: 'string', validate: (value) => typeof value === 'string' && normalizeAddress(value) === value && value.includes('.') });
+ajv.addFormat('ipv6', { type: 'string', validate: (value) => typeof value === 'string' && normalizeAddress(value) !== null && value.includes(':') });
 const validateSchema = ajv.compile(schema);
 
 function fail(reasonCode, fieldPath, detail) {
@@ -215,12 +215,6 @@ function stableJson(value) {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
   }
   return JSON.stringify(value);
-}
-
-function normalizeAddress(address) {
-  if (net.isIP(address) !== 6) return address;
-  const hostname = new URL(`http://[${address}]/`).hostname;
-  return hostname.slice(1, -1);
 }
 
 function assertMappings(scenario) {

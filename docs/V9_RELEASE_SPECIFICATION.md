@@ -187,7 +187,14 @@ Antes de una prueba entre equipos:
 7. Registrar adaptadores, familia IP, tipo de red y puertos antes de empezar.
 8. Confirmar que el panel remoto no está publicado.
 9. Cerrar otros procesos eMule que utilicen los mismos puertos.
-10. Mantener Tailscale solo como canal de control.
+10. Mantener Tailscale solo como canal de control, salvo en los casos `T6`
+    que declaran expresamente el overlay como plano de datos y la excepción
+    estrictamente acotada de `V91-C01` descrita en su matriz.
+
+La excepción `T6` es deliberada y acotada: `V91-I06` valida transporte IPv6
+remoto sobre overlay. Su informe debe etiquetar la ruta como overlay y no puede
+usarse para afirmar IPv6 pública, entrada directa, apertura de puertos, ausencia
+de CGNAT ni hole punching.
 
 ## 5. Evidencias y severidad
 
@@ -520,7 +527,7 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | `V91-K02` | `T1` | Kad2+Kad6, apagar uno durante ejecución | El otro continúa y no recibe paquetes del plano apagado |
 | `V91-K03` | perfiles | Guardar un perfil Kad6-only con la candidata y abrir una copia con el paquete eSE 8.1.0 fijado por hashes, con autoconexión activa | Kad2 no se inicia ni se reactiva; evidencia mínima: `NetworkKademlia=0` antes y después, proceso 8.1 vivo y API con `kad_connected=false` continuamente durante al menos 30 s |
 | `V91-K04` | `T1/T5` | Reiniciar ambos nodos con `nodes_v6.dat` poblado | Contactos cargados en probation; re-verificación acotada y sin confianza heredada |
-| `V91-C01` | `V1` | Peer nuevo frente a 0.70b | Transferencia íntegra; solo opcodes y payloads clásicos. Se permiten tags `HELLO` aditivos ignorados por 0.70b |
+| `V91-C01` | `V1/H2` | Peer nuevo frente a 0.70b en un Windows independiente | Transferencia íntegra; solo opcodes y payloads clásicos. Se permiten tags `HELLO` aditivos ignorados por 0.70b |
 | `V91-C02` | `T0` | Rechazar sucesivamente base, avanzado y contribución | Ninguna superficie del nivel rechazado se inicia; KRP y Beta Exit permanecen cerrados |
 | `V91-C03` | `T0/T1` | Aceptar los tres niveles y revocar el general durante actividad | El estado persiste y relay, KRP y Beta Exit se detienen en menos de 5 s; el gate estable de Kad6, independiente de NetLab, no cambia |
 | `V91-C04` | `T0` | Aceptar contribución con configuración KRP incompleta | KRP falla cerrado; no abre listener ni conexión |
@@ -529,6 +536,18 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | `V91-S03` | `T1/T5` | Enviar `BOOTSTRAP_REQ`, `REQ` y `FIND_SOURCE_REQ` desde un endpoint no verificado | Solo se emite challenge acotado; ninguna respuesta amplificada sale antes de una prueba transaction-bound |
 | `V91-R01` | `T3` | Cambiar portátil de LAN a hotspot durante sesión | Reconexión limpia, endpoint anterior caduca |
 | `V91-O01` | `T1/T5` | Soak dual-stack 12 h | Sin fuga, duplicados crecientes ni corrupción |
+
+Para `V91-C01`, `V1` sigue siendo válida, pero un segundo Windows físico
+independiente (`H2`) constituye un aislamiento más fuerte y también satisface
+el caso. Solo para esta prueba de interoperabilidad se permite que un proxy
+L4 byte-transparente y el peer vanilla se comuniquen por un overlay controlado:
+el objeto de la prueba son los bytes del protocolo clásico, no la
+alcanzabilidad. La ejecución debe capturar íntegramente ambos sentidos, fijar
+por hash tanto la candidata como el binario 0.70b, acreditar que los Windows
+son distintos y etiquetar el transporte como overlay. Esta excepción no
+demuestra IPv4/IPv6 pública, entrada directa, apertura de puertos, ausencia de
+CGNAT ni hole punching, y no habilita Tailscale como plano de datos para ningún
+otro caso distinto de `T6`.
 
 La matriz normativa vigente contiene **27 casos**. El recuento histórico de
 beta.2 era de 26 porque todavía no incluía `V91-A02`; desde beta.3, cualquier

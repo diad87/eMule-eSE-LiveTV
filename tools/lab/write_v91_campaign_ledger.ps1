@@ -142,7 +142,7 @@ $definitions = @(
     [ordered]@{ id = 'V91-K02'; topology = 'T1' },
     [ordered]@{ id = 'V91-K03'; topology = 'profiles' },
     [ordered]@{ id = 'V91-K04'; topology = 'T1/T5' },
-    [ordered]@{ id = 'V91-C01'; topology = 'V1' },
+    [ordered]@{ id = 'V91-C01'; topology = 'V1/H2' },
     [ordered]@{ id = 'V91-C02'; topology = 'T0' },
     [ordered]@{ id = 'V91-C03'; topology = 'T0/T1' },
     [ordered]@{ id = 'V91-C04'; topology = 'T0' },

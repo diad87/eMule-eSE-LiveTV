@@ -8,6 +8,13 @@ const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
 const bufferLengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteLength').get;
 const bufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'buffer').get;
 const byteOffsetGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteOffset').get;
+const rejectCodes = new Map([
+  ['unsupported-version', 1],
+  ['not-authorized', 2],
+  ['network-failure', 3],
+  ['out-of-resources', 4],
+  ['unsupported-opcode', 5],
+]);
 
 class NatPmpFaultError extends Error {
   constructor(reasonCode) {
@@ -63,6 +70,12 @@ function normalizeAction(input) {
         !Number.isInteger(jitterMs) || jitterMs !== 0) fail('NATPMP_FAULT_INVALID');
     return Object.freeze({ type, delay_ms: delayMs });
   }
+  if (type === 'reject') {
+    exactDataObject(input, ['type', 'result_code']);
+    const resultCode = ownData(input, 'result_code');
+    if (!rejectCodes.has(resultCode)) fail('NATPMP_FAULT_INVALID');
+    return Object.freeze({ type, result_code: rejectCodes.get(resultCode) });
+  }
   fail('NATPMP_FAULT_UNSUPPORTED');
 }
 
@@ -84,6 +97,12 @@ function createNatPmpFaultInjector(actionInput, dependencies = {}) {
     if (action.type === 'delay') {
       try { await sleep(action.delay_ms, signal); } catch { fail(signal.aborted ? 'NATPMP_FAULT_ABORTED' : 'NATPMP_FAULT_DELAY_FAILED'); }
       if (signal.aborted) fail('NATPMP_FAULT_ABORTED');
+      return snapshot;
+    }
+    if (action.type === 'reject') {
+      snapshot.writeUInt16BE(action.result_code, 2);
+      if (snapshot.length === 12) snapshot.fill(0, 8, 12);
+      else snapshot.fill(0, 10, 16);
       return snapshot;
     }
     fail('NATPMP_FAULT_UNSUPPORTED');

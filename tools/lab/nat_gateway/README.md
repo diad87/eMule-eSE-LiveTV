@@ -304,6 +304,10 @@ only after the fixed delay.  C05 accepts `jitter_ms: 0`; seeded jitter selection
 belongs to the shared fault selector, so this protocol edge cannot introduce
 runtime randomness.
 
+`reject` maps a closed protocol label to NAT-PMP result `1..5` and zeros every
+response field that cannot be asserted on failure while preserving the request
+opcode and echoed internal port.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

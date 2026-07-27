@@ -53,3 +53,14 @@ test('C05 delay: rejects nondeterministic jitter and maps scheduler cancellation
     (error) => error.reason_code === 'NATPMP_FAULT_ABORTED',
   );
 });
+
+test('C05 reject: emits each closed NAT-PMP rejection with deterministic zero fields', async () => {
+  const names = ['unsupported-version', 'not-authorized', 'network-failure', 'out-of-resources', 'unsupported-opcode'];
+  for (let index = 0; index < names.length; index += 1) {
+    const inject = createNatPmpFaultInjector({ type: 'reject', result_code: names[index] });
+    const result = await inject(Buffer.from(NATPMP_VECTORS.map_tcp_response.hex, 'hex'), command, new AbortController().signal);
+    assert.equal(result.readUInt16BE(2), index + 1);
+    assert.equal(result.subarray(10).equals(Buffer.alloc(6)), true);
+  }
+  assert.throws(() => createNatPmpFaultInjector({ type: 'reject', result_code: 'bogus' }), NatPmpFaultError);
+});

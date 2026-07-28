@@ -372,7 +372,8 @@ void CPPgWiz1Ports::OnCancel()
 void CPPgWiz1Ports::OnStartUPnP()
 {
 	CDlgPageWizard::OnApply();
-	theApp.emuledlg->StartUPnP(true, GetTCPPort(), GetUDPPort());
+	theApp.emuledlg->StartUPnP(
+		true, GetTCPPort(), GetUDPPort(), true);
 
 	SetDlgItemText(IDC_UPNPSTATUS, GetResString(IDS_UPNPSETUP));
 	GetDlgItem(IDC_UPNPSTART)->EnableWindow(FALSE);

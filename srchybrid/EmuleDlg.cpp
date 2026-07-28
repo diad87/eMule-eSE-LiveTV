@@ -465,6 +465,8 @@ CemuleDlg::CemuleDlg(CWnd *pParent /*=NULL*/)
 	, m_nNextUPnPLocalFailureToken()
 	, m_bUPnPLocalFailureTokenExhausted()
 	, m_hUPnPLeaseTimer()
+	, m_hIPv6HealthTimer()
+	, m_bUPnPExplicitRequest()
 	, m_uUPnPNetworkSignature()
 	, m_mappingResultMailbox(
 		std::make_shared<natmap::MappingResultMailbox>())
@@ -1245,9 +1247,9 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				// OP_PUBLICIP_REQ (CFirewallProberV6::SetDetectedV6IP), which
 				// replaced the old api6.ipify.org third-party HTTPS probe.
 				if (thePrefs.IsIPv6Enabled()) {
-					if (theApp.emuledlg->m_hUPnPLeaseTimer == 0)
-						VERIFY((theApp.emuledlg->m_hUPnPLeaseTimer = ::SetTimer(NULL, 0,
-							SEC2MS(30), UPnPLeaseTimer)) != 0);
+					if (theApp.emuledlg->m_hIPv6HealthTimer == 0)
+						VERIFY((theApp.emuledlg->m_hIPv6HealthTimer = ::SetTimer(NULL, 0,
+							SEC2MS(30), IPv6HealthTimer)) != 0);
 					CFirewallProberV6::Instance().ProbeAsync();
 				}
 
@@ -2611,6 +2613,10 @@ void CemuleDlg::OnClose()
 	if (m_hUPnPLeaseTimer != 0) {
 		VERIFY(::KillTimer(NULL, m_hUPnPLeaseTimer));
 		m_hUPnPLeaseTimer = 0;
+	}
+	if (m_hIPv6HealthTimer != 0) {
+		VERIFY(::KillTimer(NULL, m_hIPv6HealthTimer));
+		m_hIPv6HealthTimer = 0;
 	}
 	if (m_hUPnPTimeOutTimer != 0) {
 		RetireUPnPTimeout();
@@ -4684,11 +4690,19 @@ void CemuleDlg::InvalidateLocalUPnPFailure()
 void CALLBACK CemuleDlg::UPnPLeaseTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*idEvent*/, DWORD /*dwTime*/) noexcept
 {
 	try {
-		CFirewallProberV6::Instance().OnTimerTick();
 		if (theApp.emuledlg != NULL)
 			theApp.emuledlg->CheckUPnPLease();
 	} catch (...) {
 		DebugLogError(_T("Unexpected exception while scheduling UPnP lease renewal"));
+	}
+}
+
+void CALLBACK CemuleDlg::IPv6HealthTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*idEvent*/, DWORD /*dwTime*/) noexcept
+{
+	try {
+		CFirewallProberV6::Instance().OnTimerTick();
+	} catch (...) {
+		DebugLogError(_T("Unexpected exception while scheduling IPv6 health checks"));
 	}
 }
 
@@ -4764,6 +4778,16 @@ void CemuleDlg::CheckUPnPLease()
 
 LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 {
+	if (!thePrefs.IsUPnPEnabled() && !m_bUPnPExplicitRequest) {
+		m_mappingResultGate.CancelPending();
+		if (m_mappingResultMailbox)
+			m_mappingResultMailbox->Clear();
+		InvalidateLocalUPnPFailure();
+		RetireUPnPTimeout();
+		LIVE_LOG("NATMAP",
+			"discarded mapper callback while automatic mappings are disabled");
+		return 0;
+	}
 	const UINT_PTR rawMessage = static_cast<UINT_PTR>(wParam);
 	const bool bMapperResult =
 		(rawMessage & 0x80000000u) != 0
@@ -4874,7 +4898,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		}
 		// UPnP failed, check if we can retry it with another implementation
 		if (theApp.m_pUPnPFinder->SwitchImplentation()) {
-			StartUPnP(false);
+			StartUPnP(false, 0, 0, m_bUPnPExplicitRequest);
 			return 0;
 		}
 
@@ -4954,6 +4978,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		if (theApp.IsRunning() && m_bConnectRequestDelayedForUPnP)
 			StartConnection();
 
+		m_bUPnPExplicitRequest = false;
 		return 0;
 }
 
@@ -4979,8 +5004,14 @@ LRESULT CemuleDlg::OnPowerBroadcast(WPARAM wParam, LPARAM lParam)
 	return FALSE; // we do not process this message
 }
 
-void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort, uint16 nForceUDPPort)
+void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort,
+	uint16 nForceUDPPort, bool bExplicitRequest)
 {
+	if (!thePrefs.IsUPnPEnabled() && !bExplicitRequest) {
+		LIVE_LOG("NATMAP",
+			"mapping start skipped while automatic mappings are disabled");
+		return;
+	}
 	if (m_mappingResultGate.has_pending()) {
 		LIVE_LOG("NATMAP",
 			"mapping start skipped while request=%llu is pending",
@@ -4988,6 +5019,7 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort, uint16 nForceUDPPor
 				m_mappingResultGate.pending().request_id);
 		return;
 	}
+	m_bUPnPExplicitRequest = bExplicitRequest;
 	if (m_hUPnPLeaseTimer == 0)
 		VERIFY((m_hUPnPLeaseTimer = ::SetTimer(NULL, 0, SEC2MS(30), UPnPLeaseTimer)) != 0);
 	if (m_uUPnPNetworkSignature == 0)
@@ -5051,6 +5083,59 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort, uint16 nForceUDPPor
 		}
 	} else
 		ASSERT(0);
+}
+
+void CemuleDlg::StopUPnP()
+{
+	if (m_hUPnPLeaseTimer != 0) {
+		VERIFY(::KillTimer(NULL, m_hUPnPLeaseTimer));
+		m_hUPnPLeaseTimer = 0;
+	}
+	RetireUPnPTimeout();
+	m_bUPnPTimeoutForRefresh = false;
+	m_mappingResultGate.CancelPending();
+	InvalidateLocalUPnPFailure();
+
+	CUPnPImpl *impl = theApp.m_pUPnPFinder != NULL
+		? theApp.m_pUPnPFinder->GetImplementation() : NULL;
+	if (impl != NULL) {
+		impl->SetMessageOnResult(NULL, 0);
+		impl->StopAsyncFind();
+		if (m_mappingResultMailbox)
+			m_mappingResultMailbox->Clear();
+		const uint64 generation = theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+		impl->DeletePortsForGeneration(generation);
+	}
+	if (m_mappingResultMailbox)
+		m_mappingResultMailbox->Clear();
+
+	const uint64 previousGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+	const bool wasDirectReachabilityEnabled =
+		theApp.directreachability != NULL
+			&& theApp.directreachability->IsEnabled();
+	const bool withdrawn = theApp.directreachability != NULL
+		&& theApp.directreachability->DisableMappingsByPreference();
+	const natmap::AdvertisementObservation advertisement{
+		previousGeneration,
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration()
+			: previousGeneration,
+		withdrawn,
+		wasDirectReachabilityEnabled,
+		theApp.directreachability != NULL
+			&& theApp.directreachability->IsEnabled()};
+	if (natmap::RequiresAdvertisementRelogin(advertisement)
+		&& theApp.serverconnect->IsConnected()
+		&& !theApp.serverconnect->IsConnectedViaRelay()) {
+		LogWarning(_T("Automatic mappings disabled; reconnecting without the retired endpoint"));
+		theApp.serverconnect->Disconnect();
+		theApp.serverconnect->ConnectToAnyServer();
+	}
+	m_bUPnPExplicitRequest = false;
+	m_uUPnPNetworkSignature = 0;
 }
 
 void CemuleDlg::RefreshUPnP(bool bRequestAnswer)

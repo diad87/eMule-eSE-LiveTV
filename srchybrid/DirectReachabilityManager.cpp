@@ -270,6 +270,50 @@ bool CDirectReachabilityManager::ObserveMapperEpochReset()
 	return true;
 }
 
+bool CDirectReachabilityManager::DisableMappingsByPreference()
+{
+	AssertMainThread();
+	const bool wasEnabled =
+		m_bEnabled.load(std::memory_order_acquire);
+	const uint64 generation = m_snapshot.topology_generation + 1;
+	if (generation == 0) {
+		FailClosedAtGenerationLimit(
+			natmap::ReasonCode::DisabledByPreference);
+		return wasEnabled;
+	}
+	const natmap::TransitionResult tcp = natmap::ApplyEvent(
+		m_snapshot.ed2k_tcp_v4,
+		natmap::StateEvent{
+			natmap::EventType::Disable, generation,
+			natmap::ReasonCode::DisabledByPreference});
+	const natmap::TransitionResult udp = natmap::ApplyEvent(
+		m_snapshot.kad_udp_v4,
+		natmap::StateEvent{
+			natmap::EventType::Disable, generation,
+			natmap::ReasonCode::DisabledByPreference});
+	if (tcp.disposition != natmap::TransitionDisposition::Applied
+		|| udp.disposition != natmap::TransitionDisposition::Applied)
+		return false;
+
+	m_snapshot.topology_generation = generation;
+	m_snapshot.ed2k_tcp_v4 = tcp.snapshot;
+	m_snapshot.kad_udp_v4 = udp.snapshot;
+	m_tcpLease = natmap::LeaseController{};
+	m_udpLease = natmap::LeaseController{};
+	m_tcpChain = natmap::NatChainTransaction{};
+	m_udpChain = natmap::NatChainTransaction{};
+	m_mapperTopologyIdentity =
+		natmap::MapperTopologyIdentity{};
+	m_nAdvertisedTcpPort.store(
+		m_nLocalTcpPort.load(std::memory_order_acquire),
+		std::memory_order_release);
+	m_nAdvertisedUdpPort.store(
+		m_nLocalUdpPort.load(std::memory_order_acquire),
+		std::memory_order_release);
+	m_bEnabled.store(false, std::memory_order_release);
+	return wasEnabled;
+}
+
 bool CDirectReachabilityManager::ObserveFiniteMappingExpiry()
 {
 	AssertMainThread();

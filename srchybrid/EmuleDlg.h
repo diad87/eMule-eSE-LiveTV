@@ -140,7 +140,9 @@ public:
 	bool IsPreferencesDlgOpen() const;
 	bool IsTrayIconToFlash()				{ return m_iMsgIcon != 0; }
 	void SetToolTipsDelay(UINT uMilliseconds);
-	void StartUPnP(bool bReset = true, uint16 nForceTCPPort = 0, uint16 nForceUDPPort = 0);
+	void StartUPnP(bool bReset = true, uint16 nForceTCPPort = 0,
+		uint16 nForceUDPPort = 0, bool bExplicitRequest = false);
+	void StopUPnP();
 	void RefreshUPnP(bool bRequestAnswer = false);
 	HBRUSH GetCtlColor(CDC*, CWnd*, UINT);
 
@@ -257,11 +259,14 @@ protected:
 	// Finite UPnP/PCP/NAT-PMP leases are renewed independently of Kad's
 	// hourly firewall-check cadence.
 	UINT_PTR m_hUPnPLeaseTimer;
+	UINT_PTR m_hIPv6HealthTimer;
+	bool m_bUPnPExplicitRequest;
 	uint64 m_uUPnPNetworkSignature;
 	natmap::MappingRequestSequence m_mappingRequestSequence;
 	natmap::MappingResultGate m_mappingResultGate;
 	std::shared_ptr<natmap::MappingResultMailbox> m_mappingResultMailbox;
 	static void CALLBACK UPnPLeaseTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
+	static void CALLBACK IPv6HealthTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
 	void CheckUPnPLease();
 	bool ArmUPnPTimeout(UINT nMilliseconds);
 	void RetireUPnPTimeout();

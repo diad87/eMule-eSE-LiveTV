@@ -384,9 +384,13 @@ BOOL CPPgConnection::OnApply()
 	}
 	thePrefs.maxconnections = tempcon;
 
-	if (thePrefs.IsUPnPEnabled() != (IsDlgButtonChecked(IDC_PREF_UPNPONSTART) != 0)) {
-		thePrefs.m_bEnableUPnP = !thePrefs.m_bEnableUPnP;
-		if (thePrefs.m_bEnableUPnP)
+	const bool enableUPnP =
+		IsDlgButtonChecked(IDC_PREF_UPNPONSTART) != 0;
+	if (thePrefs.IsUPnPEnabled() != enableUPnP) {
+		if (!enableUPnP)
+			theApp.emuledlg->StopUPnP();
+		thePrefs.m_bEnableUPnP = enableUPnP;
+		if (enableUPnP)
 			theApp.emuledlg->StartUPnP();
 		if (theApp.emuledlg->preferenceswnd->m_wndWebServer)
 			theApp.emuledlg->preferenceswnd->m_wndWebServer.SetUPnPState();

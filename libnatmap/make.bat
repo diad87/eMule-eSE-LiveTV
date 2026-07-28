@@ -47,5 +47,9 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapping_result_m
 if errorlevel 1 exit /b 1
 build\test_mapping_result_mailbox.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_upnp_discovery.exe tests\test_upnp_discovery.cpp src\upnp_discovery.cpp
+if errorlevel 1 exit /b 1
+build\test_upnp_discovery.exe
+if errorlevel 1 exit /b 1
 echo libnatmap complete gate: PASS
 exit /b 0

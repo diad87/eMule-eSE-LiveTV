@@ -18,6 +18,8 @@
 #include "UPnPImpl.h"
 #include "natmap/ownership_ledger.h"
 
+#include <atomic>
+
 struct UPNPUrls;
 struct IGDdatas;
 
@@ -91,5 +93,5 @@ private:
 	bool m_bOwnershipLedgerLoaded;
 
 	bool m_bSucceededOnce;
-	volatile bool m_bAbortDiscovery;
+	std::atomic_bool m_bAbortDiscovery;
 };

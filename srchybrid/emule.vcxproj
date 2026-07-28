@@ -458,6 +458,11 @@
 	  <LanguageStandard>stdcpp17</LanguageStandard>
 	  <WarningLevel>Level4</WarningLevel>
 	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\upnp_discovery.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
     <ClCompile Include="..\libreach\src\reach_codec.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -988,6 +993,7 @@
 	<ClInclude Include="..\libnatmap\include\natmap\mapping_request.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\legacy_mapper_projection.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\mapping_result_mailbox.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\upnp_discovery.h" />
     <ClInclude Include="LiveDebugLog.h" />
     <ClInclude Include="LiveKadBridge.h" />
     <ClInclude Include="LiveMeshManager.h" />

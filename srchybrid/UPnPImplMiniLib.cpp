@@ -18,6 +18,7 @@
 #include "emule.h"
 #include "preferences.h"
 #include "UPnPImplMiniLib.h"
+#include "natmap/upnp_discovery.h"
 #include "Log.h"
 #include "Otherfunctions.h"
 #include "miniupnpc\include\miniupnpc.h"
@@ -49,6 +50,18 @@ namespace {
 
 constexpr uint32 kPreferredLeaseSeconds = 7200;
 constexpr unsigned kMaximumDiscoveryInterfaces = 5;
+static_assert(UPNP_CONNECTED_IGD
+	== static_cast<int>(natmap::UpnpIgdQuality::Connected),
+	"miniupnpc connected-IGD value changed");
+static_assert(UPNP_PRIVATEIP_IGD
+	== static_cast<int>(natmap::UpnpIgdQuality::PrivateAddress),
+	"miniupnpc private-IGD value changed");
+static_assert(UPNP_DISCONNECTED_IGD
+	== static_cast<int>(natmap::UpnpIgdQuality::Disconnected),
+	"miniupnpc disconnected-IGD value changed");
+static_assert(UPNP_UNKNOWN_DEVICE
+	== static_cast<int>(natmap::UpnpIgdQuality::UnknownDevice),
+	"miniupnpc unknown-device value changed");
 
 struct DiscoveryTarget {
 	CStringA address;
@@ -83,15 +96,9 @@ public:
 	int state;
 };
 
-static bool IsBetterIgdState(int candidate, int current)
-{
-	return candidate >= UPNP_CONNECTED_IGD
-		&& candidate <= UPNP_UNKNOWN_DEVICE
-		&& (current == UPNP_NO_IGD || candidate < current);
-}
-
 static void ConsiderDiscoveredDevices(UPNPDev* devices,
-	SelectedIgd& selected)
+	SelectedIgd& selected,
+	natmap::UpnpDiscoverySelection& selection)
 {
 	if (devices == NULL)
 		return;
@@ -107,10 +114,12 @@ static void ConsiderDiscoveredDevices(UPNPDev* devices,
 	const int candidateState = UPNP_GetValidIGD(devices, &candidateUrls,
 		&candidateData, candidateLan, sizeof candidateLan,
 		candidateWan, sizeof candidateWan);
-	const bool usable = candidateState != UPNP_NO_IGD
-		&& candidateUrls.controlURL != NULL
-		&& candidateData.first.servicetype[0] != 0;
-	if (usable && IsBetterIgdState(candidateState, selected.state)) {
+	const natmap::UpnpIgdObservation observation = {
+		static_cast<natmap::UpnpIgdQuality>(candidateState),
+		candidateUrls.controlURL != NULL,
+		candidateData.first.servicetype[0] != 0
+	};
+	if (selection.Consider(observation)) {
 		FreeUPNPUrls(&selected.urls);
 		selected.urls = candidateUrls;
 		memset(&candidateUrls, 0, sizeof candidateUrls);
@@ -763,14 +772,14 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			const std::vector<DiscoveryTarget> targets =
 				GetDiscoveryTargets();
 			SelectedIgd selected;
+			natmap::UpnpDiscoverySelection discoverySelection;
 			int lastError = UPNPDISCOVER_UNKNOWN_ERROR;
 
 			// First use an ephemeral SSDP source port. It avoids colliding with
 			// the Windows SSDP service and is accepted by standards-compliant
 			// IGD v1/v2 devices.
 			for (size_t i = 0; i < targets.size()
-				&& (selected.state == UPNP_NO_IGD
-					|| selected.state > UPNP_PRIVATEIP_IGD)
+				&& discoverySelection.should_continue()
 				&& !m_pOwner->m_bAbortDiscovery; ++i) {
 				const char* const multicastInterface =
 					targets[i].address.IsEmpty()
@@ -778,7 +787,8 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 				const int delay = i == 0 ? 2500 : 1200;
 				UPNPDev* devices = DiscoverIgdDevices(multicastInterface,
 					delay, UPNP_LOCAL_PORT_ANY, false, lastError);
-				ConsiderDiscoveredDevices(devices, selected);
+				ConsiderDiscoveredDevices(
+					devices, selected, discoverySelection);
 				freeUPNPDevlist(devices);
 			}
 
@@ -786,15 +796,15 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			// UDP/1900. Retry that exact legacy behavior on every useful LAN
 			// interface, but only when no connected gateway was selected.
 			for (size_t i = 0; i < targets.size()
-				&& (selected.state == UPNP_NO_IGD
-					|| selected.state > UPNP_PRIVATEIP_IGD)
+				&& discoverySelection.should_continue()
 				&& !m_pOwner->m_bAbortDiscovery; ++i) {
 				const char* const multicastInterface =
 					targets[i].address.IsEmpty()
 					? NULL : targets[i].address.GetString();
 				UPNPDev* devices = DiscoverIgdDevices(multicastInterface,
 					1200, UPNP_LOCAL_PORT_SAME, false, lastError);
-				ConsiderDiscoveredDevices(devices, selected);
+				ConsiderDiscoveredDevices(
+					devices, selected, discoverySelection);
 				freeUPNPDevlist(devices);
 			}
 
@@ -802,21 +812,25 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			// answering ssdp:all. Keep this as the final, broader discovery
 			// pass so normal networks do not download unrelated descriptions.
 			for (size_t i = 0; i < targets.size()
-				&& (selected.state == UPNP_NO_IGD
-					|| selected.state > UPNP_PRIVATEIP_IGD)
+				&& discoverySelection.should_continue()
 				&& !m_pOwner->m_bAbortDiscovery; ++i) {
 				const char* const multicastInterface =
 					targets[i].address.IsEmpty()
 					? NULL : targets[i].address.GetString();
 				UPNPDev* devices = DiscoverIgdDevices(multicastInterface,
 					1200, UPNP_LOCAL_PORT_ANY, true, lastError);
-				ConsiderDiscoveredDevices(devices, selected);
+				ConsiderDiscoveredDevices(
+					devices, selected, discoverySelection);
 				freeUPNPDevlist(devices);
 			}
 
-			if (m_pOwner->m_bAbortDiscovery)
+			if (m_pOwner->m_bAbortDiscovery) {
+				discoverySelection.Cancel();
 				return 0;
-			if (selected.state == UPNP_NO_IGD) {
+			}
+			discoverySelection.Complete();
+			if (discoverySelection.status()
+				== natmap::UpnpDiscoveryStatus::TimedOut) {
 				DebugLog(_T("UPNP: No Internet Gateway Device found across %u interface candidate(s), last error %d"),
 					static_cast<unsigned>(targets.size()), lastError);
 				m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;

@@ -59,6 +59,11 @@ cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
 build\test_mapping_result_mailbox.exe
 
 cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
+   /Febuild\test_upnp_discovery.exe `
+   tests\test_upnp_discovery.cpp src\upnp_discovery.cpp
+build\test_upnp_discovery.exe
+
+cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
    /Fe..\tools\build\natmap_ownership_inspect.exe `
    ..\tools\natmap_ownership_inspect.cpp src\ownership_ledger.cpp
 ```
@@ -88,3 +93,9 @@ legacy observer.
 publishes an immutable snapshot and receives a nonzero 31-bit delivery ID.
 The UI takes that exact ID, so out-of-order messages or an implementation
 switch cannot redirect a callback to another mapper. Delivery IDs never wrap.
+
+`UpnpDiscoverySelection` is the pure H01 IGD-selection policy. It rejects
+incomplete candidates, preserves the best usable fallback, stops at a
+connected or private first-layer IGD, and makes exhausted discovery and
+cancellation terminal. It owns no miniupnpc pointers; the mapper moves URLs
+only after the policy accepts a candidate.

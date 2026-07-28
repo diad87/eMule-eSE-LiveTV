@@ -63,6 +63,14 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_ownership_ledger
 if errorlevel 1 exit /b 1
 build\test_ownership_ledger.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_instance_isolation.exe tests\test_instance_isolation.cpp src\instance_isolation.cpp
+if errorlevel 1 exit /b 1
+build\test_instance_isolation.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_two_instance_isolation.exe tests\test_two_instance_isolation.cpp src\instance_isolation.cpp src\ownership_ledger.cpp src\pcp_mapping_identity.cpp src\natpmp_pair_transaction.cpp
+if errorlevel 1 exit /b 1
+build\test_two_instance_isolation.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapper_result.exe tests\test_mapper_result.cpp src\mapper_result.cpp
 if errorlevel 1 exit /b 1
 build\test_mapper_result.exe

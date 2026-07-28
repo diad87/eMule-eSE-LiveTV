@@ -182,6 +182,32 @@ try {
         ($nodePassed + $nodeSkipped) -eq $nodeTests
     )
 
+    $oldPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $l04Output = @(
+            & cmd.exe /d /c (
+                '"' + (Join-Path $RepoRoot 'libnatmap\make.bat') + '"') 2>&1)
+        $l04BuildExit = $LASTEXITCODE
+        $l04HostOutput = @(
+            & python.exe (
+                Join-Path $RepoRoot 'tests\test_v92_l04_two_instances.py') 2>&1)
+        $l04HostExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldPreference
+    }
+    $l04Output | ForEach-Object { Write-Host $_ }
+    $l04HostOutput | ForEach-Object { Write-Host $_ }
+    $l04Text = ($l04Output | ForEach-Object { [string]$_ }) -join "`n"
+    $l04HostText = (
+        $l04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $l04Verdict = (
+        $l04BuildExit -eq 0 -and
+        $l04HostExit -eq 0 -and
+        $l04Text -match 'two-instance T8: [0-9]+ checks, 0 failures' -and
+        $l04HostText -match '(?m)^OK\s*$'
+    )
+
     $hyperVOutput = @()
     $hyperVVerdict = $true
     try {
@@ -230,6 +256,7 @@ try {
 
     $overallPass = (
         $nodeVerdict -and
+        $l04Verdict -and
         $hyperVVerdict -and
         $coverageIds.Count -eq $requiredCoverageIds.Count
     )
@@ -252,6 +279,10 @@ try {
         }
         hyperv_pure_plan = [ordered]@{
             verdict = if ($hyperVVerdict) { 'PASS' } else { 'FAIL' }
+        }
+        l04_two_instance = [ordered]@{
+            verdict = if ($l04Verdict) { 'PASS' } else { 'FAIL' }
+            physical_mutation = $false
         }
         coverage = [ordered]@{
             schema_sha256 = Get-Sha256 -Path (

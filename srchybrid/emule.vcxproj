@@ -418,6 +418,11 @@
 		<LanguageStandard>stdcpp17</LanguageStandard>
 		<WarningLevel>Level4</WarningLevel>
 	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\instance_isolation.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+		<LanguageStandard>stdcpp17</LanguageStandard>
+		<WarningLevel>Level4</WarningLevel>
+	</ClCompile>
 	<ClCompile Include="..\libnatmap\src\natmap_chain.cpp">
 		<PrecompiledHeader>NotUsing</PrecompiledHeader>
 		<LanguageStandard>stdcpp17</LanguageStandard>
@@ -1039,6 +1044,7 @@
 	<ClInclude Include="DirectReachabilityManager.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natmap_state.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natmap_policy.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\instance_isolation.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natmap_chain.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natmap_types.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natpmp_codec.h" />

@@ -155,6 +155,14 @@
         {
           "file": "tools/lab/nat_gateway/test/two_client_lab.test.js",
           "contains": "expired crash residue is removed at the exact deadline"
+        },
+        {
+          "file": "libnatmap/tests/test_two_instance_isolation.cpp",
+          "contains": "TestSessionScopedMapperProofsStaySeparate"
+        },
+        {
+          "file": "tests/test_v92_l04_two_instances.py",
+          "contains": "test_legacy_backend_never_borrows_foreign_port_rule"
         }
       ]
     },

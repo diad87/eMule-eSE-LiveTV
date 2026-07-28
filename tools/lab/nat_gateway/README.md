@@ -497,6 +497,24 @@ in the URI, so the location retains the laboratory interface identity.
 The normative source is OCF's UPnP Device Architecture 2.0, section 1.3.2,
 including the M-SEARCH request and unicast response requirements.
 
+## UPnP E03 device and service documents
+
+`upnp_description_http.js` generates the device description and
+WANIPConnection service description as separate UTF-8 XML documents. The
+device document publishes an adapter-derived `URLBase`, the canonical
+`InternetGatewayDevice -> WANDevice -> WANConnectionDevice ->
+WANIPConnection` hierarchy, distinct UDNs, `SCPDURL`, `controlURL`, and an
+optional `eventSubURL`. `WANDevice` also exposes the mandatory
+`WANCommonInterfaceConfig:1` identity and its own typed service document so
+miniupnpc recognizes the fixture as an IGD. The WANIPConnection document
+declares `GetStatusInfo` plus the typed arguments and related state variables
+for the control actions implemented by E04–E07. The generators accept only
+closed, data-only configuration and reject XML
+injection or a non-usable adapter address before producing bytes. E03
+deliberately exposes only the internally complete IGD v1/WANIPConnection v1
+profile; a partial or mixed v2 profile is rejected rather than falsely
+advertised.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

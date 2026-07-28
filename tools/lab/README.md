@@ -274,6 +274,25 @@ management route, switches and NATs were restored, and records a final
 `TORN_DOWN` state. T8 never changes the home router or an existing external
 switch.
 
+The F05 route probe extends that proof with a real NAT-PMP request sourced from
+a second synthetic address on the T8 adapter and an established TCP socket
+bound explicitly from the T8 client address to the T8 gateway address:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File tools\lab\test_t8_routes_live.ps1 `
+  -EvidenceRoot C:\tmp\eSE-v9.2-f05-live-0123456789ab `
+  -NodePath C:\path\to\node.exe
+```
+
+It repeats mapper and data observations with no proxy environment and with all
+six uppercase/lowercase HTTP(S)/ALL proxy variables pointing at a deliberately
+invalid endpoint. Gateway, client and data targets are numeric addresses, so
+hostname DNS resolution cannot affect either case. PASS requires the same
+mapper result and interface evidence in both modes, no Tailscale data socket,
+exact source observation at the gateway, complete cleanup and the original
+Hyper-V baseline.
+
 ## V91 RC ledger
 
 The normative matrix contains 27 cases, including `V91-A02`. Reconcile a

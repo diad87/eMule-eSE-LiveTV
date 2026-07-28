@@ -551,6 +551,23 @@ gateway address, client identity, ownership digests, monotonic time and table
 capacity are explicit closed context, so the lifecycle owns neither sockets
 nor clocks. Invalid state is contained at the UPnP lifecycle boundary.
 
+## UPnP E06 mapping readback
+
+`upnp_mapping_readback.js` implements specific lookup and deterministic
+generic enumeration over the shared active mapping table. Both actions first
+expire finite leases at the explicit monotonic instant and scope entries to
+the configured gateway address. Specific misses return error 714; generic
+end-of-list returns 713. Scenario mode `unsupported` returns bounded error 501
+without pretending that a partial readback exists.
+
+Successful responses include the complete WANIPConnection v1 fields expected
+by miniupnpc. Permanent leases read as zero and finite cross-protocol entries
+report their rounded-up remaining lifetime. Descriptions are truncated at an
+explicit one-to-64-character laboratory limit before XML escaping; invalid
+XML controls are replaced. Enumeration order is stable by external port,
+transport and mapping identifier. The lifecycle result is branded and must
+pass through its projector before the strict SOAP response encoder.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

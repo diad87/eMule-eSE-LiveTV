@@ -253,6 +253,101 @@ function decodeUpnpAddPortMapping(soapActionInput, bodyInput) {
   return result;
 }
 
+function decodeUpnpPortMappingReadback(soapActionInput, bodyInput) {
+  if (typeof soapActionInput !== 'string' ||
+      soapActionInput.length > 160 ||
+      /[\r\n\0]/.test(soapActionInput)) {
+    fail('UPNP_SOAP_ACTION_INVALID', '$.soap_action');
+  }
+  const actionMatch =
+    /^"urn:schemas-upnp-org:service:WANIPConnection:1#(GetSpecificPortMappingEntry|GetGenericPortMappingEntry)"$/
+      .exec(soapActionInput);
+  if (!actionMatch) {
+    fail('UPNP_SOAP_ACTION_UNSUPPORTED', '$.soap_action');
+  }
+  let text;
+  try {
+    text = utf8Decoder.decode(snapshotBytes(bodyInput));
+  } catch (error) {
+    if (error instanceof UpnpSoapBoundaryError) throw error;
+    fail('UPNP_SOAP_INPUT_INVALID', '$.body');
+  }
+  if (/[\0\u0001-\u0008\u000b\u000c\u000e-\u001f]/.test(text) ||
+      /<!|<\?|&/.test(text.replace(/^<\?xml version="1\.0"\?>/, ''))) {
+    fail('UPNP_SOAP_REQUEST_INVALID', '$.body');
+  }
+  const match =
+    /^<\?xml version="1\.0"\?>\s*<([A-Za-z_][A-Za-z0-9_.-]*):Envelope\b([^>]*)>\s*<\1:Body>\s*<([A-Za-z_][A-Za-z0-9_.-]*):(GetSpecificPortMappingEntry|GetGenericPortMappingEntry)\b([^>]*)>([\s\S]*?)<\/\3:\4>\s*<\/\1:Body>\s*<\/\1:Envelope>\s*$/
+      .exec(text);
+  if (!match || match[1] === match[3] || match[4] !== actionMatch[1]) {
+    fail('UPNP_SOAP_REQUEST_INVALID', '$.body');
+  }
+  const envelopeAttributes = parseAttributes(match[2], '$.body.Envelope');
+  const actionAttributes = parseAttributes(match[5], '$.body.action');
+  if (envelopeAttributes.size !== 2 ||
+      envelopeAttributes.get(`xmlns:${match[1]}`) !== SOAP_ENVELOPE ||
+      envelopeAttributes.get(`${match[1]}:encodingStyle`) !== SOAP_ENCODING ||
+      actionAttributes.size !== 1 ||
+      actionAttributes.get(`xmlns:${match[3]}`) !== SERVICE_TYPE) {
+    fail('UPNP_SOAP_REQUEST_INVALID', '$.body');
+  }
+  const argumentsMap = new Map();
+  let remaining = match[6];
+  const argumentPattern =
+    /^\s*<([A-Za-z][A-Za-z0-9]*)>([^<>&]*)<\/\1>/;
+  while (remaining.trim().length > 0) {
+    const argumentMatch = argumentPattern.exec(remaining);
+    if (!argumentMatch || argumentsMap.has(argumentMatch[1])) {
+      fail('UPNP_SOAP_REQUEST_INVALID', '$.body.arguments');
+    }
+    argumentsMap.set(argumentMatch[1], argumentMatch[2]);
+    remaining = remaining.slice(argumentMatch[0].length);
+  }
+  const decimal = /^(0|[1-9][0-9]*)$/;
+  let result;
+  if (actionMatch[1] === 'GetSpecificPortMappingEntry') {
+    const expected = ['NewRemoteHost', 'NewExternalPort', 'NewProtocol'];
+    if (argumentsMap.size !== expected.length ||
+        expected.some((name) => !argumentsMap.has(name)) ||
+        argumentsMap.get('NewRemoteHost') !== '' ||
+        !decimal.test(argumentsMap.get('NewExternalPort')) ||
+        !['TCP', 'UDP'].includes(argumentsMap.get('NewProtocol'))) {
+      fail('UPNP_SOAP_ARGUMENT_INVALID', '$.body.arguments');
+    }
+    const externalPort = Number(argumentsMap.get('NewExternalPort'));
+    if (externalPort < 1 || externalPort > 65535) {
+      fail('UPNP_SOAP_ARGUMENT_INVALID', '$.body.arguments.NewExternalPort');
+    }
+    result = Object.freeze({
+      protocol: 'upnp',
+      operation: 'get_specific_port_mapping_entry',
+      service_type: SERVICE_TYPE,
+      remote_host: '',
+      external_port: externalPort,
+      transport: argumentsMap.get('NewProtocol').toLowerCase(),
+    });
+  } else {
+    if (argumentsMap.size !== 1 ||
+        !argumentsMap.has('NewPortMappingIndex') ||
+        !decimal.test(argumentsMap.get('NewPortMappingIndex'))) {
+      fail('UPNP_SOAP_ARGUMENT_INVALID', '$.body.arguments');
+    }
+    const index = Number(argumentsMap.get('NewPortMappingIndex'));
+    if (index > 65535) {
+      fail('UPNP_SOAP_ARGUMENT_INVALID',
+        '$.body.arguments.NewPortMappingIndex');
+    }
+    result = Object.freeze({
+      protocol: 'upnp',
+      operation: 'get_generic_port_mapping_entry',
+      service_type: SERVICE_TYPE,
+      index,
+    });
+  }
+  commandBrand.add(result);
+  return result;
+}
+
 function readClosedData(input, required, fieldPath) {
   const names = Object.getOwnPropertyNames(input);
   if (names.length !== required.length ||
@@ -324,13 +419,25 @@ function encodeUpnpSoapQueryResponse(command, resultInput) {
   if (!commandBrand.has(command)) {
     fail('UPNP_SOAP_COMMAND_INVALID', '$.command');
   }
-  const result = command.operation === 'get_external_ip_address' ?
-    readDiscriminatedResult(resultInput, ['external_address']) :
-    command.operation === 'get_status_info' ?
-      readDiscriminatedResult(resultInput, [
-        'connection_status', 'last_connection_error', 'uptime_seconds',
-      ]) :
-      readDiscriminatedResult(resultInput, []);
+  let successFields = [];
+  if (command.operation === 'get_external_ip_address') {
+    successFields = ['external_address'];
+  } else if (command.operation === 'get_status_info') {
+    successFields = [
+      'connection_status', 'last_connection_error', 'uptime_seconds',
+    ];
+  } else if (command.operation === 'get_specific_port_mapping_entry') {
+    successFields = [
+      'internal_port', 'internal_client', 'enabled', 'description',
+      'lease_seconds',
+    ];
+  } else if (command.operation === 'get_generic_port_mapping_entry') {
+    successFields = [
+      'remote_host', 'external_port', 'transport', 'internal_port',
+      'internal_client', 'enabled', 'description', 'lease_seconds',
+    ];
+  }
+  const result = readDiscriminatedResult(resultInput, successFields);
   if (result.ok === false) {
     return encodeFault(result);
   }
@@ -359,9 +466,46 @@ function encodeUpnpSoapQueryResponse(command, resultInput) {
       `<NewLastConnectionError>${result.last_connection_error}` +
       '</NewLastConnectionError>' +
       `<NewUptime>${result.uptime_seconds}</NewUptime>`;
-  } else {
+  } else if (command.operation === 'add_port_mapping') {
     action = 'AddPortMapping';
     payload = '';
+  } else {
+    const generic =
+      command.operation === 'get_generic_port_mapping_entry';
+    if (!Number.isInteger(result.internal_port) ||
+        result.internal_port < 1 || result.internal_port > 65535 ||
+        net.isIP(result.internal_client) !== 4 ||
+        typeof result.enabled !== 'boolean' ||
+        typeof result.description !== 'string' ||
+        Array.from(result.description).length > 64 ||
+        !result.description.isWellFormed() ||
+        /[\0\u0001-\u0008\u000b\u000c\u000e-\u001f]/u
+          .test(result.description) ||
+        !Number.isInteger(result.lease_seconds) ||
+        Object.is(result.lease_seconds, -0) ||
+        result.lease_seconds < 0 ||
+        result.lease_seconds > 0xffffffff ||
+        (generic && (result.remote_host !== '' ||
+          !Number.isInteger(result.external_port) ||
+          result.external_port < 1 || result.external_port > 65535 ||
+          !['tcp', 'udp'].includes(result.transport)))) {
+      fail('UPNP_SOAP_RESULT_INVALID', '$.result');
+    }
+    action = generic ?
+      'GetGenericPortMappingEntry' : 'GetSpecificPortMappingEntry';
+    payload =
+      (generic ?
+        `<NewRemoteHost>${escapeXml(result.remote_host)}</NewRemoteHost>` +
+        `<NewExternalPort>${result.external_port}</NewExternalPort>` +
+        `<NewProtocol>${result.transport.toUpperCase()}</NewProtocol>` :
+        '') +
+      `<NewInternalPort>${result.internal_port}</NewInternalPort>` +
+      `<NewInternalClient>${escapeXml(result.internal_client)}` +
+      '</NewInternalClient>' +
+      `<NewEnabled>${result.enabled ? 1 : 0}</NewEnabled>` +
+      `<NewPortMappingDescription>${escapeXml(result.description)}` +
+      '</NewPortMappingDescription>' +
+      `<NewLeaseDuration>${result.lease_seconds}</NewLeaseDuration>`;
   }
   return {
     status_code: 200,
@@ -379,6 +523,7 @@ module.exports = Object.freeze({
   UpnpSoapBoundaryError,
   createUpnpSoapControl,
   decodeUpnpAddPortMapping,
+  decodeUpnpPortMappingReadback,
   decodeUpnpSoapQuery,
   encodeUpnpSoapQueryResponse,
   isUpnpSoapControl,

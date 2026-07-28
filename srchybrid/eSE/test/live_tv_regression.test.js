@@ -277,7 +277,7 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.doesNotMatch(packageScript, /update_check\.ps1/);
   assert.match(packageScript, /Copy-GitTrackedTopLevelFiles/);
   assert.match(packageScript, /Assert-GitTrackedSource/);
-  assert.match(packageScript, /Assert-ZipMatchesPackage/);
+  assert.match(packageScript, /Test-ReleaseZipIntegrity/);
   assert.doesNotMatch(packageScript, /function\s+Copy-Tree/);
   assert.match(buildAll, /\$Skip\.Count\s+-gt\s+0\s+-and\s+-not\s+\$AllowDirty/);
   assert.match(buildAll, /\$DryRun\s+-and\s+-not\s+\$AllowDirty/);

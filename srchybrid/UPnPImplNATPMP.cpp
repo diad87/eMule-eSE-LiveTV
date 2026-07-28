@@ -184,6 +184,7 @@ void CUPnPImplNATPMP::DeletePorts(
 
 void CUPnPImplNATPMP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort)
 {
+	UNREFERENCED_PARAMETER(nTCPWebPort);
 	DebugLog(_T("NAT-PMP: Using NAT-PMP (RFC 6886) implementation"));
 
 	if (m_bSucceededOnce && m_dwGatewayIP != 0) {
@@ -202,10 +203,10 @@ void CUPnPImplNATPMP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nT
 
 	m_nUDPPort = nUDPPort;
 	m_nTCPPort = nTCPPort;
-	m_nTCPWebPort = nTCPWebPort;
+	m_nTCPWebPort = 0;
 	m_nExternalUDPPort = nUDPPort;
 	m_nExternalTCPPort = nTCPPort;
-	m_nExternalTCPWebPort = nTCPWebPort;
+	m_nExternalTCPWebPort = 0;
 	m_dwMappingExternalIP = 0;
 	m_dwMappingLeaseLifetime = 0;
 	m_dwMapperEpoch = 0;

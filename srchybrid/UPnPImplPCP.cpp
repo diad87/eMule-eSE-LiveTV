@@ -178,6 +178,7 @@ void CUPnPImplPCP::StopAsyncFind()
 void CUPnPImplPCP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort,
 	uint16 nTCPWebPort)
 {
+	UNREFERENCED_PARAMETER(nTCPWebPort);
 	DebugLog(_T("PCP: Using RFC 6887 MAP implementation"));
 	if (m_bShuttingDown.load(std::memory_order_acquire))
 		return;
@@ -214,10 +215,10 @@ void CUPnPImplPCP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort,
 
 	m_nTCPPort = nTCPPort;
 	m_nUDPPort = nUDPPort;
-	m_nTCPWebPort = nTCPWebPort;
+	m_nTCPWebPort = 0;
 	m_nExternalTCPPort = nTCPPort;
 	m_nExternalUDPPort = nUDPPort;
-	m_nExternalTCPWebPort = nTCPWebPort;
+	m_nExternalTCPWebPort = 0;
 	m_dwMappingExternalIP = 0;
 	m_dwMappingLeaseLifetime = 0;
 	m_dwMapperEpoch = 0;

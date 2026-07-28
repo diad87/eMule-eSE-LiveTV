@@ -1883,7 +1883,7 @@ void CPreferences::SavePreferences()
 	ini.WriteString(_T("Password"), GetWSPass(), _T("WebServer"));
 	ini.WriteString(_T("PasswordLow"), GetWSLowPass());
 	ini.WriteInt(_T("Port"), m_nWebPort);
-	ini.WriteBool(_T("WebUseUPnP"), m_bWebUseUPnP);
+	ini.WriteBool(_T("WebUseUPnP"), false);
 	ini.WriteBool(_T("Enabled"), m_bWebEnabled);
 	ini.WriteBool(_T("UseGzip"), m_bWebUseGzip);
 	ini.WriteInt(_T("PageRefreshTime"), m_nWebPageRefresh);
@@ -2526,15 +2526,9 @@ void CPreferences::LoadPreferences()
 	m_strWebPassword = ini.GetString(_T("Password"), _T(""), _T("WebServer"));
 	m_strWebLowPassword = ini.GetString(_T("PasswordLow"), _T(""));
 	m_nWebPort = (uint16)ini.GetInt(_T("Port"), 4711);
-	// eSE: Migración segura de WebUseUPnP con retrocompatibilidad INI
-	// Si la clave ya existía (usuario legacy), heredar su valor para no exponerle.
-	// Si es instalación limpia, activar por defecto (true).
-	m_bWebUseUPnP = ini.GetBool(_T("WebUseUPnP"), true);
-
-	// SEGURIDAD CRÍTICA: Deshabilitar UPnP forzosamente si no hay contraseña de admin
-	if (m_bWebUseUPnP && m_strWebPassword.IsEmpty()) {
-		m_bWebUseUPnP = false;
-	}
+	// V9.2: the WebServer remains local and is never router-mapped. Ignore
+	// legacy opt-in values and persist the safe value on the next save.
+	m_bWebUseUPnP = false;
 
 	// eSE: Inicializar estado de error de red (siempre limpio al arrancar)
 	m_bUPnPCriticalError = false;

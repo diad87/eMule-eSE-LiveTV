@@ -255,8 +255,8 @@ void CPPgWebServer::LoadSettings()
 	CheckDlgButton(IDC_WSENABLED, static_cast<UINT>(thePrefs.GetWSIsEnabled()));
 	CheckDlgButton(IDC_WS_GZIP, static_cast<UINT>(thePrefs.GetWebUseGzip()));
 
-	CheckDlgButton(IDC_WSUPNP, static_cast<UINT>(thePrefs.m_bWebUseUPnP));
-	GetDlgItem(IDC_WSUPNP)->EnableWindow(thePrefs.IsUPnPEnabled() && thePrefs.GetWSIsEnabled());
+	CheckDlgButton(IDC_WSUPNP, BST_UNCHECKED);
+	GetDlgItem(IDC_WSUPNP)->EnableWindow(FALSE);
 	SetDlgItemInt(IDC_WSPORT, thePrefs.GetWSPort());
 
 	SetDlgItemText(IDC_TMPLPATH, thePrefs.GetTemplate());
@@ -283,7 +283,6 @@ void CPPgWebServer::OnDataChange()
 BOOL CPPgWebServer::OnApply()
 {
 	if (m_bModified) {
-		bool bUPnP = thePrefs.GetWSUseUPnP();
 		bool bWSIsEnabled = IsDlgButtonChecked(IDC_WSENABLED) != 0;
 		// get and check template file existence...
 		CString sBuf;
@@ -354,10 +353,7 @@ BOOL CPPgWebServer::OnApply()
 		theApp.webserver->StartServer();
 		thePrefs.m_bAllowAdminHiLevFunc = IsDlgButtonChecked(IDC_WS_ALLOWHILEVFUNC) != 0;
 
-		thePrefs.m_bWebUseUPnP = IsDlgButtonChecked(IDC_WSUPNP) != 0;
-		//add the port to existing mapping without having eMule restarting (if all conditions are met)
-		if (bUPnP != (thePrefs.m_bWebUseUPnP && bWSIsEnabled) && thePrefs.IsUPnPEnabled() && theApp.m_pUPnPFinder != NULL)
-			theApp.m_pUPnPFinder->GetImplementation()->LateEnableWebServerPort(bUPnP ? 0 : thePrefs.GetWSPort());
+		thePrefs.m_bWebUseUPnP = false;
 
 		theApp.emuledlg->serverwnd->UpdateMyInfo();
 		SetModified(FALSE);
@@ -402,7 +398,8 @@ void CPPgWebServer::Localize()
 
 void CPPgWebServer::SetUPnPState()
 {
-	GetDlgItem(IDC_WSUPNP)->EnableWindow(thePrefs.IsUPnPEnabled() && IsDlgButtonChecked(IDC_WSENABLED));
+	CheckDlgButton(IDC_WSUPNP, BST_UNCHECKED);
+	GetDlgItem(IDC_WSUPNP)->EnableWindow(FALSE);
 }
 
 void CPPgWebServer::OnChangeHTTPS()

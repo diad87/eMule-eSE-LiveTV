@@ -896,6 +896,7 @@ void CUPnPImplMiniLib::DeletePorts(bool bSkipLock)
 
 void CUPnPImplMiniLib::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort)
 {
+	UNREFERENCED_PARAMETER(nTCPWebPort);
 	DebugLog(_T("Using MiniUPnPLib based implementation"));
 	DebugLog(_T("miniupnpc (c) 2005-2024 Thomas Bernard - http://miniupnp.free.fr/"));
 	LoadOwnershipLedger();
@@ -908,10 +909,10 @@ void CUPnPImplMiniLib::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 n
 	GetOldPorts();
 	m_nUDPPort = nUDPPort;
 	m_nTCPPort = nTCPPort;
-	m_nTCPWebPort = nTCPWebPort;
+	m_nTCPWebPort = 0;
 	m_nExternalUDPPort = nUDPPort;
 	m_nExternalTCPPort = nTCPPort;
-	m_nExternalTCPWebPort = nTCPWebPort;
+	m_nExternalTCPWebPort = 0;
 	m_dwMappingLeaseLifetime = 0;
 	m_dwMappingExternalIP = 0;
 	m_dwMapperEpoch = 0;

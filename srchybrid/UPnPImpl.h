@@ -93,7 +93,7 @@ public:
 		{ return natmap::MapperSource::None; }
 	virtual bool SupportsMappingHealthCheck() const { return true; }
 
-	void LateEnableWebServerPort(uint16 nPort);	// Add Web Server port to already existing port mapping
+	void LateEnableWebServerPort(uint16 nPort);	// V9.2 compatibility no-op; WebServer is never mapped
 
 	void SetMessageOnResult(CWnd *cwnd, UINT nMessageID,
 		const std::shared_ptr<natmap::MappingResultMailbox>& mailbox =

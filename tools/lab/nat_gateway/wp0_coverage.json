@@ -213,6 +213,27 @@
       ]
     },
     {
+      "id": "WEBSERVER_PRIVACY",
+      "evidence": [
+        {
+          "file": "tests/test_v92_l08_webserver_privacy.py",
+          "contains": "test_every_mapper_discards_the_web_port_argument"
+        },
+        {
+          "file": "tests/test_v92_l08_privacy_runtime.ps1",
+          "contains": "L08_RUNTIME_PASS"
+        },
+        {
+          "file": "srchybrid/EmuleDlg.cpp",
+          "contains": "Never expose the WebServer through the router."
+        },
+        {
+          "file": "srchybrid/Preferences.h",
+          "contains": "GetWSUseUPnP()"
+        }
+      ]
+    },
+    {
       "id": "HYPERV_PURE_PLAN",
       "evidence": [
         {

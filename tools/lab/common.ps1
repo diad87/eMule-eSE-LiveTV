@@ -224,6 +224,19 @@ function Protect-LabText {
     if ($null -eq $Value) { return $null }
 
     $result = $Value
+    $secretLabelEvaluator = [Text.RegularExpressions.MatchEvaluator]{
+        param($match)
+        $quote = $match.Groups['quote'].Value
+        return (
+            $match.Groups['label'].Value + $quote +
+            '<redacted>' + $quote
+        )
+    }
+    $result = [regex]::Replace(
+        $result,
+        '(?i)(?<label>["'']?(?:owner[_ -]?token|pcp[_ -]?nonce|nonce|gateway[_ -]?(?:identity|fingerprint))["'']?\s*[:=]\s*)(?<quote>["'']?)[^"''\s,;}]+["'']?',
+        $secretLabelEvaluator
+    )
     if ($RedactAddresses) {
         $result = [regex]::Replace(
             $result,

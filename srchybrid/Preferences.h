@@ -1298,7 +1298,7 @@ public:
 
 	// Web Server
 	static uint16	GetWSPort()							{ return m_nWebPort; }
-	static bool		GetWSUseUPnP()						{ return m_bWebUseUPnP && GetWSIsEnabled(); }
+	static bool		GetWSUseUPnP()						{ return false; }
 	static void		SetWSPort(uint16 uPort)				{ m_nWebPort = uPort; }
 	static const CString& GetWSPass()					{ return m_strWebPassword; }
 	static bool		IsWSPassEmpty()						{ return m_strWebPassword.IsEmpty(); }

@@ -243,6 +243,7 @@ void CUPnPImplWinServ::StopAsyncFind()
 // Start the discovery of the UPnP gateway devices
 void CUPnPImplWinServ::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort, bool bSecondTry)
 {
+	UNREFERENCED_PARAMETER(nTCPWebPort);
 	std::lock_guard<std::recursive_mutex> callbackLock(
 		m_asyncCallbackMutex);
 	if (bSecondTry && m_bSecondTry)	// already did 2 tries
@@ -262,10 +263,10 @@ void CUPnPImplWinServ::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 n
 	if (nTCPPort != 0) {
 		m_nTCPPort = nTCPPort;
 		m_nUDPPort = nUDPPort;
-		m_nTCPWebPort = nTCPWebPort;
+		m_nTCPWebPort = 0;
 		m_nExternalTCPPort = nTCPPort;
 		m_nExternalUDPPort = nUDPPort;
-		m_nExternalTCPWebPort = nTCPWebPort;
+		m_nExternalTCPWebPort = 0;
 		m_dwMappingLeaseLifetime = 0;
 		m_dwMapperEpoch = 0;
 	}

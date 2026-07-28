@@ -506,10 +506,13 @@ UINT AFX_CDECL WebSocketListeningFunc(LPVOID pThis)
 	InitThreadLocale();
 
 	uint16 wsPort = (uint16)thePrefs.GetWSPort();
+	const char* configuredBind = thePrefs.GetBindAddrA();
+	const char* effectiveBind =
+		configuredBind ? configuredBind : "127.0.0.1";
 	CLiveDebugLog::Get().Append("WS",
 		"Listener thread started: port=%u  bindAddr=\"%s\"",
 		(unsigned)wsPort,
-		thePrefs.GetBindAddrA() ? thePrefs.GetBindAddrA() : "INADDR_ANY");
+		effectiveBind);
 
 	SOCKET hSocket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, 0);
 	if (INVALID_SOCKET == hSocket) {
@@ -521,7 +524,8 @@ UINT AFX_CDECL WebSocketListeningFunc(LPVOID pThis)
 		SOCKADDR_IN stAddr;
 		stAddr.sin_family = AF_INET;
 		stAddr.sin_port = htons(wsPort);
-		stAddr.sin_addr.s_addr = thePrefs.GetBindAddrA() ? inet_addr(thePrefs.GetBindAddrA()) : INADDR_ANY;
+		stAddr.sin_addr.s_addr = configuredBind
+			? inet_addr(configuredBind) : htonl(INADDR_LOOPBACK);
 
 		int bindRv = bind(hSocket, (LPSOCKADDR)&stAddr, sizeof stAddr);
 		if (bindRv != 0) {

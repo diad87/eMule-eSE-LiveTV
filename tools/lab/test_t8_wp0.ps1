@@ -36,6 +36,7 @@ $requiredCoverageIds = @(
     'TWO_CLIENT_OWNERSHIP',
     'HIGHID_EVIDENCE',
     'HOSTILE_CORPUS',
+    'WEBSERVER_PRIVACY',
     'HYPERV_PURE_PLAN',
     'STATE_CAPTURE',
     'CANONICAL_REPORT',
@@ -207,6 +208,15 @@ try {
             & python.exe (
                 Join-Path $RepoRoot 'tests\test_v92_l07_hostile_corpus.py') 2>&1)
         $l07HostExit = $LASTEXITCODE
+        $l08HostOutput = @(
+            & python.exe (
+                Join-Path $RepoRoot 'tests\test_v92_l08_webserver_privacy.py') 2>&1)
+        $l08HostExit = $LASTEXITCODE
+        $l08RuntimeOutput = @(
+            & powershell.exe -NoProfile -NonInteractive -File (
+                Join-Path $RepoRoot 'tests\test_v92_l08_privacy_runtime.ps1'
+            ) -RepoRoot $RepoRoot -NodePath $NodePath 2>&1)
+        $l08RuntimeExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
     }
@@ -215,6 +225,8 @@ try {
     $l05HostOutput | ForEach-Object { Write-Host $_ }
     $l06HostOutput | ForEach-Object { Write-Host $_ }
     $l07HostOutput | ForEach-Object { Write-Host $_ }
+    $l08HostOutput | ForEach-Object { Write-Host $_ }
+    $l08RuntimeOutput | ForEach-Object { Write-Host $_ }
     $l04Text = ($l04Output | ForEach-Object { [string]$_ }) -join "`n"
     $l04HostText = (
         $l04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
@@ -224,6 +236,10 @@ try {
         $l06HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l07HostText = (
         $l07HostOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $l08HostText = (
+        $l08HostOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $l08RuntimeText = (
+        $l08RuntimeOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l04Verdict = (
         $l04BuildExit -eq 0 -and
         $l04HostExit -eq 0 -and
@@ -247,6 +263,16 @@ try {
         $l07HostExit -eq 0 -and
         $l04Text -match 'hostile corpus L07: 2245 checks, 0 failures' -and
         $l07HostText -match '(?m)^OK\s*$'
+    )
+    $l08Verdict = (
+        $l08HostExit -eq 0 -and
+        $l08HostText -match 'Ran 7 tests' -and
+        $l08HostText -match '(?m)^OK\s*$' -and
+        $l08RuntimeExit -eq 0 -and
+        $l08RuntimeText -match (
+            'L08_RUNTIME_PASS node=2 report=1 zip_positive=1 ' +
+            'zip_negative=1 command_graph=4'
+        )
     )
 
     $hyperVOutput = @()
@@ -301,6 +327,7 @@ try {
         $l05Verdict -and
         $l06Verdict -and
         $l07Verdict -and
+        $l08Verdict -and
         $hyperVVerdict -and
         $coverageIds.Count -eq $requiredCoverageIds.Count
     )
@@ -340,6 +367,15 @@ try {
             verdict = if ($l07Verdict) { 'PASS' } else { 'FAIL' }
             physical_mutation = $false
             exhaustive_sizes = 1102
+        }
+        l08_webserver_privacy = [ordered]@{
+            verdict = if ($l08Verdict) { 'PASS' } else { 'FAIL' }
+            physical_mutation = $false
+            default_bind = 'loopback'
+            router_mapping = $false
+            runtime_privacy_projection = $true
+            runtime_zip_tamper_rejected = $true
+            noninteractive_command_graph = $true
         }
         coverage = [ordered]@{
             schema_sha256 = Get-Sha256 -Path (

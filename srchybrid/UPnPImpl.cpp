@@ -306,12 +306,10 @@ void CUPnPImpl::SendMapperResultMessage(
 
 void CUPnPImpl::LateEnableWebServerPort(uint16 nPort)
 {
-	if (ArePortsForwarded() == TRIS_TRUE && IsReady()) {
-		m_nOldTCPWebPort = (m_nTCPWebPort == nPort ? 0 : m_nTCPWebPort);
-		m_nTCPWebPort = nPort;
-		m_nExternalTCPWebPort = nPort;
-		CheckAndRefresh();
-	}
+	UNREFERENCED_PARAMETER(nPort);
+	// V9.2 invariant: automatic reachability never exposes the WebServer.
+	m_nTCPWebPort = 0;
+	m_nExternalTCPWebPort = 0;
 }
 
 void CUPnPImpl::RecordLeaseSuccess()

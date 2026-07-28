@@ -13,6 +13,7 @@ const {
   loadScenarioFromObject,
   loadScenarioFromText
 } = require('../scenario_loader');
+const { compileFaultCatalog } = require('../fault_catalog');
 
 const digest = 'a'.repeat(64);
 
@@ -121,6 +122,20 @@ test('loads the smallest valid scenario from object, text and explicit file', ()
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('F01 compiles loader-accepted non-canonical IPv6 change-wan as canonical data', () => {
+  const input = validScenario();
+  input.faults.push({
+    fault_id: 'change-wan-v6',
+    enabled: true,
+    match: { protocol: 'upnp' },
+    trigger: { after_matches: 0, times: 1 },
+    action: { type: 'change-wan', wan_address: '2001:0db8:0000:0000:0000:0000:0000:0001' }
+  });
+  const loaded = loadScenarioFromObject(input);
+  const catalog = compileFaultCatalog(loaded.faults);
+  assert.equal(catalog.faults[0].action.wan_address, '2001:db8::1');
 });
 
 test('never mutates the caller object', () => {

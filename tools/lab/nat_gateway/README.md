@@ -593,6 +593,26 @@ On Windows the vendored client is built from
 Build Tools and `/p:PlatformToolset=v143`. Build output remains ignored and
 is not part of the source commit.
 
+## Fault catalogue F01
+
+`fault_catalog.js` compiles the scenario fault list into an immutable,
+branded execution catalogue. Every entry has a stable `fault_id`, protocol
+scope (`upnp`, `pcp`, `natpmp`, or `any`), a closed injection point, the
+configured and remaining application counts, a closed expected result, and
+`auto_reset: true`. The catalogue accepts all fourteen fault actions declared
+by the scenario schema and rejects unknown, incomplete, accessor-backed,
+proxied, sparse, duplicate or out-of-range input before an adapter sees it.
+
+Evaluation is a pure state transition. A request supplies protocol, operation,
+optional transport and client, request ordinal, and renewal status. Matching
+events first consume `after_matches`; the next `times` matches emit immutable
+applied-fault descriptors in declarative order. Once that finite budget is
+spent, the entry automatically becomes inactive and cannot leak into a later
+request. `resetFaultCatalog` deterministically restores the original enabled
+state and zeroes only the runtime counters. Catalogue instances do not own
+sockets, clocks, timers or process-wide flags; protocol adapters consume the
+returned action descriptors at their declared injection points.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

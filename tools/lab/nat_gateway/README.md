@@ -527,6 +527,30 @@ external addresses are preserved as explicit successful values. Active XML,
 unknown attributes, nested action content, malformed UTF-8, hostile storage
 and open semantic result shapes fail closed.
 
+## UPnP E05 AddPortMapping
+
+`upnp_soap_control.js` decodes the eight miniupnpc `AddPortMapping`
+arguments into a frozen semantic command. The external and internal ports
+must be in `1..65535`, transport is exactly `TCP` or `UDP`, the internal
+client is a usable unicast IPv4 address, `NewEnabled` is `0` or `1`, and the
+description is one to 64 safe ASCII characters. Remote-host-specific
+mappings are not supported. Lease duration is parsed as a uint32 and is
+evaluated by the lifecycle rather than by the XML boundary.
+
+`upnp_mapping_lifecycle.js` applies that command to the shared immutable
+mapping model. The laboratory supports permanent mappings only: a non-zero
+lease returns UPnP error 725, a disabled request returns bounded error 501,
+an occupied external endpoint returns 718, and a full table returns 728.
+An identical owned request renews the same mapping in place. A request from
+the same owned client may atomically replace its internal port or description,
+as required by WANIPConnection v1; another client receives conflict 718.
+Expired finite mappings from another protocol are purged at the explicit
+monotonic instant before conflict and capacity decisions. TCP and UDP remain
+separate mapping spaces. The external
+gateway address, client identity, ownership digests, monotonic time and table
+capacity are explicit closed context, so the lifecycle owns neither sockets
+nor clocks. Invalid state is contained at the UPnP lifecycle boundary.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

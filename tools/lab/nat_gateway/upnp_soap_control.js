@@ -149,6 +149,110 @@ function decodeUpnpSoapQuery(soapActionInput, bodyInput) {
   return result;
 }
 
+function decodeUpnpAddPortMapping(soapActionInput, bodyInput) {
+  const expectedSoapAction = `"${SERVICE_TYPE}#AddPortMapping"`;
+  if (typeof soapActionInput !== 'string' ||
+      soapActionInput.length > 160 ||
+      /[\r\n\0]/.test(soapActionInput) ||
+      soapActionInput !== expectedSoapAction) {
+    fail('UPNP_SOAP_ACTION_UNSUPPORTED', '$.soap_action');
+  }
+  let text;
+  try {
+    text = utf8Decoder.decode(snapshotBytes(bodyInput));
+  } catch (error) {
+    if (error instanceof UpnpSoapBoundaryError) throw error;
+    fail('UPNP_SOAP_INPUT_INVALID', '$.body');
+  }
+  if (/[\0\u0001-\u0008\u000b\u000c\u000e-\u001f]/.test(text) ||
+      /<!|<\?|&/.test(text.replace(/^<\?xml version="1\.0"\?>/, ''))) {
+    fail('UPNP_SOAP_REQUEST_INVALID', '$.body');
+  }
+  const match =
+    /^<\?xml version="1\.0"\?>\s*<([A-Za-z_][A-Za-z0-9_.-]*):Envelope\b([^>]*)>\s*<\1:Body>\s*<([A-Za-z_][A-Za-z0-9_.-]*):AddPortMapping\b([^>]*)>([\s\S]*?)<\/\3:AddPortMapping>\s*<\/\1:Body>\s*<\/\1:Envelope>\s*$/
+      .exec(text);
+  if (!match || match[1] === match[3]) {
+    fail('UPNP_SOAP_REQUEST_INVALID', '$.body');
+  }
+  const envelopeAttributes = parseAttributes(match[2], '$.body.Envelope');
+  const actionAttributes = parseAttributes(match[4], '$.body.action');
+  if (envelopeAttributes.size !== 2 ||
+      envelopeAttributes.get(`xmlns:${match[1]}`) !== SOAP_ENVELOPE ||
+      envelopeAttributes.get(`${match[1]}:encodingStyle`) !== SOAP_ENCODING ||
+      actionAttributes.size !== 1 ||
+      actionAttributes.get(`xmlns:${match[3]}`) !== SERVICE_TYPE) {
+    fail('UPNP_SOAP_REQUEST_INVALID', '$.body');
+  }
+  const argumentsMap = new Map();
+  let remaining = match[5];
+  const argumentPattern =
+    /^\s*<([A-Za-z][A-Za-z0-9]*)>([^<>&]*)<\/\1>/;
+  while (remaining.trim().length > 0) {
+    const argumentMatch = argumentPattern.exec(remaining);
+    if (!argumentMatch || argumentsMap.has(argumentMatch[1])) {
+      fail('UPNP_SOAP_REQUEST_INVALID', '$.body.arguments');
+    }
+    argumentsMap.set(argumentMatch[1], argumentMatch[2]);
+    remaining = remaining.slice(argumentMatch[0].length);
+  }
+  const expected = [
+    'NewRemoteHost', 'NewExternalPort', 'NewProtocol', 'NewInternalPort',
+    'NewInternalClient', 'NewEnabled', 'NewPortMappingDescription',
+    'NewLeaseDuration',
+  ];
+  if (argumentsMap.size !== expected.length ||
+      expected.some((name) => !argumentsMap.has(name))) {
+    fail('UPNP_SOAP_REQUEST_INVALID', '$.body.arguments');
+  }
+  const decimal = /^(0|[1-9][0-9]*)$/;
+  const externalPortText = argumentsMap.get('NewExternalPort');
+  const internalPortText = argumentsMap.get('NewInternalPort');
+  const leaseText = argumentsMap.get('NewLeaseDuration');
+  if (argumentsMap.get('NewRemoteHost') !== '' ||
+      !decimal.test(externalPortText) ||
+      !decimal.test(internalPortText) ||
+      !decimal.test(leaseText)) {
+    fail('UPNP_SOAP_ARGUMENT_INVALID', '$.body.arguments');
+  }
+  const externalPort = Number(externalPortText);
+  const internalPort = Number(internalPortText);
+  const leaseSeconds = Number(leaseText);
+  const protocol = argumentsMap.get('NewProtocol');
+  const internalClient = argumentsMap.get('NewInternalClient');
+  const enabled = argumentsMap.get('NewEnabled');
+  const description = argumentsMap.get('NewPortMappingDescription');
+  if (!Number.isInteger(externalPort) ||
+      externalPort < 1 || externalPort > 65535 ||
+      !Number.isInteger(internalPort) ||
+      internalPort < 1 || internalPort > 65535 ||
+      !Number.isInteger(leaseSeconds) ||
+      leaseSeconds < 0 || leaseSeconds > 0xffffffff ||
+      !['TCP', 'UDP'].includes(protocol) ||
+      net.isIP(internalClient) !== 4 ||
+      internalClient === '0.0.0.0' ||
+      /^127\./.test(internalClient) ||
+      Number(internalClient.split('.')[0]) >= 224 ||
+      !['0', '1'].includes(enabled) ||
+      !/^[A-Za-z0-9 ._-]{1,64}$/.test(description)) {
+    fail('UPNP_SOAP_ARGUMENT_INVALID', '$.body.arguments');
+  }
+  const result = Object.freeze({
+    protocol: 'upnp',
+    operation: 'add_port_mapping',
+    service_type: SERVICE_TYPE,
+    remote_host: '',
+    external_port: externalPort,
+    transport: protocol.toLowerCase(),
+    internal_port: internalPort,
+    internal_client: internalClient,
+    enabled: enabled === '1',
+    description,
+    lease_seconds: leaseSeconds,
+  });
+  commandBrand.add(result);
+  return result;
+}
+
 function readClosedData(input, required, fieldPath) {
   const names = Object.getOwnPropertyNames(input);
   if (names.length !== required.length ||
@@ -222,9 +326,11 @@ function encodeUpnpSoapQueryResponse(command, resultInput) {
   }
   const result = command.operation === 'get_external_ip_address' ?
     readDiscriminatedResult(resultInput, ['external_address']) :
-    readDiscriminatedResult(resultInput, [
-      'connection_status', 'last_connection_error', 'uptime_seconds',
-    ]);
+    command.operation === 'get_status_info' ?
+      readDiscriminatedResult(resultInput, [
+        'connection_status', 'last_connection_error', 'uptime_seconds',
+      ]) :
+      readDiscriminatedResult(resultInput, []);
   if (result.ok === false) {
     return encodeFault(result);
   }
@@ -239,7 +345,7 @@ function encodeUpnpSoapQueryResponse(command, resultInput) {
     action = 'GetExternalIPAddress';
     payload = `<NewExternalIPAddress>${result.external_address}` +
       '</NewExternalIPAddress>';
-  } else {
+  } else if (command.operation === 'get_status_info') {
     if (!CONNECTION_STATUSES.has(result.connection_status) ||
         !CONNECTION_ERRORS.has(result.last_connection_error) ||
         !Number.isInteger(result.uptime_seconds) ||
@@ -253,6 +359,9 @@ function encodeUpnpSoapQueryResponse(command, resultInput) {
       `<NewLastConnectionError>${result.last_connection_error}` +
       '</NewLastConnectionError>' +
       `<NewUptime>${result.uptime_seconds}</NewUptime>`;
+  } else {
+    action = 'AddPortMapping';
+    payload = '';
   }
   return {
     status_code: 200,
@@ -269,6 +378,7 @@ function encodeUpnpSoapQueryResponse(command, resultInput) {
 module.exports = Object.freeze({
   UpnpSoapBoundaryError,
   createUpnpSoapControl,
+  decodeUpnpAddPortMapping,
   decodeUpnpSoapQuery,
   encodeUpnpSoapQueryResponse,
   isUpnpSoapControl,

@@ -33,6 +33,10 @@ public:
 	virtual void DeletePorts();
 	virtual bool IsReady();
 	virtual int GetImplementationID()				{ return UPNP_IMPL_MINIUPNPLIB; }
+	virtual natmap::MapperKind GetMapperKind() const
+		{ return natmap::MapperKind::UpnpIgd; }
+	virtual natmap::MapperSource GetMapperSource() const
+		{ return natmap::MapperSource::UpnpIgd; }
 
 	class CStartDiscoveryThread : public CWinThread
 	{
@@ -44,10 +48,15 @@ public:
 	public:
 		virtual BOOL InitInstance();
 		virtual int Run();
-		void SetValues(CUPnPImplMiniLib *pOwner)	{ m_pOwner = pOwner; }
+		void SetValues(CUPnPImplMiniLib *pOwner)
+		{
+			m_pOwner = pOwner;
+			m_operation = pOwner->CaptureMappingOperation();
+		}
 
 	private:
 		CUPnPImplMiniLib *m_pOwner;
+		MappingOperationContext m_operation;
 	};
 
 protected:

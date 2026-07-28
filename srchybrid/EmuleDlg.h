@@ -19,6 +19,9 @@
 #include "TaskbarNotifier.h"
 #include "TitleMenu.h"
 #include "TrayDialog.h"
+#include "natmap/mapping_request.h"
+#include "natmap/mapping_result_mailbox.h"
+#include <memory>
 
 namespace Kademlia
 {
@@ -244,13 +247,26 @@ protected:
 	// UPnP TimeOutTimer
 	UINT_PTR m_hUPnPTimeOutTimer;
 	bool m_bUPnPTimeoutForRefresh;
+	uint32 m_nUPnPTimeoutToken;
+	uint32 m_nNextUPnPTimeoutToken;
+	bool m_bUPnPTimeoutTokenExhausted;
+	uint32 m_nPendingUPnPLocalFailureToken;
+	uint32 m_nNextUPnPLocalFailureToken;
+	bool m_bUPnPLocalFailureTokenExhausted;
 	static void CALLBACK UPnPTimeOutTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
 	// Finite UPnP/PCP/NAT-PMP leases are renewed independently of Kad's
 	// hourly firewall-check cadence.
 	UINT_PTR m_hUPnPLeaseTimer;
 	uint64 m_uUPnPNetworkSignature;
+	natmap::MappingRequestSequence m_mappingRequestSequence;
+	natmap::MappingResultGate m_mappingResultGate;
+	std::shared_ptr<natmap::MappingResultMailbox> m_mappingResultMailbox;
 	static void CALLBACK UPnPLeaseTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
 	void CheckUPnPLease();
+	bool ArmUPnPTimeout(UINT nMilliseconds);
+	void RetireUPnPTimeout();
+	bool PostLocalUPnPFailure(bool bWasRefresh);
+	void InvalidateLocalUPnPFailure();
 
 	// V2-S06/S27: runs viewer auto-join from UM_LIVE_HEADLESS_ACTION, or the
 	// signed-chunk selftest directly during isolated pre-network startup.

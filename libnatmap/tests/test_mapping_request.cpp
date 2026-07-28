@@ -279,6 +279,81 @@ void TestArmIsMonotonicAndClosed() {
     CHECK(gate.pending().request_id == 1);
 }
 
+void TestLegacyEnvelopeMigrationGate() {
+    MappingRequestSequence sequence;
+    const MappingRequestContext current =
+        sequence.Issue(20, MappingOperation::Initial).context;
+    MappingResultGate gate;
+    CHECK(gate.Arm(current, 20));
+
+    MapperResultData envelope{};
+    envelope.request_id = current.request_id;
+    envelope.topology_generation = current.topology_generation;
+    envelope.operation = current.operation;
+    CHECK(!MapperResult(envelope).IsStructurallyValid());
+    CHECK(gate.ConsumeLegacyEnvelope(envelope, 20) ==
+          ResultAcceptance::Apply);
+    CHECK(!gate.has_pending());
+    CHECK(gate.ConsumeLegacyEnvelope(envelope, 20) ==
+          ResultAcceptance::NoPendingRequest);
+}
+
+void TestLegacyEnvelopeRejectsMismatchWithoutDisplacement() {
+    MappingRequestSequence sequence;
+    const MappingRequestContext current =
+        sequence.Issue(21, MappingOperation::Refresh).context;
+    MappingResultGate gate;
+    CHECK(gate.Arm(current, 21));
+
+    MapperResultData envelope{};
+    envelope.request_id = current.request_id + 1;
+    envelope.topology_generation = current.topology_generation;
+    envelope.operation = current.operation;
+    CHECK(gate.ConsumeLegacyEnvelope(envelope, 21) ==
+          ResultAcceptance::StaleRequest);
+    CHECK(gate.has_pending());
+
+    envelope.request_id = current.request_id;
+    envelope.operation = MappingOperation::Initial;
+    CHECK(gate.ConsumeLegacyEnvelope(envelope, 21) ==
+          ResultAcceptance::OperationMismatch);
+    CHECK(gate.has_pending());
+
+    envelope.operation = current.operation;
+    envelope.request_id = 0;
+    CHECK(gate.ConsumeLegacyEnvelope(envelope, 21) ==
+          ResultAcceptance::Invalid);
+    CHECK(gate.has_pending());
+
+    envelope.request_id = current.request_id;
+    CHECK(gate.ConsumeLegacyEnvelope(envelope, 22) ==
+          ResultAcceptance::StaleTopology);
+    CHECK(!gate.has_pending());
+}
+
+void TestCancellationRejectsLateCallback() {
+    MappingRequestSequence sequence;
+    const MappingRequestContext context =
+        sequence.Issue(22, MappingOperation::Initial).context;
+    MappingResultGate gate;
+    CHECK(!gate.CancelPending());
+    CHECK(gate.Arm(context, 22));
+    CHECK(gate.CancelPending());
+    CHECK(!gate.has_pending());
+
+    MapperResultData envelope{};
+    envelope.request_id = context.request_id;
+    envelope.topology_generation = context.topology_generation;
+    envelope.operation = context.operation;
+    CHECK(gate.ConsumeLegacyEnvelope(envelope, 22) ==
+          ResultAcceptance::NoPendingRequest);
+
+    const MappingRequestContext replacement =
+        sequence.Issue(22, MappingOperation::Refresh).context;
+    CHECK(gate.Arm(replacement, 22));
+    CHECK(!gate.Arm(context, 22));
+}
+
 } // namespace
 
 int main() {
@@ -294,6 +369,9 @@ int main() {
     TestRequestIdMismatchDoesNotDisplaceCurrent();
     TestInvalidResultDoesNotDisplaceCurrent();
     TestArmIsMonotonicAndClosed();
+    TestLegacyEnvelopeMigrationGate();
+    TestLegacyEnvelopeRejectsMismatchWithoutDisplacement();
+    TestCancellationRejectsLateCallback();
     std::printf("test_mapping_request: %d checks, %d failures\n",
                 checks, failures);
     return failures == 0 ? 0 : 1;

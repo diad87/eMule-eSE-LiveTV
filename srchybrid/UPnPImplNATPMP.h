@@ -35,6 +35,10 @@ public:
     virtual void DeletePorts();
     virtual bool IsReady();
     virtual int  GetImplementationID()  { return UPNP_IMPL_NATPMP; }
+    virtual natmap::MapperKind GetMapperKind() const
+        { return natmap::MapperKind::NatPmp; }
+    virtual natmap::MapperSource GetMapperSource() const
+        { return natmap::MapperSource::NatPmp; }
 
     // Thread class for async discovery
     class CStartDiscoveryThread : public CWinThread
@@ -46,10 +50,15 @@ public:
     public:
         virtual BOOL InitInstance();
         virtual int Run();
-        void SetValues(CUPnPImplNATPMP *pOwner) { m_pOwner = pOwner; }
+        void SetValues(CUPnPImplNATPMP *pOwner)
+        {
+            m_pOwner = pOwner;
+            m_operation = pOwner->CaptureMappingOperation();
+        }
 
     private:
         CUPnPImplNATPMP *m_pOwner;
+        MappingOperationContext m_operation;
     };
 
 protected:

@@ -47,6 +47,18 @@ cl /nologo /EHsc /W4 /std:c++17 /Iinclude /Febuild\test_mapping_request.exe `
 build\test_mapping_request.exe
 
 cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
+   /Febuild\test_legacy_mapper_projection.exe `
+   tests\test_legacy_mapper_projection.cpp src\mapper_result.cpp `
+   src\legacy_mapper_projection.cpp
+build\test_legacy_mapper_projection.exe
+
+cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
+   /Febuild\test_mapping_result_mailbox.exe `
+   tests\test_mapping_result_mailbox.cpp src\mapper_result.cpp `
+   src\mapping_request.cpp src\mapping_result_mailbox.cpp
+build\test_mapping_result_mailbox.exe
+
+cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
    /Fe..\tools\build\natmap_ownership_inspect.exe `
    ..\tools\natmap_ownership_inspect.cpp src\ownership_ledger.cpp
 ```
@@ -65,3 +77,14 @@ IDs without wraparound. Its non-copyable `MappingResultGate` binds one pending
 request to its topology generation and typed operation (initial, refresh or
 delete), rejects stale/mismatched responses without displacing a newer request,
 and consumes a matching result exactly once.
+
+`ProjectLegacyMapperObservation` is the narrow G04 migration seam used while
+the native mapper producers move to strict common results. It projects only
+the fields consumed by the pre-v9.2 callback, never marks an endpoint verified,
+and is removed after the UPnP, PCP and NAT-PMP integrations stop using the
+legacy observer.
+
+`MappingResultMailbox` is the bounded value mailbox used by G04. A mapper
+publishes an immutable snapshot and receives a nonzero 31-bit delivery ID.
+The UI takes that exact ID, so out-of-order messages or an implementation
+switch cannot redirect a callback to another mapper. Delivery IDs never wrap.

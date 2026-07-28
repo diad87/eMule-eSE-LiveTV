@@ -821,7 +821,7 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 					static_cast<unsigned>(targets.size()), lastError);
 				m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
 				m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-				m_pOwner->SendResultMessage();
+				m_pOwner->SendResultMessage(m_operation);
 				return 0;
 			}
 
@@ -856,7 +856,7 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			if (bNotFound || m_pOwner->m_pURLs->controlURL == NULL) {
 				m_pOwner->m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
 				m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-				m_pOwner->SendResultMessage();
+				m_pOwner->SendResultMessage(m_operation);
 				return 0;
 			}
 			DebugLog(_T("Our LAN IP: %S"), m_pOwner->m_achLanIP);
@@ -923,7 +923,7 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			m_pOwner->m_bSucceededOnce = true;
 		} else
 			m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-		m_pOwner->SendResultMessage();
+		m_pOwner->SendResultMessage(m_operation);
 	}
 	return 0;
 }

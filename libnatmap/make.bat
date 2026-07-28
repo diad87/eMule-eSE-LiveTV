@@ -39,5 +39,13 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapping_request.
 if errorlevel 1 exit /b 1
 build\test_mapping_request.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_legacy_mapper_projection.exe tests\test_legacy_mapper_projection.cpp src\mapper_result.cpp src\legacy_mapper_projection.cpp
+if errorlevel 1 exit /b 1
+build\test_legacy_mapper_projection.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapping_result_mailbox.exe tests\test_mapping_result_mailbox.cpp src\mapper_result.cpp src\mapping_request.cpp src\mapping_result_mailbox.cpp
+if errorlevel 1 exit /b 1
+build\test_mapping_result_mailbox.exe
+if errorlevel 1 exit /b 1
 echo libnatmap complete gate: PASS
 exit /b 0

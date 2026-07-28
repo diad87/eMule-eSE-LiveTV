@@ -1,7 +1,9 @@
 #include "stdafx.h"
 #include "DirectReachabilityManager.h"
+#include "natmap/legacy_mapper_projection.h"
 
 #include <chrono>
+#include <cstring>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -168,6 +170,24 @@ CDirectReachabilityManager::GetUpstreamGatewayCandidates() const
 		return natmap::UpstreamGatewayCandidates{};
 	return natmap::BuildUpstreamGatewayCandidates(
 		m_tcpChain.FinalEndpoint().address);
+}
+
+bool CDirectReachabilityManager::ObserveMapperResult(
+	const natmap::MapperResult& result)
+{
+	AssertMainThread();
+	natmap::LegacyMapperObservation observation;
+	if (!natmap::ProjectLegacyMapperObservation(result, observation))
+		return false;
+
+	uint32 externalIP = 0;
+	std::memcpy(&externalIP, observation.external_address.bytes.data(),
+		sizeof(externalIP));
+	return ObserveMappedPorts(observation.mapper, externalIP,
+		observation.local_tcp_port, observation.external_tcp_port,
+		observation.local_udp_port, observation.external_udp_port,
+		observation.lifetime_seconds, observation.mapper_epoch,
+		observation.refresh);
 }
 
 bool CDirectReachabilityManager::HasVerifiedEd2kReachability() const

@@ -438,6 +438,26 @@
 	  <LanguageStandard>stdcpp17</LanguageStandard>
 	  <WarningLevel>Level4</WarningLevel>
 	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\mapper_result.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\mapping_request.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\legacy_mapper_projection.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\mapping_result_mailbox.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
     <ClCompile Include="..\libreach\src\reach_codec.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -964,6 +984,10 @@
 	<ClInclude Include="..\libnatmap\include\natmap\natpmp_codec.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\pcp_codec.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\ownership_ledger.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\mapper_result.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\mapping_request.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\legacy_mapper_projection.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\mapping_result_mailbox.h" />
     <ClInclude Include="LiveDebugLog.h" />
     <ClInclude Include="LiveKadBridge.h" />
     <ClInclude Include="LiveMeshManager.h" />

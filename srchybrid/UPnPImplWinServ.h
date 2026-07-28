@@ -80,6 +80,14 @@ public:
 	{
 		return UPNP_IMPL_WINDOWSERVICE;
 	}
+	virtual natmap::MapperKind GetMapperKind() const
+	{
+		return natmap::MapperKind::UpnpIgd;
+	}
+	virtual natmap::MapperSource GetMapperSource() const
+	{
+		return natmap::MapperSource::UpnpIgd;
+	}
 	virtual bool SupportsMappingHealthCheck() const { return false; }
 
 	// No Support for Refreshing in this (fallback) implementation yet - in many cases where it would be needed (router reset etc)
@@ -93,7 +101,10 @@ protected:
 	void StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort, bool bSecondTry);
 	void AddDevice(DevicePointer device, bool bAddChildren, int nLevel = 0);
 	void RemoveDevice(CComBSTR bsUDN);
-	bool OnSearchComplete();
+	bool OnSearchComplete(const MappingOperationContext& operation);
+	bool AcceptAsyncFindCallback(
+		LONG nFindData,
+		const MappingOperationContext& operation) const;
 	bool VerifyPortMapping(ServicePointer pService, uint16 nPort, LPCTSTR pszProtocol);
 	void Init();
 
@@ -139,10 +150,14 @@ protected:
 
 	void ProcessAsyncFind(CComBSTR bsSearchType);
 	HRESULT GetDeviceServices(DevicePointer pDevice);
-	void StartPortMapping();
-	HRESULT MapPort(const ServicePointer &service);
+	void StartPortMapping(const MappingOperationContext& operation);
+	HRESULT MapPort(
+		const ServicePointer &service,
+		const MappingOperationContext& operation);
 	void DeleteExistingPortMappings(ServicePointer pService);
-	void CreatePortMappings(ServicePointer pService);
+	void CreatePortMappings(
+		ServicePointer pService,
+		const MappingOperationContext& operation);
 	HRESULT SaveServices(EnumUnknownPtr pEU, const LONG nTotalItems);
 	HRESULT InvokeAction(ServicePointer pService, CComBSTR action
 						, LPCTSTR pszInArgString, CString &strResult);
@@ -179,6 +194,7 @@ private:
 	bool m_bServiceStartedByEmule;
 	bool m_bDisableWANIPSetup;
 	bool m_bDisableWANPPPSetup;
+	mutable std::recursive_mutex m_asyncCallbackMutex;
 };
 
 // DeviceFinder Callback
@@ -186,8 +202,11 @@ class CDeviceFinderCallback
 	: public IUPnPDeviceFinderCallback
 {
 public:
-	explicit CDeviceFinderCallback(CUPnPImplWinServ &instance)
+	explicit CDeviceFinderCallback(
+		CUPnPImplWinServ &instance,
+		const CUPnPImpl::MappingOperationContext& operation)
 		: m_instance(instance)
+		, m_operation(operation)
 		, m_lRefCount()
 	{
 	}
@@ -205,6 +224,7 @@ private:
 	HRESULT __stdcall SearchComplete(LONG nFindData);
 
 	CUPnPImplWinServ &m_instance;
+	CUPnPImpl::MappingOperationContext m_operation;
 	LONG m_lRefCount;
 };
 

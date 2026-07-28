@@ -4,6 +4,7 @@
 #include "natmap/natmap_state.h"
 #include "natmap/natmap_policy.h"
 #include "natmap/natmap_chain.h"
+#include "natmap/mapper_result.h"
 #include <atomic>
 
 // Main-thread owner for direct-reachability state. D1 is deliberately
@@ -29,14 +30,15 @@ public:
 	bool HasVerifiedEd2kReachability() const;
 	uint64 GetTopologyGeneration() const;
 	natmap::UpstreamGatewayCandidates GetUpstreamGatewayCandidates() const;
+	bool ObserveMapperResult(const natmap::MapperResult& result);
 
 	const natmap::ReachabilitySnapshot& GetSnapshot() const;
+
+private:
 	bool ObserveMappedPorts(natmap::MapperKind mapper, uint32 nExternalIP,
 		uint16 nLocalTcpPort, uint16 nExternalTcpPort,
 		uint16 nLocalUdpPort, uint16 nExternalUdpPort,
 		uint32 nLifetimeSeconds, uint32 nMapperEpoch, bool bRefresh);
-
-private:
 	void AssertMainThread() const;
 	static natmap::Endpoint MakeAnyV4(uint16 nPort);
 	static natmap::Endpoint MakePublicV4(uint32 nNetworkOrderIP,

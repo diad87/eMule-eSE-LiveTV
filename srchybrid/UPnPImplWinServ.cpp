@@ -69,7 +69,6 @@ void CUPnPImplWinServ::Init()
 		m_bCOM = SUCCEEDED(hr); // S_OK or S_FALSE
 		m_pDeviceFinder = CreateFinderInstance();
 		m_pServiceCallback = new CServiceCallback(*this);
-		m_pDeviceFinderCallback = new CDeviceFinderCallback(*this);
 		m_bInited = true;
 	}
 }
@@ -194,8 +193,11 @@ void CUPnPImplWinServ::StopUPnPService()
 void CUPnPImplWinServ::ProcessAsyncFind(CComBSTR bsSearchType)
 {
 	// We have to start the AsyncFind.
-	if (m_pDeviceFinderCallback == NULL)
-		return DebugLogError(_T("DeviceFinderCallback object is not available."));
+	const MappingOperationContext operation = CaptureMappingOperation();
+	if (!operation.request.IsValid())
+		return DebugLogError(_T("Mapping operation context is not available."));
+	m_pDeviceFinderCallback =
+		new CDeviceFinderCallback(*this, operation);
 
 	HRESULT res = m_pDeviceFinder->CreateAsyncFind(bsSearchType, NULL, m_pDeviceFinderCallback, &m_nAsyncFindHandle);
 	if (FAILED(res))
@@ -213,9 +215,20 @@ void CUPnPImplWinServ::ProcessAsyncFind(CComBSTR bsSearchType)
 	}
 }
 
+bool CUPnPImplWinServ::AcceptAsyncFindCallback(
+	LONG nFindData,
+	const MappingOperationContext& operation) const
+{
+	return m_bAsyncFindRunning
+		&& nFindData == m_nAsyncFindHandle
+		&& IsCurrentMappingOperation(operation);
+}
+
 // Helper function for stopping the async find if proceeding
 void CUPnPImplWinServ::StopAsyncFind()
 {
+	std::lock_guard<std::recursive_mutex> callbackLock(
+		m_asyncCallbackMutex);
 	// This will stop the async find if it is in progress
 	// ToDo: Locks up in WinME, cancelling is required <- critical
 
@@ -230,6 +243,8 @@ void CUPnPImplWinServ::StopAsyncFind()
 // Start the discovery of the UPnP gateway devices
 void CUPnPImplWinServ::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort, bool bSecondTry)
 {
+	std::lock_guard<std::recursive_mutex> callbackLock(
+		m_asyncCallbackMutex);
 	if (bSecondTry && m_bSecondTry)	// already did 2 tries
 		return;
 
@@ -365,7 +380,8 @@ void CUPnPImplWinServ::RemoveDevice(CComBSTR bsUDN)
 	}
 }
 
-bool CUPnPImplWinServ::OnSearchComplete()
+bool CUPnPImplWinServ::OnSearchComplete(
+	const MappingOperationContext& operation)
 {
 	ATLTRACE2(atlTraceCOM, 1, _T("CUPnPImplWinServ(%p)->OnSearchComplete\n"), this);
 
@@ -376,7 +392,7 @@ bool CUPnPImplWinServ::OnSearchComplete()
 			m_bUPnPDeviceConnected = TRIS_FALSE;
 			if (m_bServiceStartedByEmule)
 				StopUPnPService();
-			SendResultMessage();
+			SendResultMessage(operation);
 		} else
 			DebugLog(_T("Found no UPnP gateway devices - will retry with different parameters"));
 
@@ -385,7 +401,7 @@ bool CUPnPImplWinServ::OnSearchComplete()
 
 	for (std::size_t pos = 0; pos != m_pDevices.size(); ++pos) {
 		GetDeviceServices(m_pDevices[pos]);
-		StartPortMapping();
+		StartPortMapping(operation);
 
 		if (!m_bPortIsFree) {	// warn only once
 			// Add more descriptive explanation!!!
@@ -397,7 +413,7 @@ bool CUPnPImplWinServ::OnSearchComplete()
 		m_bUPnPPortsForwarded = TRIS_FALSE;
 		if (m_bServiceStartedByEmule)
 			StopUPnPService();
-		SendResultMessage();
+		SendResultMessage(operation);
 	}
 	return true;
 }
@@ -476,7 +492,9 @@ HRESULT CUPnPImplWinServ::SaveServices(EnumUnknownPtr pEU, const LONG nTotalItem
 	return hr;
 }
 
-HRESULT CUPnPImplWinServ::MapPort(const ServicePointer &service)
+HRESULT CUPnPImplWinServ::MapPort(
+	const ServicePointer &service,
+	const MappingOperationContext& operation)
 {
 	CComBSTR bsServiceId;
 
@@ -541,7 +559,7 @@ HRESULT CUPnPImplWinServ::MapPort(const ServicePointer &service)
 		m_sLocalIP = GetLocalRoutableIP(service);
 		if (!m_sLocalIP.IsEmpty()) {
 			DeleteExistingPortMappings(service);
-			CreatePortMappings(service);
+			CreatePortMappings(service, operation);
 			m_bUPnPDeviceConnected = TRIS_TRUE;
 		}
 	} else if (stristr(strResult, _T("|VT_BSTR=Disconnected|")) != NULL && m_bADSL)
@@ -559,10 +577,11 @@ HRESULT CUPnPImplWinServ::MapPort(const ServicePointer &service)
 	return S_OK;
 }
 
-void CUPnPImplWinServ::StartPortMapping()
+void CUPnPImplWinServ::StartPortMapping(
+	const MappingOperationContext& operation)
 {
 	for (std::vector<ServicePointer>::const_iterator Iter = m_pServices.begin(); Iter != m_pServices.end(); ++Iter)
-		MapPort(*Iter);
+		MapPort(*Iter, operation);
 
 	if (m_bADSL && !m_ADSLFailed && m_bUPnPPortsForwarded == TRIS_UNKNOWN && !thePrefs.GetSkipWANIPSetup()) {
 		m_ADSLFailed = true;
@@ -570,7 +589,7 @@ void CUPnPImplWinServ::StartPortMapping()
 		m_bDisableWANIPSetup = false;
 		m_bDisableWANPPPSetup = true;
 		for (std::vector<ServicePointer>::const_iterator Iter = m_pServices.begin(); Iter != m_pServices.end(); ++Iter)
-			MapPort(*Iter);
+			MapPort(*Iter, operation);
 	}
 }
 
@@ -747,7 +766,9 @@ void CUPnPImplWinServ::DeleteExistingPortMappings(ServicePointer pService)
 }
 
 // Creates TCP and UDP port mappings
-void CUPnPImplWinServ::CreatePortMappings(ServicePointer pService)
+void CUPnPImplWinServ::CreatePortMappings(
+	ServicePointer pService,
+	const MappingOperationContext& operation)
 {
 	if (m_sLocalIP.IsEmpty() || !m_bPortIsFree)
 		return;
@@ -791,7 +812,7 @@ void CUPnPImplWinServ::CreatePortMappings(ServicePointer pService)
 	}
 
 	m_bUPnPPortsForwarded = TRIS_TRUE;
-	SendResultMessage();
+	SendResultMessage(operation);
 
 	// Leave the message loop, since events may take more time.
 	// Assuming that the user doesn't use several devices
@@ -1088,31 +1109,45 @@ void CUPnPImplWinServ::DestroyVars(const INT_PTR nCount, VARIANT ***pppVars)
 
 // Called when a device is added
 // nFindData--AsyncFindHandle; pDevice--COM interface pointer of the device being added
-HRESULT __stdcall CDeviceFinderCallback::DeviceAdded(LONG /*nFindData*/, IUPnPDevice *pDevice)
+HRESULT __stdcall CDeviceFinderCallback::DeviceAdded(
+	LONG nFindData, IUPnPDevice *pDevice)
 {
 	ATLTRACE2(atlTraceCOM, 1, _T("Device Added\n"));
+	std::lock_guard<std::recursive_mutex> callbackLock(
+		m_instance.m_asyncCallbackMutex);
+	if (!m_instance.AcceptAsyncFindCallback(nFindData, m_operation))
+		return S_OK;
 	m_instance.AddDevice(pDevice, true);
 	return S_OK;
 }
 
 // Called when a device is removed
 // nFindData--AsyncFindHandle; bsUDN--UDN of the device being removed
-HRESULT __stdcall CDeviceFinderCallback::DeviceRemoved(LONG /*nFindData*/, BSTR bsUDN)
+HRESULT __stdcall CDeviceFinderCallback::DeviceRemoved(
+	LONG nFindData, BSTR bsUDN)
 {
 	ATLTRACE2(atlTraceCOM, 1, _T("Device Removed: %s\n"), bsUDN);
+	std::lock_guard<std::recursive_mutex> callbackLock(
+		m_instance.m_asyncCallbackMutex);
+	if (!m_instance.AcceptAsyncFindCallback(nFindData, m_operation))
+		return S_OK;
 	m_instance.RemoveDevice(bsUDN);
 	return S_OK;
 }
 
 // Called when the search is complete; nFindData--AsyncFindHandle
-HRESULT __stdcall CDeviceFinderCallback::SearchComplete(LONG /*nFindData*/)
+HRESULT __stdcall CDeviceFinderCallback::SearchComplete(LONG nFindData)
 {
+	std::lock_guard<std::recursive_mutex> callbackLock(
+		m_instance.m_asyncCallbackMutex);
+	if (!m_instance.AcceptAsyncFindCallback(nFindData, m_operation))
+		return S_OK;
 	// StopAsyncFind must be here, do not move to OnSearchComplete
 	// Otherwise, "Service died" message is shown, and it means
 	// that the service still was active.
-	bool bRetry = !m_instance.OnSearchComplete();
+	bool bRetry = !m_instance.OnSearchComplete(m_operation);
 	m_instance.StopAsyncFind();
-	if (bRetry)
+	if (bRetry && m_instance.IsCurrentMappingOperation(m_operation))
 		m_instance.StartDiscovery(0, 0, 0, true);
 	return S_OK;
 }

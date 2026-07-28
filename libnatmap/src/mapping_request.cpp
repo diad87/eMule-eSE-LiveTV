@@ -76,6 +76,31 @@ bool MappingResultGate::Arm(
 ResultAcceptance MappingResultGate::Consume(
     const MapperResult& result,
     std::uint64_t current_topology_generation) noexcept {
+    if (has_pending_ &&
+        current_topology_generation != 0 &&
+        pending_.topology_generation == current_topology_generation &&
+        !result.IsStructurallyValid())
+        return ResultAcceptance::Invalid;
+    return ConsumeCorrelatedData(
+        result.data(), current_topology_generation);
+}
+
+ResultAcceptance MappingResultGate::ConsumeLegacyEnvelope(
+    const MapperResultData& data,
+    std::uint64_t current_topology_generation) noexcept {
+    const MappingRequestContext envelope{
+        data.request_id, data.topology_generation, data.operation};
+    if (has_pending_ &&
+        current_topology_generation != 0 &&
+        pending_.topology_generation == current_topology_generation &&
+        !envelope.IsValid())
+        return ResultAcceptance::Invalid;
+    return ConsumeCorrelatedData(data, current_topology_generation);
+}
+
+ResultAcceptance MappingResultGate::ConsumeCorrelatedData(
+    const MapperResultData& data,
+    std::uint64_t current_topology_generation) noexcept {
     if (!has_pending_)
         return ResultAcceptance::NoPendingRequest;
     if (current_topology_generation == 0 ||
@@ -84,10 +109,6 @@ ResultAcceptance MappingResultGate::Consume(
         has_pending_ = false;
         return ResultAcceptance::StaleTopology;
     }
-    if (!result.IsStructurallyValid())
-        return ResultAcceptance::Invalid;
-
-    const MapperResultData& data = result.data();
     if (data.topology_generation != current_topology_generation)
         return ResultAcceptance::StaleTopology;
     if (data.request_id != pending_.request_id)
@@ -98,6 +119,14 @@ ResultAcceptance MappingResultGate::Consume(
     pending_ = {};
     has_pending_ = false;
     return ResultAcceptance::Apply;
+}
+
+bool MappingResultGate::CancelPending() noexcept {
+    if (!has_pending_)
+        return false;
+    pending_ = {};
+    has_pending_ = false;
+    return true;
 }
 
 } // namespace natmap

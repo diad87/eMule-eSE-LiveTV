@@ -73,11 +73,21 @@ public:
     ResultAcceptance Consume(
         const MapperResult& result,
         std::uint64_t current_topology_generation) noexcept;
+    // G04-only migration seam. It checks and consumes the immutable request
+    // envelope without treating the mapper payload as strictly integrated.
+    // H/I/J replace this call with Consume once each producer is complete.
+    ResultAcceptance ConsumeLegacyEnvelope(
+        const MapperResultData& data,
+        std::uint64_t current_topology_generation) noexcept;
+    bool CancelPending() noexcept;
 
     bool has_pending() const noexcept { return has_pending_; }
     const MappingRequestContext& pending() const noexcept { return pending_; }
 
 private:
+    ResultAcceptance ConsumeCorrelatedData(
+        const MapperResultData& data,
+        std::uint64_t current_topology_generation) noexcept;
     MappingRequestContext pending_{};
     std::uint64_t last_request_id_ = 0;
     bool has_pending_ = false;

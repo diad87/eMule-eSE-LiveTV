@@ -174,7 +174,7 @@ void CUPnPImplNATPMP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nT
 
 	if (!m_bAbortDiscovery && !StartThread()) {
 		m_bUPnPPortsForwarded = TRIS_FALSE;
-		SendResultMessage();
+		SendResultMessage(CaptureMappingOperation());
 	}
 }
 
@@ -524,7 +524,7 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 		DebugLogWarning(_T("NAT-PMP: No default gateway found, aborting"));
 		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
 		m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-		m_pOwner->SendResultMessage();
+		m_pOwner->SendResultMessage(m_operation);
 		return 0;
 	}
 	if (bWasRefresh && nPreviousGatewayIP != 0
@@ -657,7 +657,7 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 				m_pOwner->m_nDiagnosticStage =
 					UPNP_DIAG_PROTOCOL_UNAVAILABLE;
 		}
-		m_pOwner->SendResultMessage();
+		m_pOwner->SendResultMessage(m_operation);
 	}
 	return 0;
 }

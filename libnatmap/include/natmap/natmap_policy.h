@@ -17,6 +17,20 @@ struct LeaseTiming {
     std::uint64_t expires_monotonic_ms = 0;
 };
 
+// Snapshot of one mapper-result observation at the application boundary.
+// A server re-login is required only when a consumed result changes the
+// externally visible generation, or withdraws a previously enabled endpoint.
+struct AdvertisementObservation {
+    std::uint64_t previous_generation = 0;
+    std::uint64_t current_generation = 0;
+    bool observed = false;
+    bool was_enabled = false;
+    bool is_enabled = false;
+};
+
+bool RequiresAdvertisementRelogin(
+    const AdvertisementObservation& observation) noexcept;
+
 // Drives application-level refresh attempts for a finite mapping lease.
 // The first attempt is due at 45% of the granted lifetime. Failed attempts
 // use a bounded exponential backoff, leaving the caller free to perform the

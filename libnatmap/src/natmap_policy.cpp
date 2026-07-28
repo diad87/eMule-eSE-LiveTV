@@ -81,6 +81,15 @@ PortIntent BuildAutomaticPortIntent(Transport transport,
     return intent;
 }
 
+bool RequiresAdvertisementRelogin(
+    const AdvertisementObservation& observation) noexcept {
+    if (!observation.observed)
+        return false;
+    return observation.current_generation
+            != observation.previous_generation
+        || (observation.was_enabled && !observation.is_enabled);
+}
+
 LeaseTiming LeaseController::Schedule(const PortLease& lease,
                                       std::uint64_t now_ms) noexcept {
     return ScheduleLifetime(lease.lifetime_seconds, now_ms);

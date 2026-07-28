@@ -272,6 +272,51 @@ void TestPermanentMappingHealthProbe() {
     CHECK(schedule.next_attempt_ms() == 0);
 }
 
+void TestAdvertisementReloginIsExactlyOnce() {
+    unsigned relogins = 0;
+    const auto observe = [&relogins](
+        std::uint64_t previous_generation,
+        std::uint64_t current_generation,
+        bool was_enabled,
+        bool is_enabled,
+        bool observed = true) {
+        const bool required = RequiresAdvertisementRelogin(
+            AdvertisementObservation{
+                previous_generation,
+                current_generation,
+                observed,
+                was_enabled,
+                is_enabled});
+        if (required)
+            ++relogins;
+        return required;
+    };
+
+    // One atomic TCP/UDP publication produces exactly one re-login.
+    CHECK(observe(1, 2, false, true));
+    CHECK(relogins == 1);
+
+    // An identical renewal preserves the generation and produces none.
+    CHECK(!observe(2, 2, true, true));
+    CHECK(relogins == 1);
+
+    // One real endpoint change advances once and produces exactly one.
+    CHECK(observe(2, 3, true, true));
+    CHECK(relogins == 2);
+
+    // A duplicate delivery of that callback produces no additional re-login.
+    CHECK(!observe(3, 3, true, true));
+    CHECK(relogins == 2);
+
+    // A terminal withdrawal at the generation limit must still be advertised.
+    CHECK(observe(3, 3, true, false));
+    CHECK(relogins == 3);
+
+    // Unconsumed/stale observations never trigger external side effects.
+    CHECK(!observe(3, 4, false, true, false));
+    CHECK(relogins == 3);
+}
+
 } // namespace
 
 int main() {
@@ -284,6 +329,7 @@ int main() {
     TestPermanentLeaseHasNoRefreshClock();
     TestRefreshBackoffIsBounded();
 	TestPermanentMappingHealthProbe();
+    TestAdvertisementReloginIsExactlyOnce();
     std::printf("test_lease_policy: %d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

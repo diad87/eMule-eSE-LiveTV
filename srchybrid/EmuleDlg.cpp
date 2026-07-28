@@ -4904,11 +4904,13 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		const bool observed =
 			theApp.directreachability->ObserveMapperResult(
 				natmap::MapperResult(mapperResultData));
-		if (observed
-			&& (theApp.directreachability->GetTopologyGeneration()
-					!= previousGeneration
-				|| (wasDirectReachabilityEnabled
-					&& !theApp.directreachability->IsEnabled()))
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			theApp.directreachability->GetTopologyGeneration(),
+			observed,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability->IsEnabled()};
+		if (natmap::RequiresAdvertisementRelogin(advertisement)
 			&& theApp.serverconnect->IsConnected()
 			&& !theApp.serverconnect->IsConnectedViaRelay()) {
 			LogWarning(_T("Direct reachability endpoint changed or was withdrawn; reconnecting to update the advertised port"));

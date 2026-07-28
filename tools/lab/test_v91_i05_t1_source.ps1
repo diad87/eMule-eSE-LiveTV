@@ -557,6 +557,11 @@ Add-I05SourceSelfTest -Name 'runner-control-fail-fast-and-timeout-aligned' `
     -Passed (
         $runnerText -match
             '\[int\]\$TransferTimeoutSeconds\s*=\s*7200' -and
+        $runnerText -match (
+            '\$transferStarted\.AddSeconds\(\s*' +
+            '\$TransferTimeoutSeconds\s*\+\s*' +
+            '\$CompletionTimeoutSeconds\s*\)'
+        ) -and
         $runnerText -match
             'SelectMode\]::SelectRead' -and
         $runnerText -match

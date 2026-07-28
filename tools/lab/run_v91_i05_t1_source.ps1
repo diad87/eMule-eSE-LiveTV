@@ -4431,7 +4431,8 @@ try {
     $sampleNumber = 0
     $transferStarted = [DateTime]::UtcNow
     $transferDeadline =
-        $transferStarted.AddSeconds($TransferTimeoutSeconds)
+        $transferStarted.AddSeconds(
+            $TransferTimeoutSeconds + $CompletionTimeoutSeconds)
     $completeFrame = $null
     $apiFailureStreak = 0
     $observedRemotePorts =

@@ -1,6 +1,6 @@
 {
     "schema":  "ese.v91.rc-ledger/v2",
-    "generated_at_utc":  "2026-07-28T07:55:17.516Z",
+    "generated_at_utc":  "2026-07-28T09:21:47.567Z",
     "candidate":  {
                       "version":  "9.1.0-rc.2",
                       "commit":  "08aa6521f7d7907edb3584266abc3a9e31693161",
@@ -8,14 +8,14 @@
                       "ese_server_sha256":  "eeceef0f0dbe427f3667c033e2b653fc69e432abcc3e8afaf996840a7315e568",
                       "build_info_sha256":  "7c87f77268030c2b4da40c6da8c960f968b4e1a033c9987b64e45c49cf4b5915"
                   },
-    "results_sha256":  "f6cab6e5beb591c82ac1cb3a06d6ef924602bcda32eaf90490f39ecacd6ae56c",
+    "results_sha256":  "343f81523d3e9374e4ccd331980fa21434818cdf2e9b063066cfebb018be3798",
     "normative_source":  "docs/V9_RELEASE_SPECIFICATION.md section 8.6",
     "counts":  {
                    "total":  27,
                    "pass":  11,
                    "fail":  0,
                    "blocked":  16,
-                   "executed":  11
+                   "executed":  12
                },
     "gate_decision":  "NO_GO",
     "cases":  [
@@ -98,13 +98,15 @@
                       "id":  "V91-I05",
                       "status":  "BLOCKED",
                       "required_topology":  "T1",
-                      "executed":  false,
-                      "execution_state":  "NOT_RUN",
-                      "reason":  "A direct second physical Windows peer for the IPv4-only T1 transfer is unavailable; Maria is reachable only over the overlay and the laptop is unavailable.",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "The exact rc.2 two-host T1 campaign ran for 7,323 seconds. H1 reached READY and H3 STARTED, but no COMPLETE frame, physical IPv4 peer socket or completed 4 GiB transfer was observed, so the laboratory result is BLOCKED. The original cleanup report was a false negative caused by treating Get-NetFirewallRule ObjectNotFound as an enumeration failure; an independent post-cleanup audit proves both nonce-owned rules, both candidate processes and their owned endpoints are absent.",
                       "evidence":  [
-
+                                       "i05\\evidence\\summary.json",
+                                       "i05\\evidence\\cleanup.json",
+                                       "i05\\evidence\\post-cleanup-audit.json"
                                    ],
-                      "identity_evidence_count":  0
+                      "identity_evidence_count":  3
                   },
                   {
                       "id":  "V91-I06",

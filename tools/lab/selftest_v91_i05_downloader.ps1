@@ -102,6 +102,15 @@ if ($runnerTextForOperator -notmatch
     throw 'The candidate peer-listener startup grace contract is missing.'
 }
 if ($runnerTextForOperator -notmatch
+        '\$peerConnectTimeoutSeconds\s*=\s*300' -or
+    $runnerTextForOperator -notmatch
+        '\-not\s+\$sawExactIPv4[\s\S]{0,180}' +
+            '\$peerConnectTimeoutSeconds' -or
+    $runnerTextForOperator -notmatch
+        "Category 'missing_exact_peer_socket'") {
+    throw 'The exact peer-socket fail-fast deadline is missing.'
+}
+if ($runnerTextForOperator -notmatch
         'function Assert-I05LanApiForbidden' -or
     $runnerTextForOperator -notmatch
         '\$statusCode\s*-eq\s*403' -or
@@ -1328,6 +1337,7 @@ try {
     ini_regex_state_ps51 = 'PASS'
     single_instance_and_operator_error = 'PASS'
     candidate_peer_listener_startup_grace = 'PASS'
+    exact_peer_socket_fail_fast = 'PASS'
     containment_pending_before_mutation = 'PASS'
     containment_rules_ten_profile_any = 'PASS'
     containment_non_any_profile_rejected = 'PASS'

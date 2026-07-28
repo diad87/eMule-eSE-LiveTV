@@ -57,6 +57,7 @@ $captureFileSizeMiB = 2048
 $capturePacketSize = 256
 $maximumControlDocumentBytes = 1048576
 $transferTimeoutSeconds = 7200
+$peerConnectTimeoutSeconds = 300
 
 $layoutRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $configAtLayout = Join-Path $layoutRoot 'V91-I05-T1-CONFIG.json'
@@ -2727,6 +2728,17 @@ function Wait-I05TransferComplete {
                     $record.observations = [int]$record.observations + 1
                 }
             }
+        }
+        if (-not $sawExactIPv4 -and
+            ([DateTime]::UtcNow - $started).TotalSeconds -ge
+                $peerConnectTimeoutSeconds) {
+            Throw-I05ClassifiedFailure `
+                -Classification PRODUCT_INVARIANT `
+                -Category 'missing_exact_peer_socket' `
+                -Message (
+                    'No aparecio el socket IPv4 exacto H3->H1 ' +
+                    'durante los primeros 300 segundos.'
+                )
         }
         try {
             $part = @(Get-ChildItem -LiteralPath (Join-Path $Node 'Temp') `

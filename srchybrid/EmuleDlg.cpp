@@ -4691,11 +4691,41 @@ void CALLBACK CemuleDlg::UPnPLeaseTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR 
 void CemuleDlg::CheckUPnPLease()
 {
 	if (!theApp.IsRunning() || !thePrefs.IsUPnPEnabled()
-		|| theApp.m_pUPnPFinder == NULL || m_hUPnPTimeOutTimer != 0)
+		|| theApp.m_pUPnPFinder == NULL)
 		return;
 
 	CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
 	if (impl == NULL)
+		return;
+
+	if (impl->IsLeaseExpired()) {
+		impl->SetMessageOnResult(NULL, 0);
+		impl->StopAsyncFind();
+		m_mappingResultGate.CancelPending();
+		if (m_mappingResultMailbox)
+			m_mappingResultMailbox->Clear();
+		InvalidateLocalUPnPFailure();
+		RetireUPnPTimeout();
+		m_bUPnPTimeoutForRefresh = false;
+		const bool withdrawn = theApp.directreachability != NULL
+			&& theApp.directreachability->ObserveFiniteMappingExpiry();
+		if (!withdrawn)
+			LIVE_LOG("NATMAP",
+				"finite lease deadline observed without an active direct endpoint");
+		if (withdrawn
+			&& theApp.serverconnect->IsConnected()
+			&& !theApp.serverconnect->IsConnectedViaRelay()) {
+			LogWarning(_T("Finite mapping expired; reconnecting without the retired endpoint"));
+			theApp.serverconnect->Disconnect();
+			theApp.serverconnect->ConnectToAnyServer();
+		}
+		LIVE_LOG("NATMAP", "finite lease expired; restarting mapper discovery (impl=%d)",
+			impl->GetImplementationID());
+		StartUPnP(true);
+		return;
+	}
+
+	if (m_hUPnPTimeOutTimer != 0)
 		return;
 
 	const uint64 networkSignature = GetUPnPNetworkSignature();
@@ -4716,13 +4746,6 @@ void CemuleDlg::CheckUPnPLease()
 
 	if (!impl->IsReady())
 		return;
-
-	if (impl->IsLeaseExpired()) {
-		LIVE_LOG("NATMAP", "finite lease expired; restarting mapper discovery (impl=%d)",
-			impl->GetImplementationID());
-		StartUPnP(true);
-		return;
-	}
 	if (impl->IsLeaseRefreshDue()) {
 		impl->BeginLeaseRefreshAttempt();
 		if (impl->GetMappingLeaseLifetime() != 0)
@@ -4870,7 +4893,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		const bool observed =
 			theApp.directreachability->ObserveMapperResult(
 				natmap::MapperResult(mapperResultData));
-		if (observed && bWasRefresh
+		if (observed
 			&& theApp.directreachability->GetTopologyGeneration()
 				!= previousGeneration
 			&& theApp.serverconnect->IsConnected()

@@ -165,11 +165,86 @@ void TestSplitEvidenceAndFailedVerification() {
     CHECK(!result.snapshot.HasClassicHighIdEvidence());
 }
 
+void TestLeaseExpiryWithdrawsEndpointAndFencesLateCallbacks() {
+    PlaneSnapshot state{};
+    state.local = Ep(
+        192, 168, 1, 20, 4662, EndpointSource::LocalInterface);
+    state = ApplyEvent(
+        state, StateEvent{EventType::BeginGeneration, 31}).snapshot;
+    state = ApplyEvent(
+        state, StateEvent{EventType::MappingStarted, 31}).snapshot;
+
+    StateEvent mapped{};
+    mapped.type = EventType::MappingSucceeded;
+    mapped.generation = 31;
+    mapped.lease = Lease(31, 52144);
+    mapped.lease.mapper = MapperKind::NatPmp;
+    mapped.lease.public_endpoint.source =
+        EndpointSource::NatPmpPublicAddress;
+    mapped.lease.lifetime_seconds = 100;
+    mapped.lease.mapper_epoch = 17;
+    state = ApplyEvent(state, mapped).snapshot;
+    state = ApplyEvent(
+        state, StateEvent{EventType::VerificationStarted, 31}).snapshot;
+
+    StateEvent verified{};
+    verified.type = EventType::VerificationSucceeded;
+    verified.generation = 31;
+    verified.advertised = mapped.lease.public_endpoint;
+    verified.primary_evidence = Evidence{
+        EvidenceKind::ServerHighId, verified.advertised, 31, 1000};
+    verified.inbound_evidence = Evidence{
+        EvidenceKind::InboundTcpAccept, verified.advertised, 31, 1001};
+    state = ApplyEvent(state, verified).snapshot;
+    CHECK(state.state == ReachabilityState::Reachable);
+
+    const TransitionResult expired =
+        InvalidateForLeaseExpiry(state, 32);
+    CHECK(expired.disposition == TransitionDisposition::Applied);
+    CHECK(expired.snapshot.state == ReachabilityState::Degraded);
+    CHECK(expired.snapshot.reason == ReasonCode::LeaseExpired);
+    CHECK(expired.snapshot.generation == 32);
+    CHECK(expired.snapshot.local.port == 4662);
+    CHECK(!expired.snapshot.mapped.IsUsable());
+    CHECK(!expired.snapshot.advertised.IsUsable());
+    CHECK(!expired.snapshot.lease.IsStructurallyValid());
+    CHECK(!expired.snapshot.primary_evidence.IsCurrent(32));
+    CHECK(!expired.snapshot.inbound_evidence.IsCurrent(32));
+
+    StateEvent lateRenewal{};
+    lateRenewal.type = EventType::RenewalSucceeded;
+    lateRenewal.generation = 31;
+    lateRenewal.lease = mapped.lease;
+    TransitionResult late = ApplyEvent(expired.snapshot, lateRenewal);
+    CHECK(late.disposition == TransitionDisposition::Stale);
+    CHECK(late.snapshot.state == ReachabilityState::Degraded);
+
+    StateEvent lateServer{};
+    lateServer.type = EventType::ServerEvidenceObserved;
+    lateServer.generation = 32;
+    lateServer.primary_evidence = Evidence{
+        EvidenceKind::ServerHighId, mapped.lease.public_endpoint, 32, 2000};
+    late = ApplyEvent(expired.snapshot, lateServer);
+    CHECK(late.disposition == TransitionDisposition::Invalid);
+    CHECK(!late.snapshot.advertised.IsUsable());
+
+    StateEvent lateInbound{};
+    lateInbound.type = EventType::InboundEvidenceObserved;
+    lateInbound.generation = 32;
+    lateInbound.inbound_evidence = Evidence{
+        EvidenceKind::InboundTcpAccept,
+        mapped.lease.public_endpoint, 32, 2001};
+    late = ApplyEvent(expired.snapshot, lateInbound);
+    CHECK(late.disposition == TransitionDisposition::Invalid);
+    CHECK(!late.snapshot.advertised.IsUsable());
+}
+
 } // namespace
 
 int main() {
     TestHappyPathAndStaleFencing();
     TestSplitEvidenceAndFailedVerification();
+    TestLeaseExpiryWithdrawsEndpointAndFencesLateCallbacks();
     TestHundredThousandAdversarialTransitions();
     std::printf("test_state_machine: %d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

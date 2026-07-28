@@ -47,6 +47,9 @@ TransitionResult ApplyEvent(const PlaneSnapshot& current,
 TransitionResult InvalidateForMapperEpochReset(
     const PlaneSnapshot& current,
     std::uint64_t new_generation) noexcept;
+TransitionResult InvalidateForLeaseExpiry(
+    const PlaneSnapshot& current,
+    std::uint64_t new_generation) noexcept;
 bool IsSnapshotConsistent(const PlaneSnapshot& snapshot) noexcept;
 
 } // namespace natmap

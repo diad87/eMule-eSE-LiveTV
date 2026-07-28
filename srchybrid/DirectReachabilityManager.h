@@ -32,6 +32,10 @@ public:
 	natmap::UpstreamGatewayCandidates GetUpstreamGatewayCandidates() const;
 	bool ObserveMapperResult(const natmap::MapperResult& result);
 	bool ObserveMapperEpochReset();
+	// Consumes an expiry already established by the mapper's monotonic
+	// scheduler. The scheduler is authoritative because it is armed before
+	// this projection receives the successful mapper result.
+	bool ObserveFiniteMappingExpiry();
 
 	const natmap::ReachabilitySnapshot& GetSnapshot() const;
 

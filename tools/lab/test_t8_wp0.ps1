@@ -35,6 +35,7 @@ $requiredCoverageIds = @(
     'DOUBLE_NAT_FIRST_LAYER',
     'TWO_CLIENT_OWNERSHIP',
     'HIGHID_EVIDENCE',
+    'HOSTILE_CORPUS',
     'HYPERV_PURE_PLAN',
     'STATE_CAPTURE',
     'CANONICAL_REPORT',
@@ -202,6 +203,10 @@ try {
             & python.exe (
                 Join-Path $RepoRoot 'tests\test_v92_l06_double_evidence.py') 2>&1)
         $l06HostExit = $LASTEXITCODE
+        $l07HostOutput = @(
+            & python.exe (
+                Join-Path $RepoRoot 'tests\test_v92_l07_hostile_corpus.py') 2>&1)
+        $l07HostExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
     }
@@ -209,6 +214,7 @@ try {
     $l04HostOutput | ForEach-Object { Write-Host $_ }
     $l05HostOutput | ForEach-Object { Write-Host $_ }
     $l06HostOutput | ForEach-Object { Write-Host $_ }
+    $l07HostOutput | ForEach-Object { Write-Host $_ }
     $l04Text = ($l04Output | ForEach-Object { [string]$_ }) -join "`n"
     $l04HostText = (
         $l04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
@@ -216,6 +222,8 @@ try {
         $l05HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l06HostText = (
         $l06HostOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $l07HostText = (
+        $l07HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l04Verdict = (
         $l04BuildExit -eq 0 -and
         $l04HostExit -eq 0 -and
@@ -233,6 +241,12 @@ try {
         $l06HostExit -eq 0 -and
         $l04Text -match 'double evidence L06: 45 checks, 0 failures' -and
         $l06HostText -match '(?m)^OK\s*$'
+    )
+    $l07Verdict = (
+        $l04BuildExit -eq 0 -and
+        $l07HostExit -eq 0 -and
+        $l04Text -match 'hostile corpus L07: 2245 checks, 0 failures' -and
+        $l07HostText -match '(?m)^OK\s*$'
     )
 
     $hyperVOutput = @()
@@ -286,6 +300,7 @@ try {
         $l04Verdict -and
         $l05Verdict -and
         $l06Verdict -and
+        $l07Verdict -and
         $hyperVVerdict -and
         $coverageIds.Count -eq $requiredCoverageIds.Count
     )
@@ -320,6 +335,11 @@ try {
         l06_double_evidence = [ordered]@{
             verdict = if ($l06Verdict) { 'PASS' } else { 'FAIL' }
             physical_mutation = $false
+        }
+        l07_hostile_corpus = [ordered]@{
+            verdict = if ($l07Verdict) { 'PASS' } else { 'FAIL' }
+            physical_mutation = $false
+            exhaustive_sizes = 1102
         }
         coverage = [ordered]@{
             schema_sha256 = Get-Sha256 -Path (

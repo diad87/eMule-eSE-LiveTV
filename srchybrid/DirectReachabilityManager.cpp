@@ -215,7 +215,9 @@ bool CDirectReachabilityManager::ObserveMapperResult(
 {
 	AssertMainThread();
 	natmap::LegacyMapperObservation observation;
-	if (!natmap::ProjectLegacyMapperObservation(result, observation))
+	if (natmap::AdmitLegacyMapperObservation(
+			result, m_snapshot.topology_generation, observation) !=
+		natmap::LegacyMapperAdmissionStatus::Accepted)
 		return false;
 
 	uint32 externalIP = 0;

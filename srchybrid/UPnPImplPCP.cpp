@@ -34,15 +34,6 @@ DWORD JitteredTimeout(DWORD timeout)
 	return static_cast<DWORD>(static_cast<LONG>(timeout) + adjustment);
 }
 
-uint32 EffectiveLifetime(uint32 grantedLifetime)
-{
-	// RFC 6887 section 15 recommends treating absurdly long leases as a
-	// saner value (for example 24 hours) so removed static mappings recover.
-	const uint32 maximumLifetime = 24 * 60 * 60;
-	return grantedLifetime > maximumLifetime ? maximumLifetime
-		: grantedLifetime;
-}
-
 std::array<uint8, 16> EncodeMappedV4(
 	const natmap::IpAddress& address)
 {
@@ -835,7 +826,8 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 		m_pOwner->m_tcpExternalAddress =
 			EncodeMappedV4(pairCommit.tcp.external_address);
 		m_pOwner->m_dwMappingLeaseLifetime =
-			EffectiveLifetime(pairCommit.tcp.lifetime_seconds);
+			natmap::PcpEffectiveLifetime(
+				pairCommit.tcp.lifetime_seconds);
 		m_pOwner->m_dwMapperEpoch = pairCommit.tcp.epoch;
 		m_pOwner->m_dwMappingExternalIP =
 			NetworkOrderV4(pairCommit.tcp.external_address);
@@ -848,7 +840,7 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 				EncodeMappedV4(pairCommit.udp.external_address);
 			m_pOwner->m_dwMappingLeaseLifetime = min(
 				m_pOwner->m_dwMappingLeaseLifetime,
-				EffectiveLifetime(
+				natmap::PcpEffectiveLifetime(
 					pairCommit.udp.lifetime_seconds));
 			m_pOwner->m_dwMapperEpoch = pairCommit.udp.epoch;
 		}

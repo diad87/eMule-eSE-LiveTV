@@ -217,6 +217,12 @@ void TestAnnounce() {
 	CHECK(DecodePcpAnnounceResponse(response.data(), response.size(), decoded)
 		== PcpDecodeStatus::Ok);
 	CHECK(decoded.result == PcpResultCode::NotAuthorized && decoded.epoch == 9876);
+	response[2] = 1;
+	response[12] = 2;
+	const PcpAnnounceResponse before = decoded;
+	CHECK(DecodePcpAnnounceResponse(response.data(), response.size(), decoded)
+		== PcpDecodeStatus::Ok);
+	CHECK(decoded.result == before.result && decoded.epoch == before.epoch);
 }
 
 } // namespace

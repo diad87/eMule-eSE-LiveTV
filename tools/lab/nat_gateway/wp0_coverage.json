@@ -192,6 +192,27 @@
       ]
     },
     {
+      "id": "HOSTILE_CORPUS",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_hostile_mapper_corpus.cpp",
+          "contains": "size <= kPcpMaximumMessageSize + 1"
+        },
+        {
+          "file": "libnatmap/tests/test_hostile_mapper_corpus.cpp",
+          "contains": "TestReplayAfterNewGenerationIsRejectedWithoutMutation"
+        },
+        {
+          "file": "tests/test_v92_l07_hostile_corpus.py",
+          "contains": "test_product_manager_uses_generation_correlated_admission"
+        },
+        {
+          "file": "libnatmap/tests/test_hostile_mapper_corpus.cpp",
+          "contains": "hostile corpus L07: %d checks, %d failures"
+        }
+      ]
+    },
+    {
       "id": "HYPERV_PURE_PLAN",
       "evidence": [
         {

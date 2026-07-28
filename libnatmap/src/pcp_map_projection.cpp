@@ -100,4 +100,12 @@ PcpMapProjectionResult ProjectPcpMapResponse(
     return result;
 }
 
+std::uint32_t PcpEffectiveLifetime(
+    std::uint32_t granted_lifetime_seconds) noexcept {
+    constexpr std::uint32_t maximum_lifetime_seconds =
+        24u * 60u * 60u;
+    return granted_lifetime_seconds > maximum_lifetime_seconds
+        ? maximum_lifetime_seconds : granted_lifetime_seconds;
+}
+
 } // namespace natmap

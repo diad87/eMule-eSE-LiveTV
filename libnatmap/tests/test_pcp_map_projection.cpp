@@ -120,6 +120,14 @@ void TestInvalidGrantFailsClosed() {
         PcpMappingIdentity{}, 4662, Response(identity)).IsProjected());
 }
 
+void TestAbsurdLifetimeIsBoundedForProductUse() {
+    CHECK(PcpEffectiveLifetime(0) == 0);
+    CHECK(PcpEffectiveLifetime(7200) == 7200);
+    CHECK(PcpEffectiveLifetime(86400) == 86400);
+    CHECK(PcpEffectiveLifetime(86401) == 86400);
+    CHECK(PcpEffectiveLifetime(0xffffffffu) == 86400);
+}
+
 } // namespace
 
 int main() {
@@ -127,6 +135,7 @@ int main() {
     TestUdpAndWildcardProjection();
     TestMismatchedIdentityFailsClosed();
     TestInvalidGrantFailsClosed();
+    TestAbsurdLifetimeIsBoundedForProductUse();
     std::printf("test_pcp_map_projection: %d checks, %d failures\n",
                 checks, failures);
     return failures == 0 ? 0 : 1;

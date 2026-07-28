@@ -49,4 +49,9 @@ PcpMapProjectionResult ProjectPcpMapResponse(
     std::uint16_t requested_external_port,
     const PcpMapResponse& response) noexcept;
 
+// RFC 6887 section 15 permits a server to grant an absurdly long lifetime
+// and recommends that clients treat it as a saner value such as 24 hours.
+std::uint32_t PcpEffectiveLifetime(
+    std::uint32_t granted_lifetime_seconds) noexcept;
+
 } // namespace natmap

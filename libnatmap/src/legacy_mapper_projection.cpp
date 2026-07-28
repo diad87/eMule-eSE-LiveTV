@@ -21,6 +21,15 @@ bool IsCanonicalV4(const IpAddress& address) noexcept {
     return true;
 }
 
+bool IsUnroutableExternalV4(
+    const IpAddress& address) noexcept {
+    if (!IsCanonicalV4(address))
+        return true;
+    const std::uint8_t first = address.bytes[0];
+    return first == 0 || first == 127 || first >= 224 ||
+           (first == 169 && address.bytes[1] == 254);
+}
+
 bool IdentityMatches(MapperKind mapper, MapperSource source,
                      EndpointSource endpoint_source) noexcept {
     switch (mapper) {
@@ -172,6 +181,25 @@ bool ProjectLegacyMapperObservation(
         data.operation == MappingOperation::Refresh;
     observation = projected;
     return true;
+}
+
+LegacyMapperAdmissionStatus AdmitLegacyMapperObservation(
+    const MapperResult& result,
+    std::uint64_t expected_topology_generation,
+    LegacyMapperObservation& observation) noexcept {
+    if (!result.IsStructurallyValid())
+        return LegacyMapperAdmissionStatus::InvalidResult;
+    if (!result.IsCurrent(expected_topology_generation))
+        return LegacyMapperAdmissionStatus::StaleGeneration;
+
+    LegacyMapperObservation candidate{};
+    if (!ProjectLegacyMapperObservation(result, candidate))
+        return LegacyMapperAdmissionStatus::UnsupportedResult;
+    if (IsUnroutableExternalV4(candidate.external_address))
+        return LegacyMapperAdmissionStatus::UnroutableEndpoint;
+
+    observation = candidate;
+    return LegacyMapperAdmissionStatus::Accepted;
 }
 
 bool LegacyObservationAllowsSilentRenewal(

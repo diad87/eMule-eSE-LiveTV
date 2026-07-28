@@ -53,12 +53,28 @@ struct TopologyGenerationDecision {
     std::uint64_t generation = 0;
 };
 
+enum class LegacyMapperAdmissionStatus : std::uint8_t {
+    Accepted = 0,
+    InvalidResult = 1,
+    StaleGeneration = 2,
+    UnsupportedResult = 3,
+    UnroutableEndpoint = 4,
+};
+
 // Deliberately projects only the legacy-compatible success subset. Strict
 // MapperResult validation remains the responsibility of the final producer
 // integrations (H/I/J); this bridge must not be used to publish a verified
 // endpoint.
 bool ProjectLegacyMapperObservation(
     const MapperResult& result,
+    LegacyMapperObservation& observation) noexcept;
+
+// Strict fail-closed boundary used by the product integration. The output is
+// committed only after validation, generation correlation, projection and
+// route-safety checks all succeed.
+LegacyMapperAdmissionStatus AdmitLegacyMapperObservation(
+    const MapperResult& result,
+    std::uint64_t expected_topology_generation,
     LegacyMapperObservation& observation) noexcept;
 
 // A mapper-proven epoch reset is a topology boundary even when the newly

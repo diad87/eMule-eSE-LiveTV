@@ -2621,8 +2621,12 @@ void CemuleDlg::OnClose()
 		m_mappingResultMailbox->Clear();
 	theApp.m_pUPnPFinder->GetImplementation()->SetMessageOnResult(NULL, 0);
 	theApp.m_pUPnPFinder->GetImplementation()->StopAsyncFind();
-	if (thePrefs.CloseUPnPOnExit())
-		theApp.m_pUPnPFinder->GetImplementation()->DeletePorts();
+	if (thePrefs.CloseUPnPOnExit()) {
+		const uint64 generation = theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+		theApp.m_pUPnPFinder->GetImplementation()
+			->DeletePortsForGeneration(generation);
+	}
 
 	thePrefs.Save();
 	thePerfLog.Shutdown();
@@ -4861,8 +4865,13 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 //>>> WiZaRd - handle "UPNP_TIMEOUT" events!
 	if (!bWasRefresh && resultCode != CUPnPImpl::UPNP_OK) {
 		//just to be sure, stop any running services and also delete the forwarded ports (if necessary)
-		if (bTimeout)
-			impl->DeletePorts();
+		if (bTimeout) {
+			const uint64 generation =
+				theApp.directreachability != NULL
+					? theApp.directreachability
+						->GetTopologyGeneration() : 0;
+			impl->DeletePortsForGeneration(generation);
+		}
 		// UPnP failed, check if we can retry it with another implementation
 		if (theApp.m_pUPnPFinder->SwitchImplentation()) {
 			StartUPnP(false);

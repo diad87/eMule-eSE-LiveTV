@@ -23,6 +23,7 @@
 #include "UPnPImpl.h"
 #include "natmap/natpmp_codec.h"
 #include "natmap/natpmp_gateway_policy.h"
+#include "natmap/natpmp_pair_transaction.h"
 
 class CUPnPImplNATPMP : public CUPnPImpl
 {
@@ -34,6 +35,7 @@ public:
     virtual bool CheckAndRefresh();
     virtual void StopAsyncFind();
     virtual void DeletePorts();
+    virtual void DeletePortsForGeneration(std::uint64_t generation);
     virtual bool IsReady();
     virtual int  GetImplementationID()  { return UPNP_IMPL_NATPMP; }
     virtual natmap::MapperKind GetMapperKind() const
@@ -63,7 +65,7 @@ public:
     };
 
 protected:
-    void DeletePorts(bool bSkipLock);
+    void DeletePorts(bool bSkipLock, std::uint64_t generation);
 
 private:
     enum EReceiveResult
@@ -127,4 +129,5 @@ private:
     volatile bool m_bAbortDiscovery;
     bool m_bMapperEpochObservationValid;
     uint64 m_nMapperEpochObservedAtSeconds;
+    natmap::NatPmpCleanupProof m_cleanupProof;
 };

@@ -125,13 +125,12 @@ void CUPnPImplNATPMP::StopAsyncFind()
 
 void CUPnPImplNATPMP::DeletePorts()
 {
-	if (m_bSucceededOnce && m_dwGatewayIP != 0) {
-		m_nOldUDPPort = m_nUDPPort;
-		m_nOldTCPPort = m_nTCPPort;
-		m_nOldTCPWebPort = m_nTCPWebPort;
-		m_dwOldGatewayIP = m_dwGatewayIP;
-		m_dwOldInterfaceIndex = m_dwInterfaceIndex;
-	}
+	DeletePortsForGeneration(0);
+}
+
+void CUPnPImplNATPMP::DeletePortsForGeneration(uint64 generation)
+{
+	DeletePorts(false, generation);
 	m_nUDPPort = 0;
 	m_nTCPPort = 0;
 	m_nTCPWebPort = 0;
@@ -145,28 +144,37 @@ void CUPnPImplNATPMP::DeletePorts()
 	m_bMapperEpochObservationValid = false;
 	m_nMapperEpochObservedAtSeconds = 0;
 	m_bUPnPPortsForwarded = TRIS_FALSE;
-	DeletePorts(false);
 }
 
-void CUPnPImplNATPMP::DeletePorts(bool bSkipLock)
+void CUPnPImplNATPMP::DeletePorts(
+	bool bSkipLock, uint64 generation)
 {
 	CSingleLock lockTest(&m_mutBusy);
 	if (bSkipLock || lockTest.Lock(0)) {
-		const uint32 nGatewayIP = m_dwOldGatewayIP != 0
-			? m_dwOldGatewayIP : m_dwGatewayIP;
-		const uint32 nInterfaceIndex = m_dwOldGatewayIP != 0
-			? m_dwOldInterfaceIndex : m_dwInterfaceIndex;
-		if (nGatewayIP != 0 && nInterfaceIndex != 0) {
-			if (m_nOldTCPPort != 0)
-				UnmapPort(nGatewayIP, nInterfaceIndex,
-					m_nOldTCPPort, true);
-			if (m_nOldUDPPort != 0)
-				UnmapPort(nGatewayIP, nInterfaceIndex,
-					m_nOldUDPPort, false);
-			if (m_nOldTCPWebPort != 0)
-				UnmapPort(nGatewayIP, nInterfaceIndex,
-					m_nOldTCPWebPort, true);
+		std::array<std::uint8_t, 4> gatewayAddress{};
+		memcpy(gatewayAddress.data(), &m_dwGatewayIP,
+			gatewayAddress.size());
+		const size_t cleanupCount = min(
+			m_cleanupProof.mapping_count,
+			m_cleanupProof.mappings.size());
+		for (size_t index = 0;
+			index < cleanupCount; ++index) {
+			natmap::NatPmpCleanupRequest request{};
+			request.gateway_address = gatewayAddress;
+			request.interface_index = m_dwInterfaceIndex;
+			request.generation = generation;
+			request.observed_monotonic_seconds =
+				NatPmpMonotonicSeconds();
+			request.mapping = m_cleanupProof.mappings[index];
+			if (natmap::AllowsNatPmpCleanup(
+					m_cleanupProof, request))
+				UnmapPort(
+					m_dwGatewayIP, m_dwInterfaceIndex,
+					request.mapping.internal_port,
+					request.mapping.transport
+						== natmap::NatPmpTransport::Tcp);
 		}
+		m_cleanupProof = natmap::NatPmpCleanupProof{};
 		m_nOldTCPPort = 0;
 		m_nOldUDPPort = 0;
 		m_nOldTCPWebPort = 0;
@@ -694,7 +702,8 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 		return 0;
 
 	if (!bWasRefresh)
-		m_pOwner->DeletePorts(true);
+		m_pOwner->DeletePorts(
+			true, m_operation.request.topology_generation);
 
 	// Map ports with the RFC-recommended two-hour lease. Each response's
 	// granted lifetime drives the independent application lease scheduler.
@@ -717,9 +726,14 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 	const uint16 nSuggestedTCP = bWasRefresh
 		? m_pOwner->m_nExternalTCPPort : m_pOwner->m_nTCPPort;
 	m_pOwner->m_nDiagnosticStage = UPNP_DIAG_TCP_MAPPING;
+	const uint64 nTcpMapStartedAt = NatPmpMonotonicSeconds();
 	const bool bTcpMapped = m_pOwner->MapPort(
 		nGatewayIP, nInterfaceIndex,
 		m_pOwner->m_nTCPPort, nSuggestedTCP, true, nLeaseTime, tcpResponse);
+	const uint64 nTcpLeaseDeadline = bTcpMapped
+		? natmap::ConservativeNatPmpLeaseDeadline(
+			nTcpMapStartedAt, tcpResponse.lifetime_seconds)
+		: 0;
 	bool bSucceeded = bTcpMapped;
 	if (natmap::HasCorrelatedNatPmpMapObservation(
 		tcpResponse, m_pOwner->m_nTCPPort)) {
@@ -751,14 +765,21 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 		pairTransaction.RecordTcpFailure();
 
 	bool bUdpMapped = false;
+	uint64 nUdpLeaseDeadline = 0;
 	if (bSucceeded && bUdpRequired) {
 		natmap::NatPmpMapResponse udpResponse;
 		const uint16 nSuggestedUDP = bWasRefresh
 			? m_pOwner->m_nExternalUDPPort : m_pOwner->m_nUDPPort;
 		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_UDP_MAPPING;
+		const uint64 nUdpMapStartedAt = NatPmpMonotonicSeconds();
 		bUdpMapped = m_pOwner->MapPort(
 			nGatewayIP, nInterfaceIndex,
 			m_pOwner->m_nUDPPort, nSuggestedUDP, false, nLeaseTime, udpResponse);
+		if (bUdpMapped)
+			nUdpLeaseDeadline =
+				natmap::ConservativeNatPmpLeaseDeadline(
+					nUdpMapStartedAt,
+					udpResponse.lifetime_seconds);
 		bSucceeded = bUdpMapped;
 		const bool bUdpResponseObserved =
 			natmap::HasCorrelatedNatPmpMapObservation(
@@ -873,6 +894,8 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 				epochSequence.previous_snapshot.observed;
 			break;
 		case natmap::NatPmpPairFailureDisposition::InvalidatePrevious:
+			m_pOwner->m_cleanupProof =
+				natmap::NatPmpCleanupProof{};
 			m_pOwner->m_nExternalTCPPort = 0;
 			m_pOwner->m_nExternalUDPPort = 0;
 			m_pOwner->m_nExternalTCPWebPort = 0;
@@ -900,14 +923,23 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 	}
 
 	bool bWebEpochReset = false;
+	bool bWebMappedForCleanup = false;
+	uint64 nWebLeaseDeadline = 0;
 	if (bSucceeded && m_pOwner->m_nTCPWebPort != 0) {
 		natmap::NatPmpMapResponse webResponse;
 		const uint16 nSuggestedWeb = bWasRefresh
 			? m_pOwner->m_nExternalTCPWebPort : m_pOwner->m_nTCPWebPort;
+		const uint64 nWebMapStartedAt = NatPmpMonotonicSeconds();
 		const bool bWebMapped = m_pOwner->MapPort(
 			nGatewayIP, nInterfaceIndex,
 			m_pOwner->m_nTCPWebPort,
 			nSuggestedWeb, true, nLeaseTime, webResponse);
+		bWebMappedForCleanup = bWebMapped;
+		if (bWebMapped)
+			nWebLeaseDeadline =
+				natmap::ConservativeNatPmpLeaseDeadline(
+					nWebMapStartedAt,
+					webResponse.lifetime_seconds);
 		const bool bWebResponseObserved =
 			natmap::HasCorrelatedNatPmpMapObservation(
 				webResponse, m_pOwner->m_nTCPWebPort);
@@ -951,6 +983,8 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 					m_pOwner->UnmapPort(
 					nGatewayIP, nInterfaceIndex,
 					m_pOwner->m_nTCPWebPort, true);
+				m_pOwner->m_cleanupProof =
+					natmap::NatPmpCleanupProof{};
 				m_pOwner->m_nExternalTCPPort = 0;
 				m_pOwner->m_nExternalUDPPort = 0;
 				m_pOwner->m_nExternalTCPWebPort = 0;
@@ -982,10 +1016,60 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 			publishAddress.address.bytes.data(),
 			sizeof(m_pOwner->m_dwMappingExternalIP));
 	const bool bCanPublishDirect = publishAddress.can_publish_direct;
-	m_pOwner->m_bMapperEpochReset =
+	const bool bObservedMapperReset =
 		bWasRefresh &&
 		(epochDecision.previous_pair_invalidated ||
 		 bWebEpochReset);
+	if (bSucceeded) {
+		const bool bVisibleEndpointChange =
+			!bWasRefresh ||
+			nPreviousExternalTCPPort
+				!= m_pOwner->m_nExternalTCPPort ||
+			nPreviousExternalUDPPort
+				!= m_pOwner->m_nExternalUDPPort ||
+			retainedResponse.external_ip_network_order
+				!= m_pOwner->m_dwMappingExternalIP;
+		const uint64 cleanupGeneration =
+			natmap::ResolveNatPmpCleanupGeneration(
+				m_operation.request.topology_generation,
+				pairCommit.has_udp, bCanPublishDirect,
+				bObservedMapperReset, bVisibleEndpointChange);
+
+		natmap::NatPmpCleanupProof proof{};
+		proof.gateway_address = route.gateway_address;
+		proof.interface_index = nInterfaceIndex;
+		proof.generation = cleanupGeneration;
+		proof.expires_monotonic_seconds = nTcpLeaseDeadline;
+		if (pairCommit.has_udp)
+			proof.expires_monotonic_seconds = min(
+				proof.expires_monotonic_seconds,
+				nUdpLeaseDeadline);
+		if (bWebMappedForCleanup)
+			proof.expires_monotonic_seconds = min(
+				proof.expires_monotonic_seconds,
+				nWebLeaseDeadline);
+		proof.mappings[proof.mapping_count++] =
+			natmap::NatPmpCleanupMapping{
+				natmap::NatPmpTransport::Tcp,
+				m_pOwner->m_nTCPPort,
+				m_pOwner->m_nExternalTCPPort};
+		if (pairCommit.has_udp)
+			proof.mappings[proof.mapping_count++] =
+				natmap::NatPmpCleanupMapping{
+					natmap::NatPmpTransport::Udp,
+					m_pOwner->m_nUDPPort,
+					m_pOwner->m_nExternalUDPPort};
+		if (bWebMappedForCleanup)
+			proof.mappings[proof.mapping_count++] =
+				natmap::NatPmpCleanupMapping{
+					natmap::NatPmpTransport::Tcp,
+					m_pOwner->m_nTCPWebPort,
+					m_pOwner->m_nExternalTCPWebPort};
+		proof.in_process_proof = true;
+		m_pOwner->m_cleanupProof = proof.IsValid()
+			? proof : natmap::NatPmpCleanupProof{};
+	}
+	m_pOwner->m_bMapperEpochReset = bObservedMapperReset;
 
 	if (!m_pOwner->m_bAbortDiscovery) {
 		if (bSucceeded)

@@ -83,6 +83,8 @@ public:
 	virtual bool CheckAndRefresh() = 0;
 	virtual void StopAsyncFind() = 0;
 	virtual void DeletePorts() = 0;
+	virtual void DeletePortsForGeneration(std::uint64_t generation)
+		{ (void)generation; DeletePorts(); }
 	virtual bool IsReady() = 0;
 	virtual int GetImplementationID() = 0;
 	virtual natmap::MapperKind GetMapperKind() const

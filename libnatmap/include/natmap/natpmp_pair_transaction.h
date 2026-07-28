@@ -1,7 +1,10 @@
 #pragma once
 
 #include "natmap/natpmp_codec.h"
+#include "natmap/natpmp_gateway_policy.h"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 
 namespace natmap {
@@ -44,6 +47,49 @@ enum class NatPmpPairFailureDisposition : std::uint8_t {
 NatPmpPairFailureDisposition ResolveNatPmpPairFailureDisposition(
     bool initial_operation,
     bool mapping_epoch_reset) noexcept;
+
+std::uint64_t ConservativeNatPmpLeaseDeadline(
+    std::uint64_t observed_before_map_seconds,
+    std::uint32_t granted_lifetime_seconds) noexcept;
+
+std::uint64_t ResolveNatPmpCleanupGeneration(
+    std::uint64_t request_generation,
+    bool has_atomic_pair_result,
+    bool can_publish_direct,
+    bool mapper_epoch_reset,
+    bool visible_endpoint_change) noexcept;
+
+struct NatPmpCleanupMapping {
+    NatPmpTransport transport = NatPmpTransport::Tcp;
+    std::uint16_t internal_port = 0;
+    std::uint16_t external_port = 0;
+
+    bool IsValid() const noexcept;
+};
+
+struct NatPmpCleanupProof {
+    std::array<std::uint8_t, 4> gateway_address{};
+    std::uint32_t interface_index = 0;
+    std::uint64_t generation = 0;
+    std::uint64_t expires_monotonic_seconds = 0;
+    std::array<NatPmpCleanupMapping, 3> mappings{};
+    std::size_t mapping_count = 0;
+    bool in_process_proof = false;
+
+    bool IsValid() const noexcept;
+};
+
+struct NatPmpCleanupRequest {
+    std::array<std::uint8_t, 4> gateway_address{};
+    std::uint32_t interface_index = 0;
+    std::uint64_t generation = 0;
+    std::uint64_t observed_monotonic_seconds = 0;
+    NatPmpCleanupMapping mapping{};
+};
+
+bool AllowsNatPmpCleanup(
+    const NatPmpCleanupProof& proof,
+    const NatPmpCleanupRequest& request) noexcept;
 
 struct NatPmpRollbackTarget {
     NatPmpTransport transport = NatPmpTransport::Tcp;

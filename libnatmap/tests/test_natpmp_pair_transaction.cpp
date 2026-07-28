@@ -1,6 +1,7 @@
 #include "natmap/natpmp_pair_transaction.h"
 
 #include <cstdio>
+#include <limits>
 
 using namespace natmap;
 
@@ -177,6 +178,144 @@ void TestMalformedOrWrongTransportProjectionsFailClosed() {
         == NatPmpPairTransactionStatus::AwaitingUdp);
 }
 
+void TestLeaseDeadlineStartsBeforeMapAndSaturates() {
+    CHECK(ConservativeNatPmpLeaseDeadline(100, 7200) == 7300);
+    CHECK(ConservativeNatPmpLeaseDeadline(0, 7200) == 0);
+    CHECK(ConservativeNatPmpLeaseDeadline(100, 0) == 0);
+    const std::uint64_t maximum =
+        (std::numeric_limits<std::uint64_t>::max)();
+    CHECK(ConservativeNatPmpLeaseDeadline(
+        maximum - 5, 10) == maximum);
+}
+
+void TestCleanupGenerationMatchesHostAcceptance() {
+    CHECK(ResolveNatPmpCleanupGeneration(
+        31, true, true, false, true) == 32);
+    CHECK(ResolveNatPmpCleanupGeneration(
+        31, true, true, false, false) == 31);
+    CHECK(ResolveNatPmpCleanupGeneration(
+        31, true, false, true, false) == 32);
+    CHECK(ResolveNatPmpCleanupGeneration(
+        31, false, true, true, true) == 31);
+    CHECK(ResolveNatPmpCleanupGeneration(
+        31, false, true, false, true) == 31);
+    CHECK(ResolveNatPmpCleanupGeneration(
+        0, true, true, false, true) == 0);
+    const std::uint64_t maximum =
+        (std::numeric_limits<std::uint64_t>::max)();
+    CHECK(ResolveNatPmpCleanupGeneration(
+        maximum, true, true, false, true) == 0);
+}
+
+NatPmpCleanupProof CleanupProof() {
+    NatPmpCleanupProof proof{};
+    proof.gateway_address = {192, 168, 1, 1};
+    proof.interface_index = 17;
+    proof.generation = 31;
+    proof.expires_monotonic_seconds = 10000;
+    proof.mappings[0] = NatPmpCleanupMapping{
+        NatPmpTransport::Tcp, 4662, 52144};
+    proof.mappings[1] = NatPmpCleanupMapping{
+        NatPmpTransport::Udp, 4672, 52145};
+    proof.mapping_count = 2;
+    proof.in_process_proof = true;
+    return proof;
+}
+
+NatPmpCleanupRequest CleanupRequest(
+    const NatPmpCleanupMapping& mapping) {
+    NatPmpCleanupRequest request{};
+    request.gateway_address = {192, 168, 1, 1};
+    request.interface_index = 17;
+    request.generation = 31;
+    request.observed_monotonic_seconds = 9998;
+    request.mapping = mapping;
+    return request;
+}
+
+void TestCleanupRequiresExactLiveSessionProof() {
+    const NatPmpCleanupProof proof = CleanupProof();
+    CHECK(proof.IsValid());
+    CHECK(AllowsNatPmpCleanup(
+        proof, CleanupRequest(proof.mappings[0])));
+    CHECK(AllowsNatPmpCleanup(
+        proof, CleanupRequest(proof.mappings[1])));
+
+    NatPmpCleanupRequest wrong =
+        CleanupRequest(proof.mappings[0]);
+    wrong.gateway_address[3] = 2;
+    CHECK(!AllowsNatPmpCleanup(proof, wrong));
+    wrong = CleanupRequest(proof.mappings[0]);
+    wrong.interface_index = 18;
+    CHECK(!AllowsNatPmpCleanup(proof, wrong));
+    wrong = CleanupRequest(proof.mappings[0]);
+    wrong.generation = 30;
+    CHECK(!AllowsNatPmpCleanup(proof, wrong));
+    wrong = CleanupRequest(proof.mappings[0]);
+    wrong.observed_monotonic_seconds = 9999;
+    CHECK(!AllowsNatPmpCleanup(proof, wrong));
+    wrong = CleanupRequest(proof.mappings[0]);
+    wrong.observed_monotonic_seconds = 10000;
+    CHECK(!AllowsNatPmpCleanup(proof, wrong));
+    wrong = CleanupRequest(proof.mappings[0]);
+    wrong.observed_monotonic_seconds = 10001;
+    CHECK(!AllowsNatPmpCleanup(proof, wrong));
+    wrong = CleanupRequest(proof.mappings[0]);
+    wrong.mapping.internal_port = 4663;
+    CHECK(!AllowsNatPmpCleanup(proof, wrong));
+    wrong = CleanupRequest(proof.mappings[0]);
+    wrong.mapping.external_port = 52145;
+    CHECK(!AllowsNatPmpCleanup(proof, wrong));
+    wrong = CleanupRequest(proof.mappings[0]);
+    wrong.mapping.transport = NatPmpTransport::Udp;
+    CHECK(!AllowsNatPmpCleanup(proof, wrong));
+}
+
+void TestCrashOrMalformedCleanupProofNeverDeletes() {
+    const NatPmpCleanupProof proof = CleanupProof();
+    CHECK(!AllowsNatPmpCleanup(
+        NatPmpCleanupProof{},
+        CleanupRequest(proof.mappings[0])));
+
+    NatPmpCleanupProof malformed = proof;
+    malformed.in_process_proof = false;
+    CHECK(!malformed.IsValid());
+    malformed = proof;
+    malformed.generation = 0;
+    CHECK(!malformed.IsValid());
+    malformed = proof;
+    malformed.expires_monotonic_seconds = 0;
+    CHECK(!malformed.IsValid());
+    malformed = proof;
+    malformed.mapping_count = 0;
+    CHECK(!malformed.IsValid());
+    malformed = proof;
+    malformed.mapping_count = 4;
+    CHECK(!malformed.IsValid());
+    malformed = proof;
+    malformed.mappings[2] = malformed.mappings[0];
+    malformed.mapping_count = 3;
+    CHECK(!malformed.IsValid());
+    malformed = proof;
+    malformed.mappings[2] = malformed.mappings[0];
+    malformed.mappings[2].external_port = 60000;
+    malformed.mapping_count = 3;
+    CHECK(!malformed.IsValid());
+    malformed = proof;
+    malformed.mappings[2] = NatPmpCleanupMapping{
+        NatPmpTransport::Tcp, 4711, 0};
+    malformed.mapping_count = 3;
+    CHECK(!malformed.IsValid());
+
+    malformed = proof;
+    malformed.gateway_address = {127, 0, 0, 1};
+    CHECK(!malformed.IsValid());
+    malformed = proof;
+    malformed.interface_index =
+        kNatPmpMaximumInterfaceIndex + 1;
+    CHECK(!malformed.IsValid());
+}
+
 } // namespace
 
 int main() {
@@ -188,6 +327,10 @@ int main() {
     TestTcpFailurePublishesAndRollsBackNothing();
     TestTcpOnlyOperationCanCommit();
     TestMalformedOrWrongTransportProjectionsFailClosed();
+    TestLeaseDeadlineStartsBeforeMapAndSaturates();
+    TestCleanupGenerationMatchesHostAcceptance();
+    TestCleanupRequiresExactLiveSessionProof();
+    TestCrashOrMalformedCleanupProofNeverDeletes();
     std::printf(
         "test_natpmp_pair_transaction: %d checks, %d failures\n",
         checks, failures);

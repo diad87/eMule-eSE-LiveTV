@@ -5,8 +5,10 @@
 #include "Log.h"
 #include "OtherFunctions.h"
 #include "natmap/pcp_pair_transaction.h"
+#include "natmap/pcp_response_guard.h"
 
 #include <bcrypt.h>
+#include <limits>
 
 #pragma comment(lib, "bcrypt.lib")
 
@@ -59,6 +61,24 @@ uint32 NetworkOrderV4(const natmap::IpAddress& address)
 	return result;
 }
 
+class ScopedActivePcpExchange
+{
+public:
+	ScopedActivePcpExchange(
+		std::atomic<std::uint64_t>& active, std::uint64_t id)
+		: m_active(active), m_id(id) {}
+	~ScopedActivePcpExchange()
+	{
+		std::uint64_t expected = m_id;
+		m_active.compare_exchange_strong(
+			expected, 0, std::memory_order_acq_rel);
+	}
+
+private:
+	std::atomic<std::uint64_t>& m_active;
+	std::uint64_t m_id;
+};
+
 } // namespace
 
 CUPnPImplPCP::CUPnPImplPCP()
@@ -71,6 +91,10 @@ CUPnPImplPCP::CUPnPImplPCP()
 	, m_nRequestedWebExternalPort(0)
 	, m_hThreadHandle(NULL)
 	, m_bSucceededOnce(false)
+	, m_nextExchangeId(0)
+	, m_activeExchangeId(0)
+	, m_initialMappingInFlight(false)
+	, m_bShuttingDown(false)
 	, m_bAbortDiscovery(false)
 {
 	m_clientAddress.fill(0);
@@ -88,6 +112,11 @@ CUPnPImplPCP::CUPnPImplPCP()
 
 CUPnPImplPCP::~CUPnPImplPCP()
 {
+	{
+		std::lock_guard<std::mutex> lifecycleLock(m_lifecycleMutex);
+		m_bShuttingDown.store(true, std::memory_order_release);
+		m_activeExchangeId.store(0, std::memory_order_release);
+	}
 	StopAsyncFind();
 }
 
@@ -111,10 +140,24 @@ uint16 CUPnPImplPCP::RequestedExternalPort(
 	return localPort;
 }
 
+bool CUPnPImplPCP::SendResultIfLifecycleLive(
+	const MappingOperationContext& operation)
+{
+	std::lock_guard<std::mutex> lifecycleLock(m_lifecycleMutex);
+	if (m_bAbortDiscovery.load(std::memory_order_acquire)
+		|| m_bShuttingDown.load(std::memory_order_acquire))
+		return false;
+	return SendResultMessage(operation);
+}
+
 void CUPnPImplPCP::StopAsyncFind()
 {
 	if (m_hThreadHandle != NULL) {
-		m_bAbortDiscovery = true;
+		{
+			std::lock_guard<std::mutex> lifecycleLock(m_lifecycleMutex);
+			m_bAbortDiscovery.store(true, std::memory_order_release);
+			m_activeExchangeId.store(0, std::memory_order_release);
+		}
 		CSingleLock lockTest(&m_mutBusy);
 		if (!lockTest.Lock(10000)) {
 			DebugLogError(_T("PCP: Waiting for discovery thread to quit failed"));
@@ -125,13 +168,28 @@ void CUPnPImplPCP::StopAsyncFind()
 			DebugLog(_T("PCP: Aborted discovery thread"));
 		m_hThreadHandle = NULL;
 	}
-	m_bAbortDiscovery = false;
+	{
+		std::lock_guard<std::mutex> lifecycleLock(m_lifecycleMutex);
+		m_bAbortDiscovery.store(false, std::memory_order_release);
+	}
+	const bool initialMappingWasInFlight =
+		m_initialMappingInFlight.exchange(
+			false, std::memory_order_acq_rel);
+	const bool hasMappingIdentity =
+		m_tcpIdentity.IsValid()
+		|| m_udpIdentity.IsValid()
+		|| m_webIdentity.IsValid();
+	if (natmap::PcpInitialMappingNeedsCleanup(
+			initialMappingWasInFlight, hasMappingIdentity))
+		DeletePorts();
 }
 
 void CUPnPImplPCP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort,
 	uint16 nTCPWebPort)
 {
 	DebugLog(_T("PCP: Using RFC 6887 MAP implementation"));
+	if (m_bShuttingDown.load(std::memory_order_acquire))
+		return;
 
 	const bool hasCurrentIdentity =
 		!m_tcpIdentity.IsEmpty() || !m_udpIdentity.IsEmpty()
@@ -187,8 +245,10 @@ void CUPnPImplPCP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort,
 	m_nDiagnosticStage = UPNP_DIAG_DISCOVERING;
 	m_bCheckAndRefresh = false;
 
-	if (!m_bAbortDiscovery)
+	if (!m_bAbortDiscovery) {
+		m_initialMappingInFlight.store(true, std::memory_order_release);
 		StartThread();
+	}
 }
 
 bool CUPnPImplPCP::CheckAndRefresh()
@@ -337,55 +397,110 @@ bool CUPnPImplPCP::ExchangeMap(uint32 nGatewayIP, uint32 nInterfaceIndex,
 	if (packetSize == 0)
 		return false;
 
-	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (sock == INVALID_SOCKET)
+	if (m_bAbortDiscovery.load(std::memory_order_acquire)
+		|| (!bDeletion
+			&& m_bShuttingDown.load(std::memory_order_acquire)))
 		return false;
-	const DWORD networkInterfaceIndex = htonl(nInterfaceIndex);
-	if (nInterfaceIndex == 0
-		|| setsockopt(sock, IPPROTO_IP, IP_UNICAST_IF,
-			reinterpret_cast<const char*>(&networkInterfaceIndex),
-			sizeof(networkInterfaceIndex)) != 0) {
-		DebugLogWarning(_T("PCP: Unable to select route interface %u (error %u)"),
-			nInterfaceIndex, WSAGetLastError());
-		closesocket(sock);
-		return false;
-	}
 
 	uint32 clientIP = 0;
-	if (!ExtractIPv4(request.client_ip, clientIP)) {
-		closesocket(sock);
+	if (!ExtractIPv4(request.client_ip, clientIP))
 		return false;
-	}
-	sockaddr_in local;
-	memset(&local, 0, sizeof(local));
-	local.sin_family = AF_INET;
-	local.sin_addr.s_addr = clientIP;
-	if (bind(sock, reinterpret_cast<sockaddr*>(&local), sizeof(local)) != 0) {
+
+	SOCKET sock = INVALID_SOCKET;
+	std::uint64_t exchangeId = 0;
+	const DWORD networkInterfaceIndex = htonl(nInterfaceIndex);
+	while (sock == INVALID_SOCKET) {
+		if (m_bAbortDiscovery.load(std::memory_order_acquire)
+			|| (!bDeletion
+				&& m_bShuttingDown.load(std::memory_order_acquire)))
+			return false;
+
+		std::uint64_t previous =
+			m_nextExchangeId.load(std::memory_order_acquire);
+		const std::uint64_t maximum =
+			(std::numeric_limits<std::uint64_t>::max)();
+		while (true) {
+			if (previous == maximum)
+				return false;
+			if (m_nextExchangeId.compare_exchange_weak(
+					previous, previous + 1,
+					std::memory_order_acq_rel,
+					std::memory_order_acquire))
+				break;
+		}
+		exchangeId = previous + 1;
+		const std::uint16_t localSourcePort =
+			natmap::PcpExchangeLocalPort(exchangeId);
+		if (localSourcePort == 0) {
+			DebugLogError(_T("PCP: Exhausted non-reusable request endpoints"));
+			return false;
+		}
+
+		SOCKET candidate = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		if (candidate == INVALID_SOCKET)
+			return false;
+		if (nInterfaceIndex == 0
+			|| setsockopt(candidate, IPPROTO_IP, IP_UNICAST_IF,
+				reinterpret_cast<const char*>(&networkInterfaceIndex),
+				sizeof(networkInterfaceIndex)) != 0) {
+			DebugLogWarning(_T("PCP: Unable to select route interface %u (error %u)"),
+				nInterfaceIndex, WSAGetLastError());
+			closesocket(candidate);
+			return false;
+		}
+
+		sockaddr_in local;
+		memset(&local, 0, sizeof(local));
+		local.sin_family = AF_INET;
+		local.sin_port = htons(localSourcePort);
+		local.sin_addr.s_addr = clientIP;
+		if (bind(candidate, reinterpret_cast<sockaddr*>(&local),
+				sizeof(local)) == 0) {
+			sock = candidate;
+			break;
+		}
+
+		const int bindError = WSAGetLastError();
+		closesocket(candidate);
+		if (bindError == WSAEADDRINUSE || bindError == WSAEACCES) {
+			DebugLogWarning(_T("PCP: Local request endpoint %u unavailable; trying next"),
+				localSourcePort);
+			continue;
+		}
 		DebugLogWarning(_T("PCP: Unable to bind request to selected interface (error %u)"),
-			WSAGetLastError());
-		closesocket(sock);
+			bindError);
 		return false;
 	}
+	m_activeExchangeId.store(exchangeId, std::memory_order_release);
+	ScopedActivePcpExchange activeExchange(
+		m_activeExchangeId, exchangeId);
 
 	sockaddr_in destination;
 	memset(&destination, 0, sizeof(destination));
 	destination.sin_family = AF_INET;
 	destination.sin_port = htons(PCP_PORT);
 	destination.sin_addr.s_addr = nGatewayIP;
+	natmap::PcpResponseExpectation expectation{};
+	memcpy(expectation.source_address.data(), &nGatewayIP,
+		expectation.source_address.size());
+	expectation.source_port = PCP_PORT;
+	expectation.request_id = exchangeId;
+	expectation.nonce = request.nonce;
 
 	bool succeeded = false;
 	// Bounded variant of RFC 6887 section 8.1.1 exponential
-	// retransmission. Seven seconds worst case still fits the refresh timer.
-	const DWORD timeouts[] = { 1000, 2000, 4000 };
-	for (size_t attempt = 0; attempt < _countof(timeouts)
-		&& !m_bAbortDiscovery; ++attempt) {
+	// retransmission. The 7.7-second jittered maximum fits the refresh timer.
+	for (uint8 attempt = 0;
+		natmap::PcpExchangeTimeoutMilliseconds(attempt) != 0
+			&& !m_bAbortDiscovery; ++attempt) {
 		if (sendto(sock, reinterpret_cast<const char*>(packet),
 			static_cast<int>(packetSize), 0,
 			reinterpret_cast<sockaddr*>(&destination), sizeof(destination))
 			!= static_cast<int>(packetSize))
 			continue;
 
-		const DWORD waitTime = JitteredTimeout(timeouts[attempt]);
+		const DWORD waitTime = JitteredTimeout(
+			natmap::PcpExchangeTimeoutMilliseconds(attempt));
 		const DWORD started = GetTickCount();
 		while (!m_bAbortDiscovery) {
 			const DWORD elapsed = GetTickCount() - started;
@@ -408,8 +523,7 @@ bool CUPnPImplPCP::ExchangeMap(uint32 nGatewayIP, uint32 nInterfaceIndex,
 			const int received = recvfrom(sock, reinterpret_cast<char*>(raw),
 				sizeof(raw), 0, reinterpret_cast<sockaddr*>(&source),
 				&sourceLength);
-			if (received <= 0 || source.sin_addr.s_addr != nGatewayIP
-				|| source.sin_port != htons(PCP_PORT))
+			if (received <= 0 || source.sin_family != AF_INET)
 				continue;
 
 			natmap::PcpMapResponse candidate;
@@ -419,6 +533,29 @@ bool CUPnPImplPCP::ExchangeMap(uint32 nGatewayIP, uint32 nInterfaceIndex,
 			if (decodeStatus != natmap::PcpDecodeStatus::Ok) {
 				DebugLogWarning(_T("PCP: Ignoring invalid MAP response, status=%u"),
 					static_cast<unsigned>(decodeStatus));
+				continue;
+			}
+			natmap::PcpResponseObservation observation{};
+			memcpy(observation.source_address.data(),
+				&source.sin_addr.s_addr,
+				observation.source_address.size());
+			observation.source_port = ntohs(source.sin_port);
+			observation.active_request_id =
+				m_activeExchangeId.load(std::memory_order_acquire);
+			observation.nonce = candidate.nonce;
+			observation.shutdown =
+				m_bAbortDiscovery.load(
+					std::memory_order_acquire)
+				|| (!bDeletion
+					&& m_bShuttingDown.load(
+						std::memory_order_acquire));
+			const natmap::PcpResponseGuardStatus guardStatus =
+				natmap::ValidatePcpResponseObservation(
+					expectation, observation);
+			if (guardStatus
+				!= natmap::PcpResponseGuardStatus::Valid) {
+				DebugLogWarning(_T("PCP: Ignoring guarded MAP response, status=%u"),
+					static_cast<unsigned>(guardStatus));
 				continue;
 			}
 			if (candidate.result != natmap::PcpResultCode::Success) {
@@ -542,6 +679,9 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 	DbgSetThreadName("CUPnPImplPCP::CStartDiscoveryThread");
 	if (m_pOwner == NULL)
 		return 0;
+	if (!m_pOwner->IsCurrentMappingOperation(m_operation)
+		|| m_pOwner->m_bShuttingDown.load(std::memory_order_acquire))
+		return 0;
 
 	CSingleLock lock(&m_pOwner->m_mutBusy);
 	if (!lock.Lock(0) || m_pOwner->m_bAbortDiscovery)
@@ -557,7 +697,7 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 			static_cast<unsigned>(route.status));
 		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
 		m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-		m_pOwner->SendResultMessage(m_operation);
+		m_pOwner->SendResultIfLifecycleLive(m_operation);
 		return 0;
 	}
 	memcpy(&selectedGateway, route.binding.gateway_address.data(),
@@ -571,7 +711,7 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 		DebugLogWarning(_T("PCP: Refusing refresh because the route-bound gateway/client pair changed"));
 		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
 		m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-		m_pOwner->SendResultMessage(m_operation);
+		m_pOwner->SendResultIfLifecycleLive(m_operation);
 		return 0;
 	}
 
@@ -584,7 +724,7 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 			DebugLogWarning(_T("PCP: Refusing a new MAP while exact cleanup remains pending"));
 			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_OWNERSHIP_PERSISTENCE;
 			m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-			m_pOwner->SendResultMessage(m_operation);
+			m_pOwner->SendResultIfLifecycleLive(m_operation);
 			return 0;
 		}
 	}
@@ -653,6 +793,34 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 		}
 	}
 
+	const bool operationStale =
+		!m_pOwner->IsCurrentMappingOperation(m_operation);
+	const bool lifecycleStopping =
+		m_pOwner->m_bAbortDiscovery.load(
+			std::memory_order_acquire)
+		|| m_pOwner->m_bShuttingDown.load(
+			std::memory_order_acquire);
+	if (succeeded && (operationStale || lifecycleStopping)) {
+		if (initialOperation && operationStale
+			&& !lifecycleStopping) {
+			if (m_pOwner->m_udpIdentity.IsValid()
+				&& m_pOwner->UnmapPort(
+					m_pOwner->m_dwGatewayIP,
+					m_pOwner->m_dwInterfaceIndex,
+					m_pOwner->m_clientAddress,
+					m_pOwner->m_udpIdentity))
+				m_pOwner->m_udpIdentity.Clear();
+			if (m_pOwner->m_tcpIdentity.IsValid()
+				&& m_pOwner->UnmapPort(
+					m_pOwner->m_dwGatewayIP,
+					m_pOwner->m_dwInterfaceIndex,
+					m_pOwner->m_clientAddress,
+					m_pOwner->m_tcpIdentity))
+				m_pOwner->m_tcpIdentity.Clear();
+		}
+		succeeded = false;
+	}
+
 	natmap::PcpPairCommit pairCommit{};
 	if (succeeded)
 		succeeded = pairTransaction.TryCommit(pairCommit);
@@ -715,14 +883,35 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 		}
 	}
 
-	if (!m_pOwner->m_bAbortDiscovery) {
-		m_pOwner->m_bUPnPPortsForwarded = succeeded ? TRIS_TRUE : TRIS_FALSE;
-		if (succeeded) {
-			m_pOwner->m_bSucceededOnce = true;
-			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_SUCCESS;
-		} else if (m_pOwner->m_nDiagnosticStage == UPNP_DIAG_TCP_MAPPING)
-			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
-		m_pOwner->SendResultMessage(m_operation);
+	{
+		std::lock_guard<std::mutex> lifecycleLock(
+			m_pOwner->m_lifecycleMutex);
+		const bool lifecycleLive =
+			!m_pOwner->m_bAbortDiscovery.load(
+				std::memory_order_acquire)
+			&& !m_pOwner->m_bShuttingDown.load(
+				std::memory_order_acquire);
+		if (lifecycleLive) {
+			m_pOwner->m_bUPnPPortsForwarded =
+				succeeded ? TRIS_TRUE : TRIS_FALSE;
+			if (succeeded) {
+				m_pOwner->m_bSucceededOnce = true;
+				m_pOwner->m_nDiagnosticStage = UPNP_DIAG_SUCCESS;
+			} else if (m_pOwner->m_nDiagnosticStage
+				== UPNP_DIAG_TCP_MAPPING)
+				m_pOwner->m_nDiagnosticStage =
+					UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+			const bool partialIdentityRemains =
+				m_pOwner->m_tcpIdentity.IsValid()
+				|| m_pOwner->m_udpIdentity.IsValid()
+				|| m_pOwner->m_webIdentity.IsValid();
+			const bool resultPublished =
+				m_pOwner->SendResultMessage(m_operation);
+			if ((succeeded && resultPublished)
+				|| (!succeeded && !partialIdentityRemains))
+				m_pOwner->m_initialMappingInFlight.store(
+					false, std::memory_order_release);
+		}
 	}
 	return 0;
 }
@@ -734,10 +923,11 @@ void CUPnPImplPCP::StartThread()
 			THREAD_PRIORITY_NORMAL, 0, CREATE_SUSPENDED));
 	if (thread == NULL) {
 		m_hThreadHandle = NULL;
+		m_initialMappingInFlight.store(false, std::memory_order_release);
 		m_bUPnPPortsForwarded = TRIS_FALSE;
 		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
 		DebugLogError(_T("PCP: Unable to create discovery thread"));
-		SendResultMessage(CaptureMappingOperation());
+		SendResultIfLifecycleLive(CaptureMappingOperation());
 		return;
 	}
 	m_hThreadHandle = thread->m_hThread;

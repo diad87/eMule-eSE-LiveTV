@@ -127,7 +127,8 @@ protected:
 	// Source-compatible fail-closed seam for external legacy subclasses.
 	// Native producers must use the operation-bound overload below.
 	void SendResultMessage();
-	void SendResultMessage(const MappingOperationContext& operation);
+	// True means the exact current operation was published and queued.
+	bool SendResultMessage(const MappingOperationContext& operation);
 	void SendMapperResultMessage(
 		const MappingOperationContext& operation,
 		const natmap::MapperResultData& resultData);

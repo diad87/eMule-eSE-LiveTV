@@ -215,7 +215,7 @@ void CUPnPImpl::SendResultMessage()
 	// Keep legacy subclasses source-compatible, but never publish it.
 }
 
-void CUPnPImpl::SendResultMessage(
+bool CUPnPImpl::SendResultMessage(
 	const MappingOperationContext& operation)
 {
 	HWND resultWindow = NULL;
@@ -229,7 +229,7 @@ void CUPnPImpl::SendResultMessage(
 			|| operation.request.topology_generation
 				!= m_requestContext.topology_generation
 			|| operation.request.operation != m_requestContext.operation)
-			return;
+			return false;
 		resultWindow = m_hResultWindow;
 		resultMessage = m_nResultMessageID;
 		mailbox = m_resultMailbox;
@@ -241,16 +241,19 @@ void CUPnPImpl::SendResultMessage(
 		m_resultMailbox.reset();
 	}
 	if (resultWindow == NULL || resultMessage == 0 || !mailbox)
-		return;
+		return false;
 
 	const natmap::MailboxPublish published =
 		mailbox->Publish(resultData);
 	if (!published.IsPublished())
-		return;
+		return false;
 	const WPARAM messageToken = static_cast<WPARAM>(
 		0x80000000u | published.delivery_id);
-	if (!::PostMessage(resultWindow, resultMessage, messageToken, 0))
+	if (!::PostMessage(resultWindow, resultMessage, messageToken, 0)) {
 		mailbox->Discard(published.delivery_id);
+		return false;
+	}
+	return true;
 }
 
 void CUPnPImpl::SendMapperResultMessage(

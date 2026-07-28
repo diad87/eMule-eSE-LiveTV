@@ -180,3 +180,30 @@ host as a real topology change; the host starts a new generation, so prior
 HighID and inbound evidence cannot survive the recreated mapping. Epoch
 validity applies both RFC 6887 section 8.5 drift inequalities against the
 stored monotonic observation time, not only the backward-time check.
+
+`ValidatePcpResponseObservation` is the final I06 receive boundary. It requires
+the exact gateway address and PCP source port, the currently active monotonic
+exchange ID, the expected nonce and a live lifecycle. Shutdown, stale
+exchanges and mismatched sources fail closed before a response can be applied.
+Each exchange ID also owns a distinct local UDP port that is never reused by
+that mapper instance, so the OS cannot deliver a delayed old datagram to a
+new exchange. An occupied or reserved local endpoint is consumed and skipped;
+the same logical exchange tries the next fresh ID/port until one binds or the
+finite port-ID space is exhausted, at which point it fails closed.
+Cancellation automatically removes only identities created by an initial MAP
+transaction that is still in flight. Once that transaction commits, ordinary
+shutdown preserves the established mappings unless the existing
+close-ports-on-exit preference explicitly requests deletion.
+The initial-operation latch is cleared only after the operation-bound result
+has been accepted by the mailbox and queued to the result window. A stale,
+missing, full or otherwise undeliverable result keeps the mapping provisional
+so later stop/shutdown cleanup cannot strand an unpublished lease.
+Publication and the start of stop/shutdown share one lifecycle critical
+section: publication either commits completely before stop begins, or stop
+invalidates the operation first and the provisional identities are cleaned.
+All early failure exits use the same lifecycle-checked publication boundary;
+none can enqueue a callback after stop or shutdown has begun.
+An in-progress UNMAP also obeys the abort latch, so the worker leaves within
+one bounded receive wait and cannot overrun the stop watchdog. Exact rollback
+after the worker has stopped remains allowed once abort is reset, including
+during shutdown.

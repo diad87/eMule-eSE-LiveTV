@@ -35,6 +35,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_pcp_pair_transac
 if errorlevel 1 exit /b 1
 build\test_pcp_pair_transaction.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_pcp_response_guard.exe tests\test_pcp_response_guard.cpp src\pcp_response_guard.cpp
+if errorlevel 1 exit /b 1
+build\test_pcp_response_guard.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_lease_policy.exe tests\test_lease_policy.cpp src\natmap_policy.cpp
 if errorlevel 1 exit /b 1
 build\test_lease_policy.exe

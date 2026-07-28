@@ -8,6 +8,7 @@
 #include "natmap/pcp_route_binding.h"
 
 #include <array>
+#include <atomic>
 
 class CUPnPImplPCP : public CUPnPImpl
 {
@@ -73,6 +74,8 @@ private:
 	bool ExchangeMap(uint32 nGatewayIP, uint32 nInterfaceIndex,
 		const natmap::PcpMapRequest& request,
 		natmap::PcpMapResponse& response, bool bDeletion);
+	bool SendResultIfLifecycleLive(
+		const MappingOperationContext& operation);
 	void StartThread();
 
 	static CMutex m_mutBusy;
@@ -97,5 +100,10 @@ private:
 	natmap::PcpMappingIdentity m_oldWebIdentity;
 	HANDLE m_hThreadHandle;
 	bool m_bSucceededOnce;
-	volatile bool m_bAbortDiscovery;
+	std::atomic<std::uint64_t> m_nextExchangeId;
+	std::atomic<std::uint64_t> m_activeExchangeId;
+	std::mutex m_lifecycleMutex;
+	std::atomic_bool m_initialMappingInFlight;
+	std::atomic_bool m_bShuttingDown;
+	std::atomic_bool m_bAbortDiscovery;
 };

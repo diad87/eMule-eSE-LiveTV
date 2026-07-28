@@ -568,6 +568,16 @@ XML controls are replaced. Enumeration order is stable by external port,
 transport and mapping identifier. The lifecycle result is branded and must
 pass through its projector before the strict SOAP response encoder.
 
+## UPnP E07 DeletePortMapping
+
+`upnp_mapping_delete.js` removes the active mapping selected by gateway
+address, external port and transport after expiring finite leases. It models
+the router action, so an owned PCP or NAT-PMP entry can also be removed when
+the endpoint key matches; deciding whether to request that deletion belongs
+to the client policy. Missing, different-protocol and different-port entries
+return 714. Ownerless static entries return 606 instead of bypassing the
+shared model ownership invariant.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

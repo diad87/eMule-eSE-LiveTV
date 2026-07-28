@@ -237,6 +237,12 @@ test('E06: malformed arguments, action mismatch and hostile storage fail closed'
     });
     for (const [header, packet] of [
       [`"${service}#GetSpecificPortMappingEntry"`, valid],
+      [`"${service}#DeletePortMapping"`,
+        body('DeletePortMapping', {
+          NewRemoteHost: '',
+          NewExternalPort: '4662',
+          NewProtocol: 'TCP',
+        })],
       [`"${service}#GetGenericPortMappingEntry"`,
         body('GetGenericPortMappingEntry', {
           NewPortMappingIndex: '65536',

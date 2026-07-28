@@ -253,14 +253,14 @@ function decodeUpnpAddPortMapping(soapActionInput, bodyInput) {
   return result;
 }
 
-function decodeUpnpPortMappingReadback(soapActionInput, bodyInput) {
+function decodeUpnpPortMappingAction(soapActionInput, bodyInput) {
   if (typeof soapActionInput !== 'string' ||
       soapActionInput.length > 160 ||
       /[\r\n\0]/.test(soapActionInput)) {
     fail('UPNP_SOAP_ACTION_INVALID', '$.soap_action');
   }
   const actionMatch =
-    /^"urn:schemas-upnp-org:service:WANIPConnection:1#(GetSpecificPortMappingEntry|GetGenericPortMappingEntry)"$/
+    /^"urn:schemas-upnp-org:service:WANIPConnection:1#(GetSpecificPortMappingEntry|GetGenericPortMappingEntry|DeletePortMapping)"$/
       .exec(soapActionInput);
   if (!actionMatch) {
     fail('UPNP_SOAP_ACTION_UNSUPPORTED', '$.soap_action');
@@ -277,7 +277,7 @@ function decodeUpnpPortMappingReadback(soapActionInput, bodyInput) {
     fail('UPNP_SOAP_REQUEST_INVALID', '$.body');
   }
   const match =
-    /^<\?xml version="1\.0"\?>\s*<([A-Za-z_][A-Za-z0-9_.-]*):Envelope\b([^>]*)>\s*<\1:Body>\s*<([A-Za-z_][A-Za-z0-9_.-]*):(GetSpecificPortMappingEntry|GetGenericPortMappingEntry)\b([^>]*)>([\s\S]*?)<\/\3:\4>\s*<\/\1:Body>\s*<\/\1:Envelope>\s*$/
+    /^<\?xml version="1\.0"\?>\s*<([A-Za-z_][A-Za-z0-9_.-]*):Envelope\b([^>]*)>\s*<\1:Body>\s*<([A-Za-z_][A-Za-z0-9_.-]*):(GetSpecificPortMappingEntry|GetGenericPortMappingEntry|DeletePortMapping)\b([^>]*)>([\s\S]*?)<\/\3:\4>\s*<\/\1:Body>\s*<\/\1:Envelope>\s*$/
       .exec(text);
   if (!match || match[1] === match[3] || match[4] !== actionMatch[1]) {
     fail('UPNP_SOAP_REQUEST_INVALID', '$.body');
@@ -305,7 +305,7 @@ function decodeUpnpPortMappingReadback(soapActionInput, bodyInput) {
   }
   const decimal = /^(0|[1-9][0-9]*)$/;
   let result;
-  if (actionMatch[1] === 'GetSpecificPortMappingEntry') {
+  if (actionMatch[1] !== 'GetGenericPortMappingEntry') {
     const expected = ['NewRemoteHost', 'NewExternalPort', 'NewProtocol'];
     if (argumentsMap.size !== expected.length ||
         expected.some((name) => !argumentsMap.has(name)) ||
@@ -318,9 +318,11 @@ function decodeUpnpPortMappingReadback(soapActionInput, bodyInput) {
     if (externalPort < 1 || externalPort > 65535) {
       fail('UPNP_SOAP_ARGUMENT_INVALID', '$.body.arguments.NewExternalPort');
     }
+    const operation = actionMatch[1] === 'DeletePortMapping' ?
+      'delete_port_mapping' : 'get_specific_port_mapping_entry';
     result = Object.freeze({
       protocol: 'upnp',
-      operation: 'get_specific_port_mapping_entry',
+      operation,
       service_type: SERVICE_TYPE,
       remote_host: '',
       external_port: externalPort,
@@ -345,6 +347,22 @@ function decodeUpnpPortMappingReadback(soapActionInput, bodyInput) {
     });
   }
   commandBrand.add(result);
+  return result;
+}
+
+function decodeUpnpPortMappingReadback(soapActionInput, bodyInput) {
+  const result = decodeUpnpPortMappingAction(soapActionInput, bodyInput);
+  if (result.operation === 'delete_port_mapping') {
+    fail('UPNP_SOAP_ACTION_UNSUPPORTED', '$.soap_action');
+  }
+  return result;
+}
+
+function decodeUpnpDeletePortMapping(soapActionInput, bodyInput) {
+  const result = decodeUpnpPortMappingAction(soapActionInput, bodyInput);
+  if (result.operation !== 'delete_port_mapping') {
+    fail('UPNP_SOAP_ACTION_UNSUPPORTED', '$.soap_action');
+  }
   return result;
 }
 
@@ -466,8 +484,10 @@ function encodeUpnpSoapQueryResponse(command, resultInput) {
       `<NewLastConnectionError>${result.last_connection_error}` +
       '</NewLastConnectionError>' +
       `<NewUptime>${result.uptime_seconds}</NewUptime>`;
-  } else if (command.operation === 'add_port_mapping') {
-    action = 'AddPortMapping';
+  } else if (command.operation === 'add_port_mapping' ||
+      command.operation === 'delete_port_mapping') {
+    action = command.operation === 'add_port_mapping' ?
+      'AddPortMapping' : 'DeletePortMapping';
     payload = '';
   } else {
     const generic =
@@ -523,6 +543,7 @@ module.exports = Object.freeze({
   UpnpSoapBoundaryError,
   createUpnpSoapControl,
   decodeUpnpAddPortMapping,
+  decodeUpnpDeletePortMapping,
   decodeUpnpPortMappingReadback,
   decodeUpnpSoapQuery,
   encodeUpnpSoapQueryResponse,

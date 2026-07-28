@@ -31,6 +31,7 @@ public:
 	uint64 GetTopologyGeneration() const;
 	natmap::UpstreamGatewayCandidates GetUpstreamGatewayCandidates() const;
 	bool ObserveMapperResult(const natmap::MapperResult& result);
+	bool ObserveMapperEpochReset();
 
 	const natmap::ReachabilitySnapshot& GetSnapshot() const;
 
@@ -38,7 +39,8 @@ private:
 	bool ObserveMappedPorts(natmap::MapperKind mapper, uint32 nExternalIP,
 		uint16 nLocalTcpPort, uint16 nExternalTcpPort,
 		uint16 nLocalUdpPort, uint16 nExternalUdpPort,
-		uint32 nLifetimeSeconds, uint32 nMapperEpoch, bool bRefresh);
+		uint32 nLifetimeSeconds, uint32 nMapperEpoch,
+		bool bMapperEpochReset, bool bRefresh);
 	void AssertMainThread() const;
 	static natmap::Endpoint MakeAnyV4(uint16 nPort);
 	static natmap::Endpoint MakePublicV4(uint32 nNetworkOrderIP,

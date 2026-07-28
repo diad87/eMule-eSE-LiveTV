@@ -86,6 +86,7 @@ void TestRequiredExternalAddressOutcomes() {
     CHECK(rejected.should_attempt_map);
     CHECK(!rejected.HasAddress());
     CHECK(!rejected.can_publish_direct);
+    CHECK(rejected.epoch == 42);
 
     const NatPmpExternalAddressDecision unknown_rejection =
         ClassifyNatPmpExternalAddress(
@@ -95,6 +96,7 @@ void TestRequiredExternalAddressOutcomes() {
     CHECK(unknown_rejection.should_attempt_map);
     CHECK(!unknown_rejection.HasAddress());
     CHECK(!unknown_rejection.can_publish_direct);
+    CHECK(unknown_rejection.epoch == 42);
 
     const NatPmpExternalAddressDecision private_address =
         ClassifyNatPmpExternalAddress(

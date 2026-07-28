@@ -125,4 +125,6 @@ private:
 
     bool m_bSucceededOnce;
     volatile bool m_bAbortDiscovery;
+    bool m_bMapperEpochObservationValid;
+    uint64 m_nMapperEpochObservedAtSeconds;
 };

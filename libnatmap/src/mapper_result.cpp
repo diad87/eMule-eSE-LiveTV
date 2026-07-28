@@ -217,6 +217,12 @@ bool MapperResult::IsStructurallyValid() const noexcept {
 
     if (data_.mapper == MapperKind::UpnpIgd && data_.mapper_epoch != 0)
         return false;
+    if (data_.mapper_epoch_reset &&
+        (data_.mapper != MapperKind::NatPmp ||
+         data_.operation != MappingOperation::Refresh ||
+         (data_.status != MappingStatus::Renewed &&
+          data_.status != MappingStatus::Failed)))
+        return false;
     if (mapped || deleted) {
         if (data_.protocol_result_code != 0)
             return false;

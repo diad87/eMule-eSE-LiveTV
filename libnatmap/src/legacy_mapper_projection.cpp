@@ -113,10 +113,16 @@ bool ProjectLegacyMapperObservation(
     }
     projected.lifetime_seconds = tcp->lifetime_seconds;
     projected.mapper_epoch = data.mapper_epoch;
+    projected.mapper_epoch_reset = data.mapper_epoch_reset;
     projected.refresh =
         data.operation == MappingOperation::Refresh;
     observation = projected;
     return true;
+}
+
+bool LegacyObservationAllowsSilentRenewal(
+    const LegacyMapperObservation& observation) noexcept {
+    return observation.refresh && !observation.mapper_epoch_reset;
 }
 
 } // namespace natmap

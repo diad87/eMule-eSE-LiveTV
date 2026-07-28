@@ -74,6 +74,17 @@ void TestHappyPathAndStaleFencing() {
     r = ApplyEvent(state, StateEvent{EventType::BeginGeneration, 2});
     CHECK(r.snapshot.state == ReachabilityState::Discovering);
     CHECK(!r.snapshot.HasClassicHighIdEvidence());
+
+    const TransitionResult invalidated =
+        InvalidateForMapperEpochReset(state, 2);
+    CHECK(invalidated.disposition == TransitionDisposition::Applied);
+    CHECK(invalidated.snapshot.state == ReachabilityState::Degraded);
+    CHECK(invalidated.snapshot.reason == ReasonCode::LeaseExpired);
+    CHECK(invalidated.snapshot.generation == 2);
+    CHECK(invalidated.snapshot.local.port == 4662);
+    CHECK(!invalidated.snapshot.lease.IsStructurallyValid());
+    CHECK(!invalidated.snapshot.advertised.IsUsable());
+    CHECK(!invalidated.snapshot.HasClassicHighIdEvidence());
 }
 
 void TestHundredThousandAdversarialTransitions() {

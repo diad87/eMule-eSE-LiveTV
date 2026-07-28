@@ -150,6 +150,7 @@ protected:
 	uint32 m_dwMappingExternalIP;
 	uint32 m_dwMappingLeaseLifetime;
 	uint32 m_dwMapperEpoch;
+	bool m_bMapperEpochReset;
 	volatile LONG m_nDiagnosticStage;
 	bool m_bCheckAndRefresh;
 	natmap::LeaseRefreshSchedule m_leaseRefreshSchedule;

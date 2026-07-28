@@ -4880,6 +4880,20 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 			theApp.serverconnect->ConnectToAnyServer();
 		}
 	}
+	if (resultCode != CUPnPImpl::UPNP_OK
+		&& bMapperResult
+		&& mapperResultData.mapper_epoch_reset
+		&& theApp.directreachability != NULL) {
+		const bool invalidated =
+			theApp.directreachability->ObserveMapperEpochReset();
+		if (invalidated
+			&& theApp.serverconnect->IsConnected()
+			&& !theApp.serverconnect->IsConnectedViaRelay()) {
+			LogWarning(_T("NAT-PMP mapper reset invalidated direct reachability; reconnecting for fresh evidence"));
+			theApp.serverconnect->Disconnect();
+			theApp.serverconnect->ConnectToAnyServer();
+		}
+	}
 	if (!bWasRefresh)
 		if (resultCode == CUPnPImpl::UPNP_OK) {
 			// remember the last working implementation

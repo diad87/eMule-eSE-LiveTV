@@ -44,6 +44,9 @@ struct TransitionResult {
 
 TransitionResult ApplyEvent(const PlaneSnapshot& current,
                             const StateEvent& event) noexcept;
+TransitionResult InvalidateForMapperEpochReset(
+    const PlaneSnapshot& current,
+    std::uint64_t new_generation) noexcept;
 bool IsSnapshotConsistent(const PlaneSnapshot& snapshot) noexcept;
 
 } // namespace natmap

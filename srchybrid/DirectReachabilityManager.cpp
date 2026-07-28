@@ -187,7 +187,38 @@ bool CDirectReachabilityManager::ObserveMapperResult(
 		observation.local_tcp_port, observation.external_tcp_port,
 		observation.local_udp_port, observation.external_udp_port,
 		observation.lifetime_seconds, observation.mapper_epoch,
-		observation.refresh);
+		observation.mapper_epoch_reset, observation.refresh);
+}
+
+bool CDirectReachabilityManager::ObserveMapperEpochReset()
+{
+	AssertMainThread();
+	const uint64 generation = m_snapshot.topology_generation + 1;
+	const natmap::TransitionResult tcp =
+		natmap::InvalidateForMapperEpochReset(
+			m_snapshot.ed2k_tcp_v4, generation);
+	const natmap::TransitionResult udp =
+		natmap::InvalidateForMapperEpochReset(
+			m_snapshot.kad_udp_v4, generation);
+	if (tcp.disposition != natmap::TransitionDisposition::Applied ||
+		udp.disposition != natmap::TransitionDisposition::Applied)
+		return false;
+
+	m_snapshot.topology_generation = generation;
+	m_snapshot.ed2k_tcp_v4 = tcp.snapshot;
+	m_snapshot.kad_udp_v4 = udp.snapshot;
+	m_tcpLease = natmap::LeaseController{};
+	m_udpLease = natmap::LeaseController{};
+	m_tcpChain = natmap::NatChainTransaction{};
+	m_udpChain = natmap::NatChainTransaction{};
+	m_nAdvertisedTcpPort.store(
+		m_nLocalTcpPort.load(std::memory_order_acquire),
+		std::memory_order_release);
+	m_nAdvertisedUdpPort.store(
+		m_nLocalUdpPort.load(std::memory_order_acquire),
+		std::memory_order_release);
+	m_bEnabled.store(false, std::memory_order_release);
+	return true;
 }
 
 bool CDirectReachabilityManager::HasVerifiedEd2kReachability() const
@@ -267,7 +298,8 @@ bool CDirectReachabilityManager::ObserveInboundTcpAccept()
 bool CDirectReachabilityManager::ObserveMappedPorts(natmap::MapperKind mapper,
 	uint32 nExternalIP, uint16 nLocalTcpPort, uint16 nExternalTcpPort,
 	uint16 nLocalUdpPort, uint16 nExternalUdpPort,
-	uint32 nLifetimeSeconds, uint32 nMapperEpoch, bool bRefresh)
+	uint32 nLifetimeSeconds, uint32 nMapperEpoch,
+	bool bMapperEpochReset, bool bRefresh)
 {
 	AssertMainThread();
 	if (mapper == natmap::MapperKind::None || nExternalIP == 0 ||
@@ -287,7 +319,11 @@ bool CDirectReachabilityManager::ObserveMappedPorts(natmap::MapperKind mapper,
 		nExternalIP, nExternalUdpPort, source);
 	const uint64 now = MonotonicMilliseconds();
 
-	if (bRefresh && m_tcpLease.HasLease()) {
+	natmap::LegacyMapperObservation renewalBoundary{};
+	renewalBoundary.refresh = bRefresh;
+	renewalBoundary.mapper_epoch_reset = bMapperEpochReset;
+	if (natmap::LegacyObservationAllowsSilentRenewal(renewalBoundary)
+		&& m_tcpLease.HasLease()) {
 		natmap::PortLease tcpRenewal = m_tcpLease.lease();
 		tcpRenewal.mapper = mapper;
 		tcpRenewal.local = localTcp;

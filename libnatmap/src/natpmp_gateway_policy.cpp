@@ -59,6 +59,9 @@ NatPmpExternalAddressDecision ClassifyNatPmpExternalAddress(
         result.status = NatPmpExternalAddressStatus::Missing;
         return result;
     }
+    // Epoch is valid gateway evidence for every decoded response, even when
+    // the requested address is rejected or its value is unusable.
+    result.epoch = response.epoch;
     if (response.result_code > 5) {
         result.status = NatPmpExternalAddressStatus::Invalid;
         return result;
@@ -70,11 +73,9 @@ NatPmpExternalAddressDecision ClassifyNatPmpExternalAddress(
 
     result.address =
         DecodeNetworkOrderV4(response.external_ip_network_order);
-    result.epoch = response.epoch;
     if (!IsUsableGatewayV4(result.address)) {
         result.status = NatPmpExternalAddressStatus::Invalid;
         result.address = IpAddress{};
-        result.epoch = 0;
         return result;
     }
     if (result.address.IsSharedCgnatV4()) {

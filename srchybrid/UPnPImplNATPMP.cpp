@@ -36,6 +36,7 @@
 #include "Log.h"
 #include "OtherFunctions.h"
 #include "natmap/natpmp_codec.h"
+#include "natmap/natpmp_epoch_policy.h"
 #include "natmap/natpmp_gateway_policy.h"
 #include "natmap/natpmp_pair_transaction.h"
 
@@ -47,6 +48,24 @@ static char THIS_FILE[] = __FILE__;
 
 CMutex CUPnPImplNATPMP::m_mutBusy;
 
+namespace {
+
+uint64 NatPmpMonotonicSeconds()
+{
+	// Extend the SDK-baseline 32-bit tick count. NAT-PMP operations are
+	// serialized by m_mutBusy, so this clock is observed by one worker at a
+	// time and remains monotonic across the 49.7-day wrap.
+	static DWORD previous = 0;
+	static uint64 epoch = 0;
+	const DWORD current = ::GetTickCount();
+	if (current < previous)
+		epoch += (1ull << 32);
+	previous = current;
+	return (epoch + current) / 1000;
+}
+
+}
+
 CUPnPImplNATPMP::CUPnPImplNATPMP()
 	: m_dwGatewayIP(0)
 	, m_dwOldGatewayIP(0)
@@ -55,6 +74,8 @@ CUPnPImplNATPMP::CUPnPImplNATPMP()
 	, m_pThread(NULL)
 	, m_bSucceededOnce(false)
 	, m_bAbortDiscovery(false)
+	, m_bMapperEpochObservationValid(false)
+	, m_nMapperEpochObservedAtSeconds(0)
 {
 	m_nOldUDPPort = 0;
 	m_nOldTCPPort = 0;
@@ -120,6 +141,9 @@ void CUPnPImplNATPMP::DeletePorts()
 	m_dwMappingExternalIP = 0;
 	m_dwMappingLeaseLifetime = 0;
 	m_dwMapperEpoch = 0;
+	m_bMapperEpochReset = false;
+	m_bMapperEpochObservationValid = false;
+	m_nMapperEpochObservedAtSeconds = 0;
 	m_bUPnPPortsForwarded = TRIS_FALSE;
 	DeletePorts(false);
 }
@@ -179,6 +203,9 @@ void CUPnPImplNATPMP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nT
 	m_dwMappingExternalIP = 0;
 	m_dwMappingLeaseLifetime = 0;
 	m_dwMapperEpoch = 0;
+	m_bMapperEpochReset = false;
+	m_bMapperEpochObservationValid = false;
+	m_nMapperEpochObservedAtSeconds = 0;
 	m_bUPnPPortsForwarded = TRIS_UNKNOWN;
 	m_nDiagnosticStage = UPNP_DIAG_DISCOVERING;
 	m_bCheckAndRefresh = false;
@@ -541,6 +568,9 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 	if (m_pOwner->m_bAbortDiscovery)
 		return 0;
 
+	// The marker belongs to one completed mapper result only. Recompute it
+	// for every attempt so an early failure cannot inherit a prior reset.
+	m_pOwner->m_bMapperEpochReset = false;
 	const bool bWasRefresh = m_pOwner->m_bCheckAndRefresh;
 	const uint32 nPreviousGatewayIP = m_pOwner->m_dwGatewayIP;
 	const uint32 nPreviousInterfaceIndex =
@@ -595,27 +625,49 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 		natmap::ClassifyNatPmpExternalAddress(
 			m_pOwner->m_dwMappingExternalIP != 0,
 			retainedResponse);
+	natmap::NatPmpEpochSequence epochSequence{};
+	epochSequence.udp_required = m_pOwner->m_nUDPPort != 0;
+	if (bWasRefresh && m_pOwner->m_bSucceededOnce
+		&& m_pOwner->m_bMapperEpochObservationValid) {
+		epochSequence.previous_snapshot.observed = true;
+		epochSequence.previous_snapshot.accepted = true;
+		epochSequence.previous_snapshot.epoch =
+			retainedResponse.epoch;
+		epochSequence.previous_snapshot.observed_at_seconds =
+			m_pOwner->m_nMapperEpochObservedAtSeconds;
+	}
+	const uint64 nPreviousMappingEpochObservedAtSeconds =
+		m_pOwner->m_nMapperEpochObservedAtSeconds;
 
 	// Querying the public address is useful, but a dropped or non-conforming
 	// address response must not prevent a valid mapping exchange.
 	m_pOwner->m_nDiagnosticStage = UPNP_DIAG_EXTERNAL_ADDRESS;
-	bool bExternalAddressEpochReset = false;
 	const natmap::NatPmpExternalAddressDecision externalAddress =
 		m_pOwner->QueryExternalAddress(
 			nGatewayIP, nInterfaceIndex);
+	if (externalAddress.status
+		!= natmap::NatPmpExternalAddressStatus::Missing) {
+		epochSequence.external_address.observed = true;
+		epochSequence.external_address.accepted =
+			externalAddress.HasAddress();
+		epochSequence.external_address.epoch =
+			externalAddress.epoch;
+		epochSequence.external_address.observed_at_seconds =
+			NatPmpMonotonicSeconds();
+	}
+	const natmap::NatPmpEpochDecision externalEpochDecision =
+		natmap::EvaluateNatPmpEpochSequence(epochSequence);
+	if (externalEpochDecision.strongest_boundary
+		== natmap::NatPmpEpochBoundary::ResetBeforeExternalAddress) {
+		DebugLogWarning(_T("NAT-PMP: Gateway epoch reset detected before external-address (%u -> %u)"),
+			(unsigned)retainedResponse.epoch,
+			(unsigned)externalAddress.epoch);
+	}
 	if (externalAddress.HasAddress()) {
 		uint32 nExternalIP = 0;
 		memcpy(&nExternalIP, externalAddress.address.bytes.data(),
 			sizeof(nExternalIP));
-		if (natmap::NatPmpEpochAppearsReset(m_pOwner->m_dwMapperEpoch,
-			externalAddress.epoch)) {
-			DebugLogWarning(_T("NAT-PMP: Gateway epoch reset detected (%u -> %u)"),
-				(unsigned)m_pOwner->m_dwMapperEpoch,
-				(unsigned)externalAddress.epoch);
-			bExternalAddressEpochReset = true;
-		}
 		m_pOwner->m_dwMappingExternalIP = nExternalIP;
-		m_pOwner->m_dwMapperEpoch = externalAddress.epoch;
 		IN_ADDR extAddr;
 		extAddr.S_un.S_addr = nExternalIP;
 		DebugLog(_T("NAT-PMP: External IP: %S (status=%u)"),
@@ -627,6 +679,13 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 		if (externalAddress.status
 			== natmap::NatPmpExternalAddressStatus::Invalid)
 			m_pOwner->m_dwMappingExternalIP = 0;
+	}
+	if (externalEpochDecision.has_continuity_epoch) {
+		m_pOwner->m_dwMapperEpoch =
+			externalEpochDecision.continuity_epoch;
+		m_pOwner->m_nMapperEpochObservedAtSeconds =
+			externalEpochDecision.continuity_observed_at_seconds;
+		m_pOwner->m_bMapperEpochObservationValid = true;
 	}
 	if (!externalAddress.should_attempt_map)
 		return 0;
@@ -648,10 +707,8 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 	const uint32 nPreviousLeaseLifetime =
 		m_pOwner->m_dwMappingLeaseLifetime;
 	const uint32 nPreviousMappingEpoch =
-		m_pOwner->m_dwMapperEpoch;
-	uint32 nLatestObservedMappingEpoch =
-		nPreviousMappingEpoch;
-	const bool bUdpRequired = m_pOwner->m_nUDPPort != 0;
+		retainedResponse.epoch;
+	const bool bUdpRequired = epochSequence.udp_required;
 	const bool bInitialOperation = !bWasRefresh;
 	natmap::NatPmpPairTransaction pairTransaction(
 		bUdpRequired, bInitialOperation);
@@ -660,26 +717,28 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 	const uint16 nSuggestedTCP = bWasRefresh
 		? m_pOwner->m_nExternalTCPPort : m_pOwner->m_nTCPPort;
 	m_pOwner->m_nDiagnosticStage = UPNP_DIAG_TCP_MAPPING;
-	bool bMappingEpochReset = false;
 	const bool bTcpMapped = m_pOwner->MapPort(
 		nGatewayIP, nInterfaceIndex,
 		m_pOwner->m_nTCPPort, nSuggestedTCP, true, nLeaseTime, tcpResponse);
 	bool bSucceeded = bTcpMapped;
 	if (natmap::HasCorrelatedNatPmpMapObservation(
 		tcpResponse, m_pOwner->m_nTCPPort)) {
-		nLatestObservedMappingEpoch = tcpResponse.epoch;
-		if (natmap::NatPmpEpochAppearsReset(
-			m_pOwner->m_dwMapperEpoch, tcpResponse.epoch))
-			bMappingEpochReset = true;
+		epochSequence.tcp_map.observed = true;
+		epochSequence.tcp_map.accepted = bTcpMapped;
+		epochSequence.tcp_map.epoch = tcpResponse.epoch;
+		epochSequence.tcp_map.observed_at_seconds =
+			NatPmpMonotonicSeconds();
 	}
+	natmap::NatPmpEpochDecision epochDecision =
+		natmap::EvaluateNatPmpEpochSequence(epochSequence);
 	if (bSucceeded) {
-		if (bMappingEpochReset) {
+		if (epochDecision.strongest_boundary
+			== natmap::NatPmpEpochBoundary::ResetBeforeTcpMap) {
 			DebugLogWarning(_T("NAT-PMP: Mapping table reset before TCP MAP (%u -> %u)"),
 				(unsigned)m_pOwner->m_dwMapperEpoch,
 				(unsigned)tcpResponse.epoch);
 			// A retained address belongs to the old mapping table. Even a
 			// fresh address response cannot be paired safely across this reset.
-			bMappingEpochReset = true;
 			m_pOwner->m_dwMappingExternalIP = 0;
 		}
 		natmap::NatPmpMapProjection tcpProjection{};
@@ -704,22 +763,21 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 		const bool bUdpResponseObserved =
 			natmap::HasCorrelatedNatPmpMapObservation(
 				udpResponse, m_pOwner->m_nUDPPort);
-		bool bResetBetweenTcpAndUdp = false;
 		if (bUdpResponseObserved) {
-			nLatestObservedMappingEpoch = udpResponse.epoch;
-			if (natmap::NatPmpEpochAppearsReset(
-				tcpResponse.epoch, udpResponse.epoch)) {
-				bResetBetweenTcpAndUdp = true;
-				bMappingEpochReset = true;
-			}
+			epochSequence.udp_map.observed = true;
+			epochSequence.udp_map.accepted = bUdpMapped;
+			epochSequence.udp_map.epoch = udpResponse.epoch;
+			epochSequence.udp_map.observed_at_seconds =
+				NatPmpMonotonicSeconds();
 		}
+		epochDecision =
+			natmap::EvaluateNatPmpEpochSequence(epochSequence);
 		if (bUdpMapped) {
-			if (bResetBetweenTcpAndUdp) {
+			if (!epochDecision.pair_can_commit) {
 				// The router lost its table after granting TCP but before UDP.
 				// Do not report a false success; the normal bounded refresh
 				// retry will recreate both mappings.
 				DebugLogWarning(_T("NAT-PMP: Mapping table reset between TCP and UDP MAP"));
-				bMappingEpochReset = true;
 				bSucceeded = false;
 			} else {
 				natmap::NatPmpMapProjection udpProjection{};
@@ -735,21 +793,33 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 		if (!bSucceeded)
 			pairTransaction.RecordUdpFailure();
 	}
+	epochDecision =
+		natmap::EvaluateNatPmpEpochSequence(epochSequence);
+	if (bSucceeded && !epochDecision.pair_can_commit) {
+		pairTransaction.RecordUdpFailure();
+		bSucceeded = false;
+	}
 
-	if (!bSucceeded && bInitialOperation) {
-		natmap::NatPmpRollbackTarget tcpRollback{};
-		if (pairTransaction.GetTcpRollbackTarget(tcpRollback)) {
-			m_pOwner->UnmapPort(
-				nGatewayIP, nInterfaceIndex,
-				tcpRollback.internal_port,
-				tcpRollback.transport
-					== natmap::NatPmpTransport::Tcp);
-		} else if (bTcpMapped) {
-			m_pOwner->UnmapPort(
-				nGatewayIP, nInterfaceIndex,
-				m_pOwner->m_nTCPPort, true);
+	if (!bSucceeded) {
+		const bool bResetBetweenPair =
+			epochDecision.strongest_boundary
+				== natmap::NatPmpEpochBoundary::ResetBetweenTcpAndUdp;
+		if (bInitialOperation && !bResetBetweenPair) {
+			natmap::NatPmpRollbackTarget tcpRollback{};
+			if (pairTransaction.GetTcpRollbackTarget(tcpRollback)) {
+				m_pOwner->UnmapPort(
+					nGatewayIP, nInterfaceIndex,
+					tcpRollback.internal_port,
+					tcpRollback.transport
+						== natmap::NatPmpTransport::Tcp);
+			} else if (bTcpMapped) {
+				m_pOwner->UnmapPort(
+					nGatewayIP, nInterfaceIndex,
+					m_pOwner->m_nTCPPort, true);
+			}
 		}
-		if (bUdpMapped)
+		if (bUdpMapped
+			&& (bInitialOperation || bResetBetweenPair))
 			m_pOwner->UnmapPort(
 				nGatewayIP, nInterfaceIndex,
 				m_pOwner->m_nUDPPort, false);
@@ -771,13 +841,18 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 			m_pOwner->m_dwMappingLeaseLifetime = min(
 				m_pOwner->m_dwMappingLeaseLifetime,
 				pairCommit.udp.response.lifetime_seconds);
+		}
+		if (epochDecision.has_continuity_epoch) {
 			m_pOwner->m_dwMapperEpoch =
-				pairCommit.udp.response.epoch;
+				epochDecision.continuity_epoch;
+			m_pOwner->m_nMapperEpochObservedAtSeconds =
+				epochDecision.continuity_observed_at_seconds;
+			m_pOwner->m_bMapperEpochObservationValid = true;
 		}
 	} else {
 		switch (natmap::ResolveNatPmpPairFailureDisposition(
 			bInitialOperation,
-			bExternalAddressEpochReset || bMappingEpochReset)) {
+			epochDecision.previous_pair_invalidated)) {
 		case natmap::NatPmpPairFailureDisposition::PreservePrevious:
 			m_pOwner->m_nExternalTCPPort =
 				nPreviousExternalTCPPort;
@@ -786,7 +861,16 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 			m_pOwner->m_dwMappingLeaseLifetime =
 				nPreviousLeaseLifetime;
 			m_pOwner->m_dwMapperEpoch =
-				nPreviousMappingEpoch;
+				epochDecision.has_continuity_epoch
+					? epochDecision.continuity_epoch
+					: nPreviousMappingEpoch;
+			m_pOwner->m_nMapperEpochObservedAtSeconds =
+				epochDecision.has_continuity_epoch
+					? epochDecision.continuity_observed_at_seconds
+					: nPreviousMappingEpochObservedAtSeconds;
+			m_pOwner->m_bMapperEpochObservationValid =
+				epochDecision.has_continuity_epoch ||
+				epochSequence.previous_snapshot.observed;
 			break;
 		case natmap::NatPmpPairFailureDisposition::InvalidatePrevious:
 			m_pOwner->m_nExternalTCPPort = 0;
@@ -795,7 +879,16 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 			m_pOwner->m_dwMappingLeaseLifetime = 0;
 			m_pOwner->m_dwMappingExternalIP = 0;
 			m_pOwner->m_dwMapperEpoch =
-				nLatestObservedMappingEpoch;
+				epochDecision.has_continuity_epoch
+					? epochDecision.continuity_epoch
+					: nPreviousMappingEpoch;
+			m_pOwner->m_nMapperEpochObservedAtSeconds =
+				epochDecision.has_continuity_epoch
+					? epochDecision.continuity_observed_at_seconds
+					: nPreviousMappingEpochObservedAtSeconds;
+			m_pOwner->m_bMapperEpochObservationValid =
+				epochDecision.has_continuity_epoch ||
+				epochSequence.previous_snapshot.observed;
 			break;
 		case natmap::NatPmpPairFailureDisposition::ClearProvisional:
 		default:
@@ -806,52 +899,93 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 		}
 	}
 
+	bool bWebEpochReset = false;
 	if (bSucceeded && m_pOwner->m_nTCPWebPort != 0) {
 		natmap::NatPmpMapResponse webResponse;
 		const uint16 nSuggestedWeb = bWasRefresh
 			? m_pOwner->m_nExternalTCPWebPort : m_pOwner->m_nTCPWebPort;
-		if (m_pOwner->MapPort(
+		const bool bWebMapped = m_pOwner->MapPort(
 			nGatewayIP, nInterfaceIndex,
 			m_pOwner->m_nTCPWebPort,
-			nSuggestedWeb, true, nLeaseTime, webResponse)) {
-			if (natmap::NatPmpEpochAppearsReset(
-				m_pOwner->m_dwMapperEpoch, webResponse.epoch)) {
+			nSuggestedWeb, true, nLeaseTime, webResponse);
+		const bool bWebResponseObserved =
+			natmap::HasCorrelatedNatPmpMapObservation(
+				webResponse, m_pOwner->m_nTCPWebPort);
+		natmap::NatPmpEpochDecision webEpochDecision{};
+		if (bWebResponseObserved) {
+			natmap::NatPmpEpochSequence webEpochSequence{};
+			webEpochSequence.udp_required = false;
+			if (m_pOwner->m_bMapperEpochObservationValid) {
+				webEpochSequence.previous_snapshot.observed = true;
+				webEpochSequence.previous_snapshot.accepted = true;
+				webEpochSequence.previous_snapshot.epoch =
+					m_pOwner->m_dwMapperEpoch;
+				webEpochSequence.previous_snapshot.observed_at_seconds =
+					m_pOwner->m_nMapperEpochObservedAtSeconds;
+			}
+			webEpochSequence.tcp_map.observed = true;
+			webEpochSequence.tcp_map.accepted = bWebMapped;
+			webEpochSequence.tcp_map.epoch = webResponse.epoch;
+			webEpochSequence.tcp_map.observed_at_seconds =
+				NatPmpMonotonicSeconds();
+			webEpochDecision =
+				natmap::EvaluateNatPmpEpochSequence(webEpochSequence);
+			bWebEpochReset =
+				webEpochDecision.strongest_boundary
+					== natmap::NatPmpEpochBoundary::ResetBeforeTcpMap;
+			if (webEpochDecision.has_continuity_epoch) {
+				m_pOwner->m_dwMapperEpoch =
+					webEpochDecision.continuity_epoch;
+				m_pOwner->m_nMapperEpochObservedAtSeconds =
+					webEpochDecision.continuity_observed_at_seconds;
+				m_pOwner->m_bMapperEpochObservationValid = true;
+			}
+		}
+		if (bWebEpochReset) {
 				// The reset erased the already granted TCP/UDP mappings.
 				// Remove the lone post-reset web mapping and fail the whole
 				// attempt so no stale direct result can be published.
 				DebugLogWarning(_T("NAT-PMP: Mapping table reset before web MAP"));
-				bMappingEpochReset = true;
 				bSucceeded = false;
-				m_pOwner->UnmapPort(
+				if (bWebMapped)
+					m_pOwner->UnmapPort(
 					nGatewayIP, nInterfaceIndex,
 					m_pOwner->m_nTCPWebPort, true);
 				m_pOwner->m_nExternalTCPPort = 0;
 				m_pOwner->m_nExternalUDPPort = 0;
 				m_pOwner->m_nExternalTCPWebPort = 0;
 				m_pOwner->m_dwMappingLeaseLifetime = 0;
-				m_pOwner->m_dwMapperEpoch = webResponse.epoch;
-			} else {
+		} else if (bWebMapped) {
 				m_pOwner->m_nExternalTCPWebPort =
 					webResponse.external_port;
 				m_pOwner->m_dwMappingLeaseLifetime = min(
 					m_pOwner->m_dwMappingLeaseLifetime,
 					webResponse.lifetime_seconds);
-				m_pOwner->m_dwMapperEpoch = webResponse.epoch;
-			}
-		} else if (!bWasRefresh) {
-			m_pOwner->m_nExternalTCPWebPort = 0;
+		} else {
+			if (!bWasRefresh)
+				m_pOwner->m_nExternalTCPWebPort = 0;
 		}
 	}
 
+	const bool bEpochInvalidatesAddress =
+		bWebEpochReset ||
+		(externalAddress.HasAddress()
+			? !epochDecision.external_address_current
+			: epochDecision.previous_pair_invalidated);
 	const natmap::NatPmpExternalAddressDecision publishAddress =
 		natmap::ResolveNatPmpPublishAddress(
-			externalAddress, retainedAddress, bMappingEpochReset);
+			externalAddress, retainedAddress,
+			bEpochInvalidatesAddress);
 	m_pOwner->m_dwMappingExternalIP = 0;
 	if (publishAddress.HasAddress())
 		memcpy(&m_pOwner->m_dwMappingExternalIP,
 			publishAddress.address.bytes.data(),
 			sizeof(m_pOwner->m_dwMappingExternalIP));
 	const bool bCanPublishDirect = publishAddress.can_publish_direct;
+	m_pOwner->m_bMapperEpochReset =
+		bWasRefresh &&
+		(epochDecision.previous_pair_invalidated ||
+		 bWebEpochReset);
 
 	if (!m_pOwner->m_bAbortDiscovery) {
 		if (bSucceeded)

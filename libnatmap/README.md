@@ -227,3 +227,19 @@ refresh failures do not delete or replace the previously published pair.
 Correlated rejected or semantically invalid MAP replies remain epoch
 observations without becoming successful mappings, so a proven gateway reset
 invalidates a pre-reset pair even when the replacement transaction fails.
+
+`EvaluateNatPmpEpochSequence` is the J03 epoch boundary. It evaluates the
+previous snapshot, external-address, TCP MAP and UDP MAP observations in wire
+order. The persisted epoch includes its monotonic observation instant, so the
+conservative expected value advances by locally elapsed time before applying
+the RFC 6886 two-second backwards tolerance. It independently reports whether
+the previous pair is invalid, the address still belongs to the MAP epoch, the
+pair can commit, and a failed reset sequence needs the bounded outer retry
+path. Correlated rejection epochs advance continuity without being treated as
+successful mappings. A successful post-reset refresh carries an explicit
+`mapper_epoch_reset` boundary through `MapperResult`; the main-thread manager
+must start a new topology generation even if the router grants the same
+address and ports, so pre-reset HighID and inbound evidence cannot survive.
+If the reset also prevents a publishable replacement result, the typed failed
+refresh carries the same boundary and explicitly degrades a new generation;
+failure therefore cannot leave the pre-reset evidence live.

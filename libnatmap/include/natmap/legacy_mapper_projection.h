@@ -19,6 +19,7 @@ struct LegacyMapperObservation {
     std::uint16_t external_udp_port = 0;
     std::uint32_t lifetime_seconds = 0;
     std::uint32_t mapper_epoch = 0;
+    bool mapper_epoch_reset = false;
     bool refresh = false;
 };
 
@@ -29,5 +30,10 @@ struct LegacyMapperObservation {
 bool ProjectLegacyMapperObservation(
     const MapperResult& result,
     LegacyMapperObservation& observation) noexcept;
+
+// A mapper-proven epoch reset is a topology boundary even when the newly
+// granted address and ports are byte-for-byte identical to the old pair.
+bool LegacyObservationAllowsSilentRenewal(
+    const LegacyMapperObservation& observation) noexcept;
 
 } // namespace natmap

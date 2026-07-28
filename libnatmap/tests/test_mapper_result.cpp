@@ -151,6 +151,7 @@ void TestNatPmpRenewal() {
                                  MappingStatus::Renewed, 9);
     AddAtomicPair(data, 4662, 4662, 4672, 4672);
     data.mapper_epoch = 44;
+    data.mapper_epoch_reset = true;
     MarkOwnedAndVerified(data);
     const MapperResult result(data);
 
@@ -159,6 +160,31 @@ void TestNatPmpRenewal() {
     CHECK(result.IsPublishable(9));
     CHECK(result.data().status == MappingStatus::Renewed);
     CHECK(result.data().mapper_epoch == 44);
+    CHECK(result.data().mapper_epoch_reset);
+
+    MapperResultData invalid = data;
+    invalid.mapper = MapperKind::Pcp;
+    invalid.source = MapperSource::PcpCpe;
+    invalid.mappings[0].granted_external_endpoint.source =
+        EndpointSource::PcpMap;
+    invalid.mappings[1].granted_external_endpoint.source =
+        EndpointSource::PcpMap;
+    CHECK(!MapperResult(invalid).IsStructurallyValid());
+
+    invalid = data;
+    invalid.operation = MappingOperation::Initial;
+    invalid.status = MappingStatus::Created;
+    CHECK(!MapperResult(invalid).IsStructurallyValid());
+
+    MapperResultData failedReset = Base(
+        MapperKind::NatPmp, MapperSource::NatPmp,
+        MappingOperation::Refresh, MappingStatus::Failed, 9);
+    failedReset.mapper_epoch = 2;
+    failedReset.mapper_epoch_reset = true;
+    failedReset.verification = VerificationState::Failed;
+    failedReset.reason = ReasonCode::MappingDenied;
+    CHECK(MapperResult(failedReset).IsStructurallyValid());
+    CHECK(!MapperResult(failedReset).IsPublishable(9));
 }
 
 void TestTimeout() {

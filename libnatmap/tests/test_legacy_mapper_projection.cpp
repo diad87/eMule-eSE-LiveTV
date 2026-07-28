@@ -70,14 +70,30 @@ void TestProjectsExactLegacyValues() {
     CHECK(observation.lifetime_seconds == 3600);
     CHECK(observation.mapper_epoch == 17);
     CHECK(!observation.refresh);
+    CHECK(!LegacyObservationAllowsSilentRenewal(observation));
 }
 
 void TestRefreshOnlyChangesLegacyRefreshFlag() {
-    const MapperResult result(LegacySuccess(MappingOperation::Refresh));
+    MapperResultData data = LegacySuccess(MappingOperation::Refresh);
+    data.mapper = MapperKind::NatPmp;
+    data.source = MapperSource::NatPmp;
+    data.mappings[0].granted_external_endpoint.source =
+        EndpointSource::NatPmpPublicAddress;
+    data.mappings[1].granted_external_endpoint.source =
+        EndpointSource::NatPmpPublicAddress;
+    data.mapper_epoch_reset = true;
+    const MapperResult result(data);
     LegacyMapperObservation observation{};
     CHECK(ProjectLegacyMapperObservation(result, observation));
     CHECK(observation.refresh);
+    CHECK(observation.mapper_epoch_reset);
+    CHECK(!LegacyObservationAllowsSilentRenewal(observation));
     CHECK(observation.external_tcp_port == 52144);
+
+    data.mapper_epoch_reset = false;
+    CHECK(ProjectLegacyMapperObservation(
+        MapperResult(data), observation));
+    CHECK(LegacyObservationAllowsSilentRenewal(observation));
 }
 
 void TestProjectionFailsClosedWithoutMutatingOutput() {

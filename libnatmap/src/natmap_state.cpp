@@ -217,4 +217,25 @@ TransitionResult ApplyEvent(const PlaneSnapshot& current,
     return TransitionResult{next, TransitionDisposition::Applied};
 }
 
+TransitionResult InvalidateForMapperEpochReset(
+    const PlaneSnapshot& current,
+    std::uint64_t new_generation) noexcept {
+    TransitionResult result = ApplyEvent(
+        current,
+        StateEvent{EventType::BeginGeneration, new_generation});
+    if (result.disposition != TransitionDisposition::Applied)
+        return result;
+    result = ApplyEvent(
+        result.snapshot,
+        StateEvent{EventType::MappingStarted, new_generation});
+    if (result.disposition != TransitionDisposition::Applied)
+        return result;
+    return ApplyEvent(
+        result.snapshot,
+        StateEvent{
+            EventType::LeaseLost,
+            new_generation,
+            ReasonCode::LeaseExpired});
+}
+
 } // namespace natmap

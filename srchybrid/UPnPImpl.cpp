@@ -85,6 +85,7 @@ CUPnPImpl::CUPnPImpl()
 	, m_dwMappingExternalIP()
 	, m_dwMappingLeaseLifetime()
 	, m_dwMapperEpoch()
+	, m_bMapperEpochReset()
 	, m_nDiagnosticStage(UPNP_DIAG_NOT_RUN)
 	, m_bCheckAndRefresh()
 	, m_requestInterfaceIndex()
@@ -145,6 +146,7 @@ natmap::MapperResultData CUPnPImpl::BuildMapperResultData(
 	data.gateway.address = operation.gateway_address;
 	data.gateway.source = natmap::EndpointSource::LocalInterface;
 	data.mapper_epoch = m_dwMapperEpoch;
+	data.mapper_epoch_reset = m_bMapperEpochReset;
 	data.request_id = operation.request.request_id;
 	data.topology_generation =
 		operation.request.topology_generation;

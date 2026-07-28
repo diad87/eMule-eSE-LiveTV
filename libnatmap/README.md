@@ -37,7 +37,19 @@ cl /nologo /EHsc /W4 /std:c++17 /Iinclude /Febuild\test_ownership_ledger.exe `
    tests\test_ownership_ledger.cpp src\ownership_ledger.cpp
 build\test_ownership_ledger.exe
 
+cl /nologo /EHsc /W4 /std:c++17 /Iinclude /Febuild\test_mapper_result.exe `
+   tests\test_mapper_result.cpp src\mapper_result.cpp
+build\test_mapper_result.exe
+
 cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
    /Fe..\tools\build\natmap_ownership_inspect.exe `
    ..\tools\natmap_ownership_inspect.cpp src\ownership_ledger.cpp
 ```
+
+`MapperResult` is the value-only worker-to-main-thread boundary shared by
+UPnP IGD, PCP and NAT-PMP. It snapshots an atomic TCP/UDP result, request and
+topology generation, mapper/source, granted endpoints, lease/epoch,
+ownership proof, verification evidence and normalized reason. Structural
+validity is deliberately separate from publication: partial mappings, stale
+generations and private/CGNAT external addresses remain diagnosable but can
+never be advertised as a verified route.

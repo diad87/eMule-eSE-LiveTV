@@ -31,5 +31,9 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_ownership_ledger
 if errorlevel 1 exit /b 1
 build\test_ownership_ledger.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapper_result.exe tests\test_mapper_result.cpp src\mapper_result.cpp
+if errorlevel 1 exit /b 1
+build\test_mapper_result.exe
+if errorlevel 1 exit /b 1
 echo libnatmap complete gate: PASS
 exit /b 0

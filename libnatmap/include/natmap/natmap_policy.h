@@ -91,7 +91,9 @@ private:
 
     PortLease lease_{};
     LeaseTiming timing_{};
+    std::uint64_t last_epoch_observation_seconds_ = 0;
     bool has_lease_ = false;
+    bool has_epoch_observation_ = false;
     bool last_epoch_reset_ = false;
 };
 

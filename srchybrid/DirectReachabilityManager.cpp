@@ -297,6 +297,8 @@ bool CDirectReachabilityManager::ObserveMappedPorts(natmap::MapperKind mapper,
 		tcpRenewal.mapper_epoch = nMapperEpoch;
 		natmap::LeaseController tcpLease = m_tcpLease;
 		bool renewed = tcpLease.AcceptRenewal(tcpRenewal, now);
+		if (renewed && tcpLease.LastRenewalObservedEpochReset())
+			renewed = false;
 		natmap::LeaseController udpLease = m_udpLease;
 		natmap::NatChainTransaction tcpChain = m_tcpChain;
 		natmap::NatChainTransaction udpChain = m_udpChain;
@@ -315,6 +317,9 @@ bool CDirectReachabilityManager::ObserveMappedPorts(natmap::MapperKind mapper,
 				udpRenewal.lifetime_seconds = nLifetimeSeconds;
 				udpRenewal.mapper_epoch = nMapperEpoch;
 				renewed = udpLease.AcceptRenewal(udpRenewal, now);
+				if (renewed
+					&& udpLease.LastRenewalObservedEpochReset())
+					renewed = false;
 				if (renewed)
 					renewed = udpChain.layer_count() != 0 && udpChain.AcceptRenewal(
 						udpChain.layer_count() - 1, udpRenewal, now);

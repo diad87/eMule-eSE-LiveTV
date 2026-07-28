@@ -69,6 +69,57 @@ void TestDifferentPortRenewAndDelete() {
     CHECK(!controller.HasLease());
 }
 
+void TestPcpEpochToleranceAndResetSignal() {
+    FakeGateway gateway{};
+    gateway.mapper = MapperKind::Pcp;
+    gateway.gateway = Ep(192, 168, 1, 1, 5351);
+    gateway.external_address = IpAddress::V4(88, 11, 22, 4);
+    gateway.forced_external_port = 52144;
+    gateway.lifetime_seconds = 100;
+    const PortIntent intent = BuildAutomaticPortIntent(
+        Transport::Tcp, Ep(192, 168, 1, 20, 4662), 100, 17);
+    MapResult mapped = gateway.Map(intent, 17);
+    mapped.lease.mapper_epoch = 500;
+
+    LeaseController valid;
+    CHECK(valid.Activate(mapped.lease, 1000));
+    PortLease advanced = mapped.lease;
+    advanced.mapper_epoch = 560;
+    CHECK(valid.AcceptRenewal(advanced, 61000));
+    CHECK(!valid.LastRenewalObservedEpochReset());
+    CHECK(valid.lease().generation == 17);
+
+    LeaseController reordered;
+    CHECK(reordered.Activate(mapped.lease, 0));
+    PortLease one_second_older = mapped.lease;
+    one_second_older.mapper_epoch = 499;
+    CHECK(reordered.AcceptRenewal(one_second_older, 1000));
+    CHECK(!reordered.LastRenewalObservedEpochReset());
+    CHECK(reordered.lease().generation == 17);
+
+    LeaseController rebooted;
+    CHECK(rebooted.Activate(mapped.lease, 0));
+    PortLease reset = mapped.lease;
+    reset.mapper_epoch = 0;
+    CHECK(rebooted.AcceptRenewal(reset, 1000));
+    CHECK(rebooted.LastRenewalObservedEpochReset());
+    CHECK(rebooted.lease().generation == 17);
+
+    LeaseController too_slow;
+    CHECK(too_slow.Activate(mapped.lease, 0));
+    PortLease barely_advanced = mapped.lease;
+    barely_advanced.mapper_epoch = 501;
+    CHECK(too_slow.AcceptRenewal(barely_advanced, 3600000));
+    CHECK(too_slow.LastRenewalObservedEpochReset());
+
+    LeaseController too_fast;
+    CHECK(too_fast.Activate(mapped.lease, 0));
+    PortLease jumped = mapped.lease;
+    jumped.mapper_epoch = 4100;
+    CHECK(too_fast.AcceptRenewal(jumped, 1000));
+    CHECK(too_fast.LastRenewalObservedEpochReset());
+}
+
 void TestChangedEndpointIsNotSilentRenewal() {
     FakeGateway gateway{};
     gateway.mapper = MapperKind::NatPmp;
@@ -178,6 +229,7 @@ void TestPermanentMappingHealthProbe() {
 int main() {
     TestCandidatePolicy();
     TestDifferentPortRenewAndDelete();
+    TestPcpEpochToleranceAndResetSignal();
     TestChangedEndpointIsNotSilentRenewal();
     TestApplicationRefreshSchedule();
     TestPermanentLeaseHasNoRefreshClock();

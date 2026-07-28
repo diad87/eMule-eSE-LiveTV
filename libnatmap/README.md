@@ -172,3 +172,11 @@ rollback; refresh failure never authorizes deletion of a pre-existing TCP
 mapping, and a committed or failed transaction cannot be reused. The TCP and
 UDP epochs apply the RFC 6887 section 8.5 backward-time rule: one second of
 reordering is tolerated, while a larger regression fails the whole pair.
+
+PCP refresh keeps its typed mapping identities and uses `LeaseController` to
+preserve the current generation only when the local and public endpoints are
+unchanged and the epoch remains valid. A server epoch reset is surfaced to the
+host as a real topology change; the host starts a new generation, so prior
+HighID and inbound evidence cannot survive the recreated mapping. Epoch
+validity applies both RFC 6887 section 8.5 drift inequalities against the
+stored monotonic observation time, not only the backward-time check.

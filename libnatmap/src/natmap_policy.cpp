@@ -166,13 +166,62 @@ bool LeaseController::SameIdentity(const PortLease& left,
            SameEndpoint(left.public_endpoint, right.public_endpoint);
 }
 
+namespace {
+
+bool EpochAppearsReset(
+    const PortLease& previous,
+    const PortLease& current,
+    bool has_previous_observation,
+    std::uint64_t previous_client_seconds,
+    std::uint64_t current_client_seconds) noexcept {
+    if (previous.mapper != MapperKind::Pcp)
+        return previous.mapper_epoch != 0
+            && current.mapper_epoch != 0
+            && current.mapper_epoch < previous.mapper_epoch;
+    if (!has_previous_observation)
+        return false;
+    if (current_client_seconds < previous_client_seconds)
+        return true;
+    if (current.mapper_epoch < previous.mapper_epoch) {
+        const std::uint32_t regression =
+            previous.mapper_epoch - current.mapper_epoch;
+        // RFC 6887 section 8.5 explicitly tolerates one second of apparent
+        // backward time for response reordering.
+        return regression > 1;
+    }
+
+    const std::uint64_t client_delta =
+        current_client_seconds - previous_client_seconds;
+    const std::uint64_t server_delta =
+        static_cast<std::uint64_t>(current.mapper_epoch)
+        - previous.mapper_epoch;
+    const std::uint64_t server_lower_bound =
+        server_delta - server_delta / 16;
+    const std::uint64_t client_lower_bound =
+        client_delta - client_delta / 16;
+    const std::uint64_t maximum =
+        (std::numeric_limits<std::uint64_t>::max)();
+    const std::uint64_t client_plus_two =
+        client_delta > maximum - 2
+            ? maximum : client_delta + 2;
+    const std::uint64_t server_plus_two =
+        server_delta > maximum - 2
+            ? maximum : server_delta + 2;
+    return client_plus_two < server_lower_bound
+        || server_plus_two < client_lower_bound;
+}
+
+} // namespace
+
 bool LeaseController::Activate(const PortLease& lease,
                                std::uint64_t now_ms) noexcept {
     if (!lease.IsStructurallyValid() || !lease.owned_by_us)
         return false;
     lease_ = lease;
     timing_ = Schedule(lease, now_ms);
+    last_epoch_observation_seconds_ = now_ms / 1000;
     has_lease_ = true;
+    has_epoch_observation_ = lease.mapper == MapperKind::Pcp;
     last_epoch_reset_ = false;
     return true;
 }
@@ -182,10 +231,14 @@ bool LeaseController::AcceptRenewal(const PortLease& lease,
     if (!has_lease_ || !lease.IsStructurallyValid() || !lease.owned_by_us ||
         !SameIdentity(lease_, lease))
         return false;
-    last_epoch_reset_ = lease_.mapper_epoch != 0 && lease.mapper_epoch != 0 &&
-                        lease.mapper_epoch < lease_.mapper_epoch;
+    const std::uint64_t current_client_seconds = now_ms / 1000;
+    last_epoch_reset_ = EpochAppearsReset(
+        lease_, lease, has_epoch_observation_,
+        last_epoch_observation_seconds_, current_client_seconds);
     lease_ = lease;
     timing_ = Schedule(lease, now_ms);
+    last_epoch_observation_seconds_ = current_client_seconds;
+    has_epoch_observation_ = lease.mapper == MapperKind::Pcp;
     return true;
 }
 
@@ -205,7 +258,9 @@ bool LeaseController::TakeOwnedForDeletion(std::uint64_t generation,
     lease = lease_;
     lease_ = PortLease{};
     timing_ = LeaseTiming{};
+    last_epoch_observation_seconds_ = 0;
     has_lease_ = false;
+    has_epoch_observation_ = false;
     last_epoch_reset_ = false;
     return true;
 }

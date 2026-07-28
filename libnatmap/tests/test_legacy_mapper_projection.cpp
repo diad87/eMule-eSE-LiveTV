@@ -28,6 +28,7 @@ MapperResultData LegacySuccess(MappingOperation operation) {
     data.mapper = MapperKind::Pcp;
     data.source = MapperSource::PcpCpe;
     data.gateway.address = IpAddress::V4(192, 168, 68, 1);
+    data.gateway.port = 5351;
     data.gateway.source = EndpointSource::LocalInterface;
     data.mapping_count = 2;
     data.mappings[0].transport = Transport::Tcp;
@@ -47,14 +48,23 @@ MapperResultData LegacySuccess(MappingOperation operation) {
     data.mappings[1].lifetime_seconds = 3600;
     data.mappings[1].effective_expiry_monotonic_ms = 3601000;
     data.mapper_epoch = 17;
-    data.ownership = OwnershipState::Unverifiable;
+    data.ownership = OwnershipState::OwnedByUs;
+    data.ownership_nonce[0] = 1;
     data.verification = VerificationState::Pending;
     data.request_id = 9;
+    data.request_interface_index = 7;
+    data.request_local_address = IpAddress::V4(192, 168, 68, 54);
     data.topology_generation = 4;
     data.operation = operation;
     data.status = operation == MappingOperation::Refresh
         ? MappingStatus::Renewed : MappingStatus::Created;
     return data;
+}
+
+void SetExternalAddress(MapperResultData& data,
+                        const IpAddress& address) {
+    for (std::size_t i = 0; i < data.mapping_count; ++i)
+        data.mappings[i].granted_external_endpoint.address = address;
 }
 
 void TestProjectsExactLegacyValues() {
@@ -169,6 +179,61 @@ void TestTcpOnlyPreservesLegacyOptionalUdp() {
     CHECK(observation.external_udp_port == 0);
 }
 
+void TestAdmissionRejectsEveryNonPublishableExternalClass() {
+    const IpAddress rejected[] = {
+        IpAddress::V4(127, 0, 0, 1),
+        IpAddress::V4(169, 254, 1, 1),
+        IpAddress::V4(192, 0, 2, 1),
+        IpAddress::V4(198, 51, 100, 1),
+        IpAddress::V4(203, 0, 113, 1),
+        IpAddress::V4(224, 0, 0, 1),
+        IpAddress::V4(240, 0, 0, 1),
+        IpAddress::V4(255, 255, 255, 255),
+    };
+    for (const IpAddress& address : rejected) {
+        MapperResultData data =
+            LegacySuccess(MappingOperation::Initial);
+        SetExternalAddress(data, address);
+        LegacyMapperObservation sentinel{};
+        sentinel.local_tcp_port = 1234;
+        CHECK(AdmitLegacyMapperObservation(
+                  MapperResult(data), 4, sentinel) ==
+              LegacyMapperAdmissionStatus::UnroutableEndpoint);
+        CHECK(sentinel.local_tcp_port == 1234);
+    }
+
+    MapperResultData unspecified =
+        LegacySuccess(MappingOperation::Initial);
+    SetExternalAddress(unspecified, IpAddress::V4(0, 0, 0, 0));
+    LegacyMapperObservation sentinel{};
+    CHECK(AdmitLegacyMapperObservation(
+              MapperResult(unspecified), 4, sentinel) ==
+          LegacyMapperAdmissionStatus::InvalidResult);
+
+    MapperResultData noncanonical =
+        LegacySuccess(MappingOperation::Initial);
+    IpAddress malformed = IpAddress::V4(88, 11, 22, 4);
+    malformed.bytes[4] = 1;
+    SetExternalAddress(noncanonical, malformed);
+    CHECK(AdmitLegacyMapperObservation(
+              MapperResult(noncanonical), 4, sentinel) ==
+          LegacyMapperAdmissionStatus::InvalidResult);
+
+    const IpAddress allowed[] = {
+        IpAddress::V4(88, 11, 22, 4),
+        IpAddress::V4(192, 168, 1, 77),
+        IpAddress::V4(100, 69, 24, 30),
+    };
+    for (const IpAddress& address : allowed) {
+        MapperResultData data =
+            LegacySuccess(MappingOperation::Initial);
+        SetExternalAddress(data, address);
+        CHECK(AdmitLegacyMapperObservation(
+                  MapperResult(data), 4, sentinel) ==
+              LegacyMapperAdmissionStatus::Accepted);
+    }
+}
+
 void TestTopologyGenerationRules() {
     LegacyMapperObservation current{};
     CHECK(ProjectLegacyMapperObservation(
@@ -273,6 +338,7 @@ int main() {
     TestRefreshOnlyChangesLegacyRefreshFlag();
     TestProjectionFailsClosedWithoutMutatingOutput();
     TestTcpOnlyPreservesLegacyOptionalUdp();
+    TestAdmissionRejectsEveryNonPublishableExternalClass();
     TestTopologyGenerationRules();
     TestTopologyGenerationRejectsInvalidAndOverflow();
     std::printf(

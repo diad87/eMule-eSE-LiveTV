@@ -243,11 +243,13 @@ struct UPnPRouteContext
 	DWORD interfaceIndex;
 	DWORD gatewayAddress;
 	DWORD localAddress;
+	natmap::NetworkOrigin origin;
 
 	UPnPRouteContext()
 		: interfaceIndex()
 		, gatewayAddress()
 		, localAddress()
+		, origin(natmap::NetworkOrigin::Unknown)
 	{
 	}
 };
@@ -269,6 +271,7 @@ static bool GetUPnPRouteContext(UPnPRouteContext& context)
 		return false;
 
 	DWORD localAddress = 0;
+	natmap::NetworkOrigin origin = natmap::NetworkOrigin::Unknown;
 	for (PIP_ADAPTER_INFO adapter = adapters; adapter != NULL;
 		adapter = adapter->Next) {
 		if (adapter->Index != route.dwForwardIfIndex)
@@ -281,6 +284,15 @@ static bool GetUPnPRouteContext(UPnPRouteContext& context)
 				break;
 			}
 		}
+		natmap::NetworkOriginEvidence originEvidence;
+		originEvidence.adapter_name = adapter->AdapterName;
+		originEvidence.adapter_description = adapter->Description;
+		originEvidence.is_tunnel = adapter->Type == IF_TYPE_TUNNEL;
+		originEvidence.is_loopback =
+			adapter->Type == MIB_IF_TYPE_LOOPBACK;
+		originEvidence.has_default_gateway =
+			route.dwForwardNextHop != 0;
+		origin = natmap::ClassifyNetworkOrigin(originEvidence).origin;
 		break;
 	}
 	if (localAddress == 0)
@@ -289,6 +301,7 @@ static bool GetUPnPRouteContext(UPnPRouteContext& context)
 	context.interfaceIndex = route.dwForwardIfIndex;
 	context.gatewayAddress = route.dwForwardNextHop;
 	context.localAddress = localAddress;
+	context.origin = origin;
 	return true;
 }
 
@@ -4815,6 +4828,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		&& (rawMessage & ~static_cast<UINT_PTR>(0xffffffffu)) == 0;
 	const bool bTimeout = wParam == CUPnPImpl::UPNP_TIMEOUT;
 	natmap::MapperResultData mapperResultData;
+	natmap::RouteBindingIdentity mapperRouteBinding;
 	UINT resultCode = static_cast<UINT>(wParam);
 	bool bWasRefresh = false;
 
@@ -4843,6 +4857,16 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 					UPnPIpAddress(currentRoute.localAddress),
 					UPnPIpAddress(currentRoute.gatewayAddress)}
 				: natmap::MappingRouteIdentity{};
+		if (hasCurrentRoute) {
+			mapperRouteBinding.local_address =
+				UPnPIpAddress(currentRoute.localAddress);
+			mapperRouteBinding.interface_index =
+				currentRoute.interfaceIndex;
+			mapperRouteBinding.family =
+				natmap::AddressFamily::IPv4;
+			mapperRouteBinding.origin = currentRoute.origin;
+			mapperRouteBinding.interface_present = true;
+		}
 		const natmap::ResultAcceptance acceptance =
 			mapperResult.IsStructurallyValid()
 				? m_mappingResultGate.ConsumeForCurrentRoute(
@@ -5008,7 +5032,8 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 			theApp.directreachability->IsEnabled();
 		const bool observed =
 			theApp.directreachability->ObserveMapperResult(
-				natmap::MapperResult(mapperResultData));
+				natmap::MapperResult(mapperResultData),
+				mapperRouteBinding);
 		const natmap::AdvertisementObservation advertisement{
 			previousGeneration,
 			theApp.directreachability->GetTopologyGeneration(),

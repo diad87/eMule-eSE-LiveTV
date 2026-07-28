@@ -400,6 +400,17 @@ bool SameRouteBinding(const RouteBindingIdentity& left,
            left.interface_present == right.interface_present;
 }
 
+RouteBindingContinuity EvaluateRouteBindingContinuity(
+    const RouteBindingIdentity& established,
+    const RouteBindingIdentity& observed) noexcept {
+    if (ValidateRouteBinding(established) != RouteBindingStatus::Valid ||
+        ValidateRouteBinding(observed) != RouteBindingStatus::Valid)
+        return RouteBindingContinuity::Invalid;
+    return SameRouteBinding(established, observed)
+               ? RouteBindingContinuity::Stable
+               : RouteBindingContinuity::Changed;
+}
+
 bool AllowsScopedPrivateAddress(const PrivateAddressScope& scope,
                                 const IpAddress& address,
                                 std::uint32_t interface_index) noexcept {

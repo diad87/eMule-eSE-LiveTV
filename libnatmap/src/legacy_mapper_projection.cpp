@@ -1,4 +1,5 @@
 #include "natmap/legacy_mapper_projection.h"
+#include "natmap/address_policy.h"
 
 #include <limits>
 
@@ -25,9 +26,14 @@ bool IsUnroutableExternalV4(
     const IpAddress& address) noexcept {
     if (!IsCanonicalV4(address))
         return true;
-    const std::uint8_t first = address.bytes[0];
-    return first == 0 || first == 127 || first >= 224 ||
-           (first == 169 && address.bytes[1] == 254);
+    const AddressClass address_class =
+        ClassifyAddress(address).address_class;
+    // RFC1918 and shared space are deliberately admitted here so M02 can
+    // continue through an authorized upper NAT layer or fail closed as
+    // native CGNAT. Every other non-public class is unusable as a mapper WAN.
+    return address_class != AddressClass::Public &&
+           address_class != AddressClass::Rfc1918 &&
+           address_class != AddressClass::SharedCgnat;
 }
 
 bool IdentityMatches(MapperKind mapper, MapperSource source,

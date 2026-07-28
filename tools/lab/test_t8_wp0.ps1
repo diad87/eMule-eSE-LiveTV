@@ -33,6 +33,7 @@ $requiredCoverageIds = @(
     'RENEWAL_REJECTED',
     'MAPPING_DISAPPEARED',
     'DOUBLE_NAT_FIRST_LAYER',
+    'DOUBLE_NAT_POLICY',
     'TWO_CLIENT_OWNERSHIP',
     'HIGHID_EVIDENCE',
     'HOSTILE_CORPUS',
@@ -222,6 +223,10 @@ try {
             & python.exe (
                 Join-Path $RepoRoot 'tests\test_v92_m01_address_policy.py') 2>&1)
         $m01HostExit = $LASTEXITCODE
+        $m02HostOutput = @(
+            & python.exe (
+                Join-Path $RepoRoot 'tests\test_v92_m02_double_nat.py') 2>&1)
+        $m02HostExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
     }
@@ -233,6 +238,7 @@ try {
     $l08HostOutput | ForEach-Object { Write-Host $_ }
     $l08RuntimeOutput | ForEach-Object { Write-Host $_ }
     $m01HostOutput | ForEach-Object { Write-Host $_ }
+    $m02HostOutput | ForEach-Object { Write-Host $_ }
     $l04Text = ($l04Output | ForEach-Object { [string]$_ }) -join "`n"
     $l04HostText = (
         $l04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
@@ -248,6 +254,8 @@ try {
         $l08RuntimeOutput | ForEach-Object { [string]$_ }) -join "`n"
     $m01HostText = (
         $m01HostOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $m02HostText = (
+        $m02HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l04Verdict = (
         $l04BuildExit -eq 0 -and
         $l04HostExit -eq 0 -and
@@ -295,6 +303,20 @@ try {
         $m01NativeChecks -ge 260 -and
         $m01HostText -match 'Ran 6 tests' -and
         $m01HostText -match '(?m)^OK\s*$'
+    )
+    $m02NativeMatch = [regex]::Match(
+        $l04Text, 'test_nat_chain: (\d+) checks, 0 failures')
+    $m02NativeChecks = if ($m02NativeMatch.Success) {
+        [int]$m02NativeMatch.Groups[1].Value
+    } else {
+        0
+    }
+    $m02Verdict = (
+        $l04BuildExit -eq 0 -and
+        $m02HostExit -eq 0 -and
+        $m02NativeChecks -ge 57 -and
+        $m02HostText -match 'Ran 8 tests' -and
+        $m02HostText -match '(?m)^OK\s*$'
     )
 
     $hyperVOutput = @()
@@ -351,6 +373,7 @@ try {
         $l07Verdict -and
         $l08Verdict -and
         $m01Verdict -and
+        $m02Verdict -and
         $hyperVVerdict -and
         $coverageIds.Count -eq $requiredCoverageIds.Count
     )
@@ -406,6 +429,14 @@ try {
             native_checks = $m01NativeChecks
             origin_independent = $true
             scoped_private_exception = $true
+        }
+        m02_double_nat = [ordered]@{
+            verdict = if ($m02Verdict) { 'PASS' } else { 'FAIL' }
+            physical_mutation = $false
+            native_checks = $m02NativeChecks
+            authorized_evidence_only = $true
+            maximum_layers = 2
+            arbitrary_probe = $false
         }
         coverage = [ordered]@{
             schema_sha256 = Get-Sha256 -Path (

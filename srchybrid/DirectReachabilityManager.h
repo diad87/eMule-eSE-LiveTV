@@ -32,8 +32,10 @@ public:
 		const natmap::VerificationAttempt& attempt);
 	bool HasVerifiedEd2kReachability() const;
 	uint64 GetTopologyGeneration() const;
-	natmap::UpstreamGatewayCandidates GetUpstreamGatewayCandidates() const;
-	bool ObserveMapperResult(const natmap::MapperResult& result);
+	natmap::UpstreamGatewayCandidates GetUpstreamGatewayCandidates(
+		const natmap::UpstreamDiscoveryInput& authorizedEvidence) const;
+	bool ObserveMapperResult(const natmap::MapperResult& result,
+		const natmap::RouteBindingIdentity& routeBinding);
 	bool ObserveMapperEpochReset();
 	bool DisableMappingsByPreference();
 	bool ObserveNetworkRouteChange();
@@ -51,7 +53,8 @@ private:
 		uint16 nLocalUdpPort, uint16 nExternalUdpPort,
 		uint32 nLifetimeSeconds, uint32 nMapperEpoch,
 		const natmap::Endpoint& gateway, uint64 resultGeneration,
-		bool bMapperEpochReset, bool bRefresh);
+		bool bMapperEpochReset, bool bRefresh,
+		const natmap::RouteBindingIdentity& routeBinding);
 	void AssertMainThread() const;
 	static natmap::Endpoint MakeAnyV4(uint16 nPort);
 	static natmap::Endpoint MakePublicV4(uint32 nNetworkOrderIP,
@@ -77,6 +80,7 @@ private:
 	natmap::LeaseController m_udpLease;
 	natmap::NatChainTransaction m_tcpChain;
 	natmap::NatChainTransaction m_udpChain;
+	natmap::RouteBindingIdentity m_mapperRouteBinding;
 	natmap::MapperTopologyIdentity m_mapperTopologyIdentity;
 	natmap::ReachabilitySnapshot m_snapshot;
 };

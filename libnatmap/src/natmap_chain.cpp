@@ -1,32 +1,92 @@
 #include "natmap/natmap_chain.h"
+#include "natmap/address_policy.h"
 
 namespace natmap {
+namespace {
+
+bool SameAddress(const IpAddress& left, const IpAddress& right) noexcept {
+    return left.family == right.family && left.bytes == right.bytes;
+}
+
+bool IsAuthorizedSource(GatewayCandidateSource source) noexcept {
+    switch (source) {
+    case GatewayCandidateSource::InterfaceRoute:
+    case GatewayCandidateSource::DhcpOption:
+    case GatewayCandidateSource::ExplicitConfiguration:
+    case GatewayCandidateSource::OperatorPolicy:
+        return true;
+    case GatewayCandidateSource::None:
+        return false;
+    }
+    return false;
+}
+
+}  // namespace
 
 UpstreamGatewayCandidates BuildUpstreamGatewayCandidates(
-    const IpAddress& mapper_wan_address) noexcept {
+    const UpstreamDiscoveryInput& input) noexcept {
     UpstreamGatewayCandidates result{};
-    if (!mapper_wan_address.IsSpecified() ||
-        mapper_wan_address.family != AddressFamily::IPv4) {
-        result.status = UpstreamDiscoveryStatus::InvalidAddress;
-        return result;
-    }
-    if (mapper_wan_address.IsSharedCgnatV4()) {
-        result.status = UpstreamDiscoveryStatus::OperatorCgnat;
-        return result;
-    }
-    if (!mapper_wan_address.IsRfc1918V4()) {
-        result.status = UpstreamDiscoveryStatus::NotNeeded;
+    if (input.evidence_count > input.evidence.size()) {
+        result.status = UpstreamDiscoveryStatus::InvalidInput;
         return result;
     }
 
-    // Deliberately bounded: two conventional gateway addresses in the WAN's
-    // observed /24, never a subnet scan or an arbitrary Internet target.
+    const AddressDecision wan = ClassifyAddress(input.mapper_wan_address);
+    if (wan.address_class == AddressClass::SharedCgnat &&
+        input.mapper_origin == NetworkOrigin::Native) {
+        result.status = UpstreamDiscoveryStatus::OperatorCgnat;
+        result.reason = ReasonCode::CgnatWithoutLease;
+        return result;
+    }
+    if (wan.address_class == AddressClass::SharedCgnat) {
+        result.status =
+            UpstreamDiscoveryStatus::NoAuthorizedCandidate;
+        result.reason = ReasonCode::NoRoute;
+        return result;
+    }
+    if (wan.address_class == AddressClass::Public) {
+        result.status = UpstreamDiscoveryStatus::NotNeeded;
+        result.reason = ReasonCode::None;
+        return result;
+    }
+    if (wan.address_class != AddressClass::Rfc1918 ||
+        input.mapper_origin != NetworkOrigin::Native ||
+        input.interface_index == 0) {
+        result.status = UpstreamDiscoveryStatus::InvalidInput;
+        return result;
+    }
+
+    for (std::uint8_t i = 0; i < input.evidence_count; ++i) {
+        const UpstreamGatewayEvidence& evidence = input.evidence[i];
+        if (!evidence.interface_present ||
+            evidence.interface_index != input.interface_index ||
+            !IsAuthorizedSource(evidence.source) ||
+            ClassifyAddress(evidence.address).address_class !=
+                AddressClass::Rfc1918 ||
+            SameAddress(evidence.address, input.mapper_wan_address))
+            continue;
+
+        bool duplicate = false;
+        for (std::uint8_t j = 0; j < result.count; ++j)
+            if (SameAddress(result.addresses[j], evidence.address)) {
+                duplicate = true;
+                break;
+            }
+        if (duplicate)
+            continue;
+
+        result.addresses[result.count] = evidence.address;
+        result.sources[result.count] = evidence.source;
+        ++result.count;
+    }
+    if (result.count == 0) {
+        result.status =
+            UpstreamDiscoveryStatus::NoAuthorizedCandidate;
+        result.reason = ReasonCode::NoRoute;
+        return result;
+    }
     result.status = UpstreamDiscoveryStatus::CandidateGateways;
-    result.addresses[0] = mapper_wan_address;
-    result.addresses[0].bytes[3] = 1;
-    result.addresses[1] = mapper_wan_address;
-    result.addresses[1].bytes[3] = 254;
-    result.count = result.addresses[0].bytes == result.addresses[1].bytes ? 1 : 2;
+    result.reason = ReasonCode::None;
     return result;
 }
 
@@ -36,12 +96,17 @@ bool NatChainTransaction::SameEndpoint(const Endpoint& left,
            left.address.bytes == right.address.bytes;
 }
 
-bool NatChainTransaction::Begin(std::uint64_t generation) noexcept {
-    if (generation == 0 || (generation_ != 0 && generation <= generation_))
+bool NatChainTransaction::Begin(std::uint64_t generation,
+                                NetworkOrigin origin) noexcept {
+    if (generation == 0 || (generation_ != 0 && generation <= generation_) ||
+        (origin != NetworkOrigin::Native &&
+         origin != NetworkOrigin::Overlay &&
+         origin != NetworkOrigin::Unknown))
         return false;
     layers_ = std::array<LeaseController, kMaximumLayers>{};
     generation_ = generation;
     layer_count_ = 0;
+    origin_ = origin;
     return true;
 }
 
@@ -86,20 +151,33 @@ std::size_t NatChainTransaction::Rollback(
 }
 
 bool NatChainTransaction::IsComplete() const noexcept {
-    return layer_count_ != 0 &&
-           !layers_[layer_count_ - 1].lease().public_endpoint.address
-                .IsPrivateOrSharedV4();
+    return Evaluate() == NatChainStatus::CompletePublic;
 }
 
 bool NatChainTransaction::NeedsUpstream() const noexcept {
-    return layer_count_ != 0 &&
-           layers_[layer_count_ - 1].lease().public_endpoint.address.IsRfc1918V4() &&
-           layer_count_ < kMaximumLayers;
+    return Evaluate() == NatChainStatus::NeedsAuthorizedUpstream;
 }
 
 bool NatChainTransaction::IsBlockedByCgnat() const noexcept {
-    return layer_count_ != 0 && layers_[layer_count_ - 1].lease()
-        .public_endpoint.address.IsSharedCgnatV4();
+    return Evaluate() == NatChainStatus::OperatorCgnat;
+}
+
+NatChainStatus NatChainTransaction::Evaluate() const noexcept {
+    if (layer_count_ == 0)
+        return NatChainStatus::Empty;
+    const AddressDecision decision = ClassifyAddress(
+        layers_[layer_count_ - 1].lease().public_endpoint.address);
+    if (decision.direct_publishable)
+        return NatChainStatus::CompletePublic;
+    if (decision.address_class == AddressClass::SharedCgnat)
+        return origin_ == NetworkOrigin::Native
+                   ? NatChainStatus::OperatorCgnat
+                   : NatChainStatus::NonPublishableEndpoint;
+    if (decision.address_class == AddressClass::Rfc1918)
+        return layer_count_ < kMaximumLayers
+                   ? NatChainStatus::NeedsAuthorizedUpstream
+                   : NatChainStatus::DepthLimitReached;
+    return NatChainStatus::NonPublishableEndpoint;
 }
 
 const PortLease& NatChainTransaction::layer(std::size_t index) const noexcept {

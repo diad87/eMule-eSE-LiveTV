@@ -266,18 +266,38 @@ void TestRouteBindingIdentity() {
     binding.origin = NetworkOrigin::Native;
     binding.interface_present = true;
     CHECK(ValidateRouteBinding(binding) == RouteBindingStatus::Valid);
+    CHECK(EvaluateRouteBindingContinuity(binding, binding) ==
+          RouteBindingContinuity::Stable);
 
     RouteBindingIdentity changed = binding;
     changed.interface_index = 18;
     CHECK(!SameRouteBinding(binding, changed));
+    CHECK(EvaluateRouteBindingContinuity(binding, changed) ==
+          RouteBindingContinuity::Changed);
+    changed = binding;
+    changed.local_address = IpAddress::V4(192, 168, 71, 24);
+    CHECK(EvaluateRouteBindingContinuity(binding, changed) ==
+          RouteBindingContinuity::Changed);
+    changed = binding;
+    changed.origin = NetworkOrigin::Overlay;
+    CHECK(EvaluateRouteBindingContinuity(binding, changed) ==
+          RouteBindingContinuity::Changed);
+    changed = binding;
+    changed.origin = NetworkOrigin::Unknown;
+    CHECK(EvaluateRouteBindingContinuity(binding, changed) ==
+          RouteBindingContinuity::Changed);
     changed = binding;
     changed.family = AddressFamily::IPv6;
     CHECK(ValidateRouteBinding(changed) ==
           RouteBindingStatus::FamilyMismatch);
+    CHECK(EvaluateRouteBindingContinuity(binding, changed) ==
+          RouteBindingContinuity::Invalid);
     changed = binding;
     changed.interface_present = false;
     CHECK(ValidateRouteBinding(changed) ==
           RouteBindingStatus::InterfaceMissing);
+    CHECK(EvaluateRouteBindingContinuity(binding, changed) ==
+          RouteBindingContinuity::Invalid);
     changed = binding;
     changed.interface_index = 0;
     CHECK(ValidateRouteBinding(changed) ==
@@ -290,6 +310,12 @@ void TestRouteBindingIdentity() {
     changed.origin = static_cast<NetworkOrigin>(255);
     CHECK(ValidateRouteBinding(changed) ==
           RouteBindingStatus::OriginInvalid);
+    CHECK(EvaluateRouteBindingContinuity(binding, changed) ==
+          RouteBindingContinuity::Invalid);
+
+    RouteBindingIdentity absent{};
+    CHECK(EvaluateRouteBindingContinuity(absent, binding) ==
+          RouteBindingContinuity::Invalid);
 }
 
 void TestScopedPrivateException() {

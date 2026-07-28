@@ -63,7 +63,7 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_lease_policy.exe
 if errorlevel 1 exit /b 1
 build\test_lease_policy.exe
 if errorlevel 1 exit /b 1
-cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_nat_chain.exe tests\test_nat_chain.cpp src\natmap_policy.cpp src\natmap_chain.cpp
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_nat_chain.exe tests\test_nat_chain.cpp src\natmap_policy.cpp src\natmap_chain.cpp src\address_policy.cpp
 if errorlevel 1 exit /b 1
 build\test_nat_chain.exe
 if errorlevel 1 exit /b 1
@@ -87,7 +87,7 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapping_request.
 if errorlevel 1 exit /b 1
 build\test_mapping_request.exe
 if errorlevel 1 exit /b 1
-cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_legacy_mapper_projection.exe tests\test_legacy_mapper_projection.cpp src\mapper_result.cpp src\legacy_mapper_projection.cpp
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_legacy_mapper_projection.exe tests\test_legacy_mapper_projection.cpp src\mapper_result.cpp src\legacy_mapper_projection.cpp src\address_policy.cpp
 if errorlevel 1 exit /b 1
 build\test_legacy_mapper_projection.exe
 if errorlevel 1 exit /b 1
@@ -95,7 +95,7 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapping_result_m
 if errorlevel 1 exit /b 1
 build\test_mapping_result_mailbox.exe
 if errorlevel 1 exit /b 1
-cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_hostile_mapper_corpus.exe tests\test_hostile_mapper_corpus.cpp src\pcp_codec.cpp src\pcp_map_projection.cpp src\pcp_mapping_identity.cpp src\pcp_response_guard.cpp src\mapping_result_mailbox.cpp src\mapper_result.cpp src\mapping_request.cpp src\legacy_mapper_projection.cpp src\natpmp_epoch_policy.cpp src\natpmp_codec.cpp
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_hostile_mapper_corpus.exe tests\test_hostile_mapper_corpus.cpp src\pcp_codec.cpp src\pcp_map_projection.cpp src\pcp_mapping_identity.cpp src\pcp_response_guard.cpp src\mapping_result_mailbox.cpp src\mapper_result.cpp src\mapping_request.cpp src\legacy_mapper_projection.cpp src\address_policy.cpp src\natpmp_epoch_policy.cpp src\natpmp_codec.cpp
 if errorlevel 1 exit /b 1
 build\test_hostile_mapper_corpus.exe
 if errorlevel 1 exit /b 1

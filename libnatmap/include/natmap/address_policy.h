@@ -107,6 +107,16 @@ RouteBindingStatus ValidateRouteBinding(
 bool SameRouteBinding(const RouteBindingIdentity& left,
                       const RouteBindingIdentity& right) noexcept;
 
+enum class RouteBindingContinuity : std::uint8_t {
+    Stable = 0,
+    Changed = 1,
+    Invalid = 2,
+};
+
+RouteBindingContinuity EvaluateRouteBindingContinuity(
+    const RouteBindingIdentity& established,
+    const RouteBindingIdentity& observed) noexcept;
+
 struct PrivateAddressScope {
     bool enabled = false;
     std::uint32_t interface_index = 0;

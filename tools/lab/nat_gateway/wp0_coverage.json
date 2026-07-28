@@ -146,6 +146,27 @@
       ]
     },
     {
+      "id": "DOUBLE_NAT_POLICY",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_nat_chain.cpp",
+          "contains": "TestDiscoveryRequiresAuthorizedEvidence"
+        },
+        {
+          "file": "libnatmap/tests/test_nat_chain.cpp",
+          "contains": "TestDepthAndNonRoutablePromotionFailClosed"
+        },
+        {
+          "file": "tests/test_v92_m02_double_nat.py",
+          "contains": "test_no_gateway_is_invented_or_subnet_scanned"
+        },
+        {
+          "file": "libnatmap/include/natmap/natmap_chain.h",
+          "contains": "kMaximumLayers = 2"
+        }
+      ]
+    },
+    {
       "id": "TWO_CLIENT_OWNERSHIP",
       "evidence": [
         {

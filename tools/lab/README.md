@@ -243,6 +243,37 @@ redaction, profile isolation, safe defaults, status capture, route attribution,
 short-soak accounting, report hashing, and cleanup. No eMule process or remote
 machine is needed.
 
+## V9.2 T8 Hyper-V network
+
+The T8 Hyper-V setup is additive and uses per-run switch and NAT names. Planning
+captures adapters, routes, existing NAT prefixes, the management route and an
+exact teardown recipe before any mutation. Apply refuses a changed host,
+overlapping prefix, name collision, generic switch, or ambiguous management
+route. Teardown revalidates the management route before every removal and binds
+the exact switch ID to its management-OS adapter and interface GUID.
+
+The deterministic tests do not require Hyper-V or administrator privileges:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File tools\lab\test_t8_hyperv_plan.ps1
+```
+
+The physical create/verify/teardown proof requires an elevated PowerShell and a
+new evidence directory whose final component follows the guarded naming
+convention:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File tools\lab\test_t8_hyperv_live.ps1 `
+  -EvidenceRoot C:\tmp\eSE-v9.2-f04-live-0123456789ab
+```
+
+The live runner always attempts teardown in `finally`, proves that the original
+management route, switches and NATs were restored, and records a final
+`TORN_DOWN` state. T8 never changes the home router or an existing external
+switch.
+
 ## V91 RC ledger
 
 The normative matrix contains 27 cases, including `V91-A02`. Reconcile a

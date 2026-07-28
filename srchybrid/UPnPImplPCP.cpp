@@ -566,7 +566,10 @@ bool CUPnPImplPCP::ExchangeMap(uint32 nGatewayIP, uint32 nInterfaceIndex,
 				return false;
 			}
 			if (bDeletion) {
-				succeeded = candidate.lifetime_seconds == 0;
+				succeeded = natmap::EvaluatePcpCleanupCommit(
+					true, guardStatus, true,
+					candidate.lifetime_seconds)
+					== natmap::PcpCleanupCommitStatus::Commit;
 			} else {
 				uint32 externalIP = 0;
 				succeeded = candidate.lifetime_seconds != 0

@@ -15,6 +15,14 @@ enum class PcpResponseGuardStatus : std::uint8_t {
     InvalidExpectation = 6,
 };
 
+enum class PcpCleanupCommitStatus : std::uint8_t {
+    Commit = 0,
+    InvalidResponse = 1,
+    GuardRejected = 2,
+    MapperRejected = 3,
+    NonZeroLifetime = 4,
+};
+
 struct PcpResponseExpectation {
     std::array<std::uint8_t, 4> source_address{};
     std::uint16_t source_port = 0;
@@ -35,6 +43,11 @@ struct PcpResponseObservation {
 PcpResponseGuardStatus ValidatePcpResponseObservation(
     const PcpResponseExpectation& expectation,
     const PcpResponseObservation& observation) noexcept;
+PcpCleanupCommitStatus EvaluatePcpCleanupCommit(
+    bool response_decoded,
+    PcpResponseGuardStatus guard_status,
+    bool mapper_succeeded,
+    std::uint32_t lifetime_seconds) noexcept;
 
 std::uint32_t PcpExchangeTimeoutMilliseconds(
     std::uint8_t attempt) noexcept;

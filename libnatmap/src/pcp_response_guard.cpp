@@ -43,6 +43,22 @@ PcpResponseGuardStatus ValidatePcpResponseObservation(
     return PcpResponseGuardStatus::Valid;
 }
 
+PcpCleanupCommitStatus EvaluatePcpCleanupCommit(
+    bool response_decoded,
+    PcpResponseGuardStatus guard_status,
+    bool mapper_succeeded,
+    std::uint32_t lifetime_seconds) noexcept {
+    if (!response_decoded)
+        return PcpCleanupCommitStatus::InvalidResponse;
+    if (guard_status != PcpResponseGuardStatus::Valid)
+        return PcpCleanupCommitStatus::GuardRejected;
+    if (!mapper_succeeded)
+        return PcpCleanupCommitStatus::MapperRejected;
+    return lifetime_seconds == 0
+        ? PcpCleanupCommitStatus::Commit
+        : PcpCleanupCommitStatus::NonZeroLifetime;
+}
+
 std::uint32_t PcpExchangeTimeoutMilliseconds(
     std::uint8_t attempt) noexcept {
     return attempt < kPcpExchangeTimeouts.size()

@@ -465,6 +465,19 @@ Consequently, an old epoch/generation completion is rejected without an
 effect, and a subsequent PCP MAP is a fresh allocation carrying the new epoch
 and generation.
 
+## UPnP E01 module boundaries
+
+UPnP starts as three disjoint protocol surfaces rather than one universal
+handler. `upnp_ssdp_discovery.js` owns discovery datagrams,
+`upnp_description_http.js` owns device/service XML retrieval, and
+`upnp_soap_control.js` owns control actions. Each factory accepts only its
+fixed operation vocabulary and returns a frozen branded surface. E01 accepts
+no callbacks or universal handler. The mandatory `upnp_igd_modules.js`
+composition accepts only the three correctly branded surfaces and rejects
+fake or swapped modules. None binds sockets, parses another surface or mutates
+mappings. Later E cards add behavior inside the corresponding module without
+merging SSDP, document HTTP and SOAP dispatch.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

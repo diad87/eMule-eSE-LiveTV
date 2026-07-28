@@ -19,6 +19,7 @@
 #include "preferences.h"
 #include "UPnPImplMiniLib.h"
 #include "natmap/upnp_discovery.h"
+#include "natmap/upnp_lease_policy.h"
 #include "natmap/upnp_mapping_result.h"
 #include "Log.h"
 #include "Otherfunctions.h"
@@ -1234,31 +1235,43 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 	// grants this process permission to delete that foreign rule.
 	int nResult = queryMapping();
 	const bool mappingProvenAbsentBeforeAdd = nResult == 714;
-	if (nResult == UPNPCOMMAND_SUCCESS && observedTargetMatches()) {
-		const uint32 remaining = ParseLeaseDuration(achLeaseDuration, 0);
-		const bool ownedDescription =
-			strcmp(achOutDescription, pachDescription) == 0;
-		if (!bCheckAndRefresh || !ownedDescription || remaining == 0) {
-			noteFiniteLease(remaining);
-			const bool ownershipPersisted = !ownedDescription
-				|| m_pOwner->RecordOwnedMapping(
-					nPort, *pExternalPort, bTCP, pachLANIP,
-					remaining, ownershipDescription);
-			if (pReadbackMatches != NULL)
-				*pReadbackMatches = true;
-			if (pOwnershipMatches != NULL)
-				*pOwnershipMatches =
-					ownedDescription && ownershipPersisted;
-			if (!ownershipPersisted) {
-				m_pOwner->m_nDiagnosticStage =
-					UPNP_DIAG_OWNERSHIP_PERSISTENCE;
-				return false;
-			}
-			DebugLog(_T("UPNP: Reusing compatible mapping %hu -> %hu (%s) on %S%s"),
-				*pExternalPort, nPort, (bTCP ? sTCP : sUDP), achOutIP,
-				ownedDescription ? _T("") : _T(" (router-managed description)"));
-			return true;
+	const bool existingTargetMatches =
+		nResult == UPNPCOMMAND_SUCCESS && observedTargetMatches();
+	const uint32 remaining = existingTargetMatches
+		? ParseLeaseDuration(achLeaseDuration, 0) : 0;
+	const bool ownedDescription = existingTargetMatches
+		&& strcmp(achOutDescription, pachDescription) == 0;
+	const natmap::UpnpExistingLeaseAction existingAction =
+		natmap::EvaluateUpnpExistingLease(
+			natmap::UpnpExistingLeaseObservation{
+				bCheckAndRefresh,
+				nResult == UPNPCOMMAND_SUCCESS,
+				existingTargetMatches,
+				ownedDescription,
+				remaining
+			});
+	if (existingAction == natmap::UpnpExistingLeaseAction::Reuse) {
+		noteFiniteLease(remaining);
+		const bool ownershipPersisted = !ownedDescription
+			|| m_pOwner->RecordOwnedMapping(
+				nPort, *pExternalPort, bTCP, pachLANIP,
+				remaining, ownershipDescription);
+		if (pReadbackMatches != NULL)
+			*pReadbackMatches = true;
+		if (pOwnershipMatches != NULL)
+			*pOwnershipMatches =
+				ownedDescription && ownershipPersisted;
+		if (!ownershipPersisted) {
+			m_pOwner->m_nDiagnosticStage =
+				UPNP_DIAG_OWNERSHIP_PERSISTENCE;
+			return false;
 		}
+		DebugLog(_T("UPNP: Reusing compatible mapping %hu -> %hu (%s) on %S%s"),
+			*pExternalPort, nPort, (bTCP ? sTCP : sUDP), achOutIP,
+			ownedDescription ? _T("") : _T(" (router-managed description)"));
+		return true;
+	}
+	if (existingAction == natmap::UpnpExistingLeaseAction::RenewFinite) {
 		// Observing a finite rule does not renew it. Only renew rules whose
 		// ownership description survived the router unchanged.
 		DebugLog(_T("Checking UPnP: Owned finite mapping %hu -> %hu (%s) has %u seconds left; renewing it now"),
@@ -1323,7 +1336,10 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 	if (nResult != UPNPCOMMAND_SUCCESS && adoptMappingAfterFailedAdd())
 		return true;
 
-	if (nResult != UPNPCOMMAND_SUCCESS) {
+	if (natmap::EvaluateUpnpLeaseAttempt(
+			natmap::UpnpLeaseRequestKind::Finite,
+			nResult == UPNPCOMMAND_SUCCESS)
+		== natmap::UpnpLeaseAttemptAction::TryPermanent) {
 		// Error 725 explicitly requires this, while a number of non-compliant
 		// IGD v1 routers report only 402/501 for the same lease restriction.
 		DebugLog(_T("Adding finite PortMapping failed (%d: %S), retrying with lease 0..."),
@@ -1336,6 +1352,13 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 		}
 		if (nResult != UPNPCOMMAND_SUCCESS && adoptMappingAfterFailedAdd())
 			return true;
+		const natmap::UpnpLeaseAttemptAction permanentAction =
+			natmap::EvaluateUpnpLeaseAttempt(
+				natmap::UpnpLeaseRequestKind::Permanent,
+				nResult == UPNPCOMMAND_SUCCESS);
+		if (permanentAction
+			== natmap::UpnpLeaseAttemptAction::AcceptPermanent)
+			requestedLifetime = 0;
 	}
 
 	// IGDv2 can reserve a different free external port. Try both a suggested

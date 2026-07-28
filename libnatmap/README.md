@@ -70,6 +70,11 @@ cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
 build\test_upnp_mapping_result.exe
 
 cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
+   /Febuild\test_upnp_lease_policy.exe `
+   tests\test_upnp_lease_policy.cpp src\upnp_lease_policy.cpp
+build\test_upnp_lease_policy.exe
+
+cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
    /Fe..\tools\build\natmap_ownership_inspect.exe `
    ..\tools\natmap_ownership_inspect.cpp src\ownership_ledger.cpp
 ```
@@ -114,3 +119,8 @@ failure. `ShouldRollbackUpnpMappingAfterAtomicFailure` authorizes rollback for
 TCP or UDP only when exact owned readback and `created_by_operation` prove that
 the current atomic operation created that mapping. Pre-existing or merely
 renewed mappings are never rollback candidates.
+
+`EvaluateUpnpExistingLease` and `EvaluateUpnpLeaseAttempt` are the pure H03
+lease boundary. They keep the finite-then-permanent request sequence explicit,
+reuse a readable permanent mapping as a health-probe success, renew an owned
+finite mapping, and classify a missing or incompatible readback for recreation.

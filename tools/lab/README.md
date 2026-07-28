@@ -259,15 +259,17 @@ powershell -ExecutionPolicy Bypass `
   -File tools\lab\test_t8_hyperv_plan.ps1
 ```
 
-The physical create/verify/teardown proof requires an elevated PowerShell and a
-new evidence directory whose final component follows the guarded naming
-convention:
+The physical create/verify/teardown proof requires a PowerShell console that
+the operator has already opened with **Run as administrator**, plus a new
+evidence directory whose final component follows the guarded naming convention:
 
 ```powershell
-powershell -ExecutionPolicy Bypass `
-  -File tools\lab\test_t8_hyperv_live.ps1 `
+& .\tools\lab\test_t8_hyperv_live.ps1 `
   -EvidenceRoot C:\tmp\eSE-v9.2-f04-live-0123456789ab
 ```
+
+Do not automate elevation, hide the elevated console, change execution policy,
+or add a Microsoft Defender exclusion for this fixture.
 
 The live runner always attempts teardown in `finally`, proves that the original
 management route, switches and NATs were restored, and records a final
@@ -279,8 +281,7 @@ a second synthetic address on the T8 adapter and an established TCP socket
 bound explicitly from the T8 client address to the T8 gateway address:
 
 ```powershell
-powershell -ExecutionPolicy Bypass `
-  -File tools\lab\test_t8_routes_live.ps1 `
+& .\tools\lab\test_t8_routes_live.ps1 `
   -EvidenceRoot C:\tmp\eSE-v9.2-f05-live-0123456789ab `
   -NodePath C:\path\to\node.exe
 ```

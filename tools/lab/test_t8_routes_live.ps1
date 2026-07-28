@@ -90,6 +90,34 @@ function Assert-F05BaselineEquivalent {
     }
 }
 
+function Wait-F05PreferredAddress {
+    param(
+        [Parameter(Mandatory = $true)][int]$InterfaceIndex,
+        [Parameter(Mandatory = $true)][string]$Address,
+        [ValidateRange(1, 30)][int]$TimeoutSeconds = 15
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $items = @(Get-NetIPAddress -InterfaceIndex $InterfaceIndex `
+            -AddressFamily IPv4 -IPAddress $Address `
+            -ErrorAction SilentlyContinue)
+        if ($items.Count -eq 1 -and
+            [string]$items[0].AddressState -eq 'Preferred') {
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'F05 T8 address did not reach Preferred state before timeout'
+}
+
+function Assert-F05NatPmpPortAvailable {
+    $endpoints = @(Get-NetUDPEndpoint -LocalPort 5351 `
+        -ErrorAction SilentlyContinue)
+    if ($endpoints.Count -gt 0) {
+        throw 'F05 NAT-PMP port 5351 is already in use'
+    }
+}
+
 function Invoke-F05MapperProbe {
     param(
         [Parameter(Mandatory = $true)][string]$Mode,
@@ -195,6 +223,7 @@ $baselineData = $null
 $perturbedData = $null
 
 try {
+    Assert-F05NatPmpPortAvailable
     $planText = @(& $orchestrator -RunLabel 'v92-f05-live' `
         -PlanPath $planPath) -join [Environment]::NewLine
     $planResult = $planText | ConvertFrom-Json
@@ -222,6 +251,12 @@ try {
         -PrefixLength 24 -AddressFamily IPv4 -SkipAsSource $false `
         -ErrorAction Stop
     $probeAddressCreated = $true
+    Wait-F05PreferredAddress -InterfaceIndex `
+        ([int]$state.resources.interface_index) `
+        -Address ([string]$plan.resources.gateway_address)
+    Wait-F05PreferredAddress -InterfaceIndex `
+        ([int]$state.resources.interface_index) -Address $probeAddress
+    Assert-F05NatPmpPortAvailable
 
     $baselineMapper = Invoke-F05MapperProbe -Mode 'baseline' `
         -GatewayAddress ([string]$plan.resources.gateway_address) `

@@ -445,6 +445,26 @@ encoder shapes, snapshots bounded request wire for error echo and emits
 zero-port/zero-address deletion success. Its raw mapping result is an internal
 domain value and must never be exported directly to logs or reports.
 
+## PCP D07 epoch restart and recovery
+
+`gateway_epoch_restart.js` implements the pure, protocol-independent
+`restart-epoch` reducer slice. PCP exercises it in D07; NAT-PMP and UPnP must
+use the same transition rather than maintain protocol-local generations.
+It installs the scenario's restart epoch, clears every active gateway mapping
+and advances the process-local generation exactly once. Baseline mappings are
+retained only for a later explicit `reset`; they never become active during an
+epoch restart.
+
+Pending responses belong to branded gateway state and are bounded to the
+scenario queue maximum of 4096. The transition atomically empties that trusted
+queue, emits one ordered `CANCEL_RESPONSE` effect per entry and records the
+closed `gateway_restarted` event before the returned state can process a
+recovery request. A late completion must still match the current epoch,
+generation and queued response ID before it can produce `SEND_RESPONSE`.
+Consequently, an old epoch/generation completion is rejected without an
+effect, and a subsequent PCP MAP is a fresh allocation carrying the new epoch
+and generation.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

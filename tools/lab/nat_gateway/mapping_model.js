@@ -420,6 +420,29 @@ function resetMappingState(state, input) {
   return deepFreeze({ ok: true, state: next });
 }
 
+function restartMappingEpoch(state, input) {
+  requireState(state);
+  const request = requestCopy(input, ['restart_seconds']);
+  if (Object.is(request.restart_seconds, -0)) {
+    fail('MAPPING_FIELD_INVALID', '$.restart_seconds', 'must not be negative zero');
+  }
+  assertUint(request.restart_seconds, 0xffffffff, '$.restart_seconds');
+  if (state.generation === MAX_SAFE) {
+    fail('GENERATION_EXHAUSTED', '$.generation', 'cannot advance the mapping generation');
+  }
+  const next = freezeState(
+    request.restart_seconds,
+    state.generation + 1,
+    [],
+    state.baseline_mappings
+  );
+  return deepFreeze({
+    ok: true,
+    state: next,
+    removed_mapping_count: state.mappings.length
+  });
+}
+
 /**
  * Raw, in-process snapshot for domain tests only. It intentionally retains
  * addresses and private ownership material and MUST NOT be used for JSONL,
@@ -441,5 +464,6 @@ module.exports = {
   expireMappings,
   deleteMapping,
   resetMappingState,
+  restartMappingEpoch,
   snapshotInternalMappings
 };

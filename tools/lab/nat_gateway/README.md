@@ -351,6 +351,18 @@ mandatory options and ignores well-formed unknown optional options as PCP
 requires. Stable errors carry the PCP result code needed by the later UDP
 server.
 
+## PCP D03 MAP response encoder
+
+`pcp_map_response_encoder.js` independently emits closed PCP MAP responses.
+It supports TCP/UDP, every native result code, IPv4-mapped and native IPv6
+addresses, successful deletion, `PREFER_FAILURE` and `PORT_SET`. Rejection
+responses snapshot and echo the bounded original request wire, including
+invalid nonce/protocol/port and unknown or malformed options; they also apply
+the parsed/unparsed client-address-tail rule from RFC 6887. Successful
+responses reject unspecified, loopback, link-local, multicast and broadcast
+external addresses. The semantic nonce remains explicit so later fault
+scenarios can intentionally emit a mismatched value without hidden mutation.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

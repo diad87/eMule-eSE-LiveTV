@@ -578,6 +578,21 @@ to the client policy. Missing, different-protocol and different-port entries
 return 714. Ownerless static entries return 606 instead of bypassing the
 shared model ownership invariant.
 
+## UPnP E08 native miniupnpc smoke
+
+`test/upnp_miniupnpc_smoke.test.js` is opt-in with
+`ESE_RUN_MINIUPNPC_SMOKE=1`. It starts bounded ephemeral HTTP state in the
+test harness plus an SSDP multicast responder on the selected non-loopback
+laboratory adapter. The vendored `upnpc-static.exe` then proves native
+discovery, external-address query, permanent TCP and UDP creation, generic
+readback and deletion. The ordinary offline suite skips this host-dependent
+case; the E08 gate runs it explicitly.
+
+On Windows the vendored client is built from
+`miniupnpc/msvc/miniupnpc_vs2015.sln` with the installed Visual Studio
+Build Tools and `/p:PlatformToolset=v143`. Build output remains ignored and
+is not part of the source commit.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

@@ -478,6 +478,25 @@ fake or swapped modules. None binds sockets, parses another surface or mutates
 mappings. Later E cards add behavior inside the corresponding module without
 merging SSDP, document HTTP and SOAP dispatch.
 
+## UPnP E02 SSDP discovery
+
+`upnp_ssdp_discovery.js` now owns the pure SSDP search codec. It accepts a
+bounded 2048-byte ASCII datagram, requires the exact
+`M-SEARCH * HTTP/1.1` request line and terminal blank line, treats header names
+case-insensitively, and validates `HOST`, quoted `MAN`, `MX` and the configured
+IGD v1/v2 `ST`. Duplicate, folded, injected or body-bearing requests fail
+closed. Positive `MX` values above five seconds are normalized to five, as
+required by UDA 2.0.
+
+The response contains `CACHE-CONTROL`, `EXT`, `LOCATION`, `SERVER`, `ST` and
+`USN`. `LOCATION` is constructed from the explicit laboratory adapter address,
+HTTP port and description path; it is never accepted as a caller-supplied URL.
+Unspecified, loopback, multicast and limited-broadcast addresses are rejected.
+IPv6 link-local addresses require a zone identifier, which is percent-encoded
+in the URI, so the location retains the laboratory interface identity.
+The normative source is OCF's UPnP Device Architecture 2.0, section 1.3.2,
+including the M-SEARCH request and unicast response requirements.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

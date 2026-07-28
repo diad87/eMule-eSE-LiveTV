@@ -182,7 +182,8 @@ natmap::MapperResultData CUPnPImpl::BuildMapperResultData(
 		tcp.local_endpoint = natmap::Endpoint{
 			operation.local_address, m_nTCPPort,
 			natmap::EndpointSource::LocalInterface};
-		tcp.requested_external_port = m_nTCPPort;
+		tcp.requested_external_port = RequestedExternalPort(
+			natmap::Transport::Tcp, m_nTCPPort);
 		tcp.granted_external_endpoint = natmap::Endpoint{
 			externalAddress, m_nExternalTCPPort, externalSource};
 		tcp.lifetime_seconds = m_dwMappingLeaseLifetime;
@@ -197,7 +198,8 @@ natmap::MapperResultData CUPnPImpl::BuildMapperResultData(
 		udp.local_endpoint = natmap::Endpoint{
 			operation.local_address, m_nUDPPort,
 			natmap::EndpointSource::LocalInterface};
-		udp.requested_external_port = m_nUDPPort;
+		udp.requested_external_port = RequestedExternalPort(
+			natmap::Transport::Udp, m_nUDPPort);
 		udp.granted_external_endpoint = natmap::Endpoint{
 			externalAddress, m_nExternalUDPPort, externalSource};
 		udp.lifetime_seconds = m_dwMappingLeaseLifetime;

@@ -160,3 +160,7 @@ must match the original transport and port and cannot silently replace or
 cross-use the TCP and UDP nonces. A MAP with an ambiguous outcome or a failed
 UNMAP retains that identity, and the Windows host blocks any replacement MAP
 until exact cleanup is confirmed.
+
+`ProjectPcpMapResponse` is the acceptance boundary for a successful MAP. It
+preserves requested and granted ports, external address, effective lifetime,
+epoch and nonce only after the response matches the typed mapping identity.

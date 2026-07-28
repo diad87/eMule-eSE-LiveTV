@@ -40,6 +40,24 @@ uint32 EffectiveLifetime(uint32 grantedLifetime)
 		: grantedLifetime;
 }
 
+std::array<uint8, 16> EncodeMappedV4(
+	const natmap::IpAddress& address)
+{
+	if (address.family != natmap::AddressFamily::IPv4)
+		return std::array<uint8, 16>();
+	return natmap::PcpIpv4Mapped(
+		address.bytes[0], address.bytes[1],
+		address.bytes[2], address.bytes[3]);
+}
+
+uint32 NetworkOrderV4(const natmap::IpAddress& address)
+{
+	uint32 result = 0;
+	if (address.family == natmap::AddressFamily::IPv4)
+		memcpy(&result, address.bytes.data(), sizeof(result));
+	return result;
+}
+
 } // namespace
 
 CUPnPImplPCP::CUPnPImplPCP()
@@ -47,6 +65,9 @@ CUPnPImplPCP::CUPnPImplPCP()
 	, m_dwOldGatewayIP(0)
 	, m_dwInterfaceIndex(0)
 	, m_dwOldInterfaceIndex(0)
+	, m_nRequestedTCPExternalPort(0)
+	, m_nRequestedUDPExternalPort(0)
+	, m_nRequestedWebExternalPort(0)
 	, m_hThreadHandle(NULL)
 	, m_bSucceededOnce(false)
 	, m_bAbortDiscovery(false)
@@ -75,6 +96,18 @@ bool CUPnPImplPCP::IsReady()
 		return false;
 	CSingleLock lockTest(&m_mutBusy);
 	return lockTest.Lock(0);
+}
+
+uint16 CUPnPImplPCP::RequestedExternalPort(
+	natmap::Transport transport, uint16 localPort) const
+{
+	if (transport == natmap::Transport::Tcp
+		&& m_tcpIdentity.IsValid())
+		return m_nRequestedTCPExternalPort;
+	if (transport == natmap::Transport::Udp
+		&& m_udpIdentity.IsValid())
+		return m_nRequestedUDPExternalPort;
+	return localPort;
 }
 
 void CUPnPImplPCP::StopAsyncFind()
@@ -141,6 +174,9 @@ void CUPnPImplPCP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort,
 	m_tcpExternalAddress.fill(0);
 	m_udpExternalAddress.fill(0);
 	m_webExternalAddress.fill(0);
+	m_nRequestedTCPExternalPort = 0;
+	m_nRequestedUDPExternalPort = 0;
+	m_nRequestedWebExternalPort = 0;
 	if (!hasCurrentIdentity || movedCurrentToOld) {
 		m_tcpIdentity.Clear();
 		m_udpIdentity.Clear();
@@ -208,6 +244,9 @@ void CUPnPImplPCP::DeletePorts()
 	m_tcpExternalAddress.fill(0);
 	m_udpExternalAddress.fill(0);
 	m_webExternalAddress.fill(0);
+	m_nRequestedTCPExternalPort = 0;
+	m_nRequestedUDPExternalPort = 0;
+	m_nRequestedWebExternalPort = 0;
 	m_bUPnPPortsForwarded = TRIS_FALSE;
 	DeletePorts(false);
 }
@@ -416,7 +455,7 @@ bool CUPnPImplPCP::MapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
 	uint16 nSuggestedExternalPort,
 	const std::array<uint8, 16>& suggestedExternalAddress,
 	uint32 nLifetime, natmap::PcpMappingIdentity& identity,
-	natmap::PcpMapResponse& response)
+	natmap::PcpMapProjection& projection)
 {
 	if (identity.IsEmpty()) {
 		std::array<uint8, 12> nonce{};
@@ -439,14 +478,25 @@ bool CUPnPImplPCP::MapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
 	request.internal_port = identity.internal_port;
 	request.suggested_external_port = nSuggestedExternalPort;
 	request.suggested_external_ip = suggestedExternalAddress;
+	natmap::PcpMapResponse response;
 	if (!ExchangeMap(
 			nGatewayIP, nInterfaceIndex, request, response, false))
 		return false;
+	const natmap::PcpMapProjectionResult projected =
+		natmap::ProjectPcpMapResponse(
+			identity, nSuggestedExternalPort, response);
+	if (!projected.IsProjected()) {
+		DebugLogWarning(_T("PCP: MAP response failed exact projection (status=%u)"),
+			static_cast<unsigned>(projected.status));
+		return false;
+	}
+	projection = projected.value;
 
 	DebugLog(_T("PCP: Mapped %s port %hu -> %hu (lifetime %us)"),
-		identity.transport == natmap::Transport::Tcp
+		projection.transport == natmap::Transport::Tcp
 			? _T("TCP") : _T("UDP"), identity.internal_port,
-		response.external_port, response.lifetime_seconds);
+		projection.granted_external_port,
+		projection.lifetime_seconds);
 	return true;
 }
 
@@ -540,7 +590,7 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 
 	const uint32 leaseTime = 7200;
 	bool succeeded = false;
-	natmap::PcpMapResponse tcpResponse;
+	natmap::PcpMapProjection tcpProjection;
 	const uint16 suggestedTCP = m_pOwner->m_bCheckAndRefresh
 		? m_pOwner->m_nExternalTCPPort : m_pOwner->m_nTCPPort;
 	const std::array<uint8, 16> suggestedTCPAddress =
@@ -552,19 +602,23 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 		m_pOwner->m_clientAddress, natmap::Transport::Tcp,
 		m_pOwner->m_nTCPPort, suggestedTCP,
 		suggestedTCPAddress, leaseTime, m_pOwner->m_tcpIdentity,
-		tcpResponse);
+		tcpProjection);
 	if (succeeded) {
-		m_pOwner->m_nExternalTCPPort = tcpResponse.external_port;
-		m_pOwner->m_tcpExternalAddress = tcpResponse.external_ip;
+		m_pOwner->m_nRequestedTCPExternalPort =
+			tcpProjection.requested_external_port;
+		m_pOwner->m_nExternalTCPPort =
+			tcpProjection.granted_external_port;
+		m_pOwner->m_tcpExternalAddress =
+			EncodeMappedV4(tcpProjection.external_address);
 		m_pOwner->m_dwMappingLeaseLifetime =
-			EffectiveLifetime(tcpResponse.lifetime_seconds);
-		m_pOwner->m_dwMapperEpoch = tcpResponse.epoch;
-		CUPnPImplPCP::ExtractIPv4(tcpResponse.external_ip,
-			m_pOwner->m_dwMappingExternalIP);
+			EffectiveLifetime(tcpProjection.lifetime_seconds);
+		m_pOwner->m_dwMapperEpoch = tcpProjection.epoch;
+		m_pOwner->m_dwMappingExternalIP =
+			NetworkOrderV4(tcpProjection.external_address);
 	}
 
 	if (succeeded && m_pOwner->m_nUDPPort != 0) {
-		natmap::PcpMapResponse udpResponse;
+		natmap::PcpMapProjection udpProjection;
 		const uint16 suggestedUDP = m_pOwner->m_bCheckAndRefresh
 			? m_pOwner->m_nExternalUDPPort : m_pOwner->m_nUDPPort;
 		const std::array<uint8, 16> suggestedUDPAddress =
@@ -576,26 +630,31 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 			m_pOwner->m_clientAddress, natmap::Transport::Udp,
 			m_pOwner->m_nUDPPort, suggestedUDP,
 			suggestedUDPAddress, leaseTime, m_pOwner->m_udpIdentity,
-			udpResponse);
+			udpProjection);
 		if (succeeded) {
-			m_pOwner->m_nExternalUDPPort = udpResponse.external_port;
-			m_pOwner->m_udpExternalAddress = udpResponse.external_ip;
+			m_pOwner->m_nRequestedUDPExternalPort =
+				udpProjection.requested_external_port;
+			m_pOwner->m_nExternalUDPPort =
+				udpProjection.granted_external_port;
+			m_pOwner->m_udpExternalAddress =
+				EncodeMappedV4(udpProjection.external_address);
 			m_pOwner->m_dwMappingLeaseLifetime = min(
 				m_pOwner->m_dwMappingLeaseLifetime,
-				EffectiveLifetime(udpResponse.lifetime_seconds));
-			m_pOwner->m_dwMapperEpoch = udpResponse.epoch;
+				EffectiveLifetime(udpProjection.lifetime_seconds));
+			m_pOwner->m_dwMapperEpoch = udpProjection.epoch;
 		} else {
 			if (m_pOwner->UnmapPort(m_pOwner->m_dwGatewayIP,
 				m_pOwner->m_dwInterfaceIndex,
 				m_pOwner->m_clientAddress, m_pOwner->m_tcpIdentity))
 				m_pOwner->m_tcpIdentity.Clear();
+			m_pOwner->m_nRequestedTCPExternalPort = 0;
 			m_pOwner->m_nExternalTCPPort = 0;
 			m_pOwner->m_tcpExternalAddress.fill(0);
 		}
 	}
 
 	if (succeeded && m_pOwner->m_nTCPWebPort != 0) {
-		natmap::PcpMapResponse webResponse;
+		natmap::PcpMapProjection webProjection;
 		const uint16 suggestedWeb = m_pOwner->m_bCheckAndRefresh
 			? m_pOwner->m_nExternalTCPWebPort : m_pOwner->m_nTCPWebPort;
 		const std::array<uint8, 16> suggestedWebAddress =
@@ -606,9 +665,13 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 			m_pOwner->m_clientAddress, natmap::Transport::Tcp,
 			m_pOwner->m_nTCPWebPort, suggestedWeb,
 			suggestedWebAddress, leaseTime, m_pOwner->m_webIdentity,
-			webResponse)) {
-			m_pOwner->m_nExternalTCPWebPort = webResponse.external_port;
-			m_pOwner->m_webExternalAddress = webResponse.external_ip;
+			webProjection)) {
+			m_pOwner->m_nRequestedWebExternalPort =
+				webProjection.requested_external_port;
+			m_pOwner->m_nExternalTCPWebPort =
+				webProjection.granted_external_port;
+			m_pOwner->m_webExternalAddress =
+				EncodeMappedV4(webProjection.external_address);
 		}
 	}
 

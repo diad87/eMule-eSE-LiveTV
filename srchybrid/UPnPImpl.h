@@ -133,6 +133,9 @@ protected:
 		const natmap::MapperResultData& resultData);
 	natmap::MapperResultData BuildMapperResultData(
 		const MappingOperationContext& operation) const;
+	virtual uint16 RequestedExternalPort(
+		natmap::Transport, uint16 localPort) const
+		{ return localPort; }
 	volatile TRISTATE m_bUPnPPortsForwarded;
 	uint16 m_nOldTCPPort;
 	uint16 m_nOldTCPWebPort;

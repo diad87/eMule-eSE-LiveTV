@@ -4,6 +4,7 @@
 #include "UPnPImplPCP.h"
 #include "Log.h"
 #include "OtherFunctions.h"
+#include "natmap/pcp_pair_transaction.h"
 
 #include <bcrypt.h>
 
@@ -589,7 +590,10 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 	}
 
 	const uint32 leaseTime = 7200;
-	bool succeeded = false;
+	const bool udpRequired = m_pOwner->m_nUDPPort != 0;
+	const bool initialOperation = !m_pOwner->m_bCheckAndRefresh;
+	natmap::PcpPairTransaction pairTransaction(
+		udpRequired, initialOperation);
 	natmap::PcpMapProjection tcpProjection;
 	const uint16 suggestedTCP = m_pOwner->m_bCheckAndRefresh
 		? m_pOwner->m_nExternalTCPPort : m_pOwner->m_nTCPPort;
@@ -597,27 +601,30 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 		m_pOwner->m_bCheckAndRefresh ? m_pOwner->m_tcpExternalAddress
 			: std::array<uint8, 16>();
 	m_pOwner->m_nDiagnosticStage = UPNP_DIAG_TCP_MAPPING;
-	succeeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
+	bool succeeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
 		m_pOwner->m_dwInterfaceIndex,
 		m_pOwner->m_clientAddress, natmap::Transport::Tcp,
 		m_pOwner->m_nTCPPort, suggestedTCP,
 		suggestedTCPAddress, leaseTime, m_pOwner->m_tcpIdentity,
 		tcpProjection);
-	if (succeeded) {
-		m_pOwner->m_nRequestedTCPExternalPort =
-			tcpProjection.requested_external_port;
-		m_pOwner->m_nExternalTCPPort =
-			tcpProjection.granted_external_port;
-		m_pOwner->m_tcpExternalAddress =
-			EncodeMappedV4(tcpProjection.external_address);
-		m_pOwner->m_dwMappingLeaseLifetime =
-			EffectiveLifetime(tcpProjection.lifetime_seconds);
-		m_pOwner->m_dwMapperEpoch = tcpProjection.epoch;
-		m_pOwner->m_dwMappingExternalIP =
-			NetworkOrderV4(tcpProjection.external_address);
+	if (succeeded
+		&& !pairTransaction.StageTcp(tcpProjection)) {
+		DebugLogWarning(_T("PCP: Refusing a TCP projection that cannot enter the atomic pair"));
+		succeeded = false;
+	}
+	if (!succeeded)
+		pairTransaction.RecordTcpFailure();
+
+	if (!succeeded && initialOperation
+		&& m_pOwner->m_tcpIdentity.IsValid()) {
+		if (m_pOwner->UnmapPort(m_pOwner->m_dwGatewayIP,
+			m_pOwner->m_dwInterfaceIndex,
+			m_pOwner->m_clientAddress,
+			m_pOwner->m_tcpIdentity))
+			m_pOwner->m_tcpIdentity.Clear();
 	}
 
-	if (succeeded && m_pOwner->m_nUDPPort != 0) {
+	if (succeeded && udpRequired) {
 		natmap::PcpMapProjection udpProjection;
 		const uint16 suggestedUDP = m_pOwner->m_bCheckAndRefresh
 			? m_pOwner->m_nExternalUDPPort : m_pOwner->m_nUDPPort;
@@ -625,32 +632,65 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 			m_pOwner->m_bCheckAndRefresh ? m_pOwner->m_udpExternalAddress
 				: std::array<uint8, 16>();
 		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_UDP_MAPPING;
-		succeeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
+		const bool udpMapped = m_pOwner->MapPort(
+			m_pOwner->m_dwGatewayIP,
 			m_pOwner->m_dwInterfaceIndex,
 			m_pOwner->m_clientAddress, natmap::Transport::Udp,
 			m_pOwner->m_nUDPPort, suggestedUDP,
 			suggestedUDPAddress, leaseTime, m_pOwner->m_udpIdentity,
 			udpProjection);
-		if (succeeded) {
+		succeeded = udpMapped
+			&& pairTransaction.StageUdp(udpProjection);
+		if (!succeeded) {
+			pairTransaction.RecordUdpFailure();
+			natmap::PcpMappingIdentity rollbackIdentity{};
+			if (pairTransaction.GetTcpRollbackIdentity(
+					rollbackIdentity)
+				&& m_pOwner->UnmapPort(m_pOwner->m_dwGatewayIP,
+				m_pOwner->m_dwInterfaceIndex,
+				m_pOwner->m_clientAddress, rollbackIdentity))
+				m_pOwner->m_tcpIdentity.Clear();
+		}
+	}
+
+	natmap::PcpPairCommit pairCommit{};
+	if (succeeded)
+		succeeded = pairTransaction.TryCommit(pairCommit);
+	if (succeeded) {
+		m_pOwner->m_nRequestedTCPExternalPort =
+			pairCommit.tcp.requested_external_port;
+		m_pOwner->m_nExternalTCPPort =
+			pairCommit.tcp.granted_external_port;
+		m_pOwner->m_tcpExternalAddress =
+			EncodeMappedV4(pairCommit.tcp.external_address);
+		m_pOwner->m_dwMappingLeaseLifetime =
+			EffectiveLifetime(pairCommit.tcp.lifetime_seconds);
+		m_pOwner->m_dwMapperEpoch = pairCommit.tcp.epoch;
+		m_pOwner->m_dwMappingExternalIP =
+			NetworkOrderV4(pairCommit.tcp.external_address);
+		if (pairCommit.has_udp) {
 			m_pOwner->m_nRequestedUDPExternalPort =
-				udpProjection.requested_external_port;
+				pairCommit.udp.requested_external_port;
 			m_pOwner->m_nExternalUDPPort =
-				udpProjection.granted_external_port;
+				pairCommit.udp.granted_external_port;
 			m_pOwner->m_udpExternalAddress =
-				EncodeMappedV4(udpProjection.external_address);
+				EncodeMappedV4(pairCommit.udp.external_address);
 			m_pOwner->m_dwMappingLeaseLifetime = min(
 				m_pOwner->m_dwMappingLeaseLifetime,
-				EffectiveLifetime(udpProjection.lifetime_seconds));
-			m_pOwner->m_dwMapperEpoch = udpProjection.epoch;
-		} else {
-			if (m_pOwner->UnmapPort(m_pOwner->m_dwGatewayIP,
-				m_pOwner->m_dwInterfaceIndex,
-				m_pOwner->m_clientAddress, m_pOwner->m_tcpIdentity))
-				m_pOwner->m_tcpIdentity.Clear();
-			m_pOwner->m_nRequestedTCPExternalPort = 0;
-			m_pOwner->m_nExternalTCPPort = 0;
-			m_pOwner->m_tcpExternalAddress.fill(0);
+				EffectiveLifetime(
+					pairCommit.udp.lifetime_seconds));
+			m_pOwner->m_dwMapperEpoch = pairCommit.udp.epoch;
 		}
+	} else if (initialOperation) {
+		m_pOwner->m_nRequestedTCPExternalPort = 0;
+		m_pOwner->m_nRequestedUDPExternalPort = 0;
+		m_pOwner->m_nExternalTCPPort = 0;
+		m_pOwner->m_nExternalUDPPort = 0;
+		m_pOwner->m_dwMappingExternalIP = 0;
+		m_pOwner->m_dwMappingLeaseLifetime = 0;
+		m_pOwner->m_dwMapperEpoch = 0;
+		m_pOwner->m_tcpExternalAddress.fill(0);
+		m_pOwner->m_udpExternalAddress.fill(0);
 	}
 
 	if (succeeded && m_pOwner->m_nTCPWebPort != 0) {

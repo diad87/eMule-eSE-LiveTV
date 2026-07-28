@@ -164,3 +164,11 @@ until exact cleanup is confirmed.
 `ProjectPcpMapResponse` is the acceptance boundary for a successful MAP. It
 preserves requested and granted ports, external address, effective lifetime,
 epoch and nonce only after the response matches the typed mapping identity.
+
+`PcpPairTransaction` stages those accepted projections without exposing a
+partial result. A required UDP mapping must complete before the TCP/UDP pair
+can be committed. Initial UDP failure retains only the exact TCP identity for
+rollback; refresh failure never authorizes deletion of a pre-existing TCP
+mapping, and a committed or failed transaction cannot be reused. The TCP and
+UDP epochs apply the RFC 6887 section 8.5 backward-time rule: one second of
+reordering is tolerated, while a larger regression fails the whole pair.

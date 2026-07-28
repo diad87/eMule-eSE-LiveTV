@@ -31,6 +31,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_pcp_map_projecti
 if errorlevel 1 exit /b 1
 build\test_pcp_map_projection.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_pcp_pair_transaction.exe tests\test_pcp_pair_transaction.cpp src\pcp_pair_transaction.cpp src\pcp_map_projection.cpp src\pcp_mapping_identity.cpp src\pcp_codec.cpp
+if errorlevel 1 exit /b 1
+build\test_pcp_pair_transaction.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_lease_policy.exe tests\test_lease_policy.cpp src\natmap_policy.cpp
 if errorlevel 1 exit /b 1
 build\test_lease_policy.exe

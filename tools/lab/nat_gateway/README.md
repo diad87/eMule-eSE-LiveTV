@@ -382,6 +382,34 @@ only the common response fields. Closed input shapes, hostile-storage
 rejection and defensive copies keep the codec free of sockets, timers, clocks,
 state and productive-code dependencies.
 
+## PCP D05 UDP boundary
+
+`pcp_udp_server.js` is the bounded IPv4/IPv6 UDP edge for MAP and ANNOUNCE.
+It binds only an explicit unicast address, snapshots at most 1100 bytes,
+accepts only configured source addresses and compares the canonical datagram
+source with the Client IP Address carried in the PCP common header before the
+mapping application can run. A mismatch returns PCP `ADDRESS_MISMATCH` (`12`)
+with zero lifetime and an injected epoch, without reading or mutating mapping
+state.
+
+The adapter returns safe wire-preserving errors for decodable MAP and ANNOUNCE
+requests and `UNSUPP_OPCODE` for a bounded unknown request opcode. Version
+rejection has precedence over opcode rejection. Short or misaligned requests
+of at least 24 bytes receive `MALFORMED_REQUEST`; oversized datagrams are
+snapshotted only through byte 1100 and receive a bounded malformed response.
+Datagrams whose response bit is already set are dropped, preventing response
+loops. Application responses remain protocol-bound: a MAP request can only
+pass through the MAP encoder and ANNOUNCE through its own encoder.
+
+The FIFO has one active item and at most 32 waiting datagrams. Closing removes
+reception, discards waiting work, aborts an active application/send and is
+idempotent. Events expose only the closed
+`{ protocol, outcome, reason_code }` envelope. The epoch provider, application
+and event sink are injected; this boundary owns no clock, lease, nonce,
+mapping or ownership state. The injected epoch provider is authoritative for
+both success and error wire responses; an application-supplied epoch is
+validated by its codec but cannot override the gateway epoch.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

@@ -124,3 +124,9 @@ renewed mappings are never rollback candidates.
 lease boundary. They keep the finite-then-permanent request sequence explicit,
 reuse a readable permanent mapping as a health-probe success, renew an owned
 finite mapping, and classify a missing or incompatible readback for recreation.
+
+`OwnershipJournalCommit` is the fail-closed H04 persistence-order guard. The
+Windows host encodes even an empty ledger, writes a temporary file, flushes and
+closes it, replaces the final path atomically with write-through semantics, and
+then reopens, byte-compares and decodes the final file. Persistence is reported
+only after that final verification step.

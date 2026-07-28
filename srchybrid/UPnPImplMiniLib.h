@@ -84,6 +84,7 @@ private:
 		bool bTCP, const char* pachLANIP, uint32 nLifetimeSeconds,
 		const natmap::OwnershipDescription& description);
 	void RemoveOwnershipRecord(std::size_t index);
+	bool RemoveOwnershipRecordDurably(std::size_t index);
 	std::uint64_t CurrentGatewayFingerprint() const;
 	static bool GenerateOwnerToken(std::uint64_t& token);
 	static bool ParseIPv4(const char* text, natmap::IpAddress& address);

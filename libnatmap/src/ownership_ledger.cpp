@@ -130,6 +130,17 @@ OwnershipDescription BuildOwnershipDescription(
     return result;
 }
 
+bool OwnershipJournalCommit::Complete(
+    OwnershipJournalStep step) noexcept {
+    if (failed_ || static_cast<std::uint8_t>(step) != next_step_
+        || next_step_ >= 6) {
+        failed_ = true;
+        return false;
+    }
+    ++next_step_;
+    return true;
+}
+
 bool UpnpOwnershipRecord::IsStructurallyValid() const noexcept {
     return owner_token != 0 && gateway_fingerprint != 0 &&
         ValidTransport(transport) &&

@@ -29,6 +29,7 @@
 #include "opcodes.h"
 #include "../cryptopp/sha.h"
 
+#include <algorithm>
 #include <array>
 #include <bcrypt.h>
 #include <chrono>
@@ -435,33 +436,88 @@ bool CUPnPImplMiniLib::SaveOwnershipLedger()
 	const CString path = thePrefs.GetMuleDirectory(EMULE_CONFIGDIR)
 		+ _T("natmap-ownership.dat");
 	const CString temporary = path + _T(".new");
-	if (m_ownershipLedger.count == 0) {
-		::DeleteFile(temporary);
-		return ::DeleteFile(path) != FALSE
-			|| ::GetLastError() == ERROR_FILE_NOT_FOUND;
-	}
-
 	std::array<std::uint8_t, natmap::kOwnershipLedgerMaxEncodedSize> bytes{};
 	const size_t length = natmap::EncodeOwnershipLedger(
 		m_ownershipLedger, bytes.data(), bytes.size());
 	if (length == 0)
 		return false;
+	natmap::OwnershipJournalCommit commit;
+	if (!commit.Complete(natmap::OwnershipJournalStep::Encoded))
+		return false;
 
 	HANDLE file = ::CreateFile(temporary, GENERIC_WRITE, 0, NULL,
-		CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
 	if (file == INVALID_HANDLE_VALUE)
 		return false;
 	DWORD written = 0;
 	const bool wrote = ::WriteFile(file, bytes.data(),
 		static_cast<DWORD>(length), &written, NULL) != FALSE
-		&& written == static_cast<DWORD>(length)
-		&& ::FlushFileBuffers(file) != FALSE;
-	::CloseHandle(file);
-	const bool replaced = wrote && ::MoveFileEx(temporary, path,
-		MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
-	if (!replaced)
+		&& written == static_cast<DWORD>(length);
+	if (!wrote
+		|| !commit.Complete(
+			natmap::OwnershipJournalStep::TemporaryWritten)) {
+		commit.Fail();
+		::CloseHandle(file);
 		::DeleteFile(temporary);
-	return replaced;
+		return false;
+	}
+	if (::FlushFileBuffers(file) == FALSE
+		|| !commit.Complete(
+			natmap::OwnershipJournalStep::TemporaryFlushed)) {
+		commit.Fail();
+		::CloseHandle(file);
+		::DeleteFile(temporary);
+		return false;
+	}
+	if (::CloseHandle(file) == FALSE
+		|| !commit.Complete(
+			natmap::OwnershipJournalStep::TemporaryClosed)) {
+		commit.Fail();
+		::DeleteFile(temporary);
+		return false;
+	}
+	if (::MoveFileEx(temporary, path,
+			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE
+		|| !commit.Complete(
+			natmap::OwnershipJournalStep::FinalReplaced)) {
+		commit.Fail();
+		::DeleteFile(temporary);
+		return false;
+	}
+
+	std::array<std::uint8_t,
+		natmap::kOwnershipLedgerMaxEncodedSize> persistedBytes{};
+	HANDLE persisted = ::CreateFile(path, GENERIC_READ, FILE_SHARE_READ,
+		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (persisted == INVALID_HANDLE_VALUE) {
+		commit.Fail();
+		return false;
+	}
+	LARGE_INTEGER persistedSize = {};
+	DWORD persistedRead = 0;
+	const bool readBack =
+		::GetFileSizeEx(persisted, &persistedSize) != FALSE
+		&& persistedSize.QuadPart
+			== static_cast<LONGLONG>(length)
+		&& ::ReadFile(persisted, persistedBytes.data(),
+			static_cast<DWORD>(length), &persistedRead, NULL) != FALSE
+		&& persistedRead == static_cast<DWORD>(length);
+	const bool closed = ::CloseHandle(persisted) != FALSE;
+	natmap::OwnershipLedger decoded;
+	const bool verified = readBack && closed
+		&& std::equal(bytes.begin(), bytes.begin() + length,
+			persistedBytes.begin())
+		&& natmap::DecodeOwnershipLedger(
+			persistedBytes.data(), length, decoded)
+			== natmap::OwnershipLedgerDecodeStatus::Ok;
+	if (!verified
+		|| !commit.Complete(
+			natmap::OwnershipJournalStep::FinalVerified)) {
+		commit.Fail();
+		DebugLogError(_T("UPNP ownership: atomically replaced journal failed readback verification"));
+		return false;
+	}
+	return commit.IsPersisted();
 }
 
 void CUPnPImplMiniLib::RemoveOwnershipRecord(std::size_t index)
@@ -473,6 +529,19 @@ void CUPnPImplMiniLib::RemoveOwnershipRecord(std::size_t index)
 	--m_ownershipLedger.count;
 	m_ownershipLedger.records[m_ownershipLedger.count] =
 		natmap::UpnpOwnershipRecord{};
+}
+
+bool CUPnPImplMiniLib::RemoveOwnershipRecordDurably(std::size_t index)
+{
+	if (index >= m_ownershipLedger.count)
+		return false;
+	const natmap::OwnershipLedger previous = m_ownershipLedger;
+	RemoveOwnershipRecord(index);
+	if (SaveOwnershipLedger())
+		return true;
+	m_ownershipLedger = previous;
+	DebugLogWarning(_T("UPNP ownership: journal removal did not commit; restored in-memory proof for safe retry"));
+	return false;
 }
 
 bool CUPnPImplMiniLib::RecordOwnedMapping(uint16 nLocalPort,
@@ -634,8 +703,7 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 	if (gateway == 0 || record.gateway_fingerprint != gateway) {
 		DebugLogWarning(_T("UPNP ownership: stale %s port %hu belongs to a different gateway; dropping local proof only"),
 			prot, port);
-		RemoveOwnershipRecord(index);
-		SaveOwnershipLedger();
+		RemoveOwnershipRecordDurably(index);
 		return;
 	}
 
@@ -651,8 +719,7 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 		achOutIP, achOutPort, achDescription, NULL, achLeaseDuration);
 	if (queryResult != UPNPCOMMAND_SUCCESS) {
 		if (queryResult == 714) {
-			RemoveOwnershipRecord(index);
-			SaveOwnershipLedger();
+			RemoveOwnershipRecordDurably(index);
 			DebugLog(_T("UPNP ownership: %s port %hu is already absent"),
 				prot, port);
 		} else
@@ -673,8 +740,7 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 	if (decision != natmap::OwnershipDecision::Owned) {
 		DebugLogWarning(_T("UPNP ownership: %s port %hu no longer matches proof (decision=%u); mapping was not removed"),
 			prot, port, static_cast<unsigned>(decision));
-		RemoveOwnershipRecord(index);
-		SaveOwnershipLedger();
+		RemoveOwnershipRecordDurably(index);
 		return;
 	}
 
@@ -683,8 +749,7 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 	if (nResult == UPNPCOMMAND_SUCCESS) {
 		DebugLog(_T("Successfully removed owned mapping for %s port %hu"),
 			prot, port);
-		RemoveOwnershipRecord(index);
-		if (!SaveOwnershipLedger())
+		if (!RemoveOwnershipRecordDurably(index))
 			DebugLogWarning(_T("UPNP ownership: mapping removed but journal update failed"));
 	} else
 		DebugLogWarning(_T("Failed to remove owned mapping for %s port %hu"),

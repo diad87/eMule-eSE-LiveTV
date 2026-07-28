@@ -208,6 +208,40 @@ void TestLedgerRejectsAmbiguousRules() {
     CHECK(!ledger.IsStructurallyValid());
 }
 
+void TestJournalCommitRequiresExactOrderAndVerification() {
+    OwnershipJournalCommit commit;
+    CHECK(!commit.IsPersisted());
+    CHECK(commit.Complete(OwnershipJournalStep::Encoded));
+    CHECK(commit.Complete(OwnershipJournalStep::TemporaryWritten));
+    CHECK(commit.Complete(OwnershipJournalStep::TemporaryFlushed));
+    CHECK(commit.Complete(OwnershipJournalStep::TemporaryClosed));
+    CHECK(commit.Complete(OwnershipJournalStep::FinalReplaced));
+    CHECK(!commit.IsPersisted());
+    CHECK(commit.Complete(OwnershipJournalStep::FinalVerified));
+    CHECK(commit.IsPersisted());
+    CHECK(!commit.Complete(OwnershipJournalStep::FinalVerified));
+    CHECK(commit.HasFailed());
+
+    OwnershipJournalCommit skipped;
+    CHECK(skipped.Complete(OwnershipJournalStep::Encoded));
+    CHECK(!skipped.Complete(OwnershipJournalStep::TemporaryFlushed));
+    CHECK(skipped.HasFailed());
+    CHECK(!skipped.Complete(OwnershipJournalStep::TemporaryWritten));
+    CHECK(!skipped.IsPersisted());
+
+    OwnershipJournalCommit failed;
+    CHECK(failed.Complete(OwnershipJournalStep::Encoded));
+    failed.Fail();
+    CHECK(!failed.Complete(OwnershipJournalStep::TemporaryWritten));
+    CHECK(failed.HasFailed());
+    CHECK(!failed.IsPersisted());
+
+    OwnershipJournalCommit invalid;
+    CHECK(!invalid.Complete(
+        static_cast<OwnershipJournalStep>(255)));
+    CHECK(invalid.HasFailed());
+}
+
 } // namespace
 
 int main() {
@@ -215,6 +249,7 @@ int main() {
     TestDeletionGateFailsClosed();
     TestCodecRoundTripAndCorruption();
     TestLedgerRejectsAmbiguousRules();
+    TestJournalCommitRequiresExactOrderAndVerification();
     std::printf("test_ownership_ledger: %d checks, %d failures\n",
                 checks, failures);
     return failures == 0 ? 0 : 1;

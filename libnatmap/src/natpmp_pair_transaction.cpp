@@ -162,6 +162,29 @@ bool AllowsNatPmpCleanup(
     return false;
 }
 
+NatPmpCleanupPlan TakeNatPmpCleanupPlan(
+    NatPmpCleanupProof& proof,
+    const NatPmpCleanupContext& context) noexcept {
+    const NatPmpCleanupProof candidate = proof;
+    proof = NatPmpCleanupProof{};
+    NatPmpCleanupPlan plan{};
+    if (!candidate.IsValid())
+        return plan;
+    for (std::size_t index = 0;
+         index < candidate.mapping_count; ++index) {
+        NatPmpCleanupRequest request{};
+        request.gateway_address = context.gateway_address;
+        request.interface_index = context.interface_index;
+        request.generation = context.generation;
+        request.observed_monotonic_seconds =
+            context.observed_monotonic_seconds;
+        request.mapping = candidate.mappings[index];
+        if (AllowsNatPmpCleanup(candidate, request))
+            plan.mappings[plan.mapping_count++] = request.mapping;
+    }
+    return plan;
+}
+
 NatPmpPairTransaction::NatPmpPairTransaction(
     bool udp_required,
     bool initial_operation) noexcept

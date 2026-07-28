@@ -87,9 +87,26 @@ struct NatPmpCleanupRequest {
     NatPmpCleanupMapping mapping{};
 };
 
+struct NatPmpCleanupContext {
+    std::array<std::uint8_t, 4> gateway_address{};
+    std::uint32_t interface_index = 0;
+    std::uint64_t generation = 0;
+    std::uint64_t observed_monotonic_seconds = 0;
+};
+
+struct NatPmpCleanupPlan {
+    std::array<NatPmpCleanupMapping, 3> mappings{};
+    std::size_t mapping_count = 0;
+
+    bool IsEmpty() const noexcept { return mapping_count == 0; }
+};
+
 bool AllowsNatPmpCleanup(
     const NatPmpCleanupProof& proof,
     const NatPmpCleanupRequest& request) noexcept;
+NatPmpCleanupPlan TakeNatPmpCleanupPlan(
+    NatPmpCleanupProof& proof,
+    const NatPmpCleanupContext& context) noexcept;
 
 struct NatPmpRollbackTarget {
     NatPmpTransport transport = NatPmpTransport::Tcp;

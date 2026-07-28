@@ -316,6 +316,42 @@ void TestCrashOrMalformedCleanupProofNeverDeletes() {
     CHECK(!malformed.IsValid());
 }
 
+void TestSessionCrashAndNaturalExpiryLifecycle() {
+    NatPmpCleanupProof live = CleanupProof();
+    const NatPmpCleanupRequest current =
+        CleanupRequest(live.mappings[0]);
+    NatPmpCleanupContext context{};
+    context.gateway_address = current.gateway_address;
+    context.interface_index = current.interface_index;
+    context.generation = current.generation;
+    context.observed_monotonic_seconds =
+        current.observed_monotonic_seconds;
+    const NatPmpCleanupPlan active =
+        TakeNatPmpCleanupPlan(live, context);
+    CHECK(active.mapping_count == 2);
+    CHECK(active.mappings[0].internal_port == 4662);
+    CHECK(active.mappings[1].internal_port == 4672);
+    CHECK(!live.IsValid());
+
+    // A restarted process has no in-memory proof. Port coincidence alone
+    // must never recreate authority to delete the router rule.
+    NatPmpCleanupProof after_crash{};
+    const NatPmpCleanupPlan restarted =
+        TakeNatPmpCleanupPlan(after_crash, context);
+    CHECK(restarted.IsEmpty());
+    CHECK(!after_crash.IsValid());
+
+    // Once the conservative deadline is reached, the bounded lease is left
+    // for the router to expire naturally; no ambiguous DELETE is emitted.
+    NatPmpCleanupProof expired = CleanupProof();
+    context.observed_monotonic_seconds =
+        expired.expires_monotonic_seconds;
+    const NatPmpCleanupPlan natural_expiry =
+        TakeNatPmpCleanupPlan(expired, context);
+    CHECK(natural_expiry.IsEmpty());
+    CHECK(!expired.IsValid());
+}
+
 } // namespace
 
 int main() {
@@ -331,6 +367,7 @@ int main() {
     TestCleanupGenerationMatchesHostAcceptance();
     TestCleanupRequiresExactLiveSessionProof();
     TestCrashOrMalformedCleanupProofNeverDeletes();
+    TestSessionCrashAndNaturalExpiryLifecycle();
     std::printf(
         "test_natpmp_pair_transaction: %d checks, %d failures\n",
         checks, failures);

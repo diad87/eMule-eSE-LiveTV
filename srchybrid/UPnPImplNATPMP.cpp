@@ -154,27 +154,25 @@ void CUPnPImplNATPMP::DeletePorts(
 		std::array<std::uint8_t, 4> gatewayAddress{};
 		memcpy(gatewayAddress.data(), &m_dwGatewayIP,
 			gatewayAddress.size());
-		const size_t cleanupCount = min(
-			m_cleanupProof.mapping_count,
-			m_cleanupProof.mappings.size());
+		natmap::NatPmpCleanupContext context{};
+		context.gateway_address = gatewayAddress;
+		context.interface_index = m_dwInterfaceIndex;
+		context.generation = generation;
+		context.observed_monotonic_seconds =
+			NatPmpMonotonicSeconds();
+		const natmap::NatPmpCleanupPlan cleanup =
+			natmap::TakeNatPmpCleanupPlan(
+				m_cleanupProof, context);
 		for (size_t index = 0;
-			index < cleanupCount; ++index) {
-			natmap::NatPmpCleanupRequest request{};
-			request.gateway_address = gatewayAddress;
-			request.interface_index = m_dwInterfaceIndex;
-			request.generation = generation;
-			request.observed_monotonic_seconds =
-				NatPmpMonotonicSeconds();
-			request.mapping = m_cleanupProof.mappings[index];
-			if (natmap::AllowsNatPmpCleanup(
-					m_cleanupProof, request))
-				UnmapPort(
-					m_dwGatewayIP, m_dwInterfaceIndex,
-					request.mapping.internal_port,
-					request.mapping.transport
-						== natmap::NatPmpTransport::Tcp);
+			index < cleanup.mapping_count; ++index) {
+			const natmap::NatPmpCleanupMapping& mapping =
+				cleanup.mappings[index];
+			UnmapPort(
+				m_dwGatewayIP, m_dwInterfaceIndex,
+				mapping.internal_port,
+				mapping.transport
+					== natmap::NatPmpTransport::Tcp);
 		}
-		m_cleanupProof = natmap::NatPmpCleanupProof{};
 		m_nOldTCPPort = 0;
 		m_nOldUDPPort = 0;
 		m_nOldTCPWebPort = 0;

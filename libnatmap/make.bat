@@ -23,6 +23,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_natpmp_gateway_p
 if errorlevel 1 exit /b 1
 build\test_natpmp_gateway_policy.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_natpmp_pair_transaction.exe tests\test_natpmp_pair_transaction.cpp src\natpmp_pair_transaction.cpp
+if errorlevel 1 exit /b 1
+build\test_natpmp_pair_transaction.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_pcp_route_binding.exe tests\test_pcp_route_binding.cpp src\pcp_route_binding.cpp
 if errorlevel 1 exit /b 1
 build\test_pcp_route_binding.exe

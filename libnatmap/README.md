@@ -218,3 +218,12 @@ directly publishable. A refresh may retain a previously verified public
 address after a lost or rejected query only while the mapper epoch remains
 continuous; any epoch reset or fresh non-public evidence invalidates direct
 publication.
+
+`NatPmpPairTransaction` is the J02 atomic boundary. Successful TCP and UDP
+responses remain staged until the required pair is complete and valid, so an
+alternate external port is never exposed as a partial result. Initial
+operations request exact rollback of a staged TCP mapping after UDP failure;
+refresh failures do not delete or replace the previously published pair.
+Correlated rejected or semantically invalid MAP replies remain epoch
+observations without becoming successful mappings, so a proven gateway reset
+invalidates a pre-reset pair even when the replacement transaction fails.

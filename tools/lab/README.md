@@ -201,6 +201,44 @@ the original candidate ZIP. Its packet evidence is accepted only when the
 candidate PID, physical adapter, full 5-tuple and time window all agree. Never
 point either harness at an uncontrolled third-party peer.
 
+### Two-host I05 physical IPv4 control
+
+`V91-I05` uses exactly two physical Windows hosts on the same native IPv4 LAN.
+Run a non-mutating H1 preflight first, replacing `H3IPv4` with the second
+host's physical on-link address:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File tools\lab\run_v91_i05_t1_source.ps1 `
+  -CandidateZipPath C:\tmp\eSE-v91-rc2-x64.zip `
+  -FixturePath D:\eSE-Lab\V91-I05\v91-i05-canonical-4294967296.bin `
+  -ExpectedFixtureSha256 `
+    1016D6F63AE1649A879A7C0DE30865ED132DEB37B1C3B2BC9CA004C88FEEE26C `
+  -H3IPv4 <h3-native-lan-ipv4> -PreflightOnly
+```
+
+Start the same command without `-PreflightOnly` in an elevated H1 session.
+It prints the nonce-owned `V91-I05-T1-CONFIG.json` path and waits. While it is
+waiting, build a fresh H3 directory from the pinned base and that exact config:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File tools\lab\prepare_v91_i05_downloader_kit.ps1 `
+  -RemoteBaseZip D:\eSE-Lab\V91-I05\V91-I05-REMOTE-BASE.zip `
+  -ConfigPath <printed-config-path> `
+  -OutputDirectory C:\eSE-Lab\V91-I05-H3-<nonce>
+```
+
+Copy the complete fresh directory to a fixed local NTFS volume on H3 with at
+least 10 GiB free. The copy may travel over an overlay only as control-plane
+material; the measured transfer may not. On H3, launch
+`START-V91-I05-DOWNLOADER.cmd` and accept elevation. The runners perform the
+physical IPv6 preflight, install nonce-owned containment, transfer the
+canonical 4 GiB fixture by direct IPv4 and exchange the evidence automatically.
+If an interrupted run needs recovery, use the matching
+`STOP-V91-I05-DOWNLOADER.cmd` and the H1 cleanup script for the exact printed
+run root. Never reuse a config, nonce or prepared directory.
+
 For the normative `V91-I02` LiveTV case, use the dedicated monitor after the
 viewer has joined the broadcaster directly:
 

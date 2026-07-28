@@ -148,7 +148,88 @@ the case. Missing topology or capture prerequisites are `BLOCKED`; once the
 external fixture is armed, a crash, hang, absent packet/telemetry/source,
 unresponsive UI/API or contradictory product evidence is `FAIL`.
 
-## 6. Final stability and decision
+## 6. I05 physical IPv4 control
+
+Use two distinct physical Windows hosts on the same IPv4 LAN. Before changing
+the candidate profile, prove that IPv6 remains bound and works between the
+physical adapters. Then set `IPv6Mode=Off` inside both candidate profiles while
+leaving the Windows IPv6 stack enabled. Link-local, ULA or global IPv6 is valid
+for this baseline; link-local does not demonstrate public IPv6 reachability.
+
+Run the canonical 4 GiB transfer with Kad2 and Kad6 disabled, one literal
+on-link IPv4 eD2K link, no eD2K server connection and no third-party source.
+Record every candidate-owned established peer socket. The Downloader may have
+only peer tuples terminating at the Source IPv4 and controlled port; the Source
+may have only the inverse tuples for that same flow.
+
+Because `T1` uses RFC1918 addresses, both isolated profiles set and continuously
+verify `FilterBadIPs=0`. This is a fixture-only exception: it does not change
+the product default and does not broaden the effective network scope, because
+nonce-owned firewall rules still permit only the exact Source/Downloader tuple.
+
+Before link injection, the Downloader must install exactly ten nonce-owned,
+program-scoped `Block` rules on `Profile=Any` and all interfaces. Together they
+close TCP/UDP over IPv4 and IPv6 except for the exact IPv4 peer tuple to the
+Source and the API's TCP loopback response from local port `8011`; all UDP,
+including loopback, remains blocked. Every watchdog sample must revalidate
+`MpsSvc`, Domain/Private/Public profiles and all ten rules plus their complete
+port, application, address and interface filters. The exact-filter check count
+must equal the watchdog sample count.
+
+Resolve one PktMon component from the exact physical adapter GUID. Capture that
+component and convert its valid `Id` and nonzero `SecondaryId`, if present,
+separately. Exactly one conversion must contain the tuple previously observed
+in the candidate PID's socket inventory; zero or multiple hits are `BLOCKED`.
+PCAPNG does not itself attribute a PID, so adjudication combines that PID-bound
+socket inventory with program-scoped containment, physical-interface mapping
+and the Source's independent evidence. Preserve stable `pre`, `armed` and
+`post` inventories and require zero ETW loss. Alias-only attribution or
+unfiltered conversion cannot adjudicate the case.
+
+PktMon uses `snaplen=256`, so truncated IPv4 peer packets are expected and
+informational rather than a failure. A structurally invalid PCAPNG, ETW loss or
+unadjudicable conversion is `BLOCKED`. Once the capture is valid, missing or
+contradictory classic framing, large-file opcodes or fixture evidence on the
+exact tuple is `FAIL`. Raw IPv6, rejected-tuple or third-party packets seen on
+the physical NIC without sufficient process attribution are contamination and
+remain `BLOCKED`; a candidate-owned IPv6 or third-party peer socket is `FAIL`.
+
+The Source must receive and validate the Downloader evidence bundle before
+declaring `PASS`: exact manifest, hashes and sizes; packet analysis; component
+mapping; loss/status records; socket proof; and hashes of the retained full
+ETL, PCAPNG, samples and logs. Full raw artifacts remain on the Downloader and
+must be retrieved to repeat packet-level analysis. Both endpoints must
+independently calculate size, SHA-256 and ED2K from the completed file; echoing
+the command/link ED2K is not evidence.
+
+`COMPLETE.evidence_bundle` contains `schema`, `encoding=base64`, `bytes`,
+`sha256`, `manifest_sha256` and `content_base64`. The ZIP is at most 524,288
+bytes, contains exactly 11 entries and expands to at most 4,194,304 bytes. The
+complete control frame is at most 1,048,576 bytes.
+
+Before the first firewall, PktMon or process mutation, each node must persist
+its nonce-owned `ACTIVE/session` state with pending flags and update it after
+every mutation. Cleanup must resolve partial states, remove only owned
+resources and report its result.
+
+`FAILURE.status` accepts only `LAB_BLOCKED` and `PRODUCT_INVARIANT`, mapped to
+`BLOCKED` and `FAIL` respectively. Every frame also contains `schema`,
+`case_id`, `nonce`, `phase`, `category`, `message_sha256` and `cleanup`. At
+every available API checkpoint, `kad_connected`, `kad6_running` and
+`kad6_connected` must exist as booleans and be false. Throughout the measured
+transfer, `IPv6Mode=0`, `KadNetworkMask=0`, `NetworkKademlia=0` and
+`NetworkED2K=0` must also remain unchanged; `FilterBadIPs=0` must stay fixed so
+the one authorized RFC1918 peer is not discarded by the fixture profile.
+
+Laboratory/capture/control/cleanup failures and pre-existing third-party
+contamination remain `BLOCKED`. With a clean fixture and topology,
+contradictory product behavior is `FAIL`; a valid capture is additionally
+required only for wire invariants. A demonstrated `PRODUCT_INVARIANT` remains
+`FAIL` if control or cleanup later fails, with both incidents recorded. If the
+laboratory failure prevents proving the alleged invariant, the result is
+`BLOCKED`.
+
+## 7. Final stability and decision
 
 After functional gates:
 
@@ -159,3 +240,13 @@ After functional gates:
 
 Promotion requires 27 PASS, zero FAIL and zero BLOCKED. Otherwise the ledger
 remains `NO_GO` and the remaining topology or defect is named explicitly.
+
+### Current exact-candidate reconciliation
+
+The generated `V91_RC2_CASE_RESULTS.json` is the canonical rc.2 ledger. It
+binds commit `08aa6521f7d7907edb3584266abc3a9e31693161` and `emule.exe`
+SHA-256
+`55c5aa0e968b25330720cfb7f622cbc28ea9875365145333cbcf9d9585c1c44a`.
+The current result is 11 PASS, 0 FAIL and 16 BLOCKED, therefore `NO_GO`.
+Partial, earlier-candidate and laboratory-failed runs do not alter those
+counts.

@@ -36,7 +36,7 @@ $finalRatio = if ($finalReceived -gt 0) {
 } else { [double]::PositiveInfinity }
 $ratioDrift = $finalRatio - $initialRatio
 
-$failures = New-Object Collections.Generic.List[string]
+$failures = [Collections.Generic.List[string]]::new()
 foreach ($pair in @(
     [pscustomobject]@{ name = 'source'; verdict = $source.verdict },
     [pscustomobject]@{ name = 'viewer'; verdict = $viewer.verdict },
@@ -103,7 +103,7 @@ $summary = [ordered]@{
     failures = @($failures)
 }
 Write-LabJson -Value $summary -Path (Join-Path $evidence 'summary.json') | Out-Null
-$outcome = if ($failures.Count -eq 0) { 'BLOCKED' } else { 'FAIL' }
+$outcome = 'BLOCKED'
 & (Join-Path $PSScriptRoot 'collect_report.ps1') -RunDirectory $evidence `
     -CaseId 'V91-O01' -Outcome $outcome `
     -Version $(if ($session.candidate_version) {
@@ -112,8 +112,8 @@ $outcome = if ($failures.Count -eq 0) { 'BLOCKED' } else { 'FAIL' }
         'unknown'
     }) `
     -Commit $session.candidate_commit `
-    -Notes 'Partial long soak on exact candidate; formal 12-hour T1/T5 topology remains unavailable.'
+    -Notes 'Partial long soak on one physical host; formal 12-hour two-host T1 topology remains unavailable. A partial_verdict failure does not adjudicate the formal case.'
 if ($failures.Count -gt 0) {
-    throw "V91-O01 partial soak failed: $($failures -join '; ')"
+    throw "V91-O01 partial regression failed; formal status remains BLOCKED: $($failures -join '; ')"
 }
 Write-Host "V91-O01 partial soak PASS: $evidence" -ForegroundColor Green

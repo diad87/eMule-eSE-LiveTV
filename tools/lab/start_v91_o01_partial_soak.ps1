@@ -88,9 +88,9 @@ $session = [ordered]@{
     case_id = 'V91-O01'
     formal_status = 'BLOCKED'
     formal_limitation = if ($DurationSeconds -ge 43200) {
-        'The 12-hour duration is covered, but V91-O01 still requires T1/T5; this run uses two isolated exact-candidate profiles on dual-stack H1 with an active IPv6 Live route.'
+        'The 12-hour duration is covered, but V91-O01 still requires two physical Windows hosts in T1; this run uses two isolated exact-candidate profiles on one dual-stack H1 with an active IPv6 Live route.'
     } else {
-        'V91-O01 requires 12 hours and T1/T5; this shorter run uses two isolated exact-candidate profiles on dual-stack H1 with an active IPv6 Live route.'
+        'V91-O01 requires 12 hours between two physical Windows hosts in T1; this shorter run uses two isolated exact-candidate profiles on one dual-stack H1 with an active IPv6 Live route.'
     }
     candidate_version = $candidate.version
     candidate_commit = $candidate.commit

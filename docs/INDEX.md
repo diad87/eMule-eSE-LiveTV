@@ -43,6 +43,9 @@ maintain eMule eSE.
 - [eSE 9.1.0-rc.2 delta execution plan](V91_RC2_EXECUTION.md)
   - exact rc.1 rejection evidence, successor build gates and mandatory runtime
   qualification for the bounded fallback.
+- [eSE 9.1.0-rc.2 case ledger](V91_RC2_CASE_RESULTS.json)
+  - exact-candidate reconciliation of all 27 normative cases; currently
+    11 PASS, 0 FAIL and 16 BLOCKED.
 - [eSE 9.1.0-rc.1 execution plan](V91_RC1_EXECUTION.md)
   - exact rejected-candidate identity, historical qualification rules,
   physical/local campaigns and final `NO_GO` state.

@@ -18,11 +18,14 @@ immutable package is frozen before the physical release matrix runs; check the
 matching release page and 27-case ledger before treating it as promoted.
 
 [RC.2 release notes](docs/RELEASE_NOTES_v9.1.0-rc.2.md)
+· [Current 27-case ledger](docs/V91_RC2_CASE_RESULTS.json)
 · [All releases](https://github.com/diad87/eMule-eSE-LiveTV/releases)
 · [Previous public beta.1](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0-beta.1)
 
 > [!IMPORTANT]
 > 9.1.0-rc.2 is a prerelease IPv6/Kad6 candidate, not the stable channel.
+> Its current exact-candidate ledger is 11 PASS, 0 FAIL and 16 BLOCKED
+> (`NO_GO` for final promotion).
 > The latest stable build remains
 > [eSE 8.1.0](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE8.1.0).
 

@@ -93,20 +93,25 @@ hand.
 
 ## Qualification status
 
-The policy unit test is green. This source tree is not promotable until the
-following exact-`rc.2` gates complete:
+The exact-candidate ledger currently records **11 PASS, 0 FAIL and 16
+BLOCKED**, so rc.2 remains `NO_GO`. The build/Core/Integration/packaged gates,
+`V91-A01`, `V91-A02`, `V91-P01` through `V91-P03`, `V91-K03`, the physical
+vanilla compatibility case `V91-C01`, consent cases `V91-C02` through
+`V91-C04`, and overlay-labelled `V91-I06` have passed.
 
-1. `Release|x64`, Core, Integration and packaged self-test.
-2. `V91-P01` through `V91-P03`.
-3. A real two-host `V91-I03` route-selection run over direct native IPv4/IPv6.
-4. A real two-host silent-`DROP` `V91-I04` run proving SYN IPv6, one IPv4 retry in less
+The following physical qualification remains:
+
+1. A real two-host `V91-I03` route-selection run over direct native IPv4/IPv6.
+2. A real two-host silent-`DROP` `V91-I04` run proving SYN IPv6, one IPv4 retry in less
    than 10 seconds, one logical `HELLO` and responsive UI/API.
-5. Two-host `V91-D01` with a controlled hostname whose valid A and AAAA answers
+3. Two-host `V91-D01` with a controlled hostname whose valid A and AAAA answers
    are both simultaneously materialized, matched to hashed product evidence,
    and exercised under an exact reversible IPv6 `DROP` with PID/adapter/5-tuple
    packet attribution before the IPv4 transfer completes.
-6. The exact-candidate transfer/LiveTV smoke and soak required by the v9.1
+4. The remaining exact-candidate transfer, LiveTV, Kad6, security, mobility and
+   soak cases required by the v9.1
    release matrix.
 
-Until those gates finish, `rc.2` is a development candidate, not a published
-release.
+`V91_RC2_CASE_RESULTS.json` is the authoritative 27-case result. Until it
+reaches 27 PASS with zero FAIL and zero BLOCKED, rc.2 is a release candidate,
+not the final v9.1 release.

@@ -462,7 +462,7 @@ sus gates bilaterales de consentimiento.
 | `V91-F13` | Definir tratamiento de créditos IPv6-only: identidad eSE o estado neutral, nunca atribución incorrecta |
 | `V91-F14` | Cambio de dirección temporal sin duplicar ni banear al mismo nodo por error |
 | `V91-F15` | UI y API deben mostrar familia y ruta realmente empleadas |
-| `V91-F16` | Desactivar IPv6 debe restaurar un baseline IPv4 puro |
+| `V91-F16` | Seleccionar `IPv6Mode=Off` en eSE debe restaurar un baseline IPv4 puro sin exigir que Windows deshabilite su pila IPv6 |
 | `V91-F17` | Separar consentimiento base, avanzado y contribución; cada nivel debe partir apagado, persistir y poder revocarse |
 | `V91-F18` | Una `Kad6BetaExitOptIn` consentida debe permanecer separada de `Kad6PublicExitOptIn` y no eludir el gate firmado de salida estable |
 | `V91-F19` | Escaneo inicial y `DirectoryWatcher` deben usar una única política de admisión de compartidos, con motivos de rechazo y comparación ASCII independiente del locale |
@@ -515,9 +515,9 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | `V91-I02` | `T5` | LiveTV IPv6-only a 12 Mbps durante 2 h | Playlist y chunks válidos; cero fallback IPv4 |
 | `V91-I03` | `T1/T2` | Un mismo peer eSE HighID conserva IPv4 real e IPv6 pública aprendida por `HELLO`; con ambas rutas disponibles, repetir el dial en `Auto` y `Preferred` | `Auto` usa IPv4 para el peer dual HighID ordinario; `Preferred` usa IPv6; ambas rutas quedan atribuidas al PID/socket real y a una interfaz física |
 | `V91-I04` | `T1/T2` | Sobre ese mismo peer dual, aplicar `DROP` silencioso al TCP IPv6 manteniendo IPv4 operativo | Se observa un SYN IPv6 sin respuesta durante al menos 2,75 s y un único fallback IPv4 entre 2,75 s y menos de 8 s; la conexión termina antes de 10 s, completa un único `HELLO`/`HELLOANSWER`, no duplica la entrada lógica de conexión y mantiene UI/API responsivas |
-| `V91-I05` | `T1` | Desactivar IPv6 y repetir transferencia | Wire y comportamiento IPv4 heredados |
+| `V91-I05` | `T1` | Comprobar primero que IPv6 sigue operativo entre las NIC físicas; después fijar `IPv6Mode=Off` solo en ambos peers eSE y repetir por IPv4 literal on-link la transferencia canónica de 4 GiB de `V91-I01`, sin deshabilitar el binding IPv6 de Windows | Origen y destino coinciden en tamaño, SHA-256 y ED2K calculados localmente; el wire usa framing clásico y opcodes de fichero grande sobre sockets IPv4 atribuidos al PID y a las NIC físicas; ningún socket o flujo peer del PID candidato usa IPv6, overlay o interfaz virtual; solo se permite el control TCP loopback de la API fijada; API y procesos permanecen responsivos; la limpieza detiene la captura propia y elimina solo reglas de firewall nonce-owned |
 | `V91-I06` | `T6` | Dos Windows físicos usando direcciones IPv6 del overlay | Transferencia remota funcional; informe marcado como overlay |
-| `V91-I07` | `T3` | Portátil mediante hotspot; comprobar IPv6 global delegado | Si existe, conexión eSE directa; si no, registrar limitación sin falsear PASS público |
+| `V91-I07` | `T3` | Portátil mediante hotspot; comprobar IPv6 global delegado | PASS solo con dirección y ruta IPv6 globales nativas y una conexión eSE directa atribuida al PID y a la NIC física; si el hotspot no delega IPv6 global, registrar la limitación y mantener `BLOCKED` |
 | `V91-I08` | `T5` | Endpoint echo Windows independiente por IPv6 | Cliente abre TCP/UDP y conserva los 128 bits observados |
 | `V91-D01` | `T1/T2` | Hostname controlado con A y AAAA válidos, una sola inyección y dos hosts físicos; el Source aplica `DROP` silencioso exacto al TCP IPv6 mientras mantiene operativo el forward IPv4 | El resolver devuelve y el cliente retiene simultáneamente ambos candidatos; la captura atribuida al PID/adaptador/tupla prueba el intento AAAA sin respuesta y la transferencia termina por el candidato A |
 | `V91-P01` | `T0/T1` | SOCKS5 IPv6 | `ATYP=4`, destino y puerto correctos |
@@ -535,7 +535,7 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | `V91-S02` | `T5` | Reutilizar temporal IPv6 de otro epoch | Registro viejo rechazado; nodo legítimo no recibe crédito ajeno |
 | `V91-S03` | `T1/T5` | Enviar `BOOTSTRAP_REQ`, `REQ` y `FIND_SOURCE_REQ` desde un endpoint no verificado | Solo se emite challenge acotado; ninguna respuesta amplificada sale antes de una prueba transaction-bound |
 | `V91-R01` | `T3` | Cambiar portátil de LAN a hotspot durante sesión | Reconexión limpia, endpoint anterior caduca |
-| `V91-O01` | `T1/T5` | Soak dual-stack 12 h | Sin fuga, duplicados crecientes ni corrupción |
+| `V91-O01` | `T1` | Soak dual-stack continuo de 43.200 s entre dos Windows físicos | Procesos y API responsivos en todas las muestras; LiveTV IPv6 y transferencia IPv4 íntegras sobre NIC físicas; crecimiento por proceso ≤256 MiB y ≤1.024 handles; ratio incremental de chunks duplicados ≤25 %, deriva acumulada ≤5 puntos y cero corrupción |
 
 Para `V91-C01`, `V1` sigue siendo válida, pero un segundo Windows físico
 independiente (`H2`) constituye un aislamiento más fuerte y también satisface
@@ -552,6 +552,140 @@ otro caso distinto de `T6`.
 La matriz normativa vigente contiene **27 casos**. El recuento histórico de
 beta.2 era de 26 porque todavía no incluía `V91-A02`; desde beta.3, cualquier
 ledger de RC que omita `V91-A02` es incompleto.
+
+`V91-I05` es una prueba física de regresión IPv4 entre exactamente dos peers.
+Kad2 y Kad6 deben permanecer apagados en ambos, el enlace se inyecta una sola
+vez mediante la IPv4 literal on-link del Source, sin conexión a servidor eD2K
+ni otra fuente. El Downloader debe registrar las 5-tuplas exactas de sus sockets
+y solo puede mantener tuplas de peer del PID candidato que terminen en la IPv4
+y puerto controlados del Source; este solo puede mantener las tuplas inversas
+del mismo flujo. Así, ningún tercero puede aportar bytes a la transferencia
+canónica.
+
+Como `T1` usa direcciones RFC1918, ambos perfiles aislados fijan
+`FilterBadIPs=0` antes de arrancar y lo revalidan durante la ejecución. Esta
+excepción pertenece solo al fixture: no cambia el valor predeterminado del
+producto y no amplía el alcance efectivo, porque las reglas nonce-owned
+permiten exclusivamente la tupla privada exacta entre Source y Downloader.
+
+Antes de inyectar el enlace, el Downloader debe instalar exactamente diez
+reglas `Block` nonce-owned y program-scoped, con `Profile=Any` y todas las
+interfaces. Deben cerrar TCP/UDP IPv4 e IPv6 salvo la tupla peer IPv4 exacta
+con el Source y la respuesta TCP loopback de la API cuyo puerto local es
+`8011`; UDP, incluido loopback, queda completamente cerrado. `MpsSvc`, los
+perfiles Domain/Private/Public y las diez reglas con todos sus filtros deben
+revalidarse en cada muestra del watchdog. El número de verificaciones exactas
+de filtros debe coincidir con el número de muestras.
+
+La captura de `V91-I05` solo es adjudicable si el componente de PktMon se
+resuelve de forma unívoca por el GUID de la NIC física, se captura y convierte
+filtrando por sus identificadores válidos. `Id` y, si existe, `SecondaryId` no
+cero se convierten por separado; exactamente una conversión debe contener la
+5-tupla que el inventario de sockets atribuyó previamente al PID candidato.
+Cero o más de una coincidencia producen `BLOCKED`. PCAPNG no atribuye PID por
+sí mismo: la adjudicación combina la tupla observada por PID, el aislamiento
+program-scoped, la NIC física y la evidencia cruzada del Source. Nombre
+visible, alias localizado o mera presencia de tráfico entre ambas IPv4 no
+bastan. Los inventarios `pre`, `armed` y `post` deben conservar el mismo mapeo,
+y todos los contadores ETW de pérdida deben ser cero.
+
+PktMon captura con `snaplen=256`; por ello un paquete IPv4 peer truncado es
+esperable e informativo y no invalida por sí solo la ejecución. Un PCAPNG
+estructuralmente inválido, una pérdida ETW o una conversión no adjudicable son
+`BLOCKED`. En una captura válida, la ausencia o contradicción de framing,
+opcodes de fichero grande o fixture en la tupla exacta es `FAIL`. Paquetes
+IPv6, tuplas rechazadas o tráfico de terceros vistos solo en la NIC física, sin
+atribución suficiente al proceso, se tratan como contaminación y producen
+`BLOCKED`; un socket peer IPv6 o de tercero atribuido al PID candidato es
+`FAIL`.
+
+El Downloader conserva los artefactos completos. El Coordinator recibe y
+valida un paquete compacto con manifiesto, hashes y tamaños de esos artefactos,
+análisis de captura, mapeo de componente, estado y pérdidas de PktMon, y prueba
+de sockets. El paquete se valida por tamaño y SHA-256, se abre sin confiar en sus
+rutas y sus campos se contrastan con el resultado declarado por el peer remoto.
+Sin esa evidencia central el caso no puede ser `PASS`; repetir íntegramente el
+análisis de paquetes exige recuperar también los artefactos raw retenidos.
+
+Ambos extremos deben calcular localmente tamaño, SHA-256 y ED2K sobre los bytes
+del fichero. No se acepta como prueba que el Downloader se limite a devolver el
+ED2K recibido en el enlace o en el comando de control.
+
+Antes de la primera mutación de firewall, PktMon o procesos, cada nodo escribe
+el estado `ACTIVE/session` con nonce y flags `pending`, lo actualiza después de
+cada mutación y permite que la limpieza resuelva también estados parciales. El
+protocolo de error fija `FAILURE.status` a `LAB_BLOCKED` o
+`PRODUCT_INVARIANT`: el primero se proyecta a `BLOCKED` y el segundo a `FAIL`.
+Cada `FAILURE` contiene además `schema`, `case_id`, `nonce`, `phase`,
+`category`, `message_sha256` y el estado de `cleanup`.
+
+`COMPLETE.evidence_bundle` contiene `schema`, `encoding=base64`, `bytes`,
+`sha256`, `manifest_sha256` y `content_base64`. El ZIP compacto no supera
+524.288 bytes, contiene exactamente 11 entradas y expande como máximo
+4.194.304 bytes; el frame de control completo no supera 1.048.576 bytes.
+
+En cada checkpoint donde el API esté disponible, `kad_connected`,
+`kad6_running` y `kad6_connected` son campos obligatorios de tipo booleano y
+deben valer `false`. Un campo ausente, de tipo incorrecto o `true` constituye
+una contradicción del producto. Durante toda la transferencia también deben
+permanecer `IPv6Mode=0`, `KadNetworkMask=0`, `NetworkKademlia=0` y
+`NetworkED2K=0`; `FilterBadIPs=0` debe seguir fijado para no descartar el único
+peer RFC1918 autorizado por el fixture.
+
+Una carencia o avería del laboratorio en `V91-I05` —NIC/componente no
+resoluble, pérdida ETW, conversión de captura, disco, transporte de control o
+limpieza incompleta— produce `BLOCKED`. Con fixture y captura válidos, una
+violación del producto —modo o API contradictorios, tráfico IPv6 de peer,
+hash/ED2K distinto, opcodes inválidos o proceso no responsivo— produce `FAIL`.
+Una contaminación externa o preexistente por terceros invalida el fixture y
+produce `BLOCKED`; si, partiendo de un baseline limpio, la candidata inicia o
+utiliza un tercero pese a Kad y servidor eD2K desactivados, produce `FAIL`.
+Un `PRODUCT_INVARIANT` demostrado con evidencia suficiente permanece `FAIL`
+aunque falle después el control o la limpieza; el incidente de laboratorio se
+registra adicionalmente. Si el fallo de laboratorio impide demostrar la
+supuesta invariante, el resultado es `BLOCKED`. La captura solo es requisito
+para adjudicar invariantes del wire, no para un fallo previo de arranque, modo o
+API ya probado por evidencia válida.
+
+El preflight IPv6 de `V91-I05` admite una dirección link-local, ULA o global
+sobre la NIC física porque solo prueba que la pila de Windows sigue operativa.
+Una prueba link-local satisface este control, pero no demuestra IPv6 pública.
+
+`V91-I07` no convierte la política del operador móvil en un resultado del
+producto. El preflight debe distinguir una dirección global nativa de ULA,
+link-local, overlay, VPN o traducción. Sin dirección y ruta IPv6 globales
+delegadas por el hotspot, el caso queda `BLOCKED`; con ambas acreditadas, un
+fallo de conexión directa de la candidata es `FAIL`.
+
+`V91-O01` utiliza `T1`, no `T5`. LiveTV sobre IPv6 debe permanecer activo
+durante 43.200 segundos completos después del warm-up. Al menos una
+transferencia IPv4 canónica debe iniciarse y completarse dentro de esa ventana,
+sin necesidad de ocuparla completa, y conservar su SHA-256 final. Se muestrean
+proceso y API al menos cada 60 segundos y LiveTV al menos cada 30 segundos, sin
+huecos mayores que dos intervalos. No se permiten reinicios, cambios de red,
+otra instancia eMule ni otra captura durante la ventana medida. Preparación y
+limpieza quedan fuera de los 43.200 segundos.
+
+En la primera y última muestra de `V91-O01`, y cada vez que cambie una tupla, se
+conservan PID, 5-tupla, ruta efectiva e `InterfaceGuid`; IPv4 e IPv6 deben
+quedar atribuidas a NIC físicas. No se requiere una captura de paquetes.
+
+Para `V91-O01`, `duplicate_ratio` es
+`(duplicates_final - duplicates_initial) /
+(received_final - received_initial)` y `ratio_drift` es
+`cumulative_ratio_final - cumulative_ratio_initial`. Los contadores deben ser
+monótonos y `received_final` debe ser mayor que `received_initial`; de lo
+contrario no existe una medición válida. Una indisponibilidad de proceso o API
+observada por un monitor todavía operativo es `FAIL`; una caída del monitor, un
+hueco de evidencia superior al permitido o una duración no demostrable son
+`BLOCKED`. Un `FAIL` de producto ya acreditado no se rebaja por un fallo
+posterior de recogida o limpieza: se registran ambos incidentes.
+
+`start_v91_o01_partial_soak.ps1` y
+`finalize_v91_o01_partial_soak.ps1` son únicamente una regresión local y siempre
+mantienen el caso formal en `BLOCKED`. El `PASS` exige un Coordinator `T1` que
+ejecute monitores locales en `H1` y `H3`, reúna ambos paquetes de evidencia y
+compruebe duración efectiva, cadencia y huecos.
 
 `V91-I04` valida la conmutación de familia de un único peer dual-stack; no es
 una prueba DNS ni permite sustituir el `DROP` por un puerto cerrado, `RST` o

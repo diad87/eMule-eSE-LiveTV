@@ -399,6 +399,31 @@ UPNP_GetSpecificPortMappingEntryExt(const char * controlURL,
                                     char * enabled,
                                     char * leaseDuration);
 
+/*! \brief size-aware variant used when exact, non-truncated readback is
+ * required before a destructive ownership decision.
+ *
+ * Every non-NULL output is cleared and the function returns
+ * #UPNPCOMMAND_INVALID_RESPONSE if the complete XML value, including its
+ * terminator, does not fit the supplied buffer.
+ */
+MINIUPNP_LIBSPEC int
+UPNP_GetSpecificPortMappingEntryChecked(
+                                    const char * controlURL,
+                                    const char * servicetype,
+                                    const char * extPort,
+                                    const char * proto,
+                                    const char * remoteHost,
+                                    char * intClient,
+                                    size_t intClientLen,
+                                    char * intPort,
+                                    size_t intPortLen,
+                                    char * desc,
+                                    size_t descLen,
+                                    char * enabled,
+                                    size_t enabledLen,
+                                    char * leaseDuration,
+                                    size_t leaseDurationLen);
+
 /*! \brief WANIPConnection:GetGenericPortMappingEntry()
  *
  * errorCode errorDescription (short) | Description (long)

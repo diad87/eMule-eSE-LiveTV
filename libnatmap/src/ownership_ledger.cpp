@@ -130,6 +130,28 @@ OwnershipDescription BuildOwnershipDescription(
     return result;
 }
 
+bool ParseOwnershipDescription(
+    const char* text,
+    std::size_t available,
+    OwnershipDescription& description) noexcept {
+    description = OwnershipDescription{};
+    if (text == nullptr || available == 0)
+        return false;
+    std::size_t length = 0;
+    while (length < available && text[length] != 0) {
+        const unsigned char byte =
+            static_cast<unsigned char>(text[length]);
+        if (byte < 0x20 || byte > 0x7e
+            || length + 1 >= description.size())
+            return false;
+        ++length;
+    }
+    if (length == available)
+        return false;
+    std::copy(text, text + length, description.begin());
+    return true;
+}
+
 bool OwnershipJournalCommit::Complete(
     OwnershipJournalStep step) noexcept {
     if (failed_ || static_cast<std::uint8_t>(step) != next_step_
@@ -186,6 +208,15 @@ OwnershipDecision EvaluateOwnershipForDeletion(
     if (!SameDescription(record.description, observed.description))
         return OwnershipDecision::DescriptionMismatch;
     return OwnershipDecision::Owned;
+}
+
+bool IsUpnpCleanupAuthorized(
+    const UpnpOwnershipRecord& record,
+    std::uint64_t current_gateway_fingerprint,
+    const ObservedUpnpMapping& observed) noexcept {
+    return EvaluateOwnershipForDeletion(
+        record, current_gateway_fingerprint, observed) ==
+        OwnershipDecision::Owned;
 }
 
 bool OwnershipLedger::IsStructurallyValid() const noexcept {

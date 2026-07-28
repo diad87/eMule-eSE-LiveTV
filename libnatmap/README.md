@@ -141,3 +141,9 @@ only after that final verification step.
 owned readback authorizes router deletion. An absent, mismatched or
 different-gateway rule drops only the local proof through the durable journal
 transaction; transient and unknown observations keep proof for a safe retry.
+
+`IsUpnpCleanupAuthorized` is the H06 final delete boundary. It returns true
+only when the local record is valid and gateway fingerprint, protocol,
+external port, internal client, internal port and ownership description all
+match the router readback. The Windows host also rejects unknown protocol
+labels and retains proof when the current gateway identity is unavailable.

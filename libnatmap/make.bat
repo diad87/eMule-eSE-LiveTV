@@ -63,5 +63,9 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_upnp_recovery_po
 if errorlevel 1 exit /b 1
 build\test_upnp_recovery_policy.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Febuild\test_miniupnpc_checked_copy.exe tests\test_miniupnpc_checked_copy.cpp
+if errorlevel 1 exit /b 1
+build\test_miniupnpc_checked_copy.exe
+if errorlevel 1 exit /b 1
 echo libnatmap complete gate: PASS
 exit /b 0

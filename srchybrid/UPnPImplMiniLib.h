@@ -83,6 +83,13 @@ private:
 	bool RecordOwnedMapping(uint16 nLocalPort, uint16 nExternalPort,
 		bool bTCP, const char* pachLANIP, uint32 nLifetimeSeconds,
 		const natmap::OwnershipDescription& description);
+	bool DeleteEphemeralOwnedMapping(uint16 nLocalPort,
+		uint16 nExternalPort, bool bTCP, const char* pachLANIP,
+		uint32 nLifetimeSeconds,
+		const natmap::OwnershipDescription& description,
+		const char* observedClient, const char* observedPort,
+		const char* observedDescription,
+		std::size_t observedDescriptionCapacity);
 	void RemoveOwnershipRecord(std::size_t index);
 	bool RemoveOwnershipRecordDurably(std::size_t index);
 	std::uint64_t CurrentGatewayFingerprint() const;

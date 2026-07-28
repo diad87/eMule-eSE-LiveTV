@@ -19,6 +19,10 @@ using OwnershipDescription =
 
 OwnershipDescription BuildOwnershipDescription(
     std::uint64_t owner_token, Transport transport) noexcept;
+bool ParseOwnershipDescription(
+    const char* text,
+    std::size_t available,
+    OwnershipDescription& description) noexcept;
 
 // Durable proof of a UPnP rule created by this eMule instance. The host writes
 // the ledger atomically only after the router returns the exact description,
@@ -91,6 +95,10 @@ private:
 // This is the only authorization gate for crash-recovery deletion. A persisted
 // port number alone is never sufficient.
 OwnershipDecision EvaluateOwnershipForDeletion(
+    const UpnpOwnershipRecord& record,
+    std::uint64_t current_gateway_fingerprint,
+    const ObservedUpnpMapping& observed) noexcept;
+bool IsUpnpCleanupAuthorized(
     const UpnpOwnershipRecord& record,
     std::uint64_t current_gateway_fingerprint,
     const ObservedUpnpMapping& observed) noexcept;

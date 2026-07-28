@@ -594,6 +594,60 @@ bool CUPnPImplMiniLib::RecordOwnedMapping(uint16 nLocalPort,
 	return false;
 }
 
+bool CUPnPImplMiniLib::DeleteEphemeralOwnedMapping(
+	uint16 nLocalPort, uint16 nExternalPort, bool bTCP,
+	const char* pachLANIP, uint32 nLifetimeSeconds,
+	const natmap::OwnershipDescription& description,
+	const char* observedClient, const char* observedPort,
+	const char* observedDescription,
+	std::size_t observedDescriptionCapacity)
+{
+	natmap::UpnpOwnershipRecord record{};
+	record.owner_token = m_ownerToken;
+	record.gateway_fingerprint = CurrentGatewayFingerprint();
+	record.transport =
+		bTCP ? natmap::Transport::Tcp : natmap::Transport::Udp;
+	if (!ParseIPv4(pachLANIP, record.local_address))
+		return false;
+	record.local_port = nLocalPort;
+	record.external_port = nExternalPort;
+	record.lifetime_seconds = nLifetimeSeconds;
+	const time_t now = std::time(NULL);
+	if (now <= 0)
+		return false;
+	record.acquired_unix_seconds =
+		static_cast<std::uint64_t>(now);
+	record.generation = m_mappingGeneration;
+	record.description = description;
+
+	natmap::ObservedUpnpMapping observed{};
+	observed.transport = record.transport;
+	observed.external_port = nExternalPort;
+	if (!ParseIPv4(observedClient, observed.local_address)
+		|| !natmap::ParseUpnpDecimalPort(
+			observedPort, observed.local_port)
+		|| !natmap::ParseOwnershipDescription(
+			observedDescription,
+			observedDescriptionCapacity,
+			observed.description)
+		|| !natmap::IsUpnpCleanupAuthorized(
+			record, record.gateway_fingerprint, observed)) {
+		DebugLogWarning(_T("UPNP ownership: refusing rollback without complete ephemeral ownership proof"));
+		return false;
+	}
+
+	char externalPort[8] = {};
+	_snprintf_s(externalPort, _countof(externalPort), _TRUNCATE,
+		"%hu", nExternalPort);
+	const int result = UPNP_DeletePortMapping(
+		m_pURLs->controlURL, m_pIGDData->first.servicetype,
+		externalPort, bTCP ? sTCPa : sUDPa, NULL);
+	if (result != UPNPCOMMAND_SUCCESS)
+		DebugLogWarning(_T("UPNP ownership: strict rollback failed for %s port %hu"),
+			bTCP ? sTCP : sUDP, nExternalPort);
+	return result == UPNPCOMMAND_SUCCESS;
+}
+
 void CUPnPImplMiniLib::RecoverOwnedMappings()
 {
 	const natmap::OwnershipLedger pending = m_ownershipLedger;
@@ -676,6 +730,12 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 	if (port == 0 || m_pURLs == NULL || m_pURLs->controlURL == NULL
 		|| m_pIGDData == NULL)
 		return;
+	if (prot == NULL
+		|| (_tcscmp(prot, sTCP) != 0
+			&& _tcscmp(prot, sUDP) != 0)) {
+		DebugLogWarning(_T("UPNP ownership: refusing cleanup for unknown protocol"));
+		return;
+	}
 
 	const natmap::Transport transport = _tcscmp(prot, sUDP) == 0
 		? natmap::Transport::Udp : natmap::Transport::Tcp;
@@ -701,7 +761,17 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 
 	const natmap::UpnpOwnershipRecord record =
 		m_ownershipLedger.records[index];
-	if (gateway == 0 || record.gateway_fingerprint != gateway) {
+	if (!record.IsStructurallyValid()) {
+		DebugLogWarning(_T("UPNP ownership: refusing cleanup for invalid local %s proof on port %hu"),
+			prot, port);
+		return;
+	}
+	if (gateway == 0) {
+		DebugLogWarning(_T("UPNP ownership: current gateway identity is unavailable; retaining %s proof for port %hu"),
+			prot, port);
+		return;
+	}
+	if (record.gateway_fingerprint != gateway) {
 		DebugLogWarning(_T("UPNP ownership: stale %s port %hu belongs to a different gateway; dropping local proof only"),
 			prot, port);
 		if (natmap::EvaluateUpnpRecovery(
@@ -717,10 +787,14 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 	char achDescription[80] = {};
 	char achLeaseDuration[16] = {};
 	_snprintf_s(achPort, _countof(achPort), _TRUNCATE, "%hu", port);
-	const int queryResult = UPNP_GetSpecificPortMappingEntry(
+	const int queryResult = UPNP_GetSpecificPortMappingEntryChecked(
 		m_pURLs->controlURL, m_pIGDData->first.servicetype, achPort,
 		transport == natmap::Transport::Tcp ? sTCPa : sUDPa, NULL,
-		achOutIP, achOutPort, achDescription, NULL, achLeaseDuration);
+		achOutIP, _countof(achOutIP),
+		achOutPort, _countof(achOutPort),
+		achDescription, _countof(achDescription),
+		NULL, 0,
+		achLeaseDuration, _countof(achLeaseDuration));
 	if (queryResult != UPNPCOMMAND_SUCCESS) {
 		const natmap::UpnpRecoveryAction recoveryAction =
 			natmap::EvaluateUpnpRecovery(queryResult == 714
@@ -746,13 +820,20 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 	natmap::ParseUpnpDecimalPort(achOutPort, observed.local_port);
 	observed.external_port = port;
 	ParseIPv4(achOutIP, observed.local_address);
-	strncpy_s(observed.description.data(), observed.description.size(),
-		achDescription, _TRUNCATE);
+	if (!natmap::ParseOwnershipDescription(
+			achDescription, _countof(achDescription),
+			observed.description)) {
+		DebugLogWarning(_T("UPNP ownership: router returned an overlong, unterminated or non-printable description for %s port %hu; retaining proof"),
+			prot, port);
+		return;
+	}
 	const natmap::OwnershipDecision decision =
 		natmap::EvaluateOwnershipForDeletion(record, gateway, observed);
+	const bool cleanupAuthorized =
+		natmap::IsUpnpCleanupAuthorized(record, gateway, observed);
 	const natmap::UpnpRecoveryAction recoveryAction =
 		natmap::EvaluateUpnpRecovery(decision);
-	if (recoveryAction != natmap::UpnpRecoveryAction::DeleteOwnedMapping) {
+	if (!cleanupAuthorized) {
 		DebugLogWarning(_T("UPNP ownership: %s port %hu no longer matches proof (decision=%u); mapping was not removed"),
 			prot, port, static_cast<unsigned>(decision));
 		if (recoveryAction
@@ -760,6 +841,8 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 			RemoveOwnershipRecordDurably(index);
 		return;
 	}
+	ASSERT(recoveryAction
+		== natmap::UpnpRecoveryAction::DeleteOwnedMapping);
 
 	const int nResult = UPNP_DeletePortMapping(m_pURLs->controlURL,
 		m_pIGDData->first.servicetype, achPort, CStringA(prot), NULL);
@@ -1300,11 +1383,15 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 		achOutDescription[0] = 0;
 		achEnabled[0] = 0;
 		achLeaseDuration[0] = 0;
-		return UPNP_GetSpecificPortMappingEntry(
+		return UPNP_GetSpecificPortMappingEntryChecked(
 			m_pOwner->m_pURLs->controlURL,
 			m_pOwner->m_pIGDData->first.servicetype, achExternalPort,
-			(bTCP ? sTCPa : sUDPa), NULL, achOutIP, achOutPort,
-			achOutDescription, achEnabled, achLeaseDuration);
+			(bTCP ? sTCPa : sUDPa), NULL,
+			achOutIP, _countof(achOutIP),
+			achOutPort, _countof(achOutPort),
+			achOutDescription, _countof(achOutDescription),
+			achEnabled, _countof(achEnabled),
+			achLeaseDuration, _countof(achLeaseDuration));
 	};
 	const auto observedTargetMatches = [&]() {
 		return MappingTargetsLocalSocket(achOutIP, achOutPort, achEnabled,
@@ -1392,10 +1479,11 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 			if (mappingProvenAbsentBeforeAdd && ownedDescription) {
 				DebugLogError(_T("UPNP ownership: add response was lost and proof persistence failed for newly created %s port %hu; rolling mapping back"),
 					(bTCP ? sTCP : sUDP), *pExternalPort);
-				UPNP_DeletePortMapping(
-					m_pOwner->m_pURLs->controlURL,
-					m_pOwner->m_pIGDData->first.servicetype,
-					achExternalPort, (bTCP ? sTCPa : sUDPa), NULL);
+				m_pOwner->DeleteEphemeralOwnedMapping(
+					nPort, *pExternalPort, bTCP, pachLANIP,
+					remaining, ownershipDescription,
+					achOutIP, achOutPort, achOutDescription,
+					_countof(achOutDescription));
 			}
 			return false;
 		}
@@ -1544,9 +1632,11 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_OWNERSHIP_PERSISTENCE;
 			DebugLogError(_T("UPNP ownership: could not persist proof for %s port %hu; rolling mapping back"),
 				(bTCP ? sTCP : sUDP), *pExternalPort);
-			UPNP_DeletePortMapping(m_pOwner->m_pURLs->controlURL,
-				m_pOwner->m_pIGDData->first.servicetype, achExternalPort,
-				(bTCP ? sTCPa : sUDPa), NULL);
+			m_pOwner->DeleteEphemeralOwnedMapping(
+				nPort, *pExternalPort, bTCP, pachLANIP,
+				verifiedLifetime, ownershipDescription,
+				achOutIP, achOutPort, achOutDescription,
+				_countof(achOutDescription));
 			return false;
 		}
 		if (pReadbackMatches != NULL)

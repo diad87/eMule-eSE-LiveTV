@@ -242,6 +242,66 @@ void TestJournalCommitRequiresExactOrderAndVerification() {
     CHECK(invalid.HasFailed());
 }
 
+void TestCleanupRequiresEveryOwnershipProof() {
+    const UpnpOwnershipRecord record = Record();
+    ObservedUpnpMapping observed = Observation(record);
+    CHECK(IsUpnpCleanupAuthorized(record, kGateway, observed));
+
+    UpnpOwnershipRecord invalidRecord = record;
+    invalidRecord.owner_token = 0;
+    CHECK(!IsUpnpCleanupAuthorized(
+        invalidRecord, kGateway, observed));
+    CHECK(!IsUpnpCleanupAuthorized(record, 0, observed));
+    CHECK(!IsUpnpCleanupAuthorized(
+        record, kGateway + 1, observed));
+
+    observed = Observation(record);
+    observed.description[3] = 'X';
+    CHECK(!IsUpnpCleanupAuthorized(record, kGateway, observed));
+    observed = Observation(record);
+    observed.local_address = IpAddress::V4(192, 168, 68, 55);
+    CHECK(!IsUpnpCleanupAuthorized(record, kGateway, observed));
+    observed = Observation(record);
+    observed.local_port = 4672;
+    CHECK(!IsUpnpCleanupAuthorized(record, kGateway, observed));
+    observed = Observation(record);
+    observed.external_port = 4672;
+    CHECK(!IsUpnpCleanupAuthorized(record, kGateway, observed));
+    observed = Observation(record);
+    observed.transport = Transport::Udp;
+    CHECK(!IsUpnpCleanupAuthorized(record, kGateway, observed));
+    observed = Observation(record);
+    observed.local_port = 0;
+    CHECK(!IsUpnpCleanupAuthorized(record, kGateway, observed));
+}
+
+void TestOwnershipDescriptionNeverTruncates() {
+    OwnershipDescription parsed{};
+    const OwnershipDescription compact =
+        BuildOwnershipDescription(kToken, Transport::Tcp);
+    CHECK(ParseOwnershipDescription(
+        compact.data(), compact.size(), parsed));
+    CHECK(parsed == compact);
+
+    const char legacy[] = "eMuleT-0123456789ABCDEF";
+    CHECK(ParseOwnershipDescription(
+        legacy, sizeof(legacy), parsed));
+    CHECK(std::strcmp(parsed.data(), legacy) == 0);
+
+    const char legacyWithSuffix[] =
+        "eMuleT-0123456789ABCDEFSUFFIX";
+    CHECK(!ParseOwnershipDescription(
+        legacyWithSuffix, sizeof(legacyWithSuffix), parsed));
+    CHECK(parsed[0] == 0);
+
+    const char unterminated[] = {
+        'e', 'T', '0', '2', '8', 'T', '5', 'C'
+    };
+    CHECK(!ParseOwnershipDescription(
+        unterminated, sizeof(unterminated), parsed));
+    CHECK(!ParseOwnershipDescription(nullptr, 0, parsed));
+}
+
 } // namespace
 
 int main() {
@@ -250,6 +310,8 @@ int main() {
     TestCodecRoundTripAndCorruption();
     TestLedgerRejectsAmbiguousRules();
     TestJournalCommitRequiresExactOrderAndVerification();
+    TestCleanupRequiresEveryOwnershipProof();
+    TestOwnershipDescriptionNeverTruncates();
     std::printf("test_ownership_ledger: %d checks, %d failures\n",
                 checks, failures);
     return failures == 0 ? 0 : 1;

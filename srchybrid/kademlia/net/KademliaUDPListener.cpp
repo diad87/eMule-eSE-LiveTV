@@ -468,24 +468,26 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 		&& internalKadPort != 0) {
 		const CAddress publicV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
 		if (publicV6.GetType() == CAddress::IPv6 && publicV6.IsPublicIP()) {
-			kad6::K6Endpoint endpoint;
-			endpoint.addr.family = kad6::Kad6Address::Family::IPv6;
-			std::memcpy(endpoint.addr.addr.data(), publicV6.Data(), 16);
-			endpoint.udp_port = internalKadPort;
-			endpoint.tcp_port = theApp.GetAdvertisedV6TcpPort();
-			endpoint.transport_flags = kad6::kK6EpUdpKad6;
-			endpoint.observed = 0;
-			endpoints.push_back(endpoint);
+			const uint16 publicV6KadPort =
+				theApp.GetAdvertisedV6UdpPort();
+			if (publicV6KadPort != 0) {
+				kad6::K6Endpoint endpoint;
+				endpoint.addr.family = kad6::Kad6Address::Family::IPv6;
+				std::memcpy(endpoint.addr.addr.data(), publicV6.Data(), 16);
+				endpoint.udp_port = publicV6KadPort;
+				endpoint.tcp_port = theApp.GetAdvertisedV6TcpPort();
+				endpoint.transport_flags = kad6::kK6EpUdpKad6;
+				endpoint.observed = 0;
+				endpoints.push_back(endpoint);
+			}
 		}
 	}
 	const uint32 publicV4 = theApp.GetPublicIP();
 	if (publicV4 != 0) {
 		const CAddress addressV4(publicV4, false);
 		if (addressV4.GetType() == CAddress::IPv4 && addressV4.IsPublicIP()) {
-			uint16 publicKadPort = internalKadPort;
-			if (CKademlia::GetPrefs()->GetUseExternKadPort()
-				&& CKademlia::GetPrefs()->GetExternalKadPort() != 0)
-				publicKadPort = CKademlia::GetPrefs()->GetExternalKadPort();
+			const uint16 publicKadPort =
+				theApp.GetAdvertisedUdpPort();
 			if (publicKadPort != 0) {
 				kad6::K6Endpoint endpoint;
 				endpoint.addr.family = kad6::Kad6Address::Family::IPv4;
@@ -1138,7 +1140,13 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 		byteIOResponse.WriteUInt8(KADEMLIA_VERSION);
 
 		// Tag Count.
-		uint8 byTagCount = static_cast<uint8>(!CKademlia::GetPrefs()->GetUseExternKadPort());
+		const uint16 advertisedKadPort =
+			theApp.GetAdvertisedUdpPort();
+		const bool bSendSourceUdpPort =
+			!CKademlia::GetPrefs()->GetUseExternKadPort()
+			&& advertisedKadPort != 0;
+		uint8 byTagCount =
+			static_cast<uint8>(bSendSourceUdpPort);
 		if (byKadVersion >= KADEMLIA_VERSION8_49b
 			&& (bRequestAckPackage || CKademlia::GetPrefs()->GetFirewalled() || CUDPFirewallTester::IsFirewalledUDP(true)))
 		{
@@ -1160,8 +1168,9 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 		if (bSendV6)
 			++byTagCount;
 		byteIOResponse.WriteUInt8(byTagCount);
-		if (!CKademlia::GetPrefs()->GetUseExternKadPort())
-			byteIOResponse.WriteTag(CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
+		if (bSendSourceUdpPort)
+			byteIOResponse.WriteTag(
+				CKadTagUInt16(TAG_SOURCEUPORT, advertisedKadPort));
 
 		if (byKadVersion >= KADEMLIA_VERSION8_49b
 			&& (bRequestAckPackage || CKademlia::GetPrefs()->GetFirewalled() || CUDPFirewallTester::IsFirewalledUDP(true)))

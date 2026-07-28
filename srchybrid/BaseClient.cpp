@@ -1343,17 +1343,8 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	tagModVersion.WriteTagToFile(data);
 
 	// eMule UDP Ports
-	uint16 kadUDPPort;
-	if (Kademlia::CKademlia::IsConnected()) {
-		if (Kademlia::CKademlia::GetPrefs()->GetExternalKadPort() != 0
-			&& Kademlia::CKademlia::GetPrefs()->GetUseExternKadPort()
-			&& Kademlia::CUDPFirewallTester::IsVerified())
-		{
-			kadUDPPort = Kademlia::CKademlia::GetPrefs()->GetExternalKadPort();
-		} else
-			kadUDPPort = Kademlia::CKademlia::GetPrefs()->GetInternKadPort();
-	} else
-		kadUDPPort = 0;
+	const uint16 kadUDPPort = Kademlia::CKademlia::IsConnected()
+		? theApp.GetAdvertisedUdpPort() : 0;
 	CTag tagUdpPorts(CT_EMULE_UDPPORTS,
 				((uint32)kadUDPPort			   << 16) |
 				((uint32)theApp.GetAdvertisedUdpPort() <<  0)

@@ -6264,9 +6264,7 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
     }
 
     const uint32_t publicIp = theApp.GetPublicIP();
-    uint16_t udpPort = Kademlia::CKademlia::GetPrefs()->GetUseExternKadPort()
-        ? Kademlia::CKademlia::GetPrefs()->GetExternalKadPort() : 0;
-    if (udpPort == 0) udpPort = Kademlia::CKademlia::GetPrefs()->GetInternKadPort();
+    const uint16_t udpPort = theApp.GetAdvertisedUdpPort();
     if (publicIp == 0 || theApp.GetAdvertisedTcpPort() == 0 || udpPort == 0) {
         finish(kad6::K6SourceBoundStatus::Overloaded, NULL);
         return;

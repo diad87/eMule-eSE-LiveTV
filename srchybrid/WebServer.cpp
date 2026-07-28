@@ -3525,7 +3525,8 @@ CString CWebServer::_GetPreferences(const ThreadData &Data)
 	Out.Replace(_T("[Apply]"), _GetPlainResString(IDS_PW_APPLY));
 
 	CString m_sTestURL;
-	m_sTestURL.Format(PORTTESTURL, thePrefs.GetPort(), thePrefs.GetUDPPort(), thePrefs.GetLanguageID());
+	m_sTestURL.Format(PORTTESTURL, theApp.GetAdvertisedTcpPort(),
+		theApp.GetAdvertisedUdpPort(), thePrefs.GetLanguageID());
 
 	// the portcheck will need to do an obfuscated callback too if obfuscation is requested, so we have to provide our userhash so it can create the key
 	if (thePrefs.IsCryptLayerPreferred())

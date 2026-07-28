@@ -641,6 +641,24 @@ while malformed or hostile control input fails closed under fixed depth,
 container, graph-node and text budgets. Public snapshots omit
 addresses, instance digests, gateway identity and protocol ownership tokens.
 
+## Control CLI F03
+
+`t8_control_cli.js` is the single immutable dispatcher used by both object
+commands and the argv facade. The minimum commands are `load`, `reset`,
+`status`, `list`, `restart-epoch`, `drop-next`, `expire`, and `stop`. Every CLI
+call returns an exit code plus exactly one versioned JSON line on stdout;
+usage errors use exit code 2, state or operation failures use 1, and successful
+commands use 0. Errors never copy exception messages, paths or scenario data.
+
+`load` validates the complete scenario before constructing state. `reset`
+restores its baseline with a greater generation and clears transient drop
+faults. `list` uses the existing sanitized mapping projector. `restart-epoch`
+invalidates mappings through the shared reducer, `expire` advances only
+monotonically, and each `drop-next` creates a typed, one-use, auto-reset fault
+descriptor. `stop` discards all loaded private state. The argv layer only
+parses closed arguments and delegates; it cannot mutate mappings directly and
+does not expose an administrative socket.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

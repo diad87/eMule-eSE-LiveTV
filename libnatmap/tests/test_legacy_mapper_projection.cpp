@@ -1,6 +1,7 @@
 #include "natmap/legacy_mapper_projection.h"
 
 #include <cstdio>
+#include <limits>
 
 using namespace natmap;
 
@@ -61,6 +62,9 @@ void TestProjectsExactLegacyValues() {
     LegacyMapperObservation observation{};
     CHECK(ProjectLegacyMapperObservation(result, observation));
     CHECK(observation.mapper == MapperKind::Pcp);
+    CHECK(observation.mapper_source == MapperSource::PcpCpe);
+    CHECK(SameAddress(observation.gateway_address,
+                      IpAddress::V4(192, 168, 68, 1)));
     CHECK(SameAddress(observation.external_address,
                       IpAddress::V4(88, 11, 22, 4)));
     CHECK(observation.local_tcp_port == 4662);
@@ -69,6 +73,7 @@ void TestProjectsExactLegacyValues() {
     CHECK(observation.external_udp_port == 52145);
     CHECK(observation.lifetime_seconds == 3600);
     CHECK(observation.mapper_epoch == 17);
+    CHECK(observation.topology_generation == 4);
     CHECK(!observation.refresh);
     CHECK(!LegacyObservationAllowsSilentRenewal(observation));
 }
@@ -142,6 +147,14 @@ void TestProjectionFailsClosedWithoutMutatingOutput() {
     bad = LegacySuccess(MappingOperation::Initial);
     bad.mappings[1].granted_external_endpoint.port = 0;
     CHECK(!ProjectLegacyMapperObservation(MapperResult(bad), sentinel));
+
+    bad = LegacySuccess(MappingOperation::Initial);
+    bad.gateway.address = {};
+    CHECK(!ProjectLegacyMapperObservation(MapperResult(bad), sentinel));
+
+    bad = LegacySuccess(MappingOperation::Initial);
+    bad.gateway.source = EndpointSource::PcpMap;
+    CHECK(!ProjectLegacyMapperObservation(MapperResult(bad), sentinel));
 }
 
 void TestTcpOnlyPreservesLegacyOptionalUdp() {
@@ -156,6 +169,103 @@ void TestTcpOnlyPreservesLegacyOptionalUdp() {
     CHECK(observation.external_udp_port == 0);
 }
 
+void TestTopologyGenerationRules() {
+    LegacyMapperObservation current{};
+    CHECK(ProjectLegacyMapperObservation(
+        MapperResult(LegacySuccess(MappingOperation::Initial)),
+        current));
+    MapperTopologyIdentity identity{};
+    CHECK(BuildMapperTopologyIdentity(current, identity));
+    CHECK(identity.IsValid());
+
+    LegacyMapperObservation renewal = current;
+    renewal.refresh = true;
+    TopologyGenerationDecision decision =
+        ResolveTopologyGeneration(4, identity, renewal);
+    CHECK(decision.disposition ==
+          TopologyGenerationDisposition::Keep);
+    CHECK(decision.generation == 4);
+
+    LegacyMapperObservation changed = renewal;
+    changed.external_tcp_port = 52146;
+    decision = ResolveTopologyGeneration(4, identity, changed);
+    CHECK(decision.disposition ==
+          TopologyGenerationDisposition::Advance);
+    CHECK(decision.generation == 5);
+
+    changed = renewal;
+    changed.local_tcp_port = 4663;
+    CHECK(ResolveTopologyGeneration(4, identity, changed).disposition ==
+          TopologyGenerationDisposition::Advance);
+
+    changed = renewal;
+    changed.local_udp_port = 0;
+    changed.external_udp_port = 0;
+    CHECK(ResolveTopologyGeneration(4, identity, changed).disposition ==
+          TopologyGenerationDisposition::Advance);
+
+    changed = renewal;
+    changed.external_address = IpAddress::V4(88, 11, 22, 5);
+    CHECK(ResolveTopologyGeneration(4, identity, changed).disposition ==
+          TopologyGenerationDisposition::Advance);
+
+    changed = renewal;
+    changed.mapper = MapperKind::NatPmp;
+    changed.mapper_source = MapperSource::NatPmp;
+    CHECK(ResolveTopologyGeneration(4, identity, changed).disposition ==
+          TopologyGenerationDisposition::Advance);
+
+    changed = renewal;
+    changed.mapper_source = MapperSource::PcpUpstream;
+    CHECK(ResolveTopologyGeneration(4, identity, changed).disposition ==
+          TopologyGenerationDisposition::Advance);
+
+    changed = renewal;
+    changed.gateway_address = IpAddress::V4(192, 168, 68, 254);
+    CHECK(ResolveTopologyGeneration(4, identity, changed).disposition ==
+          TopologyGenerationDisposition::Advance);
+
+    changed = renewal;
+    changed.mapper_epoch_reset = true;
+    CHECK(ResolveTopologyGeneration(4, identity, changed).disposition ==
+          TopologyGenerationDisposition::Advance);
+
+    changed = renewal;
+    changed.topology_generation = 3;
+    decision = ResolveTopologyGeneration(4, identity, changed);
+    CHECK(decision.disposition ==
+          TopologyGenerationDisposition::RejectStale);
+    CHECK(decision.generation == 4);
+}
+
+void TestTopologyGenerationRejectsInvalidAndOverflow() {
+    LegacyMapperObservation observation{};
+    CHECK(ProjectLegacyMapperObservation(
+        MapperResult(LegacySuccess(MappingOperation::Refresh)),
+        observation));
+    MapperTopologyIdentity identity{};
+    CHECK(BuildMapperTopologyIdentity(observation, identity));
+
+    LegacyMapperObservation invalid = observation;
+    invalid.gateway_address = {};
+    CHECK(ResolveTopologyGeneration(
+              4, identity, invalid).disposition ==
+          TopologyGenerationDisposition::RejectInvalid);
+
+    const std::uint64_t maximum =
+        (std::numeric_limits<std::uint64_t>::max)();
+    observation.topology_generation = maximum;
+    CHECK(ResolveTopologyGeneration(
+              maximum, identity, observation).disposition ==
+          TopologyGenerationDisposition::Keep);
+    observation.mapper_epoch_reset = true;
+    const TopologyGenerationDecision overflow =
+        ResolveTopologyGeneration(maximum, identity, observation);
+    CHECK(overflow.disposition ==
+          TopologyGenerationDisposition::RejectOverflow);
+    CHECK(overflow.generation == maximum);
+}
+
 } // namespace
 
 int main() {
@@ -163,6 +273,8 @@ int main() {
     TestRefreshOnlyChangesLegacyRefreshFlag();
     TestProjectionFailsClosedWithoutMutatingOutput();
     TestTcpOnlyPreservesLegacyOptionalUdp();
+    TestTopologyGenerationRules();
+    TestTopologyGenerationRejectsInvalidAndOverflow();
     std::printf(
         "test_legacy_mapper_projection: %d checks, %d failures\n",
         checks, failures);

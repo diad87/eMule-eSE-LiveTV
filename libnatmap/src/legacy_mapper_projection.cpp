@@ -1,5 +1,7 @@
 #include "natmap/legacy_mapper_projection.h"
 
+#include <limits>
+
 namespace natmap {
 namespace {
 
@@ -39,7 +41,53 @@ bool IdentityMatches(MapperKind mapper, MapperSource source,
     }
 }
 
+bool IsKnownMapper(MapperKind mapper) noexcept {
+    return mapper == MapperKind::UpnpIgd ||
+           mapper == MapperKind::Pcp ||
+           mapper == MapperKind::NatPmp;
+}
+
+bool SourceMatchesMapper(
+    MapperKind mapper,
+    MapperSource source) noexcept {
+    return (mapper == MapperKind::UpnpIgd &&
+            source == MapperSource::UpnpIgd) ||
+           (mapper == MapperKind::Pcp &&
+            (source == MapperSource::PcpCpe ||
+             source == MapperSource::PcpUpstream)) ||
+           (mapper == MapperKind::NatPmp &&
+            source == MapperSource::NatPmp);
+}
+
+bool SameTopologyIdentity(
+    const MapperTopologyIdentity& left,
+    const MapperTopologyIdentity& right) noexcept {
+    return left.mapper == right.mapper &&
+           left.mapper_source == right.mapper_source &&
+           SameAddress(
+               left.gateway_address, right.gateway_address) &&
+           SameAddress(
+               left.external_address, right.external_address) &&
+           left.local_tcp_port == right.local_tcp_port &&
+           left.external_tcp_port == right.external_tcp_port &&
+           left.local_udp_port == right.local_udp_port &&
+           left.external_udp_port == right.external_udp_port;
+}
+
 } // namespace
+
+bool MapperTopologyIdentity::IsValid() const noexcept {
+    return IsKnownMapper(mapper) &&
+           SourceMatchesMapper(mapper, mapper_source) &&
+           IsCanonicalV4(gateway_address) &&
+           IsCanonicalV4(external_address) &&
+           local_tcp_port != 0 &&
+           external_tcp_port != 0 &&
+           ((local_udp_port == 0 &&
+             external_udp_port == 0) ||
+            (local_udp_port != 0 &&
+             external_udp_port != 0));
+}
 
 bool ProjectLegacyMapperObservation(
     const MapperResult& result,
@@ -54,6 +102,8 @@ bool ProjectLegacyMapperObservation(
     if ((!initial && !refresh) ||
         data.request_id == 0 ||
         data.topology_generation == 0 ||
+        data.gateway.source != EndpointSource::LocalInterface ||
+        !IsCanonicalV4(data.gateway.address) ||
         data.mapping_count == 0 ||
         data.mapping_count > data.mappings.size())
         return false;
@@ -101,6 +151,8 @@ bool ProjectLegacyMapperObservation(
 
     LegacyMapperObservation projected{};
     projected.mapper = data.mapper;
+    projected.mapper_source = data.source;
+    projected.gateway_address = data.gateway.address;
     projected.external_address =
         tcp->granted_external_endpoint.address;
     projected.local_tcp_port = tcp->local_endpoint.port;
@@ -113,6 +165,8 @@ bool ProjectLegacyMapperObservation(
     }
     projected.lifetime_seconds = tcp->lifetime_seconds;
     projected.mapper_epoch = data.mapper_epoch;
+    projected.topology_generation =
+        data.topology_generation;
     projected.mapper_epoch_reset = data.mapper_epoch_reset;
     projected.refresh =
         data.operation == MappingOperation::Refresh;
@@ -123,6 +177,64 @@ bool ProjectLegacyMapperObservation(
 bool LegacyObservationAllowsSilentRenewal(
     const LegacyMapperObservation& observation) noexcept {
     return observation.refresh && !observation.mapper_epoch_reset;
+}
+
+bool BuildMapperTopologyIdentity(
+    const LegacyMapperObservation& observation,
+    MapperTopologyIdentity& identity) noexcept {
+    MapperTopologyIdentity candidate{};
+    candidate.mapper = observation.mapper;
+    candidate.mapper_source = observation.mapper_source;
+    candidate.gateway_address = observation.gateway_address;
+    candidate.external_address = observation.external_address;
+    candidate.local_tcp_port = observation.local_tcp_port;
+    candidate.external_tcp_port =
+        observation.external_tcp_port;
+    candidate.local_udp_port = observation.local_udp_port;
+    candidate.external_udp_port =
+        observation.external_udp_port;
+    if (!candidate.IsValid())
+        return false;
+    identity = candidate;
+    return true;
+}
+
+TopologyGenerationDecision ResolveTopologyGeneration(
+    std::uint64_t current_generation,
+    const MapperTopologyIdentity& current_identity,
+    const LegacyMapperObservation& observation) noexcept {
+    TopologyGenerationDecision decision{};
+    MapperTopologyIdentity candidate{};
+    if (current_generation == 0 ||
+        observation.topology_generation == 0 ||
+        !BuildMapperTopologyIdentity(observation, candidate))
+        return decision;
+    if (observation.topology_generation != current_generation) {
+        decision.disposition =
+            TopologyGenerationDisposition::RejectStale;
+        decision.generation = current_generation;
+        return decision;
+    }
+    if (LegacyObservationAllowsSilentRenewal(observation) &&
+        current_identity.IsValid() &&
+        SameTopologyIdentity(current_identity, candidate)) {
+        decision.disposition =
+            TopologyGenerationDisposition::Keep;
+        decision.generation = current_generation;
+        return decision;
+    }
+    const std::uint64_t maximum =
+        (std::numeric_limits<std::uint64_t>::max)();
+    if (current_generation == maximum) {
+        decision.disposition =
+            TopologyGenerationDisposition::RejectOverflow;
+        decision.generation = current_generation;
+        return decision;
+    }
+    decision.disposition =
+        TopologyGenerationDisposition::Advance;
+    decision.generation = current_generation + 1;
+    return decision;
 }
 
 } // namespace natmap

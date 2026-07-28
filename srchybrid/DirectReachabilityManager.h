@@ -5,6 +5,7 @@
 #include "natmap/natmap_policy.h"
 #include "natmap/natmap_chain.h"
 #include "natmap/mapper_result.h"
+#include "natmap/legacy_mapper_projection.h"
 #include <atomic>
 
 // Main-thread owner for direct-reachability state. D1 is deliberately
@@ -40,10 +41,12 @@ public:
 	const natmap::ReachabilitySnapshot& GetSnapshot() const;
 
 private:
-	bool ObserveMappedPorts(natmap::MapperKind mapper, uint32 nExternalIP,
+	bool ObserveMappedPorts(natmap::MapperKind mapper,
+		natmap::MapperSource mapperSource, uint32 nExternalIP,
 		uint16 nLocalTcpPort, uint16 nExternalTcpPort,
 		uint16 nLocalUdpPort, uint16 nExternalUdpPort,
 		uint32 nLifetimeSeconds, uint32 nMapperEpoch,
+		const natmap::Endpoint& gateway, uint64 resultGeneration,
 		bool bMapperEpochReset, bool bRefresh);
 	void AssertMainThread() const;
 	static natmap::Endpoint MakeAnyV4(uint16 nPort);
@@ -51,8 +54,10 @@ private:
 		uint16 nPort, natmap::EndpointSource source);
 	static bool BuildMappedPlane(natmap::PlaneSnapshot& plane,
 		natmap::MapperKind mapper, natmap::Transport transport,
-		const natmap::Endpoint& local, const natmap::Endpoint& external,
+		const natmap::Endpoint& gateway, const natmap::Endpoint& local,
+		const natmap::Endpoint& external,
 		uint32 nLifetimeSeconds, uint32 nMapperEpoch, uint64 nGeneration);
+	void FailClosedAtGenerationLimit(natmap::ReasonCode reason);
 	static uint64 MonotonicMilliseconds();
 
 	DWORD m_dwOwnerThreadId;
@@ -65,5 +70,6 @@ private:
 	natmap::LeaseController m_udpLease;
 	natmap::NatChainTransaction m_tcpChain;
 	natmap::NatChainTransaction m_udpChain;
+	natmap::MapperTopologyIdentity m_mapperTopologyIdentity;
 	natmap::ReachabilitySnapshot m_snapshot;
 };

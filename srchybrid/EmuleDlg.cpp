@@ -4899,15 +4899,19 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		&& theApp.directreachability != NULL) {
 		const uint64 previousGeneration =
 			theApp.directreachability->GetTopologyGeneration();
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability->IsEnabled();
 		const bool observed =
 			theApp.directreachability->ObserveMapperResult(
 				natmap::MapperResult(mapperResultData));
 		if (observed
-			&& theApp.directreachability->GetTopologyGeneration()
-				!= previousGeneration
+			&& (theApp.directreachability->GetTopologyGeneration()
+					!= previousGeneration
+				|| (wasDirectReachabilityEnabled
+					&& !theApp.directreachability->IsEnabled()))
 			&& theApp.serverconnect->IsConnected()
 			&& !theApp.serverconnect->IsConnectedViaRelay()) {
-			LogWarning(_T("Direct reachability endpoint changed; reconnecting to advertise the new port"));
+			LogWarning(_T("Direct reachability endpoint changed or was withdrawn; reconnecting to update the advertised port"));
 			theApp.serverconnect->Disconnect();
 			theApp.serverconnect->ConnectToAnyServer();
 		}

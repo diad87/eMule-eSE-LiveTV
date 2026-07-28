@@ -137,6 +137,11 @@ void TestChangedEndpointIsNotSilentRenewal() {
     mapped.lease.granted_external_port = 50001;
     mapped.lease.public_endpoint.port = 50001;
     CHECK(!controller.AcceptRenewal(mapped.lease, 1000));
+
+    PortLease changed_gateway = controller.lease();
+    changed_gateway.gateway =
+        Ep(192, 168, 1, 254, 5351);
+    CHECK(!controller.AcceptRenewal(changed_gateway, 1000));
 }
 
 void TestApplicationRefreshSchedule() {

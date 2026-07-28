@@ -162,6 +162,7 @@ bool LeaseController::SameIdentity(const PortLease& left,
     return left.mapper == right.mapper && left.transport == right.transport &&
            left.generation == right.generation &&
            left.granted_external_port == right.granted_external_port &&
+           SameEndpoint(left.gateway, right.gateway) &&
            SameEndpoint(left.local, right.local) &&
            SameEndpoint(left.public_endpoint, right.public_endpoint);
 }

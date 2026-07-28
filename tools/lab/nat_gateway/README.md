@@ -340,6 +340,17 @@ field layout and productive client behavior are documented in
 [`docs/V9.2_T8_PCP_VECTORS.md`](../../../docs/V9.2_T8_PCP_VECTORS.md). No
 complete UDP golden is fabricated.
 
+## PCP D02 MAP decoder
+
+`pcp_map_request_decoder.js` is a pure, fail-closed MAP boundary. It snapshots
+genuine byte views, validates the PCP version, request opcode, 96-bit nonzero
+nonce, TCP/UDP protocol, internal port, deletion semantics and aligned options,
+ignores received reserved bits as required, then returns a deeply immutable
+command. It decodes `PREFER_FAILURE` and `PORT_SET`, rejects unsupported
+mandatory options and ignores well-formed unknown optional options as PCP
+requires. Stable errors carry the PCP result code needed by the later UDP
+server.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

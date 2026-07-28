@@ -1647,11 +1647,7 @@ UINT CemuleDlg::GetConnectionStateIconIndex() const
 	}
 	if (theApp.serverconnect->IsConnected())
 	{
-		const bool bVerifiedDirect = theApp.serverconnect->IsConnectedViaRelay()
-			|| theApp.directreachability == NULL
-			|| !theApp.directreachability->IsEnabled()
-			|| theApp.directreachability->HasVerifiedEd2kReachability();
-		idx += theApp.serverconnect->IsLowID() || !bVerifiedDirect ? 3 : 6;
+		idx += theApp.HasVerifiedEd2kHighId() ? 6 : 3;
 	}
 	return idx;
 }

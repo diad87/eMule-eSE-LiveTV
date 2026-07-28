@@ -34,6 +34,7 @@ $requiredCoverageIds = @(
     'MAPPING_DISAPPEARED',
     'DOUBLE_NAT_FIRST_LAYER',
     'TWO_CLIENT_OWNERSHIP',
+    'HIGHID_EVIDENCE',
     'HYPERV_PURE_PLAN',
     'STATE_CAPTURE',
     'CANONICAL_REPORT',
@@ -193,19 +194,32 @@ try {
             & python.exe (
                 Join-Path $RepoRoot 'tests\test_v92_l04_two_instances.py') 2>&1)
         $l04HostExit = $LASTEXITCODE
+        $l05HostOutput = @(
+            & python.exe (
+                Join-Path $RepoRoot 'tests\test_v92_l05_false_highid.py') 2>&1)
+        $l05HostExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
     }
     $l04Output | ForEach-Object { Write-Host $_ }
     $l04HostOutput | ForEach-Object { Write-Host $_ }
+    $l05HostOutput | ForEach-Object { Write-Host $_ }
     $l04Text = ($l04Output | ForEach-Object { [string]$_ }) -join "`n"
     $l04HostText = (
         $l04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $l05HostText = (
+        $l05HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l04Verdict = (
         $l04BuildExit -eq 0 -and
         $l04HostExit -eq 0 -and
         $l04Text -match 'two-instance T8: [0-9]+ checks, 0 failures' -and
         $l04HostText -match '(?m)^OK\s*$'
+    )
+    $l05Verdict = (
+        $l04BuildExit -eq 0 -and
+        $l05HostExit -eq 0 -and
+        $l04Text -match 'false HighID L05: [0-9]+ checks, 0 failures' -and
+        $l05HostText -match '(?m)^OK\s*$'
     )
 
     $hyperVOutput = @()
@@ -257,6 +271,7 @@ try {
     $overallPass = (
         $nodeVerdict -and
         $l04Verdict -and
+        $l05Verdict -and
         $hyperVVerdict -and
         $coverageIds.Count -eq $requiredCoverageIds.Count
     )
@@ -282,6 +297,10 @@ try {
         }
         l04_two_instance = [ordered]@{
             verdict = if ($l04Verdict) { 'PASS' } else { 'FAIL' }
+            physical_mutation = $false
+        }
+        l05_false_highid = [ordered]@{
+            verdict = if ($l05Verdict) { 'PASS' } else { 'FAIL' }
             physical_mutation = $false
         }
         coverage = [ordered]@{

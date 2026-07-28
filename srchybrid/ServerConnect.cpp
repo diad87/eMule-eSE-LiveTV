@@ -193,8 +193,14 @@ void CServerConnect::ConnectionEstablished(CServerSocket *sender)
 		}
 
 		// Send login packet
-		if (!sender->IsRelayRouted() && theApp.directreachability != NULL)
-			theApp.directreachability->BeginEd2kVerification();
+		if (!sender->IsRelayRouted() && theApp.directreachability != NULL) {
+			natmap::VerificationAttempt attempt;
+			if (theApp.directreachability->BeginEd2kVerification(attempt)) {
+				sender->m_ed2kVerificationAttempt = attempt;
+				theApp.listensocket->ArmDirectReachabilityVerification(
+					attempt);
+			}
+		}
 		CSafeMemFile data(256);
 		data.WriteHash16(thePrefs.GetUserHash());
 		data.WriteUInt32(GetClientID());

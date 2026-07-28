@@ -375,7 +375,8 @@ bool CServerSocket::ProcessPacket(const BYTE *packet, uint32 size, uint8 opcode)
 				}
 				if (!m_bRelayRouted && theApp.directreachability != NULL)
 					theApp.directreachability->ObserveServerIdChange(
-						!::IsLowID(la->clientid));
+						!::IsLowID(la->clientid),
+						m_ed2kVerificationAttempt);
 				serverconnect->SetClientID(la->clientid);
 				if (m_bRelayRouted && theApp.relayclient != NULL)
 					theApp.relayclient->OnEd2kIdChange(la->clientid, true);

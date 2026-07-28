@@ -23,6 +23,7 @@ CDirectReachabilityManager::CDirectReachabilityManager()
 	, m_nLocalUdpPort(0)
 	, m_nAdvertisedTcpPort(0)
 	, m_nAdvertisedUdpPort(0)
+	, m_nNextVerificationAttemptId(1)
 {
 }
 
@@ -387,42 +388,103 @@ bool CDirectReachabilityManager::HasVerifiedEd2kReachability() const
 	return m_snapshot.ed2k_tcp_v4.HasClassicHighIdEvidence();
 }
 
-bool CDirectReachabilityManager::BeginEd2kVerification()
+bool CDirectReachabilityManager::PromoteEd2kIfEvidenceComplete()
 {
 	AssertMainThread();
-	if (!IsEnabled())
-		return false;
-	const natmap::ReachabilityState state = m_snapshot.ed2k_tcp_v4.state;
-	if (state == natmap::ReachabilityState::Verifying)
+	if (!m_snapshot.ed2k_tcp_v4.HasCompleteClassicHighIdEvidence()
+		|| m_snapshot.ed2k_tcp_v4.state ==
+			natmap::ReachabilityState::Reachable)
 		return true;
-	natmap::StateEvent event;
-	event.type = natmap::EventType::VerificationStarted;
-	event.generation = m_snapshot.ed2k_tcp_v4.generation;
+	if (m_snapshot.ed2k_tcp_v4.state !=
+		natmap::ReachabilityState::Verifying)
+		return false;
+
+	natmap::StateEvent verified;
+	verified.type = natmap::EventType::VerificationSucceeded;
+	verified.generation = m_snapshot.ed2k_tcp_v4.generation;
+	verified.advertised = m_snapshot.ed2k_tcp_v4.advertised;
+	verified.verification_attempt =
+		m_snapshot.ed2k_tcp_v4.verification_attempt;
 	const natmap::TransitionResult result = natmap::ApplyEvent(
-		m_snapshot.ed2k_tcp_v4, event);
-	if (result.disposition != natmap::TransitionDisposition::Applied)
+		m_snapshot.ed2k_tcp_v4, verified);
+	if (result.disposition !=
+		natmap::TransitionDisposition::Applied)
 		return false;
 	m_snapshot.ed2k_tcp_v4 = result.snapshot;
 	return true;
 }
 
-bool CDirectReachabilityManager::ObserveServerIdChange(bool bHighId)
+bool CDirectReachabilityManager::BeginEd2kVerification(
+	natmap::VerificationAttempt& attempt)
 {
 	AssertMainThread();
 	if (!IsEnabled())
 		return false;
-	if (m_snapshot.ed2k_tcp_v4.state != natmap::ReachabilityState::Verifying
-		&& !BeginEd2kVerification())
+	const uint64 now = MonotonicMilliseconds();
+	const natmap::ReachabilityState state =
+		m_snapshot.ed2k_tcp_v4.state;
+	if (state == natmap::ReachabilityState::Verifying
+		&& m_snapshot.ed2k_tcp_v4.verification_attempt.IsValid()
+		&& now <= m_snapshot.ed2k_tcp_v4.verification_attempt
+			.deadline_monotonic_ms) {
+		attempt = m_snapshot.ed2k_tcp_v4.verification_attempt;
+		return true;
+	}
+	if (state == natmap::ReachabilityState::Verifying) {
+		natmap::StateEvent expired;
+		expired.type = natmap::EventType::VerificationFailed;
+		expired.generation = m_snapshot.ed2k_tcp_v4.generation;
+		expired.reason = natmap::ReasonCode::VerificationTimeout;
+		expired.verification_attempt =
+			m_snapshot.ed2k_tcp_v4.verification_attempt;
+		const natmap::TransitionResult failed = natmap::ApplyEvent(
+			m_snapshot.ed2k_tcp_v4, expired);
+		if (failed.disposition !=
+			natmap::TransitionDisposition::Applied)
+			return false;
+		m_snapshot.ed2k_tcp_v4 = failed.snapshot;
+	}
+	if (m_nNextVerificationAttemptId == 0)
+		return false;
+
+	natmap::VerificationAttempt nextAttempt;
+	nextAttempt.attempt_id = m_nNextVerificationAttemptId++;
+	nextAttempt.topology_generation =
+		m_snapshot.ed2k_tcp_v4.generation;
+	nextAttempt.endpoint = m_snapshot.ed2k_tcp_v4.advertised;
+	nextAttempt.transport = natmap::Transport::Tcp;
+	nextAttempt.started_monotonic_ms = now;
+	nextAttempt.deadline_monotonic_ms =
+		now + natmap::VerificationAttempt::kMaximumWindowMs;
+	natmap::StateEvent event;
+	event.type = natmap::EventType::VerificationStarted;
+	event.generation = m_snapshot.ed2k_tcp_v4.generation;
+	event.verification_attempt = nextAttempt;
+	const natmap::TransitionResult result = natmap::ApplyEvent(
+		m_snapshot.ed2k_tcp_v4, event);
+	if (result.disposition != natmap::TransitionDisposition::Applied)
+		return false;
+	m_snapshot.ed2k_tcp_v4 = result.snapshot;
+	attempt = nextAttempt;
+	return true;
+}
+
+bool CDirectReachabilityManager::ObserveServerIdChange(
+	bool bHighId, const natmap::VerificationAttempt& attempt)
+{
+	AssertMainThread();
+	if (!IsEnabled())
 		return false;
 
 	natmap::StateEvent event;
-	event.generation = m_snapshot.ed2k_tcp_v4.generation;
+	event.generation = attempt.topology_generation;
+	event.verification_attempt = attempt;
 	if (bHighId) {
 		event.type = natmap::EventType::ServerEvidenceObserved;
 		event.primary_evidence = natmap::Evidence{
 			natmap::EvidenceKind::ServerHighId,
-			m_snapshot.ed2k_tcp_v4.advertised, event.generation,
-			MonotonicMilliseconds()};
+			attempt.endpoint, attempt.topology_generation,
+			MonotonicMilliseconds(), attempt.attempt_id};
 	} else {
 		event.type = natmap::EventType::VerificationFailed;
 		event.reason = natmap::ReasonCode::ServerCallbackFailed;
@@ -432,27 +494,28 @@ bool CDirectReachabilityManager::ObserveServerIdChange(bool bHighId)
 	if (result.disposition != natmap::TransitionDisposition::Applied)
 		return false;
 	m_snapshot.ed2k_tcp_v4 = result.snapshot;
-	return true;
+	return PromoteEd2kIfEvidenceComplete();
 }
 
-bool CDirectReachabilityManager::ObserveInboundTcpAccept()
+bool CDirectReachabilityManager::ObserveInboundTcpAccept(
+	const natmap::VerificationAttempt& attempt)
 {
 	AssertMainThread();
 	if (!IsEnabled())
 		return false;
 	natmap::StateEvent event;
 	event.type = natmap::EventType::InboundEvidenceObserved;
-	event.generation = m_snapshot.ed2k_tcp_v4.generation;
+	event.generation = attempt.topology_generation;
 	event.inbound_evidence = natmap::Evidence{
 		natmap::EvidenceKind::InboundTcpAccept,
-		m_snapshot.ed2k_tcp_v4.advertised, event.generation,
-		MonotonicMilliseconds()};
+		attempt.endpoint, attempt.topology_generation,
+		MonotonicMilliseconds(), attempt.attempt_id};
 	const natmap::TransitionResult result = natmap::ApplyEvent(
 		m_snapshot.ed2k_tcp_v4, event);
 	if (result.disposition != natmap::TransitionDisposition::Applied)
 		return false;
 	m_snapshot.ed2k_tcp_v4 = result.snapshot;
-	return true;
+	return PromoteEd2kIfEvidenceComplete();
 }
 
 bool CDirectReachabilityManager::ObserveMappedPorts(

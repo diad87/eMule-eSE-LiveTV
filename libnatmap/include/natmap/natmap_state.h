@@ -35,6 +35,7 @@ struct StateEvent {
     Endpoint advertised{};
     Evidence primary_evidence{};
     Evidence inbound_evidence{};
+    VerificationAttempt verification_attempt{};
 };
 
 struct TransitionResult {

@@ -2905,6 +2905,13 @@ CListenSocket::~CListenSocket()
 	KillAllSockets();
 }
 
+void CListenSocket::ArmDirectReachabilityVerification(
+	const natmap::VerificationAttempt& attempt)
+{
+	m_ed2kVerificationAttempt = attempt.IsValid()
+		? attempt : natmap::VerificationAttempt{};
+}
+
 bool CListenSocket::Rebind()
 {
 	if (thePrefs.GetPort() == m_port)
@@ -3291,7 +3298,8 @@ void CListenSocket::OnAccept(int nErrorCode)
 				&& theApp.directreachability != NULL) {
 				const bool wasVerified =
 					theApp.directreachability->HasVerifiedEd2kReachability();
-				if (theApp.directreachability->ObserveInboundTcpAccept()
+				if (theApp.directreachability->ObserveInboundTcpAccept(
+						m_ed2kVerificationAttempt)
 					&& !wasVerified
 					&& theApp.directreachability->HasVerifiedEd2kReachability())
 					theApp.emuledlg->ShowConnectionState();

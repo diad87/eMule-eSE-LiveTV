@@ -167,6 +167,19 @@
       ]
     },
     {
+      "id": "HIGHID_EVIDENCE",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_false_highid.cpp",
+          "contains": "TestMappingAndServerHighIdWithoutInboundStayUnverified"
+        },
+        {
+          "file": "tests/test_v92_l05_false_highid.py",
+          "contains": "test_ui_and_firewall_status_consume_verified_predicate"
+        }
+      ]
+    },
+    {
       "id": "HYPERV_PURE_PLAN",
       "evidence": [
         {

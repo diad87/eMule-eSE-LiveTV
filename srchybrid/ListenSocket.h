@@ -16,6 +16,7 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
 #include "EMSocket.h"
+#include "natmap/natmap_types.h"
 #include "kad6/kad6_frontdoor.h"
 
 #include <array>
@@ -126,6 +127,8 @@ public:
 	void	Debug_ClientDeleted(CUpDownClient *deleted);
 	bool	Rebind();
 	bool	SendPortTestReply(char result, bool disconnect = false);
+	void	ArmDirectReachabilityVerification(
+		const natmap::VerificationAttempt& attempt);
 
 	void	UpdateConnectionsStatus();
 	float	GetMaxConperFiveModifier();
@@ -161,4 +164,5 @@ private:
 	uint16  m_port;
 	uint32	m_nHalfOpen;
 	uint32	m_nComp;
+	natmap::VerificationAttempt m_ed2kVerificationAttempt;
 };

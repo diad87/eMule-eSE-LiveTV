@@ -859,7 +859,8 @@ CString CWebServer::_GetHeader(const ThreadData &Data, long lSession)
 		HTTPConState = _T("connecting");
 		HTTPConText = _GetPlainResString(IDS_CONNECTING);
 	} else if (theApp.serverconnect->IsConnected() && !disconnectissued) {
-		HTTPConState = theApp.serverconnect->IsLowID() ? _T("low") : _T("high");
+		HTTPConState =
+			theApp.HasVerifiedEd2kHighId() ? _T("high") : _T("low");
 		CServer *cur_server = theApp.serverlist->GetServerByAddress(
 			theApp.serverconnect->GetCurrentServer()->GetAddress(),
 			theApp.serverconnect->GetCurrentServer()->GetPort());
@@ -1306,7 +1307,9 @@ CString CWebServer::_GetServerList(const ThreadData &Data)
 			Entry.sServerState = _T("connecting");
 		else if (theApp.serverconnect->IsConnected()) {
 			if (theApp.serverconnect->GetCurrentServer()->GetFullIP() == cur_serv.GetFullIP())
-				Entry.sServerState = theApp.serverconnect->IsLowID() ? _T("low") : _T("high");
+				Entry.sServerState =
+					theApp.HasVerifiedEd2kHighId()
+						? _T("high") : _T("low");
 		}
 		ServerArray.Add(Entry);
 	}
@@ -5899,10 +5902,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		// Kad's startup when the tester hasn't reported yet.
 		bool fwVerified = Kademlia::CUDPFirewallTester::IsVerified();
 		bool kadFw   = theApp.IsFirewalled();
-		bool ed2kFw  = (theApp.serverconnect && theApp.serverconnect->IsConnected()
-		                && theApp.serverconnect->IsLowID());
-		bool highId  = !kadFw && !ed2kFw;
-		bool fwChecking = !fwVerified && kadConn && !ed2kFw;  // still measuring
+		bool ed2kFw  = !theApp.HasVerifiedEd2kHighId();
+		bool highId  = !ed2kFw;
+		bool fwChecking = !fwVerified && kadConn && ed2kFw;  // still measuring
 		uint32 maxUpKBs = thePrefs.GetMaxUpload();   // KB/s, 0 = unlimited
 		uint16 port = theApp.GetAdvertisedTcpPort();
 		uint32 pubIP = theApp.GetPublicIP();

@@ -963,12 +963,13 @@ void CSharedFileList::CreateOfferedFilePacket(CKnownFile *cur_file, CSafeMemFile
 			}
 		} else {
 			// check eD2K ID state
-			if (theApp.serverconnect->IsConnected() && !theApp.serverconnect->IsLowID()) {
+			if (theApp.HasVerifiedEd2kHighId()) {
 				nClientID = theApp.GetID();
 				nClientPort = theApp.GetAdvertisedTcpPort();
 			}
 		}
-	} else if (theApp.IsConnected() && !theApp.IsFirewalled()) {
+	} else if (theApp.IsConnected()
+		&& theApp.HasVerifiedEd2kHighId()) {
 		nClientID = theApp.GetID();
 		nClientPort = theApp.GetAdvertisedTcpPort();
 	}

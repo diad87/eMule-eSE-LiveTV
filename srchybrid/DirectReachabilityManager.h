@@ -25,9 +25,11 @@ public:
 	uint16 GetAdvertisedUdpPort() const;
 	uint16 GetAdvertisedV6TcpPort() const;
 	uint16 GetAdvertisedV6UdpPort() const;
-	bool BeginEd2kVerification();
-	bool ObserveServerIdChange(bool bHighId);
-	bool ObserveInboundTcpAccept();
+	bool BeginEd2kVerification(natmap::VerificationAttempt& attempt);
+	bool ObserveServerIdChange(
+		bool bHighId, const natmap::VerificationAttempt& attempt);
+	bool ObserveInboundTcpAccept(
+		const natmap::VerificationAttempt& attempt);
 	bool HasVerifiedEd2kReachability() const;
 	uint64 GetTopologyGeneration() const;
 	natmap::UpstreamGatewayCandidates GetUpstreamGatewayCandidates() const;
@@ -61,6 +63,7 @@ private:
 		uint32 nLifetimeSeconds, uint32 nMapperEpoch, uint64 nGeneration);
 	void FailClosedAtGenerationLimit(natmap::ReasonCode reason);
 	bool DisableMappedPlanes(natmap::ReasonCode reason);
+	bool PromoteEd2kIfEvidenceComplete();
 	static uint64 MonotonicMilliseconds();
 
 	DWORD m_dwOwnerThreadId;
@@ -69,6 +72,7 @@ private:
 	std::atomic<uint16> m_nLocalUdpPort;
 	std::atomic<uint16> m_nAdvertisedTcpPort;
 	std::atomic<uint16> m_nAdvertisedUdpPort;
+	uint64 m_nNextVerificationAttemptId;
 	natmap::LeaseController m_tcpLease;
 	natmap::LeaseController m_udpLease;
 	natmap::NatChainTransaction m_tcpChain;

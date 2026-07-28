@@ -15,6 +15,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_state_machine.ex
 if errorlevel 1 exit /b 1
 build\test_state_machine.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_false_highid.exe tests\test_false_highid.cpp src\natmap_state.cpp
+if errorlevel 1 exit /b 1
+build\test_false_highid.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapping_codecs.exe tests\test_mapping_codecs.cpp src\natpmp_codec.cpp src\pcp_codec.cpp
 if errorlevel 1 exit /b 1
 build\test_mapping_codecs.exe

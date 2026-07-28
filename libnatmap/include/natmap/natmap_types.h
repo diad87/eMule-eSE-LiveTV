@@ -150,6 +150,12 @@ struct Endpoint {
     bool IsUsable() const noexcept {
         return address.IsSpecified() && port != 0;
     }
+
+    bool SameSocketEndpoint(const Endpoint& other) const noexcept {
+        return port == other.port &&
+               address.family == other.address.family &&
+               address.bytes == other.address.bytes;
+    }
 };
 
 struct PortIntent {
@@ -188,14 +194,52 @@ struct PortLease {
     }
 };
 
+struct VerificationAttempt {
+    static constexpr std::uint64_t kMaximumWindowMs = 30000;
+
+    std::uint64_t attempt_id = 0;
+    std::uint64_t topology_generation = 0;
+    Endpoint endpoint{};
+    Transport transport = Transport::Tcp;
+    std::uint64_t started_monotonic_ms = 0;
+    std::uint64_t deadline_monotonic_ms = 0;
+
+    bool IsValid() const noexcept {
+        return attempt_id != 0 && topology_generation != 0 &&
+               endpoint.IsUsable() &&
+               deadline_monotonic_ms >= started_monotonic_ms &&
+               deadline_monotonic_ms - started_monotonic_ms <=
+                   kMaximumWindowMs;
+    }
+
+    bool SameIdentity(const VerificationAttempt& other) const noexcept {
+        return attempt_id == other.attempt_id &&
+               topology_generation == other.topology_generation &&
+               endpoint.SameSocketEndpoint(other.endpoint) &&
+               transport == other.transport &&
+               started_monotonic_ms == other.started_monotonic_ms &&
+               deadline_monotonic_ms == other.deadline_monotonic_ms;
+    }
+};
+
 struct Evidence {
     EvidenceKind kind = EvidenceKind::None;
     Endpoint endpoint{};
     std::uint64_t generation = 0;
     std::uint64_t observed_monotonic_ms = 0;
+    std::uint64_t verification_attempt_id = 0;
 
     bool IsCurrent(std::uint64_t current_generation) const noexcept {
         return kind != EvidenceKind::None && generation == current_generation;
+    }
+
+    bool IsFreshFor(const VerificationAttempt& attempt) const noexcept {
+        return kind != EvidenceKind::None && attempt.IsValid() &&
+               generation == attempt.topology_generation &&
+               verification_attempt_id == attempt.attempt_id &&
+               endpoint.SameSocketEndpoint(attempt.endpoint) &&
+               observed_monotonic_ms >= attempt.started_monotonic_ms &&
+               observed_monotonic_ms <= attempt.deadline_monotonic_ms;
     }
 };
 
@@ -209,14 +253,26 @@ struct PlaneSnapshot {
     Evidence primary_evidence{};
     Evidence inbound_evidence{};
     std::uint64_t generation = 0;
+    VerificationAttempt verification_attempt{};
+
+    bool HasCompleteClassicHighIdEvidence() const noexcept {
+        return lease.IsStructurallyValid() &&
+               lease.generation == generation &&
+               lease.public_endpoint.SameSocketEndpoint(advertised) &&
+               verification_attempt.IsValid() &&
+               verification_attempt.topology_generation == generation &&
+               verification_attempt.transport == Transport::Tcp &&
+               verification_attempt.endpoint.SameSocketEndpoint(advertised) &&
+               primary_evidence.kind == EvidenceKind::ServerHighId &&
+               primary_evidence.IsFreshFor(verification_attempt) &&
+               inbound_evidence.kind == EvidenceKind::InboundTcpAccept &&
+               inbound_evidence.IsFreshFor(verification_attempt) &&
+               advertised.IsUsable();
+    }
 
     bool HasClassicHighIdEvidence() const noexcept {
         return state == ReachabilityState::Reachable &&
-               primary_evidence.kind == EvidenceKind::ServerHighId &&
-               primary_evidence.IsCurrent(generation) &&
-               inbound_evidence.kind == EvidenceKind::InboundTcpAccept &&
-               inbound_evidence.IsCurrent(generation) &&
-               advertised.IsUsable();
+               HasCompleteClassicHighIdEvidence();
     }
 };
 

@@ -1318,14 +1318,22 @@ void CemuleApp::SetPublicIP(const uint32 dwIP)
 		m_dwPublicIP = dwIP;
 }
 
-bool CemuleApp::IsFirewalled()
+bool CemuleApp::HasVerifiedEd2kHighId() const
 {
-	const bool bDirectMappingVerified = theApp.serverconnect->IsConnectedViaRelay()
-		|| directreachability == NULL
+	if (serverconnect == NULL || !serverconnect->IsConnected()
+		|| serverconnect->IsLowID())
+		return false;
+	if (serverconnect->IsConnectedViaRelay())
+		return false;
+	const bool bDirectMappingVerified = directreachability == NULL
 		|| !directreachability->IsEnabled()
 		|| directreachability->HasVerifiedEd2kReachability();
-	if (theApp.serverconnect->IsConnected() && !theApp.serverconnect->IsLowID()
-		&& bDirectMappingVerified)
+	return bDirectMappingVerified;
+}
+
+bool CemuleApp::IsFirewalled()
+{
+	if (HasVerifiedEd2kHighId())
 		return false; // we have an eD2K HighID -> not firewalled
 
 	if (Kademlia::CKademlia::IsConnected() && !Kademlia::CKademlia::IsFirewalled())

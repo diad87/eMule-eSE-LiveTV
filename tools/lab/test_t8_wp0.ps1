@@ -37,6 +37,7 @@ $requiredCoverageIds = @(
     'HIGHID_EVIDENCE',
     'HOSTILE_CORPUS',
     'WEBSERVER_PRIVACY',
+    'ADDRESS_POLICY',
     'HYPERV_PURE_PLAN',
     'STATE_CAPTURE',
     'CANONICAL_REPORT',
@@ -217,6 +218,10 @@ try {
                 Join-Path $RepoRoot 'tests\test_v92_l08_privacy_runtime.ps1'
             ) -RepoRoot $RepoRoot -NodePath $NodePath 2>&1)
         $l08RuntimeExit = $LASTEXITCODE
+        $m01HostOutput = @(
+            & python.exe (
+                Join-Path $RepoRoot 'tests\test_v92_m01_address_policy.py') 2>&1)
+        $m01HostExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
     }
@@ -227,6 +232,7 @@ try {
     $l07HostOutput | ForEach-Object { Write-Host $_ }
     $l08HostOutput | ForEach-Object { Write-Host $_ }
     $l08RuntimeOutput | ForEach-Object { Write-Host $_ }
+    $m01HostOutput | ForEach-Object { Write-Host $_ }
     $l04Text = ($l04Output | ForEach-Object { [string]$_ }) -join "`n"
     $l04HostText = (
         $l04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
@@ -240,6 +246,8 @@ try {
         $l08HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l08RuntimeText = (
         $l08RuntimeOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $m01HostText = (
+        $m01HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l04Verdict = (
         $l04BuildExit -eq 0 -and
         $l04HostExit -eq 0 -and
@@ -273,6 +281,20 @@ try {
             'L08_RUNTIME_PASS node=2 report=1 zip_positive=1 ' +
             'zip_negative=1 command_graph=4'
         )
+    )
+    $m01NativeMatch = [regex]::Match(
+        $l04Text, 'test_address_policy: (\d+) checks, 0 failures')
+    $m01NativeChecks = if ($m01NativeMatch.Success) {
+        [int]$m01NativeMatch.Groups[1].Value
+    } else {
+        0
+    }
+    $m01Verdict = (
+        $l04BuildExit -eq 0 -and
+        $m01HostExit -eq 0 -and
+        $m01NativeChecks -ge 260 -and
+        $m01HostText -match 'Ran 6 tests' -and
+        $m01HostText -match '(?m)^OK\s*$'
     )
 
     $hyperVOutput = @()
@@ -328,6 +350,7 @@ try {
         $l06Verdict -and
         $l07Verdict -and
         $l08Verdict -and
+        $m01Verdict -and
         $hyperVVerdict -and
         $coverageIds.Count -eq $requiredCoverageIds.Count
     )
@@ -376,6 +399,13 @@ try {
             runtime_privacy_projection = $true
             runtime_zip_tamper_rejected = $true
             noninteractive_command_graph = $true
+        }
+        m01_address_policy = [ordered]@{
+            verdict = if ($m01Verdict) { 'PASS' } else { 'FAIL' }
+            physical_mutation = $false
+            native_checks = $m01NativeChecks
+            origin_independent = $true
+            scoped_private_exception = $true
         }
         coverage = [ordered]@{
             schema_sha256 = Get-Sha256 -Path (

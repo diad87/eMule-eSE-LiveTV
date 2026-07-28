@@ -234,6 +234,27 @@
       ]
     },
     {
+      "id": "ADDRESS_POLICY",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_address_policy.cpp",
+          "contains": "TestIpv4Table"
+        },
+        {
+          "file": "libnatmap/tests/test_address_policy.cpp",
+          "contains": "TestIpv6Table"
+        },
+        {
+          "file": "tests/test_v92_m01_address_policy.py",
+          "contains": "test_overlay_cgnat_never_proves_native_cgnat"
+        },
+        {
+          "file": "libnatmap/include/natmap/address_policy.h",
+          "contains": "PrivateAddressScope"
+        }
+      ]
+    },
+    {
       "id": "HYPERV_PURE_PLAN",
       "evidence": [
         {

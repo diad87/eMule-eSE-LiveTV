@@ -11,6 +11,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_d0_contracts.exe
 if errorlevel 1 exit /b 1
 build\test_d0_contracts.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_address_policy.exe tests\test_address_policy.cpp src\address_policy.cpp
+if errorlevel 1 exit /b 1
+build\test_address_policy.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_state_machine.exe tests\test_state_machine.cpp src\natmap_state.cpp
 if errorlevel 1 exit /b 1
 build\test_state_machine.exe

@@ -1,0 +1,303 @@
+[CmdletBinding()]
+param(
+    [string]$RepoRoot = '',
+    [string]$NodePath = '',
+    [string]$OutputRoot = '',
+    [string]$PhysicalEvidencePath = ''
+)
+
+$ErrorActionPreference = 'Stop'
+
+if (-not $RepoRoot) {
+    $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+}
+$RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+$repoPrefix = $RepoRoot.TrimEnd([char[]]@('\', '/')) + '\'
+$gatewayRoot = Join-Path $PSScriptRoot 'nat_gateway'
+$coveragePath = Join-Path $gatewayRoot 'wp0_coverage.json'
+$temporaryOutput = -not $OutputRoot
+$requiredMinimumNodeTests = 295
+$requiredCoverageIds = @(
+    'SCENARIO_SCHEMA_AND_LOADER',
+    'NATPMP_CODEC',
+    'PCP_CODEC',
+    'UPNP_SUCCESS',
+    'PCP_SUCCESS',
+    'NATPMP_SUCCESS',
+    'SLOW_OR_LOST_RESPONSE',
+    'ALTERNATE_EXTERNAL_PORT',
+    'SHORT_LEASE',
+    'EPOCH_RESTART',
+    'PRIVATE_OR_CGNAT_EXTERNAL',
+    'PORT_COLLISION',
+    'RENEWAL_REJECTED',
+    'MAPPING_DISAPPEARED',
+    'DOUBLE_NAT_FIRST_LAYER',
+    'TWO_CLIENT_OWNERSHIP',
+    'HYPERV_PURE_PLAN',
+    'STATE_CAPTURE',
+    'CANONICAL_REPORT',
+    'PUBLIC_SANITIZATION'
+)
+
+if (-not $NodePath) {
+    $NodePath = (Get-Command node.exe -ErrorAction Stop).Source
+}
+$NodePath = (Resolve-Path -LiteralPath $NodePath).Path
+
+if (-not $OutputRoot) {
+    $OutputRoot = Join-Path ([IO.Path]::GetTempPath()) (
+        'eSE-v92-t8-wp0-' + [Guid]::NewGuid().ToString('N'))
+}
+$OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
+if (Test-Path -LiteralPath $OutputRoot) {
+    throw "OutputRoot already exists; refusing to mix evidence: $OutputRoot"
+}
+$null = New-Item -ItemType Directory -Path $OutputRoot
+
+function Get-Sha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Get-TapCount {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $match = [regex]::Match(
+        $Text, "(?m)^# $([regex]::Escape($Name)) ([0-9]+)\s*$")
+    if (-not $match.Success) {
+        throw "Node TAP summary is missing '# $Name'"
+    }
+    return [int]$match.Groups[1].Value
+}
+
+function Assert-PublicReport {
+    param([Parameter(Mandatory = $true)][string]$Json)
+    $forbidden = @(
+        '(?<![0-9])(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?![0-9])',
+        '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',
+        '(?i)\b[a-z]:\\',
+        '\\\\[^\\"]+\\'
+    )
+    foreach ($pattern in $forbidden) {
+        if ($Json -match $pattern) {
+            throw 'Canonical WP0 report contains a forbidden host or network identifier'
+        }
+    }
+}
+
+function Test-ExactTrueProperty {
+    param(
+        [Parameter(Mandatory = $true)][object]$Object,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $property = $Object.PSObject.Properties[$Name]
+    return (
+        $null -ne $property -and
+        $property.Value -is [bool] -and
+        $property.Value -eq $true
+    )
+}
+
+try {
+    $coverage = Get-Content -LiteralPath $coveragePath -Raw |
+        ConvertFrom-Json
+    if ([string]$coverage.schema -ne 'ese.v92.t8-wp0-coverage/v1' -or
+        $coverage.minimum_node_tests -isnot [int] -or
+        [int]$coverage.minimum_node_tests -ne $requiredMinimumNodeTests -or
+        @($coverage.checks).Count -ne $requiredCoverageIds.Count) {
+        throw 'Invalid T8 WP0 coverage manifest'
+    }
+
+    $coverageIds = [System.Collections.Generic.List[string]]::new()
+    $seenCoverageIds = @{}
+    foreach ($check in @($coverage.checks)) {
+        $id = [string]$check.id
+        if ($id -notmatch '^[A-Z][A-Z0-9_]{2,63}$' -or
+            $seenCoverageIds.ContainsKey($id) -or
+            @($check.evidence).Count -lt 1) {
+            throw "Invalid or duplicate T8 WP0 coverage check: $id"
+        }
+        $seenCoverageIds[$id] = $true
+        foreach ($item in @($check.evidence)) {
+            $relative = [string]$item.file
+            $needle = [string]$item.contains
+            if (-not $relative -or -not $needle -or
+                [IO.Path]::IsPathRooted($relative) -or
+                $relative -match '(^|[\\/])\.\.([\\/]|$)') {
+                throw "Unsafe T8 WP0 evidence reference in $id"
+            }
+            $full = [IO.Path]::GetFullPath((Join-Path $RepoRoot $relative))
+            if (-not $full.StartsWith(
+                    $repoPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+                -not (Test-Path -LiteralPath $full -PathType Leaf)) {
+                throw "Missing T8 WP0 evidence source for $id"
+            }
+            $source = [IO.File]::ReadAllText($full)
+            if ($source.IndexOf(
+                    $needle, [StringComparison]::Ordinal) -lt 0) {
+                throw "T8 WP0 evidence assertion is stale for $id"
+            }
+        }
+        $coverageIds.Add($id)
+    }
+    for ($index = 0; $index -lt $requiredCoverageIds.Count; $index++) {
+        if ($coverageIds[$index] -cne $requiredCoverageIds[$index]) {
+            throw 'T8 WP0 coverage contract is missing or reordered'
+        }
+    }
+
+    $nodeVersion = @(& $NodePath --version 2>&1)
+    if ($LASTEXITCODE -ne 0 -or
+        ($nodeVersion -join '') -notmatch '^v22\.') {
+        throw 'T8 WP0 requires Node.js 22.x'
+    }
+    if (-not (Test-Path -LiteralPath (
+            Join-Path $gatewayRoot 'node_modules\ajv') -PathType Container)) {
+        throw 'T8 WP0 dependencies are missing; run npm ci in tools/lab/nat_gateway'
+    }
+
+    Push-Location $gatewayRoot
+    try {
+        $oldPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $nodeOutput = @(& $NodePath --test 2>&1)
+        $nodeExit = $LASTEXITCODE
+        $ErrorActionPreference = $oldPreference
+    } finally {
+        Pop-Location
+    }
+    $nodeOutput | ForEach-Object { Write-Host $_ }
+    $nodeText = ($nodeOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $nodeTests = Get-TapCount -Text $nodeText -Name 'tests'
+    $nodePassed = Get-TapCount -Text $nodeText -Name 'pass'
+    $nodeFailed = Get-TapCount -Text $nodeText -Name 'fail'
+    $nodeSkipped = Get-TapCount -Text $nodeText -Name 'skipped'
+    $nodeVerdict = (
+        $nodeExit -eq 0 -and
+        $nodeFailed -eq 0 -and
+        $nodeTests -ge [int]$coverage.minimum_node_tests -and
+        ($nodePassed + $nodeSkipped) -eq $nodeTests
+    )
+
+    $hyperVOutput = @()
+    $hyperVVerdict = $true
+    try {
+        $hyperVOutput = @(
+            & (Join-Path $PSScriptRoot 'test_t8_hyperv_plan.ps1') 2>&1)
+    } catch {
+        $hyperVVerdict = $false
+        $hyperVOutput = @($_.Exception.Message)
+    }
+    $hyperVOutput | ForEach-Object { Write-Host $_ }
+    if (-not (@($hyperVOutput | ForEach-Object {
+                    [string]$_
+                }) -ccontains 'T8 Hyper-V pure plan tests PASS')) {
+        $hyperVVerdict = $false
+    }
+
+    $physicalMode = 'DEGRADED'
+    $physicalReason = 'PHYSICAL_EVIDENCE_NOT_REQUIRED_BY_PURE_GATE'
+    $physicalHash = $null
+    if ($PhysicalEvidencePath) {
+        $physicalFull = (Resolve-Path -LiteralPath $PhysicalEvidencePath).Path
+        $physical = Get-Content -LiteralPath $physicalFull -Raw |
+            ConvertFrom-Json
+        if ([string]$physical.schema -ne
+                'ese.v92.t8-route-live-test/v1' -or
+            [string]$physical.verdict -ne 'PASS' -or
+            -not (Test-ExactTrueProperty -Object $physical `
+                -Name 'mapper_reached_t8_gateway') -or
+            -not (Test-ExactTrueProperty -Object $physical `
+                -Name 'data_avoided_tailscale') -or
+            -not (Test-ExactTrueProperty -Object $physical `
+                -Name 'dns_proxy_neutral') -or
+            -not (Test-ExactTrueProperty -Object $physical `
+                -Name 'baseline_restored') -or
+            [string]$physical.mapper_interface_id -notmatch
+                '^[a-f0-9]{12}$' -or
+            [string]$physical.mapper_interface_id -cne
+                [string]$physical.data_interface_id -or
+            [string]$physical.final_phase -ne 'TORN_DOWN') {
+            throw 'Physical T8 evidence is not a complete safe PASS'
+        }
+        $physicalMode = 'PASS'
+        $physicalReason = 'VERIFIED_BY_CONTENT_AND_SHA256'
+        $physicalHash = Get-Sha256 -Path $physicalFull
+    }
+
+    $overallPass = (
+        $nodeVerdict -and
+        $hyperVVerdict -and
+        $coverageIds.Count -eq $requiredCoverageIds.Count
+    )
+    $report = [ordered]@{
+        schema = 'ese.v92.t8-wp0-report/v1'
+        verdict = if ($overallPass) { 'PASS' } else { 'FAIL' }
+        generated_at_utc = [DateTime]::UtcNow.ToString('o')
+        execution = [ordered]@{
+            privilege_required = $false
+            external_router_required = $false
+            hyperv_physical_mode = $physicalMode
+            hyperv_physical_reason = $physicalReason
+        }
+        node_suite = [ordered]@{
+            verdict = if ($nodeVerdict) { 'PASS' } else { 'FAIL' }
+            tests = $nodeTests
+            passed = $nodePassed
+            failed = $nodeFailed
+            skipped = $nodeSkipped
+        }
+        hyperv_pure_plan = [ordered]@{
+            verdict = if ($hyperVVerdict) { 'PASS' } else { 'FAIL' }
+        }
+        coverage = [ordered]@{
+            schema_sha256 = Get-Sha256 -Path (
+                Join-Path $gatewayRoot 'scenario.schema.json')
+            manifest_sha256 = Get-Sha256 -Path $coveragePath
+            check_count = $coverageIds.Count
+            checks = @($coverageIds)
+        }
+        physical_evidence = [ordered]@{
+            supplied = [bool]$PhysicalEvidencePath
+            sha256 = $physicalHash
+        }
+        privacy = [ordered]@{
+            projection = 'sanitized'
+            raw_addresses = $false
+            raw_host_paths = $false
+            raw_adapter_or_host_ids = $false
+        }
+    }
+
+    $json = $report | ConvertTo-Json -Depth 8 -Compress
+    Assert-PublicReport -Json $json
+    $reportPath = Join-Path $OutputRoot 'wp0-report.json'
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($reportPath, $json + "`n", $utf8)
+    $reportHash = Get-Sha256 -Path $reportPath
+    [IO.File]::WriteAllText(
+        (Join-Path $OutputRoot 'wp0-report.sha256'),
+        "$reportHash  wp0-report.json`n", $utf8)
+
+    if (-not $overallPass) {
+        throw 'T8 WP0 gate failed; inspect the emitted canonical report'
+    }
+    Write-Host "T8 WP0 autotest PASS: $reportPath" -ForegroundColor Green
+} finally {
+    if ($temporaryOutput -and
+        (Test-Path -LiteralPath $OutputRoot -PathType Container)) {
+        $tempRoot = [IO.Path]::GetFullPath(
+            [IO.Path]::GetTempPath()).TrimEnd([char[]]@('\', '/'))
+        $outputParent = [IO.Path]::GetFullPath(
+            (Split-Path -Parent $OutputRoot)).TrimEnd([char[]]@('\', '/'))
+        $outputLeaf = Split-Path -Leaf $OutputRoot
+        if ($outputParent -ne $tempRoot -or
+            -not $outputLeaf.StartsWith('eSE-v92-t8-wp0-')) {
+            throw "Refusing unsafe T8 WP0 cleanup: $OutputRoot"
+        }
+        Remove-Item -LiteralPath $OutputRoot -Recurse -Force
+    }
+}

@@ -255,8 +255,7 @@ the exact switch ID to its management-OS adapter and interface GUID.
 The deterministic tests do not require Hyper-V or administrator privileges:
 
 ```powershell
-powershell -ExecutionPolicy Bypass `
-  -File tools\lab\test_t8_hyperv_plan.ps1
+& .\tools\lab\test_t8_hyperv_plan.ps1
 ```
 
 The physical create/verify/teardown proof requires a PowerShell console that
@@ -293,6 +292,24 @@ hostname DNS resolution cannot affect either case. PASS requires the same
 mapper result and interface evidence in both modes, no Tailscale data socket,
 exact source observation at the gateway, complete cleanup and the original
 Hyper-V baseline.
+
+The F06 WP0 gate runs every deterministic gateway test, verifies a
+machine-readable coverage map for all mandatory T8 capabilities, executes the
+pure Hyper-V plan tests, and writes a privacy-checked canonical report:
+
+```powershell
+& .\tools\lab\test_t8_wp0.ps1 `
+  -OutputRoot C:\tmp\eSE-v9.2-f06-0123456789ab `
+  -PhysicalEvidencePath C:\tmp\eSE-v9.2-f05-live-0123456789ab\live-result.json
+```
+
+`-PhysicalEvidencePath` is optional. Without it, the common Core gate records a
+safe degraded physical mode and still exercises all pure tests without
+administrator privileges or Hyper-V. When evidence is supplied, F06 validates
+its PASS/teardown invariants and records only its SHA-256, never its path,
+addresses, interface IDs, or host details. `tools\run_alpha_tests.ps1 -Suite
+Core` installs the pinned fixture dependencies and invokes this gate
+automatically.
 
 ## V91 RC ledger
 

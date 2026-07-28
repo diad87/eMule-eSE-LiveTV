@@ -179,4 +179,4 @@ $teardownState.phase = 'TEARDOWN_NAT_REMOVED'
 Assert-T8Test -Condition (Assert-T8StateShape -State $teardownState) `
     -Message 'valid interrupted-teardown state was rejected'
 
-Write-Host 'T8 Hyper-V pure plan tests PASS' -ForegroundColor Green
+Write-Output 'T8 Hyper-V pure plan tests PASS'

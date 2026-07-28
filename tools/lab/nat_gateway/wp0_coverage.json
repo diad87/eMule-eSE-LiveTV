@@ -1,0 +1,202 @@
+{
+  "schema": "ese.v92.t8-wp0-coverage/v1",
+  "minimum_node_tests": 295,
+  "checks": [
+    {
+      "id": "SCENARIO_SCHEMA_AND_LOADER",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/scenario_loader.test.js",
+          "contains": "loads the smallest valid scenario from object, text and explicit file"
+        }
+      ]
+    },
+    {
+      "id": "NATPMP_CODEC",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/natpmp_vectors.test.js",
+          "contains": "NAT-PMP goldens have exact length, hex, and immutable traceability"
+        }
+      ]
+    },
+    {
+      "id": "PCP_CODEC",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/pcp_vectors.test.js",
+          "contains": "PCP goldens have exact literal bytes and immutable traceability"
+        }
+      ]
+    },
+    {
+      "id": "UPNP_SUCCESS",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/upnp_add_port_mapping.test.js",
+          "contains": "a permanent mapping is created and encoded as SOAP success"
+        }
+      ]
+    },
+    {
+      "id": "PCP_SUCCESS",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/pcp_mapping_lifecycle.test.js",
+          "contains": "creates one PCP mapping with nonce-bound ownership and exact lease"
+        }
+      ]
+    },
+    {
+      "id": "NATPMP_SUCCESS",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/natpmp_diagnostic_client.test.js",
+          "contains": "real diagnostic client observes request, parses response and reaches mapped state"
+        }
+      ]
+    },
+    {
+      "id": "SLOW_OR_LOST_RESPONSE",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/natpmp_fault_injector.test.js",
+          "contains": "C05 delay: waits through the injected cancellable scheduler"
+        },
+        {
+          "file": "tools/lab/nat_gateway/test/natpmp_fault_injector.test.js",
+          "contains": "C05 drop: deterministically suppresses the response"
+        }
+      ]
+    },
+    {
+      "id": "ALTERNATE_EXTERNAL_PORT",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/natpmp_response_encoder.test.js",
+          "contains": "encodes alternate ports, reduced leases, epochs and uint limits big-endian"
+        }
+      ]
+    },
+    {
+      "id": "SHORT_LEASE",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/natpmp_fault_injector.test.js",
+          "contains": "C05 short lease: caps only the lease"
+        }
+      ]
+    },
+    {
+      "id": "EPOCH_RESTART",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/pcp_epoch_recovery.test.js",
+          "contains": "epoch restart clears mappings, cancels pending responses and advances generation once"
+        }
+      ]
+    },
+    {
+      "id": "PRIVATE_OR_CGNAT_EXTERNAL",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/upnp_soap_query.test.js",
+          "contains": "public, RFC1918 and CGNAT IPv4 are reported exactly"
+        }
+      ]
+    },
+    {
+      "id": "PORT_COLLISION",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/mapping_model.test.js",
+          "contains": "collision is semantic, IPv6 canonical"
+        }
+      ]
+    },
+    {
+      "id": "RENEWAL_REJECTED",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/pcp_mapping_lifecycle.test.js",
+          "contains": "different nonce on the same tuple is NOT_AUTHORIZED"
+        }
+      ]
+    },
+    {
+      "id": "MAPPING_DISAPPEARED",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/clock.test.js",
+          "contains": "mapping expiry is exact, renewal moves deadline, and an expired mapping cannot revive"
+        }
+      ]
+    },
+    {
+      "id": "DOUBLE_NAT_FIRST_LAYER",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/upnp_soap_query.test.js",
+          "contains": "public, RFC1918 and CGNAT IPv4 are reported exactly"
+        },
+        {
+          "file": "tools/lab/nat_gateway/test/scenario_loader.test.js",
+          "contains": "loader-accepted non-canonical IPv6 change-wan as canonical data"
+        }
+      ]
+    },
+    {
+      "id": "TWO_CLIENT_OWNERSHIP",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/two_client_lab.test.js",
+          "contains": "B delete A: ownership mismatch cannot remove or mutate A mapping"
+        },
+        {
+          "file": "tools/lab/nat_gateway/test/two_client_lab.test.js",
+          "contains": "expired crash residue is removed at the exact deadline"
+        }
+      ]
+    },
+    {
+      "id": "HYPERV_PURE_PLAN",
+      "evidence": [
+        {
+          "file": "tools/lab/test_t8_hyperv_plan.ps1",
+          "contains": "T8 Hyper-V pure plan tests PASS"
+        }
+      ]
+    },
+    {
+      "id": "STATE_CAPTURE",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/t8_control_cli.test.js",
+          "contains": "all required CLI commands return exit code zero and one JSON line"
+        }
+      ]
+    },
+    {
+      "id": "CANONICAL_REPORT",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/structured_log.test.js",
+          "contains": "canonical report is whitelist-only, deterministic"
+        }
+      ]
+    },
+    {
+      "id": "PUBLIC_SANITIZATION",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/structured_log.test.js",
+          "contains": "serialized events never expose raw sensitive identifiers"
+        },
+        {
+          "file": "tools/lab/nat_gateway/test/two_client_lab.test.js",
+          "contains": "public snapshot omits addresses and ownership material"
+        }
+      ]
+    }
+  ]
+}

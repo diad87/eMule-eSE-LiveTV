@@ -363,6 +363,25 @@ responses reject unspecified, loopback, link-local, multicast and broadcast
 external addresses. The semantic nonce remains explicit so later fault
 scenarios can intentionally emit a mismatched value without hidden mutation.
 
+## PCP D04 ANNOUNCE codec
+
+`pcp_announce_codec.js` provides the independent pure ANNOUNCE request and
+response boundary. The decoder accepts only a bounded, aligned PCP request,
+snapshots genuine byte views, requires version `2` and request opcode `0`, and
+returns the canonical client address while ignoring the request lifetime and
+reserved fields as RFC 6887 requires. Well-formed optional options are ignored,
+including MAP's optional-to-process `PORT_SET`; unknown mandatory options
+return `UNSUPP_OPTION`, while known mandatory MAP-only or structurally
+malformed options return `MALFORMED_OPTION`.
+
+The semantic encoder emits only a successful 24-byte ANNOUNCE response with
+zero lifetime and an explicit epoch. Every error must use error-echo mode,
+which preserves the bounded original request and applies the same
+parsed/unparsed client-address-tail rule used by MAP errors while overwriting
+only the common response fields. Closed input shapes, hostile-storage
+rejection and defensive copies keep the codec free of sockets, timers, clocks,
+state and productive-code dependencies.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

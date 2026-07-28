@@ -75,6 +75,12 @@ cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
 build\test_upnp_lease_policy.exe
 
 cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
+   /Febuild\test_upnp_recovery_policy.exe `
+   tests\test_upnp_recovery_policy.cpp src\ownership_ledger.cpp `
+   src\upnp_recovery_policy.cpp
+build\test_upnp_recovery_policy.exe
+
+cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
    /Fe..\tools\build\natmap_ownership_inspect.exe `
    ..\tools\natmap_ownership_inspect.cpp src\ownership_ledger.cpp
 ```
@@ -130,3 +136,8 @@ Windows host encodes even an empty ledger, writes a temporary file, flushes and
 closes it, replaces the final path atomically with write-through semantics, and
 then reopens, byte-compares and decodes the final file. Persistence is reported
 only after that final verification step.
+
+`EvaluateUpnpRecovery` is the pure H05 crash-recovery gate. Only an exact
+owned readback authorizes router deletion. An absent, mismatched or
+different-gateway rule drops only the local proof through the durable journal
+transaction; transient and unknown observations keep proof for a safe retry.

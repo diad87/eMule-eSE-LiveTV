@@ -59,5 +59,9 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_upnp_lease_polic
 if errorlevel 1 exit /b 1
 build\test_upnp_lease_policy.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_upnp_recovery_policy.exe tests\test_upnp_recovery_policy.cpp src\ownership_ledger.cpp src\upnp_recovery_policy.cpp
+if errorlevel 1 exit /b 1
+build\test_upnp_recovery_policy.exe
+if errorlevel 1 exit /b 1
 echo libnatmap complete gate: PASS
 exit /b 0

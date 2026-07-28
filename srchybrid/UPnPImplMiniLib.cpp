@@ -21,6 +21,7 @@
 #include "natmap/upnp_discovery.h"
 #include "natmap/upnp_lease_policy.h"
 #include "natmap/upnp_mapping_result.h"
+#include "natmap/upnp_recovery_policy.h"
 #include "Log.h"
 #include "Otherfunctions.h"
 #include "miniupnpc\include\miniupnpc.h"
@@ -291,11 +292,11 @@ static bool MappingTargetsLocalSocket(const char* internalClient,
 	const char* internalPort, const char* enabled, const char* lanAddress,
 	uint16 localPort)
 {
-	char* end = NULL;
-	const unsigned long parsedPort = strtoul(internalPort, &end, 10);
+	uint16 parsedPort = 0;
 	const bool mappingEnabled = enabled == NULL || enabled[0] == 0
 		|| (strcmp(enabled, "0") != 0 && _stricmp(enabled, "false") != 0);
-	return end != internalPort && *end == 0 && parsedPort == localPort
+	return natmap::ParseUpnpDecimalPort(internalPort, parsedPort)
+		&& parsedPort == localPort
 		&& mappingEnabled && SameIPv4Address(internalClient, lanAddress);
 }
 
@@ -703,7 +704,10 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 	if (gateway == 0 || record.gateway_fingerprint != gateway) {
 		DebugLogWarning(_T("UPNP ownership: stale %s port %hu belongs to a different gateway; dropping local proof only"),
 			prot, port);
-		RemoveOwnershipRecordDurably(index);
+		if (natmap::EvaluateUpnpRecovery(
+				natmap::UpnpRecoveryObservation::GatewayMismatch)
+			== natmap::UpnpRecoveryAction::DropLocalProof)
+			RemoveOwnershipRecordDurably(index);
 		return;
 	}
 
@@ -718,29 +722,42 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 		transport == natmap::Transport::Tcp ? sTCPa : sUDPa, NULL,
 		achOutIP, achOutPort, achDescription, NULL, achLeaseDuration);
 	if (queryResult != UPNPCOMMAND_SUCCESS) {
-		if (queryResult == 714) {
+		const natmap::UpnpRecoveryAction recoveryAction =
+			natmap::EvaluateUpnpRecovery(queryResult == 714
+				? natmap::UpnpRecoveryObservation::MappingAbsent
+				: natmap::UpnpRecoveryObservation::
+					TransientReadbackFailure);
+		if (recoveryAction
+			== natmap::UpnpRecoveryAction::DropLocalProof) {
 			RemoveOwnershipRecordDurably(index);
 			DebugLog(_T("UPNP ownership: %s port %hu is already absent"),
 				prot, port);
-		} else
+		} else {
+			ASSERT(recoveryAction
+				== natmap::UpnpRecoveryAction::KeepLocalProof);
 			DebugLogWarning(_T("UPNP ownership: cannot verify %s port %hu (%d: %S); mapping was not removed"),
 				prot, port, queryResult, strupnperror(queryResult));
+		}
 		return;
 	}
 
 	natmap::ObservedUpnpMapping observed{};
 	observed.transport = transport;
-	observed.local_port = static_cast<uint16>(strtoul(achOutPort, NULL, 10));
+	natmap::ParseUpnpDecimalPort(achOutPort, observed.local_port);
 	observed.external_port = port;
 	ParseIPv4(achOutIP, observed.local_address);
 	strncpy_s(observed.description.data(), observed.description.size(),
 		achDescription, _TRUNCATE);
 	const natmap::OwnershipDecision decision =
 		natmap::EvaluateOwnershipForDeletion(record, gateway, observed);
-	if (decision != natmap::OwnershipDecision::Owned) {
+	const natmap::UpnpRecoveryAction recoveryAction =
+		natmap::EvaluateUpnpRecovery(decision);
+	if (recoveryAction != natmap::UpnpRecoveryAction::DeleteOwnedMapping) {
 		DebugLogWarning(_T("UPNP ownership: %s port %hu no longer matches proof (decision=%u); mapping was not removed"),
 			prot, port, static_cast<unsigned>(decision));
-		RemoveOwnershipRecordDurably(index);
+		if (recoveryAction
+			== natmap::UpnpRecoveryAction::DropLocalProof)
+			RemoveOwnershipRecordDurably(index);
 		return;
 	}
 
@@ -1444,13 +1461,12 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
 				m_pOwner->m_pIGDData->first.servicetype, externalPort,
 				achPort, pachLANIP, pachDescription,
 				(bTCP ? sTCPa : sUDPa), NULL, leaseDuration, reservedPort);
-			char* end = NULL;
-			const unsigned long reserved = strtoul(reservedPort, &end, 10);
+			uint16 reserved = 0;
 			if (result == UPNPCOMMAND_SUCCESS
-				&& end != reservedPort && *end == 0
-				&& reserved > 0 && reserved <= 65535) {
+				&& natmap::ParseUpnpDecimalPort(
+					reservedPort, reserved)) {
 				addAnySucceeded = true;
-				*pExternalPort = static_cast<uint16>(reserved);
+				*pExternalPort = reserved;
 				_snprintf_s(achExternalPort, _countof(achExternalPort),
 					_TRUNCATE, "%hu", *pExternalPort);
 				requestedLifetime = lifetime;

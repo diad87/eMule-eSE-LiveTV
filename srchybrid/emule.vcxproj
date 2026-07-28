@@ -473,6 +473,11 @@
 	  <LanguageStandard>stdcpp17</LanguageStandard>
 	  <WarningLevel>Level4</WarningLevel>
 	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\upnp_recovery_policy.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
     <ClCompile Include="..\libreach\src\reach_codec.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -1006,6 +1011,7 @@
 	<ClInclude Include="..\libnatmap\include\natmap\upnp_discovery.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\upnp_lease_policy.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\upnp_mapping_result.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\upnp_recovery_policy.h" />
     <ClInclude Include="LiveDebugLog.h" />
     <ClInclude Include="LiveKadBridge.h" />
     <ClInclude Include="LiveMeshManager.h" />

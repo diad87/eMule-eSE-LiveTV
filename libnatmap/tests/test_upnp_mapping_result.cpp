@@ -1,5 +1,6 @@
 #include "natmap/upnp_mapping_result.h"
 
+#include <array>
 #include <cstdio>
 #include <limits>
 
@@ -95,6 +96,87 @@ void TestFailureIsAtomic() {
     CHECK(BuildUpnpPairMapperResult(input).mapping_count == 0);
 }
 
+enum class MatrixReadback : std::uint8_t {
+    NotApplicable = 0,
+    TcpFailure = 1,
+    UdpFailure = 2,
+    ExactPair = 3,
+};
+
+struct FailureMatrixRow {
+    bool tcp_maps;
+    bool udp_maps;
+    MatrixReadback readback;
+    bool publishes_candidate;
+    bool rollback_tcp;
+    bool rollback_udp;
+};
+
+void TestTcpUdpFailureMatrixIsAtomic() {
+    const std::array<FailureMatrixRow, 5> rows = {{
+        {false, false, MatrixReadback::NotApplicable,
+         false, false, false},
+        {true, false, MatrixReadback::NotApplicable,
+         false, true, false},
+        {true, true, MatrixReadback::TcpFailure,
+         false, false, true},
+        {true, true, MatrixReadback::UdpFailure,
+         false, true, false},
+        {true, true, MatrixReadback::ExactPair,
+         true, false, false},
+    }};
+
+    for (const FailureMatrixRow& row : rows) {
+        UpnpPairResultInput input = ValidInput();
+        if (!row.tcp_maps) {
+            input.tcp.granted_external_port = 0;
+            input.tcp.readback_matches = false;
+            input.tcp.ownership_matches = false;
+            input.tcp.created_by_operation = false;
+            input.udp = UpnpTransportObservation{Transport::Udp};
+        } else if (!row.udp_maps) {
+            input.udp.granted_external_port = 0;
+            input.udp.readback_matches = false;
+            input.udp.ownership_matches = false;
+            input.udp.created_by_operation = false;
+        } else if (row.readback == MatrixReadback::TcpFailure) {
+            input.tcp.readback_matches = false;
+        } else if (row.readback == MatrixReadback::UdpFailure) {
+            input.udp.readback_matches = false;
+        }
+
+        const MapperResultData data =
+            BuildUpnpPairMapperResult(input);
+        const bool published =
+            data.status == MappingStatus::Created &&
+            data.mapping_count == 2;
+        CHECK(published == row.publishes_candidate);
+        CHECK(MapperResult(data).IsStructurallyValid());
+        CHECK(data.topology_generation ==
+              input.request.topology_generation);
+
+        if (row.publishes_candidate) {
+            CHECK(data.mappings[0].transport == Transport::Tcp);
+            CHECK(data.mappings[1].transport == Transport::Udp);
+            CHECK(data.mappings[0].effective_expiry_monotonic_ms ==
+                  data.mappings[1].effective_expiry_monotonic_ms);
+            CHECK(data.mappings[0].local_endpoint.port != 0);
+            CHECK(data.mappings[1].local_endpoint.port != 0);
+        } else {
+            CHECK(data.status == MappingStatus::Failed);
+            CHECK(data.mapping_count == 0);
+            CHECK(data.mappings[0].local_endpoint.port == 0);
+            CHECK(data.mappings[0].granted_external_endpoint.port == 0);
+            CHECK(data.mappings[1].local_endpoint.port == 0);
+            CHECK(data.mappings[1].granted_external_endpoint.port == 0);
+            CHECK(ShouldRollbackUpnpMappingAfterAtomicFailure(
+                      input.tcp) == row.rollback_tcp);
+            CHECK(ShouldRollbackUpnpMappingAfterAtomicFailure(
+                      input.udp) == row.rollback_udp);
+        }
+    }
+}
+
 void TestReasonNeverEmptyOnFailure() {
     UpnpPairResultInput input = ValidInput();
     input.tcp.readback_matches = false;
@@ -156,6 +238,7 @@ int main() {
     TestExactInitialPair();
     TestExactRefreshPair();
     TestFailureIsAtomic();
+    TestTcpUdpFailureMatrixIsAtomic();
     TestReasonNeverEmptyOnFailure();
     TestDeleteCannotProduceAPair();
     TestRollbackRequiresExactOwnedReadback();

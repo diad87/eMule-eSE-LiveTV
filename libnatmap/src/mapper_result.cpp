@@ -169,7 +169,7 @@ bool MapperResult::IsStructurallyValid() const noexcept {
         !IsConcreteEndpoint(data_.gateway) ||
         data_.gateway.source != EndpointSource::LocalInterface ||
         data_.request_id == 0 ||
-        data_.generation == 0 ||
+        data_.topology_generation == 0 ||
         data_.mapping_count > data_.mappings.size() ||
         !IsKnownOwnership(data_.ownership) ||
         !IsKnownVerification(data_.verification) ||
@@ -253,15 +253,15 @@ bool MapperResult::IsStructurallyValid() const noexcept {
 }
 
 bool MapperResult::IsCurrent(
-    std::uint64_t expected_generation) const noexcept {
-    return expected_generation != 0 &&
-           data_.generation == expected_generation;
+    std::uint64_t expected_topology_generation) const noexcept {
+    return expected_topology_generation != 0 &&
+           data_.topology_generation == expected_topology_generation;
 }
 
 bool MapperResult::IsPublishable(
-    std::uint64_t expected_generation) const noexcept {
+    std::uint64_t expected_topology_generation) const noexcept {
     if (!IsStructurallyValid() ||
-        !IsCurrent(expected_generation) ||
+        !IsCurrent(expected_topology_generation) ||
         (data_.status != MappingStatus::Created &&
          data_.status != MappingStatus::Renewed) ||
         data_.verification != VerificationState::Verified ||

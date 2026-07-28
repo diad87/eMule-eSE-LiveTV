@@ -81,7 +81,7 @@ MapperResultData Base(MapperKind mapper, MapperSource source,
     data.source = source;
     data.gateway = Ep(192, 168, 68, 1, 5351);
     data.request_id = 101;
-    data.generation = generation;
+    data.topology_generation = generation;
     data.operation = operation;
     data.status = status;
     return data;

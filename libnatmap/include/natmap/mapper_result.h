@@ -70,7 +70,7 @@ struct MapperResultData {
     VerificationState verification = VerificationState::NotAttempted;
     std::array<std::uint8_t, 32> evidence_digest{};
     std::uint64_t request_id = 0;
-    std::uint64_t generation = 0;
+    std::uint64_t topology_generation = 0;
     MappingOperation operation = MappingOperation::Initial;
     MappingStatus status = MappingStatus::None;
     std::uint32_t protocol_result_code = 0;
@@ -85,8 +85,9 @@ public:
 
     const MapperResultData& data() const noexcept { return data_; }
     bool IsStructurallyValid() const noexcept;
-    bool IsCurrent(std::uint64_t expected_generation) const noexcept;
-    bool IsPublishable(std::uint64_t expected_generation) const noexcept;
+    bool IsCurrent(std::uint64_t expected_topology_generation) const noexcept;
+    bool IsPublishable(
+        std::uint64_t expected_topology_generation) const noexcept;
 
 private:
     MapperResultData data_{};

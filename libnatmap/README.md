@@ -41,6 +41,11 @@ cl /nologo /EHsc /W4 /std:c++17 /Iinclude /Febuild\test_mapper_result.exe `
    tests\test_mapper_result.cpp src\mapper_result.cpp
 build\test_mapper_result.exe
 
+cl /nologo /EHsc /W4 /std:c++17 /Iinclude /Febuild\test_mapping_request.exe `
+   tests\test_mapping_request.cpp src\mapper_result.cpp `
+   src\mapping_request.cpp
+build\test_mapping_request.exe
+
 cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
    /Fe..\tools\build\natmap_ownership_inspect.exe `
    ..\tools\natmap_ownership_inspect.cpp src\ownership_ledger.cpp
@@ -48,8 +53,15 @@ cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
 
 `MapperResult` is the value-only worker-to-main-thread boundary shared by
 UPnP IGD, PCP and NAT-PMP. It snapshots an atomic TCP/UDP result, request and
-topology generation, mapper/source, granted endpoints, lease/epoch,
+explicit topology generation, mapper/source, granted endpoints, lease/epoch,
 ownership proof, verification evidence and normalized reason. Structural
 validity is deliberately separate from publication: partial mappings, stale
 generations and private/CGNAT external addresses remain diagnosable but can
 never be advertised as a verified route.
+
+The main-thread mapping coordinator owns exactly one non-copyable
+`MappingRequestSequence`, which issues nonzero monotonically increasing request
+IDs without wraparound. Its non-copyable `MappingResultGate` binds one pending
+request to its topology generation and typed operation (initial, refresh or
+delete), rejects stale/mismatched responses without displacing a newer request,
+and consumes a matching result exactly once.

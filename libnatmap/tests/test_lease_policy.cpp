@@ -166,6 +166,49 @@ void TestApplicationRefreshSchedule() {
     CHECK(schedule.next_attempt_ms() == 3320000);
 }
 
+void TestThreeNatPmpRenewalsWithFakeClock() {
+    PortLease lease{};
+    lease.mapper = MapperKind::NatPmp;
+    lease.transport = Transport::Tcp;
+    lease.local = Ep(
+        192, 168, 1, 20, 4662,
+        EndpointSource::LocalInterface);
+    lease.public_endpoint = Ep(
+        88, 11, 22, 4, 52144,
+        EndpointSource::NatPmpPublicAddress);
+    lease.requested_external_port = 4662;
+    lease.granted_external_port = 52144;
+    lease.lifetime_seconds = 100;
+    lease.mapper_epoch = 10;
+    lease.generation = 77;
+    lease.owned_by_us = true;
+
+    std::uint64_t fakeNowMs = 1000;
+    LeaseController controller;
+    LeaseRefreshSchedule schedule;
+    CHECK(controller.Activate(lease, fakeNowMs));
+    CHECK(schedule.Activate(lease.lifetime_seconds, fakeNowMs));
+
+    for (std::uint32_t renewal = 1; renewal <= 3; ++renewal) {
+        const std::uint64_t due = fakeNowMs + 45000;
+        CHECK(schedule.next_attempt_ms() == due);
+        CHECK(!schedule.ShouldAttempt(due - 1));
+        CHECK(schedule.ShouldAttempt(due));
+        fakeNowMs = due;
+        lease.mapper_epoch += 45;
+        CHECK(controller.AcceptRenewal(lease, fakeNowMs));
+        CHECK(!controller.LastRenewalObservedEpochReset());
+        CHECK(controller.lease().generation == 77);
+        CHECK(controller.lease().local.port == 4662);
+        CHECK(controller.lease().public_endpoint.port == 52144);
+        CHECK(controller.lease().mapper_epoch == 10 + renewal * 45);
+        CHECK(schedule.Activate(lease.lifetime_seconds, fakeNowMs));
+        CHECK(schedule.attempt_count() == 0);
+        CHECK(schedule.timing().expires_monotonic_ms
+            == fakeNowMs + 100000);
+    }
+}
+
 void TestPermanentLeaseHasNoRefreshClock() {
     LeaseRefreshSchedule schedule;
     CHECK(!schedule.Activate(0, 1234));
@@ -232,6 +275,7 @@ int main() {
     TestPcpEpochToleranceAndResetSignal();
     TestChangedEndpointIsNotSilentRenewal();
     TestApplicationRefreshSchedule();
+    TestThreeNatPmpRenewalsWithFakeClock();
     TestPermanentLeaseHasNoRefreshClock();
     TestRefreshBackoffIsBounded();
 	TestPermanentMappingHealthProbe();

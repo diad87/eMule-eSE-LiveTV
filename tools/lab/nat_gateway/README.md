@@ -633,6 +633,15 @@ Laboratory time is explicit and monotonic. Advancing it expires finite leases
 at their exact deadline, after which a restarted client may reclaim the
 released endpoint.
 
+## NAT-PMP J04 renewal
+
+`test/natpmp_renewal.test.js` drives the real loopback NAT-PMP datagram
+boundary with the diagnostic client and the shared mapping model. A virtual
+monotonic clock advances to the 45% refresh point three times. Every response
+retains the granted port, mapping identity, generation and lease scope; each
+successful renewal moves the finite expiry without creating a duplicate
+mapping.
+
 Lease-zero behavior remains protocol-bound: the simulated UPnP profile accepts
 only permanent mappings, while PCP and NAT-PMP treat a zero lifetime as a
 delete rather than silently converting a finite lease into a permanent one.

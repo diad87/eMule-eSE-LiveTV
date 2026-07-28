@@ -172,6 +172,28 @@ test('E03: service XML is well formed and declares the later control actions', (
   }
   assert.match(xml,
     /<allowedValue>TCP<\/allowedValue><allowedValue>UDP<\/allowedValue>/);
+  function allowedValuesFor(stateName) {
+    const match = new RegExp(
+      `<stateVariable[^>]*><name>${stateName}</name>` +
+      '<dataType>string</dataType><allowedValueList>' +
+      '([\\s\\S]*?)</allowedValueList></stateVariable>')
+      .exec(xml);
+    assert.ok(match, `missing state ${stateName}`);
+    return [...match[1].matchAll(
+      /<allowedValue>([^<]+)<\/allowedValue>/g)]
+      .map((value) => value[1]);
+  }
+  assert.deepEqual(allowedValuesFor('ConnectionStatus'), [
+    'Unconfigured', 'Connecting', 'Connected', 'PendingDisconnect',
+    'Disconnecting', 'Disconnected',
+  ]);
+  assert.deepEqual(allowedValuesFor('LastConnectionError'), [
+    'ERROR_NONE', 'ERROR_COMMAND_ABORTED',
+    'ERROR_NOT_ENABLED_FOR_INTERNET', 'ERROR_USER_DISCONNECT',
+    'ERROR_ISP_DISCONNECT', 'ERROR_IDLE_DISCONNECT',
+    'ERROR_FORCED_DISCONNECT', 'ERROR_NO_CARRIER',
+    'ERROR_IP_CONFIGURATION', 'ERROR_UNKNOWN',
+  ]);
   assert.ok(Buffer.isBuffer(output));
 });
 

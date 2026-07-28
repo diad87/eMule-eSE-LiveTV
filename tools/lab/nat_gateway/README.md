@@ -515,6 +515,18 @@ deliberately exposes only the internally complete IGD v1/WANIPConnection v1
 profile; a partial or mixed v2 profile is rejected rather than falsely
 advertised.
 
+## UPnP E04 query actions
+
+`upnp_soap_control.js` decodes the no-argument miniupnpc SOAP envelopes for
+`GetStatusInfo` and `GetExternalIPAddress`, requiring the quoted SOAPAction,
+body action, SOAP namespaces and WANIPConnection v1 service type to agree.
+It returns owned HTTP-status/body pairs for successful queries and standard
+UPnP SOAP faults. Public, RFC1918 and CGNAT IPv4 values are reported exactly;
+classification and publication policy remain outside the fixture codec. Empty
+external addresses are preserved as explicit successful values. Active XML,
+unknown attributes, nested action content, malformed UTF-8, hostile storage
+and open semantic result shapes fail closed.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

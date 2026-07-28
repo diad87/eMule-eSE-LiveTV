@@ -839,6 +839,8 @@ $cleanupSnapshotFunctionsLoaded = $true
 try {
     $cleanupSnapshotScript = Get-I05SourceFunctionScript -Ast $cleanupAst `
         -Names @(
+            'Get-I05CleanupRule',
+            'Get-I05CleanupDisplayRule',
             'Get-I05CleanupFirewallSnapshot',
             'Get-I05CleanupTcpSnapshot',
             'Get-I05CleanupUdpSnapshot',
@@ -851,6 +853,60 @@ try {
 Add-I05SourceSelfTest -Name 'cleanup-snapshot-functions-load' `
     -Passed $cleanupSnapshotFunctionsLoaded
 if ($cleanupSnapshotFunctionsLoaded) {
+    $cleanupMissingNameIsAbsent = & {
+        function Get-NetFirewallRule {
+            [CmdletBinding()]
+            param(
+                [string]$Name,
+                [string]$DisplayName
+            )
+            $errorRecord = [Management.Automation.ErrorRecord]::new(
+                [InvalidOperationException]::new(
+                    'synthetic missing firewall rule'
+                ),
+                'CmdletizationQuery_NotFound_InstanceID',
+                [Management.Automation.ErrorCategory]::NotSpecified,
+                $Name
+            )
+            $PSCmdlet.ThrowTerminatingError($errorRecord)
+        }
+        try {
+            return @(Get-I05CleanupRule -Name 'missing-rule').Count -eq 0
+        } catch {
+            return $false
+        }
+    }
+    Add-I05SourceSelfTest -Name 'cleanup-missing-rule-name-is-absent' `
+        -Passed $cleanupMissingNameIsAbsent
+
+    $cleanupMissingDisplayIsAbsent = & {
+        function Get-NetFirewallRule {
+            [CmdletBinding()]
+            param(
+                [string]$Name,
+                [string]$DisplayName
+            )
+            $errorRecord = [Management.Automation.ErrorRecord]::new(
+                [InvalidOperationException]::new(
+                    'synthetic missing firewall display name'
+                ),
+                'SyntheticObjectNotFound',
+                [Management.Automation.ErrorCategory]::ObjectNotFound,
+                $DisplayName
+            )
+            $PSCmdlet.ThrowTerminatingError($errorRecord)
+        }
+        try {
+            return @(
+                Get-I05CleanupDisplayRule -DisplayName 'missing-display'
+            ).Count -eq 0
+        } catch {
+            return $false
+        }
+    }
+    Add-I05SourceSelfTest -Name 'cleanup-missing-display-is-absent' `
+        -Passed $cleanupMissingDisplayIsAbsent
+
     $cleanupFirewallFailsClosed = & {
         function Get-NetFirewallRule {
             throw 'synthetic firewall enumeration failure'

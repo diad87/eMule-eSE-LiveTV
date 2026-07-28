@@ -67,6 +67,7 @@ public:
 	struct MappingOperationContext
 	{
 		natmap::MappingRequestContext request;
+		std::uint32_t interface_index = 0;
 		natmap::IpAddress local_address;
 		natmap::IpAddress gateway_address;
 	};
@@ -96,6 +97,7 @@ public:
 		const std::shared_ptr<natmap::MappingResultMailbox>& mailbox =
 			std::shared_ptr<natmap::MappingResultMailbox>());
 	void BeginMappingRequest(const natmap::MappingRequestContext& context,
+		std::uint32_t interfaceIndex,
 		const natmap::IpAddress& localAddress,
 		const natmap::IpAddress& gatewayAddress);
 	TRISTATE ArePortsForwarded() const					{ return m_bUPnPPortsForwarded; }
@@ -153,6 +155,7 @@ private:
 	mutable std::mutex m_resultMutex;
 	std::shared_ptr<natmap::MappingResultMailbox> m_resultMailbox;
 	natmap::MappingRequestContext m_requestContext;
+	std::uint32_t m_requestInterfaceIndex;
 	natmap::IpAddress m_requestLocalAddress;
 	natmap::IpAddress m_requestGatewayAddress;
 };

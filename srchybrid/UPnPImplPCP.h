@@ -3,6 +3,7 @@
 
 #include "UPnPImpl.h"
 #include "natmap/pcp_codec.h"
+#include "natmap/pcp_route_binding.h"
 
 #include <array>
 
@@ -51,23 +52,21 @@ private:
 	static const uint8 PCP_PROTOCOL_TCP = 6;
 	static const uint8 PCP_PROTOCOL_UDP = 17;
 
-	static uint32 GetDefaultGateway();
-	static bool GetClientAddress(uint32 nGatewayIP,
-		std::array<uint8, 16>& clientAddress);
 	static bool GenerateNonce(std::array<uint8, 12>& nonce);
 	static bool ExtractIPv4(const std::array<std::uint8_t, 16>& address,
 		uint32& ipv4);
 
-	bool MapPort(uint32 nGatewayIP,
+	bool MapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
 		const std::array<uint8, 16>& clientAddress, uint16 nPrivatePort,
 		uint16 nSuggestedExternalPort,
 		const std::array<uint8, 16>& suggestedExternalAddress,
 		bool bTCP, uint32 nLifetime,
 		std::array<uint8, 12>& nonce, natmap::PcpMapResponse& response);
-	bool UnmapPort(uint32 nGatewayIP,
+	bool UnmapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
 		const std::array<uint8, 16>& clientAddress, uint16 nPrivatePort,
 		bool bTCP, const std::array<uint8, 12>& nonce);
-	bool ExchangeMap(uint32 nGatewayIP, const natmap::PcpMapRequest& request,
+	bool ExchangeMap(uint32 nGatewayIP, uint32 nInterfaceIndex,
+		const natmap::PcpMapRequest& request,
 		natmap::PcpMapResponse& response, bool bDeletion);
 	void StartThread();
 
@@ -75,6 +74,8 @@ private:
 
 	uint32 m_dwGatewayIP;
 	uint32 m_dwOldGatewayIP;
+	uint32 m_dwInterfaceIndex;
+	uint32 m_dwOldInterfaceIndex;
 	std::array<uint8, 16> m_clientAddress;
 	std::array<uint8, 16> m_oldClientAddress;
 	std::array<uint8, 16> m_tcpExternalAddress;

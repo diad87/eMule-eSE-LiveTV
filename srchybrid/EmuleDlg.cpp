@@ -4973,6 +4973,7 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort, uint16 nForceUDPPor
 					return;
 				}
 				impl->BeginMappingRequest(request.context,
+					route.interfaceIndex,
 					UPnPIpAddress(route.localAddress),
 					UPnPIpAddress(route.gatewayAddress));
 				impl->SetMessageOnResult(
@@ -5039,6 +5040,7 @@ void CemuleDlg::RefreshUPnP(bool bRequestAnswer)
 					return;
 				}
 				impl->BeginMappingRequest(request.context,
+					route.interfaceIndex,
 					UPnPIpAddress(route.localAddress),
 					UPnPIpAddress(route.gatewayAddress));
 				if (bRequestAnswer)

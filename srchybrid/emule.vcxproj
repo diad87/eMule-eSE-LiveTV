@@ -433,6 +433,11 @@
 	  <LanguageStandard>stdcpp17</LanguageStandard>
 	  <WarningLevel>Level4</WarningLevel>
 	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\pcp_route_binding.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
 	<ClCompile Include="..\libnatmap\src\ownership_ledger.cpp">
 	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
 	  <LanguageStandard>stdcpp17</LanguageStandard>
@@ -1003,6 +1008,7 @@
 	<ClInclude Include="..\libnatmap\include\natmap\natmap_types.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natpmp_codec.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\pcp_codec.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\pcp_route_binding.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\ownership_ledger.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\mapper_result.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\mapping_request.h" />

@@ -6,7 +6,6 @@
 #include "OtherFunctions.h"
 
 #include <bcrypt.h>
-#include <iphlpapi.h>
 
 #pragma comment(lib, "bcrypt.lib")
 
@@ -54,6 +53,8 @@ uint32 EffectiveLifetime(uint32 grantedLifetime)
 CUPnPImplPCP::CUPnPImplPCP()
 	: m_dwGatewayIP(0)
 	, m_dwOldGatewayIP(0)
+	, m_dwInterfaceIndex(0)
+	, m_dwOldInterfaceIndex(0)
 	, m_hThreadHandle(NULL)
 	, m_bSucceededOnce(false)
 	, m_bAbortDiscovery(false)
@@ -111,6 +112,7 @@ void CUPnPImplPCP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort,
 		m_nOldUDPPort = m_nUDPPort;
 		m_nOldTCPWebPort = m_nTCPWebPort;
 		m_dwOldGatewayIP = m_dwGatewayIP;
+		m_dwOldInterfaceIndex = m_dwInterfaceIndex;
 		m_oldClientAddress = m_clientAddress;
 		m_oldTCPNonce = m_tcpNonce;
 		m_oldUDPNonce = m_udpNonce;
@@ -118,6 +120,7 @@ void CUPnPImplPCP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort,
 	} else {
 		m_nOldTCPPort = m_nOldUDPPort = m_nOldTCPWebPort = 0;
 		m_dwOldGatewayIP = 0;
+		m_dwOldInterfaceIndex = 0;
 		m_oldClientAddress.fill(0);
 		m_oldTCPNonce.fill(0);
 		m_oldUDPNonce.fill(0);
@@ -173,6 +176,7 @@ void CUPnPImplPCP::DeletePorts()
 		m_nOldUDPPort = m_nUDPPort;
 		m_nOldTCPWebPort = m_nTCPWebPort;
 		m_dwOldGatewayIP = m_dwGatewayIP;
+		m_dwOldInterfaceIndex = m_dwInterfaceIndex;
 		m_oldClientAddress = m_clientAddress;
 		m_oldTCPNonce = m_tcpNonce;
 		m_oldUDPNonce = m_udpNonce;
@@ -197,62 +201,28 @@ void CUPnPImplPCP::DeletePorts(bool bSkipLock)
 	if (bSkipLock || lockTest.Lock(0)) {
 		if (m_dwOldGatewayIP != 0) {
 			if (m_nOldTCPPort != 0 && !IsZeroNonce(m_oldTCPNonce))
-				UnmapPort(m_dwOldGatewayIP, m_oldClientAddress, m_nOldTCPPort,
+				UnmapPort(m_dwOldGatewayIP, m_dwOldInterfaceIndex,
+					m_oldClientAddress, m_nOldTCPPort,
 					true, m_oldTCPNonce);
 			if (m_nOldUDPPort != 0 && !IsZeroNonce(m_oldUDPNonce))
-				UnmapPort(m_dwOldGatewayIP, m_oldClientAddress, m_nOldUDPPort,
+				UnmapPort(m_dwOldGatewayIP, m_dwOldInterfaceIndex,
+					m_oldClientAddress, m_nOldUDPPort,
 					false, m_oldUDPNonce);
 			if (m_nOldTCPWebPort != 0 && !IsZeroNonce(m_oldWebNonce))
-				UnmapPort(m_dwOldGatewayIP, m_oldClientAddress,
+				UnmapPort(m_dwOldGatewayIP, m_dwOldInterfaceIndex,
+					m_oldClientAddress,
 					m_nOldTCPWebPort,
 					true, m_oldWebNonce);
 		}
 		m_nOldTCPPort = m_nOldUDPPort = m_nOldTCPWebPort = 0;
 		m_dwOldGatewayIP = 0;
+		m_dwOldInterfaceIndex = 0;
 		m_oldClientAddress.fill(0);
 		m_oldTCPNonce.fill(0);
 		m_oldUDPNonce.fill(0);
 		m_oldWebNonce.fill(0);
 	} else
 		DebugLogError(_T("PCP: Unable to remove port mappings - busy"));
-}
-
-uint32 CUPnPImplPCP::GetDefaultGateway()
-{
-	MIB_IPFORWARDROW route;
-	memset(&route, 0, sizeof(route));
-	if (GetBestRoute(0, 0, &route) != NO_ERROR || route.dwForwardNextHop == 0)
-		return 0;
-	return route.dwForwardNextHop;
-}
-
-bool CUPnPImplPCP::GetClientAddress(uint32 nGatewayIP,
-	std::array<uint8, 16>& clientAddress)
-{
-	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (sock == INVALID_SOCKET)
-		return false;
-
-	sockaddr_in destination;
-	memset(&destination, 0, sizeof(destination));
-	destination.sin_family = AF_INET;
-	destination.sin_port = htons(PCP_PORT);
-	destination.sin_addr.s_addr = nGatewayIP;
-
-	sockaddr_in local;
-	memset(&local, 0, sizeof(local));
-	int localLength = sizeof(local);
-	const bool ok = connect(sock, reinterpret_cast<sockaddr*>(&destination),
-		sizeof(destination)) == 0
-		&& getsockname(sock, reinterpret_cast<sockaddr*>(&local), &localLength) == 0
-		&& local.sin_addr.s_addr != 0;
-	closesocket(sock);
-	if (!ok)
-		return false;
-
-	const uint8* bytes = reinterpret_cast<const uint8*>(&local.sin_addr.s_addr);
-	clientAddress = natmap::PcpIpv4Mapped(bytes[0], bytes[1], bytes[2], bytes[3]);
-	return true;
 }
 
 bool CUPnPImplPCP::GenerateNonce(std::array<uint8, 12>& nonce)
@@ -273,7 +243,7 @@ bool CUPnPImplPCP::ExtractIPv4(
 	return ipv4 != 0;
 }
 
-bool CUPnPImplPCP::ExchangeMap(uint32 nGatewayIP,
+bool CUPnPImplPCP::ExchangeMap(uint32 nGatewayIP, uint32 nInterfaceIndex,
 	const natmap::PcpMapRequest& request, natmap::PcpMapResponse& response,
 	bool bDeletion)
 {
@@ -286,6 +256,16 @@ bool CUPnPImplPCP::ExchangeMap(uint32 nGatewayIP,
 	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (sock == INVALID_SOCKET)
 		return false;
+	const DWORD networkInterfaceIndex = htonl(nInterfaceIndex);
+	if (nInterfaceIndex == 0
+		|| setsockopt(sock, IPPROTO_IP, IP_UNICAST_IF,
+			reinterpret_cast<const char*>(&networkInterfaceIndex),
+			sizeof(networkInterfaceIndex)) != 0) {
+		DebugLogWarning(_T("PCP: Unable to select route interface %u (error %u)"),
+			nInterfaceIndex, WSAGetLastError());
+		closesocket(sock);
+		return false;
+	}
 
 	uint32 clientIP = 0;
 	if (!ExtractIPv4(request.client_ip, clientIP)) {
@@ -386,7 +366,7 @@ bool CUPnPImplPCP::ExchangeMap(uint32 nGatewayIP,
 	return false;
 }
 
-bool CUPnPImplPCP::MapPort(uint32 nGatewayIP,
+bool CUPnPImplPCP::MapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
 	const std::array<uint8, 16>& clientAddress, uint16 nPrivatePort,
 	uint16 nSuggestedExternalPort,
 	const std::array<uint8, 16>& suggestedExternalAddress,
@@ -404,7 +384,8 @@ bool CUPnPImplPCP::MapPort(uint32 nGatewayIP,
 	request.internal_port = nPrivatePort;
 	request.suggested_external_port = nSuggestedExternalPort;
 	request.suggested_external_ip = suggestedExternalAddress;
-	if (!ExchangeMap(nGatewayIP, request, response, false))
+	if (!ExchangeMap(
+			nGatewayIP, nInterfaceIndex, request, response, false))
 		return false;
 
 	DebugLog(_T("PCP: Mapped %s port %hu -> %hu (lifetime %us)"),
@@ -413,7 +394,7 @@ bool CUPnPImplPCP::MapPort(uint32 nGatewayIP,
 	return true;
 }
 
-bool CUPnPImplPCP::UnmapPort(uint32 nGatewayIP,
+bool CUPnPImplPCP::UnmapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
 	const std::array<uint8, 16>& clientAddress, uint16 nPrivatePort,
 	bool bTCP, const std::array<uint8, 12>& nonce)
 {
@@ -423,7 +404,8 @@ bool CUPnPImplPCP::UnmapPort(uint32 nGatewayIP,
 	request.protocol = bTCP ? PCP_PROTOCOL_TCP : PCP_PROTOCOL_UDP;
 	request.internal_port = nPrivatePort;
 	natmap::PcpMapResponse response;
-	const bool result = ExchangeMap(nGatewayIP, request, response, true);
+	const bool result = ExchangeMap(
+		nGatewayIP, nInterfaceIndex, request, response, true);
 	if (result)
 		DebugLog(_T("PCP: Unmapped %s port %hu"),
 			bTCP ? _T("TCP") : _T("UDP"), nPrivatePort);
@@ -454,16 +436,39 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 	if (!lock.Lock(0) || m_pOwner->m_bAbortDiscovery)
 		return 0;
 
+	const natmap::PcpRouteBindingSelection route =
+		natmap::SelectPcpRouteBinding(
+			m_operation.local_address, m_operation.gateway_address,
+			m_operation.interface_index);
+	uint32 selectedGateway = 0;
+	if (!route.IsSelected()) {
+		DebugLogWarning(_T("PCP: Request has no valid, atomic IPv4 route pair (status=%u)"),
+			static_cast<unsigned>(route.status));
+		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
+		m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
+		m_pOwner->SendResultMessage(m_operation);
+		return 0;
+	}
+	memcpy(&selectedGateway, route.binding.gateway_address.data(),
+		sizeof(selectedGateway));
+
+	if (m_pOwner->m_bCheckAndRefresh
+		&& (m_pOwner->m_dwGatewayIP != selectedGateway
+			|| m_pOwner->m_dwInterfaceIndex
+				!= route.binding.interface_index
+			|| m_pOwner->m_clientAddress != route.binding.client_address)) {
+		DebugLogWarning(_T("PCP: Refusing refresh because the route-bound gateway/client pair changed"));
+		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
+		m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
+		m_pOwner->SendResultMessage(m_operation);
+		return 0;
+	}
+
 	if (!m_pOwner->m_bCheckAndRefresh) {
-		m_pOwner->m_dwGatewayIP = CUPnPImplPCP::GetDefaultGateway();
-		if (m_pOwner->m_dwGatewayIP == 0
-			|| !CUPnPImplPCP::GetClientAddress(m_pOwner->m_dwGatewayIP,
-				m_pOwner->m_clientAddress)) {
-			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
-			m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-			m_pOwner->SendResultMessage(m_operation);
-			return 0;
-		}
+		m_pOwner->m_dwGatewayIP = selectedGateway;
+		m_pOwner->m_dwInterfaceIndex =
+			route.binding.interface_index;
+		m_pOwner->m_clientAddress = route.binding.client_address;
 		m_pOwner->DeletePorts(true);
 	}
 
@@ -477,6 +482,7 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 			: std::array<uint8, 16>();
 	m_pOwner->m_nDiagnosticStage = UPNP_DIAG_TCP_MAPPING;
 	succeeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
+		m_pOwner->m_dwInterfaceIndex,
 		m_pOwner->m_clientAddress, m_pOwner->m_nTCPPort, suggestedTCP,
 		suggestedTCPAddress, true, leaseTime, m_pOwner->m_tcpNonce,
 		tcpResponse);
@@ -499,6 +505,7 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 				: std::array<uint8, 16>();
 		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_UDP_MAPPING;
 		succeeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
+			m_pOwner->m_dwInterfaceIndex,
 			m_pOwner->m_clientAddress, m_pOwner->m_nUDPPort, suggestedUDP,
 			suggestedUDPAddress, false, leaseTime, m_pOwner->m_udpNonce,
 			udpResponse);
@@ -511,6 +518,7 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 			m_pOwner->m_dwMapperEpoch = udpResponse.epoch;
 		} else {
 			m_pOwner->UnmapPort(m_pOwner->m_dwGatewayIP,
+				m_pOwner->m_dwInterfaceIndex,
 				m_pOwner->m_clientAddress, m_pOwner->m_nTCPPort, true,
 				m_pOwner->m_tcpNonce);
 			m_pOwner->m_nExternalTCPPort = 0;
@@ -526,6 +534,7 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 			m_pOwner->m_bCheckAndRefresh ? m_pOwner->m_webExternalAddress
 				: std::array<uint8, 16>();
 		if (m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
+			m_pOwner->m_dwInterfaceIndex,
 			m_pOwner->m_clientAddress, m_pOwner->m_nTCPWebPort, suggestedWeb,
 			suggestedWebAddress, true, leaseTime, m_pOwner->m_webNonce,
 			webResponse)) {

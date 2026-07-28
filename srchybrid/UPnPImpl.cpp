@@ -87,6 +87,7 @@ CUPnPImpl::CUPnPImpl()
 	, m_dwMapperEpoch()
 	, m_nDiagnosticStage(UPNP_DIAG_NOT_RUN)
 	, m_bCheckAndRefresh()
+	, m_requestInterfaceIndex()
 {
 }
 
@@ -101,11 +102,13 @@ void CUPnPImpl::SetMessageOnResult(CWnd *cwnd, UINT nMessageID,
 
 void CUPnPImpl::BeginMappingRequest(
 	const natmap::MappingRequestContext& context,
+	std::uint32_t interfaceIndex,
 	const natmap::IpAddress& localAddress,
 	const natmap::IpAddress& gatewayAddress)
 {
 	std::lock_guard<std::mutex> lock(m_resultMutex);
 	m_requestContext = context;
+	m_requestInterfaceIndex = interfaceIndex;
 	m_requestLocalAddress = localAddress;
 	m_requestGatewayAddress = gatewayAddress;
 }
@@ -116,6 +119,7 @@ CUPnPImpl::CaptureMappingOperation() const
 	std::lock_guard<std::mutex> lock(m_resultMutex);
 	MappingOperationContext operation;
 	operation.request = m_requestContext;
+	operation.interface_index = m_requestInterfaceIndex;
 	operation.local_address = m_requestLocalAddress;
 	operation.gateway_address = m_requestGatewayAddress;
 	return operation;

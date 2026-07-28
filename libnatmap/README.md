@@ -147,3 +147,9 @@ only when the local record is valid and gateway fingerprint, protocol,
 external port, internal client, internal port and ownership description all
 match the router readback. The Windows host also rejects unknown protocol
 labels and retains proof when the current gateway identity is unavailable.
+
+`SelectPcpRouteBinding` freezes the interface index, IPv4 client address and
+gateway supplied by one host route snapshot. PCP uses that exact tuple for its
+request body, socket interface, bind and destination; incomplete, malformed,
+mixed-family or ambiguous tuples fail closed instead of triggering independent
+rediscovery.

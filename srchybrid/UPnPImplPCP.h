@@ -3,6 +3,7 @@
 
 #include "UPnPImpl.h"
 #include "natmap/pcp_codec.h"
+#include "natmap/pcp_mapping_identity.h"
 #include "natmap/pcp_route_binding.h"
 
 #include <array>
@@ -45,7 +46,7 @@ public:
 	};
 
 protected:
-	void DeletePorts(bool bSkipLock);
+	bool DeletePorts(bool bSkipLock);
 
 private:
 	static const uint16 PCP_PORT = 5351;
@@ -57,14 +58,15 @@ private:
 		uint32& ipv4);
 
 	bool MapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
-		const std::array<uint8, 16>& clientAddress, uint16 nPrivatePort,
+		const std::array<uint8, 16>& clientAddress,
+		natmap::Transport transport, uint16 nPrivatePort,
 		uint16 nSuggestedExternalPort,
 		const std::array<uint8, 16>& suggestedExternalAddress,
-		bool bTCP, uint32 nLifetime,
-		std::array<uint8, 12>& nonce, natmap::PcpMapResponse& response);
+		uint32 nLifetime, natmap::PcpMappingIdentity& identity,
+		natmap::PcpMapResponse& response);
 	bool UnmapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
-		const std::array<uint8, 16>& clientAddress, uint16 nPrivatePort,
-		bool bTCP, const std::array<uint8, 12>& nonce);
+		const std::array<uint8, 16>& clientAddress,
+		const natmap::PcpMappingIdentity& identity);
 	bool ExchangeMap(uint32 nGatewayIP, uint32 nInterfaceIndex,
 		const natmap::PcpMapRequest& request,
 		natmap::PcpMapResponse& response, bool bDeletion);
@@ -81,12 +83,12 @@ private:
 	std::array<uint8, 16> m_tcpExternalAddress;
 	std::array<uint8, 16> m_udpExternalAddress;
 	std::array<uint8, 16> m_webExternalAddress;
-	std::array<uint8, 12> m_tcpNonce;
-	std::array<uint8, 12> m_udpNonce;
-	std::array<uint8, 12> m_webNonce;
-	std::array<uint8, 12> m_oldTCPNonce;
-	std::array<uint8, 12> m_oldUDPNonce;
-	std::array<uint8, 12> m_oldWebNonce;
+	natmap::PcpMappingIdentity m_tcpIdentity;
+	natmap::PcpMappingIdentity m_udpIdentity;
+	natmap::PcpMappingIdentity m_webIdentity;
+	natmap::PcpMappingIdentity m_oldTCPIdentity;
+	natmap::PcpMappingIdentity m_oldUDPIdentity;
+	natmap::PcpMappingIdentity m_oldWebIdentity;
 	HANDLE m_hThreadHandle;
 	bool m_bSucceededOnce;
 	volatile bool m_bAbortDiscovery;

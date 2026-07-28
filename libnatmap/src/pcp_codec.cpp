@@ -12,6 +12,14 @@ constexpr std::uint8_t kResponseBit = 0x80;
 constexpr std::uint8_t kOptionPreferFailure = 2;
 constexpr std::uint8_t kOptionPortSet = 130;
 
+bool IsZeroNonce(
+    const std::array<std::uint8_t, 12>& nonce) noexcept {
+    for (std::uint8_t byte : nonce)
+        if (byte != 0)
+            return false;
+    return true;
+}
+
 void Put16(std::uint8_t* p, std::uint16_t value) noexcept {
     p[0] = static_cast<std::uint8_t>(value >> 8);
     p[1] = static_cast<std::uint8_t>(value);
@@ -69,7 +77,8 @@ std::size_t EncodePcpAnnounceRequest(
 std::size_t EncodePcpMapRequest(const PcpMapRequest& request,
                                 std::uint8_t* out,
                                 std::size_t capacity) noexcept {
-    if (out == nullptr || request.protocol == 0 || request.internal_port == 0)
+    if (out == nullptr || request.protocol == 0 || request.internal_port == 0
+        || IsZeroNonce(request.nonce))
         return 0;
     if (request.prefer_failure &&
         (request.lifetime_seconds == 0 || request.suggested_external_port == 0))
@@ -130,6 +139,8 @@ PcpDecodeStatus DecodePcpMapResponse(
         return PcpDecodeStatus::NotResponse;
     if ((data[1] & 0x7Fu) != kOpcodeMap)
         return PcpDecodeStatus::WrongOpcode;
+    if (IsZeroNonce(request.nonce))
+        return PcpDecodeStatus::WrongNonce;
     if (std::memcmp(data + 24, request.nonce.data(), request.nonce.size()) != 0)
         return PcpDecodeStatus::WrongNonce;
     if (data[36] != request.protocol)

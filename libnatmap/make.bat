@@ -23,6 +23,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_pcp_route_bindin
 if errorlevel 1 exit /b 1
 build\test_pcp_route_binding.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_pcp_mapping_identity.exe tests\test_pcp_mapping_identity.cpp src\pcp_mapping_identity.cpp
+if errorlevel 1 exit /b 1
+build\test_pcp_mapping_identity.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_lease_policy.exe tests\test_lease_policy.cpp src\natmap_policy.cpp
 if errorlevel 1 exit /b 1
 build\test_lease_policy.exe

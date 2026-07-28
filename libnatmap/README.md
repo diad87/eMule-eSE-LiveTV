@@ -153,3 +153,10 @@ gateway supplied by one host route snapshot. PCP uses that exact tuple for its
 request body, socket interface, bind and destination; incomplete, malformed,
 mixed-family or ambiguous tuples fail closed instead of triggering independent
 rediscovery.
+
+`PcpMappingIdentity` makes transport, internal port and the 96-bit MAP nonce
+one immutable identity. Initialization rejects zero nonce material; renewal
+must match the original transport and port and cannot silently replace or
+cross-use the TCP and UDP nonces. A MAP with an ambiguous outcome or a failed
+UNMAP retains that identity, and the Windows host blocks any replacement MAP
+until exact cleanup is confirmed.

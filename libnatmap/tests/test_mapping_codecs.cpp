@@ -142,6 +142,10 @@ void TestPcpRequestVectors() {
     bool zero = true;
     for (std::size_t i = 42; i < 60; ++i) zero = zero && bytes[i] == 0;
     CHECK(zero);
+
+    request.nonce.fill(0);
+    CHECK(EncodePcpMapRequest(
+        request, bytes.data(), bytes.size()) == 0);
 }
 
 void TestPcpResponseValidation() {
@@ -189,6 +193,13 @@ void TestPcpResponseValidation() {
           == PcpDecodeStatus::MalformedOption);
     CHECK(DecodePcpMapResponse(response.data(), 59, request, decoded)
           == PcpDecodeStatus::Truncated);
+
+    PcpMapRequest zeroNonceRequest = request;
+    zeroNonceRequest.nonce.fill(0);
+    std::memset(response.data() + 24, 0, zeroNonceRequest.nonce.size());
+    CHECK(DecodePcpMapResponse(
+        response.data(), response.size(), zeroNonceRequest, decoded)
+        == PcpDecodeStatus::WrongNonce);
 }
 
 void TestAnnounce() {

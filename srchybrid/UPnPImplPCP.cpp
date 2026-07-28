@@ -19,14 +19,6 @@ CMutex CUPnPImplPCP::m_mutBusy;
 
 namespace {
 
-bool IsZeroNonce(const std::array<uint8, 12>& nonce)
-{
-	for (size_t i = 0; i < nonce.size(); ++i)
-		if (nonce[i] != 0)
-			return false;
-	return true;
-}
-
 DWORD JitteredTimeout(DWORD timeout)
 {
 	ULONG random = 0;
@@ -64,12 +56,12 @@ CUPnPImplPCP::CUPnPImplPCP()
 	m_tcpExternalAddress.fill(0);
 	m_udpExternalAddress.fill(0);
 	m_webExternalAddress.fill(0);
-	m_tcpNonce.fill(0);
-	m_udpNonce.fill(0);
-	m_webNonce.fill(0);
-	m_oldTCPNonce.fill(0);
-	m_oldUDPNonce.fill(0);
-	m_oldWebNonce.fill(0);
+	m_tcpIdentity.Clear();
+	m_udpIdentity.Clear();
+	m_webIdentity.Clear();
+	m_oldTCPIdentity.Clear();
+	m_oldUDPIdentity.Clear();
+	m_oldWebIdentity.Clear();
 }
 
 CUPnPImplPCP::~CUPnPImplPCP()
@@ -107,24 +99,33 @@ void CUPnPImplPCP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort,
 {
 	DebugLog(_T("PCP: Using RFC 6887 MAP implementation"));
 
-	if (m_bSucceededOnce && m_dwGatewayIP != 0) {
-		m_nOldTCPPort = m_nTCPPort;
-		m_nOldUDPPort = m_nUDPPort;
-		m_nOldTCPWebPort = m_nTCPWebPort;
+	const bool hasCurrentIdentity =
+		!m_tcpIdentity.IsEmpty() || !m_udpIdentity.IsEmpty()
+		|| !m_webIdentity.IsEmpty();
+	const bool hasOldIdentity =
+		!m_oldTCPIdentity.IsEmpty() || !m_oldUDPIdentity.IsEmpty()
+		|| !m_oldWebIdentity.IsEmpty();
+	bool movedCurrentToOld = false;
+	if ((m_bSucceededOnce || hasCurrentIdentity)
+		&& m_dwGatewayIP != 0 && !hasOldIdentity) {
+		m_nOldTCPPort = m_tcpIdentity.internal_port;
+		m_nOldUDPPort = m_udpIdentity.internal_port;
+		m_nOldTCPWebPort = m_webIdentity.internal_port;
 		m_dwOldGatewayIP = m_dwGatewayIP;
 		m_dwOldInterfaceIndex = m_dwInterfaceIndex;
 		m_oldClientAddress = m_clientAddress;
-		m_oldTCPNonce = m_tcpNonce;
-		m_oldUDPNonce = m_udpNonce;
-		m_oldWebNonce = m_webNonce;
-	} else {
+		m_oldTCPIdentity = m_tcpIdentity;
+		m_oldUDPIdentity = m_udpIdentity;
+		m_oldWebIdentity = m_webIdentity;
+		movedCurrentToOld = true;
+	} else if (!hasOldIdentity) {
 		m_nOldTCPPort = m_nOldUDPPort = m_nOldTCPWebPort = 0;
 		m_dwOldGatewayIP = 0;
 		m_dwOldInterfaceIndex = 0;
 		m_oldClientAddress.fill(0);
-		m_oldTCPNonce.fill(0);
-		m_oldUDPNonce.fill(0);
-		m_oldWebNonce.fill(0);
+		m_oldTCPIdentity.Clear();
+		m_oldUDPIdentity.Clear();
+		m_oldWebIdentity.Clear();
 	}
 	m_bSucceededOnce = false;
 
@@ -140,9 +141,11 @@ void CUPnPImplPCP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort,
 	m_tcpExternalAddress.fill(0);
 	m_udpExternalAddress.fill(0);
 	m_webExternalAddress.fill(0);
-	m_tcpNonce.fill(0);
-	m_udpNonce.fill(0);
-	m_webNonce.fill(0);
+	if (!hasCurrentIdentity || movedCurrentToOld) {
+		m_tcpIdentity.Clear();
+		m_udpIdentity.Clear();
+		m_webIdentity.Clear();
+	}
 	m_bUPnPPortsForwarded = TRIS_UNKNOWN;
 	m_nDiagnosticStage = UPNP_DIAG_DISCOVERING;
 	m_bCheckAndRefresh = false;
@@ -171,16 +174,30 @@ bool CUPnPImplPCP::CheckAndRefresh()
 
 void CUPnPImplPCP::DeletePorts()
 {
-	if (m_bSucceededOnce && m_dwGatewayIP != 0) {
-		m_nOldTCPPort = m_nTCPPort;
-		m_nOldUDPPort = m_nUDPPort;
-		m_nOldTCPWebPort = m_nTCPWebPort;
+	const bool hasCurrentIdentity =
+		!m_tcpIdentity.IsEmpty() || !m_udpIdentity.IsEmpty()
+		|| !m_webIdentity.IsEmpty();
+	const bool hasOldIdentity =
+		!m_oldTCPIdentity.IsEmpty() || !m_oldUDPIdentity.IsEmpty()
+		|| !m_oldWebIdentity.IsEmpty();
+	bool movedCurrentToOld = false;
+	if ((m_bSucceededOnce || hasCurrentIdentity)
+		&& m_dwGatewayIP != 0 && !hasOldIdentity) {
+		m_nOldTCPPort = m_tcpIdentity.internal_port;
+		m_nOldUDPPort = m_udpIdentity.internal_port;
+		m_nOldTCPWebPort = m_webIdentity.internal_port;
 		m_dwOldGatewayIP = m_dwGatewayIP;
 		m_dwOldInterfaceIndex = m_dwInterfaceIndex;
 		m_oldClientAddress = m_clientAddress;
-		m_oldTCPNonce = m_tcpNonce;
-		m_oldUDPNonce = m_udpNonce;
-		m_oldWebNonce = m_webNonce;
+		m_oldTCPIdentity = m_tcpIdentity;
+		m_oldUDPIdentity = m_udpIdentity;
+		m_oldWebIdentity = m_webIdentity;
+		movedCurrentToOld = true;
+	}
+	if (movedCurrentToOld) {
+		m_tcpIdentity.Clear();
+		m_udpIdentity.Clear();
+		m_webIdentity.Clear();
 	}
 	m_bSucceededOnce = false;
 	m_nTCPPort = m_nUDPPort = m_nTCPWebPort = 0;
@@ -195,40 +212,67 @@ void CUPnPImplPCP::DeletePorts()
 	DeletePorts(false);
 }
 
-void CUPnPImplPCP::DeletePorts(bool bSkipLock)
+bool CUPnPImplPCP::DeletePorts(bool bSkipLock)
 {
 	CSingleLock lockTest(&m_mutBusy);
 	if (bSkipLock || lockTest.Lock(0)) {
+		bool cleaned = true;
 		if (m_dwOldGatewayIP != 0) {
-			if (m_nOldTCPPort != 0 && !IsZeroNonce(m_oldTCPNonce))
-				UnmapPort(m_dwOldGatewayIP, m_dwOldInterfaceIndex,
-					m_oldClientAddress, m_nOldTCPPort,
-					true, m_oldTCPNonce);
-			if (m_nOldUDPPort != 0 && !IsZeroNonce(m_oldUDPNonce))
-				UnmapPort(m_dwOldGatewayIP, m_dwOldInterfaceIndex,
-					m_oldClientAddress, m_nOldUDPPort,
-					false, m_oldUDPNonce);
-			if (m_nOldTCPWebPort != 0 && !IsZeroNonce(m_oldWebNonce))
-				UnmapPort(m_dwOldGatewayIP, m_dwOldInterfaceIndex,
-					m_oldClientAddress,
-					m_nOldTCPWebPort,
-					true, m_oldWebNonce);
+			if (natmap::ValidatePcpMappingIdentity(
+					m_oldTCPIdentity, natmap::Transport::Tcp,
+					m_nOldTCPPort) == natmap::PcpIdentityStatus::Valid) {
+				if (UnmapPort(m_dwOldGatewayIP, m_dwOldInterfaceIndex,
+						m_oldClientAddress, m_oldTCPIdentity)) {
+					m_oldTCPIdentity.Clear();
+					m_nOldTCPPort = 0;
+				} else
+					cleaned = false;
+			} else if (!m_oldTCPIdentity.IsEmpty())
+				cleaned = false;
+			if (natmap::ValidatePcpMappingIdentity(
+					m_oldUDPIdentity, natmap::Transport::Udp,
+					m_nOldUDPPort) == natmap::PcpIdentityStatus::Valid) {
+				if (UnmapPort(m_dwOldGatewayIP, m_dwOldInterfaceIndex,
+						m_oldClientAddress, m_oldUDPIdentity)) {
+					m_oldUDPIdentity.Clear();
+					m_nOldUDPPort = 0;
+				} else
+					cleaned = false;
+			} else if (!m_oldUDPIdentity.IsEmpty())
+				cleaned = false;
+			if (natmap::ValidatePcpMappingIdentity(
+					m_oldWebIdentity, natmap::Transport::Tcp,
+					m_nOldTCPWebPort) == natmap::PcpIdentityStatus::Valid) {
+				if (UnmapPort(m_dwOldGatewayIP, m_dwOldInterfaceIndex,
+						m_oldClientAddress, m_oldWebIdentity)) {
+					m_oldWebIdentity.Clear();
+					m_nOldTCPWebPort = 0;
+				} else
+					cleaned = false;
+			} else if (!m_oldWebIdentity.IsEmpty())
+				cleaned = false;
+		} else if (!m_oldTCPIdentity.IsEmpty()
+			|| !m_oldUDPIdentity.IsEmpty()
+			|| !m_oldWebIdentity.IsEmpty())
+			cleaned = false;
+		if (cleaned) {
+			m_nOldTCPPort = m_nOldUDPPort = m_nOldTCPWebPort = 0;
+			m_dwOldGatewayIP = 0;
+			m_dwOldInterfaceIndex = 0;
+			m_oldClientAddress.fill(0);
 		}
-		m_nOldTCPPort = m_nOldUDPPort = m_nOldTCPWebPort = 0;
-		m_dwOldGatewayIP = 0;
-		m_dwOldInterfaceIndex = 0;
-		m_oldClientAddress.fill(0);
-		m_oldTCPNonce.fill(0);
-		m_oldUDPNonce.fill(0);
-		m_oldWebNonce.fill(0);
-	} else
+		return cleaned;
+	}
+	else {
 		DebugLogError(_T("PCP: Unable to remove port mappings - busy"));
+		return false;
+	}
 }
 
 bool CUPnPImplPCP::GenerateNonce(std::array<uint8, 12>& nonce)
 {
 	return BCryptGenRandom(NULL, nonce.data(), static_cast<ULONG>(nonce.size()),
-		BCRYPT_USE_SYSTEM_PREFERRED_RNG) >= 0 && !IsZeroNonce(nonce);
+		BCRYPT_USE_SYSTEM_PREFERRED_RNG) >= 0;
 }
 
 bool CUPnPImplPCP::ExtractIPv4(
@@ -367,21 +411,32 @@ bool CUPnPImplPCP::ExchangeMap(uint32 nGatewayIP, uint32 nInterfaceIndex,
 }
 
 bool CUPnPImplPCP::MapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
-	const std::array<uint8, 16>& clientAddress, uint16 nPrivatePort,
+	const std::array<uint8, 16>& clientAddress,
+	natmap::Transport transport, uint16 nPrivatePort,
 	uint16 nSuggestedExternalPort,
 	const std::array<uint8, 16>& suggestedExternalAddress,
-	bool bTCP, uint32 nLifetime,
-	std::array<uint8, 12>& nonce, natmap::PcpMapResponse& response)
+	uint32 nLifetime, natmap::PcpMappingIdentity& identity,
+	natmap::PcpMapResponse& response)
 {
-	if (IsZeroNonce(nonce) && !GenerateNonce(nonce))
+	if (identity.IsEmpty()) {
+		std::array<uint8, 12> nonce{};
+		if (!GenerateNonce(nonce)
+			|| natmap::InitializePcpMappingIdentity(
+				identity, transport, nPrivatePort, nonce)
+				!= natmap::PcpIdentityStatus::Valid)
+			return false;
+	} else if (natmap::ValidatePcpMappingIdentity(
+			identity, transport, nPrivatePort)
+		!= natmap::PcpIdentityStatus::Valid)
 		return false;
 
 	natmap::PcpMapRequest request;
 	request.lifetime_seconds = nLifetime;
 	request.client_ip = clientAddress;
-	request.nonce = nonce;
-	request.protocol = bTCP ? PCP_PROTOCOL_TCP : PCP_PROTOCOL_UDP;
-	request.internal_port = nPrivatePort;
+	request.nonce = identity.nonce;
+	request.protocol = identity.transport == natmap::Transport::Tcp
+		? PCP_PROTOCOL_TCP : PCP_PROTOCOL_UDP;
+	request.internal_port = identity.internal_port;
 	request.suggested_external_port = nSuggestedExternalPort;
 	request.suggested_external_ip = suggestedExternalAddress;
 	if (!ExchangeMap(
@@ -389,26 +444,31 @@ bool CUPnPImplPCP::MapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
 		return false;
 
 	DebugLog(_T("PCP: Mapped %s port %hu -> %hu (lifetime %us)"),
-		bTCP ? _T("TCP") : _T("UDP"), nPrivatePort,
+		identity.transport == natmap::Transport::Tcp
+			? _T("TCP") : _T("UDP"), identity.internal_port,
 		response.external_port, response.lifetime_seconds);
 	return true;
 }
 
 bool CUPnPImplPCP::UnmapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
-	const std::array<uint8, 16>& clientAddress, uint16 nPrivatePort,
-	bool bTCP, const std::array<uint8, 12>& nonce)
+	const std::array<uint8, 16>& clientAddress,
+	const natmap::PcpMappingIdentity& identity)
 {
+	if (!identity.IsValid())
+		return false;
 	natmap::PcpMapRequest request;
 	request.client_ip = clientAddress;
-	request.nonce = nonce;
-	request.protocol = bTCP ? PCP_PROTOCOL_TCP : PCP_PROTOCOL_UDP;
-	request.internal_port = nPrivatePort;
+	request.nonce = identity.nonce;
+	request.protocol = identity.transport == natmap::Transport::Tcp
+		? PCP_PROTOCOL_TCP : PCP_PROTOCOL_UDP;
+	request.internal_port = identity.internal_port;
 	natmap::PcpMapResponse response;
 	const bool result = ExchangeMap(
 		nGatewayIP, nInterfaceIndex, request, response, true);
 	if (result)
 		DebugLog(_T("PCP: Unmapped %s port %hu"),
-			bTCP ? _T("TCP") : _T("UDP"), nPrivatePort);
+			identity.transport == natmap::Transport::Tcp
+				? _T("TCP") : _T("UDP"), identity.internal_port);
 	return result;
 }
 
@@ -469,7 +529,13 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 		m_pOwner->m_dwInterfaceIndex =
 			route.binding.interface_index;
 		m_pOwner->m_clientAddress = route.binding.client_address;
-		m_pOwner->DeletePorts(true);
+		if (!m_pOwner->DeletePorts(true)) {
+			DebugLogWarning(_T("PCP: Refusing a new MAP while exact cleanup remains pending"));
+			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_OWNERSHIP_PERSISTENCE;
+			m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
+			m_pOwner->SendResultMessage(m_operation);
+			return 0;
+		}
 	}
 
 	const uint32 leaseTime = 7200;
@@ -483,8 +549,9 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 	m_pOwner->m_nDiagnosticStage = UPNP_DIAG_TCP_MAPPING;
 	succeeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
 		m_pOwner->m_dwInterfaceIndex,
-		m_pOwner->m_clientAddress, m_pOwner->m_nTCPPort, suggestedTCP,
-		suggestedTCPAddress, true, leaseTime, m_pOwner->m_tcpNonce,
+		m_pOwner->m_clientAddress, natmap::Transport::Tcp,
+		m_pOwner->m_nTCPPort, suggestedTCP,
+		suggestedTCPAddress, leaseTime, m_pOwner->m_tcpIdentity,
 		tcpResponse);
 	if (succeeded) {
 		m_pOwner->m_nExternalTCPPort = tcpResponse.external_port;
@@ -506,8 +573,9 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_UDP_MAPPING;
 		succeeded = m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
 			m_pOwner->m_dwInterfaceIndex,
-			m_pOwner->m_clientAddress, m_pOwner->m_nUDPPort, suggestedUDP,
-			suggestedUDPAddress, false, leaseTime, m_pOwner->m_udpNonce,
+			m_pOwner->m_clientAddress, natmap::Transport::Udp,
+			m_pOwner->m_nUDPPort, suggestedUDP,
+			suggestedUDPAddress, leaseTime, m_pOwner->m_udpIdentity,
 			udpResponse);
 		if (succeeded) {
 			m_pOwner->m_nExternalUDPPort = udpResponse.external_port;
@@ -517,10 +585,10 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 				EffectiveLifetime(udpResponse.lifetime_seconds));
 			m_pOwner->m_dwMapperEpoch = udpResponse.epoch;
 		} else {
-			m_pOwner->UnmapPort(m_pOwner->m_dwGatewayIP,
+			if (m_pOwner->UnmapPort(m_pOwner->m_dwGatewayIP,
 				m_pOwner->m_dwInterfaceIndex,
-				m_pOwner->m_clientAddress, m_pOwner->m_nTCPPort, true,
-				m_pOwner->m_tcpNonce);
+				m_pOwner->m_clientAddress, m_pOwner->m_tcpIdentity))
+				m_pOwner->m_tcpIdentity.Clear();
 			m_pOwner->m_nExternalTCPPort = 0;
 			m_pOwner->m_tcpExternalAddress.fill(0);
 		}
@@ -535,8 +603,9 @@ int CUPnPImplPCP::CStartDiscoveryThread::Run()
 				: std::array<uint8, 16>();
 		if (m_pOwner->MapPort(m_pOwner->m_dwGatewayIP,
 			m_pOwner->m_dwInterfaceIndex,
-			m_pOwner->m_clientAddress, m_pOwner->m_nTCPWebPort, suggestedWeb,
-			suggestedWebAddress, true, leaseTime, m_pOwner->m_webNonce,
+			m_pOwner->m_clientAddress, natmap::Transport::Tcp,
+			m_pOwner->m_nTCPWebPort, suggestedWeb,
+			suggestedWebAddress, leaseTime, m_pOwner->m_webIdentity,
 			webResponse)) {
 			m_pOwner->m_nExternalTCPWebPort = webResponse.external_port;
 			m_pOwner->m_webExternalAddress = webResponse.external_ip;

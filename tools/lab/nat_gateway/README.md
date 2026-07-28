@@ -613,6 +613,34 @@ state and zeroes only the runtime counters. Catalogue instances do not own
 sockets, clocks, timers or process-wide flags; protocol adapters consume the
 returned action descriptors at their declared injection points.
 
+## Two-client laboratory F02
+
+`two_client_lab.js` composes exactly two simulated clients over the shared
+immutable mapping model. Each client has a protocol-bound ownership proof and
+an independent process identity. The fixture exercises same-port contention,
+different-port coexistence, owned renewal, foreign deletion denial, process
+crash and process restart without opening sockets or consulting a clock.
+
+A crash disables only that client's operations; it does not pretend that the
+gateway removed its lease. Restart requires a new instance digest and derives
+a new UPnP journal identity, PCP nonce or NAT-PMP lease scope. Consequently,
+the restarted process cannot renew or delete the stale mapping merely because
+it has the same logical client ID, but it may create a distinct mapping.
+Instance digests are single-use within a client lifetime, so a later restart
+cannot reconstruct an earlier ownership proof by cycling back to an old
+identity.
+Laboratory time is explicit and monotonic. Advancing it expires finite leases
+at their exact deadline, after which a restarted client may reclaim the
+released endpoint.
+
+Lease-zero behavior remains protocol-bound: the simulated UPnP profile accepts
+only permanent mappings, while PCP and NAT-PMP treat a zero lifetime as a
+delete rather than silently converting a finite lease into a permanent one.
+Expected contention and ownership failures are contained as immutable results,
+while malformed or hostile control input fails closed under fixed depth,
+container, graph-node and text budgets. Public snapshots omit
+addresses, instance digests, gateway identity and protocol ownership tokens.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

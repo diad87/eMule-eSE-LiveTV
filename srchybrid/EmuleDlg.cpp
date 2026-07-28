@@ -32,6 +32,7 @@
 #include <share.h>
 #include <dbt.h>
 #include <iphlpapi.h>
+#include <netioapi.h>
 #include <vector>
 #include "emule.h"
 #include "emuleDlg.h"
@@ -243,22 +244,58 @@ struct UPnPRouteContext
 	DWORD interfaceIndex;
 	DWORD gatewayAddress;
 	DWORD localAddress;
+	DWORD routeDestination;
+	uint8 routePrefixLength;
+	uint64 adapterLuid;
+	DWORD compartmentId;
+	bool compartmentPresent;
 	natmap::NetworkOrigin origin;
 
 	UPnPRouteContext()
 		: interfaceIndex()
 		, gatewayAddress()
 		, localAddress()
+		, routeDestination()
+		, routePrefixLength()
+		, adapterLuid()
+		, compartmentId()
+		, compartmentPresent()
 		, origin(natmap::NetworkOrigin::Unknown)
 	{
 	}
 };
+
+static bool UPnPPrefixLength(DWORD networkOrderMask, uint8& prefixLength)
+{
+	const uint32 mask = ntohl(networkOrderMask);
+	bool sawZero = false;
+	uint8 length = 0;
+	for (int bit = 31; bit >= 0; --bit) {
+		const bool set = (mask & (1u << bit)) != 0;
+		if (set && sawZero)
+			return false;
+		if (set)
+			++length;
+		else
+			sawZero = true;
+	}
+	prefixLength = length;
+	return true;
+}
 
 static bool GetUPnPRouteContext(UPnPRouteContext& context)
 {
 	MIB_IPFORWARDROW route = {};
 	if (::GetBestRoute(0, 0, &route) != NO_ERROR
 		|| route.dwForwardIfIndex == 0 || route.dwForwardNextHop == 0)
+		return false;
+	NET_LUID interfaceLuid = {};
+	if (::ConvertInterfaceIndexToLuid(
+			route.dwForwardIfIndex, &interfaceLuid) != NO_ERROR
+		|| interfaceLuid.Value == 0)
+		return false;
+	uint8 routePrefixLength = 0;
+	if (!UPnPPrefixLength(route.dwForwardMask, routePrefixLength))
 		return false;
 
 	ULONG bytes = 0;
@@ -301,6 +338,11 @@ static bool GetUPnPRouteContext(UPnPRouteContext& context)
 	context.interfaceIndex = route.dwForwardIfIndex;
 	context.gatewayAddress = route.dwForwardNextHop;
 	context.localAddress = localAddress;
+	context.routeDestination = route.dwForwardDest;
+	context.routePrefixLength = routePrefixLength;
+	context.adapterLuid = interfaceLuid.Value;
+	context.compartmentId = ::GetCurrentThreadCompartmentId();
+	context.compartmentPresent = context.compartmentId != 0;
 	context.origin = origin;
 	return true;
 }
@@ -313,23 +355,25 @@ static natmap::IpAddress UPnPIpAddress(DWORD networkOrderAddress)
 		bytes[0], bytes[1], bytes[2], bytes[3]);
 }
 
-static uint64 GetUPnPNetworkSignature()
+static natmap::NetworkSignature GetUPnPNetworkSignature()
 {
+	natmap::NetworkSignature signature;
 	UPnPRouteContext context;
 	if (!GetUPnPRouteContext(context))
-		return 0;
+		return signature;
 
-	// A small FNV-1a mix is sufficient here: this value is only a process-local
-	// change detector, not a persistent identity or security boundary.
-	uint64 signature = 1469598103934665603ull;
-	const DWORD parts[] = {
-		context.interfaceIndex, context.gatewayAddress, context.localAddress
-	};
-	for (size_t i = 0; i < _countof(parts); ++i) {
-		signature ^= parts[i];
-		signature *= 1099511628211ull;
-	}
-	return signature != 0 ? signature : 1;
+	natmap::NetworkSignatureInput input;
+	input.adapter_luid = context.adapterLuid;
+	input.interface_index = context.interfaceIndex;
+	input.local_address = UPnPIpAddress(context.localAddress);
+	input.gateway_address = UPnPIpAddress(context.gatewayAddress);
+	input.route_destination =
+		UPnPIpAddress(context.routeDestination);
+	input.route_prefix_length = context.routePrefixLength;
+	input.compartment_id = context.compartmentId;
+	input.compartment_present = context.compartmentPresent;
+	natmap::BuildNetworkSignature(input, signature);
+	return signature;
 }
 
 #ifdef HAVE_WIN7_SDK_H
@@ -482,7 +526,7 @@ CemuleDlg::CemuleDlg(CWnd *pParent /*=NULL*/)
 	, m_bUPnPExplicitRequest()
 	, m_bUPnPRouteRecoveryPending()
 	, m_bUPnPResumeMappingRequired()
-	, m_uUPnPNetworkSignature()
+	, m_upnpNetworkSignature()
 	, m_mappingResultMailbox(
 		std::make_shared<natmap::MappingResultMailbox>())
 	, notifierenabled()
@@ -4774,18 +4818,19 @@ bool CemuleDlg::CheckUPnPLease()
 	if (m_hUPnPTimeOutTimer != 0)
 		return true;
 
-	const uint64 networkSignature = GetUPnPNetworkSignature();
-	if (networkSignature != 0 && m_uUPnPNetworkSignature == 0)
-		m_uUPnPNetworkSignature = networkSignature;
-	else if (networkSignature != 0
-		&& networkSignature != m_uUPnPNetworkSignature) {
+	const natmap::NetworkSignature networkSignature =
+		GetUPnPNetworkSignature();
+	if (networkSignature.IsValid()
+		&& !m_upnpNetworkSignature.IsValid())
+		m_upnpNetworkSignature = networkSignature;
+	else if (networkSignature.IsValid()
+		&& !natmap::SameNetworkSignature(
+			networkSignature, m_upnpNetworkSignature)) {
 		if (!impl->IsReady())
 			return false;
-		const uint64 previous = m_uUPnPNetworkSignature;
-		m_uUPnPNetworkSignature = networkSignature;
-		LIVE_LOG("NATMAP", "network topology changed signature=%llu->%llu; restarting mapper discovery",
-			(unsigned long long)previous,
-			(unsigned long long)networkSignature);
+		m_upnpNetworkSignature = networkSignature;
+		LIVE_LOG("NATMAP",
+			"network topology identity changed; restarting mapper discovery");
 		StartUPnP(true, 0, 0, m_bUPnPExplicitRequest);
 		return true;
 	}
@@ -4914,7 +4959,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 				theApp.serverconnect->Disconnect();
 				theApp.serverconnect->ConnectToAnyServer();
 			}
-			m_uUPnPNetworkSignature = 0;
+			m_upnpNetworkSignature = natmap::NetworkSignature{};
 			m_bUPnPRouteRecoveryPending = true;
 			LIVE_LOG("NATMAP",
 				"discarded mapper result from previous route request=%llu generation=%llu",
@@ -5164,8 +5209,8 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort,
 	m_bUPnPExplicitRequest = bExplicitRequest;
 	if (m_hUPnPLeaseTimer == 0)
 		VERIFY((m_hUPnPLeaseTimer = ::SetTimer(NULL, 0, SEC2MS(30), UPnPLeaseTimer)) != 0);
-	if (m_uUPnPNetworkSignature == 0)
-		m_uUPnPNetworkSignature = GetUPnPNetworkSignature();
+	if (!m_upnpNetworkSignature.IsValid())
+		m_upnpNetworkSignature = GetUPnPNetworkSignature();
 	if (theApp.m_pUPnPFinder != NULL && (m_hUPnPTimeOutTimer == 0 || !bReset)) {
 		if (bReset) {
 			theApp.m_pUPnPFinder->Reset();
@@ -5284,7 +5329,7 @@ void CemuleDlg::StopUPnP()
 	m_bUPnPExplicitRequest = false;
 	m_bUPnPRouteRecoveryPending = false;
 	m_bUPnPResumeMappingRequired = false;
-	m_uUPnPNetworkSignature = 0;
+	m_upnpNetworkSignature = natmap::NetworkSignature{};
 }
 
 void CemuleDlg::RefreshUPnP(bool bRequestAnswer)

@@ -276,6 +276,27 @@
       ]
     },
     {
+      "id": "NETWORK_SIGNATURE",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_network_signature.cpp",
+          "contains": "TestStableIdentityAndEveryTopologyField"
+        },
+        {
+          "file": "tests/test_v92_m03_network_signature.py",
+          "contains": "test_signature_excludes_continuously_changing_fields"
+        },
+        {
+          "file": "srchybrid/EmuleDlg.cpp",
+          "contains": "GetCurrentThreadCompartmentId"
+        },
+        {
+          "file": "libnatmap/include/natmap/network_signature.h",
+          "contains": "NetworkSignatureInput"
+        }
+      ]
+    },
+    {
       "id": "HYPERV_PURE_PLAN",
       "evidence": [
         {

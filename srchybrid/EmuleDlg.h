@@ -21,6 +21,7 @@
 #include "TrayDialog.h"
 #include "natmap/mapping_request.h"
 #include "natmap/mapping_result_mailbox.h"
+#include "natmap/network_signature.h"
 #include <memory>
 
 namespace Kademlia
@@ -263,7 +264,7 @@ protected:
 	bool m_bUPnPExplicitRequest;
 	bool m_bUPnPRouteRecoveryPending;
 	bool m_bUPnPResumeMappingRequired;
-	uint64 m_uUPnPNetworkSignature;
+	natmap::NetworkSignature m_upnpNetworkSignature;
 	natmap::MappingRequestSequence m_mappingRequestSequence;
 	natmap::MappingResultGate m_mappingResultGate;
 	std::shared_ptr<natmap::MappingResultMailbox> m_mappingResultMailbox;

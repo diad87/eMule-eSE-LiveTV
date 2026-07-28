@@ -331,6 +331,15 @@ configured gateway endpoint, parses the NAT-PMP success fields independently
 and returns a sanitized frozen `mapped` state.  Its timeout is capped at five
 seconds and every exit closes the UDP handle.
 
+## PCP D01 wire study
+
+`pcp_vectors.js` freezes the native PCP MAP and ANNOUNCE test bytes with exact
+source provenance. It covers the base TCP request, renewal address, native
+IPv6, PREFER_FAILURE, PORT_SET, delete, MAP response and ANNOUNCE pair. The
+field layout and productive client behavior are documented in
+[`docs/V9.2_T8_PCP_VECTORS.md`](../../../docs/V9.2_T8_PCP_VECTORS.md). No
+complete UDP golden is fabricated.
+
 ## Validation planned for the next cards
 
 1. Parse the JSON document.

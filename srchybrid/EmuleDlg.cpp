@@ -4764,9 +4764,13 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		const uint64 currentGeneration =
 			theApp.directreachability != NULL
 				? theApp.directreachability->GetTopologyGeneration() : 1;
+		const natmap::MapperResult mapperResult(mapperResultData);
 		const natmap::ResultAcceptance acceptance =
-			m_mappingResultGate.ConsumeLegacyEnvelope(
-				mapperResultData, currentGeneration);
+			mapperResult.IsStructurallyValid()
+				? m_mappingResultGate.Consume(
+					mapperResult, currentGeneration)
+				: m_mappingResultGate.ConsumeLegacyEnvelope(
+					mapperResultData, currentGeneration);
 		if (acceptance != natmap::ResultAcceptance::Apply) {
 			LIVE_LOG("NATMAP",
 				"discarded mapper callback acceptance=%u request=%llu generation=%llu current=%llu",
@@ -4963,11 +4967,14 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort, uint16 nForceUDPPor
 				}
 				UPnPRouteContext route;
 				const bool hasRoute = GetUPnPRouteContext(route);
+				if (!hasRoute) {
+					m_mappingResultGate.CancelPending();
+					PostLocalUPnPFailure(false);
+					return;
+				}
 				impl->BeginMappingRequest(request.context,
-					hasRoute ? UPnPIpAddress(route.localAddress)
-						: natmap::IpAddress{},
-					hasRoute ? UPnPIpAddress(route.gatewayAddress)
-						: natmap::IpAddress{});
+					UPnPIpAddress(route.localAddress),
+					UPnPIpAddress(route.gatewayAddress));
 				impl->SetMessageOnResult(
 					this, UM_UPNP_RESULT, m_mappingResultMailbox);
 				m_bUPnPTimeoutForRefresh = false;
@@ -5026,11 +5033,14 @@ void CemuleDlg::RefreshUPnP(bool bRequestAnswer)
 				}
 				UPnPRouteContext route;
 				const bool hasRoute = GetUPnPRouteContext(route);
+				if (!hasRoute) {
+					if (bRequestAnswer)
+						m_mappingResultGate.CancelPending();
+					return;
+				}
 				impl->BeginMappingRequest(request.context,
-					hasRoute ? UPnPIpAddress(route.localAddress)
-						: natmap::IpAddress{},
-					hasRoute ? UPnPIpAddress(route.gatewayAddress)
-						: natmap::IpAddress{});
+					UPnPIpAddress(route.localAddress),
+					UPnPIpAddress(route.gatewayAddress));
 				if (bRequestAnswer)
 					impl->SetMessageOnResult(
 						this, UM_UPNP_RESULT,

@@ -64,6 +64,12 @@ cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
 build\test_upnp_discovery.exe
 
 cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
+   /Febuild\test_upnp_mapping_result.exe `
+   tests\test_upnp_mapping_result.cpp src\mapper_result.cpp `
+   src\mapping_request.cpp src\upnp_mapping_result.cpp
+build\test_upnp_mapping_result.exe
+
+cl /nologo /EHsc /W4 /std:c++17 /Iinclude `
    /Fe..\tools\build\natmap_ownership_inspect.exe `
    ..\tools\natmap_ownership_inspect.cpp src\ownership_ledger.cpp
 ```
@@ -99,3 +105,12 @@ incomplete candidates, preserves the best usable fallback, stops at a
 connected or private first-layer IGD, and makes exhausted discovery and
 cancellation terminal. It owns no miniupnpc pointers; the mapper moves URLs
 only after the policy accepts a candidate.
+
+`BuildUpnpPairMapperResult` is the H02 atomic boundary. A created or renewed
+result requires exact owned readback for both TCP and UDP, a nonzero ownership
+identity digest, complete request/topology correlation and concrete local,
+gateway and granted endpoints. Every other observation becomes a zero-mapping
+failure. `ShouldRollbackUpnpMappingAfterAtomicFailure` authorizes rollback for
+TCP or UDP only when exact owned readback and `created_by_operation` prove that
+the current atomic operation created that mapping. Pre-existing or merely
+renewed mappings are never rollback candidates.

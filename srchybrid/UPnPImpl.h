@@ -126,6 +126,9 @@ protected:
 	// Native producers must use the operation-bound overload below.
 	void SendResultMessage();
 	void SendResultMessage(const MappingOperationContext& operation);
+	void SendMapperResultMessage(
+		const MappingOperationContext& operation,
+		const natmap::MapperResultData& resultData);
 	natmap::MapperResultData BuildMapperResultData(
 		const MappingOperationContext& operation) const;
 	volatile TRISTATE m_bUPnPPortsForwarded;

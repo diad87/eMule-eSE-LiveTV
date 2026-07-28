@@ -45,7 +45,14 @@ public:
 		DECLARE_DYNCREATE(CStartDiscoveryThread)
 	protected:
 		CStartDiscoveryThread();
-		bool OpenPort(uint16 nPort, bool bTCP, char *pachLANIP, bool bCheckAndRefresh);
+		bool OpenPort(
+			uint16 nPort,
+			bool bTCP,
+			char *pachLANIP,
+			bool bCheckAndRefresh,
+			bool *pReadbackMatches = NULL,
+			bool *pOwnershipMatches = NULL,
+			bool *pCreatedByOperation = NULL);
 
 	public:
 		virtual BOOL InitInstance();
@@ -57,6 +64,7 @@ public:
 		}
 
 	private:
+		void SendFailure(natmap::ReasonCode reason);
 		CUPnPImplMiniLib *m_pOwner;
 		MappingOperationContext m_operation;
 	};
@@ -90,6 +98,8 @@ private:
 	natmap::OwnershipLedger m_ownershipLedger;
 	std::uint64_t m_ownerToken;
 	std::uint64_t m_mappingGeneration;
+	natmap::IpAddress m_mappingLocalAddress;
+	natmap::IpAddress m_mappingGatewayAddress;
 	bool m_bOwnershipLedgerLoaded;
 
 	bool m_bSucceededOnce;

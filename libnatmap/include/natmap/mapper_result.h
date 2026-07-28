@@ -61,6 +61,8 @@ struct MapperResultData {
     MapperKind mapper = MapperKind::None;
     MapperSource source = MapperSource::None;
     Endpoint gateway{};
+    std::uint32_t request_interface_index = 0;
+    IpAddress request_local_address{};
     std::array<TransportMappingResult, 2> mappings{};
     std::uint8_t mapping_count = 0;
     std::uint32_t mapper_epoch = 0;

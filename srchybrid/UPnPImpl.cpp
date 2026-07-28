@@ -145,6 +145,8 @@ natmap::MapperResultData CUPnPImpl::BuildMapperResultData(
 	data.source = GetMapperSource();
 	data.gateway.address = operation.gateway_address;
 	data.gateway.source = natmap::EndpointSource::LocalInterface;
+	data.request_interface_index = operation.interface_index;
+	data.request_local_address = operation.local_address;
 	data.mapper_epoch = m_dwMapperEpoch;
 	data.mapper_epoch_reset = m_bMapperEpochReset;
 	data.request_id = operation.request.request_id;
@@ -220,31 +222,26 @@ void CUPnPImpl::SendResultMessage()
 bool CUPnPImpl::SendResultMessage(
 	const MappingOperationContext& operation)
 {
-	HWND resultWindow = NULL;
-	UINT resultMessage = 0;
-	std::shared_ptr<natmap::MappingResultMailbox> mailbox;
-	natmap::MapperResultData resultData;
-	{
-		std::lock_guard<std::mutex> lock(m_resultMutex);
-		if (operation.request.request_id == 0
-			|| operation.request.request_id != m_requestContext.request_id
-			|| operation.request.topology_generation
-				!= m_requestContext.topology_generation
-			|| operation.request.operation != m_requestContext.operation)
-			return false;
-		resultWindow = m_hResultWindow;
-		resultMessage = m_nResultMessageID;
-		mailbox = m_resultMailbox;
-		if (resultWindow != NULL && resultMessage != 0 && mailbox) {
-			resultData = BuildMapperResultData(operation);
-		}
-		m_nResultMessageID = 0;
-		m_hResultWindow = NULL;
-		m_resultMailbox.reset();
-	}
+	std::lock_guard<std::mutex> lock(m_resultMutex);
+	if (operation.request.request_id == 0
+		|| operation.request.request_id != m_requestContext.request_id
+		|| operation.request.topology_generation
+			!= m_requestContext.topology_generation
+		|| operation.request.operation != m_requestContext.operation)
+		return false;
+
+	const HWND resultWindow = m_hResultWindow;
+	const UINT resultMessage = m_nResultMessageID;
+	const std::shared_ptr<natmap::MappingResultMailbox> mailbox =
+		m_resultMailbox;
+	m_nResultMessageID = 0;
+	m_hResultWindow = NULL;
+	m_resultMailbox.reset();
 	if (resultWindow == NULL || resultMessage == 0 || !mailbox)
 		return false;
 
+	const natmap::MapperResultData resultData =
+		BuildMapperResultData(operation);
 	const natmap::MailboxPublish published =
 		mailbox->Publish(resultData);
 	if (!published.IsPublished())
@@ -262,38 +259,43 @@ void CUPnPImpl::SendMapperResultMessage(
 	const MappingOperationContext& operation,
 	const natmap::MapperResultData& resultData)
 {
-	if (resultData.request_id != operation.request.request_id
-		|| resultData.topology_generation
+	natmap::MapperResultData boundResult = resultData;
+	boundResult.request_interface_index = operation.interface_index;
+	boundResult.request_local_address = operation.local_address;
+	const natmap::MappingRouteIdentity operationRoute{
+		operation.interface_index,
+		operation.local_address,
+		operation.gateway_address};
+	if (boundResult.request_id != operation.request.request_id
+		|| boundResult.topology_generation
 			!= operation.request.topology_generation
-		|| resultData.operation != operation.request.operation
-		|| resultData.mapper != GetMapperKind()
-		|| resultData.source != GetMapperSource()
-		|| !natmap::MapperResult(resultData).IsStructurallyValid())
+		|| boundResult.operation != operation.request.operation
+		|| boundResult.mapper != GetMapperKind()
+		|| boundResult.source != GetMapperSource()
+		|| !natmap::IsMapperResultRouteCurrent(
+			boundResult, operationRoute)
+		|| !natmap::MapperResult(boundResult).IsStructurallyValid())
 		return;
 
-	HWND resultWindow = NULL;
-	UINT resultMessage = 0;
-	std::shared_ptr<natmap::MappingResultMailbox> mailbox;
-	{
-		std::lock_guard<std::mutex> lock(m_resultMutex);
-		if (operation.request.request_id == 0
-			|| operation.request.request_id != m_requestContext.request_id
-			|| operation.request.topology_generation
-				!= m_requestContext.topology_generation
-			|| operation.request.operation != m_requestContext.operation)
-			return;
-		resultWindow = m_hResultWindow;
-		resultMessage = m_nResultMessageID;
-		mailbox = m_resultMailbox;
-		m_nResultMessageID = 0;
-		m_hResultWindow = NULL;
-		m_resultMailbox.reset();
-	}
+	std::lock_guard<std::mutex> lock(m_resultMutex);
+	if (operation.request.request_id == 0
+		|| operation.request.request_id != m_requestContext.request_id
+		|| operation.request.topology_generation
+			!= m_requestContext.topology_generation
+		|| operation.request.operation != m_requestContext.operation)
+		return;
+	const HWND resultWindow = m_hResultWindow;
+	const UINT resultMessage = m_nResultMessageID;
+	const std::shared_ptr<natmap::MappingResultMailbox> mailbox =
+		m_resultMailbox;
+	m_nResultMessageID = 0;
+	m_hResultWindow = NULL;
+	m_resultMailbox.reset();
 	if (resultWindow == NULL || resultMessage == 0 || !mailbox)
 		return;
 
 	const natmap::MailboxPublish published =
-		mailbox->Publish(resultData);
+		mailbox->Publish(boundResult);
 	if (!published.IsPublished())
 		return;
 	const WPARAM messageToken = static_cast<WPARAM>(

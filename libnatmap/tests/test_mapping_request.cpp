@@ -354,6 +354,72 @@ void TestCancellationRejectsLateCallback() {
     CHECK(!gate.Arm(context, 22));
 }
 
+void TestNetworkChangeRejectsOldRoute() {
+    MapperResultData data =
+        ResultFor(MappingRequestContext{
+            1, 23, MappingOperation::Refresh}).data();
+    data.request_interface_index = 7;
+    data.request_local_address = IpAddress::V4(192, 168, 68, 54);
+    data.gateway.address = IpAddress::V4(192, 168, 68, 1);
+    const MappingRouteIdentity current{
+        7,
+        IpAddress::V4(192, 168, 68, 54),
+        IpAddress::V4(192, 168, 68, 1)};
+
+    CHECK(IsMapperResultRouteCurrent(data, current));
+    MappingRouteIdentity changedInterface = current;
+    changedInterface.interface_index = 8;
+    CHECK(!IsMapperResultRouteCurrent(data, changedInterface));
+    MappingRouteIdentity changedLocal = current;
+    changedLocal.local_address = IpAddress::V4(10, 0, 0, 2);
+    CHECK(!IsMapperResultRouteCurrent(data, changedLocal));
+    MappingRouteIdentity changedGateway = current;
+    changedGateway.gateway_address = IpAddress::V4(10, 0, 0, 1);
+    CHECK(!IsMapperResultRouteCurrent(data, changedGateway));
+    CHECK(!IsMapperResultRouteCurrent(data, MappingRouteIdentity{}));
+    data.request_interface_index = 0;
+    CHECK(!IsMapperResultRouteCurrent(data, current));
+
+    data.request_interface_index = 7;
+    MappingRequestSequence sequence;
+    MappingResultGate gate;
+    const MappingRequestContext refresh =
+        sequence.Issue(23, MappingOperation::Refresh).context;
+    data.request_id = refresh.request_id;
+    data.topology_generation = refresh.topology_generation;
+    data.operation = refresh.operation;
+    CHECK(gate.Arm(refresh, 23));
+    CHECK(gate.ConsumeForCurrentRoute(
+              MapperResult(data), 23, changedGateway) ==
+          ResultAcceptance::RouteMismatch);
+    CHECK(!gate.has_pending());
+
+    const MappingRequestContext replacement =
+        sequence.Issue(23, MappingOperation::Refresh).context;
+    CHECK(gate.Arm(replacement, 23));
+    CHECK(gate.ConsumeForCurrentRoute(
+              MapperResult(data), 23, changedGateway) ==
+          ResultAcceptance::StaleRequest);
+    CHECK(gate.has_pending());
+    CHECK(gate.pending().request_id == replacement.request_id);
+
+    MappingRequestSequence legacySequence;
+    const MappingRequestContext legacyRefresh =
+        legacySequence.Issue(24, MappingOperation::Refresh).context;
+    MapperResultData legacy = data;
+    legacy.request_id = legacyRefresh.request_id;
+    legacy.topology_generation = legacyRefresh.topology_generation;
+    legacy.operation = legacyRefresh.operation;
+    legacy.ownership = OwnershipState::Unknown;
+    CHECK(!MapperResult(legacy).IsStructurallyValid());
+    MappingResultGate legacyGate;
+    CHECK(legacyGate.Arm(legacyRefresh, 24));
+    CHECK(legacyGate.ConsumeLegacyEnvelopeForCurrentRoute(
+              legacy, 24, changedGateway) ==
+          ResultAcceptance::RouteMismatch);
+    CHECK(!legacyGate.has_pending());
+}
+
 } // namespace
 
 int main() {
@@ -372,6 +438,7 @@ int main() {
     TestLegacyEnvelopeMigrationGate();
     TestLegacyEnvelopeRejectsMismatchWithoutDisplacement();
     TestCancellationRejectsLateCallback();
+    TestNetworkChangeRejectsOldRoute();
     std::printf("test_mapping_request: %d checks, %d failures\n",
                 checks, failures);
     return failures == 0 ? 0 : 1;

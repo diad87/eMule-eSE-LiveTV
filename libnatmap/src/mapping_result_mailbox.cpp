@@ -21,6 +21,8 @@ MailboxPublish MappingResultMailbox::Publish(
         return {MailboxPublishStatus::InvalidEnvelope, 0};
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if (closed_)
+        return {MailboxPublishStatus::Closed, 0};
     if (exhausted_)
         return {MailboxPublishStatus::Exhausted, 0};
     if (entries_.size() >= kMaximumPending)
@@ -61,6 +63,15 @@ bool MappingResultMailbox::Discard(std::uint32_t delivery_id) {
 void MappingResultMailbox::Clear() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     entries_.clear();
+}
+
+bool MappingResultMailbox::Close() noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    entries_.clear();
+    if (closed_)
+        return false;
+    closed_ = true;
+    return true;
 }
 
 std::size_t MappingResultMailbox::pending_count() const noexcept {

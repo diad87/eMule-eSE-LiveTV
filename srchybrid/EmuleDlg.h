@@ -261,13 +261,15 @@ protected:
 	UINT_PTR m_hUPnPLeaseTimer;
 	UINT_PTR m_hIPv6HealthTimer;
 	bool m_bUPnPExplicitRequest;
+	bool m_bUPnPRouteRecoveryPending;
+	bool m_bUPnPResumeMappingRequired;
 	uint64 m_uUPnPNetworkSignature;
 	natmap::MappingRequestSequence m_mappingRequestSequence;
 	natmap::MappingResultGate m_mappingResultGate;
 	std::shared_ptr<natmap::MappingResultMailbox> m_mappingResultMailbox;
 	static void CALLBACK UPnPLeaseTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
 	static void CALLBACK IPv6HealthTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
-	void CheckUPnPLease();
+	bool CheckUPnPLease();
 	bool ArmUPnPTimeout(UINT nMilliseconds);
 	void RetireUPnPTimeout();
 	bool PostLocalUPnPFailure(bool bWasRefresh);

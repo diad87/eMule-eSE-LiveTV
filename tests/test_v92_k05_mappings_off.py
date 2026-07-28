@@ -36,8 +36,10 @@ require(
     "IPv6 health scheduling must be independent from the mapper timer",
 )
 require(
-    "if (!theApp.IsRunning() || !thePrefs.IsUPnPEnabled()" in dialog,
-    "the lease scheduler must fail closed when mappings are disabled",
+    "if (!theApp.IsRunning()\n"
+    "\t\t|| (!thePrefs.IsUPnPEnabled() && !m_bUPnPExplicitRequest)"
+    in dialog,
+    "the lease scheduler must fail closed except for an active explicit request",
 )
 require(
     "void CemuleDlg::RefreshUPnP(bool bRequestAnswer)\n{\n"
@@ -48,6 +50,14 @@ require(
     "if (!thePrefs.IsUPnPEnabled() && !bExplicitRequest)" in dialog
     and "mapping start skipped while automatic mappings are disabled" in dialog,
     "automatic mapper start must fail closed after an ON-to-OFF transition",
+)
+require(
+    "thePrefs.IsUPnPEnabled()\n"
+    "\t\t\t\t\t|| m_bUPnPExplicitRequest" in dialog
+    and dialog.count(
+        "StartUPnP(true, 0, 0, m_bUPnPExplicitRequest)"
+    ) >= 3,
+    "route recovery must preserve a manual mapping exception while automatic mappings are off",
 )
 require(
     "if (!thePrefs.IsUPnPEnabled() && !m_bUPnPExplicitRequest)" in dialog
@@ -124,4 +134,4 @@ require(
     "an explicit legacy OFF value must continue to round-trip",
 )
 
-print("test_v92_k05_mappings_off: 18 checks, 0 failures")
+print("test_v92_k05_mappings_off: 19 checks, 0 failures")

@@ -14,6 +14,7 @@ enum class MailboxPublishStatus : std::uint8_t {
     InvalidEnvelope = 1,
     Full = 2,
     Exhausted = 3,
+    Closed = 4,
 };
 
 struct MailboxPublish {
@@ -47,6 +48,7 @@ public:
     bool Take(std::uint32_t delivery_id, MapperResultData& data);
     bool Discard(std::uint32_t delivery_id);
     void Clear() noexcept;
+    bool Close() noexcept;
     std::size_t pending_count() const noexcept;
 
 private:
@@ -59,10 +61,14 @@ private:
     std::deque<Entry> entries_;
     std::uint32_t next_delivery_id_ = 1;
     bool exhausted_ = false;
+    bool closed_ = false;
 };
 
 static_assert(
     static_cast<std::uint8_t>(MailboxPublishStatus::Exhausted) == 3,
     "mailbox publish status persistence contract changed");
+static_assert(
+    static_cast<std::uint8_t>(MailboxPublishStatus::Closed) == 4,
+    "mailbox close status persistence contract changed");
 
 } // namespace natmap

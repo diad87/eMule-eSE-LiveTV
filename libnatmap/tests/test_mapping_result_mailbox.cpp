@@ -92,6 +92,20 @@ void TestBoundAndNoWrap() {
           MailboxPublishStatus::Exhausted);
 }
 
+void TestCloseFencesLatePublish() {
+    MappingResultMailbox mailbox;
+    const MailboxPublish queued = mailbox.Publish(Envelope(1));
+    CHECK(queued.IsPublished());
+    CHECK(mailbox.pending_count() == 1);
+    CHECK(mailbox.Close());
+    CHECK(mailbox.pending_count() == 0);
+    CHECK(!mailbox.Close());
+    CHECK(mailbox.Publish(Envelope(2)).status ==
+          MailboxPublishStatus::Closed);
+    MapperResultData output{};
+    CHECK(!mailbox.Take(queued.delivery_id, output));
+}
+
 } // namespace
 
 int main() {
@@ -99,6 +113,7 @@ int main() {
     TestInvalidIdsAndEnvelopesFailClosed();
     TestDiscardAndClear();
     TestBoundAndNoWrap();
+    TestCloseFencesLatePublish();
     std::printf(
         "test_mapping_result_mailbox: %d checks, %d failures\n",
         checks, failures);

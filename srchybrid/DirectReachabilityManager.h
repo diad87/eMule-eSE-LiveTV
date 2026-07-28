@@ -34,6 +34,7 @@ public:
 	bool ObserveMapperResult(const natmap::MapperResult& result);
 	bool ObserveMapperEpochReset();
 	bool DisableMappingsByPreference();
+	bool ObserveNetworkRouteChange();
 	// Consumes an expiry already established by the mapper's monotonic
 	// scheduler. The scheduler is authoritative because it is armed before
 	// this projection receives the successful mapper result.
@@ -59,6 +60,7 @@ private:
 		const natmap::Endpoint& external,
 		uint32 nLifetimeSeconds, uint32 nMapperEpoch, uint64 nGeneration);
 	void FailClosedAtGenerationLimit(natmap::ReasonCode reason);
+	bool DisableMappedPlanes(natmap::ReasonCode reason);
 	static uint64 MonotonicMilliseconds();
 
 	DWORD m_dwOwnerThreadId;

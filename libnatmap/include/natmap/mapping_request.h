@@ -14,6 +14,18 @@ struct MappingRequestContext {
     bool IsValid() const noexcept;
 };
 
+struct MappingRouteIdentity {
+    std::uint32_t interface_index = 0;
+    IpAddress local_address{};
+    IpAddress gateway_address{};
+
+    bool IsValid() const noexcept;
+};
+
+bool IsMapperResultRouteCurrent(
+    const MapperResultData& data,
+    const MappingRouteIdentity& current_route) noexcept;
+
 enum class RequestIssueStatus : std::uint8_t {
     Issued = 0,
     InvalidTopology = 1,
@@ -56,6 +68,7 @@ enum class ResultAcceptance : std::uint8_t {
     StaleTopology = 3,
     StaleRequest = 4,
     OperationMismatch = 5,
+    RouteMismatch = 6,
 };
 
 // Main-thread gate. Only one current request may be armed. A successful result
@@ -73,12 +86,20 @@ public:
     ResultAcceptance Consume(
         const MapperResult& result,
         std::uint64_t current_topology_generation) noexcept;
+    ResultAcceptance ConsumeForCurrentRoute(
+        const MapperResult& result,
+        std::uint64_t current_topology_generation,
+        const MappingRouteIdentity& current_route) noexcept;
     // G04-only migration seam. It checks and consumes the immutable request
     // envelope without treating the mapper payload as strictly integrated.
     // H/I/J replace this call with Consume once each producer is complete.
     ResultAcceptance ConsumeLegacyEnvelope(
         const MapperResultData& data,
         std::uint64_t current_topology_generation) noexcept;
+    ResultAcceptance ConsumeLegacyEnvelopeForCurrentRoute(
+        const MapperResultData& data,
+        std::uint64_t current_topology_generation,
+        const MappingRouteIdentity& current_route) noexcept;
     bool CancelPending() noexcept;
 
     bool has_pending() const noexcept { return has_pending_; }
@@ -87,7 +108,8 @@ public:
 private:
     ResultAcceptance ConsumeCorrelatedData(
         const MapperResultData& data,
-        std::uint64_t current_topology_generation) noexcept;
+        std::uint64_t current_topology_generation,
+        const MappingRouteIdentity* current_route) noexcept;
     MappingRequestContext pending_{};
     std::uint64_t last_request_id_ = 0;
     bool has_pending_ = false;
@@ -98,5 +120,8 @@ static_assert(static_cast<std::uint8_t>(RequestIssueStatus::Exhausted) == 3,
 static_assert(static_cast<std::uint8_t>(
                   ResultAcceptance::OperationMismatch) == 5,
               "result acceptance persistence contract changed");
+static_assert(static_cast<std::uint8_t>(
+                  ResultAcceptance::RouteMismatch) == 6,
+              "result route status persistence contract changed");
 
 } // namespace natmap

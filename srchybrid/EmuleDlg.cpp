@@ -467,6 +467,8 @@ CemuleDlg::CemuleDlg(CWnd *pParent /*=NULL*/)
 	, m_hUPnPLeaseTimer()
 	, m_hIPv6HealthTimer()
 	, m_bUPnPExplicitRequest()
+	, m_bUPnPRouteRecoveryPending()
+	, m_bUPnPResumeMappingRequired()
 	, m_uUPnPNetworkSignature()
 	, m_mappingResultMailbox(
 		std::make_shared<natmap::MappingResultMailbox>())
@@ -2622,16 +2624,22 @@ void CemuleDlg::OnClose()
 		RetireUPnPTimeout();
 	}
 	CFirewallProberV6::Instance().DeletePcpMappingsBestEffort();
+	CUPnPImpl *mappingImpl =
+		theApp.m_pUPnPFinder->GetImplementation();
+	mappingImpl->SetMessageOnResult(NULL, 0);
+	mappingImpl->StopAsyncFind();
 	m_mappingResultGate.CancelPending();
+	InvalidateLocalUPnPFailure();
 	if (m_mappingResultMailbox)
-		m_mappingResultMailbox->Clear();
-	theApp.m_pUPnPFinder->GetImplementation()->SetMessageOnResult(NULL, 0);
-	theApp.m_pUPnPFinder->GetImplementation()->StopAsyncFind();
+		m_mappingResultMailbox->Close();
+	MSG mapperMessage = {};
+	while (::PeekMessage(&mapperMessage, GetSafeHwnd(),
+			UM_UPNP_RESULT, UM_UPNP_RESULT, PM_REMOVE)) {
+	}
 	if (thePrefs.CloseUPnPOnExit()) {
 		const uint64 generation = theApp.directreachability != NULL
 			? theApp.directreachability->GetTopologyGeneration() : 0;
-		theApp.m_pUPnPFinder->GetImplementation()
-			->DeletePortsForGeneration(generation);
+		mappingImpl->DeletePortsForGeneration(generation);
 	}
 
 	thePrefs.Save();
@@ -4706,15 +4714,26 @@ void CALLBACK CemuleDlg::IPv6HealthTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR
 	}
 }
 
-void CemuleDlg::CheckUPnPLease()
+bool CemuleDlg::CheckUPnPLease()
 {
-	if (!theApp.IsRunning() || !thePrefs.IsUPnPEnabled()
+	if (!theApp.IsRunning()
+		|| (!thePrefs.IsUPnPEnabled() && !m_bUPnPExplicitRequest)
 		|| theApp.m_pUPnPFinder == NULL)
-		return;
+		return false;
 
 	CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
 	if (impl == NULL)
-		return;
+		return false;
+
+	if (m_bUPnPRouteRecoveryPending) {
+		UPnPRouteContext route;
+		if (!GetUPnPRouteContext(route))
+			return true;
+		LIVE_LOG("NATMAP",
+			"network route restored; restarting pending mapper recovery");
+		StartUPnP(true, 0, 0, m_bUPnPExplicitRequest);
+		return true;
+	}
 
 	if (impl->IsLeaseExpired()) {
 		impl->SetMessageOnResult(NULL, 0);
@@ -4739,12 +4758,12 @@ void CemuleDlg::CheckUPnPLease()
 		}
 		LIVE_LOG("NATMAP", "finite lease expired; restarting mapper discovery (impl=%d)",
 			impl->GetImplementationID());
-		StartUPnP(true);
-		return;
+		StartUPnP(true, 0, 0, m_bUPnPExplicitRequest);
+		return true;
 	}
 
 	if (m_hUPnPTimeOutTimer != 0)
-		return;
+		return true;
 
 	const uint64 networkSignature = GetUPnPNetworkSignature();
 	if (networkSignature != 0 && m_uUPnPNetworkSignature == 0)
@@ -4752,18 +4771,18 @@ void CemuleDlg::CheckUPnPLease()
 	else if (networkSignature != 0
 		&& networkSignature != m_uUPnPNetworkSignature) {
 		if (!impl->IsReady())
-			return;
+			return false;
 		const uint64 previous = m_uUPnPNetworkSignature;
 		m_uUPnPNetworkSignature = networkSignature;
 		LIVE_LOG("NATMAP", "network topology changed signature=%llu->%llu; restarting mapper discovery",
 			(unsigned long long)previous,
 			(unsigned long long)networkSignature);
-		StartUPnP(true);
-		return;
+		StartUPnP(true, 0, 0, m_bUPnPExplicitRequest);
+		return true;
 	}
 
 	if (!impl->IsReady())
-		return;
+		return false;
 	if (impl->IsLeaseRefreshDue()) {
 		impl->BeginLeaseRefreshAttempt();
 		if (impl->GetMappingLeaseLifetime() != 0)
@@ -4773,7 +4792,9 @@ void CemuleDlg::CheckUPnPLease()
 			LIVE_LOG("NATMAP", "permanent mapping health probe attempt=%u (impl=%d)",
 				impl->GetLeaseRefreshAttemptCount(), impl->GetImplementationID());
 		RefreshUPnP(true);
+		return true;
 	}
+	return false;
 }
 
 LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
@@ -4816,12 +4837,76 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 			theApp.directreachability != NULL
 				? theApp.directreachability->GetTopologyGeneration() : 1;
 		const natmap::MapperResult mapperResult(mapperResultData);
+		UPnPRouteContext currentRoute;
+		const bool hasCurrentRoute =
+			GetUPnPRouteContext(currentRoute);
+		const natmap::MappingRouteIdentity routeIdentity =
+			hasCurrentRoute
+				? natmap::MappingRouteIdentity{
+					currentRoute.interfaceIndex,
+					UPnPIpAddress(currentRoute.localAddress),
+					UPnPIpAddress(currentRoute.gatewayAddress)}
+				: natmap::MappingRouteIdentity{};
 		const natmap::ResultAcceptance acceptance =
 			mapperResult.IsStructurallyValid()
-				? m_mappingResultGate.Consume(
-					mapperResult, currentGeneration)
-				: m_mappingResultGate.ConsumeLegacyEnvelope(
-					mapperResultData, currentGeneration);
+				? m_mappingResultGate.ConsumeForCurrentRoute(
+					mapperResult, currentGeneration, routeIdentity)
+				: m_mappingResultGate
+					.ConsumeLegacyEnvelopeForCurrentRoute(
+						mapperResultData, currentGeneration,
+						routeIdentity);
+		if (acceptance == natmap::ResultAcceptance::RouteMismatch) {
+			RetireUPnPTimeout();
+			m_bUPnPTimeoutForRefresh = false;
+			InvalidateLocalUPnPFailure();
+			CUPnPImpl *impl =
+				theApp.m_pUPnPFinder->GetImplementation();
+			impl->SetMessageOnResult(NULL, 0);
+			impl->StopAsyncFind();
+			if (m_mappingResultMailbox)
+				m_mappingResultMailbox->Clear();
+
+			const uint64 previousGeneration =
+				theApp.directreachability != NULL
+					? theApp.directreachability
+						->GetTopologyGeneration() : 0;
+			const bool wasDirectReachabilityEnabled =
+				theApp.directreachability != NULL
+					&& theApp.directreachability->IsEnabled();
+			const bool invalidated =
+				theApp.directreachability != NULL
+					&& theApp.directreachability
+						->ObserveNetworkRouteChange();
+			const natmap::AdvertisementObservation advertisement{
+				previousGeneration,
+				theApp.directreachability != NULL
+					? theApp.directreachability
+						->GetTopologyGeneration()
+					: previousGeneration,
+				invalidated,
+				wasDirectReachabilityEnabled,
+				theApp.directreachability != NULL
+					&& theApp.directreachability->IsEnabled()};
+			if (natmap::RequiresAdvertisementRelogin(advertisement)
+				&& theApp.serverconnect->IsConnected()
+				&& !theApp.serverconnect->IsConnectedViaRelay()) {
+				LogWarning(_T("Network route changed during mapping; reconnecting without the retired endpoint"));
+				theApp.serverconnect->Disconnect();
+				theApp.serverconnect->ConnectToAnyServer();
+			}
+			m_uUPnPNetworkSignature = 0;
+			m_bUPnPRouteRecoveryPending = true;
+			LIVE_LOG("NATMAP",
+				"discarded mapper result from previous route request=%llu generation=%llu",
+				(unsigned long long)mapperResultData.request_id,
+				(unsigned long long)mapperResultData.topology_generation);
+			if (hasCurrentRoute && theApp.IsRunning()
+				&& (thePrefs.IsUPnPEnabled()
+					|| m_bUPnPExplicitRequest))
+				StartUPnP(
+					true, 0, 0, m_bUPnPExplicitRequest);
+			return 0;
+		}
 		if (acceptance != natmap::ResultAcceptance::Apply) {
 			LIVE_LOG("NATMAP",
 				"discarded mapper callback acceptance=%u request=%llu generation=%llu current=%llu",
@@ -4988,16 +5073,52 @@ LRESULT CemuleDlg::OnPowerBroadcast(WPARAM wParam, LPARAM lParam)
 	switch (wParam) {
 	case PBT_APMRESUMEAUTOMATIC:
 		theApp.ResetStandbyOff();
-		if (m_bEd2kSuspendDisconnect || m_bKadSuspendDisconnect) {
-			DebugLog(_T("Reconnect after Power state change. wParam=%d lPararm=%ld"), wParam, lParam);
-			RefreshUPnP(true);
-			PostMessage(WM_SYSCOMMAND, MP_CONNECT, 0); // tell to connect. a sec later...
+		{
+			const bool reconnectNetworks =
+				m_bEd2kSuspendDisconnect || m_bKadSuspendDisconnect;
+			const bool resumeMappingRequired =
+				m_bUPnPResumeMappingRequired;
+			m_bUPnPResumeMappingRequired = false;
+			if (reconnectNetworks)
+				DebugLog(_T("Reconnect after Power state change. wParam=%d lPararm=%ld"), wParam, lParam);
+			if (resumeMappingRequired || reconnectNetworks) {
+				if (!CheckUPnPLease()) {
+					if (resumeMappingRequired)
+						StartUPnP(
+							true, 0, 0, m_bUPnPExplicitRequest);
+					else
+						RefreshUPnP(true);
+				}
+			}
+			if (reconnectNetworks)
+				PostMessage(WM_SYSCOMMAND, MP_CONNECT, 0); // tell to connect. a sec later...
 		}
 		return TRUE; // message processed.
 	case PBT_APMSUSPEND:
 		DebugLog(_T("System is going is suspending operation, disconnecting. wParam=%d lPararm=%ld"), wParam, lParam);
 		m_bEd2kSuspendDisconnect = theApp.serverconnect->IsConnected();
 		m_bKadSuspendDisconnect = Kademlia::CKademlia::IsRunning();
+		{
+			const bool mapperRequestPending =
+				m_mappingResultGate.has_pending();
+			m_bUPnPResumeMappingRequired =
+				m_bUPnPResumeMappingRequired || mapperRequestPending;
+			if (mapperRequestPending
+				&& theApp.m_pUPnPFinder != NULL) {
+				CUPnPImpl *impl =
+					theApp.m_pUPnPFinder->GetImplementation();
+				impl->SetMessageOnResult(NULL, 0);
+				impl->StopAsyncFind();
+				m_mappingResultGate.CancelPending();
+				if (m_mappingResultMailbox)
+					m_mappingResultMailbox->Clear();
+				InvalidateLocalUPnPFailure();
+				RetireUPnPTimeout();
+				m_bUPnPTimeoutForRefresh = false;
+				LIVE_LOG("NATMAP",
+					"suspend fenced in-flight mapper request; fresh discovery required on resume");
+			}
+		}
 		CloseConnection();
 		return TRUE; // message processed.
 	}
@@ -5053,7 +5174,9 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort,
 				const bool hasRoute = GetUPnPRouteContext(route);
 				if (!hasRoute) {
 					m_mappingResultGate.CancelPending();
-					PostLocalUPnPFailure(false);
+					m_bUPnPRouteRecoveryPending = true;
+					LIVE_LOG("NATMAP",
+						"mapping start deferred until a network route is restored");
 					return;
 				}
 				impl->BeginMappingRequest(request.context,
@@ -5069,6 +5192,7 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort,
 					PostLocalUPnPFailure(false);
 					return;
 				}
+				m_bUPnPRouteRecoveryPending = false;
 				impl->StartDiscovery((nForceTCPPort ? nForceTCPPort : thePrefs.GetPort())
 					, (nForceUDPPort ? nForceUDPPort : thePrefs.GetUDPPort())
 					// Automatic direct reachability is only for eD2K TCP and Kad
@@ -5093,14 +5217,16 @@ void CemuleDlg::StopUPnP()
 	}
 	RetireUPnPTimeout();
 	m_bUPnPTimeoutForRefresh = false;
-	m_mappingResultGate.CancelPending();
-	InvalidateLocalUPnPFailure();
 
 	CUPnPImpl *impl = theApp.m_pUPnPFinder != NULL
 		? theApp.m_pUPnPFinder->GetImplementation() : NULL;
 	if (impl != NULL) {
 		impl->SetMessageOnResult(NULL, 0);
 		impl->StopAsyncFind();
+	}
+	m_mappingResultGate.CancelPending();
+	InvalidateLocalUPnPFailure();
+	if (impl != NULL) {
 		if (m_mappingResultMailbox)
 			m_mappingResultMailbox->Clear();
 		const uint64 generation = theApp.directreachability != NULL
@@ -5135,6 +5261,8 @@ void CemuleDlg::StopUPnP()
 		theApp.serverconnect->ConnectToAnyServer();
 	}
 	m_bUPnPExplicitRequest = false;
+	m_bUPnPRouteRecoveryPending = false;
+	m_bUPnPResumeMappingRequired = false;
 	m_uUPnPNetworkSignature = 0;
 }
 

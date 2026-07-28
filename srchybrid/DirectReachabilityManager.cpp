@@ -272,25 +272,37 @@ bool CDirectReachabilityManager::ObserveMapperEpochReset()
 
 bool CDirectReachabilityManager::DisableMappingsByPreference()
 {
+	return DisableMappedPlanes(
+		natmap::ReasonCode::DisabledByPreference);
+}
+
+bool CDirectReachabilityManager::ObserveNetworkRouteChange()
+{
+	return DisableMappedPlanes(
+		natmap::ReasonCode::InterfaceChanged);
+}
+
+bool CDirectReachabilityManager::DisableMappedPlanes(
+	natmap::ReasonCode reason)
+{
 	AssertMainThread();
 	const bool wasEnabled =
 		m_bEnabled.load(std::memory_order_acquire);
 	const uint64 generation = m_snapshot.topology_generation + 1;
 	if (generation == 0) {
-		FailClosedAtGenerationLimit(
-			natmap::ReasonCode::DisabledByPreference);
+		FailClosedAtGenerationLimit(reason);
 		return wasEnabled;
 	}
 	const natmap::TransitionResult tcp = natmap::ApplyEvent(
 		m_snapshot.ed2k_tcp_v4,
 		natmap::StateEvent{
 			natmap::EventType::Disable, generation,
-			natmap::ReasonCode::DisabledByPreference});
+			reason});
 	const natmap::TransitionResult udp = natmap::ApplyEvent(
 		m_snapshot.kad_udp_v4,
 		natmap::StateEvent{
 			natmap::EventType::Disable, generation,
-			natmap::ReasonCode::DisabledByPreference});
+			reason});
 	if (tcp.disposition != natmap::TransitionDisposition::Applied
 		|| udp.disposition != natmap::TransitionDisposition::Applied)
 		return false;

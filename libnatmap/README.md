@@ -207,3 +207,14 @@ An in-progress UNMAP also obeys the abort latch, so the worker leaves within
 one bounded receive wait and cannot overrun the stop watchdog. Exact rollback
 after the worker has stopped remains allowed once abort is reset, including
 during shutdown.
+
+`SelectNatPmpGateway` and `ClassifyNatPmpExternalAddress` are the J01
+boundaries. NAT-PMP uses the gateway captured for the exact request interface,
+not a process-global default-route lookup, and rejects interface indexes that
+cannot be represented by Windows `IP_UNICAST_IF`. External-address replies
+distinguish public, missing, rejected, RFC 1918, CGNAT and invalid values.
+Every query outcome may proceed to MAP, but only a valid public address is
+directly publishable. A refresh may retain a previously verified public
+address after a lost or rejected query only while the mapper epoch remains
+continuous; any epoch reset or fresh non-public evidence invalidates direct
+publication.

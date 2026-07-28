@@ -36,8 +36,7 @@
 #include "Log.h"
 #include "OtherFunctions.h"
 #include "natmap/natpmp_codec.h"
-
-#include <iphlpapi.h>  // for GetBestRoute / GetAdaptersInfo
+#include "natmap/natpmp_gateway_policy.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -50,6 +49,8 @@ CMutex CUPnPImplNATPMP::m_mutBusy;
 CUPnPImplNATPMP::CUPnPImplNATPMP()
 	: m_dwGatewayIP(0)
 	, m_dwOldGatewayIP(0)
+	, m_dwInterfaceIndex(0)
+	, m_dwOldInterfaceIndex(0)
 	, m_pThread(NULL)
 	, m_bSucceededOnce(false)
 	, m_bAbortDiscovery(false)
@@ -107,6 +108,7 @@ void CUPnPImplNATPMP::DeletePorts()
 		m_nOldTCPPort = m_nTCPPort;
 		m_nOldTCPWebPort = m_nTCPWebPort;
 		m_dwOldGatewayIP = m_dwGatewayIP;
+		m_dwOldInterfaceIndex = m_dwInterfaceIndex;
 	}
 	m_nUDPPort = 0;
 	m_nTCPPort = 0;
@@ -127,18 +129,24 @@ void CUPnPImplNATPMP::DeletePorts(bool bSkipLock)
 	if (bSkipLock || lockTest.Lock(0)) {
 		const uint32 nGatewayIP = m_dwOldGatewayIP != 0
 			? m_dwOldGatewayIP : m_dwGatewayIP;
-		if (nGatewayIP != 0) {
+		const uint32 nInterfaceIndex = m_dwOldGatewayIP != 0
+			? m_dwOldInterfaceIndex : m_dwInterfaceIndex;
+		if (nGatewayIP != 0 && nInterfaceIndex != 0) {
 			if (m_nOldTCPPort != 0)
-				UnmapPort(nGatewayIP, m_nOldTCPPort, true);
+				UnmapPort(nGatewayIP, nInterfaceIndex,
+					m_nOldTCPPort, true);
 			if (m_nOldUDPPort != 0)
-				UnmapPort(nGatewayIP, m_nOldUDPPort, false);
+				UnmapPort(nGatewayIP, nInterfaceIndex,
+					m_nOldUDPPort, false);
 			if (m_nOldTCPWebPort != 0)
-				UnmapPort(nGatewayIP, m_nOldTCPWebPort, true);
+				UnmapPort(nGatewayIP, nInterfaceIndex,
+					m_nOldTCPWebPort, true);
 		}
 		m_nOldTCPPort = 0;
 		m_nOldUDPPort = 0;
 		m_nOldTCPWebPort = 0;
 		m_dwOldGatewayIP = 0;
+		m_dwOldInterfaceIndex = 0;
 	} else
 		DebugLogError(_T("NAT-PMP: Unable to remove port mappings - busy"));
 }
@@ -152,11 +160,13 @@ void CUPnPImplNATPMP::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nT
 		m_nOldTCPPort = m_nTCPPort;
 		m_nOldTCPWebPort = m_nTCPWebPort;
 		m_dwOldGatewayIP = m_dwGatewayIP;
+		m_dwOldInterfaceIndex = m_dwInterfaceIndex;
 	} else {
 		m_nOldUDPPort = 0;
 		m_nOldTCPPort = 0;
 		m_nOldTCPWebPort = 0;
 		m_dwOldGatewayIP = 0;
+		m_dwOldInterfaceIndex = 0;
 	}
 
 	m_nUDPPort = nUDPPort;
@@ -201,22 +211,24 @@ bool CUPnPImplNATPMP::CheckAndRefresh()
 // NAT-PMP protocol implementation (RFC 6886)
 //////////////////////////////////////////////////////////////////////////////
 
-uint32 CUPnPImplNATPMP::GetDefaultGateway()
+SOCKET CUPnPImplNATPMP::CreateRoutedSocket(uint32 interfaceIndex)
 {
-	// Use GetBestRoute to find the default gateway (route to 0.0.0.0)
-	MIB_IPFORWARDROW route;
-	memset(&route, 0, sizeof(route));
-
-	DWORD dwResult = GetBestRoute(0, 0, &route); // destination=0.0.0.0, source=any
-	if (dwResult == NO_ERROR && route.dwForwardNextHop != 0) {
-		IN_ADDR addr;
-		addr.S_un.S_addr = route.dwForwardNextHop;
-		DebugLog(_T("NAT-PMP: Default gateway detected: %S"), inet_ntoa(addr));
-		return route.dwForwardNextHop;
+	if (interfaceIndex == 0
+		|| interfaceIndex > natmap::kNatPmpMaximumInterfaceIndex)
+		return INVALID_SOCKET;
+	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (sock == INVALID_SOCKET)
+		return INVALID_SOCKET;
+	const DWORD networkInterfaceIndex = htonl(interfaceIndex);
+	if (setsockopt(sock, IPPROTO_IP, IP_UNICAST_IF,
+			reinterpret_cast<const char*>(&networkInterfaceIndex),
+			sizeof(networkInterfaceIndex)) != 0) {
+		DebugLogWarning(_T("NAT-PMP: Unable to bind request to interface %u (error=%u)"),
+			interfaceIndex, WSAGetLastError());
+		closesocket(sock);
+		return INVALID_SOCKET;
 	}
-
-	DebugLogWarning(_T("NAT-PMP: Could not determine default gateway"));
-	return 0;
+	return sock;
 }
 
 bool CUPnPImplNATPMP::SendExternalAddrRequest(SOCKET sock, uint32 gatewayIP)
@@ -239,7 +251,7 @@ bool CUPnPImplNATPMP::SendExternalAddrRequest(SOCKET sock, uint32 gatewayIP)
 
 CUPnPImplNATPMP::EReceiveResult
 CUPnPImplNATPMP::ReceiveExternalAddrResponse(SOCKET sock, uint32 gatewayIP,
-	DWORD nTimeoutMs, uint32 &nExternalIP, uint32 &nEpoch)
+	DWORD nTimeoutMs, natmap::NatPmpExternalAddressResponse &decoded)
 {
 	// Response: [version(1), opcode(1), resultcode(2), epoch(4), externalIP(4)] = 12 bytes
 	const DWORD nStarted = GetTickCount();
@@ -273,32 +285,32 @@ CUPnPImplNATPMP::ReceiveExternalAddrResponse(SOCKET sock, uint32 gatewayIP,
 		if (nRecv <= 0 || source.sin_addr.s_addr != gatewayIP)
 			continue;
 
-		natmap::NatPmpExternalAddressResponse decoded;
+		natmap::NatPmpExternalAddressResponse candidate;
 		if (natmap::DecodeNatPmpExternalAddressResponse(response,
-			static_cast<size_t>(nRecv), decoded) != natmap::NatPmpDecodeStatus::Ok)
+			static_cast<size_t>(nRecv), candidate)
+				!= natmap::NatPmpDecodeStatus::Ok)
 			continue;
-		if (decoded.result_code != NATPMP_RESULT_SUCCESS) {
+		decoded = candidate;
+		if (candidate.result_code != NATPMP_RESULT_SUCCESS) {
 			DebugLogWarning(_T("NAT-PMP: External address request rejected - result=%u"),
-				(unsigned)decoded.result_code);
+				(unsigned)candidate.result_code);
 			return RECEIVE_REJECTED;
 		}
-		if (decoded.external_ip_network_order == 0)
-			continue;
-		nExternalIP = decoded.external_ip_network_order;
-		nEpoch = decoded.epoch;
 		return RECEIVE_SUCCESS;
 	}
 	return RECEIVE_ABORTED;
 }
 
-bool CUPnPImplNATPMP::QueryExternalAddress(uint32 gatewayIP,
-	uint32 &nExternalIP, uint32 &nEpoch)
+natmap::NatPmpExternalAddressDecision
+CUPnPImplNATPMP::QueryExternalAddress(
+	uint32 gatewayIP, uint32 interfaceIndex)
 {
-	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	SOCKET sock = CreateRoutedSocket(interfaceIndex);
 	if (sock == INVALID_SOCKET)
-		return false;
+		return natmap::ClassifyNatPmpExternalAddress(false, {});
 
-	bool bResult = false;
+	bool responseReceived = false;
+	natmap::NatPmpExternalAddressResponse response;
 	const DWORD anTimeouts[] = { 250, 500, 1000 };
 	for (size_t nAttempt = 0; nAttempt < _countof(anTimeouts)
 		&& !m_bAbortDiscovery; ++nAttempt) {
@@ -307,18 +319,20 @@ bool CUPnPImplNATPMP::QueryExternalAddress(uint32 gatewayIP,
 				WSAGetLastError());
 			break;
 		}
-		const EReceiveResult eResult = ReceiveExternalAddrResponse(sock,
-			gatewayIP, anTimeouts[nAttempt], nExternalIP, nEpoch);
-		if (eResult == RECEIVE_SUCCESS) {
-			bResult = true;
+		const EReceiveResult eResult = ReceiveExternalAddrResponse(
+			sock, gatewayIP, anTimeouts[nAttempt], response);
+		if (eResult == RECEIVE_SUCCESS
+			|| eResult == RECEIVE_REJECTED) {
+			responseReceived = true;
 			break;
 		}
-		if (eResult == RECEIVE_REJECTED || eResult == RECEIVE_ABORTED)
+		if (eResult == RECEIVE_ABORTED)
 			break;
 	}
 
 	closesocket(sock);
-	return bResult;
+	return natmap::ClassifyNatPmpExternalAddress(
+		responseReceived, response);
 }
 
 bool CUPnPImplNATPMP::SendMapRequest(SOCKET sock, uint32 gatewayIP,
@@ -409,11 +423,13 @@ CUPnPImplNATPMP::ReceiveMapResponse(SOCKET sock, uint32 gatewayIP,
 	return RECEIVE_ABORTED;
 }
 
-bool CUPnPImplNATPMP::MapPort(uint32 gatewayIP, uint16 nPrivatePort,
-	uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime,
+bool CUPnPImplNATPMP::MapPort(
+	uint32 gatewayIP, uint32 interfaceIndex,
+	uint16 nPrivatePort, uint16 nSuggestedExternalPort,
+	bool bTCP, uint32 nLifetime,
 	natmap::NatPmpMapResponse &response)
 {
-	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	SOCKET sock = CreateRoutedSocket(interfaceIndex);
 	if (sock == INVALID_SOCKET) {
 		DebugLogError(_T("NAT-PMP: Failed to create UDP socket"));
 		return false;
@@ -454,10 +470,12 @@ bool CUPnPImplNATPMP::MapPort(uint32 gatewayIP, uint16 nPrivatePort,
 	return bResult;
 }
 
-bool CUPnPImplNATPMP::UnmapPort(uint32 gatewayIP, uint16 nPort, bool bTCP)
+bool CUPnPImplNATPMP::UnmapPort(
+	uint32 gatewayIP, uint32 interfaceIndex,
+	uint16 nPort, bool bTCP)
 {
 	// Unmap = map request with lifetime=0
-	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	SOCKET sock = CreateRoutedSocket(interfaceIndex);
 	if (sock == INVALID_SOCKET)
 		return false;
 
@@ -519,50 +537,91 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 
 	const bool bWasRefresh = m_pOwner->m_bCheckAndRefresh;
 	const uint32 nPreviousGatewayIP = m_pOwner->m_dwGatewayIP;
-	const uint32 nGatewayIP = CUPnPImplNATPMP::GetDefaultGateway();
-	if (nGatewayIP == 0) {
-		DebugLogWarning(_T("NAT-PMP: No default gateway found, aborting"));
+	const uint32 nPreviousInterfaceIndex =
+		m_pOwner->m_dwInterfaceIndex;
+	const natmap::NatPmpGatewaySelection route =
+		natmap::SelectNatPmpGateway(
+			m_operation.gateway_address,
+			m_operation.interface_index);
+	uint32 nGatewayIP = 0;
+	if (!route.IsSelected()) {
+		DebugLogWarning(_T("NAT-PMP: Request has no valid route-bound gateway (status=%u)"),
+			static_cast<unsigned>(route.status));
 		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
 		m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
 		m_pOwner->SendResultMessage(m_operation);
 		return 0;
 	}
+	memcpy(&nGatewayIP, route.gateway_address.data(),
+		sizeof(nGatewayIP));
+	const uint32 nInterfaceIndex = route.interface_index;
 	if (bWasRefresh && nPreviousGatewayIP != 0
-		&& nPreviousGatewayIP != nGatewayIP) {
+		&& (nPreviousGatewayIP != nGatewayIP
+			|| nPreviousInterfaceIndex != nInterfaceIndex)) {
 		IN_ADDR oldAddress;
 		oldAddress.S_un.S_addr = nPreviousGatewayIP;
 		const CString strOldGateway(inet_ntoa(oldAddress));
 		IN_ADDR newAddress;
 		newAddress.S_un.S_addr = nGatewayIP;
-		DebugLogWarning(_T("NAT-PMP: Default gateway changed from %s to %S during refresh"),
-			strOldGateway.GetString(), inet_ntoa(newAddress));
-		m_pOwner->m_dwMappingExternalIP = 0;
+		DebugLogWarning(_T("NAT-PMP: Route changed from %s/%u to %S/%u during refresh"),
+			strOldGateway.GetString(), nPreviousInterfaceIndex,
+			inet_ntoa(newAddress), nInterfaceIndex);
+		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
+		m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
+		m_pOwner->SendResultMessage(m_operation);
+		return 0;
 	}
 	m_pOwner->m_dwGatewayIP = nGatewayIP;
+	m_pOwner->m_dwInterfaceIndex = nInterfaceIndex;
 
 	if (m_pOwner->m_bAbortDiscovery)
 		return 0;
 
+	// Snapshot the last address before querying. A refresh may reuse a
+	// previously verified public address only when this query is lost or
+	// rejected and the mapper epoch remains continuous.
+	natmap::NatPmpExternalAddressResponse retainedResponse{};
+	retainedResponse.result_code = NATPMP_RESULT_SUCCESS;
+	retainedResponse.epoch = m_pOwner->m_dwMapperEpoch;
+	retainedResponse.external_ip_network_order =
+		m_pOwner->m_dwMappingExternalIP;
+	const natmap::NatPmpExternalAddressDecision retainedAddress =
+		natmap::ClassifyNatPmpExternalAddress(
+			m_pOwner->m_dwMappingExternalIP != 0,
+			retainedResponse);
+
 	// Querying the public address is useful, but a dropped or non-conforming
 	// address response must not prevent a valid mapping exchange.
 	m_pOwner->m_nDiagnosticStage = UPNP_DIAG_EXTERNAL_ADDRESS;
-	uint32 nExternalIP = 0;
-	uint32 nExternalEpoch = 0;
-	if (m_pOwner->QueryExternalAddress(nGatewayIP, nExternalIP,
-		nExternalEpoch)) {
+	const natmap::NatPmpExternalAddressDecision externalAddress =
+		m_pOwner->QueryExternalAddress(
+			nGatewayIP, nInterfaceIndex);
+	if (externalAddress.HasAddress()) {
+		uint32 nExternalIP = 0;
+		memcpy(&nExternalIP, externalAddress.address.bytes.data(),
+			sizeof(nExternalIP));
 		if (natmap::NatPmpEpochAppearsReset(m_pOwner->m_dwMapperEpoch,
-			nExternalEpoch)) {
+			externalAddress.epoch)) {
 			DebugLogWarning(_T("NAT-PMP: Gateway epoch reset detected (%u -> %u)"),
-				(unsigned)m_pOwner->m_dwMapperEpoch, (unsigned)nExternalEpoch);
+				(unsigned)m_pOwner->m_dwMapperEpoch,
+				(unsigned)externalAddress.epoch);
 		}
 		m_pOwner->m_dwMappingExternalIP = nExternalIP;
-		m_pOwner->m_dwMapperEpoch = nExternalEpoch;
+		m_pOwner->m_dwMapperEpoch = externalAddress.epoch;
 		IN_ADDR extAddr;
 		extAddr.S_un.S_addr = nExternalIP;
-		DebugLog(_T("NAT-PMP: External IP: %S"), inet_ntoa(extAddr));
+		DebugLog(_T("NAT-PMP: External IP: %S (status=%u)"),
+			inet_ntoa(extAddr),
+			static_cast<unsigned>(externalAddress.status));
 	} else {
-		DebugLogWarning(_T("NAT-PMP: No usable external address response; trying MAP directly"));
+		DebugLogWarning(_T("NAT-PMP: External address unavailable (status=%u); trying MAP directly"),
+			static_cast<unsigned>(externalAddress.status));
+		if (externalAddress.status
+			== natmap::NatPmpExternalAddressStatus::Invalid)
+			m_pOwner->m_dwMappingExternalIP = 0;
 	}
+	if (!externalAddress.should_attempt_map)
+		return 0;
 
 	if (m_pOwner->m_bAbortDiscovery)
 		return 0;
@@ -578,14 +637,20 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 	const uint16 nSuggestedTCP = bWasRefresh
 		? m_pOwner->m_nExternalTCPPort : m_pOwner->m_nTCPPort;
 	m_pOwner->m_nDiagnosticStage = UPNP_DIAG_TCP_MAPPING;
-	bool bSucceeded = m_pOwner->MapPort(nGatewayIP,
+	bool bSucceeded = m_pOwner->MapPort(
+		nGatewayIP, nInterfaceIndex,
 		m_pOwner->m_nTCPPort, nSuggestedTCP, true, nLeaseTime, tcpResponse);
+	bool bMappingEpochReset = false;
 	if (bSucceeded) {
 		if (natmap::NatPmpEpochAppearsReset(m_pOwner->m_dwMapperEpoch,
 			tcpResponse.epoch)) {
 			DebugLogWarning(_T("NAT-PMP: Mapping table reset before TCP MAP (%u -> %u)"),
 				(unsigned)m_pOwner->m_dwMapperEpoch,
 				(unsigned)tcpResponse.epoch);
+			// A retained address belongs to the old mapping table. Even a
+			// fresh address response cannot be paired safely across this reset.
+			bMappingEpochReset = true;
+			m_pOwner->m_dwMappingExternalIP = 0;
 		}
 		m_pOwner->m_nExternalTCPPort = tcpResponse.external_port;
 		m_pOwner->m_dwMappingLeaseLifetime = tcpResponse.lifetime_seconds;
@@ -597,7 +662,8 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 		const uint16 nSuggestedUDP = bWasRefresh
 			? m_pOwner->m_nExternalUDPPort : m_pOwner->m_nUDPPort;
 		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_UDP_MAPPING;
-		bSucceeded = m_pOwner->MapPort(nGatewayIP,
+		bSucceeded = m_pOwner->MapPort(
+			nGatewayIP, nInterfaceIndex,
 			m_pOwner->m_nUDPPort, nSuggestedUDP, false, nLeaseTime, udpResponse);
 		if (bSucceeded) {
 			bUdpMapped = true;
@@ -620,10 +686,12 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 		// refresh, keep either successfully renewed mapping alive while the
 		// lease scheduler retries the full pair.
 		if (!bSucceeded && !bWasRefresh) {
-			m_pOwner->UnmapPort(nGatewayIP,
+			m_pOwner->UnmapPort(
+				nGatewayIP, nInterfaceIndex,
 				m_pOwner->m_nTCPPort, true);
 			if (bUdpMapped)
-				m_pOwner->UnmapPort(nGatewayIP,
+				m_pOwner->UnmapPort(
+					nGatewayIP, nInterfaceIndex,
 					m_pOwner->m_nUDPPort, false);
 			m_pOwner->m_nExternalTCPPort = 0;
 			m_pOwner->m_nExternalUDPPort = 0;
@@ -634,26 +702,62 @@ int CUPnPImplNATPMP::CStartDiscoveryThread::Run()
 		natmap::NatPmpMapResponse webResponse;
 		const uint16 nSuggestedWeb = bWasRefresh
 			? m_pOwner->m_nExternalTCPWebPort : m_pOwner->m_nTCPWebPort;
-		if (m_pOwner->MapPort(nGatewayIP, m_pOwner->m_nTCPWebPort,
+		if (m_pOwner->MapPort(
+			nGatewayIP, nInterfaceIndex,
+			m_pOwner->m_nTCPWebPort,
 			nSuggestedWeb, true, nLeaseTime, webResponse)) {
-			m_pOwner->m_nExternalTCPWebPort = webResponse.external_port;
-			m_pOwner->m_dwMappingLeaseLifetime = min(
-				m_pOwner->m_dwMappingLeaseLifetime,
-				webResponse.lifetime_seconds);
-			m_pOwner->m_dwMapperEpoch = webResponse.epoch;
+			if (natmap::NatPmpEpochAppearsReset(
+				m_pOwner->m_dwMapperEpoch, webResponse.epoch)) {
+				// The reset erased the already granted TCP/UDP mappings.
+				// Remove the lone post-reset web mapping and fail the whole
+				// attempt so no stale direct result can be published.
+				DebugLogWarning(_T("NAT-PMP: Mapping table reset before web MAP"));
+				bMappingEpochReset = true;
+				bSucceeded = false;
+				m_pOwner->UnmapPort(
+					nGatewayIP, nInterfaceIndex,
+					m_pOwner->m_nTCPWebPort, true);
+				m_pOwner->m_nExternalTCPPort = 0;
+				m_pOwner->m_nExternalUDPPort = 0;
+				m_pOwner->m_nExternalTCPWebPort = 0;
+				m_pOwner->m_dwMappingLeaseLifetime = 0;
+				m_pOwner->m_dwMapperEpoch = webResponse.epoch;
+			} else {
+				m_pOwner->m_nExternalTCPWebPort =
+					webResponse.external_port;
+				m_pOwner->m_dwMappingLeaseLifetime = min(
+					m_pOwner->m_dwMappingLeaseLifetime,
+					webResponse.lifetime_seconds);
+				m_pOwner->m_dwMapperEpoch = webResponse.epoch;
+			}
 		} else if (!bWasRefresh) {
 			m_pOwner->m_nExternalTCPWebPort = 0;
 		}
 	}
 
+	const natmap::NatPmpExternalAddressDecision publishAddress =
+		natmap::ResolveNatPmpPublishAddress(
+			externalAddress, retainedAddress, bMappingEpochReset);
+	m_pOwner->m_dwMappingExternalIP = 0;
+	if (publishAddress.HasAddress())
+		memcpy(&m_pOwner->m_dwMappingExternalIP,
+			publishAddress.address.bytes.data(),
+			sizeof(m_pOwner->m_dwMappingExternalIP));
+	const bool bCanPublishDirect = publishAddress.can_publish_direct;
+
 	if (!m_pOwner->m_bAbortDiscovery) {
-		if (bSucceeded) {
-			m_pOwner->m_bUPnPPortsForwarded = TRIS_TRUE;
+		if (bSucceeded)
 			m_pOwner->m_bSucceededOnce = true;
+		if (bSucceeded && bCanPublishDirect) {
+			m_pOwner->m_bUPnPPortsForwarded = TRIS_TRUE;
 			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_SUCCESS;
 		} else {
 			m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-			if (m_pOwner->m_nDiagnosticStage != UPNP_DIAG_TABLE_FULL)
+			if (bSucceeded)
+				m_pOwner->m_nDiagnosticStage =
+					UPNP_DIAG_EXTERNAL_ADDRESS;
+			else if (m_pOwner->m_nDiagnosticStage
+				!= UPNP_DIAG_TABLE_FULL)
 				m_pOwner->m_nDiagnosticStage =
 					UPNP_DIAG_PROTOCOL_UNAVAILABLE;
 		}

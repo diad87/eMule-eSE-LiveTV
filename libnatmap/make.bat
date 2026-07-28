@@ -19,6 +19,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapping_codecs.e
 if errorlevel 1 exit /b 1
 build\test_mapping_codecs.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_natpmp_gateway_policy.exe tests\test_natpmp_gateway_policy.cpp src\natpmp_gateway_policy.cpp src\natpmp_codec.cpp
+if errorlevel 1 exit /b 1
+build\test_natpmp_gateway_policy.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_pcp_route_binding.exe tests\test_pcp_route_binding.cpp src\pcp_route_binding.cpp
 if errorlevel 1 exit /b 1
 build\test_pcp_route_binding.exe

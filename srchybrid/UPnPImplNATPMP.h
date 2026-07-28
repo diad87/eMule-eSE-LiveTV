@@ -22,6 +22,7 @@
 #pragma once
 #include "UPnPImpl.h"
 #include "natmap/natpmp_codec.h"
+#include "natmap/natpmp_gateway_policy.h"
 
 class CUPnPImplNATPMP : public CUPnPImpl
 {
@@ -93,7 +94,7 @@ private:
     static const uint16 NATPMP_RESULT_UNSUPPORTED_OPCODE = 5;
 
     // Internal helpers
-    static uint32 GetDefaultGateway();
+    static SOCKET CreateRoutedSocket(uint32 interfaceIndex);
     bool SendMapRequest(SOCKET sock, uint32 gatewayIP, uint16 nPrivatePort,
         uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime);
     EReceiveResult ReceiveMapResponse(SOCKET sock, uint32 gatewayIP,
@@ -101,14 +102,15 @@ private:
         natmap::NatPmpMapResponse &response);
     bool SendExternalAddrRequest(SOCKET sock, uint32 gatewayIP);
     EReceiveResult ReceiveExternalAddrResponse(SOCKET sock, uint32 gatewayIP,
-        DWORD nTimeoutMs, uint32 &nExternalIP, uint32 &nEpoch);
-    bool QueryExternalAddress(uint32 gatewayIP, uint32 &nExternalIP,
-        uint32 &nEpoch);
+        DWORD nTimeoutMs, natmap::NatPmpExternalAddressResponse &response);
+    natmap::NatPmpExternalAddressDecision QueryExternalAddress(
+        uint32 gatewayIP, uint32 interfaceIndex);
 
-    bool MapPort(uint32 gatewayIP, uint16 nPrivatePort,
+    bool MapPort(uint32 gatewayIP, uint32 interfaceIndex, uint16 nPrivatePort,
         uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime,
         natmap::NatPmpMapResponse &response);
-    bool UnmapPort(uint32 gatewayIP, uint16 nPort, bool bTCP);
+    bool UnmapPort(uint32 gatewayIP, uint32 interfaceIndex,
+        uint16 nPort, bool bTCP);
 
     bool StartThread();
     void ReleaseFinishedThread();
@@ -117,6 +119,8 @@ private:
 
     uint32 m_dwGatewayIP;
     uint32 m_dwOldGatewayIP;
+    uint32 m_dwInterfaceIndex;
+    uint32 m_dwOldInterfaceIndex;
     CStartDiscoveryThread *m_pThread;
 
     bool m_bSucceededOnce;

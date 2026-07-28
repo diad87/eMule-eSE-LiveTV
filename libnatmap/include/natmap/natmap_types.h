@@ -56,6 +56,12 @@ enum class ReachabilityPlane : std::uint8_t {
     DirectV6 = 2,
 };
 
+enum class VerificationPath : std::uint8_t {
+    Unspecified = 0,
+    Direct = 1,
+    Relay = 2,
+};
+
 // Values are persisted in diagnostics. Append only; never renumber.
 enum class ReasonCode : std::uint16_t {
     None = 0,
@@ -201,12 +207,14 @@ struct VerificationAttempt {
     std::uint64_t topology_generation = 0;
     Endpoint endpoint{};
     Transport transport = Transport::Tcp;
+    VerificationPath path = VerificationPath::Unspecified;
     std::uint64_t started_monotonic_ms = 0;
     std::uint64_t deadline_monotonic_ms = 0;
 
     bool IsValid() const noexcept {
         return attempt_id != 0 && topology_generation != 0 &&
                endpoint.IsUsable() &&
+               path == VerificationPath::Direct &&
                deadline_monotonic_ms >= started_monotonic_ms &&
                deadline_monotonic_ms - started_monotonic_ms <=
                    kMaximumWindowMs;
@@ -217,6 +225,7 @@ struct VerificationAttempt {
                topology_generation == other.topology_generation &&
                endpoint.SameSocketEndpoint(other.endpoint) &&
                transport == other.transport &&
+               path == other.path &&
                started_monotonic_ms == other.started_monotonic_ms &&
                deadline_monotonic_ms == other.deadline_monotonic_ms;
     }

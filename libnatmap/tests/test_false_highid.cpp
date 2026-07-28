@@ -59,6 +59,7 @@ VerificationAttempt Attempt(
     attempt.topology_generation = state.generation;
     attempt.endpoint = state.advertised;
     attempt.transport = Transport::Tcp;
+    attempt.path = VerificationPath::Direct;
     attempt.started_monotonic_ms = started_ms;
     attempt.deadline_monotonic_ms = deadline_ms;
     return attempt;
@@ -284,6 +285,229 @@ void TestOldGenerationCallbacksCannotPromoteNewEndpoint() {
     CHECK(result.snapshot.inbound_evidence.kind == EvidenceKind::None);
 }
 
+void TestServerThenInboundReachesVerifiedOnlyAfterDerivedSuccess() {
+    constexpr std::uint64_t generation = 509;
+    PlaneSnapshot state = MappedCandidate(generation);
+    const VerificationAttempt attempt = Attempt(state, 9001);
+    state = StartVerification(state, attempt);
+
+    StateEvent server{};
+    server.type = EventType::ServerEvidenceObserved;
+    server.generation = generation;
+    server.primary_evidence = Evidence{
+        EvidenceKind::ServerHighId, attempt.endpoint, generation,
+        140, attempt.attempt_id};
+    TransitionResult result = ApplyEvent(state, server);
+    CHECK(result.disposition == TransitionDisposition::Applied);
+    CHECK(result.snapshot.state == ReachabilityState::Verifying);
+    CHECK(!result.snapshot.HasCompleteClassicHighIdEvidence());
+    state = result.snapshot;
+
+    StateEvent inbound{};
+    inbound.type = EventType::InboundEvidenceObserved;
+    inbound.generation = generation;
+    inbound.inbound_evidence = Evidence{
+        EvidenceKind::InboundTcpAccept, attempt.endpoint, generation,
+        141, attempt.attempt_id};
+    result = ApplyEvent(state, inbound);
+    CHECK(result.disposition == TransitionDisposition::Applied);
+    CHECK(result.snapshot.state == ReachabilityState::Verifying);
+    CHECK(result.snapshot.HasCompleteClassicHighIdEvidence());
+    CHECK(!result.snapshot.HasClassicHighIdEvidence());
+    state = result.snapshot;
+
+    StateEvent verified{};
+    verified.type = EventType::VerificationSucceeded;
+    verified.generation = generation;
+    verified.advertised = attempt.endpoint;
+    verified.verification_attempt = attempt;
+    result = ApplyEvent(state, verified);
+    CHECK(result.disposition == TransitionDisposition::Applied);
+    CHECK(result.snapshot.state == ReachabilityState::Reachable);
+    CHECK(result.snapshot.HasClassicHighIdEvidence());
+}
+
+void TestInboundThenServerIsAllowedForSameAttempt() {
+    constexpr std::uint64_t generation = 510;
+    PlaneSnapshot state = MappedCandidate(generation);
+    const VerificationAttempt attempt = Attempt(state, 9002);
+    state = StartVerification(state, attempt);
+
+    StateEvent inbound{};
+    inbound.type = EventType::InboundEvidenceObserved;
+    inbound.generation = generation;
+    inbound.inbound_evidence = Evidence{
+        EvidenceKind::InboundTcpAccept, attempt.endpoint, generation,
+        150, attempt.attempt_id};
+    TransitionResult result = ApplyEvent(state, inbound);
+    CHECK(result.disposition == TransitionDisposition::Applied);
+    CHECK(result.snapshot.state == ReachabilityState::Verifying);
+    CHECK(result.snapshot.primary_evidence.kind == EvidenceKind::None);
+    state = result.snapshot;
+
+    StateEvent server{};
+    server.type = EventType::ServerEvidenceObserved;
+    server.generation = generation;
+    server.primary_evidence = Evidence{
+        EvidenceKind::ServerHighId, attempt.endpoint, generation,
+        151, attempt.attempt_id};
+    result = ApplyEvent(state, server);
+    CHECK(result.disposition == TransitionDisposition::Applied);
+    CHECK(result.snapshot.state == ReachabilityState::Verifying);
+    CHECK(result.snapshot.HasCompleteClassicHighIdEvidence());
+
+    StateEvent verified{};
+    verified.type = EventType::VerificationSucceeded;
+    verified.generation = generation;
+    verified.advertised = attempt.endpoint;
+    verified.verification_attempt = attempt;
+    result = ApplyEvent(result.snapshot, verified);
+    CHECK(result.disposition == TransitionDisposition::Applied);
+    CHECK(result.snapshot.HasClassicHighIdEvidence());
+}
+
+void TestDifferentGenerationEvidenceNeverCombines() {
+    PlaneSnapshot state = MappedCandidate(511);
+    const VerificationAttempt oldAttempt = Attempt(state, 9003);
+    state = StartVerification(state, oldAttempt);
+    StateEvent oldServer{};
+    oldServer.type = EventType::ServerEvidenceObserved;
+    oldServer.generation = 511;
+    oldServer.primary_evidence = Evidence{
+        EvidenceKind::ServerHighId, oldAttempt.endpoint, 511,
+        160, oldAttempt.attempt_id};
+    state = ApplyEvent(state, oldServer).snapshot;
+
+    state = ApplyEvent(
+        state, StateEvent{EventType::BeginGeneration, 512}).snapshot;
+    state = ApplyEvent(
+        state, StateEvent{EventType::MappingStarted, 512}).snapshot;
+    StateEvent mapped{};
+    mapped.type = EventType::MappingSucceeded;
+    mapped.generation = 512;
+    mapped.lease = Lease(512);
+    state = ApplyEvent(state, mapped).snapshot;
+    const VerificationAttempt currentAttempt = Attempt(state, 9004);
+    state = StartVerification(state, currentAttempt);
+
+    StateEvent oldInbound{};
+    oldInbound.type = EventType::InboundEvidenceObserved;
+    oldInbound.generation = 511;
+    oldInbound.inbound_evidence = Evidence{
+        EvidenceKind::InboundTcpAccept, oldAttempt.endpoint, 511,
+        161, oldAttempt.attempt_id};
+    TransitionResult result = ApplyEvent(state, oldInbound);
+    CHECK(result.disposition == TransitionDisposition::Stale);
+    CHECK(result.snapshot.primary_evidence.kind == EvidenceKind::None);
+    CHECK(result.snapshot.inbound_evidence.kind == EvidenceKind::None);
+    CHECK(!result.snapshot.HasCompleteClassicHighIdEvidence());
+}
+
+void TestDuplicateInboundDoesNotPromoteOrChangeAttempt() {
+    constexpr std::uint64_t generation = 513;
+    PlaneSnapshot state = MappedCandidate(generation);
+    const VerificationAttempt attempt = Attempt(state, 9005);
+    state = StartVerification(state, attempt);
+
+    StateEvent inbound{};
+    inbound.type = EventType::InboundEvidenceObserved;
+    inbound.generation = generation;
+    inbound.inbound_evidence = Evidence{
+        EvidenceKind::InboundTcpAccept, attempt.endpoint, generation,
+        170, attempt.attempt_id};
+    TransitionResult first = ApplyEvent(state, inbound);
+    CHECK(first.disposition == TransitionDisposition::Applied);
+    TransitionResult duplicate = ApplyEvent(first.snapshot, inbound);
+    CHECK(duplicate.disposition == TransitionDisposition::Applied);
+    CHECK(duplicate.snapshot.state == ReachabilityState::Verifying);
+    CHECK(duplicate.snapshot.primary_evidence.kind == EvidenceKind::None);
+    CHECK(duplicate.snapshot.inbound_evidence.observed_monotonic_ms ==
+          first.snapshot.inbound_evidence.observed_monotonic_ms);
+    CHECK(duplicate.snapshot.verification_attempt.SameIdentity(attempt));
+    CHECK(!duplicate.snapshot.HasCompleteClassicHighIdEvidence());
+
+    StateEvent server{};
+    server.type = EventType::ServerEvidenceObserved;
+    server.generation = generation;
+    server.primary_evidence = Evidence{
+        EvidenceKind::ServerHighId, attempt.endpoint, generation,
+        171, attempt.attempt_id};
+    TransitionResult complete = ApplyEvent(duplicate.snapshot, server);
+    CHECK(complete.snapshot.HasCompleteClassicHighIdEvidence());
+    StateEvent verified{};
+    verified.type = EventType::VerificationSucceeded;
+    verified.generation = generation;
+    verified.advertised = attempt.endpoint;
+    verified.verification_attempt = attempt;
+    TransitionResult reachable = ApplyEvent(complete.snapshot, verified);
+    CHECK(reachable.snapshot.HasClassicHighIdEvidence());
+    duplicate = ApplyEvent(reachable.snapshot, inbound);
+    CHECK(duplicate.disposition == TransitionDisposition::Applied);
+    CHECK(duplicate.snapshot.state == ReachabilityState::Reachable);
+    CHECK(duplicate.snapshot.HasClassicHighIdEvidence());
+}
+
+void TestEndpointChangeBetweenEvidenceFencesOldInbound() {
+    PlaneSnapshot state = MappedCandidate(514);
+    const VerificationAttempt oldAttempt = Attempt(state, 9006);
+    state = StartVerification(state, oldAttempt);
+    StateEvent server{};
+    server.type = EventType::ServerEvidenceObserved;
+    server.generation = 514;
+    server.primary_evidence = Evidence{
+        EvidenceKind::ServerHighId, oldAttempt.endpoint, 514,
+        180, oldAttempt.attempt_id};
+    state = ApplyEvent(state, server).snapshot;
+
+    state = ApplyEvent(
+        state, StateEvent{EventType::BeginGeneration, 515}).snapshot;
+    state = ApplyEvent(
+        state, StateEvent{EventType::MappingStarted, 515}).snapshot;
+    StateEvent mapped{};
+    mapped.type = EventType::MappingSucceeded;
+    mapped.generation = 515;
+    mapped.lease = Lease(515);
+    mapped.lease.public_endpoint =
+        Ep(88, 11, 22, 55, 54144, EndpointSource::PcpMap);
+    mapped.lease.granted_external_port = 54144;
+    state = ApplyEvent(state, mapped).snapshot;
+    const VerificationAttempt currentAttempt = Attempt(state, 9007);
+    state = StartVerification(state, currentAttempt);
+
+    StateEvent oldInbound{};
+    oldInbound.type = EventType::InboundEvidenceObserved;
+    oldInbound.generation = 514;
+    oldInbound.inbound_evidence = Evidence{
+        EvidenceKind::InboundTcpAccept, oldAttempt.endpoint, 514,
+        181, oldAttempt.attempt_id};
+    TransitionResult result = ApplyEvent(state, oldInbound);
+    CHECK(result.disposition == TransitionDisposition::Stale);
+    CHECK(result.snapshot.advertised.SameSocketEndpoint(
+        currentAttempt.endpoint));
+    CHECK(result.snapshot.primary_evidence.kind == EvidenceKind::None);
+    CHECK(result.snapshot.inbound_evidence.kind == EvidenceKind::None);
+    CHECK(!result.snapshot.HasClassicHighIdEvidence());
+}
+
+void TestRelayAttemptIsRejectedBehaviorally() {
+    constexpr std::uint64_t generation = 516;
+    const PlaneSnapshot candidate = MappedCandidate(generation);
+    VerificationAttempt relayAttempt = Attempt(candidate, 9008);
+    relayAttempt.path = VerificationPath::Relay;
+
+    StateEvent started{};
+    started.type = EventType::VerificationStarted;
+    started.generation = generation;
+    started.verification_attempt = relayAttempt;
+    const TransitionResult result = ApplyEvent(candidate, started);
+    CHECK(result.disposition == TransitionDisposition::Invalid);
+    CHECK(result.snapshot.state == ReachabilityState::CandidateMapped);
+    CHECK(!result.snapshot.verification_attempt.IsValid());
+    CHECK(result.snapshot.primary_evidence.kind == EvidenceKind::None);
+    CHECK(result.snapshot.inbound_evidence.kind == EvidenceKind::None);
+    CHECK(!result.snapshot.HasCompleteClassicHighIdEvidence());
+}
+
 } // namespace
 
 int main() {
@@ -294,7 +518,17 @@ int main() {
     TestWrongAttemptCannotBeRelabeledAsCurrent();
     TestExpiredEvidenceCannotPromoteReachable();
     TestOldGenerationCallbacksCannotPromoteNewEndpoint();
+    const int l05Checks = checks;
+    const int l05Failures = failures;
+    TestServerThenInboundReachesVerifiedOnlyAfterDerivedSuccess();
+    TestInboundThenServerIsAllowedForSameAttempt();
+    TestDifferentGenerationEvidenceNeverCombines();
+    TestDuplicateInboundDoesNotPromoteOrChangeAttempt();
+    TestEndpointChangeBetweenEvidenceFencesOldInbound();
+    TestRelayAttemptIsRejectedBehaviorally();
     std::printf("false HighID L05: %d checks, %d failures\n",
-                checks, failures);
+                l05Checks, l05Failures);
+    std::printf("double evidence L06: %d checks, %d failures\n",
+                checks - l05Checks, failures - l05Failures);
     return failures == 0 ? 0 : 1;
 }

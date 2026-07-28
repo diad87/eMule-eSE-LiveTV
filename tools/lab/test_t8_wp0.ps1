@@ -198,17 +198,24 @@ try {
             & python.exe (
                 Join-Path $RepoRoot 'tests\test_v92_l05_false_highid.py') 2>&1)
         $l05HostExit = $LASTEXITCODE
+        $l06HostOutput = @(
+            & python.exe (
+                Join-Path $RepoRoot 'tests\test_v92_l06_double_evidence.py') 2>&1)
+        $l06HostExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
     }
     $l04Output | ForEach-Object { Write-Host $_ }
     $l04HostOutput | ForEach-Object { Write-Host $_ }
     $l05HostOutput | ForEach-Object { Write-Host $_ }
+    $l06HostOutput | ForEach-Object { Write-Host $_ }
     $l04Text = ($l04Output | ForEach-Object { [string]$_ }) -join "`n"
     $l04HostText = (
         $l04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l05HostText = (
         $l05HostOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $l06HostText = (
+        $l06HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l04Verdict = (
         $l04BuildExit -eq 0 -and
         $l04HostExit -eq 0 -and
@@ -220,6 +227,12 @@ try {
         $l05HostExit -eq 0 -and
         $l04Text -match 'false HighID L05: [0-9]+ checks, 0 failures' -and
         $l05HostText -match '(?m)^OK\s*$'
+    )
+    $l06Verdict = (
+        $l04BuildExit -eq 0 -and
+        $l06HostExit -eq 0 -and
+        $l04Text -match 'double evidence L06: 45 checks, 0 failures' -and
+        $l06HostText -match '(?m)^OK\s*$'
     )
 
     $hyperVOutput = @()
@@ -272,6 +285,7 @@ try {
         $nodeVerdict -and
         $l04Verdict -and
         $l05Verdict -and
+        $l06Verdict -and
         $hyperVVerdict -and
         $coverageIds.Count -eq $requiredCoverageIds.Count
     )
@@ -301,6 +315,10 @@ try {
         }
         l05_false_highid = [ordered]@{
             verdict = if ($l05Verdict) { 'PASS' } else { 'FAIL' }
+            physical_mutation = $false
+        }
+        l06_double_evidence = [ordered]@{
+            verdict = if ($l06Verdict) { 'PASS' } else { 'FAIL' }
             physical_mutation = $false
         }
         coverage = [ordered]@{

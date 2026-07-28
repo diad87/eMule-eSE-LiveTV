@@ -453,6 +453,7 @@ bool CDirectReachabilityManager::BeginEd2kVerification(
 		m_snapshot.ed2k_tcp_v4.generation;
 	nextAttempt.endpoint = m_snapshot.ed2k_tcp_v4.advertised;
 	nextAttempt.transport = natmap::Transport::Tcp;
+	nextAttempt.path = natmap::VerificationPath::Direct;
 	nextAttempt.started_monotonic_ms = now;
 	nextAttempt.deadline_monotonic_ms =
 		now + natmap::VerificationAttempt::kMaximumWindowMs;

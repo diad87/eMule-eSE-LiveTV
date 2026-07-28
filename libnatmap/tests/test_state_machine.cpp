@@ -39,6 +39,7 @@ VerificationAttempt Attempt(
     attempt.topology_generation = generation;
     attempt.endpoint = endpoint;
     attempt.transport = Transport::Tcp;
+    attempt.path = VerificationPath::Direct;
     attempt.started_monotonic_ms = started_ms;
     attempt.deadline_monotonic_ms =
         started_ms + VerificationAttempt::kMaximumWindowMs;

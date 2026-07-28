@@ -176,6 +176,18 @@
         {
           "file": "tests/test_v92_l05_false_highid.py",
           "contains": "test_ui_and_firewall_status_consume_verified_predicate"
+        },
+        {
+          "file": "tests/test_v92_l06_double_evidence.py",
+          "contains": "test_relay_route_cannot_start_or_supply_direct_evidence"
+        },
+        {
+          "file": "libnatmap/tests/test_false_highid.cpp",
+          "contains": "TestEndpointChangeBetweenEvidenceFencesOldInbound"
+        },
+        {
+          "file": "libnatmap/tests/test_false_highid.cpp",
+          "contains": "double evidence L06: %d checks, %d failures"
         }
       ]
     },

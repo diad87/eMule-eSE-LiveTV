@@ -128,6 +128,7 @@ void TestHighIdNeedsBothPiecesOfEvidence() {
     snapshot.verification_attempt.topology_generation = 11;
     snapshot.verification_attempt.endpoint = advertised;
     snapshot.verification_attempt.transport = Transport::Tcp;
+    snapshot.verification_attempt.path = VerificationPath::Direct;
     snapshot.verification_attempt.started_monotonic_ms = 1000;
     snapshot.verification_attempt.deadline_monotonic_ms = 31000;
     snapshot.primary_evidence = high.server_evidence;

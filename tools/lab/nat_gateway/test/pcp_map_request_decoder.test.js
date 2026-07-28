@@ -107,10 +107,10 @@ test('D02: ignores common, MAP and option reserved bits on reception', () => {
   assert.equal(decodePcpMapRequest(portSet).options.port_set.preserve_parity, true);
 });
 
-test('D02: rejects a zero nonce, unsupported transport protocol and zero internal port', () => {
+test('D02: accepts a zero nonce and rejects unsupported transport or zero internal port', () => {
   const zeroNonce = vector('map_tcp_request');
   zeroNonce.fill(0, 24, 36);
-  expectError(zeroNonce, 'PCP_NONCE_INVALID', '$[24..35]', 3);
+  assert.equal(decodePcpMapRequest(zeroNonce).nonce, '0'.repeat(24));
 
   for (const value of [0, 1, 16, 18, 255]) {
     const packet = vector('map_tcp_request');

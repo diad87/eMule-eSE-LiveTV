@@ -201,8 +201,9 @@ test('D03: semantic success rejects invalid scalar and wire fields', () => {
     'PCP_RESPONSE_INTERNAL_PORT_INVALID', '$.internal_port');
   expectError(semantic({ external_port: -0 }),
     'PCP_RESPONSE_FIELD_INVALID', '$.external_port');
-  expectError(semantic({ nonce: '0'.repeat(24) }),
-    'PCP_RESPONSE_NONCE_INVALID', '$.nonce');
+  assert.equal(encodePcpMapResponse(semantic({
+    nonce: '0'.repeat(24),
+  })).subarray(24, 36).equals(Buffer.alloc(12)), true);
   expectError(semantic({ nonce: 'ab' }), 'PCP_RESPONSE_NONCE_INVALID', '$.nonce');
   for (const address of ['', '999.1.1.1', '2001:::1', 'fe80::1%3', 7]) {
     expectError(semantic({ external_address: address }),

@@ -90,10 +90,12 @@ function settle() {
 test('D05: real udp4 server routes MAP and ANNOUNCE and replies to exact source', async (t) => {
   const commands = [];
   const sources = [];
+  const requests = [];
   const server = createPcpUdpServer(config({
-    application: async (command, source) => {
+    application: async (command, source, signal, request) => {
       commands.push(command);
       sources.push(source);
+      requests.push(request);
       return response(command);
     },
   }));
@@ -121,6 +123,10 @@ test('D05: real udp4 server routes MAP and ANNOUNCE and replies to exact source'
   assert.ok(sources.every((source) =>
     source.address === '127.0.0.1' &&
     source.port === client.address().port));
+  assert.deepEqual(requests.map((request) => request.kind),
+    ['map', 'announce']);
+  assert.ok(requests.every(Object.isFrozen));
+  assert.ok(requests.every((request) => Buffer.isBuffer(request.wire)));
 });
 
 test('D05: client-address mismatch returns result 12 without model access', async () => {
@@ -152,7 +158,7 @@ test('D05: decodable MAP and ANNOUNCE errors preserve wire response semantics', 
   await server.start();
 
   const map = withIpv4('map_tcp_request');
-  map.fill(0, 24, 36);
+  map.fill(0, 40, 42);
   socket.emit('message', map, { address: '127.0.0.1', port: 9 });
   const announce = Buffer.concat([
     withIpv4('announce_request'),

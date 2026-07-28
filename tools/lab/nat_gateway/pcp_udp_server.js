@@ -426,8 +426,13 @@ function createPcpUdpServer(configInput, dependencies = {}) {
         return;
       }
     } else {
+      const request = Object.freeze({
+        kind: item.kind,
+        wire: Buffer.from(item.bytes),
+      });
       const result = await raceWithAbort(
-        () => config.application(item.command, item.source, aborter.signal),
+        () => config.application(
+          item.command, item.source, aborter.signal, request),
         aborter.signal,
       );
       if (result.aborted) {

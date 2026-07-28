@@ -175,7 +175,6 @@ function decodePcpMapRequest(packet) {
   if ((bytes.length & 3) !== 0) fail('PCP_ALIGNMENT_INVALID', '$');
   if (bytes[0] !== PCP_VERSION) fail('PCP_VERSION_INVALID', '$[0]', 1);
   if (bytes[1] !== MAP_OPCODE) fail('PCP_OPCODE_INVALID', '$[1]', 4);
-  if (allZero(bytes, 24, 36)) fail('PCP_NONCE_INVALID', '$[24..35]');
   if (bytes[36] !== TCP_PROTOCOL && bytes[36] !== UDP_PROTOCOL) {
     fail('PCP_TRANSPORT_PROTOCOL_INVALID', '$[36]', 9);
   }

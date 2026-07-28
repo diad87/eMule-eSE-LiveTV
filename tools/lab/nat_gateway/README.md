@@ -343,8 +343,9 @@ complete UDP golden is fabricated.
 ## PCP D02 MAP decoder
 
 `pcp_map_request_decoder.js` is a pure, fail-closed MAP boundary. It snapshots
-genuine byte views, validates the PCP version, request opcode, 96-bit nonzero
-nonce, TCP/UDP protocol, internal port, deletion semantics and aligned options,
+genuine byte views, validates the PCP version, request opcode, 96-bit nonce
+(including RFC 6887's legal all-zero value), TCP/UDP protocol, internal port,
+deletion semantics and aligned options,
 ignores received reserved bits as required, then returns a deeply immutable
 command. It decodes `PREFER_FAILURE` and `PORT_SET`, rejects unsupported
 mandatory options and ignores well-formed unknown optional options as PCP
@@ -409,6 +410,40 @@ and event sink are injected; this boundary owns no clock, lease, nonce,
 mapping or ownership state. The injected epoch provider is authoritative for
 both success and error wire responses; an application-supplied epoch is
 validated by its codec but cannot override the gateway epoch.
+
+The trusted application receives a fourth frozen request context containing
+the routed opcode kind and an owned wire snapshot. D06 uses that private copy
+to construct normative error-echo responses. It is never sent to the event
+sink, structured log or public report.
+
+## PCP D06 mapping lifecycle
+
+`pcp_mapping_lifecycle.js` is the pure bridge from a decoded MAP command to
+the shared immutable mapping model. Time, client identity, granted lifetime
+and a possible new allocation are explicit closed inputs. Before processing,
+expired mappings are removed at the supplied monotonic instant.
+
+An existing PCP mapping is identified by internal address, transport and
+internal port. A matching 96-bit nonce renews that exact mapping without
+changing its external endpoint; a different nonce returns `NOT_AUTHORIZED`
+with the rounded-up remaining lifetime and cannot mutate state. A correctly
+owned deletion removes the mapping, while retransmitting deletion after it is
+gone returns success as RFC 6887 requires. An expired mapping can be recreated
+with a new nonce and allocation. Multiple live PCP mappings for the same
+internal tuple are treated as an invariant failure rather than selected
+arbitrarily.
+
+An existing static mapping is returned unchanged with the recommended maximum
+lifetime for MAP, but PCP cannot delete it. New allocations are canonicalized
+and must be usable unicast external endpoints before any model mutation.
+
+`PREFER_FAILURE` rejects a different existing or proposed endpoint with
+`CANNOT_PROVIDE_EXTERNAL`; absence of an allocation returns bounded
+`NO_RESOURCES`. TCP and UDP remain separate mapping spaces. The response
+projector converts only branded lifecycle results into the strict D03 MAP
+encoder shapes, snapshots bounded request wire for error echo and emits
+zero-port/zero-address deletion success. Its raw mapping result is an internal
+domain value and must never be exported directly to logs or reports.
 
 ## Validation planned for the next cards
 

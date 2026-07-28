@@ -247,8 +247,7 @@ function snapshotSemantic(input) {
     fail('PCP_RESPONSE_PROTOCOL_INVALID', '$.protocol_number');
   }
   if (typeof value.nonce !== 'string' ||
-    !/^[a-f0-9]{24}$/.test(value.nonce) ||
-    value.nonce === '0'.repeat(24)) {
+    !/^[a-f0-9]{24}$/.test(value.nonce)) {
     fail('PCP_RESPONSE_NONCE_INVALID', '$.nonce');
   }
   const internalPort = uint(value.internal_port, 0xffff, '$.internal_port');

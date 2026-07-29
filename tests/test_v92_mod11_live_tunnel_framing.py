@@ -185,6 +185,13 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "interface_files": ["srchybrid/LiveTunnelFraming.h"],
                 "declared_direct_dependencies": [],
             }, {
+                "name": "LiveHandshakeWire",
+                "owner": "CLiveTunnel",
+                "layer": "ports",
+                "implementation_files": ["srchybrid/LiveHandshakeWire.cpp"],
+                "interface_files": ["srchybrid/LiveHandshakeWire.h"],
+                "declared_direct_dependencies": ["LiveTunnelFraming"],
+            }, {
                 "name": "LiveTunnelPending",
                 "owner": "CLiveTunnel",
                 "layer": "domain_state",
@@ -204,7 +211,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "layer": "application",
                 "implementation_files": ["srchybrid/LiveCircuitHandshake.cpp"],
                 "interface_files": ["srchybrid/LiveCircuitHandshake.h"],
-                "declared_direct_dependencies": ["LiveCircuitRegistry"],
+                "declared_direct_dependencies": [
+                    "LiveCircuitRegistry",
+                    "LiveHandshakeWire",
+                ],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -212,6 +222,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "entries": [{
                 "module": "LiveTunnelFraming",
                 "slice_base_commit": SLICE_BASE,
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveHandshakeWire",
+                "slice_base_commit": "0a173aa306963c7c8a1ed4478456c1fc20f79d05",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }, {
                 "module": "LiveTunnelPending",
@@ -271,6 +285,8 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
         expected_paths = {
             "srchybrid/LiveTunnelFraming.cpp",
             "srchybrid/LiveTunnelFraming.h",
+            "srchybrid/LiveHandshakeWire.cpp",
+            "srchybrid/LiveHandshakeWire.h",
         }
         self.assertTrue(expected_paths.issubset(set(MOD02.CRITICAL_SOURCE_PATHS)))
         self.assertTrue(expected_paths.issubset(set(

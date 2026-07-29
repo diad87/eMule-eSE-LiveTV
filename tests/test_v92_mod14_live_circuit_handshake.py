@@ -13,6 +13,8 @@ COORDINATOR = ROOT / "srchybrid" / "LiveTunnel.cpp"
 GOLDENS = ROOT / "docs" / "architecture" / "mod02_characterization_goldens_v1.json"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 INTERFACE = ROOT / "srchybrid" / "LiveCircuitHandshake.h"
+WIRE_INTERFACE = ROOT / "srchybrid" / "LiveHandshakeWire.h"
+WIRE_SOURCE = ROOT / "srchybrid" / "LiveHandshakeWire.cpp"
 VERIFIER_PATH = ROOT / "tools" / "architecture" / "verify_mod02_characterization.py"
 
 SPEC = importlib.util.spec_from_file_location("mod02_handshake_verifier", VERIFIER_PATH)
@@ -57,6 +59,19 @@ class Mod14LiveCircuitHandshakeTest(unittest.TestCase):
         project = PROJECT.read_text(encoding="utf-8")
         self.assertIn('ClCompile Include="LiveCircuitHandshake.cpp"', project)
         self.assertIn('ClInclude Include="LiveCircuitHandshake.h"', project)
+
+    def test_public_boundary_is_opaque_and_wire_dependency_is_explicit(self) -> None:
+        interface = INTERFACE.read_text(encoding="utf-8")
+        wire_interface = WIRE_INTERFACE.read_text(encoding="utf-8")
+        wire_source = WIRE_SOURCE.read_text(encoding="utf-8")
+        project = PROJECT.read_text(encoding="utf-8")
+
+        self.assertNotIn("CUpDownClient", interface)
+        self.assertIn("using LiveHandshakePeerHandle = void*;", wire_interface)
+        self.assertIn('#include "LiveTunnelFraming.h"', wire_source)
+        self.assertIn("SecureRandomBytes(", wire_source)
+        self.assertIn('ClCompile Include="LiveHandshakeWire.cpp"', project)
+        self.assertIn('ClInclude Include="LiveHandshakeWire.h"', project)
 
     def test_created_rejects_stale_state_and_verifies_before_deriving(self) -> None:
         body = self.body(
@@ -111,7 +126,12 @@ class Mod14LiveCircuitHandshakeTest(unittest.TestCase):
         )
 
     def test_wire_and_transcript_width_tripwires_are_present(self) -> None:
-        contract = self.source + INTERFACE.read_text(encoding="utf-8")
+        contract = (
+            self.source
+            + INTERFACE.read_text(encoding="utf-8")
+            + WIRE_INTERFACE.read_text(encoding="utf-8")
+            + WIRE_SOURCE.read_text(encoding="utf-8")
+        )
         for required in (
             "TUN_TRANSCRIPT_LEN == 150",
             "TUN_HKDF_INFO_LEN == 120",
@@ -119,9 +139,9 @@ class Mod14LiveCircuitHandshakeTest(unittest.TestCase):
             "TUN_HKDF_INFO_V3_LEN == 159",
             "TUN_CREATE_V3_LEN = 140",
             "TUN_EXTEND_V3_LEN = 158",
-            "69u  <= CELL_PAYLOAD_MAX",
-            "133u <= CELL_PAYLOAD_MAX",
-            "149u <= CELL_PAYLOAD_MAX",
+            "69u  <= HANDSHAKE_CELL_PAYLOAD_MAX",
+            "133u <= HANDSHAKE_CELL_PAYLOAD_MAX",
+            "149u <= HANDSHAKE_CELL_PAYLOAD_MAX",
         ):
             self.assertIn(required, contract)
 

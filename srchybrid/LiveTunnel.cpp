@@ -175,8 +175,9 @@ bool CLiveTunnel::HandleExtended_Originator(
 }
 
 void CLiveTunnel::ResolveHandshakeExitKey(
-    CUpDownClient* exit, CLiveCircuit& circuit)
+    LiveHandshakePeerHandle exitHandle, CLiveCircuit& circuit)
 {
+    CUpDownClient* exit = static_cast<CUpDownClient*>(exitHandle);
     if (!exit || circuit.m_haveExitKadKey || exit->IsIPv6OnlyEndpoint())
         return;
     if (exit->GetConnectIP() == 0
@@ -190,6 +191,35 @@ void CLiveTunnel::ResolveHandshakeExitKey(
     if (!contact) return;
     circuit.m_exitKadKey = contact->GetClientID();
     circuit.m_haveExitKadKey = true;
+}
+
+bool CLiveTunnel::ReadHandshakePeer(
+    LiveHandshakePeerHandle peerHandle,
+    LiveHandshakePeerView& view) const
+{
+    CUpDownClient* peer = static_cast<CUpDownClient*>(peerHandle);
+    if (!peer)
+        return false;
+    view = LiveHandshakePeerView{};
+    view.validHash = peer->HasValidHash();
+    const uchar* hash = peer->GetUserHash();
+    if (hash)
+        memcpy(view.userHash, hash, sizeof view.userHash);
+    view.hasNodePublicKey = peer->HasEseNodePub();
+    if (view.hasNodePublicKey)
+        memcpy(view.nodePublicKey, peer->GetEseNodePub(), sizeof view.nodePublicKey);
+    view.supportsDataplane = peer->SupportsEseTunnelDataplane();
+    view.supportsBulk = peer->SupportsEseTunnelBulk();
+    view.supportsAuth = peer->SupportsEseTunnelAuth();
+    view.supportsStrict3 = peer->SupportsEseTunnelStrict3();
+    view.supportsShaped = peer->SupportsEseTunnelShaped();
+    view.hasIpv6 = peer->HasIPv6Address();
+    if (view.hasIpv6)
+        memcpy(view.ipv6, peer->GetIPv6Address().Data(), sizeof view.ipv6);
+    view.ipv6Only = peer->IsIPv6OnlyEndpoint();
+    view.ipv4 = peer->GetIP();
+    view.port = peer->GetUserPort();
+    return true;
 }
 
 void CLiveTunnel::RegisterActiveHandshakeCircuit(
@@ -214,12 +244,32 @@ bool CLiveTunnel::SignHandshakeTranscript(
     return NodeIdentitySign(bytes, length, signature);
 }
 
+bool CLiveTunnel::HashHandshakeCircuitPrefix(
+    const CLiveCircuit& circuit, uint8_t out[32]) const
+{
+    static const char label[] = "kad6-circuit-prefix-v1";
+    std::vector<uint8_t> input;
+    input.reserve(sizeof(label) - 1 + 5 + circuit.HopCount() * 32);
+    input.insert(input.end(), label, label + sizeof(label) - 1);
+    uint8_t context[5];
+    PutU32LE(context, circuit.Id());
+    context[4] = static_cast<uint8_t>(circuit.HopCount());
+    input.insert(input.end(), context, context + sizeof context);
+    for (size_t i = 0; i < circuit.HopCount(); ++i)
+        input.insert(
+            input.end(),
+            circuit.Hop(i).pub_long,
+            circuit.Hop(i).pub_long + 32);
+    const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
+    return crypto.sha256 && crypto.sha256(input.data(), input.size(), out);
+}
+
 uint32_t CLiveTunnel::HandshakeRuntimeCapabilities() const
 {
     return g_uEseCapsRuntime;
 }
 
-CUpDownClient* CLiveTunnel::FindConnectedHandshakePeerByHash(
+LiveHandshakePeerHandle CLiveTunnel::FindConnectedHandshakePeerByHash(
     const uint8_t hash[16]) const
 {
     CUpDownClient* peer = theApp.clientlist
@@ -227,7 +277,7 @@ CUpDownClient* CLiveTunnel::FindConnectedHandshakePeerByHash(
     return peer && peer->socket && peer->socket->IsConnected() ? peer : NULL;
 }
 
-CUpDownClient* CLiveTunnel::FindConnectedHandshakePeer(
+LiveHandshakePeerHandle CLiveTunnel::FindConnectedHandshakePeer(
     uint32_t ipv4, uint16_t port) const
 {
     CUpDownClient* peer = theApp.clientlist
@@ -267,7 +317,6 @@ const uint16_t K6_SHAPE_RUNTIME_MAX_BUCKET_KIB = 1024;
 const uint16_t K6_SHAPE_DEFAULT_BUCKET_KIB = K6_SHAPE_RUNTIME_MAX_BUCKET_KIB;
 const uint8_t  K6_BULK_SUB_FLAG_SHAPED = 0x01;
 const uint64_t K6_SHAPE_PADDING_NONCE = kad6::kK6ShapedPaddingSentinel;
-const size_t   K6_SHAPE_MAX_RESERVED_LINKS = 8;
 
 bool K6ShapeValidBucket(uint32_t bucketKiB)
 {
@@ -587,7 +636,7 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
             memcpy(payload + 53, c->m_create_nonce, 16);
             PutU32LE(payload + 69, id);
             payload[73] = 0; // guard
-            if (!BuildCircuitPrefixHash(*c, c->m_createPrefixHash)) {
+            if (!HashHandshakeCircuitPrefix(*c, c->m_createPrefixHash)) {
                 c->WipeKeys();
                 continue;
             }

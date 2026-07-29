@@ -130,6 +130,7 @@ def planned(
 EXPECTED_PLANNED_MODULES = {
     "CLiveTunnel": [
         planned("CLiveTunnel", "LiveTunnelFraming", "foundation", "headers, fragmentation and reassembly"),
+        planned("CLiveTunnel", "LiveHandshakeWire", "ports", "byte-exact CREATE, CREATED, EXTEND and EXTENDED transcript and cell serialization"),
         planned("CLiveTunnel", "LiveTunnelPending", "domain_state", "pending requests, deadlines, retry and single completion"),
         planned("CLiveTunnel", "LiveCircuitRegistry", "domain_state", "circuit identity, state and lookup"),
         planned("CLiveTunnel", "LiveCircuitHandshake", "application", "CREATE, CREATED, EXTEND and EXTENDED orchestration"),

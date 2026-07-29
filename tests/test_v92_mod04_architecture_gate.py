@@ -66,6 +66,13 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "interface_files": ["srchybrid/LiveTunnelFraming.h"],
                 "declared_direct_dependencies": [],
             }, {
+                "name": "LiveHandshakeWire",
+                "owner": "CLiveTunnel",
+                "layer": "ports",
+                "implementation_files": ["srchybrid/LiveHandshakeWire.cpp"],
+                "interface_files": ["srchybrid/LiveHandshakeWire.h"],
+                "declared_direct_dependencies": ["LiveTunnelFraming"],
+            }, {
                 "name": "LiveTunnelPending",
                 "owner": "CLiveTunnel",
                 "layer": "domain_state",
@@ -85,7 +92,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "layer": "application",
                 "implementation_files": ["srchybrid/LiveCircuitHandshake.cpp"],
                 "interface_files": ["srchybrid/LiveCircuitHandshake.h"],
-                "declared_direct_dependencies": ["LiveCircuitRegistry"],
+                "declared_direct_dependencies": [
+                    "LiveCircuitRegistry",
+                    "LiveHandshakeWire",
+                ],
             }],
         })
         self.assertEqual(self.config["approved_non_module_code"], [
@@ -113,6 +123,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "slice_base_commit": "3a1ccf5faec81ea8fa60cf9b084cb76be98f2074",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }, {
+                "module": "LiveHandshakeWire",
+                "slice_base_commit": "0a173aa306963c7c8a1ed4478456c1fc20f79d05",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
                 "module": "LiveTunnelPending",
                 "slice_base_commit": "778631c0559880be06e62146a5bae44623536383",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
@@ -128,12 +142,13 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
         })
 
     def test_only_the_four_completed_extractions_are_claimed(self) -> None:
-        self.assertEqual(self.config["mod03_contract"]["planned_module_count"], 29)
-        self.assertEqual(len(VERIFIER._planned_modules(self.contract)), 29)
+        self.assertEqual(self.config["mod03_contract"]["planned_module_count"], 30)
+        self.assertEqual(len(VERIFIER._planned_modules(self.contract)), 30)
         self.assertEqual(
             [entry["name"] for entry in self.config["module_catalog"]["entries"]],
             [
                 "LiveTunnelFraming",
+                "LiveHandshakeWire",
                 "LiveTunnelPending",
                 "LiveCircuitRegistry",
                 "LiveCircuitHandshake",

@@ -196,10 +196,10 @@ def validate_config(
             raise GateError(f"coordinator final limit drift: {expected['path']}")
     if config["mod03_contract"] != {
         "path": "docs/architecture/mod03_ownership_layering_contract_v1.json",
-        "edge_policy": "deny_unlisted", "planned_module_count": 29,
+        "edge_policy": "deny_unlisted", "planned_module_count": 30,
     }:
         raise GateError("MOD-0.3 binding drift")
-    if len(_planned_modules(contract)) != 29 or contract["layer_model"]["edge_policy"] != "deny_unlisted":
+    if len(_planned_modules(contract)) != 30 or contract["layer_model"]["edge_policy"] != "deny_unlisted":
         raise GateError("MOD-0.3 deny_unlisted binding drift")
     _require_keys(config["module_catalog"], {"state", "entries"}, "module_catalog")
     if config["module_catalog"]["state"] not in {"NO_EXTRACTED_MODULES_DECLARED", "EXTRACTION_ACTIVE"}:

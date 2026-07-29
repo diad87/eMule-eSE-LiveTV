@@ -15,15 +15,15 @@
         "LiveCircuitHandshake::HandleExtendedOriginator"
       ],
       "token_sha256": {
-        "LiveCircuitHandshake::BuildExtend": "46d80d734471691391c34dc75df042e4e8c91c8e84f3c1dae07ddbf21f918ade",
-        "LiveCircuitHandshake::ContinueOriginatorBuild": "5bd40f468fc2f8b44ea29296a8c9edd675ee4f9c9ae661fce14288c4d39c5f35",
-        "LiveCircuitHandshake::ForwardCreatedAsExtendedRelay": "b87a652c8f9911dd2334e71c2bb12ab23b53adc7ee82eaeee9317c2febfc6f3a",
-        "LiveCircuitHandshake::ForwardExtendCellForward": "8c98bb080808793ed025308fa78d53aad9253ecc6d3af7486687502be6d36a58",
-        "LiveCircuitHandshake::ForwardExtendedCellReverse": "290979912ec70357493ce5950787702d794961aa1dbda8c191de7ea255476e95",
-        "LiveCircuitHandshake::HandleCreateRelay": "44e65c5db043b09411150bf7a85d38fd99774daa0d274ac9f4e44e525c5e1af9",
-        "LiveCircuitHandshake::HandleCreatedOriginator": "a0ade5289b18d3261a75fe5f00bb8d51ab5678fbc00e79e1f1d7b43cc167a63b",
-        "LiveCircuitHandshake::HandleExtendRelay": "1dd8b81f2b0df98a4aafa0ea7b1e967474f1a2dea02ea373e20c6503857dfa1e",
-        "LiveCircuitHandshake::HandleExtendedOriginator": "8528acecb5c32c33427a0c468da73afd2c62efaa3ce5aa9ee37d38967d12c152"
+        "LiveCircuitHandshake::BuildExtend": "75f92da5fcb6aa6586e41b1dda1430755e5561d55210e7d3a4b90eadc530da20",
+        "LiveCircuitHandshake::ContinueOriginatorBuild": "48affd2868c6d0349d5f18f0e9d835c1bf8deaf2c834984cca60e76f0897eafc",
+        "LiveCircuitHandshake::ForwardCreatedAsExtendedRelay": "b9edcb759e9fbec9527e71efe6856439c258d07452ba2ac5ef1d2bfd6dfe9c2a",
+        "LiveCircuitHandshake::ForwardExtendCellForward": "3ec1cd39b574c3f8dea1d00e881c77aedf1bccbedf0006cecdb32c2d2e24c1b1",
+        "LiveCircuitHandshake::ForwardExtendedCellReverse": "1b5bd9baf3810ce564a48935ed54c9f8319ffc24603b33b572b961659e9c58bb",
+        "LiveCircuitHandshake::HandleCreateRelay": "1814ccb066a4265054aed390e0703e693cad7a2339a72701e5f9273168cb2043",
+        "LiveCircuitHandshake::HandleCreatedOriginator": "586b0221b4873b21559645ff57deb2ed4071e02fd1c22e1ad9898e8201a18ba9",
+        "LiveCircuitHandshake::HandleExtendRelay": "70581178bd85bf9b0de3ab050c66dff3dcbb4aaf46fd5afb74f173400f4783f7",
+        "LiveCircuitHandshake::HandleExtendedOriginator": "33aa0c5288f469d5d625af7e6eda3b528adf67c4b69287b3c0bd245d90c73aa0"
       }
     },
     "live_circuit_registry": {

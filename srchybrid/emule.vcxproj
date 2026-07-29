@@ -741,6 +741,12 @@
     <ClCompile Include="SubscriberPinScheduler.cpp" />
     <ClCompile Include="LiveTunnel.cpp" />
     <ClCompile Include="LiveCircuitHandshake.cpp" />
+    <ClCompile Include="LiveHandshakeWire.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="LiveCircuit.cpp" />
     <ClCompile Include="LiveFec.cpp">
       <PrecompiledHeader />
@@ -1139,6 +1145,7 @@
     <ClInclude Include="SubscriberPinScheduler.h" />
     <ClInclude Include="LiveTunnel.h" />
     <ClInclude Include="LiveCircuitHandshake.h" />
+    <ClInclude Include="LiveHandshakeWire.h" />
     <ClInclude Include="LiveCircuit.h" />
     <ClInclude Include="LiveFec.h" />
     <ClInclude Include="LiveBulk.h" />

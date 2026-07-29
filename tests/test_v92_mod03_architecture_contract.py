@@ -83,7 +83,7 @@ class Mod03ArchitectureContractTest(unittest.TestCase):
         }
         self.assertEqual(
             module_counts,
-            {"CLiveTunnel": 10, "CWebServer": 10, "CLiveStreamManager": 9},
+            {"CLiveTunnel": 11, "CWebServer": 10, "CLiveStreamManager": 9},
         )
         for coordinator in self.contract["coordinators"]:
             for module in coordinator["planned_modules"]:

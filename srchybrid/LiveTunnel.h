@@ -522,17 +522,23 @@ private:
     bool SendCellToPeer(CUpDownClient* peer, const uint8_t cell[CELL_TOTAL_BYTES]);
     void DestroyCircuitFailClosed(const std::shared_ptr<CLiveCircuit>& circ);
     LiveCircuitRegistry& HandshakeCircuitRegistry() override { return m_circuitRegistry; }
-    bool SendHandshakeCell(CUpDownClient* peer, const uint8_t* cell) override { return SendCellToPeer(peer, cell); }
+    bool SendHandshakeCell(LiveHandshakePeerHandle peer, const uint8_t* cell) override {
+        return SendCellToPeer(static_cast<CUpDownClient*>(peer), cell);
+    }
+    bool ReadHandshakePeer(LiveHandshakePeerHandle peer,
+                           LiveHandshakePeerView& view) const override;
     void DestroyHandshakeCircuit(const std::shared_ptr<CLiveCircuit>& circuit) override { DestroyCircuitFailClosed(circuit); }
     uint32_t NewHandshakeCircuitId() override { return NewCircuitId(); }
-    void ResolveHandshakeExitKey(CUpDownClient* exit, CLiveCircuit& circuit) override;
+    void ResolveHandshakeExitKey(LiveHandshakePeerHandle exit, CLiveCircuit& circuit) override;
     void RegisterActiveHandshakeCircuit(const std::shared_ptr<CLiveCircuit>& circuit) override;
     const uint8_t* LocalHandshakeUserHash() const override;
     const uint8_t* LocalHandshakeNodePublicKey() const override;
     bool SignHandshakeTranscript(const uint8_t* bytes, size_t length, uint8_t signature[64]) const override;
+    bool HashHandshakeCircuitPrefix(const CLiveCircuit& circuit,
+                                    uint8_t out[32]) const override;
     uint32_t HandshakeRuntimeCapabilities() const override;
-    CUpDownClient* FindConnectedHandshakePeerByHash(const uint8_t hash[16]) const override;
-    CUpDownClient* FindConnectedHandshakePeer(uint32_t ipv4, uint16_t port) const override;
+    LiveHandshakePeerHandle FindConnectedHandshakePeerByHash(const uint8_t hash[16]) const override;
+    LiveHandshakePeerHandle FindConnectedHandshakePeer(uint32_t ipv4, uint16_t port) const override;
     uint32_t LocalHandshakePublicIp() const override;
 
     // Originator-side CREATED handler: complete handshake on hop 1.

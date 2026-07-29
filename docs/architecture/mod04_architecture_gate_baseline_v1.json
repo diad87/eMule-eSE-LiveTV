@@ -26,6 +26,14 @@
         "declared_direct_dependencies": []
       },
       {
+        "name": "LiveHandshakeWire",
+        "owner": "CLiveTunnel",
+        "layer": "ports",
+        "implementation_files": ["srchybrid/LiveHandshakeWire.cpp"],
+        "interface_files": ["srchybrid/LiveHandshakeWire.h"],
+        "declared_direct_dependencies": ["LiveTunnelFraming"]
+      },
+      {
         "name": "LiveTunnelPending",
         "owner": "CLiveTunnel",
         "layer": "domain_state",
@@ -47,7 +55,10 @@
         "layer": "application",
         "implementation_files": ["srchybrid/LiveCircuitHandshake.cpp"],
         "interface_files": ["srchybrid/LiveCircuitHandshake.h"],
-        "declared_direct_dependencies": ["LiveCircuitRegistry"]
+        "declared_direct_dependencies": [
+          "LiveCircuitRegistry",
+          "LiveHandshakeWire"
+        ]
       }
     ]
   },
@@ -72,6 +83,11 @@
         "source_coordinator": "srchybrid/LiveTunnel.cpp"
       },
       {
+        "module": "LiveHandshakeWire",
+        "slice_base_commit": "0a173aa306963c7c8a1ed4478456c1fc20f79d05",
+        "source_coordinator": "srchybrid/LiveTunnel.cpp"
+      },
+      {
         "module": "LiveTunnelPending",
         "slice_base_commit": "778631c0559880be06e62146a5bae44623536383",
         "source_coordinator": "srchybrid/LiveTunnel.cpp"
@@ -88,6 +104,6 @@
       }
     ]
   },
-  "mod03_contract": {"path": "docs/architecture/mod03_ownership_layering_contract_v1.json", "edge_policy": "deny_unlisted", "planned_module_count": 29},
+  "mod03_contract": {"path": "docs/architecture/mod03_ownership_layering_contract_v1.json", "edge_policy": "deny_unlisted", "planned_module_count": 30},
   "slice_rule": "for each catalogued extraction, git diff --numstat from its declared slice_base_commit to the worktree must show source_coordinator removed lines strictly greater than added lines"
 }

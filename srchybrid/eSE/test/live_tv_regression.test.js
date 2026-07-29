@@ -929,6 +929,7 @@ test('Adaptive is Kad6-first, auto-seeds, and reports the real route state', () 
 
 test('Kad6 Private and Strict paths fail closed at their declared hop counts', () => {
   const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
+  const handshake = read(repoRoot, 'srchybrid', 'LiveCircuitHandshake.cpp');
   const circuit = read(repoRoot, 'srchybrid', 'LiveCircuit.h');
   const keepalive = read(repoRoot, 'srchybrid', 'KadKeepalive.cpp');
   const successor = tunnel.slice(
@@ -945,13 +946,13 @@ test('Kad6 Private and Strict paths fail closed at their declared hop counts', (
   assert.match(labTwoHop, /c->m_private2 = true;[\s\S]{0,80}m_pendingHopClients\.push_back\(hop2\)/);
   assert.match(circuit, /enum class CircuitAbortReason[\s\S]{0,300}HandshakeTimeout[\s\S]{0,100}ExtendTimeout/);
   for (const reason of ['StrictV1', 'PinMismatch', 'CapsFloor', 'SigFail']) {
-    assert.match(tunnel, new RegExp(`m_abort_reason = CircuitAbortReason::${reason}`));
+    assert.match(handshake, new RegExp(`m_abort_reason = CircuitAbortReason::${reason}`));
   }
   assert.match(tunnel, /void CLiveTunnel::DestroyCircuitFailClosed[\s\S]{0,900}m_auth_ok = false/);
   assert.match(tunnel, /HandshakeTimeout;[\s\S]{0,160}m_private2 \|\| c->m_strict3\) DestroyCircuitFailClosed/);
   assert.match(tunnel, /ExtendTimeout;[\s\S]{0,160}m_private2 \|\| c->m_strict3\) DestroyCircuitFailClosed/);
   assert.match(tunnel, /Kad6CtEqual\(a->GetEseNodePub\(\), b->GetEseNodePub\(\), 32\)/);
-  assert.match(tunnel, /circ->m_private2 \|\| circ->m_strict3[\s\S]{0,500}DestroyCircuitFailClosed\(circ\)/);
+  assert.match(handshake, /circ->m_private2 \|\| circ->m_strict3[\s\S]{0,500}DestroyHandshakeCircuit\(circ\)/);
   assert.match(tunnel, /minimumHops = sub_cmd == TUN_OP_KAD6_GATEWAY \? 2 : 1;/);
   assert.match(tunnel, /quotaMessage[\s\S]{0,500}minimumHops = 3;[\s\S]{0,300}minimumHops = 1;/);
   assert.match(keepalive, /InterlockedCompareExchange[\s\S]{0,200}m_running/);

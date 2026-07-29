@@ -140,6 +140,7 @@
       ],
       "planned_modules": [
         {"module":"LiveTunnelFraming","layer":"foundation","responsibility":"headers, fragmentation and reassembly","owner_before":"CLiveTunnel","owner_after":"LiveTunnelFraming","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveHandshakeWire","layer":"ports","responsibility":"byte-exact CREATE, CREATED, EXTEND and EXTENDED transcript and cell serialization","owner_before":"CLiveTunnel","owner_after":"LiveHandshakeWire","transfer_rule":"only after atomic ownership transfer in its approved slice"},
         {"module":"LiveTunnelPending","layer":"domain_state","responsibility":"pending requests, deadlines, retry and single completion","owner_before":"CLiveTunnel","owner_after":"LiveTunnelPending","transfer_rule":"only after atomic ownership transfer in its approved slice"},
         {"module":"LiveCircuitRegistry","layer":"domain_state","responsibility":"circuit identity, state and lookup","owner_before":"CLiveTunnel","owner_after":"LiveCircuitRegistry","transfer_rule":"only after atomic ownership transfer in its approved slice"},
         {"module":"LiveCircuitHandshake","layer":"application","responsibility":"CREATE, CREATED, EXTEND and EXTENDED orchestration","owner_before":"CLiveTunnel","owner_after":"LiveCircuitHandshake","transfer_rule":"only after atomic ownership transfer in its approved slice"},

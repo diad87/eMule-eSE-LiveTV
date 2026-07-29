@@ -91,7 +91,7 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
         self.assertIn('#include "WebApiSerializer.h"', self.server)
         self.assertIn("ese::web::EscapeHtml(input, noquote)", self.server)
         self.assertIn("ese::web::EscapeJson(value)", self.server)
-        self.assertEqual(self.server.count("EseJsonEscapeA("), 30)
+        self.assertEqual(self.server.count("EseJsonEscapeA("), 34)
         self.assertIn(
             "ese::web::RunWebApiSerializerSelfTest(serializerFailure)",
             self.server,
@@ -99,6 +99,17 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
         self.assertNotIn('output.AppendFormat("\\\\u%04x", ch)', self.server)
         self.assertNotIn("Escape minimally for JSON", self.server)
         self.assertNotIn("Escape any quotes/backslashes", self.server)
+        for safe_marker in (
+            "const CStringA keyJson = EseJsonEscapeA(keyA)",
+            "kwJson += EseJsonEscapeA(CStringA(kws[i]))",
+            "EseJsonEscapeA(CStringA(CT2A(keyT)))",
+            "EseJsonEscapeA(CStringA(CT2A(ipT)))",
+        ):
+            self.assertIn(safe_marker, self.server)
+        self.assertNotIn(
+            'kwJson += CStringA(kws[i])',
+            self.server,
+        )
         self.assertIn(
             "EseXmlEscape(GetResString(IDS_WEB_REMOTE_LINK_ADDED))",
             self.server,

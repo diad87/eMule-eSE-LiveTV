@@ -4961,7 +4961,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		}
 
 		CStringA json;
-		json.Format("{\"success\":%s,\"streamKey\":\"%s\"}", ok ? "true" : "false", (LPCSTR)keyA);
+		const CStringA keyJson = EseJsonEscapeA(keyA);
+		json.Format(
+			"{\"success\":%s,\"streamKey\":\"%s\"}",
+			ok ? "true" : "false",
+			(LPCSTR)keyJson);
 		CStringA header;
 		header.Format(
 			"HTTP/1.1 %s\r\n"
@@ -6624,7 +6628,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		CStringA kwJson;
 		for (size_t i = 0; i < kws.size(); ++i) {
 			if (i > 0) kwJson += ",";
-			kwJson += "\""; kwJson += CStringA(kws[i]); kwJson += "\"";
+			kwJson += "\"";
+			kwJson += EseJsonEscapeA(CStringA(kws[i]));
+			kwJson += "\"";
 		}
 
 		// v0.71 P1.1 — runtime metrics. Each value is read from the live
@@ -7103,6 +7109,10 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			? "ipv6_not_supported_by_socks4"
 			: (!keyOk ? "invalid_stream_key"
 				: (!joined ? "join_rejected" : ""));
+		const CStringA keyJson =
+			EseJsonEscapeA(CStringA(CT2A(keyT)));
+		const CStringA ipJson =
+			EseJsonEscapeA(CStringA(CT2A(ipT)));
 
 		CStringA json;
 		json.Format(
@@ -7113,8 +7123,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			joined ? "true" : "false",
 			dialed ? "true" : "false",
 			error,
-			(LPCSTR)CStringA(CT2A(keyT)),
-			(LPCSTR)CStringA(CT2A(ipT)),
+			(LPCSTR)keyJson,
+			(LPCSTR)ipJson,
 			(unsigned)port,
 			unsupportedIPv6Proxy ? "rejected"
 				: ((directAddress.GetType() != CAddress::None && port != 0)

@@ -440,6 +440,43 @@ CLiveTunnel& CLiveTunnel::Get()
     return s_instance;
 }
 
+bool CLiveTunnel::RunCharacterizationSelfTest(CString& outFailure)
+{
+    outFailure.Empty();
+    const uint8_t message[] = { 0x01, 0xA5, 0x5A, 0xFF };
+    std::vector<std::vector<uint8_t>> cells;
+    if (!eSELive::SplitIntoCells(0x40, 0x12345678, message, sizeof(message), 2, cells)
+        || cells.size() != 2) {
+        outFailure = _T("tunnel framing split failed");
+        return false;
+    }
+    eSELive::ReassemblyEntry entry;
+    for (const std::vector<uint8_t>& cell : cells) {
+        uint8_t sub = 0; uint32_t request = 0; uint16_t bodyLen = 0;
+        const uint8_t* body = NULL;
+        uint16_t index = 0, count = 0; uint32_t total = 0;
+        const uint8_t* fragment = NULL; size_t fragmentLen = 0;
+        if (!eSELive::ParseSubHeader(cell.data(), cell.size(), sub, request, bodyLen, body)
+            || sub != 0x40 || request != 0x12345678
+            || !eSELive::ParseFragHeader(body, bodyLen, index, count, total, fragment, fragmentLen)
+            || eSELive::ReassemblyIngest(entry, index, count, total, fragment, fragmentLen)
+                == eSELive::ReassemblyResult::Error) {
+            outFailure = _T("tunnel framing parse or reassembly failed");
+            return false;
+        }
+    }
+    if (entry.message.size() != sizeof(message)
+        || memcmp(entry.message.data(), message, sizeof(message)) != 0) {
+        outFailure = _T("tunnel framing payload mismatch");
+        return false;
+    }
+    if (SendThrough(NULL, 0)) {
+        outFailure = _T("tunnel empty dispatch was accepted");
+        return false;
+    }
+    return true;
+}
+
 uint32_t CLiveTunnel::NewCircuitId()
 {
     // Local circuit IDs are 32-bit random — collisions astronomically rare;

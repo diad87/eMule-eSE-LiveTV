@@ -1,0 +1,34 @@
+{
+  "schema": "ese.mod01.approved-overlays/v1",
+  "baseline_commit": "b875d3dd61a2d675b2138d61161f0a8fec9d9888",
+  "overlays": [
+    {
+      "path": "srchybrid/LiveTunnel.cpp",
+      "baseline_sha256": "0d899136a867bd1a0571b62b06343d0ca3a1f075162656eb0f4bddcb6dc85591",
+      "overlay_sha256": "ab611f9750f1e9ea57d16947ec2fc0490738a5585561c508a0747700e802315a",
+      "task": "MOD-0.2",
+      "reason": "Headless production framing/reassembly characterization hook."
+    },
+    {
+      "path": "srchybrid/LiveTunnel.h",
+      "baseline_sha256": "1a2684e8741058667b8ececed4170026b1073b851a48e61da49f13c7ba27e731",
+      "overlay_sha256": "402355f12423ee03b6e4786c21bbf1658740f23dbf0a940c968929afd8946cbd",
+      "task": "MOD-0.2",
+      "reason": "Declaration of the headless production characterization hook."
+    },
+    {
+      "path": "srchybrid/WebServer.cpp",
+      "baseline_sha256": "afcf5a5b8091995a473548fc05086fe1b2ba0e8127378cd959424fa8f6770028",
+      "overlay_sha256": "acc6445200922865d1bbf1e2a2aa967898065f537376d0fb5a7fb9bc3c707e96",
+      "task": "MOD-0.2",
+      "reason": "Headless production parser, escaping and complete gzip characterization hook."
+    },
+    {
+      "path": "srchybrid/WebServer.h",
+      "baseline_sha256": "6457840ed976be885d1d3ef2e13ea01b03f59c960728d9cc14a5b217f3421140",
+      "overlay_sha256": "db9982186b4a4b52addd094314fa8550a8f4cf730e799564af7339f8e6eb759c",
+      "task": "MOD-0.2",
+      "reason": "Declaration of the headless production characterization hook."
+    }
+  ]
+}

@@ -409,6 +409,61 @@ CString CWebServer::_SpecialChars(const CString &cstr, bool noquote /*=false*/)
 	return str;
 }
 
+bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
+{
+	outFailure.Empty();
+	if (_ParseURL(_T("/?a=one&b=two"), _T("b")) != _T("two")) {
+		outFailure = _T("web parser failed deterministic query");
+		return false;
+	}
+	if (_SpecialChars(_T("<&\"'\n"), true) != _T("&lt;&amp;&quot;&#8217;\\n")) {
+		outFailure = _T("web serialization escaping changed");
+		return false;
+	}
+	const Bytef input[] = "mod02";
+	Bytef compressed[64] = {};
+	uLongf compressedLength = sizeof(compressed);
+	if (_GzipCompress(compressed, &compressedLength, input, sizeof(input) - 1, Z_BEST_SPEED) != 0
+		|| compressedLength < 18
+		|| compressed[0] != 0x1f || compressed[1] != 0x8b) {
+		outFailure = _T("web gzip serialization failed");
+		return false;
+	}
+	const uLong expectedCrc = crc32(0, input, sizeof(input) - 1);
+	const size_t trailer = static_cast<size_t>(compressedLength) - 8;
+	const uint32 trailerCrc = static_cast<uint32>(compressed[trailer])
+		| (static_cast<uint32>(compressed[trailer + 1]) << 8)
+		| (static_cast<uint32>(compressed[trailer + 2]) << 16)
+		| (static_cast<uint32>(compressed[trailer + 3]) << 24);
+	const uint32 trailerSize = static_cast<uint32>(compressed[trailer + 4])
+		| (static_cast<uint32>(compressed[trailer + 5]) << 8)
+		| (static_cast<uint32>(compressed[trailer + 6]) << 16)
+		| (static_cast<uint32>(compressed[trailer + 7]) << 24);
+	if (trailerCrc != static_cast<uint32>(expectedCrc)
+		|| trailerSize != sizeof(input) - 1) {
+		outFailure = _T("web gzip trailer changed");
+		return false;
+	}
+	Bytef inflated[sizeof(input) - 1] = {};
+	z_stream inflater = {};
+	inflater.next_in = compressed;
+	inflater.avail_in = static_cast<uInt>(compressedLength);
+	inflater.next_out = inflated;
+	inflater.avail_out = sizeof(inflated);
+	if (inflateInit2(&inflater, MAX_WBITS + 16) != Z_OK) {
+		outFailure = _T("web gzip inflate init failed");
+		return false;
+	}
+	const int inflateResult = inflate(&inflater, Z_FINISH);
+	inflateEnd(&inflater);
+	if (inflateResult != Z_STREAM_END || inflater.total_out != sizeof(inflated)
+		|| memcmp(inflated, input, sizeof(inflated)) != 0) {
+		outFailure = _T("web gzip round-trip changed");
+		return false;
+	}
+	return true;
+}
+
 void CWebServer::_ConnectToServer(const CString &sIP, int nPort)
 {
 	CServer *server = theApp.serverlist->GetServerByAddress(sIP, (uint16)nPort);

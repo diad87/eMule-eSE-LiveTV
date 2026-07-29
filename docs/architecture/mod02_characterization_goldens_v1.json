@@ -1,0 +1,84 @@
+{
+  "golden_id": "urn:emule:architecture:mod-0.2:production-structural-goldens:v1",
+  "goldens": {
+    "live_stream_session_chunk_callback": {
+      "production_file": "srchybrid/LiveStreamManager.cpp",
+      "symbols": [
+        "CLiveStreamManager::StartBroadcast",
+        "CLiveStreamManager::FeedSegment",
+        "CLiveStreamManager::OnChunkReceived"
+      ],
+      "token_sha256": {
+        "CLiveStreamManager::FeedSegment": "cb0dff9c1fb551dacca6c8b5ec95c1b11b8fa52e35e9d69219b1bf54f404f8ae",
+        "CLiveStreamManager::OnChunkReceived": "7cda98e42a3619e535f067c7812c1f04ac1d32e3251d93dbb46b32e03674639f",
+        "CLiveStreamManager::StartBroadcast": "089d8baad0a2588f272c80f18aac38dd7ba83fcb00644d5161cea3eb652eec93"
+      }
+    },
+    "live_tunnel_dispatch": {
+      "production_file": "srchybrid/LiveTunnel.cpp",
+      "symbols": [
+        "CLiveTunnel::SendThrough",
+        "CLiveTunnel::OnCellReceived",
+        "CLiveTunnel::DestroyCircuitFailClosed"
+      ],
+      "token_sha256": {
+        "CLiveTunnel::DestroyCircuitFailClosed": "f34cbd9407fa7908ce6f788b53b6985d3a84b61d9c60c8f6f462c27690c8fb6d",
+        "CLiveTunnel::OnCellReceived": "9dfce111a4cc6cea62e02afcd9107624df1bf2a5c6dc2ee272b4b59496af201d",
+        "CLiveTunnel::SendThrough": "e551d73a1a3c0d600d28492576baf4ac11b9ca94e0c5417265987c04cc703cc2"
+      }
+    },
+    "live_tunnel_framing": {
+      "production_file": "srchybrid/LiveCellQueue.cpp",
+      "symbols": [
+        "PackSubHeader",
+        "ParseSubHeader",
+        "PackFragHeader",
+        "ParseFragHeader"
+      ],
+      "token_sha256": {
+        "PackFragHeader": "07366809009ed29f0174188045a7c6e422154a3f6008bced5b05a103ee02bbab",
+        "PackSubHeader": "cfb693f69da2c0f26356bd9f7d272aea3296367c63819aa657d4b23c2e4a38bc",
+        "ParseFragHeader": "034c6dcc3c6e3d63f023a55d17c47654f48fa85fd27ea66a2615d4762b7ee54d",
+        "ParseSubHeader": "312f10b21546aa2a5eb27e50b23ec670b0d42bdbd9b2ca295b3d1dc1eedb9a49"
+      }
+    },
+    "web_live_dispatch": {
+      "production_file": "srchybrid/WebServer.cpp",
+      "symbols": [
+        "CWebServer::_ProcessLiveAPI"
+      ],
+      "token_sha256": {
+        "CWebServer::_ProcessLiveAPI": "e25d8c34eae9881698893da470b946cfc421c57d337bf79dd78882762793c256"
+      }
+    },
+    "web_parser_security": {
+      "production_file": "srchybrid/WebServer.cpp",
+      "symbols": [
+        "EseHexToKey16A",
+        "CWebServer::_ProcessLiveAPI",
+        "CWebServer::_SpecialChars"
+      ],
+      "token_sha256": {
+        "CWebServer::_ProcessLiveAPI": "e25d8c34eae9881698893da470b946cfc421c57d337bf79dd78882762793c256",
+        "CWebServer::_SpecialChars": "8850caee8e3f2848f746dd2e42649bb071a7d460ae44c21d52e43a63b52567be",
+        "EseHexToKey16A": "f09086fb347ef0e878566aef2da92dbbe6606252291fdc33b8b995a458f3c1d2"
+      }
+    },
+    "web_serialization": {
+      "production_file": "srchybrid/WebServer.cpp",
+      "symbols": [
+        "CWebServer::_ProcessURL",
+        "CWebServer::_GetServerInfo",
+        "CWebServer::_GetStats",
+        "CWebServer::_GzipCompress"
+      ],
+      "token_sha256": {
+        "CWebServer::_GetServerInfo": "0f3b5e2099908319a9de76b0b716bae0abb3564fb21b8ad75c2452d2ee372bbf",
+        "CWebServer::_GetStats": "d6f1c5e71a4737137fe9b93876eaf7075255f4645910f5c055c5261eda1027a2",
+        "CWebServer::_GzipCompress": "412c1d094c34d8051a732bbc9b3c05af585376ad1613ade3ad41f48191705e56",
+        "CWebServer::_ProcessURL": "c81cfb9c56a978abb75fc266d137a79f813b8b1368a68e4008e2eae4e0694884"
+      }
+    }
+  },
+  "tokenization": "comment and whitespace insensitive C++ lexical tokens; string literals preserved exactly"
+}

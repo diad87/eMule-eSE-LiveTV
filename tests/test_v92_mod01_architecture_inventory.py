@@ -13,6 +13,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 INVENTORY = ROOT / "docs" / "architecture" / "mod01_architecture_inventory_v1.json"
 SCRIPT = ROOT / "tools" / "architecture" / "generate_mod01_architecture_inventory.py"
+OVERLAYS = ROOT / "docs" / "architecture" / "mod01_approved_overlays_v1.json"
 BASELINE = "b875d3dd61a2d675b2138d61161f0a8fec9d9888"
 EXPECTED = {
     "LiveTunnel": ("CLiveTunnel", "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h"),
@@ -49,6 +50,24 @@ class Mod01ArchitectureInventoryTest(unittest.TestCase):
     def test_inventory_is_reproducible_and_worktree_is_frozen(self) -> None:
         completed = subprocess.run(
             [sys.executable, str(SCRIPT), "--verify"], cwd=ROOT,
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_mod02_overlay_is_exactly_hash_bound_and_rejects_byte_drift(self) -> None:
+        overlays = json.loads(OVERLAYS.read_text(encoding="utf-8"))
+        self.assertEqual(overlays["schema"], "ese.mod01.approved-overlays/v1")
+        self.assertEqual(overlays["baseline_commit"], BASELINE)
+        self.assertEqual({item["path"] for item in overlays["overlays"]}, {
+            "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h",
+            "srchybrid/WebServer.cpp", "srchybrid/WebServer.h",
+        })
+        for item in overlays["overlays"]:
+            self.assertRegex(item["baseline_sha256"], r"^[0-9a-f]{64}$")
+            self.assertRegex(item["overlay_sha256"], r"^[0-9a-f]{64}$")
+            self.assertTrue(item["task"] and item["reason"])
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT), "--negative-overlay-fixture"], cwd=ROOT,
             text=True, capture_output=True, check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)

@@ -725,7 +725,12 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   assert.match(address, /IsUniqueLocalIPv6[\s\S]{0,360}\(m_IP\[0\] & 0xfe\) == 0xfc/);
   assert.match(address, /IsUsableDirectIPv6[\s\S]{0,360}IsPublicIP\(\) \|\| IsUniqueLocalIPv6\(\)/);
   assert.match(liveManager, /address\.IsUsableDirectIPv6\(\)/);
-  assert.match(base, /bDirectOverlayRoute[\s\S]{0,900}m_ipv6Address\.IsPublicIP\(\) \|\| bDirectOverlayRoute/);
+  assert.match(base, /const bool bSameLanDirectRoute = bDirectRoute/);
+  assert.match(base,
+    /bSameLanDirectRoute = bDirectRoute[\s\S]{0,260}ObserveSameLanRouteToPeer\(/);
+  assert.match(base,
+    /bSameLanDirectRoute = bDirectRoute[\s\S]{0,420}CanUseSameLanEndpoint\(/);
+  assert.match(base, /m_ipv6Address\.IsPublicIP\(\) \|\| bSameLanDirectRoute/);
   assert.match(liveManager, /native IPv6 Live source/);
   assert.match(client, /SetDirectIPv6Address[\s\S]{0,300}IsUsableDirectIPv6\(\)/);
   assert.match(liveManager, /SetDirectIPv6Address\(address\)/);

@@ -323,6 +323,8 @@ public:
 	bool ReloadTemplates();
 	INT_PTR GetSessionCount()					{ return m_Params.Sessions.GetCount(); }
 	bool IsRunning() const						{ return m_bServerWorking; }
+	// MOD-0.2: headless production parser/security/serialization seam.
+	static bool RunCharacterizationSelfTest(CString& outFailure);
 protected:
 	//all static method names have an underscore prefix
 	static void		_ProcessURL(const ThreadData &Data);

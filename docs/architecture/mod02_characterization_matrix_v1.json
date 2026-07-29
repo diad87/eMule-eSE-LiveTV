@@ -1,0 +1,31 @@
+{
+  "matrix_id": "urn:emule:architecture:mod-0.2:characterization:v1",
+  "baseline_commit": "6dc20ad4b024d5cd26c3c7cec6d6943cb99f9dba",
+  "scope": "characterization only; no coordinator extraction or functional change",
+  "acceptance": "PASS requires the source-bound portable production selftest and every structural golden; structural checks alone never award PASS.",
+  "runtime_gate": {
+    "runner": "tools/architecture/run_mod02_stream_selftest.ps1",
+    "build_manifest": "docs/architecture/mod02_build_manifest_v1.json",
+    "status": "PENDING_COMMIT_AND_REBUILD",
+    "required_summary": [
+      "build_manifest_sha256",
+      "source_identity_sha256",
+      "source_tree_clean",
+      "executable_sha256",
+      "marker_sha256",
+      "termination_confirmed"
+    ],
+    "acceptance": "The committed build manifest, source identity marker and binary SHA must all match; then exit_code=0, source_tree_clean=true, markers_verified=true and termination_confirmed=true."
+  },
+  "rows": [
+    {"id":"LT-01","coordinator":"CLiveTunnel","seam":"tests/test_tunnel_framing.py","existing_evidence":"algorithm replica; not production execution","classification":"gap_replaced_by_production_boundary","input":"two-cell sub/fragment header vector","observable":"production split, parse and reassembly preserve four-byte payload","golden":"live_tunnel_framing","runner":"portable_production_selftest","dependency":"Release x64 binary plus local FFmpeg","execution_kind":"production_binary_selftest","gap":"full peer-to-peer transport remains a later topology test; this gate characterizes the production framing boundary."},
+    {"id":"LT-02","coordinator":"CLiveTunnel","seam":"tests/test_v92_k03_port_roles.py","existing_evidence":"source scan","classification":"gap_replaced_by_production_boundary","input":"empty payload dispatch","observable":"production SendThrough rejects invalid empty input","golden":"live_tunnel_dispatch","runner":"portable_production_selftest","dependency":"Release x64 binary","execution_kind":"production_binary_selftest","gap":"a successful live relay dispatch needs a multi-peer fixture and is explicitly outside this deterministic gate."},
+    {"id":"LT-03","coordinator":"CLiveTunnel","seam":"tests/test_v92_mx04_ipv6_scope.py","existing_evidence":"source scan","classification":"source_scan_only","input":"verified v6 route observation","observable":"SendThrough route-consumption contract remains fingerprinted in production","golden":"live_tunnel_dispatch","runner":"structural_production_slice","dependency":"dual-stack multi-peer topology","execution_kind":"production_source_boundary","gap":"the selftest exercises the tunnel coordinator but cannot synthesize a verified IPv6 route without external peers."},
+    {"id":"LT-04","coordinator":"CLiveTunnel","seam":"srchybrid/eSE/test/live_tv_regression.test.js","existing_evidence":"C++ source assertions plus Node production modules","classification":"mixed_source_scan_and_real_node_edge","input":"circuit lifecycle","observable":"production successor and fail-closed bodies","golden":"live_tunnel_dispatch","runner":"structural_production_slice","dependency":"relay lifecycle fixture","execution_kind":"production_source_boundary","gap":"Node does not execute MFC tunnel lifecycle; its production contract is intentionally guarded structurally here."},
+    {"id":"WS-01","coordinator":"CWebServer","seam":"srchybrid/eSE/test/live_tv_regression.test.js","existing_evidence":"C++ source assertions plus Node production modules","classification":"gap_replaced_by_production_boundary","input":"deterministic query string and escaping vector","observable":"production URL parse and escaping return exact values","golden":"web_parser_security","runner":"portable_production_selftest","dependency":"Release x64 binary","execution_kind":"production_binary_selftest","gap":"authenticated socket dispatch is a later HTTP topology test; parser/security boundary is executed now."},
+    {"id":"WS-02","coordinator":"CWebServer","seam":"tests/test_v92_k03_port_roles.py","existing_evidence":"source scan","classification":"gap_replaced_by_production_boundary","input":"fixed five-byte response payload","observable":"production gzip serialization succeeds and emits bytes","golden":"web_serialization","runner":"portable_production_selftest","dependency":"Release x64 binary","execution_kind":"production_binary_selftest","gap":"preference-dependent status response needs an app-state fixture; serialization primitive is executed now."},
+    {"id":"WS-03","coordinator":"CWebServer","seam":"tests/test_v92_l05_false_highid.py","existing_evidence":"source scan","classification":"source_scan_only","input":"reachability status","observable":"production live API dispatch body","golden":"web_live_dispatch","runner":"structural_production_slice","dependency":"running manager plus web request fixture","execution_kind":"production_source_boundary","gap":"no safe headless fixture exists for mutable reachability/UI state in MOD-0.2."},
+    {"id":"WS-04","coordinator":"CWebServer","seam":"tests/test_v92_l08_webserver_privacy.py","existing_evidence":"source scan","classification":"gap_replaced_by_production_boundary","input":"metacharacter/newline serialization vector","observable":"production escaping remains deterministic","golden":"web_parser_security","runner":"portable_production_selftest","dependency":"Release x64 binary","execution_kind":"production_binary_selftest","gap":"preference-controlled privacy mapping is deferred to its dedicated integration fixture; no configuration is mutated by this gate."},
+    {"id":"LS-01","coordinator":"CLiveStreamManager","seam":"srchybrid/eSE/test/live_tv_regression.test.js","existing_evidence":"C++ source assertions plus Node production modules","classification":"gap_replaced_by_production_boundary","input":"broadcast session, signed segment, duplicate and tamper vectors","observable":"production manager accepts valid ingest and rejects duplicate/tampered chunks","golden":"live_stream_session_chunk_callback","runner":"portable_production_selftest","dependency":"Release x64 binary and local FFmpeg","execution_kind":"production_binary_selftest","gap":"none for the deterministic signed-ingest characterization; real-network endurance remains a later phase."}
+  ]
+}

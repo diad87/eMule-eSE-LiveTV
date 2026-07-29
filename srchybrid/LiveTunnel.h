@@ -87,6 +87,11 @@ class CLiveTunnel {
 public:
     static CLiveTunnel& Get();
 
+    // MOD-0.2: headless characterization seam. It only invokes production
+    // framing/reassembly and the empty-dispatch rejection; normal runtime
+    // paths never call it.
+    bool RunCharacterizationSelfTest(CString& outFailure);
+
     // Start building `count` circuits to reach the given origin pubkey
     // through the given pool of relay candidates. Returns number of
     // CREATE cells issued. Callbacks via OnCellReceived complete the

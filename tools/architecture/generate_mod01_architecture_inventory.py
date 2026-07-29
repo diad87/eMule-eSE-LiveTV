@@ -3,10 +3,10 @@
 
 The extractor is deliberately lexical, not a C++ compiler.  It operates on
 the immutable Git object named by BASELINE, so line endings and a developer's
-checkout location cannot alter the recorded inventory.  Verification also
+checkout location cannot alter the recorded inventory. Verification also
 requires the working-tree coordinator sources to normalize to those frozen
-objects; a source change therefore fails until an explicit new baseline is
-chosen and the inventory is regenerated.
+objects. The only exception is a versioned, exact-hash overlay manifest for an
+approved later-phase test seam; it never changes the baseline.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from typing import Any
 BASELINE = "b875d3dd61a2d675b2138d61161f0a8fec9d9888"
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "docs" / "architecture" / "mod01_architecture_inventory_v1.json"
+OVERLAY_MANIFEST = ROOT / "docs" / "architecture" / "mod01_approved_overlays_v1.json"
 TARGETS = {
     "LiveTunnel": ("CLiveTunnel", "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h"),
     "WebServer": ("CWebServer", "srchybrid/WebServer.cpp", "srchybrid/WebServer.h"),
@@ -850,19 +851,85 @@ def build() -> dict[str, Any]:
     }
 
 
-def verify(data: dict[str, Any]) -> list[str]:
+def approved_overlays(data: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
+    """Return only exact, baseline-bound approved current file hashes."""
+    errors: list[str] = []
+    try:
+        manifest = json.loads(OVERLAY_MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return {}, [f"MOD-0.1 overlay manifest unavailable: {error}"]
+    if manifest.get("schema") != "ese.mod01.approved-overlays/v1":
+        errors.append("MOD-0.1 overlay manifest schema is invalid")
+    if manifest.get("baseline_commit") != BASELINE:
+        errors.append("MOD-0.1 overlay manifest baseline is not the frozen baseline")
+    frozen = {
+        entry["path"]: entry["sha256"]
+        for record in data.get("monoliths", []) for entry in record.get("files", [])
+    }
+    approved: dict[str, str] = {}
+    overlays = manifest.get("overlays")
+    if not isinstance(overlays, list) or not overlays:
+        errors.append("MOD-0.1 overlay manifest has no explicit overlays")
+        return approved, errors
+    required = {"path", "baseline_sha256", "overlay_sha256", "task", "reason"}
+    for overlay in overlays:
+        if not isinstance(overlay, dict) or set(overlay) != required:
+            errors.append("MOD-0.1 overlay record must contain only exact approval fields")
+            continue
+        path = overlay["path"]
+        baseline_hash = overlay["baseline_sha256"]
+        overlay_hash = overlay["overlay_sha256"]
+        valid = (
+            isinstance(path, str) and path in frozen and path not in approved
+            and baseline_hash == frozen.get(path)
+            and isinstance(overlay_hash, str)
+            and re.fullmatch(r"[0-9a-f]{64}", overlay_hash) is not None
+            and isinstance(overlay["task"], str) and bool(overlay["task"].strip())
+            and isinstance(overlay["reason"], str) and bool(overlay["reason"].strip())
+        )
+        if not valid:
+            errors.append(f"MOD-0.1 overlay record is not exact and baseline-bound: {path}")
+            continue
+        approved[path] = overlay_hash
+    return approved, errors
+
+
+def verify(data: dict[str, Any], content_overrides: dict[str, bytes] | None = None) -> list[str]:
     errors = []
     if data != build():
         errors.append("stored inventory is not reproducible from the frozen baseline")
+    approved, overlay_errors = approved_overlays(data)
+    errors.extend(overlay_errors)
     for record in data.get("monoliths", []):
         for file_record in record.get("files", []):
             path = ROOT / file_record["path"]
             if not path.is_file():
                 errors.append(f"missing working-tree source: {file_record['path']}")
                 continue
-            if digest(normalized(path.read_bytes())) != file_record["sha256"]:
+            current = (content_overrides or {}).get(file_record["path"], path.read_bytes())
+            current_hash = digest(normalized(current))
+            if current_hash == file_record["sha256"]:
+                continue
+            if approved.get(file_record["path"]) == current_hash:
+                continue
+            if file_record["path"] in approved:
+                errors.append(f"approved overlay hash drifted: {file_record['path']}")
+            else:
                 errors.append(f"working-tree monolith changed without a new frozen inventory: {file_record['path']}")
     return errors
+
+
+def negative_overlay_fixture(data: dict[str, Any]) -> list[str]:
+    approved, errors = approved_overlays(data)
+    if errors:
+        return errors
+    path = next(iter(sorted(approved)), None)
+    if path is None:
+        return ["MOD-0.1 negative overlay fixture needs an approved overlay"]
+    mutated = normalized((ROOT / path).read_bytes()) + b"\n// MOD-0.1 negative overlay fixture\n"
+    if not verify(data, {path: mutated}):
+        return ["MOD-0.1 negative overlay fixture was accepted"]
+    return []
 
 
 def main() -> int:
@@ -870,6 +937,7 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--write", action="store_true")
     mode.add_argument("--verify", action="store_true")
+    mode.add_argument("--negative-overlay-fixture", action="store_true")
     args = parser.parse_args()
     if args.write:
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
@@ -880,7 +948,7 @@ def main() -> int:
     except (OSError, json.JSONDecodeError) as error:
         print(f"MOD-0.1 inventory unavailable: {error}", file=sys.stderr)
         return 1
-    errors = verify(data)
+    errors = negative_overlay_fixture(data) if args.negative_overlay_fixture else verify(data)
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1

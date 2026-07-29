@@ -59,6 +59,8 @@
 #include "SharedFileList.h"
 #include "ED2KLink.h"
 #include "LiveStreamManager.h"
+#include "LiveTunnel.h"
+#include "Mod02BuildIdentity.h"
 #include "RelayClient.h"
 #include "DirectReachabilityManager.h"
 #include "Splashscreen.h"
@@ -98,7 +100,6 @@
 // crypto / Kad headers that we don't want everywhere.
 #include "LiveSubscriptionStore.h"
 #include "LiveBootstrap.h"
-#include "LiveTunnel.h"
 #include "kademlia/kademlia/KadV2SubscriberPin.h"
 #include "kademlia/kademlia/KadV2TunnelPool.h"
 #include "kademlia/kademlia/KadV2ModeSelector.h"
@@ -151,6 +152,20 @@ static const UINT_PTR UPNP_LOCAL_FAILURE_TOKEN_MASK = 0x3fffffffu;
 static UINT AFX_CDECL HeadlessActionDelayThread(LPVOID param);
 static UINT AFX_CDECL SelfTestExitThread(LPVOID param);
 static void ScheduleSelfTestExit(int exitCode);
+
+// MOD-0.2 records only fixed, non-sensitive proof markers in the isolated
+// selftest working directory. The external runner rejects a zero exit code if
+// any marker is missing, so an older or bypassed binary cannot look green.
+static void AppendMod02SelfTestMarker(const char* marker) noexcept
+{
+	HANDLE file = ::CreateFileA("mod02-selftest-markers.log", FILE_APPEND_DATA,
+		FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (file == INVALID_HANDLE_VALUE)
+		return;
+	DWORD written = 0;
+	::WriteFile(file, marker, static_cast<DWORD>(strlen(marker)), &written, NULL);
+	::CloseHandle(file);
+}
 
 static uint64 UPnPMonotonicMilliseconds()
 {
@@ -1180,27 +1195,44 @@ void CemuleDlg::RunHeadlessAction() noexcept
 			LIVE_LOG("HEADLESS", "Selftest: testpattern + signed chunk loopback");
 			bool passed = false;
 			CString failure;
-			if (theApp.liveStreamManager) {
-				const bool started = theApp.liveStreamManager->StartBroadcastWithSource(
-					_T("testpattern"), _T("Selftest"),
-					_T(""), _T("en"), 1500);
-				if (!started) {
-					failure = _T("test-pattern broadcast failed to start or prebuffer");
-				} else {
-					bool ffmpegRunning = false;
-					int chunkCount = 0;
-					theApp.liveStreamManager->GetBroadcastLivenessStatus(
-						ffmpegRunning, chunkCount);
-					if (!ffmpegRunning || chunkCount < 3) {
-						failure.Format(_T("prebuffer invariant failed (ffmpeg=%d chunks=%d)"),
-							ffmpegRunning ? 1 : 0, chunkCount);
-					} else {
-						passed = theApp.liveStreamManager->RunIsolatedLoopbackSelfTest(failure);
-					}
-				}
-				theApp.liveStreamManager->StopBroadcastFull();
+			AppendMod02SelfTestMarker("SOURCE " ESE_MOD02_CRITICAL_SOURCE_SHA256 "\n");
+			AppendMod02SelfTestMarker("BEGIN CLiveTunnel\n");
+			if (!eSELive::CLiveTunnel::Get().RunCharacterizationSelfTest(failure)) {
+				AppendMod02SelfTestMarker("FAIL CLiveTunnel\n");
+				failure = _T("LiveTunnel characterization: ") + failure;
 			} else {
-				failure = _T("LiveStreamManager is unavailable");
+				AppendMod02SelfTestMarker("PASS CLiveTunnel\n");
+				AppendMod02SelfTestMarker("BEGIN CWebServer\n");
+				if (!CWebServer::RunCharacterizationSelfTest(failure)) {
+					AppendMod02SelfTestMarker("FAIL CWebServer\n");
+					failure = _T("WebServer characterization: ") + failure;
+				} else {
+					AppendMod02SelfTestMarker("PASS CWebServer\n");
+					AppendMod02SelfTestMarker("BEGIN CLiveStreamManager\n");
+					if (theApp.liveStreamManager) {
+						const bool started = theApp.liveStreamManager->StartBroadcastWithSource(
+							_T("testpattern"), _T("Selftest"),
+							_T(""), _T("en"), 1500);
+						if (!started) {
+							failure = _T("test-pattern broadcast failed to start or prebuffer");
+						} else {
+							bool ffmpegRunning = false;
+							int chunkCount = 0;
+							theApp.liveStreamManager->GetBroadcastLivenessStatus(
+								ffmpegRunning, chunkCount);
+							if (!ffmpegRunning || chunkCount < 3) {
+								failure.Format(_T("prebuffer invariant failed (ffmpeg=%d chunks=%d)"),
+									ffmpegRunning ? 1 : 0, chunkCount);
+							} else {
+								passed = theApp.liveStreamManager->RunIsolatedLoopbackSelfTest(failure);
+							}
+						}
+						theApp.liveStreamManager->StopBroadcastFull();
+					} else {
+						failure = _T("LiveStreamManager is unavailable");
+					}
+					AppendMod02SelfTestMarker(passed ? "PASS CLiveStreamManager\n" : "FAIL CLiveStreamManager\n");
+				}
 			}
 			if (passed)
 				LIVE_LOG("HEADLESS", "Selftest PASS — quitting with code 0");

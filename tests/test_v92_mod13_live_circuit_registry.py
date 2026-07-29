@@ -13,6 +13,7 @@ HEADER = ROOT / "srchybrid" / "LiveCircuitRegistry.h"
 SOURCE = ROOT / "srchybrid" / "LiveCircuitRegistry.cpp"
 TUNNEL_HEADER = ROOT / "srchybrid" / "LiveTunnel.h"
 TUNNEL_SOURCE = ROOT / "srchybrid" / "LiveTunnel.cpp"
+HANDSHAKE_SOURCE = ROOT / "srchybrid" / "LiveCircuitHandshake.cpp"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 
 
@@ -23,6 +24,7 @@ class Mod13LiveCircuitRegistryTest(unittest.TestCase):
         cls.source = SOURCE.read_text(encoding="utf-8")
         cls.tunnel_header = TUNNEL_HEADER.read_text(encoding="utf-8")
         cls.tunnel_source = TUNNEL_SOURCE.read_text(encoding="utf-8")
+        cls.handshake_source = HANDSHAKE_SOURCE.read_text(encoding="utf-8")
 
     def test_public_contract_is_portable_and_has_no_second_lock(self) -> None:
         includes = set(re.findall(
@@ -84,36 +86,40 @@ class Mod13LiveCircuitRegistryTest(unittest.TestCase):
         )
         self.assertIn("m_circuitRegistry.NextRoundRobin()", self.tunnel_source)
         self.assertIn("m_circuitRegistry.RemoveDestroyed(", self.tunnel_source)
-        zero_preflight = self.tunnel_source.index(
-            "if (circId == 0 || m_circuitRegistry.ContainsAnyLegId(circId))",
+        zero_preflight = self.handshake_source.index(
+            "if (circId == 0 || "
+            "m_host.HandshakeCircuitRegistry().ContainsAnyLegId(circId))",
         )
-        create_crypto = self.tunnel_source.index(
+        create_crypto = self.handshake_source.index(
             "if (!X25519GenerateKeypair(erPub, erPriv))",
             zero_preflight,
         )
-        created_wire = self.tunnel_source.index(
-            "if (!SendCellToPeer(fromPeer, cell))",
+        created_wire = self.handshake_source.index(
+            "if (!m_host.SendHandshakeCell(fromPeer, cell))",
             create_crypto,
         )
         self.assertLess(zero_preflight, create_crypto)
         self.assertLess(zero_preflight, created_wire)
         self.assertIn(
             "circ->State() != CircuitState::Pending",
-            self.tunnel_source,
+            self.handshake_source,
         )
         self.assertIn(
             "circ->State() != CircuitState::HalfBuilt",
-            self.tunnel_source,
+            self.handshake_source,
         )
         self.assertIn(
-            "if (!m_circuitRegistry.Transition(circ, CircuitState::Active))",
-            self.tunnel_source,
+            "if (!m_host.HandshakeCircuitRegistry().Transition("
+            "circ, CircuitState::Active))",
+            self.handshake_source,
         )
-        transition_before_wire = self.tunnel_source.index(
-            "if (!m_circuitRegistry.Transition(circ, CircuitState::HalfBuilt))",
+        transition_before_wire = self.handshake_source.index(
+            "if (!m_host.HandshakeCircuitRegistry().Transition("
+            "circ, CircuitState::HalfBuilt))",
         )
-        extend_wire = self.tunnel_source.index(
-            "if (!circ->m_firstHopClient || !SendCellToPeer",
+        extend_wire = self.handshake_source.index(
+            "if (!circ->m_firstHopClient || "
+            "!m_host.SendHandshakeCell",
             transition_before_wire,
         )
         self.assertLess(transition_before_wire, extend_wire)

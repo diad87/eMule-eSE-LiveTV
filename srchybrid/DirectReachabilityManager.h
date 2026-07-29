@@ -7,6 +7,7 @@
 #include "natmap/mapper_result.h"
 #include "natmap/legacy_mapper_projection.h"
 #include "natmap/network_change.h"
+#include "natmap/direct_route_selection.h"
 #include <atomic>
 
 // Main-thread owner for direct-reachability state. D1 is deliberately
@@ -27,9 +28,15 @@ public:
 	uint16 GetAdvertisedV6TcpPort() const;
 	uint16 GetAdvertisedV6UdpPort() const;
 	bool BeginEd2kVerification(natmap::VerificationAttempt& attempt);
+	bool BeginDirectV4Verification(
+		uint32 nSocketLocalIP, uint64 nCapturedGeneration,
+		natmap::VerificationAttempt& attempt);
 	bool ObserveServerIdChange(
 		bool bHighId, const natmap::VerificationAttempt& attempt);
 	bool ObserveInboundTcpAccept(
+		const natmap::VerificationAttempt& attempt);
+	bool ObserveDirectV4ServerState(
+		bool bHighId, uint32 nPublicIP,
 		const natmap::VerificationAttempt& attempt);
 	bool HasVerifiedEd2kReachability() const;
 	uint64 GetTopologyGeneration() const;
@@ -49,6 +56,11 @@ public:
 	// Unlike finite expiry, this is intentionally independent of lease
 	// lifetime because health probes are authoritative for permanent leases.
 	bool ObserveMappingLoss();
+	natmap::DirectRouteSelection SelectPreferredRoute(
+		const natmap::CandidateObservation& directV6,
+		bool bIPv6Enabled, bool bMappingsEnabled,
+		bool bPeerSupportsIPv6, uint32 nPublishedV4,
+		uint16 nPublishedTcpPort) const;
 
 	const natmap::ReachabilitySnapshot& GetSnapshot() const;
 
@@ -73,6 +85,9 @@ private:
 	void FailClosedAtGenerationLimit(natmap::ReasonCode reason);
 	bool DisableMappedPlanes(natmap::ReasonCode reason);
 	bool PromoteEd2kIfEvidenceComplete();
+	bool PromoteDirectV4IfEvidenceComplete();
+	bool IsCurrentDirectV4Attempt(
+		const natmap::VerificationAttempt& attempt) const;
 	static uint64 MonotonicMilliseconds();
 
 	DWORD m_dwOwnerThreadId;
@@ -88,6 +103,10 @@ private:
 	natmap::NatChainTransaction m_udpChain;
 	natmap::RouteBindingIdentity m_mapperRouteBinding;
 	natmap::MapperTopologyIdentity m_mapperTopologyIdentity;
+	natmap::CandidateObservation m_directV4Observation;
+	natmap::VerificationAttempt m_directV4Attempt;
+	natmap::Evidence m_directV4ServerEvidence;
+	natmap::Evidence m_directV4InboundEvidence;
 	uint64 m_nNetworkChangeRediscoveryGeneration;
 	natmap::ReachabilitySnapshot m_snapshot;
 };

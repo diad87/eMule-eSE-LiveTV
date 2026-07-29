@@ -804,6 +804,7 @@ protected:
 	DWORD	m_lastRefreshedDLDisplay;
 	DWORD	m_lastRefreshedULDisplay;
 	DWORD	m_random_update_wait;
+	uint64	m_nPublicIPV6RequestGeneration;
 
 	// using bit fields for less important flags, to save some bytes
 	UINT m_fHashsetRequestingMD4 : 1, // we have sent a hashset request to this client in the current connection

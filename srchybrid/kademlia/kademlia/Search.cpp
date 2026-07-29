@@ -63,6 +63,7 @@ their client on the eMule forum.
 #include "eMuleAI/FastKad.h" // eSE: Adaptive Kad response time estimation
 #include "eMuleAI/Address.h"
 #include "FirewallProberV6.h"
+#include "DirectReachabilityManager.h"
 #include "ReachabilityWire.h"
 #include "ClientUDPSocket.h"
 
@@ -798,11 +799,22 @@ void CSearch::StorePacket()
 			if (bUdpVerified)
 				uReachCaps |= KAD_REACH_CAP_V4_UDP_IN;
 
-			const CAddress publicV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+			const uint64 topologyGeneration =
+				theApp.directreachability != NULL
+					? theApp.directreachability
+						->GetTopologyGeneration() : 0;
+			const natmap::CandidateObservation directV6 =
+				CFirewallProberV6::Instance()
+					.GetDirectRouteObservation(topologyGeneration);
+			const CAddress publicV6 =
+				CFirewallProberV6::Instance().GetDetectedV6IP();
 			const bool bHasPublicV6 = thePrefs.IsIPv6Enabled()
+				&& directV6.generation == topologyGeneration
+				&& directV6.readiness !=
+					natmap::CandidateReadiness::Absent
 				&& publicV6.GetType() == CAddress::IPv6 && publicV6.IsPublicIP();
-			const bool bV6Inbound = bHasPublicV6
-				&& CFirewallProberV6::Instance().HasInboundV6Observation();
+			const bool bV6Inbound =
+				directV6.IsVerifiedFor(topologyGeneration);
 			if (bHasPublicV6)
 				uReachCaps |= KAD_REACH_CAP_V6_OUT;
 			if (bV6Inbound)

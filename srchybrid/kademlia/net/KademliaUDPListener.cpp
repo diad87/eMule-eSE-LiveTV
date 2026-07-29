@@ -69,6 +69,7 @@ their client on the eMule forum.
 #include "LiveTunnel.h"
 #include "NodeIdentity.h"
 #include "FirewallProberV6.h"   // [eSE v9] root link: GetDetectedV6IP() for the HELLO v6 tag
+#include "DirectReachabilityManager.h"
 #include "eMuleAI/Address.h"     // [eSE v9] CAddress::Data()/GetType()/IsPublicIP()
 #include "kademlia/utils/KadUDPKey.h"
 #include "kademlia/utils/KadClientSearcher.h"
@@ -464,8 +465,28 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 		return false;
 	std::vector<kad6::K6Endpoint> endpoints;
 	const uint16 internalKadPort = CPrefs::GetInternKadPort();
+	const uint64 topologyGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+	const natmap::CandidateObservation directV6 =
+		CFirewallProberV6::Instance().GetDirectRouteObservation(
+			topologyGeneration);
+	const uint32 publicV4 = theApp.GetPublicIP();
+	const natmap::DirectRouteSelection routeSelection =
+		theApp.directreachability != NULL
+			? theApp.directreachability->SelectPreferredRoute(
+				directV6,
+				thePrefs.IsIPv6Enabled(),
+				thePrefs.IsUPnPEnabled(),
+				true,
+				publicV4,
+				theApp.GetLocalTcpPort())
+			: natmap::DirectRouteSelection{};
 	if (thePrefs.IsIPv6Enabled() && theApp.clientudp->IsDualStack()
-		&& internalKadPort != 0) {
+		&& internalKadPort != 0
+		&& directV6.IsVerifiedFor(topologyGeneration)
+		&& routeSelection.route
+			== natmap::PreferredDirectRoute::DirectV6) {
 		const CAddress publicV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
 		if (publicV6.GetType() == CAddress::IPv6 && publicV6.IsPublicIP()) {
 			const uint16 publicV6KadPort =
@@ -478,25 +499,38 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 				endpoint.tcp_port = theApp.GetAdvertisedV6TcpPort();
 				endpoint.transport_flags = kad6::kK6EpUdpKad6;
 				endpoint.observed = 0;
+				endpoint.priority =
+					routeSelection.route
+						== natmap::PreferredDirectRoute::DirectV6
+							? 0 : 1;
 				endpoints.push_back(endpoint);
 			}
 		}
 	}
-	const uint32 publicV4 = theApp.GetPublicIP();
 	if (publicV4 != 0) {
 		const CAddress addressV4(publicV4, false);
 		if (addressV4.GetType() == CAddress::IPv4 && addressV4.IsPublicIP()) {
 			const uint16 publicKadPort =
-				theApp.GetAdvertisedUdpPort();
+				routeSelection.route
+					== natmap::PreferredDirectRoute::MappedV4
+						? theApp.GetAdvertisedUdpPort()
+						: theApp.GetLocalUdpPort();
 			if (publicKadPort != 0) {
 				kad6::K6Endpoint endpoint;
 				endpoint.addr.family = kad6::Kad6Address::Family::IPv4;
 				std::memcpy(endpoint.addr.addr.data(), &publicV4, sizeof publicV4);
 				endpoint.udp_port = publicKadPort;
-				endpoint.tcp_port = theApp.GetAdvertisedTcpPort();
+				endpoint.tcp_port =
+					routeSelection.route
+						== natmap::PreferredDirectRoute::MappedV4
+							? theApp.GetAdvertisedTcpPort()
+							: theApp.GetLocalTcpPort();
 				endpoint.transport_flags = kad6::kK6EpUdpKad6;
 				endpoint.observed = 0;
-				endpoint.priority = 1; // prefer native IPv6 when both are healthy
+				endpoint.priority =
+					routeSelection.route
+						== natmap::PreferredDirectRoute::DirectV6
+							? 1 : 0;
 				endpoints.push_back(endpoint);
 			}
 		}
@@ -544,16 +578,19 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 		}
 		m_kad6LocalRecordReady = true;
 	}
-	kad6::K6Endpoint endpoint = m_kad6LocalRecord.endpoints[0];
-	if (preferredFamily != kad6::Kad6Address::Family::None)
-		for (const kad6::K6Endpoint& candidate : m_kad6LocalRecord.endpoints)
-			if (candidate.addr.family == preferredFamily) {
-				endpoint = candidate;
-				break;
-			}
-	if (preferredFamily != kad6::Kad6Address::Family::None
-		&& endpoint.addr.family != preferredFamily)
+	const kad6::K6Endpoint* selectedEndpoint = NULL;
+	for (const kad6::K6Endpoint& candidate :
+			m_kad6LocalRecord.endpoints) {
+		if (preferredFamily != kad6::Kad6Address::Family::None
+			&& candidate.addr.family != preferredFamily)
+			continue;
+		if (selectedEndpoint == NULL
+			|| candidate.priority < selectedEndpoint->priority)
+			selectedEndpoint = &candidate;
+	}
+	if (selectedEndpoint == NULL)
 		return false;
+	const kad6::K6Endpoint endpoint = *selectedEndpoint;
 
 	out.txid = txid;
 	CUInt128 localId = CKademlia::GetPrefs()->GetKadID();

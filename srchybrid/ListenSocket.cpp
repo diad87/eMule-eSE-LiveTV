@@ -2895,6 +2895,7 @@ CListenSocket::CListenSocket()
 	, m_port()
 	, m_nHalfOpen()
 	, m_nComp()
+	, m_nListenerTopologyGeneration(0)
 {
 }
 
@@ -2965,8 +2966,11 @@ bool CListenSocket::StartListening()
 		}
 	}
 	if (!bUsingV6) {
-		if (!Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, thePrefs.GetBindAddr(), AF_INET))
+		if (!Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, thePrefs.GetBindAddr(), AF_INET)) {
+			bListening = false;
+			m_nListenerTopologyGeneration = 0;
 			return false;
+		}
 	}
 	m_bDualStack = bUsingV6;   // v0.71 IPv6 Sprint 9 — expose to UI status bar
 
@@ -3009,15 +3013,29 @@ bool CListenSocket::StartListening()
 	//	VERIFY( SetSockOpt(SO_CONDITIONAL_ACCEPT, &iOptVal, sizeof iOptVal) );
 	//}
 
-	if (!Listen())
+	if (!Listen()) {
+		Close();
+		bListening = false;
+		m_nListenerTopologyGeneration = 0;
 		return false;
+	}
 
 	m_port = thePrefs.GetPort();
+	m_nListenerTopologyGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
 	return true;
 }
 
 void CListenSocket::ReStartListening()
 {
+	if (m_SocketData.hSocket == INVALID_SOCKET) {
+		if (!StartListening()) {
+			bListening = false;
+			m_nListenerTopologyGeneration = 0;
+		}
+		return;
+	}
 	bListening = true;
 
 	ASSERT(m_nPendingConnections >= 0);
@@ -3101,6 +3119,29 @@ int CALLBACK AcceptConnectionCond(LPWSABUF lpCallerId, LPWSABUF /*lpCallerData*/
 
 void CListenSocket::OnAccept(int nErrorCode)
 {
+	const uint64 currentTopologyGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+	if (currentTopologyGeneration != 0
+		&& m_nListenerTopologyGeneration
+			!= currentTopologyGeneration) {
+		// A listening socket can retain completed handshakes from the previous
+		// topology. Drop the old backlog before accepting anything; a peer
+		// connecting during the fence can retry against the rebound listener.
+		m_ed2kVerificationAttempt =
+			natmap::VerificationAttempt{};
+		Close();
+		CloseK6PreAuth();
+		m_nPendingConnections = 0;
+		bListening = false;
+		if (currentTopologyGeneration != 0
+			&& !StartListening()) {
+			bListening = false;
+			m_nListenerTopologyGeneration = 0;
+		}
+		return;
+	}
+
 	if (!nErrorCode) {
 		if (++m_nPendingConnections < 1) {
 			ASSERT(0);
@@ -3140,6 +3181,8 @@ void CListenSocket::OnAccept(int nErrorCode)
 			SOCKADDR_IN SockAddr = {};
 			CAddress NativeV6;
 			bool bNativeV6 = false;
+			const uint64 acceptedTopologyGeneration =
+				m_nListenerTopologyGeneration;
 			int iSockAddrLen = (int)sizeof SockStorage;
 			if (thePrefs.GetConditionalTCPAccept() && !thePrefs.GetProxySettings().bUseProxy) {
 				s_iAcceptConnectionCondRejected = 0;
@@ -3175,7 +3218,6 @@ void CListenSocket::OnAccept(int nErrorCode)
 				newclient->m_SocketData.hSocket = sNew;
 				newclient->AttachHandle();
 				VERIFY(newclient->SetFamily((ADDRESS_FAMILY)SockStorage.ss_family));
-
 				// Normalize address: v4 → SOCKADDR_IN direct;
 				// v6 v4-mapped → extract last 4 bytes; v6 native → drop.
 				if (SockStorage.ss_family == AF_INET) {
@@ -3227,7 +3269,6 @@ void CListenSocket::OnAccept(int nErrorCode)
 					}
 					continue;
 				}
-
 				AddConnection();
 
 				// v0.71 IPv6 Sprint 9 hotfix — normalize as above for the
@@ -3292,7 +3333,9 @@ void CListenSocket::OnAccept(int nErrorCode)
 				CAddress localV6;
 				if (newclient->GetSockName((SOCKADDR*)&localStorage, &localLength))
 					localV6.FromSA((SOCKADDR*)&localStorage, localLength);
-				CFirewallProberV6::Instance().ReportInboundV6Reachable(localV6);
+				CFirewallProberV6::Instance()
+					.ReportInboundV6Reachable(
+						localV6, acceptedTopologyGeneration);
 				DebugLog(_T("Accepted native IPv6 client [%s]"), (LPCTSTR)NativeV6.ToStringC());
 			} else if (IsGoodIP(SockAddr.sin_addr.s_addr, true)
 				&& theApp.directreachability != NULL) {

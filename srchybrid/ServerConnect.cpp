@@ -194,8 +194,36 @@ void CServerConnect::ConnectionEstablished(CServerSocket *sender)
 
 		// Send login packet
 		if (!sender->IsRelayRouted() && theApp.directreachability != NULL) {
+			sender->m_nDirectTopologyGeneration =
+				theApp.directreachability->GetTopologyGeneration();
+			SOCKADDR_STORAGE localStorage = {};
+			int localLength = sizeof localStorage;
+			if (sender->GetSockName(
+					reinterpret_cast<SOCKADDR*>(&localStorage),
+					&localLength)) {
+				if (localStorage.ss_family == AF_INET) {
+					sender->m_nDirectSocketLocalIP =
+						reinterpret_cast<SOCKADDR_IN*>(
+							&localStorage)->sin_addr.s_addr;
+				} else if (localStorage.ss_family == AF_INET6) {
+					const SOCKADDR_IN6* localV6 =
+						reinterpret_cast<const SOCKADDR_IN6*>(
+							&localStorage);
+					if (IN6_IS_ADDR_V4MAPPED(&localV6->sin6_addr))
+						memcpy(&sender->m_nDirectSocketLocalIP,
+							&localV6->sin6_addr.u.Byte[12],
+							sizeof sender->m_nDirectSocketLocalIP);
+				}
+			}
 			natmap::VerificationAttempt attempt;
-			if (theApp.directreachability->BeginEd2kVerification(attempt)) {
+			const bool directAttempt =
+				theApp.directreachability->BeginDirectV4Verification(
+					sender->m_nDirectSocketLocalIP,
+					sender->m_nDirectTopologyGeneration,
+					attempt);
+			if (directAttempt
+				|| theApp.directreachability
+					->BeginEd2kVerification(attempt)) {
 				sender->m_ed2kVerificationAttempt = attempt;
 				theApp.listensocket->ArmDirectReachabilityVerification(
 					attempt);

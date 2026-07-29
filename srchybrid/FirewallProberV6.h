@@ -27,6 +27,7 @@
 #pragma once
 
 #include "eMuleAI/Address.h"
+#include "natmap/direct_route_selection.h"
 #include <array>
 
 class CFirewallProberV6 {
@@ -61,6 +62,8 @@ public:
 		const_cast<volatile LONG*>(&m_lDetectedV6ExternallyObserved), 0, 0) != 0; }
 	bool          HasInboundV6Observation() const { return ::InterlockedCompareExchange(
 		const_cast<volatile LONG*>(&m_lInboundV6Observed), 0, 0) != 0; }
+	natmap::CandidateObservation GetDirectRouteObservation(
+		uint64 currentGeneration) const;
 	bool          IsPcpMapped() const;
 	bool          IsPcpInboundConfirmed() const;
 	CAddress      GetPcpExternalIP() const;
@@ -79,12 +82,14 @@ public:
     // OP_PUBLICIP_REQ. Peer observation may refine an unconfirmed local candidate;
     // non-public / non-v6 / null addresses are ignored. Egress proof only — does
     // NOT change the cascade verdict (inbound HighID is separate, later work).
-    void          SetDetectedV6IP(const CAddress& addr);
+    void          SetDetectedV6IP(
+		const CAddress& addr, uint64 topologyGeneration);
 
     // Called only after the dual-stack TCP listener accepted a native public
     // IPv6 connection and obtained its exact local destination address. Accept is evidence that
     // the host firewall permits unsolicited IPv6 on the eMule port.
-	void          ReportInboundV6Reachable(const CAddress& localAddress);
+	void          ReportInboundV6Reachable(
+		const CAddress& localAddress, uint64 topologyGeneration);
 
     // Manual override from preferences (Sprint 9 UI exposes this).
     void SetOverrideLayer(ECascadeLayer layer);
@@ -132,6 +137,8 @@ private:
     ECascadeLayer m_eLayer;
     ECascadeLayer m_eOverrideLayer;
     CAddress      m_detectedIP;
+	uint64        m_nDetectedV6Generation;
+	uint64        m_nInboundV6Generation;
 	volatile LONG m_lProbeStarted;   // InterlockedExchange re-entry guard
 	volatile LONG m_lDetectedV6ExternallyObserved;
 	volatile LONG m_lInboundV6Observed;

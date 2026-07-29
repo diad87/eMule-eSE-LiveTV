@@ -42,6 +42,7 @@ $requiredCoverageIds = @(
     'NETWORK_SIGNATURE',
     'NETWORK_CHANGE',
     'MAPPING_RECOVERY',
+    'IPV6_PRIORITY',
     'HYPERV_PURE_PLAN',
     'STATE_CAPTURE',
     'CANONICAL_REPORT',
@@ -242,6 +243,10 @@ try {
             & python.exe (
                 Join-Path $RepoRoot 'tests\test_v92_m05_backoff.py') 2>&1)
         $m05HostExit = $LASTEXITCODE
+        $m06HostOutput = @(
+            & python.exe (
+                Join-Path $RepoRoot 'tests\test_v92_m06_ipv6_priority.py') 2>&1)
+        $m06HostExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
     }
@@ -257,6 +262,7 @@ try {
     $m03HostOutput | ForEach-Object { Write-Host $_ }
     $m04HostOutput | ForEach-Object { Write-Host $_ }
     $m05HostOutput | ForEach-Object { Write-Host $_ }
+    $m06HostOutput | ForEach-Object { Write-Host $_ }
     $l04Text = ($l04Output | ForEach-Object { [string]$_ }) -join "`n"
     $l04HostText = (
         $l04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
@@ -280,6 +286,8 @@ try {
         $m04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $m05HostText = (
         $m05HostOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $m06HostText = (
+        $m06HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l04Verdict = (
         $l04BuildExit -eq 0 -and
         $l04HostExit -eq 0 -and
@@ -384,6 +392,21 @@ try {
         $m05HostText -match 'Ran 8 tests' -and
         $m05HostText -match '(?m)^OK\s*$'
     )
+    $m06NativeMatch = [regex]::Match(
+        $l04Text,
+        'test_direct_route_selection: (153) checks, 0 failures')
+    $m06NativeChecks = if ($m06NativeMatch.Success) {
+        [int]$m06NativeMatch.Groups[1].Value
+    } else {
+        0
+    }
+    $m06Verdict = (
+        $l04BuildExit -eq 0 -and
+        $m06HostExit -eq 0 -and
+        $m06NativeChecks -eq 153 -and
+        $m06HostText -match 'Ran 14 tests' -and
+        $m06HostText -match '(?m)^OK\s*$'
+    )
 
     $hyperVOutput = @()
     $hyperVVerdict = $true
@@ -443,6 +466,7 @@ try {
         $m03Verdict -and
         $m04Verdict -and
         $m05Verdict -and
+        $m06Verdict -and
         $hyperVVerdict -and
         $coverageIds.Count -eq $requiredCoverageIds.Count
     )
@@ -530,6 +554,16 @@ try {
             maximum_rounds = 6
             success_resets_backoff = $true
             network_change_reset_is_generation_bound = $true
+        }
+        m06_ipv6_priority = [ordered]@{
+            verdict = if ($m06Verdict) { 'PASS' } else { 'FAIL' }
+            physical_mutation = $false
+            native_checks = $m06NativeChecks
+            verified_ipv6_first = $true
+            candidates_never_selected = $true
+            classic_fallback_preserved = $true
+            direct_ipv4_endpoint_bound = $true
+            stale_listener_backlog_fenced = $true
         }
         coverage = [ordered]@{
             schema_sha256 = Get-Sha256 -Path (

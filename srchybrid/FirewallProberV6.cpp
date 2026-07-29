@@ -2,6 +2,7 @@
 // v0.71 IPv6 Sprint 3 — Firewall probe skeleton. See FirewallProberV6.h.
 #include "stdafx.h"
 #include "FirewallProberV6.h"
+#include "DirectReachabilityManager.h"
 #include "LiveDebugLog.h"
 #include "Preferences.h"
 #include "emule.h"          // theApp.IsClosing() — shutdown guard for the worker
@@ -306,6 +307,8 @@ CFirewallProberV6& CFirewallProberV6::Instance()
 CFirewallProberV6::CFirewallProberV6()
     : m_eLayer(LayerUnknown)
 	, m_eOverrideLayer(LayerUnknown)
+	, m_nDetectedV6Generation(0)
+	, m_nInboundV6Generation(0)
 	, m_lProbeStarted(0)
 	, m_lDetectedV6ExternallyObserved(0)
 	, m_lInboundV6Observed(0)
@@ -430,22 +433,56 @@ uint16 CFirewallProberV6::GetPcpExternalPort() const
 	return m_pcpTcp.externalPort;
 }
 
+natmap::CandidateObservation
+CFirewallProberV6::GetDirectRouteObservation(
+	uint64 currentGeneration) const
+{
+	natmap::CandidateObservation observation{};
+	if (currentGeneration == 0)
+		return observation;
+	CSingleLock l(&m_lock, TRUE);
+	if (m_detectedIP.GetType() != CAddress::IPv6
+		|| !m_detectedIP.IsPublicIP()
+		|| m_nDetectedV6Generation == 0)
+		return observation;
+	observation.readiness =
+		::InterlockedCompareExchange(
+			const_cast<volatile LONG*>(&m_lInboundV6Observed),
+			0, 0) != 0
+			&& m_nInboundV6Generation == m_nDetectedV6Generation
+				? natmap::CandidateReadiness::Verified
+				: natmap::CandidateReadiness::Candidate;
+	observation.generation = m_nDetectedV6Generation;
+	return observation;
+}
+
 // v0.71 IPv6 Sprint 6 — record our public v6 address as observed by a peer.
 // See header. Thread-safe; an inbound-proven exact address always wins.
-void CFirewallProberV6::SetDetectedV6IP(const CAddress& addr)
+void CFirewallProberV6::SetDetectedV6IP(
+	const CAddress& addr, uint64 topologyGeneration)
 {
     // Only a genuine, public, native-v6 address is worth recording. FromSA (the
     // source of the answered CAddress) already folds v4-mapped v6 to IPv4, so a
     // CAddress::IPv6 here is native; the public-IP check rejects link-local /
     // ULA / loopback / Teredo etc. The receiver also validates, but re-check
     // here so no caller can poison the published value.
-    if (addr.GetType() != CAddress::IPv6 || !addr.IsPublicIP())
+    if (addr.GetType() != CAddress::IPv6 || !addr.IsPublicIP()
+		|| topologyGeneration == 0
+		|| theApp.directreachability == NULL
+		|| topologyGeneration != theApp.directreachability
+			->GetTopologyGeneration())
         return;
     {
         CSingleLock l(&m_lock, TRUE);
-        if (!m_detectedIP.IsNull())
-            return;             // first validated candidate wins — ignore later peers
+		if (m_nDetectedV6Generation > topologyGeneration)
+			return;
+        if (!m_detectedIP.IsNull()
+			&& m_nDetectedV6Generation == topologyGeneration)
+            return;             // first validated candidate wins per generation
         m_detectedIP = addr;
+		m_nDetectedV6Generation = topologyGeneration;
+		if (m_nInboundV6Generation != topologyGeneration)
+			::InterlockedExchange(&m_lInboundV6Observed, 0);
     }
     if (!theApp.IsClosing())
         LIVE_LOG("NETV6", "detected public v6 = %hs (peer connect-back, egress OK, inbound unconfirmed)",
@@ -463,10 +500,13 @@ bool CFirewallProberV6::CanAdvertiseModernKadSource()
 		return true;
 
 	CFirewallProberV6& prober = Instance();
-	const CAddress address = prober.GetDetectedV6IP();
+	const uint64 currentGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+	const natmap::CandidateObservation observation =
+		prober.GetDirectRouteObservation(currentGeneration);
 	return thePrefs.IsIPv6Enabled()
-		&& address.GetType() == CAddress::IPv6 && address.IsPublicIP()
-		&& prober.HasInboundV6Observation();
+		&& observation.IsVerifiedFor(currentGeneration);
 }
 
 void CFirewallProberV6::DetectLocalPublicV6()
@@ -549,14 +589,25 @@ void CFirewallProberV6::DetectLocalPublicV6()
     }
 }
 
-void CFirewallProberV6::ReportInboundV6Reachable(const CAddress& localAddress)
+void CFirewallProberV6::ReportInboundV6Reachable(
+	const CAddress& localAddress, uint64 topologyGeneration)
 {
-	if (localAddress.GetType() != CAddress::IPv6 || !localAddress.IsPublicIP())
+	if (localAddress.GetType() != CAddress::IPv6
+		|| !localAddress.IsPublicIP() || topologyGeneration == 0
+		|| theApp.directreachability == NULL
+		|| topologyGeneration != theApp.directreachability
+			->GetTopologyGeneration())
 		return;
 	bool pcpConfirmed = false;
     {
         CSingleLock l(&m_lock, TRUE);
-		m_detectedIP = localAddress;
+		// An accept can have waited in the listener backlog across a topology
+		// change. It may only confirm an address independently observed for the
+		// current generation; it can never relabel the accepted socket itself.
+		if (m_nDetectedV6Generation != topologyGeneration
+			|| m_detectedIP != localAddress)
+			return;
+		m_nInboundV6Generation = topologyGeneration;
 		pcpConfirmed = m_pcpTcp.active;
 		m_pcpInboundConfirmed = pcpConfirmed;
         m_eLayer = pcpConfirmed ? LayerPCP : LayerHighID;

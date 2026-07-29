@@ -27,6 +27,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapping_recovery
 if errorlevel 1 exit /b 1
 build\test_mapping_recovery.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_direct_route_selection.exe tests\test_direct_route_selection.cpp src\direct_route_selection.cpp
+if errorlevel 1 exit /b 1
+build\test_direct_route_selection.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_state_machine.exe tests\test_state_machine.cpp src\natmap_state.cpp
 if errorlevel 1 exit /b 1
 build\test_state_machine.exe

@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "DirectReachabilityManager.h"
+#include "natmap/address_policy.h"
 #include "natmap/legacy_mapper_projection.h"
 
 #include <chrono>
@@ -459,6 +460,49 @@ bool CDirectReachabilityManager::ObserveMappingLoss()
 	return DisableMappedPlanes(natmap::ReasonCode::LeaseExpired);
 }
 
+natmap::DirectRouteSelection
+CDirectReachabilityManager::SelectPreferredRoute(
+	const natmap::CandidateObservation& directV6,
+	bool bIPv6Enabled, bool bMappingsEnabled,
+	bool bPeerSupportsIPv6, uint32 nPublishedV4,
+	uint16 nPublishedTcpPort) const
+{
+	AssertMainThread();
+	natmap::DirectRouteSelectionInput input{};
+	input.topology_generation = m_snapshot.topology_generation;
+	input.direct_v6 = directV6;
+	input.direct_v4 = m_directV4Observation;
+	input.ipv6_enabled = bIPv6Enabled;
+	input.mappings_enabled = bMappingsEnabled;
+	input.peer_supports_ipv6 = bPeerSupportsIPv6;
+	if (nPublishedV4 != 0 && nPublishedTcpPort != 0
+		&& m_directV4Attempt.IsValid()) {
+		const natmap::Endpoint publishedDirectV4 = MakePublicV4(
+			nPublishedV4, nPublishedTcpPort,
+			natmap::EndpointSource::LocalInterface);
+		input.direct_v4_endpoint_current =
+			publishedDirectV4.SameSocketEndpoint(
+				m_directV4Attempt.endpoint);
+	}
+
+	const natmap::PlaneSnapshot& mapped = m_snapshot.ed2k_tcp_v4;
+	const bool hasMappedCandidate =
+		mapped.generation != 0
+		&& mapped.lease.IsStructurallyValid()
+		&& mapped.lease.generation == mapped.generation
+		&& mapped.advertised.IsUsable()
+		&& mapped.lease.public_endpoint.SameSocketEndpoint(
+			mapped.advertised);
+	if (hasMappedCandidate) {
+		input.mapped_v4.readiness =
+			mapped.HasClassicHighIdEvidence()
+				? natmap::CandidateReadiness::Verified
+				: natmap::CandidateReadiness::Candidate;
+		input.mapped_v4.generation = mapped.generation;
+	}
+	return natmap::SelectPreferredDirectRoute(input);
+}
+
 bool CDirectReachabilityManager::HasVerifiedEd2kReachability() const
 {
 	AssertMainThread();
@@ -488,6 +532,97 @@ bool CDirectReachabilityManager::PromoteEd2kIfEvidenceComplete()
 		natmap::TransitionDisposition::Applied)
 		return false;
 	m_snapshot.ed2k_tcp_v4 = result.snapshot;
+	return true;
+}
+
+bool CDirectReachabilityManager::IsCurrentDirectV4Attempt(
+	const natmap::VerificationAttempt& attempt) const
+{
+	return attempt.IsValid()
+		&& m_directV4Attempt.IsValid()
+		&& attempt.attempt_id == m_directV4Attempt.attempt_id
+		&& attempt.topology_generation
+			== m_directV4Attempt.topology_generation
+		&& attempt.endpoint.SameSocketEndpoint(
+			m_directV4Attempt.endpoint)
+		&& attempt.transport == m_directV4Attempt.transport
+		&& attempt.path == m_directV4Attempt.path
+		&& attempt.started_monotonic_ms
+			== m_directV4Attempt.started_monotonic_ms
+		&& attempt.deadline_monotonic_ms
+			== m_directV4Attempt.deadline_monotonic_ms
+		&& attempt.topology_generation
+			== m_snapshot.topology_generation;
+}
+
+bool CDirectReachabilityManager::PromoteDirectV4IfEvidenceComplete()
+{
+	AssertMainThread();
+	if (!m_directV4Attempt.IsValid()
+		|| m_directV4Attempt.topology_generation
+			!= m_snapshot.topology_generation
+		|| MonotonicMilliseconds()
+			> m_directV4Attempt.deadline_monotonic_ms) {
+		m_directV4Observation = natmap::CandidateObservation{};
+		return false;
+	}
+	m_directV4Observation = natmap::ObserveDirectV4Evidence(
+		natmap::DirectV4EvidenceInput{
+			m_snapshot.topology_generation,
+			m_directV4Attempt.topology_generation,
+			m_directV4ServerEvidence.IsFreshFor(
+				m_directV4Attempt),
+			m_directV4InboundEvidence.IsFreshFor(
+				m_directV4Attempt),
+			true,
+			true});
+	return m_directV4Observation.IsVerifiedFor(
+		m_snapshot.topology_generation);
+}
+
+bool CDirectReachabilityManager::BeginDirectV4Verification(
+	uint32 nSocketLocalIP, uint64 nCapturedGeneration,
+	natmap::VerificationAttempt& attempt)
+{
+	AssertMainThread();
+	attempt = natmap::VerificationAttempt{};
+	if (nCapturedGeneration == 0
+		|| nCapturedGeneration != m_snapshot.topology_generation
+		|| nSocketLocalIP == 0
+		|| m_nNextVerificationAttemptId == 0)
+		return false;
+
+	const uint8* bytes =
+		reinterpret_cast<const uint8*>(&nSocketLocalIP);
+	const natmap::AddressDecision address =
+		natmap::ClassifyAddress(natmap::IpAddress::V4(
+			bytes[0], bytes[1], bytes[2], bytes[3]));
+	const uint16 localPort =
+		m_nLocalTcpPort.load(std::memory_order_acquire);
+	if (!address.globally_routable || !address.direct_publishable
+		|| localPort == 0)
+		return false;
+
+	const uint64 now = MonotonicMilliseconds();
+	natmap::VerificationAttempt nextAttempt;
+	nextAttempt.attempt_id = m_nNextVerificationAttemptId++;
+	nextAttempt.topology_generation = nCapturedGeneration;
+	nextAttempt.endpoint = MakePublicV4(
+		nSocketLocalIP, localPort,
+		natmap::EndpointSource::LocalInterface);
+	nextAttempt.transport = natmap::Transport::Tcp;
+	nextAttempt.path = natmap::VerificationPath::Direct;
+	nextAttempt.started_monotonic_ms = now;
+	nextAttempt.deadline_monotonic_ms =
+		now + natmap::VerificationAttempt::kMaximumWindowMs;
+	if (!nextAttempt.IsValid())
+		return false;
+
+	m_directV4Attempt = nextAttempt;
+	m_directV4ServerEvidence = natmap::Evidence{};
+	m_directV4InboundEvidence = natmap::Evidence{};
+	m_directV4Observation = natmap::CandidateObservation{};
+	attempt = nextAttempt;
 	return true;
 }
 
@@ -575,10 +710,42 @@ bool CDirectReachabilityManager::ObserveServerIdChange(
 	return PromoteEd2kIfEvidenceComplete();
 }
 
+bool CDirectReachabilityManager::ObserveDirectV4ServerState(
+	bool bHighId, uint32 nPublicIP,
+	const natmap::VerificationAttempt& attempt)
+{
+	AssertMainThread();
+	if (!IsCurrentDirectV4Attempt(attempt))
+		return false;
+
+	const natmap::Endpoint reported = MakePublicV4(
+		nPublicIP, attempt.endpoint.port,
+		natmap::EndpointSource::LocalInterface);
+	if (!bHighId || nPublicIP == 0
+		|| !reported.SameSocketEndpoint(attempt.endpoint)) {
+		m_directV4ServerEvidence = natmap::Evidence{};
+		m_directV4Observation = natmap::CandidateObservation{};
+		return true;
+	}
+	m_directV4ServerEvidence = natmap::Evidence{
+		natmap::EvidenceKind::ServerHighId,
+		attempt.endpoint, attempt.topology_generation,
+		MonotonicMilliseconds(), attempt.attempt_id};
+	PromoteDirectV4IfEvidenceComplete();
+	return true;
+}
+
 bool CDirectReachabilityManager::ObserveInboundTcpAccept(
 	const natmap::VerificationAttempt& attempt)
 {
 	AssertMainThread();
+	if (IsCurrentDirectV4Attempt(attempt)) {
+		m_directV4InboundEvidence = natmap::Evidence{
+			natmap::EvidenceKind::InboundTcpAccept,
+			attempt.endpoint, attempt.topology_generation,
+			MonotonicMilliseconds(), attempt.attempt_id};
+		return PromoteDirectV4IfEvidenceComplete();
+	}
 	if (!IsEnabled())
 		return false;
 	natmap::StateEvent event;

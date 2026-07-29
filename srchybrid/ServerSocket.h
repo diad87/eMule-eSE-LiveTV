@@ -55,5 +55,7 @@ private:
 	bool m_bStartNewMessageLog;
 	bool m_bManualSingleConnect;
 	bool m_bRelayRouted;
+	uint64 m_nDirectTopologyGeneration;
+	uint32 m_nDirectSocketLocalIP;
 	natmap::VerificationAttempt m_ed2kVerificationAttempt;
 };

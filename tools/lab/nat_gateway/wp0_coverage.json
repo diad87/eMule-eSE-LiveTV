@@ -339,6 +339,35 @@
       ]
     },
     {
+      "id": "IPV6_PRIORITY",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_direct_route_selection.cpp",
+          "contains": "TestNormativeTable"
+        },
+        {
+          "file": "libnatmap/tests/test_direct_route_selection.cpp",
+          "contains": "TestDirectV4EndpointBinding"
+        },
+        {
+          "file": "tests/test_v92_m06_ipv6_priority.py",
+          "contains": "test_kad_never_prioritizes_stale_or_candidate_ipv6"
+        },
+        {
+          "file": "tests/test_v92_m06_ipv6_priority.py",
+          "contains": "test_listener_rebinds_before_accepting_a_stale_topology_backlog"
+        },
+        {
+          "file": "srchybrid/DirectReachabilityManager.cpp",
+          "contains": "SelectPreferredRoute("
+        },
+        {
+          "file": "libnatmap/include/natmap/direct_route_selection.h",
+          "contains": "PreferredDirectRoute"
+        }
+      ]
+    },
+    {
       "id": "HYPERV_PURE_PLAN",
       "evidence": [
         {

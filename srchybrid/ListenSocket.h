@@ -165,4 +165,5 @@ private:
 	uint32	m_nHalfOpen;
 	uint32	m_nComp;
 	natmap::VerificationAttempt m_ed2kVerificationAttempt;
+	uint64	m_nListenerTopologyGeneration;
 };

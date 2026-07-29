@@ -2,6 +2,7 @@
 #include "OtherFunctions.h"
 #include "WebSocket.h"
 #include "WebServer.h"
+#include "WebRequestParser.h"
 #include "Preferences.h"
 #include "StringConversion.h"
 #include "Log.h"
@@ -39,6 +40,29 @@ static const DWORD WEBSOCKET_MAX_LIFETIME_MS    = 30000;
 static const LONG  WEBSOCKET_MAX_WORKER_THREADS = 64;
 static volatile LONG s_lActiveWebThreads        = 0;
 
+static void RejectMalformedRequest(CWebSocket *socket, ese::web::ParseStatus status)
+{
+	const char *reply =
+		"HTTP/1.1 400 Bad Request\r\n"
+		"Connection: close\r\n"
+		"Content-Length: 0\r\n";
+	if (status == ese::web::ParseStatus::HeaderTooLarge) {
+		reply =
+			"HTTP/1.1 431 Request Header Fields Too Large\r\n"
+			"Connection: close\r\n"
+			"Content-Length: 0\r\n";
+	} else if (status == ese::web::ParseStatus::TargetTooLarge ||
+			   status == ese::web::ParseStatus::BodyTooLarge) {
+		reply =
+			"HTTP/1.1 413 Content Too Large\r\n"
+			"Connection: close\r\n"
+			"Content-Length: 0\r\n";
+	}
+	socket->SendReply(reply);
+	socket->Disconnect();
+	socket->m_bCanRecv = false;
+}
+
 mbedtls_ssl_config conf;
 mbedtls_x509_crt srvcert;
 mbedtls_pk_context pkey;
@@ -52,21 +76,14 @@ typedef struct
 	in_addr incomingaddr;
 } SocketData;
 
-void CWebSocket::OnRequestReceived(const char *pHeader, DWORD dwHeaderLen, const char *pData, DWORD dwDataLen, const in_addr inad)
+void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const char *pData, DWORD dwDataLen, const in_addr inad)
 {
-	CStringA sHeader(pHeader, dwHeaderLen);
-	CStringA sURL;
-
-	if (strncmp(sHeader, "GET", 3) == 0)
-		sURL = sHeader.Trim();
-	else if (strncmp(sHeader, "POST", 4) == 0) {
+	CStringA sURL(request.target.data(), static_cast<int>(request.target.size()));
+	if (request.method == ese::web::Method::Post) {
 		CStringA sData(pData, dwDataLen);
 		sURL = '?' + sData.Trim();	// '?' to imitate GET syntax for ParseURL
 	}
-	sURL.Delete(0, sURL.Find(' ') + 1);
-	int i = sURL.Find(' ');
-	if (i >= 0)
-		sURL.Truncate(i);
+	int i;
 	bool filereq = sURL.GetLength() >= 3 && sURL.Find("..") < 0; // prevent file access in the eMule's webserver folder
 	if (filereq) {
 		CStringA ext(sURL.Right(5).MakeLower());
@@ -81,7 +98,7 @@ void CWebSocket::OnRequestReceived(const char *pHeader, DWORD dwHeaderLen, const
 	Data.inadr = inad;
 	Data.pSocket = this;
 	// eSE: Handle CORS preflight (OPTIONS) for React frontend
-	if (strncmp(sHeader, "OPTIONS", 7) == 0) {
+	if (request.method == ese::web::Method::Options) {
 		Data.pSocket->SendReply(
 			"HTTP/1.1 204 No Content\r\n"
 			"Access-Control-Allow-Origin: http://localhost:3000\r\n"
@@ -120,14 +137,29 @@ void CWebSocket::OnReceived(const void *pData, DWORD dwSize, const in_addr inad)
 {
 	static const DWORD SIZE_PRESERVE = 0x1000u;
 
-	if (m_dwBufSize < dwSize + m_dwRecv) {
+	if ((pData == NULL && dwSize != 0u) ||
+		static_cast<std::size_t>(dwSize) > ese::web::kMaxRequestBytes - m_dwRecv) {
+		RejectMalformedRequest(this, ese::web::ParseStatus::BodyTooLarge);
+		m_dwRecv = 0;
+		m_dwHttpHeaderLen = 0;
+		m_dwHttpContentLen = 0;
+		return;
+	}
+
+	const std::size_t required =
+		static_cast<std::size_t>(m_dwRecv) + static_cast<std::size_t>(dwSize);
+	if (m_dwBufSize < required) {
 		// reallocate
 		char *pNewBuf;
 		try {
-			m_dwBufSize = dwSize + m_dwRecv + SIZE_PRESERVE;
+			const std::size_t preserve =
+				ese::web::kMaxRequestBytes - required < SIZE_PRESERVE
+					? ese::web::kMaxRequestBytes - required
+					: SIZE_PRESERVE;
+			m_dwBufSize = static_cast<DWORD>(required + preserve);
 			pNewBuf = new char[m_dwBufSize];
 		} catch (...) {
-			AddDebugLogLine(DLP_VERYHIGH, false, _T("WebSocket::OnReceived: Buffer realloc failed (OOM), requested %u bytes"), dwSize + m_dwRecv + SIZE_PRESERVE);
+			AddDebugLogLine(DLP_VERYHIGH, false, _T("WebSocket::OnReceived: bounded buffer allocation failed (OOM), requested %u bytes"), m_dwBufSize);
 			m_bValid = false; // internal problem
 			return;
 		}
@@ -143,62 +175,37 @@ void CWebSocket::OnReceived(const void *pData, DWORD dwSize, const in_addr inad)
 		memcpy(&m_pBuf[m_dwRecv], pData, dwSize);
 		m_dwRecv += dwSize;
 	}
-	// check if we have all that we want
-	if (!m_dwHttpHeaderLen) {
-		// try to find it
-		bool bPrevEndl = false;
-		for (DWORD dwPos = 0; dwPos < m_dwRecv; ++dwPos)
-			if ('\n' == m_pBuf[dwPos]) {
-				if (bPrevEndl) {
-					// We just found the end of the http header
-					// Now write the message's position into two first DWORDs of the buffer
-					m_dwHttpHeaderLen = dwPos + 1;
 
-					// try to find now the 'Content-Length' header
-					for (dwPos = 0; dwPos < m_dwHttpHeaderLen;) {
-						// Elandal: pPtr is actually a char*, not a void*
-						const char *pPtr = (char*)memchr(&m_pBuf[dwPos], '\n', m_dwHttpHeaderLen - dwPos);
-						if (!pPtr)
-							break;
-						// Elandal: And thus now the pointer subtraction works as it should
-						DWORD dwNextPos = (DWORD)(pPtr - m_pBuf);
-
-						// check this header
-						static const char szMatch[] = "content-length";
-						if (!_strnicmp(&m_pBuf[dwPos], szMatch, sizeof szMatch - 1)) {
-							dwPos += sizeof szMatch - 1;
-							pPtr = (char*)memchr(&m_pBuf[dwPos], ':', m_dwHttpHeaderLen - dwPos);
-							if (pPtr)
-								m_dwHttpContentLen = atol(&pPtr[1]);
-
-							break;
-						}
-						dwPos = dwNextPos + 1;
-					}
-
-					break;
-				}
-				bPrevEndl = true;
-			} else if ('\r' != m_pBuf[dwPos])
-				bPrevEndl = false;
-
-	}
-	if (m_dwHttpHeaderLen && !m_bCanRecv && !m_dwHttpContentLen)
-		m_dwHttpContentLen = m_dwRecv - m_dwHttpHeaderLen; // of course
-
-	if (m_dwHttpHeaderLen && m_dwHttpContentLen < m_dwRecv && (!m_dwHttpContentLen || (m_dwHttpHeaderLen + m_dwHttpContentLen <= m_dwRecv))) {
-		OnRequestReceived(m_pBuf, m_dwHttpHeaderLen, m_pBuf + m_dwHttpHeaderLen, m_dwHttpContentLen, inad);
-
-		if (m_bCanRecv && (m_dwRecv > m_dwHttpHeaderLen + m_dwHttpContentLen)) {
-			// move our data
-			m_dwRecv -= m_dwHttpHeaderLen + m_dwHttpContentLen;
-			memmove(m_pBuf, m_pBuf + m_dwHttpHeaderLen + m_dwHttpContentLen, m_dwRecv);
-		} else
-			m_dwRecv = 0;
-
+	ese::web::ParsedRequest parsed;
+	const ese::web::ParseStatus parse_status =
+		ese::web::InspectRequest(m_pBuf, m_dwRecv, parsed);
+	if (parse_status == ese::web::ParseStatus::NeedMore)
+		return;
+	if (parse_status != ese::web::ParseStatus::Ready) {
+		RejectMalformedRequest(this, parse_status);
+		m_dwRecv = 0;
 		m_dwHttpHeaderLen = 0;
 		m_dwHttpContentLen = 0;
+		return;
 	}
+
+	m_dwHttpHeaderLen = static_cast<DWORD>(parsed.header_bytes);
+	m_dwHttpContentLen = static_cast<DWORD>(parsed.content_length);
+	OnRequestReceived(
+		parsed,
+		m_pBuf + m_dwHttpHeaderLen,
+		m_dwHttpContentLen,
+		inad);
+
+	if (m_bCanRecv && (m_dwRecv > m_dwHttpHeaderLen + m_dwHttpContentLen)) {
+		// move our data
+		m_dwRecv -= m_dwHttpHeaderLen + m_dwHttpContentLen;
+		memmove(m_pBuf, m_pBuf + m_dwHttpHeaderLen + m_dwHttpContentLen, m_dwRecv);
+	} else
+		m_dwRecv = 0;
+
+	m_dwHttpHeaderLen = 0;
+	m_dwHttpContentLen = 0;
 }
 
 void CWebSocket::SendData(const void *pData, DWORD dwDataSize)

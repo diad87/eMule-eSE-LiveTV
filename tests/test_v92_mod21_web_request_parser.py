@@ -71,8 +71,12 @@ class Mod21WebRequestParserTest(unittest.TestCase):
             "kMaxHeaderBytes = 32u * 1024u",
             "kMaxTargetBytes = 8u * 1024u",
             "kMaxBodyBytes = 1024u * 1024u",
+            "kMaxHeaderFields = 128u",
             "kMaxQueryFields = 128u",
             "kMaxQueryValueBytes = 64u * 1024u",
+            "kMaxCookieHeaderBytes = 8u * 1024u",
+            "kMaxCookieFields = 64u",
+            "kMaxCookieValueBytes = 4u * 1024u",
         ):
             self.assertIn(declaration, self.header)
         self.assertIn("ParseStatus::HeaderTooLarge", self.source)
@@ -80,6 +84,8 @@ class Mod21WebRequestParserTest(unittest.TestCase):
         self.assertIn("ParseStatus::BodyTooLarge", self.source)
         self.assertIn("QueryStatus::TooManyFields", self.source)
         self.assertIn("QueryStatus::ValueTooLarge", self.source)
+        self.assertIn("CookieStatus::TooManyFields", self.source)
+        self.assertIn("CookieStatus::ValueTooLarge", self.source)
         self.assertIn("kMaxRequestBytes - m_dwRecv", self.socket)
         self.assertNotIn("dwSize + m_dwRecv + SIZE_PRESERVE", self.socket)
 
@@ -101,13 +107,14 @@ class Mod21WebRequestParserTest(unittest.TestCase):
 
     def test_socket_adapter_delegates_before_dispatch(self) -> None:
         self.assertIn('#include "WebRequestParser.h"', self.socket)
-        inspect = self.socket.index("ese::web::InspectRequest(")
-        dispatch = self.socket.index("OnRequestReceived(")
+        receive = self.socket.index("void CWebSocket::OnReceived(")
+        inspect = self.socket.index("ese::web::InspectRequest(", receive)
+        dispatch = self.socket.index("OnRequestReceived(", inspect)
         self.assertLess(inspect, dispatch)
         self.assertIn("ese::web::ParsedRequest parsed", self.socket)
-        self.assertIn("parsed.method == ese::web::Method::Post", self.socket)
-        self.assertIn("parsed.method == ese::web::Method::Options", self.socket)
-        self.assertIn("parsed.target", self.socket)
+        self.assertIn("request.method == ese::web::Method::Post", self.socket)
+        self.assertIn("request.method == ese::web::Method::Options", self.socket)
+        self.assertIn("request.target", self.socket)
         self.assertIn("RejectMalformedRequest(", self.socket)
 
     def test_web_query_helpers_delegate_and_preserve_unicode_adapter(self) -> None:
@@ -121,6 +128,17 @@ class Mod21WebRequestParserTest(unittest.TestCase):
         self.assertNotIn("URL.Delete(pos, 10)", query_region)
         self.assertNotIn("URL.MakeLower()", query_region)
 
+    def test_headless_characterization_exercises_integrated_parser(self) -> None:
+        for marker in (
+            "web parser failed exact or repeated query",
+            "web request parser failed runtime request",
+            "web request parser failed runtime cookie",
+            "web request parser accepted hostile length",
+        ):
+            self.assertIn(marker, self.server)
+        self.assertIn("ese::web::InspectRequest(", self.server)
+        self.assertIn("ese::web::GetCookieValue(", self.server)
+
     def test_native_vectors_cover_legacy_and_hostile_inputs(self) -> None:
         for diagnostic in (
             "complete CRLF GET is ready",
@@ -133,12 +151,20 @@ class Mod21WebRequestParserTest(unittest.TestCase):
             "target above the byte cap is rejected",
             "header above the byte cap is rejected",
             "body exactly at the byte cap remains admissible",
+            "headers are normalized without changing values",
+            "header field count is bounded",
             "query names require exact boundaries",
             "query names remain case-sensitive",
             "form normalization preserves legacy decoding and control filtering",
             "repeated query values preserve order and case",
             "query field count is bounded",
             "individual query value size is bounded",
+            "cookie value is parsed by exact name",
+            "cookie name boundaries are exact",
+            "duplicate security cookie is rejected",
+            "malformed cookie is rejected",
+            "cookie field count is bounded",
+            "cookie value size is bounded",
         ):
             self.assertIn(diagnostic, self.native)
         self.assertNotIn("assert(", self.native)

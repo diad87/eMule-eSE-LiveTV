@@ -11,6 +11,7 @@
 #include "emule.h"
 #include "StringConversion.h"
 #include "OtherFunctions.h"
+#include "WebRequestParser.h"
 #include "WebServer.h"
 #include "ClientCredits.h"
 #include "ClientList.h"
@@ -416,6 +417,43 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 		outFailure = _T("web parser failed deterministic query");
 		return false;
 	}
+	if (_ParseURL(_T("/?ab=wrong&b=right"), _T("b")) != _T("right")
+		|| _ParseURLArray(
+			_T("/?downloads=ABC&downloads=Def"), _T("downloads"))
+			!= _T("ABC|Def|")) {
+		outFailure = _T("web parser failed exact or repeated query");
+		return false;
+	}
+	const std::string requestWire =
+		"POST /ignored HTTP/1.1\r\n"
+		"Host: 127.0.0.1\r\n"
+		"Cookie: session=abc123\r\n"
+		"Content-Length: 3\r\n\r\nx=1";
+	ese::web::ParsedRequest parsedRequest;
+	if (ese::web::InspectRequest(
+			requestWire.data(), requestWire.size(), parsedRequest)
+			!= ese::web::ParseStatus::Ready
+		|| parsedRequest.method != ese::web::Method::Post
+		|| parsedRequest.content_length != 3u) {
+		outFailure = _T("web request parser failed runtime request");
+		return false;
+	}
+	std::string cookieValue;
+	if (ese::web::GetCookieValue(
+			"session=abc123; theme=dark", "session", cookieValue)
+			!= ese::web::CookieStatus::Ok
+		|| cookieValue != "abc123") {
+		outFailure = _T("web request parser failed runtime cookie");
+		return false;
+	}
+	const std::string hostileRequest =
+		"POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n";
+	if (ese::web::InspectRequest(
+			hostileRequest.data(), hostileRequest.size(), parsedRequest)
+			!= ese::web::ParseStatus::BadRequest) {
+		outFailure = _T("web request parser accepted hostile length");
+		return false;
+	}
 	if (_SpecialChars(_T("<&\"'\n"), true) != _T("&lt;&amp;&quot;&#8217;\\n")) {
 		outFailure = _T("web serialization escaping changed");
 		return false;
@@ -770,48 +808,35 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 
 CString CWebServer::_ParseURLArray(CString URL, CString fieldname)
 {
-	URL.MakeLower();
-	fieldname.MakeLower();
+	const CStringA urlA(URL);
+	const CStringA fieldA(fieldname);
+	const std::string url(urlA.GetString(), urlA.GetLength());
+	const std::string field(fieldA.GetString(), fieldA.GetLength());
+	std::vector<std::string> values;
+	if (ese::web::GetQueryValues(url, field, values) != ese::web::QueryStatus::Ok)
+		return CString();
+
 	CString res;
-	while (!URL.IsEmpty()) {
-		int pos = URL.Find(fieldname + _T('='));
-		if (pos < 0)
+	for (const std::string &value : values) {
+		const CString decoded(OptUtf8ToStr(
+			value.data(), static_cast<int>(value.size())));
+		if (decoded.IsEmpty())
 			break;
-		const CString &temp(_ParseURL(URL, fieldname));
-		if (temp.IsEmpty())
-			break;
-		res.AppendFormat(_T("%s|"), (LPCTSTR)temp);
-		URL.Delete(pos, 10);
+		res.AppendFormat(_T("%s|"), (LPCTSTR)decoded);
 	}
 	return res;
 }
 
 CString CWebServer::_ParseURL(const CString &URL, const CString &fieldname)
 {
-	int findPos = URL.Find(_T('?'));
-	if (findPos >= 0) {
-		CString Parameter(URL.Mid(findPos + 1, URL.GetLength() - findPos - 1));
-
-		int findLength;
-		// search the field name beginning / middle and strip the rest...
-		findPos = Parameter.Find(fieldname + _T('='));
-		findLength = !findPos ? fieldname.GetLength() + 1 : 0;
-		int iPos = Parameter.Find(_T('&') + fieldname + _T('='));
-		if (iPos >= 0) {
-			findPos = iPos;
-			findLength = fieldname.GetLength() + 2;
-		}
-		if (findPos >= 0) {
-			Parameter.Delete(0, findPos + findLength);
-			iPos = Parameter.Find(_T('&'));
-			if (iPos >= 0)
-				Parameter.Truncate(iPos);
-			Parameter.Replace(_T('+'), _T(' '));
-			// decode value...
-			return OptUtf8ToStr(URLDecode(Parameter, true));
-		}
-	}
-	return CString();
+	const CStringA urlA(URL);
+	const CStringA fieldA(fieldname);
+	const std::string url(urlA.GetString(), urlA.GetLength());
+	const std::string field(fieldA.GetString(), fieldA.GetLength());
+	std::string value;
+	if (ese::web::GetQueryValue(url, field, value) != ese::web::QueryStatus::Ok)
+		return CString();
+	return OptUtf8ToStr(value.data(), static_cast<int>(value.size()));
 }
 
 CString CWebServer::_GetHeader(const ThreadData &Data, long lSession)

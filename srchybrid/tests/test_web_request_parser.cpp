@@ -34,6 +34,7 @@ int main()
     using ese::web::Method;
     using ese::web::ParseStatus;
     using ese::web::QueryStatus;
+    using ese::web::CookieStatus;
 
     {
         const std::string wire =
@@ -47,6 +48,11 @@ int main()
         Expect(parsed.target == "/?a=one&b=two", "request target is preserved");
         Expect(parsed.content_length == 0u, "GET has an empty body");
         Expect(parsed.header_bytes == wire.size(), "header byte count is exact");
+        Expect(
+            parsed.headers.size() == 1u &&
+                parsed.headers[0].name == "host" &&
+                parsed.headers[0].value == "127.0.0.1",
+            "headers are normalized without changing values");
     }
 
     {
@@ -168,6 +174,17 @@ int main()
     }
 
     {
+        std::string many_headers = "GET / HTTP/1.1\r\n";
+        for (std::size_t i = 0; i <= ese::web::kMaxHeaderFields; ++i)
+            many_headers += "X-" + std::to_string(i) + ": y\r\n";
+        many_headers += "\r\n";
+        ExpectStatus(
+            many_headers,
+            ParseStatus::BadRequest,
+            "header field count is bounded");
+    }
+
+    {
         std::string value;
         Expect(
             ese::web::GetQueryValue("/?a=one&b=two", "b", value) ==
@@ -235,6 +252,63 @@ int main()
             ese::web::GetQueryValue(target, "x", value) ==
                 QueryStatus::ValueTooLarge,
             "individual query value size is bounded");
+    }
+
+    {
+        std::string value;
+        Expect(
+            ese::web::GetCookieValue(
+                "session=abc123; theme=dark", "session", value) ==
+                CookieStatus::Ok &&
+                value == "abc123",
+            "cookie value is parsed by exact name");
+        Expect(
+            ese::web::GetCookieValue(
+                "xsession=wrong; session=right", "session", value) ==
+                CookieStatus::Ok &&
+                value == "right",
+            "cookie name boundaries are exact");
+        Expect(
+            ese::web::GetCookieValue(
+                "Session=upper; session=lower", "session", value) ==
+                CookieStatus::Ok &&
+                value == "lower",
+            "cookie names remain case-sensitive");
+        Expect(
+            ese::web::GetCookieValue("other=value", "session", value) ==
+                CookieStatus::NotFound,
+            "missing cookie is reported");
+        Expect(
+            ese::web::GetCookieValue(
+                "session=one; session=two", "session", value) ==
+                CookieStatus::BadCookie,
+            "duplicate security cookie is rejected");
+        Expect(
+            ese::web::GetCookieValue("broken", "session", value) ==
+                CookieStatus::BadCookie,
+            "malformed cookie is rejected");
+    }
+
+    {
+        std::string header;
+        for (std::size_t i = 0; i <= ese::web::kMaxCookieFields; ++i) {
+            if (i != 0u)
+                header += ";";
+            header += "c" + std::to_string(i) + "=v";
+        }
+        std::string value;
+        Expect(
+            ese::web::GetCookieValue(header, "c0", value) ==
+                CookieStatus::TooManyFields,
+            "cookie field count is bounded");
+        const std::string large_cookie =
+            "session=" +
+            std::string(ese::web::kMaxCookieValueBytes + 1u, 'v');
+        Expect(
+            ese::web::GetCookieValue(
+                large_cookie, "session", value) ==
+                CookieStatus::ValueTooLarge,
+            "cookie value size is bounded");
     }
 
     if (failures != 0) {

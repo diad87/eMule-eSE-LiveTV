@@ -1,6 +1,11 @@
 #pragma once
 
 class CWebServer;
+namespace ese {
+namespace web {
+struct ParsedRequest;
+}
+}
 
 void StartSockets(CWebServer *pThis);
 void StopSockets();
@@ -45,5 +50,5 @@ public:
 	void SendReply(LPCSTR szReply);
 	void Disconnect();
 
-	void OnRequestReceived(const char *pHeader, DWORD dwHeaderLen, const char *pData, DWORD dwDataLen, const in_addr inad);
+	void OnRequestReceived(const ese::web::ParsedRequest &request, const char *pData, DWORD dwDataLen, const in_addr inad);
 };

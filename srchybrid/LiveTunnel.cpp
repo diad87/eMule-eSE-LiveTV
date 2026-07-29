@@ -72,30 +72,30 @@ CLiveTunnel::CLiveTunnel()
 {
     // v8.1 A2 - register the built-in exit-side handlers. Sprint B/C ops
     // register theirs the same way instead of editing HandleRelay_Exit.
-    RegisterExitHandler(TUN_OP_PING,
+    m_exitServices.RegisterHandler(TUN_OP_PING,
         [this](const TunnelRequestCtx& c){ ExitHandle_Ping(c); });
-    RegisterExitHandler(TUN_OP_KAD_SEARCH,
+    m_exitServices.RegisterHandler(TUN_OP_KAD_SEARCH,
         [this](const TunnelRequestCtx& c){ ExitHandle_KadSearch(c); });
-    RegisterExitHandler(TUN_OP_ECHO_LARGE,
+    m_exitServices.RegisterHandler(TUN_OP_ECHO_LARGE,
         [this](const TunnelRequestCtx& c){ ExitHandle_EchoLarge(c); });
     // v8.1 Sprint B - real Kad search through the tunnel.
-    RegisterExitHandler(TUN_OP_KAD_SEARCH_V2,
+    m_exitServices.RegisterHandler(TUN_OP_KAD_SEARCH_V2,
         [this](const TunnelRequestCtx& c){ ExitHandle_KadSearchV2(c); });
-    RegisterExitHandler(TUN_OP_KAD_CANCEL,
+    m_exitServices.RegisterHandler(TUN_OP_KAD_CANCEL,
         [this](const TunnelRequestCtx& c){ ExitHandle_KadCancel(c); });
     // v8.1 Sprint C - tunneled LiveTV subscribe (single-cell control op).
-    RegisterExitHandler(TUN_OP_LIVE_SUBSCRIBE,
+    m_exitServices.RegisterHandler(TUN_OP_LIVE_SUBSCRIBE,
         [this](const TunnelRequestCtx& c){ ExitHandle_LiveSubscribe(c); });
     // v8.1.2 Sprint E (E3.2) - explicit bulk data-plane subscribe/unsub.
-    RegisterExitHandler(TUN_OP_BULK_SUBSCRIBE,
+    m_exitServices.RegisterHandler(TUN_OP_BULK_SUBSCRIBE,
         [this](const TunnelRequestCtx& c){ ExitHandle_BulkSubscribe(c); });
-    RegisterExitHandler(TUN_OP_BULK_UNSUB,
+    m_exitServices.RegisterHandler(TUN_OP_BULK_UNSUB,
         [this](const TunnelRequestCtx& c){ ExitHandle_BulkUnsub(c); });
-    RegisterExitHandler(TUN_OP_BULK_NACK,
+    m_exitServices.RegisterHandler(TUN_OP_BULK_NACK,
         [this](const TunnelRequestCtx& c){ ExitHandle_BulkNack(c); });
     // K6-1A canonical Live search gateway.  Originators select it only from
     // the authenticated exit-capability snapshot; old peers retain 0x42/0x43.
-    RegisterExitHandler(TUN_OP_KAD6_GATEWAY,
+    m_exitServices.RegisterHandler(TUN_OP_KAD6_GATEWAY,
         [this](const TunnelRequestCtx& c){ ExitHandle_Kad6Gateway(c); });
 
     const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
@@ -485,6 +485,14 @@ bool CLiveTunnel::RunCharacterizationSelfTest(CString& outFailure)
         outFailure.Format(
             _T("tunnel circuit registry characterization failed (%u)"),
             static_cast<unsigned>(registry));
+        return false;
+    }
+    if (!eSELive::RunLiveExitServicesCharacterizationSelfTest()) {
+        outFailure = _T("tunnel exit services characterization failed");
+        return false;
+    }
+    if (!eSELive::RunLiveRelayDispatcherCharacterizationSelfTest()) {
+        outFailure = _T("tunnel relay dispatcher characterization failed");
         return false;
     }
     if (SendThrough(NULL, 0)) {
@@ -877,6 +885,8 @@ void CLiveTunnel::Stop()
     SweepK6Gateway(now, std::set<uint32_t>());
     {
         CSingleLock pl(&m_pendingLock, TRUE);
+        (void)m_exitServices.Clear();
+        m_reassembly.clear();
         m_k6QuotaGrants.clear();
         m_k6FairPayloads.clear();
         m_k6FairCredits.clear();
@@ -968,6 +978,10 @@ void CLiveTunnel::DestroyCircuitFailClosed(
         if (circ->m_nextHopClient && circ->m_nextCircId != 0
             && CellPack(circ->m_nextCircId, CELL_DESTROY, NULL, 0, destroy))
             SendCellToPeer(circ->m_nextHopClient, destroy);
+    }
+    {
+        CSingleLock pending(&m_pendingLock, TRUE);
+        (void)m_exitServices.AbortCircuit(circ->Id());
     }
     m_circuitRegistry.Transition(circ, CircuitState::Destroyed);
     circ->WipeKeys();
@@ -3317,7 +3331,7 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
         {
             CSingleLock pl(&m_pendingLock, TRUE);
             // A1 fix - key by (circ_id, req_id), consistent with the exit side.
-            const uint64_t rkey = ExitOpKey(circ->Id(), req_id);
+            const uint64_t rkey = LiveRequestKey(circ->Id(), req_id);
             ReassemblyEntry& e = m_reassembly[rkey];
             // v8.1 A5 - stamp the entry on its first fragment so Tick() can
             // sweep it if the rest of the message never arrives.
@@ -3844,7 +3858,7 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
         return true;
     }
 
-    const uint64_t key = ExitOpKey(circ->Id(), req_id);
+    const uint64_t key = LiveRequestKey(circ->Id(), req_id);
     if (frame.msg_type == kad6::kK6MsgSearchResult) {
         if ((frame.flags & kad6::kK6FlagMore) == 0 ||
             (frame.flags & kad6::kK6FlagFinal) != 0)
@@ -4022,82 +4036,64 @@ bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
     size_t plainLen = 0;
     if (!circ->OnionDecryptAll(payload, payloadLen, plain, sizeof plain, plainLen))
         return false;
-    // A1.2 — parse + validate the 7-byte sub-header via the shared helper.
-    uint8_t sub_cmd = 0; uint32_t req_id = 0; uint16_t body_len = 0;
-    const uint8_t* body = NULL;
-    if (!ParseSubHeader(plain, plainLen, sub_cmd, req_id, body_len, body))
-        return false;   // malformed sub-header
+    return m_relayDispatcher.DispatchExitPlain(circ, plain, plainLen, *this);
+}
 
-    // v8.1 A2 - generic dispatch. sub_cmd < 0x40 is a legacy single-cell op
-    // (body is the request as-is). sub_cmd >= 0x40 is a multi-cell op: the
-    // body starts with an 8-byte fragment header; accumulate fragments
-    // until the logical message is complete, then dispatch it.
-    if (sub_cmd >= TUN_MULTICELL_OP_MIN) {
-        uint16_t fragIndex = 0, fragCount = 0;
-        uint32_t msgTotal = 0;
-        const uint8_t* fragData = NULL;
-        size_t fragDataLen = 0;
-        if (!ParseFragHeader(body, body_len, fragIndex, fragCount, msgTotal,
-                             fragData, fragDataLen))
-            return false;   // malformed fragment header
+bool CLiveTunnel::IsRelayMultiCell(uint8_t subCommand) const
+{
+    return subCommand >= TUN_MULTICELL_OP_MIN;
+}
 
-        std::vector<uint8_t> message;
-        {
-            CSingleLock pl(&m_pendingLock, TRUE);
-            // A1 fix - key by (circ_id, req_id): the exit reassembles for many
-            // circuits at once, so two messages sharing a req_id on different
-            // circuits must not collide in one ReassemblyEntry.
-            const uint64_t rkey = ExitOpKey(circ->Id(), req_id);
-            ReassemblyEntry& e = m_reassembly[rkey];
-            // v8.1 A5 - stamp the entry on its first fragment so Tick()
-            // can sweep it if the rest of the message never arrives.
-            if (!e.started) e.first_seen_tick = GetTickCount();
-            ReassemblyResult r = ReassemblyIngest(e, fragIndex, fragCount,
-                                                  msgTotal, fragData, fragDataLen);
-            if (r == ReassemblyResult::Incomplete)
-                return true;                    // wait for more fragments
-            if (r == ReassemblyResult::Error) {
-                m_reassembly.erase(rkey);       // malformed -> drop the entry
-                return true;
-            }
-            message = std::move(e.message);     // Complete: take the bytes
-            m_reassembly.erase(rkey);
-        }
-        TunnelRequestCtx ctx;
-        ctx.circ    = circ;
-        ctx.sub_cmd = sub_cmd;
-        ctx.req_id  = req_id;
-        ctx.body    = message.data();
-        ctx.bodyLen = message.size();
-        DispatchExitRequest(ctx);
-        return true;
+bool CLiveTunnel::ParseRelaySubHeader(
+    const uint8_t* plain, size_t plainLength,
+    uint8_t& subCommand, uint32_t& requestId,
+    uint16_t& bodyLength, const uint8_t*& body) const
+{
+    return ParseSubHeader(
+        plain, plainLength, subCommand, requestId, bodyLength, body);
+}
+
+bool CLiveTunnel::ParseRelayFragmentHeader(
+    const uint8_t* body, size_t bodyLength,
+    uint16_t& fragmentIndex, uint16_t& fragmentCount,
+    uint32_t& messageLength, const uint8_t*& fragmentData,
+    size_t& fragmentDataLength) const
+{
+    return ParseFragHeader(
+        body, bodyLength, fragmentIndex, fragmentCount, messageLength,
+        fragmentData, fragmentDataLength);
+}
+
+LiveRelayFragmentResult CLiveTunnel::IngestRelayFragment(
+    uint32_t circuitId, uint32_t requestId,
+    uint16_t fragmentIndex, uint16_t fragmentCount,
+    uint32_t messageLength, const uint8_t* fragmentData,
+    size_t fragmentDataLength, std::vector<uint8_t>& completedMessage)
+{
+    CSingleLock pending(&m_pendingLock, TRUE);
+    const uint64_t key = LiveRequestKey(circuitId, requestId);
+    ReassemblyEntry& entry = m_reassembly[key];
+    if (!entry.started)
+        entry.first_seen_tick = GetTickCount();
+
+    const ReassemblyResult result = ReassemblyIngest(
+        entry, fragmentIndex, fragmentCount, messageLength,
+        fragmentData, fragmentDataLength);
+    if (result == ReassemblyResult::Incomplete)
+        return LiveRelayFragmentResult::Incomplete;
+    if (result == ReassemblyResult::Error) {
+        m_reassembly.erase(key);
+        return LiveRelayFragmentResult::Rejected;
     }
 
-    // Legacy single-cell op: dispatch the raw body straight away.
-    TunnelRequestCtx ctx;
-    ctx.circ    = circ;
-    ctx.sub_cmd = sub_cmd;
-    ctx.req_id  = req_id;
-    ctx.body    = body;
-    ctx.bodyLen = body_len;
-    DispatchExitRequest(ctx);
-    return true;
+    completedMessage = std::move(entry.message);
+    m_reassembly.erase(key);
+    return LiveRelayFragmentResult::Complete;
 }
 
-// v8.1 A2.2 - register an exit-side handler for a sub_cmd (last wins).
-void CLiveTunnel::RegisterExitHandler(uint8_t sub_cmd, TunnelOpHandler handler)
+bool CLiveTunnel::DispatchRelayExit(const LiveTunnelRequestCtx& context)
 {
-    m_exitHandlers[sub_cmd] = std::move(handler);
-}
-
-// v8.1 A2 - look up and invoke the handler for a fully-received request.
-// m_exitHandlers is populated once in the constructor and only read after,
-// so no lock is needed. Unknown sub_cmd -> drop silently.
-void CLiveTunnel::DispatchExitRequest(const TunnelRequestCtx& ctx)
-{
-    auto it = m_exitHandlers.find(ctx.sub_cmd);
-    if (it != m_exitHandlers.end() && it->second)
-        it->second(ctx);
+    return m_exitServices.Dispatch(context.sub_cmd, context);
 }
 
 // === v8.1 A6 - deferred exit operations ==================================
@@ -4107,62 +4103,50 @@ void CLiveTunnel::DispatchExitRequest(const TunnelRequestCtx& ctx)
 
 bool CLiveTunnel::BeginExitOperation(const TunnelRequestCtx& ctx, uint8_t reply_op)
 {
-    if (!ctx.circ) return false;
-    ExitOperation op;
-    op.circ     = ctx.circ;
-    op.circ_id  = ctx.circ->Id();
-    op.req_id   = ctx.req_id;
-    op.reply_op = reply_op;
-    op.started  = GetTickCount();
+    if (!ctx.circ)
+        return false;
     CSingleLock pl(&m_pendingLock, TRUE);
-    m_exitOps[ExitOpKey(op.circ_id, op.req_id)] = op;
-    return true;
+    return m_exitServices.Begin(
+        ctx.circ, ctx.req_id, reply_op, GetTickCount());
 }
 
 bool CLiveTunnel::CompleteExitOperation(uint32_t circ_id, uint32_t req_id,
                                         const uint8_t* payload, size_t payloadLen)
 {
-    std::shared_ptr<CLiveCircuit> circ;
-    uint8_t reply_op = 0;
+    LiveExitServices::Completion completion;
     {
         CSingleLock pl(&m_pendingLock, TRUE);
-        auto it = m_exitOps.find(ExitOpKey(circ_id, req_id));
-        if (it == m_exitOps.end()) return false;
-        circ     = it->second.circ.lock();
-        reply_op = it->second.reply_op;
-        m_exitOps.erase(it);
+        if (!m_exitServices.TakeCompletion(
+                circ_id, req_id, completion))
+            return false;
     }
-    if (!circ) return false;            // circuit rotated/destroyed -> drop
     // Rebuild a minimal ctx and reuse SendReply (A2.4) for the fragmented reply.
     TunnelRequestCtx ctx;
-    ctx.circ   = circ;
+    ctx.circ   = completion.circuit;
     ctx.req_id = req_id;
-    return SendReply(ctx, reply_op, payload, payloadLen);
+    return SendReply(ctx, completion.reply_op, payload, payloadLen);
 }
 
 bool CLiveTunnel::SendExitOperationPart(uint32_t circ_id, uint32_t req_id,
                                         const uint8_t* payload, size_t payloadLen)
 {
-    std::shared_ptr<CLiveCircuit> circ;
-    uint8_t reply_op = 0;
+    LiveExitServices::Completion completion;
     {
         CSingleLock pl(&m_pendingLock, TRUE);
-        auto it = m_exitOps.find(ExitOpKey(circ_id, req_id));
-        if (it == m_exitOps.end()) return false;
-        circ = it->second.circ.lock();
-        reply_op = it->second.reply_op;
+        if (!m_exitServices.FindPart(
+                circ_id, req_id, completion))
+            return false;
     }
-    if (!circ) return false;
     TunnelRequestCtx ctx;
-    ctx.circ = circ;
+    ctx.circ = completion.circuit;
     ctx.req_id = req_id;
-    return SendReply(ctx, reply_op, payload, payloadLen);
+    return SendReply(ctx, completion.reply_op, payload, payloadLen);
 }
 
 void CLiveTunnel::AbortExitOperation(uint32_t circ_id, uint32_t req_id)
 {
     CSingleLock pl(&m_pendingLock, TRUE);
-    m_exitOps.erase(ExitOpKey(circ_id, req_id));
+    (void)m_exitServices.Abort(circ_id, req_id);
 }
 
 // v8.1 A2.4 - fragment + send a reply back to V. A legacy reply op
@@ -4312,7 +4296,7 @@ void CLiveTunnel::ExitHandle_KadSearchV2(const TunnelRequestCtx& ctx)
     } catch (...) {}
 
     CSingleLock pl(&m_pendingLock, TRUE);
-    m_searchJobs[ExitOpKey(job.circ_id, job.req_id)] = std::move(job);
+    m_searchJobs[LiveRequestKey(job.circ_id, job.req_id)] = std::move(job);
 }
 
 // B7 - exit handler for TUN_OP_KAD_CANCEL: V aborts an in-flight search by
@@ -4320,7 +4304,7 @@ void CLiveTunnel::ExitHandle_KadSearchV2(const TunnelRequestCtx& ctx)
 void CLiveTunnel::ExitHandle_KadCancel(const TunnelRequestCtx& ctx)
 {
     if (!ctx.circ) return;
-    const uint64_t key = ExitOpKey(ctx.circ->Id(), ctx.req_id);
+    const uint64_t key = LiveRequestKey(ctx.circ->Id(), ctx.req_id);
     TunnelSearchJob job;
     bool found = false;
     {
@@ -4490,7 +4474,7 @@ void CLiveTunnel::ExitHandle_Kad6Gateway(const TunnelRequestCtx& ctx)
         Kademlia::CSearch* search = kad2Reachable
             ? Kademlia::CSearchManager::PrepareLookup(Kademlia::CSearch::FILE, false, target)
             : NULL;
-        const uint64_t jobKey = ExitOpKey(job.circ_id, job.req_id);
+        const uint64_t jobKey = LiveRequestKey(job.circ_id, job.req_id);
         {
             // Register before CSearch::Go can deliver an immediate/local result.
             CSingleLock pl(&m_pendingLock, TRUE);
@@ -4575,7 +4559,7 @@ void CLiveTunnel::ExitHandle_Kad6Gateway(const TunnelRequestCtx& ctx)
     } catch (...) {}
 
     CSingleLock pl(&m_pendingLock, TRUE);
-    m_searchJobs[ExitOpKey(job.circ_id, job.req_id)] = std::move(job);
+    m_searchJobs[LiveRequestKey(job.circ_id, job.req_id)] = std::move(job);
 }
 
 bool CLiveTunnel::OnKad6GatewaySourceResult(uint32_t circuitId, uint32_t requestId,
@@ -4621,7 +4605,7 @@ bool CLiveTunnel::OnKad6GatewaySourceResult(uint32_t circuitId, uint32_t request
     }
 
     CSingleLock pl(&m_pendingLock, TRUE);
-    auto job = m_searchJobs.find(ExitOpKey(circuitId, requestId));
+    auto job = m_searchJobs.find(LiveRequestKey(circuitId, requestId));
     if (job == m_searchJobs.end() ||
         job->second.searchKind != kad6::kK6SearchKindSourceHash ||
         job->second.sourceCandidates.size() >= job->second.maxResults)
@@ -4685,7 +4669,7 @@ bool CLiveTunnel::OnKad6NativeSourceRecord(uint32_t circuitId,
 
     bool inserted = false;
     CSingleLock pl(&m_pendingLock, TRUE);
-    auto job = m_searchJobs.find(ExitOpKey(circuitId, requestId));
+    auto job = m_searchJobs.find(LiveRequestKey(circuitId, requestId));
     if (job == m_searchJobs.end() ||
         job->second.searchKind != kad6::kK6SearchKindSourceHash ||
         job->second.targetHash != record.object_hash)
@@ -10391,14 +10375,7 @@ void CLiveTunnel::Tick()
     // bound; without this a never-finishing exit op would leak forever.
     {
         CSingleLock pl(&m_pendingLock, TRUE);
-        for (auto it = m_exitOps.begin(); it != m_exitOps.end(); ) {
-            const bool expired =
-                (DWORD)(now - it->second.started) > TUN_REQUEST_HARD_TTL_MS;
-            if (expired || it->second.circ.expired())
-                it = m_exitOps.erase(it);
-            else
-                ++it;
-        }
+        (void)m_exitServices.Sweep(now, TUN_REQUEST_HARD_TTL_MS);
     }
 
     // 7. v8.1 Sprint B - reply to tunneled Kad searches whose accumulation

@@ -27,6 +27,9 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/LiveCellQueue.cpp", "srchybrid/LiveCellQueue.h",
     "srchybrid/LiveTunnelFraming.cpp", "srchybrid/LiveTunnelFraming.h",
     "srchybrid/LiveHandshakeWire.cpp", "srchybrid/LiveHandshakeWire.h",
+    "srchybrid/LiveRelayDispatcher.cpp", "srchybrid/LiveRelayDispatcher.h",
+    "srchybrid/LiveExitServices.cpp", "srchybrid/LiveExitServices.h",
+    "srchybrid/LiveRelayTypes.h",
     "srchybrid/LiveTunnelPending.cpp", "srchybrid/LiveTunnelPending.h",
     "srchybrid/LiveCircuitRegistry.cpp", "srchybrid/LiveCircuitRegistry.h",
     "srchybrid/LiveCircuitHandshake.cpp", "srchybrid/LiveCircuitHandshake.h",
@@ -149,7 +152,7 @@ class Mod02CharacterizationTest(unittest.TestCase):
     def test_goldens_cover_required_domains_and_use_production_files(self) -> None:
         expected = {
             "live_circuit_handshake", "live_circuit_registry",
-            "live_relay_exit",
+            "live_relay_dispatcher", "live_exit_services",
             "live_tunnel_framing", "live_tunnel_pending",
             "live_tunnel_dispatch", "web_parser_security",
             "web_serialization", "web_live_dispatch", "live_stream_session_chunk_callback",

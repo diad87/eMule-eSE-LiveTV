@@ -948,7 +948,8 @@ test('Kad6 Private and Strict paths fail closed at their declared hop counts', (
   for (const reason of ['StrictV1', 'PinMismatch', 'CapsFloor', 'SigFail']) {
     assert.match(handshake, new RegExp(`m_abort_reason = CircuitAbortReason::${reason}`));
   }
-  assert.match(tunnel, /void CLiveTunnel::DestroyCircuitFailClosed[\s\S]{0,900}m_auth_ok = false/);
+  assert.match(tunnel, /void CLiveTunnel::DestroyCircuitFailClosed[\s\S]{0,900}m_exitServices\.AbortCircuit\(circ->Id\(\)\)/);
+  assert.match(tunnel, /void CLiveTunnel::DestroyCircuitFailClosed[\s\S]{0,1600}m_auth_ok = false/);
   assert.match(tunnel, /HandshakeTimeout;[\s\S]{0,160}m_private2 \|\| c->m_strict3\) DestroyCircuitFailClosed/);
   assert.match(tunnel, /ExtendTimeout;[\s\S]{0,160}m_private2 \|\| c->m_strict3\) DestroyCircuitFailClosed/);
   assert.match(tunnel, /Kad6CtEqual\(a->GetEseNodePub\(\), b->GetEseNodePub\(\), 32\)/);

@@ -17,6 +17,8 @@
 #include "LiveTunnelPending.h"
 #include "LiveCircuitRegistry.h"
 #include "LiveCircuitHandshake.h"
+#include "LiveRelayDispatcher.h"
+#include "LiveExitServices.h"
 #include "kad6/kad6_lease.h"
 #include "kad6/kad6_publish.h"
 #include "kad6/kad6_frame.h"
@@ -86,7 +88,8 @@ struct TunnelEndpoint {
     uint8_t  remote_pubkey[32];      // origin's Ed25519 pub (channel pubkey for streams)
 };
 
-class CLiveTunnel : private LiveCircuitHandshakeHost {
+class CLiveTunnel : private LiveCircuitHandshakeHost,
+                    private ILiveRelayDispatcherPort {
 public:
     static CLiveTunnel& Get();
 
@@ -245,17 +248,8 @@ public:
     // single-cell op, or a reassembled multi-cell op) the dispatcher builds a
     // TunnelRequestCtx and invokes the handler. New ops (Sprint B/C) just
     // register a handler instead of editing HandleRelay_Exit.
-    struct TunnelRequestCtx {
-        std::shared_ptr<CLiveCircuit> circ;     // circuit the request arrived on
-        uint8_t        sub_cmd = 0;
-        uint32_t       req_id  = 0;
-        const uint8_t* body    = nullptr;       // request body (frag header stripped)
-        size_t         bodyLen = 0;
-    };
-    using TunnelOpHandler = std::function<void(const TunnelRequestCtx&)>;
-
-    // Register an exit-side handler for a sub_cmd. Last registration wins.
-    void RegisterExitHandler(uint8_t sub_cmd, TunnelOpHandler handler);
+    using TunnelRequestCtx = LiveTunnelRequestCtx;
+    using TunnelOpHandler = LiveTunnelOpHandler;
 
     // v0.71 P1.B — does the user's mode + this operation route through
     // a tunnel? Returns true if a circuit should be used. Centralised
@@ -541,6 +535,25 @@ private:
     LiveHandshakePeerHandle FindConnectedHandshakePeer(uint32_t ipv4, uint16_t port) const override;
     uint32_t LocalHandshakePublicIp() const override;
 
+    bool IsRelayMultiCell(uint8_t subCommand) const override;
+    bool ParseRelaySubHeader(const uint8_t* plain, size_t plainLength,
+                             uint8_t& subCommand, uint32_t& requestId,
+                             uint16_t& bodyLength,
+                             const uint8_t*& body) const override;
+    bool ParseRelayFragmentHeader(const uint8_t* body, size_t bodyLength,
+                                  uint16_t& fragmentIndex,
+                                  uint16_t& fragmentCount,
+                                  uint32_t& messageLength,
+                                  const uint8_t*& fragmentData,
+                                  size_t& fragmentDataLength) const override;
+    LiveRelayFragmentResult IngestRelayFragment(
+        uint32_t circuitId, uint32_t requestId,
+        uint16_t fragmentIndex, uint16_t fragmentCount,
+        uint32_t messageLength, const uint8_t* fragmentData,
+        size_t fragmentDataLength,
+        std::vector<uint8_t>& completedMessage) override;
+    bool DispatchRelayExit(const LiveTunnelRequestCtx& context) override;
+
     // Originator-side CREATED handler: complete handshake on hop 1.
     bool HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
                                   const uint8_t* payload, uint16_t payloadLen);
@@ -774,8 +787,6 @@ private:
                             uint32_t seq, const std::vector<uint8_t>& record, int r, uint8_t blockIdx);
 
     // === v8.1 A2 - generic exit dispatcher (internals) =====================
-    // Look up and invoke the registered handler for a fully-received request.
-    void DispatchExitRequest(const TunnelRequestCtx& ctx);
     // Fragment + send a reply back to V. reply_op >= 0x40 is split into
     // multi-cell fragments (sub-header + frag-header per cell); a legacy
     // reply op (< 0x40) goes as one single cell. Each cell is onion-wrapped
@@ -786,32 +797,13 @@ private:
     void ExitHandle_Ping(const TunnelRequestCtx& ctx);
     void ExitHandle_KadSearch(const TunnelRequestCtx& ctx);
     void ExitHandle_EchoLarge(const TunnelRequestCtx& ctx);   // A1.7 test op
-    // A2.2 - sub_cmd -> handler registry.
-    std::map<uint8_t, TunnelOpHandler> m_exitHandlers;
     // A1.5 - partial multi-cell message under reassembly, keyed by
-    // ExitOpKey(circ_id, req_id) so messages on different circuits that happen
+    // LiveRequestKey(circ_id, req_id) so messages on different circuits that happen
     // to share a req_id never collide (the exit reassembles for many circuits
     // at once). Accessed under m_pendingLock. Swept by Tick() (A5).
     std::map<uint64_t, ReassemblyEntry> m_reassembly;
 
     // === v8.1 A6 - deferred exit-side operations ==========================
-    // An exit handler that cannot answer immediately (e.g. a real Kad CSearch
-    // in Sprint B that completes via callbacks up to 45 s later) registers an
-    // ExitOperation in the handler and calls CompleteExitOperation when its
-    // work finishes. The op remembers which circuit + req_id to reply on and
-    // the reply opcode; it holds a weak_ptr so a slow operation does not keep a
-    // rotated-out circuit alive. Swept on TTL / aborted when its circuit dies.
-    struct ExitOperation {
-        std::weak_ptr<CLiveCircuit> circ;       // circuit to reply on
-        uint32_t circ_id  = 0;
-        uint32_t req_id   = 0;
-        uint8_t  reply_op = 0;
-        DWORD    started  = 0;
-    };
-    static uint64_t ExitOpKey(uint32_t circ_id, uint32_t req_id) {
-        return ((uint64_t)circ_id << 32) | req_id;
-    }
-    std::map<uint64_t, ExitOperation> m_exitOps;   // under m_pendingLock
     // Register a deferred reply; the handler returns without answering.
     bool BeginExitOperation(const TunnelRequestCtx& ctx, uint8_t reply_op);
     // Send the deferred reply (fragmented via SendReply) and discard the op.
@@ -862,7 +854,7 @@ private:
         DWORD                 deadline = 0;      // GetTickCount() when to reply
         std::vector<uint32_t> kadSearchIds;     // CSearch ids to StopSearch on finish
     };
-    std::map<uint64_t, TunnelSearchJob> m_searchJobs;   // key = ExitOpKey, under m_pendingLock
+    std::map<uint64_t, TunnelSearchJob> m_searchJobs;   // key = LiveRequestKey, under m_pendingLock
     void ExitHandle_KadSearchV2(const TunnelRequestCtx& ctx);   // B1
     void ExitHandle_KadCancel(const TunnelRequestCtx& ctx);     // B7
 
@@ -1253,6 +1245,8 @@ private:
     // module. m_pendingLock remains for unrelated reassembly/K6 domain state.
     using PendingHandle = eSELive::LiveTunnelPending::Handle;
     eSELive::LiveTunnelPending m_pendingRequests;
+    LiveRelayDispatcher m_relayDispatcher;
+    LiveExitServices m_exitServices;
     // Register before send so a fast reply cannot beat registration.
     PendingHandle RegisterPending(uint32_t& req_id);
     bool WaitPending(uint32_t req_id, PendingHandle pending, uint32_t timeoutMs,

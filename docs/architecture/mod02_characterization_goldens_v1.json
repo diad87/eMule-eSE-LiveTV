@@ -53,25 +53,42 @@
         "RunCircuitRegistryCharacterizationSelfTest": "f7c66c4fce8d3db346a4b2f3d7b2bebd2c564e7f73ed1092586668e548fdeb66"
       }
     },
-    "live_relay_exit": {
-      "production_file": "srchybrid/LiveTunnel.cpp",
+    "live_exit_services": {
+      "production_file": "srchybrid/LiveExitServices.cpp",
       "symbols": [
-        "CLiveTunnel::HandleRelay_Exit",
-        "CLiveTunnel::RegisterExitHandler",
-        "CLiveTunnel::DispatchExitRequest",
-        "CLiveTunnel::BeginExitOperation",
-        "CLiveTunnel::CompleteExitOperation",
-        "CLiveTunnel::SendExitOperationPart",
-        "CLiveTunnel::AbortExitOperation"
+        "LiveExitServices::RegisterHandler",
+        "LiveExitServices::Dispatch",
+        "LiveExitServices::Begin",
+        "LiveExitServices::TakeCompletion",
+        "LiveExitServices::FindPart",
+        "LiveExitServices::Abort",
+        "LiveExitServices::AbortCircuit",
+        "LiveExitServices::Clear",
+        "LiveExitServices::Sweep",
+        "RunLiveExitServicesCharacterizationSelfTest"
       ],
       "token_sha256": {
-        "CLiveTunnel::AbortExitOperation": "ecafb577bd8f295ac68d00ad8b2d6175da5207ea680fd2a0405977ccc61e50dc",
-        "CLiveTunnel::BeginExitOperation": "5453512f224f521a528805af5800ec0ec08094a63772ca3422d6369fe44ee753",
-        "CLiveTunnel::CompleteExitOperation": "6674b790dcafae1b3c08336a655832bc9fb6fa3f41a81d92fa710e27f764c463",
-        "CLiveTunnel::DispatchExitRequest": "f09dd4dafd224e612e8fefc4da3e385b06dc5a7f832beb9545f048c8105fe816",
-        "CLiveTunnel::HandleRelay_Exit": "fb6ece2d017d8c0194dbb9a310003ac159cc12292918f1a91ccc00063deb6e18",
-        "CLiveTunnel::RegisterExitHandler": "3659e962d24f3816d2421ce0bacf653fa6dbed7d5f2520fcb8a88749ad4c797d",
-        "CLiveTunnel::SendExitOperationPart": "163545e6a21134c99dba66864cf86f6f3ebda309824dea8994ed37f72370461e"
+        "LiveExitServices::Abort": "49bb0058eb1ccf9a02667337c3d14bb0b541d96578e36c6f5b8d753791d7ae9b",
+        "LiveExitServices::AbortCircuit": "48db6a7651234d07112b1b2c8606ab273f778d490e4f25b837e0d9b5678d017b",
+        "LiveExitServices::Begin": "ba2c74fd980ad8fd563c9ee3ac270cdbf37ed778c6169bf8499ee574056c18c9",
+        "LiveExitServices::Clear": "942beea3b04d7209e9b131fbea6fb92850ffb26cd7954051e28633a51c6a549e",
+        "LiveExitServices::Dispatch": "f347310fc88eeb6422c69da36db295c8cc01378a40d83cfbf8b1f50a1e1578c8",
+        "LiveExitServices::FindPart": "33ce631714243ad0abe95f9b48c746d88361f0befc274530be0c165bbba5515d",
+        "LiveExitServices::RegisterHandler": "1b406b3783ddd95dfb943cbdca4514d6f2fffde37c59494426e78b4f5342387c",
+        "LiveExitServices::Sweep": "9008a8eeb78fc6fb902259c1a345b56921a6c4e131fe8a88fc789e1f39e16d06",
+        "LiveExitServices::TakeCompletion": "bf908badb0939190357a00e75f3fefff93990f2883118e726583f4c57232e21b",
+        "RunLiveExitServicesCharacterizationSelfTest": "af0f6340e9196b53921fa706aafdc2d52d136c2805277fb75fe0dc16f3bdd565"
+      }
+    },
+    "live_relay_dispatcher": {
+      "production_file": "srchybrid/LiveRelayDispatcher.cpp",
+      "symbols": [
+        "LiveRelayDispatcher::DispatchExitPlain",
+        "RunLiveRelayDispatcherCharacterizationSelfTest"
+      ],
+      "token_sha256": {
+        "LiveRelayDispatcher::DispatchExitPlain": "b2c74664e8d7ae20bd939e6576416bfc13d5f6ab115c3805fbfd8c536a380407",
+        "RunLiveRelayDispatcherCharacterizationSelfTest": "1eb7c1c1a76fc62000edffa901ef3226ec1dda322be24865dc2e6ad0f0069acb"
       }
     },
     "live_stream_session_chunk_callback": {
@@ -95,7 +112,7 @@
         "CLiveTunnel::DestroyCircuitFailClosed"
       ],
       "token_sha256": {
-        "CLiveTunnel::DestroyCircuitFailClosed": "c7cc2d2295a62123672375ab6db35fe48547c9b709cbaeca253d7e34d77a6382",
+        "CLiveTunnel::DestroyCircuitFailClosed": "a9ac170852c9d617974bd46e87a2f170e8c858e2c786e4adb1283dfd4aed7edd",
         "CLiveTunnel::OnCellReceived": "85e33d1150767cf49379d4450d5ddbc72e66cdd959ce7b5ef3e3556dbf56e8da",
         "CLiveTunnel::SendThrough": "f8f3eba53ad91a8d33a9e168b4ef8f5f9bd6a86cc90658c9d309fd849b167fb4"
       }

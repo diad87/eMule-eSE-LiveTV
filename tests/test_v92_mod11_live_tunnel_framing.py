@@ -215,6 +215,20 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                     "LiveCircuitRegistry",
                     "LiveHandshakeWire",
                 ],
+            }, {
+                "name": "LiveRelayDispatcher",
+                "owner": "CLiveTunnel",
+                "layer": "application",
+                "implementation_files": ["srchybrid/LiveRelayDispatcher.cpp"],
+                "interface_files": ["srchybrid/LiveRelayDispatcher.h"],
+                "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveExitServices",
+                "owner": "CLiveTunnel",
+                "layer": "application",
+                "implementation_files": ["srchybrid/LiveExitServices.cpp"],
+                "interface_files": ["srchybrid/LiveExitServices.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -239,6 +253,14 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "module": "LiveCircuitHandshake",
                 "slice_base_commit": "0a173aa306963c7c8a1ed4478456c1fc20f79d05",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveRelayDispatcher",
+                "slice_base_commit": "e99303ba2377122cd173016f5f91a006c0ddcf41",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveExitServices",
+                "slice_base_commit": "e99303ba2377122cd173016f5f91a006c0ddcf41",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }],
         })
         self.assertEqual(self.baseline["approved_non_module_code"], [
@@ -255,6 +277,15 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "reason": (
                     "Standalone concurrency and retry executable test for "
                     "MOD-1.2 pending-state extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/LiveRelayTypes.h",
+                "reason": (
+                    "Narrow immutable DTO and handler signature shared by the "
+                    "two MOD-1.5 application modules without creating an "
+                    "application-to-application dependency."
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
@@ -287,6 +318,11 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/LiveTunnelFraming.h",
             "srchybrid/LiveHandshakeWire.cpp",
             "srchybrid/LiveHandshakeWire.h",
+            "srchybrid/LiveRelayDispatcher.cpp",
+            "srchybrid/LiveRelayDispatcher.h",
+            "srchybrid/LiveExitServices.cpp",
+            "srchybrid/LiveExitServices.h",
+            "srchybrid/LiveRelayTypes.h",
         }
         self.assertTrue(expected_paths.issubset(set(MOD02.CRITICAL_SOURCE_PATHS)))
         self.assertTrue(expected_paths.issubset(set(

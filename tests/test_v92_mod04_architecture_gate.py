@@ -46,6 +46,14 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
             message.startswith("slice LiveCircuitHandshake:")
             for message in messages
         ))
+        self.assertTrue(any(
+            message.startswith("slice LiveRelayDispatcher:")
+            for message in messages
+        ))
+        self.assertTrue(any(
+            message.startswith("slice LiveExitServices:")
+            for message in messages
+        ))
         self.assertFalse(self.config["final_limits"]["enforced_now"])
         self.assertEqual(self.config["baseline_commit"], "161d948281682d39acdcea796b1edddc6d68904c")
         self.assertEqual(len(self.config["coordinator_files"]), 6)
@@ -96,6 +104,20 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                     "LiveCircuitRegistry",
                     "LiveHandshakeWire",
                 ],
+            }, {
+                "name": "LiveRelayDispatcher",
+                "owner": "CLiveTunnel",
+                "layer": "application",
+                "implementation_files": ["srchybrid/LiveRelayDispatcher.cpp"],
+                "interface_files": ["srchybrid/LiveRelayDispatcher.h"],
+                "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveExitServices",
+                "owner": "CLiveTunnel",
+                "layer": "application",
+                "implementation_files": ["srchybrid/LiveExitServices.cpp"],
+                "interface_files": ["srchybrid/LiveExitServices.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.config["approved_non_module_code"], [
@@ -112,6 +134,15 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "reason": (
                     "Standalone concurrency and retry executable test for "
                     "MOD-1.2 pending-state extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/LiveRelayTypes.h",
+                "reason": (
+                    "Narrow immutable DTO and handler signature shared by the "
+                    "two MOD-1.5 application modules without creating an "
+                    "application-to-application dependency."
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
@@ -138,10 +169,18 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "module": "LiveCircuitHandshake",
                 "slice_base_commit": "0a173aa306963c7c8a1ed4478456c1fc20f79d05",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveRelayDispatcher",
+                "slice_base_commit": "e99303ba2377122cd173016f5f91a006c0ddcf41",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveExitServices",
+                "slice_base_commit": "e99303ba2377122cd173016f5f91a006c0ddcf41",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }],
         })
 
-    def test_only_the_four_completed_extractions_are_claimed(self) -> None:
+    def test_only_completed_extractions_are_claimed(self) -> None:
         self.assertEqual(self.config["mod03_contract"]["planned_module_count"], 30)
         self.assertEqual(len(VERIFIER._planned_modules(self.contract)), 30)
         self.assertEqual(
@@ -152,6 +191,8 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "LiveTunnelPending",
                 "LiveCircuitRegistry",
                 "LiveCircuitHandshake",
+                "LiveRelayDispatcher",
+                "LiveExitServices",
             ],
         )
 

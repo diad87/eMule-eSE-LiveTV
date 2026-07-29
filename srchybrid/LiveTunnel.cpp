@@ -538,6 +538,10 @@ bool CLiveTunnel::RunCharacterizationSelfTest(CString& outFailure)
         outFailure = _T("tunnel Kad-bridge characterization failed");
         return false;
     }
+    if (!eSELive::RunLiveTunnelMetricsCharacterizationSelfTest()) {
+        outFailure = _T("tunnel metrics characterization failed");
+        return false;
+    }
     if (SendThrough(NULL, 0)) {
         outFailure = _T("tunnel empty dispatch was accepted");
         return false;
@@ -590,8 +594,7 @@ bool CLiveTunnel::SendCellToPeer(CUpDownClient* peer, const uint8_t cell[CELL_TO
     Packet* pkt = new Packet(OP_LIVE_TUNNEL_CELL, CELL_TOTAL_BYTES, OP_EMULEPROT);
     memcpy(pkt->pBuffer, cell, CELL_TOTAL_BYTES);
     peer->socket->SendPacket(pkt, true, true, 0);
-    ++m_cellsSentTotal;
-    m_bytesSentTotal += CELL_TOTAL_BYTES;   // v8.1 D8 - tunnel wire-byte telemetry
+    m_metrics.RecordCellSent(CELL_TOTAL_BYTES);
     return true;
 }
 
@@ -1336,8 +1339,7 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
                                  CUpDownClient* fromPeer)
 {
     CSingleLock lock(&m_lock, TRUE);
-    ++m_cellsRecvTotal;
-    m_bytesRecvTotal += CELL_TOTAL_BYTES;   // v8.1 D8 - tunnel wire-byte telemetry
+    m_metrics.RecordCellReceived(CELL_TOTAL_BYTES);
 
     // CELL_CREATE: someone is asking us to be a relay for them. Handle
     // even if we don't know circ_id yet (this is by design — circ_id is
@@ -1627,7 +1629,7 @@ void CLiveTunnel::GetK6HardeningSnapshot(K6HardeningRuntimeSnapshot& out)
 {
     out = K6HardeningRuntimeSnapshot{};
     out.control = m_k6Hardening.Snapshot();
-    out.metrics = m_k6Metrics.WindowInfo(static_cast<uint64>(time(NULL)));
+    out.metrics = m_metrics.WindowInfo(static_cast<uint64>(time(NULL)));
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         for (const auto& pair : m_k6SourceLeases.Entries())
@@ -2041,7 +2043,7 @@ bool CLiveTunnel::K6EconomyAdmit(kad6::K6Service service)
 
 std::string CLiveTunnel::GetK6PrometheusMetrics()
 {
-    return m_k6Metrics.ExportPrometheus(static_cast<uint64>(time(NULL)));
+    return m_metrics.ExportPrometheus(static_cast<uint64>(time(NULL)));
 }
 
 bool CLiveTunnel::StartK6ExitNotice(uint16 port, kad6::K6ExitNotice notice)
@@ -2457,10 +2459,10 @@ bool CLiveTunnel::ProcessK6FairTick()
             failed.insert(item.stream_id);
             continue;
         }
-        m_k6Metrics.Add(kad6::K6MetricFamily::ExitBytesTotal,
+        m_metrics.Add(kad6::K6MetricFamily::ExitBytesTotal,
             item.direction == 0 ? 1 : 0, runtime.inbound ? 3 : 2, 0,
             static_cast<uint64>(item.bytes.size()), static_cast<uint64>(time(NULL)));
-        m_k6Metrics.Add(kad6::K6MetricFamily::TransportBytesTotal,
+        m_metrics.Add(kad6::K6MetricFamily::TransportBytesTotal,
             0, item.direction == 0 ? 1 : 0, 0,
             static_cast<uint64>(item.bytes.size()), static_cast<uint64>(time(NULL)));
         {
@@ -3239,17 +3241,13 @@ void CLiveTunnel::RebuildPeersCache()
             all.push_back(p);
         }
     }
-    CSingleLock lk(&m_peersCacheLock, TRUE);
-    m_peersCacheAll.swap(all);
-    m_peersCacheTunnelingCount = tunnelingCount;
+    m_metrics.ReplacePeers(std::move(all), tunnelingCount);
 }
 
 void CLiveTunnel::GetPeersSnapshot(std::vector<PeerSnapshot>& outAll,
                                    size_t& outTunnelingCount) const
 {
-    CSingleLock lk(&m_peersCacheLock, TRUE);
-    outAll            = m_peersCacheAll;
-    outTunnelingCount = m_peersCacheTunnelingCount;
+    m_metrics.GetPeers(outAll, outTunnelingCount);
 }
 
 // === v0.71 C — Data plane: CELL_RELAY delivery + tunnel ping =================
@@ -3337,8 +3335,7 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
             DWORD rtt = GetTickCount() - m_rttPingSentTick;
             if (rtt > 60000u) rtt = 60000u;   // clamp absurd/stale samples; also no overflow
             // EWMA (1/4 weight); first sample seeds the mean.
-            m_meanRttMs = (m_meanRttMs == 0) ? (uint32_t)rtt
-                                             : (uint32_t)((m_meanRttMs * 3 + rtt) / 4);
+            m_metrics.ObserveMeanRtt(static_cast<uint32_t>(rtt));
             m_rttPingReqId = 0;   // consume so a duplicate reply can't re-match
         }
         // v8.1 A3 - wake the blocked TunnelPing() call (no-op for the RTT probe, which
@@ -4320,7 +4317,7 @@ void CLiveTunnel::ExitHandle_Kad6Gateway(const TunnelRequestCtx& ctx)
         frame.session_id != 0 || (frame.flags & kad6::kK6FlagResponse) != 0 ||
         (frame.flags & kad6::kK6FlagReservedMask) != 0)
     {
-        m_k6Metrics.Add(kad6::K6MetricFamily::AuthFailTotal, 2, 0, 0, 1,
+        m_metrics.Add(kad6::K6MetricFamily::AuthFailTotal, 2, 0, 0, 1,
                         static_cast<uint64>(time(NULL)));
         return;
     }
@@ -4413,8 +4410,8 @@ void CLiveTunnel::ExitHandle_Kad6Gateway(const TunnelRequestCtx& ctx)
 
     if (!m_k6Hardening.CanAdmit(kad6::K6Service::Control)) {
         const uint64 now = static_cast<uint64>(time(NULL));
-        m_k6Metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
-        m_k6Metrics.Add(kad6::K6MetricFamily::SearchTotal, 0, 1, 0, 1, now);
+        m_metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
+        m_metrics.Add(kad6::K6MetricFamily::SearchTotal, 0, 1, 0, 1, now);
         finishNow(kad6::K6SearchEndStatus::PolicyDenied);
         return;
     }
@@ -4580,7 +4577,7 @@ bool CLiveTunnel::OnKad6GatewaySourceResult(uint32_t circuitId, uint32_t request
     }
     if (!K6AllowTicketTarget(this,
             static_cast<kad6::Byte>(kad6::K6TicketService::Ed2kTcp), candidate.endpoint)) {
-        m_k6Metrics.Add(kad6::K6MetricFamily::SourceCandidateTotal,
+        m_metrics.Add(kad6::K6MetricFamily::SourceCandidateTotal,
             0, 1, 0, 1, static_cast<uint64>(time(NULL)));
         return false;
     }
@@ -4594,7 +4591,7 @@ bool CLiveTunnel::OnKad6GatewaySourceResult(uint32_t circuitId, uint32_t request
     for (const auto& old : job->second.sourceCandidates) {
         if (old.userHash == candidate.userHash && old.endpoint.addr == candidate.endpoint.addr &&
             old.endpoint.tcp_port == candidate.endpoint.tcp_port) {
-            m_k6Metrics.Add(kad6::K6MetricFamily::SourceCandidateTotal,
+            m_metrics.Add(kad6::K6MetricFamily::SourceCandidateTotal,
                 0, 1, 0, 1, static_cast<uint64>(time(NULL)));
             return false;
         }
@@ -4606,15 +4603,15 @@ bool CLiveTunnel::OnKad6GatewaySourceResult(uint32_t circuitId, uint32_t request
     const double elapsed = static_cast<double>(GetTickCount() - job->second.started);
     if (!job->second.firstSourceMetric) {
         job->second.firstSourceMetric = true;
-        m_k6Metrics.Observe(kad6::K6MetricFamily::SearchLatencyMs,
+        m_metrics.Observe(kad6::K6MetricFamily::SearchLatencyMs,
             0, 0, 0, elapsed, static_cast<uint64>(time(NULL)));
     }
     if (count >= 5 && !job->second.fiveSourceMetric) {
         job->second.fiveSourceMetric = true;
-        m_k6Metrics.Observe(kad6::K6MetricFamily::SearchLatencyMs,
+        m_metrics.Observe(kad6::K6MetricFamily::SearchLatencyMs,
             1, 0, 0, elapsed, static_cast<uint64>(time(NULL)));
     }
-    m_k6Metrics.Add(kad6::K6MetricFamily::SourceCandidateTotal,
+    m_metrics.Add(kad6::K6MetricFamily::SourceCandidateTotal,
         0, 0, 0, 1, static_cast<uint64>(time(NULL)));
     return true;
 }
@@ -4627,12 +4624,12 @@ bool CLiveTunnel::OnKad6NativeSourceRecord(uint32_t circuitId,
     const uint64 now = static_cast<uint64>(time(NULL));
     const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
     if (kad6::VerifyK6SourceRecord(crypto, record) != kad6::Kad6Status::Ok) {
-        m_k6Metrics.Add(kad6::K6MetricFamily::SourceCandidateTotal,
+        m_metrics.Add(kad6::K6MetricFamily::SourceCandidateTotal,
             1, 1, 0, 1, now);
         return false;
     }
     if (kad6::K6SourceRecordCheckFresh(record, now) != kad6::Kad6Status::Ok) {
-        m_k6Metrics.Add(kad6::K6MetricFamily::SourceStaleTotal,
+        m_metrics.Add(kad6::K6MetricFamily::SourceStaleTotal,
             1, 0, 0, 1, now);
         return false;
     }
@@ -4684,7 +4681,7 @@ bool CLiveTunnel::OnKad6NativeSourceRecord(uint32_t circuitId,
             }
         }
         if (duplicate) {
-            m_k6Metrics.Add(kad6::K6MetricFamily::SourceCandidateTotal,
+            m_metrics.Add(kad6::K6MetricFamily::SourceCandidateTotal,
                 1, 1, 0, 1, now);
         }
         if (!duplicate && job->second.sourceCandidates.size() <
@@ -4696,15 +4693,15 @@ bool CLiveTunnel::OnKad6NativeSourceRecord(uint32_t circuitId,
             const double elapsed = static_cast<double>(GetTickCount() - job->second.started);
             if (!job->second.firstSourceMetric) {
                 job->second.firstSourceMetric = true;
-                m_k6Metrics.Observe(kad6::K6MetricFamily::SearchLatencyMs,
+                m_metrics.Observe(kad6::K6MetricFamily::SearchLatencyMs,
                     0, 1, 0, elapsed, now);
             }
             if (count >= 5 && !job->second.fiveSourceMetric) {
                 job->second.fiveSourceMetric = true;
-                m_k6Metrics.Observe(kad6::K6MetricFamily::SearchLatencyMs,
+                m_metrics.Observe(kad6::K6MetricFamily::SearchLatencyMs,
                     1, 1, 0, elapsed, now);
             }
-            m_k6Metrics.Add(kad6::K6MetricFamily::SourceCandidateTotal,
+            m_metrics.Add(kad6::K6MetricFamily::SourceCandidateTotal,
                 1, 0, 0, 1, now);
         }
     }
@@ -4715,7 +4712,7 @@ void CLiveTunnel::OnKad6SourceLookupRpc(uint8_t alpha, uint8_t result)
 {
     const uint8_t alphaBucket = alpha <= 3 ? 0 : (alpha <= 5 ? 1 : 2);
     if (result > 3) result = 2;
-    m_k6Metrics.Add(kad6::K6MetricFamily::SearchRpcTotal,
+    m_metrics.Add(kad6::K6MetricFamily::SearchRpcTotal,
         1, alphaBucket, result, 1, static_cast<uint64>(time(NULL)));
 }
 
@@ -5054,8 +5051,8 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
     if (!m_k6Hardening.CanAdmit(kad6::K6Service::ExitKad) ||
         !K6EconomyAdmit(kad6::K6Service::ExitKad)) {
         const uint64 now = static_cast<uint64>(time(NULL));
-        m_k6Metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
-        m_k6Metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 1, 1, 0, 1, now);
+        m_metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
+        m_metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 1, 1, 0, 1, now);
         finish(kad6::K6SourceBoundStatus::Overloaded, NULL);
         return;
     }
@@ -5254,7 +5251,7 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
             return;
         }
     }
-    m_k6Metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 1, 0, 0, 1, now);
+    m_metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 1, 0, 0, 1, now);
     SendK6GatewayResponse(ctx, kad6::kK6MsgSourceBound, encoded);
 }
 
@@ -5307,8 +5304,8 @@ void CLiveTunnel::ExitHandle_Kad6Publish(const TunnelRequestCtx& ctx,
 
     if (!m_k6Hardening.CanAdmit(kad6::K6Service::ExitKad)) {
         const uint64 now = static_cast<uint64>(time(NULL));
-        m_k6Metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
-        m_k6Metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 1, 1, 0, 1, now);
+        m_metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
+        m_metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 1, 1, 0, 1, now);
         reject("EXIT_KAD disabled by local kill switch");
         return;
     }
@@ -5541,7 +5538,7 @@ void CLiveTunnel::ExitHandle_Kad6Publish(const TunnelRequestCtx& ctx,
     if (kad6::EncodeK6PublishAck(ack, body) != kad6::Kad6Status::Ok)
         AbortExitOperation(ctx.circ->Id(), ctx.req_id);
     else {
-        m_k6Metrics.Add(kad6::K6MetricFamily::PublishTotal,
+        m_metrics.Add(kad6::K6MetricFamily::PublishTotal,
             (publish.network_mask & kad6::kK6PublishNetKad6) != 0 ? 1 : 0,
             0, 0, 1, now);
         SendK6GatewayResponse(ctx, kad6::kK6MsgPublishAck, body);
@@ -5746,8 +5743,8 @@ void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
     if (!m_k6Hardening.CanAdmit(kad6::K6Service::ExitEd2kDial) ||
         !K6EconomyAdmit(kad6::K6Service::ExitEd2kDial)) {
         const uint64 now = static_cast<uint64>(time(NULL));
-        m_k6Metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
-        m_k6Metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 2, 1, 0, 1, now);
+        m_metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
+        m_metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 2, 1, 0, 1, now);
         reject(kad6::K6DialStatus::PolicyDenied);
         return;
     }
@@ -5904,7 +5901,7 @@ void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
             runtime.ticket.target_endpoint, runtime.network_origin),
             static_cast<uint64>(time(NULL)));
         ReleaseK6FairStreamLocked(streamId); pl.Unlock();
-        m_k6Metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
+        m_metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
             runtime.network_origin == kad6::kK6NetOriginKad6 ? 1 : 0,
             2, 0, 1, static_cast<uint64>(time(NULL)));
         reject(kad6::K6DialStatus::ConnectFailed);
@@ -5976,7 +5973,7 @@ void CLiveTunnel::OnK6ExitSocketConnect(uint64 streamId, CKad6ExitSocket* socket
             result.status == kad6::K6DialStatus::Ok,
             static_cast<uint64>(time(NULL)));
     }
-    m_k6Metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
+    m_metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
         runtime.network_origin == kad6::kK6NetOriginKad6 ? 1 : 0,
         result.status == kad6::K6DialStatus::Ok ? 0 : 2, 0, 1,
         static_cast<uint64>(time(NULL)));
@@ -6011,7 +6008,7 @@ void CLiveTunnel::OnK6ExitSocketConnect(uint64 streamId, CKad6ExitSocket* socket
             return;
         }
         const uint64 metricNow = static_cast<uint64>(time(NULL));
-        m_k6Metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 2, 0, 0, 1,
+        m_metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 2, 0, 0, 1,
                         metricNow);
         const uint8_t* pub = NodeIdentityPub();
         if (!pub) return;
@@ -6134,8 +6131,8 @@ bool CLiveTunnel::ActivateK6Inbound(CKad6ExitSocket* socket,
     if (!m_k6Hardening.CanAdmit(kad6::K6Service::ExitEd2kFull) ||
         !K6EconomyAdmit(kad6::K6Service::ExitEd2kFull)) {
         const uint64 now = static_cast<uint64>(time(NULL));
-        m_k6Metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
-        m_k6Metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 3, 1, 0, 1, now);
+        m_metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
+        m_metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 3, 1, 0, 1, now);
         return false;
     }
 
@@ -6255,7 +6252,7 @@ bool CLiveTunnel::ActivateK6Inbound(CKad6ExitSocket* socket,
         }
         m_k6ExitStreams[streamId] = runtime;
     }
-    m_k6Metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 3, 0, 0, 1,
+    m_metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 3, 0, 0, 1,
                     runtime.created_at);
 
     kad6::K6DialResult accept;
@@ -6372,10 +6369,10 @@ void CLiveTunnel::ExitHandle_Kad6StreamData(const TunnelRequestCtx& ctx,
             const auto stream = m_k6ExitStreams.find(data.stream_id);
             inbound = stream != m_k6ExitStreams.end() && stream->second.inbound;
         }
-        m_k6Metrics.Add(kad6::K6MetricFamily::ExitBytesTotal, 1,
+        m_metrics.Add(kad6::K6MetricFamily::ExitBytesTotal, 1,
             inbound ? 3 : 2, 0, static_cast<uint64>(rewritten.size()),
             static_cast<uint64>(time(NULL)));
-        m_k6Metrics.Add(kad6::K6MetricFamily::TransportBytesTotal, 0, 1, 0,
+        m_metrics.Add(kad6::K6MetricFamily::TransportBytesTotal, 0, 1, 0,
             static_cast<uint64>(rewritten.size()), static_cast<uint64>(time(NULL)));
         {
             CSingleLock pl(&m_pendingLock, TRUE);
@@ -6623,10 +6620,10 @@ bool CLiveTunnel::OnK6ExitPacket(uint64 streamId, const uint8_t* raw, size_t len
         if (socket) socket->Disconnect(_T("Kad6 tunnel rejected accepted frame"));
         return false;
     }
-    m_k6Metrics.Add(kad6::K6MetricFamily::ExitBytesTotal, 0,
+    m_metrics.Add(kad6::K6MetricFamily::ExitBytesTotal, 0,
         runtime.inbound ? 3 : 2, 0, static_cast<uint64>(length),
         static_cast<uint64>(time(NULL)));
-    m_k6Metrics.Add(kad6::K6MetricFamily::TransportBytesTotal, 0, 0, 0,
+    m_metrics.Add(kad6::K6MetricFamily::TransportBytesTotal, 0, 0, 0,
         static_cast<uint64>(length), static_cast<uint64>(time(NULL)));
     {
         CSingleLock pl(&m_pendingLock, TRUE);
@@ -7219,7 +7216,7 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
                     runtime.ticket.target_endpoint, runtime.network_origin),
                     nowSeconds);
             }
-            m_k6Metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
+            m_metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
                 runtime.network_origin == kad6::kK6NetOriginKad6 ? 1 : 0,
                 3, 0, 1, nowSeconds);
         }
@@ -7298,16 +7295,16 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
         static_cast<size_t>(kad6::K6Service::ExitEd2kDial)]) / 512.0;
     const double fullCapacity = static_cast<double>(serviceActive[
         static_cast<size_t>(kad6::K6Service::ExitEd2kFull)]) / 512.0;
-    m_k6Metrics.Observe(kad6::K6MetricFamily::ExitCapacityRatio, 1, 0, 0,
+    m_metrics.Observe(kad6::K6MetricFamily::ExitCapacityRatio, 1, 0, 0,
                         leaseCapacity, nowSeconds);
-    m_k6Metrics.Observe(kad6::K6MetricFamily::ExitCapacityRatio, 2, 0, 0,
+    m_metrics.Observe(kad6::K6MetricFamily::ExitCapacityRatio, 2, 0, 0,
                         dialCapacity, nowSeconds);
-    m_k6Metrics.Observe(kad6::K6MetricFamily::ExitCapacityRatio, 3, 0, 0,
+    m_metrics.Observe(kad6::K6MetricFamily::ExitCapacityRatio, 3, 0, 0,
                         fullCapacity, nowSeconds);
     for (uint8 service = 2; service <= 3; ++service)
         for (uint8 profile = 1; profile <= 2; ++profile)
             for (uint8 state = 0; state < 4; ++state)
-                m_k6Metrics.Observe(kad6::K6MetricFamily::Sessions,
+                m_metrics.Observe(kad6::K6MetricFamily::Sessions,
                     service, profile, state,
                     state == 1 ? streamProfiles[service][profile] : 0.0, nowSeconds);
     RefreshK6EconomyMeasurements(nowSeconds, serviceActive);
@@ -7611,7 +7608,7 @@ void CLiveTunnel::FinishDueSearchJobs()
                 const uint64_t metricNow = static_cast<uint64_t>(time(NULL));
                 for (uint8_t network = 0; network < 2; ++network)
                     if ((due[i].networkMask & masks[network]) != 0)
-                        m_k6Metrics.Add(kad6::K6MetricFamily::SearchTotal,
+                        m_metrics.Add(kad6::K6MetricFamily::SearchTotal,
                             network, foundByNetwork[network] ? 0 :
                                 (startedByNetwork[network] ? 1 : 2),
                             0, 1, metricNow);
@@ -8956,8 +8953,7 @@ bool CLiveTunnel::SendBulkCellToPeer(CUpDownClient* peer, const uint8_t* bytes, 
     // cannot be trapped behind class-5 payload. The queue is independently
     // bounded above to preserve backpressure.
     peer->socket->SendPacket(pkt, false, static_cast<uint32>(size), false);
-    ++m_cellsSentTotal;
-    m_bytesSentTotal += size;
+    m_metrics.RecordCellSent(size);
     return true;
 }
 
@@ -9121,9 +9117,9 @@ bool CLiveTunnel::EmitK6ShapedEmission(
     const uint64_t useful = static_cast<uint64_t>(
         (std::min)(emission.record_bytes, carrier.size()));
     if (useful != 0)
-        m_k6Metrics.Add(kad6::K6MetricFamily::TransportBytesTotal,
+        m_metrics.Add(kad6::K6MetricFamily::TransportBytesTotal,
             0, 1, 0, useful, metricNow);
-    m_k6Metrics.Add(kad6::K6MetricFamily::TransportBytesTotal,
+    m_metrics.Add(kad6::K6MetricFamily::TransportBytesTotal,
         1, 1, 0, static_cast<uint64_t>(carrier.size()) - useful, metricNow);
     return true;
 }
@@ -9294,8 +9290,7 @@ void CLiveTunnel::ProcessClass5Tick()
 bool CLiveTunnel::OnBulkCellReceived(const uint8_t* pkt, uint32_t size, CUpDownClient* fromPeer)
 {
     CSingleLock lock(&m_lock, TRUE);
-    ++m_cellsRecvTotal;
-    m_bytesRecvTotal += size;
+    m_metrics.RecordCellReceived(size);
 
     if (size == kad6::kK6ShapedTotal)
         return HandleK6ShapedCellLocked(pkt, size, fromPeer);
@@ -10011,9 +10006,9 @@ void CLiveTunnel::Tick()
              circuit->State() != CircuitState::Destroyed))
             continue;
         const bool ok = circuit->State() == CircuitState::Active;
-        m_k6Metrics.Observe(kad6::K6MetricFamily::CircuitBuildMs,
+        m_metrics.Observe(kad6::K6MetricFamily::CircuitBuildMs,
             ok ? 0 : 1, 0, 0, static_cast<double>(circuit->AgeMs()), buildMetricNow);
-        m_k6Metrics.Add(kad6::K6MetricFamily::BuildTotal,
+        m_metrics.Add(kad6::K6MetricFamily::BuildTotal,
             ok ? 0 : 1, ok ? 0 : 6, 0, 1, buildMetricNow);
         circuit->m_k6BuildMetricEmitted = true;
     }
@@ -10074,7 +10069,7 @@ void CLiveTunnel::Tick()
         const uint64 metricNow = static_cast<uint64>(time(NULL));
         for (uint8 state = 0; state < 5; ++state)
             for (uint8 hops = 0; hops < 4; ++hops)
-                m_k6Metrics.Observe(kad6::K6MetricFamily::Circuits,
+                m_metrics.Observe(kad6::K6MetricFamily::Circuits,
                     state, hops, 0, circuitCounts[state][hops], metricNow);
     }
     {
@@ -10137,7 +10132,7 @@ void CLiveTunnel::Tick()
     // fire-and-forget TUN_OP_PING (reusing the existing ping op — no new wire opcode)
     // pinned by SendMessagePinned to an Active circuit, and record its req_id + send
     // tick. The PING_REPLY arm in HandleRelay_Originator differences the tick into
-    // m_meanRttMs (EWMA). SendMessagePinned returns 0 when there is no Active circuit,
+    // the metrics-owned RTT EWMA. SendMessagePinned returns 0 when there is no Active circuit,
     // so this is a pure no-op on a single-PC node (it never builds anything).
     {
         const DWORD RTT_PING_INTERVAL_MS = 5000u;

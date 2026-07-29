@@ -22,6 +22,7 @@
 #include "LiveTunnelScheduler.h"
 #include "LiveTunnelPeerState.h"
 #include "LiveTunnelKadBridge.h"
+#include "LiveTunnelMetrics.h"
 #include "kad6/kad6_lease.h"
 #include "kad6/kad6_publish.h"
 #include "kad6/kad6_frame.h"
@@ -390,54 +391,17 @@ public:
     // v0.71 B — accessor for the panel/REST endpoint to enumerate all
     // active circuits with their per-hop endpoints. The caller receives
     // copies (no live refs) and may iterate without holding our lock.
-    struct CircuitSnapshot {
-        uint32_t circ_id;
-        uint8_t  role;          // 0 = Originator, 1 = Relay
-        uint8_t  state;         // CircuitState as uint
-        uint32_t age_ms;
-        uint32_t hop_count;
-        uint8_t  next_hop_set;  // relay-side: 1 if forwarding to hop2
-        uint32_t next_circ_id;
-        uint8_t  auth_ok;       // v8.x Phase 2: 1 if ALL hops completed the authenticated v2 handshake
-        uint8_t  strict3;
-        uint8_t  shaped;
-        uint8_t  shaping_exposed;
-        uint8_t  abort_reason;  // CircuitAbortReason; sanitized, local-only diagnostic
-    };
+    using CircuitSnapshot = LiveCircuitSnapshot;
     void GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const;
 
     // K6-7 local beta controls. Mutations are marshaled to the main thread so
     // a Web UI worker never touches sockets or lease state. The snapshot and
     // sealed metrics contain only aggregate, fixed-cardinality values.
-    struct K6HardeningRuntimeSnapshot {
-        kad6::K6HardeningSnapshot control;
-        kad6::K6MetricsWindowInfo metrics;
-        uint64 active_leases = 0;
-        uint64 active_publishes = 0;
-        uint64 dial_streams = 0;
-        uint64 full_streams = 0;
-        uint32 shaping_exposed_circuits = 0;
-        bool source_epoch_store_failed = false;
-        bool economy_measurement_ready = false;
-        bool strict_recommended = false;
-        std::array<double, static_cast<size_t>(kad6::K6Service::Count)> rho{};
-        std::array<kad6::K6EconomyWindowSnapshot,
-                   static_cast<size_t>(kad6::K6Service::Count)> economy{};
-    };
+    using K6HardeningRuntimeSnapshot = LiveK6HardeningRuntimeSnapshot;
     bool RequestK6ServiceSwitch(kad6::K6Service service, bool enabled,
                                 uint32 drainSeconds, uint32 timeoutMs);
     void GetK6HardeningSnapshot(K6HardeningRuntimeSnapshot& out);
-    struct K6ReleaseRuntimeSnapshot {
-        bool operator_opt_in = false;
-        bool evidence_present = false;
-        bool evidence_valid = false;
-        bool runtime_healthy = false;
-        bool public_exit_enabled = false;
-        bool beta_exit_opt_in = false;
-        bool beta_exit_enabled = false;
-        kad6::K6ReleaseGateStatus status = kad6::K6ReleaseGateStatus::Missing;
-        kad6::K6ReleaseEvidence evidence;
-    };
+    using K6ReleaseRuntimeSnapshot = LiveK6ReleaseRuntimeSnapshot;
     bool RequestK6PublicRelease(bool enable,
                                 const kad6::K6ReleaseEvidence* evidence,
                                 uint32 drainSeconds, uint32 timeoutMs);
@@ -473,16 +437,9 @@ public:
 
     // Value-typed peer info — safe to hand to a worker thread (unlike raw
     // CUpDownClient pointers, which only the main thread may dereference).
-    struct PeerSnapshot {
-        uint32_t ip;
-        uint16_t port;
-        uint32_t fork_caps;
-        uint32_t ese_caps;
-        // Printable native endpoint. IPv6 must never be exposed as the
-        // synthetic legacy uint32 identity stored in `ip`.
-        std::string address;
-        bool has_ipv4;
-    };
+    // Printable endpoints are immutable values. IPv6 is never exposed as the
+    // synthetic legacy uint32 identity stored in `ip`.
+    using PeerSnapshot = LivePeerSnapshot;
     // Worker-thread safe. Copies the peer snapshot the main thread refreshes
     // in ProcessMainThreadWork(). outTunnelingCount = connected peers that
     // advertised privacy-tunneling capability.
@@ -494,15 +451,15 @@ public:
     void ProcessMainThreadWork();
 
     // v0.71 P3.3 — total counts of cells sent / received for metrics.
-    uint64_t CellsSentTotal() const { return m_cellsSentTotal; }
-    uint64_t CellsRecvTotal() const { return m_cellsRecvTotal; }
+    uint64_t CellsSentTotal() const { return m_metrics.Totals().cells_sent; }
+    uint64_t CellsRecvTotal() const { return m_metrics.Totals().cells_received; }
     // v8.1 D8 — total tunnel wire bytes (cells * CELL_TOTAL_BYTES; excludes the small
     // fixed OP_EMULEPROT/opcode header). Honest tunnel-carried byte figure.
-    uint64_t BytesSentTotal() const { return m_bytesSentTotal; }
-    uint64_t BytesRecvTotal() const { return m_bytesRecvTotal; }
+    uint64_t BytesSentTotal() const { return m_metrics.Totals().bytes_sent; }
+    uint64_t BytesRecvTotal() const { return m_metrics.Totals().bytes_received; }
     // v8.1 D8 — EWMA mean end-to-end tunnel RTT in ms (0 = unknown / no sample yet).
     // Measured by a periodic fire-and-forget TUN_OP_PING probe (see Tick).
-    uint32_t MeanRttMs() const { return m_meanRttMs; }
+    uint32_t MeanRttMs() const { return m_metrics.Totals().mean_rtt_ms; }
 
 private:
     friend class CKad6ExitSocket;
@@ -1010,7 +967,7 @@ private:
     void FlushK6ExitCredit(uint32 circId);
     LiveTunnelPeerState m_peerState;
     kad6::K6HardeningController m_k6Hardening;
-    kad6::K6Metrics m_k6Metrics;
+    LiveTunnelMetrics m_metrics;
     kad6::K6EconomyTelemetry m_k6EconomyTelemetry;
     std::array<kad6::K6SaturationInputs,
                static_cast<size_t>(kad6::K6Service::Count)> m_k6EconomyInputs{};
@@ -1248,12 +1205,6 @@ private:
     static constexpr MtOp MT_K6_RELEASE_SWITCH = MtOp::K6ReleaseSwitch;
     LiveTunnelScheduler m_scheduler;
 
-    // v0.72 — peer snapshot cache, rebuilt by the main thread every tick so
-    // worker threads never dereference CUpDownClient pointers.
-    mutable CCriticalSection  m_peersCacheLock;
-    std::vector<PeerSnapshot> m_peersCacheAll;
-    size_t                    m_peersCacheTunnelingCount = 0;
-
     // v0.72 — enqueue a SendThrough payload for the main thread. Used by
     // TunnelPing / TunneledKadSearch (they run on webserver worker threads).
     void EnqueueSend(const uint8_t* payload, size_t payloadLen);
@@ -1277,7 +1228,7 @@ private:
     std::map<uint64_t, K6SearchReplyAggregate> m_k6SearchReplies; // m_pendingLock
     bool HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
                              uint32_t req_id, const std::vector<uint8_t>& wire);
-    // v0.72 — MAIN THREAD: refresh m_peersCache* from the live ClientList.
+    // v0.72 — MAIN THREAD: refresh the value-only peer cache.
     void RebuildPeersCache();
 
     mutable CCriticalSection m_lock;
@@ -1288,14 +1239,9 @@ private:
     bool m_k6GuardLoaded = false;
     bool LoadK6Guard();
     bool SaveK6Guard(const uint8_t nodePub[32], uint64_t expiresAt);
-    uint64_t m_cellsSentTotal = 0;
-    uint64_t m_cellsRecvTotal = 0;
-    uint64_t m_bytesSentTotal = 0;   // v8.1 D8 - tunnel wire-byte telemetry
-    uint64_t m_bytesRecvTotal = 0;
     // v8.1 D8 - periodic RTT probe state (all touched only under m_lock).
     DWORD    m_rttPingSentTick = 0;  // send tick of the in-flight probe
     uint32_t m_rttPingReqId    = 0;  // req_id of the in-flight probe (0 = none outstanding)
-    uint32_t m_meanRttMs       = 0;  // EWMA mean tunnel RTT (0 = unknown)
 };
 
 }  // namespace eSELive

@@ -13,6 +13,8 @@ COORDINATOR = ROOT / "srchybrid" / "LiveTunnel.cpp"
 INTERFACE = ROOT / "srchybrid" / "LiveTunnel.h"
 WEB = ROOT / "srchybrid" / "WebServer.cpp"
 PANEL = ROOT / "srchybrid" / "NetworkInfoDlg.cpp"
+METRICS = ROOT / "srchybrid" / "LiveTunnelMetrics.cpp"
+METRICS_INTERFACE = ROOT / "srchybrid" / "LiveTunnelMetrics.h"
 CONTRACT = ROOT / "docs" / "architecture" / "mod03_ownership_layering_contract_v1.json"
 VERIFIER_PATH = ROOT / "tools" / "architecture" / "verify_mod02_characterization.py"
 
@@ -29,6 +31,8 @@ class Mod18MetricsCharacterizationTest(unittest.TestCase):
         cls.interface = INTERFACE.read_text(encoding="utf-8")
         cls.web = WEB.read_text(encoding="utf-8")
         cls.panel = PANEL.read_text(encoding="utf-8")
+        cls.metrics = METRICS.read_text(encoding="utf-8")
+        cls.metrics_interface = METRICS_INTERFACE.read_text(encoding="utf-8")
         cls.contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
 
     def body(self, symbol: str) -> str:
@@ -55,7 +59,7 @@ class Mod18MetricsCharacterizationTest(unittest.TestCase):
         self.assertLess(pending, registry)
         for marker in (
             "m_k6Hardening.Snapshot()",
-            "m_k6Metrics.WindowInfo(",
+            "m_metrics.WindowInfo(",
             "pair.second.state != kad6::K6SourceLeaseState::Closed",
             "m_k6Publishes.size()",
             "if (pair.second.inbound) ++out.full_streams",
@@ -101,44 +105,78 @@ class Mod18MetricsCharacterizationTest(unittest.TestCase):
             "p.has_ipv4  = !c->IsIPv6OnlyEndpoint()",
             "p.address = c->GetIPv6Address().ToString()",
             "CAddress::FromIPv4NetworkOrder(c->GetIP()).ToString()",
-            "CSingleLock lk(&m_peersCacheLock, TRUE)",
-            "m_peersCacheAll.swap(all)",
+            "m_metrics.ReplacePeers(std::move(all), tunnelingCount)",
         ):
             self.assertIn(marker, rebuild)
         read = self.body("CLiveTunnel::GetPeersSnapshot")
-        self.assertIn("CSingleLock lk(&m_peersCacheLock, TRUE)", read)
-        self.assertIn("outAll            = m_peersCacheAll", read)
-        self.assertIn(
-            "outTunnelingCount = m_peersCacheTunnelingCount", read
+        self.assertIn("m_metrics.GetPeers(outAll, outTunnelingCount)", read)
+        replace = VERIFIER.function_body(
+            self.metrics, "LiveTunnelMetrics::ReplacePeers"
         )
+        read_copy = VERIFIER.function_body(
+            self.metrics, "LiveTunnelMetrics::GetPeers"
+        )
+        self.assertIn("std::lock_guard<std::mutex> lock(peers_mutex_)", replace)
+        self.assertIn("peers_.swap(peers)", replace)
+        self.assertIn("std::lock_guard<std::mutex> lock(peers_mutex_)", read_copy)
+        self.assertIn("peers = peers_", read_copy)
 
     def test_scalar_totals_and_rtt_formula_are_frozen(self) -> None:
         for accessor, field in (
-            ("CellsSentTotal", "m_cellsSentTotal"),
-            ("CellsRecvTotal", "m_cellsRecvTotal"),
-            ("BytesSentTotal", "m_bytesSentTotal"),
-            ("BytesRecvTotal", "m_bytesRecvTotal"),
-            ("MeanRttMs", "m_meanRttMs"),
+            ("CellsSentTotal", "cells_sent"),
+            ("CellsRecvTotal", "cells_received"),
+            ("BytesSentTotal", "bytes_sent"),
+            ("BytesRecvTotal", "bytes_received"),
+            ("MeanRttMs", "mean_rtt_ms"),
         ):
             self.assertIn(
-                f"{accessor}() const {{ return {field}; }}", self.interface
+                f"{accessor}() const {{ return m_metrics.Totals().{field}; }}",
+                self.interface,
             )
         for marker in (
-            "++m_cellsSentTotal",
-            "m_bytesSentTotal += CELL_TOTAL_BYTES",
-            "++m_cellsRecvTotal",
-            "m_bytesRecvTotal += CELL_TOTAL_BYTES",
-            "m_bytesSentTotal += size",
-            "m_bytesRecvTotal += size",
-            "(m_meanRttMs * 3 + rtt) / 4",
+            "m_metrics.RecordCellSent(CELL_TOTAL_BYTES)",
+            "m_metrics.RecordCellReceived(CELL_TOTAL_BYTES)",
+            "m_metrics.RecordCellSent(size)",
+            "m_metrics.RecordCellReceived(size)",
+            "m_metrics.ObserveMeanRtt(static_cast<uint32_t>(rtt))",
         ):
             self.assertIn(marker, self.source)
+        totals = VERIFIER.function_body(self.metrics, "LiveTunnelMetrics::Totals")
+        for field in (
+            "cells_sent_", "cells_received_", "bytes_sent_",
+            "bytes_received_", "mean_rtt_ms_",
+        ):
+            self.assertIn(f"{field}.load(std::memory_order_relaxed)", totals)
+        rtt = VERIFIER.function_body(
+            self.metrics, "LiveTunnelMetrics::ObserveMeanRtt"
+        )
+        self.assertIn("static_cast<std::uint64_t>(current) * 3u + rtt_ms", rtt)
+        self.assertIn("compare_exchange_weak(", rtt)
 
     def test_exporters_delegate_to_fixed_cardinality_producers(self) -> None:
         prometheus = self.body("CLiveTunnel::GetK6PrometheusMetrics")
-        self.assertIn("m_k6Metrics.ExportPrometheus(", prometheus)
+        self.assertIn("m_metrics.ExportPrometheus(", prometheus)
+        export = VERIFIER.function_body(
+            self.metrics, "LiveTunnelMetrics::ExportPrometheus"
+        )
+        self.assertIn("k6_metrics_.ExportPrometheus(now_seconds)", export)
         notice = self.body("CLiveTunnel::GetK6ExitNoticeSnapshot")
         self.assertIn("m_k6ExitNoticeServer.Snapshot()", notice)
+
+    def test_extracted_owner_is_portable_and_coordinator_independent(self) -> None:
+        self.assertNotIn('#include "LiveTunnel.h"', self.metrics_interface)
+        self.assertNotIn('#include "LiveTunnel.h"', self.metrics)
+        self.assertIn("std::atomic<std::uint64_t> cells_sent_", self.metrics_interface)
+        self.assertIn("mutable std::mutex peers_mutex_", self.metrics_interface)
+        self.assertIn("kad6::K6Metrics k6_metrics_", self.metrics_interface)
+        self.assertIn("LiveTunnelMetrics m_metrics", self.interface)
+        for old_owner in (
+            "m_k6Metrics", "m_cellsSentTotal", "m_cellsRecvTotal",
+            "m_bytesSentTotal", "m_bytesRecvTotal", "m_meanRttMs",
+            "m_peersCacheLock", "m_peersCacheAll",
+            "m_peersCacheTunnelingCount",
+        ):
+            self.assertNotIn(old_owner, self.interface)
 
     def test_web_and_panel_consume_only_value_snapshots(self) -> None:
         for marker in (

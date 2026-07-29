@@ -146,7 +146,8 @@ class Mod02CharacterizationTest(unittest.TestCase):
 
     def test_goldens_cover_required_domains_and_use_production_files(self) -> None:
         expected = {
-            "live_circuit_registry", "live_tunnel_framing", "live_tunnel_pending",
+            "live_circuit_handshake", "live_circuit_registry",
+            "live_tunnel_framing", "live_tunnel_pending",
             "live_tunnel_dispatch", "web_parser_security",
             "web_serialization", "web_live_dispatch", "live_stream_session_chunk_callback",
         }

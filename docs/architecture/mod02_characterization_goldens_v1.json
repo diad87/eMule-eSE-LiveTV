@@ -1,6 +1,29 @@
 {
   "golden_id": "urn:emule:architecture:mod-0.2:production-structural-goldens:v1",
   "goldens": {
+    "live_circuit_handshake": {
+      "production_file": "srchybrid/LiveTunnel.cpp",
+      "symbols": [
+        "CLiveTunnel::HandleCreated_Originator",
+        "CLiveTunnel::ContinueOriginatorBuild",
+        "CLiveTunnel::HandleCreate_Relay",
+        "CLiveTunnel::BuildExtend",
+        "CLiveTunnel::HandleExtend_Relay",
+        "CLiveTunnel::ForwardCreatedAsExtended_Relay",
+        "CLiveTunnel::ForwardExtendedCell_Reverse",
+        "CLiveTunnel::HandleExtended_Originator"
+      ],
+      "token_sha256": {
+        "CLiveTunnel::BuildExtend": "e0cff869e341cc5da92544fd2605400ca75b63bb4cedbed729cf99778ca066ca",
+        "CLiveTunnel::ContinueOriginatorBuild": "94105138768e33dee19153887d18de78c2b9c97359d579caeba7b0bdb72e00cc",
+        "CLiveTunnel::ForwardCreatedAsExtended_Relay": "7d71a1bc9c98a521e806a123fb99395c74242dbf4e0a094eee27ea812f38594f",
+        "CLiveTunnel::ForwardExtendedCell_Reverse": "07d1b633292da47867b0b027dc174c7d6bc94adebaf112d2fff3107698d0fd41",
+        "CLiveTunnel::HandleCreate_Relay": "b732bf94efb7c92a528f452ea9dbdbfcabd6f2eba0b9f37fd3b17362b0a2cf30",
+        "CLiveTunnel::HandleCreated_Originator": "5fc1a53555c2295b3a08a0abb5d54033fdb909b2583a3c360b723524d72d46bf",
+        "CLiveTunnel::HandleExtend_Relay": "ab1e718d44651a735aa6cd763358618a297415085773efc564d47290cede081e",
+        "CLiveTunnel::HandleExtended_Originator": "80a5ff32337213f3b17837eab02e602c658b104ef8a0cb02aa084eb89bf134c5"
+      }
+    },
     "live_circuit_registry": {
       "production_file": "srchybrid/LiveCircuitRegistry.cpp",
       "symbols": [

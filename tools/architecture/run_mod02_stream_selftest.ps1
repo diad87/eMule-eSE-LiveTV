@@ -25,6 +25,7 @@ $criticalSourceRelativePaths = @(
     'srchybrid/LiveTunnelFraming.cpp', 'srchybrid/LiveTunnelFraming.h',
     'srchybrid/LiveTunnelPending.cpp', 'srchybrid/LiveTunnelPending.h',
     'srchybrid/LiveCircuitRegistry.cpp', 'srchybrid/LiveCircuitRegistry.h',
+    'srchybrid/LiveCircuitHandshake.cpp', 'srchybrid/LiveCircuitHandshake.h',
     'srchybrid/LiveCircuit.cpp', 'srchybrid/LiveCircuit.h',
     'srchybrid/WebServer.cpp', 'srchybrid/WebServer.h',
     'srchybrid/LiveStreamManager.cpp', 'srchybrid/LiveStreamManager.h'

@@ -198,6 +198,13 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveCircuitRegistry.cpp"],
                 "interface_files": ["srchybrid/LiveCircuitRegistry.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveCircuitHandshake",
+                "owner": "CLiveTunnel",
+                "layer": "application",
+                "implementation_files": ["srchybrid/LiveCircuitHandshake.cpp"],
+                "interface_files": ["srchybrid/LiveCircuitHandshake.h"],
+                "declared_direct_dependencies": ["LiveCircuitRegistry"],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -213,6 +220,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             }, {
                 "module": "LiveCircuitRegistry",
                 "slice_base_commit": "948e4e93815c6b3bd028316040e1b1c447c86c57",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveCircuitHandshake",
+                "slice_base_commit": "0a173aa306963c7c8a1ed4478456c1fc20f79d05",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }],
         })

@@ -16,6 +16,7 @@
 #include "LiveBulk.h"        // v8.1.2 E1.2/E3.4 - bulk cell wire + multi-block FEC + replay window
 #include "LiveTunnelPending.h"
 #include "LiveCircuitRegistry.h"
+#include "LiveCircuitHandshake.h"
 #include "kad6/kad6_lease.h"
 #include "kad6/kad6_publish.h"
 #include "kad6/kad6_frame.h"
@@ -85,7 +86,7 @@ struct TunnelEndpoint {
     uint8_t  remote_pubkey[32];      // origin's Ed25519 pub (channel pubkey for streams)
 };
 
-class CLiveTunnel {
+class CLiveTunnel : private LiveCircuitHandshakeHost {
 public:
     static CLiveTunnel& Get();
 
@@ -520,6 +521,19 @@ private:
     // Returns true if the packet was queued for send. Increments stats.
     bool SendCellToPeer(CUpDownClient* peer, const uint8_t cell[CELL_TOTAL_BYTES]);
     void DestroyCircuitFailClosed(const std::shared_ptr<CLiveCircuit>& circ);
+    LiveCircuitRegistry& HandshakeCircuitRegistry() override { return m_circuitRegistry; }
+    bool SendHandshakeCell(CUpDownClient* peer, const uint8_t* cell) override { return SendCellToPeer(peer, cell); }
+    void DestroyHandshakeCircuit(const std::shared_ptr<CLiveCircuit>& circuit) override { DestroyCircuitFailClosed(circuit); }
+    uint32_t NewHandshakeCircuitId() override { return NewCircuitId(); }
+    void ResolveHandshakeExitKey(CUpDownClient* exit, CLiveCircuit& circuit) override;
+    void RegisterActiveHandshakeCircuit(const std::shared_ptr<CLiveCircuit>& circuit) override;
+    const uint8_t* LocalHandshakeUserHash() const override;
+    const uint8_t* LocalHandshakeNodePublicKey() const override;
+    bool SignHandshakeTranscript(const uint8_t* bytes, size_t length, uint8_t signature[64]) const override;
+    uint32_t HandshakeRuntimeCapabilities() const override;
+    CUpDownClient* FindConnectedHandshakePeerByHash(const uint8_t hash[16]) const override;
+    CUpDownClient* FindConnectedHandshakePeer(uint32_t ipv4, uint16_t port) const override;
+    uint32_t LocalHandshakePublicIp() const override;
 
     // Originator-side CREATED handler: complete handshake on hop 1.
     bool HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
@@ -1312,6 +1326,7 @@ private:
 
     mutable CCriticalSection m_lock;
     eSELive::LiveCircuitRegistry m_circuitRegistry; // caller-serialized by m_lock
+    eSELive::LiveCircuitHandshake m_handshake;
     DWORD m_lastTickMs;
     std::array<uint8_t, 32> m_k6GuardNodePub{};
     uint64_t m_k6GuardExpiresAt = 0;

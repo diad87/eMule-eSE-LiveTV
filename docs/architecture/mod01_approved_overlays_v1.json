@@ -5,16 +5,16 @@
     {
       "path": "srchybrid/LiveTunnel.cpp",
       "baseline_sha256": "0d899136a867bd1a0571b62b06343d0ca3a1f075162656eb0f4bddcb6dc85591",
-      "overlay_sha256": "0dfeb3f23dc64ed0c13359b50bfb245765680cac8e051a5cbeb4433d2acdd873",
-      "task": "MOD-0.2 + MOD-1.1 + MOD-1.2 + MOD-1.3",
-      "reason": "MOD-0.2 headless production characterization hook; MOD-1.1 mechanically extracts framing; MOD-1.2 extracts pending-request lifetime; MOD-1.3 extracts circuit collection, identity lookup, round-robin cursor and fail-closed state transitions without changing wire or callback order."
+      "overlay_sha256": "28d08066fb5af5e3008a5a6a20d52039be0ef5b1a515acb7df326376bfd20b99",
+      "task": "MOD-0.2 + MOD-1.1 + MOD-1.2 + MOD-1.3 + MOD-1.4",
+      "reason": "MOD-0.2 headless production characterization hook; MOD-1.1 mechanically extracts framing; MOD-1.2 extracts pending-request lifetime; MOD-1.3 extracts circuit collection, identity lookup, round-robin cursor and fail-closed state transitions; MOD-1.4 leaves only bounded handshake facade and platform-port adapters in the coordinator."
     },
     {
       "path": "srchybrid/LiveTunnel.h",
       "baseline_sha256": "1a2684e8741058667b8ececed4170026b1073b851a48e61da49f13c7ba27e731",
-      "overlay_sha256": "b3fd1bbc62506789440a85f58ecbb09e254f0e3757f5ff2dc1afacaa7fe4ea69",
-      "task": "MOD-0.2 + MOD-1.2 + MOD-1.3",
-      "reason": "Declaration of the headless production characterization hook, MOD-1.2 pending-domain adapter and MOD-1.3 circuit-registry composition."
+      "overlay_sha256": "e7c4d83c3eab84f125954b093336692d66385531778c2e541b4e37a7952a16a6",
+      "task": "MOD-0.2 + MOD-1.2 + MOD-1.3 + MOD-1.4",
+      "reason": "Declaration of the headless production characterization hook, pending and registry composition, plus the MOD-1.4 handshake host port and facade."
     },
     {
       "path": "srchybrid/WebServer.cpp",

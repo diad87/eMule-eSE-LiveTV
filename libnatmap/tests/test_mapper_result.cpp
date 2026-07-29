@@ -185,6 +185,16 @@ void TestNatPmpRenewal() {
     failedReset.reason = ReasonCode::MappingDenied;
     CHECK(MapperResult(failedReset).IsStructurallyValid());
     CHECK(!MapperResult(failedReset).IsPublishable(9));
+
+    MapperResultData pcpAtomicReset = Base(
+        MapperKind::Pcp, MapperSource::PcpCpe,
+        MappingOperation::Initial, MappingStatus::Failed, 9);
+    pcpAtomicReset.mapper_epoch = 2;
+    pcpAtomicReset.mapper_epoch_reset = true;
+    pcpAtomicReset.verification = VerificationState::Failed;
+    pcpAtomicReset.reason = ReasonCode::CgnatWithoutLease;
+    CHECK(MapperResult(pcpAtomicReset).IsStructurallyValid());
+    CHECK(!MapperResult(pcpAtomicReset).IsPublishable(9));
 }
 
 void TestTimeout() {

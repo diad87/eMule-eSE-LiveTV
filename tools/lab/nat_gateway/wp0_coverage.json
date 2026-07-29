@@ -339,6 +339,35 @@
       ]
     },
     {
+      "id": "PCP_UPSTREAM",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_pcp_upstream_policy.cpp",
+          "contains": "TestGatewayAndTransportContinuityRejectsDisconnectedInputs"
+        },
+          {
+            "file": "tests/test_v92_mx03_pcp_upstream.py",
+            "contains": "test_product_bridge_consumes_one_atomic_bundle"
+          },
+          {
+            "file": "srchybrid/DirectReachabilityManager.cpp",
+            "contains": "ObservePcpUpstreamBundle"
+          },
+          {
+            "file": "srchybrid/EmuleDlg.cpp",
+            "contains": "TakePcpUpstreamBundle"
+          },
+          {
+            "file": "srchybrid/UPnPImplPCP.cpp",
+            "contains": "SendPcpUpstreamBundleMessage"
+          },
+        {
+          "file": "libnatmap/include/natmap/pcp_upstream_policy.h",
+          "contains": "PcpUpstreamDisposition"
+        }
+      ]
+    },
+    {
       "id": "IPV6_PRIORITY",
       "evidence": [
         {

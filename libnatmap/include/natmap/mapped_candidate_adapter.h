@@ -170,6 +170,11 @@ public:
         std::uint64_t now_monotonic_ms) noexcept;
     MappedCandidateRetirement WithdrawExpired(
         std::uint64_t now_monotonic_ms) noexcept;
+    // A completed mapper observation that cannot be admitted supersedes any
+    // earlier pair. Clear both transports in one publication and advance the
+    // topology generation. The fence makes all proof captured for the prior
+    // pair permanently stale before another result can enter.
+    MappedCandidateRetirement WithdrawRejectedObservation() noexcept;
     MappedCandidateRetirement Invalidate(
         std::uint64_t next_generation) noexcept;
     MappedCandidateRetirement Shutdown() noexcept;

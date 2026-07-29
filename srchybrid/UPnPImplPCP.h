@@ -60,18 +60,24 @@ private:
 	static bool GenerateNonce(std::array<uint8, 12>& nonce);
 	static bool ExtractIPv4(const std::array<std::uint8_t, 16>& address,
 		uint32& ipv4);
+	static bool ReadExplicitUpstreamGateway(
+		uint32& gateway, bool& enabled);
 
 	bool MapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
+		const std::array<uint8, 16>& bindAddress,
 		const std::array<uint8, 16>& clientAddress,
 		natmap::Transport transport, uint16 nPrivatePort,
 		uint16 nSuggestedExternalPort,
 		const std::array<uint8, 16>& suggestedExternalAddress,
 		uint32 nLifetime, natmap::PcpMappingIdentity& identity,
-		natmap::PcpMapProjection& projection);
+		natmap::PcpMapProjection& projection,
+		natmap::PcpResultCode* resultCode = NULL);
 	bool UnmapPort(uint32 nGatewayIP, uint32 nInterfaceIndex,
+		const std::array<uint8, 16>& bindAddress,
 		const std::array<uint8, 16>& clientAddress,
 		const natmap::PcpMappingIdentity& identity);
 	bool ExchangeMap(uint32 nGatewayIP, uint32 nInterfaceIndex,
+		const std::array<uint8, 16>& bindAddress,
 		const natmap::PcpMapRequest& request,
 		natmap::PcpMapResponse& response, bool bDeletion);
 	bool SendResultIfLifecycleLive(
@@ -84,8 +90,12 @@ private:
 	uint32 m_dwOldGatewayIP;
 	uint32 m_dwInterfaceIndex;
 	uint32 m_dwOldInterfaceIndex;
+	uint32 m_dwUpstreamGatewayIP;
+	uint32 m_dwOldUpstreamGatewayIP;
 	std::array<uint8, 16> m_clientAddress;
 	std::array<uint8, 16> m_oldClientAddress;
+	std::array<uint8, 16> m_upstreamClientAddress;
+	std::array<uint8, 16> m_oldUpstreamClientAddress;
 	std::array<uint8, 16> m_tcpExternalAddress;
 	std::array<uint8, 16> m_udpExternalAddress;
 	std::array<uint8, 16> m_webExternalAddress;
@@ -95,6 +105,12 @@ private:
 	natmap::PcpMappingIdentity m_tcpIdentity;
 	natmap::PcpMappingIdentity m_udpIdentity;
 	natmap::PcpMappingIdentity m_webIdentity;
+	// Layer-two identities are never shared with CPE identities: delete and
+	// refresh must prove ownership at each PCP server independently.
+	natmap::PcpMappingIdentity m_upstreamTcpIdentity;
+	natmap::PcpMappingIdentity m_upstreamUdpIdentity;
+	natmap::PcpMappingIdentity m_oldUpstreamTcpIdentity;
+	natmap::PcpMappingIdentity m_oldUpstreamUdpIdentity;
 	natmap::PcpMappingIdentity m_oldTCPIdentity;
 	natmap::PcpMappingIdentity m_oldUDPIdentity;
 	natmap::PcpMappingIdentity m_oldWebIdentity;

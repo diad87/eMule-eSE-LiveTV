@@ -112,6 +112,7 @@ void CDirectReachabilityManager::FailClosedAtGenerationLimit(
 	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
 	m_mapperTopologyIdentity =
 		natmap::MapperTopologyIdentity{};
+	m_pcpCpeResult = natmap::MapperResultData{};
 	m_nNetworkChangeRediscoveryGeneration = 0;
 	m_mappedCandidates.Shutdown();
 	m_nAdvertisedTcpPort.store(
@@ -143,6 +144,7 @@ void CDirectReachabilityManager::Initialize(uint16 nLocalTcpPort, uint16 nLocalU
 	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
 	m_mapperTopologyIdentity =
 		natmap::MapperTopologyIdentity{};
+	m_pcpCpeResult = natmap::MapperResultData{};
 	m_nNetworkChangeRediscoveryGeneration = 0;
 	m_snapshot = natmap::ReachabilitySnapshot{};
 	m_snapshot.topology_generation = 1;
@@ -312,6 +314,288 @@ bool CDirectReachabilityManager::ObserveMapperResult(
 	return false;
 }
 
+natmap::PcpUpstreamDecision
+CDirectReachabilityManager::ObservePcpUpstreamBundle(
+	const natmap::PcpUpstreamResultBundle& bundle,
+	const natmap::RouteBindingIdentity& lanRouteBinding)
+{
+	AssertMainThread();
+	natmap::PcpUpstreamDecision rejected{};
+	rejected.disposition =
+		natmap::PcpUpstreamDisposition::EndpointRejected;
+	rejected.reason = natmap::ReasonCode::NoRoute;
+	if (m_mappedCandidates.is_closed() || !bundle.IsValid() ||
+		natmap::ValidateRouteBinding(lanRouteBinding) !=
+			natmap::RouteBindingStatus::Valid ||
+		lanRouteBinding.family != natmap::AddressFamily::IPv4 ||
+		lanRouteBinding.origin != natmap::NetworkOrigin::Native ||
+		bundle.cpe.topology_generation !=
+			m_snapshot.topology_generation ||
+		bundle.cpe.request_interface_index !=
+			lanRouteBinding.interface_index ||
+		bundle.cpe.request_local_address.bytes !=
+			lanRouteBinding.local_address.bytes)
+		return rejected;
+
+	const auto RejectCompleted =
+		[this](natmap::PcpUpstreamDisposition disposition,
+			natmap::ReasonCode reason) {
+			natmap::PcpUpstreamDecision decision{};
+			decision.disposition = disposition;
+			decision.reason = reason;
+			m_mappedCandidates.WithdrawRejectedObservation();
+			DisableMappedPlanes(reason);
+			return decision;
+		};
+	if (bundle.outcome !=
+			natmap::PcpUpstreamResultBundle::Outcome::Mapped) {
+		if (bundle.outcome ==
+			natmap::PcpUpstreamResultBundle::Outcome::Denied)
+			return RejectCompleted(
+				natmap::PcpUpstreamDisposition::UpstreamDenied,
+				natmap::ReasonCode::OperatorDenied);
+		return RejectCompleted(
+			natmap::PcpUpstreamDisposition::NoGlobalCandidate,
+			bundle.outcome ==
+				natmap::PcpUpstreamResultBundle::Outcome::Absent
+				? natmap::ReasonCode::NoGateway
+				: natmap::ReasonCode::NoRoute);
+	}
+
+	const uint64 now = MonotonicMilliseconds();
+	const natmap::MapperResult rawCpe(bundle.cpe);
+	const natmap::MapperResult rawUpstream(bundle.upstream);
+	natmap::MapperResultData rawFinalData{};
+	if (!natmap::ProjectPcpFinalMapperResult(
+			rawCpe, rawUpstream, rawFinalData))
+		return RejectCompleted(
+			natmap::PcpUpstreamDisposition::EndpointRejected,
+			natmap::ReasonCode::NoRoute);
+	const natmap::MapperResult rawFinal(rawFinalData);
+
+	const bool hadPcpCpe = m_pcpCpeResult.request_id != 0;
+	const bool sameCpe = hadPcpCpe &&
+		natmap::SamePcpCpeMappingIdentity(
+			m_pcpCpeResult, bundle.cpe);
+	const bool replaceFinal =
+		m_mappedCandidates.RequiresReplacement(
+			rawFinal, lanRouteBinding, now);
+	uint64 generation = m_snapshot.topology_generation;
+	if ((hadPcpCpe && !sameCpe) ||
+		(m_mapperTopologyIdentity.IsValid() && !hadPcpCpe) ||
+		replaceFinal) {
+		++generation;
+		if (generation == 0) {
+			FailClosedAtGenerationLimit(
+				natmap::ReasonCode::StaleGeneration);
+			rejected.reason = natmap::ReasonCode::StaleGeneration;
+			return rejected;
+		}
+	}
+
+	natmap::MapperResultData cpeData = bundle.cpe;
+	natmap::MapperResultData upstreamData = bundle.upstream;
+	cpeData.topology_generation = generation;
+	upstreamData.topology_generation = generation;
+	natmap::MapperResultData finalData{};
+	if (!natmap::ProjectPcpFinalMapperResult(
+			natmap::MapperResult(cpeData),
+			natmap::MapperResult(upstreamData), finalData))
+		return RejectCompleted(
+			natmap::PcpUpstreamDisposition::EndpointRejected,
+			natmap::ReasonCode::NoRoute);
+
+	const auto FindMapping =
+		[](const natmap::MapperResultData& data,
+			natmap::Transport transport)
+			-> const natmap::TransportMappingResult* {
+			for (std::size_t index = 0;
+				index < data.mapping_count; ++index)
+				if (data.mappings[index].transport == transport)
+					return &data.mappings[index];
+			return NULL;
+		};
+	const auto MakeLease =
+		[generation, &FindMapping](
+			const natmap::MapperResultData& data,
+			natmap::Transport transport) {
+			natmap::PortLease lease;
+			const natmap::TransportMappingResult* mapping =
+				FindMapping(data, transport);
+			if (mapping == NULL)
+				return lease;
+			lease.mapper = natmap::MapperKind::Pcp;
+			lease.transport = transport;
+			lease.gateway = data.gateway;
+			lease.local = mapping->local_endpoint;
+			lease.public_endpoint =
+				mapping->granted_external_endpoint;
+			lease.requested_external_port =
+				mapping->requested_external_port;
+			lease.granted_external_port =
+				mapping->granted_external_endpoint.port;
+			lease.lifetime_seconds = mapping->lifetime_seconds;
+			lease.mapper_epoch = data.mapper_epoch;
+			lease.ownership_nonce = data.ownership_nonce;
+			lease.generation = generation;
+			lease.owned_by_us = true;
+			return lease;
+		};
+	const natmap::PortLease cpeTcp =
+		MakeLease(cpeData, natmap::Transport::Tcp);
+	const natmap::PortLease cpeUdp =
+		MakeLease(cpeData, natmap::Transport::Udp);
+	const natmap::PortLease upstreamTcp =
+		MakeLease(upstreamData, natmap::Transport::Tcp);
+	const natmap::PortLease upstreamUdp =
+		MakeLease(upstreamData, natmap::Transport::Udp);
+	natmap::NatChainTransaction cpeTcpChain;
+	natmap::NatChainTransaction cpeUdpChain;
+	if (!cpeTcpChain.Begin(generation, lanRouteBinding.origin) ||
+		!cpeUdpChain.Begin(generation, lanRouteBinding.origin) ||
+		!cpeTcpChain.AppendLease(cpeTcp, now) ||
+		!cpeUdpChain.AppendLease(cpeUdp, now))
+		return RejectCompleted(
+			natmap::PcpUpstreamDisposition::ChainIncomplete,
+			natmap::ReasonCode::CgnatWithoutLease);
+	const natmap::UpstreamGatewayCandidates gateways =
+		natmap::BuildUpstreamGatewayCandidates(
+			bundle.authorized_evidence);
+	natmap::PcpUpstreamDecision decision =
+		natmap::EvaluatePcpUpstreamCandidate(
+			cpeTcpChain, cpeUdpChain, gateways,
+			natmap::PcpUpstreamOutcome::Mapped,
+			natmap::MapperResult(upstreamData), generation);
+	if (!decision.allows_global_candidate())
+		return RejectCompleted(
+			decision.disposition, decision.reason);
+
+	natmap::NatChainTransaction tcpChain = cpeTcpChain;
+	natmap::NatChainTransaction udpChain = cpeUdpChain;
+	if (!tcpChain.AppendLease(upstreamTcp, now) ||
+		!udpChain.AppendLease(upstreamUdp, now) ||
+		tcpChain.Evaluate() !=
+			natmap::NatChainStatus::CompletePublic ||
+		udpChain.Evaluate() !=
+			natmap::NatChainStatus::CompletePublic)
+		return RejectCompleted(
+			natmap::PcpUpstreamDisposition::ChainIncomplete,
+			natmap::ReasonCode::NoRoute);
+
+	const natmap::TransportMappingResult* finalTcp =
+		FindMapping(finalData, natmap::Transport::Tcp);
+	const natmap::TransportMappingResult* finalUdp =
+		FindMapping(finalData, natmap::Transport::Udp);
+	natmap::PlaneSnapshot tcpPlane;
+	natmap::PlaneSnapshot udpPlane;
+	if (finalTcp == NULL || finalUdp == NULL ||
+		!BuildMappedPlane(tcpPlane, natmap::MapperKind::Pcp,
+			natmap::Transport::Tcp, finalData.gateway,
+			finalTcp->local_endpoint,
+			finalTcp->granted_external_endpoint,
+			finalTcp->lifetime_seconds,
+			finalData.mapper_epoch, generation) ||
+		!BuildMappedPlane(udpPlane, natmap::MapperKind::Pcp,
+			natmap::Transport::Udp, finalData.gateway,
+			finalUdp->local_endpoint,
+			finalUdp->granted_external_endpoint,
+			finalUdp->lifetime_seconds,
+			finalData.mapper_epoch, generation))
+		return RejectCompleted(
+			natmap::PcpUpstreamDisposition::EndpointRejected,
+			natmap::ReasonCode::InvalidResponse);
+	tcpPlane.lease.ownership_nonce =
+		finalData.ownership_nonce;
+	udpPlane.lease.ownership_nonce =
+		finalData.ownership_nonce;
+	natmap::LeaseController tcpLease;
+	natmap::LeaseController udpLease;
+	if (!tcpLease.Activate(tcpPlane.lease, now) ||
+		!udpLease.Activate(udpPlane.lease, now))
+		return RejectCompleted(
+			natmap::PcpUpstreamDisposition::EndpointRejected,
+			natmap::ReasonCode::InvalidResponse);
+
+	natmap::LegacyMapperObservation observation;
+	if (natmap::AdmitLegacyMapperObservation(
+			natmap::MapperResult(finalData), generation,
+			observation) !=
+			natmap::LegacyMapperAdmissionStatus::Accepted)
+		return RejectCompleted(
+			natmap::PcpUpstreamDisposition::EndpointRejected,
+			natmap::ReasonCode::InvalidResponse);
+	natmap::MapperTopologyIdentity topologyIdentity;
+	if (!natmap::BuildMapperTopologyIdentity(
+			observation, topologyIdentity))
+		return RejectCompleted(
+			natmap::PcpUpstreamDisposition::EndpointRejected,
+			natmap::ReasonCode::InvalidResponse);
+
+	// The publisher is the last fallible write. Every CPE/upstream chain,
+	// lease, plane and identity above was prepared in a local copy.
+	// ApplyMapping authenticates the worker's result against the *currently*
+	// published generation and performs its own replacement transition.  The
+	// locally prepared chains/planes already carry that final generation, but
+	// feeding it back here would make a valid N result look stale before the
+	// publisher can atomically advance to N+1.
+	decision.update = m_mappedCandidates.ApplyMapping(
+		rawFinal, lanRouteBinding,
+		now, generation);
+	if (decision.update != natmap::MappedCandidateUpdate::Published &&
+		decision.update != natmap::MappedCandidateUpdate::Renewed &&
+		decision.update != natmap::MappedCandidateUpdate::Replaced)
+		return RejectCompleted(
+			natmap::PcpUpstreamDisposition::EndpointRejected,
+			natmap::ReasonCode::NoRoute);
+
+	m_snapshot.topology_generation = generation;
+	m_snapshot.ed2k_tcp_v4 = tcpPlane;
+	m_snapshot.kad_udp_v4 = udpPlane;
+	m_tcpLease = tcpLease;
+	m_udpLease = udpLease;
+	m_tcpChain = tcpChain;
+	m_udpChain = udpChain;
+	m_mapperRouteBinding = lanRouteBinding;
+	m_mapperTopologyIdentity = topologyIdentity;
+	m_pcpCpeResult = cpeData;
+	m_nNetworkChangeRediscoveryGeneration = 0;
+	m_nLocalTcpPort.store(
+		finalTcp->local_endpoint.port, std::memory_order_release);
+	m_nLocalUdpPort.store(
+		finalUdp->local_endpoint.port, std::memory_order_release);
+	m_nAdvertisedTcpPort.store(
+		finalTcp->granted_external_endpoint.port,
+		std::memory_order_release);
+	m_nAdvertisedUdpPort.store(
+		finalUdp->granted_external_endpoint.port,
+		std::memory_order_release);
+	m_bEnabled.store(true, std::memory_order_release);
+	return decision;
+}
+
+bool CDirectReachabilityManager::ObservePcpCpeAtomicityFailure(
+	const natmap::MapperResult& result,
+	const natmap::RouteBindingIdentity& routeBinding)
+{
+	AssertMainThread();
+	const natmap::MapperResultData& data = result.data();
+	if (!result.IsStructurallyValid()
+		|| data.mapper != natmap::MapperKind::Pcp
+		|| data.source != natmap::MapperSource::PcpCpe
+		|| data.status != natmap::MappingStatus::Failed
+		|| data.reason != natmap::ReasonCode::CgnatWithoutLease
+		|| data.verification != natmap::VerificationState::Failed
+		|| data.topology_generation != m_snapshot.topology_generation
+		|| natmap::ValidateRouteBinding(routeBinding) !=
+			natmap::RouteBindingStatus::Valid
+		|| routeBinding.origin != natmap::NetworkOrigin::Native
+		|| data.request_interface_index != routeBinding.interface_index
+		|| data.request_local_address.bytes !=
+			routeBinding.local_address.bytes)
+		return false;
+	return DisableMappedPlanes(natmap::ReasonCode::CgnatWithoutLease);
+}
+
 bool CDirectReachabilityManager::ObserveMapperEpochReset()
 {
 	AssertMainThread();
@@ -342,6 +626,7 @@ bool CDirectReachabilityManager::ObserveMapperEpochReset()
 	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
 	m_mapperTopologyIdentity =
 		natmap::MapperTopologyIdentity{};
+	m_pcpCpeResult = natmap::MapperResultData{};
 	m_nNetworkChangeRediscoveryGeneration = 0;
 	m_nAdvertisedTcpPort.store(
 		m_nLocalTcpPort.load(std::memory_order_acquire),
@@ -393,6 +678,7 @@ bool CDirectReachabilityManager::ObserveNetworkRouteChange(
 	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
 	m_mapperTopologyIdentity =
 		natmap::MapperTopologyIdentity{};
+	m_pcpCpeResult = natmap::MapperResultData{};
 	m_nNetworkChangeRediscoveryGeneration =
 		prepared.current_generation;
 	m_nAdvertisedTcpPort.store(
@@ -441,6 +727,7 @@ bool CDirectReachabilityManager::DisableMappedPlanes(
 	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
 	m_mapperTopologyIdentity =
 		natmap::MapperTopologyIdentity{};
+	m_pcpCpeResult = natmap::MapperResultData{};
 	m_nNetworkChangeRediscoveryGeneration = 0;
 	m_nAdvertisedTcpPort.store(
 		m_nLocalTcpPort.load(std::memory_order_acquire),
@@ -499,6 +786,7 @@ bool CDirectReachabilityManager::ObserveFiniteMappingExpiry()
 	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
 	m_mapperTopologyIdentity =
 		natmap::MapperTopologyIdentity{};
+	m_pcpCpeResult = natmap::MapperResultData{};
 	m_nNetworkChangeRediscoveryGeneration = 0;
 	m_nAdvertisedTcpPort.store(
 		m_nLocalTcpPort.load(std::memory_order_acquire),
@@ -527,6 +815,7 @@ bool CDirectReachabilityManager::ShutdownMappedCandidates()
 		m_nLocalUdpPort.load(std::memory_order_acquire),
 		std::memory_order_release);
 	m_bEnabled.store(false, std::memory_order_release);
+	m_pcpCpeResult = natmap::MapperResultData{};
 	const natmap::MappedCandidateRetirement retired =
 		m_mappedCandidates.Shutdown();
 	return retired == natmap::MappedCandidateRetirement::Retired
@@ -1024,6 +1313,7 @@ bool CDirectReachabilityManager::ObserveMappedPorts(
 			}
 			m_mapperTopologyIdentity = candidateIdentity;
 			m_mapperRouteBinding = routeBinding;
+			m_pcpCpeResult = natmap::MapperResultData{};
 			return true;
 		}
 		// A changed endpoint is a new topology generation, never a silent
@@ -1101,6 +1391,7 @@ bool CDirectReachabilityManager::ObserveMappedPorts(
 	}
 	m_mapperTopologyIdentity = candidateIdentity;
 	m_mapperRouteBinding = routeBinding;
+	m_pcpCpeResult = natmap::MapperResultData{};
 	m_nNetworkChangeRediscoveryGeneration = 0;
 
 	switch (m_tcpChain.Evaluate()) {

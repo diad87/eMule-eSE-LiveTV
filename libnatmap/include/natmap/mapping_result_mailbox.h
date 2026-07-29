@@ -1,6 +1,7 @@
 #pragma once
 
 #include "natmap/mapper_result.h"
+#include "natmap/natmap_chain.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -28,6 +29,23 @@ struct MailboxPublish {
     }
 };
 
+// Atomic CPE->upstream handoff. It deliberately has exactly two members in
+// CPE then upstream order; both share the same request envelope and the
+// upstream gateway is backed only by captured authorized evidence.
+struct PcpUpstreamResultBundle {
+    enum class Outcome : std::uint8_t { Absent = 0, Denied = 1, Mapped = 2, Failed = 3 };
+    MapperResultData cpe{};
+    MapperResultData upstream{};
+    // PCP MAP client address for layer two. This is intentionally distinct
+    // from upstream.request_local_address, which remains the LAN socket
+    // binding route captured by the worker operation.
+    IpAddress pcp_client_address{};
+    UpstreamDiscoveryInput authorized_evidence{};
+    Outcome outcome = Outcome::Absent;
+
+    bool IsValid() const noexcept;
+};
+
 // Process-local, value-only handoff from mapper workers to the UI thread.
 // Delivery IDs fit in the low 31 bits of WPARAM; zero and the high marker bit
 // are never issued. Entries are taken by exact ID, so message order and the
@@ -45,7 +63,11 @@ public:
     MappingResultMailbox& operator=(MappingResultMailbox&&) = delete;
 
     MailboxPublish Publish(const MapperResultData& data);
+    MailboxPublish PublishPcpUpstreamBundle(
+        const PcpUpstreamResultBundle& bundle);
     bool Take(std::uint32_t delivery_id, MapperResultData& data);
+    bool TakePcpUpstreamBundle(std::uint32_t delivery_id,
+        PcpUpstreamResultBundle& bundle);
     bool Discard(std::uint32_t delivery_id);
     void Clear() noexcept;
     bool Close() noexcept;
@@ -55,6 +77,8 @@ private:
     struct Entry {
         std::uint32_t delivery_id = 0;
         MapperResultData data{};
+        PcpUpstreamResultBundle bundle{};
+        bool is_bundle = false;
     };
 
     mutable std::mutex mutex_;

@@ -131,9 +131,12 @@ protected:
 	void SendResultMessage();
 	// True means the exact current operation was published and queued.
 	bool SendResultMessage(const MappingOperationContext& operation);
-	void SendMapperResultMessage(
+	bool SendMapperResultMessage(
 		const MappingOperationContext& operation,
 		const natmap::MapperResultData& resultData);
+	bool SendPcpUpstreamBundleMessage(
+		const MappingOperationContext& operation,
+		const natmap::PcpUpstreamResultBundle& bundle);
 	natmap::MapperResultData BuildMapperResultData(
 		const MappingOperationContext& operation) const;
 	virtual uint16 RequestedExternalPort(

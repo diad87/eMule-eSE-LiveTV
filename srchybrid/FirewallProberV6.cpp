@@ -3,6 +3,7 @@
 #include "stdafx.h"
 #include "FirewallProberV6.h"
 #include "DirectReachabilityManager.h"
+#include "natmap/pcp_upstream_policy.h"
 #include "LiveDebugLog.h"
 #include "Preferences.h"
 #include "emule.h"          // theApp.IsClosing() — shutdown guard for the worker
@@ -135,8 +136,10 @@ bool ExchangePcpMapV6(const CAddress& gateway, ULONG interfaceIndex,
 			suggestedExternalIP.Data(), request.suggested_external_ip.size());
 
 	uint8 packet[natmap::kPcpMaximumMessageSize];
-	const size_t packetSize = natmap::EncodePcpMapRequest(request, packet,
-		sizeof(packet));
+	natmap::PcpMapRequestPolicyInput requestPolicy;
+	requestPolicy.request = &request;
+	const size_t packetSize = natmap::EncodePcpMapRequestForProduction(
+		request, requestPolicy, packet, sizeof(packet));
 	if (packetSize == 0)
 		return false;
 

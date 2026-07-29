@@ -217,12 +217,24 @@ bool MapperResult::IsStructurallyValid() const noexcept {
 
     if (data_.mapper == MapperKind::UpnpIgd && data_.mapper_epoch != 0)
         return false;
-    if (data_.mapper_epoch_reset &&
-        (data_.mapper != MapperKind::NatPmp ||
-         data_.operation != MappingOperation::Refresh ||
-         (data_.status != MappingStatus::Renewed &&
-          data_.status != MappingStatus::Failed)))
-        return false;
+    if (data_.mapper_epoch_reset) {
+        const bool natpmp_reset =
+            data_.mapper == MapperKind::NatPmp &&
+            data_.operation == MappingOperation::Refresh &&
+            (data_.status == MappingStatus::Renewed ||
+             data_.status == MappingStatus::Failed);
+        // PCP can observe a server epoch discontinuity between the two MAP
+        // replies. It is only representable as this terminal CPE failure;
+        // admitting it lets the UI retire the old pair generation-bound.
+        const bool pcp_atomic_pair_reset =
+            data_.mapper == MapperKind::Pcp &&
+            data_.source == MapperSource::PcpCpe &&
+            data_.status == MappingStatus::Failed &&
+            data_.verification == VerificationState::Failed &&
+            data_.reason == ReasonCode::CgnatWithoutLease;
+        if (!natpmp_reset && !pcp_atomic_pair_reset)
+            return false;
+    }
     if (mapped || deleted) {
         if (data_.protocol_result_code != 0)
             return false;

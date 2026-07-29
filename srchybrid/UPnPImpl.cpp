@@ -255,7 +255,7 @@ bool CUPnPImpl::SendResultMessage(
 	return true;
 }
 
-void CUPnPImpl::SendMapperResultMessage(
+bool CUPnPImpl::SendMapperResultMessage(
 	const MappingOperationContext& operation,
 	const natmap::MapperResultData& resultData)
 {
@@ -275,7 +275,7 @@ void CUPnPImpl::SendMapperResultMessage(
 		|| !natmap::IsMapperResultRouteCurrent(
 			boundResult, operationRoute)
 		|| !natmap::MapperResult(boundResult).IsStructurallyValid())
-		return;
+		return false;
 
 	std::lock_guard<std::mutex> lock(m_resultMutex);
 	if (operation.request.request_id == 0
@@ -283,7 +283,7 @@ void CUPnPImpl::SendMapperResultMessage(
 		|| operation.request.topology_generation
 			!= m_requestContext.topology_generation
 		|| operation.request.operation != m_requestContext.operation)
-		return;
+		return false;
 	const HWND resultWindow = m_hResultWindow;
 	const UINT resultMessage = m_nResultMessageID;
 	const std::shared_ptr<natmap::MappingResultMailbox> mailbox =
@@ -292,16 +292,66 @@ void CUPnPImpl::SendMapperResultMessage(
 	m_hResultWindow = NULL;
 	m_resultMailbox.reset();
 	if (resultWindow == NULL || resultMessage == 0 || !mailbox)
-		return;
+		return false;
 
 	const natmap::MailboxPublish published =
 		mailbox->Publish(boundResult);
 	if (!published.IsPublished())
-		return;
+		return false;
 	const WPARAM messageToken = static_cast<WPARAM>(
 		0x80000000u | published.delivery_id);
-	if (!::PostMessage(resultWindow, resultMessage, messageToken, 0))
+	if (!::PostMessage(resultWindow, resultMessage, messageToken, 0)) {
 		mailbox->Discard(published.delivery_id);
+		return false;
+	}
+	return true;
+}
+
+bool CUPnPImpl::SendPcpUpstreamBundleMessage(
+	const MappingOperationContext& operation,
+	const natmap::PcpUpstreamResultBundle& bundle)
+{
+	const natmap::MappingRouteIdentity operationRoute{
+		operation.interface_index,
+		operation.local_address,
+		operation.gateway_address};
+	if (!bundle.IsValid()
+		|| bundle.cpe.request_id != operation.request.request_id
+		|| bundle.cpe.topology_generation
+			!= operation.request.topology_generation
+		|| bundle.cpe.operation != operation.request.operation
+		|| !natmap::IsMapperResultRouteCurrent(
+			bundle.cpe, operationRoute))
+		return false;
+
+	std::lock_guard<std::mutex> lock(m_resultMutex);
+	if (operation.request.request_id == 0
+		|| operation.request.request_id != m_requestContext.request_id
+		|| operation.request.topology_generation
+			!= m_requestContext.topology_generation
+		|| operation.request.operation != m_requestContext.operation)
+		return false;
+	const HWND resultWindow = m_hResultWindow;
+	const UINT resultMessage = m_nResultMessageID;
+	const std::shared_ptr<natmap::MappingResultMailbox> mailbox =
+		m_resultMailbox;
+	m_nResultMessageID = 0;
+	m_hResultWindow = NULL;
+	m_resultMailbox.reset();
+	if (resultWindow == NULL || resultMessage == 0 || !mailbox)
+		return false;
+
+	const natmap::MailboxPublish published =
+		mailbox->PublishPcpUpstreamBundle(bundle);
+	if (!published.IsPublished())
+		return false;
+	const WPARAM messageToken = static_cast<WPARAM>(
+		0x80000000u | published.delivery_id);
+	if (!::PostMessage(resultWindow, resultMessage, messageToken, 0)) {
+		mailbox->Discard(published.delivery_id);
+		return false;
+	}
+	return true;
 }
 
 void CUPnPImpl::LateEnableWebServerPort(uint16 nPort)

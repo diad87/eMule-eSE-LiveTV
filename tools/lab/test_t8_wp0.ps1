@@ -42,6 +42,7 @@ $requiredCoverageIds = @(
     'NETWORK_SIGNATURE',
     'NETWORK_CHANGE',
     'MAPPING_RECOVERY',
+    'PCP_UPSTREAM',
     'IPV6_PRIORITY',
     'HYPERV_PURE_PLAN',
     'STATE_CAPTURE',
@@ -247,6 +248,10 @@ try {
             & python.exe (
                 Join-Path $RepoRoot 'tests\test_v92_m06_ipv6_priority.py') 2>&1)
         $m06HostExit = $LASTEXITCODE
+        $mx03HostOutput = @(
+            & python.exe (
+                Join-Path $RepoRoot 'tests\test_v92_mx03_pcp_upstream.py') 2>&1)
+        $mx03HostExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
     }
@@ -263,6 +268,7 @@ try {
     $m04HostOutput | ForEach-Object { Write-Host $_ }
     $m05HostOutput | ForEach-Object { Write-Host $_ }
     $m06HostOutput | ForEach-Object { Write-Host $_ }
+    $mx03HostOutput | ForEach-Object { Write-Host $_ }
     $l04Text = ($l04Output | ForEach-Object { [string]$_ }) -join "`n"
     $l04HostText = (
         $l04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
@@ -288,6 +294,8 @@ try {
         $m05HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $m06HostText = (
         $m06HostOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $mx03HostText = (
+        $mx03HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l04Verdict = (
         $l04BuildExit -eq 0 -and
         $l04HostExit -eq 0 -and
@@ -392,6 +400,20 @@ try {
         $m05HostText -match 'Ran 8 tests' -and
         $m05HostText -match '(?m)^OK\s*$'
     )
+    $mx03NativeMatch = [regex]::Match(
+        $l04Text, 'test_pcp_upstream_policy: (156) checks, 0 failures')
+    $mx03NativeChecks = if ($mx03NativeMatch.Success) {
+        [int]$mx03NativeMatch.Groups[1].Value
+    } else {
+        0
+    }
+    $mx03Verdict = (
+        $l04BuildExit -eq 0 -and
+        $mx03HostExit -eq 0 -and
+        $mx03NativeChecks -eq 156 -and
+        $mx03HostText -match 'Ran 23 tests' -and
+        $mx03HostText -match '(?m)^OK\s*$'
+    )
     $m06NativeMatch = [regex]::Match(
         $l04Text,
         'test_direct_route_selection: (153) checks, 0 failures')
@@ -466,6 +488,7 @@ try {
         $m03Verdict -and
         $m04Verdict -and
         $m05Verdict -and
+        $mx03Verdict -and
         $m06Verdict -and
         $hyperVVerdict -and
         $coverageIds.Count -eq $requiredCoverageIds.Count
@@ -554,6 +577,13 @@ try {
             maximum_rounds = 6
             success_resets_backoff = $true
             network_change_reset_is_generation_bound = $true
+        }
+        mx03_pcp_upstream = [ordered]@{
+            verdict = if ($mx03Verdict) { 'PASS' } else { 'FAIL' }
+            physical_mutation = $false
+            native_checks = $mx03NativeChecks
+            upstream_authorization = 'M02 typed evidence only'
+            cpe_local_map_is_global_proof = $false
         }
         m06_ipv6_priority = [ordered]@{
             verdict = if ($m06Verdict) { 'PASS' } else { 'FAIL' }

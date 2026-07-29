@@ -5055,14 +5055,24 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		&& (rawMessage & ~static_cast<UINT_PTR>(0xffffffffu)) == 0;
 	const bool bTimeout = wParam == CUPnPImpl::UPNP_TIMEOUT;
 	natmap::MapperResultData mapperResultData;
+	natmap::PcpUpstreamResultBundle pcpUpstreamBundle;
 	natmap::RouteBindingIdentity mapperRouteBinding;
 	UINT resultCode = static_cast<UINT>(wParam);
 	bool bWasRefresh = false;
+	bool bPcpUpstreamBundle = false;
+	bool bPcpTcpOnlyCgnatFailure = false;
 
 	if (bMapperResult) {
 		const uint32 deliveryId =
 			static_cast<uint32>(rawMessage & 0x7fffffffu);
-		if (!m_mappingResultMailbox
+		if (m_mappingResultMailbox)
+			bPcpUpstreamBundle =
+				m_mappingResultMailbox
+					->TakePcpUpstreamBundle(
+						deliveryId, pcpUpstreamBundle);
+		if (bPcpUpstreamBundle)
+			mapperResultData = pcpUpstreamBundle.cpe;
+		else if (!m_mappingResultMailbox
 			|| !m_mappingResultMailbox->Take(
 				deliveryId, mapperResultData)) {
 			LIVE_LOG("NATMAP",
@@ -5177,13 +5187,23 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 				(unsigned long long)currentGeneration);
 			return 0;
 		}
-		const bool success =
-			mapperResultData.status == natmap::MappingStatus::Created
-			|| mapperResultData.status == natmap::MappingStatus::Renewed;
+		const bool success = bPcpUpstreamBundle
+			? pcpUpstreamBundle.outcome ==
+				natmap::PcpUpstreamResultBundle::Outcome::Mapped
+			: mapperResultData.status ==
+					natmap::MappingStatus::Created
+				|| mapperResultData.status ==
+					natmap::MappingStatus::Renewed;
 		resultCode = success
 			? CUPnPImpl::UPNP_OK : CUPnPImpl::UPNP_FAILED;
 		bWasRefresh = mapperResultData.operation
 			== natmap::MappingOperation::Refresh;
+		bPcpTcpOnlyCgnatFailure = !bPcpUpstreamBundle
+			&& mapperResultData.mapper == natmap::MapperKind::Pcp
+			&& mapperResultData.source == natmap::MapperSource::PcpCpe
+			&& mapperResultData.status == natmap::MappingStatus::Failed
+			&& mapperResultData.reason ==
+				natmap::ReasonCode::CgnatWithoutLease;
 	} else if (bTimeout) {
 		if (m_nUPnPTimeoutToken == 0
 			|| static_cast<uint32>(lParam) != m_nUPnPTimeoutToken) {
@@ -5231,12 +5251,124 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		impl->SetMessageOnResult(NULL, 0);
 		impl->StopAsyncFind();
 	}
+	if (bPcpUpstreamBundle
+		&& theApp.directreachability != NULL) {
+		const uint64 previousGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability->IsEnabled();
+		const natmap::PcpUpstreamDecision decision =
+			theApp.directreachability->ObservePcpUpstreamBundle(
+				pcpUpstreamBundle, mapperRouteBinding);
+		if (!decision.allows_global_candidate()) {
+			resultCode = CUPnPImpl::UPNP_FAILED;
+			// The delivery can wake the UI before the worker releases its
+			// mapper lock. Join it first; PCP deletion can then acquire the
+			// lock and remove upstream UDP/TCP followed by CPE UDP/TCP.
+			impl->StopAsyncFind();
+			impl->DeletePortsForGeneration(
+				mapperResultData.topology_generation);
+		}
+		const uint64 currentGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const bool observed =
+			decision.allows_global_candidate()
+			|| currentGeneration != previousGeneration;
+		if (decision.allows_global_candidate()
+			&& m_upnpRecoverySchedule.RecordSuccess(
+				mapperResultData.topology_generation)) {
+			m_bUPnPRouteRecoveryPending = false;
+			LIVE_LOG("NATMAP",
+				"PCP CPE/upstream recovery succeeded generation=%llu; backoff reset",
+				(unsigned long long)
+					mapperResultData.topology_generation);
+		}
+		// A negative refresh has just retired an already advertised PCP
+		// CPE/upstream bundle.  Arm exactly one generation-bound retry so the
+		// normal scheduler can recover it.  Initial failures keep the ordinary
+		// fallback path, and stale/duplicate deliveries cannot re-arm it.
+		if (bWasRefresh
+			&& !decision.allows_global_candidate()
+			&& currentGeneration > previousGeneration
+			&& m_upnpRecoverySchedule.ResetForNetworkChange(
+				currentGeneration, UPnPMonotonicMilliseconds())) {
+			m_bUPnPRouteRecoveryPending = true;
+			LIVE_LOG("NATMAP",
+				"PCP upstream refresh withdrew bundle; recovery armed generation=%llu",
+				(unsigned long long)currentGeneration);
+		}
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			currentGeneration,
+			observed,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability->IsEnabled()};
+		if (natmap::ShouldRestartAdvertisementLogin(
+				advertisement,
+				theApp.serverconnect->IsConnected(),
+				theApp.serverconnect->IsConnecting(),
+				theApp.serverconnect->IsConnectedViaRelay())) {
+			LogWarning(_T("Direct reachability endpoint changed or was withdrawn; reconnecting to update the advertised port"));
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
+				theApp.serverconnect->ConnectToAnyServer();
+		}
+	}
+	if (bPcpTcpOnlyCgnatFailure
+		&& theApp.directreachability != NULL) {
+		const uint64 previousGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability->IsEnabled();
+		// The worker has already attempted the CPE TCP DELETE.  Join it before
+		// the exact cleanup retry, then retire any old globally actionable pair
+		// before the normal mapper fallback can select another implementation.
+		impl->StopAsyncFind();
+		impl->DeletePortsForGeneration(
+			mapperResultData.topology_generation);
+		const bool invalidated =
+			theApp.directreachability->ObservePcpCpeAtomicityFailure(
+				natmap::MapperResult(mapperResultData),
+				mapperRouteBinding);
+		const uint64 recoveryGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			recoveryGeneration,
+			invalidated,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability->IsEnabled()};
+		if (natmap::ShouldRestartAdvertisementLogin(
+			advertisement,
+			theApp.serverconnect->IsConnected(),
+			theApp.serverconnect->IsConnecting(),
+			theApp.serverconnect->IsConnectedViaRelay())) {
+			LogWarning(_T("TCP-only PCP CGNAT mapping withdrawn before fallback"));
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
+			theApp.serverconnect->ConnectToAnyServer();
+		}
+		if (recoveryGeneration > previousGeneration
+			&& m_upnpRecoverySchedule.ResetForNetworkChange(
+				recoveryGeneration, UPnPMonotonicMilliseconds())) {
+			m_bUPnPRouteRecoveryPending = true;
+			LIVE_LOG("NATMAP",
+				"PCP atomic pair withdrawn generation=%llu; recovery armed once",
+				(unsigned long long)recoveryGeneration);
+		}
+	}
 
 	// A failed refresh of a finite lease is not proof that the mapping has
 	// vanished: its deadline remains authoritative. A failed health probe of
 	// a permanent mapping is positive loss evidence, so withdraw it before
 	// any retry and bind the bounded recovery budget to the new generation.
 	if (bWasRefresh
+		&& !bPcpUpstreamBundle
+		&& !bPcpTcpOnlyCgnatFailure
 		&& resultCode != CUPnPImpl::UPNP_OK
 		&& impl->GetMappingLeaseLifetime() == 0
 		&& impl->SupportsMappingHealthCheck()
@@ -5328,6 +5460,7 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 	}
 	if (resultCode == CUPnPImpl::UPNP_OK
 		&& bMapperResult
+		&& !bPcpUpstreamBundle
 		&& theApp.directreachability != NULL) {
 		const uint64 previousGeneration =
 			theApp.directreachability->GetTopologyGeneration();
@@ -5367,6 +5500,10 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 	}
 	if (resultCode != CUPnPImpl::UPNP_OK
 		&& bMapperResult
+		// PCP atomic failures were already retired, advertised and scheduled by
+		// the exact CPE path above. Re-running generic epoch-reset recovery
+		// would advance generation twice and mislabel it as NAT-PMP.
+		&& !bPcpTcpOnlyCgnatFailure
 		&& mapperResultData.mapper_epoch_reset
 		&& theApp.directreachability != NULL) {
 		const uint64 previousGeneration =

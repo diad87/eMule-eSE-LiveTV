@@ -7,6 +7,8 @@
 #include "natmap/mapper_result.h"
 #include "natmap/legacy_mapper_projection.h"
 #include "natmap/network_change.h"
+#include "natmap/pcp_upstream_policy.h"
+#include "natmap/mapping_result_mailbox.h"
 #include "natmap/direct_route_selection.h"
 #include "natmap/mapped_candidate_adapter.h"
 #include <atomic>
@@ -44,6 +46,19 @@ public:
 	natmap::UpstreamGatewayCandidates GetUpstreamGatewayCandidates(
 		const natmap::UpstreamDiscoveryInput& authorizedEvidence) const;
 	bool ObserveMapperResult(const natmap::MapperResult& result,
+		const natmap::RouteBindingIdentity& routeBinding);
+	// MX03 typed bridge. It consumes only an already-authorized, already
+	// completed upstream PCP result and keeps the legacy planes withdrawn until
+	// the normal proof path validates the candidate. It sends no discovery or
+	// PCP traffic and never treats the local CPE MAP as global proof.
+	natmap::PcpUpstreamDecision ObservePcpUpstreamBundle(
+		const natmap::PcpUpstreamResultBundle& bundle,
+		const natmap::RouteBindingIdentity& lanRouteBinding);
+	// Correlated terminal PCP-CPE result for the special case where TCP was
+	// mapped behind RFC1918 but no UDP listener exists.  It withdraws with the
+	// explicit chain-incomplete reason, never as a lease expiry.
+	bool ObservePcpCpeAtomicityFailure(
+		const natmap::MapperResult& result,
 		const natmap::RouteBindingIdentity& routeBinding);
 	bool ObserveMapperEpochReset();
 	bool DisableMappingsByPreference();
@@ -108,6 +123,7 @@ private:
 	natmap::NatChainTransaction m_udpChain;
 	natmap::RouteBindingIdentity m_mapperRouteBinding;
 	natmap::MapperTopologyIdentity m_mapperTopologyIdentity;
+	natmap::MapperResultData m_pcpCpeResult;
 	natmap::CandidateObservation m_directV4Observation;
 	natmap::VerificationAttempt m_directV4Attempt;
 	natmap::Evidence m_directV4ServerEvidence;

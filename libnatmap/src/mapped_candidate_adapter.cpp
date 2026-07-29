@@ -450,6 +450,19 @@ MappedCandidatePublisher::WithdrawExpired(
     return RetireExpiredPair();
 }
 
+MappedCandidateRetirement
+MappedCandidatePublisher::WithdrawRejectedObservation() noexcept {
+    if (!IsOwnerThread())
+        return MappedCandidateRetirement::WrongThread;
+    if (closed_)
+        return MappedCandidateRetirement::Closed;
+    if (snapshot_.candidate_count_ == 0)
+        return MappedCandidateRetirement::NoChange;
+    // A clear at the same generation would allow a proof for the previous
+    // endpoint to replay if an identical endpoint were published again.
+    return RetireExpiredPair();
+}
+
 MappedCandidateRetirement MappedCandidatePublisher::Invalidate(
     std::uint64_t next_generation) noexcept {
     if (!IsOwnerThread())

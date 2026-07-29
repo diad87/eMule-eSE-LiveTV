@@ -10,6 +10,12 @@ using namespace natmap;
 namespace natmap {
 
 struct MappedCandidatePublisherTestAccess {
+    static void SetTopologyGeneration(
+        MappedCandidatePublisher& publisher,
+        std::uint64_t value) {
+        publisher.snapshot_.topology_generation_ = value;
+    }
+
     static void SetPublicationSequence(
         MappedCandidatePublisher& publisher,
         std::uint64_t value) {
@@ -649,6 +655,20 @@ void TestOverflowOnExpiryAndIdentityChangeClosesEmpty() {
     CheckClosedAndEmpty(replacement);
 }
 
+void TestRejectedObservationAtGenerationLimitClosesEmpty() {
+    const std::uint64_t maximum =
+        (std::numeric_limits<std::uint64_t>::max)();
+    MappedCandidatePublisher publisher(7);
+    PublishAndVerify(publisher);
+    MappedCandidatePublisherTestAccess::SetTopologyGeneration(
+        publisher, maximum);
+    CHECK(publisher.WithdrawRejectedObservation() ==
+          MappedCandidateRetirement::Closed);
+    CHECK(publisher.is_closed());
+    CHECK(publisher.snapshot().candidate_count() == 0);
+    CHECK(!publisher.snapshot().HasVerifiedGlobalCandidate());
+}
+
 void TestCandidateIdExhaustionClosesEmpty() {
     const std::uint64_t maximum =
         (std::numeric_limits<std::uint64_t>::max)();
@@ -778,6 +798,7 @@ int main() {
     TestExpiredStaleAndInvalidResultsWithdrawPair();
     TestRejectedResultJustBeforeExpiryKeepsPair();
     TestOverflowOnExpiryAndIdentityChangeClosesEmpty();
+    TestRejectedObservationAtGenerationLimitClosesEmpty();
     TestCandidateIdExhaustionClosesEmpty();
     TestPublicationSequenceOverflowClosesEmptyEveryPath();
     TestOnlyOwnerThreadCanPublishSnapshot();

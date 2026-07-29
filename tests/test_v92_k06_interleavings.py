@@ -32,8 +32,9 @@ require(
 )
 require(
     upnp.count("::PostMessage(resultWindow, resultMessage, messageToken, 0)")
-    == 2,
-    "both mapper result paths must use the fenced message dispatch",
+    == 3
+    and "PublishPcpUpstreamBundle(bundle)" in upnp,
+    "all mapper result paths must use the fenced message dispatch",
 )
 require(
     "MailboxPublishStatus::Closed" in mailbox
@@ -75,7 +76,7 @@ require(
 )
 require(
     "m_bUPnPRouteRecoveryPending = true;" in dialog
-    and "network route restored; restarting pending mapper recovery" in dialog
+    and "network route restored; mapper recovery round=" in dialog
     and "m_bUPnPRouteRecoveryPending = false;" in dialog,
     "temporary route loss must retain an explicit bounded recovery obligation",
 )

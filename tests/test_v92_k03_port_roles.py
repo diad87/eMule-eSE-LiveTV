@@ -93,8 +93,10 @@ require(
     "the public Kad6 IPv6 endpoint must use the advertised IPv6 UDP port",
 )
 require(
-    "const uint16 publicKadPort =\n\t\t\t\ttheApp.GetAdvertisedUdpPort();"
-    in kad_listener,
+    "const uint16 publicKadPort =" in kad_listener
+    and "natmap::PreferredDirectRoute::MappedV4" in kad_listener
+    and "? theApp.GetAdvertisedUdpPort()" in kad_listener
+    and ": theApp.GetLocalUdpPort();" in kad_listener,
     "the public Kad6 IPv4 endpoint must use the advertised UDP port",
 )
 require(

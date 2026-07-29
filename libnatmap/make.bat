@@ -83,6 +83,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_nat_chain.exe te
 if errorlevel 1 exit /b 1
 build\test_nat_chain.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_pcp_upstream_policy.exe tests\test_pcp_upstream_policy.cpp src\pcp_upstream_policy.cpp src\pcp_codec.cpp src\mapped_candidate_adapter.cpp src\natmap_policy.cpp src\natmap_chain.cpp src\mapper_result.cpp src\address_policy.cpp
+if errorlevel 1 exit /b 1
+build\test_pcp_upstream_policy.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_ownership_ledger.exe tests\test_ownership_ledger.cpp src\ownership_ledger.cpp
 if errorlevel 1 exit /b 1
 build\test_ownership_ledger.exe
@@ -111,7 +115,7 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapped_candidate
 if errorlevel 1 exit /b 1
 build\test_mapped_candidate_adapter.exe
 if errorlevel 1 exit /b 1
-cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapping_result_mailbox.exe tests\test_mapping_result_mailbox.cpp src\mapper_result.cpp src\mapping_request.cpp src\mapping_result_mailbox.cpp
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapping_result_mailbox.exe tests\test_mapping_result_mailbox.cpp src\mapper_result.cpp src\mapping_request.cpp src\mapping_result_mailbox.cpp src\address_policy.cpp
 if errorlevel 1 exit /b 1
 build\test_mapping_result_mailbox.exe
 if errorlevel 1 exit /b 1

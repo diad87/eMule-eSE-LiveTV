@@ -46,8 +46,9 @@ require(
 )
 require(
     "ExchangeMap(\n"
-    "\t\tnGatewayIP, nInterfaceIndex, request, response, true)" in unmap,
-    "DELETE must remain bound to its captured gateway and interface",
+    "\t\tnGatewayIP, nInterfaceIndex, bindAddress,\n"
+    "\t\trequest, response, true)" in unmap,
+    "DELETE must remain bound to its captured gateway, interface and LAN bind",
 )
 require(
     "expectation.source_address" in exchange
@@ -66,9 +67,9 @@ require(
     "cleanup may mutate ownership only through the checked commit decision",
 )
 require(
-    delete.count("ValidatePcpMappingIdentity(") == 3
-    and delete.count("UnmapPort(") == 3,
-    "TCP, UDP and optional web cleanup must each validate before unmapping",
+    delete.count("ValidatePcpMappingIdentity(") == 5
+    and delete.count("UnmapPort(") == 5,
+    "both upstream and CPE transports plus optional web cleanup must each validate before unmapping",
 )
 require(
     "Refusing refresh because the route-bound gateway/client pair changed"

@@ -54,12 +54,15 @@ public:
     LiveTunnelScheduler(const LiveTunnelScheduler&) = delete;
     LiveTunnelScheduler& operator=(const LiveTunnelScheduler&) = delete;
 
-    void Enqueue(LiveDeferredWork work);
-    void EnqueueBatch(std::vector<LiveDeferredWork> work);
+    bool Enqueue(LiveDeferredWork work);
+    std::vector<LiveDeferredWork> EnqueueBatch(
+        std::vector<LiveDeferredWork> work);
     bool TryTake(LiveDeferredWork& work);
     std::size_t PendingCount() const;
     LiveDeferredFlowUsage MeasureK6Flow(std::uint64_t stream_id) const;
-    std::size_t ClearDeferredWork();
+    std::vector<LiveDeferredWork> CloseDeferredWork();
+    void ReopenDeferredWork();
+    bool AcceptingDeferredWork() const;
 
     static std::uint32_t Elapsed32(std::uint32_t now,
                                    std::uint32_t since) noexcept;
@@ -89,6 +92,7 @@ public:
 private:
     mutable std::mutex m_deferred_mutex;
     std::deque<LiveDeferredWork> m_deferred_work;
+    bool m_accepting_deferred_work = true;
     std::uint32_t m_last_tick = 0;
     std::uint32_t m_last_rtt_probe = 0;
     std::uint32_t m_last_bulk_subscription = 0;

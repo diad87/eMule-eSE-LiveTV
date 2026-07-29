@@ -2,25 +2,35 @@
 #include "LiveTunnelScheduler.h"
 
 #include <algorithm>
+#include <atomic>
+#include <initializer_list>
 #include <limits>
+#include <thread>
 #include <utility>
 
 namespace eSELive {
 
-void LiveTunnelScheduler::Enqueue(LiveDeferredWork work)
+bool LiveTunnelScheduler::Enqueue(LiveDeferredWork work)
 {
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
+    if (!m_accepting_deferred_work)
+        return false;
     m_deferred_work.push_back(std::move(work));
+    return true;
 }
 
-void LiveTunnelScheduler::EnqueueBatch(std::vector<LiveDeferredWork> work)
+std::vector<LiveDeferredWork> LiveTunnelScheduler::EnqueueBatch(
+    std::vector<LiveDeferredWork> work)
 {
     if (work.empty())
-        return;
+        return {};
 
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
+    if (!m_accepting_deferred_work)
+        return work;
     for (std::size_t index = 0; index < work.size(); ++index)
         m_deferred_work.push_back(std::move(work[index]));
+    return {};
 }
 
 bool LiveTunnelScheduler::TryTake(LiveDeferredWork& work)
@@ -57,13 +67,55 @@ LiveDeferredFlowUsage LiveTunnelScheduler::MeasureK6Flow(
     return usage;
 }
 
-std::size_t LiveTunnelScheduler::ClearDeferredWork()
+std::vector<LiveDeferredWork> LiveTunnelScheduler::CloseDeferredWork()
 {
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
-    const std::size_t count = m_deferred_work.size();
-    m_deferred_work.clear();
-    return count;
+    m_accepting_deferred_work = false;
+    std::vector<LiveDeferredWork> cancelled;
+    cancelled.reserve(m_deferred_work.size());
+    while (!m_deferred_work.empty()) {
+        cancelled.push_back(std::move(m_deferred_work.front()));
+        m_deferred_work.pop_front();
+    }
+    return cancelled;
 }
+
+void LiveTunnelScheduler::ReopenDeferredWork()
+{
+    std::lock_guard<std::mutex> lock(m_deferred_mutex);
+    m_accepting_deferred_work = true;
+}
+
+bool LiveTunnelScheduler::AcceptingDeferredWork() const
+{
+    std::lock_guard<std::mutex> lock(m_deferred_mutex);
+    return m_accepting_deferred_work;
+}
+
+namespace {
+
+bool AllRequestsAre(
+    const std::vector<LiveDeferredWork>& work,
+    std::initializer_list<std::uint32_t> expected)
+{
+    if (work.size() != expected.size())
+        return false;
+    std::size_t index = 0;
+    for (const std::uint32_t request : expected) {
+        if (work[index++].reqId != request)
+            return false;
+    }
+    return true;
+}
+
+} // namespace
+
+/*
+ * Closing is deliberately an atomic queue operation: either a producer
+ * publishes before CloseDeferredWork and its command is returned for explicit
+ * cancellation, or it observes the closed state and publication fails.
+ * Nothing can survive on the queue across the shutdown boundary.
+ */
 
 std::uint32_t LiveTunnelScheduler::Elapsed32(
     std::uint32_t now, std::uint32_t since) noexcept
@@ -175,12 +227,14 @@ bool CharacterizeQueueFifoAndMove()
     first.op = LiveDeferredOp::SendMessage;
     first.reqId = 7;
     first.payload = {1, 2, 3};
-    scheduler.Enqueue(std::move(first));
+    if (!scheduler.Enqueue(std::move(first)))
+        return false;
 
     LiveDeferredWork second;
     second.op = LiveDeferredOp::Build3Hop;
     second.reqId = 8;
-    scheduler.Enqueue(std::move(second));
+    if (!scheduler.Enqueue(std::move(second)))
+        return false;
 
     if (scheduler.PendingCount() != 2)
         return false;
@@ -198,20 +252,33 @@ bool CharacterizeQueueFifoAndMove()
     return !scheduler.TryTake(taken) && scheduler.PendingCount() == 0;
 }
 
-bool CharacterizeBatchAndClear()
+bool CharacterizeBatchAndClose()
 {
     LiveTunnelScheduler scheduler;
     std::vector<LiveDeferredWork> batch(3);
     batch[0].reqId = 11;
     batch[1].reqId = 12;
     batch[2].reqId = 13;
-    scheduler.EnqueueBatch(std::move(batch));
+    if (!scheduler.EnqueueBatch(std::move(batch)).empty())
+        return false;
     if (scheduler.PendingCount() != 3)
         return false;
-    if (scheduler.ClearDeferredWork() != 3)
+    const std::vector<LiveDeferredWork> cancelled =
+        scheduler.CloseDeferredWork();
+    if (!AllRequestsAre(cancelled, {11, 12, 13}))
         return false;
-    return scheduler.PendingCount() == 0
-        && scheduler.ClearDeferredWork() == 0;
+    LiveDeferredWork rejected;
+    rejected.reqId = 14;
+    if (scheduler.Enqueue(std::move(rejected)))
+        return false;
+    if (scheduler.AcceptingDeferredWork() || scheduler.PendingCount() != 0)
+        return false;
+    scheduler.ReopenDeferredWork();
+    LiveDeferredWork accepted;
+    accepted.reqId = 15;
+    return scheduler.AcceptingDeferredWork()
+        && scheduler.Enqueue(std::move(accepted))
+        && scheduler.PendingCount() == 1;
 }
 
 bool CharacterizeFlowAccounting()
@@ -220,21 +287,25 @@ bool CharacterizeFlowAccounting()
     LiveDeferredWork first;
     first.k6StreamId = 41;
     first.k6FlowBytes = 100;
-    scheduler.Enqueue(std::move(first));
+    if (!scheduler.Enqueue(std::move(first)))
+        return false;
 
     LiveDeferredWork second;
     second.k6StreamId = 42;
     second.k6FlowBytes = 70;
-    scheduler.Enqueue(std::move(second));
+    if (!scheduler.Enqueue(std::move(second)))
+        return false;
 
     LiveDeferredWork third;
     third.k6StreamId = 41;
     third.k6FlowBytes = 30;
-    scheduler.Enqueue(std::move(third));
+    if (!scheduler.Enqueue(std::move(third)))
+        return false;
 
     LiveDeferredWork non_flow;
     non_flow.payload.resize(4096);
-    scheduler.Enqueue(std::move(non_flow));
+    if (!scheduler.Enqueue(std::move(non_flow)))
+        return false;
 
     const LiveDeferredFlowUsage usage = scheduler.MeasureK6Flow(41);
     return usage.stream_messages == 2
@@ -314,16 +385,50 @@ bool CharacterizeTimerLifecycle()
     return true;
 }
 
+bool CharacterizeConcurrentClosePublication()
+{
+    for (std::uint32_t iteration = 1; iteration <= 256; ++iteration) {
+        LiveTunnelScheduler scheduler;
+        std::atomic<bool> start{false};
+        std::atomic<bool> accepted{false};
+        std::thread producer([&]() {
+            LiveDeferredWork work;
+            work.reqId = iteration;
+            while (!start.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            accepted.store(
+                scheduler.Enqueue(std::move(work)),
+                std::memory_order_release);
+        });
+        start.store(true, std::memory_order_release);
+        const std::vector<LiveDeferredWork> cancelled =
+            scheduler.CloseDeferredWork();
+        producer.join();
+
+        if (scheduler.PendingCount() != 0
+            || scheduler.AcceptingDeferredWork())
+            return false;
+        if (accepted.load(std::memory_order_acquire)) {
+            if (!AllRequestsAre(cancelled, {iteration}))
+                return false;
+        } else if (!cancelled.empty()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 bool RunLiveTunnelSchedulerCharacterizationSelfTest()
 {
     return CharacterizeQueueFifoAndMove()
-        && CharacterizeBatchAndClear()
+        && CharacterizeBatchAndClose()
         && CharacterizeFlowAccounting()
         && CharacterizeWraparoundClock()
         && CharacterizePeriodicGates()
-        && CharacterizeTimerLifecycle();
+        && CharacterizeTimerLifecycle()
+        && CharacterizeConcurrentClosePublication();
 }
 
 } // namespace eSELive

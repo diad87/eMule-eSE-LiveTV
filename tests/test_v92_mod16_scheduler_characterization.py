@@ -97,18 +97,64 @@ class Mod16SchedulerCharacterizationTest(unittest.TestCase):
 
     def test_shutdown_stops_timer_before_releasing_tunnel_state(self) -> None:
         body = self.body("CLiveTunnel::Stop")
+        close_queue = body.index("m_scheduler.CloseDeferredWork()")
         stop_timer = body.index("StopK6ShapeTimerLocked()")
         clear_registry = body.index("m_circuitRegistry.Clear()")
         clear_pending = body.index("m_exitServices.Clear()")
+        cancel_waiters = body.index("SignalReply(work.reqId")
+        self.assertLess(close_queue, stop_timer)
         self.assertLess(stop_timer, clear_registry)
         self.assertLess(clear_registry, clear_pending)
-        self.assertIn("m_scheduler.ClearDeferredWork()", body)
+        self.assertLess(clear_pending, cancel_waiters)
         for marker in (
             "m_k6ShapeReverse.clear()",
             "m_k6FairAllocationByStream.clear()",
             "m_k6FairScheduler.Reset()",
         ):
             self.assertIn(marker, body)
+
+    def test_shutdown_boundary_rejects_racing_publication(self) -> None:
+        enqueue = VERIFIER.function_body(
+            self.scheduler, "LiveTunnelScheduler::Enqueue")
+        close = VERIFIER.function_body(
+            self.scheduler, "LiveTunnelScheduler::CloseDeferredWork")
+        self.assertIn("std::lock_guard<std::mutex>", enqueue)
+        self.assertIn("!m_accepting_deferred_work", enqueue)
+        self.assertLess(
+            close.index("m_accepting_deferred_work = false"),
+            close.index("while (!m_deferred_work.empty())"),
+        )
+        self.assertIn("CharacterizeConcurrentClosePublication", self.scheduler)
+        self.assertIn("scheduler.PendingCount() != 0", self.scheduler)
+        self.assertIn("AllRequestsAre(cancelled, {iteration})", self.scheduler)
+
+    def test_rejected_synchronous_work_wakes_waiters_immediately(self) -> None:
+        for symbol in (
+            "CLiveTunnel::RequestTestCircuit",
+            "CLiveTunnel::RequestK6ServiceSwitch",
+            "CLiveTunnel::RequestK6PublicRelease",
+        ):
+            body = self.body(symbol)
+            reject = body.index("!m_scheduler.Enqueue")
+            signal = body.index("SignalReply(reqId", reject)
+            wait = body.index("WaitPending", signal)
+            self.assertLess(reject, signal)
+            self.assertLess(signal, wait)
+        marshaled = self.body("CLiveTunnel::EnqueueSendMsg")
+        self.assertIn("!m_scheduler.Enqueue", marshaled)
+        self.assertIn("SignalReply(req_id", marshaled)
+
+    def test_only_real_pool_rebuild_reopens_after_shutdown(self) -> None:
+        pool = self.body("CLiveTunnel::BuildPool")
+        self.assertLess(
+            pool.index("theApp.IsClosing()"),
+            pool.index("m_scheduler.ReopenDeferredWork()"),
+        )
+        self.assertLess(
+            pool.index("CSingleLock lock(&m_lock, TRUE)"),
+            pool.index("m_scheduler.ReopenDeferredWork()"),
+        )
+        self.assertEqual(self.source.count("m_scheduler.ReopenDeferredWork()"), 1)
 
     def test_scheduler_state_has_one_declared_owner_after_transfer(self) -> None:
         for removed in (
@@ -123,6 +169,7 @@ class Mod16SchedulerCharacterizationTest(unittest.TestCase):
             "std::uint32_t m_last_rtt_probe",
             "std::uint32_t m_last_bulk_subscription",
             "std::uintptr_t m_class5_timer",
+            "bool m_accepting_deferred_work",
         ):
             self.assertEqual(self.scheduler_interface.count(owned), 1)
 

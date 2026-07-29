@@ -571,9 +571,10 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
     // v2 paths exist.
     if (count < TUNNEL_POOL_MIN) count = TUNNEL_POOL_MIN;
     if (count > TUNNEL_POOL_MAX) count = TUNNEL_POOL_MAX;
-    if (relayCandidates.empty()) return 0;
+    if (relayCandidates.empty() || theApp.IsClosing()) return 0;
 
     CSingleLock lock(&m_lock, TRUE);
+    m_scheduler.ReopenDeferredWork();
     size_t built = 0;
     for (size_t i = 0; i < count && i < relayCandidates.size(); ++i) {
         CUpDownClient* hop1 = relayCandidates[i];
@@ -874,10 +875,11 @@ bool CLiveTunnel::BuildSuccessor2Hop()
 void CLiveTunnel::Stop()
 {
     m_k6ExitNoticeServer.Stop();
-    (void)m_scheduler.ClearDeferredWork();
     std::set<uint32_t> retiredCircuits;
+    std::vector<LiveDeferredWork> cancelledDeferred;
     {
         CSingleLock lock(&m_lock, TRUE);
+        cancelledDeferred = m_scheduler.CloseDeferredWork();
         StopK6ShapeTimerLocked();
         m_k6ShapeReverse.clear();
         m_k6ShapeReplay.clear();
@@ -909,6 +911,9 @@ void CLiveTunnel::Stop()
     // counted as Active) indefinitely, and the pool would keep building successors
     // against a stopped subsystem. Clear it too (tunnel->pool order, same as RegisterTunnel).
     Kademlia::CKadV2TunnelPool::Get().Clear();
+    for (const LiveDeferredWork& work : cancelledDeferred)
+        if (work.reqId != 0)
+            SignalReply(work.reqId, NULL, 0, 0);
 }
 
 bool CLiveTunnel::SendThrough(const uint8_t* payload, size_t payloadLen)
@@ -2654,7 +2659,7 @@ void CLiveTunnel::FlushK6OriginCredit(uint32 circId)
             stream.pending_credit_bytes -= (std::min)(stream.pending_credit_bytes,
                 queued.data_bytes);
             stream.pending_credit_frames.pop_front();
-            m_scheduler.Enqueue(std::move(request));
+            (void)m_scheduler.Enqueue(std::move(request));
         }
         if (stream.pending_credit_frames.empty()) {
             stream.credit_stall_since_ms = 0;
@@ -2911,7 +2916,7 @@ void CLiveTunnel::EnqueueSend(const uint8_t* payload, size_t payloadLen)
     MainThreadReq req;
     req.op = MT_SEND;
     req.payload.assign(payload, payload + payloadLen);
-    m_scheduler.Enqueue(std::move(req));
+    (void)m_scheduler.Enqueue(std::move(req));
 }
 
 // v8.1 A4 - marshal a whole logical message for pinned send on the main thread.
@@ -2927,7 +2932,7 @@ void CLiveTunnel::EnqueueSendMsg(uint32_t req_id, uint8_t sub_cmd,
     req.requiredExitCaps = requiredExitCaps;
     req.pinnedCircId = pinnedCircId;
     if (msg && msgLen) req.payload.assign(msg, msg + msgLen);
-    m_scheduler.Enqueue(std::move(req));
+    if (!m_scheduler.Enqueue(std::move(req)) && req_id != 0) SignalReply(req_id, NULL, 0, 0);
 }
 
 // v8.1 A4 - pin a whole logical message to ONE circuit. Round-robin BY MESSAGE
@@ -3091,7 +3096,7 @@ uint32_t CLiveTunnel::RequestTestCircuit(int hops, uint32_t timeoutMs)
            : hops == 2 ? MT_BUILD_2HOP
                        : MT_BUILD_1HOP;
     req.reqId = reqId;
-    m_scheduler.Enqueue(std::move(req));
+    if (!m_scheduler.Enqueue(std::move(req))) SignalReply(reqId, NULL, 0, 0);
     std::vector<uint8_t> dummy;
     uint32_t circId = 0;
     WaitPending(reqId, std::move(pr), timeoutMs, dummy, &circId);
@@ -3111,7 +3116,7 @@ bool CLiveTunnel::RequestK6ServiceSwitch(kad6::K6Service service, bool enabled,
     request.k6Service = service;
     request.k6Enable = enabled;
     request.k6DrainSeconds = (std::min)(drainSeconds, kad6::kK6MaxDrainSeconds);
-    m_scheduler.Enqueue(std::move(request));
+    if (!m_scheduler.Enqueue(std::move(request))) SignalReply(reqId, NULL, 0, 0);
     std::vector<uint8_t> ignored;
     uint32_t result = 0;
     return WaitPending(reqId, std::move(pending), timeoutMs, ignored, &result) && result == 1;
@@ -3131,7 +3136,7 @@ bool CLiveTunnel::RequestK6PublicRelease(
         kad6::kK6MaxDrainSeconds);
     request.k6HasReleaseEvidence = evidence != NULL;
     if (evidence) request.k6ReleaseEvidence = *evidence;
-    m_scheduler.Enqueue(std::move(request));
+    if (!m_scheduler.Enqueue(std::move(request))) SignalReply(reqId, NULL, 0, 0);
     std::vector<uint8_t> ignored;
     uint32_t result = 0;
     return WaitPending(reqId, std::move(pending), timeoutMs, ignored, &result) && result == 1;
@@ -7643,8 +7648,7 @@ void CLiveTunnel::FinishDueSearchJobs()
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         for (auto it = m_searchJobs.begin(); it != m_searchJobs.end(); ) {
-            if (LiveTunnelScheduler::DeadlineReached32(
-                    now, it->second.deadline)) {
+            if (LiveTunnelScheduler::DeadlineReached32(now, it->second.deadline)) {
                 due.push_back(std::move(it->second));
                 it = m_searchJobs.erase(it);
             } else {
@@ -8753,10 +8757,8 @@ bool CLiveTunnel::K6SendEd2kFrameNoWait(uint64 streamId, const uint8_t* raw, siz
 
     // Bound work waiting to reach the main-thread circuit sender. The queue is
     // released as requests are popped; no socket thread blocks for credit.
-    const LiveDeferredFlowUsage queuedUsage =
-        m_scheduler.MeasureK6Flow(streamId);
-    size_t streamMessages = queuedUsage.stream_messages;
-    size_t streamBytes = queuedUsage.stream_bytes;
+    const LiveDeferredFlowUsage queuedUsage = m_scheduler.MeasureK6Flow(streamId);
+    size_t streamMessages = queuedUsage.stream_messages, streamBytes = queuedUsage.stream_bytes;
     size_t globalBytes = queuedUsage.global_bytes;
     for (const auto& origin : m_k6OriginStreams) {
         for (const K6QueuedOriginFrame& queued : origin.second.pending_credit_frames) {
@@ -8822,8 +8824,7 @@ bool CLiveTunnel::K6SendEd2kFrameNoWait(uint64 streamId, const uint8_t* raw, siz
     request.k6Sequence = data.sequence;
     request.k6DataBytes = data.data.size();
     request.payload = std::move(wire);
-    m_scheduler.Enqueue(std::move(request));
-    return true;
+    return m_scheduler.Enqueue(std::move(request));
 }
 
 bool CLiveTunnel::K6TakeSourceHints(uint64 streamId, kad6::K6SourceHints& hintsOut)
@@ -9412,8 +9413,7 @@ void CLiveTunnel::ProcessClass5Tick()
         const uint64_t idleTailUs = static_cast<uint64_t>(it->second.idle_tail_epochs)
             * kad6::kK6ShapeEpochUs;
         if (it->second.scheduler.queued_records() == 0
-            && LiveTunnelScheduler::Elapsed64(
-                nowUs, it->second.last_input_us) >= idleTailUs) {
+            && LiveTunnelScheduler::Elapsed64(nowUs, it->second.last_input_us) >= idleTailUs) {
             AddDebugLogLine(false,
                 _T("Kad6 K6-6: class-5 idle tail complete circ=0x%08x (%u epoch(s))"),
                 circ->Id(), static_cast<unsigned>(it->second.idle_tail_epochs));
@@ -9429,8 +9429,7 @@ void CLiveTunnel::ProcessClass5Tick()
                 it->second.exposed = circ->m_traffic_shaping_exposed = true;
         ++it;
     }
-    if (m_scheduler.ShouldStopClass5Timer(
-            !m_k6ShapeReverse.empty(), fairActive))
+    if (m_scheduler.ShouldStopClass5Timer(!m_k6ShapeReverse.empty(), fairActive))
         StopK6ShapeTimerLocked();
 }
 
@@ -10185,8 +10184,7 @@ void CLiveTunnel::Tick()
             else TransitionCircuitDestroyed(c);
         } else if (c->State() == CircuitState::HalfBuilt
                    && c->m_extendStartedTick != 0
-                   && LiveTunnelScheduler::HasStrictlyElapsed32(
-                       now, c->m_extendStartedTick,
+                   && LiveTunnelScheduler::HasStrictlyElapsed32(now, c->m_extendStartedTick,
                        TUNNEL_HANDSHAKE_TIMEOUT_MS * 16)) {
             // v8.1 fix: a circuit stuck mid-EXTEND (hop1 done, EXTENDED
             // never arrived) used to fall through both arms above and
@@ -10384,7 +10382,11 @@ void CLiveTunnel::Tick()
         }
         // CollectRetries has released the pending-domain mutex before queue
         // publication, preserving registry -> pending -> queue lock order.
-        m_scheduler.EnqueueBatch(std::move(retries));
+        const std::vector<LiveDeferredWork> cancelled = m_scheduler.EnqueueBatch(std::move(retries));
+        for (const LiveDeferredWork& work : cancelled) {
+            if (work.reqId != 0)
+                SignalReply(work.reqId, NULL, 0, 0);
+        }
     }
 
     // 6. v8.1 A6 - sweep deferred exit operations that never completed, or

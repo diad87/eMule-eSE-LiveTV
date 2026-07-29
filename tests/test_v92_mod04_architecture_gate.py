@@ -150,6 +150,13 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveTunnelMetrics.cpp"],
                 "interface_files": ["srchybrid/LiveTunnelMetrics.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "WebRequestParser",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebRequestParser.cpp"],
+                "interface_files": ["srchybrid/WebRequestParser.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.config["approved_non_module_code"], [
@@ -191,6 +198,14 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "reason": (
                     "Standalone concurrency, immutable-copy and exact-counter "
                     "executable test for the MOD-1.8 metrics/facade extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/tests/test_web_request_parser.cpp",
+                "reason": (
+                    "Standalone request, query, cookie and hostile-limit "
+                    "executable test for the MOD-2.1 parser extraction."
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
@@ -241,6 +256,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "module": "LiveTunnelMetrics",
                 "slice_base_commit": "1f2e155551d5a5ab7a934e2f6bab34d0da804209",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "WebRequestParser",
+                "slice_base_commit": "beb494b9907877a100d728ae87a029e9e8d11330",
+                "source_coordinator": "srchybrid/WebServer.cpp",
             }],
         })
 
@@ -261,6 +280,7 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "LiveTunnelPeerState",
                 "LiveTunnelKadBridge",
                 "LiveTunnelMetrics",
+                "WebRequestParser",
             ],
         )
 

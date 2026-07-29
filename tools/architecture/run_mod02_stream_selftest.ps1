@@ -29,31 +29,35 @@ $criticalSourceRelativePaths = @(
 $identityHeaderRelativePath = 'srchybrid/Mod02BuildIdentity.h'
 $cleanCheckRelativePaths = @($criticalSourceRelativePaths + $identityHeaderRelativePath)
 
+function Get-NormalizedTextSha256([string]$Path) {
+    $rawBytes = [IO.File]::ReadAllBytes($Path)
+    $normalizedBytes = [Collections.Generic.List[byte]]::new($rawBytes.Length)
+    for ($index = 0; $index -lt $rawBytes.Length; $index++) {
+        if ($rawBytes[$index] -eq 13) {
+            if (($index + 1 -lt $rawBytes.Length) -and ($rawBytes[$index + 1] -eq 10)) {
+                $index++
+            }
+            $normalizedBytes.Add(10)
+        } else {
+            $normalizedBytes.Add($rawBytes[$index])
+        }
+    }
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString(
+            $sha256.ComputeHash($normalizedBytes.ToArray())
+        )).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
 function Get-Mod02SourceIdentity([string]$Root, [string[]]$RelativePaths) {
     $lines = @()
     foreach ($relativePath in $RelativePaths) {
         $path = Join-Path $Root $relativePath
         if (-not (Test-Path -LiteralPath $path)) { throw "Missing critical source: $relativePath" }
-        $rawBytes = [IO.File]::ReadAllBytes($path)
-        $normalizedBytes = [Collections.Generic.List[byte]]::new($rawBytes.Length)
-        for ($index = 0; $index -lt $rawBytes.Length; $index++) {
-            if ($rawBytes[$index] -eq 13) {
-                if (($index + 1 -lt $rawBytes.Length) -and ($rawBytes[$index + 1] -eq 10)) {
-                    $index++
-                }
-                $normalizedBytes.Add(10)
-            } else {
-                $normalizedBytes.Add($rawBytes[$index])
-            }
-        }
-        $sourceSha256 = [Security.Cryptography.SHA256]::Create()
-        try {
-            $rawHash = ([BitConverter]::ToString(
-                $sourceSha256.ComputeHash($normalizedBytes.ToArray())
-            )).Replace('-', '').ToLowerInvariant()
-        } finally {
-            $sourceSha256.Dispose()
-        }
+        $rawHash = Get-NormalizedTextSha256 $path
         $lines += "$relativePath=$rawHash"
     }
     $payload = [Text.UTF8Encoding]::new($false).GetBytes([string]::Join("`n", $lines))
@@ -65,7 +69,7 @@ function Get-Mod02SourceIdentity([string]$Root, [string[]]$RelativePaths) {
     }
 }
 
-$manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$manifestHash = Get-NormalizedTextSha256 $manifestPath
 try {
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 } catch {

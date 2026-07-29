@@ -82,7 +82,7 @@ class Mod02CharacterizationTest(unittest.TestCase):
         ):
             self.assertRegex(evidence[field], r"^[0-9a-f]{64}$")
         runner = RUNTIME_RUNNER.read_text(encoding="utf-8")
-        for required in ("BuildManifest", "source_identity_sha256", "Get-Mod02SourceIdentity", "Mod02BuildIdentity.h", "ReadAllBytes", "normalizedBytes", "taskkill.exe", "WaitForExit(10000)", "WaitForExit(5000)", "SOURCE $sourceIdentity", "source_tree_clean"):
+        for required in ("BuildManifest", "source_identity_sha256", "Get-NormalizedTextSha256", "Get-Mod02SourceIdentity", "Mod02BuildIdentity.h", "ReadAllBytes", "normalizedBytes", "taskkill.exe", "WaitForExit(10000)", "WaitForExit(5000)", "SOURCE $sourceIdentity", "source_tree_clean"):
             self.assertIn(required, runner)
         self.assertNotIn("ExpectedSourceCommit", runner)
         self.assertNotIn("ExpectedExecutableSha256", runner)
@@ -98,7 +98,9 @@ class Mod02CharacterizationTest(unittest.TestCase):
             evidence["executable_sha256"], manifest["executable_sha256"])
         self.assertEqual(
             evidence["build_manifest_sha256"],
-            hashlib.sha256(BUILD_MANIFEST.read_bytes()).hexdigest(),
+            hashlib.sha256(
+                VERIFIER.normalize_source_bytes(BUILD_MANIFEST.read_bytes())
+            ).hexdigest(),
         )
         lines = [
             f"{path}={hashlib.sha256(VERIFIER.normalize_source_bytes((ROOT / path).read_bytes())).hexdigest()}"

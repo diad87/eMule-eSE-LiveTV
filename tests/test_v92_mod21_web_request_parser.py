@@ -84,6 +84,7 @@ class Mod21WebRequestParserTest(unittest.TestCase):
         self.assertIn("ParseStatus::BodyTooLarge", self.source)
         self.assertIn("QueryStatus::TooManyFields", self.source)
         self.assertIn("QueryStatus::ValueTooLarge", self.source)
+        self.assertIn("QueryStatus::AmbiguousField", self.source)
         self.assertIn("CookieStatus::TooManyFields", self.source)
         self.assertIn("CookieStatus::ValueTooLarge", self.source)
         self.assertIn("kMaxRequestBytes - m_dwRecv", self.socket)
@@ -132,6 +133,7 @@ class Mod21WebRequestParserTest(unittest.TestCase):
         for marker in (
             "web parser failed exact deterministic query",
             "web parser failed repeated query",
+            "web parser accepted ambiguous single query",
             "web request parser failed runtime request",
             "web request parser failed runtime cookie",
             "web request parser accepted hostile length",
@@ -159,6 +161,7 @@ class Mod21WebRequestParserTest(unittest.TestCase):
             "header field count is bounded",
             "query names require exact boundaries",
             "query names remain case-sensitive",
+            "duplicate single query field fails closed",
             "form normalization preserves legacy decoding and control filtering",
             "repeated query values preserve order and case",
             "query field count is bounded",

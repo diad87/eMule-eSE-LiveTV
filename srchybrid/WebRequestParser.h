@@ -49,6 +49,7 @@ struct ParsedRequest {
 enum class QueryStatus {
     Ok,
     NotFound,
+    AmbiguousField,
     TooManyFields,
     ValueTooLarge
 };

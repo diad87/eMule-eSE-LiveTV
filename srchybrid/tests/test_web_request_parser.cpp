@@ -202,6 +202,11 @@ int main()
                 value == "lower",
             "query names remain case-sensitive");
         Expect(
+            ese::web::GetQueryValue("/?b=one&b=two", "b", value) ==
+                QueryStatus::AmbiguousField &&
+                value.empty(),
+            "duplicate single query field fails closed");
+        Expect(
             ese::web::GetQueryValue(
                 "/?text=Hello+World%21%0A%0D%zz", "text", value) ==
                 QueryStatus::Ok &&

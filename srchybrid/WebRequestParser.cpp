@@ -355,6 +355,8 @@ QueryStatus GetQueryValue(
     std::vector<std::string> values;
     const QueryStatus status =
         CollectQueryValues(target, field_name, values);
+    if (status == QueryStatus::Ok && values.size() != 1u)
+        return QueryStatus::AmbiguousField;
     if (status == QueryStatus::Ok)
         value = values.front();
     return status;
@@ -441,6 +443,11 @@ bool RunCharacterizationSelfTest(std::string& failure)
         GetQueryValue("/?ab=wrong&b=right", "b", value) != QueryStatus::Ok ||
         value != "right") {
         failure = "web parser failed exact deterministic query";
+        return false;
+    }
+    if (GetQueryValue("/?b=one&b=two", "b", value) !=
+        QueryStatus::AmbiguousField) {
+        failure = "web parser accepted ambiguous single query";
         return false;
     }
 

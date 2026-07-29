@@ -62,7 +62,9 @@ class Mod17PeerKadCharacterizationTest(unittest.TestCase):
         key = VERIFIER.function_body(
             self.peer_state, "LiveTunnelPeerState::SourceScoreKey"
         )
-        self.assertIn("key.push_back(static_cast<char>(network_origin))", key)
+        self.assertIn(
+            "key.push_back(static_cast<char>(endpoint.network_origin))", key
+        )
         connect = self.body("CLiveTunnel::OnK6ExitSocketConnect")
         self.assertIn("m_peerState.RecordSourceResult(", connect)
         record = VERIFIER.function_body(
@@ -82,7 +84,7 @@ class Mod17PeerKadCharacterizationTest(unittest.TestCase):
             self.peer_state, "LiveTunnelPeerState::RankSources"
         )
         self.assertIn("std::stable_sort", rank)
-        self.assertIn("candidates[left].score > candidates[right].score", rank)
+        self.assertIn("score_at(left) > score_at(right)", rank)
 
     def test_origin_circuit_selection_is_fail_closed(self) -> None:
         body = self.body("CLiveTunnel::K6SelectOriginCircuit")

@@ -8,25 +8,24 @@
 namespace eSELive {
 
 std::string LiveTunnelPeerState::SourceScoreKey(
-    const kad6::K6Endpoint& endpoint, std::uint8_t network_origin)
+    const LiveSourceEndpointKey& endpoint)
 {
     std::string key;
     key.reserve(20);
-    key.push_back(static_cast<char>(network_origin));
-    key.push_back(static_cast<char>(endpoint.addr.family));
-    key.append(reinterpret_cast<const char*>(endpoint.addr.addr.data()),
-               endpoint.addr.addr.size());
+    key.push_back(static_cast<char>(endpoint.network_origin));
+    key.push_back(static_cast<char>(endpoint.address_family));
+    key.append(reinterpret_cast<const char*>(endpoint.address.data()),
+               endpoint.address.size());
     key.push_back(static_cast<char>(endpoint.tcp_port));
     key.push_back(static_cast<char>(endpoint.tcp_port >> 8));
     return key;
 }
 
 std::uint32_t LiveTunnelPeerState::ApplySourceScore(
-    std::uint32_t base_score, const kad6::K6Endpoint& endpoint,
-    std::uint8_t network_origin) const noexcept
+    std::uint32_t base_score,
+    const LiveSourceEndpointKey& endpoint) const noexcept
 {
-    const auto history = m_source_scores.find(
-        SourceScoreKey(endpoint, network_origin));
+    const auto history = m_source_scores.find(SourceScoreKey(endpoint));
     if (history == m_source_scores.end())
         return base_score;
 
@@ -39,11 +38,10 @@ std::uint32_t LiveTunnelPeerState::ApplySourceScore(
 }
 
 void LiveTunnelPeerState::RecordSourceResult(
-    const kad6::K6Endpoint& endpoint, std::uint8_t network_origin,
-    bool success, std::uint64_t now_seconds) noexcept
+    const LiveSourceEndpointKey& endpoint, bool success,
+    std::uint64_t now_seconds) noexcept
 {
-    SourceScore& score = m_source_scores[
-        SourceScoreKey(endpoint, network_origin)];
+    SourceScore& score = m_source_scores[SourceScoreKey(endpoint)];
     if (success) {
         if (score.successes != (std::numeric_limits<std::uint32_t>::max)())
             ++score.successes;
@@ -55,10 +53,9 @@ void LiveTunnelPeerState::RecordSourceResult(
 }
 
 void LiveTunnelPeerState::RecordSourceFailure(
-    const kad6::K6Endpoint& endpoint, std::uint8_t network_origin,
-    std::uint64_t now_seconds) noexcept
+    const LiveSourceEndpointKey& endpoint, std::uint64_t now_seconds) noexcept
 {
-    RecordSourceResult(endpoint, network_origin, false, now_seconds);
+    RecordSourceResult(endpoint, false, now_seconds);
 }
 
 void LiveTunnelPeerState::SweepSourceHistory(std::uint64_t now_seconds)
@@ -86,13 +83,14 @@ void LiveTunnelPeerState::ClearSourceHistory() noexcept
 }
 
 std::vector<std::size_t> LiveTunnelPeerState::RankSources(
-    const std::vector<LiveTunnelSourceCandidate>& candidates)
+    std::size_t count,
+    const std::function<std::uint32_t(std::size_t)>& score_at)
 {
-    std::vector<std::size_t> ranked(candidates.size());
+    std::vector<std::size_t> ranked(count);
     std::iota(ranked.begin(), ranked.end(), static_cast<std::size_t>(0));
     std::stable_sort(ranked.begin(), ranked.end(),
-        [&candidates](std::size_t left, std::size_t right) {
-            return candidates[left].score > candidates[right].score;
+        [&score_at](std::size_t left, std::size_t right) {
+            return score_at(left) > score_at(right);
         });
     return ranked;
 }
@@ -144,27 +142,26 @@ LivePeerDisconnectPlan LiveTunnelPeerState::PlanDisconnect(
 bool RunLiveTunnelPeerStateCharacterizationSelfTest()
 {
     LiveTunnelPeerState state;
-    kad6::K6Endpoint endpoint;
-    endpoint.addr.family = kad6::Kad6Address::Family::IPv4;
-    endpoint.addr.addr = {1, 2, 3, 4};
+    LiveSourceEndpointKey endpoint;
+    endpoint.address_family = 1;
+    endpoint.address = {1, 2, 3, 4};
     endpoint.tcp_port = 4662;
-    const std::uint8_t kad2 = 1;
-    const std::uint8_t kad6 = 2;
+    endpoint.network_origin = 1;
 
-    if (state.ApplySourceScore(100, endpoint, kad2) != 100)
+    if (state.ApplySourceScore(100, endpoint) != 100)
         return false;
-    state.RecordSourceResult(endpoint, kad2, true, 10);
-    state.RecordSourceFailure(endpoint, kad2, 11);
-    if (state.ApplySourceScore(100, endpoint, kad2) != 110 ||
-        state.ApplySourceScore(100, endpoint, kad6) != 100)
+    state.RecordSourceResult(endpoint, true, 10);
+    state.RecordSourceFailure(endpoint, 11);
+    if (state.ApplySourceScore(100, endpoint) != 110)
         return false;
+    LiveSourceEndpointKey other_network = endpoint;
+    other_network.network_origin = 2;
+    if (state.ApplySourceScore(100, other_network) != 100) return false;
 
-    std::vector<LiveTunnelSourceCandidate> sources(3);
-    sources[0].score = 10;
-    sources[1].score = 20;
-    sources[2].score = 20;
+    const std::vector<std::uint32_t> sources{10, 20, 20};
     const std::vector<std::size_t> ranked =
-        LiveTunnelPeerState::RankSources(sources);
+        LiveTunnelPeerState::RankSources(sources.size(),
+            [&sources](std::size_t index) { return sources[index]; });
     if (ranked.size() != 3 || ranked[0] != 1 || ranked[1] != 2 ||
         ranked[2] != 0)
         return false;

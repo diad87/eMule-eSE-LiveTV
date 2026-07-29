@@ -91,6 +91,8 @@ bool RunLiveTunnelKadBridgeCharacterizationSelfTest()
             return true;
         };
     ports.stop_search = [&stopped](std::uint32_t id) {
+        if (id == 2)
+            throw id;
         stopped.push_back(id);
     };
     ports.selected_networks = [] {
@@ -105,8 +107,9 @@ bool RunLiveTunnelKadBridgeCharacterizationSelfTest()
         !bridge.SearchStreams(L"live", &ids, true) ||
         ids != std::vector<std::uint32_t>{42})
         return false;
-    bridge.StopSearches(ids);
-    if (stopped != ids || bridge.SelectedNetworkMask(0x10, 0x20) != 0x30)
+    bridge.StopSearches({1, 2, 3});
+    if (stopped != std::vector<std::uint32_t>({1, 3}) ||
+        bridge.SelectedNetworkMask(0x10, 0x20) != 0x30)
         return false;
     if (LiveTunnelKadBridge::BuildSearchFlags(
             0x20, 0x10, 0x20, 0x01, 0x02) != 0x02)

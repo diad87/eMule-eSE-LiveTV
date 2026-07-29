@@ -67,6 +67,11 @@ namespace eSELive {
 using namespace LiveCircuitHandshakeWire;
 
 namespace {
+LiveSourceEndpointKey BuildLiveSourceEndpointKey(const kad6::K6Endpoint& endpoint, uint8 origin)
+{
+    return {origin, static_cast<uint8>(endpoint.addr.family), endpoint.addr.addr, endpoint.tcp_port};
+}
+
 LiveTunnelKadPorts BuildLiveTunnelKadPorts()
 {
     LiveTunnelKadPorts ports;
@@ -2197,18 +2202,12 @@ uint32 CLiveTunnel::K6SelectOriginCircuit(uint32 requiredCaps,
         if (!circuit)
             continue;
         LiveOriginCircuitCandidate candidate;
-        candidate.circuit_id = circuit->Id();
-        candidate.originator = circuit->m_role == CircuitRole::Originator;
-        candidate.quota_issuer = circuit->m_k6QuotaIssuerCircuit;
-        candidate.active = circuit->State() == CircuitState::Active;
-        candidate.hop_count = circuit->HopCount();
-        candidate.has_first_hop = circuit->m_firstHopClient != NULL;
-        candidate.multicell = circuit->m_multicell_ok;
-        candidate.authenticated = circuit->m_auth_ok;
-        candidate.exit_signed_caps = circuit->m_exit_signed_caps;
-        candidate.strict3 = circuit->m_strict3;
-        candidate.path_diverse = circuit->m_path_diverse;
-        candidate.shaped = circuit->m_shaped_ok;
+        candidate.circuit_id = circuit->Id(); candidate.hop_count = circuit->HopCount();
+        candidate.originator = circuit->m_role == CircuitRole::Originator; candidate.quota_issuer = circuit->m_k6QuotaIssuerCircuit;
+        candidate.active = circuit->State() == CircuitState::Active; candidate.has_first_hop = circuit->m_firstHopClient != NULL;
+        candidate.multicell = circuit->m_multicell_ok; candidate.authenticated = circuit->m_auth_ok;
+        candidate.exit_signed_caps = circuit->m_exit_signed_caps; candidate.shaped = circuit->m_shaped_ok;
+        candidate.strict3 = circuit->m_strict3; candidate.path_diverse = circuit->m_path_diverse;
         candidates.push_back(candidate);
     }
     return LiveTunnelPeerState::SelectOriginCircuit(
@@ -4554,7 +4553,7 @@ bool CLiveTunnel::OnKad6GatewaySourceResult(uint32_t circuitId, uint32_t request
         (sourceType != 1 && sourceType != 4))
         return false; // LowID/callback authority is intentionally not virtualized.
 
-    LiveTunnelSourceCandidate candidate;
+    TunnelSearchJob::SourceCandidate candidate;
     memcpy(candidate.userHash.data(), userHash, candidate.userHash.size());
     candidate.sourceType = sourceType;
     candidate.cryptOptions = cryptOptions;
@@ -4600,8 +4599,8 @@ bool CLiveTunnel::OnKad6GatewaySourceResult(uint32_t circuitId, uint32_t request
             return false;
         }
     }
-    candidate.score = m_peerState.ApplySourceScore(
-        candidate.score, candidate.endpoint, candidate.networkOrigin);
+    candidate.score = m_peerState.ApplySourceScore(candidate.score,
+        BuildLiveSourceEndpointKey(candidate.endpoint, candidate.networkOrigin));
     job->second.sourceCandidates.push_back(std::move(candidate));
     const size_t count = job->second.sourceCandidates.size();
     const double elapsed = static_cast<double>(GetTickCount() - job->second.started);
@@ -4658,7 +4657,7 @@ bool CLiveTunnel::OnKad6NativeSourceRecord(uint32_t circuitId,
                 static_cast<kad6::Byte>(kad6::K6TicketService::Ed2kTcp),
                 exit.endpoint))
             continue;
-        LiveTunnelSourceCandidate candidate;
+        TunnelSearchJob::SourceCandidate candidate;
         candidate.userHash = record.source_pseudonym;
         candidate.endpoint = exit.endpoint;
         candidate.sourceType = exit.endpoint.addr.family ==
@@ -4671,8 +4670,8 @@ bool CLiveTunnel::OnKad6NativeSourceRecord(uint32_t circuitId,
             record.expires_at - now, 24ull * 60 * 60);
         candidate.score = 200u + static_cast<uint32_t>(remaining / 3600u) +
             (exit.endpoint.addr.family == kad6::Kad6Address::Family::IPv6 ? 10u : 0u);
-        candidate.score = m_peerState.ApplySourceScore(
-            candidate.score, candidate.endpoint, candidate.networkOrigin);
+        candidate.score = m_peerState.ApplySourceScore(candidate.score,
+            BuildLiveSourceEndpointKey(candidate.endpoint, candidate.networkOrigin));
 
         bool duplicate = false;
         for (auto& old : job->second.sourceCandidates) {
@@ -5901,8 +5900,8 @@ void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
     if (!socket) {
         CSingleLock pl(&m_pendingLock, TRUE); m_k6ExitStreams.erase(streamId);
         RemoveK6FlowControlLocked(runtime.circ_id, streamId);
-        m_peerState.RecordSourceFailure(
-            runtime.ticket.target_endpoint, runtime.network_origin,
+        m_peerState.RecordSourceFailure(BuildLiveSourceEndpointKey(
+            runtime.ticket.target_endpoint, runtime.network_origin),
             static_cast<uint64>(time(NULL)));
         ReleaseK6FairStreamLocked(streamId); pl.Unlock();
         m_k6Metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
@@ -5972,8 +5971,8 @@ void CLiveTunnel::OnK6ExitSocketConnect(uint64 streamId, CKad6ExitSocket* socket
     }
     {
         CSingleLock pl(&m_pendingLock, TRUE);
-        m_peerState.RecordSourceResult(
-            runtime.ticket.target_endpoint, runtime.network_origin,
+        m_peerState.RecordSourceResult(BuildLiveSourceEndpointKey(
+            runtime.ticket.target_endpoint, runtime.network_origin),
             result.status == kad6::K6DialStatus::Ok,
             static_cast<uint64>(time(NULL)));
     }
@@ -7216,8 +7215,8 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
         if (expired.reason == 4) {
             {
                 CSingleLock pl(&m_pendingLock, TRUE);
-                m_peerState.RecordSourceFailure(
-                    runtime.ticket.target_endpoint, runtime.network_origin,
+                m_peerState.RecordSourceFailure(BuildLiveSourceEndpointKey(
+                    runtime.ticket.target_endpoint, runtime.network_origin),
                     nowSeconds);
             }
             m_k6Metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
@@ -7659,11 +7658,12 @@ uint16_t CLiveTunnel::SendK6SearchResults(const TunnelSearchJob& job)
     try {
         if (job.searchKind == kad6::kK6SearchKindSourceHash) {
             const std::vector<size_t> ranked =
-                LiveTunnelPeerState::RankSources(job.sourceCandidates);
+                LiveTunnelPeerState::RankSources(job.sourceCandidates.size(),
+                    [&job](size_t index) { return job.sourceCandidates[index].score; });
             const uint16_t limit = (uint16_t)(std::min<size_t>)(
                 ranked.size(), (size_t)job.maxResults);
             for (uint16_t i = 0; i < limit; ++i) {
-                const LiveTunnelSourceCandidate& source =
+                const TunnelSearchJob::SourceCandidate& source =
                     job.sourceCandidates[ranked[i]];
                 kad6::K6SearchResult result;
                 result.result_id = source.userHash;

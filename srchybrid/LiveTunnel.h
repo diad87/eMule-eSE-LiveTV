@@ -821,7 +821,18 @@ private:
         uint16_t              maxResults = (uint16_t)TUN_SEARCH_MAX_RESULTS;
         uint8_t               searchKind = kad6::kK6SearchKindLive;
         kad6::Hash16          targetHash{};
-        std::vector<LiveTunnelSourceCandidate> sourceCandidates;
+        struct SourceCandidate {
+            kad6::Hash16 userHash{};
+            kad6::K6Endpoint endpoint;
+            uint8_t sourceType = 0;
+            uint8_t cryptOptions = 0;
+            uint16_t reachCaps = 0;
+            uint8_t networkOrigin = kad6::kK6NetOriginKad2;
+            kad6::K6Provenance provenance = kad6::K6Provenance::KadResult;
+            kad6::Hash32 provenanceDigest{};
+            uint32_t score = 0;
+        };
+        std::vector<SourceCandidate> sourceCandidates;
         bool                  firstSourceMetric = false;
         bool                  fiveSourceMetric = false;
         DWORD                 started = 0;

@@ -200,6 +200,16 @@ class Mod15RelayExitTest(unittest.TestCase):
             dial.index("m_k6ShapeTimer = ::SetTimer"),
             pending_before_allocation,
         )
+        fair_tick = self.body(
+            self.coordinator,
+            "CLiveTunnel::ProcessK6FairTick",
+        )
+        class5_tick = self.body(
+            self.coordinator,
+            "CLiveTunnel::ProcessClass5Tick",
+        )
+        self.assertIn("!m_k6FairAllocationByStream.empty()", fair_tick)
+        self.assertIn("if (!fairActive) StopK6ShapeTimerLocked()", class5_tick)
 
     def test_shutdown_and_circuit_teardown_release_owned_operations(self) -> None:
         stop = self.body(self.coordinator, "CLiveTunnel::Stop")

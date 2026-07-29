@@ -2503,7 +2503,9 @@ bool CLiveTunnel::ProcessK6FairTick()
         if (socket) socket->Disconnect(_T("Kad6 fair queue send failed"));
     }
     CSingleLock pl(&m_pendingLock, TRUE);
-    return m_k6FairPayloadBytes != 0 || m_k6FairScheduler.queued_bytes() != 0;
+    return !m_k6FairAllocationByStream.empty() ||
+        m_k6FairPayloadBytes != 0 ||
+        m_k6FairScheduler.queued_bytes() != 0;
 }
 
 bool CLiveTunnel::RegisterK6FlowControlLocked(uint32 circId, uint64 streamId)

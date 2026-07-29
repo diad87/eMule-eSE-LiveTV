@@ -5,7 +5,7 @@
     {
       "path": "srchybrid/LiveTunnel.cpp",
       "baseline_sha256": "0d899136a867bd1a0571b62b06343d0ca3a1f075162656eb0f4bddcb6dc85591",
-      "overlay_sha256": "7e2c3947c1c6403d23d0f04c1b3e2cd08af3d668bbaed266cecce93f5da3439c",
+      "overlay_sha256": "db6ca5f1b55ef81d0f8b7a851c12e4ebbf90a565d8763d63ede75078ba8b95d1",
       "task": "MOD-0.2 + MOD-1.1 + MOD-1.2 + MOD-1.3 + MOD-1.4 + MOD-1.5",
       "reason": "MOD-0.2 headless production characterization hook; MOD-1.1 mechanically extracts framing; MOD-1.2 extracts pending-request lifetime; MOD-1.3 extracts circuit collection, identity lookup, round-robin cursor and fail-closed state transitions; MOD-1.4 extracts the bounded handshake facade and opaque platform-port adapters; MOD-1.5 extracts validated relay dispatch and exit-operation ownership behind narrow ports."
     },

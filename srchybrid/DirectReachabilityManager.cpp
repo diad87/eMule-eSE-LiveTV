@@ -454,6 +454,11 @@ bool CDirectReachabilityManager::ObserveFiniteMappingExpiry()
 	return true;
 }
 
+bool CDirectReachabilityManager::ObserveMappingLoss()
+{
+	return DisableMappedPlanes(natmap::ReasonCode::LeaseExpired);
+}
+
 bool CDirectReachabilityManager::HasVerifiedEd2kReachability() const
 {
 	AssertMainThread();

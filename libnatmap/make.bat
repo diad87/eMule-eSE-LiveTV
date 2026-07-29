@@ -23,6 +23,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_network_change.e
 if errorlevel 1 exit /b 1
 build\test_network_change.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapping_recovery.exe tests\test_mapping_recovery.cpp src\natmap_policy.cpp
+if errorlevel 1 exit /b 1
+build\test_mapping_recovery.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_state_machine.exe tests\test_state_machine.cpp src\natmap_state.cpp
 if errorlevel 1 exit /b 1
 build\test_state_machine.exe

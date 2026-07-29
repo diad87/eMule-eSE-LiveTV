@@ -86,6 +86,43 @@ private:
     bool active_ = false;
 };
 
+// Bounds complete mapper-recovery rounds after a mapping or route is lost.
+// One round may try each configured mapper implementation, but only the start
+// of the round consumes an attempt. A newer topology generation is the sole
+// event allowed to reset an active failure budget.
+class MappingRecoverySchedule {
+public:
+    static constexpr std::uint32_t kMaximumAttempts = 6;
+    static constexpr std::uint64_t kFirstRetryDelayMs = 30000;
+    static constexpr std::uint64_t kMaximumRetryDelayMs = 300000;
+
+    bool ResetForNetworkChange(
+        std::uint64_t generation, std::uint64_t now_ms) noexcept;
+    bool ShouldAttempt(
+        std::uint64_t generation, std::uint64_t now_ms) const noexcept;
+    bool BeginAttempt(
+        std::uint64_t generation, std::uint64_t now_ms) noexcept;
+    bool RecordSuccess(std::uint64_t generation) noexcept;
+    void Cancel() noexcept;
+
+    bool IsActive() const noexcept { return active_; }
+    bool IsExhausted() const noexcept {
+        return active_ && attempt_count_ >= kMaximumAttempts;
+    }
+    std::uint64_t generation() const noexcept { return generation_; }
+    std::uint64_t next_attempt_ms() const noexcept {
+        return next_attempt_ms_;
+    }
+    std::uint32_t attempt_count() const noexcept { return attempt_count_; }
+
+private:
+    std::uint64_t generation_ = 0;
+    std::uint64_t next_attempt_ms_ = 0;
+    std::uint64_t last_observed_ms_ = 0;
+    std::uint32_t attempt_count_ = 0;
+    bool active_ = false;
+};
+
 // Owns lease timing and identity rules, but performs no network I/O.
 class LeaseController {
 public:

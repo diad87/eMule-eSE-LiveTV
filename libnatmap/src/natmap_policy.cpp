@@ -177,6 +177,59 @@ void PermanentMappingProbeSchedule::Clear() noexcept {
     active_ = false;
 }
 
+bool MappingRecoverySchedule::ResetForNetworkChange(
+    std::uint64_t generation, std::uint64_t now_ms) noexcept {
+    if (generation == 0 ||
+        (active_ && generation <= generation_) ||
+        (active_ && now_ms < last_observed_ms_))
+        return false;
+    generation_ = generation;
+    next_attempt_ms_ = now_ms;
+    last_observed_ms_ = now_ms;
+    attempt_count_ = 0;
+    active_ = true;
+    return true;
+}
+
+bool MappingRecoverySchedule::ShouldAttempt(
+    std::uint64_t generation, std::uint64_t now_ms) const noexcept {
+    return active_ && generation == generation_ &&
+           attempt_count_ < kMaximumAttempts &&
+           now_ms >= last_observed_ms_ &&
+           now_ms >= next_attempt_ms_;
+}
+
+bool MappingRecoverySchedule::BeginAttempt(
+    std::uint64_t generation, std::uint64_t now_ms) noexcept {
+    if (!ShouldAttempt(generation, now_ms))
+        return false;
+    ++attempt_count_;
+    const std::uint32_t shift =
+        attempt_count_ > 4 ? 4 : attempt_count_ - 1;
+    std::uint64_t delay_ms = kFirstRetryDelayMs << shift;
+    if (delay_ms > kMaximumRetryDelayMs)
+        delay_ms = kMaximumRetryDelayMs;
+    next_attempt_ms_ = SaturatingAdd(now_ms, delay_ms);
+    last_observed_ms_ = now_ms;
+    return true;
+}
+
+bool MappingRecoverySchedule::RecordSuccess(
+    std::uint64_t generation) noexcept {
+    if (!active_ || generation == 0 || generation != generation_)
+        return false;
+    Cancel();
+    return true;
+}
+
+void MappingRecoverySchedule::Cancel() noexcept {
+    generation_ = 0;
+    next_attempt_ms_ = 0;
+    last_observed_ms_ = 0;
+    attempt_count_ = 0;
+    active_ = false;
+}
+
 bool LeaseController::SameIdentity(const PortLease& left,
                                    const PortLease& right) noexcept {
     return left.mapper == right.mapper && left.transport == right.transport &&

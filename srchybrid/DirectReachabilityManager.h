@@ -45,6 +45,10 @@ public:
 	// scheduler. The scheduler is authoritative because it is armed before
 	// this projection receives the successful mapper result.
 	bool ObserveFiniteMappingExpiry();
+	// Consumes positive evidence that a permanent mapping disappeared.
+	// Unlike finite expiry, this is intentionally independent of lease
+	// lifetime because health probes are authoritative for permanent leases.
+	bool ObserveMappingLoss();
 
 	const natmap::ReachabilitySnapshot& GetSnapshot() const;
 

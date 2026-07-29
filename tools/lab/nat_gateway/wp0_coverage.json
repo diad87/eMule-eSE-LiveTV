@@ -318,6 +318,27 @@
       ]
     },
     {
+      "id": "MAPPING_RECOVERY",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_mapping_recovery.cpp",
+          "contains": "TestNetworkChangeResetIsControlled"
+        },
+        {
+          "file": "tests/test_v92_m05_backoff.py",
+          "contains": "test_pending_recovery_obeys_due_time_and_maximum"
+        },
+        {
+          "file": "srchybrid/EmuleDlg.cpp",
+          "contains": "mapping recovery exhausted generation="
+        },
+        {
+          "file": "libnatmap/include/natmap/natmap_policy.h",
+          "contains": "class MappingRecoverySchedule"
+        }
+      ]
+    },
+    {
       "id": "HYPERV_PURE_PLAN",
       "evidence": [
         {

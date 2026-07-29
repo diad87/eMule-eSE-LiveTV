@@ -130,6 +130,7 @@
 #include "PartHashThread.h"
 #include "ImportParts.h"
 
+#include <chrono>
 #include <limits>
 
 #ifdef _DEBUG
@@ -150,6 +151,13 @@ static const UINT_PTR UPNP_LOCAL_FAILURE_TOKEN_MASK = 0x3fffffffu;
 static UINT AFX_CDECL HeadlessActionDelayThread(LPVOID param);
 static UINT AFX_CDECL SelfTestExitThread(LPVOID param);
 static void ScheduleSelfTestExit(int exitCode);
+
+static uint64 UPnPMonotonicMilliseconds()
+{
+	return static_cast<uint64>(std::chrono::duration_cast<
+		std::chrono::milliseconds>(std::chrono::steady_clock::now()
+			.time_since_epoch()).count());
+}
 
 static void ConfigureEseNetLabConsentAtStartup()
 {
@@ -527,6 +535,7 @@ CemuleDlg::CemuleDlg(CWnd *pParent /*=NULL*/)
 	, m_bUPnPRouteRecoveryPending()
 	, m_bUPnPResumeMappingRequired()
 	, m_upnpNetworkSignature()
+	, m_upnpRecoverySchedule()
 	, m_mappingResultMailbox(
 		std::make_shared<natmap::MappingResultMailbox>())
 	, notifierenabled()
@@ -4856,9 +4865,24 @@ bool CemuleDlg::HandleUPnPNetworkChange(
 			"network change cannot advance exactly one generation; rediscovery remains fail-closed");
 		return true;
 	}
+	const uint64 recoveryNow = UPnPMonotonicMilliseconds();
+	if (!m_upnpRecoverySchedule.ResetForNetworkChange(
+			currentGeneration, recoveryNow)) {
+		LIVE_LOG("NATMAP",
+			"network change recovery budget rejected generation=%llu",
+			(unsigned long long)currentGeneration);
+		return true;
+	}
 	if (!observedSignature.IsValid() || impl == NULL) {
 		LIVE_LOG("NATMAP",
 			"network route or mapper unavailable; recovery waits with old identity withdrawn");
+		return true;
+	}
+	if (!m_upnpRecoverySchedule.BeginAttempt(
+			currentGeneration, recoveryNow)) {
+		LIVE_LOG("NATMAP",
+			"network change recovery attempt rejected generation=%llu",
+			(unsigned long long)currentGeneration);
 		return true;
 	}
 
@@ -4894,13 +4918,47 @@ bool CemuleDlg::CheckUPnPLease()
 			return true;
 		if (theApp.directreachability == NULL)
 			return true;
+		const uint64 generation =
+			theApp.directreachability->GetTopologyGeneration();
+		const uint64 now = UPnPMonotonicMilliseconds();
+		if (!m_upnpRecoverySchedule.IsActive()) {
+			if (!m_upnpRecoverySchedule.ResetForNetworkChange(
+					generation, now))
+				return true;
+		} else if (m_upnpRecoverySchedule.generation() != generation) {
+			if (!m_upnpRecoverySchedule.ResetForNetworkChange(
+					generation, now))
+				return true;
+		}
+		if (m_upnpRecoverySchedule.IsExhausted()) {
+			LIVE_LOG("NATMAP",
+				"mapping recovery exhausted generation=%llu attempts=%u",
+				(unsigned long long)generation,
+				m_upnpRecoverySchedule.attempt_count());
+			return true;
+		}
+		if (m_mappingResultGate.has_pending()
+			|| m_hUPnPTimeOutTimer != 0
+			|| !m_upnpRecoverySchedule.ShouldAttempt(
+				generation, now))
+			return true;
+		if (!m_upnpRecoverySchedule.BeginAttempt(generation, now))
+			return true;
 		LIVE_LOG("NATMAP",
-			"network route restored; restarting pending mapper recovery");
+			"network route restored; mapper recovery round=%u generation=%llu",
+			m_upnpRecoverySchedule.attempt_count(),
+			(unsigned long long)generation);
 		StartUPnP(true, 0, 0, m_bUPnPExplicitRequest);
 		return true;
 	}
 
 	if (impl->IsLeaseExpired()) {
+		const uint64 previousGeneration =
+			theApp.directreachability != NULL
+				? theApp.directreachability->GetTopologyGeneration() : 0;
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability != NULL
+				&& theApp.directreachability->IsEnabled();
 		impl->SetMessageOnResult(NULL, 0);
 		impl->StopAsyncFind();
 		m_mappingResultGate.CancelPending();
@@ -4911,15 +4969,42 @@ bool CemuleDlg::CheckUPnPLease()
 		m_bUPnPTimeoutForRefresh = false;
 		const bool withdrawn = theApp.directreachability != NULL
 			&& theApp.directreachability->ObserveFiniteMappingExpiry();
+		const uint64 currentGeneration =
+			theApp.directreachability != NULL
+				? theApp.directreachability->GetTopologyGeneration()
+				: previousGeneration;
 		if (!withdrawn)
 			LIVE_LOG("NATMAP",
 				"finite lease deadline observed without an active direct endpoint");
-		if (withdrawn
-			&& theApp.serverconnect->IsConnected()
-			&& !theApp.serverconnect->IsConnectedViaRelay()) {
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			currentGeneration,
+			withdrawn,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability != NULL
+				&& theApp.directreachability->IsEnabled()};
+		if (natmap::ShouldRestartAdvertisementLogin(
+				advertisement,
+				theApp.serverconnect->IsConnected(),
+				theApp.serverconnect->IsConnecting(),
+				theApp.serverconnect->IsConnectedViaRelay())) {
 			LogWarning(_T("Finite mapping expired; reconnecting without the retired endpoint"));
-			theApp.serverconnect->Disconnect();
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
 			theApp.serverconnect->ConnectToAnyServer();
+		}
+		const uint64 recoveryNow = UPnPMonotonicMilliseconds();
+		if (!m_upnpRecoverySchedule.ResetForNetworkChange(
+				currentGeneration, recoveryNow)
+			|| !m_upnpRecoverySchedule.BeginAttempt(
+				currentGeneration, recoveryNow)) {
+			m_bUPnPRouteRecoveryPending = true;
+			LIVE_LOG("NATMAP",
+				"finite lease recovery could not arm generation=%llu",
+				(unsigned long long)currentGeneration);
+			return true;
 		}
 		LIVE_LOG("NATMAP", "finite lease expired; restarting mapper discovery (impl=%d)",
 			impl->GetImplementationID());
@@ -5037,12 +5122,14 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 				theApp.directreachability != NULL
 					&& theApp.directreachability
 						->ObserveNetworkRouteChange();
-			const natmap::AdvertisementObservation advertisement{
-				previousGeneration,
+			const uint64 recoveryGeneration =
 				theApp.directreachability != NULL
 					? theApp.directreachability
 						->GetTopologyGeneration()
-					: previousGeneration,
+					: previousGeneration;
+			const natmap::AdvertisementObservation advertisement{
+				previousGeneration,
+				recoveryGeneration,
 				invalidated,
 				wasDirectReachabilityEnabled,
 				theApp.directreachability != NULL
@@ -5061,13 +5148,20 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 			}
 			m_upnpNetworkSignature = natmap::NetworkSignature{};
 			m_bUPnPRouteRecoveryPending = true;
+			const uint64 recoveryNow = UPnPMonotonicMilliseconds();
+			const bool recoveryArmed = invalidated
+				&& m_upnpRecoverySchedule.ResetForNetworkChange(
+					recoveryGeneration, recoveryNow);
 			LIVE_LOG("NATMAP",
 				"discarded mapper result from previous route request=%llu generation=%llu",
 				(unsigned long long)mapperResultData.request_id,
 				(unsigned long long)mapperResultData.topology_generation);
 			if (hasCurrentRoute && theApp.IsRunning()
 				&& (thePrefs.IsUPnPEnabled()
-					|| m_bUPnPExplicitRequest))
+					|| m_bUPnPExplicitRequest)
+				&& recoveryArmed
+				&& m_upnpRecoverySchedule.BeginAttempt(
+					recoveryGeneration, recoveryNow))
 				StartUPnP(
 					true, 0, 0, m_bUPnPExplicitRequest);
 			return 0;
@@ -5136,6 +5230,51 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		impl->StopAsyncFind();
 	}
 
+	// A failed refresh of a finite lease is not proof that the mapping has
+	// vanished: its deadline remains authoritative. A failed health probe of
+	// a permanent mapping is positive loss evidence, so withdraw it before
+	// any retry and bind the bounded recovery budget to the new generation.
+	if (bWasRefresh
+		&& resultCode != CUPnPImpl::UPNP_OK
+		&& impl->GetMappingLeaseLifetime() == 0
+		&& impl->SupportsMappingHealthCheck()
+		&& theApp.directreachability != NULL) {
+		const uint64 previousGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability->IsEnabled();
+		const bool invalidated =
+			theApp.directreachability->ObserveMappingLoss();
+		const uint64 recoveryGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			recoveryGeneration,
+			invalidated,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability->IsEnabled()};
+		if (natmap::ShouldRestartAdvertisementLogin(
+				advertisement,
+				theApp.serverconnect->IsConnected(),
+				theApp.serverconnect->IsConnecting(),
+				theApp.serverconnect->IsConnectedViaRelay())) {
+			LogWarning(_T("Permanent mapping health probe failed; reconnecting without the withdrawn endpoint"));
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
+			theApp.serverconnect->ConnectToAnyServer();
+		}
+		if (recoveryGeneration > previousGeneration
+			&& m_upnpRecoverySchedule.ResetForNetworkChange(
+				recoveryGeneration, UPnPMonotonicMilliseconds())) {
+			m_bUPnPRouteRecoveryPending = true;
+			LIVE_LOG("NATMAP",
+				"permanent mapping withdrawn after failed health probe; recovery generation=%llu",
+				(unsigned long long)recoveryGeneration);
+		}
+	}
+
 //>>> WiZaRd - handle "UPNP_TIMEOUT" events!
 	if (!bWasRefresh && resultCode != CUPnPImpl::UPNP_OK) {
 		//just to be sure, stop any running services and also delete the forwarded ports (if necessary)
@@ -5146,13 +5285,30 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 						->GetTopologyGeneration() : 0;
 			impl->DeletePortsForGeneration(generation);
 		}
-		// UPnP failed, check if we can retry it with another implementation
+		// One recovery attempt is a complete mapper round. Trying the next
+		// implementation stays inside that round; only exhaustion schedules
+		// another round and consumes exponential backoff.
 		if (theApp.m_pUPnPFinder->SwitchImplentation()) {
 			StartUPnP(false, 0, 0, m_bUPnPExplicitRequest);
 			return 0;
 		}
 
 		DebugLog(_T("No more available UPnP implementations left"));
+		if (m_upnpRecoverySchedule.IsActive()) {
+			m_bUPnPRouteRecoveryPending = true;
+			if (m_upnpRecoverySchedule.IsExhausted())
+				LIVE_LOG("NATMAP",
+					"mapping recovery exhausted generation=%llu attempts=%u",
+					(unsigned long long)
+						m_upnpRecoverySchedule.generation(),
+					m_upnpRecoverySchedule.attempt_count());
+			else
+				LIVE_LOG("NATMAP",
+					"mapping recovery round failed; retry=%u due_ms=%llu",
+					m_upnpRecoverySchedule.attempt_count() + 1,
+					(unsigned long long)
+						m_upnpRecoverySchedule.next_attempt_ms());
+		}
 		// eSE Fase 2: Señalizar error crítico UPnP para la API JSON
 		thePrefs.SetUPnPCriticalError(true);
 	}
@@ -5179,6 +5335,15 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 			theApp.directreachability->ObserveMapperResult(
 				natmap::MapperResult(mapperResultData),
 				mapperRouteBinding);
+		if (observed
+			&& m_upnpRecoverySchedule.RecordSuccess(
+				mapperResultData.topology_generation)) {
+			m_bUPnPRouteRecoveryPending = false;
+			LIVE_LOG("NATMAP",
+				"mapping recovery succeeded generation=%llu; backoff reset",
+				(unsigned long long)
+					mapperResultData.topology_generation);
+		}
 		const natmap::AdvertisementObservation advertisement{
 			previousGeneration,
 			theApp.directreachability->GetTopologyGeneration(),
@@ -5202,15 +5367,36 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		&& bMapperResult
 		&& mapperResultData.mapper_epoch_reset
 		&& theApp.directreachability != NULL) {
+		const uint64 previousGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability->IsEnabled();
 		const bool invalidated =
 			theApp.directreachability->ObserveMapperEpochReset();
-		if (invalidated
-			&& theApp.serverconnect->IsConnected()
-			&& !theApp.serverconnect->IsConnectedViaRelay()) {
+		const uint64 currentGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			currentGeneration,
+			invalidated,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability->IsEnabled()};
+		if (natmap::ShouldRestartAdvertisementLogin(
+				advertisement,
+				theApp.serverconnect->IsConnected(),
+				theApp.serverconnect->IsConnecting(),
+				theApp.serverconnect->IsConnectedViaRelay())) {
 			LogWarning(_T("NAT-PMP mapper reset invalidated direct reachability; reconnecting for fresh evidence"));
-			theApp.serverconnect->Disconnect();
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
 			theApp.serverconnect->ConnectToAnyServer();
 		}
+		if (currentGeneration > previousGeneration
+			&& m_upnpRecoverySchedule.ResetForNetworkChange(
+				currentGeneration, UPnPMonotonicMilliseconds()))
+			m_bUPnPRouteRecoveryPending = true;
 	}
 	if (!bWasRefresh)
 		if (resultCode == CUPnPImpl::UPNP_OK) {
@@ -5439,6 +5625,7 @@ void CemuleDlg::StopUPnP()
 	m_bUPnPExplicitRequest = false;
 	m_bUPnPRouteRecoveryPending = false;
 	m_bUPnPResumeMappingRequired = false;
+	m_upnpRecoverySchedule.Cancel();
 	m_upnpNetworkSignature = natmap::NetworkSignature{};
 }
 

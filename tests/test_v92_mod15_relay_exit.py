@@ -190,7 +190,7 @@ class Mod15RelayExitTest(unittest.TestCase):
         )
         self.assertNotIn("m_lock", fair_queue)
         self.assertNotIn("SetTimer", fair_queue)
-        allocation = dial.index("m_k6FairAllocationByStream[streamId]")
+        allocation = dial.index("m_scheduler.RegisterFairStream(")
         pending_before_allocation = dial.rfind(
             "CSingleLock pl(&m_pendingLock, TRUE)",
             0,
@@ -208,8 +208,8 @@ class Mod15RelayExitTest(unittest.TestCase):
             self.coordinator,
             "CLiveTunnel::ProcessClass5Tick",
         )
-        self.assertIn("!m_k6FairAllocationByStream.empty()", fair_tick)
-        self.assertGreaterEqual(class5_tick.count("ShouldStopClass5Timer"), 2)
+        self.assertIn("m_scheduler.HasFairWork()", fair_tick)
+        self.assertEqual(class5_tick.count("ShouldStopClass5Timer"), 1)
 
     def test_shutdown_and_circuit_teardown_release_owned_operations(self) -> None:
         stop = self.body(self.coordinator, "CLiveTunnel::Stop")

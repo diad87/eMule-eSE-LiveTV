@@ -19,16 +19,16 @@
     {
       "path": "srchybrid/WebServer.cpp",
       "baseline_sha256": "afcf5a5b8091995a473548fc05086fe1b2ba0e8127378cd959424fa8f6770028",
-      "overlay_sha256": "4e575afe632b0c8fe34885113a6b9d5335a6bea6280f3d8710a7d730974d32d1",
-      "task": "MOD-0.2 + MOD-2.1 + MOD-2.2",
-      "reason": "Headless production characterization hook; MOD-2.1 delegates query, cookie and bounded request parsing to WebRequestParser; MOD-2.2 delegates sessions, one-time challenges, fail-closed permissions, Host/Origin/CSRF authorization, login failures and action rate limits to WebAuthPolicy."
+      "overlay_sha256": "710aa899858238acf2583c983126adc8a69c85dc956ce6412da9ba245ef9019e",
+      "task": "MOD-0.2 + MOD-2.1 + MOD-2.2 + MOD-2.3",
+      "reason": "Headless production characterization hook; MOD-2.1 delegates query, cookie and bounded request parsing to WebRequestParser; MOD-2.2 delegates sessions, one-time challenges, fail-closed permissions, Host/Origin/CSRF authorization, login failures and action rate limits to WebAuthPolicy; MOD-2.3 consumes the exact WebRouteId selected by WebRouteTable and no longer reclassifies paths with permissive prefixes."
     },
     {
       "path": "srchybrid/WebServer.h",
       "baseline_sha256": "6457840ed976be885d1d3ef2e13ea01b03f59c960728d9cc14a5b217f3421140",
-      "overlay_sha256": "cc3e9075da6e9ce126965114e8fce9f06cb0d03272f181deaf02859182a9080f",
-      "task": "MOD-0.2 + MOD-2.2",
-      "reason": "Declaration of the headless production characterization hook and composition ownership of WebAuthPolicy with request Host, Origin, Fetch Metadata and CSRF metadata."
+      "overlay_sha256": "8def83a3e70b0c2e24099d5431720940da315941232c024eb1b115a335bcefcc",
+      "task": "MOD-0.2 + MOD-2.2 + MOD-2.3",
+      "reason": "Declaration of the headless production characterization hook, composition ownership of WebAuthPolicy with request Host, Origin, Fetch Metadata and CSRF metadata, and the resolved WebRouteId passed across the socket/coordinator boundary."
     }
   ]
 }

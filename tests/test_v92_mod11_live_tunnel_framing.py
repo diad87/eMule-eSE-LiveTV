@@ -436,6 +436,8 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/WebRequestParser.h",
             "srchybrid/WebAuthPolicy.cpp",
             "srchybrid/WebAuthPolicy.h",
+            "srchybrid/WebRouteTable.cpp",
+            "srchybrid/WebRouteTable.h",
         }
         self.assertTrue(expected_paths.issubset(set(MOD02.CRITICAL_SOURCE_PATHS)))
         self.assertTrue(expected_paths.issubset(set(

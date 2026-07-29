@@ -39,6 +39,7 @@ $criticalSourceRelativePaths = @(
     'srchybrid/WebSocket.cpp', 'srchybrid/WebSocket.h',
     'srchybrid/WebRequestParser.cpp', 'srchybrid/WebRequestParser.h',
     'srchybrid/WebAuthPolicy.cpp', 'srchybrid/WebAuthPolicy.h',
+    'srchybrid/WebRouteTable.cpp', 'srchybrid/WebRouteTable.h',
     'srchybrid/eMule.tmpl',
     'srchybrid/LiveStreamManager.cpp', 'srchybrid/LiveStreamManager.h'
 )

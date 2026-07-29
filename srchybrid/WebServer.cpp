@@ -13,6 +13,7 @@
 #include "StringConversion.h"
 #include "OtherFunctions.h"
 #include "WebRequestParser.h"
+#include "WebRouteTable.h"
 #include "WebServer.h"
 #include "ClientCredits.h"
 #include "ClientList.h"
@@ -479,6 +480,12 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 	if (!ese::web::RunWebAuthPolicySelfTest(authFailure)) {
 		outFailure = OptUtf8ToStr(
 			authFailure.data(), static_cast<int>(authFailure.size()));
+		return false;
+	}
+	std::string routeFailure;
+	if (!ese::web::RunWebRouteTableSelfTest(routeFailure)) {
+		outFailure = OptUtf8ToStr(
+			routeFailure.data(), static_cast<int>(routeFailure.size()));
 		return false;
 	}
 	if (_SpecialChars(_T("<&\"'\n"), true) != _T("&lt;&amp;&quot;&#8217;\\n")) {
@@ -4537,38 +4544,6 @@ static CStringA EseHexKey16A(const uchar* key)
 	return hashHex;
 }
 
-static bool EseIsHexA(const CStringA& value)
-{
-	if (value.GetLength() != 32)
-		return false;
-	for (int i = 0; i < value.GetLength(); i++) {
-		const char c = value[i];
-		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
-			return false;
-	}
-	return true;
-}
-
-static bool EseIsSafeHlsResourceA(const CStringA& resource)
-{
-	if (resource.IsEmpty() || resource.Find('/') >= 0 || resource.Find('\\') >= 0 || resource.Find("..") >= 0)
-		return false;
-
-	for (int i = 0; i < resource.GetLength(); i++) {
-		const char c = resource[i];
-		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '-' || c == '.'))
-			return false;
-	}
-
-	if (resource == "stream.m3u8")
-		return true;
-	if (resource.Left(7) == "stream_" && resource.Right(5) == ".m3u8")
-		return true;
-	if (resource.Left(4) == "seg_" && resource.Right(3) == ".ts")
-		return true;
-	return false;
-}
-
 static int EseHexNibbleA(char c)
 {
 	if (c >= '0' && c <= '9')
@@ -4672,7 +4647,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// endpoint is covered by the localhost/session gate above and guest sessions
 	// are explicitly denied. SendMessage marshals both requests onto the GUI
 	// thread, matching the authenticated classic WebServer controls.
-	if (sURL.Left(20) == "/api/network/connect") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiNetworkConnect) {
 		const CString ed2kArg(_ParseURL(Data.sURL, _T("ed2k")));
 		const CString kadArg(_ParseURL(Data.sURL, _T("kad")));
 		const bool requestEd2k = ed2kArg.IsEmpty() || ed2kArg != _T("0");
@@ -4752,7 +4727,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// dual-stack hostname-source gate. It exposes hashes and outcomes, never a
 	// hostname or address. A baseline sequence lets the harness attribute one
 	// injection without clearing process state.
-	if (sURL.Left(29) == "/api/debug/source-resolutions") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiDebugSourceResolutions) {
 		const uint32 clientIP = Data.inadr.S_un.S_addr;
 		if (clientIP != htonl(INADDR_LOOPBACK)) {
 			CStringA json =
@@ -4852,7 +4827,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 	// --- /api/status --- eSE Network health for React alerts (Fase 2)
-	if (sURL == "/api/status") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiStatus) {
 		CStringA json;
 		// Determine UPnP port forwarding state: "true", "false", "unknown"
 		const char* szUpnpFwd = "unknown";
@@ -4973,7 +4948,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 	// --- /api/live/join?key={32hex}&title=... --- Start P2P viewing for a stream
-	if (sURL.Left(14) == "/api/live/join") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveJoin) {
 		CString keyT(_ParseURL(Data.sURL, _T("key")));
 		CString title(_ParseURL(Data.sURL, _T("title")));
 		if (title.IsEmpty())
@@ -5018,7 +4993,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// Hit by the player pages' pagehide beacon (relayed by ese-server for
 	// the :8080 pages). Marshaled: LeaveStream sends OP_LIVE_UNSUBSCRIBE
 	// over eD2K sockets — main-thread only. Idempotent when not viewing.
-	if (sURL.Left(15) == "/api/live/leave") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveLeave) {
 		LiveWebLeaveReq req;
 		memset(req.streamKey, 0, sizeof req.streamKey);
 		req.hasStreamKey = false;
@@ -5050,7 +5025,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// from its /hls-local handler, which eMule otherwise never sees. Atomic
 	// tick write only — safe on this worker thread (same class as the OBS-1
 	// Interlocked counters; no Live lock, no marshaling needed).
-	if (sURL.Left(22) == "/api/live/player-alive") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLivePlayerAlive) {
 		if (theApp.liveStreamManager != NULL) {
 			CString keyT(_ParseURL(Data.sURL, _T("key")));
 			bool matchesCurrent = keyT.IsEmpty();
@@ -5078,7 +5053,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// MFC "Live" tab. Source: testpattern (default), screen, file, rtmp.
 	// Example: GET /api/live/broadcast/start?source=testpattern&title=Mi+Canal&bitrate=1500
 	// (Use Left() match so query string doesn't break the route.)
-	if (sURL.Left(25) == "/api/live/broadcast/start") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveBroadcastStart) {
 		CString sourceT(_ParseURL(Data.sURL, _T("source")));
 		CString titleT (_ParseURL(Data.sURL, _T("title")));
 		CString catT   (_ParseURL(Data.sURL, _T("category")));
@@ -5256,7 +5231,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 	// --- /api/live/broadcast/stop --- Tier 2.2: stop FFmpeg + Kad publish.
-	if (sURL == "/api/live/broadcast/stop") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveBroadcastStop) {
 		// Stop touches FFmpeg + sends OP_LIVE_END to peers over eD2K sockets —
 		// main-thread only. Marshal it.
 		bool wasBroadcasting = false;
@@ -5292,24 +5267,12 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// --- /hls/<file> --- Sprint 5: serve HLS files directly from C++ WebServer.
 	// Mirrors what Node.js channel_api.js does at port 8080. Lets the dashboard
 	// (and any HLS player like VLC) work even when ese-server.exe is absent.
-	if (sURL.Left(5) == "/hls/") {
+	if (Data.webRoute == ese::web::WebRouteId::LegacyHls) {
 		CStringA req = sURL.Mid(5);
 		// Strip query string
 		int q = req.Find('?'); if (q >= 0) req = req.Left(q);
-		// Sanitize: only allow [A-Za-z0-9_.-], no slashes (path traversal guard)
-		bool ok = !req.IsEmpty() && req.GetLength() < 64;
-		for (int i = 0; ok && i < req.GetLength(); ++i) {
-			char c = req[i];
-			if (!(isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-')) ok = false;
-		}
-		// Only allow .m3u8 and .ts extensions
-		bool isPlay = req.Right(5).CompareNoCase(".m3u8") == 0;
-		bool isSeg  = req.Right(3).CompareNoCase(".ts") == 0;
-		if (!ok || !(isPlay || isSeg)) {
-			const char* hdr = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
-			Data.pSocket->SendData(hdr, (int)strlen(hdr));
-			return;
-		}
+		// WebRouteTable has already validated the safe leaf and extension.
+		const bool isPlay = req.Right(5).CompareNoCase(".m3u8") == 0;
 		// Ghost-viewer watchdog: any whitelisted HLS fetch proves a player is
 		// alive — including 404 polls while the playlist isn't written yet.
 		TCHAR tmp[MAX_PATH]; GetTempPath(MAX_PATH, tmp);
@@ -5369,7 +5332,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// preferred — but this guarantees emule.exe alone is functional.
 	// Only catches /dashboard explicitly — leaves "/" and other paths to the
 	// classic eMule WebServer pages so we don't shadow the legacy UI.
-	if (sURL == "/dashboard" || sURL == "/dashboard/") {
+	if (Data.webRoute == ese::web::WebRouteId::Dashboard) {
 		const char* dashHtml =
 "<!DOCTYPE html><html lang=es><head><meta charset=utf-8><title>eSE Live (mini)</title>"
 "<style>body{background:#0a0a0e;color:#e2e8f0;font-family:system-ui;margin:0;padding:20px;max-width:900px;margin:auto}"
@@ -5447,7 +5410,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// A fires a HOLEPUNCH_REQ(0x68) at rendezvous R asking it to relay toward B.
 	// Usage: GET /api/holepunch/rdv_test?target_ip=B&target_udp_port=4672&rdv_ip=R&rdv_udp_port=4672
 	// Observe kad3_rdv_* in /api/status on A, R and B. Rate-limited 1 fire / 5 s.
-	if (sURL.Left(23) == "/api/holepunch/rdv_test") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiHolePunchRendezvousTest) {
 		const ese::web::WebRateDecision rendezvousRate =
 			pThis->m_authPolicy.CheckRateLimit(
 				ese::web::WebAction::ManualRendezvous, WebAuthNowMs(), 5000);
@@ -5510,9 +5473,12 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// each answered with a PONG (0x67) that refreshes the pinhole. Observe keepalive_* in
 	// /api/status afterward. RequestStart/Stop are atomic (InterlockedExchange), so they
 	// are safe to call from this webserver worker thread (no Kad/Live state touched here).
-	if (sURL.Left(15) == "/api/keepalive/") {
-		const bool bStart = (sURL.Left(20) == "/api/keepalive/start");
-		const bool bStop  = (sURL.Left(19) == "/api/keepalive/stop");
+	if (Data.webRoute == ese::web::WebRouteId::ApiKeepaliveStart ||
+		Data.webRoute == ese::web::WebRouteId::ApiKeepaliveStop) {
+		const bool bStart =
+			Data.webRoute == ese::web::WebRouteId::ApiKeepaliveStart;
+		const bool bStop =
+			Data.webRoute == ese::web::WebRouteId::ApiKeepaliveStop;
 		// Throttle state-toggles: a rapid start/stop loop spams the Kad log and re-scans
 		// the routing table. 2 s is invisible to manual testing but kills a toggle flood.
 		const ese::web::WebRateDecision keepaliveRate =
@@ -5561,7 +5527,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// --- /api/ese/v9[?on=0|1] --- NetLab status + immediate cohort kill switch.
 	// A GET without "on" is read-only. Enabling restores only levels already
 	// accepted in the native notices. "on=0" atomically closes every lab level.
-	if (sURL.Left(11) == "/api/ese/v9") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiEseV9) {
 		const CString onArg = _ParseURL(Data.sURL, _T("on"));
 		bool ok = true;
 		bool changed = false;
@@ -5674,7 +5640,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 
 	// Local, sanitized cohort report. It deliberately contains no address,
 	// node ID, peer identifier, filename, stream key or central upload hook.
-	if (sURL == "/api/ese/netlab/report") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiEseNetlabReport) {
 		const CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
 		const bool hasV4 = theApp.GetPublicIP() != 0;
 		const bool hasV6 = v6.GetType() == CAddress::IPv6 && v6.IsPublicIP();
@@ -5735,7 +5701,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// P3 KRP status is deliberately read-only and separate from /api/relay/*,
 	// which belongs to the older Live/Buddy relay. The JSON is a mutex-protected
 	// main-thread snapshot and contains no endpoint, certificate, identity or payload.
-	if (sURL == "/api/krp/status") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiKrpStatus) {
 		CStringA json;
 		if (theApp.relayclient != NULL)
 			theApp.relayclient->GetStatusJson(json);
@@ -5757,20 +5723,23 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	//   selector?on=1 (viewer V):      flip EseReachSelector— Direct->punch2->punch3->relay escalation.
 	//   connect?stream=<32hex>&buddy_ip=<X>&buddy_port=<P> (viewer V): subscribe to relay X via 0xCE.
 	// Same prefs are loadable from emule.ini [eSE]; these flip them at runtime (no restart). on=0 turns off.
-	if (sURL.Left(11) == "/api/relay/") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiRelayAccept ||
+		Data.webRoute == ese::web::WebRouteId::ApiRelayEgress ||
+		Data.webRoute == ese::web::WebRouteId::ApiRelaySelector ||
+		Data.webRoute == ese::web::WebRouteId::ApiRelayConnect) {
 		const bool bOn = (_ParseURL(Data.sURL, _T("on")) != _T("0"));   // default ON unless on=0
 		const char* action = "unknown";
 		bool ok = true;
-		if (sURL.Left(17) == "/api/relay/accept") {
+		if (Data.webRoute == ese::web::WebRouteId::ApiRelayAccept) {
 			thePrefs.SetEseRelayAccept(bOn);
 			volatile LONG* caps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
 			if (bOn) ::InterlockedOr(caps, (LONG)ESE_CAP_LIVE_RELAY);
 			else     ::InterlockedAnd(caps, ~(LONG)ESE_CAP_LIVE_RELAY);
 			action = "accept";
 		}
-		else if (sURL.Left(17) == "/api/relay/egress")   { thePrefs.SetEseRelayEgress(bOn);   action = "egress"; }
-		else if (sURL.Left(19) == "/api/relay/selector") { thePrefs.SetEseReachSelector(bOn); action = "selector"; }
-		else if (sURL.Left(18) == "/api/relay/connect") {
+		else if (Data.webRoute == ese::web::WebRouteId::ApiRelayEgress)   { thePrefs.SetEseRelayEgress(bOn);   action = "egress"; }
+		else if (Data.webRoute == ese::web::WebRouteId::ApiRelaySelector) { thePrefs.SetEseReachSelector(bOn); action = "selector"; }
+		else if (Data.webRoute == ese::web::WebRouteId::ApiRelayConnect) {
 			CStringA keyA = CT2A(_ParseURL(Data.sURL, _T("stream")));
 			CStringA ipA  = CT2A(_ParseURL(Data.sURL, _T("buddy_ip")));
 			uint16 port   = (uint16)_ttoi(_ParseURL(Data.sURL, _T("buddy_port")));
@@ -5805,7 +5774,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
-	if (sURL.Left(19) == "/api/holepunch/test") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiHolePunchTest) {
 		const ese::web::WebRateDecision holePunchRate =
 			pThis->m_authPolicy.CheckRateLimit(
 				ese::web::WebAction::ManualHolePunch, WebAuthNowMs(), 5000);
@@ -5912,7 +5881,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	//   3. upload_ok       — your max upload exceeds bitrate × 1.5 (per viewer)
 	//   4. ffmpeg_found    — RTMPIngest can launch the encoder
 	// The web UI uses this to gate the START button and explain failures.
-	if (sURL == "/api/live/preflight") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLivePreflight) {
 		bool kadConn = Kademlia::CKademlia::IsConnected();
 		// Tier 1.5: differentiate between "firewall test completed and we ARE
 		// firewalled" vs "test still running, don't know yet". This avoids
@@ -6000,7 +5969,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	//   GET                       -> list current entries
 	//   GET ?add=<32 hex>&name=N  -> add channel
 	//   GET ?remove=<32 hex>      -> remove channel
-	if (sURL.Left(33) == "/api/live/privacy/subscriptions") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacySubscriptions) {
 		const CString addArg = _ParseURL(Data.sURL, _T("add"));
 		const CString rmArg  = _ParseURL(Data.sURL, _T("remove"));
 		const CString nmArg  = _ParseURL(Data.sURL, _T("name"));
@@ -6093,7 +6062,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// keyword is emitted to Kad from the EXIT's IP, never V's → V's identity
 	// stays off the DHT. (The keyword does reach the exit in clear; encrypting
 	// it toward the exit is v9.0 roadmap, thesis Decision 12.3.) Length: 31.
-	if (sURL.Left(31) == "/api/live/privacy/tunnel_search") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyTunnelSearch) {
 		CString kwArg = _ParseURL(Data.sURL, _T("keyword"));
 		if (kwArg.IsEmpty()) kwArg = _T("eselive");
 		CStringA kwA(kwArg);
@@ -6149,7 +6118,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// TUN_OP_ECHO_LARGE message and checks the reassembled reply is
 	// byte-identical. Exercises fragmentation + reassembly + dispatcher
 	// end-to-end. "/api/live/privacy/tunnel_echo" is exactly 29 chars.
-	if (sURL.Left(29) == "/api/live/privacy/tunnel_echo") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyTunnelEcho) {
 		CString bytesArg = _ParseURL(Data.sURL, _T("bytes"));
 		int n = bytesArg.IsEmpty() ? 1024 : _ttoi(bytesArg);
 		if (n < 0) n = 0;
@@ -6183,7 +6152,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 	// "/api/live/privacy/tunnel_ping" is exactly 29 chars.
-	if (sURL.Left(29) == "/api/live/privacy/tunnel_ping") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyTunnelPing) {
 		CString textArg = _ParseURL(Data.sURL, _T("text"));
 		if (textArg.IsEmpty()) textArg = _T("hello");
 		std::string text((LPCSTR)CStringA(textArg));
@@ -6224,7 +6193,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// in ms, hop count, and forwarding state (next_hop_set / next_circ_id
 	// for relay circuits that have already received EXTEND). Used to
 	// verify "Hops: 2" after BuildTestCircuit2Hop succeeds.
-	if (sURL == "/api/live/privacy/circuits") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyCircuits) {
 		std::vector<eSELive::CLiveTunnel::CircuitSnapshot> snap;
 		try {
 			eSELive::CLiveTunnel::Get().GetCircuitsSnapshot(snap);
@@ -6288,7 +6257,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// Critical for diagnosing why test_circuit creates Pending circuits
 	// that never become Active (most common cause: PC2 not in ClientList,
 	// or PC2 running an older binary that didn't emit TAG_ESE_CAPS).
-	if (sURL == "/api/live/privacy/peers") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyPeers) {
 		// v0.72 — served from the main-thread-maintained peer cache; the
 		// worker thread must never dereference CUpDownClient pointers.
 		std::vector<eSELive::CLiveTunnel::PeerSnapshot> all;
@@ -6339,7 +6308,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// fail-closed instead of creating an unfinishable Pending circuit.
 	// Length of "/api/live/privacy/test_circuit" is exactly 30 chars.
 	// Left(30) matches both bare URL and URL with ?query suffix.
-	if (sURL.Left(30) == "/api/live/privacy/test_circuit") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyTestCircuit) {
 		// v0.71 B — optional ?hops=2 to build a 2-hop circuit. Default
 		// is 1-hop (backward compat). 2-hop requires 2 distinct fork peers.
 		// hops=3 invokes K6-6 STRICT3: three authenticated/shaped IPv6
@@ -6382,7 +6351,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// --- /api/live/privacy/kad6/release --- explicit public-exit release gate.
 	// Installation and mutation are loopback-only. The host signs the evidence
 	// with its persistent NodeIdentity; callers never supply a private key.
-	if (sURL.Left(30) == "/api/live/privacy/kad6/release") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyKad6Release) {
 		const CString enabledArg = _ParseURL(Data.sURL, _T("enabled"));
 		bool mutationOk = true;
 		CStringA mutationError;
@@ -6507,7 +6476,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// --- /api/live/privacy/kad6/hardening --- K6-7 local incident control.
 	// A mutation is loopback-only even when a remote Web UI token is valid: the
 	// operator stop is intentionally local and never becomes a remote kill switch.
-	if (sURL.Left(32) == "/api/live/privacy/kad6/hardening") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyKad6Hardening) {
 		const CString serviceArg = _ParseURL(Data.sURL, _T("service"));
 		const CString enabledArg = _ParseURL(Data.sURL, _T("enabled"));
 		const CString drainArg = _ParseURL(Data.sURL, _T("drain_seconds"));
@@ -6623,7 +6592,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 
 	// --- /api/live/privacy --- F5: expose Kad v2 mode + fallback policy + sensitive keywords.
 	// GET: returns current state. PATCH (via query params): updates state.
-	if (sURL.Left(17) == "/api/live/privacy") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacy) {
 		using Kademlia::CKadV2ModeSelector;
 		using Kademlia::CKadV2Mode;
 		auto& sel = CKadV2ModeSelector::Get();
@@ -6798,7 +6767,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// Plain text/plain (version=0.0.4) endpoint that Prometheus can scrape.
 	// Exposes counters (chunks received/served/missing, peers by role, kad ops,
 	// disconnects) plus latency percentiles from LatencyHistogram (V2-S05).
-	if (sURL == "/api/live/metrics") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveMetrics) {
 		CStringA body;
 		LiveDebugSnapshot snap;
 		bool haveSnap = false;
@@ -6921,7 +6890,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// the MFC "Live Stream" tab and the web /live debug panel to surface the
 	// same internal events that previously only went to AddLogLine().
 	// ?n=N selects the last N entries (default 100, max 500).
-	if (sURL.Left(13) == "/api/live/log") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveLog) {
 		int n = _ttoi(_ParseURL(Data.sURL, _T("n")));
 		if (n <= 0) n = 100;
 		if (n > 500) n = 500;
@@ -6961,7 +6930,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// Returns JSON with everything a user/support engineer needs to figure
 	// out why a stream isn't discoverable. Usage: /api/live/diagnose?key=HEX32
 	// (key is optional — without it, returns global discovery state).
-	if (sURL.Left(18) == "/api/live/diagnose") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveDiagnose) {
 		CString keyT(_ParseURL(Data.sURL, _T("key")));
 		uchar streamKey[16] = {0};
 		bool keyValid = false;
@@ -7050,7 +7019,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// its public IP is known. Direct Join skips the 30s Kad search cooldown and
 	// the multi-minute DHT propagation delay — the viewer can connect within
 	// seconds of the broadcaster pressing START.
-	if (sURL.Left(21) == "/api/live/direct_join") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveDirectJoin) {
 		CString linkT(_ParseURL(Data.sURL, _T("link")));
 		CString keyT (_ParseURL(Data.sURL, _T("key")));
 		CString ipT  (_ParseURL(Data.sURL, _T("ip")));
@@ -7197,7 +7166,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 	// --- /api/live/channels --- JSON list of active streams
-	if (sURL == "/api/live/channels") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveChannels) {
 		CStringA json = "{\"channels\":[";
 		if (theApp.liveStreamManager != NULL) {
 			LiveChannelSnapshot ch = theApp.liveStreamManager->GetChannelSnapshot();
@@ -7238,7 +7207,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 	// --- /api/live/mesh --- Core P2P mesh stats for the Node bridge
-	if (sURL == "/api/live/mesh") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveMesh) {
 		CStringA json;
 		if (theApp.liveStreamManager != NULL) {
 			// Lock-correct snapshot — BuildDebugSnapshot runs the trust-tier
@@ -7282,7 +7251,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 	// --- /api/live/kad/streams --- Kad-discovered live stream directory
-	if (sURL == "/api/live/kad/streams") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveKadStreams) {
 		CArray<LiveStreamEntry> streams;
 		if (theApp.liveStreamManager != NULL) {
 			// SearchStreams drives CSearchManager and adds a row to the Kad
@@ -7360,7 +7329,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// ESE_TEST_HOOKS, so the honest/production binary never links this route.
 	// Loopback-only (the generic /api/live/ remote gate above already blocks
 	// non-local callers); no full-trust requirement since it's a local test op.
-	if (sURL.Left(28) == "/api/live/test/edge_sabotage") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveEdgeSabotage) {
 		extern bool  g_eseTestSabotageOn;
 		extern int   g_eseTestSabotageMode;
 		extern DWORD g_eseTestSabotageDelayMs;
@@ -7393,7 +7362,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// --- /api/live/debug --- Phase 0 Observability (OBS-1)
 	// Fix 1 (ALTA): All state is read via BuildDebugSnapshot() under m_lock.
 	// No direct CMap/CTypedPtrList iteration from the WebServer thread.
-	if (sURL == "/api/live/debug") {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveDebug) {
 		CStringA json;
 
 		if (theApp.liveStreamManager != NULL) {
@@ -7583,14 +7552,12 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 
 	// --- /api/live/{hash}/stream.m3u8 --- Dynamic HLS playlist
 	// --- /api/live/{hash}/seg_NNNNN.ts --- Segment binary data
-	if (sURL.Left(10) == "/api/live/" && sURL.GetLength() > 42) {
+	if (Data.webRoute == ese::web::WebRouteId::ApiLiveStream) {
 		CStringA hashHex = sURL.Mid(10, 32);
 		CStringA resource = sURL.Mid(43); // after "/api/live/HASH/"
-
-		if (sURL.GetLength() <= 43 || sURL[42] != '/' || !EseIsHexA(hashHex) || !EseIsSafeHlsResourceA(resource)) {
-			Data.pSocket->SendReply("HTTP/1.1 400 Bad Request\r\nContent-Length: 11\r\n\r\nBad request");
-			return;
-		}
+		const int query = resource.Find('?');
+		if (query >= 0)
+			resource = resource.Left(query);
 
 		// Ghost-viewer watchdog: a validated per-stream HLS fetch proves a
 		// player is alive (404s included — startup polls count).
@@ -7656,7 +7623,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 	// --- /live --- Channel discovery page
-	if (sURL == "/live" || sURL == "/live/") {
+	if (Data.webRoute == ese::web::WebRouteId::LiveIndex) {
 		CStringA html =
 			"<!DOCTYPE html><html><head><title>eSE Live - Channels</title>"
 			"<style>"
@@ -7717,7 +7684,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 	// --- /live/{hash} --- Player page with HLS.js
-	if (sURL.Left(6) == "/live/" && sURL.GetLength() >= 38) {
+	if (Data.webRoute == ese::web::WebRouteId::LivePlayer) {
 		CStringA hash = sURL.Mid(6, 32);
 
 		CStringA html;

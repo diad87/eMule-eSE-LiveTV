@@ -3,6 +3,7 @@
 #include "WebSocket.h"
 #include "WebServer.h"
 #include "WebRequestParser.h"
+#include "WebRouteTable.h"
 #include "Preferences.h"
 #include "StringConversion.h"
 #include "Log.h"
@@ -78,22 +79,59 @@ typedef struct
 
 void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const char *pData, DWORD dwDataLen, const in_addr inad)
 {
+	ese::web::WebRouteMethod routeMethod = ese::web::WebRouteMethod::Get;
+	switch (request.method) {
+	case ese::web::Method::Get:
+		routeMethod = ese::web::WebRouteMethod::Get;
+		break;
+	case ese::web::Method::Post:
+		routeMethod = ese::web::WebRouteMethod::Post;
+		break;
+	case ese::web::Method::Options:
+		routeMethod = ese::web::WebRouteMethod::Options;
+		break;
+	default:
+		SendReply(
+			"HTTP/1.1 400 Bad Request\r\n"
+			"Connection: close\r\n"
+			"Content-Length: 0\r\n");
+		Disconnect();
+		return;
+	}
+	const ese::web::WebRouteMatch route =
+		ese::web::ResolveWebRoute(routeMethod, request.target);
+	if (route.status != ese::web::WebRouteStatus::Matched) {
+		if (route.status == ese::web::WebRouteStatus::MethodNotAllowed) {
+			SendReply(
+				"HTTP/1.1 405 Method Not Allowed\r\n"
+				"Allow: GET, OPTIONS\r\n"
+				"Connection: close\r\n"
+				"Content-Length: 0\r\n");
+		} else {
+			SendReply(
+				"HTTP/1.1 404 Not Found\r\n"
+				"Connection: close\r\n"
+				"Content-Length: 0\r\n");
+		}
+		Disconnect();
+		return;
+	}
+
 	CStringA sURL(request.target.data(), static_cast<int>(request.target.size()));
 	if (request.method == ese::web::Method::Post) {
 		CStringA sData(pData, dwDataLen);
 		sURL = '?' + sData.Trim();	// '?' to imitate GET syntax for ParseURL
 	}
-	int i;
-	bool filereq = sURL.GetLength() >= 3 && sURL.Find("..") < 0; // prevent file access in the eMule's webserver folder
-	if (filereq) {
-		CStringA ext(sURL.Right(5).MakeLower());
-		i = ext.ReverseFind('.') + 1;
-		ext.Delete(0, i);
-		filereq = (i > 0) && ext.GetLength() > 1 && (ext == "gif" || ext == "jpg" || ext == "png"
-			|| ext == "ico" || ext == "css" || ext == "bmp" || ext == "js" || ext == "jpeg");
-	}
 	ThreadData Data;
-	Data.sURL = sURL;
+	if (route.handler == ese::web::WebHandler::StaticAsset) {
+		const CStringA canonical(
+			route.canonical_path.data(),
+			static_cast<int>(route.canonical_path.size()));
+		Data.sURL = canonical;
+	} else {
+		Data.sURL = sURL;
+	}
+	Data.webRoute = route.route;
 	for (const ese::web::HeaderField& header : request.headers) {
 		if (header.name == "x-csrf-token") {
 			Data.sCsrfToken = CStringA(
@@ -113,8 +151,9 @@ void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const
 	Data.pThis = (void*)m_pParent;
 	Data.inadr = inad;
 	Data.pSocket = this;
-	// eSE: Handle CORS preflight (OPTIONS) for React frontend
-	if (request.method == ese::web::Method::Options) {
+	// CORS preflight is available only for a registered live route. Unknown
+	// method/route pairs have already failed closed in WebRouteTable.
+	if (route.handler == ese::web::WebHandler::CorsPreflight) {
 		Data.pSocket->SendReply(
 			"HTTP/1.1 204 No Content\r\n"
 			"Access-Control-Allow-Origin: http://localhost:3000\r\n"
@@ -133,18 +172,18 @@ void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const
 	// M1 (mobile track): /s/{ses}/* is the token-prefixed remote namespace and
 	// /live* are the embedded channel/player pages — both handled (and the
 	// token validated) in _ProcessLiveAPI.
-	if (!filereq && (
-		sURL.Left(5) == "/api/" ||
-		sURL == "/dashboard" || sURL == "/dashboard/" ||
-		sURL.Left(5) == "/hls/" ||
-		sURL.Left(3) == "/s/" ||
-		sURL == "/live" || sURL.Left(6) == "/live/"
-	)) {
+	if (route.handler == ese::web::WebHandler::LiveApi) {
 		m_pParent->_ProcessLiveAPI(Data);
-	} else if (!filereq)
+	} else if (route.handler == ese::web::WebHandler::ClassicPage) {
 		m_pParent->_ProcessURL(Data);
-	else
+	} else if (route.handler == ese::web::WebHandler::StaticAsset) {
 		m_pParent->_ProcessFileReq(Data);
+	} else {
+		Data.pSocket->SendReply(
+			"HTTP/1.1 500 Internal Server Error\r\n"
+			"Connection: close\r\n"
+			"Content-Length: 0\r\n");
+	}
 
 	Disconnect();
 }

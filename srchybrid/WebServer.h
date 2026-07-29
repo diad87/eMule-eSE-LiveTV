@@ -1,6 +1,7 @@
 #pragma once
 
 #include "WebAuthPolicy.h"
+#include "WebRouteTable.h"
 #include "WebSocket.h"
 #include "PartFile.h"
 #include "zlib/zlib.h"
@@ -228,6 +229,7 @@ typedef struct
 	CStringA		sFetchSite;
 	CStringA		sHost;
 	CStringA		sOrigin;
+	ese::web::WebRouteId webRoute;
 	void			*pThis;
 	CWebSocket		*pSocket;
 	in_addr			inadr;

@@ -5,16 +5,16 @@
     {
       "path": "srchybrid/LiveTunnel.cpp",
       "baseline_sha256": "0d899136a867bd1a0571b62b06343d0ca3a1f075162656eb0f4bddcb6dc85591",
-      "overlay_sha256": "bf89f4b9b071adbc78ab9d8cdf80d4164646e19c4bda4fb50c2a6a7ea2d1e1e2",
-      "task": "MOD-0.2 + MOD-1.1 + MOD-1.2 + MOD-1.3 + MOD-1.4 + MOD-1.5 + MOD-1.6 + MOD-1.7",
-      "reason": "MOD-0.2 headless production characterization hook; MOD-1.1 mechanically extracts framing; MOD-1.2 extracts pending-request lifetime; MOD-1.3 extracts circuit collection, identity lookup, round-robin cursor and fail-closed state transitions; MOD-1.4 extracts the bounded handshake facade and opaque platform-port adapters; MOD-1.5 extracts validated relay dispatch and exit-operation ownership behind narrow ports; MOD-1.6 extracts deferred-work, tick-deadline and class-5 timer ownership; MOD-1.7 extracts source history, peer policy, fail-closed origin selection and the explicit Kad2/Kad6 port boundary."
+      "overlay_sha256": "af224432134c6d2359af8e588231f454067087aa586e45bb6461f13bfa5d0321",
+      "task": "MOD-0.2 + MOD-1.1 + MOD-1.2 + MOD-1.3 + MOD-1.4 + MOD-1.5 + MOD-1.6 + MOD-1.7 + MOD-1.8",
+      "reason": "MOD-0.2 headless production characterization hook; MOD-1.1 mechanically extracts framing; MOD-1.2 extracts pending-request lifetime; MOD-1.3 extracts circuit collection, identity lookup, round-robin cursor and fail-closed state transitions; MOD-1.4 extracts the bounded handshake facade and opaque platform-port adapters; MOD-1.5 extracts validated relay dispatch and exit-operation ownership behind narrow ports; MOD-1.6 extracts deferred-work, tick-deadline and class-5 timer ownership; MOD-1.7 extracts source history, peer policy, fail-closed origin selection and the explicit Kad2/Kad6 port boundary; MOD-1.8 extracts immutable peer snapshots, atomic totals and Kad6 metrics ownership."
     },
     {
       "path": "srchybrid/LiveTunnel.h",
       "baseline_sha256": "1a2684e8741058667b8ececed4170026b1073b851a48e61da49f13c7ba27e731",
-      "overlay_sha256": "3f6d17302e0d7b9c98a191931708a6fbb9a89c15ed393d20d96b394f4b92482a",
-      "task": "MOD-0.2 + MOD-1.2 + MOD-1.3 + MOD-1.4 + MOD-1.5 + MOD-1.6 + MOD-1.7",
-      "reason": "Declaration of the headless production characterization hook, pending/registry composition, handshake adapter, MOD-1.5 relay/exit composition ports, MOD-1.6 scheduler composition, and MOD-1.7 peer-state/Kad-boundary composition."
+      "overlay_sha256": "910ef7421d60b17416d0916dec50ba460d3a8a2242aa6ad49b744a595bdad01c",
+      "task": "MOD-0.2 + MOD-1.2 + MOD-1.3 + MOD-1.4 + MOD-1.5 + MOD-1.6 + MOD-1.7 + MOD-1.8",
+      "reason": "Declaration of the headless production characterization hook, pending/registry composition, handshake adapter, MOD-1.5 relay/exit composition ports, MOD-1.6 scheduler composition, MOD-1.7 peer-state/Kad-boundary composition, and MOD-1.8 metrics/facade aliases and owner."
     },
     {
       "path": "srchybrid/WebServer.cpp",

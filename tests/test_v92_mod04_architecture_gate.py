@@ -143,6 +143,13 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveTunnelKadBridge.cpp"],
                 "interface_files": ["srchybrid/LiveTunnelKadBridge.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveTunnelMetrics",
+                "owner": "CLiveTunnel",
+                "layer": "application",
+                "implementation_files": ["srchybrid/LiveTunnelMetrics.cpp"],
+                "interface_files": ["srchybrid/LiveTunnelMetrics.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.config["approved_non_module_code"], [
@@ -176,6 +183,14 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "reason": (
                     "Standalone policy, source-history and fake-port executable "
                     "test for the MOD-1.7 peer-state and Kad-boundary extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/tests/test_live_tunnel_metrics.cpp",
+                "reason": (
+                    "Standalone concurrency, immutable-copy and exact-counter "
+                    "executable test for the MOD-1.8 metrics/facade extraction."
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
@@ -222,6 +237,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "module": "LiveTunnelKadBridge",
                 "slice_base_commit": "8748a666f9881b6343e8ed866198feb21c1dcad9",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveTunnelMetrics",
+                "slice_base_commit": "1f2e155551d5a5ab7a934e2f6bab34d0da804209",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }],
         })
 
@@ -241,6 +260,7 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "LiveTunnelScheduler",
                 "LiveTunnelPeerState",
                 "LiveTunnelKadBridge",
+                "LiveTunnelMetrics",
             ],
         )
 

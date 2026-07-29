@@ -252,6 +252,10 @@ try {
             & python.exe (
                 Join-Path $RepoRoot 'tests\test_v92_mx03_pcp_upstream.py') 2>&1)
         $mx03HostExit = $LASTEXITCODE
+        $mx04HostOutput = @(
+            & python.exe (
+                Join-Path $RepoRoot 'tests\test_v92_mx04_ipv6_scope.py') 2>&1)
+        $mx04HostExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
     }
@@ -269,6 +273,7 @@ try {
     $m05HostOutput | ForEach-Object { Write-Host $_ }
     $m06HostOutput | ForEach-Object { Write-Host $_ }
     $mx03HostOutput | ForEach-Object { Write-Host $_ }
+    $mx04HostOutput | ForEach-Object { Write-Host $_ }
     $l04Text = ($l04Output | ForEach-Object { [string]$_ }) -join "`n"
     $l04HostText = (
         $l04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
@@ -296,6 +301,8 @@ try {
         $m06HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $mx03HostText = (
         $mx03HostOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $mx04HostText = (
+        $mx04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l04Verdict = (
         $l04BuildExit -eq 0 -and
         $l04HostExit -eq 0 -and
@@ -414,6 +421,20 @@ try {
         $mx03HostText -match 'Ran 23 tests' -and
         $mx03HostText -match '(?m)^OK\s*$'
     )
+    $mx04NativeMatch = [regex]::Match(
+        $l04Text, 'test_ipv6_scope_policy: (92) checks, 0 failures')
+    $mx04NativeChecks = if ($mx04NativeMatch.Success) {
+        [int]$mx04NativeMatch.Groups[1].Value
+    } else {
+        0
+    }
+    $mx04Verdict = (
+        $l04BuildExit -eq 0 -and
+        $mx04HostExit -eq 0 -and
+        $mx04NativeChecks -eq 92 -and
+        $mx04HostText -match 'Ran 13 tests' -and
+        $mx04HostText -match '(?m)^OK\s*$'
+    )
     $m06NativeMatch = [regex]::Match(
         $l04Text,
         'test_direct_route_selection: (153) checks, 0 failures')
@@ -489,6 +510,7 @@ try {
         $m04Verdict -and
         $m05Verdict -and
         $mx03Verdict -and
+        $mx04Verdict -and
         $m06Verdict -and
         $hyperVVerdict -and
         $coverageIds.Count -eq $requiredCoverageIds.Count
@@ -584,6 +606,15 @@ try {
             native_checks = $mx03NativeChecks
             upstream_authorization = 'M02 typed evidence only'
             cpe_local_map_is_global_proof = $false
+        }
+        mx04_ipv6_scope = [ordered]@{
+            verdict = if ($mx04Verdict) { 'PASS' } else { 'FAIL' }
+            physical_mutation = $false
+            native_checks = $mx04NativeChecks
+            global_requires_exact_firewall_evidence = $true
+            same_lan_requires_on_link_os_route = $true
+            tcp_proof_authorizes_udp = $false
+            unsanitized_reporting = $false
         }
         m06_ipv6_priority = [ordered]@{
             verdict = if ($m06Verdict) { 'PASS' } else { 'FAIL' }

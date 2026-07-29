@@ -805,13 +805,12 @@ void CSearch::StorePacket()
 						->GetTopologyGeneration() : 0;
 			const natmap::CandidateObservation directV6 =
 				CFirewallProberV6::Instance()
-					.GetDirectRouteObservation(topologyGeneration);
+					.GetDirectRouteObservation(
+						topologyGeneration, natmap::Transport::Udp);
 			const CAddress publicV6 =
 				CFirewallProberV6::Instance().GetDetectedV6IP();
 			const bool bHasPublicV6 = thePrefs.IsIPv6Enabled()
-				&& directV6.generation == topologyGeneration
-				&& directV6.readiness !=
-					natmap::CandidateReadiness::Absent
+				&& directV6.IsVerifiedFor(topologyGeneration)
 				&& publicV6.GetType() == CAddress::IPv6 && publicV6.IsPublicIP();
 			const bool bV6Inbound =
 				directV6.IsVerifiedFor(topologyGeneration);

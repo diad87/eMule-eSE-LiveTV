@@ -114,14 +114,15 @@ class M06Ipv6PriorityHostContract(unittest.TestCase):
             "CFirewallProberV6::GetDirectRouteObservation(",
             "void CFirewallProberV6::SetDetectedV6IP(",
         )
-        self.assertIn(
-            "m_nInboundV6Generation == m_nDetectedV6Generation",
-            observed,
-        )
-        self.assertIn(
-            "observation.generation = m_nDetectedV6Generation",
-            observed,
-        )
+        for marker in (
+            "m_nDetectedV6Generation != currentGeneration",
+            "m_nDetectedV6InterfaceIndex == 0",
+            "m_nInboundV6Generation",
+            "m_nInboundV6InterfaceIndex",
+            "EvaluateIpv6ScopeAdmission(input)",
+            "GlobalRouteObservation(",
+        ):
+            self.assertIn(marker, observed)
 
     def test_kad_never_prioritizes_stale_or_candidate_ipv6(self) -> None:
         body = function_body(
@@ -187,9 +188,14 @@ class M06Ipv6PriorityHostContract(unittest.TestCase):
             "void CFirewallProberV6::ReportInboundV6Reachable(",
             "bool CFirewallProberV6::TryHighID()",
         )
-        for body in (detected, inbound):
-            self.assertIn("theApp.directreachability == NULL", body)
-            self.assertIn("GetTopologyGeneration()", body)
+        self.assertIn("GetPublishedTopologyGeneration()", detected)
+        self.assertNotIn("GetTopologyGeneration()", detected)
+        # Inbound publication deliberately checks the published generation
+        # under m_lock with the CAP promotion, rather than taking an unlocked
+        # snapshot first.
+        self.assertIn("m_nPublishedTopologyGeneration != topologyGeneration", inbound)
+        self.assertIn("CSingleLock l(&m_lock, TRUE)", inbound)
+        self.assertNotIn("GetTopologyGeneration()", inbound)
         self.assertIn("m_detectedIP != localAddress", inbound)
         self.assertNotIn("m_detectedIP = localAddress", inbound)
 
@@ -303,12 +309,20 @@ class M06Ipv6PriorityHostContract(unittest.TestCase):
         modern = function_body(
             self.prober,
             "bool CFirewallProberV6::CanAdvertiseModernKadSource()",
-            "void CFirewallProberV6::DetectLocalPublicV6()",
+            "void CFirewallProberV6::DetectLocalPublicV6(",
         )
-        self.assertIn("GetDirectRouteObservation(currentGeneration)", modern)
+        self.assertIn(
+            "GetDirectRouteObservation(\n"
+            "\t\t\tcurrentGeneration, natmap::Transport::Udp)",
+            modern,
+        )
         self.assertIn("observation.IsVerifiedFor(currentGeneration)", modern)
         self.assertNotIn("HasInboundV6Observation()", modern)
-        self.assertIn("GetDirectRouteObservation(topologyGeneration)", self.search)
+        self.assertIn(
+            "GetDirectRouteObservation(\n"
+            "\t\t\t\t\t\ttopologyGeneration, natmap::Transport::Udp)",
+            self.search,
+        )
         self.assertIn("directV6.IsVerifiedFor(topologyGeneration)", self.search)
         self.assertNotIn("HasInboundV6Observation()", self.search)
 

@@ -28,6 +28,7 @@
 
 #include "eMuleAI/Address.h"
 #include "natmap/direct_route_selection.h"
+#include "natmap/ipv6_scope_policy.h"
 #include <array>
 
 class CFirewallProberV6 {
@@ -51,6 +52,11 @@ public:
     // thread for headroom (future PCP/UPnP layers can block); the v6 address
     // itself is detected separately, in-band, via SetDetectedV6IP().
     void ProbeAsync();
+	// UI/main-thread bridge: workers never query DirectReachabilityManager.
+	// Route-change callers publish the one manager generation they observed.
+	void PublishTopologyGeneration(uint64 topologyGeneration);
+	void OnTopologyGenerationChanged(uint64 topologyGeneration);
+	uint64 GetPublishedTopologyGeneration() const;
 
     // Layer-aware accessors. Until the cascade settles, GetCurrentLayer
     // returns LayerUnknown. Locked: the worker thread writes the verdict
@@ -63,11 +69,18 @@ public:
 	bool          HasInboundV6Observation() const { return ::InterlockedCompareExchange(
 		const_cast<volatile LONG*>(&m_lInboundV6Observed), 0, 0) != 0; }
 	natmap::CandidateObservation GetDirectRouteObservation(
-		uint64 currentGeneration) const;
+		uint64 currentGeneration,
+		natmap::Transport transport = natmap::Transport::Tcp) const;
 	bool          IsPcpMapped() const;
 	bool          IsPcpInboundConfirmed() const;
 	CAddress      GetPcpExternalIP() const;
 	uint16        GetPcpExternalPort() const;
+	// Reads an on-link route from the OS and records a short-lived proof only
+	// when local source, peer and private prefix are exact and current.
+	bool ObserveSameLanRouteToPeer(const CAddress& peerAddress, uint16 peerPort,
+		uint64 topologyGeneration);
+	bool CanUseSameLanEndpoint(const CAddress& peerAddress, uint16 peerPort,
+		uint64 topologyGeneration, ULONG* interfaceIndex = NULL) const;
     const TCHAR*  GetLayerLabel()   const;
 
 	// True when this process can publish a Kad source that has at least one
@@ -97,9 +110,17 @@ public:
 	// Called from the existing mapping lease timer and from graceful shutdown.
 	// Both are idempotent; no work is performed unless a PCP-v6 lease exists.
 	void OnTimerTick();
+	// Called by the UI shutdown sequence before lease deletion. It permanently
+	// fences PCP workers from publishing a late result/capability.
+	void BeginShutdownFence();
 	void DeletePcpMappingsBestEffort();
 
 private:
+	struct ProbeWork {
+		CFirewallProberV6* prober = NULL;
+		uint64 generation = 0;
+		uint64 token = 0;
+	};
 	struct PcpLeaseV6 {
 		bool active = false;
 		std::array<uint8, 12> nonce{};
@@ -109,7 +130,8 @@ private:
 		CAddress externalIP;
 		uint32 lifetimeSeconds = 0;
 		uint32 mapperEpoch = 0;
-		DWORD acquiredTick = 0;
+		uint64 acquiredTick = 0;
+		uint64 ownerToken = 0;
 	};
 
     CFirewallProberV6();
@@ -120,14 +142,20 @@ private:
     // Worker-thread entry: runs the cascade and publishes the verdict.
     static UINT AFX_CDECL ProbeThreadProc(LPVOID pParam);
 	static UINT AFX_CDECL PcpRefreshThreadProc(LPVOID pParam);
-    void RunCascade();
-    void DetectLocalPublicV6();
+    void RunCascade(uint64 generation, uint64 token);
+    void DetectLocalPublicV6(uint64 generation, uint64 token);
 	void RefreshPcpMappings();
-	bool ConfirmPcpInboundV6();
+	void ReportSameLanV6Evidence(const CAddress& localAddress,
+		uint16 localPort, const CAddress& peerAddress, uint16 peerPort,
+		ULONG interfaceIndex, uint8 prefixLength, uint64 topologyGeneration,
+		uint64 expiresMonotonicMs);
 
     // Sprint 3 stubs — return early with Unreachable. Sprints 5/6/9 fill in.
     bool TryHighID();
-    bool TryPCP();
+    natmap::PcpCascadeOutcome TryPCP(uint64 generation, uint64 token);
+	bool TryClaimPcpOperationOrScheduleRetry();
+	bool ReleasePcpOperationAndRetry();
+	void ScheduleDeferredPcpRetry();
     bool TryIGDv2();
     bool TryKeepalive();
     bool TryHolePunch();
@@ -136,19 +164,33 @@ private:
     mutable CCriticalSection m_lock; // guards m_eLayer + m_detectedIP
     ECascadeLayer m_eLayer;
     ECascadeLayer m_eOverrideLayer;
-    CAddress      m_detectedIP;
+	CAddress      m_detectedIP;
 	uint64        m_nDetectedV6Generation;
 	uint64        m_nInboundV6Generation;
+	ULONG         m_nDetectedV6InterfaceIndex;
+	ULONG         m_nInboundV6InterfaceIndex;
+	uint64        m_nPcpV6Generation;
+	uint64        m_nPublishedTopologyGeneration;
+	uint64        m_nAppliedTopologyGeneration;
+	uint64        m_nProbeToken;
+	uint64        m_nActiveProbeToken;
+	natmap::PrivateSameLanEvidence m_sameLanEvidence;
+	natmap::Endpoint m_sameLanLocalEndpoint;
 	volatile LONG m_lProbeStarted;   // InterlockedExchange re-entry guard
 	volatile LONG m_lDetectedV6ExternallyObserved;
 	volatile LONG m_lInboundV6Observed;
 	volatile LONG m_lPcpOperationActive;
+	volatile LONG m_lPcpRetryPending;
+	volatile LONG m_lShuttingDown;
 	CAddress      m_pcpGatewayV6;
 	CAddress      m_pcpClientV6;
 	ULONG         m_pcpIfIndex;
 	PcpLeaseV6    m_pcpTcp;
 	PcpLeaseV6    m_pcpUdp;
 	unsigned      m_pcpRefreshFailures;
+	// A PCP MAP is not an inbound accept. This records only that the exact,
+	// owned pinhole is currently authorized by the v9.2 policy.
+	bool          m_pcpPolicyAuthorized;
 	bool          m_pcpInboundConfirmed;
     DWORD         m_dwLastProbeTick;
 };

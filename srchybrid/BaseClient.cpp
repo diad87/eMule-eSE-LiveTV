@@ -207,8 +207,16 @@ bool CUpDownClient::CanUseIPv6Direct() const
 	const bool bCallbackRoute = m_bIPv6CallbackSource && HasIPv6Address();
 	const bool bLiveRoute = m_bLiveIPv6Source && HasIPv6Address();
 	const bool bDirectRoute = m_bDirectIPv6Source && HasIPv6Address();
-	const bool bDirectOverlayRoute = bDirectRoute
-		&& m_ipv6Address.IsUniqueLocalIPv6();
+	// A ULA is never a global route.  The narrow LAN exception is evaluated
+	// against the exact peer endpoint and a previously accepted, bounded
+	// same-domain proof; address class alone can never open this path.
+	const uint64 topologyGeneration =
+		CFirewallProberV6::Instance().GetPublishedTopologyGeneration();
+	const bool bSameLanDirectRoute = bDirectRoute
+		&& CFirewallProberV6::Instance().ObserveSameLanRouteToPeer(
+			m_ipv6Address, GetUserPort(), topologyGeneration)
+		&& CFirewallProberV6::Instance().CanUseSameLanEndpoint(
+			m_ipv6Address, GetUserPort(), topologyGeneration);
 	const ProxySettings& proxy = thePrefs.GetProxySettings();
 	const bool bIPv6CapableProxy = proxy.bUseProxy
 		&& (proxy.type == PROXYTYPE_SOCKS5
@@ -222,10 +230,10 @@ bool CUpDownClient::CanUseIPv6Direct() const
 		// SOCKS5 and HTTP CONNECT carry the native IPv6 destination through
 		// an IPv4 proxy connection; only a direct route needs local public v6.
 		&& (bIPv6CapableProxy
-			|| bDirectOverlayRoute
+			|| bSameLanDirectRoute
 			|| (localV6.GetType() == CAddress::IPv6 && localV6.IsPublicIP()))
 		&& HasIPv6Address()
-		&& (m_ipv6Address.IsPublicIP() || bDirectOverlayRoute)
+		&& (m_ipv6Address.IsPublicIP() || bSameLanDirectRoute)
 		&& GetUserPort() != 0;
 	if (bDirectRoute) {
 		LIVE_LOG("CONN",
@@ -235,7 +243,7 @@ bool CUpDownClient::CanUseIPv6Direct() const
 			bV6Backoff ? 1 : 0,
 			proxy.bUseProxy ? 1 : 0,
 			bIPv6CapableProxy ? 1 : 0,
-			bDirectOverlayRoute ? 1 : 0,
+			bSameLanDirectRoute ? 1 : 0,
 			(localV6.GetType() == CAddress::IPv6 && localV6.IsPublicIP()) ? 1 : 0,
 			HasIPv6Address() ? 1 : 0,
 			(unsigned)GetUserPort());
@@ -1303,8 +1311,15 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 
 	uint32 tagcount = 7;
 	const CAddress helloV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+	const uint64 helloGeneration = theApp.directreachability != NULL
+		? theApp.directreachability->GetTopologyGeneration() : 0;
+	const natmap::CandidateObservation helloV6Observation =
+		CFirewallProberV6::Instance().GetDirectRouteObservation(
+			helloGeneration, natmap::Transport::Tcp);
 	const bool bSendHelloV6 = thePrefs.IsIPv6Enabled()
-		&& helloV6.GetType() == CAddress::IPv6 && helloV6.IsPublicIP();
+		&& helloV6.GetType() == CAddress::IPv6 && helloV6.IsPublicIP()
+		&& helloV6Observation.IsVerifiedFor(helloGeneration)
+		&& theApp.GetAdvertisedV6TcpPort() == thePrefs.GetPort();
 	if (bSendHelloV6)
 		++tagcount;
 
@@ -1450,7 +1465,8 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 		// native Kad6 plane and is set only while a signed public v4 or v6
 		// endpoint can be built. Neither bit is advertised speculatively.
 		extern uint32 g_uForkCapsRuntime;  // defined in FirewallProberV6.cpp
-		forkCaps |= g_uForkCapsRuntime;
+		forkCaps |= static_cast<uint32>(::InterlockedCompareExchange(
+			reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime), 0, 0));
 	}
 	CTag tagForkCaps(CT_FORK_CAPABILITIES, forkCaps);
 	tagForkCaps.WriteTagToFile(data);
@@ -2138,9 +2154,31 @@ void CUpDownClient::Connect()
 		&& connectAddress.GetType() == CAddress::IPv6 && bPreferIPv6) {
 		SOCKADDR_STORAGE sockAddr = {};
 		int sockAddrLen = sizeof sockAddr;
-		if (connectAddress.TryToSA((LPSOCKADDR)&sockAddr, &sockAddrLen, GetUserPort()))
+		if (connectAddress.TryToSA((LPSOCKADDR)&sockAddr, &sockAddrLen, GetUserPort())) {
+			ULONG sameLanInterface = 0;
+			const uint64 topologyGeneration =
+				CFirewallProberV6::Instance().GetPublishedTopologyGeneration();
+			if (!connectAddress.IsPublicIP()
+				&& !CFirewallProberV6::Instance().CanUseSameLanEndpoint(
+					connectAddress, GetUserPort(), topologyGeneration,
+					&sameLanInterface))
+				return;
+			if (sameLanInterface != 0) {
+				// Link-local and ULA routes are interface-relative. The scope id
+				// comes from the exact proof just revalidated for this peer/port.
+				reinterpret_cast<SOCKADDR_IN6*>(&sockAddr)->sin6_scope_id =
+					sameLanInterface;
+				const DWORD scopedInterface = htonl(sameLanInterface);
+				const int scopeResult = ::setsockopt(socket->GetSocketHandle(), IPPROTO_IPV6,
+					IPV6_UNICAST_IF,
+					reinterpret_cast<const char*>(&scopedInterface),
+					sizeof(scopedInterface));
+				if (natmap::EvaluateScopedSocketBind(true, sameLanInterface,
+					scopeResult) != natmap::ScopedSocketBindDecision::Connect)
+					return;
+			}
 			socket->Connect((LPSOCKADDR)&sockAddr, sockAddrLen);
-		else
+		} else
 			return;
 	} else {
 		SOCKADDR_IN sockAddr = {};

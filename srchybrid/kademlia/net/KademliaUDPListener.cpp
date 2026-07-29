@@ -470,7 +470,7 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 			? theApp.directreachability->GetTopologyGeneration() : 0;
 	const natmap::CandidateObservation directV6 =
 		CFirewallProberV6::Instance().GetDirectRouteObservation(
-			topologyGeneration);
+			topologyGeneration, natmap::Transport::Udp);
 	const uint32 publicV4 = theApp.GetPublicIP();
 	const natmap::DirectRouteSelection routeSelection =
 		theApp.directreachability != NULL
@@ -1194,6 +1194,11 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 		// Compute ONCE (myV6 captured once — re-calling GetDetectedV6IP would be racy w.r.t. the
 		// ++byTagCount / WriteTag pair). v8+ only; upstream ignores the unknown tag (additive).
 		const CAddress myV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+		const uint64 v6TopologyGeneration = theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+		const natmap::CandidateObservation v6UdpObservation =
+			CFirewallProberV6::Instance().GetDirectRouteObservation(
+				v6TopologyGeneration, natmap::Transport::Udp);
 		extern uint32 g_uForkCapsRuntime;
 		const LONG forkCaps = ::InterlockedCompareExchange(
 			reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime), 0, 0);
@@ -1201,7 +1206,8 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 			&& (thePrefs.GetEseKadV6Tag()
 				|| (forkCaps & CAP_FORK_IPV6_KAD) != 0)
 			&& byKadVersion >= KADEMLIA_VERSION8_49b
-			&& myV6.GetType() == CAddress::IPv6 && myV6.IsPublicIP();
+			&& myV6.GetType() == CAddress::IPv6 && myV6.IsPublicIP()
+			&& v6UdpObservation.IsVerifiedFor(v6TopologyGeneration);
 		if (bSendV6)
 			++byTagCount;
 		byteIOResponse.WriteUInt8(byTagCount);

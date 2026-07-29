@@ -31,6 +31,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_direct_route_sel
 if errorlevel 1 exit /b 1
 build\test_direct_route_selection.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_ipv6_scope_policy.exe tests\test_ipv6_scope_policy.cpp src\ipv6_scope_policy.cpp src\address_policy.cpp src\direct_route_selection.cpp
+if errorlevel 1 exit /b 1
+build\test_ipv6_scope_policy.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_state_machine.exe tests\test_state_machine.cpp src\natmap_state.cpp
 if errorlevel 1 exit /b 1
 build\test_state_machine.exe

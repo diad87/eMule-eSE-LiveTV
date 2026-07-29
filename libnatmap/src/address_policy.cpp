@@ -432,7 +432,9 @@ bool AllowsScopedPrivateAddress(const PrivateAddressScope& scope,
         (networkClass == AddressClass::Rfc1918 &&
          addressClass == AddressClass::Rfc1918) ||
         (networkClass == AddressClass::UniqueLocal &&
-         addressClass == AddressClass::UniqueLocal);
+         addressClass == AddressClass::UniqueLocal) ||
+        (networkClass == AddressClass::LinkLocal &&
+         addressClass == AddressClass::LinkLocal);
     return permittedClass &&
            PrefixMatches(scope.network, address, scope.prefix_length);
 }

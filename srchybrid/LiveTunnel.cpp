@@ -56,6 +56,7 @@
 #include "IPFilter.h"
 #include "OtherFunctions.h"
 #include "FirewallProberV6.h"
+#include "DirectReachabilityManager.h"
 #include "eMuleAI/Address.h"
 
 #include <limits>
@@ -6898,8 +6899,14 @@ void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
         apparent.addr.family = kad6::Kad6Address::Family::IPv4;
         memcpy(apparent.addr.addr.data(), &publicIp, 4);
     } else if (ticket.target_endpoint.addr.family == kad6::Kad6Address::Family::IPv6) {
+		const uint64 topologyGeneration = theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+		const natmap::CandidateObservation v6TcpObservation =
+			CFirewallProberV6::Instance().GetDirectRouteObservation(
+				topologyGeneration, natmap::Transport::Tcp);
         const CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
-        if (v6.GetType() != CAddress::IPv6 || !v6.IsPublicIP()) {
+		if (v6.GetType() != CAddress::IPv6 || !v6.IsPublicIP()
+			|| !v6TcpObservation.IsVerifiedFor(topologyGeneration)) {
             reject(kad6::K6DialStatus::PolicyDenied); return;
         }
         apparent.addr.family = kad6::Kad6Address::Family::IPv6;

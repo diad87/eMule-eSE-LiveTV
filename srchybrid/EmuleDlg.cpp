@@ -1315,6 +1315,17 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				// OP_PUBLICIP_REQ (CFirewallProberV6::SetDetectedV6IP), which
 				// replaced the old api6.ipify.org third-party HTTPS probe.
 				if (thePrefs.IsIPv6Enabled()) {
+					if (theApp.directreachability != NULL) {
+						const uint64 currentTopologyGeneration =
+							theApp.directreachability->GetTopologyGeneration();
+						CFirewallProberV6::Instance().PublishTopologyGeneration(
+							currentTopologyGeneration);
+						// Establish the first generation immediately. Initialize is a
+						// baseline-only decision, so this cannot tear down startup state;
+						// a real early route change will invalidate before the 30s timer.
+						CFirewallProberV6::Instance().OnTopologyGenerationChanged(
+							currentTopologyGeneration);
+					}
 					if (theApp.emuledlg->m_hIPv6HealthTimer == 0)
 						VERIFY((theApp.emuledlg->m_hIPv6HealthTimer = ::SetTimer(NULL, 0,
 							SEC2MS(30), IPv6HealthTimer)) != 0);
@@ -2685,6 +2696,7 @@ void CemuleDlg::OnClose()
 	if (m_hUPnPTimeOutTimer != 0) {
 		RetireUPnPTimeout();
 	}
+	CFirewallProberV6::Instance().BeginShutdownFence();
 	CFirewallProberV6::Instance().DeletePcpMappingsBestEffort();
 	CUPnPImpl *mappingImpl =
 		theApp.m_pUPnPFinder->GetImplementation();
@@ -4772,6 +4784,9 @@ void CALLBACK CemuleDlg::UPnPLeaseTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR 
 void CALLBACK CemuleDlg::IPv6HealthTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*idEvent*/, DWORD /*dwTime*/) noexcept
 {
 	try {
+		if (theApp.directreachability != NULL)
+			CFirewallProberV6::Instance().PublishTopologyGeneration(
+				theApp.directreachability->GetTopologyGeneration());
 		CFirewallProberV6::Instance().OnTimerTick();
 	} catch (...) {
 		DebugLogError(_T("Unexpected exception while scheduling IPv6 health checks"));
@@ -4831,6 +4846,9 @@ bool CemuleDlg::HandleUPnPNetworkChange(
 		theApp.directreachability != NULL
 			? theApp.directreachability->GetTopologyGeneration()
 			: previousGeneration;
+	if (transition.IsApplied())
+		CFirewallProberV6::Instance().OnTopologyGenerationChanged(
+			currentGeneration);
 	const natmap::AdvertisementObservation advertisement{
 		previousGeneration,
 		currentGeneration,
@@ -5139,6 +5157,9 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 					? theApp.directreachability
 						->GetTopologyGeneration()
 					: previousGeneration;
+			if (invalidated)
+				CFirewallProberV6::Instance().OnTopologyGenerationChanged(
+					recoveryGeneration);
 			const natmap::AdvertisementObservation advertisement{
 				previousGeneration,
 				recoveryGeneration,

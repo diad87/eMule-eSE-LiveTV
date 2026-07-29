@@ -40,6 +40,7 @@ $requiredCoverageIds = @(
     'WEBSERVER_PRIVACY',
     'ADDRESS_POLICY',
     'NETWORK_SIGNATURE',
+    'NETWORK_CHANGE',
     'HYPERV_PURE_PLAN',
     'STATE_CAPTURE',
     'CANONICAL_REPORT',
@@ -232,6 +233,10 @@ try {
             & python.exe (
                 Join-Path $RepoRoot 'tests\test_v92_m03_network_signature.py') 2>&1)
         $m03HostExit = $LASTEXITCODE
+        $m04HostOutput = @(
+            & python.exe (
+                Join-Path $RepoRoot 'tests\test_v92_m04_network_change.py') 2>&1)
+        $m04HostExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
     }
@@ -245,6 +250,7 @@ try {
     $m01HostOutput | ForEach-Object { Write-Host $_ }
     $m02HostOutput | ForEach-Object { Write-Host $_ }
     $m03HostOutput | ForEach-Object { Write-Host $_ }
+    $m04HostOutput | ForEach-Object { Write-Host $_ }
     $l04Text = ($l04Output | ForEach-Object { [string]$_ }) -join "`n"
     $l04HostText = (
         $l04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
@@ -264,6 +270,8 @@ try {
         $m02HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $m03HostText = (
         $m03HostOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $m04HostText = (
+        $m04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l04Verdict = (
         $l04BuildExit -eq 0 -and
         $l04HostExit -eq 0 -and
@@ -340,6 +348,20 @@ try {
         $m03HostText -match 'Ran 7 tests' -and
         $m03HostText -match '(?m)^OK\s*$'
     )
+    $m04NativeMatch = [regex]::Match(
+        $l04Text, 'test_network_change: (71) checks, 0 failures')
+    $m04NativeChecks = if ($m04NativeMatch.Success) {
+        [int]$m04NativeMatch.Groups[1].Value
+    } else {
+        0
+    }
+    $m04Verdict = (
+        $l04BuildExit -eq 0 -and
+        $m04HostExit -eq 0 -and
+        $m04NativeChecks -eq 71 -and
+        $m04HostText -match 'Ran 7 tests' -and
+        $m04HostText -match '(?m)^OK\s*$'
+    )
 
     $hyperVOutput = @()
     $hyperVVerdict = $true
@@ -397,6 +419,7 @@ try {
         $m01Verdict -and
         $m02Verdict -and
         $m03Verdict -and
+        $m04Verdict -and
         $hyperVVerdict -and
         $coverageIds.Count -eq $requiredCoverageIds.Count
     )
@@ -468,6 +491,14 @@ try {
             exact_identity = $true
             volatile_fields = $false
             compartment_aware = $true
+        }
+        m04_network_change = [ordered]@{
+            verdict = if ($m04Verdict) { 'PASS' } else { 'FAIL' }
+            physical_mutation = $false
+            native_checks = $m04NativeChecks
+            exact_generation_advance = $true
+            stale_callback_fenced = $true
+            rediscovery_requires_valid_generation = $true
         }
         coverage = [ordered]@{
             schema_sha256 = Get-Sha256 -Path (

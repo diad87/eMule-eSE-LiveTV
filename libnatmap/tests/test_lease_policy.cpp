@@ -312,9 +312,28 @@ void TestAdvertisementReloginIsExactlyOnce() {
     CHECK(observe(3, 3, true, false));
     CHECK(relogins == 3);
 
+    // Network-change rediscovery publishes inside the generation that already
+    // fenced the old mapping. Disabled-to-enabled therefore needs one re-login
+    // even though the generation number deliberately remains unchanged.
+    CHECK(observe(3, 3, false, true));
+    CHECK(relogins == 4);
+    CHECK(!observe(3, 3, true, true));
+    CHECK(relogins == 4);
+
     // Unconsumed/stale observations never trigger external side effects.
     CHECK(!observe(3, 4, false, true, false));
-    CHECK(relogins == 3);
+    CHECK(relogins == 4);
+
+    const AdvertisementObservation republished{
+        3, 3, true, false, true};
+    CHECK(ShouldRestartAdvertisementLogin(
+        republished, false, true, false));
+    CHECK(ShouldRestartAdvertisementLogin(
+        republished, true, false, false));
+    CHECK(!ShouldRestartAdvertisementLogin(
+        republished, false, false, false));
+    CHECK(!ShouldRestartAdvertisementLogin(
+        republished, true, false, true));
 }
 
 } // namespace

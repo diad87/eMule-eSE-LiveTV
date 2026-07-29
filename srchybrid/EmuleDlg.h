@@ -271,6 +271,8 @@ protected:
 	static void CALLBACK UPnPLeaseTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
 	static void CALLBACK IPv6HealthTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
 	bool CheckUPnPLease();
+	bool HandleUPnPNetworkChange(
+		const natmap::NetworkSignature& observedSignature);
 	bool ArmUPnPTimeout(UINT nMilliseconds);
 	void RetireUPnPTimeout();
 	bool PostLocalUPnPFailure(bool bWasRefresh);

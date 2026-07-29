@@ -87,7 +87,18 @@ bool RequiresAdvertisementRelogin(
         return false;
     return observation.current_generation
             != observation.previous_generation
-        || (observation.was_enabled && !observation.is_enabled);
+        || (observation.was_enabled && !observation.is_enabled)
+        || (!observation.was_enabled && observation.is_enabled);
+}
+
+bool ShouldRestartAdvertisementLogin(
+    const AdvertisementObservation& observation,
+    bool server_connected,
+    bool server_connecting,
+    bool connected_via_relay) noexcept {
+    return RequiresAdvertisementRelogin(observation) &&
+           (server_connected || server_connecting) &&
+           !connected_via_relay;
 }
 
 LeaseTiming LeaseController::Schedule(const PortLease& lease,

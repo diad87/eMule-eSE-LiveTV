@@ -4767,13 +4767,123 @@ void CALLBACK CemuleDlg::IPv6HealthTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR
 	}
 }
 
+bool CemuleDlg::HandleUPnPNetworkChange(
+	const natmap::NetworkSignature& observedSignature)
+{
+	if (!m_upnpNetworkSignature.IsValid())
+		return false;
+	if (observedSignature.IsValid()
+		&& natmap::SameNetworkSignature(
+			observedSignature, m_upnpNetworkSignature))
+		return false;
+
+	CUPnPImpl *impl = theApp.m_pUPnPFinder != NULL
+		? theApp.m_pUPnPFinder->GetImplementation()
+		: NULL;
+	const natmap::MappingRequestContext cancelledRequest =
+		m_mappingResultGate.has_pending()
+			? m_mappingResultGate.pending()
+			: natmap::MappingRequestContext{};
+	const uint64 previousGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+	const bool wasDirectReachabilityEnabled =
+		theApp.directreachability != NULL
+			&& theApp.directreachability->IsEnabled();
+	natmap::NetworkChangeTransition transition;
+	const bool withdrew =
+		theApp.directreachability != NULL
+			&& theApp.directreachability->ObserveNetworkRouteChange(
+				&transition);
+
+	// Fence the original request before detaching and stopping its producer.
+	// A callback already queued is then rejected by both mailbox and gate.
+	m_mappingResultGate.CancelPending();
+	if (impl != NULL) {
+		impl->SetMessageOnResult(NULL, 0);
+		impl->StopAsyncFind();
+	}
+	if (m_mappingResultMailbox)
+		m_mappingResultMailbox->Clear();
+	InvalidateLocalUPnPFailure();
+	RetireUPnPTimeout();
+	m_bUPnPTimeoutForRefresh = false;
+	m_bUPnPRouteRecoveryPending =
+		!observedSignature.IsValid()
+		|| impl == NULL
+		|| theApp.directreachability == NULL;
+	m_upnpNetworkSignature = theApp.directreachability != NULL
+		? observedSignature
+		: natmap::NetworkSignature{};
+
+	const uint64 currentGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration()
+			: previousGeneration;
+	const natmap::AdvertisementObservation advertisement{
+		previousGeneration,
+		currentGeneration,
+		withdrew,
+		wasDirectReachabilityEnabled,
+		theApp.directreachability != NULL
+			&& theApp.directreachability->IsEnabled()};
+	if (natmap::ShouldRestartAdvertisementLogin(
+			advertisement,
+			theApp.serverconnect->IsConnected(),
+			theApp.serverconnect->IsConnecting(),
+			theApp.serverconnect->IsConnectedViaRelay())) {
+		LogWarning(_T("Network identity changed; reconnecting without the retired endpoint"));
+		if (theApp.serverconnect->IsConnecting())
+			theApp.serverconnect->StopConnectionTry();
+		if (theApp.serverconnect->IsConnected())
+			theApp.serverconnect->Disconnect();
+		theApp.serverconnect->ConnectToAnyServer();
+	}
+
+	const bool generationAdvanced =
+		transition.IsApplied()
+		&& transition.previous_generation == previousGeneration
+		&& transition.current_generation == currentGeneration;
+	LIVE_LOG("NATMAP",
+		"network change fenced request=%llu attempt=%llu generation=%llu->%llu status=%u",
+		(unsigned long long)cancelledRequest.request_id,
+		(unsigned long long)transition.cancelled_attempt_ids[0],
+		(unsigned long long)previousGeneration,
+		(unsigned long long)currentGeneration,
+		(unsigned)transition.status);
+	if (!generationAdvanced) {
+		LIVE_LOG("NATMAP",
+			"network change cannot advance exactly one generation; rediscovery remains fail-closed");
+		return true;
+	}
+	if (!observedSignature.IsValid() || impl == NULL) {
+		LIVE_LOG("NATMAP",
+			"network route or mapper unavailable; recovery waits with old identity withdrawn");
+		return true;
+	}
+
+	// StartUPnP issues a fresh request against currentGeneration. A successful
+	// mapping triggers the normal server re-login and verification path.
+	StartUPnP(true, 0, 0, m_bUPnPExplicitRequest);
+	return true;
+}
+
 bool CemuleDlg::CheckUPnPLease()
 {
 	if (!theApp.IsRunning()
-		|| (!thePrefs.IsUPnPEnabled() && !m_bUPnPExplicitRequest)
-		|| theApp.m_pUPnPFinder == NULL)
+		|| (!thePrefs.IsUPnPEnabled() && !m_bUPnPExplicitRequest))
 		return false;
 
+	const natmap::NetworkSignature networkSignature =
+		GetUPnPNetworkSignature();
+	if (networkSignature.IsValid()
+		&& !m_upnpNetworkSignature.IsValid())
+		m_upnpNetworkSignature = networkSignature;
+	else if (HandleUPnPNetworkChange(networkSignature))
+		return true;
+
+	if (theApp.m_pUPnPFinder == NULL)
+		return false;
 	CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
 	if (impl == NULL)
 		return false;
@@ -4781,6 +4891,8 @@ bool CemuleDlg::CheckUPnPLease()
 	if (m_bUPnPRouteRecoveryPending) {
 		UPnPRouteContext route;
 		if (!GetUPnPRouteContext(route))
+			return true;
+		if (theApp.directreachability == NULL)
 			return true;
 		LIVE_LOG("NATMAP",
 			"network route restored; restarting pending mapper recovery");
@@ -4817,23 +4929,6 @@ bool CemuleDlg::CheckUPnPLease()
 
 	if (m_hUPnPTimeOutTimer != 0)
 		return true;
-
-	const natmap::NetworkSignature networkSignature =
-		GetUPnPNetworkSignature();
-	if (networkSignature.IsValid()
-		&& !m_upnpNetworkSignature.IsValid())
-		m_upnpNetworkSignature = networkSignature;
-	else if (networkSignature.IsValid()
-		&& !natmap::SameNetworkSignature(
-			networkSignature, m_upnpNetworkSignature)) {
-		if (!impl->IsReady())
-			return false;
-		m_upnpNetworkSignature = networkSignature;
-		LIVE_LOG("NATMAP",
-			"network topology identity changed; restarting mapper discovery");
-		StartUPnP(true, 0, 0, m_bUPnPExplicitRequest);
-		return true;
-	}
 
 	if (!impl->IsReady())
 		return false;
@@ -4952,11 +5047,16 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 				wasDirectReachabilityEnabled,
 				theApp.directreachability != NULL
 					&& theApp.directreachability->IsEnabled()};
-			if (natmap::RequiresAdvertisementRelogin(advertisement)
-				&& theApp.serverconnect->IsConnected()
-				&& !theApp.serverconnect->IsConnectedViaRelay()) {
+			if (natmap::ShouldRestartAdvertisementLogin(
+					advertisement,
+					theApp.serverconnect->IsConnected(),
+					theApp.serverconnect->IsConnecting(),
+					theApp.serverconnect->IsConnectedViaRelay())) {
 				LogWarning(_T("Network route changed during mapping; reconnecting without the retired endpoint"));
-				theApp.serverconnect->Disconnect();
+				if (theApp.serverconnect->IsConnecting())
+					theApp.serverconnect->StopConnectionTry();
+				if (theApp.serverconnect->IsConnected())
+					theApp.serverconnect->Disconnect();
 				theApp.serverconnect->ConnectToAnyServer();
 			}
 			m_upnpNetworkSignature = natmap::NetworkSignature{};
@@ -5085,11 +5185,16 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 			observed,
 			wasDirectReachabilityEnabled,
 			theApp.directreachability->IsEnabled()};
-		if (natmap::RequiresAdvertisementRelogin(advertisement)
-			&& theApp.serverconnect->IsConnected()
-			&& !theApp.serverconnect->IsConnectedViaRelay()) {
+		if (natmap::ShouldRestartAdvertisementLogin(
+				advertisement,
+				theApp.serverconnect->IsConnected(),
+				theApp.serverconnect->IsConnecting(),
+				theApp.serverconnect->IsConnectedViaRelay())) {
 			LogWarning(_T("Direct reachability endpoint changed or was withdrawn; reconnecting to update the advertised port"));
-			theApp.serverconnect->Disconnect();
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
 			theApp.serverconnect->ConnectToAnyServer();
 		}
 	}
@@ -5319,11 +5424,16 @@ void CemuleDlg::StopUPnP()
 		wasDirectReachabilityEnabled,
 		theApp.directreachability != NULL
 			&& theApp.directreachability->IsEnabled()};
-	if (natmap::RequiresAdvertisementRelogin(advertisement)
-		&& theApp.serverconnect->IsConnected()
-		&& !theApp.serverconnect->IsConnectedViaRelay()) {
+	if (natmap::ShouldRestartAdvertisementLogin(
+			advertisement,
+			theApp.serverconnect->IsConnected(),
+			theApp.serverconnect->IsConnecting(),
+			theApp.serverconnect->IsConnectedViaRelay())) {
 		LogWarning(_T("Automatic mappings disabled; reconnecting without the retired endpoint"));
-		theApp.serverconnect->Disconnect();
+		if (theApp.serverconnect->IsConnecting())
+			theApp.serverconnect->StopConnectionTry();
+		if (theApp.serverconnect->IsConnected())
+			theApp.serverconnect->Disconnect();
 		theApp.serverconnect->ConnectToAnyServer();
 	}
 	m_bUPnPExplicitRequest = false;

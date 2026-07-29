@@ -19,6 +19,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_network_signatur
 if errorlevel 1 exit /b 1
 build\test_network_signature.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_network_change.exe tests\test_network_change.cpp src\network_change.cpp src\natmap_state.cpp src\natmap_policy.cpp src\mapping_request.cpp src\mapper_result.cpp
+if errorlevel 1 exit /b 1
+build\test_network_change.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_state_machine.exe tests\test_state_machine.cpp src\natmap_state.cpp
 if errorlevel 1 exit /b 1
 build\test_state_machine.exe

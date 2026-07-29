@@ -24,6 +24,7 @@ CDirectReachabilityManager::CDirectReachabilityManager()
 	, m_nAdvertisedTcpPort(0)
 	, m_nAdvertisedUdpPort(0)
 	, m_nNextVerificationAttemptId(1)
+	, m_nNetworkChangeRediscoveryGeneration(0)
 {
 }
 
@@ -86,20 +87,22 @@ void CDirectReachabilityManager::FailClosedAtGenerationLimit(
 	natmap::ReasonCode reason)
 {
 	const uint64 generation = m_snapshot.topology_generation;
-	natmap::PlaneSnapshot tcp = m_snapshot.ed2k_tcp_v4;
-	tcp.local = MakeAnyV4(
-		m_nLocalTcpPort.load(std::memory_order_acquire));
-	natmap::PlaneSnapshot udp = m_snapshot.kad_udp_v4;
-	udp.local = MakeAnyV4(
-		m_nLocalUdpPort.load(std::memory_order_acquire));
-	m_snapshot.ed2k_tcp_v4 = natmap::ApplyEvent(
-		tcp, natmap::StateEvent{
-			natmap::EventType::Disable, generation,
-			reason}).snapshot;
-	m_snapshot.kad_udp_v4 = natmap::ApplyEvent(
-		udp, natmap::StateEvent{
-			natmap::EventType::Disable, generation,
-			reason}).snapshot;
+	const auto DisabledPlane =
+		[generation, reason](const natmap::Endpoint& local) {
+			natmap::PlaneSnapshot plane;
+			plane.state = natmap::ReachabilityState::Disabled;
+			plane.reason = reason;
+			plane.local = local;
+			plane.advertised = local;
+			plane.generation = generation;
+			return plane;
+		};
+	m_snapshot.ed2k_tcp_v4 = DisabledPlane(MakeAnyV4(
+		m_nLocalTcpPort.load(std::memory_order_acquire)));
+	m_snapshot.kad_udp_v4 = DisabledPlane(MakeAnyV4(
+		m_nLocalUdpPort.load(std::memory_order_acquire)));
+	m_snapshot.direct_v6 = DisabledPlane(
+		m_snapshot.direct_v6.local);
 	m_tcpLease = natmap::LeaseController{};
 	m_udpLease = natmap::LeaseController{};
 	m_tcpChain = natmap::NatChainTransaction{};
@@ -107,6 +110,7 @@ void CDirectReachabilityManager::FailClosedAtGenerationLimit(
 	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
 	m_mapperTopologyIdentity =
 		natmap::MapperTopologyIdentity{};
+	m_nNetworkChangeRediscoveryGeneration = 0;
 	m_nAdvertisedTcpPort.store(
 		m_nLocalTcpPort.load(std::memory_order_acquire),
 		std::memory_order_release);
@@ -136,6 +140,7 @@ void CDirectReachabilityManager::Initialize(uint16 nLocalTcpPort, uint16 nLocalU
 	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
 	m_mapperTopologyIdentity =
 		natmap::MapperTopologyIdentity{};
+	m_nNetworkChangeRediscoveryGeneration = 0;
 	m_snapshot = natmap::ReachabilitySnapshot{};
 	m_snapshot.topology_generation = 1;
 
@@ -285,6 +290,7 @@ bool CDirectReachabilityManager::ObserveMapperEpochReset()
 	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
 	m_mapperTopologyIdentity =
 		natmap::MapperTopologyIdentity{};
+	m_nNetworkChangeRediscoveryGeneration = 0;
 	m_nAdvertisedTcpPort.store(
 		m_nLocalTcpPort.load(std::memory_order_acquire),
 		std::memory_order_release);
@@ -301,10 +307,48 @@ bool CDirectReachabilityManager::DisableMappingsByPreference()
 		natmap::ReasonCode::DisabledByPreference);
 }
 
-bool CDirectReachabilityManager::ObserveNetworkRouteChange()
+bool CDirectReachabilityManager::ObserveNetworkRouteChange(
+	natmap::NetworkChangeTransition* transition)
 {
-	return DisableMappedPlanes(
-		natmap::ReasonCode::InterfaceChanged);
+	AssertMainThread();
+	const bool wasEnabled =
+		m_bEnabled.load(std::memory_order_acquire);
+	const natmap::NetworkChangeTransition prepared =
+		natmap::PrepareNetworkChange(m_snapshot);
+	if (transition != NULL)
+		*transition = prepared;
+	if (prepared.status ==
+		natmap::NetworkChangeStatus::GenerationExhausted) {
+		FailClosedAtGenerationLimit(
+			natmap::ReasonCode::InterfaceChanged);
+		return wasEnabled;
+	}
+	if (!prepared.IsApplied()) {
+		// A malformed internal snapshot must not leave a previously
+		// advertised endpoint enabled after its network identity changed.
+		FailClosedAtGenerationLimit(
+			natmap::ReasonCode::InterfaceChanged);
+		return wasEnabled;
+	}
+
+	m_snapshot = prepared.snapshot;
+	m_tcpLease = natmap::LeaseController{};
+	m_udpLease = natmap::LeaseController{};
+	m_tcpChain = natmap::NatChainTransaction{};
+	m_udpChain = natmap::NatChainTransaction{};
+	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
+	m_mapperTopologyIdentity =
+		natmap::MapperTopologyIdentity{};
+	m_nNetworkChangeRediscoveryGeneration =
+		prepared.current_generation;
+	m_nAdvertisedTcpPort.store(
+		m_nLocalTcpPort.load(std::memory_order_acquire),
+		std::memory_order_release);
+	m_nAdvertisedUdpPort.store(
+		m_nLocalUdpPort.load(std::memory_order_acquire),
+		std::memory_order_release);
+	m_bEnabled.store(false, std::memory_order_release);
+	return wasEnabled;
 }
 
 bool CDirectReachabilityManager::DisableMappedPlanes(
@@ -342,6 +386,7 @@ bool CDirectReachabilityManager::DisableMappedPlanes(
 	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
 	m_mapperTopologyIdentity =
 		natmap::MapperTopologyIdentity{};
+	m_nNetworkChangeRediscoveryGeneration = 0;
 	m_nAdvertisedTcpPort.store(
 		m_nLocalTcpPort.load(std::memory_order_acquire),
 		std::memory_order_release);
@@ -398,6 +443,7 @@ bool CDirectReachabilityManager::ObserveFiniteMappingExpiry()
 	m_mapperRouteBinding = natmap::RouteBindingIdentity{};
 	m_mapperTopologyIdentity =
 		natmap::MapperTopologyIdentity{};
+	m_nNetworkChangeRediscoveryGeneration = 0;
 	m_nAdvertisedTcpPort.store(
 		m_nLocalTcpPort.load(std::memory_order_acquire),
 		std::memory_order_release);
@@ -586,10 +632,24 @@ bool CDirectReachabilityManager::ObserveMappedPorts(
 	renewalBoundary.topology_generation = resultGeneration;
 	renewalBoundary.refresh = bRefresh;
 	renewalBoundary.mapper_epoch_reset = bMapperEpochReset;
-	const natmap::TopologyGenerationDecision generationDecision =
-		natmap::ResolveTopologyGeneration(
+	const bool completesNetworkChange =
+		natmap::IsNetworkChangeRediscovery(
+			m_nNetworkChangeRediscoveryGeneration,
 			m_snapshot.topology_generation,
-			m_mapperTopologyIdentity, renewalBoundary);
+			resultGeneration,
+			m_mapperTopologyIdentity.IsValid(),
+			bRefresh);
+	natmap::TopologyGenerationDecision generationDecision;
+	if (completesNetworkChange) {
+		generationDecision.disposition =
+			natmap::TopologyGenerationDisposition::Advance;
+		generationDecision.generation = resultGeneration;
+	} else {
+		generationDecision =
+			natmap::ResolveTopologyGeneration(
+				m_snapshot.topology_generation,
+				m_mapperTopologyIdentity, renewalBoundary);
+	}
 	if (generationDecision.disposition
 			== natmap::TopologyGenerationDisposition::RejectInvalid
 		|| generationDecision.disposition
@@ -687,8 +747,12 @@ bool CDirectReachabilityManager::ObserveMappedPorts(
 			return true;
 		}
 	}
-	natmap::PlaneSnapshot tcpPlane = m_snapshot.ed2k_tcp_v4;
-	natmap::PlaneSnapshot udpPlane = m_snapshot.kad_udp_v4;
+	natmap::PlaneSnapshot tcpPlane = completesNetworkChange
+		? natmap::PlaneSnapshot{}
+		: m_snapshot.ed2k_tcp_v4;
+	natmap::PlaneSnapshot udpPlane = completesNetworkChange
+		? natmap::PlaneSnapshot{}
+		: m_snapshot.kad_udp_v4;
 	const bool tcpOk = BuildMappedPlane(tcpPlane, mapper,
 		natmap::Transport::Tcp, gateway, localTcp, publicTcp,
 		nLifetimeSeconds, nMapperEpoch, generation);
@@ -744,6 +808,7 @@ bool CDirectReachabilityManager::ObserveMappedPorts(
 	}
 	m_mapperTopologyIdentity = candidateIdentity;
 	m_mapperRouteBinding = routeBinding;
+	m_nNetworkChangeRediscoveryGeneration = 0;
 
 	switch (m_tcpChain.Evaluate()) {
 	case natmap::NatChainStatus::OperatorCgnat: {

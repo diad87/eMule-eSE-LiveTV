@@ -19,7 +19,8 @@ struct LeaseTiming {
 
 // Snapshot of one mapper-result observation at the application boundary.
 // A server re-login is required only when a consumed result changes the
-// externally visible generation, or withdraws a previously enabled endpoint.
+// externally visible generation, withdraws a previously enabled endpoint, or
+// publishes an endpoint after recovery inside an already-prepared generation.
 struct AdvertisementObservation {
     std::uint64_t previous_generation = 0;
     std::uint64_t current_generation = 0;
@@ -30,6 +31,11 @@ struct AdvertisementObservation {
 
 bool RequiresAdvertisementRelogin(
     const AdvertisementObservation& observation) noexcept;
+bool ShouldRestartAdvertisementLogin(
+    const AdvertisementObservation& observation,
+    bool server_connected,
+    bool server_connecting,
+    bool connected_via_relay) noexcept;
 
 // Drives application-level refresh attempts for a finite mapping lease.
 // The first attempt is due at 45% of the granted lifetime. Failed attempts

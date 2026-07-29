@@ -6,6 +6,7 @@
 #include "natmap/natmap_chain.h"
 #include "natmap/mapper_result.h"
 #include "natmap/legacy_mapper_projection.h"
+#include "natmap/network_change.h"
 #include <atomic>
 
 // Main-thread owner for direct-reachability state. D1 is deliberately
@@ -38,7 +39,8 @@ public:
 		const natmap::RouteBindingIdentity& routeBinding);
 	bool ObserveMapperEpochReset();
 	bool DisableMappingsByPreference();
-	bool ObserveNetworkRouteChange();
+	bool ObserveNetworkRouteChange(
+		natmap::NetworkChangeTransition* transition = NULL);
 	// Consumes an expiry already established by the mapper's monotonic
 	// scheduler. The scheduler is authoritative because it is armed before
 	// this projection receives the successful mapper result.
@@ -82,5 +84,6 @@ private:
 	natmap::NatChainTransaction m_udpChain;
 	natmap::RouteBindingIdentity m_mapperRouteBinding;
 	natmap::MapperTopologyIdentity m_mapperTopologyIdentity;
+	uint64 m_nNetworkChangeRediscoveryGeneration;
 	natmap::ReachabilitySnapshot m_snapshot;
 };

@@ -297,6 +297,27 @@
       ]
     },
     {
+      "id": "NETWORK_CHANGE",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_network_change.cpp",
+          "contains": "TestInvalidatesEveryPlaneAndAdvancesExactlyOnce"
+        },
+        {
+          "file": "tests/test_v92_m04_network_change.py",
+          "contains": "test_product_fences_then_rediscovers_and_fails_closed_on_generation_error"
+        },
+        {
+          "file": "srchybrid/EmuleDlg.cpp",
+          "contains": "network change fenced request="
+        },
+        {
+          "file": "libnatmap/include/natmap/network_change.h",
+          "contains": "NetworkChangeTransition"
+        }
+      ]
+    },
+    {
       "id": "HYPERV_PURE_PLAN",
       "evidence": [
         {

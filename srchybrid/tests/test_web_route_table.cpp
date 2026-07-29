@@ -188,6 +188,8 @@ void TestHostileRoutes()
 		"/api/live/0123456789abcdef0123456789ABCDEG/stream.m3u8",
 		"/api/live/0123456789abcdef0123456789ABCDEF/../secret.ts",
 		"/api/live/0123456789abcdef0123456789ABCDEF/bad.exe",
+		"/api/live/0123456789abcdef0123456789ABCDEF/stream_eng.M3U8",
+		"/api/live/0123456789abcdef0123456789ABCDEF/seg_1.TS",
 		"/hls/",
 		"/hls/../secret.ts",
 		"/hls/sub/seg_1.ts",

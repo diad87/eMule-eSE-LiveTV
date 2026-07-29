@@ -128,11 +128,11 @@ bool IsSafeHlsResource(const std::string& resource)
 		return true;
 	if (resource.size() > 12 &&
 		resource.compare(0, 7, "stream_") == 0 &&
-		HasCaseInsensitiveSuffix(resource, ".m3u8"))
+		resource.compare(resource.size() - 5, 5, ".m3u8") == 0)
 		return true;
 	return resource.size() > 7 &&
 		resource.compare(0, 4, "seg_") == 0 &&
-		HasCaseInsensitiveSuffix(resource, ".ts");
+		resource.compare(resource.size() - 3, 3, ".ts") == 0;
 }
 
 bool IsStaticAssetPath(const std::string& path)
@@ -334,6 +334,13 @@ bool RunWebRouteTableSelfTest(std::string& failure)
 	if (ResolveWebRoute(WebRouteMethod::Get, "/style.css:secret.css").status !=
 		WebRouteStatus::NotFound) {
 		failure = "web route table accepted unsafe static path";
+		return false;
+	}
+	if (ResolveWebRoute(
+			WebRouteMethod::Get,
+			"/api/live/0123456789abcdef0123456789abcdef/stream_eng.M3U8").status !=
+		WebRouteStatus::NotFound) {
+		failure = "web route table widened dynamic HLS extension case";
 		return false;
 	}
 	return true;

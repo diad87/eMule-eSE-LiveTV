@@ -82,6 +82,8 @@ class Mod23WebRouteTableTest(unittest.TestCase):
             "IsHexSpan(path, 10, 32)",
             "IsSafeHlsResource(path.substr(43))",
             "IsSafeLeaf(resource, 64)",
+            'resource.compare(resource.size() - 5, 5, ".m3u8") == 0',
+            'resource.compare(resource.size() - 3, 3, ".ts") == 0',
             "ParseSessionPrefix(path, suffix)",
             "(static_cast<std::uint64_t>(INT_MAX) - digit) / 10u",
             'path.compare(0, 3, "/s/") == 0',
@@ -144,6 +146,8 @@ class Mod23WebRouteTableTest(unittest.TestCase):
             "/api/live/joined",
             "/api/relay/unknown",
             "/api/live/privacy/future",
+            "/api/live/0123456789abcdef0123456789ABCDEF/stream_eng.M3U8",
+            "/api/live/0123456789abcdef0123456789ABCDEF/seg_1.TS",
             "/s/2147483648/api/status",
             "/s/999999999999999999999999999999999999999/api/status",
             "/s/1/style.css",
@@ -162,6 +166,7 @@ class Mod23WebRouteTableTest(unittest.TestCase):
             "web route table failed token-prefixed stream",
             "web route table accepted overflowing session token",
             "web route table accepted unsafe static path",
+            "web route table widened dynamic HLS extension case",
         ):
             self.assertIn(marker, self.source)
 

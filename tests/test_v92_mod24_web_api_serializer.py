@@ -85,13 +85,44 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
             "same_as_html_text_mode",
         )
 
-    def test_webserver_is_only_an_mfc_adapter_and_runs_production_selftest(
+    def test_typed_response_models_own_representative_wire_contracts(
+        self,
+    ) -> None:
+        for marker in (
+            "struct SerializedWebResponse",
+            "struct WebJoinResponseModel",
+            "struct WebDirectJoinResponseModel",
+            "struct WebTunnelPingResponseModel",
+            "struct WebStringArrayResponseModel",
+            "struct WebRemoteLinkXmlResponseModel",
+        ):
+            self.assertIn(marker, self.header)
+        self.assertEqual(
+            self.contract["response_models"]["owned_here"],
+            [
+                "WebJoinResponseModel",
+                "WebDirectJoinResponseModel",
+                "WebTunnelPingResponseModel",
+                "WebStringArrayResponseModel",
+                "WebRemoteLinkXmlResponseModel",
+            ],
+        )
+        for marker in (
+            "SerializedWebResponse Serialize(const WebJoinResponseModel&",
+            "SerializedWebResponse Serialize(const WebDirectJoinResponseModel&",
+            "SerializedWebResponse Serialize(const WebTunnelPingResponseModel&",
+            "SerializedWebResponse Serialize(const WebStringArrayResponseModel&",
+            "std::wstring Serialize(const WebRemoteLinkXmlResponseModel&",
+        ):
+            self.assertIn(marker, self.source + self.header)
+
+    def test_webserver_adapts_mfc_state_into_serializer_owned_models(
         self,
     ) -> None:
         self.assertIn('#include "WebApiSerializer.h"', self.server)
         self.assertIn("ese::web::EscapeHtml(input, noquote)", self.server)
         self.assertIn("ese::web::EscapeJson(value)", self.server)
-        self.assertEqual(self.server.count("EseJsonEscapeA("), 34)
+        self.assertLess(self.server.count("EseJsonEscapeA("), 34)
         self.assertIn(
             "ese::web::RunWebApiSerializerSelfTest(serializerFailure)",
             self.server,
@@ -99,34 +130,46 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
         self.assertNotIn('output.AppendFormat("\\\\u%04x", ch)', self.server)
         self.assertNotIn("Escape minimally for JSON", self.server)
         self.assertNotIn("Escape any quotes/backslashes", self.server)
-        for safe_marker in (
+        for model_marker in (
+            "ese::web::WebJoinResponseModel{",
+            "ese::web::WebDirectJoinResponseModel{",
+            "ese::web::WebTunnelPingResponseModel{",
+            "ese::web::WebStringArrayResponseModel model;",
+            "ese::web::WebRemoteLinkXmlResponseModel{",
+        ):
+            self.assertIn(model_marker, self.server)
+        for obsolete_fragment in (
             "const CStringA keyJson = EseJsonEscapeA(keyA)",
-            "kwJson += EseJsonEscapeA(CStringA(kws[i]))",
             "EseJsonEscapeA(CStringA(CT2A(keyT)))",
             "EseJsonEscapeA(CStringA(CT2A(ipT)))",
+            "static CString EseXmlEscape",
         ):
-            self.assertIn(safe_marker, self.server)
+            self.assertNotIn(obsolete_fragment, self.server)
+        self.assertIn(
+            "kwJson += EseJsonEscapeA(CStringA(kws[i]))",
+            self.server,
+        )
         self.assertNotIn(
             'kwJson += CStringA(kws[i])',
-            self.server,
-        )
-        self.assertIn(
-            "EseXmlEscape(GetResString(IDS_WEB_REMOTE_LINK_ADDED))",
-            self.server,
-        )
-        self.assertIn(
-            "EseXmlEscape(GetResString(IDS_WEB_REMOTE_LINK_NOT_ADDED))",
-            self.server,
-        )
-        self.assertIn(
-            '_T("<filename>") + EseXmlEscape(HTTPTemp) + _T("</filename>")',
             self.server,
         )
         self.assertNotIn(
             '_T("<filename>") + HTTPTemp + _T("</filename>")',
             self.server,
         )
-        self.assertIn("ese::web::EscapeXml(input)", self.server)
+        self.assertNotIn('_T("<status result=\\"OK\\">")', self.server)
+        self.assertIn(
+            "static_cast<std::size_t>(HTTPTemp.GetLength())",
+            self.server,
+        )
+        self.assertIn(
+            "Anonymous link — searching Kad for the broadcaster (5-30 s)",
+            self.server,
+        )
+        self.assertNotIn(
+            "Anonymous link â€” searching Kad for the broadcaster (5-30 s)",
+            self.server,
+        )
 
     def test_native_vectors_cover_controls_entities_and_encoding_boundaries(
         self,
@@ -136,6 +179,11 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
             "JSON escaping must preserve caller-owned text encoding",
             "pre-escaped entities must not bypass escaping",
             "markup escaping must preserve embedded NUL",
+            "join response must own exact status, headers, schema and escaping",
+            "direct-join response must preserve the legacy UTF-8 em dash bytes",
+            "failed tunnel-ping response must escape its reason",
+            "string-array response must escape field names, values and NUL",
+            "failed remote-link XML must omit filename",
             "production WebApiSerializer self-test must pass",
         ):
             self.assertIn(marker, self.native)

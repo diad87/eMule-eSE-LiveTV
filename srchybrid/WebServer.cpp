@@ -459,15 +459,6 @@ CString CWebServer::_SpecialChars(const CString &cstr, bool noquote /*=false*/)
 	return CString(escaped.data(), static_cast<int>(escaped.size()));
 }
 
-static CString EseXmlEscape(const CString& value)
-{
-	const std::wstring input(
-		static_cast<LPCTSTR>(value),
-		static_cast<std::size_t>(value.GetLength()));
-	const std::wstring escaped = ese::web::EscapeXml(input);
-	return CString(escaped.data(), static_cast<int>(escaped.size()));
-}
-
 bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 {
 	outFailure.Empty();
@@ -4445,22 +4436,23 @@ CString CWebServer::_GetRemoteLinkAddedOk(const ThreadData &Data)
 	if (pThis == NULL)
 		return CString();
 
-	CString Out;
-
 	int cat = _tstoi(_ParseURL(Data.sURL, _T("cat")));
 	CString HTTPTemp = _ParseURL(Data.sURL, _T("c"));
 
 	const TCHAR *buf = HTTPTemp;
 	theApp.emuledlg->SendMessage(WEB_ADDDOWNLOADS, (WPARAM)buf, cat);
 
-	Out += _T("<status result=\"OK\">");
-	Out += _T("<description>") +
-		EseXmlEscape(GetResString(IDS_WEB_REMOTE_LINK_ADDED)) +
-		_T("</description>");
-	Out += _T("<filename>") + EseXmlEscape(HTTPTemp) + _T("</filename>");
-	Out += _T("</status>");
-
-	return Out;
+	const CString description = GetResString(IDS_WEB_REMOTE_LINK_ADDED);
+	const std::wstring body = ese::web::Serialize(
+		ese::web::WebRemoteLinkXmlResponseModel{
+			true,
+			std::wstring(
+				static_cast<LPCTSTR>(description),
+				static_cast<std::size_t>(description.GetLength())),
+			std::wstring(
+				static_cast<LPCTSTR>(HTTPTemp),
+				static_cast<std::size_t>(HTTPTemp.GetLength()))});
+	return CString(body.data(), static_cast<int>(body.size()));
 }
 
 CString CWebServer::_GetRemoteLinkAddedFailed(const ThreadData &Data)
@@ -4469,15 +4461,15 @@ CString CWebServer::_GetRemoteLinkAddedFailed(const ThreadData &Data)
 	if (pThis == NULL)
 		return CString();
 
-	CString Out;
-
-	Out += _T("<status result=\"FAILED\" reason=\"WRONG_PASSWORD\">");
-	Out += _T("<description>") +
-		EseXmlEscape(GetResString(IDS_WEB_REMOTE_LINK_NOT_ADDED)) +
-		_T("</description>");
-	Out += _T("</status>");
-
-	return Out;
+	const CString description = GetResString(IDS_WEB_REMOTE_LINK_NOT_ADDED);
+	const std::wstring body = ese::web::Serialize(
+		ese::web::WebRemoteLinkXmlResponseModel{
+			false,
+			std::wstring(
+				static_cast<LPCTSTR>(description),
+				static_cast<std::size_t>(description.GetLength())),
+			std::wstring()});
+	return CString(body.data(), static_cast<int>(body.size()));
 }
 
 void CWebServer::_SetLastUserCat(const ThreadData &Data, long lSession, int cat)
@@ -4960,20 +4952,25 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			ok = req.joined;
 		}
 
-		CStringA json;
-		const CStringA keyJson = EseJsonEscapeA(keyA);
-		json.Format(
-			"{\"success\":%s,\"streamKey\":\"%s\"}",
-			ok ? "true" : "false",
-			(LPCSTR)keyJson);
+		const ese::web::SerializedWebResponse response =
+			ese::web::Serialize(ese::web::WebJoinResponseModel{
+				ok,
+				std::string(
+					static_cast<LPCSTR>(keyA),
+					static_cast<std::size_t>(keyA.GetLength()))});
+		const CStringA json(
+			response.body.data(),
+			static_cast<int>(response.body.size()));
 		CStringA header;
 		header.Format(
-			"HTTP/1.1 %s\r\n"
-			"Content-Type: application/json\r\n"
+			"HTTP/1.1 %u %s\r\n"
+			"Content-Type: %s\r\n"
 			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
 			"X-Content-Type-Options: nosniff\r\n"
 			"Content-Length: %d\r\n\r\n",
-			ok ? "200 OK" : "400 Bad Request",
+			response.status_code,
+			response.reason_phrase.c_str(),
+			response.content_type.c_str(),
 			json.GetLength());
 		Data.pSocket->SendData(header, header.GetLength());
 		Data.pSocket->SendData(json, json.GetLength());
@@ -6147,23 +6144,26 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			ok = eSELive::CLiveTunnel::Get().TunnelPing(text, reply, 5000);
 		} catch (...) {}
 
-		CStringA json;
-		if (ok) {
-			const CStringA sent = EseJsonEscapeA(CStringA(textArg));
-			const CStringA received = EseJsonEscapeA(CStringA(
-				reply.data(), static_cast<int>(reply.size())));
-			json.Format("{\"ok\":true,\"sent\":\"%s\",\"received\":\"%s\"}",
-				(LPCSTR)sent, (LPCSTR)received);
-		} else {
-			json = "{\"ok\":false,\"reason\":\"no active circuit or timeout - build a 2-hop circuit first via test_circuit?hops=2\"}";
-		}
+		const ese::web::SerializedWebResponse response =
+			ese::web::Serialize(ese::web::WebTunnelPingResponseModel{
+				ok,
+				text,
+				reply,
+				"no active circuit or timeout - build a 2-hop circuit first "
+				"via test_circuit?hops=2"});
+		const CStringA json(
+			response.body.data(),
+			static_cast<int>(response.body.size()));
 
 		CStringA header;
 		header.Format(
-		    "HTTP/1.1 200 OK\r\n"
+		    "HTTP/1.1 %u %s\r\n"
 		    HTTPInit
-		    "Content-Type: application/json\r\n"
+		    "Content-Type: %s\r\n"
 		    "Content-Length: %d\r\n\r\n",
+			response.status_code,
+			response.reason_phrase.c_str(),
+			response.content_type.c_str(),
 		    json.GetLength());
 		Data.pSocket->SendData(header, header.GetLength());
 		Data.pSocket->SendData(json, json.GetLength());
@@ -6882,25 +6882,30 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		std::deque<CStringA> items;
 		CLiveDebugLog::Get().GetRecent(n, items);
 
-		CStringA json = "{\"items\":[";
-		bool first = true;
+		ese::web::WebStringArrayResponseModel model;
+		model.field_name = "items";
+		model.values.reserve(items.size());
 		for (const auto& l : items) {
-			if (!first) json += ",";
-			first = false;
-			const CStringA esc = EseJsonEscapeA(l);
-			json += "\"";
-			json += esc;
-			json += "\"";
+			model.values.emplace_back(
+				static_cast<LPCSTR>(l),
+				static_cast<std::size_t>(l.GetLength()));
 		}
-		json += "]}";
+		const ese::web::SerializedWebResponse response =
+			ese::web::Serialize(model);
+		const CStringA json(
+			response.body.data(),
+			static_cast<int>(response.body.size()));
 
 		CStringA header;
 		header.Format(
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: application/json; charset=utf-8\r\n"
+			"HTTP/1.1 %u %s\r\n"
+			"Content-Type: %s\r\n"
 			"Cache-Control: no-store\r\n"
 			"Access-Control-Allow-Origin: *\r\n"
 			"Content-Length: %d\r\n\r\n",
+			response.status_code,
+			response.reason_phrase.c_str(),
+			response.content_type.c_str(),
 			json.GetLength());
 		Data.pSocket->SendData(header, header.GetLength());
 		Data.pSocket->SendData(json, json.GetLength());
@@ -7109,41 +7114,49 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			? "ipv6_not_supported_by_socks4"
 			: (!keyOk ? "invalid_stream_key"
 				: (!joined ? "join_rejected" : ""));
-		const CStringA keyJson =
-			EseJsonEscapeA(CStringA(CT2A(keyT)));
-		const CStringA ipJson =
-			EseJsonEscapeA(CStringA(CT2A(ipT)));
-
-		CStringA json;
-		json.Format(
-			"{\"success\":%s,\"joined\":%s,\"dialed\":%s,\"error\":\"%s\","
-			"\"streamKey\":\"%s\",\"ip\":\"%s\",\"port\":%u,"
-			"\"mode\":\"%s\",\"hint\":\"%s\"}",
-			overall ? "true" : "false",
-			joined ? "true" : "false",
-			dialed ? "true" : "false",
-			error,
-			(LPCSTR)keyJson,
-			(LPCSTR)ipJson,
-			(unsigned)port,
-			unsupportedIPv6Proxy ? "rejected"
-				: ((directAddress.GetType() != CAddress::None && port != 0)
-					? "direct" : "kad-search"),
-			unsupportedIPv6Proxy
-				? "SOCKS4/SOCKS4A cannot represent an IPv6 destination; use SOCKS5 or HTTP CONNECT"
-				: overall
-				? ((directAddress.GetType() != CAddress::None && port != 0)
+		const bool direct = directAddress.GetType() != CAddress::None && port != 0;
+		const char* mode = unsupportedIPv6Proxy ? "rejected" :
+			(direct ? "direct" : "kad-search");
+		const char* hint = unsupportedIPv6Proxy
+			? "SOCKS4/SOCKS4A cannot represent an IPv6 destination; use "
+				"SOCKS5 or HTTP CONNECT"
+			: overall
+				? (direct
 					? "Dialing broadcaster directly"
 					: "Anonymous link — searching Kad for the broadcaster (5-30 s)")
-				: (keyOk ? "JoinStream rejected" : "Bad streamKey or eMule not ready"));
+				: (keyOk
+					? "JoinStream rejected"
+					: "Bad streamKey or eMule not ready");
+		const CStringA keyA = CStringA(CT2A(keyT));
+		const CStringA ipA = CStringA(CT2A(ipT));
+		const ese::web::SerializedWebResponse response =
+			ese::web::Serialize(ese::web::WebDirectJoinResponseModel{
+				overall,
+				joined,
+				dialed,
+				error,
+				std::string(
+					static_cast<LPCSTR>(keyA),
+					static_cast<std::size_t>(keyA.GetLength())),
+				std::string(
+					static_cast<LPCSTR>(ipA),
+					static_cast<std::size_t>(ipA.GetLength())),
+				static_cast<unsigned>(port),
+				mode,
+				hint});
+		const CStringA json(
+			response.body.data(),
+			static_cast<int>(response.body.size()));
 		CStringA header;
 		header.Format(
-			"HTTP/1.1 %s\r\n"
-			"Content-Type: application/json\r\n"
+			"HTTP/1.1 %u %s\r\n"
+			"Content-Type: %s\r\n"
 			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
 			"X-Content-Type-Options: nosniff\r\n"
 			"Content-Length: %d\r\n\r\n",
-			overall ? "200 OK" : "400 Bad Request",
+			response.status_code,
+			response.reason_phrase.c_str(),
+			response.content_type.c_str(),
 			json.GetLength());
 		Data.pSocket->SendData(header, header.GetLength());
 		Data.pSocket->SendData(json, json.GetLength());

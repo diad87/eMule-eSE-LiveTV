@@ -69,12 +69,129 @@ void TestMarkup()
 		"markup escaping must preserve embedded NUL and non-ASCII code units");
 }
 
+void CheckResponse(
+	const ese::web::SerializedWebResponse& response,
+	unsigned status,
+	const char* reason,
+	const char* contentType,
+	const char* body,
+	const char* message)
+{
+	Check(
+		response.status_code == status &&
+			response.reason_phrase == reason &&
+			response.content_type == contentType &&
+			response.body == body,
+		message);
+}
+
+void TestResponseModels()
+{
+	CheckResponse(
+		ese::web::Serialize(
+			ese::web::WebJoinResponseModel{true, "key\"\\\n"}),
+		200,
+		"OK",
+		"application/json",
+		"{\"success\":true,\"streamKey\":\"key\\\"\\\\\\n\"}",
+		"join response must own exact status, headers, schema and escaping");
+	CheckResponse(
+		ese::web::Serialize(
+			ese::web::WebJoinResponseModel{false, "bad"}),
+		400,
+		"Bad Request",
+		"application/json",
+		"{\"success\":false,\"streamKey\":\"bad\"}",
+		"failed join response must retain its exact HTTP metadata");
+
+	CheckResponse(
+		ese::web::Serialize(ese::web::WebDirectJoinResponseModel{
+			false,
+			true,
+			false,
+			"bad\"\n",
+			"key\\x",
+			"::1\"\t",
+			0,
+			"rejected",
+			"why\r"}),
+		400,
+		"Bad Request",
+		"application/json",
+		"{\"success\":false,\"joined\":true,\"dialed\":false,"
+		"\"error\":\"bad\\\"\\n\",\"streamKey\":\"key\\\\x\","
+		"\"ip\":\"::1\\\"\\t\",\"port\":0,\"mode\":\"rejected\","
+		"\"hint\":\"why\\r\"}",
+		"direct-join response must serialize every caller-owned field");
+	CheckResponse(
+		ese::web::Serialize(ese::web::WebDirectJoinResponseModel{
+			true,
+			true,
+			false,
+			"",
+			"key",
+			"",
+			0,
+			"kad-search",
+			u8"Anonymous link \u2014 searching Kad for the broadcaster (5-30 s)"}),
+		200,
+		"OK",
+		"application/json",
+		u8"{\"success\":true,\"joined\":true,\"dialed\":false,\"error\":\"\","
+		u8"\"streamKey\":\"key\",\"ip\":\"\",\"port\":0,"
+		u8"\"mode\":\"kad-search\",\"hint\":\"Anonymous link \u2014 searching "
+		u8"Kad for the broadcaster (5-30 s)\"}",
+		"direct-join response must preserve the legacy UTF-8 em dash bytes");
+
+	CheckResponse(
+		ese::web::Serialize(ese::web::WebTunnelPingResponseModel{
+			true, "sent\n", "reply\"", "unused"}),
+		200,
+		"OK",
+		"application/json",
+		"{\"ok\":true,\"sent\":\"sent\\n\",\"received\":\"reply\\\"\"}",
+		"successful tunnel-ping response must retain its exact schema");
+	CheckResponse(
+		ese::web::Serialize(ese::web::WebTunnelPingResponseModel{
+			false, "unused", "unused", "timeout\t"}),
+		200,
+		"OK",
+		"application/json",
+		"{\"ok\":false,\"reason\":\"timeout\\t\"}",
+		"failed tunnel-ping response must escape its reason");
+
+	CheckResponse(
+		ese::web::Serialize(ese::web::WebStringArrayResponseModel{
+			"it\"ems", {"a\n", "b\\", std::string("\0x", 2)}}),
+		200,
+		"OK",
+		"application/json; charset=utf-8",
+		"{\"it\\\"ems\":[\"a\\n\",\"b\\\\\",\"\\u0000x\"]}",
+		"string-array response must escape field names, values and NUL");
+
+	Check(
+		ese::web::Serialize(ese::web::WebRemoteLinkXmlResponseModel{
+			true, L"added & <ready>", L"\"file\" & name"}) ==
+			L"<status result=\"OK\"><description>added &amp; &lt;ready&gt;"
+			L"</description><filename>&quot;file&quot; &amp; name</filename>"
+			L"</status>",
+		"successful remote-link XML must own its exact schema and escaping");
+	Check(
+		ese::web::Serialize(ese::web::WebRemoteLinkXmlResponseModel{
+			false, L"wrong <password> & retry", L"ignored"}) ==
+			L"<status result=\"FAILED\" reason=\"WRONG_PASSWORD\">"
+			L"<description>wrong &lt;password&gt; &amp; retry</description>"
+			L"</status>",
+		"failed remote-link XML must omit filename and escape its description");
+}
+
 } // namespace
 
 int main()
 {
 	TestJson();
 	TestMarkup();
+	TestResponseModels();
 	std::string selfTestFailure;
 	Check(
 		ese::web::RunWebApiSerializerSelfTest(selfTestFailure),

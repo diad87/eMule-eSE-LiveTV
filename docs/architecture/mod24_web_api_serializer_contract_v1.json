@@ -27,5 +27,31 @@
   "xml": {
     "contract": "same_as_html_text_mode"
   },
+  "response_models": {
+    "owned_here": [
+      "WebJoinResponseModel",
+      "WebDirectJoinResponseModel",
+      "WebTunnelPingResponseModel",
+      "WebStringArrayResponseModel",
+      "WebRemoteLinkXmlResponseModel"
+    ],
+    "json_owned_fields": [
+      "wire_schema",
+      "body_serialization",
+      "http_status",
+      "reason_phrase",
+      "content_type"
+    ],
+    "xml_owned_fields": [
+      "wire_schema",
+      "body_serialization"
+    ],
+    "xml_compatibility_note": "the legacy remote-link caller consumes the owned XML body while its pre-existing outer HTTP framing remains unchanged",
+    "boundary": {
+      "business_state_and_projection_collection": "retained_by_CWebServer_until_the_applicable_approved_controller_slice",
+      "socket_and_http_framing": "retained_by_CWebServer_until_the_approved_WebSocketResponse_slice"
+    }
+  },
+  "characterization_extension": "moves representative pre-existing response schemas byte-for-byte behind typed models without changing business decisions, projections or socket framing",
   "default_policy": "never_return_unescaped_caller_text_from_an_escape_function"
 }

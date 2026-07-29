@@ -34,6 +34,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
             message.startswith("slice LiveTunnelFraming:")
             for message in messages
         ))
+        self.assertTrue(any(
+            message.startswith("slice LiveTunnelPending:")
+            for message in messages
+        ))
         self.assertFalse(self.config["final_limits"]["enforced_now"])
         self.assertEqual(self.config["baseline_commit"], "161d948281682d39acdcea796b1edddc6d68904c")
         self.assertEqual(len(self.config["coordinator_files"]), 6)
@@ -53,31 +57,52 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveTunnelFraming.cpp"],
                 "interface_files": ["srchybrid/LiveTunnelFraming.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveTunnelPending",
+                "owner": "CLiveTunnel",
+                "layer": "domain_state",
+                "implementation_files": ["srchybrid/LiveTunnelPending.cpp"],
+                "interface_files": ["srchybrid/LiveTunnelPending.h"],
+                "declared_direct_dependencies": [],
             }],
         })
-        self.assertEqual(self.config["approved_non_module_code"], [{
-            "path": "srchybrid/tests/test_live_tunnel_framing.cpp",
-            "reason": (
-                "Standalone byte-exact executable test for MOD-1.1 pure "
-                "framing extraction."
-            ),
-            "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
-        }])
+        self.assertEqual(self.config["approved_non_module_code"], [
+            {
+                "path": "srchybrid/tests/test_live_tunnel_framing.cpp",
+                "reason": (
+                    "Standalone byte-exact executable test for MOD-1.1 pure "
+                    "framing extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/tests/test_live_tunnel_pending.cpp",
+                "reason": (
+                    "Standalone concurrency and retry executable test for "
+                    "MOD-1.2 pending-state extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+        ])
         self.assertEqual(self.config["slice_evidence"], {
             "state": "EXTRACTION_ACTIVE",
             "entries": [{
                 "module": "LiveTunnelFraming",
                 "slice_base_commit": "3a1ccf5faec81ea8fa60cf9b084cb76be98f2074",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveTunnelPending",
+                "slice_base_commit": "778631c0559880be06e62146a5bae44623536383",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }],
         })
 
-    def test_only_the_completed_first_extraction_is_claimed(self) -> None:
+    def test_only_the_two_completed_extractions_are_claimed(self) -> None:
         self.assertEqual(self.config["mod03_contract"]["planned_module_count"], 29)
         self.assertEqual(len(VERIFIER._planned_modules(self.contract)), 29)
         self.assertEqual(
             [entry["name"] for entry in self.config["module_catalog"]["entries"]],
-            ["LiveTunnelFraming"],
+            ["LiveTunnelFraming", "LiveTunnelPending"],
         )
 
     def test_growth_limit_is_binding_while_final_targets_remain_end_state_only(self) -> None:
@@ -117,7 +142,9 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 discovery_overrides={"srchybrid/LiveTunnelFramingImpl.cpp"},
             )
         allowed = copy.deepcopy(self.config)
-        allowed["approved_non_module_code"] = [{
+        allowed["approved_non_module_code"] = copy.deepcopy(
+            self.config["approved_non_module_code"]
+        ) + [{
             "path": "srchybrid/NewHelper.h", "reason": "fixture",
             "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
         }]

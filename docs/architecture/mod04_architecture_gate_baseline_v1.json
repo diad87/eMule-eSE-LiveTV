@@ -24,6 +24,14 @@
         "implementation_files": ["srchybrid/LiveTunnelFraming.cpp"],
         "interface_files": ["srchybrid/LiveTunnelFraming.h"],
         "declared_direct_dependencies": []
+      },
+      {
+        "name": "LiveTunnelPending",
+        "owner": "CLiveTunnel",
+        "layer": "domain_state",
+        "implementation_files": ["srchybrid/LiveTunnelPending.cpp"],
+        "interface_files": ["srchybrid/LiveTunnelPending.h"],
+        "declared_direct_dependencies": []
       }
     ]
   },
@@ -31,6 +39,11 @@
     {
       "path": "srchybrid/tests/test_live_tunnel_framing.cpp",
       "reason": "Standalone byte-exact executable test for MOD-1.1 pure framing extraction.",
+      "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md"
+    },
+    {
+      "path": "srchybrid/tests/test_live_tunnel_pending.cpp",
+      "reason": "Standalone concurrency and retry executable test for MOD-1.2 pending-state extraction.",
       "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md"
     }
   ],
@@ -40,6 +53,11 @@
       {
         "module": "LiveTunnelFraming",
         "slice_base_commit": "3a1ccf5faec81ea8fa60cf9b084cb76be98f2074",
+        "source_coordinator": "srchybrid/LiveTunnel.cpp"
+      },
+      {
+        "module": "LiveTunnelPending",
+        "slice_base_commit": "778631c0559880be06e62146a5bae44623536383",
         "source_coordinator": "srchybrid/LiveTunnel.cpp"
       }
     ]

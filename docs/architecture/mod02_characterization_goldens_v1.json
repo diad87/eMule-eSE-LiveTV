@@ -42,6 +42,25 @@
         "ParseSubHeader": "312f10b21546aa2a5eb27e50b23ec670b0d42bdbd9b2ca295b3d1dc1eedb9a49"
       }
     },
+    "live_tunnel_pending": {
+      "production_file": "srchybrid/LiveTunnelPending.cpp",
+      "symbols": [
+        "LiveTunnelPending::Register",
+        "LiveTunnelPending::Configure",
+        "LiveTunnelPending::SetCircuit",
+        "LiveTunnelPending::Complete",
+        "LiveTunnelPending::Wait",
+        "LiveTunnelPending::CollectRetries"
+      ],
+      "token_sha256": {
+        "LiveTunnelPending::CollectRetries": "0b0afed8ea4bd6272f4222d4137755d3f016404f70e7595ebf1dc38996d2882d",
+        "LiveTunnelPending::Complete": "4b80b2a22e819460437db87276e067f968a32772b27bdda7a929504afa47838c",
+        "LiveTunnelPending::Configure": "75ca28f1d628f069770ee3ea99d802ec5edd41768ec11b2b4b39f6270bd9e3bd",
+        "LiveTunnelPending::Register": "8f7db88d64fbb7669c3abf071dfb0d13271fb2d8c6da3ae7b1fdaf491810f60a",
+        "LiveTunnelPending::SetCircuit": "c109071f3f7a7f4db5a2c5a36cc54d5c18290d0821e6fb40d1806b20f028450a",
+        "LiveTunnelPending::Wait": "6618672af4ca9cfd33a1fac3052925bf60cdaba803c9a6f77f91d32db931322d"
+      }
+    },
     "web_live_dispatch": {
       "production_file": "srchybrid/WebServer.cpp",
       "symbols": [

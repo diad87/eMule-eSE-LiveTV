@@ -184,6 +184,13 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveTunnelFraming.cpp"],
                 "interface_files": ["srchybrid/LiveTunnelFraming.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveTunnelPending",
+                "owner": "CLiveTunnel",
+                "layer": "domain_state",
+                "implementation_files": ["srchybrid/LiveTunnelPending.cpp"],
+                "interface_files": ["srchybrid/LiveTunnelPending.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -192,16 +199,30 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "module": "LiveTunnelFraming",
                 "slice_base_commit": SLICE_BASE,
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveTunnelPending",
+                "slice_base_commit": "778631c0559880be06e62146a5bae44623536383",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }],
         })
-        self.assertEqual(self.baseline["approved_non_module_code"], [{
-            "path": "srchybrid/tests/test_live_tunnel_framing.cpp",
-            "reason": (
-                "Standalone byte-exact executable test for MOD-1.1 pure "
-                "framing extraction."
-            ),
-            "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
-        }])
+        self.assertEqual(self.baseline["approved_non_module_code"], [
+            {
+                "path": "srchybrid/tests/test_live_tunnel_framing.cpp",
+                "reason": (
+                    "Standalone byte-exact executable test for MOD-1.1 pure "
+                    "framing extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/tests/test_live_tunnel_pending.cpp",
+                "reason": (
+                    "Standalone concurrency and retry executable test for "
+                    "MOD-1.2 pending-state extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+        ])
         numstat = subprocess.check_output(
             ["git", "diff", "--numstat", SLICE_BASE, "--", "srchybrid/LiveTunnel.cpp"],
             cwd=ROOT,

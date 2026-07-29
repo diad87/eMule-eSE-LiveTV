@@ -3230,7 +3230,7 @@ bool CLiveTunnel::K6QuotaRoundTrip(uint32 circId, uint8 msgType,
     response = kad6::K6Frame{};
     if (circId == 0 || timeoutMs == 0) return false;
     uint32 reqId = 0;
-    PendingRequest* pending = RegisterPending(reqId);
+    PendingHandle pending = RegisterPending(reqId);
     kad6::K6Frame request;
     request.msg_type = msgType;
     request.request_id = reqId;
@@ -3238,21 +3238,16 @@ bool CLiveTunnel::K6QuotaRoundTrip(uint32 circId, uint8 msgType,
     std::vector<uint8_t> wire;
     if (kad6::EncodeK6Frame(request, wire) != kad6::Kad6Status::Ok) {
         std::vector<uint8_t> ignored;
-        WaitPending(reqId, pending, 0, ignored, NULL);
+        WaitPending(reqId, std::move(pending), 0, ignored, NULL);
         return false;
     }
     const uint32 caps = ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY;
-    {
-        CSingleLock pl(&m_pendingLock, TRUE);
-        pending->sub_cmd = TUN_OP_KAD6_GATEWAY;
-        pending->required_exit_caps = caps;
-        pending->request_msg = wire;
-        pending->retries_left = 0;
-    }
+    m_pendingRequests.Configure(
+        pending, TUN_OP_KAD6_GATEWAY, caps, 0, wire.data(), wire.size());
     EnqueueSendMsg(reqId, TUN_OP_KAD6_GATEWAY, wire.data(), wire.size(), caps,
         circId);
     std::vector<uint8_t> reply;
-    if (!WaitPending(reqId, pending, timeoutMs, reply, NULL)) return false;
+    if (!WaitPending(reqId, std::move(pending), timeoutMs, reply, NULL)) return false;
     size_t consumed = 0;
     return kad6::DecodeK6Frame(reply.data(), reply.size(), response, &consumed) ==
             kad6::Kad6Status::Ok && consumed == reply.size() &&
@@ -4097,76 +4092,49 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
     return chosen->Id();
 }
 
-// v8.1 A3 - async request/reply primitives. RegisterPending creates a
-// per-request slot with an auto-reset event; WaitPending blocks on it (in a
-// webserver worker thread - never the main thread); SignalReply fills the
-// reply and wakes the waiter. The PendingRequest is freed by the waiter
-// only, after it has erased the slot, so the signaler cannot use-after-free.
-CLiveTunnel::PendingRequest* CLiveTunnel::RegisterPending(uint32_t& req_id)
+// v9.2 MOD-1.2 - coordinator adapters for the extracted pending domain.
+// Entropy remains a coordinator concern; collision rejection, request
+// lifetime, waits, and exactly-once completion are module-owned.
+CLiveTunnel::PendingHandle CLiveTunnel::RegisterPending(uint32_t& req_id)
 {
-    PendingRequest* pr = new PendingRequest();
-    pr->evt = CreateEvent(NULL, FALSE, FALSE, NULL);   // auto-reset, unsignaled
-    CSingleLock pl(&m_pendingLock, TRUE);
-    // Pick a req_id not already in flight. A 32-bit random collision is ~2^-32,
-    // but a duplicate would silently hijack the other request's slot, so we
-    // re-roll (the same guard NewCircuitId() uses for circuit ids).
-    uint32_t id;
-    for (;;) {
+    PendingHandle pending = m_pendingRequests.Register([&]() -> uint32_t {
         uint8_t r[4];
         SecureRandomBytes(r, 4);
-        id = (uint32_t)r[0] | ((uint32_t)r[1] << 8)
-           | ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
-        if (id != 0 && m_pending.find(id) == m_pending.end()) break;
-    }
-    req_id = id;
-    m_pending[id] = pr;
-    return pr;
+        return (uint32_t)r[0] | ((uint32_t)r[1] << 8)
+             | ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
+    });
+    req_id = pending.request_id();
+    return pending;
 }
 
-bool CLiveTunnel::WaitPending(uint32_t req_id, PendingRequest* pr,
+bool CLiveTunnel::WaitPending(uint32_t req_id, PendingHandle pending,
                               uint32_t timeoutMs,
                               std::vector<uint8_t>& outReply,
                               uint32_t* outResult,
                               uint32_t* outCircuitId)
 {
+    UNREFERENCED_PARAMETER(req_id);
     if (outCircuitId) *outCircuitId = 0;
-    WaitForSingleObject(pr->evt, timeoutMs);
-    bool ok = false;
-    {
-        CSingleLock pl(&m_pendingLock, TRUE);
-        m_pending.erase(req_id);          // unregister: SignalReply can't find it now
-        // A4: a request woken by send failure (pr->failed) returns false so the
-        // caller reports an honest error, not an empty-but-"successful" reply.
-        if (pr->done && !pr->failed) {
-            outReply = std::move(pr->reply);
-            if (outResult) *outResult = pr->result;
-            if (outCircuitId) *outCircuitId = pr->circ_id;
-            ok = true;
-        }
-    }
-    CloseHandle(pr->evt);
-    delete pr;
-    return ok;
+    eSELive::LiveTunnelPending::Outcome outcome;
+    if (!m_pendingRequests.Wait(std::move(pending), timeoutMs, outcome))
+        return false;
+
+    outReply = std::move(outcome.reply);
+    if (outResult) *outResult = outcome.result;
+    if (outCircuitId) *outCircuitId = outcome.circuit_id;
+    return true;
 }
 
 void CLiveTunnel::SignalReply(uint32_t req_id, const uint8_t* reply,
                               size_t replyLen, uint32_t result)
 {
-    CSingleLock pl(&m_pendingLock, TRUE);
-    auto it = m_pending.find(req_id);
-    if (it == m_pending.end()) return;     // no waiter (timed out / unknown)
-    PendingRequest* pr = it->second;
-    if (reply && replyLen > 0)
-        pr->reply.assign(reply, reply + replyLen);
-    pr->result = result;
-    pr->done   = true;
-    SetEvent(pr->evt);
+    m_pendingRequests.Complete(req_id, reply, replyLen, result);
 }
 
 uint32_t CLiveTunnel::RequestTestCircuit(int hops, uint32_t timeoutMs)
 {
     uint32_t reqId;
-    PendingRequest* pr = RegisterPending(reqId);   // generates a unique req_id
+    PendingHandle pr = RegisterPending(reqId);   // generates a unique req_id
     {
         CSingleLock lk(&m_mtLock, TRUE);
         MainThreadReq req;
@@ -4178,7 +4146,7 @@ uint32_t CLiveTunnel::RequestTestCircuit(int hops, uint32_t timeoutMs)
     }
     std::vector<uint8_t> dummy;
     uint32_t circId = 0;
-    WaitPending(reqId, pr, timeoutMs, dummy, &circId);
+    WaitPending(reqId, std::move(pr), timeoutMs, dummy, &circId);
     return circId;   // 0 on timeout / build failure
 }
 
@@ -4188,7 +4156,7 @@ bool CLiveTunnel::RequestK6ServiceSwitch(kad6::K6Service service, bool enabled,
     if (static_cast<size_t>(service) >= static_cast<size_t>(kad6::K6Service::Count))
         return false;
     uint32_t reqId = 0;
-    PendingRequest* pending = RegisterPending(reqId);
+    PendingHandle pending = RegisterPending(reqId);
     {
         CSingleLock lk(&m_mtLock, TRUE);
         MainThreadReq request;
@@ -4201,7 +4169,7 @@ bool CLiveTunnel::RequestK6ServiceSwitch(kad6::K6Service service, bool enabled,
     }
     std::vector<uint8_t> ignored;
     uint32_t result = 0;
-    return WaitPending(reqId, pending, timeoutMs, ignored, &result) && result == 1;
+    return WaitPending(reqId, std::move(pending), timeoutMs, ignored, &result) && result == 1;
 }
 
 bool CLiveTunnel::RequestK6PublicRelease(
@@ -4209,7 +4177,7 @@ bool CLiveTunnel::RequestK6PublicRelease(
     uint32 drainSeconds, uint32 timeoutMs)
 {
     uint32_t reqId = 0;
-    PendingRequest* pending = RegisterPending(reqId);
+    PendingHandle pending = RegisterPending(reqId);
     {
         CSingleLock lock(&m_mtLock, TRUE);
         MainThreadReq request;
@@ -4224,7 +4192,7 @@ bool CLiveTunnel::RequestK6PublicRelease(
     }
     std::vector<uint8_t> ignored;
     uint32_t result = 0;
-    return WaitPending(reqId, pending, timeoutMs, ignored, &result) && result == 1;
+    return WaitPending(reqId, std::move(pending), timeoutMs, ignored, &result) && result == 1;
 }
 
 void CLiveTunnel::ProcessMainThreadWork()
@@ -4247,7 +4215,7 @@ void CLiveTunnel::ProcessMainThreadWork()
                 break;
             case MT_SEND_MSG: {
                 // A4 - pin the whole message to one circuit; record which one
-                // in the PendingRequest so Tick() can retry it on circuit death.
+                // in the pending domain so Tick() can retry it on circuit death.
                 if (req.k6StreamId != 0) {
                     CSingleLock pl(&m_pendingLock, TRUE);
                     if (m_k6OriginStreams.find(req.k6StreamId) == m_k6OriginStreams.end())
@@ -4257,12 +4225,10 @@ void CLiveTunnel::ProcessMainThreadWork()
                     req.reqId, req.subCmd,
                     req.payload.empty() ? NULL : req.payload.data(),
                     req.payload.size(), req.requiredExitCaps, req.pinnedCircId);
+                m_pendingRequests.SetCircuit(req.reqId, cid);
                 CKad6OriginSocket* failedK6Socket = NULL;
                 {
                     CSingleLock pl(&m_pendingLock, TRUE);
-                    auto it = m_pending.find(req.reqId);
-                    if (it != m_pending.end() && it->second)
-                        it->second->circ_id = cid;   // 0 = no circuit -> caller times out
                     if (req.k6StreamId != 0) {
                         auto stream = m_k6OriginStreams.find(req.k6StreamId);
                         if (stream != m_k6OriginStreams.end() && cid != 0 &&
@@ -4367,8 +4333,8 @@ void CLiveTunnel::GetPeersSnapshot(std::vector<PeerSnapshot>& outAll,
 //   [1..4]   req_id (uint32 LE) — correlates request to reply
 //   [5..6]   text_len (uint16 LE)
 //   [7..N]   text bytes (UTF-8)
-// V correlates a reply to its blocked caller by req_id via SignalReply ->
-// the PendingRequest in m_pending (A3, under m_pendingLock). Exit-side
+// V correlates a reply to its blocked caller by req_id via SignalReply and
+// LiveTunnelPending. Exit-side
 // dispatches PING by echoing back "echo:<text>" wrapped with the circuit keys.
 
 bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
@@ -4418,7 +4384,7 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
             msg = std::move(e.message);
             m_reassembly.erase(rkey);
         }   // release m_pendingLock before the heavier work below
-        // v8.1 D1 - a tunneled DISCOVERY search reply (KAD_RESULT_V2) has no PendingRequest
+        // v8.1 D1 - a tunneled DISCOVERY search reply (KAD_RESULT_V2) has no pending waiter
         // waiter when issued by the fire-and-forget SendKadSearchV2NoWait, so SignalReply
         // would just drop it. Parse it straight into the SAME Live directory the direct
         // search uses, so a Tunneled-mode viewer's stream grid populates without leaking V's
@@ -9163,7 +9129,7 @@ bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
     // K6-1 migration: prefer K6Frame only when a matching Active circuit's
     // exit signed ESE_CAP_KAD6. Otherwise retain the deployed 0x42/0x43 wire.
     uint32_t req_id;
-    PendingRequest* pr = RegisterPending(req_id);
+    PendingHandle pr = RegisterPending(req_id);
     std::vector<uint8_t> body;
     const bool canonical = HasActiveCircuitWithExitCaps(ESE_CAP_KAD6);
     uint8_t op = TUN_OP_KAD_SEARCH_V2;
@@ -9172,7 +9138,7 @@ bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
     if (canonical) {
         if (!EseBuildK6SearchStartFrame(keywordLower, req_id, body)) {
             std::vector<uint8_t> ignored;
-            WaitPending(req_id, pr, 0, ignored, NULL);
+            WaitPending(req_id, std::move(pr), 0, ignored, NULL);
             return false;
         }
         op = TUN_OP_KAD6_GATEWAY;
@@ -9184,7 +9150,7 @@ bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
             kad6::DecodeK6Frame(body.data(), body.size(), quotaOperation, &quotaUsed) !=
                 kad6::Kad6Status::Ok || quotaUsed != body.size()) {
             std::vector<uint8_t> ignored;
-            WaitPending(req_id, pr, 0, ignored, NULL);
+            WaitPending(req_id, std::move(pr), 0, ignored, NULL);
             return false;
         }
         if (K6CircuitHasExitCaps(pinnedCircuit, ESE_CAP_KAD6_ECONOMY, 2) &&
@@ -9192,7 +9158,7 @@ bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
                 quotaOperation.msg_type, quotaOperation.body,
                 (std::max<uint32>)(3, timeoutMs / 2)) && IsK6PublicReleaseEnabled()) {
             std::vector<uint8_t> ignored;
-            WaitPending(req_id, pr, 0, ignored, NULL);
+            WaitPending(req_id, std::move(pr), 0, ignored, NULL);
             return false;
         }
     } else {
@@ -9204,18 +9170,14 @@ bool CLiveTunnel::TunneledKadSearch(const std::string& keywordLower,
         body.insert(body.end(), keywordLower.begin(), keywordLower.begin() + kwLen);
     }
 
-    {
-        CSingleLock pl(&m_pendingLock, TRUE);
-        pr->sub_cmd      = op;
-        pr->required_exit_caps = requiredCaps;
-        pr->request_msg  = body;
-        pr->retries_left = canonical ? 0 : TUN_SEND_RETRIES;
-    }
+    m_pendingRequests.Configure(
+        pr, op, requiredCaps, canonical ? 0 : TUN_SEND_RETRIES,
+        body.data(), body.size());
     EnqueueSendMsg(req_id, op, body.data(), body.size(), requiredCaps,
         pinnedCircuit);
 
     std::vector<uint8_t> reply;
-    if (!WaitPending(req_id, pr, timeoutMs, reply, NULL))
+    if (!WaitPending(req_id, std::move(pr), timeoutMs, reply, NULL))
         return false;
     resultsJsonOut = SB_ParseSearchResultsToJson(reply);
     return true;
@@ -9244,7 +9206,7 @@ bool CLiveTunnel::K6BindSource(const kad6::K6SourceBind& bind,
             (std::max<uint32>)(3, timeoutMs / 2)) && IsK6PublicReleaseEnabled())
         return false;
     uint32_t reqId;
-    PendingRequest* pending = RegisterPending(reqId);
+    PendingHandle pending = RegisterPending(reqId);
     kad6::K6Frame frame;
     frame.msg_type = kad6::kK6MsgSourceBind;
     frame.flags = kad6::kK6FlagLegacyEd2k |
@@ -9253,21 +9215,17 @@ bool CLiveTunnel::K6BindSource(const kad6::K6SourceBind& bind,
     frame.body = std::move(body);
     if (kad6::EncodeK6Frame(frame, wire) != kad6::Kad6Status::Ok) {
         std::vector<uint8_t> ignored;
-        WaitPending(reqId, pending, 0, ignored, NULL);
+        WaitPending(reqId, std::move(pending), 0, ignored, NULL);
         return false;
     }
-    {
-        CSingleLock pl(&m_pendingLock, TRUE);
-        pending->sub_cmd = TUN_OP_KAD6_GATEWAY;
-        pending->required_exit_caps = requiredCaps;
-        pending->request_msg = wire;
-        pending->retries_left = 0;
-    }
+    m_pendingRequests.Configure(
+        pending, TUN_OP_KAD6_GATEWAY, requiredCaps, 0,
+        wire.data(), wire.size());
     EnqueueSendMsg(reqId, TUN_OP_KAD6_GATEWAY, wire.data(), wire.size(), requiredCaps,
         targetCircuit);
     std::vector<uint8_t> reply;
     uint32 pinnedCircuit = 0;
-    if (!WaitPending(reqId, pending, timeoutMs, reply, NULL, &pinnedCircuit)) return false;
+    if (!WaitPending(reqId, std::move(pending), timeoutMs, reply, NULL, &pinnedCircuit)) return false;
     kad6::K6Frame response;
     size_t consumed = 0;
     if (kad6::DecodeK6Frame(reply.data(), reply.size(), response, &consumed) !=
@@ -9350,7 +9308,7 @@ bool CLiveTunnel::K6PublishRecord(const kad6::K6Publish& publish,
         return false;
 
     uint32_t reqId;
-    PendingRequest* pending = RegisterPending(reqId);
+    PendingHandle pending = RegisterPending(reqId);
     kad6::K6Frame frame;
     frame.msg_type = kad6::kK6MsgPublish;
     frame.flags = ((publish.network_mask & kad6::kK6PublishNetKad2)
@@ -9361,22 +9319,18 @@ bool CLiveTunnel::K6PublishRecord(const kad6::K6Publish& publish,
     frame.body = std::move(body);
     if (kad6::EncodeK6Frame(frame, wire) != kad6::Kad6Status::Ok) {
         std::vector<uint8_t> ignored;
-        WaitPending(reqId, pending, 0, ignored, NULL);
+        WaitPending(reqId, std::move(pending), 0, ignored, NULL);
         return false;
     }
-    {
-        CSingleLock pl(&m_pendingLock, TRUE);
-        pending->sub_cmd = TUN_OP_KAD6_GATEWAY;
-        pending->required_exit_caps = ESE_CAP_KAD6;
-        pending->request_msg = wire;
-        // A SourceLease is circuit-bound. Retrying this publish on another
-        // circuit is guaranteed to fail and could create misleading state.
-        pending->retries_left = 0;
-    }
+    // A SourceLease is circuit-bound. Retrying this publish on another
+    // circuit is guaranteed to fail and could create misleading state.
+    m_pendingRequests.Configure(
+        pending, TUN_OP_KAD6_GATEWAY, ESE_CAP_KAD6, 0,
+        wire.data(), wire.size());
     EnqueueSendMsg(reqId, TUN_OP_KAD6_GATEWAY, wire.data(), wire.size(),
         ESE_CAP_KAD6, pinnedCircuit);
     std::vector<uint8_t> reply;
-    if (!WaitPending(reqId, pending, timeoutMs, reply, NULL)) return false;
+    if (!WaitPending(reqId, std::move(pending), timeoutMs, reply, NULL)) return false;
     kad6::K6Frame response;
     size_t consumed = 0;
     if (kad6::DecodeK6Frame(reply.data(), reply.size(), response, &consumed) !=
@@ -9711,21 +9665,20 @@ bool CLiveTunnel::K6RequestTargetTicket(const kad6::K6TargetTicketRequest& reque
     }
     std::vector<uint8_t> body, wire;
     if (kad6::EncodeK6TargetTicketRequest(request, body) != kad6::Kad6Status::Ok) return false;
-    uint32 reqId; PendingRequest* pending = RegisterPending(reqId);
+    uint32 reqId; PendingHandle pending = RegisterPending(reqId);
     kad6::K6Frame frame; frame.msg_type = kad6::kK6MsgTargetTicketReq;
     frame.flags = kad6::kK6FlagLegacyEd2k; frame.request_id = reqId; frame.body = std::move(body);
     if (kad6::EncodeK6Frame(frame, wire) != kad6::Kad6Status::Ok) {
-        std::vector<uint8_t> ignored; WaitPending(reqId, pending, 0, ignored, NULL); return false;
+        std::vector<uint8_t> ignored; WaitPending(reqId, std::move(pending), 0, ignored, NULL); return false;
     }
-    {
-        CSingleLock pl(&m_pendingLock, TRUE); pending->sub_cmd = TUN_OP_KAD6_GATEWAY;
-        pending->required_exit_caps = ESE_CAP_KAD6; pending->request_msg = wire;
-        pending->retries_left = 0; // result authorization is bound to this exact exit/circuit.
-    }
+    // Result authorization is bound to this exact exit/circuit.
+    m_pendingRequests.Configure(
+        pending, TUN_OP_KAD6_GATEWAY, ESE_CAP_KAD6, 0,
+        wire.data(), wire.size());
     EnqueueSendMsg(reqId, TUN_OP_KAD6_GATEWAY, wire.data(), wire.size(),
         ESE_CAP_KAD6, pinnedCircId);
     std::vector<uint8_t> reply;
-    if (!WaitPending(reqId, pending, timeoutMs, reply, NULL)) return false;
+    if (!WaitPending(reqId, std::move(pending), timeoutMs, reply, NULL)) return false;
     kad6::K6Frame response; size_t used = 0; kad6::K6TargetTicketResponse ticket;
     if (kad6::DecodeK6Frame(reply.data(), reply.size(), response, &used) != kad6::Kad6Status::Ok ||
         used != reply.size() || response.msg_type != kad6::kK6MsgTargetTicket ||
@@ -9776,21 +9729,20 @@ bool CLiveTunnel::K6DialEd2k(const std::vector<uint8_t>& ticket,
             kad6::K6QuotaService::ExitEd2kDial, kad6::kK6MsgDial, body,
             (std::max<uint32>)(3, timeoutMs / 2)) && IsK6PublicReleaseEnabled())
         return false;
-    uint32 reqId; PendingRequest* pending = RegisterPending(reqId);
+    uint32 reqId; PendingHandle pending = RegisterPending(reqId);
     kad6::K6Frame frame; frame.msg_type = kad6::kK6MsgDial;
     frame.flags = kad6::kK6FlagLegacyEd2k; frame.request_id = reqId; frame.body = std::move(body);
     if (kad6::EncodeK6Frame(frame, wire) != kad6::Kad6Status::Ok) {
-        std::vector<uint8_t> ignored; WaitPending(reqId, pending, 0, ignored, NULL); return false;
+        std::vector<uint8_t> ignored; WaitPending(reqId, std::move(pending), 0, ignored, NULL); return false;
     }
-    {
-        CSingleLock pl(&m_pendingLock, TRUE); pending->sub_cmd = TUN_OP_KAD6_GATEWAY;
-        pending->required_exit_caps = ESE_CAP_KAD6; pending->request_msg = wire;
-        pending->retries_left = 0; // a single-use DIAL must never be replayed automatically.
-    }
+    // A single-use DIAL must never be replayed automatically.
+    m_pendingRequests.Configure(
+        pending, TUN_OP_KAD6_GATEWAY, ESE_CAP_KAD6, 0,
+        wire.data(), wire.size());
     EnqueueSendMsg(reqId, TUN_OP_KAD6_GATEWAY, wire.data(), wire.size(),
         ESE_CAP_KAD6, pinnedCircId);
     std::vector<uint8_t> reply;
-    if (!WaitPending(reqId, pending, timeoutMs, reply, NULL)) return false;
+    if (!WaitPending(reqId, std::move(pending), timeoutMs, reply, NULL)) return false;
     kad6::K6Frame response; size_t used = 0;
     if (kad6::DecodeK6Frame(reply.data(), reply.size(), response, &used) != kad6::Kad6Status::Ok ||
         used != reply.size() || response.msg_type != kad6::kK6MsgDialOk ||
@@ -9962,7 +9914,7 @@ bool CLiveTunnel::TunneledLiveSubscribe(const uint8_t streamKey[16],
                                         uint32_t bAltIP, uint32_t timeoutMs)
 {
     uint32_t req_id;
-    PendingRequest* pr = RegisterPending(req_id);
+    PendingHandle pr = RegisterPending(req_id);
 
     std::vector<uint8_t> body(28);
     memcpy(body.data(), streamKey, 16);
@@ -9971,23 +9923,20 @@ bool CLiveTunnel::TunneledLiveSubscribe(const uint8_t streamKey[16],
     eseWrU16LE(body.data() + 22, bUDP);
     eseWrU32LE(body.data() + 24, bAltIP);
 
-    {
-        CSingleLock pl(&m_pendingLock, TRUE);
-        pr->sub_cmd      = TUN_OP_LIVE_SUBSCRIBE;
-        pr->request_msg  = body;
-        pr->retries_left = TUN_SEND_RETRIES;
-    }
+    m_pendingRequests.Configure(
+        pr, TUN_OP_LIVE_SUBSCRIBE, 0, TUN_SEND_RETRIES,
+        body.data(), body.size());
     EnqueueSendMsg(req_id, TUN_OP_LIVE_SUBSCRIBE, body.data(), body.size());
 
     std::vector<uint8_t> reply;
-    if (!WaitPending(req_id, pr, timeoutMs, reply, NULL))
+    if (!WaitPending(req_id, std::move(pr), timeoutMs, reply, NULL))
         return false;
     // reply = [status u8][streamKey 16]; status 0 == forwarded.
     return reply.size() >= 1 && reply[0] == 0;
 }
 
 // v8.1 Sprint C (C5) — non-blocking tunneled subscribe (see header). Uses a
-// throwaway req_id with NO PendingRequest: ProcessMainThreadWork's MT_SEND_MSG
+// throwaway req_id with no pending waiter: ProcessMainThreadWork's MT_SEND_MSG
 // tolerates a missing slot (it just skips retry tracking), and the SUB_ACK
 // reply finds no waiter in SignalReply (no-op). No leak, no block.
 void CLiveTunnel::SendLiveSubscribeNoWait(const uint8_t streamKey[16],
@@ -10031,7 +9980,7 @@ bool CLiveTunnel::SendK6LiveSubscribeNoWait(const uint8_t streamKey[16])
 }
 
 // v8.1 D1 - non-blocking tunneled Kad keyword search. Like SendLiveSubscribeNoWait, uses a
-// throwaway req_id with NO PendingRequest: the exit runs the real Kad search on our behalf
+// throwaway req_id with no pending waiter: the exit runs the real Kad search on our behalf
 // and replies TUN_OP_KAD_RESULT_V2, which HandleRelay_Originator parses straight into the
 // Live directory (no waiter to wake). This lets CLiveKadBridge::SearchStreams route
 // discovery through the tunnel from the MAIN thread without blocking (the existing
@@ -11197,28 +11146,25 @@ bool CLiveTunnel::TunnelPing(const std::string& text, std::string& replyText,
 {
     // v8.1 A4 - register the waiter BEFORE sending (generates a unique req_id;
     // a fast reply cannot race the registration), stash the message for retry,
-    // then marshal a pinned send and block on the event (A3, no poll).
+    // then marshal a pinned send and wait through the pending domain.
     uint32_t req_id;
-    PendingRequest* pr = RegisterPending(req_id);
-    {
-        CSingleLock pl(&m_pendingLock, TRUE);
-        pr->sub_cmd      = TUN_OP_PING;
-        pr->request_msg.assign(text.begin(), text.end());
-        pr->retries_left = TUN_SEND_RETRIES;
-    }
+    PendingHandle pr = RegisterPending(req_id);
+    m_pendingRequests.Configure(
+        pr, TUN_OP_PING, 0, TUN_SEND_RETRIES,
+        reinterpret_cast<const uint8_t*>(text.data()), text.size());
     EnqueueSendMsg(req_id, TUN_OP_PING,
                    (const uint8_t*)text.data(), text.size());
 
     std::vector<uint8_t> reply;
-    if (!WaitPending(req_id, pr, timeoutMs, reply, NULL))
+    if (!WaitPending(req_id, std::move(pr), timeoutMs, reply, NULL))
         return false;
     replyText.assign((const char*)reply.data(), reply.size());
     return true;
 }
 
 // v8.1 A1.7 - multi-cell echo round-trip. Marshals the message for a pinned
-// send (A4: SendMessagePinned fragments it onto one circuit) and blocks on the
-// event (A3) for the reassembled TUN_OP_ECHO_LARGE_REPLY. Worker-thread safe.
+// send (A4: SendMessagePinned fragments it onto one circuit) and waits for the
+// reassembled TUN_OP_ECHO_LARGE_REPLY. Worker-thread safe.
 bool CLiveTunnel::TunnelEchoLarge(const std::vector<uint8_t>& payload,
                                   std::vector<uint8_t>& replyOut,
                                   uint32_t timeoutMs)
@@ -11231,19 +11177,16 @@ bool CLiveTunnel::TunnelEchoLarge(const std::vector<uint8_t>& payload,
 
     // v8.1 A4 - register the waiter (generates a unique req_id), stash the
     // message for retry, then marshal a pinned send: all fragments ride ONE
-    // circuit so they reassemble at one exit. Block on the event (A3, no poll).
+    // circuit so they reassemble at one exit. Wait through the pending domain.
     uint32_t req_id;
-    PendingRequest* pr = RegisterPending(req_id);
-    {
-        CSingleLock pl(&m_pendingLock, TRUE);
-        pr->sub_cmd      = TUN_OP_ECHO_LARGE;
-        pr->request_msg  = payload;
-        pr->retries_left = TUN_SEND_RETRIES;
-    }
+    PendingHandle pr = RegisterPending(req_id);
+    m_pendingRequests.Configure(
+        pr, TUN_OP_ECHO_LARGE, 0, TUN_SEND_RETRIES,
+        payload.empty() ? NULL : payload.data(), payload.size());
     EnqueueSendMsg(req_id, TUN_OP_ECHO_LARGE,
                    payload.empty() ? NULL : payload.data(), payload.size());
 
-    return WaitPending(req_id, pr, timeoutMs, replyOut, NULL);
+    return WaitPending(req_id, std::move(pr), timeoutMs, replyOut, NULL);
 }
 
 void CLiveTunnel::Tick()
@@ -11398,9 +11341,8 @@ void CLiveTunnel::Tick()
         const DWORD RTT_PING_INTERVAL_MS = 5000u;
         if ((DWORD)(now - m_lastRttPingTick) >= RTT_PING_INTERVAL_MS) {
             m_lastRttPingTick = now;
-            // req_id is a fresh random NewCircuitId(), NOT deduped against m_pending
-            // (can't take m_pendingLock here — Tick holds m_lock, and the order is
-            // m_pendingLock->m_lock). A ~2^-32 collision with an in-flight manual
+            // req_id is a fresh random NewCircuitId(), not deduped against the
+            // pending domain. A ~2^-32 collision with an in-flight manual
             // TunnelPing would cost one washed-out EWMA sample; accepted given the odds
             // and that TunnelPing is a dev-only diagnostic path.
             const uint32_t rttReqId = NewCircuitId();
@@ -11468,36 +11410,29 @@ void CLiveTunnel::Tick()
     // another circuit (up to retries_left); when retries run out, wake the
     // waiter with a failure so it returns a clean error instead of timing out.
     {
-        auto circuitAlive = [&](uint32_t id) -> bool {
-            for (auto& c : m_circuits)
-                if (c->Id() == id && c->State() == CircuitState::Active) return true;
-            return false;
-        };
-        std::vector<MainThreadReq> retries;
-        {
-            CSingleLock pl(&m_pendingLock, TRUE);
-            for (auto& kv : m_pending) {
-                PendingRequest* pr = kv.second;
-                if (!pr || pr->done) continue;
-                if (pr->circ_id == 0) continue;            // not sent yet / no circuit
-                if (circuitAlive(pr->circ_id)) continue;   // still on a live circuit
-                if (pr->retries_left > 0) {
-                    pr->retries_left--;
-                    pr->circ_id = 0;                       // reassigned on resend
-                    MainThreadReq rq;
-                    rq.op      = MT_SEND_MSG;
-                    rq.reqId   = kv.first;
-                    rq.subCmd  = pr->sub_cmd;
-                    rq.requiredExitCaps = pr->required_exit_caps;
-                    rq.payload = pr->request_msg;
-                    retries.push_back(std::move(rq));
-                } else {
-                    pr->failed = true;                     // out of retries -> honest fail
-                    pr->done   = true;
-                    SetEvent(pr->evt);
-                }
-            }
+        // Tick already owns the registry lock. Pass a value snapshot into the
+        // pending domain; it must never call back into the registry while its
+        // own mutex is held.
+        std::set<uint32_t> activeCircuitIds;
+        for (const auto& circuit : m_circuits) {
+            if (circuit && circuit->State() == CircuitState::Active)
+                activeCircuitIds.insert(circuit->Id());
         }
+        std::vector<MainThreadReq> retries;
+        const std::vector<eSELive::LiveTunnelPending::RetryAction> actions =
+            m_pendingRequests.CollectRetries(activeCircuitIds);
+        retries.reserve(actions.size());
+        for (const auto& action : actions) {
+            MainThreadReq request;
+            request.op = MT_SEND_MSG;
+            request.reqId = action.request_id;
+            request.subCmd = action.sub_cmd;
+            request.requiredExitCaps = action.required_exit_caps;
+            request.payload = action.message;
+            retries.push_back(std::move(request));
+        }
+        // CollectRetries has released the pending-domain mutex before queue
+        // publication, preserving registry -> pending -> queue lock order.
         if (!retries.empty()) {
             CSingleLock lk(&m_mtLock, TRUE);
             for (size_t i = 0; i < retries.size(); ++i)

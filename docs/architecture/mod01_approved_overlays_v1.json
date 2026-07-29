@@ -5,16 +5,16 @@
     {
       "path": "srchybrid/LiveTunnel.cpp",
       "baseline_sha256": "0d899136a867bd1a0571b62b06343d0ca3a1f075162656eb0f4bddcb6dc85591",
-      "overlay_sha256": "0b01da80c01d287d7090d2334525320a2676d551f98db49c09c29926efcd1491",
-      "task": "MOD-0.2 + MOD-1.1",
-      "reason": "MOD-0.2 headless production framing/reassembly characterization hook; MOD-1.1 mechanically extracts its pure framing body without behavior change."
+      "overlay_sha256": "892b2705a8ac562ab07f3bb63c67e4bf345f39c56f5f29223a2decc5ce022316",
+      "task": "MOD-0.2 + MOD-1.1 + MOD-1.2",
+      "reason": "MOD-0.2 headless production framing/reassembly characterization hook; MOD-1.1 mechanically extracts its pure framing body; MOD-1.2 extracts pending request lifetime, deadlines, retry state, and exactly-once completion without wire behavior change."
     },
     {
       "path": "srchybrid/LiveTunnel.h",
       "baseline_sha256": "1a2684e8741058667b8ececed4170026b1073b851a48e61da49f13c7ba27e731",
-      "overlay_sha256": "402355f12423ee03b6e4786c21bbf1658740f23dbf0a940c968929afd8946cbd",
-      "task": "MOD-0.2",
-      "reason": "Declaration of the headless production characterization hook."
+      "overlay_sha256": "45fabead3187c3ab226c597b76fc0b8d02a8e772cb4d5c1579c92c596f04e2c4",
+      "task": "MOD-0.2 + MOD-1.2",
+      "reason": "Declaration of the headless production characterization hook and the MOD-1.2 opaque pending-domain adapter."
     },
     {
       "path": "srchybrid/WebServer.cpp",

@@ -27,6 +27,7 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h",
     "srchybrid/LiveCellQueue.cpp", "srchybrid/LiveCellQueue.h",
     "srchybrid/LiveTunnelFraming.cpp", "srchybrid/LiveTunnelFraming.h",
+    "srchybrid/LiveTunnelPending.cpp", "srchybrid/LiveTunnelPending.h",
     "srchybrid/WebServer.cpp", "srchybrid/WebServer.h",
     "srchybrid/LiveStreamManager.cpp", "srchybrid/LiveStreamManager.h",
 ]

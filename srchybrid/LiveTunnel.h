@@ -14,6 +14,7 @@
 #include "LiveOnionCrypto.h"
 #include "LiveCellQueue.h"   // v8.1 A2 - ReassemblyEntry, fragment helpers
 #include "LiveBulk.h"        // v8.1.2 E1.2/E3.4 - bulk cell wire + multi-block FEC + replay window
+#include "LiveTunnelPending.h"
 #include "kad6/kad6_lease.h"
 #include "kad6/kad6_publish.h"
 #include "kad6/kad6_frame.h"
@@ -1225,37 +1226,17 @@ private:
     // StopSearch on the job's CSearch ids (main thread only).
     void StopSearchJobKad(const TunnelSearchJob& job);
 
-    // v0.71 C — pending tunnel_ping requests. Key = req_id, value = the
-    // reply text once it arrives. The TunnelPing() blocking call polls
-    // this map under m_pendingLock with a wait/timeout. Cleared on reply
-    // or on timeout.
+    // This legacy lock still owns reassembly, K6 routing, and other adjacent
+    // domain state. Pending request records no longer use it.
     mutable CCriticalSection m_pendingLock;
-    // v8.1 A3 - async request/reply. One PendingRequest per in-flight
-    // request, keyed by req_id; the waiter (a webserver worker thread)
-    // blocks on `evt`, the cell handler / main thread fills the reply and
-    // SetEvent()s. Replaces the v0.71/v0.72 Sleep(50)-poll maps.
-    struct PendingRequest {
-        HANDLE   evt    = NULL;        // auto-reset; signaled when reply lands
-        bool     done   = false;
-        bool     failed = false;       // A4: woken by a send failure, not a reply
-        uint32_t result = 0;          // RequestTestCircuit: built circuit id
-        std::vector<uint8_t> reply;   // tunnel reply payload
-        // v8.1 A4 - message pinning + retry. The whole logical message is sent
-        // on ONE circuit; if that circuit dies mid-message Tick() retries it on
-        // another (up to retries_left) by re-enqueuing from request_msg.
-        uint32_t circ_id      = 0;     // circuit this request was pinned to (0 = not sent yet)
-        uint8_t  sub_cmd      = 0;     // op to resend with
-        uint32_t required_exit_caps = 0; // authenticated exit cap filter
-        int      retries_left = 0;     // remaining retries on circuit death
-        std::vector<uint8_t> request_msg;  // original logical message body (for resend)
-    };
-    std::map<uint32_t, PendingRequest*> m_pending;     // under m_pendingLock
-    // A3 helpers. RegisterPending must run BEFORE the send so a fast reply
-    // cannot race the registration; the waiter owns the PendingRequest.
-    // It generates a collision-free req_id (out param) under m_pendingLock so
-    // two concurrent requests can never share a slot.
-    PendingRequest* RegisterPending(uint32_t& req_id);
-    bool WaitPending(uint32_t req_id, PendingRequest* pr, uint32_t timeoutMs,
+    // v9.2 MOD-1.2 - extracted pending-domain ownership. Request records,
+    // waiter lifetime, retry state, and terminal completion are private to the
+    // module. m_pendingLock remains for unrelated reassembly/K6 domain state.
+    using PendingHandle = eSELive::LiveTunnelPending::Handle;
+    eSELive::LiveTunnelPending m_pendingRequests;
+    // Register before send so a fast reply cannot beat registration.
+    PendingHandle RegisterPending(uint32_t& req_id);
+    bool WaitPending(uint32_t req_id, PendingHandle pending, uint32_t timeoutMs,
                      std::vector<uint8_t>& outReply, uint32_t* outResult,
                      uint32_t* outCircuitId = NULL);
     void SignalReply(uint32_t req_id, const uint8_t* reply, size_t replyLen,

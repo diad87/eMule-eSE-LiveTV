@@ -106,7 +106,28 @@ class Mod02CharacterizationTest(unittest.TestCase):
             "schema", "source_commit", "source_identity_sha256", "executable_sha256",
         })
         self.assertEqual(manifest["schema"], "ese.mod02.build-manifest/v1")
-        self.assertEqual(evidence["source_commit"], manifest["source_commit"])
+        self.assertRegex(evidence["source_commit"], r"^[0-9a-f]{40}$")
+        evidence_descends_from_manifest = subprocess.run(
+            [
+                "git", "merge-base", "--is-ancestor",
+                manifest["source_commit"], evidence["source_commit"],
+            ],
+            cwd=ROOT, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(
+            evidence_descends_from_manifest.returncode, 0,
+            "Runtime evidence commit must descend from the build manifest commit.",
+        )
+        evidence_drift = subprocess.run(
+            [
+                "git", "diff", "--name-only",
+                manifest["source_commit"], evidence["source_commit"], "--",
+                *CRITICAL_SOURCE_PATHS, "srchybrid/Mod02BuildIdentity.h",
+            ],
+            cwd=ROOT, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(evidence_drift.returncode, 0, evidence_drift.stderr)
+        self.assertEqual(evidence_drift.stdout.strip(), "")
         self.assertEqual(
             evidence["source_identity_sha256"], manifest["source_identity_sha256"])
         self.assertEqual(

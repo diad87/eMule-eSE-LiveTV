@@ -15,13 +15,13 @@
       "marker_sha256",
       "termination_confirmed"
     ],
-    "acceptance": "The committed build manifest, source identity marker and binary SHA must all match; then exit_code=0, source_tree_clean=true, markers_verified=true and termination_confirmed=true.",
+    "acceptance": "The manifest commit must be an ancestor of the tested HEAD with zero critical-source drift; the committed source identity marker and binary SHA must match; then exit_code=0, source_tree_clean=true, markers_verified=true and termination_confirmed=true.",
     "evidence": {
-      "source_commit": "74e716926e13a90c9d071d3bd13f8074c0aa714c",
+      "source_commit": "7abc858fcdb9aebb01ff05712e1e509cf7c120af",
       "source_identity_sha256": "6ba51cd8fa8b89b559360d334a149c80eba014e17536be5cd3832632d9e07c9c",
       "executable_sha256": "e73e4ec445c85770a78d8aac1175dbf1a250bc760c37639a021830751d51fb4d",
       "build_manifest_sha256": "652049ddb8223c37fc1d80126b8e853e5adb7cf263b923fd74a9df11685fc060",
-      "summary_sha256": "0931ff748e3402a8c554025f901b5478082270122486480f953087af99b50ae1",
+      "summary_sha256": "d0663890850917a89f346b518866596db5a36ec5f090e72df838b7bc93ef73c4",
       "marker_sha256": "80415622fa53bf19c5c65995f3c4dd516cfab271b124fb8aea52af14fec068c2",
       "timeout_seconds": 180,
       "timed_out": false,

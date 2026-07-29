@@ -4457,7 +4457,7 @@ CString CWebServer::_GetRemoteLinkAddedOk(const ThreadData &Data)
 	Out += _T("<description>") +
 		EseXmlEscape(GetResString(IDS_WEB_REMOTE_LINK_ADDED)) +
 		_T("</description>");
-	Out += _T("<filename>") + HTTPTemp + _T("</filename>");
+	Out += _T("<filename>") + EseXmlEscape(HTTPTemp) + _T("</filename>");
 	Out += _T("</status>");
 
 	return Out;

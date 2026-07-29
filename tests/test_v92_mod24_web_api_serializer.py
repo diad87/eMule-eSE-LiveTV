@@ -107,6 +107,14 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
             "EseXmlEscape(GetResString(IDS_WEB_REMOTE_LINK_NOT_ADDED))",
             self.server,
         )
+        self.assertIn(
+            '_T("<filename>") + EseXmlEscape(HTTPTemp) + _T("</filename>")',
+            self.server,
+        )
+        self.assertNotIn(
+            '_T("<filename>") + HTTPTemp + _T("</filename>")',
+            self.server,
+        )
         self.assertIn("ese::web::EscapeXml(input)", self.server)
 
     def test_native_vectors_cover_controls_entities_and_encoding_boundaries(

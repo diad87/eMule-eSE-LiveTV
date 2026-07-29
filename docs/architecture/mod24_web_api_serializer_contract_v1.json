@@ -1,0 +1,31 @@
+{
+  "schema": "ese.mod24.web-api-serializer-contract/v1",
+  "owner_before": "CWebServer",
+  "owner_after": "WebApiSerializer",
+  "layer": "application",
+  "responsibility": "escaped JSON, XML, HTML and response models",
+  "text_encoding_policy": "caller_owned_and_byte_or_code_unit_preserving",
+  "json": {
+    "escaped_short": ["quote", "backslash", "backspace", "form_feed", "line_feed", "carriage_return", "tab"],
+    "other_control_bytes": "lowercase_u00xx",
+    "bytes_0x20_to_0xff": "preserved_except_quote_and_backslash",
+    "slash": "preserved"
+  },
+  "html": {
+    "always_escaped": ["ampersand", "less_than", "greater_than", "double_quote"],
+    "quoted_mode": {
+      "apostrophe": "&#8217;",
+      "line_feed": "\\n"
+    },
+    "text_mode": {
+      "apostrophe": "preserved",
+      "line_feed": "preserved"
+    },
+    "carriage_return": "preserved",
+    "preescaped_entities": "escaped_again"
+  },
+  "xml": {
+    "contract": "same_as_html_text_mode"
+  },
+  "default_policy": "never_return_unescaped_caller_text_from_an_escape_function"
+}

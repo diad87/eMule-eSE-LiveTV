@@ -410,6 +410,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/LiveTunnelKadBridge.h",
             "srchybrid/LiveTunnelMetrics.cpp",
             "srchybrid/LiveTunnelMetrics.h",
+            "srchybrid/WebSocket.cpp",
+            "srchybrid/WebSocket.h",
+            "srchybrid/WebRequestParser.cpp",
+            "srchybrid/WebRequestParser.h",
         }
         self.assertTrue(expected_paths.issubset(set(MOD02.CRITICAL_SOURCE_PATHS)))
         self.assertTrue(expected_paths.issubset(set(

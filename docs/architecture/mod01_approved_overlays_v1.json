@@ -19,9 +19,9 @@
     {
       "path": "srchybrid/WebServer.cpp",
       "baseline_sha256": "afcf5a5b8091995a473548fc05086fe1b2ba0e8127378cd959424fa8f6770028",
-      "overlay_sha256": "acc6445200922865d1bbf1e2a2aa967898065f537376d0fb5a7fb9bc3c707e96",
-      "task": "MOD-0.2",
-      "reason": "Headless production parser, escaping and complete gzip characterization hook."
+      "overlay_sha256": "c3aa0e722e6e97f65bac5b902b6b711382a19385cab6440997ebf24cce15a867",
+      "task": "MOD-0.2 + MOD-2.1",
+      "reason": "Headless production characterization hook and MOD-2.1 delegation of query, cookie and bounded request parsing to WebRequestParser."
     },
     {
       "path": "srchybrid/WebServer.h",

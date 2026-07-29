@@ -36,6 +36,8 @@ $criticalSourceRelativePaths = @(
     'srchybrid/LiveCircuitHandshake.cpp', 'srchybrid/LiveCircuitHandshake.h',
     'srchybrid/LiveCircuit.cpp', 'srchybrid/LiveCircuit.h',
     'srchybrid/WebServer.cpp', 'srchybrid/WebServer.h',
+    'srchybrid/WebSocket.cpp', 'srchybrid/WebSocket.h',
+    'srchybrid/WebRequestParser.cpp', 'srchybrid/WebRequestParser.h',
     'srchybrid/LiveStreamManager.cpp', 'srchybrid/LiveStreamManager.h'
 )
 $identityHeaderRelativePath = 'srchybrid/Mod02BuildIdentity.h'

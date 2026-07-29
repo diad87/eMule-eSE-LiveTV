@@ -68,11 +68,11 @@ public:
     // owner lock-free avoids adding a new rank to the established lock order.
     std::uint32_t ApplySourceScore(
         std::uint32_t base_score,
-        const LiveSourceEndpointKey& endpoint) const noexcept;
+        const LiveSourceEndpointKey& endpoint) const;
     void RecordSourceResult(const LiveSourceEndpointKey& endpoint, bool success,
-                            std::uint64_t now_seconds) noexcept;
+                            std::uint64_t now_seconds);
     void RecordSourceFailure(const LiveSourceEndpointKey& endpoint,
-                             std::uint64_t now_seconds) noexcept;
+                             std::uint64_t now_seconds);
     void SweepSourceHistory(std::uint64_t now_seconds);
     std::size_t SourceHistorySize() const noexcept;
     void ClearSourceHistory() noexcept;

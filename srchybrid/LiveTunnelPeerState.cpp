@@ -23,7 +23,7 @@ std::string LiveTunnelPeerState::SourceScoreKey(
 
 std::uint32_t LiveTunnelPeerState::ApplySourceScore(
     std::uint32_t base_score,
-    const LiveSourceEndpointKey& endpoint) const noexcept
+    const LiveSourceEndpointKey& endpoint) const
 {
     const auto history = m_source_scores.find(SourceScoreKey(endpoint));
     if (history == m_source_scores.end())
@@ -39,7 +39,7 @@ std::uint32_t LiveTunnelPeerState::ApplySourceScore(
 
 void LiveTunnelPeerState::RecordSourceResult(
     const LiveSourceEndpointKey& endpoint, bool success,
-    std::uint64_t now_seconds) noexcept
+    std::uint64_t now_seconds)
 {
     SourceScore& score = m_source_scores[SourceScoreKey(endpoint)];
     if (success) {
@@ -53,7 +53,7 @@ void LiveTunnelPeerState::RecordSourceResult(
 }
 
 void LiveTunnelPeerState::RecordSourceFailure(
-    const LiveSourceEndpointKey& endpoint, std::uint64_t now_seconds) noexcept
+    const LiveSourceEndpointKey& endpoint, std::uint64_t now_seconds)
 {
     RecordSourceResult(endpoint, false, now_seconds);
 }

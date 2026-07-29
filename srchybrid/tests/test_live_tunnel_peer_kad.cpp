@@ -3,9 +3,20 @@
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 using namespace eSELive;
+
+static_assert(!noexcept(std::declval<const LiveTunnelPeerState&>().ApplySourceScore(
+                  0, std::declval<const LiveSourceEndpointKey&>())),
+              "source scoring must preserve allocation-failure propagation");
+static_assert(!noexcept(std::declval<LiveTunnelPeerState&>().RecordSourceResult(
+                  std::declval<const LiveSourceEndpointKey&>(), true, 0)),
+              "source history updates must preserve allocation-failure propagation");
+static_assert(!noexcept(std::declval<LiveTunnelPeerState&>().RecordSourceFailure(
+                  std::declval<const LiveSourceEndpointKey&>(), 0)),
+              "source failure updates must preserve allocation-failure propagation");
 
 namespace eSELive {
 bool RunLiveTunnelKadBridgeCharacterizationSelfTest();

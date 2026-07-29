@@ -59,6 +59,15 @@ class Mod17PeerKadCharacterizationTest(unittest.TestCase):
         self.assertIn("job->second.maxResults + 8u", body)
 
     def test_score_history_is_network_scoped_saturating_and_bounded(self) -> None:
+        for signature in (
+            "ApplySourceScore(\n        std::uint32_t base_score,\n"
+            "        const LiveSourceEndpointKey& endpoint) const noexcept",
+            "RecordSourceResult(const LiveSourceEndpointKey& endpoint, bool success,\n"
+            "                            std::uint64_t now_seconds) noexcept",
+            "RecordSourceFailure(const LiveSourceEndpointKey& endpoint,\n"
+            "                             std::uint64_t now_seconds) noexcept",
+        ):
+            self.assertNotIn(signature, self.peer_interface)
         key = VERIFIER.function_body(
             self.peer_state, "LiveTunnelPeerState::SourceScoreKey"
         )

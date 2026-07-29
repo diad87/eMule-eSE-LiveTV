@@ -15,6 +15,7 @@ PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 INTERFACE = ROOT / "srchybrid" / "LiveCircuitHandshake.h"
 WIRE_INTERFACE = ROOT / "srchybrid" / "LiveHandshakeWire.h"
 WIRE_SOURCE = ROOT / "srchybrid" / "LiveHandshakeWire.cpp"
+UPDOWN_INTERFACE = ROOT / "srchybrid" / "UpdownClient.h"
 VERIFIER_PATH = ROOT / "tools" / "architecture" / "verify_mod02_characterization.py"
 
 SPEC = importlib.util.spec_from_file_location("mod02_handshake_verifier", VERIFIER_PATH)
@@ -72,6 +73,30 @@ class Mod14LiveCircuitHandshakeTest(unittest.TestCase):
         self.assertIn("SecureRandomBytes(", wire_source)
         self.assertIn('ClCompile Include="LiveHandshakeWire.cpp"', project)
         self.assertIn('ClInclude Include="LiveHandshakeWire.h"', project)
+
+    def test_shaping_limit_and_capability_masks_have_one_canonical_owner(self) -> None:
+        wire_interface = WIRE_INTERFACE.read_text(encoding="utf-8")
+        updown_interface = UPDOWN_INTERFACE.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "constexpr std::uint16_t K6_SHAPE_RUNTIME_MAX_BUCKET_KIB = 1024;",
+            wire_interface,
+        )
+        self.assertNotIn(
+            "K6_SHAPE_RUNTIME_MAX_BUCKET_KIB =",
+            self.source + self.coordinator,
+        )
+        for capability in (
+            "ESE_CAP_TUNNEL_AUTH",
+            "ESE_CAP_TUNNEL_STRICT3",
+            "ESE_CAP_TUNNEL_SHAPED",
+        ):
+            self.assertIn(
+                f"m_uEseCapabilities & {capability}",
+                updown_interface,
+            )
+        for duplicated_mask in ("0x00040000", "0x02000000", "0x04000000"):
+            self.assertNotIn(duplicated_mask, updown_interface)
 
     def test_created_rejects_stale_state_and_verifies_before_deriving(self) -> None:
         body = self.body(

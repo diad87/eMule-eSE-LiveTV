@@ -222,19 +222,19 @@ public:
 	// v0.71 P3.5 — eSE privacy capability bitmap. See Opcodes.h for the
 	// ESE_CAP_* bit constants. 0 = legacy peer / no privacy support.
 	uint32          GetEseCapabilities()    const { return m_uEseCapabilities; }
-	bool            SupportsEsePrivacyTunneling() const { return (m_uEseCapabilities & 0x00000100) != 0; }
-	bool            SupportsEseSealedRecords()    const { return (m_uEseCapabilities & 0x00000200) != 0; }
-	bool            SupportsEseGossip()           const { return (m_uEseCapabilities & 0x00000400) != 0; }
-	bool            SupportsEseTunnelDataplane()  const { return (m_uEseCapabilities & 0x00001000) != 0; }  // v8.1 multi-cell
-	bool            SupportsEseTunnelBulk()       const { return (m_uEseCapabilities & 0x00004000) != 0; }  // v8.1.2 bulk data plane (ESE_CAP_TUNNEL_BULK)
-	bool            SupportsEseTunnelAuth()       const { return (m_uEseCapabilities & 0x00040000) != 0; }  // v8.x authenticated handshake (ESE_CAP_TUNNEL_AUTH, bit 18)
-	bool            SupportsEseTunnelStrict3()    const { return (m_uEseCapabilities & 0x02000000) != 0; }  // K6-6 authenticated iterative 3-hop extension
-	bool            SupportsEseTunnelShaped()     const { return (m_uEseCapabilities & 0x04000000) != 0; }  // K6-6 class-5 fixed-record link shaping
-	bool            SupportsEseHolePunchCookie()  const { return (m_uEseCapabilities & 0x00080000) != 0; }  // P0 return-routability cookie (ESE_CAP_HOLEPUNCH_COOKIE, bit 19)
-	bool            SupportsEseHolePunchRdv()     const { return (m_uEseCapabilities & 0x00008000) != 0; }  // R.1 3-way rendezvous (ESE_CAP_HOLEPUNCH_RDV, bit 15)
-	bool            SupportsEseKadKeepalive()     const { return (m_uEseCapabilities & 0x00010000) != 0; }  // R.2 nonce-correlated Kad keepalive (bit 16)
-	bool            SupportsLiveRelay()           const { return (m_uEseCapabilities & 0x00200000) != 0; }  // R.3 buddy relay (ESE_CAP_LIVE_RELAY, bit 21)
-	bool            SupportsEseNetLabV1()         const { return (m_uEseCapabilities & 0x10000000) != 0; }  // explicit active cohort consent, not mere build support
+	bool            SupportsEsePrivacyTunneling() const { return (m_uEseCapabilities & ESE_CAP_PRIVACY_TUNNELING) != 0; }
+	bool            SupportsEseSealedRecords()    const { return (m_uEseCapabilities & ESE_CAP_SEALED_RECORDS) != 0; }
+	bool            SupportsEseGossip()           const { return (m_uEseCapabilities & ESE_CAP_GOSSIP_PROTOCOL) != 0; }
+	bool            SupportsEseTunnelDataplane()  const { return (m_uEseCapabilities & ESE_CAP_TUNNEL_DATAPLANE) != 0; }
+	bool            SupportsEseTunnelBulk()       const { return (m_uEseCapabilities & ESE_CAP_TUNNEL_BULK) != 0; }
+	bool            SupportsEseTunnelAuth()       const { return (m_uEseCapabilities & ESE_CAP_TUNNEL_AUTH) != 0; }
+	bool            SupportsEseTunnelStrict3()    const { return (m_uEseCapabilities & ESE_CAP_TUNNEL_STRICT3) != 0; }
+	bool            SupportsEseTunnelShaped()     const { return (m_uEseCapabilities & ESE_CAP_TUNNEL_SHAPED) != 0; }
+	bool            SupportsEseHolePunchCookie()  const { return (m_uEseCapabilities & ESE_CAP_HOLEPUNCH_COOKIE) != 0; }
+	bool            SupportsEseHolePunchRdv()     const { return (m_uEseCapabilities & ESE_CAP_HOLEPUNCH_RDV) != 0; }
+	bool            SupportsEseKadKeepalive()     const { return (m_uEseCapabilities & ESE_CAP_KAD_KEEPALIVE) != 0; }
+	bool            SupportsLiveRelay()           const { return (m_uEseCapabilities & ESE_CAP_LIVE_RELAY) != 0; }
+	bool            SupportsEseNetLabV1()         const { return (m_uEseCapabilities & ESE_CAP_NETLAB_V1) != 0; }
 	// Strictly decoded TAG_ESE_REACH metadata obtained with a Kad source result.
 	// It is independent of HELLO capabilities because it must select a route
 	// before a TCP HELLO can exist. Unknown future bits are intentionally masked.

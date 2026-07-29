@@ -3,4 +3,4 @@
 // the hashed source material to avoid self-reference.
 #pragma once
 
-#define ESE_MOD02_CRITICAL_SOURCE_SHA256 "0f474d72c582bd57edbb35de0e2e14e92b0baa612a49e1935414c2db1a4729f7"
+#define ESE_MOD02_CRITICAL_SOURCE_SHA256 "e95d2cf74463044685b21dc3f91c71f09bcbd7ae85999f57bf1ad7ec6e302dc3"

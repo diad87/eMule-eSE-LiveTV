@@ -40,7 +40,6 @@ inline uint32_t eseRdU32LE(const uint8_t* p)
         | (static_cast<uint32_t>(p[2]) << 16)
         | (static_cast<uint32_t>(p[3]) << 24);
 }
-constexpr uint16_t K6_SHAPE_RUNTIME_MAX_BUCKET_KIB = 1024;
 bool K6ShapeValidBucket(uint32_t bucketKiB)
 {
     return bucketKiB >= 64

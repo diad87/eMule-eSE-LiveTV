@@ -309,11 +309,6 @@ inline uint64_t eseRdU64LE(const uint8_t* p) {
     return v;
 }
 
-// USER32 timers have a practical 10 ms floor.  1024 KiB/s yields a 16.2 ms
-// class-5 slot (15.4 ms at -5% jitter), so one callback never needs to batch
-// multiple records. Higher protocol buckets remain representable but this
-// host refuses them instead of claiming shaping it cannot schedule faithfully.
-const uint16_t K6_SHAPE_RUNTIME_MAX_BUCKET_KIB = 1024;
 const uint16_t K6_SHAPE_DEFAULT_BUCKET_KIB = K6_SHAPE_RUNTIME_MAX_BUCKET_KIB;
 const uint8_t  K6_BULK_SUB_FLAG_SHAPED = 0x01;
 const uint64_t K6_SHAPE_PADDING_NONCE = kad6::kK6ShapedPaddingSentinel;

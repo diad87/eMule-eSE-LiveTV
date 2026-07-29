@@ -68,6 +68,10 @@ constexpr std::size_t TUN_HKDF_INFO_V3_LEN = 159;
 constexpr std::size_t TUN_CREATE_V3_LEN = 140;
 constexpr std::size_t TUN_EXTEND_V3_LEN = 158;
 constexpr std::size_t K6_SHAPE_MAX_RESERVED_LINKS = 8;
+// USER32 timers have a practical 10 ms floor. A 1024 KiB/s class-5
+// bucket keeps even the -5% jittered slot above that floor, so the host
+// never has to batch multiple fixed records in one callback.
+constexpr std::uint16_t K6_SHAPE_RUNTIME_MAX_BUCKET_KIB = 1024;
 
 void PutU32LE(std::uint8_t* p, std::uint32_t v);
 void PutU16LE(std::uint8_t* p, std::uint16_t v);

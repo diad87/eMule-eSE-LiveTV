@@ -264,6 +264,13 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/WebRequestParser.cpp"],
                 "interface_files": ["srchybrid/WebRequestParser.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "WebAuthPolicy",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebAuthPolicy.cpp"],
+                "interface_files": ["srchybrid/WebAuthPolicy.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -315,6 +322,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             }, {
                 "module": "WebRequestParser",
                 "slice_base_commit": "beb494b9907877a100d728ae87a029e9e8d11330",
+                "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebAuthPolicy",
+                "slice_base_commit": "630ef1cc6dac053006582714ace613670d8dc658",
                 "source_coordinator": "srchybrid/WebServer.cpp",
             }],
         })
@@ -368,6 +379,15 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/tests/test_web_auth_policy.cpp",
+                "reason": (
+                    "Standalone concurrent session, challenge replay, CSRF, "
+                    "permission and rate-limit executable test for the "
+                    "MOD-2.2 auth-policy extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         numstat = subprocess.check_output(
             ["git", "diff", "--numstat", SLICE_BASE, "--", "srchybrid/LiveTunnel.cpp"],
@@ -414,6 +434,8 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/WebSocket.h",
             "srchybrid/WebRequestParser.cpp",
             "srchybrid/WebRequestParser.h",
+            "srchybrid/WebAuthPolicy.cpp",
+            "srchybrid/WebAuthPolicy.h",
         }
         self.assertTrue(expected_paths.issubset(set(MOD02.CRITICAL_SOURCE_PATHS)))
         self.assertTrue(expected_paths.issubset(set(

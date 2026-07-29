@@ -72,6 +72,31 @@
 
 static CryptoPP::AutoSeededRandomPool webRng;
 
+static std::uint64_t WebAuthNowMs()
+{
+	// This codebase still targets Windows SDK levels where GetTickCount64 is
+	// unavailable. WebAuthPolicy treats a backwards jump as expiry/reset.
+	return static_cast<std::uint64_t>(::GetTickCount());
+}
+
+static std::uint64_t WebSessionTimeoutMs()
+{
+	const int timeoutMinutes = thePrefs.GetWebTimeoutMins();
+	return timeoutMinutes > 0
+		? static_cast<std::uint64_t>(timeoutMinutes) * 60u * 1000u
+		: 0;
+}
+
+static CStringA GenerateWebHexToken()
+{
+	BYTE tokenBytes[32];
+	webRng.GenerateBlock(tokenBytes, sizeof(tokenBytes));
+	CStringA token;
+	for (const BYTE value : tokenBytes)
+		token.AppendFormat("%02x", value);
+	return token;
+}
+
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #undef THIS_FILE
@@ -504,17 +529,9 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 
 		uint32 myip = inet_addr(ipstrA(Data.inadr));
 
-		// check for being banned
-		int myfaults = 0;
-		const DWORD curTick = ::GetTickCount();
-		for (INT_PTR i = pThis->m_Params.badlogins.GetCount(); --i >= 0;) {
-			if (curTick >= pThis->m_Params.badlogins[i].timestamp + MIN2MS(15))
-				pThis->m_Params.badlogins.RemoveAt(i); // remove outdated entries
-			else
-				if (pThis->m_Params.badlogins[i].datalen == myip)
-					++myfaults;
-		}
-		if (myfaults > 4) {
+		// Check the bounded, per-IP login failure window before doing crypto.
+		const std::uint64_t authNowMs = WebAuthNowMs();
+		if (pThis->m_authPolicy.IsLoginBlocked(myip, authNowMs)) {
 			Data.pSocket->SendContent(HTTPInit, _GetPlainResString(IDS_ACCESSDENIED));
 			CoUninitialize();
 			return;
@@ -522,6 +539,7 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 
 		bool justAddLink = false;
 		bool login = false;
+		CStringA issuedCsrfToken;
 		CString sSession(_ParseURL(Data.sURL, _T("ses")));
 		long lSession = _tstol(sSession);
 
@@ -560,25 +578,39 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 
 				if (authOk) {
 					if (!justAddLink) {
-						Session ses;
-						ses.admin = isAdmin;
-						ses.startTime = CTime::GetCurrentTime();
-						ses.lSession = lSession = (long)(webRng.GenerateWord32() & 0x7FFFFFFF);
-						ses.lastcat = -thePrefs.GetCatFilter(0);
-						pThis->m_Params.Sessions.Add(ses);
+						issuedCsrfToken = GenerateWebHexToken();
+						bool sessionAdded = false;
+						for (unsigned int attempt = 0; attempt < 16 && !sessionAdded; ++attempt) {
+							lSession = static_cast<long>(
+								webRng.GenerateWord32() & 0x7FFFFFFFu);
+							sessionAdded = pThis->m_authPolicy.AddSession(
+								static_cast<std::uint32_t>(lSession),
+								isAdmin ? ese::web::WebRole::Admin : ese::web::WebRole::Guest,
+								-thePrefs.GetCatFilter(0),
+								authNowMs,
+								std::string(
+									(LPCSTR)issuedCsrfToken,
+									issuedCsrfToken.GetLength()));
+						}
+						if (!sessionAdded) {
+							authOk = false;
+							issuedCsrfToken.Empty();
+						}
 					}
-					SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATEMYINFO, 0);
-					if (isAdmin)
-						AddLogLine(true, GetResString(IDS_WEB_ADMINLOGIN) + _T(" (%s)"), (LPCTSTR)ip);
-					else
-						AddLogLine(true, GetResString(IDS_WEB_GUESTLOGIN) + _T(" (%s)"), (LPCTSTR)ip);
-					login = true;
-				} else if (!sResponse.IsEmpty() || !_ParseURL(Data.sURL, _T("p")).IsEmpty()) {
+					if (authOk) {
+						SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATEMYINFO, 0);
+						if (isAdmin)
+							AddLogLine(true, GetResString(IDS_WEB_ADMINLOGIN) + _T(" (%s)"), (LPCTSTR)ip);
+						else
+							AddLogLine(true, GetResString(IDS_WEB_GUESTLOGIN) + _T(" (%s)"), (LPCTSTR)ip);
+						login = true;
+					}
+				}
+				if (!authOk && (!sResponse.IsEmpty() || !_ParseURL(Data.sURL, _T("p")).IsEmpty())) {
 					// Only log failure if user actually tried to authenticate
 					LogWarning(LOG_STATUSBAR, GetResString(IDS_WEB_BADLOGINATTEMPT) + _T(" (%s)"), (LPCTSTR)ip);
-					BadLogin newban = {myip, curTick};
-					pThis->m_Params.badlogins.Add(newban);
-					if (++myfaults > 4) {
+					pThis->m_authPolicy.RecordLoginFailure(myip, authNowMs);
+					if (pThis->m_authPolicy.IsLoginBlocked(myip, authNowMs)) {
 						Data.pSocket->SendContent(HTTPInit, _GetPlainResString(IDS_ACCESSDENIED));
 						CoUninitialize();
 						return;
@@ -586,13 +618,27 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 				}
 			}
 			isUseGzip = false; // [Julien]
-			if (login)	// on login, forget previous failed attempts
-				for (INT_PTR i = pThis->m_Params.badlogins.GetCount(); --i >= 0;)
-					if (pThis->m_Params.badlogins[i].datalen == myip)
-						pThis->m_Params.badlogins.RemoveAt(i);
+			if (login)
+				pThis->m_authPolicy.RecordLoginSuccess(myip);
 		}
 
 		sSession.Format(_T("%ld"), lSession);
+		ese::web::WebSessionSnapshot csrfSession;
+		if (issuedCsrfToken.IsEmpty() && lSession > 0 && pThis->m_authPolicy.GetSession(
+			static_cast<std::uint32_t>(lSession), csrfSession)) {
+			const std::string suppliedToken(
+				(LPCSTR)Data.sCsrfToken, Data.sCsrfToken.GetLength());
+			const std::string fetchSite(
+				(LPCSTR)Data.sFetchSite, Data.sFetchSite.GetLength());
+			if (!ese::web::WebAuthPolicy::ValidateCsrfRequest(
+				csrfSession, suppliedToken, fetchSite)) {
+				Data.pSocket->SendReply("HTTP/1.1 403 Forbidden\r\n"
+					"Cache-Control: no-store\r\n"
+					"Content-Length: 0\r\n\r\n");
+				CoUninitialize();
+				return;
+			}
+		}
 		if (_ParseURL(Data.sURL, _T("w")) == _T("logout"))
 			_RemoveSession(Data, lSession);
 
@@ -758,10 +804,14 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 		}
 
 		// send answer...
+		CStringA responseHeaders(isUseGzip ? HTTPInitGZ : HTTPInit);
+		if (!issuedCsrfToken.IsEmpty())
+			responseHeaders.AppendFormat(
+				"X-CSRF-Token: %s\r\n", (LPCSTR)issuedCsrfToken);
 		if (!isUseGzip)
-			Data.pSocket->SendContent(HTTPInit, Out);
+			Data.pSocket->SendContent(responseHeaders, Out);
 		else
-			Data.pSocket->SendContent(HTTPInitGZ, gzipOut, gzipLen);
+			Data.pSocket->SendContent(responseHeaders, gzipOut, gzipLen);
 
 		delete[] gzipOut;
 
@@ -3643,41 +3693,12 @@ CStringA CWebServer::_GenerateNonce(const ThreadData &Data)
 	if (pThis == NULL)
 		return CStringA();
 
-	_PurgeStaleChallenges(Data);
-
-	// 32 cryptographically random bytes -> 64 hex chars
-	BYTE nonceBytes[32];
-	webRng.GenerateBlock(nonceBytes, sizeof(nonceBytes));
-
-	CStringA sNonce;
-	for (int i = 0; i < 32; ++i)
-		sNonce.AppendFormat("%02x", nonceBytes[i]);
-
-	// Store the challenge bound to client IP
-	PendingChallenge ch;
-	ch.sNonce = sNonce;
-	ch.dwTimestamp = ::GetTickCount();
-	ch.dwClientIP = inet_addr(ipstrA(Data.inadr));
-	pThis->m_Params.pendingChallenges.Add(ch);
-
-	// Memory cap: max 64 pending challenges
-	while (pThis->m_Params.pendingChallenges.GetCount() > 64)
-		pThis->m_Params.pendingChallenges.RemoveAt(0);
-
-	return sNonce;
-}
-
-// eSE 8.14: Remove challenges older than 5 minutes
-void CWebServer::_PurgeStaleChallenges(const ThreadData &Data)
-{
-	CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
-	if (pThis == NULL)
-		return;
-
-	const DWORD dwNow = ::GetTickCount();
-	for (INT_PTR i = pThis->m_Params.pendingChallenges.GetCount(); --i >= 0;)
-		if (dwNow >= pThis->m_Params.pendingChallenges[i].dwTimestamp + 300000u)
-			pThis->m_Params.pendingChallenges.RemoveAt(i);
+	const CStringA nonce = GenerateWebHexToken();
+	const std::uint32_t clientIp = inet_addr(ipstrA(Data.inadr));
+	const std::string value((LPCSTR)nonce, nonce.GetLength());
+	if (!pThis->m_authPolicy.AddChallenge(value, clientIp, WebAuthNowMs()))
+		return CStringA();
+	return nonce;
 }
 
 // eSE 8.14: Validate SHA256(nonce + storedHash) == clientResponse
@@ -3695,18 +3716,12 @@ bool CWebServer::_ValidateChallengeResponse(const ThreadData &Data,
 	aNonce.MakeLower();
 	aResponse.MakeLower();
 
-	// Find and CONSUME the nonce (one-time use, IP-bound)
-	uint32 clientIP = inet_addr(ipstrA(Data.inadr));
-	bool nonceFound = false;
-	for (INT_PTR i = pThis->m_Params.pendingChallenges.GetCount(); --i >= 0;) {
-		const PendingChallenge &ch = pThis->m_Params.pendingChallenges[i];
-		if (ch.sNonce == aNonce && ch.dwClientIP == clientIP) {
-			pThis->m_Params.pendingChallenges.RemoveAt(i);
-			nonceFound = true;
-			break;
-		}
-	}
-	if (!nonceFound)
+	// Find and consume the IP-bound nonce before validating credentials.
+	const std::uint32_t clientIP = inet_addr(ipstrA(Data.inadr));
+	if (!pThis->m_authPolicy.ConsumeChallenge(
+		std::string((LPCSTR)aNonce, aNonce.GetLength()),
+		clientIP,
+		WebAuthNowMs()))
 		return false;
 
 	// Helper lambda: compute SHA256(nonce + hashHex) as lowercase hex
@@ -3724,10 +3739,16 @@ bool CWebServer::_ValidateChallengeResponse(const ThreadData &Data,
 			hexOut.AppendFormat("%02x", digest[j]);
 		return hexOut;
 	};
+	auto responseMatches = [&](const CString& storedHash) -> bool {
+		const CStringA expected = computeExpected(storedHash);
+		return ese::web::WebAuthPolicy::ConstantTimeEqual(
+			std::string((LPCSTR)expected, expected.GetLength()),
+			std::string((LPCSTR)aResponse, aResponse.GetLength()));
+	};
 
 	// Check admin password first
 	if (!thePrefs.GetWSPass().IsEmpty()) {
-		if (computeExpected(thePrefs.GetWSPass()) == aResponse) {
+		if (responseMatches(thePrefs.GetWSPass())) {
 			outIsAdmin = true;
 			return true;
 		}
@@ -3735,7 +3756,7 @@ bool CWebServer::_ValidateChallengeResponse(const ThreadData &Data,
 
 	// Check low-privilege password
 	if (thePrefs.GetWSIsLowUserEnabled() && !thePrefs.GetWSLowPass().IsEmpty()) {
-		if (computeExpected(thePrefs.GetWSLowPass()) == aResponse)
+		if (responseMatches(thePrefs.GetWSLowPass()))
 			return true;  // outIsAdmin stays false
 	}
 
@@ -3792,20 +3813,10 @@ bool CWebServer::_IsLoggedIn(const ThreadData &Data, long lSession)
 	CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
 	if (pThis == NULL)
 		return false;
-
-	_RemoveTimeOuts(Data);
-
-	// find our session
-	// i should have used CMap there, but i like CArray more ;-)
-	if (lSession != 0)
-		for (INT_PTR i = pThis->m_Params.Sessions.GetCount(); --i >= 0;)
-			if (pThis->m_Params.Sessions[i].lSession == lSession) {
-				// if found, also reset expiration time
-				pThis->m_Params.Sessions[i].startTime = CTime::GetCurrentTime();
-				return true;
-			}
-
-	return false;
+	return lSession > 0 && pThis->m_authPolicy.TouchSession(
+		static_cast<std::uint32_t>(lSession),
+		WebAuthNowMs(),
+		WebSessionTimeoutMs());
 }
 
 void CWebServer::_RemoveTimeOuts(const ThreadData &Data)
@@ -3822,38 +3833,23 @@ bool CWebServer::_RemoveSession(const ThreadData &Data, long lSession)
 	if (pThis == NULL || lSession == 0)
 		return false;
 
-	// find our session
-	for (INT_PTR i = pThis->m_Params.Sessions.GetCount(); --i >= 0;)
-		if (pThis->m_Params.Sessions[i].lSession == lSession) {
-			pThis->m_Params.Sessions.RemoveAt(i);
-			AddLogLine(true, (LPCTSTR)GetResString(IDS_WEB_SESSIONEND), (LPCTSTR)ipstr(pThis->m_uCurIP));
-			SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATEMYINFO, 0);
-			return true;
-		}
-
-	return false;
-}
-
-Session CWebServer::_GetSessionByID(const ThreadData &Data, long sessionID)
-{
-	CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
-	if (pThis != NULL && sessionID != 0)
-		for (INT_PTR i = pThis->m_Params.Sessions.GetCount(); --i >= 0;)
-			if (pThis->m_Params.Sessions[i].lSession == sessionID)
-				return pThis->m_Params.Sessions[i];
-
-	return Session{};
+	if (!pThis->m_authPolicy.RemoveSession(static_cast<std::uint32_t>(lSession)))
+		return false;
+	AddLogLine(true, (LPCTSTR)GetResString(IDS_WEB_SESSIONEND), (LPCTSTR)ipstr(pThis->m_uCurIP));
+	SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATEMYINFO, 0);
+	return true;
 }
 
 bool CWebServer::_IsSessionAdmin(const ThreadData &Data, long sessionID)
 {
 	CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
-	if (pThis != NULL && sessionID != 0)
-		for (INT_PTR i = pThis->m_Params.Sessions.GetCount(); --i >= 0;)
-			if (pThis->m_Params.Sessions[i].lSession == sessionID)
-				return pThis->m_Params.Sessions[i].admin;
-
-	return false;
+	if (pThis == NULL || sessionID <= 0)
+		return false;
+	ese::web::WebSessionSnapshot session;
+	return pThis->m_authPolicy.GetSession(
+		static_cast<std::uint32_t>(sessionID), session) &&
+		ese::web::WebAuthPolicy::HasPermission(
+			session.role, ese::web::WebRole::Admin);
 }
 
 bool CWebServer::_IsSessionAdmin(const ThreadData &Data, const CString &strSsessionID)
@@ -4244,20 +4240,12 @@ CString CWebServer::_GetSearch(const ThreadData &Data)
 
 INT_PTR CWebServer::UpdateSessionCount()
 {
-	INT_PTR oldvalue = m_Params.Sessions.GetCount();
-	for (INT_PTR i = 0; i < m_Params.Sessions.GetCount();)
-	{
-		CTimeSpan ts = CTime::GetCurrentTime() - m_Params.Sessions[i].startTime;
-		if (thePrefs.GetWebTimeoutMins() > 0 && ts.GetTotalSeconds() > thePrefs.GetWebTimeoutMins() * 60)
-			m_Params.Sessions.RemoveAt(i);
-		else
-			i++;
-	}
-
-	if (oldvalue != m_Params.Sessions.GetCount())
+	const std::size_t removed = m_authPolicy.PurgeExpiredSessions(
+		WebAuthNowMs(), WebSessionTimeoutMs());
+	if (removed != 0)
 		SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATEMYINFO, 0);
 
-	return m_Params.Sessions.GetCount();
+	return static_cast<INT_PTR>(m_authPolicy.SessionCount());
 }
 
 void CWebServer::_InsertCatBox(CString &Out, int preselect, LPCTSTR boxlabel, bool jump, bool extraCats, const CString &sSession, const CString &sFileHash, bool ed2kbox)
@@ -4438,19 +4426,12 @@ void CWebServer::_SetLastUserCat(const ThreadData &Data, long lSession, int cat)
 	if (pThis == NULL)
 		return;
 
-	_RemoveTimeOuts(Data);
-
-	// find our session
-	for (INT_PTR i = 0; i < pThis->m_Params.Sessions.GetCount(); i++)
-	{
-		if (pThis->m_Params.Sessions[i].lSession == lSession && lSession != 0)
-		{
-			// if found, also reset expiration time
-			pThis->m_Params.Sessions[i].startTime = CTime::GetCurrentTime();
-			pThis->m_Params.Sessions[i].lastcat = cat;
-			return;
-		}
-	}
+	if (lSession > 0)
+		pThis->m_authPolicy.SetLastCategory(
+			static_cast<std::uint32_t>(lSession),
+			cat,
+			WebAuthNowMs(),
+			WebSessionTimeoutMs());
 }
 
 int CWebServer::_GetLastUserCat(const ThreadData &Data, long lSession)
@@ -4459,20 +4440,14 @@ int CWebServer::_GetLastUserCat(const ThreadData &Data, long lSession)
 	if (pThis == NULL)
 		return 0;
 
-	_RemoveTimeOuts(Data);
-
-	// find our session
-	for (INT_PTR i = 0; i < pThis->m_Params.Sessions.GetCount(); i++)
-	{
-		if (pThis->m_Params.Sessions[i].lSession == lSession && lSession != 0)
-		{
-			// if found, also reset expiration time
-			pThis->m_Params.Sessions[i].startTime = CTime::GetCurrentTime();
-			return pThis->m_Params.Sessions[i].lastcat;
-		}
-	}
-
-	return 0;
+	int category = 0;
+	return lSession > 0 && pThis->m_authPolicy.GetLastCategory(
+		static_cast<std::uint32_t>(lSession),
+		category,
+		WebAuthNowMs(),
+		WebSessionTimeoutMs())
+		? category
+		: 0;
 }
 
 
@@ -4585,6 +4560,9 @@ static bool EseHexToKey16A(const CStringA& hex, uchar* outKey)
 // eSE Live Streaming & Network Status API
 void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 {
+	CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
+	if (pThis == NULL)
+		return;
 	CStringA sURL(CT2A(Data.sURL));
 
 	// --- M1 (mobile track): token-prefixed remote access ---------------------
@@ -4712,12 +4690,13 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		const bool requestEd2k = ed2kArg.IsEmpty() || ed2kArg != _T("0");
 		const bool requestKad = kadArg.IsEmpty() || kadArg != _T("0");
 
-		static DWORD s_lastNetworkConnect = 0;
-		const DWORD nowConnect = ::GetTickCount();
-		if (s_lastNetworkConnect != 0 && (nowConnect - s_lastNetworkConnect) < 2000) {
+		const ese::web::WebRateDecision connectRate =
+			pThis->m_authPolicy.CheckRateLimit(
+				ese::web::WebAction::NetworkConnect, WebAuthNowMs(), 2000);
+		if (!connectRate.allowed) {
 			CStringA json = "{\"success\":false,\"error\":\"rate_limited\",\"retry_after_ms\":";
 			CStringA retry;
-			retry.Format("%u}", 2000 - (nowConnect - s_lastNetworkConnect));
+			retry.Format("%I64u}", connectRate.retry_after_ms);
 			json += retry;
 			CStringA hdr;
 			hdr.Format(
@@ -4730,7 +4709,6 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			Data.pSocket->SendData(json, json.GetLength());
 			return;
 		}
-		s_lastNetworkConnect = nowConnect;
 
 		bool ed2kRequested = false;
 		bool kadRequested = false;
@@ -5482,11 +5460,12 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// Usage: GET /api/holepunch/rdv_test?target_ip=B&target_udp_port=4672&rdv_ip=R&rdv_udp_port=4672
 	// Observe kad3_rdv_* in /api/status on A, R and B. Rate-limited 1 fire / 5 s.
 	if (sURL.Left(23) == "/api/holepunch/rdv_test") {
-		static DWORD s_lastManualRdv = 0;
-		DWORD now = ::GetTickCount();
-		if (now - s_lastManualRdv < 5000) {
+		const ese::web::WebRateDecision rendezvousRate =
+			pThis->m_authPolicy.CheckRateLimit(
+				ese::web::WebAction::ManualRendezvous, WebAuthNowMs(), 5000);
+		if (!rendezvousRate.allowed) {
 			CStringA json = "{\"success\":false,\"error\":\"rate_limited\",\"retry_after_ms\":";
-			CStringA n; n.Format("%u}", 5000 - (now - s_lastManualRdv));
+			CStringA n; n.Format("%I64u}", rendezvousRate.retry_after_ms);
 			json += n;
 			CStringA hdr;
 			hdr.Format("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", json.GetLength());
@@ -5515,7 +5494,6 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		} else {
 			// InitiateKad3Rendezvous wants host-order IP/port (Kad convention).
 			Kademlia::CKademlia::GetUDPListener()->InitiateKad3Rendezvous(ntohl(rIpNet), rPort, ntohl(tIpNet), tPort);
-			s_lastManualRdv = now;
 			ok = true;
 		}
 
@@ -5549,11 +5527,14 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		const bool bStop  = (sURL.Left(19) == "/api/keepalive/stop");
 		// Throttle state-toggles: a rapid start/stop loop spams the Kad log and re-scans
 		// the routing table. 2 s is invisible to manual testing but kills a toggle flood.
-		static DWORD s_lastKeepaliveToggle = 0;
-		DWORD nowKa = ::GetTickCount();
-		if ((bStart || bStop) && s_lastKeepaliveToggle != 0 && (nowKa - s_lastKeepaliveToggle) < 2000) {
+		const ese::web::WebRateDecision keepaliveRate =
+			(bStart || bStop)
+			? pThis->m_authPolicy.CheckRateLimit(
+				ese::web::WebAction::KeepaliveToggle, WebAuthNowMs(), 2000)
+			: ese::web::WebRateDecision{true, 0};
+		if (!keepaliveRate.allowed) {
 			CStringA json = "{\"success\":false,\"error\":\"rate_limited\",\"retry_after_ms\":";
-			CStringA n; n.Format("%u}", 2000 - (nowKa - s_lastKeepaliveToggle));
+			CStringA n; n.Format("%I64u}", keepaliveRate.retry_after_ms);
 			json += n;
 			CStringA hdr;
 			hdr.Format("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", json.GetLength());
@@ -5567,8 +5548,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			ok = false;
 			errCode = "netlab_consent_required";
 		}
-		else if (bStart) { CKadKeepalive::Instance().RequestStart(); s_lastKeepaliveToggle = nowKa; }
-		else if (bStop)  { CKadKeepalive::Instance().RequestStop();  s_lastKeepaliveToggle = nowKa; }
+		else if (bStart) { CKadKeepalive::Instance().RequestStart(); }
+		else if (bStop)  { CKadKeepalive::Instance().RequestStop(); }
 		else { ok = false; errCode = "unknown_action"; }
 
 		CKadKeepalive::Stats ks = CKadKeepalive::Instance().GetStats();
@@ -5837,12 +5818,13 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	}
 
 	if (sURL.Left(19) == "/api/holepunch/test") {
-		static DWORD s_lastManualHolePunch = 0;
-		DWORD now = ::GetTickCount();
-		if (now - s_lastManualHolePunch < 5000) {
+		const ese::web::WebRateDecision holePunchRate =
+			pThis->m_authPolicy.CheckRateLimit(
+				ese::web::WebAction::ManualHolePunch, WebAuthNowMs(), 5000);
+		if (!holePunchRate.allowed) {
 			CStringA json = "{\"success\":false,\"error\":\"rate_limited\",\"retry_after_ms\":";
 			CStringA n;
-			n.Format("%u}", 5000 - (now - s_lastManualHolePunch));
+			n.Format("%I64u}", holePunchRate.retry_after_ms);
 			json += n;
 			CStringA hdr;
 			hdr.Format(
@@ -5893,7 +5875,6 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				: (thePrefs.GetEseHolePunchPortPredict() ? (uint16)thePrefs.GetEseHolePunchPortSpread() : 0);
 			Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(
 				ntohl(ipNet), udpPort, hpSpread, true, targetPeer);
-			s_lastManualHolePunch = now;
 			ok = true;
 		}
 

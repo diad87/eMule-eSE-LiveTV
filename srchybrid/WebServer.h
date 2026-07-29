@@ -1,5 +1,6 @@
 #pragma once
 
+#include "WebAuthPolicy.h"
 #include "WebSocket.h"
 #include "PartFile.h"
 #include "zlib/zlib.h"
@@ -18,28 +19,6 @@ typedef struct
 	double upload;
 	long connections;
 } UpDown;
-
-typedef struct
-{
-	CTime	startTime;
-	long	lSession;
-	int		lastcat;
-	bool	admin;
-} Session;
-
-struct BadLogin
-{
-	uint32	datalen;
-	DWORD	timestamp;
-};
-
-// eSE 8.14: Challenge-Response pending nonce
-struct PendingChallenge
-{
-	CStringA  sNonce;       // 64-char hex string (32 random bytes)
-	DWORD     dwTimestamp;  // GetTickCount() at creation
-	uint32    dwClientIP;   // requestor IP for binding
-};
 
 typedef struct
 {
@@ -217,10 +196,6 @@ typedef enum
 typedef struct
 {
 	CArray<UpDown>	PointsForWeb;
-	CArray<Session>	Sessions;
-	CArray<BadLogin> badlogins;	//TransferredData= IP : time
-	CArray<PendingChallenge> pendingChallenges;  // eSE 8.14: active login challenges
-
 	CString			sETag;
 	CString			sLastModified;
 	CString			sShowServerIP;		//Purity: Action Buttons
@@ -249,6 +224,8 @@ typedef struct
 typedef struct
 {
 	CString			sURL;
+	CStringA		sCsrfToken;
+	CStringA		sFetchSite;
 	void			*pThis;
 	CWebSocket		*pSocket;
 	in_addr			inadr;
@@ -321,7 +298,7 @@ public:
 	void RestartSockets();
 	void AddStatsLine(const UpDown &line);
 	bool ReloadTemplates();
-	INT_PTR GetSessionCount()					{ return m_Params.Sessions.GetCount(); }
+	INT_PTR GetSessionCount()					{ return static_cast<INT_PTR>(m_authPolicy.SessionCount()); }
 	bool IsRunning() const						{ return m_bServerWorking; }
 	// MOD-0.2: headless production parser/security/serialization seam.
 	static bool RunCharacterizationSelfTest(CString& outFailure);
@@ -366,12 +343,10 @@ private:
 	static void		_GetPlainResString(CString &rstrOut, UINT nID, bool noquote = true);
 	static int		_GzipCompress(Bytef *dest, uLongf *destLen, const Bytef *source, uLong sourceLen, int level);
 	static CString	_LoadTemplate(const CString &sAll, const CString &sTemplateName);
-	static Session	_GetSessionByID(const ThreadData &Data, long sessionID);
 	static bool		_IsSessionAdmin(const ThreadData &Data, long sessionID);
 	static bool		_IsSessionAdmin(const ThreadData &Data, const CString &strSsessionID);
 	// eSE 8.14: Challenge-Response authentication
 	static CStringA	_GenerateNonce(const ThreadData &Data);
-	static void		_PurgeStaleChallenges(const ThreadData &Data);
 	static bool		_ValidateChallengeResponse(const ThreadData &Data, const CString &sNonce, const CString &sResponse, bool &outIsAdmin);
 	static CString	_GetPermissionDenied();
 	static CString	_GetDownloadGraph(const ThreadData &Data, const CString &filehash);
@@ -399,6 +374,7 @@ private:
 	static int AFX_CDECL _UploadCmp(void *prm, void const *pv1, void const *pv2);
 
 	// Common data
+	ese::web::WebAuthPolicy m_authPolicy;
 	GlobalParams	m_Params;
 	WebTemplates	m_Templates;
 	u_long			m_uCurIP;

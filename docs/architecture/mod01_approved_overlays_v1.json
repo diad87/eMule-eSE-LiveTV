@@ -19,16 +19,16 @@
     {
       "path": "srchybrid/WebServer.cpp",
       "baseline_sha256": "afcf5a5b8091995a473548fc05086fe1b2ba0e8127378cd959424fa8f6770028",
-      "overlay_sha256": "c3aa0e722e6e97f65bac5b902b6b711382a19385cab6440997ebf24cce15a867",
-      "task": "MOD-0.2 + MOD-2.1",
-      "reason": "Headless production characterization hook and MOD-2.1 delegation of query, cookie and bounded request parsing to WebRequestParser."
+      "overlay_sha256": "66d520c5fced8bce54326b0ccc2c7b2629a76906ac893515f8e03efb9a90f0d1",
+      "task": "MOD-0.2 + MOD-2.1 + MOD-2.2",
+      "reason": "Headless production characterization hook; MOD-2.1 delegates query, cookie and bounded request parsing to WebRequestParser; MOD-2.2 delegates sessions, one-time challenges, CSRF, permissions, login failures and action rate limits to WebAuthPolicy."
     },
     {
       "path": "srchybrid/WebServer.h",
       "baseline_sha256": "6457840ed976be885d1d3ef2e13ea01b03f59c960728d9cc14a5b217f3421140",
-      "overlay_sha256": "db9982186b4a4b52addd094314fa8550a8f4cf730e799564af7339f8e6eb759c",
-      "task": "MOD-0.2",
-      "reason": "Declaration of the headless production characterization hook."
+      "overlay_sha256": "43a2eda5a4e4ee3e116a9ee114c7a0e44c2b01f5897a0aecc8ef1aa894dd67a7",
+      "task": "MOD-0.2 + MOD-2.2",
+      "reason": "Declaration of the headless production characterization hook and composition ownership of WebAuthPolicy with request CSRF metadata."
     }
   ]
 }

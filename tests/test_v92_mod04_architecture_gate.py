@@ -157,6 +157,13 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/WebRequestParser.cpp"],
                 "interface_files": ["srchybrid/WebRequestParser.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "WebAuthPolicy",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebAuthPolicy.cpp"],
+                "interface_files": ["srchybrid/WebAuthPolicy.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.config["approved_non_module_code"], [
@@ -206,6 +213,15 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "reason": (
                     "Standalone request, query, cookie and hostile-limit "
                     "executable test for the MOD-2.1 parser extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/tests/test_web_auth_policy.cpp",
+                "reason": (
+                    "Standalone concurrent session, challenge replay, CSRF, "
+                    "permission and rate-limit executable test for the "
+                    "MOD-2.2 auth-policy extraction."
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
@@ -260,6 +276,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "module": "WebRequestParser",
                 "slice_base_commit": "beb494b9907877a100d728ae87a029e9e8d11330",
                 "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebAuthPolicy",
+                "slice_base_commit": "630ef1cc6dac053006582714ace613670d8dc658",
+                "source_coordinator": "srchybrid/WebServer.cpp",
             }],
         })
 
@@ -281,6 +301,7 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "LiveTunnelKadBridge",
                 "LiveTunnelMetrics",
                 "WebRequestParser",
+                "WebAuthPolicy",
             ],
         )
 

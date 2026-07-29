@@ -94,6 +94,16 @@ void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const
 	}
 	ThreadData Data;
 	Data.sURL = sURL;
+	for (const ese::web::HeaderField& header : request.headers) {
+		if (header.name == "x-csrf-token") {
+			Data.sCsrfToken = CStringA(
+				header.value.data(), static_cast<int>(header.value.size()));
+		} else if (header.name == "sec-fetch-site") {
+			Data.sFetchSite = CStringA(
+				header.value.data(), static_cast<int>(header.value.size()));
+			Data.sFetchSite.MakeLower();
+		}
+	}
 	Data.pThis = (void*)m_pParent;
 	Data.inadr = inad;
 	Data.pSocket = this;

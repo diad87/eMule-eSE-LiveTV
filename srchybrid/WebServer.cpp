@@ -4445,7 +4445,9 @@ CString CWebServer::_GetRemoteLinkAddedOk(const ThreadData &Data)
 	theApp.emuledlg->SendMessage(WEB_ADDDOWNLOADS, (WPARAM)buf, cat);
 
 	Out += _T("<status result=\"OK\">");
-	Out += _T("<description>") + GetResString(IDS_WEB_REMOTE_LINK_ADDED) + _T("</description>");
+	Out += _T("<description>") +
+		_SpecialChars(GetResString(IDS_WEB_REMOTE_LINK_ADDED), false) +
+		_T("</description>");
 	Out += _T("<filename>") + HTTPTemp + _T("</filename>");
 	Out += _T("</status>");
 
@@ -4461,7 +4463,9 @@ CString CWebServer::_GetRemoteLinkAddedFailed(const ThreadData &Data)
 	CString Out;
 
 	Out += _T("<status result=\"FAILED\" reason=\"WRONG_PASSWORD\">");
-	Out += _T("<description>") + GetResString(IDS_WEB_REMOTE_LINK_NOT_ADDED) + _T("</description>");
+	Out += _T("<description>") +
+		_SpecialChars(GetResString(IDS_WEB_REMOTE_LINK_NOT_ADDED), false) +
+		_T("</description>");
 	Out += _T("</status>");
 
 	return Out;
@@ -5629,9 +5633,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		const char* fallback = CStatistics::m_dwHolePunchSuccess != 0 ? "none" :
 			CStatistics::m_dwHolePunchSymNATFail != 0 ? "punch_timeout_or_nat_mapping_changed" :
 			!Kademlia::CKademlia::IsConnected() ? "kad_disconnected" : "not_observed";
-		CStringA version = CT2A(theApp.m_strCurVersionLong);
-		version.Replace("\\", "\\\\");
-		version.Replace("\"", "\\\"");
+		const CStringA version =
+			EseJsonEscapeA(CStringA(CT2A(theApp.m_strCurVersionLong)));
 		CStringA json;
 		json.Format(
 			"{\"schema\":\"ESE_NETLAB_REPORT_V1\",\"version\":\"%s\","
@@ -6055,12 +6058,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			// `reply` is already a JSON array of rich result records built by
 			// TunneledKadSearch; embed it directly. Do NOT use Format here - a
 			// '%' in a stream title would be misread as a format spec.
-			CStringA kwSafe;
-			for (int i = 0; i < kwA.GetLength(); ++i) {
-				char c = kwA[i];
-				if (c == '"' || c == '\\') kwSafe += '\\';
-				kwSafe += c;
-			}
+			const CStringA kwSafe = EseJsonEscapeA(kwA);
 			// K6-1 (Kad6 DISCOVERY_ONLY): label the operation honestly. The
 			// originator's IP never touches the DHT (the exit queries Kad from its
 			// OWN IP), but the exit DOES see the keyword in clear (spec K6-SEARCH-010),
@@ -6138,14 +6136,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 
 		CStringA json;
 		if (ok) {
-			// Escape any quotes/backslashes in reply just in case
-			CStringA safe;
-			for (char c : reply) {
-				if (c == '"' || c == '\\') safe += '\\';
-				safe += c;
-			}
+			const CStringA sent = EseJsonEscapeA(CStringA(textArg));
+			const CStringA received = EseJsonEscapeA(CStringA(
+				reply.data(), static_cast<int>(reply.size())));
 			json.Format("{\"ok\":true,\"sent\":\"%s\",\"received\":\"%s\"}",
-				(LPCSTR)CStringA(textArg), (LPCSTR)safe);
+				(LPCSTR)sent, (LPCSTR)received);
 		} else {
 			json = "{\"ok\":false,\"reason\":\"no active circuit or timeout - build a 2-hop circuit first via test_circuit?hops=2\"}";
 		}
@@ -6877,10 +6872,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		for (const auto& l : items) {
 			if (!first) json += ",";
 			first = false;
-			// Escape minimally for JSON: backslash and double-quote only.
-			CStringA esc = l;
-			esc.Replace("\\", "\\\\");
-			esc.Replace("\"", "\\\"");
+			const CStringA esc = EseJsonEscapeA(l);
 			json += "\"";
 			json += esc;
 			json += "\"";
@@ -6933,8 +6925,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		CStringA json;
 		CStringA entryJson = "null";
 		if (inDirectory) {
-			CStringA titleA = CT2A(entry.title);
-			titleA.Replace("\"", "\\\"");
+			const CStringA titleA =
+				EseJsonEscapeA(CStringA(CT2A(entry.title)));
 			CStringA t;
 			t.Format("{\"title\":\"%s\",\"ip\":\"%s\",\"port\":%u,"
 			         "\"bitrate\":%u,\"viewerCount\":%u,"

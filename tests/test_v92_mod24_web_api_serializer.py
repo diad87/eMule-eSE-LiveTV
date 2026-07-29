@@ -91,11 +91,22 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
         self.assertIn('#include "WebApiSerializer.h"', self.server)
         self.assertIn("ese::web::EscapeHtml(input, noquote)", self.server)
         self.assertIn("ese::web::EscapeJson(value)", self.server)
+        self.assertEqual(self.server.count("EseJsonEscapeA("), 30)
         self.assertIn(
             "ese::web::RunWebApiSerializerSelfTest(serializerFailure)",
             self.server,
         )
         self.assertNotIn('output.AppendFormat("\\\\u%04x", ch)', self.server)
+        self.assertNotIn("Escape minimally for JSON", self.server)
+        self.assertNotIn("Escape any quotes/backslashes", self.server)
+        self.assertIn(
+            "_SpecialChars(GetResString(IDS_WEB_REMOTE_LINK_ADDED), false)",
+            self.server,
+        )
+        self.assertIn(
+            "_SpecialChars(GetResString(IDS_WEB_REMOTE_LINK_NOT_ADDED), false)",
+            self.server,
+        )
 
     def test_native_vectors_cover_controls_entities_and_encoding_boundaries(
         self,

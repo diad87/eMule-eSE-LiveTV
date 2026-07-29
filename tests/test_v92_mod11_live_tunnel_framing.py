@@ -278,6 +278,13 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/WebRouteTable.cpp"],
                 "interface_files": ["srchybrid/WebRouteTable.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "WebApiSerializer",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebApiSerializer.cpp"],
+                "interface_files": ["srchybrid/WebApiSerializer.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -337,6 +344,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             }, {
                 "module": "WebRouteTable",
                 "slice_base_commit": "f6f9d700d7682bb4b228d259f69107d69b066a85",
+                "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebApiSerializer",
+                "slice_base_commit": "12b60647c2cd6c76e014cd0d1fda3463ed56640c",
                 "source_coordinator": "srchybrid/WebServer.cpp",
             }],
         })
@@ -407,6 +418,14 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/tests/test_web_api_serializer.cpp",
+                "reason": (
+                    "Standalone byte/code-unit exact JSON, HTML and XML "
+                    "escaping test for the MOD-2.4 serializer extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         numstat = subprocess.check_output(
             ["git", "diff", "--numstat", SLICE_BASE, "--", "srchybrid/LiveTunnel.cpp"],
@@ -457,6 +476,8 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/WebAuthPolicy.h",
             "srchybrid/WebRouteTable.cpp",
             "srchybrid/WebRouteTable.h",
+            "srchybrid/WebApiSerializer.cpp",
+            "srchybrid/WebApiSerializer.h",
         }
         self.assertTrue(expected_paths.issubset(set(MOD02.CRITICAL_SOURCE_PATHS)))
         self.assertTrue(expected_paths.issubset(set(

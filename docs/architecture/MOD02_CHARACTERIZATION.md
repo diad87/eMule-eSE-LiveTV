@@ -43,12 +43,15 @@ confirmación de terminación.
 
 ## Estado
 
-MOD-0.2 está **PENDING_COMMIT_AND_REBUILD**. El manifiesto actual es un punto
-de partida revisable: después de confirmar los cambios se debe regenerar la
-identidad para el commit final, compilar, registrar el SHA real de `emule.exe`
-en el manifiesto y ejecutar el runner. Sólo entonces podrá constar `PASS` con
-`source_tree_clean=true`, identidad coincidente, terminación confirmada y los
-siete marcadores exactos. No se ejecuta el runtime final antes de ese paso.
+MOD-0.2 está **PASS**. El binario Release x64 se compiló desde el commit de
+fuente `c3a66642d836a9628a0594338c2ae22e53844f7a`; su SHA-256 es
+`3b40f45a57edb28cc1359fb47d0df3bdcc7bcbeabc509dfd8e3f436afd2515a7`.
+La ejecución final terminó con código `0` en nueve segundos, sin timeout, con
+`source_tree_clean=true`, terminación confirmada y los siete marcadores
+exactos. La huella del marcador es
+`f8bdc5c3829867e08ddc32c69b21d63aa82f045352c583a361a33fa93f223ed0`
+y la del resumen sanitizado es
+`06b086f13eecf0c512922b34b732108e5f44a0df488dd304603626463dd009b9`.
 
 El hook de `CWebServer` comprueba parser, escaping y gzip completo: magic,
 CRC, ISIZE y descompresión exacta de `mod02`. El hook de túnel ejerce framing,

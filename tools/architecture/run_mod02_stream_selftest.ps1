@@ -54,17 +54,18 @@ try {
 $requiredManifestFields = @('schema', 'source_commit', 'source_identity_sha256', 'executable_sha256')
 $actualManifestFields = @($manifest.PSObject.Properties.Name | Sort-Object)
 $expectedManifestFields = @($requiredManifestFields | Sort-Object)
-if ($actualManifestFields.Count -ne $expectedManifestFields.Count
-    -or (Compare-Object $actualManifestFields $expectedManifestFields)
-    -or $manifest.schema -ne 'ese.mod02.build-manifest/v1') {
+$manifestFieldsDiffer = [bool](Compare-Object $actualManifestFields $expectedManifestFields)
+if (($actualManifestFields.Count -ne $expectedManifestFields.Count) -or
+    $manifestFieldsDiffer -or
+    ($manifest.schema -ne 'ese.mod02.build-manifest/v1')) {
     throw 'MOD-0.2 build manifest must use the exact v1 schema and fields.'
 }
 foreach ($field in @('source_commit', 'source_identity_sha256', 'executable_sha256')) {
     $value = [string]$manifest.$field
     if ([string]::IsNullOrWhiteSpace($value)) { throw "MOD-0.2 build manifest has an empty $field." }
 }
-if ($manifest.source_identity_sha256 -notmatch '^[0-9a-f]{64}$'
-    -or $manifest.executable_sha256 -notmatch '^[0-9a-f]{64}$') {
+if (($manifest.source_identity_sha256 -notmatch '^[0-9a-f]{64}$') -or
+    ($manifest.executable_sha256 -notmatch '^[0-9a-f]{64}$')) {
     throw 'MOD-0.2 build manifest hashes must be lowercase SHA-256 values.'
 }
 

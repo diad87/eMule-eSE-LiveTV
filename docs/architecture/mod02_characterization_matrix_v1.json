@@ -6,7 +6,7 @@
   "runtime_gate": {
     "runner": "tools/architecture/run_mod02_stream_selftest.ps1",
     "build_manifest": "docs/architecture/mod02_build_manifest_v1.json",
-    "status": "PENDING_COMMIT_AND_REBUILD",
+    "status": "PASS",
     "required_summary": [
       "build_manifest_sha256",
       "source_identity_sha256",
@@ -15,7 +15,21 @@
       "marker_sha256",
       "termination_confirmed"
     ],
-    "acceptance": "The committed build manifest, source identity marker and binary SHA must all match; then exit_code=0, source_tree_clean=true, markers_verified=true and termination_confirmed=true."
+    "acceptance": "The committed build manifest, source identity marker and binary SHA must all match; then exit_code=0, source_tree_clean=true, markers_verified=true and termination_confirmed=true.",
+    "evidence": {
+      "source_commit": "c3a66642d836a9628a0594338c2ae22e53844f7a",
+      "source_identity_sha256": "a97b99b6e86730cd24ff81f5b17da5778284fc435d1427a72a60a9dfe5fd7195",
+      "executable_sha256": "3b40f45a57edb28cc1359fb47d0df3bdcc7bcbeabc509dfd8e3f436afd2515a7",
+      "build_manifest_sha256": "5102b289611e8f6f97f33795c94d10e142341aeefcf7769f608ffd9558759a92",
+      "summary_sha256": "06b086f13eecf0c512922b34b732108e5f44a0df488dd304603626463dd009b9",
+      "marker_sha256": "f8bdc5c3829867e08ddc32c69b21d63aa82f045352c583a361a33fa93f223ed0",
+      "timeout_seconds": 180,
+      "timed_out": false,
+      "termination_confirmed": true,
+      "exit_code": 0,
+      "source_tree_clean": true,
+      "markers_verified": true
+    }
   },
   "rows": [
     {"id":"LT-01","coordinator":"CLiveTunnel","seam":"tests/test_tunnel_framing.py","existing_evidence":"algorithm replica; not production execution","classification":"gap_replaced_by_production_boundary","input":"two-cell sub/fragment header vector","observable":"production split, parse and reassembly preserve four-byte payload","golden":"live_tunnel_framing","runner":"portable_production_selftest","dependency":"Release x64 binary plus local FFmpeg","execution_kind":"production_binary_selftest","gap":"full peer-to-peer transport remains a later topology test; this gate characterizes the production framing boundary."},

@@ -62,7 +62,18 @@ class Mod02CharacterizationTest(unittest.TestCase):
         gate = self.matrix["runtime_gate"]
         self.assertEqual(gate["runner"], "tools/architecture/run_mod02_stream_selftest.ps1")
         self.assertEqual(gate["build_manifest"], "docs/architecture/mod02_build_manifest_v1.json")
-        self.assertEqual(gate["status"], "PENDING_COMMIT_AND_REBUILD")
+        self.assertEqual(gate["status"], "PASS")
+        evidence = gate["evidence"]
+        self.assertEqual(evidence["exit_code"], 0)
+        self.assertTrue(evidence["source_tree_clean"])
+        self.assertTrue(evidence["termination_confirmed"])
+        self.assertTrue(evidence["markers_verified"])
+        self.assertFalse(evidence["timed_out"])
+        for field in (
+            "source_identity_sha256", "executable_sha256",
+            "build_manifest_sha256", "summary_sha256", "marker_sha256",
+        ):
+            self.assertRegex(evidence[field], r"^[0-9a-f]{64}$")
         runner = RUNTIME_RUNNER.read_text(encoding="utf-8")
         for required in ("BuildManifest", "source_identity_sha256", "Get-Mod02SourceIdentity", "Mod02BuildIdentity.h", "taskkill.exe", "WaitForExit(10000)", "WaitForExit(5000)", "SOURCE $sourceIdentity", "source_tree_clean"):
             self.assertIn(required, runner)
@@ -73,6 +84,15 @@ class Mod02CharacterizationTest(unittest.TestCase):
             "schema", "source_commit", "source_identity_sha256", "executable_sha256",
         })
         self.assertEqual(manifest["schema"], "ese.mod02.build-manifest/v1")
+        self.assertEqual(evidence["source_commit"], manifest["source_commit"])
+        self.assertEqual(
+            evidence["source_identity_sha256"], manifest["source_identity_sha256"])
+        self.assertEqual(
+            evidence["executable_sha256"], manifest["executable_sha256"])
+        self.assertEqual(
+            evidence["build_manifest_sha256"],
+            hashlib.sha256(BUILD_MANIFEST.read_bytes()).hexdigest(),
+        )
         lines = [
             f"{path}={hashlib.sha256((ROOT / path).read_bytes()).hexdigest()}"
             for path in CRITICAL_SOURCE_PATHS
@@ -84,6 +104,20 @@ class Mod02CharacterizationTest(unittest.TestCase):
             r'ESE_MOD02_CRITICAL_SOURCE_SHA256\s+"([0-9a-f]{64})"', header)
         self.assertIsNotNone(header_identity)
         self.assertEqual(header_identity.group(1), current_identity)
+
+    def test_runtime_runner_parses_in_windows_powershell(self) -> None:
+        runner_path = str(RUNTIME_RUNNER).replace("'", "''")
+        command = (
+            "$errors=$null; $tokens=$null; "
+            "[void][System.Management.Automation.Language.Parser]::ParseFile("
+            f"'{runner_path}',[ref]$tokens,[ref]$errors); "
+            "if ($errors.Count) { $errors | Out-String | Write-Error; exit 1 }"
+        )
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", command],
+            cwd=ROOT, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
     def test_goldens_cover_required_domains_and_use_production_files(self) -> None:
         expected = {

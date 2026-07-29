@@ -7,6 +7,7 @@
 #include <locale.h>
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 #include <vector>
 #include "emule.h"
 #include "StringConversion.h"
@@ -71,6 +72,7 @@
 #include "UserMsgs.h"
 
 static CryptoPP::AutoSeededRandomPool webRng;
+static std::mutex webRngMutex;
 
 static std::uint64_t WebAuthNowMs()
 {
@@ -90,11 +92,35 @@ static std::uint64_t WebSessionTimeoutMs()
 static CStringA GenerateWebHexToken()
 {
 	BYTE tokenBytes[32];
-	webRng.GenerateBlock(tokenBytes, sizeof(tokenBytes));
+	{
+		std::lock_guard<std::mutex> lock(webRngMutex);
+		webRng.GenerateBlock(tokenBytes, sizeof(tokenBytes));
+	}
 	CStringA token;
 	for (const BYTE value : tokenBytes)
 		token.AppendFormat("%02x", value);
 	return token;
+}
+
+static CryptoPP::word32 GenerateWebRandomWord32()
+{
+	std::lock_guard<std::mutex> lock(webRngMutex);
+	return webRng.GenerateWord32();
+}
+
+static void SendWebForbidden(CWebSocket* socket, const char* hint)
+{
+	CStringA body;
+	body.Format("{\"error\":\"forbidden\",\"hint\":\"%s\"}", hint);
+	CStringA header;
+	header.Format(
+		"HTTP/1.1 403 Forbidden\r\n"
+		"Content-Type: application/json\r\n"
+		"Cache-Control: no-store\r\n"
+		"Content-Length: %d\r\n\r\n",
+		body.GetLength());
+	socket->SendData(header, header.GetLength());
+	socket->SendData(body, body.GetLength());
 }
 
 #ifdef _DEBUG
@@ -124,7 +150,7 @@ static char THIS_FILE[] = __FILE__;
 #define HTTPInitGZ HTTPInit "Content-Encoding: gzip\r\n"
 #define HTTPENCODING _T("utf-8")
 
-#define WEB_SERVER_TEMPLATES_VERSION	7
+#define WEB_SERVER_TEMPLATES_VERSION	8
 
 //SyruS CQArray-Sorting operators
 bool operator > (QueueUsers &first, QueueUsers &second)
@@ -568,9 +594,13 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 					// New secure path: challenge-response
 					authOk = _ValidateChallengeResponse(Data, sNonce, sResponse, isAdmin);
 				} else {
-					// Legacy fallback (TODO: remove in future version)
+					// The bundled browser uses challenge-response. Retain the
+					// plaintext legacy protocol only for the local eSE bridge;
+					// never accept a reusable password from a remote socket.
 					const CString sPlain(_ParseURL(Data.sURL, _T("p")));
-					if (!sPlain.IsEmpty()) {
+					const bool loopback =
+						Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK);
+					if (loopback && !sPlain.IsEmpty()) {
 						if (MD5Sum(sPlain).GetHashString() == thePrefs.GetWSPass()) {
 							isAdmin = true;
 							authOk = true;
@@ -589,7 +619,7 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 						bool sessionAdded = false;
 						for (unsigned int attempt = 0; attempt < 16 && !sessionAdded; ++attempt) {
 							lSession = static_cast<long>(
-								webRng.GenerateWord32() & 0x7FFFFFFFu);
+								GenerateWebRandomWord32() & 0x7FFFFFFFu);
 							sessionAdded = pThis->m_authPolicy.AddSession(
 								static_cast<std::uint32_t>(lSession),
 								isAdmin ? ese::web::WebRole::Admin : ese::web::WebRole::Guest,
@@ -888,7 +918,7 @@ CString CWebServer::_GetHeader(const ThreadData &Data, long lSession)
 		sRefresh.Format(_T("%d"), SEC2MS(thePrefs.GetWebPageRefresh()));
 
 	CString swCommand(_ParseURL(Data.sURL, _T("w")));
-	swCommand.AppendFormat(_T("&amp;cat=%s&amp;dummy=%u"), (LPCTSTR)_ParseURL(Data.sURL, _T("cat")), webRng.GenerateWord32());
+	swCommand.AppendFormat(_T("&amp;cat=%s&amp;dummy=%u"), (LPCTSTR)_ParseURL(Data.sURL, _T("cat")), GenerateWebRandomWord32());
 
 
 	Out.Replace(_T("[admin]"), (bAdmin && thePrefs.GetWebAdminAllowedHiLevFunc()) ? _T("admin") : _T(""));
@@ -4583,24 +4613,18 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// past the session timeout would otherwise ban its own IP.
 	bool bTokenAuth = false;
 	bool bTokenAdmin = false;
+	ese::web::WebSessionSnapshot tokenSession;
 	if (sURL.GetLength() > 3 && strncmp(sURL, "/s/", 3) == 0) {
 		const int iSlash = sURL.Find('/', 3);
 		const long lToken = (iSlash > 3) ? atol((LPCSTR)sURL + 3) : 0;
-		if (lToken != 0 && _IsLoggedIn(Data, lToken)) {
+		if (lToken != 0 && _IsLoggedIn(Data, lToken) &&
+			pThis->m_authPolicy.GetSession(
+				static_cast<std::uint32_t>(lToken), tokenSession)) {
 			bTokenAuth = true;
-			bTokenAdmin = _IsSessionAdmin(Data, lToken);
+			bTokenAdmin = tokenSession.role == ese::web::WebRole::Admin;
 			sURL.Delete(0, iSlash); // strip prefix; routing below sees the bare path
 		} else {
-			CStringA body = "{\"error\":\"forbidden\",\"hint\":\"invalid or expired token\"}";
-			CStringA hdr;
-			hdr.Format(
-				"HTTP/1.1 403 Forbidden\r\n"
-				"Content-Type: application/json\r\n"
-				"Cache-Control: no-store\r\n"
-				"Content-Length: %d\r\n\r\n",
-				body.GetLength());
-			Data.pSocket->SendData(hdr, hdr.GetLength());
-			Data.pSocket->SendData(body, body.GetLength());
+			SendWebForbidden(Data.pSocket, "invalid or expired token");
 			const uint32 clientIP = Data.inadr.S_un.S_addr; // network order
 			LIVE_LOG("SEC", "Rejected /s/ request with bad token from %lu.%lu.%lu.%lu  url=%s",
 				(unsigned long)(clientIP & 0xFF),
@@ -4612,57 +4636,20 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		}
 	}
 
-	// --- SECURITY GATE -------------------------------------------------------
-	// Critical: this dispatch in WebSocket.cpp:88 BYPASSES the password gate
-	// that _ProcessURL applies to the classic WebServer. Without this guard,
-	// any host on the LAN that AllowedRemoteAccessIPs admits (default = ALLOW
-	// ALL) can issue GET /api/live/broadcast/start?source=screen&title=Pwned
-	// and start streaming the victim's desktop, then read it via the published
-	// Kad link. Same attack works against /api/holepunch/* and /api/live/log.
-	//
-	// Mitigation: only accept these endpoints from localhost or with a valid
-	// session token in the /s/{ses}/ path prefix (validated above — bTokenAuth
-	// can only be true after _IsLoggedIn() matched a session created through
-	// the password gate). The legitimate Node.js dashboard on :8080 proxies
-	// through 127.0.0.1 -> 127.0.0.1:4711 so it keeps working. With no
-	// webserver password configured no session can exist, so remote access
-	// stays fully blocked exactly as before.
-	bool bIsLiveOrHolepunch =
-		(sURL.Left(10) == "/api/live/")
-		|| (sURL.Left(15) == "/api/holepunch/")
-		|| (sURL.Left(15) == "/api/keepalive/")
-		|| (sURL.Left(11) == "/api/relay/")
-		|| (sURL.Left(9) == "/api/krp/")
-		|| (sURL.Left(13) == "/api/network/")
-		|| (sURL.Left(11) == "/api/debug/")
-		|| (sURL.Left(11) == "/api/ese/v9")
-		|| (sURL.Left(15) == "/api/ese/netlab")
-		|| (sURL == "/api/status")
-		|| (sURL == "/dashboard") || (sURL == "/dashboard/")
-		|| (sURL.Left(5) == "/hls/")
-		|| (sURL == "/live") || (sURL.Left(6) == "/live/");
-	if (bIsLiveOrHolepunch) {
-		const uint32 clientIP = Data.inadr.S_un.S_addr; // network order
-		const uint32 loopback = htonl(INADDR_LOOPBACK);
-		if (clientIP != loopback && !bTokenAuth) {
-			CStringA body = "{\"error\":\"forbidden\",\"hint\":\"this API is localhost-only\"}";
-			CStringA hdr;
-			hdr.Format(
-				"HTTP/1.1 403 Forbidden\r\n"
-				"Content-Type: application/json\r\n"
-				"Cache-Control: no-store\r\n"
-				"Content-Length: %d\r\n\r\n",
-				body.GetLength());
-			Data.pSocket->SendData(hdr, hdr.GetLength());
-			Data.pSocket->SendData(body, body.GetLength());
-			LIVE_LOG("SEC", "Blocked remote /api/live request from %lu.%lu.%lu.%lu  url=%s",
-				(unsigned long)(clientIP & 0xFF),
-				(unsigned long)((clientIP >> 8) & 0xFF),
-				(unsigned long)((clientIP >> 16) & 0xFF),
-				(unsigned long)((clientIP >> 24) & 0xFF),
-				(LPCSTR)sURL);
-			return;
-		}
+	const std::string livePath((LPCSTR)sURL, sURL.GetLength());
+	const ese::web::WebSessionSnapshot* mutationSession =
+		bTokenAuth ? &tokenSession : nullptr;
+	if (!ese::web::WebAuthPolicy::AuthorizeLiveRequest(
+		livePath,
+		Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK),
+		mutationSession,
+		std::string((LPCSTR)Data.sCsrfToken, Data.sCsrfToken.GetLength()),
+		std::string((LPCSTR)Data.sFetchSite, Data.sFetchSite.GetLength()),
+		std::string((LPCSTR)Data.sHost, Data.sHost.GetLength()),
+		std::string((LPCSTR)Data.sOrigin, Data.sOrigin.GetLength()))) {
+		SendWebForbidden(
+			Data.pSocket, "trusted origin or session CSRF required");
+		return;
 	}
 
 	// Guest (low-user) tokens are viewers only. WebAuthPolicy owns the complete
@@ -4676,16 +4663,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			std::string((LPCSTR)sURL, sURL.GetLength()));
 	if (bTokenAuth && !ese::web::WebAuthPolicy::HasPermission(
 		tokenRole, requiredRole)) {
-		CStringA body = "{\"error\":\"forbidden\",\"hint\":\"admin session required\"}";
-		CStringA hdr;
-		hdr.Format(
-			"HTTP/1.1 403 Forbidden\r\n"
-			"Content-Type: application/json\r\n"
-			"Cache-Control: no-store\r\n"
-			"Content-Length: %d\r\n\r\n",
-			body.GetLength());
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(body, body.GetLength());
+		SendWebForbidden(Data.pSocket, "admin session required");
 		return;
 	}
 

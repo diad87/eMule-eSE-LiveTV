@@ -464,6 +464,7 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   const relay = read(repoRoot, 'srchybrid', 'RelayClient.cpp');
   const kadUdp = read(repoRoot, 'srchybrid', 'kademlia', 'net', 'KademliaUDPListener.cpp');
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const webAuth = read(repoRoot, 'srchybrid', 'WebAuthPolicy.cpp');
   const partFile = read(repoRoot, 'srchybrid', 'PartFile.cpp');
   const partWriteThread = read(repoRoot, 'srchybrid', 'PartFileWriteThread.cpp');
   const packaging = read(repoRoot, 'build_package.ps1');
@@ -540,7 +541,8 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(web, /advanced_consent/);
   assert.match(web, /contribution_consent/);
   assert.match(web, /kad6_beta_exit/);
-  assert.match(web, /sURL\.Left\(15\) == "\/api\/ese\/netlab"/);
+  assert.match(web, /WebAuthPolicy::AuthorizeLiveRequest/);
+  assert.match(webAuth, /path\.compare\(0, 5, "\/api\/"\) == 0[\s\S]{0,60}return WebRole::Admin/);
   assert.match(prober, /previewMask[\s\S]{0,360}ESE_CAP_HOLEPUNCH_RDV[\s\S]{0,180}InterlockedAnd\(caps, ~previewMask\)/);
   assert.match(web, /netlab_target_required/);
   assert.doesNotMatch(web, /\/api\/ese\/v9[\s\S]{0,1800}SetEseRelayAccept\(bOn\)/);
@@ -550,7 +552,7 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(web, /ESE_NETLAB_REPORT_V1/);
   assert.match(web, /GetConnectedSocketCount\(\)/);
   assert.match(web, /\\"central_telemetry\\":false/);
-  assert.match(web, /sURL\.Left\(13\) == "\/api\/network\/"/);
+  assert.match(webAuth, /Unknown APIs are treated as mutations until explicitly proven read-only/);
   assert.match(web, /\/api\/network\/connect[\s\S]{0,1800}WEBGUIIA_CONNECTTOSERVER/);
   assert.match(web, /\/api\/network\/connect[\s\S]{0,2200}WEBGUIIA_KAD_START/);
   assert.match(web, /WebFileOperationRequest \*request[\s\S]{0,2200}WEBGUIIA_FILE_OPERATION/);

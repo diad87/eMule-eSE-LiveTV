@@ -42,6 +42,7 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/WebSocket.cpp", "srchybrid/WebSocket.h",
     "srchybrid/WebRequestParser.cpp", "srchybrid/WebRequestParser.h",
     "srchybrid/WebAuthPolicy.cpp", "srchybrid/WebAuthPolicy.h",
+    "srchybrid/eMule.tmpl",
     "srchybrid/LiveStreamManager.cpp", "srchybrid/LiveStreamManager.h",
 ]
 

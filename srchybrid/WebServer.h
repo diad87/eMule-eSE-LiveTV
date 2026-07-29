@@ -226,6 +226,8 @@ typedef struct
 	CString			sURL;
 	CStringA		sCsrfToken;
 	CStringA		sFetchSite;
+	CStringA		sHost;
+	CStringA		sOrigin;
 	void			*pThis;
 	CWebSocket		*pSocket;
 	in_addr			inadr;

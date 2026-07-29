@@ -7,7 +7,7 @@
 <-- ################################################################# -->
 
 <--TMPL_VERSION-->
-7
+8
 <--TMPL_VERSION_END-->
 
 
@@ -84,7 +84,7 @@ function preload_images()
 </script>
 
 </head>
-<body background="main_bg.gif" text=white link=white vlink=white alink=white onload="javascript:preload_images(); document.login.p.focus();">
+<body background="main_bg.gif" text=white link=white vlink=white alink=white onload="javascript:preload_images(); document.login.password.focus();">
 <table align=center border=0 cellpadding=4 cellspacing=0 width="100%" height="100%">
  <tr>
   <td align=center valign=middle>
@@ -131,12 +131,85 @@ function preload_images()
          <img src="./transparent.gif" alt="">
         </td>
         <td background="./login_downmain.gif" align="center">
-         <form action="" method="POST" name="login">
+         <script type="text/javascript">
+          function eseMd5Utf16Le(text) {
+           function add(x,y){return (x+y)|0;}
+           function rol(x,n){return (x<<n)|(x>>>(32-n));}
+           function cmn(q,a,b,x,s,t){return add(rol(add(add(a,q),add(x,t)),s),b);}
+           function ff(a,b,c,d,x,s,t){return cmn((b&c)|((~b)&d),a,b,x,s,t);}
+           function gg(a,b,c,d,x,s,t){return cmn((b&d)|(c&(~d)),a,b,x,s,t);}
+           function hh(a,b,c,d,x,s,t){return cmn(b^c^d,a,b,x,s,t);}
+           function ii(a,b,c,d,x,s,t){return cmn(c^(b|(~d)),a,b,x,s,t);}
+           var bytes=[],i,j;
+           for(i=0;i<text.length;i++){j=text.charCodeAt(i);bytes.push(j&255,(j>>>8)&255);}
+           var bitLength=bytes.length*8;
+           bytes.push(128);
+           while((bytes.length%64)!==56)bytes.push(0);
+           for(i=0;i<8;i++)bytes.push(i<4?(bitLength>>>(8*i))&255:0);
+           var a0=0x67452301|0,b0=0xefcdab89|0,c0=0x98badcfe|0,d0=0x10325476|0;
+           for(i=0;i<bytes.length;i+=64){
+            var x=[];
+            for(j=0;j<16;j++){var k=i+j*4;x[j]=(bytes[k]|(bytes[k+1]<<8)|(bytes[k+2]<<16)|(bytes[k+3]<<24));}
+            var a=a0,b=b0,c=c0,d=d0;
+            a=ff(a,b,c,d,x[0],7,0xd76aa478);d=ff(d,a,b,c,x[1],12,0xe8c7b756);c=ff(c,d,a,b,x[2],17,0x242070db);b=ff(b,c,d,a,x[3],22,0xc1bdceee);
+            a=ff(a,b,c,d,x[4],7,0xf57c0faf);d=ff(d,a,b,c,x[5],12,0x4787c62a);c=ff(c,d,a,b,x[6],17,0xa8304613);b=ff(b,c,d,a,x[7],22,0xfd469501);
+            a=ff(a,b,c,d,x[8],7,0x698098d8);d=ff(d,a,b,c,x[9],12,0x8b44f7af);c=ff(c,d,a,b,x[10],17,0xffff5bb1);b=ff(b,c,d,a,x[11],22,0x895cd7be);
+            a=ff(a,b,c,d,x[12],7,0x6b901122);d=ff(d,a,b,c,x[13],12,0xfd987193);c=ff(c,d,a,b,x[14],17,0xa679438e);b=ff(b,c,d,a,x[15],22,0x49b40821);
+            a=gg(a,b,c,d,x[1],5,0xf61e2562);d=gg(d,a,b,c,x[6],9,0xc040b340);c=gg(c,d,a,b,x[11],14,0x265e5a51);b=gg(b,c,d,a,x[0],20,0xe9b6c7aa);
+            a=gg(a,b,c,d,x[5],5,0xd62f105d);d=gg(d,a,b,c,x[10],9,0x02441453);c=gg(c,d,a,b,x[15],14,0xd8a1e681);b=gg(b,c,d,a,x[4],20,0xe7d3fbc8);
+            a=gg(a,b,c,d,x[9],5,0x21e1cde6);d=gg(d,a,b,c,x[14],9,0xc33707d6);c=gg(c,d,a,b,x[3],14,0xf4d50d87);b=gg(b,c,d,a,x[8],20,0x455a14ed);
+            a=gg(a,b,c,d,x[13],5,0xa9e3e905);d=gg(d,a,b,c,x[2],9,0xfcefa3f8);c=gg(c,d,a,b,x[7],14,0x676f02d9);b=gg(b,c,d,a,x[12],20,0x8d2a4c8a);
+            a=hh(a,b,c,d,x[5],4,0xfffa3942);d=hh(d,a,b,c,x[8],11,0x8771f681);c=hh(c,d,a,b,x[11],16,0x6d9d6122);b=hh(b,c,d,a,x[14],23,0xfde5380c);
+            a=hh(a,b,c,d,x[1],4,0xa4beea44);d=hh(d,a,b,c,x[4],11,0x4bdecfa9);c=hh(c,d,a,b,x[7],16,0xf6bb4b60);b=hh(b,c,d,a,x[10],23,0xbebfbc70);
+            a=hh(a,b,c,d,x[13],4,0x289b7ec6);d=hh(d,a,b,c,x[0],11,0xeaa127fa);c=hh(c,d,a,b,x[3],16,0xd4ef3085);b=hh(b,c,d,a,x[6],23,0x04881d05);
+            a=hh(a,b,c,d,x[9],4,0xd9d4d039);d=hh(d,a,b,c,x[12],11,0xe6db99e5);c=hh(c,d,a,b,x[15],16,0x1fa27cf8);b=hh(b,c,d,a,x[2],23,0xc4ac5665);
+            a=ii(a,b,c,d,x[0],6,0xf4292244);d=ii(d,a,b,c,x[7],10,0x432aff97);c=ii(c,d,a,b,x[14],15,0xab9423a7);b=ii(b,c,d,a,x[5],21,0xfc93a039);
+            a=ii(a,b,c,d,x[12],6,0x655b59c3);d=ii(d,a,b,c,x[3],10,0x8f0ccc92);c=ii(c,d,a,b,x[10],15,0xffeff47d);b=ii(b,c,d,a,x[1],21,0x85845dd1);
+            a=ii(a,b,c,d,x[8],6,0x6fa87e4f);d=ii(d,a,b,c,x[15],10,0xfe2ce6e0);c=ii(c,d,a,b,x[6],15,0xa3014314);b=ii(b,c,d,a,x[13],21,0x4e0811a1);
+            a=ii(a,b,c,d,x[4],6,0xf7537e82);d=ii(d,a,b,c,x[11],10,0xbd3af235);c=ii(c,d,a,b,x[2],15,0x2ad7d2bb);b=ii(b,c,d,a,x[9],21,0xeb86d391);
+            a0=add(a0,a);b0=add(b0,b);c0=add(c0,c);d0=add(d0,d);
+           }
+           function hex(word){var out="",n;for(n=0;n<4;n++)out+=("0"+((word>>>(n*8))&255).toString(16)).slice(-2);return out;}
+           return hex(a0)+hex(b0)+hex(c0)+hex(d0);
+          }
+          function eseSha256Ascii(text) {
+           var k=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+           var bytes=[],i,j;
+           for(i=0;i<text.length;i++)bytes.push(text.charCodeAt(i)&255);
+           var bitLength=bytes.length*8;
+           bytes.push(128);
+           while((bytes.length%64)!==56)bytes.push(0);
+           for(i=7;i>=0;i--)bytes.push(i<4?(bitLength>>>(8*i))&255:0);
+           var h=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+           function rr(x,n){return (x>>>n)|(x<<(32-n));}
+           for(i=0;i<bytes.length;i+=64){
+            var w=[];
+            for(j=0;j<16;j++){var p=i+j*4;w[j]=((bytes[p]<<24)|(bytes[p+1]<<16)|(bytes[p+2]<<8)|bytes[p+3])|0;}
+            for(j=16;j<64;j++){var s0=rr(w[j-15],7)^rr(w[j-15],18)^(w[j-15]>>>3);var s1=rr(w[j-2],17)^rr(w[j-2],19)^(w[j-2]>>>10);w[j]=(w[j-16]+s0+w[j-7]+s1)|0;}
+            var a=h[0],b=h[1],c=h[2],d=h[3],e=h[4],f=h[5],g=h[6],q=h[7];
+            for(j=0;j<64;j++){var sA=rr(a,2)^rr(a,13)^rr(a,22);var maj=(a&b)^(a&c)^(b&c);var sE=rr(e,6)^rr(e,11)^rr(e,25);var ch=(e&f)^((~e)&g);var t1=(q+sE+ch+k[j]+w[j])|0;var t2=(sA+maj)|0;q=g;g=f;f=e;e=(d+t1)|0;d=c;c=b;b=a;a=(t1+t2)|0;}
+            h[0]=(h[0]+a)|0;h[1]=(h[1]+b)|0;h[2]=(h[2]+c)|0;h[3]=(h[3]+d)|0;h[4]=(h[4]+e)|0;h[5]=(h[5]+f)|0;h[6]=(h[6]+g)|0;h[7]=(h[7]+q)|0;
+           }
+           return h.map(function(word){return ("00000000"+(word>>>0).toString(16)).slice(-8);}).join("");
+          }
+          function eseChallengeLogin(form,event) {
+           var password=form.elements.password.value;
+           var nonce=form.elements.n.value;
+           var material=nonce+eseMd5Utf16Le(password);
+           form.elements.r.value=eseSha256Ascii(material);
+           form.elements.password.value="";
+           form.submit();
+           return false;
+          }
+         </script>
+         <form action="" method="POST" name="login" onsubmit="return eseChallengeLogin(this,event)">
           <font face="Tahoma" style="font-size:10pt;">
            &nbsp;<br>
            [EnterPassword]<br><br>
-           <input type="password" autocomplete="off" name="p" maxlength="12" size="37" style="border-width:1px; border-color:black; border-style:none;" value="">
+           <input type="password" autocomplete="off" name="password" maxlength="12" size="37" style="border-width:1px; border-color:black; border-style:none;" value="">
            <input type="hidden" name="w" value="password">
+           <input type="hidden" name="n" value="[ChallengeNonce]">
+           <input type="hidden" name="r" value="">
            <br><br><input type="submit" value="[LoginNow]"><br>
           </font>
          </form>

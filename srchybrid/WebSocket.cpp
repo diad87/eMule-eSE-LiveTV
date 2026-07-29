@@ -102,6 +102,12 @@ void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const
 			Data.sFetchSite = CStringA(
 				header.value.data(), static_cast<int>(header.value.size()));
 			Data.sFetchSite.MakeLower();
+		} else if (header.name == "host") {
+			Data.sHost = CStringA(
+				header.value.data(), static_cast<int>(header.value.size()));
+		} else if (header.name == "origin") {
+			Data.sOrigin = CStringA(
+				header.value.data(), static_cast<int>(header.value.size()));
 		}
 	}
 	Data.pThis = (void*)m_pParent;

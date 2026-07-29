@@ -102,12 +102,101 @@ void TestSessions()
 		"/api/live/log",
 		"/api/live/preflight",
 		"/api/live/privacy/subscriptions?add=x",
-		"/api/live/reachability/fire"
+		"/api/live/privacy/kad6/release?on=1",
+		"/api/live/privacy/kad6/hardening?on=1",
+		"/api/live/reachability/fire",
+		"/api/live/test/edge_sabotage?on=1",
+		"/api/future/operator"
 	}) {
 		Check(
 			WebAuthPolicy::RequiredRoleForLivePath(path) == WebRole::Admin,
 			"operator and sensitive paths must require admin");
 	}
+	for (const char* path : {
+		"/api/live/join?key=x",
+		"/api/live/leave?key=x",
+		"/api/live/player-alive?key=x",
+		"/api/relay/accept?on=1",
+		"/api/ese/v9?on=1",
+		"/api/live/privacy/subscriptions?add=x",
+		"/api/live/privacy/kad6/release?on=1",
+		"/api/live/privacy/kad6/hardening?on=1",
+		"/api/live/broadcast/start",
+		"/api/live/reachability/fire",
+		"/api/network/connect",
+		"/api/keepalive/start",
+		"/api/holepunch/test",
+		"/api/live/test/edge_sabotage?on=1",
+		"/api/future/operator"
+	}) {
+		Check(WebAuthPolicy::IsLivePathStateChanging(path),
+			"viewer mutations, operator routes and unknown APIs must be state-changing");
+	}
+	for (const char* path : {
+		"/api/status",
+		"/api/live/metrics",
+		"/api/live/channels",
+		"/api/live/mesh",
+		"/api/live/kad/streams",
+		"/api/live/0123456789abcdef0123456789ABCDEF/stream.m3u8",
+		"/hls/stream.m3u8"
+	}) {
+		Check(!WebAuthPolicy::IsLivePathStateChanging(path),
+			"explicit viewer read paths must remain read-only");
+	}
+	for (const char* authority : {
+		"localhost", "LOCALHOST:4711", "127.0.0.1:80", "[::1]:4711"
+	}) {
+		Check(WebAuthPolicy::IsLocalWebAuthority(authority),
+			"literal loopback web authority must be accepted");
+	}
+	for (const char* authority : {
+		"", "evil.example", "evil.example:4711", "127.0.0.1.evil.example",
+		"127.0.0.1:bad", "[::1", "[::2]:4711"
+	}) {
+		Check(!WebAuthPolicy::IsLocalWebAuthority(authority),
+			"non-local or malformed web authority must fail closed");
+	}
+	Check(WebAuthPolicy::IsLocalWebOrigin("http://localhost:4711"),
+		"local HTTP origin must be accepted");
+	Check(WebAuthPolicy::IsLocalWebOrigin("https://[::1]:4711/"),
+		"local HTTPS origin must be accepted");
+	Check(!WebAuthPolicy::IsLocalWebOrigin("http://evil.example"),
+		"foreign origin must be rejected");
+	Check(!WebAuthPolicy::IsLocalWebOrigin("null"),
+		"opaque origin must be rejected");
+	Check(WebAuthPolicy::AuthorizeLiveRequest(
+		"/api/live/join", true, nullptr, "", "same-origin",
+		"localhost:4711", "http://localhost:4711"),
+		"same-origin literal loopback viewer mutation must pass");
+	Check(!WebAuthPolicy::AuthorizeLiveRequest(
+		"/api/live/join", true, nullptr, "", "same-origin",
+		"evil.example:4711", "http://evil.example:4711"),
+		"DNS-rebound same-origin loopback mutation must fail");
+	Check(!WebAuthPolicy::AuthorizeLiveRequest(
+		"/api/live/join", true, nullptr, "", "cross-site",
+		"localhost:4711", ""),
+		"cross-site loopback mutation must fail");
+	Check(!WebAuthPolicy::AuthorizeLiveRequest(
+		"/api/live/join", false, &snapshot, "", "same-origin", "", ""),
+		"browser session mutation without exact CSRF token must fail");
+	Check(WebAuthPolicy::AuthorizeLiveRequest(
+		"/api/live/join", false, &snapshot, Token('a'), "same-origin", "", ""),
+		"browser session mutation with exact CSRF token must pass");
+	Check(WebAuthPolicy::AuthorizeLiveRequest(
+		"/api/live/join", false, &snapshot, "", "", "", ""),
+		"non-browser session automation must remain compatible");
+	Check(!WebAuthPolicy::AuthorizeLiveRequest(
+		"/api/status", true, nullptr, "", "same-origin",
+		"evil.example:4711", "http://evil.example:4711"),
+		"DNS-rebound same-origin read request must fail");
+	Check(WebAuthPolicy::AuthorizeLiveRequest(
+		"/api/status", true, nullptr, "", "same-origin",
+		"localhost:4711", "http://localhost:4711"),
+		"same-origin literal loopback read request must pass");
+	Check(WebAuthPolicy::AuthorizeLiveRequest(
+		"/api/status", false, &snapshot, "", "same-origin", "", ""),
+		"authenticated remote read request must pass without mutation CSRF");
 }
 
 void TestChallenges()

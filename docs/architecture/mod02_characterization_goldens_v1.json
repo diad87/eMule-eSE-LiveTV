@@ -157,7 +157,7 @@
         "CWebServer::_ProcessLiveAPI"
       ],
       "token_sha256": {
-        "CWebServer::_ProcessLiveAPI": "5c60562e2e66f4ba396fb3a8f46a0d53a72fa07b17d472bf847b768c1ddb950e"
+        "CWebServer::_ProcessLiveAPI": "22839136ac037467e79a4e285f418e58cc0db5afbfee541180e07fe0dfed72ad"
       }
     },
     "web_parser_security": {
@@ -168,7 +168,7 @@
         "CWebServer::_SpecialChars"
       ],
       "token_sha256": {
-        "CWebServer::_ProcessLiveAPI": "5c60562e2e66f4ba396fb3a8f46a0d53a72fa07b17d472bf847b768c1ddb950e",
+        "CWebServer::_ProcessLiveAPI": "22839136ac037467e79a4e285f418e58cc0db5afbfee541180e07fe0dfed72ad",
         "CWebServer::_SpecialChars": "8850caee8e3f2848f746dd2e42649bb071a7d460ae44c21d52e43a63b52567be",
         "EseHexToKey16A": "f09086fb347ef0e878566aef2da92dbbe6606252291fdc33b8b995a458f3c1d2"
       }
@@ -185,7 +185,7 @@
         "CWebServer::_GetServerInfo": "0f3b5e2099908319a9de76b0b716bae0abb3564fb21b8ad75c2452d2ee372bbf",
         "CWebServer::_GetStats": "d6f1c5e71a4737137fe9b93876eaf7075255f4645910f5c055c5261eda1027a2",
         "CWebServer::_GzipCompress": "412c1d094c34d8051a732bbc9b3c05af585376ad1613ade3ad41f48191705e56",
-        "CWebServer::_ProcessURL": "6ceba15652de4740bbd06987a6a3a39a6265d4f43f83320e41e179f3aab1e5c5"
+        "CWebServer::_ProcessURL": "7f212e067454ea675615aff7b5773e3a5df4666b2eafbcaad206da617823baa6"
       }
     }
   },

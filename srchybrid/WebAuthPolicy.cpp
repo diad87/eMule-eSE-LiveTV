@@ -1,6 +1,7 @@
 #include "WebAuthPolicy.h"
 
 #include <algorithm>
+#include <cctype>
 
 namespace ese {
 namespace web {
@@ -377,26 +378,144 @@ bool WebAuthPolicy::HasPermission(WebRole role, WebRole required)
 
 WebRole WebAuthPolicy::RequiredRoleForLivePath(const std::string& path)
 {
-	static const char* const adminPrefixes[] = {
-		"/api/debug/",
-		"/api/ese/",
-		"/api/holepunch/",
-		"/api/keepalive/",
-		"/api/krp/",
-		"/api/network/",
-		"/api/relay/",
-		"/api/live/broadcast/",
-		"/api/live/log",
-		"/api/live/preflight",
-		"/api/live/privacy/",
-		"/api/live/reachability/"
+	static const char* const guestPaths[] = {
+		"/api/status",
+		"/api/live/join",
+		"/api/live/leave",
+		"/api/live/player-alive",
+		"/api/live/metrics",
+		"/api/live/channels",
+		"/api/live/mesh",
+		"/api/live/kad/streams"
 	};
-	for (const char* const prefix : adminPrefixes) {
-		const std::size_t length = std::char_traits<char>::length(prefix);
-		if (path.size() >= length && path.compare(0, length, prefix) == 0)
-			return WebRole::Admin;
+	for (const char* const guestPath : guestPaths) {
+		const std::size_t length = std::char_traits<char>::length(guestPath);
+		if (path.compare(0, length, guestPath) == 0 &&
+			(path.size() == length || path[length] == '?'))
+			return WebRole::Guest;
 	}
+	if (path.compare(0, 10, "/api/live/") == 0 && path.size() >= 43) {
+		bool hash = true;
+		for (std::size_t index = 10; index < 42; ++index) {
+			const char value = path[index];
+			hash = hash &&
+				((value >= '0' && value <= '9') ||
+				 (value >= 'a' && value <= 'f') ||
+				 (value >= 'A' && value <= 'F'));
+		}
+		if (hash && path[42] == '/')
+			return WebRole::Guest;
+	}
+	// Fail closed for every API endpoint not explicitly classified as a
+	// viewer/read-only route. This also protects future and test-only handlers.
+	if (path.compare(0, 5, "/api/") == 0)
+		return WebRole::Admin;
 	return WebRole::Guest;
+}
+
+bool WebAuthPolicy::IsLivePathStateChanging(const std::string& path)
+{
+	static const char* const readOnlyPaths[] = {
+		"/api/status",
+		"/api/live/metrics",
+		"/api/live/channels",
+		"/api/live/mesh",
+		"/api/live/kad/streams"
+	};
+	for (const char* const readOnlyPath : readOnlyPaths) {
+		const std::size_t length = std::char_traits<char>::length(readOnlyPath);
+		if (path.compare(0, length, readOnlyPath) == 0 &&
+			(path.size() == length || path[length] == '?'))
+			return false;
+	}
+	if (path.compare(0, 10, "/api/live/") == 0 && path.size() >= 43) {
+		bool hash = true;
+		for (std::size_t index = 10; index < 42; ++index) {
+			const char value = path[index];
+			hash = hash &&
+				((value >= '0' && value <= '9') ||
+				 (value >= 'a' && value <= 'f') ||
+				 (value >= 'A' && value <= 'F'));
+		}
+		if (hash && path[42] == '/')
+			return false;
+	}
+	// Unknown APIs are treated as mutations until explicitly proven read-only.
+	return path.compare(0, 5, "/api/") == 0;
+}
+
+bool WebAuthPolicy::IsLocalWebAuthority(const std::string& authority)
+{
+	if (authority.empty())
+		return false;
+	std::string lower(authority);
+	std::transform(lower.begin(), lower.end(), lower.begin(),
+		[](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+	const std::size_t colon = lower.find(':');
+	std::string host;
+	if (lower[0] == '[') {
+		const std::size_t bracket = lower.find(']');
+		if (bracket == std::string::npos)
+			return false;
+		host = lower.substr(0, bracket + 1);
+	} else {
+		host = lower.substr(0, colon);
+	}
+	if (host != "localhost" && host != "127.0.0.1" && host != "[::1]")
+		return false;
+	const std::size_t suffix = host.size();
+	if (lower.size() == suffix)
+		return true;
+	if (lower[suffix] != ':' || suffix + 1 == lower.size())
+		return false;
+	for (std::size_t index = suffix + 1; index < lower.size(); ++index) {
+		if (lower[index] < '0' || lower[index] > '9')
+			return false;
+	}
+	return true;
+}
+
+bool WebAuthPolicy::IsLocalWebOrigin(const std::string& origin)
+{
+	std::string lower(origin);
+	std::transform(lower.begin(), lower.end(), lower.begin(),
+		[](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+	const std::string http = "http://";
+	const std::string https = "https://";
+	std::size_t offset = std::string::npos;
+	if (lower.compare(0, http.size(), http) == 0)
+		offset = http.size();
+	else if (lower.compare(0, https.size(), https) == 0)
+		offset = https.size();
+	if (offset == std::string::npos)
+		return false;
+	const std::size_t end = lower.find('/', offset);
+	const std::string authority = lower.substr(
+		offset, end == std::string::npos ? end : end - offset);
+	return IsLocalWebAuthority(authority) &&
+		(end == std::string::npos || end + 1 == lower.size());
+}
+
+bool WebAuthPolicy::AuthorizeLiveRequest(
+	const std::string& path,
+	bool loopback,
+	const WebSessionSnapshot* session,
+	const std::string& suppliedToken,
+	const std::string& fetchSite,
+	const std::string& host,
+	const std::string& origin)
+{
+	const bool browserRequest = !fetchSite.empty() || !origin.empty();
+	if (session != nullptr) {
+		if (!IsLivePathStateChanging(path))
+			return true;
+		return browserRequest
+			? ValidateCsrf(*session, suppliedToken)
+			: ValidateCsrfRequest(*session, suppliedToken, fetchSite);
+	}
+	if (!loopback || !IsLocalWebAuthority(host) || fetchSite == "cross-site")
+		return false;
+	return origin.empty() || IsLocalWebOrigin(origin);
 }
 
 bool RunWebAuthPolicySelfTest(std::string& failure)
@@ -441,7 +560,34 @@ bool RunWebAuthPolicySelfTest(std::string& failure)
 	if (WebAuthPolicy::RequiredRoleForLivePath("/api/status") != WebRole::Guest ||
 		WebAuthPolicy::RequiredRoleForLivePath("/api/live/join?key=x") != WebRole::Guest ||
 		WebAuthPolicy::RequiredRoleForLivePath("/api/relay/accept?on=1") != WebRole::Admin ||
-		WebAuthPolicy::RequiredRoleForLivePath("/api/ese/v9?on=1") != WebRole::Admin) {
+		WebAuthPolicy::RequiredRoleForLivePath("/api/live/test/edge_sabotage?on=1") != WebRole::Admin ||
+		WebAuthPolicy::RequiredRoleForLivePath("/api/future/operator") != WebRole::Admin ||
+		!WebAuthPolicy::IsLivePathStateChanging("/api/live/join?key=x") ||
+		!WebAuthPolicy::IsLivePathStateChanging("/api/relay/accept?on=1") ||
+		WebAuthPolicy::IsLivePathStateChanging("/api/status") ||
+		!WebAuthPolicy::IsLocalWebAuthority("localhost:4711") ||
+		!WebAuthPolicy::IsLocalWebAuthority("127.0.0.1") ||
+		WebAuthPolicy::IsLocalWebAuthority("evil.example") ||
+		!WebAuthPolicy::IsLocalWebOrigin("http://localhost:4711") ||
+		WebAuthPolicy::IsLocalWebOrigin("http://evil.example") ||
+		!WebAuthPolicy::AuthorizeLiveRequest(
+			"/api/live/join", true, nullptr, "", "same-origin",
+			"localhost:4711", "http://localhost:4711") ||
+		WebAuthPolicy::AuthorizeLiveRequest(
+			"/api/live/join", true, nullptr, "", "same-origin",
+			"evil.example:4711", "http://evil.example:4711") ||
+		WebAuthPolicy::AuthorizeLiveRequest(
+			"/api/live/join", true, nullptr, "", "cross-site",
+			"localhost:4711", "") ||
+		WebAuthPolicy::AuthorizeLiveRequest(
+			"/api/live/join", false, &session, "", "same-origin", "", "") ||
+		!WebAuthPolicy::AuthorizeLiveRequest(
+			"/api/live/join", false, &session, token, "same-origin", "", "") ||
+		WebAuthPolicy::AuthorizeLiveRequest(
+			"/api/status", true, nullptr, "", "same-origin",
+			"evil.example:4711", "http://evil.example:4711") ||
+		!WebAuthPolicy::AuthorizeLiveRequest(
+			"/api/status", false, &session, "", "same-origin", "", "")) {
 		failure = "web auth live permission matrix failed";
 		return false;
 	}

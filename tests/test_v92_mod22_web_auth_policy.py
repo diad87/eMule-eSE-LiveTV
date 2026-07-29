@@ -16,6 +16,7 @@ NATIVE_TEST = ROOT / "srchybrid" / "tests" / "test_web_auth_policy.cpp"
 SERVER_H = ROOT / "srchybrid" / "WebServer.h"
 SERVER_CPP = ROOT / "srchybrid" / "WebServer.cpp"
 SOCKET_CPP = ROOT / "srchybrid" / "WebSocket.cpp"
+TEMPLATE = ROOT / "srchybrid" / "eMule.tmpl"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 NATIVE_GATE = ROOT / "srchybrid" / "tests" / "make.bat"
 CONTRACT = ROOT / "docs" / "architecture" / "mod03_ownership_layering_contract_v1.json"
@@ -30,6 +31,7 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
         cls.server_h = SERVER_H.read_text(encoding="utf-8")
         cls.server = SERVER_CPP.read_text(encoding="utf-8")
         cls.socket = SOCKET_CPP.read_text(encoding="utf-8")
+        cls.template = TEMPLATE.read_text(encoding="utf-8")
         cls.contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
 
     def test_planned_owner_layer_and_responsibility_are_exact(self) -> None:
@@ -108,12 +110,40 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
             self.assertIn(required, self.source)
         self.assertIn('header.name == "x-csrf-token"', self.socket)
         self.assertIn('header.name == "sec-fetch-site"', self.socket)
+        self.assertIn('header.name == "host"', self.socket)
+        self.assertIn('header.name == "origin"', self.socket)
         self.assertIn("X-CSRF-Token: %s", self.server)
         self.assertIn("Access-Control-Expose-Headers: X-CSRF-Token", self.server)
         self.assertIn("ValidateCsrfRequest(", self.server)
         self.assertIn("ConstantTimeEqual(", self.server)
         self.assertNotIn("computeExpected(thePrefs.GetWSPass()) == aResponse", self.server)
         self.assertIn("HTTP/1.1 403 Forbidden", self.server)
+        self.assertIn("AuthorizeLiveRequest(", self.server)
+        self.assertIn("IsLivePathStateChanging(", self.source)
+        self.assertIn("IsLocalWebAuthority(host)", self.source)
+        self.assertIn("IsLocalWebOrigin(origin)", self.source)
+        self.assertIn("ValidateCsrf(*session, suppliedToken)", self.source)
+        self.assertIn('fetchSite == "cross-site"', self.source)
+
+    def test_bundled_login_uses_challenge_response_without_remote_plaintext(self) -> None:
+        for required in (
+            'name="n" value="[ChallengeNonce]"',
+            'name="r" value=""',
+            "eseMd5Utf16Le(password)",
+            "eseSha256Ascii(material)",
+            'form.elements.password.value=""',
+            "document.login.password.focus()",
+        ):
+            self.assertIn(required, self.template)
+        self.assertNotIn('name="p"', self.template)
+        self.assertNotIn("window.crypto.subtle", self.template)
+        self.assertRegex(
+            self.template,
+            r"<--TMPL_VERSION-->\s*8\s*<--TMPL_VERSION_END-->",
+        )
+        self.assertIn("#define WEB_SERVER_TEMPLATES_VERSION\t8", self.server)
+        self.assertIn("loopback && !sPlain.IsEmpty()", self.server)
+        self.assertIn("never accept a reusable password from a remote socket", self.server)
 
     def test_permissions_and_four_action_limits_delegate_to_policy(self) -> None:
         self.assertIn("HasPermission(", self.server)
@@ -124,7 +154,10 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
             "/api/relay/", "/api/live/broadcast/",
             "/api/live/privacy/",
         ):
-            self.assertIn(privileged, self.source)
+            self.assertIn(privileged, self.server)
+        self.assertIn('path.compare(0, 5, "/api/") == 0', self.source)
+        self.assertIn("/api/live/test/edge_sabotage", self.native)
+        self.assertIn("/api/future/operator", self.native)
         for action in (
             "NetworkConnect", "ManualRendezvous",
             "KeepaliveToggle", "ManualHolePunch",
@@ -147,12 +180,17 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
             "cross-site credentialed request without CSRF token must fail",
             "first action must be allowed even at tick zero",
             "concurrent session store must retain every unique session",
+            "viewer mutations, operator routes and unknown APIs must be state-changing",
+            "non-local or malformed web authority must fail closed",
             "production WebAuthPolicy self-test must pass",
         ):
             self.assertIn(required, self.native)
         self.assertIn("threadCount = 8", self.native)
         self.assertIn("sessionsPerThread = 100", self.native)
         self.assertIn("RunWebAuthPolicySelfTest(authFailure)", self.server)
+        self.assertIn("std::lock_guard<std::mutex> lock(webRngMutex)", self.server)
+        self.assertEqual(self.server.count("webRng.GenerateBlock"), 1)
+        self.assertEqual(self.server.count("webRng.GenerateWord32"), 1)
 
     def test_project_and_standalone_gate_compile_production_module(self) -> None:
         namespace = {"m": "http://schemas.microsoft.com/developer/msbuild/2003"}

@@ -108,6 +108,17 @@ public:
 		const std::string& fetchSite);
 	static bool HasPermission(WebRole role, WebRole required);
 	static WebRole RequiredRoleForLivePath(const std::string& path);
+	static bool IsLivePathStateChanging(const std::string& path);
+	static bool IsLocalWebAuthority(const std::string& authority);
+	static bool IsLocalWebOrigin(const std::string& origin);
+	static bool AuthorizeLiveRequest(
+		const std::string& path,
+		bool loopback,
+		const WebSessionSnapshot* session,
+		const std::string& suppliedToken,
+		const std::string& fetchSite,
+		const std::string& host,
+		const std::string& origin);
 
 private:
 	struct SessionRecord {

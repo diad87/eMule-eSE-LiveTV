@@ -30,7 +30,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
 
     def test_baseline_is_reproducible_and_final_limits_are_not_premature(self) -> None:
         messages = VERIFIER.validate(self.config, self.contract)
-        self.assertIn("NO_EXTRACTED_MODULES_DISCOVERED", messages)
+        self.assertTrue(any(
+            message.startswith("slice LiveTunnelFraming:")
+            for message in messages
+        ))
         self.assertFalse(self.config["final_limits"]["enforced_now"])
         self.assertEqual(self.config["baseline_commit"], "161d948281682d39acdcea796b1edddc6d68904c")
         self.assertEqual(len(self.config["coordinator_files"]), 6)
@@ -42,23 +45,49 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
             (None, None, "not_specified_by_plan"),
         )
         self.assertEqual(self.config["module_catalog"], {
-            "state": "NO_EXTRACTED_MODULES_DECLARED", "entries": [],
+            "state": "EXTRACTION_ACTIVE",
+            "entries": [{
+                "name": "LiveTunnelFraming",
+                "owner": "CLiveTunnel",
+                "layer": "foundation",
+                "implementation_files": ["srchybrid/LiveTunnelFraming.cpp"],
+                "interface_files": ["srchybrid/LiveTunnelFraming.h"],
+                "declared_direct_dependencies": [],
+            }],
         })
-        self.assertEqual(self.config["approved_non_module_code"], [])
+        self.assertEqual(self.config["approved_non_module_code"], [{
+            "path": "srchybrid/tests/test_live_tunnel_framing.cpp",
+            "reason": (
+                "Standalone byte-exact executable test for MOD-1.1 pure "
+                "framing extraction."
+            ),
+            "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+        }])
         self.assertEqual(self.config["slice_evidence"], {
-            "state": "NO_EXTRACTION", "entries": [],
+            "state": "EXTRACTION_ACTIVE",
+            "entries": [{
+                "module": "LiveTunnelFraming",
+                "slice_base_commit": "3a1ccf5faec81ea8fa60cf9b084cb76be98f2074",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }],
         })
 
-    def test_no_future_module_is_claimed_before_an_extraction(self) -> None:
+    def test_only_the_completed_first_extraction_is_claimed(self) -> None:
         self.assertEqual(self.config["mod03_contract"]["planned_module_count"], 29)
         self.assertEqual(len(VERIFIER._planned_modules(self.contract)), 29)
-        self.assertFalse(self.config["module_catalog"]["entries"])
+        self.assertEqual(
+            [entry["name"] for entry in self.config["module_catalog"]["entries"]],
+            ["LiveTunnelFraming"],
+        )
 
     def test_growth_limit_is_binding_while_final_targets_remain_end_state_only(self) -> None:
         path = self.config["coordinator_files"][0]["path"]
         raw = (ROOT / path).read_bytes()
+        baseline = self.config["coordinator_files"][0]["baseline_loc_physical"]
+        lines_to_exceed_baseline = baseline - VERIFIER.loc_physical(raw) + 1
+        grown = raw + (b"// coordinator growth fixture\n" * lines_to_exceed_baseline)
         with self.assertRaisesRegex(VERIFIER.GateError, "coordinator LOC grew over baseline"):
-            VERIFIER.validate(self.config, self.contract, {path: raw + b"\n// fixture\n"})
+            VERIFIER.validate(self.config, self.contract, {path: grown})
 
     def test_baseline_mapping_scope_rule_and_limits_are_immutable(self) -> None:
         mutations = (
@@ -97,11 +126,14 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
             overrides={"srchybrid/NewHelper.h": b""},
             discovery_overrides={"srchybrid/NewHelper.h"},
         )
-        self.assertIn("NO_EXTRACTED_MODULES_DISCOVERED", messages)
+        self.assertTrue(
+            any(message.startswith("slice LiveTunnelFraming:") for message in messages),
+            messages,
+        )
 
     def test_cli_positive_and_exact_negative_fixtures(self) -> None:
         for mode, needle in (
-            ("--verify", "NO_EXTRACTED_MODULES_DISCOVERED"),
+            ("--verify", "slice LiveTunnelFraming:"),
             ("--negative-fixtures", "41 negative fixtures"),
         ):
             completed = subprocess.run([sys.executable, str(SCRIPT), mode], cwd=ROOT,

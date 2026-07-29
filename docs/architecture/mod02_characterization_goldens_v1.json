@@ -28,7 +28,7 @@
       }
     },
     "live_tunnel_framing": {
-      "production_file": "srchybrid/LiveCellQueue.cpp",
+      "production_file": "srchybrid/LiveTunnelFraming.cpp",
       "symbols": [
         "PackSubHeader",
         "ParseSubHeader",

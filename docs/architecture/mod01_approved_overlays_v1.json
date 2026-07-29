@@ -5,9 +5,9 @@
     {
       "path": "srchybrid/LiveTunnel.cpp",
       "baseline_sha256": "0d899136a867bd1a0571b62b06343d0ca3a1f075162656eb0f4bddcb6dc85591",
-      "overlay_sha256": "ab611f9750f1e9ea57d16947ec2fc0490738a5585561c508a0747700e802315a",
-      "task": "MOD-0.2",
-      "reason": "Headless production framing/reassembly characterization hook."
+      "overlay_sha256": "0b01da80c01d287d7090d2334525320a2676d551f98db49c09c29926efcd1491",
+      "task": "MOD-0.2 + MOD-1.1",
+      "reason": "MOD-0.2 headless production framing/reassembly characterization hook; MOD-1.1 mechanically extracts its pure framing body without behavior change."
     },
     {
       "path": "srchybrid/LiveTunnel.h",

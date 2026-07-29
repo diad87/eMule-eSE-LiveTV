@@ -14,9 +14,36 @@
   ],
   "final_limits": {"enforced_now": false, "activation": "end-state review only; each extraction slice remains bound by no coordinator growth"},
   "module_policy": {"recommended_implementation_loc_min": 300, "recommended_implementation_loc_max": 1200, "hard_stop_implementation_loc": 1500, "max_direct_dependencies": 8},
-  "module_catalog": {"state": "NO_EXTRACTED_MODULES_DECLARED", "entries": []},
-  "approved_non_module_code": [],
-  "slice_evidence": {"state": "NO_EXTRACTION", "entries": []},
+  "module_catalog": {
+    "state": "EXTRACTION_ACTIVE",
+    "entries": [
+      {
+        "name": "LiveTunnelFraming",
+        "owner": "CLiveTunnel",
+        "layer": "foundation",
+        "implementation_files": ["srchybrid/LiveTunnelFraming.cpp"],
+        "interface_files": ["srchybrid/LiveTunnelFraming.h"],
+        "declared_direct_dependencies": []
+      }
+    ]
+  },
+  "approved_non_module_code": [
+    {
+      "path": "srchybrid/tests/test_live_tunnel_framing.cpp",
+      "reason": "Standalone byte-exact executable test for MOD-1.1 pure framing extraction.",
+      "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md"
+    }
+  ],
+  "slice_evidence": {
+    "state": "EXTRACTION_ACTIVE",
+    "entries": [
+      {
+        "module": "LiveTunnelFraming",
+        "slice_base_commit": "3a1ccf5faec81ea8fa60cf9b084cb76be98f2074",
+        "source_coordinator": "srchybrid/LiveTunnel.cpp"
+      }
+    ]
+  },
   "mod03_contract": {"path": "docs/architecture/mod03_ownership_layering_contract_v1.json", "edge_policy": "deny_unlisted", "planned_module_count": 29},
   "slice_rule": "for each catalogued extraction, git diff --numstat from its declared slice_base_commit to the worktree must show source_coordinator removed lines strictly greater than added lines"
 }

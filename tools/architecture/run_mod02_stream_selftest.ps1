@@ -22,6 +22,7 @@ $criticalSourceRelativePaths = @(
     'srchybrid/EmuleDlg.cpp',
     'srchybrid/LiveTunnel.cpp', 'srchybrid/LiveTunnel.h',
     'srchybrid/LiveCellQueue.cpp', 'srchybrid/LiveCellQueue.h',
+    'srchybrid/LiveTunnelFraming.cpp', 'srchybrid/LiveTunnelFraming.h',
     'srchybrid/WebServer.cpp', 'srchybrid/WebServer.h',
     'srchybrid/LiveStreamManager.cpp', 'srchybrid/LiveStreamManager.h'
 )
@@ -33,7 +34,26 @@ function Get-Mod02SourceIdentity([string]$Root, [string[]]$RelativePaths) {
     foreach ($relativePath in $RelativePaths) {
         $path = Join-Path $Root $relativePath
         if (-not (Test-Path -LiteralPath $path)) { throw "Missing critical source: $relativePath" }
-        $rawHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $rawBytes = [IO.File]::ReadAllBytes($path)
+        $normalizedBytes = [Collections.Generic.List[byte]]::new($rawBytes.Length)
+        for ($index = 0; $index -lt $rawBytes.Length; $index++) {
+            if ($rawBytes[$index] -eq 13) {
+                if (($index + 1 -lt $rawBytes.Length) -and ($rawBytes[$index + 1] -eq 10)) {
+                    $index++
+                }
+                $normalizedBytes.Add(10)
+            } else {
+                $normalizedBytes.Add($rawBytes[$index])
+            }
+        }
+        $sourceSha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $rawHash = ([BitConverter]::ToString(
+                $sourceSha256.ComputeHash($normalizedBytes.ToArray())
+            )).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $sourceSha256.Dispose()
+        }
         $lines += "$relativePath=$rawHash"
     }
     $payload = [Text.UTF8Encoding]::new($false).GetBytes([string]::Join("`n", $lines))

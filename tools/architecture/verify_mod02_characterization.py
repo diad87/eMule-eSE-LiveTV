@@ -26,9 +26,15 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/EmuleDlg.cpp",
     "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h",
     "srchybrid/LiveCellQueue.cpp", "srchybrid/LiveCellQueue.h",
+    "srchybrid/LiveTunnelFraming.cpp", "srchybrid/LiveTunnelFraming.h",
     "srchybrid/WebServer.cpp", "srchybrid/WebServer.h",
     "srchybrid/LiveStreamManager.cpp", "srchybrid/LiveStreamManager.h",
 ]
+
+
+def normalize_source_bytes(raw: bytes) -> bytes:
+    """Return source bytes with platform-independent line endings."""
+    return raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
 def tokenize(text: str) -> list[str]:
@@ -97,7 +103,7 @@ def actual(goldens: dict, source_override: dict[str, str] | None = None) -> dict
 
 def source_identity() -> str:
     lines = [
-        f"{path}={hashlib.sha256((ROOT / path).read_bytes()).hexdigest()}"
+        f"{path}={hashlib.sha256(normalize_source_bytes((ROOT / path).read_bytes())).hexdigest()}"
         for path in CRITICAL_SOURCE_PATHS
     ]
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()

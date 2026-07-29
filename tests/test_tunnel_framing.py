@@ -4,7 +4,7 @@
 # Locks down the v8.1 tunnel sub-protocol framing by replicating the byte layout
 # of the 7-byte sub-header and the 8-byte fragment header in Python and asserting
 # against fixed test vectors. The C++ helpers PackSubHeader / ParseSubHeader /
-# PackFragHeader / ParseFragHeader (srchybrid/LiveCellQueue.cpp) MUST agree
+# PackFragHeader / ParseFragHeader (srchybrid/LiveTunnelFraming.cpp) MUST agree
 # with these vectors byte-for-byte; any drift is a regression.
 #
 # Same pattern as test_address_wire.py. Pure Python, no emule.exe needed.
@@ -15,7 +15,7 @@
 import sys
 
 
-# ---- constants mirrored from srchybrid/LiveCellQueue.h + Opcodes.h ----------
+# ---- constants mirrored from srchybrid/LiveTunnelFraming.h + Opcodes.h ------
 SUB_HEADER_BYTES      = 7
 FRAG_HEADER_BYTES     = 8
 TUN_MULTICELL_OP_MIN  = 0x40

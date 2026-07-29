@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import importlib.util
 import pathlib
 import re
 import subprocess
@@ -24,9 +25,15 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/EmuleDlg.cpp",
     "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h",
     "srchybrid/LiveCellQueue.cpp", "srchybrid/LiveCellQueue.h",
+    "srchybrid/LiveTunnelFraming.cpp", "srchybrid/LiveTunnelFraming.h",
     "srchybrid/WebServer.cpp", "srchybrid/WebServer.h",
     "srchybrid/LiveStreamManager.cpp", "srchybrid/LiveStreamManager.h",
 ]
+
+SPEC = importlib.util.spec_from_file_location("mod02_verifier", SCRIPT)
+assert SPEC is not None and SPEC.loader is not None
+VERIFIER = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(VERIFIER)
 
 
 class Mod02CharacterizationTest(unittest.TestCase):
@@ -75,7 +82,7 @@ class Mod02CharacterizationTest(unittest.TestCase):
         ):
             self.assertRegex(evidence[field], r"^[0-9a-f]{64}$")
         runner = RUNTIME_RUNNER.read_text(encoding="utf-8")
-        for required in ("BuildManifest", "source_identity_sha256", "Get-Mod02SourceIdentity", "Mod02BuildIdentity.h", "taskkill.exe", "WaitForExit(10000)", "WaitForExit(5000)", "SOURCE $sourceIdentity", "source_tree_clean"):
+        for required in ("BuildManifest", "source_identity_sha256", "Get-Mod02SourceIdentity", "Mod02BuildIdentity.h", "ReadAllBytes", "normalizedBytes", "taskkill.exe", "WaitForExit(10000)", "WaitForExit(5000)", "SOURCE $sourceIdentity", "source_tree_clean"):
             self.assertIn(required, runner)
         self.assertNotIn("ExpectedSourceCommit", runner)
         self.assertNotIn("ExpectedExecutableSha256", runner)
@@ -94,7 +101,7 @@ class Mod02CharacterizationTest(unittest.TestCase):
             hashlib.sha256(BUILD_MANIFEST.read_bytes()).hexdigest(),
         )
         lines = [
-            f"{path}={hashlib.sha256((ROOT / path).read_bytes()).hexdigest()}"
+            f"{path}={hashlib.sha256(VERIFIER.normalize_source_bytes((ROOT / path).read_bytes())).hexdigest()}"
             for path in CRITICAL_SOURCE_PATHS
         ]
         current_identity = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
@@ -104,6 +111,19 @@ class Mod02CharacterizationTest(unittest.TestCase):
             r'ESE_MOD02_CRITICAL_SOURCE_SHA256\s+"([0-9a-f]{64})"', header)
         self.assertIsNotNone(header_identity)
         self.assertEqual(header_identity.group(1), current_identity)
+
+    def test_source_identity_is_line_ending_invariant(self) -> None:
+        lf = b"alpha\nbeta\ngamma\n"
+        crlf = b"alpha\r\nbeta\r\ngamma\r\n"
+        cr = b"alpha\rbeta\rgamma\r"
+        self.assertEqual(
+            VERIFIER.normalize_source_bytes(lf),
+            VERIFIER.normalize_source_bytes(crlf),
+        )
+        self.assertEqual(
+            VERIFIER.normalize_source_bytes(lf),
+            VERIFIER.normalize_source_bytes(cr),
+        )
 
     def test_runtime_runner_parses_in_windows_powershell(self) -> None:
         runner_path = str(RUNTIME_RUNNER).replace("'", "''")

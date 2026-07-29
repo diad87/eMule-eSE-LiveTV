@@ -733,9 +733,12 @@ def _expect_invalid(
 
 def run_negative_fixtures(base: dict[str, Any], contract: dict[str, Any]) -> None:
     first = base["coordinator_files"][0]["path"]
+    first_raw = _read_worktree(first, None)
+    first_baseline = base["coordinator_files"][0]["baseline_loc_physical"]
+    lines_to_exceed_baseline = first_baseline - loc_physical(first_raw) + 1
     _expect_invalid(
         "coordinator-growth", base, contract, "coordinator LOC grew over baseline",
-        overrides={first: _read_worktree(first, None) + b"\n// growth\n"},
+        overrides={first: first_raw + (b"// growth fixture\n" * lines_to_exceed_baseline)},
     )
     for field, expected in (
         ("baseline_commit", "baseline_commit drift"),

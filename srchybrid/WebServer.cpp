@@ -417,41 +417,10 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 		outFailure = _T("web parser failed deterministic query");
 		return false;
 	}
-	if (_ParseURL(_T("/?ab=wrong&b=right"), _T("b")) != _T("right")
-		|| _ParseURLArray(
-			_T("/?downloads=ABC&downloads=Def"), _T("downloads"))
-			!= _T("ABC|Def|")) {
-		outFailure = _T("web parser failed exact or repeated query");
-		return false;
-	}
-	const std::string requestWire =
-		"POST /ignored HTTP/1.1\r\n"
-		"Host: 127.0.0.1\r\n"
-		"Cookie: session=abc123\r\n"
-		"Content-Length: 3\r\n\r\nx=1";
-	ese::web::ParsedRequest parsedRequest;
-	if (ese::web::InspectRequest(
-			requestWire.data(), requestWire.size(), parsedRequest)
-			!= ese::web::ParseStatus::Ready
-		|| parsedRequest.method != ese::web::Method::Post
-		|| parsedRequest.content_length != 3u) {
-		outFailure = _T("web request parser failed runtime request");
-		return false;
-	}
-	std::string cookieValue;
-	if (ese::web::GetCookieValue(
-			"session=abc123; theme=dark", "session", cookieValue)
-			!= ese::web::CookieStatus::Ok
-		|| cookieValue != "abc123") {
-		outFailure = _T("web request parser failed runtime cookie");
-		return false;
-	}
-	const std::string hostileRequest =
-		"POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n";
-	if (ese::web::InspectRequest(
-			hostileRequest.data(), hostileRequest.size(), parsedRequest)
-			!= ese::web::ParseStatus::BadRequest) {
-		outFailure = _T("web request parser accepted hostile length");
+	std::string parserFailure;
+	if (!ese::web::RunCharacterizationSelfTest(parserFailure)) {
+		outFailure = OptUtf8ToStr(
+			parserFailure.data(), static_cast<int>(parserFailure.size()));
 		return false;
 	}
 	if (_SpecialChars(_T("<&\"'\n"), true) != _T("&lt;&amp;&quot;&#8217;\\n")) {

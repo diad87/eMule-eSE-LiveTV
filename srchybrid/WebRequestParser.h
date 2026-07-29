@@ -82,5 +82,7 @@ CookieStatus GetCookieValue(
     const std::string& cookie_name,
     std::string& value);
 
+bool RunCharacterizationSelfTest(std::string& failure);
+
 } // namespace web
 } // namespace ese

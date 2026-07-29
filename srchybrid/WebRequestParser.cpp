@@ -432,5 +432,62 @@ CookieStatus GetCookieValue(
     return found ? CookieStatus::Ok : CookieStatus::NotFound;
 }
 
+bool RunCharacterizationSelfTest(std::string& failure)
+{
+    failure.clear();
+    std::string value;
+    if (GetQueryValue("/?a=one&b=two", "b", value) != QueryStatus::Ok ||
+        value != "two" ||
+        GetQueryValue("/?ab=wrong&b=right", "b", value) != QueryStatus::Ok ||
+        value != "right") {
+        failure = "web parser failed exact deterministic query";
+        return false;
+    }
+
+    std::vector<std::string> values;
+    if (GetQueryValues(
+            "/?downloads=ABC&downloads=Def", "downloads", values)
+            != QueryStatus::Ok ||
+        values.size() != 2u ||
+        values[0] != "ABC" ||
+        values[1] != "Def") {
+        failure = "web parser failed repeated query";
+        return false;
+    }
+
+    const std::string request_wire =
+        "POST /ignored HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Cookie: session=abc123\r\n"
+        "Content-Length: 3\r\n\r\nx=1";
+    ParsedRequest parsed_request;
+    if (InspectRequest(
+            request_wire.data(), request_wire.size(), parsed_request)
+            != ParseStatus::Ready ||
+        parsed_request.method != Method::Post ||
+        parsed_request.content_length != 3u) {
+        failure = "web request parser failed runtime request";
+        return false;
+    }
+
+    if (GetCookieValue(
+            "session=abc123; theme=dark", "session", value)
+            != CookieStatus::Ok ||
+        value != "abc123") {
+        failure = "web request parser failed runtime cookie";
+        return false;
+    }
+
+    const std::string hostile_request =
+        "POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n";
+    if (InspectRequest(
+            hostile_request.data(), hostile_request.size(), parsed_request)
+            != ParseStatus::BadRequest) {
+        failure = "web request parser accepted hostile length";
+        return false;
+    }
+    return true;
+}
+
 } // namespace web
 } // namespace ese

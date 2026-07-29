@@ -311,6 +311,14 @@ int main()
             "cookie value size is bounded");
     }
 
+    {
+        std::string failure;
+        Expect(
+            ese::web::RunCharacterizationSelfTest(failure) &&
+                failure.empty(),
+            "production characterization helper passes");
+    }
+
     if (failures != 0) {
         std::fprintf(stderr, "%d WebRequestParser test(s) failed.\n", failures);
         return 1;

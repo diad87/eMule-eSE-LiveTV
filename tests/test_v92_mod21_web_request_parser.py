@@ -130,14 +130,18 @@ class Mod21WebRequestParserTest(unittest.TestCase):
 
     def test_headless_characterization_exercises_integrated_parser(self) -> None:
         for marker in (
-            "web parser failed exact or repeated query",
+            "web parser failed exact deterministic query",
+            "web parser failed repeated query",
             "web request parser failed runtime request",
             "web request parser failed runtime cookie",
             "web request parser accepted hostile length",
         ):
-            self.assertIn(marker, self.server)
-        self.assertIn("ese::web::InspectRequest(", self.server)
-        self.assertIn("ese::web::GetCookieValue(", self.server)
+            self.assertIn(marker, self.source)
+        self.assertIn(
+            "ese::web::RunCharacterizationSelfTest(parserFailure)",
+            self.server,
+        )
+        self.assertIn("production characterization helper passes", self.native)
 
     def test_native_vectors_cover_legacy_and_hostile_inputs(self) -> None:
         for diagnostic in (

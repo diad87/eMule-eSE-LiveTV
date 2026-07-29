@@ -164,6 +164,13 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/WebAuthPolicy.cpp"],
                 "interface_files": ["srchybrid/WebAuthPolicy.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "WebRouteTable",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebRouteTable.cpp"],
+                "interface_files": ["srchybrid/WebRouteTable.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.config["approved_non_module_code"], [
@@ -225,6 +232,14 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/tests/test_web_route_table.cpp",
+                "reason": (
+                    "Standalone exact, dynamic, method-matrix and hostile-route "
+                    "executable test for the MOD-2.3 route-table extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         self.assertEqual(self.config["slice_evidence"], {
             "state": "EXTRACTION_ACTIVE",
@@ -280,6 +295,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "module": "WebAuthPolicy",
                 "slice_base_commit": "630ef1cc6dac053006582714ace613670d8dc658",
                 "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebRouteTable",
+                "slice_base_commit": "f6f9d700d7682bb4b228d259f69107d69b066a85",
+                "source_coordinator": "srchybrid/WebServer.cpp",
             }],
         })
 
@@ -302,6 +321,7 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "LiveTunnelMetrics",
                 "WebRequestParser",
                 "WebAuthPolicy",
+                "WebRouteTable",
             ],
         )
 

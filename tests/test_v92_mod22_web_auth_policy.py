@@ -148,13 +148,16 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
     def test_permissions_and_four_action_limits_delegate_to_policy(self) -> None:
         self.assertIn("HasPermission(", self.server)
         self.assertIn("RequiredRoleForLivePath(", self.server)
-        for privileged in (
-            "/api/debug/", "/api/ese/", "/api/holepunch/",
-            "/api/keepalive/", "/api/krp/", "/api/network/",
-            "/api/relay/", "/api/live/broadcast/",
-            "/api/live/privacy/",
+        for privileged_route in (
+            "ApiDebugSourceResolutions", "ApiEseV9", "ApiHolePunchTest",
+            "ApiKeepaliveStart", "ApiKrpStatus", "ApiNetworkConnect",
+            "ApiRelayAccept", "ApiLiveBroadcastStart",
+            "ApiLivePrivacy",
         ):
-            self.assertIn(privileged, self.server)
+            self.assertIn(
+                f"WebRouteId::{privileged_route}",
+                self.server,
+            )
         self.assertIn('path.compare(0, 5, "/api/") == 0', self.source)
         self.assertIn("/api/live/test/edge_sabotage", self.native)
         self.assertIn("/api/future/operator", self.native)

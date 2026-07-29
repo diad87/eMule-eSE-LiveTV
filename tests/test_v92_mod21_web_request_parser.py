@@ -114,7 +114,7 @@ class Mod21WebRequestParserTest(unittest.TestCase):
         self.assertLess(inspect, dispatch)
         self.assertIn("ese::web::ParsedRequest parsed", self.socket)
         self.assertIn("request.method == ese::web::Method::Post", self.socket)
-        self.assertIn("request.method == ese::web::Method::Options", self.socket)
+        self.assertIn("case ese::web::Method::Options:", self.socket)
         self.assertIn("request.target", self.socket)
         self.assertIn("RejectMalformedRequest(", self.socket)
 

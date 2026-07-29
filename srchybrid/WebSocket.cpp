@@ -102,11 +102,19 @@ void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const
 		ese::web::ResolveWebRoute(routeMethod, request.target);
 	if (route.status != ese::web::WebRouteStatus::Matched) {
 		if (route.status == ese::web::WebRouteStatus::MethodNotAllowed) {
-			SendReply(
+			const char* allowed = "GET, OPTIONS";
+			if (route.route == ese::web::WebRouteId::ClassicPage)
+				allowed = "GET, POST";
+			else if (route.route == ese::web::WebRouteId::StaticAsset)
+				allowed = "GET";
+			CStringA response;
+			response.Format(
 				"HTTP/1.1 405 Method Not Allowed\r\n"
-				"Allow: GET, OPTIONS\r\n"
+				"Allow: %s\r\n"
 				"Connection: close\r\n"
-				"Content-Length: 0\r\n");
+				"Content-Length: 0\r\n",
+				allowed);
+			SendReply(response);
 		} else {
 			SendReply(
 				"HTTP/1.1 404 Not Found\r\n"
@@ -157,7 +165,7 @@ void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const
 		Data.pSocket->SendReply(
 			"HTTP/1.1 204 No Content\r\n"
 			"Access-Control-Allow-Origin: http://localhost:3000\r\n"
-			"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+			"Access-Control-Allow-Methods: GET, OPTIONS\r\n"
 			"Access-Control-Allow-Headers: Authorization, X-CSRF-Token, Content-Type\r\n"
 			"Access-Control-Max-Age: 86400\r\n"
 			"Content-Length: 0\r\n");

@@ -83,7 +83,7 @@ class Mod23WebRouteTableTest(unittest.TestCase):
             "IsSafeHlsResource(path.substr(43))",
             "IsSafeLeaf(resource, 64)",
             "ParseSessionPrefix(path, suffix)",
-            "token > static_cast<std::uint64_t>(INT_MAX)",
+            "(static_cast<std::uint64_t>(INT_MAX) - digit) / 10u",
             'path.compare(0, 3, "/s/") == 0',
             "IsStaticAssetPath(path)",
         ):
@@ -106,6 +106,17 @@ class Mod23WebRouteTableTest(unittest.TestCase):
         self.assertLess(resolve, min(live, classic, static))
         self.assertIn("HTTP/1.1 404 Not Found", self.socket)
         self.assertIn("HTTP/1.1 405 Method Not Allowed", self.socket)
+        for allow_value in (
+            'allowed = "GET, OPTIONS"',
+            'allowed = "GET, POST"',
+            'allowed = "GET"',
+            "Access-Control-Allow-Methods: GET, OPTIONS",
+        ):
+            self.assertIn(allow_value, self.socket)
+        self.assertNotIn(
+            "Access-Control-Allow-Methods: GET, POST, OPTIONS",
+            self.socket,
+        )
         self.assertIn(
             "route.handler == ese::web::WebHandler::CorsPreflight",
             self.socket,
@@ -134,7 +145,9 @@ class Mod23WebRouteTableTest(unittest.TestCase):
             "/api/relay/unknown",
             "/api/live/privacy/future",
             "/s/2147483648/api/status",
+            "/s/999999999999999999999999999999999999999/api/status",
             "/s/1/style.css",
+            "/style.css:secret.css",
             "/%61pi/status",
         ):
             self.assertIn(hostile, self.native)
@@ -147,6 +160,8 @@ class Mod23WebRouteTableTest(unittest.TestCase):
             "web route table accepted unknown route",
             "web route table accepted unknown method",
             "web route table failed token-prefixed stream",
+            "web route table accepted overflowing session token",
+            "web route table accepted unsafe static path",
         ):
             self.assertIn(marker, self.source)
 

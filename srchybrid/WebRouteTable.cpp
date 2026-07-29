@@ -110,7 +110,11 @@ bool IsSafeLeaf(const std::string& value, std::size_t maxLength)
 		value.find("..") != std::string::npos)
 		return false;
 	for (const unsigned char byte : value) {
-		if (!(std::isalnum(byte) || byte == '.' || byte == '_' || byte == '-'))
+		const bool asciiAlphaNumeric =
+			(byte >= '0' && byte <= '9') ||
+			(byte >= 'A' && byte <= 'Z') ||
+			(byte >= 'a' && byte <= 'z');
+		if (!(asciiAlphaNumeric || byte == '.' || byte == '_' || byte == '-'))
 			return false;
 	}
 	return true;
@@ -137,6 +141,15 @@ bool IsStaticAssetPath(const std::string& path)
 		path.find("..") != std::string::npos ||
 		path.find('\\') != std::string::npos)
 		return false;
+	for (const unsigned char byte : path) {
+		const bool asciiAlphaNumeric =
+			(byte >= '0' && byte <= '9') ||
+			(byte >= 'A' && byte <= 'Z') ||
+			(byte >= 'a' && byte <= 'z');
+		if (!(asciiAlphaNumeric || byte == '/' || byte == '.' ||
+			byte == '_' || byte == '-'))
+			return false;
+	}
 	return HasCaseInsensitiveSuffix(path, ".gif") ||
 		HasCaseInsensitiveSuffix(path, ".jpg") ||
 		HasCaseInsensitiveSuffix(path, ".png") ||
@@ -162,9 +175,11 @@ bool ParseSessionPrefix(
 		const char value = path[index];
 		if (value < '0' || value > '9')
 			return false;
-		token = token * 10u + static_cast<unsigned>(value - '0');
-		if (token > static_cast<std::uint64_t>(INT_MAX))
+		const unsigned digit = static_cast<unsigned>(value - '0');
+		if (token >
+			(static_cast<std::uint64_t>(INT_MAX) - digit) / 10u)
 			return false;
+		token = token * 10u + digit;
 	}
 	if (token == 0)
 		return false;
@@ -307,6 +322,18 @@ bool RunWebRouteTableSelfTest(std::string& failure)
 		!prefixed.token_prefixed ||
 		prefixed.route != WebRouteId::ApiLiveStream) {
 		failure = "web route table failed token-prefixed stream";
+		return false;
+	}
+	if (ResolveWebRoute(
+			WebRouteMethod::Get,
+			"/s/999999999999999999999999999999999999999/api/status").status !=
+		WebRouteStatus::NotFound) {
+		failure = "web route table accepted overflowing session token";
+		return false;
+	}
+	if (ResolveWebRoute(WebRouteMethod::Get, "/style.css:secret.css").status !=
+		WebRouteStatus::NotFound) {
+		failure = "web route table accepted unsafe static path";
 		return false;
 	}
 	return true;

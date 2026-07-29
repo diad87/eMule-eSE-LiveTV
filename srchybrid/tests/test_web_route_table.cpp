@@ -196,8 +196,11 @@ void TestHostileRoutes()
 		"/s/+1/api/status",
 		"/s/1x/api/status",
 		"/s/2147483648/api/status",
+		"/s/999999999999999999999999999999999999999/api/status",
 		"/s/1/api/future",
 		"/s/1/style.css",
+		"/style.css:secret.css",
+		"/style%2ecss",
 		"/api/status#fragment",
 		"/%61pi/status",
 		"/anything"

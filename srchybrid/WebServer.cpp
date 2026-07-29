@@ -459,6 +459,15 @@ CString CWebServer::_SpecialChars(const CString &cstr, bool noquote /*=false*/)
 	return CString(escaped.data(), static_cast<int>(escaped.size()));
 }
 
+static CString EseXmlEscape(const CString& value)
+{
+	const std::wstring input(
+		static_cast<LPCTSTR>(value),
+		static_cast<std::size_t>(value.GetLength()));
+	const std::wstring escaped = ese::web::EscapeXml(input);
+	return CString(escaped.data(), static_cast<int>(escaped.size()));
+}
+
 bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 {
 	outFailure.Empty();
@@ -4446,7 +4455,7 @@ CString CWebServer::_GetRemoteLinkAddedOk(const ThreadData &Data)
 
 	Out += _T("<status result=\"OK\">");
 	Out += _T("<description>") +
-		_SpecialChars(GetResString(IDS_WEB_REMOTE_LINK_ADDED), false) +
+		EseXmlEscape(GetResString(IDS_WEB_REMOTE_LINK_ADDED)) +
 		_T("</description>");
 	Out += _T("<filename>") + HTTPTemp + _T("</filename>");
 	Out += _T("</status>");
@@ -4464,7 +4473,7 @@ CString CWebServer::_GetRemoteLinkAddedFailed(const ThreadData &Data)
 
 	Out += _T("<status result=\"FAILED\" reason=\"WRONG_PASSWORD\">");
 	Out += _T("<description>") +
-		_SpecialChars(GetResString(IDS_WEB_REMOTE_LINK_NOT_ADDED), false) +
+		EseXmlEscape(GetResString(IDS_WEB_REMOTE_LINK_NOT_ADDED)) +
 		_T("</description>");
 	Out += _T("</status>");
 

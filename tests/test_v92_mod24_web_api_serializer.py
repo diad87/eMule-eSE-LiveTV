@@ -100,13 +100,14 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
         self.assertNotIn("Escape minimally for JSON", self.server)
         self.assertNotIn("Escape any quotes/backslashes", self.server)
         self.assertIn(
-            "_SpecialChars(GetResString(IDS_WEB_REMOTE_LINK_ADDED), false)",
+            "EseXmlEscape(GetResString(IDS_WEB_REMOTE_LINK_ADDED))",
             self.server,
         )
         self.assertIn(
-            "_SpecialChars(GetResString(IDS_WEB_REMOTE_LINK_NOT_ADDED), false)",
+            "EseXmlEscape(GetResString(IDS_WEB_REMOTE_LINK_NOT_ADDED))",
             self.server,
         )
+        self.assertIn("ese::web::EscapeXml(input)", self.server)
 
     def test_native_vectors_cover_controls_entities_and_encoding_boundaries(
         self,

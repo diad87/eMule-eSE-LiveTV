@@ -54,6 +54,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
             message.startswith("slice LiveExitServices:")
             for message in messages
         ))
+        self.assertTrue(any(
+            message.startswith("slice LiveTunnelScheduler:")
+            for message in messages
+        ))
         self.assertFalse(self.config["final_limits"]["enforced_now"])
         self.assertEqual(self.config["baseline_commit"], "161d948281682d39acdcea796b1edddc6d68904c")
         self.assertEqual(len(self.config["coordinator_files"]), 6)
@@ -118,6 +122,13 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveExitServices.cpp"],
                 "interface_files": ["srchybrid/LiveExitServices.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveTunnelScheduler",
+                "owner": "CLiveTunnel",
+                "layer": "application",
+                "implementation_files": ["srchybrid/LiveTunnelScheduler.cpp"],
+                "interface_files": ["srchybrid/LiveTunnelScheduler.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.config["approved_non_module_code"], [
@@ -177,6 +188,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "module": "LiveExitServices",
                 "slice_base_commit": "e99303ba2377122cd173016f5f91a006c0ddcf41",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveTunnelScheduler",
+                "slice_base_commit": "ed017dd19423618cfc9d138724cdc091bdcf4525",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }],
         })
 
@@ -193,6 +208,7 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "LiveCircuitHandshake",
                 "LiveRelayDispatcher",
                 "LiveExitServices",
+                "LiveTunnelScheduler",
             ],
         )
 

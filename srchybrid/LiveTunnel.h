@@ -19,6 +19,7 @@
 #include "LiveCircuitHandshake.h"
 #include "LiveRelayDispatcher.h"
 #include "LiveExitServices.h"
+#include "LiveTunnelScheduler.h"
 #include "kad6/kad6_lease.h"
 #include "kad6/kad6_publish.h"
 #include "kad6/kad6_frame.h"
@@ -706,10 +707,10 @@ private:
                                 const kad6::K6ShapeSlot& slot);
     void DeliverK6ShapedOriginLocked(const std::shared_ptr<CLiveCircuit>& circ,
                                      const uint8_t* pkt, size_t size);
+    bool EnsureK6ShapeTimerLocked();
     void StopK6ShapeTimerLocked();
     std::map<uint32_t, K6ShapedLinkState> m_k6ShapeReverse;
     std::map<uint64_t, Bulk::BulkReplayWindow> m_k6ShapeReplay;
-    UINT_PTR m_k6ShapeTimer = 0;
 
     // E3.4 reassembly: symbols of a (streamKey, seq) segment arrive STRIPED across the
     // viewer's bulk circuits, so this is keyed globally by (streamKey, seq), not per
@@ -1269,29 +1270,16 @@ private:
     // thread drains it in ProcessMainThreadWork().
     // A4 adds MT_SEND_MSG: marshal a whole logical message (req_id + sub_cmd +
     // body) so the main thread picks one circuit and pins all its cells to it.
-    enum MtOp : uint8_t { MT_SEND = 1, MT_BUILD_1HOP = 2, MT_BUILD_2HOP = 3,
-                          MT_SEND_MSG = 4, MT_BUILD_3HOP = 5,
-                          MT_K6_SERVICE_SWITCH = 6,
-                          MT_K6_RELEASE_SWITCH = 7 };
-    struct MainThreadReq {
-        MtOp                 op     = MT_SEND;
-        uint32_t             reqId  = 0;   // MT_BUILD_*/MT_SEND_MSG key
-        uint8_t              subCmd = 0;   // MT_SEND_MSG op
-        uint32_t             requiredExitCaps = 0;
-        uint32_t             pinnedCircId = 0; // 0=select; nonzero=stream-bound circuit
-        uint64_t             k6StreamId = 0; // nonzero only for bounded K6 stream data
-        size_t               k6FlowBytes = 0;
-        uint64_t             k6Sequence = 0;
-        size_t               k6DataBytes = 0;
-        kad6::K6Service      k6Service = kad6::K6Service::Control;
-        bool                 k6Enable = true;
-        uint32_t             k6DrainSeconds = 0;
-        bool                 k6HasReleaseEvidence = false;
-        kad6::K6ReleaseEvidence k6ReleaseEvidence;
-        std::vector<uint8_t> payload;      // MT_SEND payload / MT_SEND_MSG body
-    };
-    mutable CCriticalSection  m_mtLock;
-    std::deque<MainThreadReq> m_mtQueue;
+    using MtOp = LiveDeferredOp;
+    using MainThreadReq = LiveDeferredWork;
+    static constexpr MtOp MT_SEND = MtOp::Send;
+    static constexpr MtOp MT_BUILD_1HOP = MtOp::Build1Hop;
+    static constexpr MtOp MT_BUILD_2HOP = MtOp::Build2Hop;
+    static constexpr MtOp MT_SEND_MSG = MtOp::SendMessage;
+    static constexpr MtOp MT_BUILD_3HOP = MtOp::Build3Hop;
+    static constexpr MtOp MT_K6_SERVICE_SWITCH = MtOp::K6ServiceSwitch;
+    static constexpr MtOp MT_K6_RELEASE_SWITCH = MtOp::K6ReleaseSwitch;
+    LiveTunnelScheduler m_scheduler;
 
     // v0.72 — peer snapshot cache, rebuilt by the main thread every tick so
     // worker threads never dereference CUpDownClient pointers.
@@ -1328,7 +1316,6 @@ private:
     mutable CCriticalSection m_lock;
     eSELive::LiveCircuitRegistry m_circuitRegistry; // caller-serialized by m_lock
     eSELive::LiveCircuitHandshake m_handshake;
-    DWORD m_lastTickMs;
     std::array<uint8_t, 32> m_k6GuardNodePub{};
     uint64_t m_k6GuardExpiresAt = 0;
     bool m_k6GuardLoaded = false;
@@ -1339,12 +1326,9 @@ private:
     uint64_t m_bytesSentTotal = 0;   // v8.1 D8 - tunnel wire-byte telemetry
     uint64_t m_bytesRecvTotal = 0;
     // v8.1 D8 - periodic RTT probe state (all touched only under m_lock).
-    DWORD    m_lastRttPingTick = 0;  // when we last SENT an RTT probe (interval gate)
     DWORD    m_rttPingSentTick = 0;  // send tick of the in-flight probe
     uint32_t m_rttPingReqId    = 0;  // req_id of the in-flight probe (0 = none outstanding)
     uint32_t m_meanRttMs       = 0;  // EWMA mean tunnel RTT (0 = unknown)
-    // v8.1.2 E3.2 - last tick we (re)sent the viewer bulk-subscribe (throttle, < BULK_SUB_TTL_MS).
-    DWORD    m_lastBulkSubTick  = 0;
 };
 
 }  // namespace eSELive

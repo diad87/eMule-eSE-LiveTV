@@ -743,6 +743,12 @@
     <ClCompile Include="LiveCircuitHandshake.cpp" />
     <ClCompile Include="LiveRelayDispatcher.cpp" />
     <ClCompile Include="LiveExitServices.cpp" />
+    <ClCompile Include="LiveTunnelScheduler.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="LiveHandshakeWire.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
@@ -1150,6 +1156,7 @@
     <ClInclude Include="LiveRelayDispatcher.h" />
     <ClInclude Include="LiveExitServices.h" />
     <ClInclude Include="LiveRelayTypes.h" />
+    <ClInclude Include="LiveTunnelScheduler.h" />
     <ClInclude Include="LiveHandshakeWire.h" />
     <ClInclude Include="LiveCircuit.h" />
     <ClInclude Include="LiveFec.h" />

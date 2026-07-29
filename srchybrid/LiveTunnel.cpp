@@ -68,7 +68,6 @@ using namespace LiveCircuitHandshakeWire;
 
 CLiveTunnel::CLiveTunnel()
     : m_handshake(*this)
-    , m_lastTickMs(0)
 {
     // v8.1 A2 - register the built-in exit-side handlers. Sprint B/C ops
     // register theirs the same way instead of editing HandleRelay_Exit.
@@ -495,6 +494,10 @@ bool CLiveTunnel::RunCharacterizationSelfTest(CString& outFailure)
         outFailure = _T("tunnel relay dispatcher characterization failed");
         return false;
     }
+    if (!eSELive::RunLiveTunnelSchedulerCharacterizationSelfTest()) {
+        outFailure = _T("tunnel scheduler characterization failed");
+        return false;
+    }
     if (SendThrough(NULL, 0)) {
         outFailure = _T("tunnel empty dispatch was accepted");
         return false;
@@ -871,6 +874,7 @@ bool CLiveTunnel::BuildSuccessor2Hop()
 void CLiveTunnel::Stop()
 {
     m_k6ExitNoticeServer.Stop();
+    (void)m_scheduler.ClearDeferredWork();
     std::set<uint32_t> retiredCircuits;
     {
         CSingleLock lock(&m_lock, TRUE);
@@ -2621,7 +2625,6 @@ void CLiveTunnel::FlushK6OriginCredit(uint32 circId)
     CSingleLock pl(&m_pendingLock, TRUE);
     auto ledger = m_k6SendCredits.find(circId);
     if (ledger == m_k6SendCredits.end()) return;
-    CSingleLock ql(&m_mtLock, TRUE);
     for (auto& pair : m_k6OriginStreams) {
         K6OriginStreamRuntime& stream = pair.second;
         if (stream.circ_id != circId) continue;
@@ -2651,14 +2654,13 @@ void CLiveTunnel::FlushK6OriginCredit(uint32 circId)
             stream.pending_credit_bytes -= (std::min)(stream.pending_credit_bytes,
                 queued.data_bytes);
             stream.pending_credit_frames.pop_front();
-            m_mtQueue.push_back(std::move(request));
+            m_scheduler.Enqueue(std::move(request));
         }
         if (stream.pending_credit_frames.empty()) {
             stream.credit_stall_since_ms = 0;
             if (stream.socket) resumed.push_back(stream.socket);
         }
     }
-    ql.Unlock();
     pl.Unlock();
     for (CKad6OriginSocket* socket : resumed)
         if (socket) socket->SetKad6FlowBlocked(false);
@@ -2906,11 +2908,10 @@ void CLiveTunnel::OnPeerDisconnected(CUpDownClient* peer)
 void CLiveTunnel::EnqueueSend(const uint8_t* payload, size_t payloadLen)
 {
     if (!payload || payloadLen == 0) return;
-    CSingleLock lk(&m_mtLock, TRUE);
     MainThreadReq req;
     req.op = MT_SEND;
     req.payload.assign(payload, payload + payloadLen);
-    m_mtQueue.push_back(std::move(req));
+    m_scheduler.Enqueue(std::move(req));
 }
 
 // v8.1 A4 - marshal a whole logical message for pinned send on the main thread.
@@ -2919,7 +2920,6 @@ void CLiveTunnel::EnqueueSendMsg(uint32_t req_id, uint8_t sub_cmd,
                                  uint32_t requiredExitCaps,
                                  uint32_t pinnedCircId)
 {
-    CSingleLock lk(&m_mtLock, TRUE);
     MainThreadReq req;
     req.op     = MT_SEND_MSG;
     req.reqId  = req_id;
@@ -2927,7 +2927,7 @@ void CLiveTunnel::EnqueueSendMsg(uint32_t req_id, uint8_t sub_cmd,
     req.requiredExitCaps = requiredExitCaps;
     req.pinnedCircId = pinnedCircId;
     if (msg && msgLen) req.payload.assign(msg, msg + msgLen);
-    m_mtQueue.push_back(std::move(req));
+    m_scheduler.Enqueue(std::move(req));
 }
 
 // v8.1 A4 - pin a whole logical message to ONE circuit. Round-robin BY MESSAGE
@@ -3086,15 +3086,12 @@ uint32_t CLiveTunnel::RequestTestCircuit(int hops, uint32_t timeoutMs)
 {
     uint32_t reqId;
     PendingHandle pr = RegisterPending(reqId);   // generates a unique req_id
-    {
-        CSingleLock lk(&m_mtLock, TRUE);
-        MainThreadReq req;
-        req.op = hops == 3 ? MT_BUILD_3HOP
-               : hops == 2 ? MT_BUILD_2HOP
-                           : MT_BUILD_1HOP;
-        req.reqId = reqId;
-        m_mtQueue.push_back(std::move(req));
-    }
+    MainThreadReq req;
+    req.op = hops == 3 ? MT_BUILD_3HOP
+           : hops == 2 ? MT_BUILD_2HOP
+                       : MT_BUILD_1HOP;
+    req.reqId = reqId;
+    m_scheduler.Enqueue(std::move(req));
     std::vector<uint8_t> dummy;
     uint32_t circId = 0;
     WaitPending(reqId, std::move(pr), timeoutMs, dummy, &circId);
@@ -3108,16 +3105,13 @@ bool CLiveTunnel::RequestK6ServiceSwitch(kad6::K6Service service, bool enabled,
         return false;
     uint32_t reqId = 0;
     PendingHandle pending = RegisterPending(reqId);
-    {
-        CSingleLock lk(&m_mtLock, TRUE);
-        MainThreadReq request;
-        request.op = MT_K6_SERVICE_SWITCH;
-        request.reqId = reqId;
-        request.k6Service = service;
-        request.k6Enable = enabled;
-        request.k6DrainSeconds = (std::min)(drainSeconds, kad6::kK6MaxDrainSeconds);
-        m_mtQueue.push_back(std::move(request));
-    }
+    MainThreadReq request;
+    request.op = MT_K6_SERVICE_SWITCH;
+    request.reqId = reqId;
+    request.k6Service = service;
+    request.k6Enable = enabled;
+    request.k6DrainSeconds = (std::min)(drainSeconds, kad6::kK6MaxDrainSeconds);
+    m_scheduler.Enqueue(std::move(request));
     std::vector<uint8_t> ignored;
     uint32_t result = 0;
     return WaitPending(reqId, std::move(pending), timeoutMs, ignored, &result) && result == 1;
@@ -3129,18 +3123,15 @@ bool CLiveTunnel::RequestK6PublicRelease(
 {
     uint32_t reqId = 0;
     PendingHandle pending = RegisterPending(reqId);
-    {
-        CSingleLock lock(&m_mtLock, TRUE);
-        MainThreadReq request;
-        request.op = MT_K6_RELEASE_SWITCH;
-        request.reqId = reqId;
-        request.k6Enable = enable;
-        request.k6DrainSeconds = (std::min)(drainSeconds,
-            kad6::kK6MaxDrainSeconds);
-        request.k6HasReleaseEvidence = evidence != NULL;
-        if (evidence) request.k6ReleaseEvidence = *evidence;
-        m_mtQueue.push_back(std::move(request));
-    }
+    MainThreadReq request;
+    request.op = MT_K6_RELEASE_SWITCH;
+    request.reqId = reqId;
+    request.k6Enable = enable;
+    request.k6DrainSeconds = (std::min)(drainSeconds,
+        kad6::kK6MaxDrainSeconds);
+    request.k6HasReleaseEvidence = evidence != NULL;
+    if (evidence) request.k6ReleaseEvidence = *evidence;
+    m_scheduler.Enqueue(std::move(request));
     std::vector<uint8_t> ignored;
     uint32_t result = 0;
     return WaitPending(reqId, std::move(pending), timeoutMs, ignored, &result) && result == 1;
@@ -3150,14 +3141,10 @@ void CLiveTunnel::ProcessMainThreadWork()
 {
     // MAIN THREAD. Drain the marshaled-work queue. Bounded per call so a
     // burst of requests cannot stretch a single Kad tick.
-    for (int budget = 0; budget < 256; ++budget) {
+    for (size_t budget = 0;
+         budget < LiveTunnelScheduler::kDefaultDrainBudget; ++budget) {
         MainThreadReq req;
-        {
-            CSingleLock lk(&m_mtLock, TRUE);
-            if (m_mtQueue.empty()) break;
-            req = std::move(m_mtQueue.front());
-            m_mtQueue.pop_front();
-        }
+        if (!m_scheduler.TryTake(req)) break;
         try {
             switch (req.op) {
             case MT_SEND:
@@ -5892,12 +5879,9 @@ void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
         // Exit handlers run under OnCellReceived's tunnel lock. Arm the
         // shared timer before entering any pending-rank section so the global
         // order remains tunnel -> pending on every fair-queue path.
-        if (m_k6ShapeTimer == 0) {
-            m_k6ShapeTimer = ::SetTimer(NULL, 0, 10, K6Class5TimerProc);
-            if (m_k6ShapeTimer == 0) {
-                reject(kad6::K6DialStatus::Overloaded);
-                return;
-            }
+        if (!EnsureK6ShapeTimerLocked()) {
+            reject(kad6::K6DialStatus::Overloaded);
+            return;
         }
         kad6::Hash32 targetHash{};
         std::vector<uint8_t> target(ticket.target_endpoint.addr.addr.begin(),
@@ -7659,7 +7643,8 @@ void CLiveTunnel::FinishDueSearchJobs()
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         for (auto it = m_searchJobs.begin(); it != m_searchJobs.end(); ) {
-            if ((int)(now - it->second.deadline) >= 0) {   // window elapsed (wrap-safe)
+            if (LiveTunnelScheduler::DeadlineReached32(
+                    now, it->second.deadline)) {
                 due.push_back(std::move(it->second));
                 it = m_searchJobs.erase(it);
             } else {
@@ -8768,16 +8753,11 @@ bool CLiveTunnel::K6SendEd2kFrameNoWait(uint64 streamId, const uint8_t* raw, siz
 
     // Bound work waiting to reach the main-thread circuit sender. The queue is
     // released as requests are popped; no socket thread blocks for credit.
-    CSingleLock ql(&m_mtLock, TRUE);
-    size_t streamMessages = 0, streamBytes = 0, globalBytes = 0;
-    for (const MainThreadReq& queued : m_mtQueue) {
-        if (queued.k6StreamId == 0) continue;
-        globalBytes += queued.k6FlowBytes;
-        if (queued.k6StreamId == streamId) {
-            ++streamMessages;
-            streamBytes += queued.k6FlowBytes;
-        }
-    }
+    const LiveDeferredFlowUsage queuedUsage =
+        m_scheduler.MeasureK6Flow(streamId);
+    size_t streamMessages = queuedUsage.stream_messages;
+    size_t streamBytes = queuedUsage.stream_bytes;
+    size_t globalBytes = queuedUsage.global_bytes;
     for (const auto& origin : m_k6OriginStreams) {
         for (const K6QueuedOriginFrame& queued : origin.second.pending_credit_frames) {
             globalBytes += queued.wire.size();
@@ -8842,7 +8822,7 @@ bool CLiveTunnel::K6SendEd2kFrameNoWait(uint64 streamId, const uint8_t* raw, siz
     request.k6Sequence = data.sequence;
     request.k6DataBytes = data.data.size();
     request.payload = std::move(wire);
-    m_mtQueue.push_back(std::move(request));
+    m_scheduler.Enqueue(std::move(request));
     return true;
 }
 
@@ -9056,12 +9036,26 @@ bool CLiveTunnel::SendBulkCellToPeer(CUpDownClient* peer, const uint8_t* bytes, 
     return true;
 }
 
+bool CLiveTunnel::EnsureK6ShapeTimerLocked()
+{
+    if (m_scheduler.HasClass5Timer())
+        return true;
+    const UINT_PTR token = ::SetTimer(NULL, 0, 10, K6Class5TimerProc);
+    if (token == 0)
+        return false;
+    if (!m_scheduler.PublishClass5Timer(
+            static_cast<std::uintptr_t>(token))) {
+        ::KillTimer(NULL, token);
+        return false;
+    }
+    return true;
+}
+
 void CLiveTunnel::StopK6ShapeTimerLocked()
 {
-    if (m_k6ShapeTimer != 0) {
-        ::KillTimer(NULL, m_k6ShapeTimer);
-        m_k6ShapeTimer = 0;
-    }
+    const std::uintptr_t token = m_scheduler.ReleaseClass5Timer();
+    if (token != 0)
+        ::KillTimer(NULL, static_cast<UINT_PTR>(token));
 }
 
 bool CLiveTunnel::EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ,
@@ -9122,12 +9116,9 @@ bool CLiveTunnel::EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ
         return false;
     m_k6ShapeReverse.emplace(circ->Id(), std::move(state));
 
-    if (m_k6ShapeTimer == 0) {
-        m_k6ShapeTimer = ::SetTimer(NULL, 0, 10, K6Class5TimerProc);
-        if (m_k6ShapeTimer == 0) {
-            m_k6ShapeReverse.erase(circ->Id());
-            return false;
-        }
+    if (!EnsureK6ShapeTimerLocked()) {
+        m_k6ShapeReverse.erase(circ->Id());
+        return false;
     }
     AddDebugLogLine(false,
         _T("Kad6 K6-6: class-5 link active circ=0x%08x hop=%u bucket=%uKiB/s reservoir=%u records"),
@@ -9398,7 +9389,8 @@ void CLiveTunnel::ProcessClass5Tick()
     const bool fairActive = ProcessK6FairTick();
     CSingleLock lock(&m_lock, TRUE);
     if (m_k6ShapeReverse.empty()) {
-        if (!fairActive) StopK6ShapeTimerLocked();
+        if (m_scheduler.ShouldStopClass5Timer(false, fairActive))
+            StopK6ShapeTimerLocked();
         return;
     }
     const uint64_t nowUs = K6ShapeNowUs();
@@ -9420,7 +9412,8 @@ void CLiveTunnel::ProcessClass5Tick()
         const uint64_t idleTailUs = static_cast<uint64_t>(it->second.idle_tail_epochs)
             * kad6::kK6ShapeEpochUs;
         if (it->second.scheduler.queued_records() == 0
-            && nowUs - it->second.last_input_us >= idleTailUs) {
+            && LiveTunnelScheduler::Elapsed64(
+                nowUs, it->second.last_input_us) >= idleTailUs) {
             AddDebugLogLine(false,
                 _T("Kad6 K6-6: class-5 idle tail complete circ=0x%08x (%u epoch(s))"),
                 circ->Id(), static_cast<unsigned>(it->second.idle_tail_epochs));
@@ -9436,7 +9429,9 @@ void CLiveTunnel::ProcessClass5Tick()
                 it->second.exposed = circ->m_traffic_shaping_exposed = true;
         ++it;
     }
-    if (m_k6ShapeReverse.empty() && !fairActive) StopK6ShapeTimerLocked();
+    if (m_scheduler.ShouldStopClass5Timer(
+            !m_k6ShapeReverse.empty(), fairActive))
+        StopK6ShapeTimerLocked();
 }
 
 bool CLiveTunnel::OnBulkCellReceived(const uint8_t* pkt, uint32_t size, CUpDownClient* fromPeer)
@@ -10190,7 +10185,9 @@ void CLiveTunnel::Tick()
             else TransitionCircuitDestroyed(c);
         } else if (c->State() == CircuitState::HalfBuilt
                    && c->m_extendStartedTick != 0
-                   && (DWORD)(now - c->m_extendStartedTick) > TUNNEL_HANDSHAKE_TIMEOUT_MS * 16) {
+                   && LiveTunnelScheduler::HasStrictlyElapsed32(
+                       now, c->m_extendStartedTick,
+                       TUNNEL_HANDSHAKE_TIMEOUT_MS * 16)) {
             // v8.1 fix: a circuit stuck mid-EXTEND (hop1 done, EXTENDED
             // never arrived) used to fall through both arms above and
             // leak forever. Time it out, with a longer budget since it
@@ -10252,7 +10249,9 @@ void CLiveTunnel::Tick()
                 covCfg.NextPaddingDelayMs((uint32_t)covCfg.GetProfile());
             continue;
         }
-        if (now - c->m_lastPaddingTick < c->m_nextPaddingDelayMs) continue;
+        if (!LiveTunnelScheduler::HasElapsed32(
+                now, c->m_lastPaddingTick, c->m_nextPaddingDelayMs))
+            continue;
 
         // Build a CELL_PADDING: payload = random bytes of random length.
         uint16_t fakeLen = covCfg.SampleFakeLength();
@@ -10290,8 +10289,7 @@ void CLiveTunnel::Tick()
     // so this is a pure no-op on a single-PC node (it never builds anything).
     {
         const DWORD RTT_PING_INTERVAL_MS = 5000u;
-        if ((DWORD)(now - m_lastRttPingTick) >= RTT_PING_INTERVAL_MS) {
-            m_lastRttPingTick = now;
+        if (m_scheduler.DueRttProbe(now, RTT_PING_INTERVAL_MS)) {
             // req_id is a fresh random NewCircuitId(), not deduped against the
             // pending domain. A ~2^-32 collision with an in-flight manual
             // TunnelPing would cost one washed-out EWMA sample; accepted given the odds
@@ -10315,13 +10313,15 @@ void CLiveTunnel::Tick()
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         for (auto it = m_reassembly.begin(); it != m_reassembly.end(); ) {
-            if ((DWORD)(now - it->second.first_seen_tick) > TUN_REASSEMBLY_TTL_MS)
+            if (LiveTunnelScheduler::HasStrictlyElapsed32(
+                    now, it->second.first_seen_tick, TUN_REASSEMBLY_TTL_MS))
                 it = m_reassembly.erase(it);
             else
                 ++it;
         }
         for (auto it = m_k6SearchReplies.begin(); it != m_k6SearchReplies.end(); ) {
-            if ((DWORD)(now - it->second.started) > TUN_REQUEST_HARD_TTL_MS)
+            if (LiveTunnelScheduler::HasStrictlyElapsed32(
+                    now, it->second.started, TUN_REQUEST_HARD_TTL_MS))
                 it = m_k6SearchReplies.erase(it);
             else
                 ++it;
@@ -10344,13 +10344,13 @@ void CLiveTunnel::Tick()
     // (recursive CCriticalSection) — fine. liveStreamManager->IsViewingLive()/GetStreamKey()
     // are unlocked inline reads (same pattern as elsewhere), so no manager lock is taken here.
     if (theApp.liveStreamManager && theApp.liveStreamManager->IsViewingLive()
-        && (DWORD)(now - m_lastBulkSubTick) > 10000u) {
+        && m_scheduler.DueBulkSubscription(now, 10000u)) {
         bool haveBulk = false;
         for (const auto& c : m_circuitRegistry.GetSnapshot())
             if (c->m_role == CircuitRole::Originator && c->State() == CircuitState::Active
                 && c->HopCount() >= 1 && c->m_bulk_ok) { haveBulk = true; break; }
         if (haveBulk) {
-            m_lastBulkSubTick = now;
+            m_scheduler.MarkBulkSubscription(now);
             BulkSubscribe(theApp.liveStreamManager->GetViewerStreamKey());
         }
     }
@@ -10384,11 +10384,7 @@ void CLiveTunnel::Tick()
         }
         // CollectRetries has released the pending-domain mutex before queue
         // publication, preserving registry -> pending -> queue lock order.
-        if (!retries.empty()) {
-            CSingleLock lk(&m_mtLock, TRUE);
-            for (size_t i = 0; i < retries.size(); ++i)
-                m_mtQueue.push_back(std::move(retries[i]));
-        }
+        m_scheduler.EnqueueBatch(std::move(retries));
     }
 
     // 6. v8.1 A6 - sweep deferred exit operations that never completed, or
@@ -10425,7 +10421,8 @@ void CLiveTunnel::Tick()
                 auto& circs = sit->second.circuits;
                 for (auto cit = circs.begin(); cit != circs.end(); ) {
                     if (!circuitAlive(cit->first) ||
-                        (DWORD)(now - cit->second.lastSeen) > EXIT_SUB_TTL_MS)
+                        LiveTunnelScheduler::HasStrictlyElapsed32(
+                            now, cit->second.lastSeen, EXIT_SUB_TTL_MS))
                         cit = circs.erase(cit);
                     else
                         ++cit;
@@ -10448,7 +10445,7 @@ void CLiveTunnel::Tick()
         }
     }
 
-    m_lastTickMs = now;
+    m_scheduler.RecordTick(now);
 }
 
 size_t CLiveTunnel::ActiveCircuitCount() const

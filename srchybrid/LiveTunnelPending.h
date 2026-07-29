@@ -102,6 +102,10 @@ public:
     std::vector<RetryAction> CollectRetries(
         const std::set<std::uint32_t>& active_circuit_ids);
 
+    // Fails every generation currently registered and wakes all waiters.
+    // Records are detached atomically; notification happens after unlock.
+    std::size_t CancelAll();
+
     std::size_t size() const;
 
 private:

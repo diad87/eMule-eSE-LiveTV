@@ -676,41 +676,22 @@ private:
 
     // K6-6.2 fixed-record reverse path. Every relay mapping owns an
     // independent scheduler, nonce space and bounded per-stream reservoir.
-    struct K6ShapedQueuedRecord {
-        uint64_t incoming_nonce = 0; // zero only for terminal plaintext
-        bool terminal = false;
-        std::vector<uint8_t> bytes;  // encoded terminal plain or opaque lower prefix
-    };
-    struct K6ShapedLinkState {
-        kad6::K6Class5Scheduler scheduler;
-        std::map<uint64_t, std::deque<K6ShapedQueuedRecord>> records;
-        uint32_t bucket_kib = 0;
-        int output_layers = 0;
-        uint64_t nonce_epoch = 0;
-        uint32_t nonce_epoch_high_base = 0;
-        uint32_t nonce_epoch_low_base = 0;
-        uint32_t nonce_in_epoch = 0;
-        uint64_t padding_sequence = 0;
-        uint64_t last_input_us = 0;
-        uint8_t idle_tail_epochs = 1;
-        bool nonce_epoch_ready = false;
-        bool exposed = false;
-    };
     bool EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ,
                               int outputLayers, uint32_t bucketKiB);
     bool QueueK6ShapedRecordLocked(const std::shared_ptr<CLiveCircuit>& circ,
-                                   uint64_t streamId, K6ShapedQueuedRecord&& record);
+                                   uint64_t streamId, LiveShapedQueuedRecord&& record);
     bool HandleK6ShapedCellLocked(const uint8_t* pkt, size_t size,
                                   CUpDownClient* fromPeer);
-    bool EmitK6ShapedSlotLocked(const std::shared_ptr<CLiveCircuit>& circ,
-                                K6ShapedLinkState& state,
-                                const kad6::K6ShapeSlot& slot);
+    bool PrepareK6ShapedEmissionLocked(
+        const std::shared_ptr<CLiveCircuit>& circ,
+        const kad6::K6ShapeSlot& slot, LiveShapedEmission& emission);
+    bool EmitK6ShapedEmission(
+        const std::shared_ptr<CLiveCircuit>& circ,
+        const LiveShapedEmission& emission);
     void DeliverK6ShapedOriginLocked(const std::shared_ptr<CLiveCircuit>& circ,
                                      const uint8_t* pkt, size_t size);
     bool EnsureK6ShapeTimerLocked();
     void StopK6ShapeTimerLocked();
-    std::map<uint32_t, K6ShapedLinkState> m_k6ShapeReverse;
-    std::map<uint64_t, Bulk::BulkReplayWindow> m_k6ShapeReplay;
 
     // E3.4 reassembly: symbols of a (streamKey, seq) segment arrive STRIPED across the
     // viewer's bulk circuits, so this is keyed globally by (streamKey, seq), not per
@@ -1055,16 +1036,6 @@ private:
     kad6::K6QuotaIssuerLimiter m_k6QuotaIssuerLimiter;
     kad6::K6QuotaHierarchy m_k6QuotaHierarchy;
     kad6::K6QuotaSpentSet m_k6QuotaSpent;
-    kad6::K6FairScheduler m_k6FairScheduler;
-    struct K6FairPayload {
-        uint8 direction = 0; // 0 origin->remote raw eD2K; 1 remote->origin K6 body
-        size_t credit_bytes = 0; // receiver bytes released after downstream consumption
-        std::vector<uint8_t> bytes;
-    };
-    std::map<uint64, std::deque<K6FairPayload>> m_k6FairPayloads;
-    std::map<uint64, uint64> m_k6FairCredits;
-    std::map<uint64, uint64> m_k6FairAllocationByStream;
-    uint64 m_k6FairPayloadBytes = 0;
     struct K6QuotaGrant {
         kad6::K6QuotaService service = kad6::K6QuotaService::Control;
         kad6::Hash32 context{};

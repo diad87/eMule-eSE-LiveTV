@@ -60,8 +60,8 @@ class Mod16SchedulerCharacterizationTest(unittest.TestCase):
     def test_class5_timer_keeps_fair_allocations_alive(self) -> None:
         fair = self.body("CLiveTunnel::ProcessK6FairTick")
         tick = self.body("CLiveTunnel::ProcessClass5Tick")
-        self.assertIn("!m_k6FairAllocationByStream.empty()", fair)
-        self.assertGreaterEqual(tick.count("ShouldStopClass5Timer"), 2)
+        self.assertIn("m_scheduler.HasFairWork()", fair)
+        self.assertEqual(tick.count("ShouldStopClass5Timer"), 1)
         decision = VERIFIER.function_body(
             self.scheduler,
             "LiveTunnelScheduler::ShouldStopClass5Timer",
@@ -98,18 +98,18 @@ class Mod16SchedulerCharacterizationTest(unittest.TestCase):
     def test_shutdown_stops_timer_before_releasing_tunnel_state(self) -> None:
         body = self.body("CLiveTunnel::Stop")
         close_queue = body.index("m_scheduler.CloseDeferredWork()")
+        cancel_pending = body.index("m_pendingRequests.CancelAll()")
         stop_timer = body.index("StopK6ShapeTimerLocked()")
         clear_registry = body.index("m_circuitRegistry.Clear()")
         clear_pending = body.index("m_exitServices.Clear()")
-        cancel_waiters = body.index("SignalReply(work.reqId")
+        self.assertLess(close_queue, cancel_pending)
+        self.assertLess(cancel_pending, stop_timer)
         self.assertLess(close_queue, stop_timer)
         self.assertLess(stop_timer, clear_registry)
         self.assertLess(clear_registry, clear_pending)
-        self.assertLess(clear_pending, cancel_waiters)
         for marker in (
-            "m_k6ShapeReverse.clear()",
-            "m_k6FairAllocationByStream.clear()",
-            "m_k6FairScheduler.Reset()",
+            "m_scheduler.ClearShaping()",
+            "m_scheduler.ClearFair()",
         ):
             self.assertIn(marker, body)
 
@@ -163,6 +163,8 @@ class Mod16SchedulerCharacterizationTest(unittest.TestCase):
             "struct MainThreadReq", "enum MtOp",
             "struct K6ShapedQueuedRecord", "struct K6ShapedLinkState",
             "m_k6ShapeReverse", "m_k6ShapeReplay",
+            "m_k6FairScheduler", "m_k6FairPayloads", "m_k6FairCredits",
+            "m_k6FairAllocationByStream", "m_k6FairPayloadBytes",
         ):
             self.assertNotIn(removed, self.interface)
         for owned in (
@@ -174,6 +176,9 @@ class Mod16SchedulerCharacterizationTest(unittest.TestCase):
             "bool m_accepting_deferred_work",
             "std::map<std::uint32_t, ShapedLinkState> m_shaped_links",
             "std::map<std::uint64_t, Bulk::BulkReplayWindow> m_shaped_replay",
+            "kad6::K6FairScheduler m_fair_scheduler",
+            "std::map<std::uint64_t, std::deque<FairPayload>> m_fair_payloads",
+            "std::map<std::uint64_t, std::uint64_t> m_fair_allocation_by_stream",
         ):
             self.assertEqual(self.scheduler_interface.count(owned), 1)
 
@@ -193,9 +198,29 @@ class Mod16SchedulerCharacterizationTest(unittest.TestCase):
             "CharacterizeShapingOwnership",
         ):
             self.assertIn(marker, self.scheduler + self.scheduler_interface)
+        fair = self.body("CLiveTunnel::ProcessK6FairTick")
+        self.assertIn("m_scheduler.PollFair", fair)
+        self.assertIn("m_scheduler.HasFairWork", fair)
+        self.assertNotIn("K6FairScheduler", fair)
+        prepare = self.body("CLiveTunnel::PrepareK6ShapedEmissionLocked")
+        emit = self.body("CLiveTunnel::EmitK6ShapedEmission")
+        self.assertIn("m_scheduler.PrepareShapedEmission", prepare)
+        self.assertNotIn("SendBulkCellToPeer", prepare)
+        self.assertIn("SendBulkCellToPeer", emit)
+        self.assertNotIn("m_scheduler.PrepareShapedEmission", emit)
+        self.assertLess(
+            tick.index("StopK6ShapeTimerLocked()"),
+            tick.index("EmitK6ShapedEmission"),
+        )
 
     def test_module_is_project_owned_and_coordinator_independent(self) -> None:
         project = PROJECT.read_text(encoding="utf-8")
+        module_loc = (
+            len(self.scheduler.splitlines())
+            + len(self.scheduler_interface.splitlines())
+        )
+        self.assertGreaterEqual(module_loc, 300)
+        self.assertLessEqual(module_loc, 1200)
         self.assertIn('ClCompile Include="LiveTunnelScheduler.cpp"', project)
         self.assertIn('ClInclude Include="LiveTunnelScheduler.h"', project)
         self.assertNotIn('#include "LiveTunnel.h"', self.scheduler)

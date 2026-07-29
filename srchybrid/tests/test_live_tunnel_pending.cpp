@@ -183,6 +183,29 @@ void TestConcurrentCompletionExactlyOnce()
     Check(outcome.result >= 1 && outcome.result <= 8, "winner result is preserved");
 }
 
+void TestCancelAllWakesDispatchedRequest()
+{
+    using eSELive::LiveTunnelPending;
+    LiveTunnelPending pending;
+    auto handle = pending.Register(Sequence({51}));
+    const std::vector<std::uint8_t> message{9, 9};
+    Check(pending.Configure(handle, 0x40, 0, 2, message.data(), message.size()),
+          "cancel-all dispatched fixture configured");
+    Check(pending.SetCircuit(51, 301), "cancel-all request is already dispatched");
+
+    LiveTunnelPending::Outcome outcome;
+    std::atomic<bool> returned{false};
+    std::thread waiter([&] {
+        returned = !pending.Wait(std::move(handle), 60000, outcome);
+    });
+    Check(pending.CancelAll() == 1, "cancel-all detaches dispatched request");
+    waiter.join();
+    Check(returned, "cancel-all wakes long-timeout waiter immediately");
+    Check(pending.size() == 0, "cancel-all leaves no pending generation");
+    Check(pending.CollectRetries({}).empty(),
+          "cancelled generation cannot publish a retry after reopen");
+}
+
 }  // namespace
 
 int main()
@@ -194,6 +217,7 @@ int main()
     TestCompletionPreventsRetry();
     TestFastCompletionStillRecordsCircuit();
     TestConcurrentCompletionExactlyOnce();
+    TestCancelAllWakesDispatchedRequest();
 
     if (failures != 0)
         return 1;

@@ -319,11 +319,6 @@ bool K6ShapeValidBucket(uint32_t bucketKiB)
         && (bucketKiB & (bucketKiB - 1)) == 0;
 }
 
-uint64_t K6ShapeReplayKey(uint32_t circId, uint8_t lane)
-{
-    return (static_cast<uint64_t>(circId) << 8) | lane;
-}
-
 uint64_t K6ShapeNowUs()
 {
     LARGE_INTEGER counter{}, frequency{};
@@ -876,13 +871,12 @@ void CLiveTunnel::Stop()
 {
     m_k6ExitNoticeServer.Stop();
     std::set<uint32_t> retiredCircuits;
-    std::vector<LiveDeferredWork> cancelledDeferred;
     {
         CSingleLock lock(&m_lock, TRUE);
-        cancelledDeferred = m_scheduler.CloseDeferredWork();
+        (void)m_scheduler.CloseDeferredWork();
+        m_pendingRequests.CancelAll();
         StopK6ShapeTimerLocked();
-        m_k6ShapeReverse.clear();
-        m_k6ShapeReplay.clear();
+        m_scheduler.ClearShaping();
         const std::vector<uint32_t> retired = m_circuitRegistry.Clear();
         retiredCircuits.insert(retired.begin(), retired.end());
     }
@@ -894,11 +888,7 @@ void CLiveTunnel::Stop()
         (void)m_exitServices.Clear();
         m_reassembly.clear();
         m_k6QuotaGrants.clear();
-        m_k6FairPayloads.clear();
-        m_k6FairCredits.clear();
-        m_k6FairAllocationByStream.clear();
-        m_k6FairPayloadBytes = 0;
-        m_k6FairScheduler.Reset();
+        m_scheduler.ClearFair();
         m_k6QuotaIssuerLimiter = kad6::K6QuotaIssuerLimiter();
         m_k6QuotaHierarchy = kad6::K6QuotaHierarchy();
         m_k6QuotaSpent = kad6::K6QuotaSpentSet();
@@ -911,9 +901,6 @@ void CLiveTunnel::Stop()
     // counted as Active) indefinitely, and the pool would keep building successors
     // against a stopped subsystem. Clear it too (tunnel->pool order, same as RegisterTunnel).
     Kademlia::CKadV2TunnelPool::Get().Clear();
-    for (const LiveDeferredWork& work : cancelledDeferred)
-        if (work.reqId != 0)
-            SignalReply(work.reqId, NULL, 0, 0);
 }
 
 bool CLiveTunnel::SendThrough(const uint8_t* payload, size_t payloadLen)
@@ -2369,12 +2356,12 @@ bool CLiveTunnel::ConsumeK6QuotaGrant(const TunnelRequestCtx& ctx,
     if (grant == m_k6QuotaGrants.end()) return !IsK6PublicReleaseEnabled();
     if (grant->second.expires_at <= static_cast<uint64>(time(NULL)) ||
         grant->second.service != service) {
-        m_k6FairScheduler.ReleaseAllocation(grant->second.allocation_id);
+        m_scheduler.ReleaseFairAllocation(grant->second.allocation_id);
         m_k6QuotaGrants.erase(grant);
         return false;
     }
     if (allocationId) *allocationId = grant->second.allocation_id;
-    else m_k6FairScheduler.ReleaseAllocation(grant->second.allocation_id);
+    else m_scheduler.ReleaseFairAllocation(grant->second.allocation_id);
     m_k6QuotaGrants.erase(grant);
     return true;
 }
@@ -2383,90 +2370,27 @@ bool CLiveTunnel::QueueK6FairPayloadLocked(uint64 streamId, uint8 direction,
                                            std::vector<uint8_t>&& bytes,
                                            size_t creditBytes)
 {
-    if (streamId == 0 || direction > 1 || bytes.empty() ||
-        m_k6FairAllocationByStream.find(streamId) == m_k6FairAllocationByStream.end())
-        return false;
-    std::deque<K6FairPayload>& queue = m_k6FairPayloads[streamId];
-    uint64 streamBytes = 0;
-    for (const K6FairPayload& payload : queue) streamBytes += payload.bytes.size();
-    if (queue.size() >= 64 || streamBytes + bytes.size() > 2u * 1024u * 1024u ||
-        m_k6FairPayloadBytes + bytes.size() > kad6::kK6FairMaxQueuedBytes)
-        return false;
-    if (!m_k6FairScheduler.Enqueue(streamId, bytes.size())) return false;
-    K6FairPayload payload;
-    payload.direction = direction;
-    payload.credit_bytes = creditBytes;
-    payload.bytes = std::move(bytes);
-    m_k6FairPayloadBytes += payload.bytes.size();
-    queue.push_back(std::move(payload));
-    return true;
+    return m_scheduler.QueueFairPayload(
+        streamId, direction, std::move(bytes), creditBytes);
 }
 
 void CLiveTunnel::ReleaseK6FairStreamLocked(uint64 streamId)
 {
-    auto payloads = m_k6FairPayloads.find(streamId);
-    if (payloads != m_k6FairPayloads.end()) {
-        for (const K6FairPayload& payload : payloads->second)
-            m_k6FairPayloadBytes -= (std::min<uint64>)(
-                m_k6FairPayloadBytes, payload.bytes.size());
-        m_k6FairPayloads.erase(payloads);
-    }
-    m_k6FairCredits.erase(streamId);
-    m_k6FairScheduler.ReleaseStream(streamId);
-    auto allocation = m_k6FairAllocationByStream.find(streamId);
-    if (allocation != m_k6FairAllocationByStream.end()) {
-        m_k6FairScheduler.ReleaseAllocation(allocation->second);
-        m_k6FairAllocationByStream.erase(allocation);
-    }
+    m_scheduler.ReleaseFairStream(streamId);
 }
 
 bool CLiveTunnel::ProcessK6FairTick()
 {
-    struct Ready {
-        uint64 stream_id = 0;
-        uint8 direction = 0;
-        size_t credit_bytes = 0;
-        std::vector<uint8_t> bytes;
-    };
-    std::vector<Ready> ready;
+    std::vector<LiveFairReady> ready;
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         const uint64 maxBytes = (std::max<uint64>)(1,
             static_cast<uint64>(thePrefs.GetMaxGraphUploadRate(true)) * 1024ull / 200ull);
-        std::vector<kad6::K6FairGrant> grants;
-        m_k6FairScheduler.Poll(maxBytes, 128, grants);
-        std::set<uint64> touched;
-        for (const kad6::K6FairGrant& grant : grants) {
-            m_k6FairCredits[grant.stream_id] += grant.bytes;
-            touched.insert(grant.stream_id);
-        }
-        for (uint64 streamId : touched) {
-            auto queue = m_k6FairPayloads.find(streamId);
-            if (queue == m_k6FairPayloads.end()) continue;
-            uint64& credit = m_k6FairCredits[streamId];
-            while (!queue->second.empty() &&
-                   credit >= queue->second.front().bytes.size()) {
-                K6FairPayload payload = std::move(queue->second.front());
-                queue->second.pop_front();
-                credit -= payload.bytes.size();
-                m_k6FairPayloadBytes -= (std::min<uint64>)(
-                    m_k6FairPayloadBytes, payload.bytes.size());
-                Ready item;
-                item.stream_id = streamId;
-                item.direction = payload.direction;
-                item.credit_bytes = payload.credit_bytes;
-                item.bytes = std::move(payload.bytes);
-                ready.push_back(std::move(item));
-            }
-            if (queue->second.empty()) {
-                m_k6FairPayloads.erase(queue);
-                if (credit == 0) m_k6FairCredits.erase(streamId);
-            }
-        }
+        ready = m_scheduler.PollFair(maxBytes, 128);
     }
 
     std::set<uint64> failed;
-    for (const Ready& item : ready) {
+    for (const LiveFairReady& item : ready) {
         K6ExitStreamRuntime runtime;
         bool found = false;
         {
@@ -2512,9 +2436,7 @@ bool CLiveTunnel::ProcessK6FairTick()
         if (socket) socket->Disconnect(_T("Kad6 fair queue send failed"));
     }
     CSingleLock pl(&m_pendingLock, TRUE);
-    return !m_k6FairAllocationByStream.empty() ||
-        m_k6FairPayloadBytes != 0 ||
-        m_k6FairScheduler.queued_bytes() != 0;
+    return m_scheduler.HasFairWork();
 }
 
 bool CLiveTunnel::RegisterK6FlowControlLocked(uint32 circId, uint64 streamId)
@@ -5036,7 +4958,7 @@ void CLiveTunnel::ExitHandle_Kad6QuotaPresent(const TunnelRequestCtx& ctx,
                     ctx.circ->Id(), token.presentation_context_hash);
                 if (m_k6QuotaGrants.size() >= kad6::kK6QuotaDefaultSpentCapacity ||
                     m_k6QuotaGrants.find(grantKey) != m_k6QuotaGrants.end() ||
-                    !m_k6FairScheduler.RegisterAllocation(allocation, certificate.key_id,
+                    !m_scheduler.RegisterFairAllocation(allocation, certificate.key_id,
                         4ull * 1024ull * 1024ull * 1024ull,
                         16ull * 4ull * 1024ull * 1024ull * 1024ull)) {
                     result.status = kad6::K6QuotaStatus::Capacity;
@@ -5774,7 +5696,7 @@ void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
     uint64 quotaAllocation = 0;
     auto reject = [&](kad6::K6DialStatus status) {
         if (quotaAllocation != 0) {
-            m_k6FairScheduler.ReleaseAllocation(quotaAllocation);
+            m_scheduler.ReleaseFairAllocation(quotaAllocation);
             quotaAllocation = 0;
         }
         kad6::K6DialResult result; result.stream_id = NewCircuitId();
@@ -5893,14 +5815,18 @@ void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
                                     ticket.target_endpoint.addr.addr.end());
         target.push_back(static_cast<uint8_t>(ticket.target_endpoint.tcp_port));
         target.push_back(static_cast<uint8_t>(ticket.target_endpoint.tcp_port >> 8));
-        if (!crypto.sha256 || !crypto.sha256(target.data(), target.size(), targetHash.data()) ||
-            !m_k6FairScheduler.RegisterStream(quotaAllocation, streamId, targetHash,
-                ticket.max_bytes, 16ull * 1024ull * 1024ull * 1024ull)) {
+        bool fairRegistered = false;
+        if (crypto.sha256
+            && crypto.sha256(target.data(), target.size(), targetHash.data())) {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            fairRegistered = m_scheduler.RegisterFairStream(
+                quotaAllocation, streamId, targetHash, ticket.max_bytes,
+                16ull * 1024ull * 1024ull * 1024ull);
+        }
+        if (!fairRegistered) {
             reject(kad6::K6DialStatus::Overloaded);
             return;
         }
-        CSingleLock pl(&m_pendingLock, TRUE);
-        m_k6FairAllocationByStream[streamId] = quotaAllocation;
     }
 
     uint32 ip = 0; uint32 id = 0x01000001u;
@@ -6403,8 +6329,7 @@ void CLiveTunnel::ExitHandle_Kad6StreamData(const TunnelRequestCtx& ctx,
     bool fairQueued = false;
     {
         CSingleLock pl(&m_pendingLock, TRUE);
-        fairStream = m_k6FairAllocationByStream.find(data.stream_id) !=
-            m_k6FairAllocationByStream.end();
+        fairStream = m_scheduler.HasFairStream(data.stream_id);
         if (fairStream)
             fairQueued = QueueK6FairPayloadLocked(data.stream_id, 0,
                 std::move(rewritten), data.data.size());
@@ -7140,7 +7065,7 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
             else ++it;
         for (auto it = m_k6QuotaGrants.begin(); it != m_k6QuotaGrants.end(); ) {
             if (it->second.expires_at <= nowSeconds) {
-                m_k6FairScheduler.ReleaseAllocation(it->second.allocation_id);
+                m_scheduler.ReleaseFairAllocation(it->second.allocation_id);
                 it = m_k6QuotaGrants.erase(it);
             } else ++it;
         }
@@ -9070,11 +8995,9 @@ bool CLiveTunnel::EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ
         || outputLayers != 3 - static_cast<int>(circ->m_remoteHopIndex))
         return false;
 
-    auto existing = m_k6ShapeReverse.find(circ->Id());
-    if (existing != m_k6ShapeReverse.end())
-        return existing->second.output_layers == outputLayers
-            && existing->second.bucket_kib == bucketKiB
-            && existing->second.scheduler.configured();
+    if (m_scheduler.HasShapedLink(circ->Id()))
+        return m_scheduler.ShapedLinkMatches(
+            circ->Id(), outputLayers, bucketKiB);
 
     const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
     uint8_t random[19]{};
@@ -9103,124 +9026,53 @@ bool CLiveTunnel::EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ
               nonceRoot, sizeof nonceRoot))
         return false;
 
-    K6ShapedLinkState state;
-    state.bucket_kib = bucketKiB;
-    state.output_layers = outputLayers;
-    state.nonce_epoch_high_base = eseRdU32LE(nonceRoot) & 0x7FFFFFFFu;
-    if (state.nonce_epoch_high_base == 0) state.nonce_epoch_high_base = 1;
-    state.padding_sequence = paddingSequence;
-    state.idle_tail_epochs = static_cast<uint8_t>(1 + random[18] % 3);
+    LiveShapedLinkConfig config;
+    config.circ_id = circ->Id();
+    config.bucket_kib = bucketKiB;
+    config.output_layers = outputLayers;
+    config.reservoir_ms = reservoirMs;
+    config.phase = phase;
+    config.nonce_epoch_high_base = eseRdU32LE(nonceRoot) & 0x7FFFFFFFu;
+    if (config.nonce_epoch_high_base == 0) config.nonce_epoch_high_base = 1;
+    config.padding_sequence = paddingSequence;
+    config.idle_tail_epochs = static_cast<uint8_t>(1 + random[18] % 3);
     const uint64_t nowUs = K6ShapeNowUs();
-    state.last_input_us = nowUs;
-    if (state.scheduler.Configure(bucketKiB, reservoirMs, nowUs, phase)
-        != kad6::Kad6Status::Ok)
+    config.now_us = nowUs;
+    if (!m_scheduler.ConfigureShapedLink(config))
         return false;
-    m_k6ShapeReverse.emplace(circ->Id(), std::move(state));
 
     if (!EnsureK6ShapeTimerLocked()) {
-        m_k6ShapeReverse.erase(circ->Id());
+        m_scheduler.RemoveShapedLink(circ->Id());
         return false;
     }
     AddDebugLogLine(false,
         _T("Kad6 K6-6: class-5 link active circ=0x%08x hop=%u bucket=%uKiB/s reservoir=%u records"),
         circ->Id(), static_cast<unsigned>(circ->m_remoteHopIndex), bucketKiB,
-        static_cast<unsigned>(m_k6ShapeReverse[circ->Id()].scheduler.reservoir_capacity()));
+        static_cast<unsigned>(m_scheduler.ShapedReservoirCapacity(circ->Id())));
     return true;
 }
 
 bool CLiveTunnel::QueueK6ShapedRecordLocked(const std::shared_ptr<CLiveCircuit>& circ,
                                             uint64_t streamId,
-                                            K6ShapedQueuedRecord&& record)
+                                            LiveShapedQueuedRecord&& record)
 {
     if (!circ || streamId == 0) return false;
-    auto stateIt = m_k6ShapeReverse.find(circ->Id());
-    if (stateIt == m_k6ShapeReverse.end()) return false;
-    K6ShapedLinkState& state = stateIt->second;
-    try {
-        std::deque<K6ShapedQueuedRecord>& queue = state.records[streamId];
-        queue.push_back(std::move(record));
-        if (!state.scheduler.Enqueue(streamId)) {
-            queue.pop_back();
-            if (queue.empty()) state.records.erase(streamId);
-            state.exposed = true;
-            circ->m_traffic_shaping_exposed = true;
-            return false;
-        }
-    } catch (...) {
-        state.exposed = true;
+    if (!m_scheduler.QueueShapedRecord(
+            circ->Id(), streamId, std::move(record), K6ShapeNowUs())) {
         circ->m_traffic_shaping_exposed = true;
         return false;
     }
-    state.last_input_us = K6ShapeNowUs();
     return true;
 }
 
-bool CLiveTunnel::EmitK6ShapedSlotLocked(const std::shared_ptr<CLiveCircuit>& circ,
-                                         K6ShapedLinkState& state,
-                                         const kad6::K6ShapeSlot& slot)
+bool CLiveTunnel::PrepareK6ShapedEmissionLocked(
+    const std::shared_ptr<CLiveCircuit>& circ,
+    const kad6::K6ShapeSlot& slot, LiveShapedEmission& emission)
 {
-    if (!circ || !circ->m_prevHopClient || state.output_layers < 1
-        || state.output_layers > 3)
-        return false;
+    if (!circ) return false;
     const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
-    K6ShapedQueuedRecord record;
-    bool haveRecord = false;
-    if (slot.kind == kad6::K6ShapeSlotKind::Data) {
-        auto q = state.records.find(slot.stream_id);
-        if (q == state.records.end() || q->second.empty()) {
-            state.exposed = true;
-            return false; // scheduler/record reservoir invariant broke
-        }
-        record = std::move(q->second.front());
-        q->second.pop_front();
-        if (q->second.empty()) state.records.erase(q);
-        haveRecord = true;
-    }
-
-    std::vector<uint8_t> layerPlain;
-    if (haveRecord) {
-        if (record.terminal) {
-            if (state.output_layers != 1
-                || record.bytes.size() != kad6::kK6ShapedPlainSize)
-                return false;
-            layerPlain.resize(8 + record.bytes.size());
-            eseWrU64LE(layerPlain.data(), 0); // terminal sentinel
-            memcpy(layerPlain.data() + 8, record.bytes.data(), record.bytes.size());
-        } else {
-            const size_t expected = kad6::K6ShapedPrefixLen(state.output_layers - 1);
-            if (state.output_layers <= 1 || record.incoming_nonce == 0
-                || record.incoming_nonce == K6_SHAPE_PADDING_NONCE
-                || record.bytes.size() != expected)
-                return false;
-            layerPlain.resize(8 + record.bytes.size());
-            eseWrU64LE(layerPlain.data(), record.incoming_nonce);
-            memcpy(layerPlain.data() + 8, record.bytes.data(), record.bytes.size());
-        }
-    } else if (state.output_layers == 1) {
-        // Terminal padding uses the same authenticated plaintext codec as data.
-        kad6::K6ShapedBulkPlainV1 padding;
-        padding.kind = static_cast<uint8_t>(kad6::K6BulkKind::Padding);
-        padding.stream_id = circ->Id();
-        padding.logical_sequence = state.padding_sequence++;
-        std::vector<uint8_t> encoded;
-        if (kad6::EncodeK6ShapedPlain(padding, crypto, encoded)
-            != kad6::Kad6Status::Ok)
-            return false;
-        layerPlain.resize(8 + encoded.size());
-        eseWrU64LE(layerPlain.data(), 0);
-        memcpy(layerPlain.data() + 8, encoded.data(), encoded.size());
-    } else {
-        // Hop-generated padding terminates at this authenticated layer. The
-        // all-ones inner nonce is hidden by AEAD and can never be an outer
-        // link nonce; the origin drops it without needing keys for fake hops.
-        const size_t lower = kad6::K6ShapedPrefixLen(state.output_layers - 1);
-        layerPlain.resize(8 + lower);
-        eseWrU64LE(layerPlain.data(), K6_SHAPE_PADDING_NONCE);
-        if (!crypto.random_bytes || !crypto.random_bytes(layerPlain.data() + 8, lower))
-            return false;
-    }
-
-    if (!state.nonce_epoch_ready || state.nonce_epoch != slot.epoch) {
+    uint32_t epochLowBase = 0;
+    if (m_scheduler.NeedsShapedEpoch(circ->Id(), slot.epoch)) {
         static const char epochLabel[] = "kad6-shape-nonce-epoch-v1";
         uint8_t epochInfo[sizeof(epochLabel) - 1 + 18]{};
         size_t epochInfoLen = 0;
@@ -9237,41 +9089,38 @@ bool CLiveTunnel::EmitK6ShapedSlotLocked(const std::shared_ptr<CLiveCircuit>& ci
                   NULL, 0, epochInfo, epochInfoLen,
                   epochMaterial, sizeof epochMaterial))
             return false;
-        const uint64_t epochHigh = static_cast<uint64_t>(state.nonce_epoch_high_base)
-            + slot.epoch;
-        if (epochHigh >= 0xFFFFFFFFull) return false;
-        state.nonce_epoch = slot.epoch;
-        state.nonce_epoch_low_base = eseRdU32LE(epochMaterial) & 0x00FFFFFFu;
-        state.nonce_in_epoch = 0;
-        state.nonce_epoch_ready = true;
+        epochLowBase = eseRdU32LE(epochMaterial);
     }
-    if (state.nonce_in_epoch >= 0xFF000000u) return false;
-    const uint64_t linkNonce =
-        ((static_cast<uint64_t>(state.nonce_epoch_high_base) + state.nonce_epoch) << 32)
-        | static_cast<uint64_t>(state.nonce_epoch_low_base + state.nonce_in_epoch++);
-    if (linkNonce == 0 || linkNonce == K6_SHAPE_PADDING_NONCE)
-        return false;
 
-    std::vector<uint8_t> prefix(layerPlain.size() + 16);
+    return m_scheduler.PrepareShapedEmission(
+        circ->Id(), slot, crypto, epochLowBase, emission);
+}
+
+bool CLiveTunnel::EmitK6ShapedEmission(
+    const std::shared_ptr<CLiveCircuit>& circ,
+    const LiveShapedEmission& emission)
+{
+    if (!circ || !circ->m_prevHopClient) return false;
+    const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
+    std::vector<uint8_t> prefix(emission.layer_plain.size() + 16);
     size_t prefixLen = 0;
-    if (!circ->EncryptOneLayerExplicit(0, linkNonce, layerPlain.data(),
-                                       layerPlain.size(), prefix.data(), prefixLen)
-        || prefixLen != kad6::K6ShapedPrefixLen(state.output_layers))
+    if (!circ->EncryptOneLayerExplicit(
+            0, emission.link_nonce, emission.layer_plain.data(),
+            emission.layer_plain.size(), prefix.data(), prefixLen)
+        || prefixLen != kad6::K6ShapedPrefixLen(emission.output_layers))
         return false;
     prefix.resize(prefixLen);
     std::vector<uint8_t> carrier;
-    if (kad6::BuildK6ShapedCarrier(prefix.data(), prefix.size(), state.output_layers,
-                                   circ->Id(), linkNonce, crypto, carrier)
+    if (kad6::BuildK6ShapedCarrier(
+            prefix.data(), prefix.size(), emission.output_layers,
+            circ->Id(), emission.link_nonce, crypto, carrier)
         != kad6::Kad6Status::Ok)
         return false;
-    if (!SendBulkCellToPeer(circ->m_prevHopClient, carrier.data(), carrier.size())) {
-        state.exposed = true; // sticky telemetry: a scheduled slot was missed
-        circ->m_traffic_shaping_exposed = true;
+    if (!SendBulkCellToPeer(circ->m_prevHopClient, carrier.data(), carrier.size()))
         return false;
-    }
     const uint64_t metricNow = static_cast<uint64_t>(time(NULL));
-    const uint64_t useful = haveRecord
-        ? static_cast<uint64_t>((std::min)(record.bytes.size(), carrier.size())) : 0;
+    const uint64_t useful = static_cast<uint64_t>(
+        (std::min)(emission.record_bytes, carrier.size()));
     if (useful != 0)
         m_k6Metrics.Add(kad6::K6MetricFamily::TransportBytesTotal,
             0, 1, 0, useful, metricNow);
@@ -9300,7 +9149,7 @@ void CLiveTunnel::DeliverK6ShapedOriginLocked(
         // all three prevents a malicious upstream relay from replaying an
         // authenticated downstream prefix under a fresh outer nonce.
         if (linkNonce == 0 || linkNonce == K6_SHAPE_PADDING_NONCE
-            || !m_k6ShapeReplay[K6ShapeReplayKey(circ->Id(), hop)].Check(linkNonce))
+            || !m_scheduler.AcceptShapedReplay(circ->Id(), hop, linkNonce))
             return;
         if (current.size() < 16) return;
         std::vector<uint8_t> opened(current.size() - 16);
@@ -9356,13 +9205,14 @@ bool CLiveTunnel::HandleK6ShapedCellLocked(const uint8_t* pkt, size_t size,
         std::vector<uint8_t> prefix;
         if (kad6::ExtractK6ShapedPrefix(pkt, size, incomingLayers, prefix)
             != kad6::Kad6Status::Ok
-            || !m_k6ShapeReplay[K6ShapeReplayKey(
-                    relay->Id(), static_cast<uint8_t>(0x80u + relay->m_remoteHopIndex))]
-                    .Check(header.link_nonce_seq)
+            || !m_scheduler.AcceptShapedReplay(
+                    relay->Id(),
+                    static_cast<uint8_t>(0x80u + relay->m_remoteHopIndex),
+                    header.link_nonce_seq)
             || !EnsureK6ShaperLocked(relay, incomingLayers + 1,
                                      relay->m_shape_bucket_kib))
             return true;
-        K6ShapedQueuedRecord record;
+        LiveShapedQueuedRecord record;
         record.incoming_nonce = header.link_nonce_seq;
         record.bytes = std::move(prefix);
         if (!QueueK6ShapedRecordLocked(relay, relay->Id(), std::move(record))) {
@@ -9387,50 +9237,59 @@ bool CLiveTunnel::HandleK6ShapedCellLocked(const uint8_t* pkt, size_t size,
 
 void CLiveTunnel::ProcessClass5Tick()
 {
+    struct Prepared {
+        std::shared_ptr<CLiveCircuit> circuit;
+        LiveShapedEmission emission;
+    };
     const bool fairActive = ProcessK6FairTick();
-    CSingleLock lock(&m_lock, TRUE);
-    if (m_k6ShapeReverse.empty()) {
-        if (m_scheduler.ShouldStopClass5Timer(false, fairActive))
+    LiveShapedTickResult tick;
+    std::vector<Prepared> prepared;
+    {
+        CSingleLock lock(&m_lock, TRUE);
+        const std::vector<std::shared_ptr<CLiveCircuit>> circuits =
+            m_circuitRegistry.GetSnapshot();
+        std::vector<uint32_t> liveRelays;
+        for (const auto& circ : circuits)
+            if (circ->State() != CircuitState::Destroyed
+                && circ->m_role == CircuitRole::Relay)
+                liveRelays.push_back(circ->Id());
+        tick = m_scheduler.PollShapedLinks(K6ShapeNowUs(), liveRelays, 8);
+        auto findCircuit = [&](uint32_t circId) {
+            for (const auto& circ : circuits)
+                if (circ->Id() == circId)
+                    return circ;
+            return std::shared_ptr<CLiveCircuit>();
+        };
+        for (uint32_t circId : tick.exposed) {
+            const auto circ = findCircuit(circId);
+            if (circ) circ->m_traffic_shaping_exposed = true;
+        }
+        for (const LiveShapedTickWork& work : tick.work) {
+            Prepared item;
+            item.circuit = findCircuit(work.circ_id);
+            if (!item.circuit || !PrepareK6ShapedEmissionLocked(
+                    item.circuit, work.slot, item.emission)) {
+                m_scheduler.MarkShapedExposed(work.circ_id);
+                if (item.circuit)
+                    item.circuit->m_traffic_shaping_exposed = true;
+            } else {
+                prepared.push_back(std::move(item));
+            }
+        }
+        if (m_scheduler.ShouldStopClass5Timer(tick.has_links, fairActive))
             StopK6ShapeTimerLocked();
-        return;
     }
-    const uint64_t nowUs = K6ShapeNowUs();
-    for (auto it = m_k6ShapeReverse.begin(); it != m_k6ShapeReverse.end(); ) {
-        std::shared_ptr<CLiveCircuit> circ;
-        for (const auto& candidate : m_circuitRegistry.GetSnapshot())
-            if (candidate->Id() == it->first) { circ = candidate; break; }
-        if (!circ || circ->State() == CircuitState::Destroyed
-            || circ->m_role != CircuitRole::Relay) {
-            const uint32_t deadId = it->first;
-            for (auto replay = m_k6ShapeReplay.begin(); replay != m_k6ShapeReplay.end(); )
-                if (static_cast<uint32_t>(replay->first >> 8) == deadId)
-                    replay = m_k6ShapeReplay.erase(replay);
-                else
-                    ++replay;
-            it = m_k6ShapeReverse.erase(it);
-            continue;
+    for (const LiveShapedRetirement& retired : tick.retired)
+        AddDebugLogLine(false,
+            _T("Kad6 K6-6: class-5 idle tail complete circ=0x%08x (%u epoch(s))"),
+            retired.circ_id, static_cast<unsigned>(retired.idle_tail_epochs));
+    for (const Prepared& item : prepared) {
+        if (!EmitK6ShapedEmission(item.circuit, item.emission)) {
+            CSingleLock lock(&m_lock, TRUE);
+            m_scheduler.MarkShapedExposed(item.circuit->Id());
+            item.circuit->m_traffic_shaping_exposed = true;
         }
-        const uint64_t idleTailUs = static_cast<uint64_t>(it->second.idle_tail_epochs)
-            * kad6::kK6ShapeEpochUs;
-        if (it->second.scheduler.queued_records() == 0
-            && LiveTunnelScheduler::Elapsed64(nowUs, it->second.last_input_us) >= idleTailUs) {
-            AddDebugLogLine(false,
-                _T("Kad6 K6-6: class-5 idle tail complete circ=0x%08x (%u epoch(s))"),
-                circ->Id(), static_cast<unsigned>(it->second.idle_tail_epochs));
-            it = m_k6ShapeReverse.erase(it);
-            continue;
-        }
-        std::vector<kad6::K6ShapeSlot> slots;
-        it->second.scheduler.Poll(nowUs, 8, slots);
-        if (it->second.scheduler.exposed())
-            it->second.exposed = circ->m_traffic_shaping_exposed = true;
-        for (const kad6::K6ShapeSlot& slot : slots)
-            if (!EmitK6ShapedSlotLocked(circ, it->second, slot))
-                it->second.exposed = circ->m_traffic_shaping_exposed = true;
-        ++it;
     }
-    if (m_scheduler.ShouldStopClass5Timer(!m_k6ShapeReverse.empty(), fairActive))
-        StopK6ShapeTimerLocked();
 }
 
 bool CLiveTunnel::OnBulkCellReceived(const uint8_t* pkt, uint32_t size, CUpDownClient* fromPeer)
@@ -9505,7 +9364,7 @@ bool CLiveTunnel::SendBulkCellReverse(std::shared_ptr<CLiveCircuit>& circ, uint8
     // A shaped subscription turns arrival-triggered writes into bounded
     // reservoir inserts. The 10 ms class-5 heartbeat alone decides when a
     // data or padding record leaves this mapping.
-    if (m_k6ShapeReverse.find(circ->Id()) != m_k6ShapeReverse.end()) {
+    if (m_scheduler.HasShapedLink(circ->Id())) {
         if (bcmd != Bulk::BULK_DATA || !plain
             || plainLen > kad6::kK6ShapedInnerMax)
             return false;
@@ -9519,7 +9378,7 @@ bool CLiveTunnel::SendBulkCellReverse(std::shared_ptr<CLiveCircuit>& circ, uint8
         }
         if (plainLen >= 20) shaped.logical_sequence = eseRdU32LE(plain + 16);
         shaped.inner.assign(plain, plain + plainLen);
-        K6ShapedQueuedRecord record;
+        LiveShapedQueuedRecord record;
         record.terminal = true;
         if (kad6::EncodeK6ShapedPlain(shaped, MakeKad6HostCryptoHooks(), record.bytes)
             != kad6::Kad6Status::Ok)
@@ -9666,15 +9525,11 @@ void CLiveTunnel::SweepBulkReasm()
         if (m_circuitRegistry.FindById(it->first)) alive = true;
         if (!alive) it = m_bulkReplay.erase(it); else ++it;
     }
-    for (auto it = m_k6ShapeReplay.begin(); it != m_k6ShapeReplay.end(); ) {
-        bool alive = false;
-        for (const auto& c : m_circuitRegistry.GetSnapshot())
-            if (c->Id() == static_cast<uint32_t>(it->first >> 8)
-                && c->State() != CircuitState::Destroyed) {
-                alive = true; break;
-            }
-        if (!alive) it = m_k6ShapeReplay.erase(it); else ++it;
-    }
+    std::vector<uint32_t> liveShapeCircuits;
+    for (const auto& circuit : m_circuitRegistry.GetSnapshot())
+        if (circuit->State() != CircuitState::Destroyed)
+            liveShapeCircuits.push_back(circuit->Id());
+    m_scheduler.SweepShapedReplay(liveShapeCircuits);
 
     // v8.1.2 E3.2 — sweep explicit bulk subs: drop those whose circuit died or that went
     // silent past the TTL (the viewer re-subscribes on each refresh; the exit dedups by circ_id).

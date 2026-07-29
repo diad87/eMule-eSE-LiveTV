@@ -228,6 +228,27 @@ LiveTunnelPending::CollectRetries(
     return retries;
 }
 
+std::size_t LiveTunnelPending::CancelAll()
+{
+    std::vector<std::shared_ptr<Entry>> cancelled;
+    {
+        std::lock_guard<std::mutex> guard(m_impl->mutex);
+        cancelled.reserve(m_impl->requests.size());
+        for (const auto& request : m_impl->requests) {
+            Entry& entry = *request.second;
+            if (!entry.terminal) {
+                entry.failed = true;
+                entry.terminal = true;
+            }
+            cancelled.push_back(request.second);
+        }
+        m_impl->requests.clear();
+    }
+    for (const auto& entry : cancelled)
+        entry->changed.notify_all();
+    return cancelled.size();
+}
+
 std::size_t LiveTunnelPending::size() const
 {
     std::lock_guard<std::mutex> guard(m_impl->mutex);

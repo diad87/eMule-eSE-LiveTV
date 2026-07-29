@@ -68,6 +68,7 @@ class Mod12LiveTunnelPendingTest(unittest.TestCase):
             "LiveTunnelPending::Complete",
             "LiveTunnelPending::Wait",
             "LiveTunnelPending::CollectRetries",
+            "LiveTunnelPending::CancelAll",
         ):
             self.assertIn(required, self.source)
         self.assertIn("completed->terminal = true;", self.source)
@@ -120,6 +121,8 @@ class Mod12LiveTunnelPendingTest(unittest.TestCase):
             "concurrent completion has exactly one winner",
             "consumed waiter handle cannot be reused",
             "a pending handle must have exactly one waiter owner",
+            "cancel-all wakes long-timeout waiter immediately",
+            "cancelled generation cannot publish a retry after reopen",
         ):
             self.assertIn(required, self.native)
         self.assertNotIn("Sleep(", self.native)

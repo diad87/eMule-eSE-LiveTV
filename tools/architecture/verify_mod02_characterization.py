@@ -173,11 +173,15 @@ def negative() -> None:
     start = original.find("void CWebServer::_ProcessLiveAPI(")
     if start < 0:
         raise ValueError("negative fixture could not locate _ProcessLiveAPI")
-    marker = '"/api/live/"'
+    marker = "WebRouteId::ApiLiveStream"
     offset = original.find(marker, start)
     if offset < 0:
-        raise ValueError("negative fixture could not alter /api/live/ literal")
-    mutated = original[:offset] + '"/api/live-x/"' + original[offset + len(marker):]
+        raise ValueError("negative fixture could not alter live-stream route ID")
+    mutated = (
+        original[:offset]
+        + "WebRouteId::ApiLiveDebug"
+        + original[offset + len(marker):]
+    )
     if fingerprint(path, spec["symbols"], {path: mutated}) == spec["token_sha256"]:
         raise ValueError("literal mutation escaped the characterization gate")
 

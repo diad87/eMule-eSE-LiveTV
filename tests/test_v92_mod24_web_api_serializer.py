@@ -141,12 +141,19 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
         for obsolete_fragment in (
             "const CStringA keyJson = EseJsonEscapeA(keyA)",
             "EseJsonEscapeA(CStringA(CT2A(keyT)))",
-            "EseJsonEscapeA(CStringA(CT2A(ipT)))",
             "static CString EseXmlEscape",
         ):
             self.assertNotIn(obsolete_fragment, self.server)
         self.assertIn(
             "kwJson += EseJsonEscapeA(CStringA(kws[i]))",
+            self.server,
+        )
+        self.assertIn(
+            "const CStringA ipJson = EseJsonEscapeA(ipA)",
+            self.server,
+        )
+        self.assertNotIn(
+            "(LPCSTR)CT2A(ipT), (unsigned)udpPort",
             self.server,
         )
         self.assertNotIn(

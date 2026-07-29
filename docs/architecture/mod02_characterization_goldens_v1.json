@@ -157,7 +157,7 @@
         "CWebServer::_ProcessLiveAPI"
       ],
       "token_sha256": {
-        "CWebServer::_ProcessLiveAPI": "be955391f89cc36852e32ea2ae7e482b098203359428f145a64c1a9aba23522a"
+        "CWebServer::_ProcessLiveAPI": "15751d8798ddf9f5ddb5ae83dc4da560f62d860130616d8d3ad48c9acd7f0539"
       }
     },
     "web_parser_security": {
@@ -168,7 +168,7 @@
         "CWebServer::_SpecialChars"
       ],
       "token_sha256": {
-        "CWebServer::_ProcessLiveAPI": "be955391f89cc36852e32ea2ae7e482b098203359428f145a64c1a9aba23522a",
+        "CWebServer::_ProcessLiveAPI": "15751d8798ddf9f5ddb5ae83dc4da560f62d860130616d8d3ad48c9acd7f0539",
         "CWebServer::_SpecialChars": "68d29479dc26752e6f15e4e688b895d4cc594e33139a7e5cde42ba83a8af6f42",
         "EseHexToKey16A": "f09086fb347ef0e878566aef2da92dbbe6606252291fdc33b8b995a458f3c1d2"
       }

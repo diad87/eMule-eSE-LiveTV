@@ -5784,6 +5784,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		CString ipT  (_ParseURL(Data.sURL, _T("ip")));
 		CString portT(_ParseURL(Data.sURL, _T("udp_port")));
 		CStringA ipA = CT2A(ipT);
+		const CStringA ipJson = EseJsonEscapeA(ipA);
 		uint32 ipNet = (uint32)inet_addr((LPCSTR)ipA);
 		uint16 udpPort = (uint16)_ttoi(portT);
 
@@ -5834,7 +5835,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"\"port_predict\":{\"on\":%s,\"spread\":%u,\"used\":%u}}",
 			ok ? "true" : "false",
 			errCode,
-			(LPCSTR)CT2A(ipT), (unsigned)udpPort,
+			(LPCSTR)ipJson, (unsigned)udpPort,
 			(unsigned)attemptsBefore, (unsigned)CStatistics::m_dwHolePunchAttempts,
 			(unsigned)CStatistics::m_dwHolePunchAttempts,
 			(unsigned)CStatistics::m_dwHolePunchSuccess,

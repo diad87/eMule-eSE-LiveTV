@@ -107,6 +107,10 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_legacy_mapper_pr
 if errorlevel 1 exit /b 1
 build\test_legacy_mapper_projection.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapped_candidate_adapter.exe tests\test_mapped_candidate_adapter.cpp src\mapped_candidate_adapter.cpp src\mapper_result.cpp src\address_policy.cpp
+if errorlevel 1 exit /b 1
+build\test_mapped_candidate_adapter.exe
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Iinclude /Febuild\test_mapping_result_mailbox.exe tests\test_mapping_result_mailbox.cpp src\mapper_result.cpp src\mapping_request.cpp src\mapping_result_mailbox.cpp
 if errorlevel 1 exit /b 1
 build\test_mapping_result_mailbox.exe

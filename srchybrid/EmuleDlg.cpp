@@ -2692,6 +2692,8 @@ void CemuleDlg::OnClose()
 	mappingImpl->StopAsyncFind();
 	m_mappingResultGate.CancelPending();
 	InvalidateLocalUPnPFailure();
+	if (theApp.directreachability != NULL)
+		theApp.directreachability->ShutdownMappedCandidates();
 	if (m_mappingResultMailbox)
 		m_mappingResultMailbox->Close();
 	MSG mapperMessage = {};

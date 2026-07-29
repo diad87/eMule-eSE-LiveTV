@@ -8,6 +8,7 @@
 #include "natmap/legacy_mapper_projection.h"
 #include "natmap/network_change.h"
 #include "natmap/direct_route_selection.h"
+#include "natmap/mapped_candidate_adapter.h"
 #include <atomic>
 
 // Main-thread owner for direct-reachability state. D1 is deliberately
@@ -56,6 +57,7 @@ public:
 	// Unlike finite expiry, this is intentionally independent of lease
 	// lifetime because health probes are authoritative for permanent leases.
 	bool ObserveMappingLoss();
+	bool ShutdownMappedCandidates();
 	natmap::DirectRouteSelection SelectPreferredRoute(
 		const natmap::CandidateObservation& directV6,
 		bool bIPv6Enabled, bool bMappingsEnabled,
@@ -63,6 +65,8 @@ public:
 		uint16 nPublishedTcpPort) const;
 
 	const natmap::ReachabilitySnapshot& GetSnapshot() const;
+	const natmap::MappedCandidateSnapshot&
+		GetMappedCandidateSnapshot() const;
 
 private:
 	bool ObserveMappedPorts(natmap::MapperKind mapper,
@@ -72,6 +76,7 @@ private:
 		uint32 nLifetimeSeconds, uint32 nMapperEpoch,
 		const natmap::Endpoint& gateway, uint64 resultGeneration,
 		bool bMapperEpochReset, bool bRefresh,
+		bool bForceGenerationAdvance,
 		const natmap::RouteBindingIdentity& routeBinding);
 	void AssertMainThread() const;
 	static natmap::Endpoint MakeAnyV4(uint16 nPort);
@@ -108,5 +113,6 @@ private:
 	natmap::Evidence m_directV4ServerEvidence;
 	natmap::Evidence m_directV4InboundEvidence;
 	uint64 m_nNetworkChangeRediscoveryGeneration;
+	natmap::MappedCandidatePublisher m_mappedCandidates;
 	natmap::ReachabilitySnapshot m_snapshot;
 };

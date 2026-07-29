@@ -1,6 +1,33 @@
 {
   "golden_id": "urn:emule:architecture:mod-0.2:production-structural-goldens:v1",
   "goldens": {
+    "live_circuit_registry": {
+      "production_file": "srchybrid/LiveCircuitRegistry.cpp",
+      "symbols": [
+        "LiveCircuitRegistry::Add",
+        "LiveCircuitRegistry::Clear",
+        "LiveCircuitRegistry::RemoveDestroyed",
+        "LiveCircuitRegistry::ContainsIncomingId",
+        "LiveCircuitRegistry::ContainsAnyLegId",
+        "LiveCircuitRegistry::FindById",
+        "LiveCircuitRegistry::FindRelayByOutgoingId",
+        "LiveCircuitRegistry::NextRoundRobin",
+        "LiveCircuitRegistry::Transition",
+        "RunCircuitRegistryCharacterizationSelfTest"
+      ],
+      "token_sha256": {
+        "LiveCircuitRegistry::Add": "6a841034e5b182844c819cc86387f6de40c1dfeacbe1894ae9eaddef037d7034",
+        "LiveCircuitRegistry::Clear": "c845ea03d8215bfffadf469ba8eacd6099281e67c597c3076167e27835021bb1",
+        "LiveCircuitRegistry::ContainsAnyLegId": "d0f52b8302e453ab52a273663b612daffd642b1722ac0c214c8e087fdd61f114",
+        "LiveCircuitRegistry::ContainsIncomingId": "15268902813c9f04167d3dba284cefc667d671fabd1931f26c682f1702e7fdae",
+        "LiveCircuitRegistry::FindById": "379cf1434ef7f8a8dcfc36fe894d176a50545564225b7fa0e3c71cf495c70238",
+        "LiveCircuitRegistry::FindRelayByOutgoingId": "8322790dd5cc695962b46b73c8786bc6fabf9eea70217e1962a08824380d2585",
+        "LiveCircuitRegistry::NextRoundRobin": "392977710f1710575ff1bf2e5a3400c54571de9287bf8b346a75e6a1ad699699",
+        "LiveCircuitRegistry::RemoveDestroyed": "b8240293dd682143090dcd97d75482096b41a2d15f51f9d9461d620d5dc8bcef",
+        "LiveCircuitRegistry::Transition": "78ae47885db26c7fb61aff494bac2ae22669ba07800093625915dae6862b2e1f",
+        "RunCircuitRegistryCharacterizationSelfTest": "f7c66c4fce8d3db346a4b2f3d7b2bebd2c564e7f73ed1092586668e548fdeb66"
+      }
+    },
     "live_stream_session_chunk_callback": {
       "production_file": "srchybrid/LiveStreamManager.cpp",
       "symbols": [
@@ -22,9 +49,9 @@
         "CLiveTunnel::DestroyCircuitFailClosed"
       ],
       "token_sha256": {
-        "CLiveTunnel::DestroyCircuitFailClosed": "f34cbd9407fa7908ce6f788b53b6985d3a84b61d9c60c8f6f462c27690c8fb6d",
-        "CLiveTunnel::OnCellReceived": "9dfce111a4cc6cea62e02afcd9107624df1bf2a5c6dc2ee272b4b59496af201d",
-        "CLiveTunnel::SendThrough": "e551d73a1a3c0d600d28492576baf4ac11b9ca94e0c5417265987c04cc703cc2"
+        "CLiveTunnel::DestroyCircuitFailClosed": "c7cc2d2295a62123672375ab6db35fe48547c9b709cbaeca253d7e34d77a6382",
+        "CLiveTunnel::OnCellReceived": "85e33d1150767cf49379d4450d5ddbc72e66cdd959ce7b5ef3e3556dbf56e8da",
+        "CLiveTunnel::SendThrough": "f8f3eba53ad91a8d33a9e168b4ef8f5f9bd6a86cc90658c9d309fd849b167fb4"
       }
     },
     "live_tunnel_framing": {

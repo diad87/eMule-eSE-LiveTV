@@ -216,8 +216,7 @@ static_assert(133u <= CELL_PAYLOAD_MAX,  "CREATED v2 (133B) must fit one cell pa
 static_assert(149u <= CELL_PAYLOAD_MAX,  "wrapped EXTENDED v2 (133+16 tag) must fit one cell payload");
 
 CLiveTunnel::CLiveTunnel()
-    : m_rrNextIdx(0)
-    , m_lastTickMs(0)
+    : m_lastTickMs(0)
 {
     // v8.1 A2 - register the built-in exit-side handlers. Sprint B/C ops
     // register theirs the same way instead of editing HandleRelay_Exit.
@@ -456,6 +455,14 @@ bool CLiveTunnel::RunCharacterizationSelfTest(CString& outFailure)
         outFailure = _T("tunnel framing payload mismatch");
         return false;
     }
+    const eSELive::CircuitRegistrySelfTestResult registry =
+        eSELive::RunCircuitRegistryCharacterizationSelfTest();
+    if (registry != eSELive::CircuitRegistrySelfTestResult::Pass) {
+        outFailure.Format(
+            _T("tunnel circuit registry characterization failed (%u)"),
+            static_cast<unsigned>(registry));
+        return false;
+    }
     if (SendThrough(NULL, 0)) {
         outFailure = _T("tunnel empty dispatch was accepted");
         return false;
@@ -542,9 +549,7 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
         uint32_t id = 0;
         for (int t = 0; t < 4; ++t) {
             id = NewCircuitId();
-            bool collision = false;
-            for (auto& c : m_circuits) if (c->Id() == id) { collision = true; break; }
-            if (!collision) break;
+            if (!m_circuitRegistry.ContainsIncomingId(id)) break;
             id = 0;
         }
         if (id == 0) continue;
@@ -568,7 +573,6 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
             continue;
         }
         c->m_have_ephemeral = true;
-        c->SetState(CircuitState::Pending);
 
         // v0.71 P0.B — CELL_CREATE payload = ev_pub (32B) + target_user_hash
         // (16B). target_user_hash binds the CREATE to a specific recipient:
@@ -641,8 +645,8 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
             c->WipeKeys();
             continue;
         }
-        m_circuits.push_back(c);
-        ++built;
+        if (m_circuitRegistry.Add(c, CircuitState::Pending))
+            ++built;
     }
     (void)origin_pubkey;  // unused until ntor-with-pubkey binding lands
     return built;
@@ -667,14 +671,14 @@ uint32_t CLiveTunnel::BuildTestCircuit(CUpDownClient* clientHint)
     size_t before = 0;
     {
         CSingleLock lk(&m_lock, TRUE);
-        before = m_circuits.size();
+        before = m_circuitRegistry.Size();
     }
     size_t built = BuildPool(NULL, cands, 1);
     if (built == 0) return 0;
     // Return the id of the circuit we just added.
     CSingleLock lk(&m_lock, TRUE);
-    if (m_circuits.size() > before)
-        return m_circuits.back()->Id();
+    if (m_circuitRegistry.Size() > before)
+        return m_circuitRegistry.Back()->Id();
     return 0;
 }
 
@@ -694,7 +698,7 @@ bool CLiveTunnel::BuildQuotaGuardCircuit()
     std::set<std::string> privatePathNodes;
     {
         CSingleLock lock(&m_lock, TRUE);
-        for (const auto& circuit : m_circuits) {
+        for (const auto& circuit : m_circuitRegistry.GetSnapshot()) {
             if (circuit && circuit->m_k6QuotaIssuerCircuit &&
                 circuit->State() != CircuitState::Destroyed)
                 return false;
@@ -742,13 +746,13 @@ bool CLiveTunnel::BuildQuotaGuardCircuit()
     size_t before = 0;
     {
         CSingleLock lock(&m_lock, TRUE);
-        before = m_circuits.size();
+        before = m_circuitRegistry.Size();
     }
     std::vector<CUpDownClient*> one{selected};
     if (BuildPool(NULL, one, 1) == 0) return false;
     CSingleLock lock(&m_lock, TRUE);
-    for (size_t i = before; i < m_circuits.size(); ++i) {
-        const std::shared_ptr<CLiveCircuit>& circuit = m_circuits[i];
+    for (size_t i = before; i < m_circuitRegistry.Size(); ++i) {
+        const std::shared_ptr<CLiveCircuit> circuit = m_circuitRegistry.At(i);
         if (circuit && circuit->m_firstHopClient == selected &&
             circuit->State() == CircuitState::Pending) {
             circuit->m_k6QuotaIssuerCircuit = true;
@@ -817,14 +821,14 @@ bool CLiveTunnel::BuildSuccessor2Hop()
     if (!hop1 || !hop2) return false;   // < 2 distinct tunnel peers -> no real 2-hop
 
     size_t before = 0;
-    { CSingleLock lk(&m_lock, TRUE); before = m_circuits.size(); }
+    { CSingleLock lk(&m_lock, TRUE); before = m_circuitRegistry.Size(); }
 
     std::vector<CUpDownClient*> hop1Vec = { hop1 };
     if (BuildPool(NULL, hop1Vec, 1) == 0) return false;   // BuildPool takes m_lock itself
 
     CSingleLock lk(&m_lock, TRUE);
-    if (m_circuits.size() <= before) return false;
-    auto& c = m_circuits.back();
+    if (m_circuitRegistry.Size() <= before) return false;
+    std::shared_ptr<CLiveCircuit> c = m_circuitRegistry.Back();
     // Pre-stage the exit: HandleCreated_Originator auto-extends to it after hop1's
     // CELL_CREATED, producing a real V -> hop1 -> exit circuit (hop1 forwards via F-1).
     c->m_private2 = true;
@@ -841,10 +845,8 @@ void CLiveTunnel::Stop()
         StopK6ShapeTimerLocked();
         m_k6ShapeReverse.clear();
         m_k6ShapeReplay.clear();
-        for (const auto& circuit : m_circuits)
-            if (circuit) retiredCircuits.insert(circuit->Id());
-        m_circuits.clear();
-        m_rrNextIdx = 0;
+        const std::vector<uint32_t> retired = m_circuitRegistry.Clear();
+        retiredCircuits.insert(retired.begin(), retired.end());
     }
     const uint64 now = static_cast<uint64_t>(time(NULL));
     SweepK6SourceLeases(std::set<uint32_t>(), retiredCircuits, now);
@@ -865,7 +867,7 @@ void CLiveTunnel::Stop()
         m_k6FlowStreamsByCircuit.clear();
     }
     // v8.1 D4 - the PST pool holds a 2nd shared_ptr alias per circuit. Clearing
-    // m_circuits without clearing the pool would keep those circuits alive (and
+    // the registry without clearing the pool would keep those circuits alive (and
     // counted as Active) indefinitely, and the pool would keep building successors
     // against a stopped subsystem. Clear it too (tunnel->pool order, same as RegisterTunnel).
     Kademlia::CKadV2TunnelPool::Get().Clear();
@@ -875,14 +877,12 @@ bool CLiveTunnel::SendThrough(const uint8_t* payload, size_t payloadLen)
 {
     if (!payload || payloadLen == 0) return false;
     CSingleLock lock(&m_lock, TRUE);
-    if (m_circuits.empty()) return false;
+    if (m_circuitRegistry.Empty()) return false;
 
     // Round-robin (multipath split, Decision 5.1).
-    size_t tries = m_circuits.size();
+    size_t tries = m_circuitRegistry.Size();
     while (tries-- > 0) {
-        const size_t idx = m_rrNextIdx % m_circuits.size();
-        m_rrNextIdx = (m_rrNextIdx + 1) % m_circuits.size();
-        auto& c = m_circuits[idx];
+        std::shared_ptr<CLiveCircuit> c = m_circuitRegistry.NextRoundRobin();
         if (c->State() != CircuitState::Active) continue;
         if (c->HopCount() == 0) continue;
 
@@ -927,6 +927,11 @@ static void EseTryResolveExitKadKey(CUpDownClient* exit, CLiveCircuit& c)
 bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
                                            const uint8_t* payload, uint16_t payloadLen)
 {
+    if (!circ || circ->m_role != CircuitRole::Originator
+        || circ->State() != CircuitState::Pending
+        || m_circuitRegistry.FindById(circ->Id()) != circ) {
+        return false;
+    }
     if (!circ->m_have_ephemeral) return false;
     if (payloadLen < 32) return false;
 
@@ -1068,7 +1073,6 @@ bool CLiveTunnel::HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
     SecureWipe(shared, sizeof shared);
     SecureWipe(okm, sizeof okm);
 
-    circ->SetState(CircuitState::Active);
     return ContinueOriginatorBuild(circ);
 }
 
@@ -1087,7 +1091,8 @@ bool EseK6PathRandom(void*, kad6::Byte* out, std::size_t length)
 
 }
 
-void CLiveTunnel::DestroyCircuitFailClosed(std::shared_ptr<CLiveCircuit>& circ)
+void CLiveTunnel::DestroyCircuitFailClosed(
+    const std::shared_ptr<CLiveCircuit>& circ)
 {
     if (!circ || circ->State() == CircuitState::Destroyed) return;
     uint8_t destroy[CELL_TOTAL_BYTES];
@@ -1103,7 +1108,7 @@ void CLiveTunnel::DestroyCircuitFailClosed(std::shared_ptr<CLiveCircuit>& circ)
             && CellPack(circ->m_nextCircId, CELL_DESTROY, NULL, 0, destroy))
             SendCellToPeer(circ->m_nextHopClient, destroy);
     }
-    circ->SetState(CircuitState::Destroyed);
+    m_circuitRegistry.Transition(circ, CircuitState::Destroyed);
     circ->WipeKeys();
     circ->m_auth_ok = false;
     circ->m_exit_signed_caps = 0;
@@ -1191,7 +1196,7 @@ bool CLiveTunnel::BuildSuccessor3Hop(uint32_t* circuitId)
     std::set<std::string> quotaIssuerNodes;
     {
         CSingleLock lock(&m_lock, TRUE);
-        for (const auto& circuit : m_circuits)
+        for (const auto& circuit : m_circuitRegistry.GetSnapshot())
             if (circuit && circuit->m_k6QuotaIssuerCircuit &&
                 circuit->State() != CircuitState::Destroyed &&
                 circuit->m_firstHopClient &&
@@ -1287,14 +1292,14 @@ bool CLiveTunnel::BuildSuccessor3Hop(uint32_t* circuitId)
     }
 
     size_t before = 0;
-    { CSingleLock lk(&m_lock, TRUE); before = m_circuits.size(); }
+    { CSingleLock lk(&m_lock, TRUE); before = m_circuitRegistry.Size(); }
     std::vector<CUpDownClient*> first{guard};
     if (BuildPool(NULL, first, 1) == 0)
         return false;
     CSingleLock lk(&m_lock, TRUE);
     std::shared_ptr<CLiveCircuit> circuit;
-    for (size_t i = before; i < m_circuits.size(); ++i) {
-        const std::shared_ptr<CLiveCircuit>& candidate = m_circuits[i];
+    for (size_t i = before; i < m_circuitRegistry.Size(); ++i) {
+        const std::shared_ptr<CLiveCircuit> candidate = m_circuitRegistry.At(i);
         if (candidate && candidate->m_role == CircuitRole::Originator
             && candidate->m_firstHopClient == guard
             && candidate->State() == CircuitState::Pending) {
@@ -1337,7 +1342,8 @@ bool CLiveTunnel::ContinueOriginatorBuild(std::shared_ptr<CLiveCircuit>& circ)
         }
         // Explicit diagnostic/legacy construction may retain its authenticated
         // prefix. Production Private and Strict never reach this arm.
-        circ->SetState(CircuitState::Active);
+        if (!m_circuitRegistry.Transition(circ, CircuitState::Active))
+            return false;
         circ->m_haveExitKadKey = false;
         EseTryResolveExitKadKey(circ->m_firstHopClient, *circ);
         Kademlia::CKadV2TunnelPool::Get().RegisterTunnel(circ);
@@ -1355,7 +1361,8 @@ bool CLiveTunnel::ContinueOriginatorBuild(std::shared_ptr<CLiveCircuit>& circ)
         DestroyCircuitFailClosed(circ);
         return false;
     }
-    circ->SetState(CircuitState::Active);
+    if (!m_circuitRegistry.Transition(circ, CircuitState::Active))
+        return false;
     if (circ->m_auth_ok)
         AddDebugLogLine(false, _T("LiveTunnel: authenticated circuit ACTIVE circ=0x%08x hops=%u%s"),
                         circ->Id(), static_cast<unsigned>(circ->HopCount()),
@@ -1373,6 +1380,11 @@ bool CLiveTunnel::HandleCreate_Relay(uint32_t circId,
                                      CUpDownClient* fromPeer)
 {
     if (!fromPeer || payloadLen < 32) return false;
+    // Reject identity ambiguity before doing handshake crypto or emitting a
+    // CREATED response. Incoming IDs share the same dispatch namespace as
+    // existing incoming and relay-outgoing legs.
+    if (circId == 0 || m_circuitRegistry.ContainsAnyLegId(circId))
+        return false;
     const uint8_t* viewerPub = payload;
 
     // v0.71 P0.B — verify target_user_hash binding (anti-MITM lite).
@@ -1423,7 +1435,7 @@ bool CLiveTunnel::HandleCreate_Relay(uint32_t circId,
     const uint16_t shapeBucketKiB = v3 ? eseRdU16LE(payload + 138) : 0;
     if (v3) {
         size_t reservedLinks = 0;
-        for (const auto& existing : m_circuits)
+        for (const auto& existing : m_circuitRegistry.GetSnapshot())
             if (existing->m_role == CircuitRole::Relay
                 && existing->State() != CircuitState::Destroyed
                 && existing->m_shape_bucket_kib != 0)
@@ -1544,9 +1556,7 @@ bool CLiveTunnel::HandleCreate_Relay(uint32_t circId,
     // it only after the response was queued so snapshots cannot show an
     // ACTIVE ghost or strict3=true/auth_ok=false for an authenticated leg.
     c->m_auth_ok = v3 || v2;
-    c->SetState(CircuitState::Active);
-    m_circuits.push_back(c);
-    return true;
+    return m_circuitRegistry.Add(c, CircuitState::Active);
 }
 
 // === DoS hardening — CREATE handshake admission gate =======================
@@ -1570,7 +1580,7 @@ const uint32_t CREATE_GATE_MAX_PER_IP = 15;
 const uint32_t CREATE_GATE_MAX_GLOBAL = 100;
 // Concurrent relay-side circuits ("concurrent handshakes": the handshake
 // itself completes synchronously inside HandleCreate_Relay, so the durable
-// per-CREATE cost is the circuit registered in m_circuits — memory plus the
+// per-CREATE cost is the circuit registered in the registry — memory plus the
 // linear scan every incoming cell pays). Tick() reaps every circuit after
 // the 5-min rotation, so this also bounds a slow drip-flood. 512 concurrent
 // relay circuits = hundreds of simultaneous viewers tunneling through us.
@@ -1667,7 +1677,7 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
         bool admit = CreateGateAdmit(sourceAddress);
         if (admit) {
             size_t relayCircs = 0;
-            for (const auto& c : m_circuits)
+            for (const auto& c : m_circuitRegistry.GetSnapshot())
                 if (c->m_role == CircuitRole::Relay) ++relayCircs;
             if (relayCircs >= CREATE_GATE_MAX_RELAY_CIRCS) admit = false;
         }
@@ -1692,7 +1702,7 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
     // receiving CREATED from hop2 and we must wrap it as EXTENDED back
     // to V on V's circ_id.
     if (cmd == CELL_CREATED) {
-        auto relayCirc = FindRelayByOutgoingId(circ_id);
+        auto relayCirc = m_circuitRegistry.FindRelayByOutgoingId(circ_id);
         if (relayCirc) {
             if (fromPeer != relayCirc->m_nextHopClient) return false;
             return ForwardCreatedAsExtended_Relay(circ_id, payload, payloadLen);
@@ -1700,7 +1710,7 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
     }
 
     if (cmd == CELL_EXTENDED) {
-        auto relayCirc = FindRelayByOutgoingId(circ_id);
+        auto relayCirc = m_circuitRegistry.FindRelayByOutgoingId(circ_id);
         if (relayCirc) {
             if (fromPeer != relayCirc->m_nextHopClient) return false;
             return ForwardExtendedCell_Reverse(relayCirc, payload, payloadLen);
@@ -1712,14 +1722,14 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
     // forward it only to the bound previous transport peer and retire this
     // mapping. A failed STRICT3 prefix must not survive at guard or middle.
     if (cmd == CELL_DESTROY) {
-        auto relayCirc = FindRelayByOutgoingId(circ_id);
+        auto relayCirc = m_circuitRegistry.FindRelayByOutgoingId(circ_id);
         if (relayCirc) {
             if (fromPeer != relayCirc->m_nextHopClient) return false;
             uint8_t destroy[CELL_TOTAL_BYTES];
             if (relayCirc->m_prevHopClient
                 && CellPack(relayCirc->Id(), CELL_DESTROY, NULL, 0, destroy))
                 SendCellToPeer(relayCirc->m_prevHopClient, destroy);
-            relayCirc->SetState(CircuitState::Destroyed);
+            m_circuitRegistry.Transition(relayCirc, CircuitState::Destroyed);
             relayCirc->WipeKeys();
             return true;
         }
@@ -1730,7 +1740,7 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
     // re-add our hop1->V layer and relay it to V. Looked up BEFORE the by-Id lookup
     // (the outbound id is not a circuit Id on this node), mirroring CELL_CREATED above.
     if (cmd == CELL_RELAY) {
-        auto relayCirc = FindRelayByOutgoingId(circ_id);
+        auto relayCirc = m_circuitRegistry.FindRelayByOutgoingId(circ_id);
         if (relayCirc) {
             if (fromPeer != relayCirc->m_nextHopClient) return false;
             return ForwardRelayCell_Reverse(relayCirc, payload, payloadLen);
@@ -1739,9 +1749,7 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
 
     // All other cells require an existing circuit entry by circ_id
     // (originator's V-side id, or relay-side from-V id).
-    std::shared_ptr<CLiveCircuit> circ;
-    for (auto& c : m_circuits)
-        if (c->Id() == circ_id) { circ = c; break; }
+    std::shared_ptr<CLiveCircuit> circ = m_circuitRegistry.FindById(circ_id);
     if (!circ) return false;
     if (circ->m_role == CircuitRole::Originator) {
         if (fromPeer != circ->m_firstHopClient) return false;
@@ -1795,7 +1803,7 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
                 if (CellPack(circ->m_nextCircId, CELL_DESTROY, NULL, 0, destroy))
                     SendCellToPeer(circ->m_nextHopClient, destroy);
             }
-            circ->SetState(CircuitState::Destroyed);
+            m_circuitRegistry.Transition(circ, CircuitState::Destroyed);
             circ->WipeKeys();
             return true;
 
@@ -1856,6 +1864,15 @@ bool CLiveTunnel::BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
     if (!circ || !target || circ->m_role != CircuitRole::Originator
         || circ->HopCount() < 1 || circ->HopCount() >= 3
         || circ->m_have_ephemeral)
+        return false;
+    if (circ->State() != CircuitState::Pending
+        && circ->State() != CircuitState::HalfBuilt) {
+        return false;
+    }
+    // Commit the extending state before preparing or emitting CELL_EXTEND.
+    // ContinueOriginatorBuild either promotes a failed legacy prefix back to
+    // Active or destroys private/strict prefixes, so no partial state escapes.
+    if (!m_circuitRegistry.Transition(circ, CircuitState::HalfBuilt))
         return false;
     const uint8_t hopIndex = static_cast<uint8_t>(circ->HopCount());
     const uchar* targetHash = target->GetUserHash();
@@ -1991,11 +2008,9 @@ bool CLiveTunnel::BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
         return false;
     }
 
-    // Move state from Active (1-hop) back to "extending" — we represent
-    // that as HalfBuilt to signal "more than just hop1 in flight". When
-    // EXTENDED arrives we promote to Active again.
+    // HalfBuilt was committed before emission; the timeout starts only
+    // after CELL_EXTEND has actually been queued.
     circ->m_extendStartedTick = GetTickCount();
-    circ->SetState(CircuitState::HalfBuilt);
     return true;
 }
 
@@ -2076,12 +2091,7 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
         uint32_t outId = 0;
         for (int attempt = 0; attempt < 4; ++attempt) {
             outId = NewCircuitId();
-            bool collision = false;
-            for (const auto& candidate : m_circuits)
-                if (candidate->Id() == outId || candidate->m_nextCircId == outId) {
-                    collision = true; break;
-                }
-            if (!collision) break;
+            if (!m_circuitRegistry.ContainsAnyLegId(outId)) break;
             outId = 0;
         }
         if (outId == 0) {
@@ -2250,10 +2260,7 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
     uint32_t outId = 0;
     for (int t = 0; t < 4; ++t) {
         outId = NewCircuitId();
-        bool collision = false;
-        for (auto& c : m_circuits)
-            if (c->Id() == outId || c->m_nextCircId == outId) { collision = true; break; }
-        if (!collision) break;
+        if (!m_circuitRegistry.ContainsAnyLegId(outId)) break;
         outId = 0;
     }
     if (outId == 0) {
@@ -2296,21 +2303,11 @@ bool CLiveTunnel::HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
     return true;
 }
 
-std::shared_ptr<CLiveCircuit> CLiveTunnel::FindRelayByOutgoingId(uint32_t outboundCircId)
-{
-    // Caller holds m_lock.
-    for (auto& c : m_circuits) {
-        if (c->m_role == CircuitRole::Relay && c->m_nextCircId == outboundCircId)
-            return c;
-    }
-    return nullptr;
-}
-
 bool CLiveTunnel::ForwardCreatedAsExtended_Relay(uint32_t outboundCircId,
                                                  const uint8_t* payload, uint16_t payloadLen)
 {
     // Caller holds m_lock.
-    auto circ = FindRelayByOutgoingId(outboundCircId);
+    auto circ = m_circuitRegistry.FindRelayByOutgoingId(outboundCircId);
     if (!circ || circ->HopCount() != 1 || payloadLen < 32) return false;
 
     // hop2's CREATED rides back verbatim: v1 = 32B er_pub2, v2 = 133B signed bundle.
@@ -2386,7 +2383,11 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
 {
     // Caller holds m_lock. circ is the V-side circuit. The cell payload
     // is the wrapped er_pub2 (32+16 tag = 48B).
-    if (!circ || circ->m_role != CircuitRole::Originator) return false;
+    if (!circ || circ->m_role != CircuitRole::Originator
+        || circ->State() != CircuitState::HalfBuilt
+        || m_circuitRegistry.FindById(circ->Id()) != circ) {
+        return false;
+    }
     if (circ->HopCount() < 1 || circ->HopCount() >= 3) return false;
     const uint8_t expectedHopIndex = static_cast<uint8_t>(circ->HopCount());
     if (!circ->m_have_ephemeral) return false;
@@ -2551,7 +2552,6 @@ bool CLiveTunnel::HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
 
     circ->m_extendExpectedNodePubSet = false;
     circ->m_extendStartedTick = 0;
-    circ->SetState(CircuitState::Active);
     return ContinueOriginatorBuild(circ);
 }
 
@@ -2583,15 +2583,15 @@ uint32_t CLiveTunnel::BuildTestCircuit2Hop()
     size_t built = BuildPool(NULL, hop1Vec, 1);
     if (built == 0) return 0;
 
-    // The freshly-built circuit is at the back of m_circuits. We can't
+    // The freshly-built circuit is at the back of the registry. We can't
     // call BuildExtend yet — the circuit is still Pending until CREATED
     // arrives. We mark a flag so HandleCreated_Originator triggers
     // BuildExtend automatically. For simplicity (and because there's no
     // good place to stash hop2 right now), we register a one-shot
     // post-CREATED action via a static map.
     CSingleLock lk(&m_lock, TRUE);
-    if (m_circuits.empty()) return 0;
-    auto& c = m_circuits.back();
+    if (m_circuitRegistry.Empty()) return 0;
+    const std::shared_ptr<CLiveCircuit> c = m_circuitRegistry.Back();
     // Re-use m_nextHopClient on the ORIGINATOR side to mean "after
     // CREATED, extend to this peer". HandleCreated_Originator will check.
     c->m_private2 = true;
@@ -2603,9 +2603,9 @@ void CLiveTunnel::GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const
 {
     CSingleLock lock(&m_lock, TRUE);
     out.clear();
-    out.reserve(m_circuits.size());
+    out.reserve(m_circuitRegistry.Size());
     DWORD now = GetTickCount();
-    for (auto& c : m_circuits) {
+    for (const auto& c : m_circuitRegistry.GetSnapshot()) {
         CircuitSnapshot s = {};
         s.circ_id      = c->Id();
         s.role         = (uint8_t)c->m_role;
@@ -2656,7 +2656,7 @@ void CLiveTunnel::GetK6HardeningSnapshot(K6HardeningRuntimeSnapshot& out)
     }
     {
         CSingleLock lock(&m_lock, TRUE);
-        for (const auto& circuit : m_circuits)
+        for (const auto& circuit : m_circuitRegistry.GetSnapshot())
             if (circuit && circuit->m_traffic_shaping_exposed)
                 ++out.shaping_exposed_circuits;
     }
@@ -2756,7 +2756,7 @@ void CLiveTunnel::RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds)
     bool shapingExposed = false;
     {
         CSingleLock lock(&m_lock, TRUE);
-        for (const auto& circuit : m_circuits)
+        for (const auto& circuit : m_circuitRegistry.GetSnapshot())
             if (circuit && circuit->m_traffic_shaping_exposed) {
                 shapingExposed = true;
                 break;
@@ -3196,7 +3196,7 @@ uint32 CLiveTunnel::K6SelectOriginCircuit(uint32 requiredCaps,
                                           size_t minimumHops) const
 {
     CSingleLock lock(&m_lock, TRUE);
-    for (const auto& circuit : m_circuits) {
+    for (const auto& circuit : m_circuitRegistry.GetSnapshot()) {
         if (!circuit || (pinnedCircId != 0 && circuit->Id() != pinnedCircId) ||
             circuit->m_role != CircuitRole::Originator ||
             circuit->m_k6QuotaIssuerCircuit ||
@@ -3270,14 +3270,14 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
     {
         CSingleLock lock(&m_lock, TRUE);
         const CLiveCircuit* target = NULL;
-        for (const auto& circuit : m_circuits)
+        for (const auto& circuit : m_circuitRegistry.GetSnapshot())
             if (circuit && circuit->Id() == targetCircId && circuit->HopCount() != 0) {
                 target = circuit.get();
                 break;
             }
         if (!target) return false;
         const uint8_t* targetPub = target->Hop(target->HopCount() - 1).pub_long;
-        for (const auto& circuit : m_circuits) {
+        for (const auto& circuit : m_circuitRegistry.GetSnapshot()) {
             if (!circuit || circuit->Id() == targetCircId ||
                 !circuit->m_k6QuotaIssuerCircuit ||
                 circuit->m_role != CircuitRole::Originator ||
@@ -3909,7 +3909,7 @@ void CLiveTunnel::OnPeerDisconnected(CUpDownClient* peer)
     }
 
     CSingleLock lock(&m_lock, TRUE);
-    for (auto& c : m_circuits) {
+    for (const auto& c : m_circuitRegistry.GetSnapshot()) {
         if (!c || c->State() == CircuitState::Destroyed) continue;
 
         const bool lostFirst = c->m_firstHopClient == peer;
@@ -3940,7 +3940,7 @@ void CLiveTunnel::OnPeerDisconnected(CUpDownClient* peer)
         if (lostPrev)  c->m_prevHopClient = NULL;
         if (lostNext)  c->m_nextHopClient = NULL;
         if (lostPending) c->m_pendingHopClients.clear();
-        c->SetState(CircuitState::Destroyed);
+        m_circuitRegistry.Transition(c, CircuitState::Destroyed);
         c->WipeKeys();
     }
 }
@@ -4008,16 +4008,15 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
         }
     }
     CSingleLock lock(&m_lock, TRUE);
-    if (m_circuits.empty()) return 0;
+    if (m_circuitRegistry.Empty()) return 0;
 
     // Pick one Active circuit, advancing the round-robin cursor once per
     // message. (SendThrough advances it once per cell -> wrong for multi-cell.)
     std::shared_ptr<CLiveCircuit> chosen;
-    size_t tries = m_circuits.size();
+    size_t tries = m_circuitRegistry.Size();
     while (tries-- > 0) {
-        const size_t idx = m_rrNextIdx % m_circuits.size();
-        m_rrNextIdx = (m_rrNextIdx + 1) % m_circuits.size();
-        auto& c = m_circuits[idx];
+        const std::shared_ptr<CLiveCircuit> c =
+            m_circuitRegistry.NextRoundRobin();
         if ((!pinnedCircId || c->Id() == pinnedCircId) &&
             (!c->m_k6QuotaIssuerCircuit || quotaMessage) &&
             c->State() == CircuitState::Active && c->HopCount() >= minimumHops
@@ -4083,7 +4082,7 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
             // Destroy the circuit so it is never reused with a desynced nonce;
             // returning its id lets Tick's retry (A4.3) re-send the whole
             // message on another circuit.
-            chosen->SetState(CircuitState::Destroyed);
+            m_circuitRegistry.Transition(chosen, CircuitState::Destroyed);
             return chosen->Id();
         }
         if (!SendCellToPeer(chosen->m_firstHopClient, cell))
@@ -7313,7 +7312,7 @@ bool CLiveTunnel::ActivateK6Inbound(CKad6ExitSocket* socket,
     std::shared_ptr<CLiveCircuit> circuit;
     {
         CSingleLock lock(&m_lock, TRUE);
-        for (const auto& candidate : m_circuits)
+        for (const auto& candidate : m_circuitRegistry.GetSnapshot())
             if (candidate && candidate->Id() == selected.circuit_id &&
                 candidate->State() == CircuitState::Active) {
                 circuit = candidate;
@@ -8152,7 +8151,7 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
     std::array<uint64, static_cast<size_t>(kad6::K6Service::Count)> serviceActive{};
     double streamProfiles[4][3] = {};
     std::set<uint32> strictCircuits;
-    for (const auto& circuit : m_circuits)
+    for (const auto& circuit : m_circuitRegistry.GetSnapshot())
         if (circuit && circuit->m_strict3 && circuit->m_shaped_ok &&
             circuit->State() == CircuitState::Active)
             strictCircuits.insert(circuit->Id());
@@ -8630,7 +8629,7 @@ void CLiveTunnel::ExitRelayLiveControl(const uint8_t streamKey[16],
     CSingleLock lock(&m_lock, TRUE);
     for (size_t i = 0; i < targets.size(); ++i) {
         std::shared_ptr<CLiveCircuit> circ;
-        for (auto& c : m_circuits) {
+        for (const auto& c : m_circuitRegistry.GetSnapshot()) {
             if (c->Id() == targets[i] && c->State() == CircuitState::Active &&
                 c->m_role == CircuitRole::Relay) { circ = c; break; }
         }
@@ -8684,7 +8683,7 @@ void CLiveTunnel::ExitRelayPeerList(const uint8_t streamKey[16],
     CSingleLock lock(&m_lock, TRUE);
     for (size_t i = 0; i < targets.size(); ++i) {
         std::shared_ptr<CLiveCircuit> circ;
-        for (auto& c : m_circuits) {
+        for (const auto& c : m_circuitRegistry.GetSnapshot()) {
             if (c->Id() == targets[i] && c->State() == CircuitState::Active &&
                 c->m_role == CircuitRole::Relay) { circ = c; break; }
         }
@@ -9240,7 +9239,7 @@ bool CLiveTunnel::K6BindSource(const kad6::K6SourceBind& bind,
     bool exitPinned = false;
     {
         CSingleLock lock(&m_lock, TRUE);
-        for (const auto& circuit : m_circuits) {
+        for (const auto& circuit : m_circuitRegistry.GetSnapshot()) {
             if (!circuit || circuit->Id() != pinnedCircuit ||
                 circuit->m_role != CircuitRole::Originator ||
                 circuit->State() != CircuitState::Active || !circuit->m_auth_ok ||
@@ -10400,7 +10399,8 @@ bool CLiveTunnel::HandleK6ShapedCellLocked(const uint8_t* pkt, size_t size,
         || header.link_nonce_seq == K6_SHAPE_PADDING_NONCE)
         return true;
 
-    std::shared_ptr<CLiveCircuit> relay = FindRelayByOutgoingId(header.circ_id);
+    std::shared_ptr<CLiveCircuit> relay =
+        m_circuitRegistry.FindRelayByOutgoingId(header.circ_id);
     if (relay) {
         if (fromPeer != relay->m_nextHopClient || relay->m_remoteHopIndex >= 2
             || relay->m_originCircContext == 0 || relay->HopCount() != 1)
@@ -10427,7 +10427,7 @@ bool CLiveTunnel::HandleK6ShapedCellLocked(const uint8_t* pkt, size_t size,
         return true;
     }
 
-    for (auto& candidate : m_circuits) {
+    for (const auto& candidate : m_circuitRegistry.GetSnapshot()) {
         if (candidate->Id() == header.circ_id
             && candidate->m_role == CircuitRole::Originator) {
             if (fromPeer == candidate->m_firstHopClient)
@@ -10449,7 +10449,7 @@ void CLiveTunnel::ProcessClass5Tick()
     const uint64_t nowUs = K6ShapeNowUs();
     for (auto it = m_k6ShapeReverse.begin(); it != m_k6ShapeReverse.end(); ) {
         std::shared_ptr<CLiveCircuit> circ;
-        for (auto& candidate : m_circuits)
+        for (const auto& candidate : m_circuitRegistry.GetSnapshot())
             if (candidate->Id() == it->first) { circ = candidate; break; }
         if (!circ || circ->State() == CircuitState::Destroyed
             || circ->m_role != CircuitRole::Relay) {
@@ -10501,7 +10501,7 @@ bool CLiveTunnel::OnBulkCellReceived(const uint8_t* pkt, uint32_t size, CUpDownC
     // Reverse forwarding: a bulk cell on a relay's OUTBOUND id is coming back from
     // hop2/exit -> re-add our hop1->V layer and relay to V (mirror of CELL_RELAY F-1).
     {
-        auto relayCirc = FindRelayByOutgoingId(h.circ_id);
+        auto relayCirc = m_circuitRegistry.FindRelayByOutgoingId(h.circ_id);
         if (relayCirc) {
             if (fromPeer != relayCirc->m_nextHopClient) return true;
             ForwardBulkCell_Reverse(relayCirc, h.bcmd, h.nonce_seq, payload, h.length);
@@ -10511,7 +10511,7 @@ bool CLiveTunnel::OnBulkCellReceived(const uint8_t* pkt, uint32_t size, CUpDownC
 
     // Terminating end (viewer/originator): decode + reassemble.
     std::shared_ptr<CLiveCircuit> circ;
-    for (auto& c : m_circuits)
+    for (const auto& c : m_circuitRegistry.GetSnapshot())
         if (c->Id() == h.circ_id) { circ = c; break; }
     if (!circ) return true;
     if (circ->m_role == CircuitRole::Originator
@@ -10714,12 +10714,12 @@ void CLiveTunnel::SweepBulkReasm()
         m_proxyRecent.pop_front();
     for (auto it = m_bulkReplay.begin(); it != m_bulkReplay.end(); ) {
         bool alive = false;
-        for (auto& c : m_circuits) if (c->Id() == it->first) { alive = true; break; }
+        if (m_circuitRegistry.FindById(it->first)) alive = true;
         if (!alive) it = m_bulkReplay.erase(it); else ++it;
     }
     for (auto it = m_k6ShapeReplay.begin(); it != m_k6ShapeReplay.end(); ) {
         bool alive = false;
-        for (auto& c : m_circuits)
+        for (const auto& c : m_circuitRegistry.GetSnapshot())
             if (c->Id() == static_cast<uint32_t>(it->first >> 8)
                 && c->State() != CircuitState::Destroyed) {
                 alive = true; break;
@@ -10735,7 +10735,7 @@ void CLiveTunnel::SweepBulkReasm()
             std::vector<BulkSub>& subs = it->second;
             for (auto i = subs.begin(); i != subs.end(); ) {
                 bool alive = false;
-                for (auto& c : m_circuits) if (c->Id() == i->circ_id) { alive = true; break; }
+                if (m_circuitRegistry.FindById(i->circ_id)) alive = true;
                 if (!alive || (DWORD)(now - i->lastSeen) > Bulk::BULK_SUB_TTL_MS) i = subs.erase(i);
                 else ++i;
             }
@@ -10884,14 +10884,14 @@ void CLiveTunnel::ProcessProxyIngest()
         // circuits (B5): symbol with (block_idx b, symbol_idx s) -> circuit[(s + b) mod C], so
         // no circuit holds a whole block and a circuit death loses <= ceil((k+r)/C)/block. With
         // C==1 (fallback / single-circuit viewer) the whole k+r goes down the one circuit.
-        // m_lock is held by Tick -> m_circuits is safe to read.
+        // m_lock is held by Tick -> the circuit registry is safe to read.
         size_t pushed = 0;
         for (const std::vector<uint32_t>& sess : sessions) {
             const size_t C = sess.size();
             if (C == 0) continue;
             std::vector<std::shared_ptr<CLiveCircuit>> sc(C);
             for (size_t i = 0; i < C; ++i)
-                for (auto& c : m_circuits) if (c->Id() == sess[i]) { sc[i] = c; break; }
+                sc[i] = m_circuitRegistry.FindById(sess[i]);
             for (const Bulk::BulkSymbol& s : symbols) {
                 std::shared_ptr<CLiveCircuit>& cc = sc[((size_t)s.symbol_idx + s.block_idx) % C];
                 if (!cc || cc->m_role != CircuitRole::Relay) continue;
@@ -10999,7 +10999,7 @@ size_t CLiveTunnel::BulkSubscribe(const uint8_t streamKey[16])
     const uint32_t sessionId = NewCircuitId();
 
     size_t sent = 0;
-    for (auto& c : m_circuits) {
+    for (const auto& c : m_circuitRegistry.GetSnapshot()) {
         if (c->m_role != CircuitRole::Originator) continue;
         if (c->State() != CircuitState::Active) continue;
         if (c->HopCount() < 1 || !c->m_bulk_ok) continue;   // only bulk-capable Active circuits
@@ -11119,7 +11119,7 @@ bool CLiveTunnel::SendBulkNack(const uint8_t streamKey[16],
         body.insert(body.end(), tmp, tmp + 4);
         body.push_back(m.second);
     }
-    for (auto& c : m_circuits) {
+    for (const auto& c : m_circuitRegistry.GetSnapshot()) {
         if (c->m_role != CircuitRole::Originator || c->State() != CircuitState::Active) continue;
         if (c->HopCount() < 1 || !c->m_bulk_ok) continue;
         const size_t onion = c->HopCount() * 16;
@@ -11198,7 +11198,7 @@ void CLiveTunnel::Tick()
     // reached Active; every fail-closed teardown is a failed build unless a
     // success was already recorded earlier in the circuit lifetime.
     const uint64_t buildMetricNow = static_cast<uint64_t>(time(NULL));
-    for (const auto& circuit : m_circuits) {
+    for (const auto& circuit : m_circuitRegistry.GetSnapshot()) {
         if (circuit && circuit->State() == CircuitState::Destroyed)
             retiredCircuits.insert(circuit->Id());
         if (!circuit || !circuit->m_strict3 ||
@@ -11215,20 +11215,17 @@ void CLiveTunnel::Tick()
         circuit->m_k6BuildMetricEmitted = true;
     }
     // 1. Reap Destroyed circuits.
-    auto isDead = [](const std::shared_ptr<CLiveCircuit>& c) {
-        return c->State() == CircuitState::Destroyed;
-    };
-    m_circuits.erase(std::remove_if(m_circuits.begin(), m_circuits.end(), isDead),
-                     m_circuits.end());
+    m_circuitRegistry.RemoveDestroyed(&retiredCircuits);
 
     // 2. Rotation: any ACTIVE circuit older than ROTATION_BASE_MS is
     // marked Destroyed. Pending circuits get a longer timeout because
     // they're waiting for handshake reply.
     const DWORD now = GetTickCount();
-    for (auto& c : m_circuits) {
+    for (const auto& c : m_circuitRegistry.GetSnapshot()) {
         if (c->State() == CircuitState::Active && c->AgeMs() > TUNNEL_ROTATION_BASE_MS) {
             if (c->m_strict3) DestroyCircuitFailClosed(c);
-            else c->SetState(CircuitState::Destroyed); // normal legacy rotation
+            else m_circuitRegistry.Transition(
+                c, CircuitState::Destroyed); // normal legacy rotation
         } else if (c->State() == CircuitState::Pending && c->AgeMs() > TUNNEL_HANDSHAKE_TIMEOUT_MS * 8) {
             // 8x handshake timeout = ~6.4 s. After this, give up — peer
             // probably isn't running the fork. Distinct from a crypto reject:
@@ -11236,7 +11233,7 @@ void CLiveTunnel::Tick()
             AddDebugLogLine(false, _T("LiveTunnel: circ=0x%08x REAP reason=HANDSHAKE_TIMEOUT (CREATED never arrived, age=%u ms) — NOT a crypto reject"), c->Id(), c->AgeMs());
             c->m_abort_reason = CircuitAbortReason::HandshakeTimeout;
             if (c->m_private2 || c->m_strict3) DestroyCircuitFailClosed(c);
-            else c->SetState(CircuitState::Destroyed);
+            else m_circuitRegistry.Transition(c, CircuitState::Destroyed);
         } else if (c->State() == CircuitState::HalfBuilt
                    && c->m_extendStartedTick != 0
                    && (DWORD)(now - c->m_extendStartedTick) > TUNNEL_HANDSHAKE_TIMEOUT_MS * 16) {
@@ -11247,7 +11244,7 @@ void CLiveTunnel::Tick()
             AddDebugLogLine(false, _T("LiveTunnel: circ=0x%08x REAP reason=EXTEND_TIMEOUT (EXTENDED never arrived, age=%u ms) — NOT a crypto reject"), c->Id(), c->AgeMs());
             c->m_abort_reason = CircuitAbortReason::ExtendTimeout;
             if (c->m_private2 || c->m_strict3) DestroyCircuitFailClosed(c);
-            else c->SetState(CircuitState::Destroyed);
+            else m_circuitRegistry.Transition(c, CircuitState::Destroyed);
         }
     }
 
@@ -11259,13 +11256,13 @@ void CLiveTunnel::Tick()
     // K6-3: SourceLeases are circuit-bound. Rotation, DESTROY or timeout
     // drains their publishes; wall-clock expiry closes them independently of
     // GetTickCount wraparound.
-    for (const auto& circuit : m_circuits)
+    for (const auto& circuit : m_circuitRegistry.GetSnapshot())
         if (circuit && circuit->State() == CircuitState::Destroyed)
             retiredCircuits.insert(circuit->Id());
 
     {
         double circuitCounts[5][4] = {};
-        for (const auto& circuit : m_circuits) {
+        for (const auto& circuit : m_circuitRegistry.GetSnapshot()) {
             if (!circuit) continue;
             const uint8 state = (std::min<uint8>)(static_cast<uint8>(circuit->State()), 4);
             const uint8 hops = (std::min<uint8>)(static_cast<uint8>(circuit->HopCount()), 3);
@@ -11279,7 +11276,7 @@ void CLiveTunnel::Tick()
     }
     {
         std::set<uint32_t> active;
-        for (const auto& c : m_circuits)
+        for (const auto& c : m_circuitRegistry.GetSnapshot())
             if (c->State() == CircuitState::Active) active.insert(c->Id());
         const uint64 k6Now = static_cast<uint64_t>(time(NULL));
         SweepK6SourceLeases(active, retiredCircuits, k6Now);
@@ -11291,7 +11288,7 @@ void CLiveTunnel::Tick()
     }
 
     auto& covCfg = CLiveCoverTraffic::Get();
-    for (auto& c : m_circuits) {
+    for (const auto& c : m_circuitRegistry.GetSnapshot()) {
         if (c->State() != CircuitState::Active) continue;
         if (c->m_role != CircuitRole::Originator) continue;   // only originator drives cover
         if (c->HopCount() < 1) continue;
@@ -11395,7 +11392,7 @@ void CLiveTunnel::Tick()
     if (theApp.liveStreamManager && theApp.liveStreamManager->IsViewingLive()
         && (DWORD)(now - m_lastBulkSubTick) > 10000u) {
         bool haveBulk = false;
-        for (auto& c : m_circuits)
+        for (const auto& c : m_circuitRegistry.GetSnapshot())
             if (c->m_role == CircuitRole::Originator && c->State() == CircuitState::Active
                 && c->HopCount() >= 1 && c->m_bulk_ok) { haveBulk = true; break; }
         if (haveBulk) {
@@ -11414,7 +11411,7 @@ void CLiveTunnel::Tick()
         // pending domain; it must never call back into the registry while its
         // own mutex is held.
         std::set<uint32_t> activeCircuitIds;
-        for (const auto& circuit : m_circuits) {
+        for (const auto& circuit : m_circuitRegistry.GetSnapshot()) {
             if (circuit && circuit->State() == CircuitState::Active)
                 activeCircuitIds.insert(circuit->Id());
         }
@@ -11464,9 +11461,9 @@ void CLiveTunnel::Tick()
     // (and re-subscribing to) the broadcaster on its behalf.
     {
         auto circuitAlive = [&](uint32_t id) -> bool {
-            for (auto& c : m_circuits)
-                if (c->Id() == id && c->State() == CircuitState::Active) return true;
-            return false;
+            const std::shared_ptr<CLiveCircuit> circuit =
+                m_circuitRegistry.FindById(id);
+            return circuit && circuit->State() == CircuitState::Active;
         };
         const DWORD EXIT_SUB_TTL_MS = 10u * 60u * 1000u;   // 10 min
         // Streams whose last viewer left: UNSUBSCRIBE the exit from the
@@ -11511,7 +11508,7 @@ size_t CLiveTunnel::ActiveCircuitCount() const
 {
     CSingleLock lock(&m_lock, TRUE);
     size_t n = 0;
-    for (auto& c : m_circuits)
+    for (const auto& c : m_circuitRegistry.GetSnapshot())
         if (c->State() == CircuitState::Active) ++n;
     return n;
 }
@@ -11521,7 +11518,7 @@ bool CLiveTunnel::HasActiveCircuitWithExitCaps(uint32_t requiredCaps) const
     if (requiredCaps == 0) return ActiveCircuitCount() != 0;
     const size_t minimumHops = (requiredCaps & ESE_CAP_KAD6) != 0 ? 2 : 1;
     CSingleLock lock(&m_lock, TRUE);
-    for (const auto& c : m_circuits) {
+    for (const auto& c : m_circuitRegistry.GetSnapshot()) {
         if (!c->m_k6QuotaIssuerCircuit &&
             c->m_role == CircuitRole::Originator &&
             c->State() == CircuitState::Active && c->HopCount() >= minimumHops &&
@@ -11545,7 +11542,7 @@ size_t CLiveTunnel::PendingCircuitCount() const
 {
     CSingleLock lock(&m_lock, TRUE);
     size_t n = 0;
-    for (auto& c : m_circuits)
+    for (const auto& c : m_circuitRegistry.GetSnapshot())
         if (c->State() == CircuitState::Pending) ++n;
     return n;
 }
@@ -11554,7 +11551,7 @@ size_t CLiveTunnel::RelayCircuitCount() const
 {
     CSingleLock lock(&m_lock, TRUE);
     size_t n = 0;
-    for (auto& c : m_circuits)
+    for (const auto& c : m_circuitRegistry.GetSnapshot())
         if (c->m_role == CircuitRole::Relay && c->State() == CircuitState::Active) ++n;
     return n;
 }
@@ -11562,7 +11559,7 @@ size_t CLiveTunnel::RelayCircuitCount() const
 size_t CLiveTunnel::TotalCircuitCount() const
 {
     CSingleLock lock(&m_lock, TRUE);
-    return m_circuits.size();
+    return m_circuitRegistry.Size();
 }
 
 }  // namespace eSELive

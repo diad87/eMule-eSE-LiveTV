@@ -764,6 +764,10 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="LiveCircuitRegistry.cpp">
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>stdafx.h</PrecompiledHeaderFile>
+    </ClCompile>
     <ClCompile Include="LiveCoverTraffic.cpp" />
     <ClCompile Include="LiveMigrationV7.cpp" />
     <ClCompile Include="FirewallProberV6.cpp" />
@@ -1139,6 +1143,7 @@
     <ClInclude Include="LiveCellQueue.h" />
     <ClInclude Include="LiveTunnelFraming.h" />
     <ClInclude Include="LiveTunnelPending.h" />
+    <ClInclude Include="LiveCircuitRegistry.h" />
     <ClInclude Include="LiveCoverTraffic.h" />
     <ClInclude Include="LiveMigrationV7.h" />
     <ClInclude Include="FirewallProberV6.h" />

@@ -15,6 +15,7 @@
 #include "LiveCellQueue.h"   // v8.1 A2 - ReassemblyEntry, fragment helpers
 #include "LiveBulk.h"        // v8.1.2 E1.2/E3.4 - bulk cell wire + multi-block FEC + replay window
 #include "LiveTunnelPending.h"
+#include "LiveCircuitRegistry.h"
 #include "kad6/kad6_lease.h"
 #include "kad6/kad6_publish.h"
 #include "kad6/kad6_frame.h"
@@ -518,7 +519,7 @@ private:
     // its existing CClientReqSocket, wrapped as OP_LIVE_TUNNEL_CELL.
     // Returns true if the packet was queued for send. Increments stats.
     bool SendCellToPeer(CUpDownClient* peer, const uint8_t cell[CELL_TOTAL_BYTES]);
-    void DestroyCircuitFailClosed(std::shared_ptr<CLiveCircuit>& circ);
+    void DestroyCircuitFailClosed(const std::shared_ptr<CLiveCircuit>& circ);
 
     // Originator-side CREATED handler: complete handshake on hop 1.
     bool HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
@@ -580,8 +581,6 @@ private:
 
     // v0.71 B — looks up a relay-side circuit by its OUTBOUND id (the
     // one we chose for talking to hop2). Returns nullptr if not found.
-    std::shared_ptr<CLiveCircuit> FindRelayByOutgoingId(uint32_t outboundCircId);
-
     // v0.71 C — CELL_RELAY handlers.
     // Originator: peel ALL hops, parse TunnelOp, deliver to pending
     // request table or drop if no waiter.
@@ -1312,8 +1311,7 @@ private:
     void RebuildPeersCache();
 
     mutable CCriticalSection m_lock;
-    std::vector<std::shared_ptr<CLiveCircuit>> m_circuits;
-    size_t m_rrNextIdx;
+    eSELive::LiveCircuitRegistry m_circuitRegistry; // caller-serialized by m_lock
     DWORD m_lastTickMs;
     std::array<uint8_t, 32> m_k6GuardNodePub{};
     uint64_t m_k6GuardExpiresAt = 0;

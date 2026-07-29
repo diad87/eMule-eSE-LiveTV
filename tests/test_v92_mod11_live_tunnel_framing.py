@@ -191,6 +191,13 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveTunnelPending.cpp"],
                 "interface_files": ["srchybrid/LiveTunnelPending.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveCircuitRegistry",
+                "owner": "CLiveTunnel",
+                "layer": "domain_state",
+                "implementation_files": ["srchybrid/LiveCircuitRegistry.cpp"],
+                "interface_files": ["srchybrid/LiveCircuitRegistry.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -202,6 +209,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             }, {
                 "module": "LiveTunnelPending",
                 "slice_base_commit": "778631c0559880be06e62146a5bae44623536383",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveCircuitRegistry",
+                "slice_base_commit": "948e4e93815c6b3bd028316040e1b1c447c86c57",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }],
         })

@@ -38,6 +38,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
             message.startswith("slice LiveTunnelPending:")
             for message in messages
         ))
+        self.assertTrue(any(
+            message.startswith("slice LiveCircuitRegistry:")
+            for message in messages
+        ))
         self.assertFalse(self.config["final_limits"]["enforced_now"])
         self.assertEqual(self.config["baseline_commit"], "161d948281682d39acdcea796b1edddc6d68904c")
         self.assertEqual(len(self.config["coordinator_files"]), 6)
@@ -63,6 +67,13 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "layer": "domain_state",
                 "implementation_files": ["srchybrid/LiveTunnelPending.cpp"],
                 "interface_files": ["srchybrid/LiveTunnelPending.h"],
+                "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveCircuitRegistry",
+                "owner": "CLiveTunnel",
+                "layer": "domain_state",
+                "implementation_files": ["srchybrid/LiveCircuitRegistry.cpp"],
+                "interface_files": ["srchybrid/LiveCircuitRegistry.h"],
                 "declared_direct_dependencies": [],
             }],
         })
@@ -94,15 +105,19 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "module": "LiveTunnelPending",
                 "slice_base_commit": "778631c0559880be06e62146a5bae44623536383",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveCircuitRegistry",
+                "slice_base_commit": "948e4e93815c6b3bd028316040e1b1c447c86c57",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }],
         })
 
-    def test_only_the_two_completed_extractions_are_claimed(self) -> None:
+    def test_only_the_three_completed_extractions_are_claimed(self) -> None:
         self.assertEqual(self.config["mod03_contract"]["planned_module_count"], 29)
         self.assertEqual(len(VERIFIER._planned_modules(self.contract)), 29)
         self.assertEqual(
             [entry["name"] for entry in self.config["module_catalog"]["entries"]],
-            ["LiveTunnelFraming", "LiveTunnelPending"],
+            ["LiveTunnelFraming", "LiveTunnelPending", "LiveCircuitRegistry"],
         )
 
     def test_growth_limit_is_binding_while_final_targets_remain_end_state_only(self) -> None:

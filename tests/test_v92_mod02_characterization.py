@@ -27,6 +27,8 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/LiveCellQueue.cpp", "srchybrid/LiveCellQueue.h",
     "srchybrid/LiveTunnelFraming.cpp", "srchybrid/LiveTunnelFraming.h",
     "srchybrid/LiveTunnelPending.cpp", "srchybrid/LiveTunnelPending.h",
+    "srchybrid/LiveCircuitRegistry.cpp", "srchybrid/LiveCircuitRegistry.h",
+    "srchybrid/LiveCircuit.cpp", "srchybrid/LiveCircuit.h",
     "srchybrid/WebServer.cpp", "srchybrid/WebServer.h",
     "srchybrid/LiveStreamManager.cpp", "srchybrid/LiveStreamManager.h",
 ]
@@ -144,7 +146,8 @@ class Mod02CharacterizationTest(unittest.TestCase):
 
     def test_goldens_cover_required_domains_and_use_production_files(self) -> None:
         expected = {
-            "live_tunnel_framing", "live_tunnel_pending", "live_tunnel_dispatch", "web_parser_security",
+            "live_circuit_registry", "live_tunnel_framing", "live_tunnel_pending",
+            "live_tunnel_dispatch", "web_parser_security",
             "web_serialization", "web_live_dispatch", "live_stream_session_chunk_callback",
         }
         self.assertEqual(set(self.goldens["goldens"]), expected)

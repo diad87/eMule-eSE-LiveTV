@@ -979,11 +979,7 @@ void CLiveTunnel::DestroyCircuitFailClosed(
             && CellPack(circ->m_nextCircId, CELL_DESTROY, NULL, 0, destroy))
             SendCellToPeer(circ->m_nextHopClient, destroy);
     }
-    {
-        CSingleLock pending(&m_pendingLock, TRUE);
-        (void)m_exitServices.AbortCircuit(circ->Id());
-    }
-    m_circuitRegistry.Transition(circ, CircuitState::Destroyed);
+    TransitionCircuitDestroyed(circ);
     circ->WipeKeys();
     circ->m_auth_ok = false;
     circ->m_exit_signed_caps = 0;
@@ -1367,7 +1363,7 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
             if (relayCirc->m_prevHopClient
                 && CellPack(relayCirc->Id(), CELL_DESTROY, NULL, 0, destroy))
                 SendCellToPeer(relayCirc->m_prevHopClient, destroy);
-            m_circuitRegistry.Transition(relayCirc, CircuitState::Destroyed);
+            TransitionCircuitDestroyed(relayCirc);
             relayCirc->WipeKeys();
             return true;
         }
@@ -1441,7 +1437,7 @@ bool CLiveTunnel::OnCellReceived(uint32_t circ_id, uint8_t cmd,
                 if (CellPack(circ->m_nextCircId, CELL_DESTROY, NULL, 0, destroy))
                     SendCellToPeer(circ->m_nextHopClient, destroy);
             }
-            m_circuitRegistry.Transition(circ, CircuitState::Destroyed);
+            TransitionCircuitDestroyed(circ);
             circ->WipeKeys();
             return true;
 
@@ -2903,7 +2899,7 @@ void CLiveTunnel::OnPeerDisconnected(CUpDownClient* peer)
         if (lostPrev)  c->m_prevHopClient = NULL;
         if (lostNext)  c->m_nextHopClient = NULL;
         if (lostPending) c->m_pendingHopClients.clear();
-        m_circuitRegistry.Transition(c, CircuitState::Destroyed);
+        TransitionCircuitDestroyed(c);
         c->WipeKeys();
     }
 }
@@ -3045,7 +3041,7 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
             // Destroy the circuit so it is never reused with a desynced nonce;
             // returning its id lets Tick's retry (A4.3) re-send the whole
             // message on another circuit.
-            m_circuitRegistry.Transition(chosen, CircuitState::Destroyed);
+            TransitionCircuitDestroyed(chosen);
             return chosen->Id();
         }
         if (!SendCellToPeer(chosen->m_firstHopClient, cell))
@@ -4039,6 +4035,27 @@ bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
     return m_relayDispatcher.DispatchExitPlain(circ, plain, plainLen, *this);
 }
 
+void CLiveTunnel::TransitionCircuitDestroyed(
+    const std::shared_ptr<CLiveCircuit>& circ)
+{
+    if (!circ)
+        return;
+
+    const uint32_t circuitId = circ->Id();
+    {
+        CSingleLock pending(&m_pendingLock, TRUE);
+        (void)m_exitServices.AbortCircuit(circuitId);
+        for (auto entry = m_reassembly.begin();
+             entry != m_reassembly.end();) {
+            if (static_cast<uint32_t>(entry->first >> 32) == circuitId)
+                entry = m_reassembly.erase(entry);
+            else
+                ++entry;
+        }
+    }
+    m_circuitRegistry.Transition(circ, CircuitState::Destroyed);
+}
+
 bool CLiveTunnel::IsRelayMultiCell(uint8_t subCommand) const
 {
     return subCommand >= TUN_MULTICELL_OP_MIN;
@@ -4272,7 +4289,8 @@ void CLiveTunnel::ExitHandle_KadSearchV2(const TunnelRequestCtx& ctx)
     for (auto& ch : keyword)
         if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
 
-    BeginExitOperation(ctx, TUN_OP_KAD_RESULT_V2);
+    if (!BeginExitOperation(ctx, TUN_OP_KAD_RESULT_V2))
+        return;
 
     TunnelSearchJob job;
     job.circ_id  = ctx.circ->Id();
@@ -7956,7 +7974,8 @@ void CLiveTunnel::ExitHandle_EchoLarge(const TunnelRequestCtx& ctx)
 {
     if (!ctx.circ) return;
     std::vector<uint8_t> echo(ctx.body, ctx.body + ctx.bodyLen);
-    BeginExitOperation(ctx, TUN_OP_ECHO_LARGE_REPLY);
+    if (!BeginExitOperation(ctx, TUN_OP_ECHO_LARGE_REPLY))
+        return;
     CompleteExitOperation(ctx.circ->Id(), ctx.req_id, echo.data(), echo.size());
 }
 
@@ -10157,8 +10176,7 @@ void CLiveTunnel::Tick()
     for (const auto& c : m_circuitRegistry.GetSnapshot()) {
         if (c->State() == CircuitState::Active && c->AgeMs() > TUNNEL_ROTATION_BASE_MS) {
             if (c->m_strict3) DestroyCircuitFailClosed(c);
-            else m_circuitRegistry.Transition(
-                c, CircuitState::Destroyed); // normal legacy rotation
+            else TransitionCircuitDestroyed(c); // normal legacy rotation
         } else if (c->State() == CircuitState::Pending && c->AgeMs() > TUNNEL_HANDSHAKE_TIMEOUT_MS * 8) {
             // 8x handshake timeout = ~6.4 s. After this, give up — peer
             // probably isn't running the fork. Distinct from a crypto reject:
@@ -10166,7 +10184,7 @@ void CLiveTunnel::Tick()
             AddDebugLogLine(false, _T("LiveTunnel: circ=0x%08x REAP reason=HANDSHAKE_TIMEOUT (CREATED never arrived, age=%u ms) — NOT a crypto reject"), c->Id(), c->AgeMs());
             c->m_abort_reason = CircuitAbortReason::HandshakeTimeout;
             if (c->m_private2 || c->m_strict3) DestroyCircuitFailClosed(c);
-            else m_circuitRegistry.Transition(c, CircuitState::Destroyed);
+            else TransitionCircuitDestroyed(c);
         } else if (c->State() == CircuitState::HalfBuilt
                    && c->m_extendStartedTick != 0
                    && (DWORD)(now - c->m_extendStartedTick) > TUNNEL_HANDSHAKE_TIMEOUT_MS * 16) {
@@ -10177,7 +10195,7 @@ void CLiveTunnel::Tick()
             AddDebugLogLine(false, _T("LiveTunnel: circ=0x%08x REAP reason=EXTEND_TIMEOUT (EXTENDED never arrived, age=%u ms) — NOT a crypto reject"), c->Id(), c->AgeMs());
             c->m_abort_reason = CircuitAbortReason::ExtendTimeout;
             if (c->m_private2 || c->m_strict3) DestroyCircuitFailClosed(c);
-            else m_circuitRegistry.Transition(c, CircuitState::Destroyed);
+            else TransitionCircuitDestroyed(c);
         }
     }
 

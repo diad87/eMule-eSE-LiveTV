@@ -515,6 +515,7 @@ private:
     // Returns true if the packet was queued for send. Increments stats.
     bool SendCellToPeer(CUpDownClient* peer, const uint8_t cell[CELL_TOTAL_BYTES]);
     void DestroyCircuitFailClosed(const std::shared_ptr<CLiveCircuit>& circ);
+    void TransitionCircuitDestroyed(const std::shared_ptr<CLiveCircuit>& circ);
     LiveCircuitRegistry& HandshakeCircuitRegistry() override { return m_circuitRegistry; }
     bool SendHandshakeCell(LiveHandshakePeerHandle peer, const uint8_t* cell) override {
         return SendCellToPeer(static_cast<CUpDownClient*>(peer), cell);

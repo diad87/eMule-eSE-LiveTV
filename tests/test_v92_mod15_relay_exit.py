@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import re
 import unittest
 
 
@@ -99,6 +100,30 @@ class Mod15RelayExitTest(unittest.TestCase):
         self.assertIn("m_operations.emplace", begin)
         self.assertIn(".second", begin)
         self.assertNotIn("m_operations[", begin)
+        search = self.body(
+            self.coordinator,
+            "CLiveTunnel::ExitHandle_KadSearchV2",
+        )
+        echo = self.body(
+            self.coordinator,
+            "CLiveTunnel::ExitHandle_EchoLarge",
+        )
+        self.assertIn(
+            "if (!BeginExitOperation(ctx, TUN_OP_KAD_RESULT_V2))",
+            search,
+        )
+        self.assertLess(
+            search.index("BeginExitOperation"),
+            search.index("TunnelSearchJob job"),
+        )
+        self.assertIn(
+            "if (!BeginExitOperation(ctx, TUN_OP_ECHO_LARGE_REPLY))",
+            echo,
+        )
+        self.assertLess(
+            echo.index("BeginExitOperation"),
+            echo.index("CompleteExitOperation"),
+        )
 
     def test_completion_consumes_before_external_reply(self) -> None:
         take = self.body(
@@ -162,8 +187,22 @@ class Mod15RelayExitTest(unittest.TestCase):
             self.coordinator,
             "CLiveTunnel::DestroyCircuitFailClosed",
         )
+        transition = self.body(
+            self.coordinator,
+            "CLiveTunnel::TransitionCircuitDestroyed",
+        )
         self.assertIn("m_exitServices.Clear()", stop)
-        self.assertIn("m_exitServices.AbortCircuit(circ->Id())", destroy)
+        self.assertIn("TransitionCircuitDestroyed(circ)", destroy)
+        self.assertIn("m_exitServices.AbortCircuit(circuitId)", transition)
+        self.assertIn("m_reassembly.begin()", transition)
+        self.assertIn("entry->first >> 32", transition)
+        direct_destroy_transitions = re.findall(
+            r"m_circuitRegistry\.Transition\([^;]{0,160}"
+            r"CircuitState::Destroyed\);",
+            self.coordinator,
+        )
+        self.assertEqual(len(direct_destroy_transitions), 1)
+        self.assertIn(direct_destroy_transitions[0], transition)
 
     def test_modules_are_project_owned_and_do_not_include_the_coordinator(self) -> None:
         project = PROJECT.read_text(encoding="utf-8")

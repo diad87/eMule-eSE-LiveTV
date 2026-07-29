@@ -1,0 +1,30 @@
+{
+  "package_id": "urn:emule:handoff:v92-to-v93:v1",
+  "schema_id": "urn:emule:contract:direct-candidate-snapshot:v1",
+  "schema_sha256": "2bae43d34ce845be56cfcb8d404773cc50d8f6628d4c0353eea9896657bbd8a9",
+  "producer_baseline_commit": "176296cdc6585f68974684801371d05215bbffbc",
+  "producer_baseline_semantics": "producer baseline only",
+  "producer_baseline_schema_sha256": "2bae43d34ce845be56cfcb8d404773cc50d8f6628d4c0353eea9896657bbd8a9",
+  "producer_baseline_schema_verification": "frozen-git-object-and-semantic-contract",
+  "producer_baseline_consumer_sha256": "64db034c4d989ca5a323a20245ffa45def97419b426afc47e00049bb7f791265",
+  "compatibility": {"accepted_schema_versions": [1], "benign_additive_fields": "compat observer only"},
+  "excluded_features": ["DCO", "PUNCH2", "PUNCH3", "PREDICTION", "BIRTHDAY", "DVL", "RELAY", "QUIC"],
+  "excluded_features_verified": {"DCO": false, "PUNCH2": false, "PUNCH3": false, "PREDICTION": false, "BIRTHDAY": false, "DVL": false, "RELAY": false, "QUIC": false},
+  "artifacts": {
+    "docs/reachability/v92_to_v93_handoff_v1/handoff_matrix_v1.json": "d438012538507e3f8abaa2a118939920b3e33d6bf1425677398a4bebca5319e9",
+    "docs/reachability/v92_to_v93_handoff_v1/goldens/generation_isolation.json": "93a899599181c81765cb14855726c0402c3b711c9cafc2c3ae99e248a4f7a63f",
+    "docs/reachability/v92_to_v93_handoff_v1/goldens/ipv6_global.json": "3ff27f74d5b3fe487096a8e118e6bb916778d64c53549bb32a74e5e676fa2718",
+    "docs/reachability/v92_to_v93_handoff_v1/goldens/lan_same_lan.json": "043e2611d5c06dd613d8348e777b63c0d2011583b6ff10cb8a5916b54011fe07",
+    "docs/reachability/v92_to_v93_handoff_v1/goldens/map.json": "9520ef373d7b97f83988016b7719effe18721337c6d853d80255b2467284d941",
+    "docs/reachability/v92_to_v93_handoff_v1/goldens/renewal_identity.json": "4618b5f39c74e804b4e1818dac7801dd25e14bed3ad159bdb4dba466aec24af6",
+    "docs/reachability/v92_to_v93_handoff_v1/V92_TO_V93_HANDOFF_OPERATION.md": "db6ac377c8341b78d582e29748e82662ac2a94e1530771385f35b3bf60f255c0",
+    "tests/fixtures/v93_candidate_gatherer_fake.py": "b858a6a3c3d48b7250dfd11ccca948f59d69a66067badfb460238b91eabe3445",
+    "tests/test_v92_mx05_handoff.py": "e2dbe06bb0ec47b6999cfef803a23bee6592831d45652ee3126dc764f18917b4",
+    "tests/fixtures/direct_candidate_snapshot_v1_consumer.py": "64db034c4d989ca5a323a20245ffa45def97419b426afc47e00049bb7f791265",
+    "docs/reachability/goldens/empty.json": "b198b5c9992d9fbe06695c937181b6fdf5f2727dbcb42a50e162152fb0d9eed4",
+    "docs/reachability/goldens/candidate.json": "142f4c92dad765236176d9e1673fd60d245e83718794a5af572e42f4daad2726",
+    "docs/reachability/goldens/verified.json": "d83b453dc4aff560c7c069fcd13182fcde7053b7f137e13b610a92b784822911",
+    "docs/reachability/goldens/expired.json": "c6b7a774eb6ea41dd152dee0f4616f01000105a240e416e4d0eaf6cf57695cae",
+    "docs/reachability/goldens/stale.json": "3ceb9c72ca2f6ea02a28e541f1caf638922cca4b3303fbb6062e21cf5d9daa34"
+  }
+}

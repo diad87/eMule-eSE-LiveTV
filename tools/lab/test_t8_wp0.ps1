@@ -256,6 +256,10 @@ try {
             & python.exe (
                 Join-Path $RepoRoot 'tests\test_v92_mx04_ipv6_scope.py') 2>&1)
         $mx04HostExit = $LASTEXITCODE
+        $mx05HostOutput = @(
+            & python.exe (
+                Join-Path $RepoRoot 'tests\test_v92_mx05_handoff.py') 2>&1)
+        $mx05HostExit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $oldPreference
     }
@@ -274,6 +278,7 @@ try {
     $m06HostOutput | ForEach-Object { Write-Host $_ }
     $mx03HostOutput | ForEach-Object { Write-Host $_ }
     $mx04HostOutput | ForEach-Object { Write-Host $_ }
+    $mx05HostOutput | ForEach-Object { Write-Host $_ }
     $l04Text = ($l04Output | ForEach-Object { [string]$_ }) -join "`n"
     $l04HostText = (
         $l04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
@@ -303,6 +308,8 @@ try {
         $mx03HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $mx04HostText = (
         $mx04HostOutput | ForEach-Object { [string]$_ }) -join "`n"
+    $mx05HostText = (
+        $mx05HostOutput | ForEach-Object { [string]$_ }) -join "`n"
     $l04Verdict = (
         $l04BuildExit -eq 0 -and
         $l04HostExit -eq 0 -and
@@ -435,6 +442,11 @@ try {
         $mx04HostText -match 'Ran 13 tests' -and
         $mx04HostText -match '(?m)^OK\s*$'
     )
+    $mx05Verdict = (
+        $mx05HostExit -eq 0 -and
+        $mx05HostText -match 'Ran 11 tests' -and
+        $mx05HostText -match '(?m)^OK\s*$'
+    )
     $m06NativeMatch = [regex]::Match(
         $l04Text,
         'test_direct_route_selection: (153) checks, 0 failures')
@@ -511,6 +523,7 @@ try {
         $m05Verdict -and
         $mx03Verdict -and
         $mx04Verdict -and
+        $mx05Verdict -and
         $m06Verdict -and
         $hyperVVerdict -and
         $coverageIds.Count -eq $requiredCoverageIds.Count
@@ -615,6 +628,20 @@ try {
             same_lan_requires_on_link_os_route = $true
             tcp_proof_authorizes_udp = $false
             unsanitized_reporting = $false
+        }
+        mx05_v92_to_v93_handoff = [ordered]@{
+            verdict = if ($mx05Verdict) { 'PASS' } else { 'FAIL' }
+            physical_mutation = $false
+            host_checks = 11
+            schema_and_artifacts_hashed = [bool]$mx05Verdict
+            stale_callbacks_fenced = [bool]$mx05Verdict
+            current_events_applied = [bool]$mx05Verdict
+            excluded_features_verified = [bool]$mx05Verdict
+            actionable_endpoints_exported = if ($mx05Verdict) {
+                $false
+            } else {
+                $null
+            }
         }
         m06_ipv6_priority = [ordered]@{
             verdict = if ($m06Verdict) { 'PASS' } else { 'FAIL' }

@@ -113,7 +113,7 @@
       ],
       "token_sha256": {
         "CLiveTunnel::DestroyCircuitFailClosed": "7e96dcca78287489d473a982c529255d2135bca2b2f7eda46bf63f269e5dcd03",
-        "CLiveTunnel::OnCellReceived": "2d70b9602031b3822962d6a47b237b0e665f93db97c3ac7eb5119c2dfa1cf9df",
+        "CLiveTunnel::OnCellReceived": "007be932c3cb6f76d6d61734595e8bdfc2ace9fdcd6ac4bf3036187cbdb31127",
         "CLiveTunnel::SendThrough": "f8f3eba53ad91a8d33a9e168b4ef8f5f9bd6a86cc90658c9d309fd849b167fb4"
       }
     },

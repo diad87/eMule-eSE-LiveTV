@@ -978,7 +978,7 @@ test('--selftest verifies signed chunk ingest and returns failure to the caller'
   assert.match(dialog, /Metrics isolation: dashboard auto-spawn skipped \(port=%u\)/);
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
   const netlabSwitch = web.slice(
-    web.indexOf('if (sURL.Left(11) == "/api/ese/v9")'),
+    web.indexOf('if (Data.webRoute == ese::web::WebRouteId::ApiEseV9)'),
     web.indexOf('// Local, sanitized cohort report'));
   assert.match(netlabSwitch, /onArg == _T\("0"\)[\s\S]{0,360}WriteBool\(_T\("EseNetLabEnabled"\), false, _T\("eSE"\)\)/);
   assert.match(netlabSwitch, /GetBool\(_T\("EseNetLabEnabled"\), true, _T\("eSE"\)\)/);

@@ -161,6 +161,8 @@ class Mod16SchedulerCharacterizationTest(unittest.TestCase):
             "m_mtQueue", "m_mtLock", "m_k6ShapeTimer",
             "m_lastTickMs", "m_lastRttPingTick", "m_lastBulkSubTick",
             "struct MainThreadReq", "enum MtOp",
+            "struct K6ShapedQueuedRecord", "struct K6ShapedLinkState",
+            "m_k6ShapeReverse", "m_k6ShapeReplay",
         ):
             self.assertNotIn(removed, self.interface)
         for owned in (
@@ -170,8 +172,27 @@ class Mod16SchedulerCharacterizationTest(unittest.TestCase):
             "std::uint32_t m_last_bulk_subscription",
             "std::uintptr_t m_class5_timer",
             "bool m_accepting_deferred_work",
+            "std::map<std::uint32_t, ShapedLinkState> m_shaped_links",
+            "std::map<std::uint64_t, Bulk::BulkReplayWindow> m_shaped_replay",
         ):
             self.assertEqual(self.scheduler_interface.count(owned), 1)
+
+    def test_shaping_policy_and_replay_are_scheduler_owned(self) -> None:
+        tick = self.body("CLiveTunnel::ProcessClass5Tick")
+        self.assertIn("m_scheduler.PollShapedLinks", tick)
+        self.assertNotIn("K6Class5Scheduler", tick)
+        for forbidden in ("m_k6ShapeReverse", "m_k6ShapeReplay"):
+            self.assertNotIn(forbidden, self.source)
+        for marker in (
+            "ConfigureShapedLink",
+            "QueueShapedRecord",
+            "PrepareShapedEmission",
+            "AcceptShapedReplay",
+            "SweepShapedReplay",
+            "ClearShaping",
+            "CharacterizeShapingOwnership",
+        ):
+            self.assertIn(marker, self.scheduler + self.scheduler_interface)
 
     def test_module_is_project_owned_and_coordinator_independent(self) -> None:
         project = PROJECT.read_text(encoding="utf-8")

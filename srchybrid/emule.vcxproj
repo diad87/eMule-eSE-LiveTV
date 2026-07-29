@@ -785,6 +785,12 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="WebApiSerializer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="LiveHandshakeWire.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
@@ -1199,6 +1205,7 @@
     <ClInclude Include="WebRequestParser.h" />
     <ClInclude Include="WebAuthPolicy.h" />
     <ClInclude Include="WebRouteTable.h" />
+    <ClInclude Include="WebApiSerializer.h" />
     <ClInclude Include="LiveHandshakeWire.h" />
     <ClInclude Include="LiveCircuit.h" />
     <ClInclude Include="LiveFec.h" />

@@ -12,6 +12,7 @@
 #include "emule.h"
 #include "StringConversion.h"
 #include "OtherFunctions.h"
+#include "WebApiSerializer.h"
 #include "WebRequestParser.h"
 #include "WebRouteTable.h"
 #include "WebServer.h"
@@ -451,16 +452,11 @@ void CWebServer::AddStatsLine(const UpDown &line)
 
 CString CWebServer::_SpecialChars(const CString &cstr, bool noquote /*=false*/)
 {
-	CString str(cstr);
-	str.Replace(_T("&"), _T("&amp;"));
-	str.Replace(_T("<"), _T("&lt;"));
-	str.Replace(_T(">"), _T("&gt;"));
-	str.Replace(_T("\""), _T("&quot;"));
-	if (noquote) {
-		str.Replace(_T("'"), _T("&#8217;"));
-		str.Replace(_T("\n"), _T("\\n"));
-	}
-	return str;
+	const std::wstring input(
+		static_cast<LPCTSTR>(cstr),
+		static_cast<std::size_t>(cstr.GetLength()));
+	const std::wstring escaped = ese::web::EscapeHtml(input, noquote);
+	return CString(escaped.data(), static_cast<int>(escaped.size()));
 }
 
 bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
@@ -486,6 +482,13 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 	if (!ese::web::RunWebRouteTableSelfTest(routeFailure)) {
 		outFailure = OptUtf8ToStr(
 			routeFailure.data(), static_cast<int>(routeFailure.size()));
+		return false;
+	}
+	std::string serializerFailure;
+	if (!ese::web::RunWebApiSerializerSelfTest(serializerFailure)) {
+		outFailure = OptUtf8ToStr(
+			serializerFailure.data(),
+			static_cast<int>(serializerFailure.size()));
 		return false;
 	}
 	if (_SpecialChars(_T("<&\"'\n"), true) != _T("&lt;&amp;&quot;&#8217;\\n")) {
@@ -4498,40 +4501,11 @@ int CWebServer::_GetLastUserCat(const ThreadData &Data, long lSession)
 
 static CStringA EseJsonEscapeA(const CStringA& input)
 {
-	CStringA output;
-	for (int i = 0; i < input.GetLength(); i++) {
-		const unsigned char ch = (unsigned char)input[i];
-		switch (ch) {
-		case '\"':
-			output += "\\\"";
-			break;
-		case '\\':
-			output += "\\\\";
-			break;
-		case '\b':
-			output += "\\b";
-			break;
-		case '\f':
-			output += "\\f";
-			break;
-		case '\n':
-			output += "\\n";
-			break;
-		case '\r':
-			output += "\\r";
-			break;
-		case '\t':
-			output += "\\t";
-			break;
-		default:
-			if (ch < 0x20)
-				output.AppendFormat("\\u%04x", ch);
-			else
-				output += input[i];
-			break;
-		}
-	}
-	return output;
+	const std::string value(
+		static_cast<LPCSTR>(input),
+		static_cast<std::size_t>(input.GetLength()));
+	const std::string escaped = ese::web::EscapeJson(value);
+	return CStringA(escaped.data(), static_cast<int>(escaped.size()));
 }
 
 static CStringA EseHexKey16A(const uchar* key)

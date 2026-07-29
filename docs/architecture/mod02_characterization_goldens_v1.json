@@ -53,6 +53,27 @@
         "RunCircuitRegistryCharacterizationSelfTest": "f7c66c4fce8d3db346a4b2f3d7b2bebd2c564e7f73ed1092586668e548fdeb66"
       }
     },
+    "live_relay_exit": {
+      "production_file": "srchybrid/LiveTunnel.cpp",
+      "symbols": [
+        "CLiveTunnel::HandleRelay_Exit",
+        "CLiveTunnel::RegisterExitHandler",
+        "CLiveTunnel::DispatchExitRequest",
+        "CLiveTunnel::BeginExitOperation",
+        "CLiveTunnel::CompleteExitOperation",
+        "CLiveTunnel::SendExitOperationPart",
+        "CLiveTunnel::AbortExitOperation"
+      ],
+      "token_sha256": {
+        "CLiveTunnel::AbortExitOperation": "ecafb577bd8f295ac68d00ad8b2d6175da5207ea680fd2a0405977ccc61e50dc",
+        "CLiveTunnel::BeginExitOperation": "5453512f224f521a528805af5800ec0ec08094a63772ca3422d6369fe44ee753",
+        "CLiveTunnel::CompleteExitOperation": "6674b790dcafae1b3c08336a655832bc9fb6fa3f41a81d92fa710e27f764c463",
+        "CLiveTunnel::DispatchExitRequest": "f09dd4dafd224e612e8fefc4da3e385b06dc5a7f832beb9545f048c8105fe816",
+        "CLiveTunnel::HandleRelay_Exit": "fb6ece2d017d8c0194dbb9a310003ac159cc12292918f1a91ccc00063deb6e18",
+        "CLiveTunnel::RegisterExitHandler": "3659e962d24f3816d2421ce0bacf653fa6dbed7d5f2520fcb8a88749ad4c797d",
+        "CLiveTunnel::SendExitOperationPart": "163545e6a21134c99dba66864cf86f6f3ebda309824dea8994ed37f72370461e"
+      }
+    },
     "live_stream_session_chunk_callback": {
       "production_file": "srchybrid/LiveStreamManager.cpp",
       "symbols": [

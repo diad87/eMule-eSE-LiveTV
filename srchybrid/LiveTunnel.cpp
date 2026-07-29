@@ -2383,15 +2383,6 @@ bool CLiveTunnel::QueueK6FairPayloadLocked(uint64 streamId, uint8 direction,
     if (queue.size() >= 64 || streamBytes + bytes.size() > 2u * 1024u * 1024u ||
         m_k6FairPayloadBytes + bytes.size() > kad6::kK6FairMaxQueuedBytes)
         return false;
-    {
-        // Global lock order is pending -> tunnel. The timer is shared with
-        // class-5, but the fair queue has independent state and payload caps.
-        CSingleLock lock(&m_lock, TRUE);
-        if (m_k6ShapeTimer == 0) {
-            m_k6ShapeTimer = ::SetTimer(NULL, 0, 10, K6Class5TimerProc);
-            if (m_k6ShapeTimer == 0) return false;
-        }
-    }
     if (!m_k6FairScheduler.Enqueue(streamId, bytes.size())) return false;
     K6FairPayload payload;
     payload.direction = direction;
@@ -5896,6 +5887,16 @@ void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
     } while (streamId == 0 || m_k6ExitStreams.find(streamId) != m_k6ExitStreams.end());
 
     if (quotaAllocation != 0) {
+        // Exit handlers run under OnCellReceived's tunnel lock. Arm the
+        // shared timer before entering any pending-rank section so the global
+        // order remains tunnel -> pending on every fair-queue path.
+        if (m_k6ShapeTimer == 0) {
+            m_k6ShapeTimer = ::SetTimer(NULL, 0, 10, K6Class5TimerProc);
+            if (m_k6ShapeTimer == 0) {
+                reject(kad6::K6DialStatus::Overloaded);
+                return;
+            }
+        }
         kad6::Hash32 targetHash{};
         std::vector<uint8_t> target(ticket.target_endpoint.addr.addr.begin(),
                                     ticket.target_endpoint.addr.addr.end());

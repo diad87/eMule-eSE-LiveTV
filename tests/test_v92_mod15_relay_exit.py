@@ -180,6 +180,26 @@ class Mod15RelayExitTest(unittest.TestCase):
             lifecycle.count("CSingleLock pl(&m_pendingLock, TRUE)"),
             4,
         )
+        fair_queue = self.body(
+            self.coordinator,
+            "CLiveTunnel::QueueK6FairPayloadLocked",
+        )
+        dial = self.body(
+            self.coordinator,
+            "CLiveTunnel::ExitHandle_Kad6Dial",
+        )
+        self.assertNotIn("m_lock", fair_queue)
+        self.assertNotIn("SetTimer", fair_queue)
+        allocation = dial.index("m_k6FairAllocationByStream[streamId]")
+        pending_before_allocation = dial.rfind(
+            "CSingleLock pl(&m_pendingLock, TRUE)",
+            0,
+            allocation,
+        )
+        self.assertLess(
+            dial.index("m_k6ShapeTimer = ::SetTimer"),
+            pending_before_allocation,
+        )
 
     def test_shutdown_and_circuit_teardown_release_owned_operations(self) -> None:
         stop = self.body(self.coordinator, "CLiveTunnel::Stop")

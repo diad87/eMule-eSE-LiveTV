@@ -102,15 +102,27 @@ foreach ($field in @('source_commit', 'source_identity_sha256', 'executable_sha2
     $value = [string]$manifest.$field
     if ([string]::IsNullOrWhiteSpace($value)) { throw "MOD-0.2 build manifest has an empty $field." }
 }
-if (($manifest.source_identity_sha256 -notmatch '^[0-9a-f]{64}$') -or
+if (($manifest.source_commit -notmatch '^[0-9a-f]{40}$') -or
+    ($manifest.source_identity_sha256 -notmatch '^[0-9a-f]{64}$') -or
     ($manifest.executable_sha256 -notmatch '^[0-9a-f]{64}$')) {
-    throw 'MOD-0.2 build manifest hashes must be lowercase SHA-256 values.'
+    throw 'MOD-0.2 build manifest commit/hash fields must be lowercase hexadecimal values.'
 }
 
 $actualCommit = (& git -C $sourceRoot rev-parse HEAD).Trim().ToLowerInvariant()
 if ($LASTEXITCODE -ne 0) { throw 'Unable to determine source commit for MOD-0.2 evidence.' }
-if ($actualCommit -ne $manifest.source_commit.ToLowerInvariant()) {
-    throw "Source commit mismatch: manifest has $($manifest.source_commit), found $actualCommit."
+$manifestCommit = $manifest.source_commit.ToLowerInvariant()
+& git -C $sourceRoot merge-base --is-ancestor $manifestCommit $actualCommit
+if ($LASTEXITCODE -ne 0) {
+    throw "Manifest source commit is not an ancestor of HEAD: $manifestCommit -> $actualCommit."
+}
+$criticalSourceDrift = @(
+    & git -C $sourceRoot diff --name-only $manifestCommit $actualCommit -- $cleanCheckRelativePaths
+)
+if ($LASTEXITCODE -ne 0) {
+    throw 'Unable to compare characterized sources with the manifest commit.'
+}
+if ($criticalSourceDrift) {
+    throw "Critical sources changed after manifest commit: $($criticalSourceDrift -join '; ')"
 }
 $dirtyCriticalSources = & git -C $sourceRoot status --porcelain -- $cleanCheckRelativePaths
 if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect critical source cleanliness for MOD-0.2 evidence.' }

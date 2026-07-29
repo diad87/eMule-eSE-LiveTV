@@ -96,8 +96,9 @@ class Mod02CharacterizationTest(unittest.TestCase):
         ):
             self.assertRegex(evidence[field], r"^[0-9a-f]{64}$")
         runner = RUNTIME_RUNNER.read_text(encoding="utf-8")
-        for required in ("BuildManifest", "source_identity_sha256", "Get-NormalizedTextSha256", "Get-Mod02SourceIdentity", "Mod02BuildIdentity.h", "ReadAllBytes", "normalizedBytes", "taskkill.exe", "WaitForExit(10000)", "WaitForExit(5000)", "SOURCE $sourceIdentity", "source_tree_clean"):
+        for required in ("BuildManifest", "source_identity_sha256", "Get-NormalizedTextSha256", "Get-Mod02SourceIdentity", "Mod02BuildIdentity.h", "ReadAllBytes", "normalizedBytes", "merge-base --is-ancestor", "diff --name-only", "Critical sources changed after manifest commit", "taskkill.exe", "WaitForExit(10000)", "WaitForExit(5000)", "SOURCE $sourceIdentity", "source_tree_clean"):
             self.assertIn(required, runner)
+        self.assertNotIn("$actualCommit -ne $manifest.source_commit", runner)
         self.assertNotIn("ExpectedSourceCommit", runner)
         self.assertNotIn("ExpectedExecutableSha256", runner)
         manifest = json.loads(BUILD_MANIFEST.read_text(encoding="utf-8"))
@@ -127,6 +128,31 @@ class Mod02CharacterizationTest(unittest.TestCase):
             r'ESE_MOD02_CRITICAL_SOURCE_SHA256\s+"([0-9a-f]{64})"', header)
         self.assertIsNotNone(header_identity)
         self.assertEqual(header_identity.group(1), current_identity)
+
+    def test_runtime_manifest_commit_is_ancestor_without_critical_drift(self) -> None:
+        manifest = json.loads(BUILD_MANIFEST.read_text(encoding="utf-8"))
+        source_commit = manifest["source_commit"]
+        self.assertRegex(source_commit, r"^[0-9a-f]{40}$")
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", source_commit, "HEAD"],
+            cwd=ROOT, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(
+            ancestor.returncode, 0,
+            f"Manifest commit {source_commit} is not an ancestor of HEAD.",
+        )
+        drift = subprocess.run(
+            [
+                "git", "diff", "--name-only", source_commit, "HEAD", "--",
+                *CRITICAL_SOURCE_PATHS, "srchybrid/Mod02BuildIdentity.h",
+            ],
+            cwd=ROOT, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(drift.returncode, 0, drift.stderr)
+        self.assertEqual(
+            drift.stdout.strip(), "",
+            f"Critical sources changed after manifest commit:\n{drift.stdout}",
+        )
 
     def test_source_identity_is_line_ending_invariant(self) -> None:
         lf = b"alpha\nbeta\ngamma\n"

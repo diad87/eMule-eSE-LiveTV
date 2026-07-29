@@ -229,6 +229,13 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveExitServices.cpp"],
                 "interface_files": ["srchybrid/LiveExitServices.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveTunnelScheduler",
+                "owner": "CLiveTunnel",
+                "layer": "application",
+                "implementation_files": ["srchybrid/LiveTunnelScheduler.cpp"],
+                "interface_files": ["srchybrid/LiveTunnelScheduler.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -260,6 +267,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             }, {
                 "module": "LiveExitServices",
                 "slice_base_commit": "e99303ba2377122cd173016f5f91a006c0ddcf41",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveTunnelScheduler",
+                "slice_base_commit": "ed017dd19423618cfc9d138724cdc091bdcf4525",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }],
         })
@@ -323,6 +334,8 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/LiveExitServices.cpp",
             "srchybrid/LiveExitServices.h",
             "srchybrid/LiveRelayTypes.h",
+            "srchybrid/LiveTunnelScheduler.cpp",
+            "srchybrid/LiveTunnelScheduler.h",
         }
         self.assertTrue(expected_paths.issubset(set(MOD02.CRITICAL_SOURCE_PATHS)))
         self.assertTrue(expected_paths.issubset(set(

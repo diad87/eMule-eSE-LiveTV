@@ -100,9 +100,10 @@ class Mod12LiveTunnelPendingTest(unittest.TestCase):
         retry_slice = tick[start:end]
         self.assertIn("std::set<uint32_t> activeCircuitIds;", retry_slice)
         collect = retry_slice.index("m_pendingRequests.CollectRetries(activeCircuitIds)")
-        queue_lock = retry_slice.index("CSingleLock lk(&m_mtLock, TRUE)")
-        self.assertLess(collect, queue_lock)
+        publish = retry_slice.index("m_scheduler.EnqueueBatch(std::move(retries))")
+        self.assertLess(collect, publish)
         self.assertNotIn("m_pendingLock", retry_slice)
+        self.assertNotIn("m_mtLock", retry_slice)
         self.assertNotIn("[&]", retry_slice)
 
     def test_native_tests_cover_deadline_retry_late_and_exactly_once(self) -> None:

@@ -137,6 +137,10 @@ private:
 		std::uint64_t nowMs,
 		std::uint64_t thenMs,
 		std::uint64_t lifetimeMs);
+	static bool IsExpiredInclusive(
+		std::uint64_t nowMs,
+		std::uint64_t thenMs,
+		std::uint64_t lifetimeMs);
 	static WebSessionSnapshot MakeSnapshot(const SessionRecord& record);
 	void PurgeChallengesLocked(std::uint64_t nowMs);
 	void PurgeLoginFailuresLocked(std::uint64_t nowMs);
@@ -147,6 +151,8 @@ private:
 	std::vector<LoginFailureRecord> m_loginFailures;
 	std::array<ActionClock, static_cast<std::size_t>(WebAction::Count)> m_actionClocks{};
 };
+
+bool RunWebAuthPolicySelfTest(std::string& failure);
 
 } // namespace web
 } // namespace ese

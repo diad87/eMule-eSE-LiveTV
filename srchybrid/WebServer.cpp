@@ -119,7 +119,8 @@ static char THIS_FILE[] = __FILE__;
 	"Cache-Control: no-store\r\n" \
 	"Access-Control-Allow-Origin: http://localhost:3000\r\n" \
 	"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n" \
-	"Access-Control-Allow-Headers: Authorization, X-CSRF-Token, Content-Type\r\n"
+	"Access-Control-Allow-Headers: Authorization, X-CSRF-Token, Content-Type\r\n" \
+	"Access-Control-Expose-Headers: X-CSRF-Token\r\n"
 #define HTTPInitGZ HTTPInit "Content-Encoding: gzip\r\n"
 #define HTTPENCODING _T("utf-8")
 
@@ -446,6 +447,12 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 	if (!ese::web::RunCharacterizationSelfTest(parserFailure)) {
 		outFailure = OptUtf8ToStr(
 			parserFailure.data(), static_cast<int>(parserFailure.size()));
+		return false;
+	}
+	std::string authFailure;
+	if (!ese::web::RunWebAuthPolicySelfTest(authFailure)) {
+		outFailure = OptUtf8ToStr(
+			authFailure.data(), static_cast<int>(authFailure.size()));
 		return false;
 	}
 	if (_SpecialChars(_T("<&\"'\n"), true) != _T("&lt;&amp;&quot;&#8217;\\n")) {

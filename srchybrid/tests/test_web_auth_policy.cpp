@@ -105,8 +105,8 @@ void TestChallenges()
 
 	Check(policy.AddChallenge(nonce, 7, 200),
 		"fresh challenge must be accepted");
-	Check(policy.ConsumeChallenge(nonce, 7, 300200),
-		"challenge must remain valid at exact lifetime boundary");
+	Check(!policy.ConsumeChallenge(nonce, 7, 300200),
+		"challenge must expire at the exact lifetime boundary");
 	Check(policy.AddChallenge(nonce, 7, 400),
 		"challenge may be issued again after consumption");
 	Check(!policy.ConsumeChallenge(nonce, 7, 300401),
@@ -209,6 +209,9 @@ int main()
 	TestLoginFailures();
 	TestActionLimits();
 	TestConcurrentSessions();
+	std::string selfTestFailure;
+	Check(ese::web::RunWebAuthPolicySelfTest(selfTestFailure),
+		"production WebAuthPolicy self-test must pass");
 	if (failures != 0) {
 		std::fprintf(stderr, "%d WebAuthPolicy test(s) failed.\n", failures);
 		return 1;

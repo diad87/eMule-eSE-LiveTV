@@ -24,6 +24,14 @@ bool WebAuthPolicy::IsExpired(
 	return lifetimeMs != 0 && (nowMs < thenMs || nowMs - thenMs > lifetimeMs);
 }
 
+bool WebAuthPolicy::IsExpiredInclusive(
+	std::uint64_t nowMs,
+	std::uint64_t thenMs,
+	std::uint64_t lifetimeMs)
+{
+	return lifetimeMs != 0 && (nowMs < thenMs || nowMs - thenMs >= lifetimeMs);
+}
+
 bool WebAuthPolicy::AddSession(
 	std::uint32_t id,
 	WebRole role,
@@ -176,7 +184,8 @@ void WebAuthPolicy::PurgeChallengesLocked(std::uint64_t nowMs)
 		std::remove_if(
 			m_challenges.begin(), m_challenges.end(),
 			[nowMs](const ChallengeRecord& record) {
-				return IsExpired(nowMs, record.issued_ms, kChallengeLifetimeMs);
+				return IsExpiredInclusive(
+					nowMs, record.issued_ms, kChallengeLifetimeMs);
 			}),
 		m_challenges.end());
 }
@@ -237,7 +246,8 @@ void WebAuthPolicy::PurgeLoginFailuresLocked(std::uint64_t nowMs)
 		std::remove_if(
 			m_loginFailures.begin(), m_loginFailures.end(),
 			[nowMs](const LoginFailureRecord& record) {
-				return IsExpired(nowMs, record.occurred_ms, kLoginFailureWindowMs);
+				return IsExpiredInclusive(
+					nowMs, record.occurred_ms, kLoginFailureWindowMs);
 			}),
 		m_loginFailures.end());
 }
@@ -363,6 +373,48 @@ bool WebAuthPolicy::HasPermission(WebRole role, WebRole required)
 	if (required == WebRole::Guest)
 		return role == WebRole::Guest || role == WebRole::Admin;
 	return role == WebRole::Admin;
+}
+
+bool RunWebAuthPolicySelfTest(std::string& failure)
+{
+	failure.clear();
+	const std::string token(WebAuthPolicy::kCsrfTokenHexLength, 'a');
+	WebAuthPolicy policy;
+	if (!policy.AddSession(7, WebRole::Admin, 3, 100, token) ||
+		policy.AddSession(7, WebRole::Guest, 0, 101, token)) {
+		failure = "web auth session identity failed";
+		return false;
+	}
+	WebSessionSnapshot session;
+	if (!policy.TouchSession(7, 400, 300, &session) ||
+		WebAuthPolicy::ValidateCsrfRequest(session, "", "cross-site") ||
+		!WebAuthPolicy::ValidateCsrfRequest(session, token, "cross-site")) {
+		failure = "web auth CSRF/session expiry failed";
+		return false;
+	}
+	const std::string nonce(WebAuthPolicy::kNonceHexLength, 'b');
+	if (!policy.AddChallenge(nonce, 9, 1000) ||
+		!policy.ConsumeChallenge(nonce, 9, 1001) ||
+		policy.ConsumeChallenge(nonce, 9, 1002)) {
+		failure = "web auth challenge replay failed";
+		return false;
+	}
+	for (std::size_t attempt = 0;
+		attempt < WebAuthPolicy::kMaxLoginFailuresPerIp; ++attempt)
+		policy.RecordLoginFailure(9, 2000 + attempt);
+	if (!policy.IsLoginBlocked(9, 2100)) {
+		failure = "web auth login limit failed";
+		return false;
+	}
+	const WebRateDecision first =
+		policy.CheckRateLimit(WebAction::NetworkConnect, 0, 2000);
+	const WebRateDecision second =
+		policy.CheckRateLimit(WebAction::NetworkConnect, 500, 2000);
+	if (!first.allowed || second.allowed || second.retry_after_ms != 1500) {
+		failure = "web auth action rate limit failed";
+		return false;
+	}
+	return true;
 }
 
 } // namespace web

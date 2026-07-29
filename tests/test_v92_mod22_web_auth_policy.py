@@ -109,6 +109,7 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
         self.assertIn('header.name == "x-csrf-token"', self.socket)
         self.assertIn('header.name == "sec-fetch-site"', self.socket)
         self.assertIn("X-CSRF-Token: %s", self.server)
+        self.assertIn("Access-Control-Expose-Headers: X-CSRF-Token", self.server)
         self.assertIn("ValidateCsrfRequest(", self.server)
         self.assertIn("ConstantTimeEqual(", self.server)
         self.assertNotIn("computeExpected(thePrefs.GetWSPass()) == aResponse", self.server)
@@ -138,10 +139,12 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
             "cross-site credentialed request without CSRF token must fail",
             "first action must be allowed even at tick zero",
             "concurrent session store must retain every unique session",
+            "production WebAuthPolicy self-test must pass",
         ):
             self.assertIn(required, self.native)
         self.assertIn("threadCount = 8", self.native)
         self.assertIn("sessionsPerThread = 100", self.native)
+        self.assertIn("RunWebAuthPolicySelfTest(authFailure)", self.server)
 
     def test_project_and_standalone_gate_compile_production_module(self) -> None:
         namespace = {"m": "http://schemas.microsoft.com/developer/msbuild/2003"}

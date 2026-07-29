@@ -236,6 +236,20 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveTunnelScheduler.cpp"],
                 "interface_files": ["srchybrid/LiveTunnelScheduler.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveTunnelPeerState",
+                "owner": "CLiveTunnel",
+                "layer": "domain_state",
+                "implementation_files": ["srchybrid/LiveTunnelPeerState.cpp"],
+                "interface_files": ["srchybrid/LiveTunnelPeerState.h"],
+                "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveTunnelKadBridge",
+                "owner": "CLiveTunnel",
+                "layer": "adapters",
+                "implementation_files": ["srchybrid/LiveTunnelKadBridge.cpp"],
+                "interface_files": ["srchybrid/LiveTunnelKadBridge.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -272,6 +286,14 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "module": "LiveTunnelScheduler",
                 "slice_base_commit": "ed017dd19423618cfc9d138724cdc091bdcf4525",
                 "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveTunnelPeerState",
+                "slice_base_commit": "8748a666f9881b6343e8ed866198feb21c1dcad9",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
+            }, {
+                "module": "LiveTunnelKadBridge",
+                "slice_base_commit": "8748a666f9881b6343e8ed866198feb21c1dcad9",
+                "source_coordinator": "srchybrid/LiveTunnel.cpp",
             }],
         })
         self.assertEqual(self.baseline["approved_non_module_code"], [
@@ -297,6 +319,14 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                     "Narrow immutable DTO and handler signature shared by the "
                     "two MOD-1.5 application modules without creating an "
                     "application-to-application dependency."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/tests/test_live_tunnel_peer_kad.cpp",
+                "reason": (
+                    "Standalone policy, source-history and fake-port executable "
+                    "test for the MOD-1.7 peer-state and Kad-boundary extraction."
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
@@ -336,6 +366,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/LiveRelayTypes.h",
             "srchybrid/LiveTunnelScheduler.cpp",
             "srchybrid/LiveTunnelScheduler.h",
+            "srchybrid/LiveTunnelPeerState.cpp",
+            "srchybrid/LiveTunnelPeerState.h",
+            "srchybrid/LiveTunnelKadBridge.cpp",
+            "srchybrid/LiveTunnelKadBridge.h",
         }
         self.assertTrue(expected_paths.issubset(set(MOD02.CRITICAL_SOURCE_PATHS)))
         self.assertTrue(expected_paths.issubset(set(

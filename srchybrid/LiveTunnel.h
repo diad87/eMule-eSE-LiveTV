@@ -20,6 +20,8 @@
 #include "LiveRelayDispatcher.h"
 #include "LiveExitServices.h"
 #include "LiveTunnelScheduler.h"
+#include "LiveTunnelPeerState.h"
+#include "LiveTunnelKadBridge.h"
 #include "kad6/kad6_lease.h"
 #include "kad6/kad6_publish.h"
 #include "kad6/kad6_frame.h"
@@ -819,18 +821,7 @@ private:
         uint16_t              maxResults = (uint16_t)TUN_SEARCH_MAX_RESULTS;
         uint8_t               searchKind = kad6::kK6SearchKindLive;
         kad6::Hash16          targetHash{};
-        struct SourceCandidate {
-            kad6::Hash16 userHash{};
-            kad6::K6Endpoint endpoint;
-            uint8_t sourceType = 0;
-            uint8_t cryptOptions = 0;
-            uint16_t reachCaps = 0;
-            uint8_t networkOrigin = kad6::kK6NetOriginKad2;
-            kad6::K6Provenance provenance = kad6::K6Provenance::KadResult;
-            kad6::Hash32 provenanceDigest{};
-            uint32_t score = 0;
-        };
-        std::vector<SourceCandidate> sourceCandidates;
+        std::vector<LiveTunnelSourceCandidate> sourceCandidates;
         bool                  firstSourceMetric = false;
         bool                  fiveSourceMetric = false;
         DWORD                 started = 0;
@@ -1006,12 +997,7 @@ private:
                                 bool fromExit);
     void FlushK6OriginCredit(uint32 circId);
     void FlushK6ExitCredit(uint32 circId);
-    struct K6SourceScore {
-        uint32 successes = 0;
-        uint32 failures = 0;
-        uint64 last_seen = 0;
-    };
-    std::map<std::string, K6SourceScore> m_k6SourceScores;
+    LiveTunnelPeerState m_peerState;
     kad6::K6HardeningController m_k6Hardening;
     kad6::K6Metrics m_k6Metrics;
     kad6::K6EconomyTelemetry m_k6EconomyTelemetry;
@@ -1146,8 +1132,6 @@ private:
     void SweepK6Gateway(uint64 nowSeconds,
                         const std::set<uint32_t>& activeCircuits);
     static std::string K6BinaryKey(const uint8_t* bytes, size_t length);
-    static std::string K6SourceScoreKey(const kad6::K6Endpoint& endpoint,
-                                        uint8 networkOrigin);
     static std::string K6ShadowKey(const kad6::K6SourceLease& lease);
     bool EnsureK6SourceEpochsLoaded();
     bool SaveK6SourceEpochs() const;
@@ -1220,6 +1204,7 @@ private:
     eSELive::LiveTunnelPending m_pendingRequests;
     LiveRelayDispatcher m_relayDispatcher;
     LiveExitServices m_exitServices;
+    LiveTunnelKadBridge m_kadBridge;
     // Register before send so a fast reply cannot beat registration.
     PendingHandle RegisterPending(uint32_t& req_id);
     bool WaitPending(uint32_t req_id, PendingHandle pending, uint32_t timeoutMs,

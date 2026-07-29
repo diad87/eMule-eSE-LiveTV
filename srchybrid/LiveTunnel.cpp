@@ -66,8 +66,40 @@ namespace eSELive {
 
 using namespace LiveCircuitHandshakeWire;
 
+namespace {
+LiveTunnelKadPorts BuildLiveTunnelKadPorts()
+{
+    LiveTunnelKadPorts ports;
+    ports.should_route = [](const wchar_t* keyword, std::uint8_t operationClass) {
+        using namespace Kademlia;
+        CKadV2ModeSelector::QueryContext query = {};
+        query.includesPrivateChannelHash = false; if (keyword) query.keywordLowercase = keyword;
+        query.operationClass = static_cast<
+            CKadV2ModeSelector::QueryContext::OperationClass>(operationClass);
+        return CKadV2ModeSelector::Get().Decide(query) == CKadV2Mode::Tunneled;
+    };
+    ports.search_streams = [](const wchar_t* keyword,
+        std::vector<std::uint32_t>* searchIds, bool forceDirect) {
+        return theApp.liveStreamManager && keyword &&
+            theApp.liveStreamManager->GetKadBridge().SearchStreams(
+                CString(keyword), searchIds, forceDirect);
+    };
+    ports.stop_search = [](std::uint32_t id) {
+        Kademlia::CSearchManager::StopSearch(id, true); };
+    ports.selected_networks = [] {
+        const uint8 selected = thePrefs.GetEffectiveKadNetworkMask();
+        uint8 bridgeMask = 0;
+        if (KadNetworkPolicy::HasKad2(selected)) bridgeMask |= LiveTunnelKadBridge::kSelectedKad2;
+        if (KadNetworkPolicy::HasKad6(selected)) bridgeMask |= LiveTunnelKadBridge::kSelectedKad6;
+        return bridgeMask;
+    };
+    return ports;
+}
+} // namespace
+
 CLiveTunnel::CLiveTunnel()
-    : m_handshake(*this)
+    : m_kadBridge(BuildLiveTunnelKadPorts()),
+      m_handshake(*this)
 {
     // v8.1 A2 - register the built-in exit-side handlers. Sprint B/C ops
     // register theirs the same way instead of editing HandleRelay_Exit.
@@ -491,6 +523,14 @@ bool CLiveTunnel::RunCharacterizationSelfTest(CString& outFailure)
     }
     if (!eSELive::RunLiveTunnelSchedulerCharacterizationSelfTest()) {
         outFailure = _T("tunnel scheduler characterization failed");
+        return false;
+    }
+    if (!eSELive::RunLiveTunnelPeerStateCharacterizationSelfTest()) {
+        outFailure = _T("tunnel peer-state characterization failed");
+        return false;
+    }
+    if (!eSELive::RunLiveTunnelKadBridgeCharacterizationSelfTest()) {
+        outFailure = _T("tunnel Kad-bridge characterization failed");
         return false;
     }
     if (SendThrough(NULL, 0)) {
@@ -2151,22 +2191,29 @@ uint32 CLiveTunnel::K6SelectOriginCircuit(uint32 requiredCaps,
                                           size_t minimumHops) const
 {
     CSingleLock lock(&m_lock, TRUE);
+    std::vector<LiveOriginCircuitCandidate> candidates;
+    candidates.reserve(m_circuitRegistry.Size());
     for (const auto& circuit : m_circuitRegistry.GetSnapshot()) {
-        if (!circuit || (pinnedCircId != 0 && circuit->Id() != pinnedCircId) ||
-            circuit->m_role != CircuitRole::Originator ||
-            circuit->m_k6QuotaIssuerCircuit ||
-            circuit->State() != CircuitState::Active ||
-            circuit->HopCount() < minimumHops ||
-            circuit->m_firstHopClient == NULL || !circuit->m_multicell_ok ||
-            !circuit->m_auth_ok ||
-            (circuit->m_exit_signed_caps & requiredCaps) != requiredCaps ||
-            ((requiredCaps & ESE_CAP_TUNNEL_STRICT3) != 0 &&
-             (!circuit->m_strict3 || !circuit->m_path_diverse ||
-              !circuit->m_shaped_ok || circuit->HopCount() != 3)))
+        if (!circuit)
             continue;
-        return circuit->Id();
+        LiveOriginCircuitCandidate candidate;
+        candidate.circuit_id = circuit->Id();
+        candidate.originator = circuit->m_role == CircuitRole::Originator;
+        candidate.quota_issuer = circuit->m_k6QuotaIssuerCircuit;
+        candidate.active = circuit->State() == CircuitState::Active;
+        candidate.hop_count = circuit->HopCount();
+        candidate.has_first_hop = circuit->m_firstHopClient != NULL;
+        candidate.multicell = circuit->m_multicell_ok;
+        candidate.authenticated = circuit->m_auth_ok;
+        candidate.exit_signed_caps = circuit->m_exit_signed_caps;
+        candidate.strict3 = circuit->m_strict3;
+        candidate.path_diverse = circuit->m_path_diverse;
+        candidate.shaped = circuit->m_shaped_ok;
+        candidates.push_back(candidate);
     }
-    return 0;
+    return LiveTunnelPeerState::SelectOriginCircuit(
+        candidates, requiredCaps, pinnedCircId, minimumHops,
+        ESE_CAP_TUNNEL_STRICT3);
 }
 
 bool CLiveTunnel::K6CircuitHasExitCaps(uint32 circId,
@@ -2798,31 +2845,45 @@ void CLiveTunnel::OnPeerDisconnected(CUpDownClient* peer)
         const bool lostNext  = c->m_nextHopClient == peer;
         const bool lostPending = std::find(c->m_pendingHopClients.begin(),
             c->m_pendingHopClients.end(), peer) != c->m_pendingHopClients.end();
-        if (!lostFirst && !lostPrev && !lostNext && !lostPending) continue;
+        LivePeerDisconnectView view;
+        view.relay = c->m_role == CircuitRole::Relay;
+        view.lost_first = lostFirst;
+        view.lost_previous = lostPrev;
+        view.lost_next = lostNext;
+        view.lost_pending = lostPending;
+        view.has_previous_survivor =
+            c->m_prevHopClient && c->m_prevHopClient != peer;
+        view.has_next_survivor =
+            c->m_nextHopClient && c->m_nextHopClient != peer;
+        view.has_next_circuit = c->m_nextCircId != 0;
+        const LivePeerDisconnectPlan plan =
+            LiveTunnelPeerState::PlanDisconnect(view);
+        if (!plan.affected) continue;
 
         // If an intermediate relay loses one side, notify the surviving side
         // before wiping the keys. This propagates exit death back to the
         // originator (or originator death toward the exit) instead of leaving
         // the remote half Active until rotation.
         uint8_t destroy[CELL_TOTAL_BYTES];
-        if (c->m_role == CircuitRole::Relay) {
-            if (lostPrev && c->m_nextHopClient && c->m_nextHopClient != peer &&
-                c->m_nextCircId != 0 &&
+        if (view.relay) {
+            if (plan.notify_next &&
                 CellPack(c->m_nextCircId, CELL_DESTROY, NULL, 0, destroy)) {
                 SendCellToPeer(c->m_nextHopClient, destroy);
             }
-            if (lostNext && c->m_prevHopClient && c->m_prevHopClient != peer &&
+            if (plan.notify_previous &&
                 CellPack(c->Id(), CELL_DESTROY, NULL, 0, destroy)) {
                 SendCellToPeer(c->m_prevHopClient, destroy);
             }
         }
 
-        if (lostFirst) c->m_firstHopClient = NULL;
-        if (lostPrev)  c->m_prevHopClient = NULL;
-        if (lostNext)  c->m_nextHopClient = NULL;
-        if (lostPending) c->m_pendingHopClients.clear();
-        TransitionCircuitDestroyed(c);
-        c->WipeKeys();
+        if (plan.clear_first) c->m_firstHopClient = NULL;
+        if (plan.clear_previous) c->m_prevHopClient = NULL;
+        if (plan.clear_next) c->m_nextHopClient = NULL;
+        if (plan.clear_pending) c->m_pendingHopClients.clear();
+        if (plan.destroy) {
+            TransitionCircuitDestroyed(c);
+            c->WipeKeys();
+        }
     }
 }
 
@@ -4211,13 +4272,10 @@ void CLiveTunnel::ExitHandle_KadSearchV2(const TunnelRequestCtx& ctx)
     // amplifier; if it declines, kadSearchIds stays empty and we just serve
     // whatever the directory already holds when the window elapses.
     try {
-        if (theApp.liveStreamManager) {
-            CString kw = EseUtf8CString(keyword);
-            // v8.1 D1 - bForceDirect=true: the exit MUST query Kad from its OWN IP, never
-            // re-enter the tunnel branch (would cascade a tunneled search out our circuit).
-            theApp.liveStreamManager->GetKadBridge().SearchStreams(kw, &job.kadSearchIds,
-                                                                   /*bForceDirect*/true);
-        }
+        CString kw = EseUtf8CString(keyword);
+        // v8.1 D1 - forceDirect=true: the exit MUST query Kad from its OWN IP,
+        // never re-enter the tunnel branch (would cascade out our circuit).
+        m_kadBridge.SearchStreams(kw, &job.kadSearchIds, /*forceDirect*/true);
     } catch (...) {}
 
     CSingleLock pl(&m_pendingLock, TRUE);
@@ -4478,9 +4536,8 @@ void CLiveTunnel::ExitHandle_Kad6Gateway(const TunnelRequestCtx& ctx)
                                                    (DWORD)start.deadline_ms);
     job.kadReachable = Kademlia::CKademlia::IsConnected();
     try {
-        if (theApp.liveStreamManager)
-            job.lookupStarted = theApp.liveStreamManager->GetKadBridge().SearchStreams(
-                searchWord, &job.kadSearchIds, /*bForceDirect*/true);
+        job.lookupStarted = m_kadBridge.SearchStreams(
+            searchWord, &job.kadSearchIds, /*forceDirect*/true);
     } catch (...) {}
 
     CSingleLock pl(&m_pendingLock, TRUE);
@@ -4497,7 +4554,7 @@ bool CLiveTunnel::OnKad6GatewaySourceResult(uint32_t circuitId, uint32_t request
         (sourceType != 1 && sourceType != 4))
         return false; // LowID/callback authority is intentionally not virtualized.
 
-    TunnelSearchJob::SourceCandidate candidate;
+    LiveTunnelSourceCandidate candidate;
     memcpy(candidate.userHash.data(), userHash, candidate.userHash.size());
     candidate.sourceType = sourceType;
     candidate.cryptOptions = cryptOptions;
@@ -4543,14 +4600,8 @@ bool CLiveTunnel::OnKad6GatewaySourceResult(uint32_t circuitId, uint32_t request
             return false;
         }
     }
-    const auto history = m_k6SourceScores.find(K6SourceScoreKey(
-        candidate.endpoint, candidate.networkOrigin));
-    if (history != m_k6SourceScores.end()) {
-        const uint32 bonus = (std::min<uint32>)(100, history->second.successes * 20u);
-        const uint32 penalty = (std::min<uint32>)(80, history->second.failures * 10u);
-        candidate.score += bonus;
-        candidate.score = candidate.score > penalty ? candidate.score - penalty : 0;
-    }
+    candidate.score = m_peerState.ApplySourceScore(
+        candidate.score, candidate.endpoint, candidate.networkOrigin);
     job->second.sourceCandidates.push_back(std::move(candidate));
     const size_t count = job->second.sourceCandidates.size();
     const double elapsed = static_cast<double>(GetTickCount() - job->second.started);
@@ -4607,7 +4658,7 @@ bool CLiveTunnel::OnKad6NativeSourceRecord(uint32_t circuitId,
                 static_cast<kad6::Byte>(kad6::K6TicketService::Ed2kTcp),
                 exit.endpoint))
             continue;
-        TunnelSearchJob::SourceCandidate candidate;
+        LiveTunnelSourceCandidate candidate;
         candidate.userHash = record.source_pseudonym;
         candidate.endpoint = exit.endpoint;
         candidate.sourceType = exit.endpoint.addr.family ==
@@ -4620,14 +4671,8 @@ bool CLiveTunnel::OnKad6NativeSourceRecord(uint32_t circuitId,
             record.expires_at - now, 24ull * 60 * 60);
         candidate.score = 200u + static_cast<uint32_t>(remaining / 3600u) +
             (exit.endpoint.addr.family == kad6::Kad6Address::Family::IPv6 ? 10u : 0u);
-        const auto history = m_k6SourceScores.find(K6SourceScoreKey(
-            candidate.endpoint, candidate.networkOrigin));
-        if (history != m_k6SourceScores.end()) {
-            const uint32 bonus = (std::min<uint32>)(100, history->second.successes * 20u);
-            const uint32 penalty = (std::min<uint32>)(80, history->second.failures * 10u);
-            candidate.score += bonus;
-            candidate.score = candidate.score > penalty ? candidate.score - penalty : 0;
-        }
+        candidate.score = m_peerState.ApplySourceScore(
+            candidate.score, candidate.endpoint, candidate.networkOrigin);
 
         bool duplicate = false;
         for (auto& old : job->second.sourceCandidates) {
@@ -4679,20 +4724,6 @@ std::string CLiveTunnel::K6BinaryKey(const uint8_t* bytes, size_t length)
 {
     return bytes && length ? std::string(reinterpret_cast<const char*>(bytes), length)
                            : std::string();
-}
-
-std::string CLiveTunnel::K6SourceScoreKey(const kad6::K6Endpoint& endpoint,
-                                          uint8 networkOrigin)
-{
-    std::string key;
-    key.reserve(20);
-    key.push_back(static_cast<char>(networkOrigin));
-    key.push_back(static_cast<char>(endpoint.addr.family));
-    key.append(reinterpret_cast<const char*>(endpoint.addr.addr.data()),
-               endpoint.addr.addr.size());
-    key.push_back(static_cast<char>(endpoint.tcp_port));
-    key.push_back(static_cast<char>(endpoint.tcp_port >> 8));
-    return key;
 }
 
 namespace {
@@ -5870,10 +5901,9 @@ void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
     if (!socket) {
         CSingleLock pl(&m_pendingLock, TRUE); m_k6ExitStreams.erase(streamId);
         RemoveK6FlowControlLocked(runtime.circ_id, streamId);
-        K6SourceScore& score = m_k6SourceScores[K6SourceScoreKey(
-            runtime.ticket.target_endpoint, runtime.network_origin)];
-        if (score.failures != (std::numeric_limits<uint32>::max)()) ++score.failures;
-        score.last_seen = static_cast<uint64>(time(NULL));
+        m_peerState.RecordSourceFailure(
+            runtime.ticket.target_endpoint, runtime.network_origin,
+            static_cast<uint64>(time(NULL)));
         ReleaseK6FairStreamLocked(streamId); pl.Unlock();
         m_k6Metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
             runtime.network_origin == kad6::kK6NetOriginKad6 ? 1 : 0,
@@ -5942,14 +5972,10 @@ void CLiveTunnel::OnK6ExitSocketConnect(uint64 streamId, CKad6ExitSocket* socket
     }
     {
         CSingleLock pl(&m_pendingLock, TRUE);
-        K6SourceScore& score = m_k6SourceScores[K6SourceScoreKey(
-            runtime.ticket.target_endpoint, runtime.network_origin)];
-        if (result.status == kad6::K6DialStatus::Ok) {
-            if (score.successes != (std::numeric_limits<uint32>::max)()) ++score.successes;
-        } else if (score.failures != (std::numeric_limits<uint32>::max)()) {
-            ++score.failures;
-        }
-        score.last_seen = static_cast<uint64>(time(NULL));
+        m_peerState.RecordSourceResult(
+            runtime.ticket.target_endpoint, runtime.network_origin,
+            result.status == kad6::K6DialStatus::Ok,
+            static_cast<uint64>(time(NULL)));
     }
     m_k6Metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
         runtime.network_origin == kad6::kK6NetOriginKad6 ? 1 : 0,
@@ -7165,14 +7191,7 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
             RemoveK6FlowControlLocked(it->second.circ_id, it->first);
             it = m_k6OriginStreams.erase(it);
         }
-        for (auto it = m_k6SourceScores.begin(); it != m_k6SourceScores.end(); )
-            if (it->second.last_seen != 0 &&
-                it->second.last_seen + 24ull * 60 * 60 <= nowSeconds)
-                it = m_k6SourceScores.erase(it);
-            else
-                ++it;
-        while (m_k6SourceScores.size() > 4096)
-            m_k6SourceScores.erase(m_k6SourceScores.begin());
+        m_peerState.SweepSourceHistory(nowSeconds);
     }
 
     // Never hold m_pendingLock while notifying a circuit or disconnecting an
@@ -7197,11 +7216,9 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
         if (expired.reason == 4) {
             {
                 CSingleLock pl(&m_pendingLock, TRUE);
-                K6SourceScore& score = m_k6SourceScores[K6SourceScoreKey(
-                    runtime.ticket.target_endpoint, runtime.network_origin)];
-                if (score.failures != (std::numeric_limits<uint32>::max)())
-                    ++score.failures;
-                score.last_seen = nowSeconds;
+                m_peerState.RecordSourceFailure(
+                    runtime.ticket.target_endpoint, runtime.network_origin,
+                    nowSeconds);
             }
             m_k6Metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
                 runtime.network_origin == kad6::kK6NetOriginKad6 ? 1 : 0,
@@ -7587,7 +7604,8 @@ void CLiveTunnel::FinishDueSearchJobs()
             if (due[i].searchKind == kad6::kK6SearchKindSourceHash) {
                 bool foundByNetwork[2] = {false, false};
                 for (const auto& source : due[i].sourceCandidates)
-                    foundByNetwork[source.networkOrigin == kad6::kK6NetOriginKad6 ? 1 : 0] = true;
+                    foundByNetwork[LiveTunnelKadBridge::NetworkIndex(
+                        source.networkOrigin, kad6::kK6NetOriginKad6)] = true;
                 const bool startedByNetwork[2] = {
                     due[i].kad2LookupStarted, due[i].kad6LookupStarted};
                 const uint8_t masks[2] = {kad6::kK6NetMaskKad2, kad6::kK6NetMaskKad6};
@@ -7640,18 +7658,13 @@ uint16_t CLiveTunnel::SendK6SearchResults(const TunnelSearchJob& job)
     uint16_t sent = 0;
     try {
         if (job.searchKind == kad6::kK6SearchKindSourceHash) {
-            std::vector<const TunnelSearchJob::SourceCandidate*> ranked;
-            ranked.reserve(job.sourceCandidates.size());
-            for (const auto& source : job.sourceCandidates) ranked.push_back(&source);
-            std::stable_sort(ranked.begin(), ranked.end(),
-                [](const TunnelSearchJob::SourceCandidate* a,
-                   const TunnelSearchJob::SourceCandidate* b) {
-                    return a->score > b->score;
-                });
+            const std::vector<size_t> ranked =
+                LiveTunnelPeerState::RankSources(job.sourceCandidates);
             const uint16_t limit = (uint16_t)(std::min<size_t>)(
                 ranked.size(), (size_t)job.maxResults);
             for (uint16_t i = 0; i < limit; ++i) {
-                const TunnelSearchJob::SourceCandidate& source = *ranked[i];
+                const LiveTunnelSourceCandidate& source =
+                    job.sourceCandidates[ranked[i]];
                 kad6::K6SearchResult result;
                 result.result_id = source.userHash;
                 result.result_kind = kad6::kK6SearchKindSourceHash;
@@ -7874,10 +7887,7 @@ void CLiveTunnel::SerializeSearchResults(const std::string& keyword,
 // UDP packets drain; the search is gone within ~15 s regardless.
 void CLiveTunnel::StopSearchJobKad(const TunnelSearchJob& job)
 {
-    for (size_t i = 0; i < job.kadSearchIds.size(); ++i) {
-        try { Kademlia::CSearchManager::StopSearch(job.kadSearchIds[i], true); }
-        catch (...) {}
-    }
+    m_kadBridge.StopSearches(job.kadSearchIds);
 }
 
 // v8.1 A1.7 - exit handler for the multi-cell echo test op. The dispatcher
@@ -7898,14 +7908,7 @@ void CLiveTunnel::ExitHandle_EchoLarge(const TunnelRequestCtx& ctx)
 
 bool CLiveTunnel::ShouldRouteThroughTunnel(const wchar_t* keywordOrNull, uint8_t opClass) const
 {
-    using namespace Kademlia;
-    CKadV2ModeSelector& sel = CKadV2ModeSelector::Get();
-    CKadV2ModeSelector::QueryContext q = {};
-    q.includesPrivateChannelHash = false;
-    if (keywordOrNull) q.keywordLowercase = keywordOrNull;
-    q.operationClass = (CKadV2ModeSelector::QueryContext::OperationClass)opClass;   // v8.1 D7
-    CKadV2Mode decided = sel.Decide(q);
-    return decided == CKadV2Mode::Tunneled;
+    return m_kadBridge.ShouldRouteThroughTunnel(keywordOrNull, opClass);
 }
 
 // v8.1 Sprint B - parse the TUN_OP_KAD_RESULT_V2 wire body (breakdown 2.3) into
@@ -8417,12 +8420,8 @@ bool CLiveTunnel::StartK6SourceLookup(const uint8_t fileHash[16],
 
     kad6::K6SearchStart start;
     start.search_kind = kad6::kK6SearchKindSourceHash;
-    start.network_mask = 0;
-    const uint8 selectedNetworks = thePrefs.GetEffectiveKadNetworkMask();
-    if (KadNetworkPolicy::HasKad2(selectedNetworks))
-        start.network_mask |= kad6::kK6NetMaskKad2;
-    if (KadNetworkPolicy::HasKad6(selectedNetworks))
-        start.network_mask |= kad6::kK6NetMaskKad6;
+    start.network_mask = m_kadBridge.SelectedNetworkMask(
+        kad6::kK6NetMaskKad2, kad6::kK6NetMaskKad6);
     if (start.network_mask == 0)
         return false;
     start.max_results = 100;
@@ -8433,10 +8432,10 @@ bool CLiveTunnel::StartK6SourceLookup(const uint8_t fileHash[16],
     kad6::K6Frame frame;
     frame.msg_type = kad6::kK6MsgSearchStart;
     frame.flags = kad6::kK6FlagCancelable |
-        ((start.network_mask & kad6::kK6NetMaskKad2)
-            ? kad6::kK6FlagLegacyKad2 : 0) |
-        ((start.network_mask & kad6::kK6NetMaskKad6)
-            ? kad6::kK6FlagNativeKad6 : 0);
+        LiveTunnelKadBridge::BuildSearchFlags(
+            start.network_mask, kad6::kK6NetMaskKad2,
+            kad6::kK6NetMaskKad6, kad6::kK6FlagLegacyKad2,
+            kad6::kK6FlagNativeKad6);
     frame.request_id = reqId;
     frame.body = std::move(body);
     if (kad6::EncodeK6Frame(frame, wire) != kad6::Kad6Status::Ok) return false;

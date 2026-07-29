@@ -31,6 +31,8 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/LiveExitServices.cpp", "srchybrid/LiveExitServices.h",
     "srchybrid/LiveRelayTypes.h",
     "srchybrid/LiveTunnelScheduler.cpp", "srchybrid/LiveTunnelScheduler.h",
+    "srchybrid/LiveTunnelPeerState.cpp", "srchybrid/LiveTunnelPeerState.h",
+    "srchybrid/LiveTunnelKadBridge.cpp", "srchybrid/LiveTunnelKadBridge.h",
     "srchybrid/LiveTunnelPending.cpp", "srchybrid/LiveTunnelPending.h",
     "srchybrid/LiveCircuitRegistry.cpp", "srchybrid/LiveCircuitRegistry.h",
     "srchybrid/LiveCircuitHandshake.cpp", "srchybrid/LiveCircuitHandshake.h",

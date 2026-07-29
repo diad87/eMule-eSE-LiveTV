@@ -19,7 +19,7 @@
     {
       "path": "srchybrid/WebServer.cpp",
       "baseline_sha256": "afcf5a5b8091995a473548fc05086fe1b2ba0e8127378cd959424fa8f6770028",
-      "overlay_sha256": "45c9c1aee7302007290ce086f3a1bf1331218be754a0be5876483d1cffd865ae",
+      "overlay_sha256": "cd64fcf9f5cab337e91ee59598d6da05fead40a8d202b0eed3cd82fa557b06ee",
       "task": "MOD-0.2 + MOD-2.1 + MOD-2.2",
       "reason": "Headless production characterization hook; MOD-2.1 delegates query, cookie and bounded request parsing to WebRequestParser; MOD-2.2 delegates sessions, one-time challenges, CSRF, permissions, login failures and action rate limits to WebAuthPolicy."
     },

@@ -375,6 +375,30 @@ bool WebAuthPolicy::HasPermission(WebRole role, WebRole required)
 	return role == WebRole::Admin;
 }
 
+WebRole WebAuthPolicy::RequiredRoleForLivePath(const std::string& path)
+{
+	static const char* const adminPrefixes[] = {
+		"/api/debug/",
+		"/api/ese/",
+		"/api/holepunch/",
+		"/api/keepalive/",
+		"/api/krp/",
+		"/api/network/",
+		"/api/relay/",
+		"/api/live/broadcast/",
+		"/api/live/log",
+		"/api/live/preflight",
+		"/api/live/privacy/",
+		"/api/live/reachability/"
+	};
+	for (const char* const prefix : adminPrefixes) {
+		const std::size_t length = std::char_traits<char>::length(prefix);
+		if (path.size() >= length && path.compare(0, length, prefix) == 0)
+			return WebRole::Admin;
+	}
+	return WebRole::Guest;
+}
+
 bool RunWebAuthPolicySelfTest(std::string& failure)
 {
 	failure.clear();
@@ -412,6 +436,13 @@ bool RunWebAuthPolicySelfTest(std::string& failure)
 		policy.CheckRateLimit(WebAction::NetworkConnect, 500, 2000);
 	if (!first.allowed || second.allowed || second.retry_after_ms != 1500) {
 		failure = "web auth action rate limit failed";
+		return false;
+	}
+	if (WebAuthPolicy::RequiredRoleForLivePath("/api/status") != WebRole::Guest ||
+		WebAuthPolicy::RequiredRoleForLivePath("/api/live/join?key=x") != WebRole::Guest ||
+		WebAuthPolicy::RequiredRoleForLivePath("/api/relay/accept?on=1") != WebRole::Admin ||
+		WebAuthPolicy::RequiredRoleForLivePath("/api/ese/v9?on=1") != WebRole::Admin) {
+		failure = "web auth live permission matrix failed";
 		return false;
 	}
 	return true;

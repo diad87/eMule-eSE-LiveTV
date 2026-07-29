@@ -117,6 +117,14 @@ class Mod22WebAuthPolicyTest(unittest.TestCase):
 
     def test_permissions_and_four_action_limits_delegate_to_policy(self) -> None:
         self.assertIn("HasPermission(", self.server)
+        self.assertIn("RequiredRoleForLivePath(", self.server)
+        for privileged in (
+            "/api/debug/", "/api/ese/", "/api/holepunch/",
+            "/api/keepalive/", "/api/krp/", "/api/network/",
+            "/api/relay/", "/api/live/broadcast/",
+            "/api/live/privacy/",
+        ):
+            self.assertIn(privileged, self.source)
         for action in (
             "NetworkConnect", "ManualRendezvous",
             "KeepaliveToggle", "ManualHolePunch",

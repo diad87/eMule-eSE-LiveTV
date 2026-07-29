@@ -4665,14 +4665,17 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		}
 	}
 
-	// Guest (low-user) tokens are viewers only: operator endpoints stay
-	// admin-session-only when reached through /s/. Loopback keeps today's
-	// full-trust behavior.
-	if (bTokenAuth && !bTokenAdmin && (
-		(sURL.Left(20) == "/api/live/broadcast/")
-		|| (sURL.Left(15) == "/api/holepunch/")
-		|| (sURL.Left(13) == "/api/network/")
-		|| (sURL.Left(18) == "/api/live/privacy/"))) {
+	// Guest (low-user) tokens are viewers only. WebAuthPolicy owns the complete
+	// permission matrix so newly extracted operator families cannot silently
+	// bypass this boundary. Loopback keeps today's full-trust behavior.
+	const ese::web::WebRole tokenRole = bTokenAdmin
+		? ese::web::WebRole::Admin
+		: ese::web::WebRole::Guest;
+	const ese::web::WebRole requiredRole =
+		ese::web::WebAuthPolicy::RequiredRoleForLivePath(
+			std::string((LPCSTR)sURL, sURL.GetLength()));
+	if (bTokenAuth && !ese::web::WebAuthPolicy::HasPermission(
+		tokenRole, requiredRole)) {
 		CStringA body = "{\"error\":\"forbidden\",\"hint\":\"admin session required\"}";
 		CStringA hdr;
 		hdr.Format(

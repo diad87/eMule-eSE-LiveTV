@@ -85,6 +85,29 @@ void TestSessions()
 		"guest must have guest permission");
 	Check(!WebAuthPolicy::HasPermission(WebRole::Guest, WebRole::Admin),
 		"guest must not have admin permission");
+	Check(
+		WebAuthPolicy::RequiredRoleForLivePath("/api/status") == WebRole::Guest &&
+		WebAuthPolicy::RequiredRoleForLivePath("/api/live/join?key=x") == WebRole::Guest &&
+		WebAuthPolicy::RequiredRoleForLivePath("/hls/stream.m3u8") == WebRole::Guest,
+		"viewer and read-only paths must remain guest-accessible");
+	for (const char* path : {
+		"/api/debug/source-resolutions",
+		"/api/ese/v9?on=1",
+		"/api/holepunch/test",
+		"/api/keepalive/start",
+		"/api/krp/status",
+		"/api/network/connect",
+		"/api/relay/accept?on=1",
+		"/api/live/broadcast/start",
+		"/api/live/log",
+		"/api/live/preflight",
+		"/api/live/privacy/subscriptions?add=x",
+		"/api/live/reachability/fire"
+	}) {
+		Check(
+			WebAuthPolicy::RequiredRoleForLivePath(path) == WebRole::Admin,
+			"operator and sensitive paths must require admin");
+	}
 }
 
 void TestChallenges()

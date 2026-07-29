@@ -107,6 +107,7 @@ public:
 		const std::string& suppliedToken,
 		const std::string& fetchSite);
 	static bool HasPermission(WebRole role, WebRole required);
+	static WebRole RequiredRoleForLivePath(const std::string& path);
 
 private:
 	struct SessionRecord {

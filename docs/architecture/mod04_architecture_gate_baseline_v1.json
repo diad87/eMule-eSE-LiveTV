@@ -1,0 +1,22 @@
+{
+  "schema": "ese.mod04.architecture-gate-baseline/v1",
+  "gate_id": "urn:emule:architecture:mod-0.4:architecture-gate:v1",
+  "status": "PASS",
+  "scope": "binding CI architecture gates only; no extraction or production behavior change",
+  "baseline_commit": "161d948281682d39acdcea796b1edddc6d68904c",
+  "coordinator_files": [
+    {"coordinator": "LiveTunnel", "path": "srchybrid/LiveTunnel.cpp", "kind": "source", "baseline_loc_physical": 11647, "baseline_sha256": "ab611f9750f1e9ea57d16947ec2fc0490738a5585561c508a0747700e802315a", "final_target_loc_max": 3500, "final_hard_stop_loc": 4000},
+    {"coordinator": "LiveTunnel", "path": "srchybrid/LiveTunnel.h", "kind": "header", "baseline_loc_physical": 1355, "baseline_sha256": "402355f12423ee03b6e4786c21bbf1658740f23dbf0a940c968929afd8946cbd", "final_target_loc_max": 750, "final_hard_stop_loc": 900},
+    {"coordinator": "WebServer", "path": "srchybrid/WebServer.cpp", "kind": "source", "baseline_loc_physical": 8257, "baseline_sha256": "acc6445200922865d1bbf1e2a2aa967898065f537376d0fb5a7fb9bc3c707e96", "final_target_loc_max": 3000, "final_hard_stop_loc": 3500},
+    {"coordinator": "WebServer", "path": "srchybrid/WebServer.h", "kind": "header", "baseline_loc_physical": 410, "baseline_sha256": "db9982186b4a4b52addd094314fa8550a8f4cf730e799564af7339f8e6eb759c", "final_target_loc_max": null, "final_hard_stop_loc": null, "final_limit_status": "not_specified_by_plan"},
+    {"coordinator": "LiveStreamManager", "path": "srchybrid/LiveStreamManager.cpp", "kind": "source", "baseline_loc_physical": 5067, "baseline_sha256": "33d509c439836fce2fc35e509f933637687505394daeb5b66e29cb599eb62cc2", "final_target_loc_max": 2500, "final_hard_stop_loc": 3000},
+    {"coordinator": "LiveStreamManager", "path": "srchybrid/LiveStreamManager.h", "kind": "header", "baseline_loc_physical": 886, "baseline_sha256": "e93b3c7467a389872fb5084e9912bcbf1b2cd6693d3990d3dda54fcaec0449fd", "final_target_loc_max": 600, "final_hard_stop_loc": 700}
+  ],
+  "final_limits": {"enforced_now": false, "activation": "end-state review only; each extraction slice remains bound by no coordinator growth"},
+  "module_policy": {"recommended_implementation_loc_min": 300, "recommended_implementation_loc_max": 1200, "hard_stop_implementation_loc": 1500, "max_direct_dependencies": 8},
+  "module_catalog": {"state": "NO_EXTRACTED_MODULES_DECLARED", "entries": []},
+  "approved_non_module_code": [],
+  "slice_evidence": {"state": "NO_EXTRACTION", "entries": []},
+  "mod03_contract": {"path": "docs/architecture/mod03_ownership_layering_contract_v1.json", "edge_policy": "deny_unlisted", "planned_module_count": 29},
+  "slice_rule": "for each catalogued extraction, git diff --numstat from its declared slice_base_commit to the worktree must show source_coordinator removed lines strictly greater than added lines"
+}

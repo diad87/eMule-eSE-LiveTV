@@ -21,7 +21,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 1
+          # MOD-0.4 reproduces its architecture metrics from frozen commit
+          # 161d9482..., so the baseline object must be present in CI.
+          fetch-depth: 0
           # libutp is a real submodule (160000 mode); cryptopp/mbedtls/etc.
           # are vendored as regular trees. Recursive clones libutp.
           submodules: recursive
@@ -29,10 +31,19 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
       - name: Setup Node.js 22
         uses: actions/setup-node@v5
         with:
           node-version: '22'
+
+      - name: Architecture gates (MOD-0.1 through MOD-0.4)
+        shell: pwsh
+        run: python -m unittest discover -s tests -p "test_v92_mod*.py"
 
       # ── 1) eSE Node server ────────────────────────────────────────────
       - name: Install npm deps (eSE)

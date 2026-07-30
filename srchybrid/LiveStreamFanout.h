@@ -63,6 +63,13 @@ public:
 		LiveFanoutChild previous,
 		LiveFanoutChild replacement,
 		std::uint64_t replacement_external_queued_bytes = 0u);
+	bool BeginChildReplacement(
+		LiveFanoutChild previous,
+		LiveFanoutChild replacement);
+	bool CommitChildReplacement(
+		LiveFanoutChild previous,
+		LiveFanoutChild replacement,
+		std::uint64_t replacement_external_queued_bytes);
 	bool ReleaseChild(LiveFanoutChild child);
 	void Clear();
 
@@ -115,11 +122,14 @@ private:
 		LiveFanoutChild child) const;
 	std::uint64_t NextTokenLocked();
 	bool HasActiveTransportLocked(LiveFanoutChild child) const;
+	bool IsReplacementPausedLocked(LiveFanoutChild child) const;
+	void FinishReplacementLocked();
 
 	mutable std::mutex mutex_;
 	std::condition_variable transport_idle_;
 	std::vector<ChildEntry> children_;
 	std::vector<ReservationEntry> reservations_;
+	std::vector<LiveFanoutChild> replacement_paused_children_;
 	std::uint64_t next_token_;
 };
 

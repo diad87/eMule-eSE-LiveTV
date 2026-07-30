@@ -95,7 +95,8 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             "fanout.BeginDelivery(",
             "fanout.BeginTransport(",
             "fanout.CompleteDelivery(",
-            "fanout.ReplaceChild(",
+            "fanout.BeginChildReplacement(",
+            "fanout.CommitChildReplacement(",
             "fanout.ReleaseChild(",
         ):
             self.assertIn(marker, adapter)
@@ -152,6 +153,9 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             "collision replacement cancels work beyond the peer queue limit",
             "collision replacement includes destination socket queue headroom",
             "noncollision replacement includes destination socket queue headroom",
+            "replacement and release wait for active destination transport",
+            "release stays blocked while replacement queue capture is paused",
+            "quiesced replacement commits before release removes destination",
             "slow child does not block a healthy sibling",
             "release cancels pending work and rejects future delivery",
             "release waits while transport owns the child lifetime",

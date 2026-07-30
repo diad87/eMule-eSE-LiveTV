@@ -251,6 +251,69 @@ int main()
 				external_replacement_pending.token, bounded_target),
 		"noncollision replacement includes destination socket queue headroom");
 
+	LiveStreamFanout quiesced_collision;
+	quiesced_collision.RegisterChild(501u);
+	quiesced_collision.RegisterChild(502u);
+	auto quiesced_prior =
+		quiesced_collision.BeginDelivery(501u, 1u, 1u, 0u, 1u);
+	auto quiesced_active =
+		quiesced_collision.BeginDelivery(502u, 2u, 2u, 0u, 1u);
+	ese::live::LiveFanoutChild quiesced_target = 0u;
+	std::atomic<bool> replacement_began{false};
+	std::atomic<bool> allow_replacement_commit{false};
+	std::atomic<bool> replacement_committed{false};
+	Check(
+		quiesced_prior.IsReserved() &&
+			quiesced_active.IsReserved() &&
+			quiesced_collision.BeginTransport(
+				quiesced_active.token, quiesced_target),
+		"quiesced replacement fixture owns destination transport");
+	std::thread replacement_thread(
+		[&quiesced_collision, &replacement_began,
+			&allow_replacement_commit, &replacement_committed, limit]() {
+			if (!quiesced_collision.BeginChildReplacement(501u, 502u))
+				return;
+			replacement_began.store(true, std::memory_order_release);
+			while (!allow_replacement_commit.load(
+				std::memory_order_acquire))
+				std::this_thread::yield();
+			replacement_committed.store(
+				quiesced_collision.CommitChildReplacement(
+					501u, 502u, limit),
+				std::memory_order_release);
+		});
+	while (!quiesced_collision.SelectRecipients(0u, {}, 2u).empty())
+		std::this_thread::yield();
+	std::atomic<bool> quiesced_release_finished{false};
+	std::thread quiesced_release(
+		[&quiesced_collision, &quiesced_release_finished]() {
+			quiesced_collision.ReleaseChild(502u);
+			quiesced_release_finished.store(
+				true, std::memory_order_release);
+		});
+	std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	Check(
+		!replacement_began.load(std::memory_order_acquire) &&
+			!quiesced_release_finished.load(std::memory_order_acquire),
+		"replacement and release wait for active destination transport");
+	Check(
+		quiesced_collision.CompleteDelivery(
+			quiesced_active.token, true),
+		"active destination completion unblocks replacement capture");
+	while (!replacement_began.load(std::memory_order_acquire))
+		std::this_thread::yield();
+	Check(
+		!quiesced_release_finished.load(std::memory_order_acquire),
+		"release stays blocked while replacement queue capture is paused");
+	allow_replacement_commit.store(true, std::memory_order_release);
+	replacement_thread.join();
+	quiesced_release.join();
+	Check(
+		replacement_committed.load(std::memory_order_acquire) &&
+			quiesced_release_finished.load(std::memory_order_acquire) &&
+			quiesced_collision.ChildCount() == 0u,
+		"quiesced replacement commits before release removes destination");
+
 	Check(
 		fanout.RegisterChild(50u) ==
 				LiveFanoutRegisterResult::Registered &&

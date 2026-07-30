@@ -98,9 +98,12 @@ bool LiveStreamFanoutAdapter::ReplaceChild(
 		return false;
 	CUpDownClient* replacement_peer = FanoutChild(replacement);
 	if (replacement_peer == NULL ||
-		!fanout.ReplaceChild(
-			previous, replacement,
-			replacement_peer->GetSocketQueuedBytes()))
+		!fanout.BeginChildReplacement(previous, replacement))
+		return false;
+	const std::uint64_t replacement_queued_bytes =
+		replacement_peer->GetSocketQueuedBytes();
+	if (!fanout.CommitChildReplacement(
+			previous, replacement, replacement_queued_bytes))
 		return false;
 	// The validated previous handle and non-zero replacement make PeerSet's
 	// manager-lock-serialized second step infallible.

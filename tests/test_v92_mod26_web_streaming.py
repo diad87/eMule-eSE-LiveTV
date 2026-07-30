@@ -47,6 +47,7 @@ class Mod26WebStreamingProductionTest(unittest.TestCase):
     def test_range_policy_is_single_bounded_and_overflow_safe(self) -> None:
         for token in (
             '"bytes="',
+            'HasCaseInsensitivePrefix(headerValue, "bytes=")',
             "find(',', 6)",
             "std::numeric_limits<std::uint64_t>::max()",
             "WebRangeStatus::Unsatisfiable",
@@ -90,6 +91,9 @@ class Mod26WebStreamingProductionTest(unittest.TestCase):
         self.assertGreaterEqual(self.web_server.count("SendFileResponse("), 4)
         self.assertIn('header.name == "range"', self.web_socket)
         self.assertIn("Data.sRange", self.web_server)
+        self.assertIn("rangeSeen", self.web_socket)
+        self.assertIn("CollectRangeHeader", self.web_socket)
+        self.assertIn("__duplicate_range__", self.static_source)
         self.assertNotIn("new BYTE[fileSize]", self.web_server)
         self.assertNotIn("new char[filesize]", self.web_server)
         self.assertNotIn("Content-Disposition: attachment; filename=\"%s", self.web_server)

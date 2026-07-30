@@ -68,10 +68,11 @@
     "retained_by_CWebServer": [
       "route-specific authorization",
       "application object lookup",
-      "filesystem handle acquisition after validated routing"
+      "route-specific filesystem path selection and sharing policy"
     ],
     "retained_by_CWebSocket": [
       "WinSock and mbedTLS system calls",
+      "filesystem handle acquisition after validated routing",
       "worker event-loop lifetime"
     ]
   }

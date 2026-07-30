@@ -6,6 +6,31 @@
 
 namespace ese {
 namespace web {
+namespace {
+
+class SelfTestSource final : public IWebResponseSource
+{
+public:
+	bool Read(
+		std::uint8_t* destination,
+		std::size_t capacity,
+		std::size_t& bytesRead) override
+	{
+		if (capacity == 0u || m_offset >= 3u) {
+			bytesRead = 0;
+			return false;
+		}
+		destination[0] = static_cast<std::uint8_t>('a' + m_offset);
+		++m_offset;
+		bytesRead = 1;
+		return true;
+	}
+
+private:
+	std::size_t m_offset = 0;
+};
+
+} // namespace
 
 bool WebSocketResponse::Enqueue(const void* bytes, std::size_t byteCount)
 {
@@ -161,6 +186,30 @@ std::size_t WebSocketResponse::QueuedBytes() const
 std::size_t WebSocketResponse::QueuedChunks() const
 {
 	return m_chunks.size();
+}
+
+bool RunWebSocketResponseSelfTest(std::string& failure)
+{
+	failure.clear();
+	WebSocketResponse response;
+	if (!response.AttachSource(std::make_unique<SelfTestSource>(), 3u) ||
+		!response.PumpSource(2u) ||
+		response.QueuedBytes() != 1u ||
+		!response.Consume(1u) ||
+		!response.PumpSource(2u) ||
+		!response.Consume(1u) ||
+		!response.PumpSource(2u) ||
+		response.SourceAttached() ||
+		!response.Consume(1u) ||
+		response.Pending()) {
+		failure = "web socket response stream self-test failed";
+		return false;
+	}
+	if (response.Enqueue(nullptr, 1u) || !response.Failed()) {
+		failure = "web socket response fail-closed self-test failed";
+		return false;
+	}
+	return true;
 }
 
 } // namespace web

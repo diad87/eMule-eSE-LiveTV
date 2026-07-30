@@ -67,6 +67,11 @@ int main()
 	const auto open = WebStaticAssets::ParseRange("bytes=90-", 100);
 	Check(open.status == WebRangeStatus::Satisfiable, "open range status");
 	Check(open.offset == 90 && open.length == 10, "open range values");
+	const auto uppercase = WebStaticAssets::ParseRange("BYTES=0-1", 100);
+	Check(
+		uppercase.status == WebRangeStatus::Satisfiable &&
+			uppercase.offset == 0 && uppercase.length == 2,
+		"range unit is case-insensitive");
 
 	const auto suffix = WebStaticAssets::ParseRange("bytes=-25", 100);
 	Check(suffix.status == WebRangeStatus::Satisfiable, "suffix status");
@@ -99,6 +104,20 @@ int main()
 		WebStaticAssets::ParseRange("bytes=0-", 0).status ==
 			WebRangeStatus::Unsatisfiable,
 		"zero-length representation is unsatisfiable");
+	std::string collectedRange;
+	bool rangeSeen = false;
+	Check(
+		WebStaticAssets::CollectRangeHeader(
+			collectedRange, rangeSeen, "bytes=0-1"),
+		"first range field accepted");
+	Check(
+		!WebStaticAssets::CollectRangeHeader(
+			collectedRange, rangeSeen, "bytes=2-3"),
+		"duplicate range field rejected");
+	Check(
+		WebStaticAssets::ParseRange(collectedRange, 100).status ==
+			WebRangeStatus::Invalid,
+		"duplicate range collection maps to 416");
 
 	Check(
 		std::strcmp(WebStaticAssets::MimeTypeForPath("A.JPEG"), "image/jpeg") == 0,
@@ -142,11 +161,15 @@ int main()
 		"movie.ts",
 		"bytes=100-",
 		100,
-		WebFileResponseOptions{});
+		responseOptions);
 	Check(rejected.statusCode == 416, "range rejection status");
 	Check(
 		rejected.headers.find("Content-Range: bytes */100") != std::string::npos,
 		"range rejection content-range");
+	Check(
+		rejected.headers.find("Access-Control-Allow-Origin: *") !=
+			std::string::npos,
+		"range rejection retains CORS policy");
 
 	WebSocketResponse queue;
 	const char first[] = "abcd";

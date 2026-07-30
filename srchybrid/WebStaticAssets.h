@@ -46,6 +46,10 @@ public:
 	static WebByteRange ParseRange(
 		const std::string& headerValue,
 		std::uint64_t representationSize);
+	static bool CollectRangeHeader(
+		std::string& destination,
+		bool& seen,
+		const std::string& value);
 
 	static WebFileResponsePlan PlanResponse(
 		const std::string& path,
@@ -59,6 +63,8 @@ public:
 	static bool IsMediaSegment(const std::string& path);
 	static std::size_t ReadChunkBytes();
 };
+
+bool RunWebStaticAssetsSelfTest(std::string& failure);
 
 } // namespace web
 } // namespace ese

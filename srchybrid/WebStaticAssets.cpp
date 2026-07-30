@@ -48,6 +48,22 @@ bool ParseUnsigned(
 	return true;
 }
 
+bool HasCaseInsensitivePrefix(const std::string& value, const char* prefix)
+{
+	const std::string expected(prefix);
+	if (value.size() < expected.size())
+		return false;
+	for (std::size_t index = 0; index < expected.size(); ++index) {
+		const unsigned char left =
+			static_cast<unsigned char>(value[index]);
+		const unsigned char right =
+			static_cast<unsigned char>(expected[index]);
+		if (std::tolower(left) != std::tolower(right))
+			return false;
+	}
+	return true;
+}
+
 std::string EncodeHeaderParameter(const std::string& value)
 {
 	static const char kHex[] = "0123456789ABCDEF";
@@ -79,7 +95,7 @@ WebByteRange WebStaticAssets::ParseRange(
 	WebByteRange result;
 	if (headerValue.empty())
 		return result;
-	if (headerValue.compare(0, 6, "bytes=") != 0 ||
+	if (!HasCaseInsensitivePrefix(headerValue, "bytes=") ||
 		headerValue.find(',', 6) != std::string::npos) {
 		result.status = WebRangeStatus::Invalid;
 		return result;
@@ -138,6 +154,20 @@ WebByteRange WebStaticAssets::ParseRange(
 	return result;
 }
 
+bool WebStaticAssets::CollectRangeHeader(
+	std::string& destination,
+	bool& seen,
+	const std::string& value)
+{
+	if (seen) {
+		destination = "__duplicate_range__";
+		return false;
+	}
+	destination = value;
+	seen = true;
+	return true;
+}
+
 WebFileResponsePlan WebStaticAssets::PlanResponse(
 	const std::string& path,
 	const std::string& rangeHeader,
@@ -153,9 +183,13 @@ WebFileResponsePlan WebStaticAssets::PlanResponse(
 		response
 			<< "HTTP/1.1 416 Range Not Satisfiable\r\n"
 			<< "Connection: close\r\n"
+			<< "X-Content-Type-Options: nosniff\r\n"
+			<< "Cache-Control: no-store\r\n"
 			<< "Accept-Ranges: bytes\r\n"
-			<< "Content-Range: bytes */" << representationSize << "\r\n"
-			<< "Content-Length: 0\r\n\r\n";
+			<< "Content-Range: bytes */" << representationSize << "\r\n";
+		if (!options.corsOrigin.empty())
+			response << "Access-Control-Allow-Origin: " << options.corsOrigin << "\r\n";
+		response << "Content-Length: 0\r\n\r\n";
 		plan.headers = response.str();
 		return plan;
 	}
@@ -246,6 +280,31 @@ bool WebStaticAssets::IsMediaSegment(const std::string& path)
 std::size_t WebStaticAssets::ReadChunkBytes()
 {
 	return 64u * 1024u;
+}
+
+bool RunWebStaticAssetsSelfTest(std::string& failure)
+{
+	failure.clear();
+	const WebByteRange range =
+		WebStaticAssets::ParseRange("bytes=3-7", 10);
+	if (range.status != WebRangeStatus::Satisfiable ||
+		range.offset != 3u || range.length != 5u) {
+		failure = "web static range self-test failed";
+		return false;
+	}
+	const WebFileResponsePlan plan = WebStaticAssets::PlanResponse(
+		"segment.ts",
+		"bytes=-2",
+		10,
+		WebFileResponseOptions{});
+	if (plan.statusCode != 206 || plan.offset != 8u ||
+		plan.length != 2u ||
+		plan.headers.find("Content-Range: bytes 8-9/10") ==
+			std::string::npos) {
+		failure = "web static response-plan self-test failed";
+		return false;
+	}
+	return true;
 }
 
 } // namespace web

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace ese {
@@ -57,6 +58,8 @@ private:
 	bool m_closeRequested = false;
 	bool m_failed = false;
 };
+
+bool RunWebSocketResponseSelfTest(std::string& failure);
 
 } // namespace web
 } // namespace ese

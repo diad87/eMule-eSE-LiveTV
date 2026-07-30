@@ -495,6 +495,19 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 			static_cast<int>(serializerFailure.size()));
 		return false;
 	}
+	std::string staticFailure;
+	if (!ese::web::RunWebStaticAssetsSelfTest(staticFailure)) {
+		outFailure = OptUtf8ToStr(
+			staticFailure.data(), static_cast<int>(staticFailure.size()));
+		return false;
+	}
+	std::string responseFailure;
+	if (!ese::web::RunWebSocketResponseSelfTest(responseFailure)) {
+		outFailure = OptUtf8ToStr(
+			responseFailure.data(),
+			static_cast<int>(responseFailure.size()));
+		return false;
+	}
 	if (_SpecialChars(_T("<&\"'\n"), true) != _T("&lt;&amp;&quot;&#8217;\\n")) {
 		outFailure = _T("web serialization escaping changed");
 		return false;
@@ -772,6 +785,7 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 						static_cast<ULONGLONG>(
 							thePrefs.GetMaxWebUploadFileSizeMB()) *
 							1024ull * 1024ull,
+						false,
 						true);
 					CoUninitialize();
 					return;
@@ -5248,6 +5262,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			Data.sRange,
 			hlsOptions,
 			20ull * 1024ull * 1024ull,
+			true,
 			false);
 		return;
 	}
@@ -7531,6 +7546,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 				Data.sRange,
 				hlsOptions,
 				20ull * 1024ull * 1024ull,
+				true,
 				false);
 			return;
 		}
@@ -7753,6 +7769,7 @@ void CWebServer::_ProcessFileReq(const ThreadData &Data)
 		Data.sRange,
 		options,
 		maximumBytes,
+		false,
 		true);
 }
 

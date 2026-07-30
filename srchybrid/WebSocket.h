@@ -46,6 +46,7 @@ public:
 		const CStringA& rangeHeader,
 		const ese::web::WebFileResponseOptions& options,
 		ULONGLONG maximumBytes,
+		bool allowConcurrentWrite,
 		bool allowEmpty);
 	void FlushResponseQueue();
 	void SendReply(LPCSTR szReply);

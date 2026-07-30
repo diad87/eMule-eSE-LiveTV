@@ -175,6 +175,8 @@ void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const
 		Data.sURL = sURL;
 	}
 	Data.webRoute = route.route;
+	bool rangeSeen = false;
+	std::string collectedRange;
 	for (const ese::web::HeaderField& header : request.headers) {
 		if (header.name == "x-csrf-token") {
 			Data.sCsrfToken = CStringA(
@@ -190,10 +192,15 @@ void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const
 			Data.sOrigin = CStringA(
 				header.value.data(), static_cast<int>(header.value.size()));
 		} else if (header.name == "range") {
-			Data.sRange = CStringA(
-				header.value.data(), static_cast<int>(header.value.size()));
+			ese::web::WebStaticAssets::CollectRangeHeader(
+				collectedRange,
+				rangeSeen,
+				header.value);
 		}
 	}
+	Data.sRange = CStringA(
+		collectedRange.data(),
+		static_cast<int>(collectedRange.size()));
 	Data.pThis = (void*)m_pParent;
 	Data.inadr = inad;
 	Data.pSocket = this;
@@ -424,6 +431,7 @@ void CWebSocket::SendFileResponse(
 	const CStringA& rangeHeader,
 	const ese::web::WebFileResponseOptions& options,
 	ULONGLONG maximumBytes,
+	bool allowConcurrentWrite,
 	bool allowEmpty)
 {
 	std::unique_ptr<CFile> file;
@@ -437,7 +445,11 @@ void CWebSocket::SendFileResponse(
 	}
 	if (!file->Open(
 		filePath,
-		CFile::modeRead | CFile::shareDenyNone | CFile::typeBinary)) {
+		CFile::modeRead |
+			(allowConcurrentWrite
+				? CFile::shareDenyNone
+				: CFile::shareDenyWrite) |
+			CFile::typeBinary)) {
 		SendReply(
 			"HTTP/1.1 404 Not Found\r\n"
 			"Connection: close\r\nContent-Length: 0\r\n");
@@ -482,7 +494,8 @@ void CWebSocket::FlushResponseQueue()
 {
 	while (m_bValid && m_response.Pending()) {
 		if (m_response.Empty() &&
-			!m_response.PumpSource(64u * 1024u)) {
+			!m_response.PumpSource(
+				ese::web::WebStaticAssets::ReadChunkBytes())) {
 			m_bValid = false;
 			break;
 		}

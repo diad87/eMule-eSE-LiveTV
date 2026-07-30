@@ -410,13 +410,9 @@ def _validate_test_source(blob: bytes, covers: list[str]) -> None:
             raise GateError(
                 f"active M2A coverage method may not be skipped: {coverage}"
             )
-        reachable_assertion = False
-        for statement in method.body:
-            if isinstance(statement, (ast.Return, ast.Raise)):
-                break
-            if meaningful_assertion(statement):
-                reachable_assertion = True
-                break
+        reachable_assertion = bool(
+            method.body and meaningful_assertion(method.body[0])
+        )
         if not reachable_assertion:
             raise GateError(
                 f"active M2A coverage method has no reachable nontrivial assertion: {coverage}"
@@ -441,6 +437,12 @@ original_test_case_methods = {
         "run", "__call__", "_callSetUp", "_callTestMethod",
         "_callTearDown", "doCleanups",
     )
+}
+original_test_case_assertions = {
+    name: getattr(unittest.TestCase, name)
+    for name in dir(unittest.TestCase)
+    if name.startswith("assert")
+    or name in {"fail", "failIf", "failUnless", "skipTest"}
 }
 OriginalTestLoader = unittest.TestLoader
 original_load_from_module = unittest.TestLoader.loadTestsFromModule
@@ -472,6 +474,8 @@ unittest.TestResult = OriginalTestResult
 unittest.result.TestResult = OriginalTestResult
 for name, implementation in original_test_case_methods.items():
     setattr(OriginalTestCase, name, implementation)
+for name, implementation in original_test_case_assertions.items():
+    setattr(OriginalTestCase, name, implementation)
 OriginalTestLoader.loadTestsFromModule = original_load_from_module
 TrackingResult.addSuccess = original_tracking_add_success
 
@@ -491,8 +495,12 @@ with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
         test_type = test.__class__
         forbidden = {
             "run", "__call__", "_callSetUp", "_callTestMethod",
-            "_callTearDown", "doCleanups",
+            "_callTearDown", "doCleanups", "setUp", "tearDown",
+            "setUpClass", "tearDownClass", "__getattribute__",
+            "__getattr__", "__setattr__", "fail", "skipTest",
+            "failureException",
         }
+        forbidden.update(original_test_case_assertions)
         if (
             test_type.__bases__ != (OriginalTestCase,)
             or forbidden.intersection(test_type.__dict__)

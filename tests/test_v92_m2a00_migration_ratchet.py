@@ -285,6 +285,19 @@ class M2A00RatchetTest(unittest.TestCase):
                 GATE._run_required_tests(relative, {coverage})
             test_path.write_text(
                 "import unittest\n"
+                "class Fixture(unittest.TestCase):\n"
+                "    def assertEqual(self, *args, **kwargs):\n"
+                "        return None\n"
+                f"    def {method}(self):\n"
+                "        self.assertEqual(1, 2)\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                GATE.GateError, "did not finish cleanly"
+            ):
+                GATE._run_required_tests(relative, {coverage})
+            test_path.write_text(
+                "import unittest\n"
                 "Original = unittest.TestCase\n"
                 "class Evil(Original):\n"
                 "    def run(self, result=None):\n"

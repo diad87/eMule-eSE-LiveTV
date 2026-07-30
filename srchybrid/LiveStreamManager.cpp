@@ -1421,8 +1421,7 @@ void CLiveStreamManager::RefreshViewerHlsPlaylist()
     uint32 newest = m_chunkBuffer.GetNewestSeq();
     const uint32 windowSpan = newest - oldest + 1u;
 
-    // Startup alone requires two contiguous segments; later gaps become
-    // HLS discontinuities instead of freezing the playlist.
+    // Startup requires two contiguous segments; later gaps become HLS discontinuities.
     if (!m_bHlsPlaylistStarted) {
         const uint32 ESE_HLS_MIN_BUFFER_SEGMENTS = 2;
         uint32 contiguous = 0;
@@ -1820,7 +1819,7 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
         int segsPushed = 0;
         for (uint32 offset = 0u; offset < pushSpan; ++offset) {
             const uint32 seq = startSeq + offset;
-            if (haveVbm && vbm.Has(seq)) continue;   // viewer already has it -> don't re-push
+            if (haveVbm && LiveChunkWindow::IsSequenceAvailable(vbm.bitmap, vbm.oldestSeq, seq)) continue;
             Packet* chunkPkt = NULL;
             uint32 chunkSize = 0;
             servedBuffer.WithSegment(seq, [&](const LiveChunkRecord& chunk) {
@@ -4112,7 +4111,7 @@ void CLiveStreamManager::RequestMissingSegments()
             m_peerBitmaps.GetNextAssoc(pos, pid, info);
             if (info.bitmap == 0) continue;
             uint32 peerNewest = info.NewestSeq();
-            if (!haveAny || peerNewest > bestEdge) {
+            if (!haveAny || ese::live::LiveChunkWindow::IsNewerSequence(peerNewest, bestEdge)) {
                 bestEdge   = peerNewest;
                 bestOldest = info.oldestSeq;
                 haveAny    = true;
@@ -4127,8 +4126,9 @@ void CLiveStreamManager::RequestMissingSegments()
         // the HLS playlist reaches its 2-segment minimum quickly without
         // chasing the absolute latest.
         const uint32 preroll = 3;
-        oldestSeq = (bestEdge >= preroll) ? (bestEdge - preroll) : bestEdge;
-        if (oldestSeq < bestOldest) oldestSeq = bestOldest;
+        const uint32 availableBeforeEdge = bestEdge - bestOldest;
+        const uint32 preRollDistance = availableBeforeEdge < preroll ? availableBeforeEdge : preroll;
+        oldestSeq = bestEdge - preRollDistance;
         newestSeq = bestEdge;
         AddDebugLogLine(false,
             _T("eSE Live: Bootstrap pull seg %u..%u (live edge from peers)"),
@@ -4151,7 +4151,8 @@ void CLiveStreamManager::RequestMissingSegments()
         InflightSegReq ireq;
         m_inflightSegReqs.GetNextAssoc(ppos, iseq, ireq);
         if (m_chunkBuffer.HasSegment(iseq)
-            || (m_chunkBuffer.GetCount() > 0 && iseq < m_chunkBuffer.GetOldestSeq()))
+            || (m_chunkBuffer.GetCount() > 0 && ese::live::LiveChunkWindow::
+                IsNewerSequence(m_chunkBuffer.GetOldestSeq(), iseq)))
             m_inflightSegReqs.RemoveKey(iseq);
     }
 
@@ -4219,7 +4220,7 @@ void CLiveStreamManager::RequestMissingSegments()
                 // block here is what actually freezes playback; far-ahead blocks
                 // are recoverable. Classified at request time and read back on
                 // both timeout (charge) and receipt (reward).
-                req.edgeCritical = (seq < oldestSeq + ESE_LIVE_EDGE_GUARD);
+                req.edgeCritical = (seq - oldestSeq) < ESE_LIVE_EDGE_GUARD;
                 req.failCharged  = false;
                 m_inflightSegReqs[seq] = req;
                 requested++;
@@ -4429,7 +4430,7 @@ CUpDownClient* CLiveStreamManager::SelectPeerForSegment(uint32 seqNum,
             continue;
         PeerBitmapInfo info;
         if (!m_peerBitmaps.Lookup(PeerId(peer), info)) continue;
-        if (!info.Has(seqNum)) continue;
+        if (!LiveChunkWindow::IsSequenceAvailable(info.bitmap, info.oldestSeq, seqNum)) continue;
 
         PeerTrust trust;
         int score = 50;
@@ -4600,8 +4601,9 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
     snap.oldestSeq = primaryBuffer.GetOldestSeq();
     snap.newestSeq = primaryBuffer.GetNewestSeq();
     snap.bitmap    = primaryBuffer.GetBitmap();
-    if (snap.bufCount > 0 && snap.newestSeq >= snap.oldestSeq) {
-        int expected = (int)(snap.newestSeq - snap.oldestSeq + 1);
+    if (snap.bufCount > 0) {
+        const uint32 serialSpan = snap.newestSeq - snap.oldestSeq + 1u;
+        int expected = (int)serialSpan;
         snap.missingChunks = expected - snap.bufCount;
         if (snap.missingChunks < 0) snap.missingChunks = 0;
     } else {

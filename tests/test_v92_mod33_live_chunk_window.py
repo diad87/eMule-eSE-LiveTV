@@ -154,6 +154,7 @@ class Mod33LiveChunkWindowTest(unittest.TestCase):
             "large jump expires every prior chunk",
             "serial order accepts uint32 wrap",
             "half-range serial ambiguity fails closed",
+            "peer bitmap selects every advertised segment across uint32 wrap",
             "prior snapshots stay valid",
             "external callback runs without the internal lock",
             "oversized bytes fail before allocation",
@@ -174,6 +175,34 @@ class Mod33LiveChunkWindowTest(unittest.TestCase):
             ).stdout
             normalize = lambda data: data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
             self.assertEqual(normalize((ROOT / path).read_bytes()), normalize(baseline))
+
+    def test_peer_bitmap_and_request_path_are_serial_wrap_safe(self) -> None:
+        protocol = (ROOT / "srchybrid/LiveProtocol.h").read_text(encoding="utf-8")
+        manager = MANAGER_SOURCE.read_text(encoding="utf-8")
+        mesh = MESH_SOURCE.read_text(encoding="utf-8")
+        self.assertIn("if (seqNum < oldestSeq) return false;", protocol)
+        self.assertNotIn(".Has(", manager + mesh)
+        self.assertGreaterEqual(
+            (manager + mesh).count("LiveChunkWindow::IsSequenceAvailable("),
+            4,
+        )
+        for marker in (
+            "IsNewerSequence(peerNewest, bestEdge)",
+            "availableBeforeEdge = bestEdge - bestOldest",
+            "(seq - oldestSeq) < ESE_LIVE_EDGE_GUARD",
+            "serialSpan = snap.newestSeq - snap.oldestSeq + 1u",
+        ):
+            self.assertIn(marker, manager)
+
+        mask = 0xFFFFFFFF
+        anchor = mask - 1
+        bitmap = 0x000F
+        advertised = lambda seq: ((seq - anchor) & mask) < 16 and (
+            bitmap & (1 << ((seq - anchor) & mask))
+        ) != 0
+        self.assertTrue(all(advertised(seq) for seq in (mask - 1, mask, 0, 1)))
+        self.assertFalse(advertised(mask - 2))
+        self.assertFalse(advertised(14))
 
         for path in ("srchybrid/LiveStreamManager.cpp", "srchybrid/LiveStreamManager.h"):
             baseline = subprocess.run(

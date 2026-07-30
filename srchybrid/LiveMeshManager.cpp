@@ -190,7 +190,9 @@ int CLiveMeshManager::CountPeersWithSegment(uint32 seqNum) const
     while (pos) {
         CUpDownClient* peer = m_meshPeers.GetNext(pos);
         PeerBitmapInfo info;
-        if (m_pManager->GetPeerBitmap(peer, info) && info.Has(seqNum))
+        if (m_pManager->GetPeerBitmap(peer, info)
+            && ese::live::LiveChunkWindow::IsSequenceAvailable(
+                info.bitmap, info.oldestSeq, seqNum))
             count++;
     }
     return count;
@@ -212,7 +214,8 @@ CUpDownClient* CLiveMeshManager::SelectBestPeerForSegment(uint32 seqNum)
         CUpDownClient* peer = m_meshPeers.GetNext(pos);
         PeerBitmapInfo info;
         if (!m_pManager->GetPeerBitmap(peer, info)) continue;
-        if (!info.Has(seqNum)) continue;
+        if (!ese::live::LiveChunkWindow::IsSequenceAvailable(
+                info.bitmap, info.oldestSeq, seqNum)) continue;
 
         // Score: trust-based + load-balanced
         int score = 50; // base score

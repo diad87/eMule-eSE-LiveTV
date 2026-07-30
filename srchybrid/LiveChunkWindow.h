@@ -91,6 +91,10 @@ public:
 	static bool IsNewerSequence(
 		std::uint32_t candidate,
 		std::uint32_t reference);
+	static bool IsSequenceAvailable(
+		std::uint16_t bitmap,
+		std::uint32_t oldest_sequence,
+		std::uint32_t sequence_number);
 
 private:
 	using ChunkPointer = std::shared_ptr<const LiveChunkRecord>;

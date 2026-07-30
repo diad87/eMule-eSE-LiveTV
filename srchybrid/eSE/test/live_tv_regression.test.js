@@ -107,7 +107,8 @@ test('simultaneous broadcast and viewing keep native identities and buffers isol
   const mesh = read(repoRoot, 'srchybrid', 'LiveMeshManager.cpp');
 
   assert.match(header, /LiveStreamInfo\s+m_broadcastStreamInfo/);
-  assert.match(header, /CLiveChunkBuffer\s+m_broadcastChunkBuffer/);
+  assert.match(header, /ese::live::LiveChunkWindow\s+m_chunkBuffer/);
+  assert.match(header, /ese::live::LiveChunkWindow\s+m_broadcastChunkBuffer/);
   assert.match(header, /CopyBroadcastStreamKey\(uchar outKey\[16\]\)/);
   assert.match(header, /CopyViewerStreamKey\(uchar outKey\[16\]\)/);
 

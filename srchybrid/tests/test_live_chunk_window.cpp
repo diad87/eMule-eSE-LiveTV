@@ -128,6 +128,18 @@ int main()
 			wrapped.newest_sequence == 1u &&
 			wrapped.availability_bitmap == 0x000fu,
 		"wrapped range and bitmap are exact");
+	Check(
+		LiveChunkWindow::IsSequenceAvailable(0x000fu, maximum - 1u, maximum - 1u) &&
+			LiveChunkWindow::IsSequenceAvailable(0x000fu, maximum - 1u, maximum) &&
+			LiveChunkWindow::IsSequenceAvailable(0x000fu, maximum - 1u, 0u) &&
+			LiveChunkWindow::IsSequenceAvailable(0x000fu, maximum - 1u, 1u),
+		"peer bitmap selects every advertised segment across uint32 wrap");
+	Check(
+		!LiveChunkWindow::IsSequenceAvailable(
+			0x000fu, maximum - 1u, maximum - 2u) &&
+			!LiveChunkWindow::IsSequenceAvailable(
+				0x000fu, maximum - 1u, 14u),
+		"peer bitmap rejects serial values outside its advertised window");
 	bool reentrant_callback_ran = false;
 	Check(
 		window.WithSegment(0u, [&](const LiveChunkRecord& chunk) {

@@ -26,6 +26,15 @@ bool LiveChunkWindow::IsNewerSequence(
 	return distance != 0u && distance < kSerialHalfRange;
 }
 
+bool LiveChunkWindow::IsSequenceAvailable(
+	std::uint16_t bitmap,
+	std::uint32_t oldest_sequence,
+	std::uint32_t sequence_number)
+{
+	const std::uint32_t bit = sequence_number - oldest_sequence;
+	return bit < 16u && (bitmap & (std::uint16_t(1u) << bit)) != 0u;
+}
+
 std::vector<LiveChunkWindow::ChunkPointer>::const_iterator
 LiveChunkWindow::FindLocked(std::uint32_t sequence_number) const
 {

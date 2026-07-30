@@ -113,13 +113,19 @@ public:
 		std::uint32_t first_seen_tick,
 		std::uint32_t last_nack_tick) noexcept;
 	static std::vector<std::uint8_t> MissingFecBlocks(
-		const std::vector<std::uint8_t>& required,
-		const std::vector<std::uint8_t>& received);
+		const int* required,
+		std::size_t required_count,
+		const std::vector<int>& received);
 	static LiveFecParityDecision AdvanceParity(
 		std::uint8_t current_parity,
 		std::uint32_t nack_count,
 		std::uint32_t elapsed_ms) noexcept;
 	static std::uint32_t NextAttempt(std::uint32_t attempts) noexcept;
+	static void UpdateParityWindow(
+		int& parity,
+		std::uint32_t& nack_count,
+		std::uint32_t& window_start,
+		std::uint32_t now) noexcept;
 
 private:
 	struct InflightRequest {

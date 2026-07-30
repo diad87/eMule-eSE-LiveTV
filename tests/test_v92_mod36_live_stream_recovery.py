@@ -118,7 +118,7 @@ class Mod36LiveStreamRecoveryTest(unittest.TestCase):
         for marker in (
             "LiveStreamRecovery::ShouldSendNack(",
             "LiveStreamRecovery::MissingFecBlocks(",
-            "LiveStreamRecovery::AdvanceParity(",
+            "LiveStreamRecovery::UpdateParityWindow(",
             "Bulk::BulkDecodeSegment(",
             "Bulk::BulkEncodeSegment(",
         ):

@@ -9508,19 +9508,9 @@ void CLiveTunnel::SweepBulkReasm()
             ese::live::LiveStreamRecovery::ShouldSendNack(
                 now, e.first_seen_tick, e.lastNackTick)) {
             std::vector<std::pair<uint32_t, uint8_t>> missing;
-            std::vector<std::uint8_t> required;
-            std::vector<std::uint8_t> received;
-            required.reserve(static_cast<std::size_t>(e.layout.n_blocks));
-            received.reserve(static_cast<std::size_t>(e.layout.n_blocks));
-            for (int b = 0; b < e.layout.n_blocks; ++b) {
-                required.push_back(static_cast<std::uint8_t>(e.layout.k[b]));
-                received.push_back(static_cast<std::uint8_t>(
-                    b < static_cast<int>(e.blockRecv.size())
-                        ? e.blockRecv[b] : 0));
-            }
             const std::vector<std::uint8_t> missingBlocks =
                 ese::live::LiveStreamRecovery::MissingFecBlocks(
-                    required, received);
+                    e.layout.k, e.layout.n_blocks, e.blockRecv);
             for (const std::uint8_t block : missingBlocks)
                 missing.push_back(std::make_pair(e.seq, block));
             if (!missing.empty() && SendBulkNack(e.streamKey, missing))
@@ -9861,17 +9851,8 @@ int CLiveTunnel::ProxyAdaptiveR(const std::string& hex)
     // holds m_lock.
     const DWORD now = GetTickCount();
     ProxyStreamCtl& c = m_proxyCtl[hex];
-    if (c.windowStart == 0) { c.windowStart = now; c.r = Bulk::BULK_DEFAULT_R; }
-    const ese::live::LiveFecParityDecision decision =
-        ese::live::LiveStreamRecovery::AdvanceParity(
-            static_cast<std::uint8_t>(c.r),
-            c.nackCount,
-            now - c.windowStart);
-    c.r = decision.parity;
-    if (decision.reset_window) {
-        c.nackCount = 0;
-        c.windowStart = now;
-    }
+    ese::live::LiveStreamRecovery::UpdateParityWindow(
+        c.r, c.nackCount, c.windowStart, now);
     return c.r;
 }
 

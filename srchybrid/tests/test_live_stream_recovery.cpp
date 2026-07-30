@@ -134,13 +134,15 @@ int main()
 		!LiveStreamRecovery::ShouldSendNack(5000u, 0u, 3001u) &&
 		LiveStreamRecovery::ShouldSendNack(5002u, 0u, 3001u),
 		"NACK initial delay and cooldown use strict wire-compatible boundaries");
+	const std::vector<int> required(20u, 4);
+	const std::vector<int> received(20u, 3);
 	const auto missing = LiveStreamRecovery::MissingFecBlocks(
-		std::vector<std::uint8_t>(20u, 4u),
-		std::vector<std::uint8_t>(20u, 3u));
+		required.data(), required.size(), received);
 	Check(missing.size() == LiveStreamRecovery::kMissingBlockCapacity &&
 		missing.front() == 0u && missing.back() == 15u,
 		"missing FEC block plan is ordered and capped");
-	Check(LiveStreamRecovery::MissingFecBlocks({1u}, {}).empty(),
+	Check(LiveStreamRecovery::MissingFecBlocks(
+			required.data(), required.size(), {}).empty(),
 		"mismatched FEC observations fail closed");
 
 	auto parity = LiveStreamRecovery::AdvanceParity(3u, 0u, 10000u);
@@ -155,6 +157,16 @@ int main()
 	parity = LiveStreamRecovery::AdvanceParity(255u, 0u, 9999u);
 	Check(!parity.reset_window && parity.parity == 3u,
 		"invalid parity is normalized before the next window");
+	int parity_state = 0;
+	std::uint32_t nack_state = 0u;
+	std::uint32_t window_state = 0u;
+	LiveStreamRecovery::UpdateParityWindow(
+		parity_state, nack_state, window_state, 100u);
+	LiveStreamRecovery::UpdateParityWindow(
+		parity_state, nack_state, window_state, 10100u);
+	Check(parity_state == 2 && nack_state == 0u &&
+		window_state == 10100u,
+		"stateful parity window delegates policy and resets atomically");
 
 	if (failures == 0)
 		std::cout << "Live stream recovery tests passed.\n";

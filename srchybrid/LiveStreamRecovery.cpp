@@ -251,20 +251,21 @@ bool LiveStreamRecovery::ShouldSendNack(
 }
 
 std::vector<std::uint8_t> LiveStreamRecovery::MissingFecBlocks(
-	const std::vector<std::uint8_t>& required,
-	const std::vector<std::uint8_t>& received)
+	const int* const required,
+	const std::size_t required_count,
+	const std::vector<int>& received)
 {
 	std::vector<std::uint8_t> missing;
-	if (required.size() != received.size())
+	if (required == nullptr || required_count != received.size())
 		return missing;
 	const std::size_t count = std::min(
-		required.size(),
+		required_count,
 		static_cast<std::size_t>(std::numeric_limits<std::uint8_t>::max()) + 1u);
 	missing.reserve(std::min(count, kMissingBlockCapacity));
 	for (std::size_t block = 0u;
 		block < count && missing.size() < kMissingBlockCapacity;
 		++block) {
-		if (required[block] != 0u && received[block] < required[block])
+		if (required[block] > 0 && received[block] < required[block])
 			missing.push_back(static_cast<std::uint8_t>(block));
 	}
 	return missing;
@@ -299,6 +300,25 @@ std::uint32_t LiveStreamRecovery::NextAttempt(
 {
 	return attempts == std::numeric_limits<std::uint32_t>::max()
 		? attempts : attempts + 1u;
+}
+
+void LiveStreamRecovery::UpdateParityWindow(
+	int& parity,
+	std::uint32_t& nack_count,
+	std::uint32_t& window_start,
+	const std::uint32_t now) noexcept
+{
+	if (window_start == 0u) {
+		window_start = now;
+		parity = kDefaultParity;
+	}
+	const LiveFecParityDecision decision = AdvanceParity(
+		static_cast<std::uint8_t>(parity), nack_count, now - window_start);
+	parity = decision.parity;
+	if (decision.reset_window) {
+		nack_count = 0u;
+		window_start = now;
+	}
 }
 
 std::vector<LiveStreamRecovery::InflightRequest>::iterator

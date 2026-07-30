@@ -596,15 +596,26 @@ test('Live send queues are bounded and ratio drops release their packet', () => 
   const clientHeader = read(repoRoot, 'srchybrid', 'UpdownClient.h');
   const protocol = read(repoRoot, 'srchybrid', 'LiveProtocol.h');
   const manager = read(repoRoot, 'srchybrid', 'LiveStreamManager.cpp');
+  const fanoutAdapter = read(repoRoot, 'srchybrid', 'LiveFanoutTransportAdapter.cpp');
 
   assert.match(socketHeader, /GetQueuedDataBytes\(\) const/);
   assert.match(socket, /CSingleLock lock\(&self->sendLocker, TRUE\)/);
   assert.match(socket, /controlpacket_queue[\s\S]{0,500}standardpacket_queue/);
   assert.match(clientHeader, /GetSocketQueuedBytes\(\) const/);
   assert.match(protocol, /ESE_LIVE_MAX_PEER_QUEUE_BYTES\s+\(8u \* 1024u \* 1024u\)/);
+  assert.match(
+    fanoutAdapter,
+    /BeginDelivery\([\s\S]{0,180}GetSocketQueuedBytes\(\),\s*wire_bytes\)/,
+    'the transport adapter must project queued bytes into atomic batch admission'
+  );
   assert.ok(
-    (manager.match(/GetSocketQueuedBytes\(\) > ESE_LIVE_MAX_PEER_QUEUE_BYTES/g) || []).length >= 3,
-    'initial push, requested chunks and relay fanout must all apply backpressure'
+    (manager.match(/LiveStreamFanoutAdapter::ReservePackets\(/g) || []).length >= 2,
+    'initial push and requested chunks must reserve their whole packet batch'
+  );
+  assert.match(
+    manager,
+    /LiveStreamFanoutAdapter::PrepareRelayBatches\(/,
+    'relay fanout must use the same bounded batch admission'
   );
   assert.match(manager, /DROP-strong[\s\S]{0,360}delete chunkPkt;\s*return;/);
   assert.match(manager, /DROP-medium[\s\S]{0,360}delete chunkPkt;\s*return;/);

@@ -84,6 +84,14 @@ public:
 	{
 		return Remove(LivePeerRole::Downstream, peer);
 	}
+	bool ReplaceSource(LivePeerHandle previous, LivePeerHandle replacement)
+	{
+		return Replace(LivePeerRole::Source, previous, replacement);
+	}
+	bool ReplaceDownstream(LivePeerHandle previous, LivePeerHandle replacement)
+	{
+		return Replace(LivePeerRole::Downstream, previous, replacement);
+	}
 	void ClearSources() { Clear(LivePeerRole::Source); }
 	void ClearDownstreams() { Clear(LivePeerRole::Downstream); }
 	bool HasSource(LivePeerHandle peer) const

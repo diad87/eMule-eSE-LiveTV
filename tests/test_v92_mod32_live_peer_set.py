@@ -16,6 +16,9 @@ HEADER = ROOT / "srchybrid" / "LivePeerSet.h"
 SOURCE = ROOT / "srchybrid" / "LivePeerSet.cpp"
 MANAGER_HEADER = ROOT / "srchybrid" / "LiveStreamManager.h"
 MANAGER_SOURCE = ROOT / "srchybrid" / "LiveStreamManager.cpp"
+CLIENT_LIST_SOURCE = ROOT / "srchybrid" / "ClientList.cpp"
+MESH_HEADER = ROOT / "srchybrid" / "LiveMeshManager.h"
+MESH_SOURCE = ROOT / "srchybrid" / "LiveMeshManager.cpp"
 NATIVE_TEST = ROOT / "srchybrid" / "tests" / "test_live_peer_set.cpp"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
@@ -136,6 +139,47 @@ class Mod32LivePeerSetTest(unittest.TestCase):
         self.assertIn("true", xml)
         self.assertIn("stdcpp17", xml)
         self.assertIn("LivePeerSet.h", include_items)
+
+    def test_remote_lists_are_bounded_and_client_swap_is_atomic(self) -> None:
+        manager = MANAGER_SOURCE.read_text(encoding="utf-8")
+        client_list = CLIENT_LIST_SOURCE.read_text(encoding="utf-8")
+        mesh = (
+            MESH_HEADER.read_text(encoding="utf-8")
+            + MESH_SOURCE.read_text(encoding="utf-8")
+        )
+        self.assertIn("ESE_LIVE_MAX_SOURCE_PEERS = 8u", manager)
+        self.assertIn(
+            "peer != NULL && !m_peerSet.HasSource(PeerHandleOf(peer))",
+            manager,
+        )
+        for marker in (
+            "m_peerSet.AddSource(PeerHandleOf(newClient), sourceLimit)",
+            "sourceAdd != LivePeerAddResult::Added",
+        ):
+            self.assertGreaterEqual(manager.count(marker), 2)
+        self.assertNotRegex(
+            manager,
+            r"m_peerSet\.AddSource\([\s\S]{0,120}0u\)",
+        )
+
+        replace_call = (
+            "theApp.liveStreamManager->OnPeerReplaced(tocheck, found_client);"
+        )
+        self.assertIn(replace_call, client_list)
+        self.assertLess(client_list.index(replace_call), client_list.index("delete tocheck;"))
+        replacement = manager[
+            manager.index("void CLiveStreamManager::OnPeerReplaced("):
+            manager.index("void CLiveStreamManager::OnPeerDisconnected(")
+        ]
+        for call in (
+            "m_peerSet.ReplaceSource(",
+            "m_peerSet.ReplaceDownstream(",
+            "m_meshManager.ReplaceMeshPeer(",
+        ):
+            self.assertIn(call, replacement)
+        self.assertIn("ReplaceMeshPeer(", mesh)
+        self.assertIn("m_pendingRequests[i].peer = replacement", mesh)
+        self.assertIn("m_uploadTracker[replacement]", mesh)
 
     def test_wire_files_are_unchanged_and_coordinator_shrinks(self) -> None:
         for path in ("srchybrid/LiveProtocol.h", "srchybrid/LivePackets.cpp"):

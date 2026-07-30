@@ -40,6 +40,7 @@
 #include "Log.h"
 #include "packets.h"
 #include "Statistics.h"
+#include "LiveStreamManager.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -264,6 +265,8 @@ bool CClientList::AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket 
 	}
 	*client = NULL;
 //***	found_client->SetSourceFrom(tocheck->GetSourceFrom());
+	if (theApp.liveStreamManager != NULL)
+		theApp.liveStreamManager->OnPeerReplaced(tocheck, found_client);
 	delete tocheck;
 	*client = found_client;
 	return true;

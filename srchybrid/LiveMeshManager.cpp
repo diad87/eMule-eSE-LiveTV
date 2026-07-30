@@ -79,6 +79,41 @@ void CLiveMeshManager::RemoveMeshPeer(CUpDownClient* peer)
     }
 }
 
+bool CLiveMeshManager::ReplaceMeshPeer(
+    CUpDownClient* previous,
+    CUpDownClient* replacement)
+{
+    if (previous == NULL || replacement == NULL || previous == replacement)
+        return false;
+
+    CSingleLock lock(&m_lock, TRUE);
+    POSITION previousPos = m_meshPeers.Find(previous);
+    if (previousPos == NULL)
+        return false;
+
+    if (m_meshPeers.Find(replacement) != NULL)
+        m_meshPeers.RemoveAt(previousPos);
+    else
+        m_meshPeers.SetAt(previousPos, replacement);
+
+    uint64 previousBytes = 0;
+    if (m_uploadTracker.Lookup(previous, previousBytes)) {
+        uint64 replacementBytes = 0;
+        m_uploadTracker.Lookup(replacement, replacementBytes);
+        const uint64 maximum = ~(uint64)0;
+        m_uploadTracker[replacement] =
+            maximum - replacementBytes < previousBytes
+                ? maximum
+                : replacementBytes + previousBytes;
+        m_uploadTracker.RemoveKey(previous);
+    }
+    for (INT_PTR i = 0; i < m_pendingRequests.GetCount(); ++i) {
+        if (m_pendingRequests[i].peer == previous)
+            m_pendingRequests[i].peer = replacement;
+    }
+    return true;
+}
+
 void CLiveMeshManager::ResetSessionPeers()
 {
     CSingleLock lock(&m_lock, TRUE);

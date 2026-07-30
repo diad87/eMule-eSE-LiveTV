@@ -58,6 +58,8 @@ DWORD g_eseTestSabotageDelayMs = 6000;
 // within the hour are rare (StartBroadcast generates fresh streamKeys).
 static const DWORD ESE_TOMBSTONE_TTL_MS    = 30u * 60u * 1000u;
 static const DWORD ESE_TOMBSTONE_PRUNE_MS  = 60u * 1000u;
+static const std::size_t ESE_LIVE_MAX_SOURCE_PEERS = 8u;
+static const std::size_t ESE_LIVE_BALANCED_SOURCE_PEERS = 3u;
 // Watchdog threshold: 180 s. v7.2.0 had 90 s which was too aggressive
 // for bandwidth-limited viewers (4G CGN saturated by a too-high
 // variant) — chunks arrive in bursts with multi-tens-of-seconds gaps,
@@ -971,10 +973,10 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     // a popular stream with dozens of secondary sources can grow the source set
     // unboundedly, consuming sockets and memory. 8 is plenty: V2-S19 only
     // targets 3, and mesh fallback (V2-S20) prefers low-RTT peers anyway.
-    static const int kMaxViewPeers = 8;
-    if (m_peerSet.SourceCount() >= static_cast<std::size_t>(kMaxViewPeers)) {
+    if (m_peerSet.SourceCount() >= ESE_LIVE_MAX_SOURCE_PEERS) {
         LIVE_LOG("CAP", "DISC-S07: viewPeers full (%d/%d), skip dial %S:%u",
-            static_cast<int>(m_peerSet.SourceCount()), kMaxViewPeers,
+            static_cast<int>(m_peerSet.SourceCount()),
+            static_cast<int>(ESE_LIVE_MAX_SOURCE_PEERS),
             (LPCWSTR)ipstr(ip), port);
         return false;
     }
@@ -996,7 +998,7 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     // destructor then removes the already-registered handle (UAF guard).
     const LivePeerAddResult sourceAdd = m_peerSet.AddSource(
         PeerHandleOf(client),
-        static_cast<std::size_t>(kMaxViewPeers));
+        ESE_LIVE_MAX_SOURCE_PEERS);
     if (sourceAdd == LivePeerAddResult::Full ||
         sourceAdd == LivePeerAddResult::Invalid)
         return false;
@@ -1132,10 +1134,10 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey,
             return true;
     }
 
-    static const int kMaxViewPeers = 8;
-    if (m_peerSet.SourceCount() >= static_cast<std::size_t>(kMaxViewPeers)) {
+    if (m_peerSet.SourceCount() >= ESE_LIVE_MAX_SOURCE_PEERS) {
         LIVE_LOG("CAP", "IPv6 direct join skipped: viewPeers full (%d/%d)",
-            static_cast<int>(m_peerSet.SourceCount()), kMaxViewPeers);
+            static_cast<int>(m_peerSet.SourceCount()),
+            static_cast<int>(ESE_LIVE_MAX_SOURCE_PEERS));
         return false;
     }
 
@@ -1154,7 +1156,7 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey,
     // whose destructor then removes it from both lists.
     const LivePeerAddResult sourceAdd = m_peerSet.AddSource(
         PeerHandleOf(client),
-        static_cast<std::size_t>(kMaxViewPeers));
+        ESE_LIVE_MAX_SOURCE_PEERS);
     if (sourceAdd == LivePeerAddResult::Full ||
         sourceAdd == LivePeerAddResult::Invalid)
         return false;
@@ -2505,7 +2507,11 @@ void CLiveStreamManager::OnPeerBitmap(CUpDownClient* peer, const uchar* streamKe
     }
     if (viewerHeartbeat &&
         !m_peerSet.HasSource(PeerHandleOf(peer))) {
-        m_peerSet.AddSource(PeerHandleOf(peer));
+        const LivePeerAddResult sourceAdd = m_peerSet.AddSource(
+            PeerHandleOf(peer), ESE_LIVE_MAX_SOURCE_PEERS);
+        if (sourceAdd != LivePeerAddResult::Added &&
+            sourceAdd != LivePeerAddResult::AlreadyPresent)
+            return;
         // Restore mesh membership lost with the replaced pointer.
         m_meshManager.AddMeshPeer(peer);
         LIVE_LOG("PEER", "REJOIN source=%S:%u (heartbeat after ClientList swap) total=%d",
@@ -2556,16 +2562,12 @@ void CLiveStreamManager::OnPeerBitmap(CUpDownClient* peer, const uchar* streamKe
         oldestSeq, bitmap);
 }
 
-void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
+void CLiveStreamManager::OnPeerListReceived(CUpDownClient* peer,
     const uchar* streamKey,
     const CArray<DWORD>& ips, const CArray<uint16>& ports)
 {
-    // C2/C3 (Sprint C finish): if THIS node is an exit proxying `streamKey` for
-    // tunneled viewers, relay the broadcaster's peer-list down their circuits
-    // BEFORE taking m_lock. The tunnel call takes tunnel locks; holding the
-    // manager m_lock here would invert the tunnel->manager-only order. ExitRelay
-    // PeerList is a no-op if we proxy no one for this stream, so this is cheap on
-    // a normal (non-exit) viewer too. ips are net-order DWORDs (value-preserving).
+    // Relay before m_lock to preserve tunnel-to-manager lock order.
+    // IP values remain in network order.
     {
         int n = (int)ips.GetCount();
         if (n > (int)ports.GetCount()) n = (int)ports.GetCount();
@@ -2581,44 +2583,34 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
 
     if (!m_viewerSession.IsActive()) return;
     if (memcmp(m_streamInfo.streamKey, streamKey, 16) != 0) return;
+    if (peer != NULL && !m_peerSet.HasSource(PeerHandleOf(peer))) return;
     LIVE_LOG("MESH", "Received peer-list (%d entries)", (int)ips.GetCount());
 
-    // C2/C3 finish: in Tunelizado the SUBSCRIBE to each secondary source must be
-    // tunneled too (the exit proxy-subscribes on our behalf), symmetric with the C5
-    // primary path — otherwise we would hand every secondary source a direct
-    // user-hash<->stream<->IP association that the primary deliberately withholds.
-    // SendLiveSubscribeNoWait only takes the leaf m_mtLock, so it is safe to call
-    // under m_lock (exactly as the C5 self-heal does). BALANCED/BEST_EFFORT may
-    // use the direct data plane; a STRICT session sends only the tunneled
-    // subscribe and deliberately creates no primary or secondary source socket.
-    // In Direct mode this is unchanged (direct subscribe).
+    // Secondary subscriptions follow the primary privacy mode. STRICT never
+    // materializes a direct source; other modes may use a direct data socket.
     auto& tun = eSELive::CLiveTunnel::Get();
     const bool wantTunnel  = tun.ShouldRouteThroughTunnel(NULL);
     const bool haveCircuit = tun.ActiveCircuitCount() > 0;
     const bool tunMode = wantTunnel && haveCircuit;
     const bool strictTunnelOnly = m_viewerSession.StrictTunnelOnly();
-    // v8.1 D3 BALANCED - "Tunelizado wanted, no circuit, BALANCED fallback policy": the
-    // viewer must still watch (direct primary), but must NOT amplify its IP exposure across
-    // the whole peer-list. Cap the secondary fanout to the resilience floor so BALANCED stays
-    // narrow while BEST_EFFORT expands to the full mesh. (STRICT never reaches here — it aborts
-    // the primary in TryConnectToStreamSource before any view peer exists.)
+    // Degraded BALANCED mode narrows exposure to the resilience floor.
     const bool balancedDegraded = wantTunnel && !haveCircuit
         && Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy()
                == Kademlia::CKadV2ModeSelector::BALANCED;
-    static const int kBalancedFanoutCap = 3;
+    const std::size_t sourceLimit = balancedDegraded
+        ? ESE_LIVE_BALANCED_SOURCE_PEERS
+        : ESE_LIVE_MAX_SOURCE_PEERS;
 
-    for (INT_PTR i = 0; i < ips.GetCount(); i++) {
+    for (INT_PTR i = 0;
+         i < ips.GetCount() && i < ports.GetCount();
+         ++i) {
         DWORD ip = ips[i];
         uint16 port = ports[i];
 
-        // v8.1 D3 BALANCED - stop amplifying fanout past the cap in the degraded state, so a
-        // BALANCED viewer with no circuit exposes its IP to far fewer secondary sources than
-        // a BEST_EFFORT viewer (which keeps the full peer-list mesh).
-        if (balancedDegraded &&
-            m_peerSet.SourceCount() >=
-                static_cast<std::size_t>(kBalancedFanoutCap)) {
-            LIVE_LOG("TUN", "D3 BALANCED: secondary-fanout cap (%d) reached, skip rest of peer-list",
-                kBalancedFanoutCap);
+        // A single cap also bounds repeated hostile peer lists.
+        if (m_peerSet.SourceCount() >= sourceLimit) {
+            LIVE_LOG("CAP", "Peer-list source cap (%d) reached; skip remaining entries",
+                static_cast<int>(sourceLimit));
             break;
         }
 
@@ -2661,11 +2653,10 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
             theApp.clientlist->AddClient(newClient);
         }
         // Register before connecting so a delete-on-failure can scrub the handle.
-        m_peerSet.AddSource(
-            PeerHandleOf(newClient),
-            balancedDegraded
-                ? static_cast<std::size_t>(kBalancedFanoutCap)
-                : 0u);
+        const LivePeerAddResult sourceAdd =
+            m_peerSet.AddSource(PeerHandleOf(newClient), sourceLimit);
+        if (sourceAdd != LivePeerAddResult::Added)
+            continue;
         m_meshManager.AddMeshPeer(newClient);
 
         if (tunMode) {
@@ -2710,19 +2701,13 @@ void CLiveStreamManager::OnTunneledPeerList(const uchar* streamKey,
     OnPeerListReceived(NULL, streamKey, ipArr, portArr);
 }
 
-// v0.71 IPv6 Sprint 7 follow-up — OP_LIVE_PEER_LIST_V2 receiver.
-// IPv4 entries continue through the legacy uint32 path; native IPv6 entries
-// are materialized as address-keyed clients and use the validated native TCP
-// route. Older clients never send this additive opcode, so their behavior
-// lists is harmless because the receiver simply ignores them — that's
+// OP_LIVE_PEER_LIST_V2 keeps IPv4 on the legacy path and materializes
+// validated native IPv6 endpoints as address-keyed clients.
 void CLiveStreamManager::OnPeerListReceivedV6(CUpDownClient* peer,
     const uchar* streamKey,
     const CArray<CAddress>& addrs, const CArray<uint16>& ports)
 {
-    // Fast path: separate v4 and v6, then delegate the v4 set to the
-    // uint32 overload (which already takes m_lock). We don't take m_lock
-    // around the partition because addrs/ports are local CArrays owned
-    // by the caller on its stack.
+    // Partition caller-owned arrays before either locked receiver path.
     CArray<DWORD> v4ips;
     CArray<uint16> v4ports;
     int v6Count = 0;
@@ -2766,6 +2751,8 @@ void CLiveStreamManager::OnPeerListReceivedV6(CUpDownClient* peer,
         CSingleLock lock(&m_lock, TRUE);
         if (!m_viewerSession.IsActive() || memcmp(m_streamInfo.streamKey, streamKey, 16) != 0)
             return;
+        if (peer != NULL && !m_peerSet.HasSource(PeerHandleOf(peer)))
+            return;
         const CAddress localV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
         const bool wantTunnel = eSELive::CLiveTunnel::Get().ShouldRouteThroughTunnel(NULL);
         const bool haveCircuit = eSELive::CLiveTunnel::Get().ActiveCircuitCount() > 0;
@@ -2773,7 +2760,9 @@ void CLiveStreamManager::OnPeerListReceivedV6(CUpDownClient* peer,
         const bool balancedDegraded = wantTunnel && !haveCircuit
             && Kademlia::CKadV2ModeSelector::Get().GetFallbackPolicy()
                    == Kademlia::CKadV2ModeSelector::BALANCED;
-        static const int kBalancedFanoutCap = 3;
+        const std::size_t sourceLimit = balancedDegraded
+            ? ESE_LIVE_BALANCED_SOURCE_PEERS
+            : ESE_LIVE_MAX_SOURCE_PEERS;
 
         for (INT_PTR i = 0; i < addrs.GetCount() && i < ports.GetCount(); ++i) {
             const CAddress& address = addrs[i];
@@ -2783,9 +2772,7 @@ void CLiveStreamManager::OnPeerListReceivedV6(CUpDownClient* peer,
                 continue;
             if (localV6.GetType() == CAddress::IPv6 && address == localV6)
                 continue;
-            if (balancedDegraded &&
-                m_peerSet.SourceCount() >=
-                    static_cast<std::size_t>(kBalancedFanoutCap))
+            if (m_peerSet.SourceCount() >= sourceLimit)
                 break;
 
             bool alreadyConnected = false;
@@ -2816,11 +2803,10 @@ void CLiveStreamManager::OnPeerListReceivedV6(CUpDownClient* peer,
                 newClient->SetIP(address.ToSyntheticUInt32());
             }
             newClient->SetLiveIPv6Source();
-            m_peerSet.AddSource(
-                PeerHandleOf(newClient),
-                balancedDegraded
-                    ? static_cast<std::size_t>(kBalancedFanoutCap)
-                    : 0u);
+            const LivePeerAddResult sourceAdd =
+                m_peerSet.AddSource(PeerHandleOf(newClient), sourceLimit);
+            if (sourceAdd != LivePeerAddResult::Added)
+                continue;
             m_meshManager.AddMeshPeer(newClient);
 
             Packet* pkt = eSELive::CreateSubscribePacket(
@@ -2906,6 +2892,30 @@ bool CLiveStreamManager::RequestMorePeers()
     return true;
 }
 
+void CLiveStreamManager::OnPeerReplaced(CUpDownClient* previous,
+    CUpDownClient* replacement)
+{
+    if (previous == NULL || replacement == NULL || previous == replacement)
+        return;
+
+    CSingleLock lock(&m_lock, TRUE);
+    const bool downstreamReplaced = m_peerSet.ReplaceDownstream(
+        PeerHandleOf(previous), PeerHandleOf(replacement));
+    const bool sourceReplaced = m_peerSet.ReplaceSource(
+        PeerHandleOf(previous), PeerHandleOf(replacement));
+    if (!downstreamReplaced && !sourceReplaced)
+        return;
+
+    m_meshManager.ReplaceMeshPeer(previous, replacement);
+    if (downstreamReplaced) {
+        LiveStreamInfo& info = m_broadcastSession.IsActive()
+            ? m_broadcastStreamInfo : m_streamInfo;
+        info.viewerCount = static_cast<uint32>(m_peerSet.DownstreamCount());
+    }
+    LIVE_LOG("PEER", "REPLACE old=%p new=%p source=%d downstream=%d",
+        previous, replacement, sourceReplaced ? 1 : 0,
+        downstreamReplaced ? 1 : 0);
+}
 void CLiveStreamManager::OnPeerDisconnected(CUpDownClient* peer)
 {
     CSingleLock lock(&m_lock, TRUE);

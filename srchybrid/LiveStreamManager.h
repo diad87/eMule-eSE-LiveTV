@@ -402,8 +402,8 @@ public:
     void OnPeerListReceivedV6(CUpDownClient* peer, const uchar* streamKey,
                               const CArray<class CAddress>& addrs,
                               const CArray<uint16>& ports);
-    // Called when a peer disconnects
-    void OnPeerDisconnected(CUpDownClient* peer);
+    void OnPeerDisconnected(CUpDownClient* peer); // client-list lifetime callbacks
+    void OnPeerReplaced(CUpDownClient* previous, CUpDownClient* replacement);
     // Ask one surviving source (rotated, grace/cooldown bounded) for a fresh
     // peer list. Used by disconnect recovery and the periodic mesh check.
     bool RequestMorePeers();

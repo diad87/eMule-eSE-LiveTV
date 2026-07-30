@@ -40,6 +40,9 @@ public:
     // Remove a peer from mesh
     void RemoveMeshPeer(CUpDownClient* peer);
 
+    // Atomically retarget topology and pointer-keyed transient state.
+    bool ReplaceMeshPeer(CUpDownClient* previous, CUpDownClient* replacement);
+
     // Drop role-specific topology/request state when the manager switches
     // between broadcast and viewer sessions. Cumulative counters remain.
     void ResetSessionPeers();

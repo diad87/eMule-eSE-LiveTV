@@ -48,14 +48,19 @@ bool LivePeerSet::Replace(
 	if (previous == replacement)
 		return true;
 
+	std::size_t previous_index =
+		static_cast<std::size_t>(previous_it - peers.begin());
 	const auto replacement_it =
 		std::find(peers.begin(), peers.end(), replacement);
 	if (replacement_it != peers.end()) {
-		peers.erase(previous_it);
-		return true;
+		const std::size_t replacement_index =
+			static_cast<std::size_t>(replacement_it - peers.begin());
+		peers.erase(peers.begin() + replacement_index);
+		if (replacement_index < previous_index)
+			--previous_index;
 	}
 
-	*previous_it = replacement;
+	peers[previous_index] = replacement;
 	return true;
 }
 

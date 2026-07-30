@@ -83,9 +83,17 @@ int main()
 			peers.Select(LivePeerRole::Source, 0u, selected) &&
 			selected == 12u,
 		"replacement by an existing handle removes the old duplicate");
+	peers.Add(LivePeerRole::Source, 31u, 0u);
+	peers.Add(LivePeerRole::Source, 32u, 0u);
+	Check(
+		peers.Replace(LivePeerRole::Source, 32u, 12u) &&
+			peers.Count(LivePeerRole::Source) == 2u &&
+			peers.Select(LivePeerRole::Source, 1u, selected) &&
+			selected == 12u,
+		"existing replacement keeps the replaced handle's position");
 	Check(
 		!peers.Replace(LivePeerRole::Source, 99u, 31u) &&
-			peers.Count(LivePeerRole::Source) == 1u,
+			peers.Count(LivePeerRole::Source) == 2u,
 		"missing replacement source cannot mutate the set");
 
 	Check(

@@ -27,6 +27,9 @@ class Mod27WebDiagnosticsProductionTest(unittest.TestCase):
         cls.web_server = (
             ROOT / "srchybrid" / "WebServer.cpp"
         ).read_text(encoding="utf-8", errors="replace")
+        cls.native_test = (
+            ROOT / "srchybrid" / "tests" / "test_web_diagnostics.cpp"
+        ).read_text(encoding="utf-8")
 
     def test_contract_is_exact_and_value_only(self) -> None:
         self.assertEqual(
@@ -96,6 +99,23 @@ class Mod27WebDiagnosticsProductionTest(unittest.TestCase):
             self.web_server,
         )
         self.assertIn("BuildDebugSnapshot()", self.web_server)
+        self.assertNotIn("lastChunkReceivedAt > 0", self.web_server)
+        self.assertIn(
+            "static_cast<std::uint32_t>(\n"
+            "\t\t\t\t\ts.counters.lastChunkReceivedAt)",
+            self.web_server,
+        )
+
+    def test_all_route_shapes_are_compared_byte_exactly(self) -> None:
+        for message in (
+            "local status response remains byte-exact",
+            "remote status privacy and nullability remain byte-exact",
+            "mesh response remains exact",
+            "unavailable debug response remains byte-exact",
+            "available debug response remains byte-exact",
+        ):
+            self.assertIn(message, self.native_test)
+        self.assertGreaterEqual(self.native_test.count("=="), 5)
 
     def test_webserver_delegates_all_three_diagnostic_routes(self) -> None:
         self.assertGreaterEqual(

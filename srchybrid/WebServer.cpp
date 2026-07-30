@@ -7329,10 +7329,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			debug.hls_segments_written = s.counters.hlsSegmentsWritten;
 			debug.hls_playlist_refreshes = s.counters.hlsPlaylistRefresh;
 			debug.last_chunk_received_at =
-				s.counters.lastChunkReceivedAt > 0
-					? static_cast<std::uint32_t>(
-						s.counters.lastChunkReceivedAt)
-					: 0u;
+				static_cast<std::uint32_t>(
+					s.counters.lastChunkReceivedAt);
 			debug.segment_duration_seconds = ESE_LIVE_SEGMENT_DURATION;
 			debug.kad_publishes = s.counters.kadPublishes;
 			debug.kad_searches = s.counters.kadSearches;

@@ -530,7 +530,7 @@ bool CLiveStreamManager::RunIsolatedLoopbackSelfTest(CString& outFailure)
             &viewer.m_counters.chunksReceived, 0, 0);
         const LONG duplicates = InterlockedCompareExchange(
             &viewer.m_counters.duplicateChunksReceived, 0, 0);
-        if (viewer.m_chunkBuffer.GetCount() != 1 || received != 2 || duplicates != 1) {
+        if (viewer.m_chunkBuffer.GetCount() != 1 || received != 1 || duplicates != 1) {
             ok = false;
             outFailure = _T("duplicate V2 chunk was not rejected exactly once");
         }

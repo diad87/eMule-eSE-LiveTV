@@ -1,11 +1,11 @@
 {
   "schema": "ese.mod42.runtime-evidence/v1",
-  "source_commit": "3ce6d3cc4688b0cd0895065976d4d04ac0139122",
+  "source_commit": "3790cae5471b28a962fafb5fc520fc775c7b00cd",
   "status": "PASS",
   "packaged_executable": {
     "path": "srchybrid/eSE/ese-server.exe",
-    "bytes": 70723237,
-    "sha256": "983217913dc39572df8db25cf263db6cc4a456fbfbc607675f4a5a2ef67b0b43"
+    "bytes": 70723823,
+    "sha256": "ff747d707c327b1163b067b19c80f6f6847bf800d1447c07d8c333055e3f63de"
   },
   "source_runtime": {
     "port": 18095,
@@ -39,6 +39,10 @@
     "mod42_focal": "16/16",
     "native": "40/40 PASS; FEC 21659/21659; Bulk 183/183; standalone 14/14",
     "node_package_build": "PASS"
+  },
+  "post_fix_smoke": {
+    "source": "status=200; lifecycle=200; completed_list=200; logs=200",
+    "packaged": "status=200; lifecycle=200; completed_list=200; logs=200"
   },
   "runtime_ports_released": true
 }

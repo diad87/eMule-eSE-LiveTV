@@ -163,8 +163,12 @@ bool WebStaticAssets::CollectRangeHeader(
 		destination = "__duplicate_range__";
 		return false;
 	}
-	destination = value;
 	seen = true;
+	if (value.empty()) {
+		destination = "__empty_range__";
+		return false;
+	}
+	destination = value;
 	return true;
 }
 

@@ -94,6 +94,7 @@ class Mod26WebStreamingProductionTest(unittest.TestCase):
         self.assertIn("rangeSeen", self.web_socket)
         self.assertIn("CollectRangeHeader", self.web_socket)
         self.assertIn("__duplicate_range__", self.static_source)
+        self.assertIn("__empty_range__", self.static_source)
         self.assertNotIn("new BYTE[fileSize]", self.web_server)
         self.assertNotIn("new char[filesize]", self.web_server)
         self.assertNotIn("Content-Disposition: attachment; filename=\"%s", self.web_server)

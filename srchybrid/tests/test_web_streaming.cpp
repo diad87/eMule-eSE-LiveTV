@@ -118,6 +118,17 @@ int main()
 		WebStaticAssets::ParseRange(collectedRange, 100).status ==
 			WebRangeStatus::Invalid,
 		"duplicate range collection maps to 416");
+	std::string emptyRange;
+	bool emptyRangeSeen = false;
+	Check(
+		!WebStaticAssets::CollectRangeHeader(
+			emptyRange, emptyRangeSeen, ""),
+		"empty range field rejected");
+	Check(
+		emptyRangeSeen &&
+			WebStaticAssets::ParseRange(emptyRange, 100).status ==
+				WebRangeStatus::Invalid,
+		"empty range collection maps to 416");
 
 	Check(
 		std::strcmp(WebStaticAssets::MimeTypeForPath("A.JPEG"), "image/jpeg") == 0,

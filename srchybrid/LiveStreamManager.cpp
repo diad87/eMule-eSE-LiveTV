@@ -78,6 +78,24 @@ using ese::live::LivePeerDiversityDecision;
 using ese::live::LivePeerDiversityReason;
 using ese::live::LivePeerHandle;
 using ese::live::LivePeerSet;
+using ese::live::LiveChunkRecord;
+using ese::live::LiveChunkWindow;
+
+struct LegacyChunkView final {
+    explicit LegacyChunkView(const LiveChunkRecord& source) {
+        memcpy(chunk_.streamKey, source.stream_key.data(), 16);
+        chunk_.sequenceNumber = source.sequence_number;
+        chunk_.timestamp = source.timestamp;
+        chunk_.dataSize = static_cast<uint32>(source.data.size());
+        chunk_.bitrate = source.bitrate_kbps;
+        chunk_.data = const_cast<BYTE*>(source.data.data());
+    }
+    ~LegacyChunkView() { chunk_.data = NULL; chunk_.dataSize = 0; }
+    const LiveChunk* Get() const { return &chunk_; }
+    LegacyChunkView(const LegacyChunkView&) = delete;
+    LegacyChunkView& operator=(const LegacyChunkView&) = delete;
+    LiveChunk chunk_;
+};
 
 static LivePeerHandle PeerHandleOf(CUpDownClient* peer) {
     return reinterpret_cast<LivePeerHandle>(peer); }
@@ -146,7 +164,8 @@ bool CLiveStreamManager::GetPinnedPubkey(const uchar streamKey[16], uchar outPub
 // EseReachSelector (default OFF) — see thePrefs. Byte-for-byte dormant until an operator opts in.
 
 CLiveStreamManager::CLiveStreamManager()
-    : m_lastRelayedSeq(UINT_MAX)   // R.3: nothing relayed yet
+    : m_lastRelayedSeq(0)
+    , m_hasRelayedSeq(false)
     , m_dwLastRelaySetup(0)        // R.3
     , m_dwLastBitmapSend(0)
     , m_dwLastViewerBitmapSend(0)
@@ -261,7 +280,8 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     m_dwLastKadPublish = 0;
     // R.3: fresh relay-egress state for this broadcast (clears any stale buddy from a
     // previous stream so RelayPushNewSegments re-negotiates before pushing).
-    m_lastRelayedSeq = UINT_MAX;
+    m_lastRelayedSeq = 0;
+    m_hasRelayedSeq = false;
     m_dwLastRelaySetup = 0;
     CLiveBuddyRelay::Instance().ResetBroadcasterEgress();
     // Commit active only after every lock-free projection is coherent.
@@ -446,9 +466,10 @@ bool CLiveStreamManager::RunIsolatedLoopbackSelfTest(CString& outFailure)
 
         sourceInfo = m_broadcastStreamInfo;
         seqNum = m_broadcastChunkBuffer.GetNewestSeq();
-        const bool found = m_broadcastChunkBuffer.WithSegment(seqNum, [&](const LiveChunk& chunk) {
-            expected.assign(chunk.data, chunk.data + chunk.dataSize);
-            packet = eSELive::CreateChunkPacketV2(&chunk,
+        const bool found = m_broadcastChunkBuffer.WithSegment(seqNum, [&](const LiveChunkRecord& chunk) {
+            expected.assign(chunk.data.begin(), chunk.data.end());
+            LegacyChunkView legacy(chunk);
+            packet = eSELive::CreateChunkPacketV2(legacy.Get(),
                 m_broadcastSession.PrivateKey().data(),
                 m_broadcastSession.PublicKey().data());
         });
@@ -484,9 +505,9 @@ bool CLiveStreamManager::RunIsolatedLoopbackSelfTest(CString& outFailure)
             reinterpret_cast<const BYTE*>(packet->pBuffer), packet->size);
 
         bool storedMatches = false;
-        viewer.m_chunkBuffer.WithSegment(seqNum, [&](const LiveChunk& chunk) {
-            storedMatches = chunk.dataSize == expected.size()
-                && memcmp(chunk.data, expected.data(), expected.size()) == 0;
+        viewer.m_chunkBuffer.WithSegment(seqNum, [&](const LiveChunkRecord& chunk) {
+            storedMatches = chunk.data.size() == expected.size()
+                && chunk.data == expected;
         });
         const LONG received = InterlockedCompareExchange(
             &viewer.m_counters.chunksReceived, 0, 0);
@@ -1398,21 +1419,15 @@ void CLiveStreamManager::RefreshViewerHlsPlaylist()
     EseEnsureDirectoryTree(dir);
     uint32 oldest = m_chunkBuffer.GetOldestSeq();
     uint32 newest = m_chunkBuffer.GetNewestSeq();
+    const uint32 windowSpan = newest - oldest + 1u;
 
-    // Phase 3 HLS-2 / Phase 2 LAT-3 / Phase-1 fix #1 (2026-06): buffer
-    // minimum gate, STARTUP-ONLY. Require 2 contiguous trailing segments
-    // (2 s each = 4 s of material) before the FIRST playlist write, so the
-    // player doesn't start on a sliver. Once playback has started the gate
-    // no longer applies: it used to run on every refresh, and because
-    // `contiguous` resets to 0 on each hole it measured the TRAILING run —
-    // any gap near the live edge froze the playlist for 2-4 s even with a
-    // full buffer behind it. VLC, playing at the live edge, saw a stalled
-    // playlist => micro-cut with no network cause. Post-start gaps are
-    // handled below via #EXT-X-DISCONTINUITY instead.
+    // Startup alone requires two contiguous segments; later gaps become
+    // HLS discontinuities instead of freezing the playlist.
     if (!m_bHlsPlaylistStarted) {
         const uint32 ESE_HLS_MIN_BUFFER_SEGMENTS = 2;
         uint32 contiguous = 0;
-        for (uint32 seq = oldest; seq <= newest; ++seq) {
+        for (uint32 offset = 0u; offset < windowSpan; ++offset) {
+            const uint32 seq = oldest + offset;
             if (m_chunkBuffer.HasSegment(seq))
                 contiguous++;
             else
@@ -1440,7 +1455,9 @@ void CLiveStreamManager::RefreshViewerHlsPlaylist()
             if (uscore >= 0 && dot > uscore) {
                 uint32 seq = (uint32)_ttoi(name.Mid(uscore + 1, dot - uscore - 1));
                 const uint32 cleanupMargin = 2;
-                if (seq + cleanupMargin < oldest || seq > newest) {
+                const uint32 offset = seq - oldest;
+                const uint32 age = oldest - seq;
+                if (offset >= windowSpan && age > cleanupMargin) {
                     CString filePath;
                     filePath.Format(_T("%s\\%s"), (LPCTSTR)dir, fd.cFileName);
                     DeleteFile(filePath);
@@ -1450,13 +1467,11 @@ void CLiveStreamManager::RefreshViewerHlsPlaylist()
         FindClose(hFind);
     }
 
-    // Phase 3 HLS-3 FIX: Build playlist with only segments that actually exist.
-    // Use #EXT-X-DISCONTINUITY at gap boundaries for standards compliance.
-    // Set EXT-X-MEDIA-SEQUENCE to the first actually-present segment,
-    // not the oldest buffered seq (which may be missing in P2P).
+    // Emit only present segments and anchor media-sequence at the first one.
     uint32 firstPresentSeq = 0;
     bool foundFirst = false;
-    for (uint32 seq = oldest; seq <= newest; ++seq) {
+    for (uint32 offset = 0u; offset < windowSpan; ++offset) {
+        const uint32 seq = oldest + offset;
         if (m_chunkBuffer.HasSegment(seq)) {
             firstPresentSeq = seq;
             foundFirst = true;
@@ -1477,7 +1492,9 @@ void CLiveStreamManager::RefreshViewerHlsPlaylist()
 
     uint32 gapCount = 0;
     bool lastWasPresent = true;
-    for (uint32 seq = firstPresentSeq; seq <= newest; ++seq) {
+    const uint32 playlistSpan = newest - firstPresentSeq + 1u;
+    for (uint32 offset = 0u; offset < playlistSpan; ++offset) {
+        const uint32 seq = firstPresentSeq + offset;
         if (m_chunkBuffer.HasSegment(seq)) {
             if (!lastWasPresent) {
                 // Insert discontinuity tag after a gap
@@ -1533,7 +1550,7 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     if (!servingBroadcast && !servingViewer) return;
     LiveStreamInfo& servedInfo = servingBroadcast
         ? m_broadcastStreamInfo : m_streamInfo;
-    CLiveChunkBuffer& servedBuffer = servingBroadcast
+    LiveChunkWindow& servedBuffer = servingBroadcast
         ? m_broadcastChunkBuffer : m_chunkBuffer;
 
     // v7.3.0 — Per-IP SUBSCRIBE rate limit. Cap: 30 SUBSCRIBEs/60 s from
@@ -1784,49 +1801,41 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
         const uint32 pushCount = 3;
         newest = servedBuffer.GetNewestSeq();
         uint32 oldest = servedBuffer.GetOldestSeq();
-        startSeq = (newest >= pushCount - 1) ? (newest - (pushCount - 1)) : oldest;
-        if (startSeq < oldest) startSeq = oldest;
+        const uint32 availableSpan = newest - oldest + 1u;
+        const uint32 pushSpan =
+            availableSpan < pushCount ? availableSpan : pushCount;
+        startSeq = newest - (pushSpan - 1u);
 
-        // PUSH/PULL dedup (2026-06): the viewer already PULLs missing segments
-        // (ASK -> OP_LIVE_REQUEST). On a RE-subscribe (~12 s cadence, past the
-        // push cooldown) the live-edge segments we'd push are ones it already has
-        // and ACK'd, so the push is a wasted ~2-3 MB burst that competes with the
-        // live pull (the periodic ms stutter). Consult the viewer's last-known
-        // bitmap (recorded every ~1 s by OnPeerBitmap; GetPeerBitmap is a lockless
-        // map lookup) and skip segments it reports having. First subscribe = no
-        // recorded bitmap -> haveVbm false -> push all (bootstrap preserved). A
-        // stale/missing bitmap degrades to today's push, and the viewer's own PULL
-        // still fetches anything truly missing, so this never withholds data.
+        // Avoid re-pushing chunks acknowledged in the viewer's latest bitmap.
+        // A missing/stale bitmap safely falls back to the bootstrap push.
         PeerBitmapInfo vbm;
         const bool haveVbm = GetPeerBitmap(peer, vbm);
 
-        // v7.5.0 — WithSegment serializes the read against AddSegment; previous
-        // code held the LiveStreamManager m_lock but NOT the chunk buffer's
-        // own m_lock, so AddSegment from the broadcaster thread could free
-        // the slot between GetSegment() and CreateChunkPacket()'s memcpy.
-        // CreateChunkPacket copies the bytes, so once it returns the Packet is
-        // self-contained and safe to use after the buffer's lock releases.
+        // The immutable chunk handle stays valid across concurrent eviction;
+        // CreateChunkPacket copies it into a self-contained packet.
         // v8.1.x — fragment oversized segments if the viewer can reassemble.
         const bool peerFrag = peer && (peer->GetEseCapabilities() & ESE_CAP_LIVE_CHUNK_FRAG) != 0;
         CArray<Packet*> pushBatch;   // may hold >1 packet per segment when fragmented
         uint64 totalBytes = 0;
         int segsPushed = 0;
-        for (uint32 seq = startSeq; seq <= newest; ++seq) {
+        for (uint32 offset = 0u; offset < pushSpan; ++offset) {
+            const uint32 seq = startSeq + offset;
             if (haveVbm && vbm.Has(seq)) continue;   // viewer already has it -> don't re-push
             Packet* chunkPkt = NULL;
             uint32 chunkSize = 0;
-            servedBuffer.WithSegment(seq, [&](const LiveChunk& chunk) {
+            servedBuffer.WithSegment(seq, [&](const LiveChunkRecord& chunk) {
+                LegacyChunkView legacy(chunk);
                 // v7.7.0 — if we're broadcasting our own stream, emit signed V2.
                 // Otherwise (relay of someone else's chunk) emit legacy V1.
                 if (m_broadcastSession.IsActive() &&
-                    memcmp(chunk.streamKey, servedInfo.streamKey, 16) == 0) {
-                    chunkPkt = eSELive::CreateChunkPacketV2(&chunk,
+                    memcmp(chunk.stream_key.data(), servedInfo.streamKey, 16) == 0) {
+                    chunkPkt = eSELive::CreateChunkPacketV2(legacy.Get(),
                         m_broadcastSession.PrivateKey().data(),
                         m_broadcastSession.PublicKey().data());
                 }
                 if (!chunkPkt)
-                    chunkPkt = eSELive::CreateChunkPacket(&chunk);
-                chunkSize = chunk.dataSize;
+                    chunkPkt = eSELive::CreateChunkPacket(legacy.Get());
+                chunkSize = static_cast<uint32>(chunk.data.size());
             });
             if (!chunkPkt) continue;
             eSELive::AppendChunkSendPackets(chunkPkt, peerFrag, pushBatch);  // takes ownership
@@ -1913,7 +1922,7 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
     if (!servingBroadcast && !servingViewer) return;
     const LiveStreamInfo& servedInfo = servingBroadcast
         ? m_broadcastStreamInfo : m_streamInfo;
-    const CLiveChunkBuffer& servedBuffer = servingBroadcast
+    const LiveChunkWindow& servedBuffer = servingBroadcast
         ? m_broadcastChunkBuffer : m_chunkBuffer;
 
     // Sprint 4 F.4 — DDoS rate-limit by /24 subnet.
@@ -1936,22 +1945,20 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
         return;
     }
 
-    // v7.5.0 — snapshot what we need from the chunk under the buffer's lock.
-    // The legacy GetSegment() returned a raw pointer that could be freed
-    // before we finished using it (UAF #7).
     Packet*  chunkPkt   = NULL;
     uint32   chunkSize  = 0;
-    bool     chunkFound = servedBuffer.WithSegment(seqNum, [&](const LiveChunk& c) {
+    bool     chunkFound = servedBuffer.WithSegment(seqNum, [&](const LiveChunkRecord& c) {
+        LegacyChunkView legacy(c);
         // v7.7.0 — sign if we own this stream; else V1 for relays.
         if (servingBroadcast &&
-            memcmp(c.streamKey, servedInfo.streamKey, 16) == 0) {
-            chunkPkt = eSELive::CreateChunkPacketV2(&c,
+            memcmp(c.stream_key.data(), servedInfo.streamKey, 16) == 0) {
+            chunkPkt = eSELive::CreateChunkPacketV2(legacy.Get(),
                 m_broadcastSession.PrivateKey().data(),
                 m_broadcastSession.PublicKey().data());
         }
         if (!chunkPkt)
-            chunkPkt = eSELive::CreateChunkPacket(&c);
-        chunkSize = c.dataSize;
+            chunkPkt = eSELive::CreateChunkPacket(legacy.Get());
+        chunkSize = static_cast<uint32>(c.data.size());
     });
     if (!chunkFound) {
         LIVE_LOG("REQ", "MISS seq=%u from %S:%u — not in buffer",
@@ -2364,18 +2371,9 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
     // Subject to the same EffectiveMaxConcurrentUploads cap (no fan-out
     // amplification beyond what S13/S16 already authorize).
     //
-    // v7.5.0 — was reading `stored->dataSize` and passing `stored` to
-    // CreateChunkPacket across N iterations while AddSegment from the encoder
-    // thread could free that slot. Pre-build the packets and snapshot the size
-    // inside one WithSegment lambda, then send outside the buffer lock.
-    //
-    // Phase-1 fix #4 (2026-06) — packets are built and accounting updated
-    // under m_lock, but the socket sends are deferred to after the lock is
-    // released (same snapshot-then-act pattern as the initial push in
-    // OnPeerJoin and the BuildDebugSnapshot deadlock fix): N sends of a
-    // ~500 KB chunk under the manager lock stalled FeedSegment/Process on
-    // contention. Child pointers stay valid across the unlock because
-    // CUpDownClient deletion only happens on this same (main) thread.
+    // The immutable window record is copied once before per-child packet builds.
+    // Build/account under m_lock, then send outside it; client lifetime is
+    // stable because deletion runs on this same main thread.
     struct RelayOut { CUpDownClient* child; Packet* pkt; };
     std::vector<RelayOut> relayPkts;
     // A simultaneous local broadcaster owns the downstream role. Remote chunks
@@ -2385,22 +2383,18 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
     if (!m_broadcastSession.IsActive() && !m_peerSet.DownstreamsEmpty()) {
         uint32 storedSize = 0;
         bool   storedFound = false;
-        // We can't build N packets inside the lambda without knowing N — we
-        // don't know how many children will receive yet. So copy the bytes
-        // into a local buffer under the lock and rebuild a packet per child
-        // afterwards. CreateChunkPacket takes a LiveChunk* with an owned data
-        // pointer; we pass a stack-local LiveChunk view of our copy.
+        // Snapshot once, then build one legacy packet per selected child.
         std::vector<BYTE> bodyCopy;
         uchar localStreamKey[16] = {0};
         uint32 localTs = 0;
         uint16 localBitrate = 0;
-        m_chunkBuffer.WithSegment(seqNum, [&](const LiveChunk& c) {
+        m_chunkBuffer.WithSegment(seqNum, [&](const LiveChunkRecord& c) {
             storedFound = true;
-            storedSize  = c.dataSize;
-            bodyCopy.assign(c.data, c.data + c.dataSize);
-            memcpy(localStreamKey, c.streamKey, 16);
+            storedSize  = static_cast<uint32>(c.data.size());
+            bodyCopy.assign(c.data.begin(), c.data.end());
+            memcpy(localStreamKey, c.stream_key.data(), 16);
             localTs      = c.timestamp;
-            localBitrate = c.bitrate;
+            localBitrate = c.bitrate_kbps;
         });
         if (storedFound) {
             LiveChunk localView;
@@ -3790,7 +3784,7 @@ void CLiveStreamManager::SendBitmapToAll(bool broadcastRole)
 {
     if (broadcastRole && !m_broadcastSession.IsActive()) return;
     if (!broadcastRole && !m_viewerSession.IsActive()) return;
-    const CLiveChunkBuffer& buffer = broadcastRole
+    const LiveChunkWindow& buffer = broadcastRole
         ? m_broadcastChunkBuffer : m_chunkBuffer;
     const LiveStreamInfo& info = broadcastRole
         ? m_broadcastStreamInfo : m_streamInfo;
@@ -3877,10 +3871,8 @@ void CLiveStreamManager::SendAnnounceToAll()
     }
 }
 
-// R.3 egress: forward every NEW segment to the active relay buddy as OP_LIVE_RELAY_FWD/
-// CHUNK. Runs on the main thread AFTER Process() released m_lock (so a big relay drain
-// never blocks FeedSegment). Lock-free: WithSegment provides chunk-buffer safety; the
-// buddy pointer + m_streamInfo are main-thread-only. Dormant unless s_relayEgressEnabled.
+// R.3 egress: forward every new immutable segment to the relay buddy.
+// Dormant unless the relay-egress preference is enabled.
 void CLiveStreamManager::RelayPushNewSegments()
 {
     if (!thePrefs.GetEseRelayEgress() || !m_broadcastSession.IsActive())   // gate: pref EseRelayEgress (default OFF)
@@ -3895,27 +3887,27 @@ void CLiveStreamManager::RelayPushNewSegments()
         }
         return;
     }
-    // Build the relay packets UNDER m_lock so the chunk-buffer window (GetOldest/NewestSeq)
-    // + WithSegment read are consistent against FeedSegment's AddSegment/eviction on the
-    // FFmpeg watcher thread; then RELEASE m_lock and send — a big relay drain must never run
-    // under m_lock (mirrors the initial-push pattern ~:1396). `buddy` is main-thread-stable:
-    // the main loop is run-to-completion and SendPacket only queues to the socket buffer (it
-    // does NOT pump the message loop), so g_activeBuddy cannot change across this call.
+    // Snapshot immutable chunks under manager orchestration, then send unlocked.
     CArray<Packet*> outBatch;
     {
         CSingleLock lock(&m_lock, TRUE);
         if (!m_broadcastSession.IsActive() || m_broadcastChunkBuffer.GetCount() == 0)
             return;
-        const uint32 newest = m_broadcastChunkBuffer.GetNewestSeq();
-        const uint32 oldest = m_broadcastChunkBuffer.GetOldestSeq();
-        uint32 from = (m_lastRelayedSeq == UINT_MAX) ? oldest : (m_lastRelayedSeq + 1);
-        if (from < oldest) from = oldest;        // segments before `oldest` were already evicted
-        for (uint32 seq = from; seq <= newest; ++seq) {
+        const ese::live::LiveChunkWindowSnapshot window =
+            m_broadcastChunkBuffer.Snapshot();
+        const uint32 relaySpan =
+            window.newest_sequence - window.oldest_sequence + 1u;
+        for (uint32 offset = 0u; offset < relaySpan; ++offset) {
+            const uint32 seq = window.oldest_sequence + offset;
+            if (m_hasRelayedSeq &&
+                !LiveChunkWindow::IsNewerSequence(seq, m_lastRelayedSeq))
+                continue;
             Packet* v2 = NULL;
-            m_broadcastChunkBuffer.WithSegment(seq, [&](const LiveChunk& c) {
-                if (memcmp(c.streamKey, m_broadcastStreamInfo.streamKey, 16) == 0)
+            m_broadcastChunkBuffer.WithSegment(seq, [&](const LiveChunkRecord& c) {
+                LegacyChunkView legacy(c);
+                if (memcmp(c.stream_key.data(), m_broadcastStreamInfo.streamKey, 16) == 0)
                     v2 = eSELive::CreateChunkPacketV2(
-                        &c,
+                        legacy.Get(),
                         m_broadcastSession.PrivateKey().data(),
                         m_broadcastSession.PublicKey().data());
             });
@@ -3930,7 +3922,8 @@ void CLiveStreamManager::RelayPushNewSegments()
             if (fwd != NULL)
                 outBatch.Add(fwd);
         }
-        m_lastRelayedSeq = newest;
+        m_lastRelayedSeq = window.newest_sequence;
+        m_hasRelayedSeq = true;
     }   // m_lock released before the socket drain
     for (INT_PTR i = 0; i < outBatch.GetCount(); ++i) {
         theStats.AddUpDataOverheadOther(outBatch[i]->size);
@@ -4176,7 +4169,11 @@ void CLiveStreamManager::RequestMissingSegments()
     const int    maxRequestsPerCycle = 5;
     const uint32 lookahead = 3;
     const DWORD  ESE_LIVE_INFLIGHT_TIMEOUT_MS = 4000;
-    for (uint32 seq = oldestSeq; seq <= newestSeq + lookahead && requested < maxRequestsPerCycle; seq++) {
+    const uint32 requestSpan = newestSeq - oldestSeq + 1u + lookahead;
+    for (uint32 offset = 0u;
+        offset < requestSpan && requested < maxRequestsPerCycle;
+        ++offset) {
+        const uint32 seq = oldestSeq + offset;
         if (m_chunkBuffer.HasSegment(seq)) continue;
 
         CAddress excludeAddress;
@@ -4532,7 +4529,7 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
     snap.emergencyMode = m_bEmergencyMode;
     const LiveStreamInfo& primaryInfo = m_broadcastSession.IsActive()
         ? m_broadcastStreamInfo : m_streamInfo;
-    const CLiveChunkBuffer& primaryBuffer = m_broadcastSession.IsActive()
+    const LiveChunkWindow& primaryBuffer = m_broadcastSession.IsActive()
         ? m_broadcastChunkBuffer : m_chunkBuffer;
     snap.uptimeMs      = (primaryInfo.startedAt > 0)
         ? ((uint32)time(NULL) - primaryInfo.startedAt) * 1000 : 0;

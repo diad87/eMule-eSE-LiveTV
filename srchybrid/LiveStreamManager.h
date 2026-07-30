@@ -4,7 +4,7 @@
 #pragma once
 
 #include "LiveProtocol.h"
-#include "LiveChunkBuffer.h"
+#include "LiveChunkWindow.h"
 #include "LiveKadBridge.h"
 #include "LiveMeshManager.h"
 #include "LivePeerRefreshPolicy.h"
@@ -441,12 +441,12 @@ public:
     // The mesh manager follows the viewer session whenever one is active.
     // A pure broadcaster falls back to the broadcast session.  Callers which
     // require a specific role must use the explicit accessors below.
-    const CLiveChunkBuffer& GetBuffer() const
+    const ese::live::LiveChunkWindow& GetBuffer() const
         { return m_viewerSession.IsActive() ? m_chunkBuffer : m_broadcastChunkBuffer; }
     const LiveStreamInfo& GetStreamInfo() const
         { return m_viewerSession.IsActive() ? m_streamInfo : m_broadcastStreamInfo; }
-    const CLiveChunkBuffer& GetBroadcastBuffer() const { return m_broadcastChunkBuffer; }
-    const CLiveChunkBuffer& GetViewerBuffer() const { return m_chunkBuffer; }
+    const ese::live::LiveChunkWindow& GetBroadcastBuffer() const { return m_broadcastChunkBuffer; }
+    const ese::live::LiveChunkWindow& GetViewerBuffer() const { return m_chunkBuffer; }
     const LiveStreamInfo& GetBroadcastStreamInfo() const { return m_broadcastStreamInfo; }
     const LiveStreamInfo& GetViewerStreamInfo() const { return m_streamInfo; }
     uint32 GetViewerCount() const;
@@ -565,19 +565,16 @@ private:
     // Stream state
     ese::live::LiveBroadcastSession m_broadcastSession;
     ese::live::LiveViewerSession    m_viewerSession;
-    // Viewer and broadcaster identities must never alias.  beta.1 used a
-    // single m_streamInfo/m_chunkBuffer pair; JoinStream consequently replaced
-    // the active broadcaster key and local FFmpeg chunks were written into the
-    // remote viewer namespace.  Keep the viewer members under their historical
-    // names to minimize protocol-path churn, and give the broadcaster an
-    // authoritative, independent state pair.
+    // Viewer and broadcaster identities/windows stay authoritative and
+    // independent; joining a remote stream cannot replace local broadcast state.
     LiveStreamInfo      m_streamInfo;              // current remote viewer
     LiveStreamInfo      m_broadcastStreamInfo;     // current local broadcaster
-    CLiveChunkBuffer    m_chunkBuffer;              // received remote chunks
-    CLiveChunkBuffer    m_broadcastChunkBuffer;     // locally produced chunks
+    ese::live::LiveChunkWindow m_chunkBuffer;          // received remote chunks
+    ese::live::LiveChunkWindow m_broadcastChunkBuffer; // locally produced chunks
     // R.3 relay egress (gated by pref EseRelayEgress): proactively forward new segments to a
     // relay buddy when we are an unreachable broadcaster (symmetric NAT/CGNAT).
-    uint32              m_lastRelayedSeq;       // last seq forwarded to the buddy (UINT_MAX = none)
+    uint32              m_lastRelayedSeq;
+    bool                m_hasRelayedSeq;
     DWORD               m_dwLastRelaySetup;     // throttle for (re)sending SETUP when no buddy
 
     ese::live::LivePeerSet m_peerSet; // opaque membership; client list owns pointers

@@ -148,14 +148,16 @@ void CLiveMeshManager::CalculateRarities(CArray<SegmentRarity>& outRarities)
 
     if (!m_pManager) return;
 
-    const CLiveChunkBuffer& buffer = m_pManager->GetBuffer();
+    const ese::live::LiveChunkWindow& buffer = m_pManager->GetBuffer();
     uint32 oldest = buffer.GetOldestSeq();
     uint32 newest = buffer.GetNewestSeq();
+    const uint32 span = newest - oldest + 1u;
 
     outRarities.RemoveAll();
 
     // For each possible segment in the window
-    for (uint32 seq = oldest; seq <= newest + 2; seq++) {
+    for (uint32 offset = 0u; offset < span + 2u; ++offset) {
+        const uint32 seq = oldest + offset;
         SegmentRarity rarity;
         rarity.seqNum = seq;
         rarity.haveIt = buffer.HasSegment(seq);

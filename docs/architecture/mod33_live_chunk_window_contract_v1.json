@@ -1,0 +1,43 @@
+{
+  "schema": "ese.mod33.live-chunk-window-contract/v1",
+  "baseline_commit": "d032418e65a2dc64c726c46a275e5841a9a34874",
+  "module": {
+    "name": "LiveChunkWindow",
+    "owner_before": "CLiveStreamManager",
+    "owner_after": "LiveChunkWindow",
+    "layer": "domain_state",
+    "responsibility": "bounded chunk ingest, serial order, expiry and immutable availability",
+    "declared_direct_dependencies": []
+  },
+  "invariants": {
+    "capacity": 15,
+    "maximum_chunk_bytes": 12582912,
+    "stream_identity": "first_accepted_chunk_binds_the_window_until_clear",
+    "duplicates": "rejected_without_mutation",
+    "reorder": "accepted_only_inside_the_current_serial_window",
+    "expiry": "every_chunk_outside_the_latest_15_serial_positions_is_unavailable",
+    "large_jump": "expires_all_prior_chunks_without_range_iteration",
+    "sequence_wrap": "uint32_serial_order_is_supported_and_half_range_is_fail_closed",
+    "availability": "snapshot_count_range_and_bitmap_describe_only_retrievable_chunks",
+    "lifetime": "immutable_shared_chunk_survives_eviction_and_clear",
+    "callbacks": "no_external_callback_runs_under_the_internal_lock",
+    "wire_format": "unchanged"
+  },
+  "boundary": {
+    "owned_by_LiveChunkWindow": [
+      "chunk byte ownership",
+      "stream-key binding",
+      "duplicate and stale admission",
+      "serial-order window advancement",
+      "expiry and immutable chunk lookup",
+      "count, range and availability bitmap"
+    ],
+    "retained_by_CLiveStreamManager": [
+      "packet parsing and signature verification",
+      "legacy wire packet construction",
+      "broadcast and viewer session selection",
+      "HLS file output and relay delivery",
+      "logging, counters and UI projection"
+    ]
+  }
+}

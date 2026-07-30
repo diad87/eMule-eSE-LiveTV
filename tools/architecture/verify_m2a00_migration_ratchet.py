@@ -435,13 +435,17 @@ import sys
 import unittest
 
 OriginalTestCase = unittest.TestCase
-original_test_case_run = unittest.TestCase.run
-original_test_case_call = unittest.TestCase.__call__
+original_test_case_methods = {
+    name: getattr(unittest.TestCase, name)
+    for name in (
+        "run", "__call__", "_callSetUp", "_callTestMethod",
+        "_callTearDown", "doCleanups",
+    )
+}
 OriginalTestLoader = unittest.TestLoader
 original_load_from_module = unittest.TestLoader.loadTestsFromModule
 OriginalTestSuite = unittest.TestSuite
-original_suite_run = unittest.TestSuite.run
-original_suite_call = unittest.TestSuite.__call__
+OriginalTestResult = unittest.TestResult
 
 class TrackingResult(unittest.TestResult):
     def __init__(self):
@@ -452,22 +456,57 @@ class TrackingResult(unittest.TestResult):
         super().addSuccess(test)
         self.successes.append(test.id())
 
+original_tracking_add_success = TrackingResult.addSuccess
 path = pathlib.Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location("_m2a_evidence", path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 # Evidence is executable but not authoritative over the runner itself.
-OriginalTestCase.run = original_test_case_run
-OriginalTestCase.__call__ = original_test_case_call
+unittest.TestCase = OriginalTestCase
+unittest.case.TestCase = OriginalTestCase
+unittest.TestLoader = OriginalTestLoader
+unittest.loader.TestLoader = OriginalTestLoader
+unittest.TestSuite = OriginalTestSuite
+unittest.suite.TestSuite = OriginalTestSuite
+unittest.TestResult = OriginalTestResult
+unittest.result.TestResult = OriginalTestResult
+for name, implementation in original_test_case_methods.items():
+    setattr(OriginalTestCase, name, implementation)
 OriginalTestLoader.loadTestsFromModule = original_load_from_module
-OriginalTestSuite.run = original_suite_run
-OriginalTestSuite.__call__ = original_suite_call
+TrackingResult.addSuccess = original_tracking_add_success
 
 result = TrackingResult()
 suite = original_load_from_module(OriginalTestLoader(), module)
+
+def flatten(node):
+    for item in node:
+        if isinstance(item, OriginalTestSuite):
+            yield from flatten(item)
+        else:
+            yield item
+
 captured = io.StringIO()
 with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-    original_suite_run(suite, result)
+    for test in flatten(suite):
+        test_type = test.__class__
+        forbidden = {
+            "run", "__call__", "_callSetUp", "_callTestMethod",
+            "_callTearDown", "doCleanups",
+        }
+        if (
+            test_type.__bases__ != (OriginalTestCase,)
+            or forbidden.intersection(test_type.__dict__)
+        ):
+            result.addError(
+                test,
+                (
+                    RuntimeError,
+                    RuntimeError("evidence test runner override forbidden"),
+                    None,
+                ),
+            )
+            continue
+        original_test_case_methods["run"](test, result)
 payload = {
     "testsRun": result.testsRun,
     "successes": result.successes,
@@ -518,6 +557,7 @@ print("__M2A_TEST_RESULT__" + json.dumps(payload, sort_keys=True))
             "expectedFailures", "unexpectedSuccesses",
         }
         or not isinstance(result["testsRun"], int)
+        or result["testsRun"] != len(result["successes"])
         or any(
             result[key]
             for key in (
@@ -1257,34 +1297,7 @@ def _preexisting_parent_route(
     classes: tuple[str, ...],
     call_start: int,
 ) -> bool:
-    """Require the call to sit in a parent member that existed before A."""
-    def lexically_reachable(opening: int) -> bool:
-        prefix = current[opening + 1:call_start]
-        constant_false = re.compile(
-            r"\b(?:if(?:\s+constexpr)?|while)\s*"
-            r"\(\s*(?:false|0|nullptr|NULL)\s*\)"
-        )
-        # Cover an unbraced `if (false) call();`.
-        tail = prefix[
-            max(prefix.rfind(";"), prefix.rfind("{"), prefix.rfind("}")) + 1:
-        ]
-        if constant_false.search(tail):
-            return False
-        dead_stack = [False]
-        for index, character in enumerate(prefix):
-            if character == "{":
-                header = prefix[max(
-                    prefix.rfind(";", 0, index),
-                    prefix.rfind("{", 0, index),
-                    prefix.rfind("}", 0, index),
-                ) + 1:index]
-                dead_stack.append(
-                    dead_stack[-1]
-                    or constant_false.search(header) is not None
-                )
-            elif character == "}" and len(dead_stack) > 1:
-                dead_stack.pop()
-        return not any(dead_stack)
+    """Require an unconditional first statement in a pre-existing member."""
 
     for owner in classes:
         signature = re.compile(
@@ -1298,7 +1311,7 @@ def _preexisting_parent_route(
             if (
                 closing is None
                 or not (opening < call_start < closing)
-                or not lexically_reachable(opening)
+                or current[opening + 1:call_start].strip()
             ):
                 continue
             old_signature = re.compile(

@@ -285,6 +285,23 @@ class M2A00RatchetTest(unittest.TestCase):
                 GATE._run_required_tests(relative, {coverage})
             test_path.write_text(
                 "import unittest\n"
+                "Original = unittest.TestCase\n"
+                "class Evil(Original):\n"
+                "    def run(self, result=None):\n"
+                "        result.addSuccess(self)\n"
+                "unittest.TestCase = Evil\n"
+                "unittest.case.TestCase = Evil\n"
+                "class Fixture(unittest.TestCase):\n"
+                f"    def {method}(self):\n"
+                "        self.assertEqual(1, 2)\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                GATE.GateError, "did not finish cleanly"
+            ):
+                GATE._run_required_tests(relative, {coverage})
+            test_path.write_text(
+                "import unittest\n"
                 "_original_run = unittest.TestCase.run\n"
                 "def _forge_success(self, result=None):\n"
                 "    result.addSuccess(self)\n"
@@ -307,9 +324,7 @@ class M2A00RatchetTest(unittest.TestCase):
         )
         live = (
             "bool Parent::Run() {\n"
-            "  if (!m_handle) {\n"
-            "    m_handle = M2A_BIND_X(M2AParentPort{this});\n"
-            "  }\n"
+            "  m_handle = M2A_BIND_X(M2AParentPort{this});\n"
             "  return true;\n"
             "}\n"
         )
@@ -328,15 +343,31 @@ class M2A00RatchetTest(unittest.TestCase):
             "  return true;\n"
             "}\n"
         )
+        false_variants = (
+            "0u",
+            "!true",
+            "std::false_type::value",
+        )
         self.assertTrue(GATE._preexisting_parent_route(
-            live, previous, ("Parent",), live.index("M2A_BIND_X")
+            live, previous, ("Parent",), live.index("m_handle")
         ))
-        for source in (dead, unbraced):
+        sources = [dead, unbraced]
+        sources.extend(
+            (
+                "bool Parent::Run() {\n"
+                f"  if ({condition}) "
+                "m_handle = M2A_BIND_X(M2AParentPort{this});\n"
+                "  return true;\n"
+                "}\n"
+            )
+            for condition in false_variants
+        )
+        for source in sources:
             self.assertFalse(GATE._preexisting_parent_route(
                 source,
                 previous,
                 ("Parent",),
-                source.index("M2A_BIND_X"),
+                source.index("m_handle"),
             ))
 
     def test_real_git_activation_sequence_b_a_h_and_negative_cases(self):
@@ -728,8 +759,7 @@ class M2A00RatchetTest(unittest.TestCase):
                         (
                             "bool LiveTunnelScheduler::Enqueue("
                             "LiveDeferredWork work)\n{\n"
-                            f"    if (!{binding_member})\n"
-                            f"        {binding_member} = {binding_marker}("
+                            f"    {binding_member} = {binding_marker}("
                             "M2AParentPort{this});\n"
                         ).encode(),
                         1,
@@ -941,8 +971,7 @@ class M2A00RatchetTest(unittest.TestCase):
                         (
                             "bool LiveTunnelScheduler::Enqueue("
                             "LiveDeferredWork work)\n{\n"
-                            f"    if (!{binding_member})\n"
-                            f"        {binding_member} = {binding_marker}("
+                            f"    {binding_member} = {binding_marker}("
                             "M2AParentPort{this});\n"
                         ).encode(),
                         1,

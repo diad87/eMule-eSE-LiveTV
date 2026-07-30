@@ -238,6 +238,7 @@ test('package manifest includes every offline player asset', () => {
 test('release dashboard is loopback-only and legacy updates fail closed', () => {
   const pkg = JSON.parse(read(eseRoot, 'package.json'));
   const server = read(eseRoot, 'server.js');
+  const domainRouter = read(eseRoot, 'routes', 'http_domain_router.js');
   const legacyPlayer = read(eseRoot, 'live_player_server.js');
   const miscPages = read(eseRoot, 'pages', 'misc_pages.js');
   const channelApi = read(eseRoot, 'eSE-live', 'channel_api.js');
@@ -255,7 +256,7 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.doesNotMatch(server, /eSE v6\.2/);
   assert.doesNotMatch(miscPages, /version:\s*'7\.5\.2'/);
   assert.match(server, /server\.listen\(PORT,\s*'127\.0\.0\.1'/);
-  assert.match(server, /url\.pathname === '\/api\/eSE\/update\/check'/);
+  assert.match(domainRouter, /pathname === ["']\/api\/eSE\/update\/check["']/);
   assert.match(legacyPlayer, /server\.listen\(PORT,\s*'127\.0\.0\.1'/);
   assert.match(
     webSocketTunnel,

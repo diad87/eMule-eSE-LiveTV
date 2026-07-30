@@ -130,6 +130,8 @@ const streamPart     = require('./routes/stream_part');
 const streamCompleted = require('./routes/stream_completed');
 const systemRoutes   = require('./routes/system_routes');
 const v1Routes       = require('./routes/v1_routes');
+const { createHttpDomainRouter } = require('./routes/http_domain_router');
+const { createStaticRoutes } = require('./routes/static_routes');
 
 // Init pages with shared context (done after all helpers are defined)
 // See initPages() call at bottom of file
@@ -211,68 +213,18 @@ v1Routes.init({
   }
 });
 // Init tunnel (must be before server handles requests that use tunnel.*)
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost:' + PORT);
-
-  if (!security.apply(url, req, res)) return;
-
-  // Debug log endpoint + /debug viewer page (always-on, loopback-only).
-  if (debugLog.handle(url, req, res)) return;
-  if (debugPage.handle(url, req, res)) return;
-
-  // ━━━ eSE LIVE routes (/api/live/*, /live/*) ━━━
-
-  // 2026-05-17: '/hls/' (with trailing slash) missed '/hls-local/...' so the
-  // per-stream HLS endpoint in channel_api.js never fired and self-viewing on
-  // the same PC failed silently with a generic 404. Use '/hls' to catch both.
-  if (url.pathname.startsWith('/api/live/') ||
-      url.pathname.startsWith('/live') ||
-      url.pathname.startsWith('/hls') ||
-      url.pathname === '/privacy' ||
-      url.pathname === '/api/eSE/update/check') {
-    const handled = liveApi.handleRoute(url, req, res, {
-      port: PORT,
-      ffmpegPath: FFMPEG_PATH,
-      hwEncoder: HW_ENCODER,
-      hwEncoderOpts: HW_ENCODER_OPTS
-    });
-    if (handled) return;
-  }
-  
-  
-    
-
-  // ── API routes ───────────────────────────────────
-  if (v1Routes.handle(url, req, res))        return;
-  if (moviesRoutes.handle(url, req, res))    return;
-  if (emuleRoutes.handle(url, req, res))     return;
-  if (streamCompleted.handle(url, req, res)) return;
-  if (streamPart.handle(url, req, res))      return;
-  if (systemRoutes.handle(url, req, res))    return;
-
-  // ── Page modules ───────────────────────────────────
-  if (miscPages.handle(url, req, res))   return;
-  if (connectPage.handle(url, req, res)) return;
-  if (searchPage.handle(url, req, res))  return;
-  if (appPage.handle(url, req, res))     return;
-  if (explorePage.handle(url, req, res)) return;
-  if (mylistPage.handle(url, req, res))  return;
-  if (mainPage.handle(url, req, res))    return;
-
-  // ── Static assets ─────────────────────────────────
-  if (url.pathname === '/emule_mascot.svg' || url.pathname === '/favicon.ico') {
-    const svgPath = path.join(__dirname, 'emule_mascot.svg');
-    try {
-      await fs.promises.access(svgPath);
-      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' });
-      fs.createReadStream(svgPath).pipe(res);
-      return;
-    } catch (_) {}
-  }
-
-  // 404 fallback
-  res.writeHead(404); res.end('Not found');
+const routeHttpRequest = createHttpDomainRouter({
+  port: PORT,
+  security,
+  debugLog,
+  debugPage,
+  liveApi,
+  liveRouteContext: { port: PORT, ffmpegPath: FFMPEG_PATH, hwEncoder: HW_ENCODER, hwEncoderOpts: HW_ENCODER_OPTS },
+  apiRoutes: [v1Routes, moviesRoutes, emuleRoutes, streamCompleted, streamPart, systemRoutes],
+  pageRoutes: [miscPages, connectPage, searchPage, appPage, explorePage, mylistPage, mainPage],
+  staticRoutes: createStaticRoutes({ rootDir: __dirname })
 });
+const server = http.createServer(routeHttpRequest);
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log('');

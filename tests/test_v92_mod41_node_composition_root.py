@@ -12,6 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "docs" / "architecture" / "mod41_node_composition_contract_v1.json"
 SERVER = ROOT / "srchybrid" / "eSE" / "server.js"
 DEBUG_PAGE = ROOT / "srchybrid" / "eSE" / "pages" / "debug_page.js"
+DOMAIN_ROUTER = ROOT / "srchybrid" / "eSE" / "routes" / "http_domain_router.js"
 PACKAGE = ROOT / "srchybrid" / "eSE" / "package.json"
 SLICE_BASE = "76cee7b0482ef0c0916708ea159a56915d185b36"
 
@@ -29,6 +30,7 @@ class Mod41NodeCompositionRootTest(unittest.TestCase):
         cls.contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
         cls.server = SERVER.read_text(encoding="utf-8")
         cls.debug_page = DEBUG_PAGE.read_text(encoding="utf-8")
+        cls.domain_router = DOMAIN_ROUTER.read_text(encoding="utf-8")
 
     def test_contract_freezes_scope_ownership_and_hard_stop(self) -> None:
         self.assertEqual(
@@ -64,17 +66,27 @@ class Mod41NodeCompositionRootTest(unittest.TestCase):
             self.assertNotIn(forbidden, self.debug_page)
 
     def test_security_and_route_order_are_unchanged(self) -> None:
-        ordered = (
+        domain_order = (
             "security.apply(url, req, res)",
             "debugLog.handle(url, req, res)",
             "debugPage.handle(url, req, res)",
             "liveApi.handleRoute(url, req, res",
-            "v1Routes.handle(url, req, res)",
-            "moviesRoutes.handle(url, req, res)",
-            "miscPages.handle(url, req, res)",
+            "runHandlers(apiHandlers, url, req, res)",
+            "runHandlers(pageHandlers, url, req, res)",
+            "staticRoutes.handle(url, req, res)",
         )
-        positions = [self.server.index(marker) for marker in ordered]
+        positions = [self.domain_router.index(marker) for marker in domain_order]
         self.assertEqual(positions, sorted(positions))
+        self.assertIn(
+            "apiRoutes: [v1Routes, moviesRoutes, emuleRoutes, "
+            "streamCompleted, streamPart, systemRoutes]",
+            self.server,
+        )
+        self.assertIn(
+            "pageRoutes: [miscPages, connectPage, searchPage, appPage, "
+            "explorePage, mylistPage, mainPage]",
+            self.server,
+        )
         self.assertIn(
             "const debugPage    = require('./pages/debug_page');",
             self.server,
@@ -124,38 +136,44 @@ class Mod41NodeCompositionRootTest(unittest.TestCase):
             self.assertIn(marker, self.debug_page)
 
     def test_negative_fixtures_detect_growth_order_and_response_drift(self) -> None:
-        def validate(server: str, page: str) -> None:
+        def validate(server: str, page: str, router: str) -> None:
             if len(server.splitlines()) > 300:
                 raise ValueError("composition root LOC drift")
-            if server.index("security.apply(") > server.index("debugPage.handle("):
+            if router.index("security.apply(") > router.index("debugPage.handle("):
                 raise ValueError("security order drift")
             digest = hashlib.sha256(debug_html(page).encode("utf-8")).hexdigest()
             if digest != self.contract["invariants"]["debug_template_source_sha256"]:
                 raise ValueError("debug response drift")
 
-        validate(self.server, self.debug_page)
+        validate(self.server, self.debug_page, self.domain_router)
         mutations = (
             (
                 self.server + "\n" * (302 - len(self.server.splitlines())),
                 self.debug_page,
+                self.domain_router,
             ),
             (
+                self.server,
+                self.debug_page,
                 re.sub(
-                    r"  if \(!security\.apply\(url, req, res\)\) return;\n",
+                    r"    if \(!security\.apply\(url, req, res\)\) return;\n",
                     "",
-                    self.server,
+                    self.domain_router,
                 ).replace(
                     "if (debugPage.handle(url, req, res)) return;",
                     "if (debugPage.handle(url, req, res)) return;\n"
-                    "  if (!security.apply(url, req, res)) return;",
+                    "    if (!security.apply(url, req, res)) return;",
                 ),
-                self.debug_page,
             ),
-            (self.server, self.debug_page.replace("<title>eSE/eMule", "<title>drift")),
+            (
+                self.server,
+                self.debug_page.replace("<title>eSE/eMule", "<title>drift"),
+                self.domain_router,
+            ),
         )
-        for server, page in mutations:
+        for server, page, router in mutations:
             with self.assertRaises(ValueError):
-                validate(server, page)
+                validate(server, page, router)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,73 @@
+{
+  "schema": "ese.mod43.http-domains-contract/v1",
+  "baseline_commit": "70ea757321868326edc40ed04f50b70383157a81",
+  "composition_root": {
+    "file": "srchybrid/eSE/server.js",
+    "maximum_physical_lines": 300,
+    "owns_route_precedence": false
+  },
+  "dispatcher": {
+    "file": "srchybrid/eSE/routes/http_domain_router.js",
+    "domain_order": [
+      "security",
+      "debug",
+      "live",
+      "api",
+      "pages",
+      "static",
+      "not_found"
+    ],
+    "winner_stops_fallthrough": true,
+    "injectable_without_loading_server": true
+  },
+  "live_paths": {
+    "prefixes": [
+      "/api/live/",
+      "/live",
+      "/hls"
+    ],
+    "exact": [
+      "/privacy",
+      "/api/eSE/update/check"
+    ]
+  },
+  "api_route_order": [
+    "v1Routes",
+    "moviesRoutes",
+    "emuleRoutes",
+    "streamCompleted",
+    "streamPart",
+    "systemRoutes"
+  ],
+  "page_route_order": [
+    "miscPages",
+    "connectPage",
+    "searchPage",
+    "appPage",
+    "explorePage",
+    "mylistPage",
+    "mainPage"
+  ],
+  "static_routes": {
+    "file": "srchybrid/eSE/routes/static_routes.js",
+    "paths": [
+      "/emule_mascot.svg",
+      "/favicon.ico"
+    ],
+    "filesystem": "async"
+  },
+  "real_http_gate": {
+    "file": "srchybrid/eSE/test/http_domain_router.test.js",
+    "bind_host": "127.0.0.1",
+    "port": 0,
+    "required_cases": [
+      "security short-circuit",
+      "domain precedence",
+      "live prefix compatibility",
+      "static response",
+      "404 fallback",
+      "winner prevents fallthrough"
+    ],
+    "cleanup_required": true
+  }
+}

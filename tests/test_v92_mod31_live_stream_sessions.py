@@ -248,9 +248,8 @@ class Mod31LiveStreamSessionsTest(unittest.TestCase):
             "m_chunkBuffer.Clear()",
             "m_peerSet.ClearSources()",
             "m_meshManager.ResetSessionPeers()",
-            "m_inflightSegReqs.RemoveAll()",
+            "m_streamRecovery.ResetViewer()",
             "m_recentDials.RemoveAll()",
-            "m_peerRefreshPolicy.Reset()",
             "ResetViewerHlsOutput(true)",
         ):
             self.assertIn(cleanup, cleanup_helper)

@@ -766,14 +766,14 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
 
     def test_workflow_binds_the_modularization_suite_before_build(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("Architecture gates (MOD-0.1 through MOD-0.4)", workflow)
+        self.assertIn("Architecture gates (MOD-0.1 through MOD-5.1)", workflow)
         self.assertIn('python -m unittest discover -s tests -p "test_v92_mod*.py"', workflow)
         self.assertIn("actions/setup-python@v6", workflow)
         self.assertIn("python-version: '3.12'", workflow)
         self.assertIn("fetch-depth: 0", workflow)
         self.assertLess(workflow.index("Setup Python 3.12"),
-                        workflow.index("Architecture gates (MOD-0.1 through MOD-0.4)"))
-        self.assertLess(workflow.index("Architecture gates (MOD-0.1 through MOD-0.4)"),
+                        workflow.index("Architecture gates (MOD-0.1 through MOD-5.1)"))
+        self.assertLess(workflow.index("Architecture gates (MOD-0.1 through MOD-5.1)"),
                         workflow.index("Build ese-server.exe (pkg)"))
 
 

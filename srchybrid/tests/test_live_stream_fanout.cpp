@@ -495,6 +495,50 @@ int main()
 			fanout.PendingBytes() == 0u,
 		"clear reclaims every child and reservation");
 
+	LiveStreamFanout session_tokens;
+	session_tokens.RegisterChild(701u);
+	auto stale_session =
+		session_tokens.BeginDelivery(701u, 1u, 1u, 0u, 1u);
+	session_tokens.Clear();
+	session_tokens.RegisterChild(702u);
+	auto current_session =
+		session_tokens.BeginDelivery(702u, 1u, 1u, 0u, 1u);
+	ese::live::LiveFanoutChild session_target = 0u;
+	Check(
+		stale_session.IsReserved() &&
+			current_session.IsReserved() &&
+			stale_session.token != current_session.token &&
+			!session_tokens.BeginTransport(
+				stale_session.token, session_target) &&
+			!session_tokens.CompleteDelivery(
+				stale_session.token, true) &&
+			session_tokens.BeginTransport(
+				current_session.token, session_target) &&
+			session_target == 702u &&
+			session_tokens.CompleteDelivery(
+				current_session.token, true),
+		"clear never reuses delivery tokens across sessions");
+	session_tokens.Clear();
+	session_tokens.RegisterChild(711u);
+	session_tokens.RegisterChild(712u);
+	const ese::live::LiveFanoutReplacementTicket stale_replacement =
+		session_tokens.BeginChildReplacement(711u, 712u);
+	Check(
+		stale_replacement.IsActive() &&
+			session_tokens.AbortChildReplacement(stale_replacement),
+		"replacement token ABA fixture aborts first session");
+	session_tokens.Clear();
+	session_tokens.RegisterChild(713u);
+	session_tokens.RegisterChild(714u);
+	const ese::live::LiveFanoutReplacementTicket current_replacement =
+		session_tokens.BeginChildReplacement(713u, 714u);
+	Check(
+		current_replacement.IsActive() &&
+			stale_replacement.token != current_replacement.token &&
+			!session_tokens.AbortChildReplacement(stale_replacement) &&
+			session_tokens.AbortChildReplacement(current_replacement),
+		"clear never reuses replacement tickets across sessions");
+
 	if (failures != 0)
 		return 1;
 	std::cout << "live stream fanout tests: PASS\n";

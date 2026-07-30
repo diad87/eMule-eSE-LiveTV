@@ -166,6 +166,8 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             "concurrent release waiters revalidate child after wake",
             "concurrent reservation accounting remains bounded",
             "clear reclaims every child and reservation",
+            "clear never reuses delivery tokens across sessions",
+            "clear never reuses replacement tickets across sessions",
         ):
             self.assertIn(marker, native)
 

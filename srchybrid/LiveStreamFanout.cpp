@@ -309,8 +309,6 @@ void LiveStreamFanout::Clear()
 		});
 	reservations_.clear();
 	children_.clear();
-	next_token_ = 1u;
-	next_replacement_token_ = 1u;
 }
 
 bool LiveStreamFanout::IsReplacementPausedLocked(

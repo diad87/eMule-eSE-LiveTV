@@ -281,6 +281,20 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveStreamRecovery.cpp"],
                 "interface_files": ["srchybrid/LiveStreamRecovery.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveStreamAnnouncer",
+                "owner": "CLiveStreamManager",
+                "layer": "adapters",
+                "implementation_files": ["srchybrid/LiveStreamAnnouncer.cpp"],
+                "interface_files": ["srchybrid/LiveStreamAnnouncer.h"],
+                "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveStreamSnapshot",
+                "owner": "CLiveStreamManager",
+                "layer": "application",
+                "implementation_files": ["srchybrid/LiveStreamSnapshot.cpp"],
+                "interface_files": ["srchybrid/LiveStreamSnapshot.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.config["approved_non_module_code"], [
@@ -473,6 +487,39 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
             {
+                "path": "srchybrid/tests/test_live_stream_announcer.cpp",
+                "reason": (
+                    "Standalone cadence, uint32 wrap, fail-closed descriptor "
+                    "and byte-field projection executable test for the "
+                    "MOD-3.7 announcer extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/tests/test_live_stream_snapshot.cpp",
+                "reason": (
+                    "Standalone immutable state, counters, chunk gaps and "
+                    "uint32 uptime executable test for the MOD-3.7 snapshot extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/LiveAnnounceTransportAdapter.cpp",
+                "reason": (
+                    "Narrow MFC adapter transmitting MOD-3.7 value-only announce "
+                    "descriptors through the unchanged LivePackets wire builder."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/LiveAnnounceTransportAdapter.h",
+                "reason": (
+                    "Legacy peer transport boundary for MOD-3.7 without exposing "
+                    "CUpDownClient or Packet to the value-only announcer core."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
                 "path": "srchybrid/LiveStreamTrustAdapter.cpp",
                 "reason": (
                     "Legacy MFC adapter projecting durable Live peer identities "
@@ -604,6 +651,14 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "module": "LiveStreamRecovery",
                 "slice_base_commit": "03b8bb118d06b7d7407faaff0c7552b6ef51a2d1",
                 "source_coordinator": "srchybrid/LiveStreamManager.cpp",
+            }, {
+                "module": "LiveStreamAnnouncer",
+                "slice_base_commit": "e5a5d138376fd78c50438931d591f42cbf02da59",
+                "source_coordinator": "srchybrid/LiveStreamManager.cpp",
+            }, {
+                "module": "LiveStreamSnapshot",
+                "slice_base_commit": "e5a5d138376fd78c50438931d591f42cbf02da59",
+                "source_coordinator": "srchybrid/LiveStreamManager.cpp",
             }],
         })
 
@@ -641,6 +696,8 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "LiveStreamSecurity",
                 "LiveStreamFanout",
                 "LiveStreamRecovery",
+                "LiveStreamAnnouncer",
+                "LiveStreamSnapshot",
             ],
         )
 

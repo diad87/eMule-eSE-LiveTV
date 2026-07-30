@@ -1,0 +1,50 @@
+{
+  "schema": "ese.mod37.live-stream-facade-contract/v1",
+  "baseline_commit": "e5a5d138376fd78c50438931d591f42cbf02da59",
+  "scope": "announce cadence, byte-compatible announce projection, immutable diagnostics projection and final LiveStreamManager facade reduction",
+  "modules": [
+    {
+      "name": "LiveStreamAnnouncer",
+      "layer": "adapters",
+      "declared_direct_dependencies": [],
+      "owns": [
+        "announce and Kad publish cadence",
+        "bounded value-only announce descriptor",
+        "announce packet transport adapter"
+      ]
+    },
+    {
+      "name": "LiveStreamSnapshot",
+      "layer": "application",
+      "declared_direct_dependencies": [],
+      "owns": [
+        "public debug snapshot value types",
+        "counter initialization",
+        "immutable numerical snapshot projection"
+      ]
+    }
+  ],
+  "invariants": {
+    "wire_format": "byte_unchanged",
+    "announce_interval_ms": 2000,
+    "kad_publish_interval_ms": 60000,
+    "bitrate_projection": "saturate_uint16",
+    "announce_preconditions": [
+      "broadcast session active",
+      "at least one immutable chunk",
+      "non-null stream and public keys"
+    ],
+    "snapshot_pointer_fields": 0,
+    "kad_lock_order": "Kad snapshot before CLiveStreamManager::m_lock",
+    "manager_lock_rule": "all mutable source collection and projection occurs under the existing m_lock",
+    "clock_arithmetic": "uint32 wrap-safe subtraction",
+    "manager_header_hard_stop_loc": 700
+  },
+  "stop_conditions": [
+    "any LiveProtocol or LivePackets wire drift",
+    "any raw peer pointer stored in either module",
+    "any snapshot read outside its existing lock",
+    "any new callback while holding a new lock",
+    "any coordinator source or header growth relative to the MOD-3.7 baseline"
+  ]
+}

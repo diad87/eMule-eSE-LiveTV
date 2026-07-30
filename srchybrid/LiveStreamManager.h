@@ -8,6 +8,8 @@
 #include "LiveStreamSecurity.h"
 #include "LiveStreamFanout.h"
 #include "LiveStreamRecovery.h"
+#include "LiveStreamAnnouncer.h"
+#include "LiveStreamSnapshot.h"
 #include "LiveStreamTrustAdapter.h"
 #include "LiveKadBridge.h"
 #include "LiveMeshManager.h"
@@ -35,60 +37,6 @@ template<> inline UINT AFXAPI HashKey(const LivePeerId& key)
     for (int i = 0; i < 32; ++i) { h ^= key.bytes[i]; h *= 16777619u; }
     return h;
 }
-
-// eSE Phase 0: Per-stream observability counters (OBS-1)
-// All counters are LONG for InterlockedIncrement/InterlockedExchange thread safety.
-// These are incremented from multiple threads (network callbacks, timer, UI)
-// without guaranteed lock coverage, so atomic operations are mandatory.
-struct LiveStreamCounters {
-    LONG kadPublishes;          // Kad publish operations queued
-    LONG kadSearches;           // Kad search requests issued
-    LONG kadResultsAccepted;    // Kad results that passed validation (in KadBridge)
-    LONG kadResultsRejected;    // Kad results discarded (invalid/filtered)
-    LONG sourceDialAttempts;    // TryConnectToStreamSource() calls (was duplicate kadResultsAccepted)
-    LONG subscribeSent;         // OP_LIVE_SUBSCRIBE packets sent
-    LONG subscribeAccepted;     // Subscribe responses received
-    LONG chunksRequested;       // OP_LIVE_REQUEST packets sent
-    LONG chunksReceived;        // OP_LIVE_CHUNK packets received
-    LONG chunksMissing;         // Chunk timeouts / missing detections
-    LONG hlsSegmentsWritten;    // HLS .ts files written to disk
-    LONG hlsPlaylistRefresh;    // HLS .m3u8 regenerations
-    LONG peerDisconnects;       // Peer disconnect events
-    LONG lastChunkReceivedAt;   // GetTickCount() of last chunk arrival (via InterlockedExchange)
-    // v7.3.0 — observability for the security/efficiency passes.
-    LONG skippedInitialPushes;  // Initial pushes skipped by (IP,port) cooldown (v7.2.2)
-    LONG subscribesRateLimited; // SUBSCRIBE rejects by per-IP rate limit (v7.3.0)
-    LONG requestsRateLimited;   // OP_LIVE_REQUEST rejects by bounded /24/global limiter
-    LONG endsRejectedNoAuth;    // OP_LIVE_END rejected because sender wasn't in our mesh
-    LONG tombstonesEvicted;     // Tombstones forcibly evicted to keep map under cap
-    // DISC-S11: visibility into Kad discovery health
-    LONG kadSearchesEmpty;      // searches that returned 0 hits (timeout / propagation)
-    LONG kadSearchesRateLimited;// searches dropped by token bucket (DISC-S08)
-    LONG pendingDialsDropped;   // results dropped because dial queue was full (DISC-S06)
-    // DISC-S12: time-to-first-chunk (single histogram populated in OnChunkReceived
-    // on the first chunk of a JoinStream session). Total/count -> mean.
-    LONG joinToFirstChunkSamples;
-    LONG joinToFirstChunkSumMs;
-    // Phase-1 stabilization (2026-06): waste visibility for the pull path.
-    LONG duplicateChunksReceived;     // chunks the buffer rejected (dup/stale) — wasted download
-    LONG requestsSuppressedInflight;  // re-requests skipped because one was already in flight
-
-    LiveStreamCounters()
-        : kadPublishes(0), kadSearches(0)
-        , kadResultsAccepted(0), kadResultsRejected(0)
-        , sourceDialAttempts(0)
-        , subscribeSent(0), subscribeAccepted(0)
-        , chunksRequested(0), chunksReceived(0), chunksMissing(0)
-        , hlsSegmentsWritten(0), hlsPlaylistRefresh(0)
-        , peerDisconnects(0), lastChunkReceivedAt(0)
-        , skippedInitialPushes(0), subscribesRateLimited(0), requestsRateLimited(0)
-        , endsRejectedNoAuth(0), tombstonesEvicted(0)
-        , kadSearchesEmpty(0), kadSearchesRateLimited(0)
-        , pendingDialsDropped(0)
-        , joinToFirstChunkSamples(0), joinToFirstChunkSumMs(0)
-        , duplicateChunksReceived(0), requestsSuppressedInflight(0)
-    {}
-};
 
 // V2-S12 — Auto-tier classification of THIS peer based on upload capacity vs
 // the active stream bitrate. Drives upload caps (S13), throttle policy (S14),
@@ -146,81 +94,6 @@ struct PeerCounters {
         if (bytes_in_window_60s == 0) return 1.0f;
         return (float)bytes_out_window_60s / (float)bytes_in_window_60s;
     }
-};
-
-// eSE: Kad discovery snapshot (read under CLiveKadBridge::m_lock)
-struct KadDebugSnapshot {
-    bool   kadConnected;
-    int    knownStreams;
-    DWORD  lastPublishTime;
-    DWORD  lastSearchTime;
-    DWORD  lastResultTime;
-    uint32 lastResultIP;
-    uint16 lastResultPort;
-    // H5 — dual-namespace adoption: count of entries in the directory
-    // tagged as clean / legacy / unknown (synthetic) by source. Sum can
-    // be less than knownStreams when own-streams or stale entries lack
-    // a discovery tag yet. Used by /api/live/debug to decide when it
-    // is safe to flip GetEseLivePublishLegacy() to false.
-    int    knownStreamsClean;
-    int    knownStreamsLegacy;
-};
-
-// eSE: Thread-safe debug snapshot for /api/live/debug.
-// All fields are plain copies — no pointers, no CMap iterators.
-struct LiveDebugSnapshot {
-    // Stream state
-    bool     broadcasting;
-    bool     viewing;
-    bool     emergencyMode;
-    uint32   uptimeMs;
-
-    // Kad discovery
-    KadDebugSnapshot kad;
-
-    // Peers
-    int      viewPeers;
-    int      broadcastPeers;
-    int      meshPeers;
-    int      pendingRequests;
-    int      chunksServed;
-    int      superSeeders;
-    int      middlePeers;
-    int      leafPeers;
-
-    // Chunk buffer
-    int      bufCount;
-    uint32   oldestSeq;
-    uint32   newestSeq;
-    uint16   bitmap;
-    int      missingChunks;
-
-    // Mesh
-    uint64   totalRedistributed;
-    uint32   minUploadRequired;   // upload floor for the throttler (/api/live/mesh)
-
-    // eSE test instrumentation (threat-model ① validation): per-peer trust
-    // detail for /api/live/debug. Layout is UNCONDITIONAL (constant sizeof
-    // regardless of ESE_TEST_HOOKS — no per-TU ODR mismatch); only the fill
-    // (BuildDebugSnapshot) is gated, and the emission is count-guarded, so the
-    // production binary always reports peerDetailCount==0 and emits nothing.
-    // ip[] is sized 46 (== INET6_ADDRSTRLEN): the worst-case IPv6 textual form
-    // (<=45 visible chars) + NUL fits, so a future dual-stack v6 peer needs no
-    // change here. Written only by a bounded writer (FillPeerIpSafe).
-    struct PeerDbg {
-        char   ip[46];      // worst-case IPv6 text + NUL — never sized for IPv4(16)
-        uint16 port;
-        int    level;       // 0=super, 1=middle, 2=leaf
-        int    failCount;
-        int    respPct;     // GetResponseRate() * 100
-        uint32 rttMs;       // EWMA RTT, ms
-    };
-    static const int MAX_PEER_DBG = 16;
-    PeerDbg peerDetail[MAX_PEER_DBG];
-    int     peerDetailCount;
-
-    // Counters (atomic snapshot)
-    LiveStreamCounters counters;
 };
 
 // eSE: Thread-safe snapshot for /api/live/channels — copied under m_lock so
@@ -585,6 +458,7 @@ private:
     ese::live::LiveStreamSecurity m_streamSecurity;
     ese::live::LiveStreamFanout m_streamFanout;
     ese::live::LiveStreamRecovery m_streamRecovery;
+    ese::live::LiveStreamAnnouncer m_streamAnnouncer;
     LiveStreamTrustAdapter m_streamTrustAdapter;
 
     // Trust data. C6 (2026-06): keyed by LivePeerId (durable user-hash/pubkey
@@ -598,8 +472,6 @@ private:
     // Timers
     DWORD               m_dwLastBitmapSend;
     DWORD               m_dwLastViewerBitmapSend;
-    DWORD               m_dwLastAnnounceSend;
-    DWORD               m_dwLastKadPublish;
     DWORD               m_dwLastHealthCheck;
     DWORD               m_dwLastStatsSend;
 
@@ -753,7 +625,6 @@ private:
 
     // Internal helpers
     void SendBitmapToAll(bool broadcastRole);
-    void SendAnnounceToAll();
     void RelayPushNewSegments();   // R.3: forward new segments to the active relay buddy (main thread, lock-free)
     void TickReachabilitySelector(DWORD now);   // [eSE v9] reachability escalation (dormant unless m_bReachSelectorOn)
     bool PickRendezvous(uint32 targetIpHost, uint16 targetUdp, uint32& outRipHost, uint16& outRport);

@@ -2,6 +2,7 @@
 // eSE — Live Stream Manager Implementation
 #include "stdafx.h"
 #include "LiveStreamManager.h"
+#include "LiveAnnounceTransportAdapter.h"
 #include "LiveFanoutTransportAdapter.h"
 #include "LiveRecoveryTransportAdapter.h"
 #include "LiveCrypto.h"        // v7.6.0 — Ed25519 keypair helpers
@@ -63,6 +64,12 @@ static const DWORD ESE_LIVE_WATCHDOG_MS    = 180u * 1000u;
 static_assert(ese::live::LiveStreamRecovery::kMinimumSourcePeers ==
     ESE_LIVE_MIN_PEERS,
     "Live peer refresh policy must match the wire/runtime resilience floor");
+static_assert(ese::live::LiveStreamAnnouncer::kAnnounceIntervalMs ==
+    ESE_LIVE_ANNOUNCE_INTERVAL,
+    "Live announce cadence must remain wire-compatible");
+static_assert(ese::live::LiveStreamAnnouncer::kKadPublishIntervalMs ==
+    ESE_LIVE_KAD_PUBLISH_INTERVAL,
+    "Live Kad publish cadence must remain compatible");
 
 using ese::live::LivePeerAddResult;
 using ese::live::LiveFanoutChild;
@@ -180,8 +187,6 @@ CLiveStreamManager::CLiveStreamManager()
     , m_dwLastRelaySetup(0)        // R.3
     , m_dwLastBitmapSend(0)
     , m_dwLastViewerBitmapSend(0)
-    , m_dwLastAnnounceSend(0)
-    , m_dwLastKadPublish(0)
     , m_dwLastHealthCheck(0)
     , m_dwLastStatsSend(0)
     , m_dwLastPingTick(0)         // V2-S03
@@ -284,7 +289,7 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     // Never inherit downstream peers from a previous local broadcast.
     m_peerSet.ClearDownstreams();
     m_streamFanout.Clear();
-    m_dwLastKadPublish = 0;
+    m_streamAnnouncer.ResetBroadcast();
     // R.3: fresh relay-egress state for this broadcast (clears any stale buddy from a
     // previous stream so RelayPushNewSegments re-negotiates before pushing).
     m_lastRelayedSeq = 0;
@@ -3496,23 +3501,32 @@ void CLiveStreamManager::Process()
     }
 
     if (m_broadcastSession.IsActive()) {
+        const ese::live::LiveAnnounceActions announceActions =
+            m_streamAnnouncer.Poll(
+                static_cast<std::uint32_t>(now), true);
+
         // Send bitmap to all peers
         if (now - m_dwLastBitmapSend >= ESE_LIVE_BITMAP_INTERVAL) {
             SendBitmapToAll(true);
             m_dwLastBitmapSend = now;
         }
 
-        // Announce new segments
-        if (now - m_dwLastAnnounceSend >= ESE_LIVE_ANNOUNCE_INTERVAL) {
-            SendAnnounceToAll();
-            m_dwLastAnnounceSend = now;
+        if (announceActions.send_announce) {
+            const ese::live::LiveAnnounceDescriptor descriptor =
+                ese::live::LiveStreamAnnouncer::Describe(
+                    true,
+                    static_cast<std::size_t>(
+                        m_broadcastChunkBuffer.GetCount()),
+                    m_broadcastChunkBuffer.GetNewestSeq(),
+                    m_broadcastStreamInfo.bitrate,
+                    m_broadcastStreamInfo.streamKey,
+                    m_broadcastStreamInfo.pubkey);
+            LiveAnnounceTransportAdapter::Send(
+                descriptor, DownstreamPeers(m_peerSet));
         }
 
-        // Publish to Kad
-        if (now - m_dwLastKadPublish >= ESE_LIVE_KAD_PUBLISH_INTERVAL) {
+        if (announceActions.publish_kad)
             PublishToKad();
-            m_dwLastKadPublish = now;
-        }
 
         // Check peer health
         if (now - m_dwLastHealthCheck >= ESE_LIVE_STATS_INTERVAL) {
@@ -3860,28 +3874,6 @@ void CLiveStreamManager::SendBitmapToAll(bool broadcastRole)
         if (!m_broadcastSession.IsActive()) {
             for (CUpDownClient* peer : DownstreamPeers(m_peerSet))
                 sendOne(peer);
-        }
-    }
-}
-
-void CLiveStreamManager::SendAnnounceToAll()
-{
-    if (!m_broadcastSession.IsActive() || m_broadcastChunkBuffer.GetCount() == 0) return;
-
-    uint32 newestSeq = m_broadcastChunkBuffer.GetNewestSeq();
-
-    for (CUpDownClient* peer : DownstreamPeers(m_peerSet)) {
-        // v7.6.0 — include pubkey so receivers can pin the streamKey→pubkey
-        // binding before chunks/end arrive with signatures (T4/T5).
-        const uint16 wireBitrate = static_cast<uint16>(
-            m_broadcastStreamInfo.bitrate > 0xFFFFu
-                ? 0xFFFFu : m_broadcastStreamInfo.bitrate);
-        Packet* pkt = eSELive::CreateAnnouncePacket(
-            m_broadcastStreamInfo.streamKey, newestSeq, wireBitrate,
-            m_broadcastStreamInfo.pubkey);
-        if (pkt) {
-            theStats.AddUpDataOverheadOther(pkt->size);
-            peer->SendPacket(pkt);
         }
     }
 }
@@ -4516,33 +4508,24 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
 
     CSingleLock lock(&m_lock, TRUE);
 
-    LiveDebugSnapshot snap;
-    memset(&snap, 0, sizeof(snap));
-
-    // Stream state
-    snap.broadcasting  = m_broadcastSession.IsActive();
-    snap.viewing       = m_viewerSession.IsActive();
-    snap.emergencyMode = m_streamRecovery.IsEmergencyMode();
+    LiveStreamSnapshotInput input;
+    input.broadcasting = m_broadcastSession.IsActive();
+    input.viewing = m_viewerSession.IsActive();
+    input.emergency_mode = m_streamRecovery.IsEmergencyMode();
+    input.now_seconds = static_cast<std::uint32_t>(time(NULL));
     const LiveStreamInfo& primaryInfo = m_broadcastSession.IsActive()
         ? m_broadcastStreamInfo : m_streamInfo;
     const LiveChunkWindow& primaryBuffer = m_broadcastSession.IsActive()
         ? m_broadcastChunkBuffer : m_chunkBuffer;
-    snap.uptimeMs      = (primaryInfo.startedAt > 0)
-        ? ((uint32)time(NULL) - primaryInfo.startedAt) * 1000 : 0;
-
-    snap.kad = kadSnap;
-
-    // Peers (counted under our lock)
-    snap.viewPeers = static_cast<int>(m_peerSet.SourceCount());
-    snap.broadcastPeers = static_cast<int>(m_peerSet.DownstreamCount());
-    snap.meshPeers      = m_meshManager.GetMeshPeerCount();
-    snap.pendingRequests = m_meshManager.GetPendingRequestCount();
-    snap.chunksServed    = m_meshManager.GetChunksServedCount();
+    input.started_at = primaryInfo.startedAt;
+    input.kad = kadSnap;
+    input.view_peers = static_cast<int>(m_peerSet.SourceCount());
+    input.broadcast_peers = static_cast<int>(m_peerSet.DownstreamCount());
+    input.mesh_peers = m_meshManager.GetMeshPeerCount();
+    input.pending_requests = m_meshManager.GetPendingRequestCount();
+    input.chunks_served = m_meshManager.GetChunksServedCount();
 
     // Trust tier census (iterate bitmaps under our lock)
-    snap.superSeeders = 0;
-    snap.middlePeers  = 0;
-    snap.leafPeers    = 0;
     {
         POSITION pos = m_peerBitmaps.GetStartPosition();
         while (pos) {
@@ -4552,16 +4535,26 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
             PeerTrust trust;
             if (GetTrustById(pid, trust)) {
                 if (trust.currentLevel == ESE_TRUST_SUPERSEEDER)
-                    snap.superSeeders++;
+                    input.super_seeders++;
                 else if (trust.currentLevel == ESE_TRUST_MIDDLE)
-                    snap.middlePeers++;
+                    input.middle_peers++;
                 else
-                    snap.leafPeers++;
+                    input.leaf_peers++;
             } else {
-                snap.leafPeers++;
+                input.leaf_peers++;
             }
         }
     }
+
+    input.buffer_count = primaryBuffer.GetCount();
+    input.oldest_sequence = primaryBuffer.GetOldestSeq();
+    input.newest_sequence = primaryBuffer.GetNewestSeq();
+    input.bitmap = primaryBuffer.GetBitmap();
+    input.total_redistributed =
+        m_meshManager.GetTotalBytesRedistributed();
+    input.minimum_upload_required = GetMinUploadRequired();
+    input.counters = m_counters;
+    LiveDebugSnapshot snap = LiveStreamSnapshot::Build(input);
 
 #ifdef ESE_TEST_HOOKS
     // TEST-ONLY: per-peer trust detail (bounded by MAX_PEER_DBG). Iterate
@@ -4590,27 +4583,6 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
         }
     }
 #endif
-
-    // Chunk buffer
-    snap.bufCount  = primaryBuffer.GetCount();
-    snap.oldestSeq = primaryBuffer.GetOldestSeq();
-    snap.newestSeq = primaryBuffer.GetNewestSeq();
-    snap.bitmap    = primaryBuffer.GetBitmap();
-    if (snap.bufCount > 0) {
-        const uint32 serialSpan = snap.newestSeq - snap.oldestSeq + 1u;
-        int expected = (int)serialSpan;
-        snap.missingChunks = expected - snap.bufCount;
-        if (snap.missingChunks < 0) snap.missingChunks = 0;
-    } else {
-        snap.missingChunks = 0;
-    }
-
-    // Mesh
-    snap.totalRedistributed = m_meshManager.GetTotalBytesRedistributed();
-    snap.minUploadRequired  = GetMinUploadRequired();
-
-    // Atomic counters — plain copy (all LONG fields, atomic reads on x86)
-    snap.counters = m_counters;
 
     return snap;
 }

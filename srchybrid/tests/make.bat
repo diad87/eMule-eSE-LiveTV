@@ -103,6 +103,16 @@ if errorlevel 1 exit /b 1
 tests\build\test_live_stream_recovery.exe
 if errorlevel 1 exit /b 1
 
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_stream_announcer.exe tests\test_live_stream_announcer.cpp LiveStreamAnnouncer.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_stream_announcer.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_stream_snapshot.exe tests\test_live_stream_snapshot.cpp LiveStreamSnapshot.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_stream_snapshot.exe
+if errorlevel 1 exit /b 1
+
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_request_parser.exe tests\test_web_request_parser.cpp WebRequestParser.cpp
 if errorlevel 1 exit /b 1
 tests\build\test_web_request_parser.exe

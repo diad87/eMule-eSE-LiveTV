@@ -749,6 +749,19 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="LiveStreamAnnouncer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveStreamSnapshot.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveAnnounceTransportAdapter.cpp" />
     <ClCompile Include="LiveRecoveryTransportAdapter.cpp" />
     <ClCompile Include="LiveFanoutTransportAdapter.cpp" />
     <ClCompile Include="LiveStreamTrustAdapter.cpp" />
@@ -1232,6 +1245,9 @@
     <ClInclude Include="LiveStreamSecurity.h" />
     <ClInclude Include="LiveStreamFanout.h" />
     <ClInclude Include="LiveStreamRecovery.h" />
+    <ClInclude Include="LiveStreamAnnouncer.h" />
+    <ClInclude Include="LiveStreamSnapshot.h" />
+    <ClInclude Include="LiveAnnounceTransportAdapter.h" />
     <ClInclude Include="LiveRecoveryTransportAdapter.h" />
     <ClInclude Include="LiveFanoutTransportAdapter.h" />
     <ClInclude Include="LiveStreamTrustAdapter.h" />

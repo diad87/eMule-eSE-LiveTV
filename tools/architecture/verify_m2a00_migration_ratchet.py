@@ -431,11 +431,12 @@ import sys
 import unittest
 
 OriginalTestCase = unittest.TestCase
+OriginalObjectNew = object.__new__
 original_test_case_methods = {
     name: getattr(unittest.TestCase, name)
     for name in (
-        "run", "__call__", "_callSetUp", "_callTestMethod",
-        "_callTearDown", "doCleanups",
+        "__init__", "run", "__call__", "_callSetUp",
+        "_callTestMethod", "_callTearDown", "doCleanups",
     )
 }
 original_test_case_assertions = {
@@ -444,10 +445,8 @@ original_test_case_assertions = {
     if name.startswith("assert")
     or name in {"fail", "failIf", "failUnless", "skipTest"}
 }
-OriginalTestLoader = unittest.TestLoader
-original_load_from_module = unittest.TestLoader.loadTestsFromModule
-OriginalTestSuite = unittest.TestSuite
 OriginalTestResult = unittest.TestResult
+required_methods = json.loads(sys.argv[2])
 
 class TrackingResult(unittest.TestResult):
     def __init__(self):
@@ -456,7 +455,7 @@ class TrackingResult(unittest.TestResult):
 
     def addSuccess(self, test):
         super().addSuccess(test)
-        self.successes.append(test.id())
+        self.successes.append(test._testMethodName)
 
 original_tracking_add_success = TrackingResult.addSuccess
 path = pathlib.Path(sys.argv[1])
@@ -466,73 +465,84 @@ spec.loader.exec_module(module)
 # Evidence is executable but not authoritative over the runner itself.
 unittest.TestCase = OriginalTestCase
 unittest.case.TestCase = OriginalTestCase
-unittest.TestLoader = OriginalTestLoader
-unittest.loader.TestLoader = OriginalTestLoader
-unittest.TestSuite = OriginalTestSuite
-unittest.suite.TestSuite = OriginalTestSuite
 unittest.TestResult = OriginalTestResult
 unittest.result.TestResult = OriginalTestResult
 for name, implementation in original_test_case_methods.items():
     setattr(OriginalTestCase, name, implementation)
 for name, implementation in original_test_case_assertions.items():
     setattr(OriginalTestCase, name, implementation)
-OriginalTestLoader.loadTestsFromModule = original_load_from_module
 TrackingResult.addSuccess = original_tracking_add_success
 
 result = TrackingResult()
-suite = original_load_from_module(OriginalTestLoader(), module)
-
-def flatten(node):
-    for item in node:
-        if isinstance(item, OriginalTestSuite):
-            yield from flatten(item)
-        else:
-            yield item
-
 captured = io.StringIO()
 with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-    for test in flatten(suite):
-        test_type = test.__class__
+    for method in required_methods:
         forbidden = {
-            "run", "__call__", "_callSetUp", "_callTestMethod",
+            "__init__", "__new__", "id", "run", "__call__",
+            "_callSetUp", "_callTestMethod",
             "_callTearDown", "doCleanups", "setUp", "tearDown",
             "setUpClass", "tearDownClass", "__getattribute__",
             "__getattr__", "__setattr__", "fail", "skipTest",
             "failureException",
         }
         forbidden.update(original_test_case_assertions)
-        if (
-            test_type.__bases__ != (OriginalTestCase,)
-            or forbidden.intersection(test_type.__dict__)
-        ):
-            result.addError(
-                test,
-                (
-                    RuntimeError,
-                    RuntimeError("evidence test runner override forbidden"),
-                    None,
-                ),
+        candidates = [
+            value
+            for value in vars(module).values()
+            if (
+                isinstance(value, type)
+                and type(value) is type
+                and value.__bases__ == (OriginalTestCase,)
+                and method in value.__dict__
             )
-            continue
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError("one direct evidence TestCase is required")
+        test_type = candidates[0]
+        if forbidden.intersection(test_type.__dict__):
+            raise RuntimeError("evidence test runner override forbidden")
+        test = OriginalObjectNew(test_type)
+        original_test_case_methods["__init__"](test, method)
+        if (
+            test.__dict__.get("_testMethodName") != method
+            or any(
+                name in test.__dict__
+                for name in original_test_case_assertions
+            )
+        ):
+            raise RuntimeError("evidence method identity was redirected")
         original_test_case_methods["run"](test, result)
 payload = {
     "testsRun": result.testsRun,
     "successes": result.successes,
-    "skipped": [(test.id(), reason) for test, reason in result.skipped],
-    "failures": [test.id() for test, _ in result.failures],
-    "errors": [test.id() for test, _ in result.errors],
+    "skipped": [
+        (test._testMethodName, reason) for test, reason in result.skipped
+    ],
+    "failures": [
+        test._testMethodName for test, _ in result.failures
+    ],
+    "errors": [test._testMethodName for test, _ in result.errors],
     "expectedFailures": [
-        test.id() for test, _ in result.expectedFailures
+        test._testMethodName for test, _ in result.expectedFailures
     ],
     "unexpectedSuccesses": [
-        test.id() for test in result.unexpectedSuccesses
+        test._testMethodName for test in result.unexpectedSuccesses
     ],
 }
 print("__M2A_TEST_RESULT__" + json.dumps(payload, sort_keys=True))
 """
     try:
         completed = subprocess.run(
-            [sys.executable, "-c", runner, test_path],
+            [
+                sys.executable,
+                "-c",
+                runner,
+                test_path,
+                json.dumps(sorted(
+                    _coverage_test_method(coverage)
+                    for coverage in covers
+                )),
+            ],
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,

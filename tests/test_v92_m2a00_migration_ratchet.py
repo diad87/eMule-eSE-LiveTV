@@ -280,7 +280,38 @@ class M2A00RatchetTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(
-                GATE.GateError, "did not finish cleanly"
+                GATE.GateError, "failed|did not finish cleanly"
+            ):
+                GATE._run_required_tests(relative, {coverage})
+            test_path.write_text(
+                "import unittest\n"
+                "class Fixture(unittest.TestCase):\n"
+                "    def __init__(self, *args, **kwargs):\n"
+                "        super().__init__(*args, **kwargs)\n"
+                "        self.assertEqual = lambda *a, **k: None\n"
+                f"    def {method}(self):\n"
+                "        self.assertEqual(1, 2)\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                GATE.GateError, "failed|did not finish cleanly"
+            ):
+                GATE._run_required_tests(relative, {coverage})
+            test_path.write_text(
+                "import unittest\n"
+                "class Fixture(unittest.TestCase):\n"
+                "    def __init__(self, *args, **kwargs):\n"
+                "        super().__init__('safe')\n"
+                "    def safe(self):\n"
+                "        self.assertEqual(1, 1)\n"
+                "    def id(self):\n"
+                f"        return 'Fixture.{method}'\n"
+                f"    def {method}(self):\n"
+                "        self.assertEqual(1, 2)\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                GATE.GateError, "failed|did not finish cleanly"
             ):
                 GATE._run_required_tests(relative, {coverage})
             test_path.write_text(
@@ -293,7 +324,7 @@ class M2A00RatchetTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(
-                GATE.GateError, "did not finish cleanly"
+                GATE.GateError, "failed|did not finish cleanly"
             ):
                 GATE._run_required_tests(relative, {coverage})
             test_path.write_text(
@@ -310,7 +341,7 @@ class M2A00RatchetTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(
-                GATE.GateError, "did not finish cleanly"
+                GATE.GateError, "failed|did not finish cleanly"
             ):
                 GATE._run_required_tests(relative, {coverage})
             test_path.write_text(
@@ -325,7 +356,7 @@ class M2A00RatchetTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(
-                GATE.GateError, "did not finish cleanly"
+                GATE.GateError, "failed|did not finish cleanly"
             ):
                 GATE._run_required_tests(relative, {coverage})
 

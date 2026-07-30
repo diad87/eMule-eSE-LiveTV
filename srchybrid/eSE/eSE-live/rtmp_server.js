@@ -6,7 +6,10 @@
  */
 'use strict';
 
-const { spawn, execSync } = require('child_process');
+const {
+  spawnManaged,
+  killProcessTree,
+} = require('../bounded_process_runner');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -98,7 +101,7 @@ function start(opts) {
   console.log('[eSE Live] RTMP: Waiting for OBS on', rtmpUrl);
 
   try {
-    rtmpProcess = spawn(opts.ffmpegPath, args, {
+    rtmpProcess = spawnManaged(opts.ffmpegPath, args, {
       stdio: ['ignore', 'pipe', 'pipe']
     });
   } catch (e) {
@@ -158,11 +161,11 @@ function stop() {
   try {
     const pid = rtmpProcess.pid;
     if (process.platform === 'win32' && pid) {
-      try {
-        execSync('taskkill /F /T /PID ' + pid, { stdio: 'ignore', timeout: 3000 });
-      } catch (e) {
-        console.warn('[eSE Live] RTMP: taskkill failed:', e.message);
-      }
+      killProcessTree(pid).then(result => {
+        if (!result.ok) {
+          console.warn('[eSE Live] RTMP: taskkill failed:', result.error || result.stderr);
+        }
+      });
     } else {
       rtmpProcess.kill('SIGTERM');
     }
@@ -171,7 +174,7 @@ function stop() {
       try {
         if (proc && !proc.killed) {
           if (process.platform === 'win32' && pid) {
-            execSync('taskkill /F /T /PID ' + pid, { stdio: 'ignore', timeout: 3000 });
+            killProcessTree(pid);
           } else {
             proc.kill('SIGKILL');
           }

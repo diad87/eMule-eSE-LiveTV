@@ -62,13 +62,12 @@ if (!TEST_MODE) {
 
 // Auto-detect hardware encoder at startup
 const hwEncoderMod = require('./hw_encoder');
-if (!TEST_MODE) hwEncoderMod.detect(FFMPEG_PATH, TEMP_DIR);
+async function startServer() {
+if (!TEST_MODE) await hwEncoderMod.detect(FFMPEG_PATH, TEMP_DIR);
 let HW_ENCODER      = hwEncoderMod.HW_ENCODER;
 let HW_ENCODER_OPTS = hwEncoderMod.HW_ENCODER_OPTS;
-
 const CACHE_DIR    = path.join(EMULE_INCOMING, 'film_cache');
 const SETTINGS_FILE = path.join(CACHE_DIR, 'settings.json');
-
 // Ensure cache dir exists
 try { if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch(e) {}
 
@@ -114,8 +113,6 @@ emuleApi.onRevived(function(epoch) {
   console.log('[lifecycle] eMule revived (epoch=' + epoch + ').');
   setTimeout(autoLoginEmule, 2000);
 });
-
-
 // Pages (HTML + static routes)
 const miscPages    = require('./pages/misc_pages');
 const connectPage  = require('./pages/connect_page');
@@ -213,8 +210,6 @@ v1Routes.init({
     hwEncoderOpts: HW_ENCODER_OPTS
   }
 });
-
-
 // Init tunnel (must be before server handles requests that use tunnel.*)
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost:' + PORT);
@@ -297,3 +292,9 @@ process.on('SIGTERM', () => process.exit(0));
 process.on('SIGHUP',  () => process.exit(0));
 // Windows-specific: when parent (emule.exe) closes, child receives a CTRL_CLOSE
 // which becomes SIGHUP via Node's compat layer. Above handlers cover it.
+}
+
+startServer().catch(error => {
+  console.error('[startup] Fatal initialization error:', error);
+  process.exitCode = 1;
+});

@@ -6,7 +6,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { spawnSync, spawn } = require('child_process');
+const { runProcess, spawnDetached } = require('./bounded_process_runner');
 
 // ─── EMULE PROCESS WATCHDOG ────────────────────────────────────
 let _emuleExePath = null;
@@ -23,30 +23,28 @@ function getEmuleExePath() {
   return null;
 }
 
-function isEmuleRunning() {
+async function isEmuleRunning() {
   try {
-    const result = spawnSync('tasklist', ['/FI', 'IMAGENAME eq emule.exe', '/NH', '/FO', 'CSV'], {
-      timeout: 3000,
-      windowsHide: true,   // ← prevents the black console window from flashing
-      encoding: 'utf8'
-    });
+    const result = await runProcess(
+      'tasklist',
+      ['/FI', 'IMAGENAME eq emule.exe', '/NH', '/FO', 'CSV'],
+      { timeoutMs: 3000, maxOutputBytes: 256 * 1024 },
+    );
     return (result.stdout || '').includes('emule.exe');
   } catch(e) { return false; }
 }
 
-function ensureEmuleRunning() {
-  if (isEmuleRunning()) return true;
+async function ensureEmuleRunning() {
+  if (await isEmuleRunning()) return true;
   const exe = getEmuleExePath();
   if (!exe) { console.log('[eMule] ⚠ Cannot find emule.exe to auto-restart'); return false; }
   console.log('[eMule] 🔄 Process not found — auto-restarting: ' + exe);
-  try {
-    const child = spawn(exe, [], { detached: true, stdio: 'ignore', windowsHide: true });
-    child.unref();
-    return true;
-  } catch(e) {
-    console.log('[eMule] ❌ Failed to restart emule.exe:', e.message);
+  const started = await spawnDetached(exe);
+  if (!started.ok) {
+    console.log('[eMule] ❌ Failed to restart emule.exe:', started.error);
     return false;
   }
+  return true;
 }
 
 // ─── LIFECYCLE WATCHDOG ─────────────────────────────────────────────────────
@@ -69,13 +67,13 @@ function onRevived(handler) {
 function getLibraryEpoch() { return _emuleLibraryEpoch; }
 function getRestartedAt()  { return _emuleRestartedAt; }
 
-function killEmuleFFmpegOrphans() {
+async function killEmuleFFmpegOrphans() {
   try {
     // Query all running ffmpeg processes with their executable path
-    const result = spawnSync(
+    const result = await runProcess(
       'wmic',
       ['process', 'where', 'name="ffmpeg.exe"', 'get', 'ProcessId,ExecutablePath', '/format:csv'],
-      { encoding: 'utf8', windowsHide: true, timeout: 4000 }
+      { timeoutMs: 4000, maxOutputBytes: 1024 * 1024 },
     );
     if (!result.stdout) return;
     const lines = result.stdout.split('\n').filter(l => l.includes('ffmpeg.exe'));
@@ -88,8 +86,14 @@ function killEmuleFFmpegOrphans() {
       // Only kill ffmpeg launched from eMule's install folder (not our own pipeline)
       if (exePath.includes('emule') && exePath.includes('ffmpeg.exe')) {
         try {
-          spawnSync('taskkill', ['/F', '/PID', String(pid)], { windowsHide: true });
-          console.log('[eMule] 🔪 Killed orphan FFmpeg (eMule launch) PID:', pid, 'path:', exePath);
+          const killed = await runProcess(
+            'taskkill',
+            ['/F', '/PID', String(pid)],
+            { timeoutMs: 3000, maxOutputBytes: 64 * 1024 },
+          );
+          if (killed.ok) {
+            console.log('[eMule] 🔪 Killed orphan FFmpeg (eMule launch) PID:', pid, 'path:', exePath);
+          }
         } catch(e) {}
       }
     }
@@ -98,11 +102,11 @@ function killEmuleFFmpegOrphans() {
 
 // Watchdog: check every 10s. On dead→alive, bump epoch and notify handlers.
 // On alive→dead, kill orphan ffmpeg children.
-setInterval(function emuleLifecycleWatchdog() {
-  const alive = isEmuleRunning();
+setInterval(async function emuleLifecycleWatchdog() {
+  const alive = await isEmuleRunning();
   if (_emuleWasAlive && !alive) {
     console.log('[eMule] Process died — cleaning up orphan FFmpeg broadcasts...');
-    killEmuleFFmpegOrphans();
+    await killEmuleFFmpegOrphans();
     emuleSession = null;
   } else if (!_emuleWasAlive && alive) {
     _emuleRestartedAt = Date.now();
@@ -119,7 +123,7 @@ setInterval(function emuleLifecycleWatchdog() {
   _emuleWasAlive = alive;
 }, 10000);
 // Initialise state without triggering cleanup on first run
-_emuleWasAlive = isEmuleRunning();
+isEmuleRunning().then(alive => { _emuleWasAlive = alive; });
 
 const zlib = require('zlib');
 
@@ -358,11 +362,11 @@ function emuleSearch(query, settings, callback) {
       const maxAttempts = 5;   // Reduced: less hammering on WebServer
       const pollInterval = 6000; // Increased: give eMule more breathing room
       
-      const poll = () => {
+      const poll = async () => {
         // Abort if eMule died during polling
-        if (!isEmuleRunning()) {
+        if (!await isEmuleRunning()) {
           console.log('[eMule] ⚠ eMule died during search poll — aborting');
-          ensureEmuleRunning(); // Try to restart it
+          await ensureEmuleRunning(); // Try to restart it
           callback(new Error('eMule process died during search'), []);
           return;
         }

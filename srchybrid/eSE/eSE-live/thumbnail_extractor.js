@@ -5,7 +5,7 @@
  */
 'use strict';
 
-const { execFile } = require('child_process');
+const { runProcess } = require('../bounded_process_runner');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -189,18 +189,21 @@ function extractFrame(tsFile, key) {
     tempFile
   ];
   
-  execFile(ffmpegPath, args, { timeout: 8000 }, (err, stdout, stderr) => {
-    if (err) {
-      console.log('[Thumbnails] FFmpeg error for', key, ':', err.message);
-      if (stderr) console.log('[Thumbnails] stderr:', stderr.substring(0, 200));
+  runProcess(
+    ffmpegPath,
+    args,
+    { timeoutMs: 8000, maxOutputBytes: 512 * 1024 },
+  ).then(async result => {
+    if (!result.ok) {
+      console.log('[Thumbnails] FFmpeg error for', key, ':', result.error || result.stderr || result.exitCode);
+      if (result.stderr) console.log('[Thumbnails] stderr:', result.stderr.substring(0, 200));
       return;
     }
     // Atomic rename to avoid serving partial files
     try {
-      if (fs.existsSync(tempFile)) {
-        fs.renameSync(tempFile, outFile);
-        console.log('[Thumbnails] Extracted:', key + '.jpg', '(' + Math.round(fs.statSync(outFile).size / 1024) + ' KB)');
-      }
+      await fs.promises.rename(tempFile, outFile);
+      const stat = await fs.promises.stat(outFile);
+      console.log('[Thumbnails] Extracted:', key + '.jpg', '(' + Math.round(stat.size / 1024) + ' KB)');
     } catch (e) {
       console.log('[Thumbnails] Rename error:', e.message);
     }

@@ -22,22 +22,36 @@ function delegate(handler, url, req, res, pathname) {
   return handler.handle(rewrite(url, pathname), req, res);
 }
 
+function currentEmuleRunning() {
+  try {
+    if (!_ctx.emuleApi || !_ctx.emuleApi.isEmuleRunning) {
+      return Promise.resolve(false);
+    }
+    return Promise.resolve(_ctx.emuleApi.isEmuleRunning()).then(
+      alive => !!alive,
+      () => false,
+    );
+  } catch (_) {
+    return Promise.resolve(false);
+  }
+}
+
 function handle(url, req, res) {
   const p = url.pathname;
   if (!p.startsWith('/api/v1/')) return false;
 
   if (p === '/api/v1/status') {
-    json(res, 200, {
-      ok: true,
-      apiVersion: 1,
-      uptime: Math.round(process.uptime()),
-      auth: { enabled: !!(_ctx.security && _ctx.security.isReady()) },
-      emule: {
-        loggedIn: !!(_ctx.getSession && _ctx.getSession()),
-        running: !!(_ctx.emuleApi && _ctx.emuleApi.isEmuleRunning && _ctx.emuleApi.isEmuleRunning())
-      },
-      live: { coreStats: '/api/v1/live/p2p/stats', streams: '/api/v1/live/p2p/streams' }
-    });
+    currentEmuleRunning().then(running => json(res, 200, {
+        ok: true,
+        apiVersion: 1,
+        uptime: Math.round(process.uptime()),
+        auth: { enabled: !!(_ctx.security && _ctx.security.isReady()) },
+        emule: {
+          loggedIn: !!(_ctx.getSession && _ctx.getSession()),
+          running
+        },
+        live: { coreStats: '/api/v1/live/p2p/stats', streams: '/api/v1/live/p2p/streams' }
+      }));
     return true;
   }
 
@@ -45,12 +59,11 @@ function handle(url, req, res) {
   // epoch so the front-end can detect a process restart and refresh stale
   // state (e.g. smart_play's .part-still-playable heuristic).
   if (p === '/api/v1/lifecycle') {
-    const alive = !!(_ctx.emuleApi && _ctx.emuleApi.isEmuleRunning && _ctx.emuleApi.isEmuleRunning());
-    json(res, 200, {
-      alive,
-      epoch: _ctx.emuleApi && _ctx.emuleApi.getLibraryEpoch ? _ctx.emuleApi.getLibraryEpoch() : 0,
-      restartedAt: _ctx.emuleApi && _ctx.emuleApi.getRestartedAt ? _ctx.emuleApi.getRestartedAt() : 0
-    });
+    currentEmuleRunning().then(alive => json(res, 200, {
+        alive,
+        epoch: _ctx.emuleApi && _ctx.emuleApi.getLibraryEpoch ? _ctx.emuleApi.getLibraryEpoch() : 0,
+        restartedAt: _ctx.emuleApi && _ctx.emuleApi.getRestartedAt ? _ctx.emuleApi.getRestartedAt() : 0
+      }));
     return true;
   }
 

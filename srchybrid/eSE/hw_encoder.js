@@ -1,7 +1,7 @@
 'use strict';
-const { spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { runProcess } = require('./bounded_process_runner');
 
 let HW_ENCODER = 'libx264';
 let HW_ENCODER_OPTS = ['-preset', 'ultrafast', '-crf', '23', '-threads', '4'];
@@ -12,7 +12,7 @@ let HW_ENCODER_OPTS = ['-preset', 'ultrafast', '-crf', '23', '-threads', '4'];
  * @param {string} ffmpegPath  Ruta al ejecutable ffmpeg
  * @param {string} tempDir     Directorio temporal para el archivo de prueba
  */
-function detect(ffmpegPath, tempDir) {
+async function detect(ffmpegPath, tempDir) {
   const encoders = [
     { name: 'h264_nvenc', opts: ['-preset', 'p1', '-rc', 'vbr', '-cq', '23'], label: 'NVIDIA NVENC' },
     { name: 'h264_qsv',  opts: ['-preset', 'veryfast', '-global_quality', '23'], label: 'Intel QSV' },
@@ -22,12 +22,12 @@ function detect(ffmpegPath, tempDir) {
   for (const enc of encoders) {
     try {
       const testOut = path.join(tempDir, 'ese_hwtest.mp4');
-      const result = spawnSync(ffmpegPath, [
+      const result = await runProcess(ffmpegPath, [
         '-f', 'lavfi', '-i', 'color=c=black:s=256x256:d=1:r=25',
         '-pix_fmt', 'yuv420p', '-c:v', enc.name, '-frames:v', '3', '-y', testOut
-      ], { timeout: 10000, stdio: 'pipe' });
+      ], { timeoutMs: 10000, maxOutputBytes: 2 * 1024 * 1024 });
 
-      if (result.status === 0) {
+      if (result.ok) {
         HW_ENCODER = enc.name;
         HW_ENCODER_OPTS = enc.opts;
         console.log('   GPU Encoder: ' + enc.label + ' (' + enc.name + ')');
@@ -36,7 +36,7 @@ function detect(ffmpegPath, tempDir) {
       }
 
       // Mostrar motivo del fallo si es por driver
-      const stderr = (result.stderr || '').toString();
+      const stderr = result.stderr || '';
       const driverMsg = stderr.match(/minimum required.*driver.*is (\d+)/i);
       if (driverMsg) console.log('   ' + enc.label + ': need driver ' + driverMsg[1] + '+');
     } catch (e) {}

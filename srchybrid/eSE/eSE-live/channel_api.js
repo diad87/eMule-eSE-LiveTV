@@ -823,8 +823,14 @@ function handleRoute(url, req, res, ctx) {
 
   // === GET /api/live/sources ===
   if (p === '/api/live/sources') {
-    const sources = deviceScanner.getSourcesForAPI(ctx.ffmpegPath);
-    jsonResponse(res, 200, { sources });
+    deviceScanner.getSourcesForAPI(ctx.ffmpegPath).then(
+      sources => jsonResponse(res, 200, { sources }),
+      error => jsonResponse(res, 503, {
+        sources: [],
+        error: 'source_scan_failed',
+        detail: error.message,
+      }),
+    );
     return true;
   }
 

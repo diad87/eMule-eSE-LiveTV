@@ -1,7 +1,10 @@
 'use strict';
 const fs   = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const {
+  runProcess,
+  killProcessTree,
+} = require('./bounded_process_runner');
 
 // Estado compartido — se inyecta vía init()
 let _activeStreams = {};
@@ -111,27 +114,36 @@ function gracefulShutdown(signal) {
  * On Windows: uses `wmic` to find child processes by ParentProcessId.
  * On POSIX: uses `pkill -P` for child process tree.
  */
-function killOrphanedFFmpeg() {
+async function killOrphanedFFmpeg() {
   const myPid = process.pid;
   try {
     if (process.platform === 'win32') {
       // BUG-016 FIX: Use Get-CimInstance instead of deprecated wmic
-      const psCmd = 'powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name=\'ffmpeg.exe\' AND ParentProcessId=' + myPid + '\\" | Select-Object -ExpandProperty ProcessId"';
-      const output = execSync(psCmd, { encoding: 'utf8', timeout: 8000 });
-      const pids = output.trim().split(/\r?\n/).filter(p => /^\d+$/.test(p.trim()));
+      const query = "Get-CimInstance Win32_Process -Filter \"Name='ffmpeg.exe' AND ParentProcessId="
+        + myPid + '" | Select-Object -ExpandProperty ProcessId';
+      const result = await runProcess(
+        'powershell',
+        ['-NoProfile', '-Command', query],
+        { timeoutMs: 8000, maxOutputBytes: 256 * 1024 },
+      );
+      const pids = result.stdout.trim().split(/\r?\n/).filter(p => /^\d+$/.test(p.trim()));
       if (pids.length > 0) {
-        pids.forEach(childPid => {
+        await Promise.all(pids.map(async childPid => {
           try {
-            execSync('taskkill /F /T /PID ' + childPid.trim(), { stdio: 'ignore', timeout: 3000 });
-            console.log('[cleanup] Killed orphaned ffmpeg PID:', childPid.trim());
+            const killed = await killProcessTree(Number(childPid.trim()));
+            if (killed.ok) console.log('[cleanup] Killed orphaned ffmpeg PID:', childPid.trim());
           } catch (e) { /* already dead */ }
-        });
+        }));
       }
     } else {
       // POSIX: kill child ffmpeg processes
       try {
-        execSync('pkill -P ' + myPid + ' -f ffmpeg', { stdio: 'ignore', timeout: 3000 });
-        console.log('[cleanup] Killed child ffmpeg processes.');
+        const killed = await runProcess(
+          'pkill',
+          ['-P', String(myPid), '-f', 'ffmpeg'],
+          { timeoutMs: 3000, maxOutputBytes: 64 * 1024 },
+        );
+        if (killed.ok) console.log('[cleanup] Killed child ffmpeg processes.');
       } catch (e) { /* no matches or already dead */ }
     }
   } catch (e) {

@@ -1,7 +1,7 @@
 'use strict';
 const fs   = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawnManaged } = require('../bounded_process_runner');
 
 let _ctx = {};
 
@@ -84,7 +84,7 @@ function handle(url, req, res) {
     }
     ffArgs.push('-c:a', 'aac', '-b:a', '192k', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-max_muxing_queue_size', '1024', '-f', 'mp4', '-');
 
-    const ff = spawn(_ctx.FFMPEG_PATH, ffArgs);
+    const ff = spawnManaged(_ctx.FFMPEG_PATH, ffArgs);
     let dataSent = false, stderrLog = '';
     ff.stdout.on('data', (chunk) => {
       if (!dataSent) { dataSent = true; console.log('[Stream] First data chunk sent (' + chunk.length + ' bytes)'); }
@@ -113,7 +113,7 @@ function handle(url, req, res) {
     try { fs.unlinkSync(tempAvi); } catch(e) {}
     console.log('[MSE] Copying .part for ' + dl.fileName);
     new Promise((resolve, reject) => {
-      const ps = spawn('powershell', ['-ExecutionPolicy','Bypass','-File',copyScript,'-Source',dl.partPath,'-Dest',tempAvi,'-MaxMB','600']);
+      const ps = spawnManaged('powershell', ['-ExecutionPolicy','Bypass','-File',copyScript,'-Source',dl.partPath,'-Dest',tempAvi,'-MaxMB','600']);
       let out = '';
       ps.stdout.on('data', d => out += d.toString());
       ps.stderr.on('data', (d) => { console.warn('[MSE] ps stderr:', d.toString().slice(-200)); });
@@ -152,7 +152,7 @@ function handle(url, req, res) {
     if (q.scale) ffArgs.push('-vf', 'scale=' + q.scale);
     ffArgs.push('-c:a', 'aac', '-b:a', q.abr, '-ac', '2', '-err_detect', 'ignore_err', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-frag_duration', '2000000', '-f', 'mp4', 'pipe:1');
     console.log('[MSE] Starting ffmpeg pipe (quality: ' + String(quality).replace(/[\r\n]/g, '') + ', encoder: ' + _ctx.HW_ENCODER + ')');
-    const ff = spawn(_ctx.FFMPEG_PATH, ffArgs);
+    const ff = spawnManaged(_ctx.FFMPEG_PATH, ffArgs);
     _ctx.activeStreams[partNum] = ff;
     res.writeHead(200, { 'Content-Type': 'video/mp4', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
     ff.stdout.pipe(res);

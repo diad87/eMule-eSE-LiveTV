@@ -6,9 +6,10 @@
  */
 'use strict';
 
-const { spawn, execSync } = require('child_process');
-
-// spawn & execSync imported above
+const {
+  spawnManaged,
+  killProcessTree,
+} = require('../bounded_process_runner');
 const path = require('path');
 const fs = require('fs');
 const sourceSelector = require('./source_selector');
@@ -35,7 +36,7 @@ let pipelineGeneration = 0; // BUG-057 FIX: monotonic ID to prevent race in stop
  * @param {Function} [opts.onStatus] - Callback for status changes
  * @returns {{success: boolean, error?: string}}
  */
-function start(opts) {
+async function start(opts) {
   if (ffmpegProcess) {
     return { success: false, error: 'Pipeline already running. Stop it first.' };
   }
@@ -65,7 +66,7 @@ function start(opts) {
   cleanSegments(outputDir);
   // Auto-detect audio loopback for screen capture (if no explicit audio device)
   if (opts.source.type === 'screen' && !opts.source.audioDevice) {
-    const loopback = sourceSelector.findLoopbackDevice(opts.ffmpegPath);
+    const loopback = await sourceSelector.findLoopbackDevice(opts.ffmpegPath);
     if (loopback) {
       opts.source._loopbackDevice = loopback;
     }
@@ -91,7 +92,7 @@ function start(opts) {
 
   // Spawn ffmpeg
   try {
-    ffmpegProcess = spawn(opts.ffmpegPath, fullArgs, {
+    ffmpegProcess = spawnManaged(opts.ffmpegPath, fullArgs, {
       stdio: ['ignore', 'pipe', 'pipe']
     });
   } catch (e) {
@@ -167,13 +168,10 @@ function stop() {
   // On Windows SIGTERM is unreliable — use taskkill /F
   try {
     if (process.platform === 'win32' && pid) {
-      try {
-        execSync('taskkill /F /T /PID ' + pid, { stdio: 'ignore' });
-        console.log('[eSE Live] taskkill sent to PID', pid);
-      } catch (e) {
-        // Process may already be dead
-        console.log('[eSE Live] taskkill failed (process may be gone):', e.message);
-      }
+      killProcessTree(pid).then(result => {
+        if (result.ok) console.log('[eSE Live] taskkill sent to PID', pid);
+        else console.log('[eSE Live] taskkill failed (process may be gone):', result.error || result.stderr);
+      });
     } else {
       ffmpegProcess.kill('SIGTERM');
     }
@@ -188,7 +186,7 @@ function stop() {
     try {
       if (proc && !proc.killed && pid) {
         if (process.platform === 'win32') {
-          execSync('taskkill /F /T /PID ' + pid, { stdio: 'ignore' });
+          killProcessTree(pid);
         } else {
           proc.kill('SIGKILL');
         }

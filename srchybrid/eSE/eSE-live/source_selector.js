@@ -10,6 +10,7 @@ const fs = require('fs');   // BUG-067 FIX: hoisted from validateSource()
 const path = require('path');
 const dns = require('dns');
 const net = require('net');
+const { runProcess } = require('../bounded_process_runner');
 
 /**
  * @typedef {Object} SourceConfig
@@ -172,14 +173,13 @@ function validateSource(source) {
  * Auto-detect a system audio loopback device from dshow.
  * Looks for Stereo Mix, WASAPI loopback, or any output device.
  * @param {string} ffmpegPath - Path to ffmpeg executable.
- * @returns {string|null} Device name or null if not found.
+ * @returns {Promise<string|null>} Device name or null if not found.
  */
-function findLoopbackDevice(ffmpegPath) {
-  const { spawnSync } = require('child_process');
+async function findLoopbackDevice(ffmpegPath) {
   try {
-    const result = spawnSync(ffmpegPath,
+    const result = await runProcess(ffmpegPath,
       ['-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'],
-      { timeout: 10000, encoding: 'utf8' }
+      { timeoutMs: 10000, maxOutputBytes: 1024 * 1024 },
     );
     const stderr = result.stderr || '';
     

@@ -23,6 +23,11 @@
       "path": "srchybrid/M2ABindingPort.cpp",
       "reason": "Portable characterization of move-only M2A ownership and snapshot-unlock-callback ordering, compiled into the existing headless self-test path.",
       "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+    },
+    {
+      "path": "srchybrid/LiveTunnelGatewayStorePort.h",
+      "reason": "Closed, storage-neutral LT3 command vocabulary shared by the domain-state owner and the Kad6 adapter without introducing a reverse dependency.",
+      "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
     }
   ],
   "approval": "M2A-00; a card is activated only by a reviewed catalogue revision and its frozen A/D/net budget"

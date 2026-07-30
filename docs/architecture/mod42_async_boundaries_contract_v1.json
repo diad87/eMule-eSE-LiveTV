@@ -1,0 +1,48 @@
+{
+  "schema": "ese.mod42.async-boundaries-contract/v1",
+  "baseline_commit": "fa8ed3c525fad3b36a57086ed78ade34210a306e",
+  "scope": "bounded external process execution and non-blocking filesystem operations in production HTTP handlers",
+  "process_runner": {
+    "file": "srchybrid/eSE/bounded_process_runner.js",
+    "sole_child_process_owner": true,
+    "shell": false,
+    "windows_hide": true,
+    "maximum_timeout_ms": 30000,
+    "default_max_output_bytes": 1048576,
+    "maximum_output_bytes": 4194304,
+    "maximum_arguments": 256,
+    "supports": [
+      "bounded completion",
+      "managed long-running child",
+      "detached child with spawn acknowledgement",
+      "bounded process-tree termination"
+    ]
+  },
+  "handler_filesystem": {
+    "route_glob": "srchybrid/eSE/routes/*.js",
+    "synchronous_calls_allowed": 0,
+    "channel_handler_file": "srchybrid/eSE/eSE-live/channel_api.js",
+    "synchronous_calls_allowed_after_handleRoute": 0,
+    "startup_only_exceptions": [
+      "locate packaged hls.min.js",
+      "create local HLS directory"
+    ]
+  },
+  "invariants": {
+    "server_hard_stop_physical_loc": 300,
+    "status_and_lifecycle_fail_closed": true,
+    "process_arguments_are_arrays": true,
+    "process_shell_expansion": false,
+    "streaming_processes_remain_killable": true,
+    "path_containment_checks_preserved": true,
+    "file_response_content_length_from_async_stat": true
+  },
+  "stop_conditions": [
+    "any production module except the runner imports child_process",
+    "any execSync or spawnSync remains reachable in production",
+    "a route handler uses synchronous filesystem APIs",
+    "a process has unbounded captured output or timeout",
+    "a path validation or local-only network invariant is weakened",
+    "server.js exceeds 300 physical lines"
+  ]
+}

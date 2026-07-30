@@ -20,9 +20,19 @@ function isWithinBase(resolvedPath, baseDir) {
   return normalizedTarget.startsWith(normalizedBase) || normalizedTarget === path.resolve(baseDir);
 }
 
+async function pathExists(filePath) {
+  try {
+    await fs.promises.access(filePath);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function handle(url, req, res) {
   // Legacy .part streaming via ffmpeg pipe
   if (url.pathname === '/api/stream/part') {
+    void (async () => {
     const partFile = url.searchParams.get('file') || '';
     const fileName = url.searchParams.get('name') || '';
     const EMULE_TEMP = path.join(path.dirname(_ctx.EMULE_INCOMING), 'Temp');
@@ -31,20 +41,20 @@ function handle(url, req, res) {
     // BUG-041 FIX: Strict regex + path containment check for .part files
     if (partFile && /^\d+\.part$/.test(partFile)) {
       const tempPath = path.resolve(path.join(EMULE_TEMP, partFile));
-      if (isWithinBase(tempPath, EMULE_TEMP) && fs.existsSync(tempPath)) filePath = tempPath;
+      if (isWithinBase(tempPath, EMULE_TEMP) && await pathExists(tempPath)) filePath = tempPath;
     }
     if (!filePath && partFile) {
       const metPath = path.resolve(path.join(EMULE_TEMP, partFile + '.met'));
       // BUG-041 FIX: Validate .met path is within TEMP
-      if (isWithinBase(metPath, EMULE_TEMP) && fs.existsSync(metPath)) {
+      if (isWithinBase(metPath, EMULE_TEMP) && await pathExists(metPath)) {
         try {
-          const metText = fs.readFileSync(metPath).toString('latin1');
+          const metText = (await fs.promises.readFile(metPath)).toString('latin1');
           const fnMatch = metText.match(/[^\x00-\x1F\x7F-\x9F]{5,}\.(avi|mkv|mp4|wmv|mov|webm|flv)/i);
           if (fnMatch) {
             // BUG-041 FIX: Extract only basename to prevent embedded path traversal
             const safeName = path.basename(fnMatch[0]);
             const incomingPath = path.resolve(path.join(_ctx.EMULE_INCOMING, safeName));
-            if (isWithinBase(incomingPath, _ctx.EMULE_INCOMING) && fs.existsSync(incomingPath)) filePath = incomingPath;
+            if (isWithinBase(incomingPath, _ctx.EMULE_INCOMING) && await pathExists(incomingPath)) filePath = incomingPath;
           }
         } catch(e) { console.warn('[Stream] Failed to parse .met file:', e.message); }
       }
@@ -53,11 +63,11 @@ function handle(url, req, res) {
       // BUG-041 FIX: Use basename to strip any path components from user input
       const safeName = path.basename(fileName);
       const incomingPath = path.resolve(path.join(_ctx.EMULE_INCOMING, safeName));
-      if (isWithinBase(incomingPath, _ctx.EMULE_INCOMING) && fs.existsSync(incomingPath)) {
+      if (isWithinBase(incomingPath, _ctx.EMULE_INCOMING) && await pathExists(incomingPath)) {
         filePath = incomingPath;
       } else {
         try {
-          const files = fs.readdirSync(_ctx.EMULE_INCOMING);
+          const files = await fs.promises.readdir(_ctx.EMULE_INCOMING);
           const nameLower = safeName.toLowerCase();
           const match = files.find(f => f.toLowerCase().includes(nameLower) || nameLower.includes(f.toLowerCase()));
           if (match) {
@@ -68,8 +78,8 @@ function handle(url, req, res) {
       }
     }
 
-    if (!filePath) { res.writeHead(404); res.end('File not found in Temp or Incoming'); return true; }
-    const stat = fs.statSync(filePath);
+    if (!filePath) { res.writeHead(404); res.end('File not found in Temp or Incoming'); return; }
+    const stat = await fs.promises.stat(filePath);
     console.log('[Stream] Streaming: ' + String(filePath).replace(/[\r\n]/g, '') + ' (' + Math.round(stat.size / (1024*1024)) + ' MB)');
 
     res.writeHead(200, { 'Content-Type': 'video/mp4', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
@@ -98,6 +108,11 @@ function handle(url, req, res) {
     });
     ff.on('error', (err) => { console.log('[Stream] ffmpeg error: ' + err.message); try { res.end(); } catch(e) {} });
     res.on('close', () => { try { ff.kill('SIGKILL'); } catch(e) {} });
+    })().catch(error => {
+      console.warn('[Stream] Async file preparation failed:', error.message);
+      if (!res.headersSent) res.writeHead(500);
+      if (!res.writableEnded) res.end('Cannot prepare stream');
+    });
     return true;
   }
 
@@ -110,15 +125,14 @@ function handle(url, req, res) {
     if (!dl) { res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' })); return true; }
     const copyScript = path.join(_ctx.__dirname, 'copy_part.ps1');
     const tempAvi = path.join(_ctx.TEMP_DIR, 'ese_mse_' + partNum + '.avi');
-    try { fs.unlinkSync(tempAvi); } catch(e) {}
     console.log('[MSE] Copying .part for ' + dl.fileName);
-    new Promise((resolve, reject) => {
+    fs.promises.unlink(tempAvi).catch(() => {}).then(() => new Promise((resolve, reject) => {
       const ps = spawnManaged('powershell', ['-ExecutionPolicy','Bypass','-File',copyScript,'-Source',dl.partPath,'-Dest',tempAvi,'-MaxMB','600']);
       let out = '';
       ps.stdout.on('data', d => out += d.toString());
       ps.stderr.on('data', (d) => { console.warn('[MSE] ps stderr:', d.toString().slice(-200)); });
       ps.on('close', () => { parseInt(out.trim()) > 0 ? resolve() : reject(new Error('Copy failed')); });
-    }).then(() => {
+    })).then(() => {
       const estTotalSec = Math.round((dl.fileSizeMB * 8) / 4);
       console.log('[MSE] Ready. Est: ' + estTotalSec + 's');
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -139,7 +153,7 @@ function handle(url, req, res) {
     // BUG-047 FIX: Validate quality preset is one of the allowed values
     const quality = url.searchParams.get('q') || 'original';
     const tempAvi = path.join(_ctx.TEMP_DIR, 'ese_mse_' + partNum + '.avi');
-    if (!fs.existsSync(tempAvi)) { res.writeHead(404); res.end('Not ready'); return true; }
+    fs.promises.access(tempAvi).then(() => {
     const presets = { '480p': { scale: '854:480', abr: '128k' }, '720p': { scale: '1280:720', abr: '192k' }, '1080p': { scale: '-2:1080', abr: '256k' }, 'original': { scale: null, abr: '256k' } };
     const q = presets[quality] || presets['original'];
     // BUG-047 FIX: Clamp seek to non-negative, finite number
@@ -173,6 +187,10 @@ function handle(url, req, res) {
         try { _ctx.activeStreams[partNum].kill('SIGKILL'); } catch(e) {}
         delete _ctx.activeStreams[partNum];
       }
+    });
+    }).catch(() => {
+      res.writeHead(404);
+      res.end('Not ready');
     });
     return true;
   }

@@ -62,12 +62,12 @@ function handle(url, req, res) {
     const title    = url.searchParams.get('title') || '';
     const safeName = title.replace(/[^a-z0-9]/gi, '_').substring(0, 60);
     const posterPath = path.join(_ctx.CACHE_DIR, safeName + '.jpg');
-    if (fs.existsSync(posterPath)) {
+    fs.promises.access(posterPath).then(() => {
       res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
       fs.createReadStream(posterPath).pipe(res);
-    } else {
+    }).catch(() => {
       res.writeHead(404); res.end('');
-    }
+    });
     return true;
   }
 

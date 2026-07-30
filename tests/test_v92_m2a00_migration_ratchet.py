@@ -52,6 +52,48 @@ class M2A00RatchetTest(unittest.TestCase):
             with self.assertRaisesRegex(GATE.GateError, message):
                 GATE.validate_inputs(self.contract, candidate, self.baseline)
 
+    def test_lt1_budget_limits_are_independent_and_scope_is_exact(self):
+        transfer = next(
+            item
+            for item in self.matrix["field_matrix"]["LiveTunnel"]["transfers"]
+            if item["card"] == "LT1"
+        )
+        module = next(
+            item
+            for item in self.matrix["additional_modules"]
+            if item["card"] == "LT1"
+        )
+        expected = {
+            "module_loc": 800,
+            "add": 1000,
+            "delete": 300,
+            "net": 250,
+        }
+        self.assertEqual(transfer["budget"], expected)
+        self.assertEqual(module["budget"], expected)
+        self.assertEqual(
+            self.matrix["card_budgets"]["LT1"],
+            {
+                "add": 1000,
+                "delete": 300,
+                "net": 250,
+                "coordinator": "LiveTunnel",
+                "facade_add_max": 80,
+                "reduction_required": True,
+            },
+        )
+        self.assertEqual(len(transfer["fields"]), 12)
+        self.assertFalse(
+            any("Economy" in field or "Hardening" in field
+                for field in transfer["fields"])
+        )
+        candidate = copy.deepcopy(self.matrix)
+        candidate["additional_modules"][0]["budget"]["net"] = 1001
+        with self.assertRaisesRegex(
+            GATE.GateError, "budget/dependency drift"
+        ):
+            GATE.validate_inputs(self.contract, candidate, self.baseline)
+
     def test_catalogue_rejects_collapsed_live_api_or_placeholder_dependencies(self):
         candidate = copy.deepcopy(self.matrix)
         candidate["additional_modules"] = [item for item in candidate["additional_modules"] if not item["name"].startswith("WebLiveApi")]

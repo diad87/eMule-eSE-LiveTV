@@ -120,8 +120,8 @@ declara en el coordinador.
 
 | Tarjeta | Owner y estado que sale de `CLiveTunnel` | Destinos y API/puertos | Funciones/LOC que debe vaciar | Test focal obligatorio | JP |
 |---|---|---|---|---|---:|
-| `M2A-LT1` | Release/economy: `m_k6Release*`, `m_k6Economy*`, challenge, evidencia y medición. | `LiveTunnelReleaseGate.{h,cpp}` (domain_state) + `LiveTunnelReleaseStorePort`; sólo snapshots/decisiones. | `Load/Save/Refresh/ApplyK6PublicRelease`, economy y métricas (≈650 LOC). | evidencia inválida, challenge de un uso, wrap de tiempo, lectura concurrente de snapshot. | 1,5 |
-| `M2A-LT2` | Cuota: secreto, certificado, limiter, hierarchy, spent y grants (`m_k6Quota*`). | `LiveTunnelQuotaAuthority.{h,cpp}` (domain_state), `QuotaCryptoPort` y `QuotaClockPort`. | `Ensure/K6QuotaPrincipal/K6QuotaIssuerTrusted/K6AcquireAnonymousQuota` (≈900 LOC). | certificado inválido, replay/spent, cuota agotada, cancelación y secreto borrado. | 2,0 |
+| `M2A-LT1` | Release/aviso: `m_k6Release*`, challenge, evidencia y `m_k6ExitNoticeServer`; exactamente los 12 campos de la matriz. | `LiveTunnelReleaseGate.{h,cpp}` (domain_state) + `LiveTunnelReleaseStorePort`; sólo snapshots/decisiones y puertos, sin socket/Kad concreto. | `Load/Save/Refresh/ApplyK6PublicRelease`, challenge y aviso (≈300–400 LOC eliminables). | evidencia inválida, challenge de un uso, wrap de tiempo, lectura concurrente de snapshot. | 1,5 |
+| `M2A-LT2` | Hardening/economía/cuota: controller, telemetría/mediciones, secreto, certificado, limiter, hierarchy, spent y grants; exactamente los 20 campos de la matriz. | `LiveTunnelQuotaAuthority.{h,cpp}` (domain_state), `QuotaCryptoPort` y `QuotaClockPort`. | `Ensure/K6QuotaPrincipal/K6QuotaIssuerTrusted/K6AcquireAnonymousQuota`, economy y métricas (≈900 LOC). | certificado inválido, replay/spent, cuota agotada, cancelación y secreto borrado. | 2,0 |
 | `M2A-LT3` | Gateway/lease: sólo source leases, scheduler, budget, coalescer y epochs; no publica ni posee sombras. | `LiveTunnelGatewayLeaseState.{h,cpp}`; adaptador Kad6 separado. | `HandleK6SearchReply` (585), `ExitHandle_Kad6Gateway` (237), callbacks gateway (≈1.150 LOC). | resultado tardío tras cancel, epochs persistidos corruptos, lease duplicado y salida ordenada. | 2,0 |
 | `M2A-LT4` | Publicación/tickets: `m_k6Publishes`, `m_k6ShadowPrimary`, targets y tickets; LT3 sólo recibe vista inmutable de leases. | `LiveTunnelSourcePublisher.{h,cpp}` y `LiveTunnelTicketPolicy.{h,cpp}`; `Kad6PublishPort`. | `ExitHandle_Kad6SourceBind` (241), `ExitHandle_Kad6Publish` (265), bind/unbind/ack (≈1.050 LOC). | bind/unbind idempotente, ticket replay, publicación shadow/nativa y orden de callbacks. | 2,0 |
 | `M2A-LT5` | Streams y créditos: `m_k6ExitStreams`, `m_k6OriginStreams`, send/receive credits, mapas por circuito. | `LiveTunnelStreamFlow.{h,cpp}` (domain_state) + `Kad6StreamTransportAdapter.{h,cpp}`. | `ExitHandle_Kad6Dial` (203), `ActivateK6Inbound` (169), `OnK6ExitPacket` (172), close/data/credit (≈1.200 LOC). | half-close, crédito límite, socket cerrado durante callback, ABA de streamId y envío después de unlock. | 2,25 |
@@ -132,13 +132,15 @@ declara en el coordinador.
 | `M2A-LT10` | Cierre de header y medición. | Mover DTOs/puertos a cabeceras de módulo, quitar miembros delegados; `LiveTunnel.h` contiene ≤20 campos reales. | Ninguna función >150; `.cpp` ≤4.000, `.h` ≤900. | compilación de consumidores, ABI interno, inventario MOD-0.1 y gate M2. | 0,75 |
 
 Budget fijo por tarjeta (máximo LOC del módulo / A máximo / D mínimo / neto
-máximo; todas las cifras son líneas): LT1 `800/1000/750/+250`, LT2
+máximo; todas las cifras son líneas): LT1 `800/1000/300/+250`, LT2
 `1100/1300/1000/+300`, LT3 `1150/1350/1150/+200`, LT4
 `1100/1300/1050/+250`, LT5 `1200/1450/1200/+250`, LT6
 `1100/1300/1000/+300`, LT7 `1100/1300/950/+350`, LT8 `900/1100/800/+300`,
 LT9 `1200/1450/1250/+200`, LT10 `700/800/500/+300`. Además, el coordinador
 en cada tarjeta añade ≤80 líneas de fachada y elimina más de las que añade.
 Todo valor se valida antes del commit; >1.500 LOC/net detiene la tarjeta.
+Los máximos A/neto y el mínimo D son límites independientes; la autorización
+del propietario de 2026-07-30 corrige LT1 sin relajar A, neto, fachada ni LOC.
 
 Dependencias: LT1 puede iniciar; LT2 depende de LT1 para el estado de release;
 LT3/LT4 dependen de LT2; LT5 depende de LT4; LT6 depende de LT3 y LT5; LT7

@@ -34,7 +34,7 @@ BASELINE_COMMIT = "8534bf9ee48a16084c0368bf33dcafb4ba12558d"
 # changing a contract cannot silently authorize its own replacement.
 EXPECTED_DOC_HASHES: dict[str, str] = {
     "mod52_migration_contract_v1.json": "b3957aca15b7c25e42229c3f9623bff881b450c7277323a28c7639e0ea9f3caf",
-    "mod52_migration_matrix_v1.json": "5dfd9b0eba033bf50a6cc35b9fde9c720a4de247b4ff1f2058aade78360a2424",
+    "mod52_migration_matrix_v1.json": "8657a13fd6fdad258ad9b3d78cdc00b9efbb32df54c45ff13ed708a894b033f4",
     "mod52_migration_baseline_v1.json": "4c162b457059776f13c26341fdab60778088014e183acc48926f22f5d1cbc5c3",
     "mod03_ownership_layering_contract_v2.json": "c3aa3d90bccbc63ff7a0c8ebafd199e9ed2b00acc2c2ef488c5e11515a3f28b1",
     "mod04_architecture_gate_catalog_v2.json": "17c23fa5878fb034c6c15441fb0943809b4eedfe21eef383c7b7d6eabbbf086d",
@@ -1997,7 +1997,14 @@ def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: 
             if set(transfer) != {"card","owner","parent","lock","wire","test","budget","fields"}:
                 raise GateError("M2A field transfer schema incomplete")
             budget = transfer["budget"]
-            if set(budget) != {"module_loc","add","delete","net"} or not all(isinstance(value, int) and value > 0 for value in budget.values()) or budget["add"] - budget["delete"] != budget["net"]:
+            if (
+                set(budget) != {"module_loc", "add", "delete", "net"}
+                or not all(
+                    isinstance(value, int) and value > 0
+                    for value in budget.values()
+                )
+                or budget["net"] > budget["add"]
+            ):
                 raise GateError("M2A field budget must be a typed closed object")
             if budget["module_loc"] > 1200 or budget["module_loc"] > 1500 or budget["net"] >= 1500:
                 raise GateError("M2A module/card budget exceeds policy")
@@ -2016,7 +2023,14 @@ def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: 
         if set(item) != {"name","card","owner","state","lock","wire","test","budget"}:
             raise GateError("M2A function row schema incomplete")
         budget = item["budget"]
-        if set(budget) != {"module_loc","add","delete","net"} or not all(isinstance(value, int) and value > 0 for value in budget.values()) or budget["add"] - budget["delete"] != budget["net"]:
+        if (
+            set(budget) != {"module_loc", "add", "delete", "net"}
+            or not all(
+                isinstance(value, int) and value > 0
+                for value in budget.values()
+            )
+            or budget["net"] > budget["add"]
+        ):
             raise GateError("M2A function budget must be a typed closed object")
         if budget["module_loc"] > 1200 or budget["net"] >= 1500:
             raise GateError("M2A function budget exceeds policy")
@@ -2154,7 +2168,17 @@ def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: 
         names.add(module["name"]); name_casefold.add(module["name"].casefold())
         dependency_edges += len(module["dependencies"])
         budget = module["budget"]
-        if set(budget) != {"module_loc","add","delete","net"} or not all(isinstance(value, int) and value > 0 for value in budget.values()) or budget["module_loc"] > 1200 or budget["net"] >= 1500 or budget["add"] - budget["delete"] != budget["net"] or len(module["dependencies"]) > 8:
+        if (
+            set(budget) != {"module_loc", "add", "delete", "net"}
+            or not all(
+                isinstance(value, int) and value > 0
+                for value in budget.values()
+            )
+            or budget["module_loc"] > 1200
+            or budget["net"] >= 1500
+            or budget["net"] > budget["add"]
+            or len(module["dependencies"]) > 8
+        ):
             raise GateError("M2A additional module budget/dependency drift")
         if module["card"] not in activation:
             raise GateError("M2A module references an undeclared activation card")
@@ -2191,7 +2215,7 @@ def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: 
         or any(
             set(value) != budget_keys
             or not all(isinstance(value[key], int) and value[key] >= 0 for key in ("add", "delete", "net", "facade_add_max"))
-            or value["add"] - value["delete"] != value["net"]
+            or value["net"] > value["add"]
             or value["coordinator"] not in COORDINATOR_FILES
             or not isinstance(value["reduction_required"], bool)
             for value in card_budgets.values()

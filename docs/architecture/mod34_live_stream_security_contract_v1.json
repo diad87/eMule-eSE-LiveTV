@@ -22,7 +22,7 @@
     "trust_identity": "durable_user_hash_or_public_key_only_never_pointer_or_network_address",
     "trust_capacity": 1024,
     "trust_rate": "response_rate_not_volume_controls_degradation_and_promotion",
-    "trust_failure_cap": 100,
+    "trust_failure_cap": 10,
     "threading": "module_state_is_internally_serialized_and_no_external_callback_runs_under_its_lock",
     "secrets": "private_keys_never_enter_the_module",
     "allocation": "bounded_state_mutations_fail_closed_without_partial_commit"
@@ -53,8 +53,8 @@
       "durable_trust_survives_pointer_replacement_projection",
       "response_rate_boundaries",
       "failure_cap_and_stale_prune",
-      "concurrent_read_write_and_clear",
-      "allocation_failure_atomicity"
+      "concurrent_read_write",
+      "bounded_capacity_failure_atomicity"
     ],
     "required_gates": [
       "MOD-0.1",

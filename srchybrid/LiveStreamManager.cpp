@@ -52,22 +52,10 @@ DWORD g_eseTestSabotageDelayMs = 6000;
 #endif
 
 
-// v7.2.0 — Tombstone / watchdog constants. Forward of the helper below.
-// TTL after which a tombstone is forgotten. 30 min: long enough to
-// outlive Kad echo cascades, short enough that same-key re-broadcasts
-// within the hour are rare (StartBroadcast generates fresh streamKeys).
 static const DWORD ESE_TOMBSTONE_TTL_MS    = 30u * 60u * 1000u;
 static const DWORD ESE_TOMBSTONE_PRUNE_MS  = 60u * 1000u;
 static const std::size_t ESE_LIVE_MAX_SOURCE_PEERS = 8u;
 static const std::size_t ESE_LIVE_BALANCED_SOURCE_PEERS = 3u;
-// Watchdog threshold: 180 s. v7.2.0 had 90 s which was too aggressive
-// for bandwidth-limited viewers (4G CGN saturated by a too-high
-// variant) — chunks arrive in bursts with multi-tens-of-seconds gaps,
-// the 90 s timer expired, viewer gossipped a (false) END for the
-// stream, broadcaster cascaded the END to all OTHER viewers, mass
-// disconnect. v7.2.2 raises to 180 s AND additionally gates on
-// the source role is empty so we only declare dead when we are
-// genuinely alone, not just slow.
 static const DWORD ESE_LIVE_WATCHDOG_MS    = 180u * 1000u;
 
 static_assert(CLivePeerRefreshPolicy::MIN_PEERS == ESE_LIVE_MIN_PEERS,
@@ -80,6 +68,7 @@ using ese::live::LivePeerHandle;
 using ese::live::LivePeerSet;
 using ese::live::LiveChunkRecord;
 using ese::live::LiveChunkWindow;
+using ese::live::LiveStreamKey;
 using ese::live::LiveTrustLevel;
 using ese::live::LiveTrustSnapshot;
 
@@ -127,6 +116,13 @@ static CString HexStreamKey(const uchar* streamKey)
     return out;
 }
 
+static LiveStreamKey SecurityStreamKeyOf(const uchar* streamKey)
+{
+    LiveStreamKey key;
+    memcpy(key.data(), streamKey, key.size());
+    return key;
+}
+
 static LiveTrustSnapshot TrustSnapshotOf(const PeerTrust& trust)
 {
     return {static_cast<std::uint32_t>(trust.joinedAt),
@@ -134,20 +130,19 @@ static LiveTrustSnapshot TrustSnapshotOf(const PeerTrust& trust)
         static_cast<LiveTrustLevel>(trust.currentLevel), trust.isBanned};
 }
 
-// v7.7.0 — pin the pubkey for a streamKey. Idempotent: if already pinned to
-// the same pubkey, returns true; if pinned to a DIFFERENT pubkey, rejects.
-// The caller MUST have already verified sha1(pubkey)[:16] == streamKey;
-// this function does not re-check that (cheap to call, no cryptography).
 bool CLiveStreamManager::PinStreamPubkey(const uchar streamKey[16], const uchar pubkey[32])
 {
     if (streamKey == NULL || pubkey == NULL) return false;
-    ese::live::LiveStreamKey key;
+    CSingleLock lock(&m_lock, TRUE);
+    if (!m_viewerSession.Matches(streamKey, 16u) &&
+        !m_broadcastSession.Matches(streamKey, 16u))
+        return false;
     ese::live::LivePublicKey publicKey;
-    memcpy(key.data(), streamKey, key.size());
     memcpy(publicKey.data(), pubkey, publicKey.size());
     CString hex = HexStreamKey(streamKey);
     const ese::live::LivePinResult result = m_streamSecurity.PinValidatedPublicKey(
-        key, publicKey, static_cast<std::uint32_t>(GetTickCount()));
+        SecurityStreamKeyOf(streamKey), publicKey,
+        static_cast<std::uint32_t>(GetTickCount()));
     if (result == ese::live::LivePinResult::Pinned) {
         LIVE_LOG("PIN", "PIN pubkey for stream %s", (LPCSTR)CStringA(hex));
         return true;
@@ -157,6 +152,9 @@ bool CLiveStreamManager::PinStreamPubkey(const uchar streamKey[16], const uchar 
     if (result == ese::live::LivePinResult::Conflict) {
         LIVE_LOG("PIN", "REJECT pubkey switch for stream %s — keeping original",
             (LPCSTR)CStringA(hex));
+    } else {
+        LIVE_LOG("PIN", "REJECT pubkey for stream %s reason=%u",
+            (LPCSTR)CStringA(hex), static_cast<unsigned>(result));
     }
     return false;
 }
@@ -171,9 +169,6 @@ bool CLiveStreamManager::GetPinnedPubkey(const uchar streamKey[16], uchar outPub
     memcpy(outPubkey, publicKey.data(), publicKey.size());
     return true;
 }
-
-// R.3 egress + reachability selector gates are now driven by the runtime prefs EseRelayEgress /
-// EseReachSelector (default OFF) — see thePrefs. Byte-for-byte dormant until an operator opts in.
 
 CLiveStreamManager::CLiveStreamManager()
     : m_lastRelayedSeq(0)
@@ -199,6 +194,7 @@ CLiveStreamManager::CLiveStreamManager()
     , m_bSuppressHlsOutput(false)  // isolated --selftest viewer
     , m_dwLastPeerPrune(0)         // C6 durable-state TTL sweep
 {
+    m_streamTrustAdapter.Bind(m_streamSecurity);
     memset(m_pendingGhostKey, 0, sizeof m_pendingGhostKey);
     m_meshManager.Init(this);
     MeasureUploadCapacity();      // V2-S11: initial classification at startup
@@ -243,10 +239,6 @@ CLiveStreamManager::~CLiveStreamManager()
     m_pendingPings.RemoveAll();
 }
 
-
-// ============================================================
-// BROADCASTER API
-// ============================================================
 
 bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& category,
     const CString& language, uint16 bitrate)
@@ -699,13 +691,15 @@ void CLiveStreamManager::StopBroadcast()
     // directory.  Never call ResetViewerHlsOutput here: during dual-role use
     // it points at the remote viewer key and would delete that live player.
 
+    m_streamSecurity.ReleaseStream(
+        SecurityStreamKeyOf(m_broadcastStreamInfo.streamKey));
     m_broadcastSession.Stop();
     m_broadcastChunkBuffer.Clear();
     m_peerSet.ClearDownstreams();
     CLiveBuddyRelay::Instance().ResetBroadcasterEgress();   // R.3: drop the relay buddy on stop
     if (!m_viewerSession.IsActive()) {
         m_meshManager.ResetSessionPeers();
-        m_peerTrust.RemoveAll();
+        m_streamSecurity.ClearTrust();
         m_peerBitmaps.RemoveAll();
     }
 
@@ -755,10 +749,6 @@ void CLiveStreamManager::FeedSegment(const BYTE* data, uint32 dataSize)
     // Will trigger announce in next Process() tick
 }
 
-
-// ============================================================
-// VIEWER API
-// ============================================================
 
 bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title)
 {
@@ -849,6 +839,7 @@ void CLiveStreamManager::LeaveStream()
         }
     }
 
+    m_streamSecurity.ReleaseStream(SecurityStreamKeyOf(m_streamInfo.streamKey));
     m_viewerSession.Leave();
     ResetViewerCoordinatorState();
 
@@ -1285,13 +1276,12 @@ void CLiveStreamManager::OnTunneledLiveControl(const uchar* streamKey,
     CSingleLock lock(&m_lock, TRUE);
     if (streamKey == NULL) return;
 
-    // Pin the broadcaster pubkey relayed from an announce, so signed chunks /
-    // END packets verify against it (same as the direct OP_LIVE_ANNOUNCE path).
-    if (pubkeyOrNull && eSELive::StreamKeyMatchesPubkey(streamKey, pubkeyOrNull))
-        PinStreamPubkey(streamKey, pubkeyOrNull);
-
-    if (!hasBitmap) return;
     if (!m_viewerSession.IsActive() || memcmp(m_streamInfo.streamKey, streamKey, 16) != 0) return;
+    // Only the active viewer stream may consume bounded pin state.
+    if (pubkeyOrNull && eSELive::StreamKeyMatchesPubkey(streamKey, pubkeyOrNull) &&
+        !PinStreamPubkey(streamKey, pubkeyOrNull))
+        return;
+    if (!hasBitmap) return;
 
     // C3 bridge (Tunelizado): the subscribe was tunneled, so the broadcaster
     // sends its heartbeats to the EXIT, not to us — we'd otherwise never learn
@@ -1321,7 +1311,8 @@ void CLiveStreamManager::OnTunneledLiveControl(const uchar* streamKey,
             || peer->GetUserPort() != m_viewerSession.TunnelSourcePort())
             continue;
         m_peerBitmaps[PeerId(peer)] = info;
-        GetOrCreateTrust(peer);    // stamp lastSeen for the C6 prune
+        PeerTrust ignoredTrust;
+        GetOrCreateTrust(peer, ignoredTrust); // stamp lastSeen for the C6 prune
         applied++;
     }
     if (applied > 0) {
@@ -1664,9 +1655,12 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     m_peerSet.AddDownstream(
         PeerHandleOf(peer),
         cap > 0 ? static_cast<std::size_t>(cap) : 0u);
-    PeerTrust& trust = GetOrCreateTrust(peer);
-    trust.joinedAt = GetTickCount();
-    trust.currentLevel = ESE_TRUST_LEAF;  // Everyone starts as leaf
+    PeerTrust trust;
+    if (GetOrCreateTrust(peer, trust)) {
+        trust.joinedAt = GetTickCount();
+        trust.currentLevel = ESE_TRUST_LEAF;  // Everyone starts as leaf
+        SetTrustById(PeerId(peer), trust);
+    }
 
     servedInfo.viewerCount =
         static_cast<uint32>(m_peerSet.DownstreamCount());
@@ -2027,9 +2021,12 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
     }
 
     // Update trust tracking
-    PeerTrust& trust = GetOrCreateTrust(peer);
-    trust.requestsReceived++;
-    trust.requestsServed++;
+    PeerTrust trust;
+    if (GetOrCreateTrust(peer, trust)) {
+        trust.requestsReceived++;
+        trust.requestsServed++;
+        SetTrustById(PeerId(peer), trust);
+    }
 
 #ifdef ESE_TEST_HOOKS
     // TEST-ONLY: selective live-edge sabotage. Drops or defers serving any
@@ -2286,14 +2283,16 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
         LIVE_LOG("RECV", "DROP chunk seq=%u — wrong key", seqNum);
         return;
     }
+    const LiveStreamKey replayKey = SecurityStreamKeyOf(streamKey);
     if (verifiedSigned) {
-        ese::live::LiveStreamKey key;
-        memcpy(key.data(), streamKey, key.size());
         const ese::live::LiveReplayResult replay =
-            m_streamSecurity.AcceptVerifiedSequence(key, seqNum);
+            m_streamSecurity.ClassifyVerifiedSequence(replayKey, seqNum);
         if (replay != ese::live::LiveReplayResult::Accepted) {
-            InterlockedIncrement(&m_counters.duplicateChunksReceived);
-            LIVE_LOG("RECV", "REPLAY seq=%u — signed duplicate/stale dropped", seqNum);
+            if (replay == ese::live::LiveReplayResult::Duplicate ||
+                replay == ese::live::LiveReplayResult::TooOld)
+                InterlockedIncrement(&m_counters.duplicateChunksReceived);
+            LIVE_LOG("RECV", "REPLAY-REJECT seq=%u reason=%u",
+                seqNum, static_cast<unsigned>(replay));
             return;
         }
     }
@@ -2356,20 +2355,30 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
         LIVE_LOG("RECV", "DUP seq=%u — dropped (no HLS rewrite, no relay)", seqNum);
         return;
     }
+    if (verifiedSigned &&
+        m_streamSecurity.CommitVerifiedSequence(replayKey, seqNum) !=
+            ese::live::LiveReplayResult::Accepted) {
+        LIVE_LOG("RECV", "REPLAY-COMMIT invariant failure seq=%u", seqNum);
+        return;
+    }
     WriteViewerHlsSegment(seqNum, data, dataSize);
 
     // Update trust for the sending peer
-    PeerTrust& trust = GetOrCreateTrust(peer);
-    trust.bytesServed += dataSize;  // Peer served us these bytes
+    PeerTrust trust;
+    const bool haveTrust = GetOrCreateTrust(peer, trust);
+    if (haveTrust)
+        trust.bytesServed += dataSize;  // Peer served us these bytes
 
     // Threat-model vector #3: reward on-time delivery of a CRITICAL (near-
     // playhead) block — the ONLY way a peer works off accumulated punctuality
     // failures. Backfill deliveries earn nothing, so a peer that serves cheap
     // far-ahead blocks but keeps dropping the imminent one cannot decay its way
     // back to a clean failCount.
-    if (wasEdgeCritical)
+    if (haveTrust && wasEdgeCritical)
         trust.failCount = ese::live::LiveStreamSecurity::
             RewardCriticalDelivery(trust.failCount);
+    if (haveTrust)
+        SetTrustById(PeerId(peer), trust);
 
     // V2-S01/S02: per-peer counters (we already hold m_lock).
     PeerCounters& pc = m_peerCounters[PeerId(peer)];
@@ -2555,7 +2564,8 @@ void CLiveStreamManager::OnPeerBitmap(CUpDownClient* peer, const uchar* streamKe
     m_peerBitmaps[PeerId(peer)] = info;
     // C6: ensure a durable trust record exists and stamp its lastSeen so the
     // TTL prune treats this identity as alive (covers bitmap-only peers).
-    GetOrCreateTrust(peer);
+    PeerTrust ignoredTrust;
+    GetOrCreateTrust(peer, ignoredTrust);
     // v7.2.0 — bitmap heartbeats also count as proof-of-life for the
     // watchdog: the upstream is still alive even if it has nothing new
     // to send yet. Without this, slow streams (e.g. test pattern at
@@ -3141,7 +3151,9 @@ bool CLiveStreamManager::IsStreamTombstoned(const uchar* streamKey) const
 
 int CLiveStreamManager::CalculateTrustLevel(CUpDownClient* peer)
 {
-    PeerTrust& trust = GetOrCreateTrust(peer);
+    PeerTrust trust;
+    if (!GetOrCreateTrust(peer, trust))
+        return ESE_TRUST_LEAF;
     LiveTrustLevel level = ese::live::LiveStreamSecurity::EvaluateTrust(
         TrustSnapshotOf(trust), static_cast<std::uint32_t>(GetTickCount()), true);
     if (level == LiveTrustLevel::SuperSeeder &&
@@ -3152,7 +3164,9 @@ int CLiveStreamManager::CalculateTrustLevel(CUpDownClient* peer)
 
 void CLiveStreamManager::MeasurePeerRatio(CUpDownClient* peer)
 {
-    PeerTrust& trust = GetOrCreateTrust(peer);
+    PeerTrust trust;
+    if (!GetOrCreateTrust(peer, trust))
+        return;
     DWORD uptime = trust.GetUptime();
 
     // If nobody has asked this peer for anything, we can't judge them
@@ -3171,8 +3185,11 @@ void CLiveStreamManager::MeasurePeerRatio(CUpDownClient* peer)
         BanPeer(peer);
         return;
     }
-    if (ese::live::LiveStreamSecurity::ShouldDemote(snapshot, now))
+    if (ese::live::LiveStreamSecurity::ShouldDemote(snapshot, now)) {
         DemotePeer(peer);
+        if (!GetTrustById(PeerId(peer), trust))
+            return;
+    }
 
     // Try to promote
     int newLevel = CalculateTrustLevel(peer);
@@ -3182,11 +3199,14 @@ void CLiveStreamManager::MeasurePeerRatio(CUpDownClient* peer)
         AddLogLine(false, GetResString(IDS_LIVEMGR_PEER_PROMOTED_FMT),
             newLevel, snapshot.ResponseRate() * 100.0f);
     }
+    SetTrustById(PeerId(peer), trust);
 }
 
 void CLiveStreamManager::ProbeTestPeer(CUpDownClient* peer)
 {
-    PeerTrust& trust = GetOrCreateTrust(peer);
+    PeerTrust trust;
+    if (!GetOrCreateTrust(peer, trust))
+        return;
 
     // Find a segment we know this peer has (from their bitmap).
     // Phase 1 BOOT-3: bitmap is anchored at the PEER's oldestSeq.
@@ -3204,6 +3224,7 @@ void CLiveStreamManager::ProbeTestPeer(CUpDownClient* peer)
             }
             trust.lastProbeTime = GetTickCount();
             trust.requestsReceived++;
+            SetTrustById(PeerId(peer), trust);
             // If they respond: requestsServed++ in OnChunkReceived
             // If they don't: ratio drops naturally
             break;
@@ -3232,7 +3253,7 @@ bool CLiveStreamManager::CanPromoteToSuperSeeder(CUpDownClient* peer)
         if (other == peer) continue;
 
         PeerTrust trust;
-        if (!m_peerTrust.Lookup(PeerId(other), trust)) continue;
+        if (!GetTrustById(PeerId(other), trust)) continue;
         if (trust.currentLevel != ESE_TRUST_SUPERSEEDER) continue;
 
         if (other->IsIPv6OnlyEndpoint()) continue;
@@ -3267,7 +3288,7 @@ void CLiveStreamManager::MonitorPeerHealth()
 
     for (CUpDownClient* peer : DownstreamPeers(m_peerSet)) {
         PeerTrust trust;
-        if (m_peerTrust.Lookup(PeerId(peer), trust)) {
+        if (GetTrustById(PeerId(peer), trust)) {
             if (trust.currentLevel == ESE_TRUST_SUPERSEEDER) {
                 totalSuper++;
                 // Check if peer is still connected (socket exists and is valid)
@@ -3298,7 +3319,7 @@ void CLiveStreamManager::MonitorPeerHealth()
             if (promoted >= 5)
                 break;
             PeerTrust trust;
-            if (!m_peerTrust.Lookup(PeerId(peer), trust)) continue;
+            if (!GetTrustById(PeerId(peer), trust)) continue;
             if (trust.currentLevel != ESE_TRUST_MIDDLE) continue;
 
             // Only promote if good response rate and subnet-diverse
@@ -3308,7 +3329,7 @@ void CLiveStreamManager::MonitorPeerHealth()
             {
                 trust.currentLevel = ESE_TRUST_SUPERSEEDER;
                 trust.lastPromotionTime = GetTickCount();
-                m_peerTrust[PeerId(peer)] = trust;
+                SetTrustById(PeerId(peer), trust);
                 promoted++;
                 AddLogLine(false, GetResString(IDS_LIVEMGR_EMERGENCY_PROMOTED_FMT),
                     promoted);
@@ -4256,18 +4277,24 @@ void CLiveStreamManager::PublishToKad()
 
 void CLiveStreamManager::DemotePeer(CUpDownClient* peer)
 {
-    PeerTrust& trust = GetOrCreateTrust(peer);
+    PeerTrust trust;
+    if (!GetOrCreateTrust(peer, trust))
+        return;
     if (trust.currentLevel < ESE_TRUST_LEAF) {
         trust.currentLevel++;
         AddLogLine(false, GetResString(IDS_LIVEMGR_PEER_DEMOTED_FMT),
             trust.currentLevel, trust.GetResponseRate() * 100.0f);
     }
+    SetTrustById(PeerId(peer), trust);
 }
 
 void CLiveStreamManager::BanPeer(CUpDownClient* peer)
 {
-    PeerTrust& trust = GetOrCreateTrust(peer);
+    PeerTrust trust;
+    if (!GetOrCreateTrust(peer, trust))
+        return;
     trust.isBanned = true;
+    SetTrustById(PeerId(peer), trust);
     AddLogLine(true, GetResString(IDS_LIVEMGR_PEER_BANNED_FMT),
         trust.GetResponseRate() * 100.0f, trust.requestsReceived);
 
@@ -4303,65 +4330,43 @@ void CLiveStreamManager::ChargePunctualityFailure(const CAddress& address, uint1
     }
     if (peer == NULL) return;  // peer already gone — nothing left to penalise
 
-    PeerTrust& trust = GetOrCreateTrust(peer);
+    PeerTrust trust;
+    if (!GetOrCreateTrust(peer, trust))
+        return;
     trust.failCount = ese::live::LiveStreamSecurity::ChargeFailure(
         trust.failCount, ESE_EDGE_FAIL_WEIGHT);
     trust.lastSeen = GetTickCount();
+    SetTrustById(PeerId(peer), trust);
     const std::string text = address.ToString();
     LIVE_LOG("TRUST", "edge-miss address=%s port=%u failCount=%d",
         text.c_str(), (unsigned)port, trust.failCount);
 }
 
-// ============================================================
-// C6 (2026-06) — durable peer identity + keyed accessors.
-// ============================================================
-
 LivePeerId CLiveStreamManager::PeerId(CUpDownClient* peer) const
 {
-    LivePeerId id;  // default = LPID_INVALID, zeroed
-    if (peer == NULL)
-        return id;
-    const uchar* uh = peer->GetUserHash();
-    bool hasHash = false;
-    if (uh != NULL) {
-        for (int i = 0; i < 16; ++i) { if (uh[i] != 0) { hasHash = true; break; } }
-    }
-    if (hasHash) {
-        id.kind = LPID_USERHASH;
-        memcpy(id.bytes, uh, 16);        // user-hash is stable across the swap
-    } else {
-        // Hashless / pre-HELLO peer: synthesize a per-pointer key so the maps
-        // still work for this one peer (no cross-swap durability — same as the
-        // pre-C6 behavior). kind stays LPID_INVALID so it never collides with a
-        // real user-hash or pubkey identity.
-        DWORD_PTR p = (DWORD_PTR)peer;
-        memcpy(id.bytes, &p, sizeof p);
-    }
-    return id;
+    return LiveStreamTrustAdapter::PeerIdFromUserHash(
+        peer == NULL ? NULL : peer->GetUserHash());
 }
 
-bool CLiveStreamManager::GetPeerBitmap(CUpDownClient* peer, PeerBitmapInfo& outInfo) const
+bool CLiveStreamManager::GetPeerBitmap(CUpDownClient* peer, PeerBitmapInfo& out) const
 {
-    return m_peerBitmaps.Lookup(PeerId(peer), outInfo) != FALSE;
+    return m_peerBitmaps.Lookup(PeerId(peer), out) != FALSE;
 }
 
-// v8.1.2 B6 — co-seeder check for the tunnel's 2-hop builder. Source-role peers are those we
-// pull THIS stream from; routing a circuit through one of them would let it learn we watch
-// the channel. Main-thread read (membership is mutated on the main thread too).
 bool CLiveStreamManager::IsStreamSourcePeer(CUpDownClient* peer) const
 {
-    if (!peer || !m_viewerSession.IsActive()) return false;
-    return m_peerSet.HasSource(PeerHandleOf(peer));
+    return peer != NULL && m_viewerSession.IsActive() &&
+        m_peerSet.HasSource(PeerHandleOf(peer));
 }
 
-bool CLiveStreamManager::GetPeerTrust(CUpDownClient* peer, PeerTrust& outTrust) const
+bool CLiveStreamManager::GetPeerTrust(CUpDownClient* peer, PeerTrust& out) const
 {
-    return m_peerTrust.Lookup(PeerId(peer), outTrust) != FALSE;
+    return GetTrustById(PeerId(peer), out);
 }
 
 void CLiveStreamManager::SetPeerTrust(CUpDownClient* peer, const PeerTrust& trust)
 {
-    m_peerTrust[PeerId(peer)] = trust;
+    SetTrustById(PeerId(peer), trust);
 }
 
 PeerCounters& CLiveStreamManager::GetOrCreatePeerCounters(CUpDownClient* peer)
@@ -4369,45 +4374,39 @@ PeerCounters& CLiveStreamManager::GetOrCreatePeerCounters(CUpDownClient* peer)
     return m_peerCounters[PeerId(peer)];
 }
 
-PeerTrust& CLiveStreamManager::GetOrCreateTrust(CUpDownClient* peer)
+bool CLiveStreamManager::GetTrustById(const LivePeerId& id, PeerTrust& trust) const
 {
-    LivePeerId id = PeerId(peer);
-    PeerTrust trust;
-    if (!m_peerTrust.Lookup(id, trust)) {
-        trust.joinedAt = GetTickCount();
-        m_peerTrust[id] = trust;
-    }
-    // C6: stamp last-seen on every touch — drives the durable-state TTL prune.
-    m_peerTrust[id].lastSeen = GetTickCount();
-    return m_peerTrust[id];
+    return m_streamTrustAdapter.Get(id, trust);
 }
 
-// C6: drop durable per-peer state for identities unseen within the TTL. This
-// replaces the old "scrub on every OnPeerDisconnected" — most disconnects are
-// just the AttachToAlreadyKnown pointer swap, and scrubbing there is exactly
-// what orphaned live peers' state (the micro-cut). A truly-departed peer stops
-// refreshing its trust.lastSeen and gets reaped here. TTL comfortably exceeds
-// the ~6 s LowID swap cycle.
+bool CLiveStreamManager::SetTrustById(const LivePeerId& id, const PeerTrust& trust)
+{
+    return m_streamTrustAdapter.Set(id, trust);
+}
+
+bool CLiveStreamManager::GetOrCreateTrust(CUpDownClient* peer, PeerTrust& trust)
+{
+    const bool stored = m_streamTrustAdapter.Touch(
+        PeerId(peer), GetTickCount(), trust);
+    if (!stored) LIVE_LOG("TRUST", "record rejected: no durable identity/capacity");
+    return stored;
+}
+
 void CLiveStreamManager::PrunePeerState(DWORD now)
 {
-    const DWORD ESE_PEER_STATE_TTL_MS = 120u * 1000u;  // 2 min
+    const std::size_t pruned = m_streamTrustAdapter.Prune(now, 120u * 1000u);
     CArray<LivePeerId> dead;
-    POSITION pos = m_peerTrust.GetStartPosition();
+    POSITION pos = m_peerBitmaps.GetStartPosition();
     while (pos) {
-        LivePeerId id;
-        PeerTrust tr;
-        m_peerTrust.GetNextAssoc(pos, id, tr);
-        DWORD anchor = (tr.lastSeen != 0) ? tr.lastSeen : tr.joinedAt;
-        if (anchor != 0 && (now - anchor) > ESE_PEER_STATE_TTL_MS)
-            dead.Add(id);
+        LivePeerId id; PeerBitmapInfo bitmap; PeerTrust trust;
+        m_peerBitmaps.GetNextAssoc(pos, id, bitmap);
+        if (!GetTrustById(id, trust)) dead.Add(id);
     }
     for (INT_PTR i = 0; i < dead.GetCount(); ++i) {
-        m_peerTrust.RemoveKey(dead[i]);
-        m_peerBitmaps.RemoveKey(dead[i]);
-        m_peerCounters.RemoveKey(dead[i]);
+        m_peerBitmaps.RemoveKey(dead[i]); m_peerCounters.RemoveKey(dead[i]);
     }
-    if (dead.GetCount() > 0)
-        LIVE_LOG("MESH", "C6 prune: reaped %d stale durable peer record(s)", (int)dead.GetCount());
+    if (pruned > 0u) LIVE_LOG("MESH", "C6 prune: reaped %u stale durable peer record(s)",
+        static_cast<unsigned>(pruned));
 }
 
 CUpDownClient* CLiveStreamManager::SelectPeerForSegment(uint32 seqNum,
@@ -4433,7 +4432,7 @@ CUpDownClient* CLiveStreamManager::SelectPeerForSegment(uint32 seqNum,
 
         PeerTrust trust;
         int score = 50;
-        if (m_peerTrust.Lookup(PeerId(peer), trust)) {
+        if (GetTrustById(PeerId(peer), trust)) {
             score = (int)(trust.GetResponseRate() * 100);
             score -= trust.failCount * 20;
         }
@@ -4554,7 +4553,7 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
             PeerBitmapInfo bm;
             m_peerBitmaps.GetNextAssoc(pos, pid, bm);
             PeerTrust trust;
-            if (m_peerTrust.Lookup(pid, trust)) {
+            if (GetTrustById(pid, trust)) {
                 if (trust.currentLevel == ESE_TRUST_SUPERSEEDER)
                     snap.superSeeders++;
                 else if (trust.currentLevel == ESE_TRUST_MIDDLE)
@@ -4582,7 +4581,7 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
             FillPeerIpSafe(d.ip, sizeof(d.ip), p);             // bounded, native v4/v6
             d.port = p->GetUserPort();
             PeerTrust t;
-            if (m_peerTrust.Lookup(PeerId(p), t)) {
+            if (GetTrustById(PeerId(p), t)) {
                 d.level    = t.currentLevel;
                 d.failCount = t.failCount;
                 d.respPct  = (int)(t.GetResponseRate() * 100.0f);

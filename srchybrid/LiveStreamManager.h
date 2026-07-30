@@ -6,6 +6,7 @@
 #include "LiveProtocol.h"
 #include "LiveChunkWindow.h"
 #include "LiveStreamSecurity.h"
+#include "LiveStreamTrustAdapter.h"
 #include "LiveKadBridge.h"
 #include "LiveMeshManager.h"
 #include "LivePeerRefreshPolicy.h"
@@ -581,12 +582,11 @@ private:
 
     ese::live::LivePeerSet m_peerSet; // opaque membership; client list owns pointers
     ese::live::LiveStreamSecurity m_streamSecurity;
+    LiveStreamTrustAdapter m_streamTrustAdapter;
 
     // Trust data. C6 (2026-06): keyed by LivePeerId (durable user-hash/pubkey
     // identity), NOT the CUpDownClient* pointer — so it survives the ~6 s LowID
     // AttachToAlreadyKnown swap that used to orphan it and cause the micro-cut.
-    CMap<LivePeerId, const LivePeerId&, PeerTrust, PeerTrust&> m_peerTrust;
-
     // Peer bitmaps. C6: keyed by LivePeerId (durable identity).
     // Phase 1 BOOT-1: stores both bitmap and oldestSeq, so bit positions are
     // interpreted against the peer's anchor (not the viewer's).
@@ -795,7 +795,9 @@ private:
     // Threat-model vector #3 (piece starvation): charge a punctuality failure to
     // the peer (ip+port) we asked when a CRITICAL near-playhead request times out.
     void ChargePunctualityFailure(const CAddress& address, uint16 port);
-    PeerTrust& GetOrCreateTrust(CUpDownClient* peer);
+    bool GetOrCreateTrust(CUpDownClient* peer, PeerTrust& trust);
+    bool GetTrustById(const LivePeerId& id, PeerTrust& trust) const;
+    bool SetTrustById(const LivePeerId& id, const PeerTrust& trust);
 
     // Select best peer to request a segment from. A non-None typed address skips that
     // peer — used to retry a timed-out in-flight request somewhere else.

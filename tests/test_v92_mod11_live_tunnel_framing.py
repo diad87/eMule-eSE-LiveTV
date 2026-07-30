@@ -610,6 +610,23 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/LiveStreamTrustAdapter.cpp",
+                "reason": (
+                    "Legacy MFC adapter projecting durable Live peer identities "
+                    "and DTOs into the portable MOD-3.4 security owner without "
+                    "creating a reverse domain dependency."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/LiveStreamTrustAdapter.h",
+                "reason": (
+                    "Narrow legacy projection interface binding LiveProtocol "
+                    "DTOs to the portable MOD-3.4 security owner."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         numstat = subprocess.check_output(
             ["git", "diff", "--numstat", SLICE_BASE, "--", "srchybrid/LiveTunnel.cpp"],
@@ -684,6 +701,8 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/LiveChunkWindow.h",
             "srchybrid/LiveStreamSecurity.cpp",
             "srchybrid/LiveStreamSecurity.h",
+            "srchybrid/LiveStreamTrustAdapter.cpp",
+            "srchybrid/LiveStreamTrustAdapter.h",
             "srchybrid/ClientList.cpp",
             "srchybrid/ClientList.h",
             "srchybrid/LiveMeshManager.cpp",

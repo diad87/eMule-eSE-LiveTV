@@ -42,6 +42,18 @@ ese::live::LivePublicKey PublicKey(std::uint32_t value)
 	return key;
 }
 
+ese::live::LiveTrustIdentity TrustIdentity(std::uint32_t value)
+{
+	ese::live::LiveTrustIdentity identity;
+	identity.kind = ese::live::LiveTrustIdentityKind::UserHash;
+	identity.bytes[0] = 3u;
+	identity.bytes[12] = static_cast<std::uint8_t>(value >> 24u);
+	identity.bytes[13] = static_cast<std::uint8_t>(value >> 16u);
+	identity.bytes[14] = static_cast<std::uint8_t>(value >> 8u);
+	identity.bytes[15] = static_cast<std::uint8_t>(value);
+	return identity;
+}
+
 } // namespace
 
 int main()
@@ -50,7 +62,9 @@ int main()
 	using ese::live::LiveReplayResult;
 	using ese::live::LiveStreamSecurity;
 	using ese::live::LiveTrustLevel;
+	using ese::live::LiveTrustRecord;
 	using ese::live::LiveTrustSnapshot;
+	using ese::live::LiveTrustStoreResult;
 
 	static_assert(!std::is_copy_constructible_v<LiveStreamSecurity>);
 	static_assert(LiveStreamSecurity::kPinCapacity == 256u);
@@ -60,7 +74,7 @@ int main()
 	const auto stream = StreamKey(1u);
 	const auto public_key = PublicKey(1u);
 	Check(
-		security.AcceptVerifiedSequence(stream, 1u) ==
+		security.CommitVerifiedSequence(stream, 1u) ==
 			LiveReplayResult::UnpinnedStream,
 		"unverified or unpinned input cannot poison replay state");
 	Check(
@@ -81,25 +95,30 @@ int main()
 		"pinned key lookup returns an immutable value copy");
 
 	Check(
-		security.AcceptVerifiedSequence(stream, 10u) ==
+		security.ClassifyVerifiedSequence(stream, 10u) ==
+			LiveReplayResult::Accepted &&
+			security.ReplayStreamCount() == 0u,
+		"replay preflight does not mutate state before storage");
+	Check(
+		security.CommitVerifiedSequence(stream, 10u) ==
 			LiveReplayResult::Accepted,
 		"first verified sequence is accepted");
 	Check(
-		security.AcceptVerifiedSequence(stream, 10u) ==
+		security.CommitVerifiedSequence(stream, 10u) ==
 			LiveReplayResult::Duplicate,
 		"exact verified replay is rejected");
 	Check(
-		security.AcceptVerifiedSequence(stream, 12u) ==
+		security.CommitVerifiedSequence(stream, 12u) ==
 			LiveReplayResult::Accepted &&
-			security.AcceptVerifiedSequence(stream, 11u) ==
+			security.CommitVerifiedSequence(stream, 11u) ==
 				LiveReplayResult::Accepted &&
-			security.AcceptVerifiedSequence(stream, 11u) ==
+			security.CommitVerifiedSequence(stream, 11u) ==
 				LiveReplayResult::Duplicate,
 		"bounded reorder is accepted once");
 	Check(
-		security.AcceptVerifiedSequence(stream, 100u) ==
+		security.CommitVerifiedSequence(stream, 100u) ==
 			LiveReplayResult::Accepted &&
-			security.AcceptVerifiedSequence(stream, 35u) ==
+			security.CommitVerifiedSequence(stream, 35u) ==
 				LiveReplayResult::TooOld,
 		"verified sequence outside replay window is rejected");
 
@@ -112,12 +131,12 @@ int main()
 	for (const std::uint32_t sequence :
 		{maximum - 1u, maximum, 0u, 1u}) {
 		Check(
-			security.AcceptVerifiedSequence(stream, sequence) ==
+			security.CommitVerifiedSequence(stream, sequence) ==
 				LiveReplayResult::Accepted,
 			"verified replay window accepts uint32 wrap");
 	}
 	Check(
-		security.AcceptVerifiedSequence(stream, 0x80000001u) ==
+		security.CommitVerifiedSequence(stream, 0x80000001u) ==
 			LiveReplayResult::AmbiguousSequence,
 		"half-range serial ambiguity fails closed");
 
@@ -130,6 +149,10 @@ int main()
 				StreamKey(index), PublicKey(index), index) ==
 				LivePinResult::Pinned,
 			"pin capacity accepts every bounded slot");
+		Check(
+			security.CommitVerifiedSequence(StreamKey(index), index) ==
+				LiveReplayResult::Accepted,
+			"replay capacity accepts every jointly bounded stream");
 	}
 	Check(
 		security.PinValidatedPublicKey(
@@ -137,8 +160,16 @@ int main()
 			LivePinResult::CapacityExceeded,
 		"pin capacity fails closed");
 	Check(
-		security.PinCount() == LiveStreamSecurity::kPinCapacity,
-		"capacity rejection does not partially mutate state");
+		security.PinCount() == LiveStreamSecurity::kPinCapacity &&
+			security.ReplayStreamCount() ==
+				LiveStreamSecurity::kReplayCapacity,
+		"pin and replay capacity rejection does not partially mutate state");
+	security.ReleaseStream(StreamKey(1u));
+	Check(
+		security.PinCount() == LiveStreamSecurity::kPinCapacity - 1u &&
+			security.ReplayStreamCount() ==
+				LiveStreamSecurity::kReplayCapacity - 1u,
+		"session release reclaims both pin and replay state");
 
 	LiveTrustSnapshot trust;
 	trust.joined_at = 100u;
@@ -176,6 +207,61 @@ int main()
 			LiveStreamSecurity::RewardCriticalDelivery(0) == 0,
 		"failure charge is capped and critical reward cannot underflow");
 
+	security.ClearTrust();
+	LiveTrustRecord record;
+	Check(
+		security.TouchTrust({}, 10u, record) ==
+			LiveTrustStoreResult::InvalidIdentity,
+		"pointerless trust rejects an identity without durable bytes");
+	const auto durable_identity = TrustIdentity(1u);
+	Check(
+		security.TouchTrust(durable_identity, 100u, record) ==
+			LiveTrustStoreResult::Stored,
+		"durable trust record is created");
+	record.requests_received = 12u;
+	record.requests_served = 11u;
+	Check(
+		security.SetTrust(durable_identity, record) ==
+			LiveTrustStoreResult::Stored,
+		"durable trust record update is stored");
+	LiveTrustRecord replacement_projection;
+	Check(
+		security.TouchTrust(durable_identity, 120u, replacement_projection) ==
+			LiveTrustStoreResult::Stored &&
+			replacement_projection.requests_received == 12u &&
+			replacement_projection.requests_served == 11u,
+		"trust survives replacement object projection with the same identity");
+
+	security.ClearTrust();
+	for (std::uint32_t index = 0u;
+		index < LiveStreamSecurity::kTrustCapacity;
+		++index) {
+		Check(
+			security.TouchTrust(
+				TrustIdentity(index), index + 1u, record) ==
+				LiveTrustStoreResult::Stored,
+			"trust capacity accepts every reserved slot");
+	}
+	Check(
+		security.TouchTrust(TrustIdentity(9999u), 9999u, record) ==
+			LiveTrustStoreResult::CapacityExceeded &&
+			security.TrustCount() == LiveStreamSecurity::kTrustCapacity,
+		"trust capacity failure is atomic");
+	Check(
+		security.GetTrust(TrustIdentity(1u), record),
+		"capacity failure preserves existing trust records");
+
+	security.ClearTrust();
+	Check(
+		security.TouchTrust(TrustIdentity(1u), 100u, record) ==
+			LiveTrustStoreResult::Stored &&
+			security.TouchTrust(TrustIdentity(2u), 200u, record) ==
+				LiveTrustStoreResult::Stored &&
+			security.PruneTrust(251u, 100u) == 1u &&
+			security.TrustCount() == 1u &&
+			security.GetTrust(TrustIdentity(2u), record),
+		"stale trust pruning is bounded and preserves fresh records");
+
 	security.Clear();
 	Check(
 		security.PinValidatedPublicKey({}, public_key, 0u) ==
@@ -196,7 +282,7 @@ int main()
 			if (!security.GetPinnedPublicKey(stream, observed))
 				return;
 			const LiveReplayResult result =
-				security.AcceptVerifiedSequence(stream, 500u);
+				security.CommitVerifiedSequence(stream, 500u);
 			if (result == LiveReplayResult::Accepted)
 				++accepted;
 			else if (result == LiveReplayResult::Duplicate)
@@ -210,8 +296,9 @@ int main()
 		"concurrent replay mutation accepts exactly one verified sequence");
 	security.Clear();
 	Check(
-		security.PinCount() == 0u && security.ReplayStreamCount() == 0u,
-		"clear atomically removes pins and replay state");
+		security.PinCount() == 0u && security.ReplayStreamCount() == 0u &&
+			security.TrustCount() == 0u,
+		"clear atomically removes all security state");
 
 	if (failures != 0)
 		return 1;

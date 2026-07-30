@@ -14,6 +14,8 @@ HEADER = ROOT / "srchybrid" / "LiveStreamSecurity.h"
 SOURCE = ROOT / "srchybrid" / "LiveStreamSecurity.cpp"
 MANAGER_HEADER = ROOT / "srchybrid" / "LiveStreamManager.h"
 MANAGER_SOURCE = ROOT / "srchybrid" / "LiveStreamManager.cpp"
+TRUST_ADAPTER = ROOT / "srchybrid" / "LiveStreamTrustAdapter.cpp"
+TRUST_ADAPTER_HEADER = ROOT / "srchybrid" / "LiveStreamTrustAdapter.h"
 LISTEN_SOURCE = ROOT / "srchybrid" / "ListenSocket.cpp"
 NATIVE_TEST = ROOT / "srchybrid" / "tests" / "test_live_stream_security.cpp"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
@@ -41,6 +43,8 @@ class Mod34LiveStreamSecurityTest(unittest.TestCase):
         self.assertEqual(invariants["wire_format"], "byte_unchanged")
         self.assertEqual(invariants["pin_capacity"], 256)
         self.assertEqual(invariants["replay_window_sequences"], 64)
+        self.assertEqual(invariants["trust_capacity"], 1024)
+        self.assertEqual(invariants["trust_failure_cap"], 10)
         self.assertEqual(
             invariants["replay"],
             "only_a_cryptographically_verified_sequence_may_advance_the_replay_window",
@@ -66,11 +70,13 @@ class Mod34LiveStreamSecurityTest(unittest.TestCase):
         for marker in (
             "kPinCapacity = 256u",
             "kReplayCapacity = 256u",
+            "kTrustCapacity = 1024u",
             "kReplayWindowSequences = 64u",
             "UnpinnedStream",
             "AmbiguousSequence",
             "pins_.reserve(kPinCapacity)",
             "replay_.reserve(kReplayCapacity)",
+            "trust_.reserve(kTrustCapacity)",
             "std::mutex",
             "EvaluateTrust(",
             "ShouldBan(",
@@ -82,6 +88,7 @@ class Mod34LiveStreamSecurityTest(unittest.TestCase):
     def test_manager_delegates_pins_and_verified_replay(self) -> None:
         header = MANAGER_HEADER.read_text(encoding="utf-8")
         source = MANAGER_SOURCE.read_text(encoding="utf-8")
+        adapter = TRUST_ADAPTER.read_text(encoding="utf-8")
         listen = LISTEN_SOURCE.read_text(encoding="utf-8")
         self.assertRegex(
             header,
@@ -89,14 +96,21 @@ class Mod34LiveStreamSecurityTest(unittest.TestCase):
         )
         self.assertNotIn("m_streamPubkeyPin", header + source)
         self.assertNotIn("struct PubkeyPin", header)
+        self.assertNotIn("m_peerTrust", header + source + adapter)
+        self.assertNotIn("DWORD_PTR p =", source + adapter)
         self.assertIn("PinValidatedPublicKey(", source)
         self.assertIn("GetPinnedPublicKey(", source)
-        self.assertIn("AcceptVerifiedSequence(", source)
+        self.assertIn("ClassifyVerifiedSequence(", source)
+        self.assertIn("CommitVerifiedSequence(", source)
         self.assertIn("EvaluateTrust(", source)
         self.assertIn("ShouldBan(", source)
         self.assertIn("ShouldDemote(", source)
         self.assertIn("ChargeFailure(", source)
         self.assertIn("RewardCriticalDelivery(", source)
+        self.assertIn("m_viewerSession.Matches(streamKey, 16u)", source)
+        self.assertIn("m_streamSecurity.ReleaseStream(", source)
+        self.assertIn("security_->TouchTrust(", adapter)
+        self.assertIn("security_->PruneTrust(", adapter)
         self.assertRegex(
             source,
             r"OnChunkReceived\(peer, streamKey, seqNum, timestamp, "
@@ -109,6 +123,18 @@ class Mod34LiveStreamSecurityTest(unittest.TestCase):
         ]
         self.assertNotIn("VerifySignature(", chunk_cases)
         self.assertNotIn("CryptoPP::SHA256", chunk_cases)
+        on_chunk = source[
+            source.index("void CLiveStreamManager::OnChunkReceived(") :
+            source.index("void CLiveStreamManager::OnPeerBitmap(")
+        ]
+        self.assertLess(
+            on_chunk.index("ClassifyVerifiedSequence("),
+            on_chunk.index("m_chunkBuffer.AddSegment("),
+        )
+        self.assertLess(
+            on_chunk.index("m_chunkBuffer.AddSegment("),
+            on_chunk.index("CommitVerifiedSequence("),
+        )
 
     def test_native_cases_cover_pin_replay_wrap_and_capacity(self) -> None:
         native = NATIVE_TEST.read_text(encoding="utf-8")
@@ -120,14 +146,19 @@ class Mod34LiveStreamSecurityTest(unittest.TestCase):
             "verified replay window accepts uint32 wrap",
             "half-range serial ambiguity fails closed",
             "pin capacity fails closed",
-            "capacity rejection does not partially mutate state",
+            "pin and replay capacity rejection does not partially mutate state",
+            "session release reclaims both pin and replay state",
+            "replay preflight does not mutate state before storage",
             "responsive peer reaches middle at the exact threshold",
             "responsive peer reaches super-seeder with diversity approval",
             "response rate below twenty percent after ten requests bans",
             "failure charge is capped and critical reward cannot underflow",
+            "trust survives replacement object projection with the same identity",
+            "trust capacity failure is atomic",
+            "stale trust pruning is bounded and preserves fresh records",
             "zero identities fail closed",
             "concurrent replay mutation accepts exactly one verified sequence",
-            "clear atomically removes pins and replay state",
+            "clear atomically removes all security state",
         ):
             self.assertIn(marker, native)
 
@@ -153,6 +184,8 @@ class Mod34LiveStreamSecurityTest(unittest.TestCase):
             if "Include" in item.attrib
         }
         self.assertIn("LiveStreamSecurity.cpp", compiles)
+        self.assertIn("LiveStreamTrustAdapter.cpp", compiles)
+        self.assertIn("LiveStreamTrustAdapter.h", includes)
         xml = ET.tostring(compiles["LiveStreamSecurity.cpp"], encoding="unicode")
         for marker in ("NotUsing", "Level4", "true", "stdcpp17"):
             self.assertIn(marker, xml)

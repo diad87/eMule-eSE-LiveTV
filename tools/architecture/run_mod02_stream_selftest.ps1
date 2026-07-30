@@ -57,6 +57,7 @@ $criticalSourceRelativePaths = @(
     'srchybrid/LivePeerSet.cpp', 'srchybrid/LivePeerSet.h',
     'srchybrid/LiveChunkWindow.cpp', 'srchybrid/LiveChunkWindow.h',
     'srchybrid/LiveStreamSecurity.cpp', 'srchybrid/LiveStreamSecurity.h',
+    'srchybrid/LiveStreamTrustAdapter.cpp', 'srchybrid/LiveStreamTrustAdapter.h',
     'srchybrid/ClientList.cpp', 'srchybrid/ClientList.h',
     'srchybrid/LiveMeshManager.cpp', 'srchybrid/LiveMeshManager.h',
     'srchybrid/LiveBuddyRelay.cpp', 'srchybrid/LiveBuddyRelay.h',

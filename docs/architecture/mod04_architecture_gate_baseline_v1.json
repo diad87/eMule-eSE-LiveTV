@@ -310,6 +310,16 @@
       "path": "srchybrid/tests/test_live_stream_security.cpp",
       "reason": "Standalone pinning, verified replay, serial-wrap, capacity, concurrency and trust-policy executable test for the MOD-3.4 security extraction.",
       "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md"
+    },
+    {
+      "path": "srchybrid/LiveStreamTrustAdapter.cpp",
+      "reason": "Legacy MFC adapter projecting durable Live peer identities and DTOs into the portable MOD-3.4 security owner without creating a reverse domain dependency.",
+      "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md"
+    },
+    {
+      "path": "srchybrid/LiveStreamTrustAdapter.h",
+      "reason": "Narrow legacy projection interface binding LiveProtocol DTOs to the portable MOD-3.4 security owner.",
+      "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md"
     }
   ],
   "slice_evidence": {

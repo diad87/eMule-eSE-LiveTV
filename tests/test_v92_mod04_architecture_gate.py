@@ -407,6 +407,23 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/LiveStreamTrustAdapter.cpp",
+                "reason": (
+                    "Legacy MFC adapter projecting durable Live peer identities "
+                    "and DTOs into the portable MOD-3.4 security owner without "
+                    "creating a reverse domain dependency."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/LiveStreamTrustAdapter.h",
+                "reason": (
+                    "Narrow legacy projection interface binding LiveProtocol "
+                    "DTOs to the portable MOD-3.4 security owner."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         self.assertEqual(self.config["slice_evidence"], {
             "state": "EXTRACTION_ACTIVE",

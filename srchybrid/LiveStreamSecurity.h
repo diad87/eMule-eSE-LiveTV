@@ -29,6 +29,22 @@ enum class LiveReplayResult : std::uint8_t {
 	CapacityExceeded = 5,
 };
 
+enum class LiveTrustIdentityKind : std::uint8_t {
+	Invalid = 0,
+	UserHash = 1,
+	PublicKey = 2,
+};
+
+struct LiveTrustIdentity {
+	LiveTrustIdentityKind kind = LiveTrustIdentityKind::Invalid;
+	std::array<std::uint8_t, 32> bytes = {};
+
+	bool operator==(const LiveTrustIdentity& other) const
+	{
+		return kind == other.kind && bytes == other.bytes;
+	}
+};
+
 enum class LiveTrustLevel : std::uint8_t {
 	SuperSeeder = 0,
 	Middle = 1,
@@ -46,11 +62,34 @@ struct LiveTrustSnapshot {
 	float ResponseRate() const;
 };
 
+struct LiveTrustRecord {
+	std::uint32_t joined_at = 0u;
+	std::uint64_t bytes_served = 0u;
+	std::uint64_t bytes_received = 0u;
+	std::uint32_t requests_received = 0u;
+	std::uint32_t requests_served = 0u;
+	LiveTrustLevel current_level = LiveTrustLevel::Leaf;
+	std::int32_t fail_count = 0;
+	std::uint32_t last_promotion_time = 0u;
+	std::uint32_t last_probe_time = 0u;
+	bool is_banned = false;
+	std::uint32_t last_seen = 0u;
+
+	float ResponseRate() const;
+};
+
+enum class LiveTrustStoreResult : std::uint8_t {
+	Stored = 0,
+	CapacityExceeded = 1,
+	InvalidIdentity = 2,
+};
+
 class LiveStreamSecurity final
 {
 public:
 	static constexpr std::size_t kPinCapacity = 256u;
 	static constexpr std::size_t kReplayCapacity = 256u;
+	static constexpr std::size_t kTrustCapacity = 1024u;
 	static constexpr std::uint32_t kReplayWindowSequences = 64u;
 
 	LiveStreamSecurity();
@@ -64,11 +103,28 @@ public:
 	bool GetPinnedPublicKey(
 		const LiveStreamKey& stream_key,
 		LivePublicKey& public_key) const;
-	LiveReplayResult AcceptVerifiedSequence(
+	LiveReplayResult ClassifyVerifiedSequence(
+		const LiveStreamKey& stream_key,
+		std::uint32_t sequence_number) const;
+	LiveReplayResult CommitVerifiedSequence(
 		const LiveStreamKey& stream_key,
 		std::uint32_t sequence_number);
+	void ReleaseStream(const LiveStreamKey& stream_key);
 	std::size_t PinCount() const;
 	std::size_t ReplayStreamCount() const;
+	LiveTrustStoreResult TouchTrust(
+		const LiveTrustIdentity& identity,
+		std::uint32_t now,
+		LiveTrustRecord& record);
+	bool GetTrust(
+		const LiveTrustIdentity& identity,
+		LiveTrustRecord& record) const;
+	LiveTrustStoreResult SetTrust(
+		const LiveTrustIdentity& identity,
+		const LiveTrustRecord& record);
+	std::size_t PruneTrust(std::uint32_t now, std::uint32_t ttl);
+	std::size_t TrustCount() const;
+	void ClearTrust();
 	void Clear();
 	static LiveTrustLevel EvaluateTrust(
 		const LiveTrustSnapshot& trust,
@@ -98,14 +154,29 @@ private:
 		std::uint64_t seen_bitmap = 0u;
 	};
 
+	struct TrustEntry {
+		LiveTrustIdentity identity = {};
+		LiveTrustRecord record = {};
+	};
+
 	std::vector<PinEntry>::const_iterator FindPinLocked(
 		const LiveStreamKey& stream_key) const;
 	std::vector<ReplayEntry>::iterator FindReplayLocked(
 		const LiveStreamKey& stream_key);
+	std::vector<ReplayEntry>::const_iterator FindReplayLocked(
+		const LiveStreamKey& stream_key) const;
+	std::vector<TrustEntry>::iterator FindTrustLocked(
+		const LiveTrustIdentity& identity);
+	std::vector<TrustEntry>::const_iterator FindTrustLocked(
+		const LiveTrustIdentity& identity) const;
+	LiveReplayResult ClassifyVerifiedSequenceLocked(
+		const LiveStreamKey& stream_key,
+		std::uint32_t sequence_number) const;
 
 	mutable std::mutex mutex_;
 	std::vector<PinEntry> pins_;
 	std::vector<ReplayEntry> replay_;
+	std::vector<TrustEntry> trust_;
 };
 
 } // namespace live

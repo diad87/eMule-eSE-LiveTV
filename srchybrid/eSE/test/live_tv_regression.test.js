@@ -87,10 +87,16 @@ test('C++ broadcaster rolls back failed prebuffer and removes HLS output', () =>
 
 test('legacy C++ HLS route falls back to the active viewer stream namespace', () => {
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const legacyHls = web.slice(
+    web.indexOf('if (Data.webRoute == ese::web::WebRouteId::LegacyHls)'),
+    web.indexOf('// --- /dashboard ---')
+  );
 
-  assert.match(web, /hF == INVALID_HANDLE_VALUE && theApp\.liveStreamManager != NULL/);
-  assert.match(web, /IsViewingLive\(\)[\s\S]{0,160}GetViewerStreamKey\(\)/);
-  assert.match(web, /eMule_RTMP\\\\%hs\\\\%hs/);
+  assert.match(legacyHls, /!PathFileExists\(fp\) && theApp\.liveStreamManager != NULL/);
+  assert.match(legacyHls, /IsViewingLive\(\)[\s\S]{0,160}GetViewerStreamKey\(\)/);
+  assert.match(legacyHls, /eMule_RTMP\\\\%hs\\\\%hs/);
+  assert.match(legacyHls, /SendFileResponse\([\s\S]*Data\.sRange[\s\S]*true,\s*false\)/);
+  assert.doesNotMatch(legacyHls, /CFile|Read\(|new BYTE|new char/);
 });
 
 test('simultaneous broadcast and viewing keep native identities and buffers isolated', () => {

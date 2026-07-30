@@ -38,7 +38,7 @@ EXPECTED_INPUTS = {
     "completed_module_count": 30,
 }
 EXPECTED_NORMALIZATION = {
-    "include_parser": "phase-2 splice, raw/string/comment masking, # or %: literal include parser; non-literal active #include fails closed",
+    "include_parser": "one leading BOM removal, CRLF/CR-to-LF normalization, phase-2 splice, raw/string/comment masking, # or %: literal include parser; non-literal active #include fails closed",
     "include_resolution": "MOD-0.4 current-parent, repository-root, srchybrid-root casefold lookup",
     "path_separator": "forward-slash",
     "path_case": "casefold for repository-local lookup",
@@ -131,8 +131,15 @@ def _sccs(graph: dict[str, set[str]]) -> list[list[str]]:
 
 
 def _splice_phase_two(source: str) -> str:
-    """Apply C/C++ translation phase 2, including CRLF source files."""
-    return re.sub(r"\\(?:\r\n|\n|\r)", "", source)
+    """Apply C/C++ translation phase 2 after physical lines are normalized."""
+    return source.replace("\\\n", "")
+
+
+def _normalize_translation_input(source: str) -> str:
+    """Perform the bounded file-start/BOL normalization preceding phase 2."""
+    if source.startswith("\ufeff"):
+        source = source[1:]
+    return source.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _masked_segment(source: str) -> str:
@@ -265,7 +272,8 @@ def _mask_comments_and_literals(source_file: str, source: str) -> str:
 
 def _literal_includes(source_file: str, raw: str) -> list[str]:
     """Return active literal includes after phase 2; reject macro includes closed."""
-    translated = _mask_comments_and_literals(source_file, _splice_phase_two(raw))
+    normalized = _normalize_translation_input(raw)
+    translated = _mask_comments_and_literals(source_file, _splice_phase_two(normalized))
     includes: list[str] = []
     for match in INCLUDE_DIRECTIVE_RE.finditer(translated):
         literal = LITERAL_INCLUDE_RE.fullmatch(match.group(1))
@@ -489,6 +497,7 @@ def run_negative_fixtures(
         ("digraph-cycle", b'\n%:include "LiveHandshakeWire.h"\n'),
         ("formfeed-leading-cycle", b'\n\f#include "LiveHandshakeWire.h"\n'),
         ("formfeed-after-hash-cycle", b'\n#\finclude "LiveHandshakeWire.h"\n'),
+        ("bare-cr-after-comment-cycle", b'// MOD51 separator\r#include "LiveHandshakeWire.h"\r'),
         (
             "raw-literal-state-cycle",
             b'\nR"tag(/*)tag"\n#include "LiveHandshakeWire.h"\nR"tag(*/)tag"\n',
@@ -502,6 +511,11 @@ def run_negative_fixtures(
     _expect_cycle(
         "line-spliced-literal-cycle", contract, mod04_config, mod03_contract,
         {framing: original + b'\r\n#include \\\r\n "LiveHandshakeWire.h"\r\n'},
+        "new include SCCs forbidden: LiveHandshakeWire,LiveTunnelFraming",
+    )
+    _expect_cycle(
+        "bom-first-line-cycle", contract, mod04_config, mod03_contract,
+        {framing: b'\xef\xbb\xbf#include "LiveHandshakeWire.h"\r\n' + original},
         "new include SCCs forbidden: LiveHandshakeWire,LiveTunnelFraming",
     )
     _expect_non_literal_include(
@@ -582,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             validate_contract(contract, mod04_config, mod03_contract)
             run_negative_fixtures(contract, mod04_config, mod03_contract)
-            print("MOD-5.1 PASS: 11 negative include-SCC fixtures rejected with exact reasons")
+            print("MOD-5.1 PASS: 13 negative include-SCC fixtures rejected with exact reasons")
     except (OSError, json.JSONDecodeError, KeyError, TypeError, mod04.GateError, GateError) as exc:
         print(f"MOD-5.1 FAIL: {exc}", file=sys.stderr)
         return 1

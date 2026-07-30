@@ -9,7 +9,7 @@
     "completed_module_count": 30
   },
   "normalization": {
-    "include_parser": "phase-2 splice, raw/string/comment masking, # or %: literal include parser; non-literal active #include fails closed",
+    "include_parser": "one leading BOM removal, CRLF/CR-to-LF normalization, phase-2 splice, raw/string/comment masking, # or %: literal include parser; non-literal active #include fails closed",
     "include_resolution": "MOD-0.4 current-parent, repository-root, srchybrid-root casefold lookup",
     "path_separator": "forward-slash",
     "path_case": "casefold for repository-local lookup",

@@ -61,7 +61,8 @@ public:
 	LiveFanoutRegisterResult RegisterChild(LiveFanoutChild child);
 	bool ReplaceChild(
 		LiveFanoutChild previous,
-		LiveFanoutChild replacement);
+		LiveFanoutChild replacement,
+		std::uint64_t replacement_external_queued_bytes = 0u);
 	bool ReleaseChild(LiveFanoutChild child);
 	void Clear();
 

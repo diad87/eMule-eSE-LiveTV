@@ -224,6 +224,33 @@ int main()
 				retained_limit.token, true),
 		"collision replacement cancels work beyond the peer queue limit");
 
+	LiveStreamFanout external_collision;
+	external_collision.RegisterChild(401u);
+	external_collision.RegisterChild(402u);
+	auto external_collision_pending =
+		external_collision.BeginDelivery(401u, 1u, 1u, 0u, 1u);
+	Check(
+		external_collision_pending.IsReserved() &&
+			external_collision.ReplaceChild(401u, 402u, limit) &&
+			external_collision.ReservationCount() == 0u &&
+			external_collision.PendingBytes() == 0u &&
+			!external_collision.BeginTransport(
+				external_collision_pending.token, bounded_target),
+		"collision replacement includes destination socket queue headroom");
+
+	LiveStreamFanout external_replacement;
+	external_replacement.RegisterChild(403u);
+	auto external_replacement_pending =
+		external_replacement.BeginDelivery(403u, 1u, 1u, 0u, 1u);
+	Check(
+		external_replacement_pending.IsReserved() &&
+			external_replacement.ReplaceChild(403u, 404u, limit) &&
+			external_replacement.ReservationCount() == 0u &&
+			external_replacement.PendingBytes() == 0u &&
+			!external_replacement.BeginTransport(
+				external_replacement_pending.token, bounded_target),
+		"noncollision replacement includes destination socket queue headroom");
+
 	Check(
 		fanout.RegisterChild(50u) ==
 				LiveFanoutRegisterResult::Registered &&

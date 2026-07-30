@@ -6,6 +6,19 @@
 namespace ese {
 namespace live {
 
+namespace {
+
+std::uint64_t SaturatingAdd(
+	std::uint64_t left,
+	std::uint64_t right)
+{
+	const std::uint64_t maximum =
+		(std::numeric_limits<std::uint64_t>::max)();
+	return right > maximum - left ? maximum : left + right;
+}
+
+} // namespace
+
 LiveStreamFanout::LiveStreamFanout()
 	: next_token_(1u)
 {
@@ -47,7 +60,8 @@ LiveFanoutRegisterResult LiveStreamFanout::RegisterChild(
 
 bool LiveStreamFanout::ReplaceChild(
 	LiveFanoutChild previous,
-	LiveFanoutChild replacement)
+	LiveFanoutChild replacement,
+	std::uint64_t replacement_external_queued_bytes)
 {
 	if (previous == 0u || replacement == 0u || previous == replacement)
 		return false;
@@ -65,13 +79,38 @@ bool LiveStreamFanout::ReplaceChild(
 		return false;
 
 	const auto replacement_found = FindChildLocked(replacement);
+	const std::uint64_t replacement_headroom =
+		replacement_external_queued_bytes >= kPeerQueueLimitBytes
+			? 0u
+			: kPeerQueueLimitBytes -
+				replacement_external_queued_bytes;
 	if (replacement_found == children_.end()) {
 		found = FindChildLocked(previous);
 		found->child = replacement;
-		for (ReservationEntry& reservation : reservations_) {
-			if (reservation.child == previous)
-				reservation.child = replacement;
+		std::uint64_t retained_bytes = 0u;
+		std::size_t retained_deliveries = 0u;
+		for (auto reservation = reservations_.begin();
+			reservation != reservations_.end();) {
+			if (reservation->child != previous) {
+				++reservation;
+				continue;
+			}
+			const bool exceeds_limit =
+				reservation->wire_bytes >
+					replacement_headroom - retained_bytes;
+			if (exceeds_limit) {
+				found->failed_deliveries = SaturatingAdd(
+					found->failed_deliveries, 1u);
+				reservation = reservations_.erase(reservation);
+			} else {
+				retained_bytes += reservation->wire_bytes;
+				++retained_deliveries;
+				reservation->child = replacement;
+				++reservation;
+			}
 		}
+		found->pending_bytes = retained_bytes;
+		found->pending_deliveries = retained_deliveries;
 		return true;
 	}
 
@@ -80,17 +119,35 @@ bool LiveStreamFanout::ReplaceChild(
 	const std::size_t replacement_index =
 		static_cast<std::size_t>(replacement_found - children_.begin());
 	ChildEntry merged = *replacement_found;
-	merged.completed_deliveries += found->completed_deliveries;
-	merged.completed_bytes += found->completed_bytes;
-	merged.failed_deliveries += found->failed_deliveries;
-	merged.backpressure_rejections += found->backpressure_rejections;
+	merged.completed_deliveries = SaturatingAdd(
+		merged.completed_deliveries, found->completed_deliveries);
+	merged.completed_bytes = SaturatingAdd(
+		merged.completed_bytes, found->completed_bytes);
+	merged.failed_deliveries = SaturatingAdd(
+		merged.failed_deliveries, found->failed_deliveries);
+	merged.backpressure_rejections = SaturatingAdd(
+		merged.backpressure_rejections,
+		found->backpressure_rejections);
 
 	std::uint64_t retained_bytes = 0u;
 	std::size_t retained_deliveries = 0u;
-	for (const ReservationEntry& reservation : reservations_) {
-		if (reservation.child == replacement) {
-			retained_bytes += reservation.wire_bytes;
+	for (auto reservation = reservations_.begin();
+		reservation != reservations_.end();) {
+		if (reservation->child != replacement) {
+			++reservation;
+			continue;
+		}
+		const bool exceeds_limit =
+			reservation->wire_bytes >
+				replacement_headroom - retained_bytes;
+		if (exceeds_limit) {
+			merged.failed_deliveries = SaturatingAdd(
+				merged.failed_deliveries, 1u);
+			reservation = reservations_.erase(reservation);
+		} else {
+			retained_bytes += reservation->wire_bytes;
 			++retained_deliveries;
+			++reservation;
 		}
 	}
 	for (auto reservation = reservations_.begin();
@@ -110,13 +167,11 @@ bool LiveStreamFanout::ReplaceChild(
 						reservation->last_sequence;
 			});
 		const bool exceeds_limit =
-			retained_bytes > kPeerQueueLimitBytes ||
 			reservation->wire_bytes >
-				kPeerQueueLimitBytes - retained_bytes;
+				replacement_headroom - retained_bytes;
 		if (duplicate || exceeds_limit) {
-			if (merged.failed_deliveries !=
-				(std::numeric_limits<std::uint64_t>::max)())
-				++merged.failed_deliveries;
+			merged.failed_deliveries = SaturatingAdd(
+				merged.failed_deliveries, 1u);
 			reservation = reservations_.erase(reservation);
 		} else {
 			retained_bytes += reservation->wire_bytes;

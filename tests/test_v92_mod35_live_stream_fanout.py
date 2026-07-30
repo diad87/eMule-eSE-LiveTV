@@ -117,6 +117,14 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             adapter.index("FanoutChild(current_child)"),
         )
         self.assertIn("return sent_all && completed;", adapter)
+        self.assertIn(
+            "replacement_peer->GetSocketQueuedBytes()",
+            adapter,
+        )
+        self.assertGreaterEqual(
+            SOURCE.read_text(encoding="utf-8").count("SaturatingAdd("),
+            6,
+        )
         self.assertNotIn(
             "fanout.ReplaceChild(replacement, previous)",
             adapter,
@@ -142,6 +150,8 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             "collision replacement preserves canonical order and retargets work",
             "collision replacement cancels duplicate pending identity",
             "collision replacement cancels work beyond the peer queue limit",
+            "collision replacement includes destination socket queue headroom",
+            "noncollision replacement includes destination socket queue headroom",
             "slow child does not block a healthy sibling",
             "release cancels pending work and rejects future delivery",
             "release waits while transport owns the child lifetime",

@@ -29,6 +29,20 @@
       "overlay_sha256": "d6c99b16c405523114cc6a34134fa61fb2e83392880afb34b300cf775bf28c38",
       "task": "MOD-0.2 + MOD-2.2 + MOD-2.3 + MOD-2.5 + MOD-2.6",
       "reason": "Declaration of the headless production characterization hook, composition ownership of WebAuthPolicy with request Host, Origin, Fetch Metadata and CSRF metadata, the resolved WebRouteId passed across the socket/coordinator boundary, removal of the obsolete coordinator-owned boolean parser after MOD-2.5 transfer ownership, and propagation of the typed Range request metadata required by MOD-2.6."
+    },
+    {
+      "path": "srchybrid/LiveStreamManager.cpp",
+      "baseline_sha256": "33d509c439836fce2fc35e509f933637687505394daeb5b66e29cb599eb62cc2",
+      "overlay_sha256": "a51aa0bdc52026dded1e4a39ad30de08335748c8abecb21655113c77201bcc4c",
+      "task": "MOD-0.2 + MOD-3.1",
+      "reason": "MOD-3.1 delegates broadcaster and viewer lifecycle state, generation, retry timers, tunnel-session scalars and broadcaster secret lifetime to the two portable session modules while retaining locks, protocol projection and external I/O in the coordinator."
+    },
+    {
+      "path": "srchybrid/LiveStreamManager.h",
+      "baseline_sha256": "e93b3c7467a389872fb5084e9912bcbf1b2cd6693d3990d3dda54fcaec0449fd",
+      "overlay_sha256": "5c18b4ca13a140b959de5a81dff9ef0d444958690c2a6c2d2975b13e581b197a",
+      "task": "MOD-0.2 + MOD-3.1",
+      "reason": "MOD-3.1 replaces coordinator-owned broadcaster/viewer lifecycle scalars with explicit LiveBroadcastSession and LiveViewerSession composition."
     }
   ]
 }

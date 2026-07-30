@@ -72,6 +72,12 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /I..\libkad6\include /Fetests\build\test
 if errorlevel 1 exit /b 1
 tests\build\test_live_tunnel_metrics.exe
 if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_stream_sessions.exe tests\test_live_stream_sessions.cpp LiveBroadcastSession.cpp LiveViewerSession.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_stream_sessions.exe
+if errorlevel 1 exit /b 1
+
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_request_parser.exe tests\test_web_request_parser.cpp WebRequestParser.cpp
 if errorlevel 1 exit /b 1
 tests\build\test_web_request_parser.exe

@@ -61,6 +61,7 @@ class Mod01ArchitectureInventoryTest(unittest.TestCase):
         self.assertEqual({item["path"] for item in overlays["overlays"]}, {
             "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h",
             "srchybrid/WebServer.cpp", "srchybrid/WebServer.h",
+            "srchybrid/LiveStreamManager.cpp", "srchybrid/LiveStreamManager.h",
         })
         for item in overlays["overlays"]:
             self.assertRegex(item["baseline_sha256"], r"^[0-9a-f]{64}$")

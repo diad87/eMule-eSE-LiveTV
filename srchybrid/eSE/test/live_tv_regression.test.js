@@ -134,12 +134,12 @@ test('simultaneous broadcast and viewing keep native identities and buffers isol
   assert.match(join, /m_chunkBuffer\.Clear\(\)/);
   assert.doesNotMatch(join, /m_broadcastChunkBuffer\.Clear\(\)/);
 
-  assert.match(manager, /if \(!m_bBroadcasting && !m_broadcastPeers\.IsEmpty\(\)\)/);
+  assert.match(manager, /if \(!m_broadcastSession\.IsActive\(\) && !m_broadcastPeers\.IsEmpty\(\)\)/);
   assert.match(manager, /SendBitmapToAll\(true\)/);
   assert.match(manager, /SendBitmapToAll\(false\)/);
   assert.match(manager, /GetChannelSnapshot\(\)[\s\S]{0,450}m_broadcastStreamInfo\.streamKey/);
   assert.match(join, /m_meshManager\.ResetSessionPeers\(\)/);
-  assert.match(manager, /LeaveStream\(\)[\s\S]{0,1600}ResetSessionPeers\(\)[\s\S]{0,220}m_bBroadcasting/);
+  assert.match(manager, /LeaveStream\(\)[\s\S]{0,1600}ResetSessionPeers\(\)[\s\S]{0,220}m_broadcastSession\.IsActive\(\)/);
   assert.match(mesh, /ResetSessionPeers\(\)[\s\S]{0,300}m_meshPeers\.RemoveAll\(\)/);
   assert.match(manager, /simultaneous broadcast\/view state or buffers crossed/);
   assert.match(manager, /m_broadcastChunkBuffer\.GetNewestSeq\(\) > broadcastNewestBefore/);
@@ -911,7 +911,7 @@ test('source loss schedules bounded rotating peer replenishment', () => {
   assert.match(manager, /m_peerRefreshPolicy\.OnSourceLost/);
   assert.match(manager, /if \(m_peerRefreshPolicy\.IsPending\(\)\)[\s\S]{0,100}RequestMorePeers\(\)/);
   assert.match(manager, /Peer refresh via tunnel/);
-  assert.match(manager, /m_strictTunnelOnly/);
+  assert.match(manager, /m_viewerSession\.StrictTunnelOnly\(\)/);
   assert.match(mesh, /m_pManager->RequestMorePeers\(\)/);
   assert.match(policy, /LOSS_GRACE_MS = 2000/);
   assert.match(policy, /REQUEST_COOLDOWN_MS = 15000/);

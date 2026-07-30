@@ -870,6 +870,18 @@
     <ClCompile Include="LiveStreamDlg.cpp" />
     <ClCompile Include="LiveStreamDlgUI.cpp" />
     <ClCompile Include="LiveStreamHandlers.cpp" />
+    <ClCompile Include="LiveBroadcastSession.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveViewerSession.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="LiveStreamManager.cpp" />
     <ClCompile Include="RTMPIngest.cpp" />
     <ClCompile Include="ListViewSearchDlg.cpp" />
@@ -1265,6 +1277,8 @@
     <ClInclude Include="LiveBuddyRelay.h" />
     <ClInclude Include="LivePackets.h" />
     <ClInclude Include="LiveProtocol.h" />
+    <ClInclude Include="LiveBroadcastSession.h" />
+    <ClInclude Include="LiveViewerSession.h" />
     <ClInclude Include="LiveStreamDlg.h" />
     <ClInclude Include="LiveStreamManager.h" />
     <ClInclude Include="ListViewSearchDlg.h" />

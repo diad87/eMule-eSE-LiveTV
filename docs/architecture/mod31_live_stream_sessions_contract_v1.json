@@ -1,0 +1,51 @@
+{
+  "schema": "ese.mod31.live-stream-sessions-contract/v1",
+  "baseline_commit": "a48445e560765fc68fc85b0e61a09e2e72b7f9de",
+  "valid_input_compatibility": "start_stop_join_leave_and_dual_role_behavior_exact",
+  "invalid_input_policy": "reject_overlapping_start_or_join_without_partial_state",
+  "modules": [
+    {
+      "name": "LiveBroadcastSession",
+      "owner_before": "CLiveStreamManager",
+      "owner_after": "LiveBroadcastSession",
+      "layer": "domain_state",
+      "responsibility": "broadcaster active state, identity, secret lifetime, generation and sequence allocation",
+      "declared_direct_dependencies": []
+    },
+    {
+      "name": "LiveViewerSession",
+      "owner_before": "CLiveStreamManager",
+      "owner_after": "LiveViewerSession",
+      "layer": "domain_state",
+      "responsibility": "viewer active state, identity, generation, lifecycle timers, web-player watchdog and tunnel-session reset",
+      "declared_direct_dependencies": []
+    }
+  ],
+  "invariants": {
+    "broadcast_and_viewer_roles": "independent_and_simultaneously_active",
+    "replacement": "explicit_leave_required_before_join",
+    "generation": "monotonic_nonzero_per_successful_start_or_join",
+    "tick_arithmetic": "uint32_modular_and_zero_sentinel_preserved",
+    "broadcast_private_key": "wiped_on_stop",
+    "outbound_network_work": "retained_by_coordinator_and_never_owned_by_session_modules",
+    "wire_format": "unchanged"
+  },
+  "boundary": {
+    "owned_by_sessions": [
+      "role activity and stream-key matching",
+      "broadcast generation and sequence allocation",
+      "broadcaster private-key lifetime",
+      "viewer generation and lifecycle timers",
+      "viewer watchdog and tunnel-session scalar state"
+    ],
+    "retained_by_CLiveStreamManager": [
+      "manager lock",
+      "CString and LiveStreamInfo protocol projections",
+      "peer lists and socket sends",
+      "Kad publish/search/unpublish",
+      "HLS buffers and filesystem cleanup",
+      "RTMP/FFmpeg process control",
+      "logging and UI resource strings"
+    ]
+  }
+}

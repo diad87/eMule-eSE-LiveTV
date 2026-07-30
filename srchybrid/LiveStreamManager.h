@@ -8,6 +8,8 @@
 #include "LiveKadBridge.h"
 #include "LiveMeshManager.h"
 #include "LivePeerRefreshPolicy.h"
+#include "LiveBroadcastSession.h"
+#include "LiveViewerSession.h"
 #include "LiveDebugLog.h"        // V2-S05: LatencyHistogram
 #include "RTMPIngest.h"
 #include "eMuleAI/Address.h"
@@ -285,7 +287,7 @@ public:
     // Feed a new HLS segment into the buffer (called by RTMPIngest or file watcher)
     void FeedSegment(const BYTE* data, uint32 dataSize);
     // Is currently broadcasting?
-    bool IsBroadcasting() const { return m_bBroadcasting; }
+    bool IsBroadcasting() const { return m_broadcastSession.IsActive(); }
 
     // Tier 2.2: One-shot broadcast launcher for the web UI.
     // sourceType: "testpattern" | "screen" | "file" | "rtmp"
@@ -317,7 +319,7 @@ public:
     // Leave the current stream
     void LeaveStream();
     // Is currently viewing a live stream?
-    bool IsViewingLive() const { return m_bViewing; }
+    bool IsViewingLive() const { return m_viewerSession.IsActive(); }
     // Connect to a discovered broadcaster/relay for the stream we are viewing.
     // A.4 Sprint 1: udpPort optional — when non-zero, populates CUpDownClient
     // KadPort so TryToConnect can hole-punch via SendEseHolePunchReq if TCP
@@ -337,7 +339,7 @@ public:
     // by the tunnel exit handler (ExitHandle_LiveSubscribe) when a tunneled
     // subscribe arrives: dial the broadcaster and send OP_LIVE_SUBSCRIBE from
     // THIS node (the exit) on the viewer's behalf, WITHOUT entering our own
-    // viewing state (m_bViewing / m_viewPeers untouched). The broadcaster thus
+    // viewing state (viewer session / m_viewPeers untouched). The broadcaster thus
     // sees the exit, never the viewer. altIP is tried if the public endpoint is
     // non-routable. Returns true if the subscribe packet was sent. The heartbeat
     // / announce relay back to the viewer is C3.
@@ -439,9 +441,9 @@ public:
     // A pure broadcaster falls back to the broadcast session.  Callers which
     // require a specific role must use the explicit accessors below.
     const CLiveChunkBuffer& GetBuffer() const
-        { return m_bViewing ? m_chunkBuffer : m_broadcastChunkBuffer; }
+        { return m_viewerSession.IsActive() ? m_chunkBuffer : m_broadcastChunkBuffer; }
     const LiveStreamInfo& GetStreamInfo() const
-        { return m_bViewing ? m_streamInfo : m_broadcastStreamInfo; }
+        { return m_viewerSession.IsActive() ? m_streamInfo : m_broadcastStreamInfo; }
     const CLiveChunkBuffer& GetBroadcastBuffer() const { return m_broadcastChunkBuffer; }
     const CLiveChunkBuffer& GetViewerBuffer() const { return m_chunkBuffer; }
     const LiveStreamInfo& GetBroadcastStreamInfo() const { return m_broadcastStreamInfo; }
@@ -462,20 +464,20 @@ public:
 
     // Accessors for WebServer and UI
     const uchar* GetStreamKey() const
-        { return m_bViewing ? m_streamInfo.streamKey : m_broadcastStreamInfo.streamKey; }
+        { return m_viewerSession.IsActive() ? m_streamInfo.streamKey : m_broadcastStreamInfo.streamKey; }
     const uchar* GetBroadcastStreamKey() const { return m_broadcastStreamInfo.streamKey; }
     const uchar* GetViewerStreamKey() const { return m_streamInfo.streamKey; }
     CString GetStreamTitle() const
-        { return m_bViewing ? m_streamInfo.title : m_broadcastStreamInfo.title; }
+        { return m_viewerSession.IsActive() ? m_streamInfo.title : m_broadcastStreamInfo.title; }
     uint32 GetBitrate() const
-        { return m_bViewing ? m_streamInfo.bitrate : m_broadcastStreamInfo.bitrate; }
+        { return m_viewerSession.IsActive() ? m_streamInfo.bitrate : m_broadcastStreamInfo.bitrate; }
     uint32 GetBroadcastBitrate() const { return m_broadcastStreamInfo.bitrate; }
     uint32 GetBroadcastStartTime() const { return m_broadcastStreamInfo.startedAt; }
     bool IsEmergencyMode() const { return m_bEmergencyMode; }
 
     // Ghost-viewer watchdog (2026-06). A web player session that stops
     // fetching HLS (tab closed or crashed without the pagehide leave beacon)
-    // used to leave m_bViewing latched forever: the viewer machinery kept
+    // used to leave the viewer session latched forever: its machinery kept
     // re-dialing/re-subscribing for the whole life of the broadcast — the
     // JOIN/DISCONNECT loop visible on the broadcaster's status page.
     // NotePlayerFetch() is an atomic tick write, safe from webserver worker
@@ -486,8 +488,10 @@ public:
     // watchdog and is only called for web-originated joins (OnLiveWebJoin)
     // so MFC/VLC-from-disk flows, which produce no HTTP fetches, are never
     // auto-left. Process() leaves the stream after 60 s of player silence.
-    void NotePlayerFetch() { InterlockedExchange(&m_lastPlayerFetchTick, (LONG)::GetTickCount()); }
-    void MarkWebPlayerSession() { InterlockedExchange(&m_bWebPlayerSession, 1); NotePlayerFetch(); }
+    void NotePlayerFetch()
+        { m_viewerSession.NotePlayerFetch(static_cast<std::uint32_t>(::GetTickCount())); }
+    void MarkWebPlayerSession()
+        { m_viewerSession.MarkWebPlayerSession(static_cast<std::uint32_t>(::GetTickCount())); }
 
     // Thread-safe debug snapshot (takes m_lock, copies all state)
     LiveDebugSnapshot BuildDebugSnapshot() const;
@@ -552,8 +556,8 @@ public:
 
 private:
     // Stream state
-    bool                m_bBroadcasting;
-    bool                m_bViewing;
+    ese::live::LiveBroadcastSession m_broadcastSession;
+    ese::live::LiveViewerSession    m_viewerSession;
     // Viewer and broadcaster identities must never alias.  beta.1 used a
     // single m_streamInfo/m_chunkBuffer pair; JoinStream consequently replaced
     // the active broadcaster key and local FFmpeg chunks were written into the
@@ -562,13 +566,8 @@ private:
     // authoritative, independent state pair.
     LiveStreamInfo      m_streamInfo;              // current remote viewer
     LiveStreamInfo      m_broadcastStreamInfo;     // current local broadcaster
-    // v7.6.0 — broadcaster's Ed25519 private key. Generated freshly on every
-    // StartBroadcast(); never serialized to disk; zeroed on StopBroadcast.
-    // The matching public key lives in m_broadcastStreamInfo.pubkey and IS published.
-    uint8_t             m_broadcasterPrivkey[32];
     CLiveChunkBuffer    m_chunkBuffer;              // received remote chunks
     CLiveChunkBuffer    m_broadcastChunkBuffer;     // locally produced chunks
-    uint32              m_nNextSeqNum;      // Next segment sequence number
     // R.3 relay egress (gated by pref EseRelayEgress): proactively forward new segments to a
     // relay buddy when we are an unreachable broadcaster (symmetric NAT/CGNAT).
     uint32              m_lastRelayedSeq;       // last seq forwarded to the buddy (UINT_MAX = none)
@@ -711,12 +710,7 @@ private:
         DWORD lastSeen;        // for pruning
     };
     CMap<uint32, uint32, SubRateState, SubRateState&> m_subscribeRate;
-    // Watchdog: per-viewing-session timestamp of the last chunk or
-    // heartbeat we received from ANY peer for the active stream. If
-    // (now - this) > 90 s while m_bViewing, declare end + gossip.
-    DWORD               m_dwLastLiveActivity;
-
-    // DISC-S04: pending ghost-cleanup. Loaded from preferences at startup;
+\r\n    // DISC-S04: pending ghost-cleanup. Loaded from preferences at startup;
     // if non-empty, Process() will try to publish a tombstone once Kad
     // connects, then clear it. Avoids a previous-session crash leaving an
     // entry in the DHT for ~3 min (the new ESE_KAD_ENTRY_TTL).
@@ -739,27 +733,7 @@ private:
 
     // V2-S11: result of upload-capacity probe in kbps (0 = leaf-restricted).
     DWORD               m_measuredUploadKbps;
-
-    // V2-S17: last time we re-published as a secondary source for the stream
-    // we are currently viewing. 0 means "not yet" (forces a publish on the
-    // first eligible Process tick).
-    DWORD               m_dwLastSecondaryPublish;
-
-    // DISC-S05: periodic re-search while viewing with zero source peers.
-    // m_dwLastJoinSearchTick = last time we re-fired the 3 Kad searches;
-    // m_nJoinSearchRetries  = total retries this JoinStream session, capped.
-    DWORD               m_dwLastJoinSearchTick;
-    int                 m_nJoinSearchRetries;
-
-    // DISC-S12: time-to-first-chunk measurement.
-    // m_dwJoinTick = the GetTickCount() of the latest JoinStream call.
-    // m_bFirstChunkLogged = whether OnChunkReceived has already recorded
-    // the delta into the counter (only the FIRST chunk per JoinStream
-    // counts; subsequent ones don't reset the measurement).
-    DWORD               m_dwJoinTick;
-    bool                m_bFirstChunkLogged;
-
-    // V2-S19: last time EnsureMultiParent dialed extra sources.
+\r\n    // V2-S19: last time EnsureMultiParent dialed extra sources.
     DWORD               m_dwLastMultiParentTick;
 
     // Phase-1 fix #2 (2026-06) — in-flight pull-request tracking. Without it,
@@ -798,13 +772,7 @@ private:
     // Isolated --selftest viewers exercise the real ingest path without
     // touching the broadcaster's live HLS files in the shared temp directory.
     bool                m_bSuppressHlsOutput;
-
-    // Ghost-viewer watchdog state (see NotePlayerFetch/MarkWebPlayerSession).
-    // LONG + Interlocked because writers include webserver worker threads.
-    volatile LONG       m_lastPlayerFetchTick;  // GetTickCount() of last player sign of life
-    volatile LONG       m_bWebPlayerSession;    // 1 = current viewing session came from the web API
-
-    // Tier 2.2: shared FFmpeg ingest. Owned by the manager so both the MFC
+\r\n    // Tier 2.2: shared FFmpeg ingest. Owned by the manager so both the MFC
     // dialog and the web API can drive broadcast start/stop. Only one source
     // can be active at a time (CRTMPIngest enforces this internally).
     CRTMPIngest         m_rtmpIngest;
@@ -864,23 +832,4 @@ private:
 
     // C6: last durable-state TTL sweep (PrunePeerState), throttled in Process().
     DWORD               m_dwLastPeerPrune;
-
-    // C5/C3 (Sprint C review fix): endpoint of the broadcaster we tunnel-
-    // subscribed to this session (0 = not in Tunelizado / not dialed). The C3
-    // relayed heartbeat carries the broadcaster's live edge; OnTunneledLiveControl
-    // applies it ONLY to the view peer matching this endpoint, so secondary
-    // sources (dialed via OP_LIVE_PEER_LIST, with their own real bitmaps) are
-    // not clobbered. Set in TryConnectToStreamSource's tunnel branch; cleared in
-    // JoinStream/LeaveStream.
-    uint32              m_tunnelSourceIP;
-    uint16              m_tunnelSourcePort;
-    // K6-1.5: sticky for the current viewing session.  When true, neither the
-    // primary result nor tunneled peer-list fanout may create a direct socket.
-    bool                m_strictTunnelOnly;
-    // C5/C6 review fix: self-heal a lost tunneled subscribe (dropped send,
-    // broadcaster DENY of the exit, or a circuit-death TOCTOU). Re-issue the
-    // tunneled subscribe from Process() if no live edge appears within a grace
-    // window. Bounded by m_tunnelResubCount.
-    DWORD               m_tunnelSubscribeTick;
-    int                 m_tunnelResubCount;
 };

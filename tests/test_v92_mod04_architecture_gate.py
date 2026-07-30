@@ -58,6 +58,14 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
             message.startswith("slice LiveTunnelScheduler:")
             for message in messages
         ))
+        self.assertTrue(any(
+            message.startswith("slice LiveBroadcastSession:")
+            for message in messages
+        ))
+        self.assertTrue(any(
+            message.startswith("slice LiveViewerSession:")
+            for message in messages
+        ))
         self.assertFalse(self.config["final_limits"]["enforced_now"])
         self.assertEqual(self.config["baseline_commit"], "161d948281682d39acdcea796b1edddc6d68904c")
         self.assertEqual(len(self.config["coordinator_files"]), 6)
@@ -220,6 +228,20 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/WebDiagnostics.cpp"],
                 "interface_files": ["srchybrid/WebDiagnostics.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveBroadcastSession",
+                "owner": "CLiveStreamManager",
+                "layer": "domain_state",
+                "implementation_files": ["srchybrid/LiveBroadcastSession.cpp"],
+                "interface_files": ["srchybrid/LiveBroadcastSession.h"],
+                "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveViewerSession",
+                "owner": "CLiveStreamManager",
+                "layer": "domain_state",
+                "implementation_files": ["srchybrid/LiveViewerSession.cpp"],
+                "interface_files": ["srchybrid/LiveViewerSession.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.config["approved_non_module_code"], [
@@ -324,6 +346,15 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/tests/test_live_stream_sessions.cpp",
+                "reason": (
+                    "Standalone lifecycle, dual-role, retry, tick-wrap and "
+                    "secret-wipe executable test for the two MOD-3.1 session "
+                    "extractions."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         self.assertEqual(self.config["slice_evidence"], {
             "state": "EXTRACTION_ACTIVE",
@@ -411,6 +442,14 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "module": "WebDiagnostics",
                 "slice_base_commit": "96e1c64833dd0bd4da3715ed48b7d664684de329",
                 "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "LiveBroadcastSession",
+                "slice_base_commit": "a48445e560765fc68fc85b0e61a09e2e72b7f9de",
+                "source_coordinator": "srchybrid/LiveStreamManager.cpp",
+            }, {
+                "module": "LiveViewerSession",
+                "slice_base_commit": "a48445e560765fc68fc85b0e61a09e2e72b7f9de",
+                "source_coordinator": "srchybrid/LiveStreamManager.cpp",
             }],
         })
 
@@ -441,6 +480,8 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "WebStaticAssets",
                 "WebSocketResponse",
                 "WebDiagnostics",
+                "LiveBroadcastSession",
+                "LiveViewerSession",
             ],
         )
 

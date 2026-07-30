@@ -133,7 +133,7 @@ declara en el coordinador.
 
 Budget fijo por tarjeta (máximo LOC del módulo / A máximo / D mínimo / neto
 máximo; todas las cifras son líneas): LT1 `800/1000/250/+350`, LT2
-`1100/1300/1000/+300`, LT3 `1150/1350/1150/+200`, LT4
+`1100/1300/275/+1000`, LT3 `1150/1350/1150/+200`, LT4
 `1100/1300/1050/+250`, LT5 `1200/1450/1200/+250`, LT6
 `1100/1300/1000/+300`, LT7 `1100/1300/950/+350`, LT8 `900/1100/800/+300`,
 LT9 `1200/1450/1250/+200`, LT10 `700/800/500/+300`. Además, el coordinador
@@ -141,6 +141,15 @@ en cada tarjeta añade ≤80 líneas de fachada y elimina más de las que añade
 Todo valor se valida antes del commit; >1.500 LOC/net detiene la tarjeta.
 Los máximos A/neto y el mínimo D son límites independientes; la autorización
 del propietario de 2026-07-30 corrige LT1 sin relajar A, neto, fachada ni LOC.
+
+La autorización adicional del propietario de 2026-07-30 corrige LT2 tras
+medir el árbol verde posterior a LT1. El inventario alcanzable contiene 20
+campos y 277 líneas eliminables de estado/operaciones directas; por tanto el
+mínimo anterior de 1.000 eliminaciones no podía satisfacerse sin invadir
+tarjetas LT3–LT6. LT2 conserva `A <= 1300`, módulo `<= 1100`, fachada
+`A <= 80`, reducción neta obligatoria de la fachada y el STOP global de 1.500
+líneas; sólo se ajustan `D >= 275` y neto `<= +1000` para permitir puertos,
+serialización de ownership, locks propios y caracterización de replay.
 
 Dependencias: LT1 puede iniciar; LT2 depende de LT1 para el estado de release;
 LT3/LT4 dependen de LT2; LT5 depende de LT4; LT6 depende de LT3 y LT5; LT7

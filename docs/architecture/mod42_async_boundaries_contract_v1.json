@@ -26,6 +26,15 @@
     "startup_only_exceptions": [
       "locate packaged hls.min.js",
       "create local HLS directory"
+    ],
+    "transitive_async_owners": [
+      "srchybrid/eSE/media_resolver.js",
+      "srchybrid/eSE/cleanup.js"
+    ],
+    "bounds": [
+      "at most 8 concurrent media metadata operations",
+      "at most 2 MiB read from each .part.met",
+      "at most 16 concurrent cleanup operations"
     ]
   },
   "invariants": {
@@ -34,6 +43,7 @@
     "process_arguments_are_arrays": true,
     "process_shell_expansion": false,
     "streaming_processes_remain_killable": true,
+    "finite_processes_support_request_abort": true,
     "path_containment_checks_preserved": true,
     "file_response_content_length_from_async_stat": true
   },

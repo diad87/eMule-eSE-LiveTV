@@ -100,8 +100,23 @@ function runProcess(file, args = [], options = {}) {
     'maxOutputBytes',
   );
   const acceptedExitCodes = new Set(options.acceptedExitCodes || [0]);
+  const abortSignal = options.signal;
 
   return new Promise(resolve => {
+    if (abortSignal && abortSignal.aborted) {
+      resolve({
+        ok: false,
+        exitCode: null,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        outputExceeded: false,
+        aborted: true,
+        error: 'aborted',
+      });
+      return;
+    }
     let child;
     try {
       child = spawnManaged(file, args, options);
@@ -114,6 +129,7 @@ function runProcess(file, args = [], options = {}) {
         stderr: '',
         timedOut: false,
         outputExceeded: false,
+        aborted: false,
         error: error.message,
       });
       return;
@@ -123,6 +139,7 @@ function runProcess(file, args = [], options = {}) {
     let stderr = Buffer.alloc(0);
     let timedOut = false;
     let outputExceeded = false;
+    let aborted = false;
     let spawnError = null;
     let settled = false;
 
@@ -145,6 +162,11 @@ function runProcess(file, args = [], options = {}) {
     if (child.stdout) child.stdout.on('data', chunk => { stdout = append(stdout, chunk); });
     if (child.stderr) child.stderr.on('data', chunk => { stderr = append(stderr, chunk); });
     child.on('error', error => { spawnError = error; });
+    const onAbort = () => {
+      aborted = true;
+      terminateSpawned(child);
+    };
+    if (abortSignal) abortSignal.addEventListener('abort', onAbort, { once: true });
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -156,9 +178,10 @@ function runProcess(file, args = [], options = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (abortSignal) abortSignal.removeEventListener('abort', onAbort);
       const encoding = options.encoding || 'utf8';
       resolve({
-        ok: !spawnError && !timedOut && !outputExceeded
+        ok: !spawnError && !timedOut && !outputExceeded && !aborted
           && acceptedExitCodes.has(exitCode),
         exitCode,
         signal,
@@ -166,7 +189,8 @@ function runProcess(file, args = [], options = {}) {
         stderr: stderr.toString(encoding),
         timedOut,
         outputExceeded,
-        error: spawnError ? spawnError.message : null,
+        aborted,
+        error: spawnError ? spawnError.message : (aborted ? 'aborted' : null),
       });
     });
   });
@@ -196,10 +220,17 @@ async function killProcessTree(pid, options = {}) {
   );
   const isAlive = () => {
     try {
-      process.kill(pid, 0);
+      process.kill(-pid, 0);
       return true;
-    } catch (error) {
-      return error.code === 'EPERM';
+    } catch (groupError) {
+      if (groupError.code === 'EPERM') return true;
+      if (groupError.code !== 'ESRCH') throw groupError;
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (processError) {
+        return processError.code === 'EPERM';
+      }
     }
   };
   const waitUntilGone = async deadline => {

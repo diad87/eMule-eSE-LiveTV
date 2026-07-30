@@ -14,19 +14,28 @@ const v1Routes = require("../routes/v1_routes");
 const runner = require("../bounded_process_runner");
 const originalRunProcess = runner.runProcess;
 const originalSpawnManaged = runner.spawnManaged;
-let resolveProcess;
 let managedSpawnCount = 0;
-runner.runProcess = () => new Promise(resolve => { resolveProcess = resolve; });
+const processResolvers = [];
+const managedChildren = [];
+runner.runProcess = () => new Promise(resolve => { processResolvers.push(resolve); });
 runner.spawnManaged = () => {
   managedSpawnCount++;
   const child = new EventEmitter();
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
-  child.kill = () => true;
+  child.killCount = 0;
+  child.kill = () => {
+    child.killCount++;
+    queueMicrotask(() => child.emit("close", 0));
+    return true;
+  };
+  managedChildren.push(child);
   return child;
 };
 const streamPart = require("../routes/stream_part");
 const streamCompleted = require("../routes/stream_completed");
+const systemRoutes = require("../routes/system_routes");
+const mediaResolver = require("../media_resolver");
 
 function responsePromise() {
   let finish;
@@ -54,7 +63,16 @@ function eventedResponse() {
   response.writableEnded = false;
   response.writeHead = function writeHead() { this.headersSent = true; };
   response.end = function end() { this.writableEnded = true; };
+  response.write = function write() { return true; };
   return response;
+}
+
+async function waitFor(predicate, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("condition not reached");
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
 }
 
 test("DirectShow parsing preserves video and audio device selection", () => {
@@ -174,14 +192,131 @@ test("subtitle streaming observes disconnect before a delayed probe can spawn", 
     true,
   );
   response.emit("close");
-  resolveProcess({
-    ok: true,
-    stdout: JSON.stringify({
-      streams: [{ index: 2, codec_name: "subrip" }],
-    }),
-  });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(managedSpawnCount, 0);
+});
+
+test("media resolver performs bounded async scans for completed and part files", async () => {
+  const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ese-media-"));
+  const incoming = path.join(tempRoot, "Incoming");
+  const temp = path.join(tempRoot, "Temp");
+  await fs.promises.mkdir(incoming);
+  await fs.promises.mkdir(temp);
+  await fs.promises.writeFile(path.join(incoming, "Completed.MKV"), Buffer.alloc(64));
+
+  const met = Buffer.alloc(256);
+  Buffer.from("00112233445566778899aabbccddeeff", "hex").copy(met, 5);
+  met.write("Part Movie.mkv", 64, "latin1");
+  await Promise.all([
+    fs.promises.writeFile(path.join(temp, "1.part"), Buffer.alloc(128)),
+    fs.promises.writeFile(path.join(temp, "1.part.met"), met),
+  ]);
+
+  const completed = await mediaResolver.resolveMediaFile(
+    "completed.mkv",
+    incoming,
+    temp,
+  );
+  assert.equal(path.basename(completed.filePath).toLowerCase(), "completed.mkv");
+  assert.equal(completed.isPartFile, false);
+
+  const partial = await mediaResolver.resolveMediaFile(
+    "Part Movie.mkv",
+    incoming,
+    temp,
+  );
+  assert.equal(path.basename(partial.filePath), "1.part");
+  assert.equal(partial.isPartFile, true);
+  assert.equal(partial.hash, "00112233445566778899AABBCCDDEEFF");
+
+  const downloads = await mediaResolver.listDownloads(temp);
+  assert.equal(downloads.length, 1);
+  assert.equal(downloads[0].fileName, "Part Movie.mkv");
+  const completedFiles = await mediaResolver.getCompletedFiles(incoming);
+  assert.equal(completedFiles.length, 1);
+  assert.equal(completedFiles[0].fileName, "Completed.MKV");
+
+  await fs.promises.rm(tempRoot, { recursive: true, force: true });
+});
+
+test("a disconnected preparation cannot kill another request's completed stream", async () => {
+  managedSpawnCount = 0;
+  managedChildren.length = 0;
+  processResolvers.length = 0;
+  const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ese-owner-"));
+  const movie = path.join(tempRoot, "movie.mkv");
+  const file = await fs.promises.open(movie, "w");
+  await file.truncate(6 * 1024 * 1024);
+  await file.close();
+  const activeStreams = {};
+  streamCompleted.init({
+    FFMPEG_PATH: "ffmpeg.exe",
+    HW_ENCODER: "libx264",
+    HW_ENCODER_OPTS: ["-preset", "ultrafast"],
+    activeStreams,
+    resolveMediaFile: async () => ({
+      filePath: movie,
+      isPartFile: false,
+      fileSize: 6 * 1024 * 1024,
+    }),
+  });
+
+  const requestA = new EventEmitter();
+  requestA.destroyed = false;
+  const responseA = eventedResponse();
+  streamCompleted.handle(
+    new URL("http://localhost/api/stream/completed/movie.mkv"),
+    requestA,
+    responseA,
+  );
+  await waitFor(() => processResolvers.length === 2);
+  const codecResult = codec => ({ ok: true, stdout: codec, stderr: "" });
+  processResolvers.shift()(codecResult("h264\n"));
+  processResolvers.shift()(codecResult("aac\n"));
+  await waitFor(() => managedSpawnCount === 1);
+  const ownedByA = managedChildren[0];
+
+  const requestB = new EventEmitter();
+  requestB.destroyed = false;
+  const responseB = eventedResponse();
+  streamCompleted.handle(
+    new URL("http://localhost/api/stream/completed/movie.mkv"),
+    requestB,
+    responseB,
+  );
+  responseB.emit("close");
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(ownedByA.killCount, 0);
+  assert.equal(activeStreams["completed_movie.mkv"], ownedByA);
+  responseA.emit("close");
+  assert.equal(ownedByA.killCount, 1);
+  await new Promise(resolve => setImmediate(resolve));
+  await fs.promises.rm(tempRoot, { recursive: true, force: true });
+});
+
+test("cleanup HTTP response waits for asynchronous bounded deletion", async () => {
+  let finishCleanup;
+  systemRoutes.init({
+    cleanup: {
+      cleanupAll: () => new Promise(resolve => { finishCleanup = resolve; }),
+    },
+    loadSettings: () => ({}),
+    saveSettings: () => {},
+  });
+  const { response, completed } = responsePromise();
+  assert.equal(
+    systemRoutes.handle(
+      new URL("http://localhost/api/cleanup"),
+      { method: "POST" },
+      response,
+    ),
+    true,
+  );
+  assert.equal(response.body, null);
+  finishCleanup();
+  await completed;
+  assert.deepEqual(JSON.parse(response.body), { cleaned: true });
 });
 
 test.after(() => {

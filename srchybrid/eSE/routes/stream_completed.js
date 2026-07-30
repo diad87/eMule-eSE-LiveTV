@@ -12,15 +12,19 @@ let _ctx = {};
 function init(ctx) { _ctx = ctx; }
 
 function createDisconnectGuard(req, res, onDisconnect) {
+  const controller = new AbortController();
   let disconnected = !!(req.destroyed || res.destroyed);
+  if (disconnected) controller.abort();
   const markDisconnected = () => {
     if (disconnected) return;
     disconnected = true;
+    controller.abort();
     if (onDisconnect) onDisconnect();
   };
   req.once('aborted', markDisconnected);
   res.once('close', markDisconnected);
   return {
+    signal: controller.signal,
     get disconnected() { return disconnected; },
     checkNow() {
       if (req.destroyed || res.destroyed) markDisconnected();
@@ -76,14 +80,21 @@ function handle(url, req, res) {
   if (url.pathname === '/api/stream/completed/info') {
     const fileName = _safeOrReject(url.searchParams.get('name'), res);
     if (!fileName) return true;
-    const resolved = _ctx.resolveMediaFile(fileName);
-    if (!resolved) { res.writeHead(404); res.end('{}'); return true; }
-    Promise.resolve(_ctx.getDuration(resolved.filePath)).then(dur => {
+    const disconnect = createDisconnectGuard(req, res);
+    void (async () => {
+      const resolved = await _ctx.resolveMediaFile(fileName);
+      if (disconnect.checkNow()) return;
+      if (!resolved) { res.writeHead(404); res.end('{}'); return; }
+      let dur = 0;
+      try { dur = await _ctx.getDuration(resolved.filePath); } catch (_) {}
+      if (disconnect.checkNow()) return;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ fileName, estimatedTotalSec: Math.round(dur) || 7200, isPartFile: !!resolved.isPartFile, partNum: resolved.isPartFile ? path.basename(resolved.filePath).replace('.part','') : null }));
-    }, () => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ fileName, estimatedTotalSec: 7200, isPartFile: !!resolved.isPartFile, partNum: resolved.isPartFile ? path.basename(resolved.filePath).replace('.part','') : null }));
+    })().catch(error => {
+      if (!disconnect.disconnected) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: error.message }));
+      }
     });
     return true;
   }
@@ -91,14 +102,18 @@ function handle(url, req, res) {
   if (url.pathname === '/api/stream/tracks') {
     const fileName = _safeOrReject(url.searchParams.get('name'), res);
     if (!fileName) return true;
-    const resolved = _ctx.resolveMediaFile(fileName);
-    if (!resolved) { res.writeHead(404); res.end('{}'); return true; }
-    const ffprobePath = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
-    runProcess(
-      ffprobePath,
-      ['-v', 'quiet', '-print_format', 'json', '-show_streams', resolved.filePath],
-      { timeoutMs: 15000, maxOutputBytes: 2 * 1024 * 1024 },
-    ).then(result => {
+    const disconnect = createDisconnectGuard(req, res);
+    void (async () => {
+      const resolved = await _ctx.resolveMediaFile(fileName);
+      if (disconnect.checkNow()) return;
+      if (!resolved) { res.writeHead(404); res.end('{}'); return; }
+      const ffprobePath = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
+      const result = await runProcess(
+        ffprobePath,
+        ['-v', 'quiet', '-print_format', 'json', '-show_streams', resolved.filePath],
+        { timeoutMs: 15000, maxOutputBytes: 2 * 1024 * 1024, signal: disconnect.signal },
+      );
+      if (disconnect.checkNow()) return;
       if (!result.ok) throw new Error(result.error || result.stderr || 'ffprobe failed');
       const probe = JSON.parse(result.stdout);
       const audio = [], subtitles = [];
@@ -108,9 +123,11 @@ function handle(url, req, res) {
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ audio, subtitles }));
-    }).catch(e => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ audio: [], subtitles: [], error: e.message }));
+    })().catch(e => {
+      if (!disconnect.disconnected) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ audio: [], subtitles: [], error: e.message }));
+      }
     });
     return true;
   }
@@ -119,14 +136,17 @@ function handle(url, req, res) {
     const fileName = _safeOrReject(url.searchParams.get('name'), res);
     if (!fileName) return true;
     const seekTime = parseFloat(url.searchParams.get('time') || '0');
-    const resolved = _ctx.resolveMediaFile(fileName);
-    if (!resolved) { res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' })); return true; }
+    const disconnect = createDisconnectGuard(req, res);
+    void (async () => {
+    const resolved = await _ctx.resolveMediaFile(fileName);
+    if (disconnect.checkNow()) return;
+    if (!resolved) { res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' })); return; }
     const PARTSIZE = 9728000;
     const fileSize = resolved.fileSize || 0;
     if (!fileSize || !resolved.isPartFile) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, seekTime, partFile: false, message: 'File complete, seek directly' }));
-      return true;
+      return;
     }
     const bytesPerSecond = fileSize / 7200;
     const seekBytes = Math.floor(seekTime * bytesPerSecond);
@@ -137,6 +157,12 @@ function handle(url, req, res) {
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, seekTime, targetPart, totalParts: Math.ceil(fileSize / PARTSIZE), seekBytes, partFile: true }));
+    })().catch(error => {
+      if (!disconnect.disconnected) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: error.message }));
+      }
+    });
     return true;
   }
 
@@ -144,18 +170,20 @@ function handle(url, req, res) {
     const fileName = _safeOrReject(url.searchParams.get('name'), res);
     if (!fileName) return true;
     const trackIdx = parseInt(url.searchParams.get('track') || '0');
-    const resolved = _ctx.resolveMediaFile(fileName);
-    if (!resolved) { res.writeHead(404); res.end('Not found'); return true; }
     let ffSub = null;
     const disconnect = createDisconnectGuard(req, res, () => {
       try { if (ffSub) ffSub.kill(); } catch (_) {}
     });
-    const ffprobePath = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
-    runProcess(
-      ffprobePath,
-      ['-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 's', resolved.filePath],
-      { timeoutMs: 15000, maxOutputBytes: 2 * 1024 * 1024 },
-    ).then(result => {
+    void (async () => {
+      const resolved = await _ctx.resolveMediaFile(fileName);
+      if (disconnect.checkNow()) return;
+      if (!resolved) { res.writeHead(404); res.end('Not found'); return; }
+      const ffprobePath = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
+      const result = await runProcess(
+        ffprobePath,
+        ['-v', 'quiet', '-print_format', 'json', '-show_streams', '-select_streams', 's', resolved.filePath],
+        { timeoutMs: 15000, maxOutputBytes: 2 * 1024 * 1024, signal: disconnect.signal },
+      );
       if (disconnect.checkNow()) return;
       if (!result.ok) throw new Error(result.error || result.stderr || 'ffprobe failed');
       const subStreams = JSON.parse(result.stdout).streams || [];
@@ -173,7 +201,7 @@ function handle(url, req, res) {
       ffSub.stdout.pipe(res);
       ffSub.stderr.on('data', () => {});
       ffSub.on('close', () => { if (!res.writableEnded) res.end(); });
-    }).catch(() => {
+    })().catch(() => {
       if (!disconnect.disconnected) {
         res.writeHead(500); res.end('Error extracting subtitle');
       }
@@ -189,13 +217,17 @@ function handle(url, req, res) {
     const fileName = _safeOrReject(rawName, res);
     if (!fileName) return true;
     const streamKey = 'completed_' + fileName;
+    let ownedProcess = null;
     const disconnect = createDisconnectGuard(req, res, () => {
-      const active = _ctx.activeStreams[streamKey];
-      try { if (active) active.kill(); } catch (_) {}
-      delete _ctx.activeStreams[streamKey];
+      try { if (ownedProcess) ownedProcess.kill(); } catch (_) {}
+      if (_ctx.activeStreams[streamKey] === ownedProcess) {
+        delete _ctx.activeStreams[streamKey];
+      }
     });
-    const resolved = _ctx.resolveMediaFile(fileName);
-    if (!resolved) { res.writeHead(404); res.end('Not found'); return true; }
+    void (async () => {
+    const resolved = await _ctx.resolveMediaFile(fileName);
+    if (disconnect.checkNow()) return;
+    if (!resolved) { res.writeHead(404); res.end('Not found'); return; }
     const { filePath, isPartFile } = resolved;
     const quality = url.searchParams.get('q') || 'auto';
     const seekSec = parseFloat(url.searchParams.get('ss')) || 0;
@@ -206,18 +238,18 @@ function handle(url, req, res) {
 
     // Probe codecs without blocking the request loop.
     const fp = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
-    Promise.all([
+    const [videoProbe, audioProbe] = await Promise.all([
       runProcess(
         fp,
         ['-v', 'quiet', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', filePath],
-        { timeoutMs: 5000, maxOutputBytes: 64 * 1024 },
+        { timeoutMs: 5000, maxOutputBytes: 64 * 1024, signal: disconnect.signal },
       ),
       runProcess(
         fp,
         ['-v', 'quiet', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', filePath],
-        { timeoutMs: 5000, maxOutputBytes: 64 * 1024 },
+        { timeoutMs: 5000, maxOutputBytes: 64 * 1024, signal: disconnect.signal },
       ),
-    ]).then(async ([videoProbe, audioProbe]) => {
+    ]);
     if (disconnect.checkNow()) return;
     const srcVideoCodec = videoProbe.ok
       ? videoProbe.stdout.trim().split('\n')[0].trim().toLowerCase()
@@ -297,10 +329,11 @@ function handle(url, req, res) {
       if (ssIdx >= 0) currentArgs[ssIdx + 1] = String(seekFrom);
       else if (seekFrom > 0) { const iIdx = currentArgs.indexOf('-i'); currentArgs.splice(iIdx, 0, '-ss', String(seekFrom)); }
       const ff = spawnManaged(_ctx.FFMPEG_PATH, currentArgs);
+      ownedProcess = ff;
       _ctx.activeStreams[streamKey] = ff;
       if (disconnect.checkNow()) {
         ff.kill();
-        delete _ctx.activeStreams[streamKey];
+        if (_ctx.activeStreams[streamKey] === ff) delete _ctx.activeStreams[streamKey];
         return;
       }
       let gotData = false, dataTimeout = null, lastErr = '';
@@ -338,10 +371,13 @@ function handle(url, req, res) {
                   if (!disconnect.disconnected && !res.writableEnded) {
                     const newSize = (await fs.promises.stat(filePath)).size;
                     if (newSize > currentSize) { launchFfmpeg(currentSeekSec); }
-                    else { delete _ctx.activeStreams[streamKey]; if (!res.writableEnded) res.end(); }
+                    else {
+                      if (_ctx.activeStreams[streamKey] === ff) delete _ctx.activeStreams[streamKey];
+                      if (!res.writableEnded) res.end();
+                    }
                   }
                 } catch (_) {
-                  delete _ctx.activeStreams[streamKey];
+                  if (_ctx.activeStreams[streamKey] === ff) delete _ctx.activeStreams[streamKey];
                   if (!res.writableEnded) res.end();
                 }
               }, 15000);
@@ -349,7 +385,7 @@ function handle(url, req, res) {
             }
           } catch(e) {}
         }
-        delete _ctx.activeStreams[streamKey];
+        if (_ctx.activeStreams[streamKey] === ff) delete _ctx.activeStreams[streamKey];
         if (!res.writableEnded) res.end();
       });
       // v7.4.0 — .part needs longer dataTimeout because HEVC→H264 re-encode
@@ -357,16 +393,16 @@ function handle(url, req, res) {
       // when buffered data is still light. Completed files stay at 30s.
       const DATA_TIMEOUT_MS = isPartFile ? 60000 : 30000;
       dataTimeout = setTimeout(() => {
-        if (!gotData && _ctx.activeStreams[streamKey]) {
+        if (!gotData && _ctx.activeStreams[streamKey] === ff) {
           console.log('[Stream] No data from ffmpeg after ' + (DATA_TIMEOUT_MS / 1000) + 's, killing');
-          _ctx.activeStreams[streamKey].kill();
+          ff.kill();
           delete _ctx.activeStreams[streamKey];
         }
       }, DATA_TIMEOUT_MS);
     };
 
     launchFfmpeg(seekSec);
-    }).catch(error => {
+    })().catch(error => {
       console.warn('[Stream] Async preparation failed:', error.message);
       if (!disconnect.disconnected) {
         if (!res.headersSent) res.writeHead(500);

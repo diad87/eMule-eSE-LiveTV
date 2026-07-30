@@ -11,15 +11,19 @@ let _ctx = {};
 function init(ctx) { _ctx = ctx; }
 
 function createDisconnectGuard(req, res, onDisconnect) {
+  const controller = new AbortController();
   let disconnected = !!(req.destroyed || res.destroyed);
+  if (disconnected) controller.abort();
   const markDisconnected = () => {
     if (disconnected) return;
     disconnected = true;
+    controller.abort();
     if (onDisconnect) onDisconnect();
   };
   req.once('aborted', markDisconnected);
   res.once('close', markDisconnected);
   return {
+    signal: controller.signal,
     get disconnected() { return disconnected; },
     checkNow() {
       if (req.destroyed || res.destroyed) markDisconnected();
@@ -155,26 +159,41 @@ function handle(url, req, res) {
     // BUG-041 FIX: Validate partNum is strictly numeric
     const partNum = url.pathname.split('/').pop();
     if (!/^\d+$/.test(partNum)) { res.writeHead(400); res.end(JSON.stringify({ error: 'Invalid partNum' })); return true; }
-    const dl = _ctx.getDownloads().find(d => d.partNum === partNum);
-    if (!dl) { res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' })); return true; }
     const copyScript = path.join(_ctx.__dirname, 'copy_part.ps1');
     const tempAvi = path.join(_ctx.TEMP_DIR, 'ese_mse_' + partNum + '.avi');
+    const copyTarget = tempAvi + '.' + process.pid + '.' + Date.now() + '.partial';
     const disconnect = createDisconnectGuard(req, res);
+    void (async () => {
+    const downloads = await _ctx.getDownloads();
+    if (disconnect.checkNow()) return;
+    const dl = downloads.find(d => d.partNum === partNum);
+    if (!dl) { res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' })); return; }
     console.log('[MSE] Copying .part for ' + dl.fileName);
-    fs.promises.unlink(tempAvi).catch(() => {}).then(() => runProcess(
+    await Promise.all([
+      fs.promises.unlink(tempAvi).catch(() => {}),
+      fs.promises.unlink(copyTarget).catch(() => {}),
+    ]);
+    if (disconnect.checkNow()) return;
+    const result = await runProcess(
       'powershell',
-      ['-ExecutionPolicy','Bypass','-File',copyScript,'-Source',dl.partPath,'-Dest',tempAvi,'-MaxMB','600'],
-      { timeoutMs: 30000, maxOutputBytes: 64 * 1024 },
-    )).then(result => {
-      if (disconnect.checkNow()) return;
-      if (!result.ok || parseInt(result.stdout.trim()) <= 0) {
-        throw new Error(result.error || result.stderr || 'Copy failed');
-      }
-      const estTotalSec = Math.round((dl.fileSizeMB * 8) / 4);
-      console.log('[MSE] Ready. Est: ' + estTotalSec + 's');
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ready', fileName: dl.fileName, estimatedTotalSec: estTotalSec }));
-    }).catch((e) => {
+      ['-ExecutionPolicy','Bypass','-File',copyScript,'-Source',dl.partPath,'-Dest',copyTarget,'-MaxMB','600'],
+      { timeoutMs: 30000, maxOutputBytes: 64 * 1024, signal: disconnect.signal },
+    );
+    if (disconnect.checkNow()) throw new Error('copy aborted');
+    if (!result.ok || parseInt(result.stdout.trim()) <= 0) {
+      throw new Error(result.error || result.stderr || 'Copy failed');
+    }
+    await fs.promises.rename(copyTarget, tempAvi);
+    if (disconnect.checkNow()) {
+      await fs.promises.unlink(tempAvi).catch(() => {});
+      return;
+    }
+    const estTotalSec = Math.round((dl.fileSizeMB * 8) / 4);
+    console.log('[MSE] Ready. Est: ' + estTotalSec + 's');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ready', fileName: dl.fileName, estimatedTotalSec: estTotalSec }));
+    })().catch(async e => {
+      await fs.promises.unlink(copyTarget).catch(() => {});
       console.error('[MSE] Copy failed:', e.message);
       if (!disconnect.disconnected) {
         if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });

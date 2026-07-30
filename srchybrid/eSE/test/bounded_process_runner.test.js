@@ -54,6 +54,20 @@ test("bounded runner kills timeouts and oversized output", async () => {
   assert.equal(Buffer.byteLength(oversized.stdout), 128);
 });
 
+test("bounded runner aborts finite work when its request disconnects", async () => {
+  const controller = new AbortController();
+  const pending = runner.runProcess(
+    node,
+    ["-e", "setInterval(() => {}, 1000)"],
+    { timeoutMs: 2000, maxOutputBytes: 1024, signal: controller.signal },
+  );
+  controller.abort();
+  const result = await pending;
+  assert.equal(result.ok, false);
+  assert.equal(result.aborted, true);
+  assert.equal(result.error, "aborted");
+});
+
 test("bounded runner rejects hostile configuration before spawning", async () => {
   assert.throws(
     () => runner.runProcess(node, [], { timeoutMs: 30001 }),

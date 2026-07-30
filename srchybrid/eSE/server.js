@@ -262,11 +262,12 @@ const server = http.createServer(async (req, res) => {
   // ── Static assets ─────────────────────────────────
   if (url.pathname === '/emule_mascot.svg' || url.pathname === '/favicon.ico') {
     const svgPath = path.join(__dirname, 'emule_mascot.svg');
-    if (fs.existsSync(svgPath)) {
+    try {
+      await fs.promises.access(svgPath);
       res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' });
       fs.createReadStream(svgPath).pipe(res);
       return;
-    }
+    } catch (_) {}
   }
 
   // 404 fallback

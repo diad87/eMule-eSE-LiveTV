@@ -24,8 +24,14 @@ function init(activeStreams, tempDir) {
   registerShutdownHooks();
 }
 
+async function forEachFileBatch(files, callback) {
+  for (let offset = 0; offset < files.length; offset += 16) {
+    await Promise.all(files.slice(offset, offset + 16).map(callback));
+  }
+}
+
 /** Mata todos los procesos ffmpeg activos y borra temporales ese_*. */
-function cleanupAll() {
+async function cleanupAll() {
   console.log('[cleanup] Cleaning temp files...');
 
   // Matar procesos ffmpeg activos
@@ -36,31 +42,35 @@ function cleanupAll() {
 
   // Borrar todos los archivos ese_* del directorio temporal
   try {
-    const files = fs.readdirSync(_tempDir);
+    const files = await fs.promises.readdir(_tempDir);
     let count = 0;
-    for (const f of files) {
-      if (f.startsWith('ese_')) {
-        try { fs.unlinkSync(path.join(_tempDir, f)); count++; } catch (e) {}
-      }
-    }
+    await forEachFileBatch(files.filter(f => f.startsWith('ese_')), async fileName => {
+      try {
+        await fs.promises.unlink(path.join(_tempDir, fileName));
+        count++;
+      } catch (_) {}
+    });
     if (count > 0) console.log('[cleanup] Deleted ' + count + ' temp files');
   } catch (e) {}
 }
 
 /** Borra archivos ese_* más antiguos que maxAgeMinutes. */
-function cleanupOld(maxAgeMinutes) {
+async function cleanupOld(maxAgeMinutes) {
   try {
-    const files = fs.readdirSync(_tempDir);
+    const files = await fs.promises.readdir(_tempDir);
     const now   = Date.now();
     let count   = 0;
-    for (const f of files) {
-      if (!f.startsWith('ese_')) continue;
-      const fp  = path.join(_tempDir, f);
-      const age = (now - fs.statSync(fp).mtimeMs) / 60000;
-      if (age > maxAgeMinutes) {
-        try { fs.unlinkSync(fp); count++; } catch (e) {}
-      }
-    }
+    await forEachFileBatch(files.filter(f => f.startsWith('ese_')), async fileName => {
+      const filePath = path.join(_tempDir, fileName);
+      try {
+        const stat = await fs.promises.stat(filePath);
+        const age = (now - stat.mtimeMs) / 60000;
+        if (age > maxAgeMinutes) {
+          await fs.promises.unlink(filePath);
+          count++;
+        }
+      } catch (_) {}
+    });
     if (count > 0) console.log('[cleanup] Removed ' + count + ' old files (>' + maxAgeMinutes + 'min)');
   } catch (e) {}
 }
@@ -107,7 +117,7 @@ function gracefulShutdown(signal) {
     await Promise.allSettled(stops);
 
     // 2. Kill active streaming processes from the activeStreams registry
-    cleanupAll();
+    await cleanupAll();
 
     // 3. Platform-specific orphan sweep: kill any ffmpeg spawned by this Node.js PID
     await killOrphanedFFmpeg();
@@ -202,6 +212,6 @@ function registerShutdownHooks() {
 }
 
 // Limpieza periódica: borrar archivos con más de 60 min cada 10 min
-setInterval(() => cleanupOld(60), 10 * 60 * 1000);
+setInterval(() => { void cleanupOld(60); }, 10 * 60 * 1000);
 
 module.exports = { init, cleanupAll, cleanupOld, gracefulShutdown };

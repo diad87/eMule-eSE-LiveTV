@@ -160,26 +160,15 @@ async function stop() {
   }
   try {
     const pid = rtmpProcess.pid;
-    if (process.platform === 'win32' && pid) {
+    const proc = rtmpProcess;
+    if (pid) {
       const result = await killProcessTree(pid);
       if (!result.ok) {
-        console.warn('[eSE Live] RTMP: taskkill failed:', result.error || result.stderr);
+        console.warn('[eSE Live] RTMP: process-tree stop failed:', result.error || result.stderr);
       }
     } else {
-      rtmpProcess.kill('SIGTERM');
+      proc.kill('SIGTERM');
     }
-    const proc = rtmpProcess;
-    setTimeout(() => {
-      try {
-        if (proc && !proc.killed) {
-          if (process.platform === 'win32' && pid) {
-            killProcessTree(pid);
-          } else {
-            proc.kill('SIGKILL');
-          }
-        }
-      } catch (e) {}
-    }, 3000);
   } catch (e) { console.warn('[eSE Live] RTMP: Error killing process:', e.message); }
   rtmpProcess = null;
   rtmpStatus = 'idle';

@@ -163,41 +163,25 @@ async function stop() {
 
   pipelineStatus = 'stopped';
   const pid = ffmpegProcess.pid;
+  const proc = ffmpegProcess;
+  const stopGeneration = ++pipelineGeneration;
   console.log('[eSE Live] Stopping pipeline, ffmpeg PID:', pid);
 
-  // On Windows SIGTERM is unreliable — use taskkill /F
   try {
-    if (process.platform === 'win32' && pid) {
+    if (pid) {
       const result = await killProcessTree(pid);
-      if (result.ok) console.log('[eSE Live] taskkill sent to PID', pid);
-      else console.log('[eSE Live] taskkill failed (process may be gone):', result.error || result.stderr);
+      if (result.ok) console.log('[eSE Live] Process tree stopped for PID', pid);
+      else console.log('[eSE Live] Process-tree stop failed:', result.error || result.stderr);
     } else {
-      ffmpegProcess.kill('SIGTERM');
+      proc.kill('SIGTERM');
     }
   } catch (e) {
     console.log('[eSE Live] kill error:', e.message);
   }
 
-  // BUG-057 FIX: capture generation ID instead of object reference to prevent race
-  const stopGeneration = ++pipelineGeneration;
-  const proc = ffmpegProcess;
-  setTimeout(() => {
-    try {
-      if (proc && !proc.killed && pid) {
-        if (process.platform === 'win32') {
-          killProcessTree(pid);
-        } else {
-          proc.kill('SIGKILL');
-        }
-        console.log('[eSE Live] Force-killed ffmpeg PID', pid);
-      }
-    } catch (e) {}
-    // Only clean state if no new pipeline started since stop()
-    if (pipelineGeneration === stopGeneration) {
-      ffmpegProcess = null;
-    }
-  }, 5000);
-
+  if (pipelineGeneration === stopGeneration && ffmpegProcess === proc) {
+    ffmpegProcess = null;
+  }
   currentSource = null;
   return { success: true };
 }

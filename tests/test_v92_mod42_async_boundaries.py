@@ -82,6 +82,10 @@ class Mod42AsyncBoundariesTest(unittest.TestCase):
         startup = channel[:channel.index("function handleRoute(")]
         self.assertEqual(len(SYNC_FS.findall(startup)), 3)
 
+        server = (ESE / "server.js").read_text(encoding="utf-8")
+        http_handler = server[server.index("http.createServer("):]
+        self.assertIsNone(SYNC_FS.search(http_handler))
+
     def test_async_status_stream_and_path_safety_contracts_remain_explicit(self) -> None:
         v1 = (ESE / "routes" / "v1_routes.js").read_text(encoding="utf-8")
         stream_part = (ESE / "routes" / "stream_part.js").read_text(encoding="utf-8")
@@ -93,11 +97,15 @@ class Mod42AsyncBoundariesTest(unittest.TestCase):
         self.assertIn("fs.promises.access", stream_part)
         self.assertIn("createDisconnectGuard(req, res", stream_part)
         self.assertIn("runProcess(\n      'powershell'", stream_part)
+        self.assertIn("signal: disconnect.signal", stream_part)
+        self.assertIn(".partial", stream_part)
         self.assertIn("stderrLog = (stderrLog + d.toString()).slice(-2048)", stream_part)
         self.assertIn("runProcess(", completed)
         self.assertIn("fs.promises.open", completed)
         self.assertIn("createDisconnectGuard(req, res", completed)
         self.assertIn("if (disconnect.checkNow()) return", completed)
+        self.assertIn("let ownedProcess = null", completed)
+        self.assertIn("=== ownedProcess", completed)
         self.assertIn("pipeFileResponse(", channel)
         self.assertIn("fs.promises.stat", channel)
 
@@ -132,6 +140,26 @@ class Mod42AsyncBoundariesTest(unittest.TestCase):
         self.assertIn("_lifecycleWatchdogInFlight = true", emule)
         self.assertIn("_lifecycleWatchdogInFlight = false", emule)
         self.assertIn("return result.ok &&", emule)
+
+    def test_transitive_handler_scans_use_bounded_async_filesystem_owners(self) -> None:
+        media = (ESE / "media_resolver.js").read_text(encoding="utf-8")
+        cleanup = (ESE / "cleanup.js").read_text(encoding="utf-8")
+        system = (ESE / "routes" / "system_routes.js").read_text(encoding="utf-8")
+
+        for forbidden in ("readdirSync", "readFileSync", "statSync", "existsSync"):
+            self.assertNotIn(forbidden, media)
+        self.assertIn("MAX_MET_BYTES = 2 * 1024 * 1024", media)
+        self.assertIn("FS_CONCURRENCY = 8", media)
+        self.assertIn("async function resolveMediaFile(", media)
+        self.assertIn("async function listDownloads(", media)
+
+        cleanup_scans = cleanup[
+            cleanup.index("async function cleanupAll("):
+            cleanup.index("function gracefulShutdown(")
+        ]
+        self.assertIsNone(SYNC_FS.search(cleanup_scans))
+        self.assertIn("await forEachFileBatch(", cleanup_scans)
+        self.assertIn("Promise.resolve(_ctx.cleanup.cleanupAll()).then(", system)
 
 
 if __name__ == "__main__":

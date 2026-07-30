@@ -86,9 +86,16 @@ function handle(url, req, res) {
       res.end(JSON.stringify({ error: 'method_not_allowed', expected: 'POST' }));
       return true;
     }
-    _ctx.cleanup.cleanupAll();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ cleaned: true }));
+    Promise.resolve(_ctx.cleanup.cleanupAll()).then(
+      () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ cleaned: true }));
+      },
+      error => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ cleaned: false, error: error.message }));
+      },
+    );
     return true;
   }
 

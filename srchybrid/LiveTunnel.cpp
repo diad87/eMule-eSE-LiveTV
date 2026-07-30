@@ -16,6 +16,7 @@
 // without the fork drop the unknown opcode silently (no wire breakage).
 #include "stdafx.h"
 #include "LiveTunnel.h"
+#include "LiveStreamRecovery.h"
 #include "LiveCircuitHandshake.h"
 #include "LiveCoverTraffic.h"
 #include "LiveOnionCrypto.h"
@@ -9503,13 +9504,25 @@ void CLiveTunnel::SweepBulkReasm()
         if (now - e.first_seen_tick > BULK_REASM_TTL_MS) { it = m_bulkReasm.erase(it); continue; }
         // E3.5 (viewer) — still incomplete past the NACK deadline -> request a re-push of the
         // blocks short of k_b (throttled per entry). The exit re-encodes from its retained record.
-        if (!e.done && e.haveLayout
-            && (DWORD)(now - e.first_seen_tick) > 3000
-            && (DWORD)(now - e.lastNackTick) > 2000) {
+        if (!e.done && e.haveLayout &&
+            ese::live::LiveStreamRecovery::ShouldSendNack(
+                now, e.first_seen_tick, e.lastNackTick)) {
             std::vector<std::pair<uint32_t, uint8_t>> missing;
-            for (int b = 0; b < e.layout.n_blocks && missing.size() < 16; ++b)
-                if (b < (int)e.blockRecv.size() && e.blockRecv[b] < e.layout.k[b])
-                    missing.push_back(std::make_pair(e.seq, (uint8_t)b));
+            std::vector<std::uint8_t> required;
+            std::vector<std::uint8_t> received;
+            required.reserve(static_cast<std::size_t>(e.layout.n_blocks));
+            received.reserve(static_cast<std::size_t>(e.layout.n_blocks));
+            for (int b = 0; b < e.layout.n_blocks; ++b) {
+                required.push_back(static_cast<std::uint8_t>(e.layout.k[b]));
+                received.push_back(static_cast<std::uint8_t>(
+                    b < static_cast<int>(e.blockRecv.size())
+                        ? e.blockRecv[b] : 0));
+            }
+            const std::vector<std::uint8_t> missingBlocks =
+                ese::live::LiveStreamRecovery::MissingFecBlocks(
+                    required, received);
+            for (const std::uint8_t block : missingBlocks)
+                missing.push_back(std::make_pair(e.seq, block));
             if (!missing.empty() && SendBulkNack(e.streamKey, missing))
                 e.lastNackTick = now;
         }
@@ -9849,15 +9862,16 @@ int CLiveTunnel::ProxyAdaptiveR(const std::string& hex)
     const DWORD now = GetTickCount();
     ProxyStreamCtl& c = m_proxyCtl[hex];
     if (c.windowStart == 0) { c.windowStart = now; c.r = Bulk::BULK_DEFAULT_R; }
-    if ((DWORD)(now - c.windowStart) >= 10000) {
-        if      (c.nackCount == 0) c.r = (c.r > 2 ? c.r - 1 : 2);
-        else if (c.nackCount <= 3) c.r = (c.r < 3 ? 3 : c.r);
-        else                       c.r = (c.r < Bulk::BULK_MAX_R ? c.r + 1 : Bulk::BULK_MAX_R);
+    const ese::live::LiveFecParityDecision decision =
+        ese::live::LiveStreamRecovery::AdvanceParity(
+            static_cast<std::uint8_t>(c.r),
+            c.nackCount,
+            now - c.windowStart);
+    c.r = decision.parity;
+    if (decision.reset_window) {
         c.nackCount = 0;
         c.windowStart = now;
     }
-    if (c.r < 2) c.r = 2;
-    if (c.r > Bulk::BULK_MAX_R) c.r = Bulk::BULK_MAX_R;
     return c.r;
 }
 

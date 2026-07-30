@@ -3,6 +3,7 @@
 #include "stdafx.h"
 #include "LiveStreamManager.h"
 #include "LiveFanoutTransportAdapter.h"
+#include "LiveRecoveryTransportAdapter.h"
 #include "LiveCrypto.h"        // v7.6.0 — Ed25519 keypair helpers
 #include "LiveDebugLog.h"
 #include "LivePackets.h"
@@ -59,7 +60,8 @@ static const std::size_t ESE_LIVE_MAX_SOURCE_PEERS = 8u;
 static const std::size_t ESE_LIVE_BALANCED_SOURCE_PEERS = 3u;
 static const DWORD ESE_LIVE_WATCHDOG_MS    = 180u * 1000u;
 
-static_assert(CLivePeerRefreshPolicy::MIN_PEERS == ESE_LIVE_MIN_PEERS,
+static_assert(ese::live::LiveStreamRecovery::kMinimumSourcePeers ==
+    ESE_LIVE_MIN_PEERS,
     "Live peer refresh policy must match the wire/runtime resilience floor");
 
 using ese::live::LivePeerAddResult;
@@ -182,8 +184,6 @@ CLiveStreamManager::CLiveStreamManager()
     , m_dwLastKadPublish(0)
     , m_dwLastHealthCheck(0)
     , m_dwLastStatsSend(0)
-    , m_bEmergencyMode(false)
-    , m_dwEmergencyStart(0)
     , m_dwLastPingTick(0)         // V2-S03
     , m_nNextPingId(0)            // V2-S03
     , m_measuredUploadKbps(0)     // V2-S11
@@ -781,9 +781,8 @@ bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title
     // the downstream role and are restored when this viewer session ends.
     m_meshManager.ResetSessionPeers();
     m_peerBitmaps.RemoveAll();
-    m_inflightSegReqs.RemoveAll();  // Phase-1 fix #2
+    m_streamRecovery.ResetViewer();
     m_recentDials.RemoveAll();      // churn fix: fresh dial-cooldown table
-    m_peerRefreshPolicy.Reset();    // fresh replenishment cadence/candidate rotation
     ResetViewerHlsOutput(true);
     // Publish the active role only after its lock-free projection and all
     // coordinator-owned session state are coherent.
@@ -828,9 +827,8 @@ void CLiveStreamManager::ResetViewerCoordinatorState()
             m_meshManager.AddMeshPeer(peer);
     }
     m_peerBitmaps.RemoveAll();
-    m_inflightSegReqs.RemoveAll();
+    m_streamRecovery.ResetViewer();
     m_recentDials.RemoveAll();
-    m_peerRefreshPolicy.Reset();
     ResetViewerHlsOutput(true);
 }
 
@@ -2365,12 +2363,7 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
     // Threat-model vector #3: snapshot whether this segment was edge-critical
     // before we drop the in-flight record, so we can reward on-time delivery.
     bool wasEdgeCritical = false;
-    {
-        InflightSegReq doneReq;
-        if (m_inflightSegReqs.Lookup(seqNum, doneReq))
-            wasEdgeCritical = doneReq.edgeCritical;
-    }
-    m_inflightSegReqs.RemoveKey(seqNum);
+    m_streamRecovery.CompleteRequest(seqNum, wasEdgeCritical);
 
     // Phase-1 fix #3: AddSegment now reports whether the chunk was actually
     // stored. A rejected chunk (duplicate or stale late arrival) is wasted
@@ -2872,13 +2865,13 @@ bool CLiveStreamManager::RequestMorePeers()
     }
 
     const DWORD now = GetTickCount();
-    if (!m_peerRefreshPolicy.ShouldRequest(now,
+    if (!m_streamRecovery.ShouldRequestPeers(now,
             static_cast<uint32_t>(candidates.size())))
         return false;
     if (candidates.empty())
         return false;
 
-    const uint32_t selected = m_peerRefreshPolicy.TakeCandidate(
+    const uint32_t selected = m_streamRecovery.TakePeerCandidate(
         static_cast<uint32_t>(candidates.size()));
     LivePeerHandle selectedHandle = 0u;
     if (!m_peerSet.SelectSource(selected, selectedHandle))
@@ -2995,7 +2988,7 @@ void CLiveStreamManager::OnPeerDisconnected(CUpDownClient* peer)
     // Process() will ask a rotated surviving source after the grace, or keep
     // the refresh pending until Kad discovers a new source if none survived.
     if (sourceRemoved && m_viewerSession.IsActive()) {
-        m_peerRefreshPolicy.OnSourceLost(GetTickCount(),
+        m_streamRecovery.OnSourceLost(GetTickCount(),
             static_cast<uint32_t>(m_peerSet.SourceCount()));
         LIVE_LOG("MESH", "Peer refresh armed after source loss (remaining=%d)",
             static_cast<int>(m_peerSet.SourceCount()));
@@ -3303,13 +3296,19 @@ void CLiveStreamManager::MonitorPeerHealth()
         }
     }
 
-    if (totalSuper == 0) return;
+    const DWORD now = GetTickCount();
+    const ese::live::LiveEmergencyTransition emergencyTransition =
+        m_streamRecovery.ObservePeerHealth(
+            now,
+            totalSuper > 0 ? static_cast<uint32>(totalSuper) : 0u,
+            aliveSuper > 0 ? static_cast<uint32>(aliveSuper) : 0u,
+            static_cast<uint32>(ESE_EMERGENCY_DROP_THRESHOLD * 100.0f),
+            static_cast<uint32>(ESE_EMERGENCY_DURATION));
 
-    float dropRate = 1.0f - (float)aliveSuper / totalSuper;
-
-    if (dropRate > ESE_EMERGENCY_DROP_THRESHOLD && !m_bEmergencyMode) {
-        m_bEmergencyMode = true;
-        m_dwEmergencyStart = GetTickCount();
+    if (emergencyTransition ==
+        ese::live::LiveEmergencyTransition::Entered) {
+        const float dropRate = totalSuper > 0
+            ? 1.0f - static_cast<float>(aliveSuper) / totalSuper : 0.0f;
         AddLogLine(true, GetResString(IDS_LIVEMGR_EMERGENCY_DROP_FMT),
             dropRate * 100.0f, totalSuper - aliveSuper, totalSuper);
 
@@ -3365,11 +3364,8 @@ void CLiveStreamManager::MonitorPeerHealth()
         }
     }
 
-    // End emergency after timeout
-    if (m_bEmergencyMode &&
-        GetTickCount() - m_dwEmergencyStart > ESE_EMERGENCY_DURATION)
-    {
-        m_bEmergencyMode = false;
+    if (emergencyTransition ==
+        ese::live::LiveEmergencyTransition::Exited) {
         AddLogLine(true, GetResString(IDS_LIVEMGR_EMERGENCY_ENDED));
     }
 }
@@ -3534,7 +3530,7 @@ void CLiveStreamManager::Process()
         // retrying from the timer so a zero-source loss can recover as soon as
         // Kad/PEX supplies the first usable source; the policy enforces the
         // 15-second dedup window and clears itself at the three-peer floor.
-        if (m_peerRefreshPolicy.IsPending())
+        if (m_streamRecovery.IsPeerRefreshPending())
             RequestMorePeers();
 
         // Send our bitmap to peers
@@ -4161,20 +4157,24 @@ void CLiveStreamManager::RequestMissingSegments()
 
     DWORD now = GetTickCount();
 
-    // Phase-1 fix #2 — prune in-flight entries that no longer matter:
-    // fulfilled (safety net; OnChunkReceived already erases those) or fallen
-    // behind the buffer window (the ring would reject them as stale anyway).
-    // MFC CMap allows removing the key GetNextAssoc just returned.
-    POSITION ppos = m_inflightSegReqs.GetStartPosition();
-    while (ppos) {
-        uint32 iseq;
-        InflightSegReq ireq;
-        m_inflightSegReqs.GetNextAssoc(ppos, iseq, ireq);
-        if (m_chunkBuffer.HasSegment(iseq)
-            || (m_chunkBuffer.GetCount() > 0 && ese::live::LiveChunkWindow::
-                IsNewerSequence(m_chunkBuffer.GetOldestSeq(), iseq)))
-            m_inflightSegReqs.RemoveKey(iseq);
+    // The recovery module owns the bounded in-flight table. Feed it only
+    // immutable sequence values; transport pointers never cross its boundary.
+    std::vector<uint32> presentSequences;
+    if (m_chunkBuffer.GetCount() > 0) {
+        const uint32 presentSpan =
+            m_chunkBuffer.GetNewestSeq() - m_chunkBuffer.GetOldestSeq();
+        presentSequences.reserve(
+            static_cast<std::size_t>(presentSpan) + 1u);
+        for (uint32 offset = 0u; offset <= presentSpan; ++offset) {
+            const uint32 sequence = m_chunkBuffer.GetOldestSeq() + offset;
+            if (m_chunkBuffer.HasSegment(sequence))
+                presentSequences.push_back(sequence);
+        }
     }
+    m_streamRecovery.PruneRequests(
+        presentSequences,
+        m_chunkBuffer.GetCount() > 0,
+        m_chunkBuffer.GetOldestSeq());
 
     // Request up to 5 missing segments with extended lookahead.
     // Phase-1 fix #2: skip segments with a request already in flight. The
@@ -4189,7 +4189,6 @@ void CLiveStreamManager::RequestMissingSegments()
     int suppressed = 0;
     const int    maxRequestsPerCycle = 5;
     const uint32 lookahead = 3;
-    const DWORD  ESE_LIVE_INFLIGHT_TIMEOUT_MS = 4000;
     const uint32 requestSpan = newestSeq - oldestSeq + 1u + lookahead;
     for (uint32 offset = 0u;
         offset < requestSpan && requested < maxRequestsPerCycle;
@@ -4197,57 +4196,53 @@ void CLiveStreamManager::RequestMissingSegments()
         const uint32 seq = oldestSeq + offset;
         if (m_chunkBuffer.HasSegment(seq)) continue;
 
-        CAddress excludeAddress;
-        int    attempts  = 0;
-        InflightSegReq prev;
-        if (m_inflightSegReqs.Lookup(seq, prev)) {
-            if ((now - prev.sentTick) < ESE_LIVE_INFLIGHT_TIMEOUT_MS) {
-                suppressed++;
-                continue;  // request outstanding — don't duplicate it
-            }
-            // Timed out. If this was a CRITICAL (near-playhead) block, charge a
-            // punctuality failure to the peer we asked — exactly once per
-            // outstanding request. failCharged guards against re-charging on
-            // later ticks when no replacement peer is found and the entry below
-            // is not overwritten (threat-model vector #3).
-            if (prev.edgeCritical && !prev.failCharged) {
-                ChargePunctualityFailure(prev.peerAddress, prev.peerPort);
-                prev.failCharged = true;
-                m_inflightSegReqs[seq] = prev;  // persist the flag
-            }
-            excludeAddress = prev.peerAddress;   // timed out: prefer another peer
-            attempts  = prev.attempts;
+        const bool edgeCritical =
+            (seq - oldestSeq) < ESE_LIVE_EDGE_GUARD;
+        const ese::live::LiveMissingProbe probe =
+            m_streamRecovery.InspectMissing(seq, now);
+        if (probe.result ==
+            ese::live::LiveMissingProbeResult::Suppressed) {
+            suppressed++;
+            continue;
         }
+        if (probe.charge_previous_failure)
+            ChargePunctualityFailure(probe.previous_endpoint);
 
         InterlockedIncrement(&m_counters.chunksMissing);
-        CUpDownClient* peer = SelectPeerForSegment(seq, excludeAddress);
-        if (peer == NULL && excludeAddress.GetType() != CAddress::None)
+        CUpDownClient* peer =
+            SelectPeerForSegment(seq, probe.previous_endpoint);
+        if (peer == NULL && probe.previous_endpoint.IsValid())
             peer = SelectPeerForSegment(seq);  // only the slow peer has it — re-ask it
         if (peer) {
             Packet* pkt = eSELive::CreateRequestPacket(
                 m_streamInfo.streamKey, seq);
             if (pkt) {
+                const ese::live::LiveRecoveryEndpoint endpoint =
+                    LiveRecoveryTransportAdapter::EndpointOf(peer);
+                const uint32 nextAttempt =
+                    ese::live::LiveStreamRecovery::NextAttempt(probe.attempts);
+                if (!m_streamRecovery.RecordRequest(
+                        seq,
+                        now,
+                        endpoint,
+                        nextAttempt,
+                        edgeCritical)) {
+                    delete pkt;
+                    LIVE_LOG("REQ",
+                        "TRACK_REJECT seq=%u endpoint-invalid-or-capacity",
+                        seq);
+                    noPeer++;
+                    continue;
+                }
                 theStats.AddUpDataOverheadOther(pkt->size);
                 peer->SendPacket(pkt);
                 InterlockedIncrement(&m_counters.chunksRequested);
-                InflightSegReq req;
-                req.sentTick     = now;
-                req.peerAddress  = LivePeerEndpoint(peer);
-                req.peerPort     = peer->GetUserPort();
-                req.attempts     = attempts + 1;
-                // Critical = close to the playback head (the low end of the
-                // request window). The player consumes oldest-first, so a late
-                // block here is what actually freezes playback; far-ahead blocks
-                // are recoverable. Classified at request time and read back on
-                // both timeout (charge) and receipt (reward).
-                req.edgeCritical = (seq - oldestSeq) < ESE_LIVE_EDGE_GUARD;
-                req.failCharged  = false;
-                m_inflightSegReqs[seq] = req;
                 requested++;
-                const std::string requestAddress = req.peerAddress.GetType() != CAddress::None
-                    ? req.peerAddress.ToString() : std::string("unknown");
-                LIVE_LOG("REQ", "ASK seq=%u -> %s:%u (attempt %d)",
-                    seq, requestAddress.c_str(), (unsigned)peer->GetUserPort(), req.attempts);
+                const std::string requestAddress = endpoint.IsValid()
+                    ? std::string(endpoint.address) : std::string("unknown");
+                LIVE_LOG("REQ", "ASK seq=%u -> %s:%u (attempt %u)",
+                    seq, requestAddress.c_str(), (unsigned)peer->GetUserPort(),
+                    static_cast<unsigned>(nextAttempt));
             }
         } else {
             AddDebugLogLine(false,
@@ -4317,13 +4312,14 @@ void CLiveStreamManager::BanPeer(CUpDownClient* peer)
 // (SelectPeerForSegment: -= failCount*20). It recovers only by serving critical
 // blocks on time (failCount-- in OnChunkReceived). Caller (RequestMissingSegments
 // via Process) holds m_lock.
-void CLiveStreamManager::ChargePunctualityFailure(const CAddress& address, uint16 port)
+void CLiveStreamManager::ChargePunctualityFailure(
+    const ese::live::LiveRecoveryEndpoint& endpoint)
 {
-    if (address.GetType() == CAddress::None || port == 0) return;
+    if (!endpoint.IsValid()) return;
     CUpDownClient* peer = NULL;
     for (CUpDownClient* p : SourcePeers(m_peerSet)) {
-        if (p != NULL && p->GetUserPort() == port
-            && LivePeerEndpoint(p) == address) {
+        if (p != NULL &&
+            LiveRecoveryTransportAdapter::EndpointOf(p) == endpoint) {
             peer = p;
             break;
         }
@@ -4337,9 +4333,8 @@ void CLiveStreamManager::ChargePunctualityFailure(const CAddress& address, uint1
         trust.failCount, ESE_EDGE_FAIL_WEIGHT);
     trust.lastSeen = GetTickCount();
     SetTrustById(PeerId(peer), trust);
-    const std::string text = address.ToString();
     LIVE_LOG("TRUST", "edge-miss address=%s port=%u failCount=%d",
-        text.c_str(), (unsigned)port, trust.failCount);
+        endpoint.address, (unsigned)endpoint.port, trust.failCount);
 }
 
 LivePeerId CLiveStreamManager::PeerId(CUpDownClient* peer) const
@@ -4409,8 +4404,9 @@ void CLiveStreamManager::PrunePeerState(DWORD now)
         static_cast<unsigned>(pruned));
 }
 
-CUpDownClient* CLiveStreamManager::SelectPeerForSegment(uint32 seqNum,
-                                                        const CAddress& excludeAddress)
+CUpDownClient* CLiveStreamManager::SelectPeerForSegment(
+    uint32 seqNum,
+    const ese::live::LiveRecoveryEndpoint& excludeEndpoint)
 {
     // V2-S20 — Mesh fallback peer selection.
     // Score = response_rate * 100  - failCount * 20  - RTT_penalty.
@@ -4418,13 +4414,14 @@ CUpDownClient* CLiveStreamManager::SelectPeerForSegment(uint32 seqNum,
     // This biases toward low-latency parents while preserving the existing
     // trust-based ordering. Both broadcaster and any secondary-source viewers
     // are considered (they were already added to the source role).
-    // Phase-1 fix #2: a non-None typed address skips that peer (timed-out retry).
+    // Phase-1 fix #2: a valid typed endpoint skips that peer (timed-out retry).
     CUpDownClient* bestPeer = NULL;
     int bestScore = -1;
 
     for (CUpDownClient* peer : SourcePeers(m_peerSet)) {
-        if (peer != NULL && excludeAddress.GetType() != CAddress::None
-            && LivePeerEndpoint(peer) == excludeAddress)
+        if (peer != NULL && excludeEndpoint.IsValid()
+            && LiveRecoveryTransportAdapter::EndpointOf(peer) ==
+                excludeEndpoint)
             continue;
         PeerBitmapInfo info;
         if (!m_peerBitmaps.Lookup(PeerId(peer), info)) continue;
@@ -4525,7 +4522,7 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
     // Stream state
     snap.broadcasting  = m_broadcastSession.IsActive();
     snap.viewing       = m_viewerSession.IsActive();
-    snap.emergencyMode = m_bEmergencyMode;
+    snap.emergencyMode = m_streamRecovery.IsEmergencyMode();
     const LiveStreamInfo& primaryInfo = m_broadcastSession.IsActive()
         ? m_broadcastStreamInfo : m_streamInfo;
     const LiveChunkWindow& primaryBuffer = m_broadcastSession.IsActive()

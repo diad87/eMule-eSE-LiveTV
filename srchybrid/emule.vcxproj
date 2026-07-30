@@ -743,6 +743,13 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="LiveStreamRecovery.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveRecoveryTransportAdapter.cpp" />
     <ClCompile Include="LiveFanoutTransportAdapter.cpp" />
     <ClCompile Include="LiveStreamTrustAdapter.cpp" />
     <ClCompile Include="LiveDebugLog.cpp" />
@@ -1224,6 +1231,8 @@
     <ClInclude Include="LiveChunkWindow.h" />
     <ClInclude Include="LiveStreamSecurity.h" />
     <ClInclude Include="LiveStreamFanout.h" />
+    <ClInclude Include="LiveStreamRecovery.h" />
+    <ClInclude Include="LiveRecoveryTransportAdapter.h" />
     <ClInclude Include="LiveFanoutTransportAdapter.h" />
     <ClInclude Include="LiveStreamTrustAdapter.h" />
 	<ClInclude Include="DirectReachabilityManager.h" />

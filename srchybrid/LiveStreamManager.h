@@ -7,10 +7,10 @@
 #include "LiveChunkWindow.h"
 #include "LiveStreamSecurity.h"
 #include "LiveStreamFanout.h"
+#include "LiveStreamRecovery.h"
 #include "LiveStreamTrustAdapter.h"
 #include "LiveKadBridge.h"
 #include "LiveMeshManager.h"
-#include "LivePeerRefreshPolicy.h"
 #include "LiveBroadcastSession.h"
 #include "LiveViewerSession.h"
 #include "LivePeerSet.h"
@@ -484,7 +484,7 @@ public:
     }
     uint32 GetBroadcastBitrate() const { return m_broadcastStreamInfo.bitrate; }
     uint32 GetBroadcastStartTime() const { return m_broadcastStreamInfo.startedAt; }
-    bool IsEmergencyMode() const { return m_bEmergencyMode; }
+    bool IsEmergencyMode() const { return m_streamRecovery.IsEmergencyMode(); }
 
     // Ghost-viewer watchdog (2026-06). A web player session that stops
     // fetching HLS (tab closed or crashed without the pagehide leave beacon)
@@ -584,6 +584,7 @@ private:
     ese::live::LivePeerSet m_peerSet; // opaque membership; client list owns pointers
     ese::live::LiveStreamSecurity m_streamSecurity;
     ese::live::LiveStreamFanout m_streamFanout;
+    ese::live::LiveStreamRecovery m_streamRecovery;
     LiveStreamTrustAdapter m_streamTrustAdapter;
 
     // Trust data. C6 (2026-06): keyed by LivePeerId (durable user-hash/pubkey
@@ -601,10 +602,6 @@ private:
     DWORD               m_dwLastKadPublish;
     DWORD               m_dwLastHealthCheck;
     DWORD               m_dwLastStatsSend;
-
-    // Emergency mode
-    bool                m_bEmergencyMode;
-    DWORD               m_dwEmergencyStart;
 
     mutable CCriticalSection m_lock;  // mutable: locking is logically const (Fix 12)
 
@@ -689,11 +686,6 @@ private:
     // Pruned in Process(); cleared on Join/Leave.
     CMap<uint64, uint64, DWORD, DWORD&> m_recentDials;
 
-    // Source replenishment policy. A 2 s loss grace absorbs the common
-    // AttachToAlreadyKnown pointer swap; retries are limited and rotate among
-    // surviving sources. The policy is deterministic and independently tested.
-    CLivePeerRefreshPolicy m_peerRefreshPolicy;
-
     // [eSE v9] Reachability SELECTOR — per-source escalation state. Endpoint-keyed
     // (ip<<16|port, HOST-order ip) like m_recentDials so it survives the LowID
     // AttachToAlreadyKnown pointer swap. Drives Direct(R.0)->2way-punch->3way-rdv(R.1)
@@ -728,26 +720,6 @@ private:
     DWORD               m_measuredUploadKbps;
     // V2-S19: last time EnsureMultiParent dialed extra sources.
     DWORD               m_dwLastMultiParentTick;
-
-    // Phase-1 fix #2 (2026-06) — in-flight pull-request tracking. Without it,
-    // RequestMissingSegments re-sent OP_LIVE_REQUEST for every missing seq on
-    // every 1 s Process() tick: a 500 KB segment takes 1.5-2 s to transfer at
-    // 2-3 Mbps, so the same segment was requested (and served) 2-3 times —
-    // wasting bandwidth exactly when the link is congested. Keyed by seqNum;
-    // bounded by the 16-segment ring + lookahead. Peer identity is stored as
-    // IP+port (NOT CUpDownClient* — pointers are unstable, cf. §13.1) so an
-    // expired entry can bias the retry away from the unresponsive peer.
-    // Fulfilled entries are erased in OnChunkReceived; evicted/stale ones are
-    // pruned at the top of RequestMissingSegments. All access under m_lock.
-    struct InflightSegReq {
-        DWORD  sentTick;    // GetTickCount() when the request went out
-        CAddress peerAddress; // peer we asked (IPv4 or native IPv6)
-        uint16 peerPort;
-        int    attempts;    // total requests sent for this seq this session
-        bool   edgeCritical; // seq was within ESE_LIVE_EDGE_GUARD of the playhead
-        bool   failCharged;  // punctuality failure already charged for this request
-    };
-    CMap<uint32, uint32, InflightSegReq, InflightSegReq&> m_inflightSegReqs;
 
     // eSE test scaffolding (threat-model ① validation, 3-PC recipe). Layout is
     // UNCONDITIONAL (this member is always present so sizeof(CLiveStreamManager)
@@ -796,15 +768,18 @@ private:
     void BanPeer(CUpDownClient* peer);
     // Threat-model vector #3 (piece starvation): charge a punctuality failure to
     // the peer (ip+port) we asked when a CRITICAL near-playhead request times out.
-    void ChargePunctualityFailure(const CAddress& address, uint16 port);
+    void ChargePunctualityFailure(
+        const ese::live::LiveRecoveryEndpoint& endpoint);
     bool GetOrCreateTrust(CUpDownClient* peer, PeerTrust& trust);
     bool GetTrustById(const LivePeerId& id, PeerTrust& trust) const;
     bool SetTrustById(const LivePeerId& id, const PeerTrust& trust);
 
     // Select best peer to request a segment from. A non-None typed address skips that
     // peer — used to retry a timed-out in-flight request somewhere else.
-    CUpDownClient* SelectPeerForSegment(uint32 seqNum,
-                                        const CAddress& excludeAddress = CAddress());
+    CUpDownClient* SelectPeerForSegment(
+        uint32 seqNum,
+        const ese::live::LiveRecoveryEndpoint& excludeEndpoint =
+            ese::live::LiveRecoveryEndpoint());
 
     // V2-S03 helpers
     void PingAllPeers();           // periodic, called from Process()

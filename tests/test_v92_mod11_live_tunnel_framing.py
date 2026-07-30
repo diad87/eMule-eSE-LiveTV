@@ -369,6 +369,13 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveStreamFanout.cpp"],
                 "interface_files": ["srchybrid/LiveStreamFanout.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveStreamRecovery",
+                "owner": "CLiveStreamManager",
+                "layer": "application",
+                "implementation_files": ["srchybrid/LiveStreamRecovery.cpp"],
+                "interface_files": ["srchybrid/LiveStreamRecovery.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -480,6 +487,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             }, {
                 "module": "LiveStreamFanout",
                 "slice_base_commit": "c476950d1590fb7f337cc3010e1a86bdee10537d",
+                "source_coordinator": "srchybrid/LiveStreamManager.cpp",
+            }, {
+                "module": "LiveStreamRecovery",
+                "slice_base_commit": "03b8bb118d06b7d7407faaff0c7552b6ef51a2d1",
                 "source_coordinator": "srchybrid/LiveStreamManager.cpp",
             }],
         })
@@ -648,6 +659,31 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
             {
+                "path": "srchybrid/tests/test_live_stream_recovery.cpp",
+                "reason": (
+                    "Standalone retry, replenishment, emergency, FEC/NACK and "
+                    "hostile-boundary executable test for the MOD-3.6 recovery extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/LiveRecoveryTransportAdapter.cpp",
+                "reason": (
+                    "Narrow MFC adapter projecting typed peer endpoints into "
+                    "the portable MOD-3.6 recovery owner."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/LiveRecoveryTransportAdapter.h",
+                "reason": (
+                    "Pointer-free recovery endpoint projection boundary for "
+                    "MOD-3.6 without exposing CUpDownClient or CAddress to the "
+                    "portable module."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
                 "path": "srchybrid/LiveStreamTrustAdapter.cpp",
                 "reason": (
                     "Legacy MFC adapter projecting durable Live peer identities "
@@ -740,6 +776,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/LiveStreamSecurity.h",
             "srchybrid/LiveStreamFanout.cpp",
             "srchybrid/LiveStreamFanout.h",
+            "srchybrid/LiveStreamRecovery.cpp",
+            "srchybrid/LiveStreamRecovery.h",
+            "srchybrid/LiveRecoveryTransportAdapter.cpp",
+            "srchybrid/LiveRecoveryTransportAdapter.h",
             "srchybrid/LiveFanoutTransportAdapter.cpp",
             "srchybrid/LiveFanoutTransportAdapter.h",
             "srchybrid/LiveStreamTrustAdapter.cpp",

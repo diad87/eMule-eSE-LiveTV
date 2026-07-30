@@ -7,9 +7,8 @@
 namespace ese {
 namespace live {
 
-void LiveStreamAnnouncer::ResetBroadcast() noexcept
+void LiveStreamAnnouncer::ResetKadPublish() noexcept
 {
-	last_announce_tick_ = 0u;
 	last_kad_publish_tick_ = 0u;
 }
 

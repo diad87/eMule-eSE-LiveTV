@@ -68,7 +68,7 @@ class Mod37LiveStreamFacadeTest(unittest.TestCase):
         for marker in (
             "kAnnounceIntervalMs = 2000u",
             "kKadPublishIntervalMs = 60000u",
-            "ResetBroadcast()",
+            "ResetKadPublish()",
             "Poll(",
             "Describe(",
             "std::array<std::uint8_t, 16u>",
@@ -78,7 +78,8 @@ class Mod37LiveStreamFacadeTest(unittest.TestCase):
         adapter = ANNOUNCER_ADAPTER.read_text(encoding="utf-8")
         self.assertIn("CreateAnnouncePacket(", adapter)
         self.assertIn("CUpDownClient", adapter)
-        self.assertIn("SendPacket(", adapter)
+        self.assertIn("if (peer->SendPacket(packet))", adapter)
+        self.assertNotIn("peer->SendPacket(packet);\n\t\t++sent;", adapter)
 
     def test_manager_delegates_cadence_and_snapshot_projection(self) -> None:
         header = MANAGER_HEADER.read_text(encoding="utf-8")
@@ -96,7 +97,7 @@ class Mod37LiveStreamFacadeTest(unittest.TestCase):
         ):
             self.assertNotIn(obsolete, header + "\n" + source)
         for marker in (
-            "m_streamAnnouncer.ResetBroadcast()",
+            "m_streamAnnouncer.ResetKadPublish()",
             "m_streamAnnouncer.Poll(",
             "LiveStreamAnnouncer::Describe(",
             "LiveAnnounceTransportAdapter::Send(",

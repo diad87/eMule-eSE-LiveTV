@@ -289,7 +289,7 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     // Never inherit downstream peers from a previous local broadcast.
     m_peerSet.ClearDownstreams();
     m_streamFanout.Clear();
-    m_streamAnnouncer.ResetBroadcast();
+    m_streamAnnouncer.ResetKadPublish();
     // R.3: fresh relay-egress state for this broadcast (clears any stale buddy from a
     // previous stream so RelayPushNewSegments re-negotiates before pushing).
     m_lastRelayedSeq = 0;

@@ -25,7 +25,7 @@ public:
 	static constexpr std::uint32_t kAnnounceIntervalMs = 2000u;
 	static constexpr std::uint32_t kKadPublishIntervalMs = 60000u;
 
-	void ResetBroadcast() noexcept;
+	void ResetKadPublish() noexcept;
 	LiveAnnounceActions Poll(
 		std::uint32_t now,
 		bool broadcasting) noexcept;

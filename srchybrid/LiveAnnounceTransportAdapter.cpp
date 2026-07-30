@@ -24,8 +24,8 @@ std::size_t LiveAnnounceTransportAdapter::Send(
 		if (packet == NULL)
 			continue;
 		theStats.AddUpDataOverheadOther(packet->size);
-		peer->SendPacket(packet);
-		++sent;
+		if (peer->SendPacket(packet))
+			++sent;
 	}
 	return sent;
 }

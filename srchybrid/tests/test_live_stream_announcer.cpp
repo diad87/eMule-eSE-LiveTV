@@ -36,12 +36,18 @@ int main()
 	Check(announcer.Poll(60000u, true).publish_kad,
 		"Kad cadence fires at its exact boundary");
 
-	announcer.ResetBroadcast();
-	Check(!announcer.Poll(70000u, false).send_announce,
+	announcer.ResetKadPublish();
+	Check(!announcer.Poll(60001u, false).send_announce,
 		"inactive polling neither announces nor consumes a deadline");
-	const auto restarted = announcer.Poll(70000u, true);
-	Check(restarted.send_announce && restarted.publish_kad,
-		"fresh broadcast preserves the legacy immediate timer behavior");
+	Check(!announcer.Poll(60001u, true).send_announce,
+		"broadcast restart preserves the legacy announce cooldown");
+	LiveStreamAnnouncer kad_reset;
+	Check(kad_reset.Poll(60000u, true).publish_kad,
+		"initial Kad boundary publishes");
+	kad_reset.ResetKadPublish();
+	const auto restarted = kad_reset.Poll(60001u, true);
+	Check(!restarted.send_announce && restarted.publish_kad,
+		"broadcast restart resets only the legacy Kad timer");
 
 	LiveStreamAnnouncer wrapped;
 	const std::uint32_t near_wrap =

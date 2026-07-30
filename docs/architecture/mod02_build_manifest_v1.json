@@ -1,6 +1,6 @@
 {
   "schema": "ese.mod02.build-manifest/v1",
-  "source_commit": "a732ea86b22647b17ad1ef7e3640af70dc82d468",
-  "source_identity_sha256": "703f9887acce6654f9f5820f8964da4754cd043bb7db1f5aea5808de877e6f60",
-  "executable_sha256": "2f4e1df28d4dd21a542513d8c5f8db95affe80f81bc9d026948356e584792935"
+  "source_commit": "41b6c29c1b3400688b2ed541b082916d701a493b",
+  "source_identity_sha256": "180d9475373c63b801250e2abe401c4517539d946b19e1c43949abb200adf1c4",
+  "executable_sha256": "144635bda9ff80d8e453e5b5e9b3ee6466246e39142912cb3ced3535b9be81d1"
 }

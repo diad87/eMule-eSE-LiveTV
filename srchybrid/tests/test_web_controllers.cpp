@@ -79,7 +79,9 @@ void TestTransferController()
 			!WebTransferController::PlanColumnChange(
 				"menuup", "5", "1").allowed &&
 			!WebTransferController::PlanColumnChange(
-				"menuqueue", "4", "1").allowed,
+				"menuqueue", "4", "1").allowed &&
+			!WebTransferController::PlanColumnChange(
+				"menudown", "0", "").allowed,
 		"every out-of-range transfer column must fail closed");
 
 	const WebTransferSortDecision named =

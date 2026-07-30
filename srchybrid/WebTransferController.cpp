@@ -169,7 +169,12 @@ WebTransferColumnChange WebTransferController::PlanColumnChange(
 		parsed.ptr != index.data() + index.size() || parsedIndex >= limit)
 		return WebTransferColumnChange{};
 	long parsedHidden = 0;
-	if (!ParseLong(hidden, parsedHidden))
+	if (hidden.empty())
+		return WebTransferColumnChange{};
+	const std::from_chars_result hiddenResult = std::from_chars(
+		hidden.data(), hidden.data() + hidden.size(), parsedHidden);
+	if (hiddenResult.ec != std::errc() ||
+		hiddenResult.ptr != hidden.data() + hidden.size())
 		return WebTransferColumnChange{};
 	change.allowed = true;
 	change.index = parsedIndex;

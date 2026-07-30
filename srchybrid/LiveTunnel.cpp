@@ -160,7 +160,7 @@ CLiveTunnel::CLiveTunnel()
     // required before any public Kad6 service admits work.
     const uint64 now = static_cast<uint64>(time(NULL));
     for (size_t i = 0; i < static_cast<size_t>(kad6::K6Service::Count); ++i)
-        m_k6Hardening.SetEnabled(static_cast<kad6::K6Service>(i), false,
+        m_scheduler.LT2HardeningSetEnabled(static_cast<kad6::K6Service>(i), false,
             now ? now : 1, 0, 0);
 }
 
@@ -952,11 +952,8 @@ void CLiveTunnel::Stop()
         CSingleLock pl(&m_pendingLock, TRUE);
         (void)m_exitServices.Clear();
         m_reassembly.clear();
-        m_k6QuotaGrants.clear();
+        m_scheduler.LT2ResetQuotaState();
         m_scheduler.ClearFair();
-        m_k6QuotaIssuerLimiter = kad6::K6QuotaIssuerLimiter();
-        m_k6QuotaHierarchy = kad6::K6QuotaHierarchy();
-        m_k6QuotaSpent = kad6::K6QuotaSpentSet();
         m_k6SendCredits.clear();
         m_k6ReceiveCredits.clear();
         m_k6FlowStreamsByCircuit.clear();
@@ -1645,7 +1642,7 @@ void CLiveTunnel::GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const
 void CLiveTunnel::GetK6HardeningSnapshot(K6HardeningRuntimeSnapshot& out)
 {
     out = K6HardeningRuntimeSnapshot{};
-    out.control = m_k6Hardening.Snapshot();
+    out.control = m_scheduler.LT2HardeningSnapshot();
     out.metrics = m_metrics.WindowInfo(static_cast<uint64>(time(NULL)));
     {
         CSingleLock pl(&m_pendingLock, TRUE);
@@ -1658,12 +1655,8 @@ void CLiveTunnel::GetK6HardeningSnapshot(K6HardeningRuntimeSnapshot& out)
             else ++out.dial_streams;
         }
         out.source_epoch_store_failed = m_k6SourceEpochsLoadFailed;
-        out.economy_measurement_ready = m_k6EconomyReady;
-        for (size_t i = 0; i < out.economy.size(); ++i) {
-            out.rho[i] = m_k6EconomyReady ? kad6::K6Rho(m_k6EconomyInputs[i]) :
-                std::numeric_limits<double>::infinity();
-            out.economy[i] = m_k6EconomyTelemetry.Latest(static_cast<kad6::Byte>(i));
-        }
+        m_scheduler.LT2FillEconomySnapshot(
+            out.economy_measurement_ready, out.rho, out.economy);
         // A local process can never self-certify the 30-day supply, top-five
         // loss and external quota-audit gates. Those explicit evidence bits
         // remain false here, so the default cannot silently flip itself.
@@ -1710,14 +1703,7 @@ void CLiveTunnel::RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds)
                 { shapingExposed = true; break; }
     }
     bool runtimeHealthy = NodeIdentityIsPersistent() && m_k6TicketSecretReady &&
-        m_k6EconomyReady && !m_k6SourceEpochsLoadFailed && !shapingExposed;
-    if (runtimeHealthy) {
-        CSingleLock pl(&m_pendingLock, TRUE);
-        for (const kad6::K6SaturationInputs& input : m_k6EconomyInputs)
-            if (!std::isfinite(kad6::K6Rho(input)) ||
-                kad6::K6Rho(input) >= kad6::kK6RhoTarget)
-                { runtimeHealthy = false; break; }
-    }
+        m_scheduler.LT2EconomyHealthy() && !m_k6SourceEpochsLoadFailed && !shapingExposed;
 
     m_scheduler.ApplyReleaseEvaluation(
         optIn, betaOptIn, runtimeHealthy, evidenceStatus, drainSeconds);
@@ -1772,86 +1758,33 @@ void CLiveTunnel::RefreshK6EconomyMeasurements(uint64 nowSeconds,
     const std::array<uint64, static_cast<size_t>(kad6::K6Service::Count)>& active)
 {
     if (nowSeconds == 0) return;
-    const uint64 elapsed = m_k6EconomyLastSampleAt && nowSeconds > m_k6EconomyLastSampleAt
-        ? nowSeconds - m_k6EconomyLastSampleAt : 1;
-    const uint64 byteDelta = m_k6EconomyUsefulBytes >= m_k6EconomyLastUsefulBytes
-        ? m_k6EconomyUsefulBytes - m_k6EconomyLastUsefulBytes : 0;
-    const uint64 publishDelta = m_k6EconomyPublishAttempts >= m_k6EconomyLastPublishAttempts
-        ? m_k6EconomyPublishAttempts - m_k6EconomyLastPublishAttempts : 0;
-
     // Configured/estimated upload is KiB/s. Divide by two because an exit moves
     // every useful byte once on the onion side and once on the exterior side.
     const double usefulCapacity = static_cast<double>(
         thePrefs.GetMaxGraphUploadRate(true)) * 1024.0 * 8.0 / 2.0;
-    const double demandedBps = static_cast<double>(byteDelta) * 8.0 /
-        static_cast<double>(elapsed);
-    const double publishQps = static_cast<double>(publishDelta) /
-        static_cast<double>(elapsed);
-
-    double processCpu = 0.0;
+    uint64 processNow = 0;
+    uint64 systemNow = 0;
     FILETIME created{}, exited{}, processKernel{}, processUser{};
     FILETIME idle{}, systemKernel{}, systemUser{};
     if (GetProcessTimes(GetCurrentProcess(), &created, &exited,
             &processKernel, &processUser) &&
         GetSystemTimes(&idle, &systemKernel, &systemUser)) {
-        const uint64 processNow = K6FileTimeValue(processKernel) + K6FileTimeValue(processUser);
-        const uint64 systemNow = K6FileTimeValue(systemKernel) + K6FileTimeValue(systemUser);
-        if (m_k6EconomyLastProcessCpu && systemNow > m_k6EconomyLastSystemCpu &&
-            processNow >= m_k6EconomyLastProcessCpu)
-            processCpu = (std::min)(1.0, static_cast<double>(
-                processNow - m_k6EconomyLastProcessCpu) /
-                static_cast<double>(systemNow - m_k6EconomyLastSystemCpu));
-        m_k6EconomyLastProcessCpu = processNow;
-        m_k6EconomyLastSystemCpu = systemNow;
+        processNow =
+            K6FileTimeValue(processKernel) + K6FileTimeValue(processUser);
+        systemNow =
+            K6FileTimeValue(systemKernel) + K6FileTimeValue(systemUser);
     }
-
     uint64 occupiedPreauth = 0;
     if (theApp.listensocket != NULL)
         occupiedPreauth = static_cast<uint64>(
             theApp.listensocket->GetK6PreAuthStats().active);
-
-    CSingleLock pl(&m_pendingLock, TRUE);
-    for (size_t i = 0; i < m_k6EconomyInputs.size(); ++i) {
-        kad6::K6SaturationInputs input;
-        input.demanded_useful_bps = (i == static_cast<size_t>(kad6::K6Service::ExitEd2kDial) ||
-            i == static_cast<size_t>(kad6::K6Service::ExitEd2kFull)) ? demandedBps : 0.0;
-        input.available_useful_bps = usefulCapacity;
-        input.overhead_factor = 1.15;
-        input.active_streams = active[i];
-        input.available_stream_slots = i == static_cast<size_t>(kad6::K6Service::ExitKad)
-            ? 4096u : 512u;
-        input.occupied_preauth_slots = i == static_cast<size_t>(kad6::K6Service::ExitEd2kFull)
-            ? occupiedPreauth : 0;
-        input.available_preauth_slots = kad6::kK6PreAuthMaxSlots;
-        input.demanded_publish_qps = i == static_cast<size_t>(kad6::K6Service::ExitKad)
-            ? publishQps : 0.0;
-        input.available_publish_qps = 2.0; // K6PublishBudget default: 120 / 60 s.
-        input.measured_exit_cpu = processCpu;
-        input.exit_cpu_budget = 0.85;
-        m_k6EconomyInputs[i] = input;
-        m_k6EconomyTelemetry.Observe(static_cast<kad6::Byte>(i), nowSeconds,
-            kad6::K6Rho(input), false, false);
-    }
-    m_k6EconomyTelemetry.SealThrough(nowSeconds);
-    m_k6EconomyLastUsefulBytes = m_k6EconomyUsefulBytes;
-    m_k6EconomyLastPublishAttempts = m_k6EconomyPublishAttempts;
-    m_k6EconomyLastSampleAt = nowSeconds;
-    m_k6EconomyReady = usefulCapacity > 0.0;
+    m_scheduler.LT2RefreshEconomy(nowSeconds, active, usefulCapacity,
+        processNow, systemNow, occupiedPreauth);
 }
 
 bool CLiveTunnel::K6EconomyAdmit(kad6::K6Service service)
 {
-    const size_t index = static_cast<size_t>(service);
-    if (index >= m_k6EconomyInputs.size()) return false;
-    CSingleLock pl(&m_pendingLock, TRUE);
-    const double rho = m_k6EconomyReady
-        ? kad6::K6Rho(m_k6EconomyInputs[index])
-        : std::numeric_limits<double>::infinity();
-    const bool admitted = m_k6EconomyReady &&
-        kad6::K6AdmitLease(m_k6EconomyInputs[index]);
-    m_k6EconomyTelemetry.Observe(static_cast<kad6::Byte>(index),
-        static_cast<uint64>(time(NULL)), rho, true, admitted);
-    return admitted;
+    return m_scheduler.LT2EconomyAdmit(service, static_cast<uint64>(time(NULL)));
 }
 
 std::string CLiveTunnel::GetK6PrometheusMetrics()
@@ -1891,38 +1824,15 @@ bool CLiveTunnel::EnsureK6QuotaAuthority(uint64 nowSeconds)
         (g_uEseCapsRuntime & ESE_CAP_KAD6) == 0 ||
         nowSeconds == 0 || !NodeIdentityIsPersistent() || NodeIdentityPub() == NULL)
         return false;
-    if (!m_k6QuotaCrypto.Ready()) {
-        if (m_k6QuotaInitAttempted) return false;
-        m_k6QuotaInitAttempted = true;
-        CString path = thePrefs.GetMuleDirectory(EMULE_CONFIGDIR);
-        if (path.IsEmpty()) return false;
-        const TCHAR last = path[path.GetLength() - 1];
-        if (last != _T('\\') && last != _T('/')) path += _T('\\');
-        path += _T("kad6_quota_rsa.dat");
-        if (!m_k6QuotaCrypto.Initialize(K6WideToUtf8(path), 4096) ||
-            !m_k6QuotaCrypto.Persistent())
-            return false;
-    }
-    const uint64 epoch = kad6::K6QuotaEpoch(nowSeconds);
-    if (m_k6QuotaCertificateEpoch != epoch || m_k6QuotaCertificateWire.empty()) {
-        kad6::K6QuotaIssuerCertificate certificate;
-        certificate.key = m_k6QuotaCrypto.PublicKey();
-        memcpy(certificate.issuer_node_pub.data(), NodeIdentityPub(),
-            certificate.issuer_node_pub.size());
-        certificate.policy_id = 1;
-        certificate.service_mask = 0x0F;
-        certificate.valid_from_epoch = epoch;
-        certificate.valid_until_epoch = epoch + 1;
-        std::vector<uint8_t> encoded;
-        if (kad6::SignK6QuotaIssuerCertificate(MakeKad6HostCryptoHooks(),
-                certificate, encoded) != kad6::Kad6Status::Ok)
-            return false;
-        m_k6QuotaCertificate = std::move(certificate);
-        m_k6QuotaCertificateWire = std::move(encoded);
-        m_k6QuotaCertificateEpoch = epoch;
-    }
-    m_k6QuotaIssuerLimiter.Prune(epoch);
-    m_k6QuotaSpent.Prune(epoch);
+    CString path = thePrefs.GetMuleDirectory(EMULE_CONFIGDIR);
+    if (path.IsEmpty()) return false;
+    const TCHAR last = path[path.GetLength() - 1];
+    if (last != _T('\\') && last != _T('/')) path += _T('\\');
+    path += _T("kad6_quota_rsa.dat");
+    if (!m_scheduler.LT2EnsureQuotaAuthority(
+            nowSeconds, K6WideToUtf8(path), NodeIdentityPub(),
+            MakeKad6HostCryptoHooks()))
+        return false;
     volatile LONG* caps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
     ::InterlockedOr(caps, static_cast<LONG>(ESE_CAP_KAD6_ECONOMY));
     return true;
@@ -2130,8 +2040,7 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
             kad6::Kad6Status::Ok)
         return false;
     kad6::K6QuotaBlindState blind;
-    if (kad6::BlindK6QuotaToken(m_k6QuotaCrypto.Hooks(), certificate.key,
-            token, blind) != kad6::Kad6Status::Ok)
+    if (!m_scheduler.LT2BlindQuotaToken(certificate, token, blind))
         return false;
 
     kad6::K6QuotaBlindRequest issue;
@@ -2156,8 +2065,8 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
         return false;
 
     kad6::K6QuotaPresentation presentation;
-    if (kad6::FinalizeK6QuotaToken(m_k6QuotaCrypto.Hooks(), certificate, blind,
-            issued.blind_signatures[0], presentation) != kad6::Kad6Status::Ok)
+    if (!m_scheduler.LT2FinalizeQuotaToken(
+            certificate, blind, issued.blind_signatures[0], presentation))
         return false;
     std::vector<uint8_t> presentationBody;
     if (kad6::EncodeK6QuotaPresentation(presentation, presentationBody) !=
@@ -2180,15 +2089,6 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
             expectedUnitHash.size());
 }
 
-std::string CLiveTunnel::K6QuotaGrantKey(uint32 circId,
-                                         const kad6::Hash32& context)
-{
-    std::string key(sizeof circId + context.size(), '\0');
-    memcpy(&key[0], &circId, sizeof circId);
-    memcpy(&key[sizeof circId], context.data(), context.size());
-    return key;
-}
-
 bool CLiveTunnel::ConsumeK6QuotaGrant(const TunnelRequestCtx& ctx,
                                       kad6::K6QuotaService service,
                                       const kad6::K6Frame& frame,
@@ -2200,20 +2100,10 @@ bool CLiveTunnel::ConsumeK6QuotaGrant(const TunnelRequestCtx& ctx,
             frame.msg_type, frame.body.data(), frame.body.size(), context) !=
             kad6::Kad6Status::Ok)
         return false;
-    CSingleLock pl(&m_pendingLock, TRUE);
-    const std::string key = K6QuotaGrantKey(ctx.circ->Id(), context);
-    auto grant = m_k6QuotaGrants.find(key);
-    if (grant == m_k6QuotaGrants.end()) return !IsK6PublicReleaseEnabled();
-    if (grant->second.expires_at <= static_cast<uint64>(time(NULL)) ||
-        grant->second.service != service) {
-        m_scheduler.ReleaseFairAllocation(grant->second.allocation_id);
-        m_k6QuotaGrants.erase(grant);
-        return false;
-    }
-    if (allocationId) *allocationId = grant->second.allocation_id;
-    else m_scheduler.ReleaseFairAllocation(grant->second.allocation_id);
-    m_k6QuotaGrants.erase(grant);
-    return true;
+    return m_scheduler.LT2ConsumeQuotaGrant(
+        ctx.circ->Id(), context, static_cast<uint8_t>(service),
+        static_cast<uint64>(time(NULL)), !IsK6PublicReleaseEnabled(),
+        allocationId);
 }
 
 bool CLiveTunnel::QueueK6FairPayloadLocked(uint64 streamId, uint8 direction,
@@ -2269,7 +2159,7 @@ bool CLiveTunnel::ProcessK6FairTick()
             static_cast<uint64>(item.bytes.size()), static_cast<uint64>(time(NULL)));
         {
             CSingleLock pl(&m_pendingLock, TRUE);
-            m_k6EconomyUsefulBytes += static_cast<uint64>(item.bytes.size());
+            m_scheduler.LT2RecordUsefulBytes(static_cast<uint64>(item.bytes.size()));
         }
         if (item.credit_bytes != 0)
             ConsumeK6ReceiveCredit(runtime.circ_id, item.stream_id, 0,
@@ -2553,7 +2443,7 @@ bool CLiveTunnel::ApplyK6ServiceSwitch(kad6::K6Service service, bool enabled,
             ++active[static_cast<size_t>(pair.second.inbound
                 ? kad6::K6Service::ExitEd2kFull : kad6::K6Service::ExitEd2kDial)];
     }
-    if (!m_k6Hardening.SetEnabled(service, enabled, now, drainSeconds,
+    if (!m_scheduler.LT2HardeningSetEnabled(service, enabled, now, drainSeconds,
             active[static_cast<size_t>(service)]))
         return false;
 
@@ -2602,7 +2492,7 @@ bool CLiveTunnel::ApplyK6ServiceSwitch(kad6::K6Service service, bool enabled,
     // ESE_CAP_KAD6 is only the coarse discovery bit. Stop advertising it when
     // every local class is disabled/draining; restore it only when the same
     // identity/privacy preconditions used by K6-1 are still true.
-    const kad6::K6HardeningSnapshot snapshot = m_k6Hardening.Snapshot();
+    const kad6::K6HardeningSnapshot snapshot = m_scheduler.LT2HardeningSnapshot();
     volatile LONG* caps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
     if (snapshot.admission_mask == 0) {
         ::InterlockedAnd(caps, ~static_cast<LONG>(ESE_CAP_KAD6));
@@ -4210,7 +4100,7 @@ void CLiveTunnel::ExitHandle_Kad6Gateway(const TunnelRequestCtx& ctx)
         return;
     }
 
-    if (!m_k6Hardening.CanAdmit(kad6::K6Service::Control)) {
+    if (!m_scheduler.LT2HardeningCanAdmit(kad6::K6Service::Control)) {
         const uint64 now = static_cast<uint64>(time(NULL));
         m_metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
         m_metrics.Add(kad6::K6MetricFamily::SearchTotal, 0, 1, 0, 1, now);
@@ -4674,7 +4564,7 @@ void CLiveTunnel::ExitHandle_Kad6QuotaKey(const TunnelRequestCtx& ctx,
         AbortExitOperation(ctx.circ->Id(), ctx.req_id);
         return;
     }
-    SendK6GatewayResponse(ctx, kad6::kK6MsgQuotaKey, m_k6QuotaCertificateWire);
+    SendK6GatewayResponse(ctx, kad6::kK6MsgQuotaKey, m_scheduler.LT2QuotaCertificateWire());
 }
 
 void CLiveTunnel::ExitHandle_Kad6QuotaIssue(const TunnelRequestCtx& ctx,
@@ -4695,47 +4585,12 @@ void CLiveTunnel::ExitHandle_Kad6QuotaIssue(const TunnelRequestCtx& ctx,
     uint32 asn = 0;
     if (!EnsureK6QuotaAuthority(now))
         response.status = kad6::K6QuotaStatus::CryptoFailure;
-    else if (!kad6::Kad6CtEqual(request.issuer_key_id.data(),
-             m_k6QuotaCertificate.key_id.data(), request.issuer_key_id.size()))
-        response.status = kad6::K6QuotaStatus::UnknownIssuer;
     else if (!K6QuotaPrincipal(ctx, principal, prefix48, asn))
         response.status = kad6::K6QuotaStatus::PolicyDenied;
-    else if (request.version == 2 &&
-             request.subepoch_slot != kad6::K6QuotaSubepoch(now))
-        response.status = kad6::K6QuotaStatus::WrongEpoch;
-    else {
-        const uint64 epoch = kad6::K6QuotaEpoch(now);
-        if (request.version == 1) {
-            response.status = m_k6QuotaIssuerLimiter.Reserve(principal, epoch,
-                request.blinded_messages.size());
-        } else {
-            kad6::K6QuotaHierarchyRequest budget;
-            budget.principal = principal;
-            budget.prefix48 = prefix48;
-            budget.issuer_key_id = request.issuer_key_id;
-            budget.asn = asn;
-            budget.service = request.service;
-            budget.now_ms = (std::max<uint64>)(1, K6ShapeNowUs() / 1000u);
-            budget.units = request.blinded_messages.size();
-            response.status = m_k6QuotaHierarchy.Reserve(budget);
-        }
-        if (response.status == kad6::K6QuotaStatus::Ok) {
-            const kad6::K6QuotaCryptoHooks hooks = m_k6QuotaCrypto.Hooks();
-            response.blind_signatures.reserve(request.blinded_messages.size());
-            for (const std::vector<uint8_t>& blinded : request.blinded_messages) {
-                std::vector<uint8_t> signature;
-                if (!hooks.blind_sign || !hooks.blind_sign(hooks.context,
-                        request.issuer_key_id, blinded.data(), blinded.size(), signature)) {
-                    response.status = kad6::K6QuotaStatus::CryptoFailure;
-                    response.blind_signatures.clear();
-                    break;
-                }
-                response.blind_signatures.push_back(std::move(signature));
-            }
-            if (response.status == kad6::K6QuotaStatus::Ok)
-                response.issuer_certificate = m_k6QuotaCertificateWire;
-        }
-    }
+    else
+        m_scheduler.LT2IssueQuota(
+            request, principal, prefix48, asn, now,
+            (std::max<uint64>)(1, K6ShapeNowUs() / 1000u), response);
     std::vector<uint8_t> body;
     if (kad6::EncodeK6QuotaBlindResponse(response, body) != kad6::Kad6Status::Ok)
         AbortExitOperation(ctx.circ->Id(), ctx.req_id);
@@ -4756,58 +4611,19 @@ void CLiveTunnel::ExitHandle_Kad6QuotaPresent(const TunnelRequestCtx& ctx,
     kad6::K6QuotaPresentationResult result;
     result.status = kad6::K6QuotaStatus::BadRequest;
     const uint64 now = static_cast<uint64>(time(NULL));
-    kad6::K6QuotaToken token;
     kad6::K6QuotaIssuerCertificate certificate;
     if (!EnsureK6QuotaAuthority(now))
         result.status = kad6::K6QuotaStatus::CryptoFailure;
-    else if (kad6::DecodeK6QuotaPreparedMessage(presentation.prepared_message.data(),
-                 presentation.prepared_message.size(), token) != kad6::Kad6Status::Ok ||
-             kad6::DecodeK6QuotaIssuerCertificate(presentation.issuer_certificate.data(),
+    else if (kad6::DecodeK6QuotaIssuerCertificate(
+                 presentation.issuer_certificate.data(),
                  presentation.issuer_certificate.size(), certificate, &consumed) !=
                  kad6::Kad6Status::Ok || consumed != presentation.issuer_certificate.size())
         result.status = kad6::K6QuotaStatus::InvalidProof;
-    else {
-        result.status = kad6::VerifyAndSpendK6Quota(MakeKad6HostCryptoHooks(),
-            m_k6QuotaCrypto.Hooks(), m_k6QuotaSpent, presentation, token.service,
-            token.policy_id, kad6::K6QuotaEpoch(now), kad6::K6QuotaSubepoch(now),
-            token.presentation_context_hash,
-            K6QuotaIssuerTrusted(certificate.issuer_node_pub.data()), &token, &certificate);
-        if (result.status == kad6::K6QuotaStatus::Ok) {
-            const kad6::Kad6CryptoHooks identity = MakeKad6HostCryptoHooks();
-            if (!identity.sha256 || !identity.sha256(token.admission_unit.data(),
-                    token.admission_unit.size(), result.admission_unit_hash.data()))
-                result.status = kad6::K6QuotaStatus::CryptoFailure;
-            else {
-                uint64 allocation = 0;
-                for (unsigned i = 0; i < 8; ++i)
-                    allocation |= static_cast<uint64>(result.admission_unit_hash[i]) << (8 * i);
-                if (allocation == 0) allocation = 1;
-                CSingleLock pl(&m_pendingLock, TRUE);
-                const std::string grantKey = K6QuotaGrantKey(
-                    ctx.circ->Id(), token.presentation_context_hash);
-                if (m_k6QuotaGrants.size() >= kad6::kK6QuotaDefaultSpentCapacity ||
-                    m_k6QuotaGrants.find(grantKey) != m_k6QuotaGrants.end() ||
-                    !m_scheduler.RegisterFairAllocation(allocation, certificate.key_id,
-                        4ull * 1024ull * 1024ull * 1024ull,
-                        16ull * 4ull * 1024ull * 1024ull * 1024ull)) {
-                    result.status = kad6::K6QuotaStatus::Capacity;
-                } else {
-                    K6QuotaGrant grant;
-                    grant.service = token.service;
-                    grant.context = token.presentation_context_hash;
-                    grant.issuer = certificate.key_id;
-                    grant.allocation_id = allocation;
-                    grant.expires_at = token.version == 2
-                        ? token.valid_epoch * kad6::kK6QuotaEpochSeconds +
-                          (static_cast<uint64>(token.subepoch_slot) + 1) *
-                              kad6::kK6QuotaSubepochSeconds
-                        : (token.valid_epoch + 1) * kad6::kK6QuotaEpochSeconds;
-                    m_k6QuotaGrants[grantKey] = grant;
-                    result.valid_epoch = token.valid_epoch;
-                }
-            }
-        }
-    }
+    else
+        m_scheduler.LT2PresentQuota(
+            presentation,
+            K6QuotaIssuerTrusted(certificate.issuer_node_pub.data()),
+            ctx.circ->Id(), now, MakeKad6HostCryptoHooks(), result);
     std::vector<uint8_t> body;
     if (kad6::EncodeK6QuotaPresentationResult(result, body) != kad6::Kad6Status::Ok)
         AbortExitOperation(ctx.circ->Id(), ctx.req_id);
@@ -4850,7 +4666,7 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
         return;
     }
 
-    if (!m_k6Hardening.CanAdmit(kad6::K6Service::ExitKad) ||
+    if (!m_scheduler.LT2HardeningCanAdmit(kad6::K6Service::ExitKad) ||
         !K6EconomyAdmit(kad6::K6Service::ExitKad)) {
         const uint64 now = static_cast<uint64>(time(NULL));
         m_metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
@@ -5104,7 +4920,7 @@ void CLiveTunnel::ExitHandle_Kad6Publish(const TunnelRequestCtx& ctx,
         return;
     }
 
-    if (!m_k6Hardening.CanAdmit(kad6::K6Service::ExitKad)) {
+    if (!m_scheduler.LT2HardeningCanAdmit(kad6::K6Service::ExitKad)) {
         const uint64 now = static_cast<uint64>(time(NULL));
         m_metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
         m_metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 1, 1, 0, 1, now);
@@ -5542,7 +5358,7 @@ void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
         reject(kad6::K6DialStatus::PolicyDenied);
         return;
     }
-    if (!m_k6Hardening.CanAdmit(kad6::K6Service::ExitEd2kDial) ||
+    if (!m_scheduler.LT2HardeningCanAdmit(kad6::K6Service::ExitEd2kDial) ||
         !K6EconomyAdmit(kad6::K6Service::ExitEd2kDial)) {
         const uint64 now = static_cast<uint64>(time(NULL));
         m_metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
@@ -5930,7 +5746,7 @@ bool CLiveTunnel::ActivateK6Inbound(CKad6ExitSocket* socket,
                                     const std::vector<std::vector<uint8_t>>& initialFrames)
 {
     if (!socket || initialFrames.empty()) return false;
-    if (!m_k6Hardening.CanAdmit(kad6::K6Service::ExitEd2kFull) ||
+    if (!m_scheduler.LT2HardeningCanAdmit(kad6::K6Service::ExitEd2kFull) ||
         !K6EconomyAdmit(kad6::K6Service::ExitEd2kFull)) {
         const uint64 now = static_cast<uint64>(time(NULL));
         m_metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
@@ -6178,7 +5994,7 @@ void CLiveTunnel::ExitHandle_Kad6StreamData(const TunnelRequestCtx& ctx,
             static_cast<uint64>(rewritten.size()), static_cast<uint64>(time(NULL)));
         {
             CSingleLock pl(&m_pendingLock, TRUE);
-            m_k6EconomyUsefulBytes += static_cast<uint64>(rewritten.size());
+            m_scheduler.LT2RecordUsefulBytes(static_cast<uint64>(rewritten.size()));
         }
         ConsumeK6ReceiveCredit(ctx.circ->Id(), data.stream_id, 0,
             data.data.size(), ctx.circ, true);
@@ -6429,7 +6245,7 @@ bool CLiveTunnel::OnK6ExitPacket(uint64 streamId, const uint8_t* raw, size_t len
         static_cast<uint64>(length), static_cast<uint64>(time(NULL)));
     {
         CSingleLock pl(&m_pendingLock, TRUE);
-        m_k6EconomyUsefulBytes += static_cast<uint64>(length);
+        m_scheduler.LT2RecordUsefulBytes(static_cast<uint64>(length));
     }
     return true;
 }
@@ -6439,7 +6255,7 @@ bool CLiveTunnel::AllowKad6ShadowPublishContact(uint64 publishLeaseId,
 {
     if (!custodianId) return false;
     CSingleLock pl(&m_pendingLock, TRUE);
-    ++m_k6EconomyPublishAttempts;
+    m_scheduler.LT2RecordPublishAttempt(1);
     auto runtime = m_k6Publishes.find(publishLeaseId);
     if (runtime == m_k6Publishes.end() || !runtime->second.refresh_enabled ||
         runtime->second.expires_at <= static_cast<uint64_t>(time(NULL))) return false;
@@ -6863,7 +6679,7 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
             streamProfiles[service][profile] += 1.0;
         }
     }
-    const kad6::K6DrainResult drain = m_k6Hardening.Tick(nowSeconds, serviceActive);
+    const kad6::K6DrainResult drain = m_scheduler.LT2HardeningTick(nowSeconds, serviceActive);
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         if ((drain.force_close_mask &
@@ -6887,12 +6703,7 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds,
         for (auto it = m_k6UsedTickets.begin(); it != m_k6UsedTickets.end(); )
             if (it->second.expires_at <= nowSeconds) it = m_k6UsedTickets.erase(it);
             else ++it;
-        for (auto it = m_k6QuotaGrants.begin(); it != m_k6QuotaGrants.end(); ) {
-            if (it->second.expires_at <= nowSeconds) {
-                m_scheduler.ReleaseFairAllocation(it->second.allocation_id);
-                it = m_k6QuotaGrants.erase(it);
-            } else ++it;
-        }
+        m_scheduler.LT2PruneQuotaGrants(nowSeconds);
         for (auto it = m_k6OriginTargetRoutes.begin(); it != m_k6OriginTargetRoutes.end(); )
             if (it->second.expires_at <= nowSeconds ||
                 activeCircuits.find(it->second.circ_id) == activeCircuits.end())

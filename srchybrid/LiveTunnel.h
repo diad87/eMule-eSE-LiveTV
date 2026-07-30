@@ -39,7 +39,6 @@
 #include "kad6/kad6_quota.h"
 #include "kad6/kad6_exit_notice.h"
 #include "kad6/kad6_release.h"
-#include "Kad6QuotaCrypto.h"
 #include "Kad6ExitNoticeServer.h"
 
 #include <memory>
@@ -966,38 +965,10 @@ private:
     void FlushK6OriginCredit(uint32 circId);
     void FlushK6ExitCredit(uint32 circId);
     LiveTunnelPeerState m_peerState;
-    kad6::K6HardeningController m_k6Hardening;
     LiveTunnelMetrics m_metrics;
-    kad6::K6EconomyTelemetry m_k6EconomyTelemetry;
-    std::array<kad6::K6SaturationInputs,
-               static_cast<size_t>(kad6::K6Service::Count)> m_k6EconomyInputs{};
-    bool m_k6EconomyReady = false;
-    uint64 m_k6EconomyUsefulBytes = 0;
-    uint64 m_k6EconomyPublishAttempts = 0;
-    uint64 m_k6EconomyLastUsefulBytes = 0;
-    uint64 m_k6EconomyLastPublishAttempts = 0;
-    uint64 m_k6EconomyLastSampleAt = 0;
-    uint64 m_k6EconomyLastProcessCpu = 0;
-    uint64 m_k6EconomyLastSystemCpu = 0;
     bool K6EconomyAdmit(kad6::K6Service service);
     void RefreshK6EconomyMeasurements(uint64 nowSeconds,
         const std::array<uint64, static_cast<size_t>(kad6::K6Service::Count)>& active);
-    CKad6QuotaCrypto m_k6QuotaCrypto;
-    kad6::K6QuotaIssuerCertificate m_k6QuotaCertificate;
-    std::vector<uint8_t> m_k6QuotaCertificateWire;
-    uint64 m_k6QuotaCertificateEpoch = 0;
-    bool m_k6QuotaInitAttempted = false;
-    kad6::K6QuotaIssuerLimiter m_k6QuotaIssuerLimiter;
-    kad6::K6QuotaHierarchy m_k6QuotaHierarchy;
-    kad6::K6QuotaSpentSet m_k6QuotaSpent;
-    struct K6QuotaGrant {
-        kad6::K6QuotaService service = kad6::K6QuotaService::Control;
-        kad6::Hash32 context{};
-        kad6::Hash32 issuer{};
-        uint64 allocation_id = 0;
-        uint64 expires_at = 0;
-    };
-    std::map<std::string, K6QuotaGrant> m_k6QuotaGrants;
     bool IsK6PublicReleaseEnabled() const;
     bool EnsureK6QuotaAuthority(uint64 nowSeconds);
     bool K6QuotaPrincipal(const TunnelRequestCtx& ctx, kad6::Hash32& principal,
@@ -1022,7 +993,6 @@ private:
                              kad6::K6QuotaService service,
                              const kad6::K6Frame& frame,
                              uint64* allocationId = nullptr);
-    static std::string K6QuotaGrantKey(uint32 circId, const kad6::Hash32& context);
     bool QueueK6FairPayloadLocked(uint64 streamId, uint8 direction,
                                   std::vector<uint8_t>&& bytes,
                                   size_t creditBytes = 0);

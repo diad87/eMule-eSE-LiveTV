@@ -15,9 +15,15 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <string>
 #include <vector>
 
-namespace kad6 { struct K6ExitNotice; }
+namespace kad6 {
+struct K6ExitNotice; struct K6QuotaBlindRequest;
+struct K6QuotaBlindResponse; struct K6QuotaIssuerCertificate;
+struct K6QuotaToken; struct K6QuotaBlindState;
+struct K6QuotaPresentation; struct K6QuotaPresentationResult;
+}
 namespace eSELive {
 struct LiveK6ReleaseRuntimeSnapshot;
 
@@ -121,6 +127,58 @@ public:
     std::vector<LiveDeferredWork> CloseDeferredWork();
     void ReopenDeferredWork();
     bool AcceptingDeferredWork() const;
+    bool LT2HardeningCanAdmit(kad6::K6Service service) const noexcept;
+    bool LT2HardeningSetEnabled(kad6::K6Service service, bool enabled, std::uint64_t now, std::uint32_t drain, std::uint64_t active);
+    kad6::K6HardeningSnapshot LT2HardeningSnapshot() const noexcept;
+    kad6::K6DrainResult LT2HardeningTick(std::uint64_t now, const std::array<std::uint64_t, static_cast<size_t>(kad6::K6Service::Count)>& active);
+    void LT2RecordUsefulBytes(std::uint64_t delta) noexcept;
+    void LT2RecordPublishAttempt(std::uint64_t delta) noexcept;
+    bool LT2EconomyHealthy() const noexcept;
+    bool LT2EconomyAdmit(kad6::K6Service service, std::uint64_t now);
+    void LT2RefreshEconomy(
+        std::uint64_t now,
+        const std::array<std::uint64_t,
+            static_cast<size_t>(kad6::K6Service::Count)>& active,
+        double capacity, std::uint64_t processNow,
+        std::uint64_t systemNow, std::uint64_t occupied);
+    void LT2FillEconomySnapshot(
+        bool& measurementReady,
+        std::array<double, static_cast<size_t>(kad6::K6Service::Count)>& rho,
+        std::array<kad6::K6EconomyWindowSnapshot,
+            static_cast<size_t>(kad6::K6Service::Count)>& economy) const;
+    void LT2ResetQuotaState();
+    void LT2PruneQuotaGrants(std::uint64_t now);
+    bool LT2EnsureQuotaAuthority(
+        std::uint64_t now, const std::string& storagePath,
+        const std::uint8_t nodePublicKey[32],
+        const kad6::Kad6CryptoHooks& identityCrypto);
+    std::vector<std::uint8_t> LT2QuotaCertificateWire() const;
+    bool LT2BlindQuotaToken(
+        const kad6::K6QuotaIssuerCertificate& certificate,
+        const kad6::K6QuotaToken& token,
+        kad6::K6QuotaBlindState& blind);
+    bool LT2FinalizeQuotaToken(
+        const kad6::K6QuotaIssuerCertificate& certificate,
+        const kad6::K6QuotaBlindState& blind,
+        const std::vector<std::uint8_t>& blindSignature,
+        kad6::K6QuotaPresentation& presentation);
+    void LT2IssueQuota(
+        const kad6::K6QuotaBlindRequest& request,
+        const std::array<std::uint8_t, 32>& principal,
+        const std::array<std::uint8_t, 6>& prefix48,
+        std::uint32_t asn, std::uint64_t now,
+        std::uint64_t monotonicNowMs,
+        kad6::K6QuotaBlindResponse& response);
+    void LT2PresentQuota(
+        const kad6::K6QuotaPresentation& presentation,
+        bool issuerTrusted, std::uint32_t circuitId, std::uint64_t now,
+        const kad6::Kad6CryptoHooks& identityCrypto,
+        kad6::K6QuotaPresentationResult& result);
+    bool LT2ConsumeQuotaGrant(
+        std::uint32_t circuitId,
+        const std::array<std::uint8_t, 32>& context,
+        std::uint8_t service, std::uint64_t now,
+        bool allowMissing, std::uint64_t* allocationId);
     void ConfigureReleaseGate(
         const std::wstring&, bool (*)(void*, std::uint8_t*, std::size_t), void*,
         bool (*)(void*, bool, std::uint32_t));
@@ -249,6 +307,7 @@ private:
     std::map<std::uint64_t, std::uint64_t> m_fair_allocation_by_stream;
     std::uint64_t m_fair_payload_bytes = 0;
     M2AModuleHandle m_m2a_binding_bab3ce64a0;
+    M2AModuleHandle m_m2a_binding_8892179a6e;
     CKad6ExitNoticeServer m_release_notice_adapter;
 };
 

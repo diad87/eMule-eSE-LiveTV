@@ -13,6 +13,60 @@
 namespace eSELive {
 
 M2AModuleHandle M2A_BIND_LT1_BAB3CE64A0(const M2AParentPort&);
+M2AModuleHandle M2A_BIND_LT2_8892179A6E(const M2AParentPort&);
+void M2A_LT2_InitializeBridge(M2AModuleHandle&);
+bool M2A_LT2_HardeningCanAdmitBridge(const M2AModuleHandle&,kad6::K6Service) noexcept;
+bool M2A_LT2_HardeningSetEnabledBridge(M2AModuleHandle&,kad6::K6Service,bool,std::uint64_t,std::uint32_t,std::uint64_t);
+kad6::K6HardeningSnapshot M2A_LT2_HardeningSnapshotBridge(const M2AModuleHandle&) noexcept;
+kad6::K6DrainResult M2A_LT2_HardeningTickBridge(M2AModuleHandle&,std::uint64_t,const std::array<std::uint64_t,static_cast<size_t>(kad6::K6Service::Count)>&);
+void M2A_LT2_RecordUsefulBytesBridge(M2AModuleHandle&, std::uint64_t) noexcept;
+void M2A_LT2_RecordPublishAttemptBridge(M2AModuleHandle&, std::uint64_t) noexcept;
+bool M2A_LT2_EconomyHealthyBridge(const M2AModuleHandle&) noexcept;
+bool M2A_LT2_EconomyAdmitBridge(M2AModuleHandle&, kad6::K6Service, std::uint64_t);
+void M2A_LT2_RefreshEconomyBridge(
+    M2AModuleHandle&, std::uint64_t,
+    const std::array<std::uint64_t,
+        static_cast<size_t>(kad6::K6Service::Count)>&,
+    double, std::uint64_t, std::uint64_t, std::uint64_t);
+void M2A_LT2_FillEconomySnapshotBridge(
+    const M2AModuleHandle&, bool&,
+    std::array<double, static_cast<size_t>(kad6::K6Service::Count)>&,
+    std::array<kad6::K6EconomyWindowSnapshot,
+        static_cast<size_t>(kad6::K6Service::Count)>&);
+void M2A_LT2_ResetQuotaStateBridge(M2AModuleHandle&);
+std::vector<std::uint64_t> M2A_LT2_PruneQuotaGrantsBridge(M2AModuleHandle&, std::uint64_t);
+bool M2A_LT2_EnsureQuotaAuthorityBridge(
+    M2AModuleHandle&, std::uint64_t, const std::string&,
+    const std::uint8_t[32], const kad6::Kad6CryptoHooks&);
+bool M2A_LT2_QuotaCertificateWireBridge(const M2AModuleHandle&, std::vector<std::uint8_t>&);
+bool M2A_LT2_BlindQuotaTokenBridge(
+    M2AModuleHandle&, const kad6::K6QuotaIssuerCertificate&,
+    const kad6::K6QuotaToken&, kad6::K6QuotaBlindState&);
+bool M2A_LT2_FinalizeQuotaTokenBridge(
+    M2AModuleHandle&, const kad6::K6QuotaIssuerCertificate&,
+    const kad6::K6QuotaBlindState&,
+    const std::vector<std::uint8_t>&, kad6::K6QuotaPresentation&);
+void M2A_LT2_IssueQuotaBridge(
+    M2AModuleHandle&, const kad6::K6QuotaBlindRequest&,
+    const std::array<std::uint8_t, 32>&,
+    const std::array<std::uint8_t, 6>&,
+    std::uint32_t, std::uint64_t, std::uint64_t,
+    kad6::K6QuotaBlindResponse&);
+using M2ARegisterFairAllocation = bool (*)(
+    void*, std::uint64_t, const kad6::Hash32&,
+    std::uint64_t, std::uint64_t);
+using M2AReleaseFairAllocation = void (*)(void*, std::uint64_t);
+void M2A_LT2_PresentQuotaBridge(
+    M2AModuleHandle&, const kad6::K6QuotaPresentation&,
+    bool, std::uint32_t, std::uint64_t,
+    const kad6::Kad6CryptoHooks&, void*,
+    M2ARegisterFairAllocation, M2AReleaseFairAllocation,
+    kad6::K6QuotaPresentationResult&);
+bool M2A_LT2_ConsumeQuotaGrantBridge(
+    M2AModuleHandle&, std::uint32_t,
+    const std::array<std::uint8_t, 32>&,
+    std::uint8_t, std::uint64_t, bool,
+    std::uint64_t&, std::uint64_t&);
 bool RunLiveTunnelReleaseGateCharacterizationSelfTest();
 void M2A_LT1_ConfigureBridge(M2AModuleHandle&, CKad6ExitNoticeServer&, const std::wstring&, bool (*)(void*, std::uint8_t*, std::size_t), void*, bool (*)(void*, bool, std::uint32_t));
 bool M2A_LT1_SaveEvidenceBridge(M2AModuleHandle&, kad6::K6ReleaseEvidence, const kad6::Kad6CryptoHooks&, const std::uint8_t*, std::uint64_t);
@@ -26,8 +80,151 @@ bool M2A_LT1_GetChallengeBridge(M2AModuleHandle&, std::string&, std::uint64_t);
 bool M2A_LT1_ConsumeChallengeBridge(M2AModuleHandle&, const std::string&, std::uint64_t) noexcept;
 
 LiveTunnelScheduler::LiveTunnelScheduler()
-    : m_m2a_binding_bab3ce64a0(M2AAssignmentPolicy::RetainExisting)
+    : m_m2a_binding_bab3ce64a0(M2AAssignmentPolicy::RetainExisting),
+      m_m2a_binding_8892179a6e(M2AAssignmentPolicy::RetainExisting)
 {
+    m_m2a_binding_8892179a6e = M2A_BIND_LT2_8892179A6E(M2AParentPort{this});
+    M2A_LT2_InitializeBridge(m_m2a_binding_8892179a6e);
+}
+
+bool LiveTunnelScheduler::LT2HardeningCanAdmit(kad6::K6Service service) const noexcept { return M2A_LT2_HardeningCanAdmitBridge(m_m2a_binding_8892179a6e,service); }
+bool LiveTunnelScheduler::LT2HardeningSetEnabled(kad6::K6Service service,bool enabled,std::uint64_t now,std::uint32_t drain,std::uint64_t active) { return M2A_LT2_HardeningSetEnabledBridge(m_m2a_binding_8892179a6e,service,enabled,now,drain,active); }
+kad6::K6HardeningSnapshot LiveTunnelScheduler::LT2HardeningSnapshot() const noexcept { return M2A_LT2_HardeningSnapshotBridge(m_m2a_binding_8892179a6e); }
+kad6::K6DrainResult LiveTunnelScheduler::LT2HardeningTick(std::uint64_t now,const std::array<std::uint64_t,static_cast<size_t>(kad6::K6Service::Count)>& active) { return M2A_LT2_HardeningTickBridge(m_m2a_binding_8892179a6e,now,active); }
+void LiveTunnelScheduler::LT2RecordUsefulBytes(
+    std::uint64_t delta) noexcept {
+    M2A_LT2_RecordUsefulBytesBridge(m_m2a_binding_8892179a6e, delta);
+}
+void LiveTunnelScheduler::LT2RecordPublishAttempt(
+    std::uint64_t delta) noexcept {
+    M2A_LT2_RecordPublishAttemptBridge(m_m2a_binding_8892179a6e, delta);
+}
+bool LiveTunnelScheduler::LT2EconomyHealthy() const noexcept {
+    return M2A_LT2_EconomyHealthyBridge(m_m2a_binding_8892179a6e);
+}
+bool LiveTunnelScheduler::LT2EconomyAdmit(
+    kad6::K6Service service, std::uint64_t now) {
+    return M2A_LT2_EconomyAdmitBridge(
+        m_m2a_binding_8892179a6e, service, now);
+}
+void LiveTunnelScheduler::LT2RefreshEconomy(
+    std::uint64_t now,
+    const std::array<std::uint64_t,
+        static_cast<size_t>(kad6::K6Service::Count)>& active,
+    double capacity, std::uint64_t processNow,
+    std::uint64_t systemNow, std::uint64_t occupied) {
+    M2A_LT2_RefreshEconomyBridge(
+        m_m2a_binding_8892179a6e, now, active, capacity,
+        processNow, systemNow, occupied);
+}
+void LiveTunnelScheduler::LT2FillEconomySnapshot(
+    bool& measurementReady,
+    std::array<double, static_cast<size_t>(kad6::K6Service::Count)>& rho,
+    std::array<kad6::K6EconomyWindowSnapshot,
+        static_cast<size_t>(kad6::K6Service::Count)>& economy) const {
+    M2A_LT2_FillEconomySnapshotBridge(
+        m_m2a_binding_8892179a6e, measurementReady, rho, economy);
+}
+namespace {
+bool M2A_LT2_RegisterFair(
+    void* context, std::uint64_t allocation,
+    const kad6::Hash32& issuer, std::uint64_t allocationLimit,
+    std::uint64_t issuerLimit) {
+    LiveTunnelScheduler* scheduler =
+        static_cast<LiveTunnelScheduler*>(context);
+    return scheduler && scheduler->RegisterFairAllocation(
+        allocation, issuer, allocationLimit, issuerLimit);
+}
+void M2A_LT2_ReleaseFair(void* context, std::uint64_t allocation) {
+    LiveTunnelScheduler* scheduler =
+        static_cast<LiveTunnelScheduler*>(context);
+    if (scheduler)
+        scheduler->ReleaseFairAllocation(allocation);
+}
+}
+void LiveTunnelScheduler::LT2ResetQuotaState() { M2A_LT2_ResetQuotaStateBridge(m_m2a_binding_8892179a6e); }
+void LiveTunnelScheduler::LT2PruneQuotaGrants(std::uint64_t now) {
+    const std::vector<std::uint64_t> released =
+        M2A_LT2_PruneQuotaGrantsBridge(m_m2a_binding_8892179a6e, now);
+    for (std::uint64_t allocation : released)
+        ReleaseFairAllocation(allocation);
+}
+bool LiveTunnelScheduler::LT2EnsureQuotaAuthority(
+    std::uint64_t now, const std::string& storagePath,
+    const std::uint8_t nodePublicKey[32],
+    const kad6::Kad6CryptoHooks& identityCrypto) {
+    return M2A_LT2_EnsureQuotaAuthorityBridge(
+        m_m2a_binding_8892179a6e, now, storagePath,
+        nodePublicKey, identityCrypto);
+}
+std::vector<std::uint8_t> LiveTunnelScheduler::LT2QuotaCertificateWire() const {
+    std::vector<std::uint8_t> out;
+    M2A_LT2_QuotaCertificateWireBridge(m_m2a_binding_8892179a6e, out);
+    return out;
+}
+
+bool LiveTunnelScheduler::LT2BlindQuotaToken(
+    const kad6::K6QuotaIssuerCertificate& certificate,
+    const kad6::K6QuotaToken& token,
+    kad6::K6QuotaBlindState& blind) {
+    return M2A_LT2_BlindQuotaTokenBridge(
+        m_m2a_binding_8892179a6e, certificate, token, blind);
+}
+
+bool LiveTunnelScheduler::LT2FinalizeQuotaToken(
+    const kad6::K6QuotaIssuerCertificate& certificate,
+    const kad6::K6QuotaBlindState& blind,
+    const std::vector<std::uint8_t>& blindSignature,
+    kad6::K6QuotaPresentation& presentation) {
+    return M2A_LT2_FinalizeQuotaTokenBridge(
+        m_m2a_binding_8892179a6e, certificate, blind,
+        blindSignature, presentation);
+}
+
+void LiveTunnelScheduler::LT2IssueQuota(
+    const kad6::K6QuotaBlindRequest& request,
+    const std::array<std::uint8_t, 32>& principal,
+    const std::array<std::uint8_t, 6>& prefix48,
+    std::uint32_t asn, std::uint64_t now,
+    std::uint64_t monotonicNowMs,
+    kad6::K6QuotaBlindResponse& response) {
+    M2A_LT2_IssueQuotaBridge(
+        m_m2a_binding_8892179a6e, request, principal, prefix48,
+        asn, now, monotonicNowMs, response);
+}
+
+void LiveTunnelScheduler::LT2PresentQuota(
+    const kad6::K6QuotaPresentation& presentation,
+    bool issuerTrusted, std::uint32_t circuitId, std::uint64_t now,
+    const kad6::Kad6CryptoHooks& identityCrypto,
+    kad6::K6QuotaPresentationResult& result) {
+    M2A_LT2_PresentQuotaBridge(
+        m_m2a_binding_8892179a6e, presentation, issuerTrusted,
+        circuitId, now, identityCrypto, this,
+        &M2A_LT2_RegisterFair, &M2A_LT2_ReleaseFair, result);
+}
+
+bool LiveTunnelScheduler::LT2ConsumeQuotaGrant(
+    std::uint32_t circuitId,
+    const std::array<std::uint8_t, 32>& context,
+    std::uint8_t service, std::uint64_t now,
+    bool allowMissing, std::uint64_t* allocationId) {
+    if (allocationId)
+        *allocationId = 0;
+    std::uint64_t allocation = 0;
+    std::uint64_t release = 0;
+    const bool allowed = M2A_LT2_ConsumeQuotaGrantBridge(
+        m_m2a_binding_8892179a6e, circuitId, context, service,
+        now, allowMissing, allocation, release);
+    if (release)
+        ReleaseFairAllocation(release);
+    if (!allowed)
+        return false;
+    if (allocationId)
+        *allocationId = allocation;
+    else if (allocation)
+        ReleaseFairAllocation(allocation);
+    return true;
 }
 
 bool LiveTunnelScheduler::Enqueue(LiveDeferredWork work)

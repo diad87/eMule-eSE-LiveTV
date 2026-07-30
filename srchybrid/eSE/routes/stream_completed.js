@@ -8,7 +8,7 @@ const {
 const { safeBasename } = require('../utils');
 const { validateRouteContext } = require('./route_context');
 
-/** @type {Pick<import('./route_context').SharedRouteContext, 'FFMPEG_PATH'|'HW_ENCODER'|'HW_ENCODER_OPTS'|'activeStreams'|'getCompletedFiles'|'resolveMediaFile'|'getDuration'> & Record<string, Function>} */
+/** @type {Pick<import('./route_context').SharedRouteContext, 'FFMPEG_PATH'|'HW_ENCODER'|'HW_ENCODER_OPTS'|'activeStreams'|'getCompletedFiles'|'resolveMediaFile'|'getDuration'> & {getSession: Function, emuleRequest: Function}} */
 let _ctx = {};
 
 function init(ctx) {

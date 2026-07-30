@@ -1,0 +1,80 @@
+{
+  "schema": "ese.mod34.live-stream-security-contract/v1",
+  "baseline_commit": "05c815444d106e305908ee076bd3c2bf62f24883",
+  "module": {
+    "name": "LiveStreamSecurity",
+    "owner_before": "CLiveStreamManager",
+    "owner_after": "LiveStreamSecurity",
+    "layer": "domain_state",
+    "responsibility": "signature policy, public-key pinning, verified replay rejection and durable peer trust",
+    "declared_direct_dependencies": []
+  },
+  "invariants": {
+    "wire_format": "byte_unchanged",
+    "crypto_primitive": "existing_Ed25519_and_SHA256_adapters_remain_authoritative",
+    "stream_identity": "a_public_key_is_accepted_only_after_the_adapter_proves_sha1_pubkey_prefix_matches_stream_key",
+    "pinning": "first_valid_key_wins_until_clear_same_key_is_idempotent_key_switch_fails_closed",
+    "pin_capacity": 256,
+    "replay": "only_a_cryptographically_verified_sequence_may_advance_the_replay_window",
+    "replay_window_sequences": 64,
+    "replay_capacity": 256,
+    "serial_wrap": "uint32_sequence_wrap_is_supported_and_half_range_is_fail_closed",
+    "trust_identity": "durable_user_hash_or_public_key_only_never_pointer_or_network_address",
+    "trust_capacity": 1024,
+    "trust_rate": "response_rate_not_volume_controls_degradation_and_promotion",
+    "trust_failure_cap": 100,
+    "threading": "module_state_is_internally_serialized_and_no_external_callback_runs_under_its_lock",
+    "secrets": "private_keys_never_enter_the_module",
+    "allocation": "bounded_state_mutations_fail_closed_without_partial_commit"
+  },
+  "boundary": {
+    "owned_by_LiveStreamSecurity": [
+      "stream-key to public-key pin state",
+      "verified sequence replay windows",
+      "durable peer trust records",
+      "response-rate and trust-tier transition policy",
+      "bounded stale-state pruning decisions"
+    ],
+    "retained_by_CLiveStreamManager": [
+      "packet parsing and wire DTO projection",
+      "SHA256 and Ed25519 primitive invocation",
+      "stream-key self-certification primitive invocation",
+      "CUpDownClient to durable peer identity projection",
+      "logging, counters, MFC locking and external I/O"
+    ]
+  },
+  "acceptance": {
+    "required_native_cases": [
+      "pin_idempotence_and_conflict",
+      "pin_and_replay_capacity_fail_closed",
+      "verified_replay_duplicate_and_too_old",
+      "uint32_wrap_and_half_range",
+      "forged_or_unverified_input_cannot_poison_replay",
+      "durable_trust_survives_pointer_replacement_projection",
+      "response_rate_boundaries",
+      "failure_cap_and_stale_prune",
+      "concurrent_read_write_and_clear",
+      "allocation_failure_atomicity"
+    ],
+    "required_gates": [
+      "MOD-0.1",
+      "MOD-0.2",
+      "MOD-0.3",
+      "MOD-0.4",
+      "MOD-3.1",
+      "MOD-3.2",
+      "MOD-3.3",
+      "Release-x64",
+      "production-selftest",
+      "independent-Sol-review"
+    ],
+    "stop_conditions": [
+      "wire_byte_drift",
+      "cryptographic_verification_bypass",
+      "unverified_replay_state_mutation",
+      "unbounded_security_state",
+      "pointer_or_address_keyed_trust",
+      "new_P0_P1_or_P2_finding"
+    ]
+  }
+}

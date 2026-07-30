@@ -80,6 +80,8 @@ using ese::live::LivePeerHandle;
 using ese::live::LivePeerSet;
 using ese::live::LiveChunkRecord;
 using ese::live::LiveChunkWindow;
+using ese::live::LiveTrustLevel;
+using ese::live::LiveTrustSnapshot;
 
 struct LegacyChunkView final {
     explicit LegacyChunkView(const LiveChunkRecord& source) {
@@ -125,38 +127,48 @@ static CString HexStreamKey(const uchar* streamKey)
     return out;
 }
 
+static LiveTrustSnapshot TrustSnapshotOf(const PeerTrust& trust)
+{
+    return {static_cast<std::uint32_t>(trust.joinedAt),
+        trust.requestsReceived, trust.requestsServed, trust.failCount,
+        static_cast<LiveTrustLevel>(trust.currentLevel), trust.isBanned};
+}
+
 // v7.7.0 — pin the pubkey for a streamKey. Idempotent: if already pinned to
 // the same pubkey, returns true; if pinned to a DIFFERENT pubkey, rejects.
 // The caller MUST have already verified sha1(pubkey)[:16] == streamKey;
 // this function does not re-check that (cheap to call, no cryptography).
 bool CLiveStreamManager::PinStreamPubkey(const uchar streamKey[16], const uchar pubkey[32])
 {
-    CSingleLock lock(&m_lock, TRUE);
+    if (streamKey == NULL || pubkey == NULL) return false;
+    ese::live::LiveStreamKey key;
+    ese::live::LivePublicKey publicKey;
+    memcpy(key.data(), streamKey, key.size());
+    memcpy(publicKey.data(), pubkey, publicKey.size());
     CString hex = HexStreamKey(streamKey);
-    PubkeyPin existing;
-    if (m_streamPubkeyPin.Lookup(hex, existing)) {
-        if (memcmp(existing.pubkey, pubkey, 32) == 0)
-            return true;  // same key — idempotent
+    const ese::live::LivePinResult result = m_streamSecurity.PinValidatedPublicKey(
+        key, publicKey, static_cast<std::uint32_t>(GetTickCount()));
+    if (result == ese::live::LivePinResult::Pinned) {
+        LIVE_LOG("PIN", "PIN pubkey for stream %s", (LPCSTR)CStringA(hex));
+        return true;
+    }
+    if (result == ese::live::LivePinResult::AlreadyPinned)
+        return true;
+    if (result == ese::live::LivePinResult::Conflict) {
         LIVE_LOG("PIN", "REJECT pubkey switch for stream %s — keeping original",
             (LPCSTR)CStringA(hex));
-        return false;
     }
-    PubkeyPin pin;
-    memcpy(pin.pubkey, pubkey, 32);
-    pin.pinnedAt = GetTickCount();
-    m_streamPubkeyPin[hex] = pin;
-    LIVE_LOG("PIN", "PIN pubkey for stream %s", (LPCSTR)CStringA(hex));
-    return true;
+    return false;
 }
 
 bool CLiveStreamManager::GetPinnedPubkey(const uchar streamKey[16], uchar outPubkey[32]) const
 {
-    CSingleLock lock(&m_lock, TRUE);
-    CString hex = HexStreamKey(streamKey);
-    PubkeyPin pin;
-    if (!const_cast<CMap<CString, LPCTSTR, PubkeyPin, PubkeyPin&>&>(m_streamPubkeyPin).Lookup(hex, pin))
-        return false;
-    memcpy(outPubkey, pin.pubkey, 32);
+    if (streamKey == NULL || outPubkey == NULL) return false;
+    ese::live::LiveStreamKey key;
+    ese::live::LivePublicKey publicKey;
+    memcpy(key.data(), streamKey, key.size());
+    if (!m_streamSecurity.GetPinnedPublicKey(key, publicKey)) return false;
+    memcpy(outPubkey, publicKey.data(), publicKey.size());
     return true;
 }
 
@@ -2159,7 +2171,7 @@ void CLiveStreamManager::IngestChunkPayload(CUpDownClient* peer, uint8 innerOpco
                 return;
             }
         }
-        OnChunkReceived(peer, streamKey, seqNum, timestamp, chunkData, chunkSize);
+        OnChunkReceived(peer, streamKey, seqNum, timestamp, chunkData, chunkSize, true);
         return;
     }
     // Unknown inner opcode — drop silently.
@@ -2261,7 +2273,8 @@ void CLiveStreamManager::OnChunkFragmentReceived(CUpDownClient* peer, const ucha
 }
 
 void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* streamKey,
-    uint32 seqNum, uint32 timestamp, const BYTE* data, uint32 dataSize)
+    uint32 seqNum, uint32 timestamp, const BYTE* data, uint32 dataSize,
+    bool verifiedSigned)
 {
     CSingleLock lock(&m_lock, TRUE);
 
@@ -2272,6 +2285,17 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
     if (memcmp(m_streamInfo.streamKey, streamKey, 16) != 0) {
         LIVE_LOG("RECV", "DROP chunk seq=%u — wrong key", seqNum);
         return;
+    }
+    if (verifiedSigned) {
+        ese::live::LiveStreamKey key;
+        memcpy(key.data(), streamKey, key.size());
+        const ese::live::LiveReplayResult replay =
+            m_streamSecurity.AcceptVerifiedSequence(key, seqNum);
+        if (replay != ese::live::LiveReplayResult::Accepted) {
+            InterlockedIncrement(&m_counters.duplicateChunksReceived);
+            LIVE_LOG("RECV", "REPLAY seq=%u — signed duplicate/stale dropped", seqNum);
+            return;
+        }
     }
 
     LIVE_LOG("RECV", "chunk seq=%u size=%u from peer", seqNum, dataSize);
@@ -2343,8 +2367,9 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
     // failures. Backfill deliveries earn nothing, so a peer that serves cheap
     // far-ahead blocks but keeps dropping the imminent one cannot decay its way
     // back to a clean failCount.
-    if (wasEdgeCritical && trust.failCount > 0)
-        trust.failCount--;
+    if (wasEdgeCritical)
+        trust.failCount = ese::live::LiveStreamSecurity::
+            RewardCriticalDelivery(trust.failCount);
 
     // V2-S01/S02: per-peer counters (we already hold m_lock).
     PeerCounters& pc = m_peerCounters[PeerId(peer)];
@@ -3117,33 +3142,12 @@ bool CLiveStreamManager::IsStreamTombstoned(const uchar* streamKey) const
 int CLiveStreamManager::CalculateTrustLevel(CUpDownClient* peer)
 {
     PeerTrust& trust = GetOrCreateTrust(peer);
-
-    if (trust.isBanned) return ESE_TRUST_LEAF;
-
-    DWORD uptime = trust.GetUptime();
-    float responseRate = trust.GetResponseRate();
-
-    // New peer: always leaf
-    if (uptime < ESE_PROMOTE_MIDDLE_TIME) return ESE_TRUST_LEAF;
-
-    // Low response rate (but only if enough requests to judge)
-    if (trust.requestsReceived > 5 && responseRate < ESE_PROMOTE_MIDDLE_RATE)
-        return ESE_TRUST_LEAF;
-
-    // Failed too many times
-    if (trust.failCount > 2) return ESE_TRUST_LEAF;
-
-    // Not enough time for super-seeder
-    if (uptime < ESE_PROMOTE_SUPER_TIME) return ESE_TRUST_MIDDLE;
-
-    // High response rate required for super-seeder
-    if (trust.requestsReceived > 10 && responseRate < ESE_PROMOTE_SUPER_RATE)
-        return ESE_TRUST_MIDDLE;
-
-    // Check subnet diversity
-    if (!CanPromoteToSuperSeeder(peer)) return ESE_TRUST_MIDDLE;
-
-    return ESE_TRUST_SUPERSEEDER;
+    LiveTrustLevel level = ese::live::LiveStreamSecurity::EvaluateTrust(
+        TrustSnapshotOf(trust), static_cast<std::uint32_t>(GetTickCount()), true);
+    if (level == LiveTrustLevel::SuperSeeder &&
+        !CanPromoteToSuperSeeder(peer))
+        level = LiveTrustLevel::Middle;
+    return static_cast<int>(level);
 }
 
 void CLiveStreamManager::MeasurePeerRatio(CUpDownClient* peer)
@@ -3161,27 +3165,22 @@ void CLiveStreamManager::MeasurePeerRatio(CUpDownClient* peer)
         return;
     }
 
-    float responseRate = trust.GetResponseRate();
-
-    // Only judge after enough requests
-    if (uptime > ESE_PROMOTE_MIDDLE_TIME) {
-        if (trust.requestsReceived > 10 && responseRate < ESE_BAN_RESPONSE_RATE) {
-            // Confirmed: refuses to serve requests
-            BanPeer(peer);
-            return;
-        }
-        if (trust.requestsReceived > 5 && responseRate < ESE_DEGRADE_RESPONSE_RATE) {
-            DemotePeer(peer);
-        }
+    const DWORD now = GetTickCount();
+    const LiveTrustSnapshot snapshot = TrustSnapshotOf(trust);
+    if (ese::live::LiveStreamSecurity::ShouldBan(snapshot, now)) {
+        BanPeer(peer);
+        return;
     }
+    if (ese::live::LiveStreamSecurity::ShouldDemote(snapshot, now))
+        DemotePeer(peer);
 
     // Try to promote
     int newLevel = CalculateTrustLevel(peer);
     if (newLevel < trust.currentLevel) {
         trust.currentLevel = newLevel;
-        trust.lastPromotionTime = GetTickCount();
+        trust.lastPromotionTime = now;
         AddLogLine(false, GetResString(IDS_LIVEMGR_PEER_PROMOTED_FMT),
-            newLevel, responseRate * 100.0f);
+            newLevel, snapshot.ResponseRate() * 100.0f);
     }
 }
 
@@ -4305,8 +4304,8 @@ void CLiveStreamManager::ChargePunctualityFailure(const CAddress& address, uint1
     if (peer == NULL) return;  // peer already gone — nothing left to penalise
 
     PeerTrust& trust = GetOrCreateTrust(peer);
-    trust.failCount += ESE_EDGE_FAIL_WEIGHT;
-    if (trust.failCount > ESE_FAIL_COUNT_CAP) trust.failCount = ESE_FAIL_COUNT_CAP;
+    trust.failCount = ese::live::LiveStreamSecurity::ChargeFailure(
+        trust.failCount, ESE_EDGE_FAIL_WEIGHT);
     trust.lastSeen = GetTickCount();
     const std::string text = address.ToString();
     LIVE_LOG("TRUST", "edge-miss address=%s port=%u failCount=%d",

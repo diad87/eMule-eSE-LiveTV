@@ -2080,88 +2080,19 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				if (thePrefs.GetDebugClientTCPLevel() > 1) // level > 1 to avoid flooding
 					DebugRecv("OP_LiveChunk", client, (size >= 16) ? packet : NULL);
 				theStats.AddDownDataOverheadOther(uRawSize);
-				if (size < 28) break; // streamKey(16) + seqNum(4) + chunkSize(4) + timestamp(4)
-
-				CSafeMemFile data(packet, size);
-				uchar streamKey[16];
-				data.ReadHash16(streamKey);
-				uint32 seqNum = data.ReadUInt32();
-				uint32 timestamp = data.ReadUInt32();
-				uint32 chunkSize = data.ReadUInt32();
-
-				// Sanity check: chunk size must not exceed remaining data
-				if (chunkSize > size - 28 || chunkSize > 4 * 1024 * 1024) break; // max 4MB
-
-				const BYTE* chunkData = packet + 28;
 				if (theApp.liveStreamManager)
-					theApp.liveStreamManager->OnChunkReceived(client, streamKey,
-						seqNum, timestamp, chunkData, chunkSize);
+					theApp.liveStreamManager->IngestChunkPayload(
+						client, OP_LIVE_CHUNK, packet, size);
 			}
 			break;
 		case OP_LIVE_CHUNK_V2:
 			{
-				// v7.7.0 — signed chunk.
-				// Format: streamKey(16) + seqNum(4) + ts(4) + dataSize(4) + bitrate(2)
-				//        + sha256(32) + sig(64) + data(dataSize).
 				if (thePrefs.GetDebugClientTCPLevel() > 1)
 					DebugRecv("OP_LiveChunkV2", client, (size >= 16) ? packet : NULL);
 				theStats.AddDownDataOverheadOther(uRawSize);
-				if (size < 126) break;  // header alone
-
-				CSafeMemFile data(packet, size);
-				uchar streamKey[16];
-				data.ReadHash16(streamKey);
-				uint32 seqNum    = data.ReadUInt32();
-				uint32 timestamp = data.ReadUInt32();
-				uint32 chunkSize = data.ReadUInt32();
-				/*uint16 bitrate =*/ data.ReadUInt16();
-				uchar digest[32];
-				data.Read(digest, 32);
-				uchar sig[64];
-				data.Read(sig, 64);
-
-				if (chunkSize > size - 126 || chunkSize > 4 * 1024 * 1024) break;
-
-				const BYTE* chunkData = packet + 126;
-
-				// 1. Need a pinned pubkey for this streamKey; without it we
-				//    can't verify. Drop silently — V1 path will retry if/when
-				//    an ANNOUNCE carries the pubkey.
-				uchar pubkey[32];
-				if (!theApp.liveStreamManager ||
-				    !theApp.liveStreamManager->GetPinnedPubkey(streamKey, pubkey)) {
-					break;
-				}
-
-				// 2. Verify sha256(data) matches digest. Cheap integrity check
-				//    that also amortises the cost of the signature path: if a
-				//    peer corrupts even one byte we fail here before doing
-				//    the expensive Ed25519 verify.
-				{
-					CryptoPP::SHA256 hash;
-					uchar computed[32];
-					hash.CalculateDigest(computed, chunkData, chunkSize);
-					if (memcmp(computed, digest, 32) != 0) {
-						AddLogLine(true, _T("eSE Live: chunk seq=%u digest mismatch — dropping"), seqNum);
-						break;
-					}
-				}
-
-				// 3. Verify signature over (streamKey || seqNum || digest).
-				{
-					uchar signMsg[16 + 4 + 32];
-					memcpy(signMsg, streamKey, 16);
-					memcpy(signMsg + 16, &seqNum, 4);
-					memcpy(signMsg + 20, digest, 32);
-					if (!eSELive::VerifySignature(pubkey, signMsg, sizeof signMsg, sig)) {
-						AddLogLine(true, _T("eSE Live: chunk seq=%u bad signature — dropping"), seqNum);
-						break;
-					}
-				}
-
-				// All checks passed — hand to the manager exactly like V1.
-				theApp.liveStreamManager->OnChunkReceived(client, streamKey,
-					seqNum, timestamp, chunkData, chunkSize);
+				if (theApp.liveStreamManager)
+					theApp.liveStreamManager->IngestChunkPayload(
+						client, OP_LIVE_CHUNK_V2, packet, size);
 			}
 			break;
 		case OP_LIVE_CHUNK_FRAG:

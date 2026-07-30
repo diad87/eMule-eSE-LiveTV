@@ -5,6 +5,7 @@
 
 #include "LiveProtocol.h"
 #include "LiveChunkWindow.h"
+#include "LiveStreamSecurity.h"
 #include "LiveKadBridge.h"
 #include "LiveMeshManager.h"
 #include "LivePeerRefreshPolicy.h"
@@ -377,7 +378,8 @@ public:
     void OnPeerRequest(CUpDownClient* peer, const uchar* streamKey, uint32 seqNum);
     // Called when we receive OP_LIVE_CHUNK from a peer
     void OnChunkReceived(CUpDownClient* peer, const uchar* streamKey,
-                         uint32 seqNum, uint32 timestamp, const BYTE* data, uint32 dataSize);
+                         uint32 seqNum, uint32 timestamp, const BYTE* data,
+                         uint32 dataSize, bool verifiedSigned = false);
     // v8.1.x — OP_LIVE_CHUNK_FRAG receiver: accumulate fragments of an oversized
     // chunk; on completion verify+ingest the reassembled inner payload via
     // IngestChunkPayload (the SAME verify the direct V2/V1 path uses).
@@ -578,6 +580,7 @@ private:
     DWORD               m_dwLastRelaySetup;     // throttle for (re)sending SETUP when no buddy
 
     ese::live::LivePeerSet m_peerSet; // opaque membership; client list owns pointers
+    ese::live::LiveStreamSecurity m_streamSecurity;
 
     // Trust data. C6 (2026-06): keyed by LivePeerId (durable user-hash/pubkey
     // identity), NOT the CUpDownClient* pointer — so it survives the ~6 s LowID
@@ -718,20 +721,6 @@ private:
     // entry in the DHT for ~3 min (the new ESE_KAD_ENTRY_TTL).
     uchar               m_pendingGhostKey[16];
     bool                m_bHasPendingGhostKey;
-
-    // v7.7.0 — streamKey → broadcaster pubkey pin. Populated the first time
-    // we see a self-certifying ANNOUNCE / Kad result for a given streamKey
-    // (sha1(pubkey) == streamKey). Future chunks and END packets for that
-    // streamKey are validated against this pubkey. A peer can't switch the
-    // identity of a stream mid-flight: once pinned, the pin stays for the
-    // lifetime of m_streamPubkeyPin (cleared on Clear() / process exit).
-    // Key: hex(streamKey) — CString-friendly for the existing CMap pattern.
-    // Value: 32-byte pubkey (heap-allocated; deleted in destructor / Clear).
-    struct PubkeyPin {
-        uchar pubkey[32];
-        DWORD pinnedAt;       // GetTickCount() — for staleness pruning if ever needed
-    };
-    CMap<CString, LPCTSTR, PubkeyPin, PubkeyPin&> m_streamPubkeyPin;
 
     // V2-S11: result of upload-capacity probe in kbps (0 = leaf-restricted).
     DWORD               m_measuredUploadKbps;

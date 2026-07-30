@@ -749,6 +749,7 @@ void CLiveStreamManager::FeedSegment(const BYTE* data, uint32 dataSize)
     // Will trigger announce in next Process() tick
 }
 
+// VIEWER API
 
 bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title)
 {

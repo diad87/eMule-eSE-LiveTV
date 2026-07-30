@@ -7531,10 +7531,12 @@ void CLiveTunnel::ExitRelayLiveControl(const uint8_t streamKey[16],
 // ip is a net-order DWORD written byte-preserving via eseWrU32LE; the viewer reads
 // it back with eseRdU32LE and feeds the identical value into OnPeerListReceived.
 void CLiveTunnel::ExitRelayPeerList(const uint8_t streamKey[16],
+                                    uint32_t upstreamIP, uint16_t upstreamPort,
                                     const uint32_t* ips, const uint16_t* ports,
                                     uint8_t count)
 {
-    if (count == 0 || ips == NULL || ports == NULL) return;
+    if (upstreamIP == 0 || upstreamPort == 0 ||
+        count == 0 || ips == NULL || ports == NULL) return;
     if (count > 16) count = 16;   // ESE_LIVE_MAX_PEER_LIST; also bounds the single cell
     const std::string hex = LiveStreamKeyHex(streamKey);
 
@@ -7542,7 +7544,9 @@ void CLiveTunnel::ExitRelayPeerList(const uint8_t streamKey[16],
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         auto it = m_exitLiveSubs.find(hex);
-        if (it == m_exitLiveSubs.end() || it->second.circuits.empty()) return;
+        if (it == m_exitLiveSubs.end() || it->second.circuits.empty() ||
+            it->second.bIP != upstreamIP ||
+            it->second.bPort != upstreamPort) return;
         const DWORD nowT = GetTickCount();
         for (auto& kv : it->second.circuits) {
             kv.second.lastSeen = nowT;   // active relay keeps the circuit fresh vs the TTL sweep

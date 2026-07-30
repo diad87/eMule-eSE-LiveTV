@@ -2566,8 +2566,7 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* peer,
     const uchar* streamKey,
     const CArray<DWORD>& ips, const CArray<uint16>& ports)
 {
-    // Relay before m_lock to preserve tunnel-to-manager lock order.
-    // IP values remain in network order.
+    // Relay network-order IPs before m_lock to preserve lock order.
     {
         int n = (int)ips.GetCount();
         if (n > (int)ports.GetCount()) n = (int)ports.GetCount();
@@ -2575,10 +2574,11 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* peer,
         if (n > 0) {
             uint32_t ipBuf[16]; uint16_t portBuf[16];
             for (int i = 0; i < n; ++i) { ipBuf[i] = (uint32_t)ips[i]; portBuf[i] = ports[i]; }
-            eSELive::CLiveTunnel::Get().ExitRelayPeerList(streamKey, ipBuf, portBuf, (uint8_t)n);
+            if (peer != NULL && !peer->IsIPv6OnlyEndpoint())
+                eSELive::CLiveTunnel::Get().ExitRelayPeerList(
+                    streamKey, peer->GetIP(), peer->GetUserPort(), ipBuf, portBuf, (uint8_t)n);
         }
     }
-
     CSingleLock lock(&m_lock, TRUE);
 
     if (!m_viewerSession.IsActive()) return;

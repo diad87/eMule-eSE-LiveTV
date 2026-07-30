@@ -5,16 +5,16 @@
     {
       "path": "srchybrid/LiveTunnel.cpp",
       "baseline_sha256": "0d899136a867bd1a0571b62b06343d0ca3a1f075162656eb0f4bddcb6dc85591",
-      "overlay_sha256": "c70d5f51d6c62dcd67f337cbca12250557a03a5693db67e1d8285fa14218fb45",
-      "task": "MOD-0.2 + MOD-1.1 + MOD-1.2 + MOD-1.3 + MOD-1.4 + MOD-1.5 + MOD-1.6 + MOD-1.7 + MOD-1.8 + MOD-3.1",
-      "reason": "MOD-0.2 headless production characterization hook; MOD-1.1 mechanically extracts framing; MOD-1.2 extracts pending-request lifetime; MOD-1.3 extracts circuit collection, identity lookup, round-robin cursor and fail-closed state transitions; MOD-1.4 extracts the bounded handshake facade and opaque platform-port adapters; MOD-1.5 extracts validated relay dispatch and exit-operation ownership behind narrow ports; MOD-1.6 extracts deferred-work, tick-deadline and class-5 timer ownership; MOD-1.7 extracts source history, peer policy, fail-closed origin selection and the explicit Kad2/Kad6 port boundary; MOD-1.8 extracts immutable peer snapshots, atomic totals and Kad6 metrics ownership; MOD-3.1 consumes an atomic viewer-key snapshot for bulk subscription."
+      "overlay_sha256": "59c4069c817a9205673b2c839ab7c2909055a398e9614baf877839404c456fd2",
+      "task": "MOD-0.2 + MOD-1.1 + MOD-1.2 + MOD-1.3 + MOD-1.4 + MOD-1.5 + MOD-1.6 + MOD-1.7 + MOD-1.8 + MOD-3.1 + MOD-3.2",
+      "reason": "MOD-0.2 headless production characterization hook; MOD-1.1 mechanically extracts framing; MOD-1.2 extracts pending-request lifetime; MOD-1.3 extracts circuit collection, identity lookup, round-robin cursor and fail-closed state transitions; MOD-1.4 extracts the bounded handshake facade and opaque platform-port adapters; MOD-1.5 extracts validated relay dispatch and exit-operation ownership behind narrow ports; MOD-1.6 extracts deferred-work, tick-deadline and class-5 timer ownership; MOD-1.7 extracts source history, peer policy, fail-closed origin selection and the explicit Kad2/Kad6 port boundary; MOD-1.8 extracts immutable peer snapshots, atomic totals and Kad6 metrics ownership; MOD-3.1 consumes an atomic viewer-key snapshot for bulk subscription; MOD-3.2 binds relayed peer lists to the registered upstream endpoint before refreshing or forwarding them."
     },
     {
       "path": "srchybrid/LiveTunnel.h",
       "baseline_sha256": "1a2684e8741058667b8ececed4170026b1073b851a48e61da49f13c7ba27e731",
-      "overlay_sha256": "910ef7421d60b17416d0916dec50ba460d3a8a2242aa6ad49b744a595bdad01c",
-      "task": "MOD-0.2 + MOD-1.2 + MOD-1.3 + MOD-1.4 + MOD-1.5 + MOD-1.6 + MOD-1.7 + MOD-1.8",
-      "reason": "Declaration of the headless production characterization hook, pending/registry composition, handshake adapter, MOD-1.5 relay/exit composition ports, MOD-1.6 scheduler composition, MOD-1.7 peer-state/Kad-boundary composition, and MOD-1.8 metrics/facade aliases and owner."
+      "overlay_sha256": "2d7e687404ceb39232029e882bbc967bc5f4878e07b65748d34a6a8fbe520331",
+      "task": "MOD-0.2 + MOD-1.2 + MOD-1.3 + MOD-1.4 + MOD-1.5 + MOD-1.6 + MOD-1.7 + MOD-1.8 + MOD-3.2",
+      "reason": "Declaration of the headless production characterization hook, pending/registry composition, handshake adapter, MOD-1.5 relay/exit composition ports, MOD-1.6 scheduler composition, MOD-1.7 peer-state/Kad-boundary composition, MOD-1.8 metrics/facade aliases and owner, and the MOD-3.2 authenticated upstream endpoint for peer-list relay."
     },
     {
       "path": "srchybrid/WebServer.cpp",
@@ -33,7 +33,7 @@
     {
       "path": "srchybrid/LiveStreamManager.cpp",
       "baseline_sha256": "33d509c439836fce2fc35e509f933637687505394daeb5b66e29cb599eb62cc2",
-      "overlay_sha256": "8d881f3ac5885b7dbf456252189953bdaf0fb2278aa8607f7b54172d17d47554",
+      "overlay_sha256": "9683829361c3979898f83196ba0d11bb99fbbd5339bc774ee005212e93a43a62",
       "task": "MOD-0.2 + MOD-3.1 + MOD-3.2",
       "reason": "MOD-3.1 delegates broadcaster and viewer lifecycle state, generation, retry timers, tunnel-session scalars and broadcaster secret lifetime to the two portable session modules; MOD-3.2 delegates ordered source/downstream membership, one canonical source cap, stable selection, atomic client replacement and IPv4 diversity while retaining locks, pointer lifetime, protocol projection and external I/O in the coordinator."
     },

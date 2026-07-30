@@ -19,6 +19,8 @@ MANAGER_SOURCE = ROOT / "srchybrid" / "LiveStreamManager.cpp"
 CLIENT_LIST_SOURCE = ROOT / "srchybrid" / "ClientList.cpp"
 MESH_HEADER = ROOT / "srchybrid" / "LiveMeshManager.h"
 MESH_SOURCE = ROOT / "srchybrid" / "LiveMeshManager.cpp"
+TUNNEL_HEADER = ROOT / "srchybrid" / "LiveTunnel.h"
+TUNNEL_SOURCE = ROOT / "srchybrid" / "LiveTunnel.cpp"
 NATIVE_TEST = ROOT / "srchybrid" / "tests" / "test_live_peer_set.cpp"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
@@ -147,6 +149,10 @@ class Mod32LivePeerSetTest(unittest.TestCase):
             MESH_HEADER.read_text(encoding="utf-8")
             + MESH_SOURCE.read_text(encoding="utf-8")
         )
+        tunnel = (
+            TUNNEL_HEADER.read_text(encoding="utf-8")
+            + TUNNEL_SOURCE.read_text(encoding="utf-8")
+        )
         self.assertIn("ESE_LIVE_MAX_SOURCE_PEERS = 8u", manager)
         self.assertIn(
             "peer != NULL && !m_peerSet.HasSource(PeerHandleOf(peer))",
@@ -180,6 +186,17 @@ class Mod32LivePeerSetTest(unittest.TestCase):
         self.assertIn("ReplaceMeshPeer(", mesh)
         self.assertIn("m_pendingRequests[i].peer = replacement", mesh)
         self.assertIn("m_uploadTracker[replacement]", mesh)
+        relay = tunnel[
+            tunnel.index("void CLiveTunnel::ExitRelayPeerList("):
+            tunnel.index("void CLiveTunnel::FinishDueSearchJobs(")
+        ]
+        for check in (
+            "it->second.bIP != upstreamIP",
+            "it->second.bPort != upstreamPort",
+        ):
+            self.assertIn(check, relay)
+            self.assertLess(relay.index(check), relay.index("lastSeen = nowT"))
+        self.assertIn("peer->GetIP(), peer->GetUserPort()", manager)
 
     def test_wire_files_are_unchanged_and_coordinator_shrinks(self) -> None:
         for path in ("srchybrid/LiveProtocol.h", "srchybrid/LivePackets.cpp"):

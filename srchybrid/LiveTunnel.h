@@ -1149,6 +1149,7 @@ public:
     // stream, so it is cheap to call unconditionally. ips are net-order DWORDs,
     // value-preserving through the LE body (no byte-swap).
     void ExitRelayPeerList(const uint8_t streamKey[16],
+                           uint32_t upstreamIP, uint16_t upstreamPort,
                            const uint32_t* ips, const uint16_t* ports, uint8_t count);
 private:
     // B2/B3 - main thread: reply to jobs whose window elapsed, then drop them.

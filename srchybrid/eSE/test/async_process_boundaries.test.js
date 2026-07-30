@@ -1,10 +1,32 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { PassThrough } = require("node:stream");
 const test = require("node:test");
 
 const deviceScanner = require("../eSE-live/device_scanner");
 const v1Routes = require("../routes/v1_routes");
+
+const runner = require("../bounded_process_runner");
+const originalRunProcess = runner.runProcess;
+const originalSpawnManaged = runner.spawnManaged;
+let resolveProcess;
+let managedSpawnCount = 0;
+runner.runProcess = () => new Promise(resolve => { resolveProcess = resolve; });
+runner.spawnManaged = () => {
+  managedSpawnCount++;
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = () => true;
+  return child;
+};
+const streamPart = require("../routes/stream_part");
+const streamCompleted = require("../routes/stream_completed");
 
 function responsePromise() {
   let finish;
@@ -23,6 +45,16 @@ function responsePromise() {
     },
   };
   return { response, completed };
+}
+
+function eventedResponse() {
+  const response = new EventEmitter();
+  response.destroyed = false;
+  response.headersSent = false;
+  response.writableEnded = false;
+  response.writeHead = function writeHead() { this.headersSent = true; };
+  response.end = function end() { this.writableEnded = true; };
+  return response;
 }
 
 test("DirectShow parsing preserves video and audio device selection", () => {
@@ -93,4 +125,66 @@ test("v1 lifecycle fails closed when process state rejects", async () => {
     epoch: 7,
     restartedAt: 11,
   });
+});
+
+test("part streaming observes disconnect before async filesystem preparation can spawn", async () => {
+  managedSpawnCount = 0;
+  const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ese-mod42-"));
+  const incoming = path.join(tempRoot, "Incoming");
+  const temp = path.join(tempRoot, "Temp");
+  await fs.promises.mkdir(incoming);
+  await fs.promises.mkdir(temp);
+  await fs.promises.writeFile(path.join(temp, "1.part"), Buffer.alloc(32));
+  streamPart.init({
+    EMULE_INCOMING: incoming,
+    FFMPEG_PATH: "ffmpeg",
+  });
+  const request = new EventEmitter();
+  request.destroyed = false;
+  const response = eventedResponse();
+  assert.equal(
+    streamPart.handle(
+      new URL("http://localhost/api/stream/part?file=1.part"),
+      request,
+      response,
+    ),
+    true,
+  );
+  response.emit("close");
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(managedSpawnCount, 0);
+  await fs.promises.rm(tempRoot, { recursive: true, force: true });
+});
+
+test("subtitle streaming observes disconnect before a delayed probe can spawn", async () => {
+  managedSpawnCount = 0;
+  streamCompleted.init({
+    FFMPEG_PATH: "ffmpeg.exe",
+    resolveMediaFile: () => ({ filePath: "movie.mkv" }),
+  });
+  const request = new EventEmitter();
+  request.destroyed = false;
+  const response = eventedResponse();
+  assert.equal(
+    streamCompleted.handle(
+      new URL("http://localhost/api/stream/subtitle?name=movie.mkv&track=0"),
+      request,
+      response,
+    ),
+    true,
+  );
+  response.emit("close");
+  resolveProcess({
+    ok: true,
+    stdout: JSON.stringify({
+      streams: [{ index: 2, codec_name: "subrip" }],
+    }),
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(managedSpawnCount, 0);
+});
+
+test.after(() => {
+  runner.runProcess = originalRunProcess;
+  runner.spawnManaged = originalSpawnManaged;
 });

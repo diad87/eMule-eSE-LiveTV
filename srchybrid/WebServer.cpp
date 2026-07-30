@@ -13,6 +13,7 @@
 #include "StringConversion.h"
 #include "OtherFunctions.h"
 #include "WebApiSerializer.h"
+#include "WebDiagnostics.h"
 #include "WebRequestParser.h"
 #include "WebRouteTable.h"
 #include "WebSearchController.h"
@@ -493,6 +494,13 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 		outFailure = OptUtf8ToStr(
 			serializerFailure.data(),
 			static_cast<int>(serializerFailure.size()));
+		return false;
+	}
+	std::string diagnosticsFailure;
+	if (!ese::web::RunWebDiagnosticsSelfTest(diagnosticsFailure)) {
+		outFailure = OptUtf8ToStr(
+			diagnosticsFailure.data(),
+			static_cast<int>(diagnosticsFailure.size()));
 		return false;
 	}
 	std::string staticFailure;
@@ -4780,7 +4788,6 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 
 	// --- /api/status --- eSE Network health for React alerts (Fase 2)
 	if (Data.webRoute == ese::web::WebRouteId::ApiStatus) {
-		CStringA json;
 		// Determine UPnP port forwarding state: "true", "false", "unknown"
 		const char* szUpnpFwd = "unknown";
 		if (theApp.m_pUPnPFinder && theApp.m_pUPnPFinder->GetImplementation()) {
@@ -4791,102 +4798,81 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		// diagnostics must never make the persistent eD2K identity observable
 		// to a remote dashboard session (including an authenticated guest).
 		// Keep the schema stable and expose values only to a loopback caller.
-		CStringA localDiagnosticJson;
-		if (Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK)) {
+		ese::web::WebNetworkStatusDiagnostics status;
+		status.local.exposed =
+			Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK);
+		if (status.local.exposed) {
 			const CStringA userHashA = CT2A(md4str(thePrefs.GetUserHash()));
-			localDiagnosticJson.Format(
-				"\"user_hash\":\"%s\","
-				"\"connecting_client_count\":%ld,"
-				"\"connecting_client_adds\":%ld,"
-				"\"connecting_client_high_water\":%ld,"
-				"\"connecting_client_duplicate_adds\":%ld,",
-				(LPCSTR)userHashA,
-				theApp.clientlist ? theApp.clientlist->GetConnectingClientCount() : 0,
-				theApp.clientlist ? theApp.clientlist->GetConnectingClientAdds() : 0,
-				theApp.clientlist ? theApp.clientlist->GetConnectingClientHighWater() : 0,
-				theApp.clientlist ? theApp.clientlist->GetConnectingClientDuplicateAdds() : 0);
-		} else {
-			localDiagnosticJson =
-				"\"user_hash\":null,"
-				"\"connecting_client_count\":null,"
-				"\"connecting_client_adds\":null,"
-				"\"connecting_client_high_water\":null,"
-				"\"connecting_client_duplicate_adds\":null,";
+			status.local.user_hash.assign(
+				static_cast<LPCSTR>(userHashA),
+				static_cast<std::size_t>(userHashA.GetLength()));
+			status.local.connecting_client_count = theApp.clientlist
+				? theApp.clientlist->GetConnectingClientCount() : 0;
+			status.local.connecting_client_adds = theApp.clientlist
+				? theApp.clientlist->GetConnectingClientAdds() : 0;
+			status.local.connecting_client_high_water = theApp.clientlist
+				? theApp.clientlist->GetConnectingClientHighWater() : 0;
+			status.local.connecting_client_duplicate_adds = theApp.clientlist
+				? theApp.clientlist->GetConnectingClientDuplicateAdds() : 0;
 		}
 		CKadKeepalive::Stats ksKeepalive = CKadKeepalive::Instance().GetStats();  // R.2 telemetry snapshot
-		json.Format(
-			"{\"upnp_critical_error\":%s,"
-			"\"utp_hole_punch_enabled\":%s,"
-			"\"web_upnp_active\":%s,"
-			"\"upnp_ports_forwarded\":\"%s\","
-			"\"kad_connected\":%s,"
-			"\"kad_configured_mask\":%u,"
-			"\"kad_running_mask\":%u,"
-			"\"kad2_running\":%s,"
-			"\"kad2_connected\":%s,"
-			"\"kad6_running\":%s,"
-			"\"kad6_connected\":%s,"
-			"\"kad6_verified_contacts\":%u,"
-			"\"ed2k_connected\":%s,"
-			"%s"
-			"\"hole_punch_attempts\":%u,"
-			"\"hole_punch_success\":%u,"
-			"\"hole_punch_sym_nat_fail\":%u,"
-			"\"hole_punch_encrypted\":%u,"
-			"\"hole_punch_plaintext\":%u,"
-			"\"hole_punch_req_recv\":%u,"
-			"\"hole_punch_challenge_sent\":%u,"
-			"\"kad3_rdv_req_sent\":%u,"
-			"\"kad3_rdv_req_recv\":%u,"
-			"\"kad3_rdv_challenge_sent\":%u,"
-			"\"kad3_rdv_fwd\":%u,"
-			"\"kad3_rdv_success\":%u,"
-			"\"keepalive_running\":%s,"
-			"\"keepalive_pings_sent\":%u,"
-			"\"keepalive_pongs_recv\":%u,"
-			"\"keepalive_supernodes\":%u,"
-			"\"netlab_consent\":\"%s\","
-			"\"netlab_advanced_consent\":\"%s\","
-			"\"netlab_contribution_consent\":\"%s\","
-			"\"netlab_enabled\":%s}",
-			thePrefs.GetUPnPCriticalError() ? "true" : "false",
-			thePrefs.GetUtpHolePunchEnabled() ? "true" : "false",
-			thePrefs.GetWSUseUPnP() ? "true" : "false",
-			szUpnpFwd,
-			Kademlia::CKademlia::IsAnyConnected() ? "true" : "false",
-			static_cast<unsigned>(thePrefs.GetKadNetworkMask()),
-			static_cast<unsigned>(Kademlia::CKademlia::GetRunningNetworkMask()),
-			Kademlia::CKademlia::IsKad2Running() ? "true" : "false",
-			Kademlia::CKademlia::IsKad2Connected() ? "true" : "false",
-			Kademlia::CKademlia::IsKad6Running() ? "true" : "false",
-			Kademlia::CKademlia::IsKad6Connected() ? "true" : "false",
-			Kademlia::CKademlia::GetKad6VerifiedContacts(),
-			(theApp.serverconnect && theApp.serverconnect->IsConnected()) ? "true" : "false",
-			(LPCSTR)localDiagnosticJson,
-			CStatistics::m_dwHolePunchAttempts,
-			CStatistics::m_dwHolePunchSuccess,
-			CStatistics::m_dwHolePunchSymNATFail,
-			CStatistics::m_dwHolePunchEncrypted,
-			CStatistics::m_dwHolePunchPlaintext,
-			CStatistics::m_dwHolePunchReqRecv,
-			CStatistics::m_dwHolePunchChallengeSent,
-			CStatistics::m_dwKad3RdvReqSent,
-			CStatistics::m_dwKad3RdvReqRecv,
-			CStatistics::m_dwKad3RdvChallengeSent,
-			CStatistics::m_dwKad3RdvFwd,
-			CStatistics::m_dwKad3RdvSuccess,
-			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
-			ksKeepalive.pingsSent,
-			ksKeepalive.pongsReceived,
-			ksKeepalive.supernodesActive,
-			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
-				thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided",
-			thePrefs.GetEseNetLabAdvancedConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
-				thePrefs.GetEseNetLabAdvancedConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided",
-			thePrefs.GetEseNetLabContributionConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
-				thePrefs.GetEseNetLabContributionConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided",
-			thePrefs.IsEseNetLabActive() ? "true" : "false"
-		);
+		status.upnp_critical_error = thePrefs.GetUPnPCriticalError();
+		status.utp_hole_punch_enabled = thePrefs.GetUtpHolePunchEnabled();
+		status.web_upnp_active = thePrefs.GetWSUseUPnP();
+		status.upnp_ports_forwarded = szUpnpFwd;
+		status.kad_connected = Kademlia::CKademlia::IsAnyConnected();
+		status.kad_configured_mask = thePrefs.GetKadNetworkMask();
+		status.kad_running_mask = Kademlia::CKademlia::GetRunningNetworkMask();
+		status.kad2_running = Kademlia::CKademlia::IsKad2Running();
+		status.kad2_connected = Kademlia::CKademlia::IsKad2Connected();
+		status.kad6_running = Kademlia::CKademlia::IsKad6Running();
+		status.kad6_connected = Kademlia::CKademlia::IsKad6Connected();
+		status.kad6_verified_contacts =
+			Kademlia::CKademlia::GetKad6VerifiedContacts();
+		status.ed2k_connected =
+			theApp.serverconnect && theApp.serverconnect->IsConnected();
+		status.hole_punch_attempts = CStatistics::m_dwHolePunchAttempts;
+		status.hole_punch_success = CStatistics::m_dwHolePunchSuccess;
+		status.hole_punch_sym_nat_fail = CStatistics::m_dwHolePunchSymNATFail;
+		status.hole_punch_encrypted = CStatistics::m_dwHolePunchEncrypted;
+		status.hole_punch_plaintext = CStatistics::m_dwHolePunchPlaintext;
+		status.hole_punch_req_recv = CStatistics::m_dwHolePunchReqRecv;
+		status.hole_punch_challenge_sent =
+			CStatistics::m_dwHolePunchChallengeSent;
+		status.kad3_rdv_req_sent = CStatistics::m_dwKad3RdvReqSent;
+		status.kad3_rdv_req_recv = CStatistics::m_dwKad3RdvReqRecv;
+		status.kad3_rdv_challenge_sent =
+			CStatistics::m_dwKad3RdvChallengeSent;
+		status.kad3_rdv_fwd = CStatistics::m_dwKad3RdvFwd;
+		status.kad3_rdv_success = CStatistics::m_dwKad3RdvSuccess;
+		status.keepalive_running = CKadKeepalive::Instance().IsRunning();
+		status.keepalive_pings_sent = ksKeepalive.pingsSent;
+		status.keepalive_pongs_recv = ksKeepalive.pongsReceived;
+		status.keepalive_supernodes = ksKeepalive.supernodesActive;
+		status.netlab_consent =
+			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted
+				? "accepted"
+				: thePrefs.GetEseNetLabConsent() ==
+						CPreferences::EseNetLabDeclined
+					? "declined" : "undecided";
+		status.netlab_advanced_consent =
+			thePrefs.GetEseNetLabAdvancedConsent() ==
+				CPreferences::EseNetLabAccepted
+				? "accepted"
+				: thePrefs.GetEseNetLabAdvancedConsent() ==
+						CPreferences::EseNetLabDeclined
+					? "declined" : "undecided";
+		status.netlab_contribution_consent =
+			thePrefs.GetEseNetLabContributionConsent() ==
+				CPreferences::EseNetLabAccepted
+				? "accepted"
+				: thePrefs.GetEseNetLabContributionConsent() ==
+						CPreferences::EseNetLabDeclined
+					? "declined" : "undecided";
+		status.netlab_enabled = thePrefs.IsEseNetLabActive();
+		const std::string body =
+			ese::web::WebDiagnostics::Serialize(status);
+		const CStringA json(body.data(), static_cast<int>(body.size()));
 		CStringA header;
 		header.Format(
 			"HTTP/1.1 200 OK\r\n"
@@ -7161,35 +7147,25 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 
 	// --- /api/live/mesh --- Core P2P mesh stats for the Node bridge
 	if (Data.webRoute == ese::web::WebRouteId::ApiLiveMesh) {
-		CStringA json;
+		ese::web::WebLiveMeshDiagnostics mesh;
 		if (theApp.liveStreamManager != NULL) {
 			// Lock-correct snapshot — BuildDebugSnapshot runs the trust-tier
 			// census under m_lock. Never iterate m_peerBitmaps or dereference
 			// CUpDownClient* / GetPeerTrust() from this worker thread.
 			LiveDebugSnapshot s = theApp.liveStreamManager->BuildDebugSnapshot();
-			json.Format(
-				"{\"meshPeers\":%d,"
-				"\"pendingRequests\":%d,"
-				"\"chunksServed\":%d,"
-				"\"totalRedistributed\":%I64u,"
-				"\"trustLevels\":{\"superSeeders\":%d,\"middle\":%d,\"leaf\":%d},"
-				"\"uploadFloor\":%u,"
-				"\"emergencyMode\":%s,"
-				"\"source\":\"emule-core\"}",
-				s.meshPeers,
-				s.pendingRequests,
-				s.chunksServed,
-				(unsigned __int64)s.totalRedistributed,
-				s.superSeeders, s.middlePeers, s.leafPeers,
-				s.minUploadRequired,
-				s.emergencyMode ? "true" : "false");
+			mesh.mesh_peers = s.meshPeers;
+			mesh.pending_requests = s.pendingRequests;
+			mesh.chunks_served = s.chunksServed;
+			mesh.total_redistributed = s.totalRedistributed;
+			mesh.super_seeders = s.superSeeders;
+			mesh.middle_peers = s.middlePeers;
+			mesh.leaf_peers = s.leafPeers;
+			mesh.upload_floor = s.minUploadRequired;
+			mesh.emergency_mode = s.emergencyMode;
 		}
-		else {
-			json = "{\"meshPeers\":0,\"pendingRequests\":0,\"chunksServed\":0,"
-				"\"totalRedistributed\":0,"
-				"\"trustLevels\":{\"superSeeders\":0,\"middle\":0,\"leaf\":0},"
-				"\"uploadFloor\":0,\"emergencyMode\":false,\"source\":\"emule-core\"}";
-		}
+		const std::string body =
+			ese::web::WebDiagnostics::Serialize(mesh);
+		const CStringA json(body.data(), static_cast<int>(body.size()));
 
 		CStringA header;
 		header.Format(
@@ -7316,180 +7292,90 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	// Fix 1 (ALTA): All state is read via BuildDebugSnapshot() under m_lock.
 	// No direct CMap/CTypedPtrList iteration from the WebServer thread.
 	if (Data.webRoute == ese::web::WebRouteId::ApiLiveDebug) {
-		CStringA json;
+		ese::web::WebLiveDebugDiagnostics debug;
 
 		if (theApp.liveStreamManager != NULL) {
 			LiveDebugSnapshot s = theApp.liveStreamManager->BuildDebugSnapshot();
-			DWORD now = GetTickCount();
+			debug.available = true;
+			debug.broadcasting = s.broadcasting;
+			debug.viewing = s.viewing;
+			debug.emergency_mode = s.emergencyMode;
+			debug.uptime_ms = s.uptimeMs;
+			debug.total_redistributed = s.totalRedistributed;
+			debug.now_ms = GetTickCount();
+			debug.kad_connected = s.kad.kadConnected;
+			debug.known_streams = s.kad.knownStreams;
+			debug.known_streams_clean = s.kad.knownStreamsClean;
+			debug.known_streams_legacy = s.kad.knownStreamsLegacy;
+			debug.last_publish_time = s.kad.lastPublishTime;
+			debug.last_search_time = s.kad.lastSearchTime;
+			debug.last_result_time = s.kad.lastResultTime;
+			debug.last_result_ip = s.kad.lastResultIP;
+			debug.last_result_port = s.kad.lastResultPort;
+			debug.view_peers = s.viewPeers;
+			debug.broadcast_peers = s.broadcastPeers;
+			debug.mesh_peers = s.meshPeers;
+			debug.pending_requests = s.pendingRequests;
+			debug.chunks_served = s.chunksServed;
+			debug.super_seeders = s.superSeeders;
+			debug.middle_peers = s.middlePeers;
+			debug.leaf_peers = s.leafPeers;
+			debug.chunk_count = s.bufCount;
+			debug.oldest_sequence = s.oldestSeq;
+			debug.newest_sequence = s.newestSeq;
+			debug.chunk_bitmap = s.bitmap;
+			debug.missing_chunks = s.missingChunks;
+			debug.max_capacity = ESE_LIVE_MAX_SEGMENTS;
+			debug.hls_segments_written = s.counters.hlsSegmentsWritten;
+			debug.hls_playlist_refreshes = s.counters.hlsPlaylistRefresh;
+			debug.last_chunk_received_at =
+				s.counters.lastChunkReceivedAt > 0
+					? static_cast<std::uint32_t>(
+						s.counters.lastChunkReceivedAt)
+					: 0u;
+			debug.segment_duration_seconds = ESE_LIVE_SEGMENT_DURATION;
+			debug.kad_publishes = s.counters.kadPublishes;
+			debug.kad_searches = s.counters.kadSearches;
+			debug.kad_results_accepted = s.counters.kadResultsAccepted;
+			debug.kad_results_rejected = s.counters.kadResultsRejected;
+			debug.source_dial_attempts = s.counters.sourceDialAttempts;
+			debug.subscribe_sent = s.counters.subscribeSent;
+			debug.subscribe_accepted = s.counters.subscribeAccepted;
+			debug.chunks_requested = s.counters.chunksRequested;
+			debug.chunks_received = s.counters.chunksReceived;
+			debug.chunks_missing = s.counters.chunksMissing;
+			debug.duplicate_chunks_received =
+				s.counters.duplicateChunksReceived;
+			debug.requests_suppressed_inflight =
+				s.counters.requestsSuppressedInflight;
+			debug.peer_disconnects = s.counters.peerDisconnects;
+			debug.skipped_initial_pushes = s.counters.skippedInitialPushes;
+			debug.subscribes_rate_limited =
+				s.counters.subscribesRateLimited;
+			debug.requests_rate_limited = s.counters.requestsRateLimited;
+			debug.ends_rejected_no_auth = s.counters.endsRejectedNoAuth;
+			debug.tombstones_evicted = s.counters.tombstonesEvicted;
 
-			// --- Discovery section ---
-			DWORD lastPublishAge = (s.kad.lastPublishTime > 0)
-				? (now - s.kad.lastPublishTime) : 0;
-			DWORD lastSearchAge = (s.kad.lastSearchTime > 0)
-				? (now - s.kad.lastSearchTime) : 0;
-			DWORD lastResultAge = (s.kad.lastResultTime > 0)
-				? (now - s.kad.lastResultTime) : 0;
-
-			CStringA discovery;
-			discovery.Format(
-				"\"discovery\":{"
-				"\"kadConnected\":%s,"
-				"\"knownStreams\":%d,"
-				"\"knownStreamsClean\":%d,"
-				"\"knownStreamsLegacy\":%d,"
-				"\"lastPublishAgeMs\":%u,"
-				"\"lastSearchAgeMs\":%u,"
-				"\"lastResultAgeMs\":%u,"
-				"\"lastResultIP\":%u,"
-				"\"lastResultPort\":%u}",
-				s.kad.kadConnected ? "true" : "false",
-				s.kad.knownStreams,
-				s.kad.knownStreamsClean,
-				s.kad.knownStreamsLegacy,
-				lastPublishAge,
-				lastSearchAge,
-				lastResultAge,
-				s.kad.lastResultIP,
-				(unsigned)s.kad.lastResultPort);
-
-			// --- Peer section ---
-			CStringA peers;
-			peers.Format(
-				"\"peers\":{"
-				"\"viewPeers\":%d,"
-				"\"broadcastPeers\":%d,"
-				"\"meshPeers\":%d,"
-				"\"pendingRequests\":%d,"
-				"\"chunksServed\":%d,"
-				"\"trustLevels\":{\"superSeeders\":%d,\"middle\":%d,\"leaf\":%d}}",
-				s.viewPeers,
-				s.broadcastPeers,
-				s.meshPeers,
-				s.pendingRequests,
-				s.chunksServed,
-				s.superSeeders, s.middlePeers, s.leafPeers);
-
-			// --- Chunk buffer section ---
-			CStringA chunks;
-			chunks.Format(
-				"\"chunks\":{"
-				"\"count\":%d,"
-				"\"oldestSeq\":%u,"
-				"\"newestSeq\":%u,"
-				"\"bitmap\":%u,"
-				"\"missing\":%d,"
-				"\"maxCapacity\":%d}",
-				s.bufCount, s.oldestSeq, s.newestSeq,
-				(unsigned)s.bitmap, s.missingChunks,
-				ESE_LIVE_MAX_SEGMENTS);
-
-			// --- HLS status section ---
-			DWORD lastChunkAge = (s.counters.lastChunkReceivedAt > 0)
-				? (now - s.counters.lastChunkReceivedAt) : 0;
-
-			CStringA hlsStatus;
-			hlsStatus.Format(
-				"\"hls\":{"
-				"\"segmentsWritten\":%u,"
-				"\"playlistRefreshes\":%u,"
-				"\"lastChunkAgeMs\":%u,"
-				"\"segmentDurationSec\":%d}",
-				s.counters.hlsSegmentsWritten,
-				s.counters.hlsPlaylistRefresh,
-				lastChunkAge,
-				ESE_LIVE_SEGMENT_DURATION);
-
-			// --- Counters section (Fix 4: added sourceDialAttempts; v7.3.0: skipped/rate-limit/auth/evict;
-			//     Phase-1 2026-06: duplicateChunksReceived/requestsSuppressedInflight) ---
-			CStringA ctrJson;
-			ctrJson.Format(
-				"\"counters\":{"
-				"\"kadPublishes\":%u,"
-				"\"kadSearches\":%u,"
-				"\"kadResultsAccepted\":%u,"
-				"\"kadResultsRejected\":%u,"
-				"\"sourceDialAttempts\":%u,"
-				"\"subscribeSent\":%u,"
-				"\"subscribeAccepted\":%u,"
-				"\"chunksRequested\":%u,"
-				"\"chunksReceived\":%u,"
-				"\"chunksMissing\":%u,"
-				"\"duplicateChunksReceived\":%u,"
-				"\"requestsSuppressedInflight\":%u,"
-				"\"peerDisconnects\":%u,"
-				"\"skippedInitialPushes\":%u,"
-				"\"subscribesRateLimited\":%u,"
-				"\"requestsRateLimited\":%u,"
-				"\"endsRejectedNoAuth\":%u,"
-				"\"tombstonesEvicted\":%u}",
-				s.counters.kadPublishes, s.counters.kadSearches,
-				s.counters.kadResultsAccepted, s.counters.kadResultsRejected,
-				s.counters.sourceDialAttempts,
-				s.counters.subscribeSent, s.counters.subscribeAccepted,
-				s.counters.chunksRequested, s.counters.chunksReceived,
-				s.counters.chunksMissing,
-				s.counters.duplicateChunksReceived, s.counters.requestsSuppressedInflight,
-				s.counters.peerDisconnects,
-				s.counters.skippedInitialPushes, s.counters.subscribesRateLimited,
-				s.counters.requestsRateLimited,
-				s.counters.endsRejectedNoAuth, s.counters.tombstonesEvicted);
-
-			CStringA peerDetailJson;   // empty unless snapshot was populated (ESE_TEST_HOOKS build)
-			if (s.peerDetailCount > 0) {
-				peerDetailJson = ",\"peerDetail\":[";
-				for (int pd = 0; pd < s.peerDetailCount; pd++) {
-					CStringA one;
-					// ip[] is already a bounded, safe <=45-char string (FillPeerIpSafe);
-					// v4/v6 digits/dots/colons need no JSON escaping.
-					one.Format("%s{\"ip\":\"%s\",\"port\":%u,\"level\":%d,"
-						"\"failCount\":%d,\"respPct\":%d,\"rttMs\":%u}",
-						pd ? "," : "",
-						s.peerDetail[pd].ip, (unsigned)s.peerDetail[pd].port,
-						s.peerDetail[pd].level, s.peerDetail[pd].failCount,
-						s.peerDetail[pd].respPct, s.peerDetail[pd].rttMs);
-					peerDetailJson += one;
-				}
-				peerDetailJson += "]";
+			const int peerCount = (std::max)(
+				0,
+				(std::min)(
+					s.peerDetailCount,
+					LiveDebugSnapshot::MAX_PEER_DBG));
+			debug.peer_detail.reserve(static_cast<std::size_t>(peerCount));
+			for (int index = 0; index < peerCount; ++index) {
+				ese::web::WebLiveDebugPeerDiagnostics peer;
+				peer.ip = s.peerDetail[index].ip;
+				peer.port = s.peerDetail[index].port;
+				peer.level = s.peerDetail[index].level;
+				peer.fail_count = s.peerDetail[index].failCount;
+				peer.response_percent = s.peerDetail[index].respPct;
+				peer.rtt_ms = s.peerDetail[index].rttMs;
+				debug.peer_detail.push_back(peer);
 			}
-
-			// --- Assemble final JSON ---
-			json.Format(
-				"{\"broadcasting\":%s,"
-				"\"viewing\":%s,"
-				"\"emergencyMode\":%s,"
-				"\"uptimeMs\":%u,"
-				"\"totalRedistributed\":%I64u,"
-				"%s,%s,%s,%s,%s%s,"
-				"\"source\":\"emule-core-debug\"}",
-				s.broadcasting ? "true" : "false",
-				s.viewing ? "true" : "false",
-				s.emergencyMode ? "true" : "false",
-				s.uptimeMs,
-				(unsigned __int64)s.totalRedistributed,
-				(LPCSTR)discovery, (LPCSTR)peers, (LPCSTR)chunks,
-				(LPCSTR)hlsStatus, (LPCSTR)ctrJson, (LPCSTR)peerDetailJson);
-		} else {
-			json = "{\"broadcasting\":false,\"viewing\":false,"
-				"\"emergencyMode\":false,\"uptimeMs\":0,\"totalRedistributed\":0,"
-				"\"discovery\":{\"kadConnected\":false,\"knownStreams\":0,"
-				"\"knownStreamsClean\":0,\"knownStreamsLegacy\":0,"
-				"\"lastPublishAgeMs\":0,\"lastSearchAgeMs\":0,\"lastResultAgeMs\":0,"
-				"\"lastResultIP\":0,\"lastResultPort\":0},"
-				"\"peers\":{\"viewPeers\":0,\"broadcastPeers\":0,\"meshPeers\":0,"
-				"\"pendingRequests\":0,\"chunksServed\":0,"
-				"\"trustLevels\":{\"superSeeders\":0,\"middle\":0,\"leaf\":0}},"
-				"\"chunks\":{\"count\":0,\"oldestSeq\":0,\"newestSeq\":0,"
-				"\"bitmap\":0,\"missing\":0,\"maxCapacity\":15},"
-				"\"hls\":{\"segmentsWritten\":0,\"playlistRefreshes\":0,"
-				"\"lastChunkAgeMs\":0,\"segmentDurationSec\":2},"
-				"\"counters\":{\"kadPublishes\":0,\"kadSearches\":0,"
-				"\"kadResultsAccepted\":0,\"kadResultsRejected\":0,"
-				"\"sourceDialAttempts\":0,"
-				"\"subscribeSent\":0,\"subscribeAccepted\":0,"
-				"\"chunksRequested\":0,\"chunksReceived\":0,"
-				"\"chunksMissing\":0,\"peerDisconnects\":0},"
-				"\"source\":\"emule-core-debug\"}";
 		}
+		const std::string body =
+			ese::web::WebDiagnostics::Serialize(debug);
+		const CStringA json(body.data(), static_cast<int>(body.size()));
 
 		CStringA header;
 		header.Format(

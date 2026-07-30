@@ -815,6 +815,12 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="WebDiagnostics.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="WebSocketResponse.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
@@ -1240,6 +1246,7 @@
     <ClInclude Include="WebSearchController.h" />
     <ClInclude Include="WebSharedController.h" />
     <ClInclude Include="WebStaticAssets.h" />
+    <ClInclude Include="WebDiagnostics.h" />
     <ClInclude Include="WebSocketResponse.h" />
     <ClInclude Include="LiveHandshakeWire.h" />
     <ClInclude Include="LiveCircuit.h" />

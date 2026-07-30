@@ -621,6 +621,7 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   const prefs = read(repoRoot, 'srchybrid', 'Preferences.cpp');
   const prober = read(repoRoot, 'srchybrid', 'FirewallProberV6.cpp');
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const webDiagnostics = read(repoRoot, 'srchybrid', 'WebDiagnostics.cpp');
   const client = read(repoRoot, 'srchybrid', 'UpdownClient.h');
   const clientUdp = read(repoRoot, 'srchybrid', 'ClientUDPSocket.cpp');
   const utp = read(repoRoot, 'srchybrid', 'eMuleAI', 'UtpSocket.cpp');
@@ -681,7 +682,7 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   }
   const statusStart = web.indexOf('// --- /api/status');
   const localDiagnosticsStart = web.indexOf(
-    'if (Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK))', statusStart);
+    'status.local.exposed =', statusStart);
   const localDiagnosticsEnd = web.indexOf(
     'CKadKeepalive::Stats', localDiagnosticsStart);
   assert.ok(statusStart >= 0 && localDiagnosticsStart > statusStart &&
@@ -689,8 +690,10 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   'the /api/status loopback diagnostic boundary must remain inspectable');
   const localDiagnostics = web.slice(localDiagnosticsStart, localDiagnosticsEnd);
   assert.match(localDiagnostics, /user_hash/);
-  assert.match(localDiagnostics, /user_hash\\":null/);
-  assert.match(localDiagnostics, /connecting_client_count\\":null/);
+  assert.match(localDiagnostics, /connecting_client_count/);
+  assert.match(webDiagnostics, /user_hash\\":/);
+  assert.match(webDiagnostics, /connecting_client_count\\":/);
+  assert.match(webDiagnostics, /if \(local\.exposed\)[\s\S]{0,120}else[\s\S]{0,80}"null"/);
   assert.match(web, /\/api\/debug\/source-resolutions/);
   assert.match(web, /ese\.debug\.source-resolutions\/v1/);
   assert.match(web,

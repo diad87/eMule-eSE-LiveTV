@@ -320,6 +320,13 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/WebSocketResponse.cpp"],
                 "interface_files": ["srchybrid/WebSocketResponse.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "WebDiagnostics",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebDiagnostics.cpp"],
+                "interface_files": ["srchybrid/WebDiagnostics.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -403,6 +410,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             }, {
                 "module": "WebSocketResponse",
                 "slice_base_commit": "6a83cb2797c48918f9e2adbd7dda6f4d5b405145",
+                "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebDiagnostics",
+                "slice_base_commit": "96e1c64833dd0bd4da3715ed48b7d664684de329",
                 "source_coordinator": "srchybrid/WebServer.cpp",
             }],
         })
@@ -499,6 +510,15 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/tests/test_web_diagnostics.cpp",
+                "reason": (
+                    "Standalone exact status, mesh, live-debug, privacy, "
+                    "tick-wrap and hostile-bound executable test for the "
+                    "MOD-2.7 diagnostics facade extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         numstat = subprocess.check_output(
             ["git", "diff", "--numstat", SLICE_BASE, "--", "srchybrid/LiveTunnel.cpp"],
@@ -561,6 +581,8 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/WebStaticAssets.h",
             "srchybrid/WebSocketResponse.cpp",
             "srchybrid/WebSocketResponse.h",
+            "srchybrid/WebDiagnostics.cpp",
+            "srchybrid/WebDiagnostics.h",
         }
         self.assertTrue(expected_paths.issubset(set(MOD02.CRITICAL_SOURCE_PATHS)))
         self.assertTrue(expected_paths.issubset(set(

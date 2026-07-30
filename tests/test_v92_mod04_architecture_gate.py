@@ -213,6 +213,13 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/WebSocketResponse.cpp"],
                 "interface_files": ["srchybrid/WebSocketResponse.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "WebDiagnostics",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebDiagnostics.cpp"],
+                "interface_files": ["srchybrid/WebDiagnostics.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.config["approved_non_module_code"], [
@@ -308,6 +315,15 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/tests/test_web_diagnostics.cpp",
+                "reason": (
+                    "Standalone exact status, mesh, live-debug, privacy, "
+                    "tick-wrap and hostile-bound executable test for the "
+                    "MOD-2.7 diagnostics facade extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         self.assertEqual(self.config["slice_evidence"], {
             "state": "EXTRACTION_ACTIVE",
@@ -391,6 +407,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "module": "WebSocketResponse",
                 "slice_base_commit": "6a83cb2797c48918f9e2adbd7dda6f4d5b405145",
                 "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebDiagnostics",
+                "slice_base_commit": "96e1c64833dd0bd4da3715ed48b7d664684de329",
+                "source_coordinator": "srchybrid/WebServer.cpp",
             }],
         })
 
@@ -420,6 +440,7 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "WebSharedController",
                 "WebStaticAssets",
                 "WebSocketResponse",
+                "WebDiagnostics",
             ],
         )
 

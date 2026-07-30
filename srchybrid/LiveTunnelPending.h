@@ -107,6 +107,7 @@ public:
     std::size_t CancelAll();
 
     std::size_t size() const;
+    bool IsLive(std::uint32_t request_id) const;
 
 private:
     struct Impl;

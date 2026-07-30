@@ -866,15 +866,8 @@ private:
         bool auto_refresh = false;
         bool refresh_enabled = true;
     };
-    kad6::K6SourceLeaseTable m_k6SourceLeases;
-    kad6::K6CohortScheduler m_k6CohortScheduler;
-    kad6::K6PublishBudget m_k6PublishBudget;
-    kad6::K6PublishCoalescer m_k6PublishCoalescer;
     std::map<uint64, K6ExitPublishRuntime> m_k6Publishes;
     std::map<std::string, uint64> m_k6ShadowPrimary;
-    std::map<std::string, uint64> m_k6SourceEpochs;
-    bool m_k6SourceEpochsLoaded = false;
-    bool m_k6SourceEpochsLoadFailed = false;
     struct K6AuthorizedTarget {
         uint32 circ_id = 0;
         uint32 source_request_id = 0;
@@ -1058,7 +1051,6 @@ private:
     static std::string K6BinaryKey(const uint8_t* bytes, size_t length);
     static std::string K6ShadowKey(const kad6::K6SourceLease& lease);
     bool EnsureK6SourceEpochsLoaded();
-    bool SaveK6SourceEpochs() const;
     void SweepK6SourceLeases(const std::set<uint32_t>& activeCircuits,
                              const std::set<uint32_t>& teardownQueue,
                              uint64 nowSeconds);

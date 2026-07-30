@@ -53,6 +53,7 @@ LiveTunnelPending::LiveTunnelPending()
 }
 
 LiveTunnelPending::~LiveTunnelPending() = default;
+bool LiveTunnelPending::IsLive(std::uint32_t request_id) const { std::lock_guard<std::mutex> guard(m_impl->mutex); const auto found=m_impl->requests.find(request_id); return found!=m_impl->requests.end() && !found->second->terminal; }
 
 LiveTunnelPending::Handle LiveTunnelPending::Register(
     const RequestIdGenerator& generator)

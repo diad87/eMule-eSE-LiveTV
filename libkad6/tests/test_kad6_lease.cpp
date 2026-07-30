@@ -94,12 +94,14 @@ int main() {
 
     Hash16 pseudo{};pseudo[0]=1;K6SourceLeaseTable table;
     CHECK(table.AddBound(7,pseudo,b,bound,1000)==Kad6Status::Ok,"add bound lease");
+    CHECK(table.AddBound(7,pseudo,b,bound,1000)==Kad6Status::BadValue,"duplicate lease rejected");
     CHECK(table.CanPublish(99) && !table.CanAccept(99),"bound can publish not accept");
     CHECK(table.MarkServing(99)==Kad6Status::BadValue,"publish-before-bound transition blocked");
     CHECK(table.MarkPublished(99)==Kad6Status::Ok && table.MarkServing(99)==Kad6Status::Ok,"publish and serving transitions");
     CHECK(table.CanAccept(99),"serving accepts");
     CHECK(table.DrainCircuit(7)==1 && !table.CanAccept(99),"dead circuit drains");
     CHECK(table.MarkPublished(99)==Kad6Status::BadValue,"draining cannot republish");
+    CHECK(table.Close(99)&&table.EraseClosedSome(1)==1,"ordered drain close erase shutdown");
 
     K6SourceBind cohort=Bind(K6BindingMode::Cohort);K6SourceBound cb=Bound(cohort,K6BindingMode::Cohort);cb.source_lease_id=100;
     CHECK(table.AddBound(8,pseudo,cohort,cb,1000)==Kad6Status::Ok,"cohort lease accepted");
@@ -114,9 +116,9 @@ int main() {
     peerBound.source_lease_id=103;peerBound.cohort_id[0]^=1;
     CHECK(table.AddBound(11,pseudo,peer,peerBound,1000)==Kad6Status::BadValue,
         "same hash and front door reject cohort-id switch");
-    CHECK(table.Expire(2800)==3 && !table.CanAccept(100),"expiry closes all");
-    CHECK(table.ActiveSize()==0&&table.Size()==3,"closed leases excluded from active count");
-    CHECK(table.EraseClosed()==3&&table.Size()==0,"closed leases purged");
+    CHECK(table.Expire(2800)==2 && !table.CanAccept(100),"expiry closes all");
+    CHECK(table.ActiveSize()==0&&table.Size()==2,"closed leases excluded from active count");
+    CHECK(table.EraseClosed()==2&&table.Size()==0,"closed leases purged");
 
     // L2/Q27 laboratory: 4096 leases on distinct circuits must not trigger a
     // lease-table sweep for every retired circuit.  Teardown is indexed and

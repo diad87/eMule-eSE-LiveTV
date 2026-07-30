@@ -3,10 +3,19 @@ const fs           = require('fs');
 const path         = require('path');
 const aiAssistant  = require('../ai_assistant');
 const utils         = require('../utils');
+const { validateRouteContext } = require('./route_context');
 
+/** @type {Pick<import('./route_context').SharedRouteContext, 'EMULE_INCOMING'|'loadSettings'|'saveSettings'> & Record<string, Function|object|string>} */
 let _ctx = {};
 
-function init(ctx) { _ctx = ctx; }
+function init(ctx) {
+  _ctx = validateRouteContext(ctx, 'emule', {
+    EMULE_INCOMING: 'string', loadSettings: 'function', saveSettings: 'function',
+    emuleLogin: 'function', emuleSearch: 'function', emuleDownload: 'function',
+    emuleTransferAction: 'function', emuleAddEd2kLink: 'function', getSession: 'function',
+    security: 'security',
+  });
+}
 
 function readJsonBody(req, callback) {
   utils.readBodyLimited(req, (err, body) => {

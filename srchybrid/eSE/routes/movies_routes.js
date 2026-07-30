@@ -3,10 +3,16 @@ const fs    = require('fs');
 const https = require('https');
 const path  = require('path');
 const { TMDB_KEY } = require('../api_keys');
+const { validateRouteContext } = require('./route_context');
 
+/** @type {Pick<import('./route_context').SharedRouteContext, 'CACHE_DIR'|'loadSettings'> & Record<string, Function|string>} */
 let _ctx = {};
 
-function init(ctx) { _ctx = ctx; }
+function init(ctx) {
+  _ctx = validateRouteContext(ctx, 'movies', {
+    CACHE_DIR: 'string', loadSettings: 'function', fetchAndCacheMovie: 'function', proxyOMDB: 'function',
+  });
+}
 
 // ── /api/tmdb/* proxy ──────────────────────────────────────────────────────────
 // Forwards any TMDB v3 path to api.themoviedb.org, injecting the server-side

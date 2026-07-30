@@ -1,9 +1,16 @@
 'use strict';
 
+const { validateRouteContext } = require('./route_context');
+
+/** @type {{security: object, emuleApi: object, getSession: Function, emuleRoutes: import('./route_context').RouteHandler, streamCompleted: import('./route_context').RouteHandler, streamPart: import('./route_context').RouteHandler, systemRoutes: import('./route_context').RouteHandler, liveApi: object, liveRouteCtx: object}} */
 let _ctx = {};
 
 function init(ctx) {
-  _ctx = ctx || {};
+  _ctx = validateRouteContext(ctx, 'v1', {
+    security: 'security', emuleApi: 'emuleApi', getSession: 'function',
+    emuleRoutes: 'handler', streamCompleted: 'handler', streamPart: 'handler', systemRoutes: 'handler',
+    liveApi: 'liveApi', liveRouteCtx: 'object',
+  });
 }
 
 function json(res, code, data) {

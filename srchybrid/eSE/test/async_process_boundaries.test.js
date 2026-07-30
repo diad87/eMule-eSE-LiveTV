@@ -93,6 +93,51 @@ async function waitFor(predicate, timeoutMs = 1000) {
   }
 }
 
+function securityContext(overrides = {}) {
+  return {
+    isReady: () => false,
+    redactSettings: settings => settings,
+    mergeSettings: (target, source) => Object.assign(target, source),
+    ...overrides,
+  };
+}
+
+function handlerContext() { return { handle: () => false }; }
+
+function v1Context(overrides = {}) {
+  const { security, emuleApi, ...rest } = overrides;
+  return {
+    security: securityContext(security),
+    emuleApi: { isEmuleRunning: () => false, ...(emuleApi || {}) },
+    getSession: () => null,
+    emuleRoutes: handlerContext(), streamCompleted: handlerContext(), streamPart: handlerContext(), systemRoutes: handlerContext(),
+    liveApi: { handleRoute: () => false }, liveRouteCtx: {},
+    ...rest,
+  };
+}
+
+function partContext(overrides = {}) {
+  return {
+    EMULE_INCOMING: path.join(os.tmpdir(), "Incoming"), FFMPEG_PATH: "ffmpeg", TEMP_DIR: os.tmpdir(),
+    __dirname: path.join(os.tmpdir(), "ese-test"), HW_ENCODER: "libx264", HW_ENCODER_OPTS: [],
+    activeStreams: {}, getDownloads: async () => [], ...overrides,
+  };
+}
+
+function completedContext(overrides = {}) {
+  return {
+    FFMPEG_PATH: "ffmpeg", HW_ENCODER: "libx264", HW_ENCODER_OPTS: [], activeStreams: {},
+    getCompletedFiles: async () => [], resolveMediaFile: async () => null, getDuration: async () => 0,
+    getSession: () => null, emuleRequest: () => {}, ...overrides,
+  };
+}
+
+function systemContext(overrides = {}) {
+  return {
+    PORT: 8080, cleanup: { cleanupAll: async () => {} }, loadSettings: () => ({}), saveSettings: () => {}, ...overrides,
+  };
+}
+
 test("DirectShow parsing preserves video and audio device selection", () => {
   const output = [
     "[dshow] DirectShow video devices",
@@ -113,13 +158,13 @@ test("DirectShow parsing preserves video and audio device selection", () => {
 
 test("v1 status returns immediately and completes after async process state", async () => {
   let resolveRunning;
-  v1Routes.init({
+  v1Routes.init(v1Context({
     security: { isReady: () => true },
     getSession: () => "session",
     emuleApi: {
       isEmuleRunning: () => new Promise(resolve => { resolveRunning = resolve; }),
     },
-  });
+  }));
   const { response, completed } = responsePromise();
   assert.equal(
     v1Routes.handle(
@@ -139,13 +184,13 @@ test("v1 status returns immediately and completes after async process state", as
 });
 
 test("v1 lifecycle fails closed when process state rejects", async () => {
-  v1Routes.init({
+  v1Routes.init(v1Context({
     emuleApi: {
       isEmuleRunning: () => Promise.reject(new Error("probe failed")),
       getLibraryEpoch: () => 7,
       getRestartedAt: () => 11,
     },
-  });
+  }));
   const { response, completed } = responsePromise();
   assert.equal(
     v1Routes.handle(
@@ -171,10 +216,10 @@ test("part streaming observes disconnect before async filesystem preparation can
   await fs.promises.mkdir(incoming);
   await fs.promises.mkdir(temp);
   await fs.promises.writeFile(path.join(temp, "1.part"), Buffer.alloc(32));
-  streamPart.init({
+  streamPart.init(partContext({
     EMULE_INCOMING: incoming,
     FFMPEG_PATH: "ffmpeg",
-  });
+  }));
   const request = new EventEmitter();
   request.destroyed = false;
   const response = eventedResponse();
@@ -194,10 +239,10 @@ test("part streaming observes disconnect before async filesystem preparation can
 
 test("subtitle streaming observes disconnect before a delayed probe can spawn", async () => {
   managedSpawnCount = 0;
-  streamCompleted.init({
+  streamCompleted.init(completedContext({
     FFMPEG_PATH: "ffmpeg.exe",
     resolveMediaFile: () => ({ filePath: "movie.mkv" }),
-  });
+  }));
   const request = new EventEmitter();
   request.destroyed = false;
   const response = eventedResponse();
@@ -271,12 +316,12 @@ test("media resolver rejects an aborted scan before retaining metadata", async (
 test("completed list aborts its bounded scan when the client disconnects", async () => {
   let observedSignal;
   let finishScan;
-  streamCompleted.init({
+  streamCompleted.init(completedContext({
     getCompletedFiles: options => {
       observedSignal = options.signal;
       return new Promise(resolve => { finishScan = resolve; });
     },
-  });
+  }));
   const request = new EventEmitter();
   request.destroyed = false;
   const response = eventedResponse();
@@ -296,14 +341,14 @@ test("completed list aborts its bounded scan when the client disconnects", async
 });
 
 test("completed list does not expose internal filesystem paths", async () => {
-  streamCompleted.init({
+  streamCompleted.init(completedContext({
     getCompletedFiles: async () => [{
       fileName: "movie.mkv",
       filePath: "C:\\private\\Incoming\\movie.mkv",
       sizeMB: 10,
       mtime: 123,
     }],
-  });
+  }));
   const request = new EventEmitter();
   request.destroyed = false;
   const response = eventedResponse();
@@ -331,10 +376,10 @@ test("legacy part lookup reads only bounded met metadata", async () => {
   oversizedMet.write("Late Movie.mkv", 2 * 1024 * 1024 + 16, "latin1");
   await fs.promises.writeFile(path.join(temp, "9.part.met"), oversizedMet);
   await fs.promises.writeFile(path.join(incoming, "Late Movie.mkv"), Buffer.alloc(32));
-  streamPart.init({
+  streamPart.init(partContext({
     EMULE_INCOMING: incoming,
     FFMPEG_PATH: "ffmpeg",
-  });
+  }));
   const request = new EventEmitter();
   request.destroyed = false;
   const response = eventedResponse();
@@ -354,13 +399,13 @@ test("MSE data stream replacement preserves the new request owner", async () => 
   const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ese-mse-owner-"));
   await fs.promises.writeFile(path.join(tempRoot, "ese_mse_1.avi"), Buffer.alloc(32));
   const activeStreams = {};
-  streamPart.init({
+  streamPart.init(partContext({
     TEMP_DIR: tempRoot,
     FFMPEG_PATH: "ffmpeg",
     HW_ENCODER: "libx264",
     HW_ENCODER_OPTS: ["-preset", "ultrafast"],
     activeStreams,
-  });
+  }));
   const requestA = new EventEmitter();
   requestA.destroyed = false;
   const responseA = eventedResponse();
@@ -401,7 +446,7 @@ test("MSE promotion serializes a superseded copy behind the newer output", async
   const canonical = path.join(tempRoot, "ese_mse_1.avi");
   await fs.promises.writeFile(source, Buffer.alloc(32));
   await fs.promises.writeFile(canonical, "BASE");
-  streamPart.init({
+  streamPart.init(partContext({
     __dirname: tempRoot,
     TEMP_DIR: tempRoot,
     getDownloads: async () => [{
@@ -410,7 +455,7 @@ test("MSE promotion serializes a superseded copy behind the newer output", async
       fileName: "movie.mkv",
       fileSizeMB: 1,
     }],
-  });
+  }));
   const requestA = new EventEmitter();
   requestA.destroyed = false;
   const responseA = eventedResponse();
@@ -476,7 +521,7 @@ test("a disconnected preparation cannot kill another request's completed stream"
   await file.truncate(6 * 1024 * 1024);
   await file.close();
   const activeStreams = {};
-  streamCompleted.init({
+  streamCompleted.init(completedContext({
     FFMPEG_PATH: "ffmpeg.exe",
     HW_ENCODER: "libx264",
     HW_ENCODER_OPTS: ["-preset", "ultrafast"],
@@ -486,7 +531,7 @@ test("a disconnected preparation cannot kill another request's completed stream"
       isPartFile: false,
       fileSize: 6 * 1024 * 1024,
     }),
-  });
+  }));
 
   const requestA = new EventEmitter();
   requestA.destroyed = false;
@@ -583,13 +628,13 @@ test("RTMP stop cannot clear a newly started generation", async () => {
 
 test("cleanup HTTP response waits for asynchronous bounded deletion", async () => {
   let finishCleanup;
-  systemRoutes.init({
+  systemRoutes.init(systemContext({
     cleanup: {
       cleanupAll: () => new Promise(resolve => { finishCleanup = resolve; }),
     },
     loadSettings: () => ({}),
     saveSettings: () => {},
-  });
+  }));
   const { response, completed } = responsePromise();
   assert.equal(
     systemRoutes.handle(

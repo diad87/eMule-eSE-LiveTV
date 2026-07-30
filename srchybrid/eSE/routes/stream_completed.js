@@ -6,10 +6,18 @@ const {
   spawnManaged,
 } = require('../bounded_process_runner');
 const { safeBasename } = require('../utils');
+const { validateRouteContext } = require('./route_context');
 
+/** @type {Pick<import('./route_context').SharedRouteContext, 'FFMPEG_PATH'|'HW_ENCODER'|'HW_ENCODER_OPTS'|'activeStreams'|'getCompletedFiles'|'resolveMediaFile'|'getDuration'> & Record<string, Function>} */
 let _ctx = {};
 
-function init(ctx) { _ctx = ctx; }
+function init(ctx) {
+  _ctx = validateRouteContext(ctx, 'stream completed', {
+    FFMPEG_PATH: 'string', HW_ENCODER: 'string', HW_ENCODER_OPTS: 'array', activeStreams: 'object',
+    getCompletedFiles: 'function', resolveMediaFile: 'function', getDuration: 'function',
+    getSession: 'function', emuleRequest: 'function',
+  });
+}
 
 function createDisconnectGuard(req, res, onDisconnect) {
   const controller = new AbortController();

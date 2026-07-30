@@ -2,12 +2,16 @@
 const aiAssistant = require('../ai_assistant');
 const aiOAuth     = require('../ai_oauth');
 const utils       = require('../utils');
+const { validateRouteContext } = require('./route_context');
 
+/** @type {{PORT: number, cleanup: {cleanupAll: Function}, loadSettings: Function, saveSettings: Function}} */
 let _ctx = {};
 
 function init(ctx) {
-  _ctx = ctx;
-  aiOAuth.init(ctx.loadSettings, ctx.saveSettings);
+  _ctx = validateRouteContext(ctx, 'system', {
+    PORT: 'port', cleanup: 'cleanup', loadSettings: 'function', saveSettings: 'function',
+  });
+  aiOAuth.init(_ctx.loadSettings, _ctx.saveSettings);
 }
 
 function handle(url, req, res) {

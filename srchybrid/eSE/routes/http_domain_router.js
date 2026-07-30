@@ -1,5 +1,20 @@
 "use strict";
 
+const { validateRouteContext } = require("./route_context");
+
+/**
+ * @typedef {Object} HttpDomainRouterContext
+ * @property {number} port
+ * @property {{apply: Function}} security
+ * @property {{handle: Function}} debugLog
+ * @property {{handle: Function}} debugPage
+ * @property {{handleRoute: Function}} liveApi
+ * @property {object} liveRouteContext
+ * @property {Array<{handle: Function}>} apiRoutes
+ * @property {Array<{handle: Function}>} pageRoutes
+ * @property {{handle: Function}} staticRoutes
+ */
+
 /**
  * Creates the HTTP request dispatcher without loading the composition root.
  * The order below is a compatibility contract: a matching handler is final
@@ -16,15 +31,14 @@ function createHttpDomainRouter(dependencies) {
     apiRoutes,
     pageRoutes,
     staticRoutes,
-  } = dependencies;
+  } = validateRouteContext(dependencies, "HTTP dispatcher", {
+    port: "port", security: "securityApply", debugLog: "handler", debugPage: "handler",
+    liveApi: "liveApi", liveRouteContext: "object", apiRoutes: "handlers",
+    pageRoutes: "handlers", staticRoutes: "handler",
+  });
 
-  if (!Number.isInteger(port) || port <= 0) throw new Error("port is required");
-  if (!security || !debugLog || !debugPage || !liveApi || !staticRoutes) {
-    throw new Error("router dependencies are incomplete");
-  }
-
-  const apiHandlers = apiRoutes || [];
-  const pageHandlers = pageRoutes || [];
+  const apiHandlers = apiRoutes;
+  const pageHandlers = pageRoutes;
 
   return async function routeHttpRequest(req, res) {
     const url = new URL(req.url, "http://localhost:" + port);

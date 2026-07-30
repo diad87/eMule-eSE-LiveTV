@@ -2,14 +2,27 @@
 
 const fs = require("fs");
 const path = require("path");
+const { validateRouteContext } = require("./route_context");
 
 /**
  * Handles the two intentionally public application icons.  Keeping this
  * separate from the composition root makes the final routing fallback
  * explicit and allows it to be exercised through a real HTTP server.
  */
-function createStaticRoutes({ rootDir, fileSystem = fs, pathModule = path }) {
-  if (!rootDir) throw new Error("rootDir is required");
+/**
+ * @param {{rootDir: string, fileSystem?: typeof fs, pathModule?: typeof path}} dependencies
+ */
+function createStaticRoutes(dependencies) {
+  const candidate = dependencies && typeof dependencies === "object"
+    ? {
+      rootDir: Object.prototype.hasOwnProperty.call(dependencies, "rootDir") ? dependencies.rootDir : undefined,
+      fileSystem: Object.prototype.hasOwnProperty.call(dependencies, "fileSystem") ? dependencies.fileSystem : fs,
+      pathModule: Object.prototype.hasOwnProperty.call(dependencies, "pathModule") ? dependencies.pathModule : path,
+    }
+    : dependencies;
+  const { rootDir, fileSystem, pathModule } = validateRouteContext(candidate, "static", {
+    rootDir: "string", fileSystem: "fileSystem", pathModule: "pathModule",
+  });
 
   return {
     async handle(url, _req, res) {

@@ -1,0 +1,126 @@
+{
+  "schema": "ese.mod44.route-context-contract/v1",
+  "baseline_commit": "6212ec7529adbbcb35814ee83fd73fe07558ae88",
+  "scope": "explicit, validated route initialization dependencies",
+  "validator": {
+    "file": "srchybrid/eSE/routes/route_context.js",
+    "requires_own_properties": true,
+    "copies_validated_properties": true,
+    "mutates_input": false,
+    "safe_error_template": "invalid <route> route context"
+  },
+  "route_contexts": {
+    "emule_routes.js": {
+      "name": "emule",
+      "dependencies": [
+        "EMULE_INCOMING",
+        "emuleAddEd2kLink",
+        "emuleDownload",
+        "emuleLogin",
+        "emuleSearch",
+        "emuleTransferAction",
+        "getSession",
+        "loadSettings",
+        "saveSettings",
+        "security"
+      ]
+    },
+    "movies_routes.js": {
+      "name": "movies",
+      "dependencies": [
+        "CACHE_DIR",
+        "fetchAndCacheMovie",
+        "loadSettings",
+        "proxyOMDB"
+      ]
+    },
+    "stream_completed.js": {
+      "name": "stream completed",
+      "dependencies": [
+        "FFMPEG_PATH",
+        "HW_ENCODER",
+        "HW_ENCODER_OPTS",
+        "activeStreams",
+        "emuleRequest",
+        "getCompletedFiles",
+        "getDuration",
+        "getSession",
+        "resolveMediaFile"
+      ]
+    },
+    "stream_part.js": {
+      "name": "stream part",
+      "dependencies": [
+        "EMULE_INCOMING",
+        "FFMPEG_PATH",
+        "HW_ENCODER",
+        "HW_ENCODER_OPTS",
+        "TEMP_DIR",
+        "__dirname",
+        "activeStreams",
+        "getDownloads"
+      ]
+    },
+    "system_routes.js": {
+      "name": "system",
+      "dependencies": [
+        "PORT",
+        "cleanup",
+        "loadSettings",
+        "saveSettings"
+      ]
+    },
+    "v1_routes.js": {
+      "name": "v1",
+      "dependencies": [
+        "emuleApi",
+        "emuleRoutes",
+        "getSession",
+        "liveApi",
+        "liveRouteCtx",
+        "security",
+        "streamCompleted",
+        "streamPart",
+        "systemRoutes"
+      ]
+    }
+  },
+  "dispatcher_context": {
+    "file": "srchybrid/eSE/routes/http_domain_router.js",
+    "name": "HTTP dispatcher",
+    "dependencies": [
+      "apiRoutes",
+      "debugLog",
+      "debugPage",
+      "liveApi",
+      "liveRouteContext",
+      "pageRoutes",
+      "port",
+      "security",
+      "staticRoutes"
+    ]
+  },
+  "static_context": {
+    "file": "srchybrid/eSE/routes/static_routes.js",
+    "name": "static",
+    "required": [
+      "rootDir"
+    ],
+    "defaulted": [
+      "fileSystem",
+      "pathModule"
+    ]
+  },
+  "limits": {
+    "composition_root_physical_lines": 300,
+    "route_module_physical_lines": 500
+  },
+  "stop_conditions": [
+    "a route reads an undeclared _ctx property",
+    "a route accepts null, missing, or inherited required dependencies",
+    "validation retains the caller context object",
+    "an initialization error exposes dependency values",
+    "a route module exceeds 500 physical lines",
+    "server.js exceeds 300 physical lines"
+  ]
+}

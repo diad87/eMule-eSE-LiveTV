@@ -10,12 +10,19 @@ const {
   extractFileName,
   readMetBounded,
 } = require('../media_resolver');
+const { validateRouteContext } = require('./route_context');
 
+/** @type {Pick<import('./route_context').SharedRouteContext, 'EMULE_INCOMING'|'FFMPEG_PATH'|'TEMP_DIR'|'__dirname'|'HW_ENCODER'|'HW_ENCODER_OPTS'|'activeStreams'|'getDownloads'>} */
 let _ctx = {};
 const copyOwners = new Map();
 const promotionQueues = new Map();
 
-function init(ctx) { _ctx = ctx; }
+function init(ctx) {
+  _ctx = validateRouteContext(ctx, 'stream part', {
+    EMULE_INCOMING: 'string', FFMPEG_PATH: 'string', TEMP_DIR: 'string', __dirname: 'string',
+    HW_ENCODER: 'string', HW_ENCODER_OPTS: 'array', activeStreams: 'object', getDownloads: 'function',
+  });
+}
 
 function promoteCopy(partNum, copyToken, copyTarget, tempAvi) {
   const previous = promotionQueues.get(partNum) || Promise.resolve();

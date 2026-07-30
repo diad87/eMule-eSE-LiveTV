@@ -63,6 +63,7 @@ static_assert(CLivePeerRefreshPolicy::MIN_PEERS == ESE_LIVE_MIN_PEERS,
     "Live peer refresh policy must match the wire/runtime resilience floor");
 
 using ese::live::LivePeerAddResult;
+using ese::live::LiveFanoutChild;
 using ese::live::LivePeerDiversityDecision;
 using ese::live::LivePeerDiversityReason;
 using ese::live::LivePeerHandle;
@@ -1870,27 +1871,32 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
             totalBytes = 0u;
         }
 
-        if (haveTrust && segsPushed > 0) {
-            trust.requestsServed += (uint32)segsPushed;
-            SetTrustById(PeerId(peer), trust);
-        }
-        for (int i = 0; i < segsPushed; ++i) {
-            if (!m_viewerSession.IsActive())
-                m_meshManager.IncrementChunksServed();
-        }
-        if (segsPushed > 0 && !m_viewerSession.IsActive())
-            m_meshManager.TrackUpload(peer, (uint32)totalBytes);
-
         pushed = segsPushed;
 
-        // Release the manager lock before socket I/O so FeedSegment cannot block
-        // on m_lock while we drain ~4.5 MB of chunk data into the socket.
         if (pushed > 0) {
             lock.Unlock();
-            LiveStreamFanoutAdapter::SendReserved(
+            const bool sentAll = LiveStreamFanoutAdapter::SendReserved(
                 m_streamFanout, reservedPush);
-            // Note: do NOT re-lock — function exit, CSingleLock dtor is a no-op
-            // when already unlocked. There is nothing else to do after the push.
+            lock.Lock();
+            peer = LiveStreamFanoutAdapter::ResolveDeliveredChild(
+                m_peerSet, reservedPush.child);
+            if (!sentAll || peer == NULL) {
+                pushed = 0;
+            } else {
+                if (haveTrust &&
+                    GetTrustById(PeerId(peer), trust)) {
+                    trust.requestsServed +=
+                        static_cast<uint32>(segsPushed);
+                    SetTrustById(PeerId(peer), trust);
+                }
+                for (int i = 0; i < segsPushed; ++i) {
+                    if (!m_viewerSession.IsActive())
+                        m_meshManager.IncrementChunksServed();
+                }
+                if (!m_viewerSession.IsActive())
+                    m_meshManager.TrackUpload(
+                        peer, static_cast<uint32>(totalBytes));
+            }
         }
     }
     if (pushed > 0) {
@@ -2087,9 +2093,10 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
         const bool sentAll = LiveStreamFanoutAdapter::SendReserved(
             m_streamFanout, reservedSend);
         lock.Lock();
-        if (!sentAll)
+        peer = LiveStreamFanoutAdapter::ResolveDeliveredChild(
+            m_peerSet, reservedSend.child);
+        if (!sentAll || peer == NULL)
             return;
-
         if (GetTrustById(PeerId(peer), trust)) {
             trust.requestsServed++;
             SetTrustById(PeerId(peer), trust);
@@ -2423,13 +2430,7 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
         }
     }
 
-    // Proactive child delivery is selected and atomically admitted by fanout;
-    // the adapter performs packet/socket work after m_lock is released.
     std::vector<LiveFanoutPacketBatch> relayPkts;
-    // A simultaneous local broadcaster owns the downstream role. Remote chunks
-    // must never be pushed to those viewers or signed with the local
-    // broadcaster identity.  Secondary redistribution remains enabled for a
-    // pure viewer.
     if (!m_broadcastSession.IsActive() && !m_peerSet.DownstreamsEmpty()) {
         uint32 storedSize = 0;
         bool   storedFound = false;
@@ -2465,22 +2466,24 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
         }
     }
 
-    // Notify mesh manager that this request is fulfilled
     m_meshManager.FulfillRequest(seqNum);
-
-    // Phase-1 fix #4: sends happen with m_lock released.
     lock.Unlock();
-    std::vector<CUpDownClient*> deliveredChildren;
+    std::vector<LiveFanoutChild> deliveredChildren;
     deliveredChildren.reserve(relayPkts.size());
     for (LiveFanoutPacketBatch& delivery : relayPkts) {
-        CUpDownClient* child = PeerFromHandle(delivery.child);
         if (LiveStreamFanoutAdapter::SendReserved(
                 m_streamFanout, delivery))
-            deliveredChildren.push_back(child);
+            deliveredChildren.push_back(delivery.child);
     }
+    std::size_t accountedChildren = 0u;
     if (!deliveredChildren.empty()) {
         lock.Lock();
-        for (CUpDownClient* child : deliveredChildren) {
+        for (LiveFanoutChild childHandle : deliveredChildren) {
+            CUpDownClient* child =
+                LiveStreamFanoutAdapter::ResolveDeliveredChild(
+                    m_peerSet, childHandle);
+            if (child == NULL)
+                continue;
             m_meshManager.TrackUpload(child, static_cast<uint32>(dataSize));
             m_meshManager.IncrementChunksServed();
             PeerCounters& ccp = m_peerCounters[PeerId(child)];
@@ -2489,11 +2492,12 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
             ccp.bytes_out_window_60s += dataSize;
             ccp.chunks_served++;
             ccp.last_chunk_sent_ms = nowTick;
+            ++accountedChildren;
         }
     }
-    if (!deliveredChildren.empty())
+    if (accountedChildren != 0u)
         LIVE_LOG("RELAY", "PUSH seq=%u to %d child(ren)",
-            seqNum, static_cast<int>(deliveredChildren.size()));
+            seqNum, static_cast<int>(accountedChildren));
 }
 
 void CLiveStreamManager::OnPeerBitmap(CUpDownClient* peer, const uchar* streamKey,

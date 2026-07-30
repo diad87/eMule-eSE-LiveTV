@@ -139,12 +139,15 @@ class Mod34LiveStreamSecurityTest(unittest.TestCase):
             source.index("void CLiveStreamManager::OnPeerJoin(") :
             source.index("void CLiveStreamManager::OnPeerRequest(")
         ]
-        credit = peer_join.index("trust.requestsServed +=")
-        self.assertLess(credit, peer_join.index("SetTrustById(", credit))
-        self.assertLess(
-            peer_join.index("SetTrustById(", credit),
-            peer_join.index("lock.Unlock()", credit),
+        send = peer_join.index("LiveStreamFanoutAdapter::SendReserved(")
+        relock = peer_join.index("lock.Lock()", send)
+        resolved = peer_join.index(
+            "LiveStreamFanoutAdapter::ResolveDeliveredChild(", relock
         )
+        credit = peer_join.index("trust.requestsServed +=")
+        self.assertLess(relock, resolved)
+        self.assertLess(resolved, credit)
+        self.assertLess(credit, peer_join.index("SetTrustById(", credit))
 
     def test_native_cases_cover_pin_replay_wrap_and_capacity(self) -> None:
         native = NATIVE_TEST.read_text(encoding="utf-8")

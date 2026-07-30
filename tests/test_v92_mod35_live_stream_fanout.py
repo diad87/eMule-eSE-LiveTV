@@ -69,6 +69,7 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             "std::mutex",
             "SelectRecipients(",
             "BeginDelivery(",
+            "BeginTransport(",
             "CompleteDelivery(",
             "ReplaceChild(",
             "ReleaseChild(",
@@ -92,13 +93,14 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             "fanout.RegisterChild(",
             "fanout.SelectRecipients(",
             "fanout.BeginDelivery(",
+            "fanout.BeginTransport(",
             "fanout.CompleteDelivery(",
             "fanout.ReplaceChild(",
             "fanout.ReleaseChild(",
         ):
             self.assertIn(marker, adapter)
         relay = source[
-            source.index("// Proactive child delivery") :
+            source.index("std::vector<LiveFanoutPacketBatch> relayPkts;") :
             source.index("void CLiveStreamManager::OnPeerBitmap(")
         ]
         self.assertNotIn(
@@ -109,6 +111,15 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
         self.assertLess(
             relay.index("lock.Unlock()"),
             relay.index("SendReserved("),
+        )
+        self.assertLess(
+            adapter.index("fanout.BeginTransport("),
+            adapter.index("FanoutChild(current_child)"),
+        )
+        self.assertIn("return sent_all && completed;", adapter)
+        self.assertGreaterEqual(
+            source.count("m_peerSet.HasDownstream("),
+            4,
         )
 
     def test_native_cases_cover_slow_close_capacity_and_concurrency(self) -> None:
@@ -123,9 +134,13 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             "duplicate pending delivery is rejected",
             "whole-batch identity accepts uint32 sequence wrap",
             "reservation capacity failure does not partially mutate state",
-            "replacement preserves pending delivery ownership",
+            "replacement retargets and preserves pending delivery ownership",
+            "collision replacement preserves canonical order and retargets work",
+            "collision replacement cancels duplicate pending identity",
             "slow child does not block a healthy sibling",
             "release cancels pending work and rejects future delivery",
+            "release waits while transport owns the child lifetime",
+            "release completes after transport becomes idle",
             "concurrent reservation accounting remains bounded",
             "clear reclaims every child and reservation",
         ):

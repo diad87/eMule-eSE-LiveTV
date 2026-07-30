@@ -1,6 +1,7 @@
 #include "../LiveStreamFanout.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -141,6 +142,7 @@ int main()
 		"replacement fixture registers");
 	auto replaced = fanout.BeginDelivery(40u, 7u, 9u, 0u, 321u);
 	ese::live::LiveFanoutChildSnapshot snapshot;
+	ese::live::LiveFanoutChild replacement_target = 0u;
 	Check(
 		replaced.IsReserved() &&
 			fanout.ReplaceChild(40u, 41u) &&
@@ -148,8 +150,56 @@ int main()
 			fanout.GetChildSnapshot(41u, snapshot) &&
 			snapshot.pending_deliveries == 1u &&
 			snapshot.pending_bytes == 321u &&
+			fanout.BeginTransport(
+				replaced.token, replacement_target) &&
+			replacement_target == 41u &&
 			fanout.CompleteDelivery(replaced.token, true),
-		"replacement preserves pending delivery ownership");
+		"replacement retargets and preserves pending delivery ownership");
+
+	LiveStreamFanout collision;
+	for (std::uintptr_t child : {101u, 102u, 103u})
+		collision.RegisterChild(child);
+	auto prior_pending =
+		collision.BeginDelivery(101u, 10u, 10u, 0u, 10u);
+	auto replacement_pending =
+		collision.BeginDelivery(103u, 11u, 11u, 0u, 11u);
+	ese::live::LiveFanoutChild collision_target = 0u;
+	Check(
+		prior_pending.IsReserved() &&
+			replacement_pending.IsReserved() &&
+			collision.ReplaceChild(101u, 103u) &&
+			collision.SelectRecipients(0u, {}, 3u) ==
+				std::vector<std::uintptr_t>({103u, 102u}) &&
+			collision.ChildCount() == 2u &&
+			collision.BeginTransport(
+				prior_pending.token, collision_target) &&
+			collision_target == 103u &&
+			collision.CompleteDelivery(prior_pending.token, true) &&
+			collision.CompleteDelivery(
+				replacement_pending.token, true),
+		"collision replacement preserves canonical order and retargets work");
+
+	LiveStreamFanout duplicate_collision;
+	duplicate_collision.RegisterChild(201u);
+	duplicate_collision.RegisterChild(202u);
+	auto canceled_duplicate =
+		duplicate_collision.BeginDelivery(201u, 1u, 1u, 0u, 1u);
+	auto retained_duplicate =
+		duplicate_collision.BeginDelivery(202u, 1u, 1u, 0u, 1u);
+	ese::live::LiveFanoutChild canceled_target = 0u;
+	Check(
+		canceled_duplicate.IsReserved() &&
+			retained_duplicate.IsReserved() &&
+			duplicate_collision.ReplaceChild(201u, 202u) &&
+			duplicate_collision.ReservationCount() == 1u &&
+			!duplicate_collision.BeginTransport(
+				canceled_duplicate.token, canceled_target) &&
+			duplicate_collision.BeginTransport(
+				retained_duplicate.token, canceled_target) &&
+			canceled_target == 202u &&
+			duplicate_collision.CompleteDelivery(
+				retained_duplicate.token, true),
+		"collision replacement cancels duplicate pending identity");
 
 	Check(
 		fanout.RegisterChild(50u) ==
@@ -180,6 +230,40 @@ int main()
 			fanout.BeginDelivery(60u, 4u, 4u, 0u, 1u).result ==
 				LiveFanoutDeliveryResult::UnknownChild,
 		"release cancels pending work and rejects future delivery");
+
+	LiveStreamFanout leased;
+	leased.RegisterChild(70u);
+	auto leased_delivery =
+		leased.BeginDelivery(70u, 1u, 1u, 0u, 10u);
+	ese::live::LiveFanoutChild leased_target = 0u;
+	std::atomic<bool> release_started{false};
+	std::atomic<bool> release_finished{false};
+	Check(
+		leased_delivery.IsReserved() &&
+			leased.BeginTransport(
+				leased_delivery.token, leased_target) &&
+			leased_target == 70u,
+		"transport lease resolves a live child");
+	std::thread closing_thread(
+		[&leased, &release_started, &release_finished]() {
+			release_started.store(true, std::memory_order_release);
+			leased.ReleaseChild(70u);
+			release_finished.store(true, std::memory_order_release);
+		});
+	while (!release_started.load(std::memory_order_acquire))
+		std::this_thread::yield();
+	std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	Check(
+		!release_finished.load(std::memory_order_acquire),
+		"release waits while transport owns the child lifetime");
+	Check(
+		leased.CompleteDelivery(leased_delivery.token, true),
+		"transport completion releases the child lifetime");
+	closing_thread.join();
+	Check(
+		release_finished.load(std::memory_order_acquire) &&
+			leased.ChildCount() == 0u,
+		"release completes after transport becomes idle");
 
 	fanout.Clear();
 	Check(

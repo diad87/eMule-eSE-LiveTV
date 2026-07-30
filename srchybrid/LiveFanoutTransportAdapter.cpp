@@ -92,19 +92,17 @@ bool LiveStreamFanoutAdapter::ReplaceChild(
 	ese::live::LiveFanoutChild previous,
 	ese::live::LiveFanoutChild replacement)
 {
-	if (!peers.ReplaceDownstream(previous, replacement))
+	if (previous == 0u || replacement == 0u ||
+		previous == replacement ||
+		!peers.HasDownstream(previous))
 		return false;
-	if (fanout.ReplaceChild(previous, replacement))
+	if (!fanout.ReplaceChild(previous, replacement))
+		return false;
+	if (peers.ReplaceDownstream(previous, replacement))
 		return true;
-	const ese::live::LiveFanoutRegisterResult registered =
-		fanout.RegisterChild(replacement);
-	if (registered == ese::live::LiveFanoutRegisterResult::Registered ||
-		registered ==
-			ese::live::LiveFanoutRegisterResult::AlreadyRegistered) {
-		fanout.ReleaseChild(previous);
-		return true;
-	}
-	peers.RemoveDownstream(replacement);
+	// PeerSet is manager-lock serialized, so this is a fail-closed rollback
+	// for invariant drift rather than a normal race.
+	fanout.ReplaceChild(replacement, previous);
 	return false;
 }
 
@@ -213,7 +211,14 @@ bool LiveStreamFanoutAdapter::SendReserved(
 		batch.Reset();
 		return false;
 	}
-	CUpDownClient* child = FanoutChild(batch.child);
+	ese::live::LiveFanoutChild current_child = 0u;
+	if (!fanout.BeginTransport(
+			batch.reservation_token, current_child)) {
+		batch.Reset();
+		return false;
+	}
+	batch.child = current_child;
+	CUpDownClient* child = FanoutChild(current_child);
 	bool sent_all = child != NULL;
 	for (Packet*& packet : batch.packets) {
 		if (packet == NULL)
@@ -228,8 +233,18 @@ bool LiveStreamFanoutAdapter::SendReserved(
 		packet = NULL;
 	}
 	batch.packets.clear();
-	fanout.CompleteDelivery(batch.reservation_token, sent_all);
+	const bool completed =
+		fanout.CompleteDelivery(batch.reservation_token, sent_all);
 	batch.owner = nullptr;
 	batch.reservation_token = 0u;
-	return sent_all;
+	return sent_all && completed;
+}
+
+CUpDownClient* LiveStreamFanoutAdapter::ResolveDeliveredChild(
+	const ese::live::LivePeerSet& peers,
+	ese::live::LiveFanoutChild child)
+{
+	if (child == 0u || !peers.HasDownstream(child))
+		return NULL;
+	return FanoutChild(child);
 }

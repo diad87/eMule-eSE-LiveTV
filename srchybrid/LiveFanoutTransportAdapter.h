@@ -7,6 +7,7 @@
 #include <vector>
 
 class Packet;
+class CUpDownClient;
 struct LiveChunk;
 
 struct LiveFanoutPacketBatch final {
@@ -65,6 +66,11 @@ public:
 	static bool SendReserved(
 		ese::live::LiveStreamFanout& fanout,
 		LiveFanoutPacketBatch& batch);
+	// Caller must serialize LivePeerSet membership for the returned pointer's
+	// entire use (CLiveStreamManager does so with m_lock).
+	static CUpDownClient* ResolveDeliveredChild(
+		const ese::live::LivePeerSet& peers,
+		ese::live::LiveFanoutChild child);
 
 private:
 	LiveStreamFanoutAdapter() = delete;

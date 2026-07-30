@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -75,6 +76,9 @@ public:
 		std::uint32_t last_sequence,
 		std::uint64_t external_queued_bytes,
 		std::uint64_t wire_bytes);
+	bool BeginTransport(
+		std::uint64_t token,
+		LiveFanoutChild& child);
 	bool CompleteDelivery(std::uint64_t token, bool sent);
 
 	bool GetChildSnapshot(
@@ -101,6 +105,7 @@ private:
 		std::uint32_t first_sequence = 0u;
 		std::uint32_t last_sequence = 0u;
 		std::uint64_t wire_bytes = 0u;
+		bool transport_active = false;
 	};
 
 	std::vector<ChildEntry>::iterator FindChildLocked(
@@ -108,8 +113,10 @@ private:
 	std::vector<ChildEntry>::const_iterator FindChildLocked(
 		LiveFanoutChild child) const;
 	std::uint64_t NextTokenLocked();
+	bool HasActiveTransportLocked(LiveFanoutChild child) const;
 
 	mutable std::mutex mutex_;
+	std::condition_variable transport_idle_;
 	std::vector<ChildEntry> children_;
 	std::vector<ReservationEntry> reservations_;
 	std::uint64_t next_token_;

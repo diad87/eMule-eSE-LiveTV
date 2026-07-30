@@ -51,16 +51,80 @@ bool LiveStreamFanout::ReplaceChild(
 {
 	if (previous == 0u || replacement == 0u || previous == replacement)
 		return false;
-	std::lock_guard<std::mutex> lock(mutex_);
+	std::unique_lock<std::mutex> lock(mutex_);
 	auto found = FindChildLocked(previous);
-	if (found == children_.end() ||
-		FindChildLocked(replacement) != children_.end())
+	if (found == children_.end())
 		return false;
-	found->child = replacement;
-	for (ReservationEntry& reservation : reservations_) {
-		if (reservation.child == previous)
-			reservation.child = replacement;
+	transport_idle_.wait(
+		lock,
+		[this, previous]() {
+			return !HasActiveTransportLocked(previous);
+		});
+	found = FindChildLocked(previous);
+	if (found == children_.end())
+		return false;
+
+	const auto replacement_found = FindChildLocked(replacement);
+	if (replacement_found == children_.end()) {
+		found = FindChildLocked(previous);
+		found->child = replacement;
+		for (ReservationEntry& reservation : reservations_) {
+			if (reservation.child == previous)
+				reservation.child = replacement;
+		}
+		return true;
 	}
+
+	const std::size_t previous_index =
+		static_cast<std::size_t>(found - children_.begin());
+	const std::size_t replacement_index =
+		static_cast<std::size_t>(replacement_found - children_.begin());
+	ChildEntry merged = *replacement_found;
+	merged.completed_deliveries += found->completed_deliveries;
+	merged.completed_bytes += found->completed_bytes;
+	merged.failed_deliveries += found->failed_deliveries;
+	merged.backpressure_rejections += found->backpressure_rejections;
+
+	for (auto reservation = reservations_.begin();
+		reservation != reservations_.end();) {
+		if (reservation->child != previous) {
+			++reservation;
+			continue;
+		}
+		const bool duplicate = std::any_of(
+			reservations_.cbegin(), reservations_.cend(),
+			[replacement, &reservation](
+				const ReservationEntry& candidate) {
+				return candidate.child == replacement &&
+					candidate.first_sequence ==
+						reservation->first_sequence &&
+					candidate.last_sequence ==
+						reservation->last_sequence;
+			});
+		if (duplicate)
+			reservation = reservations_.erase(reservation);
+		else {
+			reservation->child = replacement;
+			++reservation;
+		}
+	}
+	merged.pending_bytes = 0u;
+	merged.pending_deliveries = 0u;
+	for (ReservationEntry& reservation : reservations_) {
+		if (reservation.child == replacement) {
+			merged.pending_bytes += reservation.wire_bytes;
+			++merged.pending_deliveries;
+		}
+	}
+	std::vector<ChildEntry> reordered;
+	reordered.reserve(children_.size() - 1u);
+	for (std::size_t index = 0u; index < children_.size(); ++index) {
+		if (index == previous_index)
+			reordered.push_back(merged);
+		else if (index != replacement_index)
+			reordered.push_back(children_[index]);
+	}
+	children_.swap(reordered);
 	return true;
 }
 
@@ -68,10 +132,16 @@ bool LiveStreamFanout::ReleaseChild(LiveFanoutChild child)
 {
 	if (child == 0u)
 		return false;
-	std::lock_guard<std::mutex> lock(mutex_);
+	std::unique_lock<std::mutex> lock(mutex_);
 	auto found = FindChildLocked(child);
 	if (found == children_.end())
 		return false;
+	transport_idle_.wait(
+		lock,
+		[this, child]() {
+			return !HasActiveTransportLocked(child);
+		});
+	found = FindChildLocked(child);
 	reservations_.erase(
 		std::remove_if(
 			reservations_.begin(), reservations_.end(),
@@ -85,10 +155,30 @@ bool LiveStreamFanout::ReleaseChild(LiveFanoutChild child)
 
 void LiveStreamFanout::Clear()
 {
-	std::lock_guard<std::mutex> lock(mutex_);
+	std::unique_lock<std::mutex> lock(mutex_);
+	transport_idle_.wait(
+		lock,
+		[this]() {
+			return std::none_of(
+				reservations_.cbegin(), reservations_.cend(),
+				[](const ReservationEntry& reservation) {
+					return reservation.transport_active;
+				});
+		});
 	reservations_.clear();
 	children_.clear();
 	next_token_ = 1u;
+}
+
+bool LiveStreamFanout::HasActiveTransportLocked(
+	LiveFanoutChild child) const
+{
+	return std::any_of(
+		reservations_.cbegin(), reservations_.cend(),
+		[child](const ReservationEntry& reservation) {
+			return reservation.child == child &&
+				reservation.transport_active;
+		});
 }
 
 std::vector<LiveFanoutChild> LiveStreamFanout::SelectRecipients(
@@ -230,6 +320,29 @@ bool LiveStreamFanout::CompleteDelivery(std::uint64_t token, bool sent)
 		++child->failed_deliveries;
 	}
 	reservations_.erase(reservation);
+	transport_idle_.notify_all();
+	return true;
+}
+
+bool LiveStreamFanout::BeginTransport(
+	std::uint64_t token,
+	LiveFanoutChild& child)
+{
+	child = 0u;
+	if (token == 0u)
+		return false;
+	std::lock_guard<std::mutex> lock(mutex_);
+	auto reservation = std::find_if(
+		reservations_.begin(), reservations_.end(),
+		[token](const ReservationEntry& entry) {
+			return entry.token == token;
+		});
+	if (reservation == reservations_.end() ||
+		reservation->transport_active ||
+		FindChildLocked(reservation->child) == children_.end())
+		return false;
+	reservation->transport_active = true;
+	child = reservation->child;
 	return true;
 }
 

@@ -34,15 +34,30 @@ function boundedInteger(value, fallback, minimum, maximum, label) {
 }
 
 function spawnManaged(file, args = [], options = {}) {
+  const detached = options.detached === undefined
+    ? process.platform !== 'win32'
+    : options.detached === true;
   const child = spawn(normalizeFile(file), normalizeArgs(args), {
     cwd: options.cwd,
     env: options.env,
-    detached: options.detached === true,
+    detached,
     windowsHide: true,
     shell: false,
     stdio: options.stdio || ['ignore', 'pipe', 'pipe'],
   });
   return child;
+}
+
+function terminateSpawned(child, signal = 'SIGKILL') {
+  if (process.platform !== 'win32' && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (_) {
+      // Fall back to the direct child when it is not a process-group leader.
+    }
+  }
+  child.kill(signal);
 }
 
 function spawnDetached(file, args = [], options = {}) {
@@ -115,13 +130,13 @@ function runProcess(file, args = [], options = {}) {
       const remaining = maxOutputBytes - stdout.length - stderr.length;
       if (remaining <= 0) {
         outputExceeded = true;
-        child.kill('SIGKILL');
+        terminateSpawned(child);
         return current;
       }
       const data = Buffer.from(chunk);
       if (data.length > remaining) {
         outputExceeded = true;
-        child.kill('SIGKILL');
+        terminateSpawned(child);
         return Buffer.concat([current, data.subarray(0, remaining)]);
       }
       return Buffer.concat([current, data]);
@@ -133,7 +148,7 @@ function runProcess(file, args = [], options = {}) {
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      terminateSpawned(child);
     }, timeoutMs);
     timer.unref();
 
@@ -168,10 +183,59 @@ async function killProcessTree(pid, options = {}) {
       { timeoutMs: options.timeoutMs || 3000, maxOutputBytes: 64 * 1024 },
     );
   }
+  const timeoutMs = boundedInteger(
+    options.timeoutMs,
+    3000,
+    1,
+    MAX_TIMEOUT_MS,
+    'timeoutMs',
+  );
+  const graceMs = Math.min(
+    boundedInteger(options.graceMs, 500, 0, MAX_TIMEOUT_MS, 'graceMs'),
+    timeoutMs,
+  );
+  const isAlive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error.code === 'EPERM';
+    }
+  };
+  const waitUntilGone = async deadline => {
+    while (isAlive() && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    return !isAlive();
+  };
+  const signalTree = signal => {
+    try {
+      process.kill(-pid, signal);
+    } catch (groupError) {
+      if (groupError.code !== 'ESRCH') throw groupError;
+      process.kill(pid, signal);
+    }
+  };
   try {
-    process.kill(pid, options.signal || 'SIGTERM');
-    return { ok: true, exitCode: 0, signal: null, stdout: '', stderr: '' };
+    const deadline = Date.now() + timeoutMs;
+    signalTree(options.signal || 'SIGTERM');
+    if (await waitUntilGone(Math.min(deadline, Date.now() + graceMs))) {
+      return { ok: true, exitCode: 0, signal: options.signal || 'SIGTERM', stdout: '', stderr: '' };
+    }
+    signalTree('SIGKILL');
+    const gone = await waitUntilGone(deadline);
+    return {
+      ok: gone,
+      exitCode: gone ? 0 : null,
+      signal: 'SIGKILL',
+      stdout: '',
+      stderr: '',
+      error: gone ? null : 'process tree did not exit before deadline',
+    };
   } catch (error) {
+    if (error.code === 'ESRCH') {
+      return { ok: true, exitCode: 0, signal: null, stdout: '', stderr: '' };
+    }
     return { ok: false, error: error.message };
   }
 }

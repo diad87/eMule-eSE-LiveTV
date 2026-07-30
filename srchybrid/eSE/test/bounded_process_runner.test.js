@@ -64,3 +64,36 @@ test("bounded runner rejects hostile configuration before spawning", async () =>
   assert.match(hostileArg.error, /NUL/);
   assert.throws(() => runner.spawnManaged("", []), /non-empty/);
 });
+
+test("managed POSIX children are process-group leaders and tree termination is bounded", {
+  skip: process.platform === "win32",
+}, async () => {
+  const child = runner.spawnManaged(node, [
+    "-e",
+    [
+      "const {spawn}=require('node:child_process');",
+      "const grandchild=spawn(process.execPath,['-e','setInterval(()=>{},1000)']);",
+      "process.stdout.write(String(grandchild.pid)+'\\n');",
+      "setInterval(()=>{},1000);",
+    ].join(""),
+  ]);
+  const grandchildPid = await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.stdout.once("data", chunk => resolve(Number(chunk.toString().trim())));
+  });
+  const result = await runner.killProcessTree(child.pid, {
+    timeoutMs: 2000,
+    graceMs: 100,
+  });
+  assert.equal(result.ok, true);
+  const alive = pid => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
+  assert.equal(alive(child.pid), false);
+  assert.equal(alive(grandchildPid), false);
+});

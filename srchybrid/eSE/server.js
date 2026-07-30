@@ -287,11 +287,8 @@ server.listen(PORT, '127.0.0.1', () => {
 // HLS files belong to the C++ broadcast/view session.  Deleting them when the
 // dashboard restarts used to cut off an otherwise healthy eMule stream.  The
 // C++ manager now removes its own root and per-stream output on Stop/Leave.
-process.on('SIGINT',  () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
-process.on('SIGHUP',  () => process.exit(0));
 // Windows-specific: when parent (emule.exe) closes, child receives a CTRL_CLOSE
-// which becomes SIGHUP via Node's compat layer. Above handlers cover it.
+// which becomes SIGHUP via Node's compat layer. cleanup.js owns those signals.
 }
 
 startServer().catch(error => {

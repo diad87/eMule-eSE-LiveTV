@@ -65,7 +65,9 @@ class Mod42AsyncBoundariesTest(unittest.TestCase):
             "shell: false",
             "outputExceeded = true",
             "timedOut = true",
-            "child.kill('SIGKILL')",
+            "terminateSpawned(child)",
+            "process.kill(-pid, signal)",
+            "signalTree('SIGKILL')",
         ):
             self.assertIn(marker, source)
 
@@ -89,8 +91,13 @@ class Mod42AsyncBoundariesTest(unittest.TestCase):
         self.assertIn("() => false", v1)
         self.assertIn("isWithinBase(", stream_part)
         self.assertIn("fs.promises.access", stream_part)
+        self.assertIn("createDisconnectGuard(req, res", stream_part)
+        self.assertIn("runProcess(\n      'powershell'", stream_part)
+        self.assertIn("stderrLog = (stderrLog + d.toString()).slice(-2048)", stream_part)
         self.assertIn("runProcess(", completed)
         self.assertIn("fs.promises.open", completed)
+        self.assertIn("createDisconnectGuard(req, res", completed)
+        self.assertIn("if (disconnect.checkNow()) return", completed)
         self.assertIn("pipeFileResponse(", channel)
         self.assertIn("fs.promises.stat", channel)
 
@@ -99,6 +106,32 @@ class Mod42AsyncBoundariesTest(unittest.TestCase):
         self.assertLessEqual(len(server.splitlines()), 300)
         self.assertIn("async function startServer()", server)
         self.assertIn("await hwEncoderMod.detect(", server)
+
+    def test_async_lifecycle_work_is_serialized_and_awaited_before_exit(self) -> None:
+        server = (ESE / "server.js").read_text(encoding="utf-8")
+        cleanup = (ESE / "cleanup.js").read_text(encoding="utf-8")
+        emule = (ESE / "emule_api.js").read_text(encoding="utf-8")
+        pipeline = (ESE / "eSE-live" / "ffmpeg_pipeline.js").read_text(
+            encoding="utf-8"
+        )
+        rtmp = (ESE / "eSE-live" / "rtmp_server.js").read_text(encoding="utf-8")
+
+        self.assertNotIn("process.on('SIGINT'", server)
+        self.assertNotIn("process.on('SIGTERM'", server)
+        self.assertIn("await killOrphanedFFmpeg()", cleanup)
+        self.assertIn("void gracefulShutdown(signal).finally(", cleanup)
+        self.assertIn("process.once('SIGINT'", cleanup)
+        self.assertIn("process.once('SIGTERM'", cleanup)
+        self.assertIn("async function stop()", pipeline)
+        self.assertIn("await killProcessTree(pid)", pipeline)
+        self.assertIn("async function stop()", rtmp)
+        self.assertIn("await killProcessTree(pid)", rtmp)
+
+        self.assertIn("let _lifecycleWatchdogInFlight = false", emule)
+        self.assertIn("if (_lifecycleWatchdogInFlight) return", emule)
+        self.assertIn("_lifecycleWatchdogInFlight = true", emule)
+        self.assertIn("_lifecycleWatchdogInFlight = false", emule)
+        self.assertIn("return result.ok &&", emule)
 
 
 if __name__ == "__main__":

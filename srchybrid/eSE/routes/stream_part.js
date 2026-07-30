@@ -1,11 +1,32 @@
 'use strict';
 const fs   = require('fs');
 const path = require('path');
-const { spawnManaged } = require('../bounded_process_runner');
+const {
+  runProcess,
+  spawnManaged,
+} = require('../bounded_process_runner');
 
 let _ctx = {};
 
 function init(ctx) { _ctx = ctx; }
+
+function createDisconnectGuard(req, res, onDisconnect) {
+  let disconnected = !!(req.destroyed || res.destroyed);
+  const markDisconnected = () => {
+    if (disconnected) return;
+    disconnected = true;
+    if (onDisconnect) onDisconnect();
+  };
+  req.once('aborted', markDisconnected);
+  res.once('close', markDisconnected);
+  return {
+    get disconnected() { return disconnected; },
+    checkNow() {
+      if (req.destroyed || res.destroyed) markDisconnected();
+      return disconnected;
+    },
+  };
+}
 
 /**
  * BUG-041 FIX: Validate that resolvedPath is strictly within baseDir.
@@ -32,6 +53,10 @@ async function pathExists(filePath) {
 function handle(url, req, res) {
   // Legacy .part streaming via ffmpeg pipe
   if (url.pathname === '/api/stream/part') {
+    let ff = null;
+    const disconnect = createDisconnectGuard(req, res, () => {
+      try { if (ff) ff.kill('SIGKILL'); } catch (_) {}
+    });
     void (async () => {
     const partFile = url.searchParams.get('file') || '';
     const fileName = url.searchParams.get('name') || '';
@@ -78,8 +103,10 @@ function handle(url, req, res) {
       }
     }
 
+    if (disconnect.checkNow()) return;
     if (!filePath) { res.writeHead(404); res.end('File not found in Temp or Incoming'); return; }
     const stat = await fs.promises.stat(filePath);
+    if (disconnect.checkNow()) return;
     console.log('[Stream] Streaming: ' + String(filePath).replace(/[\r\n]/g, '') + ' (' + Math.round(stat.size / (1024*1024)) + ' MB)');
 
     res.writeHead(200, { 'Content-Type': 'video/mp4', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
@@ -94,24 +121,31 @@ function handle(url, req, res) {
     }
     ffArgs.push('-c:a', 'aac', '-b:a', '192k', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-max_muxing_queue_size', '1024', '-f', 'mp4', '-');
 
-    const ff = spawnManaged(_ctx.FFMPEG_PATH, ffArgs);
+    ff = spawnManaged(_ctx.FFMPEG_PATH, ffArgs);
+    if (disconnect.checkNow()) {
+      ff.kill('SIGKILL');
+      return;
+    }
     let dataSent = false, stderrLog = '';
     ff.stdout.on('data', (chunk) => {
       if (!dataSent) { dataSent = true; console.log('[Stream] First data chunk sent (' + chunk.length + ' bytes)'); }
       try { res.write(chunk); } catch(e) {}
     });
-    ff.stderr.on('data', (d) => { stderrLog += d.toString().slice(-500); });
+    ff.stderr.on('data', (d) => {
+      stderrLog = (stderrLog + d.toString()).slice(-2048);
+    });
     ff.on('exit', (code) => {
       console.log('[Stream] ffmpeg exit code: ' + code + (dataSent ? '' : ' (NO data sent!)'));
       if (!dataSent && stderrLog) console.log('[Stream] ffmpeg stderr: ' + stderrLog.slice(-300));
       try { res.end(); } catch(e) {}
     });
     ff.on('error', (err) => { console.log('[Stream] ffmpeg error: ' + err.message); try { res.end(); } catch(e) {} });
-    res.on('close', () => { try { ff.kill('SIGKILL'); } catch(e) {} });
     })().catch(error => {
       console.warn('[Stream] Async file preparation failed:', error.message);
-      if (!res.headersSent) res.writeHead(500);
-      if (!res.writableEnded) res.end('Cannot prepare stream');
+      if (!disconnect.disconnected) {
+        if (!res.headersSent) res.writeHead(500);
+        if (!res.writableEnded) res.end('Cannot prepare stream');
+      }
     });
     return true;
   }
@@ -125,22 +159,27 @@ function handle(url, req, res) {
     if (!dl) { res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' })); return true; }
     const copyScript = path.join(_ctx.__dirname, 'copy_part.ps1');
     const tempAvi = path.join(_ctx.TEMP_DIR, 'ese_mse_' + partNum + '.avi');
+    const disconnect = createDisconnectGuard(req, res);
     console.log('[MSE] Copying .part for ' + dl.fileName);
-    fs.promises.unlink(tempAvi).catch(() => {}).then(() => new Promise((resolve, reject) => {
-      const ps = spawnManaged('powershell', ['-ExecutionPolicy','Bypass','-File',copyScript,'-Source',dl.partPath,'-Dest',tempAvi,'-MaxMB','600']);
-      let out = '';
-      ps.stdout.on('data', d => out += d.toString());
-      ps.stderr.on('data', (d) => { console.warn('[MSE] ps stderr:', d.toString().slice(-200)); });
-      ps.on('close', () => { parseInt(out.trim()) > 0 ? resolve() : reject(new Error('Copy failed')); });
-    })).then(() => {
+    fs.promises.unlink(tempAvi).catch(() => {}).then(() => runProcess(
+      'powershell',
+      ['-ExecutionPolicy','Bypass','-File',copyScript,'-Source',dl.partPath,'-Dest',tempAvi,'-MaxMB','600'],
+      { timeoutMs: 30000, maxOutputBytes: 64 * 1024 },
+    )).then(result => {
+      if (disconnect.checkNow()) return;
+      if (!result.ok || parseInt(result.stdout.trim()) <= 0) {
+        throw new Error(result.error || result.stderr || 'Copy failed');
+      }
       const estTotalSec = Math.round((dl.fileSizeMB * 8) / 4);
       console.log('[MSE] Ready. Est: ' + estTotalSec + 's');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ready', fileName: dl.fileName, estimatedTotalSec: estTotalSec }));
     }).catch((e) => {
       console.error('[MSE] Copy failed:', e.message);
-      if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
-      try { res.end(JSON.stringify({ error: e.message })); } catch(ignored) {}
+      if (!disconnect.disconnected) {
+        if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
+        try { res.end(JSON.stringify({ error: e.message })); } catch(ignored) {}
+      }
     });
     return true;
   }
@@ -153,7 +192,13 @@ function handle(url, req, res) {
     // BUG-047 FIX: Validate quality preset is one of the allowed values
     const quality = url.searchParams.get('q') || 'original';
     const tempAvi = path.join(_ctx.TEMP_DIR, 'ese_mse_' + partNum + '.avi');
+    let ff = null;
+    const disconnect = createDisconnectGuard(req, res, () => {
+      try { if (ff) ff.kill('SIGKILL'); } catch (_) {}
+      delete _ctx.activeStreams[partNum];
+    });
     fs.promises.access(tempAvi).then(() => {
+    if (disconnect.checkNow()) return;
     const presets = { '480p': { scale: '854:480', abr: '128k' }, '720p': { scale: '1280:720', abr: '192k' }, '1080p': { scale: '-2:1080', abr: '256k' }, 'original': { scale: null, abr: '256k' } };
     const q = presets[quality] || presets['original'];
     // BUG-047 FIX: Clamp seek to non-negative, finite number
@@ -166,8 +211,13 @@ function handle(url, req, res) {
     if (q.scale) ffArgs.push('-vf', 'scale=' + q.scale);
     ffArgs.push('-c:a', 'aac', '-b:a', q.abr, '-ac', '2', '-err_detect', 'ignore_err', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-frag_duration', '2000000', '-f', 'mp4', 'pipe:1');
     console.log('[MSE] Starting ffmpeg pipe (quality: ' + String(quality).replace(/[\r\n]/g, '') + ', encoder: ' + _ctx.HW_ENCODER + ')');
-    const ff = spawnManaged(_ctx.FFMPEG_PATH, ffArgs);
+    ff = spawnManaged(_ctx.FFMPEG_PATH, ffArgs);
     _ctx.activeStreams[partNum] = ff;
+    if (disconnect.checkNow()) {
+      ff.kill('SIGKILL');
+      delete _ctx.activeStreams[partNum];
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'video/mp4', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
     ff.stdout.pipe(res);
     ff.stderr.on('data', () => {});
@@ -182,15 +232,11 @@ function handle(url, req, res) {
       delete _ctx.activeStreams[partNum];
       if (!res.writableEnded) try { res.end(); } catch(e) {}
     });
-    req.on('close', () => {
-      if (_ctx.activeStreams[partNum]) {
-        try { _ctx.activeStreams[partNum].kill('SIGKILL'); } catch(e) {}
-        delete _ctx.activeStreams[partNum];
-      }
-    });
     }).catch(() => {
-      res.writeHead(404);
-      res.end('Not ready');
+      if (!disconnect.disconnected) {
+        res.writeHead(404);
+        res.end('Not ready');
+      }
     });
     return true;
   }

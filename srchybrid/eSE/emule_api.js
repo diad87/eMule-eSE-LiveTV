@@ -30,7 +30,7 @@ async function isEmuleRunning() {
       ['/FI', 'IMAGENAME eq emule.exe', '/NH', '/FO', 'CSV'],
       { timeoutMs: 3000, maxOutputBytes: 256 * 1024 },
     );
-    return (result.stdout || '').includes('emule.exe');
+    return result.ok && (result.stdout || '').includes('emule.exe');
   } catch(e) { return false; }
 }
 
@@ -61,6 +61,7 @@ let _emuleWasAlive = false;
 let _emuleRestartedAt = 0;     // ms epoch when alive last flipped false→true
 let _emuleLibraryEpoch = 0;    // monotonic counter — NOT persisted
 const _onEmuleRevivedHandlers = [];
+let _lifecycleWatchdogInFlight = false;
 function onRevived(handler) {
   if (typeof handler === 'function') _onEmuleRevivedHandlers.push(handler);
 }
@@ -102,26 +103,33 @@ async function killEmuleFFmpegOrphans() {
 
 // Watchdog: check every 10s. On dead→alive, bump epoch and notify handlers.
 // On alive→dead, kill orphan ffmpeg children.
-setInterval(async function emuleLifecycleWatchdog() {
-  const alive = await isEmuleRunning();
-  if (_emuleWasAlive && !alive) {
-    console.log('[eMule] Process died — cleaning up orphan FFmpeg broadcasts...');
-    await killEmuleFFmpegOrphans();
-    emuleSession = null;
-  } else if (!_emuleWasAlive && alive) {
-    _emuleRestartedAt = Date.now();
-    _emuleLibraryEpoch++;
-    console.log('[eMule] Process back online (epoch=' + _emuleLibraryEpoch + ')');
-    // Auto-login is called by server.js initialisation; the autoLoginEmule
-    // function declared later in this file picks up immediately. We just
-    // notify external listeners.
-    for (const h of _onEmuleRevivedHandlers) {
-      try { h(_emuleLibraryEpoch); }
-      catch(e) { console.warn('[watchdog] revived handler error:', e.message); }
+async function runEmuleLifecycleWatchdog() {
+  if (_lifecycleWatchdogInFlight) return;
+  _lifecycleWatchdogInFlight = true;
+  try {
+    const alive = await isEmuleRunning();
+    if (_emuleWasAlive && !alive) {
+      console.log('[eMule] Process died — cleaning up orphan FFmpeg broadcasts...');
+      await killEmuleFFmpegOrphans();
+      emuleSession = null;
+    } else if (!_emuleWasAlive && alive) {
+      _emuleRestartedAt = Date.now();
+      _emuleLibraryEpoch++;
+      console.log('[eMule] Process back online (epoch=' + _emuleLibraryEpoch + ')');
+      // Auto-login is called by server.js initialisation; the autoLoginEmule
+      // function declared later in this file picks up immediately. We just
+      // notify external listeners.
+      for (const h of _onEmuleRevivedHandlers) {
+        try { h(_emuleLibraryEpoch); }
+        catch(e) { console.warn('[watchdog] revived handler error:', e.message); }
+      }
     }
+    _emuleWasAlive = alive;
+  } finally {
+    _lifecycleWatchdogInFlight = false;
   }
-  _emuleWasAlive = alive;
-}, 10000);
+}
+setInterval(() => { void runEmuleLifecycleWatchdog(); }, 10000);
 // Initialise state without triggering cleanup on first run
 isEmuleRunning().then(alive => { _emuleWasAlive = alive; });
 

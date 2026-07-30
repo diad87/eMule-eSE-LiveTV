@@ -10,6 +10,7 @@ const {
 let _activeStreams = {};
 let _tempDir       = '';
 let _shutdownInProgress = false;
+let _shutdownPromise = null;
 
 /**
  * Inicializa el módulo con las referencias compartidas de server.js.
@@ -70,43 +71,51 @@ function cleanupOld(maxAgeMinutes) {
  * Works on both Windows (taskkill /T) and POSIX (SIGTERM → SIGKILL).
  */
 function gracefulShutdown(signal) {
-  if (_shutdownInProgress) return;
+  if (_shutdownPromise) return _shutdownPromise;
   _shutdownInProgress = true;
-  console.log('[cleanup] Graceful shutdown initiated (' + signal + ')...');
+  _shutdownPromise = (async () => {
+    console.log('[cleanup] Graceful shutdown initiated (' + signal + ')...');
 
-  // 1. Stop eSE Live subsystems (pipeline, RTMP, tunnel)
-  try {
-    const pipeline = require('./eSE-live/ffmpeg_pipeline');
-    pipeline.stop();
-    console.log('[cleanup] FFmpeg pipeline stopped.');
-  } catch (e) { console.warn('[cleanup] Pipeline stop error:', e.message); }
+    // 1. Stop eSE Live subsystems (pipeline, RTMP, tunnel)
+    const stops = [];
+    try {
+      const pipeline = require('./eSE-live/ffmpeg_pipeline');
+      stops.push(Promise.resolve(pipeline.stop()).then(() => {
+        console.log('[cleanup] FFmpeg pipeline stopped.');
+      }));
+    } catch (e) { console.warn('[cleanup] Pipeline stop error:', e.message); }
 
-  try {
-    const rtmpServer = require('./eSE-live/rtmp_server');
-    rtmpServer.stop();
-    console.log('[cleanup] RTMP server stopped.');
-  } catch (e) { console.warn('[cleanup] RTMP stop error:', e.message); }
+    try {
+      const rtmpServer = require('./eSE-live/rtmp_server');
+      stops.push(Promise.resolve(rtmpServer.stop()).then(() => {
+        console.log('[cleanup] RTMP server stopped.');
+      }));
+    } catch (e) { console.warn('[cleanup] RTMP stop error:', e.message); }
 
-  try {
-    const wsTunnel = require('./eSE-live/ws_tunnel');
-    wsTunnel.stopServer();
-    console.log('[cleanup] WS tunnel stopped.');
-  } catch (e) { console.warn('[cleanup] Tunnel stop error:', e.message); }
+    try {
+      const wsTunnel = require('./eSE-live/ws_tunnel');
+      wsTunnel.stopServer();
+      console.log('[cleanup] WS tunnel stopped.');
+    } catch (e) { console.warn('[cleanup] Tunnel stop error:', e.message); }
 
-  try {
-    const thumbExtractor = require('./eSE-live/thumbnail_extractor');
-    thumbExtractor.stop();
-    console.log('[cleanup] Thumbnail extractor stopped.');
-  } catch (e) { console.warn('[cleanup] Thumbnail stop error:', e.message); }
+    try {
+      const thumbExtractor = require('./eSE-live/thumbnail_extractor');
+      thumbExtractor.stop();
+      console.log('[cleanup] Thumbnail extractor stopped.');
+    } catch (e) { console.warn('[cleanup] Thumbnail stop error:', e.message); }
 
-  // 2. Kill active streaming processes from the activeStreams registry
-  cleanupAll();
+    await Promise.allSettled(stops);
 
-  // 3. Platform-specific orphan sweep: kill any ffmpeg spawned by this Node.js PID
-  killOrphanedFFmpeg();
+    // 2. Kill active streaming processes from the activeStreams registry
+    cleanupAll();
 
-  console.log('[cleanup] Shutdown complete.');
-  removePidFile(); // BUG-016 FIX: clean up PID file on exit
+    // 3. Platform-specific orphan sweep: kill any ffmpeg spawned by this Node.js PID
+    await killOrphanedFFmpeg();
+
+    console.log('[cleanup] Shutdown complete.');
+    removePidFile(); // BUG-016 FIX: clean up PID file on exit
+  })();
+  return _shutdownPromise;
 }
 
 /**
@@ -172,13 +181,23 @@ setInterval(writePidFile, 30000);
  * Handles: Ctrl+C, SIGTERM, uncaughtException (last resort), Windows close.
  */
 function registerShutdownHooks() {
-  process.on('SIGINT',  () => { gracefulShutdown('SIGINT');  setTimeout(() => process.exit(0), 2000); });
-  process.on('SIGTERM', () => { gracefulShutdown('SIGTERM'); setTimeout(() => process.exit(0), 2000); });
-  process.on('beforeExit', () => gracefulShutdown('beforeExit'));
+  const shutdownAndExit = signal => {
+    const hardStop = setTimeout(() => {
+      console.warn('[cleanup] Shutdown deadline exceeded.');
+      process.exit(1);
+    }, 12000);
+    void gracefulShutdown(signal).finally(() => {
+      clearTimeout(hardStop);
+      process.exit(0);
+    });
+  };
+  process.once('SIGINT',  () => shutdownAndExit('SIGINT'));
+  process.once('SIGTERM', () => shutdownAndExit('SIGTERM'));
+  process.once('beforeExit', () => { void gracefulShutdown('beforeExit'); });
 
   // Windows: handle console close event
   if (process.platform === 'win32') {
-    process.on('SIGHUP', () => { gracefulShutdown('SIGHUP'); setTimeout(() => process.exit(0), 2000); });
+    process.once('SIGHUP', () => shutdownAndExit('SIGHUP'));
   }
 }
 

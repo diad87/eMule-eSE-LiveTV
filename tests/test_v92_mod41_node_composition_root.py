@@ -41,7 +41,7 @@ class Mod41NodeCompositionRootTest(unittest.TestCase):
         self.assertEqual(root["baseline_physical_loc"], 389)
         self.assertEqual(root["hard_stop_physical_loc"], 300)
         self.assertIn("HTTP server construction", root["owns"])
-        self.assertIn("process lifecycle hooks", root["owns"])
+        self.assertIn("process lifecycle delegation", root["owns"])
 
     def test_server_is_the_only_bounded_composition_root(self) -> None:
         self.assertLessEqual(len(self.server.splitlines()), 300)
@@ -51,7 +51,7 @@ class Mod41NodeCompositionRootTest(unittest.TestCase):
             "tunnel.init(PORT)",
             "security.init({ tunnel })",
             "v1Routes.init({",
-            "process.on('SIGINT'",
+            "cleanup.init(activeStreams, TEMP_DIR)",
         ):
             self.assertIn(marker, self.server)
         for forbidden in (
@@ -135,7 +135,10 @@ class Mod41NodeCompositionRootTest(unittest.TestCase):
 
         validate(self.server, self.debug_page)
         mutations = (
-            (self.server + "\n" * 2, self.debug_page),
+            (
+                self.server + "\n" * (302 - len(self.server.splitlines())),
+                self.debug_page,
+            ),
             (
                 re.sub(
                     r"  if \(!security\.apply\(url, req, res\)\) return;\n",

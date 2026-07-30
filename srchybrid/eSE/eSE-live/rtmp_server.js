@@ -151,7 +151,7 @@ function start(opts) {
 /**
  * Stop RTMP server.
  */
-function stop() {
+async function stop() {
   // v7.5.0 — clear the ingest key on stop so a stale key can't be reused.
   rtmpIngestKey = null;
   if (!rtmpProcess) {
@@ -161,11 +161,10 @@ function stop() {
   try {
     const pid = rtmpProcess.pid;
     if (process.platform === 'win32' && pid) {
-      killProcessTree(pid).then(result => {
-        if (!result.ok) {
-          console.warn('[eSE Live] RTMP: taskkill failed:', result.error || result.stderr);
-        }
-      });
+      const result = await killProcessTree(pid);
+      if (!result.ok) {
+        console.warn('[eSE Live] RTMP: taskkill failed:', result.error || result.stderr);
+      }
     } else {
       rtmpProcess.kill('SIGTERM');
     }

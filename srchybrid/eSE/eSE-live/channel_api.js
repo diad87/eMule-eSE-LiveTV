@@ -912,8 +912,8 @@ function handleRoute(url, req, res, ctx) {
 
     // Clean any legacy local process left by a previous version, then stop the
     // canonical C++ broadcaster (which also sends OP_LIVE_END to P2P peers).
-    pipeline.stop();
-    rtmpServer.stop();
+    void pipeline.stop();
+    void rtmpServer.stop();
     streamMeta = { title: '', category: 'general', language: 'es' };
 
     proxyEmuleJson(res, '/api/live/broadcast/stop', 5000);

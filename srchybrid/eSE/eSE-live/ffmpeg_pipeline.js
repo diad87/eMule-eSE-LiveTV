@@ -153,9 +153,9 @@ async function startResolved(opts) {
 
 /**
  * Stop the running pipeline.
- * @returns {{success: boolean}}
+ * @returns {Promise<{success: boolean}>}
  */
-function stop() {
+async function stop() {
   if (!ffmpegProcess) {
     pipelineStatus = 'idle';
     return { success: true };
@@ -168,10 +168,9 @@ function stop() {
   // On Windows SIGTERM is unreliable — use taskkill /F
   try {
     if (process.platform === 'win32' && pid) {
-      killProcessTree(pid).then(result => {
-        if (result.ok) console.log('[eSE Live] taskkill sent to PID', pid);
-        else console.log('[eSE Live] taskkill failed (process may be gone):', result.error || result.stderr);
-      });
+      const result = await killProcessTree(pid);
+      if (result.ok) console.log('[eSE Live] taskkill sent to PID', pid);
+      else console.log('[eSE Live] taskkill failed (process may be gone):', result.error || result.stderr);
     } else {
       ffmpegProcess.kill('SIGTERM');
     }

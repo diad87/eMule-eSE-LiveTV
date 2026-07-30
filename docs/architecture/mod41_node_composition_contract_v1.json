@@ -11,7 +11,7 @@
       "dependency construction and initialization",
       "HTTP server construction",
       "top-level route ordering",
-      "process lifecycle hooks"
+      "process lifecycle delegation"
     ]
   },
   "extracted_module": {

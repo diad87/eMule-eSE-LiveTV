@@ -750,8 +750,13 @@ class M2A00RatchetTest(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as temporary:
             worktree = pathlib.Path(temporary) / "worktree"
+            lt1_state = self.ledger["cards"]["LT1"]
+            fixture_base = (
+                GATE._activation_parent(lt1_state["activation_commit"])
+                if lt1_state["state"] == "active" else "HEAD"
+            )
             subprocess.check_call(
-                ["git", "worktree", "add", "--detach", str(worktree), "HEAD"],
+                ["git", "worktree", "add", "--detach", str(worktree), fixture_base],
                 cwd=ROOT,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -774,6 +779,15 @@ class M2A00RatchetTest(unittest.TestCase):
                     target = worktree / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(ROOT / relative, target)
+                fixture_ledger_path = worktree / (
+                    "docs/architecture/mod52_migration_activation_ledger_v1.json"
+                )
+                fixture_ledger = json.loads(
+                    fixture_ledger_path.read_text(encoding="utf-8"))
+                fixture_ledger["cards"]["LT1"] = {
+                    "state": "planned", "activation_commit": None, "evidence": []}
+                fixture_ledger_path.write_text(
+                    json.dumps(fixture_ledger, indent=2) + "\n", encoding="utf-8")
                 gate_baseline_commit = add_and_commit(
                     "B M2A gate fixture", fixture_relpaths
                 )

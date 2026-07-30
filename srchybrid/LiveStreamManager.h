@@ -462,15 +462,21 @@ public:
     // Returns true and fills outPubkey if a pin exists for streamKey.
     bool GetPinnedPubkey(const uchar streamKey[16], uchar outPubkey[32]) const;
 
-    // Accessors for WebServer and UI
-    const uchar* GetStreamKey() const
-        { return m_viewerSession.IsActive() ? m_streamInfo.streamKey : m_broadcastStreamInfo.streamKey; }
-    const uchar* GetBroadcastStreamKey() const { return m_broadcastStreamInfo.streamKey; }
-    const uchar* GetViewerStreamKey() const { return m_streamInfo.streamKey; }
-    CString GetStreamTitle() const
-        { return m_viewerSession.IsActive() ? m_streamInfo.title : m_broadcastStreamInfo.title; }
-    uint32 GetBitrate() const
-        { return m_viewerSession.IsActive() ? m_streamInfo.bitrate : m_broadcastStreamInfo.bitrate; }
+    // Coherent key snapshots for worker threads and UI consumers.
+    bool CopyBroadcastStreamKey(uchar outKey[16]) const {
+        if (outKey == NULL) return false;
+        CSingleLock lock(&m_lock, TRUE);
+        if (!m_broadcastSession.IsActive()) return false;
+        memcpy(outKey, m_broadcastStreamInfo.streamKey, 16);
+        return true;
+    }
+    bool CopyViewerStreamKey(uchar outKey[16]) const {
+        if (outKey == NULL) return false;
+        CSingleLock lock(&m_lock, TRUE);
+        if (!m_viewerSession.IsActive()) return false;
+        memcpy(outKey, m_streamInfo.streamKey, 16);
+        return true;
+    }
     uint32 GetBroadcastBitrate() const { return m_broadcastStreamInfo.bitrate; }
     uint32 GetBroadcastStartTime() const { return m_broadcastStreamInfo.startedAt; }
     bool IsEmergencyMode() const { return m_bEmergencyMode; }
@@ -710,7 +716,7 @@ private:
         DWORD lastSeen;        // for pruning
     };
     CMap<uint32, uint32, SubRateState, SubRateState&> m_subscribeRate;
-\r\n    // DISC-S04: pending ghost-cleanup. Loaded from preferences at startup;
+    // DISC-S04: pending ghost-cleanup. Loaded from preferences at startup;
     // if non-empty, Process() will try to publish a tombstone once Kad
     // connects, then clear it. Avoids a previous-session crash leaving an
     // entry in the DHT for ~3 min (the new ESE_KAD_ENTRY_TTL).
@@ -733,7 +739,7 @@ private:
 
     // V2-S11: result of upload-capacity probe in kbps (0 = leaf-restricted).
     DWORD               m_measuredUploadKbps;
-\r\n    // V2-S19: last time EnsureMultiParent dialed extra sources.
+    // V2-S19: last time EnsureMultiParent dialed extra sources.
     DWORD               m_dwLastMultiParentTick;
 
     // Phase-1 fix #2 (2026-06) — in-flight pull-request tracking. Without it,
@@ -772,7 +778,7 @@ private:
     // Isolated --selftest viewers exercise the real ingest path without
     // touching the broadcaster's live HLS files in the shared temp directory.
     bool                m_bSuppressHlsOutput;
-\r\n    // Tier 2.2: shared FFmpeg ingest. Owned by the manager so both the MFC
+    // Tier 2.2: shared FFmpeg ingest. Owned by the manager so both the MFC
     // dialog and the web API can drive broadcast start/stop. Only one source
     // can be active at a time (CRTMPIngest enforces this internally).
     CRTMPIngest         m_rtmpIngest;
@@ -796,6 +802,7 @@ private:
     void PublishToKad();
     CString GetLiveHlsDir() const;
     void ResetViewerHlsOutput(bool removeDirectory = false);
+    void ResetViewerCoordinatorState();
     void WriteViewerHlsSegment(uint32 seqNum, const BYTE* data, uint32 dataSize);
     void RefreshViewerHlsPlaylist();
     void DemotePeer(CUpDownClient* peer);

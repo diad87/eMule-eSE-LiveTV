@@ -19,7 +19,6 @@ void LiveViewerSession::ResetTransient(std::uint32_t now)
 	first_chunk_logged_ = false;
 	last_search_tick_ = now;
 	search_retries_ = 0u;
-	last_secondary_publish_ = 0u;
 	last_player_fetch_.store(now, std::memory_order_release);
 	web_player_session_.store(false, std::memory_order_release);
 	tunnel_source_ip_ = 0u;
@@ -34,22 +33,22 @@ bool LiveViewerSession::Join(
 	std::size_t size,
 	std::uint32_t now)
 {
-	if (active_ || stream_key == nullptr || size != stream_key_.size())
+	if (IsActive() || stream_key == nullptr || size != stream_key_.size())
 		return false;
 
 	std::memcpy(stream_key_.data(), stream_key, stream_key_.size());
 	generation_ = NextGeneration(generation_);
 	ResetTransient(now);
-	active_ = true;
+	active_.store(true, std::memory_order_release);
 	return true;
 }
 
 bool LiveViewerSession::Leave()
 {
-	if (!active_)
+	if (!IsActive())
 		return false;
 
-	active_ = false;
+	active_.store(false, std::memory_order_release);
 	ResetTransient(0u);
 	std::fill(stream_key_.begin(), stream_key_.end(), std::uint8_t{0});
 	return true;
@@ -59,7 +58,7 @@ bool LiveViewerSession::Matches(
 	const std::uint8_t* stream_key,
 	std::size_t size) const
 {
-	return active_ && stream_key != nullptr && size == stream_key_.size() &&
+	return IsActive() && stream_key != nullptr && size == stream_key_.size() &&
 		std::memcmp(stream_key_.data(), stream_key, stream_key_.size()) == 0;
 }
 
@@ -72,7 +71,7 @@ bool LiveViewerSession::IsActivityExpired(
 
 std::uint32_t LiveViewerSession::ActivityAge(std::uint32_t now) const
 {
-	return active_ && last_activity_ != 0u
+	return IsActive() && last_activity_ != 0u
 		? now - last_activity_
 		: 0u;
 }
@@ -81,7 +80,7 @@ bool LiveViewerSession::RecordFirstChunk(
 	std::uint32_t now,
 	std::uint32_t& elapsed)
 {
-	if (!active_ || first_chunk_logged_ || joined_tick_ == 0u)
+	if (!IsActive() || first_chunk_logged_ || joined_tick_ == 0u)
 		return false;
 
 	elapsed = now - joined_tick_;
@@ -94,13 +93,13 @@ bool LiveViewerSession::SearchRetryDue(
 	std::uint32_t interval,
 	std::uint32_t retry_limit) const
 {
-	return active_ && search_retries_ < retry_limit &&
+	return IsActive() && search_retries_ < retry_limit &&
 		now - last_search_tick_ > interval;
 }
 
 void LiveViewerSession::RecordSearchRetry(std::uint32_t now)
 {
-	if (!active_)
+	if (!IsActive())
 		return;
 	++search_retries_;
 	last_search_tick_ = now;
@@ -110,7 +109,7 @@ bool LiveViewerSession::SecondaryPublishDue(
 	std::uint32_t now,
 	std::uint32_t interval) const
 {
-	return active_ && now - last_secondary_publish_ > interval;
+	return IsActive() && now - last_secondary_publish_ > interval;
 }
 
 void LiveViewerSession::NotePlayerFetch(std::uint32_t now)
@@ -133,7 +132,7 @@ bool LiveViewerSession::IsWebPlayerExpired(
 
 std::uint32_t LiveViewerSession::WebPlayerIdleAge(std::uint32_t now) const
 {
-	if (!active_ ||
+	if (!IsActive() ||
 		!web_player_session_.load(std::memory_order_acquire)) {
 		return 0u;
 	}
@@ -147,7 +146,7 @@ void LiveViewerSession::ConfigureTunnelSource(
 	std::uint16_t port,
 	std::uint32_t subscribe_tick)
 {
-	if (!active_)
+	if (!IsActive())
 		return;
 	tunnel_source_ip_ = ip;
 	tunnel_source_port_ = port;
@@ -160,7 +159,7 @@ bool LiveViewerSession::TunnelResubscribeDue(
 	std::uint32_t interval,
 	std::uint32_t retry_limit) const
 {
-	return active_ && tunnel_source_ip_ != 0u &&
+	return IsActive() && tunnel_source_ip_ != 0u &&
 		tunnel_resubscribe_count_ < retry_limit &&
 		tunnel_subscribe_tick_ != 0u &&
 		now - tunnel_subscribe_tick_ > interval;
@@ -168,7 +167,7 @@ bool LiveViewerSession::TunnelResubscribeDue(
 
 void LiveViewerSession::RecordTunnelResubscribe(std::uint32_t now)
 {
-	if (!active_)
+	if (!IsActive())
 		return;
 	++tunnel_resubscribe_count_;
 	tunnel_subscribe_tick_ = now;

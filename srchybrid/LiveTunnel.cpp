@@ -10188,9 +10188,9 @@ void CLiveTunnel::Tick()
     // BULK_SUB_TTL_MS so the exit's subs stay fresh AND circuits that turned Active after the
     // join get covered. No-op at any node the exit isn't proxying this stream for (the exit
     // only registers/pushes if it proxies the streamKey). BulkSubscribe re-takes m_lock
-    // (recursive CCriticalSection) — fine. liveStreamManager->IsViewingLive()/GetStreamKey()
-    // are unlocked inline reads (same pattern as elsewhere), so no manager lock is taken here.
-    if (theApp.liveStreamManager && theApp.liveStreamManager->IsViewingLive()
+    uchar viewerKey[16];
+    if (theApp.liveStreamManager
+        && theApp.liveStreamManager->CopyViewerStreamKey(viewerKey)
         && m_scheduler.DueBulkSubscription(now, 10000u)) {
         bool haveBulk = false;
         for (const auto& c : m_circuitRegistry.GetSnapshot())
@@ -10198,7 +10198,7 @@ void CLiveTunnel::Tick()
                 && c->HopCount() >= 1 && c->m_bulk_ok) { haveBulk = true; break; }
         if (haveBulk) {
             m_scheduler.MarkBulkSubscription(now);
-            BulkSubscribe(theApp.liveStreamManager->GetViewerStreamKey());
+            BulkSubscribe(viewerKey);
         }
     }
 

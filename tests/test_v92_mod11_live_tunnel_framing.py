@@ -618,6 +618,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/LiveBroadcastSession.h",
             "srchybrid/LiveViewerSession.cpp",
             "srchybrid/LiveViewerSession.h",
+            "srchybrid/LiveBuddyRelay.cpp",
+            "srchybrid/LiveBuddyRelay.h",
+            "srchybrid/LiveStreamDlgUI.cpp",
+            "srchybrid/LiveStreamDlgUI.h",
         }
         self.assertTrue(expected_paths.issubset(set(MOD02.CRITICAL_SOURCE_PATHS)))
         self.assertTrue(expected_paths.issubset(set(

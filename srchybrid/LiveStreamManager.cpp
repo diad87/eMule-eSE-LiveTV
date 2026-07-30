@@ -114,7 +114,6 @@ bool CLiveStreamManager::GetPinnedPubkey(const uchar streamKey[16], uchar outPub
     return true;
 }
 
-
 // R.3 egress + reachability selector gates are now driven by the runtime prefs EseRelayEgress /
 // EseReachSelector (default OFF) — see thePrefs. Byte-for-byte dormant until an operator opts in.
 
@@ -207,30 +206,16 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     // predictable: attacker pre-computes streamKey for popular titles and
     // races the legitimate broadcaster to claim the Kad slot.
     ese::live::LiveBroadcastIdentity identity;
-    if (!eSELive::GenerateBroadcasterKeypair(
-            identity.public_key.data(), identity.private_key.data())) {
+    if (!eSELive::GenerateBroadcasterKeypair(identity.public_key.data(),
+            identity.private_key.data())) {
+        SecureZeroMemory(identity.private_key.data(), identity.private_key.size());
         AddLogLine(true, GetResString(IDS_LIVEMGR_KEYGEN_FAILED));
         return false;
     }
-    eSELive::DeriveStreamKey(
-        identity.public_key.data(), identity.stream_key.data());
-    if (!m_broadcastSession.Start(identity)) {
-        SecureZeroMemory(
-            identity.private_key.data(),
-            identity.private_key.size());
-        AddLogLine(true, GetResString(IDS_LIVEMGR_ALREADY_BROADCASTING));
-        return false;
-    }
-    SecureZeroMemory(
-        identity.private_key.data(),
-        identity.private_key.size());
-    memcpy(
-        m_broadcastStreamInfo.pubkey,
-        identity.public_key.data(),
+    eSELive::DeriveStreamKey(identity.public_key.data(), identity.stream_key.data());
+    memcpy(m_broadcastStreamInfo.pubkey, identity.public_key.data(),
         identity.public_key.size());
-    memcpy(
-        m_broadcastStreamInfo.streamKey,
-        identity.stream_key.data(),
+    memcpy(m_broadcastStreamInfo.streamKey, identity.stream_key.data(),
         identity.stream_key.size());
     uint32 now = (uint32)time(NULL);
 
@@ -243,9 +228,7 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     m_broadcastStreamInfo.isBroadcaster = true;
 
     m_broadcastChunkBuffer.Clear();
-    // If this node was previously a pure viewer/secondary source, the legacy
-    // downstream list belonged to that remote stream.  From this point onward
-    // it belongs exclusively to the new local broadcast.
+    // Never inherit downstream peers from a previously viewed remote stream.
     m_broadcastPeers.RemoveAll();
     m_dwLastKadPublish = 0;
     // R.3: fresh relay-egress state for this broadcast (clears any stale buddy from a
@@ -253,6 +236,13 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     m_lastRelayedSeq = UINT_MAX;
     m_dwLastRelaySetup = 0;
     CLiveBuddyRelay::Instance().ResetBroadcasterEgress();
+    // Commit active only after every lock-free projection is coherent.
+    if (!m_broadcastSession.Start(identity)) {
+        SecureZeroMemory(identity.private_key.data(), identity.private_key.size());
+        AddLogLine(true, GetResString(IDS_LIVEMGR_ALREADY_BROADCASTING));
+        return false;
+    }
+    SecureZeroMemory(identity.private_key.data(), identity.private_key.size());
 
     // Make the stream visible immediately; RepublishIfNeeded handles Kad timing.
     InterlockedIncrement(&m_counters.kadPublishes);  // Phase 0: OBS-1 (atomic)
@@ -715,13 +705,13 @@ bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title
 {
     CSingleLock lock(&m_lock, TRUE);
 
+    // Invalid replacement input must not tear down the current viewer session.
+    if (streamKey == NULL)
+        return false;
+
     if (m_viewerSession.IsActive()) {
         LeaveStream();
     }
-
-    if (!m_viewerSession.Join(
-            streamKey, 16u, static_cast<std::uint32_t>(GetTickCount())))
-        return false;
 
     memcpy(m_streamInfo.streamKey, streamKey, 16);
     m_streamInfo.title = title;
@@ -737,7 +727,13 @@ bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title
     m_recentDials.RemoveAll();      // churn fix: fresh dial-cooldown table
     m_peerRefreshPolicy.Reset();    // fresh replenishment cadence/candidate rotation
     ResetViewerHlsOutput(true);
-\r\n    AddLogLine(true, GetResString(IDS_LIVEMGR_JOINING_FMT), (LPCTSTR)title);
+    // Publish the active role only after its lock-free projection and all
+    // coordinator-owned session state are coherent.
+    if (!m_viewerSession.Join(
+            streamKey, 16u, static_cast<std::uint32_t>(GetTickCount())))
+        return false;
+
+    AddLogLine(true, GetResString(IDS_LIVEMGR_JOINING_FMT), (LPCTSTR)title);
 
     char keyHex[33] = {0};
     for (int i = 0; i < 16; ++i) sprintf_s(keyHex + i*2, 3, "%02x", streamKey[i]);
@@ -758,6 +754,22 @@ bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title
     m_kadBridge.SearchStreams(hashSearch);
 
     return true;
+}
+
+void CLiveStreamManager::ResetViewerCoordinatorState()
+{
+    m_chunkBuffer.Clear();
+    m_viewPeers.RemoveAll();
+    m_meshManager.ResetSessionPeers();
+    if (m_broadcastSession.IsActive()) {
+        POSITION pos = m_broadcastPeers.GetHeadPosition();
+        while (pos) m_meshManager.AddMeshPeer(m_broadcastPeers.GetNext(pos));
+    }
+    m_peerBitmaps.RemoveAll();
+    m_inflightSegReqs.RemoveAll();
+    m_recentDials.RemoveAll();
+    m_peerRefreshPolicy.Reset();
+    ResetViewerHlsOutput(true);
 }
 
 void CLiveStreamManager::LeaveStream()
@@ -781,19 +793,7 @@ void CLiveStreamManager::LeaveStream()
     }
 
     m_viewerSession.Leave();
-    m_chunkBuffer.Clear();
-    m_viewPeers.RemoveAll();
-    m_meshManager.ResetSessionPeers();
-    if (m_broadcastSession.IsActive()) {
-        POSITION broadcastPos = m_broadcastPeers.GetHeadPosition();
-        while (broadcastPos)
-            m_meshManager.AddMeshPeer(m_broadcastPeers.GetNext(broadcastPos));
-    }
-    m_peerBitmaps.RemoveAll();
-    m_inflightSegReqs.RemoveAll();  // Phase-1 fix #2
-    m_recentDials.RemoveAll();      // churn fix
-    m_peerRefreshPolicy.Reset();    // no refresh may escape a finished session
-    ResetViewerHlsOutput(true);
+    ResetViewerCoordinatorState();
 
     AddLogLine(true, GetResString(IDS_LIVEMGR_LEFT_STREAM));
     LIVE_LOG("MGR", "LeaveStream");
@@ -3059,12 +3059,7 @@ void CLiveStreamManager::OnStreamEnded(const uchar* streamKey, uint8 reason, CUp
     // or via the gossip below.
     if (m_viewerSession.Matches(streamKey, 16u)) {
         AddLogLine(true, GetResString(IDS_LIVEMGR_STREAM_ENDED));
-        // Inline-leave so we don't recurse OnStreamEnded.
-        m_viewerSession.Leave();
-        m_chunkBuffer.Clear();
-        m_viewPeers.RemoveAll();
-        m_peerBitmaps.RemoveAll();
-        ResetViewerHlsOutput(true);
+        LeaveStream();
     }
 
     // Gossip to OUR mesh peers (anyone we exchange chunks with for this
@@ -4466,12 +4461,14 @@ CUpDownClient* CLiveStreamManager::SelectPeerForSegment(uint32 seqNum,
 
 uint32 CLiveStreamManager::GetViewerCount() const
 {
+    CSingleLock lock(&m_lock, TRUE);
     return m_broadcastSession.IsActive()
         ? m_broadcastStreamInfo.viewerCount : m_streamInfo.viewerCount;
 }
 
 uint32 CLiveStreamManager::GetMinUploadRequired() const
 {
+    CSingleLock lock(&m_lock, TRUE);
     if (!m_broadcastSession.IsActive() && !m_viewerSession.IsActive()) return 0;
 
     // When both roles are active, protect the upload floor of our own

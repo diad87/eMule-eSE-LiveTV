@@ -256,8 +256,8 @@ void CLiveStreamDlg::PopulateSharePanel()
 	// If the public IP is unknown (LowID, Kad/UPnP not yet ready) we fall back
 	// to the legacy stream link without endpoint, which still works via Kad.
 	CString ed2k;
-	const uchar* key = theApp.liveStreamManager->GetBroadcastStreamKey();
-	if (key) {
+	uchar key[16];
+	if (theApp.liveStreamManager->CopyBroadcastStreamKey(key)) {
 		CString hexKey;
 		for (int i = 0; i < 16; i++)
 			hexKey.AppendFormat(_T("%02X"), key[i]);

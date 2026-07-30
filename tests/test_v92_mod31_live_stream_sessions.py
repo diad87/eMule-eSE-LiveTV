@@ -96,6 +96,9 @@ class Mod31LiveStreamSessionsTest(unittest.TestCase):
         )
         for source in (BROADCAST_SOURCE, VIEWER_SOURCE):
             self.assertLessEqual(len(source.read_text(encoding="utf-8").splitlines()), 300)
+        self.assertEqual(module_text.count("std::atomic<bool> active_{false}"), 2)
+        self.assertGreaterEqual(module_text.count("std::memory_order_release"), 4)
+        self.assertGreaterEqual(module_text.count("std::memory_order_acquire"), 2)
 
     def test_native_test_and_release_project_compile_the_exact_modules(self) -> None:
         self.assertTrue(NATIVE_TEST.is_file())
@@ -142,6 +145,10 @@ class Mod31LiveStreamSessionsTest(unittest.TestCase):
             self.manager_header,
             r"ese::live::LiveViewerSession\s+m_viewerSession;",
         )
+        self.assertIn("CopyBroadcastStreamKey(uchar outKey[16])", self.manager_header)
+        self.assertIn("CopyViewerStreamKey(uchar outKey[16])", self.manager_header)
+        self.assertNotIn("GetBroadcastStreamKey()", self.manager_header)
+        self.assertNotIn("GetViewerStreamKey()", self.manager_header)
         for call in (
             "m_broadcastSession.Start(identity)",
             "m_broadcastSession.Stop()",
@@ -177,6 +184,81 @@ class Mod31LiveStreamSessionsTest(unittest.TestCase):
         )
         for field in removed_fields:
             self.assertNotIn(field, manager)
+
+        consumers = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in (
+                "srchybrid/EmuleDlg.cpp",
+                "srchybrid/LiveBuddyRelay.cpp",
+                "srchybrid/LiveStreamDlgUI.cpp",
+                "srchybrid/LiveTunnel.cpp",
+                "srchybrid/WebServer.cpp",
+            )
+        )
+        self.assertNotIn("GetBroadcastStreamKey", consumers)
+        self.assertNotIn("GetViewerStreamKey", consumers)
+        self.assertIn("CopyBroadcastStreamKey", consumers)
+        self.assertIn("CopyViewerStreamKey", consumers)
+
+    def test_manager_commits_roles_last_and_remote_end_uses_full_leave_cleanup(self) -> None:
+        start = self.manager_source[
+            self.manager_source.index("bool CLiveStreamManager::StartBroadcast("):
+            self.manager_source.index("bool CLiveStreamManager::StartBroadcastWithSource(")
+        ]
+        self.assertLess(
+            start.index("m_broadcastStreamInfo.streamKey"),
+            start.index("m_broadcastSession.Start(identity)"),
+        )
+        self.assertLess(
+            start.index("m_broadcastChunkBuffer.Clear()"),
+            start.index("m_broadcastSession.Start(identity)"),
+        )
+        self.assertLess(
+            start.index("ResetBroadcasterEgress()"),
+            start.index("m_broadcastSession.Start(identity)"),
+        )
+
+        join = self.manager_source[
+            self.manager_source.index("bool CLiveStreamManager::JoinStream("):
+            self.manager_source.index("void CLiveStreamManager::LeaveStream(")
+        ]
+        self.assertLess(join.index("streamKey == NULL"), join.index("LeaveStream()"))
+        self.assertLess(
+            join.index("memcpy(m_streamInfo.streamKey"),
+            join.index("m_viewerSession.Join("),
+        )
+        self.assertLess(
+            join.index("ResetViewerHlsOutput(true)"),
+            join.index("m_viewerSession.Join("),
+        )
+
+        ended = self.manager_source[
+            self.manager_source.index("void CLiveStreamManager::OnStreamEnded("):
+            self.manager_source.index("bool CLiveStreamManager::IsStreamTombstoned(")
+        ]
+        self.assertIn("LeaveStream()", ended)
+
+        cleanup_helper = self.manager_source[
+            self.manager_source.index(
+                "void CLiveStreamManager::ResetViewerCoordinatorState()"
+            ):
+            self.manager_source.index("void CLiveStreamManager::LeaveStream(")
+        ]
+        for cleanup in (
+            "m_chunkBuffer.Clear()",
+            "m_viewPeers.RemoveAll()",
+            "m_meshManager.ResetSessionPeers()",
+            "m_inflightSegReqs.RemoveAll()",
+            "m_recentDials.RemoveAll()",
+            "m_peerRefreshPolicy.Reset()",
+            "ResetViewerHlsOutput(true)",
+        ):
+            self.assertIn(cleanup, cleanup_helper)
+        self.assertRegex(
+            cleanup_helper,
+            r"m_broadcastSession\.IsActive\(\)[\s\S]{0,250}"
+            r"m_meshManager\.AddMeshPeer",
+        )
 
     def test_wire_files_are_byte_unchanged_and_coordinator_shrinks(self) -> None:
         subprocess.run(

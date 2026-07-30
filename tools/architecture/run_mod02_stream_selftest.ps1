@@ -50,7 +50,9 @@ $criticalSourceRelativePaths = @(
     'srchybrid/eMule.tmpl',
     'srchybrid/LiveStreamManager.cpp', 'srchybrid/LiveStreamManager.h',
     'srchybrid/LiveBroadcastSession.cpp', 'srchybrid/LiveBroadcastSession.h',
-    'srchybrid/LiveViewerSession.cpp', 'srchybrid/LiveViewerSession.h'
+    'srchybrid/LiveViewerSession.cpp', 'srchybrid/LiveViewerSession.h',
+    'srchybrid/LiveBuddyRelay.cpp', 'srchybrid/LiveBuddyRelay.h',
+    'srchybrid/LiveStreamDlgUI.cpp', 'srchybrid/LiveStreamDlgUI.h'
 )
 $identityHeaderRelativePath = 'srchybrid/Mod02BuildIdentity.h'
 $cleanCheckRelativePaths = @($criticalSourceRelativePaths + $identityHeaderRelativePath)

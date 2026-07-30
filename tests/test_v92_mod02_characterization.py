@@ -54,6 +54,8 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/LiveStreamManager.cpp", "srchybrid/LiveStreamManager.h",
     "srchybrid/LiveBroadcastSession.cpp", "srchybrid/LiveBroadcastSession.h",
     "srchybrid/LiveViewerSession.cpp", "srchybrid/LiveViewerSession.h",
+    "srchybrid/LiveBuddyRelay.cpp", "srchybrid/LiveBuddyRelay.h",
+    "srchybrid/LiveStreamDlgUI.cpp", "srchybrid/LiveStreamDlgUI.h",
 ]
 
 SPEC = importlib.util.spec_from_file_location("mod02_verifier", SCRIPT)

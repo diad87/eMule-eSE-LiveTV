@@ -93,7 +93,7 @@ test('legacy C++ HLS route falls back to the active viewer stream namespace', ()
   );
 
   assert.match(legacyHls, /!PathFileExists\(fp\) && theApp\.liveStreamManager != NULL/);
-  assert.match(legacyHls, /IsViewingLive\(\)[\s\S]{0,160}GetViewerStreamKey\(\)/);
+  assert.match(legacyHls, /CopyViewerStreamKey\(key\)/);
   assert.match(legacyHls, /eMule_RTMP\\\\%hs\\\\%hs/);
   assert.match(legacyHls, /SendFileResponse\([\s\S]*Data\.sRange[\s\S]*true,\s*false\)/);
   assert.doesNotMatch(legacyHls, /CFile|Read\(|new BYTE|new char/);
@@ -108,8 +108,8 @@ test('simultaneous broadcast and viewing keep native identities and buffers isol
 
   assert.match(header, /LiveStreamInfo\s+m_broadcastStreamInfo/);
   assert.match(header, /CLiveChunkBuffer\s+m_broadcastChunkBuffer/);
-  assert.match(header, /GetBroadcastStreamKey\(\)/);
-  assert.match(header, /GetViewerStreamKey\(\)/);
+  assert.match(header, /CopyBroadcastStreamKey\(uchar outKey\[16\]\)/);
+  assert.match(header, /CopyViewerStreamKey\(uchar outKey\[16\]\)/);
 
   const start = manager.slice(
     manager.indexOf('bool CLiveStreamManager::StartBroadcast('),
@@ -139,13 +139,13 @@ test('simultaneous broadcast and viewing keep native identities and buffers isol
   assert.match(manager, /SendBitmapToAll\(false\)/);
   assert.match(manager, /GetChannelSnapshot\(\)[\s\S]{0,450}m_broadcastStreamInfo\.streamKey/);
   assert.match(join, /m_meshManager\.ResetSessionPeers\(\)/);
-  assert.match(manager, /LeaveStream\(\)[\s\S]{0,1600}ResetSessionPeers\(\)[\s\S]{0,220}m_broadcastSession\.IsActive\(\)/);
+  assert.match(manager, /ResetViewerCoordinatorState\(\)[\s\S]{0,500}ResetSessionPeers\(\)[\s\S]{0,300}m_broadcastSession\.IsActive\(\)/);
   assert.match(mesh, /ResetSessionPeers\(\)[\s\S]{0,300}m_meshPeers\.RemoveAll\(\)/);
   assert.match(manager, /simultaneous broadcast\/view state or buffers crossed/);
   assert.match(manager, /m_broadcastChunkBuffer\.GetNewestSeq\(\) > broadcastNewestBefore/);
   assert.match(manager, /m_chunkBuffer\.GetCount\(\) == 0/);
-  assert.match(tunnel, /BulkSubscribe\(theApp\.liveStreamManager->GetViewerStreamKey\(\)\)/);
-  assert.match(buddy, /GetBroadcastStreamKey\(\)/);
+  assert.match(tunnel, /CopyViewerStreamKey\(viewerKey\)[\s\S]{0,800}BulkSubscribe\(viewerKey\)/);
+  assert.match(buddy, /CopyBroadcastStreamKey\(sk\)/);
 });
 
 test('directory deduplicates canonical stream keys and never reuses a local thumbnail for a remote channel', () => {
@@ -178,8 +178,8 @@ test('player lifecycle messages are scoped to the viewed stream key', () => {
   assert.match(api, /player-alive' \+ suffix/);
   assert.match(api, /api\/live\/leave\?key=\$\{hash\}/);
   assert.match(web, /req\.hasStreamKey = EseHexToKey16A/);
-  assert.match(web, /GetViewerStreamKey\(\)/);
-  assert.match(dlg, /!r->hasStreamKey[\s\S]{0,150}GetViewerStreamKey\(\)/);
+  assert.match(web, /CopyViewerStreamKey\(viewerKey\)/);
+  assert.match(dlg, /CopyViewerStreamKey\(viewerKey\)[\s\S]{0,150}!r->hasStreamKey/);
 });
 
 test('controlled 30 fps sources align two-second GOPs with independent HLS segments', () => {

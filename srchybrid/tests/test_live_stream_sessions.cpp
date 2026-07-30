@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
+#include <type_traits>
 
 namespace {
 
@@ -36,7 +37,21 @@ ese::live::LiveBroadcastIdentity BroadcastIdentity(std::uint8_t seed)
 int main()
 {
 	using ese::live::LiveBroadcastSession;
+	using ese::live::LiveBroadcastIdentity;
 	using ese::live::LiveViewerSession;
+
+	static_assert(!std::is_copy_constructible_v<LiveBroadcastIdentity>);
+	static_assert(!std::is_copy_assignable_v<LiveBroadcastIdentity>);
+	static_assert(std::is_nothrow_move_constructible_v<LiveBroadcastIdentity>);
+	static_assert(std::is_nothrow_move_assignable_v<LiveBroadcastIdentity>);
+	static_assert(!std::is_copy_constructible_v<LiveBroadcastSession>);
+	static_assert(!std::is_copy_assignable_v<LiveBroadcastSession>);
+	static_assert(!std::is_move_constructible_v<LiveBroadcastSession>);
+	static_assert(!std::is_move_assignable_v<LiveBroadcastSession>);
+	static_assert(!std::is_copy_constructible_v<LiveViewerSession>);
+	static_assert(!std::is_copy_assignable_v<LiveViewerSession>);
+	static_assert(!std::is_move_constructible_v<LiveViewerSession>);
+	static_assert(!std::is_move_assignable_v<LiveViewerSession>);
 
 	const auto identity = BroadcastIdentity(3u);
 	const auto replacementIdentity = BroadcastIdentity(91u);
@@ -179,9 +194,13 @@ int main()
 				[](std::uint8_t byte) { return byte == 0u; }),
 		"viewer leave clears all transient authority");
 	Check(
-		viewer.Join(viewerKey, sizeof viewerKey, 10u) &&
+		viewer.Join(viewerKey, sizeof viewerKey, 40u) &&
 			viewer.Generation() > firstViewerGeneration,
 		"viewer can rejoin with a fresh generation");
+	Check(
+		!viewer.SecondaryPublishDue(61u, 30u) &&
+			viewer.SecondaryPublishDue(62u, 30u),
+		"viewer rejoin preserves the cross-session publish rate limit");
 
 	if (failures != 0)
 		return 1;

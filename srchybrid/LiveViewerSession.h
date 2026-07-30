@@ -11,13 +11,22 @@ namespace live {
 class LiveViewerSession final
 {
 public:
+	LiveViewerSession() = default;
+	LiveViewerSession(const LiveViewerSession&) = delete;
+	LiveViewerSession& operator=(const LiveViewerSession&) = delete;
+	LiveViewerSession(LiveViewerSession&&) = delete;
+	LiveViewerSession& operator=(LiveViewerSession&&) = delete;
+
 	bool Join(
 		const std::uint8_t* stream_key,
 		std::size_t size,
 		std::uint32_t now);
 	bool Leave();
 
-	bool IsActive() const { return active_; }
+	bool IsActive() const
+	{
+		return active_.load(std::memory_order_acquire);
+	}
 	bool Matches(const std::uint8_t* stream_key, std::size_t size) const;
 	std::uint64_t Generation() const { return generation_; }
 	const std::array<std::uint8_t, 16>& StreamKey() const
@@ -73,7 +82,7 @@ private:
 	static std::uint64_t NextGeneration(std::uint64_t current);
 	void ResetTransient(std::uint32_t now);
 
-	bool active_ = false;
+	std::atomic<bool> active_{false};
 	std::uint64_t generation_ = 0;
 	std::array<std::uint8_t, 16> stream_key_{};
 	std::uint32_t joined_tick_ = 0;

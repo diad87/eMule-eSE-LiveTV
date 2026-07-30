@@ -4976,12 +4976,12 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		if (theApp.liveStreamManager != NULL) {
 			CString keyT(_ParseURL(Data.sURL, _T("key")));
 			bool matchesCurrent = keyT.IsEmpty();
-			if (!keyT.IsEmpty() && theApp.liveStreamManager->IsViewingLive()) {
-				uchar requestedKey[16];
+			if (!keyT.IsEmpty()) {
+				uchar requestedKey[16], viewerKey[16];
 				CStringA keyA = CT2A(keyT);
 				matchesCurrent = EseHexToKey16A(keyA, requestedKey)
-					&& memcmp(requestedKey,
-						theApp.liveStreamManager->GetViewerStreamKey(), 16) == 0;
+					&& theApp.liveStreamManager->CopyViewerStreamKey(viewerKey)
+					&& memcmp(requestedKey, viewerKey, 16) == 0;
 			}
 			if (matchesCurrent)
 				theApp.liveStreamManager->NotePlayerFetch();
@@ -5091,10 +5091,10 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		// Build the share link if broadcast started + we know our IP.
 		CStringA linkA;
 		if (ok) {
-			const uchar* key = theApp.liveStreamManager->GetBroadcastStreamKey();
+			uchar key[16];
 			uint32 pubIP = theApp.GetPublicIP();
 			uint16 port  = theApp.GetAdvertisedTcpPort();
-			if (key) {
+			if (theApp.liveStreamManager->CopyBroadcastStreamKey(key)) {
 				CStringA hex = EseHexKey16A(key);
 				CString titleEnc = EncodeURLQueryParam(titleT);
 
@@ -5228,10 +5228,9 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		// streams cannot collide. Keep the legacy /hls/<file> URL working by
 		// falling back to the active stream namespace when the root file is not
 		// present. Broadcasters still take the root fast path above.
-		if (!PathFileExists(fp) && theApp.liveStreamManager != NULL
-			&& theApp.liveStreamManager->IsViewingLive()) {
-			const uchar* key = theApp.liveStreamManager->GetViewerStreamKey();
-			if (key != NULL) {
+		if (!PathFileExists(fp) && theApp.liveStreamManager != NULL) {
+			uchar key[16];
+			if (theApp.liveStreamManager->CopyViewerStreamKey(key)) {
 				CStringA keyHex = EseHexKey16A(key);
 				fp.Format(_T("%seMule_RTMP\\%hs\\%hs"), tmp,
 					(LPCSTR)keyHex, (LPCSTR)req);
@@ -7398,12 +7397,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 
 		// Ghost-viewer watchdog: a validated per-stream HLS fetch proves a
 		// player is alive (404s included — startup polls count).
-		if (theApp.liveStreamManager != NULL
-			&& theApp.liveStreamManager->IsViewingLive()) {
-			uchar requestedKey[16];
+		if (theApp.liveStreamManager != NULL) {
+			uchar requestedKey[16], viewerKey[16];
 			if (EseHexToKey16A(hashHex, requestedKey)
-				&& memcmp(requestedKey,
-					theApp.liveStreamManager->GetViewerStreamKey(), 16) == 0)
+				&& theApp.liveStreamManager->CopyViewerStreamKey(viewerKey)
+				&& memcmp(requestedKey, viewerKey, 16) == 0)
 				theApp.liveStreamManager->NotePlayerFetch();
 		}
 

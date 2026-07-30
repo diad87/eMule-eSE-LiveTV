@@ -350,9 +350,13 @@ def _validate_test_source(blob: bytes, covers: list[str]) -> None:
         tree = ast.parse(blob.decode("utf-8"))
     except (UnicodeDecodeError, SyntaxError) as exc:
         raise GateError("active M2A test_source is not valid Python") from exc
-    methods: dict[str, list[ast.FunctionDef]] = collections.defaultdict(list)
+    methods: dict[
+        str, list[ast.FunctionDef | ast.AsyncFunctionDef]
+    ] = collections.defaultdict(list)
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef)
+        ) and node.name.startswith("test_"):
             methods[node.name].append(node)
 
     def decorator_name(node: ast.expr) -> str:
@@ -399,6 +403,17 @@ def _validate_test_source(blob: bytes, covers: list[str]) -> None:
                 f"active M2A test_source lacks one unique coverage method: {coverage}"
             )
         method = candidates[0]
+        if isinstance(method, ast.AsyncFunctionDef):
+            raise GateError(
+                f"active M2A coverage method may not be asynchronous: {coverage}"
+            )
+        if any(
+            isinstance(node, (ast.Yield, ast.YieldFrom, ast.Await))
+            for node in ast.walk(method)
+        ):
+            raise GateError(
+                f"active M2A coverage method may not defer execution: {coverage}"
+            )
         decorators = {
             decorator_name(item).casefold()
             for item in method.decorator_list
@@ -409,6 +424,10 @@ def _validate_test_source(blob: bytes, covers: list[str]) -> None:
         ):
             raise GateError(
                 f"active M2A coverage method may not be skipped: {coverage}"
+            )
+        if method.decorator_list:
+            raise GateError(
+                f"active M2A coverage method may not be decorated: {coverage}"
             )
         reachable_assertion = bool(
             method.body and meaningful_assertion(method.body[0])
@@ -428,10 +447,13 @@ import io
 import json
 import pathlib
 import sys
+import types
 import unittest
 
 OriginalTestCase = unittest.TestCase
 OriginalObjectNew = object.__new__
+OriginalCodeType = types.CodeType
+OriginalFunctionType = types.FunctionType
 original_test_case_methods = {
     name: getattr(unittest.TestCase, name)
     for name in (
@@ -461,6 +483,22 @@ original_tracking_add_success = TrackingResult.addSuccess
 path = pathlib.Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location("_m2a_evidence", path)
 module = importlib.util.module_from_spec(spec)
+expected_module_code = spec.loader.get_code("_m2a_evidence")
+expected_codes = {}
+
+def collect_codes(code):
+    for constant in code.co_consts:
+        if isinstance(constant, OriginalCodeType):
+            if constant.co_name in required_methods:
+                expected_codes.setdefault(constant.co_name, []).append(constant)
+            collect_codes(constant)
+
+collect_codes(expected_module_code)
+if (
+    set(expected_codes) != set(required_methods)
+    or any(len(items) != 1 for items in expected_codes.values())
+):
+    raise RuntimeError("one compiled evidence method is required")
 spec.loader.exec_module(module)
 # Evidence is executable but not authoritative over the runner itself.
 unittest.TestCase = OriginalTestCase
@@ -501,6 +539,15 @@ with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
         test_type = candidates[0]
         if forbidden.intersection(test_type.__dict__):
             raise RuntimeError("evidence test runner override forbidden")
+        runtime_method = test_type.__dict__[method]
+        if (
+            type(runtime_method) is not OriginalFunctionType
+            or runtime_method.__code__ != expected_codes[method][0]
+            or runtime_method.__defaults__ is not None
+            or runtime_method.__kwdefaults__ is not None
+            or runtime_method.__closure__ is not None
+        ):
+            raise RuntimeError("evidence method changed after validation")
         test = OriginalObjectNew(test_type)
         original_test_case_methods["__init__"](test, method)
         if (

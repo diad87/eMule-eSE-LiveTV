@@ -286,6 +286,50 @@ class M2A00RatchetTest(unittest.TestCase):
             test_path.write_text(
                 "import unittest\n"
                 "class Fixture(unittest.TestCase):\n"
+                f"    def {method}(self):\n"
+                "        self.assertEqual(1, 2)\n"
+                "        yield None\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                GATE.GateError, "defer execution|failed"
+            ):
+                GATE._validate_test_source(
+                    test_path.read_bytes(), [coverage]
+                )
+                GATE._run_required_tests(relative, {coverage})
+            test_path.write_text(
+                "import unittest\n"
+                "class Fixture(unittest.TestCase):\n"
+                f"    def {method}(self):\n"
+                "        self.assertEqual(1, 2)\n"
+                f"Fixture.{method} = lambda self: None\n",
+                encoding="utf-8",
+            )
+            GATE._validate_test_source(test_path.read_bytes(), [coverage])
+            with self.assertRaisesRegex(
+                GATE.GateError, "failed|did not finish cleanly"
+            ):
+                GATE._run_required_tests(relative, {coverage})
+            test_path.write_text(
+                "import unittest\n"
+                "def neutralize(function):\n"
+                "    return lambda self: None\n"
+                "class Fixture(unittest.TestCase):\n"
+                "    @neutralize\n"
+                f"    def {method}(self):\n"
+                "        self.assertEqual(1, 2)\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                GATE.GateError, "may not be decorated"
+            ):
+                GATE._validate_test_source(
+                    test_path.read_bytes(), [coverage]
+                )
+            test_path.write_text(
+                "import unittest\n"
+                "class Fixture(unittest.TestCase):\n"
                 "    def __init__(self, *args, **kwargs):\n"
                 "        super().__init__(*args, **kwargs)\n"
                 "        self.assertEqual = lambda *a, **k: None\n"

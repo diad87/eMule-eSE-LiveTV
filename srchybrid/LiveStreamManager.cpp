@@ -1657,7 +1657,8 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
         PeerHandleOf(peer),
         cap > 0 ? static_cast<std::size_t>(cap) : 0u);
     PeerTrust trust;
-    if (GetOrCreateTrust(peer, trust)) {
+    const bool haveTrust = GetOrCreateTrust(peer, trust);
+    if (haveTrust) {
         trust.joinedAt = GetTickCount();
         trust.currentLevel = ESE_TRUST_LEAF;  // Everyone starts as leaf
         SetTrustById(PeerId(peer), trust);
@@ -1849,8 +1850,10 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
             segsPushed++;
         }
 
-        // Update trust + mesh counters under the lock (per SEGMENT, not per packet).
-        trust.requestsServed += (uint32)segsPushed;
+        if (haveTrust) {
+            trust.requestsServed += (uint32)segsPushed;
+            SetTrustById(PeerId(peer), trust);
+        }
         for (int i = 0; i < segsPushed; ++i) {
             if (!m_viewerSession.IsActive())
                 m_meshManager.IncrementChunksServed();
@@ -1861,8 +1864,7 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
 
         pushed = segsPushed;
 
-        // RELEASE THE MANAGER LOCK before doing socket I/O. This prevents
-        // FeedSegment (called from the FFmpeg watcher thread) from blocking
+        // Release the manager lock before socket I/O so FeedSegment cannot block
         // on m_lock while we drain ~4.5 MB of chunk data into the socket.
         if (pushed > 0) {
             lock.Unlock();
@@ -2021,7 +2023,6 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
         }
     }
 
-    // Update trust tracking
     PeerTrust trust;
     if (GetOrCreateTrust(peer, trust)) {
         trust.requestsReceived++;
@@ -2300,7 +2301,6 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
 
     LIVE_LOG("RECV", "chunk seq=%u size=%u from peer", seqNum, dataSize);
 
-    // Store in our buffer
     // Phase 0: Counter instrumentation (OBS-1)
     DWORD nowTick = GetTickCount();
     InterlockedIncrement(&m_counters.chunksReceived);  // Phase 0: OBS-1 (atomic)

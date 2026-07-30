@@ -135,6 +135,16 @@ class Mod34LiveStreamSecurityTest(unittest.TestCase):
             on_chunk.index("m_chunkBuffer.AddSegment("),
             on_chunk.index("CommitVerifiedSequence("),
         )
+        peer_join = source[
+            source.index("void CLiveStreamManager::OnPeerJoin(") :
+            source.index("void CLiveStreamManager::OnPeerRequest(")
+        ]
+        credit = peer_join.index("trust.requestsServed +=")
+        self.assertLess(credit, peer_join.index("SetTrustById(", credit))
+        self.assertLess(
+            peer_join.index("SetTrustById(", credit),
+            peer_join.index("lock.Unlock()", credit),
+        )
 
     def test_native_cases_cover_pin_replay_wrap_and_capacity(self) -> None:
         native = NATIVE_TEST.read_text(encoding="utf-8")

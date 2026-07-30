@@ -306,6 +306,20 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/WebSharedController.cpp"],
                 "interface_files": ["srchybrid/WebSharedController.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "WebStaticAssets",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebStaticAssets.cpp"],
+                "interface_files": ["srchybrid/WebStaticAssets.h"],
+                "declared_direct_dependencies": [],
+            }, {
+                "name": "WebSocketResponse",
+                "owner": "CWebServer",
+                "layer": "adapters",
+                "implementation_files": ["srchybrid/WebSocketResponse.cpp"],
+                "interface_files": ["srchybrid/WebSocketResponse.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -381,6 +395,14 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             }, {
                 "module": "WebSharedController",
                 "slice_base_commit": "cd64a412b0dfe0b3e65ebd3e4c3fc454240f3b95",
+                "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebStaticAssets",
+                "slice_base_commit": "6a83cb2797c48918f9e2adbd7dda6f4d5b405145",
+                "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebSocketResponse",
+                "slice_base_commit": "6a83cb2797c48918f9e2adbd7dda6f4d5b405145",
                 "source_coordinator": "srchybrid/WebServer.cpp",
             }],
         })
@@ -465,6 +487,15 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                     "Standalone action, projection-policy and hostile-boundary "
                     "executable test for the three MOD-2.5 Web controller "
                     "extractions."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/tests/test_web_streaming.cpp",
+                "reason": (
+                    "Standalone range, MIME, cache, response-queue, "
+                    "partial-write and bounded-source executable test for the "
+                    "two MOD-2.6 Web streaming extractions."
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },

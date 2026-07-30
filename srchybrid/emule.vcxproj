@@ -782,6 +782,12 @@
     <ClCompile Include="LiveCircuitHandshake.cpp" />
     <ClCompile Include="LiveRelayDispatcher.cpp" />
     <ClCompile Include="LiveExitServices.cpp" />
+    <ClCompile Include="M2ABindingPort.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="LiveTunnelScheduler.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
@@ -1301,6 +1307,7 @@
     <ClInclude Include="LiveExitServices.h" />
     <ClInclude Include="LiveRelayTypes.h" />
     <ClInclude Include="LiveTunnelScheduler.h" />
+    <ClInclude Include="M2ABindingPort.h" />
     <ClInclude Include="LiveTunnelPeerState.h" />
     <ClInclude Include="LiveTunnelKadBridge.h" />
     <ClInclude Include="LiveTunnelMetrics.h" />

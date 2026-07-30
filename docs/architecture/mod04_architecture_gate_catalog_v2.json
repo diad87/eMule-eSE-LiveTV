@@ -1,0 +1,29 @@
+{
+  "schema": "ese.mod04.architecture-gate-catalog/v2",
+  "supersedes": "docs/architecture/mod04_architecture_gate_baseline_v1.json",
+  "status": "PASS",
+  "scope": "closed catalogue and per-card budgets for M2A additional modules; v1 baseline/growth gate remains binding",
+  "policy": {
+    "planned_modules_must_be_absent_until_their_card": true,
+    "new_module_requires_catalogue_entry_before_source": true,
+    "target_physical_loc_max": 1200,
+    "hard_physical_loc_max": 1500,
+    "direct_dependencies_max": 8,
+    "coordinator_facade_added_lines_max": 80,
+    "coordinator_removed_lines_must_exceed_added": true
+  },
+  "catalogue_source": "docs/architecture/mod52_migration_matrix_v1.json",
+  "approved_non_module_code": [
+    {
+      "path": "srchybrid/M2ABindingPort.h",
+      "reason": "Move-only type-erased composition handle and opaque parent port shared by M2A parents and children without a reverse include or a coordinator field.",
+      "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+    },
+    {
+      "path": "srchybrid/M2ABindingPort.cpp",
+      "reason": "Portable characterization of move-only M2A ownership and snapshot-unlock-callback ordering, compiled into the existing headless self-test path.",
+      "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+    }
+  ],
+  "approval": "M2A-00; a card is activated only by a reviewed catalogue revision and its frozen A/D/net budget"
+}

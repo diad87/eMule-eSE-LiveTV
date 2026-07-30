@@ -397,6 +397,32 @@ def validate_discovery(
 ) -> set[str]:
     file_owner = _module_file_owner(entries)
     allowed = {item["path"] for item in config["approved_non_module_code"]}
+    # v1 remains strict for every ordinary source.  The sole extra allowance
+    # is a ledger-active M2A pair; its ownership/includes/SCC are checked by
+    # the mandatory M2A ratchet immediately after this gate in CI.
+    active_m2a: set[str] = set()
+    try:
+        matrix = json.loads((ROOT / "docs/architecture/mod52_migration_matrix_v1.json").read_text(encoding="utf-8"))
+        ledger = json.loads((ROOT / "docs/architecture/mod52_migration_activation_ledger_v1.json").read_text(encoding="utf-8"))
+        overlay = json.loads((ROOT / "docs/architecture/mod04_architecture_gate_catalog_v2.json").read_text(encoding="utf-8"))
+        if (
+            overlay.get("schema")
+            == "ese.mod04.architecture-gate-catalog/v2"
+            and overlay.get("catalogue_source")
+            == "docs/architecture/mod52_migration_matrix_v1.json"
+        ):
+            allowed.update(
+                item["path"]
+                for item in overlay.get("approved_non_module_code", [])
+                if set(item) == {"path", "reason", "adr"}
+            )
+        for item in matrix.get("additional_modules", []):
+            state = ledger.get("cards", {}).get(item.get("card"), {})
+            if state.get("state") == "active":
+                active_m2a.update({f"srchybrid/{item['name']}.cpp", f"srchybrid/{item['name']}.h"})
+    except (OSError, ValueError, TypeError, KeyError):
+        # Missing/malformed overlay must never make v1 permissive.
+        active_m2a = set()
     overlap = set(file_owner) & allowed
     if overlap:
         raise GateError(f"approved_non_module_code overlaps module catalog: {sorted(overlap)[0]}")
@@ -409,7 +435,7 @@ def validate_discovery(
         path = sorted(external_companions)[0]
         raise GateError(f"planned module companion outside srchybrid: {path} expected={_companion_owner(path, planned)}")
     for path in discovered:
-        if path not in file_owner and path not in allowed:
+        if path not in file_owner and path not in allowed and path not in active_m2a:
             raise GateError(f"new or renamed C/C++ file is uncatalogued: {path}")
         companion = _companion_owner(path, planned)
         if companion and file_owner.get(path) != companion:

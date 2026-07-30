@@ -1,5 +1,6 @@
 // this file is part of eMule eSE - tunnel scheduling and deferred-work owner
 #include "LiveTunnelScheduler.h"
+#include "M2ABindingPort.h"
 
 #include <algorithm>
 #include <atomic>
@@ -940,7 +941,8 @@ bool RunLiveTunnelSchedulerCharacterizationSelfTest()
         && CharacterizePeriodicGates()
         && CharacterizeTimerLifecycle()
         && CharacterizeConcurrentClosePublication()
-        && CharacterizeShapingOwnership();
+        && CharacterizeShapingOwnership()
+        && RunM2ABindingPortCharacterizationSelfTest();
 }
 
 } // namespace eSELive

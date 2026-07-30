@@ -43,7 +43,9 @@ jobs:
 
       - name: Architecture gates (MOD-0.1 through MOD-5.1)
         shell: pwsh
-        run: python -m unittest discover -s tests -p "test_v92_mod*.py"
+        run: |
+          python -m unittest discover -s tests -p "test_v92_mod*.py"
+          python -m unittest discover -s tests -p "test_v92_m2a*.py"
 
       # ── 1) eSE Node server ────────────────────────────────────────────
       - name: Install npm deps (eSE)

@@ -791,6 +791,24 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="WebTransferController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebSearchController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebSharedController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="LiveHandshakeWire.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
@@ -1206,6 +1224,9 @@
     <ClInclude Include="WebAuthPolicy.h" />
     <ClInclude Include="WebRouteTable.h" />
     <ClInclude Include="WebApiSerializer.h" />
+    <ClInclude Include="WebTransferController.h" />
+    <ClInclude Include="WebSearchController.h" />
+    <ClInclude Include="WebSharedController.h" />
     <ClInclude Include="LiveHandshakeWire.h" />
     <ClInclude Include="LiveCircuit.h" />
     <ClInclude Include="LiveFec.h" />

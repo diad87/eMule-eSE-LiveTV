@@ -285,6 +285,27 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/WebApiSerializer.cpp"],
                 "interface_files": ["srchybrid/WebApiSerializer.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "WebTransferController",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebTransferController.cpp"],
+                "interface_files": ["srchybrid/WebTransferController.h"],
+                "declared_direct_dependencies": [],
+            }, {
+                "name": "WebSearchController",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebSearchController.cpp"],
+                "interface_files": ["srchybrid/WebSearchController.h"],
+                "declared_direct_dependencies": [],
+            }, {
+                "name": "WebSharedController",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebSharedController.cpp"],
+                "interface_files": ["srchybrid/WebSharedController.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -348,6 +369,18 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             }, {
                 "module": "WebApiSerializer",
                 "slice_base_commit": "12b60647c2cd6c76e014cd0d1fda3463ed56640c",
+                "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebTransferController",
+                "slice_base_commit": "cd64a412b0dfe0b3e65ebd3e4c3fc454240f3b95",
+                "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebSearchController",
+                "slice_base_commit": "cd64a412b0dfe0b3e65ebd3e4c3fc454240f3b95",
+                "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebSharedController",
+                "slice_base_commit": "cd64a412b0dfe0b3e65ebd3e4c3fc454240f3b95",
                 "source_coordinator": "srchybrid/WebServer.cpp",
             }],
         })
@@ -426,6 +459,15 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/tests/test_web_controllers.cpp",
+                "reason": (
+                    "Standalone action, projection-policy and hostile-boundary "
+                    "executable test for the three MOD-2.5 Web controller "
+                    "extractions."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         numstat = subprocess.check_output(
             ["git", "diff", "--numstat", SLICE_BASE, "--", "srchybrid/LiveTunnel.cpp"],
@@ -478,6 +520,12 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/WebRouteTable.h",
             "srchybrid/WebApiSerializer.cpp",
             "srchybrid/WebApiSerializer.h",
+            "srchybrid/WebTransferController.cpp",
+            "srchybrid/WebTransferController.h",
+            "srchybrid/WebSearchController.cpp",
+            "srchybrid/WebSearchController.h",
+            "srchybrid/WebSharedController.cpp",
+            "srchybrid/WebSharedController.h",
         }
         self.assertTrue(expected_paths.issubset(set(MOD02.CRITICAL_SOURCE_PATHS)))
         self.assertTrue(expected_paths.issubset(set(

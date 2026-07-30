@@ -15,6 +15,9 @@
 #include "WebApiSerializer.h"
 #include "WebRequestParser.h"
 #include "WebRouteTable.h"
+#include "WebSearchController.h"
+#include "WebSharedController.h"
+#include "WebTransferController.h"
 #include "WebServer.h"
 #include "ClientCredits.h"
 #include "ClientList.h"
@@ -1640,182 +1643,171 @@ CString CWebServer::_GetTransferList(const ThreadData &Data)
 
 	HTTPTemp = _ParseURL(Data.sURL, _T("c"));
 
-	if (HTTPTemp == _T("menudown")) {
-		int iMenu = _tstol(_ParseURL(Data.sURL, _T("m")));
-		WSdownloadColumnHidden[iMenu] = (_tstol(_ParseURL(Data.sURL, _T("v"))) != 0);
-
-		CIni ini(thePrefs.GetConfigFile(), _T("WebServer"));
-
-		_SaveWIConfigArray(WSdownloadColumnHidden, _countof(WSdownloadColumnHidden), _T("downloadColumnHidden"));
-	} else if (HTTPTemp == _T("menuup")) {
-		int iMenu = _tstol(_ParseURL(Data.sURL, _T("m")));
-		WSuploadColumnHidden[iMenu] = (_tstol(_ParseURL(Data.sURL, _T("v"))) != 0);
-		_SaveWIConfigArray(WSuploadColumnHidden, _countof(WSuploadColumnHidden), _T("uploadColumnHidden"));
-	} else if (HTTPTemp == _T("menuqueue")) {
-		int iMenu = _tstol(_ParseURL(Data.sURL, _T("m")));
-		WSqueueColumnHidden[iMenu] = (_tstol(_ParseURL(Data.sURL, _T("v"))) != 0);
-		_SaveWIConfigArray(WSqueueColumnHidden, _countof(WSqueueColumnHidden), _T("queueColumnHidden"));
+	const CString menuIndex = _ParseURL(Data.sURL, _T("m"));
+	const CString menuValue = _ParseURL(Data.sURL, _T("v"));
+	const ese::web::WebTransferColumnChange columnChange =
+		ese::web::WebTransferController::PlanColumnChange(
+			std::string(CT2A(HTTPTemp)),
+			std::string(CT2A(menuIndex)),
+			std::string(CT2A(menuValue)));
+	if (columnChange.allowed) {
+		BOOL* columns = columnChange.group ==
+			ese::web::WebTransferColumnGroup::Download
+			? WSdownloadColumnHidden
+			: (columnChange.group ==
+				ese::web::WebTransferColumnGroup::Upload
+				? WSuploadColumnHidden : WSqueueColumnHidden);
+		columns[columnChange.index] = columnChange.hidden;
+		LPCTSTR key = columnChange.group ==
+			ese::web::WebTransferColumnGroup::Download
+			? _T("downloadColumnHidden")
+			: (columnChange.group ==
+				ese::web::WebTransferColumnGroup::Upload
+				? _T("uploadColumnHidden") : _T("queueColumnHidden"));
+		const int count = columnChange.group ==
+			ese::web::WebTransferColumnGroup::Download ? 8 :
+			(columnChange.group ==
+				ese::web::WebTransferColumnGroup::Upload ? 5 : 4);
+		_SaveWIConfigArray(columns, count, key);
 	} else if (HTTPTemp == _T("menuprio") && bAdmin) {
 		const CString &sPrio(_ParseURL(Data.sURL, _T("p")));
-		int prio;
-		if (sPrio == _T("low"))
-			prio = PR_LOW;
-		else if (sPrio == _T("high"))
-			prio = PR_HIGH;
-		else if (sPrio == _T("normal"))
-			prio = PR_NORMAL;
-		else //if (sPrio == _T("auto"))
-			prio = PR_AUTO; //make auto the default
-		SendMessage(theApp.emuledlg->m_hWnd, WEB_CATPRIO, (WPARAM)cat, (LPARAM)prio);
+		const ese::web::WebTransferPriorityDecision priority =
+			ese::web::WebTransferController::PlanCategoryPriority(
+				bAdmin, std::string(CT2A(sPrio)));
+		if (priority.allowed) {
+			const int prio =
+				priority.priority == ese::web::WebTransferCategoryPriority::Low
+				? PR_LOW
+				: (priority.priority ==
+					ese::web::WebTransferCategoryPriority::High
+					? PR_HIGH
+					: (priority.priority ==
+						ese::web::WebTransferCategoryPriority::Normal
+						? PR_NORMAL : PR_AUTO));
+			SendMessage(theApp.emuledlg->m_hWnd, WEB_CATPRIO,
+				(WPARAM)cat, (LPARAM)prio);
+		}
 	}
 
-	if (bAdmin) {
-		const CString &sOp(_ParseURL(Data.sURL, _T("op")));
-
-		if (!sOp.IsEmpty()) {
-			const CString &sFile(_ParseURL(Data.sURL, _T("file")));
-
-			if (sFile.IsEmpty()) {
-				const CString &sUser(_ParseURL(Data.sURL, _T("userhash")));
-				uchar UserHash[MDX_DIGEST_SIZE];
-
-				if (strmd4(sUser, UserHash)) {
-					CUpDownClient *cur_client = theApp.clientlist->FindClientByUserHash(UserHash);
-					if (cur_client) {
-						if (sOp == _T("addfriend"))
-							SendMessage(theApp.emuledlg->m_hWnd, WEB_ADDREMOVEFRIEND, (WPARAM)cur_client, (LPARAM)1);
-						else if (sOp == _T("removefriend")) {
-							const CFriend *f = theApp.friendlist->SearchFriend(UserHash, 0, 0);
-							if (f)
-								SendMessage(theApp.emuledlg->m_hWnd, WEB_ADDREMOVEFRIEND, (WPARAM)f, (LPARAM)0);
-						}
-					}
-				}
-			} else {
-				uchar FileHash[MDX_DIGEST_SIZE];
-				bool bHash = strmd4(sFile, FileHash);
-				if (bHash) {
-					// CPartFile and MFC mutations belong to the GUI thread. Calling
-					// DeletePartFile from this WebServer worker can make the GUI wait
-					// on the file-list lock while cleanup waits for the GUI pump.
-					// Transfer only immutable arguments and resolve the file again
-					// on the main thread, so no CPartFile* crosses threads.
-					WebFileOperationRequest *request = new WebFileOperationRequest;
-					memcpy(request->fileHash, FileHash, sizeof request->fileHash);
-					bool validOperation = true;
-					if (sOp == _T("stop"))
-						request->operation = WEBFILEOP_STOP;
-					else if (sOp == _T("pause"))
-						request->operation = WEBFILEOP_PAUSE;
-					else if (sOp == _T("resume"))
-						request->operation = WEBFILEOP_RESUME;
-					else if (sOp == _T("cancel"))
-						request->operation = WEBFILEOP_CANCEL;
-					else if (sOp == _T("getflc"))
-						request->operation = WEBFILEOP_GETFLC;
-					else if (sOp == _T("rename")) {
-						request->operation = WEBFILEOP_RENAME;
-						request->text = _ParseURL(Data.sURL, _T("name"));
-					} else if (sOp == _T("priolow"))
-						request->operation = WEBFILEOP_PRIOLOW;
-					else if (sOp == _T("prionormal"))
-						request->operation = WEBFILEOP_PRIONORMAL;
-					else if (sOp == _T("priohigh"))
-						request->operation = WEBFILEOP_PRIOHIGH;
-					else if (sOp == _T("prioauto"))
-						request->operation = WEBFILEOP_PRIOAUTO;
-					else if (sOp == _T("setcat")) {
-						request->operation = WEBFILEOP_SETCAT;
-						const CString &newcat(_ParseURL(Data.sURL, _T("filecat")));
-						request->value = newcat.IsEmpty() ? -1 : _tstol(newcat);
-					} else if (sOp == _T("streamseek")) {
-						request->operation = WEBFILEOP_STREAMSEEK;
-						const CString &sPart(_ParseURL(Data.sURL, _T("part")));
-						request->value = sPart.IsEmpty() ? -1 : _tstol(sPart);
-					} else
-						validOperation = false;
-
-					if (validOperation)
-						SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_FILE_OPERATION, (LPARAM)request);
-					else
-						delete request;
-				}
+	const CString sOp = _ParseURL(Data.sURL, _T("op"));
+	const CString sFile = _ParseURL(Data.sURL, _T("file"));
+	if (!sOp.IsEmpty() && sFile.IsEmpty()) {
+		const CString sUser = _ParseURL(Data.sURL, _T("userhash"));
+		const ese::web::WebTransferFriendAction action =
+			ese::web::WebTransferController::PlanFriendAction(
+				bAdmin, std::string(CT2A(sOp)), std::string(CT2A(sUser)));
+		uchar userHash[MDX_DIGEST_SIZE];
+		if (action.allowed && strmd4(sUser, userHash)) {
+			CUpDownClient* client =
+				theApp.clientlist->FindClientByUserHash(userHash);
+			if (action.operation ==
+				ese::web::WebTransferFriendOperation::Add && client) {
+				SendMessage(theApp.emuledlg->m_hWnd,
+					WEB_ADDREMOVEFRIEND, (WPARAM)client, (LPARAM)1);
+			} else if (action.operation ==
+				ese::web::WebTransferFriendOperation::Remove && client) {
+				const CFriend* friendEntry =
+					theApp.friendlist->SearchFriend(userHash, 0, 0);
+				if (friendEntry)
+					SendMessage(theApp.emuledlg->m_hWnd,
+						WEB_ADDREMOVEFRIEND,
+						(WPARAM)friendEntry, (LPARAM)0);
 			}
+		}
+	} else if (!sOp.IsEmpty()) {
+		const CString actionText = sOp == _T("rename")
+			? _ParseURL(Data.sURL, _T("name")) : CString();
+		const CString numericValue = sOp == _T("setcat")
+			? _ParseURL(Data.sURL, _T("filecat"))
+			: (sOp == _T("streamseek")
+				? _ParseURL(Data.sURL, _T("part")) : CString());
+		const ese::web::WebTransferFileAction action =
+			ese::web::WebTransferController::PlanFileAction(
+				bAdmin,
+				std::string(CT2A(sOp)),
+				std::string(CT2A(sFile)),
+				std::string(CT2A(actionText)),
+				std::string(CT2A(numericValue)));
+		uchar fileHash[MDX_DIGEST_SIZE];
+		if (action.allowed && strmd4(sFile, fileHash)) {
+			WebFileOperationRequest* request =
+				new WebFileOperationRequest;
+			memcpy(request->fileHash, fileHash, sizeof request->fileHash);
+			switch (action.operation) {
+			case ese::web::WebTransferFileOperation::Stop:
+				request->operation = WEBFILEOP_STOP; break;
+			case ese::web::WebTransferFileOperation::Pause:
+				request->operation = WEBFILEOP_PAUSE; break;
+			case ese::web::WebTransferFileOperation::Resume:
+				request->operation = WEBFILEOP_RESUME; break;
+			case ese::web::WebTransferFileOperation::Cancel:
+				request->operation = WEBFILEOP_CANCEL; break;
+			case ese::web::WebTransferFileOperation::GetFileLink:
+				request->operation = WEBFILEOP_GETFLC; break;
+			case ese::web::WebTransferFileOperation::Rename:
+				request->operation = WEBFILEOP_RENAME;
+				request->text = actionText; break;
+			case ese::web::WebTransferFileOperation::PriorityLow:
+				request->operation = WEBFILEOP_PRIOLOW; break;
+			case ese::web::WebTransferFileOperation::PriorityNormal:
+				request->operation = WEBFILEOP_PRIONORMAL; break;
+			case ese::web::WebTransferFileOperation::PriorityHigh:
+				request->operation = WEBFILEOP_PRIOHIGH; break;
+			case ese::web::WebTransferFileOperation::PriorityAuto:
+				request->operation = WEBFILEOP_PRIOAUTO; break;
+			case ese::web::WebTransferFileOperation::SetCategory:
+				request->operation = WEBFILEOP_SETCAT;
+				request->value = action.value; break;
+			case ese::web::WebTransferFileOperation::StreamSeek:
+				request->operation = WEBFILEOP_STREAMSEEK;
+				request->value = action.value; break;
+			default:
+				delete request;
+				request = NULL;
+			}
+			if (request)
+				SendMessage(theApp.emuledlg->m_hWnd,
+					WEB_GUI_INTERACTION, WEBGUIIA_FILE_OPERATION,
+					(LPARAM)request);
 		}
 	}
 
 	HTTPTemp = _ParseURL(Data.sURL, _T("sortreverse"));
 	const CString &sSort(_ParseURL(Data.sURL, _T("sort")));
 
-	if (!sSort.IsEmpty()) {
-		bool bDirection = false;
-		if (sSort == _T("dstate"))
-			pThis->m_Params.DownloadSort = DOWN_SORT_STATE;
-		else if (sSort == _T("dtype"))
-			pThis->m_Params.DownloadSort = DOWN_SORT_TYPE;
-		else if (sSort == _T("dname")) {
-			pThis->m_Params.DownloadSort = DOWN_SORT_NAME;
-			bDirection = true;
-		} else if (sSort == _T("dsize"))
-			pThis->m_Params.DownloadSort = DOWN_SORT_SIZE;
-		else if (sSort == _T("dtransferred"))
-			pThis->m_Params.DownloadSort = DOWN_SORT_TRANSFERRED;
-		else if (sSort == _T("dspeed"))
-			pThis->m_Params.DownloadSort = DOWN_SORT_SPEED;
-		else if (sSort == _T("dprogress"))
-			pThis->m_Params.DownloadSort = DOWN_SORT_PROGRESS;
-		else if (sSort == _T("dsources"))
-			pThis->m_Params.DownloadSort = DOWN_SORT_SOURCES;
-		else if (sSort == _T("dpriority"))
-			pThis->m_Params.DownloadSort = DOWN_SORT_PRIORITY;
-		else if (sSort == _T("dcategory")) {
-			pThis->m_Params.DownloadSort = DOWN_SORT_CATEGORY;
-			bDirection = true;
-		} else if (sSort == _T("uuser")) {
-			pThis->m_Params.UploadSort = UP_SORT_USER;
-			bDirection = true;
-		} else if (sSort == _T("uclient"))
-			pThis->m_Params.UploadSort = UP_SORT_CLIENT;
-		else if (sSort == _T("uversion"))
-			pThis->m_Params.UploadSort = UP_SORT_VERSION;
-		else if (sSort == _T("ufilename")) {
-			pThis->m_Params.UploadSort = UP_SORT_FILENAME;
-			bDirection = true;
-		} else if (sSort == _T("utransferred"))
-			pThis->m_Params.UploadSort = UP_SORT_TRANSFERRED;
-		else if (sSort == _T("uspeed"))
-			pThis->m_Params.UploadSort = UP_SORT_SPEED;
-		else if (sSort == _T("qclient"))
-			pThis->m_Params.QueueSort = QU_SORT_CLIENT;
-		else if (sSort == _T("quser")) {
-			pThis->m_Params.QueueSort = QU_SORT_USER;
-			bDirection = true;
-		} else if (sSort == _T("qversion"))
-			pThis->m_Params.QueueSort = QU_SORT_VERSION;
-		else if (sSort == _T("qfilename")) {
-			pThis->m_Params.QueueSort = QU_SORT_FILENAME;
-			bDirection = true;
-		} else if (sSort == _T("qscore"))
-			pThis->m_Params.QueueSort = QU_SORT_SCORE;
-
-		if (!HTTPTemp.IsEmpty())
-			bDirection = (HTTPTemp.CompareNoCase(_T("true")) == 0);
-
-		switch (sSort[0]) {
-		case _T('d'):
-			pThis->m_Params.bDownloadSortReverse = bDirection;
-			break;
-		case _T('u'):
-			pThis->m_Params.bUploadSortReverse = bDirection;
-			break;
-		case _T('q'):
-			pThis->m_Params.bQueueSortReverse = bDirection;
+	const ese::web::WebTransferSortDecision sortDecision =
+		ese::web::WebTransferController::PlanSort(
+			std::string(CT2A(sSort)), std::string(CT2A(HTTPTemp)));
+	if (sortDecision.allowed) {
+		if (sortDecision.domain ==
+			ese::web::WebTransferSortDomain::Download) {
+			pThis->m_Params.DownloadSort =
+				static_cast<DownloadSort>(sortDecision.target_index);
+			pThis->m_Params.bDownloadSortReverse = sortDecision.reverse;
+		} else if (sortDecision.domain ==
+			ese::web::WebTransferSortDomain::Upload) {
+			pThis->m_Params.UploadSort =
+				static_cast<UploadSort>(sortDecision.target_index);
+			pThis->m_Params.bUploadSortReverse = sortDecision.reverse;
+		} else {
+			pThis->m_Params.QueueSort =
+				static_cast<QueueSort>(sortDecision.target_index);
+			pThis->m_Params.bQueueSortReverse = sortDecision.reverse;
 		}
 	}
 
-	_SetBoolean(pThis->m_Params.bShowUploadQueue, Data.sURL, _T("showuploadqueue"));
-	_SetBoolean(pThis->m_Params.bShowUploadQueueBanned, Data.sURL, _T("showuploadqueuebanned"));
-	_SetBoolean(pThis->m_Params.bShowUploadQueueFriend, Data.sURL, _T("showuploadqueuefriend"));
+	auto applyBoolean = [&](bool& current, LPCTSTR field) {
+		const CString input = _ParseURL(Data.sURL, field);
+		bool output = current;
+		if (ese::web::WebTransferController::TryApplyBoolean(
+			current, std::string(CT2A(input)), output))
+			current = output;
+	};
+	applyBoolean(pThis->m_Params.bShowUploadQueue, _T("showuploadqueue"));
+	applyBoolean(pThis->m_Params.bShowUploadQueueBanned,
+		_T("showuploadqueuebanned"));
+	applyBoolean(pThis->m_Params.bShowUploadQueueFriend,
+		_T("showuploadqueuefriend"));
 
 	Out += pThis->m_Templates.sTransferImages;
 	Out += pThis->m_Templates.sTransferList;
@@ -2803,15 +2795,6 @@ void CWebServer::_MakeTransferList(CString &Out, CWebServer *pThis, const Thread
 	Out.Replace(_T("[ScoreTitleM]"), strTmp);
 }
 
-void CWebServer::_SetBoolean(bool &var, const CString &URL, LPCTSTR pFieldname)
-{
-	const CString &sBool(_ParseURL(URL, pFieldname));
-	if (sBool == _T("true"))
-		var = true;
-	else if (sBool == _T("false"))
-		var = false;
-}
-
 CString CWebServer::_GetSharedFilesList(const ThreadData &Data)
 {
 	CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
@@ -2824,80 +2807,61 @@ CString CWebServer::_GetSharedFilesList(const ThreadData &Data)
 
 	CString strTmp(_ParseURL(Data.sURL, _T("sortreverse")));
 
-	if (!strSort.IsEmpty()) {
-		bool bDirection = false;
-
-		if (strSort == _T("state"))
-			pThis->m_Params.SharedSort = SHARED_SORT_STATE;
-		else if (strSort == _T("type"))
-			pThis->m_Params.SharedSort = SHARED_SORT_TYPE;
-		else if (strSort == _T("name")) {
-			pThis->m_Params.SharedSort = SHARED_SORT_NAME;
-			bDirection = true;
-		} else if (strSort == _T("size"))
-			pThis->m_Params.SharedSort = SHARED_SORT_SIZE;
-		else if (strSort == _T("transferred"))
-			pThis->m_Params.SharedSort = SHARED_SORT_TRANSFERRED;
-		else if (strSort == _T("alltimetransferred"))
-			pThis->m_Params.SharedSort = SHARED_SORT_ALL_TIME_TRANSFERRED;
-		else if (strSort == _T("requests"))
-			pThis->m_Params.SharedSort = SHARED_SORT_REQUESTS;
-		else if (strSort == _T("alltimerequests"))
-			pThis->m_Params.SharedSort = SHARED_SORT_ALL_TIME_REQUESTS;
-		else if (strSort == _T("accepts"))
-			pThis->m_Params.SharedSort = SHARED_SORT_ACCEPTS;
-		else if (strSort == _T("alltimeaccepts"))
-			pThis->m_Params.SharedSort = SHARED_SORT_ALL_TIME_ACCEPTS;
-		else if (strSort == _T("completes"))
-			pThis->m_Params.SharedSort = SHARED_SORT_COMPLETES;
-		else if (strSort == _T("priority"))
-			pThis->m_Params.SharedSort = SHARED_SORT_PRIORITY;
-
-		if (strTmp.IsEmpty())
-			pThis->m_Params.bSharedSortReverse = bDirection;
+	const ese::web::WebSharedSortDecision sharedSort =
+		ese::web::WebSharedController::PlanSort(
+			std::string(CT2A(strSort)), std::string(CT2A(strTmp)));
+	if (sharedSort.allowed) {
+		pThis->m_Params.SharedSort =
+			static_cast<SharedSort>(sharedSort.target_index);
+		pThis->m_Params.bSharedSortReverse = sharedSort.reverse;
 	}
-	if (!strTmp.IsEmpty())
-		pThis->m_Params.bSharedSortReverse = (strTmp == _T("true"));
 
-	if (bAdmin) {
-		CString hash(_ParseURL(Data.sURL, _T("hash")));
-		const CString &sPrio(_ParseURL(Data.sURL, _T("prio")));
-		if (!hash.IsEmpty() && !sPrio.IsEmpty()) {
-			uchar fileid[MDX_DIGEST_SIZE];
-			if (hash.GetLength() == 32 && DecodeBase16(hash, hash.GetLength(), fileid, _countof(fileid))) {
-				CKnownFile *pFile = theApp.sharedfiles->GetFileByID(fileid);
-				if (pFile != NULL) {
-					uint8 uPrio;
-					if (sPrio == _T("verylow"))
-						uPrio = PR_VERYLOW;
-					else if (sPrio == _T("low"))
-						uPrio = PR_LOW;
-					else if (sPrio == _T("normal"))
-						uPrio = PR_NORMAL;
-					else if (sPrio == _T("high"))
-						uPrio = PR_HIGH;
-					else if (sPrio == _T("release"))
-						uPrio = PR_VERYHIGH;
-					else //if (sPrio == _T("auto"))
-						uPrio = PR_AUTO;
-					if (uPrio == PR_AUTO) {
-						pFile->SetAutoUpPriority(true);
-						pFile->UpdateAutoUpPriority();
-					} else {
-						pFile->SetAutoUpPriority(false);
-						pFile->SetUpPriority(uPrio);
-					}
-					SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPD_SFUPDATE, (LPARAM)pFile);
-				}
+	const CString priorityHash = _ParseURL(Data.sURL, _T("hash"));
+	const CString sPrio = _ParseURL(Data.sURL, _T("prio"));
+	const ese::web::WebSharedPriorityDecision priority =
+		ese::web::WebSharedController::PlanPriority(
+			bAdmin, std::string(CT2A(priorityHash)),
+			std::string(CT2A(sPrio)));
+	uchar priorityFileId[MDX_DIGEST_SIZE];
+	if (priority.allowed &&
+		DecodeBase16(priorityHash, priorityHash.GetLength(), priorityFileId,
+			_countof(priorityFileId))) {
+		CKnownFile* file = theApp.sharedfiles->GetFileByID(priorityFileId);
+		if (file != NULL) {
+			if (priority.priority == ese::web::WebSharedPriority::Auto) {
+				file->SetAutoUpPriority(true);
+				file->UpdateAutoUpPriority();
+			} else {
+				const uint8 uploadPriority =
+					priority.priority == ese::web::WebSharedPriority::VeryLow
+					? PR_VERYLOW
+					: (priority.priority == ese::web::WebSharedPriority::Low
+						? PR_LOW
+						: (priority.priority ==
+							ese::web::WebSharedPriority::Normal
+							? PR_NORMAL
+							: (priority.priority ==
+								ese::web::WebSharedPriority::High
+								? PR_HIGH : PR_VERYHIGH)));
+				file->SetAutoUpPriority(false);
+				file->SetUpPriority(uploadPriority);
 			}
+			SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION,
+				WEBGUIIA_UPD_SFUPDATE, (LPARAM)file);
 		}
 	}
 
 	if (_ParseURL(Data.sURL, _T("c")) == _T("menu")) {
-		int iMenu = _tstoi(_ParseURL(Data.sURL, _T("m")));
-		bool bValue = _tstoi(_ParseURL(Data.sURL, _T("v"))) != 0;
-		WSsharedColumnHidden[iMenu] = bValue;
-		_SaveWIConfigArray(WSsharedColumnHidden, _countof(WSsharedColumnHidden), _T("sharedColumnHidden"));
+		const CString index = _ParseURL(Data.sURL, _T("m"));
+		const CString hidden = _ParseURL(Data.sURL, _T("v"));
+		const ese::web::WebSharedColumnChange change =
+			ese::web::WebSharedController::PlanColumnChange(
+				std::string(CT2A(index)), std::string(CT2A(hidden)));
+		if (change.allowed) {
+			WSsharedColumnHidden[change.index] = change.hidden;
+			_SaveWIConfigArray(WSsharedColumnHidden,
+				_countof(WSsharedColumnHidden), _T("sharedColumnHidden"));
+		}
 	}
 	if (_ParseURL(Data.sURL, _T("reload")) == _T("true"))
 		SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_SHARED_FILES_RELOAD, 0);
@@ -4024,88 +3988,89 @@ CString CWebServer::_GetSearch(const ThreadData &Data)
 
 	if (!_ParseURL(Data.sURL, _T("downloads")).IsEmpty() && bSessionAdmin) {
 		const CString &downloads(_ParseURLArray(Data.sURL, _T("downloads")));
-
-		for (int iPos = 0; iPos >= 0;) {
-			const CString &resToken(downloads.Tokenize(_T("|"), iPos));
-			if (resToken.GetLength() == 32)
-				SendMessage(theApp.emuledlg->m_hWnd, WEB_ADDDOWNLOADS, (LPARAM)(LPCTSTR)resToken, cat);
+		const std::vector<std::string> hashes =
+			ese::web::WebSearchController::PlanDownloads(
+				bSessionAdmin, std::string(CT2A(downloads)));
+		for (const std::string& hash : hashes) {
+			const CString hashText(CA2T(hash.c_str()));
+			SendMessage(theApp.emuledlg->m_hWnd, WEB_ADDDOWNLOADS,
+				(LPARAM)(LPCTSTR)hashText, cat);
 		}
 	}
 
 	if (_ParseURL(Data.sURL, _T("c")) == _T("menu")) {
-		int iMenu = _tstoi(_ParseURL(Data.sURL, _T("m")));
-		bool bValue = _tstoi(_ParseURL(Data.sURL, _T("v"))) != 0;
-		WSsearchColumnHidden[iMenu] = bValue;
-
-		_SaveWIConfigArray(WSsearchColumnHidden, _countof(WSsearchColumnHidden), _T("searchColumnHidden"));
+		const CString index = _ParseURL(Data.sURL, _T("m"));
+		const CString hidden = _ParseURL(Data.sURL, _T("v"));
+		const ese::web::WebSearchColumnChange change =
+			ese::web::WebSearchController::PlanColumnChange(
+				std::string(CT2A(index)), std::string(CT2A(hidden)));
+		if (change.allowed) {
+			WSsearchColumnHidden[change.index] = change.hidden;
+			_SaveWIConfigArray(WSsearchColumnHidden,
+				_countof(WSsearchColumnHidden), _T("searchColumnHidden"));
+		}
 	}
 
 	if (!_ParseURL(Data.sURL, _T("tosearch")).IsEmpty() && bSessionAdmin) {
-
-		// perform search
-		SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_DELETEALLSEARCHES, 0);
-
-		// get method
-		const CString &method((_ParseURL(Data.sURL, _T("method"))));
-
-		SSearchParams *pParams = new SSearchParams;
-		pParams->strExpression = _ParseURL(Data.sURL, _T("tosearch"));
-		pParams->strFileType = _ParseURL(Data.sURL, _T("type"));
-		// for safety: this string is sent to servers and/or kad nodes, validate it!
-		if (!pParams->strFileType.IsEmpty()
-			&& pParams->strFileType != _T(ED2KFTSTR_ARCHIVE)
-			&& pParams->strFileType != _T(ED2KFTSTR_AUDIO)
-			&& pParams->strFileType != _T(ED2KFTSTR_CDIMAGE)
-			&& pParams->strFileType != _T(ED2KFTSTR_DOCUMENT)
-			&& pParams->strFileType != _T(ED2KFTSTR_IMAGE)
-			&& pParams->strFileType != _T(ED2KFTSTR_PROGRAM)
-			&& pParams->strFileType != _T(ED2KFTSTR_VIDEO)
-			&& pParams->strFileType != _T(ED2KFTSTR_EMULECOLLECTION))
-		{
-			ASSERT(0);
-			pParams->strFileType.Empty();
-		}
-		pParams->ullMinSize = _tstoi64(_ParseURL(Data.sURL, _T("min"))) * 1048576ui64;
-		pParams->ullMaxSize = _tstoi64(_ParseURL(Data.sURL, _T("max"))) * 1048576ui64;
-		if (pParams->ullMaxSize < pParams->ullMinSize)
-			pParams->ullMaxSize = 0;
-
-		const CString &s(_ParseURL(Data.sURL, _T("avail")));
-		pParams->uAvailability = s.IsEmpty() ? 0 : _tstoi(s);
-		if (pParams->uAvailability > 1000000)
-			pParams->uAvailability = 1000000;
-
-		pParams->strExtension = _ParseURL(Data.sURL, _T("ext"));
-		if (method == _T("kademlia"))
-			pParams->eType = SearchTypeKademlia;
-		else if (method == _T("global"))
-			pParams->eType = SearchTypeEd2kGlobal;
-		else
-			pParams->eType = SearchTypeEd2kServer;
-
-		CString strResponse(_GetPlainResString(IDS_SW_SEARCHINGINFO));
-		try {
-			if (pParams->eType != SearchTypeKademlia) {
-				if (!theApp.emuledlg->searchwnd->DoNewEd2kSearch(pParams)) {
+		const CString expression = _ParseURL(Data.sURL, _T("tosearch"));
+		const CString fileType = _ParseURL(Data.sURL, _T("type"));
+		const CString minimum = _ParseURL(Data.sURL, _T("min"));
+		const CString maximum = _ParseURL(Data.sURL, _T("max"));
+		const CString availability = _ParseURL(Data.sURL, _T("avail"));
+		const CString extension = _ParseURL(Data.sURL, _T("ext"));
+		const CString method = _ParseURL(Data.sURL, _T("method"));
+		const ese::web::WebSearchRequest request =
+			ese::web::WebSearchController::PlanSearch(
+				bSessionAdmin,
+				std::string(CT2A(expression)),
+				std::string(CT2A(fileType)),
+				std::string(CT2A(minimum)),
+				std::string(CT2A(maximum)),
+				std::string(CT2A(availability)),
+				std::string(CT2A(extension)),
+				std::string(CT2A(method)));
+		CString strResponse = request.allowed
+			? _GetPlainResString(IDS_SW_SEARCHINGINFO)
+			: _GetPlainResString(IDS_ERROR);
+		SSearchParams* pParams = NULL;
+		if (request.allowed) {
+			SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION,
+				WEBGUIIA_DELETEALLSEARCHES, 0);
+			pParams = new SSearchParams;
+			pParams->strExpression = expression;
+			pParams->strFileType = fileType;
+			pParams->ullMinSize = request.minimum_bytes;
+			pParams->ullMaxSize = request.maximum_bytes;
+			pParams->uAvailability = request.availability;
+			pParams->strExtension = extension;
+			pParams->eType = request.method == ese::web::WebSearchMethod::Kademlia
+				? SearchTypeKademlia
+				: (request.method == ese::web::WebSearchMethod::Global
+					? SearchTypeEd2kGlobal : SearchTypeEd2kServer);
+			try {
+				if (pParams->eType != SearchTypeKademlia) {
+					if (!theApp.emuledlg->searchwnd->DoNewEd2kSearch(pParams)) {
+						delete pParams;
+						pParams = NULL;
+						strResponse =
+							_GetPlainResString(IDS_ERR_NOTCONNECTED);
+					}
+					// Search results arrive asynchronously; the UI refreshes.
+				} else if (!theApp.emuledlg->searchwnd->DoNewKadSearch(
+					pParams)) {
 					delete pParams;
 					pParams = NULL;
-					strResponse = _GetPlainResString(IDS_ERR_NOTCONNECTED);
+					strResponse =
+						_GetPlainResString(IDS_ERR_NOTCONNECTEDKAD);
 				}
-				// BUG-013 FIX: Removed Sleep(SEC2MS(2)) that blocked HTTP worker thread.
-				// Search results arrive asynchronously; the UI refreshes to display them.
-			} else {
-				if (!theApp.emuledlg->searchwnd->DoNewKadSearch(pParams)) {
-					delete pParams;
-					pParams = NULL;
-					strResponse = _GetPlainResString(IDS_ERR_NOTCONNECTEDKAD);
-				}
+			} catch (...) {
+				AddDebugLogLine(DLP_VERYHIGH, false,
+					_T("*** Exception in CWebServer::_GetSearch search dispatch"));
+				strResponse = _GetPlainResString(IDS_ERROR);
+				ASSERT(0);
+				delete pParams;
+				pParams = NULL;
 			}
-		} catch (...) {
-			AddDebugLogLine(DLP_VERYHIGH, false, _T("*** Exception in CWebServer::_GetSearch search dispatch"));
-			strResponse = _GetPlainResString(IDS_ERROR);
-			ASSERT(0);
-			delete pParams;
-			pParams = NULL;
 		}
 		Out.Replace(_T("[Message]"), strResponse);
 
@@ -4117,11 +4082,17 @@ CString CWebServer::_GetSearch(const ThreadData &Data)
 		Out.Replace(_T("[Message]"), _GetPlainResString(IDS_SW_REFETCHRES));
 
 	CString sSort = _ParseURL(Data.sURL, _T("sort"));
-	if (sSort.GetLength() > 0)
-		pThis->m_iSearchSortby = _tstoi(sSort);
-	sSort = _ParseURL(Data.sURL, _T("sortAsc"));
-	if (sSort.GetLength() > 0)
-		pThis->m_bSearchAsc = _tstoi(sSort) != 0;
+	const CString sortAscending = _ParseURL(Data.sURL, _T("sortAsc"));
+	const ese::web::WebSearchSortDecision searchSort =
+		ese::web::WebSearchController::PlanSort(
+			std::string(CT2A(sSort)),
+			std::string(CT2A(sortAscending)),
+			static_cast<unsigned>(pThis->m_iSearchSortby),
+			pThis->m_bSearchAsc);
+	if (searchSort.allowed) {
+		pThis->m_iSearchSortby = static_cast<int>(searchSort.column);
+		pThis->m_bSearchAsc = searchSort.ascending;
+	}
 
 	CString result(pThis->m_Templates.sSearchHeader);
 	CQArray<SearchFileStruct, SearchFileStruct> SearchFileArray;
@@ -4159,16 +4130,9 @@ CString CWebServer::_GetSearch(const ThreadData &Data)
 		}
 		strColorPrefix.Format(_T("<font color=#%02x%02x%02x>"), nRed, nGreen, nBlue);
 
-		if (structFile.m_uSourceCount < 5)
-			strSourcesImage = _T("0");
-		else if (structFile.m_uSourceCount < 10)
-			strSourcesImage = _T("5");
-		else if (structFile.m_uSourceCount < 25)
-			strSourcesImage = _T("10");
-		else if (structFile.m_uSourceCount < 50)
-			strSourcesImage = _T("25");
-		else
-			strSourcesImage = _T("50");
+		strSourcesImage = CString(
+			ese::web::WebSearchController::SourceImageBucket(
+				structFile.m_uSourceCount));
 
 		strSources.Format(_T("%u(%u)"), structFile.m_uSourceCount, structFile.m_dwCompleteSourceCount);
 		strFilename = structFile.m_strFileName;

@@ -178,6 +178,27 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/WebApiSerializer.cpp"],
                 "interface_files": ["srchybrid/WebApiSerializer.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "WebTransferController",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebTransferController.cpp"],
+                "interface_files": ["srchybrid/WebTransferController.h"],
+                "declared_direct_dependencies": [],
+            }, {
+                "name": "WebSearchController",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebSearchController.cpp"],
+                "interface_files": ["srchybrid/WebSearchController.h"],
+                "declared_direct_dependencies": [],
+            }, {
+                "name": "WebSharedController",
+                "owner": "CWebServer",
+                "layer": "application",
+                "implementation_files": ["srchybrid/WebSharedController.cpp"],
+                "interface_files": ["srchybrid/WebSharedController.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.config["approved_non_module_code"], [
@@ -255,6 +276,15 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/tests/test_web_controllers.cpp",
+                "reason": (
+                    "Standalone action, projection-policy and hostile-boundary "
+                    "executable test for the three MOD-2.5 Web controller "
+                    "extractions."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         self.assertEqual(self.config["slice_evidence"], {
             "state": "EXTRACTION_ACTIVE",
@@ -318,6 +348,18 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "module": "WebApiSerializer",
                 "slice_base_commit": "12b60647c2cd6c76e014cd0d1fda3463ed56640c",
                 "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebTransferController",
+                "slice_base_commit": "cd64a412b0dfe0b3e65ebd3e4c3fc454240f3b95",
+                "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebSearchController",
+                "slice_base_commit": "cd64a412b0dfe0b3e65ebd3e4c3fc454240f3b95",
+                "source_coordinator": "srchybrid/WebServer.cpp",
+            }, {
+                "module": "WebSharedController",
+                "slice_base_commit": "cd64a412b0dfe0b3e65ebd3e4c3fc454240f3b95",
+                "source_coordinator": "srchybrid/WebServer.cpp",
             }],
         })
 
@@ -342,6 +384,9 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "WebAuthPolicy",
                 "WebRouteTable",
                 "WebApiSerializer",
+                "WebTransferController",
+                "WebSearchController",
+                "WebSharedController",
             ],
         )
 

@@ -99,9 +99,9 @@
         "CLiveStreamManager::OnChunkReceived"
       ],
       "token_sha256": {
-        "CLiveStreamManager::FeedSegment": "cb0dff9c1fb551dacca6c8b5ec95c1b11b8fa52e35e9d69219b1bf54f404f8ae",
-        "CLiveStreamManager::OnChunkReceived": "7cda98e42a3619e535f067c7812c1f04ac1d32e3251d93dbb46b32e03674639f",
-        "CLiveStreamManager::StartBroadcast": "089d8baad0a2588f272c80f18aac38dd7ba83fcb00644d5161cea3eb652eec93"
+        "CLiveStreamManager::FeedSegment": "3c5c468a2ee94f8c7f0dc5d991252c26e2e4bd843e042e9e2fce73de0859ee9f",
+        "CLiveStreamManager::OnChunkReceived": "f66f562b5ea639cd9f33246255cba50c10aa0b9c4af182d6297fa9ba5aa45410",
+        "CLiveStreamManager::StartBroadcast": "71ac561d7682952731050890f88c252f39adb854d7a34223535e7c68b5fec041"
       }
     },
     "live_tunnel_dispatch": {
@@ -157,7 +157,7 @@
         "CWebServer::_ProcessLiveAPI"
       ],
       "token_sha256": {
-        "CWebServer::_ProcessLiveAPI": "9fd2b1bba5dc698a3bb889b8552cd3e75c923b45773d2e0626f96b6bfcd2057e"
+        "CWebServer::_ProcessLiveAPI": "8821383d6ce8e8f5f9f7458cc863ce3c48dfae9db1764584a8a748e0caead6f6"
       }
     },
     "web_parser_security": {
@@ -168,7 +168,7 @@
         "CWebServer::_SpecialChars"
       ],
       "token_sha256": {
-        "CWebServer::_ProcessLiveAPI": "9fd2b1bba5dc698a3bb889b8552cd3e75c923b45773d2e0626f96b6bfcd2057e",
+        "CWebServer::_ProcessLiveAPI": "8821383d6ce8e8f5f9f7458cc863ce3c48dfae9db1764584a8a748e0caead6f6",
         "CWebServer::_SpecialChars": "68d29479dc26752e6f15e4e688b895d4cc594e33139a7e5cde42ba83a8af6f42",
         "EseHexToKey16A": "f09086fb347ef0e878566aef2da92dbbe6606252291fdc33b8b995a458f3c1d2"
       }

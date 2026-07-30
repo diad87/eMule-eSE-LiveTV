@@ -47,6 +47,14 @@ struct LiveFanoutChildSnapshot {
 	std::uint64_t backpressure_rejections = 0u;
 };
 
+struct LiveFanoutReplacementTicket {
+	std::uint64_t token = 0u;
+	LiveFanoutChild previous = 0u;
+	LiveFanoutChild replacement = 0u;
+
+	bool IsActive() const { return token != 0u; }
+};
+
 class LiveStreamFanout final
 {
 public:
@@ -63,13 +71,14 @@ public:
 		LiveFanoutChild previous,
 		LiveFanoutChild replacement,
 		std::uint64_t replacement_external_queued_bytes = 0u);
-	bool BeginChildReplacement(
+	LiveFanoutReplacementTicket BeginChildReplacement(
 		LiveFanoutChild previous,
 		LiveFanoutChild replacement);
 	bool CommitChildReplacement(
-		LiveFanoutChild previous,
-		LiveFanoutChild replacement,
+		const LiveFanoutReplacementTicket& ticket,
 		std::uint64_t replacement_external_queued_bytes);
+	bool AbortChildReplacement(
+		const LiveFanoutReplacementTicket& ticket);
 	bool ReleaseChild(LiveFanoutChild child);
 	void Clear();
 
@@ -129,8 +138,11 @@ private:
 	std::condition_variable transport_idle_;
 	std::vector<ChildEntry> children_;
 	std::vector<ReservationEntry> reservations_;
-	std::vector<LiveFanoutChild> replacement_paused_children_;
 	std::uint64_t next_token_;
+	std::uint64_t next_replacement_token_;
+	std::uint64_t replacement_token_;
+	LiveFanoutChild replacement_previous_;
+	LiveFanoutChild replacement_target_;
 };
 
 } // namespace live

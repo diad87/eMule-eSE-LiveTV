@@ -97,6 +97,7 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             "fanout.CompleteDelivery(",
             "fanout.BeginChildReplacement(",
             "fanout.CommitChildReplacement(",
+            "fanout.AbortChildReplacement(",
             "fanout.ReleaseChild(",
         ):
             self.assertIn(marker, adapter)
@@ -130,6 +131,7 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             "fanout.ReplaceChild(replacement, previous)",
             adapter,
         )
+        self.assertIn("catch (...)", adapter)
         self.assertGreaterEqual(
             source.count("m_peerSet.HasDownstream("),
             4,
@@ -156,6 +158,7 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             "replacement and release wait for active destination transport",
             "release stays blocked while replacement queue capture is paused",
             "quiesced replacement commits before release removes destination",
+            "replacement ticket binds ordered pair and abort releases pause",
             "slow child does not block a healthy sibling",
             "release cancels pending work and rejects future delivery",
             "release waits while transport owns the child lifetime",

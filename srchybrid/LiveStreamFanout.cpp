@@ -21,10 +21,13 @@ std::uint64_t SaturatingAdd(
 
 LiveStreamFanout::LiveStreamFanout()
 	: next_token_(1u)
+	, next_replacement_token_(1u)
+	, replacement_token_(0u)
+	, replacement_previous_(0u)
+	, replacement_target_(0u)
 {
 	children_.reserve(kChildCapacity);
 	reservations_.reserve(kReservationCapacity);
-	replacement_paused_children_.reserve(2u);
 }
 
 std::vector<LiveStreamFanout::ChildEntry>::iterator
@@ -66,25 +69,40 @@ bool LiveStreamFanout::ReplaceChild(
 	LiveFanoutChild replacement,
 	std::uint64_t replacement_external_queued_bytes)
 {
-	if (!BeginChildReplacement(previous, replacement))
+	const LiveFanoutReplacementTicket ticket =
+		BeginChildReplacement(previous, replacement);
+	if (!ticket.IsActive())
 		return false;
-	return CommitChildReplacement(
-		previous, replacement,
-		replacement_external_queued_bytes);
+	try {
+		if (CommitChildReplacement(
+			ticket, replacement_external_queued_bytes))
+			return true;
+		AbortChildReplacement(ticket);
+		return false;
+	} catch (...) {
+		AbortChildReplacement(ticket);
+		throw;
+	}
 }
 
-bool LiveStreamFanout::BeginChildReplacement(
+LiveFanoutReplacementTicket LiveStreamFanout::BeginChildReplacement(
 	LiveFanoutChild previous,
 	LiveFanoutChild replacement)
 {
+	LiveFanoutReplacementTicket ticket;
 	if (previous == 0u || replacement == 0u || previous == replacement)
-		return false;
+		return ticket;
 	std::unique_lock<std::mutex> lock(mutex_);
-	if (!replacement_paused_children_.empty() ||
+	if (replacement_token_ != 0u ||
 		FindChildLocked(previous) == children_.end())
-		return false;
-	replacement_paused_children_.push_back(previous);
-	replacement_paused_children_.push_back(replacement);
+		return ticket;
+	replacement_token_ = next_replacement_token_++;
+	if (next_replacement_token_ == 0u)
+		next_replacement_token_ = 1u;
+	if (replacement_token_ == 0u)
+		replacement_token_ = next_replacement_token_++;
+	replacement_previous_ = previous;
+	replacement_target_ = replacement;
 	transport_idle_.wait(
 		lock,
 		[this, previous, replacement]() {
@@ -93,21 +111,27 @@ bool LiveStreamFanout::BeginChildReplacement(
 		});
 	if (FindChildLocked(previous) == children_.end()) {
 		FinishReplacementLocked();
-		return false;
+		return ticket;
 	}
-	return true;
+	ticket.token = replacement_token_;
+	ticket.previous = previous;
+	ticket.replacement = replacement;
+	return ticket;
 }
 
 bool LiveStreamFanout::CommitChildReplacement(
-	LiveFanoutChild previous,
-	LiveFanoutChild replacement,
+	const LiveFanoutReplacementTicket& ticket,
 	std::uint64_t replacement_external_queued_bytes)
 {
 	std::unique_lock<std::mutex> lock(mutex_);
-	if (!IsReplacementPausedLocked(previous) ||
-		!IsReplacementPausedLocked(replacement)) {
+	if (!ticket.IsActive() ||
+		ticket.token != replacement_token_ ||
+		ticket.previous != replacement_previous_ ||
+		ticket.replacement != replacement_target_) {
 		return false;
 	}
+	const LiveFanoutChild previous = ticket.previous;
+	const LiveFanoutChild replacement = ticket.replacement;
 	auto found = FindChildLocked(previous);
 	if (found == children_.end()) {
 		FinishReplacementLocked();
@@ -155,6 +179,8 @@ bool LiveStreamFanout::CommitChildReplacement(
 		static_cast<std::size_t>(found - children_.begin());
 	const std::size_t replacement_index =
 		static_cast<std::size_t>(replacement_found - children_.begin());
+	std::vector<ChildEntry> reordered;
+	reordered.reserve(children_.size() - 1u);
 	ChildEntry merged = *replacement_found;
 	merged.completed_deliveries = SaturatingAdd(
 		merged.completed_deliveries, found->completed_deliveries);
@@ -219,8 +245,6 @@ bool LiveStreamFanout::CommitChildReplacement(
 	}
 	merged.pending_bytes = retained_bytes;
 	merged.pending_deliveries = retained_deliveries;
-	std::vector<ChildEntry> reordered;
-	reordered.reserve(children_.size() - 1u);
 	for (std::size_t index = 0u; index < children_.size(); ++index) {
 		if (index == previous_index)
 			reordered.push_back(merged);
@@ -228,6 +252,19 @@ bool LiveStreamFanout::CommitChildReplacement(
 			reordered.push_back(children_[index]);
 	}
 	children_.swap(reordered);
+	FinishReplacementLocked();
+	return true;
+}
+
+bool LiveStreamFanout::AbortChildReplacement(
+	const LiveFanoutReplacementTicket& ticket)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!ticket.IsActive() ||
+		ticket.token != replacement_token_ ||
+		ticket.previous != replacement_previous_ ||
+		ticket.replacement != replacement_target_)
+		return false;
 	FinishReplacementLocked();
 	return true;
 }
@@ -263,7 +300,7 @@ void LiveStreamFanout::Clear()
 	transport_idle_.wait(
 		lock,
 		[this]() {
-			return replacement_paused_children_.empty() &&
+			return replacement_token_ == 0u &&
 				std::none_of(
 				reservations_.cbegin(), reservations_.cend(),
 				[](const ReservationEntry& reservation) {
@@ -273,20 +310,22 @@ void LiveStreamFanout::Clear()
 	reservations_.clear();
 	children_.clear();
 	next_token_ = 1u;
+	next_replacement_token_ = 1u;
 }
 
 bool LiveStreamFanout::IsReplacementPausedLocked(
 	LiveFanoutChild child) const
 {
-	return std::find(
-		replacement_paused_children_.cbegin(),
-		replacement_paused_children_.cend(),
-		child) != replacement_paused_children_.cend();
+	return replacement_token_ != 0u &&
+		(child == replacement_previous_ ||
+			child == replacement_target_);
 }
 
 void LiveStreamFanout::FinishReplacementLocked()
 {
-	replacement_paused_children_.clear();
+	replacement_token_ = 0u;
+	replacement_previous_ = 0u;
+	replacement_target_ = 0u;
 	transport_idle_.notify_all();
 }
 

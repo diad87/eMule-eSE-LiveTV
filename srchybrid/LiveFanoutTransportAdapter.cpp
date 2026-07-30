@@ -97,14 +97,24 @@ bool LiveStreamFanoutAdapter::ReplaceChild(
 		!peers.HasDownstream(previous))
 		return false;
 	CUpDownClient* replacement_peer = FanoutChild(replacement);
-	if (replacement_peer == NULL ||
-		!fanout.BeginChildReplacement(previous, replacement))
+	if (replacement_peer == NULL)
 		return false;
-	const std::uint64_t replacement_queued_bytes =
-		replacement_peer->GetSocketQueuedBytes();
-	if (!fanout.CommitChildReplacement(
-			previous, replacement, replacement_queued_bytes))
+	const ese::live::LiveFanoutReplacementTicket ticket =
+		fanout.BeginChildReplacement(previous, replacement);
+	if (!ticket.IsActive())
 		return false;
+	try {
+		const std::uint64_t replacement_queued_bytes =
+			replacement_peer->GetSocketQueuedBytes();
+		if (!fanout.CommitChildReplacement(
+			ticket, replacement_queued_bytes)) {
+			fanout.AbortChildReplacement(ticket);
+			return false;
+		}
+	} catch (...) {
+		fanout.AbortChildReplacement(ticket);
+		throw;
+	}
 	// The validated previous handle and non-zero replacement make PeerSet's
 	// manager-lock-serialized second step infallible.
 	return peers.ReplaceDownstream(previous, replacement);

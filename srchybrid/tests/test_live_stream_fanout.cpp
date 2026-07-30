@@ -271,7 +271,9 @@ int main()
 	std::thread replacement_thread(
 		[&quiesced_collision, &replacement_began,
 			&allow_replacement_commit, &replacement_committed, limit]() {
-			if (!quiesced_collision.BeginChildReplacement(501u, 502u))
+			const ese::live::LiveFanoutReplacementTicket ticket =
+				quiesced_collision.BeginChildReplacement(501u, 502u);
+			if (!ticket.IsActive())
 				return;
 			replacement_began.store(true, std::memory_order_release);
 			while (!allow_replacement_commit.load(
@@ -279,7 +281,7 @@ int main()
 				std::this_thread::yield();
 			replacement_committed.store(
 				quiesced_collision.CommitChildReplacement(
-					501u, 502u, limit),
+					ticket, limit),
 				std::memory_order_release);
 		});
 	while (!quiesced_collision.SelectRecipients(0u, {}, 2u).empty())
@@ -313,6 +315,25 @@ int main()
 			quiesced_release_finished.load(std::memory_order_acquire) &&
 			quiesced_collision.ChildCount() == 0u,
 		"quiesced replacement commits before release removes destination");
+
+	LiveStreamFanout abortable_replacement;
+	abortable_replacement.RegisterChild(601u);
+	abortable_replacement.RegisterChild(602u);
+	const ese::live::LiveFanoutReplacementTicket abort_ticket =
+		abortable_replacement.BeginChildReplacement(601u, 602u);
+	ese::live::LiveFanoutReplacementTicket reversed_ticket = abort_ticket;
+	std::swap(
+		reversed_ticket.previous,
+		reversed_ticket.replacement);
+	Check(
+		abort_ticket.IsActive() &&
+			!abortable_replacement.CommitChildReplacement(
+				reversed_ticket, 0u) &&
+			abortable_replacement.SelectRecipients(0u, {}, 2u).empty() &&
+			abortable_replacement.AbortChildReplacement(abort_ticket) &&
+			abortable_replacement.SelectRecipients(0u, {}, 2u) ==
+				std::vector<std::uintptr_t>({601u, 602u}),
+		"replacement ticket binds ordered pair and abort releases pause");
 
 	Check(
 		fanout.RegisterChild(50u) ==

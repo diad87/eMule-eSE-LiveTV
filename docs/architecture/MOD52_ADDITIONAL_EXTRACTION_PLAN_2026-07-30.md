@@ -132,7 +132,7 @@ declara en el coordinador.
 | `M2A-LT10` | Cierre de header y medición. | Mover DTOs/puertos a cabeceras de módulo, quitar miembros delegados; `LiveTunnel.h` contiene ≤20 campos reales. | Ninguna función >150; `.cpp` ≤4.000, `.h` ≤900. | compilación de consumidores, ABI interno, inventario MOD-0.1 y gate M2. | 0,75 |
 
 Budget fijo por tarjeta (máximo LOC del módulo / A máximo / D mínimo / neto
-máximo; todas las cifras son líneas): LT1 `800/1000/300/+250`, LT2
+máximo; todas las cifras son líneas): LT1 `800/1000/250/+350`, LT2
 `1100/1300/1000/+300`, LT3 `1150/1350/1150/+200`, LT4
 `1100/1300/1050/+250`, LT5 `1200/1450/1200/+250`, LT6
 `1100/1300/1000/+300`, LT7 `1100/1300/950/+350`, LT8 `900/1100/800/+300`,

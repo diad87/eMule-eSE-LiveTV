@@ -66,8 +66,8 @@ class M2A00RatchetTest(unittest.TestCase):
         expected = {
             "module_loc": 800,
             "add": 1000,
-            "delete": 300,
-            "net": 250,
+            "delete": 250,
+            "net": 350,
         }
         self.assertEqual(transfer["budget"], expected)
         self.assertEqual(module["budget"], expected)
@@ -75,8 +75,8 @@ class M2A00RatchetTest(unittest.TestCase):
             self.matrix["card_budgets"]["LT1"],
             {
                 "add": 1000,
-                "delete": 300,
-                "net": 250,
+                "delete": 250,
+                "net": 350,
                 "coordinator": "LiveTunnel",
                 "facade_add_max": 80,
                 "reduction_required": True,

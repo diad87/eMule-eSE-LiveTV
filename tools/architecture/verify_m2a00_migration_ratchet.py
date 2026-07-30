@@ -34,7 +34,7 @@ BASELINE_COMMIT = "8534bf9ee48a16084c0368bf33dcafb4ba12558d"
 # changing a contract cannot silently authorize its own replacement.
 EXPECTED_DOC_HASHES: dict[str, str] = {
     "mod52_migration_contract_v1.json": "b3957aca15b7c25e42229c3f9623bff881b450c7277323a28c7639e0ea9f3caf",
-    "mod52_migration_matrix_v1.json": "4c03996d7f1c61ae976560ac14675d41dcf913a47e2fea06076d78c78d4a0588",
+    "mod52_migration_matrix_v1.json": "0b84a0898a78f62f253587b4085b2c35167fa4f7ead4d0720a5b6cedfbf6d0ca",
     "mod52_migration_baseline_v1.json": "4c162b457059776f13c26341fdab60778088014e183acc48926f22f5d1cbc5c3",
     "mod03_ownership_layering_contract_v2.json": "c3aa3d90bccbc63ff7a0c8ebafd199e9ed2b00acc2c2ef488c5e11515a3f28b1",
     "mod04_architecture_gate_catalog_v2.json": "17c23fa5878fb034c6c15441fb0943809b4eedfe21eef383c7b7d6eabbbf086d",

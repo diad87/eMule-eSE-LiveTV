@@ -121,7 +121,7 @@ declara en el coordinador.
 | Tarjeta | Owner y estado que sale de `CLiveTunnel` | Destinos y API/puertos | Funciones/LOC que debe vaciar | Test focal obligatorio | JP |
 |---|---|---|---|---|---:|
 | `M2A-LT1` | Release/aviso: `m_k6Release*`, challenge, evidencia y `m_k6ExitNoticeServer`; exactamente los 12 campos de la matriz. | `LiveTunnelReleaseGate.{h,cpp}` (domain_state) + `LiveTunnelReleaseStorePort`; sólo snapshots/decisiones y puertos, sin socket/Kad concreto. | `Load/Save/Refresh/ApplyK6PublicRelease`, challenge y aviso (≈300–400 LOC eliminables). | evidencia inválida, challenge de un uso, wrap de tiempo, lectura concurrente de snapshot. | 1,5 |
-| `M2A-LT2` | Hardening/economía/cuota: controller, telemetría/mediciones, secreto, certificado, limiter, hierarchy, spent y grants; exactamente los 20 campos de la matriz. | `LiveTunnelQuotaAuthority.{h,cpp}` (domain_state), `QuotaCryptoPort` y `QuotaClockPort`. | `Ensure/K6QuotaPrincipal/K6QuotaIssuerTrusted/K6AcquireAnonymousQuota`, economy y métricas (≈900 LOC). | certificado inválido, replay/spent, cuota agotada, cancelación y secreto borrado. | 2,0 |
+| `M2A-LT2` | Hardening/economía/cuota: controller, telemetría/mediciones, secreto, certificado, limiter, hierarchy, spent y grants; exactamente los 20 campos de la matriz. | `LiveTunnelQuotaAuthority.{h,cpp}` (application), con callbacks externos fuera de lock y estado mutable encapsulado. | `Ensure/K6QuotaPrincipal/K6QuotaIssuerTrusted/K6AcquireAnonymousQuota`, economy y métricas (≈900 LOC). | certificado inválido, replay/spent, cuota agotada, cancelación y secreto borrado. | 2,0 |
 | `M2A-LT3` | Gateway/lease: sólo source leases, scheduler, budget, coalescer y epochs; no publica ni posee sombras. | `LiveTunnelGatewayLeaseState.{h,cpp}`; adaptador Kad6 separado. | `HandleK6SearchReply` (585), `ExitHandle_Kad6Gateway` (237), callbacks gateway (≈1.150 LOC). | resultado tardío tras cancel, epochs persistidos corruptos, lease duplicado y salida ordenada. | 2,0 |
 | `M2A-LT4` | Publicación/tickets: `m_k6Publishes`, `m_k6ShadowPrimary`, targets y tickets; LT3 sólo recibe vista inmutable de leases. | `LiveTunnelSourcePublisher.{h,cpp}` y `LiveTunnelTicketPolicy.{h,cpp}`; `Kad6PublishPort`. | `ExitHandle_Kad6SourceBind` (241), `ExitHandle_Kad6Publish` (265), bind/unbind/ack (≈1.050 LOC). | bind/unbind idempotente, ticket replay, publicación shadow/nativa y orden de callbacks. | 2,0 |
 | `M2A-LT5` | Streams y créditos: `m_k6ExitStreams`, `m_k6OriginStreams`, send/receive credits, mapas por circuito. | `LiveTunnelStreamFlow.{h,cpp}` (domain_state) + `Kad6StreamTransportAdapter.{h,cpp}`. | `ExitHandle_Kad6Dial` (203), `ActivateK6Inbound` (169), `OnK6ExitPacket` (172), close/data/credit (≈1.200 LOC). | half-close, crédito límite, socket cerrado durante callback, ABA de streamId y envío después de unlock. | 2,25 |
@@ -150,6 +150,15 @@ tarjetas LT3–LT6. LT2 conserva `A <= 1300`, módulo `<= 1100`, fachada
 `A <= 80`, reducción neta obligatoria de la fachada y el STOP global de 1.500
 líneas; sólo se ajustan `D >= 275` y neto `<= +1000` para permitir puertos,
 serialización de ownership, locks propios y caracterización de replay.
+
+La misma autorización corrige la capa de LT2 de `domain_state` a
+`application`: su responsabilidad es orquestar de forma explícita el
+controlador Kad6, la telemetría y el proveedor criptográfico concreto. La
+clasificación anterior obligaba simultáneamente a poseer esos 20 estados y a
+no nombrar ninguno de sus tipos, por lo que era incompatible con el gate de
+dependencias. La corrección no añade dependencias entre módulos M2A ni relaja
+aislamiento, locks, presupuesto o wire. La salida de economía cruza un puerto
+de datos mínimo, sin crear un include ni un edge entre owners de aplicación.
 
 Dependencias: LT1 puede iniciar; LT2 depende de LT1 para el estado de release;
 LT3/LT4 dependen de LT2; LT5 depende de LT4; LT6 depende de LT3 y LT5; LT7

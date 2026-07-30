@@ -116,7 +116,7 @@
   ],
   "additional_modules": [
     {"name":"LiveTunnelReleaseGate","card":"LT1","parent":"m_scheduler","layer":"domain_state","dependencies":[],"budget":{"module_loc":800,"add":1000,"delete":250,"net":350}},
-    {"name":"LiveTunnelQuotaAuthority","card":"LT2","parent":"m_scheduler","layer":"domain_state","dependencies":[],"budget":{"module_loc":1100,"add":1300,"delete":275,"net":1000}},
+    {"name":"LiveTunnelQuotaAuthority","card":"LT2","parent":"m_scheduler","layer":"application","dependencies":[],"budget":{"module_loc":1100,"add":1300,"delete":275,"net":1000}},
     {"name":"LiveTunnelGatewayLeaseState","card":"LT3","parent":"m_kadBridge","layer":"domain_state","dependencies":[],"budget":{"module_loc":1150,"add":1350,"delete":1150,"net":200}},
     {"name":"LiveTunnelSourcePublisher","card":"LT4","parent":"m_exitServices","layer":"application","dependencies":["LiveTunnelTicketPolicy"],"budget":{"module_loc":1100,"add":1300,"delete":1050,"net":250}},
     {"name":"LiveTunnelTicketPolicy","card":"LT4","parent":"LiveTunnelSourcePublisher","layer":"ports","dependencies":[],"budget":{"module_loc":700,"add":900,"delete":700,"net":200}},

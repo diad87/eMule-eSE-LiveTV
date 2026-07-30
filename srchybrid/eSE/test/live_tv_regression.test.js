@@ -917,18 +917,18 @@ test('nodes.dat bootstrap is disabled by default and requires verified determini
 test('source loss schedules bounded rotating peer replenishment', () => {
   const manager = read(repoRoot, 'srchybrid', 'LiveStreamManager.cpp');
   const mesh = read(repoRoot, 'srchybrid', 'LiveMeshManager.cpp');
-  const policy = read(repoRoot, 'srchybrid', 'LivePeerRefreshPolicy.h');
+  const policy = read(repoRoot, 'srchybrid', 'LiveStreamRecovery.h');
 
   assert.doesNotMatch(manager, /TODO:\s*Request more peers from broadcaster/);
-  assert.match(manager, /m_peerRefreshPolicy\.OnSourceLost/);
-  assert.match(manager, /if \(m_peerRefreshPolicy\.IsPending\(\)\)[\s\S]{0,100}RequestMorePeers\(\)/);
+  assert.match(manager, /m_streamRecovery\.OnSourceLost/);
+  assert.match(manager, /if \(m_streamRecovery\.IsPeerRefreshPending\(\)\)[\s\S]{0,100}RequestMorePeers\(\)/);
   assert.match(manager, /Peer refresh via tunnel/);
   assert.match(manager, /m_viewerSession\.StrictTunnelOnly\(\)/);
   assert.match(mesh, /m_pManager->RequestMorePeers\(\)/);
-  assert.match(policy, /LOSS_GRACE_MS = 2000/);
-  assert.match(policy, /REQUEST_COOLDOWN_MS = 15000/);
-  assert.match(policy, /TakeCandidate/);
-  assert.match(policy, /\(int32_t\)\(now - target\) >= 0/);
+  assert.match(policy, /kPeerLossGraceMs = 2000u/);
+  assert.match(policy, /kPeerRequestCooldownMs = 15000u/);
+  assert.match(policy, /TakePeerCandidate/);
+  assert.match(policy, /ShouldRequestPeers/);
 });
 
 test('Adaptive is Kad6-first, auto-seeds, and reports the real route state', () => {

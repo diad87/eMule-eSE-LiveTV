@@ -237,16 +237,13 @@ bool LiveStreamFanout::ReleaseChild(LiveFanoutChild child)
 	if (child == 0u)
 		return false;
 	std::unique_lock<std::mutex> lock(mutex_);
-	auto found = FindChildLocked(child);
-	if (found == children_.end())
-		return false;
 	transport_idle_.wait(
 		lock,
 		[this, child]() {
 			return !IsReplacementPausedLocked(child) &&
 				!HasActiveTransportLocked(child);
 		});
-	found = FindChildLocked(child);
+	auto found = FindChildLocked(child);
 	if (found == children_.end())
 		return false;
 	reservations_.erase(

@@ -39,13 +39,22 @@ int main()
 	using ese::live::LiveViewerSession;
 
 	const auto identity = BroadcastIdentity(3u);
+	const auto replacementIdentity = BroadcastIdentity(91u);
 	LiveBroadcastSession broadcast;
 	Check(!broadcast.IsActive(), "broadcast starts inactive");
 	Check(broadcast.Start(identity), "broadcast starts once");
-	Check(!broadcast.Start(identity), "broadcast rejects overlapping start");
+	Check(
+		!broadcast.Start(replacementIdentity),
+		"broadcast rejects overlapping start");
 	Check(
 		broadcast.Matches(identity.stream_key.data(), identity.stream_key.size()),
-		"broadcast owns its exact key");
+		"rejected broadcast replacement preserves the original key");
+	Check(
+		!broadcast.Matches(
+			replacementIdentity.stream_key.data(),
+			replacementIdentity.stream_key.size()) &&
+			broadcast.PrivateKey() == identity.private_key,
+		"rejected broadcast replacement cannot partially replace identity");
 	std::uint32_t sequence = 99u;
 	Check(
 		broadcast.NextSequence(sequence) && sequence == 0u,
@@ -75,15 +84,24 @@ int main()
 
 	LiveViewerSession viewer;
 	std::uint8_t viewerKey[16] = {};
+	std::uint8_t replacementViewerKey[16] = {};
 	for (std::size_t index = 0; index < 16u; ++index)
 		viewerKey[index] = static_cast<std::uint8_t>(0xa0u + index);
+	for (std::size_t index = 0; index < 16u; ++index)
+		replacementViewerKey[index] = static_cast<std::uint8_t>(0x30u + index);
+	Check(
+		!viewer.Join(nullptr, sizeof viewerKey, 1u) &&
+			!viewer.Join(viewerKey, sizeof viewerKey - 1u, 1u) &&
+			!viewer.IsActive(),
+		"invalid viewer joins fail without partial state");
 	Check(viewer.Join(viewerKey, sizeof viewerKey, 0xfffffff0u), "viewer joins");
 	Check(
-		!viewer.Join(viewerKey, sizeof viewerKey, 2u),
+		!viewer.Join(replacementViewerKey, sizeof replacementViewerKey, 2u),
 		"viewer replacement requires explicit leave");
 	Check(
-		viewer.Matches(viewerKey, sizeof viewerKey),
-		"viewer owns its exact key");
+		viewer.Matches(viewerKey, sizeof viewerKey) &&
+			!viewer.Matches(replacementViewerKey, sizeof replacementViewerKey),
+		"rejected viewer replacement preserves the original key");
 	Check(
 		broadcast.IsActive() && viewer.IsActive(),
 		"broadcast and viewer roles remain independent");
@@ -111,6 +129,15 @@ int main()
 		viewer.SearchRetries() == 2u &&
 			!viewer.SearchRetryDue(100u, 20u, 2u),
 		"search retries are bounded");
+
+	Check(
+		viewer.SecondaryPublishDue(31u, 30u),
+		"secondary publish is due after its strict deadline");
+	viewer.RecordSecondaryPublish(31u);
+	Check(
+		!viewer.SecondaryPublishDue(61u, 30u) &&
+			viewer.SecondaryPublishDue(62u, 30u),
+		"secondary publish timestamp advances with strict deadline");
 
 	viewer.MarkWebPlayerSession(0xfffffffdu);
 	Check(
@@ -145,7 +172,11 @@ int main()
 	Check(!viewer.Leave(), "viewer leave is idempotent");
 	Check(
 		!viewer.IsActive() && !viewer.Matches(viewerKey, sizeof viewerKey) &&
-			!viewer.StrictTunnelOnly() && viewer.TunnelSourceIp() == 0u,
+			!viewer.StrictTunnelOnly() && viewer.TunnelSourceIp() == 0u &&
+			std::all_of(
+				viewer.StreamKey().begin(),
+				viewer.StreamKey().end(),
+				[](std::uint8_t byte) { return byte == 0u; }),
 		"viewer leave clears all transient authority");
 	Check(
 		viewer.Join(viewerKey, sizeof viewerKey, 10u) &&

@@ -2,6 +2,7 @@
 
 #include <charconv>
 #include <cctype>
+#include <limits>
 
 namespace ese {
 namespace web {
@@ -179,9 +180,12 @@ WebSharedRowProjection WebSharedController::ProjectRow(
 			break;
 		}
 	}
+	const bool limitFits =
+		maximumDownloadMiB <=
+		std::numeric_limits<std::uint64_t>::max() / 1048576u;
 	projection.downloadable = !partFile &&
 		(maximumDownloadMiB == 0 ||
-			fileSize < maximumDownloadMiB * 1048576u);
+			(limitFits && fileSize < maximumDownloadMiB * 1048576u));
 	if (completeSourcesLow == 0)
 		projection.complete_sources =
 			"< " + std::to_string(completeSourcesHigh);

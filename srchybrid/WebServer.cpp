@@ -3152,13 +3152,13 @@ CString CWebServer::_GetSharedFilesList(const ThreadData &Data)
 		case PR_VERYHIGH: rowPriority = ese::web::WebSharedPriority::Release; break;
 		default: break;
 		}
-		const ese::web::WebSharedRowProjection rowProjection =
+		const ese::web::WebSharedRowProjection priorityProjection =
 			ese::web::WebSharedController::ProjectRow(
 				SharedArray[i].bFileAutoPriority, rowPriority,
-				SharedArray[i].bIsPartFile, SharedArray[i].m_qwFileSize,
+				true, SharedArray[i].m_qwFileSize,
 				thePrefs.GetMaxWebUploadFileSizeMB(), 0, 0);
 		const CString sharedpriority =
-			CString(CA2T(rowProjection.priority_token));
+			CString(CA2T(priorityProjection.priority_token));
 
 		CString ed2k(SharedArray[i].sED2kLink);		//ed2klink
 		ed2k.Replace(_T("'"), _T("&#8217;"));
@@ -3174,7 +3174,12 @@ CString CWebServer::_GetSharedFilesList(const ThreadData &Data)
 			if (cur_file != NULL) {
 				HTTPProcessData.Replace(_T("[FileIsPriority]")
 					, (cur_file->GetUpPriority() == PR_VERYHIGH) ? _T("release") : _T("none"));
-				downloadable = rowProjection.downloadable;
+				downloadable =
+					ese::web::WebSharedController::ProjectRow(
+						SharedArray[i].bFileAutoPriority, rowPriority,
+						cur_file->IsPartFile(), SharedArray[i].m_qwFileSize,
+						thePrefs.GetMaxWebUploadFileSizeMB(), 0, 0)
+						.downloadable;
 			}
 		}
 

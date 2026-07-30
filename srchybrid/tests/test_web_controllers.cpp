@@ -525,6 +525,10 @@ void TestSharedController()
 	const WebSharedRowProjection blocked =
 		WebSharedController::ProjectRow(
 			false, WebSharedPriority::Normal, true, 1, 0, 2, 7);
+	const WebSharedRowProjection overflowLimit =
+		WebSharedController::ProjectRow(
+			false, WebSharedPriority::Normal, false, 1,
+			std::numeric_limits<std::uint64_t>::max(), 1, 1);
 	Check(
 		std::string(automatic.priority_token) == "Auto" &&
 			automatic.downloadable &&
@@ -532,7 +536,8 @@ void TestSharedController()
 			std::string(releaseRow.priority_token) == "Release" &&
 			releaseRow.complete_sources == "7" &&
 			!blocked.downloadable &&
-			blocked.complete_sources == "2 - 7",
+			blocked.complete_sources == "2 - 7" &&
+			!overflowLimit.downloadable,
 		"shared row projection must own priority, download and completion policy");
 }
 

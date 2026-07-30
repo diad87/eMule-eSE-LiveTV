@@ -1,0 +1,52 @@
+{
+  "schema": "ese.mod41.node-composition-contract/v1",
+  "baseline_commit": "76cee7b0482ef0c0916708ea159a56915d185b36",
+  "scope": "retain server.js as the Node composition root while extracting the stateless debug page without changing its response bytes or route order",
+  "composition_root": {
+    "file": "srchybrid/eSE/server.js",
+    "baseline_physical_loc": 389,
+    "hard_stop_physical_loc": 300,
+    "owns": [
+      "startup configuration",
+      "dependency construction and initialization",
+      "HTTP server construction",
+      "top-level route ordering",
+      "process lifecycle hooks"
+    ]
+  },
+  "extracted_module": {
+    "file": "srchybrid/eSE/pages/debug_page.js",
+    "layer": "page adapter",
+    "owns": [
+      "matching /debug and /debug/",
+      "the immutable debug viewer response"
+    ],
+    "must_not_own": [
+      "process lifecycle",
+      "network listener",
+      "filesystem state",
+      "timers outside the browser response",
+      "application dependency construction"
+    ]
+  },
+  "invariants": {
+    "debug_template_source_sha256": "773e274a64dd9ea9410877b4c71351a8a599f32917ba4c2ab94ffb4b8892b34f",
+    "debug_response_sha256": "e140d8d81745e43412aa321e241a8e9894d2607b3e4d23aeba8aa624bd80318f",
+    "debug_content_type": "text/html; charset=utf-8",
+    "debug_status": 200,
+    "non_debug_result": false,
+    "security_precedes_debug": true,
+    "debug_log_precedes_debug_page": true,
+    "debug_page_precedes_live_and_api_routes": true,
+    "listen_host": "127.0.0.1",
+    "package_includes": "pages/*.js"
+  },
+  "stop_conditions": [
+    "server.js exceeds 300 physical lines",
+    "the extracted response changes by one byte",
+    "security or route order changes",
+    "the extracted page imports server.js or constructs application dependencies",
+    "a second composition or lifetime owner appears",
+    "a feature, I/O redesign or domain route split is mixed into MOD-4.1"
+  ]
+}

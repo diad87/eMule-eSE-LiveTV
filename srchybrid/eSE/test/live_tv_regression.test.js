@@ -1096,12 +1096,12 @@ test('request body reader enforces its byte limit', async () => {
 });
 
 test('log and download UI render untrusted text without HTML event handlers', () => {
-  const server = read(eseRoot, 'server.js');
+  const debugPage = read(eseRoot, 'pages', 'debug_page.js');
   const logRoute = read(eseRoot, 'debug_log.js');
   const myList = read(eseRoot, 'pages', 'mylist_page.js');
 
-  assert.match(server, /document\.createTextNode/);
-  assert.doesNotMatch(server, /pre\.innerHTML\s*=\s*colorize/);
+  assert.match(debugPage, /document\.createTextNode/);
+  assert.doesNotMatch(debugPage, /pre\.innerHTML\s*=\s*colorize/);
   assert.doesNotMatch(logRoute, /Access-Control-Allow-Origin['"]?\s*:\s*['"]\*/);
   assert.match(myList, /data-dl-cancel/);
   assert.doesNotMatch(myList, /onclick="dlCancel/);

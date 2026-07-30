@@ -61,6 +61,15 @@ class Mod51IncludeSccGateTest(unittest.TestCase):
             b'\n#include "subdir\\..\\LiveHandshakeWire.h"\n',
             b'\n#include "SUBDIR\\..\\livehandshakewire.h"\n',
             b'\r\n#include \\\r\n "LiveHandshakeWire.h"\r\n',
+            b'\n%:include "LiveHandshakeWire.h"\n',
+            b'\n\f#include "LiveHandshakeWire.h"\n',
+            b'\n#\finclude "LiveHandshakeWire.h"\n',
+            b'\nR"tag(/*)tag"\n#include "LiveHandshakeWire.h"\nR"tag(*/)tag"\n',
+            (
+                b'\nconst char* a = R"TAG(" /* )TAG";\n'
+                b'#include "LiveHandshakeWire.h"\n'
+                b'const char* b = R"X( */ )X";\n'
+            ),
         ):
             graph = GATE.build_graph(self.mod04, self.mod03, {source: raw + suffix})
             with self.assertRaisesRegex(GATE.GateError, expected):
@@ -89,6 +98,44 @@ class Mod51IncludeSccGateTest(unittest.TestCase):
             GATE.build_graph(self.mod04, self.mod03, {source: raw + decoration}),
             self.contract["baseline_graph"],
         )
+
+    def test_raw_strings_mask_multiline_directive_text_without_changing_lexer_state(self) -> None:
+        source = "srchybrid/LiveTunnelFraming.cpp"
+        raw = (ROOT / source).read_bytes()
+        decoration = (
+            b'\nR"safe(\n#include MOD51_RAW_ONLY\n)safe"\n'
+            b'u8R"x(\n#include MOD51_U8\n)x"\n'
+            b'uR"x(\n#include MOD51_U\n)x"\n'
+            b'UR"x(\n#include MOD51_UCAP\n)x"\n'
+            b'LR"x(\n#include MOD51_L\n)x"\n'
+        )
+        self.assertEqual(
+            GATE.build_graph(self.mod04, self.mod03, {source: raw + decoration}),
+            self.contract["baseline_graph"],
+        )
+
+    def test_literals_do_not_turn_later_hashes_on_the_same_line_into_directives(self) -> None:
+        source = "srchybrid/LiveTunnelFraming.cpp"
+        raw = (ROOT / source).read_bytes()
+        decoration = (
+            b'\nR"x()x" #include "LiveHandshakeWire.h"\n'
+            b'"ordinary" #include "LiveHandshakeWire.h"\n'
+        )
+        self.assertEqual(
+            GATE.build_graph(self.mod04, self.mod03, {source: raw + decoration}),
+            self.contract["baseline_graph"],
+        )
+
+    def test_unterminated_lexemes_fail_closed(self) -> None:
+        source = "srchybrid/LiveTunnelFraming.cpp"
+        raw = (ROOT / source).read_bytes()
+        for suffix, expected in (
+            (b'\nR"bad(\n#include MOD51_RAW\n', "unterminated raw string literal"),
+            (b'\n/*\n#include MOD51_COMMENT\n', "unterminated block comment"),
+            (b'\n"unterminated\n#include MOD51_STRING\n', "unterminated string literal"),
+        ):
+            with self.assertRaisesRegex(GATE.GateError, expected):
+                GATE.build_graph(self.mod04, self.mod03, {source: raw + suffix})
 
     def test_baseline_cannot_self_authorize_a_cycle(self) -> None:
         mutated = copy.deepcopy(self.contract)
@@ -140,7 +187,7 @@ class Mod51IncludeSccGateTest(unittest.TestCase):
     def test_cli_positive_and_exact_negative_fixtures(self) -> None:
         for mode, needle in (
             ("--verify", "new_sccs=0"),
-            ("--negative-fixtures", "7 negative include-SCC fixtures"),
+            ("--negative-fixtures", "11 negative include-SCC fixtures"),
         ):
             completed = subprocess.run(
                 [sys.executable, str(SCRIPT), mode], cwd=ROOT,

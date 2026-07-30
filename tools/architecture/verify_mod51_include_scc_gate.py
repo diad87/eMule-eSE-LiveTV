@@ -38,7 +38,7 @@ EXPECTED_INPUTS = {
     "completed_module_count": 30,
 }
 EXPECTED_NORMALIZATION = {
-    "include_parser": "phase-2 splice, comment-aware literal #include parser; non-literal active #include fails closed",
+    "include_parser": "phase-2 splice, raw/string/comment masking, # or %: literal include parser; non-literal active #include fails closed",
     "include_resolution": "MOD-0.4 current-parent, repository-root, srchybrid-root casefold lookup",
     "path_separator": "forward-slash",
     "path_case": "casefold for repository-local lookup",
@@ -52,8 +52,15 @@ EXPECTED_POLICY = {
 # independent value, editing baseline_graph, sccs and its self-reported digest
 # together could silently turn a newly introduced cycle into an allowlist.
 EXPECTED_BASELINE_GRAPH_SHA256 = "254138a09563255244172aabdc0aa15e91b2f4290dc37c956aca0ecb4442b16c"
-INCLUDE_DIRECTIVE_RE = re.compile(r"^[ \t]*\#[ \t]*include\b([^\r\n]*)", re.MULTILINE)
-LITERAL_INCLUDE_RE = re.compile(r'^[ \t]*(?:"([^"\r\n]+)"|<([^>\r\n]+)>)[ \t]*$')
+HORIZONTAL_WHITESPACE = " \t\v\f"
+INCLUDE_DIRECTIVE_RE = re.compile(
+    r"^[ \t\v\f]*(?:\#|%:)[ \t\v\f]*include(?![A-Za-z0-9_])([^\r\n]*)",
+    re.MULTILINE,
+)
+INCLUDE_OPERAND_PREFIX_RE = re.compile(
+    r"^[ \t\v\f]*(?:\#|%:)[ \t\v\f]*include(?![A-Za-z0-9_])[ \t\v\f]*$"
+)
+LITERAL_INCLUDE_RE = re.compile(r'^[ \t\v\f]*(?:"([^"\r\n]+)"|<([^>\r\n]+)>)[ \t\v\f]*$')
 
 
 class GateError(RuntimeError):
@@ -128,63 +135,137 @@ def _splice_phase_two(source: str) -> str:
     return re.sub(r"\\(?:\r\n|\n|\r)", "", source)
 
 
-def _strip_comments(source: str) -> str:
-    """Mask comments without moving line starts or treating strings as code."""
+def _masked_segment(source: str) -> str:
+    """Replace a token with spaces while preserving every physical line break."""
+    return "".join(character if character in "\r\n" else " " for character in source)
+
+
+def _masked_literal_segment(source: str) -> str:
+    """Mask a literal without turning its occupied line into whitespace only."""
     result: list[str] = []
+    needs_sentinel = True
+    for character in source:
+        if character in "\r\n":
+            result.append(character)
+            needs_sentinel = True
+        elif needs_sentinel:
+            # Comments are preprocessing whitespace; literals are not.  The
+            # sentinel prevents a following # on this physical line from
+            # becoming a false directive after the literal is hidden.
+            result.append("0")
+            needs_sentinel = False
+        else:
+            result.append(" ")
+    return "".join(result)
+
+
+def _raw_literal_end(source_file: str, source: str, start: int, prefix: str) -> int:
+    """Return the first index after a valid raw literal, or fail closed."""
+    delimiter_start = start + len(prefix)
+    delimiter_end = delimiter_start
+    while delimiter_end < len(source) and source[delimiter_end] != "(":
+        character = source[delimiter_end]
+        if (
+            character in " \t\v\f\r\n()\\"
+            or not (0x21 <= ord(character) <= 0x7E)
+            or delimiter_end - delimiter_start >= 16
+        ):
+            raise GateError(f"malformed raw string literal: {source_file}")
+        delimiter_end += 1
+    if delimiter_end == len(source) or delimiter_end - delimiter_start > 16:
+        raise GateError(f"malformed raw string literal: {source_file}")
+    delimiter = source[delimiter_start:delimiter_end]
+    terminator = ")" + delimiter + '"'
+    content_end = source.find(terminator, delimiter_end + 1)
+    if content_end < 0:
+        raise GateError(f"unterminated raw string literal: {source_file}")
+    return content_end + len(terminator)
+
+
+def _ordinary_literal_end(source_file: str, source: str, start: int, quote: str) -> int:
+    """Return the first index after a normal string/character literal."""
+    index = start + 1
+    while index < len(source):
+        character = source[index]
+        if character in "\r\n":
+            raise GateError(f"unterminated {('string' if quote == '"' else 'character')} literal: {source_file}")
+        if character == "\\":
+            if index + 1 >= len(source):
+                raise GateError(f"unterminated {('string' if quote == '"' else 'character')} literal: {source_file}")
+            index += 2
+            continue
+        index += 1
+        if character == quote:
+            return index
+    raise GateError(f"unterminated {('string' if quote == '"' else 'character')} literal: {source_file}")
+
+
+def _mask_comments_and_literals(source_file: str, source: str) -> str:
+    """Mask comments and C++ literals, preserving lines for directive scanning.
+
+    This runs after phase 2.  Raw literals are recognized before comment
+    delimiters, so text such as ``R"tag(/*)tag"`` cannot alter lexer state.
+    Invalid/unterminated constructs fail closed because they could otherwise
+    hide an active directive on a later line.
+    """
+    result: list[str] = []
+    line_prefix = ""
+
+    def append(text: str) -> None:
+        """Append masked output and retain only its current physical line."""
+        nonlocal line_prefix
+        result.append(text)
+        newline = max(text.rfind("\n"), text.rfind("\r"))
+        line_prefix = text[newline + 1:] if newline >= 0 else line_prefix + text
+
     index = 0
-    state = "code"
     while index < len(source):
         current = source[index]
         following = source[index + 1] if index + 1 < len(source) else ""
-        if state == "code":
-            if current == "/" and following == "/":
-                result.extend((" ", " "))
-                index += 2
-                state = "line-comment"
-                continue
-            if current == "/" and following == "*":
-                result.extend((" ", " "))
-                index += 2
-                state = "block-comment"
-                continue
-            result.append(current)
-            if current == '"':
-                state = "string"
-            elif current == "'":
-                state = "character"
-            index += 1
+        raw_prefix = next(
+            (prefix for prefix in ("u8R\"", "uR\"", "UR\"", "LR\"", "R\"")
+             if source.startswith(prefix, index)),
+            None,
+        )
+        if raw_prefix is not None:
+            end = _raw_literal_end(source_file, source, index, raw_prefix)
+            append(_masked_literal_segment(source[index:end]))
+            index = end
             continue
-        if state == "line-comment":
-            result.append(current if current in "\r\n" else " ")
-            if current in "\r\n":
-                state = "code"
-            index += 1
+        if current == "/" and following == "/":
+            end = index + 2
+            while end < len(source) and source[end] not in "\r\n":
+                end += 1
+            append(_masked_segment(source[index:end]))
+            index = end
             continue
-        if state == "block-comment":
-            if current == "*" and following == "/":
-                result.extend((" ", " "))
-                index += 2
-                state = "code"
-                continue
-            result.append(current if current in "\r\n" else " ")
-            index += 1
+        if current == "/" and following == "*":
+            end = source.find("*/", index + 2)
+            if end < 0:
+                raise GateError(f"unterminated block comment: {source_file}")
+            end += 2
+            append(_masked_segment(source[index:end]))
+            index = end
             continue
-        # String and character literals cannot start a directive; retain them
-        # exactly while honouring escaped delimiters.
-        result.append(current)
-        if current == "\\" and index + 1 < len(source):
-            result.append(source[index + 1])
-            index += 2
+        if current in {'"', "'"}:
+            end = _ordinary_literal_end(source_file, source, index, current)
+            if current == '"' and INCLUDE_OPERAND_PREFIX_RE.fullmatch(line_prefix):
+                # Preserve only a verified header-name token.  Every other
+                # ordinary literal remains masked, so its multiline-looking
+                # contents cannot be mistaken for a directive.
+                append(source[index:end])
+            else:
+                append(_masked_literal_segment(source[index:end]))
+            index = end
             continue
-        if (state == "string" and current == '"') or (state == "character" and current == "'"):
-            state = "code"
+        append(current)
         index += 1
     return "".join(result)
 
 
 def _literal_includes(source_file: str, raw: str) -> list[str]:
     """Return active literal includes after phase 2; reject macro includes closed."""
-    translated = _strip_comments(_splice_phase_two(raw))
+    translated = _mask_comments_and_literals(source_file, _splice_phase_two(raw))
     includes: list[str] = []
     for match in INCLUDE_DIRECTIVE_RE.finditer(translated):
         literal = LITERAL_INCLUDE_RE.fullmatch(match.group(1))
@@ -405,6 +486,13 @@ def run_negative_fixtures(
         ("quoted-cycle", b'\n#include "LiveHandshakeWire.h"\n'),
         ("windows-backslash-cycle", b'\n#include "subdir\\..\\LiveHandshakeWire.h"\n'),
         ("windows-case-cycle", b'\n#include "SUBDIR\\..\\livehandshakewire.h"\n'),
+        ("digraph-cycle", b'\n%:include "LiveHandshakeWire.h"\n'),
+        ("formfeed-leading-cycle", b'\n\f#include "LiveHandshakeWire.h"\n'),
+        ("formfeed-after-hash-cycle", b'\n#\finclude "LiveHandshakeWire.h"\n'),
+        (
+            "raw-literal-state-cycle",
+            b'\nR"tag(/*)tag"\n#include "LiveHandshakeWire.h"\nR"tag(*/)tag"\n',
+        ),
     )
     for name, suffix in variants:
         _expect_cycle(
@@ -494,7 +582,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             validate_contract(contract, mod04_config, mod03_contract)
             run_negative_fixtures(contract, mod04_config, mod03_contract)
-            print("MOD-5.1 PASS: 7 negative include-SCC fixtures rejected with exact reasons")
+            print("MOD-5.1 PASS: 11 negative include-SCC fixtures rejected with exact reasons")
     except (OSError, json.JSONDecodeError, KeyError, TypeError, mod04.GateError, GateError) as exc:
         print(f"MOD-5.1 FAIL: {exc}", file=sys.stderr)
         return 1

@@ -1,0 +1,49 @@
+{
+  "schema": "ese.mod43.runtime-evidence/v1",
+  "source_commit": "fba346dc2be4d6740c660194289961249e821b22",
+  "status": "PASS",
+  "composition_root": {
+    "file": "srchybrid/eSE/server.js",
+    "physical_lines": 250,
+    "maximum_physical_lines": 300
+  },
+  "route_modules": {
+    "http_domain_router_lines": 68,
+    "static_routes_lines": 36,
+    "maximum_route_lines": 500
+  },
+  "packaged_executable": {
+    "path": "srchybrid/eSE/ese-server.exe",
+    "bytes": 70727015,
+    "sha256": "8dc9604f409106659c8cb351f2c26c9d1476f28b08d1be69600880ef6bd9bff5"
+  },
+  "real_http": {
+    "test_server": "4/4 PASS; 127.0.0.1 ephemeral port",
+    "source": {
+      "status": 200,
+      "lifecycle": 200,
+      "debug": 200,
+      "live_first_run": 200,
+      "mascot": 200,
+      "favicon": 200,
+      "unknown": 404
+    },
+    "packaged": {
+      "status": 200,
+      "lifecycle": 200,
+      "debug": 200,
+      "live_first_run": 200,
+      "mascot": 200,
+      "favicon": 200,
+      "unknown": 404
+    }
+  },
+  "suites": {
+    "python": "404/404",
+    "mod41_mod42_mod43_focal": "19/19",
+    "node": "67/67 PASS; 1 POSIX-only SKIP; 68 total",
+    "native_prebuilt": "40/40 PASS",
+    "node_package_build": "PASS"
+  },
+  "runtime_ports_released": true
+}

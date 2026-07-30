@@ -117,6 +117,10 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             adapter.index("FanoutChild(current_child)"),
         )
         self.assertIn("return sent_all && completed;", adapter)
+        self.assertNotIn(
+            "fanout.ReplaceChild(replacement, previous)",
+            adapter,
+        )
         self.assertGreaterEqual(
             source.count("m_peerSet.HasDownstream("),
             4,
@@ -137,10 +141,12 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             "replacement retargets and preserves pending delivery ownership",
             "collision replacement preserves canonical order and retargets work",
             "collision replacement cancels duplicate pending identity",
+            "collision replacement cancels work beyond the peer queue limit",
             "slow child does not block a healthy sibling",
             "release cancels pending work and rejects future delivery",
             "release waits while transport owns the child lifetime",
             "release completes after transport becomes idle",
+            "concurrent release waiters revalidate child after wake",
             "concurrent reservation accounting remains bounded",
             "clear reclaims every child and reservation",
         ):

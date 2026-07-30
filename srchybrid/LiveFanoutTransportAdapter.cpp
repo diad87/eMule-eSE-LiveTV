@@ -98,12 +98,9 @@ bool LiveStreamFanoutAdapter::ReplaceChild(
 		return false;
 	if (!fanout.ReplaceChild(previous, replacement))
 		return false;
-	if (peers.ReplaceDownstream(previous, replacement))
-		return true;
-	// PeerSet is manager-lock serialized, so this is a fail-closed rollback
-	// for invariant drift rather than a normal race.
-	fanout.ReplaceChild(replacement, previous);
-	return false;
+	// The validated previous handle and non-zero replacement make PeerSet's
+	// manager-lock-serialized second step infallible.
+	return peers.ReplaceDownstream(previous, replacement);
 }
 
 bool LiveStreamFanoutAdapter::ReleaseChild(

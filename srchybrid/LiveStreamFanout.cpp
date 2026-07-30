@@ -85,6 +85,14 @@ bool LiveStreamFanout::ReplaceChild(
 	merged.failed_deliveries += found->failed_deliveries;
 	merged.backpressure_rejections += found->backpressure_rejections;
 
+	std::uint64_t retained_bytes = 0u;
+	std::size_t retained_deliveries = 0u;
+	for (const ReservationEntry& reservation : reservations_) {
+		if (reservation.child == replacement) {
+			retained_bytes += reservation.wire_bytes;
+			++retained_deliveries;
+		}
+	}
 	for (auto reservation = reservations_.begin();
 		reservation != reservations_.end();) {
 		if (reservation->child != previous) {
@@ -101,21 +109,24 @@ bool LiveStreamFanout::ReplaceChild(
 					candidate.last_sequence ==
 						reservation->last_sequence;
 			});
-		if (duplicate)
+		const bool exceeds_limit =
+			retained_bytes > kPeerQueueLimitBytes ||
+			reservation->wire_bytes >
+				kPeerQueueLimitBytes - retained_bytes;
+		if (duplicate || exceeds_limit) {
+			if (merged.failed_deliveries !=
+				(std::numeric_limits<std::uint64_t>::max)())
+				++merged.failed_deliveries;
 			reservation = reservations_.erase(reservation);
-		else {
+		} else {
+			retained_bytes += reservation->wire_bytes;
+			++retained_deliveries;
 			reservation->child = replacement;
 			++reservation;
 		}
 	}
-	merged.pending_bytes = 0u;
-	merged.pending_deliveries = 0u;
-	for (ReservationEntry& reservation : reservations_) {
-		if (reservation.child == replacement) {
-			merged.pending_bytes += reservation.wire_bytes;
-			++merged.pending_deliveries;
-		}
-	}
+	merged.pending_bytes = retained_bytes;
+	merged.pending_deliveries = retained_deliveries;
 	std::vector<ChildEntry> reordered;
 	reordered.reserve(children_.size() - 1u);
 	for (std::size_t index = 0u; index < children_.size(); ++index) {
@@ -142,6 +153,8 @@ bool LiveStreamFanout::ReleaseChild(LiveFanoutChild child)
 			return !HasActiveTransportLocked(child);
 		});
 	found = FindChildLocked(child);
+	if (found == children_.end())
+		return false;
 	reservations_.erase(
 		std::remove_if(
 			reservations_.begin(), reservations_.end(),

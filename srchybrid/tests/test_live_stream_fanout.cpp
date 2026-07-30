@@ -201,6 +201,29 @@ int main()
 				retained_duplicate.token, true),
 		"collision replacement cancels duplicate pending identity");
 
+	LiveStreamFanout bounded_collision;
+	bounded_collision.RegisterChild(301u);
+	bounded_collision.RegisterChild(302u);
+	auto canceled_overflow = bounded_collision.BeginDelivery(
+		301u, 1u, 1u, 0u, 1u);
+	auto retained_limit = bounded_collision.BeginDelivery(
+		302u, 2u, 2u, 0u, limit);
+	ese::live::LiveFanoutChild bounded_target = 0u;
+	Check(
+		canceled_overflow.IsReserved() &&
+			retained_limit.IsReserved() &&
+			bounded_collision.ReplaceChild(301u, 302u) &&
+			bounded_collision.ReservationCount() == 1u &&
+			bounded_collision.PendingBytes() == limit &&
+			!bounded_collision.BeginTransport(
+				canceled_overflow.token, bounded_target) &&
+			bounded_collision.BeginTransport(
+				retained_limit.token, bounded_target) &&
+			bounded_target == 302u &&
+			bounded_collision.CompleteDelivery(
+				retained_limit.token, true),
+		"collision replacement cancels work beyond the peer queue limit");
+
 	Check(
 		fanout.RegisterChild(50u) ==
 				LiveFanoutRegisterResult::Registered &&
@@ -264,6 +287,39 @@ int main()
 		release_finished.load(std::memory_order_acquire) &&
 			leased.ChildCount() == 0u,
 		"release completes after transport becomes idle");
+
+	LiveStreamFanout double_release;
+	double_release.RegisterChild(71u);
+	auto double_delivery =
+		double_release.BeginDelivery(71u, 1u, 1u, 0u, 10u);
+	ese::live::LiveFanoutChild double_target = 0u;
+	std::atomic<std::uint32_t> release_waiters{0u};
+	std::atomic<std::uint32_t> release_successes{0u};
+	Check(
+		double_delivery.IsReserved() &&
+			double_release.BeginTransport(
+				double_delivery.token, double_target),
+		"double release fixture owns an active transport");
+	auto release_worker = [&double_release, &release_waiters,
+		&release_successes]() {
+		release_waiters.fetch_add(1u, std::memory_order_release);
+		if (double_release.ReleaseChild(71u))
+			release_successes.fetch_add(1u, std::memory_order_release);
+	};
+	std::thread first_release(release_worker);
+	std::thread second_release(release_worker);
+	while (release_waiters.load(std::memory_order_acquire) != 2u)
+		std::this_thread::yield();
+	std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	Check(
+		double_release.CompleteDelivery(double_delivery.token, true),
+		"double release fixture completes its transport");
+	first_release.join();
+	second_release.join();
+	Check(
+		release_successes.load(std::memory_order_acquire) == 1u &&
+			double_release.ChildCount() == 0u,
+		"concurrent release waiters revalidate child after wake");
 
 	fanout.Clear();
 	Check(

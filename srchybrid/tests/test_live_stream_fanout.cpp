@@ -56,6 +56,22 @@ int main()
 		fanout.SelectRecipients(0u, {}, 0u).empty(),
 		"zero upload cap selects no recipients");
 
+	LiveStreamFanout child_capacity;
+	for (std::uintptr_t child = 1u;
+		child <= LiveStreamFanout::kChildCapacity;
+		++child) {
+		Check(
+			child_capacity.RegisterChild(child) ==
+				LiveFanoutRegisterResult::Registered,
+			"child capacity accepts every bounded slot");
+	}
+	Check(
+		child_capacity.RegisterChild(999u) ==
+				LiveFanoutRegisterResult::CapacityExceeded &&
+			child_capacity.ChildCount() ==
+				LiveStreamFanout::kChildCapacity,
+		"child capacity failure does not partially mutate state");
+
 	const std::uint64_t limit = LiveStreamFanout::kPeerQueueLimitBytes;
 	auto exact = fanout.BeginDelivery(1u, 10u, 12u, limit - 100u, 100u);
 	Check(
@@ -88,6 +104,12 @@ int main()
 	Check(
 		fanout.CompleteDelivery(pending.token, false),
 		"failed transport completion releases its reservation");
+	auto wrapped = fanout.BeginDelivery(
+		1u, std::numeric_limits<std::uint32_t>::max(), 0u, 0u, 1u);
+	Check(
+		wrapped.IsReserved() &&
+			fanout.CompleteDelivery(wrapped.token, true),
+		"whole-batch identity accepts uint32 sequence wrap");
 
 	std::vector<std::uint64_t> capacity_tokens;
 	capacity_tokens.reserve(LiveStreamFanout::kReservationCapacity);

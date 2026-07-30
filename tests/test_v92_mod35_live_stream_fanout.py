@@ -116,10 +116,12 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
         for marker in (
             "selection preserves registration order and caps children not fragments",
             "selection excludes sender, blocked and duplicate children",
+            "child capacity failure does not partially mutate state",
             "exact whole-batch queue boundary is accepted",
             "one byte beyond the queue boundary is rejected atomically",
             "oversize and overflow-like queue inputs fail closed",
             "duplicate pending delivery is rejected",
+            "whole-batch identity accepts uint32 sequence wrap",
             "reservation capacity failure does not partially mutate state",
             "replacement preserves pending delivery ownership",
             "slow child does not block a healthy sibling",

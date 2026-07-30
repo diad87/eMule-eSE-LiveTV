@@ -46,10 +46,12 @@
   "acceptance": {
     "required_native_cases": [
       "stable_recipient_order_and_child_cap",
+      "child_capacity_failure_atomicity",
       "sender_and_mutual_source_exclusion",
       "whole_batch_backpressure_boundary",
       "overflow_and_oversize_fail_closed",
       "duplicate_pending_batch_rejected",
+      "uint32_wrapped_batch_identity",
       "reservation_capacity_failure_atomicity",
       "replacement_preserves_pending_delivery",
       "slow_child_does_not_block_healthy_child",

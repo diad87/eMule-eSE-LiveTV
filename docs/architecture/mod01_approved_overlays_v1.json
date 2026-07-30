@@ -33,16 +33,16 @@
     {
       "path": "srchybrid/LiveStreamManager.cpp",
       "baseline_sha256": "33d509c439836fce2fc35e509f933637687505394daeb5b66e29cb599eb62cc2",
-      "overlay_sha256": "0123932d522e7594b4f3e88f224e82d1278ec904dfee1203b7e0f54c3607e2b3",
-      "task": "MOD-0.2 + MOD-3.1 + MOD-3.2 + MOD-3.3 + MOD-3.4",
-      "reason": "MOD-3.1 delegates broadcaster and viewer lifecycle state, generation, retry timers, tunnel-session scalars and broadcaster secret lifetime to the two portable session modules; MOD-3.2 delegates ordered source/downstream membership, one canonical source cap, stable selection, atomic client replacement and IPv4 diversity while retaining locks, pointer lifetime, protocol projection and external I/O in the coordinator; MOD-3.3 delegates bounded chunk ingestion, serial ordering, expiry, availability and immutable record lifetime to LiveChunkWindow while preserving legacy packet projection and external I/O in the coordinator; MOD-3.4 delegates session-scoped public-key pinning, post-storage verified replay windows, bounded durable trust records, pruning and trust transitions to LiveStreamSecurity through a narrow legacy DTO adapter."
+      "overlay_sha256": "7f4f2cae40fa5b309107e1d5c55b2b72733fe02516a03e70eb00989e4a08ce24",
+      "task": "MOD-0.2 + MOD-3.1 + MOD-3.2 + MOD-3.3 + MOD-3.4 + MOD-3.5",
+      "reason": "MOD-3.1 delegates broadcaster and viewer lifecycle state, generation, retry timers, tunnel-session scalars and broadcaster secret lifetime to the two portable session modules; MOD-3.2 delegates ordered source/downstream membership, one canonical source cap, stable selection, atomic client replacement and IPv4 diversity while retaining locks, pointer lifetime, protocol projection and external I/O in the coordinator; MOD-3.3 delegates bounded chunk ingestion, serial ordering, expiración, disponibilidad y vida inmutable a LiveChunkWindow; MOD-3.4 delegates session-scoped public-key pinning, post-storage verified replay windows, bounded durable trust records, pruning and trust transitions to LiveStreamSecurity; MOD-3.5 delegates stable child selection, bounded whole-batch reservations and backpressure admission to LiveStreamFanout through a move-only transport adapter while retaining trust, metrics and orchestration."
     },
     {
       "path": "srchybrid/LiveStreamManager.h",
       "baseline_sha256": "e93b3c7467a389872fb5084e9912bcbf1b2cd6693d3990d3dda54fcaec0449fd",
-      "overlay_sha256": "3c6508cec5b6afbe34f7b67bfc32ba5f1e095a1704c5ca033ebe964e3180e7ea",
-      "task": "MOD-0.2 + MOD-3.1 + MOD-3.2 + MOD-3.3 + MOD-3.4",
-      "reason": "MOD-3.1 replaces coordinator-owned broadcaster/viewer lifecycle scalars with explicit LiveBroadcastSession and LiveViewerSession composition; MOD-3.2 replaces the two coordinator-owned peer lists with a single portable LivePeerSet; MOD-3.3 replaces coordinator-owned viewer and broadcaster chunk containers with two bounded LiveChunkWindow instances and an explicit relay-sequence presence flag; MOD-3.4 replaces coordinator-owned pin, replay and trust stores with bounded LiveStreamSecurity composition plus a pointer-free legacy trust adapter."
+      "overlay_sha256": "d79779b7d7404b6a78e6d0bb2dc745008d5e3082a0dc97072258f11ec1903cd2",
+      "task": "MOD-0.2 + MOD-3.1 + MOD-3.2 + MOD-3.3 + MOD-3.4 + MOD-3.5",
+      "reason": "MOD-3.1 replaces coordinator-owned broadcaster/viewer lifecycle scalars with explicit LiveBroadcastSession and LiveViewerSession composition; MOD-3.2 replaces the two coordinator-owned peer lists with a single portable LivePeerSet; MOD-3.3 replaces coordinator-owned viewer and broadcaster chunk containers with two bounded LiveChunkWindow instances and an explicit relay-sequence presence flag; MOD-3.4 replaces coordinator-owned pin, replay and trust stores with bounded LiveStreamSecurity composition plus a pointer-free legacy trust adapter; MOD-3.5 composes bounded LiveStreamFanout state while Packet and CUpDownClient remain behind the transport adapter."
     }
   ]
 }

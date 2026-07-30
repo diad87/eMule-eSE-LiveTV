@@ -16,6 +16,7 @@ HEADER = ROOT / "srchybrid" / "LivePeerSet.h"
 SOURCE = ROOT / "srchybrid" / "LivePeerSet.cpp"
 MANAGER_HEADER = ROOT / "srchybrid" / "LiveStreamManager.h"
 MANAGER_SOURCE = ROOT / "srchybrid" / "LiveStreamManager.cpp"
+FANOUT_ADAPTER_SOURCE = ROOT / "srchybrid" / "LiveFanoutTransportAdapter.cpp"
 CLIENT_LIST_SOURCE = ROOT / "srchybrid" / "ClientList.cpp"
 MESH_HEADER = ROOT / "srchybrid" / "LiveMeshManager.h"
 MESH_SOURCE = ROOT / "srchybrid" / "LiveMeshManager.cpp"
@@ -93,15 +94,16 @@ class Mod32LivePeerSetTest(unittest.TestCase):
     def test_manager_delegates_membership_and_old_lists_are_gone(self) -> None:
         header = MANAGER_HEADER.read_text(encoding="utf-8")
         source = MANAGER_SOURCE.read_text(encoding="utf-8")
+        membership_path = source + "\n" + FANOUT_ADAPTER_SOURCE.read_text(
+            encoding="utf-8"
+        )
         manager = header + "\n" + source
         self.assertRegex(header, r"ese::live::LivePeerSet\s+m_peerSet;")
         self.assertNotIn("m_broadcastPeers", manager)
         self.assertNotIn("m_viewPeers", manager)
         for call in (
             "m_peerSet.AddSource(",
-            "m_peerSet.AddDownstream(",
             "m_peerSet.RemoveSource(",
-            "m_peerSet.RemoveDownstream(",
             "m_peerSet.ClearSources(",
             "m_peerSet.ClearDownstreams(",
             "m_peerSet.SourceCount(",
@@ -112,6 +114,8 @@ class Mod32LivePeerSetTest(unittest.TestCase):
             "EvaluateIpv4SuperSeederDiversity(",
         ):
             self.assertIn(call, source)
+        for call in ("peers.AddDownstream(", "peers.RemoveDownstream("):
+            self.assertIn(call, membership_path)
 
     def test_release_and_standalone_build_the_exact_module(self) -> None:
         make = MAKE.read_text(encoding="utf-8")
@@ -177,12 +181,13 @@ class Mod32LivePeerSetTest(unittest.TestCase):
             manager.index("void CLiveStreamManager::OnPeerReplaced("):
             manager.index("void CLiveStreamManager::OnPeerDisconnected(")
         ]
-        for call in (
-            "m_peerSet.ReplaceSource(",
-            "m_peerSet.ReplaceDownstream(",
-            "m_meshManager.ReplaceMeshPeer(",
-        ):
+        for call in ("m_peerSet.ReplaceSource(", "m_meshManager.ReplaceMeshPeer("):
             self.assertIn(call, replacement)
+        self.assertIn("LiveStreamFanoutAdapter::ReplaceChild(", replacement)
+        self.assertIn(
+            "peers.ReplaceDownstream(",
+            FANOUT_ADAPTER_SOURCE.read_text(encoding="utf-8"),
+        )
         self.assertIn("ReplaceMeshPeer(", mesh)
         self.assertIn("m_pendingRequests[i].peer = replacement", mesh)
         self.assertIn("m_uploadTracker[replacement]", mesh)

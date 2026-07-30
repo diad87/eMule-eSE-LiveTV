@@ -526,6 +526,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/WebSearchController.h",
             "srchybrid/WebSharedController.cpp",
             "srchybrid/WebSharedController.h",
+            "srchybrid/WebStaticAssets.cpp",
+            "srchybrid/WebStaticAssets.h",
+            "srchybrid/WebSocketResponse.cpp",
+            "srchybrid/WebSocketResponse.h",
         }
         self.assertTrue(expected_paths.issubset(set(MOD02.CRITICAL_SOURCE_PATHS)))
         self.assertTrue(expected_paths.issubset(set(

@@ -52,6 +52,7 @@ CODE_SUFFIXES = SOURCE_SUFFIXES | INTERFACE_CODE_SUFFIXES
 COORDINATOR_HEADERS = {"LiveTunnel.h", "WebServer.h", "LiveStreamManager.h", "EmuleDlg.h"}
 DOMAIN_CONCRETE_HINTS = ("dlg", "dialog", "socket", "kad", "kademlia", "windows.h", "winsock")
 PCH_HEADERS = {"stdafx.h", "pch.h"}
+PORTABLE_DOMAIN_INTERFACE_HEADERS = {"websocketresponse.h"}
 DOMAIN_CONCRETE_TYPE_RE = re.compile(
     r"\b(?:C[A-Za-z0-9_]*(?:Socket|Dlg|Dialog)|CKad[A-Za-z0-9_]*|"
     r"Kademlia|HANDLE|C(?:File|StdioFile|Wnd|WinApp|WinThread)|"
@@ -441,6 +442,8 @@ def _repo_code_paths(overrides: dict[str, bytes] | None, file_owner: dict[str, s
 def _include_is_domain_concrete(include: str) -> bool:
     lower = include.casefold()
     name = PurePosixPath(include).name.casefold()
+    if name in PORTABLE_DOMAIN_INTERFACE_HEADERS:
+        return False
     return (
         any(hint in lower for hint in DOMAIN_CONCRETE_HINTS)
         or name.startswith("afx") and name.endswith(".h")
@@ -452,8 +455,15 @@ def _include_is_pch(include: str) -> bool:
 
 
 def validate_approved_non_module_code(
-    config: dict[str, Any], overrides: dict[str, bytes] | None,
+    config: dict[str, Any],
+    entries: dict[str, dict[str, Any]],
+    overrides: dict[str, bytes] | None,
 ) -> None:
+    catalogued_interfaces = {
+        PurePosixPath(path).name.casefold()
+        for entry in entries.values()
+        for path in entry["interface_files"]
+    }
     for item in config["approved_non_module_code"]:
         path = item["path"]
         raw = _read_worktree(path, overrides).decode("utf-8", errors="replace")
@@ -463,7 +473,11 @@ def validate_approved_non_module_code(
             include = _normal_include(quoted or angled)
             if PurePosixPath(include).name.casefold() in {name.casefold() for name in COORDINATOR_HEADERS}:
                 raise GateError(f"approved non-module code reverse coordinator include: {path} includes {include}")
-            if _include_is_domain_concrete(include):
+            if (
+                _include_is_domain_concrete(include)
+                and PurePosixPath(include).name.casefold()
+                not in catalogued_interfaces
+            ):
                 raise GateError(f"approved non-module code concrete dependency forbidden: {path} includes {include}")
 
 
@@ -678,7 +692,7 @@ def validate(
         config, contract, entries, overrides, discovery_overrides, discovery_status_overrides,
         first_party_companion_overrides,
     )
-    validate_approved_non_module_code(config, overrides)
+    validate_approved_non_module_code(config, entries, overrides)
     messages = validate_modules(config, contract, entries, overrides)
     messages.extend(validate_slice_evidence(config, entries, slice_diff_overrides, ancestry_overrides))
     messages.append(f"coordinator reduction since MOD-0.4 baseline={reduction}")

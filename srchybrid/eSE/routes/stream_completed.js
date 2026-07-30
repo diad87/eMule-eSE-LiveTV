@@ -54,25 +54,25 @@ function handle(url, req, res) {
   if (!url.pathname.startsWith('/api/stream/')) return false;
 
   if (url.pathname === '/api/stream/completed/list') {
-    fs.promises.readdir(_ctx.EMULE_INCOMING).then(async names => {
-      const files = await Promise.all(
-        names
-          .filter(f => /\.(avi|mkv|mp4|wmv|mov|flv|webm|mpg|mpeg)$/i.test(f))
-          .map(async fileName => {
-            const stat = await fs.promises.stat(path.join(_ctx.EMULE_INCOMING, fileName));
-            return {
-              fileName,
-              sizeMB: Math.round(stat.size / (1024 * 1024)),
-              mtime: stat.mtimeMs,
-            };
-          }),
-      );
+    const disconnect = createDisconnectGuard(req, res);
+    void (async () => {
+      const records = await _ctx.getCompletedFiles({ signal: disconnect.signal });
+      if (disconnect.checkNow()) return;
+      // Keep filesystem paths internal: this public response historically
+      // exposes only display metadata.
+      const files = records.map(({ fileName, sizeMB, mtime }) => ({
+        fileName,
+        sizeMB,
+        mtime,
+      }));
       files.sort((a, b) => b.mtime - a.mtime);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(files));
-    }).catch(() => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end('[]');
+    })().catch(() => {
+      if (!disconnect.disconnected) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('[]');
+      }
     });
     return true;
   }
@@ -82,7 +82,7 @@ function handle(url, req, res) {
     if (!fileName) return true;
     const disconnect = createDisconnectGuard(req, res);
     void (async () => {
-      const resolved = await _ctx.resolveMediaFile(fileName);
+      const resolved = await _ctx.resolveMediaFile(fileName, { signal: disconnect.signal });
       if (disconnect.checkNow()) return;
       if (!resolved) { res.writeHead(404); res.end('{}'); return; }
       let dur = 0;
@@ -104,7 +104,7 @@ function handle(url, req, res) {
     if (!fileName) return true;
     const disconnect = createDisconnectGuard(req, res);
     void (async () => {
-      const resolved = await _ctx.resolveMediaFile(fileName);
+      const resolved = await _ctx.resolveMediaFile(fileName, { signal: disconnect.signal });
       if (disconnect.checkNow()) return;
       if (!resolved) { res.writeHead(404); res.end('{}'); return; }
       const ffprobePath = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
@@ -138,7 +138,7 @@ function handle(url, req, res) {
     const seekTime = parseFloat(url.searchParams.get('time') || '0');
     const disconnect = createDisconnectGuard(req, res);
     void (async () => {
-    const resolved = await _ctx.resolveMediaFile(fileName);
+    const resolved = await _ctx.resolveMediaFile(fileName, { signal: disconnect.signal });
     if (disconnect.checkNow()) return;
     if (!resolved) { res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' })); return; }
     const PARTSIZE = 9728000;
@@ -175,7 +175,7 @@ function handle(url, req, res) {
       try { if (ffSub) ffSub.kill(); } catch (_) {}
     });
     void (async () => {
-      const resolved = await _ctx.resolveMediaFile(fileName);
+      const resolved = await _ctx.resolveMediaFile(fileName, { signal: disconnect.signal });
       if (disconnect.checkNow()) return;
       if (!resolved) { res.writeHead(404); res.end('Not found'); return; }
       const ffprobePath = _ctx.FFMPEG_PATH.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1');
@@ -225,7 +225,7 @@ function handle(url, req, res) {
       }
     });
     void (async () => {
-    const resolved = await _ctx.resolveMediaFile(fileName);
+    const resolved = await _ctx.resolveMediaFile(fileName, { signal: disconnect.signal });
     if (disconnect.checkNow()) return;
     if (!resolved) { res.writeHead(404); res.end('Not found'); return; }
     const { filePath, isPartFile } = resolved;

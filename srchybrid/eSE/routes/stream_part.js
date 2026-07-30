@@ -1,12 +1,18 @@
 'use strict';
 const fs   = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const {
   runProcess,
   spawnManaged,
 } = require('../bounded_process_runner');
+const {
+  extractFileName,
+  readMetBounded,
+} = require('../media_resolver');
 
 let _ctx = {};
+const copyOwners = new Map();
 
 function init(ctx) { _ctx = ctx; }
 
@@ -77,11 +83,11 @@ function handle(url, req, res) {
       // BUG-041 FIX: Validate .met path is within TEMP
       if (isWithinBase(metPath, EMULE_TEMP) && await pathExists(metPath)) {
         try {
-          const metText = (await fs.promises.readFile(metPath)).toString('latin1');
-          const fnMatch = metText.match(/[^\x00-\x1F\x7F-\x9F]{5,}\.(avi|mkv|mp4|wmv|mov|webm|flv)/i);
-          if (fnMatch) {
+          const metBuffer = await readMetBounded(metPath, disconnect.signal);
+          const metFileName = metBuffer ? extractFileName(metBuffer) : null;
+          if (metFileName) {
             // BUG-041 FIX: Extract only basename to prevent embedded path traversal
-            const safeName = path.basename(fnMatch[0]);
+            const safeName = path.basename(metFileName);
             const incomingPath = path.resolve(path.join(_ctx.EMULE_INCOMING, safeName));
             if (isWithinBase(incomingPath, _ctx.EMULE_INCOMING) && await pathExists(incomingPath)) filePath = incomingPath;
           }
@@ -161,18 +167,16 @@ function handle(url, req, res) {
     if (!/^\d+$/.test(partNum)) { res.writeHead(400); res.end(JSON.stringify({ error: 'Invalid partNum' })); return true; }
     const copyScript = path.join(_ctx.__dirname, 'copy_part.ps1');
     const tempAvi = path.join(_ctx.TEMP_DIR, 'ese_mse_' + partNum + '.avi');
-    const copyTarget = tempAvi + '.' + process.pid + '.' + Date.now() + '.partial';
+    const copyToken = Object.freeze({ nonce: crypto.randomBytes(12).toString('hex') });
+    const copyTarget = tempAvi + '.' + process.pid + '.' + copyToken.nonce + '.partial';
+    copyOwners.set(partNum, copyToken);
     const disconnect = createDisconnectGuard(req, res);
     void (async () => {
-    const downloads = await _ctx.getDownloads();
+    const downloads = await _ctx.getDownloads({ signal: disconnect.signal });
     if (disconnect.checkNow()) return;
     const dl = downloads.find(d => d.partNum === partNum);
     if (!dl) { res.writeHead(404); res.end(JSON.stringify({ error: 'Not found' })); return; }
     console.log('[MSE] Copying .part for ' + dl.fileName);
-    await Promise.all([
-      fs.promises.unlink(tempAvi).catch(() => {}),
-      fs.promises.unlink(copyTarget).catch(() => {}),
-    ]);
     if (disconnect.checkNow()) return;
     const result = await runProcess(
       'powershell',
@@ -183,9 +187,18 @@ function handle(url, req, res) {
     if (!result.ok || parseInt(result.stdout.trim()) <= 0) {
       throw new Error(result.error || result.stderr || 'Copy failed');
     }
+    if (copyOwners.get(partNum) !== copyToken) {
+      throw new Error('copy superseded by a newer request');
+    }
+    await fs.promises.unlink(tempAvi).catch(() => {});
     await fs.promises.rename(copyTarget, tempAvi);
-    if (disconnect.checkNow()) {
-      await fs.promises.unlink(tempAvi).catch(() => {});
+    // Once promoted, the canonical AVI remains valid even if this request
+    // disconnects or a newer generation starts. Only unique partials are
+    // eligible for request-owned cleanup.
+    if (disconnect.checkNow()) return;
+    if (copyOwners.get(partNum) !== copyToken) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'superseded' }));
       return;
     }
     const estTotalSec = Math.round((dl.fileSizeMB * 8) / 4);
@@ -196,9 +209,12 @@ function handle(url, req, res) {
       await fs.promises.unlink(copyTarget).catch(() => {});
       console.error('[MSE] Copy failed:', e.message);
       if (!disconnect.disconnected) {
-        if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
+        const status = e.message === 'copy superseded by a newer request' ? 409 : 500;
+        if (!res.headersSent) res.writeHead(status, { 'Content-Type': 'application/json' });
         try { res.end(JSON.stringify({ error: e.message })); } catch(ignored) {}
       }
+    }).finally(() => {
+      if (copyOwners.get(partNum) === copyToken) copyOwners.delete(partNum);
     });
     return true;
   }
@@ -214,7 +230,9 @@ function handle(url, req, res) {
     let ff = null;
     const disconnect = createDisconnectGuard(req, res, () => {
       try { if (ff) ff.kill('SIGKILL'); } catch (_) {}
-      delete _ctx.activeStreams[partNum];
+      if (_ctx.activeStreams[partNum] === ff) {
+        delete _ctx.activeStreams[partNum];
+      }
     });
     fs.promises.access(tempAvi).then(() => {
     if (disconnect.checkNow()) return;
@@ -230,11 +248,16 @@ function handle(url, req, res) {
     if (q.scale) ffArgs.push('-vf', 'scale=' + q.scale);
     ffArgs.push('-c:a', 'aac', '-b:a', q.abr, '-ac', '2', '-err_detect', 'ignore_err', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-frag_duration', '2000000', '-f', 'mp4', 'pipe:1');
     console.log('[MSE] Starting ffmpeg pipe (quality: ' + String(quality).replace(/[\r\n]/g, '') + ', encoder: ' + _ctx.HW_ENCODER + ')');
+    const previous = _ctx.activeStreams[partNum];
+    if (previous) {
+      try { previous.kill('SIGKILL'); } catch (_) {}
+      if (_ctx.activeStreams[partNum] === previous) delete _ctx.activeStreams[partNum];
+    }
     ff = spawnManaged(_ctx.FFMPEG_PATH, ffArgs);
     _ctx.activeStreams[partNum] = ff;
     if (disconnect.checkNow()) {
       ff.kill('SIGKILL');
-      delete _ctx.activeStreams[partNum];
+      if (_ctx.activeStreams[partNum] === ff) delete _ctx.activeStreams[partNum];
       return;
     }
     res.writeHead(200, { 'Content-Type': 'video/mp4', 'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache' });
@@ -243,12 +266,12 @@ function handle(url, req, res) {
     // BUG-042 FIX: Clean up stream reference and ensure response closes
     ff.on('close', (code) => {
       console.log('[MSE] ffmpeg done (code ' + code + ')');
-      delete _ctx.activeStreams[partNum];
+      if (_ctx.activeStreams[partNum] === ff) delete _ctx.activeStreams[partNum];
       if (!res.writableEnded) try { res.end(); } catch(e) {}
     });
     ff.on('error', (err) => {
       console.error('[MSE] ffmpeg process error:', err.message);
-      delete _ctx.activeStreams[partNum];
+      if (_ctx.activeStreams[partNum] === ff) delete _ctx.activeStreams[partNum];
       if (!res.writableEnded) try { res.end(); } catch(e) {}
     });
     }).catch(() => {

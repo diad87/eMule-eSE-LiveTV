@@ -34,6 +34,8 @@
     "bounds": [
       "at most 8 concurrent media metadata operations",
       "at most 2 MiB read from each .part.met",
+      "at most 16 MiB of .part.met buffers retained by an active metadata scan",
+      "request-owned media scans stop scheduling work after disconnect",
       "at most 16 concurrent cleanup operations"
     ]
   },
@@ -44,6 +46,7 @@
     "process_shell_expansion": false,
     "streaming_processes_remain_killable": true,
     "finite_processes_support_request_abort": true,
+    "stream_and_copy_cleanup_is_generation_owned": true,
     "path_containment_checks_preserved": true,
     "file_response_content_length_from_async_stat": true
   },

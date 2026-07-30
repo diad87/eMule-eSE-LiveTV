@@ -17,6 +17,7 @@ const fs = require('fs');
 let rtmpProcess = null;
 let rtmpStatus = 'idle'; // idle | waiting | receiving | error
 let rtmpPort = 1935;
+let rtmpGeneration = 0;
 // v7.5.0 — per-session ingest key. Generated on each start(), embedded in
 // the URL ffmpeg listens on. Any other local process that does NOT know the
 // key cannot push a stream into our pipeline (#10: RTMP hijack defense).
@@ -100,18 +101,23 @@ function start(opts) {
 
   console.log('[eSE Live] RTMP: Waiting for OBS on', rtmpUrl);
 
+  const generation = ++rtmpGeneration;
+  let proc;
   try {
-    rtmpProcess = spawnManaged(opts.ffmpegPath, args, {
+    proc = spawnManaged(opts.ffmpegPath, args, {
       stdio: ['ignore', 'pipe', 'pipe']
     });
+    rtmpProcess = proc;
   } catch (e) {
     rtmpStatus = 'error';
+    if (rtmpGeneration === generation) rtmpIngestKey = null;
     return { success: false, error: e.message };
   }
 
   rtmpStatus = 'waiting';
 
-  rtmpProcess.stderr.on('data', (data) => {
+  proc.stderr.on('data', (data) => {
+    if (rtmpGeneration !== generation || rtmpProcess !== proc) return;
     const line = data.toString();
 
     // Detect OBS connection
@@ -122,8 +128,9 @@ function start(opts) {
     }
   });
 
-  rtmpProcess.on('close', (code) => {
+  proc.on('close', (code) => {
     console.log('[eSE Live] RTMP server stopped (code', code + ')');
+    if (rtmpGeneration !== generation || rtmpProcess !== proc) return;
     rtmpProcess = null;
     if (rtmpStatus !== 'idle') {
       rtmpStatus = code === 0 ? 'idle' : 'error';
@@ -131,8 +138,9 @@ function start(opts) {
     if (opts.onStatus) opts.onStatus(rtmpStatus);
   });
 
-  rtmpProcess.on('error', (err) => {
+  proc.on('error', (err) => {
     console.error('[eSE Live] RTMP error:', err.message);
+    if (rtmpGeneration !== generation || rtmpProcess !== proc) return;
     rtmpStatus = 'error';
     rtmpProcess = null;
   });
@@ -158,9 +166,11 @@ async function stop() {
     rtmpStatus = 'idle';
     return { success: true };
   }
+  const proc = rtmpProcess;
+  const stopGeneration = rtmpGeneration;
+  rtmpStatus = 'idle';
   try {
-    const pid = rtmpProcess.pid;
-    const proc = rtmpProcess;
+    const pid = proc.pid;
     if (pid) {
       const result = await killProcessTree(pid);
       if (!result.ok) {
@@ -170,8 +180,10 @@ async function stop() {
       proc.kill('SIGTERM');
     }
   } catch (e) { console.warn('[eSE Live] RTMP: Error killing process:', e.message); }
-  rtmpProcess = null;
-  rtmpStatus = 'idle';
+  if (rtmpGeneration === stopGeneration) {
+    if (rtmpProcess === proc) rtmpProcess = null;
+    rtmpStatus = 'idle';
+  }
   return { success: true };
 }
 

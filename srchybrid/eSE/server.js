@@ -72,8 +72,8 @@ const SETTINGS_FILE = path.join(CACHE_DIR, 'settings.json');
 try { if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch(e) {}
 
 // ━━━ MODULE WRAPPERS (only wrappers used by routes/pages ctx) ━━━━━━━━━━━━━
-function resolveMediaFile(fileName) { return mediaResolver.resolveMediaFile(fileName, EMULE_INCOMING, EMULE_TEMP); }
-function getDownloads() { return mediaResolver.listDownloads(EMULE_TEMP); }
+function resolveMediaFile(fileName, options) { return mediaResolver.resolveMediaFile(fileName, EMULE_INCOMING, EMULE_TEMP, options); }
+function getDownloads(options) { return mediaResolver.listDownloads(EMULE_TEMP, options); }
 
 function loadSettings() { return utils.loadSettings(SETTINGS_FILE); }
 function saveSettings(s) { return utils.saveSettings(s, SETTINGS_FILE); }
@@ -100,7 +100,7 @@ function autoLoginEmule()       { return emuleApi.autoLoginEmule(); }
 // shifted CACHE_DIR into `callback` when movies_routes called it with 5 args
 // -> "TypeError: callback is not a function". Keep the arity aligned.
 function fetchAndCacheMovie(title, cacheDir, cb, rawFilename, settings) { return tmdbApi.fetchAndCacheMovie(title, cacheDir, cb, rawFilename, settings); }
-function getCompletedFiles() { return mediaResolver.getCompletedFiles(EMULE_INCOMING); }
+function getCompletedFiles(options) { return mediaResolver.getCompletedFiles(EMULE_INCOMING, options); }
 
 // Auto-login eMule + keepalive
 setTimeout(autoLoginEmule, 3000);

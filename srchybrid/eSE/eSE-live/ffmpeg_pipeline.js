@@ -90,11 +90,20 @@ async function start(opts) {
 
   console.log('[eSE Live] Starting pipeline:', opts.ffmpegPath, fullArgs.join(' '));
 
+  // A screen-source start may have yielded while discovering loopback audio.
+  // Re-check ownership before spawning so concurrent starts cannot both win.
+  if (ffmpegProcess) {
+    return { success: false, error: 'Pipeline already running. Stop it first.' };
+  }
+
   // Spawn ffmpeg
+  const generation = ++pipelineGeneration;
+  let proc;
   try {
-    ffmpegProcess = spawnManaged(opts.ffmpegPath, fullArgs, {
+    proc = spawnManaged(opts.ffmpegPath, fullArgs, {
       stdio: ['ignore', 'pipe', 'pipe']
     });
+    ffmpegProcess = proc;
   } catch (e) {
     pipelineStatus = 'error';
     pipelineError = e.message;
@@ -107,7 +116,8 @@ async function start(opts) {
   startTime = Date.now();
   currentSource = opts.source;
 
-  ffmpegProcess.stderr.on('data', (data) => {
+  proc.stderr.on('data', (data) => {
+    if (pipelineGeneration !== generation || ffmpegProcess !== proc) return;
     const line = data.toString();
     // Detect first segment written
     if (line.includes('.ts') && pipelineStatus === 'starting') {
@@ -121,8 +131,9 @@ async function start(opts) {
     }
   });
 
-  ffmpegProcess.on('close', (code) => {
+  proc.on('close', (code) => {
     console.log('[eSE Live] ffmpeg exited with code', code);
+    if (pipelineGeneration !== generation || ffmpegProcess !== proc) return;
     ffmpegProcess = null;
     if (pipelineStatus !== 'stopped') {
       pipelineStatus = code === 0 ? 'stopped' : 'error';
@@ -131,8 +142,9 @@ async function start(opts) {
     if (opts.onStatus) opts.onStatus(pipelineStatus);
   });
 
-  ffmpegProcess.on('error', (err) => {
+  proc.on('error', (err) => {
     console.error('[eSE Live] ffmpeg error:', err.message);
+    if (pipelineGeneration !== generation || ffmpegProcess !== proc) return;
     pipelineStatus = 'error';
     pipelineError = err.message;
     ffmpegProcess = null;
@@ -164,7 +176,7 @@ async function stop() {
   pipelineStatus = 'stopped';
   const pid = ffmpegProcess.pid;
   const proc = ffmpegProcess;
-  const stopGeneration = ++pipelineGeneration;
+  const stopGeneration = pipelineGeneration;
   console.log('[eSE Live] Stopping pipeline, ffmpeg PID:', pid);
 
   try {
@@ -179,10 +191,10 @@ async function stop() {
     console.log('[eSE Live] kill error:', e.message);
   }
 
-  if (pipelineGeneration === stopGeneration && ffmpegProcess === proc) {
-    ffmpegProcess = null;
+  if (pipelineGeneration === stopGeneration) {
+    if (ffmpegProcess === proc) ffmpegProcess = null;
+    currentSource = null;
   }
-  currentSource = null;
   return { success: true };
 }
 

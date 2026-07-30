@@ -14,13 +14,20 @@ const v1Routes = require("../routes/v1_routes");
 const runner = require("../bounded_process_runner");
 const originalRunProcess = runner.runProcess;
 const originalSpawnManaged = runner.spawnManaged;
+const originalKillProcessTree = runner.killProcessTree;
 let managedSpawnCount = 0;
 const processResolvers = [];
+const processCalls = [];
+const killResolvers = [];
 const managedChildren = [];
-runner.runProcess = () => new Promise(resolve => { processResolvers.push(resolve); });
+runner.runProcess = (command, args, options) => new Promise(resolve => {
+  processResolvers.push(resolve);
+  processCalls.push({ command, args, options, resolve });
+});
 runner.spawnManaged = () => {
   managedSpawnCount++;
   const child = new EventEmitter();
+  child.pid = 10000 + managedSpawnCount;
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   child.killCount = 0;
@@ -32,10 +39,13 @@ runner.spawnManaged = () => {
   managedChildren.push(child);
   return child;
 };
+runner.killProcessTree = () => new Promise(resolve => { killResolvers.push(resolve); });
 const streamPart = require("../routes/stream_part");
 const streamCompleted = require("../routes/stream_completed");
 const systemRoutes = require("../routes/system_routes");
 const mediaResolver = require("../media_resolver");
+const ffmpegPipeline = require("../eSE-live/ffmpeg_pipeline");
+const rtmpServer = require("../eSE-live/rtmp_server");
 
 function responsePromise() {
   let finish;
@@ -61,8 +71,16 @@ function eventedResponse() {
   response.destroyed = false;
   response.headersSent = false;
   response.writableEnded = false;
-  response.writeHead = function writeHead() { this.headersSent = true; };
-  response.end = function end() { this.writableEnded = true; };
+  response.status = null;
+  response.body = null;
+  response.writeHead = function writeHead(status) {
+    this.status = status;
+    this.headersSent = true;
+  };
+  response.end = function end(body) {
+    this.body = body;
+    this.writableEnded = true;
+  };
   response.write = function write() { return true; };
   return response;
 }
@@ -239,6 +257,183 @@ test("media resolver performs bounded async scans for completed and part files",
   await fs.promises.rm(tempRoot, { recursive: true, force: true });
 });
 
+test("media resolver rejects an aborted scan before retaining metadata", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    mediaResolver.resolveMediaFile("movie.mkv", "Incoming", "Temp", {
+      signal: controller.signal,
+    }),
+    error => error && error.name === "AbortError",
+  );
+});
+
+test("completed list aborts its bounded scan when the client disconnects", async () => {
+  let observedSignal;
+  let finishScan;
+  streamCompleted.init({
+    getCompletedFiles: options => {
+      observedSignal = options.signal;
+      return new Promise(resolve => { finishScan = resolve; });
+    },
+  });
+  const request = new EventEmitter();
+  request.destroyed = false;
+  const response = eventedResponse();
+  assert.equal(
+    streamCompleted.handle(
+      new URL("http://localhost/api/stream/completed/list"),
+      request,
+      response,
+    ),
+    true,
+  );
+  response.emit("close");
+  assert.equal(observedSignal.aborted, true);
+  finishScan([]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(response.writableEnded, false);
+});
+
+test("completed list does not expose internal filesystem paths", async () => {
+  streamCompleted.init({
+    getCompletedFiles: async () => [{
+      fileName: "movie.mkv",
+      filePath: "C:\\private\\Incoming\\movie.mkv",
+      sizeMB: 10,
+      mtime: 123,
+    }],
+  });
+  const request = new EventEmitter();
+  request.destroyed = false;
+  const response = eventedResponse();
+  streamCompleted.handle(
+    new URL("http://localhost/api/stream/completed/list"),
+    request,
+    response,
+  );
+  await waitFor(() => response.writableEnded);
+  assert.deepEqual(JSON.parse(response.body), [{
+    fileName: "movie.mkv",
+    sizeMB: 10,
+    mtime: 123,
+  }]);
+});
+
+test("legacy part lookup reads only bounded met metadata", async () => {
+  managedSpawnCount = 0;
+  const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ese-met-bound-"));
+  const incoming = path.join(tempRoot, "Incoming");
+  const temp = path.join(tempRoot, "Temp");
+  await fs.promises.mkdir(incoming);
+  await fs.promises.mkdir(temp);
+  const oversizedMet = Buffer.alloc((2 * 1024 * 1024) + 128);
+  oversizedMet.write("Late Movie.mkv", 2 * 1024 * 1024 + 16, "latin1");
+  await fs.promises.writeFile(path.join(temp, "9.part.met"), oversizedMet);
+  await fs.promises.writeFile(path.join(incoming, "Late Movie.mkv"), Buffer.alloc(32));
+  streamPart.init({
+    EMULE_INCOMING: incoming,
+    FFMPEG_PATH: "ffmpeg",
+  });
+  const request = new EventEmitter();
+  request.destroyed = false;
+  const response = eventedResponse();
+  streamPart.handle(
+    new URL("http://localhost/api/stream/part?file=9.part"),
+    request,
+    response,
+  );
+  await waitFor(() => response.writableEnded);
+  assert.equal(response.status, 404);
+  assert.equal(managedSpawnCount, 0);
+  await fs.promises.rm(tempRoot, { recursive: true, force: true });
+});
+
+test("MSE data stream replacement preserves the new request owner", async () => {
+  const spawnBase = managedChildren.length;
+  const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ese-mse-owner-"));
+  await fs.promises.writeFile(path.join(tempRoot, "ese_mse_1.avi"), Buffer.alloc(32));
+  const activeStreams = {};
+  streamPart.init({
+    TEMP_DIR: tempRoot,
+    FFMPEG_PATH: "ffmpeg",
+    HW_ENCODER: "libx264",
+    HW_ENCODER_OPTS: ["-preset", "ultrafast"],
+    activeStreams,
+  });
+  const requestA = new EventEmitter();
+  requestA.destroyed = false;
+  const responseA = eventedResponse();
+  streamPart.handle(
+    new URL("http://localhost/api/stream/data/1"),
+    requestA,
+    responseA,
+  );
+  await waitFor(() => managedChildren.length === spawnBase + 1);
+  const first = managedChildren[spawnBase];
+
+  const requestB = new EventEmitter();
+  requestB.destroyed = false;
+  const responseB = eventedResponse();
+  streamPart.handle(
+    new URL("http://localhost/api/stream/data/1"),
+    requestB,
+    responseB,
+  );
+  await waitFor(() => managedChildren.length === spawnBase + 2);
+  const second = managedChildren[spawnBase + 1];
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(first.killCount, 1);
+  assert.equal(activeStreams["1"], second);
+
+  responseA.emit("close");
+  assert.equal(activeStreams["1"], second);
+  responseB.emit("close");
+  assert.equal(second.killCount, 1);
+  assert.equal(activeStreams["1"], undefined);
+  await fs.promises.rm(tempRoot, { recursive: true, force: true });
+});
+
+test("concurrent MSE copies use unique partials and preserve promoted output", async () => {
+  const callBase = processCalls.length;
+  const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ese-copy-owner-"));
+  const source = path.join(tempRoot, "1.part");
+  await fs.promises.writeFile(source, Buffer.alloc(32));
+  streamPart.init({
+    __dirname: tempRoot,
+    TEMP_DIR: tempRoot,
+    getDownloads: async () => [{
+      partNum: "1",
+      partPath: source,
+      fileName: "movie.mkv",
+      fileSizeMB: 1,
+    }],
+  });
+  const requestA = new EventEmitter();
+  requestA.destroyed = false;
+  const responseA = eventedResponse();
+  const requestB = new EventEmitter();
+  requestB.destroyed = false;
+  const responseB = eventedResponse();
+  streamPart.handle(new URL("http://localhost/api/stream/start/1"), requestA, responseA);
+  streamPart.handle(new URL("http://localhost/api/stream/start/1"), requestB, responseB);
+  await waitFor(() => processCalls.length === callBase + 2);
+  const calls = processCalls.slice(callBase);
+  const targets = calls.map(call => call.args[call.args.indexOf("-Dest") + 1]);
+  assert.notEqual(targets[0], targets[1]);
+  await Promise.all(targets.map(target => fs.promises.writeFile(target, Buffer.alloc(64))));
+  calls[0].resolve({ ok: true, stdout: "64", stderr: "" });
+  calls[1].resolve({ ok: true, stdout: "64", stderr: "" });
+  await waitFor(() => responseA.writableEnded && responseB.writableEnded);
+  assert.equal(responseA.status, 409);
+  assert.equal(responseB.status, 200);
+  const canonical = path.join(tempRoot, "ese_mse_1.avi");
+  assert.equal((await fs.promises.stat(canonical)).size, 64);
+  responseB.emit("close");
+  assert.equal((await fs.promises.stat(canonical)).size, 64);
+  await fs.promises.rm(tempRoot, { recursive: true, force: true });
+});
+
 test("a disconnected preparation cannot kill another request's completed stream", async () => {
   managedSpawnCount = 0;
   managedChildren.length = 0;
@@ -295,6 +490,65 @@ test("a disconnected preparation cannot kill another request's completed stream"
   await fs.promises.rm(tempRoot, { recursive: true, force: true });
 });
 
+test("pipeline stop cannot clear a newly started generation", async () => {
+  killResolvers.length = 0;
+  const childBase = managedChildren.length;
+  const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ese-pipeline-aba-"));
+  const movie = path.join(tempRoot, "movie.mp4");
+  const output = path.join(tempRoot, "hls");
+  await fs.promises.writeFile(movie, Buffer.alloc(32));
+  const options = {
+    source: { type: "file", id: movie },
+    ffmpegPath: "ffmpeg",
+    outputDir: output,
+    hwEncoder: "libx264",
+    hwEncoderOpts: ["-preset", "ultrafast"],
+  };
+  assert.equal((await ffmpegPipeline.start(options)).success, true);
+  const oldChild = managedChildren[childBase];
+  const stopping = ffmpegPipeline.stop();
+  await waitFor(() => killResolvers.length === 1);
+  oldChild.emit("close", 0);
+  const nextSource = { ...options.source, id: movie };
+  assert.equal((await ffmpegPipeline.start({ ...options, source: nextSource })).success, true);
+  const newChild = managedChildren[childBase + 1];
+  killResolvers.shift()({ ok: true });
+  await stopping;
+  assert.equal(ffmpegPipeline.getStatus().status, "starting");
+  assert.equal(ffmpegPipeline.getStatus().source, nextSource);
+  newChild.emit("close", 0);
+  await fs.promises.rm(tempRoot, { recursive: true, force: true });
+});
+
+test("RTMP stop cannot clear a newly started generation", async () => {
+  killResolvers.length = 0;
+  const childBase = managedChildren.length;
+  const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ese-rtmp-aba-"));
+  const first = rtmpServer.start({
+    ffmpegPath: "ffmpeg",
+    outputDir: tempRoot,
+    port: 19351,
+  });
+  assert.equal(first.success, true);
+  const oldChild = managedChildren[childBase];
+  const stopping = rtmpServer.stop();
+  await waitFor(() => killResolvers.length === 1);
+  oldChild.emit("close", 0);
+  const second = rtmpServer.start({
+    ffmpegPath: "ffmpeg",
+    outputDir: tempRoot,
+    port: 19352,
+  });
+  assert.equal(second.success, true);
+  const newChild = managedChildren[childBase + 1];
+  killResolvers.shift()({ ok: true });
+  await stopping;
+  assert.equal(rtmpServer.getStatus().status, "waiting");
+  assert.equal(rtmpServer.getStatus().rtmpStreamKey, second.rtmpStreamKey);
+  newChild.emit("close", 0);
+  await fs.promises.rm(tempRoot, { recursive: true, force: true });
+});
+
 test("cleanup HTTP response waits for asynchronous bounded deletion", async () => {
   let finishCleanup;
   systemRoutes.init({
@@ -322,4 +576,5 @@ test("cleanup HTTP response waits for asynchronous bounded deletion", async () =
 test.after(() => {
   runner.runProcess = originalRunProcess;
   runner.spawnManaged = originalSpawnManaged;
+  runner.killProcessTree = originalKillProcessTree;
 });

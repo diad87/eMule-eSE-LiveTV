@@ -12,6 +12,24 @@
 
 namespace eSELive {
 
+M2AModuleHandle M2A_BIND_LT1_BAB3CE64A0(const M2AParentPort&);
+bool RunLiveTunnelReleaseGateCharacterizationSelfTest();
+void M2A_LT1_ConfigureBridge(M2AModuleHandle&, CKad6ExitNoticeServer&, const std::wstring&, bool (*)(void*, std::uint8_t*, std::size_t), void*, bool (*)(void*, bool, std::uint32_t));
+bool M2A_LT1_SaveEvidenceBridge(M2AModuleHandle&, kad6::K6ReleaseEvidence, const kad6::Kad6CryptoHooks&, const std::uint8_t*, std::uint64_t);
+bool M2A_LT1_StartNoticeBridge(M2AModuleHandle&, std::uint16_t, const kad6::K6ExitNotice&, const kad6::Kad6CryptoHooks&, const std::uint8_t*);
+void M2A_LT1_StopNoticeBridge(M2AModuleHandle&) noexcept;
+K6ExitNoticeServerSnapshot M2A_LT1_NoticeSnapshotBridge(const M2AModuleHandle&) noexcept;
+kad6::K6ReleaseGateStatus M2A_LT1_GetSnapshotBridge(M2AModuleHandle&, LiveK6ReleaseRuntimeSnapshot&, bool, bool, const std::uint8_t*, const kad6::Kad6CryptoHooks&, std::uint64_t);
+void M2A_LT1_ApplyEvaluationBridge(M2AModuleHandle&, bool, bool, bool, kad6::K6ReleaseGateStatus, std::uint32_t);
+bool M2A_LT1_IsEnabledBridge(const M2AModuleHandle&) noexcept;
+bool M2A_LT1_GetChallengeBridge(M2AModuleHandle&, std::string&, std::uint64_t);
+bool M2A_LT1_ConsumeChallengeBridge(M2AModuleHandle&, const std::string&, std::uint64_t) noexcept;
+
+LiveTunnelScheduler::LiveTunnelScheduler()
+    : m_m2a_binding_bab3ce64a0(M2AAssignmentPolicy::RetainExisting)
+{
+}
+
 bool LiveTunnelScheduler::Enqueue(LiveDeferredWork work)
 {
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
@@ -84,6 +102,8 @@ std::vector<LiveDeferredWork> LiveTunnelScheduler::CloseDeferredWork()
 
 void LiveTunnelScheduler::ReopenDeferredWork()
 {
+    m_m2a_binding_bab3ce64a0 =
+        M2A_BIND_LT1_BAB3CE64A0(M2AParentPort{this});
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
     m_accepting_deferred_work = true;
 }
@@ -93,6 +113,17 @@ bool LiveTunnelScheduler::AcceptingDeferredWork() const
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
     return m_accepting_deferred_work;
 }
+
+void LiveTunnelScheduler::ConfigureReleaseGate(const std::wstring& path, bool (*random)(void*, std::uint8_t*, std::size_t), void* context, bool (*services)(void*, bool, std::uint32_t)) { M2A_LT1_ConfigureBridge(m_m2a_binding_bab3ce64a0, m_release_notice_adapter, path, random, context, services); }
+bool LiveTunnelScheduler::SaveReleaseEvidence(kad6::K6ReleaseEvidence evidence, const kad6::Kad6CryptoHooks& crypto, const std::uint8_t* pub, std::uint64_t now) { return M2A_LT1_SaveEvidenceBridge(m_m2a_binding_bab3ce64a0, std::move(evidence), crypto, pub, now); }
+bool LiveTunnelScheduler::StartReleaseNotice(std::uint16_t port, const kad6::K6ExitNotice& notice, const kad6::Kad6CryptoHooks& crypto, const std::uint8_t* pub) { return M2A_LT1_StartNoticeBridge(m_m2a_binding_bab3ce64a0, port, notice, crypto, pub); }
+void LiveTunnelScheduler::StopReleaseNotice() noexcept { M2A_LT1_StopNoticeBridge(m_m2a_binding_bab3ce64a0); }
+K6ExitNoticeServerSnapshot LiveTunnelScheduler::GetReleaseNoticeSnapshot() const noexcept { return M2A_LT1_NoticeSnapshotBridge(m_m2a_binding_bab3ce64a0); }
+kad6::K6ReleaseGateStatus LiveTunnelScheduler::GetReleaseSnapshot(LiveK6ReleaseRuntimeSnapshot& out, bool optIn, bool betaOptIn, const std::uint8_t* pub, const kad6::Kad6CryptoHooks& crypto, std::uint64_t now) { return M2A_LT1_GetSnapshotBridge(m_m2a_binding_bab3ce64a0, out, optIn, betaOptIn, pub, crypto, now); }
+void LiveTunnelScheduler::ApplyReleaseEvaluation(bool optIn, bool betaOptIn, bool healthy, kad6::K6ReleaseGateStatus evidence, std::uint32_t drain) { M2A_LT1_ApplyEvaluationBridge(m_m2a_binding_bab3ce64a0, optIn, betaOptIn, healthy, evidence, drain); }
+bool LiveTunnelScheduler::IsReleaseEnabled() const noexcept { return M2A_LT1_IsEnabledBridge(m_m2a_binding_bab3ce64a0); }
+bool LiveTunnelScheduler::GetReleaseChallenge(std::string& challenge, std::uint64_t now) { return M2A_LT1_GetChallengeBridge(m_m2a_binding_bab3ce64a0, challenge, now); }
+bool LiveTunnelScheduler::ConsumeReleaseChallenge(const std::string& challenge, std::uint64_t now) noexcept { return M2A_LT1_ConsumeChallengeBridge(m_m2a_binding_bab3ce64a0, challenge, now); }
 
 namespace {
 
@@ -942,7 +973,8 @@ bool RunLiveTunnelSchedulerCharacterizationSelfTest()
         && CharacterizeTimerLifecycle()
         && CharacterizeConcurrentClosePublication()
         && CharacterizeShapingOwnership()
-        && RunM2ABindingPortCharacterizationSelfTest();
+        && RunM2ABindingPortCharacterizationSelfTest()
+        && RunLiveTunnelReleaseGateCharacterizationSelfTest();
 }
 
 } // namespace eSELive

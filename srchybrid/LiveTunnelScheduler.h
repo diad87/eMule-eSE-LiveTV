@@ -1,7 +1,9 @@
 // this file is part of eMule eSE - tunnel scheduling and deferred-work owner
 #pragma once
 
+#include "Kad6ExitNoticeServer.h"
 #include "LiveBulk.h"
+#include "M2ABindingPort.h"
 #include "kad6/kad6_economy.h"
 #include "kad6/kad6_hardening.h"
 #include "kad6/kad6_release.h"
@@ -15,7 +17,9 @@
 #include <mutex>
 #include <vector>
 
+namespace kad6 { struct K6ExitNotice; }
 namespace eSELive {
+struct LiveK6ReleaseRuntimeSnapshot;
 
 enum class LiveDeferredOp : std::uint8_t {
     Send = 1,
@@ -104,7 +108,7 @@ class LiveTunnelScheduler {
 public:
     static const std::size_t kDefaultDrainBudget = 256;
 
-    LiveTunnelScheduler() = default;
+    LiveTunnelScheduler();
     LiveTunnelScheduler(const LiveTunnelScheduler&) = delete;
     LiveTunnelScheduler& operator=(const LiveTunnelScheduler&) = delete;
 
@@ -117,6 +121,23 @@ public:
     std::vector<LiveDeferredWork> CloseDeferredWork();
     void ReopenDeferredWork();
     bool AcceptingDeferredWork() const;
+    void ConfigureReleaseGate(
+        const std::wstring&, bool (*)(void*, std::uint8_t*, std::size_t), void*,
+        bool (*)(void*, bool, std::uint32_t));
+    bool SaveReleaseEvidence(kad6::K6ReleaseEvidence,
+        const kad6::Kad6CryptoHooks&, const std::uint8_t*, std::uint64_t);
+    bool StartReleaseNotice(std::uint16_t, const kad6::K6ExitNotice&,
+        const kad6::Kad6CryptoHooks&, const std::uint8_t*);
+    void StopReleaseNotice() noexcept;
+    K6ExitNoticeServerSnapshot GetReleaseNoticeSnapshot() const noexcept;
+    kad6::K6ReleaseGateStatus GetReleaseSnapshot(
+        LiveK6ReleaseRuntimeSnapshot&, bool, bool,
+        const std::uint8_t*, const kad6::Kad6CryptoHooks&, std::uint64_t);
+    void ApplyReleaseEvaluation(
+        bool, bool, bool, kad6::K6ReleaseGateStatus, std::uint32_t);
+    bool IsReleaseEnabled() const noexcept;
+    bool GetReleaseChallenge(std::string&, std::uint64_t);
+    bool ConsumeReleaseChallenge(const std::string&, std::uint64_t) noexcept;
 
     static std::uint32_t Elapsed32(std::uint32_t now,
                                    std::uint32_t since) noexcept;
@@ -227,6 +248,8 @@ private:
     std::map<std::uint64_t, std::uint64_t> m_fair_credits;
     std::map<std::uint64_t, std::uint64_t> m_fair_allocation_by_stream;
     std::uint64_t m_fair_payload_bytes = 0;
+    M2AModuleHandle m_m2a_binding_bab3ce64a0;
+    CKad6ExitNoticeServer m_release_notice_adapter;
 };
 
 bool RunLiveTunnelSchedulerCharacterizationSelfTest();

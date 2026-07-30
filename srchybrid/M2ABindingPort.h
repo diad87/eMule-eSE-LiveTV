@@ -14,11 +14,20 @@ struct M2AParentPort final {
     }
 };
 
+enum class M2AAssignmentPolicy {
+    Replace,
+    RetainExisting,
+};
+
 class M2AModuleHandle final {
 public:
     using Destroy = void (*)(void*);
 
     M2AModuleHandle() noexcept = default;
+    explicit M2AModuleHandle(M2AAssignmentPolicy policy) noexcept
+        : m_assignment_policy(policy)
+    {
+    }
 
     M2AModuleHandle(void* instance, Destroy destroy) noexcept
         : m_instance(instance),
@@ -31,7 +40,8 @@ public:
 
     M2AModuleHandle(M2AModuleHandle&& other) noexcept
         : m_instance(other.m_instance),
-          m_destroy(other.m_destroy)
+          m_destroy(other.m_destroy),
+          m_assignment_policy(other.m_assignment_policy)
     {
         other.m_instance = nullptr;
         other.m_destroy = nullptr;
@@ -40,6 +50,9 @@ public:
     M2AModuleHandle& operator=(M2AModuleHandle&& other) noexcept
     {
         if (this == &other)
+            return *this;
+        if (m_assignment_policy == M2AAssignmentPolicy::RetainExisting &&
+            m_instance != nullptr)
             return *this;
         Reset();
         m_instance = other.m_instance;
@@ -59,6 +72,9 @@ public:
         return m_instance != nullptr;
     }
 
+    void* Get() noexcept { return m_instance; }
+    const void* Get() const noexcept { return m_instance; }
+
     void Reset() noexcept
     {
         if (m_instance != nullptr && m_destroy != nullptr)
@@ -70,6 +86,7 @@ public:
 private:
     void* m_instance = nullptr;
     Destroy m_destroy = nullptr;
+    M2AAssignmentPolicy m_assignment_policy = M2AAssignmentPolicy::Replace;
 };
 
 template <typename Module>

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 struct K6ExitNoticeServerSnapshot {
     bool running = false;
@@ -28,6 +29,9 @@ public:
     bool Update(const std::string& signed_notice_json);
     void Stop() noexcept;
     K6ExitNoticeServerSnapshot Snapshot() const noexcept;
+    void ConfigureEvidencePath(std::wstring path);
+    bool LoadEvidence(std::vector<std::uint8_t>&, std::uint32_t& status);
+    bool SaveEvidence(const std::vector<std::uint8_t>& wire);
 
 private:
     struct Impl;

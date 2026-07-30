@@ -57,8 +57,17 @@ bool CharacterizeCallbackAfterUnlock()
 
 bool RunM2ABindingPortCharacterizationSelfTest()
 {
-    return CharacterizeMoveOnlyOwnership()
-        && CharacterizeCallbackAfterUnlock();
+    bool replaced = false, current = false, rejected = false;
+    M2AModuleHandle binding =
+        MakeM2AModuleHandle(new DestructionProbe(replaced));
+    binding = MakeM2AModuleHandle(new DestructionProbe(current));
+    M2AModuleHandle retained(M2AAssignmentPolicy::RetainExisting);
+    retained = MakeM2AModuleHandle(new DestructionProbe(rejected));
+    void* const first_binding = retained.Get();
+    retained = MakeM2AModuleHandle(new DestructionProbe(rejected));
+    return CharacterizeMoveOnlyOwnership() && replaced && !current &&
+        retained.Get() == first_binding && rejected &&
+        CharacterizeCallbackAfterUnlock();
 }
 
 } // namespace eSELive

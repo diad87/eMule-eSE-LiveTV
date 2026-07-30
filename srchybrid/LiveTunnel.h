@@ -998,17 +998,6 @@ private:
         uint64 expires_at = 0;
     };
     std::map<std::string, K6QuotaGrant> m_k6QuotaGrants;
-    bool m_k6PublicStableEnabled = false; // external release gates must enable it.
-    bool m_k6PublicBetaEnabled = false; // explicit NetLab contribution; never stable evidence.
-    bool m_k6ReleaseEvidenceLoaded = false;
-    bool m_k6ReleaseEvidencePresent = false;
-    bool m_k6ReleaseRuntimeHealthy = false;
-    kad6::K6ReleaseGateStatus m_k6ReleaseStatus = kad6::K6ReleaseGateStatus::Missing;
-    kad6::K6ReleaseEvidence m_k6ReleaseEvidence;
-    mutable CCriticalSection m_k6ReleaseLock;
-    std::array<uint8_t, 32> m_k6ReleaseChallenge{};
-    uint64 m_k6ReleaseChallengeExpires = 0;
-    bool m_k6ReleaseChallengeReady = false;
     bool IsK6PublicReleaseEnabled() const;
     bool EnsureK6QuotaAuthority(uint64 nowSeconds);
     bool K6QuotaPrincipal(const TunnelRequestCtx& ctx, kad6::Hash32& principal,
@@ -1039,14 +1028,11 @@ private:
                                   size_t creditBytes = 0);
     void ReleaseK6FairStreamLocked(uint64 streamId);
     bool ProcessK6FairTick();
-    CKad6ExitNoticeServer m_k6ExitNoticeServer;
     bool ApplyK6ServiceSwitch(kad6::K6Service service, bool enabled,
                               uint32 drainSeconds);
     bool ApplyK6PublicRelease(bool enable,
                               const kad6::K6ReleaseEvidence* evidence,
                               uint32 drainSeconds);
-    bool LoadK6ReleaseEvidence();
-    bool SaveK6ReleaseEvidence(const std::vector<uint8_t>& wire) const;
     void RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds = 300);
     struct K6OriginSourceLookup {
         kad6::Hash16 file_hash{};

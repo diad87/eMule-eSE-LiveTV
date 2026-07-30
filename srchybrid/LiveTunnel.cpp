@@ -68,6 +68,8 @@ namespace eSELive {
 using namespace LiveCircuitHandshakeWire;
 
 namespace {
+bool K6ReleaseRandom(void*, std::uint8_t*, std::size_t);
+
 LiveSourceEndpointKey BuildLiveSourceEndpointKey(const kad6::K6Endpoint& endpoint, uint8 origin)
 {
     return {origin, static_cast<uint8>(endpoint.addr.family), endpoint.addr.addr, endpoint.tcp_port};
@@ -107,6 +109,20 @@ CLiveTunnel::CLiveTunnel()
     : m_kadBridge(BuildLiveTunnelKadPorts()),
       m_handshake(*this)
 {
+    m_scheduler.ReopenDeferredWork();
+    const CString releasePath = thePrefs.GetMuleDirectory(EMULE_CONFIGDIR) +
+        _T("kad6_release_gate.dat");
+    m_scheduler.ConfigureReleaseGate(
+        std::wstring(releasePath.GetString()), K6ReleaseRandom, this,
+        [](void* raw, bool enable, std::uint32_t drain) {
+        CLiveTunnel& self = *static_cast<CLiveTunnel*>(raw);
+        bool accepted = true;
+        for (size_t i = 0; i < static_cast<size_t>(kad6::K6Service::Count); ++i)
+            accepted = self.ApplyK6ServiceSwitch(static_cast<kad6::K6Service>(i),
+                enable, drain) && accepted;
+        return accepted;
+    });
+
     // v8.1 A2 - register the built-in exit-side handlers. Sprint B/C ops
     // register theirs the same way instead of editing HandleRelay_Exit.
     m_exitServices.RegisterHandler(TUN_OP_PING,
@@ -918,7 +934,7 @@ bool CLiveTunnel::BuildSuccessor2Hop()
 
 void CLiveTunnel::Stop()
 {
-    m_k6ExitNoticeServer.Stop();
+    m_scheduler.StopReleaseNotice();
     std::set<uint32_t> retiredCircuits;
     {
         CSingleLock lock(&m_lock, TRUE);
@@ -1666,104 +1682,32 @@ void CLiveTunnel::GetK6HardeningSnapshot(K6HardeningRuntimeSnapshot& out)
 }
 
 namespace {
-CString K6ReleaseEvidencePath()
+bool K6ReleaseRandom(
+    void*, std::uint8_t* bytes, std::size_t size)
 {
-    return thePrefs.GetMuleDirectory(EMULE_CONFIGDIR) + _T("kad6_release_gate.dat");
-}
+    const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
+    return crypto.random_bytes && crypto.random_bytes(bytes, size);
 }
 
-bool CLiveTunnel::LoadK6ReleaseEvidence()
-{
-    CSingleLock release(&m_k6ReleaseLock, TRUE);
-    m_k6ReleaseEvidenceLoaded = true;
-    m_k6ReleaseEvidencePresent = false;
-    m_k6ReleaseEvidence = kad6::K6ReleaseEvidence{};
-    try {
-        CFile file;
-        if (!file.Open(K6ReleaseEvidencePath(), CFile::modeRead | CFile::shareDenyWrite))
-            return false;
-        const ULONGLONG length = file.GetLength();
-        if (length != kad6::kK6ReleaseEvidenceWireSize) {
-            file.Close();
-            m_k6ReleaseStatus = kad6::K6ReleaseGateStatus::BadEncoding;
-            return false;
-        }
-        std::vector<uint8_t> wire(static_cast<size_t>(length));
-        const bool read = file.Read(wire.data(), static_cast<UINT>(wire.size())) ==
-            wire.size();
-        file.Close();
-        if (!read || kad6::DecodeK6ReleaseEvidence(wire.data(), wire.size(),
-                m_k6ReleaseEvidence) != kad6::Kad6Status::Ok) {
-            m_k6ReleaseStatus = kad6::K6ReleaseGateStatus::BadEncoding;
-            return false;
-        }
-        m_k6ReleaseEvidencePresent = true;
-        return true;
-    } catch (CFileException* error) {
-        error->Delete();
-        m_k6ReleaseStatus = kad6::K6ReleaseGateStatus::BadEncoding;
-        return false;
-    }
-}
-
-bool CLiveTunnel::SaveK6ReleaseEvidence(const std::vector<uint8_t>& wire) const
-{
-    if (wire.size() != kad6::kK6ReleaseEvidenceWireSize) return false;
-    const CString path = K6ReleaseEvidencePath();
-    const CString temporary = path + _T(".new");
-    try {
-        CFile file(temporary, CFile::modeCreate | CFile::modeWrite |
-                              CFile::shareExclusive);
-        file.Write(wire.data(), static_cast<UINT>(wire.size()));
-        file.Flush();
-        file.Close();
-        if (!MoveFileEx(temporary, path,
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            DeleteFile(temporary);
-            return false;
-        }
-        return true;
-    } catch (CFileException* error) {
-        error->Delete();
-        DeleteFile(temporary);
-        return false;
-    }
-}
+} // namespace
 
 void CLiveTunnel::RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds)
 {
     if (nowSeconds == 0) return;
-    bool evidenceLoaded = false;
-    {
-        CSingleLock release(&m_k6ReleaseLock, TRUE);
-        evidenceLoaded = m_k6ReleaseEvidenceLoaded;
-    }
-    if (!evidenceLoaded) LoadK6ReleaseEvidence();
-
     const bool optIn = thePrefs.GetKad6PublicExitOptIn();
-    const bool betaOptIn = thePrefs.IsEseNetLabContributionActive()
-        && thePrefs.GetKad6BetaExitOptIn();
-    bool evidencePresent = false;
-    kad6::K6ReleaseEvidence evidence;
-    {
-        CSingleLock release(&m_k6ReleaseLock, TRUE);
-        evidencePresent = m_k6ReleaseEvidencePresent;
-        evidence = m_k6ReleaseEvidence;
-    }
-    kad6::K6ReleaseGateStatus evidenceStatus = kad6::K6ReleaseGateStatus::Missing;
-    if (evidencePresent && NodeIdentityPub() != NULL)
-        evidenceStatus = kad6::EvaluateK6ReleaseEvidence(
-            MakeKad6HostCryptoHooks(), evidence,
-            NodeIdentityPub(), nowSeconds);
+    const bool betaOptIn = thePrefs.IsEseNetLabContributionActive() &&
+        thePrefs.GetKad6BetaExitOptIn();
+    K6ReleaseRuntimeSnapshot release;
+    const kad6::K6ReleaseGateStatus evidenceStatus = m_scheduler.GetReleaseSnapshot(
+        release, optIn, betaOptIn, NodeIdentityPub(),
+        MakeKad6HostCryptoHooks(), nowSeconds);
 
     bool shapingExposed = false;
     {
         CSingleLock lock(&m_lock, TRUE);
         for (const auto& circuit : m_circuitRegistry.GetSnapshot())
-            if (circuit && circuit->m_traffic_shaping_exposed) {
-                shapingExposed = true;
-                break;
-            }
+            if (circuit && circuit->m_traffic_shaping_exposed)
+                { shapingExposed = true; break; }
     }
     bool runtimeHealthy = NodeIdentityIsPersistent() && m_k6TicketSecretReady &&
         m_k6EconomyReady && !m_k6SourceEpochsLoadFailed && !shapingExposed;
@@ -1771,62 +1715,12 @@ void CLiveTunnel::RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds)
         CSingleLock pl(&m_pendingLock, TRUE);
         for (const kad6::K6SaturationInputs& input : m_k6EconomyInputs)
             if (!std::isfinite(kad6::K6Rho(input)) ||
-                kad6::K6Rho(input) >= kad6::kK6RhoTarget) {
-                runtimeHealthy = false;
-                break;
-            }
+                kad6::K6Rho(input) >= kad6::kK6RhoTarget)
+                { runtimeHealthy = false; break; }
     }
 
-    const kad6::K6ReleaseGateStatus stableStatus =
-        !optIn ? kad6::K6ReleaseGateStatus::OperatorOptOut
-        : evidenceStatus != kad6::K6ReleaseGateStatus::Ok ? evidenceStatus
-        : !runtimeHealthy ? kad6::K6ReleaseGateStatus::RuntimeUnhealthy
-        : kad6::K6ReleaseGateStatus::Ok;
-    // The beta cohort bypasses only the stable signed-evidence requirement.
-    // It still requires explicit contribution consent and every runtime gate.
-    const bool betaEnable = betaOptIn && runtimeHealthy;
-    const bool shouldEnable = stableStatus == kad6::K6ReleaseGateStatus::Ok
-        || betaEnable;
-    const kad6::K6ReleaseGateStatus status = betaEnable
-        ? kad6::K6ReleaseGateStatus::Ok : stableStatus;
-    bool previouslyEnabled = false;
-    {
-        CSingleLock release(&m_k6ReleaseLock, TRUE);
-        m_k6ReleaseRuntimeHealthy = runtimeHealthy;
-        m_k6ReleaseStatus = status;
-        previouslyEnabled = m_k6PublicStableEnabled;
-        m_k6PublicBetaEnabled = betaEnable;
-    }
-    if (shouldEnable == previouslyEnabled) return;
-
-    if (shouldEnable) {
-        {
-            CSingleLock release(&m_k6ReleaseLock, TRUE);
-            m_k6PublicStableEnabled = true; // permits the controlled enable calls below
-        }
-        bool enabled = true;
-        for (size_t i = 0; i < static_cast<size_t>(kad6::K6Service::Count); ++i)
-            enabled = ApplyK6ServiceSwitch(static_cast<kad6::K6Service>(i), true, 0) && enabled;
-        if (!enabled) {
-            {
-                CSingleLock release(&m_k6ReleaseLock, TRUE);
-                m_k6PublicStableEnabled = false;
-                m_k6PublicBetaEnabled = false;
-                m_k6ReleaseStatus = kad6::K6ReleaseGateStatus::RuntimeUnhealthy;
-            }
-            for (size_t i = 0; i < static_cast<size_t>(kad6::K6Service::Count); ++i)
-                ApplyK6ServiceSwitch(static_cast<kad6::K6Service>(i), false, 0);
-        }
-    } else {
-        {
-            CSingleLock release(&m_k6ReleaseLock, TRUE);
-            m_k6PublicStableEnabled = false;
-            m_k6PublicBetaEnabled = false;
-        }
-        for (size_t i = 0; i < static_cast<size_t>(kad6::K6Service::Count); ++i)
-            ApplyK6ServiceSwitch(static_cast<kad6::K6Service>(i), false,
-                                 drainSeconds);
-    }
+    m_scheduler.ApplyReleaseEvaluation(
+        optIn, betaOptIn, runtimeHealthy, evidenceStatus, drainSeconds);
 }
 
 bool CLiveTunnel::ApplyK6PublicRelease(bool enable,
@@ -1840,27 +1734,8 @@ bool CLiveTunnel::ApplyK6PublicRelease(bool enable,
         return !IsK6PublicReleaseEnabled();
     }
     if (!NodeIdentityIsPersistent() || NodeIdentityPub() == NULL) return false;
-    if (evidence != NULL) {
-        kad6::K6ReleaseEvidence candidate = *evidence;
-        candidate.version = kad6::kK6ReleaseEvidenceVersion;
-        memcpy(candidate.node_pub.data(), NodeIdentityPub(), candidate.node_pub.size());
-        if (candidate.issued_at == 0) candidate.issued_at = now;
-        if (candidate.valid_until == 0)
-            candidate.valid_until = candidate.issued_at + 30ull * 24 * 60 * 60;
-        std::vector<uint8_t> wire;
-        if (kad6::SignK6ReleaseEvidence(MakeKad6HostCryptoHooks(), candidate, wire) !=
-                kad6::Kad6Status::Ok ||
-            kad6::EvaluateK6ReleaseEvidence(MakeKad6HostCryptoHooks(), candidate,
-                NodeIdentityPub(), now) != kad6::K6ReleaseGateStatus::Ok ||
-            !SaveK6ReleaseEvidence(wire))
-            return false;
-        {
-            CSingleLock release(&m_k6ReleaseLock, TRUE);
-            m_k6ReleaseEvidence = candidate;
-            m_k6ReleaseEvidenceLoaded = true;
-            m_k6ReleaseEvidencePresent = true;
-        }
-    }
+    if (evidence && !m_scheduler.SaveReleaseEvidence(*evidence,
+            MakeKad6HostCryptoHooks(), NodeIdentityPub(), now)) return false;
     thePrefs.SetKad6PublicExitOptIn(true);
     RefreshK6PublicRelease(now, drainSeconds);
     return IsK6PublicReleaseEnabled();
@@ -1868,85 +1743,22 @@ bool CLiveTunnel::ApplyK6PublicRelease(bool enable,
 
 void CLiveTunnel::GetK6ReleaseSnapshot(K6ReleaseRuntimeSnapshot& out)
 {
-    out = K6ReleaseRuntimeSnapshot{};
-    out.operator_opt_in = thePrefs.GetKad6PublicExitOptIn();
-    out.beta_exit_opt_in = thePrefs.GetKad6BetaExitOptIn()
-        && thePrefs.IsEseNetLabContributionActive();
-    {
-        CSingleLock release(&m_k6ReleaseLock, TRUE);
-        out.evidence_present = m_k6ReleaseEvidencePresent;
-        out.runtime_healthy = m_k6ReleaseRuntimeHealthy;
-        out.public_exit_enabled = m_k6PublicStableEnabled;
-        out.beta_exit_enabled = m_k6PublicBetaEnabled;
-        out.status = m_k6ReleaseStatus;
-        out.evidence = m_k6ReleaseEvidence;
-    }
-    out.evidence_valid = out.evidence_present && NodeIdentityPub() != NULL &&
-        kad6::EvaluateK6ReleaseEvidence(MakeKad6HostCryptoHooks(),
-            out.evidence, NodeIdentityPub(), static_cast<uint64>(time(NULL))) ==
-            kad6::K6ReleaseGateStatus::Ok;
+    m_scheduler.GetReleaseSnapshot(out, thePrefs.GetKad6PublicExitOptIn(),
+        thePrefs.GetKad6BetaExitOptIn() && thePrefs.IsEseNetLabContributionActive(),
+        NodeIdentityPub(), MakeKad6HostCryptoHooks(),
+        static_cast<uint64>(time(NULL)));
 }
 
 bool CLiveTunnel::IsK6PublicReleaseEnabled() const
-{
-    CSingleLock release(&m_k6ReleaseLock, TRUE);
-    return m_k6PublicStableEnabled;
-}
+{ return m_scheduler.IsReleaseEnabled(); }
 
 bool CLiveTunnel::GetK6ReleaseOperatorChallenge(std::string& challenge)
-{
-    challenge.clear();
-    const uint64 now = static_cast<uint64>(time(NULL));
-    CSingleLock release(&m_k6ReleaseLock, TRUE);
-    if (!m_k6ReleaseChallengeReady || m_k6ReleaseChallengeExpires <= now) {
-        const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
-        if (!crypto.random_bytes || !crypto.random_bytes(
-                m_k6ReleaseChallenge.data(), m_k6ReleaseChallenge.size())) {
-            m_k6ReleaseChallenge.fill(0);
-            m_k6ReleaseChallengeExpires = 0;
-            m_k6ReleaseChallengeReady = false;
-            return false;
-        }
-        m_k6ReleaseChallengeExpires = now + 60;
-        m_k6ReleaseChallengeReady = true;
-    }
-    static const char hex[] = "0123456789abcdef";
-    challenge.resize(m_k6ReleaseChallenge.size() * 2);
-    for (size_t i = 0; i < m_k6ReleaseChallenge.size(); ++i) {
-        challenge[i * 2] = hex[m_k6ReleaseChallenge[i] >> 4];
-        challenge[i * 2 + 1] = hex[m_k6ReleaseChallenge[i] & 0x0f];
-    }
-    return true;
-}
+{ return m_scheduler.GetReleaseChallenge(
+    challenge, static_cast<std::uint64_t>(time(NULL))); }
 
 bool CLiveTunnel::ConsumeK6ReleaseOperatorChallenge(const std::string& challenge)
-{
-    if (challenge.size() != m_k6ReleaseChallenge.size() * 2) return false;
-    std::array<uint8_t, 32> decoded{};
-    auto nibble = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        return -1;
-    };
-    for (size_t i = 0; i < decoded.size(); ++i) {
-        const int hi = nibble(challenge[i * 2]);
-        const int lo = nibble(challenge[i * 2 + 1]);
-        if (hi < 0 || lo < 0) return false;
-        decoded[i] = static_cast<uint8_t>((hi << 4) | lo);
-    }
-    const uint64 now = static_cast<uint64>(time(NULL));
-    CSingleLock release(&m_k6ReleaseLock, TRUE);
-    const bool valid = m_k6ReleaseChallengeReady &&
-        m_k6ReleaseChallengeExpires > now &&
-        kad6::Kad6CtEqual(decoded.data(), m_k6ReleaseChallenge.data(), decoded.size());
-    if (valid) {
-        m_k6ReleaseChallenge.fill(0);
-        m_k6ReleaseChallengeExpires = 0;
-        m_k6ReleaseChallengeReady = false;
-    }
-    return valid;
-}
+{ return m_scheduler.ConsumeReleaseChallenge(
+    challenge, static_cast<std::uint64_t>(time(NULL))); }
 
 namespace {
 uint64 K6FileTimeValue(const FILETIME& value)
@@ -2049,26 +1861,15 @@ std::string CLiveTunnel::GetK6PrometheusMetrics()
 
 bool CLiveTunnel::StartK6ExitNotice(uint16 port, kad6::K6ExitNotice notice)
 {
-    if (port == 0 || !NodeIdentityIsPersistent() || NodeIdentityPub() == NULL)
-        return false;
-    memcpy(notice.node_pub.data(), NodeIdentityPub(), notice.node_pub.size());
-    std::string signedJson;
-    if (kad6::SignK6ExitNotice(MakeKad6HostCryptoHooks(), notice, signedJson) !=
-            kad6::Kad6Status::Ok)
-        return false;
-    m_k6ExitNoticeServer.Stop();
-    return m_k6ExitNoticeServer.Start(port, signedJson);
+    return NodeIdentityIsPersistent() && m_scheduler.StartReleaseNotice(
+        port, notice, MakeKad6HostCryptoHooks(), NodeIdentityPub());
 }
 
 void CLiveTunnel::StopK6ExitNotice() noexcept
-{
-    m_k6ExitNoticeServer.Stop();
-}
+{ m_scheduler.StopReleaseNotice(); }
 
 K6ExitNoticeServerSnapshot CLiveTunnel::GetK6ExitNoticeSnapshot() const noexcept
-{
-    return m_k6ExitNoticeServer.Snapshot();
-}
+{ return m_scheduler.GetReleaseNoticeSnapshot(); }
 
 namespace {
 std::string K6WideToUtf8(const wchar_t* value)

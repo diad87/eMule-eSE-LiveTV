@@ -9851,8 +9851,10 @@ int CLiveTunnel::ProxyAdaptiveR(const std::string& hex)
     // holds m_lock.
     const DWORD now = GetTickCount();
     ProxyStreamCtl& c = m_proxyCtl[hex];
+    std::uint32_t windowStart = c.windowStart;
     ese::live::LiveStreamRecovery::UpdateParityWindow(
-        c.r, c.nackCount, c.windowStart, now);
+        c.r, c.nackCount, windowStart, now);
+    c.windowStart = windowStart;
     return c.r;
 }
 

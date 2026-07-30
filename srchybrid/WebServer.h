@@ -229,6 +229,7 @@ typedef struct
 	CStringA		sFetchSite;
 	CStringA		sHost;
 	CStringA		sOrigin;
+	CStringA		sRange;
 	ese::web::WebRouteId webRoute;
 	void			*pThis;
 	CWebSocket		*pSocket;

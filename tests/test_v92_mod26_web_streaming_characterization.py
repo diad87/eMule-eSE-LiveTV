@@ -101,17 +101,41 @@ class Mod26WebStreamingCharacterizationTest(unittest.TestCase):
         )
 
     def test_characterized_sources_expose_every_known_legacy_hazard(self) -> None:
-        web = (
-            ROOT / "srchybrid" / "WebServer.cpp"
-        ).read_text(encoding="utf-8", errors="replace")
-        socket = (
-            ROOT / "srchybrid" / "WebSocket.cpp"
-        ).read_text(encoding="utf-8", errors="replace")
+        web = subprocess.check_output(
+            [
+                "git",
+                "show",
+                f"{self.contract['baseline_commit']}:srchybrid/WebServer.cpp",
+            ],
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+        )
+        socket = subprocess.check_output(
+            [
+                "git",
+                "show",
+                f"{self.contract['baseline_commit']}:srchybrid/WebSocket.cpp",
+            ],
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+        )
+        socket_header = subprocess.check_output(
+            [
+                "git",
+                "show",
+                f"{self.contract['baseline_commit']}:srchybrid/WebSocket.h",
+            ],
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+        )
         self.assertIn("new BYTE[fileSize]", web)
         self.assertIn("new char[filesize]", web)
         self.assertNotIn("Content-Range:", web)
         self.assertNotIn("Accept-Ranges:", web)
-        self.assertIn("class CChunk", (ROOT / "srchybrid" / "WebSocket.h").read_text())
+        self.assertIn("class CChunk", socket_header)
         self.assertNotIn("m_queuedBytes", socket)
         self.assertGreaterEqual(socket.count("MBEDTLS_ERR_SSL_WANT_READ"), 3)
 

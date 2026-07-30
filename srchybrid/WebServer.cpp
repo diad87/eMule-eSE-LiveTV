@@ -17,6 +17,7 @@
 #include "WebRouteTable.h"
 #include "WebSearchController.h"
 #include "WebSharedController.h"
+#include "WebStaticAssets.h"
 #include "WebTransferController.h"
 #include "WebServer.h"
 #include "ClientCredits.h"
@@ -757,38 +758,21 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 						return;
 					}
 
-					CFile file;
-					if (file.Open(kf->GetFilePath(), CFile::modeRead | CFile::shareDenyWrite | CFile::typeBinary)) {
-						EMFileSize filesize = kf->GetFileSize();
-
-#define SENDFILEBUFSIZE 2048
-						char *buffer = (char*)malloc(SENDFILEBUFSIZE);
-						if (!buffer) {
-							Data.pSocket->SendReply("HTTP/1.1 500 Internal Server Error\r\n");
-							CoUninitialize();
-							return;
-						}
-
-						CStringA fname(kf->GetFileName());
-						CStringA szBuf;
-						szBuf.Format("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
-							"Content-Description: \"%s\"\r\n"
-							"Content-Disposition: attachment; filename=\"%s\";\r\n"
-							"Content-Transfer-Encoding: binary\r\n"
-							"Content-Length: %I64u\r\n\r\n"
-							, (LPCSTR)fname, (LPCSTR)fname, (uint64)filesize);
-						Data.pSocket->SendData(szBuf, szBuf.GetLength());
-
-						for (UINT r = 1; (uint64)filesize > 0 && r;) {
-							r = file.Read(buffer, SENDFILEBUFSIZE);
-							filesize -= r;
-							Data.pSocket->SendData(buffer, r);
-						}
-						file.Close();
-
-						free(buffer);
-					} else
-						Data.pSocket->SendReply("HTTP/1.1 404 File not found\r\n");
+					const CStringA fname(wc2utf8(kf->GetFileName()));
+					ese::web::WebFileResponseOptions options;
+					options.cacheControl = "no-store";
+					options.attachmentUtf8.assign(
+						(LPCSTR)fname,
+						fname.GetLength());
+					Data.pSocket->SendFileResponse(
+						kf->GetFilePath(),
+						"download.bin",
+						Data.sRange,
+						options,
+						static_cast<ULONGLONG>(
+							thePrefs.GetMaxWebUploadFileSizeMB()) *
+							1024ull * 1024ull,
+						true);
 					CoUninitialize();
 					return;
 				}
@@ -5235,56 +5219,36 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		// Strip query string
 		int q = req.Find('?'); if (q >= 0) req = req.Left(q);
 		// WebRouteTable has already validated the safe leaf and extension.
-		const bool isPlay = req.Right(5).CompareNoCase(".m3u8") == 0;
 		// Ghost-viewer watchdog: any whitelisted HLS fetch proves a player is
 		// alive — including 404 polls while the playlist isn't written yet.
 		TCHAR tmp[MAX_PATH]; GetTempPath(MAX_PATH, tmp);
 		CString fp;
 		fp.Format(_T("%seMule_RTMP\\%hs"), tmp, (LPCSTR)req);
-		HANDLE hF = CreateFile(fp, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-			NULL, OPEN_EXISTING, 0, NULL);
 		// Viewers reconstruct HLS into a per-stream subdirectory so concurrent
 		// streams cannot collide. Keep the legacy /hls/<file> URL working by
 		// falling back to the active stream namespace when the root file is not
 		// present. Broadcasters still take the root fast path above.
-		if (hF == INVALID_HANDLE_VALUE && theApp.liveStreamManager != NULL
+		if (!PathFileExists(fp) && theApp.liveStreamManager != NULL
 			&& theApp.liveStreamManager->IsViewingLive()) {
 			const uchar* key = theApp.liveStreamManager->GetViewerStreamKey();
 			if (key != NULL) {
 				CStringA keyHex = EseHexKey16A(key);
 				fp.Format(_T("%seMule_RTMP\\%hs\\%hs"), tmp,
 					(LPCSTR)keyHex, (LPCSTR)req);
-				hF = CreateFile(fp, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-					NULL, OPEN_EXISTING, 0, NULL);
 				// A validated viewer-namespace poll proves that the remote
 				// player is alive, even while its first playlist is a 404.
 				theApp.liveStreamManager->NotePlayerFetch();
 			}
 		}
-		if (hF == INVALID_HANDLE_VALUE) {
-			const char* hdr = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-			Data.pSocket->SendData(hdr, (int)strlen(hdr));
-			return;
-		}
-		DWORD sz = GetFileSize(hF, NULL);
-		const char* mime = isPlay ? "application/vnd.apple.mpegurl" : "video/mp2t";
-		const char* cache = isPlay ? "no-cache" : "max-age=30";
-		CStringA hdr;
-		hdr.Format(
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: %s\r\n"
-			"Content-Length: %u\r\n"
-			"Cache-Control: %s\r\n"
-			"Access-Control-Allow-Origin: *\r\n\r\n",
-			mime, (unsigned)sz, cache);
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		// Stream file in 64 KB chunks (small player segments are < 1 MB anyway)
-		BYTE buf[65536];
-		DWORD got = 0;
-		while (ReadFile(hF, buf, sizeof(buf), &got, NULL) && got > 0) {
-			Data.pSocket->SendData((const char*)buf, (int)got);
-		}
-		CloseHandle(hF);
+		ese::web::WebFileResponseOptions hlsOptions;
+		hlsOptions.corsOrigin = "*";
+		Data.pSocket->SendFileResponse(
+			fp,
+			req,
+			Data.sRange,
+			hlsOptions,
+			20ull * 1024ull * 1024ull,
+			false);
 		return;
 	}
 
@@ -7559,39 +7523,15 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			filePath.Format(_T("%seMule_RTMP\\%s\\%s"), tmpPath,
 				(LPCTSTR)CString(hashHex), (LPCTSTR)CString(resource));
 
-			HANDLE hFile = CreateFile(filePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-				NULL, OPEN_EXISTING, 0, NULL);
-			if (hFile == INVALID_HANDLE_VALUE) {
-				Data.pSocket->SendReply("HTTP/1.1 404 Not Found\r\nContent-Length: 14\r\n\r\nFile not found");
-				return;
-			}
-			DWORD fileSize = GetFileSize(hFile, NULL);
-			if (fileSize == 0 || fileSize > 20 * 1024 * 1024) {
-				CloseHandle(hFile);
-				Data.pSocket->SendReply("HTTP/1.1 404 Not Found\r\nContent-Length: 12\r\n\r\nEmpty or big");
-				return;
-			}
-			BYTE* buf = new BYTE[fileSize];
-			DWORD bytesRead = 0;
-			ReadFile(hFile, buf, fileSize, &bytesRead, NULL);
-			CloseHandle(hFile);
-
-			const char* ct = (resource.Right(5) == ".m3u8")
-				? "application/vnd.apple.mpegurl" : "video/mp2t";
-			const char* cache = (resource.Right(5) == ".m3u8")
-				? "Cache-Control: no-cache\r\n" : "";
-
-			CStringA header;
-			header.Format(
-				"HTTP/1.1 200 OK\r\n"
-				"Content-Type: %s\r\n"
-				"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
-			"X-Content-Type-Options: nosniff\r\n"
-				"%s"
-				"Content-Length: %u\r\n\r\n", ct, cache, bytesRead);
-			Data.pSocket->SendData(header, header.GetLength());
-			Data.pSocket->SendData(buf, bytesRead);
-			delete[] buf;
+			ese::web::WebFileResponseOptions hlsOptions;
+			hlsOptions.corsOrigin = "http://127.0.0.1";
+			Data.pSocket->SendFileResponse(
+				filePath,
+				resource,
+				Data.sRange,
+				hlsOptions,
+				20ull * 1024ull * 1024ull,
+				false);
 			return;
 		}
 	}
@@ -7789,45 +7729,31 @@ void CWebServer::_ProcessFileReq(const ThreadData &Data)
 	const CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
 	if (pThis == NULL)
 		return;
-	CString contenttype;
 
 	CString filename(Data.sURL);
-	LPCTSTR pDot = ::PathFindExtension(filename);
-	if (CPTR(filename, filename.GetLength()) > pDot + 2) { //at least 2 characters
-		CString ext(pDot + 1); //skip the dot
-		ext.MakeLower();
-		if (ext == _T("bmp") || ext == _T("gif") || ext == _T("jpeg") || ext == _T("jpg") || ext == _T("png"))
-			contenttype.Format(_T("Content-Type: image/%s\r\n"), (LPCTSTR)ext);
-		//DonQ - additional file types
-		else if (ext == _T("ico"))
-			contenttype = _T("Content-Type: image/x-icon\r\n");
-		else if (ext == _T("css"))
-			contenttype = _T("Content-Type: text/css\r\n");
-		else if (ext == _T("js"))
-			contenttype = _T("Content-Type: text/javascript\r\n");
-	}
-
-	contenttype.AppendFormat(_T("Last-Modified: %s\r\nETag: %s\r\n"), (LPCTSTR)pThis->m_Params.sLastModified, (LPCTSTR)pThis->m_Params.sETag);
+	const CStringA requestPath(Data.sURL);
 
 	filename.Replace(_T('/'), _T('\\'));
 	if (filename[0] == _T('\\'))
 		filename.Delete(0, 1);
 	filename.Insert(0, thePrefs.GetMuleDirectory(EMULE_WEBSERVERDIR));
 
-	CFile file;
-	if (file.Open(filename, CFile::modeRead | CFile::shareDenyWrite | CFile::typeBinary)) {
-		if (thePrefs.GetMaxWebUploadFileSizeMB() == 0 || file.GetLength() <= thePrefs.GetMaxWebUploadFileSizeMB() * 1024ull * 1024ull) {
-			UINT filesize = (UINT)file.GetLength();
+	const ULONGLONG maximumBytes =
+		static_cast<ULONGLONG>(thePrefs.GetMaxWebUploadFileSizeMB()) *
+		1024ull * 1024ull;
 
-			char *buffer = new char[filesize];
-			UINT size = file.Read(buffer, filesize);
-			file.Close();
-			Data.pSocket->SendContent((CStringA)contenttype, buffer, size);
-			delete[] buffer;
-		} else
-			Data.pSocket->SendReply("HTTP/1.1 403 Forbidden\r\n");
-	} else
-		Data.pSocket->SendReply("HTTP/1.1 404 File not found\r\n");
+	const CStringA lastModified(pThis->m_Params.sLastModified);
+	const CStringA etag(pThis->m_Params.sETag);
+	ese::web::WebFileResponseOptions options;
+	options.lastModified.assign((LPCSTR)lastModified, lastModified.GetLength());
+	options.etag.assign((LPCSTR)etag, etag.GetLength());
+	Data.pSocket->SendFileResponse(
+		filename,
+		requestPath,
+		Data.sRange,
+		options,
+		maximumBytes,
+		true);
 }
 
 CString CWebServer::_GetWebImageNameForFileType(const CString &filename)

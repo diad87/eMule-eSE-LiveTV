@@ -95,6 +95,11 @@ if errorlevel 1 exit /b 1
 tests\build\test_web_controllers.exe
 if errorlevel 1 exit /b 1
 
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_streaming.exe tests\test_web_streaming.cpp WebStaticAssets.cpp WebSocketResponse.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_web_streaming.exe
+if errorlevel 1 exit /b 1
+
 set "CRYPTLIB=%ROOT%\..\cryptopp\x64\Output\Release\cryptlib.lib"
 if not exist "%CRYPTLIB%" (echo ERROR: cryptlib.lib missing; run the core gate or build emule first & exit /b 2)
 cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /I.. /Fetests\build\test_holepunch_cookie.exe tests\test_holepunch_cookie.cpp "%CRYPTLIB%"

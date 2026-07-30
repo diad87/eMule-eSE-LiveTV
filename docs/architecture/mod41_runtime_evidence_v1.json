@@ -1,0 +1,36 @@
+{
+  "schema": "ese.mod41.runtime-evidence/v1",
+  "source_commit": "c98dc638ec36186fcc9258940ce345cae89da955",
+  "status": "PASS",
+  "test_mode": true,
+  "loopback_only": true,
+  "source_runtime": {
+    "port": 18092,
+    "debug_status": 200,
+    "debug_response_sha256": "e140d8d81745e43412aa321e241a8e9894d2607b3e4d23aeba8aa624bd80318f",
+    "debug_slash_identical": true,
+    "lookalike_status": 404,
+    "log_status": 200,
+    "termination_confirmed": true
+  },
+  "packaged_runtime": {
+    "port": 18093,
+    "executable": "srchybrid/eSE/ese-server.exe",
+    "executable_bytes": 70697736,
+    "executable_sha256": "f3595bfe2829229b7788ff2baf450a2705348fc289145dd7d341e69e7e6619ad",
+    "debug_status": 200,
+    "debug_response_sha256": "e140d8d81745e43412aa321e241a8e9894d2607b3e4d23aeba8aa624bd80318f",
+    "debug_slash_identical": true,
+    "lookalike_status": 404,
+    "log_status": 200,
+    "termination_confirmed": true
+  },
+  "suites": {
+    "python": "391/391",
+    "node": "42/42",
+    "native": "PASS; FEC 21659/21659; Bulk 183/183; standalone 14/14",
+    "node_package_build": "PASS"
+  },
+  "runtime_ports_released": true,
+  "artifact_directory": "artifacts/mod41-runtime-c98dc638"
+}

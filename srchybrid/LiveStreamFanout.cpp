@@ -320,7 +320,8 @@ LiveFanoutReservation LiveStreamFanout::BeginDelivery(
 		external_queued_bytes > kPeerQueueLimitBytes - wire_bytes ||
 		found->pending_bytes >
 			kPeerQueueLimitBytes - wire_bytes - external_queued_bytes) {
-		++found->backpressure_rejections;
+		found->backpressure_rejections = SaturatingAdd(
+			found->backpressure_rejections, 1u);
 		result.result = LiveFanoutDeliveryResult::Backpressured;
 		return result;
 	}
@@ -382,10 +383,13 @@ bool LiveStreamFanout::CompleteDelivery(std::uint64_t token, bool sent)
 	child->pending_bytes -= reservation->wire_bytes;
 	--child->pending_deliveries;
 	if (sent) {
-		++child->completed_deliveries;
-		child->completed_bytes += reservation->wire_bytes;
+		child->completed_deliveries = SaturatingAdd(
+			child->completed_deliveries, 1u);
+		child->completed_bytes = SaturatingAdd(
+			child->completed_bytes, reservation->wire_bytes);
 	} else {
-		++child->failed_deliveries;
+		child->failed_deliveries = SaturatingAdd(
+			child->failed_deliveries, 1u);
 	}
 	reservations_.erase(reservation);
 	transport_idle_.notify_all();

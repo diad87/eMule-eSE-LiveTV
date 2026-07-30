@@ -33,16 +33,16 @@
     {
       "path": "srchybrid/LiveStreamManager.cpp",
       "baseline_sha256": "33d509c439836fce2fc35e509f933637687505394daeb5b66e29cb599eb62cc2",
-      "overlay_sha256": "cf664b99e3713fe43b7302a41bc99c09f5445a65af2e05c49b2a35fbd4776939",
-      "task": "MOD-0.2 + MOD-3.1",
-      "reason": "MOD-3.1 delegates broadcaster and viewer lifecycle state, generation, retry timers, tunnel-session scalars and broadcaster secret lifetime to the two portable session modules while retaining locks, protocol projection and external I/O in the coordinator."
+      "overlay_sha256": "d07b6675bdb80a176116eb7a10ed03829df3bddfd2c4fedb5adfe835c9aa6721",
+      "task": "MOD-0.2 + MOD-3.1 + MOD-3.2",
+      "reason": "MOD-3.1 delegates broadcaster and viewer lifecycle state, generation, retry timers, tunnel-session scalars and broadcaster secret lifetime to the two portable session modules; MOD-3.2 delegates ordered source/downstream membership, bounded selection, atomic replacement and IPv4 diversity while retaining locks, pointer lifetime, protocol projection and external I/O in the coordinator."
     },
     {
       "path": "srchybrid/LiveStreamManager.h",
       "baseline_sha256": "e93b3c7467a389872fb5084e9912bcbf1b2cd6693d3990d3dda54fcaec0449fd",
-      "overlay_sha256": "e6645cc04239028dacdcfc70d64198ec754121c7f8e441caebe049e22af41827",
-      "task": "MOD-0.2 + MOD-3.1",
-      "reason": "MOD-3.1 replaces coordinator-owned broadcaster/viewer lifecycle scalars with explicit LiveBroadcastSession and LiveViewerSession composition."
+      "overlay_sha256": "47f9f57229d2994a571ae79ce63c4c77837a9158e3900f59b0257fd305a0b88f",
+      "task": "MOD-0.2 + MOD-3.1 + MOD-3.2",
+      "reason": "MOD-3.1 replaces coordinator-owned broadcaster/viewer lifecycle scalars with explicit LiveBroadcastSession and LiveViewerSession composition; MOD-3.2 replaces the two coordinator-owned peer lists with a single portable LivePeerSet."
     }
   ]
 }

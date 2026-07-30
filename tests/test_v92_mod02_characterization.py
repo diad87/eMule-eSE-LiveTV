@@ -54,6 +54,7 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/LiveStreamManager.cpp", "srchybrid/LiveStreamManager.h",
     "srchybrid/LiveBroadcastSession.cpp", "srchybrid/LiveBroadcastSession.h",
     "srchybrid/LiveViewerSession.cpp", "srchybrid/LiveViewerSession.h",
+    "srchybrid/LivePeerSet.cpp", "srchybrid/LivePeerSet.h",
     "srchybrid/LiveBuddyRelay.cpp", "srchybrid/LiveBuddyRelay.h",
     "srchybrid/LiveStreamDlgUI.cpp", "srchybrid/LiveStreamDlg.h",
 ]

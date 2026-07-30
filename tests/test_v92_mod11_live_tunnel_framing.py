@@ -341,6 +341,13 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveViewerSession.cpp"],
                 "interface_files": ["srchybrid/LiveViewerSession.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LivePeerSet",
+                "owner": "CLiveStreamManager",
+                "layer": "domain_state",
+                "implementation_files": ["srchybrid/LivePeerSet.cpp"],
+                "interface_files": ["srchybrid/LivePeerSet.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -436,6 +443,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             }, {
                 "module": "LiveViewerSession",
                 "slice_base_commit": "a48445e560765fc68fc85b0e61a09e2e72b7f9de",
+                "source_coordinator": "srchybrid/LiveStreamManager.cpp",
+            }, {
+                "module": "LivePeerSet",
+                "slice_base_commit": "e56166bc11bbd41c6f27978519bad4b6099a3952",
                 "source_coordinator": "srchybrid/LiveStreamManager.cpp",
             }],
         })
@@ -550,6 +561,15 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/tests/test_live_peer_set.cpp",
+                "reason": (
+                    "Standalone role, replacement, limit, ordering and IPv4 "
+                    "diversity executable test for the MOD-3.2 peer-set "
+                    "extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         numstat = subprocess.check_output(
             ["git", "diff", "--numstat", SLICE_BASE, "--", "srchybrid/LiveTunnel.cpp"],
@@ -618,6 +638,8 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/LiveBroadcastSession.h",
             "srchybrid/LiveViewerSession.cpp",
             "srchybrid/LiveViewerSession.h",
+            "srchybrid/LivePeerSet.cpp",
+            "srchybrid/LivePeerSet.h",
             "srchybrid/LiveBuddyRelay.cpp",
             "srchybrid/LiveBuddyRelay.h",
             "srchybrid/LiveStreamDlgUI.cpp",

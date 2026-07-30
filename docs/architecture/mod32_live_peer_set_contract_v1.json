@@ -1,0 +1,40 @@
+{
+  "schema": "ese.mod32.live-peer-set-contract/v1",
+  "baseline_commit": "e56166bc11bbd41c6f27978519bad4b6099a3952",
+  "module": {
+    "name": "LivePeerSet",
+    "owner_before": "CLiveStreamManager",
+    "owner_after": "LivePeerSet",
+    "layer": "domain_state",
+    "responsibility": "peer role membership, stable selection, replacement, limits and IPv4 super-seeder diversity",
+    "declared_direct_dependencies": []
+  },
+  "invariants": {
+    "roles": "source_and_downstream_are_independent",
+    "identity": "opaque_nonzero_handle_with_pointer_identity_semantics",
+    "order": "stable_insertion_order",
+    "duplicates": "idempotent_without_reordering",
+    "limits": "zero_is_unbounded_and_full_rejects_without_partial_state",
+    "replacement": "atomic_position_preserving_and_duplicate_free",
+    "selection": "bounded_index_without_hidden_rotation",
+    "ipv4_diversity": "maximum_five_existing_super_seeders_per_24_and_existing_20_percent_rule_per_16",
+    "wire_format": "unchanged"
+  },
+  "boundary": {
+    "owned_by_LivePeerSet": [
+      "source peer membership",
+      "downstream peer membership",
+      "membership limits and stable selection",
+      "pointer replacement semantics",
+      "pure IPv4 super-seeder diversity decision"
+    ],
+    "retained_by_CLiveStreamManager": [
+      "manager lock",
+      "CUpDownClient lifetime and pointer conversion",
+      "peer trust, counters and bitmap records",
+      "mesh manager synchronization",
+      "network endpoint inspection and packet sends",
+      "logging and UI projection"
+    ]
+  }
+}

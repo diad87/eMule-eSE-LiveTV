@@ -10,6 +10,7 @@
 #include "LivePeerRefreshPolicy.h"
 #include "LiveBroadcastSession.h"
 #include "LiveViewerSession.h"
+#include "LivePeerSet.h"
 #include "LiveDebugLog.h"        // V2-S05: LatencyHistogram
 #include "RTMPIngest.h"
 #include "eMuleAI/Address.h"
@@ -339,7 +340,7 @@ public:
     // by the tunnel exit handler (ExitHandle_LiveSubscribe) when a tunneled
     // subscribe arrives: dial the broadcaster and send OP_LIVE_SUBSCRIBE from
     // THIS node (the exit) on the viewer's behalf, WITHOUT entering our own
-    // viewing state (viewer session / m_viewPeers untouched). The broadcaster thus
+    // viewing state (viewer session / source role untouched). The broadcaster thus
     // sees the exit, never the viewer. altIP is tried if the public endpoint is
     // non-routable. Returns true if the subscribe packet was sent. The heartbeat
     // / announce relay back to the viewer is C3.
@@ -348,7 +349,7 @@ public:
 
     // v8.1 Sprint C (C4 zombie fix) — exit-side proxy UNSUBSCRIBE. Called from
     // the tunnel sweep when the last tunneled viewer of a stream leaves: tells
-    // the broadcaster to drop us from m_broadcastPeers so we stop occupying an
+    // the broadcaster to drop us from its downstream role so we stop occupying an
     // upload slot with zero downstream viewers. Main thread.
     void ExitProxyUnsubscribe(const uchar* streamKey, uint32 ip, uint16 port);
 
@@ -519,8 +520,8 @@ public:
     // Phase 0: Observability counters
     const LiveStreamCounters& GetCounters() const { return m_counters; }
     LiveStreamCounters& GetCountersMut() { return m_counters; }
-    int GetViewPeerCount() const { return (int)m_viewPeers.GetCount(); }
-    int GetBroadcastPeerCount() const { return (int)m_broadcastPeers.GetCount(); }
+    int GetViewPeerCount() const { return static_cast<int>(m_peerSet.SourceCount()); }
+    int GetBroadcastPeerCount() const { return static_cast<int>(m_peerSet.DownstreamCount()); }
     // v8.1.2 B6 — is `peer` one of our SOURCES for the currently viewed stream (a co-seeder
     // that serves us this channel)? The tunnel's 2-hop builder keeps such a peer out of
     // hop1/exit (it would deanonymize the viewer by channel). Main-thread read, no lock.
@@ -579,9 +580,7 @@ private:
     uint32              m_lastRelayedSeq;       // last seq forwarded to the buddy (UINT_MAX = none)
     DWORD               m_dwLastRelaySetup;     // throttle for (re)sending SETUP when no buddy
 
-    // Peer lists
-    CTypedPtrList<CPtrList, CUpDownClient*> m_broadcastPeers;   // Peers watching our stream
-    CTypedPtrList<CPtrList, CUpDownClient*> m_viewPeers;        // Peers we get stream from
+    ese::live::LivePeerSet m_peerSet; // opaque membership; client list owns pointers
 
     // Trust data. C6 (2026-06): keyed by LivePeerId (durable user-hash/pubkey
     // identity), NOT the CUpDownClient* pointer — so it survives the ~6 s LowID
@@ -681,7 +680,7 @@ private:
     // Re-dialing a source we dialed seconds ago recycles its CUpDownClient via
     // CClientList::AttachToAlreadyKnown, which drops the live TCP socket
     // mid-transfer — the JOIN/DISCONNECT churn + micro-cuts seen in 2-PC tests.
-    // The m_viewPeers dedup is defeated when the recycle briefly removes the
+    // Source-role dedup is defeated when the recycle briefly removes the
     // peer from the list, so we cooldown by endpoint (key = ip<<16|port),
     // surviving the transient disconnect. Fed by the Kad dial-queue drain,
     // EnsureMultiParent and the failover, which all re-dial known sources.

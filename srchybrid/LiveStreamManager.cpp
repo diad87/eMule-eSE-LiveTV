@@ -64,12 +64,38 @@ static const DWORD ESE_TOMBSTONE_PRUNE_MS  = 60u * 1000u;
 // the 90 s timer expired, viewer gossipped a (false) END for the
 // stream, broadcaster cascaded the END to all OTHER viewers, mass
 // disconnect. v7.2.2 raises to 180 s AND additionally gates on
-// m_viewPeers.GetCount() == 0 so we only declare dead when we are
+// the source role is empty so we only declare dead when we are
 // genuinely alone, not just slow.
 static const DWORD ESE_LIVE_WATCHDOG_MS    = 180u * 1000u;
 
 static_assert(CLivePeerRefreshPolicy::MIN_PEERS == ESE_LIVE_MIN_PEERS,
     "Live peer refresh policy must match the wire/runtime resilience floor");
+
+using ese::live::LivePeerAddResult;
+using ese::live::LivePeerDiversityDecision;
+using ese::live::LivePeerDiversityReason;
+using ese::live::LivePeerHandle;
+using ese::live::LivePeerSet;
+
+static LivePeerHandle PeerHandleOf(CUpDownClient* peer) {
+    return reinterpret_cast<LivePeerHandle>(peer); }
+static CUpDownClient* PeerFromHandle(LivePeerHandle peer) {
+    return reinterpret_cast<CUpDownClient*>(peer); }
+
+static std::vector<CUpDownClient*> PeerPointers(
+    const std::vector<LivePeerHandle>& handles)
+{
+    std::vector<CUpDownClient*> snapshot;
+    snapshot.reserve(handles.size());
+    for (LivePeerHandle handle : handles)
+        snapshot.push_back(PeerFromHandle(handle));
+    return snapshot;
+}
+
+static std::vector<CUpDownClient*> SourcePeers(const LivePeerSet& peers) {
+    return PeerPointers(peers.SourceSnapshot()); }
+static std::vector<CUpDownClient*> DownstreamPeers(const LivePeerSet& peers) {
+    return PeerPointers(peers.DownstreamSnapshot()); }
 
 static CString HexStreamKey(const uchar* streamKey)
 {
@@ -228,8 +254,8 @@ bool CLiveStreamManager::StartBroadcast(const CString& title, const CString& cat
     m_broadcastStreamInfo.isBroadcaster = true;
 
     m_broadcastChunkBuffer.Clear();
-    // Never inherit downstream peers from a previously viewed remote stream.
-    m_broadcastPeers.RemoveAll();
+    // Never inherit downstream peers from a previous local broadcast.
+    m_peerSet.ClearDownstreams();
     m_dwLastKadPublish = 0;
     // R.3: fresh relay-egress state for this broadcast (clears any stale buddy from a
     // previous stream so RelayPushNewSegments re-negotiates before pushing).
@@ -594,7 +620,7 @@ void CLiveStreamManager::StopBroadcast()
     m_streamTombstones[hexKey] = GetTickCount() + ESE_TOMBSTONE_TTL_MS;
 
     // Notify all direct viewers + mesh peers: stream ended normally.
-    // Before v7.2.0, only m_broadcastPeers was notified, so secondary
+    // Before v7.2.0, only direct downstream peers were notified, so secondary
     // relays / super-seeders that we redistributed to never got the
     // memo and kept advertising the stream until their own watchdog
     // (which didn't exist) fired. Now we cast wide: broadcast peers
@@ -623,11 +649,9 @@ void CLiveStreamManager::StopBroadcast()
             peer->SendPacket(pkt);
         }
     };
-    {
-        POSITION pos = m_broadcastPeers.GetHeadPosition();
-        while (pos) sendEnd(m_broadcastPeers.GetNext(pos));
-    }
-    // m_viewPeers belongs to a concurrently viewed remote stream.  Never send
+    for (CUpDownClient* peer : DownstreamPeers(m_peerSet))
+        sendEnd(peer);
+    // The source role belongs to a concurrently viewed remote stream. Never send
     // our local END to those upstream sources.
     // C6: the old third loop swept m_peerCounters keys as "peers we know" to
     // catch mesh participants in neither list. That map is now keyed by
@@ -642,7 +666,7 @@ void CLiveStreamManager::StopBroadcast()
 
     m_broadcastSession.Stop();
     m_broadcastChunkBuffer.Clear();
-    m_broadcastPeers.RemoveAll();
+    m_peerSet.ClearDownstreams();
     CLiveBuddyRelay::Instance().ResetBroadcasterEgress();   // R.3: drop the relay buddy on stop
     if (!m_viewerSession.IsActive()) {
         m_meshManager.ResetSessionPeers();
@@ -717,10 +741,10 @@ bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title
     m_streamInfo.title = title;
     m_streamInfo.isBroadcaster = false;
     m_chunkBuffer.Clear();
-    m_viewPeers.RemoveAll();
+    m_peerSet.ClearSources();
     // The mesh manager has one active topology. During dual-role operation it
     // follows the viewer session; own broadcast viewers remain separately in
-    // m_broadcastPeers and are restored when this viewer session ends.
+    // the downstream role and are restored when this viewer session ends.
     m_meshManager.ResetSessionPeers();
     m_peerBitmaps.RemoveAll();
     m_inflightSegReqs.RemoveAll();  // Phase-1 fix #2
@@ -759,11 +783,11 @@ bool CLiveStreamManager::JoinStream(const uchar* streamKey, const CString& title
 void CLiveStreamManager::ResetViewerCoordinatorState()
 {
     m_chunkBuffer.Clear();
-    m_viewPeers.RemoveAll();
+    m_peerSet.ClearSources();
     m_meshManager.ResetSessionPeers();
     if (m_broadcastSession.IsActive()) {
-        POSITION pos = m_broadcastPeers.GetHeadPosition();
-        while (pos) m_meshManager.AddMeshPeer(m_broadcastPeers.GetNext(pos));
+        for (CUpDownClient* peer : DownstreamPeers(m_peerSet))
+            m_meshManager.AddMeshPeer(peer);
     }
     m_peerBitmaps.RemoveAll();
     m_inflightSegReqs.RemoveAll();
@@ -779,9 +803,7 @@ void CLiveStreamManager::LeaveStream()
     if (!m_viewerSession.IsActive()) return;
 
     // Send OP_LIVE_UNSUBSCRIBE to all peers we were viewing from
-    POSITION pos = m_viewPeers.GetHeadPosition();
-    while (pos) {
-        CUpDownClient* peer = m_viewPeers.GetNext(pos);
+    for (CUpDownClient* peer : SourcePeers(m_peerSet)) {
         if (peer) {
             Packet* pkt = eSELive::CreateUnsubscribePacket(
                 m_streamInfo.streamKey, thePrefs.GetUserHash());
@@ -902,9 +924,7 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
         return false;
     }
 
-    POSITION pos = m_viewPeers.GetHeadPosition();
-    while (pos) {
-        CUpDownClient* existing = m_viewPeers.GetNext(pos);
+    for (CUpDownClient* existing : SourcePeers(m_peerSet)) {
         if (existing && existing->GetIP() == ip && existing->GetUserPort() == port) {
             // A.4: even if we already have this peer, refresh its Kad UDP port
             // in case it just became known (Live result vs earlier dial)
@@ -935,7 +955,7 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     // (ip,port) within the cooldown, DON'T dial again — re-dialing recycles the
     // peer's CUpDownClient (AttachToAlreadyKnown), tearing down the live socket
     // and truncating the chunk in flight (the JOIN/DISCONNECT churn). This
-    // survives the brief m_viewPeers removal during a recycle, which defeats the
+    // survives the brief source-role removal during a recycle, which defeats the
     // dedup above. 15 s < the 20 s failover, so a genuinely dead source still
     // gets re-dialed in time. Return true = "we're already handling this source".
     const DWORD ESE_DIAL_COOLDOWN_MS = 15000;
@@ -948,13 +968,13 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     m_recentDials[dialKey] = GetTickCount();
 
     // DISC-S07: hard cap on simultaneous source connections. Without this,
-    // a popular stream with dozens of secondary sources can grow m_viewPeers
+    // a popular stream with dozens of secondary sources can grow the source set
     // unboundedly, consuming sockets and memory. 8 is plenty: V2-S19 only
     // targets 3, and mesh fallback (V2-S20) prefers low-RTT peers anyway.
     static const int kMaxViewPeers = 8;
-    if ((int)m_viewPeers.GetCount() >= kMaxViewPeers) {
+    if (m_peerSet.SourceCount() >= static_cast<std::size_t>(kMaxViewPeers)) {
         LIVE_LOG("CAP", "DISC-S07: viewPeers full (%d/%d), skip dial %S:%u",
-            (int)m_viewPeers.GetCount(), kMaxViewPeers,
+            static_cast<int>(m_peerSet.SourceCount()), kMaxViewPeers,
             (LPCWSTR)ipstr(ip), port);
         return false;
     }
@@ -972,16 +992,14 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey, uint32
     if (udpPort != 0)
         client->SetKadPort(udpPort);
 
-    // UAF FIX (Sprint C adversarial review): add the client to the peer lists
-    // BEFORE the connect attempt. SafeConnectAndSendPacket / TryToConnect can
-    // `delete this` on a hard-failure path (e.g. LowID with no callback,
-    // BaseClient.cpp ~1485) and return. The ~CUpDownClient destructor scrubs
-    // these lists via OnPeerDisconnected (the v7.1.8 UAF guard) — but only if
-    // the pointer is already IN the lists when the delete happens. The old order
-    // (add AFTER connect) inserted a freed pointer that crashed on the next
-    // iteration over m_viewPeers/mesh. Adding first makes a delete-during-connect
-    // self-cleaning. Pre-existing in the direct path; C5 added a 2nd call site.
-    m_viewPeers.AddTail(client);
+    // Register before connecting: a hard failure may delete the client, whose
+    // destructor then removes the already-registered handle (UAF guard).
+    const LivePeerAddResult sourceAdd = m_peerSet.AddSource(
+        PeerHandleOf(client),
+        static_cast<std::size_t>(kMaxViewPeers));
+    if (sourceAdd == LivePeerAddResult::Full ||
+        sourceAdd == LivePeerAddResult::Invalid)
+        return false;
     m_meshManager.AddMeshPeer(client);
     // Fix 4: Use dedicated sourceDialAttempts instead of duplicate kadResultsAccepted
     InterlockedIncrement(&m_counters.sourceDialAttempts);
@@ -1107,9 +1125,7 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey,
         || memcmp(m_streamInfo.streamKey, streamKey, 16) != 0)
         return false;
 
-    POSITION pos = m_viewPeers.GetHeadPosition();
-    while (pos) {
-        CUpDownClient* existing = m_viewPeers.GetNext(pos);
+    for (CUpDownClient* existing : SourcePeers(m_peerSet)) {
         if (existing != NULL && existing->HasIPv6Address()
             && existing->GetIPv6Address() == address
             && existing->GetUserPort() == port)
@@ -1117,9 +1133,9 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey,
     }
 
     static const int kMaxViewPeers = 8;
-    if ((int)m_viewPeers.GetCount() >= kMaxViewPeers) {
+    if (m_peerSet.SourceCount() >= static_cast<std::size_t>(kMaxViewPeers)) {
         LIVE_LOG("CAP", "IPv6 direct join skipped: viewPeers full (%d/%d)",
-            (int)m_viewPeers.GetCount(), kMaxViewPeers);
+            static_cast<int>(m_peerSet.SourceCount()), kMaxViewPeers);
         return false;
     }
 
@@ -1136,7 +1152,12 @@ bool CLiveStreamManager::TryConnectToStreamSource(const uchar* streamKey,
 
     // Add before connecting: SafeConnectAndSendPacket may delete the client,
     // whose destructor then removes it from both lists.
-    m_viewPeers.AddTail(client);
+    const LivePeerAddResult sourceAdd = m_peerSet.AddSource(
+        PeerHandleOf(client),
+        static_cast<std::size_t>(kMaxViewPeers));
+    if (sourceAdd == LivePeerAddResult::Full ||
+        sourceAdd == LivePeerAddResult::Invalid)
+        return false;
     m_meshManager.AddMeshPeer(client);
     InterlockedIncrement(&m_counters.sourceDialAttempts);
 
@@ -1196,7 +1217,7 @@ bool CLiveStreamManager::ExitProxySubscribe(const uchar* streamKey, uint32 ip,
         client->SetKadPort(udpPort);
 
     // Subscribe with OUR user-hash: the broadcaster sees the exit, never V.
-    // NOT added to m_viewPeers / m_meshManager — this node is not viewing the
+    // NOT added to the source role / mesh manager — this node is not viewing the
     // stream for itself; it is only relaying the subscribe on V's behalf.
     Packet* pkt = eSELive::CreateSubscribePacket(streamKey, thePrefs.GetUserHash(), 0);
     if (!pkt) return false;
@@ -1256,9 +1277,7 @@ void CLiveStreamManager::OnTunneledLiveControl(const uchar* streamKey,
     // per-peer-anchored bitmaps via OnPeerBitmap; stamping the broadcaster's
     // window onto them would misrepresent what they hold and waste requests.
     int applied = 0;
-    POSITION pos = m_viewPeers.GetHeadPosition();
-    while (pos) {
-        CUpDownClient* peer = m_viewPeers.GetNext(pos);
+    for (CUpDownClient* peer : SourcePeers(m_peerSet)) {
         if (!peer) continue;
         // Only the tunneled broadcaster source. If we never recorded an endpoint
         // (shouldn't happen when a tunneled heartbeat arrives), apply to none.
@@ -1563,30 +1582,31 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     // hard cap). Reply with a peer list of alternative sources so the
     // requester can fan out instead of bouncing between us and the broadcaster.
     int cap = EffectiveMaxConcurrentUploads();
-    if (cap > 0 && (int)m_broadcastPeers.GetCount() >= cap
-        && m_broadcastPeers.Find(peer) == NULL)
+    if (cap > 0 &&
+        m_peerSet.DownstreamCount() >= static_cast<std::size_t>(cap) &&
+        !m_peerSet.HasDownstream(PeerHandleOf(peer)))
     {
         LIVE_LOG("CAP", "REJECT %S:%u — cap=%d already reached (viewers=%u)",
             peer ? (LPCWSTR)ipstr(peer->GetIP()) : L"?",
             peer ? (unsigned)peer->GetUserPort() : 0,
-            cap, (unsigned)m_broadcastPeers.GetCount());
+            cap, static_cast<unsigned>(m_peerSet.DownstreamCount()));
 
         // Send up to ESE_LIVE_MAX_PEERS alternative sources so the rejected
         // viewer does not just retry against us. We pull from both lists so
         // mesh peers get advertised too.
         CArray<DWORD>  altIPs;
         CArray<uint16> altPorts;
-        POSITION posA = m_broadcastPeers.GetHeadPosition();
-        while (posA && altIPs.GetCount() < ESE_LIVE_MAX_PEERS) {
-            CUpDownClient* alt = m_broadcastPeers.GetNext(posA);
+        for (CUpDownClient* alt : DownstreamPeers(m_peerSet)) {
+            if (altIPs.GetCount() >= ESE_LIVE_MAX_PEERS)
+                break;
             if (alt && alt != peer && !alt->IsIPv6OnlyEndpoint() && alt->GetIP() != 0) {
                 altIPs.Add(alt->GetIP());
                 altPorts.Add(alt->GetUserPort());
             }
         }
-        posA = m_viewPeers.GetHeadPosition();
-        while (posA && altIPs.GetCount() < ESE_LIVE_MAX_PEERS) {
-            CUpDownClient* alt = m_viewPeers.GetNext(posA);
+        for (CUpDownClient* alt : SourcePeers(m_peerSet)) {
+            if (altIPs.GetCount() >= ESE_LIVE_MAX_PEERS)
+                break;
             if (alt && alt != peer && !alt->IsIPv6OnlyEndpoint() && alt->GetIP() != 0) {
                 altIPs.Add(alt->GetIP());
                 altPorts.Add(alt->GetUserPort());
@@ -1611,13 +1631,15 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     }
 
     // Register peer
-    if (m_broadcastPeers.Find(peer) == NULL)
-        m_broadcastPeers.AddTail(peer);
+    m_peerSet.AddDownstream(
+        PeerHandleOf(peer),
+        cap > 0 ? static_cast<std::size_t>(cap) : 0u);
     PeerTrust& trust = GetOrCreateTrust(peer);
     trust.joinedAt = GetTickCount();
     trust.currentLevel = ESE_TRUST_LEAF;  // Everyone starts as leaf
 
-    servedInfo.viewerCount = (uint32)m_broadcastPeers.GetCount();
+    servedInfo.viewerCount =
+        static_cast<uint32>(m_peerSet.DownstreamCount());
     InterlockedIncrement(&m_counters.subscribeAccepted);  // Phase 0: OBS-1 (atomic)
 
     AddLogLine(false, GetResString(IDS_LIVEMGR_PEER_JOINED_FMT),
@@ -1638,17 +1660,17 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     // Collect up to 5 peers IPs/ports
     CArray<DWORD> peerIPs;
     CArray<uint16> peerPorts;
-    POSITION pos2 = m_broadcastPeers.GetHeadPosition();
-    while (pos2 && peerIPs.GetCount() < ESE_LIVE_MAX_PEERS) {
-        CUpDownClient* existing = m_broadcastPeers.GetNext(pos2);
+    for (CUpDownClient* existing : DownstreamPeers(m_peerSet)) {
+        if (peerIPs.GetCount() >= ESE_LIVE_MAX_PEERS)
+            break;
         if (existing != peer && !existing->IsIPv6OnlyEndpoint() && existing->GetIP() != 0) {
             peerIPs.Add(existing->GetIP());
             peerPorts.Add(existing->GetUserPort());
         }
     }
-    pos2 = m_viewPeers.GetHeadPosition();
-    while (pos2 && peerIPs.GetCount() < ESE_LIVE_MAX_PEERS) {
-        CUpDownClient* existing = m_viewPeers.GetNext(pos2);
+    for (CUpDownClient* existing : SourcePeers(m_peerSet)) {
+        if (peerIPs.GetCount() >= ESE_LIVE_MAX_PEERS)
+            break;
         if (existing != peer && !existing->IsIPv6OnlyEndpoint() && existing->GetIP() != 0) {
             peerIPs.Add(existing->GetIP());
             peerPorts.Add(existing->GetUserPort());
@@ -1671,9 +1693,9 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
 		CArray<CAddress> peerAddrs;
 		CArray<uint16> peerAddrPorts;
 		CArray<uint8> peerScores;
-		POSITION v2pos = m_broadcastPeers.GetHeadPosition();
-		while (v2pos && peerAddrs.GetCount() < ESE_LIVE_MAX_PEERS) {
-			CUpDownClient* existing = m_broadcastPeers.GetNext(v2pos);
+		for (CUpDownClient* existing : DownstreamPeers(m_peerSet)) {
+			if (peerAddrs.GetCount() >= ESE_LIVE_MAX_PEERS)
+				break;
 			if (existing == peer) continue;
 			CAddress address = existing->IsIPv6OnlyEndpoint()
 				? existing->GetIPv6Address()
@@ -1684,9 +1706,9 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
 				peerScores.Add(100); // upstream/broadcaster peer
 			}
 		}
-		v2pos = m_viewPeers.GetHeadPosition();
-		while (v2pos && peerAddrs.GetCount() < ESE_LIVE_MAX_PEERS) {
-			CUpDownClient* existing = m_viewPeers.GetNext(v2pos);
+		for (CUpDownClient* existing : SourcePeers(m_peerSet)) {
+			if (peerAddrs.GetCount() >= ESE_LIVE_MAX_PEERS)
+				break;
 			if (existing == peer) continue;
 			CAddress address = existing->IsIPv6OnlyEndpoint()
 				? existing->GetIPv6Address()
@@ -1951,7 +1973,7 @@ void CLiveStreamManager::OnPeerRequest(CUpDownClient* peer, const uchar* streamK
     pcReq.MaybeResetWindow(GetTickCount());
     float ratio = pcReq.Ratio60s();
 
-    int total_viewers = (int)m_broadcastPeers.GetCount();
+    const int total_viewers = static_cast<int>(m_peerSet.DownstreamCount());
     float required;
     if (total_viewers <= 5)       required = 0.0f;
     else if (total_viewers <= 20) required = (float)(total_viewers - 5) / 15.0f * 0.7f;
@@ -2354,11 +2376,11 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
     // CUpDownClient deletion only happens on this same (main) thread.
     struct RelayOut { CUpDownClient* child; Packet* pkt; };
     std::vector<RelayOut> relayPkts;
-    // A simultaneous local broadcaster owns m_broadcastPeers.  Remote chunks
+    // A simultaneous local broadcaster owns the downstream role. Remote chunks
     // must never be pushed to those viewers or signed with the local
     // broadcaster identity.  Secondary redistribution remains enabled for a
     // pure viewer.
-    if (!m_broadcastSession.IsActive() && !m_broadcastPeers.IsEmpty()) {
+    if (!m_broadcastSession.IsActive() && !m_peerSet.DownstreamsEmpty()) {
         uint32 storedSize = 0;
         bool   storedFound = false;
         // We can't build N packets inside the lambda without knowing N — we
@@ -2388,20 +2410,22 @@ void CLiveStreamManager::OnChunkReceived(CUpDownClient* peer, const uchar* strea
             localView.data           = bodyCopy.data();   // points into bodyCopy, valid for this scope
 
             int relayMax = EffectiveMaxConcurrentUploads();
-            POSITION cpos = m_broadcastPeers.GetHeadPosition();
-            while (cpos && (relayMax <= 0 || (int)relayPkts.size() < relayMax)) {
-                CUpDownClient* child = m_broadcastPeers.GetNext(cpos);
+            for (CUpDownClient* child : DownstreamPeers(m_peerSet)) {
+                if (relayMax > 0 &&
+                    static_cast<int>(relayPkts.size()) >= relayMax)
+                    break;
                 if (!child) continue;
                 if (child == peer) continue;  // do not bounce back to source
                 // v8.1.1 dedup — skip the proactive relay-push to a child that is
-                // ALSO one of OUR sources (m_viewPeers). In a mutual mesh (V<->X both
+                // ALSO one of OUR sources. In a mutual mesh (V<->X both
                 // pull from each other) that child independently PULLs the same stream,
                 // so this push just races its own pull and lands as a "REJECT duplicate"
                 // — about half the bandwidth wasted at high bitrate. It still PULLs from
                 // us anything it genuinely lacks (failover intact), so data is never
                 // withheld. Children that are NOT our sources (pure leaves) still get
                 // the proactive push.
-                if (m_viewPeers.Find(child) != NULL) continue;
+                if (m_peerSet.HasSource(PeerHandleOf(child)))
+                    continue;
                 if (child->GetSocketQueuedBytes() > ESE_LIVE_MAX_PEER_QUEUE_BYTES) {
                     LIVE_LOG("RELAY", "DROP seq=%u: child queue exceeds %u KB",
                         seqNum, ESE_LIVE_MAX_PEER_QUEUE_BYTES / 1024);
@@ -2465,38 +2489,28 @@ void CLiveStreamManager::OnPeerBitmap(CUpDownClient* peer, const uchar* streamKe
         && memcmp(m_streamInfo.streamKey, streamKey, 16) == 0;
     if (!broadcastHeartbeat && !viewerHeartbeat) return;
 
-    // v7.2.1 — Self-heal peer lists. v7.1.8 added ~CUpDownClient ->
-    // OnPeerDisconnected to scrub dangling pointers, but that ALSO fires
-    // when CClientList::AttachToAlreadyKnown merges two CUpDownClient
-    // objects for the same peer (e.g. on second OP_HELLO). The new
-    // instance keeps the TCP socket alive but isn't in m_broadcastPeers
-    // because no OP_LIVE_JOIN is resent — only OP_LIVE_BITMAP heartbeats
-    // arrive. Effect before this fix: 4 active TCP connections, internal
-    // viewer count stuck at 0. Heartbeats fire every 1 s, so we just
-    // re-add the peer here whenever it's the matching key + matching role.
-    if (broadcastHeartbeat && m_broadcastPeers.Find(peer) == NULL) {
-        m_broadcastPeers.AddTail(peer);
-        m_broadcastStreamInfo.viewerCount = (uint32)m_broadcastPeers.GetCount();
-        // C6 finish: OnPeerDisconnected (fires on the AttachToAlreadyKnown swap)
-        // also evicted this peer from the pointer-keyed mesh via RemoveMeshPeer,
-        // but only m_broadcastPeers was restored above. Restore mesh membership
-        // too so GetMeshPeerCount / the (dormant) rarest-first scheduler stay
-        // consistent. AddMeshPeer is idempotent (IsMeshPeer guard, no counter
-        // resets), so this cannot double-add.
+    // AttachToAlreadyKnown may replace a client object without resending JOIN.
+    // Matching heartbeats restore the role removed with the old pointer.
+    if (broadcastHeartbeat &&
+        !m_peerSet.HasDownstream(PeerHandleOf(peer))) {
+        m_peerSet.AddDownstream(PeerHandleOf(peer));
+        m_broadcastStreamInfo.viewerCount =
+            static_cast<uint32>(m_peerSet.DownstreamCount());
+        // The pointer swap also evicts mesh membership; its add is idempotent.
         if (!m_viewerSession.IsActive())
             m_meshManager.AddMeshPeer(peer);
         LIVE_LOG("PEER", "REJOIN viewer=%S:%u (heartbeat after ClientList swap) total=%u",
             (LPCWSTR)ipstr(peer->GetIP()), (unsigned)peer->GetUserPort(),
             m_broadcastStreamInfo.viewerCount);
     }
-    if (viewerHeartbeat && m_viewPeers.Find(peer) == NULL) {
-        m_viewPeers.AddTail(peer);
-        // C6 finish: restore mesh membership lost to the swap's RemoveMeshPeer
-        // (see the broadcaster branch above). Idempotent, side-effect-free on add.
+    if (viewerHeartbeat &&
+        !m_peerSet.HasSource(PeerHandleOf(peer))) {
+        m_peerSet.AddSource(PeerHandleOf(peer));
+        // Restore mesh membership lost with the replaced pointer.
         m_meshManager.AddMeshPeer(peer);
         LIVE_LOG("PEER", "REJOIN source=%S:%u (heartbeat after ClientList swap) total=%d",
             (LPCWSTR)ipstr(peer->GetIP()), (unsigned)peer->GetUserPort(),
-            (int)m_viewPeers.GetCount());
+            static_cast<int>(m_peerSet.SourceCount()));
     }
 
     // Phase 1 BOOT-1: persist BOTH bitmap and oldestSeq.
@@ -2600,7 +2614,9 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
         // v8.1 D3 BALANCED - stop amplifying fanout past the cap in the degraded state, so a
         // BALANCED viewer with no circuit exposes its IP to far fewer secondary sources than
         // a BEST_EFFORT viewer (which keeps the full peer-list mesh).
-        if (balancedDegraded && (int)m_viewPeers.GetCount() >= kBalancedFanoutCap) {
+        if (balancedDegraded &&
+            m_peerSet.SourceCount() >=
+                static_cast<std::size_t>(kBalancedFanoutCap)) {
             LIVE_LOG("TUN", "D3 BALANCED: secondary-fanout cap (%d) reached, skip rest of peer-list",
                 kBalancedFanoutCap);
             break;
@@ -2612,9 +2628,7 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
         // Skip only this exact endpoint. Several independent peers may share
         // one public address behind CGNAT; IP alone is not an identity.
         bool alreadyConnected = false;
-        POSITION pos2 = m_viewPeers.GetHeadPosition();
-        while (pos2) {
-            CUpDownClient* existing = m_viewPeers.GetNext(pos2);
+        for (CUpDownClient* existing : SourcePeers(m_peerSet)) {
             if (existing && !existing->IsIPv6OnlyEndpoint()
                 && existing->GetIP() == ip && existing->GetUserPort() == port) {
                 alreadyConnected = true;
@@ -2646,13 +2660,12 @@ void CLiveStreamManager::OnPeerListReceived(CUpDownClient* /*peer*/,
             newClient->SetIP(ip);
             theApp.clientlist->AddClient(newClient);
         }
-        // UAF-safe ordering (matches the C5 fix in TryConnectToStreamSource): add to
-        // the view/mesh lists BEFORE the connect, because SafeConnectAndSendPacket /
-        // TryToConnect can `delete this` on a LowID hard-fail and ~CUpDownClient ->
-        // OnPeerDisconnected scrubs these lists — self-cleaning only if the pointer is
-        // already IN them. The old order (add after connect) inserted a freed pointer.
-        if (m_viewPeers.Find(newClient) == NULL)
-            m_viewPeers.AddTail(newClient);
+        // Register before connecting so a delete-on-failure can scrub the handle.
+        m_peerSet.AddSource(
+            PeerHandleOf(newClient),
+            balancedDegraded
+                ? static_cast<std::size_t>(kBalancedFanoutCap)
+                : 0u);
         m_meshManager.AddMeshPeer(newClient);
 
         if (tunMode) {
@@ -2770,13 +2783,13 @@ void CLiveStreamManager::OnPeerListReceivedV6(CUpDownClient* peer,
                 continue;
             if (localV6.GetType() == CAddress::IPv6 && address == localV6)
                 continue;
-            if (balancedDegraded && (int)m_viewPeers.GetCount() >= kBalancedFanoutCap)
+            if (balancedDegraded &&
+                m_peerSet.SourceCount() >=
+                    static_cast<std::size_t>(kBalancedFanoutCap))
                 break;
 
             bool alreadyConnected = false;
-            POSITION pos2 = m_viewPeers.GetHeadPosition();
-            while (pos2) {
-                CUpDownClient* existing = m_viewPeers.GetNext(pos2);
+            for (CUpDownClient* existing : SourcePeers(m_peerSet)) {
                 if (existing != NULL && existing->HasIPv6Address()
                     && existing->GetIPv6Address() == address
                     && existing->GetUserPort() == port) {
@@ -2803,8 +2816,11 @@ void CLiveStreamManager::OnPeerListReceivedV6(CUpDownClient* peer,
                 newClient->SetIP(address.ToSyntheticUInt32());
             }
             newClient->SetLiveIPv6Source();
-            if (m_viewPeers.Find(newClient) == NULL)
-                m_viewPeers.AddTail(newClient);
+            m_peerSet.AddSource(
+                PeerHandleOf(newClient),
+                balancedDegraded
+                    ? static_cast<std::size_t>(kBalancedFanoutCap)
+                    : 0u);
             m_meshManager.AddMeshPeer(newClient);
 
             Packet* pkt = eSELive::CreateSubscribePacket(
@@ -2836,13 +2852,7 @@ bool CLiveStreamManager::RequestMorePeers()
     // Work from the canonical source list, not CLiveMeshManager's auxiliary
     // pointer list. This avoids selecting the just-destroyed CUpDownClient and
     // lets the policy count exactly the sources the pull engine can use.
-    std::vector<CUpDownClient*> candidates;
-    POSITION pos = m_viewPeers.GetHeadPosition();
-    while (pos) {
-        CUpDownClient* candidate = m_viewPeers.GetNext(pos);
-        if (candidate != NULL)
-            candidates.push_back(candidate);
-    }
+    const std::vector<CUpDownClient*> candidates = SourcePeers(m_peerSet);
 
     if (m_viewerSession.StrictTunnelOnly() && (!wantTunnel || !haveCircuit)) {
         LIVE_LOG("MESH", "Peer refresh deferred: STRICT session has no active circuit");
@@ -2858,7 +2868,12 @@ bool CLiveStreamManager::RequestMorePeers()
 
     const uint32_t selected = m_peerRefreshPolicy.TakeCandidate(
         static_cast<uint32_t>(candidates.size()));
-    CUpDownClient* peer = candidates[selected];
+    LivePeerHandle selectedHandle = 0u;
+    if (!m_peerSet.SelectSource(selected, selectedHandle))
+        return false;
+    CUpDownClient* peer = PeerFromHandle(selectedHandle);
+    if (peer == NULL)
+        return false;
     const bool peerIPv6Only = peer->IsIPv6OnlyEndpoint();
     const uint32 ip = peerIPv6Only ? 0 : peer->GetIP();
     const uint16 port = peer->GetUserPort();
@@ -2896,28 +2911,25 @@ void CLiveStreamManager::OnPeerDisconnected(CUpDownClient* peer)
     CSingleLock lock(&m_lock, TRUE);
     bool sourceRemoved = false;
 
-    // Remove from broadcast peers
-    POSITION pos = m_broadcastPeers.Find(peer);
-    if (pos) {
-        m_broadcastPeers.RemoveAt(pos);
+    // Remove from downstream peers.
+    if (m_peerSet.RemoveDownstream(PeerHandleOf(peer))) {
         LiveStreamInfo& downstreamInfo = m_broadcastSession.IsActive()
             ? m_broadcastStreamInfo : m_streamInfo;
-        downstreamInfo.viewerCount = (uint32)m_broadcastPeers.GetCount();
+        downstreamInfo.viewerCount =
+            static_cast<uint32>(m_peerSet.DownstreamCount());
         LIVE_LOG("PEER", "DISCONNECT viewer=%S:%u  remaining=%u",
             peer ? (LPCWSTR)ipstr(peer->GetIP()) : L"?",
             peer ? (unsigned)peer->GetUserPort() : 0,
             downstreamInfo.viewerCount);
     }
 
-    // Remove from view peers
-    pos = m_viewPeers.Find(peer);
-    if (pos) {
-        m_viewPeers.RemoveAt(pos);
+    // Remove from source peers.
+    if (m_peerSet.RemoveSource(PeerHandleOf(peer))) {
         sourceRemoved = true;
         LIVE_LOG("PEER", "DISCONNECT source=%S:%u  remaining_sources=%d",
             peer ? (LPCWSTR)ipstr(peer->GetIP()) : L"?",
             peer ? (unsigned)peer->GetUserPort() : 0,
-            (int)m_viewPeers.GetCount());
+            static_cast<int>(m_peerSet.SourceCount()));
     }
 
     // C6 (2026-06): do NOT scrub trust / bitmap / counters here. Most
@@ -2946,9 +2958,9 @@ void CLiveStreamManager::OnPeerDisconnected(CUpDownClient* peer)
     // the refresh pending until Kad discovers a new source if none survived.
     if (sourceRemoved && m_viewerSession.IsActive()) {
         m_peerRefreshPolicy.OnSourceLost(GetTickCount(),
-            static_cast<uint32_t>(m_viewPeers.GetCount()));
+            static_cast<uint32_t>(m_peerSet.SourceCount()));
         LIVE_LOG("MESH", "Peer refresh armed after source loss (remaining=%d)",
-            (int)m_viewPeers.GetCount());
+            static_cast<int>(m_peerSet.SourceCount()));
     }
 }
 
@@ -2988,16 +3000,17 @@ void CLiveStreamManager::OnStreamEnded(const uchar* streamKey, uint8 reason, CUp
 
     // v7.3.0 — Authenticate the sender. Honor END only from:
     //   - Self-watchdog (fromPeer == NULL)
-    //   - A peer we are CURRENTLY viewing from (m_viewPeers) — they are
+    //   - A peer we are CURRENTLY viewing from (source role) — they are
     //     in a position to legitimately report the broadcaster died, OR
-    //   - A peer we are currently SERVING (m_broadcastPeers) — relay path
+    //   - A peer we are currently SERVING (downstream role) — relay path
     //     where they are forwarding gossip from the actual broadcaster.
     // Reject random peers gossiping END for streamKeys we know nothing
     // about; otherwise an attacker can poison every receiver's tombstone
     // map for 30 min by spamming OP_LIVE_END for popular streamKeys.
     if (fromPeer != NULL
-        && m_viewPeers.Find(fromPeer) == NULL
-        && (m_broadcastSession.IsActive() || m_broadcastPeers.Find(fromPeer) == NULL))
+        && !m_peerSet.HasSource(PeerHandleOf(fromPeer))
+        && (m_broadcastSession.IsActive() ||
+            !m_peerSet.HasDownstream(PeerHandleOf(fromPeer))))
     {
         InterlockedIncrement(&m_counters.endsRejectedNoAuth);
         LIVE_LOG("MGR", "Rejected unauthenticated OP_LIVE_END from %S:%u",
@@ -3075,13 +3088,11 @@ void CLiveStreamManager::OnStreamEnded(const uchar* streamKey, uint8 reason, CUp
         }
     };
     if (!m_broadcastSession.IsActive()) {
-        POSITION pos = m_broadcastPeers.GetHeadPosition();
-        while (pos) gossip(m_broadcastPeers.GetNext(pos));
+        for (CUpDownClient* peer : DownstreamPeers(m_peerSet))
+            gossip(peer);
     }
-    {
-        POSITION pos = m_viewPeers.GetHeadPosition();
-        while (pos) gossip(m_viewPeers.GetNext(pos));
-    }
+    for (CUpDownClient* peer : SourcePeers(m_peerSet))
+        gossip(peer);
 }
 
 bool CLiveStreamManager::IsStreamTombstoned(const uchar* streamKey) const
@@ -3214,16 +3225,8 @@ bool CLiveStreamManager::CanPromoteToSuperSeeder(CUpDownClient* peer)
     uint32 peerIP = peer->GetIP();
     if (peerIP == 0) return true;  // Can't check, allow
 
-    uint32 peer24 = peerIP & 0xFFFFFF00;  // /24 mask
-    uint32 peer16 = peerIP & 0xFFFF0000;  // /16 mask
-
-    int sameSubnet24 = 0;
-    int sameSubnet16 = 0;
-    int totalSuper = 0;
-
-    POSITION pos = m_broadcastPeers.GetHeadPosition();
-    while (pos) {
-        CUpDownClient* other = m_broadcastPeers.GetNext(pos);
+    std::vector<uint32_t> existingSuperSeederIps;
+    for (CUpDownClient* other : DownstreamPeers(m_peerSet)) {
         if (other == peer) continue;
 
         PeerTrust trust;
@@ -3231,27 +3234,26 @@ bool CLiveStreamManager::CanPromoteToSuperSeeder(CUpDownClient* peer)
         if (trust.currentLevel != ESE_TRUST_SUPERSEEDER) continue;
 
         if (other->IsIPv6OnlyEndpoint()) continue;
-        totalSuper++;
-        uint32 otherIP = other->GetIP();
-        if ((otherIP & 0xFFFFFF00) == peer24) sameSubnet24++;
-        if ((otherIP & 0xFFFF0000) == peer16) sameSubnet16++;
+        existingSuperSeederIps.push_back(other->GetIP());
     }
 
-    // Rule 1: Max 5 super-seeders per /24
-    if (sameSubnet24 >= 5) {
+    const LivePeerDiversityDecision decision =
+        LivePeerSet::EvaluateIpv4SuperSeederDiversity(
+            peerIP,
+            existingSuperSeederIps.data(),
+            existingSuperSeederIps.size());
+    if (decision.reason == LivePeerDiversityReason::Subnet24Limit) {
         AddLogLine(false, GetResString(IDS_LIVEMGR_SYBIL_BLOCKED24_FMT),
-            sameSubnet24);
+            static_cast<int>(decision.same_subnet_24));
         return false;
     }
-
-    // Rule 2: Max 20% of super-seeders per /16
-    if (totalSuper > 10 && sameSubnet16 > totalSuper / 5) {
+    if (decision.reason == LivePeerDiversityReason::Subnet16Ratio) {
         AddLogLine(false, GetResString(IDS_LIVEMGR_SYBIL_BLOCKED16_FMT),
-            sameSubnet16, totalSuper);
+            static_cast<int>(decision.same_subnet_16),
+            static_cast<int>(decision.total_super_seeders));
         return false;
     }
-
-    return true;
+    return decision.allowed;
 }
 
 void CLiveStreamManager::MonitorPeerHealth()
@@ -3261,9 +3263,7 @@ void CLiveStreamManager::MonitorPeerHealth()
     int aliveSuper = 0;
     CArray<uint32> droppedSubnets;  // /24 subnets of dropped super-seeders
 
-    POSITION pos = m_broadcastPeers.GetHeadPosition();
-    while (pos) {
-        CUpDownClient* peer = m_broadcastPeers.GetNext(pos);
+    for (CUpDownClient* peer : DownstreamPeers(m_peerSet)) {
         PeerTrust trust;
         if (m_peerTrust.Lookup(PeerId(peer), trust)) {
             if (trust.currentLevel == ESE_TRUST_SUPERSEEDER) {
@@ -3292,9 +3292,9 @@ void CLiveStreamManager::MonitorPeerHealth()
 
         // === Emergency Action 1: Promote trusted middle-tier peers ===
         int promoted = 0;
-        pos = m_broadcastPeers.GetHeadPosition();
-        while (pos && promoted < 5) {
-            CUpDownClient* peer = m_broadcastPeers.GetNext(pos);
+        for (CUpDownClient* peer : DownstreamPeers(m_peerSet)) {
+            if (promoted >= 5)
+                break;
             PeerTrust trust;
             if (!m_peerTrust.Lookup(PeerId(peer), trust)) continue;
             if (trust.currentLevel != ESE_TRUST_MIDDLE) continue;
@@ -3332,9 +3332,7 @@ void CLiveStreamManager::MonitorPeerHealth()
                 // 2+ super-seeders from same /24 dropped → ban others from that subnet
                 AddLogLine(true, GetResString(IDS_LIVEMGR_SYBIL_BANNING_FMT),
                     count);
-                pos = m_broadcastPeers.GetHeadPosition();
-                while (pos) {
-                    CUpDownClient* peer = m_broadcastPeers.GetNext(pos);
+                for (CUpDownClient* peer : DownstreamPeers(m_peerSet)) {
                     if (!peer->IsIPv6OnlyEndpoint()
                         && (peer->GetIP() & 0xFFFFFF00) == subnet) {
                         BanPeer(peer);
@@ -3428,7 +3426,7 @@ void CLiveStreamManager::Process()
     //   2. >180 s since last chunk OR heartbeat (was 90 s, false-fired
     //      on bandwidth-throttled viewers receiving high-variant
     //      streams in bursts)
-    //   3. m_viewPeers is empty — i.e. nobody left to receive from
+    //   3. the source role is empty — i.e. nobody left to receive from
     // The third condition is critical: if we still have peers we're
     // talking to, we might just be slow (their bandwidth, our
     // bandwidth, intermediate NAT). Only when EVERY source peer has
@@ -3436,7 +3434,7 @@ void CLiveStreamManager::Process()
     const std::uint32_t activityAge =
         m_viewerSession.ActivityAge(static_cast<std::uint32_t>(now));
     if (m_viewerSession.IsActive()
-        && m_viewPeers.GetCount() == 0
+        && m_peerSet.SourcesEmpty()
         && m_viewerSession.IsActivityExpired(
             static_cast<std::uint32_t>(now), ESE_LIVE_WATCHDOG_MS))
     {
@@ -3501,9 +3499,7 @@ void CLiveStreamManager::Process()
         if (now - m_dwLastHealthCheck >= ESE_LIVE_STATS_INTERVAL) {
             MonitorPeerHealth();
             // Measure ratios for all peers
-            POSITION pos = m_broadcastPeers.GetHeadPosition();
-            while (pos) {
-                CUpDownClient* peer = m_broadcastPeers.GetNext(pos);
+            for (CUpDownClient* peer : DownstreamPeers(m_peerSet)) {
                 MeasurePeerRatio(peer);
             }
             m_dwLastHealthCheck = now;
@@ -3557,7 +3553,7 @@ void CLiveStreamManager::Process()
         // permanently-unfindable stream eventually stops spamming the DHT.
         // Kad propagation can take 1-5 min on cold bootstrap; without this
         // retry the viewer is "blind" if Kad results arrived after JoinStream.
-        if (m_viewPeers.GetCount() == 0
+        if (m_peerSet.SourcesEmpty()
             && m_viewerSession.SearchRetryDue(
                 static_cast<std::uint32_t>(now), 15000u, 10u))
         {
@@ -3581,7 +3577,7 @@ void CLiveStreamManager::Process()
         // If we have zero source peers AND haven't received a chunk in 10 s
         // we fire an aggressive livehash search every 5 s (vs the 30 s cool
         // down used for the regular failover path). Burst-mode discovery.
-        if (m_viewPeers.GetCount() == 0) {
+        if (m_peerSet.SourcesEmpty()) {
             static DWORD s_lastAnycast = 0;
             if (now - s_lastAnycast > 5000) {
                 s_lastAnycast = now;
@@ -3650,9 +3646,7 @@ void CLiveStreamManager::Process()
                     // broadcasterIP re-dialed the dead public address of an
                     // already-connected broadcaster (dual-dial churn).
                     bool alreadyConnected = false;
-                    POSITION pos = m_viewPeers.GetHeadPosition();
-                    while (pos) {
-                        CUpDownClient* existing = m_viewPeers.GetNext(pos);
+                    for (CUpDownClient* existing : SourcePeers(m_peerSet)) {
                         if (existing
                             && existing->GetUserPort() == known[i].broadcasterPort
                             && (existing->GetIP() == known[i].broadcasterIP
@@ -3714,9 +3708,9 @@ void CLiveStreamManager::Process()
             static_cast<std::uint32_t>(now), 8000u, 5u))
     {
         bool haveEdge = false;
-        POSITION tp = m_viewPeers.GetHeadPosition();
-        while (tp && !haveEdge) {
-            CUpDownClient* p = m_viewPeers.GetNext(tp);
+        for (CUpDownClient* p : SourcePeers(m_peerSet)) {
+            if (haveEdge)
+                break;
             if (p && p->GetIP() == m_viewerSession.TunnelSourceIp()
                   && p->GetUserPort() == m_viewerSession.TunnelSourcePort()) {
                 PeerBitmapInfo bi;
@@ -3839,14 +3833,14 @@ void CLiveStreamManager::SendBitmapToAll(bool broadcastRole)
     };
 
     if (broadcastRole) {
-        POSITION pos = m_broadcastPeers.GetHeadPosition();
-        while (pos) sendOne(m_broadcastPeers.GetNext(pos));
+        for (CUpDownClient* peer : DownstreamPeers(m_peerSet))
+            sendOne(peer);
     } else {
-        POSITION pos = m_viewPeers.GetHeadPosition();
-        while (pos) sendOne(m_viewPeers.GetNext(pos));
+        for (CUpDownClient* peer : SourcePeers(m_peerSet))
+            sendOne(peer);
         if (!m_broadcastSession.IsActive()) {
-            pos = m_broadcastPeers.GetHeadPosition();
-            while (pos) sendOne(m_broadcastPeers.GetNext(pos));
+            for (CUpDownClient* peer : DownstreamPeers(m_peerSet))
+                sendOne(peer);
         }
     }
 }
@@ -3857,9 +3851,7 @@ void CLiveStreamManager::SendAnnounceToAll()
 
     uint32 newestSeq = m_broadcastChunkBuffer.GetNewestSeq();
 
-    POSITION pos = m_broadcastPeers.GetHeadPosition();
-    while (pos) {
-        CUpDownClient* peer = m_broadcastPeers.GetNext(pos);
+    for (CUpDownClient* peer : DownstreamPeers(m_peerSet)) {
         // v7.6.0 — include pubkey so receivers can pin the streamKey→pubkey
         // binding before chunks/end arrive with signatures (T4/T5).
         const uint16 wireBitrate = static_cast<uint16>(
@@ -4018,8 +4010,7 @@ void CLiveStreamManager::TickReachabilitySelector(DWORD now)
         }
         // Drop tracking for sources we are no longer trying to view.
         bool stillWanted = false;
-        for (POSITION vp = m_viewPeers.GetHeadPosition(); vp != NULL; ) {
-            CUpDownClient* v = m_viewPeers.GetNext(vp);
+        for (CUpDownClient* v : SourcePeers(m_peerSet)) {
             if (v != NULL && !v->IsIPv6OnlyEndpoint()
                 && ntohl(v->GetIP()) == ipHost && v->GetUserPort() == port) {
                 stillWanted = true;
@@ -4096,7 +4087,8 @@ static CAddress LivePeerEndpoint(const CUpDownClient* peer)
 
 void CLiveStreamManager::RequestMissingSegments()
 {
-    if (!m_viewerSession.IsActive() || m_viewPeers.GetCount() == 0) return;
+    if (!m_viewerSession.IsActive() || m_peerSet.SourcesEmpty())
+        return;
 
     uint32 oldestSeq;
     uint32 newestSeq;
@@ -4239,7 +4231,8 @@ void CLiveStreamManager::RequestMissingSegments()
         InterlockedExchangeAdd(&m_counters.requestsSuppressedInflight, suppressed);
     if (noPeer > 0) {
         LIVE_LOG("REQ", "NO_PEER for %d gap segments (range %u..%u, viewPeers=%d)",
-            noPeer, oldestSeq, newestSeq, (int)m_viewPeers.GetCount());
+            noPeer, oldestSeq, newestSeq,
+            static_cast<int>(m_peerSet.SourceCount()));
     }
 }
 
@@ -4247,7 +4240,8 @@ void CLiveStreamManager::PublishToKad()
 {
     if (!m_broadcastSession.IsActive()) return;
 
-    m_broadcastStreamInfo.viewerCount = (uint32)m_broadcastPeers.GetCount();
+    m_broadcastStreamInfo.viewerCount =
+        static_cast<uint32>(m_peerSet.DownstreamCount());
     InterlockedIncrement(&m_counters.kadPublishes);  // Phase 0: OBS-1 (atomic)
     m_kadBridge.PublishStream(m_broadcastStreamInfo);
     m_kadBridge.RepublishIfNeeded();
@@ -4272,7 +4266,7 @@ void CLiveStreamManager::BanPeer(CUpDownClient* peer)
 
     // Send deny packet and disconnect
     const uchar* deniedKey = (m_broadcastSession.IsActive()
-        && m_broadcastPeers.Find(peer) != NULL)
+        && m_peerSet.HasDownstream(PeerHandleOf(peer)))
         ? m_broadcastStreamInfo.streamKey : m_streamInfo.streamKey;
     Packet* pkt = eSELive::CreateDenyPacket(deniedKey, ESE_DENY_BANNED);
     if (pkt) {
@@ -4293,9 +4287,7 @@ void CLiveStreamManager::ChargePunctualityFailure(const CAddress& address, uint1
 {
     if (address.GetType() == CAddress::None || port == 0) return;
     CUpDownClient* peer = NULL;
-    POSITION pos = m_viewPeers.GetHeadPosition();
-    while (pos != NULL) {
-        CUpDownClient* p = m_viewPeers.GetNext(pos);
+    for (CUpDownClient* p : SourcePeers(m_peerSet)) {
         if (p != NULL && p->GetUserPort() == port
             && LivePeerEndpoint(p) == address) {
             peer = p;
@@ -4346,16 +4338,13 @@ bool CLiveStreamManager::GetPeerBitmap(CUpDownClient* peer, PeerBitmapInfo& outI
     return m_peerBitmaps.Lookup(PeerId(peer), outInfo) != FALSE;
 }
 
-// v8.1.2 B6 — co-seeder check for the tunnel's 2-hop builder. m_viewPeers are the peers we
+// v8.1.2 B6 — co-seeder check for the tunnel's 2-hop builder. Source-role peers are those we
 // pull THIS stream from; routing a circuit through one of them would let it learn we watch
-// the channel. Main-thread read (no lock — m_viewPeers is mutated on the main thread too).
+// the channel. Main-thread read (membership is mutated on the main thread too).
 bool CLiveStreamManager::IsStreamSourcePeer(CUpDownClient* peer) const
 {
     if (!peer || !m_viewerSession.IsActive()) return false;
-    POSITION pos = m_viewPeers.GetHeadPosition();
-    while (pos != NULL)
-        if (m_viewPeers.GetNext(pos) == peer) return true;
-    return false;
+    return m_peerSet.HasSource(PeerHandleOf(peer));
 }
 
 bool CLiveStreamManager::GetPeerTrust(CUpDownClient* peer, PeerTrust& outTrust) const
@@ -4422,14 +4411,12 @@ CUpDownClient* CLiveStreamManager::SelectPeerForSegment(uint32 seqNum,
     // RTT penalty: floor(rtt_ms_ewma / 50). 100ms -> -2, 500ms -> -10, 1s -> -20.
     // This biases toward low-latency parents while preserving the existing
     // trust-based ordering. Both broadcaster and any secondary-source viewers
-    // are considered (we already added them to m_viewPeers via JoinStream).
+    // are considered (they were already added to the source role).
     // Phase-1 fix #2: a non-None typed address skips that peer (timed-out retry).
     CUpDownClient* bestPeer = NULL;
     int bestScore = -1;
 
-    POSITION pos = m_viewPeers.GetHeadPosition();
-    while (pos) {
-        CUpDownClient* peer = m_viewPeers.GetNext(pos);
+    for (CUpDownClient* peer : SourcePeers(m_peerSet)) {
         if (peer != NULL && excludeAddress.GetType() != CAddress::None
             && LivePeerEndpoint(peer) == excludeAddress)
             continue;
@@ -4543,8 +4530,8 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
     snap.kad = kadSnap;
 
     // Peers (counted under our lock)
-    snap.viewPeers      = (int)m_viewPeers.GetCount();
-    snap.broadcastPeers = (int)m_broadcastPeers.GetCount();
+    snap.viewPeers = static_cast<int>(m_peerSet.SourceCount());
+    snap.broadcastPeers = static_cast<int>(m_peerSet.DownstreamCount());
     snap.meshPeers      = m_meshManager.GetMeshPeerCount();
     snap.pendingRequests = m_meshManager.GetPendingRequestCount();
     snap.chunksServed    = m_meshManager.GetChunksServedCount();
@@ -4575,14 +4562,14 @@ LiveDebugSnapshot CLiveStreamManager::BuildDebugSnapshot() const
 
 #ifdef ESE_TEST_HOOKS
     // TEST-ONLY: per-peer trust detail (bounded by MAX_PEER_DBG). Iterate
-    // m_viewPeers (gives CUpDownClient* -> IP/port) under the m_lock we already
+    // source-role snapshot (gives CUpDownClient* -> IP/port) under m_lock
     // hold. snap.peerDetail layout is unconditional; only this fill is gated, so
     // production keeps peerDetailCount == 0 and emits nothing.
     snap.peerDetailCount = 0;
     {
-        POSITION vpos = m_viewPeers.GetHeadPosition();
-        while (vpos && snap.peerDetailCount < LiveDebugSnapshot::MAX_PEER_DBG) {
-            CUpDownClient* p = m_viewPeers.GetNext(vpos);
+        for (CUpDownClient* p : SourcePeers(m_peerSet)) {
+            if (snap.peerDetailCount >= LiveDebugSnapshot::MAX_PEER_DBG)
+                break;
             if (p == NULL) continue;
             LiveDebugSnapshot::PeerDbg& d = snap.peerDetail[snap.peerDetailCount++];
             FillPeerIpSafe(d.ip, sizeof(d.ip), p);             // bounded, native v4/v6
@@ -4675,12 +4662,12 @@ void CLiveStreamManager::PingAllPeers()
 {
     // Caller holds m_lock. Iterate both directions (we may want RTT to viewers
     // we're serving AND to peers we're pulling from).
-    POSITION pos = m_viewPeers.GetHeadPosition();
-    while (pos) PingPeer(m_viewPeers.GetNext(pos), m_streamInfo.streamKey);
-    pos = m_broadcastPeers.GetHeadPosition();
+    for (CUpDownClient* peer : SourcePeers(m_peerSet))
+        PingPeer(peer, m_streamInfo.streamKey);
     const uchar* downstreamKey = m_broadcastSession.IsActive()
         ? m_broadcastStreamInfo.streamKey : m_streamInfo.streamKey;
-    while (pos) PingPeer(m_broadcastPeers.GetNext(pos), downstreamKey);
+    for (CUpDownClient* peer : DownstreamPeers(m_peerSet))
+        PingPeer(peer, downstreamKey);
 }
 
 void CLiveStreamManager::ReapStalePings(DWORD now)
@@ -5000,7 +4987,8 @@ void CLiveStreamManager::EnsureMultiParent()
     // the stream — failover is sub-second because spare(s) are warm.
     if (!m_viewerSession.IsActive()) return;
     const int TARGET = 3;
-    if (m_viewPeers.GetCount() >= TARGET) return;
+    if (m_peerSet.SourceCount() >= static_cast<std::size_t>(TARGET))
+        return;
 
     // Pull candidates from KadBridge — entries we discovered for OUR streamKey.
     // Skip ones we already have, ones we are (LAN/loopback), or filtered IPs.
@@ -5009,7 +4997,10 @@ void CLiveStreamManager::EnsureMultiParent()
 
     int dialed = 0;
     for (INT_PTR i = 0; i < known.GetCount(); i++) {
-        if (m_viewPeers.GetCount() + dialed >= TARGET) break;
+        if (m_peerSet.SourceCount() +
+                static_cast<std::size_t>(dialed) >=
+            static_cast<std::size_t>(TARGET))
+            break;
         if (memcmp(known[i].streamKey, m_streamInfo.streamKey, 16) != 0) continue;
         if (known[i].broadcasterIP == 0 || known[i].broadcasterPort == 0) continue;
 
@@ -5021,9 +5012,7 @@ void CLiveStreamManager::EnsureMultiParent()
         // every cycle -> AttachToAlreadyKnown recycled the working socket -> the
         // JOIN churn. Counting the alt address as "have it" stops that.
         bool already = false;
-        POSITION pos = m_viewPeers.GetHeadPosition();
-        while (pos) {
-            CUpDownClient* p = m_viewPeers.GetNext(pos);
+        for (CUpDownClient* p : SourcePeers(m_peerSet)) {
             if (p && p->GetUserPort() == known[i].broadcasterPort
                   && (p->GetIP() == known[i].broadcasterIP
                       || (known[i].broadcasterAltIP != 0
@@ -5036,7 +5025,7 @@ void CLiveStreamManager::EnsureMultiParent()
 
         LIVE_LOG("PARENT", "EnsureMultiParent: dial %S:%u (have %d, target %d)",
             (LPCWSTR)ipstr(known[i].broadcasterIP), known[i].broadcasterPort,
-            (int)m_viewPeers.GetCount(), TARGET);
+            static_cast<int>(m_peerSet.SourceCount()), TARGET);
 
         // TryConnectToStreamSource takes m_lock recursively; release ours
         // briefly to avoid self-deadlock with the inner CSingleLock.

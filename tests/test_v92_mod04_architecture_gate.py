@@ -66,6 +66,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
             message.startswith("slice LiveViewerSession:")
             for message in messages
         ))
+        self.assertTrue(any(
+            message.startswith("slice LivePeerSet:")
+            for message in messages
+        ))
         self.assertFalse(self.config["final_limits"]["enforced_now"])
         self.assertEqual(self.config["baseline_commit"], "161d948281682d39acdcea796b1edddc6d68904c")
         self.assertEqual(len(self.config["coordinator_files"]), 6)
@@ -242,6 +246,13 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveViewerSession.cpp"],
                 "interface_files": ["srchybrid/LiveViewerSession.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LivePeerSet",
+                "owner": "CLiveStreamManager",
+                "layer": "domain_state",
+                "implementation_files": ["srchybrid/LivePeerSet.cpp"],
+                "interface_files": ["srchybrid/LivePeerSet.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.config["approved_non_module_code"], [
@@ -355,6 +366,15 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/tests/test_live_peer_set.cpp",
+                "reason": (
+                    "Standalone role, replacement, limit, ordering and IPv4 "
+                    "diversity executable test for the MOD-3.2 peer-set "
+                    "extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         self.assertEqual(self.config["slice_evidence"], {
             "state": "EXTRACTION_ACTIVE",
@@ -450,6 +470,10 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "module": "LiveViewerSession",
                 "slice_base_commit": "a48445e560765fc68fc85b0e61a09e2e72b7f9de",
                 "source_coordinator": "srchybrid/LiveStreamManager.cpp",
+            }, {
+                "module": "LivePeerSet",
+                "slice_base_commit": "e56166bc11bbd41c6f27978519bad4b6099a3952",
+                "source_coordinator": "srchybrid/LiveStreamManager.cpp",
             }],
         })
 
@@ -482,6 +506,7 @@ class Mod04ArchitectureGateTest(unittest.TestCase):
                 "WebDiagnostics",
                 "LiveBroadcastSession",
                 "LiveViewerSession",
+                "LivePeerSet",
             ],
         )
 

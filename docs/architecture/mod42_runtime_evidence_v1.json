@@ -1,11 +1,11 @@
 {
   "schema": "ese.mod42.runtime-evidence/v1",
-  "source_commit": "5a6d8e95f89b88705fe57ce9ccc0ebee0935b122",
+  "source_commit": "3ce6d3cc4688b0cd0895065976d4d04ac0139122",
   "status": "PASS",
   "packaged_executable": {
     "path": "srchybrid/eSE/ese-server.exe",
-    "bytes": 70712773,
-    "sha256": "2d5dc8749f963dad258091a499eaefec11b499e50eaf869984aaf53d427217e3"
+    "bytes": 70723237,
+    "sha256": "983217913dc39572df8db25cf263db6cc4a456fbfbc607675f4a5a2ef67b0b43"
   },
   "source_runtime": {
     "port": 18095,
@@ -17,7 +17,7 @@
     "completed_list": 200,
     "sources": 200,
     "source_count": 3,
-    "debug_while_source_probe_ms": 21,
+    "debug_while_source_probe_ms": 11,
     "termination_confirmed": true
   },
   "packaged_runtime": {
@@ -30,14 +30,14 @@
     "completed_list": 200,
     "sources": 200,
     "source_count": 3,
-    "debug_while_source_probe_ms": 18,
+    "debug_while_source_probe_ms": 12,
     "termination_confirmed": true
   },
   "suites": {
-    "python": "397/397",
-    "node": "49/49",
-    "mod41_mod42_focal": "12/12",
-    "native": "PASS; FEC 21659/21659; Bulk 183/183; standalone 14/14",
+    "python": "399/399",
+    "node": "63/63 PASS; 1 POSIX-only SKIP; 64 total",
+    "mod42_focal": "16/16",
+    "native": "40/40 PASS; FEC 21659/21659; Bulk 183/183; standalone 14/14",
     "node_package_build": "PASS"
   },
   "runtime_ports_released": true

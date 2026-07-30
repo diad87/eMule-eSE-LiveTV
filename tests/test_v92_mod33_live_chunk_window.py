@@ -180,6 +180,9 @@ class Mod33LiveChunkWindowTest(unittest.TestCase):
         protocol = (ROOT / "srchybrid/LiveProtocol.h").read_text(encoding="utf-8")
         manager = MANAGER_SOURCE.read_text(encoding="utf-8")
         mesh = MESH_SOURCE.read_text(encoding="utf-8")
+        snapshot = (ROOT / "srchybrid/LiveStreamSnapshot.cpp").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("if (seqNum < oldestSeq) return false;", protocol)
         self.assertNotIn(".Has(", manager + mesh)
         self.assertGreaterEqual(
@@ -190,9 +193,12 @@ class Mod33LiveChunkWindowTest(unittest.TestCase):
             "IsNewerSequence(peerNewest, bestEdge)",
             "availableBeforeEdge = bestEdge - bestOldest",
             "(seq - oldestSeq) < ESE_LIVE_EDGE_GUARD",
-            "serialSpan = snap.newestSeq - snap.oldestSeq + 1u",
         ):
             self.assertIn(marker, manager)
+        self.assertIn(
+            "input.newest_sequence - input.oldest_sequence + 1u",
+            snapshot,
+        )
 
         mask = 0xFFFFFFFF
         anchor = mask - 1

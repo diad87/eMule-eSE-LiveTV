@@ -246,7 +246,7 @@ class Mod31LiveStreamSessionsTest(unittest.TestCase):
         ]
         for cleanup in (
             "m_chunkBuffer.Clear()",
-            "m_viewPeers.RemoveAll()",
+            "m_peerSet.ClearSources()",
             "m_meshManager.ResetSessionPeers()",
             "m_inflightSegReqs.RemoveAll()",
             "m_recentDials.RemoveAll()",

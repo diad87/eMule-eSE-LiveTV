@@ -38,7 +38,7 @@ EXPECTED_INPUTS = {
     "completed_module_count": 30,
 }
 EXPECTED_NORMALIZATION = {
-    "include_parser": "one leading BOM removal, CRLF/CR-to-LF normalization, phase-2 splice, raw/string/comment masking, # or %: literal include parser; non-literal active #include fails closed",
+    "include_parser": "one leading BOM removal, CRLF/CR-to-LF normalization, raw-literal candidate plus physical backslash-LF reject, phase-2 splice, raw/string/comment masking, # or %: literal include parser; non-literal active #include fails closed",
     "include_resolution": "MOD-0.4 current-parent, repository-root, srchybrid-root casefold lookup",
     "path_separator": "forward-slash",
     "path_case": "casefold for repository-local lookup",
@@ -140,6 +140,71 @@ def _normalize_translation_input(source: str) -> str:
     if source.startswith("\ufeff"):
         source = source[1:]
     return source.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _preflight_raw_content_splices(source_file: str, source: str) -> None:
+    """Conservatively reject phase-2 ambiguity around any raw token candidate.
+
+    C++'s raw-literal phase reversion makes a global splice pass unsafe when
+    a physical backslash-LF coexists with a raw-literal token candidate.  MOD-
+    5.1 deliberately rejects that rare combination before parsing directives;
+    plain raw literals and ordinary phase-2 splices remain supported.
+    """
+    if "\\\n" not in source:
+        return
+
+    def match(index: int, token: str) -> int | None:
+        for expected in token:
+            while source.startswith("\\\n", index):
+                index += 2
+            if index >= len(source) or source[index] != expected:
+                return None
+            index += 1
+        return index
+
+    index = 0
+    while index < len(source):
+        line_comment = match(index, "//")
+        if line_comment is not None:
+            index = line_comment
+            while index < len(source):
+                if source.startswith("\\\n", index):
+                    index += 2
+                elif source[index] == "\n":
+                    index += 1
+                    break
+                else:
+                    index += 1
+            continue
+        block_comment = match(index, "/*")
+        if block_comment is not None:
+            index = block_comment
+            while index < len(source):
+                block_end = match(index, "*/")
+                if block_end is not None:
+                    index = block_end
+                    break
+                index += 2 if source.startswith("\\\n", index) else 1
+            continue
+        if source[index] in {'"', "'"}:
+            quote = source[index]
+            index += 1
+            while index < len(source):
+                if source.startswith("\\\n", index):
+                    index += 2
+                elif source[index] == "\\":
+                    index += 2
+                elif source[index] == quote:
+                    index += 1
+                    break
+                elif source[index] == "\n":
+                    break
+                else:
+                    index += 1
+            continue
+        if any(match(index, prefix) is not None for prefix in ("u8R\"", "uR\"", "UR\"", "LR\"", "R\"")):
+            raise GateError(f"raw-literal candidate with backslash-LF forbidden: {source_file}")
+        index += 2 if source.startswith("\\\n", index) else 1
 
 
 def _masked_segment(source: str) -> str:
@@ -273,6 +338,7 @@ def _mask_comments_and_literals(source_file: str, source: str) -> str:
 def _literal_includes(source_file: str, raw: str) -> list[str]:
     """Return active literal includes after phase 2; reject macro includes closed."""
     normalized = _normalize_translation_input(raw)
+    _preflight_raw_content_splices(source_file, normalized)
     translated = _mask_comments_and_literals(source_file, _splice_phase_two(normalized))
     includes: list[str] = []
     for match in INCLUDE_DIRECTIVE_RE.finditer(translated):
@@ -523,6 +589,20 @@ def run_negative_fixtures(
         {framing: original + b'\n#define MOD51_TARGET "LiveHandshakeWire.h"\n#include MOD51_TARGET\n'},
         f"non-literal active #include forbidden: {framing}",
     )
+    _expect_non_literal_include(
+        "raw-literal-splice-ambiguity", mod04_config, mod03_contract,
+        {framing: original + (
+            b'\nconst char* a = R"tag(\n)\\\ntag" /* \n)tag";\n'
+            b'#include "LiveHandshakeWire.h"\n'
+            b'const char* b = R"x( */ " )x";\n'
+        )},
+        f"raw-literal candidate with backslash-LF forbidden: {framing}",
+    )
+    _expect_non_literal_include(
+        "raw-prefix-splice-ambiguity", mod04_config, mod03_contract,
+        {framing: original + b'\nconst char* raw = R\\\n"tag(payload)tag";\nint marker = 1;\\\n'},
+        f"raw-literal candidate with backslash-LF forbidden: {framing}",
+    )
     baseline = copy.deepcopy(contract)
     baseline["baseline_graph"]["edges"].append(["LiveTunnelFraming", "LiveCircuitHandshake"])
     baseline["baseline_graph"]["includes"].append({
@@ -596,7 +676,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             validate_contract(contract, mod04_config, mod03_contract)
             run_negative_fixtures(contract, mod04_config, mod03_contract)
-            print("MOD-5.1 PASS: 13 negative include-SCC fixtures rejected with exact reasons")
+            print("MOD-5.1 PASS: 15 negative include-SCC fixtures rejected with exact reasons")
     except (OSError, json.JSONDecodeError, KeyError, TypeError, mod04.GateError, GateError) as exc:
         print(f"MOD-5.1 FAIL: {exc}", file=sys.stderr)
         return 1

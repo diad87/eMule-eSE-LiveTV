@@ -158,6 +158,33 @@ class Mod51IncludeSccGateTest(unittest.TestCase):
             with self.assertRaisesRegex(GATE.GateError, expected):
                 GATE.build_graph(self.mod04, self.mod03, {source: raw + suffix})
 
+    def test_raw_literal_and_physical_splice_fail_closed_before_directive_scan(self) -> None:
+        source = "srchybrid/LiveTunnelFraming.cpp"
+        raw = (ROOT / source).read_bytes()
+        bypass = (
+            b'\nconst char* a = R"tag(\n)\\\ntag" /* \n)tag";\n'
+            b'#include "LiveHandshakeWire.h"\n'
+            b'const char* b = R"x( */ " )x";\n'
+        )
+        with self.assertRaisesRegex(
+            GATE.GateError, f"raw-literal candidate with backslash-LF forbidden: {source}",
+        ):
+            GATE.build_graph(self.mod04, self.mod03, {source: raw + bypass})
+        prefix_split = raw + b'\nconst char* raw = R\\\n"tag(payload)tag";\nint marker = 1;\\\n'
+        with self.assertRaisesRegex(
+            GATE.GateError, f"raw-literal candidate with backslash-LF forbidden: {source}",
+        ):
+            GATE.build_graph(self.mod04, self.mod03, {source: prefix_split})
+
+    def test_split_comment_hides_raw_looking_text_during_preflight(self) -> None:
+        source = "srchybrid/LiveTunnelFraming.cpp"
+        raw = (ROOT / source).read_bytes()
+        decoration = b'\n/\\\n* R"host(\\\n#include MOD51_RAW_LOOKING\n)host" *\\\n/\n'
+        self.assertEqual(
+            GATE.build_graph(self.mod04, self.mod03, {source: raw + decoration}),
+            self.contract["baseline_graph"],
+        )
+
     def test_baseline_cannot_self_authorize_a_cycle(self) -> None:
         mutated = copy.deepcopy(self.contract)
         graph = mutated["baseline_graph"]
@@ -208,7 +235,7 @@ class Mod51IncludeSccGateTest(unittest.TestCase):
     def test_cli_positive_and_exact_negative_fixtures(self) -> None:
         for mode, needle in (
             ("--verify", "new_sccs=0"),
-            ("--negative-fixtures", "13 negative include-SCC fixtures"),
+            ("--negative-fixtures", "15 negative include-SCC fixtures"),
         ):
             completed = subprocess.run(
                 [sys.executable, str(SCRIPT), mode], cwd=ROOT,

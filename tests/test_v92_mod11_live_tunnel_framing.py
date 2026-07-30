@@ -355,6 +355,13 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveChunkWindow.cpp"],
                 "interface_files": ["srchybrid/LiveChunkWindow.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveStreamSecurity",
+                "owner": "CLiveStreamManager",
+                "layer": "domain_state",
+                "implementation_files": ["srchybrid/LiveStreamSecurity.cpp"],
+                "interface_files": ["srchybrid/LiveStreamSecurity.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -458,6 +465,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             }, {
                 "module": "LiveChunkWindow",
                 "slice_base_commit": "d032418e65a2dc64c726c46a275e5841a9a34874",
+                "source_coordinator": "srchybrid/LiveStreamManager.cpp",
+            }, {
+                "module": "LiveStreamSecurity",
+                "slice_base_commit": "05c815444d106e305908ee076bd3c2bf62f24883",
                 "source_coordinator": "srchybrid/LiveStreamManager.cpp",
             }],
         })
@@ -590,6 +601,15 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 ),
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
+            {
+                "path": "srchybrid/tests/test_live_stream_security.cpp",
+                "reason": (
+                    "Standalone pinning, verified replay, serial-wrap, capacity, "
+                    "concurrency and trust-policy executable test for the "
+                    "MOD-3.4 security extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
         ])
         numstat = subprocess.check_output(
             ["git", "diff", "--numstat", SLICE_BASE, "--", "srchybrid/LiveTunnel.cpp"],
@@ -662,6 +682,8 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/LivePeerSet.h",
             "srchybrid/LiveChunkWindow.cpp",
             "srchybrid/LiveChunkWindow.h",
+            "srchybrid/LiveStreamSecurity.cpp",
+            "srchybrid/LiveStreamSecurity.h",
             "srchybrid/ClientList.cpp",
             "srchybrid/ClientList.h",
             "srchybrid/LiveMeshManager.cpp",

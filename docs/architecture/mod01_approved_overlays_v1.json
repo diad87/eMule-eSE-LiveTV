@@ -19,16 +19,16 @@
     {
       "path": "srchybrid/WebServer.cpp",
       "baseline_sha256": "afcf5a5b8091995a473548fc05086fe1b2ba0e8127378cd959424fa8f6770028",
-      "overlay_sha256": "ae2db09e3f93e0dfffa1d1d33e98d5742472212d0ffd260c061ab1d678d31742",
-      "task": "MOD-0.2 + MOD-2.1 + MOD-2.2 + MOD-2.3 + MOD-2.4",
-      "reason": "Headless production characterization hook; MOD-2.1 delegates query, cookie and bounded request parsing to WebRequestParser; MOD-2.2 delegates sessions, one-time challenges, fail-closed permissions, Host/Origin/CSRF authorization, login failures and action rate limits to WebAuthPolicy; MOD-2.3 consumes the exact WebRouteId selected by WebRouteTable; MOD-2.4 delegates JSON/HTML/XML escaping and representative response schemas to WebApiSerializer and removes partial manual JSON escapes."
+      "overlay_sha256": "e56a4e8e9930d8b2d33a22d206a9a061886b056e63c72c89e2216c857158eef9",
+      "task": "MOD-0.2 + MOD-2.1 + MOD-2.2 + MOD-2.3 + MOD-2.4 + MOD-2.5",
+      "reason": "Headless production characterization hook; MOD-2.1 delegates query, cookie and bounded request parsing to WebRequestParser; MOD-2.2 delegates sessions, one-time challenges, fail-closed permissions, Host/Origin/CSRF authorization, login failures and action rate limits to WebAuthPolicy; MOD-2.3 consumes the exact WebRouteId selected by WebRouteTable; MOD-2.4 delegates JSON/HTML/XML escaping and representative response schemas to WebApiSerializer and removes partial manual JSON escapes; MOD-2.5 delegates transfer actions/comparisons, search requests/result projection, and shared catalog actions/comparisons/projection to three typed controllers."
     },
     {
       "path": "srchybrid/WebServer.h",
       "baseline_sha256": "6457840ed976be885d1d3ef2e13ea01b03f59c960728d9cc14a5b217f3421140",
-      "overlay_sha256": "8def83a3e70b0c2e24099d5431720940da315941232c024eb1b115a335bcefcc",
-      "task": "MOD-0.2 + MOD-2.2 + MOD-2.3",
-      "reason": "Declaration of the headless production characterization hook, composition ownership of WebAuthPolicy with request Host, Origin, Fetch Metadata and CSRF metadata, and the resolved WebRouteId passed across the socket/coordinator boundary."
+      "overlay_sha256": "e9ed616250c2a03d5d4bf2887e1337f4e1d107849ec77c8f4a68dc9c1c351825",
+      "task": "MOD-0.2 + MOD-2.2 + MOD-2.3 + MOD-2.5",
+      "reason": "Declaration of the headless production characterization hook, composition ownership of WebAuthPolicy with request Host, Origin, Fetch Metadata and CSRF metadata, the resolved WebRouteId passed across the socket/coordinator boundary, and removal of the obsolete coordinator-owned boolean parser after MOD-2.5 transfer ownership."
     }
   ]
 }

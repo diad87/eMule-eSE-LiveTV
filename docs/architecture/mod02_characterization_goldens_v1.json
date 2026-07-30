@@ -100,8 +100,8 @@
       ],
       "token_sha256": {
         "CLiveStreamManager::FeedSegment": "3c5c468a2ee94f8c7f0dc5d991252c26e2e4bd843e042e9e2fce73de0859ee9f",
-        "CLiveStreamManager::OnChunkReceived": "7dfc89e4bd903be7fd4fe3bba1fb20a935ad98a7f9c21a665a90cd5fdc185ca5",
-        "CLiveStreamManager::StartBroadcast": "cf243148a87ee29c8dbea3f33575155bc9f1408cf287eb0fab3d44337ffac9d4"
+        "CLiveStreamManager::OnChunkReceived": "e325a587edf084343bd2ea6c6d1b19ac77093ba0004835101fd4864096f4c780",
+        "CLiveStreamManager::StartBroadcast": "80ce9c9fc81a1bcc844d00083301bd069684c8055497b457784070fb417fa474"
       }
     },
     "live_tunnel_dispatch": {

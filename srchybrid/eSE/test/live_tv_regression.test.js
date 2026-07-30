@@ -134,7 +134,7 @@ test('simultaneous broadcast and viewing keep native identities and buffers isol
   assert.match(join, /m_chunkBuffer\.Clear\(\)/);
   assert.doesNotMatch(join, /m_broadcastChunkBuffer\.Clear\(\)/);
 
-  assert.match(manager, /if \(!m_broadcastSession\.IsActive\(\) && !m_broadcastPeers\.IsEmpty\(\)\)/);
+  assert.match(manager, /if \(!m_broadcastSession\.IsActive\(\) && !m_peerSet\.DownstreamsEmpty\(\)\)/);
   assert.match(manager, /SendBitmapToAll\(true\)/);
   assert.match(manager, /SendBitmapToAll\(false\)/);
   assert.match(manager, /GetChannelSnapshot\(\)[\s\S]{0,450}m_broadcastStreamInfo\.streamKey/);

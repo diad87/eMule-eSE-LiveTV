@@ -13,8 +13,31 @@ const {
 
 let _ctx = {};
 const copyOwners = new Map();
+const promotionQueues = new Map();
 
 function init(ctx) { _ctx = ctx; }
+
+function promoteCopy(partNum, copyToken, copyTarget, tempAvi) {
+  const previous = promotionQueues.get(partNum) || Promise.resolve();
+  const promotion = previous.catch(() => {}).then(async () => {
+    if (copyOwners.get(partNum) !== copyToken) {
+      throw new Error('copy superseded by a newer request');
+    }
+    // The whole canonical replacement is serialized per part. A newer copy
+    // may become owner while these awaits are in flight, but it cannot promote
+    // until this operation completes, so an older generation can never run
+    // after (and overwrite) a newer successful promotion.
+    await fs.promises.unlink(tempAvi).catch(() => {});
+    await fs.promises.rename(copyTarget, tempAvi);
+    return copyOwners.get(partNum) === copyToken;
+  });
+  promotionQueues.set(partNum, promotion);
+  return promotion.finally(() => {
+    if (promotionQueues.get(partNum) === promotion) {
+      promotionQueues.delete(partNum);
+    }
+  });
+}
 
 function createDisconnectGuard(req, res, onDisconnect) {
   const controller = new AbortController();
@@ -187,16 +210,17 @@ function handle(url, req, res) {
     if (!result.ok || parseInt(result.stdout.trim()) <= 0) {
       throw new Error(result.error || result.stderr || 'Copy failed');
     }
-    if (copyOwners.get(partNum) !== copyToken) {
-      throw new Error('copy superseded by a newer request');
-    }
-    await fs.promises.unlink(tempAvi).catch(() => {});
-    await fs.promises.rename(copyTarget, tempAvi);
+    const promotedAsOwner = await promoteCopy(
+      partNum,
+      copyToken,
+      copyTarget,
+      tempAvi,
+    );
     // Once promoted, the canonical AVI remains valid even if this request
     // disconnects or a newer generation starts. Only unique partials are
     // eligible for request-owned cleanup.
     if (disconnect.checkNow()) return;
-    if (copyOwners.get(partNum) !== copyToken) {
+    if (!promotedAsOwner) {
       res.writeHead(409, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'superseded' }));
       return;

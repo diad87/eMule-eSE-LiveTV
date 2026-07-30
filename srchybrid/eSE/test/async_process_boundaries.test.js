@@ -394,11 +394,13 @@ test("MSE data stream replacement preserves the new request owner", async () => 
   await fs.promises.rm(tempRoot, { recursive: true, force: true });
 });
 
-test("concurrent MSE copies use unique partials and preserve promoted output", async () => {
+test("MSE promotion serializes a superseded copy behind the newer output", async () => {
   const callBase = processCalls.length;
   const tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ese-copy-owner-"));
   const source = path.join(tempRoot, "1.part");
+  const canonical = path.join(tempRoot, "ese_mse_1.avi");
   await fs.promises.writeFile(source, Buffer.alloc(32));
+  await fs.promises.writeFile(canonical, "BASE");
   streamPart.init({
     __dirname: tempRoot,
     TEMP_DIR: tempRoot,
@@ -415,23 +417,53 @@ test("concurrent MSE copies use unique partials and preserve promoted output", a
   const requestB = new EventEmitter();
   requestB.destroyed = false;
   const responseB = eventedResponse();
-  streamPart.handle(new URL("http://localhost/api/stream/start/1"), requestA, responseA);
-  streamPart.handle(new URL("http://localhost/api/stream/start/1"), requestB, responseB);
-  await waitFor(() => processCalls.length === callBase + 2);
-  const calls = processCalls.slice(callBase);
-  const targets = calls.map(call => call.args[call.args.indexOf("-Dest") + 1]);
-  assert.notEqual(targets[0], targets[1]);
-  await Promise.all(targets.map(target => fs.promises.writeFile(target, Buffer.alloc(64))));
-  calls[0].resolve({ ok: true, stdout: "64", stderr: "" });
-  calls[1].resolve({ ok: true, stdout: "64", stderr: "" });
-  await waitFor(() => responseA.writableEnded && responseB.writableEnded);
-  assert.equal(responseA.status, 409);
-  assert.equal(responseB.status, 200);
-  const canonical = path.join(tempRoot, "ese_mse_1.avi");
-  assert.equal((await fs.promises.stat(canonical)).size, 64);
-  responseB.emit("close");
-  assert.equal((await fs.promises.stat(canonical)).size, 64);
-  await fs.promises.rm(tempRoot, { recursive: true, force: true });
+  const originalUnlink = fs.promises.unlink;
+  let releaseOldPromotion;
+  let oldPromotionReached;
+  const oldPromotionPaused = new Promise(resolve => { oldPromotionReached = resolve; });
+  const oldPromotionRelease = new Promise(resolve => { releaseOldPromotion = resolve; });
+  let heldCanonicalUnlink = false;
+  fs.promises.unlink = async target => {
+    if (target === canonical && !heldCanonicalUnlink) {
+      heldCanonicalUnlink = true;
+      oldPromotionReached();
+      await oldPromotionRelease;
+    }
+    return originalUnlink.call(fs.promises, target);
+  };
+  try {
+    streamPart.handle(new URL("http://localhost/api/stream/start/1"), requestA, responseA);
+    await waitFor(() => processCalls.length === callBase + 1);
+    const callA = processCalls[callBase];
+    const targetA = callA.args[callA.args.indexOf("-Dest") + 1];
+    await fs.promises.writeFile(targetA, "OLDER-A");
+    callA.resolve({ ok: true, stdout: "7", stderr: "" });
+    await oldPromotionPaused;
+
+    // A already validated ownership and is paused inside canonical promotion.
+    // B now becomes owner and completes its copy while A is still paused.
+    streamPart.handle(new URL("http://localhost/api/stream/start/1"), requestB, responseB);
+    await waitFor(() => processCalls.length === callBase + 2);
+    const callB = processCalls[callBase + 1];
+    const targetB = callB.args[callB.args.indexOf("-Dest") + 1];
+    assert.notEqual(targetA, targetB);
+    await fs.promises.writeFile(targetB, "NEWER-B");
+    callB.resolve({ ok: true, stdout: "7", stderr: "" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(responseB.writableEnded, false);
+
+    releaseOldPromotion();
+    await waitFor(() => responseA.writableEnded && responseB.writableEnded);
+    assert.equal(responseA.status, 409);
+    assert.equal(responseB.status, 200);
+    assert.equal(await fs.promises.readFile(canonical, "utf8"), "NEWER-B");
+    responseB.emit("close");
+    assert.equal(await fs.promises.readFile(canonical, "utf8"), "NEWER-B");
+  } finally {
+    releaseOldPromotion();
+    fs.promises.unlink = originalUnlink;
+    await fs.promises.rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("a disconnected preparation cannot kill another request's completed stream", async () => {

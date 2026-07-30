@@ -13,6 +13,7 @@ import argparse
 import copy
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,7 @@ EXPECTED_INPUTS = {
     "completed_module_count": 30,
 }
 EXPECTED_NORMALIZATION = {
-    "include_parser": "MOD-0.4 INCLUDE_RE",
+    "include_parser": "phase-2 splice, comment-aware literal #include parser; non-literal active #include fails closed",
     "include_resolution": "MOD-0.4 current-parent, repository-root, srchybrid-root casefold lookup",
     "path_separator": "forward-slash",
     "path_case": "casefold for repository-local lookup",
@@ -51,6 +52,8 @@ EXPECTED_POLICY = {
 # independent value, editing baseline_graph, sccs and its self-reported digest
 # together could silently turn a newly introduced cycle into an allowlist.
 EXPECTED_BASELINE_GRAPH_SHA256 = "254138a09563255244172aabdc0aa15e91b2f4290dc37c956aca0ecb4442b16c"
+INCLUDE_DIRECTIVE_RE = re.compile(r"^[ \t]*\#[ \t]*include\b([^\r\n]*)", re.MULTILINE)
+LITERAL_INCLUDE_RE = re.compile(r'^[ \t]*(?:"([^"\r\n]+)"|<([^>\r\n]+)>)[ \t]*$')
 
 
 class GateError(RuntimeError):
@@ -120,6 +123,77 @@ def _sccs(graph: dict[str, set[str]]) -> list[list[str]]:
     return sorted(components, key=_component_key)
 
 
+def _splice_phase_two(source: str) -> str:
+    """Apply C/C++ translation phase 2, including CRLF source files."""
+    return re.sub(r"\\(?:\r\n|\n|\r)", "", source)
+
+
+def _strip_comments(source: str) -> str:
+    """Mask comments without moving line starts or treating strings as code."""
+    result: list[str] = []
+    index = 0
+    state = "code"
+    while index < len(source):
+        current = source[index]
+        following = source[index + 1] if index + 1 < len(source) else ""
+        if state == "code":
+            if current == "/" and following == "/":
+                result.extend((" ", " "))
+                index += 2
+                state = "line-comment"
+                continue
+            if current == "/" and following == "*":
+                result.extend((" ", " "))
+                index += 2
+                state = "block-comment"
+                continue
+            result.append(current)
+            if current == '"':
+                state = "string"
+            elif current == "'":
+                state = "character"
+            index += 1
+            continue
+        if state == "line-comment":
+            result.append(current if current in "\r\n" else " ")
+            if current in "\r\n":
+                state = "code"
+            index += 1
+            continue
+        if state == "block-comment":
+            if current == "*" and following == "/":
+                result.extend((" ", " "))
+                index += 2
+                state = "code"
+                continue
+            result.append(current if current in "\r\n" else " ")
+            index += 1
+            continue
+        # String and character literals cannot start a directive; retain them
+        # exactly while honouring escaped delimiters.
+        result.append(current)
+        if current == "\\" and index + 1 < len(source):
+            result.append(source[index + 1])
+            index += 2
+            continue
+        if (state == "string" and current == '"') or (state == "character" and current == "'"):
+            state = "code"
+        index += 1
+    return "".join(result)
+
+
+def _literal_includes(source_file: str, raw: str) -> list[str]:
+    """Return active literal includes after phase 2; reject macro includes closed."""
+    translated = _strip_comments(_splice_phase_two(raw))
+    includes: list[str] = []
+    for match in INCLUDE_DIRECTIVE_RE.finditer(translated):
+        literal = LITERAL_INCLUDE_RE.fullmatch(match.group(1))
+        if literal is None:
+            raise GateError(f"non-literal active #include forbidden: {source_file}")
+        includes.append(literal.group(1) or literal.group(2))
+    return includes
+
+
 def build_graph(
     mod04_config: dict[str, Any], mod03_contract: dict[str, Any],
     overrides: dict[str, bytes] | None = None,
@@ -135,8 +209,8 @@ def build_graph(
         entry = entries[source_module]
         for source_file in sorted(entry["implementation_files"] + entry["interface_files"]):
             raw = mod04._read_worktree(source_file, overrides).decode("utf-8", errors="replace")
-            for quoted, angled in mod04.INCLUDE_RE.findall(raw):
-                include = mod04._normal_include(quoted or angled)
+            for raw_include in _literal_includes(source_file, raw):
+                include = mod04._normal_include(raw_include)
                 target_file = mod04._resolve_include(include, source_file, repo_paths)
                 target_module = owners.get(target_file) if target_file else None
                 if target_module is None or target_module == source_module:
@@ -309,6 +383,19 @@ def _expect_cycle(
         raise GateError(f"negative {name} unexpectedly passed")
 
 
+def _expect_non_literal_include(
+    name: str, mod04_config: dict[str, Any], mod03_contract: dict[str, Any],
+    overrides: dict[str, bytes], expected: str,
+) -> None:
+    try:
+        build_graph(mod04_config, mod03_contract, overrides)
+    except GateError as exc:
+        if expected not in str(exc):
+            raise GateError(f"negative {name} failed for the wrong reason: {exc}") from exc
+    else:
+        raise GateError(f"negative {name} unexpectedly passed")
+
+
 def run_negative_fixtures(
     contract: dict[str, Any], mod04_config: dict[str, Any], mod03_contract: dict[str, Any],
 ) -> None:
@@ -324,6 +411,16 @@ def run_negative_fixtures(
             name, contract, mod04_config, mod03_contract, {framing: original + suffix},
             "new include SCCs forbidden: LiveHandshakeWire,LiveTunnelFraming",
         )
+    _expect_cycle(
+        "line-spliced-literal-cycle", contract, mod04_config, mod03_contract,
+        {framing: original + b'\r\n#include \\\r\n "LiveHandshakeWire.h"\r\n'},
+        "new include SCCs forbidden: LiveHandshakeWire,LiveTunnelFraming",
+    )
+    _expect_non_literal_include(
+        "macro-include", mod04_config, mod03_contract,
+        {framing: original + b'\n#define MOD51_TARGET "LiveHandshakeWire.h"\n#include MOD51_TARGET\n'},
+        f"non-literal active #include forbidden: {framing}",
+    )
     baseline = copy.deepcopy(contract)
     baseline["baseline_graph"]["edges"].append(["LiveTunnelFraming", "LiveCircuitHandshake"])
     baseline["baseline_graph"]["includes"].append({
@@ -397,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             validate_contract(contract, mod04_config, mod03_contract)
             run_negative_fixtures(contract, mod04_config, mod03_contract)
-            print("MOD-5.1 PASS: 5 negative include-SCC fixtures rejected with exact reasons")
+            print("MOD-5.1 PASS: 7 negative include-SCC fixtures rejected with exact reasons")
     except (OSError, json.JSONDecodeError, KeyError, TypeError, mod04.GateError, GateError) as exc:
         print(f"MOD-5.1 FAIL: {exc}", file=sys.stderr)
         return 1

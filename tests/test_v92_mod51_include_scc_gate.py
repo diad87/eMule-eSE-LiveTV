@@ -6,8 +6,10 @@ import copy
 import importlib.util
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -58,10 +60,35 @@ class Mod51IncludeSccGateTest(unittest.TestCase):
             b'\n#include "LiveHandshakeWire.h"\n',
             b'\n#include "subdir\\..\\LiveHandshakeWire.h"\n',
             b'\n#include "SUBDIR\\..\\livehandshakewire.h"\n',
+            b'\r\n#include \\\r\n "LiveHandshakeWire.h"\r\n',
         ):
             graph = GATE.build_graph(self.mod04, self.mod03, {source: raw + suffix})
             with self.assertRaisesRegex(GATE.GateError, expected):
                 GATE.verify_scc_policy(self.contract, graph)
+
+    def test_active_nonliteral_include_fails_closed(self) -> None:
+        source = "srchybrid/LiveTunnelFraming.cpp"
+        raw = (ROOT / source).read_bytes()
+        with self.assertRaisesRegex(
+            GATE.GateError, f"non-literal active #include forbidden: {source}",
+        ):
+            GATE.build_graph(
+                self.mod04, self.mod03,
+                {source: raw + b'\n#define MOD51_TARGET "LiveHandshakeWire.h"\n#include MOD51_TARGET\n'},
+            )
+
+    def test_comments_and_strings_do_not_create_active_include_directives(self) -> None:
+        source = "srchybrid/LiveTunnelFraming.cpp"
+        raw = (ROOT / source).read_bytes()
+        decoration = (
+            b'\r\n/*\r\n#include MOD51_COMMENT_ONLY\r\n*/\r\n'
+            b'const char* mod51_text = "#include MOD51_STRING_ONLY";\r\n'
+            b'// #include MOD51_LINE_COMMENT_ONLY\r\n'
+        )
+        self.assertEqual(
+            GATE.build_graph(self.mod04, self.mod03, {source: raw + decoration}),
+            self.contract["baseline_graph"],
+        )
 
     def test_baseline_cannot_self_authorize_a_cycle(self) -> None:
         mutated = copy.deepcopy(self.contract)
@@ -83,8 +110,11 @@ class Mod51IncludeSccGateTest(unittest.TestCase):
             GATE.validate_contract(mutated, self.mod04, self.mod03)
 
     def test_cli_writes_deterministic_artifact_only_under_artifacts(self) -> None:
-        first = ROOT / "artifacts" / "mod51-test-one.json"
-        second = ROOT / "artifacts" / "mod51-test-two.json"
+        artifacts = (ROOT / "artifacts").resolve()
+        created = pathlib.Path(tempfile.mkdtemp(prefix="mod51-test-", dir=artifacts)).resolve()
+        self.assertTrue(created.is_relative_to(artifacts))
+        first = created / "one.json"
+        second = created / "two.json"
         try:
             for output in (first, second):
                 completed = subprocess.run(
@@ -102,14 +132,15 @@ class Mod51IncludeSccGateTest(unittest.TestCase):
             self.assertIn("report path must remain under artifacts/", blocked.stderr)
             self.assertFalse((ROOT / "docs" / "mod51-blocked.json").exists())
         finally:
-            for output in (first, second):
-                if output.exists():
-                    output.unlink()
+            # The directory was created by this test and is constrained again
+            # before cleanup, so no pre-existing artifact can be removed.
+            if created.is_relative_to(artifacts) and created.name.startswith("mod51-test-"):
+                shutil.rmtree(created, ignore_errors=True)
 
     def test_cli_positive_and_exact_negative_fixtures(self) -> None:
         for mode, needle in (
             ("--verify", "new_sccs=0"),
-            ("--negative-fixtures", "5 negative include-SCC fixtures"),
+            ("--negative-fixtures", "7 negative include-SCC fixtures"),
         ):
             completed = subprocess.run(
                 [sys.executable, str(SCRIPT), mode], cwd=ROOT,

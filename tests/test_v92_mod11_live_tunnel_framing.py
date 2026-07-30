@@ -362,6 +362,13 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "implementation_files": ["srchybrid/LiveStreamSecurity.cpp"],
                 "interface_files": ["srchybrid/LiveStreamSecurity.h"],
                 "declared_direct_dependencies": [],
+            }, {
+                "name": "LiveStreamFanout",
+                "owner": "CLiveStreamManager",
+                "layer": "application",
+                "implementation_files": ["srchybrid/LiveStreamFanout.cpp"],
+                "interface_files": ["srchybrid/LiveStreamFanout.h"],
+                "declared_direct_dependencies": [],
             }],
         })
         self.assertEqual(self.baseline["slice_evidence"], {
@@ -469,6 +476,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             }, {
                 "module": "LiveStreamSecurity",
                 "slice_base_commit": "05c815444d106e305908ee076bd3c2bf62f24883",
+                "source_coordinator": "srchybrid/LiveStreamManager.cpp",
+            }, {
+                "module": "LiveStreamFanout",
+                "slice_base_commit": "c476950d1590fb7f337cc3010e1a86bdee10537d",
                 "source_coordinator": "srchybrid/LiveStreamManager.cpp",
             }],
         })
@@ -611,6 +622,32 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
                 "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
             },
             {
+                "path": "srchybrid/tests/test_live_stream_fanout.cpp",
+                "reason": (
+                    "Standalone selection, atomic batch reservation, "
+                    "backpressure, replacement, closure and concurrency "
+                    "executable test for the MOD-3.5 fanout extraction."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/LiveFanoutTransportAdapter.cpp",
+                "reason": (
+                    "Narrow MFC adapter projecting packet batches, socket queue "
+                    "depth and transport completion into the portable MOD-3.5 "
+                    "fanout owner."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
+                "path": "srchybrid/LiveFanoutTransportAdapter.h",
+                "reason": (
+                    "Move-only legacy packet-batch boundary for MOD-3.5 without "
+                    "exposing Packet or CUpDownClient to the portable module."
+                ),
+                "adr": "docs/architecture/ADR_MOD03_OWNERSHIP_AND_LAYERING_V1.md",
+            },
+            {
                 "path": "srchybrid/LiveStreamTrustAdapter.cpp",
                 "reason": (
                     "Legacy MFC adapter projecting durable Live peer identities "
@@ -701,6 +738,10 @@ class Mod11LiveTunnelFramingTest(unittest.TestCase):
             "srchybrid/LiveChunkWindow.h",
             "srchybrid/LiveStreamSecurity.cpp",
             "srchybrid/LiveStreamSecurity.h",
+            "srchybrid/LiveStreamFanout.cpp",
+            "srchybrid/LiveStreamFanout.h",
+            "srchybrid/LiveFanoutTransportAdapter.cpp",
+            "srchybrid/LiveFanoutTransportAdapter.h",
             "srchybrid/LiveStreamTrustAdapter.cpp",
             "srchybrid/LiveStreamTrustAdapter.h",
             "srchybrid/ClientList.cpp",

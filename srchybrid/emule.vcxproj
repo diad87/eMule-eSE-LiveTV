@@ -737,6 +737,13 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="LiveStreamFanout.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveFanoutTransportAdapter.cpp" />
     <ClCompile Include="LiveStreamTrustAdapter.cpp" />
     <ClCompile Include="LiveDebugLog.cpp" />
     <ClCompile Include="LiveKadBridge.cpp" />
@@ -1216,6 +1223,8 @@
     <ClInclude Include="ListenSocket.h" />
     <ClInclude Include="LiveChunkWindow.h" />
     <ClInclude Include="LiveStreamSecurity.h" />
+    <ClInclude Include="LiveStreamFanout.h" />
+    <ClInclude Include="LiveFanoutTransportAdapter.h" />
     <ClInclude Include="LiveStreamTrustAdapter.h" />
 	<ClInclude Include="DirectReachabilityManager.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natmap_state.h" />

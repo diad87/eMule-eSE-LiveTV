@@ -1,0 +1,82 @@
+{
+  "schema": "ese.mod35.live-stream-fanout-contract/v1",
+  "baseline_commit": "c476950d1590fb7f337cc3010e1a86bdee10537d",
+  "module": {
+    "name": "LiveStreamFanout",
+    "owner_before": "CLiveStreamManager",
+    "owner_after": "LiveStreamFanout",
+    "layer": "application",
+    "responsibility": "stable child selection, bounded delivery reservations and socket-backpressure admission",
+    "declared_direct_dependencies": []
+  },
+  "invariants": {
+    "wire_format": "byte_unchanged",
+    "child_capacity": 64,
+    "reservation_capacity": 256,
+    "peer_queue_limit_bytes": 8388608,
+    "selection": "stable_registered_order_excludes_sender_and_blocked_children_and_caps_children_not_fragments",
+    "batch_atomicity": "a_whole_segment_or_bootstrap_batch_is_reserved_or_rejected_before_any_packet_is_sent",
+    "backpressure": "external_socket_queue_plus_module_reservations_plus_batch_bytes_must_not_exceed_the_peer_limit",
+    "overflow": "all_size_arithmetic_is_overflow_safe_and_fails_closed",
+    "replacement": "transport_handle_replacement_preserves_child_delivery_state_and_pending_reservations",
+    "closure": "release_removes_the_child_and_cancels_every_pending_reservation_for_that_transport",
+    "threading": "module_state_is_internally_serialized_and_no_external_callback_runs_under_its_lock",
+    "allocation": "bounded_state_mutations_fail_closed_without_partial_commit"
+  },
+  "boundary": {
+    "owned_by_LiveStreamFanout": [
+      "ordered child delivery membership",
+      "sender and mutual-source exclusion during fanout selection",
+      "per-child pending delivery bytes",
+      "atomic delivery reservations and completion",
+      "socket-queue backpressure admission",
+      "bounded delivery outcome snapshots"
+    ],
+    "retained_by_transport_adapter": [
+      "Packet construction, fragmentation, destruction and move-only batch lifetime",
+      "socket queued-byte observation and SendPacket invocation",
+      "CUpDownClient transport-handle projection"
+    ],
+    "retained_by_CLiveStreamManager": [
+      "CUpDownClient lifetime and durable identity projection",
+      "stream and peer role validation",
+      "trust, mesh metrics, logging, MFC locking and external I/O"
+    ]
+  },
+  "acceptance": {
+    "required_native_cases": [
+      "stable_recipient_order_and_child_cap",
+      "sender_and_mutual_source_exclusion",
+      "whole_batch_backpressure_boundary",
+      "overflow_and_oversize_fail_closed",
+      "duplicate_pending_batch_rejected",
+      "reservation_capacity_failure_atomicity",
+      "replacement_preserves_pending_delivery",
+      "slow_child_does_not_block_healthy_child",
+      "close_cancels_pending_and_rejects_future_delivery",
+      "concurrent_reserve_complete_and_release",
+      "clear_reclaims_all_state"
+    ],
+    "required_gates": [
+      "MOD-0.1",
+      "MOD-0.2",
+      "MOD-0.3",
+      "MOD-0.4",
+      "MOD-3.1",
+      "MOD-3.2",
+      "MOD-3.3",
+      "MOD-3.4",
+      "Release-x64",
+      "production-selftest",
+      "independent-Sol-review"
+    ],
+    "stop_conditions": [
+      "wire_byte_drift",
+      "unbounded_child_or_delivery_state",
+      "partial_fragment_batch_admission",
+      "external_socket_io_under_module_lock",
+      "slow_child_blocks_healthy_sibling",
+      "new_P0_P1_or_P2_finding"
+    ]
+  }
+}

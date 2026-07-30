@@ -6,6 +6,7 @@
 #include "LiveProtocol.h"
 #include "LiveChunkWindow.h"
 #include "LiveStreamSecurity.h"
+#include "LiveStreamFanout.h"
 #include "LiveStreamTrustAdapter.h"
 #include "LiveKadBridge.h"
 #include "LiveMeshManager.h"
@@ -582,6 +583,7 @@ private:
 
     ese::live::LivePeerSet m_peerSet; // opaque membership; client list owns pointers
     ese::live::LiveStreamSecurity m_streamSecurity;
+    ese::live::LiveStreamFanout m_streamFanout;
     LiveStreamTrustAdapter m_streamTrustAdapter;
 
     // Trust data. C6 (2026-06): keyed by LivePeerId (durable user-hash/pubkey

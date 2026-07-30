@@ -60,6 +60,8 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/LivePeerSet.cpp", "srchybrid/LivePeerSet.h",
     "srchybrid/LiveChunkWindow.cpp", "srchybrid/LiveChunkWindow.h",
     "srchybrid/LiveStreamSecurity.cpp", "srchybrid/LiveStreamSecurity.h",
+    "srchybrid/LiveStreamFanout.cpp", "srchybrid/LiveStreamFanout.h",
+    "srchybrid/LiveFanoutTransportAdapter.cpp", "srchybrid/LiveFanoutTransportAdapter.h",
     "srchybrid/LiveStreamTrustAdapter.cpp", "srchybrid/LiveStreamTrustAdapter.h",
     "srchybrid/ClientList.cpp", "srchybrid/ClientList.h",
     "srchybrid/LiveMeshManager.cpp", "srchybrid/LiveMeshManager.h",

@@ -109,8 +109,49 @@ struct WebTransferPriorityDecision {
 		WebTransferCategoryPriority::None;
 };
 
+struct WebTransferClearAction {
+	bool allowed = false;
+	bool all = false;
+	std::string file_hash;
+};
+
+struct WebTransferAddAction {
+	bool allowed = false;
+	std::string link;
+};
+
+struct WebTransferDownloadComparison {
+	int state = 0;
+	int type = 0;
+	int name = 0;
+	int size = 0;
+	int transferred = 0;
+	int speed = 0;
+	int progress = 0;
+	int sources = 0;
+	int priority = 0;
+	int category = 0;
+};
+
+struct WebTransferUploadComparison {
+	int client = 0;
+	int user = 0;
+	int version = 0;
+	int filename = 0;
+	int transferred = 0;
+	int speed = 0;
+};
+
 class WebTransferController {
 public:
+	static WebTransferClearAction PlanClearCompleted(
+		bool isAdmin,
+		const std::string& value);
+
+	static WebTransferAddAction PlanAddDownload(
+		bool isAdmin,
+		const std::string& link);
+
 	static WebTransferFileAction PlanFileAction(
 		bool isAdmin,
 		const std::string& operation,
@@ -124,11 +165,13 @@ public:
 		const std::string& userHash);
 
 	static WebTransferColumnChange PlanColumnChange(
+		bool isAdmin,
 		const std::string& command,
 		const std::string& index,
 		const std::string& hidden);
 
 	static WebTransferSortDecision PlanSort(
+		bool isAdmin,
 		const std::string& sort,
 		const std::string& explicitReverse);
 
@@ -137,9 +180,20 @@ public:
 		const std::string& priority);
 
 	static bool TryApplyBoolean(
+		bool isAdmin,
 		bool currentValue,
 		const std::string& input,
 		bool& output);
+
+	static int CompareDownload(
+		unsigned targetIndex,
+		bool reverse,
+		const WebTransferDownloadComparison& comparison);
+
+	static int CompareUpload(
+		unsigned targetIndex,
+		bool reverse,
+		const WebTransferUploadComparison& comparison);
 };
 
 } // namespace web

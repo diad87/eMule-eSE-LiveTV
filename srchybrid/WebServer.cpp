@@ -1623,10 +1623,13 @@ CString CWebServer::_GetTransferList(const ThreadData &Data)
 
 
 	const CString &sClear(_ParseURL(Data.sURL, _T("clearcompleted")));
-	if (bAdmin && !sClear.IsEmpty()) {
-		if (sClear.CompareNoCase(_T("all")) == 0)
+	const ese::web::WebTransferClearAction clearAction =
+		ese::web::WebTransferController::PlanClearCompleted(
+			bAdmin, std::string(CT2A(sClear)));
+	if (clearAction.allowed) {
+		if (clearAction.all)
 			theApp.emuledlg->SendMessage(WEB_CLEAR_COMPLETED, (WPARAM)0, (LPARAM)cat);
-		else if (!sClear.IsEmpty()) {
+		else {
 			uchar FileHash[MDX_DIGEST_SIZE];
 			if (strmd4(sClear, FileHash)) {
 				uchar *pFileHash = new uchar[MDX_DIGEST_SIZE];
@@ -1637,8 +1640,10 @@ CString CWebServer::_GetTransferList(const ThreadData &Data)
 	}
 
 	CString HTTPTemp(_ParseURL(Data.sURL, _T("ed2k")));
-
-	if (bAdmin && !HTTPTemp.IsEmpty())
+	const ese::web::WebTransferAddAction addAction =
+		ese::web::WebTransferController::PlanAddDownload(
+			bAdmin, std::string(CT2A(HTTPTemp)));
+	if (addAction.allowed)
 		theApp.emuledlg->SendMessage(WEB_ADDDOWNLOADS, (WPARAM)(LPCTSTR)HTTPTemp, cat);
 
 	HTTPTemp = _ParseURL(Data.sURL, _T("c"));
@@ -1647,6 +1652,7 @@ CString CWebServer::_GetTransferList(const ThreadData &Data)
 	const CString menuValue = _ParseURL(Data.sURL, _T("v"));
 	const ese::web::WebTransferColumnChange columnChange =
 		ese::web::WebTransferController::PlanColumnChange(
+			bAdmin,
 			std::string(CT2A(HTTPTemp)),
 			std::string(CT2A(menuIndex)),
 			std::string(CT2A(menuValue)));
@@ -1777,7 +1783,8 @@ CString CWebServer::_GetTransferList(const ThreadData &Data)
 
 	const ese::web::WebTransferSortDecision sortDecision =
 		ese::web::WebTransferController::PlanSort(
-			std::string(CT2A(sSort)), std::string(CT2A(HTTPTemp)));
+			bAdmin, std::string(CT2A(sSort)),
+			std::string(CT2A(HTTPTemp)));
 	if (sortDecision.allowed) {
 		if (sortDecision.domain ==
 			ese::web::WebTransferSortDomain::Download) {
@@ -1800,7 +1807,7 @@ CString CWebServer::_GetTransferList(const ThreadData &Data)
 		const CString input = _ParseURL(Data.sURL, field);
 		bool output = current;
 		if (ese::web::WebTransferController::TryApplyBoolean(
-			current, std::string(CT2A(input)), output))
+			bAdmin, current, std::string(CT2A(input)), output))
 			current = output;
 	};
 	applyBoolean(pThis->m_Params.bShowUploadQueue, _T("showuploadqueue"));
@@ -2809,11 +2816,14 @@ CString CWebServer::_GetSharedFilesList(const ThreadData &Data)
 
 	const ese::web::WebSharedSortDecision sharedSort =
 		ese::web::WebSharedController::PlanSort(
-			std::string(CT2A(strSort)), std::string(CT2A(strTmp)));
+			bAdmin, std::string(CT2A(strSort)),
+			std::string(CT2A(strTmp)));
 	if (sharedSort.allowed) {
-		pThis->m_Params.SharedSort =
-			static_cast<SharedSort>(sharedSort.target_index);
-		pThis->m_Params.bSharedSortReverse = sharedSort.reverse;
+		if (sharedSort.update_sort)
+			pThis->m_Params.SharedSort =
+				static_cast<SharedSort>(sharedSort.target_index);
+		if (sharedSort.update_reverse)
+			pThis->m_Params.bSharedSortReverse = sharedSort.reverse;
 	}
 
 	const CString priorityHash = _ParseURL(Data.sURL, _T("hash"));
@@ -2856,14 +2866,17 @@ CString CWebServer::_GetSharedFilesList(const ThreadData &Data)
 		const CString hidden = _ParseURL(Data.sURL, _T("v"));
 		const ese::web::WebSharedColumnChange change =
 			ese::web::WebSharedController::PlanColumnChange(
-				std::string(CT2A(index)), std::string(CT2A(hidden)));
+				bAdmin, std::string(CT2A(index)),
+				std::string(CT2A(hidden)));
 		if (change.allowed) {
 			WSsharedColumnHidden[change.index] = change.hidden;
 			_SaveWIConfigArray(WSsharedColumnHidden,
 				_countof(WSsharedColumnHidden), _T("sharedColumnHidden"));
 		}
 	}
-	if (_ParseURL(Data.sURL, _T("reload")) == _T("true"))
+	const CString reload = _ParseURL(Data.sURL, _T("reload"));
+	if (ese::web::WebSharedController::PlanReload(
+		bAdmin, std::string(CT2A(reload))))
 		SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_SHARED_FILES_RELOAD, 0);
 
 	strTmp = (pThis->m_Params.bSharedSortReverse) ? _T("false") : _T("true");
@@ -3066,12 +3079,14 @@ CString CWebServer::_GetSharedFilesList(const ThreadData &Data)
 			dFile.nFileAllTimeAccepts = pFile->statistic.GetAllTimeAccepts();
 			dFile.sFileHash = md4str(pFile->GetFileHash());
 
-			if (pFile->m_nCompleteSourcesCountLo == 0)
-				dFile.sFileCompletes.Format(_T("< %hu"), pFile->m_nCompleteSourcesCountHi);
-			else if (pFile->m_nCompleteSourcesCountLo == pFile->m_nCompleteSourcesCountHi)
-				dFile.sFileCompletes.Format(_T("%hu"), pFile->m_nCompleteSourcesCountLo);
-			else
-				dFile.sFileCompletes.Format(_T("%hu - %hu"), pFile->m_nCompleteSourcesCountLo, pFile->m_nCompleteSourcesCountHi);
+			const ese::web::WebSharedRowProjection completion =
+				ese::web::WebSharedController::ProjectRow(
+					false, ese::web::WebSharedPriority::None, bPartFile,
+					dFile.m_qwFileSize, 0,
+					pFile->m_nCompleteSourcesCountLo,
+					pFile->m_nCompleteSourcesCountHi);
+			dFile.sFileCompletes =
+				CString(CA2T(completion.complete_sources.c_str()));
 
 			UINT uid;
 			if (pFile->IsAutoUpPriority()) {
@@ -3127,29 +3142,23 @@ CString CWebServer::_GetSharedFilesList(const ThreadData &Data)
 		bool b = (SharedArray[i].sFileHash == _ParseURL(Data.sURL, _T("hash")));
 		HTTPProcessData.Replace(_T("[LastChangedDataset]"), b ? _T("checked") : _T("checked_no"));
 
-		LPCTSTR sharedpriority;	//priority
-		if (SharedArray[i].bFileAutoPriority)
-			sharedpriority = _T("Auto");
-		else
-			switch (SharedArray[i].nFilePriority) {
-			case PR_VERYLOW:
-				sharedpriority = _T("VeryLow");
-				break;
-			case PR_LOW:
-				sharedpriority = _T("Low");
-				break;
-			case PR_NORMAL:
-				sharedpriority = _T("Normal");
-				break;
-			case PR_HIGH:
-				sharedpriority = _T("High");
-				break;
-			case PR_VERYHIGH:
-				sharedpriority = _T("Release");
-				break;
-			default:
-				sharedpriority = _T("");
-			}
+		ese::web::WebSharedPriority rowPriority =
+			ese::web::WebSharedPriority::None;
+		switch (SharedArray[i].nFilePriority) {
+		case PR_VERYLOW: rowPriority = ese::web::WebSharedPriority::VeryLow; break;
+		case PR_LOW: rowPriority = ese::web::WebSharedPriority::Low; break;
+		case PR_NORMAL: rowPriority = ese::web::WebSharedPriority::Normal; break;
+		case PR_HIGH: rowPriority = ese::web::WebSharedPriority::High; break;
+		case PR_VERYHIGH: rowPriority = ese::web::WebSharedPriority::Release; break;
+		default: break;
+		}
+		const ese::web::WebSharedRowProjection rowProjection =
+			ese::web::WebSharedController::ProjectRow(
+				SharedArray[i].bFileAutoPriority, rowPriority,
+				SharedArray[i].bIsPartFile, SharedArray[i].m_qwFileSize,
+				thePrefs.GetMaxWebUploadFileSizeMB(), 0, 0);
+		const CString sharedpriority =
+			CString(CA2T(rowProjection.priority_token));
 
 		CString ed2k(SharedArray[i].sED2kLink);		//ed2klink
 		ed2k.Replace(_T("'"), _T("&#8217;"));
@@ -3165,7 +3174,7 @@ CString CWebServer::_GetSharedFilesList(const ThreadData &Data)
 			if (cur_file != NULL) {
 				HTTPProcessData.Replace(_T("[FileIsPriority]")
 					, (cur_file->GetUpPriority() == PR_VERYHIGH) ? _T("release") : _T("none"));
-				downloadable = !cur_file->IsPartFile() && (thePrefs.GetMaxWebUploadFileSizeMB() == 0 || SharedArray[i].m_qwFileSize < ((uint64)thePrefs.GetMaxWebUploadFileSizeMB()) * 1024 * 1024);
+				downloadable = rowProjection.downloadable;
 			}
 		}
 
@@ -4003,7 +4012,8 @@ CString CWebServer::_GetSearch(const ThreadData &Data)
 		const CString hidden = _ParseURL(Data.sURL, _T("v"));
 		const ese::web::WebSearchColumnChange change =
 			ese::web::WebSearchController::PlanColumnChange(
-				std::string(CT2A(index)), std::string(CT2A(hidden)));
+				bSessionAdmin, std::string(CT2A(index)),
+				std::string(CT2A(hidden)));
 		if (change.allowed) {
 			WSsearchColumnHidden[change.index] = change.hidden;
 			_SaveWIConfigArray(WSsearchColumnHidden,
@@ -4085,7 +4095,7 @@ CString CWebServer::_GetSearch(const ThreadData &Data)
 	const CString sortAscending = _ParseURL(Data.sURL, _T("sortAsc"));
 	const ese::web::WebSearchSortDecision searchSort =
 		ese::web::WebSearchController::PlanSort(
-			std::string(CT2A(sSort)),
+			bSessionAdmin, std::string(CT2A(sSort)),
 			std::string(CT2A(sortAscending)),
 			static_cast<unsigned>(pThis->m_iSearchSortby),
 			pThis->m_bSearchAsc);
@@ -4100,7 +4110,6 @@ CString CWebServer::_GetSearch(const ThreadData &Data)
 	SearchFileArray.QuickSort(pThis->m_bSearchAsc);
 
 	uchar aFileHash[16];
-	uchar nRed, nGreen, nBlue;
 	CKnownFile *sameFile;
 	CString strOverlayImage;
 	CString strSourcesImage;
@@ -4113,26 +4122,23 @@ CString CWebServer::_GetSearch(const ThreadData &Data)
 
 	for (uint16 i = 0; i < SearchFileArray.GetCount(); ++i) {
 		structFile = SearchFileArray.GetAt(i);
-		nRed = nGreen = nBlue = 255;
 		DecodeBase16(structFile.m_strFileHash, 32, aFileHash, _countof(aFileHash));
 		strOverlayImage = _T("none");
-		if (theApp.downloadqueue->HasFileByID(aFileHash)) {
-			nBlue = 128;
-			nGreen = 128;
-		} else {
+		const bool downloading =
+			theApp.downloadqueue->HasFileByID(aFileHash) != NULL;
+		bool known = false;
+		if (!downloading) {
 			sameFile = theApp.sharedfiles->GetFileByID(aFileHash);
 			if (sameFile == NULL)
 				sameFile = theApp.knownfiles->FindKnownFileByID(aFileHash);
-			if (sameFile != NULL) {
-				nBlue = 128;
-				nRed = 128;
-			}
+			known = sameFile != NULL;
 		}
-		strColorPrefix.Format(_T("<font color=#%02x%02x%02x>"), nRed, nGreen, nBlue);
-
-		strSourcesImage = CString(
-			ese::web::WebSearchController::SourceImageBucket(
-				structFile.m_uSourceCount));
+		const ese::web::WebSearchResultProjection projection =
+			ese::web::WebSearchController::ProjectResult(
+				downloading, known, structFile.m_uSourceCount);
+		strColorPrefix.Format(_T("<font color=#%02x%02x%02x>"),
+			projection.red, projection.green, projection.blue);
+		strSourcesImage = CString(projection.source_bucket);
 
 		strSources.Format(_T("%u(%u)"), structFile.m_uSourceCount, structFile.m_dwCompleteSourceCount);
 		strFilename = structFile.m_strFileName;
@@ -7986,42 +7992,24 @@ int AFX_CDECL CWebServer::_DownloadCmp(void *prm, void const *pv1, void const *p
 {
 	const DownloadFiles &p1 = *reinterpret_cast<const DownloadFiles*>(pv1);
 	const DownloadFiles &p2 = *reinterpret_cast<const DownloadFiles*>(pv2);
-	int iOrd;
-	switch ((DownloadSort)((SortParams*)prm)->eSort) {
-	case DOWN_SORT_STATE:
-		iOrd = p1.iFileState - p2.iFileState;
-		break;
-	case DOWN_SORT_TYPE:
-		iOrd = p1.sFileType.CompareNoCase(p2.sFileType);
-		break;
-	case DOWN_SORT_NAME:
-		iOrd = p1.sFileName.CompareNoCase(p2.sFileName);
-		break;
-	case DOWN_SORT_SIZE:
-		iOrd = CompareUnsigned(p1.m_qwFileSize, p2.m_qwFileSize);
-		break;
-	case DOWN_SORT_TRANSFERRED:
-		iOrd = CompareUnsigned(p1.m_qwFileTransferred, p2.m_qwFileTransferred);
-		break;
-	case DOWN_SORT_SPEED:
-		iOrd = p1.lFileSpeed - p2.lFileSpeed;
-		break;
-	case DOWN_SORT_PROGRESS:
-		iOrd = sgn(p1.m_dblCompleted - p2.m_dblCompleted);
-		break;
-	case DOWN_SORT_SOURCES:
-		iOrd = p1.lSourceCount - p2.lSourceCount;
-		break;
-	case DOWN_SORT_PRIORITY:
-		iOrd = p1.nFilePrio - p2.nFilePrio;
-		break;
-	case DOWN_SORT_CATEGORY:
-		iOrd = p1.sCategory.CompareNoCase(p2.sCategory);
-		break;
-	default: //unknown
-		return 0;
-	}
-	return ((SortParams*)prm)->bReverse ? iOrd : -iOrd;
+	const auto compare = [](const auto& left, const auto& right) {
+		return left < right ? -1 : (left > right ? 1 : 0);
+	};
+	const ese::web::WebTransferDownloadComparison comparison{
+		compare(p1.iFileState, p2.iFileState),
+		p1.sFileType.CompareNoCase(p2.sFileType),
+		p1.sFileName.CompareNoCase(p2.sFileName),
+		compare(p1.m_qwFileSize, p2.m_qwFileSize),
+		compare(p1.m_qwFileTransferred, p2.m_qwFileTransferred),
+		compare(p1.lFileSpeed, p2.lFileSpeed),
+		compare(p1.m_dblCompleted, p2.m_dblCompleted),
+		compare(p1.lSourceCount, p2.lSourceCount),
+		compare(p1.nFilePrio, p2.nFilePrio),
+		p1.sCategory.CompareNoCase(p2.sCategory)
+	};
+	const SortParams* sort = static_cast<const SortParams*>(prm);
+	return ese::web::WebTransferController::CompareDownload(
+		static_cast<unsigned>(sort->eSort), sort->bReverse, comparison);
 }
 
 int AFX_CDECL CWebServer::_ServerCmp(void *prm, void const *pv1, void const *pv2)
@@ -8075,76 +8063,45 @@ int AFX_CDECL CWebServer::_SharedCmp(void *prm, void const *pv1, void const *pv2
 {
 	const SharedFiles &p1 = *reinterpret_cast<const SharedFiles*>(pv1);
 	const SharedFiles &p2 = *reinterpret_cast<const SharedFiles*>(pv2);
-	int iOrd;
-	switch ((SharedSort)((SortParams*)prm)->eSort) {
-	case SHARED_SORT_STATE:
-		iOrd = p2.sFileState.CompareNoCase(p1.sFileState); //reversed
-		break;
-	case SHARED_SORT_TYPE:
-		iOrd = p2.sFileType.CompareNoCase(p1.sFileType); //reversed
-		break;
-	case SHARED_SORT_NAME:
-		iOrd = p1.sFileName.CompareNoCase(p2.sFileName);
-		break;
-	case SHARED_SORT_SIZE:
-		iOrd = CompareUnsigned(p1.m_qwFileSize, p2.m_qwFileSize);
-		break;
-	case SHARED_SORT_TRANSFERRED:
-		iOrd = CompareUnsigned(p1.nFileTransferred, p2.nFileTransferred);
-		break;
-	case SHARED_SORT_ALL_TIME_TRANSFERRED:
-		iOrd = CompareUnsigned(p1.nFileAllTimeTransferred, p2.nFileAllTimeTransferred);
-		break;
-	case SHARED_SORT_REQUESTS:
-		iOrd = p1.nFileRequests - p2.nFileRequests;
-		break;
-	case SHARED_SORT_ALL_TIME_REQUESTS:
-		iOrd = p1.nFileAllTimeRequests - p2.nFileAllTimeRequests;
-		break;
-	case SHARED_SORT_ACCEPTS:
-		iOrd = p1.nFileAccepts - p2.nFileAccepts;
-		break;
-	case SHARED_SORT_ALL_TIME_ACCEPTS:
-		iOrd = p1.nFileAllTimeAccepts - p2.nFileAllTimeAccepts;
-		break;
-	case SHARED_SORT_COMPLETES:
-		iOrd = sgn(p1.dblFileCompletes - p2.dblFileCompletes);
-		break;
-	case SHARED_SORT_PRIORITY:
-		iOrd = CSharedFileList::GetRealPrio(p1.nFilePriority) - CSharedFileList::GetRealPrio(p2.nFilePriority);
-		break;
-	default: //unknown
-		return 0;
-	}
-	return ((SortParams*)prm)->bReverse ? iOrd : -iOrd;
+	const auto compare = [](const auto& left, const auto& right) {
+		return left < right ? -1 : (left > right ? 1 : 0);
+	};
+	const ese::web::WebSharedComparison comparison{
+		p2.sFileState.CompareNoCase(p1.sFileState),
+		p2.sFileType.CompareNoCase(p1.sFileType),
+		p1.sFileName.CompareNoCase(p2.sFileName),
+		compare(p1.m_qwFileSize, p2.m_qwFileSize),
+		compare(p1.nFileTransferred, p2.nFileTransferred),
+		compare(p1.nFileAllTimeTransferred, p2.nFileAllTimeTransferred),
+		compare(p1.nFileRequests, p2.nFileRequests),
+		compare(p1.nFileAllTimeRequests, p2.nFileAllTimeRequests),
+		compare(p1.nFileAccepts, p2.nFileAccepts),
+		compare(p1.nFileAllTimeAccepts, p2.nFileAllTimeAccepts),
+		compare(p1.dblFileCompletes, p2.dblFileCompletes),
+		compare(CSharedFileList::GetRealPrio(p1.nFilePriority),
+			CSharedFileList::GetRealPrio(p2.nFilePriority))
+	};
+	const SortParams* sort = static_cast<const SortParams*>(prm);
+	return ese::web::WebSharedController::Compare(
+		static_cast<unsigned>(sort->eSort), sort->bReverse, comparison);
 }
 
 int AFX_CDECL CWebServer::_UploadCmp(void *prm, void const *pv1, void const *pv2)
 {
 	const UploadUsers &p1 = *reinterpret_cast<const UploadUsers*>(pv1);
 	const UploadUsers &p2 = *reinterpret_cast<const UploadUsers*>(pv2);
-	int iOrd;
-	switch ((UploadSort)((SortParams*)prm)->eSort) {
-	case UP_SORT_CLIENT:
-		iOrd = *p1.sClientSoft - *p2.sClientSoft;
-		break;
-	case UP_SORT_USER:
-		iOrd = p1.sUserName.CompareNoCase(p2.sUserName);
-		break;
-	case UP_SORT_VERSION:
-		iOrd = p1.sClientNameVersion.CompareNoCase(p2.sClientNameVersion);
-		break;
-	case UP_SORT_FILENAME:
-		iOrd = p1.sFileName.CompareNoCase(p2.sFileName);
-		break;
-	case UP_SORT_TRANSFERRED:
-		iOrd = CompareUnsigned(p1.nTransferredUp, p2.nTransferredUp);
-		break;
-	case UP_SORT_SPEED:
-		iOrd = p1.nDataRate - p2.nDataRate;
-		break;
-	default: //unknown
-		return 0;
-	}
-	return ((SortParams*)prm)->bReverse ? iOrd : -iOrd;
+	const auto compare = [](const auto& left, const auto& right) {
+		return left < right ? -1 : (left > right ? 1 : 0);
+	};
+	const ese::web::WebTransferUploadComparison comparison{
+		compare(*p1.sClientSoft, *p2.sClientSoft),
+		p1.sUserName.CompareNoCase(p2.sUserName),
+		p1.sClientNameVersion.CompareNoCase(p2.sClientNameVersion),
+		p1.sFileName.CompareNoCase(p2.sFileName),
+		compare(p1.nTransferredUp, p2.nTransferredUp),
+		compare(p1.nDataRate, p2.nDataRate)
+	};
+	const SortParams* sort = static_cast<const SortParams*>(prm);
+	return ese::web::WebTransferController::CompareUpload(
+		static_cast<unsigned>(sort->eSort), sort->bReverse, comparison);
 }

@@ -19,6 +19,17 @@ bool IsMd4Hex(const std::string& value)
 	return true;
 }
 
+bool AsciiEqualsNoCase(const std::string& left, const char* right)
+{
+	std::size_t index = 0;
+	for (; index < left.size() && right[index] != '\0'; ++index) {
+		if (std::tolower(static_cast<unsigned char>(left[index])) !=
+			std::tolower(static_cast<unsigned char>(right[index])))
+			return false;
+	}
+	return index == left.size() && right[index] == '\0';
+}
+
 bool ParseLong(const std::string& value, long& result)
 {
 	if (value.empty()) {
@@ -97,7 +108,42 @@ WebTransferSort SortValue(const std::string& value, bool& defaultReverse)
 	return WebTransferSort::None;
 }
 
+int ApplyDirection(int value, bool reverse)
+{
+	const int order = (value > 0) - (value < 0);
+	return reverse ? order : -order;
+}
+
 } // namespace
+
+WebTransferClearAction WebTransferController::PlanClearCompleted(
+	bool isAdmin,
+	const std::string& value)
+{
+	WebTransferClearAction action;
+	if (!isAdmin || value.empty())
+		return action;
+	if (AsciiEqualsNoCase(value, "all"))
+		action.all = true;
+	else if (IsMd4Hex(value))
+		action.file_hash = value;
+	else
+		return action;
+	action.allowed = true;
+	return action;
+}
+
+WebTransferAddAction WebTransferController::PlanAddDownload(
+	bool isAdmin,
+	const std::string& link)
+{
+	WebTransferAddAction action;
+	if (!isAdmin || link.empty())
+		return action;
+	action.allowed = true;
+	action.link = link;
+	return action;
+}
 
 WebTransferFileAction WebTransferController::PlanFileAction(
 	bool isAdmin,
@@ -144,11 +190,14 @@ WebTransferFriendAction WebTransferController::PlanFriendAction(
 }
 
 WebTransferColumnChange WebTransferController::PlanColumnChange(
+	bool isAdmin,
 	const std::string& command,
 	const std::string& index,
 	const std::string& hidden)
 {
 	WebTransferColumnChange change;
+	if (!isAdmin)
+		return change;
 	unsigned limit = 0;
 	if (command == "menudown") {
 		change.group = WebTransferColumnGroup::Download;
@@ -183,10 +232,13 @@ WebTransferColumnChange WebTransferController::PlanColumnChange(
 }
 
 WebTransferSortDecision WebTransferController::PlanSort(
+	bool isAdmin,
 	const std::string& sort,
 	const std::string& explicitReverse)
 {
 	WebTransferSortDecision decision;
+	if (!isAdmin)
+		return decision;
 	bool defaultReverse = false;
 	decision.sort = SortValue(sort, defaultReverse);
 	if (decision.sort == WebTransferSort::None)
@@ -214,9 +266,9 @@ WebTransferSortDecision WebTransferController::PlanSort(
 	}
 	decision.reverse = defaultReverse;
 	if (!explicitReverse.empty()) {
-		if (explicitReverse == "true")
+		if (AsciiEqualsNoCase(explicitReverse, "true"))
 			decision.reverse = true;
-		else if (explicitReverse == "false")
+		else if (AsciiEqualsNoCase(explicitReverse, "false"))
 			decision.reverse = false;
 		else
 			return WebTransferSortDecision{};
@@ -247,11 +299,14 @@ WebTransferPriorityDecision WebTransferController::PlanCategoryPriority(
 }
 
 bool WebTransferController::TryApplyBoolean(
+	bool isAdmin,
 	bool currentValue,
 	const std::string& input,
 	bool& output)
 {
 	output = currentValue;
+	if (!isAdmin)
+		return false;
 	if (input == "true")
 		output = true;
 	else if (input == "false")
@@ -259,6 +314,36 @@ bool WebTransferController::TryApplyBoolean(
 	else
 		return false;
 	return true;
+}
+
+int WebTransferController::CompareDownload(
+	unsigned targetIndex,
+	bool reverse,
+	const WebTransferDownloadComparison& comparison)
+{
+	const int* values[] = {
+		&comparison.state, &comparison.type, &comparison.name,
+		&comparison.size, &comparison.transferred, &comparison.speed,
+		&comparison.progress, &comparison.sources, &comparison.priority,
+		&comparison.category
+	};
+	if (targetIndex >= sizeof values / sizeof values[0])
+		return 0;
+	return ApplyDirection(*values[targetIndex], reverse);
+}
+
+int WebTransferController::CompareUpload(
+	unsigned targetIndex,
+	bool reverse,
+	const WebTransferUploadComparison& comparison)
+{
+	const int* values[] = {
+		&comparison.client, &comparison.user, &comparison.version,
+		&comparison.filename, &comparison.transferred, &comparison.speed
+	};
+	if (targetIndex >= sizeof values / sizeof values[0])
+		return 0;
+	return ApplyDirection(*values[targetIndex], reverse);
 }
 
 } // namespace web

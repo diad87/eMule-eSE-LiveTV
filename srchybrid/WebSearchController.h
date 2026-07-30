@@ -36,6 +36,13 @@ struct WebSearchSortDecision {
 	bool ascending = false;
 };
 
+struct WebSearchResultProjection {
+	unsigned red = 255;
+	unsigned green = 255;
+	unsigned blue = 255;
+	const char* source_bucket = "0";
+};
+
 class WebSearchController {
 public:
 	static WebSearchRequest PlanSearch(
@@ -53,16 +60,23 @@ public:
 		const std::string& pipeSeparatedHashes);
 
 	static WebSearchColumnChange PlanColumnChange(
+		bool isAdmin,
 		const std::string& index,
 		const std::string& hidden);
 
 	static WebSearchSortDecision PlanSort(
+		bool isAdmin,
 		const std::string& column,
 		const std::string& ascending,
 		unsigned currentColumn,
 		bool currentAscending);
 
 	static const char* SourceImageBucket(unsigned sources);
+
+	static WebSearchResultProjection ProjectResult(
+		bool downloading,
+		bool known,
+		unsigned sources);
 };
 
 } // namespace web

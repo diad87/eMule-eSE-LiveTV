@@ -33,10 +33,10 @@ bool ParseUnsigned(const std::string& value, std::uint64_t& output)
 
 bool IsFileType(const std::string& value)
 {
-	return value.empty() || value == "archive" || value == "audio" ||
-		value == "cdimage" || value == "document" || value == "image" ||
-		value == "program" || value == "video" ||
-		value == "emulecollection";
+	return value.empty() || value == "Arc" || value == "Audio" ||
+		value == "Iso" || value == "Doc" || value == "Image" ||
+		value == "Pro" || value == "Video" ||
+		value == "EmuleCollection";
 }
 
 } // namespace
@@ -105,10 +105,13 @@ std::vector<std::string> WebSearchController::PlanDownloads(
 }
 
 WebSearchColumnChange WebSearchController::PlanColumnChange(
+	bool isAdmin,
 	const std::string& index,
 	const std::string& hidden)
 {
 	WebSearchColumnChange change;
+	if (!isAdmin)
+		return change;
 	unsigned parsedIndex = 0;
 	long parsedHidden = 0;
 	const std::from_chars_result indexResult = std::from_chars(
@@ -129,6 +132,7 @@ WebSearchColumnChange WebSearchController::PlanColumnChange(
 }
 
 WebSearchSortDecision WebSearchController::PlanSort(
+	bool isAdmin,
 	const std::string& column,
 	const std::string& ascending,
 	unsigned currentColumn,
@@ -137,6 +141,8 @@ WebSearchSortDecision WebSearchController::PlanSort(
 	WebSearchSortDecision decision;
 	decision.column = currentColumn;
 	decision.ascending = currentAscending;
+	if (!isAdmin)
+		return decision;
 	if (!column.empty()) {
 		unsigned parsedColumn = 0;
 		const std::from_chars_result result = std::from_chars(
@@ -148,9 +154,9 @@ WebSearchSortDecision WebSearchController::PlanSort(
 		decision.column = parsedColumn;
 	}
 	if (!ascending.empty()) {
-		if (ascending == "1" || ascending == "true")
+		if (ascending == "1")
 			decision.ascending = true;
-		else if (ascending == "0" || ascending == "false")
+		else if (ascending == "0")
 			decision.ascending = false;
 		else
 			return WebSearchSortDecision{};
@@ -166,6 +172,23 @@ const char* WebSearchController::SourceImageBucket(unsigned sources)
 	if (sources < 25) return "10";
 	if (sources < 50) return "25";
 	return "50";
+}
+
+WebSearchResultProjection WebSearchController::ProjectResult(
+	bool downloading,
+	bool known,
+	unsigned sources)
+{
+	WebSearchResultProjection projection;
+	if (downloading) {
+		projection.green = 128;
+		projection.blue = 128;
+	} else if (known) {
+		projection.red = 128;
+		projection.blue = 128;
+	}
+	projection.source_bucket = SourceImageBucket(sources);
+	return projection;
 }
 
 } // namespace web

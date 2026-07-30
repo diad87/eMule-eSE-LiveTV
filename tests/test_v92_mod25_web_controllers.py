@@ -69,19 +69,26 @@ class Mod25WebControllersTest(unittest.TestCase):
         for header in MODULES:
             self.assertIn(f'#include "{header}.h"', self.server)
         for marker in (
+            "WebTransferController::PlanClearCompleted",
+            "WebTransferController::PlanAddDownload",
             "WebTransferController::PlanFileAction",
             "WebTransferController::PlanFriendAction",
             "WebTransferController::PlanColumnChange",
             "WebTransferController::PlanSort",
             "WebTransferController::TryApplyBoolean",
+            "WebTransferController::CompareDownload",
+            "WebTransferController::CompareUpload",
             "WebSearchController::PlanSearch",
             "WebSearchController::PlanDownloads",
             "WebSearchController::PlanColumnChange",
             "WebSearchController::PlanSort",
-            "WebSearchController::SourceImageBucket",
+            "WebSearchController::ProjectResult",
             "WebSharedController::PlanSort",
             "WebSharedController::PlanPriority",
             "WebSharedController::PlanColumnChange",
+            "WebSharedController::PlanReload",
+            "WebSharedController::Compare",
+            "WebSharedController::ProjectRow",
         ):
             self.assertIn(marker, self.server)
         for obsolete in (
@@ -160,6 +167,19 @@ class Mod25WebControllersTest(unittest.TestCase):
                 "request-to-action decisions",
                 "sort and projection policy",
                 "bounded hostile-input validation",
+            ],
+        )
+        self.assertEqual(
+            self.contract["modules"][1]["file_types"],
+            [
+                "Arc",
+                "Audio",
+                "Iso",
+                "Doc",
+                "Image",
+                "Pro",
+                "Video",
+                "EmuleCollection",
             ],
         )
 

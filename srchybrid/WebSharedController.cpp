@@ -40,16 +40,23 @@ WebSharedSort SortValue(const std::string& value, bool& defaultReverse)
 } // namespace
 
 WebSharedSortDecision WebSharedController::PlanSort(
+	bool isAdmin,
 	const std::string& sort,
 	const std::string& explicitReverse)
 {
 	WebSharedSortDecision decision;
-	bool defaultReverse = false;
-	decision.sort = SortValue(sort, defaultReverse);
-	if (decision.sort == WebSharedSort::None)
+	if (!isAdmin || (sort.empty() && explicitReverse.empty()))
 		return decision;
-	decision.target_index = static_cast<unsigned>(decision.sort) - 1;
-	decision.reverse = defaultReverse;
+	bool defaultReverse = false;
+	if (!sort.empty()) {
+		decision.sort = SortValue(sort, defaultReverse);
+		if (decision.sort == WebSharedSort::None)
+			return decision;
+		decision.target_index = static_cast<unsigned>(decision.sort) - 1;
+		decision.update_sort = true;
+		decision.update_reverse = true;
+		decision.reverse = defaultReverse;
+	}
 	if (!explicitReverse.empty()) {
 		if (explicitReverse == "true")
 			decision.reverse = true;
@@ -57,6 +64,7 @@ WebSharedSortDecision WebSharedController::PlanSort(
 			decision.reverse = false;
 		else
 			return WebSharedSortDecision{};
+		decision.update_reverse = true;
 	}
 	decision.allowed = true;
 	return decision;
@@ -90,10 +98,13 @@ WebSharedPriorityDecision WebSharedController::PlanPriority(
 }
 
 WebSharedColumnChange WebSharedController::PlanColumnChange(
+	bool isAdmin,
 	const std::string& index,
 	const std::string& hidden)
 {
 	WebSharedColumnChange change;
+	if (!isAdmin)
+		return change;
 	unsigned parsedIndex = 0;
 	long parsedHidden = 0;
 	const std::from_chars_result indexResult = std::from_chars(
@@ -111,6 +122,76 @@ WebSharedColumnChange WebSharedController::PlanColumnChange(
 	change.index = parsedIndex;
 	change.hidden = parsedHidden != 0;
 	return change;
+}
+
+bool WebSharedController::PlanReload(
+	bool isAdmin,
+	const std::string& value)
+{
+	return isAdmin && value == "true";
+}
+
+int WebSharedController::Compare(
+	unsigned targetIndex,
+	bool reverse,
+	const WebSharedComparison& comparison)
+{
+	const int* values[] = {
+		&comparison.state, &comparison.type, &comparison.name,
+		&comparison.size, &comparison.transferred,
+		&comparison.all_time_transferred, &comparison.requests,
+		&comparison.all_time_requests, &comparison.accepts,
+		&comparison.all_time_accepts, &comparison.completes,
+		&comparison.priority
+	};
+	if (targetIndex >= sizeof values / sizeof values[0])
+		return 0;
+	const int value = (*values[targetIndex] > 0) -
+		(*values[targetIndex] < 0);
+	return reverse ? value : -value;
+}
+
+WebSharedRowProjection WebSharedController::ProjectRow(
+	bool autoPriority,
+	WebSharedPriority priority,
+	bool partFile,
+	std::uint64_t fileSize,
+	std::uint64_t maximumDownloadMiB,
+	unsigned completeSourcesLow,
+	unsigned completeSourcesHigh)
+{
+	WebSharedRowProjection projection;
+	if (autoPriority)
+		projection.priority_token = "Auto";
+	else {
+		switch (priority) {
+		case WebSharedPriority::VeryLow:
+			projection.priority_token = "VeryLow"; break;
+		case WebSharedPriority::Low:
+			projection.priority_token = "Low"; break;
+		case WebSharedPriority::Normal:
+			projection.priority_token = "Normal"; break;
+		case WebSharedPriority::High:
+			projection.priority_token = "High"; break;
+		case WebSharedPriority::Release:
+			projection.priority_token = "Release"; break;
+		default:
+			break;
+		}
+	}
+	projection.downloadable = !partFile &&
+		(maximumDownloadMiB == 0 ||
+			fileSize < maximumDownloadMiB * 1048576u);
+	if (completeSourcesLow == 0)
+		projection.complete_sources =
+			"< " + std::to_string(completeSourcesHigh);
+	else if (completeSourcesLow == completeSourcesHigh)
+		projection.complete_sources = std::to_string(completeSourcesLow);
+	else
+		projection.complete_sources =
+			std::to_string(completeSourcesLow) + " - " +
+			std::to_string(completeSourcesHigh);
+	return projection;
 }
 
 } // namespace web

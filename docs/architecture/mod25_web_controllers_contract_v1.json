@@ -72,14 +72,14 @@
         "default": "SearchTypeEd2kServer"
       },
       "file_types": [
-        "archive",
-        "audio",
-        "cdimage",
-        "document",
-        "image",
-        "program",
-        "video",
-        "emulecollection"
+        "Arc",
+        "Audio",
+        "Iso",
+        "Doc",
+        "Image",
+        "Pro",
+        "Video",
+        "EmuleCollection"
       ],
       "availability_max": 1000000,
       "download_hash_hex_length": 32

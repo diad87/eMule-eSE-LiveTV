@@ -346,7 +346,6 @@ private:
 	static CString	_SpecialChars(const CString &cstr, bool noquote = true);
 	static CString	_GetPlainResString(UINT nID, bool noquote = true);
 	static void		_GetPlainResString(CString &rstrOut, UINT nID, bool noquote = true);
-	static int		_GzipCompress(Bytef *dest, uLongf *destLen, const Bytef *source, uLong sourceLen, int level);
 	static CString	_LoadTemplate(const CString &sAll, const CString &sTemplateName);
 	static bool		_IsSessionAdmin(const ThreadData &Data, long sessionID);
 	static bool		_IsSessionAdmin(const ThreadData &Data, const CString &strSsessionID);

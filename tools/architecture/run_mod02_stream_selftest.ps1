@@ -40,6 +40,7 @@ $criticalSourceRelativePaths = @(
     'srchybrid/WebRequestParser.cpp', 'srchybrid/WebRequestParser.h',
     'srchybrid/WebAuthPolicy.cpp', 'srchybrid/WebAuthPolicy.h',
     'srchybrid/WebRouteTable.cpp', 'srchybrid/WebRouteTable.h',
+    'srchybrid/WebRequestDispatch.cpp', 'srchybrid/WebRequestDispatch.h',
     'srchybrid/WebApiSerializer.cpp', 'srchybrid/WebApiSerializer.h',
     'srchybrid/WebTransferController.cpp', 'srchybrid/WebTransferController.h',
     'srchybrid/WebSearchController.cpp', 'srchybrid/WebSearchController.h',

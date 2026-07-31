@@ -173,19 +173,32 @@
         "EseHexToKey16A": "f09086fb347ef0e878566aef2da92dbbe6606252291fdc33b8b995a458f3c1d2"
       }
     },
+    "web_request_dispatch": {
+      "production_file": "srchybrid/WebRequestDispatch.cpp",
+      "symbols": [
+        "WebRequestDispatch::Process",
+        "CompressWebGzip",
+        "ResolveWebClassicView",
+        "ValidateWebChallengeDigest"
+      ],
+      "token_sha256": {
+        "CompressWebGzip": "33e40b870cf86ccf6bda5f2cd7fb3c2b8841dd9db8846bf7bcde8e816dc97f4e",
+        "ResolveWebClassicView": "e15610e6dd7c43310d7ff16f2c3f8ffc091474894ed85eca992b4d7a533b0ad2",
+        "ValidateWebChallengeDigest": "c4f0962e22c982492392e43c9fc3487f3b352498658f34d4c6966899d0ab862e",
+        "WebRequestDispatch::Process": "66928afe05c4ce6ccd95d7ddba2eb4b02cfe66eee7a5cf338a35688dc80327a8"
+      }
+    },
     "web_serialization": {
       "production_file": "srchybrid/WebServer.cpp",
       "symbols": [
         "CWebServer::_ProcessURL",
         "CWebServer::_GetServerInfo",
-        "CWebServer::_GetStats",
-        "CWebServer::_GzipCompress"
+        "CWebServer::_GetStats"
       ],
       "token_sha256": {
         "CWebServer::_GetServerInfo": "0f3b5e2099908319a9de76b0b716bae0abb3564fb21b8ad75c2452d2ee372bbf",
         "CWebServer::_GetStats": "d6f1c5e71a4737137fe9b93876eaf7075255f4645910f5c055c5261eda1027a2",
-        "CWebServer::_GzipCompress": "412c1d094c34d8051a732bbc9b3c05af585376ad1613ade3ad41f48191705e56",
-        "CWebServer::_ProcessURL": "f8dc6cd195e0c8497b5aa91e73df6438582e82b2422139901d8e27e1362495c4"
+        "CWebServer::_ProcessURL": "d8b200febe06afe06fbd16e58f45c537c5a022cafe6790a9a58f740c9d9cd726"
       }
     }
   },

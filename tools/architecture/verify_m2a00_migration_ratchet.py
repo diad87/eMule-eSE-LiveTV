@@ -1387,6 +1387,27 @@ def _preexisting_parent_route(
     return False
 
 
+def _same_card_parent_constructor_route(
+    current: str, owner: str, call_start: int
+) -> bool:
+    """Allow a new parent module to bind its same-card child in its constructor."""
+
+    signature = re.compile(
+        rf"\b{re.escape(owner)}::{re.escape(owner)}\s*"
+        r"\([^;{}]*\)\s*(?:noexcept\s*)?(?::[^{}]*)?\{"
+    )
+    for match in signature.finditer(current):
+        opening = current.find("{", match.start(), match.end())
+        closing = _matching_brace(current, opening)
+        if (
+            closing is not None
+            and opening < call_start < closing
+            and not current[opening + 1:call_start].strip()
+        ):
+            return True
+    return False
+
+
 def _parent_binding_paths(
     module: dict[str, Any],
     entries: dict[str, dict[str, Any]],
@@ -1516,6 +1537,15 @@ def validate_active_card_outcomes(
         parent_paths = _parent_binding_paths(module, entries)
         parent_headers = _parent_binding_headers(module, entries)
         parent_classes = _parent_binding_classes(module)
+        same_card_parent = next(
+            (
+                parent
+                for parent in matrix["additional_modules"]
+                if parent["name"] == module["parent"]
+                and parent["card"] == module["card"]
+            ),
+            None,
+        )
         activation_parent = _activation_parent(
             ledger["cards"][module["card"]]["activation_commit"]
         )
@@ -1603,6 +1633,11 @@ def validate_active_card_outcomes(
                     )
                     if _preexisting_parent_route(
                         translated, previous, parent_classes, call.start()
+                    ) or (
+                        same_card_parent is not None
+                        and _same_card_parent_constructor_route(
+                            translated, same_card_parent["name"], call.start()
+                        )
                     ):
                         route_found = True
             parent_header_code = "\n".join(

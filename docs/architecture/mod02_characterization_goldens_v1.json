@@ -77,7 +77,7 @@
         "LiveExitServices::RegisterHandler": "181a41ad4b7b14edaf632a212cb0e4bed5aa693c63a5c547d41c54a8a32199a3",
         "LiveExitServices::Sweep": "9008a8eeb78fc6fb902259c1a345b56921a6c4e131fe8a88fc789e1f39e16d06",
         "LiveExitServices::TakeCompletion": "bf908badb0939190357a00e75f3fefff93990f2883118e726583f4c57232e21b",
-        "RunLiveExitServicesCharacterizationSelfTest": "e72a010a13cc318f8081c23c27cd78fcfc7f36522cdcea4e7cd49c87593c2842"
+        "RunLiveExitServicesCharacterizationSelfTest": "c778b2d895ce7757e8fc7384af3cd45ef2311b49a0ada13b108b97dd61a28654"
       }
     },
     "live_relay_dispatcher": {

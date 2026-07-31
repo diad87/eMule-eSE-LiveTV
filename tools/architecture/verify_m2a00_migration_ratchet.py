@@ -37,7 +37,7 @@ EXPECTED_DOC_HASHES: dict[str, str] = {
     "mod52_migration_matrix_v1.json": "0b84a0898a78f62f253587b4085b2c35167fa4f7ead4d0720a5b6cedfbf6d0ca",
     "mod52_migration_baseline_v1.json": "4c162b457059776f13c26341fdab60778088014e183acc48926f22f5d1cbc5c3",
     "mod03_ownership_layering_contract_v2.json": "c3aa3d90bccbc63ff7a0c8ebafd199e9ed2b00acc2c2ef488c5e11515a3f28b1",
-    "mod04_architecture_gate_catalog_v2.json": "8098b20c0cea254eaea1d2d51ea75338b858f134beb4eaa9efc6211a74bae07a",
+    "mod04_architecture_gate_catalog_v2.json": "24559b15a4f30a090298764d6ddca11fdda57e4afcbb01f4da452c1b6df373d2",
 }
 COORDINATORS = (
     ("LiveTunnel", "CLiveTunnel", "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h"),
@@ -1408,6 +1408,36 @@ def _same_card_parent_constructor_route(
     return False
 
 
+def _lt5_state_parent_constructor_route(
+    current: str, owner: str, marker: str, member: str
+) -> bool:
+    """Accept only LT5's complete, synchronous state-view binding."""
+
+    signature = re.compile(
+        rf"\b{re.escape(owner)}::{re.escape(owner)}\s*"
+        r"\([^;{}]*\)\s*(?:noexcept\s*)?(?::[^{}]*)?\{"
+    )
+    state = (
+        r"LT5StreamStateBinding\s+state\s*\{\s*"
+        r"&m_k6ExitStreams\s*,\s*&m_k6OriginStreams\s*,\s*"
+        r"&m_k6SendCredits\s*,\s*&m_k6ReceiveCredits\s*,\s*"
+        r"&m_k6FlowStreamsByCircuit\s*,\s*&m_nextGeneration\s*\}\s*;"
+    )
+    assignment = (
+        rf"{re.escape(member)}\s*=\s*{re.escape(marker)}\s*\(\s*"
+        r"M2AParentPort\s*\{\s*&state\s*\}\s*\)\s*;"
+    )
+    for match in signature.finditer(current):
+        opening = current.find("{", match.start(), match.end())
+        closing = _matching_brace(current, opening)
+        if closing is not None and re.fullmatch(
+            rf"\s*{state}\s*{assignment}\s*",
+            current[opening + 1:closing],
+        ):
+            return True
+    return False
+
+
 def _parent_binding_paths(
     module: dict[str, Any],
     entries: dict[str, dict[str, Any]],
@@ -1644,6 +1674,17 @@ def validate_active_card_outcomes(
                         )
                     ):
                         route_found = True
+                if (
+                    same_card_parent is not None
+                    and module["name"] == "Kad6StreamTransportAdapter"
+                    and _lt5_state_parent_constructor_route(
+                        translated,
+                        same_card_parent["name"],
+                        marker,
+                        member,
+                    )
+                ):
+                    route_found = True
             parent_header_code = "\n".join(
                 _translated(path, reader(path))
                 for path in parent_headers
@@ -2038,6 +2079,18 @@ def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: 
             "reason": (
                 "Value-only LT4 publish runtime and action vocabulary shared "
                 "by the source-publisher owner and its parent without a "
+                "reverse coordinator dependency."
+            ),
+            "adr": (
+                "docs/architecture/"
+                "MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+            ),
+        },
+        {
+            "path": "srchybrid/LiveTunnelStreamFlowPort.h",
+            "reason": (
+                "Value-only LT5 stream runtime and credit-ledger vocabulary "
+                "shared by the state owner and transport adapter without a "
                 "reverse coordinator dependency."
             ),
             "adr": (

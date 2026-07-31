@@ -747,6 +747,7 @@ class M2A00RatchetTest(unittest.TestCase):
             "srchybrid/M2ABindingPort.h",
             "srchybrid/LiveTunnelGatewayStorePort.h",
             "srchybrid/LiveTunnelSourcePublisherPort.h",
+            "srchybrid/LiveTunnelStreamFlowPort.h",
             "srchybrid/LiveTunnelScheduler.cpp",
             "srchybrid/emule.vcxproj",
         ]

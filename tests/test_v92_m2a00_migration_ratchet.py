@@ -745,6 +745,8 @@ class M2A00RatchetTest(unittest.TestCase):
             "docs/architecture/mod52_migration_matrix_v1.json",
             "srchybrid/M2ABindingPort.cpp",
             "srchybrid/M2ABindingPort.h",
+            "srchybrid/LiveTunnelGatewayStorePort.h",
+            "srchybrid/LiveTunnelSourcePublisherPort.h",
             "srchybrid/LiveTunnelScheduler.cpp",
             "srchybrid/emule.vcxproj",
         ]
@@ -784,8 +786,12 @@ class M2A00RatchetTest(unittest.TestCase):
                 )
                 fixture_ledger = json.loads(
                     fixture_ledger_path.read_text(encoding="utf-8"))
-                fixture_ledger["cards"]["LT1"] = {
-                    "state": "planned", "activation_commit": None, "evidence": []}
+                for card in fixture_ledger["cards"].values():
+                    card.update({
+                        "state": "planned",
+                        "activation_commit": None,
+                        "evidence": [],
+                    })
                 fixture_ledger_path.write_text(
                     json.dumps(fixture_ledger, indent=2) + "\n", encoding="utf-8")
                 gate_baseline_commit = add_and_commit(

@@ -37,7 +37,7 @@ EXPECTED_DOC_HASHES: dict[str, str] = {
     "mod52_migration_matrix_v1.json": "0b84a0898a78f62f253587b4085b2c35167fa4f7ead4d0720a5b6cedfbf6d0ca",
     "mod52_migration_baseline_v1.json": "4c162b457059776f13c26341fdab60778088014e183acc48926f22f5d1cbc5c3",
     "mod03_ownership_layering_contract_v2.json": "c3aa3d90bccbc63ff7a0c8ebafd199e9ed2b00acc2c2ef488c5e11515a3f28b1",
-    "mod04_architecture_gate_catalog_v2.json": "209d97240f5abdca9101baad88e3b34063c1aab0b2d758ba45856482dcd8e3ee",
+    "mod04_architecture_gate_catalog_v2.json": "8098b20c0cea254eaea1d2d51ea75338b858f134beb4eaa9efc6211a74bae07a",
 }
 COORDINATORS = (
     ("LiveTunnel", "CLiveTunnel", "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h"),
@@ -1988,6 +1988,18 @@ def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: 
                 "Closed, storage-neutral LT3 command vocabulary shared by the "
                 "domain-state owner and the Kad6 adapter without introducing "
                 "a reverse dependency."
+            ),
+            "adr": (
+                "docs/architecture/"
+                "MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+            ),
+        },
+        {
+            "path": "srchybrid/LiveTunnelSourcePublisherPort.h",
+            "reason": (
+                "Value-only LT4 publish runtime and action vocabulary shared "
+                "by the source-publisher owner and its parent without a "
+                "reverse coordinator dependency."
             ),
             "adr": (
                 "docs/architecture/"

@@ -94,6 +94,7 @@ struct WebClassicPort {
 };
 M2AModuleHandle M2A_BIND_W1_EC6846B80E(const M2AParentPort&); void M2A_UNBIND_W1_EC6846B80E(const M2AParentPort&);
 void RunWebClassicRequest(const M2AParentPort&, const WebClassicInput&, const WebClassicPort&); bool RunWebClassicRequestCharacterizationSelfTest(); std::uint64_t WebRequestAuthNowMs() noexcept; std::uint64_t WebRequestSessionTimeoutMs() noexcept; CStringA GenerateWebRequestHexToken(); std::uint32_t GenerateWebRequestWord32(); bool ValidateWebChallengeDigest(const CStringA&, const CStringA&, const CString&, bool, const CString&, bool&); int CompressWebGzip(unsigned char*, unsigned long*, const unsigned char*, unsigned long, int); enum class WebTemplateId : std::uint8_t { Header, HeaderStylesheet, Footer, ServerList, ServerLine, TransferImages, TransferList, TransferDownHeader, TransferDownFooter, TransferDownLine, TransferUpHeader, TransferUpFooter, TransferUpLine, TransferUpQueueShow, TransferUpQueueHide, TransferUpQueueLine, TransferUpQueueBannedShow, TransferUpQueueBannedHide, TransferUpQueueBannedLine, TransferUpQueueFriendShow, TransferUpQueueFriendHide, TransferUpQueueFriendLine, SharedList, SharedLine, Graphs, Log, ServerInfo, DebugLog, Stats, Preferences, Login, AddServerBox, Search, ProgressbarWidth, SearchHeader, SearchResultLine, ProgressbarImgs, ProgressbarImgsPercent, CatArrow, DownArrow, UpArrow, DownDoubleArrow, UpDoubleArrow, Kad, BootstrapLine, MyInfoLog, CommentList, CommentListLine, Count }; enum class WebTemplateLogView : std::uint8_t { Log, ServerInfo, DebugLog }; struct WebHeaderRuntime { CString version, serverName; std::uint32_t serverUsers = 0, serverMaxUsers = 0, serverFiles = 0; std::uint32_t allUsers = 0, allFiles = 0, openSockets = 0; double downloadRate = 0.0, uploadRate = 0.0; bool serverConnecting = false, serverConnected = false, highId = false; bool kad2Connected = false, kadFirewalled = false; bool kad6Connected = false, kadRunning = false; }; struct WebCommentRow { CString user, file, text, rating; }; struct WebCommentListInput { bool found = false; CString fileName; std::vector<WebCommentRow> rows; }; M2AModuleHandle M2A_BIND_W2_071B3D442B(const M2AParentPort&); void M2A_UNBIND_W2_071B3D442B(const M2AParentPort&); M2AModuleHandle M2A_BIND_W2_9330EBAD15(const M2AParentPort&); void M2A_UNBIND_W2_9330EBAD15(const M2AParentPort&); bool ReloadWebTemplates(const M2AParentPort&, const CString&, bool, bool, bool&); CString GetWebTemplate(const M2AParentPort&, WebTemplateId); CString GetWebTemplateLastModified(const M2AParentPort&); CString GetWebTemplateETag(const M2AParentPort&); M2AModuleHandle CaptureWebTemplateSnapshot(const M2AParentPort&); CString EscapeWebTemplateText(const CString&, bool); CString GetWebPlainResource(UINT, bool); bool RunWebTemplateCharacterizationSelfTest(); CString RenderWebHeader(const M2AParentPort&, const CString&, const CString&, const CString&, long, bool, std::uint32_t, const CString&, const CString&, const CString&, const WebHeaderRuntime&); CString RenderWebFooter(const M2AParentPort&, const CString&); CString RenderWebLogin(const M2AParentPort&, const CString&, const CStringA&, bool, const CString&); CString RenderWebLogView(WebTemplateLogView, const CString&, const CString&, const CString&); CString RenderWebMyInfo(const CString&, const CString&); CString RenderWebStats(const CString&, const CString&); CString RenderWebCommentList(const WebCommentListInput&, const CString&, const CString&); void InsertWebCategoryBox(CString&, int, LPCTSTR, bool, bool, const CString&, const CString&, int, bool); bool RunWebPageChromeCharacterizationSelfTest();
+enum class WebServerAction : std::uint8_t { Connect, Disconnect, Remove, AddStatic, RemoveStatic, PriorityLow, PriorityNormal, PriorityHigh }; struct WebServerRow { CString description, fullIp, ip, name, priorityText, state, version; std::uint32_t files = 0, hardLimit = 0, maxUsers = 0, ping = 0; std::uint32_t softLimit = 0, users = 0; int failed = 0, port = 0; std::uint8_t priority = 0; bool isStatic = false; }; struct WebServerPageInput { CString url, pageTemplate, rowTemplate, addTemplate, upArrow, downArrow; bool admin = false; unsigned sort = 0; bool reverse = false; std::array<bool, 10> hidden{}; }; struct WebServerPageResult { CString html; unsigned sort = 0; bool reverse = false; std::array<bool, 10> hidden{}; }; struct WebServerGuiPort { void* context = nullptr; CString (*parse)(void*, const CString&, const CString&) = nullptr; CString (*plain)(void*, unsigned) = nullptr; void (*action)(void*, WebServerAction, const CString&, int) = nullptr; bool (*addServer)(void*, const CString&, int, const CString&, const CString&, bool, bool, CString&) = nullptr; void (*updateServerMet)(void*, const CString&, CString&) = nullptr; void (*saveHidden)(void*, const std::array<bool, 10>&) = nullptr; void (*snapshot)(void*, std::vector<WebServerRow>&) = nullptr; bool Complete() const noexcept; }; M2AModuleHandle M2A_BIND_W3_F05B56128F(const M2AParentPort&); void M2A_UNBIND_W3_F05B56128F(const M2AParentPort&); WebServerPageResult RunWebServerPage(const M2AParentPort&, const WebServerPageInput&, const WebServerGuiPort&); bool RunWebServerPageCharacterizationSelfTest();
 }
 
 static M2AParentPort WebTemplateParent(const void* parent) { return M2AParentPort{const_cast<void*>(parent)}; }
@@ -182,7 +183,7 @@ CWebServer::CWebServer()
 	, m_bSearchAsc()
 	, m_bIsTempDisabled()
 {
-	CIni ini(thePrefs.GetConfigFile(), _T("WebServer"));
+	M2AModuleHandle serverListBinding = M2A_BIND_W3_F05B56128F(M2AParentPort{this}); if (!serverListBinding) return; CIni ini(thePrefs.GetConfigFile(), _T("WebServer"));
 	ini.SerGet(true, WSdownloadColumnHidden, _countof(WSdownloadColumnHidden), _T("downloadColumnHidden"));
 	ini.SerGet(true, WSuploadColumnHidden, _countof(WSuploadColumnHidden), _T("uploadColumnHidden"));
 	ini.SerGet(true, WSqueueColumnHidden, _countof(WSqueueColumnHidden), _T("queueColumnHidden"));
@@ -223,7 +224,7 @@ CWebServer::~CWebServer()
 	ini.WriteInt(_T("SharedSort"), m_Params.SharedSort);
 	if (m_bServerWorking)
 		StopSockets();
-	M2A_UNBIND_W1_EC6846B80E(M2AParentPort{this}); M2A_UNBIND_W2_9330EBAD15(M2AParentPort{this}); M2A_UNBIND_W2_071B3D442B(M2AParentPort{this});
+	M2A_UNBIND_W1_EC6846B80E(M2AParentPort{this}); M2A_UNBIND_W2_9330EBAD15(M2AParentPort{this}); M2A_UNBIND_W2_071B3D442B(M2AParentPort{this}); M2A_UNBIND_W3_F05B56128F(M2AParentPort{this});
 }
 
 void CWebServer::_SaveWIConfigArray(BOOL *array, int size, LPCTSTR key)
@@ -291,28 +292,6 @@ void CWebServer::StopServer()
 	thePrefs.SetWSIsEnabled(false);
 }
 
-void CWebServer::_RemoveServer(const CString &sIP, int nPort)
-{
-	CServer *server = theApp.serverlist->GetServerByAddress(sIP, (uint16)nPort);
-	if (server != NULL)
-		SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_SERVER_REMOVE, (LPARAM)server);
-}
-
-void CWebServer::_AddToStatic(const CString &sIP, int nPort)
-{
-	CServer *server = theApp.serverlist->GetServerByAddress(sIP, (uint16)nPort);
-	if (server != NULL)
-		SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_ADD_TO_STATIC, (LPARAM)server);
-}
-
-void CWebServer::_RemoveFromStatic(const CString &sIP, int nPort)
-{
-	CServer *server = theApp.serverlist->GetServerByAddress(sIP, (uint16)nPort);
-	if (server != NULL)
-		SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_REMOVE_FROM_STATIC, (LPARAM)server);
-}
-
-
 void CWebServer::AddStatsLine(const UpDown &line)
 {
 	m_Params.PointsForWeb.Add(line);
@@ -349,7 +328,7 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 		outFailure = OptUtf8ToStr(routeFailure.data(), static_cast<int>(routeFailure.size()));
 		return false;
 	}
-	if (!RunWebClassicRequestCharacterizationSelfTest()) { outFailure = _T("web request dispatch route table changed"); return false; } if (!RunWebTemplateCharacterizationSelfTest() || !RunWebPageChromeCharacterizationSelfTest()) { outFailure = _T("web template/header rendering changed"); return false; }
+	if (!RunWebClassicRequestCharacterizationSelfTest()) { outFailure = _T("web request dispatch route table changed"); return false; } if (!RunWebTemplateCharacterizationSelfTest() || !RunWebPageChromeCharacterizationSelfTest()) { outFailure = _T("web template/header rendering changed"); return false; } if (!RunWebServerPageCharacterizationSelfTest()) { outFailure = _T("web server-list rendering changed"); return false; }
 	std::string serializerFailure;
 	if (!ese::web::RunWebApiSerializerSelfTest(serializerFailure)) {
 		outFailure = OptUtf8ToStr(
@@ -423,13 +402,6 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 		return false;
 	}
 	return true;
-}
-
-void CWebServer::_ConnectToServer(const CString &sIP, int nPort)
-{
-	CServer *server = theApp.serverlist->GetServerByAddress(sIP, (uint16)nPort);
-	if (server != NULL)
-		SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_CONNECTTOSERVER, (LPARAM)server);
 }
 
 void CWebServer::_ProcessURL(const ThreadData &Data)
@@ -520,412 +492,24 @@ const CString CWebServer::_GetFooter(const ThreadData &Data)
 }
 CString CWebServer::_GetServerList(const ThreadData &Data)
 {
-	CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
-	if (pThis == NULL)
-		return CString();
-	const CString &sSession(_ParseURL(Data.sURL, _T("ses")));
-	bool bAdmin = _IsSessionAdmin(Data, sSession);
-	const CString &sAddServerBox(_GetAddServerBox(Data));
-	const CString &sCmd(_ParseURL(Data.sURL, _T("c")));
-	const CString &sIP(_ParseURL(Data.sURL, _T("ip")));
-	int nPort = _tstoi(_ParseURL(Data.sURL, _T("port")));
-	if (bAdmin) {
-		if (sCmd == _T("connect")) {
-			if (sIP.IsEmpty())
-				SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_CONNECTTOSERVER, 0);
-			else
-				_ConnectToServer(sIP, nPort);
-		} else if (sCmd == _T("disconnect")) {
-			if (theApp.serverconnect->IsConnecting())
-				SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_STOPCONNECTING, 0);
-			else
-				SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_DISCONNECT, 1);
-		} else if (sCmd == _T("remove")) {
-			if (!sIP.IsEmpty())
-				_RemoveServer(sIP, nPort);
-		} else if (sCmd == _T("addtostatic")) {
-			if (!sIP.IsEmpty())
-				_AddToStatic(sIP, nPort);
-		} else if (sCmd == _T("removefromstatic")) {
-			if (!sIP.IsEmpty())
-				_RemoveFromStatic(sIP, nPort);
-		} else if (sCmd == _T("priolow")) {
-			if (!sIP.IsEmpty()) {
-				CServer *server = theApp.serverlist->GetServerByAddress(sIP, (uint16)nPort);
-				if (server) {
-					server->SetPreference(SRV_PR_LOW);
-					SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATESERVER, (LPARAM)server);
-				}
-			}
-		} else if (sCmd == _T("prionormal")) {
-			if (!sIP.IsEmpty()) {
-				CServer *server = theApp.serverlist->GetServerByAddress(sIP, (uint16)nPort);
-				if (server) {
-					server->SetPreference(SRV_PR_NORMAL);
-					SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATESERVER, (LPARAM)server);
-				}
-			}
-		} else if (sCmd == _T("priohigh")) {
-			if (!sIP.IsEmpty()) {
-				CServer *server = theApp.serverlist->GetServerByAddress(sIP, (uint16)nPort);
-				if (server) {
-					server->SetPreference(SRV_PR_HIGH);
-					SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATESERVER, (LPARAM)server);
-				}
-			}
-		}
-	} else if (sCmd == _T("menu")) {
-		int iMenu = _tstol(_ParseURL(Data.sURL, _T("m")));
-		bool bValue = _ParseURL(Data.sURL, _T("v")) == _T("1");
-		WSserverColumnHidden[iMenu] = bValue;
-		_SaveWIConfigArray(WSserverColumnHidden, _countof(WSserverColumnHidden), _T("serverColumnHidden"));
-	}
-	CString strTmp(_ParseURL(Data.sURL, _T("sortreverse")));
-	const CString &sSort(_ParseURL(Data.sURL, _T("sort")));
-	if (!sSort.IsEmpty()) {
-		bool bDirection = false;
-		if (sSort == _T("state"))
-			pThis->m_Params.ServerSort = SERVER_SORT_STATE;
-		else if (sSort == _T("name")) {
-			pThis->m_Params.ServerSort = SERVER_SORT_NAME;
-			bDirection = true;
-		} else if (sSort == _T("ip"))
-			pThis->m_Params.ServerSort = SERVER_SORT_IP;
-		else if (sSort == _T("description")) {
-			pThis->m_Params.ServerSort = SERVER_SORT_DESCRIPTION;
-			bDirection = true;
-		} else if (sSort == _T("ping"))
-			pThis->m_Params.ServerSort = SERVER_SORT_PING;
-		else if (sSort == _T("users"))
-			pThis->m_Params.ServerSort = SERVER_SORT_USERS;
-		else if (sSort == _T("files"))
-			pThis->m_Params.ServerSort = SERVER_SORT_FILES;
-		else if (sSort == _T("priority"))
-			pThis->m_Params.ServerSort = SERVER_SORT_PRIORITY;
-		else if (sSort == _T("failed"))
-			pThis->m_Params.ServerSort = SERVER_SORT_FAILED;
-		else if (sSort == _T("limit"))
-			pThis->m_Params.ServerSort = SERVER_SORT_LIMIT;
-		else if (sSort == _T("version"))
-			pThis->m_Params.ServerSort = SERVER_SORT_VERSION;
-		if (strTmp.IsEmpty())
-			pThis->m_Params.bServerSortReverse = bDirection;
-	}
-	if (!strTmp.IsEmpty())
-		pThis->m_Params.bServerSortReverse = (strTmp == _T("true"));
-	CString Out(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::ServerList));
-	Out.Replace(_T("[AddServerBox]"), sAddServerBox);
-	Out.Replace(_T("[Session]"), sSession);
-	strTmp = (pThis->m_Params.bServerSortReverse) ? _T("&amp;sortreverse=false") : _T("&amp;sortreverse=true");
-	if (pThis->m_Params.ServerSort == SERVER_SORT_STATE)
-		Out.Replace(_T("[SortState]"), strTmp);
-	else
-		Out.Replace(_T("[SortState]"), _T(""));
-	if (pThis->m_Params.ServerSort == SERVER_SORT_NAME)
-		Out.Replace(_T("[SortName]"), strTmp);
-	else
-		Out.Replace(_T("[SortName]"), _T(""));
-	if (pThis->m_Params.ServerSort == SERVER_SORT_IP)
-		Out.Replace(_T("[SortIP]"), strTmp);
-	else
-		Out.Replace(_T("[SortIP]"), _T(""));
-	if (pThis->m_Params.ServerSort == SERVER_SORT_DESCRIPTION)
-		Out.Replace(_T("[SortDescription]"), strTmp);
-	else
-		Out.Replace(_T("[SortDescription]"), _T(""));
-	if (pThis->m_Params.ServerSort == SERVER_SORT_PING)
-		Out.Replace(_T("[SortPing]"), strTmp);
-	else
-		Out.Replace(_T("[SortPing]"), _T(""));
-	if (pThis->m_Params.ServerSort == SERVER_SORT_USERS)
-		Out.Replace(_T("[SortUsers]"), strTmp);
-	else
-		Out.Replace(_T("[SortUsers]"), _T(""));
-	if (pThis->m_Params.ServerSort == SERVER_SORT_FILES)
-		Out.Replace(_T("[SortFiles]"), strTmp);
-	else
-		Out.Replace(_T("[SortFiles]"), _T(""));
-	if (pThis->m_Params.ServerSort == SERVER_SORT_PRIORITY)
-		Out.Replace(_T("[SortPriority]"), strTmp);
-	else
-		Out.Replace(_T("[SortPriority]"), _T(""));
-	if (pThis->m_Params.ServerSort == SERVER_SORT_FAILED)
-		Out.Replace(_T("[SortFailed]"), strTmp);
-	else
-		Out.Replace(_T("[SortFailed]"), _T(""));
-	if (pThis->m_Params.ServerSort == SERVER_SORT_LIMIT)
-		Out.Replace(_T("[SortLimit]"), strTmp);
-	else
-		Out.Replace(_T("[SortLimit]"), _T(""));
-	if (pThis->m_Params.ServerSort == SERVER_SORT_VERSION)
-		Out.Replace(_T("[SortVersion]"), strTmp);
-	else
-		Out.Replace(_T("[SortVersion]"), _T(""));
-	Out.Replace(_T("[ServerList]"), _GetPlainResString(IDS_SV_SERVERLIST));
-	CString pcSortIcon((pThis->m_Params.bServerSortReverse) ? GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::UpArrow) : GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::DownArrow));
-	_GetPlainResString(strTmp, IDS_SL_SERVERNAME);
-	if (WSserverColumnHidden[0]) {
-		Out.Replace(_T("[ServernameI]"), _T(""));
-		Out.Replace(_T("[ServernameH]"), _T(""));
-	} else {
-		Out.Replace(_T("[ServernameI]"), (pThis->m_Params.ServerSort == SERVER_SORT_NAME) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[ServernameH]"), strTmp);
-	}
-	Out.Replace(_T("[ServernameM]"), strTmp);
-	_GetPlainResString(strTmp, IDS_IP);
-	if (WSserverColumnHidden[1]) {
-		Out.Replace(_T("[AddressI]"), _T(""));
-		Out.Replace(_T("[AddressH]"), _T(""));
-	} else {
-		Out.Replace(_T("[AddressI]"), (pThis->m_Params.ServerSort == SERVER_SORT_IP) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[AddressH]"), strTmp);
-	}
-	Out.Replace(_T("[AddressM]"), strTmp);
-	_GetPlainResString(strTmp, IDS_DESCRIPTION);
-	if (WSserverColumnHidden[2]) {
-		Out.Replace(_T("[DescriptionI]"), _T(""));
-		Out.Replace(_T("[DescriptionH]"), _T(""));
-	} else {
-		Out.Replace(_T("[DescriptionI]"), (pThis->m_Params.ServerSort == SERVER_SORT_DESCRIPTION) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[DescriptionH]"), strTmp);
-	}
-	Out.Replace(_T("[DescriptionM]"), strTmp);
-	_GetPlainResString(strTmp, IDS_PING);
-	if (WSserverColumnHidden[3]) {
-		Out.Replace(_T("[PingI]"), _T(""));
-		Out.Replace(_T("[PingH]"), _T(""));
-	} else {
-		Out.Replace(_T("[PingI]"), (pThis->m_Params.ServerSort == SERVER_SORT_PING) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[PingH]"), strTmp);
-	}
-	Out.Replace(_T("[PingM]"), strTmp);
-	_GetPlainResString(strTmp, IDS_UUSERS);
-	if (WSserverColumnHidden[4]) {
-		Out.Replace(_T("[UsersI]"), _T(""));
-		Out.Replace(_T("[UsersH]"), _T(""));
-	} else {
-		Out.Replace(_T("[UsersI]"), (pThis->m_Params.ServerSort == SERVER_SORT_USERS) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[UsersH]"), strTmp);
-	}
-	Out.Replace(_T("[UsersM]"), strTmp);
-	_GetPlainResString(strTmp, IDS_FILES);
-	if (WSserverColumnHidden[5]) {
-		Out.Replace(_T("[FilesI]"), _T(""));
-		Out.Replace(_T("[FilesH]"), _T(""));
-	} else {
-		Out.Replace(_T("[FilesI]"), (pThis->m_Params.ServerSort == SERVER_SORT_FILES) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[FilesH]"), strTmp);
-	}
-	Out.Replace(_T("[FilesM]"), strTmp);
-	_GetPlainResString(strTmp, IDS_PRIORITY);
-	if (WSserverColumnHidden[6]) {
-		Out.Replace(_T("[PriorityI]"), _T(""));
-		Out.Replace(_T("[PriorityH]"), _T(""));
-	} else {
-		Out.Replace(_T("[PriorityI]"), (pThis->m_Params.ServerSort == SERVER_SORT_PRIORITY) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[PriorityH]"), strTmp);
-	}
-	Out.Replace(_T("[PriorityM]"), strTmp);
-	_GetPlainResString(strTmp, IDS_UFAILED);
-	if (WSserverColumnHidden[7]) {
-		Out.Replace(_T("[FailedI]"), _T(""));
-		Out.Replace(_T("[FailedH]"), _T(""));
-	} else {
-		Out.Replace(_T("[FailedI]"), (pThis->m_Params.ServerSort == SERVER_SORT_FAILED) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[FailedH]"), strTmp);
-	}
-	Out.Replace(_T("[FailedM]"), strTmp);
-	_GetPlainResString(strTmp, IDS_SERVER_LIMITS);
-	if (WSserverColumnHidden[8]) {
-		Out.Replace(_T("[LimitI]"), _T(""));
-		Out.Replace(_T("[LimitH]"), _T(""));
-	} else {
-		Out.Replace(_T("[LimitI]"), (pThis->m_Params.ServerSort == SERVER_SORT_LIMIT) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[LimitH]"), strTmp);
-	}
-	Out.Replace(_T("[LimitM]"), strTmp);
-	_GetPlainResString(strTmp, IDS_SV_SERVERINFO);
-	if (WSserverColumnHidden[9]) {
-		Out.Replace(_T("[VersionI]"), _T(""));
-		Out.Replace(_T("[VersionH]"), _T(""));
-	} else {
-		Out.Replace(_T("[VersionI]"), (pThis->m_Params.ServerSort == SERVER_SORT_VERSION) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[VersionH]"), strTmp);
-	}
-	Out.Replace(_T("[VersionM]"), strTmp);
-	Out.Replace(_T("[Actions]"), _GetPlainResString(IDS_WEB_ACTIONS));
-	CArray<ServerEntry> ServerArray;
-	// Populating array
-	for (INT_PTR sc = theApp.serverlist->GetServerCount(); --sc >= 0;) {
-		const CServer &cur_serv = *theApp.serverlist->GetServerAt(sc);
-		ServerEntry Entry;
-		Entry.sServerName = _SpecialChars(cur_serv.GetListName());
-		Entry.sServerIP = cur_serv.GetAddress();
-		Entry.nServerPort = cur_serv.GetPort();
-		Entry.sServerDescription = _SpecialChars(cur_serv.GetDescription());
-		Entry.nServerPing = cur_serv.GetPing();
-		Entry.nServerUsers = cur_serv.GetUsers();
-		Entry.nServerMaxUsers = cur_serv.GetMaxUsers();
-		Entry.nServerFiles = cur_serv.GetFiles();
-		Entry.bServerStatic = cur_serv.IsStaticMember();
-		UINT uid;
-		switch (cur_serv.GetPreference()) {
-		case SRV_PR_HIGH:
-			uid = IDS_PRIOHIGH;
-			Entry.nServerPriority = 2;
-			break;
-		case SRV_PR_NORMAL:
-			uid = IDS_PRIONORMAL;
-			Entry.nServerPriority = 1;
-			break;
-		case SRV_PR_LOW:
-			uid = IDS_PRIOLOW;
-			Entry.nServerPriority = 0;
-			break;
-		default:
-			uid = 0;
-			Entry.nServerPriority = 0;
-		}
-		if (uid)
-			Entry.sServerPriority = _GetPlainResString(uid);
-		Entry.nServerFailed = cur_serv.GetFailedCount();
-		Entry.nServerSoftLimit = cur_serv.GetSoftFiles();
-		Entry.nServerHardLimit = cur_serv.GetHardFiles();
-		Entry.sServerVersion = cur_serv.GetVersion();
-		if (inet_addr((CStringA)Entry.sServerIP) != INADDR_NONE) {
-			CString &newip(Entry.sServerFullIP);
-			for (int j = 0, iPos = 0; j < 4 && iPos >= 0; ++j) {
-				const CString &temp(Entry.sServerIP.Tokenize(_T("."), iPos));
-				newip.AppendFormat(&_T("000%s")[min(temp.GetLength(), 3)], (LPCTSTR)temp);
-			}
-		} else
-			Entry.sServerFullIP = Entry.sServerIP;
-		Entry.sServerState = cur_serv.GetFailedCount() ? _T("failed") : _T("disconnected");
-		if (theApp.serverconnect->IsConnecting())
-			Entry.sServerState = _T("connecting");
-		else if (theApp.serverconnect->IsConnected()) {
-			if (theApp.serverconnect->GetCurrentServer()->GetFullIP() == cur_serv.GetFullIP())
-				Entry.sServerState =
-					theApp.HasVerifiedEd2kHighId()
-						? _T("high") : _T("low");
-		}
-		ServerArray.Add(Entry);
-	}
-	SortParams prm{ (int)pThis->m_Params.ServerSort, pThis->m_Params.bServerSortReverse };
-	qsort_s(ServerArray.GetData(), ServerArray.GetCount(), sizeof(ServerEntry), &_ServerCmp, &prm);
-	// Displaying
-	CString OutE(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::ServerLine)); // List Entry Templates
-	OutE.Replace(_T("[admin]"), bAdmin ? _T("admin") : _T(""));
-	OutE.Replace(_T("[session]"), sSession);
-	CString sList, HTTPProcessData, sServerPort, ed2k;
-	for (INT_PTR i = 0; i < ServerArray.GetCount(); ++i) {
-		const ServerEntry &cur_srv(ServerArray[i]);
-		HTTPProcessData = OutE;	// Copy Entry Line to Temp
-		sServerPort.Format(_T("%i"), cur_srv.nServerPort);
-		ed2k.Format(_T("ed2k://|server|%s|%s|/"), (LPCTSTR)cur_srv.sServerIP, (LPCTSTR)sServerPort);
-		bool b = (cur_srv.sServerIP == _ParseURL(Data.sURL, _T("ip")) && sServerPort == _ParseURL(Data.sURL, _T("port")));
-		HTTPProcessData.Replace(_T("[LastChangedDataset]"), b ?_T("checked") : _T("checked_no"));
-		b = cur_srv.bServerStatic;
-		HTTPProcessData.Replace(_T("[isstatic]"), b ? _T("staticsrv") : _T(""));
-		HTTPProcessData.Replace(_T("[ServerType]"), b ? _T("static") : _T("none"));
-		LPCTSTR pcSrvPriority;
-		switch (cur_srv.nServerPriority) {
-		case 0:
-			pcSrvPriority = _T("Low");
-			break;
-		case 1:
-			pcSrvPriority = _T("Normal");
-			break;
-		case 2:
-			pcSrvPriority = _T("High");
-			break;
-		default:
-			pcSrvPriority = _T("");
-		}
-		HTTPProcessData.Replace(_T("[ed2k]"), ed2k);
-		HTTPProcessData.Replace(_T("[ip]"), cur_srv.sServerIP);
-		HTTPProcessData.Replace(_T("[port]"), sServerPort);
-		HTTPProcessData.Replace(_T("[server-priority]"), pcSrvPriority);
-		// DonGato: reduced large server names or descriptions
-		if (WSserverColumnHidden[0])
-			HTTPProcessData.Replace(_T("[Servername]"), _T(""));
-		else if (cur_srv.sServerName.GetLength() > (SHORT_LENGTH)) {
-			CString s;
-			s.Format(_T("<acronym title=\"%s\">%s...</acronym>"), (LPCTSTR)cur_srv.sServerName, (LPCTSTR)cur_srv.sServerName.Left(SHORT_LENGTH - 3));
-			HTTPProcessData.Replace(_T("[Servername]"), s);
-		} else
-			HTTPProcessData.Replace(_T("[Servername]"), cur_srv.sServerName);
-		if (WSserverColumnHidden[1])
-			HTTPProcessData.Replace(_T("[Address]"), _T(""));
-		else {
-			CString sAddr(cur_srv.sServerIP);
-			sAddr.AppendFormat(_T(":%d"), cur_srv.nServerPort);
-			HTTPProcessData.Replace(_T("[Address]"), sAddr);
-		}
-		if (WSserverColumnHidden[2])
-			HTTPProcessData.Replace(_T("[Description]"), _T(""));
-		else if (cur_srv.sServerDescription.GetLength() > SHORT_LENGTH) {
-			CString s;
-			s.Format(_T("<acronym title=\"%s\">%s...</acronym>"), (LPCTSTR)cur_srv.sServerDescription, (LPCTSTR)cur_srv.sServerDescription.Left(SHORT_LENGTH - 3));
-			HTTPProcessData.Replace(_T("[Description]"), s);
-		} else
-			HTTPProcessData.Replace(_T("[Description]"), cur_srv.sServerDescription);
-		if (WSserverColumnHidden[3])
-			HTTPProcessData.Replace(_T("[Ping]"), _T(""));
-		else {
-			CString sPing;
-			sPing.Format(_T("%u"), cur_srv.nServerPing);
-			HTTPProcessData.Replace(_T("[Ping]"), sPing);
-		}
-		if (WSserverColumnHidden[4])
-			HTTPProcessData.Replace(_T("[Users]"), _T(""));
-		else {
-			CString sT;
-			if (cur_srv.nServerUsers > 0) {
-				sT = CastItoIShort(cur_srv.nServerUsers);
-				if (cur_srv.nServerMaxUsers > 0)
-					sT.AppendFormat(_T(" (%s)"), (LPCTSTR)CastItoIShort(cur_srv.nServerMaxUsers));
-			}
-			HTTPProcessData.Replace(_T("[Users]"), sT);
-		}
-		if (WSserverColumnHidden[5] && (cur_srv.nServerFiles > 0))
-			HTTPProcessData.Replace(_T("[Files]"), _T(""));
-		else
-			HTTPProcessData.Replace(_T("[Files]"), CastItoIShort(cur_srv.nServerFiles));
-		if (WSserverColumnHidden[6])
-			HTTPProcessData.Replace(_T("[Priority]"), _T(""));
-		else
-			HTTPProcessData.Replace(_T("[Priority]"), cur_srv.sServerPriority);
-		if (WSserverColumnHidden[7])
-			HTTPProcessData.Replace(_T("[Failed]"), _T(""));
-		else {
-			CString sFailed;
-			sFailed.Format(_T("%d"), cur_srv.nServerFailed);
-			HTTPProcessData.Replace(_T("[Failed]"), sFailed);
-		}
-		if (WSserverColumnHidden[8])
-			HTTPProcessData.Replace(_T("[Limit]"), _T(""));
-		else {
-			CString strTemp(CastItoIShort(cur_srv.nServerSoftLimit));
-			strTemp.AppendFormat(_T(" (%s)"), (LPCTSTR)CastItoIShort(cur_srv.nServerHardLimit));
-			HTTPProcessData.Replace(_T("[Limit]"), strTemp);
-		}
-		if (WSserverColumnHidden[9])
-			HTTPProcessData.Replace(_T("[Version]"), _T(""));
-		else if (cur_srv.sServerVersion.GetLength() > SHORT_LENGTH_MIN) {
-			CString s;
-			s.Format(_T("<acronym title=\"%s\">%s...</acronym>"), (LPCTSTR)cur_srv.sServerVersion, (LPCTSTR)cur_srv.sServerVersion.Left(SHORT_LENGTH_MIN - 3));
-			HTTPProcessData.Replace(_T("[Version]"), s);
-		} else
-			HTTPProcessData.Replace(_T("[Version]"), cur_srv.sServerVersion);
-		HTTPProcessData.Replace(_T("[ServerState]"), cur_srv.sServerState);
-		sList += HTTPProcessData;
-	}
-	Out.Replace(_T("[ServersList]"), sList);
-	Out.Replace(_T("[Session]"), sSession);
-	return Out;
+	M2AModuleHandle binding = M2A_BIND_W3_F05B56128F(M2AParentPort{Data.pThis}); if (!binding) return CString();
+	CWebServer* owner = static_cast<CWebServer*>(Data.pThis); if (owner == nullptr) return CString();
+	WebServerPageInput input; input.url = Data.sURL; input.admin = _IsSessionAdmin(Data, _ParseURL(Data.sURL, _T("ses"))); input.sort = owner->m_Params.ServerSort; input.reverse = owner->m_Params.bServerSortReverse;
+	input.pageTemplate = GetWebTemplate(WebTemplateParent(owner), WebTemplateId::ServerList); input.rowTemplate = GetWebTemplate(WebTemplateParent(owner), WebTemplateId::ServerLine); input.addTemplate = GetWebTemplate(WebTemplateParent(owner), WebTemplateId::AddServerBox); input.upArrow = GetWebTemplate(WebTemplateParent(owner), WebTemplateId::UpArrow); input.downArrow = GetWebTemplate(WebTemplateParent(owner), WebTemplateId::DownArrow);
+	for (std::size_t index = 0; index < input.hidden.size(); ++index) input.hidden[index] = WSserverColumnHidden[index] != FALSE;
+	WebServerGuiPort port; port.context = owner;
+	port.parse = [](void*, const CString& url, const CString& field) { return _ParseURL(url, field); };
+	port.plain = [](void*, unsigned id) { return _GetPlainResString(id); };
+	port.action = [](void*, WebServerAction action, const CString& ip, int serverPort) { if (action == WebServerAction::Disconnect) { const bool connecting = theApp.serverconnect->IsConnecting(); SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, connecting ? WEBGUIIA_STOPCONNECTING : WEBGUIIA_DISCONNECT, connecting ? 0 : 1); return; } if (action == WebServerAction::Connect && ip.IsEmpty()) { SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_CONNECTTOSERVER, 0); return; } CServer* server = theApp.serverlist->GetServerByAddress(ip, static_cast<uint16>(serverPort)); if (server == nullptr) return; switch (action) { case WebServerAction::Connect: SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_CONNECTTOSERVER, reinterpret_cast<LPARAM>(server)); break; case WebServerAction::Remove: SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_SERVER_REMOVE, reinterpret_cast<LPARAM>(server)); break; case WebServerAction::AddStatic: SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_ADD_TO_STATIC, reinterpret_cast<LPARAM>(server)); break; case WebServerAction::RemoveStatic: SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_REMOVE_FROM_STATIC, reinterpret_cast<LPARAM>(server)); break; case WebServerAction::PriorityLow: server->SetPreference(SRV_PR_LOW); SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATESERVER, reinterpret_cast<LPARAM>(server)); break; case WebServerAction::PriorityNormal: server->SetPreference(SRV_PR_NORMAL); SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATESERVER, reinterpret_cast<LPARAM>(server)); break; case WebServerAction::PriorityHigh: server->SetPreference(SRV_PR_HIGH); SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATESERVER, reinterpret_cast<LPARAM>(server)); break; default: break; } };
+	port.addServer = [](void*, const CString& address, int serverPort, const CString& name, const CString& priority, bool makeStatic, bool connectNow, CString& message) { message = EscapeWebTemplateText(theApp.emuledlg->GetLastLogEntry(), true); CServer* server = new CServer(static_cast<uint16>(serverPort), address); server->SetListName(name); if (!theApp.emuledlg->serverwnd->serverlistctrl.AddServer(server, true)) { delete server; return false; } if (priority == _T("low")) server->SetPreference(PR_LOW); else if (priority == _T("normal")) server->SetPreference(PR_NORMAL); else if (priority == _T("high")) server->SetPreference(PR_HIGH); SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATESERVER, reinterpret_cast<LPARAM>(server)); if (makeStatic) { SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_ADD_TO_STATIC, reinterpret_cast<LPARAM>(server)); message.AppendFormat(_T("<br>%s"), (LPCTSTR)EscapeWebTemplateText(theApp.emuledlg->GetLastLogEntry(), true)); } if (connectNow) SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_CONNECTTOSERVER, reinterpret_cast<LPARAM>(server)); return true; };
+	port.updateServerMet = [](void*, const CString& url, CString& message) { SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATESERVERMETFROMURL, reinterpret_cast<LPARAM>((LPCTSTR)url)); message = EscapeWebTemplateText(theApp.emuledlg->GetLastLogEntry(), true); };
+	port.saveHidden = [](void*, const std::array<bool, 10>& hidden) { for (std::size_t index = 0; index < hidden.size(); ++index) WSserverColumnHidden[index] = hidden[index]; _SaveWIConfigArray(WSserverColumnHidden, _countof(WSserverColumnHidden), _T("serverColumnHidden")); };
+	port.snapshot = [](void*, std::vector<WebServerRow>& rows) { rows.reserve(static_cast<std::size_t>(theApp.serverlist->GetServerCount())); for (INT_PTR index = theApp.serverlist->GetServerCount(); --index >= 0;) { const CServer& server = *theApp.serverlist->GetServerAt(index); WebServerRow row; row.name = EscapeWebTemplateText(server.GetListName(), true); row.ip = server.GetAddress(); row.port = server.GetPort(); row.description = EscapeWebTemplateText(server.GetDescription(), true); row.ping = server.GetPing(); row.users = server.GetUsers(); row.maxUsers = server.GetMaxUsers(); row.files = server.GetFiles(); row.isStatic = server.IsStaticMember(); unsigned priorityId = 0; switch (server.GetPreference()) { case SRV_PR_HIGH: priorityId = IDS_PRIOHIGH; row.priority = 2; break; case SRV_PR_NORMAL: priorityId = IDS_PRIONORMAL; row.priority = 1; break; case SRV_PR_LOW: priorityId = IDS_PRIOLOW; row.priority = 0; break; default: break; } if (priorityId != 0) row.priorityText = _GetPlainResString(priorityId); row.failed = server.GetFailedCount(); row.softLimit = server.GetSoftFiles(); row.hardLimit = server.GetHardFiles(); row.version = server.GetVersion(); if (inet_addr(CStringA(row.ip)) != INADDR_NONE) { for (int part = 0, position = 0; part < 4 && position >= 0; ++part) { const CString token(row.ip.Tokenize(_T("."), position)); row.fullIp.AppendFormat(&_T("000%s")[min(token.GetLength(), 3)], (LPCTSTR)token); } } else row.fullIp = row.ip; row.state = server.GetFailedCount() ? _T("failed") : _T("disconnected"); if (theApp.serverconnect->IsConnecting()) row.state = _T("connecting"); else if (theApp.serverconnect->IsConnected() && theApp.serverconnect->GetCurrentServer() != nullptr && theApp.serverconnect->GetCurrentServer()->GetFullIP() == server.GetFullIP()) row.state = theApp.HasVerifiedEd2kHighId() ? _T("high") : _T("low"); rows.push_back(row); } };
+	if (!port.Complete()) return CString();
+	const WebServerPageResult result(RunWebServerPage(WebTemplateParent(owner), input, port)); owner->m_Params.ServerSort = static_cast<ServerSort>(result.sort); owner->m_Params.bServerSortReverse = result.reverse;
+	for (std::size_t index = 0; index < result.hidden.size(); ++index) WSserverColumnHidden[index] = result.hidden[index];
+	return result.html;
 }
-
 CString CWebServer::_GetTransferList(const ThreadData &Data)
 {
 	CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
@@ -2548,94 +2132,6 @@ CString CWebServer::_GetGraphs(const ThreadData &Data)
 
 	return Out;
 }
-CString CWebServer::_GetAddServerBox(const ThreadData &Data)
-{
-	const CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
-	if (pThis == NULL)
-		return CString();
-
-	const CString &sSession(_ParseURL(Data.sURL, _T("ses")));
-	if (!_IsSessionAdmin(Data, sSession))
-		return CString();
-
-	CString resultlog(_SpecialChars(theApp.emuledlg->GetLastLogEntry())); //Pick-up last line of the log
-
-	CString Out(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::AddServerBox));
-	if (_ParseURL(Data.sURL, _T("addserver")) == _T("true")) {
-		CString strServerAddress(_ParseURL(Data.sURL, _T("serveraddr")));
-		CString strServerPort(_ParseURL(Data.sURL, _T("serverport")));
-		if (!strServerAddress.Trim().IsEmpty() && !strServerPort.Trim().IsEmpty()) {
-			CString strServerName(_ParseURL(Data.sURL, _T("servername")));
-			if (strServerName.Trim().IsEmpty())
-				strServerName = strServerAddress;
-			CServer *srv = new CServer((uint16)_tstoi(strServerPort), strServerAddress);
-			srv->SetListName(strServerName);
-			if (!theApp.emuledlg->serverwnd->serverlistctrl.AddServer(srv, true)) {
-				delete srv;
-				Out.Replace(_T("[Message]"), _GetPlainResString(IDS_ERROR));
-			} else {
-				const CString &sPrio(_ParseURL(Data.sURL, _T("priority")));
-				if (sPrio == _T("low"))
-					srv->SetPreference(PR_LOW);
-				else if (sPrio == _T("normal"))
-					srv->SetPreference(PR_NORMAL);
-				else if (sPrio == _T("high"))
-					srv->SetPreference(PR_HIGH);
-
-				SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATESERVER, (LPARAM)srv);
-
-				if (_ParseURL(Data.sURL, _T("addtostatic")) == _T("true")) {
-					_AddToStatic(_ParseURL(Data.sURL, _T("serveraddr")), _tstoi(_ParseURL(Data.sURL, _T("serverport"))));
-					resultlog.AppendFormat(_T("<br>%s"), (LPCTSTR)_SpecialChars(theApp.emuledlg->GetLastLogEntry())); //Pick-up last line of the log
-				}
-				resultlog.TrimRight(_T('\n'));
-				resultlog.Delete(0, resultlog.ReverseFind(_T('\n')));
-				Out.Replace(_T("[Message]"), resultlog);
-				if (_ParseURL(Data.sURL, _T("connectnow")) == _T("true"))
-					_ConnectToServer(_ParseURL(Data.sURL, _T("serveraddr")), _tstoi(_ParseURL(Data.sURL, _T("serverport"))));
-			}
-		} else
-			Out.Replace(_T("[Message]"), _GetPlainResString(IDS_ERROR));
-	} else if (_ParseURL(Data.sURL, _T("updateservermetfromurl")) == _T("true")) {
-		const CString &url(_ParseURL(Data.sURL, _T("servermeturl")));
-		SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPDATESERVERMETFROMURL, (LPARAM)(LPCTSTR)url);
-
-		resultlog = _SpecialChars(theApp.emuledlg->GetLastLogEntry());
-		resultlog.TrimRight(_T('\n'));
-		resultlog.Delete(0, resultlog.ReverseFind(_T('\n')));
-		Out.Replace(_T("[Message]"), resultlog);
-	} else
-		Out.Replace(_T("[Message]"), _T(""));
-
-	Out.Replace(_T("[AddServer]"), _GetPlainResString(IDS_SV_NEWSERVER));
-	Out.Replace(_T("[IP]"), _GetPlainResString(IDS_SV_ADDRESS));
-	Out.Replace(_T("[Port]"), _GetPlainResString(IDS_PORT));
-	Out.Replace(_T("[Name]"), _GetPlainResString(IDS_SW_NAME));
-	Out.Replace(_T("[Static]"), _GetPlainResString(IDS_STATICSERVER));
-	Out.Replace(_T("[ConnectNow]"), _GetPlainResString(IDS_IRC_CONNECT));
-	Out.Replace(_T("[Priority]"), _GetPlainResString(IDS_PRIORITY));
-	Out.Replace(_T("[Low]"), _GetPlainResString(IDS_PRIOLOW));
-	Out.Replace(_T("[Normal]"), _GetPlainResString(IDS_PRIONORMAL));
-	Out.Replace(_T("[High]"), _GetPlainResString(IDS_PRIOHIGH));
-	Out.Replace(_T("[Add]"), _GetPlainResString(IDS_SV_ADD));
-	Out.Replace(_T("[UpdateServerMetFromURL]"), _GetPlainResString(IDS_SV_MET));
-	Out.Replace(_T("[URL]"), _GetPlainResString(IDS_SV_URL));
-	Out.Replace(_T("[Apply]"), _GetPlainResString(IDS_PW_APPLY));
-	//for admin only (verified on entry)
-	CString s;
-	s.Format(_T("?ses=%s&amp;w=server&amp;c=disconnect"), (LPCTSTR)sSession);
-	Out.Replace(_T("[URL_Disconnect]"), s);
-	s.Format(_T("?ses=%s&amp;w=server&amp;c=connect"), (LPCTSTR)sSession);
-	Out.Replace(_T("[URL_Connect]"), s);
-
-	Out.Replace(_T("[Disconnect]"), _GetPlainResString(IDS_IRC_DISCONNECT));
-	Out.Replace(_T("[Connect]"), _GetPlainResString(IDS_CONNECTTOANYSERVER));
-	Out.Replace(_T("[ServerOptions]"), _GetPlainResString(IDS_CONNECTION));
-	Out.Replace(_T("[Execute]"), _GetPlainResString(IDS_IRC_PERFORM));
-
-	return Out;
-}
-
 CString CWebServer::_GetLog(const ThreadData &Data)
 {
 	const CWebServer* owner = reinterpret_cast<CWebServer*>(Data.pThis); if (owner == NULL) return CString(); const CString session(_ParseURL(Data.sURL, _T("ses"))); if (_ParseURL(Data.sURL, _T("clear")) == _T("yes") && _IsSessionAdmin(Data, session)) theApp.emuledlg->ResetLog(); return RenderWebLogView(WebTemplateLogView::Log, GetWebTemplate(WebTemplateParent(owner), WebTemplateId::Log), session, theApp.emuledlg->GetAllLogEntries());
@@ -6688,53 +6184,6 @@ int AFX_CDECL CWebServer::_DownloadCmp(void *prm, void const *pv1, void const *p
 	const SortParams* sort = static_cast<const SortParams*>(prm);
 	return ese::web::WebTransferController::CompareDownload(
 		static_cast<unsigned>(sort->eSort), sort->bReverse, comparison);
-}
-
-int AFX_CDECL CWebServer::_ServerCmp(void *prm, void const *pv1, void const *pv2)
-{
-	const ServerEntry &p1 = *reinterpret_cast<const ServerEntry*>(pv1);
-	const ServerEntry &p2 = *reinterpret_cast<const ServerEntry*>(pv2);
-	int iOrd;
-	switch ((ServerSort)((SortParams*)prm)->eSort) {
-	case SERVER_SORT_STATE:
-		iOrd = p2.sServerState.CompareNoCase(p1.sServerState); //reversed
-		break;
-	case SERVER_SORT_NAME:
-		iOrd = p1.sServerName.CompareNoCase(p2.sServerName);
-		break;
-	case SERVER_SORT_IP:
-		iOrd = p1.sServerFullIP.Compare(p2.sServerFullIP);
-		if (!iOrd)
-			iOrd = p1.nServerPort - p2.nServerPort;
-		break;
-	case SERVER_SORT_DESCRIPTION:
-		iOrd = p1.sServerDescription.CompareNoCase(p2.sServerDescription);
-		break;
-	case SERVER_SORT_PING:
-		iOrd = p1.nServerPing - p2.nServerPing;
-		break;
-	case SERVER_SORT_USERS:
-		iOrd = p1.nServerUsers - p2.nServerUsers;
-		break;
-	case SERVER_SORT_FILES:
-		iOrd = p1.nServerFiles - p2.nServerFiles;
-		break;
-	case SERVER_SORT_PRIORITY:
-		iOrd = p1.nServerPriority - p2.nServerPriority;
-		break;
-	case SERVER_SORT_FAILED:
-		iOrd = p1.nServerFailed - p2.nServerFailed;
-		break;
-	case SERVER_SORT_LIMIT:
-		iOrd = p1.nServerSoftLimit - p2.nServerSoftLimit;
-		break;
-	case SERVER_SORT_VERSION:
-		iOrd = p1.sServerVersion.Compare(p2.sServerVersion);
-		break;
-	default: //unknown
-		return 0;
-	}
-	return ((SortParams*)prm)->bReverse ? iOrd : -iOrd;
 }
 
 int AFX_CDECL CWebServer::_SharedCmp(void *prm, void const *pv1, void const *pv2)

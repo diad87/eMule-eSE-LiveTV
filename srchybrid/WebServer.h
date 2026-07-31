@@ -158,27 +158,6 @@ typedef enum
 	SHARED_SORT_PRIORITY
 } SharedSort;
 
-typedef struct
-{
-	CString	sServerDescription;
-	CString	sServerFullIP; //for sorting
-	CString	sServerIP;
-	CString	sServerName;
-	CString	sServerPriority;
-	CString	sServerState;
-	CString	sServerVersion;
-	uint32	nServerFiles;
-	uint32	nServerHardLimit;
-	uint32	nServerMaxUsers;
-	uint32	nServerPing;
-	uint32	nServerSoftLimit;
-	uint32	nServerUsers;
-	int		nServerFailed;
-	int		nServerPort;
-	byte	nServerPriority;
-	bool	bServerStatic;
-} ServerEntry;
-
 typedef enum
 {
 	SERVER_SORT_STATE,
@@ -273,19 +252,12 @@ private:
 	static CString  _GetKadDlg(const ThreadData &Data);
 	static CString	_GetPreferences(const ThreadData &Data);
 	static CString	_GetLoginScreen(const ThreadData &Data);
-	//static CString	_GetConnectedServer(const ThreadData &Data);
-	static CString	_GetAddServerBox(const ThreadData &Data);
 	static CString	_GetCommentlist(const ThreadData &Data);
-	static void		_RemoveServer(const CString &sIP, int nPort);
-	static void		_AddToStatic(const CString &sIP, int nPort);
-	static void		_RemoveFromStatic(const CString &sIP, int nPort);
 
-	//static CString	_GetWebSearch(const ThreadData &Data);
 	static CString	_GetSearch(const ThreadData &Data);
 
 	static CString	_ParseURL(const CString &URL, const CString &fieldname);
 	static CString	_ParseURLArray(CString URL, CString fieldname);
-	static void		_ConnectToServer(const CString &sIP, int nPort);
 	static bool		_IsLoggedIn(const ThreadData &Data, long lSession);
 	static void		_RemoveTimeOuts(const ThreadData &Data);
 	static bool		_RemoveSession(const ThreadData &Data, long lSession);
@@ -315,7 +287,6 @@ private:
 
 	//comparators for quick sort
 	static int AFX_CDECL _DownloadCmp(void *prm, void const *pv1, void const *pv2);
-	static int AFX_CDECL _ServerCmp(void *prm, void const *pv1, void const *pv2);
 	static int AFX_CDECL _SharedCmp(void *prm, void const *pv1, void const *pv2);
 	static int AFX_CDECL _UploadCmp(void *prm, void const *pv1, void const *pv2);
 

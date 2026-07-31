@@ -243,7 +243,7 @@ class Mod02CharacterizationTest(unittest.TestCase):
             "live_circuit_handshake", "live_circuit_registry",
             "live_relay_dispatcher", "live_exit_services",
             "live_tunnel_framing", "live_tunnel_pending",
-            "live_tunnel_dispatch", "web_parser_security",
+            "live_tunnel_dispatch", "web_parser_security", "web_request_dispatch",
             "web_serialization", "web_live_dispatch", "live_stream_session_chunk_callback",
         }
         self.assertEqual(set(self.goldens["goldens"]), expected)
@@ -251,7 +251,10 @@ class Mod02CharacterizationTest(unittest.TestCase):
             self.assertTrue((ROOT / spec["production_file"]).is_file())
             self.assertTrue(spec["symbols"])
             self.assertTrue(spec["token_sha256"])
-        self.assertIn("CWebServer::_GzipCompress", self.goldens["goldens"]["web_serialization"]["symbols"])
+        self.assertIn(
+            "CompressWebGzip",
+            self.goldens["goldens"]["web_request_dispatch"]["symbols"],
+        )
 
     def test_production_characterization_and_negative_fixture_detect_drift(self) -> None:
         for mode in ("--verify", "--negative-fixture"):

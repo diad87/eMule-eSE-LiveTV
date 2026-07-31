@@ -306,8 +306,7 @@ void CWebServer::StopServer()
 
 void CWebServer::AddStatsLine(const UpDown &line)
 {
-	M2AModuleHandle transferActionsBinding = M2A_BIND_W5_095B87253F(M2AParentPort{this}); if (!transferActionsBinding) return;
-	m_Params.PointsForWeb.Add(line);
+	M2AModuleHandle transferActionsBinding = M2A_BIND_W5_095B87253F(M2AParentPort{this}); if (!transferActionsBinding) return; m_Params.PointsForWeb.Add(line);
 	if (m_Params.PointsForWeb.GetCount() > WEB_GRAPH_WIDTH)
 		m_Params.PointsForWeb.RemoveAt(0);
 }

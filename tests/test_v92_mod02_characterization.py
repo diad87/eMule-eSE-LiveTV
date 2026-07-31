@@ -78,6 +78,9 @@ SPEC = importlib.util.spec_from_file_location("mod02_verifier", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 VERIFIER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFIER)
+# Keep the evidence test bound to the verifier's complete, versioned source
+# set instead of maintaining a second list that can silently go stale.
+CRITICAL_SOURCE_PATHS = VERIFIER.CRITICAL_SOURCE_PATHS
 
 
 class Mod02CharacterizationTest(unittest.TestCase):

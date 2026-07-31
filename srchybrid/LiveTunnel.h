@@ -56,6 +56,8 @@ class CUpDownClient;
 
 namespace eSELive {
 
+using K6AuthorizedTarget = LiveTunnelAuthorizedTarget;
+
 class CKad6ExitSocket;
 class CKad6OriginSocket;
 
@@ -844,41 +846,6 @@ private:
     bool MarkK6SourceServingLocked(uint64 sourceLeaseId,
                                    kad6::K6CohortBackend& backend);
 
-    struct K6ExitPublishRuntime {
-        kad6::K6Publish request;
-        uint64 publish_lease_id = 0;
-        uint64 source_lease_id = 0;
-        uint64 expires_at = 0;
-        kad6::K6PublishStatus status = kad6::K6PublishStatus::Queued;
-        uint8_t published_networks = 0;
-        uint16_t replicas = 0;
-        uint8_t max_load = 0;
-        uint64 primary_publish_lease_id = 0;
-        uint64 next_refresh_at = 0;
-        uint64 next_native_refresh_at = 0;
-        uint64 visibility_probe_at = 0;
-        uint64 visibility_probe_deadline = 0;
-        uint32 refresh_backoff_s = 60;
-        uint32 native_backoff_s = 60;
-        bool kad2_queued = false;
-        bool kad2_search_active = false;
-        bool visibility_probe_started = false;
-        bool auto_refresh = false;
-        bool refresh_enabled = true;
-    };
-    std::map<uint64, K6ExitPublishRuntime> m_k6Publishes;
-    std::map<std::string, uint64> m_k6ShadowPrimary;
-    struct K6AuthorizedTarget {
-        uint32 circ_id = 0;
-        uint32 source_request_id = 0;
-        kad6::Hash16 result_id{};
-        kad6::Hash16 object_hash{};
-        kad6::Hash32 digest{};
-        kad6::K6Endpoint endpoint;
-        uint8 network_origin = kad6::kK6NetOriginKad2;
-        uint64 expires_at = 0;
-    };
-    struct K6UsedTicket { uint16 used = 0; uint64 expires_at = 0; };
     struct K6ExitStreamRuntime {
         uint32 circ_id = 0;
         uint32 dial_request_id = 0;
@@ -932,10 +899,6 @@ private:
         size_t pending_credit_bytes = 0;
         uint64 credit_stall_since_ms = 0;
     };
-    std::array<uint8_t, 32> m_k6TicketSecret{};
-    bool m_k6TicketSecretReady = false;
-    std::map<std::string, K6AuthorizedTarget> m_k6AuthorizedTargets;
-    std::map<std::string, K6UsedTicket> m_k6UsedTickets;
     std::map<uint64, K6ExitStreamRuntime> m_k6ExitStreams;
     std::map<uint64, K6OriginStreamRuntime> m_k6OriginStreams;
     std::map<uint32, kad6::K6SendCreditLedger> m_k6SendCredits;

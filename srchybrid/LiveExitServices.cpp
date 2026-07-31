@@ -8,10 +8,38 @@
 
 namespace eSELive {
 
+M2AModuleHandle M2A_BIND_LT4_6E698BD4A3(const M2AParentPort&); bool RunLiveTunnelSourcePublisherCharacterizationSelfTest();
+bool M2A_LT4_InitializeSecretBridge(M2AModuleHandle&,const std::array<std::uint8_t,32>&) noexcept; bool M2A_LT4_TicketSecretReadyBridge(const M2AModuleHandle&) noexcept; std::array<std::uint8_t,32> M2A_LT4_TicketSecretBridge(const M2AModuleHandle&) noexcept;
+void M2A_LT4_AuthorizeTargetBridge(M2AModuleHandle&,const std::string&,const LiveTunnelAuthorizedTarget&); bool M2A_LT4_FindAuthorizedTargetBridge(const M2AModuleHandle&,const std::string&,std::uint64_t,LiveTunnelAuthorizedTarget&); bool M2A_LT4_ConsumeTicketBridge(M2AModuleHandle&,const kad6::K6TargetTicket&,std::uint64_t) noexcept;
+std::map<std::uint64_t,LiveTunnelPublishRuntime> M2A_LT4_PublishSnapshotBridge(const M2AModuleHandle&); std::size_t M2A_LT4_PublishCountBridge(const M2AModuleHandle&) noexcept; bool M2A_LT4_FindPublishBridge(const M2AModuleHandle&,std::uint64_t,LiveTunnelPublishRuntime&); std::map<std::string,std::uint64_t> M2A_LT4_ShadowSnapshotBridge(const M2AModuleHandle&);
+LiveTunnelPublishMutation M2A_LT4_OpenPublishBridge(M2AModuleHandle&,LiveTunnelPublishRuntime&,const std::string&,LiveTunnelPublishRuntime&,bool&); LiveTunnelPublishMutation M2A_LT4_RemovePublishBridge(M2AModuleHandle&,std::uint64_t,std::vector<LiveTunnelPublishAction>&); bool M2A_LT4_DisablePublishBridge(M2AModuleHandle&,std::uint64_t); std::vector<std::uint64_t> M2A_LT4_DisableSourceBridge(M2AModuleHandle&,std::uint64_t); std::vector<std::uint64_t> M2A_LT4_DisableAllBridge(M2AModuleHandle&,bool);
+bool M2A_LT4_EnsureShadowBridge(M2AModuleHandle&,const std::string&,std::uint64_t,std::uint64_t&,bool&); bool M2A_LT4_ForgetShadowBridge(M2AModuleHandle&,const std::string&); bool M2A_LT4_SetQueueStateBridge(M2AModuleHandle&,std::uint64_t,bool,std::uint64_t,std::uint64_t); bool M2A_LT4_MarkNativeSentBridge(M2AModuleHandle&,std::uint64_t,std::uint64_t,std::uint64_t,std::uint64_t&); std::vector<std::uint64_t> M2A_LT4_MarkShadowSentBridge(M2AModuleHandle&,std::uint64_t); bool M2A_LT4_MarkShadowAckBridge(M2AModuleHandle&,std::uint64_t,std::uint8_t,std::uint64_t); bool M2A_LT4_MarkShadowVerifiedBridge(M2AModuleHandle&,std::uint64_t); bool M2A_LT4_MarkNativeResultBridge(M2AModuleHandle&,std::uint64_t,kad6::K6StoreStatus,std::uint8_t,std::uint64_t,std::uint64_t,bool&);
+std::vector<LiveTunnelPublishRuntime> M2A_LT4_TakeNativeRefreshesBridge(M2AModuleHandle&,std::uint64_t); bool M2A_LT4_CompleteNativeRefreshBridge(M2AModuleHandle&,std::uint64_t,bool,std::uint64_t); bool M2A_LT4_TakeShadowBridge(M2AModuleHandle&,std::uint64_t,LiveTunnelPublishRuntime&); bool M2A_LT4_CompleteShadowBridge(M2AModuleHandle&,std::uint64_t,bool,std::uint64_t); std::vector<LiveTunnelPublishRuntime> M2A_LT4_TakeVisibilityProbesBridge(M2AModuleHandle&,std::uint64_t,bool&); bool M2A_LT4_CompleteVisibilityProbeBridge(M2AModuleHandle&,std::uint64_t,bool,std::uint64_t); std::vector<LiveTunnelPublishAction> M2A_LT4_SweepBridge(M2AModuleHandle&,std::uint64_t); void M2A_LT4_ResetPublishesBridge(M2AModuleHandle&); void M2A_LT4_PruneTicketStateBridge(M2AModuleHandle&,std::uint64_t);
+
+LiveExitServices::LiveExitServices():m_m2a_binding_6e698bd4a3(M2AAssignmentPolicy::RetainExisting){}
+bool LiveExitServices::LT4InitializeTicketSecret(const std::array<std::uint8_t,32>& v) noexcept{return M2A_LT4_InitializeSecretBridge(m_m2a_binding_6e698bd4a3,v);}
+bool LiveExitServices::LT4TicketSecretReady() const noexcept{return M2A_LT4_TicketSecretReadyBridge(m_m2a_binding_6e698bd4a3);}
+std::array<std::uint8_t,32> LiveExitServices::LT4TicketSecret() const noexcept{return M2A_LT4_TicketSecretBridge(m_m2a_binding_6e698bd4a3);}
+void LiveExitServices::LT4AuthorizeTarget(const std::string& k,const LiveTunnelAuthorizedTarget& v){M2A_LT4_AuthorizeTargetBridge(m_m2a_binding_6e698bd4a3,k,v);}
+bool LiveExitServices::LT4FindAuthorizedTarget(const std::string& k,std::uint64_t n,LiveTunnelAuthorizedTarget& v) const{return M2A_LT4_FindAuthorizedTargetBridge(m_m2a_binding_6e698bd4a3,k,n,v);}
+bool LiveExitServices::LT4ConsumeTicket(const kad6::K6TargetTicket& t,std::uint64_t n) noexcept{return M2A_LT4_ConsumeTicketBridge(m_m2a_binding_6e698bd4a3,t,n);}
+std::map<std::uint64_t,LiveTunnelPublishRuntime> LiveExitServices::LT4PublishSnapshot() const{return M2A_LT4_PublishSnapshotBridge(m_m2a_binding_6e698bd4a3);}
+std::size_t LiveExitServices::LT4PublishCount() const noexcept{return M2A_LT4_PublishCountBridge(m_m2a_binding_6e698bd4a3);}
+bool LiveExitServices::LT4FindPublish(std::uint64_t id,LiveTunnelPublishRuntime& v) const{return M2A_LT4_FindPublishBridge(m_m2a_binding_6e698bd4a3,id,v);}
+std::map<std::string,std::uint64_t> LiveExitServices::LT4ShadowSnapshot() const{return M2A_LT4_ShadowSnapshotBridge(m_m2a_binding_6e698bd4a3);}
+LiveTunnelPublishMutation LiveExitServices::LT4OpenPublish(LiveTunnelPublishRuntime& r,const std::string& k,LiveTunnelPublishRuntime& d,bool& e){return M2A_LT4_OpenPublishBridge(m_m2a_binding_6e698bd4a3,r,k,d,e);} LiveTunnelPublishMutation LiveExitServices::LT4RemovePublish(std::uint64_t id,std::vector<LiveTunnelPublishAction>& a){return M2A_LT4_RemovePublishBridge(m_m2a_binding_6e698bd4a3,id,a);}
+bool LiveExitServices::LT4DisablePublish(std::uint64_t id){return M2A_LT4_DisablePublishBridge(m_m2a_binding_6e698bd4a3,id);} std::vector<std::uint64_t> LiveExitServices::LT4DisableSource(std::uint64_t id){return M2A_LT4_DisableSourceBridge(m_m2a_binding_6e698bd4a3,id);} std::vector<std::uint64_t> LiveExitServices::LT4DisableAll(bool c){return M2A_LT4_DisableAllBridge(m_m2a_binding_6e698bd4a3,c);}
+bool LiveExitServices::LT4EnsureShadow(const std::string& k,std::uint64_t id,std::uint64_t& p,bool& c){return M2A_LT4_EnsureShadowBridge(m_m2a_binding_6e698bd4a3,k,id,p,c);} bool LiveExitServices::LT4ForgetShadow(const std::string& k){return M2A_LT4_ForgetShadowBridge(m_m2a_binding_6e698bd4a3,k);} bool LiveExitServices::LT4SetQueueState(std::uint64_t id,bool q,std::uint64_t p,std::uint64_t n){return M2A_LT4_SetQueueStateBridge(m_m2a_binding_6e698bd4a3,id,q,p,n);}
+bool LiveExitServices::LT4MarkNativeSent(std::uint64_t id,std::uint64_t n,std::uint64_t t,std::uint64_t& s){return M2A_LT4_MarkNativeSentBridge(m_m2a_binding_6e698bd4a3,id,n,t,s);} std::vector<std::uint64_t> LiveExitServices::LT4MarkShadowSent(std::uint64_t id){return M2A_LT4_MarkShadowSentBridge(m_m2a_binding_6e698bd4a3,id);} bool LiveExitServices::LT4MarkShadowAck(std::uint64_t id,std::uint8_t l,std::uint64_t n){return M2A_LT4_MarkShadowAckBridge(m_m2a_binding_6e698bd4a3,id,l,n);} bool LiveExitServices::LT4MarkShadowVerified(std::uint64_t id){return M2A_LT4_MarkShadowVerifiedBridge(m_m2a_binding_6e698bd4a3,id);} bool LiveExitServices::LT4MarkNativeResult(std::uint64_t id,kad6::K6StoreStatus s,std::uint8_t l,std::uint64_t e,std::uint64_t n,bool& o){return M2A_LT4_MarkNativeResultBridge(m_m2a_binding_6e698bd4a3,id,s,l,e,n,o);}
+std::vector<LiveTunnelPublishRuntime> LiveExitServices::LT4TakeNativeRefreshes(std::uint64_t n){return M2A_LT4_TakeNativeRefreshesBridge(m_m2a_binding_6e698bd4a3,n);} bool LiveExitServices::LT4CompleteNativeRefresh(std::uint64_t id,bool s,std::uint64_t n){return M2A_LT4_CompleteNativeRefreshBridge(m_m2a_binding_6e698bd4a3,id,s,n);} bool LiveExitServices::LT4TakeShadow(std::uint64_t id,LiveTunnelPublishRuntime& r){return M2A_LT4_TakeShadowBridge(m_m2a_binding_6e698bd4a3,id,r);} bool LiveExitServices::LT4CompleteShadow(std::uint64_t id,bool s,std::uint64_t n){return M2A_LT4_CompleteShadowBridge(m_m2a_binding_6e698bd4a3,id,s,n);}
+std::vector<LiveTunnelPublishRuntime> LiveExitServices::LT4TakeVisibilityProbes(std::uint64_t n,bool& o){return M2A_LT4_TakeVisibilityProbesBridge(m_m2a_binding_6e698bd4a3,n,o);} bool LiveExitServices::LT4CompleteVisibilityProbe(std::uint64_t id,bool s,std::uint64_t n){return M2A_LT4_CompleteVisibilityProbeBridge(m_m2a_binding_6e698bd4a3,id,s,n);} std::vector<LiveTunnelPublishAction> LiveExitServices::LT4Sweep(std::uint64_t n){return M2A_LT4_SweepBridge(m_m2a_binding_6e698bd4a3,n);} void LiveExitServices::LT4ResetPublishes(){M2A_LT4_ResetPublishesBridge(m_m2a_binding_6e698bd4a3);}
+void LiveExitServices::LT4PruneTicketState(std::uint64_t n){M2A_LT4_PruneTicketStateBridge(m_m2a_binding_6e698bd4a3,n);}
+
 void LiveExitServices::RegisterHandler(
     std::uint8_t subCommand,
     LiveTunnelOpHandler handler)
 {
+    m_m2a_binding_6e698bd4a3=M2A_BIND_LT4_6E698BD4A3(M2AParentPort{this});
     m_handlers[subCommand] = std::move(handler);
 }
 
@@ -300,7 +328,8 @@ bool RunLiveExitServicesCharacterizationSelfTest()
     if (!Check(services.HandlerCount() == 1))
         return false;
 
-    return Check(services.PendingCount() == 0);
+    return Check(services.PendingCount() == 0) &&
+        RunLiveTunnelSourcePublisherCharacterizationSelfTest();
 }
 
 } // namespace eSELive

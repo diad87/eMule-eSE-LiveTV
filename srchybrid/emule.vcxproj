@@ -806,6 +806,18 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="LiveTunnelTicketPolicy.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelSourcePublisher.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="LiveTunnelScheduler.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
@@ -1329,6 +1341,9 @@
     <ClInclude Include="LiveTunnelReleaseGate.h" />
     <ClInclude Include="LiveTunnelQuotaAuthority.h" />
     <ClInclude Include="LiveTunnelGatewayLeaseState.h" />
+    <ClInclude Include="LiveTunnelTicketPolicy.h" />
+    <ClInclude Include="LiveTunnelSourcePublisher.h" />
+    <ClInclude Include="LiveTunnelSourcePublisherPort.h" />
     <ClInclude Include="LiveTunnelPeerState.h" />
     <ClInclude Include="LiveTunnelKadBridge.h" />
     <ClInclude Include="LiveTunnelMetrics.h" />

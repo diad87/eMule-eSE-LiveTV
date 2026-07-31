@@ -1,12 +1,17 @@
 // this file is part of eMule eSE - exit handler and deferred-reply ownership
 #pragma once
 
+#include "M2ABindingPort.h"
 #include "LiveRelayTypes.h"
+#include "LiveTunnelSourcePublisherPort.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace eSELive {
 
@@ -31,7 +36,7 @@ public:
         std::uint8_t reply_op = 0;
     };
 
-    LiveExitServices() = default;
+    LiveExitServices();
     LiveExitServices(const LiveExitServices&) = delete;
     LiveExitServices& operator=(const LiveExitServices&) = delete;
 
@@ -98,6 +103,39 @@ public:
         std::uint32_t circuitId,
         std::uint32_t requestId) const;
 
+    bool LT4InitializeTicketSecret(
+        const std::array<std::uint8_t, 32>& secret) noexcept;
+    bool LT4TicketSecretReady() const noexcept;
+    std::array<std::uint8_t, 32> LT4TicketSecret() const noexcept;
+    void LT4AuthorizeTarget(
+        const std::string& key,
+        const LiveTunnelAuthorizedTarget& target);
+    bool LT4FindAuthorizedTarget(
+        const std::string& key,
+        std::uint64_t now,
+        LiveTunnelAuthorizedTarget& target) const;
+    bool LT4ConsumeTicket(
+        const kad6::K6TargetTicket& ticket,
+        std::uint64_t now) noexcept;
+    std::map<std::uint64_t, LiveTunnelPublishRuntime>
+        LT4PublishSnapshot() const;
+    std::size_t LT4PublishCount() const noexcept;
+    bool LT4FindPublish(
+        std::uint64_t publishLeaseId,
+        LiveTunnelPublishRuntime& runtime) const;
+    std::map<std::string, std::uint64_t> LT4ShadowSnapshot() const;
+    LiveTunnelPublishMutation LT4OpenPublish(LiveTunnelPublishRuntime&,const std::string&,LiveTunnelPublishRuntime&,bool&);
+    LiveTunnelPublishMutation LT4RemovePublish(std::uint64_t,std::vector<LiveTunnelPublishAction>&);
+    bool LT4DisablePublish(std::uint64_t); std::vector<std::uint64_t> LT4DisableSource(std::uint64_t); std::vector<std::uint64_t> LT4DisableAll(bool);
+    bool LT4EnsureShadow(const std::string&,std::uint64_t,std::uint64_t&,bool&); bool LT4ForgetShadow(const std::string&); bool LT4SetQueueState(std::uint64_t,bool,std::uint64_t,std::uint64_t);
+    bool LT4MarkNativeSent(std::uint64_t,std::uint64_t,std::uint64_t,std::uint64_t&); std::vector<std::uint64_t> LT4MarkShadowSent(std::uint64_t);
+    bool LT4MarkShadowAck(std::uint64_t,std::uint8_t,std::uint64_t); bool LT4MarkShadowVerified(std::uint64_t); bool LT4MarkNativeResult(std::uint64_t,kad6::K6StoreStatus,std::uint8_t,std::uint64_t,std::uint64_t,bool&);
+    std::vector<LiveTunnelPublishRuntime> LT4TakeNativeRefreshes(std::uint64_t); bool LT4CompleteNativeRefresh(std::uint64_t,bool,std::uint64_t);
+    bool LT4TakeShadow(std::uint64_t,LiveTunnelPublishRuntime&); bool LT4CompleteShadow(std::uint64_t,bool,std::uint64_t);
+    std::vector<LiveTunnelPublishRuntime> LT4TakeVisibilityProbes(std::uint64_t,bool&); bool LT4CompleteVisibilityProbe(std::uint64_t,bool,std::uint64_t);
+    std::vector<LiveTunnelPublishAction> LT4Sweep(std::uint64_t); void LT4ResetPublishes();
+    void LT4PruneTicketState(std::uint64_t now);
+
 private:
     struct Operation {
         std::weak_ptr<CLiveCircuit> circuit;
@@ -109,6 +147,7 @@ private:
 
     std::map<std::uint8_t, LiveTunnelOpHandler> m_handlers;
     std::map<std::uint64_t, Operation> m_operations;
+    M2AModuleHandle m_m2a_binding_6e698bd4a3;
 };
 
 // Deterministic production-boundary test used by the unattended `--selftest`

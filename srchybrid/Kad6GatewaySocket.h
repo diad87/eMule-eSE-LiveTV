@@ -6,9 +6,10 @@
 #include <cstdint>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
 
-namespace kad6 { enum class K6Service : std::uint8_t; struct K6CohortBackend; struct K6Endpoint; struct K6Frame; }
+namespace kad6 { enum class K6Service : std::uint8_t; enum class K6StoreStatus : std::uint8_t; enum class K6Provenance : std::uint8_t; struct K6CohortBackend; struct K6Endpoint; struct K6Frame; struct K6TargetPolicy; struct K6TargetTicket; }
 
 namespace eSELive {
 
@@ -71,6 +72,10 @@ public:
     static void LT3SourceUnbind(CLiveTunnel&, const LiveTunnelRequestCtx&, const kad6::K6Frame&); static void LT3Unpublish(CLiveTunnel&, const LiveTunnelRequestCtx&, const kad6::K6Frame&);
     static bool LT3HasServingLeases(const CLiveTunnel&); static bool LT3MarkServing(CLiveTunnel&, std::uint64_t, kad6::K6CohortBackend&); static bool LT3EnsureEpochsLoaded(CLiveTunnel&);
     static void LT3QueueRefreshes(CLiveTunnel&, std::uint64_t); static void LT3SweepLeases(CLiveTunnel&, const std::set<std::uint32_t>&, const std::set<std::uint32_t>&, std::uint64_t);
+    static void LT4SourceBind(CLiveTunnel&,const LiveTunnelRequestCtx&,const kad6::K6Frame&); static void LT4Publish(CLiveTunnel&,const LiveTunnelRequestCtx&,const kad6::K6Frame&);
+    static bool LT4AllowShadow(CLiveTunnel&,std::uint64_t,const std::uint8_t*); static void LT4ShadowSent(CLiveTunnel&,std::uint64_t); static void LT4ShadowAck(CLiveTunnel&,std::uint64_t,std::uint8_t,bool); static void LT4ShadowVerified(CLiveTunnel&,std::uint64_t); static void LT4NativeAck(CLiveTunnel&,std::uint64_t,kad6::K6StoreStatus,std::uint8_t,std::uint64_t);
+    static void LT4RefreshNative(CLiveTunnel&,std::uint64_t); static void LT4StartShadow(CLiveTunnel&,std::uint64_t); static void LT4StartProbes(CLiveTunnel&,std::uint64_t); static bool LT4ConsumeTicket(void*,const kad6::K6TargetTicket&); static void LT4TargetTicketReq(CLiveTunnel&,const LiveTunnelRequestCtx&,const kad6::K6Frame&);
+    static std::string LT4AuthorizedKey(std::uint32_t,std::uint32_t,const void*); static bool LT4AllowTarget(std::uint8_t,const kad6::K6Endpoint&); static kad6::K6TargetPolicy LT4TicketPolicy(CLiveTunnel&); static bool LT4IssueTicket(CLiveTunnel&,const void*,std::uint64_t,kad6::K6Provenance,std::uint64_t,std::uint64_t,std::uint64_t,std::vector<std::uint8_t>&); static std::string LT4BinaryKey(const std::uint8_t*,std::size_t); static std::string LT4ShadowKey(const void*);
 private:
     std::uint64_t m_streamId = 0;
     bool m_suppressReplies = false;

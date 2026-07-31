@@ -57,6 +57,7 @@ class CUpDownClient;
 namespace eSELive {
 
 using K6AuthorizedTarget = LiveTunnelAuthorizedTarget;
+using TunnelSearchJob = LiveTunnelSearchJob;
 
 class CKad6ExitSocket;
 class CKad6OriginSocket;
@@ -728,38 +729,6 @@ private:
     // on the Kad UDP thread, thread-safe there); after TUN_SEARCH_WINDOW_MS,
     // Tick() reads the matching streams, serializes them as TUN_OP_KAD_RESULT_V2
     // and completes the deferred op. All of THIS runs on the main thread.
-    struct TunnelSearchJob {
-        uint32_t              circ_id  = 0;
-        uint32_t              req_id   = 0;
-        std::string           keyword;          // normalized (lowercase)
-        bool                  canonicalK6 = false;
-        bool                  kadReachable = false;
-        bool                  lookupStarted = false;
-        bool                  kad2LookupStarted = false;
-        bool                  kad6LookupStarted = false;
-        uint8_t               networkMask = 0;
-        uint16_t              maxResults = (uint16_t)TUN_SEARCH_MAX_RESULTS;
-        uint8_t               searchKind = kad6::kK6SearchKindLive;
-        kad6::Hash16          targetHash{};
-        struct SourceCandidate {
-            kad6::Hash16 userHash{};
-            kad6::K6Endpoint endpoint;
-            uint8_t sourceType = 0;
-            uint8_t cryptOptions = 0;
-            uint16_t reachCaps = 0;
-            uint8_t networkOrigin = kad6::kK6NetOriginKad2;
-            kad6::K6Provenance provenance = kad6::K6Provenance::KadResult;
-            kad6::Hash32 provenanceDigest{};
-            uint32_t score = 0;
-        };
-        std::vector<SourceCandidate> sourceCandidates;
-        bool                  firstSourceMetric = false;
-        bool                  fiveSourceMetric = false;
-        DWORD                 started = 0;
-        DWORD                 deadline = 0;      // GetTickCount() when to reply
-        std::vector<uint32_t> kadSearchIds;     // CSearch ids to StopSearch on finish
-    };
-    std::map<uint64_t, TunnelSearchJob> m_searchJobs;   // key = LiveRequestKey, under m_pendingLock
     void ExitHandle_KadSearchV2(const TunnelRequestCtx& ctx);   // B1
     void ExitHandle_KadCancel(const TunnelRequestCtx& ctx);     // B7
 
@@ -982,16 +951,6 @@ private:
                         uint32_t requiredExitCaps = 0,
                         uint32_t pinnedCircId = 0);
 
-    // Origin-side accumulator for the ordered sequence of canonical
-    // SEARCH_RESULT frames that ends with SEARCH_END.  `legacy` is the old
-    // rich-result body solely for the existing directory/JSON consumers; it
-    // never goes back onto the K6 wire.
-    struct K6SearchReplyAggregate {
-        std::vector<uint8_t> legacy;
-        uint16_t count = 0;
-        DWORD started = 0;
-    };
-    std::map<uint64_t, K6SearchReplyAggregate> m_k6SearchReplies; // m_pendingLock
     bool HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
                              uint32_t req_id, const std::vector<uint8_t>& wire);
     // v0.72 — MAIN THREAD: refresh the value-only peer cache.

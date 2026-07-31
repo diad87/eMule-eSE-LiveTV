@@ -20,7 +20,7 @@ if (Test-Path -LiteralPath $markerPath) { throw 'MOD-0.2 marker file unexpectedl
 
 $criticalSourceRelativePaths = @(
     'srchybrid/EmuleDlg.cpp',
-    'srchybrid/LiveTunnel.cpp', 'srchybrid/LiveTunnel.h', 'srchybrid/LiveTunnelBulkFacade.inl', 'srchybrid/LiveTunnelBulkStatePort.h', 'srchybrid/LiveTunnelBulkProxy.cpp', 'srchybrid/LiveTunnelBulkProxy.h', 'srchybrid/LiveTunnelBulkTransportAdapter.cpp', 'srchybrid/LiveTunnelBulkTransportAdapter.h',
+    'srchybrid/LiveTunnel.cpp', 'srchybrid/LiveTunnel.h', 'srchybrid/LiveTunnelBulkFacade.inl', 'srchybrid/LiveTunnelBulkStatePort.h', 'srchybrid/LiveTunnelBulkProxy.cpp', 'srchybrid/LiveTunnelBulkProxy.h', 'srchybrid/LiveTunnelBulkTransportAdapter.cpp', 'srchybrid/LiveTunnelBulkTransportAdapter.h', 'srchybrid/LiveTunnelSearchFacade.inl', 'srchybrid/LiveTunnelSearchPort.h', 'srchybrid/LiveTunnelSearchService.cpp', 'srchybrid/LiveTunnelSearchService.h',
     'srchybrid/LiveCellQueue.cpp', 'srchybrid/LiveCellQueue.h',
     'srchybrid/LiveTunnelFraming.cpp', 'srchybrid/LiveTunnelFraming.h',
     'srchybrid/LiveHandshakeWire.cpp', 'srchybrid/LiveHandshakeWire.h',

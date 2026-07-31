@@ -854,6 +854,12 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="LiveTunnelSearchService.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="LiveTunnelScheduler.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
@@ -1388,6 +1394,9 @@
     <ClInclude Include="LiveTunnelOriginPort.h" />
     <ClInclude Include="LiveTunnelBulkProxy.h" />
     <ClInclude Include="LiveTunnelBulkTransportAdapter.h" />
+    <ClInclude Include="LiveTunnelSearchService.h" />
+    <ClInclude Include="LiveTunnelSearchPort.h" />
+    <ClInclude Include="LiveTunnelSearchFacade.inl" />
     <ClInclude Include="LiveTunnelPeerState.h" />
     <ClInclude Include="LiveTunnelKadBridge.h" />
     <ClInclude Include="LiveTunnelMetrics.h" />

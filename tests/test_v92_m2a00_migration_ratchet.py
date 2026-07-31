@@ -519,6 +519,19 @@ class M2A00RatchetTest(unittest.TestCase):
                 ("Parent",),
                 source.index("m_handle"),
             ))
+        constructor = (
+            "Parent::Parent():m_handle(M2AAssignmentPolicy::RetainExisting){"
+            "m_handle=M2A_BIND_X(M2AParentPort{this});}\n"
+        )
+        self.assertTrue(GATE._new_default_parent_constructor_route(
+            constructor, previous, "Parent", "M2A_BIND_X", "m_handle",
+            constructor.index("m_handle=M2A_BIND_X"),
+        ))
+        self.assertFalse(GATE._new_default_parent_constructor_route(
+            constructor.replace(";}", "; SideEffect();}"), previous,
+            "Parent", "M2A_BIND_X", "m_handle",
+            constructor.index("m_handle=M2A_BIND_X"),
+        ))
 
     def test_real_git_activation_sequence_b_a_h_and_negative_cases(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -767,7 +780,7 @@ class M2A00RatchetTest(unittest.TestCase):
             "srchybrid/M2ABindingPort.h",
             "srchybrid/LiveTunnelGatewayStorePort.h",
             "srchybrid/LiveTunnelSourcePublisherPort.h",
-            "srchybrid/LiveTunnelStreamFlowPort.h", "srchybrid/LiveTunnelOriginPort.h", "srchybrid/LiveTunnelBulkStatePort.h", "srchybrid/LiveTunnelBulkFacade.inl",
+            "srchybrid/LiveTunnelStreamFlowPort.h", "srchybrid/LiveTunnelOriginPort.h", "srchybrid/LiveTunnelBulkStatePort.h", "srchybrid/LiveTunnelBulkFacade.inl", "srchybrid/LiveTunnelSearchPort.h", "srchybrid/LiveTunnelSearchFacade.inl",
             "srchybrid/LiveTunnelScheduler.cpp",
             "srchybrid/emule.vcxproj",
         ]

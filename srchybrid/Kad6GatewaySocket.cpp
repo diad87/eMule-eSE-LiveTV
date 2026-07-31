@@ -507,11 +507,7 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
         one[3] = 0;
         {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            auto& agg=host.m_k6SearchReplies[key];
-            if(agg.legacy.empty()){agg.legacy.assign(4,0);agg.started=GetTickCount();}
-            if(agg.count>=kad6::kK6SearchMaxResults||agg.legacy.size()+one.size()-4>TUN_MSG_MAX_BYTES)return false;
-            agg.legacy.insert(agg.legacy.end(),one.begin()+4,one.end());
-            ++agg.count;
+            if(!host.m_relayDispatcher.LT8AppendReply(key,one,kad6::kK6SearchMaxResults,TUN_MSG_MAX_BYTES,GetTickCount()))return false;
             LiveTunnelOriginTargetRoute route;route.circuit_id=circ->Id();route.source_request_id=req_id;
             route.expires_at=static_cast<uint64>(time(NULL))+120;
             host.m_kadBridge.LT6AddTargetRoute(host.K6AuthorizedTargetKey(0,req_id,result.result_id),route);
@@ -541,11 +537,7 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
         uint16_t count=0;
         {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            auto it=host.m_k6SearchReplies.find(key);
-            if(it!=host.m_k6SearchReplies.end()){
-                legacy=std::move(it->second.legacy);count=it->second.count;
-                host.m_k6SearchReplies.erase(it);
-            }
+            host.m_relayDispatcher.LT8TakeReply(key,legacy,count);
         }
         if(count!=end.result_count)return false;
         legacy[0]=(uint8_t)count;legacy[1]=(uint8_t)(count>>8);legacy[2]=0x02;legacy[3]=0;
@@ -650,7 +642,7 @@ void CKad6OriginSocket::LT3ExecuteExitGateway( CLiveTunnel& host, const LiveTunn
             finishNow(kad6::K6SearchEndStatus::PolicyDenied);
             return;
         }
-        CLiveTunnel::TunnelSearchJob job;
+        TunnelSearchJob job;
         job.circ_id = ctx.circ->Id();
         job.req_id = ctx.req_id;
         job.canonicalK6 = true;
@@ -669,18 +661,19 @@ void CKad6OriginSocket::LT3ExecuteExitGateway( CLiveTunnel& host, const LiveTunn
         const uint64_t jobKey = LiveRequestKey(job.circ_id, job.req_id);
         {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            host.m_searchJobs[jobKey] = job;
+            host.m_relayDispatcher.LT8AddJob(jobKey,job);
         }
         if (search != NULL) {
             search->SetK6GatewaySourceLookup(job.circ_id, job.req_id);
             const uint32 searchId = search->GetSearchID();
             const bool started = Kademlia::CSearchManager::StartSearch(search);
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            auto registered = host.m_searchJobs.find(jobKey);
-            if (registered != host.m_searchJobs.end()) {
-                registered->second.lookupStarted = started;
-                registered->second.kad2LookupStarted = started;
-                if (started) registered->second.kadSearchIds.push_back(searchId);
+            TunnelSearchJob registered;
+            if (host.m_relayDispatcher.LT8FindJob(jobKey,registered)) {
+                registered.lookupStarted = started;
+                registered.kad2LookupStarted = started;
+                if (started) registered.kadSearchIds.push_back(searchId);
+                host.m_relayDispatcher.LT8UpdateJob(jobKey,registered);
             }
         }
         bool nativeStarted = false;
@@ -688,11 +681,12 @@ void CKad6OriginSocket::LT3ExecuteExitGateway( CLiveTunnel& host, const LiveTunn
             nativeStarted = Kademlia::CKademlia::GetUDPListener()->StartKad6SourceLookup( start.target_hash, job.circ_id, job.req_id, job.maxResults);
         if (nativeStarted) {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            auto registered = host.m_searchJobs.find(jobKey);
-            if (registered != host.m_searchJobs.end()) {
-                registered->second.lookupStarted = true;
-                registered->second.kad6LookupStarted = true;
-                registered->second.kadReachable = true;
+            TunnelSearchJob registered;
+            if (host.m_relayDispatcher.LT8FindJob(jobKey,registered)) {
+                registered.lookupStarted = true;
+                registered.kad6LookupStarted = true;
+                registered.kadReachable = true;
+                host.m_relayDispatcher.LT8UpdateJob(jobKey,registered);
             }
         }
         return;
@@ -720,7 +714,7 @@ void CKad6OriginSocket::LT3ExecuteExitGateway( CLiveTunnel& host, const LiveTunn
         finishNow(kad6::K6SearchEndStatus::PolicyDenied);
         return;
     }
-    CLiveTunnel::TunnelSearchJob job;
+    TunnelSearchJob job;
     job.circ_id = ctx.circ->Id();
     job.req_id = ctx.req_id;
     job.keyword = keyword;
@@ -733,7 +727,7 @@ void CKad6OriginSocket::LT3ExecuteExitGateway( CLiveTunnel& host, const LiveTunn
     job.kadReachable = Kademlia::CKademlia::IsConnected();
     try { job.lookupStarted = host.m_kadBridge.SearchStreams( searchWord, &job.kadSearchIds, /*forceDirect*/true); } catch (...) {}
     CSingleLock pl(&host.m_pendingLock, TRUE);
-    host.m_searchJobs[LiveRequestKey(job.circ_id, job.req_id)] = std::move(job);
+    host.m_relayDispatcher.LT8AddJob(LiveRequestKey(job.circ_id,job.req_id),job);
 }
 void CKad6OriginSocket::LT3GetHardeningSnapshot( CLiveTunnel& host, LiveK6HardeningRuntimeSnapshot& out)
 {
@@ -774,7 +768,7 @@ bool CKad6OriginSocket::LT3ApplyServiceSwitch( CLiveTunnel& host, kad6::K6Servic
     std::array<uint64, static_cast<size_t>(kad6::K6Service::Count)> active{};
     {
         CSingleLock pl(&host.m_pendingLock, TRUE);
-        active[static_cast<size_t>(kad6::K6Service::Control)] = static_cast<uint64>(host.m_searchJobs.size());
+        active[static_cast<size_t>(kad6::K6Service::Control)] = static_cast<uint64>(host.m_relayDispatcher.LT8JobCount());
         for (const auto& pair : host.m_kadBridge.LT3SourceLeaseEntries())
             if (pair.second.state != kad6::K6SourceLeaseState::Closed)
                 ++active[static_cast<size_t>(kad6::K6Service::ExitKad)];
@@ -2225,7 +2219,7 @@ void CLiveTunnel::SweepK6Gateway(uint64 nowSeconds, const std::set<uint32_t>& ac
             strictCircuits.insert(circuit->Id());
     {
         CSingleLock pl(&m_pendingLock, TRUE);
-        serviceActive[static_cast<size_t>(kad6::K6Service::Control)]=static_cast<uint64>(m_searchJobs.size());
+        serviceActive[static_cast<size_t>(kad6::K6Service::Control)]=static_cast<uint64>(m_relayDispatcher.LT8JobCount());
         for(const auto& pair:m_kadBridge.LT3SourceLeaseEntries())
             if(pair.second.state!=kad6::K6SourceLeaseState::Closed)
                 ++serviceActive[static_cast<size_t>(kad6::K6Service::ExitKad)];

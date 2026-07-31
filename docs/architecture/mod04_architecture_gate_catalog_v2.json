@@ -53,6 +53,16 @@
       "path": "srchybrid/LiveTunnelBulkFacade.inl",
       "reason": "LT7 coordinator method bodies retained as a textual facade partition so physical coordinator reduction does not create a reverse module dependency or change linkage.",
       "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+    },
+    {
+      "path": "srchybrid/LiveTunnelSearchPort.h",
+      "reason": "Value-only LT8 search-job and reply-aggregate vocabulary shared by the search owner and relay parent without a reverse coordinator dependency.",
+      "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+    },
+    {
+      "path": "srchybrid/LiveTunnelSearchFacade.inl",
+      "reason": "LT8 coordinator method bodies retained as a textual facade partition so physical coordinator reduction does not create a reverse module dependency or change linkage.",
+      "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
     }
   ],
   "approval": "M2A-00; a card is activated only by a reviewed catalogue revision and its frozen A/D/net budget"

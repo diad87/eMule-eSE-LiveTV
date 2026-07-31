@@ -2,6 +2,8 @@
 #pragma once
 
 #include "LiveRelayTypes.h"
+#include "LiveTunnelSearchPort.h"
+#include "M2ABindingPort.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -55,6 +57,7 @@ public:
 
 class LiveRelayDispatcher {
 public:
+    LiveRelayDispatcher();
     // Consumes already onion-decrypted bytes. Malformed subheaders and
     // fragment headers return false. Incomplete, duplicate/rejected fragment
     // sequences and unknown handlers are deliberately silent accepted drops,
@@ -63,7 +66,18 @@ public:
         const std::shared_ptr<CLiveCircuit>& circuit,
         const std::uint8_t* plain,
         std::size_t plainLength,
-        ILiveRelayDispatcherPort& port) const;
+        ILiveRelayDispatcherPort& port);
+    bool LT8AddJob(std::uint64_t,const LiveTunnelSearchJob&);
+    bool LT8UpdateJob(std::uint64_t,const LiveTunnelSearchJob&);
+    bool LT8FindJob(std::uint64_t,LiveTunnelSearchJob&) const;
+    bool LT8TakeJob(std::uint64_t,LiveTunnelSearchJob&);
+    std::vector<LiveTunnelSearchJob> LT8TakeDue(DWORD);
+    bool LT8AppendReply(std::uint64_t,const std::vector<std::uint8_t>&,std::uint16_t,std::size_t,DWORD);
+    bool LT8TakeReply(std::uint64_t,std::vector<std::uint8_t>&,std::uint16_t&);
+    std::size_t LT8SweepReplies(DWORD,DWORD);
+    std::size_t LT8JobCount() const noexcept;
+private:
+    M2AModuleHandle m_m2a_binding_17641c1557;
 };
 
 // Deterministic application-boundary test for the unattended production

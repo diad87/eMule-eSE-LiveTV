@@ -37,7 +37,7 @@ EXPECTED_DOC_HASHES: dict[str, str] = {
     "mod52_migration_matrix_v1.json": "0b84a0898a78f62f253587b4085b2c35167fa4f7ead4d0720a5b6cedfbf6d0ca",
     "mod52_migration_baseline_v1.json": "4c162b457059776f13c26341fdab60778088014e183acc48926f22f5d1cbc5c3",
     "mod03_ownership_layering_contract_v2.json": "c3aa3d90bccbc63ff7a0c8ebafd199e9ed2b00acc2c2ef488c5e11515a3f28b1",
-    "mod04_architecture_gate_catalog_v2.json": "596ee611e509b8778ea72ac998f32fe7f9e94dc6b58a275de327a139d10a430e",
+    "mod04_architecture_gate_catalog_v2.json": "19d87ea7325b04ac144528653d17ace36a7689aaeffb9288959209462a3b852e",
 }
 COORDINATORS = (
     ("LiveTunnel", "CLiveTunnel", "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h"),
@@ -1424,6 +1424,35 @@ def _same_card_parent_constructor_route(
     return False
 
 
+def _new_default_parent_constructor_route(
+    current: str, previous: str, owner: str, marker: str,
+    member: str, call_start: int,
+) -> bool:
+    """Allow only a new, pure binding constructor for an implicit-default parent."""
+
+    if re.search(rf"\b{re.escape(owner)}::{re.escape(owner)}\s*\(", previous):
+        return False
+    signature = re.compile(
+        rf"\b{re.escape(owner)}::{re.escape(owner)}\s*\(\s*\)\s*:\s*"
+        rf"{re.escape(member)}\s*\(\s*M2AAssignmentPolicy\s*::\s*"
+        r"RetainExisting\s*\)\s*\{"
+    )
+    assignment = (
+        rf"{re.escape(member)}\s*=\s*{re.escape(marker)}\s*\(\s*"
+        r"M2AParentPort\s*\{\s*this\s*\}\s*\)\s*;"
+    )
+    match = signature.search(current)
+    if match is None:
+        return False
+    opening = current.find("{", match.start(), match.end())
+    closing = _matching_brace(current, opening)
+    return (
+        closing is not None and opening < call_start < closing and
+        re.fullmatch(rf"\s*{assignment}\s*", current[opening + 1:closing])
+        is not None
+    )
+
+
 def _lt5_state_parent_constructor_route(
     current: str, owner: str, marker: str, member: str
 ) -> bool:
@@ -1688,6 +1717,12 @@ def validate_active_card_outcomes(
                         and _same_card_parent_constructor_route(
                             translated, same_card_parent["name"], call.start()
                         )
+                    ) or (
+                        same_card_parent is None
+                        and any(_new_default_parent_constructor_route(
+                            translated, previous, owner, marker, member,
+                            call.start(),
+                        ) for owner in parent_classes)
                     ):
                         route_found = True
                 if (
@@ -2142,6 +2177,30 @@ def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: 
             "path": "srchybrid/LiveTunnelBulkFacade.inl",
             "reason": (
                 "LT7 coordinator method bodies retained as a textual facade "
+                "partition so physical coordinator reduction does not create "
+                "a reverse module dependency or change linkage."
+            ),
+            "adr": (
+                "docs/architecture/"
+                "MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+            ),
+        },
+        {
+            "path": "srchybrid/LiveTunnelSearchPort.h",
+            "reason": (
+                "Value-only LT8 search-job and reply-aggregate vocabulary "
+                "shared by the search owner and relay parent without a "
+                "reverse coordinator dependency."
+            ),
+            "adr": (
+                "docs/architecture/"
+                "MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+            ),
+        },
+        {
+            "path": "srchybrid/LiveTunnelSearchFacade.inl",
+            "reason": (
+                "LT8 coordinator method bodies retained as a textual facade "
                 "partition so physical coordinator reduction does not create "
                 "a reverse module dependency or change linkage."
             ),

@@ -5,12 +5,32 @@
 #include "LiveCircuit.h"
 
 namespace eSELive {
+M2AModuleHandle M2A_BIND_LT8_17641C1557(const M2AParentPort&);
+bool M2A_LT8_AddJobBridge(M2AModuleHandle&,std::uint64_t,const LiveTunnelSearchJob&);
+bool M2A_LT8_UpdateJobBridge(M2AModuleHandle&,std::uint64_t,const LiveTunnelSearchJob&);
+bool M2A_LT8_FindJobBridge(const M2AModuleHandle&,std::uint64_t,LiveTunnelSearchJob&);
+bool M2A_LT8_TakeJobBridge(M2AModuleHandle&,std::uint64_t,LiveTunnelSearchJob&);
+std::vector<LiveTunnelSearchJob> M2A_LT8_TakeDueBridge(M2AModuleHandle&,DWORD);
+bool M2A_LT8_AppendReplyBridge(M2AModuleHandle&,std::uint64_t,const std::vector<std::uint8_t>&,std::uint16_t,std::size_t,DWORD);
+bool M2A_LT8_TakeReplyBridge(M2AModuleHandle&,std::uint64_t,std::vector<std::uint8_t>&,std::uint16_t&);
+std::size_t M2A_LT8_SweepRepliesBridge(M2AModuleHandle&,DWORD,DWORD);
+std::size_t M2A_LT8_JobCountBridge(const M2AModuleHandle&) noexcept;
+LiveRelayDispatcher::LiveRelayDispatcher():m_m2a_binding_17641c1557(M2AAssignmentPolicy::RetainExisting){m_m2a_binding_17641c1557=M2A_BIND_LT8_17641C1557(M2AParentPort{this});}
+bool LiveRelayDispatcher::LT8AddJob(std::uint64_t k,const LiveTunnelSearchJob& v){return M2A_LT8_AddJobBridge(m_m2a_binding_17641c1557,k,v);}
+bool LiveRelayDispatcher::LT8UpdateJob(std::uint64_t k,const LiveTunnelSearchJob& v){return M2A_LT8_UpdateJobBridge(m_m2a_binding_17641c1557,k,v);}
+bool LiveRelayDispatcher::LT8FindJob(std::uint64_t k,LiveTunnelSearchJob& v)const{return M2A_LT8_FindJobBridge(m_m2a_binding_17641c1557,k,v);}
+bool LiveRelayDispatcher::LT8TakeJob(std::uint64_t k,LiveTunnelSearchJob& v){return M2A_LT8_TakeJobBridge(m_m2a_binding_17641c1557,k,v);}
+std::vector<LiveTunnelSearchJob> LiveRelayDispatcher::LT8TakeDue(DWORD n){return M2A_LT8_TakeDueBridge(m_m2a_binding_17641c1557,n);}
+bool LiveRelayDispatcher::LT8AppendReply(std::uint64_t k,const std::vector<std::uint8_t>& v,std::uint16_t r,std::size_t b,DWORD n){return M2A_LT8_AppendReplyBridge(m_m2a_binding_17641c1557,k,v,r,b,n);}
+bool LiveRelayDispatcher::LT8TakeReply(std::uint64_t k,std::vector<std::uint8_t>& v,std::uint16_t& c){return M2A_LT8_TakeReplyBridge(m_m2a_binding_17641c1557,k,v,c);}
+std::size_t LiveRelayDispatcher::LT8SweepReplies(DWORD n,DWORD t){return M2A_LT8_SweepRepliesBridge(m_m2a_binding_17641c1557,n,t);}
+std::size_t LiveRelayDispatcher::LT8JobCount()const noexcept{return M2A_LT8_JobCountBridge(m_m2a_binding_17641c1557);}
 
 bool LiveRelayDispatcher::DispatchExitPlain(
     const std::shared_ptr<CLiveCircuit>& circuit,
     const std::uint8_t* plain,
     std::size_t plainLength,
-    ILiveRelayDispatcherPort& port) const
+    ILiveRelayDispatcherPort& port)
 {
     if (!circuit || !plain)
         return false;
@@ -311,7 +331,7 @@ bool RunLiveRelayDispatcherCharacterizationSelfTest()
         return false;
     }
 
-    return true;
+    return RunLiveTunnelSearchServiceCharacterizationSelfTest();
 }
 
 } // namespace eSELive

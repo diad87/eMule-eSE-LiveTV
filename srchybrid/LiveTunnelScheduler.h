@@ -197,6 +197,12 @@ public:
     bool IsReleaseEnabled() const noexcept;
     bool GetReleaseChallenge(std::string&, std::uint64_t);
     bool ConsumeReleaseChallenge(const std::string&, std::uint64_t) noexcept;
+    bool LT9BeginGuardLoad(std::uint64_t, bool&) noexcept;
+    void LT9SetGuard(const std::uint8_t[32], std::uint64_t) noexcept;
+    bool LT9CopyGuard(std::array<std::uint8_t, 32>&) const noexcept;
+    bool LT9ConsumeRtt(std::uint32_t, std::uint32_t, std::uint32_t&) noexcept;
+    void LT9RecordRtt(std::uint32_t, std::uint32_t) noexcept;
+    void LT9ClearRtt() noexcept;
 
     static std::uint32_t Elapsed32(std::uint32_t now,
                                    std::uint32_t since) noexcept;
@@ -309,6 +315,7 @@ private:
     std::uint64_t m_fair_payload_bytes = 0;
     M2AModuleHandle m_m2a_binding_bab3ce64a0;
     M2AModuleHandle m_m2a_binding_8892179a6e;
+    M2AModuleHandle m_m2a_binding_a14692e28f;
     CKad6ExitNoticeServer m_release_notice_adapter;
 };
 

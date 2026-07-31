@@ -780,7 +780,7 @@ class M2A00RatchetTest(unittest.TestCase):
             "srchybrid/M2ABindingPort.h",
             "srchybrid/LiveTunnelGatewayStorePort.h",
             "srchybrid/LiveTunnelSourcePublisherPort.h",
-            "srchybrid/LiveTunnelStreamFlowPort.h", "srchybrid/LiveTunnelOriginPort.h", "srchybrid/LiveTunnelBulkStatePort.h", "srchybrid/LiveTunnelBulkFacade.inl", "srchybrid/LiveTunnelSearchPort.h", "srchybrid/LiveTunnelSearchFacade.inl",
+            "srchybrid/LiveTunnelStreamFlowPort.h", "srchybrid/LiveTunnelOriginPort.h", "srchybrid/LiveTunnelBulkStatePort.h", "srchybrid/LiveTunnelBulkFacade.inl", "srchybrid/LiveTunnelSearchPort.h", "srchybrid/LiveTunnelSearchFacade.inl", "srchybrid/LiveTunnelCoordinatorPort.h", "srchybrid/LiveTunnelCoordinatorMethods.inl",
             "srchybrid/LiveTunnelScheduler.cpp",
             "srchybrid/emule.vcxproj",
         ]

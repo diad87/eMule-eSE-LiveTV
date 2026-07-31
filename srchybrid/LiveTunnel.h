@@ -959,16 +959,10 @@ private:
     mutable CCriticalSection m_lock;
     eSELive::LiveCircuitRegistry m_circuitRegistry; // caller-serialized by m_lock
     eSELive::LiveCircuitHandshake m_handshake;
-    std::array<uint8_t, 32> m_k6GuardNodePub{};
-    uint64_t m_k6GuardExpiresAt = 0;
-    bool m_k6GuardLoaded = false;
     // Declared last so its service/worker are canceled and joined first.
     LiveTunnelKadBridge m_kadBridge;
     bool LoadK6Guard();
     bool SaveK6Guard(const uint8_t nodePub[32], uint64_t expiresAt);
-    // v8.1 D8 - periodic RTT probe state (all touched only under m_lock).
-    DWORD    m_rttPingSentTick = 0;  // send tick of the in-flight probe
-    uint32_t m_rttPingReqId    = 0;  // req_id of the in-flight probe (0 = none outstanding)
 };
 
 }  // namespace eSELive

@@ -37,7 +37,7 @@ EXPECTED_DOC_HASHES: dict[str, str] = {
     "mod52_migration_matrix_v1.json": "0b84a0898a78f62f253587b4085b2c35167fa4f7ead4d0720a5b6cedfbf6d0ca",
     "mod52_migration_baseline_v1.json": "4c162b457059776f13c26341fdab60778088014e183acc48926f22f5d1cbc5c3",
     "mod03_ownership_layering_contract_v2.json": "c3aa3d90bccbc63ff7a0c8ebafd199e9ed2b00acc2c2ef488c5e11515a3f28b1",
-    "mod04_architecture_gate_catalog_v2.json": "19d87ea7325b04ac144528653d17ace36a7689aaeffb9288959209462a3b852e",
+    "mod04_architecture_gate_catalog_v2.json": "a977410c88a95a8d42c8f03950deb1c9d740da644bb42135df0d67d9b91bc2a4",
 }
 COORDINATORS = (
     ("LiveTunnel", "CLiveTunnel", "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h"),
@@ -2201,6 +2201,30 @@ def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: 
             "path": "srchybrid/LiveTunnelSearchFacade.inl",
             "reason": (
                 "LT8 coordinator method bodies retained as a textual facade "
+                "partition so physical coordinator reduction does not create "
+                "a reverse module dependency or change linkage."
+            ),
+            "adr": (
+                "docs/architecture/"
+                "MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+            ),
+        },
+        {
+            "path": "srchybrid/LiveTunnelCoordinatorPort.h",
+            "reason": (
+                "Value-only LT9 guard and RTT vocabulary shared by the "
+                "coordinator-state owner and scheduler without a reverse "
+                "dependency."
+            ),
+            "adr": (
+                "docs/architecture/"
+                "MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+            ),
+        },
+        {
+            "path": "srchybrid/LiveTunnelCoordinatorMethods.inl",
+            "reason": (
+                "LT9 coordinator method bodies retained as a textual facade "
                 "partition so physical coordinator reduction does not create "
                 "a reverse module dependency or change linkage."
             ),

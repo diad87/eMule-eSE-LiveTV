@@ -453,6 +453,45 @@ void CLiveTunnel::SweepBulkReasm()
             if (subs.empty()) it = LT7_STATE(BulkSubscriptions).erase(it); else ++it;
         }
     }
+    auto circuitAlive = [&](uint32_t id) -> bool {
+        const std::shared_ptr<CLiveCircuit> circuit =
+            m_circuitRegistry.FindById(id);
+        return circuit && circuit->State() == CircuitState::Active;
+    };
+    const DWORD EXIT_SUB_TTL_MS = 10u * 60u * 1000u;
+    // Snapshot dead streams under m_pendingLock, then call the manager only
+    // after releasing it to preserve tunnel -> manager ordering.
+    struct DeadProxy { uint8_t streamKey[16]; uint32_t bIP; uint16_t bPort; };
+    std::vector<DeadProxy> dead;
+    {
+        CSingleLock pending(&m_pendingLock, TRUE);
+        for (auto sit = LT7_STATE(ExitLiveSubscriptions).begin();
+             sit != LT7_STATE(ExitLiveSubscriptions).end(); ) {
+            auto& circuits = sit->second.circuits;
+            for (auto cit = circuits.begin(); cit != circuits.end(); ) {
+                if (!circuitAlive(cit->first) ||
+                    LiveTunnelScheduler::HasStrictlyElapsed32(
+                        now, cit->second.lastSeen, EXIT_SUB_TTL_MS))
+                    cit = circuits.erase(cit);
+                else
+                    ++cit;
+            }
+            if (circuits.empty()) {
+                DeadProxy item;
+                memcpy(item.streamKey, sit->second.streamKey, 16);
+                item.bIP = sit->second.bIP;
+                item.bPort = sit->second.bPort;
+                dead.push_back(item);
+                sit = LT7_STATE(ExitLiveSubscriptions).erase(sit);
+            } else {
+                ++sit;
+            }
+        }
+    }
+    for (const DeadProxy& item : dead)
+        if (theApp.liveStreamManager && item.bIP != 0)
+            theApp.liveStreamManager->ExitProxyUnsubscribe(
+                item.streamKey, item.bIP, item.bPort);
 }
 
 bool CLiveTunnel::IsExitProxying(const uint8_t streamKey[16]) const

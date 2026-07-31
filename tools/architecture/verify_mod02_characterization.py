@@ -24,7 +24,7 @@ BUILD_MANIFEST = ROOT / "docs" / "architecture" / "mod02_build_manifest_v1.json"
 IDENTITY_HEADER = ROOT / "srchybrid" / "Mod02BuildIdentity.h"
 CRITICAL_SOURCE_PATHS = [
     "srchybrid/EmuleDlg.cpp",
-    "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h", "srchybrid/LiveTunnelBulkFacade.inl", "srchybrid/LiveTunnelBulkStatePort.h", "srchybrid/LiveTunnelBulkProxy.cpp", "srchybrid/LiveTunnelBulkProxy.h", "srchybrid/LiveTunnelBulkTransportAdapter.cpp", "srchybrid/LiveTunnelBulkTransportAdapter.h", "srchybrid/LiveTunnelSearchFacade.inl", "srchybrid/LiveTunnelSearchPort.h", "srchybrid/LiveTunnelSearchService.cpp", "srchybrid/LiveTunnelSearchService.h",
+    "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h", "srchybrid/LiveTunnelBulkFacade.inl", "srchybrid/LiveTunnelBulkStatePort.h", "srchybrid/LiveTunnelBulkProxy.cpp", "srchybrid/LiveTunnelBulkProxy.h", "srchybrid/LiveTunnelBulkTransportAdapter.cpp", "srchybrid/LiveTunnelBulkTransportAdapter.h", "srchybrid/LiveTunnelSearchFacade.inl", "srchybrid/LiveTunnelSearchPort.h", "srchybrid/LiveTunnelSearchService.cpp", "srchybrid/LiveTunnelSearchService.h", "srchybrid/LiveTunnelCoordinatorFacade.cpp", "srchybrid/LiveTunnelCoordinatorFacade.h", "srchybrid/LiveTunnelCoordinatorMethods.inl", "srchybrid/LiveTunnelCoordinatorPort.h",
     "srchybrid/LiveCellQueue.cpp", "srchybrid/LiveCellQueue.h",
     "srchybrid/LiveTunnelFraming.cpp", "srchybrid/LiveTunnelFraming.h",
     "srchybrid/LiveHandshakeWire.cpp", "srchybrid/LiveHandshakeWire.h",

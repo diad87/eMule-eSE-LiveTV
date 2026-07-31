@@ -1,7 +1,6 @@
 // this file is part of eMule eSE - tunnel scheduling and deferred-work owner
 #include "LiveTunnelScheduler.h"
 #include "M2ABindingPort.h"
-
 #include <algorithm>
 #include <atomic>
 #include <cstring>
@@ -9,11 +8,17 @@
 #include <limits>
 #include <thread>
 #include <utility>
-
 namespace eSELive {
-
 M2AModuleHandle M2A_BIND_LT1_BAB3CE64A0(const M2AParentPort&);
 M2AModuleHandle M2A_BIND_LT2_8892179A6E(const M2AParentPort&);
+M2AModuleHandle M2A_BIND_LT9_A14692E28F(const M2AParentPort&);
+bool M2A_LT9_BeginGuardLoadBridge(M2AModuleHandle&,std::uint64_t,bool&);
+void M2A_LT9_SetGuardBridge(M2AModuleHandle&,const std::uint8_t[32],std::uint64_t);
+bool M2A_LT9_CopyGuardBridge(const M2AModuleHandle&,std::array<std::uint8_t,32>&);
+bool M2A_LT9_ConsumeRttBridge(M2AModuleHandle&,std::uint32_t,std::uint32_t,std::uint32_t&);
+void M2A_LT9_RecordRttBridge(M2AModuleHandle&,std::uint32_t,std::uint32_t);
+void M2A_LT9_ClearRttBridge(M2AModuleHandle&);
+bool RunLiveTunnelCoordinatorFacadeCharacterizationSelfTest();
 void M2A_LT2_InitializeBridge(M2AModuleHandle&);
 bool M2A_LT2_HardeningCanAdmitBridge(const M2AModuleHandle&,kad6::K6Service) noexcept;
 bool M2A_LT2_HardeningSetEnabledBridge(M2AModuleHandle&,kad6::K6Service,bool,std::uint64_t,std::uint32_t,std::uint64_t);
@@ -78,15 +83,21 @@ void M2A_LT1_ApplyEvaluationBridge(M2AModuleHandle&, bool, bool, bool, kad6::K6R
 bool M2A_LT1_IsEnabledBridge(const M2AModuleHandle&) noexcept;
 bool M2A_LT1_GetChallengeBridge(M2AModuleHandle&, std::string&, std::uint64_t);
 bool M2A_LT1_ConsumeChallengeBridge(M2AModuleHandle&, const std::string&, std::uint64_t) noexcept;
-
 LiveTunnelScheduler::LiveTunnelScheduler()
     : m_m2a_binding_bab3ce64a0(M2AAssignmentPolicy::RetainExisting),
-      m_m2a_binding_8892179a6e(M2AAssignmentPolicy::RetainExisting)
+      m_m2a_binding_8892179a6e(M2AAssignmentPolicy::RetainExisting),
+      m_m2a_binding_a14692e28f(M2AAssignmentPolicy::RetainExisting)
 {
     m_m2a_binding_8892179a6e = M2A_BIND_LT2_8892179A6E(M2AParentPort{this});
+    m_m2a_binding_a14692e28f = M2A_BIND_LT9_A14692E28F(M2AParentPort{this});
     M2A_LT2_InitializeBridge(m_m2a_binding_8892179a6e);
 }
-
+bool LiveTunnelScheduler::LT9BeginGuardLoad(std::uint64_t n,bool& v) noexcept { return M2A_LT9_BeginGuardLoadBridge(m_m2a_binding_a14692e28f,n,v); }
+void LiveTunnelScheduler::LT9SetGuard(const std::uint8_t p[32],std::uint64_t e) noexcept { M2A_LT9_SetGuardBridge(m_m2a_binding_a14692e28f,p,e); }
+bool LiveTunnelScheduler::LT9CopyGuard(std::array<std::uint8_t,32>& p) const noexcept { return M2A_LT9_CopyGuardBridge(m_m2a_binding_a14692e28f,p); }
+bool LiveTunnelScheduler::LT9ConsumeRtt(std::uint32_t r,std::uint32_t n,std::uint32_t& e) noexcept { return M2A_LT9_ConsumeRttBridge(m_m2a_binding_a14692e28f,r,n,e); }
+void LiveTunnelScheduler::LT9RecordRtt(std::uint32_t r,std::uint32_t n) noexcept { M2A_LT9_RecordRttBridge(m_m2a_binding_a14692e28f,r,n); }
+void LiveTunnelScheduler::LT9ClearRtt() noexcept { M2A_LT9_ClearRttBridge(m_m2a_binding_a14692e28f); }
 bool LiveTunnelScheduler::LT2HardeningCanAdmit(kad6::K6Service service) const noexcept { return M2A_LT2_HardeningCanAdmitBridge(m_m2a_binding_8892179a6e,service); }
 bool LiveTunnelScheduler::LT2HardeningSetEnabled(kad6::K6Service service,bool enabled,std::uint64_t now,std::uint32_t drain,std::uint64_t active) { return M2A_LT2_HardeningSetEnabledBridge(m_m2a_binding_8892179a6e,service,enabled,now,drain,active); }
 kad6::K6HardeningSnapshot LiveTunnelScheduler::LT2HardeningSnapshot() const noexcept { return M2A_LT2_HardeningSnapshotBridge(m_m2a_binding_8892179a6e); }
@@ -162,7 +173,6 @@ std::vector<std::uint8_t> LiveTunnelScheduler::LT2QuotaCertificateWire() const {
     M2A_LT2_QuotaCertificateWireBridge(m_m2a_binding_8892179a6e, out);
     return out;
 }
-
 bool LiveTunnelScheduler::LT2BlindQuotaToken(
     const kad6::K6QuotaIssuerCertificate& certificate,
     const kad6::K6QuotaToken& token,
@@ -170,7 +180,6 @@ bool LiveTunnelScheduler::LT2BlindQuotaToken(
     return M2A_LT2_BlindQuotaTokenBridge(
         m_m2a_binding_8892179a6e, certificate, token, blind);
 }
-
 bool LiveTunnelScheduler::LT2FinalizeQuotaToken(
     const kad6::K6QuotaIssuerCertificate& certificate,
     const kad6::K6QuotaBlindState& blind,
@@ -180,7 +189,6 @@ bool LiveTunnelScheduler::LT2FinalizeQuotaToken(
         m_m2a_binding_8892179a6e, certificate, blind,
         blindSignature, presentation);
 }
-
 void LiveTunnelScheduler::LT2IssueQuota(
     const kad6::K6QuotaBlindRequest& request,
     const std::array<std::uint8_t, 32>& principal,
@@ -192,7 +200,6 @@ void LiveTunnelScheduler::LT2IssueQuota(
         m_m2a_binding_8892179a6e, request, principal, prefix48,
         asn, now, monotonicNowMs, response);
 }
-
 void LiveTunnelScheduler::LT2PresentQuota(
     const kad6::K6QuotaPresentation& presentation,
     bool issuerTrusted, std::uint32_t circuitId, std::uint64_t now,
@@ -203,7 +210,6 @@ void LiveTunnelScheduler::LT2PresentQuota(
         circuitId, now, identityCrypto, this,
         &M2A_LT2_RegisterFair, &M2A_LT2_ReleaseFair, result);
 }
-
 bool LiveTunnelScheduler::LT2ConsumeQuotaGrant(
     std::uint32_t circuitId,
     const std::array<std::uint8_t, 32>& context,
@@ -226,7 +232,6 @@ bool LiveTunnelScheduler::LT2ConsumeQuotaGrant(
         ReleaseFairAllocation(allocation);
     return true;
 }
-
 bool LiveTunnelScheduler::Enqueue(LiveDeferredWork work)
 {
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
@@ -235,13 +240,11 @@ bool LiveTunnelScheduler::Enqueue(LiveDeferredWork work)
     m_deferred_work.push_back(std::move(work));
     return true;
 }
-
 std::vector<LiveDeferredWork> LiveTunnelScheduler::EnqueueBatch(
     std::vector<LiveDeferredWork> work)
 {
     if (work.empty())
         return {};
-
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
     if (!m_accepting_deferred_work)
         return work;
@@ -249,24 +252,20 @@ std::vector<LiveDeferredWork> LiveTunnelScheduler::EnqueueBatch(
         m_deferred_work.push_back(std::move(work[index]));
     return {};
 }
-
 bool LiveTunnelScheduler::TryTake(LiveDeferredWork& work)
 {
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
     if (m_deferred_work.empty())
         return false;
-
     work = std::move(m_deferred_work.front());
     m_deferred_work.pop_front();
     return true;
 }
-
 std::size_t LiveTunnelScheduler::PendingCount() const
 {
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
     return m_deferred_work.size();
 }
-
 LiveDeferredFlowUsage LiveTunnelScheduler::MeasureK6Flow(
     std::uint64_t stream_id) const
 {
@@ -283,7 +282,6 @@ LiveDeferredFlowUsage LiveTunnelScheduler::MeasureK6Flow(
     }
     return usage;
 }
-
 std::vector<LiveDeferredWork> LiveTunnelScheduler::CloseDeferredWork()
 {
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
@@ -296,7 +294,6 @@ std::vector<LiveDeferredWork> LiveTunnelScheduler::CloseDeferredWork()
     }
     return cancelled;
 }
-
 void LiveTunnelScheduler::ReopenDeferredWork()
 {
     m_m2a_binding_bab3ce64a0 =
@@ -304,13 +301,11 @@ void LiveTunnelScheduler::ReopenDeferredWork()
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
     m_accepting_deferred_work = true;
 }
-
 bool LiveTunnelScheduler::AcceptingDeferredWork() const
 {
     std::lock_guard<std::mutex> lock(m_deferred_mutex);
     return m_accepting_deferred_work;
 }
-
 void LiveTunnelScheduler::ConfigureReleaseGate(const std::wstring& path, bool (*random)(void*, std::uint8_t*, std::size_t), void* context, bool (*services)(void*, bool, std::uint32_t)) { M2A_LT1_ConfigureBridge(m_m2a_binding_bab3ce64a0, m_release_notice_adapter, path, random, context, services); }
 bool LiveTunnelScheduler::SaveReleaseEvidence(kad6::K6ReleaseEvidence evidence, const kad6::Kad6CryptoHooks& crypto, const std::uint8_t* pub, std::uint64_t now) { return M2A_LT1_SaveEvidenceBridge(m_m2a_binding_bab3ce64a0, std::move(evidence), crypto, pub, now); }
 bool LiveTunnelScheduler::StartReleaseNotice(std::uint16_t port, const kad6::K6ExitNotice& notice, const kad6::Kad6CryptoHooks& crypto, const std::uint8_t* pub) { return M2A_LT1_StartNoticeBridge(m_m2a_binding_bab3ce64a0, port, notice, crypto, pub); }
@@ -321,9 +316,7 @@ void LiveTunnelScheduler::ApplyReleaseEvaluation(bool optIn, bool betaOptIn, boo
 bool LiveTunnelScheduler::IsReleaseEnabled() const noexcept { return M2A_LT1_IsEnabledBridge(m_m2a_binding_bab3ce64a0); }
 bool LiveTunnelScheduler::GetReleaseChallenge(std::string& challenge, std::uint64_t now) { return M2A_LT1_GetChallengeBridge(m_m2a_binding_bab3ce64a0, challenge, now); }
 bool LiveTunnelScheduler::ConsumeReleaseChallenge(const std::string& challenge, std::uint64_t now) noexcept { return M2A_LT1_ConsumeChallengeBridge(m_m2a_binding_bab3ce64a0, challenge, now); }
-
 namespace {
-
 bool AllRequestsAre(
     const std::vector<LiveDeferredWork>& work,
     std::initializer_list<std::uint32_t> expected)
@@ -337,7 +330,6 @@ bool AllRequestsAre(
     }
     return true;
 }
-
 } // namespace
 
 /*
@@ -1171,7 +1163,8 @@ bool RunLiveTunnelSchedulerCharacterizationSelfTest()
         && CharacterizeConcurrentClosePublication()
         && CharacterizeShapingOwnership()
         && RunM2ABindingPortCharacterizationSelfTest()
-        && RunLiveTunnelReleaseGateCharacterizationSelfTest();
+        && RunLiveTunnelReleaseGateCharacterizationSelfTest()
+        && RunLiveTunnelCoordinatorFacadeCharacterizationSelfTest();
 }
 
 } // namespace eSELive

@@ -19,9 +19,9 @@
     {
       "path": "srchybrid/WebServer.cpp",
       "baseline_sha256": "afcf5a5b8091995a473548fc05086fe1b2ba0e8127378cd959424fa8f6770028",
-      "overlay_sha256": "6fa477f859b7861fccbf0379ef8e61de2a165ac7c35c5b734c57b9ad12c87b7c",
-      "task": "MOD-0.2 + MOD-2.1..MOD-2.7 + MOD-3.1 + MOD-5.2A/W1..W4",
-      "reason": "Approved cumulative coordinator overlay. MOD-2 delegates parser, auth, routes, serialization, controllers, static responses and diagnostics; MOD-3.1 consumes coherent stream-key snapshots; MOD-5.2A/W1 moves classic request orchestration and security response ownership, W2 transfers template state and page chrome, W3 transfers server-list rendering, sorting and permission-gated actions through a mockable GUI port, and W4 transfers transfer-list snapshot projection, sorting and rendering without changing HTTP output."
+      "overlay_sha256": "1b5570e02bf70a40bf669e05f323d4de311860d1ac55042913defcb51e895a69",
+      "task": "MOD-0.2 + MOD-2.1..MOD-2.7 + MOD-3.1 + MOD-5.2A/W1..W4 + W5-PREP",
+      "reason": "Approved cumulative coordinator overlay. MOD-2 delegates parser, auth, routes, serialization, controllers, static responses and diagnostics; MOD-3.1 consumes coherent stream-key snapshots; MOD-5.2A/W1 moves classic request orchestration and security response ownership, W2 transfers template state and page chrome, W3 transfers server-list rendering, sorting and permission-gated actions through a mockable GUI port, W4 transfers transfer-list snapshot projection, sorting and rendering, and W5-PREP restores readable physical formatting to the action owner without changing tokens or behavior before its atomic extraction."
     },
     {
       "path": "srchybrid/WebServer.h",

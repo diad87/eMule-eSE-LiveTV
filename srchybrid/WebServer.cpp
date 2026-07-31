@@ -515,11 +515,306 @@ CString CWebServer::_GetServerList(const ThreadData &Data)
 	for (std::size_t index = 0; index < result.hidden.size(); ++index) WSserverColumnHidden[index] = result.hidden[index];
 	return result.html;
 }
-void CWebServer::_MakeTransferList(CString &, CWebServer *pThis, const ThreadData &Data, void *, void *, bool bAdmin)
+void CWebServer::_MakeTransferList(CString &,
+                                   CWebServer *pThis,
+                                   const ThreadData &Data,
+                                   void *, void *,
+                                   bool bAdmin)
 {
-	const CString session(_ParseURL(Data.sURL, _T("ses"))); const long sessionId = _tstol(session); int cat; const CString category(_ParseURL(Data.sURL, _T("cat"))); if (category.IsEmpty()) cat = _GetLastUserCat(Data, sessionId); else cat = _tstoi(category);
-	const CString &sClear(_ParseURL(Data.sURL, _T("clearcompleted"))); const ese::web::WebTransferClearAction clearAction = ese::web::WebTransferController::PlanClearCompleted( bAdmin, std::string(CT2A(sClear))); if (clearAction.allowed) { if (clearAction.all) theApp.emuledlg->SendMessage(WEB_CLEAR_COMPLETED, (WPARAM)0, (LPARAM)cat); else { uchar FileHash[MDX_DIGEST_SIZE]; if (strmd4(sClear, FileHash)) { uchar *pFileHash = new uchar[MDX_DIGEST_SIZE]; md4cpy(pFileHash, FileHash); theApp.emuledlg->SendMessage(WEB_CLEAR_COMPLETED, (WPARAM)1, reinterpret_cast<LPARAM>(pFileHash)); } } } CString HTTPTemp(_ParseURL(Data.sURL, _T("ed2k"))); const ese::web::WebTransferAddAction addAction = ese::web::WebTransferController::PlanAddDownload( bAdmin, std::string(CT2A(HTTPTemp))); if (addAction.allowed) theApp.emuledlg->SendMessage(WEB_ADDDOWNLOADS, (WPARAM)(LPCTSTR)HTTPTemp, cat); HTTPTemp = _ParseURL(Data.sURL, _T("c")); const CString menuIndex = _ParseURL(Data.sURL, _T("m")); const CString menuValue = _ParseURL(Data.sURL, _T("v")); const ese::web::WebTransferColumnChange columnChange = ese::web::WebTransferController::PlanColumnChange( bAdmin, std::string(CT2A(HTTPTemp)), std::string(CT2A(menuIndex)), std::string(CT2A(menuValue))); if (columnChange.allowed) { BOOL* columns = columnChange.group == ese::web::WebTransferColumnGroup::Download ? WSdownloadColumnHidden : (columnChange.group == ese::web::WebTransferColumnGroup::Upload ? WSuploadColumnHidden : WSqueueColumnHidden); columns[columnChange.index] = columnChange.hidden; LPCTSTR key = columnChange.group == ese::web::WebTransferColumnGroup::Download ? _T("downloadColumnHidden") : (columnChange.group == ese::web::WebTransferColumnGroup::Upload ? _T("uploadColumnHidden") : _T("queueColumnHidden")); const int count = columnChange.group == ese::web::WebTransferColumnGroup::Download ? 8 : (columnChange.group == ese::web::WebTransferColumnGroup::Upload ? 5 : 4); _SaveWIConfigArray(columns, count, key); } else if (HTTPTemp == _T("menuprio") && bAdmin) { const CString &sPrio(_ParseURL(Data.sURL, _T("p"))); const ese::web::WebTransferPriorityDecision priority = ese::web::WebTransferController::PlanCategoryPriority( bAdmin, std::string(CT2A(sPrio))); if (priority.allowed) { const int prio = priority.priority == ese::web::WebTransferCategoryPriority::Low ? PR_LOW : (priority.priority == ese::web::WebTransferCategoryPriority::High ? PR_HIGH : (priority.priority == ese::web::WebTransferCategoryPriority::Normal ? PR_NORMAL : PR_AUTO)); SendMessage(theApp.emuledlg->m_hWnd, WEB_CATPRIO, (WPARAM)cat, (LPARAM)prio); } } const CString sOp = _ParseURL(Data.sURL, _T("op")); const CString sFile = _ParseURL(Data.sURL, _T("file")); if (!sOp.IsEmpty() && sFile.IsEmpty()) { const CString sUser = _ParseURL(Data.sURL, _T("userhash")); const ese::web::WebTransferFriendAction action = ese::web::WebTransferController::PlanFriendAction( bAdmin, std::string(CT2A(sOp)), std::string(CT2A(sUser))); uchar userHash[MDX_DIGEST_SIZE]; if (action.allowed && strmd4(sUser, userHash)) { CUpDownClient* client = theApp.clientlist->FindClientByUserHash(userHash); if (action.operation == ese::web::WebTransferFriendOperation::Add && client) { SendMessage(theApp.emuledlg->m_hWnd, WEB_ADDREMOVEFRIEND, (WPARAM)client, (LPARAM)1); } else if (action.operation == ese::web::WebTransferFriendOperation::Remove && client) { const CFriend* friendEntry = theApp.friendlist->SearchFriend(userHash, 0, 0); if (friendEntry) SendMessage(theApp.emuledlg->m_hWnd, WEB_ADDREMOVEFRIEND, (WPARAM)friendEntry, (LPARAM)0); } } } else if (!sOp.IsEmpty()) { const CString actionText = sOp == _T("rename") ? _ParseURL(Data.sURL, _T("name")) : CString(); const CString numericValue = sOp == _T("setcat") ? _ParseURL(Data.sURL, _T("filecat")) : (sOp == _T("streamseek") ? _ParseURL(Data.sURL, _T("part")) : CString()); const ese::web::WebTransferFileAction action = ese::web::WebTransferController::PlanFileAction( bAdmin, std::string(CT2A(sOp)), std::string(CT2A(sFile)), std::string(CT2A(actionText)), std::string(CT2A(numericValue))); uchar fileHash[MDX_DIGEST_SIZE]; if (action.allowed && strmd4(sFile, fileHash)) { WebFileOperationRequest* request = new WebFileOperationRequest; memcpy(request->fileHash, fileHash, sizeof request->fileHash); switch (action.operation) { case ese::web::WebTransferFileOperation::Stop: request->operation = WEBFILEOP_STOP; break; case ese::web::WebTransferFileOperation::Pause: request->operation = WEBFILEOP_PAUSE; break; case ese::web::WebTransferFileOperation::Resume: request->operation = WEBFILEOP_RESUME; break; case ese::web::WebTransferFileOperation::Cancel: request->operation = WEBFILEOP_CANCEL; break; case ese::web::WebTransferFileOperation::GetFileLink: request->operation = WEBFILEOP_GETFLC; break; case ese::web::WebTransferFileOperation::Rename: request->operation = WEBFILEOP_RENAME; request->text = actionText; break; case ese::web::WebTransferFileOperation::PriorityLow: request->operation = WEBFILEOP_PRIOLOW; break; case ese::web::WebTransferFileOperation::PriorityNormal: request->operation = WEBFILEOP_PRIONORMAL; break; case ese::web::WebTransferFileOperation::PriorityHigh: request->operation = WEBFILEOP_PRIOHIGH; break; case ese::web::WebTransferFileOperation::PriorityAuto: request->operation = WEBFILEOP_PRIOAUTO; break; case ese::web::WebTransferFileOperation::SetCategory: request->operation = WEBFILEOP_SETCAT; request->value = action.value; break; case ese::web::WebTransferFileOperation::StreamSeek: request->operation = WEBFILEOP_STREAMSEEK; request->value = action.value; break; default: delete request; request = NULL; } if (request) SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_FILE_OPERATION, (LPARAM)request); } } HTTPTemp = _ParseURL(Data.sURL, _T("sortreverse")); const CString &sSort(_ParseURL(Data.sURL, _T("sort"))); const ese::web::WebTransferSortDecision sortDecision = ese::web::WebTransferController::PlanSort( bAdmin, std::string(CT2A(sSort)), std::string(CT2A(HTTPTemp))); if (sortDecision.allowed) { if (sortDecision.domain == ese::web::WebTransferSortDomain::Download) { pThis->m_Params.DownloadSort = static_cast<DownloadSort>(sortDecision.target_index); pThis->m_Params.bDownloadSortReverse = sortDecision.reverse; } else if (sortDecision.domain == ese::web::WebTransferSortDomain::Upload) { pThis->m_Params.UploadSort = static_cast<UploadSort>(sortDecision.target_index); pThis->m_Params.bUploadSortReverse = sortDecision.reverse; } else { pThis->m_Params.QueueSort = static_cast<QueueSort>(sortDecision.target_index); pThis->m_Params.bQueueSortReverse = sortDecision.reverse; } } auto applyBoolean = [&](bool& current, LPCTSTR field) { const CString input = _ParseURL(Data.sURL, field); bool output = current; if (ese::web::WebTransferController::TryApplyBoolean( bAdmin, current, std::string(CT2A(input)), output)) current = output; };
-	applyBoolean(pThis->m_Params.bShowUploadQueue, _T("showuploadqueue")); applyBoolean(pThis->m_Params.bShowUploadQueueBanned, _T("showuploadqueuebanned")); applyBoolean(pThis->m_Params.bShowUploadQueueFriend, _T("showuploadqueuefriend"));
+    const CString session(_ParseURL(Data.sURL, _T("ses")));
+    const long sessionId = _tstol(session);
+    int cat;
+    const CString category(_ParseURL(Data.sURL, _T("cat")));
+    if (category.IsEmpty())
+        cat = _GetLastUserCat(Data, sessionId);
+    else
+        cat = _tstoi(category);
+    const CString &sClear(
+        _ParseURL(Data.sURL, _T("clearcompleted")));
+    const ese::web::WebTransferClearAction clearAction =
+        ese::web::WebTransferController::PlanClearCompleted(
+            bAdmin, std::string(CT2A(sClear)));
+    if (clearAction.allowed)
+    {
+        if (clearAction.all)
+            theApp.emuledlg->SendMessage(
+                WEB_CLEAR_COMPLETED, (WPARAM)0,
+                (LPARAM)cat);
+        else
+        {
+            uchar FileHash[MDX_DIGEST_SIZE];
+            if (strmd4(sClear, FileHash))
+            {
+                uchar *pFileHash =
+                    new uchar[MDX_DIGEST_SIZE];
+                md4cpy(pFileHash, FileHash);
+                theApp.emuledlg->SendMessage(
+                    WEB_CLEAR_COMPLETED, (WPARAM)1,
+                    reinterpret_cast<LPARAM>(pFileHash));
+            }
+        }
+    }
+    CString HTTPTemp(_ParseURL(Data.sURL, _T("ed2k")));
+    const ese::web::WebTransferAddAction addAction =
+        ese::web::WebTransferController::PlanAddDownload(
+            bAdmin, std::string(CT2A(HTTPTemp)));
+    if (addAction.allowed)
+        theApp.emuledlg->SendMessage(
+            WEB_ADDDOWNLOADS, (WPARAM)(LPCTSTR)HTTPTemp,
+            cat);
+    HTTPTemp = _ParseURL(Data.sURL, _T("c"));
+    const CString menuIndex = _ParseURL(Data.sURL, _T("m"));
+    const CString menuValue = _ParseURL(Data.sURL, _T("v"));
+    const ese::web::WebTransferColumnChange columnChange =
+        ese::web::WebTransferController::PlanColumnChange(
+            bAdmin, std::string(CT2A(HTTPTemp)),
+            std::string(CT2A(menuIndex)),
+            std::string(CT2A(menuValue)));
+    if (columnChange.allowed)
+    {
+        BOOL *columns =
+            columnChange.group ==
+                    ese::web::WebTransferColumnGroup::
+                        Download
+                ? WSdownloadColumnHidden
+                : (columnChange.group ==
+                           ese::web::
+                               WebTransferColumnGroup::
+                                   Upload
+                       ? WSuploadColumnHidden
+                       : WSqueueColumnHidden);
+        columns[columnChange.index] = columnChange.hidden;
+        LPCTSTR key =
+            columnChange.group ==
+                    ese::web::WebTransferColumnGroup::
+                        Download
+                ? _T("downloadColumnHidden")
+                : (columnChange.group ==
+                           ese::web::
+                               WebTransferColumnGroup::
+                                   Upload
+                       ? _T("uploadColumnHidden")
+                       : _T("queueColumnHidden"));
+        const int count =
+            columnChange.group ==
+                    ese::web::WebTransferColumnGroup::
+                        Download
+                ? 8
+                : (columnChange.group ==
+                           ese::web::
+                               WebTransferColumnGroup::
+                                   Upload
+                       ? 5
+                       : 4);
+        _SaveWIConfigArray(columns, count, key);
+    }
+    else if (HTTPTemp == _T("menuprio") && bAdmin)
+    {
+        const CString &sPrio(_ParseURL(Data.sURL, _T("p")));
+        const ese::web::WebTransferPriorityDecision
+            priority = ese::web::WebTransferController::
+                PlanCategoryPriority(
+                    bAdmin, std::string(CT2A(sPrio)));
+        if (priority.allowed)
+        {
+            const int prio =
+                priority.priority ==
+                        ese::web::
+                            WebTransferCategoryPriority::Low
+                    ? PR_LOW
+                    : (priority.priority ==
+                               ese::web::
+                                   WebTransferCategoryPriority::
+                                       High
+                           ? PR_HIGH
+                           : (priority.priority ==
+                                      ese::web::
+                                          WebTransferCategoryPriority::
+                                              Normal
+                                  ? PR_NORMAL
+                                  : PR_AUTO));
+            SendMessage(theApp.emuledlg->m_hWnd,
+                        WEB_CATPRIO, (WPARAM)cat,
+                        (LPARAM)prio);
+        }
+    }
+    const CString sOp = _ParseURL(Data.sURL, _T("op"));
+    const CString sFile = _ParseURL(Data.sURL, _T("file"));
+    if (!sOp.IsEmpty() && sFile.IsEmpty())
+    {
+        const CString sUser =
+            _ParseURL(Data.sURL, _T("userhash"));
+        const ese::web::WebTransferFriendAction action =
+            ese::web::WebTransferController::
+                PlanFriendAction(bAdmin,
+                                 std::string(CT2A(sOp)),
+                                 std::string(CT2A(sUser)));
+        uchar userHash[MDX_DIGEST_SIZE];
+        if (action.allowed && strmd4(sUser, userHash))
+        {
+            CUpDownClient *client =
+                theApp.clientlist->FindClientByUserHash(
+                    userHash);
+            if (action.operation ==
+                    ese::web::WebTransferFriendOperation::
+                        Add &&
+                client)
+            {
+                SendMessage(theApp.emuledlg->m_hWnd,
+                            WEB_ADDREMOVEFRIEND,
+                            (WPARAM)client, (LPARAM)1);
+            }
+            else if (action.operation ==
+                         ese::web::
+                             WebTransferFriendOperation::
+                                 Remove &&
+                     client)
+            {
+                const CFriend *friendEntry =
+                    theApp.friendlist->SearchFriend(
+                        userHash, 0, 0);
+                if (friendEntry)
+                    SendMessage(theApp.emuledlg->m_hWnd,
+                                WEB_ADDREMOVEFRIEND,
+                                (WPARAM)friendEntry,
+                                (LPARAM)0);
+            }
+        }
+    }
+    else if (!sOp.IsEmpty())
+    {
+        const CString actionText =
+            sOp == _T("rename")
+                ? _ParseURL(Data.sURL, _T("name"))
+                : CString();
+        const CString numericValue =
+            sOp == _T("setcat")
+                ? _ParseURL(Data.sURL, _T("filecat"))
+                : (sOp == _T("streamseek")
+                       ? _ParseURL(Data.sURL, _T("part"))
+                       : CString());
+        const ese::web::WebTransferFileAction action =
+            ese::web::WebTransferController::PlanFileAction(
+                bAdmin, std::string(CT2A(sOp)),
+                std::string(CT2A(sFile)),
+                std::string(CT2A(actionText)),
+                std::string(CT2A(numericValue)));
+        uchar fileHash[MDX_DIGEST_SIZE];
+        if (action.allowed && strmd4(sFile, fileHash))
+        {
+            WebFileOperationRequest *request =
+                new WebFileOperationRequest;
+            memcpy(request->fileHash, fileHash,
+                   sizeof request->fileHash);
+            switch (action.operation)
+            {
+            case ese::web::WebTransferFileOperation::Stop:
+                request->operation = WEBFILEOP_STOP;
+                break;
+            case ese::web::WebTransferFileOperation::Pause:
+                request->operation = WEBFILEOP_PAUSE;
+                break;
+            case ese::web::WebTransferFileOperation::Resume:
+                request->operation = WEBFILEOP_RESUME;
+                break;
+            case ese::web::WebTransferFileOperation::Cancel:
+                request->operation = WEBFILEOP_CANCEL;
+                break;
+            case ese::web::WebTransferFileOperation::
+                GetFileLink:
+                request->operation = WEBFILEOP_GETFLC;
+                break;
+            case ese::web::WebTransferFileOperation::Rename:
+                request->operation = WEBFILEOP_RENAME;
+                request->text = actionText;
+                break;
+            case ese::web::WebTransferFileOperation::
+                PriorityLow:
+                request->operation = WEBFILEOP_PRIOLOW;
+                break;
+            case ese::web::WebTransferFileOperation::
+                PriorityNormal:
+                request->operation = WEBFILEOP_PRIONORMAL;
+                break;
+            case ese::web::WebTransferFileOperation::
+                PriorityHigh:
+                request->operation = WEBFILEOP_PRIOHIGH;
+                break;
+            case ese::web::WebTransferFileOperation::
+                PriorityAuto:
+                request->operation = WEBFILEOP_PRIOAUTO;
+                break;
+            case ese::web::WebTransferFileOperation::
+                SetCategory:
+                request->operation = WEBFILEOP_SETCAT;
+                request->value = action.value;
+                break;
+            case ese::web::WebTransferFileOperation::
+                StreamSeek:
+                request->operation = WEBFILEOP_STREAMSEEK;
+                request->value = action.value;
+                break;
+            default:
+                delete request;
+                request = NULL;
+            }
+            if (request)
+                SendMessage(theApp.emuledlg->m_hWnd,
+                            WEB_GUI_INTERACTION,
+                            WEBGUIIA_FILE_OPERATION,
+                            (LPARAM)request);
+        }
+    }
+    HTTPTemp = _ParseURL(Data.sURL, _T("sortreverse"));
+    const CString &sSort(_ParseURL(Data.sURL, _T("sort")));
+    const ese::web::WebTransferSortDecision sortDecision =
+        ese::web::WebTransferController::PlanSort(
+            bAdmin, std::string(CT2A(sSort)),
+            std::string(CT2A(HTTPTemp)));
+    if (sortDecision.allowed)
+    {
+        if (sortDecision.domain ==
+            ese::web::WebTransferSortDomain::Download)
+        {
+            pThis->m_Params.DownloadSort =
+                static_cast<DownloadSort>(
+                    sortDecision.target_index);
+            pThis->m_Params.bDownloadSortReverse =
+                sortDecision.reverse;
+        }
+        else if (sortDecision.domain ==
+                 ese::web::WebTransferSortDomain::Upload)
+        {
+            pThis->m_Params.UploadSort =
+                static_cast<UploadSort>(
+                    sortDecision.target_index);
+            pThis->m_Params.bUploadSortReverse =
+                sortDecision.reverse;
+        }
+        else
+        {
+            pThis->m_Params.QueueSort =
+                static_cast<QueueSort>(
+                    sortDecision.target_index);
+            pThis->m_Params.bQueueSortReverse =
+                sortDecision.reverse;
+        }
+    }
+    auto applyBoolean = [&](bool &current, LPCTSTR field) {
+        const CString input = _ParseURL(Data.sURL, field);
+        bool output = current;
+        if (ese::web::WebTransferController::
+                TryApplyBoolean(bAdmin, current,
+                                std::string(CT2A(input)),
+                                output))
+            current = output;
+    };
+    applyBoolean(pThis->m_Params.bShowUploadQueue,
+                 _T("showuploadqueue"));
+    applyBoolean(pThis->m_Params.bShowUploadQueueBanned,
+                 _T("showuploadqueuebanned"));
+    applyBoolean(pThis->m_Params.bShowUploadQueueFriend,
+                 _T("showuploadqueuefriend"));
 }
 
 CString CWebServer::_GetTransferList(const ThreadData &Data)

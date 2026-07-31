@@ -23,7 +23,7 @@ GOLDENS = ROOT / "docs" / "architecture" / "mod02_characterization_goldens_v1.js
 BUILD_MANIFEST = ROOT / "docs" / "architecture" / "mod02_build_manifest_v1.json"
 IDENTITY_HEADER = ROOT / "srchybrid" / "Mod02BuildIdentity.h"
 CRITICAL_SOURCE_PATHS = [
-    "srchybrid/EmuleDlg.cpp",
+    "srchybrid/EmuleDlg.cpp", "srchybrid/EmuleDlg.h",
     "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h", "srchybrid/LiveTunnelBulkFacade.inl", "srchybrid/LiveTunnelBulkStatePort.h", "srchybrid/LiveTunnelBulkProxy.cpp", "srchybrid/LiveTunnelBulkProxy.h", "srchybrid/LiveTunnelBulkTransportAdapter.cpp", "srchybrid/LiveTunnelBulkTransportAdapter.h", "srchybrid/LiveTunnelSearchFacade.inl", "srchybrid/LiveTunnelSearchPort.h", "srchybrid/LiveTunnelSearchService.cpp", "srchybrid/LiveTunnelSearchService.h", "srchybrid/LiveTunnelCoordinatorFacade.cpp", "srchybrid/LiveTunnelCoordinatorFacade.h", "srchybrid/LiveTunnelCoordinatorMethods.inl", "srchybrid/LiveTunnelCoordinatorPort.h",
     "srchybrid/LiveCellQueue.cpp", "srchybrid/LiveCellQueue.h",
     "srchybrid/LiveTunnelFraming.cpp", "srchybrid/LiveTunnelFraming.h",
@@ -47,6 +47,7 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/WebRequestDispatch.cpp", "srchybrid/WebRequestDispatch.h",
     "srchybrid/WebTemplateRenderer.cpp", "srchybrid/WebTemplateRenderer.h", "srchybrid/WebHeaderFooter.cpp", "srchybrid/WebHeaderFooter.h",
     "srchybrid/WebServerListController.cpp", "srchybrid/WebServerListController.h",
+    "srchybrid/WebTransferProjection.cpp", "srchybrid/WebTransferProjection.h",
     "srchybrid/WebApiSerializer.cpp", "srchybrid/WebApiSerializer.h",
     "srchybrid/WebTransferController.cpp", "srchybrid/WebTransferController.h",
     "srchybrid/WebSearchController.cpp", "srchybrid/WebSearchController.h",

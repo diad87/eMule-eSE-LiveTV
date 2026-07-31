@@ -4706,6 +4706,14 @@ LRESULT CemuleDlg::OnWebGUIInteraction(WPARAM wParam, LPARAM lParam)
 				transferwnd->UpdateCatTabTitles();
 		}
 		break;
+	case WEBGUIIA_TRANSFER_SNAPSHOT:
+		{
+			WebTransferSnapshotRequest* request =
+				reinterpret_cast<WebTransferSnapshotRequest*>(lParam);
+			if (request != NULL && request->capture != nullptr)
+				request->capture(request->context);
+		}
+		break;
 	}
 
 	return 0;

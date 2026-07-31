@@ -22,7 +22,7 @@ RUNTIME_RUNNER = ROOT / "tools" / "architecture" / "run_mod02_stream_selftest.ps
 BUILD_MANIFEST = ROOT / "docs" / "architecture" / "mod02_build_manifest_v1.json"
 IDENTITY_HEADER = ROOT / "srchybrid" / "Mod02BuildIdentity.h"
 CRITICAL_SOURCE_PATHS = [
-    "srchybrid/EmuleDlg.cpp",
+    "srchybrid/EmuleDlg.cpp", "srchybrid/EmuleDlg.h",
     "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h",
     "srchybrid/LiveCellQueue.cpp", "srchybrid/LiveCellQueue.h",
     "srchybrid/LiveTunnelFraming.cpp", "srchybrid/LiveTunnelFraming.h",
@@ -46,6 +46,7 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/WebRequestDispatch.cpp", "srchybrid/WebRequestDispatch.h",
     "srchybrid/WebTemplateRenderer.cpp", "srchybrid/WebTemplateRenderer.h", "srchybrid/WebHeaderFooter.cpp", "srchybrid/WebHeaderFooter.h",
     "srchybrid/WebServerListController.cpp", "srchybrid/WebServerListController.h",
+    "srchybrid/WebTransferProjection.cpp", "srchybrid/WebTransferProjection.h",
     "srchybrid/WebApiSerializer.cpp", "srchybrid/WebApiSerializer.h",
     "srchybrid/WebTransferController.cpp", "srchybrid/WebTransferController.h",
     "srchybrid/WebSearchController.cpp", "srchybrid/WebSearchController.h",

@@ -438,7 +438,8 @@ enum EWebinterfaceOrders
 	WEBGUIIA_KAD_START,
 	WEBGUIIA_KAD_STOP,
 	WEBGUIIA_KAD_RCFW,
-	WEBGUIIA_FILE_OPERATION
+	WEBGUIIA_FILE_OPERATION,
+	WEBGUIIA_TRANSFER_SNAPSHOT
 };
 
 enum EWebFileOperation
@@ -466,4 +467,12 @@ struct WebFileOperationRequest
 	EWebFileOperation operation = WEBFILEOP_STOP;
 	int value = 0;
 	CString text;
+};
+
+// Synchronous, stack-owned request. SendMessage keeps the payload alive while
+// the GUI thread captures transfer state without racing list/widget mutation.
+struct WebTransferSnapshotRequest
+{
+	void (*capture)(void*) = nullptr;
+	void* context = nullptr;
 };

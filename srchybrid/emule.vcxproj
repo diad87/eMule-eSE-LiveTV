@@ -1151,6 +1151,7 @@
     <ClCompile Include="VisualStylesXP.cpp" />
     <ClCompile Include="WebServer.cpp" />
     <ClCompile Include="WebServerListController.cpp" />
+    <ClCompile Include="WebTransferProjection.cpp" />
     <ClCompile Include="eMuleAI\DirectoryWatcher.cpp" />
     <ClCompile Include="eMuleAI\Address.cpp" />
     <ClCompile Include="eMuleAI\UtpSocket.cpp" />
@@ -1586,6 +1587,7 @@
     <ClInclude Include="VisualStylesXP.h" />
     <ClInclude Include="WebServer.h" />
     <ClInclude Include="WebServerListController.h" />
+    <ClInclude Include="WebTransferProjection.h" />
     <ClInclude Include="WebServices.h" />
     <ClInclude Include="eMuleAI\DirectoryWatcher.h" />
     <ClInclude Include="eMuleAI\Address.h" />

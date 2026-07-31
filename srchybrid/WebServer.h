@@ -30,7 +30,7 @@ typedef struct
 	CString	sFileName;
 	CString	sFileNameJS;
 	CString	sFileState;
-	CString	sFileType;
+	CString	sFileType, sDownloadGraph;
 	double	m_dblCompleted;
 	uint64	m_qwFileSize;
 	uint64	m_qwFileTransferred;
@@ -42,7 +42,7 @@ typedef struct
 	int		iComment;
 	int		iFileState;
 	int		nFilePrio;
-	int		nFileStatus;
+	int		nFileStatus, nCategory;
 	bool	bIsComplete;
 	bool	bIsGetFLC;
 	bool	bIsPreview;

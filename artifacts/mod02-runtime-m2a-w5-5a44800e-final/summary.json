@@ -1,0 +1,40 @@
+{
+  "schema": "ese.mod02.stream-selftest/v1",
+  "build_manifest_sha256": "e66d6e279fd55c8e8066e85426d29dfedc488cf99a542a6ac12d8100679d1fcc",
+  "source_commit": "5a44800eb757e0b5b7dd003048bdeeca7f829cea",
+  "source_identity_sha256": "3fa0c6f2a86a465f3fcb28526945756e2324e54347833261d14893f9147b085d",
+  "source_tree_clean": true,
+  "executable_sha256": "047cbe09f44d0e65c4aeee3eff6987fd31c45beb1c00b071490ecfe9b8cc892f",
+  "executable_write_utc": "2026-07-31T22:58:34.1624234Z",
+  "latest_critical_source_write_utc": "2026-07-31T22:52:47.5313605Z",
+  "timeout_seconds": 180,
+  "timed_out": false,
+  "taskkill_started": false,
+  "taskkill_finished": true,
+  "taskkill_exit_code": null,
+  "termination_confirmed": true,
+  "exit_code": 0,
+  "expected_markers": [
+    "SOURCE 3fa0c6f2a86a465f3fcb28526945756e2324e54347833261d14893f9147b085d",
+    "BEGIN CLiveTunnel",
+    "PASS CLiveTunnel",
+    "BEGIN CWebServer",
+    "PASS CWebServer",
+    "BEGIN CLiveStreamManager",
+    "PASS CLiveStreamManager"
+  ],
+  "observed_markers_sanitized": [
+    "SOURCE 3fa0c6f2a86a465f3fcb28526945756e2324e54347833261d14893f9147b085d",
+    "BEGIN CLiveTunnel",
+    "PASS CLiveTunnel",
+    "BEGIN CWebServer",
+    "PASS CWebServer",
+    "BEGIN CLiveStreamManager",
+    "PASS CLiveStreamManager"
+  ],
+  "markers_verified": true,
+  "marker_sha256": "6680b52d9e5c9e0a0a7d2d2e33031b8b163d91f425b801962f14447fa0471d27",
+  "verdict": "PASS",
+  "command": "--portable --ignoreinstances --selftest",
+  "isolation": "portable unique output root; no UI"
+}

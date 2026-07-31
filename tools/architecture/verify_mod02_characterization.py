@@ -226,7 +226,11 @@ def main() -> int:
             goldens = json.loads(GOLDENS.read_text(encoding="utf-8"))
             for key, spec in goldens["goldens"].items():
                 spec["token_sha256"] = fingerprint(spec["production_file"], spec["symbols"])
-            GOLDENS.write_text(json.dumps(goldens, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            GOLDENS.write_text(
+                json.dumps(goldens, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
         elif args.verify:
             verify()
         else:

@@ -74,10 +74,10 @@
         "LiveExitServices::Clear": "942beea3b04d7209e9b131fbea6fb92850ffb26cd7954051e28633a51c6a549e",
         "LiveExitServices::Dispatch": "f347310fc88eeb6422c69da36db295c8cc01378a40d83cfbf8b1f50a1e1578c8",
         "LiveExitServices::FindPart": "33ce631714243ad0abe95f9b48c746d88361f0befc274530be0c165bbba5515d",
-        "LiveExitServices::RegisterHandler": "1b406b3783ddd95dfb943cbdca4514d6f2fffde37c59494426e78b4f5342387c",
+        "LiveExitServices::RegisterHandler": "181a41ad4b7b14edaf632a212cb0e4bed5aa693c63a5c547d41c54a8a32199a3",
         "LiveExitServices::Sweep": "9008a8eeb78fc6fb902259c1a345b56921a6c4e131fe8a88fc789e1f39e16d06",
         "LiveExitServices::TakeCompletion": "bf908badb0939190357a00e75f3fefff93990f2883118e726583f4c57232e21b",
-        "RunLiveExitServicesCharacterizationSelfTest": "af0f6340e9196b53921fa706aafdc2d52d136c2805277fb75fe0dc16f3bdd565"
+        "RunLiveExitServicesCharacterizationSelfTest": "e72a010a13cc318f8081c23c27cd78fcfc7f36522cdcea4e7cd49c87593c2842"
       }
     },
     "live_relay_dispatcher": {

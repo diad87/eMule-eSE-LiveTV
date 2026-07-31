@@ -4,6 +4,7 @@
 #include "M2ABindingPort.h"
 #include "LiveRelayTypes.h"
 #include "LiveTunnelSourcePublisherPort.h"
+#include "LiveTunnelStreamFlowPort.h"
 
 #include <array>
 #include <cstddef>
@@ -135,6 +136,22 @@ public:
     std::vector<LiveTunnelPublishRuntime> LT4TakeVisibilityProbes(std::uint64_t,bool&); bool LT4CompleteVisibilityProbe(std::uint64_t,bool,std::uint64_t);
     std::vector<LiveTunnelPublishAction> LT4Sweep(std::uint64_t); void LT4ResetPublishes();
     void LT4PruneTicketState(std::uint64_t now);
+    void LT5ClearCredits() noexcept;
+    std::size_t LT5ExitCount() const noexcept; std::size_t LT5OriginCount() const noexcept;
+    LiveTunnelExitStreams LT5ExitSnapshot() const; LiveTunnelOriginStreams LT5OriginSnapshot() const;
+    bool LT5FindExit(std::uint64_t,LiveTunnelExitStreamRuntime&) const; bool LT5FindOrigin(std::uint64_t,LiveTunnelOriginStreamRuntime&) const;
+    bool LT5FindExit(std::uint64_t,CKad6ExitSocket*,LiveTunnelExitStreamRuntime&) const; bool LT5FindOrigin(std::uint64_t,CKad6OriginSocket*,LiveTunnelOriginStreamRuntime&) const;
+    bool LT5CreateExit(std::uint64_t,LiveTunnelExitStreamRuntime&); bool LT5CreateOrigin(std::uint64_t,LiveTunnelOriginStreamRuntime&);
+    bool LT5UpdateExit(std::uint64_t,CKad6ExitSocket*,std::uint64_t,const LiveTunnelExitStreamRuntime&); bool LT5UpdateOrigin(std::uint64_t,CKad6OriginSocket*,std::uint64_t,const LiveTunnelOriginStreamRuntime&);
+    bool LT5TakeExit(std::uint64_t,CKad6ExitSocket*,std::uint64_t,LiveTunnelExitStreamRuntime&); bool LT5TakeOrigin(std::uint64_t,CKad6OriginSocket*,std::uint64_t,LiveTunnelOriginStreamRuntime&);
+    bool LT5HalfCloseExit(std::uint32_t,const kad6::K6StreamHalfClose&); bool LT5HalfCloseOrigin(std::uint32_t,const kad6::K6StreamHalfClose&);
+    bool LT5CloseExit(std::uint32_t,const kad6::K6StreamClose&,LiveTunnelExitStreamRuntime&); bool LT5CloseOrigin(std::uint32_t,const kad6::K6StreamClose&,LiveTunnelOriginStreamRuntime&);
+    bool LT5Grant(std::uint32_t,const kad6::K6MaxStreamData&); bool LT5Grant(std::uint32_t,const kad6::K6MaxData&);
+    std::uint64_t LT5Available(std::uint32_t,std::uint64_t,std::uint8_t,std::uint64_t,std::uint64_t,std::uint64_t) const; std::uint64_t LT5Sent(std::uint32_t,std::uint64_t,std::uint8_t) const;
+    bool LT5CommitExitSend(CKad6ExitSocket*,std::uint64_t,std::uint64_t,std::uint8_t,std::uint64_t,std::uint64_t,std::uint64_t,std::uint64_t);
+    bool LT5CommitOriginSend(CKad6OriginSocket*,std::uint64_t,std::uint64_t,std::uint8_t,std::uint64_t,std::uint64_t,std::uint64_t,std::uint64_t);
+    bool LT5InitialCredit(std::uint32_t,std::uint64_t,std::uint8_t,kad6::K6MaxStreamData&,kad6::K6MaxData&) const; bool LT5CanAccept(std::uint32_t,std::uint64_t,std::uint8_t,std::uint64_t) const;
+    bool LT5Accept(std::uint32_t,std::uint64_t,std::uint8_t,std::uint64_t,std::uint64_t); bool LT5Consume(std::uint32_t,std::uint64_t,std::uint8_t,std::uint64_t,std::uint64_t,kad6::K6MaxStreamData&,kad6::K6MaxData&); bool LT5ReadsPaused(std::uint32_t) const;
 
 private:
     struct Operation {
@@ -148,6 +165,7 @@ private:
     std::map<std::uint8_t, LiveTunnelOpHandler> m_handlers;
     std::map<std::uint64_t, Operation> m_operations;
     M2AModuleHandle m_m2a_binding_6e698bd4a3;
+    M2AModuleHandle m_m2a_binding_ae4815b275;
 };
 
 // Deterministic production-boundary test used by the unattended `--selftest`

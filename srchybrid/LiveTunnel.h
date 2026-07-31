@@ -846,66 +846,6 @@ private:
     bool MarkK6SourceServingLocked(uint64 sourceLeaseId,
                                    kad6::K6CohortBackend& backend);
 
-    struct K6ExitStreamRuntime {
-        uint32 circ_id = 0;
-        uint32 dial_request_id = 0;
-        std::weak_ptr<CLiveCircuit> circuit;
-        kad6::K6TargetTicket ticket;
-        kad6::K6Endpoint apparent;
-        CKad6ExitSocket* socket = nullptr;
-        CUpDownClient* client = nullptr;
-        kad6::K6StreamFlowState flow;
-        std::vector<uint8_t> initial_data;
-        uint64 created_at = 0;
-        uint64 last_activity = 0;
-        uint64 connect_deadline = 0;
-        uint64 idle_deadline = 0;
-        uint32 idle_timeout_ms = 0;
-        uint64 stream_max_bytes = 0;
-        uint64 tx_sequence = 0;
-        uint64 pex_sequence = 0;
-        uint64 quota_allocation_id = 0;
-        uint8 network_origin = kad6::kK6NetOriginKad2;
-        bool connected = false;
-        bool inbound = false;
-        bool kill_switch_close = false;
-        std::deque<std::vector<uint8_t>> pending_credit_frames;
-        size_t pending_credit_bytes = 0;
-        uint64 credit_stall_since_ms = 0;
-    };
-    struct K6QueuedOriginFrame {
-        uint32 request_id = 0;
-        uint64 sequence = 0;
-        size_t data_bytes = 0;
-        std::vector<uint8_t> wire;
-    };
-    struct K6OriginStreamRuntime {
-        uint32 circ_id = 0;
-        kad6::K6DialResult dial;
-        CKad6OriginSocket* socket = nullptr;
-        CUpDownClient* client = nullptr;
-        kad6::K6StreamFlowState flow;
-        kad6::K6VirtualIdentityEndpoint vep;
-        bool has_vep = false;
-        bool initial_data_sent = false;
-        uint64 next_tx_sequence = 0;
-        uint64 queued_tx_bytes = 0;
-        std::deque<kad6::K6SourceHints> hints;
-        std::deque<std::vector<uint8_t>> pending_frames;
-        size_t pending_frame_bytes = 0;
-        uint64 last_activity = 0;
-        uint64 idle_deadline = 0;
-        std::deque<K6QueuedOriginFrame> pending_credit_frames;
-        size_t pending_credit_bytes = 0;
-        uint64 credit_stall_since_ms = 0;
-    };
-    std::map<uint64, K6ExitStreamRuntime> m_k6ExitStreams;
-    std::map<uint64, K6OriginStreamRuntime> m_k6OriginStreams;
-    std::map<uint32, kad6::K6SendCreditLedger> m_k6SendCredits;
-    std::map<uint32, kad6::K6ReceiveCreditWindow> m_k6ReceiveCredits;
-    std::map<uint32, std::set<uint64>> m_k6FlowStreamsByCircuit;
-    bool RegisterK6FlowControlLocked(uint32 circId, uint64 streamId);
-    void RemoveK6FlowControlLocked(uint32 circId, uint64 streamId);
     bool SendK6FlowCredit(uint32 circId,
                           const std::weak_ptr<CLiveCircuit>& circuit,
                           bool fromExit,

@@ -44,6 +44,7 @@ struct LiveDeferredWork {
     std::uint32_t requiredExitCaps = 0;
     std::uint32_t pinnedCircId = 0;
     std::uint64_t k6StreamId = 0;
+    std::uint64_t k6Generation = 0;
     std::size_t k6FlowBytes = 0;
     std::uint64_t k6Sequence = 0;
     std::size_t k6DataBytes = 0;

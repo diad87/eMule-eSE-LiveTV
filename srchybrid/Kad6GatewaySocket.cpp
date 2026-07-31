@@ -18,6 +18,8 @@
 #include "SafeFile.h"
 #include "Preferences.h"
 #include "Opcodes.h"
+#include "DirectReachabilityManager.h"
+#include "FirewallProberV6.h"
 #include "eMuleAI/Address.h"
 #include "kademlia/kademlia/Kademlia.h"
 #include "kademlia/kademlia/KadV2ModeSelector.h"
@@ -29,6 +31,15 @@
 #include "kad6/kad6_live_search.h"
 
 namespace eSELive {
+namespace {
+LiveSourceEndpointKey BuildLiveSourceEndpointKey(
+    const kad6::K6Endpoint& endpoint,
+    uint8 origin)
+{
+    return {origin, static_cast<uint8>(endpoint.addr.family),
+        endpoint.addr.addr, endpoint.tcp_port};
+}
+} // namespace
 uint64_t M2A_LT3_K6ShapeNowUs();
 std::vector<uint8_t> M2A_LT3_EseCStringUtf8(const CString&);
 CString M2A_LT3_EseUtf8CString(const std::string&);
@@ -133,7 +144,16 @@ bool CKad6ExitSocket::PacketReceived(Packet* packet){
          packet->opcode==OP_PUBLICKEY||packet->opcode==OP_SIGNATURE||
          packet->opcode==OP_SECIDENTSTATE||packet->opcode==OP_PUBLICIP_REQ);
     if(exitTerminated)return CClientReqSocket::PacketReceived(packet);
-    return CLiveTunnel::Get().OnK6ExitPacket(m_streamId,raw.data(),raw.size());
+    CLiveTunnel& tunnel=CLiveTunnel::Get();
+    {
+        // Socket callbacks are dispatched on the main thread.  Validate the
+        // concrete socket immediately before entering the legacy coordinator
+        // signature so a retired socket cannot target a reused stream id.
+        CSingleLock pl(&tunnel.m_pendingLock,TRUE);
+        K6ExitStreamRuntime active;
+        if(!tunnel.m_exitServices.LT5FindExit(m_streamId,this,active))return false;
+    }
+    return tunnel.OnK6ExitPacket(m_streamId,raw.data(),raw.size());
 }
 
 bool CKad6OriginSocket::Initialize(std::uint64_t streamId,CUpDownClient* owner){
@@ -169,7 +189,16 @@ void CKad6OriginSocket::SendPacket(Packet* packet,bool controlpacket,uint32 actu
     if(!packet)return;
     if(m_suppressReplies){delete packet;return;}
     char* bytes=packet->GetPacket();const std::size_t length=packet->GetRealPacketSize();
-    const bool ok=bytes&&CLiveTunnel::Get().K6SendEd2kFrameNoWait(m_streamId,
+    CLiveTunnel& tunnel=CLiveTunnel::Get();
+    bool active=false;
+    {
+        // As above, main-thread serialization makes this source check and the
+        // immediately following call one callback transaction.
+        CSingleLock pl(&tunnel.m_pendingLock,TRUE);
+        K6OriginStreamRuntime runtime;
+        active=tunnel.m_exitServices.LT5FindOrigin(m_streamId,this,runtime);
+    }
+    const bool ok=bytes&&active&&tunnel.K6SendEd2kFrameNoWait(m_streamId,
         reinterpret_cast<const uint8_t*>(bytes),length);
     delete packet;
     if(!ok)Disconnect(_T("Kad6 stream send failed"));
@@ -258,8 +287,7 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
         }
         {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            if (host.m_k6OriginStreams.size() >= 512 || host.m_k6OriginStreams.find(accepted.stream_id) != host.m_k6OriginStreams.end() || !host.RegisterK6FlowControlLocked(circ->Id(), accepted.stream_id)) { pl.Unlock(); socket->Safe_Delete(); return false; }
-            CLiveTunnel::K6OriginStreamRuntime runtime;
+            K6OriginStreamRuntime runtime;
             runtime.circ_id = circ->Id();
             runtime.dial = accepted;
             runtime.socket = socket;
@@ -268,12 +296,11 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
             runtime.last_activity = static_cast<uint64>(time(NULL));
             runtime.idle_deadline = runtime.last_activity +
                 ((accepted.idle_timeout_ms + 999u) / 1000u);
-            host.m_k6OriginStreams[accepted.stream_id] = runtime;
+            if(!host.m_exitServices.LT5CreateOrigin(accepted.stream_id,runtime)){pl.Unlock();socket->Safe_Delete();return false;}
         }
         if (!host.SendK6InitialCredit(circ->Id(), accepted.stream_id, 1, circ, false)) {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            host.m_k6OriginStreams.erase(accepted.stream_id);
-            host.RemoveK6FlowControlLocked(circ->Id(), accepted.stream_id);
+            K6OriginStreamRuntime failed;if(host.m_exitServices.LT5FindOrigin(accepted.stream_id,socket,failed))host.m_exitServices.LT5TakeOrigin(accepted.stream_id,socket,failed.generation,failed);
             pl.Unlock();
             socket->Safe_Delete();
             return false;
@@ -322,16 +349,10 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
             expected = circ->m_expectedNodePub;
         if (!expected || memcmp(expected, vep.exit_node_pub.data(), 32) != 0)
             return false;
-        CSingleLock pl(&host.m_pendingLock, TRUE);
-        auto stream = host.m_k6OriginStreams.find(vep.source_lease_id);
-        if (stream == host.m_k6OriginStreams.end()) return false;
-        stream->second.vep = vep;
-        stream->second.has_vep = true;
-        if (stream->second.client && vep.apparent_source_ip.family == kad6::Kad6Address::Family::IPv4) {
-            uint32 ip = 0;
-            memcpy(&ip, vep.apparent_source_ip.addr.data(), 4);
-            stream->second.client->SetK6SecureIdentVepIPv4(ip);
-        }
+        CUpDownClient* client=NULL;uint32 ip=0;{CSingleLock pl(&host.m_pendingLock,TRUE);K6OriginStreamRuntime stream;
+        if(!host.m_exitServices.LT5FindOrigin(vep.source_lease_id,stream))return false;CKad6OriginSocket* expected=stream.socket;const uint64 generation=stream.generation;
+        stream.vep=vep;stream.has_vep=true;client=stream.client;if(!host.m_exitServices.LT5UpdateOrigin(vep.source_lease_id,expected,generation,stream))return false;}
+        if(client&&vep.apparent_source_ip.family==kad6::Kad6Address::Family::IPv4){memcpy(&ip,vep.apparent_source_ip.addr.data(),4);client->SetK6SecureIdentVepIPv4(ip);}
         return true;
     }
     if (frame.msg_type == kad6::kK6MsgSourceHints) {
@@ -340,11 +361,9 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
         if (kad6::DecodeK6SourceHints(frame.body.data(), frame.body.size(), hints, &consumed) != kad6::Kad6Status::Ok || consumed != frame.body.size())
             return false;
         CSingleLock pl(&host.m_pendingLock, TRUE);
-        auto stream = host.m_k6OriginStreams.find(hints.source_stream_id);
-        if (stream == host.m_k6OriginStreams.end() || stream->second.hints.size() >= 32)
-            return false;
-        stream->second.hints.push_back(std::move(hints));
-        return true;
+        K6OriginStreamRuntime stream;if(!host.m_exitServices.LT5FindOrigin(hints.source_stream_id,stream)||stream.hints.size()>=32)return false;
+        CKad6OriginSocket* expected=stream.socket;const uint64 generation=stream.generation;stream.hints.push_back(std::move(hints));
+        return host.m_exitServices.LT5UpdateOrigin(hints.source_stream_id,expected,generation,stream);
     }
     if (frame.msg_type == kad6::kK6MsgMaxStreamData) {
         kad6::K6MaxStreamData credit;
@@ -353,9 +372,8 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
             return false;
         {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            const auto stream = host.m_k6OriginStreams.find(credit.stream_id);
-            const auto ledger = host.m_k6SendCredits.find(circ->Id());
-            if (stream == host.m_k6OriginStreams.end() || stream->second.circ_id != circ->Id() || ledger == host.m_k6SendCredits.end() || ledger->second.Grant(credit) != kad6::Kad6Status::Ok)
+            K6OriginStreamRuntime stream;
+            if(!host.m_exitServices.LT5FindOrigin(credit.stream_id,stream)||stream.circ_id!=circ->Id()||!host.m_exitServices.LT5Grant(circ->Id(),credit))
                 return false;
         }
         host.FlushK6OriginCredit(circ->Id());
@@ -368,8 +386,7 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
             return false;
         {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            const auto ledger = host.m_k6SendCredits.find(circ->Id());
-            if (ledger == host.m_k6SendCredits.end() || ledger->second.Grant(credit) != kad6::Kad6Status::Ok)
+            if(!host.m_exitServices.LT5Grant(circ->Id(),credit))
                 return false;
         }
         host.FlushK6OriginCredit(circ->Id());
@@ -386,27 +403,20 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
         CKad6OriginSocket* socket = NULL;
         {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            auto stream = host.m_k6OriginStreams.find(data.stream_id);
-            if (stream == host.m_k6OriginStreams.end()) return false;
-            const uint64 maxBytes = stream->second.dial.max_bytes;
-            const uint64 txBytes = stream->second.flow.total_bytes(0);
-            const uint64 rxBytes = stream->second.flow.total_bytes(1);
-            auto receiver = host.m_k6ReceiveCredits.find(circ->Id());
-            const bool bufferForAttach = stream->second.socket == NULL;
-            if ((maxBytes && (txBytes > maxBytes || rxBytes > maxBytes - txBytes || stream->second.queued_tx_bytes > maxBytes - txBytes - rxBytes || data.data.size() > maxBytes - txBytes - rxBytes - stream->second.queued_tx_bytes)) || receiver == host.m_k6ReceiveCredits.end() || (bufferForAttach && (stream->second.pending_frames.size() >= 64 || stream->second.pending_frame_bytes + data.data.size() > 256u * 1024u)) || receiver->second.CanAccept(data.stream_id, 1, data.data.size()) != kad6::Kad6Status::Ok || stream->second.flow.CanAccept(data) != kad6::Kad6Status::Ok)
+            K6OriginStreamRuntime stream;if(!host.m_exitServices.LT5FindOrigin(data.stream_id,stream))return false;
+            const uint64 maxBytes=stream.dial.max_bytes,txBytes=stream.flow.total_bytes(0),rxBytes=stream.flow.total_bytes(1);
+            const bool bufferForAttach=stream.socket==NULL;
+            if((maxBytes&&(txBytes>maxBytes||rxBytes>maxBytes-txBytes||stream.queued_tx_bytes>maxBytes-txBytes-rxBytes||data.data.size()>maxBytes-txBytes-rxBytes-stream.queued_tx_bytes))||(bufferForAttach&&(stream.pending_frames.size()>=64||stream.pending_frame_bytes+data.data.size()>256u*1024u))||!host.m_exitServices.LT5CanAccept(circ->Id(),data.stream_id,1,data.data.size())||stream.flow.CanAccept(data)!=kad6::Kad6Status::Ok)
                 return false;
-            if (receiver->second.Accept(data.stream_id, 1, data.data.size(), M2A_LT3_K6ShapeNowUs() / 1000u) != kad6::Kad6Status::Ok || stream->second.flow.Accept(data) != kad6::Kad6Status::Ok)
+            if(!host.m_exitServices.LT5Accept(circ->Id(),data.stream_id,1,data.data.size(),M2A_LT3_K6ShapeNowUs()/1000u)||stream.flow.Accept(data)!=kad6::Kad6Status::Ok)
                 return false;
             const uint64 now = static_cast<uint64>(time(NULL));
-            const uint64 idle = (stream->second.dial.idle_timeout_ms + 999u) / 1000u;
-            stream->second.last_activity = now;
-            stream->second.idle_deadline = now + idle;
-            socket = stream->second.socket;
+            const uint64 idle=(stream.dial.idle_timeout_ms+999u)/1000u;stream.last_activity=now;stream.idle_deadline=now+idle;socket=stream.socket;
             if (!socket) {
-                stream->second.pending_frame_bytes += data.data.size();
-                stream->second.pending_frames.push_back(std::move(data.data));
-                return true;
+                stream.pending_frame_bytes+=data.data.size();stream.pending_frames.push_back(std::move(data.data));
             }
+            if(!host.m_exitServices.LT5UpdateOrigin(data.stream_id,socket,stream.generation,stream))return false;
+            if(!socket)return true;
         }
         const bool injected = socket->InjectRawFrame(data.data.data(), data.data.size(), suppressHandshakeReply);
         if (!injected) {
@@ -415,9 +425,8 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
         }
         if (injected) {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            auto stream = host.m_k6OriginStreams.find(data.stream_id);
-            if (stream != host.m_k6OriginStreams.end() && stream->second.socket == socket)
-                stream->second.client = socket->client;
+            K6OriginStreamRuntime stream;
+            if(host.m_exitServices.LT5FindOrigin(data.stream_id,socket,stream)){stream.client=socket->client;host.m_exitServices.LT5UpdateOrigin(data.stream_id,socket,stream.generation,stream);}
         }
         return host.ConsumeK6ReceiveCredit(circ->Id(), data.stream_id, 1, data.data.size(), circ, false);
     }
@@ -426,8 +435,7 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
         consumed = 0;
         if (kad6::DecodeK6StreamHalfClose(frame.body.data(), frame.body.size(), close, &consumed) != kad6::Kad6Status::Ok || consumed != frame.body.size() || close.direction != 1) return false;
         CSingleLock pl(&host.m_pendingLock, TRUE);
-        auto stream = host.m_k6OriginStreams.find(close.stream_id);
-        return stream != host.m_k6OriginStreams.end() && stream->second.flow.HalfClose(close) == kad6::Kad6Status::Ok;
+        return host.m_exitServices.LT5HalfCloseOrigin(circ->Id(),close);
     }
     if (frame.msg_type == kad6::kK6MsgStreamClose) {
         kad6::K6StreamClose close;
@@ -438,12 +446,8 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
         CUpDownClient* client = NULL;
         {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            auto stream = host.m_k6OriginStreams.find(close.stream_id);
-            if (stream == host.m_k6OriginStreams.end() || stream->second.flow.Close(close) != kad6::Kad6Status::Ok) return false;
-            socket = stream->second.socket;
-            client = stream->second.client;
-            host.RemoveK6FlowControlLocked(stream->second.circ_id, close.stream_id);
-            host.m_k6OriginStreams.erase(stream);
+            K6OriginStreamRuntime stream;if(!host.m_exitServices.LT5CloseOrigin(circ->Id(),close,stream))return false;
+            socket=stream.socket;client=stream.client;
         }
         if (client) client->ClearK6SecureIdentVep();
         if (socket) socket->Disconnect(_T("Kad6 remote stream closed"));
@@ -470,22 +474,20 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
         bool streamRegistered = result.status != kad6::K6DialStatus::Ok;
         if (result.status == kad6::K6DialStatus::Ok) {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            if (host.m_k6OriginStreams.size() < 512 && result.stream_id != 0 && host.m_k6OriginStreams.find(result.stream_id) == host.m_k6OriginStreams.end() && host.RegisterK6FlowControlLocked(circ->Id(), result.stream_id)) {
-                CLiveTunnel::K6OriginStreamRuntime runtime;
+            if(result.stream_id!=0){
+                K6OriginStreamRuntime runtime;
                 runtime.circ_id = circ->Id();
                 runtime.dial = result;
                 runtime.flow = kad6::K6StreamFlowState(result.max_bytes);
                 runtime.last_activity = static_cast<uint64>(time(NULL));
                 runtime.idle_deadline = runtime.last_activity +
                     ((result.idle_timeout_ms + 999u) / 1000u);
-                host.m_k6OriginStreams[result.stream_id] = runtime;
-                streamRegistered = true;
+                streamRegistered=host.m_exitServices.LT5CreateOrigin(result.stream_id,runtime);
             }
         }
         if (result.status == kad6::K6DialStatus::Ok && streamRegistered && !host.SendK6InitialCredit(circ->Id(), result.stream_id, 1, circ, false)) {
             CSingleLock pl(&host.m_pendingLock, TRUE);
-            host.m_k6OriginStreams.erase(result.stream_id);
-            host.RemoveK6FlowControlLocked(circ->Id(), result.stream_id);
+            K6OriginStreamRuntime failed;if(host.m_exitServices.LT5FindOrigin(result.stream_id,failed))host.m_exitServices.LT5TakeOrigin(result.stream_id,failed.socket,failed.generation,failed);
             streamRegistered = false;
         }
         if (hasActivation) {
@@ -494,17 +496,13 @@ bool CKad6OriginSocket::LT3ExecuteSearchReply( CLiveTunnel& host, const std::sha
                 return true;
             }
             if (streamRegistered && result.status == kad6::K6DialStatus::Ok) {
-                CLiveTunnel::K6OriginStreamRuntime orphan;
+                K6OriginStreamRuntime orphan;
                 bool found = false;
                 {
                     CSingleLock pl(&host.m_pendingLock, TRUE);
-                    auto stream = host.m_k6OriginStreams.find(result.stream_id);
-                    if (stream != host.m_k6OriginStreams.end() && stream->second.socket == NULL) {
-                        orphan = stream->second;
-                        host.RemoveK6FlowControlLocked(stream->second.circ_id, result.stream_id);
-                        host.m_k6OriginStreams.erase(stream);
-                        found = true;
-                    }
+                    K6OriginStreamRuntime stream;
+                    if(host.m_exitServices.LT5FindOrigin(result.stream_id,stream)&&stream.socket==NULL)
+                        found=host.m_exitServices.LT5TakeOrigin(result.stream_id,NULL,stream.generation,orphan);
                 }
                 if (found) {
                     kad6::K6StreamClose close;
@@ -880,7 +878,7 @@ void CKad6OriginSocket::LT3GetHardeningSnapshot( CLiveTunnel& host, LiveK6Harden
                 ++out.active_leases;
         out.active_publishes = static_cast<uint64>(
             host.m_exitServices.LT4PublishCount());
-        for (const auto& pair : host.m_k6ExitStreams) {
+        for (const auto& pair : host.m_exitServices.LT5ExitSnapshot()) {
             if (pair.second.inbound) ++out.full_streams;
             else ++out.dial_streams;
         }
@@ -911,7 +909,7 @@ bool CKad6OriginSocket::LT3ApplyServiceSwitch( CLiveTunnel& host, kad6::K6Servic
         for (const auto& pair : host.m_kadBridge.LT3SourceLeaseEntries())
             if (pair.second.state != kad6::K6SourceLeaseState::Closed)
                 ++active[static_cast<size_t>(kad6::K6Service::ExitKad)];
-        for (const auto& pair : host.m_k6ExitStreams)
+        for (const auto& pair : host.m_exitServices.LT5ExitSnapshot())
             ++active[static_cast<size_t>(pair.second.inbound ? kad6::K6Service::ExitEd2kFull : kad6::K6Service::ExitEd2kDial)];
     }
     if (!host.m_scheduler.LT2HardeningSetEnabled(service, enabled, now, drainSeconds, active[static_cast<size_t>(service)]))
@@ -937,11 +935,12 @@ bool CKad6OriginSocket::LT3ApplyServiceSwitch( CLiveTunnel& host, kad6::K6Servic
                 host.m_kadBridge.LT3EraseClosedSourceLeases(static_cast<size_t>(-1));
             }
             } else if (drainSeconds == 0 && (service == kad6::K6Service::ExitEd2kDial || service == kad6::K6Service::ExitEd2kFull)) {
-                for (auto& pair : host.m_k6ExitStreams) {
+                for (auto pair : host.m_exitServices.LT5ExitSnapshot()) {
                     const bool matches = pair.second.inbound ? service == kad6::K6Service::ExitEd2kFull : service == kad6::K6Service::ExitEd2kDial;
                     if (matches) {
                         pair.second.kill_switch_close = true;
                         pair.second.idle_deadline = now;
+                        host.m_exitServices.LT5UpdateExit(pair.first,pair.second.socket,pair.second.generation,pair.second);
                     }
                 }
             }
@@ -1342,6 +1341,1003 @@ void CKad6OriginSocket::LT4StartProbes(CLiveTunnel& host,std::uint64_t nowSecond
         CSingleLock lock(&host.m_pendingLock,TRUE);
         host.m_exitServices.LT4CompleteVisibilityProbe(probe.id,started,nowSeconds);
     }
+}
+
+void CLiveTunnel::ExitHandle_Kad6Dial(const TunnelRequestCtx& ctx,
+                                      const kad6::K6Frame& frame)
+{
+    kad6::K6Dial dial; size_t consumed = 0;
+    if (kad6::DecodeK6Dial(frame.body.data(), frame.body.size(), dial, &consumed) !=
+            kad6::Kad6Status::Ok || consumed != frame.body.size()) return;
+    if (!BeginExitOperation(ctx, TUN_OP_KAD6_GATEWAY)) return;
+    uint64 quotaAllocation = 0;
+    auto reject = [&](kad6::K6DialStatus status) {
+        if (quotaAllocation != 0) {
+            m_scheduler.ReleaseFairAllocation(quotaAllocation);
+            quotaAllocation = 0;
+        }
+        kad6::K6DialResult result; result.stream_id = NewCircuitId();
+        result.status = status; result.transport = dial.protocol;
+        result.apparent_local_endpoint.addr.family = kad6::Kad6Address::Family::None;
+        result.remote_endpoint.addr.family = kad6::Kad6Address::Family::None;
+        std::vector<uint8_t> body;
+        if (kad6::EncodeK6DialResult(result, body) == kad6::Kad6Status::Ok)
+            SendK6GatewayResponse(ctx, kad6::kK6MsgDialOk, body);
+        else AbortExitOperation(ctx.circ->Id(), ctx.req_id);
+    };
+    if (!ConsumeK6QuotaGrant(ctx, kad6::K6QuotaService::ExitEd2kDial,
+            frame, &quotaAllocation)) {
+        reject(kad6::K6DialStatus::PolicyDenied);
+        return;
+    }
+    if (!m_scheduler.LT2HardeningCanAdmit(kad6::K6Service::ExitEd2kDial) ||
+        !K6EconomyAdmit(kad6::K6Service::ExitEd2kDial)) {
+        const uint64 now = static_cast<uint64>(time(NULL));
+        m_metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
+        m_metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 2, 1, 0, 1, now);
+        reject(kad6::K6DialStatus::PolicyDenied);
+        return;
+    }
+    if (dial.protocol != kad6::K6GatewayTransport::TcpEd2k) { reject(kad6::K6DialStatus::Unsupported); return; }
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        if (m_exitServices.LT5ExitCount() >= 512) { pl.Unlock(); reject(kad6::K6DialStatus::Overloaded); return; }
+    }
+    kad6::K6TargetTicket ticket;
+    if (kad6::VerifyK6TargetTicket(MakeKad6HostCryptoHooks(), K6TicketPolicy(),
+            m_exitServices.LT4TicketSecret().data(), 32, dial.ticket.data(),
+            dial.ticket.size(), static_cast<uint64>(time(NULL)), ticket) != kad6::Kad6Status::Ok ||
+        ticket.service != static_cast<kad6::Byte>(kad6::K6TicketService::Ed2kTcp)) {
+        reject(kad6::K6DialStatus::TicketRejected); return;
+    }
+
+    kad6::K6Endpoint apparent; apparent.tcp_port = theApp.GetAdvertisedTcpPort();
+    apparent.udp_port = theApp.GetAdvertisedUdpPort(); apparent.transport_flags = kad6::kK6EpEd2kGateway;
+    apparent.valid_until = static_cast<uint64>(time(NULL)) + kad6::kK6VepMaxTtlSeconds;
+    if (ticket.target_endpoint.addr.family == kad6::Kad6Address::Family::IPv4) {
+        const uint32 publicIp = theApp.GetPublicIP();
+        if (publicIp == 0 || !IsGoodIP(publicIp)) {
+            reject(kad6::K6DialStatus::PolicyDenied); return;
+        }
+        apparent.addr.family = kad6::Kad6Address::Family::IPv4;
+        memcpy(apparent.addr.addr.data(), &publicIp, 4);
+    } else if (ticket.target_endpoint.addr.family == kad6::Kad6Address::Family::IPv6) {
+		const uint64 topologyGeneration = theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+		const natmap::CandidateObservation v6TcpObservation =
+			CFirewallProberV6::Instance().GetDirectRouteObservation(
+				topologyGeneration, natmap::Transport::Tcp);
+        const CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+		if (v6.GetType() != CAddress::IPv6 || !v6.IsPublicIP()
+			|| !v6TcpObservation.IsVerifiedFor(topologyGeneration)) {
+            reject(kad6::K6DialStatus::PolicyDenied); return;
+        }
+        apparent.addr.family = kad6::Kad6Address::Family::IPv6;
+        memcpy(apparent.addr.addr.data(), v6.Data(), 16);
+    } else { reject(kad6::K6DialStatus::PolicyDenied); return; }
+
+    std::vector<uint8_t> initial; size_t offset = 0; bool initialOk = true;
+    while (offset < dial.initial_data.size()) {
+        if (dial.initial_data.size() - offset < kad6::kK6Ed2kHeaderSize) { initialOk = false; break; }
+        const uint8_t* p = dial.initial_data.data() + offset;
+        const uint32 packetLength = static_cast<uint32>(p[1]) |
+            (static_cast<uint32>(p[2]) << 8) | (static_cast<uint32>(p[3]) << 16) |
+            (static_cast<uint32>(p[4]) << 24);
+        const size_t frameLength = 5ull + packetLength;
+        if (packetLength == 0 || frameLength > dial.initial_data.size() - offset) { initialOk = false; break; }
+        kad6::K6Ed2kFrameView view;
+        if (kad6::DecodeK6Ed2kFrame(p, frameLength, view) != kad6::Kad6Status::Ok) { initialOk = false; break; }
+        const kad6::K6Ed2kDisposition disposition = kad6::K6Ed2kPolicy(
+            kad6::K6Ed2kDirection::OriginToRemote,
+            kad6::ClassifyK6Ed2kFrame(view.protocol, view.opcode));
+        std::vector<uint8_t> rewritten;
+        if (disposition == kad6::K6Ed2kDisposition::RewriteEndpoint) {
+            if (view.opcode == OP_HELLO || view.opcode == OP_HELLOANSWER)
+                initialOk = SanitizeK6HelloFrame(p, frameLength, apparent, rewritten);
+            else
+                initialOk = kad6::RewriteK6Ed2kPublicIpAnswer(view, apparent.addr, rewritten) == kad6::Kad6Status::Ok;
+        } else if (disposition == kad6::K6Ed2kDisposition::Pass)
+            rewritten.assign(p, p + frameLength);
+        else if (disposition == kad6::K6Ed2kDisposition::Drop) {
+            offset += frameLength; continue;
+        } else initialOk = false;
+        if (!initialOk) break;
+        initial.insert(initial.end(), rewritten.begin(), rewritten.end()); offset += frameLength;
+    }
+    if (!initialOk) { reject(kad6::K6DialStatus::BadInitialData); return; }
+    if (initial.size() > ticket.max_bytes) {
+        reject(kad6::K6DialStatus::PolicyDenied); return;
+    }
+    const uint64 streamMaxBytes = (std::min<uint64>)(
+        ticket.max_bytes - initial.size(), quotaAllocation != 0
+            ? 4ull * 1024ull * 1024ull * 1024ull
+            : ticket.max_bytes - initial.size());
+
+    uint64 streamId = 0; const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
+    uint8 randomId[8];
+    do { if (!crypto.random_bytes || !crypto.random_bytes(randomId, 8)) { reject(kad6::K6DialStatus::Overloaded); return; }
+        streamId = 0; for (int i=0;i<8;++i) streamId |= static_cast<uint64>(randomId[i]) << (8*i);
+    } while(streamId==0);
+
+    if (quotaAllocation != 0) {
+        // Exit handlers run under OnCellReceived's tunnel lock. Arm the
+        // shared timer before entering any pending-rank section so the global
+        // order remains tunnel -> pending on every fair-queue path.
+        if (!EnsureK6ShapeTimerLocked()) {
+            reject(kad6::K6DialStatus::Overloaded);
+            return;
+        }
+        kad6::Hash32 targetHash{};
+        std::vector<uint8_t> target(ticket.target_endpoint.addr.addr.begin(),
+                                    ticket.target_endpoint.addr.addr.end());
+        target.push_back(static_cast<uint8_t>(ticket.target_endpoint.tcp_port));
+        target.push_back(static_cast<uint8_t>(ticket.target_endpoint.tcp_port >> 8));
+        bool fairRegistered = false;
+        if (crypto.sha256
+            && crypto.sha256(target.data(), target.size(), targetHash.data())) {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            fairRegistered = m_scheduler.RegisterFairStream(
+                quotaAllocation, streamId, targetHash, ticket.max_bytes,
+                16ull * 1024ull * 1024ull * 1024ull);
+        }
+        if (!fairRegistered) {
+            reject(kad6::K6DialStatus::Overloaded);
+            return;
+        }
+    }
+
+    uint32 ip = 0; uint32 id = 0x01000001u;
+    if (ticket.target_endpoint.addr.family == kad6::Kad6Address::Family::IPv4) {
+        memcpy(&ip, ticket.target_endpoint.addr.addr.data(), 4); id = ntohl(ip);
+    }
+    CKad6ExitClient* client = new CKad6ExitClient(NULL, ticket.target_endpoint.tcp_port,
+        id, 0, 0, false);
+    if (ip) client->SetIP(ip);
+    else {
+        CAddress target(ticket.target_endpoint.addr.addr.data());
+        client->SetIPv6Address(target); client->SetConnectIP(target.ToSyntheticUInt32());
+        client->SetUserIDHybrid(0x01000001u);
+    }
+    theApp.clientlist->AddClient(client);
+    K6ExitStreamRuntime runtime; runtime.circ_id = ctx.circ->Id(); runtime.dial_request_id = ctx.req_id;
+    runtime.quota_allocation_id = quotaAllocation;
+    runtime.circuit = ctx.circ; runtime.ticket = ticket; runtime.apparent = apparent;
+    runtime.network_origin = (ticket.provenance_flags &
+        kad6::kK6ProvenanceFlagNativeKad6) != 0
+        ? kad6::kK6NetOriginKad6 : kad6::kK6NetOriginKad2;
+    runtime.client = client; runtime.flow = kad6::K6StreamFlowState(streamMaxBytes);
+    runtime.stream_max_bytes = streamMaxBytes;
+    runtime.initial_data = std::move(initial); runtime.created_at = runtime.last_activity = static_cast<uint64>(time(NULL));
+    runtime.idle_timeout_ms = dial.idle_timeout_ms;
+    runtime.connect_deadline = runtime.created_at + ((dial.connect_timeout_ms + 999u) / 1000u);
+    runtime.idle_deadline = runtime.created_at + ((dial.idle_timeout_ms + 999u) / 1000u);
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        if(!m_exitServices.LT5CreateExit(streamId,runtime)){
+            pl.Unlock();
+            ReleaseK6FairStreamLocked(streamId);
+            reject(kad6::K6DialStatus::Overloaded);
+            if (client->Disconnected(_T("Kad6 flow-control capacity"))) delete client;
+            return;
+        }
+    }
+    const bool connecting = client->TryToConnect(true, true, RUNTIME_CLASS(CKad6ExitSocket));
+    CKad6ExitSocket* socket = connecting ? DYNAMIC_DOWNCAST(CKad6ExitSocket, client->socket) : NULL;
+    if (!socket) {
+        CSingleLock pl(&m_pendingLock,TRUE);K6ExitStreamRuntime removed;m_exitServices.LT5TakeExit(streamId,NULL,runtime.generation,removed);
+        m_peerState.RecordSourceFailure(BuildLiveSourceEndpointKey(
+            runtime.ticket.target_endpoint, runtime.network_origin),
+            static_cast<uint64>(time(NULL)));
+        ReleaseK6FairStreamLocked(streamId); pl.Unlock();
+        m_metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
+            runtime.network_origin == kad6::kK6NetOriginKad6 ? 1 : 0,
+            2, 0, 1, static_cast<uint64>(time(NULL)));
+        reject(kad6::K6DialStatus::ConnectFailed);
+        if (connecting && client->Disconnected(_T("Kad6 outgoing connect failed")))
+            delete client;
+        return;
+    }
+    socket->Initialize(streamId);
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        K6ExitStreamRuntime stream;if(m_exitServices.LT5FindExit(streamId,NULL,stream)){stream.socket=socket;m_exitServices.LT5UpdateExit(streamId,NULL,stream.generation,stream);}
+    }
+}
+
+bool CLiveTunnel::ActivateK6Inbound(CKad6ExitSocket* socket,
+                                    const kad6::Hash16& fileHash,
+                                    const std::vector<std::vector<uint8_t>>& initialFrames)
+{
+    if (!socket || initialFrames.empty()) return false;
+    if (!m_scheduler.LT2HardeningCanAdmit(kad6::K6Service::ExitEd2kFull) ||
+        !K6EconomyAdmit(kad6::K6Service::ExitEd2kFull)) {
+        const uint64 now = static_cast<uint64>(time(NULL));
+        m_metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
+        m_metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 3, 1, 0, 1, now);
+        return false;
+    }
+
+    const std::vector<uint8_t>* hello = NULL;
+    for (const std::vector<uint8_t>& raw : initialFrames) {
+        kad6::K6Ed2kFrameView view;
+        if (kad6::DecodeK6Ed2kFrame(raw.data(), raw.size(), view) != kad6::Kad6Status::Ok)
+            return false;
+        if (!hello && kad6::ClassifyK6Ed2kFrame(view.protocol, view.opcode) ==
+                kad6::K6Ed2kFrameClass::Hello)
+            hello = &raw;
+    }
+    const std::vector<uint8_t>& request = initialFrames.back();
+    kad6::K6Ed2kFrameView requestView;
+    if (!hello || kad6::DecodeK6Ed2kFrame(request.data(), request.size(), requestView) !=
+            kad6::Kad6Status::Ok || requestView.protocol != OP_EDONKEYPROT ||
+        (requestView.opcode != OP_REQUESTFILENAME && requestView.opcode != OP_SETREQFILEID) ||
+        requestView.payload_size < fileHash.size() ||
+        !kad6::Kad6CtEqual(requestView.payload, fileHash.data(), fileHash.size()))
+        return false;
+
+    uint8 randomId[8];
+    uint64 streamId = 0;
+    const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
+    if (!crypto.random_bytes) return false;
+    do {
+        if (!crypto.random_bytes(randomId, sizeof randomId)) return false;
+        streamId = 0;
+        for (size_t i = 0; i < sizeof randomId; ++i)
+            streamId |= static_cast<uint64>(randomId[i]) << (8 * i);
+    } while (streamId == 0);
+
+    kad6::K6CohortBackend selected;
+    kad6::K6SourceLease lease;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        K6ExitStreamRuntime collision;if(m_exitServices.LT5ExitCount()>=512||m_exitServices.LT5FindExit(streamId,collision))return false;
+        kad6::Hash16 cohort{};
+        bool cohortSet = false;
+        for (const auto& pair : m_kadBridge.LT3SourceLeaseEntries()) {
+            const kad6::K6SourceLease& candidate = pair.second;
+            if (!m_kadBridge.LT3SourceLeaseCanAccept(pair.first) ||
+                !kad6::Kad6CtEqual(candidate.bind.file_hash.data(), fileHash.data(),
+                    fileHash.size()))
+                continue;
+            if (!cohortSet) {
+                cohort = candidate.bound.cohort_id;
+                cohortSet = true;
+            } else if (!kad6::Kad6CtEqual(cohort.data(),
+                           candidate.bound.cohort_id.data(), cohort.size())) {
+                // One shared endpoint cannot disambiguate distinct identities
+                // for the same eD2K hash. Dedicated VEPs must handle that case.
+                return false;
+            }
+        }
+        if (!cohortSet || !m_kadBridge.LT3CohortSelect(fileHash, cohort, streamId, selected))
+            return false;
+        const auto selectedLease = m_kadBridge.LT3FindSourceLease(selected.lease_id);
+        if (!selectedLease || !m_kadBridge.LT3SourceLeaseCanAccept(selected.lease_id)) {
+            m_kadBridge.LT3CohortReleaseStream(streamId);
+            ReleaseK6FairStreamLocked(streamId);
+            return false;
+        }
+        lease = *selectedLease;
+    }
+
+    std::shared_ptr<CLiveCircuit> circuit;
+    {
+        CSingleLock lock(&m_lock, TRUE);
+        for (const auto& candidate : m_circuitRegistry.GetSnapshot())
+            if (candidate && candidate->Id() == selected.circuit_id &&
+                candidate->State() == CircuitState::Active) {
+                circuit = candidate;
+                break;
+            }
+    }
+    if (!circuit) {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        m_kadBridge.LT3CohortReleaseStream(streamId);
+        ReleaseK6FairStreamLocked(streamId);
+        return false;
+    }
+
+    const uint64 idleMs = 120000;
+    uint64 maxBytes = 4ull * 1024ull * 1024ull * 1024ull;
+    if (lease.bind.max_upload_bps != 0)
+        maxBytes = (std::min)(maxBytes,
+            static_cast<uint64>(lease.bind.max_upload_bps) * (idleMs / 1000u));
+    if (!socket->BindInboundStream(streamId)) {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        m_kadBridge.LT3CohortReleaseStream(streamId);
+        ReleaseK6FairStreamLocked(streamId);
+        return false;
+    }
+
+    K6ExitStreamRuntime runtime;
+    runtime.circ_id = selected.circuit_id;
+    runtime.circuit = circuit;
+    runtime.apparent = lease.bound.virtual_endpoint;
+    runtime.socket = socket;
+    runtime.client = socket->client;
+    runtime.flow = kad6::K6StreamFlowState(maxBytes);
+    runtime.stream_max_bytes = maxBytes;
+    runtime.ticket.max_bytes = maxBytes;
+    runtime.created_at = runtime.last_activity = static_cast<uint64>(time(NULL));
+    runtime.idle_timeout_ms = static_cast<uint32>(idleMs);
+    runtime.idle_deadline = runtime.created_at + (idleMs / 1000u);
+    runtime.connected = true;
+    runtime.inbound = true;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        if(!m_exitServices.LT5CreateExit(streamId,runtime)){
+            pl.Unlock();
+            socket->Disconnect(_T("Kad6 flow-control capacity"));
+            return false;
+        }
+    }
+    m_metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 3, 0, 0, 1,
+                    runtime.created_at);
+
+    kad6::K6DialResult accept;
+    accept.stream_id = streamId;
+    accept.status = kad6::K6DialStatus::Ok;
+    accept.transport = kad6::K6GatewayTransport::TcpEd2k;
+    accept.flags = 0x0001; // inbound front-door stream
+    accept.apparent_local_endpoint = lease.bound.virtual_endpoint;
+    // A needs a nonzero peer address for unchanged credit/client bookkeeping,
+    // but disclosing the vanilla peer's network endpoint is unnecessary. Use
+    // a stream-scoped RFC1918 pseudonym which can never be published or dialed.
+    accept.remote_endpoint.addr.family = kad6::Kad6Address::Family::IPv4;
+    accept.remote_endpoint.addr.addr = {10,
+        static_cast<uint8_t>(streamId >> 16),
+        static_cast<uint8_t>(streamId >> 8),
+        static_cast<uint8_t>(streamId)};
+    accept.max_bytes = maxBytes;
+    accept.idle_timeout_ms = static_cast<uint32>(idleMs);
+    std::vector<uint8_t> body;
+    if (kad6::EncodeK6DialResult(accept, body) != kad6::Kad6Status::Ok ||
+        !SendK6GatewayPush(circuit, selected.circuit_id, 0,
+            kad6::kK6MsgAccept, kad6::kK6FlagFinal, body) ||
+        !SendK6InitialCredit(selected.circuit_id, streamId, 0, circuit, true) ||
+        !OnK6ExitPacket(streamId,hello->data(),hello->size()) ||
+        !OnK6ExitPacket(streamId,request.data(),request.size())) {
+        CSingleLock pl(&m_pendingLock,TRUE);K6ExitStreamRuntime removed;m_exitServices.LT5TakeExit(streamId,socket,runtime.generation,removed);
+        m_kadBridge.LT3CohortReleaseStream(streamId);
+        ReleaseK6FairStreamLocked(streamId);
+        pl.Unlock();
+        socket->Disconnect(_T("Kad6 inbound activation failed"));
+        return false;
+    }
+    LIVE_LOG("K6", "front-door selected lease=%llu stream=%llu circuit=%u",
+        static_cast<unsigned long long>(selected.lease_id),
+        static_cast<unsigned long long>(streamId), selected.circuit_id);
+    return true;
+}
+
+bool CLiveTunnel::OnK6ExitPacket(uint64 streamId,const uint8_t* raw,size_t length)
+{
+    kad6::K6Ed2kFrameView view;
+    if (kad6::DecodeK6Ed2kFrame(raw, length, view) != kad6::Kad6Status::Ok) return false;
+    K6ExitStreamRuntime runtime; CKad6ExitSocket* source=NULL; uint64 sequence = 0;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        if(!m_exitServices.LT5FindExit(streamId,runtime)||!runtime.socket||!runtime.connected)return false;
+        source=runtime.socket;
+        sequence=runtime.tx_sequence;
+        const uint64 now = static_cast<uint64>(time(NULL));
+        const uint64 idle=(runtime.idle_timeout_ms+999u)/1000u;runtime.last_activity=now;runtime.idle_deadline=now+idle;
+        if(!m_exitServices.LT5UpdateExit(streamId,source,runtime.generation,runtime))return false;
+    }
+    const kad6::K6Ed2kFrameClass frameClass = kad6::ClassifyK6Ed2kFrame(view.protocol, view.opcode);
+    const kad6::K6Ed2kDisposition disposition = kad6::K6Ed2kPolicy(
+        kad6::K6Ed2kDirection::RemoteToOrigin, frameClass);
+    if (disposition == kad6::K6Ed2kDisposition::ConvertToHints) {
+        kad6::K6ParsedPex pex;
+        if (kad6::DecodeEd2kSourceExchange(view.opcode, view.payload, view.payload_size, pex) !=
+                kad6::Kad6Status::Ok) return false;
+        kad6::Hash32 digest{}; const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
+        if (!crypto.sha256 || !crypto.sha256(raw, length, digest.data())) return false;
+        kad6::K6SourceHints hints; hints.source_session_id = runtime.circ_id;
+        hints.source_stream_id = streamId; hints.pex_version = pex.version;
+        hints.object_hash = pex.object_hash; hints.exterior_message_hash = digest;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            K6ExitStreamRuntime stream;if(!m_exitServices.LT5FindExit(streamId,source,stream))return false;
+            hints.source_message_seq=stream.pex_sequence++;
+            if(!m_exitServices.LT5UpdateExit(streamId,source,stream.generation,stream))return false;
+        }
+        std::set<std::string> dedupe;
+        for (size_t i = 0; i < pex.sources.size() && hints.sources.size() < kad6::kK6SourceHintsMaxSources; ++i) {
+            const kad6::K6ParsedPexSource& source = pex.sources[i];
+            if (source.low_id || source.endpoint.tcp_port == 0) continue;
+            std::string key(reinterpret_cast<const char*>(source.endpoint.addr.addr.data()), 16);
+            key.push_back(static_cast<char>(source.endpoint.tcp_port));
+            key.push_back(static_cast<char>(source.endpoint.tcp_port >> 8));
+            if (!dedupe.insert(key).second) continue;
+            LiveTunnelAuthorizedTarget target; target.circ_id = runtime.circ_id;
+            target.object_hash = pex.object_hash; target.digest = digest;
+            target.endpoint = source.endpoint;
+            target.endpoint.valid_until = static_cast<uint64>(time(NULL)) + kad6::kK6TicketMaxTtlSeconds;
+            if (!K6AllowTicketTarget(this, static_cast<kad6::Byte>(kad6::K6TicketService::Ed2kTcp), target.endpoint))
+                continue;
+            kad6::K6SourceHint hint; hint.endpoint = target.endpoint;
+            hint.user_hash = source.user_hash; hint.crypt_options = source.crypt_options;
+            if (!IssueK6RuntimeTicket(target, runtime.ticket.max_bytes,
+                    kad6::K6Provenance::Pex, runtime.circ_id, streamId,
+                    hints.source_message_seq, hint.ticket)) continue;
+            hints.sources.push_back(std::move(hint));
+        }
+        std::vector<uint8_t> body;
+        return kad6::EncodeK6SourceHints(hints, body) == kad6::Kad6Status::Ok &&
+            SendK6GatewayPush(runtime.circuit, runtime.circ_id, 0,
+                kad6::kK6MsgSourceHints, kad6::kK6FlagFinal, body);
+    }
+    if (disposition == kad6::K6Ed2kDisposition::Drop) return true;
+    if (disposition != kad6::K6Ed2kDisposition::Pass) return false;
+    CKad6ExitSocket* pauseSocket = NULL;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        K6ExitStreamRuntime stream;if(!m_exitServices.LT5FindExit(streamId,source,stream))return false;
+        const uint64 sent=m_exitServices.LT5Sent(stream.circ_id,streamId,1);
+        const uint64 received=stream.flow.total_bytes(0);
+        const uint64 remaining = stream.stream_max_bytes == 0 ||
+                sent + received >= stream.stream_max_bytes
+            ? (stream.stream_max_bytes == 0
+                ? (std::numeric_limits<uint64>::max)() : 0)
+            : stream.stream_max_bytes - sent - received;
+        const bool waitForCredit = !stream.pending_credit_frames.empty() ||
+            m_exitServices.LT5Available(stream.circ_id,streamId,1,remaining,
+                (std::numeric_limits<uint64>::max)(),
+                2u*1024u*1024u-stream.pending_credit_bytes)<length;
+        if (waitForCredit) {
+            if (stream.pending_credit_frames.size() >= 64 ||
+                length > 2u * 1024u * 1024u - stream.pending_credit_bytes)
+                return false;
+            stream.pending_credit_frames.emplace_back(raw,raw+length);stream.pending_credit_bytes+=length;
+            if(stream.credit_stall_since_ms==0)stream.credit_stall_since_ms=
+                    M2A_LT3_K6ShapeNowUs() / 1000u;
+            pauseSocket=stream.socket;
+            if(!m_exitServices.LT5UpdateExit(streamId,source,stream.generation,stream))return false;
+        }
+    }
+    if (pauseSocket) {
+        pauseSocket->SetKad6ReadPaused(true);
+        return true;
+    }
+    kad6::K6StreamData data; data.stream_id = streamId; data.sequence = sequence;
+    data.direction = 1; data.flags = 0x02; data.data.assign(raw, raw + length);
+    std::vector<uint8_t> body;
+    if (kad6::EncodeK6StreamData(data, body) != kad6::Kad6Status::Ok) return false;
+    if (runtime.quota_allocation_id != 0) {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        K6ExitStreamRuntime stream;if(!m_exitServices.LT5FindExit(streamId,source,stream)||
+            stream.flow.CanAccept(data)!=kad6::Kad6Status::Ok)
+            return false;
+        if (!QueueK6FairPayloadLocked(streamId, 1, std::move(body))) {
+            ReleaseK6FairStreamLocked(streamId);
+            return false;
+        }
+        const uint64 sent=m_exitServices.LT5Sent(stream.circ_id,streamId,1);
+        const uint64 received=stream.flow.total_bytes(0);
+        const uint64 remaining = stream.stream_max_bytes == 0 ||
+                sent + received >= stream.stream_max_bytes
+            ? (stream.stream_max_bytes == 0
+                ? (std::numeric_limits<uint64>::max)() : 0)
+            : stream.stream_max_bytes - sent - received;
+        if(!m_exitServices.LT5CommitExitSend(source,streamId,stream.generation,1,length,remaining,
+                (std::numeric_limits<uint64>::max)(),2u*1024u*1024u)||
+            stream.flow.Accept(data)!=kad6::Kad6Status::Ok) {
+            ReleaseK6FairStreamLocked(streamId);
+            return false;
+        }
+        ++stream.tx_sequence;if(!m_exitServices.LT5UpdateExit(streamId,source,stream.generation,stream)){ReleaseK6FairStreamLocked(streamId);return false;}return true;
+    }
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        K6ExitStreamRuntime stream;if(!m_exitServices.LT5FindExit(streamId,source,stream)||
+            stream.flow.CanAccept(data)!=kad6::Kad6Status::Ok)
+            return false;
+        const uint64 sent=m_exitServices.LT5Sent(stream.circ_id,streamId,1);
+        const uint64 received=stream.flow.total_bytes(0);
+        const uint64 remaining = stream.stream_max_bytes == 0 ||
+                sent + received >= stream.stream_max_bytes
+            ? (stream.stream_max_bytes == 0
+                ? (std::numeric_limits<uint64>::max)() : 0)
+            : stream.stream_max_bytes - sent - received;
+        if(!m_exitServices.LT5CommitExitSend(source,streamId,stream.generation,1,length,remaining,
+                (std::numeric_limits<uint64>::max)(),2u*1024u*1024u)||
+            stream.flow.Accept(data)!=kad6::Kad6Status::Ok)
+            return false;
+        ++stream.tx_sequence;if(!m_exitServices.LT5UpdateExit(streamId,source,stream.generation,stream))return false;
+    }
+    if (!SendK6GatewayPush(runtime.circuit, runtime.circ_id, 0,
+            kad6::kK6MsgStreamData, kad6::kK6FlagFinal, body)) {
+        CKad6ExitSocket* socket = NULL;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            K6ExitStreamRuntime stream;if(m_exitServices.LT5FindExit(streamId,source,stream))socket=stream.socket;
+        }
+        if (socket) socket->Disconnect(_T("Kad6 tunnel rejected accepted frame"));
+        return false;
+    }
+    m_metrics.Add(kad6::K6MetricFamily::ExitBytesTotal, 0,
+        runtime.inbound ? 3 : 2, 0, static_cast<uint64>(length),
+        static_cast<uint64>(time(NULL)));
+    m_metrics.Add(kad6::K6MetricFamily::TransportBytesTotal, 0, 0, 0,
+        static_cast<uint64>(length), static_cast<uint64>(time(NULL)));
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        m_scheduler.LT2RecordUsefulBytes(static_cast<uint64>(length));
+    }
+    return true;
+}
+
+bool CLiveTunnel::SendK6FlowCredit(
+    uint32 circId, const std::weak_ptr<CLiveCircuit>& circuit, bool fromExit,
+    const kad6::K6MaxStreamData& streamCredit,const kad6::K6MaxData& circuitCredit)
+{
+    auto sendOne = [&](uint8 msgType, const std::vector<uint8_t>& body) -> bool {
+        if(fromExit)return SendK6GatewayPush(circuit,circId,0,msgType,kad6::kK6FlagFinal,body);
+        kad6::K6Frame frame;frame.msg_type=msgType;frame.request_id=NewCircuitId();frame.body=body;
+        std::vector<uint8_t> wire;
+        return kad6::EncodeK6Frame(frame,wire)==kad6::Kad6Status::Ok&&
+            SendMessagePinned(frame.request_id,TUN_OP_KAD6_GATEWAY,wire.data(),
+                wire.size(),ESE_CAP_KAD6,circId)==circId;
+    };
+    std::vector<uint8_t> streamBody,circuitBody;
+    return kad6::EncodeK6MaxStreamData(streamCredit,streamBody)==kad6::Kad6Status::Ok&&
+        kad6::EncodeK6MaxData(circuitCredit,circuitBody)==kad6::Kad6Status::Ok&&
+        sendOne(kad6::kK6MsgMaxStreamData,streamBody)&&sendOne(kad6::kK6MsgMaxData,circuitBody);
+}
+
+bool CLiveTunnel::SendK6InitialCredit(
+    uint32 circId, uint64 streamId, uint8 direction,
+    const std::weak_ptr<CLiveCircuit>& circuit, bool fromExit)
+{
+    kad6::K6MaxStreamData streamCredit;kad6::K6MaxData circuitCredit;
+    {
+        CSingleLock pl(&m_pendingLock,TRUE);
+        if(!m_exitServices.LT5InitialCredit(circId,streamId,direction,streamCredit,circuitCredit))return false;
+    }
+    return SendK6FlowCredit(circId,circuit,fromExit,streamCredit,circuitCredit);
+}
+
+bool CLiveTunnel::ConsumeK6ReceiveCredit(
+    uint32 circId, uint64 streamId, uint8 direction, size_t bytes,
+    const std::weak_ptr<CLiveCircuit>& circuit, bool fromExit)
+{
+    kad6::K6MaxStreamData streamCredit;kad6::K6MaxData circuitCredit;bool stillPaused=false;
+    {
+        CSingleLock pl(&m_pendingLock,TRUE);
+        if(!m_exitServices.LT5Consume(circId,streamId,direction,bytes,M2A_LT3_K6ShapeNowUs()/1000u,streamCredit,circuitCredit))return false;
+        stillPaused=m_exitServices.LT5ReadsPaused(circId);
+    }
+    return stillPaused||SendK6FlowCredit(circId,circuit,fromExit,streamCredit,circuitCredit);
+}
+
+void CLiveTunnel::FlushK6OriginCredit(uint32 circId)
+{
+    std::vector<CKad6OriginSocket*> resumed;std::vector<MainThreadReq> requests;
+    CSingleLock pl(&m_pendingLock, TRUE);
+    for(auto pair:m_exitServices.LT5OriginSnapshot()){
+        K6OriginStreamRuntime& stream = pair.second;
+        if (stream.circ_id != circId) continue;
+        bool changed=false;
+        while (!stream.pending_credit_frames.empty()) {
+            K6QueuedOriginFrame& queued = stream.pending_credit_frames.front();
+            const uint64 sent=m_exitServices.LT5Sent(circId,pair.first,0);
+            const uint64 received = stream.flow.total_bytes(1);
+            const uint64 remaining = stream.dial.max_bytes == 0 ||
+                    sent + received >= stream.dial.max_bytes
+                ? (stream.dial.max_bytes == 0 ? (std::numeric_limits<uint64>::max)() : 0)
+                : stream.dial.max_bytes - sent - received;
+            if(!m_exitServices.LT5CommitOriginSend(stream.socket,pair.first,stream.generation,0,queued.data_bytes,
+                    remaining,(std::numeric_limits<uint64>::max)(),2u*1024u*1024u))
+                break;
+            MainThreadReq request;
+            request.op = MT_SEND_MSG;
+            request.reqId = queued.request_id;
+            request.subCmd = TUN_OP_KAD6_GATEWAY;
+            request.requiredExitCaps = ESE_CAP_KAD6;
+            request.pinnedCircId = circId;
+            request.k6StreamId = pair.first;
+            request.k6Generation = stream.generation;
+            request.k6FlowBytes = queued.wire.size();
+            request.k6Sequence = queued.sequence;
+            request.k6DataBytes = queued.data_bytes;
+            request.payload = std::move(queued.wire);
+            stream.pending_credit_bytes -= (std::min)(stream.pending_credit_bytes,
+                queued.data_bytes);
+            stream.pending_credit_frames.pop_front();
+            requests.push_back(std::move(request));changed=true;
+        }
+        if (stream.pending_credit_frames.empty()) {
+            stream.credit_stall_since_ms = 0;
+            if (stream.socket) resumed.push_back(stream.socket);
+        }
+        if(changed)m_exitServices.LT5UpdateOrigin(pair.first,stream.socket,stream.generation,stream);
+    }
+    pl.Unlock();
+    for(auto& request:requests)(void)m_scheduler.Enqueue(std::move(request));
+    for (CKad6OriginSocket* socket : resumed)
+        if (socket) socket->SetKad6FlowBlocked(false);
+}
+
+void CLiveTunnel::FlushK6ExitCredit(uint32 circId)
+{
+    struct Push {
+        std::weak_ptr<CLiveCircuit> circuit;
+        uint32 circ_id = 0;
+        uint64 stream_id = 0;
+        std::vector<uint8_t> body;
+    };
+    std::vector<Push> pushes;
+    std::vector<CKad6ExitSocket*> resumed;
+    std::vector<CKad6ExitSocket*> failed;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        for(auto pair:m_exitServices.LT5ExitSnapshot()){
+            K6ExitStreamRuntime& stream = pair.second;
+            if (stream.circ_id != circId || !stream.connected) continue;
+            bool changed=false;
+            while (!stream.pending_credit_frames.empty()) {
+                const std::vector<uint8_t>& raw = stream.pending_credit_frames.front();
+                const uint64 sent=m_exitServices.LT5Sent(circId,pair.first,1);
+                const uint64 received = stream.flow.total_bytes(0);
+                const uint64 remaining = stream.stream_max_bytes == 0 ||
+                        sent + received >= stream.stream_max_bytes
+                    ? (stream.stream_max_bytes == 0
+                        ? (std::numeric_limits<uint64>::max)() : 0)
+                    : stream.stream_max_bytes - sent - received;
+                if (m_exitServices.LT5Available(circId,pair.first,1,remaining,
+                        (std::numeric_limits<uint64>::max)(),
+                        2u * 1024u * 1024u) < raw.size())
+                    break;
+                kad6::K6StreamData data;
+                data.stream_id = pair.first;
+                data.sequence = stream.tx_sequence;
+                data.direction = 1;
+                data.flags = 0x02;
+                data.data = raw;
+                std::vector<uint8_t> body;
+                if (kad6::EncodeK6StreamData(data, body) != kad6::Kad6Status::Ok ||
+                    stream.flow.CanAccept(data) != kad6::Kad6Status::Ok)
+                    break;
+                bool queued = false;
+                if (stream.quota_allocation_id != 0) {
+                    queued = QueueK6FairPayloadLocked(pair.first, 1, std::move(body));
+                    if (!queued) break;
+                }
+                if(!m_exitServices.LT5CommitExitSend(stream.socket,pair.first,stream.generation,1,raw.size(),remaining,
+                        (std::numeric_limits<uint64>::max)(),2u*1024u*1024u)||
+                    stream.flow.Accept(data) != kad6::Kad6Status::Ok) {
+                    if (queued) ReleaseK6FairStreamLocked(pair.first);
+                    break;
+                }
+                ++stream.tx_sequence;
+                if (stream.quota_allocation_id == 0) {
+                    Push push;
+                    push.circuit = stream.circuit;
+                    push.circ_id = stream.circ_id;
+                    push.stream_id = pair.first;
+                    push.body = std::move(body);
+                    pushes.push_back(std::move(push));
+                    queued = true;
+                }
+                stream.pending_credit_bytes -= (std::min)(stream.pending_credit_bytes,
+                    raw.size());
+                stream.pending_credit_frames.pop_front();
+                changed=true;
+            }
+            if (stream.pending_credit_frames.empty()) {
+                stream.credit_stall_since_ms = 0;
+                if (stream.socket) resumed.push_back(stream.socket);
+            }
+            if(changed)m_exitServices.LT5UpdateExit(pair.first,stream.socket,stream.generation,stream);
+        }
+    }
+    for (const Push& push : pushes)
+        if (!SendK6GatewayPush(push.circuit, push.circ_id, 0,
+                kad6::kK6MsgStreamData, kad6::kK6FlagFinal, push.body)) {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            K6ExitStreamRuntime stream;if(m_exitServices.LT5FindExit(push.stream_id,stream)&&stream.socket)failed.push_back(stream.socket);
+        }
+    for (CKad6ExitSocket* socket : failed)
+        if (socket) socket->Disconnect(_T("Kad6 credit flush failed"));
+    for (CKad6ExitSocket* socket : resumed)
+        if (socket) socket->SetKad6ReadPaused(false);
+}
+
+void CLiveTunnel::OnK6ExitSocketConnect(uint64 streamId, CKad6ExitSocket* socket, int error)
+{
+    K6ExitStreamRuntime runtime; bool found = false;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        if(m_exitServices.LT5FindExit(streamId,socket,runtime)){
+            found=true;
+            if (error == 0) {
+                const uint64 now = static_cast<uint64>(time(NULL));
+                runtime.connected=true;runtime.last_activity=now;
+                runtime.idle_deadline=now+((runtime.idle_timeout_ms+999u)/1000u);
+                found=m_exitServices.LT5UpdateExit(streamId,socket,runtime.generation,runtime);
+            }
+            else {
+                ReleaseK6FairStreamLocked(streamId);
+                found=m_exitServices.LT5TakeExit(streamId,socket,runtime.generation,runtime);
+            }
+        }
+    }
+    if (!found) return;
+    kad6::K6DialResult result; result.stream_id = streamId;
+    result.status = error == 0 ? kad6::K6DialStatus::Ok : kad6::K6DialStatus::ConnectFailed;
+    result.transport = kad6::K6GatewayTransport::TcpEd2k; result.apparent_local_endpoint = runtime.apparent;
+    result.remote_endpoint = runtime.ticket.target_endpoint; result.max_bytes = runtime.stream_max_bytes;
+    result.idle_timeout_ms = runtime.idle_timeout_ms;
+    std::vector<uint8_t> body;
+    if (kad6::EncodeK6DialResult(result, body) != kad6::Kad6Status::Ok) {
+        CSingleLock pl(&m_pendingLock,TRUE);K6ExitStreamRuntime removed;m_exitServices.LT5TakeExit(streamId,socket,runtime.generation,removed);
+        ReleaseK6FairStreamLocked(streamId); pl.Unlock();
+        AbortExitOperation(runtime.circ_id, runtime.dial_request_id);
+        if (socket) socket->Disconnect(_T("Kad6 DIAL result encode failed"));
+        return;
+    }
+    if (error == 0) {
+        size_t offset = 0;
+        while (offset < runtime.initial_data.size()) {
+            const uint8_t* p = runtime.initial_data.data() + offset;
+            const uint32 n = static_cast<uint32>(p[1]) | (static_cast<uint32>(p[2]) << 8) |
+                (static_cast<uint32>(p[3]) << 16) | (static_cast<uint32>(p[4]) << 24);
+            const size_t total = 5ull + n;
+            if (!socket->SendRawFrame(p, total)) { result.status = kad6::K6DialStatus::ConnectFailed; break; }
+            offset += total;
+        }
+        kad6::EncodeK6DialResult(result, body);
+    }
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        m_peerState.RecordSourceResult(BuildLiveSourceEndpointKey(
+            runtime.ticket.target_endpoint, runtime.network_origin),
+            result.status == kad6::K6DialStatus::Ok,
+            static_cast<uint64>(time(NULL)));
+    }
+    m_metrics.Add(kad6::K6MetricFamily::SourceDialTotal,
+        runtime.network_origin == kad6::kK6NetOriginKad6 ? 1 : 0,
+        result.status == kad6::K6DialStatus::Ok ? 0 : 2, 0, 1,
+        static_cast<uint64>(time(NULL)));
+    if (result.status != kad6::K6DialStatus::Ok) {
+        CSingleLock pl(&m_pendingLock,TRUE);K6ExitStreamRuntime removed;m_exitServices.LT5TakeExit(streamId,socket,runtime.generation,removed);
+        ReleaseK6FairStreamLocked(streamId);
+    }
+    kad6::K6Frame response; response.msg_type = kad6::kK6MsgDialOk;
+    response.flags = kad6::kK6FlagResponse | kad6::kK6FlagFinal;
+    response.request_id = runtime.dial_request_id; response.body = body;
+    std::vector<uint8_t> wire;
+    if (kad6::EncodeK6Frame(response, wire) != kad6::Kad6Status::Ok ||
+        !CompleteExitOperation(runtime.circ_id, runtime.dial_request_id,
+                               wire.data(), wire.size())) {
+        CSingleLock pl(&m_pendingLock,TRUE);K6ExitStreamRuntime removed;m_exitServices.LT5TakeExit(streamId,socket,runtime.generation,removed);
+        ReleaseK6FairStreamLocked(streamId); pl.Unlock();
+        if (socket) socket->Disconnect(_T("Kad6 DIAL reply failed"));
+        return;
+    }
+
+    if (result.status != kad6::K6DialStatus::Ok) {
+        if (socket) socket->Disconnect(_T("Kad6 initial data failed"));
+        return;
+    }
+
+    if (result.status == kad6::K6DialStatus::Ok) {
+        if (!SendK6InitialCredit(runtime.circ_id, streamId, 0,
+                runtime.circuit, true)) {
+            if (socket) socket->Disconnect(_T("Kad6 initial credit failed"));
+            return;
+        }
+        const uint64 metricNow = static_cast<uint64>(time(NULL));
+        m_metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 2, 0, 0, 1,
+                        metricNow);
+        const uint8_t* pub = NodeIdentityPub();
+        if (!pub) return;
+        kad6::K6VirtualIdentityEndpoint vep;
+        vep.apparent_source_ip = runtime.apparent.addr;
+        vep.apparent_tcp_port = runtime.apparent.tcp_port;
+        vep.apparent_udp_port = runtime.apparent.udp_port;
+        memcpy(vep.exit_node_pub.data(), pub, 32);
+        vep.source_lease_id = streamId;
+        vep.valid_until = static_cast<uint64>(time(NULL)) + kad6::kK6VepMaxTtlSeconds;
+        std::vector<uint8_t> vepBody;
+        if (kad6::SignK6Vep(MakeKad6HostCryptoHooks(), vep, vepBody) == kad6::Kad6Status::Ok)
+            SendK6GatewayPush(runtime.circuit, runtime.circ_id, 0,
+                kad6::kK6MsgVep, kad6::kK6FlagFinal, vepBody);
+    }
+}
+
+void CLiveTunnel::OnK6ExitSocketClosed(uint64 streamId, CKad6ExitSocket* socket, int error)
+{
+    (void)error;
+    K6ExitStreamRuntime runtime; bool found = false;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        if(m_exitServices.LT5FindExit(streamId,socket,runtime)){
+            m_kadBridge.LT3CohortReleaseStream(streamId);
+            ReleaseK6FairStreamLocked(streamId);
+            found=m_exitServices.LT5TakeExit(streamId,socket,runtime.generation,runtime);
+        }
+    }
+    if (!found || !runtime.connected) return;
+    kad6::K6StreamClose close; close.stream_id = streamId; close.reason_code = 1;
+    close.last_tx_sequence = runtime.flow.next_sequence(0)
+        ? runtime.flow.next_sequence(0) - 1 : 0;
+    close.last_rx_sequence = runtime.flow.next_sequence(1)
+        ? runtime.flow.next_sequence(1) - 1 : 0;
+    close.total_tx_bytes = runtime.flow.total_bytes(0);
+    close.total_rx_bytes = runtime.flow.total_bytes(1);
+    std::vector<uint8_t> body;
+    if (kad6::EncodeK6StreamClose(close, body) == kad6::Kad6Status::Ok)
+        SendK6GatewayPush(runtime.circuit, runtime.circ_id, 0,
+            kad6::kK6MsgStreamClose, kad6::kK6FlagFinal, body);
+}
+
+void CLiveTunnel::OnK6OriginSocketClosed(uint64 streamId, CKad6OriginSocket* socket)
+{
+    K6OriginStreamRuntime runtime;
+    bool found = false;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        if(m_exitServices.LT5FindOrigin(streamId,socket,runtime))
+            found=m_exitServices.LT5TakeOrigin(streamId,socket,runtime.generation,runtime);
+    }
+    if (!found) return;
+    if (runtime.client) runtime.client->ClearK6SecureIdentVep();
+
+    kad6::K6StreamClose close;
+    close.stream_id = streamId;
+    close.reason_code = 1;
+    close.last_tx_sequence = runtime.flow.next_sequence(0)
+        ? runtime.flow.next_sequence(0) - 1 : 0;
+    close.last_rx_sequence = runtime.flow.next_sequence(1)
+        ? runtime.flow.next_sequence(1) - 1 : 0;
+    close.total_tx_bytes = runtime.flow.total_bytes(0);
+    close.total_rx_bytes = runtime.flow.total_bytes(1);
+    std::vector<uint8_t> body, wire;
+    kad6::K6Frame frame;
+    frame.msg_type = kad6::kK6MsgStreamClose;
+    frame.flags = kad6::kK6FlagLegacyEd2k | kad6::kK6FlagFinal;
+    frame.request_id = NewCircuitId();
+    if (kad6::EncodeK6StreamClose(close, body) == kad6::Kad6Status::Ok) {
+        frame.body = std::move(body);
+        if (kad6::EncodeK6Frame(frame, wire) == kad6::Kad6Status::Ok)
+            SendMessagePinned(frame.request_id, TUN_OP_KAD6_GATEWAY,
+                wire.data(), wire.size(), ESE_CAP_KAD6, runtime.circ_id);
+    }
+}
+
+void CLiveTunnel::ExitHandle_Kad6StreamData(const TunnelRequestCtx& ctx,
+                                             const kad6::K6Frame& frame)
+{
+    kad6::K6StreamData data; size_t consumed = 0;
+    if (kad6::DecodeK6StreamData(frame.body.data(), frame.body.size(), data, &consumed) !=
+            kad6::Kad6Status::Ok || consumed != frame.body.size() || data.direction != 0 ||
+        (data.flags & 0x02) == 0) return;
+    kad6::K6Ed2kFrameView view;
+    if (kad6::DecodeK6Ed2kFrame(data.data.data(), data.data.size(), view) != kad6::Kad6Status::Ok)
+        return;
+    CKad6ExitSocket* socket = NULL; kad6::K6Endpoint apparent;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        K6ExitStreamRuntime stream;if(!m_exitServices.LT5FindExit(data.stream_id,stream)||
+            stream.circ_id!=ctx.circ->Id()||!stream.connected||
+            !m_exitServices.LT5CanAccept(ctx.circ->Id(),data.stream_id,0,data.data.size())||
+            stream.flow.CanAccept(data)!=kad6::Kad6Status::Ok)return;
+        if(!m_exitServices.LT5Accept(ctx.circ->Id(),data.stream_id,0,data.data.size(),M2A_LT3_K6ShapeNowUs()/1000u)||
+            stream.flow.Accept(data)!=kad6::Kad6Status::Ok)return;
+        socket=stream.socket;apparent=stream.apparent;
+        const uint64 now = static_cast<uint64>(time(NULL));
+        const uint64 idle=(stream.idle_timeout_ms+999u)/1000u;stream.last_activity=now;stream.idle_deadline=now+idle;
+        if(!m_exitServices.LT5UpdateExit(data.stream_id,socket,stream.generation,stream))return;
+    }
+    const kad6::K6Ed2kDisposition disposition = kad6::K6Ed2kPolicy(
+        kad6::K6Ed2kDirection::OriginToRemote,
+        kad6::ClassifyK6Ed2kFrame(view.protocol, view.opcode));
+    std::vector<uint8_t> rewritten;
+    if (disposition == kad6::K6Ed2kDisposition::Pass)
+        rewritten = data.data;
+    else if (disposition == kad6::K6Ed2kDisposition::RewriteEndpoint) {
+        const bool ok = (view.opcode == OP_HELLO || view.opcode == OP_HELLOANSWER)
+            ? SanitizeK6HelloFrame(data.data.data(), data.data.size(), apparent, rewritten)
+            : kad6::RewriteK6Ed2kPublicIpAnswer(view, apparent.addr, rewritten) == kad6::Kad6Status::Ok;
+        if (!ok) {
+            ConsumeK6ReceiveCredit(ctx.circ->Id(), data.stream_id, 0,
+                data.data.size(), ctx.circ, true);
+            return;
+        }
+    } else if (disposition == kad6::K6Ed2kDisposition::Drop) {
+        ConsumeK6ReceiveCredit(ctx.circ->Id(), data.stream_id, 0,
+            data.data.size(), ctx.circ, true);
+        return;
+    } else {
+        ConsumeK6ReceiveCredit(ctx.circ->Id(), data.stream_id, 0,
+            data.data.size(), ctx.circ, true);
+        return;
+    }
+    bool fairStream = false;
+    bool fairQueued = false;
+    {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        fairStream = m_scheduler.HasFairStream(data.stream_id);
+        if (fairStream)
+            fairQueued = QueueK6FairPayloadLocked(data.stream_id, 0,
+                std::move(rewritten), data.data.size());
+        if (fairStream && !fairQueued) ReleaseK6FairStreamLocked(data.stream_id);
+    }
+    if (fairStream) {
+        if (!fairQueued && socket)
+            socket->Disconnect(_T("Kad6 fair queue capacity exhausted"));
+        return;
+    }
+    if (socket && socket->SendRawFrame(rewritten.data(), rewritten.size())) {
+        bool inbound = false;
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            K6ExitStreamRuntime stream;inbound=m_exitServices.LT5FindExit(data.stream_id,stream)&&stream.inbound;
+        }
+        m_metrics.Add(kad6::K6MetricFamily::ExitBytesTotal, 1,
+            inbound ? 3 : 2, 0, static_cast<uint64>(rewritten.size()),
+            static_cast<uint64>(time(NULL)));
+        m_metrics.Add(kad6::K6MetricFamily::TransportBytesTotal, 0, 1, 0,
+            static_cast<uint64>(rewritten.size()), static_cast<uint64>(time(NULL)));
+        {
+            CSingleLock pl(&m_pendingLock, TRUE);
+            m_scheduler.LT2RecordUsefulBytes(static_cast<uint64>(rewritten.size()));
+        }
+        ConsumeK6ReceiveCredit(ctx.circ->Id(), data.stream_id, 0,
+            data.data.size(), ctx.circ, true);
+    } else if (socket) {
+        socket->Disconnect(_T("Kad6 downstream socket rejected frame"));
+    }
+}
+
+void CLiveTunnel::ExitHandle_Kad6StreamHalfClose(const TunnelRequestCtx& ctx,
+                                                  const kad6::K6Frame& frame)
+{
+    kad6::K6StreamHalfClose close;size_t consumed=0;
+    if(kad6::DecodeK6StreamHalfClose(frame.body.data(),frame.body.size(),close,&consumed)!=kad6::Kad6Status::Ok||
+       consumed!=frame.body.size()||close.direction!=0)return;
+    CSingleLock pl(&m_pendingLock,TRUE);m_exitServices.LT5HalfCloseExit(ctx.circ->Id(),close);
+}
+
+void CLiveTunnel::ExitHandle_Kad6StreamClose(const TunnelRequestCtx& ctx,
+                                              const kad6::K6Frame& frame)
+{
+    kad6::K6StreamClose close;size_t consumed=0;CKad6ExitSocket* socket=NULL;
+    if(kad6::DecodeK6StreamClose(frame.body.data(),frame.body.size(),close,&consumed)!=kad6::Kad6Status::Ok||consumed!=frame.body.size())return;
+    {
+        CSingleLock pl(&m_pendingLock,TRUE);K6ExitStreamRuntime stream;
+        if(!m_exitServices.LT5CloseExit(ctx.circ->Id(),close,stream))return;socket=stream.socket;
+        m_kadBridge.LT3CohortReleaseStream(close.stream_id);ReleaseK6FairStreamLocked(close.stream_id);
+    }
+    if(socket)socket->Disconnect(_T("Kad6 stream closed"));
+}
+
+void CLiveTunnel::ExitHandle_Kad6MaxStreamData(const TunnelRequestCtx& ctx,
+                                                const kad6::K6Frame& frame)
+{
+    kad6::K6MaxStreamData credit;size_t consumed=0;
+    if(kad6::DecodeK6MaxStreamData(frame.body.data(),frame.body.size(),credit,&consumed)!=kad6::Kad6Status::Ok||
+       consumed!=frame.body.size()||credit.direction!=1)return;
+    {
+        CSingleLock pl(&m_pendingLock,TRUE);
+        K6ExitStreamRuntime stream;if(!m_exitServices.LT5FindExit(credit.stream_id,stream)||
+           stream.circ_id!=ctx.circ->Id()||!m_exitServices.LT5Grant(ctx.circ->Id(),credit))return;
+    }
+    FlushK6ExitCredit(ctx.circ->Id());
+}
+
+void CLiveTunnel::ExitHandle_Kad6MaxData(const TunnelRequestCtx& ctx,
+                                          const kad6::K6Frame& frame)
+{
+    kad6::K6MaxData credit;size_t consumed=0;
+    if(kad6::DecodeK6MaxData(frame.body.data(),frame.body.size(),credit,&consumed)!=kad6::Kad6Status::Ok||
+       consumed!=frame.body.size()||credit.direction!=1)return;
+    {
+        CSingleLock pl(&m_pendingLock,TRUE);if(!m_exitServices.LT5Grant(ctx.circ->Id(),credit))return;
+    }
+    FlushK6ExitCredit(ctx.circ->Id());
 }
 
 } // namespace eSELive

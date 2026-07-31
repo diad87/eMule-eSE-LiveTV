@@ -1628,8 +1628,12 @@ def validate_active_card_outcomes(
                     )
                 )
                 for call in assignment.finditer(translated):
-                    previous = _translated(
-                        path, _git_blob(activation_parent, path)
+                    previous = (
+                        ""
+                        if same_card_parent is not None
+                        else _translated(
+                            path, _git_blob(activation_parent, path)
+                        )
                     )
                     if _preexisting_parent_route(
                         translated, previous, parent_classes, call.start()

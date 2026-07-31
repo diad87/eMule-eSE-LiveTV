@@ -914,6 +914,8 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="WebTemplateRenderer.cpp" />
+    <ClCompile Include="WebHeaderFooter.cpp" />
     <ClCompile Include="WebApiSerializer.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
@@ -1419,6 +1421,8 @@
     <ClInclude Include="WebAuthPolicy.h" />
     <ClInclude Include="WebRouteTable.h" />
     <ClInclude Include="WebRequestDispatch.h" />
+    <ClInclude Include="WebTemplateRenderer.h" />
+    <ClInclude Include="WebHeaderFooter.h" />
     <ClInclude Include="WebApiSerializer.h" />
     <ClInclude Include="WebTransferController.h" />
     <ClInclude Include="WebSearchController.h" />

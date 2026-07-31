@@ -19,16 +19,16 @@
     {
       "path": "srchybrid/WebServer.cpp",
       "baseline_sha256": "afcf5a5b8091995a473548fc05086fe1b2ba0e8127378cd959424fa8f6770028",
-      "overlay_sha256": "975964aa89abe8e763d30930b16451f1b0aa14b61c7f227407453c90ae387e8a",
-      "task": "MOD-0.2 + MOD-2.1..MOD-2.7 + MOD-3.1 + MOD-5.2A/W1",
-      "reason": "Approved cumulative coordinator overlay. MOD-2 delegates parser, auth, routes, serialization, controllers, static responses and diagnostics; MOD-3.1 consumes coherent stream-key snapshots; MOD-5.2A/W1 moves classic request orchestration, route selection, challenge digest, request tokens and gzip ownership to WebRequestDispatch through a closed callback port, while preserving HTTP routes and security headers."
+      "overlay_sha256": "3c13041c42d8c389fb2ff3dc23298396c2e6784885e8b5b257ee6112bb06633a",
+      "task": "MOD-0.2 + MOD-2.1..MOD-2.7 + MOD-3.1 + MOD-5.2A/W1..W2",
+      "reason": "Approved cumulative coordinator overlay. MOD-2 delegates parser, auth, routes, serialization, controllers, static responses and diagnostics; MOD-3.1 consumes coherent stream-key snapshots; MOD-5.2A/W1 moves classic request orchestration and security response ownership, while W2 transfers template state, loading, escaping, metadata, header/footer and auxiliary rendering to bound owners without changing HTTP output."
     },
     {
       "path": "srchybrid/WebServer.h",
       "baseline_sha256": "6457840ed976be885d1d3ef2e13ea01b03f59c960728d9cc14a5b217f3421140",
-      "overlay_sha256": "ef6c24164c42cc87a72aa2de985a492ace81682a4743ac86cc3f7d160a530e44",
-      "task": "MOD-0.2 + MOD-2.2 + MOD-2.3 + MOD-2.5 + MOD-2.6 + MOD-5.2A/W1",
-      "reason": "Approved cumulative interface overlay. Existing slices retain WebAuthPolicy and typed request metadata; MOD-5.2A/W1 removes the coordinator-owned gzip declaration after transferring its implementation to WebRequestDispatch while keeping ThreadData private to the legacy web boundary."
+      "overlay_sha256": "99ec7d2f9ffb92fb7465b867af650ad1248746f60025e5fc6467bbd9c13e2e24",
+      "task": "MOD-0.2 + MOD-2.2 + MOD-2.3 + MOD-2.5 + MOD-2.6 + MOD-5.2A/W1..W2",
+      "reason": "Approved cumulative interface overlay. Existing slices retain WebAuthPolicy and typed request metadata; W1 removes coordinator-owned gzip, and W2 removes the WebTemplates aggregate, ETag/Last-Modified state and obsolete private helpers after transferring their ownership to the bound template and header/footer modules."
     },
     {
       "path": "srchybrid/LiveStreamManager.cpp",

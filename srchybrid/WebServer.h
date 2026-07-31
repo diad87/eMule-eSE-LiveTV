@@ -197,8 +197,6 @@ typedef enum
 typedef struct
 {
 	CArray<UpDown>	PointsForWeb;
-	CString			sETag;
-	CString			sLastModified;
 	CString			sShowServerIP;		//Purity: Action Buttons
 	CString			sShowSharedFile;	//Purity: Action Buttons
 	CString			sShowTransferFile;	//Purity: Action Buttons
@@ -235,58 +233,6 @@ typedef struct
 	CWebSocket		*pSocket;
 	in_addr			inadr;
 } ThreadData;
-
-typedef struct
-{
-	CString	sAddServerBox;
-	CString	sBootstrapLine;
-	CString	sCatArrow;
-	CString	sCommentList;
-	CString	sCommentListLine;
-	CString	sDebugLog;
-	CString	sDownArrow;
-	CString	sDownDoubleArrow;
-	CString	sFooter;
-	CString	sGraphs;
-	CString	sHeader;
-	CString	sHeaderStylesheet;
-	CString	sKad;
-	CString	sLog;
-	CString	sLogin;
-	CString	sMyInfoLog;
-	CString	sPreferences;
-	CString	sProgressbarImgs;
-	CString	sProgressbarImgsPercent;
-	CString	sSearch;
-	CString	sSearchHeader;
-	CString	sSearchResultLine;
-	CString	sServerInfo;
-	CString	sServerLine;
-	CString	sServerList;
-	CString	sSharedLine;
-	CString	sSharedList;
-	CString	sStats;
-	CString	sTransferDownFooter;
-	CString	sTransferDownHeader;
-	CString	sTransferDownLine;
-	CString	sTransferImages;
-	CString	sTransferList;
-	CString	sTransferUpFooter;
-	CString	sTransferUpHeader;
-	CString	sTransferUpLine;
-	CString	sTransferUpQueueBannedHide;
-	CString	sTransferUpQueueBannedLine;
-	CString	sTransferUpQueueBannedShow;
-	CString	sTransferUpQueueFriendHide;
-	CString	sTransferUpQueueFriendLine;
-	CString	sTransferUpQueueFriendShow;
-	CString	sTransferUpQueueHide;
-	CString	sTransferUpQueueLine;
-	CString	sTransferUpQueueShow;
-	CString	sUpArrow;
-	CString	sUpDoubleArrow;
-	uint16	iProgressbarWidth;
-} WebTemplates;
 
 class CWebServer
 {
@@ -346,16 +292,13 @@ private:
 	static CString	_SpecialChars(const CString &cstr, bool noquote = true);
 	static CString	_GetPlainResString(UINT nID, bool noquote = true);
 	static void		_GetPlainResString(CString &rstrOut, UINT nID, bool noquote = true);
-	static CString	_LoadTemplate(const CString &sAll, const CString &sTemplateName);
 	static bool		_IsSessionAdmin(const ThreadData &Data, long sessionID);
 	static bool		_IsSessionAdmin(const ThreadData &Data, const CString &strSsessionID);
 	// eSE 8.14: Challenge-Response authentication
 	static CStringA	_GenerateNonce(const ThreadData &Data);
 	static bool		_ValidateChallengeResponse(const ThreadData &Data, const CString &sNonce, const CString &sResponse, bool &outIsAdmin);
-	static CString	_GetPermissionDenied();
 	static CString	_GetDownloadGraph(const ThreadData &Data, const CString &filehash);
 	static void		_InsertCatBox(CString &Out, int preselect, LPCTSTR boxlabel, bool jump, bool extraCats, const CString &sSession, const CString &sFileHash, bool ed2kbox = false);
-	static CString	_GetSubCatLabel(int cat);
 	static CString  _GetRemoteLinkAddedOk(const ThreadData &Data);
 	static CString  _GetRemoteLinkAddedFailed(const ThreadData &Data);
 	static void		_SetLastUserCat(const ThreadData &Data, long lSession, int cat);
@@ -379,7 +322,6 @@ private:
 	// Common data
 	ese::web::WebAuthPolicy m_authPolicy;
 	GlobalParams	m_Params;
-	WebTemplates	m_Templates;
 	u_long			m_uCurIP;
 	int				m_iSearchSortby;
 	uint16			m_nIntruderDetect;

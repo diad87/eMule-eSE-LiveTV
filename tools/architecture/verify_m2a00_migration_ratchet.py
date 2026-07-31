@@ -37,7 +37,7 @@ EXPECTED_DOC_HASHES: dict[str, str] = {
     "mod52_migration_matrix_v1.json": "0b84a0898a78f62f253587b4085b2c35167fa4f7ead4d0720a5b6cedfbf6d0ca",
     "mod52_migration_baseline_v1.json": "4c162b457059776f13c26341fdab60778088014e183acc48926f22f5d1cbc5c3",
     "mod03_ownership_layering_contract_v2.json": "c3aa3d90bccbc63ff7a0c8ebafd199e9ed2b00acc2c2ef488c5e11515a3f28b1",
-    "mod04_architecture_gate_catalog_v2.json": "24559b15a4f30a090298764d6ddca11fdda57e4afcbb01f4da452c1b6df373d2",
+    "mod04_architecture_gate_catalog_v2.json": "994ea1bf06b5aff9fcdbb368c02760e3074985bdeb47ce3a2fc0e4c00b5f51f5",
 }
 COORDINATORS = (
     ("LiveTunnel", "CLiveTunnel", "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h"),

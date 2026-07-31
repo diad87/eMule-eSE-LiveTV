@@ -69,13 +69,7 @@ class Mod25WebControllersTest(unittest.TestCase):
         for header in MODULES:
             self.assertIn(f'#include "{header}.h"', self.server)
         for marker in (
-            "WebTransferController::PlanClearCompleted",
-            "WebTransferController::PlanAddDownload",
-            "WebTransferController::PlanFileAction",
-            "WebTransferController::PlanFriendAction",
-            "WebTransferController::PlanColumnChange",
-            "WebTransferController::PlanSort",
-            "WebTransferController::TryApplyBoolean",
+            "RunWebTransferActions",
             "WebTransferController::CompareDownload",
             "WebTransferController::CompareUpload",
             "WebSearchController::PlanSearch",

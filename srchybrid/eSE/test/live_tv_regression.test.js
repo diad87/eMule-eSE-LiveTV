@@ -563,7 +563,7 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(webAuth, /Unknown APIs are treated as mutations until explicitly proven read-only/);
   assert.match(web, /\/api\/network\/connect[\s\S]{0,1800}WEBGUIIA_CONNECTTOSERVER/);
   assert.match(web, /\/api\/network\/connect[\s\S]{0,2200}WEBGUIIA_KAD_START/);
-  assert.match(web, /WebTransferController::PlanFileAction/);
+  assert.match(web, /RunWebTransferActions/);
   assert.match(web, /WebFileOperationRequest\s*\*\s*request[\s\S]{0,180}memcpy\(request->fileHash/);
   assert.match(web, /if \(request\)[\s\S]{0,180}WEBGUIIA_FILE_OPERATION/);
   assert.doesNotMatch(web, /WithFileByID\(FileHash,[\s\S]{0,900}DeletePartFile\(\)/);

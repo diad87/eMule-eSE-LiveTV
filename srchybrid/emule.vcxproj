@@ -928,6 +928,12 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="WebTransferActions.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="WebSearchController.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
@@ -1427,6 +1433,7 @@
     <ClInclude Include="WebHeaderFooter.h" />
     <ClInclude Include="WebApiSerializer.h" />
     <ClInclude Include="WebTransferController.h" />
+    <ClInclude Include="WebTransferActions.h" />
     <ClInclude Include="WebSearchController.h" />
     <ClInclude Include="WebSharedController.h" />
     <ClInclude Include="WebStaticAssets.h" />

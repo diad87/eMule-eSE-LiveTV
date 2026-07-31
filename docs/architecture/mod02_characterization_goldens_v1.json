@@ -87,8 +87,8 @@
         "RunLiveRelayDispatcherCharacterizationSelfTest"
       ],
       "token_sha256": {
-        "LiveRelayDispatcher::DispatchExitPlain": "b2c74664e8d7ae20bd939e6576416bfc13d5f6ab115c3805fbfd8c536a380407",
-        "RunLiveRelayDispatcherCharacterizationSelfTest": "1eb7c1c1a76fc62000edffa901ef3226ec1dda322be24865dc2e6ad0f0069acb"
+        "LiveRelayDispatcher::DispatchExitPlain": "c7788e6cb240b030bf129d41c79a5b3060bfb0fe7ff79bb654f7ffb23ee1aba5",
+        "RunLiveRelayDispatcherCharacterizationSelfTest": "bc1d4dc22deed3340fa5bc830168be83f39c556eb02f1951f1dd6588cd2d21b3"
       }
     },
     "live_stream_session_chunk_callback": {
@@ -105,7 +105,7 @@
       }
     },
     "live_tunnel_dispatch": {
-      "production_file": "srchybrid/LiveTunnel.cpp",
+      "production_file": "srchybrid/LiveTunnelCoordinatorMethods.inl",
       "symbols": [
         "CLiveTunnel::SendThrough",
         "CLiveTunnel::OnCellReceived",

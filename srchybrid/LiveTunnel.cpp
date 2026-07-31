@@ -24,7 +24,6 @@
 #include "Kad6GatewaySocket.h"
 #include "kademlia/kademlia/Prefs.h"
 #include "kad6/kad6_records.h"
-
 // v0.71 P3.3 — TCP send path.
 #include "UpDownClient.h"
 #include "ClientList.h"
@@ -60,21 +59,16 @@
 #include "FirewallProberV6.h"
 #include "DirectReachabilityManager.h"
 #include "eMuleAI/Address.h"
-
 #include <limits>
-
 namespace eSELive {
 #define LT7_STATE(member) (*m_exitServices.LT7State().member)
 using namespace LiveCircuitHandshakeWire;
-
 namespace {
 bool K6ReleaseRandom(void*, std::uint8_t*, std::size_t);
-
 LiveSourceEndpointKey BuildLiveSourceEndpointKey(const kad6::K6Endpoint& endpoint, uint8 origin)
 {
     return {origin, static_cast<uint8>(endpoint.addr.family), endpoint.addr.addr, endpoint.tcp_port};
 }
-
 LiveTunnelKadPorts BuildLiveTunnelKadPorts()
 {
     LiveTunnelKadPorts ports;
@@ -104,7 +98,6 @@ LiveTunnelKadPorts BuildLiveTunnelKadPorts()
     return ports;
 }
 } // namespace
-
 CLiveTunnel::CLiveTunnel()
     : m_handshake(*this),
       m_kadBridge(BuildLiveTunnelKadPorts())
@@ -121,7 +114,6 @@ CLiveTunnel::CLiveTunnel()
                 enable, drain) && accepted;
         return accepted;
     });
-
     // v8.1 A2 - register the built-in exit-side handlers. Sprint B/C ops
     // register theirs the same way instead of editing HandleRelay_Exit.
     m_exitServices.RegisterHandler(TUN_OP_PING,
@@ -149,11 +141,9 @@ CLiveTunnel::CLiveTunnel()
     // the authenticated exit-capability snapshot; old peers retain 0x42/0x43.
     m_exitServices.RegisterHandler(TUN_OP_KAD6_GATEWAY,
         [this](const TunnelRequestCtx& c){ ExitHandle_Kad6Gateway(c); });
-
     const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks(); std::array<uint8_t, 32> ticketSecret{};
     if (crypto.random_bytes && crypto.random_bytes(ticketSecret.data(), ticketSecret.size()))
         m_exitServices.LT4InitializeTicketSecret(ticketSecret);
-
     // A fresh installation is never a public exit merely because the binary
     // contains the handlers. Operator consent plus signed release evidence is
     // required before any public Kad6 service admits work.
@@ -162,7 +152,6 @@ CLiveTunnel::CLiveTunnel()
         m_scheduler.LT2HardeningSetEnabled(static_cast<kad6::K6Service>(i), false,
             now ? now : 1, 0, 0);
 }
-
 // v8.1 Sprint C — little-endian field helpers for the Live tunnel op bodies.
 bool CLiveTunnel::HandleCreated_Originator(
     std::shared_ptr<CLiveCircuit>& circ,
@@ -170,13 +159,11 @@ bool CLiveTunnel::HandleCreated_Originator(
 {
     return m_handshake.HandleCreatedOriginator(circ, payload, payloadLen);
 }
-
 bool CLiveTunnel::ContinueOriginatorBuild(
     std::shared_ptr<CLiveCircuit>& circ)
 {
     return m_handshake.ContinueOriginatorBuild(circ);
 }
-
 bool CLiveTunnel::HandleCreate_Relay(
     uint32_t circId, const uint8_t* payload, uint16_t payloadLen,
     CUpDownClient* fromPeer)
@@ -184,48 +171,41 @@ bool CLiveTunnel::HandleCreate_Relay(
     return m_handshake.HandleCreateRelay(
         circId, payload, payloadLen, fromPeer);
 }
-
 bool CLiveTunnel::BuildExtend(
     std::shared_ptr<CLiveCircuit>& circ, CUpDownClient* target)
 {
     return m_handshake.BuildExtend(circ, target);
 }
-
 bool CLiveTunnel::HandleExtend_Relay(
     std::shared_ptr<CLiveCircuit>& circ,
     const uint8_t* payload, uint16_t payloadLen)
 {
     return m_handshake.HandleExtendRelay(circ, payload, payloadLen);
 }
-
 bool CLiveTunnel::ForwardCreatedAsExtended_Relay(
     uint32_t outboundCircId, const uint8_t* payload, uint16_t payloadLen)
 {
     return m_handshake.ForwardCreatedAsExtendedRelay(
         outboundCircId, payload, payloadLen);
 }
-
 bool CLiveTunnel::ForwardExtendCell_Forward(
     std::shared_ptr<CLiveCircuit>& circ,
     const uint8_t* payload, uint16_t payloadLen)
 {
     return m_handshake.ForwardExtendCellForward(circ, payload, payloadLen);
 }
-
 bool CLiveTunnel::ForwardExtendedCell_Reverse(
     std::shared_ptr<CLiveCircuit>& circ,
     const uint8_t* payload, uint16_t payloadLen)
 {
     return m_handshake.ForwardExtendedCellReverse(circ, payload, payloadLen);
 }
-
 bool CLiveTunnel::HandleExtended_Originator(
     std::shared_ptr<CLiveCircuit>& circ,
     const uint8_t* payload, uint16_t payloadLen)
 {
     return m_handshake.HandleExtendedOriginator(circ, payload, payloadLen);
 }
-
 void CLiveTunnel::ResolveHandshakeExitKey(
     LiveHandshakePeerHandle exitHandle, CLiveCircuit& circuit)
 {
@@ -244,7 +224,6 @@ void CLiveTunnel::ResolveHandshakeExitKey(
     circuit.m_exitKadKey = contact->GetClientID();
     circuit.m_haveExitKadKey = true;
 }
-
 bool CLiveTunnel::ReadHandshakePeer(
     LiveHandshakePeerHandle peerHandle,
     LiveHandshakePeerView& view) const
@@ -273,29 +252,24 @@ bool CLiveTunnel::ReadHandshakePeer(
     view.port = peer->GetUserPort();
     return true;
 }
-
 void CLiveTunnel::RegisterActiveHandshakeCircuit(
     const std::shared_ptr<CLiveCircuit>& circuit)
 {
     Kademlia::CKadV2TunnelPool::Get().RegisterTunnel(circuit);
 }
-
 const uint8_t* CLiveTunnel::LocalHandshakeUserHash() const
 {
     return thePrefs.GetUserHash();
 }
-
 const uint8_t* CLiveTunnel::LocalHandshakeNodePublicKey() const
 {
     return NodeIdentityPub();
 }
-
 bool CLiveTunnel::SignHandshakeTranscript(
     const uint8_t* bytes, size_t length, uint8_t signature[64]) const
 {
     return NodeIdentitySign(bytes, length, signature);
 }
-
 bool CLiveTunnel::HashHandshakeCircuitPrefix(
     const CLiveCircuit& circuit, uint8_t out[32]) const
 {
@@ -315,12 +289,10 @@ bool CLiveTunnel::HashHandshakeCircuitPrefix(
     const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
     return crypto.sha256 && crypto.sha256(input.data(), input.size(), out);
 }
-
 uint32_t CLiveTunnel::HandshakeRuntimeCapabilities() const
 {
     return g_uEseCapsRuntime;
 }
-
 LiveHandshakePeerHandle CLiveTunnel::FindConnectedHandshakePeerByHash(
     const uint8_t hash[16]) const
 {
@@ -328,7 +300,6 @@ LiveHandshakePeerHandle CLiveTunnel::FindConnectedHandshakePeerByHash(
         ? theApp.clientlist->FindClientByUserHash(hash) : NULL;
     return peer && peer->socket && peer->socket->IsConnected() ? peer : NULL;
 }
-
 LiveHandshakePeerHandle CLiveTunnel::FindConnectedHandshakePeer(
     uint32_t ipv4, uint16_t port) const
 {
@@ -336,12 +307,10 @@ LiveHandshakePeerHandle CLiveTunnel::FindConnectedHandshakePeer(
         ? theApp.clientlist->FindClientByIP(ipv4, port) : NULL;
     return peer && peer->socket && peer->socket->IsConnected() ? peer : NULL;
 }
-
 uint32_t CLiveTunnel::LocalHandshakePublicIp() const
 {
     return theApp.GetPublicIP();
 }
-
 namespace {
 inline void eseWrU16LE(uint8_t* p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 inline void eseWrU32LE(uint8_t* p, uint32_t v) {
@@ -360,18 +329,15 @@ inline uint64_t eseRdU64LE(const uint8_t* p) {
     for (unsigned i = 0; i < 8; ++i) v |= (uint64_t)p[i] << (i * 8);
     return v;
 }
-
 const uint16_t K6_SHAPE_DEFAULT_BUCKET_KIB = K6_SHAPE_RUNTIME_MAX_BUCKET_KIB;
 const uint8_t  K6_BULK_SUB_FLAG_SHAPED = 0x01;
 const uint64_t K6_SHAPE_PADDING_NONCE = kad6::kK6ShapedPaddingSentinel;
-
 bool K6ShapeValidBucket(uint32_t bucketKiB)
 {
     return bucketKiB >= kad6::kK6ShapeMinBucketKiB
         && bucketKiB <= K6_SHAPE_RUNTIME_MAX_BUCKET_KIB
         && (bucketKiB & (bucketKiB - 1)) == 0;
 }
-
 uint64_t K6ShapeNowUs()
 {
     LARGE_INTEGER counter{}, frequency{};
@@ -384,7 +350,6 @@ uint64_t K6ShapeNowUs()
     }
     return static_cast<uint64_t>(::GetTickCount()) * 1000ull;
 }
-
 void CALLBACK K6Class5TimerProc(HWND, UINT, UINT_PTR timerId, DWORD) noexcept
 {
     try {
@@ -402,7 +367,6 @@ void CALLBACK K6Class5TimerProc(HWND, UINT, UINT_PTR timerId, DWORD) noexcept
         ::KillTimer(NULL, timerId);
     }
 }
-
 std::vector<uint8_t> EseCStringUtf8(const CString& value)
 {
     std::vector<uint8_t> out;
@@ -415,7 +379,6 @@ std::vector<uint8_t> EseCStringUtf8(const CString& value)
                         reinterpret_cast<char*>(out.data()), bytes, NULL, NULL);
     return out;
 }
-
 CString EseUtf8CString(const std::string& value)
 {
     if (value.empty()) return CString();
@@ -431,7 +394,6 @@ CString EseUtf8CString(const std::string& value)
     wide.ReleaseBuffer(converted == chars ? chars : 0);
     return converted == chars ? CString((LPCWSTR)wide) : CString();
 }
-
 // Append one K6 Live result to the legacy rich-result aggregate used by the
 // existing directory/JSON consumers. This is a host compatibility adapter;
 // the actual K6 wire remains K6Frame + canonical tags.
@@ -441,7 +403,6 @@ bool EseAppendLegacyK6Result(const kad6::K6LiveSearchMetadata& live,
     if (aggregate.empty()) aggregate.assign(4, 0);
     if (aggregate.size() < 4 || aggregate.size() > TUN_MSG_MAX_BYTES - 512)
         return false;
-
     std::vector<uint8_t> rec;
     rec.insert(rec.end(), live.result_id.begin(), live.result_id.end());
     const uint32_t ip = (uint32_t)live.ipv4[0] | ((uint32_t)live.ipv4[1] << 8) |
@@ -471,9 +432,7 @@ bool EseAppendLegacyK6Result(const kad6::K6LiveSearchMetadata& live,
     aggregate.insert(aggregate.end(), rec.begin(), rec.end());
     return true;
 }
-
 }  // namespace
-
 uint64_t M2A_LT3_K6ShapeNowUs() { return K6ShapeNowUs(); } std::vector<uint8_t> M2A_LT3_EseCStringUtf8(const CString& v) { return EseCStringUtf8(v); }
 CString M2A_LT3_EseUtf8CString(const std::string& v) { return EseUtf8CString(v); }
 bool M2A_LT3_AppendLegacyK6Result(const kad6::K6LiveSearchMetadata& v, std::vector<uint8_t>& out) { return EseAppendLegacyK6Result(v, out); }
@@ -482,7 +441,6 @@ CLiveTunnel& CLiveTunnel::Get()
     static CLiveTunnel s_instance;
     return s_instance;
 }
-
 bool CLiveTunnel::RunCharacterizationSelfTest(CString& outFailure)
 {
     outFailure.Empty();
@@ -537,7 +495,6 @@ bool CLiveTunnel::RunCharacterizationSelfTest(CString& outFailure)
     }
     return true;
 }
-
 uint32_t CLiveTunnel::NewCircuitId()
 {
     // Local circuit IDs are 32-bit random — collisions astronomically rare;
@@ -549,14 +506,12 @@ uint32_t CLiveTunnel::NewCircuitId()
     if (id == 0) id = 1;
     return id;
 }
-
 // Keep tunnel control queues bounded. At 512 bytes/cell this permits roughly
 // one MiB of queued wire per neighbour while still accommodating several
 // complete eD2K framed messages. A full queue is backpressure, not permission
 // to allocate indefinitely.
 static const INT_PTR TUNNEL_EGRESS_MAX_QUEUED_CELLS = 2048;
 static const INT_PTR TUNNEL_BULK_MAX_QUEUED_CELLS = 256;
-
 static bool EseCanQueueTunnelCells(CUpDownClient* peer, size_t count)
 {
     return peer && peer->socket && peer->socket->IsConnected() &&
@@ -564,7 +519,6 @@ static bool EseCanQueueTunnelCells(CUpDownClient* peer, size_t count)
         peer->socket->GetControlQueueCount() <=
             TUNNEL_EGRESS_MAX_QUEUED_CELLS - static_cast<INT_PTR>(count);
 }
-
 static bool EseCanQueueBulkCells(CUpDownClient* peer, size_t count)
 {
     return peer && peer->socket && peer->socket->IsConnected() &&
@@ -572,21 +526,18 @@ static bool EseCanQueueBulkCells(CUpDownClient* peer, size_t count)
         peer->socket->DbgGetStdQueueCount() <=
             TUNNEL_BULK_MAX_QUEUED_CELLS - static_cast<INT_PTR>(count);
 }
-
 // v0.71 P3.3 — send a 512B cell to a peer wrapped as OP_LIVE_TUNNEL_CELL.
 // Uses the existing extension-protocol packet path. Caller holds m_lock.
 bool CLiveTunnel::SendCellToPeer(CUpDownClient* peer, const uint8_t cell[CELL_TOTAL_BYTES])
 {
     if (!EseCanQueueTunnelCells(peer, 1))
         return false;
-
     Packet* pkt = new Packet(OP_LIVE_TUNNEL_CELL, CELL_TOTAL_BYTES, OP_EMULEPROT);
     memcpy(pkt->pBuffer, cell, CELL_TOTAL_BYTES);
     peer->socket->SendPacket(pkt, true, true, 0);
     m_metrics.RecordCellSent(CELL_TOTAL_BYTES);
     return true;
 }
-
 size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
                               const std::vector<CUpDownClient*>& relayCandidates,
                               size_t count)
@@ -604,7 +555,6 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
     if (count < TUNNEL_POOL_MIN) count = TUNNEL_POOL_MIN;
     if (count > TUNNEL_POOL_MAX) count = TUNNEL_POOL_MAX;
     if (relayCandidates.empty() || theApp.IsClosing()) return 0;
-
     CSingleLock lock(&m_lock, TRUE);
     m_scheduler.ReopenDeferredWork();
     size_t built = 0;
@@ -612,7 +562,6 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
         CUpDownClient* hop1 = relayCandidates[i];
         if (!hop1 || !hop1->socket || !hop1->socket->IsConnected())
             continue;
-
         // Allocate a fresh circuit id.
         uint32_t id = 0;
         for (int t = 0; t < 4; ++t) {
@@ -621,7 +570,6 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
             id = 0;
         }
         if (id == 0) continue;
-
         // Generate ephemeral X25519 keypair for the handshake. The private
         // key stays in the circuit until CELL_CREATED arrives; then we
         // derive the shared secret and wipe.
@@ -641,7 +589,6 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
             continue;
         }
         c->m_have_ephemeral = true;
-
         // v0.71 P0.B — CELL_CREATE payload = ev_pub (32B) + target_user_hash
         // (16B). target_user_hash binds the CREATE to a specific recipient:
         // the hop receiving it verifies the hash matches their own
@@ -719,7 +666,6 @@ size_t CLiveTunnel::BuildPool(const uint8_t origin_pubkey[32],
     (void)origin_pubkey;  // unused until ntor-with-pubkey binding lands
     return built;
 }
-
 void CLiveTunnel::GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const
 {
     CSingleLock lock(&m_lock, TRUE);
@@ -743,12 +689,10 @@ void CLiveTunnel::GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const
         out.push_back(s);
     }
 }
-
 void CLiveTunnel::GetK6HardeningSnapshot(K6HardeningRuntimeSnapshot& out)
 {
     CKad6OriginSocket::LT3GetHardeningSnapshot(*this, out);
 }
-
 namespace {
 bool K6ReleaseRandom(
     void*, std::uint8_t* bytes, std::size_t size)
@@ -756,9 +700,7 @@ bool K6ReleaseRandom(
     const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
     return crypto.random_bytes && crypto.random_bytes(bytes, size);
 }
-
 } // namespace
-
 void CLiveTunnel::RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds)
 {
     if (nowSeconds == 0) return;
@@ -769,7 +711,6 @@ void CLiveTunnel::RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds)
     const kad6::K6ReleaseGateStatus evidenceStatus = m_scheduler.GetReleaseSnapshot(
         release, optIn, betaOptIn, NodeIdentityPub(),
         MakeKad6HostCryptoHooks(), nowSeconds);
-
     bool shapingExposed = false;
     {
         CSingleLock lock(&m_lock, TRUE);
@@ -779,11 +720,9 @@ void CLiveTunnel::RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds)
     }
     bool runtimeHealthy = NodeIdentityIsPersistent() && m_exitServices.LT4TicketSecretReady() &&
         m_scheduler.LT2EconomyHealthy() && !m_kadBridge.LT3SourceEpochStoreFailed() && !shapingExposed;
-
     m_scheduler.ApplyReleaseEvaluation(
         optIn, betaOptIn, runtimeHealthy, evidenceStatus, drainSeconds);
 }
-
 bool CLiveTunnel::ApplyK6PublicRelease(bool enable,
                                        const kad6::K6ReleaseEvidence* evidence,
                                        uint32 drainSeconds)
@@ -801,7 +740,6 @@ bool CLiveTunnel::ApplyK6PublicRelease(bool enable,
     RefreshK6PublicRelease(now, drainSeconds);
     return IsK6PublicReleaseEnabled();
 }
-
 void CLiveTunnel::GetK6ReleaseSnapshot(K6ReleaseRuntimeSnapshot& out)
 {
     m_scheduler.GetReleaseSnapshot(out, thePrefs.GetKad6PublicExitOptIn(),
@@ -809,18 +747,14 @@ void CLiveTunnel::GetK6ReleaseSnapshot(K6ReleaseRuntimeSnapshot& out)
         NodeIdentityPub(), MakeKad6HostCryptoHooks(),
         static_cast<uint64>(time(NULL)));
 }
-
 bool CLiveTunnel::IsK6PublicReleaseEnabled() const
 { return m_scheduler.IsReleaseEnabled(); }
-
 bool CLiveTunnel::GetK6ReleaseOperatorChallenge(std::string& challenge)
 { return m_scheduler.GetReleaseChallenge(
     challenge, static_cast<std::uint64_t>(time(NULL))); }
-
 bool CLiveTunnel::ConsumeK6ReleaseOperatorChallenge(const std::string& challenge)
 { return m_scheduler.ConsumeReleaseChallenge(
     challenge, static_cast<std::uint64_t>(time(NULL))); }
-
 namespace {
 uint64 K6FileTimeValue(const FILETIME& value)
 {
@@ -828,7 +762,6 @@ uint64 K6FileTimeValue(const FILETIME& value)
         static_cast<uint64>(value.dwLowDateTime);
 }
 }
-
 void CLiveTunnel::RefreshK6EconomyMeasurements(uint64 nowSeconds,
     const std::array<uint64, static_cast<size_t>(kad6::K6Service::Count)>& active)
 {
@@ -856,29 +789,23 @@ void CLiveTunnel::RefreshK6EconomyMeasurements(uint64 nowSeconds,
     m_scheduler.LT2RefreshEconomy(nowSeconds, active, usefulCapacity,
         processNow, systemNow, occupiedPreauth);
 }
-
 bool CLiveTunnel::K6EconomyAdmit(kad6::K6Service service)
 {
     return m_scheduler.LT2EconomyAdmit(service, static_cast<uint64>(time(NULL)));
 }
-
 std::string CLiveTunnel::GetK6PrometheusMetrics()
 {
     return m_metrics.ExportPrometheus(static_cast<uint64>(time(NULL)));
 }
-
 bool CLiveTunnel::StartK6ExitNotice(uint16 port, kad6::K6ExitNotice notice)
 {
     return NodeIdentityIsPersistent() && m_scheduler.StartReleaseNotice(
         port, notice, MakeKad6HostCryptoHooks(), NodeIdentityPub());
 }
-
 void CLiveTunnel::StopK6ExitNotice() noexcept
 { m_scheduler.StopReleaseNotice(); }
-
 K6ExitNoticeServerSnapshot CLiveTunnel::GetK6ExitNoticeSnapshot() const noexcept
 { return m_scheduler.GetReleaseNoticeSnapshot(); }
-
 namespace {
 std::string K6WideToUtf8(const wchar_t* value)
 {
@@ -892,7 +819,6 @@ std::string K6WideToUtf8(const wchar_t* value)
     return result;
 }
 }
-
 bool CLiveTunnel::EnsureK6QuotaAuthority(uint64 nowSeconds)
 {
     if (!thePrefs.GetEseV9Experimental() ||
@@ -912,7 +838,6 @@ bool CLiveTunnel::EnsureK6QuotaAuthority(uint64 nowSeconds)
     ::InterlockedOr(caps, static_cast<LONG>(ESE_CAP_KAD6_ECONOMY));
     return true;
 }
-
 bool CLiveTunnel::K6QuotaPrincipal(const TunnelRequestCtx& ctx,
                                    kad6::Hash32& principal,
                                    std::array<uint8_t, 6>& prefix48,
@@ -939,7 +864,6 @@ bool CLiveTunnel::K6QuotaPrincipal(const TunnelRequestCtx& ctx,
         address = CAddress(peer->GetConnectIP(), false);
     if (address.GetType() != CAddress::IPv4 && address.GetType() != CAddress::IPv6)
         return false;
-
     static const char domain[] = "eSE-Kad6-QuotaPrincipal-v1";
     std::vector<uint8_t> message(domain, domain + sizeof domain - 1);
     if (address.GetType() == CAddress::IPv4) {
@@ -967,7 +891,6 @@ bool CLiveTunnel::K6QuotaPrincipal(const TunnelRequestCtx& ctx,
         32, message.data(),
         message.size(), principal.data());
 }
-
 bool CLiveTunnel::K6QuotaIssuerTrusted(const uint8_t nodePub[32]) const
 {
     if (!nodePub) return false;
@@ -979,7 +902,6 @@ bool CLiveTunnel::K6QuotaIssuerTrusted(const uint8_t nodePub[32]) const
     kad6::K6AsnInfo asn;
     return table->LookupVerifiedIdentity(nodePub, address, asn);
 }
-
 uint32 CLiveTunnel::K6SelectOriginCircuit(uint32 requiredCaps,
                                           uint32 pinnedCircId,
                                           size_t minimumHops) const
@@ -1003,7 +925,6 @@ uint32 CLiveTunnel::K6SelectOriginCircuit(uint32 requiredCaps,
         candidates, requiredCaps, pinnedCircId, minimumHops,
         ESE_CAP_TUNNEL_STRICT3);
 }
-
 bool CLiveTunnel::K6CircuitHasExitCaps(uint32 circId,
                                        uint32 requiredCaps,
                                        size_t minimumHops) const
@@ -1011,7 +932,6 @@ bool CLiveTunnel::K6CircuitHasExitCaps(uint32 circId,
     return circId != 0 &&
         K6SelectOriginCircuit(requiredCaps, circId, minimumHops) == circId;
 }
-
 bool CLiveTunnel::K6QuotaRoundTrip(uint32 circId, uint8 msgType,
                                    const std::vector<uint8_t>& body,
                                    uint8 expectedMsgType, uint32 timeoutMs,
@@ -1046,8 +966,6 @@ bool CLiveTunnel::K6QuotaRoundTrip(uint32 circId, uint8 msgType,
         (response.flags & (kad6::kK6FlagResponse | kad6::kK6FlagFinal)) ==
             (kad6::kK6FlagResponse | kad6::kK6FlagFinal);
 }
-
-
 bool CLiveTunnel::K6AcquireAnonymousQuota(
     uint32 targetCircId, kad6::K6QuotaService service, uint8 operationMsgType,
     const std::vector<uint8_t>& operationBody, uint32 timeoutMs)
@@ -1056,7 +974,6 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
         !K6CircuitHasExitCaps(targetCircId,
             ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY, 2))
         return false;
-
     uint32 guardCircId = 0;
     {
         CSingleLock lock(&m_lock, TRUE);
@@ -1087,7 +1004,6 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
         }
     }
     if (guardCircId == 0) return false;
-
     const uint32 stageTimeout = (std::max<uint32>)(1, timeoutMs / 3);
     kad6::K6Frame keyFrame;
     if (!K6QuotaRoundTrip(guardCircId, kad6::kK6MsgQuotaKeyReq,
@@ -1100,7 +1016,6 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
         consumed != keyFrame.body.size() ||
         (certificate.service_mask & (1u << static_cast<unsigned>(service))) == 0)
         return false;
-
     kad6::K6QuotaToken token;
     token.service = service;
     token.policy_id = certificate.policy_id;
@@ -1118,7 +1033,6 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
     kad6::K6QuotaBlindState blind;
     if (!m_scheduler.LT2BlindQuotaToken(certificate, token, blind))
         return false;
-
     kad6::K6QuotaBlindRequest issue;
     issue.issuer_key_id = certificate.key_id;
     issue.service = service;
@@ -1139,7 +1053,6 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
         issued.blind_signatures.size() != 1 ||
         issued.issuer_certificate != keyFrame.body)
         return false;
-
     kad6::K6QuotaPresentation presentation;
     if (!m_scheduler.LT2FinalizeQuotaToken(
             certificate, blind, issued.blind_signatures[0], presentation))
@@ -1164,7 +1077,6 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
         kad6::Kad6CtEqual(status.admission_unit_hash.data(), expectedUnitHash.data(),
             expectedUnitHash.size());
 }
-
 bool CLiveTunnel::ConsumeK6QuotaGrant(const TunnelRequestCtx& ctx,
                                       kad6::K6QuotaService service,
                                       const kad6::K6Frame& frame,
@@ -1181,7 +1093,6 @@ bool CLiveTunnel::ConsumeK6QuotaGrant(const TunnelRequestCtx& ctx,
         static_cast<uint64>(time(NULL)), !IsK6PublicReleaseEnabled(),
         allocationId);
 }
-
 bool CLiveTunnel::QueueK6FairPayloadLocked(uint64 streamId, uint8 direction,
                                            std::vector<uint8_t>&& bytes,
                                            size_t creditBytes)
@@ -1189,12 +1100,10 @@ bool CLiveTunnel::QueueK6FairPayloadLocked(uint64 streamId, uint8 direction,
     return m_scheduler.QueueFairPayload(
         streamId, direction, std::move(bytes), creditBytes);
 }
-
 void CLiveTunnel::ReleaseK6FairStreamLocked(uint64 streamId)
 {
     m_scheduler.ReleaseFairStream(streamId);
 }
-
 bool CLiveTunnel::ProcessK6FairTick()
 {
     std::vector<LiveFairReady> ready;
@@ -1204,7 +1113,6 @@ bool CLiveTunnel::ProcessK6FairTick()
             static_cast<uint64>(thePrefs.GetMaxGraphUploadRate(true)) * 1024ull / 200ull);
         ready = m_scheduler.PollFair(maxBytes, 128);
     }
-
     std::set<uint64> failed;
     for (const LiveFairReady& item : ready) {
         K6ExitStreamRuntime runtime;
@@ -1249,13 +1157,11 @@ bool CLiveTunnel::ProcessK6FairTick()
     CSingleLock pl(&m_pendingLock, TRUE);
     return m_scheduler.HasFairWork();
 }
-
 bool CLiveTunnel::ApplyK6ServiceSwitch(kad6::K6Service service, bool enabled,
                                        uint32 drainSeconds)
 {
     return CKad6OriginSocket::LT3ApplyServiceSwitch(*this, service, enabled, drainSeconds);
 }
-
 void CLiveTunnel::OnPeerDisconnected(CUpDownClient* peer)
 {
     if(!peer)return;
@@ -1290,13 +1196,11 @@ void CLiveTunnel::OnPeerDisconnected(CUpDownClient* peer)
         if(plan.destroy){TransitionCircuitDestroyed(c);c->WipeKeys();}
     }
 }
-
 // === v0.72 — main-thread marshaling impl ====================================
 // SendThrough()/BuildTestCircuit*() touch peer sockets and the ClientList,
 // which are main-thread only. The webserver privacy endpoints run on worker
 // threads, so they enqueue the work here; the main thread runs it from
 // ProcessMainThreadWork() (CKademlia::Process, ~1 Hz).
-
 void CLiveTunnel::EnqueueSend(const uint8_t* payload, size_t payloadLen)
 {
     if (!payload || payloadLen == 0) return;
@@ -1305,7 +1209,6 @@ void CLiveTunnel::EnqueueSend(const uint8_t* payload, size_t payloadLen)
     req.payload.assign(payload, payload + payloadLen);
     (void)m_scheduler.Enqueue(std::move(req));
 }
-
 // v8.1 A4 - marshal a whole logical message for pinned send on the main thread.
 void CLiveTunnel::EnqueueSendMsg(uint32_t req_id, uint8_t sub_cmd,
                                  const uint8_t* msg, size_t msgLen,
@@ -1321,7 +1224,6 @@ void CLiveTunnel::EnqueueSendMsg(uint32_t req_id, uint8_t sub_cmd,
     if (msg && msgLen) req.payload.assign(msg, msg + msgLen);
     if (!m_scheduler.Enqueue(std::move(req)) && req_id != 0) SignalReply(req_id, NULL, 0, 0);
 }
-
 // v8.1 A4 - pin a whole logical message to ONE circuit. Round-robin BY MESSAGE
 // (not by cell, as SendThrough does): all cells of one fragmented message must
 // ride the same circuit so they reach the same exit in order and reassemble
@@ -1353,7 +1255,6 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
     }
     CSingleLock lock(&m_lock, TRUE);
     if (m_circuitRegistry.Empty()) return 0;
-
     // Pick one Active circuit, advancing the round-robin cursor once per
     // message. (SendThrough advances it once per cell -> wrong for multi-cell.)
     std::shared_ptr<CLiveCircuit> chosen;
@@ -1386,9 +1287,7 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
         }
     }
     if (!chosen) return 0;
-
     const size_t hopOverhead = chosen->HopCount() * 16;   // AEAD tag per hop
-
     // Build the cell plaintext(s) for this circuit's hop count.
     std::vector<std::vector<uint8_t> > cells;
     if (sub_cmd >= TUN_MULTICELL_OP_MIN) {
@@ -1407,12 +1306,10 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
         if (msgLen) memcpy(cell.data() + SUB_HEADER_BYTES, msg, msgLen);
         cells.push_back(std::move(cell));
     }
-
     // Atomic preflight: never encrypt/send only a prefix of one logical
     // message merely because the neighbour's TCP control queue filled midway.
     if (!EseCanQueueTunnelCells(chosen->m_firstHopClient, cells.size()))
         return 0;
-
     // Onion-wrap each plaintext and send ALL on the SAME (chosen) circuit.
     for (size_t i = 0; i < cells.size(); ++i) {
         uint8_t cellPayload[CELL_PAYLOAD_MAX];
@@ -1434,7 +1331,6 @@ uint32_t CLiveTunnel::SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
     }
     return chosen->Id();
 }
-
 // v9.2 MOD-1.2 - coordinator adapters for the extracted pending domain.
 // Entropy remains a coordinator concern; collision rejection, request
 // lifetime, waits, and exactly-once completion are module-owned.
@@ -1449,7 +1345,6 @@ CLiveTunnel::PendingHandle CLiveTunnel::RegisterPending(uint32_t& req_id)
     req_id = pending.request_id();
     return pending;
 }
-
 bool CLiveTunnel::WaitPending(uint32_t req_id, PendingHandle pending,
                               uint32_t timeoutMs,
                               std::vector<uint8_t>& outReply,
@@ -1461,19 +1356,16 @@ bool CLiveTunnel::WaitPending(uint32_t req_id, PendingHandle pending,
     eSELive::LiveTunnelPending::Outcome outcome;
     if (!m_pendingRequests.Wait(std::move(pending), timeoutMs, outcome))
         return false;
-
     outReply = std::move(outcome.reply);
     if (outResult) *outResult = outcome.result;
     if (outCircuitId) *outCircuitId = outcome.circuit_id;
     return true;
 }
-
 void CLiveTunnel::SignalReply(uint32_t req_id, const uint8_t* reply,
                               size_t replyLen, uint32_t result)
 {
     m_pendingRequests.Complete(req_id, reply, replyLen, result);
 }
-
 uint32_t CLiveTunnel::RequestTestCircuit(int hops, uint32_t timeoutMs)
 {
     uint32_t reqId;
@@ -1489,7 +1381,6 @@ uint32_t CLiveTunnel::RequestTestCircuit(int hops, uint32_t timeoutMs)
     WaitPending(reqId, std::move(pr), timeoutMs, dummy, &circId);
     return circId;   // 0 on timeout / build failure
 }
-
 bool CLiveTunnel::RequestK6ServiceSwitch(kad6::K6Service service, bool enabled,
                                          uint32 drainSeconds, uint32 timeoutMs)
 {
@@ -1508,7 +1399,6 @@ bool CLiveTunnel::RequestK6ServiceSwitch(kad6::K6Service service, bool enabled,
     uint32_t result = 0;
     return WaitPending(reqId, std::move(pending), timeoutMs, ignored, &result) && result == 1;
 }
-
 bool CLiveTunnel::RequestK6PublicRelease(
     bool enable, const kad6::K6ReleaseEvidence* evidence,
     uint32 drainSeconds, uint32 timeoutMs)
@@ -1528,7 +1418,6 @@ bool CLiveTunnel::RequestK6PublicRelease(
     uint32_t result = 0;
     return WaitPending(reqId, std::move(pending), timeoutMs, ignored, &result) && result == 1;
 }
-
 void CLiveTunnel::ProcessMainThreadWork()
 {
     // MAIN THREAD. Drain the marshaled-work queue. Bounded per call so a
@@ -1612,7 +1501,6 @@ void CLiveTunnel::ProcessMainThreadWork()
     }
     RebuildPeersCache();
 }
-
 void CLiveTunnel::RebuildPeersCache()
 {
     // MAIN THREAD. Snapshot the ClientList into value-typed records so the
@@ -1645,13 +1533,11 @@ void CLiveTunnel::RebuildPeersCache()
     }
     m_metrics.ReplacePeers(std::move(all), tunnelingCount);
 }
-
 void CLiveTunnel::GetPeersSnapshot(std::vector<PeerSnapshot>& outAll,
                                    size_t& outTunnelingCount) const
 {
     m_metrics.GetPeers(outAll, outTunnelingCount);
 }
-
 // === v0.71 C — Data plane: CELL_RELAY delivery + tunnel ping =================
 // Sub-protocol carried inside the AEAD-decrypted CELL_RELAY payload:
 //   [0]      sub_cmd (TunnelOpCmd: PING=0x01, PING_REPLY=0x02)
@@ -1661,13 +1547,11 @@ void CLiveTunnel::GetPeersSnapshot(std::vector<PeerSnapshot>& outAll,
 // V correlates a reply to its blocked caller by req_id via SignalReply and
 // LiveTunnelPending. Exit-side
 // dispatches PING by echoing back "echo:<text>" wrapped with the circuit keys.
-
 bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
                                          const uint8_t* payload, uint16_t payloadLen)
 {
     if (!circ || circ->m_role != CircuitRole::Originator) return false;
     if (circ->HopCount() < 1) return false;
-
     // Peel all V-side hops to get the plaintext sub-protocol payload.
     uint8_t plain[CELL_PAYLOAD_MAX];
     size_t plainLen = 0;
@@ -1678,7 +1562,6 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
     const uint8_t* body = NULL;
     if (!ParseSubHeader(plain, plainLen, sub_cmd, req_id, text_len, body))
         return false;   // malformed sub-header
-
     // v8.1 A1.7 - multi-cell reply (sub_cmd >= 0x40): the body carries an
     // 8-byte fragment header. Accumulate fragments; when the logical reply
     // is complete, hand it to the waiting TunnelEchoLarge() caller.
@@ -1726,9 +1609,7 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
         SignalReply(req_id, msg.data(), msg.size(), 0);
         return true;
     }
-
     std::string text((const char*)body, text_len);
-
     if (sub_cmd == TUN_OP_PING_REPLY) {
         // v8.1 D8 - if this is our periodic RTT probe's reply, record the round trip.
         // (Runs under m_lock via OnCellReceived, same as the Tick send, so the RTT
@@ -1796,7 +1677,6 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
     // Unknown sub_cmd: drop silently (future ops land here).
     return true;
 }
-
 bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
                                    const uint8_t* payload, uint16_t payloadLen)
 {
@@ -1806,20 +1686,17 @@ bool CLiveTunnel::HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
     // in 1-hop case we hold just V↔hop1 (HopCount==1). Both are valid
     // exit configurations from THIS node's perspective.
     if (circ->HopCount() < 1) return false;
-
     uint8_t plain[CELL_PAYLOAD_MAX];
     size_t plainLen = 0;
     if (!circ->OnionDecryptAll(payload, payloadLen, plain, sizeof plain, plainLen))
         return false;
     return m_relayDispatcher.DispatchExitPlain(circ, plain, plainLen, *this);
 }
-
 void CLiveTunnel::TransitionCircuitDestroyed(
     const std::shared_ptr<CLiveCircuit>& circ)
 {
     if (!circ)
         return;
-
     const uint32_t circuitId = circ->Id();
     {
         CSingleLock pending(&m_pendingLock, TRUE);
@@ -1834,12 +1711,10 @@ void CLiveTunnel::TransitionCircuitDestroyed(
     }
     m_circuitRegistry.Transition(circ, CircuitState::Destroyed);
 }
-
 bool CLiveTunnel::IsRelayMultiCell(uint8_t subCommand) const
 {
     return subCommand >= TUN_MULTICELL_OP_MIN;
 }
-
 bool CLiveTunnel::ParseRelaySubHeader(
     const uint8_t* plain, size_t plainLength,
     uint8_t& subCommand, uint32_t& requestId,
@@ -1848,7 +1723,6 @@ bool CLiveTunnel::ParseRelaySubHeader(
     return ParseSubHeader(
         plain, plainLength, subCommand, requestId, bodyLength, body);
 }
-
 bool CLiveTunnel::ParseRelayFragmentHeader(
     const uint8_t* body, size_t bodyLength,
     uint16_t& fragmentIndex, uint16_t& fragmentCount,
@@ -1859,7 +1733,6 @@ bool CLiveTunnel::ParseRelayFragmentHeader(
         body, bodyLength, fragmentIndex, fragmentCount, messageLength,
         fragmentData, fragmentDataLength);
 }
-
 LiveRelayFragmentResult CLiveTunnel::IngestRelayFragment(
     uint32_t circuitId, uint32_t requestId,
     uint16_t fragmentIndex, uint16_t fragmentCount,
@@ -1871,7 +1744,6 @@ LiveRelayFragmentResult CLiveTunnel::IngestRelayFragment(
     ReassemblyEntry& entry = LT7_STATE(RelayReassemblyState)[key];
     if (!entry.started)
         entry.first_seen_tick = GetTickCount();
-
     const ReassemblyResult result = ReassemblyIngest(
         entry, fragmentIndex, fragmentCount, messageLength,
         fragmentData, fragmentDataLength);
@@ -1881,22 +1753,18 @@ LiveRelayFragmentResult CLiveTunnel::IngestRelayFragment(
         LT7_STATE(RelayReassemblyState).erase(key);
         return LiveRelayFragmentResult::Rejected;
     }
-
     completedMessage = std::move(entry.message);
     LT7_STATE(RelayReassemblyState).erase(key);
     return LiveRelayFragmentResult::Complete;
 }
-
 bool CLiveTunnel::DispatchRelayExit(const LiveTunnelRequestCtx& context)
 {
     return m_exitServices.Dispatch(context.sub_cmd, context);
 }
-
 // === v8.1 A6 - deferred exit operations ==================================
 // BeginExitOperation registers a pending reply; CompleteExitOperation sends it
 // when the handler's work finishes (immediately, or later from a callback in
 // Sprint B). Both run on the main thread (OnCellReceived / Kad callbacks).
-
 bool CLiveTunnel::BeginExitOperation(const TunnelRequestCtx& ctx, uint8_t reply_op)
 {
     if (!ctx.circ)
@@ -1905,7 +1773,6 @@ bool CLiveTunnel::BeginExitOperation(const TunnelRequestCtx& ctx, uint8_t reply_
     return m_exitServices.Begin(
         ctx.circ, ctx.req_id, reply_op, GetTickCount());
 }
-
 bool CLiveTunnel::CompleteExitOperation(uint32_t circ_id, uint32_t req_id,
                                         const uint8_t* payload, size_t payloadLen)
 {
@@ -1922,7 +1789,6 @@ bool CLiveTunnel::CompleteExitOperation(uint32_t circ_id, uint32_t req_id,
     ctx.req_id = req_id;
     return SendReply(ctx, completion.reply_op, payload, payloadLen);
 }
-
 bool CLiveTunnel::SendExitOperationPart(uint32_t circ_id, uint32_t req_id,
                                         const uint8_t* payload, size_t payloadLen)
 {
@@ -1938,13 +1804,11 @@ bool CLiveTunnel::SendExitOperationPart(uint32_t circ_id, uint32_t req_id,
     ctx.req_id = req_id;
     return SendReply(ctx, completion.reply_op, payload, payloadLen);
 }
-
 void CLiveTunnel::AbortExitOperation(uint32_t circ_id, uint32_t req_id)
 {
     CSingleLock pl(&m_pendingLock, TRUE);
     (void)m_exitServices.Abort(circ_id, req_id);
 }
-
 // v8.1 A2.4 - fragment + send a reply back to V. A legacy reply op
 // (reply_op < 0x40) goes as one single cell; a v8.1 op (>= 0x40) is split
 // into multi-cell fragments. Each cell is onion-wrapped via SendRelayReply.
@@ -1953,7 +1817,6 @@ bool CLiveTunnel::SendReply(const TunnelRequestCtx& ctx, uint8_t reply_op,
 {
     if (!ctx.circ) return false;
     std::shared_ptr<CLiveCircuit> circ = ctx.circ;   // SendRelayReply wants a non-const ref
-
     if (reply_op < TUN_MULTICELL_OP_MIN) {
         // Legacy single-cell reply: 7-byte sub-header + raw body.
         if (payloadLen > CELL_PAYLOAD_MAX - SUB_HEADER_BYTES) return false;
@@ -1964,7 +1827,6 @@ bool CLiveTunnel::SendReply(const TunnelRequestCtx& ctx, uint8_t reply_op,
         if (!EseCanQueueTunnelCells(circ->m_prevHopClient, 1)) return false;
         return SendRelayReply(circ, cell.data(), cell.size());
     }
-
     // Multi-cell reply: leave room in each cell for this circuit's onion
     // tags (16 B per hop) plus the sub-header + fragment header.
     const size_t hopOverhead = circ->HopCount() * 16;
@@ -1983,7 +1845,6 @@ bool CLiveTunnel::SendReply(const TunnelRequestCtx& ctx, uint8_t reply_op,
         ok = SendRelayReply(circ, cells[i].data(), cells[i].size()) && ok;
     return ok;
 }
-
 // v8.1 A2 - exit handler for TUN_OP_PING: echo the body back with an
 // "echo:" prefix as TUN_OP_PING_REPLY. (Was inline in HandleRelay_Exit.)
 void CLiveTunnel::ExitHandle_Ping(const TunnelRequestCtx& ctx)
@@ -1994,15 +1855,12 @@ void CLiveTunnel::ExitHandle_Ping(const TunnelRequestCtx& ctx)
     SendReply(ctx, TUN_OP_PING_REPLY,
               (const uint8_t*)echoText.data(), echoText.size());
 }
-
 std::string CLiveTunnel::K6BinaryKey(const uint8_t* b,size_t n){return CKad6OriginSocket::LT4BinaryKey(b,n);}
 bool CLiveTunnel::EnsureK6SourceEpochsLoaded()
 {
     return CKad6OriginSocket::LT3EnsureEpochsLoaded(*this);
 }
-
 std::string CLiveTunnel::K6ShadowKey(const kad6::K6SourceLease& l){return CKad6OriginSocket::LT4ShadowKey(&l);}
-
 bool CLiveTunnel::SendK6GatewayResponse(const TunnelRequestCtx& ctx, uint8_t msgType,
                                         const std::vector<uint8_t>& body)
 {
@@ -2018,7 +1876,6 @@ bool CLiveTunnel::SendK6GatewayResponse(const TunnelRequestCtx& ctx, uint8_t msg
     }
     return CompleteExitOperation(ctx.circ->Id(), ctx.req_id, wire.data(), wire.size());
 }
-
 void CLiveTunnel::ExitHandle_Kad6QuotaKey(const TunnelRequestCtx& ctx,
                                           const kad6::K6Frame& frame)
 {
@@ -2030,7 +1887,6 @@ void CLiveTunnel::ExitHandle_Kad6QuotaKey(const TunnelRequestCtx& ctx,
     }
     SendK6GatewayResponse(ctx, kad6::kK6MsgQuotaKey, m_scheduler.LT2QuotaCertificateWire());
 }
-
 void CLiveTunnel::ExitHandle_Kad6QuotaIssue(const TunnelRequestCtx& ctx,
                                             const kad6::K6Frame& frame)
 {
@@ -2061,7 +1917,6 @@ void CLiveTunnel::ExitHandle_Kad6QuotaIssue(const TunnelRequestCtx& ctx,
     else
         SendK6GatewayResponse(ctx, kad6::kK6MsgQuotaIssued, body);
 }
-
 void CLiveTunnel::ExitHandle_Kad6QuotaPresent(const TunnelRequestCtx& ctx,
                                               const kad6::K6Frame& frame)
 {
@@ -2095,30 +1950,23 @@ void CLiveTunnel::ExitHandle_Kad6QuotaPresent(const TunnelRequestCtx& ctx,
         SendK6GatewayResponse(ctx, kad6::kK6MsgQuotaStatus, body);
 }
 void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& c,const kad6::K6Frame& f){CKad6OriginSocket::LT4SourceBind(*this,c,f);}
-
 void CLiveTunnel::ExitHandle_Kad6SourceUnbind(const TunnelRequestCtx& ctx,
                                               const kad6::K6Frame& frame)
 {
     CKad6OriginSocket::LT3SourceUnbind(*this, ctx, frame);
 }
 void CLiveTunnel::ExitHandle_Kad6Publish(const TunnelRequestCtx& c,const kad6::K6Frame& f){CKad6OriginSocket::LT4Publish(*this,c,f);}
-
 void CLiveTunnel::ExitHandle_Kad6Unpublish(const TunnelRequestCtx& ctx,
                                            const kad6::K6Frame& frame)
 {
     CKad6OriginSocket::LT3Unpublish(*this, ctx, frame);
 }
-
 std::string CLiveTunnel::K6AuthorizedTargetKey(uint32 c,uint32 r,const kad6::Hash16& id){return CKad6OriginSocket::LT4AuthorizedKey(c,r,&id);}
-
 bool CLiveTunnel::K6AllowTicketTarget(void*,kad6::Byte s,const kad6::K6Endpoint& e){return CKad6OriginSocket::LT4AllowTarget(s,e);}
 bool CLiveTunnel::K6ConsumeTicket(void* c,const kad6::K6TargetTicket& t){return CKad6OriginSocket::LT4ConsumeTicket(c,t);}
-
 kad6::K6TargetPolicy CLiveTunnel::K6TicketPolicy(){return CKad6OriginSocket::LT4TicketPolicy(*this);}
-
 bool CLiveTunnel::IssueK6RuntimeTicket(const K6AuthorizedTarget& t,uint64 b,kad6::K6Provenance p,uint64 s,uint64 st,uint64 q,std::vector<uint8_t>& w){return CKad6OriginSocket::LT4IssueTicket(*this,&t,b,p,s,st,q,w);}
 void CLiveTunnel::ExitHandle_Kad6TargetTicketReq(const TunnelRequestCtx& c,const kad6::K6Frame& f){CKad6OriginSocket::LT4TargetTicketReq(*this,c,f);}
-
 bool CLiveTunnel::SendK6GatewayPush(const std::weak_ptr<CLiveCircuit>& weak,
                                     uint32 circId, uint32 requestId, uint8 msgType,
                                     uint16 flags, const std::vector<uint8_t>& body)
@@ -2133,40 +1981,34 @@ bool CLiveTunnel::SendK6GatewayPush(const std::weak_ptr<CLiveCircuit>& weak,
     TunnelRequestCtx ctx; ctx.circ = circ; ctx.req_id = requestId;
     return SendReply(ctx, TUN_OP_KAD6_GATEWAY, wire.data(), wire.size());
 }
-
 bool CLiveTunnel::HasK6ServingLeases() const
 {
     return CKad6OriginSocket::LT3HasServingLeases(*this);
 }
 bool M2A_LT5CommitOriginSendCompat(LiveExitServices& exitServices,CKad6OriginSocket* source,uint64 streamId,uint64 generation,uint64 bytes,uint64 remaining,uint64 quota,uint64 headroom){return exitServices.LT5CommitOriginSend(source,streamId,generation,0,bytes,remaining,quota,headroom);}
-
 bool CLiveTunnel::MarkK6SourceServingLocked(uint64 sourceLeaseId,
                                             kad6::K6CohortBackend& backend)
 {
     return CKad6OriginSocket::LT3MarkServing(*this, sourceLeaseId, backend);
 }
-
 bool CLiveTunnel::AllowKad6ShadowPublishContact(uint64 id,const uint8_t* c){return CKad6OriginSocket::LT4AllowShadow(*this,id,c);}
 void CLiveTunnel::OnKad6ShadowPublishSent(uint64 id){CKad6OriginSocket::LT4ShadowSent(*this,id);}
 void CLiveTunnel::OnKad6ShadowPublishAck(uint64 id,uint8_t load,bool response){CKad6OriginSocket::LT4ShadowAck(*this,id,load,response);}
 void CLiveTunnel::OnKad6ShadowVerified(uint64 id){CKad6OriginSocket::LT4ShadowVerified(*this,id);}
 void CLiveTunnel::OnKad6NativePublishAck(uint64 id,kad6::K6StoreStatus s,uint8_t load,uint64 epoch){CKad6OriginSocket::LT4NativeAck(*this,id,s,load,epoch);}
 void CLiveTunnel::RefreshK6NativePublishes(uint64 now){CKad6OriginSocket::LT4RefreshNative(*this,now);}
-
 void CLiveTunnel::QueueK6ShadowRefreshes(uint64 nowSeconds)
 {
     CKad6OriginSocket::LT3QueueRefreshes(*this, nowSeconds);
 }
 void CLiveTunnel::StartDueK6ShadowPublishes(uint64 now){CKad6OriginSocket::LT4StartShadow(*this,now);}
 void CLiveTunnel::StartK6VisibilityProbes(uint64 now){CKad6OriginSocket::LT4StartProbes(*this,now);}
-
 void CLiveTunnel::SweepK6SourceLeases(const std::set<uint32_t>& activeCircuits,
                                       const std::set<uint32_t>& teardownQueue,
                                       uint64 nowSeconds)
 {
     CKad6OriginSocket::LT3SweepLeases(*this, activeCircuits, teardownQueue, nowSeconds);
 }
-
 // === v8.1 Sprint C - tunneled LiveTV subscribe ===========================
 // C2 - exit handler for TUN_OP_LIVE_SUBSCRIBE. The viewer (V) found the stream
 // via Kad and knows the broadcaster endpoint, but does not want the broadcaster
@@ -2179,16 +2021,13 @@ void CLiveTunnel::SweepK6SourceLeases(const std::set<uint32_t>& activeCircuits,
 // exit in clear — accepted in the 2-hop model (cf. Decision 12.3, keyword leak);
 // what matters is V's identity never touches the broadcaster or the DHT.
 #include "LiveTunnelBulkFacade.inl"
-
 // C3 - 32-char lowercase hex of a 16-byte streamKey (map key for LT7_STATE(ExitLiveSubscriptions)).
-
 // C3 - relay a broadcaster control update to every circuit that proxy-subscribed
 // to `streamKey` through us. Called from the Live HEARTBEAT/ANNOUNCE handlers on
 // the main thread. Builds TUN_OP_LIVE_HEARTBEAT and pushes it down each circuit
 // (req_id = 0: this is an unsolicited push, not a reply to a pending request).
 // Body: [streamKey 16][flags u8][bitmap u16 LE][oldestSeq u32 LE][pubkey 32].
 // flags bit0 = bitmap/oldestSeq valid, bit1 = pubkey valid.
-
 // C2/C3 (Sprint C finish) - relay the broadcaster's OP_LIVE_PEER_LIST (alternative
 // sources) down every circuit that proxy-subscribed to `streamKey` through us, so a
 // tunneled viewer learns the alt sources WITHOUT the broadcaster ever seeing the
@@ -2197,7 +2036,6 @@ void CLiveTunnel::SweepK6SourceLeases(const std::set<uint32_t>& activeCircuits,
 // (req_id = 0). Body: [streamKey 16][count u8][count*(ip u32 LE + port u16 LE)].
 // ip is a net-order DWORD written byte-preserving via eseWrU32LE; the viewer reads
 // it back with eseRdU32LE and feeds the identical value into OnPeerListReceived.
-
 // v8.1 A1.7 - exit handler for the multi-cell echo test op. The dispatcher
 // has already reassembled the full request; echo it back as
 // TUN_OP_ECHO_LARGE_REPLY. v8.1 A6 - routed through the deferred-operation
@@ -2213,12 +2051,10 @@ void CLiveTunnel::ExitHandle_EchoLarge(const TunnelRequestCtx& ctx)
         return;
     CompleteExitOperation(ctx.circ->Id(), ctx.req_id, echo.data(), echo.size());
 }
-
 bool CLiveTunnel::ShouldRouteThroughTunnel(const wchar_t* keywordOrNull, uint8_t opClass) const
 {
     return m_kadBridge.ShouldRouteThroughTunnel(keywordOrNull, opClass);
 }
-
 // v8.1 Sprint B - parse the TUN_OP_KAD_RESULT_V2 wire body (breakdown 2.3) into
 // a JSON array. Defensive: every field is bounds-checked against the buffer and
 // the per-record length, since this is network-sourced data.
@@ -2235,7 +2071,6 @@ static std::string SB_JsonEscape(const char* p, size_t n)
     }
     return s;
 }
-
 static std::string SB_ParseSearchResultsToJson(const std::vector<uint8_t>& in)
 {
     static const char* HEX = "0123456789abcdef";
@@ -2245,7 +2080,6 @@ static std::string SB_ParseSearchResultsToJson(const std::vector<uint8_t>& in)
     auto rd32 = [&](size_t o)->uint32_t {
         return (uint32_t)in[o] | ((uint32_t)in[o+1] << 8)
              | ((uint32_t)in[o+2] << 16) | ((uint32_t)in[o+3] << 24); };
-
     const uint16_t count = rd16(0);
     std::string json = "[";
     size_t p = 4;
@@ -2278,7 +2112,6 @@ static std::string SB_ParseSearchResultsToJson(const std::vector<uint8_t>& in)
             o.assign((const char*)&in[q], len); q += len; return true;
         };
         if (!rdstr(title) || !rdstr(cat) || !rdstr(lang)) { p = recEnd; continue; }
-
         std::string ipstr = std::to_string(ip & 0xFF) + "." + std::to_string((ip >> 8) & 0xFF)
                           + "." + std::to_string((ip >> 16) & 0xFF) + "." + std::to_string((ip >> 24) & 0xFF);
         if (!first) json += ",";
@@ -2300,7 +2133,6 @@ static std::string SB_ParseSearchResultsToJson(const std::vector<uint8_t>& in)
     json += "]";
     return json;
 }
-
 // v8.1 Sprint C (C1) — send TUN_OP_LIVE_SUBSCRIBE and block for the SUB_ACK.
 // (the exit forwarded our subscribe to the broadcaster). BLOCKING — call off
 bool CLiveTunnel::SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,
@@ -2320,14 +2152,12 @@ bool CLiveTunnel::SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,
         return false;
     return SendCellToPeer(circ->m_prevHopClient, cell);
 }
-
 // === v8.1.1 F-1 — TRUE 2-hop relay forwarding of DATA cells ==================
 // hop1 sits between V and the exit. It relays opaque onion cells in both
 // directions, peeling/adding exactly ONE layer, so it learns V's IP but never
 // the application payload, and the exit learns the payload but never V's IP (G1).
 // CellPack always repads to CELL_TOTAL_BYTES, so the 512 B wire size is preserved
 // after a layer is removed (the declared `length` shrinks by the 16 B AEAD tag).
-
 // Forward (V -> hop1 -> exit): peel our V<->hop1 layer (advances nonce_recv) and
 // relay the still-encrypted inner cell to hop2/exit on the outbound circ id.
 bool CLiveTunnel::ForwardRelayCell_Forward(std::shared_ptr<CLiveCircuit>& circ,
@@ -2336,20 +2166,17 @@ bool CLiveTunnel::ForwardRelayCell_Forward(std::shared_ptr<CLiveCircuit>& circ,
     if (!circ || circ->m_role != CircuitRole::Relay) return false;
     if (!circ->m_nextHopClient || circ->m_nextCircId == 0) return false;
     if (circ->HopCount() < 1) return false;
-
     uint8_t inner[CELL_PAYLOAD_MAX];
     size_t  innerLen = 0;
     // Peel exactly ONE layer (hop[0].k_recv = V->hop1). The inner bytes stay
     // encrypted for the exit; we never parse them. A bad/desynced cell -> drop.
     if (!circ->OnionPeelOne(0, payload, payloadLen, inner, innerLen))
         return false;
-
     uint8_t cell[CELL_TOTAL_BYTES];
     if (!CellPack(circ->m_nextCircId, CELL_RELAY, inner, innerLen, cell))
         return false;
     return SendCellToPeer(circ->m_nextHopClient, cell);
 }
-
 // Reverse (exit -> hop1 -> V): a data cell arrived from hop2/exit on our outbound
 // id. Add our hop1->V layer back (hop[0].k_send) and relay to V on V's circ id.
 bool CLiveTunnel::ForwardRelayCell_Reverse(std::shared_ptr<CLiveCircuit>& circ,
@@ -2357,7 +2184,6 @@ bool CLiveTunnel::ForwardRelayCell_Reverse(std::shared_ptr<CLiveCircuit>& circ,
 {
     if (!circ || circ->m_role != CircuitRole::Relay || !circ->m_prevHopClient) return false;
     if (circ->HopCount() < 1) return false;
-
     uint8_t wrapped[CELL_PAYLOAD_MAX];
     size_t  wrappedLen = 0;
     // Add ONE layer (hop[0].k_send = hop1->V). V then peels hop1 (outer) then the
@@ -2366,24 +2192,19 @@ bool CLiveTunnel::ForwardRelayCell_Reverse(std::shared_ptr<CLiveCircuit>& circ,
     if (!circ->EncryptOneLayer(0, payload, payloadLen, wrapped, wrappedLen))
         return false;
     if (wrappedLen > CELL_PAYLOAD_MAX) return false;
-
     uint8_t cell[CELL_TOTAL_BYTES];
     if (!CellPack(circ->Id(), CELL_RELAY, wrapped, wrappedLen, cell))
         return false;
     return SendCellToPeer(circ->m_prevHopClient, cell);
 }
-
 // === v8.1.2 Sprint E — bulk data plane carrier (OP_LIVE_BULK_CELL 0xD9) =======
 // Same 2-hop topology as F-1 but for variable-length bulk cells with an EXPLICIT
 // on-wire nonce (B2). Data flows exit -> hop1 -> V (push); NACK/feedback ride the
 // 512 B control cells. Bulk buffers are up to ~17 KB so they live on the heap, not
 // the 505 B stack cells.
-
 static_assert(Bulk::BULK_DATA_HEADER_BYTES + Bulk::BULK_SYMBOL_BYTES
               == kad6::kK6ShapedInnerMax,
               "class-5 inner payload must fit one complete legacy bulk symbol");
-
-
 bool CLiveTunnel::EnsureK6ShapeTimerLocked()
 {
     if (m_scheduler.HasClass5Timer())
@@ -2398,14 +2219,12 @@ bool CLiveTunnel::EnsureK6ShapeTimerLocked()
     }
     return true;
 }
-
 void CLiveTunnel::StopK6ShapeTimerLocked()
 {
     const std::uintptr_t token = m_scheduler.ReleaseClass5Timer();
     if (token != 0)
         ::KillTimer(NULL, static_cast<UINT_PTR>(token));
 }
-
 bool CLiveTunnel::EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ,
                                        int outputLayers, uint32_t bucketKiB)
 {
@@ -2416,11 +2235,9 @@ bool CLiveTunnel::EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ
         || !K6ShapeValidBucket(bucketKiB)
         || outputLayers != 3 - static_cast<int>(circ->m_remoteHopIndex))
         return false;
-
     if (m_scheduler.HasShapedLink(circ->Id()))
         return m_scheduler.ShapedLinkMatches(
             circ->Id(), outputLayers, bucketKiB);
-
     const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
     uint8_t random[19]{};
     if (!crypto.random_bytes || !crypto.random_bytes(random, sizeof random))
@@ -2430,7 +2247,6 @@ bool CLiveTunnel::EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ
                                - kad6::kK6ShapeMinReservoirMs + 1);
     uint64_t phase = eseRdU64LE(random + 2);
     uint64_t paddingSequence = eseRdU64LE(random + 10);
-
     static const char nonceRootLabel[] = "kad6-shape-nonce-root-v1";
     uint8_t nonceRootInfo[sizeof(nonceRootLabel) - 1 + 10]{};
     size_t nonceRootLen = 0;
@@ -2447,7 +2263,6 @@ bool CLiveTunnel::EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ
               NULL, 0, nonceRootInfo, nonceRootLen,
               nonceRoot, sizeof nonceRoot))
         return false;
-
     LiveShapedLinkConfig config;
     config.circ_id = circ->Id();
     config.bucket_kib = bucketKiB;
@@ -2462,7 +2277,6 @@ bool CLiveTunnel::EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ
     config.now_us = nowUs;
     if (!m_scheduler.ConfigureShapedLink(config))
         return false;
-
     if (!EnsureK6ShapeTimerLocked()) {
         m_scheduler.RemoveShapedLink(circ->Id());
         return false;
@@ -2473,7 +2287,6 @@ bool CLiveTunnel::EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ
         static_cast<unsigned>(m_scheduler.ShapedReservoirCapacity(circ->Id())));
     return true;
 }
-
 bool CLiveTunnel::QueueK6ShapedRecordLocked(const std::shared_ptr<CLiveCircuit>& circ,
                                             uint64_t streamId,
                                             LiveShapedQueuedRecord&& record)
@@ -2486,7 +2299,6 @@ bool CLiveTunnel::QueueK6ShapedRecordLocked(const std::shared_ptr<CLiveCircuit>&
     }
     return true;
 }
-
 bool CLiveTunnel::PrepareK6ShapedEmissionLocked(
     const std::shared_ptr<CLiveCircuit>& circ,
     const kad6::K6ShapeSlot& slot, LiveShapedEmission& emission)
@@ -2513,11 +2325,9 @@ bool CLiveTunnel::PrepareK6ShapedEmissionLocked(
             return false;
         epochLowBase = eseRdU32LE(epochMaterial);
     }
-
     return m_scheduler.PrepareShapedEmission(
         circ->Id(), slot, crypto, epochLowBase, emission);
 }
-
 bool CLiveTunnel::EmitK6ShapedEmission(
     const std::shared_ptr<CLiveCircuit>& circ,
     const LiveShapedEmission& emission)
@@ -2550,7 +2360,6 @@ bool CLiveTunnel::EmitK6ShapedEmission(
         1, 1, 0, static_cast<uint64_t>(carrier.size()) - useful, metricNow);
     return true;
 }
-
 void CLiveTunnel::DeliverK6ShapedOriginLocked(
     const std::shared_ptr<CLiveCircuit>& circ, const uint8_t* pkt, size_t size)
 {
@@ -2564,7 +2373,6 @@ void CLiveTunnel::DeliverK6ShapedOriginLocked(
         || header.circ_id != circ->Id()
         || header.link_nonce_seq == K6_SHAPE_PADDING_NONCE)
         return;
-
     uint64_t linkNonce = header.link_nonce_seq;
     for (uint8_t hop = 0; hop < 3; ++hop) {
         // Each origin<->hop layer owns an independent nonce space. Checking
@@ -2608,7 +2416,6 @@ void CLiveTunnel::DeliverK6ShapedOriginLocked(
         return;
     }
 }
-
 bool CLiveTunnel::HandleK6ShapedCellLocked(const uint8_t* pkt, size_t size,
                                            CUpDownClient* fromPeer)
 {
@@ -2616,7 +2423,6 @@ bool CLiveTunnel::HandleK6ShapedCellLocked(const uint8_t* pkt, size_t size,
     if (kad6::PeekK6ShapedHeader(pkt, size, header) != kad6::Kad6Status::Ok
         || header.link_nonce_seq == K6_SHAPE_PADDING_NONCE)
         return true;
-
     std::shared_ptr<CLiveCircuit> relay =
         m_circuitRegistry.FindRelayByOutgoingId(header.circ_id);
     if (relay) {
@@ -2645,7 +2451,6 @@ bool CLiveTunnel::HandleK6ShapedCellLocked(const uint8_t* pkt, size_t size,
         }
         return true;
     }
-
     for (const auto& candidate : m_circuitRegistry.GetSnapshot()) {
         if (candidate->Id() == header.circ_id
             && candidate->m_role == CircuitRole::Originator) {
@@ -2656,36 +2461,12 @@ bool CLiveTunnel::HandleK6ShapedCellLocked(const uint8_t* pkt, size_t size,
     }
     return true;
 }
-
-
-
-
-
-
-
-
-
 // === v8.1.2 E3.1/E3.3 — exit headless ingest -> FEC encode -> stripe push =====
 // The chunk hooks below run UNDER the manager lock and only touch the leaf-locked
 // m_proxy* state (never m_lock/m_pendingLock), so the tunnel->manager lock order is
 // never inverted. The heavy work runs in ProcessProxyIngest() from Tick() under m_lock.
-
-
-
-
-
-
 // === v8.1.2 E3.2 — explicit bulk subscribe (exit handlers + viewer sender) =====
-
-
-
-
 // === v8.1.2 E3.5 (NACK gap-fill) + E4' (adaptive r) ===========================
-
-
-
-
-
 size_t CLiveTunnel::RelayCircuitCount() const
 {
     CSingleLock lock(&m_lock, TRUE);
@@ -2694,13 +2475,11 @@ size_t CLiveTunnel::RelayCircuitCount() const
         if (c->m_role == CircuitRole::Relay && c->State() == CircuitState::Active) ++n;
     return n;
 }
-
 size_t CLiveTunnel::TotalCircuitCount() const
 {
     CSingleLock lock(&m_lock, TRUE);
     return m_circuitRegistry.Size();
 }
-
 bool CLiveTunnel::TunneledLiveSubscribe(const uint8_t streamKey[16],
                                         uint32_t bIP, uint16_t bPort, uint16_t bUDP,
                                         uint32_t bAltIP, uint32_t timeoutMs)
@@ -2712,7 +2491,6 @@ bool CLiveTunnel::TunneledLiveSubscribe(const uint8_t streamKey[16],
     EnqueueSendMsg(req_id,TUN_OP_LIVE_SUBSCRIBE,body.data(),body.size());
     return WaitPending(req_id,std::move(pending),timeoutMs,reply,NULL)&&!reply.empty()&&reply[0]==0;
 }
-
 void CLiveTunnel::SendLiveSubscribeNoWait(const uint8_t streamKey[16],
                                            uint32_t bIP, uint16_t bPort, uint16_t bUDP,
                                            uint32_t bAltIP)
@@ -2723,7 +2501,6 @@ void CLiveTunnel::SendLiveSubscribeNoWait(const uint8_t streamKey[16],
     eseWrU16LE(body.data()+22,bUDP);eseWrU32LE(body.data()+24,bAltIP);
     EnqueueSendMsg(req_id,TUN_OP_LIVE_SUBSCRIBE,body.data(),body.size());
 }
-
 // Keep the previously characterized LT3 boundary compile-time-bound after
 // the LT8 search method bodies move into the textual facade below.
 namespace {
@@ -2732,9 +2509,6 @@ using LT3ExecuteSearchReplyContract = decltype(&CKad6OriginSocket::LT3ExecuteSea
 using LT3PlanExitGatewayContract = decltype(&LiveTunnelKadBridge::LT3PlanExitGateway);
 using LT3ExecuteExitGatewayContract = decltype(&CKad6OriginSocket::LT3ExecuteExitGateway);
 }
-
 #include "LiveTunnelCoordinatorMethods.inl"
-
 #include "LiveTunnelSearchFacade.inl"
-
 }  // namespace eSELive

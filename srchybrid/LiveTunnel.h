@@ -9,7 +9,6 @@
 // Network I/O (actual TCP send/recv) is delegated to CClientReqSocket
 // in F5; LiveTunnel owns cell construction + onion crypto only.
 #pragma once
-
 #include "LiveCircuit.h"
 #include "LiveOnionCrypto.h"
 #include "LiveCellQueue.h"   // v8.1 A2 - ReassemblyEntry, fragment helpers
@@ -40,7 +39,6 @@
 #include "kad6/kad6_exit_notice.h"
 #include "kad6/kad6_release.h"
 #include "Kad6ExitNoticeServer.h"
-
 #include <memory>
 #include <vector>
 #include <string>   // v0.71 C — TunnelPing text I/O
@@ -49,61 +47,36 @@
 #include <utility>  // v0.72 — std::move
 #include <functional> // v8.1 A2 - std::function handler registry
 #include <set>     // v8.1.2 E3.1 — exit-proxy stream-key set
-
 #include <array>
-
 class CUpDownClient;
-
 namespace eSELive {
-
 using K6AuthorizedTarget = LiveTunnelAuthorizedTarget;
 using TunnelSearchJob = LiveTunnelSearchJob;
-
 class CKad6ExitSocket;
 class CKad6OriginSocket;
-
 // Pool size limits from §5.5.5 thesis
 const size_t TUNNEL_POOL_MIN = 3;
 const size_t TUNNEL_POOL_MAX = 5;
 const DWORD  TUNNEL_ROTATION_BASE_MS  = 300u * 1000u;   // v8.1: 5 min (was 30 s, too short: micro-cut streams + blocked testing)
 const DWORD  TUNNEL_ROTATION_JITTER_MS = 10u * 1000u;
 const DWORD  TUNNEL_HANDSHAKE_TIMEOUT_MS = 800u;
-
 // v8.x Phase 2 — tunnel auth policy. Mixed (default): emit v2 to auth-capable
 // peers, v1 otherwise, accept either. Strict: require a verified v2 handshake and
 // abort any v1/unsigned cell. Toggle is a runtime flag for now (wire to a pref/UI
 // later); the handshake crypto is final regardless of the toggle source.
 bool TunnelAuthStrict();
 void SetTunnelAuthStrict(bool strict);
-
 // v8.1 Sprint B — tunneled Kad search.
 const DWORD  TUN_SEARCH_WINDOW_MS   = 7000u;   // accumulate Kad results this long, then reply
 const size_t TUN_SEARCH_MAX_RESULTS = 100;     // cap records per reply (anti-DoS + size)
-
-// Endpoint opaque handle exposed to LiveMeshManager (Cap 5 §5.6.3 thesis).
-// The mesh layer manipulates TunnelEndpoint references, not raw client pointers.
-// RESERVED for the Sprint E data plane (C6/E3), where CLiveMeshManager re-indexes
-// peers by endpoint. It is intentionally NOT used by the exit's ExitStreamProxy,
-// which keys proxied viewers by bare circ_id: at an exit the originating viewer's
-// pubkey is structurally unknowable (onion routing hides the originator — a relay
-// circuit knows only its neighbour hops), and circ_id is the stable session handle
-// that survives a CUpDownClient swap. remote_pubkey is populated only on the
-// ORIGINATOR side, from the channel pubkey the viewer already holds.
-struct TunnelEndpoint {
-    uint32_t circ_id;
-    uint8_t  remote_pubkey[32];      // origin's Ed25519 pub (channel pubkey for streams)
-};
-
 class CLiveTunnel : private LiveCircuitHandshakeHost,
                     private ILiveRelayDispatcherPort {
 public:
     static CLiveTunnel& Get();
-
     // MOD-0.2: headless characterization seam. It only invokes production
     // framing/reassembly and the empty-dispatch rejection; normal runtime
     // paths never call it.
     bool RunCharacterizationSelfTest(CString& outFailure);
-
     // Start building `count` circuits to reach the given origin pubkey
     // through the given pool of relay candidates. Returns number of
     // CREATE cells issued. Callbacks via OnCellReceived complete the
@@ -111,21 +84,17 @@ public:
     size_t BuildPool(const uint8_t origin_pubkey[32],
                      const std::vector<CUpDownClient*>& relayCandidates,
                      size_t count);
-
     // Tear down all circuits and clear state.
     void Stop();
-
     // Send a payload through any one of the active circuits, using the
     // multipath split policy (round-robin by default — chunks consecutive
     // by seq get distinct circuits, Decision 5.1).
     bool SendThrough(const uint8_t* payload, size_t payloadLen);
-
     // Incoming cell from a hop (called by ListenSocket OP_LIVE_TUNNEL_CELL
     // handler in F5). Returns true if the cell was consumed.
     bool OnCellReceived(uint32_t circ_id, uint8_t cmd,
                         const uint8_t* payload, uint16_t payloadLen,
                         CUpDownClient* fromPeer);
-
     // v8.1.2 Sprint E (E1.2) — incoming OP_LIVE_BULK_CELL (0xD9) from a hop. Called by
     // the ListenSocket dispatch with the RAW packet bytes (after the opcode). Parses the
     // variable-length bulk cell (LiveBulk §2.1), then either FORWARDS it (intermediate
@@ -133,7 +102,6 @@ public:
     // explicit-nonce onion-decrypt -> replay check -> BULK_DATA -> reassembly E3.4).
     // Returns true if the cell was consumed (incl. silently dropped).
     bool OnBulkCellReceived(const uint8_t* pkt, uint32_t size, CUpDownClient* fromPeer);
-
     // === v8.1.2 E3.1 — exit headless ingest hooks ==========================
     // Called from CLiveStreamManager's chunk path (IngestChunkPayload / OnChunkFragment
     // Received), which holds the MANAGER lock, BEFORE its m_bViewing gate. To preserve the
@@ -149,30 +117,24 @@ public:
     void ExitProxyOnFragment(const uint8_t streamKey[16], uint32_t seqNum,
                              uint16_t fragIndex, uint16_t fragCount, uint32_t totalLen,
                              const uint8_t* fragData, uint32_t fragLen);
-
     // v8.1.2 E3.2 (viewer) — start the bulk data plane for `streamKey`: send
     // TUN_OP_BULK_SUBSCRIBE on every Active bulk-capable circuit, all tagged with one fresh
     // session_id (so the exit stripes across them). No-op if no bulk circuit exists (caller
     // stays on the direct/fallback path). Returns the number of circuits subscribed.
     size_t BulkSubscribe(const uint8_t streamKey[16]);
-
     // Periodic tick (rotation, cover traffic, dead circuit cleanup).
     void Tick();
-
     // K6-6 class-5 has a dedicated 10 ms UI-thread heartbeat. The ordinary
     // Kad Tick is ~1 Hz and cannot preserve fixed record slots.
     void ProcessClass5Tick();
-
     size_t ActiveCircuitCount() const;
     size_t PendingCircuitCount() const;      // v0.71 P3.8 — circuits in CREATE/CREATED handshake
     size_t RelayCircuitCount() const;        // v0.71 P3.3 — circuits we relay (intermediate)
     size_t TotalCircuitCount() const;        // v0.71 P3.3 — for UI / metrics
-
     // True only when an Active originator circuit terminates at an
     // authenticated exit whose signed CREATED-v2 capability snapshot contains
     // every requested bit.  Used by K6-1 to choose K6Frame vs legacy wire.
     bool HasActiveCircuitWithExitCaps(uint32_t requiredCaps) const;
-
     // v0.71 P3.6 — self-loop test: build a single-hop circuit to a peer
     // identified by clientHint. If clientHint == NULL, picks the first
     // connected CUpDownClient with a working socket (works for solo
@@ -183,71 +145,23 @@ public:
     // completes and the circuit reaches Active. Returns the circuit_id
     // assigned, or 0 on failure.
     uint32_t BuildTestCircuit(CUpDownClient* clientHint);
-
     // PST pool make-before-break successor. Production privacy is fail-closed:
     // it builds either an exact 3-hop Strict path or an exact 2-hop Private path.
     // One-hop paths are reserved for explicit diagnostics and quota issuance.
     bool BuildSuccessorCircuit();
-
     // Build the dedicated direct issuer circuit used by anonymous quota
     // acquisition.  It is kept outside the private circuit pool and is never
     // eligible for ordinary origin traffic.
     bool BuildQuotaGuardCircuit();
-
     // K6-6: build one fail-closed STRICT circuit with exactly three remote
     // identities (guard, middle, exit).  No one/two-hop fallback occurs here.
     bool BuildSuccessor3Hop(uint32_t* circuitId = NULL);
-
     // v0.71 B (2-hop) — extended test: builds a 1-hop circuit AND, once
     // CREATED arrives, requests a 2nd hop. Returns the V-side circ_id.
     // If only 1 fork peer is available, hop2 loops back to the same peer
     // (semantically weird but valid for state-machine testing). Real
     // multi-node deployments pick 2 distinct peers.
     uint32_t BuildTestCircuit2Hop();
-
-    // v0.71 C — sub-protocol for application payloads carried inside
-    // CELL_RELAY. The plaintext after onion peel has this layout:
-    //   [0]     sub_cmd (TunnelOpCmd)
-    //   [1..4]  req_id (uint32 LE) — correlates request to reply
-    //   [5..6]  text_len (uint16 LE)
-    //   [7..N]  text bytes
-    // Future sub_cmds (Kad search, Live subscribe, etc.) will extend
-    // this. Keep the first 7 bytes structure stable.
-    enum TunnelOpCmd : uint8_t {
-        TUN_OP_PING        = 0x01,
-        TUN_OP_PING_REPLY  = 0x02,
-        // v0.71 P1.A — real operations through tunnel
-        TUN_OP_KAD_SEARCH       = 0x10,   // V → exit: do Kad keyword search on my behalf
-        TUN_OP_KAD_RESULT       = 0x11,   // exit → V: serialized search hits
-        TUN_OP_LIVE_SUBSCRIBE   = 0x20,   // V → exit: forward subscribe to broadcaster
-        TUN_OP_LIVE_SUB_ACK     = 0x21,   // exit → V: ack / broadcaster contact info
-        TUN_OP_LIVE_HEARTBEAT   = 0x22,   // exit → V: relay broadcaster heartbeat/announce (C3)
-        TUN_OP_LIVE_PEER_LIST   = 0x23,   // exit → V: relay broadcaster's OP_LIVE_PEER_LIST alt sources (C2/C3)
-        // v8.1 Sprint A — multi-cell ops. sub_cmd >= TUN_MULTICELL_OP_MIN (0x40)
-        // ALWAYS carries an 8-byte fragment header in its body (see
-        // LiveCellQueue.h). 0x42-0x7F are reserved for Sprint B/C.
-        TUN_OP_ECHO_LARGE       = 0x40,   // A1.7 test: V -> exit, arbitrary-size echo
-        TUN_OP_ECHO_LARGE_REPLY = 0x41,   // A1.7 test: exit -> V, echoed payload
-        // v8.1 Sprint B — real Kad search through the tunnel (multi-cell).
-        TUN_OP_KAD_SEARCH_V2    = 0x42,   // V -> exit: run a real Kad CSearch on my behalf
-        TUN_OP_KAD_RESULT_V2    = 0x43,   // exit -> V: rich result records (multi-cell)
-        TUN_OP_KAD_CANCEL       = 0x44,   // V -> exit: abort an in-flight search by req_id
-        // v8.1.2 Sprint E (E3.2) — bulk data plane control (0x50-0x5F reserved for E).
-        // SUBSCRIBE body: stream_key 16 + flags 1 + r_pref 1 + session_id 4. session_id
-        // groups a viewer's multiple bulk circuits so the exit can STRIPE symbols across
-        // them (one viewer = one session_id on all its circuits).
-        TUN_OP_BULK_SUBSCRIBE   = 0x50,   // V -> exit: start the bulk push for a stream on this circuit
-        // NACK body: stream_key 16 + count 1 + (seq 4 + block_idx 1)*count. Requests a re-push
-        // of specific (seq, block) the viewer could not reassemble (E3.5 gap-fill).
-        TUN_OP_BULK_NACK        = 0x52,   // V -> exit: re-push missing (seq, block)
-        TUN_OP_BULK_UNSUB       = 0x54,   // V -> exit: stop the bulk push on this circuit
-        // Kad6 anonymity/compatibility gateway service. Multi-cell
-        // (>= TUN_MULTICELL_OP_MIN): the
-        // reassembled body is a K6FrameV1.  SEARCH_* is active for Live
-        // discovery; later message families remain independently gated.
-        TUN_OP_KAD6_GATEWAY     = 0x70
-    };
-
     // === v8.1 A2 - generic exit-side dispatcher ============================
     // Replaces the hardcoded sub_cmd switch in HandleRelay_Exit. One handler
     // is registered per sub_cmd; once a request is fully received (a legacy
@@ -256,7 +170,6 @@ public:
     // register a handler instead of editing HandleRelay_Exit.
     using TunnelRequestCtx = LiveTunnelRequestCtx;
     using TunnelOpHandler = LiveTunnelOpHandler;
-
     // v0.71 P1.B — does the user's mode + this operation route through
     // a tunnel? Returns true if a circuit should be used. Centralised
     // here so the same logic gates Kad search, Live subscribe, future
@@ -270,7 +183,6 @@ public:
     // selector header into this widely-included header. Defaults to LIVE_CONTROL so the
     // existing subscribe call sites are unchanged.
     bool ShouldRouteThroughTunnel(const wchar_t* keywordOrNull, uint8_t opClass = 2) const;
-
     // v0.71 P1.A — issue a Kad keyword search through the tunnel.
     // Sends TUN_OP_KAD_SEARCH, waits for TUN_OP_KAD_RESULT. timeoutMs
     // bound on the whole operation. Returns true if any results came
@@ -279,7 +191,6 @@ public:
     bool TunneledKadSearch(const std::string& keywordLower,
                            std::string& resultsJsonOut,
                            uint32_t timeoutMs);
-
     // K6-3 source gateway. Blocking calls are worker-thread APIs, mirroring
     // TunneledKadSearch; unbind/unpublish are idempotent fire-and-forget.
     bool K6BindSource(const kad6::K6SourceBind& bind,
@@ -288,7 +199,6 @@ public:
                          kad6::K6PublishAck& ackOut, uint32_t timeoutMs);
     void K6SourceUnbindNoWait(const kad6::K6SourceUnbind& unbind);
     void K6UnpublishNoWait(const kad6::K6Unpublish& unpublish);
-
     // K6-4 outbound legacy gateway. Blocking methods are worker-thread APIs;
     // attach/send use the normal main-thread client engine and never open a
     // destination that is not covered by an exit-issued target ticket.
@@ -302,7 +212,6 @@ public:
     bool K6TakeSourceHints(uint64 streamId, kad6::K6SourceHints& hintsOut);
     bool K6GetVirtualIdentity(uint64 streamId,
                               kad6::K6VirtualIdentityEndpoint& vepOut) const;
-
     // K6-4 production activation. Source-hash lookup is fire-and-forget on
     // the main thread; matching results materialize ordinary download clients
     // carrying an opaque exit ticket. BeginK6Download consumes that ticket and
@@ -312,7 +221,6 @@ public:
     void QueueK6SourceAdvertise(const uint8_t fileHash[16], uint64 fileSize,
                                 kad6::K6CommitmentKind commitmentKind,
                                 const uint8_t commitment[32]);
-
     // K6-5 inbound cohort front-door. The listener enables bounded pre-auth
     // only while at least one published source lease can accept sessions.
     bool HasK6ServingLeases() const;
@@ -326,7 +234,6 @@ public:
     // MAIN THREAD. Native lookup transport reports only fixed alpha/result
     // buckets; no peer or target identity reaches the public metric registry.
     void OnKad6SourceLookupRpc(uint8_t alpha, uint8_t result);
-
     // Main-thread callbacks from the real Kad2 CSearch::STOREFILE path.
     bool AllowKad6ShadowPublishContact(uint64 publishLeaseId,
                                        const uint8_t custodianId[16]);
@@ -337,14 +244,12 @@ public:
     void OnKad6NativePublishAck(uint64 publishLeaseId,
                                 kad6::K6StoreStatus status, uint8_t load,
                                 uint64 acceptedEpoch);
-
     // v0.71 C — synchronous tunnel ping. Sends a PING through any
     // active circuit, blocks up to timeoutMs waiting for the reply.
     // Returns true if reply arrived in time, with replyText populated.
     // Used by the /api/live/privacy/tunnel_ping REST endpoint.
     bool TunnelPing(const std::string& text, std::string& replyText,
                     uint32_t timeoutMs);
-
     // v8.1 Sprint C (C1/C2) — tunneled LiveTV subscribe. Sends
     // TUN_OP_LIVE_SUBSCRIBE through a circuit; the exit forwards a real
     // OP_LIVE_SUBSCRIBE to the broadcaster ON V's BEHALF (the broadcaster sees
@@ -361,7 +266,6 @@ public:
     bool TunneledLiveSubscribe(const uint8_t streamKey[16],
                                uint32_t bIP, uint16_t bPort, uint16_t bUDP,
                                uint32_t bAltIP, uint32_t timeoutMs);
-
     // v8.1 Sprint C (C5) — fire-and-forget tunneled subscribe. Unlike
     // TunneledLiveSubscribe this does NOT block for the SUB_ACK, so it is safe
     // to call from the main thread (the Live dial path). It enqueues a
@@ -376,26 +280,22 @@ public:
     // Kad6-native Live result: the endpoint stays at the exit. Resolve the
     // result_id on the exact circuit that returned it and subscribe opaquely.
     bool SendK6LiveSubscribeNoWait(const uint8_t streamKey[16]);
-
     // v8.1 D1 - fire-and-forget tunneled Kad keyword search (keyword UTF-8, lowercased).
     // Like SendLiveSubscribeNoWait: throwaway req_id, no waiter; the TUN_OP_KAD_RESULT_V2
     // reply is parsed straight into the Live directory by HandleRelay_Originator. Safe from
     // the MAIN thread (the blocking TunneledKadSearch is not). No-op without an Active circuit.
     void SendKadSearchV2NoWait(const std::string& keywordLower);
-
     // v8.1 A1.7 - multi-cell echo test op. Splits `payload` into fragments,
     // sends them as TUN_OP_ECHO_LARGE, awaits the reassembled
     // TUN_OP_ECHO_LARGE_REPLY. Exercises the whole multi-cell path
     // end-to-end. Returns false on timeout or oversize message.
     bool TunnelEchoLarge(const std::vector<uint8_t>& payload,
                          std::vector<uint8_t>& replyOut, uint32_t timeoutMs);
-
     // v0.71 B — accessor for the panel/REST endpoint to enumerate all
     // active circuits with their per-hop endpoints. The caller receives
     // copies (no live refs) and may iterate without holding our lock.
     using CircuitSnapshot = LiveCircuitSnapshot;
     void GetCircuitsSnapshot(std::vector<CircuitSnapshot>& out) const;
-
     // K6-7 local beta controls. Mutations are marshaled to the main thread so
     // a Web UI worker never touches sockets or lease state. The snapshot and
     // sealed metrics contain only aggregate, fixed-cardinality values.
@@ -414,13 +314,11 @@ public:
     bool StartK6ExitNotice(uint16 port, kad6::K6ExitNotice notice);
     void StopK6ExitNotice() noexcept;
     K6ExitNoticeServerSnapshot GetK6ExitNoticeSnapshot() const noexcept;
-
     // MAIN THREAD ONLY. A circuit is bound to the concrete eD2K client
     // connection used for each adjacent hop. Tear it down as soon as that
     // client disconnects so the API/pool cannot keep reporting or selecting
     // an Active circuit whose transport has already disappeared.
     void OnPeerDisconnected(CUpDownClient* peer);
-
     // === v0.72 — main-thread marshaling ====================================
     // The embedded webserver answers each HTTP request on its own worker
     // thread. CLiveTunnel, CUpDownClient and the eMule sockets are
@@ -430,13 +328,11 @@ public:
     // enqueue the work here and the main thread drains it from
     // ProcessMainThreadWork() (called once per Kad tick). Read-only endpoints
     // are served from caches the main thread keeps refreshed.
-
     // Worker-thread safe. Builds a test circuit ON THE MAIN THREAD and waits
     // up to timeoutMs for the resulting circuit id. hops is 1, 2 or strict 3.
     // Three-hop construction never loops back or degrades. Returns
     // the circuit id, or 0 on failure / timeout.
     uint32_t RequestTestCircuit(int hops, uint32_t timeoutMs);
-
     // Value-typed peer info — safe to hand to a worker thread (unlike raw
     // CUpDownClient pointers, which only the main thread may dereference).
     // Printable endpoints are immutable values. IPv6 is never exposed as the
@@ -447,11 +343,9 @@ public:
     // advertised privacy-tunneling capability.
     void GetPeersSnapshot(std::vector<PeerSnapshot>& outAll,
                           size_t& outTunnelingCount) const;
-
     // MAIN THREAD ONLY. Drains the marshaled-work queue and refreshes the
     // peer cache. Call once per Kad process tick.
     void ProcessMainThreadWork();
-
     // v0.71 P3.3 — total counts of cells sent / received for metrics.
     uint64_t CellsSentTotal() const { return m_metrics.Totals().cells_sent; }
     uint64_t CellsRecvTotal() const { return m_metrics.Totals().cells_received; }
@@ -462,19 +356,13 @@ public:
     // v8.1 D8 — EWMA mean end-to-end tunnel RTT in ms (0 = unknown / no sample yet).
     // Measured by a periodic fire-and-forget TUN_OP_PING probe (see Tick).
     uint32_t MeanRttMs() const { return m_metrics.Totals().mean_rtt_ms; }
-
 private:
     friend class CKad6ExitSocket;
     friend class CKad6OriginSocket;
     CLiveTunnel();
     CLiveTunnel(const CLiveTunnel&) = delete;
     CLiveTunnel& operator=(const CLiveTunnel&) = delete;
-
     static uint32_t NewCircuitId();
-
-    // v0.71 P3.3 — send a packed cell (CELL_TOTAL_BYTES) to a peer over
-    // its existing CClientReqSocket, wrapped as OP_LIVE_TUNNEL_CELL.
-    // Returns true if the packet was queued for send. Increments stats.
     bool SendCellToPeer(CUpDownClient* peer, const uint8_t cell[CELL_TOTAL_BYTES]);
     void DestroyCircuitFailClosed(const std::shared_ptr<CLiveCircuit>& circ);
     void TransitionCircuitDestroyed(const std::shared_ptr<CLiveCircuit>& circ);
@@ -497,7 +385,6 @@ private:
     LiveHandshakePeerHandle FindConnectedHandshakePeerByHash(const uint8_t hash[16]) const override;
     LiveHandshakePeerHandle FindConnectedHandshakePeer(uint32_t ipv4, uint16_t port) const override;
     uint32_t LocalHandshakePublicIp() const override;
-
     bool IsRelayMultiCell(uint8_t subCommand) const override;
     bool ParseRelaySubHeader(const uint8_t* plain, size_t plainLength,
                              uint8_t& subCommand, uint32_t& requestId,
@@ -516,127 +403,45 @@ private:
         size_t fragmentDataLength,
         std::vector<uint8_t>& completedMessage) override;
     bool DispatchRelayExit(const LiveTunnelRequestCtx& context) override;
-
-    // Originator-side CREATED handler: complete handshake on hop 1.
     bool HandleCreated_Originator(std::shared_ptr<CLiveCircuit>& circ,
                                   const uint8_t* payload, uint16_t payloadLen);
-
-    // Relay-side CREATE handler: generate ephemeral, derive keys, reply
-    // with CREATED, register as relay circuit so future RELAY cells are
-    // peeled correctly.
     bool HandleCreate_Relay(uint32_t circId,
                             const uint8_t* payload, uint16_t payloadLen,
                             CUpDownClient* fromPeer);
-
-    // v0.71 B — originator side: send CELL_EXTEND through the now-active
-    // hop1 circuit. Generates a fresh X25519 ephemeral for V↔hop2 and
-    // encrypts a 38-byte payload (hop2 IP + port + new ev_pub) with
-    // hop1's K_send. The receiver-side handlers below complete the
-    // round-trip. Returns true on success.
     bool BuildExtend(std::shared_ptr<CLiveCircuit>& circ,
                      CUpDownClient* hop2);
-
-    // v8.1.1 F-2 — build a TRUE 2-hop circuit V -> hop1 -> exit with hop1 != exit
-    // (DISTINCT nodes by user-hash), so the exit never has a direct socket to V and
-    // never sees V's IP (real anonymity / G1). Picks two distinct tunnel-capable
-    // authenticated peers; pre-stages hop2 on the originator so
-    // HandleCreated_Originator auto-extends after hop1's CREATED. No loopback or
-    // one-hop fallback exists: fewer than two eligible identities fails closed.
     bool BuildSuccessor2Hop();
-
     bool ContinueOriginatorBuild(std::shared_ptr<CLiveCircuit>& circ);
-
-    // v0.71 B — relay side: a CELL_EXTEND cell arrived on a relay-side
-    // circuit. Peel V→hop1 layer, parse hop2 endpoint + new ephemeral,
-    // pick new outbound circ_id, send CELL_CREATE to hop2. Store
-    // forwarding state on the relay circuit.
     bool HandleExtend_Relay(std::shared_ptr<CLiveCircuit>& circ,
                             const uint8_t* payload, uint16_t payloadLen);
-
-    // v0.71 B — relay side: CELL_CREATED arrived from hop2 on our
-    // outbound forwarding circ. Look up which V-side circuit asked for
-    // it, wrap CREATED payload with K_send_r_to_v, send as
-    // CELL_EXTENDED back to V on V's circ_id.
     bool ForwardCreatedAsExtended_Relay(uint32_t outboundCircId,
                                         const uint8_t* payload, uint16_t payloadLen);
-
-    // Iterative extension forwarding for the second EXTEND/EXTENDED pair.
     bool ForwardExtendCell_Forward(std::shared_ptr<CLiveCircuit>& circ,
                                    const uint8_t* payload, uint16_t payloadLen);
     bool ForwardPaddingCell_Forward(std::shared_ptr<CLiveCircuit>& circ,
                                     const uint8_t* payload, uint16_t payloadLen);
     bool ForwardExtendedCell_Reverse(std::shared_ptr<CLiveCircuit>& circ,
                                      const uint8_t* payload, uint16_t payloadLen);
-
-    // v0.71 B — originator side: a CELL_EXTENDED cell arrived on a
-    // V-side originator circuit. Peel V→hop1 layer to reveal hop2's
-    // er_pub. Derive V↔hop2 keys, add hop2 to m_hops, mark fully Active
-    // with 2 hops. Wipe ephemeral.
     bool HandleExtended_Originator(std::shared_ptr<CLiveCircuit>& circ,
                                    const uint8_t* payload, uint16_t payloadLen);
-
-    // v0.71 B — looks up a relay-side circuit by its OUTBOUND id (the
-    // one we chose for talking to hop2). Returns nullptr if not found.
-    // v0.71 C — CELL_RELAY handlers.
-    // Originator: peel ALL hops, parse TunnelOp, deliver to pending
-    // request table or drop if no waiter.
     bool HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
                                 const uint8_t* payload, uint16_t payloadLen);
-    // Exit/relay-with-2-hops: peel ALL hops (we keep both layers'
-    // recv keys in m_hops when we're the exit). Parse TunnelOp.
-    // For PING, build PING_REPLY and wrap back through both hops.
     bool HandleRelay_Exit(std::shared_ptr<CLiveCircuit>& circ,
                           const uint8_t* payload, uint16_t payloadLen);
-
-    // v0.71 C — wrap a plaintext payload through a relay-side circuit's
-    // hops in REVERSE order (mirror of originator's OnionEncrypt) and
-    // send back to V via m_prevHopClient. Used when the exit produces
-    // a reply (PING_REPLY, KadSearch result, etc.).
     bool SendRelayReply(std::shared_ptr<CLiveCircuit>& circ,
                         const uint8_t* plain, size_t plainLen);
-
-    // === v8.1.1 F-1 — TRUE 2-hop relay forwarding of DATA cells (CELL_RELAY) ===
-    // Until now the code only TERMINATED relay cells (HandleRelay_Exit peels ALL
-    // layers + dispatches), so the only working configs were 1-hop (exit==hop1,
-    // directly connected to V) or loopback — in both the exit sees V's IP, defeating
-    // G1. These forward an OPAQUE cell through an intermediate hop1 WITHOUT decrypting
-    // the application payload: hop1 peels/re-adds exactly ONE layer and relays. The
-    // construction side (non-loopback HandleExtend_Relay) already stashes the
-    // forwarding state (m_nextHopClient/m_nextCircId on hop1, m_prevHopClient on the
-    // exit); these two methods are the missing DATA path. Counter-based crypto is fine
-    // here (control rides TCP, no expected loss); the bulk data plane uses the
-    // explicit-nonce twins (LiveCircuit::*Explicit) because FEC/NACK lose cells.
-    //   Forward (V -> hop1 -> exit): peel our 1 layer, relay inner ct on m_nextCircId.
     bool ForwardRelayCell_Forward(std::shared_ptr<CLiveCircuit>& circ,
                                   const uint8_t* payload, uint16_t payloadLen);
-    //   Reverse (exit -> hop1 -> V): re-add our 1 layer, relay to V on circ->Id().
     bool ForwardRelayCell_Reverse(std::shared_ptr<CLiveCircuit>& circ,
                                   const uint8_t* payload, uint16_t payloadLen);
-
-    // === v8.1.2 Sprint E — bulk data plane carrier (OP_LIVE_BULK_CELL 0xD9) =====
-    // Same 2-hop topology as F-1 but for variable-length bulk cells with an EXPLICIT
-    // on-wire nonce (B2), so FEC/NACK loss never tears the circuit. Data flows
-    // exit -> hop1 -> V only (push); the viewer's NACK/feedback ride the 512 B control
-    // cells (TUN_OP_BULK_*).
-    //   Send a variable-length bulk cell to a peer wrapped as OP_LIVE_BULK_CELL.
     bool SendBulkCellToPeer(CUpDownClient* peer, const uint8_t* bytes, size_t size);
-    //   hop1 relays a bulk cell back to V: re-add our hop1->V layer (explicit nonce),
-    //   preserving bcmd; re-pack on V's circ id and send to m_prevHopClient.
     bool ForwardBulkCell_Reverse(std::shared_ptr<CLiveCircuit>& circ, uint8_t bcmd,
                                  uint64_t nonce_seq, const uint8_t* payload, size_t payloadLen);
-    //   EXIT pushes ONE bulk cell toward V (E3.3 scheduler uses this): wrap with our
-    //   1 layer (explicit nonce from m_bulk_nonce_send++) and send to m_prevHopClient.
     bool SendBulkCellReverse(std::shared_ptr<CLiveCircuit>& circ, uint8_t bcmd,
                              const uint8_t* plain, size_t plainLen);
-    //   Viewer terminating decode: explicit-nonce onion-decrypt-all -> replay check ->
-    //   BULK_DATA -> accumulate into reassembly; on a complete segment, RS-decode the
-    //   whole CHUNK_V2 record (E3.4) and deliver it to the chunk pipeline.
     void DeliverBulkData(std::shared_ptr<CLiveCircuit>& circ, uint64_t nonce_seq,
                          const uint8_t* payload, size_t payloadLen);
     void DeliverBulkPlain(const uint8_t* plain, size_t plainLen);
-
-    // K6-6.2 fixed-record reverse path. Every relay mapping owns an
-    // independent scheduler, nonce space and bounded per-stream reservoir.
     bool EnsureK6ShaperLocked(const std::shared_ptr<CLiveCircuit>& circ,
                               int outputLayers, uint32_t bucketKiB);
     bool QueueK6ShapedRecordLocked(const std::shared_ptr<CLiveCircuit>& circ,
@@ -653,87 +458,31 @@ private:
                                      const uint8_t* pkt, size_t size);
     bool EnsureK6ShapeTimerLocked();
     void StopK6ShapeTimerLocked();
-
-    // E3.4 reassembly: symbols of a (streamKey, seq) segment arrive STRIPED across the
-    // viewer's bulk circuits, so this is keyed globally by (streamKey, seq), not per
-    // circuit. The decode is attempted only once every block has >= k_b symbols (bounds
-    // the 3 MB-buffer cost); Bulk::BulkDecodeSegment then rebuilds the signed CHUNK_V2
-    // record byte-identical -> existing verify/inject (unchanged).
-    // E3.5 (viewer) — send a NACK requesting re-push of the listed (seq, block) pairs of a
-    // stream, on an Active bulk circuit. Returns true if a NACK was sent.
     bool SendBulkNack(const uint8_t streamKey[16],
                       const std::vector<std::pair<uint32_t, uint8_t>>& missing);
     static std::string BulkReasmKey(const uint8_t streamKey[16], uint32_t seq);
-    // Sweep stale partial segments (pattern A5); called from Tick().
     void SweepBulkReasm();
-
-    // === v8.1.2 E3.1/E3.3 — exit proxy ingest -> FEC encode -> stripe push ==
-    // LEAF lock: held ONLY to touch the m_proxy* state, NEVER while acquiring m_lock /
-    // m_pendingLock / the manager lock -> the documented tunnel->manager order is never
-    // inverted, so the chunk hooks (which run under the manager lock) are deadlock-safe.
-    // MAIN THREAD (Tick, under m_lock): refresh proxy keys, drain ready records, FEC-encode each
-    // record and push its symbols across the stream's subscribed bulk circuits.
     void ProcessProxyIngest();
     void RefreshProxyKeys();   // rebuild the LT7 proxy-key mirror under pending + leaf locks
-
-    // v8.1.2 E3.2 — explicit bulk subscriptions. The viewer sends TUN_OP_BULK_SUBSCRIBE on
-    // EACH of its bulk circuits, all carrying the SAME session_id, so the exit can group a
-    // viewer's circuits and STRIPE a segment's symbols across them. When a stream has explicit
-    // bulk subs, ProcessProxyIngest pushes to THESE (grouped + striped); otherwise it falls
-    // back to the C7 control subs (full k+r per circuit). Under m_pendingLock.
     void ExitHandle_BulkSubscribe(const TunnelRequestCtx& ctx);   // register/refresh a bulk sub
     void ExitHandle_BulkUnsub(const TunnelRequestCtx& ctx);       // drop a bulk sub
-
-    // v8.1.2 E3.5 (NACK gap-fill) + E4' (adaptive r). The exit retains the last few whole
-    // records per stream so it can RE-PUSH blocks a viewer could not reassemble (TUN_OP_BULK_
-    // NACK), and tracks the NACK rate to ADAPT the parity r up/down. All under m_lock.
     void ExitHandle_BulkNack(const TunnelRequestCtx& ctx);  // re-push missing (seq, block) + bump NACK rate
     int  ProxyAdaptiveR(const std::string& hex);            // E4' — current r for a stream (adapts on NACK rate)
-    // Re-encode `record` and push ONLY block `blockIdx` to `circ` (used by ExitHandle_BulkNack).
     void PushBlockToCircuit(std::shared_ptr<CLiveCircuit>& circ, const uint8_t streamKey[16],
                             uint32_t seq, const std::vector<uint8_t>& record, int r, uint8_t blockIdx);
-
-    // === v8.1 A2 - generic exit dispatcher (internals) =====================
-    // Fragment + send a reply back to V. reply_op >= 0x40 is split into
-    // multi-cell fragments (sub-header + frag-header per cell); a legacy
-    // reply op (< 0x40) goes as one single cell. Each cell is onion-wrapped
-    // and sent via SendRelayReply.
     bool SendReply(const TunnelRequestCtx& ctx, uint8_t reply_op,
                    const uint8_t* payload, size_t payloadLen);
-    // Built-in exit handlers (registered in the constructor).
     void ExitHandle_Ping(const TunnelRequestCtx& ctx);
     void ExitHandle_KadSearch(const TunnelRequestCtx& ctx);
     void ExitHandle_EchoLarge(const TunnelRequestCtx& ctx);   // A1.7 test op
-    // A1.5 - partial multi-cell message under reassembly, keyed by
-    // LiveRequestKey(circ_id, req_id) so messages on different circuits that happen
-    // to share a req_id never collide (the exit reassembles for many circuits
-    // at once). Accessed under m_pendingLock. Swept by Tick() (A5).
-
-    // === v8.1 A6 - deferred exit-side operations ==========================
-    // Register a deferred reply; the handler returns without answering.
     bool BeginExitOperation(const TunnelRequestCtx& ctx, uint8_t reply_op);
-    // Send the deferred reply (fragmented via SendReply) and discard the op.
-    // Returns false if the op is unknown or its circuit has gone.
     bool CompleteExitOperation(uint32_t circ_id, uint32_t req_id,
                                const uint8_t* payload, size_t payloadLen);
-    // Send one non-final response for a deferred operation without consuming
-    // it. K6 searches use this for each SEARCH_RESULT, then Complete... for END.
     bool SendExitOperationPart(uint32_t circ_id, uint32_t req_id,
                                const uint8_t* payload, size_t payloadLen);
-    // Discard a deferred op without replying (e.g. cancelled / circuit dead).
     void AbortExitOperation(uint32_t circ_id, uint32_t req_id);
-
-    // === v8.1 Sprint B - real Kad search via tunnel =======================
-    // TUN_OP_KAD_SEARCH_V2 starts a real Kad CSearch on the exit and defers the
-    // reply (A6). Results accumulate in CLiveKadBridge's directory (filled async
-    // on the Kad UDP thread, thread-safe there); after TUN_SEARCH_WINDOW_MS,
-    // Tick() reads the matching streams, serializes them as TUN_OP_KAD_RESULT_V2
-    // and completes the deferred op. All of THIS runs on the main thread.
     void ExitHandle_KadSearchV2(const TunnelRequestCtx& ctx);   // B1
     void ExitHandle_KadCancel(const TunnelRequestCtx& ctx);     // B7
-
-    // K6-1A gateway: validates K6FrameV1 and dispatches canonical Live
-    // SEARCH_START/RESULT/END. Unsupported message families fail closed.
     void ExitHandle_Kad6Gateway(const TunnelRequestCtx& ctx);
     void ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
                                    const kad6::K6Frame& frame);
@@ -776,7 +525,6 @@ private:
                            const std::vector<std::vector<uint8_t>>& initialFrames);
     bool MarkK6SourceServingLocked(uint64 sourceLeaseId,
                                    kad6::K6CohortBackend& backend);
-
     bool SendK6FlowCredit(uint32 circId,
                           const std::weak_ptr<CLiveCircuit>& circuit,
                           bool fromExit,
@@ -853,82 +601,36 @@ private:
     void StartDueK6ShadowPublishes(uint64 nowSeconds);
     void StartK6VisibilityProbes(uint64 nowSeconds);
     void RefreshK6NativePublishes(uint64 nowSeconds);
-    // v8.1 Sprint C (C2) — exit forwards a tunneled subscribe to the broadcaster
-    // on the viewer's behalf, then acks. Runs on the main thread (OnCellReceived).
     void ExitHandle_LiveSubscribe(const TunnelRequestCtx& ctx);
-
-    // v8.1 Sprint C (C3) — active exit-proxy subscriptions: streamKey (hex) ->
-    // the set of V-side circuit ids that subscribed to that stream through us.
-    // Populated by ExitHandle_LiveSubscribe; consumed by ExitRelayLiveControl to
-    // tunnel the broadcaster's heartbeat/announce back to each subscribed V.
-    // Swept (dead circuits / TTL) in Tick. Under m_pendingLock.
-    // Per-stream proxy: the broadcaster endpoint we subscribed to (so the sweep
-    // can UNSUBSCRIBE when the last viewer leaves — otherwise the exit stays a
-    // zombie viewer holding an upload slot) + the set of V circuits to relay to.
     static std::string LiveStreamKeyHex(const uint8_t streamKey[16]);
-
 public:
-    // v8.1 Sprint C (C3) — called from the Live HEARTBEAT/ANNOUNCE handlers
-    // (main thread). If THIS node is an exit proxying `streamKey` for one or
-    // more tunneled viewers, relay the control update (bitmap+oldestSeq from a
-    // heartbeat, and/or the broadcaster pubkey from an announce) to each
-    // subscribed circuit as TUN_OP_LIVE_HEARTBEAT. No-op if we proxy no one for
-    // this stream, so it is cheap to call unconditionally.
     void ExitRelayLiveControl(const uint8_t streamKey[16],
                               bool hasBitmap, uint16_t bitmap, uint32_t oldestSeq,
                               const uint8_t* pubkeyOrNull);
-    // v8.1 Sprint C (C2/C3 finish) — called from CLiveStreamManager::OnPeerListReceived
-    // (main thread, BEFORE its m_lock). If THIS node is an exit proxying `streamKey`
-    // for tunneled viewers, relay the broadcaster's alternative-source list to each
-    // subscribed circuit as TUN_OP_LIVE_PEER_LIST. No-op if we proxy no one for this
-    // stream, so it is cheap to call unconditionally. ips are net-order DWORDs,
-    // value-preserving through the LE body (no byte-swap).
     void ExitRelayPeerList(const uint8_t streamKey[16],
                            uint32_t upstreamIP, uint16_t upstreamPort,
                            const uint32_t* ips, const uint16_t* ports, uint8_t count);
 private:
-    // B2/B3 - main thread: reply to jobs whose window elapsed, then drop them.
     void FinishDueSearchJobs();
-    // Serialize matching known streams into the TUN_OP_KAD_RESULT_V2 wire body.
     void SerializeSearchResults(const std::string& keyword,
                                 std::vector<uint8_t>& out) const;
-    // Build and stream canonical K6M_SEARCH_RESULT frames. Returns the number
-    // successfully sent; FinishDueSearchJobs emits the matching SEARCH_END.
     uint16_t SendK6SearchResults(const TunnelSearchJob& job);
-    // StopSearch on the job's CSearch ids (main thread only).
     void StopSearchJobKad(const TunnelSearchJob& job);
-
-    // This legacy lock still owns reassembly, K6 routing, and other adjacent
-    // domain state. Pending request records no longer use it.
     mutable CCriticalSection m_pendingLock;
-    // v9.2 MOD-1.2 - extracted pending-domain ownership. Request records,
-    // waiter lifetime, retry state, and terminal completion are private to the
-    // module. m_pendingLock remains for unrelated reassembly/K6 domain state.
     using PendingHandle = eSELive::LiveTunnelPending::Handle;
     eSELive::LiveTunnelPending m_pendingRequests;
     LiveRelayDispatcher m_relayDispatcher;
     LiveExitServices m_exitServices;
-    // Register before send so a fast reply cannot beat registration.
     PendingHandle RegisterPending(uint32_t& req_id);
     bool WaitPending(uint32_t req_id, PendingHandle pending, uint32_t timeoutMs,
                      std::vector<uint8_t>& outReply, uint32_t* outResult,
                      uint32_t* outCircuitId = NULL);
     void SignalReply(uint32_t req_id, const uint8_t* reply, size_t replyLen,
                      uint32_t result);
-
-    // v8.1 A4 - send a whole logical message pinned to ONE circuit (round-robin
-    // BY MESSAGE, not by cell). sub_cmd >= 0x40 is fragmented via SplitIntoCells;
-    // < 0x40 is a single legacy cell. Returns the circuit id used, or 0 if no
-    // Active circuit was available. MAIN THREAD ONLY (touches sockets).
     uint32_t SendMessagePinned(uint32_t req_id, uint8_t sub_cmd,
                                const uint8_t* msg, size_t msgLen,
                                uint32_t requiredExitCaps = 0,
                                uint32_t pinnedCircId = 0);
-
-    // v0.72 — marshaled-work queue: webserver worker threads push, the main
-    // thread drains it in ProcessMainThreadWork().
-    // A4 adds MT_SEND_MSG: marshal a whole logical message (req_id + sub_cmd +
-    // body) so the main thread picks one circuit and pins all its cells to it.
     using MtOp = LiveDeferredOp;
     using MainThreadReq = LiveDeferredWork;
     static constexpr MtOp MT_SEND = MtOp::Send;
@@ -939,30 +641,19 @@ private:
     static constexpr MtOp MT_K6_SERVICE_SWITCH = MtOp::K6ServiceSwitch;
     static constexpr MtOp MT_K6_RELEASE_SWITCH = MtOp::K6ReleaseSwitch;
     LiveTunnelScheduler m_scheduler;
-
-    // v0.72 — enqueue a SendThrough payload for the main thread. Used by
-    // TunnelPing / TunneledKadSearch (they run on webserver worker threads).
     void EnqueueSend(const uint8_t* payload, size_t payloadLen);
-    // v8.1 A4 — enqueue a whole logical message for pinned send on the main
-    // thread (see SendMessagePinned). Replaces the per-cell EnqueueSend path
-    // for tunnel ops so all cells of one message ride one circuit.
     void EnqueueSendMsg(uint32_t req_id, uint8_t sub_cmd,
                         const uint8_t* msg, size_t msgLen,
                         uint32_t requiredExitCaps = 0,
                         uint32_t pinnedCircId = 0);
-
     bool HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
                              uint32_t req_id, const std::vector<uint8_t>& wire);
-    // v0.72 — MAIN THREAD: refresh the value-only peer cache.
     void RebuildPeersCache();
-
     mutable CCriticalSection m_lock;
     eSELive::LiveCircuitRegistry m_circuitRegistry; // caller-serialized by m_lock
     eSELive::LiveCircuitHandshake m_handshake;
-    // Declared last so its service/worker are canceled and joined first.
     LiveTunnelKadBridge m_kadBridge;
     bool LoadK6Guard();
     bool SaveK6Guard(const uint8_t nodePub[32], uint64_t expiresAt);
 };
-
 }  // namespace eSELive

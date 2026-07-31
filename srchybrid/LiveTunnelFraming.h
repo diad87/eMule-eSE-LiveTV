@@ -31,6 +31,28 @@ enum CellCmd : uint8_t {
     CELL_PADDING   = 0x10
 };
 
+// Application operations carried inside CELL_RELAY.  The framing module owns
+// these wire values; CLiveTunnel only publishes compatibility aliases.
+enum LiveTunnelOpCmd : uint8_t {
+    TUN_OP_PING = 0x01,
+    TUN_OP_PING_REPLY = 0x02,
+    TUN_OP_KAD_SEARCH = 0x10,
+    TUN_OP_KAD_RESULT = 0x11,
+    TUN_OP_LIVE_SUBSCRIBE = 0x20,
+    TUN_OP_LIVE_SUB_ACK = 0x21,
+    TUN_OP_LIVE_HEARTBEAT = 0x22,
+    TUN_OP_LIVE_PEER_LIST = 0x23,
+    TUN_OP_ECHO_LARGE = 0x40,
+    TUN_OP_ECHO_LARGE_REPLY = 0x41,
+    TUN_OP_KAD_SEARCH_V2 = 0x42,
+    TUN_OP_KAD_RESULT_V2 = 0x43,
+    TUN_OP_KAD_CANCEL = 0x44,
+    TUN_OP_BULK_SUBSCRIBE = 0x50,
+    TUN_OP_BULK_NACK = 0x52,
+    TUN_OP_BULK_UNSUB = 0x54,
+    TUN_OP_KAD6_GATEWAY = 0x70
+};
+
 // === Tunnel sub-protocol framing (v8.1 Sprint A) =========================
 // Two headers ride INSIDE the AEAD-decrypted CELL_RELAY payload, above the
 // 512-byte cell layer. Neither changes the cell wire format -> a v8.0.0

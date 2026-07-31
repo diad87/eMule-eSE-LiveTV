@@ -9,6 +9,10 @@
 
 namespace eSELive {
 M2AModuleHandle M2A_BIND_LT3_876B98A826(const M2AParentPort&);
+M2AModuleHandle M2A_BIND_LT6_8E07B736A1(const M2AParentPort&);bool RunLiveTunnelOriginServiceCharacterizationSelfTest();
+bool M2A_LT6_OperateBridge(
+    const M2AModuleHandle&, LiveTunnelOriginOperation,
+    void*, void*, void*, void*, void*, void*);
 void M2A_LT3_InitializeBridge(
     M2AModuleHandle&, void*, void (*)(void*), void*, void (*)(void*),
     void*, void (*)(void*), void*, void (*)(void*));
@@ -42,9 +46,12 @@ bool OperateLT3(const M2AModuleHandle& handle, LiveTunnelGatewayStoreOperation o
 
 LiveTunnelKadBridge::LiveTunnelKadBridge(LiveTunnelKadPorts ports)
     : m_ports(std::move(ports)),
-      m_m2a_binding_876b98a826(M2AAssignmentPolicy::RetainExisting)
+      m_m2a_binding_876b98a826(M2AAssignmentPolicy::RetainExisting),
+      m_m2a_binding_8e07b736a1(M2AAssignmentPolicy::RetainExisting)
 {
     m_m2a_binding_876b98a826 = M2A_BIND_LT3_876B98A826(M2AParentPort{this});
+    m_m2a_binding_8e07b736a1 =
+        M2A_BIND_LT6_8E07B736A1(M2AParentPort{this});
     std::unique_ptr<kad6::K6SourceLeaseTable> leases(
         new kad6::K6SourceLeaseTable());
     std::unique_ptr<kad6::K6CohortScheduler> cohorts(
@@ -132,6 +139,39 @@ bool LiveTunnelKadBridge::LT3PublishEnqueue(const kad6::K6PublishSchedule& sched
 std::vector<kad6::K6PublishSchedule> LiveTunnelKadBridge::LT3PublishTakeDue(std::uint64_t now, std::size_t maximum) { std::vector<kad6::K6PublishSchedule> value; OperateLT3(m_m2a_binding_876b98a826, LiveTunnelGatewayStoreOperation::TakeDue, &now, &maximum, &value); return value; }
 bool LiveTunnelKadBridge::LT3PublishRemove(std::uint64_t leaseId) { bool value=false; OperateLT3(m_m2a_binding_876b98a826, LiveTunnelGatewayStoreOperation::Remove, &leaseId, &value); return value; }
 std::size_t LiveTunnelKadBridge::LT3PublishExpire(std::uint64_t now) { std::size_t value=0; OperateLT3(m_m2a_binding_876b98a826, LiveTunnelGatewayStoreOperation::PublishExpire, &now, &value); return value; }
+
+namespace {
+bool OperateLT6(
+    const M2AModuleHandle& handle, LiveTunnelOriginOperation operation,
+    void* a=nullptr, void* b=nullptr, void* c=nullptr, void* d=nullptr,
+    void* e=nullptr, void* f=nullptr) {
+    return M2A_LT6_OperateBridge(handle, operation, a, b, c, d, e, f);
+}
+}
+
+bool LiveTunnelKadBridge::LT6AddSourceLookup(std::uint32_t requestId,const LiveTunnelOriginSourceLookup& value){return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::AddSourceLookup,&requestId,const_cast<LiveTunnelOriginSourceLookup*>(&value));}
+bool LiveTunnelKadBridge::LT6BindSourceLookup(std::uint32_t requestId,std::uint32_t circuitId,LiveTunnelOriginSourceLookup& value){return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::BindSourceLookup,&requestId,&circuitId,&value);}
+bool LiveTunnelKadBridge::LT6NoteSourceLookupResult(std::uint32_t requestId){return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::NoteSourceLookupResult,&requestId);}
+bool LiveTunnelKadBridge::LT6TakeSourceLookup(std::uint32_t requestId,std::uint32_t circuitId,LiveTunnelOriginSourceLookup& value){return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::TakeSourceLookup,&requestId,&circuitId,&value);}
+bool LiveTunnelKadBridge::LT6AddDownloadActivation(std::uint32_t requestId,const LiveTunnelOriginDownloadActivation& value){return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::AddDownloadActivation,&requestId,const_cast<LiveTunnelOriginDownloadActivation*>(&value));}
+bool LiveTunnelKadBridge::LT6TakeDownloadActivation(std::uint32_t requestId,std::uint32_t circuitId,LiveTunnelOriginDownloadActivation& value){return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::TakeDownloadActivation,&requestId,&circuitId,&value);}
+bool LiveTunnelKadBridge::LT6RemoveDownloadActivation(std::uint32_t requestId,LiveTunnelOriginDownloadActivation* value){return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::RemoveDownloadActivation,&requestId,value);}
+void LiveTunnelKadBridge::LT6RemoveDownloadActivationsByClient(std::uintptr_t token){OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::RemoveDownloadActivationsByClient,&token);}
+void LiveTunnelKadBridge::LT6AddSourceRoute(std::uint64_t leaseId,std::uint32_t circuitId){OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::AddSourceRoute,&leaseId,&circuitId);}
+bool LiveTunnelKadBridge::LT6FindSourceRoute(std::uint64_t leaseId,std::uint32_t& circuitId) const{return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::FindSourceRoute,&leaseId,&circuitId);}
+bool LiveTunnelKadBridge::LT6TakeSourceRoute(std::uint64_t leaseId,std::uint32_t& circuitId){return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::TakeSourceRoute,&leaseId,&circuitId);}
+void LiveTunnelKadBridge::LT6AddPublishRoute(std::uint64_t leaseId,std::uint32_t circuitId){OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::AddPublishRoute,&leaseId,&circuitId);}
+bool LiveTunnelKadBridge::LT6TakePublishRoute(std::uint64_t leaseId,std::uint32_t& circuitId){return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::TakePublishRoute,&leaseId,&circuitId);}
+LiveTunnelOriginAdvertiseReservation LiveTunnelKadBridge::LT6ReserveAdvertise(const std::string& key,std::uint64_t now,std::uint64_t minimumEpoch){LiveTunnelOriginAdvertiseReservation value;OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::ReserveAdvertise,const_cast<std::string*>(&key),&now,&minimumEpoch,&value);return value;}
+bool LiveTunnelKadBridge::LT6FinishAdvertise(const std::string& key,std::uint64_t generation,const LiveTunnelOriginAdvertiseCompletion& completion){return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::FinishAdvertise,const_cast<std::string*>(&key),&generation,const_cast<LiveTunnelOriginAdvertiseCompletion*>(&completion));}
+bool LiveTunnelKadBridge::LT6SubmitAdvertise(std::uint64_t generation,LiveTunnelOriginWorkerTask task){return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::SubmitAdvertise,&generation,&task);}
+void LiveTunnelKadBridge::LT6AddTargetRoute(const std::string& key,const LiveTunnelOriginTargetRoute& value){OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::AddTargetRoute,const_cast<std::string*>(&key),const_cast<LiveTunnelOriginTargetRoute*>(&value));}
+bool LiveTunnelKadBridge::LT6FindTargetRoute(const std::string& key,std::uint64_t now,LiveTunnelOriginTargetRoute& value) const{return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::FindTargetRoute,const_cast<std::string*>(&key),&now,&value);}
+void LiveTunnelKadBridge::LT6AddLiveRoute(const std::string& key,const LiveTunnelOriginTargetRoute& value){OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::AddLiveRoute,const_cast<std::string*>(&key),const_cast<LiveTunnelOriginTargetRoute*>(&value));}
+bool LiveTunnelKadBridge::LT6FindLiveRoute(const std::string& key,std::uint64_t now,LiveTunnelOriginTargetRoute& value) const{return OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::FindLiveRoute,const_cast<std::string*>(&key),&now,&value);}
+LiveTunnelOriginSweepResult LiveTunnelKadBridge::LT6Sweep(std::uint64_t nowSeconds,std::uint32_t nowTick,const std::set<std::uint32_t>& activeCircuits){LiveTunnelOriginSweepResult value;OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::Sweep,&nowSeconds,&nowTick,const_cast<std::set<std::uint32_t>*>(&activeCircuits),&value);return value;}
+void LiveTunnelKadBridge::LT6CancelWorker() noexcept{OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::Cancel);}
+void LiveTunnelKadBridge::LT6JoinWorker() noexcept{OperateLT6(m_m2a_binding_8e07b736a1,LiveTunnelOriginOperation::Join);}
 
 bool LiveTunnelKadBridge::ShouldRouteThroughTunnel(
     const wchar_t* keyword, std::uint8_t operation_class) const
@@ -246,8 +286,8 @@ bool RunLiveTunnelKadBridgeCharacterizationSelfTest()
     kad6::Hash16 pseudonym{}; pseudonym[0]=1; kad6::K6SourceBind bind{}; bind.transport_mask=kad6::kK6TransportTcp; bind.requested_lifetime_s=3600; bind.desired_family=4; bind.requested_mode=kad6::K6BindingMode::DedicatedVep; bind.bind_nonce[0]=1; kad6::K6SourceBound bound{}; bound.status=kad6::K6SourceBoundStatus::Ok; bound.transport_mask=bind.transport_mask; bound.binding_mode=kad6::K6BindingMode::DedicatedVep; bound.identity_mode=kad6::K6IdentityMode::OriginatorVep; bound.endpoint_slot=1; bound.source_lease_id=1; bound.lifetime_s=3600; bound.refresh_after_s=1800; bound.virtual_endpoint.addr.family=kad6::Kad6Address::Family::IPv4; bound.virtual_endpoint.addr.addr[0]=1; bound.virtual_endpoint.tcp_port=1; bound.virtual_endpoint.transport_flags=kad6::kK6EpTcpEd2k; bound.virtual_endpoint.valid_until=3600; bound.exit_apparent_ip=bound.virtual_endpoint.addr; bound.bind_nonce=bind.bind_nonce; std::vector<std::uint64_t> stoppedLeases; if (!bridge.LT3SourceEpochStoreHealthy() || bridge.LT3AddBound(7,pseudonym,bind,bound,0)!=kad6::Kad6Status::Ok || bridge.LT3AddBound(7,pseudonym,bind,bound,0)!=kad6::Kad6Status::BadValue || (bridge.LT3QueueCircuitTeardown(7),bridge.LT3DrainQueuedCircuits(1,&stoppedLeases))!=1 || stoppedLeases!=std::vector<std::uint64_t>{1}) return false; const LT3SourceLeaseValue stoppedLease=bridge.LT3FindSourceLease(1); if (!stoppedLease || stoppedLease->state!=kad6::K6SourceLeaseState::Closed || bridge.LT3EraseClosedSourceLeases(1)!=1 || bridge.LT3FindSourceLease(1)) return false;
     LiveTunnelKadBridge corrupt(LiveTunnelKadPorts{});
     if (bridge.LT3CanAcceptSourceEpoch(identity, 1) || corrupt.LT3LoadSourceEpochs(std::vector<std::uint8_t>{1}, true) || !corrupt.LT3SourceEpochStoreFailed()) return false;
-    return LiveTunnelKadBridge::NetworkIndex(2, 2) == 1 &&
-           LiveTunnelKadBridge::NetworkIndex(1, 2) == 0;
+    return LiveTunnelKadBridge::NetworkIndex(2,2)==1&&LiveTunnelKadBridge::NetworkIndex(1,2)==0&&
+        RunLiveTunnelOriginServiceCharacterizationSelfTest();
 }
 
 } // namespace eSELive

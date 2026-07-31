@@ -481,6 +481,26 @@ class M2A00RatchetTest(unittest.TestCase):
         self.assertTrue(GATE._preexisting_parent_route(
             live, previous, ("Parent",), live.index("m_handle")
         ))
+        chained_previous = (
+            "bool Parent::Run() {\n"
+            "  m_m2a_binding_111 = "
+            "M2A_BIND_OLD(M2AParentPort{this});\n"
+            "  return true;\n"
+            "}\n"
+        )
+        chained = (
+            "bool Parent::Run() {\n"
+            "  m_m2a_binding_111 = "
+            "M2A_BIND_OLD(M2AParentPort{this});\n"
+            "  m_m2a_binding_222 = "
+            "M2A_BIND_NEW(M2AParentPort{this});\n"
+            "  return true;\n"
+            "}\n"
+        )
+        self.assertTrue(GATE._preexisting_parent_route(
+            chained, chained_previous, ("Parent",),
+            chained.index("m_m2a_binding_222")
+        ))
         sources = [dead, unbraced]
         sources.extend(
             (
@@ -747,7 +767,7 @@ class M2A00RatchetTest(unittest.TestCase):
             "srchybrid/M2ABindingPort.h",
             "srchybrid/LiveTunnelGatewayStorePort.h",
             "srchybrid/LiveTunnelSourcePublisherPort.h",
-            "srchybrid/LiveTunnelStreamFlowPort.h",
+            "srchybrid/LiveTunnelStreamFlowPort.h", "srchybrid/LiveTunnelOriginPort.h",
             "srchybrid/LiveTunnelScheduler.cpp",
             "srchybrid/emule.vcxproj",
         ]

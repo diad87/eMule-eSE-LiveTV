@@ -38,6 +38,11 @@
       "path": "srchybrid/LiveTunnelStreamFlowPort.h",
       "reason": "Value-only LT5 stream runtime and credit-ledger vocabulary shared by the state owner and transport adapter without a reverse coordinator dependency.",
       "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+    },
+    {
+      "path": "srchybrid/LiveTunnelOriginPort.h",
+      "reason": "Value-only LT6 lookup, activation, route and worker-action vocabulary shared by the origin owner and Kad6 adapter without a reverse coordinator dependency.",
+      "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
     }
   ],
   "approval": "M2A-00; a card is activated only by a reviewed catalogue revision and its frozen A/D/net budget"

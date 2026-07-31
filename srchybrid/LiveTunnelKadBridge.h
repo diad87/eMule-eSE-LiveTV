@@ -1,9 +1,9 @@
 // this file is part of eMule eSE - explicit Kad2/Kad6 tunnel adapter boundary
 #pragma once
 #include "M2ABindingPort.h"
+#include "LiveTunnelOriginPort.h"
 #include "kad6/kad6_frontdoor.h"
 #include "kad6/kad6_frame.h"
-#include "kad6/kad6_hardening.h"
 #include "kad6/kad6_lease.h"
 #include "kad6/kad6_publish.h"
 #include <array>
@@ -75,6 +75,56 @@ public:
     std::vector<kad6::K6PublishSchedule> LT3PublishTakeDue( std::uint64_t now, std::size_t maximum);
     bool LT3PublishRemove(std::uint64_t leaseId);
     std::size_t LT3PublishExpire(std::uint64_t now);
+    bool LT6AddSourceLookup(
+        std::uint32_t requestId, const LiveTunnelOriginSourceLookup& value);
+    bool LT6BindSourceLookup(
+        std::uint32_t requestId, std::uint32_t circuitId,
+        LiveTunnelOriginSourceLookup& value);
+    bool LT6NoteSourceLookupResult(std::uint32_t requestId);
+    bool LT6TakeSourceLookup(
+        std::uint32_t requestId, std::uint32_t circuitId,
+        LiveTunnelOriginSourceLookup& value);
+    bool LT6AddDownloadActivation(
+        std::uint32_t requestId,
+        const LiveTunnelOriginDownloadActivation& value);
+    bool LT6TakeDownloadActivation(
+        std::uint32_t requestId, std::uint32_t circuitId,
+        LiveTunnelOriginDownloadActivation& value);
+    bool LT6RemoveDownloadActivation(
+        std::uint32_t requestId,
+        LiveTunnelOriginDownloadActivation* value = nullptr);
+    void LT6RemoveDownloadActivationsByClient(std::uintptr_t clientToken);
+    void LT6AddSourceRoute(std::uint64_t leaseId, std::uint32_t circuitId);
+    bool LT6FindSourceRoute(
+        std::uint64_t leaseId, std::uint32_t& circuitId) const;
+    bool LT6TakeSourceRoute(
+        std::uint64_t leaseId, std::uint32_t& circuitId);
+    void LT6AddPublishRoute(std::uint64_t leaseId, std::uint32_t circuitId);
+    bool LT6TakePublishRoute(
+        std::uint64_t leaseId, std::uint32_t& circuitId);
+    LiveTunnelOriginAdvertiseReservation LT6ReserveAdvertise(
+        const std::string& key, std::uint64_t now,
+        std::uint64_t minimumEpoch);
+    bool LT6FinishAdvertise(
+        const std::string& key, std::uint64_t generation,
+        const LiveTunnelOriginAdvertiseCompletion& completion);
+    bool LT6SubmitAdvertise(
+        std::uint64_t generation, LiveTunnelOriginWorkerTask task);
+    void LT6AddTargetRoute(
+        const std::string& key, const LiveTunnelOriginTargetRoute& value);
+    bool LT6FindTargetRoute(
+        const std::string& key, std::uint64_t now,
+        LiveTunnelOriginTargetRoute& value) const;
+    void LT6AddLiveRoute(
+        const std::string& key, const LiveTunnelOriginTargetRoute& value);
+    bool LT6FindLiveRoute(
+        const std::string& key, std::uint64_t now,
+        LiveTunnelOriginTargetRoute& value) const;
+    LiveTunnelOriginSweepResult LT6Sweep(
+        std::uint64_t nowSeconds, std::uint32_t nowTick,
+        const std::set<std::uint32_t>& activeCircuits);
+    void LT6CancelWorker() noexcept;
+    void LT6JoinWorker() noexcept;
     static std::uint8_t BuildNetworkMask(bool kad2_selected,
                                          bool kad6_selected,
                                          std::uint8_t kad2_mask,
@@ -90,6 +140,7 @@ private:
     friend bool RunLiveTunnelKadBridgeCharacterizationSelfTest();
     LiveTunnelKadPorts m_ports;
     M2AModuleHandle m_m2a_binding_876b98a826;
+    M2AModuleHandle m_m2a_binding_8e07b736a1;
 };
 bool RunLiveTunnelKadBridgeCharacterizationSelfTest();
 } // namespace eSELive

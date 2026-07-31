@@ -900,45 +900,6 @@ private:
                               const kad6::K6ReleaseEvidence* evidence,
                               uint32 drainSeconds);
     void RefreshK6PublicRelease(uint64 nowSeconds, uint32 drainSeconds = 300);
-    struct K6OriginSourceLookup {
-        kad6::Hash16 file_hash{};
-        uint32 circ_id = 0;
-        DWORD deadline = 0;
-        uint16 received = 0;
-    };
-    struct K6DownloadActivation {
-        CUpDownClient* client = nullptr;
-        uint32 circ_id = 0;
-        DWORD deadline = 0;
-    };
-    std::map<uint32_t, K6OriginSourceLookup> m_k6OriginSourceLookups;
-    std::map<uint32_t, K6DownloadActivation> m_k6DownloadActivations;
-    std::map<uint64, uint32> m_k6OriginSourceLeaseRoutes;
-    std::map<uint64, uint32> m_k6OriginPublishLeaseRoutes;
-    struct K6OriginAdvertiseState {
-        bool in_flight = false;
-        uint64 next_attempt = 0;
-        uint64 source_lease_id = 0;
-        uint64 publish_lease_id = 0;
-    };
-    struct K6OriginAdvertiseWork {
-        CLiveTunnel* owner = nullptr;
-        std::string key;
-        kad6::K6SourceBind bind;
-    };
-    std::map<std::string, K6OriginAdvertiseState> m_k6OriginAdvertisements;
-    uint64 m_k6OriginSourceEpoch = 0;
-    static UINT AFX_CDECL K6OriginAdvertiseWorker(LPVOID context);
-    void FinishK6OriginAdvertise(const std::string& key, bool success,
-                                 uint64 sourceLeaseId, uint64 publishLeaseId,
-                                 uint32 refreshAfter);
-    struct K6OriginTargetRoute {
-        uint32 circ_id = 0;
-        uint32 source_request_id = 0;
-        uint64 expires_at = 0;
-    };
-    std::map<std::string, K6OriginTargetRoute> m_k6OriginTargetRoutes;
-    std::map<std::string, K6OriginTargetRoute> m_k6OriginLiveRoutes;
     static std::string K6AuthorizedTargetKey(uint32 circId, uint32 requestId,
                                              const kad6::Hash16& resultId);
     static bool K6AllowTicketTarget(void* context, kad6::Byte service,
@@ -1024,7 +985,6 @@ private:
     eSELive::LiveTunnelPending m_pendingRequests;
     LiveRelayDispatcher m_relayDispatcher;
     LiveExitServices m_exitServices;
-    LiveTunnelKadBridge m_kadBridge;
     // Register before send so a fast reply cannot beat registration.
     PendingHandle RegisterPending(uint32_t& req_id);
     bool WaitPending(uint32_t req_id, PendingHandle pending, uint32_t timeoutMs,
@@ -1089,6 +1049,8 @@ private:
     std::array<uint8_t, 32> m_k6GuardNodePub{};
     uint64_t m_k6GuardExpiresAt = 0;
     bool m_k6GuardLoaded = false;
+    // Declared last so its service/worker are canceled and joined first.
+    LiveTunnelKadBridge m_kadBridge;
     bool LoadK6Guard();
     bool SaveK6Guard(const uint8_t nodePub[32], uint64_t expiresAt);
     // v8.1 D8 - periodic RTT probe state (all touched only under m_lock).

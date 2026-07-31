@@ -1373,16 +1373,32 @@ def _preexisting_parent_route(
         for match in signature.finditer(current):
             opening = current.find("{", match.start(), match.end())
             closing = _matching_brace(current, opening)
+            prefix = current[opening + 1:call_start]
+            prior_bindings = re.compile(
+                r"(?:\s*m_m2a_binding_[0-9a-f]+\s*=\s*"
+                r"M2A_BIND_[A-Z0-9_]+\s*\(\s*"
+                r"M2AParentPort\s*\{\s*this\s*\}\s*\)\s*;\s*)+"
+            )
             if (
                 closing is None
                 or not (opening < call_start < closing)
-                or current[opening + 1:call_start].strip()
+                or (
+                    prefix.strip()
+                    and prior_bindings.fullmatch(prefix) is None
+                )
             ):
                 continue
             old_signature = re.compile(
                 rf"\b{re.escape(owner)}::{re.escape(match.group(1))}\s*\("
             )
-            if old_signature.search(previous):
+            if old_signature.search(previous) and (
+                not prefix.strip()
+                or all(
+                    statement.strip() in previous
+                    for statement in prefix.split(";")
+                    if statement.strip()
+                )
+            ):
                 return True
     return False
 
@@ -2092,6 +2108,18 @@ def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: 
                 "Value-only LT5 stream runtime and credit-ledger vocabulary "
                 "shared by the state owner and transport adapter without a "
                 "reverse coordinator dependency."
+            ),
+            "adr": (
+                "docs/architecture/"
+                "MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+            ),
+        },
+        {
+            "path": "srchybrid/LiveTunnelOriginPort.h",
+            "reason": (
+                "Value-only LT6 lookup, activation, route and worker-action "
+                "vocabulary shared by the origin owner and Kad6 adapter "
+                "without a reverse coordinator dependency."
             ),
             "adr": (
                 "docs/architecture/"

@@ -37,7 +37,7 @@ EXPECTED_DOC_HASHES: dict[str, str] = {
     "mod52_migration_matrix_v1.json": "0b84a0898a78f62f253587b4085b2c35167fa4f7ead4d0720a5b6cedfbf6d0ca",
     "mod52_migration_baseline_v1.json": "4c162b457059776f13c26341fdab60778088014e183acc48926f22f5d1cbc5c3",
     "mod03_ownership_layering_contract_v2.json": "c3aa3d90bccbc63ff7a0c8ebafd199e9ed2b00acc2c2ef488c5e11515a3f28b1",
-    "mod04_architecture_gate_catalog_v2.json": "994ea1bf06b5aff9fcdbb368c02760e3074985bdeb47ce3a2fc0e4c00b5f51f5",
+    "mod04_architecture_gate_catalog_v2.json": "596ee611e509b8778ea72ac998f32fe7f9e94dc6b58a275de327a139d10a430e",
 }
 COORDINATORS = (
     ("LiveTunnel", "CLiveTunnel", "srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h"),
@@ -2120,6 +2120,30 @@ def validate_inputs(contract: dict[str, Any], matrix: dict[str, Any], baseline: 
                 "Value-only LT6 lookup, activation, route and worker-action "
                 "vocabulary shared by the origin owner and Kad6 adapter "
                 "without a reverse coordinator dependency."
+            ),
+            "adr": (
+                "docs/architecture/"
+                "MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+            ),
+        },
+        {
+            "path": "srchybrid/LiveTunnelBulkStatePort.h",
+            "reason": (
+                "Value-only LT7 bulk, proxy and reassembly state vocabulary "
+                "shared by the state owner and its parent without a reverse "
+                "coordinator dependency."
+            ),
+            "adr": (
+                "docs/architecture/"
+                "MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+            ),
+        },
+        {
+            "path": "srchybrid/LiveTunnelBulkFacade.inl",
+            "reason": (
+                "LT7 coordinator method bodies retained as a textual facade "
+                "partition so physical coordinator reduction does not create "
+                "a reverse module dependency or change linkage."
             ),
             "adr": (
                 "docs/architecture/"

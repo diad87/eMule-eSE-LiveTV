@@ -7,7 +7,7 @@
 
 namespace eSELive {
 
-M2AModuleHandle M2A_BIND_LT4_6E698BD4A3(const M2AParentPort&); M2AModuleHandle M2A_BIND_LT5_AE4815B275(const M2AParentPort&); bool RunLiveTunnelSourcePublisherCharacterizationSelfTest();
+M2AModuleHandle M2A_BIND_LT4_6E698BD4A3(const M2AParentPort&); M2AModuleHandle M2A_BIND_LT5_AE4815B275(const M2AParentPort&); M2AModuleHandle M2A_BIND_LT7_9EA638E856(const M2AParentPort&); LiveTunnelBulkStatePort M2A_LT7_StateBridge(M2AModuleHandle&) noexcept; bool M2A_LT7_AcceptReplayBridge(M2AModuleHandle&,std::uint32_t,std::uint64_t) noexcept; bool M2A_LT7_AcceptFragmentBridge(M2AModuleHandle&,const std::string&,std::uint16_t,std::uint16_t,std::uint32_t,const std::uint8_t*,std::uint32_t,std::uint32_t,DWORD) noexcept; bool RunLiveTunnelBulkProxyCharacterizationSelfTest(); bool RunLiveTunnelSourcePublisherCharacterizationSelfTest();
 bool M2A_LT4_InitializeSecretBridge(M2AModuleHandle&,const std::array<std::uint8_t,32>&) noexcept; bool M2A_LT4_TicketSecretReadyBridge(const M2AModuleHandle&) noexcept; std::array<std::uint8_t,32> M2A_LT4_TicketSecretBridge(const M2AModuleHandle&) noexcept;
 void M2A_LT4_AuthorizeTargetBridge(M2AModuleHandle&,const std::string&,const LiveTunnelAuthorizedTarget&); bool M2A_LT4_FindAuthorizedTargetBridge(const M2AModuleHandle&,const std::string&,std::uint64_t,LiveTunnelAuthorizedTarget&); bool M2A_LT4_ConsumeTicketBridge(M2AModuleHandle&,const kad6::K6TargetTicket&,std::uint64_t) noexcept;
 std::map<std::uint64_t,LiveTunnelPublishRuntime> M2A_LT4_PublishSnapshotBridge(const M2AModuleHandle&); std::size_t M2A_LT4_PublishCountBridge(const M2AModuleHandle&) noexcept; bool M2A_LT4_FindPublishBridge(const M2AModuleHandle&,std::uint64_t,LiveTunnelPublishRuntime&); std::map<std::string,std::uint64_t> M2A_LT4_ShadowSnapshotBridge(const M2AModuleHandle&);
@@ -23,10 +23,13 @@ bool M2A_LT5_InitialCreditBridge(const M2AModuleHandle&,std::uint32_t,std::uint6
 
 LiveExitServices::LiveExitServices()
     : m_m2a_binding_6e698bd4a3(M2AAssignmentPolicy::RetainExisting),
-      m_m2a_binding_ae4815b275(M2AAssignmentPolicy::RetainExisting)
+      m_m2a_binding_ae4815b275(M2AAssignmentPolicy::RetainExisting),
+      m_m2a_binding_9ea638e856(M2AAssignmentPolicy::RetainExisting)
 {
     m_m2a_binding_ae4815b275 =
         M2A_BIND_LT5_AE4815B275(M2AParentPort{this});
+    m_m2a_binding_9ea638e856 =
+        M2A_BIND_LT7_9EA638E856(M2AParentPort{this});
 }
 bool LiveExitServices::LT4InitializeTicketSecret(const std::array<std::uint8_t,32>& v) noexcept{return M2A_LT4_InitializeSecretBridge(m_m2a_binding_6e698bd4a3,v);}
 bool LiveExitServices::LT4TicketSecretReady() const noexcept{return M2A_LT4_TicketSecretReadyBridge(m_m2a_binding_6e698bd4a3);}
@@ -59,6 +62,11 @@ std::uint64_t LiveExitServices::LT5Available(std::uint32_t c,std::uint64_t s,std
 bool LiveExitServices::LT5CommitExitSend(CKad6ExitSocket* p,std::uint64_t s,std::uint64_t g,std::uint8_t d,std::uint64_t b,std::uint64_t t,std::uint64_t q,std::uint64_t h){return M2A_LT5_CommitExitBridge(m_m2a_binding_ae4815b275,p,s,g,d,b,t,q,h);} bool LiveExitServices::LT5CommitOriginSend(CKad6OriginSocket* p,std::uint64_t s,std::uint64_t g,std::uint8_t d,std::uint64_t b,std::uint64_t t,std::uint64_t q,std::uint64_t h){return M2A_LT5_CommitOriginBridge(m_m2a_binding_ae4815b275,p,s,g,d,b,t,q,h);}
 bool LiveExitServices::LT5InitialCredit(std::uint32_t c,std::uint64_t s,std::uint8_t d,kad6::K6MaxStreamData& a,kad6::K6MaxData& b) const{return M2A_LT5_InitialCreditBridge(m_m2a_binding_ae4815b275,c,s,d,a,b);} bool LiveExitServices::LT5CanAccept(std::uint32_t c,std::uint64_t s,std::uint8_t d,std::uint64_t b) const{return M2A_LT5_CanAcceptBridge(m_m2a_binding_ae4815b275,c,s,d,b);}
 bool LiveExitServices::LT5Accept(std::uint32_t c,std::uint64_t s,std::uint8_t d,std::uint64_t b,std::uint64_t n){return M2A_LT5_AcceptBridge(m_m2a_binding_ae4815b275,c,s,d,b,n);} bool LiveExitServices::LT5Consume(std::uint32_t c,std::uint64_t s,std::uint8_t d,std::uint64_t b,std::uint64_t n,kad6::K6MaxStreamData& a,kad6::K6MaxData& z){return M2A_LT5_ConsumeBridge(m_m2a_binding_ae4815b275,c,s,d,b,n,a,z);} bool LiveExitServices::LT5ReadsPaused(std::uint32_t c) const{return M2A_LT5_ReadsPausedBridge(m_m2a_binding_ae4815b275,c);}
+LiveTunnelBulkStatePort LiveExitServices::LT7State() noexcept{return M2A_LT7_StateBridge(m_m2a_binding_9ea638e856);}
+LiveTunnelBulkStatePort LiveExitServices::LT7State() const noexcept{return M2A_LT7_StateBridge(const_cast<M2AModuleHandle&>(m_m2a_binding_9ea638e856));}
+bool LiveExitServices::LT7AcceptReplay(std::uint32_t c,std::uint64_t n) noexcept{return M2A_LT7_AcceptReplayBridge(m_m2a_binding_9ea638e856,c,n);}
+bool LiveExitServices::LT7AcceptFragment(const std::string& k,std::uint16_t i,std::uint16_t c,std::uint32_t t,const std::uint8_t* d,std::uint32_t n,std::uint32_t o,DWORD w) noexcept{return M2A_LT7_AcceptFragmentBridge(m_m2a_binding_9ea638e856,k,i,c,t,d,n,o,w);}
+bool RunLiveTunnelBulkStateCharacterizationSelfTest(){return RunLiveTunnelBulkProxyCharacterizationSelfTest();}
 
 void LiveExitServices::RegisterHandler(
     std::uint8_t subCommand,

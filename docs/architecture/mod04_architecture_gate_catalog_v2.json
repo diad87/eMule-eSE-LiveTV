@@ -43,6 +43,16 @@
       "path": "srchybrid/LiveTunnelOriginPort.h",
       "reason": "Value-only LT6 lookup, activation, route and worker-action vocabulary shared by the origin owner and Kad6 adapter without a reverse coordinator dependency.",
       "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+    },
+    {
+      "path": "srchybrid/LiveTunnelBulkStatePort.h",
+      "reason": "Value-only LT7 bulk, proxy and reassembly state vocabulary shared by the state owner and its parent without a reverse coordinator dependency.",
+      "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
+    },
+    {
+      "path": "srchybrid/LiveTunnelBulkFacade.inl",
+      "reason": "LT7 coordinator method bodies retained as a textual facade partition so physical coordinator reduction does not create a reverse module dependency or change linkage.",
+      "adr": "docs/architecture/MOD52_ADDITIONAL_EXTRACTION_PLAN_2026-07-30.md"
     }
   ],
   "approval": "M2A-00; a card is activated only by a reviewed catalogue revision and its frozen A/D/net budget"

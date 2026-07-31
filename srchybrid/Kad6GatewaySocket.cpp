@@ -45,6 +45,7 @@ std::vector<uint8_t> M2A_LT3_EseCStringUtf8(const CString&);
 CString M2A_LT3_EseUtf8CString(const std::string&);
 bool M2A_LT3_AppendLegacyK6Result(
     const kad6::K6LiveSearchMetadata&, std::vector<uint8_t>&);
+bool M2A_LT5CommitOriginSendCompat(LiveExitServices&,CKad6OriginSocket*,uint64,uint64,uint64,uint64,uint64,uint64);
 bool M2A_LT3_PlanGatewayFrameBridge(const M2AModuleHandle& handle, const std::uint8_t* wire, std::size_t length, std::uint32_t requestId, bool response, void* output) { if (!handle.Get() || !wire || length == 0 || !output) return false; kad6::K6Frame frame; std::size_t consumed=0; if (kad6::DecodeK6Frame(wire,length,frame,&consumed)!=kad6::Kad6Status::Ok || consumed!=length || frame.request_id!=requestId || frame.session_id!=0 || ((frame.flags&kad6::kK6FlagResponse)!=0)!=response || (frame.flags&kad6::kK6FlagReservedMask)!=0 || (!response && (frame.flags&(kad6::kK6FlagMore|kad6::kK6FlagFinal))!=0)) return false; *static_cast<kad6::K6Frame*>(output)=std::move(frame); return true; }
 bool M2A_LT3_OperateStoresBridge(const M2AModuleHandle& handle, LiveTunnelGatewayStoreOperation operation, void* a, void* b, void* c, void* d, void* e, void* f) {
     auto* owner=static_cast<LiveTunnelGatewayLeaseState*>(const_cast<void*>(handle.Get())); if (!owner) return false; std::lock_guard<std::mutex> lock(owner->m_storeMutex);
@@ -2686,7 +2687,7 @@ bool CLiveTunnel::K6SendEd2kFrameNoWait(uint64 streamId,const uint8_t* raw,size_
     ++stream.next_tx_sequence;stream.queued_tx_bytes+=data.data.size();
     const uint64 sent=m_exitServices.LT5Sent(stream.circ_id,streamId,0);
     const uint64 remaining=maxBytes==0||sent+rxBytes>=maxBytes?(maxBytes==0?(std::numeric_limits<uint64>::max)():0):maxBytes-sent-rxBytes;
-    const bool waitForCredit=!stream.pending_credit_frames.empty()|| !m_exitServices.LT5CommitOriginSend(source,streamId,stream.generation,0,data.data.size(),remaining,(std::numeric_limits<uint64>::max)(),perStreamLimit-streamBytes);
+    const bool waitForCredit=!stream.pending_credit_frames.empty()|| !M2A_LT5CommitOriginSendCompat(m_exitServices,source,streamId,stream.generation,data.data.size(),remaining,(std::numeric_limits<uint64>::max)(),perStreamLimit-streamBytes);
     if(waitForCredit){
         K6QueuedOriginFrame queued;queued.request_id=reqId;queued.sequence=data.sequence;
         queued.data_bytes=data.data.size();queued.wire=std::move(wire);

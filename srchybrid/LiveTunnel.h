@@ -658,26 +658,10 @@ private:
     // circuit. The decode is attempted only once every block has >= k_b symbols (bounds
     // the 3 MB-buffer cost); Bulk::BulkDecodeSegment then rebuilds the signed CHUNK_V2
     // record byte-identical -> existing verify/inject (unchanged).
-    struct BulkReasmEntry {
-        uint8_t           streamKey[16] = {0};   // for E3.5 NACK addressing
-        uint32_t          seq      = 0;
-        uint32_t          msg_len  = 0;
-        uint8_t           n_blocks = 0;
-        uint8_t           r        = 0;
-        DWORD             first_seen_tick = 0;
-        bool              done     = false;
-        Bulk::BulkLayout  layout;                // derived from msg_len on the first symbol
-        bool              haveLayout = false;
-        std::vector<int>  blockRecv;             // distinct symbols received per block
-        std::vector<Bulk::BulkSymbol> symbols;   // deduped by (block_idx, symbol_idx)
-        DWORD             lastNackTick = 0;       // E3.5 — throttle NACKs for this (streamKey,seq)
-    };
     // E3.5 (viewer) — send a NACK requesting re-push of the listed (seq, block) pairs of a
     // stream, on an Active bulk circuit. Returns true if a NACK was sent.
     bool SendBulkNack(const uint8_t streamKey[16],
                       const std::vector<std::pair<uint32_t, uint8_t>>& missing);
-    std::map<std::string, BulkReasmEntry> m_bulkReasm;          // key = streamKeyHex + ":" + seq
-    std::map<uint32_t, Bulk::BulkReplayWindow> m_bulkReplay;    // per terminating circ_id (recv dir)
     static std::string BulkReasmKey(const uint8_t streamKey[16], uint32_t seq);
     // Sweep stale partial segments (pattern A5); called from Tick().
     void SweepBulkReasm();
@@ -686,43 +670,22 @@ private:
     // LEAF lock: held ONLY to touch the m_proxy* state, NEVER while acquiring m_lock /
     // m_pendingLock / the manager lock -> the documented tunnel->manager order is never
     // inverted, so the chunk hooks (which run under the manager lock) are deadlock-safe.
-    mutable CCriticalSection m_proxyIngestLock;
-    std::set<std::string> m_proxyKeys;                 // streamKeyHex this node exit-proxies (mirror of m_exitLiveSubs)
-    struct ProxyFrag {
-        uint32_t totalLen = 0; uint16_t fragCount = 0; uint16_t haveCount = 0; DWORD firstTick = 0;
-        std::vector<uint8_t> buf; std::vector<bool> got;
-    };
-    std::map<std::string, ProxyFrag> m_proxyFragReasm; // key = streamKeyHex + ":" + seq (exit-side 0xE0 reassembly)
-    std::deque<std::vector<uint8_t>> m_proxyReady;     // whole CHUNK_V2 records ready to FEC-encode + push
-    // MAIN THREAD (Tick, under m_lock): refresh m_proxyKeys, drain m_proxyReady, FEC-encode each
+    // MAIN THREAD (Tick, under m_lock): refresh proxy keys, drain ready records, FEC-encode each
     // record and push its symbols across the stream's subscribed bulk circuits.
     void ProcessProxyIngest();
-    void RefreshProxyKeys();   // rebuild m_proxyKeys from m_exitLiveSubs + m_bulkSubs (under m_pendingLock + leaf)
+    void RefreshProxyKeys();   // rebuild the LT7 proxy-key mirror under pending + leaf locks
 
     // v8.1.2 E3.2 — explicit bulk subscriptions. The viewer sends TUN_OP_BULK_SUBSCRIBE on
     // EACH of its bulk circuits, all carrying the SAME session_id, so the exit can group a
     // viewer's circuits and STRIPE a segment's symbols across them. When a stream has explicit
     // bulk subs, ProcessProxyIngest pushes to THESE (grouped + striped); otherwise it falls
     // back to the C7 control subs (full k+r per circuit). Under m_pendingLock.
-    struct BulkSub {
-        uint32_t circ_id = 0;
-        uint32_t session_id = 0;
-        uint16_t shape_bucket_kib = 0;
-        uint8_t r_pref = 0;
-        bool shaped = false;
-        DWORD lastSeen = 0;
-    };
-    std::map<std::string, std::vector<BulkSub>> m_bulkSubs;   // streamKeyHex -> subs
     void ExitHandle_BulkSubscribe(const TunnelRequestCtx& ctx);   // register/refresh a bulk sub
     void ExitHandle_BulkUnsub(const TunnelRequestCtx& ctx);       // drop a bulk sub
 
     // v8.1.2 E3.5 (NACK gap-fill) + E4' (adaptive r). The exit retains the last few whole
     // records per stream so it can RE-PUSH blocks a viewer could not reassemble (TUN_OP_BULK_
     // NACK), and tracks the NACK rate to ADAPT the parity r up/down. All under m_lock.
-    struct ProxyRecentRec { uint8_t streamKey[16] = {0}; uint32_t seq = 0; std::vector<uint8_t> record; DWORD tick = 0; };
-    std::deque<ProxyRecentRec> m_proxyRecent;          // ring of recent records for re-push
-    struct ProxyStreamCtl { int r = Bulk::BULK_DEFAULT_R; uint32_t nackCount = 0; DWORD windowStart = 0; };
-    std::map<std::string, ProxyStreamCtl> m_proxyCtl;  // per streamKeyHex — adaptive r + NACK telemetry
     void ExitHandle_BulkNack(const TunnelRequestCtx& ctx);  // re-push missing (seq, block) + bump NACK rate
     int  ProxyAdaptiveR(const std::string& hex);            // E4' — current r for a stream (adapts on NACK rate)
     // Re-encode `record` and push ONLY block `blockIdx` to `circ` (used by ExitHandle_BulkNack).
@@ -744,7 +707,6 @@ private:
     // LiveRequestKey(circ_id, req_id) so messages on different circuits that happen
     // to share a req_id never collide (the exit reassembles for many circuits
     // at once). Accessed under m_pendingLock. Swept by Tick() (A5).
-    std::map<uint64_t, ReassemblyEntry> m_reassembly;
 
     // === v8.1 A6 - deferred exit-side operations ==========================
     // Register a deferred reply; the handler returns without answering.
@@ -931,17 +893,9 @@ private:
     // Populated by ExitHandle_LiveSubscribe; consumed by ExitRelayLiveControl to
     // tunnel the broadcaster's heartbeat/announce back to each subscribed V.
     // Swept (dead circuits / TTL) in Tick. Under m_pendingLock.
-    struct ExitLiveSub { DWORD lastSeen = 0; };
     // Per-stream proxy: the broadcaster endpoint we subscribed to (so the sweep
     // can UNSUBSCRIBE when the last viewer leaves — otherwise the exit stays a
     // zombie viewer holding an upload slot) + the set of V circuits to relay to.
-    struct ExitStreamProxy {
-        uint8_t  streamKey[16] = {0};
-        uint32_t bIP   = 0;
-        uint16_t bPort = 0;
-        std::map<uint32_t, ExitLiveSub> circuits;
-    };
-    std::map<std::string, ExitStreamProxy> m_exitLiveSubs;
     static std::string LiveStreamKeyHex(const uint8_t streamKey[16]);
 
 public:

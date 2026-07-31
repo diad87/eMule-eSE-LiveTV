@@ -5,6 +5,7 @@
 #include "LiveRelayTypes.h"
 #include "LiveTunnelSourcePublisherPort.h"
 #include "LiveTunnelStreamFlowPort.h"
+#include "LiveTunnelBulkStatePort.h"
 
 #include <array>
 #include <cstddef>
@@ -152,6 +153,10 @@ public:
     bool LT5CommitOriginSend(CKad6OriginSocket*,std::uint64_t,std::uint64_t,std::uint8_t,std::uint64_t,std::uint64_t,std::uint64_t,std::uint64_t);
     bool LT5InitialCredit(std::uint32_t,std::uint64_t,std::uint8_t,kad6::K6MaxStreamData&,kad6::K6MaxData&) const; bool LT5CanAccept(std::uint32_t,std::uint64_t,std::uint8_t,std::uint64_t) const;
     bool LT5Accept(std::uint32_t,std::uint64_t,std::uint8_t,std::uint64_t,std::uint64_t); bool LT5Consume(std::uint32_t,std::uint64_t,std::uint8_t,std::uint64_t,std::uint64_t,kad6::K6MaxStreamData&,kad6::K6MaxData&); bool LT5ReadsPaused(std::uint32_t) const;
+    LiveTunnelBulkStatePort LT7State() noexcept;
+    LiveTunnelBulkStatePort LT7State() const noexcept;
+    bool LT7AcceptReplay(std::uint32_t, std::uint64_t) noexcept;
+    bool LT7AcceptFragment(const std::string&,std::uint16_t,std::uint16_t,std::uint32_t,const std::uint8_t*,std::uint32_t,std::uint32_t,DWORD) noexcept;
 
 private:
     struct Operation {
@@ -166,10 +171,12 @@ private:
     std::map<std::uint64_t, Operation> m_operations;
     M2AModuleHandle m_m2a_binding_6e698bd4a3;
     M2AModuleHandle m_m2a_binding_ae4815b275;
+    M2AModuleHandle m_m2a_binding_9ea638e856;
 };
 
 // Deterministic production-boundary test used by the unattended `--selftest`
 // path. It performs no network, UI, registry or filesystem operation.
 bool RunLiveExitServicesCharacterizationSelfTest();
+bool RunLiveTunnelBulkStateCharacterizationSelfTest();
 
 } // namespace eSELive

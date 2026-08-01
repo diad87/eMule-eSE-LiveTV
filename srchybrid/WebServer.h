@@ -50,28 +50,6 @@ typedef struct
 
 typedef struct
 {
-	CString sFileCompletes;
-	CString sFileHash;
-	CString sFilePriority;
-	CString sFileType;
-	CString	sED2kLink;
-	CString	sFileName;
-	CString	sFileState;
-	double	dblFileCompletes;
-	uint64	m_qwFileSize;
-	uint64	nFileAllTimeTransferred;
-	uint64	nFileTransferred;
-	uint32	nFileAllTimeRequests;
-	uint32	nFileAllTimeAccepts;
-	UINT	nFileRequests;
-	UINT	nFileAccepts;
-	byte	nFilePriority;
-	bool	bIsPartFile;
-	bool	bFileAutoPriority;
-} SharedFiles;
-
-typedef struct
-{
 	CString	sClientState;
 	CString	sUserHash;
 	CString	sActive;
@@ -287,7 +265,6 @@ private:
 
 	//comparators for quick sort
 	static int AFX_CDECL _DownloadCmp(void *prm, void const *pv1, void const *pv2);
-	static int AFX_CDECL _SharedCmp(void *prm, void const *pv1, void const *pv2);
 	static int AFX_CDECL _UploadCmp(void *prm, void const *pv1, void const *pv2);
 
 	// Common data

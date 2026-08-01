@@ -102,6 +102,11 @@ struct WebTransferProjectionPort { void* context = nullptr; CString (*templateTe
 M2AModuleHandle M2A_BIND_W4_AD763A5EE0(const M2AParentPort&); void M2A_UNBIND_W4_AD763A5EE0(const M2AParentPort&); CString RunWebTransferProjection(const M2AParentPort&, const WebTransferProjectionInput&, const WebTransferProjectionPort&); bool RunWebTransferProjectionCharacterizationSelfTest();
 enum class WebTransferActionKind : std::uint8_t { None = 0, ClearCompletedAll, ClearCompletedFile, AddDownload, SaveDownloadColumn, SaveUploadColumn, SaveQueueColumn, CategoryPriorityLow, CategoryPriorityNormal, CategoryPriorityHigh, CategoryPriorityAuto, FriendAdd, FriendRemove, FileStop, FilePause, FileResume, FileCancel, FileGetLink, FileRename, FilePriorityLow, FilePriorityNormal, FilePriorityHigh, FilePriorityAuto, FileSetCategory, FileStreamSeek }; enum class WebTransferActionSortDomain : std::uint8_t { None = 0, Download, Upload, Queue }; struct WebTransferActionCommand { WebTransferActionKind kind = WebTransferActionKind::None; std::string value; long number = -1; unsigned index = 0; bool flag = false; }; struct WebTransferActionInput { bool admin = false; int category = 0; std::string clearCompleted; std::string addDownload; std::string columnCommand; std::string columnIndex; std::string columnValue; std::string categoryPriority; std::string operation; std::string fileHash; std::string userHash; std::string actionText; std::string numericValue; std::string sort; std::string sortReverse; std::string showQueue; std::string showBanned; std::string showFriend; unsigned downloadSort = 0; unsigned uploadSort = 0; unsigned queueSort = 0; bool downloadReverse = false; bool uploadReverse = false; bool queueReverse = false; bool queueVisible = false; bool bannedVisible = false; bool friendVisible = false; }; struct WebTransferActionResult { WebTransferActionSortDomain sortDomain = WebTransferActionSortDomain::None; unsigned downloadSort = 0; unsigned uploadSort = 0; unsigned queueSort = 0; bool downloadReverse = false; bool uploadReverse = false; bool queueReverse = false; bool queueVisible = false; bool bannedVisible = false; bool friendVisible = false; }; struct WebTransferActionsPort { void* context = nullptr; void (*emit)(void*, const WebTransferActionCommand&) = nullptr; bool Complete() const noexcept; };
 M2AModuleHandle M2A_BIND_W5_095B87253F(const M2AParentPort&); void M2A_UNBIND_W5_095B87253F(const M2AParentPort&); WebTransferActionResult RunWebTransferActions(const M2AParentPort&, const WebTransferActionInput&, const WebTransferActionsPort&); bool RunWebTransferActionsCharacterizationSelfTest();
+struct WebSearchProjectionRow { std::wstring fileName; std::wstring limitedName; std::wstring typeImage; std::wstring sizeText; std::uint64_t sizeBytes = 0; std::wstring hash; std::wstring sources; std::wstring sourceBucket; std::uint8_t red = 0; std::uint8_t green = 0; std::uint8_t blue = 0; }; struct WebSearchProjectionInput { std::wstring pageTemplate; std::wstring headerTemplate; std::wstring rowTemplate; std::wstring message; std::wstring categoryBox; std::wstring session; std::wstring upArrow; std::wstring downArrow; std::array<bool, 4> hidden{}; unsigned sortColumn = 0; bool ascending = true; std::vector<std::pair<std::wstring, std::wstring>> replacements; std::array<std::wstring, 4> columnNames; std::vector<WebSearchProjectionRow> rows; }; class WebSearchProjection { public: explicit WebSearchProjection(const M2AParentPort& parent); std::wstring Render(const WebSearchProjectionInput& input) const; private: M2AParentPort m_parent; };
+M2AModuleHandle M2A_BIND_W6_64C04005E2(const M2AParentPort&); void M2A_UNBIND_W6_64C04005E2(const M2AParentPort&); std::wstring RunWebSearchProjection(const M2AParentPort&, const WebSearchProjectionInput&); bool RunWebSearchProjectionCharacterizationSelfTest();
+enum class WebSharedFilesSort : unsigned { State, Type, Name, Size, Transferred, AllTimeTransferred, Requests, AllTimeRequests, Accepts, AllTimeAccepts, Completes, Priority }; enum class WebSharedFilePriority : std::uint8_t { VeryLow, Low, Normal, High, Release };
+struct WebSharedFilesRow { std::wstring hash; std::wstring fileName; std::wstring fileState; std::wstring fileType; std::wstring ed2kLink; std::wstring priorityLabel; std::wstring fileSizeText; std::wstring transferredText; std::wstring allTimeTransferredText; std::array<std::wstring, 3> textOrder{}; std::uint64_t fileSizeBytes = 0; std::uint64_t transferredBytes = 0; std::uint64_t allTimeTransferredBytes = 0; std::uint32_t requests = 0; std::uint32_t allTimeRequests = 0; std::uint32_t accepts = 0; std::uint32_t allTimeAccepts = 0; std::uint32_t completeSourcesLow = 0; std::uint32_t completeSourcesHigh = 0; std::uint32_t completeSourcesOrder = 0; std::uint32_t priorityOrder = 0; WebSharedFilePriority priority = WebSharedFilePriority::Normal; bool partFile = false; bool autoPriority = false; }; struct WebSharedFilesInput { std::wstring pageTemplate; std::wstring rowTemplate; std::wstring session; std::wstring selectedHash; std::wstring message; std::wstring upArrow; std::wstring downArrow; std::wstring upDoubleArrow; std::wstring downDoubleArrow; std::array<std::wstring, 7> columnNames{}; std::wstring actionsLabel; std::wstring reloadLabel; std::wstring sharedListLabel; std::array<bool, 7> hidden{}; WebSharedFilesSort sort = WebSharedFilesSort::Name; bool reverse = false; bool admin = false; std::uint64_t maximumDownloadMiB = 0; std::size_t shortNameLimit = 40; std::vector<std::pair<std::wstring, std::wstring>> replacements; std::vector<WebSharedFilesRow> rows; }; class WebSharedFilesController { public: explicit WebSharedFilesController(const M2AParentPort& parent); std::wstring Render(const WebSharedFilesInput& input) const; private: M2AParentPort m_parent; };
+M2AModuleHandle M2A_BIND_W6_B161DA740E(const M2AParentPort&); void M2A_UNBIND_W6_B161DA740E(const M2AParentPort&); std::wstring RunWebSharedFilesController(const M2AParentPort&, const WebSharedFilesInput&); bool RunWebSharedFilesControllerCharacterizationSelfTest();
 }
 static M2AParentPort WebTemplateParent(const void* parent) { return M2AParentPort{const_cast<void*>(parent)}; }
 static std::uint64_t WebAuthNowMs()
@@ -230,7 +235,7 @@ CWebServer::~CWebServer()
 	ini.WriteInt(_T("SharedSort"), m_Params.SharedSort);
 	if (m_bServerWorking)
 		StopSockets();
-	M2A_UNBIND_W1_EC6846B80E(M2AParentPort{this}); M2A_UNBIND_W2_9330EBAD15(M2AParentPort{this}); M2A_UNBIND_W2_071B3D442B(M2AParentPort{this}); M2A_UNBIND_W3_F05B56128F(M2AParentPort{this}); M2A_UNBIND_W4_AD763A5EE0(M2AParentPort{this}); M2A_UNBIND_W5_095B87253F(M2AParentPort{this});
+	M2A_UNBIND_W1_EC6846B80E(M2AParentPort{this}); M2A_UNBIND_W2_9330EBAD15(M2AParentPort{this}); M2A_UNBIND_W2_071B3D442B(M2AParentPort{this}); M2A_UNBIND_W3_F05B56128F(M2AParentPort{this}); M2A_UNBIND_W4_AD763A5EE0(M2AParentPort{this}); M2A_UNBIND_W5_095B87253F(M2AParentPort{this}); M2A_UNBIND_W6_64C04005E2(M2AParentPort{this}); M2A_UNBIND_W6_B161DA740E(M2AParentPort{this});
 }
 
 void CWebServer::_SaveWIConfigArray(BOOL *array, int size, LPCTSTR key)
@@ -334,7 +339,7 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 		outFailure = OptUtf8ToStr(routeFailure.data(), static_cast<int>(routeFailure.size()));
 		return false;
 	}
-	if (!RunWebClassicRequestCharacterizationSelfTest()) { outFailure = _T("web request dispatch route table changed"); return false; } if (!RunWebTemplateCharacterizationSelfTest() || !RunWebPageChromeCharacterizationSelfTest()) { outFailure = _T("web template/header rendering changed"); return false; } if (!RunWebServerPageCharacterizationSelfTest()) { outFailure = _T("web server-list rendering changed"); return false; } if (!RunWebTransferProjectionCharacterizationSelfTest()) { outFailure = _T("web transfer projection changed"); return false; } if (!RunWebTransferActionsCharacterizationSelfTest()) { outFailure = _T("web transfer actions changed"); return false; }
+	if (!RunWebClassicRequestCharacterizationSelfTest()) { outFailure = _T("web request dispatch route table changed"); return false; } if (!RunWebTemplateCharacterizationSelfTest() || !RunWebPageChromeCharacterizationSelfTest()) { outFailure = _T("web template/header rendering changed"); return false; } if (!RunWebServerPageCharacterizationSelfTest()) { outFailure = _T("web server-list rendering changed"); return false; } if (!RunWebTransferProjectionCharacterizationSelfTest()) { outFailure = _T("web transfer projection changed"); return false; } if (!RunWebTransferActionsCharacterizationSelfTest()) { outFailure = _T("web transfer actions changed"); return false; } if (!RunWebSearchProjectionCharacterizationSelfTest()) { outFailure = _T("web search projection changed"); return false; } if (!RunWebSharedFilesControllerCharacterizationSelfTest()) { outFailure = _T("web shared-files projection changed"); return false; } const ese::web::WebSharedComparison sharedCompatibility{0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}; const ese::web::WebSharedRowProjection sharedProjection = ese::web::WebSharedController::ProjectRow(false, ese::web::WebSharedPriority::Normal, false, 1024, 1, 1, 1); if (ese::web::WebSharedController::Compare(2, false, sharedCompatibility) != -1 || std::string(sharedProjection.priority_token) != "Normal" || !sharedProjection.downloadable || sharedProjection.complete_sources != "1") { outFailure = _T("web shared policy compatibility changed"); return false; }
 	std::string serializerFailure;
 	if (!ese::web::RunWebApiSerializerSelfTest(serializerFailure)) {
 		outFailure = OptUtf8ToStr(
@@ -442,7 +447,7 @@ void CWebServer::_ProcessURL(const ThreadData &Data)
 	port.render = [](WebClassicView view, const void* raw, long session) {
 		const ThreadData& data = *static_cast<const ThreadData*>(raw); switch (view) {
 		case WebClassicView::Login: return _GetLoginScreen(data); case WebClassicView::RemoteLinkAdded: return _GetRemoteLinkAddedOk(data); case WebClassicView::RemoteLinkFailed: return _GetRemoteLinkAddedFailed(data); case WebClassicView::CommentList: return _GetCommentlist(data);
-		case WebClassicView::Header: return _GetHeader(data, session); case WebClassicView::Footer: return _GetFooter(data); case WebClassicView::Server: return _GetServerList(data); case WebClassicView::Shared: return _GetSharedFilesList(data); case WebClassicView::Transfer: return _GetTransferList(data);
+		case WebClassicView::Header: return _GetHeader(data, session); case WebClassicView::Footer: return _GetFooter(data); case WebClassicView::Server: return _GetServerList(data); case WebClassicView::Shared: return static_cast<CWebServer*>(data.pThis)->_GetSharedFilesList(data); case WebClassicView::Transfer: return _GetTransferList(data);
 		case WebClassicView::Search: return _GetSearch(data); case WebClassicView::Graphs: return _GetGraphs(data); case WebClassicView::Log: return _GetLog(data);
 		case WebClassicView::ServerInfo: return _GetServerInfo(data); case WebClassicView::DebugLog: return _GetDebugLog(data); case WebClassicView::MyInfo: return _GetMyInfo(data); case WebClassicView::Stats: return _GetStats(data); case WebClassicView::Kad: return _GetKadDlg(data); case WebClassicView::Options: return _GetPreferences(data);
 		default: return CString();
@@ -546,454 +551,36 @@ CString CWebServer::_GetTransferList(const ThreadData &Data)
 }
 CString CWebServer::_GetSharedFilesList(const ThreadData &Data)
 {
-	CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
-	if (pThis == NULL)
-		return CString();
-
-	const CString &sSession(_ParseURL(Data.sURL, _T("ses")));
-	bool bAdmin = _IsSessionAdmin(Data, sSession);
-	const CString &strSort(_ParseURL(Data.sURL, _T("sort")));
-
-	CString strTmp(_ParseURL(Data.sURL, _T("sortreverse")));
-
-	const ese::web::WebSharedSortDecision sharedSort =
-		ese::web::WebSharedController::PlanSort(
-			bAdmin, std::string(CT2A(strSort)),
-			std::string(CT2A(strTmp)));
-	if (sharedSort.allowed) {
-		if (sharedSort.update_sort)
-			pThis->m_Params.SharedSort =
-				static_cast<SharedSort>(sharedSort.target_index);
-		if (sharedSort.update_reverse)
-			pThis->m_Params.bSharedSortReverse = sharedSort.reverse;
+	M2AModuleHandle sharedFilesBinding = M2A_BIND_W6_B161DA740E(M2AParentPort{Data.pThis}); if (!sharedFilesBinding) return CString(); CWebServer* const pThis = static_cast<CWebServer*>(Data.pThis); if (pThis == NULL) return CString();
+	const auto wide = [](const CString& value) { return std::wstring(static_cast<LPCWSTR>(value), static_cast<std::size_t>(value.GetLength())); };
+	const auto lower = [&wide](const CString& value) { CString folded(value); folded.MakeLower(); return wide(folded); };
+	const CString sSession(_ParseURL(Data.sURL, _T("ses"))); const bool admin = _IsSessionAdmin(Data, sSession);
+	const CString sort(_ParseURL(Data.sURL, _T("sort"))); const CString sortReverse(_ParseURL(Data.sURL, _T("sortreverse")));
+	const ese::web::WebSharedSortDecision sortDecision = ese::web::WebSharedController::PlanSort(admin, std::string(CT2A(sort)), std::string(CT2A(sortReverse)));
+	if (sortDecision.allowed) { if (sortDecision.update_sort) pThis->m_Params.SharedSort = static_cast<SharedSort>(sortDecision.target_index); if (sortDecision.update_reverse) pThis->m_Params.bSharedSortReverse = sortDecision.reverse; }
+	const CString selectedHash(_ParseURL(Data.sURL, _T("hash"))); const CString priorityText(_ParseURL(Data.sURL, _T("prio")));
+	const ese::web::WebSharedPriorityDecision priorityDecision = ese::web::WebSharedController::PlanPriority(admin, std::string(CT2A(selectedHash)), std::string(CT2A(priorityText)));
+	uchar priorityFileId[MDX_DIGEST_SIZE]; if (priorityDecision.allowed && DecodeBase16(selectedHash, selectedHash.GetLength(), priorityFileId, _countof(priorityFileId))) {
+		CKnownFile* file = theApp.sharedfiles->GetFileByID(priorityFileId); if (file != NULL) { if (priorityDecision.priority == ese::web::WebSharedPriority::Auto) { file->SetAutoUpPriority(true); file->UpdateAutoUpPriority(); } else { const uint8 value = priorityDecision.priority == ese::web::WebSharedPriority::VeryLow ? PR_VERYLOW : (priorityDecision.priority == ese::web::WebSharedPriority::Low ? PR_LOW : (priorityDecision.priority == ese::web::WebSharedPriority::Normal ? PR_NORMAL : (priorityDecision.priority == ese::web::WebSharedPriority::High ? PR_HIGH : PR_VERYHIGH))); file->SetAutoUpPriority(false); file->SetUpPriority(value); } SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_UPD_SFUPDATE, reinterpret_cast<LPARAM>(file)); }
 	}
-
-	const CString priorityHash = _ParseURL(Data.sURL, _T("hash"));
-	const CString sPrio = _ParseURL(Data.sURL, _T("prio"));
-	const ese::web::WebSharedPriorityDecision priority =
-		ese::web::WebSharedController::PlanPriority(
-			bAdmin, std::string(CT2A(priorityHash)),
-			std::string(CT2A(sPrio)));
-	uchar priorityFileId[MDX_DIGEST_SIZE];
-	if (priority.allowed &&
-		DecodeBase16(priorityHash, priorityHash.GetLength(), priorityFileId,
-			_countof(priorityFileId))) {
-		CKnownFile* file = theApp.sharedfiles->GetFileByID(priorityFileId);
-		if (file != NULL) {
-			if (priority.priority == ese::web::WebSharedPriority::Auto) {
-				file->SetAutoUpPriority(true);
-				file->UpdateAutoUpPriority();
-			} else {
-				const uint8 uploadPriority =
-					priority.priority == ese::web::WebSharedPriority::VeryLow
-					? PR_VERYLOW
-					: (priority.priority == ese::web::WebSharedPriority::Low
-						? PR_LOW
-						: (priority.priority ==
-							ese::web::WebSharedPriority::Normal
-							? PR_NORMAL
-							: (priority.priority ==
-								ese::web::WebSharedPriority::High
-								? PR_HIGH : PR_VERYHIGH)));
-				file->SetAutoUpPriority(false);
-				file->SetUpPriority(uploadPriority);
-			}
-			SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION,
-				WEBGUIIA_UPD_SFUPDATE, (LPARAM)file);
-		}
-	}
-
-	if (_ParseURL(Data.sURL, _T("c")) == _T("menu")) {
-		const CString index = _ParseURL(Data.sURL, _T("m"));
-		const CString hidden = _ParseURL(Data.sURL, _T("v"));
-		const ese::web::WebSharedColumnChange change =
-			ese::web::WebSharedController::PlanColumnChange(
-				bAdmin, std::string(CT2A(index)),
-				std::string(CT2A(hidden)));
-		if (change.allowed) {
-			WSsharedColumnHidden[change.index] = change.hidden;
-			_SaveWIConfigArray(WSsharedColumnHidden,
-				_countof(WSsharedColumnHidden), _T("sharedColumnHidden"));
-		}
-	}
-	const CString reload = _ParseURL(Data.sURL, _T("reload"));
-	if (ese::web::WebSharedController::PlanReload(
-		bAdmin, std::string(CT2A(reload))))
-		SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_SHARED_FILES_RELOAD, 0);
-
-	strTmp = (pThis->m_Params.bSharedSortReverse) ? _T("false") : _T("true");
-
-	CString Out(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::SharedList));
-	//State sorting link
-	if (pThis->m_Params.SharedSort == SHARED_SORT_STATE)
-		Out.Replace(_T("[SortState]"), _T("sort=state&amp;sortreverse=") + strTmp);
-	else
-		Out.Replace(_T("[SortState]"), _T("sort=state"));
-	//Type sorting link
-	if (pThis->m_Params.SharedSort == SHARED_SORT_TYPE)
-		Out.Replace(_T("[SortType]"), _T("sort=type&amp;sortreverse=") + strTmp);
-	else
-		Out.Replace(_T("[SortType]"), _T("sort=type"));
-	//Name sorting link
-	if (pThis->m_Params.SharedSort == SHARED_SORT_NAME)
-		Out.Replace(_T("[SortName]"), _T("sort=name&amp;sortreverse=") + strTmp);
-	else
-		Out.Replace(_T("[SortName]"), _T("sort=name"));
-	//Size sorting Link
-	if (pThis->m_Params.SharedSort == SHARED_SORT_SIZE)
-		Out.Replace(_T("[SortSize]"), _T("sort=size&amp;sortreverse=") + strTmp);
-	else
-		Out.Replace(_T("[SortSize]"), _T("sort=size"));
-	//Complete Sources sorting Link
-	if (pThis->m_Params.SharedSort == SHARED_SORT_COMPLETES)
-		Out.Replace(_T("[SortCompletes]"), _T("sort=completes&amp;sortreverse=") + strTmp);
-	else
-		Out.Replace(_T("[SortCompletes]"), _T("sort=completes"));
-	//Priority sorting Link
-	if (pThis->m_Params.SharedSort == SHARED_SORT_PRIORITY)
-		Out.Replace(_T("[SortPriority]"), _T("sort=priority&amp;sortreverse=") + strTmp);
-	else
-		Out.Replace(_T("[SortPriority]"), _T("sort=priority"));
-	//Transferred sorting link
-	if (pThis->m_Params.SharedSort == SHARED_SORT_TRANSFERRED) {
-		if (pThis->m_Params.bSharedSortReverse)
-			Out.Replace(_T("[SortTransferred]"), _T("sort=alltimetransferred&amp;sortreverse=") + strTmp);
-		else
-			Out.Replace(_T("[SortTransferred]"), _T("sort=transferred&amp;sortreverse=") + strTmp);
-	} else if (pThis->m_Params.SharedSort == SHARED_SORT_ALL_TIME_TRANSFERRED) {
-		if (pThis->m_Params.bSharedSortReverse)
-			Out.Replace(_T("[SortTransferred]"), _T("sort=transferred&amp;sortreverse=") + strTmp);
-		else
-			Out.Replace(_T("[SortTransferred]"), _T("sort=alltimetransferred&amp;sortreverse=") + strTmp);
-	} else
-		Out.Replace(_T("[SortTransferred]"), _T("&amp;sort=transferred&amp;sortreverse=false"));
-	//Request sorting link
-	if (pThis->m_Params.SharedSort == SHARED_SORT_REQUESTS) {
-		if (pThis->m_Params.bSharedSortReverse)
-			Out.Replace(_T("[SortRequests]"), _T("sort=alltimerequests&amp;sortreverse=") + strTmp);
-		else
-			Out.Replace(_T("[SortRequests]"), _T("sort=requests&amp;sortreverse=") + strTmp);
-	} else if (pThis->m_Params.SharedSort == SHARED_SORT_ALL_TIME_REQUESTS) {
-		if (pThis->m_Params.bSharedSortReverse)
-			Out.Replace(_T("[SortRequests]"), _T("sort=requests&amp;sortreverse=") + strTmp);
-		else
-			Out.Replace(_T("[SortRequests]"), _T("sort=alltimerequests&amp;sortreverse=") + strTmp);
-	} else
-		Out.Replace(_T("[SortRequests]"), _T("&amp;sort=requests&amp;sortreverse=false"));
-	//Accepts sorting link
-	if (pThis->m_Params.SharedSort == SHARED_SORT_ACCEPTS) {
-		if (pThis->m_Params.bSharedSortReverse)
-			Out.Replace(_T("[SortAccepts]"), _T("sort=alltimeaccepts&amp;sortreverse=") + strTmp);
-		else
-			Out.Replace(_T("[SortAccepts]"), _T("sort=accepts&amp;sortreverse=") + strTmp);
-	} else if (pThis->m_Params.SharedSort == SHARED_SORT_ALL_TIME_ACCEPTS) {
-		if (pThis->m_Params.bSharedSortReverse)
-			Out.Replace(_T("[SortAccepts]"), _T("sort=accepts&amp;sortreverse=") + strTmp);
-		else
-			Out.Replace(_T("[SortAccepts]"), _T("sort=alltimeaccepts&amp;sortreverse=") + strTmp);
-	} else
-		Out.Replace(_T("[SortAccepts]"), _T("&amp;sort=accepts&amp;sortreverse=false"));
-
-	if (_ParseURL(Data.sURL, _T("reload")) == _T("true")) {
-		//Pick-up last line of the log
-		CString strResultLog(_SpecialChars(theApp.emuledlg->GetLastLogEntry().TrimRight(_T('\n'))));
-		int iStringIndex = strResultLog.ReverseFind(_T('\n'));
-		if (iStringIndex > 0)
-			strResultLog.Delete(0, iStringIndex);
-		Out.Replace(_T("[Message]"), strResultLog);
-	} else
-		Out.Replace(_T("[Message]"), _T(""));
-
-	CString pcSortIcon((pThis->m_Params.bSharedSortReverse) ? GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::UpArrow) : GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::DownArrow));
-
-	_GetPlainResString(strTmp, IDS_DL_FILENAME);
-	if (WSsharedColumnHidden[0]) {
-		Out.Replace(_T("[FilenameI]"), _T(""));
-		Out.Replace(_T("[Filename]"), _T(""));
-	} else {
-		Out.Replace(_T("[FilenameI]"), (pThis->m_Params.SharedSort == SHARED_SORT_NAME) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[Filename]"), strTmp);
-	}
-	Out.Replace(_T("[FilenameM]"), strTmp);
-
-	_GetPlainResString(strTmp, IDS_SF_TRANSFERRED);
-	if (WSsharedColumnHidden[1]) {
-		Out.Replace(_T("[FileTransferredI]"), _T(""));
-		Out.Replace(_T("[FileTransferred]"), _T(""));
-	} else {
-		CString pcIconTmp = (pThis->m_Params.SharedSort == SHARED_SORT_TRANSFERRED) ? pcSortIcon : _T("");
-		if (pThis->m_Params.SharedSort == SHARED_SORT_ALL_TIME_TRANSFERRED)
-			pcIconTmp = (pThis->m_Params.bSharedSortReverse) ? GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::UpDoubleArrow) : GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::DownDoubleArrow);
-		Out.Replace(_T("[FileTransferredI]"), pcIconTmp);
-		Out.Replace(_T("[FileTransferred]"), strTmp);
-	}
-	Out.Replace(_T("[FileTransferredM]"), strTmp);
-
-	_GetPlainResString(strTmp, IDS_SF_REQUESTS);
-	if (WSsharedColumnHidden[2]) {
-		Out.Replace(_T("[FileRequestsI]"), _T(""));
-		Out.Replace(_T("[FileRequests]"), _T(""));
-	} else {
-		CString pcIconTmp = (pThis->m_Params.SharedSort == SHARED_SORT_REQUESTS) ? pcSortIcon : _T("");
-		if (pThis->m_Params.SharedSort == SHARED_SORT_ALL_TIME_REQUESTS)
-			pcIconTmp = (pThis->m_Params.bSharedSortReverse) ? GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::UpDoubleArrow) : GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::DownDoubleArrow);
-		Out.Replace(_T("[FileRequestsI]"), pcIconTmp);
-		Out.Replace(_T("[FileRequests]"), strTmp);
-	}
-	Out.Replace(_T("[FileRequestsM]"), strTmp);
-
-	_GetPlainResString(strTmp, IDS_SF_ACCEPTS);
-	if (WSsharedColumnHidden[3]) {
-		Out.Replace(_T("[FileAcceptsI]"), _T(""));
-		Out.Replace(_T("[FileAccepts]"), _T(""));
-	} else {
-		CString pcIconTmp = (pThis->m_Params.SharedSort == SHARED_SORT_ACCEPTS) ? pcSortIcon : _T("");
-		if (pThis->m_Params.SharedSort == SHARED_SORT_ALL_TIME_ACCEPTS)
-			pcIconTmp = (pThis->m_Params.bSharedSortReverse) ? GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::UpDoubleArrow) : GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::DownDoubleArrow);
-		Out.Replace(_T("[FileAcceptsI]"), pcIconTmp);
-		Out.Replace(_T("[FileAccepts]"), strTmp);
-	}
-	Out.Replace(_T("[FileAcceptsM]"), strTmp);
-
-	_GetPlainResString(strTmp, IDS_DL_SIZE);
-	if (WSsharedColumnHidden[4]) {
-		Out.Replace(_T("[SizeI]"), _T(""));
-		Out.Replace(_T("[Size]"), _T(""));
-	} else {
-		Out.Replace(_T("[SizeI]"), (pThis->m_Params.SharedSort == SHARED_SORT_SIZE) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[Size]"), strTmp);
-	}
-	Out.Replace(_T("[SizeM]"), strTmp);
-
-	_GetPlainResString(strTmp, IDS_COMPLSOURCES);
-	if (WSsharedColumnHidden[5]) {
-		Out.Replace(_T("[CompletesI]"), _T(""));
-		Out.Replace(_T("[Completes]"), _T(""));
-	} else {
-		Out.Replace(_T("[CompletesI]"), (pThis->m_Params.SharedSort == SHARED_SORT_COMPLETES) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[Completes]"), strTmp);
-	}
-	Out.Replace(_T("[CompletesM]"), strTmp);
-
-	_GetPlainResString(strTmp, IDS_PRIORITY);
-	if (WSsharedColumnHidden[6]) {
-		Out.Replace(_T("[PriorityI]"), _T(""));
-		Out.Replace(_T("[Priority]"), _T(""));
-	} else {
-		Out.Replace(_T("[PriorityI]"), (pThis->m_Params.SharedSort == SHARED_SORT_PRIORITY) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[Priority]"), strTmp);
-	}
-	Out.Replace(_T("[PriorityM]"), strTmp);
-
-	Out.Replace(_T("[Actions]"), _GetPlainResString(IDS_WEB_ACTIONS));
-	Out.Replace(_T("[Reload]"), _GetPlainResString(IDS_SF_RELOAD));
-	Out.Replace(_T("[Session]"), sSession);
-	Out.Replace(_T("[SharedList]"), _GetPlainResString(IDS_SHAREDFILES));
-
-	CString OutE(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::SharedLine));
-
-	CArray<SharedFiles> SharedArray;
-
-	// Populating array
+	if (_ParseURL(Data.sURL, _T("c")) == _T("menu")) { const CString index(_ParseURL(Data.sURL, _T("m"))); const CString hidden(_ParseURL(Data.sURL, _T("v"))); const ese::web::WebSharedColumnChange change = ese::web::WebSharedController::PlanColumnChange(admin, std::string(CT2A(index)), std::string(CT2A(hidden))); if (change.allowed) { WSsharedColumnHidden[change.index] = change.hidden; _SaveWIConfigArray(WSsharedColumnHidden, _countof(WSsharedColumnHidden), _T("sharedColumnHidden")); } }
+	const CString reload(_ParseURL(Data.sURL, _T("reload"))); if (ese::web::WebSharedController::PlanReload(admin, std::string(CT2A(reload)))) SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_SHARED_FILES_RELOAD, 0);
+	CString message; if (reload == _T("true")) { message = _SpecialChars(theApp.emuledlg->GetLastLogEntry().TrimRight(_T('\n'))); const int newline = message.ReverseFind(_T('\n')); if (newline > 0) message.Delete(0, newline); }
+	WebSharedFilesInput input; input.pageTemplate = wide(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::SharedList)); input.rowTemplate = wide(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::SharedLine)); input.session = wide(sSession); input.selectedHash = wide(selectedHash); input.message = wide(message);
+	input.upArrow = wide(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::UpArrow)); input.downArrow = wide(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::DownArrow)); input.upDoubleArrow = wide(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::UpDoubleArrow)); input.downDoubleArrow = wide(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::DownDoubleArrow));
+	input.columnNames = { wide(_GetPlainResString(IDS_DL_FILENAME)), wide(_GetPlainResString(IDS_SF_TRANSFERRED)), wide(_GetPlainResString(IDS_SF_REQUESTS)), wide(_GetPlainResString(IDS_SF_ACCEPTS)), wide(_GetPlainResString(IDS_DL_SIZE)), wide(_GetPlainResString(IDS_COMPLSOURCES)), wide(_GetPlainResString(IDS_PRIORITY)) };
+	input.actionsLabel = wide(_GetPlainResString(IDS_WEB_ACTIONS)); input.reloadLabel = wide(_GetPlainResString(IDS_SF_RELOAD)); input.sharedListLabel = wide(_GetPlainResString(IDS_SHAREDFILES));
+	input.hidden = {{ !!WSsharedColumnHidden[0], !!WSsharedColumnHidden[1], !!WSsharedColumnHidden[2], !!WSsharedColumnHidden[3], !!WSsharedColumnHidden[4], !!WSsharedColumnHidden[5], !!WSsharedColumnHidden[6] }}; input.sort = static_cast<WebSharedFilesSort>(pThis->m_Params.SharedSort); input.reverse = pThis->m_Params.bSharedSortReverse; input.admin = admin; input.maximumDownloadMiB = thePrefs.GetMaxWebUploadFileSizeMB(); input.shortNameLimit = SHORT_LENGTH;
 	for (POSITION pos = BEFORE_START_POSITION; pos != NULL;) {
-		CKnownFile *pFile = theApp.sharedfiles->GetFileNext(pos);
-		if (pFile != NULL) {
-			bool bPartFile = pFile->IsPartFile();
-
-			SharedFiles dFile;
-			//dFile.sFileName = _SpecialChars(cur_file->GetFileName());
-			dFile.bIsPartFile = bPartFile;
-			dFile.sFileName = pFile->GetFileName();
-			dFile.sFileState = bPartFile ? _T("filedown") : _T("file");
-			dFile.sFileType = _GetWebImageNameForFileType(dFile.sFileName);
-			dFile.m_qwFileSize = pFile->GetFileSize();
-
-			if (theApp.GetPublicIP() && !theApp.IsFirewalled())
-				dFile.sED2kLink = pFile->GetED2kLink(false, false, false, true, theApp.GetPublicIP());
-			else
-				dFile.sED2kLink = pFile->GetED2kLink();
-
-			dFile.nFileTransferred = pFile->statistic.GetTransferred();
-			dFile.nFileAllTimeTransferred = pFile->statistic.GetAllTimeTransferred();
-			dFile.nFileRequests = pFile->statistic.GetRequests();
-			dFile.nFileAllTimeRequests = pFile->statistic.GetAllTimeRequests();
-			dFile.nFileAccepts = pFile->statistic.GetAccepts();
-			dFile.nFileAllTimeAccepts = pFile->statistic.GetAllTimeAccepts();
-			dFile.sFileHash = md4str(pFile->GetFileHash());
-
-			const ese::web::WebSharedRowProjection completion =
-				ese::web::WebSharedController::ProjectRow(
-					false, ese::web::WebSharedPriority::None, bPartFile,
-					dFile.m_qwFileSize, 0,
-					pFile->m_nCompleteSourcesCountLo,
-					pFile->m_nCompleteSourcesCountHi);
-			dFile.sFileCompletes =
-				CString(CA2T(completion.complete_sources.c_str()));
-
-			UINT uid;
-			if (pFile->IsAutoUpPriority()) {
-				switch (pFile->GetUpPriority()) {
-				case PR_LOW:
-					uid = IDS_PRIOAUTOLOW;
-					break;
-				case PR_HIGH:
-					uid = IDS_PRIOAUTOHIGH;
-					break;
-				case PR_VERYHIGH:
-					uid = IDS_PRIOAUTORELEASE;
-					break;
-				//case PR_NORMAL:
-				default:
-					uid = IDS_PRIOAUTONORMAL;
-				}
-			} else {
-				switch (pFile->GetUpPriority()) {
-				case PR_VERYLOW:
-					uid = IDS_PRIOVERYLOW;
-					break;
-				case PR_LOW:
-					uid = IDS_PRIOLOW;
-					break;
-				case PR_HIGH:
-					uid = IDS_PRIOHIGH;
-					break;
-				case PR_VERYHIGH:
-					uid = IDS_PRIORELEASE;
-					break;
-				case PR_NORMAL:
-				default:
-					uid = IDS_PRIONORMAL;
-				}
-			}
-			dFile.sFilePriority = GetResString(uid);
-
-			dFile.nFilePriority = pFile->GetUpPriority();
-			dFile.bFileAutoPriority = pFile->IsAutoUpPriority();
-			SharedArray.Add(dFile);
-		}
-	} //for
-
-	SortParams prm{ (int)pThis->m_Params.SharedSort, pThis->m_Params.bSharedSortReverse };
-	qsort_s(SharedArray.GetData(), SharedArray.GetCount(), sizeof(SharedFiles), &_SharedCmp, &prm);
-
-	// Displaying
-	CString sSharedList;
-	for (INT_PTR i = 0; i < SharedArray.GetCount(); ++i) {
-		CString HTTPProcessData(OutE);
-
-		bool b = (SharedArray[i].sFileHash == _ParseURL(Data.sURL, _T("hash")));
-		HTTPProcessData.Replace(_T("[LastChangedDataset]"), b ? _T("checked") : _T("checked_no"));
-
-		ese::web::WebSharedPriority rowPriority =
-			ese::web::WebSharedPriority::None;
-		switch (SharedArray[i].nFilePriority) {
-		case PR_VERYLOW: rowPriority = ese::web::WebSharedPriority::VeryLow; break;
-		case PR_LOW: rowPriority = ese::web::WebSharedPriority::Low; break;
-		case PR_NORMAL: rowPriority = ese::web::WebSharedPriority::Normal; break;
-		case PR_HIGH: rowPriority = ese::web::WebSharedPriority::High; break;
-		case PR_VERYHIGH: rowPriority = ese::web::WebSharedPriority::Release; break;
-		default: break;
-		}
-		const ese::web::WebSharedRowProjection priorityProjection =
-			ese::web::WebSharedController::ProjectRow(
-				SharedArray[i].bFileAutoPriority, rowPriority,
-				true, SharedArray[i].m_qwFileSize,
-				thePrefs.GetMaxWebUploadFileSizeMB(), 0, 0);
-		const CString sharedpriority =
-			CString(CA2T(priorityProjection.priority_token));
-
-		CString ed2k(SharedArray[i].sED2kLink);		//ed2klink
-		ed2k.Replace(_T("'"), _T("&#8217;"));
-		const CString &hash(SharedArray[i].sFileHash);	//hash
-		CString fname(SharedArray[i].sFileName);	//filename
-		fname.Replace(_T("'"), _T("&#8217;"));
-
-		bool downloadable = false;
-		uchar fileid[MDX_DIGEST_SIZE];
-		if (hash.GetLength() == 32 && DecodeBase16(hash, hash.GetLength(), fileid, _countof(fileid))) {
-			HTTPProcessData.Replace(_T("[hash]"), hash);
-			const CKnownFile *cur_file = theApp.sharedfiles->GetFileByID(fileid);
-			if (cur_file != NULL) {
-				HTTPProcessData.Replace(_T("[FileIsPriority]")
-					, (cur_file->GetUpPriority() == PR_VERYHIGH) ? _T("release") : _T("none"));
-				downloadable =
-					ese::web::WebSharedController::ProjectRow(
-						SharedArray[i].bFileAutoPriority, rowPriority,
-						cur_file->IsPartFile(), SharedArray[i].m_qwFileSize,
-						thePrefs.GetMaxWebUploadFileSizeMB(), 0, 0)
-						.downloadable;
-			}
-		}
-
-		HTTPProcessData.Replace(_T("[admin]"), bAdmin ? _T("admin") : _T(""));
-		HTTPProcessData.Replace(_T("[ed2k]"), _SpecialChars(ed2k));
-		HTTPProcessData.Replace(_T("[fname]"), _SpecialChars(fname));
-		HTTPProcessData.Replace(_T("[session]"), sSession);
-		HTTPProcessData.Replace(_T("[shared-priority]"), sharedpriority); //DonGato: priority change
-
-		HTTPProcessData.Replace(_T("[FileName]"), _SpecialChars(SharedArray[i].sFileName));
-		HTTPProcessData.Replace(_T("[FileType]"), SharedArray[i].sFileType);
-		HTTPProcessData.Replace(_T("[FileState]"), SharedArray[i].sFileState);
-
-		HTTPProcessData.Replace(_T("[Downloadable]"), downloadable ? _T("yes") : _T("no"));
-
-		HTTPProcessData.Replace(_T("[IFDOWNLOADABLE]"), downloadable ? _T("") : _T("<!--"));
-		HTTPProcessData.Replace(_T("[/IFDOWNLOADABLE]"), downloadable ? _T("") : _T("-->"));
-
-		TCHAR HTTPTempC[100];
-		//0
-		if (WSsharedColumnHidden[0])
-			HTTPProcessData.Replace(_T("[ShortFileName]"), _T(""));
-		else if (SharedArray[i].sFileName.GetLength() > (SHORT_LENGTH))
-			HTTPProcessData.Replace(_T("[ShortFileName]"), _SpecialChars(SharedArray[i].sFileName.Left(SHORT_LENGTH - 3)) + _T("..."));
-		else
-			HTTPProcessData.Replace(_T("[ShortFileName]"), _SpecialChars(SharedArray[i].sFileName));
-		//1
-		HTTPProcessData.Replace(_T("[FileTransferred]"), WSsharedColumnHidden[1] ? _T("") : (LPCTSTR)CastItoXBytes(SharedArray[i].nFileTransferred));
-		if (WSsharedColumnHidden[1])
-			*HTTPTempC = _T('\0');
-		else
-			_stprintf(HTTPTempC, _T(" (%s)"), (LPCTSTR)CastItoXBytes(SharedArray[i].nFileAllTimeTransferred));
-		HTTPProcessData.Replace(_T("[FileAllTimeTransferred]"), HTTPTempC);
-		//2
-		if (WSsharedColumnHidden[2])
-			*HTTPTempC = _T('\0');
-		else
-			_stprintf(HTTPTempC, _T("%i"), SharedArray[i].nFileRequests);
-		HTTPProcessData.Replace(_T("[FileRequests]"), HTTPTempC);
-		if (!WSsharedColumnHidden[2])
-			_stprintf(HTTPTempC, _T(" (%i)"), SharedArray[i].nFileAllTimeRequests);
-		HTTPProcessData.Replace(_T("[FileAllTimeRequests]"), HTTPTempC);
-		//3
-		if (WSsharedColumnHidden[3])
-			*HTTPTempC = _T('\0');
-		else
-			_stprintf(HTTPTempC, _T("%i"), SharedArray[i].nFileAccepts);
-		HTTPProcessData.Replace(_T("[FileAccepts]"), HTTPTempC);
-		if (!WSsharedColumnHidden[3])
-			_stprintf(HTTPTempC, _T(" (%i)"), SharedArray[i].nFileAllTimeAccepts);
-		HTTPProcessData.Replace(_T("[FileAllTimeAccepts]"), HTTPTempC);
-		//4..6
-		if (WSsharedColumnHidden[4])
-			HTTPProcessData.Replace(_T("[FileSize]"), _T(""));
-		else
-			HTTPProcessData.Replace(_T("[FileSize]"), CastItoXBytes(SharedArray[i].m_qwFileSize));
-		if (WSsharedColumnHidden[5])
-			HTTPProcessData.Replace(_T("[Completes]"), _T(""));
-		else
-			HTTPProcessData.Replace(_T("[Completes]"), SharedArray[i].sFileCompletes);
-		if (WSsharedColumnHidden[6])
-			HTTPProcessData.Replace(_T("[Priority]"), _T(""));
-		else
-			HTTPProcessData.Replace(_T("[Priority]"), SharedArray[i].sFilePriority);
-		HTTPProcessData.Replace(_T("[FileHash]"), SharedArray[i].sFileHash);
-
-		sSharedList += HTTPProcessData;
+		CKnownFile* file = theApp.sharedfiles->GetFileNext(pos); if (file == NULL) continue; WebSharedFilesRow row; const CString fileName(file->GetFileName()); const CString fileState(file->IsPartFile() ? _T("filedown") : _T("file")); const CString fileType(_GetWebImageNameForFileType(fileName));
+		row.hash = wide(md4str(file->GetFileHash())); row.fileName = wide(fileName); row.fileState = wide(fileState); row.fileType = wide(fileType); row.ed2kLink = wide(theApp.GetPublicIP() && !theApp.IsFirewalled() ? file->GetED2kLink(false, false, false, true, theApp.GetPublicIP()) : file->GetED2kLink()); row.textOrder = { lower(fileState), lower(fileType), lower(fileName) };
+		row.fileSizeBytes = file->GetFileSize(); row.transferredBytes = file->statistic.GetTransferred(); row.allTimeTransferredBytes = file->statistic.GetAllTimeTransferred(); row.requests = file->statistic.GetRequests(); row.allTimeRequests = file->statistic.GetAllTimeRequests(); row.accepts = file->statistic.GetAccepts(); row.allTimeAccepts = file->statistic.GetAllTimeAccepts();
+		row.fileSizeText = wide(CString(CastItoXBytes(row.fileSizeBytes))); row.transferredText = wide(CString(CastItoXBytes(row.transferredBytes))); row.allTimeTransferredText = wide(CString(CastItoXBytes(row.allTimeTransferredBytes))); row.completeSourcesLow = file->m_nCompleteSourcesCountLo; row.completeSourcesHigh = file->m_nCompleteSourcesCountHi; row.completeSourcesOrder = file->m_nCompleteSourcesCount;
+		const uint8 rawPriority = file->GetUpPriority(); row.priorityOrder = CSharedFileList::GetRealPrio(rawPriority); row.autoPriority = file->IsAutoUpPriority(); row.partFile = file->IsPartFile(); UINT priorityResource = IDS_PRIONORMAL;
+		if (rawPriority == PR_VERYLOW) { row.priority = WebSharedFilePriority::VeryLow; priorityResource = row.autoPriority ? IDS_PRIOAUTONORMAL : IDS_PRIOVERYLOW; } else if (rawPriority == PR_LOW) { row.priority = WebSharedFilePriority::Low; priorityResource = row.autoPriority ? IDS_PRIOAUTOLOW : IDS_PRIOLOW; } else if (rawPriority == PR_HIGH) { row.priority = WebSharedFilePriority::High; priorityResource = row.autoPriority ? IDS_PRIOAUTOHIGH : IDS_PRIOHIGH; } else if (rawPriority == PR_VERYHIGH) { row.priority = WebSharedFilePriority::Release; priorityResource = row.autoPriority ? IDS_PRIOAUTORELEASE : IDS_PRIORELEASE; } else { row.priority = WebSharedFilePriority::Normal; priorityResource = row.autoPriority ? IDS_PRIOAUTONORMAL : IDS_PRIONORMAL; }
+		row.priorityLabel = wide(GetResString(priorityResource)); input.rows.push_back(std::move(row));
 	}
-
-	Out.Replace(_T("[SharedFilesList]"), sSharedList);
-	Out.Replace(_T("[Session]"), sSession);
-	return Out;
+	const std::wstring rendered = RunWebSharedFilesController(M2AParentPort{pThis}, input); return CString(rendered.c_str());
 }
 
 CString CWebServer::_GetGraphs(const ThreadData &Data)
@@ -1440,277 +1027,40 @@ CString CWebServer::_GetDownloadGraph(const ThreadData &Data, const CString &fil
 
 CString CWebServer::_GetSearch(const ThreadData &Data)
 {
-	CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
-	if (pThis == NULL)
-		return CString();
-
-	CString sCat;
-	int cat = _tstoi(_ParseURL(Data.sURL, _T("cat")));
-	if (cat != 0)
-		sCat.Format(_T("%i"), cat);
-
-	const CString &sSession(_ParseURL(Data.sURL, _T("ses")));
-	bool bSessionAdmin = _IsSessionAdmin(Data, sSession);
-	CString Out(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::Search));
-
+	M2AModuleHandle projectionBinding = M2A_BIND_W6_64C04005E2(M2AParentPort{Data.pThis}); if (!projectionBinding) return CString();
+	CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis); if (pThis == NULL) return CString();
+	const auto wide = [](const CString& value) { return std::wstring(static_cast<LPCWSTR>(value), value.GetLength()); };
+	CString sCat; const int cat = _tstoi(_ParseURL(Data.sURL, _T("cat"))); if (cat != 0) sCat.Format(_T("%i"), cat);
+	const CString &sSession(_ParseURL(Data.sURL, _T("ses"))); const bool bSessionAdmin = _IsSessionAdmin(Data, sSession); CString Out(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::Search));
 	if (!_ParseURL(Data.sURL, _T("downloads")).IsEmpty() && bSessionAdmin) {
-		const CString &downloads(_ParseURLArray(Data.sURL, _T("downloads")));
-		const std::vector<std::string> hashes =
-			ese::web::WebSearchController::PlanDownloads(
-				bSessionAdmin, std::string(CT2A(downloads)));
-		for (const std::string& hash : hashes) {
-			const CString hashText(CA2T(hash.c_str()));
-			SendMessage(theApp.emuledlg->m_hWnd, WEB_ADDDOWNLOADS,
-				(LPARAM)(LPCTSTR)hashText, cat);
-		}
+		const CString &downloads(_ParseURLArray(Data.sURL, _T("downloads"))); const std::vector<std::string> hashes = ese::web::WebSearchController::PlanDownloads(bSessionAdmin, std::string(CT2A(downloads)));
+		for (const std::string& hash : hashes) { const CString hashText(CA2T(hash.c_str())); SendMessage(theApp.emuledlg->m_hWnd, WEB_ADDDOWNLOADS, (LPARAM)(LPCTSTR)hashText, cat); }
 	}
-
 	if (_ParseURL(Data.sURL, _T("c")) == _T("menu")) {
-		const CString index = _ParseURL(Data.sURL, _T("m"));
-		const CString hidden = _ParseURL(Data.sURL, _T("v"));
-		const ese::web::WebSearchColumnChange change =
-			ese::web::WebSearchController::PlanColumnChange(
-				bSessionAdmin, std::string(CT2A(index)),
-				std::string(CT2A(hidden)));
-		if (change.allowed) {
-			WSsearchColumnHidden[change.index] = change.hidden;
-			_SaveWIConfigArray(WSsearchColumnHidden,
-				_countof(WSsearchColumnHidden), _T("searchColumnHidden"));
-		}
+		const CString index = _ParseURL(Data.sURL, _T("m")); const CString hidden = _ParseURL(Data.sURL, _T("v")); const ese::web::WebSearchColumnChange change = ese::web::WebSearchController::PlanColumnChange(bSessionAdmin, std::string(CT2A(index)), std::string(CT2A(hidden)));
+		if (change.allowed) { WSsearchColumnHidden[change.index] = change.hidden; _SaveWIConfigArray(WSsearchColumnHidden, _countof(WSsearchColumnHidden), _T("searchColumnHidden")); }
 	}
-
 	if (!_ParseURL(Data.sURL, _T("tosearch")).IsEmpty() && bSessionAdmin) {
-		const CString expression = _ParseURL(Data.sURL, _T("tosearch"));
-		const CString fileType = _ParseURL(Data.sURL, _T("type"));
-		const CString minimum = _ParseURL(Data.sURL, _T("min"));
-		const CString maximum = _ParseURL(Data.sURL, _T("max"));
-		const CString availability = _ParseURL(Data.sURL, _T("avail"));
-		const CString extension = _ParseURL(Data.sURL, _T("ext"));
-		const CString method = _ParseURL(Data.sURL, _T("method"));
-		const ese::web::WebSearchRequest request =
-			ese::web::WebSearchController::PlanSearch(
-				bSessionAdmin,
-				std::string(CT2A(expression)),
-				std::string(CT2A(fileType)),
-				std::string(CT2A(minimum)),
-				std::string(CT2A(maximum)),
-				std::string(CT2A(availability)),
-				std::string(CT2A(extension)),
-				std::string(CT2A(method)));
-		CString strResponse = request.allowed
-			? _GetPlainResString(IDS_SW_SEARCHINGINFO)
-			: _GetPlainResString(IDS_ERROR);
-		SSearchParams* pParams = NULL;
+		const CString expression = _ParseURL(Data.sURL, _T("tosearch")); const CString fileType = _ParseURL(Data.sURL, _T("type")); const CString minimum = _ParseURL(Data.sURL, _T("min")); const CString maximum = _ParseURL(Data.sURL, _T("max")); const CString availability = _ParseURL(Data.sURL, _T("avail")); const CString extension = _ParseURL(Data.sURL, _T("ext")); const CString method = _ParseURL(Data.sURL, _T("method"));
+		const ese::web::WebSearchRequest request = ese::web::WebSearchController::PlanSearch(bSessionAdmin, std::string(CT2A(expression)), std::string(CT2A(fileType)), std::string(CT2A(minimum)), std::string(CT2A(maximum)), std::string(CT2A(availability)), std::string(CT2A(extension)), std::string(CT2A(method))); CString strResponse = request.allowed ? _GetPlainResString(IDS_SW_SEARCHINGINFO) : _GetPlainResString(IDS_ERROR); SSearchParams* pParams = NULL;
 		if (request.allowed) {
-			SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION,
-				WEBGUIIA_DELETEALLSEARCHES, 0);
-			pParams = new SSearchParams;
-			pParams->strExpression = expression;
-			pParams->strFileType = fileType;
-			pParams->ullMinSize = request.minimum_bytes;
-			pParams->ullMaxSize = request.maximum_bytes;
-			pParams->uAvailability = request.availability;
-			pParams->strExtension = extension;
-			pParams->eType = request.method == ese::web::WebSearchMethod::Kademlia
-				? SearchTypeKademlia
-				: (request.method == ese::web::WebSearchMethod::Global
-					? SearchTypeEd2kGlobal : SearchTypeEd2kServer);
-			try {
-				if (pParams->eType != SearchTypeKademlia) {
-					if (!theApp.emuledlg->searchwnd->DoNewEd2kSearch(pParams)) {
-						delete pParams;
-						pParams = NULL;
-						strResponse =
-							_GetPlainResString(IDS_ERR_NOTCONNECTED);
-					}
-					// Search results arrive asynchronously; the UI refreshes.
-				} else if (!theApp.emuledlg->searchwnd->DoNewKadSearch(
-					pParams)) {
-					delete pParams;
-					pParams = NULL;
-					strResponse =
-						_GetPlainResString(IDS_ERR_NOTCONNECTEDKAD);
-				}
-			} catch (...) {
-				AddDebugLogLine(DLP_VERYHIGH, false,
-					_T("*** Exception in CWebServer::_GetSearch search dispatch"));
-				strResponse = _GetPlainResString(IDS_ERROR);
-				ASSERT(0);
-				delete pParams;
-				pParams = NULL;
-			}
+			SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_DELETEALLSEARCHES, 0); pParams = new SSearchParams; pParams->strExpression = expression; pParams->strFileType = fileType; pParams->ullMinSize = request.minimum_bytes; pParams->ullMaxSize = request.maximum_bytes; pParams->uAvailability = request.availability; pParams->strExtension = extension; pParams->eType = request.method == ese::web::WebSearchMethod::Kademlia ? SearchTypeKademlia : (request.method == ese::web::WebSearchMethod::Global ? SearchTypeEd2kGlobal : SearchTypeEd2kServer);
+			try { if (pParams->eType != SearchTypeKademlia) { if (!theApp.emuledlg->searchwnd->DoNewEd2kSearch(pParams)) { delete pParams; pParams = NULL; strResponse = _GetPlainResString(IDS_ERR_NOTCONNECTED); } } else if (!theApp.emuledlg->searchwnd->DoNewKadSearch(pParams)) { delete pParams; pParams = NULL; strResponse = _GetPlainResString(IDS_ERR_NOTCONNECTEDKAD); } } catch (...) { AddDebugLogLine(DLP_VERYHIGH, false, _T("*** Exception in CWebServer::_GetSearch search dispatch")); strResponse = _GetPlainResString(IDS_ERROR); ASSERT(0); delete pParams; pParams = NULL; }
 		}
 		Out.Replace(_T("[Message]"), strResponse);
-
+	} else if (!_ParseURL(Data.sURL, _T("tosearch")).IsEmpty() && !bSessionAdmin) Out.Replace(_T("[Message]"), _GetPlainResString(IDS_ACCESSDENIED)); else Out.Replace(_T("[Message]"), _GetPlainResString(IDS_SW_REFETCHRES));
+	const CString sSort = _ParseURL(Data.sURL, _T("sort")); const CString sortAscending = _ParseURL(Data.sURL, _T("sortAsc")); const ese::web::WebSearchSortDecision searchSort = ese::web::WebSearchController::PlanSort(bSessionAdmin, std::string(CT2A(sSort)), std::string(CT2A(sortAscending)), static_cast<unsigned>(pThis->m_iSearchSortby), pThis->m_bSearchAsc);
+	if (searchSort.allowed) { pThis->m_iSearchSortby = static_cast<int>(searchSort.column); pThis->m_bSearchAsc = searchSort.ascending; }
+	CQArray<SearchFileStruct, SearchFileStruct> searchSnapshot; theApp.searchlist->GetWebList(&searchSnapshot, pThis->m_iSearchSortby); searchSnapshot.QuickSort(pThis->m_bSearchAsc);
+	WebSearchProjectionInput input; input.pageTemplate = wide(Out); input.headerTemplate = wide(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::SearchHeader)); input.rowTemplate = wide(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::SearchResultLine)); input.session = wide(sSession); input.upArrow = wide(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::UpArrow)); input.downArrow = wide(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::DownArrow)); input.hidden = {{ !!WSsearchColumnHidden[0], !!WSsearchColumnHidden[1], !!WSsearchColumnHidden[2], !!WSsearchColumnHidden[3] }}; input.sortColumn = static_cast<unsigned>(pThis->m_iSearchSortby); input.ascending = pThis->m_bSearchAsc;
+	input.columnNames = { wide(_GetPlainResString(IDS_DL_FILENAME)), wide(_GetPlainResString(IDS_DL_SIZE)), wide(_GetPlainResString(IDS_FILEHASH)), wide(_GetPlainResString(IDS_DL_SOURCES)) };
+	input.replacements = { { L"[Result]", wide(GetResString(IDS_SW_RESULT)) }, { L"[Name]", wide(_GetPlainResString(IDS_SW_NAME)) }, { L"[Type]", wide(_GetPlainResString(IDS_TYPE)) }, { L"[Any]", wide(_GetPlainResString(IDS_SEARCH_ANY)) }, { L"[Audio]", wide(_GetPlainResString(IDS_SEARCH_AUDIO)) }, { L"[Image]", wide(_GetPlainResString(IDS_SEARCH_PICS)) }, { L"[Video]", wide(_GetPlainResString(IDS_SEARCH_VIDEO)) }, { L"[Document]", wide(_GetPlainResString(IDS_SEARCH_DOC)) }, { L"[CDImage]", wide(_GetPlainResString(IDS_SEARCH_CDIMG)) }, { L"[Program]", wide(_GetPlainResString(IDS_SEARCH_PRG)) }, { L"[Archive]", wide(_GetPlainResString(IDS_SEARCH_ARC)) }, { L"[Search]", wide(_GetPlainResString(IDS_EM_SEARCH)) }, { L"[Unicode]", wide(_GetPlainResString(IDS_SEARCH_UNICODE)) }, { L"[Size]", wide(_GetPlainResString(IDS_DL_SIZE)) }, { L"[Start]", wide(_GetPlainResString(IDS_SW_START)) }, { L"[USESSERVER]", wide(_GetPlainResString(IDS_SERVER)) }, { L"[USEKADEMLIA]", wide(_GetPlainResString(IDS_KADEMLIA)) }, { L"[METHOD]", wide(_GetPlainResString(IDS_METHOD)) }, { L"[SizeMin]", wide(_GetPlainResString(IDS_SEARCHMINSIZE)) }, { L"[SizeMax]", wide(_GetPlainResString(IDS_SEARCHMAXSIZE)) }, { L"[Availabl]", wide(_GetPlainResString(IDS_SEARCHAVAIL)) }, { L"[Extention]", wide(_GetPlainResString(IDS_SEARCHEXTENTION)) }, { L"[Global]", wide(_GetPlainResString(IDS_SW_GLOBAL)) }, { L"[MB]", wide(_GetPlainResString(IDS_MBYTES)) }, { L"[Apply]", wide(_GetPlainResString(IDS_PW_APPLY)) }, { L"[CatSel]", wide(sCat) }, { L"[Ed2klink]", wide(_GetPlainResString(IDS_SW_LINK)) }, { L"[Download]", wide(_GetPlainResString(IDS_DOWNLOAD)) } };
+	for (uint16 i = 0; i < searchSnapshot.GetCount(); ++i) {
+		const SearchFileStruct structFile = searchSnapshot.GetAt(i); uchar aFileHash[16]; DecodeBase16(structFile.m_strFileHash, 32, aFileHash, _countof(aFileHash)); const bool downloading = theApp.downloadqueue->HasFileByID(aFileHash) != NULL; CKnownFile* sameFile = downloading ? NULL : theApp.sharedfiles->GetFileByID(aFileHash); if (!downloading && sameFile == NULL) sameFile = theApp.knownfiles->FindKnownFileByID(aFileHash); const ese::web::WebSearchResultProjection projection = ese::web::WebSearchController::ProjectResult(downloading, sameFile != NULL, structFile.m_uSourceCount); CString sources; sources.Format(_T("%u(%u)"), structFile.m_uSourceCount, structFile.m_dwCompleteSourceCount);
+		WebSearchProjectionRow row; row.fileName = wide(structFile.m_strFileName); row.limitedName = wide(StringLimit(structFile.m_strFileName, 70)); row.typeImage = wide(_GetWebImageNameForFileType(structFile.m_strFileName)); row.sizeText = wide(CastItoXBytes(structFile.m_uFileSize)); row.sizeBytes = structFile.m_uFileSize; row.hash = wide(structFile.m_strFileHash); row.sources = wide(sources); row.sourceBucket = wide(CString(projection.source_bucket)); row.red = static_cast<std::uint8_t>(projection.red); row.green = static_cast<std::uint8_t>(projection.green); row.blue = static_cast<std::uint8_t>(projection.blue); input.rows.push_back(row);
 	}
-	else if (!_ParseURL(Data.sURL, _T("tosearch")).IsEmpty() && !_IsSessionAdmin(Data, sSession)) {
-		Out.Replace(_T("[Message]"), _GetPlainResString(IDS_ACCESSDENIED));
-	}
-	else
-		Out.Replace(_T("[Message]"), _GetPlainResString(IDS_SW_REFETCHRES));
-
-	CString sSort = _ParseURL(Data.sURL, _T("sort"));
-	const CString sortAscending = _ParseURL(Data.sURL, _T("sortAsc"));
-	const ese::web::WebSearchSortDecision searchSort =
-		ese::web::WebSearchController::PlanSort(
-			bSessionAdmin, std::string(CT2A(sSort)),
-			std::string(CT2A(sortAscending)),
-			static_cast<unsigned>(pThis->m_iSearchSortby),
-			pThis->m_bSearchAsc);
-	if (searchSort.allowed) {
-		pThis->m_iSearchSortby = static_cast<int>(searchSort.column);
-		pThis->m_bSearchAsc = searchSort.ascending;
-	}
-
-	CString result(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::SearchHeader));
-	CQArray<SearchFileStruct, SearchFileStruct> SearchFileArray;
-	theApp.searchlist->GetWebList(&SearchFileArray, pThis->m_iSearchSortby);
-	SearchFileArray.QuickSort(pThis->m_bSearchAsc);
-
-	uchar aFileHash[16];
-	CKnownFile *sameFile;
-	CString strOverlayImage;
-	CString strSourcesImage;
-	CString strColorPrefix;
-	CString strColorSuffix = _T("</font>");
-	CString strSources;
-	CString strFilename;
-	CString strTemp, strTemp2;
-	SearchFileStruct structFile;
-
-	for (uint16 i = 0; i < SearchFileArray.GetCount(); ++i) {
-		structFile = SearchFileArray.GetAt(i);
-		DecodeBase16(structFile.m_strFileHash, 32, aFileHash, _countof(aFileHash));
-		strOverlayImage = _T("none");
-		const bool downloading =
-			theApp.downloadqueue->HasFileByID(aFileHash) != NULL;
-		bool known = false;
-		if (!downloading) {
-			sameFile = theApp.sharedfiles->GetFileByID(aFileHash);
-			if (sameFile == NULL)
-				sameFile = theApp.knownfiles->FindKnownFileByID(aFileHash);
-			known = sameFile != NULL;
-		}
-		const ese::web::WebSearchResultProjection projection =
-			ese::web::WebSearchController::ProjectResult(
-				downloading, known, structFile.m_uSourceCount);
-		strColorPrefix.Format(_T("<font color=#%02x%02x%02x>"),
-			projection.red, projection.green, projection.blue);
-		strSourcesImage = CString(projection.source_bucket);
-
-		strSources.Format(_T("%u(%u)"), structFile.m_uSourceCount, structFile.m_dwCompleteSourceCount);
-		strFilename = structFile.m_strFileName;
-		strFilename.Replace(_T("'"), _T("\\'"));
-
-		strTemp2.Format(_T("ed2k://|file|%s|%I64u|%s|/"),
-			(LPCTSTR)strFilename, structFile.m_uFileSize, (LPCTSTR)structFile.m_strFileHash);
-
-		strTemp.Format(GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::SearchResultLine),
-			(LPCTSTR)strSourcesImage, (LPCTSTR)strTemp2, (LPCTSTR)strOverlayImage,
-			(LPCTSTR)_GetWebImageNameForFileType(structFile.m_strFileName),
-			(!WSsearchColumnHidden[0]) ? (LPCTSTR)(strColorPrefix + StringLimit(structFile.m_strFileName, 70) + strColorSuffix) : _T(""),
-			(!WSsearchColumnHidden[1]) ? (LPCTSTR)(strColorPrefix + CastItoXBytes(structFile.m_uFileSize) + strColorSuffix) : _T(""),
-			(!WSsearchColumnHidden[2]) ? (LPCTSTR)(strColorPrefix + structFile.m_strFileHash + strColorSuffix) : _T(""),
-			(!WSsearchColumnHidden[3]) ? (LPCTSTR)(strColorPrefix + strSources + strColorSuffix) : _T(""),
-			(LPCTSTR)structFile.m_strFileHash);
-		result.Append(strTemp);
-	}
-
-	if (thePrefs.GetCatCount() > 1)
-		_InsertCatBox(Out, 0, GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::CatArrow), false, false, sSession, _T(""));
-	else
-		Out.Replace(_T("[CATBOX]"), _T(""));
-
-	Out.Replace(_T("[SEARCHINFOMSG]"), _T(""));
-	Out.Replace(_T("[RESULTLIST]"), result);
-	Out.Replace(_T("[Result]"), GetResString(IDS_SW_RESULT));
-	Out.Replace(_T("[Session]"), sSession);
-	Out.Replace(_T("[Name]"), _GetPlainResString(IDS_SW_NAME));
-	Out.Replace(_T("[Type]"), _GetPlainResString(IDS_TYPE));
-	Out.Replace(_T("[Any]"), _GetPlainResString(IDS_SEARCH_ANY));
-	Out.Replace(_T("[Audio]"), _GetPlainResString(IDS_SEARCH_AUDIO));
-	Out.Replace(_T("[Image]"), _GetPlainResString(IDS_SEARCH_PICS));
-	Out.Replace(_T("[Video]"), _GetPlainResString(IDS_SEARCH_VIDEO));
-	Out.Replace(_T("[Document]"), _GetPlainResString(IDS_SEARCH_DOC));
-	Out.Replace(_T("[CDImage]"), _GetPlainResString(IDS_SEARCH_CDIMG));
-	Out.Replace(_T("[Program]"), _GetPlainResString(IDS_SEARCH_PRG));
-	Out.Replace(_T("[Archive]"), _GetPlainResString(IDS_SEARCH_ARC));
-	Out.Replace(_T("[Search]"), _GetPlainResString(IDS_EM_SEARCH));
-	Out.Replace(_T("[Unicode]"), _GetPlainResString(IDS_SEARCH_UNICODE));
-	Out.Replace(_T("[Size]"), _GetPlainResString(IDS_DL_SIZE));
-	Out.Replace(_T("[Start]"), _GetPlainResString(IDS_SW_START));
-	Out.Replace(_T("[USESSERVER]"), _GetPlainResString(IDS_SERVER));
-	Out.Replace(_T("[USEKADEMLIA]"), _GetPlainResString(IDS_KADEMLIA));
-	Out.Replace(_T("[METHOD]"), _GetPlainResString(IDS_METHOD));
-	Out.Replace(_T("[SizeMin]"), _GetPlainResString(IDS_SEARCHMINSIZE));
-	Out.Replace(_T("[SizeMax]"), _GetPlainResString(IDS_SEARCHMAXSIZE));
-	Out.Replace(_T("[Availabl]"), _GetPlainResString(IDS_SEARCHAVAIL));
-	Out.Replace(_T("[Extention]"), _GetPlainResString(IDS_SEARCHEXTENTION));
-	Out.Replace(_T("[Global]"), _GetPlainResString(IDS_SW_GLOBAL));
-	Out.Replace(_T("[MB]"), _GetPlainResString(IDS_MBYTES));
-	Out.Replace(_T("[Apply]"), _GetPlainResString(IDS_PW_APPLY));
-	Out.Replace(_T("[CatSel]"), sCat);
-	Out.Replace(_T("[Ed2klink]"), _GetPlainResString(IDS_SW_LINK));
-
-	CString pcSortIcon((pThis->m_bSearchAsc) ? GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::UpArrow) : GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::DownArrow));
-
-	CString strTmp;
-	_GetPlainResString(strTmp, IDS_DL_FILENAME);
-	if (!WSsearchColumnHidden[0]) {
-		Out.Replace(_T("[FilenameI]"), (pThis->m_iSearchSortby == 0) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[FilenameH]"), strTmp);
-	} else {
-		Out.Replace(_T("[FilenameI]"), _T(""));
-		Out.Replace(_T("[FilenameH]"), _T(""));
-	}
-	Out.Replace(_T("[FilenameM]"), strTmp);
-
-	_GetPlainResString(strTmp, IDS_DL_SIZE);
-	if (!WSsearchColumnHidden[1]) {
-		Out.Replace(_T("[FilesizeI]"), (pThis->m_iSearchSortby == 1) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[FilesizeH]"), strTmp);
-	} else {
-		Out.Replace(_T("[FilesizeI]"), _T(""));
-		Out.Replace(_T("[FilesizeH]"), _T(""));
-	}
-	Out.Replace(_T("[FilesizeM]"), strTmp);
-
-	_GetPlainResString(strTmp, IDS_FILEHASH);
-	if (!WSsearchColumnHidden[2]) {
-		Out.Replace(_T("[FilehashI]"), (pThis->m_iSearchSortby == 2) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[FilehashH]"), strTmp);
-	} else {
-		Out.Replace(_T("[FilehashI]"), _T(""));
-		Out.Replace(_T("[FilehashH]"), _T(""));
-	}
-	Out.Replace(_T("[FilehashM]"), strTmp);
-
-	_GetPlainResString(strTmp, IDS_DL_SOURCES);
-	if (!WSsearchColumnHidden[3]) {
-		Out.Replace(_T("[SourcesI]"), (pThis->m_iSearchSortby == 3) ? pcSortIcon : _T(""));
-		Out.Replace(_T("[SourcesH]"), strTmp);
-	} else {
-		Out.Replace(_T("[SourcesI]"), _T(""));
-		Out.Replace(_T("[SourcesH]"), _T(""));
-	}
-	Out.Replace(_T("[SourcesM]"), strTmp);
-
-	Out.Replace(_T("[Download]"), _GetPlainResString(IDS_DOWNLOAD));
-
-	strTmp.Format(_T("%i"), (pThis->m_iSearchSortby != 0 || (pThis->m_iSearchSortby == 0 && pThis->m_bSearchAsc == 0)) ? 1 : 0);
-	Out.Replace(_T("[SORTASCVALUE0]"), strTmp);
-	strTmp.Format(_T("%i"), (pThis->m_iSearchSortby != 1 || (pThis->m_iSearchSortby == 1 && pThis->m_bSearchAsc == 0)) ? 1 : 0);
-	Out.Replace(_T("[SORTASCVALUE1]"), strTmp);
-	strTmp.Format(_T("%i"), (pThis->m_iSearchSortby != 2 || (pThis->m_iSearchSortby == 2 && pThis->m_bSearchAsc == 0)) ? 1 : 0);
-	Out.Replace(_T("[SORTASCVALUE2]"), strTmp);
-	strTmp.Format(_T("%i"), (pThis->m_iSearchSortby != 3 || (pThis->m_iSearchSortby == 3 && pThis->m_bSearchAsc == 0)) ? 1 : 0);
-	Out.Replace(_T("[SORTASCVALUE3]"), strTmp);
-	strTmp.Format(_T("%i"), (pThis->m_iSearchSortby != 4 || (pThis->m_iSearchSortby == 4 && pThis->m_bSearchAsc == 0)) ? 1 : 0);
-	Out.Replace(_T("[SORTASCVALUE4]"), strTmp);
-	strTmp.Format(_T("%i"), (pThis->m_iSearchSortby != 5 || (pThis->m_iSearchSortby == 5 && pThis->m_bSearchAsc == 0)) ? 1 : 0);
-	Out.Replace(_T("[SORTASCVALUE5]"), strTmp);
-
-	return Out;
+	if (thePrefs.GetCatCount() > 1) _InsertCatBox(Out, 0, GetWebTemplate(WebTemplateParent(pThis), WebTemplateId::CatArrow), false, false, sSession, _T("")); else Out.Replace(_T("[CATBOX]"), _T("")); input.pageTemplate = wide(Out);
+	const std::wstring rendered = RunWebSearchProjection(M2AParentPort{pThis}, input); return CString(rendered.c_str());
 }
 
 INT_PTR CWebServer::UpdateSessionCount()
@@ -5091,33 +4441,6 @@ int AFX_CDECL CWebServer::_DownloadCmp(void *prm, void const *pv1, void const *p
 	};
 	const SortParams* sort = static_cast<const SortParams*>(prm);
 	return ese::web::WebTransferController::CompareDownload(
-		static_cast<unsigned>(sort->eSort), sort->bReverse, comparison);
-}
-
-int AFX_CDECL CWebServer::_SharedCmp(void *prm, void const *pv1, void const *pv2)
-{
-	const SharedFiles &p1 = *reinterpret_cast<const SharedFiles*>(pv1);
-	const SharedFiles &p2 = *reinterpret_cast<const SharedFiles*>(pv2);
-	const auto compare = [](const auto& left, const auto& right) {
-		return left < right ? -1 : (left > right ? 1 : 0);
-	};
-	const ese::web::WebSharedComparison comparison{
-		p2.sFileState.CompareNoCase(p1.sFileState),
-		p2.sFileType.CompareNoCase(p1.sFileType),
-		p1.sFileName.CompareNoCase(p2.sFileName),
-		compare(p1.m_qwFileSize, p2.m_qwFileSize),
-		compare(p1.nFileTransferred, p2.nFileTransferred),
-		compare(p1.nFileAllTimeTransferred, p2.nFileAllTimeTransferred),
-		compare(p1.nFileRequests, p2.nFileRequests),
-		compare(p1.nFileAllTimeRequests, p2.nFileAllTimeRequests),
-		compare(p1.nFileAccepts, p2.nFileAccepts),
-		compare(p1.nFileAllTimeAccepts, p2.nFileAllTimeAccepts),
-		compare(p1.dblFileCompletes, p2.dblFileCompletes),
-		compare(CSharedFileList::GetRealPrio(p1.nFilePriority),
-			CSharedFileList::GetRealPrio(p2.nFilePriority))
-	};
-	const SortParams* sort = static_cast<const SortParams*>(prm);
-	return ese::web::WebSharedController::Compare(
 		static_cast<unsigned>(sort->eSort), sort->bReverse, comparison);
 }
 

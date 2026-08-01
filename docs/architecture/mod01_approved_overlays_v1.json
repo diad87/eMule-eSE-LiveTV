@@ -19,16 +19,16 @@
     {
       "path": "srchybrid/WebServer.cpp",
       "baseline_sha256": "afcf5a5b8091995a473548fc05086fe1b2ba0e8127378cd959424fa8f6770028",
-      "overlay_sha256": "ac5d651ad83fcad30ac6fc98bac6f8f7ff8e4096e9c7acb07d371c4c0a29e0ef",
-      "task": "MOD-0.2 + MOD-2.1..MOD-2.7 + MOD-3.1 + MOD-5.2A/W1..W5",
-      "reason": "Approved cumulative coordinator overlay. MOD-2 delegates parser, auth, routes, serialization, controllers, static responses and diagnostics; MOD-3.1 consumes coherent stream-key snapshots; MOD-5.2A/W1 moves classic request orchestration and security response ownership, W2 transfers template state and page chrome, W3 transfers server-list rendering, sorting and permission-gated actions through a mockable GUI port, W4 transfers transfer-list snapshot projection, sorting and rendering, and W5 transfers permission-gated transfer actions, sorting and visibility state through a typed fail-closed effects port."
+      "overlay_sha256": "516fe96e193149b836d8263d4d7380cdaa5cc0703728dbdb310785281e5a6532",
+      "task": "MOD-0.2 + MOD-2.1..MOD-2.7 + MOD-3.1 + MOD-5.2A/W1..W6",
+      "reason": "Approved cumulative coordinator overlay. MOD-2 delegates parser, auth, routes, serialization, controllers, static responses and diagnostics; MOD-3.1 consumes coherent stream-key snapshots; MOD-5.2A/W1 moves classic request orchestration and security response ownership, W2 transfers template state and page chrome, W3 transfers server-list rendering and actions, W4 transfers transfer-list snapshot projection, W5 transfers fail-closed transfer actions, and W6 transfers shared-file and search-result snapshot sorting, projection and rendering to bounded Unicode-safe modules."
     },
     {
       "path": "srchybrid/WebServer.h",
       "baseline_sha256": "6457840ed976be885d1d3ef2e13ea01b03f59c960728d9cc14a5b217f3421140",
-      "overlay_sha256": "a4a0af7093a16ac29d3917caf1f5a772058ae989b62794be001d996806d5193b",
-      "task": "MOD-0.2 + MOD-2.2 + MOD-2.3 + MOD-2.5 + MOD-2.6 + MOD-5.2A/W1..W4",
-      "reason": "Approved cumulative interface overlay. Existing slices retain WebAuthPolicy and typed request metadata; W1 removes coordinator-owned gzip, W2 removes template and page-chrome ownership, W3 removes the legacy server row DTO, server-list helpers and comparator after transferring them to the bound controller, and W4 removes transfer-list row DTOs, comparators and projection helpers after transferring them to WebTransferProjection."
+      "overlay_sha256": "fae4d1596837712be0b0963dac9989756246823ad22b6a6f2c2767d0a5014f70",
+      "task": "MOD-0.2 + MOD-2.2 + MOD-2.3 + MOD-2.5 + MOD-2.6 + MOD-5.2A/W1..W6",
+      "reason": "Approved cumulative interface overlay. Existing slices retain WebAuthPolicy and typed request metadata; W1 removes coordinator-owned gzip, W2 removes template and page-chrome ownership, W3 removes the legacy server row DTO and comparator, W4 removes transfer-list projection helpers, and W6 removes the legacy shared-file row DTO and comparator after transferring stable snapshot projection and rendering to WebSharedFilesController."
     },
     {
       "path": "srchybrid/LiveStreamManager.cpp",

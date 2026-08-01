@@ -52,6 +52,8 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/WebTransferController.cpp", "srchybrid/WebTransferController.h",
     "srchybrid/WebTransferActions.cpp", "srchybrid/WebTransferActions.h",
     "srchybrid/WebSearchController.cpp", "srchybrid/WebSearchController.h",
+    "srchybrid/WebSearchProjection.cpp", "srchybrid/WebSearchProjection.h",
+    "srchybrid/WebSharedFilesController.cpp", "srchybrid/WebSharedFilesController.h",
     "srchybrid/WebSharedController.cpp", "srchybrid/WebSharedController.h",
     "srchybrid/WebStaticAssets.cpp", "srchybrid/WebStaticAssets.h",
     "srchybrid/WebSocketResponse.cpp", "srchybrid/WebSocketResponse.h",

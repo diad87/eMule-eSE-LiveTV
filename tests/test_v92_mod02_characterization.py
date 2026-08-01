@@ -123,6 +123,24 @@ class Mod02CharacterizationTest(unittest.TestCase):
         self.assertEqual(gate["build_manifest"], "docs/architecture/mod02_build_manifest_v1.json")
         self.assertEqual(gate["status"], "PASS")
         evidence = gate["evidence"]
+        summary_path = ROOT / gate["summary"]
+        summary_bytes = summary_path.read_bytes()
+        self.assertFalse(summary_bytes.startswith(b"\xef\xbb\xbf"))
+        self.assertNotIn(b"\r", summary_bytes)
+        self.assertTrue(summary_bytes.endswith(b"\n"))
+        self.assertEqual(
+            hashlib.sha256(summary_bytes).hexdigest(),
+            evidence["summary_sha256"],
+        )
+        summary = json.loads(summary_bytes.decode("utf-8"))
+        for field in (
+            "source_commit", "source_identity_sha256", "executable_sha256",
+            "build_manifest_sha256", "marker_sha256", "timeout_seconds",
+            "timed_out", "termination_confirmed", "exit_code",
+            "source_tree_clean", "markers_verified",
+        ):
+            self.assertEqual(summary[field], evidence[field], field)
+        self.assertEqual(summary["verdict"], gate["status"])
         self.assertEqual(evidence["exit_code"], 0)
         self.assertTrue(evidence["source_tree_clean"])
         self.assertTrue(evidence["termination_confirmed"])

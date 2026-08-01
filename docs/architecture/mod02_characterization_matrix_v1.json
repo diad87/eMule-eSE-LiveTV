@@ -6,6 +6,7 @@
   "runtime_gate": {
     "runner": "tools/architecture/run_mod02_stream_selftest.ps1",
     "build_manifest": "docs/architecture/mod02_build_manifest_v1.json",
+    "summary": "artifacts/mod02-runtime-m2a-w8-175c923a-final/summary.json",
     "status": "PASS",
     "required_summary": [
       "build_manifest_sha256",
@@ -17,12 +18,12 @@
     ],
     "acceptance": "The manifest commit must be an ancestor of the tested HEAD with zero critical-source drift; the committed source identity marker and binary SHA must match; then exit_code=0, source_tree_clean=true, markers_verified=true and termination_confirmed=true.",
     "evidence": {
-      "source_commit": "d16509065c90a349b7266d7bffe71fb7658238e7",
-      "source_identity_sha256": "20c61f5ffa82673b77270fa1cf9e5be09fb6416707bfd848e1d6b056df264ae0",
-      "executable_sha256": "60580e05f5cff1dfa23b0b4477cfe3e4af41e77237958c168c772f570d30d964",
-      "build_manifest_sha256": "976127f99666ce65c5003f403413f004554b2141699a3ab311ec5d0558ecaefd",
-      "summary_sha256": "9f7517b7056658f011e4d82d5f006e00cd78c4779fb8716dcd444b1f84ebe77b",
-      "marker_sha256": "ba5a15238525f6208e95853929095a2f28026101beae3a1591837fddb2bcad25",
+      "source_commit": "175c923ace67ff40c49bb4c3ffaba026e81bbb05",
+      "source_identity_sha256": "33bf33b50a549e76d3d6d7f2841131d21d85cf12a9ac40f7fe0dc38f79cf1308",
+      "executable_sha256": "c61734dfc5c43ac87a076ee3cb4332be3bcfd3d3dc25c5eccd4571eaa0d780f3",
+      "build_manifest_sha256": "64c62f01221ad4fb877dbeeab3b525d4b7f6df5452084a1e6099f8b644dc6bdf",
+      "summary_sha256": "d2c1c209b89c00a9ed5f1ed480388ac197fac8aa0dbc36bb1858a9e65083fb5d",
+      "marker_sha256": "e712e4018cc69e93558522a730b69ac2aaa0b17a269b206d3c173fe2605853b8",
       "timeout_seconds": 180,
       "timed_out": false,
       "termination_confirmed": true,

@@ -1,0 +1,40 @@
+{
+    "schema":  "ese.mod02.stream-selftest/v1",
+    "build_manifest_sha256":  "64c62f01221ad4fb877dbeeab3b525d4b7f6df5452084a1e6099f8b644dc6bdf",
+    "source_commit":  "175c923ace67ff40c49bb4c3ffaba026e81bbb05",
+    "source_identity_sha256":  "33bf33b50a549e76d3d6d7f2841131d21d85cf12a9ac40f7fe0dc38f79cf1308",
+    "source_tree_clean":  true,
+    "executable_sha256":  "c61734dfc5c43ac87a076ee3cb4332be3bcfd3d3dc25c5eccd4571eaa0d780f3",
+    "executable_write_utc":  "2026-08-01T21:56:51.4329054Z",
+    "latest_critical_source_write_utc":  "2026-08-01T21:36:15.0427410Z",
+    "timeout_seconds":  180,
+    "timed_out":  false,
+    "taskkill_started":  false,
+    "taskkill_finished":  true,
+    "taskkill_exit_code":  null,
+    "termination_confirmed":  true,
+    "exit_code":  0,
+    "expected_markers":  [
+                             "SOURCE 33bf33b50a549e76d3d6d7f2841131d21d85cf12a9ac40f7fe0dc38f79cf1308",
+                             "BEGIN CLiveTunnel",
+                             "PASS CLiveTunnel",
+                             "BEGIN CWebServer",
+                             "PASS CWebServer",
+                             "BEGIN CLiveStreamManager",
+                             "PASS CLiveStreamManager"
+                         ],
+    "observed_markers_sanitized":  [
+                                       "SOURCE 33bf33b50a549e76d3d6d7f2841131d21d85cf12a9ac40f7fe0dc38f79cf1308",
+                                       "BEGIN CLiveTunnel",
+                                       "PASS CLiveTunnel",
+                                       "BEGIN CWebServer",
+                                       "PASS CWebServer",
+                                       "BEGIN CLiveStreamManager",
+                                       "PASS CLiveStreamManager"
+                                   ],
+    "markers_verified":  true,
+    "marker_sha256":  "e712e4018cc69e93558522a730b69ac2aaa0b17a269b206d3c173fe2605853b8",
+    "verdict":  "PASS",
+    "command":  "--portable --ignoreinstances --selftest",
+    "isolation":  "portable unique output root; no UI"
+}

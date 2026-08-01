@@ -1403,6 +1403,44 @@ def _preexisting_parent_route(
     return False
 
 
+def _preexisting_web_static_thread_route(
+    current: str, previous: str, current_header: str, previous_header: str,
+    marker: str, method: str,
+) -> bool:
+    """Accept only CWebServer's assigned, pre-existing static ThreadData seam."""
+    definition = re.compile(
+        rf"\bCString\s+CWebServer::{re.escape(method)}\s*"
+        r"\(\s*const\s+ThreadData\s*&\s*Data\s*\)\s*\{"
+    )
+    current_matches = list(definition.finditer(current))
+    if len(current_matches) != 1 or len(list(definition.finditer(previous))) != 1:
+        return False
+    declaration = (
+        f"private|static CString {method} ( const ThreadData & Data ) ;"
+    )
+    if (
+        _depth_one_declarations(current_header, "CWebServer")[declaration] != 1
+        or _depth_one_declarations(previous_header, "CWebServer")[declaration] != 1
+    ):
+        return False
+    opening = current.find(
+        "{", current_matches[0].start(), current_matches[0].end()
+    )
+    closing = _matching_brace(current, opening)
+    if closing is None:
+        return False
+    binding = re.compile(
+        rf"\bM2AModuleHandle\s+[A-Za-z_]\w*\s*=\s*"
+        rf"{re.escape(marker)}\s*\(\s*M2AParentPort\s*"
+        r"\{\s*Data\s*\.\s*pThis\s*\}\s*\)\s*;"
+    )
+    calls = list(binding.finditer(current, opening + 1, closing))
+    return (
+        len(calls) == 1
+        and not current[opening + 1:calls[0].start()].strip()
+    )
+
+
 def _same_card_parent_constructor_route(
     current: str, owner: str, call_start: int
 ) -> bool:
@@ -1624,6 +1662,12 @@ def validate_active_card_outcomes(
         activation_parent = _activation_parent(
             ledger["cards"][module["card"]]["activation_commit"]
         )
+        web_static_methods = [
+            item["name"].split("::", 1)[1]
+            for item in matrix["function_matrix"]
+            if item["owner"] == module["name"]
+            and item["name"].startswith("CWebServer::")
+        ]
         for label, reader in (
             (
                 "A",
@@ -1702,14 +1746,14 @@ def validate_active_card_outcomes(
                         r"M2AParentPort\s*\{\s*this\s*\}\s*\)"
                     )
                 )
-                for call in assignment.finditer(translated):
-                    previous = (
-                        ""
-                        if same_card_parent is not None
-                        else _translated(
-                            path, _git_blob(activation_parent, path)
-                        )
+                previous = (
+                    ""
+                    if same_card_parent is not None
+                    else _translated(
+                        path, _git_blob(activation_parent, path)
                     )
+                )
+                for call in assignment.finditer(translated):
                     if _preexisting_parent_route(
                         translated, previous, parent_classes, call.start()
                     ) or (
@@ -1725,6 +1769,25 @@ def validate_active_card_outcomes(
                         ) for owner in parent_classes)
                     ):
                         route_found = True
+                if (
+                    module["parent"] == "CWebServer"
+                    and len(web_static_methods) == 1
+                    and _preexisting_web_static_thread_route(
+                        translated, previous,
+                        "\n".join(
+                            reader(header).decode("utf-8", errors="replace")
+                            for header in parent_headers
+                        ),
+                        "\n".join(
+                            _git_blob(activation_parent, header).decode(
+                                "utf-8", errors="replace"
+                            )
+                            for header in parent_headers
+                        ),
+                        marker, web_static_methods[0],
+                    )
+                ):
+                    route_found = True
                 if (
                     same_card_parent is not None
                     and module["name"] == "Kad6StreamTransportAdapter"

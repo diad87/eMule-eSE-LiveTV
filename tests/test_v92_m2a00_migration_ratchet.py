@@ -533,6 +533,41 @@ class M2A00RatchetTest(unittest.TestCase):
             constructor.index("m_handle=M2A_BIND_X"),
         ))
 
+    def test_web_static_thread_route_is_exact_and_fail_closed(self):
+        previous = (
+            "CString CWebServer::_Get(const ThreadData &Data) { "
+            "return CString(); }"
+        )
+        binding = (
+            "M2AModuleHandle binding = "
+            "M2A_BIND_X(M2AParentPort{Data.pThis});"
+        )
+        current = previous.replace("{ ", "{ " + binding + " ")
+        header = (
+            "class CWebServer { private: static CString "
+            "_Get(const ThreadData &Data); };"
+        )
+        route = GATE._preexisting_web_static_thread_route
+        self.assertTrue(route(
+            current, previous, header, header, "M2A_BIND_X", "_Get"
+        ))
+        bad = (
+            (current.replace("{ " + binding, "{ Prepare(); " + binding), previous, header, header),
+            (current.replace(binding, "if (false) { " + binding + " }"), previous, header, header),
+            (current, "", header, header),
+            (current.replace("CWebServer", "Other"), previous, header, header),
+            (current.replace("ThreadData", "OtherData"), previous, header, header),
+            (current.replace("&Data", "&input"), previous, header, header),
+            (current.replace("Data.pThis", "Data.pSocket"), previous, header, header),
+            (current.replace("M2A_BIND_X", "M2A_BIND_Y"), previous, header, header),
+            (current, previous, header.replace("static ", ""), header),
+            (current, previous, header, header.replace("static ", "")),
+        )
+        for values in bad:
+            self.assertFalse(route(
+                *values, "M2A_BIND_X", "_Get"
+            ))
+
     def test_real_git_activation_sequence_b_a_h_and_negative_cases(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = pathlib.Path(temporary)

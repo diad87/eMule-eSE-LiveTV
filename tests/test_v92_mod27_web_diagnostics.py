@@ -27,6 +27,14 @@ class Mod27WebDiagnosticsProductionTest(unittest.TestCase):
         cls.web_server = (
             ROOT / "srchybrid" / "WebServer.cpp"
         ).read_text(encoding="utf-8", errors="replace")
+        cls.status_controller_path = (
+            ROOT / "srchybrid" / "WebLiveApiStatusController.cpp"
+        )
+        cls.status_controller = (
+            cls.status_controller_path.read_text(encoding="utf-8")
+            if cls.status_controller_path.exists()
+            else ""
+        )
         cls.native_test = (
             ROOT / "srchybrid" / "tests" / "test_web_diagnostics.cpp"
         ).read_text(encoding="utf-8")
@@ -117,21 +125,46 @@ class Mod27WebDiagnosticsProductionTest(unittest.TestCase):
             self.assertIn(message, self.native_test)
         self.assertGreaterEqual(self.native_test.count("=="), 5)
 
-    def test_webserver_delegates_all_three_diagnostic_routes(self) -> None:
-        self.assertGreaterEqual(
-            self.web_server.count("WebDiagnostics::Serialize("),
-            3,
-        )
-        for route in ("ApiStatus", "ApiLiveMesh", "ApiLiveDebug"):
-            start = self.web_server.index(f"WebRouteId::{route}")
-            next_route = self.web_server.find(
-                "WebRouteId::",
-                start + len(f"WebRouteId::{route}"),
+    def test_diagnostic_routes_keep_serializer_ownership_after_w8_extraction(self) -> None:
+        """The W8 facade dispatches status/mesh once; debug remains MOD-2.7-owned.
+
+        Before W8, all three routes were serialized inline in WebServer.cpp.  W8
+        deliberately moves the status and mesh wire serializers behind a portable
+        snapshot port, so counting WebDiagnostics::Serialize calls in the facade
+        would reject the intended extraction.  This checks every route and both
+        serializer owners instead of merely lowering that count.
+        """
+        if not self.status_controller:
+            # Compatibility with the pre-W8 reviewed baseline.
+            self.assertGreaterEqual(
+                self.web_server.count("WebDiagnostics::Serialize("), 3
             )
-            block = self.web_server[
-                start : next_route if next_route >= 0 else len(self.web_server)
-            ]
-            self.assertIn("WebDiagnostics::Serialize(", block)
+            return
+
+        dispatch_start = self.web_server.index("// W8 dispatch stays below")
+        dispatch_end = self.web_server.index("W8LiveStreamRequest request", dispatch_start)
+        dispatch = self.web_server[dispatch_start:dispatch_end]
+        self.assertIn("RunW8LiveStatusApi(statusOperation", dispatch)
+        self.assertIn("W8LiveStatusPort", dispatch)
+        for route, operation in (
+            ("ApiStatus", "W8LiveStatusOperation::Status"),
+            ("ApiLiveChannels", "W8LiveStatusOperation::Channels"),
+            ("ApiLiveMesh", "W8LiveStatusOperation::Mesh"),
+        ):
+            self.assertIn(
+                f"WebRouteId::{route}: statusOperation=ese::web::{operation}",
+                dispatch,
+            )
+
+        # The two extracted routes still have one explicit, portable serializer
+        # each, selected by the facade operation; debug deliberately remains in
+        # the MOD-2.7 serializer until its own migration card is activated.
+        self.assertIn("r.body=Status(s,loopback)", self.status_controller)
+        self.assertIn("r.body=Channels(c)", self.status_controller)
+        self.assertIn("r.body=Mesh(m)", self.status_controller)
+        debug_start = self.web_server.index("WebRouteId::ApiLiveDebug")
+        debug_block = self.web_server[debug_start:]
+        self.assertIn("WebDiagnostics::Serialize(debug)", debug_block)
 
     def test_coordinator_shrinks_from_reviewed_baseline(self) -> None:
         completed = subprocess.run(

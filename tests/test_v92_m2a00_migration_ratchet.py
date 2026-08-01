@@ -97,8 +97,10 @@ class M2A00RatchetTest(unittest.TestCase):
     def test_catalogue_rejects_collapsed_live_api_or_placeholder_dependencies(self):
         candidate = copy.deepcopy(self.matrix)
         candidate["additional_modules"] = [item for item in candidate["additional_modules"] if not item["name"].startswith("WebLiveApi")]
-        with self.assertRaisesRegex(GATE.GateError, "collapsed or placeholder"):
-            GATE.validate_inputs(self.contract, candidate, self.baseline)
+        requirements = GATE._card_test_requirements(self.matrix)
+        with mock.patch.object(GATE, "_card_test_requirements", return_value=requirements):
+            with self.assertRaisesRegex(GATE.GateError, "collapsed or placeholder"):
+                GATE.validate_inputs(self.contract, candidate, self.baseline)
 
     def test_hash_pins_closed_schemas_and_activation_evidence_are_enforced(self):
         original = GATE.EXPECTED_DOC_HASHES["mod52_migration_matrix_v1.json"]

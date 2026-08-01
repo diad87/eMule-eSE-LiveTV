@@ -58,6 +58,8 @@ CRITICAL_SOURCE_PATHS = [
     "srchybrid/WebStaticAssets.cpp", "srchybrid/WebStaticAssets.h",
     "srchybrid/WebSocketResponse.cpp", "srchybrid/WebSocketResponse.h",
     "srchybrid/WebDiagnostics.cpp", "srchybrid/WebDiagnostics.h",
+    "srchybrid/WebLiveApiStreamController.cpp", "srchybrid/WebLiveApiStreamController.h",
+    "srchybrid/WebLiveApiStatusController.cpp", "srchybrid/WebLiveApiStatusController.h",
     "srchybrid/eMule.tmpl",
     "srchybrid/ListenSocket.cpp",
     "srchybrid/LiveProtocol.h",

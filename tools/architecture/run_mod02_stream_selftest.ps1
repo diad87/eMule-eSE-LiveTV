@@ -54,6 +54,8 @@ $criticalSourceRelativePaths = @(
     'srchybrid/WebStaticAssets.cpp', 'srchybrid/WebStaticAssets.h',
     'srchybrid/WebSocketResponse.cpp', 'srchybrid/WebSocketResponse.h',
     'srchybrid/WebDiagnostics.cpp', 'srchybrid/WebDiagnostics.h',
+    'srchybrid/WebLiveApiStreamController.cpp', 'srchybrid/WebLiveApiStreamController.h',
+    'srchybrid/WebLiveApiStatusController.cpp', 'srchybrid/WebLiveApiStatusController.h',
     'srchybrid/eMule.tmpl',
     'srchybrid/ListenSocket.cpp',
     'srchybrid/LiveProtocol.h',
@@ -250,7 +252,9 @@ $summary = [ordered]@{
     command = '--portable --ignoreinstances --selftest'
     isolation = 'portable unique output root; no UI'
 }
-$summary | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $root 'summary.json') -Encoding UTF8
+$summaryJson = ($summary | ConvertTo-Json -Depth 4) -replace "`r`n", "`n" -replace "`r", "`n"
+$utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
+[IO.File]::WriteAllText((Join-Path $root 'summary.json'), $summaryJson + "`n", $utf8WithoutBom)
 if ($timedOut) { throw "MOD-0.2 stream selftest timed out after $TimeoutSeconds seconds (termination_confirmed=$terminationConfirmed)." }
 if (-not $terminationConfirmed) { throw 'MOD-0.2 stream selftest termination was not confirmed within five seconds.' }
 if ($exitCode -ne 0) { throw "MOD-0.2 stream selftest failed: $exitCode" }

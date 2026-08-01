@@ -134,7 +134,7 @@ class Mod02CharacterizationTest(unittest.TestCase):
         ):
             self.assertRegex(evidence[field], r"^[0-9a-f]{64}$")
         runner = RUNTIME_RUNNER.read_text(encoding="utf-8")
-        for required in ("BuildManifest", "source_identity_sha256", "Get-NormalizedTextSha256", "Get-Mod02SourceIdentity", "Mod02BuildIdentity.h", "ReadAllBytes", "normalizedBytes", "merge-base --is-ancestor", "diff --name-only", "Critical sources changed after manifest commit", "taskkill.exe", "WaitForExit(10000)", "WaitForExit(5000)", "SOURCE $sourceIdentity", "source_tree_clean"):
+        for required in ("BuildManifest", "source_identity_sha256", "Get-NormalizedTextSha256", "Get-Mod02SourceIdentity", "Mod02BuildIdentity.h", "ReadAllBytes", "normalizedBytes", "merge-base --is-ancestor", "diff --name-only", "Critical sources changed after manifest commit", "taskkill.exe", "WaitForExit(10000)", "WaitForExit(5000)", "SOURCE $sourceIdentity", "source_tree_clean", "WriteAllText", "UTF8Encoding"):
             self.assertIn(required, runner)
         self.assertNotIn("$actualCommit -ne $manifest.source_commit", runner)
         self.assertNotIn("ExpectedSourceCommit", runner)

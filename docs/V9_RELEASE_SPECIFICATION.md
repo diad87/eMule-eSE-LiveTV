@@ -6,10 +6,15 @@ Estado: borrador normativo para desarrollo y publicación
 
 Base inicial inspeccionada: `35264bb` (candidato binario beta.2: `ab1ad6b`)
 
-Revisión actual: fuente `9.1.0-rc.3` previa a congelación; el commit y los
-hashes definitivos se fijan al construir la candidata limpia.
+Revisión actual: fuente final `9.1.0` preparada para publicación; el commit y
+los hashes definitivos se fijan al construir el artefacto limpio.
 
-Fecha de revisión: 2026-07-27
+Fecha de revisión: 2026-08-02
+
+> Nota de publicación (2026-08-02): el mantenedor aprobó 9.1.0 con una
+> excepción explícita al gate normativo. La campaña acumulada queda en
+> 22 PASS, 0 FAIL y 5 BLOCKED; no se reescriben los gates ni se convierten los
+> BLOCKED en PASS. Véase `V91_POST_RC3_CAMPAIGN_STATUS.md`.
 
 ## 1. Propósito
 
@@ -1425,7 +1430,8 @@ Nunca se transforman estos resultados en:
 
 ## 17. Estado de referencia de esta especificación
 
-Esta revisión acompaña a la fuente candidata `9.1.0-rc.3`:
+Esta revisión parte de la fuente candidata `9.1.0-rc.3` y conserva el siguiente
+historial:
 
 - `rc.1` fue rechazada al demostrar `V91-I04` que el blackhole IPv6 carecía de
   fallback acotado.
@@ -1439,8 +1445,11 @@ Esta revisión acompaña a la fuente candidata `9.1.0-rc.3`:
   transporte IPv6 ordinario declarado para 9.1.
 - `libreach`, `libnatmap`, Punch3, predicción, selector y KRP conservan sus gates
   experimentales y no adquieren estado público por estar presentes en el árbol.
-- El estado formal vigente lo determina exclusivamente el
-  `V91-RC-LEDGER.json` del commit/binario exactos, no este resumen narrativo.
+- El estado formal de cada ejecución lo determina el ledger y el hash del
+  commit/binario exactos, no este resumen narrativo. El acumulado de
+  publicación está en `V91_POST_RC3_CAMPAIGN_STATUS.md`: 22 PASS, 0 FAIL y
+  5 BLOCKED, con la excepción del mantenedor documentada sin alterar los
+  resultados originales.
 
 Por tanto, la presencia de código 9.2–9.4 en el binario no cambia el orden de
 promoción: cada capa debe ganarse su versión mediante sus propios tests.

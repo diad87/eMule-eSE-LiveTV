@@ -1,9 +1,10 @@
 # Kad6: diseño, fronteras y política de promoción
 
-Estado: especificación viva del runtime presente en eSE 9.1.0-rc.3.
+Estado: especificación viva del runtime presente en eSE 9.1.0.
 
-Este documento describe el Kad6 que realmente existe en el árbol. No convierte
-una beta en una promesa de soporte y no autoriza infraestructura pública.
+Este documento describe el Kad6 que realmente existe en el árbol. La release
+9.1.0 conserva los límites de calificación publicados y no autoriza
+infraestructura pública.
 
 ## 1. Decisión de producto
 
@@ -17,8 +18,9 @@ family-neutral que aporta:
 
 eSE 9.0 distribuye el **cliente UDP Kad6 nativo como función experimental
 seleccionada por defecto** junto a Kad2. eSE 9.1 no lo introduce por primera
-vez: lo promociona a soportado después de completar las topologías y gates
-IPv6-only, dual-stack, seguridad, compatibilidad y churn.
+vez: lo incorpora a la release estable con 22 PASS, 0 FAIL y 5 BLOCKED
+acumulados. Las topologías físicas pendientes y los límites de soporte están
+declarados en `RELEASE_NOTES_v9.1.0.md`.
 
 ## 2. Selección y migración
 

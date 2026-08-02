@@ -1,4 +1,4 @@
-# Deterministic-input portable package for eSE v9 prereleases.
+# Deterministic-input portable package for eSE v9 releases.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$ReleaseTag,
@@ -20,8 +20,8 @@ if ($AllowDirty) { $preflightArgs.AllowDirty = $true }
 & (Join-Path $RepoRoot 'tools\release_preflight.ps1') @preflightArgs
 
 # release_preflight has already validated this exact tag grammar. Derive the
-# matching notes filename here so alpha, beta and RC packages cannot silently
-# copy the notes from a different prerelease.
+# matching notes filename here so stable, alpha, beta and RC packages cannot
+# silently copy the notes from a different release.
 $ReleaseTag -match '^v0\.70b-eSE(?<version>.+)$' | Out-Null
 $releaseVersion = $Matches.version
 $releaseNotesRelativePath = "docs\RELEASE_NOTES_v$releaseVersion.md"

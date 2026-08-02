@@ -33,8 +33,8 @@
 #define VERSION_MIN	70
 #define VERSION_UPDATE	1
 #define VERSION_BUILD	10
-#define ESE_RELEASE_VERSION _T("9.1.0-rc.3")
-#define ESE_PRERELEASE 1
+#define ESE_RELEASE_VERSION _T("9.1.0")
+#define ESE_PRERELEASE 0
 #ifdef _M_X64
 #define VERSION_X64 _T(" x64")
 #else
@@ -45,6 +45,6 @@
 
 // NOTE: This version string is also used by the language DLLs!
 #define	SZ_VERSION_NAME		chSTR(VERSION_MJR) _T(".") chSTR(VERSION_MIN) _T(".") chSTR(VERSION_UPDATE)
-#define SZ_ESE_PRODUCT_VERSION SZ_VERSION_NAME _T(" - eSE 9.1.0-rc.3")
+#define SZ_ESE_PRODUCT_VERSION SZ_VERSION_NAME _T(" - eSE 9.1.0")
 
 #endif /* !__VERSION_H__ */

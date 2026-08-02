@@ -4,17 +4,17 @@ This guide covers the end-user workflow: install, watch a stream,
 broadcast your own, troubleshoot.
 
 For the runtime design see [the architecture overview](../ARCHITECTURE.md).
-The current candidate limits are in
-[the 9.1.0-rc.3 release notes](RELEASE_NOTES_v9.1.0-rc.3.md).
+The current release limits are in
+[the 9.1.0 release notes](RELEASE_NOTES_v9.1.0.md).
 
 ---
 
 ## 1. Install
 
-1. Download the `9.1.0-rc.3` portable ZIP only from the
-   [matching release page](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0-rc.3)
-   and verify its SHA-256. If that tag has no published asset, the candidate
-   has not been released yet; use the latest listed public build instead.
+1. Download the `9.1.0` portable ZIP only from the
+   [matching release page](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0)
+   and verify its SHA-256. If that tag has no published asset, the release is
+   not available yet; use the latest listed public build instead.
 2. Extract anywhere (e.g. `C:\eSE\`).
 3. Double-click **`emule.exe`**.
 4. Wait for eD2K + Kad to connect (status icons go green/yellow).
@@ -30,12 +30,12 @@ If a UAC prompt appears the first time, accept it — needed for UPnP
 to map the eD2K ports on your router. If Windows Firewall asks about
 `emule.exe`, `ese-server.exe`, or `ffmpeg.exe`, allow all three.
 
-The candidate may ask whether you want to join the consent-based NetLab cohort.
+The release may ask whether you want to join the consent-based NetLab cohort.
 Declining does not block normal eD2K, Kad or LiveTV use. Accepting permits
 bounded interoperability measurements; it does not enable relay bandwidth
 donation, KRP or Kad6 public exit.
 
-Automatic updating is disabled in 9.1.0-rc.3, and no updater executable or
+Automatic updating is disabled in 9.1.0, and no updater executable or
 installer is packaged or invoked. Download updates manually from the exact
 release page, stop eMule, back up the active profile and download state, and
 follow the update/rollback procedure in the release notes.
@@ -95,8 +95,8 @@ http://127.0.0.1:8080/hls-local/<hash>/stream.m3u8
 Paste it into VLC → Media → Open Network Stream. Useful if you want
 hardware-accelerated decode or PiP.
 
-These URLs are localhost-only in 9.1.0-rc.3. The dashboard and received-HLS
-server are not a LAN/remote service in this candidate; do not forward port
+These URLs are localhost-only in 9.1.0. The dashboard and received-HLS
+server are not a LAN/remote service in 9.1.0; do not forward port
 8080 or try to open these URLs from another device.
 
 ---
@@ -158,8 +158,8 @@ two. The P2P watcher sends one selected rendition to the mesh.
 |---|---|---|---|
 | 4662 | TCP | inbound | Recommended for a direct HighID path. Gated fallback paths are not guaranteed on every NAT. |
 | 4672 | UDP | inbound | Yes — Kad discovery. |
-| 4711 | TCP | loopback | Native API; localhost-only in rc.3. Do not forward it. |
-| 8080 | TCP | loopback | Dashboard and local HLS; localhost-only in rc.3. Do not forward it. |
+| 4711 | TCP | loopback | Native API; localhost-only in 9.1.0. Do not forward it. |
+| 8080 | TCP | loopback | Dashboard and local HLS; localhost-only in 9.1.0. Do not forward it. |
 | 1935 | TCP | inbound | Optional — only if your OBS is on a different machine. Keep closed otherwise. |
 | 5354 | UDP multicast | LAN | TTL=1, never escapes your subnet — no router config needed. |
 

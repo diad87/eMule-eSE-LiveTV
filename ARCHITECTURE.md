@@ -104,7 +104,7 @@ media transfer can still reveal endpoints to peers.
 
 The 8.1 control tunnel can proxy search and subscription through an exit. The
 production topology uses one relay hop, so the exit can identify the viewer;
-the data path may remain direct. The beta does not claim strong anonymity.
+the data path may remain direct. The release does not claim strong anonymity.
 
 ## Local HTTP boundaries
 
@@ -114,9 +114,9 @@ the data path may remain direct. The beta does not claim strong anonymity.
 | 8080 | `ese-server.exe` | Dashboard, player and local HLS |
 | 1935 | FFmpeg/native orchestration | RTMP ingest |
 
-For 9.1.0-rc.2 the API, dashboard and received-HLS HTTP surfaces bind to
+For 9.1.0 the API, dashboard and received-HLS HTTP surfaces bind to
 loopback only. LAN/remote dashboard access is deliberately postponed and is
-not a supported configuration for this candidate. The dashboard is never
+not a supported configuration for this release. The dashboard is never
 exposed with UPnP; legacy pairing/remote routes return `410` and the remote
 launcher is excluded from the package.
 

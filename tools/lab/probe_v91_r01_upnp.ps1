@@ -179,7 +179,10 @@ if (-not $mappingCreated -or -not $cleanupComplete) {
     backend = [string]$backend.kind
     physical_adapter = $true
     local_ipv4_class = Get-R01IPv4Class -Address $localAddress
-    external_ipv4_class = Get-R01IPv4Class -Address $externalAddress
+    external_ipv4_class = if ([string]::IsNullOrWhiteSpace(
+            $externalAddress)) { 'unreported' } else {
+        Get-R01IPv4Class -Address $externalAddress
+    }
     external_ipv4_sha256 = if ([string]::IsNullOrWhiteSpace(
             $externalAddress)) { $null } else {
         Get-R01StringSha256 -Value $externalAddress

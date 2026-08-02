@@ -5,6 +5,9 @@ maintain eMule eSE.
 
 ## User documentation
 
+- [eSE 9.1.0 release notes](RELEASE_NOTES_v9.1.0.md)
+  — final Windows x64 scope, cumulative qualification limits, safe defaults,
+  update procedure and rollback.
 - [eSE 9.1.0-rc.3 release notes](RELEASE_NOTES_v9.1.0-rc.3.md)
   — successor candidate that restores direct-link-only downloads when eD2K
   and Kad discovery are intentionally disconnected.

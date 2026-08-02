@@ -1,4 +1,4 @@
-# build_all.ps1 -- v9 prerelease pipeline (PowerShell 5.1 compatible).
+# build_all.ps1 -- v9 release pipeline (PowerShell 5.1 compatible).
 [CmdletBinding()]
 param(
     [string]$RepoRoot = '',
@@ -300,7 +300,20 @@ Stage 'package' {
 
 Stage 'package-smoke' {
     $packageDir = Join-Path $RepoRoot "dist\$ReleaseTag\package"
-    foreach ($required in @('emule.exe','ese-server.exe','ffmpeg.exe','ffprobe.exe','config\preferences.ini','config\nodes.dat','BUILD_INFO.txt','SHA256SUMS.txt')) {
+    foreach ($required in @(
+        'emule.exe',
+        'ese-server.exe',
+        'ffmpeg.exe',
+        'ffprobe.exe',
+        'config\preferences.ini',
+        'config\nodes.dat',
+        'eSE\eSE-live\vendor\hls.min.js',
+        'eSE\eSE-live\vendor\hls.LICENSE',
+        'license.txt',
+        'THIRD_PARTY_LICENSES.md',
+        'BUILD_INFO.txt',
+        'SHA256SUMS.txt'
+    )) {
         if (-not (Test-Path (Join-Path $packageDir $required) -PathType Leaf)) { throw "package smoke missing $required" }
     }
     $packageRootPrefix = [IO.Path]::GetFullPath($packageDir).TrimEnd('\') + '\'

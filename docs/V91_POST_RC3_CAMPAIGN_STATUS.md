@@ -1,5 +1,12 @@
 # v9.1 post-RC3 qualification campaign
 
+> **Final publication decision (2026-08-02):** cumulative coverage remains
+> 22 PASS, 0 FAIL and 5 BLOCKED. The strict matrix gate remains `NO_GO`, but
+> the maintainer explicitly approved publication of 9.1.0 with the five
+> incomplete physical-condition gaps disclosed in `RELEASE_NOTES_v9.1.0.md`.
+> This does not convert any
+> BLOCKED case to PASS and does not claim a 27-case rerun on one final binary.
+
 ## Scope and interpretation
 
 This document is the cumulative campaign view after the immutable RC3 ledger.

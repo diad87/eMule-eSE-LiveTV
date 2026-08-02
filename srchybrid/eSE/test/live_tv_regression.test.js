@@ -284,6 +284,7 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   const webSocketTunnel = read(eseRoot, 'eSE-live', 'ws_tunnel.js');
   const packageScript = read(repoRoot, 'build_package.ps1');
   const buildAll = read(repoRoot, 'tools', 'build_all.ps1');
+  const versionResource = read(repoRoot, 'srchybrid', 'res', 'emule.rc2');
   const languageCheck = read(repoRoot, 'tools', 'check_languages.ps1');
   const updateCheck = read(repoRoot, 'tools', 'update_check.ps1');
   const preflight = read(repoRoot, 'tools', 'release_preflight.ps1');
@@ -334,6 +335,13 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.match(buildAll, /ls-files -- [`\s]+[\r\n]*\s*'srchybrid\/lang\/\*\.vcxproj'/);
   assert.match(buildAll, /Assert-NoReparseTree -Root \$languageGeneratedRoot/);
   assert.match(buildAll, /Write-ReleaseLanguageStamp/);
+  assert.match(buildAll, /THIRD_PARTY_LICENSES\.md/);
+  assert.match(buildAll, /eSE\\eSE-live\\vendor\\hls\.LICENSE/);
+  assert.match(versionResource, /#elif\s+ESE_PRERELEASE/);
+  assert.doesNotMatch(
+    versionResource,
+    /#elif\s+defined\s*\(\s*ESE_PRERELEASE\s*\)/
+  );
   assert.match(
     packageScript,
     /check_languages\.ps1'[\s\S]{0,250}\$langDlls/
@@ -345,7 +353,7 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.match(updateCheck, /Automatic installation is disabled/);
   assert.match(preflight, /package-lock\.json/);
   assert.match(preflight, /GPL-2\.0-only/);
-  assert.equal(pkg.version, '9.1.0-rc.3');
+  assert.equal(pkg.version, '9.1.0');
 });
 
 test('postponed dashboard remote access is inert and leaks no pairing state', () => {

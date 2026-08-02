@@ -350,14 +350,26 @@ if ($RequireFreshBinaries) {
     } catch {
         Fail $_.Exception.Message
     }
-    $emuleFileVersion = (
-        Get-Item -LiteralPath $emuleBinary
-    ).VersionInfo.FileVersion
+    $emuleVersionInfo = (Get-Item -LiteralPath $emuleBinary).VersionInfo
+    $emuleFileVersion = $emuleVersionInfo.FileVersion
     if ([string]$emuleFileVersion -notlike "*eSE $tagVersion*") {
         Fail (
             "emule.exe FileVersion '$emuleFileVersion' does not identify " +
             "'$tagVersion'"
         )
+    }
+    $binaryShouldBePrerelease = $tagVersion -match
+        '-(?:alpha|beta|rc)\.\d+$'
+    if ([bool]$emuleVersionInfo.IsPreRelease -ne
+        [bool]$binaryShouldBePrerelease) {
+        Fail (
+            "emule.exe prerelease flag '$($emuleVersionInfo.IsPreRelease)' " +
+            "does not match '$tagVersion'"
+        )
+    }
+    if (-not $binaryShouldBePrerelease -and
+        [bool]$emuleVersionInfo.IsPrivateBuild) {
+        Fail 'stable emule.exe is marked as a private build'
     }
 }
 if (-not $AllowDirty) {

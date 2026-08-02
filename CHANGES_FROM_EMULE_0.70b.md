@@ -1,7 +1,7 @@
 # Changes from upstream eMule 0.70b
 
 This repository is a modified eMule 0.70b source tree. The changes below
-describe the main first-party differences shipped in eMule eSE 9.0.0-beta.1.
+describe the main first-party differences shipped in eMule eSE 9.1.0.
 
 The list is intentionally limited to implemented behavior. Experimental code
 is identified as gated and is not presented as a supported public service.
@@ -52,12 +52,12 @@ The release includes a packaged Node.js dashboard server:
 - local HLS.js playback without a CDN dependency;
 - status, diagnostics and metrics views;
 - first-run and network configuration;
-- localhost-only dashboard, API proxy and received-HLS access in 9.1.0-rc.2;
+- localhost-only dashboard, API proxy and received-HLS access in 9.1.0;
 - native API proxying with bounded responses and timeouts.
 
 `emule.exe` starts `ese-server.exe` when the eSE toolbar action is used. The
 dashboard listens on port 8080 and proxies native operations to the eMule
-WebServer on port 4711. Both HTTP surfaces bind to loopback in 9.1.0-rc.2;
+WebServer on port 4711. Both HTTP surfaces bind to loopback in 9.1.0;
 LAN/remote access is postponed.
 
 ## Encoding and media handling
@@ -107,7 +107,7 @@ Network changes include:
 - consent-based NetLab measurements.
 
 Punch3, anti-CGNAT port prediction, relay bandwidth donation, KRP and Kad6
-public exit are gated and disabled by default in the beta profile.
+public exit are gated and disabled by default in the release profile.
 
 ## Tunnel and privacy controls
 
@@ -128,7 +128,7 @@ Privacy limits are explicit:
 First-party hardening includes:
 
 - loopback-first API boundaries;
-- localhost-only dashboard/API/HLS binding for the 9.1.0-rc.2 package;
+- localhost-only dashboard/API/HLS binding for the 9.1.0 package;
 - removal of automatic dashboard UPnP exposure;
 - HLS path validation;
 - bounded proxy responses and request timeouts;
@@ -139,7 +139,7 @@ First-party hardening includes:
 - CSPRNG-backed identity and nonce generation;
 - crash dump support.
 
-Automatic updating is disabled for 9.1.0-rc.2. No updater executable or
+Automatic updating is disabled for 9.1.0. No updater executable or
 installer is packaged or invoked; update and rollback are manual, with an
 explicit profile/download backup.
 

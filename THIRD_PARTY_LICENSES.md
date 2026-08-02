@@ -1,12 +1,12 @@
-# Third-party notices for eMule eSE 9.1.0-rc.2
+# Third-party notices for eMule eSE 9.1.0
 
-This inventory describes the content of the Windows x64 portable candidate,
+This inventory describes the content of the Windows x64 portable release,
 not every development tool installed on a build machine. eMule eSE and its
 first-party modifications are distributed under the GNU General Public License
 version 2; the complete text is included as [`license.txt`](license.txt).
 
 Keep this file and `license.txt` with redistributed binaries. `BUILD_INFO.txt`,
-`SHA256SUMS.txt` and the external ZIP checksum identify the exact candidate to
+`SHA256SUMS.txt` and the external ZIP checksum identify the exact package to
 which this inventory applies.
 
 ## Executables and browser runtime in the portable package
@@ -52,7 +52,7 @@ toolchain are not redistributed as standalone files by this package.
 
 - eMule eSE source, including the native libraries above and the first-party
   dashboard: [github.com/diad87/eMule-eSE-LiveTV](https://github.com/diad87/eMule-eSE-LiveTV).
-  Use the commit recorded in `BUILD_INFO.txt`; a candidate is not a published
+  Use the commit recorded in `BUILD_INFO.txt`; a build is not a published
   release until its matching tag and assets exist.
 - FFmpeg and the libraries enabled in the bundled full build: use the exact
   8.1 source/build links above and retain the configure line printed by the
@@ -63,5 +63,6 @@ toolchain are not redistributed as standalone files by this package.
 Data/configuration files are not presented here as separately licensed
 executable dependencies.
 
-_Inventory checked against the intended 9.1.0-rc.2 package layout on
-2026-07-26._
+_Inventory checked against the 9.1.0 source and package-smoke requirements on
+2026-08-02. The release pipeline verifies the listed notices and runtime files
+inside the final package._

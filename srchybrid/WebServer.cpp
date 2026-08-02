@@ -109,7 +109,25 @@ struct W9SearchPort { void* context = nullptr; std::uint32_t (*now_ms)(void*) = 
 struct W9SearchResponse { std::string header, body; };
 bool RunW9LiveSearchApi(const W9SearchRequest&, const W9SearchPort&, W9SearchResponse&); bool RunW9LiveSearchCharacterizationSelfTest(std::string& failure);
 } }
-namespace eSELive { M2AModuleHandle M2A_BIND_W8_4974C0F316(const M2AParentPort&); void M2A_UNBIND_W8_4974C0F316(const M2AParentPort&); M2AModuleHandle M2A_BIND_W8_E988965D5A(const M2AParentPort&); void M2A_UNBIND_W8_E988965D5A(const M2AParentPort&); M2AModuleHandle M2A_BIND_W9_52CC9DEBDD(const M2AParentPort&); void M2A_UNBIND_W9_52CC9DEBDD(const M2AParentPort&); M2AModuleHandle M2A_BIND_W9_3B359EBB1A(const M2AParentPort&); void M2A_UNBIND_W9_3B359EBB1A(const M2AParentPort&); }
+enum class W10SettingsOperation { EseV9, Privacy, EdgeSabotage };
+struct W10SettingsRequest { W10SettingsOperation operation = W10SettingsOperation::EseV9; bool loopback = false; std::string on, mode, fallback, add_sensitive, rm_sensitive, delay; };
+struct W10NetlabSnapshot { std::string consent = "undecided", advanced_consent = "undecided", contribution_consent = "undecided"; bool enabled = false, capability_advertised = false, ipv6_auto = false, hole_punch = false; bool auto_keepalive = false, selector = false, port_predict = false, ed2k_punch3 = false; bool kad3_rendezvous = false, relay_accept = false, relay_egress = false, krp = false; bool kad6_beta_exit = false, kad6_stable_public_exit = false, keepalive_running = false; bool experimental = false, hole_punch_master = false; std::uint32_t reach_direct = 0, reach_punch2 = 0, reach_punch3 = 0, reach_relay = 0; };
+struct W10PrivacySnapshot { std::string mode = "adaptive", fallback = "balanced", public_ipv6; std::vector<std::string> sensitive_keywords, caps_human; std::uint32_t caps_bits = 0, circuits_active = 0, circuits_pending = 0, tunnel_pool_size = 0; std::uint32_t subscriptions_loaded = 0, mean_rtt_ms = 0; std::uint64_t cells_sent = 0, cells_recv = 0, bytes_sent = 0, bytes_recv = 0; bool kad6_preferred = false, kad6_circuit_active = false; std::string route_state = "kad2_direct"; };
+struct W10SettingsResponse { unsigned status = 200; std::string reason = "OK", header, body; };
+struct W10SettingsPort { void* context = nullptr; bool (*read_netlab)(void*, W10NetlabSnapshot&) = nullptr; bool (*netlab_consent_accepted)(void*) = nullptr; void (*apply_netlab)(void*, bool) = nullptr; void (*refresh_preview_caps)(void*) = nullptr; void (*request_keepalive)(void*, bool) = nullptr; bool (*persist_disable_and_verify)(void*) = nullptr; bool (*save_preferences)(void*) = nullptr; void (*post_krp_event)(void*) = nullptr; bool (*read_privacy_policy)(void*, W10PrivacySnapshot&) = nullptr; void (*set_privacy_mode)(void*, const std::string&) = nullptr; void (*set_fallback)(void*, const std::string&) = nullptr; void (*add_sensitive)(void*, const std::string&) = nullptr; void (*remove_sensitive)(void*, const std::string&) = nullptr; void (*mirror_privacy_preferences)(void*) = nullptr; bool (*read_privacy_runtime)(void*, W10PrivacySnapshot&) = nullptr; bool test_hooks_enabled = false; void (*set_edge_sabotage)(void*, bool, int, std::uint32_t) = nullptr; };
+bool RunW10LiveSettingsApi(const W10SettingsRequest&, const W10SettingsPort&, W10SettingsResponse&); bool RunW10LiveSettingsCharacterizationSelfTest(std::string& failure);
+namespace ese { namespace web {
+enum class W10DiagnosticsOperation { KrpStatus, Preflight, Metrics, Log, Debug };
+struct W10DiagnosticsRequest { W10DiagnosticsOperation operation = W10DiagnosticsOperation::KrpStatus; int log_n = 100; };
+struct W10PreflightSnapshot { bool kad_connected = false, high_id = false, kad_firewalled = false, ed2k_lowid = false, firewall_checking = false, ffmpeg_found = false; std::uint32_t max_upload_kbs = 0; std::uint16_t port = 0; std::string public_ip, public_ip_v6, ffmpeg_path; };
+struct W10MetricsSnapshot { long chunks_received = 0, chunks_requested = 0, chunks_missing = 0, kad_publishes = 0, kad_searches = 0, peer_disconnects = 0, kad_searches_empty = 0, kad_searches_rate_limited = 0, pending_dials_dropped = 0, join_first_count = 0, join_first_sum = 0; int chunks_served = 0, view_peers = 0, broadcast_peers = 0, mesh_peers = 0, buffer_count = 0, pending_requests = 0; bool broadcasting = false, viewing = false; };
+struct W10DebugPeer { std::string ip; std::uint16_t port = 0; std::int64_t level = 0, fail_count = 0, response_percent = 0; std::uint32_t rtt_ms = 0; };
+struct W10DebugSnapshot { bool available = false, broadcasting = false, viewing = false, emergency_mode = false, kad_connected = false; std::uint32_t uptime_ms = 0, now_ms = 0, last_publish_time = 0, last_search_time = 0, last_result_time = 0, last_result_ip = 0, last_chunk_received_at = 0, hls_segments_written = 0, hls_playlist_refreshes = 0, kad_publishes = 0, kad_searches = 0, kad_results_accepted = 0, kad_results_rejected = 0, source_dial_attempts = 0, subscribe_sent = 0, subscribe_accepted = 0, chunks_requested = 0, chunks_received = 0, chunks_missing = 0, duplicate_chunks_received = 0, requests_suppressed_inflight = 0, peer_disconnects = 0, skipped_initial_pushes = 0, subscribes_rate_limited = 0, requests_rate_limited = 0, ends_rejected_no_auth = 0, tombstones_evicted = 0, oldest_sequence = 0, newest_sequence = 0; std::uint64_t total_redistributed = 0; std::uint16_t last_result_port = 0, chunk_bitmap = 0; std::int64_t known_streams = 0, known_streams_clean = 0, known_streams_legacy = 0, view_peers = 0, broadcast_peers = 0, mesh_peers = 0, pending_requests = 0, chunks_served = 0, super_seeders = 0, middle_peers = 0, leaf_peers = 0, chunk_count = 0, missing_chunks = 0, max_capacity = 15, segment_duration_seconds = 2; std::vector<W10DebugPeer> peer_detail; };
+struct W10DiagnosticsResponse { std::string header, body; };
+struct W10DiagnosticsPort { void* context = nullptr; bool (*read_krp_json)(void*, std::string&) = nullptr; bool (*read_preflight)(void*, W10PreflightSnapshot&) = nullptr; bool (*read_metrics)(void*, W10MetricsSnapshot&) = nullptr; void (*read_percentiles)(void*, std::uint32_t&, std::uint32_t&, std::uint32_t&) = nullptr; std::uint32_t (*read_latency_mean)(void*) = nullptr; int (*read_latency_samples)(void*) = nullptr; bool (*read_kad6_metrics)(void*, std::string&) = nullptr; bool (*read_log)(void*, int, std::vector<std::string>&) = nullptr; bool (*read_debug)(void*, W10DebugSnapshot&) = nullptr; };
+bool RunW10LiveDiagnosticsApi(const W10DiagnosticsRequest&, const W10DiagnosticsPort&, W10DiagnosticsResponse&); bool RunW10LiveDiagnosticsCharacterizationSelfTest(std::string& failure);
+} }
+namespace eSELive { M2AModuleHandle M2A_BIND_W8_4974C0F316(const M2AParentPort&); void M2A_UNBIND_W8_4974C0F316(const M2AParentPort&); M2AModuleHandle M2A_BIND_W8_E988965D5A(const M2AParentPort&); void M2A_UNBIND_W8_E988965D5A(const M2AParentPort&); M2AModuleHandle M2A_BIND_W9_52CC9DEBDD(const M2AParentPort&); void M2A_UNBIND_W9_52CC9DEBDD(const M2AParentPort&); M2AModuleHandle M2A_BIND_W9_3B359EBB1A(const M2AParentPort&); void M2A_UNBIND_W9_3B359EBB1A(const M2AParentPort&); M2AModuleHandle M2A_BIND_W10_E9722EA045(const M2AParentPort&); void M2A_UNBIND_W10_E9722EA045(const M2AParentPort&); M2AModuleHandle M2A_BIND_W10_47570D3256(const M2AParentPort&); void M2A_UNBIND_W10_47570D3256(const M2AParentPort&); }
 namespace eSELive {
 enum class WebClassicView : std::uint8_t { Unknown = 0, Login, RemoteLinkAdded, RemoteLinkFailed, CommentList, Header, Footer, Server, Shared, Transfer, Search, Graphs, Log, ServerInfo, DebugLog, MyInfo, Stats, Kad, Options };
 enum class WebAdminAction : std::uint8_t { Close, Shutdown, Reboot };
@@ -190,6 +208,44 @@ bool W9SearchContext::Tunnel(void*,const std::string& keyword,std::string& reply
 bool W9SearchContext::Diagnose(void*,const std::array<std::uint8_t,16>* key,ese::web::W9DiagnoseSnapshot& out) { out=ese::web::W9DiagnoseSnapshot();out.kad_connected=Kademlia::CKademlia::IsConnected();out.broadcasting=theApp.liveStreamManager&&theApp.liveStreamManager->IsBroadcasting();out.viewing=theApp.liveStreamManager&&theApp.liveStreamManager->IsViewingLive();const std::uint32_t publicIp=theApp.GetPublicIP();out.public_ip_available=publicIp!=0;out.public_ip=W8Legacy(ipstr(publicIp));out.tcp_port=theApp.GetAdvertisedTcpPort();if(key&&theApp.liveStreamManager){LiveStreamEntry entry;if(theApp.liveStreamManager->GetKadBridge().GetStreamInfo(key->data(),entry)){out.in_directory=true;out.entry.title=W8Legacy(entry.title);out.entry.broadcaster_ip=W8Legacy(ipstr(entry.broadcasterIP));out.entry.broadcaster_port=entry.broadcasterPort;out.entry.bitrate=entry.bitrate;out.entry.viewers=entry.viewerCount;out.entry.last_seen_age_ms=GetTickCount()-entry.lastSeen;out.entry.own=entry.isOwnStream;}}out.directory_size=theApp.liveStreamManager?static_cast<std::uint32_t>(theApp.liveStreamManager->GetKadBridge().GetDirectoryCount()):0;return true; }
 void W9SearchContext::Refresh(void*) { if(theApp.liveStreamManager&&theApp.emuledlg)theApp.emuledlg->PostMessage(UM_LIVE_KAD_REFRESH); }
 bool W9SearchContext::Streams(void*,bool& kad,std::vector<ese::web::W9KadStream>& out) { CArray<LiveStreamEntry> native;if(theApp.liveStreamManager)theApp.liveStreamManager->GetKadBridge().GetKnownStreams(native);kad=Kademlia::CKademlia::IsConnected();out.clear();out.reserve(static_cast<std::size_t>(native.GetCount()));for(INT_PTR i=0;i<native.GetCount();++i){const LiveStreamEntry& item=native[i];ese::web::W9KadStream value;memcpy(value.key.data(),item.streamKey,value.key.size());value.title=W8Legacy(item.title);value.category=W8Legacy(item.category);value.language=W8Legacy(item.language);value.bitrate=item.bitrate;value.viewers=item.viewerCount;value.broadcaster_ip=item.broadcasterIP;value.broadcaster_port=item.broadcasterPort;value.started_at=item.startedAt;value.last_seen=item.lastSeen;value.own=item.isOwnStream;value.kad6_tunnel=item.privacyOrigin==ESE_PRIV_ORIGIN_KAD6_TUNNEL;out.push_back(std::move(value));}return true; }
+using Kademlia::CKadV2Mode; using Kademlia::CKadV2ModeSelector;
+static CString W10Text(const std::string& value) { return W8Text(value); }
+struct W10SettingsContext { static bool ReadNetlab(void*,W10NetlabSnapshot&); static bool Consent(void*); static void Apply(void*,bool); static void Refresh(void*); static void Keepalive(void*,bool); static bool PersistDisable(void*); static bool Save(void*); static void Post(void*); static bool ReadPrivacy(void*,W10PrivacySnapshot&); static void SetMode(void*,const std::string&); static void SetFallback(void*,const std::string&); static void Add(void*,const std::string&); static void Remove(void*,const std::string&); static void Mirror(void*); static bool ReadRuntime(void*,W10PrivacySnapshot&); static void Edge(void*,bool,int,std::uint32_t); static W10SettingsPort Port(); };
+bool W10SettingsContext::ReadNetlab(void*,W10NetlabSnapshot& o) { o=W10NetlabSnapshot();o.consent=thePrefs.GetEseNetLabConsent()==CPreferences::EseNetLabAccepted?"accepted":thePrefs.GetEseNetLabConsent()==CPreferences::EseNetLabDeclined?"declined":"undecided";o.advanced_consent=thePrefs.GetEseNetLabAdvancedConsent()==CPreferences::EseNetLabAccepted?"accepted":thePrefs.GetEseNetLabAdvancedConsent()==CPreferences::EseNetLabDeclined?"declined":"undecided";o.contribution_consent=thePrefs.GetEseNetLabContributionConsent()==CPreferences::EseNetLabAccepted?"accepted":thePrefs.GetEseNetLabContributionConsent()==CPreferences::EseNetLabDeclined?"declined":"undecided";o.enabled=thePrefs.IsEseNetLabActive();o.capability_advertised=(g_uEseCapsRuntime&ESE_CAP_NETLAB_V1)!=0;o.ipv6_auto=thePrefs.IsIPv6Enabled();o.hole_punch=thePrefs.GetUtpHolePunchEnabled();o.auto_keepalive=thePrefs.GetEseAutoKeepalive();o.selector=thePrefs.GetEseReachSelector();o.port_predict=thePrefs.GetEseHolePunchPortPredict();o.ed2k_punch3=thePrefs.GetEseEd2kPunch3();o.kad3_rendezvous=thePrefs.GetEseKad3Rendezvous();o.relay_accept=thePrefs.GetEseRelayAccept();o.relay_egress=thePrefs.GetEseRelayEgress();o.krp=thePrefs.GetKrpRelayEnabled();o.kad6_beta_exit=thePrefs.GetKad6BetaExitOptIn();o.kad6_stable_public_exit=thePrefs.GetKad6PublicExitOptIn();o.keepalive_running=CKadKeepalive::Instance().IsRunning();o.experimental=thePrefs.GetEseV9Experimental();o.hole_punch_master=thePrefs.GetUtpHolePunchEnabled();o.reach_direct=CStatistics::m_dwReachConnDirect;o.reach_punch2=CStatistics::m_dwReachConnPunch2;o.reach_punch3=CStatistics::m_dwReachConnPunch3;o.reach_relay=CStatistics::m_dwReachConnRelay;return true; }
+bool W10SettingsContext::Consent(void*) { return thePrefs.GetEseNetLabConsent()==CPreferences::EseNetLabAccepted; }
+void W10SettingsContext::Apply(void*,bool on) { thePrefs.ApplyEseNetLabPreferenceState(on); }
+void W10SettingsContext::Refresh(void*) { RefreshEseV9PreviewCaps(); }
+void W10SettingsContext::Keepalive(void*,bool on) { if(on)CKadKeepalive::Instance().RequestStart();else CKadKeepalive::Instance().RequestStop(); }
+bool W10SettingsContext::PersistDisable(void*) { CIni ini(CPreferences::GetConfigFile(),_T("eMule"));ini.WriteBool(_T("EseNetLabEnabled"),false,_T("eSE"));return !ini.GetBool(_T("EseNetLabEnabled"),true,_T("eSE")); }
+bool W10SettingsContext::Save(void*) { return CPreferences::Save()!=0; }
+void W10SettingsContext::Post(void*) { if(theApp.emuledlg!=NULL&&::IsWindow(theApp.emuledlg->GetSafeHwnd()))::PostMessage(theApp.emuledlg->GetSafeHwnd(),UM_KRP_CLIENT_EVENT,0,0); }
+bool W10SettingsContext::ReadPrivacy(void*,W10PrivacySnapshot& o) { CKadV2ModeSelector& s=CKadV2ModeSelector::Get();o=W10PrivacySnapshot();o.mode=s.GetDefaultMode()==CKadV2Mode::Direct?"direct":s.GetDefaultMode()==CKadV2Mode::Tunneled?"tunneled":"adaptive";o.fallback=s.GetFallbackPolicy()==CKadV2ModeSelector::STRICT_PRIVACY?"strict":s.GetFallbackPolicy()==CKadV2ModeSelector::BEST_EFFORT?"best_effort":"balanced";std::vector<CStringW> keys;s.GetSensitiveKeywords(keys);o.sensitive_keywords.reserve(keys.size());for(const CStringW& key:keys)o.sensitive_keywords.push_back(W8Legacy(CString(key)));o.caps_bits=g_uEseCapsRuntime;struct Cap{std::uint32_t bit;const char* name;};const Cap caps[]={{ESE_CAP_M1_SUBSCRIBER_PIN,"M1_subscriber_pin"},{ESE_CAP_M2_COMPOSITE_KEYS,"M2_composite_keys"},{ESE_CAP_M3_SHARDING,"M3_sharding"},{ESE_CAP_M4_TRIGRAMS,"M4_trigrams"},{ESE_CAP_M5_BLOOM_GOSSIP,"M5_bloom_gossip"},{ESE_CAP_M6_K_EFFECTIVE,"M6_k_effective"},{ESE_CAP_PRIVACY_TUNNELING,"privacy_tunneling"},{ESE_CAP_SEALED_RECORDS,"sealed_records"},{ESE_CAP_GOSSIP_PROTOCOL,"gossip_protocol"},{ESE_CAP_COVER_TRAFFIC,"cover_traffic"},{ESE_CAP_TUNNEL_AUTH,"tunnel_auth"},{ESE_CAP_KAD6,"kad6"},{ESE_CAP_TUNNEL_STRICT3,"tunnel_strict3"},{ESE_CAP_TUNNEL_SHAPED,"tunnel_shaped"},{ESE_CAP_NETLAB_V1,"netlab_v1"}};for(const Cap& cap:caps)if(o.caps_bits&cap.bit)o.caps_human.push_back(cap.name);o.kad6_preferred=s.GetDefaultMode()!=CKadV2Mode::Direct;return true; }
+void W10SettingsContext::SetMode(void*,const std::string& value) { CKadV2ModeSelector::Get().SetDefaultMode(value=="direct"?CKadV2Mode::Direct:value=="tunneled"?CKadV2Mode::Tunneled:CKadV2Mode::Adaptive); }
+void W10SettingsContext::SetFallback(void*,const std::string& value) { CKadV2ModeSelector::Get().SetFallbackPolicy(value=="strict"?CKadV2ModeSelector::STRICT_PRIVACY:value=="best_effort"?CKadV2ModeSelector::BEST_EFFORT:CKadV2ModeSelector::BALANCED); }
+void W10SettingsContext::Add(void*,const std::string& value) { CKadV2ModeSelector::Get().AddSensitiveKeyword(W10Text(value)); }
+void W10SettingsContext::Remove(void*,const std::string& value) { CKadV2ModeSelector::Get().RemoveSensitiveKeyword(W10Text(value)); }
+void W10SettingsContext::Mirror(void*) { CKadV2ModeSelector& s=CKadV2ModeSelector::Get();thePrefs.SetKadV2PrivacyMode(static_cast<int>(s.GetDefaultMode()));thePrefs.SetKadV2FallbackPolicy(static_cast<int>(s.GetFallbackPolicy()));std::vector<CStringW> keys;s.GetSensitiveKeywords(keys);CString joined;for(const CStringW& item:keys){CString key(item);key.Replace(_T("|"),_T(" "));if(!joined.IsEmpty())joined+=_T("|");joined+=key;}thePrefs.SetKadV2SensitiveKeywords(joined); }
+bool W10SettingsContext::ReadRuntime(void*,W10PrivacySnapshot& o) { try{eSELive::CLiveTunnel& t=eSELive::CLiveTunnel::Get();o.circuits_active=static_cast<std::uint32_t>(t.ActiveCircuitCount());o.circuits_pending=static_cast<std::uint32_t>(t.PendingCircuitCount());o.tunnel_pool_size=static_cast<std::uint32_t>(Kademlia::CKadV2TunnelPool::Get().Size());o.subscriptions_loaded=static_cast<std::uint32_t>(eSELive::CLiveSubscriptionStore::Get().Count());CAddress v6=CFirewallProberV6::Instance().GetDetectedV6IP();if(!v6.IsNull())o.public_ipv6=W9Bytes(CStringA(v6.ToStringC()));o.kad6_circuit_active=t.HasActiveCircuitWithExitCaps(ESE_CAP_KAD6);o.cells_sent=t.CellsSentTotal();o.cells_recv=t.CellsRecvTotal();o.bytes_sent=t.BytesSentTotal();o.bytes_recv=t.BytesRecvTotal();o.mean_rtt_ms=t.MeanRttMs();}catch(...){ }o.route_state=!o.kad6_preferred?"kad2_direct":o.kad6_circuit_active?"kad6":o.circuits_active!=0?"tunnel_kad2_compat":o.fallback=="strict"?"blocked_waiting_kad6":"kad2_fallback";return true; }
+#ifdef ESE_TEST_HOOKS
+void W10SettingsContext::Edge(void*,bool on,int mode,std::uint32_t delay) { extern bool g_eseTestSabotageOn;extern int g_eseTestSabotageMode;extern DWORD g_eseTestSabotageDelayMs;g_eseTestSabotageOn=on;g_eseTestSabotageMode=mode;g_eseTestSabotageDelayMs=delay; }
+#else
+void W10SettingsContext::Edge(void*,bool,int,std::uint32_t) {}
+#endif
+W10SettingsPort W10SettingsContext::Port() { W10SettingsPort p={nullptr,W10SettingsContext::ReadNetlab,W10SettingsContext::Consent,W10SettingsContext::Apply,W10SettingsContext::Refresh,W10SettingsContext::Keepalive,W10SettingsContext::PersistDisable,W10SettingsContext::Save,W10SettingsContext::Post,W10SettingsContext::ReadPrivacy,W10SettingsContext::SetMode,W10SettingsContext::SetFallback,W10SettingsContext::Add,W10SettingsContext::Remove,W10SettingsContext::Mirror,W10SettingsContext::ReadRuntime,false,nullptr};
+#ifdef ESE_TEST_HOOKS
+p.test_hooks_enabled=true;p.set_edge_sabotage=W10SettingsContext::Edge;
+#endif
+return p; }
+struct W10DiagnosticsContext { bool metrics_available=false; static bool Krp(void*,std::string&); static bool Preflight(void*,ese::web::W10PreflightSnapshot&); static bool Metrics(void*,ese::web::W10MetricsSnapshot&); static void Percentiles(void*,std::uint32_t&,std::uint32_t&,std::uint32_t&); static std::uint32_t Mean(void*); static int Samples(void*); static bool Kad6(void*,std::string&); static bool Log(void*,int,std::vector<std::string>&); static bool Debug(void*,ese::web::W10DebugSnapshot&); };
+bool W10DiagnosticsContext::Krp(void*,std::string& o) { if(theApp.relayclient==NULL)return false;CStringA json;theApp.relayclient->GetStatusJson(json);o=W9Bytes(json);return true; }
+bool W10DiagnosticsContext::Preflight(void*,ese::web::W10PreflightSnapshot& o) { o=ese::web::W10PreflightSnapshot();o.kad_connected=Kademlia::CKademlia::IsConnected();const bool verified=Kademlia::CUDPFirewallTester::IsVerified();o.kad_firewalled=theApp.IsFirewalled();o.ed2k_lowid=!theApp.HasVerifiedEd2kHighId();o.high_id=!o.ed2k_lowid;o.firewall_checking=!verified&&o.kad_connected&&o.ed2k_lowid;o.max_upload_kbs=thePrefs.GetMaxUpload();o.port=theApp.GetAdvertisedTcpPort();const std::uint32_t ip=theApp.GetPublicIP();if(ip!=0)o.public_ip=W8Legacy(ipstr(ip));const CString ffmpeg=CRTMPIngest::FindFFmpeg();o.ffmpeg_found=GetFileAttributes(ffmpeg)!=INVALID_FILE_ATTRIBUTES;o.ffmpeg_path=W8Legacy(ffmpeg);try{const CAddress v6=CFirewallProberV6::Instance().GetDetectedV6IP();if(!v6.IsNull())o.public_ip_v6=W9Bytes(CStringA(v6.ToStringC()));}catch(...){ }return true; }
+bool W10DiagnosticsContext::Metrics(void* raw,ese::web::W10MetricsSnapshot& o) { W10DiagnosticsContext& c=*static_cast<W10DiagnosticsContext*>(raw);o=ese::web::W10MetricsSnapshot();c.metrics_available=theApp.liveStreamManager!=NULL;if(!c.metrics_available)return true;const LiveDebugSnapshot s=theApp.liveStreamManager->BuildDebugSnapshot();o.chunks_received=s.counters.chunksReceived;o.chunks_requested=s.counters.chunksRequested;o.chunks_missing=s.counters.chunksMissing;o.chunks_served=s.chunksServed;o.kad_publishes=s.counters.kadPublishes;o.kad_searches=s.counters.kadSearches;o.peer_disconnects=s.counters.peerDisconnects;o.view_peers=s.viewPeers;o.broadcast_peers=s.broadcastPeers;o.mesh_peers=s.meshPeers;o.buffer_count=s.bufCount;o.pending_requests=s.pendingRequests;o.broadcasting=s.broadcasting;o.viewing=s.viewing;o.kad_searches_empty=s.counters.kadSearchesEmpty;o.kad_searches_rate_limited=s.counters.kadSearchesRateLimited;o.pending_dials_dropped=s.counters.pendingDialsDropped;o.join_first_count=s.counters.joinToFirstChunkSamples;o.join_first_sum=s.counters.joinToFirstChunkSumMs;return true; }
+void W10DiagnosticsContext::Percentiles(void* raw,std::uint32_t& p50,std::uint32_t& p95,std::uint32_t& p99) { if(static_cast<W10DiagnosticsContext*>(raw)->metrics_available){DWORD a=0,b=0,c=0;theApp.liveStreamManager->ChunkArrivalLatency().Percentiles(a,b,c);p50=a;p95=b;p99=c;} }
+std::uint32_t W10DiagnosticsContext::Mean(void* raw) { return static_cast<W10DiagnosticsContext*>(raw)->metrics_available?theApp.liveStreamManager->ChunkArrivalLatency().Mean():0; }
+int W10DiagnosticsContext::Samples(void* raw) { return static_cast<W10DiagnosticsContext*>(raw)->metrics_available?theApp.liveStreamManager->ChunkArrivalLatency().SampleCount():0; }
+bool W10DiagnosticsContext::Kad6(void*,std::string& o) { o=eSELive::CLiveTunnel::Get().GetK6PrometheusMetrics();return true; }
+bool W10DiagnosticsContext::Log(void*,int n,std::vector<std::string>& o) { std::deque<CStringA> native;CLiveDebugLog::Get().GetRecent(n,native);o.clear();o.reserve(native.size());for(const CStringA& item:native)o.push_back(W9Bytes(item));return true; }
+bool W10DiagnosticsContext::Debug(void*,ese::web::W10DebugSnapshot& o) { o=ese::web::W10DebugSnapshot();if(theApp.liveStreamManager==NULL)return true;const LiveDebugSnapshot s=theApp.liveStreamManager->BuildDebugSnapshot();o.available=true;o.broadcasting=s.broadcasting;o.viewing=s.viewing;o.emergency_mode=s.emergencyMode;o.uptime_ms=s.uptimeMs;o.total_redistributed=s.totalRedistributed;o.now_ms=GetTickCount();o.kad_connected=s.kad.kadConnected;o.known_streams=s.kad.knownStreams;o.known_streams_clean=s.kad.knownStreamsClean;o.known_streams_legacy=s.kad.knownStreamsLegacy;o.last_publish_time=s.kad.lastPublishTime;o.last_search_time=s.kad.lastSearchTime;o.last_result_time=s.kad.lastResultTime;o.last_result_ip=s.kad.lastResultIP;o.last_result_port=s.kad.lastResultPort;o.view_peers=s.viewPeers;o.broadcast_peers=s.broadcastPeers;o.mesh_peers=s.meshPeers;o.pending_requests=s.pendingRequests;o.chunks_served=s.chunksServed;o.super_seeders=s.superSeeders;o.middle_peers=s.middlePeers;o.leaf_peers=s.leafPeers;o.chunk_count=s.bufCount;o.oldest_sequence=s.oldestSeq;o.newest_sequence=s.newestSeq;o.chunk_bitmap=s.bitmap;o.missing_chunks=s.missingChunks;o.max_capacity=ESE_LIVE_MAX_SEGMENTS;o.hls_segments_written=s.counters.hlsSegmentsWritten;o.hls_playlist_refreshes=s.counters.hlsPlaylistRefresh;o.last_chunk_received_at=static_cast<std::uint32_t>(s.counters.lastChunkReceivedAt);o.segment_duration_seconds=ESE_LIVE_SEGMENT_DURATION;o.kad_publishes=s.counters.kadPublishes;o.kad_searches=s.counters.kadSearches;o.kad_results_accepted=s.counters.kadResultsAccepted;o.kad_results_rejected=s.counters.kadResultsRejected;o.source_dial_attempts=s.counters.sourceDialAttempts;o.subscribe_sent=s.counters.subscribeSent;o.subscribe_accepted=s.counters.subscribeAccepted;o.chunks_requested=s.counters.chunksRequested;o.chunks_received=s.counters.chunksReceived;o.chunks_missing=s.counters.chunksMissing;o.duplicate_chunks_received=s.counters.duplicateChunksReceived;o.requests_suppressed_inflight=s.counters.requestsSuppressedInflight;o.peer_disconnects=s.counters.peerDisconnects;o.skipped_initial_pushes=s.counters.skippedInitialPushes;o.subscribes_rate_limited=s.counters.subscribesRateLimited;o.requests_rate_limited=s.counters.requestsRateLimited;o.ends_rejected_no_auth=s.counters.endsRejectedNoAuth;o.tombstones_evicted=s.counters.tombstonesEvicted;const int count=(std::max)(0,(std::min)(s.peerDetailCount,LiveDebugSnapshot::MAX_PEER_DBG));o.peer_detail.reserve(static_cast<std::size_t>(count));for(int i=0;i<count;++i)o.peer_detail.push_back({s.peerDetail[i].ip,s.peerDetail[i].port,s.peerDetail[i].level,s.peerDetail[i].failCount,s.peerDetail[i].respPct,s.peerDetail[i].rttMs});return true; }
 }
 
 #ifdef _DEBUG
@@ -253,7 +309,7 @@ CWebServer::CWebServer()
 	, m_bSearchAsc()
 	, m_bIsTempDisabled()
 {
-	M2AModuleHandle streamBinding = M2A_BIND_W8_4974C0F316(M2AParentPort{this}); if (!streamBinding) return; M2AModuleHandle liveTransferBinding = M2A_BIND_W9_52CC9DEBDD(M2AParentPort{this}); if (!liveTransferBinding) return; M2AModuleHandle liveSearchBinding = M2A_BIND_W9_3B359EBB1A(M2AParentPort{this}); if (!liveSearchBinding) return; M2AModuleHandle serverListBinding = M2A_BIND_W3_F05B56128F(M2AParentPort{this}); if (!serverListBinding) return; CIni ini(thePrefs.GetConfigFile(), _T("WebServer"));
+	M2AModuleHandle streamBinding = M2A_BIND_W8_4974C0F316(M2AParentPort{this}); if (!streamBinding) return; M2AModuleHandle liveTransferBinding = M2A_BIND_W9_52CC9DEBDD(M2AParentPort{this}); if (!liveTransferBinding) return; M2AModuleHandle liveSearchBinding = M2A_BIND_W9_3B359EBB1A(M2AParentPort{this}); if (!liveSearchBinding) return; M2AModuleHandle w10SettingsBinding = M2A_BIND_W10_E9722EA045(M2AParentPort{this}); if (!w10SettingsBinding) return; M2AModuleHandle w10DiagnosticsBinding = M2A_BIND_W10_47570D3256(M2AParentPort{this}); if (!w10DiagnosticsBinding) return; M2AModuleHandle serverListBinding = M2A_BIND_W3_F05B56128F(M2AParentPort{this}); if (!serverListBinding) return; CIni ini(thePrefs.GetConfigFile(), _T("WebServer"));
 	ini.SerGet(true, WSdownloadColumnHidden, _countof(WSdownloadColumnHidden), _T("downloadColumnHidden"));
 	ini.SerGet(true, WSuploadColumnHidden, _countof(WSuploadColumnHidden), _T("uploadColumnHidden"));
 	ini.SerGet(true, WSqueueColumnHidden, _countof(WSqueueColumnHidden), _T("queueColumnHidden"));
@@ -294,7 +350,7 @@ CWebServer::~CWebServer()
 	ini.WriteInt(_T("SharedSort"), m_Params.SharedSort);
 	if (m_bServerWorking)
 		StopSockets();
-	M2A_UNBIND_W9_52CC9DEBDD(M2AParentPort{this}); M2A_UNBIND_W9_3B359EBB1A(M2AParentPort{this}); M2A_UNBIND_W8_4974C0F316(M2AParentPort{this}); M2A_UNBIND_W8_E988965D5A(M2AParentPort{this}); M2A_UNBIND_W1_EC6846B80E(M2AParentPort{this}); M2A_UNBIND_W2_9330EBAD15(M2AParentPort{this}); M2A_UNBIND_W2_071B3D442B(M2AParentPort{this}); M2A_UNBIND_W3_F05B56128F(M2AParentPort{this}); M2A_UNBIND_W4_AD763A5EE0(M2AParentPort{this}); M2A_UNBIND_W5_095B87253F(M2AParentPort{this}); M2A_UNBIND_W6_64C04005E2(M2AParentPort{this}); M2A_UNBIND_W6_B161DA740E(M2AParentPort{this});
+	M2A_UNBIND_W10_E9722EA045(M2AParentPort{this}); M2A_UNBIND_W10_47570D3256(M2AParentPort{this}); M2A_UNBIND_W9_52CC9DEBDD(M2AParentPort{this}); M2A_UNBIND_W9_3B359EBB1A(M2AParentPort{this}); M2A_UNBIND_W8_4974C0F316(M2AParentPort{this}); M2A_UNBIND_W8_E988965D5A(M2AParentPort{this}); M2A_UNBIND_W1_EC6846B80E(M2AParentPort{this}); M2A_UNBIND_W2_9330EBAD15(M2AParentPort{this}); M2A_UNBIND_W2_071B3D442B(M2AParentPort{this}); M2A_UNBIND_W3_F05B56128F(M2AParentPort{this}); M2A_UNBIND_W4_AD763A5EE0(M2AParentPort{this}); M2A_UNBIND_W5_095B87253F(M2AParentPort{this}); M2A_UNBIND_W6_64C04005E2(M2AParentPort{this}); M2A_UNBIND_W6_B161DA740E(M2AParentPort{this});
 }
 
 void CWebServer::_SaveWIConfigArray(BOOL *array, int size, LPCTSTR key)
@@ -399,7 +455,7 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 	}
 	if (!RunWebClassicRequestCharacterizationSelfTest()) { outFailure = _T("web request dispatch route table changed"); return false; } if (!RunWebTemplateCharacterizationSelfTest() || !RunWebPageChromeCharacterizationSelfTest()) { outFailure = _T("web template/header rendering changed"); return false; } if (!RunWebServerPageCharacterizationSelfTest()) { outFailure = _T("web server-list rendering changed"); return false; } if (!RunWebTransferProjectionCharacterizationSelfTest()) { outFailure = _T("web transfer projection changed"); return false; } if (!RunWebTransferActionsCharacterizationSelfTest()) { outFailure = _T("web transfer actions changed"); return false; } if (!RunWebSearchProjectionCharacterizationSelfTest()) { outFailure = _T("web search projection changed"); return false; } if (!RunWebSharedFilesControllerCharacterizationSelfTest()) { outFailure = _T("web shared-files projection changed"); return false; } const ese::web::WebSharedComparison sharedCompatibility{0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}; const ese::web::WebSharedRowProjection sharedProjection = ese::web::WebSharedController::ProjectRow(false, ese::web::WebSharedPriority::Normal, false, 1024, 1, 1, 1); if (ese::web::WebSharedController::Compare(2, false, sharedCompatibility) != -1 || std::string(sharedProjection.priority_token) != "Normal" || !sharedProjection.downloadable || sharedProjection.complete_sources != "1") { outFailure = _T("web shared policy compatibility changed"); return false; }
 	std::string serializerFailure;
-	std::string w8Failure; const CString w8Unicode(_T("\x0416")); if (W8Text(W8Utf8(w8Unicode)) != w8Unicode) { outFailure = _T("web Live API UTF-8 boundary changed"); return false; } std::string w8Wire, w8Ui, w8Encoded; W8Assign(_T("A b!"),w8Wire,w8Ui,&w8Encoded); if(w8Wire!="A b!" || w8Ui!="A b!" || w8Encoded!="A+b%21") { outFailure = _T("web Live API legacy wire boundary changed"); return false; } if (!RunW8LiveStreamCharacterizationSelfTest(w8Failure) || !ese::web::RunW8LiveStatusCharacterizationSelfTest(w8Failure) || !RunW9LiveTransferCharacterizationSelfTest(w8Failure) || !ese::web::RunW9LiveSearchCharacterizationSelfTest(w8Failure)) { outFailure = OptUtf8ToStr(w8Failure.data(), static_cast<int>(w8Failure.size())); return false; }
+	std::string w8Failure; const CString w8Unicode(_T("\x0416")); if (W8Text(W8Utf8(w8Unicode)) != w8Unicode || W10Text(W8Utf8(w8Unicode)) != w8Unicode) { outFailure = _T("web Live API UTF-8 boundary changed"); return false; } std::string w8Wire, w8Ui, w8Encoded; W8Assign(_T("A b!"),w8Wire,w8Ui,&w8Encoded); if(w8Wire!="A b!" || w8Ui!="A b!" || w8Encoded!="A+b%21") { outFailure = _T("web Live API legacy wire boundary changed"); return false; } if (!RunW8LiveStreamCharacterizationSelfTest(w8Failure) || !ese::web::RunW8LiveStatusCharacterizationSelfTest(w8Failure) || !RunW9LiveTransferCharacterizationSelfTest(w8Failure) || !ese::web::RunW9LiveSearchCharacterizationSelfTest(w8Failure) || !RunW10LiveSettingsCharacterizationSelfTest(w8Failure) || !ese::web::RunW10LiveDiagnosticsCharacterizationSelfTest(w8Failure)) { outFailure = OptUtf8ToStr(w8Failure.data(), static_cast<int>(w8Failure.size())); return false; }
 	if (!ese::web::RunWebApiSerializerSelfTest(serializerFailure)) {
 		outFailure = OptUtf8ToStr(
 			serializerFailure.data(),
@@ -1211,7 +1267,6 @@ int CWebServer::_GetLastUserCat(const ThreadData &Data, long lSession)
 
 
 
-static CStringA EseJsonEscapeA(const CStringA& input) { const std::string value((LPCSTR)input,input.GetLength()); const std::string escaped=ese::web::EscapeJson(value); return CStringA(escaped.data(),static_cast<int>(escaped.size())); }
 static CStringA W8JsonA(const CStringA& input) { const std::string escaped = W8EscapeJson(std::string((LPCSTR)input, input.GetLength())); return CStringA(escaped.data(), static_cast<int>(escaped.size())); }
 static CStringA W8KeyA(const uchar* key) { std::array<unsigned char, 16> value; memcpy(value.data(), key, value.size()); const std::string encoded = W8EncodeKey16(value); return CStringA(encoded.data(), static_cast<int>(encoded.size())); }
 
@@ -1301,6 +1356,14 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	if(hasTransfer){W9TransferContext context{&pThis->m_authPolicy,NULL};W9LiveTransferPort port{&context,W9TransferContext::Now,W9TransferContext::Rate,W9TransferContext::ParseIPv4,W9TransferContext::Read,W9TransferContext::Network,W9TransferContext::Rendezvous,W9TransferContext::Keepalive,W9TransferContext::Relay,W9TransferContext::RelayConnect,W9TransferContext::HolePunch};W9LiveTransferResponse response;if(RunW9LiveTransferApi(transfer,port,response)){W8StatusContext::Send(Data.pSocket,W9BuildLiveTransferHeader(response),response.body);return;}}
 	ese::web::W9SearchRequest search; bool hasSearch=false; switch(Data.webRoute){case ese::web::WebRouteId::ApiDebugSourceResolutions:search.operation=ese::web::W9SearchOperation::SourceResolutions;search.loopback=Data.inadr.S_un.S_addr==htonl(INADDR_LOOPBACK);search.after=W8Legacy(_ParseURL(Data.sURL,_T("after")));hasSearch=true;break;case ese::web::WebRouteId::ApiLivePrivacySubscriptions:search.operation=ese::web::W9SearchOperation::PrivacySubscriptions;search.add=W8Legacy(_ParseURL(Data.sURL,_T("add")));search.remove=W8Legacy(_ParseURL(Data.sURL,_T("remove")));search.name=W8Legacy(_ParseURL(Data.sURL,_T("name")));hasSearch=true;break;case ese::web::WebRouteId::ApiLivePrivacyTunnelSearch:{search.operation=ese::web::W9SearchOperation::TunnelSearch;CStringA keyword(_ParseURL(Data.sURL,_T("keyword")));if(!keyword.IsEmpty())keyword.MakeLower();search.keyword=W9Bytes(keyword);search.keyword_lowered=true;hasSearch=true;break;}case ese::web::WebRouteId::ApiLiveDiagnose:search.operation=ese::web::W9SearchOperation::Diagnose;search.key=W8Legacy(_ParseURL(Data.sURL,_T("key")));hasSearch=true;break;case ese::web::WebRouteId::ApiLiveKadStreams:search.operation=ese::web::W9SearchOperation::KadStreams;hasSearch=true;break;default:break;}
 	if(hasSearch){ese::web::W9SearchPort port{nullptr,W9SearchContext::Now,W9SearchContext::Sources,W9SearchContext::Add,W9SearchContext::Remove,W9SearchContext::List,W9SearchContext::Tunnel,W9SearchContext::Diagnose,W9SearchContext::Refresh,W9SearchContext::Streams};ese::web::W9SearchResponse response;if(ese::web::RunW9LiveSearchApi(search,port,response)){W8StatusContext::Send(Data.pSocket,response.header,response.body);return;}}
+	// W10 owns settings and diagnostics below the unchanged common auth/CSRF/role gate.
+	W10SettingsRequest settings;bool hasSettings=false;switch(Data.webRoute){case ese::web::WebRouteId::ApiEseV9:settings.operation=W10SettingsOperation::EseV9;settings.on=W8Legacy(_ParseURL(Data.sURL,_T("on")));hasSettings=true;break;case ese::web::WebRouteId::ApiLivePrivacy:settings.operation=W10SettingsOperation::Privacy;settings.mode=W8Legacy(_ParseURL(Data.sURL,_T("mode")));settings.fallback=W8Legacy(_ParseURL(Data.sURL,_T("fallback")));settings.add_sensitive=W8Utf8(_ParseURL(Data.sURL,_T("add_sensitive")));settings.rm_sensitive=W8Utf8(_ParseURL(Data.sURL,_T("rm_sensitive")));hasSettings=true;break;
+#ifdef ESE_TEST_HOOKS
+	case ese::web::WebRouteId::ApiLiveEdgeSabotage:settings.operation=W10SettingsOperation::EdgeSabotage;settings.loopback=Data.inadr.S_un.S_addr==htonl(INADDR_LOOPBACK);settings.on=W8Legacy(_ParseURL(Data.sURL,_T("on")));settings.mode=W8Legacy(_ParseURL(Data.sURL,_T("mode")));settings.delay=W8Legacy(_ParseURL(Data.sURL,_T("delay")));hasSettings=true;break;
+#endif
+	default:break;}if(hasSettings){const W10SettingsPort port=W10SettingsContext::Port();W10SettingsResponse response;if(RunW10LiveSettingsApi(settings,port,response)){W8StatusContext::Send(Data.pSocket,response.header,response.body);return;}}
+	ese::web::W10DiagnosticsRequest diagnostics;bool hasDiagnostics=false;switch(Data.webRoute){case ese::web::WebRouteId::ApiKrpStatus:diagnostics.operation=ese::web::W10DiagnosticsOperation::KrpStatus;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLivePreflight:diagnostics.operation=ese::web::W10DiagnosticsOperation::Preflight;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveMetrics:diagnostics.operation=ese::web::W10DiagnosticsOperation::Metrics;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveLog:diagnostics.operation=ese::web::W10DiagnosticsOperation::Log;diagnostics.log_n=_ttoi(_ParseURL(Data.sURL,_T("n")));hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveDebug:diagnostics.operation=ese::web::W10DiagnosticsOperation::Debug;hasDiagnostics=true;break;default:break;}
+	if(hasDiagnostics){W10DiagnosticsContext context;const ese::web::W10DiagnosticsPort port{&context,W10DiagnosticsContext::Krp,W10DiagnosticsContext::Preflight,W10DiagnosticsContext::Metrics,W10DiagnosticsContext::Percentiles,W10DiagnosticsContext::Mean,W10DiagnosticsContext::Samples,W10DiagnosticsContext::Kad6,W10DiagnosticsContext::Log,W10DiagnosticsContext::Debug};ese::web::W10DiagnosticsResponse response;if(ese::web::RunW10LiveDiagnosticsApi(diagnostics,port,response)){W8StatusContext::Send(Data.pSocket,response.header,response.body);return;}}
 
 	// --- /hls/<file> --- Sprint 5: serve HLS files directly from C++ WebServer.
 	// Mirrors what Node.js channel_api.js does at port 8080. Lets the dashboard
@@ -1414,120 +1477,6 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
-	// --- /api/ese/v9[?on=0|1] --- NetLab status + immediate cohort kill switch.
-	// A GET without "on" is read-only. Enabling restores only levels already
-	// accepted in the native notices. "on=0" atomically closes every lab level.
-	if (Data.webRoute == ese::web::WebRouteId::ApiEseV9) {
-		const CString onArg = _ParseURL(Data.sURL, _T("on"));
-		bool ok = true;
-		bool changed = false;
-		const char* error = "";
-		if (!onArg.IsEmpty()) {
-			changed = true;
-			if (onArg == _T("0")) {
-				thePrefs.ApplyEseNetLabPreferenceState(false);
-				RefreshEseV9PreviewCaps();
-				CKadKeepalive::Instance().RequestStop();
-				// The stable Kad6 public-exit gate is an independent operator
-				// choice, not a NetLab level. Revocation closes beta exit via
-				// ApplyEseNetLabPreferenceState(false) and leaves stable Kad6
-				// untouched.
-			} else if (onArg == _T("1")) {
-				if (thePrefs.GetEseNetLabConsent() != CPreferences::EseNetLabAccepted) {
-					ok = false;
-					error = "explicit_consent_required";
-				} else {
-					thePrefs.ApplyEseNetLabPreferenceState(true);
-					RefreshEseV9PreviewCaps();
-					CKadKeepalive::Instance().RequestStart();
-				}
-			} else {
-				ok = false;
-				error = "invalid_on_value";
-			}
-			// A cohort kill switch must survive a crash or forced restart, not
-			// merely the next graceful OnClose. Persist the single master gate
-			// before replying. Startup normalizes every derived NetLab flag from
-			// this value, so a crash after this write still restarts fail-closed.
-			// Avoid the full Save() path on revocation: it serializes unrelated
-			// preferences and statistics and can make an emergency stop miss its
-			// bounded response time. Reactivation still persists the complete
-			// accepted state.
-			if (ok && onArg == _T("0")) {
-				CIni ini(CPreferences::GetConfigFile(), _T("eMule"));
-				ini.WriteBool(_T("EseNetLabEnabled"), false, _T("eSE"));
-				if (ini.GetBool(_T("EseNetLabEnabled"), true, _T("eSE"))) {
-					ok = false;
-					error = "persist_failed";
-				}
-			} else if (ok && CPreferences::Save()) {
-				ok = false;
-				error = "persist_failed";
-			}
-			if (theApp.emuledlg != NULL
-				&& ::IsWindow(theApp.emuledlg->GetSafeHwnd()))
-				::PostMessage(theApp.emuledlg->GetSafeHwnd(),
-					UM_KRP_CLIENT_EVENT, 0, 0);
-		}
-		const char* consent =
-			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
-			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided";
-		const char* advancedConsent =
-			thePrefs.GetEseNetLabAdvancedConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
-			thePrefs.GetEseNetLabAdvancedConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided";
-		const char* contributionConsent =
-			thePrefs.GetEseNetLabContributionConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
-			thePrefs.GetEseNetLabContributionConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided";
-		CStringA json;
-		json.Format("{\"success\":%s,\"changed\":%s,\"error\":\"%s\","
-			"\"netlab\":{\"consent\":\"%s\",\"advanced_consent\":\"%s\","
-			"\"contribution_consent\":\"%s\",\"enabled\":%s,\"capability_advertised\":%s,"
-			"\"base\":{\"ipv6_auto\":%s,\"mappings\":true,\"hole_punch\":%s,\"auto_keepalive\":%s},"
-			"\"staged\":{\"selector\":%s,\"port_predict\":%s,\"ed2k_punch3\":%s,\"kad3_rendezvous\":%s},"
-			"\"independent\":{\"relay_accept\":%s,\"relay_egress\":%s,\"krp\":%s,"
-			"\"kad6_beta_exit\":%s,\"kad6_stable_public_exit\":%s},"
-			"\"keepalive_running\":%s},"
-			"\"v9\":{\"experimental\":%s,"
-			"\"port_predict\":%s,\"ed2k_punch3\":%s,\"kad3_rendezvous\":%s,"
-			"\"keepalive_running\":%s,\"hole_punch_master\":%s},"
-			"\"reach_connects\":{\"direct\":%u,\"punch2\":%u,\"punch3\":%u,\"relay\":%u}}",
-			ok ? "true" : "false",
-			changed ? "true" : "false",
-			error,
-			consent,
-			advancedConsent,
-			contributionConsent,
-			thePrefs.IsEseNetLabActive() ? "true" : "false",
-			(g_uEseCapsRuntime & ESE_CAP_NETLAB_V1) != 0 ? "true" : "false",
-			thePrefs.IsIPv6Enabled() ? "true" : "false",
-			thePrefs.GetUtpHolePunchEnabled() ? "true" : "false",
-			thePrefs.GetEseAutoKeepalive() ? "true" : "false",
-			thePrefs.GetEseReachSelector() ? "true" : "false",
-			thePrefs.GetEseHolePunchPortPredict() ? "true" : "false",
-			thePrefs.GetEseEd2kPunch3() ? "true" : "false",
-			thePrefs.GetEseKad3Rendezvous() ? "true" : "false",
-			thePrefs.GetEseRelayAccept() ? "true" : "false",
-			thePrefs.GetEseRelayEgress() ? "true" : "false",
-			thePrefs.GetKrpRelayEnabled() ? "true" : "false",
-			thePrefs.GetKad6BetaExitOptIn() ? "true" : "false",
-			thePrefs.GetKad6PublicExitOptIn() ? "true" : "false",
-			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
-			thePrefs.GetEseV9Experimental() ? "true" : "false",
-			thePrefs.GetEseHolePunchPortPredict() ? "true" : "false",
-			thePrefs.GetEseEd2kPunch3() ? "true" : "false",
-			thePrefs.GetEseKad3Rendezvous() ? "true" : "false",
-			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
-			thePrefs.GetUtpHolePunchEnabled() ? "true" : "false",
-			(unsigned)CStatistics::m_dwReachConnDirect, (unsigned)CStatistics::m_dwReachConnPunch2,
-			(unsigned)CStatistics::m_dwReachConnPunch3, (unsigned)CStatistics::m_dwReachConnRelay);
-		CStringA hdr;
-		hdr.Format("HTTP/1.1 %s\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n",
-			ok ? "200 OK" : "409 Conflict", json.GetLength());
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
 	// Local, sanitized cohort report. It deliberately contains no address,
 	// node ID, peer identifier, filename, stream key or central upload hook.
 	if (Data.webRoute == ese::web::WebRouteId::ApiEseNetlabReport) {
@@ -1583,107 +1532,6 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		hdr.Format("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n",
 			json.GetLength());
 		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// P3 KRP status is deliberately read-only and separate from /api/relay/*,
-	// which belongs to the older Live/Buddy relay. The JSON is a mutex-protected
-	// main-thread snapshot and contains no endpoint, certificate, identity or payload.
-	if (Data.webRoute == ese::web::WebRouteId::ApiKrpStatus) {
-		CStringA json;
-		if (theApp.relayclient != NULL)
-			theApp.relayclient->GetStatusJson(json);
-		else
-			json = "{\"enabled\":false,\"kill_switch\":false,\"display\":\"Low ID\",\"carrier\":\"Disabled\"}";
-		CStringA hdr;
-		hdr.Format(
-			"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-			"Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"
-			"Content-Length: %d\r\n\r\n", json.GetLength());
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/live/preflight --- Read-only health check before broadcasting.
-	// Returns the four conditions that determine whether broadcasting will work:
-	//   1. kad_connected   — your stream metadata can reach the DHT
-	//   2. high_id         — viewers can open a TCP socket to your port
-	//   3. upload_ok       — your max upload exceeds bitrate × 1.5 (per viewer)
-	//   4. ffmpeg_found    — RTMPIngest can launch the encoder
-	// The web UI uses this to gate the START button and explain failures.
-	if (Data.webRoute == ese::web::WebRouteId::ApiLivePreflight) {
-		bool kadConn = Kademlia::CKademlia::IsConnected();
-		// Tier 1.5: differentiate between "firewall test completed and we ARE
-		// firewalled" vs "test still running, don't know yet". This avoids
-		// the pre-flight panel flashing a red ❌ during the first 30-90 s of
-		// Kad's startup when the tester hasn't reported yet.
-		bool fwVerified = Kademlia::CUDPFirewallTester::IsVerified();
-		bool kadFw   = theApp.IsFirewalled();
-		bool ed2kFw  = !theApp.HasVerifiedEd2kHighId();
-		bool highId  = !ed2kFw;
-		bool fwChecking = !fwVerified && kadConn && ed2kFw;  // still measuring
-		uint32 maxUpKBs = thePrefs.GetMaxUpload();   // KB/s, 0 = unlimited
-		uint16 port = theApp.GetAdvertisedTcpPort();
-		uint32 pubIP = theApp.GetPublicIP();
-		CString ffPath = CRTMPIngest::FindFFmpeg();
-		bool ffmpegFound = (GetFileAttributes(ffPath) != INVALID_FILE_ATTRIBUTES);
-
-		CStringA pubIpA;
-		if (pubIP != 0)
-			pubIpA = (LPCSTR)CT2A(ipstr(pubIP));
-		else
-			pubIpA = "";
-
-		// v0.71 IPv6 — surface the in-band detected public v6 address
-		// (OP_PUBLICIP_ANSWER_V6 / CFirewallProberV6) so the eSE web UI can show
-		// and link it WITHOUT querying any third-party echo service. Empty until
-		// a peer has observed and reported our v6 address.
-		CStringA pubIp6A = "";
-		try {
-			CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
-			if (!v6.IsNull())
-				pubIp6A = CStringA(v6.ToStringC());
-		} catch (...) { /* a health endpoint must never throw */ }
-
-		CStringA ffPathA = (LPCSTR)CT2A(ffPath);
-		ffPathA = W8JsonA(ffPathA);
-
-		CStringA json;
-		json.Format(
-			"{\"kad_connected\":%s,"
-			"\"high_id\":%s,"
-			"\"kad_firewalled\":%s,"
-			"\"ed2k_lowid\":%s,"
-			"\"firewall_checking\":%s,"
-			"\"max_upload_kbs\":%u,"
-			"\"port\":%u,"
-			"\"public_ip\":\"%s\","
-			"\"public_ip_v6\":\"%s\","
-			"\"ffmpeg_found\":%s,"
-			"\"ffmpeg_path\":\"%s\","
-			"\"ready\":%s}",
-			kadConn ? "true" : "false",
-			highId ? "true" : "false",
-			kadFw ? "true" : "false",
-			ed2kFw ? "true" : "false",
-			fwChecking ? "true" : "false",
-			(unsigned)maxUpKBs, (unsigned)port,
-			(LPCSTR)pubIpA,
-			(LPCSTR)pubIp6A,
-			ffmpegFound ? "true" : "false",
-			(LPCSTR)ffPathA,
-			(kadConn && highId && ffmpegFound) ? "true" : "false");
-
-		CStringA header;
-		header.Format(
-			"HTTP/1.1 200 OK\r\n"
-			HTTPInit
-			"Content-Type: application/json\r\n"
-			"Content-Length: %d\r\n\r\n",
-			json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
 		Data.pSocket->SendData(json, json.GetLength());
 		return;
 	}
@@ -2159,483 +2007,6 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		CStringA header;
 		header.Format("HTTP/1.1 200 OK\r\n" HTTPInit
 			"Content-Type: application/json\r\nCache-Control: no-store\r\n"
-			"Content-Length: %d\r\n\r\n", json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/live/privacy --- F5: expose Kad v2 mode + fallback policy + sensitive keywords.
-	// GET: returns current state. PATCH (via query params): updates state.
-	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacy) {
-		using Kademlia::CKadV2ModeSelector;
-		using Kademlia::CKadV2Mode;
-		auto& sel = CKadV2ModeSelector::Get();
-		const CString modeArg     = _ParseURL(Data.sURL, _T("mode"));        // direct|tunneled|adaptive
-		const CString fallbackArg = _ParseURL(Data.sURL, _T("fallback"));    // strict|balanced|best_effort
-		const CString addSens     = _ParseURL(Data.sURL, _T("add_sensitive"));
-		const CString rmSens      = _ParseURL(Data.sURL, _T("rm_sensitive"));
-		if (!modeArg.IsEmpty()) {
-			if      (modeArg == _T("direct"))    sel.SetDefaultMode(CKadV2Mode::Direct);
-			else if (modeArg == _T("tunneled"))  sel.SetDefaultMode(CKadV2Mode::Tunneled);
-			else if (modeArg == _T("adaptive"))  sel.SetDefaultMode(CKadV2Mode::Adaptive);
-		}
-		if (!fallbackArg.IsEmpty()) {
-			if      (fallbackArg == _T("strict"))      sel.SetFallbackPolicy(CKadV2ModeSelector::STRICT_PRIVACY);
-			else if (fallbackArg == _T("balanced"))    sel.SetFallbackPolicy(CKadV2ModeSelector::BALANCED);
-			else if (fallbackArg == _T("best_effort")) sel.SetFallbackPolicy(CKadV2ModeSelector::BEST_EFFORT);
-		}
-		if (!addSens.IsEmpty()) sel.AddSensitiveKeyword((LPCWSTR)addSens);
-		if (!rmSens.IsEmpty())  sel.RemoveSensitiveKeyword((LPCWSTR)rmSens);
-
-		// D2 (Sprint D): mirror any change into the persisted prefs so the mode
-		// survives restart. The selector update above already takes effect THIS
-		// session (ShouldRouteThroughTunnel -> sel.Decide). We only set the pref
-		// members here (cheap; the main thread reads them at startup-seed /
-		// exit-save, not concurrently) — we do NOT call thePrefs.Save() from this
-		// webserver WORKER thread (file I/O + project_ese_live_api_threadsafety);
-		// persistence lands on eMule's normal exit-time Save().
-		if (!modeArg.IsEmpty() || !fallbackArg.IsEmpty() || !addSens.IsEmpty() || !rmSens.IsEmpty()) {
-			thePrefs.SetKadV2PrivacyMode((int)sel.GetDefaultMode());
-			thePrefs.SetKadV2FallbackPolicy((int)sel.GetFallbackPolicy());
-			std::vector<CStringW> persistKws;
-			sel.GetSensitiveKeywords(persistKws);
-			CString joined;
-			for (size_t i = 0; i < persistKws.size(); ++i) {
-				CString k(persistKws[i]);
-				k.Replace(_T("|"), _T(" "));   // keep the '|' delimiter lossless
-				if (!joined.IsEmpty()) joined += _T("|");
-				joined += k;
-			}
-			thePrefs.SetKadV2SensitiveKeywords(joined);
-		}
-
-		const char* modeStr =
-			sel.GetDefaultMode() == CKadV2Mode::Direct    ? "direct"   :
-			sel.GetDefaultMode() == CKadV2Mode::Tunneled  ? "tunneled" : "adaptive";
-		const char* fbStr =
-			sel.GetFallbackPolicy() == CKadV2ModeSelector::STRICT_PRIVACY ? "strict"   :
-			sel.GetFallbackPolicy() == CKadV2ModeSelector::BEST_EFFORT     ? "best_effort" : "balanced";
-		std::vector<CStringW> kws;
-		sel.GetSensitiveKeywords(kws);
-		CStringA kwJson;
-		for (size_t i = 0; i < kws.size(); ++i) {
-			if (i > 0) kwJson += ",";
-			kwJson += "\"";
-			kwJson += EseJsonEscapeA(CStringA(kws[i]));
-			kwJson += "\"";
-		}
-
-		// v0.71 P1.1 — runtime metrics. Each value is read from the live
-		// singletons so the user can see what's actually happening, not
-		// just what the settings say. Empty / zero values are an honest
-		// signal that the module exists but isn't doing work yet (eg.
-		// circuits=0 with mode=tunneled means the TCP-send path in F5 P3
-		// isn't wired yet — the user knows where they stand).
-		size_t circuitsActive = 0;
-		size_t circuitsPending = 0;   // v0.71 P3.8 — visible Pending state
-		size_t tunnelPoolSize = 0;
-		size_t subscriptionCount = 0;
-		uint32 capsRuntime = g_uEseCapsRuntime;
-		CStringA proberV6Str = "";
-		// v8.1 D8-web - tunnel byte/cell/RTT telemetry (mirrors the MFC Network Info panel).
-		// Read-only scalar getters; safe to call from the webserver worker (same pattern as
-		// ActiveCircuitCount below — a momentary torn read just yields a slightly stale count).
-		uint64_t cellsSent = 0, cellsRecv = 0, bytesSent = 0, bytesRecv = 0;
-		uint32 meanRttMs = 0;
-		bool kad6CircuitActive = false;
-		try {
-			eSELive::CLiveTunnel& tunnel = eSELive::CLiveTunnel::Get();
-			circuitsActive    = tunnel.ActiveCircuitCount();
-			circuitsPending   = tunnel.PendingCircuitCount();
-			tunnelPoolSize    = Kademlia::CKadV2TunnelPool::Get().Size();
-			subscriptionCount = eSELive::CLiveSubscriptionStore::Get().Count();
-			CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
-			if (!v6.IsNull()) proberV6Str = CStringA(v6.ToStringC());
-			kad6CircuitActive = tunnel.HasActiveCircuitWithExitCaps(ESE_CAP_KAD6);
-			cellsSent  = tunnel.CellsSentTotal();   // v8.1 D8-web
-			cellsRecv  = tunnel.CellsRecvTotal();
-			bytesSent  = tunnel.BytesSentTotal();
-			bytesRecv  = tunnel.BytesRecvTotal();
-			meanRttMs  = tunnel.MeanRttMs();
-		} catch (...) {
-			// keep zeros; this endpoint must never throw
-		}
-		const bool kad6Preferred = sel.GetDefaultMode() != CKadV2Mode::Direct;
-		const char* routeState = !kad6Preferred ? "kad2_direct" :
-			kad6CircuitActive ? "kad6" :
-			circuitsActive != 0 ? "tunnel_kad2_compat" :
-			sel.GetFallbackPolicy() == CKadV2ModeSelector::STRICT_PRIVACY
-				? "blocked_waiting_kad6" : "kad2_fallback";
-
-		// Build the human-readable caps array cleanly (no printf comma games).
-		CStringA capsArr;
-		auto appendCap = [&capsArr](const char* name) {
-		    if (!capsArr.IsEmpty()) capsArr += ",";
-		    capsArr += "\""; capsArr += name; capsArr += "\"";
-		};
-		if (capsRuntime & ESE_CAP_M1_SUBSCRIBER_PIN)   appendCap("M1_subscriber_pin");
-		if (capsRuntime & ESE_CAP_M2_COMPOSITE_KEYS)   appendCap("M2_composite_keys");
-		if (capsRuntime & ESE_CAP_M3_SHARDING)         appendCap("M3_sharding");
-		if (capsRuntime & ESE_CAP_M4_TRIGRAMS)         appendCap("M4_trigrams");
-		if (capsRuntime & ESE_CAP_M5_BLOOM_GOSSIP)     appendCap("M5_bloom_gossip");
-		if (capsRuntime & ESE_CAP_M6_K_EFFECTIVE)      appendCap("M6_k_effective");
-		if (capsRuntime & ESE_CAP_PRIVACY_TUNNELING)   appendCap("privacy_tunneling");
-		if (capsRuntime & ESE_CAP_SEALED_RECORDS)      appendCap("sealed_records");
-		if (capsRuntime & ESE_CAP_GOSSIP_PROTOCOL)     appendCap("gossip_protocol");
-		if (capsRuntime & ESE_CAP_COVER_TRAFFIC)       appendCap("cover_traffic");
-		if (capsRuntime & ESE_CAP_TUNNEL_AUTH)         appendCap("tunnel_auth");
-		if (capsRuntime & ESE_CAP_KAD6)                appendCap("kad6");
-		if (capsRuntime & ESE_CAP_TUNNEL_STRICT3)      appendCap("tunnel_strict3");
-		if (capsRuntime & ESE_CAP_TUNNEL_SHAPED)       appendCap("tunnel_shaped");
-		if (capsRuntime & ESE_CAP_NETLAB_V1)           appendCap("netlab_v1");
-
-		CStringA json;
-		json.Format(
-		    "{"
-		    "\"mode\":\"%s\","
-		    "\"fallback\":\"%s\","
-		    "\"sensitiveKeywords\":[%s],"
-		    "\"runtime\":{"
-		        "\"capsBits\":\"0x%08X\","
-		        "\"capsHumanReadable\":[%s],"
-		        "\"kad6Preferred\":%s,"
-		        "\"kad6CircuitActive\":%s,"
-		        "\"routeState\":\"%s\","
-		        "\"circuitsActive\":%u,"
-		        "\"circuitsPending\":%u,"
-		        "\"tunnelPoolSize\":%u,"
-		        "\"subscriptionsLoaded\":%u,"
-		        "\"cellsSent\":%I64u,\"cellsRecv\":%I64u,"
-		        "\"bytesSent\":%I64u,\"bytesRecv\":%I64u,"
-		        "\"meanRttMs\":%u,"
-		        "\"publicIPv6\":\"%s\""
-		    "}"
-		    "}",
-		    modeStr, fbStr, (LPCSTR)kwJson,
-		    capsRuntime,
-		    (LPCSTR)capsArr,
-		    kad6Preferred ? "true" : "false",
-		    kad6CircuitActive ? "true" : "false",
-		    routeState,
-		    (unsigned)circuitsActive,
-		    (unsigned)circuitsPending,
-		    (unsigned)tunnelPoolSize,
-		    (unsigned)subscriptionCount,
-		    (unsigned __int64)cellsSent,
-		    (unsigned __int64)cellsRecv,
-		    (unsigned __int64)bytesSent,
-		    (unsigned __int64)bytesRecv,
-		    (unsigned)meanRttMs,
-		    (LPCSTR)proberV6Str);
-		CStringA header;
-		header.Format(
-			"HTTP/1.1 200 OK\r\n"
-			HTTPInit
-			"Content-Type: application/json\r\n"
-			"Content-Length: %d\r\n\r\n",
-			json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/live/metrics --- V2-S04+S05: Prometheus exposition.
-	// Plain text/plain (version=0.0.4) endpoint that Prometheus can scrape.
-	// Exposes counters (chunks received/served/missing, peers by role, kad ops,
-	// disconnects) plus latency percentiles from LatencyHistogram (V2-S05).
-	if (Data.webRoute == ese::web::WebRouteId::ApiLiveMetrics) {
-		CStringA body;
-		LiveDebugSnapshot snap;
-		bool haveSnap = false;
-		if (theApp.liveStreamManager) {
-			snap = theApp.liveStreamManager->BuildDebugSnapshot();
-			haveSnap = true;
-		}
-
-		DWORD p50 = 0, p95 = 0, p99 = 0, mean = 0;
-		int   nLat = 0;
-		if (theApp.liveStreamManager) {
-			theApp.liveStreamManager->ChunkArrivalLatency().Percentiles(p50, p95, p99);
-			mean = theApp.liveStreamManager->ChunkArrivalLatency().Mean();
-			nLat = theApp.liveStreamManager->ChunkArrivalLatency().SampleCount();
-		}
-
-		body.Format(
-			"# HELP esmule_chunks_received_total Total chunks received from peers\n"
-			"# TYPE esmule_chunks_received_total counter\n"
-			"esmule_chunks_received_total %ld\n"
-			"# HELP esmule_chunks_requested_total Chunk requests issued by us\n"
-			"# TYPE esmule_chunks_requested_total counter\n"
-			"esmule_chunks_requested_total %ld\n"
-			"# HELP esmule_chunks_missing_total Chunk timeouts / missing detections\n"
-			"# TYPE esmule_chunks_missing_total counter\n"
-			"esmule_chunks_missing_total %ld\n"
-			"# HELP esmule_chunks_served_total Chunks served to peers (mesh redistribution)\n"
-			"# TYPE esmule_chunks_served_total counter\n"
-			"esmule_chunks_served_total %d\n"
-			"# HELP esmule_kad_publishes_total Total Kad publish operations queued\n"
-			"# TYPE esmule_kad_publishes_total counter\n"
-			"esmule_kad_publishes_total %ld\n"
-			"# HELP esmule_kad_searches_total Total Kad search requests issued\n"
-			"# TYPE esmule_kad_searches_total counter\n"
-			"esmule_kad_searches_total %ld\n"
-			"# HELP esmule_peer_disconnects_total Total peer disconnect events\n"
-			"# TYPE esmule_peer_disconnects_total counter\n"
-			"esmule_peer_disconnects_total %ld\n"
-			"# HELP esmule_active_peers Currently connected peers, by role\n"
-			"# TYPE esmule_active_peers gauge\n"
-			"esmule_active_peers{role=\"viewer\"} %d\n"
-			"esmule_active_peers{role=\"broadcaster\"} %d\n"
-			"esmule_active_peers{role=\"mesh\"} %d\n"
-			"# HELP esmule_chunk_buffer_count Chunks currently held in the ring buffer\n"
-			"# TYPE esmule_chunk_buffer_count gauge\n"
-			"esmule_chunk_buffer_count %d\n"
-			"# HELP esmule_pending_requests Outstanding chunk requests awaiting a peer reply\n"
-			"# TYPE esmule_pending_requests gauge\n"
-			"esmule_pending_requests %d\n"
-			"# HELP esmule_broadcasting Whether this instance is broadcasting (1) or not (0)\n"
-			"# TYPE esmule_broadcasting gauge\n"
-			"esmule_broadcasting %d\n"
-			"# HELP esmule_viewing Whether this instance is viewing a live stream (1/0)\n"
-			"# TYPE esmule_viewing gauge\n"
-			"esmule_viewing %d\n"
-			"# HELP esmule_chunk_latency_ms Chunk arrival latency in ms (broadcaster timestamp -> our recv)\n"
-			"# TYPE esmule_chunk_latency_ms summary\n"
-			"esmule_chunk_latency_ms_count %d\n"
-			"esmule_chunk_latency_ms_sum %lu\n"
-			"esmule_chunk_latency_ms{quantile=\"0.5\"} %lu\n"
-			"esmule_chunk_latency_ms{quantile=\"0.95\"} %lu\n"
-			"esmule_chunk_latency_ms{quantile=\"0.99\"} %lu\n"
-			"# HELP esmule_kad_searches_empty_total Searches that returned 0 hits (DISC-S11)\n"
-			"# TYPE esmule_kad_searches_empty_total counter\n"
-			"esmule_kad_searches_empty_total %ld\n"
-			"# HELP esmule_kad_searches_rate_limited_total Searches dropped by token bucket (DISC-S08)\n"
-			"# TYPE esmule_kad_searches_rate_limited_total counter\n"
-			"esmule_kad_searches_rate_limited_total %ld\n"
-			"# HELP esmule_pending_dials_dropped_total FIFO drops in pending dial queue (DISC-S06)\n"
-			"# TYPE esmule_pending_dials_dropped_total counter\n"
-			"esmule_pending_dials_dropped_total %ld\n"
-			"# HELP esmule_join_to_first_chunk_ms Average ms from JoinStream to first chunk (DISC-S12)\n"
-			"# TYPE esmule_join_to_first_chunk_ms summary\n"
-			"esmule_join_to_first_chunk_ms_count %ld\n"
-			"esmule_join_to_first_chunk_ms_sum %ld\n",
-			haveSnap ? snap.counters.chunksReceived : 0L,
-			haveSnap ? snap.counters.chunksRequested : 0L,
-			haveSnap ? snap.counters.chunksMissing : 0L,
-			haveSnap ? snap.chunksServed : 0,
-			haveSnap ? snap.counters.kadPublishes : 0L,
-			haveSnap ? snap.counters.kadSearches : 0L,
-			haveSnap ? snap.counters.peerDisconnects : 0L,
-			haveSnap ? snap.viewPeers : 0,
-			haveSnap ? snap.broadcastPeers : 0,
-			haveSnap ? snap.meshPeers : 0,
-			haveSnap ? snap.bufCount : 0,
-			haveSnap ? snap.pendingRequests : 0,
-			(haveSnap && snap.broadcasting) ? 1 : 0,
-			(haveSnap && snap.viewing) ? 1 : 0,
-			nLat,
-			(unsigned long)((uint64)mean * (uint64)nLat),
-			(unsigned long)p50,
-			(unsigned long)p95,
-			(unsigned long)p99,
-			haveSnap ? snap.counters.kadSearchesEmpty : 0L,
-			haveSnap ? snap.counters.kadSearchesRateLimited : 0L,
-			haveSnap ? snap.counters.pendingDialsDropped : 0L,
-			haveSnap ? snap.counters.joinToFirstChunkSamples : 0L,
-			haveSnap ? snap.counters.joinToFirstChunkSumMs : 0L);
-		try {
-			const std::string kad6Metrics = eSELive::CLiveTunnel::Get().GetK6PrometheusMetrics();
-			body += CStringA(kad6Metrics.c_str());
-		} catch (...) {}
-
-		CStringA hdr;
-		hdr.Format(
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n"
-			"Cache-Control: no-store\r\n"
-			"Access-Control-Allow-Origin: *\r\n"
-			"Content-Length: %d\r\n\r\n",
-			body.GetLength());
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(body, body.GetLength());
-		return;
-	}
-
-	// --- /api/live/log --- Tail of the in-process live debug log.
-	// Returns JSON {"items":["HH:MM:SS [TAG] msg", ...]} oldest first. Used by
-	// the MFC "Live Stream" tab and the web /live debug panel to surface the
-	// same internal events that previously only went to AddLogLine().
-	// ?n=N selects the last N entries (default 100, max 500).
-	if (Data.webRoute == ese::web::WebRouteId::ApiLiveLog) {
-		int n = _ttoi(_ParseURL(Data.sURL, _T("n")));
-		if (n <= 0) n = 100;
-		if (n > 500) n = 500;
-
-		std::deque<CStringA> items;
-		CLiveDebugLog::Get().GetRecent(n, items);
-
-		ese::web::WebStringArrayResponseModel model;
-		model.field_name = "items";
-		model.values.reserve(items.size());
-		for (const auto& l : items) {
-			model.values.emplace_back(
-				static_cast<LPCSTR>(l),
-				static_cast<std::size_t>(l.GetLength()));
-		}
-		const ese::web::SerializedWebResponse response =
-			ese::web::Serialize(model);
-		const CStringA json(
-			response.body.data(),
-			static_cast<int>(response.body.size()));
-
-		CStringA header;
-		header.Format(
-			"HTTP/1.1 %u %s\r\n"
-			"Content-Type: %s\r\n"
-			"Cache-Control: no-store\r\n"
-			"Access-Control-Allow-Origin: *\r\n"
-			"Content-Length: %d\r\n\r\n",
-			response.status_code,
-			response.reason_phrase.c_str(),
-			response.content_type.c_str(),
-			json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-
-#ifdef ESE_TEST_HOOKS
-	// --- /api/live/test/edge_sabotage?on=1&mode=drop|delay&delay=6000 ---
-	// TEST-ONLY (rogue node R): toggle selective live-edge sabotage in
-	// OnPeerRequest for the 3-PC validation recipe. Compiled ONLY under
-	// ESE_TEST_HOOKS, so the honest/production binary never links this route.
-	// Loopback-only (the generic /api/live/ remote gate above already blocks
-	// non-local callers); no full-trust requirement since it's a local test op.
-	if (Data.webRoute == ese::web::WebRouteId::ApiLiveEdgeSabotage) {
-		extern bool  g_eseTestSabotageOn;
-		extern int   g_eseTestSabotageMode;
-		extern DWORD g_eseTestSabotageDelayMs;
-		CString onT   (_ParseURL(Data.sURL, _T("on")));
-		CString modeT (_ParseURL(Data.sURL, _T("mode")));
-		CString delayT(_ParseURL(Data.sURL, _T("delay")));
-		g_eseTestSabotageOn   = (onT == _T("1"));
-		g_eseTestSabotageMode = (modeT == _T("delay")) ? 1 : 0;
-		int dl = _ttoi(delayT);
-		g_eseTestSabotageDelayMs = (dl > 0) ? (DWORD)dl : 6000;
-		CStringA json;
-		json.Format("{\"ok\":true,\"on\":%s,\"mode\":\"%s\",\"delayMs\":%u}",
-			g_eseTestSabotageOn ? "true" : "false",
-			g_eseTestSabotageMode ? "delay" : "drop",
-			g_eseTestSabotageDelayMs);
-		CStringA header;
-		header.Format(
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: application/json\r\n"
-			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
-			"X-Content-Type-Options: nosniff\r\n"
-			"Content-Length: %d\r\n\r\n",
-			json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-#endif
-
-	// --- /api/live/debug --- Phase 0 Observability (OBS-1)
-	// Fix 1 (ALTA): All state is read via BuildDebugSnapshot() under m_lock.
-	// No direct CMap/CTypedPtrList iteration from the WebServer thread.
-	if (Data.webRoute == ese::web::WebRouteId::ApiLiveDebug) {
-		ese::web::WebLiveDebugDiagnostics debug;
-
-		if (theApp.liveStreamManager != NULL) {
-			LiveDebugSnapshot s = theApp.liveStreamManager->BuildDebugSnapshot();
-			debug.available = true;
-			debug.broadcasting = s.broadcasting;
-			debug.viewing = s.viewing;
-			debug.emergency_mode = s.emergencyMode;
-			debug.uptime_ms = s.uptimeMs;
-			debug.total_redistributed = s.totalRedistributed;
-			debug.now_ms = GetTickCount();
-			debug.kad_connected = s.kad.kadConnected;
-			debug.known_streams = s.kad.knownStreams;
-			debug.known_streams_clean = s.kad.knownStreamsClean;
-			debug.known_streams_legacy = s.kad.knownStreamsLegacy;
-			debug.last_publish_time = s.kad.lastPublishTime;
-			debug.last_search_time = s.kad.lastSearchTime;
-			debug.last_result_time = s.kad.lastResultTime;
-			debug.last_result_ip = s.kad.lastResultIP;
-			debug.last_result_port = s.kad.lastResultPort;
-			debug.view_peers = s.viewPeers;
-			debug.broadcast_peers = s.broadcastPeers;
-			debug.mesh_peers = s.meshPeers;
-			debug.pending_requests = s.pendingRequests;
-			debug.chunks_served = s.chunksServed;
-			debug.super_seeders = s.superSeeders;
-			debug.middle_peers = s.middlePeers;
-			debug.leaf_peers = s.leafPeers;
-			debug.chunk_count = s.bufCount;
-			debug.oldest_sequence = s.oldestSeq;
-			debug.newest_sequence = s.newestSeq;
-			debug.chunk_bitmap = s.bitmap;
-			debug.missing_chunks = s.missingChunks;
-			debug.max_capacity = ESE_LIVE_MAX_SEGMENTS;
-			debug.hls_segments_written = s.counters.hlsSegmentsWritten;
-			debug.hls_playlist_refreshes = s.counters.hlsPlaylistRefresh;
-			debug.last_chunk_received_at =
-				static_cast<std::uint32_t>(
-					s.counters.lastChunkReceivedAt);
-			debug.segment_duration_seconds = ESE_LIVE_SEGMENT_DURATION;
-			debug.kad_publishes = s.counters.kadPublishes;
-			debug.kad_searches = s.counters.kadSearches;
-			debug.kad_results_accepted = s.counters.kadResultsAccepted;
-			debug.kad_results_rejected = s.counters.kadResultsRejected;
-			debug.source_dial_attempts = s.counters.sourceDialAttempts;
-			debug.subscribe_sent = s.counters.subscribeSent;
-			debug.subscribe_accepted = s.counters.subscribeAccepted;
-			debug.chunks_requested = s.counters.chunksRequested;
-			debug.chunks_received = s.counters.chunksReceived;
-			debug.chunks_missing = s.counters.chunksMissing;
-			debug.duplicate_chunks_received =
-				s.counters.duplicateChunksReceived;
-			debug.requests_suppressed_inflight =
-				s.counters.requestsSuppressedInflight;
-			debug.peer_disconnects = s.counters.peerDisconnects;
-			debug.skipped_initial_pushes = s.counters.skippedInitialPushes;
-			debug.subscribes_rate_limited =
-				s.counters.subscribesRateLimited;
-			debug.requests_rate_limited = s.counters.requestsRateLimited;
-			debug.ends_rejected_no_auth = s.counters.endsRejectedNoAuth;
-			debug.tombstones_evicted = s.counters.tombstonesEvicted;
-
-			const int peerCount = (std::max)(
-				0,
-				(std::min)(
-					s.peerDetailCount,
-					LiveDebugSnapshot::MAX_PEER_DBG));
-			debug.peer_detail.reserve(static_cast<std::size_t>(peerCount));
-			for (int index = 0; index < peerCount; ++index) {
-				ese::web::WebLiveDebugPeerDiagnostics peer;
-				peer.ip = s.peerDetail[index].ip;
-				peer.port = s.peerDetail[index].port;
-				peer.level = s.peerDetail[index].level;
-				peer.fail_count = s.peerDetail[index].failCount;
-				peer.response_percent = s.peerDetail[index].respPct;
-				peer.rtt_ms = s.peerDetail[index].rttMs;
-				debug.peer_detail.push_back(peer);
-			}
-		}
-		const std::string body =
-			ese::web::WebDiagnostics::Serialize(debug);
-		const CStringA json(body.data(), static_cast<int>(body.size()));
-
-		CStringA header;
-		header.Format(
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: application/json\r\n"
-			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
-			"X-Content-Type-Options: nosniff\r\n"
 			"Content-Length: %d\r\n\r\n", json.GetLength());
 		Data.pSocket->SendData(header, header.GetLength());
 		Data.pSocket->SendData(json, json.GetLength());

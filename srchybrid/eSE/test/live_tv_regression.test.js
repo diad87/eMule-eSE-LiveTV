@@ -1001,12 +1001,17 @@ test('--selftest verifies signed chunk ingest and returns failure to the caller'
   assert.match(dialog, /if \(!theApp\.m_bSelfTest && theApp\.m_uHeadlessMetricsPort == 0\)[\s\S]{0,80}LaunchEseServer/);
   assert.match(dialog, /Metrics isolation: dashboard auto-spawn skipped \(port=%u\)/);
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
-  const netlabSwitch = web.slice(
-    web.indexOf('if (Data.webRoute == ese::web::WebRouteId::ApiEseV9)'),
-    web.indexOf('// Local, sanitized cohort report'));
-  assert.match(netlabSwitch, /onArg == _T\("0"\)[\s\S]{0,360}WriteBool\(_T\("EseNetLabEnabled"\), false, _T\("eSE"\)\)/);
-  assert.match(netlabSwitch, /GetBool\(_T\("EseNetLabEnabled"\), true, _T\("eSE"\)\)/);
-  assert.match(netlabSwitch, /else if \(ok && CPreferences::Save\(\)\)/);
+  const settingsController = read(repoRoot, 'srchybrid', 'WebLiveApiSettingsController.cpp');
+  const netlabSwitch = settingsController.slice(
+    settingsController.indexOf('W10SettingsOperation::EseV9'),
+    settingsController.indexOf('const bool changed = !request.mode.empty()'));
+  const netlabAdapter = web.slice(
+    web.indexOf('bool W10SettingsContext::PersistDisable'),
+    web.indexOf('struct W10DiagnosticsContext'));
+  assert.match(netlabSwitch, /request\.on == "0"[\s\S]{0,700}persist_disable_and_verify/);
+  assert.match(netlabAdapter, /WriteBool\(_T\("EseNetLabEnabled"\),false,_T\("eSE"\)\)/);
+  assert.match(netlabAdapter, /GetBool\(_T\("EseNetLabEnabled"\),true,_T\("eSE"\)\)/);
+  assert.match(netlabAdapter, /CPreferences::Save\(\)!=0/);
   assert.match(netlabSwitch, /error = "persist_failed"/);
   assert.match(dialog, /AfxBeginThread\(HeadlessActionDelayThread/);
   assert.match(dialog, /PostMessage\(hwnd, UM_LIVE_HEADLESS_ACTION/);

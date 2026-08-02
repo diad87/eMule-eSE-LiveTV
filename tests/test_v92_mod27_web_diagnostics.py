@@ -33,6 +33,9 @@ class Mod27WebDiagnosticsProductionTest(unittest.TestCase):
         cls.search_controller = (
             ROOT / "srchybrid" / "WebLiveApiSearchController.cpp"
         ).read_text(encoding="utf-8")
+        cls.diagnostics_controller = (
+            ROOT / "srchybrid" / "WebLiveApiDiagnosticsController.cpp"
+        ).read_text(encoding="utf-8")
         cls.native_test = (
             ROOT / "srchybrid" / "tests" / "test_web_diagnostics.cpp"
         ).read_text(encoding="utf-8")
@@ -44,13 +47,12 @@ class Mod27WebDiagnosticsProductionTest(unittest.TestCase):
         )
         self.assertEqual(
             self.contract["module"]["routes"],
-            ["/api/status", "/api/live/mesh", "/api/live/debug"],
+            ["/api/status", "/api/live/mesh"],
         )
         self.assertEqual(
             self.contract["module"]["declared_direct_dependencies"],
             [],
         )
-        self.assertEqual(self.contract["bounds"]["peer_detail_max"], 16)
         self.assertEqual(self.contract["privacy"]["remote_user_hash"], None)
         for concrete in (
             "CString",
@@ -90,41 +92,28 @@ class Mod27WebDiagnosticsProductionTest(unittest.TestCase):
         )
         self.assertNotIn("localDiagnosticJson", self.web_server)
 
-    def test_debug_projection_is_bounded_and_wrap_safe(self) -> None:
+    def test_debug_projection_has_moved_to_w10_diagnostics(self) -> None:
         self.assertIn(
-            "return timestamp == 0u ? 0u : now - timestamp",
-            self.source,
+            "W10DiagnosticsOperation::Debug",
+            self.diagnostics_controller,
         )
         self.assertIn(
-            "std::min(model.peer_detail.size(), MaxDebugPeers())",
-            self.source,
+            "RunW10LiveDiagnosticsApi",
+            self.diagnostics_controller,
         )
-        self.assertIn("output += \"\\\\u00\"", self.source)
-        self.assertIn(
-            "LiveDebugSnapshot::MAX_PEER_DBG",
-            self.web_server,
-        )
-        self.assertIn("BuildDebugSnapshot()", self.web_server)
-        self.assertNotIn("lastChunkReceivedAt > 0", self.web_server)
-        self.assertIn(
-            "static_cast<std::uint32_t>(\n"
-            "\t\t\t\t\ts.counters.lastChunkReceivedAt)",
-            self.web_server,
-        )
+        self.assertNotIn("WebLiveDebugDiagnostics", self.header + self.source)
 
     def test_all_route_shapes_are_compared_byte_exactly(self) -> None:
         for message in (
             "local status response remains byte-exact",
             "remote status privacy and nullability remain byte-exact",
             "mesh response remains exact",
-            "unavailable debug response remains byte-exact",
-            "available debug response remains byte-exact",
         ):
             self.assertIn(message, self.native_test)
-        self.assertGreaterEqual(self.native_test.count("=="), 5)
+        self.assertGreaterEqual(self.native_test.count("=="), 3)
 
     def test_diagnostic_routes_keep_serializer_ownership_after_w9_extraction(self) -> None:
-        """W8/W9 delegate their families while MOD-2.7 keeps live/debug."""
+        """W8/W9 delegate their families while MOD-2.7 keeps status/mesh."""
         dispatch_start = self.web_server.index("// W8 dispatch stays below")
         dispatch_end = self.web_server.index("W8LiveStreamRequest request", dispatch_start)
         dispatch = self.web_server[dispatch_start:dispatch_end]
@@ -154,9 +143,10 @@ class Mod27WebDiagnosticsProductionTest(unittest.TestCase):
             self.assertEqual(w9_dispatch.count(f"WebRouteId::{route}"), 1)
         for serializer in ("Sources(n,e)", "Diagnose(!r.key.empty(),valid,s)", "Streams(p,kad,s)"):
             self.assertIn(serializer, self.search_controller)
-        debug_start = self.web_server.index("WebRouteId::ApiLiveDebug")
-        debug_block = self.web_server[debug_start:]
-        self.assertIn("WebDiagnostics::Serialize(debug)", debug_block)
+        self.assertIn(
+            "W10DiagnosticsOperation::Debug",
+            self.diagnostics_controller,
+        )
 
     def test_coordinator_shrinks_from_reviewed_baseline(self) -> None:
         completed = subprocess.run(

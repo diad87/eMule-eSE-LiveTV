@@ -20,8 +20,6 @@ void Check(bool condition, const char* message)
 int main()
 {
 	using ese::web::WebDiagnostics;
-	using ese::web::WebLiveDebugDiagnostics;
-	using ese::web::WebLiveDebugPeerDiagnostics;
 	using ese::web::WebLiveMeshDiagnostics;
 	using ese::web::WebNetworkStatusDiagnostics;
 
@@ -113,103 +111,6 @@ int main()
 			"\"uploadFloor\":8,\"emergencyMode\":true,"
 			"\"source\":\"emule-core\"}",
 		"mesh response remains exact");
-
-	WebLiveDebugDiagnostics unavailable;
-	const std::string unavailableJson =
-		WebDiagnostics::Serialize(unavailable);
-	Check(
-		unavailableJson ==
-			"{\"broadcasting\":false,\"viewing\":false,"
-			"\"emergencyMode\":false,\"uptimeMs\":0,"
-			"\"totalRedistributed\":0,"
-			"\"discovery\":{\"kadConnected\":false,\"knownStreams\":0,"
-			"\"knownStreamsClean\":0,\"knownStreamsLegacy\":0,"
-			"\"lastPublishAgeMs\":0,\"lastSearchAgeMs\":0,"
-			"\"lastResultAgeMs\":0,\"lastResultIP\":0,"
-			"\"lastResultPort\":0},"
-			"\"peers\":{\"viewPeers\":0,\"broadcastPeers\":0,"
-			"\"meshPeers\":0,\"pendingRequests\":0,\"chunksServed\":0,"
-			"\"trustLevels\":{\"superSeeders\":0,\"middle\":0,"
-			"\"leaf\":0}},"
-			"\"chunks\":{\"count\":0,\"oldestSeq\":0,\"newestSeq\":0,"
-			"\"bitmap\":0,\"missing\":0,\"maxCapacity\":15},"
-			"\"hls\":{\"segmentsWritten\":0,\"playlistRefreshes\":0,"
-			"\"lastChunkAgeMs\":0,\"segmentDurationSec\":2},"
-			"\"counters\":{\"kadPublishes\":0,\"kadSearches\":0,"
-			"\"kadResultsAccepted\":0,\"kadResultsRejected\":0,"
-			"\"sourceDialAttempts\":0,\"subscribeSent\":0,"
-			"\"subscribeAccepted\":0,\"chunksRequested\":0,"
-			"\"chunksReceived\":0,\"chunksMissing\":0,"
-			"\"peerDisconnects\":0},"
-			"\"source\":\"emule-core-debug\"}",
-		"unavailable debug response remains byte-exact");
-
-	WebLiveDebugDiagnostics debug;
-	debug.available = true;
-	debug.broadcasting = true;
-	debug.viewing = true;
-	debug.emergency_mode = true;
-	debug.uptime_ms = 9;
-	debug.total_redistributed = 10;
-	debug.now_ms = 4;
-	debug.last_publish_time = 0xfffffffdu;
-	debug.last_search_time = 2;
-	debug.last_result_time = 0;
-	debug.last_result_port = 4662;
-	debug.max_capacity = 15;
-	debug.segment_duration_seconds = 2;
-	debug.last_chunk_received_at = 3;
-	debug.kad_publishes = 11;
-	debug.tombstones_evicted = 12;
-	debug.peer_detail.push_back(WebLiveDebugPeerDiagnostics{
-		"2001:db8::1\"\n", 13, 1, 2, 99, 14});
-	const std::string debugJson = WebDiagnostics::Serialize(debug);
-	Check(
-		debugJson ==
-			"{\"broadcasting\":true,\"viewing\":true,"
-			"\"emergencyMode\":true,\"uptimeMs\":9,"
-			"\"totalRedistributed\":10,"
-			"\"discovery\":{\"kadConnected\":false,\"knownStreams\":0,"
-			"\"knownStreamsClean\":0,\"knownStreamsLegacy\":0,"
-			"\"lastPublishAgeMs\":7,\"lastSearchAgeMs\":2,"
-			"\"lastResultAgeMs\":0,\"lastResultIP\":0,"
-			"\"lastResultPort\":4662},"
-			"\"peers\":{\"viewPeers\":0,\"broadcastPeers\":0,"
-			"\"meshPeers\":0,\"pendingRequests\":0,\"chunksServed\":0,"
-			"\"trustLevels\":{\"superSeeders\":0,\"middle\":0,"
-			"\"leaf\":0}},"
-			"\"chunks\":{\"count\":0,\"oldestSeq\":0,\"newestSeq\":0,"
-			"\"bitmap\":0,\"missing\":0,\"maxCapacity\":15},"
-			"\"hls\":{\"segmentsWritten\":0,\"playlistRefreshes\":0,"
-			"\"lastChunkAgeMs\":1,\"segmentDurationSec\":2},"
-			"\"counters\":{\"kadPublishes\":11,\"kadSearches\":0,"
-			"\"kadResultsAccepted\":0,\"kadResultsRejected\":0,"
-			"\"sourceDialAttempts\":0,\"subscribeSent\":0,"
-			"\"subscribeAccepted\":0,\"chunksRequested\":0,"
-			"\"chunksReceived\":0,\"chunksMissing\":0,"
-			"\"duplicateChunksReceived\":0,"
-			"\"requestsSuppressedInflight\":0,\"peerDisconnects\":0,"
-			"\"skippedInitialPushes\":0,\"subscribesRateLimited\":0,"
-			"\"requestsRateLimited\":0,\"endsRejectedNoAuth\":0,"
-			"\"tombstonesEvicted\":12},"
-			"\"peerDetail\":[{\"ip\":\"2001:db8::1\\\"\\n\","
-			"\"port\":13,\"level\":1,\"failCount\":2,\"respPct\":99,"
-			"\"rttMs\":14}],\"source\":\"emule-core-debug\"}",
-		"available debug response remains byte-exact");
-
-	debug.peer_detail.assign(
-		WebDiagnostics::MaxDebugPeers() + 5u,
-		WebLiveDebugPeerDiagnostics{});
-	const std::string bounded = WebDiagnostics::Serialize(debug);
-	std::size_t peerCount = 0;
-	for (std::size_t offset = 0;
-		(offset = bounded.find("\"ip\":", offset)) != std::string::npos;
-		offset += 5) {
-		++peerCount;
-	}
-	Check(
-		peerCount == WebDiagnostics::MaxDebugPeers(),
-		"debug peer detail is capped");
 
 	std::string failure;
 	Check(

@@ -12,6 +12,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 HEADER = ROOT / "srchybrid" / "WebApiSerializer.h"
 SOURCE = ROOT / "srchybrid" / "WebApiSerializer.cpp"
 SERVER = ROOT / "srchybrid" / "WebServer.cpp"
+STREAM_CONTROLLER = ROOT / "srchybrid" / "WebLiveApiStreamController.cpp"
+SETTINGS_CONTROLLER = ROOT / "srchybrid" / "WebLiveApiSettingsController.cpp"
+DIAGNOSTICS_CONTROLLER = ROOT / "srchybrid" / "WebLiveApiDiagnosticsController.cpp"
 NATIVE = ROOT / "srchybrid" / "tests" / "test_web_api_serializer.cpp"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
@@ -29,6 +32,9 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
         cls.header = HEADER.read_text(encoding="utf-8")
         cls.source = SOURCE.read_text(encoding="utf-8")
         cls.server = SERVER.read_text(encoding="utf-8")
+        cls.stream_controller = STREAM_CONTROLLER.read_text(encoding="utf-8")
+        cls.settings_controller = SETTINGS_CONTROLLER.read_text(encoding="utf-8")
+        cls.diagnostics_controller = DIAGNOSTICS_CONTROLLER.read_text(encoding="utf-8")
         cls.native = NATIVE.read_text(encoding="utf-8")
         cls.ownership = json.loads(OWNERSHIP.read_text(encoding="utf-8"))
         cls.contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
@@ -120,8 +126,6 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
         self,
     ) -> None:
         self.assertIn('#include "WebApiSerializer.h"', self.server)
-        self.assertIn("ese::web::EscapeHtml(input, noquote)", self.server)
-        self.assertIn("ese::web::EscapeJson(value)", self.server)
         self.assertLess(self.server.count("EseJsonEscapeA("), 34)
         self.assertIn(
             "ese::web::RunWebApiSerializerSelfTest(serializerFailure)",
@@ -131,27 +135,25 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
         self.assertNotIn("Escape minimally for JSON", self.server)
         self.assertNotIn("Escape any quotes/backslashes", self.server)
         for model_marker in (
-            "ese::web::WebJoinResponseModel{",
-            "ese::web::WebDirectJoinResponseModel{",
             "ese::web::WebTunnelPingResponseModel{",
-            "ese::web::WebStringArrayResponseModel model;",
             "ese::web::WebRemoteLinkXmlResponseModel{",
         ):
             self.assertIn(model_marker, self.server)
+        # W8/W10 portable controllers own the response escaping after their
+        # migration cards; the coordinator must not recreate those serializers.
+        self.assertIn("W8EscapeJson", self.stream_controller)
+        self.assertIn("std::string Escape(", self.settings_controller)
+        self.assertIn("void E(std::string&", self.diagnostics_controller)
+        self.assertNotIn("ese::web::WebStringArrayResponseModel model;", self.server)
         for obsolete_fragment in (
             "const CStringA keyJson = EseJsonEscapeA(keyA)",
             "EseJsonEscapeA(CStringA(CT2A(keyT)))",
             "static CString EseXmlEscape",
         ):
             self.assertNotIn(obsolete_fragment, self.server)
-        self.assertIn(
-            "kwJson += EseJsonEscapeA(CStringA(kws[i]))",
-            self.server,
-        )
-        self.assertIn(
-            "const CStringA ipJson = EseJsonEscapeA(ipA)",
-            self.server,
-        )
+        self.assertNotIn("kwJson += EseJsonEscapeA(CStringA(kws[i]))", self.server)
+        self.assertIn("available debug response remains byte-exact", self.diagnostics_controller)
+        self.assertIn("unavailable debug response remains byte-exact", self.diagnostics_controller)
         self.assertNotIn(
             "(LPCSTR)CT2A(ipT), (unsigned)udpPort",
             self.server,
@@ -170,12 +172,12 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
             self.server,
         )
         self.assertIn(
-            "Anonymous link — searching Kad for the broadcaster (5-30 s)",
-            self.server,
+            r"Anonymous link \xE2\x80\x94 searching Kad for the broadcaster (5-30 s)",
+            self.stream_controller,
         )
         self.assertNotIn(
             "Anonymous link â€” searching Kad for the broadcaster (5-30 s)",
-            self.server,
+            self.stream_controller,
         )
 
     def test_native_vectors_cover_controls_entities_and_encoding_boundaries(

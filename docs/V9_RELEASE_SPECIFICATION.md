@@ -132,7 +132,9 @@ Estado observado al redactar este plan:
 - `H1`, `H2` y `N1` estaban visibles en la red de control.
 - `H3` estaba apagado o desconectado, pero forma parte del material disponible.
 - `H1` tiene Hyper-V, Tailscale, Cloudflare WARP y un router doméstico.
-- El estado local de eSE en `H1` confirmaba Kad conectado y mapping UPnP.
+- La observación histórica de eSE en `H1` mostraba Kad conectado y un mapping
+  UPnP, pero no acredita capacidad actual del router, ownership R01 ni entrada
+  pública.
 - La API eSE de `H2` no era accesible en ese momento; antes de una sesión de
   campo debe arrancarse el candidato y comprobarse localmente.
 
@@ -156,6 +158,15 @@ Tailscale NO cuenta como ruta de datos válida para demostrar:
 En esos casos eSE debe recibir explícitamente la dirección no-Tailscale del
 peer y la captura debe confirmar que el tráfico no utiliza el adaptador
 Tailscale.
+
+Un producto usado como plano de control puede crear y renovar sus propias
+leases UPnP/NAT-PMP y, por tanto, contaminar la tabla del router. Antes de `T7`
+o `V91-R01` el harness DEBE releer los dos puertos elegidos y demostrar su
+ausencia exacta; PUEDE además censar la tabla completa como diagnóstico de solo
+lectura. Ese censo no demuestra por sí solo el límite ni la causa de un error
+de alta. El harness NO DEBE borrar, reemplazar ni reutilizar una entrada que no
+coincida exactamente con su tag y tupla R01. Un rechazo ambiental de alta es
+`BLOCKED`, no `FAIL`.
 
 ### 4.2 Perfiles de red
 
@@ -534,8 +545,41 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | `V91-S01` | `T5` | Introducir dos IPv6 que colisionarían en un hash de 32 bits | Se mantienen como endpoints diferentes |
 | `V91-S02` | `T5` | Reutilizar temporal IPv6 de otro epoch | Registro viejo rechazado; nodo legítimo no recibe crédito ajeno |
 | `V91-S03` | `T1/T5` | Enviar `BOOTSTRAP_REQ`, `REQ` y `FIND_SOURCE_REQ` desde un endpoint no verificado | Solo se emite challenge acotado; ninguna respuesta amplificada sale antes de una prueba transaction-bound |
-| `V91-R01` | `T3` | Cambiar portátil de LAN a hotspot durante sesión | Reconexión limpia, endpoint anterior caduca |
+| `V91-R01` | `T3` | Mantener el mismo PID al cambiar el portátil de LAN a hotspot; exponer en H1 dos listeners mediante mappings TCP ownership-bound y ejecutar un probe entrante nonce-bound real | El mismo PID reconecta por la NIC física móvil, el endpoint anterior caduca, el probe entra por el mapping exacto y devuelve el nonce completo, y ambos mappings se eliminan exactamente sin tocar entradas ajenas |
 | `V91-O01` | `T1` | Soak dual-stack continuo de 43.200 s entre dos Windows físicos | Procesos y API responsivos en todas las muestras; LiveTV IPv6 y transferencia IPv4 íntegras sobre NIC físicas; crecimiento por proceso ≤256 MiB y ≤1.024 handles; ratio incremental de chunks duplicados ≤25 %, deriva acumulada ≤5 puntos y cero corrupción |
+
+Para `V91-R01`, SOAP IGD directo es el único backend de mapping admisible en
+una ejecución física formal. El adaptador
+`HNetCfg.NATUPnP.StaticPortMappingCollection` puede conservarse y probarse
+offline, pero no permite adjudicar `PASS` ni `FAIL` hasta que el harness pueda
+demostrar que su colección pertenece al mismo gateway físico e IGD
+seleccionados.
+
+El backend SOAP exige ausencia previa, registro del candidato de cleanup antes
+de la primera mutación, `AddPortMapping`, lectura exacta, ownership completo,
+`DeletePortMapping` y ausencia final del mapping ownership-bound. Si aparece una
+entrada ajena después del borrado, se preserva y documenta. Se limita al gateway
+IPv4 literal seleccionado por la ruta física, sin proxy ni redirects, con un
+único servicio WANIPConnection/WANPPPConnection no ambiguo, XML sin
+DTD/resolución externa y tamaños y tiempos acotados.
+
+Cada mapping formal usa `eR01-<rol>-<digest24>`, de 31 caracteres. `<rol>` vale
+`S` o `P`; `<digest24>` son los primeros 24 hexadecimales minúsculos -- 96
+bits -- de SHA-256 sobre UTF-8:
+
+`ese.v91.r01-upnp/v1|<nonce-completo-minúsculas>|<SERVER-o-PROBE>|TCP|<puerto-externo>|<puerto-interno>|<IPv4-interna-canónica>`.
+
+El nonce completo y la tupla completa se conservan en evidencia privada. La
+limpieza solo puede actuar tras releer y comparar exactamente tag, cliente,
+puerto interno, puerto externo, protocolo y estado habilitado.
+
+La dirección devuelta por `GetExternalIPAddress`, si existe, y una dirección
+suministrada por el operador son únicamente candidatos no confiables. Ninguna
+de ellas demuestra entrada pública. `V91-R01` solo puede ser `PASS`, o producir
+un `FAIL` de producto, tras una conexión TCP entrante real desde H3 sobre su NIC
+Wi-Fi física no-overlay al puerto mapeado exacto, con intercambio completo del
+nonce y evidencia independiente coincidente en ambos extremos. Sin esa prueba
+el resultado es `BLOCKED`.
 
 Para `V91-C01`, `V1` sigue siendo válida, pero un segundo Windows físico
 independiente (`H2`) constituye un aislamiento más fuerte y también satisface

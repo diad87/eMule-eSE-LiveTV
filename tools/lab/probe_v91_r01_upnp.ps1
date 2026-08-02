@@ -1,8 +1,12 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$ObservedExternalAddress = '',
+    [switch]$MappingOnly
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
+. (Join-Path $PSScriptRoot 'v91_r01_upnp.ps1')
 
 function Get-R01IPv4Class {
     param([Parameter(Mandatory = $true)][string]$Address)
@@ -72,11 +76,9 @@ if ($localAddresses.Count -ne 1) {
 }
 $localAddress = [string]$localAddresses[0].IPAddress
 
-$nat = New-Object -ComObject HNetCfg.NATUPnP
-$mappings = $nat.StaticPortMappingCollection
-if ($null -eq $mappings) {
-    throw 'Router did not expose a UPnP static mapping collection.'
-}
+$gatewayAddress = [string]$selectedRoute.NextHop
+$backend = New-R01UpnpBackend -LocalAddress $localAddress `
+    -GatewayAddress $gatewayAddress
 $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
 $portBytes = New-Object byte[] 2
 $externalPort = 0
@@ -87,8 +89,8 @@ try {
             [BitConverter]::ToUInt16($portBytes, 0) % 16384)
         if (@(Get-NetTCPConnection -LocalPort $candidatePort `
                     -ErrorAction SilentlyContinue).Count -ne 0) { continue }
-        try { $existing = $mappings.Item($candidatePort, 'TCP') }
-        catch { $existing = $null }
+        $existing = Get-R01UpnpMapping -Backend $backend `
+            -ExternalPort $candidatePort
         if ($null -eq $existing) {
             $externalPort = $candidatePort
             break
@@ -98,55 +100,92 @@ try {
 if ($externalPort -eq 0) { throw 'No clean UPnP probe port was found.' }
 
 $nonce = [Guid]::NewGuid().ToString('N')
-$description = "eSE-R01-PREFLIGHT-$nonce"
+$description = Get-R01UpnpOwnershipDescription -Nonce $nonce `
+    -Role PREFLIGHT -ExternalPort $externalPort `
+    -InternalPort $externalPort -InternalClient $localAddress
 $mappingCreated = $false
 $cleanupComplete = $false
 $externalAddress = ''
+$listener = [Net.Sockets.TcpListener]::new(
+    [Net.IPAddress]::Parse($localAddress), $externalPort)
 try {
-    $created = $mappings.Add(
-        $externalPort, 'TCP', $externalPort, $localAddress, $true,
-        $description)
-    try { $current = $mappings.Item($externalPort, 'TCP') }
-    catch { $current = $null }
+    $listener.Start(1)
+    $created = Add-R01UpnpMapping -Backend $backend `
+        -ExternalPort $externalPort -InternalPort $externalPort `
+        -InternalClient $localAddress -Description $description
+    $current = Get-R01UpnpMapping -Backend $backend `
+        -ExternalPort $externalPort
     $mappingCreated = $null -ne $created -and $null -ne $current -and
         [string]$created.Description -ceq $description -and
         [string]$created.InternalClient -ceq $localAddress -and
         [int]$created.InternalPort -eq $externalPort -and
+        [bool]$created.Enabled -and
         [string]$current.Description -ceq $description -and
         [string]$current.InternalClient -ceq $localAddress -and
-        [int]$current.InternalPort -eq $externalPort
+        [int]$current.InternalPort -eq $externalPort -and
+        [bool]$current.Enabled
     if (-not $mappingCreated) {
         throw 'UPnP did not return the exact nonce-owned mapping.'
     }
     $externalAddress = [string]$created.ExternalIPAddress
-    if ((Get-R01IPv4Class -Address $externalAddress) -cne 'global') {
-        throw 'UPnP external address is not globally routable IPv4.'
+    if (-not [string]::IsNullOrWhiteSpace($ObservedExternalAddress)) {
+        if (-not [string]::IsNullOrWhiteSpace($externalAddress) -and
+            $externalAddress -cne $ObservedExternalAddress) {
+            throw 'Observed public IPv4 differs from the UPnP report.'
+        }
+        $externalAddress = $ObservedExternalAddress
+    }
+    if (-not $MappingOnly -and
+        (Get-R01IPv4Class -Address $externalAddress) -cne 'global') {
+        throw 'No globally routable H1 IPv4 was supplied or reported.'
     }
 } finally {
-    try { $current = $mappings.Item($externalPort, 'TCP') }
-    catch { $current = $null }
+    $currentReadComplete = $true
+    try {
+        $current = Get-R01UpnpMapping -Backend $backend `
+            -ExternalPort $externalPort
+    } catch {
+        $current = $null
+        $currentReadComplete = $false
+    }
     if ($null -ne $current -and
         [string]$current.Description -ceq $description -and
         [string]$current.InternalClient -ceq $localAddress -and
-        [int]$current.InternalPort -eq $externalPort) {
-        $mappings.Remove($externalPort, 'TCP')
+        [int]$current.InternalPort -eq $externalPort -and
+        [bool]$current.Enabled) {
+        Remove-R01UpnpMapping -Backend $backend `
+            -ExternalPort $externalPort
     }
-    try { $remaining = $mappings.Item($externalPort, 'TCP') }
-    catch { $remaining = $null }
-    $cleanupComplete = $null -eq $remaining
+    $remainingReadComplete = $true
+    try {
+        $remaining = Get-R01UpnpMapping -Backend $backend `
+            -ExternalPort $externalPort
+    } catch {
+        $remaining = $null
+        $remainingReadComplete = $false
+    }
+    $cleanupComplete = $currentReadComplete -and
+        $remainingReadComplete -and $null -eq $remaining
+    try { $listener.Stop() } catch {}
 }
 if (-not $mappingCreated -or -not $cleanupComplete) {
     throw 'UPnP preflight ownership or cleanup was not complete.'
 }
 
 [pscustomobject][ordered]@{
-    schema = 'ese.v91.r01-upnp-preflight/v1'
-    status = 'PASS'
+    schema = 'ese.v91.r01-upnp-preflight/v2'
+    status = if ($MappingOnly) { 'MAPPING_PASS' } else { 'PASS' }
+    formal_endpoint_validated = -not $MappingOnly
+    backend = [string]$backend.kind
     physical_adapter = $true
     local_ipv4_class = Get-R01IPv4Class -Address $localAddress
     external_ipv4_class = Get-R01IPv4Class -Address $externalAddress
-    external_ipv4_sha256 = Get-R01StringSha256 -Value $externalAddress
+    external_ipv4_sha256 = if ([string]::IsNullOrWhiteSpace(
+            $externalAddress)) { $null } else {
+        Get-R01StringSha256 -Value $externalAddress
+    }
     exact_nonce_mapping_created = $mappingCreated
+    ownership_description_length = $description.Length
     cleanup_complete = $cleanupComplete
     mapping_remaining = $false
 } | ConvertTo-Json -Compress

@@ -39,6 +39,25 @@ The ten post-RC3 results are V91-I01, V91-I02, V91-I08, V91-K01, V91-K02,
 V91-K04, V91-S01, V91-S02, V91-S03 and V91-O01. Their result files pin the candidate
 identity, physical topology, packet evidence and cleanup independently.
 
+## Current H1 UPnP allocation snapshot
+
+| Item | Result |
+|---|---|
+| Enumerated entries | 64 entries observed at indices 0-63; index 64 returned UPnP fault 713. This does not prove that 64 is the capacity limit. |
+| Tailscale-labelled occupancy | 62 finite UDP leases named `tailscale-portmap`, sharing the same local client/internal port. |
+| Other occupancy | One UDP NAT-PMP entry and one TCP `eSE Streaming` entry. |
+| R01 allocation attempt | UPnP fault 501 `ActionFailed`. |
+| Safety | Read-only census; zero foreign mappings removed or changed. |
+
+Direct gateway SOAP has demonstrated exact short-description Add/Get/Delete
+mechanics when capacity is available, whereas the Windows COM collection
+remains unavailable. Formal R01 nevertheless admits only the direct,
+gateway-scoped SOAP backend: the diagnostic mapping did not use the final
+96-bit ownership tag. The proven blocker is the 501 allocation failure. The 64
+entries were contemporaneous context, not proof of its cause or of the actual
+capacity limit. It is not absence of an IGD service and is not a product
+failure.
+
 ## Complete 27-case matrix
 
 | Case | Status | Provenance or remaining requirement |
@@ -68,7 +87,7 @@ identity, physical topology, packet evidence and cleanup independently.
 | V91-S01 | PASS | Post-RC3 `V91_S01_RESULT.json`: two full-width colliding endpoints remained distinct and simultaneously verified on the physical path. |
 | V91-S02 | PASS | Post-RC3 `V91_S02_RESULT.json`: temporal address reuse required independent verification and rejected the expired record replay. |
 | V91-S03 | PASS | Post-RC3 `V91_S03_RESULT.json`: all three unverified-request opcodes were limited to a transaction-bound challenge without amplified response. |
-| V91-R01 | BLOCKED | The audited offline v2 harness, dedicated disposable-account agent and exact RC3 candidate passed their unattended preflights. The laptop has separately demonstrated native mobile IPv6. The current Home router does not expose a UPnP static-mapping collection, so the nonce-owned public IPv4 mapping cannot yet be armed and rolled back; no mapping was created. |
+| V91-R01 | BLOCKED | The audited unattended harness, disposable-account agent, exact RC3 package and mobile-path preflights passed. Direct gateway SOAP has demonstrated exact short-description Add/Get/Delete mechanics, and the normative harness now requires gateway-scoped SOAP with a 31-character, 96-bit nonce-and-tuple-bound ownership tag. H1 exposed 64 entries -- 62 are finite `tailscale-portmap` UDP leases -- while a new R01 Add returned UPnP 501; causality and the capacity limit remain unproven. No foreign mapping was altered. Formal PASS still requires two simultaneous accepted mappings and the real mobile nonce-bound inbound probe. |
 | V91-O01 | PASS | Formal run `9108ff953fb044ef91f4d6c3cab521cc`: both physical nodes completed the uninterrupted 43,200-second window with exit code 0; LiveTV remained on IPv6, the canonical 4 GiB transfer completed on IPv4 with exact SHA-256/ED2K, the viewer advanced 62 -> 44,631 chunks, duplicate ratio was 3.24%, drift was 3.24 points and the aggregate finalizer returned PASS. |
 
 ## Evidence index
@@ -91,10 +110,12 @@ identity, physical topology, packet evidence and cleanup independently.
 - `V91_S01_RESULT.json` and `V91_S01_EXECUTION.md`: post-RC3 S01.
 - `V91_S02_RESULT.json` and `V91_S02_EXECUTION.md`: post-RC3 S02.
 - `V91_S03_RESULT.json` and `V91_S03_EXECUTION.md`: post-RC3 S03.
-- `V91_R01_EXECUTION.md`, `invoke_v91_r01_campaign.ps1`,
+- `V91_R01_EXECUTION.md`, `v91_r01_upnp.ps1`,
+  `probe_v91_r01_upnp.ps1`, `invoke_v91_r01_campaign.ps1`,
   `test_v91_r01_remote.ps1` and `test_v91_r01_campaign.ps1`: unattended R01
-  procedure, raw-evidence adjudicator and offline regressions. These validate
-  the harness, not the still-pending physical LAN-to-hotspot result.
+  procedure, gateway-scoped SOAP mapping contract, raw-evidence adjudicator and
+  offline regressions. These validate the harness, not the still-pending
+  physical LAN-to-hotspot result.
 - `V91_I07_EXECUTION.md`, `invoke_v91_i07_campaign.ps1` and
   `test_v91_i07_offline.ps1`: unattended I07 T3 procedure and offline
   regressions. These validate the harness, not the still-pending physical
@@ -107,16 +128,20 @@ identity, physical topology, packet evidence and cleanup independently.
   35/35 offline preflight runs over the frozen D01 harness bytes.
 - `test_v91_effective_ini_sections.ps1`: regression for the effective
   `NetworkED2K` and `CryptLayer*` section in I03, I04 and D01 fixtures.
-- `V91_R01_EXECUTION.md`: first physical attempt, local controlled-login
-  evidence, corrected defects and the exact remaining PASS procedure.
+- `V91_R01_EXECUTION.md`: physical agent/mobile preflights, direct SOAP
+  Add/Get/Delete diagnostic, current 64-entry mapping-table census and the exact
+  remaining PASS procedure.
 - `V91_O01_RESULT.json`, `V91_O01_EXECUTION.md` and
   `../lab-runs/v91-k04/9108ff953fb044ef91f4d6c3cab521cc/aggregate-result.json`:
   formal 12-hour physical dual-stack O01 PASS and compact evidence index.
 
 ## Fastest path to the next PASS
 
-V91-R01 remains the cheapest next physical attempt after the Home-side public
-IPv4 mapping prerequisite is solved. A physical R01 PASS is a prerequisite for
-I07, which also needs a second controlled peer with native public IPv6. The
-current fixture does not unlock I03, I04 or D01 because those cases
-deliberately require real public dual-stack routes.
+V91-R01 remains the cheapest next physical PASS. Its proven blocker is the
+UPnP 501 allocation failure observed while 64 entries were present; the cause
+and capacity limit are not established. The router must accept two simultaneous
+mappings without deleting or modifying foreign leases. Once it does, the unattended campaign can create
+the two short ownership-bound mappings and require the real nonce-bound inbound
+probe. A physical R01 PASS then unlocks I07, which still needs a second
+controlled peer with native public IPv6. The fixture does not unlock I03, I04
+or D01 because those cases require public dual-stack routes.

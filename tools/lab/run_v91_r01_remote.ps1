@@ -870,12 +870,14 @@ function Test-MobileTopologyProbe {
             $localEndpoint = [Net.IPEndPoint]$client.Client.LocalEndPoint
             $remoteEndpoint = [Net.IPEndPoint]$client.Client.RemoteEndPoint
             return [pscustomobject][ordered]@{
+                schema = 'ese.v91.r01-mobile-probe/v1'
                 status = 'PASS'
                 at_utc = [DateTimeOffset]::UtcNow.ToString('o')
                 local_address = $localEndpoint.Address.ToString()
                 local_port = $localEndpoint.Port
                 remote_address = $remoteEndpoint.Address.ToString()
                 remote_port = $remoteEndpoint.Port
+                nonce_sha256 = Get-Hash -Text $Nonce
                 interface_index = [int]$Snapshot.interface_index
                 interface_guid = [string]$Snapshot.interface_guid
                 physical_nonvirtual = [bool]$Snapshot.hardware_interface -and

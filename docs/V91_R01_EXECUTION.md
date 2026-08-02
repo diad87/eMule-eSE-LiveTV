@@ -4,7 +4,7 @@
 
 `V91-R01` remains **BLOCKED**, not FAIL, until one physical T3 run completes.
 The offline harness is ready and self-tested. No physical result is inferred
-from parser tests, the earlier partial attempt or the ongoing `V91-O01` soak.
+from parser tests, the earlier partial attempt or the completed `V91-O01` run.
 
 R01 is independent from I07. R01 tests clean roaming from the home LAN to the
 mobile hotspot over IPv4. Native global IPv6 is recorded as an optional
@@ -42,14 +42,35 @@ and the isolated ZIP again matches the frozen RC3 bytes. The original SYSTEM
 agent remains online as the recovery/control plane. Account name, SID digest,
 port and paths stay in private controller evidence.
 
-A separate transactional H1 UPnP probe then stopped before creating a mapping:
-Windows SSDP Discovery and UPnP Device Host were already running, but
-`HNetCfg.NATUPnP.StaticPortMappingCollection` was null. No router mapping or
-local firewall rule was left behind. R01 therefore remains `BLOCKED` until the
-H1 router exposes the required static UPnP mapping collection (or the normative
-harness is deliberately revised and re-audited for an equally strict
-pre-provisioned public mapping). The disposable H3 side no longer blocks the
-next attempt.
+### 2026-08-02 H1 UPnP transport and capacity
+
+`HNetCfg.NATUPnP.StaticPortMappingCollection` still returns null on H1, but
+direct SSDP discovery bound to H1's selected physical IPv4 route found one
+unambiguous IGD WANIPConnection SOAP endpoint on the selected gateway. A
+transactional diagnostic with a live target listener and a short description
+successfully performed `AddPortMapping`, exact
+`GetSpecificPortMappingEntry` verification, `DeletePortMapping` and exact
+absence verification. That diagnostic proves the direct SOAP transport and
+cleanup mechanics only; it did not use the final 96-bit R01 ownership tag and
+is not formal R01 evidence.
+
+A later read-only `GetGenericPortMappingEntry` census observed:
+
+| Observation | Physical result |
+|---|---|
+| Enumerated table | Indices 0 through 63 returned valid entries; index 64 returned UPnP fault 713. This proves 64 observed entries and no entry at index 64; it does not by itself prove that 64 is the router's capacity limit. |
+| Tailscale-labelled leases | 62 UDP entries had the literal description `tailscale-portmap`, the same local client/internal port and finite leases. |
+| Other entries | One UDP entry was labelled `NAT-PMP ... udp`; one TCP entry was labelled `eSE Streaming`. |
+| R01 `AddPortMapping` | Returned UPnP fault 501 `ActionFailed` while those 64 entries were observed. The census does not establish the cause. |
+| Safety | The census was read-only. No foreign entry was deleted or changed. |
+
+The concentration of finite `tailscale-portmap` leases is consistent with an
+active renewal/refill loop, but R01 does not infer authority to remove them
+from their description alone. The only proven allocation blocker is the 501
+response; its relationship to the 64 observed entries, the router's actual
+capacity limit and acceptance of the final 31-character tag remain unproven.
+This is environmental `BLOCKED`, not a product `FAIL`. The disposable H3 side
+no longer blocks the next attempt.
 
 The controller and remote runner use the same strict IPv4 classifier. Private,
 CGNAT, loopback, link-local, documentation, protocol-assignment, AS112,
@@ -101,6 +122,52 @@ One complete run must prove all of the following:
      An independent nonce-owned watchdog performs that restore even if the main
      runner is killed; I07 later performs its own hotspot switch and restore.
 
+For formal physical R01, direct IGD SOAP is the only admissible mapping backend.
+Discovery and every descriptor/control HTTP request must be source-bound to the
+selected physical H1 route, accept SSDP replies
+only from its selected IPv4 gateway, use one unambiguous WANIPConnection or
+WANPPPConnection service, and restrict descriptor and control URLs to plain
+HTTP on that exact literal gateway, without proxy, redirect, user info,
+hostname substitution or fragment. XML parsing must prohibit DTD/external
+resolution and all request, response and timeout bounds remain finite.
+
+The Windows COM facade remains implemented as a non-adjudicating adapter for
+offline self-tests. It cannot create formal physical evidence until the
+harness can prove that its collection belongs to the same selected physical
+gateway and IGD. A COM result must therefore never be promoted to R01 `PASS` or
+to a product `FAIL`.
+
+SOAP must prove absence before Add, register a complete cleanup candidate before
+the first mutation, prove exact ownership after Add through a fresh query, and
+prove final absence of the ownership-bound mapping after Delete. If a foreign
+mapping appears on that tuple after deletion, it is preserved and documented;
+it is never treated as the owned mapping. The harness must never overwrite or
+delete a mapping whose complete ownership tuple differs. Each formal mapping uses the
+31-character router-visible tag `eR01-<role>-<digest24>`, where `<role>` is `S`
+for SERVER or `P` for PROBE and `<digest24>` is the first 24 lowercase
+hexadecimal characters -- 96 bits -- of SHA-256 over the UTF-8 canonical
+string:
+
+`ese.v91.r01-upnp/v1|<lowercase-full-nonce>|<SERVER-or-PROBE>|TCP|<external-port>|<internal-port>|<canonical-internal-IPv4>`
+
+`F` is reserved for non-adjudicating PREFLIGHT mappings. Private evidence
+retains the full nonce and complete canonical tuple; the truncated tag is only
+the router-compatible ownership handle.
+
+`GetExternalIPAddress` may legitimately return an empty value. In that case the
+controller may receive `MobileServerAddress`, but it is an untrusted endpoint
+candidate, not evidence. A global-address classification is necessary but never
+sufficient. Regardless of whether the address came from UPnP or an explicit
+candidate, `PASS` -- and any product `FAIL` adjudication -- requires H3 on the
+mobile hotspot to establish a real inbound TCP connection to the exact mapped
+probe port through its selected physical, non-overlay Wi-Fi route, send the
+complete run nonce and receive the same nonce from H1. H1 must independently
+record the same fresh connection. The two records are cross-bound to the exact
+public destination, listener port and SHA-256 of the full run nonce, and their
+timestamps must differ by no more than 20 seconds. The source port is not
+required to survive mobile NAT unchanged. Missing or contradictory inbound
+proof is `BLOCKED`.
+
 The result is `FAIL` only when the mobile public path and the controlled
 fixture have both been independently validated and the candidate then violates
 the roaming invariant. That product verdict is established before cleanup, so
@@ -135,11 +202,22 @@ from one held descriptor; `emule.exe` is rehashed from a held descriptor
 immediately around process creation. No loose, unmanifested or changed tree is
 executed, closing the package-to-launch TOCTOU window.
 
-The executable used by formal O01 currently has SHA-256
-`0bc2ca4e0d161fc90c1f42009bc1c2e793f6dc1c13c973bebb935d65aff839bd`,
-but that hash alone is not a frozen package contract and is not attributed to
-the current repository HEAD. If that executable remains the candidate, create
-and deploy its matching clean package, ZIP and `BUILD_INFO.txt` before R01.
+Formal R01 is pinned to the frozen RC3 package tuple:
+
+- commit `815b45ca7a1415bd3e06ff043d53794bc340b346`;
+- `emule.exe` SHA-256
+  `94620cf502c954cda29fa7f40f834ef1eebacb753f1fe277865d1d173e0b9b41`;
+- `ese-server.exe` SHA-256
+  `c12e71a1602bb7b55077b82a72000a6980790fdf75d90bdbcba8d2843f7a0ba2`;
+- `BUILD_INFO.txt` SHA-256
+  `48445ff0231908aa1edbb21970bcb38b91397c643c7012b65b62686bc8a63428`;
+- ZIP SHA-256
+  `359272c764c532c32cfd97eeb92e2db4feaa620c5d3f6318a82a7453dbf1b56f`;
+  and
+- ZIP size `212040831` bytes.
+
+The earlier O01 executable hash is historical evidence for O01 and is not the
+R01 candidate identity.
 
 ## Disposable H3 account and registry preflight
 
@@ -193,6 +271,7 @@ H3:
   -HomeProfile '<saved-home-profile>' `
   -HotspotProfile '<saved-hotspot-profile>' `
   -AgentIPv4 '<H3-control-IPv4>' `
+  -MobileServerAddress '<untrusted-H1-global-IPv4-candidate>' `
   -CandidatePackagePath '<unpacked-frozen-package-on-H1>' `
   -CandidateZipPath '<matching-frozen-zip-on-H1>' `
   -ExpectedCommit '<40-hex-package-commit>' `
@@ -201,6 +280,10 @@ H3:
   -DisposableH3AccountConfirmed
 ```
 
+`-MobileServerAddress` is required only when the IGD returns no external
+address. Supplying it does not validate it; the nonce-bound inbound probe is
+still mandatory.
+
 The command performs the remaining work unattended:
 
 - validates the complete package-to-H1-ZIP-to-H3-ZIP locked-snapshot contract;
@@ -208,7 +291,8 @@ The command performs the remaining work unattended:
   pre-existing H3 eMule, any occupied campaign port or any failed collector;
 - selects the active physical, non-virtual, non-overlay H1 NIC and later binds
   each H3 candidate/probe socket to its exact selected physical route;
-- creates two nonce-owned TCP UPnP mappings and matching firewall rules;
+- creates two nonce-owned TCP mappings through the gateway-scoped SOAP backend
+  and matching firewall rules;
 - starts the controlled eD2K server and the independent public-path probe;
 - deploys and starts the H3 runner through the existing authenticated agent;
 - arms an independent, typed Home-profile watchdog and changes H3 from LAN to
@@ -244,11 +328,13 @@ Each run writes under `lab-runs/v91-r01/<run-id>/`:
 - local/remote stdout, stderr and agent status (**PRIVATE**) where available.
 
 The aggregate schema is `ese.v91.r01-campaign/v1`. It cross-binds remote and
-server evidence by schema, case, nonce, candidate tuple and ports, retains
-the full ZIP/package binding, UPnP lifecycle/rollback and cooperative recovery,
-and never accepts stale artifacts. A proven product `FAIL` remains `FAIL` even
-if a later cleanup incident is recorded. I07 must consume this private
-`aggregate-result.json` to obtain the contractual
+server evidence by schema, case, candidate tuple, exact public destination,
+listener port, full-nonce SHA-256 and a maximum 20-second timestamp separation.
+It retains the full ZIP/package binding, SOAP endpoint identity, every cleanup
+candidate registered before mutation, the UPnP lifecycle/rollback and
+cooperative recovery, and never accepts stale artifacts. A proven product
+`FAIL` remains `FAIL` even if a later cleanup incident is recorded. I07 must
+consume this private `aggregate-result.json` to obtain the contractual
 `topology.home_profile_sha256` and `topology.hotspot_profile_sha256` NLA hashes;
 requested WLAN-name hashes are separate root fields.
 
@@ -273,12 +359,12 @@ These commands perform no network transition and start no eMule process:
 
 Current result:
 
-- all seven R01/agent-contract PowerShell files parse cleanly;
+- all nine R01/agent-contract PowerShell files parse cleanly;
 - profile builder self-test: PASS;
 - campaign/adjudication self-test: PASS;
 - 28 IPv4 classification cases against both controller and remote
   implementations (56 assertions): PASS;
-- 16 PASS/FAIL/BLOCKED cross-evidence cases, including SID/port/process/route,
+- 22 PASS/FAIL/BLOCKED cross-evidence cases, including SID/port/process/route,
   overlay, package-lock and cleanup-incident negatives: PASS;
 - login, post-login frame drain, EOF and second-login sequence: PASS;
 - six controller ZIP/package cases plus two strict-manifest and six safe-path
@@ -286,34 +372,45 @@ Current result:
   reparse-point rejection: PASS;
 - four safe preferences, registry snapshot change detection and safe
   nonce-tree/reparse cleanup: PASS;
-- UPnP Add rollback, cooperative cancel and autonomous deadline: PASS; and
+- deterministic 31-character, nonce-and-tuple-bound 96-bit UPnP ownership tags:
+  PASS;
+- SOAP gateway/URI scoping, mocked exact Add/Get/Delete/absence, foreign-mapping preservation,
+  UPnP Add rollback, cooperative cancel and autonomous deadline: PASS; and
 - clock-before-mutation, independent watchdog, IPv6-diagnostic-only and exact
   API isolation, identity-bound cleanup, fail-closed collectors and public
   privacy contracts: PASS.
 
-Frozen offline checkpoint for this revision:
+Frozen offline checkpoint for this SOAP revision:
 
-- both commands completed twice with `status=PASS`,
-  `formal_case_status=BLOCKED` and
+- both commands completed twice with byte-identical output,
+  `status=PASS`, `formal_case_status=BLOCKED` and
   `physical_execution_performed=false`;
-- campaign canonical-result SHA-256:
-  `ff3e6ab7d4a0a4cd54e7ad390ecef162bb47d7c50e6876fd1f10afaf98552ee9`;
-- remote-profile canonical-result SHA-256:
-  `a839ac3b8959f80e6319fb0c77b3058e6d5949475f4bed4248e18a157c2169a9`.
+- campaign canonical-output SHA-256:
+  `893cbbe61d26fe57b0622ddcb1ad4f7fa71eb661a3bdb1829a2897e4134de00e`;
+- remote-profile canonical-output SHA-256:
+  `b28d3ad167bc83f125a107fdd4c0af65bb0b0adaa9de0459ade9ef741a230bb5`.
 
 These hashes freeze only the offline outputs. They are not a physical R01
 aggregate and cannot change the matrix status.
 
 ## Remaining physical prerequisites
 
-Only external state remains:
+The protocol-v2 agents, disposable H3 identity, registry/profile isolation,
+saved Home/hotspot profiles, byte-identical RC3 ZIP and native mobile path have
+already passed their non-adjudicating preflights. The remaining external work
+is:
 
-1. let O01 finish and release H1/H3;
-2. install the protocol-v2 agent, sign it into the dedicated disposable H3
-   account, satisfy the Run/autostart preflight, and obtain its SID SHA-256;
-3. freeze the package/ZIP and place a byte-identical ZIP on H3;
-4. provide the two distinct saved home and hotspot profile names to the one
-   command;
-5. keep the phone hotspot available for the short R01 transition; and
-6. require the H1 router to expose a real global IPv4 through UPnP. A private
-   or CGNAT external address keeps R01 `BLOCKED` and can never become FAIL.
+1. keep the phone hotspot available for the unattended transition;
+2. make the router accept two simultaneous TCP mappings on H1 without deleting
+   or modifying any foreign mapping;
+3. provide one H1 global IPv4 candidate if the IGD continues returning an empty
+   external address; and
+4. complete one full campaign in which both short nonce-owned mappings are
+   created, queried, exercised by the real mobile inbound nonce probe and
+   removed exactly.
+
+The repeated UPnP 501 allocation response keeps R01 `BLOCKED`. Sixty-four
+entries were observed at the same time, but neither causality nor a 64-entry
+capacity limit is established. A private or CGNAT candidate, missing inbound proof,
+foreign ownership or incomplete cleanup also remains `BLOCKED` and can never
+be promoted to `PASS`.

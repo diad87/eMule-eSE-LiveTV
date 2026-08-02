@@ -54,7 +54,9 @@ $paths = @(
     (Join-Path $PSScriptRoot 'invoke_v91_r01_campaign.ps1'),
     (Join-Path $PSScriptRoot 'run_ese_lab_smallframe_agent.ps1'),
     (Join-Path $PSScriptRoot 'control_ese_lab_smallframe_agent.ps1'),
-    (Join-Path $PSScriptRoot 'test_v91_r01_remote.ps1')
+    (Join-Path $PSScriptRoot 'test_v91_r01_remote.ps1'),
+    (Join-Path $PSScriptRoot 'v91_r01_upnp.ps1'),
+    (Join-Path $PSScriptRoot 'probe_v91_r01_upnp.ps1')
 )
 $asts = @{}
 foreach ($path in $paths) {
@@ -70,13 +72,24 @@ foreach ($path in $paths) {
 
 $controllerPath = $paths[3]
 $controllerAst = $asts[$controllerPath]
+$upnpAst = $asts[$paths[7]]
+foreach ($name in @(
+    'Get-R01UpnpOwnershipDescription', 'Assert-R01UpnpHttpUri',
+    'ConvertFrom-R01UpnpXml', 'Get-R01UpnpSoapFaultCode',
+    'Get-R01UpnpSoapResponseElement', 'Get-R01UpnpSoapChildValue',
+    'Get-R01UpnpSoapExternalAddress',
+    'Get-R01UpnpMapping',
+    'Add-R01UpnpMapping', 'Remove-R01UpnpMapping'
+)) { Import-R01Function -Ast $upnpAst -Name $name }
 foreach ($name in @(
     'Get-R01TextSha256', 'Get-R01StreamSha256',
     'Assert-R01NoReparsePath', 'Test-R01SafeRelativePath',
     'Get-R01PackageFileCensus', 'Get-R01PackageManifestCanonical',
     'Get-R01ZipPackageEvidence', 'Get-R01IPv4Class',
     'Test-R01OverlayAdapter', 'Assert-R01PublicResultPrivacy',
-    'Add-R01OwnedUpnpMapping', 'Test-R01TransitionEvidence',
+    'Get-R01UpnpBackendEvidence',
+    'Add-R01OwnedUpnpMapping', 'Remove-R01OwnedUpnpMapping',
+    'Test-R01TransitionEvidence', 'Test-R01ExactProbeBinding',
     'Test-R01EvidenceBinding',
     'Test-R01AggregatePass', 'Test-R01ProductFailureProven',
     'Get-R01AggregateStatus'
@@ -183,11 +196,18 @@ $remote = [pscustomobject]@{
             })
         }
         mobile_public_probe = [pscustomobject]@{
-            status = 'PASS'; remote_port = 51902
+            schema = 'ese.v91.r01-mobile-probe/v1'
+            status = 'PASS'; at_utc = '2026-08-01T10:01:00.0000000Z'
+            local_port = 43000; remote_address = '8.8.8.8'
+            remote_port = 51902
+            nonce_sha256 = Get-R01TextSha256 -Text $nonce
             local_address = '10.20.30.40'
             interface_guid = '11111111-1111-1111-1111-111111111111'
             physical_nonvirtual = $true
-            selected_route = [pscustomobject]@{ valid = $true; overlay = $false }
+            selected_route = [pscustomobject]@{
+                valid = $true; overlay = $false
+                remote_address = '8.8.8.8'
+            }
         }
         initial_selected_route = [pscustomobject]@{ valid = $true; overlay = $false }
         mobile_selected_route = [pscustomobject]@{ valid = $true; overlay = $false }
@@ -216,6 +236,7 @@ $server = [pscustomobject]@{
     schema = 'ese.v91.r01-controlled-server/v1'; case_id = 'V91-R01'
     nonce = $nonce; status = 'SERVER_PASS'; server_port = 51901
     probe_port = 51902; same_client_identity = $true
+    listen_address = '192.168.1.2'
     different_observed_remote = $true
     fixture_valid_for_product_adjudication = $true
     initial = [pscustomobject]@{
@@ -223,18 +244,58 @@ $server = [pscustomobject]@{
     }
     mobile = [pscustomobject]@{ remote_address = '8.8.4.4' }
     topology_probe = [pscustomobject]@{
-        status = 'PASS'; remote_address = '8.8.4.4'
+        schema = 'ese.v91.r01-server-probe/v1'
+        status = 'PASS'; accepted_at_utc = '2026-08-01T10:01:00.1000000Z'
+        remote_address = '8.8.4.4'; remote_port = 53000
+        local_address = '192.168.1.2'; local_port = 51902
+        nonce_sha256 = Get-R01TextSha256 -Text $nonce
     }
 }
 $adjudication = @{
     Remote = $remote; Server = $server; ExpectedCandidate = $candidate
     ExpectedNonce = $nonce; ExpectedServerPort = 51901
+    ExpectedProbeAddress = '8.8.8.8'
     ExpectedProbePort = 51902; ExpectedCandidateTcpPort = 51662
     CleanupComplete = $true; ControllerFailure = ''
 }
 Assert-R01 -Condition (
     (Get-R01AggregateStatus @adjudication) -ceq 'PASS') `
     -Message 'Exact cross-bound R01 evidence did not adjudicate PASS.'
+$adjudication.ExpectedProbeAddress = ''
+$adjudication.ControllerFailure = 'pre-endpoint allocation failure'
+Assert-R01 -Condition (
+    (Get-R01AggregateStatus @adjudication) -ceq 'BLOCKED') `
+    -Message 'Early allocation failure did not publish a BLOCKED result.'
+$adjudication.ExpectedProbeAddress = '8.8.8.8'
+$adjudication.ControllerFailure = ''
+$remote.topology.mobile_public_probe.nonce_sha256 = '0' * 64
+Assert-R01 -Condition (
+    (Get-R01AggregateStatus @adjudication) -ceq 'BLOCKED') `
+    -Message 'Remote probe with a different nonce was accepted.'
+$remote.topology.mobile_public_probe.nonce_sha256 =
+    Get-R01TextSha256 -Text $nonce
+$server.topology_probe.nonce_sha256 = '0' * 64
+Assert-R01 -Condition (
+    (Get-R01AggregateStatus @adjudication) -ceq 'BLOCKED') `
+    -Message 'Server probe with a different nonce was accepted.'
+$server.topology_probe.nonce_sha256 = Get-R01TextSha256 -Text $nonce
+$remote.topology.mobile_public_probe.remote_address = '1.1.1.1'
+Assert-R01 -Condition (
+    (Get-R01AggregateStatus @adjudication) -ceq 'BLOCKED') `
+    -Message 'Probe to a different public endpoint was accepted.'
+$remote.topology.mobile_public_probe.remote_address = '8.8.8.8'
+$server.topology_probe.local_port = 51903
+Assert-R01 -Condition (
+    (Get-R01AggregateStatus @adjudication) -ceq 'BLOCKED') `
+    -Message 'Server observation on a different listener was accepted.'
+$server.topology_probe.local_port = 51902
+$remote.topology.mobile_public_probe.at_utc =
+    '2026-08-01T10:02:00.0000000Z'
+Assert-R01 -Condition (
+    (Get-R01AggregateStatus @adjudication) -ceq 'BLOCKED') `
+    -Message 'Probe observations outside the time window were accepted.'
+$remote.topology.mobile_public_probe.at_utc =
+    '2026-08-01T10:01:00.0000000Z'
 $remote.topology.mobile.wlan_profile_sha256 =
     $remote.topology.initial.wlan_profile_sha256
 Assert-R01 -Condition (
@@ -539,36 +600,406 @@ try {
 
 $script:mappingLifecycleEvidence =
     [Collections.Generic.List[object]]::new()
-$fakeMappings = [pscustomobject]@{ slots = @{} }
+$script:mappingCleanupCandidates =
+    [Collections.Generic.List[object]]::new()
+$fakeMappings = [pscustomobject]@{
+    slots = @{}
+    return_created = $false
+    fail_reads = $false
+    fail_reads_after_add = $false
+    fail_reads_after_remove = $false
+    throw_on_remove = $false
+}
 $fakeMappings | Add-Member ScriptMethod Item {
     param($port, $protocol)
+    if ($this.fail_reads) { throw 'simulated COM read failure' }
     return $this.slots["$port/$protocol"]
 }
 $fakeMappings | Add-Member ScriptMethod Add {
     param($external, $protocol, $internal, $client, $enabled, $description)
-    $this.slots["$external/$protocol"] = [pscustomobject]@{
+    $key = "$external/$protocol"
+    $this.slots[$key] = [pscustomobject]@{
         Description = $description; InternalClient = $client
         InternalPort = $internal; ExternalIPAddress = '198.18.0.1'
+        Enabled = $true
     }
+    if ($this.fail_reads_after_add) { $this.fail_reads = $true }
+    if ($this.return_created) { return $this.slots[$key] }
     return $null
 }
 $fakeMappings | Add-Member ScriptMethod Remove {
     param($external, $protocol)
+    if ($this.throw_on_remove) { throw 'simulated COM delete failure' }
     $this.slots.Remove("$external/$protocol")
+    if ($this.fail_reads_after_remove) { $this.fail_reads = $true }
 }
+$fakeBackend = [pscustomobject]@{
+    kind = 'com'; mappings = $fakeMappings
+}
+$ownedDescription = Get-R01UpnpOwnershipDescription -Nonce $nonce `
+    -Role SERVER -ExternalPort 51901 -InternalPort 51901 `
+    -InternalClient '192.168.1.2'
+$probeDescription = Get-R01UpnpOwnershipDescription -Nonce $nonce `
+    -Role PROBE -ExternalPort 51901 -InternalPort 51901 `
+    -InternalClient '192.168.1.2'
+$changedDescription = Get-R01UpnpOwnershipDescription `
+    -Nonce ('f' + $nonce.Substring(1)) -Role SERVER `
+    -ExternalPort 51901 -InternalPort 51901 `
+    -InternalClient '192.168.1.2'
+Assert-R01 -Condition ($ownedDescription.Length -eq 31 -and
+    $ownedDescription -match '^eR01-S-[0-9a-f]{24}$' -and
+    $probeDescription -cne $ownedDescription -and
+    $changedDescription -cne $ownedDescription) `
+    -Message 'Short nonce-bound UPnP ownership descriptions are invalid.'
 $rollbackRaised = $false
 try {
-    $null = Add-R01OwnedUpnpMapping -Mappings $fakeMappings `
+    $null = Add-R01OwnedUpnpMapping -Backend $fakeBackend `
         -ExternalPort 51901 -InternalPort 51901 `
-        -InternalClient '192.168.1.2' -Description 'owned'
+        -InternalClient '192.168.1.2' -Description $ownedDescription
 } catch { $rollbackRaised = $true }
 Assert-R01 -Condition ($rollbackRaised -and
     $fakeMappings.slots.Count -eq 0 -and
     [bool]$script:mappingLifecycleEvidence[0].rollback_complete) `
     -Message 'UPnP Add validation rollback window is unsafe.'
 
+$fakeMappings.return_created = $true
+$normalDescription = Get-R01UpnpOwnershipDescription -Nonce $nonce `
+    -Role SERVER -ExternalPort 51902 -InternalPort 51902 `
+    -InternalClient '192.168.1.2'
+$normalOwned = Add-R01OwnedUpnpMapping -Backend $fakeBackend `
+    -ExternalPort 51902 -InternalPort 51902 `
+    -InternalClient '192.168.1.2' -Description $normalDescription
+$normalRemoved = Remove-R01OwnedUpnpMapping -Backend $fakeBackend `
+    -Owned $normalOwned
+Assert-R01 -Condition ([bool]$normalRemoved.resolved -and
+    [bool]$normalRemoved.deleted -and
+    -not $fakeMappings.slots.ContainsKey('51902/TCP') -and
+    @($script:mappingLifecycleEvidence | Where-Object {
+            [int]$_.external_port -eq 51902 -and
+            [string]$_.phase -ceq 'owned_mapping_created'
+        }).Count -eq 1 -and
+    @($script:mappingLifecycleEvidence | Where-Object {
+            [int]$_.external_port -eq 51902 -and
+            [string]$_.phase -ceq 'owned_mapping_removed'
+        }).Count -eq 1) `
+    -Message 'Normal exact UPnP Add/Get/Delete lifecycle is invalid.'
+
+$postReadDescription = Get-R01UpnpOwnershipDescription -Nonce $nonce `
+    -Role SERVER -ExternalPort 51903 -InternalPort 51903 `
+    -InternalClient '192.168.1.2'
+$postReadOwned = Add-R01OwnedUpnpMapping -Backend $fakeBackend `
+    -ExternalPort 51903 -InternalPort 51903 `
+    -InternalClient '192.168.1.2' -Description $postReadDescription
+$fakeMappings.fail_reads_after_remove = $true
+$postReadRemoved = Remove-R01OwnedUpnpMapping -Backend $fakeBackend `
+    -Owned $postReadOwned
+Assert-R01 -Condition (-not [bool]$postReadRemoved.resolved -and
+    -not $fakeMappings.slots.ContainsKey('51903/TCP')) `
+    -Message 'Post-delete read failure was treated as verified cleanup.'
+$fakeMappings.fail_reads = $false
+$fakeMappings.fail_reads_after_remove = $false
+
+$deleteFailureDescription = Get-R01UpnpOwnershipDescription -Nonce $nonce `
+    -Role SERVER -ExternalPort 51904 -InternalPort 51904 `
+    -InternalClient '192.168.1.2'
+$deleteFailureOwned = Add-R01OwnedUpnpMapping -Backend $fakeBackend `
+    -ExternalPort 51904 -InternalPort 51904 `
+    -InternalClient '192.168.1.2' -Description $deleteFailureDescription
+$fakeMappings.throw_on_remove = $true
+$deleteOutcome = Remove-R01OwnedUpnpMapping `
+    -Backend $fakeBackend -Owned $deleteFailureOwned
+$deleteFailedClosed = -not [bool]$deleteOutcome.resolved
+Assert-R01 -Condition ($deleteFailedClosed -and
+    $fakeMappings.slots.ContainsKey('51904/TCP')) `
+    -Message 'UPnP delete failure was treated as completed cleanup.'
+$fakeMappings.throw_on_remove = $false
+$fakeMappings.slots.Remove('51904/TCP')
+
+$foreignDescription = Get-R01UpnpOwnershipDescription -Nonce $nonce `
+    -Role PROBE -ExternalPort 51901 -InternalPort 51901 `
+    -InternalClient '192.168.1.2'
+$fakeMappings.slots['51901/TCP'] = [pscustomobject]@{
+    Description = $foreignDescription; InternalClient = '192.168.1.2'
+    InternalPort = 51901; ExternalIPAddress = ''; Enabled = $true
+}
+$fakeBackendIdentity = Get-R01UpnpBackendEvidence -Backend $fakeBackend
+$foreignOutcome = Remove-R01OwnedUpnpMapping `
+        -Backend $fakeBackend -Owned ([pscustomobject]@{
+            external_port = 51901; internal_port = 51901
+            internal_client = '192.168.1.2'; protocol = 'TCP'
+            description = $ownedDescription; backend = 'com'
+            backend_identity_sha256 = $fakeBackendIdentity.identity_sha256
+        })
+Assert-R01 -Condition ([bool]$foreignOutcome.resolved -and
+    [bool]$foreignOutcome.foreign_preserved -and
+    -not [bool]$foreignOutcome.deleted -and
+    $fakeMappings.slots.Count -eq 1) `
+    -Message 'UPnP cleanup removed a mapping with foreign ownership.'
+$fakeMappings.slots.Clear()
+
+$strandedDescription = Get-R01UpnpOwnershipDescription -Nonce $nonce `
+    -Role SERVER -ExternalPort 51907 -InternalPort 51907 `
+    -InternalClient '192.168.1.2'
+$fakeMappings.fail_reads_after_add = $true
+$strandedRaised = $false
+try {
+    $null = Add-R01OwnedUpnpMapping -Backend $fakeBackend `
+        -ExternalPort 51907 -InternalPort 51907 `
+        -InternalClient '192.168.1.2' -Description $strandedDescription
+} catch { $strandedRaised = $true }
+Assert-R01 -Condition ($strandedRaised -and
+    $fakeMappings.slots.ContainsKey('51907/TCP')) `
+    -Message 'Stranded mapping fixture did not reproduce the failure window.'
+$fakeMappings.fail_reads = $false
+$fakeMappings.fail_reads_after_add = $false
+$strandedCandidate = @($script:mappingCleanupCandidates | Where-Object {
+        [int]$_.external_port -eq 51907
+    })
+Assert-R01 -Condition ($strandedCandidate.Count -eq 1) `
+    -Message 'Pre-mutation cleanup candidate was not registered exactly once.'
+$strandedOutcome = Remove-R01OwnedUpnpMapping -Backend $fakeBackend `
+    -Owned $strandedCandidate[0]
+Assert-R01 -Condition ([bool]$strandedOutcome.resolved -and
+    [bool]$strandedOutcome.deleted -and
+    -not $fakeMappings.slots.ContainsKey('51907/TCP')) `
+    -Message 'Stranded owned mapping was not recovered by final cleanup.'
+
+Assert-R01UpnpHttpUri -Uri ([Uri]'http://192.168.1.1:5000/root.xml') `
+    -GatewayAddress '192.168.1.1'
+foreach ($unsafeUri in @(
+    'https://192.168.1.1/root.xml',
+    'http://192.168.1.2/root.xml',
+    'http://router.local/root.xml',
+    'http://user@192.168.1.1/root.xml')) {
+    $uriRejected = $false
+    try {
+        Assert-R01UpnpHttpUri -Uri ([Uri]$unsafeUri) `
+            -GatewayAddress '192.168.1.1'
+    } catch { $uriRejected = $true }
+    Assert-R01 $uriRejected "Unsafe UPnP URI was accepted: $unsafeUri"
+}
+
+$faultResponse = [pscustomobject]@{
+    status_code = 500
+    body = @'
+<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body><s:Fault>
+    <faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring>
+    <detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
+      <errorCode>714</errorCode>
+      <errorDescription>NoSuchEntryInArray</errorDescription>
+    </UPnPError></detail>
+  </s:Fault></s:Body>
+</s:Envelope>
+'@
+}
+Assert-R01 -Condition (
+    (Get-R01UpnpSoapFaultCode -Response $faultResponse) -eq 714) `
+    -Message 'UPnP SOAP fault 714 was not parsed exactly.'
+foreach ($invalidFault in @(
+    [pscustomobject]@{
+        status_code = 404; body = $faultResponse.body
+    },
+    [pscustomobject]@{
+        status_code = 500
+        body = '<root><errorCode>714</errorCode></root>'
+    },
+    [pscustomobject]@{
+        status_code = 500
+        body = '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>714</errorCode><errorCode>714</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>'
+    },
+    [pscustomobject]@{
+        status_code = 500
+        body = $faultResponse.body.Replace(
+            '<errorCode>714</errorCode>', '<errorCode>0714</errorCode>')
+    },
+    [pscustomobject]@{
+        status_code = 500
+        body = $faultResponse.body.Replace(
+            '<faultstring>UPnPError</faultstring>',
+            '<faultstring>not-upnp</faultstring>')
+    },
+    [pscustomobject]@{
+        status_code = 500
+        body = $faultResponse.body.Replace(
+            '</s:Fault></s:Body>', '</s:Fault><extra /></s:Body>')
+    }
+)) {
+    Assert-R01 -Condition (
+        $null -eq (Get-R01UpnpSoapFaultCode -Response $invalidFault)) `
+        -Message 'Malformed or non-SOAP UPnP fault was accepted.'
+}
+
+$throwingMappings = [pscustomobject]@{}
+$throwingMappings | Add-Member ScriptMethod Item {
+    param($external, $protocol)
+    throw 'simulated COM read failure'
+}
+$comReadFailedClosed = $false
+try {
+    $null = Get-R01UpnpMapping -Backend ([pscustomobject]@{
+            kind = 'com'; mappings = $throwingMappings
+        }) -ExternalPort 51901
+} catch {
+    $comReadFailedClosed = $_.Exception.Message -match 'absence is unproven'
+}
+Assert-R01 -Condition $comReadFailedClosed `
+    -Message 'COM mapping read failure was converted into false absence.'
+
+$soapBackend = [pscustomobject]@{
+    kind = 'soap'
+    service_type = 'urn:schemas-upnp-org:service:WANIPConnection:1'
+}
+$soapSuccess = [pscustomobject]@{
+    status_code = 200
+    body = @'
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:GetSpecificPortMappingEntryResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1">
+      <NewInternalPort>51901</NewInternalPort>
+      <NewInternalClient>192.168.1.2</NewInternalClient>
+      <NewEnabled>1</NewEnabled>
+      <NewPortMappingDescription>owned</NewPortMappingDescription>
+      <NewLeaseDuration>0</NewLeaseDuration>
+    </u:GetSpecificPortMappingEntryResponse>
+  </s:Body>
+</s:Envelope>
+'@
+}
+$soapElement = Get-R01UpnpSoapResponseElement -Backend $soapBackend `
+    -Action GetSpecificPortMappingEntry -Response $soapSuccess
+Assert-R01 -Condition (
+    (Get-R01UpnpSoapChildValue -ResponseElement $soapElement `
+        -Name NewInternalClient) -ceq '192.168.1.2') `
+    -Message 'Strict SOAP success response was not parsed.'
+foreach ($invalidSuccess in @(
+    $soapSuccess.body.Replace(
+        '</s:Body>', '<extra /></s:Body>'),
+    $soapSuccess.body.Replace(
+        'urn:schemas-upnp-org:service:WANIPConnection:1',
+        'urn:schemas-upnp-org:service:WANIPConnection:2'),
+    $soapSuccess.body.Replace(
+        '<NewInternalClient>192.168.1.2</NewInternalClient>',
+        '<NewInternalClient>192.168.1.2</NewInternalClient><NewInternalClient>192.168.1.3</NewInternalClient>'),
+    $soapSuccess.body.Replace(
+        '<NewInternalClient>192.168.1.2</NewInternalClient>',
+        '<u:NewInternalClient>192.168.1.2</u:NewInternalClient>')
+)) {
+    $successRejected = $false
+    try {
+        $invalidElement = Get-R01UpnpSoapResponseElement `
+            -Backend $soapBackend -Action GetSpecificPortMappingEntry `
+            -Response ([pscustomobject]@{
+                status_code = 200; body = $invalidSuccess
+            })
+        $null = Get-R01UpnpSoapChildValue `
+            -ResponseElement $invalidElement -Name NewInternalClient
+    } catch { $successRejected = $true }
+    Assert-R01 -Condition $successRejected `
+        -Message 'Malformed or ambiguous SOAP success was accepted.'
+}
+
+$script:soapSlots = @{}
+$script:soapDeleteCount = 0
+$script:soapFaultBody = [string]$faultResponse.body
+function Invoke-R01UpnpSoapAction {
+    param($Backend, $Action, $Arguments)
+    $serviceType = [string]$Backend.service_type
+    switch ($Action) {
+        'AddPortMapping' {
+            $port = [int]$Arguments['NewExternalPort']
+            $script:soapSlots["$port/TCP"] = [pscustomobject]@{
+                internal_port = [int]$Arguments['NewInternalPort']
+                internal_client = [string]$Arguments['NewInternalClient']
+                enabled = [string]$Arguments['NewEnabled']
+                description = [string]$Arguments['NewPortMappingDescription']
+                lease = [string]$Arguments['NewLeaseDuration']
+            }
+            return [pscustomobject]@{
+                status_code = 200
+                body = '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:AddPortMappingResponse xmlns:u="' +
+                    $serviceType + '" /></s:Body></s:Envelope>'
+            }
+        }
+        'GetSpecificPortMappingEntry' {
+            $port = [int]$Arguments['NewExternalPort']
+            $slot = $script:soapSlots["$port/TCP"]
+            if ($null -eq $slot) {
+                return [pscustomobject]@{
+                    status_code = 500; body = $script:soapFaultBody
+                }
+            }
+            $client = [Security.SecurityElement]::Escape(
+                [string]$slot.internal_client)
+            $description = [Security.SecurityElement]::Escape(
+                [string]$slot.description)
+            return [pscustomobject]@{
+                status_code = 200
+                body = '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetSpecificPortMappingEntryResponse xmlns:u="' +
+                    $serviceType + '"><NewInternalPort>' +
+                    [string]$slot.internal_port + '</NewInternalPort>' +
+                    '<NewInternalClient>' + $client + '</NewInternalClient>' +
+                    '<NewEnabled>' + [string]$slot.enabled + '</NewEnabled>' +
+                    '<NewPortMappingDescription>' + $description +
+                    '</NewPortMappingDescription><NewLeaseDuration>' +
+                    [string]$slot.lease + '</NewLeaseDuration>' +
+                    '</u:GetSpecificPortMappingEntryResponse></s:Body></s:Envelope>'
+            }
+        }
+        'GetExternalIPAddress' {
+            return [pscustomobject]@{
+                status_code = 200
+                body = '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetExternalIPAddressResponse xmlns:u="' +
+                    $serviceType + '"><NewExternalIPAddress></NewExternalIPAddress>' +
+                    '</u:GetExternalIPAddressResponse></s:Body></s:Envelope>'
+            }
+        }
+        'DeletePortMapping' {
+            $port = [int]$Arguments['NewExternalPort']
+            $null = $script:soapSlots.Remove("$port/TCP")
+            $script:soapDeleteCount++
+            return [pscustomobject]@{
+                status_code = 200
+                body = '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:DeletePortMappingResponse xmlns:u="' +
+                    $serviceType + '" /></s:Body></s:Envelope>'
+            }
+        }
+        default { throw "Unexpected mocked SOAP action: $Action" }
+    }
+}
+$soapLifecycleBackend = [pscustomobject]@{
+    kind = 'soap'
+    local_address = '192.168.1.2'
+    gateway_address = '192.168.1.1'
+    control_uri = 'http://192.168.1.1:5000/control'
+    service_type = 'urn:schemas-upnp-org:service:WANIPConnection:1'
+}
+$soapDescription = Get-R01UpnpOwnershipDescription -Nonce $nonce `
+    -Role SERVER -ExternalPort 51906 -InternalPort 51906 `
+    -InternalClient '192.168.1.2'
+try {
+    $soapOwned = Add-R01OwnedUpnpMapping -Backend $soapLifecycleBackend `
+        -ExternalPort 51906 -InternalPort 51906 `
+        -InternalClient '192.168.1.2' -Description $soapDescription
+} catch {
+    $latestLifecycle = @($script:mappingLifecycleEvidence)[-1] |
+        ConvertTo-Json -Compress
+    throw "Mocked SOAP lifecycle failed: $latestLifecycle"
+}
+$soapRemoved = Remove-R01OwnedUpnpMapping -Backend $soapLifecycleBackend `
+    -Owned $soapOwned
+Assert-R01 -Condition ([bool]$soapRemoved.resolved -and
+    [bool]$soapRemoved.deleted -and $script:soapDeleteCount -eq 1 -and
+    $script:soapSlots.Count -eq 0 -and
+    [string]$soapOwned.backend -ceq 'soap' -and
+    [string]$soapOwned.backend_identity_sha256 -match '^[0-9a-f]{64}$') `
+    -Message 'Mocked SOAP exact Add/Get/Delete lifecycle is invalid.'
+
 $remoteText = Get-Content -LiteralPath $remotePath -Raw
 $controllerText = Get-Content -LiteralPath $controllerPath -Raw
+$serverText = Get-Content -LiteralPath $serverPath -Raw
+$upnpText = Get-Content -LiteralPath $paths[7] -Raw
 $agentText = Get-Content -LiteralPath $paths[4] -Raw
 $watchdogText = Get-Content -LiteralPath $paths[2] -Raw
 foreach ($pattern in @('EseNetLabEnabled\s*=\s*''0''',
@@ -590,10 +1021,30 @@ Assert-R01 -Condition ($agentText -match 'protocol\s*=\s*2' -and
     $agentText -match 'cooperative_cancel') `
     -Message 'Agent ping v2 capability/clock contract is absent.'
 $pingIndex = $controllerText.IndexOf('-Command ping')
-$mutationIndex = $controllerText.IndexOf('HNetCfg.NATUPnP')
+$mutationIndex = $controllerText.IndexOf('New-R01UpnpBackend')
+$readyIndex = $controllerText.IndexOf(
+    "Test-Path -LiteralPath `$readyPath")
+$mappingCleanupIndex = $controllerText.IndexOf(
+    '# On an error path, release exact owned mappings')
+$serverStopIndex = $controllerText.IndexOf(
+    "Join-Path `$runRoot 'stop-server.flag'")
 Assert-R01 -Condition ($pingIndex -ge 0 -and $mutationIndex -gt $pingIndex -and
     $controllerText -match 'clockBoundMs\s*-gt\s*1000') `
     -Message 'Clock/agent preflight is not before H1 mutation.'
+Assert-R01 -Condition ($readyIndex -ge 0 -and
+    $mutationIndex -gt $readyIndex) `
+    -Message 'UPnP mutation is not gated by the live server READY state.'
+Assert-R01 -Condition ($mappingCleanupIndex -ge 0 -and
+    $serverStopIndex -gt $mappingCleanupIndex -and
+    $serverText -match "phase\s*=\s*'pass_ready'" -and
+    $serverText -match "phase\s+-ceq\s*'pass_ready'") `
+    -Message 'UPnP cleanup is not completed while listeners remain alive.'
+Assert-R01 -Condition ($upnpText -match 'BindIPEndPointDelegate' -and
+    $upnpText -match 'ConnectionGroupName' -and
+    $upnpText -match 'absoluteDeadline' -and
+    $controllerText -match 'backend_identity_sha256' -and
+    $controllerText -match 'resolvedMappingKeys') `
+    -Message 'SOAP route binding, deadline or backend identity is incomplete.'
 Assert-R01 -Condition ($watchdogText -match 'home_restored' -and
     $remoteText -match 'Start-R01WifiWatchdog' -and
     $remoteText -match 'Complete-R01WifiWatchdog') `
@@ -637,11 +1088,23 @@ Assert-R01 -Condition ($controllerText -match
     address_cases = $addressCases.Count
     address_implementations = 2
     address_assertions = $addressCases.Count * 2
-    adjudication_cases = 16
+    adjudication_cases = 22
     zip_manifest_cases = 6
     server_frame_sequence = 'login+post-login+EOF+second-login'
     cancellation_and_deadline = $true
     upnp_add_rollback = $true
+    upnp_pre_mutation_cleanup_candidate = $true
+    upnp_exact_soap_lifecycle = $true
+    upnp_cleanup_fail_closed = $true
+    upnp_fault_and_success_strict = $true
+    upnp_backend_identity_bound = $true
+    upnp_http_source_binding_contract = $true
+    upnp_short_ownership_tag = $true
+    upnp_foreign_mapping_preserved = $true
+    upnp_uri_scope_fail_closed = $true
+    upnp_listener_ready_before_mapping = $true
+    upnp_listeners_held_through_cleanup = $true
+    nonce_bound_probe_cross_evidence = $true
     clock_preflight_before_mutation = $true
     independent_wifi_watchdog = $true
     account_registry_contract = $true

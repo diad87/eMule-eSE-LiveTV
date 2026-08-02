@@ -32,6 +32,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot 'common.ps1')
+. (Join-Path $PSScriptRoot 'v91_r01_upnp.ps1')
 
 $parsedAgentIPv4 = $null
 if (-not [Net.IPAddress]::TryParse($AgentIPv4, [ref]$parsedAgentIPv4) -or
@@ -519,56 +520,141 @@ function Test-R01LocalProcessIdentity {
     } catch { return $false }
 }
 
+function Get-R01UpnpBackendEvidence {
+    param([Parameter(Mandatory = $true)]$Backend)
+    $kind = [string]$Backend.kind
+    if ($kind -ceq 'com') {
+        return [pscustomobject][ordered]@{
+            kind = 'com'
+            formal_eligible = $false
+            local_address = ''
+            gateway_address = ''
+            control_uri = ''
+            service_type = ''
+            identity_sha256 = Get-R01TextSha256 -Text (
+                'ese.v91.r01-upnp-backend/v1|com|unbound')
+        }
+    }
+    if ($kind -cne 'soap') { throw 'Unknown R01 UPnP backend identity.' }
+    $localAddress = [string]$Backend.local_address
+    $gatewayAddress = [string]$Backend.gateway_address
+    $controlUri = [Uri]([string]$Backend.control_uri)
+    $serviceType = [string]$Backend.service_type
+    $localIp = $null
+    $gatewayIp = $null
+    if (-not [Net.IPAddress]::TryParse($localAddress, [ref]$localIp) -or
+        $localIp.AddressFamily -ne
+            [Net.Sockets.AddressFamily]::InterNetwork -or
+        -not [Net.IPAddress]::TryParse($gatewayAddress, [ref]$gatewayIp) -or
+        $gatewayIp.AddressFamily -ne
+            [Net.Sockets.AddressFamily]::InterNetwork -or
+        $serviceType -cnotmatch
+            '^urn:schemas-upnp-org:service:(WANIP|WANPPP)Connection:[0-9]+$') {
+        throw 'SOAP backend identity is incomplete or invalid.'
+    }
+    Assert-R01UpnpHttpUri -Uri $controlUri `
+        -GatewayAddress $gatewayAddress
+    $canonical = 'ese.v91.r01-upnp-backend/v1|soap|{0}|{1}|{2}|{3}' -f
+        $localIp.ToString(), $gatewayIp.ToString(),
+        $controlUri.AbsoluteUri, $serviceType
+    return [pscustomobject][ordered]@{
+        kind = 'soap'
+        formal_eligible = $true
+        local_address = $localIp.ToString()
+        gateway_address = $gatewayIp.ToString()
+        control_uri = $controlUri.AbsoluteUri
+        service_type = $serviceType
+        identity_sha256 = Get-R01TextSha256 -Text $canonical
+    }
+}
+
 function Add-R01OwnedUpnpMapping {
     param(
-        [Parameter(Mandatory = $true)]$Mappings,
+        [Parameter(Mandatory = $true)]$Backend,
         [Parameter(Mandatory = $true)][int]$ExternalPort,
         [Parameter(Mandatory = $true)][int]$InternalPort,
         [Parameter(Mandatory = $true)][string]$InternalClient,
         [Parameter(Mandatory = $true)][string]$Description
     )
-    try {
-        $existing = $Mappings.Item($ExternalPort, 'TCP')
-    } catch { $existing = $null }
+    if ($Description -notmatch '^eR01-[SPF]-[0-9a-f]{24}$' -or
+        $Description.Length -gt 32) {
+        throw 'UPnP ownership description does not satisfy the R01 contract.'
+    }
+    $backendEvidence = Get-R01UpnpBackendEvidence -Backend $Backend
+    $existing = Get-R01UpnpMapping -Backend $Backend `
+        -ExternalPort $ExternalPort
     if ($null -ne $existing) {
         throw "TCP UPnP port $ExternalPort already has a mapping."
     }
+    # Register the complete cleanup tuple before the first router mutation.
+    # Even if Add succeeds remotely and its response/readback fails locally,
+    # catch/finally can later re-read and delete only this exact mapping.
+    $cleanupCandidate = [pscustomobject][ordered]@{
+        external_port = $ExternalPort
+        internal_port = $InternalPort
+        internal_client = $InternalClient
+        protocol = 'TCP'
+        description = $Description
+        external_address = ''
+        backend = [string]$Backend.kind
+        backend_identity_sha256 = [string]$backendEvidence.identity_sha256
+    }
+    $script:mappingCleanupCandidates.Add($cleanupCandidate)
     $created = $null
     $addError = ''
     try {
-        $created = $Mappings.Add($ExternalPort, 'TCP', $InternalPort,
-            $InternalClient, $true, $Description)
+        $created = Add-R01UpnpMapping -Backend $Backend `
+            -ExternalPort $ExternalPort -InternalPort $InternalPort `
+            -InternalClient $InternalClient -Description $Description
     } catch { $addError = $_.Exception.Message }
+    $currentReadComplete = $true
     try {
-        $current = $Mappings.Item($ExternalPort, 'TCP')
-    } catch { $current = $null }
+        $current = Get-R01UpnpMapping -Backend $Backend `
+            -ExternalPort $ExternalPort
+    } catch {
+        $current = $null
+        $currentReadComplete = $false
+    }
     $valid = $null -ne $created -and $null -ne $current -and
         [string]$created.Description -ceq $Description -and
         [string]$created.InternalClient -ceq $InternalClient -and
         [int]$created.InternalPort -eq $InternalPort -and
+        [bool]$created.Enabled -and
         [string]$current.Description -ceq $Description -and
         [string]$current.InternalClient -ceq $InternalClient -and
-        [int]$current.InternalPort -eq $InternalPort
+        [int]$current.InternalPort -eq $InternalPort -and
+        [bool]$current.Enabled
     if (-not $valid) {
         $ownedCurrent = $null -ne $current -and
             [string]$current.Description -ceq $Description -and
             [string]$current.InternalClient -ceq $InternalClient -and
-            [int]$current.InternalPort -eq $InternalPort
+            [int]$current.InternalPort -eq $InternalPort -and
+            [bool]$current.Enabled
         $rollbackAttempted = $false
-        $rollbackComplete = $null -eq $current
+        $rollbackComplete = $currentReadComplete -and $null -eq $current
         if ($ownedCurrent) {
             $rollbackAttempted = $true
             try {
-                $Mappings.Remove($ExternalPort, 'TCP')
+                Remove-R01UpnpMapping -Backend $Backend `
+                    -ExternalPort $ExternalPort
+                $rollbackReadComplete = $true
                 try {
-                    $afterRollback = $Mappings.Item($ExternalPort, 'TCP')
-                } catch { $afterRollback = $null }
-                $rollbackComplete = $null -eq $afterRollback
+                    $afterRollback = Get-R01UpnpMapping -Backend $Backend `
+                        -ExternalPort $ExternalPort
+                } catch {
+                    $afterRollback = $null
+                    $rollbackReadComplete = $false
+                }
+                $rollbackComplete = $rollbackReadComplete -and
+                    $null -eq $afterRollback
             } catch { $rollbackComplete = $false }
         }
         $script:mappingLifecycleEvidence.Add([pscustomobject][ordered]@{
                 external_port = $ExternalPort
                 protocol = 'TCP'
+                backend = [string]$Backend.kind
+                backend_identity_sha256 =
+                    [string]$backendEvidence.identity_sha256
                 phase = 'add_validation_failed'
                 add_error = $addError
                 exact_owned_mapping_observed = $ownedCurrent
@@ -582,59 +668,100 @@ function Add-R01OwnedUpnpMapping {
     $script:mappingLifecycleEvidence.Add([pscustomobject][ordered]@{
             external_port = $ExternalPort
             protocol = 'TCP'
+            backend = [string]$Backend.kind
+            backend_identity_sha256 =
+                [string]$backendEvidence.identity_sha256
             phase = 'owned_mapping_created'
             add_error = ''
             exact_owned_mapping_observed = $true
             rollback_attempted = $false
             rollback_complete = $null
         })
-    return [pscustomobject][ordered]@{
-        external_port = $ExternalPort
-        internal_port = $InternalPort
-        internal_client = $InternalClient
-        protocol = 'TCP'
-        description = $Description
-        external_address = [string]$created.ExternalIPAddress
-    }
+    $cleanupCandidate.external_address = [string]$created.ExternalIPAddress
+    return $cleanupCandidate
 }
 
 function Remove-R01OwnedUpnpMapping {
     param(
-        [Parameter(Mandatory = $true)]$Mappings,
+        [Parameter(Mandatory = $true)]$Backend,
         [Parameter(Mandatory = $true)]$Owned
     )
+    $result = [ordered]@{
+        resolved = $false
+        deleted = $false
+        foreign_preserved = $false
+        phase = 'owned_mapping_remove_failed'
+    }
+    $backendEvidence = $null
     try {
-        $current = $Mappings.Item([int]$Owned.external_port, 'TCP')
-        if ($null -ne $current -and
+        $backendEvidence = Get-R01UpnpBackendEvidence -Backend $Backend
+        if ([string]$Owned.backend -cne [string]$Backend.kind) {
+            throw 'UPnP backend identity changed before cleanup.'
+        }
+        if ([string]$Owned.protocol -cne 'TCP') {
+            throw 'UPnP owned mapping protocol changed before cleanup.'
+        }
+        if ([string]$Owned.backend_identity_sha256 -cne
+            [string]$backendEvidence.identity_sha256) {
+            throw 'UPnP backend endpoint changed before cleanup.'
+        }
+        $current = Get-R01UpnpMapping -Backend $Backend `
+            -ExternalPort ([int]$Owned.external_port)
+        if ($null -eq $current) {
+            $result.resolved = $true
+            $result.phase = 'owned_mapping_absent'
+        } elseif (
             [string]$current.Description -ceq [string]$Owned.description -and
             [string]$current.InternalClient -ceq
                 [string]$Owned.internal_client -and
-            [int]$current.InternalPort -eq [int]$Owned.internal_port) {
-            $Mappings.Remove([int]$Owned.external_port, 'TCP')
+            [int]$current.InternalPort -eq [int]$Owned.internal_port -and
+            [bool]$current.Enabled) {
+            Remove-R01UpnpMapping -Backend $Backend `
+                -ExternalPort ([int]$Owned.external_port)
+            $remainingReadComplete = $true
             try {
-                $remaining = $Mappings.Item(
-                    [int]$Owned.external_port, 'TCP')
-            } catch { $remaining = $null }
-            $removed = $null -eq $remaining
-            $script:mappingLifecycleEvidence.Add(
-                [pscustomobject][ordered]@{
-                    external_port = [int]$Owned.external_port
-                    protocol = 'TCP'
-                    phase = if ($removed) {
-                        'owned_mapping_removed'
-                    } else { 'owned_mapping_remove_failed' }
-                    rollback_complete = $removed
-                })
-            return $removed
+                $remaining = Get-R01UpnpMapping -Backend $Backend `
+                    -ExternalPort ([int]$Owned.external_port)
+            } catch {
+                $remaining = $null
+                $remainingReadComplete = $false
+            }
+            if ($remainingReadComplete -and $null -eq $remaining) {
+                $result.resolved = $true
+                $result.deleted = $true
+                $result.phase = 'owned_mapping_removed'
+            } elseif ($remainingReadComplete -and
+                ([string]$remaining.Description -cne
+                    [string]$Owned.description -or
+                [string]$remaining.InternalClient -cne
+                    [string]$Owned.internal_client -or
+                [int]$remaining.InternalPort -ne
+                    [int]$Owned.internal_port -or
+                -not [bool]$remaining.Enabled)) {
+                $result.resolved = $true
+                $result.deleted = $true
+                $result.foreign_preserved = $true
+                $result.phase = 'foreign_mapping_observed_after_delete'
+            }
+        } else {
+            $result.resolved = $true
+            $result.foreign_preserved = $true
+            $result.phase = 'foreign_mapping_preserved'
         }
     } catch {}
     $script:mappingLifecycleEvidence.Add([pscustomobject][ordered]@{
             external_port = [int]$Owned.external_port
             protocol = 'TCP'
-            phase = 'owned_mapping_remove_failed'
-            rollback_complete = $false
+            backend = [string]$Backend.kind
+            backend_identity_sha256 = if ($null -ne $backendEvidence) {
+                [string]$backendEvidence.identity_sha256
+            } else { '' }
+            phase = [string]$result.phase
+            rollback_complete = [bool]$result.resolved
+            deleted = [bool]$result.deleted
+            foreign_preserved = [bool]$result.foreign_preserved
         })
-    return $false
+    return [pscustomobject]$result
 }
 
 function Test-R01TransitionEvidence {
@@ -707,12 +834,79 @@ function Test-R01TransitionEvidence {
     } catch { return $false }
 }
 
+function Test-R01ExactProbeBinding {
+    param(
+        [Parameter(Mandatory = $true)]$RemoteProbe,
+        [Parameter(Mandatory = $true)]$ServerProbe,
+        [Parameter(Mandatory = $true)][string]$ServerListenAddress,
+        [Parameter(Mandatory = $true)][AllowEmptyString()]
+        [string]$ExpectedProbeAddress,
+        [Parameter(Mandatory = $true)][int]$ExpectedProbePort,
+        [Parameter(Mandatory = $true)][string]$ExpectedNonce
+    )
+    try {
+        $expectedAddress = $null
+        $remoteAddress = $null
+        $selectedRouteAddress = $null
+        $serverListen = $null
+        $serverLocal = $null
+        if (-not [Net.IPAddress]::TryParse(
+                $ExpectedProbeAddress, [ref]$expectedAddress) -or
+            $expectedAddress.AddressFamily -ne
+                [Net.Sockets.AddressFamily]::InterNetwork -or
+            -not [Net.IPAddress]::TryParse(
+                [string]$RemoteProbe.remote_address, [ref]$remoteAddress) -or
+            -not [Net.IPAddress]::TryParse(
+                [string]$RemoteProbe.selected_route.remote_address,
+                [ref]$selectedRouteAddress) -or
+            -not [Net.IPAddress]::TryParse(
+                $ServerListenAddress, [ref]$serverListen) -or
+            -not [Net.IPAddress]::TryParse(
+                [string]$ServerProbe.local_address, [ref]$serverLocal)) {
+            return $false
+        }
+        $remoteAt = [DateTimeOffset]::MinValue
+        $serverAt = [DateTimeOffset]::MinValue
+        if (-not [DateTimeOffset]::TryParse(
+                [string]$RemoteProbe.at_utc, [ref]$remoteAt) -or
+            -not [DateTimeOffset]::TryParse(
+                [string]$ServerProbe.accepted_at_utc, [ref]$serverAt)) {
+            return $false
+        }
+        $timeDeltaSeconds = [Math]::Abs(
+            ($remoteAt.ToUniversalTime() -
+                $serverAt.ToUniversalTime()).TotalSeconds)
+        $nonceSha256 = Get-R01TextSha256 -Text $ExpectedNonce
+        return (
+            [string]$RemoteProbe.schema -ceq
+                'ese.v91.r01-mobile-probe/v1' -and
+            [string]$ServerProbe.schema -ceq
+                'ese.v91.r01-server-probe/v1' -and
+            [string]$RemoteProbe.status -ceq 'PASS' -and
+            [string]$ServerProbe.status -ceq 'PASS' -and
+            $expectedAddress.Equals($remoteAddress) -and
+            $expectedAddress.Equals($selectedRouteAddress) -and
+            $serverListen.Equals($serverLocal) -and
+            [int]$RemoteProbe.remote_port -eq $ExpectedProbePort -and
+            [int]$ServerProbe.local_port -eq $ExpectedProbePort -and
+            [int]$RemoteProbe.local_port -ge 1 -and
+            [int]$RemoteProbe.local_port -le 65535 -and
+            [int]$ServerProbe.remote_port -ge 1 -and
+            [int]$ServerProbe.remote_port -le 65535 -and
+            [string]$RemoteProbe.nonce_sha256 -ceq $nonceSha256 -and
+            [string]$ServerProbe.nonce_sha256 -ceq $nonceSha256 -and
+            $timeDeltaSeconds -le 20.0)
+    } catch { return $false }
+}
+
 function Test-R01EvidenceBinding {
     param(
         [Parameter(Mandatory = $true)]$Remote,
         [Parameter(Mandatory = $true)]$Server,
         [Parameter(Mandatory = $true)]$ExpectedCandidate,
         [Parameter(Mandatory = $true)][string]$ExpectedNonce,
+        [Parameter(Mandatory = $true)][AllowEmptyString()]
+        [string]$ExpectedProbeAddress,
         [Parameter(Mandatory = $true)][int]$ExpectedServerPort,
         [Parameter(Mandatory = $true)][int]$ExpectedProbePort,
         [Parameter(Mandatory = $true)][int]$ExpectedCandidateTcpPort
@@ -791,6 +985,13 @@ function Test-R01EvidenceBinding {
             [int]$Server.probe_port -eq $ExpectedProbePort -and
             [int]$Server.initial.advertised_tcp_port -eq
                 $ExpectedCandidateTcpPort -and
+            (Test-R01ExactProbeBinding `
+                -RemoteProbe $Remote.topology.mobile_public_probe `
+                -ServerProbe $Server.topology_probe `
+                -ServerListenAddress ([string]$Server.listen_address) `
+                -ExpectedProbeAddress $ExpectedProbeAddress `
+                -ExpectedProbePort $ExpectedProbePort `
+                -ExpectedNonce $ExpectedNonce) -and
             (Test-R01TransitionEvidence -Remote $Remote -Server $Server)
     } catch { return $false }
 }
@@ -801,6 +1002,8 @@ function Test-R01AggregatePass {
         [Parameter(Mandatory = $true)]$Server,
         [Parameter(Mandatory = $true)]$ExpectedCandidate,
         [Parameter(Mandatory = $true)][string]$ExpectedNonce,
+        [Parameter(Mandatory = $true)][AllowEmptyString()]
+        [string]$ExpectedProbeAddress,
         [Parameter(Mandatory = $true)][int]$ExpectedServerPort,
         [Parameter(Mandatory = $true)][int]$ExpectedProbePort,
         [Parameter(Mandatory = $true)][int]$ExpectedCandidateTcpPort
@@ -808,6 +1011,7 @@ function Test-R01AggregatePass {
     return (Test-R01EvidenceBinding -Remote $Remote -Server $Server `
             -ExpectedCandidate $ExpectedCandidate `
             -ExpectedNonce $ExpectedNonce `
+            -ExpectedProbeAddress $ExpectedProbeAddress `
             -ExpectedServerPort $ExpectedServerPort `
             -ExpectedProbePort $ExpectedProbePort `
             -ExpectedCandidateTcpPort $ExpectedCandidateTcpPort) -and
@@ -841,6 +1045,8 @@ function Test-R01ProductFailureProven {
         [Parameter(Mandatory = $true)]$Server,
         [Parameter(Mandatory = $true)]$ExpectedCandidate,
         [Parameter(Mandatory = $true)][string]$ExpectedNonce,
+        [Parameter(Mandatory = $true)][AllowEmptyString()]
+        [string]$ExpectedProbeAddress,
         [Parameter(Mandatory = $true)][int]$ExpectedServerPort,
         [Parameter(Mandatory = $true)][int]$ExpectedProbePort,
         [Parameter(Mandatory = $true)][int]$ExpectedCandidateTcpPort
@@ -848,6 +1054,7 @@ function Test-R01ProductFailureProven {
     return (Test-R01EvidenceBinding -Remote $Remote -Server $Server `
             -ExpectedCandidate $ExpectedCandidate `
             -ExpectedNonce $ExpectedNonce `
+            -ExpectedProbeAddress $ExpectedProbeAddress `
             -ExpectedServerPort $ExpectedServerPort `
             -ExpectedProbePort $ExpectedProbePort `
             -ExpectedCandidateTcpPort $ExpectedCandidateTcpPort) -and
@@ -863,6 +1070,8 @@ function Get-R01AggregateStatus {
         [AllowNull()]$Server,
         [Parameter(Mandatory = $true)]$ExpectedCandidate,
         [Parameter(Mandatory = $true)][string]$ExpectedNonce,
+        [Parameter(Mandatory = $true)][AllowEmptyString()]
+        [string]$ExpectedProbeAddress,
         [Parameter(Mandatory = $true)][int]$ExpectedServerPort,
         [Parameter(Mandatory = $true)][int]$ExpectedProbePort,
         [Parameter(Mandatory = $true)][int]$ExpectedCandidateTcpPort,
@@ -873,6 +1082,7 @@ function Get-R01AggregateStatus {
         (Test-R01ProductFailureProven -Remote $Remote -Server $Server `
             -ExpectedCandidate $ExpectedCandidate `
             -ExpectedNonce $ExpectedNonce `
+            -ExpectedProbeAddress $ExpectedProbeAddress `
             -ExpectedServerPort $ExpectedServerPort `
             -ExpectedProbePort $ExpectedProbePort `
             -ExpectedCandidateTcpPort $ExpectedCandidateTcpPort)) {
@@ -885,6 +1095,7 @@ function Get-R01AggregateStatus {
     if (Test-R01AggregatePass -Remote $Remote -Server $Server `
             -ExpectedCandidate $ExpectedCandidate `
             -ExpectedNonce $ExpectedNonce `
+            -ExpectedProbeAddress $ExpectedProbeAddress `
             -ExpectedServerPort $ExpectedServerPort `
             -ExpectedProbePort $ExpectedProbePort `
             -ExpectedCandidateTcpPort $ExpectedCandidateTcpPort) {
@@ -1129,12 +1340,16 @@ $expectedCandidate = [pscustomobject][ordered]@{
 $serverProcess = $null
 $serverProcessIdentity = $null
 $serverProcessTerminal = $false
-$mappings = $null
+$upnpBackend = $null
+$upnpBackendEvidence = $null
 $ownedMappings = [Collections.Generic.List[object]]::new()
+$mappingCleanupCandidates = [Collections.Generic.List[object]]::new()
 $mappingLifecycleEvidence = [Collections.Generic.List[object]]::new()
+$resolvedMappingKeys = [Collections.Generic.HashSet[string]]::new(
+    [StringComparer]::Ordinal)
 $ownedFirewallRules = [Collections.Generic.List[object]]::new()
 $firewallGroup = "eSE R01 Lab $nonce"
-$removedMappingCount = 0
+$deletedMappingCount = 0
 $removedFirewallRuleCount = 0
 $controllerFailure = ''
 $remoteResult = $null
@@ -1219,45 +1434,23 @@ try {
         throw 'Expected exactly one usable IPv4 on the H1 server NIC.'
     }
     $localAddress = [string]$localAddresses[0].IPAddress
+    $serverDefaultRoutes = @(Get-NetRoute `
+            -InterfaceIndex ([int]$adapter.ifIndex) -AddressFamily IPv4 `
+            -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+        Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_.NextHop) -and
+            [string]$_.NextHop -cne '0.0.0.0'
+        } | Sort-Object RouteMetric)
+    if ($serverDefaultRoutes.Count -lt 1) {
+        throw 'Selected H1 server NIC has no explicit IPv4 gateway.'
+    }
+    $gatewayAddress = [string]$serverDefaultRoutes[0].NextHop
     $controllerPortBaseline = @(Get-R01PortBaseline `
         -TcpPorts @($ServerPort, $ProbePort))
     if (@($controllerPortBaseline | Where-Object {
                 -not [bool]$_.available
             }).Count -ne 0) {
         throw 'R01 controlled server/probe ports are not clean before mutation.'
-    }
-
-    $nat = New-Object -ComObject HNetCfg.NATUPnP
-    $mappings = $nat.StaticPortMappingCollection
-    if ($null -eq $mappings) {
-        throw 'The router did not expose a UPnP static mapping collection.'
-    }
-    foreach ($definition in @(
-        @{ port = $ServerPort; suffix = 'SERVER' },
-        @{ port = $ProbePort; suffix = 'PROBE' }
-    )) {
-        $owned = Add-R01OwnedUpnpMapping -Mappings $mappings `
-            -ExternalPort $definition.port -InternalPort $definition.port `
-            -InternalClient $localAddress `
-            -Description "eSE-R01-$nonce-$($definition.suffix)"
-        $ownedMappings.Add($owned)
-    }
-    $reportedAddresses = @($ownedMappings | ForEach-Object external_address |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-            Select-Object -Unique)
-    if (-not [string]::IsNullOrWhiteSpace($MobileServerAddress)) {
-        $publicAddress = $MobileServerAddress
-        if ($reportedAddresses.Count -gt 0 -and
-            $reportedAddresses -notcontains $publicAddress) {
-            throw 'Requested public IPv4 differs from the UPnP mapping report.'
-        }
-    } elseif ($reportedAddresses.Count -eq 1) {
-        $publicAddress = [string]$reportedAddresses[0]
-    } else {
-        throw 'UPnP did not expose one unambiguous external IPv4 address.'
-    }
-    if ((Get-R01IPv4Class -Address $publicAddress) -cne 'global') {
-        throw 'Router endpoint is not a globally routable IPv4 address.'
     }
 
     foreach ($definition in @(
@@ -1318,6 +1511,54 @@ try {
             throw 'Timed out waiting for controlled server READY.'
         }
         Start-Sleep -Milliseconds 100
+    }
+
+    # This IGD requires a live target socket before AddPortMapping. Bring up
+    # the exact firewall/listener fixture first, then mutate the router.
+    $upnpBackend = New-R01UpnpBackend -LocalAddress $localAddress `
+        -GatewayAddress $gatewayAddress
+    $upnpBackendEvidence = Get-R01UpnpBackendEvidence -Backend $upnpBackend
+    if (-not [bool]$upnpBackendEvidence.formal_eligible) {
+        throw 'Selected UPnP backend is not eligible for formal R01.'
+    }
+    foreach ($definition in @(
+        @{ port = $ServerPort; suffix = 'SERVER' },
+        @{ port = $ProbePort; suffix = 'PROBE' }
+    )) {
+        $description = Get-R01UpnpOwnershipDescription -Nonce $nonce `
+            -Role $definition.suffix -ExternalPort $definition.port `
+            -InternalPort $definition.port -InternalClient $localAddress
+        $owned = Add-R01OwnedUpnpMapping -Backend $upnpBackend `
+            -ExternalPort $definition.port -InternalPort $definition.port `
+            -InternalClient $localAddress -Description $description
+        $ownedMappings.Add($owned)
+    }
+    $reportedAddresses = @($ownedMappings | ForEach-Object external_address |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique)
+    if (-not [string]::IsNullOrWhiteSpace($MobileServerAddress)) {
+        $publicAddress = $MobileServerAddress
+        if ($reportedAddresses.Count -gt 1) {
+            throw 'UPnP mappings reported ambiguous external IPv4 addresses.'
+        }
+        if ($reportedAddresses.Count -eq 1) {
+            $reportedIp = $null
+            $suppliedIp = $null
+            if (-not [Net.IPAddress]::TryParse(
+                    [string]$reportedAddresses[0], [ref]$reportedIp) -or
+                -not [Net.IPAddress]::TryParse(
+                    $publicAddress, [ref]$suppliedIp) -or
+                -not $reportedIp.Equals($suppliedIp)) {
+                throw 'Supplied public IPv4 differs from the UPnP report.'
+            }
+        }
+    } elseif ($reportedAddresses.Count -eq 1) {
+        $publicAddress = [string]$reportedAddresses[0]
+    } else {
+        throw 'No unambiguous H1 public IPv4 was supplied or reported.'
+    }
+    if ((Get-R01IPv4Class -Address $publicAddress) -cne 'global') {
+        throw 'Router endpoint is not a globally routable IPv4 address.'
     }
 
     [ordered]@{
@@ -1398,18 +1639,28 @@ try {
                 -OutputPath (Join-Path $runRoot "remote-$name") | Out-Null
         } catch {}
     }
-    [IO.File]::WriteAllText((Join-Path $runRoot 'stop-server.flag'), 'stop',
-        [Text.Encoding]::ASCII)
-    if (-not $serverProcess.WaitForExit(30000)) {
-        throw 'Controlled server did not stop after the remote cleanup.'
-    }
-    $serverProcessTerminal = $true
     $remoteResult = Get-Content -LiteralPath $remoteResultPath -Raw |
         ConvertFrom-Json
-    $serverResult = Get-Content -LiteralPath (
-        Join-Path $runRoot 'server-result.json') -Raw | ConvertFrom-Json
 } catch {
     $controllerFailure = $_.Exception.Message
+    # On an error path, release exact owned mappings before any potentially
+    # long cooperative recovery wait can let the controlled listeners expire.
+    if ($null -ne $upnpBackend) {
+        foreach ($owned in @($mappingCleanupCandidates)) {
+            $mappingKey = '{0}|{1}' -f [int]$owned.external_port,
+                [string]$owned.backend_identity_sha256
+            if (-not $resolvedMappingKeys.Contains($mappingKey)) {
+                $resolution = Remove-R01OwnedUpnpMapping `
+                    -Backend $upnpBackend -Owned $owned
+                if ([bool]$resolution.resolved) {
+                    $null = $resolvedMappingKeys.Add($mappingKey)
+                    if ([bool]$resolution.deleted) {
+                        $deletedMappingCount++
+                    }
+                }
+            }
+        }
+    }
     if ($remoteJobLaunchAttempted) {
         if ($null -eq $remoteAutonomousDeadline) {
             $remoteAutonomousDeadline = [DateTimeOffset]::UtcNow.AddSeconds(
@@ -1430,6 +1681,24 @@ try {
         }
     }
 } finally {
+    # Keep both controlled listeners alive while deleting and re-reading the
+    # mappings. Some IGDs couple mapping lifecycle to the target listener.
+    if ($null -ne $upnpBackend) {
+        foreach ($owned in @($mappingCleanupCandidates)) {
+            $mappingKey = '{0}|{1}' -f [int]$owned.external_port,
+                [string]$owned.backend_identity_sha256
+            if (-not $resolvedMappingKeys.Contains($mappingKey)) {
+                $resolution = Remove-R01OwnedUpnpMapping `
+                    -Backend $upnpBackend -Owned $owned
+                if ([bool]$resolution.resolved) {
+                    $null = $resolvedMappingKeys.Add($mappingKey)
+                    if ([bool]$resolution.deleted) {
+                        $deletedMappingCount++
+                    }
+                }
+            }
+        }
+    }
     try {
         [IO.File]::WriteAllText((Join-Path $runRoot 'stop-server.flag'),
             'stop', [Text.Encoding]::ASCII)
@@ -1453,14 +1722,6 @@ try {
             $serverProcess.Refresh()
             $serverProcessTerminal = $serverProcess.HasExited
         } catch { $serverProcessTerminal = $false }
-    }
-    if ($null -ne $mappings) {
-        foreach ($owned in @($ownedMappings)) {
-            if (Remove-R01OwnedUpnpMapping -Mappings $mappings `
-                    -Owned $owned) {
-                $removedMappingCount++
-            }
-        }
     }
     foreach ($ownedRule in @($ownedFirewallRules)) {
         try {
@@ -1487,24 +1748,27 @@ if ($null -eq $serverResult -and
             ConvertFrom-Json
     } catch {}
 }
-$mappingLifecycleSafe = @($mappingLifecycleEvidence | Where-Object {
-        -not ([string]$_.phase -in @(
-                'add_validation_failed', 'owned_mapping_remove_failed')) -or
-        [bool]$_.rollback_complete
-    }).Count -eq $mappingLifecycleEvidence.Count
+$mappingLifecycleSafe = $resolvedMappingKeys.Count -eq
+    $mappingCleanupCandidates.Count
+$formalMappingLifecycleComplete =
+    $ownedMappings.Count -eq 2 -and
+    $mappingCleanupCandidates.Count -eq 2 -and
+    $deletedMappingCount -eq 2
 $remoteRecoveryComplete = $null -eq $remoteCleanupEvidence -or
     ([bool]$remoteCleanupEvidence.terminal_state_observed -and
         [bool]$remoteCleanupEvidence.result_collected -and
         -not [bool]$remoteCleanupEvidence.forced_stop_used)
-$cleanupComplete = $removedMappingCount -eq $ownedMappings.Count -and
+$cleanupSafe = $mappingLifecycleSafe -and
     $removedFirewallRuleCount -eq $ownedFirewallRules.Count -and
-    $mappingLifecycleSafe -and $remoteRecoveryComplete -and
-    $serverProcessTerminal
+    $remoteRecoveryComplete -and $serverProcessTerminal
+$adjudicationCleanupComplete = $cleanupSafe -and
+    $formalMappingLifecycleComplete
 $status = Get-R01AggregateStatus -Remote $remoteResult -Server $serverResult `
     -ExpectedCandidate $expectedCandidate -ExpectedNonce $nonce `
+    -ExpectedProbeAddress $publicAddress `
     -ExpectedServerPort $ServerPort -ExpectedProbePort $ProbePort `
     -ExpectedCandidateTcpPort $CandidateTcpPort `
-    -CleanupComplete $cleanupComplete `
+    -CleanupComplete $adjudicationCleanupComplete `
     -ControllerFailure $controllerFailure
 $aggregate = [ordered]@{
     schema = 'ese.v91.r01-campaign/v1'
@@ -1562,15 +1826,20 @@ $aggregate = [ordered]@{
     requested_hotspot_wlan_profile_sha256 =
         Get-R01TextSha256 -Text $HotspotProfile
     agent_preflight = $agentPreflightEvidence
+    upnp_backend = $upnpBackendEvidence
     controller_port_baseline = $controllerPortBaseline
     remote = $remoteResult
     server = $serverResult
     cleanup = [ordered]@{
         owned_upnp_mapping_count = $ownedMappings.Count
-        removed_upnp_mapping_count = $removedMappingCount
+        attempted_upnp_mapping_count = $mappingCleanupCandidates.Count
+        resolved_upnp_cleanup_count = $resolvedMappingKeys.Count
+        removed_upnp_mapping_count = $deletedMappingCount
         owned_firewall_rule_count = $ownedFirewallRules.Count
         removed_firewall_rule_count = $removedFirewallRuleCount
         mapping_lifecycle_safe = $mappingLifecycleSafe
+        formal_mapping_lifecycle_complete =
+            $formalMappingLifecycleComplete
         upnp_mapping_lifecycle = @($mappingLifecycleEvidence)
         remote_job_launch_attempted = $remoteJobLaunchAttempted
         remote_job_started = $remoteJobStarted
@@ -1582,9 +1851,10 @@ $aggregate = [ordered]@{
             $null -ne $remoteResult.cleanup) {
             [bool]$remoteResult.cleanup.cleanup_incident
         } else { $true }
-        incident = (-not $cleanupComplete) -or $null -eq $remoteResult -or
+        incident = (-not $cleanupSafe) -or $null -eq $remoteResult -or
             [bool]$remoteResult.cleanup.cleanup_incident
-        complete = $cleanupComplete
+        complete = $cleanupSafe
+        adjudication_gate_complete = $adjudicationCleanupComplete
     }
 }
 $aggregate | ConvertTo-Json -Depth 16 |
@@ -1592,11 +1862,11 @@ $aggregate | ConvertTo-Json -Depth 16 |
 $remoteProductFailureProven = $null -ne $remoteResult -and
     [bool]$remoteResult.product_failure_proven -and
     [string]$remoteResult.failure_category -ceq 'PRODUCT'
-$overallCleanupIncident = (-not $cleanupComplete) -or
+$overallCleanupIncident = (-not $cleanupSafe) -or
     $null -eq $remoteResult -or [bool]$remoteResult.cleanup.cleanup_incident
 $publicResult = New-R01PublicResult -Aggregate ([pscustomobject]$aggregate) `
     -Candidate $expectedCandidate -PrivateAggregatePath $aggregatePath `
-    -CleanupComplete $cleanupComplete `
+    -CleanupComplete $cleanupSafe `
     -CleanupIncident $overallCleanupIncident `
     -ProductFailureProven $remoteProductFailureProven `
     -SensitiveValues @(
@@ -1605,7 +1875,13 @@ $publicResult = New-R01PublicResult -Aggregate ([pscustomobject]$aggregate) `
         $MobileServerAddress, $CandidatePackagePath, $CandidateZipPath,
         $RemoteCandidateZipPath, $OutputRoot, $ExpectedH3SidSha256,
         $runId, $jobId, $nonce, $runRoot, $localAddress, $publicAddress,
-        $(if ($null -ne $adapter) { [string]$adapter.InterfaceGuid } else { '' })
+        $(if ($null -ne $adapter) { [string]$adapter.InterfaceGuid } else { '' }),
+        $(if ($null -ne $upnpBackendEvidence) {
+                [string]$upnpBackendEvidence.gateway_address
+            } else { '' }),
+        $(if ($null -ne $upnpBackendEvidence) {
+                [string]$upnpBackendEvidence.control_uri
+            } else { '' })
     )
 $publicResultPath = Join-Path $runRoot 'public-result.json'
 $publicResult | ConvertTo-Json -Depth 8 |
@@ -1630,6 +1906,9 @@ $manifest = [ordered]@{
     requested_hotspot_wlan_profile_sha256 =
         Get-R01TextSha256 -Text $HotspotProfile
     agent_preflight = $agentPreflightEvidence
+    upnp_backend_identity_sha256 = if ($null -ne $upnpBackendEvidence) {
+        [string]$upnpBackendEvidence.identity_sha256
+    } else { '' }
     upnp_mapping_lifecycle = @($mappingLifecycleEvidence)
     cooperative_remote_recovery = $remoteCleanupEvidence
 }

@@ -203,6 +203,7 @@ function Receive-R01Probe {
         $remote = [Net.IPEndPoint]$Client.Client.RemoteEndPoint
         $local = [Net.IPEndPoint]$Client.Client.LocalEndPoint
         return [pscustomobject][ordered]@{
+            schema = 'ese.v91.r01-server-probe/v1'
             status = 'PASS'
             accepted_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
             remote_address = $remote.Address.ToString()
@@ -274,6 +275,14 @@ try {
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds(
         [int]$request.timeout_seconds)
     while ([DateTimeOffset]::UtcNow -lt $deadline) {
+        if ($phase -ceq 'pass_ready') {
+            if (Test-Path -LiteralPath $stopPath) {
+                $phase = 'pass'
+                break
+            }
+            Start-Sleep -Milliseconds 50
+            continue
+        }
         if ($probeListener.Pending()) {
             $phase = 'topology_probe'
             $probe = Receive-R01Probe -Client $probeListener.AcceptTcpClient()
@@ -327,12 +336,16 @@ try {
             [string]$initial.user_hash_sha256 -ceq
                 [string]$mobile.user_hash_sha256 -and
             [string]$initial.remote_address -cne [string]$mobile.remote_address
-        if ($complete -and ((Test-Path -LiteralPath $stopPath) -or
-            $null -eq $activeClient)) {
-            $phase = 'pass'
-            break
+        if ($complete -and $null -eq $activeClient) {
+            # Preserve both listeners until the controller has deleted and
+            # re-read the two exact UPnP mappings.
+            $phase = 'pass_ready'
         }
         if (Test-Path -LiteralPath $stopPath) {
+            if ($phase -ceq 'pass_ready') {
+                $phase = 'pass'
+                break
+            }
             throw 'Controller stopped the server before both sessions completed.'
         }
         Start-Sleep -Milliseconds 50

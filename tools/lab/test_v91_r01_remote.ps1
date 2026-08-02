@@ -280,7 +280,9 @@ Port=4711
         status = 'PASS'
         formal_case_status = 'BLOCKED'
         physical_execution_performed = $false
-        runner = $runner
+        runner = 'tools/lab/run_v91_r01_remote.ps1'
+        runner_sha256 = (Get-FileHash -LiteralPath $runner `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
         effective_network_section = 'Connection'
         staticservers_encoding = 'UTF-16LE-BOM'
         safe_preference_keys = 4

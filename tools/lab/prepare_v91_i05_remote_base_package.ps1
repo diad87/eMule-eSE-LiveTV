@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$Rc2ZipPath,
+    [Parameter(Mandatory = $true)][string]$CandidateZipPath,
     [string]$OutputZip = '',
     [switch]$ValidateOnly
 )
@@ -9,24 +9,24 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $expected = [ordered]@{
-    release = 'v0.70b-eSE9.1.0-rc.2'
-    commit = '08aa6521f7d7907edb3584266abc3a9e31693161'
-    archive_name = 'eSE-LiveTV-v0.70b-eSE9.1.0-rc.2-x64.zip'
-    archive_bytes = 212025531L
+    release = 'v0.70b-eSE9.1.0-rc.3'
+    commit = '815b45ca7a1415bd3e06ff043d53794bc340b346'
+    archive_name = 'eSE-LiveTV-v0.70b-eSE9.1.0-rc.3-x64.zip'
+    archive_bytes = 212040831L
     archive_sha256 =
-        '5F17AF0EDBDDA9E1FCC165D2E2F8A33910B40F856343934B970DB24259CF3590'
-    emule_bytes = 11250688L
+        '359272C764C532C32CFD97EEB92E2DB4FEAA620C5D3F6318A82A7453DBF1B56F'
+    emule_bytes = 11251200L
     emule_sha256 =
-        '55C5AA0E968B25330720CFB7F622CBC28EA9875365145333CBCF9D9585C1C44A'
-    ese_server_bytes = 70502379L
+        '94620CF502C954CDA29FA7F40F834EF1EEBACB753F1FE277865D1D173E0B9B41'
+    ese_server_bytes = 70502450L
     ese_server_sha256 =
-        'EECEEF0F0DBE427F3667C033E2B653FC69E432ABCC3E8AFAF996840A7315E568'
-    build_info_bytes = 501L
+        'C12E71A1602BB7B55077B82A72000A6980790FDF75D90BDBCBA8D2843F7A0BA2'
+    build_info_bytes = 502L
     build_info_sha256 =
-        '7C87F77268030C2B4DA40C6DA8C960F968B4E1A033C9987B64E45C49CF4B5915'
-    sha256_sums_bytes = 14401L
+        '48445FF0231908AA1EDBB21970BCB38B91397C643C7012B65B62686BC8A63428'
+    sha256_sums_bytes = 14782L
     sha256_sums_sha256 =
-        '8A39593E8503A1B3B7C0E2F284111C308F716BD995109E816EF9EE43CFE370C9'
+        '492798B701E8C16F56F91630B6414EDE72BE76424E467CDA80C5B38321949FF9'
     ffmpeg_bytes = 223360000L
     ffmpeg_sha256 =
         'D1E2A156261ECC675081943197A85F08F2868784A0AF499171EDE89353EDAD31'
@@ -74,11 +74,11 @@ function Assert-I05ArchiveEntry {
         $_.FullName -ceq $Name
     })
     if ($matches.Count -ne 1) {
-        throw "RC2 archive must contain exactly one '$Name' entry."
+        throw "Candidate archive must contain exactly one '$Name' entry."
     }
     $entry = $matches[0]
     if ([Int64]$entry.Length -ne $Bytes) {
-        throw "RC2 '$Name' byte length mismatch: $($entry.Length)"
+        throw "Candidate '$Name' byte length mismatch: $($entry.Length)"
     }
     $stream = $entry.Open()
     try {
@@ -87,7 +87,7 @@ function Assert-I05ArchiveEntry {
         $stream.Dispose()
     }
     if ($actual -ne $Sha256) {
-        throw "RC2 '$Name' SHA-256 mismatch: $actual"
+        throw "Candidate '$Name' SHA-256 mismatch: $actual"
     }
     return $entry
 }
@@ -154,18 +154,19 @@ function Add-I05ZipText {
 
 Add-Type -AssemblyName System.IO.Compression
 
-$archivePath = Get-I05BaseFullPath -Path $Rc2ZipPath -Label 'RC2 ZIP'
+$archivePath = Get-I05BaseFullPath -Path $CandidateZipPath `
+    -Label 'candidate ZIP'
 if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
-    throw "Exact RC2 ZIP is missing: $archivePath"
+    throw "Exact candidate ZIP is missing: $archivePath"
 }
 $archiveItem = Get-Item -LiteralPath $archivePath
 if ($archiveItem.Length -ne $expected.archive_bytes) {
-    throw "RC2 ZIP byte length mismatch: $($archiveItem.Length)"
+    throw "Candidate ZIP byte length mismatch: $($archiveItem.Length)"
 }
 $archiveHash =
     (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
 if ($archiveHash -ne $expected.archive_sha256) {
-    throw "RC2 ZIP SHA-256 mismatch: $archiveHash"
+    throw "Candidate ZIP SHA-256 mismatch: $archiveHash"
 }
 
 $releaseStream = [IO.File]::OpenRead($archivePath)
@@ -197,7 +198,7 @@ try {
     if ($buildInfo -notmatch $releasePattern -or
         $buildInfo -notmatch $commitPattern -or
         $buildInfo -notmatch '(?m)^dirty:\s*false\s*$') {
-        throw 'RC2 BUILD_INFO.txt does not attest the pinned clean release.'
+        throw 'BUILD_INFO.txt does not attest the pinned clean candidate.'
     }
 } finally {
     $releaseArchive.Dispose()
@@ -217,13 +218,13 @@ $manifest = [ordered]@{
     schema = 'ese.v91.i05-remote-base/v1'
     case_id = 'V91-I05'
     created_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
-    purpose = 'Pinned RC2 payload and canonical fixture tooling for the physical T1 IPv4 control'
+    purpose = 'Pinned RC3 payload and canonical fixture tooling for the physical T1 IPv4 control'
     candidate = [ordered]@{
         release = $expected.release
         commit = $expected.commit
         dirty = $false
         archive_entry =
-            "payload/$($expected.archive_name)"
+            "payload/candidates/$($expected.archive_name)"
         archive_name = $expected.archive_name
         archive_bytes = $expected.archive_bytes
         archive_sha256 =
@@ -297,7 +298,7 @@ if ([IO.Path]::GetExtension($outputPath) -ne '.zip') {
 }
 if ($outputPath.Equals(
         $archivePath, [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'OutputZip must differ from the pinned RC2 ZIP.'
+    throw 'OutputZip must differ from the pinned candidate ZIP.'
 }
 if (Test-Path -LiteralPath $outputPath) {
     throw "Refusing to overwrite an existing ZIP: $outputPath"
@@ -315,7 +316,7 @@ $outputArchive = New-Object IO.Compression.ZipArchive(
 try {
     Add-I05ZipFileStreaming -Archive $outputArchive `
         -Source $archivePath `
-        -EntryName "payload/$($expected.archive_name)" `
+        -EntryName "payload/candidates/$($expected.archive_name)" `
         -Compression ([IO.Compression.CompressionLevel]::NoCompression)
     Add-I05ZipFileStreaming -Archive $outputArchive `
         -Source $generatorPath `

@@ -93,6 +93,51 @@ test('legacy C++ HLS route falls back to the active viewer stream namespace', ()
   assert.match(web, /eMule_RTMP\\\\%hs\\\\%hs/);
 });
 
+test('I02 unattended soak mirrors the browser player heartbeat', () => {
+  const runner = read(
+    repoRoot, 'tools', 'lab', 'run_v91_k04_node.ps1'
+  );
+  const controller = read(
+    repoRoot, 'tools', 'lab', 'control_v91_k04.ps1'
+  );
+  assert.match(runner, /api\/live\/player-alive/);
+  assert.match(runner, /\?key=\$streamKey/);
+  assert.match(runner, /heartbeat del reproductor I02 fue rechazado/);
+  assert.doesNotMatch(
+    runner,
+    /k01_relay_preparing[\s\S]{0,500}Get-ChildItem\s+-LiteralPath\s+\$baseNode/,
+    'the protocol-only K01 relay must not copy the 500 MB media runtime'
+  );
+  assert.match(
+    runner,
+    /K01's third node is a protocol-only relay[\s\S]{0,900}'config\\eMule\.tmpl'/,
+    'the K01 relay must copy only its minimal Web template'
+  );
+  assert.ok(
+    runner.indexOf("'K01-source-to-requester'") <
+      runner.indexOf("'K01-source-to-relay'") &&
+    runner.indexOf("'K01-relay-to-source'") <
+      runner.indexOf("'K01-relay-to-requester'") &&
+    runner.indexOf("'K01-requester-to-relay'") <
+      runner.indexOf("'K01-requester-to-source'"),
+    'the final direct joins must leave a persistent source-relay-requester cycle'
+  );
+  assert.match(controller, /guard_ipv6\s*=\s*\$K01GuardIPv6/);
+  assert.match(runner, /MinimumAuthenticated\s+3/);
+  assert.ok(
+    runner.indexOf('$circuit = New-K01Circuit') <
+      runner.indexOf("'K01-quota-guard-to-source'") &&
+    runner.indexOf("'k01_source_advertised'") <
+      runner.indexOf("'K01-quota-guard-to-requester'"),
+    'the independent quota guard must attach after path freeze and hand off after publish'
+  );
+  assert.match(
+    runner,
+    /New-K01Circuit[\s\S]{0,3500}\$retryBuild\s*=\s*\$true[\s\S]{0,300}Start-Sleep/,
+    'a transient destroyed K01 circuit must be rebuilt inside the test window'
+  );
+});
+
 test('simultaneous broadcast and viewing keep native identities and buffers isolated', () => {
   const header = read(repoRoot, 'srchybrid', 'LiveStreamManager.h');
   const manager = read(repoRoot, 'srchybrid', 'LiveStreamManager.cpp');
@@ -300,7 +345,7 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.match(updateCheck, /Automatic installation is disabled/);
   assert.match(preflight, /package-lock\.json/);
   assert.match(preflight, /GPL-2\.0-only/);
-  assert.equal(pkg.version, '9.1.0-rc.2');
+  assert.equal(pkg.version, '9.1.0-rc.3');
 });
 
 test('postponed dashboard remote access is inert and leaks no pairing state', () => {
@@ -395,6 +440,13 @@ test('Kad2 and Kad6 are independently selectable with dual mode as the default',
   const prefsHeader = read(repoRoot, 'srchybrid', 'Preferences.h');
   const kad = read(repoRoot, 'srchybrid', 'kademlia', 'kademlia', 'Kademlia.cpp');
   const kadUdp = read(repoRoot, 'srchybrid', 'kademlia', 'net', 'KademliaUDPListener.cpp');
+  const kadRouting = read(
+    repoRoot,
+    'srchybrid',
+    'kademlia',
+    'routing',
+    'Kad6RoutingTable.cpp'
+  );
   const clientUdp = read(repoRoot, 'srchybrid', 'ClientUDPSocket.cpp');
   const connectionPage = read(repoRoot, 'srchybrid', 'PPgConnection.cpp');
   const resources = read(repoRoot, 'srchybrid', 'emule.rc');
@@ -424,6 +476,81 @@ test('Kad2 and Kad6 are independently selectable with dual mode as the default',
   assert.match(kadUdp, /ProcessPacketKad6[\s\S]{0,500}!CKademlia::IsKad6Running\(\)/);
   assert.match(clientUdp, /OP_KAD6HEADER[\s\S]{0,180}IsKad6Running\(\)/);
   assert.match(clientUdp, /OP_KADEMLIAPACKEDPROT[\s\S]{0,180}!Kademlia::CKademlia::IsKad2Running\(\)/);
+  assert.match(
+    clientUdp,
+    /bNativeKad6Datagram[\s\S]{0,350}sourceAddress\.IsUniqueLocalIPv6\(\)[\s\S]{0,100}IsExplicitKad6UlaMode\(\)/,
+    'native Kad6 must admit an isolated ULA without widening legacy UDP'
+  );
+  assert.match(
+    kadUdp,
+    /CAddress routeV6;[\s\S]{0,240}GetIPv6BindAddr\(\)[\s\S]{0,500}configuredV6\.IsUniqueLocalIPv6\(\)[\s\S]{0,180}routeV6 = configuredV6;[\s\S]{0,180}routeV6\.IsNull\(\)[\s\S]{0,120}GetDetectedV6IP\(\)/,
+    'Kad6 must advertise only an explicitly bound ULA in T5'
+  );
+  assert.match(
+    kadUdp,
+    /BootstrapV6[\s\S]{0,650}hostAddress\.IsPublicIP\(\)[\s\S]{0,220}hostAddress\.IsUniqueLocalIPv6\(\)[\s\S]{0,120}IsExplicitKad6UlaMode\(\)/,
+    'Kad6 bootstrap must require explicit ULA mode for non-public IPv6'
+  );
+  assert.match(
+    kadRouting,
+    /IsDirectRouteAddress[\s\S]{0,850}GetIPv6BindAddr\(\)[\s\S]{0,400}configuredV6\.IsUniqueLocalIPv6\(\)/,
+    'Kad6 routing probation must require an explicitly bound ULA'
+  );
+
+  const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
+  const sharedFiles = read(repoRoot, 'srchybrid', 'SharedFileList.cpp');
+  assert.doesNotMatch(
+    tunnel,
+    /QueueK6SourceAdvertise[\s\S]{0,500}!thePrefs\.IsKad2Enabled\(\)/,
+    'Kad6-only source publication must not be gated on Kad2'
+  );
+  assert.match(
+    tunnel,
+    /QueueK6SourceAdvertise[\s\S]{0,700}GetEffectiveKadNetworkMask\(\)[\s\S]{0,3500}desired_family\s*=[\s\S]{0,180}HasKad6\(networkMask\)/,
+    'Kad6-only publication must request an IPv6 SourceLease endpoint'
+  );
+  assert.match(
+    tunnel,
+    /K6OriginAdvertiseWorker[\s\S]{0,5500}SignK6SourceRecord[\s\S]{0,500}Kad6SourceDescriptor/,
+    'the production origin worker must create a signed native source descriptor'
+  );
+  assert.doesNotMatch(
+    tunnel,
+    /work->bind\.flags\s*=\s*[^;]*kK6SourceStrict/,
+    'the two-hop Private source path must not be marked Strict unconditionally'
+  );
+  assert.match(
+    tunnel,
+    /HasActiveCircuitWithExitCaps\(ESE_CAP_KAD6\s*\|[\s\S]{0,180}ESE_CAP_TUNNEL_STRICT3\s*\|[\s\S]{0,180}ESE_CAP_TUNNEL_SHAPED\)[\s\S]{0,120}work->bind\.flags\s*\|=\s*kad6::kK6SourceStrict/,
+    'source publication may request Strict only when a shaped three-hop circuit exists'
+  );
+  assert.match(
+    tunnel,
+    /haveK6EconomyPath[\s\S]{0,900}m_lastK6QuotaGuardAttemptTick[\s\S]{0,160}BuildQuotaGuardCircuit\(\)/,
+    'the runtime must build the independent economy issuer after a private path exists'
+  );
+  assert.match(web, /source_pipeline/);
+  assert.match(web, /snap\.origin_advertise_success_total/);
+  assert.match(
+    web,
+    /snap\.origin_source_recovered_total/,
+    'K01 adjudication must expose exact monotonic publish/recovery counters'
+  );
+  assert.match(
+    sharedFiles,
+    /const bool queued[\s\S]{0,500}queued\s*\?\s*KADEMLIAPUBLISHTIME\s*:\s*30/,
+    'a source present before circuit activation must retry promptly'
+  );
+  assert.match(
+    kadRouting,
+    /entry->candidates\.empty\(\)[\s\S]{0,120}entry->endpointSet\.valid_until != 0[\s\S]{0,100}entry->endpointSet\.valid_until <= nowSeconds/,
+    'a persisted signed contact must survive probation until HELLO rebuilds its endpoint set'
+  );
+  assert.match(
+    kadRouting,
+    /LookupVerifiedIdentity[\s\S]{0,600}!IsPublicAddress\(/,
+    'public-exit identity lookup must remain restricted to public addresses'
+  );
 
   for (const field of [
     'kad_configured_mask', 'kad_running_mask',
@@ -447,6 +574,64 @@ test('hole-punch keeps Kad identity separate from the eD2K user hash', () => {
   assert.match(udpHeader, /InitiateUtpConnect\([^;]+CUpDownClient\* pExpectedClient,\s*bool bViaRendezvous/);
   assert.doesNotMatch(udp, /FindClientByUserHash\(pClientHash\)/);
   assert.match(udp, /FindClientByIP_KadPort\(uIPNetwork, nUDPPort\)/);
+});
+
+test('I08 IPv6 echo is a bounded production-client NetLab action', () => {
+  const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const runner = read(repoRoot, 'tools', 'lab', 'run_v91_k04_node.ps1');
+  const controller = read(repoRoot, 'tools', 'lab', 'control_v91_k04.ps1');
+
+  assert.match(web, /sURL\.Left\(25\) == "\/api\/ese\/netlab\/ipv6_echo"/);
+  assert.match(
+    web,
+    /ipv6_echo[\s\S]{0,3600}!thePrefs\.IsEseNetLabContributionActive\(\)[\s\S]{0,500}native_ipv6_literal_required/
+  );
+  assert.match(
+    web,
+    /targetAddress\.GetType\(\) == CAddress::IPv6[\s\S]{0,140}!targetAddress\.IsMappedIPv4\(\)/
+  );
+  assert.match(web, /targetAddress\.TryToSA\([\s\S]{0,900}EseI08TcpEcho\(/);
+  assert.match(web, /EseI08TcpEcho\([\s\S]{0,500}EseI08UdpEcho\(/);
+  assert.match(web, /reply != payload/);
+  assert.match(
+    web,
+    /sourceAddress != expectedAddress \|\| sourcePort != expectedPort/
+  );
+  assert.match(web, /timeoutValue < 1000 \|\| timeoutValue > 8000/);
+  assert.match(web, /nonceArg\.GetLength\(\) == 32/);
+  assert.doesNotMatch(
+    web,
+    /ipv6_echo[\s\S]{0,4200}(getaddrinfo|GetAddrInfo|DnsQuery)/
+  );
+  assert.match(
+    controller,
+    /ValidateSet\('none', 'i01', 'i02', 'i08', 'k01', 'o01'\)/
+  );
+  assert.match(controller, /post_action = 'i08-server'/);
+  assert.match(controller, /post_action = 'i08-client'/);
+  assert.match(
+    controller,
+    /ese\.v91\.i08-aggregate\/v1[\s\S]{0,600}V91-I08/
+  );
+  assert.match(
+    controller,
+    /fixture\.tcp\.local_address_hex[\s\S]{0,900}client_action\.tcp\.bytes/
+  );
+  assert.match(runner, /function Invoke-I08EchoFixture/);
+  assert.match(runner, /BeginAcceptTcpClient[\s\S]{0,500}BeginReceive/);
+  assert.match(
+    runner,
+    /tcpRemote\.Address\.Equals\(\$peerAddress\)/
+  );
+  assert.match(
+    runner,
+    /udpRemote\.Address\.Equals\(\$peerAddress\)/
+  );
+  assert.match(
+    runner,
+    /api\/ese\/netlab\/ipv6_echo/
+  );
+  assert.match(runner, /client_action = \$action/);
 });
 
 test('v9 capabilities and remote administration fail closed by default', () => {
@@ -558,6 +743,34 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(dlg, /WEBGUIIA_FILE_OPERATION[\s\S]{0,500}WithFileByID[\s\S]{0,650}WEBFILEOP_CANCEL[\s\S]{0,120}DeletePartFile\(\)/);
   assert.match(partFile, /m_FlushList\.AddHead\(ToWrite\{[\s\S]{0,220}PART_WRITE_SET_LENGTH/);
   assert.doesNotMatch(partFile, /if \(newsize\) \{\s*const DWORD dwAllocT0/);
+  assert.match(
+    partFile,
+    /const bool hasKad6Gateway\s*=\s*[\s\S]{0,140}HasActiveCircuitWithExitCaps\(ESE_CAP_KAD6\)[\s\S]{0,500}IsAnyConnected\(\) \|\| hasKad6Gateway/
+  );
+  assert.match(
+    tunnel,
+    /K6OriginSourceLookupWorker[\s\S]{0,1800}K6AcquireAnonymousQuota\([\s\S]{0,220}K6QuotaService::Control[\s\S]{0,180}kK6MsgSearchStart[\s\S]{0,900}EnqueueSendMsg/
+  );
+  assert.match(
+    tunnel,
+    /result\.result_kind == kad6::kK6SearchKindSourceHash[\s\S]{0,2600}sourceV6 = CAddress\([\s\S]{0,420}K6AllowTicketTarget\(this,[\s\S]{0,220}K6TicketService::Ed2kTcp/
+  );
+  assert.match(
+    tunnel,
+    /job\.origin_circ_id = ctx\.circ->m_originCircContext/
+  );
+  assert.match(
+    tunnel,
+    /job\.origin_circ_id == 0 \|\|[\s\S]{0,260}IssueK6RuntimeTicket\([\s\S]{0,260}job\.origin_circ_id/
+  );
+  assert.match(
+    kadUdp,
+    /m_kad6StoredSources\.Put\([\s\S]{0,260}table->Closest[\s\S]{0,420}localStatus == kad6::K6StoreStatus::Stored/
+  );
+  assert.match(
+    kadUdp,
+    /StartKad6SourceLookup[\s\S]{0,1100}m_kad6StoredSources\.Find\([\s\S]{0,420}OnKad6NativeSourceRecord\([\s\S]{0,500}table->VerifiedSize\(\)/
+  );
   assert.match(partWriteThread, /PART_WRITE_SET_LENGTH[\s\S]{0,1000}GetFileSizeEx[\s\S]{0,500}SetEndOfFile/);
 
   assert.match(packaging, /"\[UPnP\]"[\s\S]{0,80}"EnableUPnP=1"/);
@@ -591,9 +804,21 @@ test('Live send queues are bounded and ratio drops release their packet', () => 
   assert.match(socket, /controlpacket_queue[\s\S]{0,500}standardpacket_queue/);
   assert.match(clientHeader, /GetSocketQueuedBytes\(\) const/);
   assert.match(protocol, /ESE_LIVE_MAX_PEER_QUEUE_BYTES\s+\(8u \* 1024u \* 1024u\)/);
+  assert.match(
+    read(repoRoot, 'srchybrid', 'LivePackets.h'),
+    /ESE_FRAG_REASM_TTL\s*=\s*15000/
+  );
   assert.ok(
     (manager.match(/GetSocketQueuedBytes\(\) > ESE_LIVE_MAX_PEER_QUEUE_BYTES/g) || []).length >= 3,
     'initial push, requested chunks and relay fanout must all apply backpressure'
+  );
+  assert.match(
+    manager,
+    /pushBudget\s*=\s*ESE_LIVE_MAX_PEER_QUEUE_BYTES\s*\/\s*2u/
+  );
+  assert.match(
+    manager,
+    /selectedBytes\s*\+\s*candidateBytes\s*>\s*pushBudget/
   );
   assert.match(manager, /DROP-strong[\s\S]{0,360}delete chunkPkt;\s*return;/);
   assert.match(manager, /DROP-medium[\s\S]{0,360}delete chunkPkt;\s*return;/);
@@ -693,6 +918,16 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   assert.match(downloadQueue,
     /new CUpDownClient\(file, port, ipv4[\s\S]{0,220}SetSourceFrom\(SF_LINK\)/,
     'IPv4 hostname-link candidates must retain link provenance');
+  assert.match(
+    downloadQueue,
+    /SourceResolutionMaterializeCandidate[\s\S]{0,300}GetIPv6BindAddr\(\)[\s\S]{0,360}IsUniqueLocalIPv6\(\)[\s\S]{0,180}IsEseNetLabContributionActive\(\)[\s\S]{0,420}rejected_unusable/,
+    'direct ULA sources must remain gated by explicit NetLab contribution consent and bind state'
+  );
+  assert.match(
+    downloadQueue,
+    /SourceResolutionMaterializeCandidate[\s\S]{0,3200}SetDirectIPv6Address\(address\)[\s\S]{0,160}SetDirectIPv6Source\(\)/,
+    'an admitted direct ULA source must preserve its full endpoint instead of falling back to a synthetic IPv4'
+  );
   assert.match(sourceResolutionPolicy,
     /endpoint\.port >> 8[\s\S]{0,140}endpoint\.port & 0xff/);
   assert.match(sourceResolutionPolicy,
@@ -937,6 +1172,8 @@ test('Kad6 Private and Strict paths fail closed at their declared hop counts', (
   const labTwoHop = tunnel.slice(
     tunnel.indexOf('uint32_t CLiveTunnel::BuildTestCircuit2Hop()'),
     tunnel.indexOf('void CLiveTunnel::GetCircuitsSnapshot'));
+  assert.match(labTwoHop, /HasValidHash\(\)[\s\S]{0,180}HasEseNodePub\(\)[\s\S]{0,180}SupportsEseTunnelAuth\(\)/);
+  assert.match(labTwoHop, /Kad6CtEqual\([\s\S]{0,120}GetEseNodePub/);
   assert.match(labTwoHop, /c->m_private2 = true;[\s\S]{0,80}m_pendingHopClients\.push_back\(hop2\)/);
   assert.match(circuit, /enum class CircuitAbortReason[\s\S]{0,300}HandshakeTimeout[\s\S]{0,100}ExtendTimeout/);
   for (const reason of ['StrictV1', 'PinMismatch', 'CapsFloor', 'SigFail']) {
@@ -951,6 +1188,123 @@ test('Kad6 Private and Strict paths fail closed at their declared hop counts', (
   assert.match(tunnel, /quotaMessage[\s\S]{0,500}minimumHops = 3;[\s\S]{0,300}minimumHops = 1;/);
   assert.match(keepalive, /InterlockedCompareExchange[\s\S]{0,200}m_running/);
   assert.match(keepalive, /InterlockedIncrement\(&m_statPingsSent\)/);
+});
+
+test('K01 relay proves native DHT custodian reachability before circuit use', () => {
+    const runner = read(repoRoot, 'tools', 'lab', 'run_v91_k04_node.ps1');
+    const kad = read(
+        repoRoot, 'srchybrid', 'kademlia', 'kademlia', 'Kademlia.cpp'
+    );
+    const routing = read(
+        repoRoot, 'srchybrid', 'kademlia', 'routing',
+        'Kad6RoutingTable.cpp'
+    );
+    const udp = read(
+        repoRoot, 'srchybrid', 'kademlia', 'net',
+        'KademliaUDPListener.cpp'
+    );
+    const relayPreparation = runner.slice(
+        runner.indexOf('# A relay selected as the source'),
+        runner.indexOf("Write-K04Progress -Phase 'k01_relay_ready'")
+    );
+    assert.match(
+        kad,
+        /Bootstrap\(LPCTSTR[\s\S]{0,220}IsKad2Running\(\) \|\| IsKad6Running\(\)/
+    );
+    assert.match(
+        udp,
+        /Bootstrap\(LPCTSTR[\s\S]{0,160}!CKademlia::IsKad2Running\(\) && !CKademlia::IsKad6Running\(\)/
+    );
+    assert.match(relayPreparation, /\$relayKadDeadline[\s\S]{0,700}kad6_verified_contacts/);
+    assert.match(
+        relayPreparation,
+        /Invoke-K04Bootstrap[\s\S]{0,180}-HostName \$localIPv6[\s\S]{0,120}-PeerPort \$udpPort/
+    );
+    assert.match(
+        relayPreparation,
+        /Invoke-K04Bootstrap -Port \$webPort[\s\S]{0,180}-HostName \$secondaryIPv6[\s\S]{0,120}-PeerPort \$secondaryUdpPort/
+    );
+    assert.match(
+        relayPreparation,
+        /throw 'El relay K01 no verifico ningun contacto Kad6\.'/
+    );
+    assert.match(relayPreparation, /Invoke-K01DirectJoin -Port \$secondaryWebPort/);
+    assert.match(relayPreparation, /-PeerIPv6 \$localIPv6 -PeerTcpPort \$tcpPort/);
+    assert.match(relayPreparation, /Wait-K01PeerAddress/);
+    assert.match(relayPreparation, /-MinimumAuthenticated 1/);
+    assert.match(
+        routing,
+        /PassesDiversity[\s\S]{0,900}IsUniqueLocalIPv6\(\)[\s\S]{0,160}IsEseNetLabContributionActive\(\)/
+    );
+    assert.match(
+        routing,
+        /if \(explicitUlaLab\)[\s\S]{0,80}return same128 < 1;/
+    );
+});
+
+test('K01 ULA quota issuer trust is explicit-consent and authenticated-peer only', () => {
+    const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
+    const ticketHeader = read(
+        repoRoot, 'libkad6', 'include', 'kad6', 'kad6_ticket.h'
+    );
+    const ticket = read(repoRoot, 'libkad6', 'src', 'kad6_ticket.cpp');
+    const trust = tunnel.slice(
+        tunnel.indexOf('bool CLiveTunnel::K6QuotaIssuerTrusted'),
+        tunnel.indexOf('uint32 CLiveTunnel::K6SelectOriginCircuit')
+    );
+    assert.match(trust, /IsEseNetLabContributionActive\(\)/);
+    assert.match(trust, /SupportsEseTunnelAuth\(\)/);
+    assert.match(trust, /SupportsEseTunnelDataplane\(\)/);
+    assert.match(trust, /ESE_CAP_KAD6_ECONOMY/);
+    assert.match(trust, /Kad6CtEqual\(peer->GetEseNodePub\(\), nodePub, 32\)/);
+    assert.match(trust, /IsUniqueLocalIPv6\(\)/);
+    assert.match(trust, /peer->socket->IsConnected\(\)/);
+    assert.match(ticketHeader, /bool allow_ula_target = false;/);
+    assert.match(
+        ticket,
+        /policy\.allow_ula_target && AddressIsUla\(t\.target_endpoint\.addr\)/
+    );
+    assert.match(
+        tunnel,
+        /K6TicketPolicy\(\)[\s\S]{0,260}allow_ula_target = thePrefs\.IsEseNetLabContributionActive\(\)/
+    );
+    const quotaGuardBuilder = tunnel.slice(
+        tunnel.indexOf('bool haveK6EconomyPath = false;'),
+        tunnel.indexOf('// 3. v0.71 P0.A')
+    );
+    assert.match(quotaGuardBuilder, /IsK6PublicReleaseEnabled\(\)/);
+    assert.match(
+        quotaGuardBuilder,
+        /IsEseNetLabContributionActive\(\)[\s\S]{0,240}BuildQuotaGuardCircuit\(\)/
+    );
+    const targetPolicy = tunnel.slice(
+        tunnel.indexOf('bool CLiveTunnel::K6AllowTicketTarget'),
+        tunnel.indexOf('bool CLiveTunnel::K6ConsumeTicket')
+    );
+    assert.match(
+        targetPolicy,
+        /IsUniqueLocalIPv6\(\)[\s\S]{0,100}IsEseNetLabContributionActive\(\)/
+    );
+
+    const runner = read(repoRoot, 'tools', 'lab', 'run_v91_k04_node.ps1');
+    const pretrust = runner.indexOf('K01-quota-guard-pretrust-requester');
+    const relayPretrust = runner.indexOf('K01-quota-guard-pretrust-relay');
+    const attachSource = runner.indexOf('K01-quota-guard-to-source');
+    const publishing = runner.indexOf("$fixtureName = 'V91-K01-KAD6-SOURCE.bin'");
+    assert.ok(pretrust >= 0 && pretrust < relayPretrust);
+    assert.ok(relayPretrust < attachSource);
+    assert.ok(attachSource < publishing);
+
+    const quotaPresent = tunnel.slice(
+        tunnel.indexOf('void CLiveTunnel::ExitHandle_Kad6QuotaPresent'),
+        tunnel.indexOf('void CLiveTunnel::ExitHandle_Kad6SourceBind')
+    );
+    assert.doesNotMatch(
+        quotaPresent,
+        /issuerTrusted,\s*&token,\s*&certificate/,
+        'decoded quota input must not alias outputs that the verifier clears'
+    );
+    assert.match(quotaPresent, /issuerTrusted,\s*NULL,\s*NULL/);
 });
 
 test('--selftest verifies signed chunk ingest and returns failure to the caller', () => {

@@ -1,0 +1,52 @@
+{
+  "schema": "ese.v91.k04-result/v1",
+  "case_id": "V91-K04",
+  "status": "PASS",
+  "completed_at_utc": "2026-07-30T13:48:47.2953617+00:00",
+  "candidate": {
+    "source_base_commit": "1a0f8a272a56af4999902d49ac868388c47e1732",
+    "source_delta_committed": false,
+    "emule_sha256": "71786be8ed1be9a16dc7b47f1c08d2487102833d5141e1cc0a3f0b5ec34cc694",
+    "emule_bytes": 11252224
+  },
+  "topology": {
+    "kind": "T5",
+    "control_plane": "Tailscale",
+    "data_plane": "physical Ethernet/Wi-Fi with nonce-owned ULA /128 routes",
+    "public_projection": true,
+    "h1": {
+      "ipv6_observed": true,
+      "interface": "Ethernet",
+      "interface_index": 7,
+      "udp_port": 48072
+    },
+    "h3": {
+      "ipv6_observed": true,
+      "interface": "Wi-Fi",
+      "interface_index": 22,
+      "udp_port": 48272
+    }
+  },
+  "h1": {
+    "status": "PASS",
+    "before_restart_verified": 1,
+    "restart_isolated_verified": 0,
+    "after_fresh_reverification_verified": 1,
+    "nodes_v6_bytes": 194,
+    "nodes_v6_sha256": "d4db47b6ed92c2f1ebfdf45ad205c64dcdaead821b62fd22ab2de381c04505ea"
+  },
+  "h3": {
+    "status": "PASS",
+    "before_restart_verified": 1,
+    "restart_isolated_verified": 0,
+    "after_fresh_reverification_verified": 1,
+    "nodes_v6_bytes": 194,
+    "nodes_v6_sha256": "7f0e3dc3fd652afe5ce4850988684435308ecb3b07a8a8858d049c405b03eb44"
+  },
+  "local_gates": {
+    "live_tv_regression": "35/35 PASS",
+    "kad6_executables": "29/29 PASS",
+    "release_x64_build": "PASS"
+  },
+  "raw_evidence": "lab-runs/v91-k04/bec884b2de364679bc4a467a2ee59607/aggregate-result.json"
+}

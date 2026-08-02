@@ -52,7 +52,7 @@ const uint32 ESE_FRAG_THRESHOLD   = 1800000;     // inner-payload size above whi
 const uint32 ESE_FRAG_MAX_TOTAL   = 12582912;    // 12MB hard cap on a reassembled payload (DoS bound; covers ~12000-15000 kbps 4s VBR peaks)
 const uint16 ESE_FRAG_MAX_COUNT   = 64;          // max fragments per segment
 const int    ESE_FRAG_MAX_CONCURRENT = 8;        // concurrent partial reassemblies (8*8MB worst case)
-const DWORD  ESE_FRAG_REASM_TTL   = 4000;        // ms; drop a partial that hasn't completed
+const DWORD  ESE_FRAG_REASM_TTL   = 15000;       // ms; tolerate throttled high-bitrate segment delivery
 
 // Take ownership of an already-built chunk packet (V1 OP_LIVE_CHUNK or V2
 // OP_LIVE_CHUNK_V2). If its payload <= ESE_FRAG_THRESHOLD or !peerSupportsFrag,

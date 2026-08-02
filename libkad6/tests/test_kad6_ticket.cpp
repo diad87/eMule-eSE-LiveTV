@@ -77,6 +77,12 @@ static K6TargetPolicy Policy(bool denyAdmin = false) {
     return p;
 }
 
+static K6TargetPolicy UlaLabPolicy() {
+    K6TargetPolicy p = Policy();
+    p.allow_ula_target = true;
+    return p;
+}
+
 // A well-formed, public, dial-able ticket template.
 static K6TargetTicket MakeValidTicket() {
     K6TargetTicket t;
@@ -298,6 +304,25 @@ static void test_forbidden_targets() {
         t.target_endpoint.addr.addr[0] = 0xFE; t.target_endpoint.addr.addr[1] = 0x80;
         t.target_endpoint.addr.addr[15] = 5;
         CHECK(IssueK6TargetTicket(h, Policy(), secret, sizeof(secret), t, wire) == Kad6Status::TargetForbidden, "v6 fe80");
+    }
+    { // ULA remains forbidden unless the host explicitly enables lab policy
+        K6TargetTicket t = MakeValidTicket();
+        t.target_endpoint.addr.family = Kad6Address::Family::IPv6;
+        t.target_endpoint.addr.addr = {};
+        t.target_endpoint.addr.addr[0] = 0xFD;
+        t.target_endpoint.addr.addr[15] = 5;
+        CHECK(IssueK6TargetTicket(h, Policy(), secret, sizeof(secret), t, wire)
+              == Kad6Status::TargetForbidden, "v6 ULA denied by default");
+        CHECK(IssueK6TargetTicket(h, UlaLabPolicy(), secret, sizeof(secret), t, wire)
+              == Kad6Status::Ok, "v6 ULA allowed only by explicit lab policy");
+        K6TargetTicket out;
+        CHECK(VerifyK6TargetTicket(h, UlaLabPolicy(), secret, sizeof(secret),
+                                  wire.data(), wire.size(), 1100, out)
+              == Kad6Status::Ok, "v6 ULA lab ticket verifies under same policy");
+        CHECK(VerifyK6TargetTicket(h, Policy(), secret, sizeof(secret),
+                                  wire.data(), wire.size(), 1100, out)
+              == Kad6Status::TargetForbidden,
+              "v6 ULA lab ticket fails closed when lab policy is removed");
     }
     { // an ordinary global IPv6 is allowed
         K6TargetTicket t = MakeValidTicket();

@@ -6,7 +6,7 @@ Estado: borrador normativo para desarrollo y publicación
 
 Base inicial inspeccionada: `35264bb` (candidato binario beta.2: `ab1ad6b`)
 
-Revisión actual: fuente `9.1.0-rc.2` previa a congelación; el commit y los
+Revisión actual: fuente `9.1.0-rc.3` previa a congelación; el commit y los
 hashes definitivos se fijan al construir la candidata limpia.
 
 Fecha de revisión: 2026-07-27
@@ -381,7 +381,7 @@ mantienen preferencias, capacidades y gates de consentimiento independientes.
 | `V90-C03` | `T1` | A acepta y B rechaza | No se ejecuta una medición bilateral |
 | `V90-C04` | `T1` | A y B aceptan | Solo aumentan contadores NetLab permitidos |
 | `V90-C05` | `T1` | Activar NetLab con funciones avanzadas en cero | Punch3, predicción, relay y KRP continúan en cero |
-| `V90-S01` | `T0` | Intentar acceder a dashboard/API/HLS desde una interfaz no loopback | Conexión rechazada; el paquete rc.2 no publica esas superficies |
+| `V90-S01` | `T0` | Intentar acceder a dashboard/API/HLS desde una interfaz no loopback | Conexión rechazada; el paquete rc.3 no publica esas superficies |
 | `V90-S02` | `T7` | Arrancar con web local y UPnP general activo | El puerto web no aparece mapeado |
 | `V90-I01` | `T1` | Transferir archivo de 4 GiB, cerrar abruptamente y reanudar | Hash final idéntico; no se pierde estado confirmado |
 | `V90-L01` | `T4` | Emisor y dos viewers LiveTV a 12 Mbps durante 2 h | Sin crash; reproducción continua y chunks válidos |
@@ -524,7 +524,7 @@ Está prohibido reutilizar un hash de IPv6 truncado o un `uint32` sintético.
 | `V91-P02` | `T0/T1` | HTTP CONNECT IPv6 | Autoridad `[IPv6]:puerto` correcta |
 | `V91-P03` | `T0` | Intentar IPv6 mediante SOCKS4 | Rechazo explícito, sin truncado |
 | `V91-K01` | `T5` | Kad6-only: bootstrap, routing, publish y source find | Contacto autenticado y fuente recuperada |
-| `V91-K02` | `T1` | Kad2+Kad6, apagar uno durante ejecución | El otro continúa y no recibe paquetes del plano apagado |
+| `V91-K02` | `T1` | En un único proceso Kad2+Kad6, aplicar en caliente y sin reinicio las máscaras `Both -> Kad6-only -> Kad2-only`; sondear ambos planos en cada fase | El plano habilitado completa su intercambio, el apagado no responde y las máscaras configurada/activa coinciden en todas las muestras |
 | `V91-K03` | perfiles | Guardar un perfil Kad6-only con la candidata y abrir una copia con el paquete eSE 8.1.0 fijado por hashes, con autoconexión activa | Kad2 no se inicia ni se reactiva; evidencia mínima: `NetworkKademlia=0` antes y después, proceso 8.1 vivo y API con `kad_connected=false` continuamente durante al menos 30 s |
 | `V91-K04` | `T1/T5` | Reiniciar ambos nodos con `nodes_v6.dat` poblado | Contactos cargados en probation; re-verificación acotada y sin confianza heredada |
 | `V91-C01` | `V1/H2` | Peer nuevo frente a 0.70b en un Windows independiente | Transferencia íntegra; solo opcodes y payloads clásicos. Se permiten tags `HELLO` aditivos ignorados por 0.70b |
@@ -552,6 +552,65 @@ otro caso distinto de `T6`.
 La matriz normativa vigente contiene **27 casos**. El recuento histórico de
 beta.2 era de 26 porque todavía no incluía `V91-A02`; desde beta.3, cualquier
 ledger de RC que omita `V91-A02` es incompleto.
+
+En `T5`, una ULA RFC 4193 solo es dirección Kad6 válida cuando está
+configurada explícitamente como `IPv6BindAddr`. El runtime no puede inferirla
+de otra interfaz ni publicarla mediante el prober de IPv6 pública. Su admisión
+UDP queda limitada al discriminador `OP_KAD6HEADER` y a opcodes Kad6 nativos:
+Kad2, uTP y UDP arbitrario mantienen el rechazo de direcciones no públicas.
+La excepción tampoco convierte la ULA en salida pública ni permite usarla
+para identidad, ASN o diversidad de una Beta Exit.
+
+La misma ULA puede materializarse como fuente directa TCP desde un enlace
+`ed2k://` únicamente durante `T5`, con consentimiento NetLab de contribución
+activo y una ULA fijada explícitamente en `IPv6BindAddr`. Esta excepción no
+admite loopback, link-local, IPv4 mapeada ni otras direcciones no públicas,
+no habilita resolución o descubrimiento público y desaparece al desactivar
+NetLab. La captura debe atribuir el socket al PID candidato y a la NIC física.
+
+Para `V91-K02`, las tres fases se ejecutan en el mismo PID y cada una mantiene
+su máscara durante al menos 15 s con muestreo de API cada segundo. El cambio
+se aplica por la misma ruta de Preferencias que usa el usuario, no editando el
+INI ni reiniciando. Cada fase inyecta un `BOOTSTRAP_REQ` Kad2 y un
+`BOOTSTRAP_REQ` Kad6: con el plano activo debe completarse la respuesta
+correspondiente (incluido el challenge firmado de Kad6), y con el plano
+apagado no puede salir challenge ni respuesta. Para evitar que la protección
+de reutilización de identidad se mezcle con el aislamiento, cada fase usa una
+identidad y dirección IPv6 propias. En un laboratorio sin prefijo global se
+permite `2001:2::/48`, reservado por RFC 5180 para benchmarking, solo con rutas
+locales `/128`; esa fixture no demuestra alcanzabilidad pública. La captura
+física debe contener todos los eventos declarados, cero tramas inesperadas,
+cero descartes del kernel y limpieza completa.
+
+Para `V91-S01`, los dos endpoints deben ser direcciones IPv6 completas
+distintas, pertenecer a prefijos `/64` distintos y compartir deliberadamente
+los mismos 32 bits bajos. Cada endpoint usa identidad Kad y puerto UDP propios,
+completa de forma independiente el challenge firmado transaction-bound y
+permanece simultáneamente en la tabla verificada: la telemetría debe alcanzar
+dos contactos, no una sustitución. La captura física debe acreditar ambas
+direcciones de 128 bits, las dos verificaciones, la ausencia de overlay y la
+limpieza completa del fixture. Una proyección abreviada que colisione no puede
+participar en la identidad, clave, crédito, deduplicación ni reemplazo del
+contacto.
+
+Para `V91-S02`, una identidad A se verifica con un record firmado de vigencia
+corta en un endpoint IPv6 exacto. Tras observar su caducidad y retirada de la
+tabla verificada, una identidad B distinta y con epoch superior reutiliza la
+misma dirección IPv6 completa y el mismo puerto UDP. B debe recibir y completar
+un challenge transaction-bound nuevo antes de obtener respuesta semántica: ni
+la dirección ni el puerto transmiten el crédito de A. Reinyectar después el
+record exacto y ya caducado de A no puede producir challenge, respuesta
+semántica ni promoción. La telemetría debe acreditar la secuencia de contactos
+verificados `0 -> 1 -> 0 -> 1`, y la captura física debe fijar las identidades,
+epochs, endpoint, ausencia de overlay y limpieza completa.
+
+Para `V91-S03`, cada uno de los tres opcodes se prueba desde una identidad y
+puerto no verificados contra un proceso candidato recién iniciado. Cada
+petición debe producir exactamente un `HELLO_REQ` firmado, válido y de tamaño
+menor o igual que la petición; no puede producir `BOOTSTRAP_RES`,
+`FIND_NODE_RES`, `FIND_SOURCE_RES` ni ninguna respuesta adicional. La captura
+debe acreditar las tuplas IPv6 físicas, el PID candidato, el hash del binario,
+la ausencia de overlay y la limpieza completa del fixture.
 
 `V91-I05` es una prueba física de regresión IPv4 entre exactamente dos peers.
 Kad2 y Kad6 deben permanecer apagados en ambos, el enlace se inyecta una sola
@@ -599,6 +658,22 @@ atribución suficiente al proceso, se tratan como contaminación y producen
 `BLOCKED`; un socket peer IPv6 o de tercero atribuido al PID candidato es
 `FAIL`.
 
+Para el fixture de exactamente `2^32` bytes, la petición debe contener
+`OP_REQUESTPARTS_I64 (C5:A3)`. La respuesta puede usar
+`OP_COMPRESSEDPART (C5:40)`, `OP_COMPRESSEDPART_I64 (C5:A1)` u
+`OP_SENDINGPART_I64 (C5:A2)`: el emisor elige la variante según el extremo del
+bloque concreto, no solo según el tamaño total del fichero. El adjudicador
+exige al menos un `A3` y al menos una respuesta `40`, `A1` o `A2`, todos
+ligados al ED2K exacto del fixture; cualquier firma inválida sigue siendo
+`FAIL`.
+
+En una NIC Wi-Fi, `pktmon etl2pcap` puede declarar `LinkType=Ethernet (1)` y
+conservar tramas de datos IEEE 802.11. El analizador admite ese caso únicamente
+si la cabecera 802.11 es de datos y va seguida por una cabecera LLC/SNAP exacta
+`AA AA 03 00 00 00` con EtherType IPv4 o IPv6. No se infiere la familia desde
+otros bytes ni se aceptan cabeceras LLC/SNAP parciales; una captura que no
+produzca la 5-tupla exacta después de esta decapsulación queda `BLOCKED`.
+
 El Downloader conserva los artefactos completos. El Coordinator recibe y
 valida un paquete compacto con manifiesto, hashes y tamaños de esos artefactos,
 análisis de captura, mapeo de componente, estado y pérdidas de PktMon, y prueba
@@ -606,6 +681,24 @@ de sockets. El paquete se valida por tamaño y SHA-256, se abre sin confiar en s
 rutas y sus campos se contrastan con el resultado declarado por el peer remoto.
 Sin esa evidencia central el caso no puede ser `PASS`; repetir íntegramente el
 análisis de paquetes exige recuperar también los artefactos raw retenidos.
+
+Se permite readjudicar una ejecución sin repetir el producto únicamente cuando
+el resultado original fue `LAB_BLOCKED` dentro del adjudicador post-captura y
+se conservan completos el nonce, candidata, fixture, ETL, PCAPNG, inventarios,
+contadores, muestras, prueba de sockets y expediente de limpieza. La
+readjudicación debe usar un adjudicador corregido cuyos self-tests pasen,
+reconstruir el paquete compacto central, superar de nuevo la validación H1 y
+publicar un informe enlazado por hashes al `FAILURE` original, al cleanup y al
+commit exacto del harness. No puede readjudicarse una ejecución con limpieza
+incompleta, evidencia ausente, fallo anterior a la captura, contaminación ni
+una contradicción del producto. El informe declara expresamente que reutiliza
+evidencia bruta y que no volvió a ejecutar el producto.
+
+Las reglas de contención que cubren el espacio IPv6 completo se materializan
+en Windows como los dos intervalos exactos `::/1` y `8000::/1`. Su unión
+equivale a `::/0`, pero el expediente conserva y valida los dos filtros
+realmente instalados, incluidos sus hashes y cardinalidad, sin sustituirlos por
+una representación teórica.
 
 Ambos extremos deben calcular localmente tamaño, SHA-256 y ED2K sobre los bytes
 del fichero. No se acepta como prueba que el Downloader se limite a devolver el
@@ -1288,13 +1381,16 @@ Nunca se transforman estos resultados en:
 
 ## 17. Estado de referencia de esta especificación
 
-Esta revisión acompaña a la fuente candidata `9.1.0-rc.2`:
+Esta revisión acompaña a la fuente candidata `9.1.0-rc.3`:
 
 - `rc.1` fue rechazada al demostrar `V91-I04` que el blackhole IPv6 carecía de
   fallback acotado.
 - `rc.2` incorpora la corrección, la conservación simultánea A/AAAA y los
-  harnesses exactos I03/I04/D01; no es promocionable hasta construir el paquete
-  limpio y reconciliar los 27 casos.
+  harnesses exactos I03/I04/D01; su ledger queda conservado como evidencia
+  histórica.
+- `rc.3` añade únicamente la corrección de scheduling para fuentes HighID
+  explícitas cuando eD2K y Kad están desconectados, más el endurecimiento del
+  laboratorio necesario para repetir `V91-I05`.
 - NetLab y las superficies 9.2–9.4 siguen fail-closed y no forman parte del
   transporte IPv6 ordinario declarado para 9.1.
 - `libreach`, `libnatmap`, Punch3, predicción, selector y KRP conservan sus gates

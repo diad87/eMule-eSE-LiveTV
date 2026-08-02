@@ -85,6 +85,13 @@ static bool AddressForbidden(const Kad6Address& in) noexcept {
     return true; // Family::None or unknown => never a valid dial target
 }
 
+static bool AddressIsUla(const Kad6Address& in) noexcept {
+    Kad6Address a = in;
+    Kad6AddressNormalize(a);
+    return a.family == Kad6Address::Family::IPv6
+        && (a.addr[0] & 0xFEu) == 0xFCu;
+}
+
 bool K6TicketTargetForbidden(const K6TargetTicket& t) noexcept {
     if (AddressForbidden(t.target_endpoint.addr))
         return true;
@@ -95,7 +102,8 @@ bool K6TicketTargetForbidden(const K6TargetTicket& t) noexcept {
 
 Kad6Status K6TicketCheckTarget(const K6TargetTicket& t,
                                const K6TargetPolicy& policy) noexcept {
-    if (K6TicketTargetForbidden(t))
+    if (K6TicketTargetForbidden(t)
+        && !(policy.allow_ula_target && AddressIsUla(t.target_endpoint.addr)))
         return Kad6Status::TargetForbidden;
     if (!policy.allow_target)
         return Kad6Status::BadValue;
@@ -291,7 +299,9 @@ Kad6Status VerifyK6TargetTicket(const Kad6CryptoHooks& h,
     const Kad6Status fields = ValidateTicketFields(candidate);
     if (fields != Kad6Status::Ok)
         return fields;
-    if (K6TicketTargetForbidden(candidate))
+    if (K6TicketTargetForbidden(candidate)
+        && !(policy.allow_ula_target
+             && AddressIsUla(candidate.target_endpoint.addr)))
         return Kad6Status::TargetForbidden;
 
     Byte mac[kMacSize];

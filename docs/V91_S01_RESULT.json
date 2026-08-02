@@ -1,0 +1,82 @@
+{
+  "schema": "ese.v91.case-result/v2",
+  "case_id": "V91-S01",
+  "status": "PASS",
+  "completed_at_utc": "2026-07-29T21:03:37.3235656+00:00",
+  "candidate": {
+    "version": "9.1.0-rc.3",
+    "commit": "622813d5944951efbdba68a1bd7bd68f4d79a2d2",
+    "dirty": false,
+    "emule_sha256": "0cb269cedc4b9f7d2c3ceeadd77c7ea291e25d59feff060ac1e2d976e8032c77",
+    "candidate_overlay_zip_sha256": "f225d1dea9fbdee6ee3f49f06ef7b0754c17d087cad9bb0a862ae5936f7e5100",
+    "candidate_overlay_zip_bytes": 5009146
+  },
+  "topology": {
+    "profile": "T1",
+    "physical_windows_hosts": 2,
+    "public_projection": true,
+    "source_physical_ipv4_observed": true,
+    "source_interface": "eth2",
+    "source_mac_observed": true,
+    "source_ipv6_count": 2,
+    "target_physical_ipv4_observed": true,
+    "target_ipv6_observed": true,
+    "target_interface": "Wi-Fi",
+    "target_mac_observed": true,
+    "target_udp_port": 49372,
+    "ipv4_data_route_used": false,
+    "overlay_data_route_used": false
+  },
+  "collision": {
+    "projection": "low-32-bits",
+    "value_hex": "12345678",
+    "distinct_128_bit_addresses": true,
+    "distinct_64_bit_prefixes": true
+  },
+  "run": {
+    "job_id": "628e2f7b41794958a448ead69ff603f4",
+    "probe_started_at_utc": "2026-07-29T21:02:54Z",
+    "remote_completed_at_utc": "2026-07-29T21:03:37.3235656+00:00",
+    "candidate_challenges": 2,
+    "challenge_responses": 2,
+    "completed_bootstraps": 2,
+    "maximum_simultaneous_verified_contacts": 2,
+    "physical_frame_count": 9,
+    "unexpected_physical_frames": 0,
+    "capture_packets_dropped_by_kernel": 0
+  },
+  "checks": {
+    "both_full_ipv6_addresses_challenged": true,
+    "both_full_ipv6_addresses_completed": true,
+    "both_contacts_present_simultaneously": true,
+    "low_32_bit_collision_did_not_overwrite_contact": true,
+    "kad6_running_in_all_remote_samples": true,
+    "kad2_stopped_in_all_remote_samples": true,
+    "candidate_identity_matches": true,
+    "physical_capture_matches_probe_events": true,
+    "cleanup_complete": true
+  },
+  "evidence": [
+    {
+      "path": "lab-runs/v91-s01-622813d5/s01-final-probe.json",
+      "bytes": 10393,
+      "sha256": "c05ec9ea57ae5e77ba3225db2f5f22b7ff7272842b6bcafde6163e55219a9b39"
+    },
+    {
+      "path": "lab-runs/v91-s01-622813d5/s01-final-remote.json",
+      "bytes": 7718,
+      "sha256": "11f5e5a4339f617219062e0158837b528eca0ff11f425f0bf3c29552100cfe4f"
+    },
+    {
+      "path": "lab-runs/v91-s01-622813d5/s01-final.pcap",
+      "bytes": 3286,
+      "sha256": "219f973df85174179d06a0997d5bd4a9056c48095ec36bd1e06fcbd3b5bfba85"
+    },
+    {
+      "path": "lab-runs/v91-s01-622813d5/s01-final.txt",
+      "bytes": 15983,
+      "sha256": "9ecbb735d60c3fc7a096d777cfc01cebeb8ca654eb7340f8d16c4d06a0d38503"
+    }
+  ],
+  "adjudication": "Two different 128-bit IPv6 endpoints in different /64 prefixes, deliberately sharing the same low 32 bits, independently completed signed transaction-bound verification against the exact candidate and coexisted as two verified contacts. The physical capture contains every expected probe and candidate frame with no unexpected frame or capture loss. Kad2 remained stopped and all temporary routes, addresses, firewall rules and permanent neighbor fixtures were removed."
+}

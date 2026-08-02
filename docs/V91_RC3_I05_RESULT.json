@@ -1,0 +1,63 @@
+{
+  "schema": "ese.v91.rc3-delta-result/v1",
+  "case_id": "V91-I05",
+  "status": "PASS",
+  "adjudication": "post-capture-readjudication",
+  "nonce": "10c4ae72d87740049aec64913871a7c1",
+  "validated_at_utc": "2026-07-28T20:30:31.4311266+00:00",
+  "candidate": {
+    "version": "9.1.0-rc.3",
+    "commit": "815b45ca7a1415bd3e06ff043d53794bc340b346",
+    "dirty": false,
+    "emule_sha256": "94620cf502c954cda29fa7f40f834ef1eebacb753f1fe277865d1d173e0b9b41",
+    "ese_server_sha256": "c12e71a1602bb7b55077b82a72000a6980790fdf75d90bdbcba8d2843f7a0ba2",
+    "build_info_sha256": "48445ff0231908aa1edbb21970bcb38b91397c643c7012b65b62686bc8a63428",
+    "zip_sha256": "359272c764c532c32cfd97eeb92e2db4feaa620c5d3f6318a82a7453dbf1b56f",
+    "zip_bytes": 212040831
+  },
+  "fixture": {
+    "bytes": 4294967296,
+    "sha256": "1016d6f63ae1649a879a7c0de30865ed132deb37b1c3b2bc9ca004c88feee26c",
+    "ed2k": "796A95E75DF8E78D54A57CDEA1FEDE84"
+  },
+  "wire": {
+    "public_projection": true,
+    "source_ipv4_observed": true,
+    "downloader_ipv4_observed": true,
+    "observed_ephemeral_port": 56027,
+    "exact_peer_packets": 131877,
+    "ieee80211_packets": 131877,
+    "third_party_peer_packets": 0,
+    "ipv6_peer_packets": 0,
+    "requestparts_i64": 1,
+    "compressedpart_32": 10711,
+    "sendingpart_i64": 0,
+    "compressedpart_i64": 0,
+    "invalid_fixture_frames": 0
+  },
+  "capture": {
+    "pcapng_bytes": 32278712,
+    "pcapng_sha256": "7c40295ff1bfff54a6ce7cedec933731f50cd3593000481f358e2be7da3d852d",
+    "etl_bytes": 150994944,
+    "analysis_sha256": "ec13652c33791afc45101383da86a37727169181dfd1c1ee19aa32daf3714313",
+    "socket_proof_sha256": "8e0aaa210799d8468fb5bc4456394e492f2f773e38cf25e93b5685cd598333d3",
+    "evidence_bundle_sha256": "a9582e7fda4fed15bc765a212af272ec4912f1baea7e3aec133088238e5d1252",
+    "evidence_manifest_sha256": "71db1518dca0fc8ed4919e34909caf2e78c1ed7adaa255b76a3e1d459ae4f682",
+    "compact_entry_count": 11,
+    "retained_raw_count": 12
+  },
+  "provenance": {
+    "original_failure_status": "LAB_BLOCKED",
+    "original_failure_phase": "pktmon_complete",
+    "original_failure_sha256": "0a5fb89aa5147c69750f4f36d55cc94955f3d5559725dcce644532aad22f551a",
+    "cleanup_status": "CLEANUP_COMPLETE",
+    "cleanup_sha256": "826260d1a4d2868564e91d8343fead84041b67640be113e0404bf8350fb18264",
+    "corrected_harness_commit": "a87300fa07879792698486db8414a7ea38e4f193",
+    "remote_complete_sha256": "fe69689bce809a4f0d9514c4e72bdf0ee9f19b26766e78c91f4f43ebfae39381",
+    "remote_readjudication_sha256": "698a580e73112160bf1b4045003006e279540094cdd7a0b54f1fae604677395c",
+    "central_readjudication_sha256": "c451b5f7876d7f6badf7c54693e312bde9dc26e3735e5e634b4841e920d42438",
+    "raw_evidence_reused": true,
+    "product_reexecuted": false
+  },
+  "private_evidence_retained": true
+}

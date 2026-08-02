@@ -1773,10 +1773,14 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
     uint32 startSeq = 0, newest = 0;
     if (!skipInitialPush && servingBroadcast && servedBuffer.GetCount() > 0) {
         const uint32 pushCount = 3;
+        // A fixed three-segment bootstrap is too aggressive for high-bitrate
+        // streams. At 12 Mbps each two-second HLS segment is roughly 3 MB, so
+        // the old burst queued about 9 MB before the next heartbeat could
+        // advance the viewer's bitmap. Keep the bootstrap below half of the
+        // per-peer queue budget while always retaining the newest segment.
+        const uint64 pushBudget = ESE_LIVE_MAX_PEER_QUEUE_BYTES / 2u;
         newest = servedBuffer.GetNewestSeq();
         uint32 oldest = servedBuffer.GetOldestSeq();
-        startSeq = (newest >= pushCount - 1) ? (newest - (pushCount - 1)) : oldest;
-        if (startSeq < oldest) startSeq = oldest;
 
         // PUSH/PULL dedup (2026-06): the viewer already PULLs missing segments
         // (ASK -> OP_LIVE_REQUEST). On a RE-subscribe (~12 s cadence, past the
@@ -1790,6 +1794,27 @@ void CLiveStreamManager::OnPeerJoin(CUpDownClient* peer, const uchar* streamKey,
         // still fetches anything truly missing, so this never withholds data.
         PeerBitmapInfo vbm;
         const bool haveVbm = GetPeerBitmap(peer, vbm);
+
+        startSeq = newest;
+        uint64 selectedBytes = 0;
+        uint32 selectedSegments = 0;
+        for (uint32 seq = newest; ; --seq) {
+            uint32 candidateBytes = 0;
+            const bool found = servedBuffer.WithSegment(seq,
+                [&](const LiveChunk& chunk) {
+                    candidateBytes = chunk.dataSize;
+                });
+            if (found && (!haveVbm || !vbm.Has(seq))) {
+                if (selectedSegments > 0
+                    && selectedBytes + candidateBytes > pushBudget)
+                    break;
+                selectedBytes += candidateBytes;
+                selectedSegments++;
+                startSeq = seq;
+            }
+            if (selectedSegments >= pushCount || seq == oldest)
+                break;
+        }
 
         // v7.5.0 — WithSegment serializes the read against AddSegment; previous
         // code held the LiveStreamManager m_lock but NOT the chunk buffer's

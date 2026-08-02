@@ -1,0 +1,385 @@
+{
+    "schema":  "ese.v91.rc-ledger/v2",
+    "generated_at_utc":  "2026-07-28T20:32:47.8223331+00:00",
+    "candidate":  {
+                      "version":  "9.1.0-rc.3",
+                      "commit":  "815b45ca7a1415bd3e06ff043d53794bc340b346",
+                      "emule_sha256":  "94620cf502c954cda29fa7f40f834ef1eebacb753f1fe277865d1d173e0b9b41",
+                      "ese_server_sha256":  "c12e71a1602bb7b55077b82a72000a6980790fdf75d90bdbcba8d2843f7a0ba2",
+                      "build_info_sha256":  "48445ff0231908aa1edbb21970bcb38b91397c643c7012b65b62686bc8a63428",
+                      "zip_sha256":  "359272c764c532c32cfd97eeb92e2db4feaa620c5d3f6318a82a7453dbf1b56f",
+                      "zip_bytes":  212040831
+                  },
+    "results_sha256":  "9d955d062fdea489dd576e5d1799180944823286669241a1dce16a9c104cbf1e",
+    "normative_source":  "docs/V9_RELEASE_SPECIFICATION.md section 8.6",
+    "counts":  {
+                   "total":  27,
+                   "pass":  12,
+                   "fail":  0,
+                   "blocked":  15,
+                   "executed":  12
+               },
+    "gate_decision":  "NO_GO",
+    "cases":  [
+                  {
+                      "id":  "V91-A01",
+                      "status":  "PASS",
+                      "required_topology":  "build",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "The exact-candidate wire/common gates, clean pipeline and packaged self-test completed successfully with the candidate binary unchanged.",
+                      "evidence":  [
+                                       "safe-core\\evidence\\V91-A01-A02-SAFE-CORE-SUMMARY.json",
+                                       "selftest\\evidence\\G-SELFTEST-SUMMARY.json",
+                                       "build\\official-rc2-final-20260727-100118.stdout.log"
+                                   ],
+                      "identity_evidence_count":  2
+                  },
+                  {
+                      "id":  "V91-A02",
+                      "status":  "PASS",
+                      "required_topology":  "build",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "The clean exact-candidate pipeline passed the fixed eMule AI 1.5.2 A/B corpus with ai_fp=0, ai_fn=7, ese_fp=0 and ese_fn=0; Core, Integration and Release x64 also passed.",
+                      "evidence":  [
+                                       "safe-core\\evidence\\V91-A01-A02-SAFE-CORE-SUMMARY.json",
+                                       "build\\official-rc2-final-20260727-100118.stdout.log"
+                                   ],
+                      "identity_evidence_count":  1
+                  },
+                  {
+                      "id":  "V91-I01",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T5",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "Two physical IPv6-only peers with a direct native route are unavailable; this host has no native public IPv6 and Maria is reachable only through Tailscale overlay.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-I02",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T5",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "The exact-candidate two-hour IPv6-only LiveTV campaign was not run because two peers with a native IPv6-only path are unavailable.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-I03",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T1/T2",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "No two physical Windows hosts currently have direct native public IPv4 and IPv6 routes; Maria is overlay-only and WARP or Tailscale cannot satisfy T1 or T2.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-I04",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T1/T2",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "The native dual-stack T1 or T2 topology required for a silent IPv6 blackhole and direct IPv4 fallback capture is unavailable.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-I05",
+                      "status":  "PASS",
+                      "required_topology":  "T1",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "The exact RC3 candidate completed the canonical 4 GiB transfer between two physical Windows hosts over the single on-link IPv4 peer tuple. Both endpoints independently matched byte length, SHA-256 and ED2K; the physical Wi-Fi PktMon capture contained 131,877 exact peer packets, zero third-party/IPv6 peer packets, one A3 request and 10,711 valid classic compressed responses. The retained raw evidence was readjudicated after correcting the post-capture Wi-Fi parser, rebuilt into the compact central bundle, passed the full H1 validator, and the original cleanup was COMPLETE.",
+                      "evidence":  [
+                                       "docs\\V91_RC3_I05_RESULT.json",
+                                       "private-evidence\\CENTRAL-READJUDICATION-V91-I05-T1.json",
+                                       "runs\\v91-i05-h3-10c4ae72-20260728-195348\\COMPLETE-READJUDICATED-V91-I05-T1.json",
+                                       "runs\\v91-i05-h3-10c4ae72-20260728-195348\\READJUDICATION-V91-I05-T1.json"
+                                   ],
+                      "identity_evidence_count":  4
+                  },
+                  {
+                      "id":  "V91-I06",
+                      "status":  "PASS",
+                      "required_topology":  "T6",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "Two separate physical Windows hosts completed a 300-second remote LiveTV transfer over IPv6 Tailscale overlay (T6/DERP), with valid playlist and chunks throughout, no IPv4 fallback, no missing buffer chunks and no monitor failures; this does not claim native or public IPv6.",
+                      "evidence":  [
+                                       "i06\\evidence\\V91-I06-PASS.json",
+                                       "i06\\evidence\\operator-attestation.json",
+                                       "i06\\evidence\\viewer-cleanup.json"
+                                   ],
+                      "identity_evidence_count":  3
+                  },
+                  {
+                      "id":  "V91-I07",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T3",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "The laptop and hotspot required to inspect delegated global IPv6 in T3 are unavailable.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-I08",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T5",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "An independent Windows IPv6 echo endpoint over a native direct T5 route is unavailable.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-D01",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T1/T2",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "D01 requires two physical Windows hosts with direct native public IPv4 and IPv6, controlled A and AAAA DNS, and capture attribution; the only second host is overlay-only.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-P01",
+                      "status":  "PASS",
+                      "required_topology":  "T0/T1",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "The exact candidate sent SOCKS5 ATYP=4 with the expected 128-bit IPv6 destination and port.",
+                      "evidence":  [
+                                       "proxy\\evidence\\V91-P01-summary.json"
+                                   ],
+                      "identity_evidence_count":  1
+                  },
+                  {
+                      "id":  "V91-P02",
+                      "status":  "PASS",
+                      "required_topology":  "T0/T1",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "The exact candidate emitted the correctly bracketed IPv6 HTTP CONNECT authority and port.",
+                      "evidence":  [
+                                       "proxy\\evidence\\V91-P02-summary.json"
+                                   ],
+                      "identity_evidence_count":  1
+                  },
+                  {
+                      "id":  "V91-P03",
+                      "status":  "PASS",
+                      "required_topology":  "T0",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "The exact candidate rejected IPv6 over SOCKS4 explicitly without opening or truncating an outbound proxy connection.",
+                      "evidence":  [
+                                       "proxy\\evidence\\V91-P03-summary.json"
+                                   ],
+                      "identity_evidence_count":  1
+                  },
+                  {
+                      "id":  "V91-K01",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T5",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "Kad6-only bootstrap, publish and source recovery require two native IPv6-only peers in T5, which are unavailable.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-K02",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T1",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "Runtime isolation of Kad2 and Kad6 requires a direct second physical T1 peer; Maria is available only through Tailscale.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-K03",
+                      "status":  "PASS",
+                      "required_topology":  "profiles",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "The exact candidate saved a Kad6-only profile and the hash-pinned official eSE 8.1 package remained alive and observable for more than 30 seconds without starting or reactivating Kad2.",
+                      "evidence":  [
+                                       "k03\\evidence\\V91-K03-SUMMARY.json"
+                                   ],
+                      "identity_evidence_count":  1
+                  },
+                  {
+                      "id":  "V91-K04",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T1/T5",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "Restarting two populated nodes and observing bounded probation requires a direct T1 or T5 two-host topology, which is unavailable.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-C01",
+                      "status":  "PASS",
+                      "required_topology":  "V1/H2",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "The exact RC2 candidate transferred the pinned fixture from vanilla eMule 0.70b on the independent physical Windows host Maria over the scoped compatibility overlay. Complete classic framing, socket attribution, gapless payload reconstruction and all SHA-256 checks passed; this does not claim native public reachability.",
+                      "evidence":  [
+                                       "c01\\evidence\\V91-C01-PASS.json",
+                                       "c01\\evidence\\remote-ready-validated.json",
+                                       "c01\\evidence\\operator-topology-attestation.json",
+                                       "c01\\evidence\\remote-cleanup-verified.json",
+                                       "c01\\evidence\\remote-source-cleanup.json",
+                                       "c01\\evidence\\remote-source-evidence.zip",
+                                       "c01\\evidence\\candidate-to-vanilla.bin",
+                                       "c01\\evidence\\vanilla-to-candidate.bin",
+                                       "c01\\evidence\\proxy-events.jsonl",
+                                       "c01\\evidence\\progress.jsonl"
+                                   ],
+                      "identity_evidence_count":  2
+                  },
+                  {
+                      "id":  "V91-C02",
+                      "status":  "PASS",
+                      "required_topology":  "T0",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "All rejected consent levels kept their gated surfaces closed in two exact-candidate rounds.",
+                      "evidence":  [
+                                       "consent-retry\\evidence\\V91-CONSENT-SUMMARY.json",
+                                       "consent-retry\\evidence\\base-rejected-r1.json",
+                                       "consent-retry\\evidence\\advanced-rejected-r1.json",
+                                       "consent-retry\\evidence\\contribution-rejected-r1.json",
+                                       "consent-retry\\evidence\\base-rejected-r2.json",
+                                       "consent-retry\\evidence\\advanced-rejected-r2.json",
+                                       "consent-retry\\evidence\\contribution-rejected-r2.json"
+                                   ],
+                      "identity_evidence_count":  7
+                  },
+                  {
+                      "id":  "V91-C03",
+                      "status":  "PASS",
+                      "required_topology":  "T0/T1",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "General consent revocation persisted and stopped the gated activity within the required deadline in two exact-candidate rounds.",
+                      "evidence":  [
+                                       "consent-retry\\evidence\\V91-CONSENT-SUMMARY.json",
+                                       "consent-retry\\evidence\\all-accepted-r1.json",
+                                       "consent-retry\\evidence\\all-accepted-r2.json"
+                                   ],
+                      "identity_evidence_count":  3
+                  },
+                  {
+                      "id":  "V91-C04",
+                      "status":  "PASS",
+                      "required_topology":  "T0",
+                      "executed":  true,
+                      "execution_state":  "COMPLETE",
+                      "reason":  "Incomplete KRP configuration failed closed without listener or outbound connection in two exact-candidate rounds.",
+                      "evidence":  [
+                                       "consent-retry\\evidence\\V91-CONSENT-SUMMARY.json",
+                                       "consent-retry\\evidence\\all-accepted-r1.json",
+                                       "consent-retry\\evidence\\all-accepted-r2.json"
+                                   ],
+                      "identity_evidence_count":  3
+                  },
+                  {
+                      "id":  "V91-S01",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T5",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "The colliding-IPv6 endpoint injection requires two native IPv6 peers in T5, which are unavailable.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-S02",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T5",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "Temporal IPv6 reuse across identity epochs requires a controlled physical T5 campaign, which cannot be formed with the available hosts.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-S03",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T1/T5",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "The unverified remote endpoint and packet-capture campaign requires a direct T1 or T5 peer; the only second host is overlay-only.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-R01",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T3",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "The laptop and hotspot required for the T3 LAN-to-hotspot transition are unavailable.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  },
+                  {
+                      "id":  "V91-O01",
+                      "status":  "BLOCKED",
+                      "required_topology":  "T1/T5",
+                      "executed":  false,
+                      "execution_state":  "NOT_RUN",
+                      "reason":  "The formal exact-candidate 12-hour dual-stack soak on two physical direct peers was not executed; previous same-host or earlier-candidate runs cannot adjudicate O01.",
+                      "evidence":  [
+
+                                   ],
+                      "identity_evidence_count":  0
+                  }
+              ],
+    "qualification":  {
+                          "kind":  "delta-requalification",
+                          "baseline_ledger":  "docs/V91_RC2_CASE_RESULTS.json",
+                          "baseline_ledger_sha256":  "edd0c2f54bce46bc4dff53bd2f70b670f927de7f5dd4e6c11d51e93ec51d7d5f",
+                          "delta_result":  "docs/V91_RC3_I05_RESULT.json",
+                          "delta_result_sha256":  "9d955d062fdea489dd576e5d1799180944823286669241a1dce16a9c104cbf1e",
+                          "affected_case":  "V91-I05",
+                          "unaffected_results_carried_forward_as_regression_evidence":  true
+                      }
+}

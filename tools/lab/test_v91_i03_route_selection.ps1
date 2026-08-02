@@ -32,6 +32,10 @@ equal and IPv6 is on-link; a routed native IPv6 next hop is reported as T2.
 param(
     [ValidateSet('Coordinator', 'Peer')][string]$Role = 'Coordinator',
     [Parameter(Mandatory = $true)][string]$PackagePath,
+    [Parameter(Mandatory = $true)][string]$CandidateZipPath,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedCandidateZipSha256,
     [Parameter(Mandatory = $true)][string]$OutputRoot,
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-fA-F]{40}$')][string]$Commit,
@@ -42,6 +46,10 @@ param(
     [Parameter(Mandatory = $true)][string]$PeerIPv6,
     [Parameter(Mandatory = $true)][string]$CoordinationRoot,
     [Parameter(Mandatory = $true)][switch]$ControlledPeerAcknowledged,
+    [Parameter(Mandatory = $true)][switch]$DisposableLabAccountAcknowledged,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedLabUserSidSha256,
     [ValidateRange(1024, 65535)][int]$PeerTcpPort = 9462,
     [ValidateRange(1024, 65535)][int]$PeerUdpPort = 9472,
     [ValidateRange(1024, 65535)][int]$PeerWebPort = 9511,
@@ -65,6 +73,8 @@ Set-StrictMode -Version 2.0
 
 $caseId = 'V91-I03'
 $expectedHash = $ExpectedEmuleSha256.ToLowerInvariant()
+$expectedZipHash = $ExpectedCandidateZipSha256.ToLowerInvariant()
+$expectedLabSidHash = $ExpectedLabUserSidSha256.ToLowerInvariant()
 $peerUploadCapKiBps = 16
 $candidate = Get-LabCandidateInfo -PackagePath $PackagePath `
     -ExpectedCommit $Commit
@@ -73,6 +83,29 @@ if ($candidate.emule_sha256 -ne $expectedHash) {
 }
 if (-not $ControlledPeerAcknowledged) {
     throw 'I03 requires two controlled physical Windows hosts'
+}
+if (-not $DisposableLabAccountAcknowledged) {
+    throw 'I03_FIXTURE_BLOCKED: dedicated disposable lab account required'
+}
+$currentLabSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$currentLabSidHash = Get-LabStringSha256 -Value $currentLabSid
+if ($currentLabSidHash -cne $expectedLabSidHash) {
+    throw 'I03_FIXTURE_BLOCKED: dedicated lab account SID binding mismatch'
+}
+$candidateZip = Get-LabFullPath -Path $CandidateZipPath
+if (-not (Test-Path -LiteralPath $candidateZip -PathType Leaf)) {
+    throw 'I03_FIXTURE_BLOCKED: CandidateZipPath is missing'
+}
+$candidateZipSha256 = Get-LabSha256 -Path $candidateZip
+if ($candidateZipSha256 -cne $expectedZipHash) {
+    throw 'I03_FIXTURE_BLOCKED: candidate ZIP SHA-256 mismatch'
+}
+$candidatePackagePrefix =
+    (Get-LabFullPath -Path $candidate.package_path).TrimEnd('\') + '\'
+if (($candidateZip.TrimEnd('\') + '\').StartsWith(
+        $candidatePackagePrefix,
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'I03_FIXTURE_BLOCKED: CandidateZipPath must be outside PackagePath'
 }
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'V91-I03 T1/T2 is a Windows-only two-host fixture'
@@ -110,6 +143,670 @@ function Get-I03NormalizedIp {
     return $parsed.ToString()
 }
 
+function Test-I03PathContainedBy {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+
+    $fullPath = (Get-LabFullPath -Path $Path).TrimEnd('\')
+    $fullRoot = (Get-LabFullPath -Path $Root).TrimEnd('\')
+    return $fullPath.Equals(
+        $fullRoot, [StringComparison]::OrdinalIgnoreCase
+    ) -or $fullPath.StartsWith(
+        $fullRoot + '\', [StringComparison]::OrdinalIgnoreCase
+    )
+}
+
+function Assert-I03PrivateRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$CandidatePackageRoot
+    )
+
+    $fullPath = Get-LabFullPath -Path $Path
+    if (Test-I03PathContainedBy -Path $fullPath -Root $RepositoryRoot) {
+        throw "I03_PRIVATE_ROOT::${Label}_INSIDE_REPOSITORY"
+    }
+    if (Test-I03PathContainedBy -Path $fullPath `
+        -Root $CandidatePackageRoot) {
+        throw "I03_PRIVATE_ROOT::${Label}_INSIDE_PACKAGE"
+    }
+    $cursor = $fullPath
+    while ($cursor) {
+        if (Test-Path -LiteralPath $cursor) {
+            $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+            if (($item.Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "I03_PRIVATE_ROOT::${Label}_REPARSE_ANCESTOR"
+            }
+        }
+        $parent = Split-Path -Parent $cursor
+        if (-not $parent -or $parent -eq $cursor) { break }
+        $cursor = $parent
+    }
+    return $fullPath
+}
+
+function Test-I03PublicEvidenceText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()][string]$Text
+    )
+
+    $forbidden = @(
+        '(?i)"(?:[a-z0-9]+_)*(?:path|address|ip|host|machine|userhash|user_hash|runtime_error|raw_error|message|password|token|cookie|authorization)(?:_[a-z0-9]+)*"\s*:',
+        '(?i)"(?:[a-z0-9]+_)*(?:exception|detail|secret|auth|bearer|credential|private_key)(?:_[a-z0-9]+)*"\s*:',
+        '(?i)"(?:error|[a-z0-9_]+_error)"\s*:',
+        '(?i)user[_-]?hash',
+        '(?i)"Bearer\s+[A-Za-z0-9._~+/=-]+"',
+        '(?i)(?:System\.)?[A-Za-z0-9_.]+Exception(?::|\\r|\\n|\b)',
+        '(?i)"(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|eyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,})"',
+        '(?i)[A-Z]:\\',
+        '\\\\[^"\r\n]+\\',
+        '(?<![0-9])(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?:\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}(?![0-9])',
+        '(?i)(?<![0-9a-f])(?:[0-9a-f]{0,4}:){3,}[0-9a-f]{0,4}(?![0-9a-f:])',
+        '(?i)BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY'
+    )
+    foreach ($pattern in $forbidden) {
+        if ($Text -match $pattern) { return $false }
+    }
+    return $true
+}
+
+function Test-I03PublicEvidenceObject {
+    param([Parameter(Mandatory = $true)][object]$Value)
+
+    try {
+        $text = $Value | ConvertTo-Json -Depth 32 -Compress
+        if (-not (Test-I03PublicEvidenceText -Text $text) -or
+            $null -eq $Value -or $Value.schema -isnot [string]) {
+            return $false
+        }
+        $exact = {
+            param([object]$Object, [string[]]$Names)
+            if ($null -eq $Object) { return $false }
+            $actual = @($Object.PSObject.Properties.Name)
+            return $actual.Count -eq $Names.Count -and
+                @($Names | Where-Object {
+                    $actual -cnotcontains $_
+                }).Count -eq 0
+        }
+        $hash = { param($v) $v -is [string] -and $v -cmatch '^[0-9a-f]{64}$' }
+        $bool = { param($v) $v -is [bool] }
+        $integer = {
+            param($v)
+            return $v -isnot [bool] -and $v -is [ValueType] -and
+                $v -isnot [single] -and $v -isnot [double] -and
+                $v -isnot [decimal] -and
+                $v -isnot [DateTime] -and $v -isnot [char]
+        }
+        $nonnegative = {
+            param($v)
+            return (& $integer $v) -and [Int64]$v -ge 0
+        }
+        $positive = {
+            param($v)
+            return (& $integer $v) -and [Int64]$v -gt 0
+        }
+        $productCodes = [ordered]@{
+            CANDIDATE_EXITED = 'PRODUCT_RUNTIME'
+            UI_UNRESPONSIVE = 'PRODUCT_LIVENESS'
+            API_UNAVAILABLE = 'PRODUCT_LIVENESS'
+            API_CONTRACT = 'PRODUCT_CONTRACT'
+            LINK_REJECTED = 'PRODUCT_INPUT'
+            IPV4_PREWARM_INVARIANT = 'PRODUCT_ROUTE'
+            PEER_IDENTITY_CHANGED = 'PRODUCT_IDENTITY'
+            NO_ROUTE = 'PRODUCT_ROUTE'
+            WRONG_FAMILY = 'PRODUCT_ROUTE'
+            DUPLICATE_ROUTE = 'PRODUCT_ROUTE'
+            WRONG_OR_NONPHYSICAL_SOCKET = 'PRODUCT_ATTRIBUTION'
+            CANDIDATE_THIRD_PARTY_SOCKET = 'PRODUCT_ATTRIBUTION'
+        }
+        $labCodes = [ordered]@{
+            PACKAGE_BINDING = 'LAB_PACKAGE'
+            TOPOLOGY = 'LAB_TOPOLOGY'
+            CLOCK = 'LAB_CLOCK'
+            CONTROL_TIMEOUT = 'LAB_CONTROL'
+            COORDINATION_SCHEMA = 'LAB_CONTROL'
+            COLLECTOR_UNAVAILABLE = 'LAB_COLLECTOR'
+            COLLECTOR_AMBIGUOUS = 'LAB_COLLECTOR'
+            EXTERNAL_CONTAMINATION = 'LAB_CONTAMINATION'
+            EVIDENCE_INCOMPLETE = 'LAB_EVIDENCE'
+            CLEANUP_INCOMPLETE = 'LAB_CLEANUP'
+            HARNESS_EXCEPTION = 'LAB_HARNESS'
+        }
+        $failurePhases = @(
+            'preflight', 'dualstack_rearm', 'ipv4_prewarm',
+            'peer_restart', 'peer_completion', 'cleanup',
+            'case_setup', 'identity_bootstrap', 'candidate_startup',
+            'link_injection', 'backlog_revalidation',
+            'post_restart_route', 'evidence_finalize'
+        )
+        if ([string]$Value.schema -ceq
+            'ese.v91.i03-public-evidence-manifest/v1') {
+            $manifestFields = if ($Value.PSObject.Properties.Name `
+                -ccontains 'role') {
+                @(
+                    'schema', 'case_id', 'role', 'files',
+                    'private_artifacts_retained',
+                    'private_artifact_manifest_sha256',
+                    'public_scan_passed'
+                )
+            } else {
+                @(
+                    'schema', 'case_id', 'files',
+                    'private_artifacts_retained',
+                    'private_artifact_manifest_sha256',
+                    'public_scan_passed'
+                )
+            }
+            if (-not (& $exact $Value $manifestFields) -or
+                [string]$Value.case_id -cne 'V91-I03' -or
+                ($manifestFields -ccontains 'role' -and
+                    [string]$Value.role -cne 'Peer') -or
+                $Value.files -isnot [System.Array] -or
+                @($Value.files).Count -ne 1 -or
+                -not (& $bool $Value.private_artifacts_retained) -or
+                -not [bool]$Value.private_artifacts_retained -or
+                -not (& $bool $Value.public_scan_passed) -or
+                -not [bool]$Value.public_scan_passed -or
+                -not (& $hash $Value.private_artifact_manifest_sha256)) {
+                return $false
+            }
+            $file = @($Value.files)[0]
+            return (& $exact $file @('name', 'bytes', 'sha256')) -and
+                [string]$file.name -ceq 'summary.json' -and
+                ($file.bytes -is [int] -or $file.bytes -is [Int64]) -and
+                [Int64]$file.bytes -gt 0 -and (& $hash $file.sha256)
+        }
+        if ([string]$Value.schema -ceq
+            'ese.v91.i03-public-summary/v1') {
+            if (-not (& $exact $Value @(
+                'schema', 'case_id', 'formal_status', 'candidate',
+                'topology', 'policies', 'adjudication', 'failures',
+                'cleanup', 'retention'
+            )) -or [string]$Value.case_id -cne 'V91-I03' -or
+                [string]$Value.formal_status -cnotin @(
+                    'PASS', 'FAIL', 'BLOCKED'
+                ) -or
+                -not (& $exact $Value.candidate @(
+                    'commit', 'emule_sha256', 'zip_sha256',
+                    'package_manifest_sha256', 'package_unchanged'
+                )) -or
+                [string]$Value.candidate.commit -notmatch '^[0-9a-f]{40}$' -or
+                -not (& $hash $Value.candidate.emule_sha256) -or
+                -not (& $hash $Value.candidate.zip_sha256) -or
+                -not (& $hash $Value.candidate.package_manifest_sha256) -or
+                -not (& $bool $Value.candidate.package_unchanged) -or
+                -not (& $exact $Value.topology @(
+                    'class', 'proved', 't1_proved', 't2_proved'
+                )) -or
+                [string]$Value.topology.class -cnotin @('', 'T1', 'T2') -or
+                -not (& $bool $Value.topology.proved) -or
+                -not (& $bool $Value.topology.t1_proved) -or
+                -not (& $bool $Value.topology.t2_proved) -or
+                $Value.policies -isnot [System.Array] -or
+                $Value.failures -isnot [System.Array]) {
+                return $false
+            }
+            foreach ($policy in @($Value.policies)) {
+                if (-not (& $exact $policy @(
+                    'policy', 'ipv6_mode', 'expected_family',
+                    'fixture_valid', 'product_match'
+                )) -or [string]$policy.policy -cnotin @('auto', 'preferred') -or
+                    -not (& $integer $policy.ipv6_mode) -or
+                    [int]$policy.ipv6_mode -notin @(1, 2) -or
+                    [string]$policy.expected_family -cnotin @('IPv4', 'IPv6') -or
+                    -not (& $bool $policy.fixture_valid) -or
+                    -not (& $bool $policy.product_match)) { return $false }
+                if (([string]$policy.policy -ceq 'auto' -and
+                        ([int]$policy.ipv6_mode -ne 1 -or
+                        [string]$policy.expected_family -cne 'IPv4')) -or
+                    ([string]$policy.policy -ceq 'preferred' -and
+                        ([int]$policy.ipv6_mode -ne 2 -or
+                        [string]$policy.expected_family -cne 'IPv6'))) {
+                    return $false
+                }
+            }
+            $policyNames = @(@($Value.policies) | ForEach-Object {
+                [string]$_.policy
+            } | Sort-Object -Unique)
+            if (@($Value.policies).Count -gt 2 -or
+                $policyNames.Count -ne @($Value.policies).Count -or
+                ([string]$Value.formal_status -ceq 'PASS' -and
+                    ($policyNames -join '|') -cne 'auto|preferred')) {
+                return $false
+            }
+            if (-not (& $exact $Value.adjudication @(
+                'formal_status', 'proven_product_failure_count',
+                'untrusted_product_failure_count', 'lab_incident_count',
+                'malformed_or_stale_failure_count'
+            )) -or [string]$Value.adjudication.formal_status -cne
+                [string]$Value.formal_status -or
+                -not (& $nonnegative `
+                    $Value.adjudication.proven_product_failure_count) -or
+                -not (& $nonnegative `
+                    $Value.adjudication.untrusted_product_failure_count) -or
+                -not (& $nonnegative `
+                    $Value.adjudication.lab_incident_count) -or
+                -not (& $nonnegative `
+                    $Value.adjudication.malformed_or_stale_failure_count)) {
+                return $false
+            }
+            foreach ($failure in @($Value.failures)) {
+                if (-not (& $exact $failure @(
+                    'role', 'policy', 'phase', 'status', 'category',
+                    'code', 'fixture_certified', 'cleanup_complete',
+                    'cleanup_incident_codes'
+                )) -or [string]$failure.role -cnotin @('Coordinator', 'Peer') -or
+                    [string]$failure.policy -cnotin @('none', 'auto', 'preferred') -or
+                    $failure.phase -isnot [string] -or
+                    [string]$failure.phase -cnotin $failurePhases -or
+                    [string]$failure.status -cnotin @(
+                        'LAB_BLOCKED', 'PRODUCT_INVARIANT'
+                    ) -or -not (& $bool $failure.fixture_certified) -or
+                    -not (& $bool $failure.cleanup_complete) -or
+                    $failure.cleanup_incident_codes -isnot [System.Array]) {
+                    return $false
+                }
+                $failureMap = if ([string]$failure.status -ceq
+                    'PRODUCT_INVARIANT') { $productCodes } else { $labCodes }
+                if ($failure.code -isnot [string] -or
+                    -not $failureMap.Contains([string]$failure.code) -or
+                    $failure.category -isnot [string] -or
+                    [string]$failure.category -cne
+                        [string]$failureMap[[string]$failure.code] -or
+                    @($failure.cleanup_incident_codes | Where-Object {
+                        $_ -isnot [string] -or
+                        [string]$_ -cnotin @($labCodes.Keys)
+                    }).Count -ne 0) {
+                    return $false
+                }
+            }
+            if (-not (& $exact $Value.cleanup @(
+                'complete', 'candidate_package_unchanged',
+                'package_manifest_unchanged',
+                'package_zip_binding_unchanged',
+                'process_cleanup_complete', 'peer_cleanup_complete',
+                'registry_and_system_state_exact'
+            )) -or @($Value.cleanup.PSObject.Properties.Value |
+                    Where-Object { -not (& $bool $_) }).Count -ne 0 -or
+                -not (& $exact $Value.retention @(
+                'private_artifacts_retained', 'private_file_count',
+                'private_total_bytes',
+                'private_artifact_manifest_sha256', 'public_allowlist'
+            )) -or -not (& $bool `
+                    $Value.retention.private_artifacts_retained) -or
+                -not [bool]$Value.retention.private_artifacts_retained -or
+                -not (& $positive $Value.retention.private_file_count) -or
+                -not (& $positive $Value.retention.private_total_bytes) -or
+                -not (& $hash `
+                    $Value.retention.private_artifact_manifest_sha256) -or
+                $Value.retention.public_allowlist -isnot [System.Array] -or
+                @($Value.retention.public_allowlist | Where-Object {
+                    $_ -isnot [string]
+                }).Count -ne 0 -or
+                (@($Value.retention.public_allowlist) -join '|') -cne
+                    'summary.json|evidence-manifest.json') {
+                return $false
+            }
+            $topologyCoherent =
+                ([bool]$Value.topology.proved -and
+                    [string]$Value.topology.class -ceq 'T1' -and
+                    [bool]$Value.topology.t1_proved -and
+                    -not [bool]$Value.topology.t2_proved) -or
+                ([bool]$Value.topology.proved -and
+                    [string]$Value.topology.class -ceq 'T2' -and
+                    -not [bool]$Value.topology.t1_proved -and
+                    [bool]$Value.topology.t2_proved) -or
+                (-not [bool]$Value.topology.proved -and
+                    [string]$Value.topology.class -ceq '' -and
+                    -not [bool]$Value.topology.t1_proved -and
+                    -not [bool]$Value.topology.t2_proved)
+            if (-not $topologyCoherent) { return $false }
+            $productFailureCount = @($Value.failures | Where-Object {
+                [string]$_.status -ceq 'PRODUCT_INVARIANT'
+            }).Count
+            $labFailureCount = @($Value.failures | Where-Object {
+                [string]$_.status -ceq 'LAB_BLOCKED'
+            }).Count
+            if ([Int64]$Value.adjudication.proven_product_failure_count +
+                    [Int64]$Value.adjudication.
+                        untrusted_product_failure_count -ne
+                    $productFailureCount -or
+                [Int64]$Value.adjudication.lab_incident_count -ne
+                    $labFailureCount -or
+                @($Value.failures | Where-Object {
+                    [string]$_.status -ceq 'PRODUCT_INVARIANT' -and
+                    -not [bool]$_.fixture_certified
+                }).Count -gt 0) {
+                return $false
+            }
+            $allPoliciesPass = @($Value.policies).Count -eq 2 -and
+                ($policyNames -join '|') -ceq 'auto|preferred' -and
+                @($Value.policies | Where-Object {
+                    -not [bool]$_.fixture_valid -or
+                    -not [bool]$_.product_match
+                }).Count -eq 0
+            $allCleanupPass = @(
+                $Value.cleanup.PSObject.Properties.Value |
+                    Where-Object { -not [bool]$_ }
+            ).Count -eq 0
+            $passEvidence = [bool]$Value.candidate.package_unchanged -and
+                [bool]$Value.topology.proved -and $allPoliciesPass -and
+                $allCleanupPass -and @($Value.failures).Count -eq 0 -and
+                [Int64]$Value.adjudication.proven_product_failure_count -eq 0 -and
+                [Int64]$Value.adjudication.untrusted_product_failure_count -eq 0 -and
+                [Int64]$Value.adjudication.lab_incident_count -eq 0 -and
+                [Int64]$Value.adjudication.malformed_or_stale_failure_count -eq 0
+            if (([string]$Value.formal_status -ceq 'PASS' -and
+                    -not $passEvidence) -or
+                ([string]$Value.formal_status -ceq 'FAIL' -and
+                    ([Int64]$Value.adjudication.
+                        proven_product_failure_count -le 0 -or
+                    $productFailureCount -le 0)) -or
+                ([string]$Value.formal_status -ceq 'BLOCKED' -and
+                    ([Int64]$Value.adjudication.
+                        proven_product_failure_count -ne 0 -or
+                    $passEvidence))) {
+                return $false
+            }
+            return $true
+        }
+        if ([string]$Value.schema -ceq
+            'ese.v91.i03-peer-public-summary/v1') {
+            if (-not (& $exact $Value @(
+                'schema', 'case_id', 'role', 'status', 'candidate',
+                'barriers_completed', 'expected_barriers', 'failures',
+                'cleanup', 'retention'
+            )) -or [string]$Value.case_id -cne 'V91-I03' -or
+                [string]$Value.role -cne 'Peer' -or
+                [string]$Value.status -cnotin @(
+                    'COMPLETE', 'PRODUCT_INVARIANT', 'LAB_BLOCKED'
+                ) -or
+                -not (& $exact $Value.candidate @(
+                    'commit', 'emule_sha256', 'zip_sha256',
+                    'package_unchanged'
+                )) -or
+                [string]$Value.candidate.commit -notmatch '^[0-9a-f]{40}$' -or
+                -not (& $hash $Value.candidate.emule_sha256) -or
+                -not (& $hash $Value.candidate.zip_sha256) -or
+                -not (& $bool $Value.candidate.package_unchanged) -or
+                -not (& $nonnegative $Value.barriers_completed) -or
+                [Int64]$Value.barriers_completed -gt 2 -or
+                -not (& $integer $Value.expected_barriers) -or
+                [Int64]$Value.expected_barriers -ne 2 -or
+                $Value.failures -isnot [System.Array]) { return $false }
+            if (([string]$Value.status -ceq 'COMPLETE' -and
+                    [Int64]$Value.barriers_completed -ne 2) -or
+                ([string]$Value.status -cne 'COMPLETE' -and
+                    @($Value.failures).Count -eq 0)) {
+                return $false
+            }
+            foreach ($failure in @($Value.failures)) {
+                if (-not (& $exact $failure @(
+                    'policy', 'phase', 'status', 'category', 'code',
+                    'fixture_certified', 'cleanup_complete'
+                )) -or [string]$failure.policy -cnotin @(
+                        'none', 'auto', 'preferred'
+                    ) -or $failure.phase -isnot [string] -or
+                    [string]$failure.phase -cnotin $failurePhases -or
+                    [string]$failure.status -cnotin @(
+                        'LAB_BLOCKED', 'PRODUCT_INVARIANT'
+                    ) -or -not (& $bool $failure.fixture_certified) -or
+                    -not (& $bool $failure.cleanup_complete)) {
+                    return $false
+                }
+                $failureMap = if ([string]$failure.status -ceq
+                    'PRODUCT_INVARIANT') { $productCodes } else { $labCodes }
+                if ($failure.code -isnot [string] -or
+                    -not $failureMap.Contains([string]$failure.code) -or
+                    $failure.category -isnot [string] -or
+                    [string]$failure.category -cne
+                        [string]$failureMap[[string]$failure.code]) {
+                    return $false
+                }
+            }
+            if (-not (& $exact $Value.cleanup @(
+                'complete', 'source_process_stopped',
+                'candidate_package_unchanged',
+                'registry_and_system_state_exact'
+            )) -or @($Value.cleanup.PSObject.Properties.Value |
+                    Where-Object { -not (& $bool $_) }).Count -ne 0 -or
+                -not (& $exact $Value.retention @(
+                'private_artifacts_retained',
+                'coordination_private_artifacts_retained',
+                'private_file_count',
+                'private_artifact_manifest_sha256'
+            )) -or -not (& $bool `
+                    $Value.retention.private_artifacts_retained) -or
+                -not [bool]$Value.retention.private_artifacts_retained -or
+                -not (& $bool `
+                    $Value.retention.coordination_private_artifacts_retained) -or
+                -not [bool]$Value.retention.coordination_private_artifacts_retained -or
+                -not (& $positive $Value.retention.private_file_count) -or
+                -not (& $hash `
+                    $Value.retention.private_artifact_manifest_sha256)) {
+                return $false
+            }
+            $peerProductFailureCount = @($Value.failures |
+                Where-Object {
+                    [string]$_.status -ceq 'PRODUCT_INVARIANT'
+                }).Count
+            $peerLabFailureCount = @($Value.failures | Where-Object {
+                [string]$_.status -ceq 'LAB_BLOCKED'
+            }).Count
+            $peerCleanupPass = @(
+                $Value.cleanup.PSObject.Properties.Value |
+                    Where-Object { -not [bool]$_ }
+            ).Count -eq 0
+            if (([string]$Value.status -ceq 'COMPLETE' -and
+                    (@($Value.failures).Count -ne 0 -or
+                    [Int64]$Value.barriers_completed -ne 2 -or
+                    -not [bool]$Value.candidate.package_unchanged -or
+                    -not $peerCleanupPass)) -or
+                ([string]$Value.status -ceq 'PRODUCT_INVARIANT' -and
+                    $peerProductFailureCount -le 0) -or
+                ([string]$Value.status -ceq 'LAB_BLOCKED' -and
+                    ($peerLabFailureCount -le 0 -or
+                    $peerProductFailureCount -ne 0))) {
+                return $false
+            }
+            return $true
+        }
+        return $false
+    } catch { return $false }
+}
+
+function Test-I03PublicEvidenceDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedFiles,
+        [Parameter(Mandatory = $true)][string]$PrivateManifestPath
+    )
+
+    try {
+        $rootPath = [IO.Path]::GetFullPath($Root)
+        $rootItem = Get-Item -LiteralPath $rootPath -Force `
+            -ErrorAction Stop
+        if (-not $rootItem.PSIsContainer -or
+            ($rootItem.Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            return $false
+        }
+        $items = @(Get-ChildItem -LiteralPath $rootPath -Force `
+            -Recurse -ErrorAction Stop)
+        if (@($items | Where-Object {
+                $_.PSIsContainer -or
+                ($_.Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -ne 0
+            }).Count -ne 0) {
+            return $false
+        }
+        $actualNames = @($items | ForEach-Object {
+            $_.FullName.Substring($rootPath.TrimEnd('\').Length + 1).
+                Replace('\', '/')
+        } | Sort-Object)
+        $expectedNames = @($ExpectedFiles | Sort-Object)
+        if ($actualNames.Count -ne $expectedNames.Count -or
+            ($actualNames -join '|') -cne ($expectedNames -join '|')) {
+            return $false
+        }
+        $objectsByName = @{}
+        foreach ($item in $items) {
+            $text = Get-Content -LiteralPath $item.FullName -Raw `
+                -ErrorAction Stop
+            if (-not (Test-I03PublicEvidenceText -Text $text)) {
+                return $false
+            }
+            $object = $text | ConvertFrom-Json -ErrorAction Stop
+            if (-not (Test-I03PublicEvidenceObject -Value $object)) {
+                return $false
+            }
+            $objectsByName[$item.Name] = $object
+        }
+        $summaryItem = Get-Item -LiteralPath (
+            Join-Path $rootPath 'summary.json'
+        ) -Force -ErrorAction Stop
+        $manifest = $objectsByName['evidence-manifest.json']
+        $summary = $objectsByName['summary.json']
+        $manifestSummary = @($manifest.files)[0]
+        if ([string]$manifestSummary.name -cne 'summary.json' -or
+            [Int64]$manifestSummary.bytes -ne [Int64]$summaryItem.Length -or
+            [string]$manifestSummary.sha256 -cne
+                (Get-LabSha256 -Path $summaryItem.FullName)) {
+            return $false
+        }
+        $privateManifestItem = Get-Item -LiteralPath $PrivateManifestPath `
+            -Force -ErrorAction Stop
+        if (($privateManifestItem.Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            return $false
+        }
+        $privateManifestSha = Get-LabSha256 `
+            -Path $privateManifestItem.FullName
+        if ([string]$manifest.private_artifact_manifest_sha256 -cne
+                $privateManifestSha -or
+            [string]$summary.retention.
+                private_artifact_manifest_sha256 -cne $privateManifestSha) {
+            return $false
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Test-I03IpPrefix {
+    param(
+        [Parameter(Mandatory = $true)][Net.IPAddress]$Address,
+        [Parameter(Mandatory = $true)][string]$Network,
+        [ValidateRange(0, 128)][int]$PrefixLength
+    )
+
+    $networkAddress = [Net.IPAddress]::Parse($Network)
+    if ($Address.AddressFamily -ne $networkAddress.AddressFamily) {
+        return $false
+    }
+    $addressBytes = $Address.GetAddressBytes()
+    $networkBytes = $networkAddress.GetAddressBytes()
+    if ($PrefixLength -gt ($addressBytes.Length * 8)) {
+        return $false
+    }
+    $wholeBytes = [Math]::Floor($PrefixLength / 8)
+    for ($index = 0; $index -lt $wholeBytes; $index++) {
+        if ($addressBytes[$index] -ne $networkBytes[$index]) {
+            return $false
+        }
+    }
+    $remainingBits = $PrefixLength % 8
+    if ($remainingBits -eq 0) { return $true }
+    $mask = [byte](0xff -band (0xff -shl (8 - $remainingBits)))
+    return (($addressBytes[$wholeBytes] -band $mask) -eq
+        ($networkBytes[$wholeBytes] -band $mask))
+}
+
+function Get-I03NativeAddressClass {
+    param([Parameter(Mandatory = $true)][string]$Address)
+
+    $parsed = $null
+    if (-not [Net.IPAddress]::TryParse(
+            $Address.Split('%')[0], [ref]$parsed)) {
+        return 'invalid'
+    }
+    if ($parsed.AddressFamily -eq
+        [Net.Sockets.AddressFamily]::InterNetwork) {
+        $bytes = $parsed.GetAddressBytes()
+        if ($bytes[0] -eq 0) { return 'special-v4' }
+        if ($bytes[0] -eq 10 -or
+            ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and
+                $bytes[1] -le 31) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 168)) {
+            return 'private-v4'
+        }
+        if ($bytes[0] -eq 100 -and $bytes[1] -ge 64 -and
+            $bytes[1] -le 127) { return 'cgnat-v4' }
+        if ($bytes[0] -eq 127) { return 'loopback-v4' }
+        if ($bytes[0] -eq 169 -and $bytes[1] -eq 254) {
+            return 'linklocal-v4'
+        }
+        if (($bytes[0] -eq 192 -and $bytes[1] -eq 0 -and
+                $bytes[2] -eq 0) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 0 -and
+                $bytes[2] -eq 2) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 31 -and
+                $bytes[2] -eq 196) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 52 -and
+                $bytes[2] -eq 193) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 88 -and
+                $bytes[2] -eq 99) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 175 -and
+                $bytes[2] -eq 48) -or
+            ($bytes[0] -eq 198 -and $bytes[1] -in @(18, 19)) -or
+            ($bytes[0] -eq 198 -and $bytes[1] -eq 51 -and
+                $bytes[2] -eq 100) -or
+            ($bytes[0] -eq 203 -and $bytes[1] -eq 0 -and
+                $bytes[2] -eq 113) -or $bytes[0] -ge 224) {
+            return 'special-v4'
+        }
+        return 'global-public-v4'
+    }
+
+    if ($parsed.IsIPv4MappedToIPv6) { return 'ipv4-mapped' }
+    if ($parsed.Equals([Net.IPAddress]::IPv6Any)) {
+        return 'unspecified-v6'
+    }
+    if ($parsed.Equals([Net.IPAddress]::IPv6Loopback)) {
+        return 'loopback-v6'
+    }
+    if ($parsed.IsIPv6Multicast) { return 'multicast-v6' }
+    if ($parsed.IsIPv6LinkLocal) { return 'linklocal-v6' }
+    if (Test-I03IpPrefix -Address $parsed -Network 'fc00::' `
+            -PrefixLength 7) { return 'ula-v6' }
+    if (Test-I03IpPrefix -Address $parsed -Network '64:ff9b::' `
+            -PrefixLength 96) { return 'translation-v6' }
+    if (Test-I03IpPrefix -Address $parsed -Network '64:ff9b:1::' `
+            -PrefixLength 48) { return 'translation-v6' }
+    if (Test-I03IpPrefix -Address $parsed -Network '2001::' `
+            -PrefixLength 23) { return 'special-v6' }
+    if (Test-I03IpPrefix -Address $parsed -Network '2001:db8::' `
+            -PrefixLength 32) { return 'documentation-v6' }
+    if (Test-I03IpPrefix -Address $parsed -Network '2002::' `
+            -PrefixLength 16) { return 'transition-v6' }
+    if (Test-I03IpPrefix -Address $parsed -Network '3ffe::' `
+            -PrefixLength 16) { return 'former-6bone-v6' }
+    if (Test-I03IpPrefix -Address $parsed -Network '3fff::' `
+            -PrefixLength 20) { return 'documentation-v6' }
+    if (Test-I03IpPrefix -Address $parsed -Network '2620:4f:8000::' `
+            -PrefixLength 48) { return 'special-v6' }
+    if (-not (Test-I03IpPrefix -Address $parsed -Network '2000::' `
+                -PrefixLength 3)) { return 'non-global-v6' }
+    return 'global-native-v6'
+}
+
 $peerV4Address = Convert-I03Address -Value $PeerIPv4 `
     -Family ([Net.Sockets.AddressFamily]::InterNetwork) -Name 'PeerIPv4'
 $peerLocalV4Address = Convert-I03Address -Value $PeerLocalIPv4 `
@@ -119,13 +816,15 @@ $peerV6Address = Convert-I03Address -Value $PeerIPv6 `
 $peerV4Text = $peerV4Address.ToString()
 $peerLocalV4Text = $peerLocalV4Address.ToString()
 $peerV6Text = $peerV6Address.ToString()
-if ((Get-LabAddressClass -Address $peerV4Text) -ne 'global-v4') {
+if ((Get-I03NativeAddressClass -Address $peerV4Text) -ne
+        'global-public-v4') {
     throw 'PeerIPv4 must be the real globally routable HighID endpoint'
 }
-if ((Get-LabAddressClass -Address $peerV6Text) -ne 'global-v6') {
+if ((Get-I03NativeAddressClass -Address $peerV6Text) -ne
+        'global-native-v6') {
     throw 'PeerIPv6 must be a native public global IPv6 address'
 }
-if ((Get-LabAddressClass -Address $peerLocalV4Text) -in @(
+if ((Get-I03NativeAddressClass -Address $peerLocalV4Text) -in @(
     'invalid', 'loopback-v4', 'linklocal-v4', 'special-v4'
 )) {
     throw 'PeerLocalIPv4 must be an assigned unicast address on the peer adapter'
@@ -152,28 +851,89 @@ function Test-I03Administrator {
     }
 }
 
-function Get-I03MachineId {
-    $machineGuid = ''
+function Get-I03MachineIdentityEvidence {
     try {
         $machineGuid = [string](Get-ItemProperty `
             -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Cryptography' `
             -Name MachineGuid -ErrorAction Stop).MachineGuid
+        if ([string]::IsNullOrWhiteSpace($machineGuid)) {
+            throw 'MachineGuid is empty'
+        }
+        $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem `
+            -ErrorAction Stop
+        if ($null -eq $computerSystem -or
+            [string]::IsNullOrWhiteSpace(
+                [string]$computerSystem.Manufacturer
+            ) -or
+            [string]::IsNullOrWhiteSpace([string]$computerSystem.Model)) {
+            throw 'Win32_ComputerSystem identity is incomplete'
+        }
+        $manufacturer = ([string]$computerSystem.Manufacturer).Trim()
+        $model = ([string]$computerSystem.Model).Trim()
+        $virtualSignaturePattern =
+            '(?i)vmware|virtualbox|vbox|innotek|parallels|qemu|kvm|' +
+            'virtio|xen|bochs|bhyve|hyper-v|virtual machine|' +
+            'hvm domu|amazon ec2|google compute engine|openstack'
+        $virtualSignature = ($manufacturer + '|' + $model) -match
+            $virtualSignaturePattern
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-machine-identity/v1'
+            collector_ok = $true
+            collector_error_code = 'NONE'
+            source = 'HKLM_MACHINEGUID_AND_WIN32_COMPUTERSYSTEM'
+            machine_id_sha256 = Get-LabStringSha256 -Value $machineGuid
+            manufacturer = $manufacturer
+            model = $model
+            virtual_signature_detected = $virtualSignature
+            physical_host_claim = -not $virtualSignature
+        }
     } catch {
-        $machineGuid = '{0}|{1}' -f $env:COMPUTERNAME,
-            [Environment]::OSVersion.VersionString
+        throw 'I03_COLLECTOR::MACHINE_ID_QUERY_FAILED'
     }
-    return Get-LabStringSha256 -Value $machineGuid
+}
+
+function Get-I03MachineId {
+    $identity = Get-I03MachineIdentityEvidence
+    if (-not [bool]$identity.collector_ok -or
+        [string]$identity.machine_id_sha256 -notmatch '^[0-9a-f]{64}$') {
+        throw 'I03_COLLECTOR::MACHINE_ID_QUERY_FAILED'
+    }
+    return [string]$identity.machine_id_sha256
 }
 
 function Get-I03PackageIdentity {
     param([Parameter(Mandatory = $true)][string]$PackagePath)
 
     $root = Get-LabFullPath -Path $PackagePath
+    $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+    if (-not $rootItem.PSIsContainer -or
+        ($rootItem.Attributes -band
+            [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'I03_ZIP_BINDING::PACKAGE_ROOT_REPARSE_OR_INVALID'
+    }
+    $rootPrefix = $root.TrimEnd('\') + '\'
+    $allItems = [System.Collections.Generic.List[object]]::new()
+    $pending = [System.Collections.Generic.Stack[string]]::new()
+    $pending.Push($root)
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        foreach ($item in @(Get-ChildItem -LiteralPath $directory -Force `
+                -ErrorAction Stop)) {
+            $fullName = [IO.Path]::GetFullPath([string]$item.FullName)
+            if (-not $fullName.StartsWith(
+                    $rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+                ($item.Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'I03_ZIP_BINDING::PACKAGE_REPARSE_OR_ESCAPE'
+            }
+            $allItems.Add($item)
+            if ($item.PSIsContainer) { $pending.Push($fullName) }
+        }
+    }
     $entries = [System.Collections.Generic.List[object]]::new()
-    $canonical = New-Object Text.StringBuilder
     $totalBytes = 0L
     foreach ($file in @(
-        Get-ChildItem -LiteralPath $root -Recurse -File -Force |
+        $allItems | Where-Object { -not $_.PSIsContainer } |
             Sort-Object FullName
     )) {
         $relative = $file.FullName.Substring($root.Length).
@@ -185,22 +945,1245 @@ function Get-I03PackageIdentity {
             bytes = [Int64]$file.Length
             sha256 = $sha256
         })
-        $null = $canonical.Append($relative)
-        $null = $canonical.Append([char]0)
-        $null = $canonical.Append([string][Int64]$file.Length)
-        $null = $canonical.Append([char]0)
-        $null = $canonical.Append($sha256)
-        $null = $canonical.Append("`n")
     }
     return [pscustomobject][ordered]@{
         schema = 'ese.v91.i03-extracted-package-manifest/v1'
         package_directory_name = Split-Path -Leaf $root
         file_count = $entries.Count
         total_bytes = $totalBytes
-        manifest_sha256 =
-            Get-LabStringSha256 -Value $canonical.ToString()
+        manifest_sha256 = Get-I03PackageManifestSha256 -Entries $entries
         files = @($entries)
     }
+}
+
+function Get-I03PackageManifestSha256 {
+    param([Parameter(Mandatory = $true)][object[]]$Entries)
+
+    $canonical = New-Object Text.StringBuilder
+    foreach ($entry in @($Entries | Sort-Object {
+                [string]$_.relative_path
+            })) {
+        $null = $canonical.Append([string]$entry.relative_path)
+        $null = $canonical.Append([char]0)
+        $null = $canonical.Append([string][Int64]$entry.bytes)
+        $null = $canonical.Append([char]0)
+        $null = $canonical.Append(
+            ([string]$entry.sha256).ToLowerInvariant())
+        $null = $canonical.Append("`n")
+    }
+    return Get-LabStringSha256 -Value $canonical.ToString()
+}
+
+function New-I03PreparedPreferencesOracle {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackagePath,
+        [Parameter(Mandatory = $true)][object]$PackageIdentity,
+        [Parameter(Mandatory = $true)][string]$OracleRoot,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('A', 'B')][string]$NodeRole,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[A-Za-z0-9._-]{1,64}$')][string]$RunId,
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(0, 60000)][int]$PortOffset
+    )
+
+    $result = [ordered]@{
+        schema = 'ese.v91.i03-prepared-preferences-oracle/v1'
+        collector_ok = $false
+        collector_error_code = 'ORACLE_NOT_EVALUATED'
+        source_bound = $false
+        source_preferences_sha256 = ''
+        source_preferences_bytes = 0
+        expected_prepared_preferences_sha256 = ''
+        expected_prepared_preferences_bytes = 0
+    }
+    try {
+        $rows = @($PackageIdentity.files | Where-Object {
+            [string]$_.relative_path -ceq 'config/preferences.ini'
+        })
+        if ($rows.Count -ne 1 -or
+            [string]$rows[0].sha256 -notmatch '^[0-9a-f]{64}$' -or
+            [Int64]$rows[0].bytes -lt 0) {
+            $result.collector_ok = $true
+            $result.collector_error_code = 'NONE'
+            return [pscustomobject]$result
+        }
+        $packageRoot = Get-LabFullPath -Path $PackagePath
+        $sourcePath = Get-LabFullPath -Path (
+            Join-Path $packageRoot 'config\preferences.ini'
+        )
+        $packagePrefix = $packageRoot.TrimEnd('\') + '\'
+        $sourceItem = Get-Item -LiteralPath $sourcePath -Force `
+            -ErrorAction Stop
+        if (-not $sourcePath.StartsWith(
+                $packagePrefix,
+                [StringComparison]::OrdinalIgnoreCase) -or
+            $sourceItem.PSIsContainer -or
+            ($sourceItem.Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $result.collector_ok = $true
+            $result.collector_error_code = 'NONE'
+            return [pscustomobject]$result
+        }
+        $stream = [IO.FileStream]::new(
+            $sourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+            [IO.FileShare]::None
+        )
+        try {
+            $memory = [IO.MemoryStream]::new()
+            try {
+                $stream.CopyTo($memory)
+                $sourceBytes = $memory.ToArray()
+            } finally { $memory.Dispose() }
+        } finally { $stream.Dispose() }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $sourceSha = ([BitConverter]::ToString(
+                $sha.ComputeHash($sourceBytes)
+            )).Replace('-', '').ToLowerInvariant()
+        } finally { $sha.Dispose() }
+        $result.source_preferences_sha256 = $sourceSha
+        $result.source_preferences_bytes = [Int64]$sourceBytes.Length
+        $result.source_bound = $sourceSha -ceq
+                [string]$rows[0].sha256 -and
+            [Int64]$sourceBytes.Length -eq [Int64]$rows[0].bytes
+        if (-not [bool]$result.source_bound) {
+            $result.collector_ok = $true
+            $result.collector_error_code = 'NONE'
+            return [pscustomobject]$result
+        }
+
+        $root = New-LabDirectory -Path $OracleRoot
+        $shadowPackage = Join-Path $root 'frozen-source'
+        $oracleNodes = Join-Path $root 'prepared'
+        if ((Test-Path -LiteralPath $shadowPackage) -or
+            (Test-Path -LiteralPath $oracleNodes)) {
+            throw 'Oracle directory is not empty'
+        }
+        $null = New-Item -ItemType Directory -Path $shadowPackage
+        $null = New-Item -ItemType Directory `
+            -Path (Join-Path $shadowPackage 'config')
+        $null = New-Item -ItemType Directory -Path $oracleNodes
+        [IO.File]::WriteAllBytes(
+            (Join-Path $shadowPackage 'emule.exe'), [byte[]]@()
+        )
+        [IO.File]::WriteAllBytes(
+            (Join-Path $shadowPackage 'config\preferences.ini'),
+            $sourceBytes
+        )
+        & (Join-Path $PSScriptRoot 'prepare_node.ps1') `
+            -NodeRole $NodeRole -SourcePackage $shadowPackage `
+            -OutputRoot $oracleNodes -RunId $RunId `
+            -PortOffset $PortOffset
+        $preparedPreferences = Join-Path $oracleNodes (
+            '{0}-{1}\config\preferences.ini' -f
+                $RunId, $NodeRole.ToLowerInvariant()
+        )
+        $preparedItem = Get-Item -LiteralPath $preparedPreferences `
+            -Force -ErrorAction Stop
+        if (($preparedItem.Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Prepared oracle preferences is a reparse point'
+        }
+        $result.expected_prepared_preferences_sha256 =
+            Get-LabSha256 -Path $preparedPreferences
+        $result.expected_prepared_preferences_bytes =
+            [Int64]$preparedItem.Length
+        $result.collector_ok = $true
+        $result.collector_error_code = 'NONE'
+        return [pscustomobject]$result
+    } catch {
+        $result.collector_error_code = 'PREFERENCES_ORACLE_FAILED'
+        return [pscustomobject]$result
+    }
+}
+
+function Test-I03PreparedNodeBinding {
+    param(
+        [Parameter(Mandatory = $true)][string]$NodePath,
+        [Parameter(Mandatory = $true)][object]$PackageIdentity,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Initial', 'Terminal')][string]$Phase,
+        [string]$ExpectedPreparedPreferencesSha256 = '',
+        [Int64]$ExpectedPreparedPreferencesBytes = -1
+    )
+
+    $result = [ordered]@{
+        schema = 'ese.v91.i03-prepared-node-binding/v1'
+        phase = $Phase.ToLowerInvariant()
+        collector_ok = $false
+        collector_error_code = 'NODE_BINDING_NOT_EVALUATED'
+        bound = $false
+        binding_error_code = 'NONE'
+        package_manifest_sha256 = ''
+        expected_package_file_count = 0
+        observed_node_file_count = 0
+        verified_immutable_file_count = 0
+        verified_immutable_manifest_sha256 = ''
+        mutable_package_exclusions = @('config/preferences.ini')
+        prepared_preferences_sha256 = ''
+        prepared_preferences_bytes = 0
+        deterministic_preferences_match = $false
+        allowed_initial_extra_files = @('LAB_NODE.json')
+    }
+    try {
+        if ([string]$PackageIdentity.schema -cne
+                'ese.v91.i03-extracted-package-manifest/v1' -or
+            [string]$PackageIdentity.manifest_sha256 -notmatch
+                '^[0-9a-f]{64}$' -or
+            $PackageIdentity.files -isnot [System.Array]) {
+            $result.collector_ok = $true
+            $result.collector_error_code = 'NONE'
+            $result.binding_error_code = 'PACKAGE_IDENTITY_INVALID'
+            return [pscustomobject]$result
+        }
+        $result.package_manifest_sha256 =
+            [string]$PackageIdentity.manifest_sha256
+        $result.expected_package_file_count =
+            [int]@($PackageIdentity.files).Count
+        $expected = [System.Collections.Generic.Dictionary[
+            string,object]]::new([StringComparer]::Ordinal)
+        foreach ($row in @($PackageIdentity.files)) {
+            $relative = [string]$row.relative_path
+            if ([string]::IsNullOrWhiteSpace($relative) -or
+                $relative.StartsWith('/') -or $relative.Contains('\') -or
+                @($relative.Split('/') | Where-Object {
+                    [string]$_ -cin @('', '.', '..')
+                }).Count -gt 0 -or
+                $row.bytes -is [bool] -or
+                $row.bytes -isnot [ValueType] -or
+                [Int64]$row.bytes -lt 0 -or
+                [string]$row.sha256 -notmatch '^[0-9a-f]{64}$' -or
+                $expected.ContainsKey($relative)) {
+                $result.collector_ok = $true
+                $result.collector_error_code = 'NONE'
+                $result.binding_error_code = 'PACKAGE_FILE_ROW_INVALID'
+                return [pscustomobject]$result
+            }
+            $expected.Add($relative, $row)
+        }
+        if ($expected.Count -ne [int]$PackageIdentity.file_count -or
+            -not $expected.ContainsKey('config/preferences.ini') -or
+            -not $expected.ContainsKey('emule.exe') -or
+            -not $expected.ContainsKey('ese-server.exe') -or
+            -not $expected.ContainsKey('BUILD_INFO.txt')) {
+            $result.collector_ok = $true
+            $result.collector_error_code = 'NONE'
+            $result.binding_error_code = 'PACKAGE_FILE_SET_INVALID'
+            return [pscustomobject]$result
+        }
+
+        $root = Get-LabFullPath -Path $NodePath
+        $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+        if (-not $rootItem.PSIsContainer -or
+            ($rootItem.Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $result.collector_ok = $true
+            $result.collector_error_code = 'NONE'
+            $result.binding_error_code = 'NODE_ROOT_INVALID'
+            return [pscustomobject]$result
+        }
+        $rootPrefix = $root.TrimEnd('\') + '\'
+        $items = @(Get-ChildItem -LiteralPath $root -Force -Recurse `
+            -ErrorAction Stop)
+        if (@($items | Where-Object {
+                ($_.Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -ne 0
+            }).Count -gt 0) {
+            $result.collector_ok = $true
+            $result.collector_error_code = 'NONE'
+            $result.binding_error_code = 'NODE_REPARSE_POINT'
+            return [pscustomobject]$result
+        }
+        $files = @($items | Where-Object { -not $_.PSIsContainer })
+        $result.observed_node_file_count = $files.Count
+        $actual = [System.Collections.Generic.Dictionary[
+            string,object]]::new([StringComparer]::Ordinal)
+        foreach ($file in $files) {
+            $full = [IO.Path]::GetFullPath([string]$file.FullName)
+            if (-not $full.StartsWith(
+                    $rootPrefix,
+                    [StringComparison]::OrdinalIgnoreCase)) {
+                $result.collector_ok = $true
+                $result.collector_error_code = 'NONE'
+                $result.binding_error_code = 'NODE_PATH_ESCAPE'
+                return [pscustomobject]$result
+            }
+            $relative = $full.Substring($rootPrefix.Length).
+                Replace('\', '/')
+            if ($actual.ContainsKey($relative)) {
+                $result.collector_ok = $true
+                $result.collector_error_code = 'NONE'
+                $result.binding_error_code = 'NODE_PATH_DUPLICATE'
+                return [pscustomobject]$result
+            }
+            $actual.Add($relative, $file)
+        }
+
+        if ($Phase -ceq 'Initial') {
+            if ($ExpectedPreparedPreferencesSha256 -notmatch
+                    '^[0-9a-f]{64}$' -or
+                $ExpectedPreparedPreferencesBytes -lt 0) {
+                $result.collector_ok = $true
+                $result.collector_error_code = 'NONE'
+                $result.binding_error_code =
+                    'EXPECTED_PREPARED_PREFERENCES_MISSING'
+                return [pscustomobject]$result
+            }
+            if ($actual.Count -ne ($expected.Count + 1) -or
+                -not $actual.ContainsKey('LAB_NODE.json') -or
+                @($actual.Keys | Where-Object {
+                    [string]$_ -cne 'LAB_NODE.json' -and
+                    -not $expected.ContainsKey([string]$_)
+                }).Count -gt 0 -or
+                @($expected.Keys | Where-Object {
+                    -not $actual.ContainsKey([string]$_)
+                }).Count -gt 0) {
+                $result.collector_ok = $true
+                $result.collector_error_code = 'NONE'
+                $result.binding_error_code = 'INITIAL_FILE_SET_MISMATCH'
+                return [pscustomobject]$result
+            }
+            $preparedPreferences =
+                $actual['config/preferences.ini']
+            $result.prepared_preferences_bytes =
+                [Int64]$preparedPreferences.Length
+            $result.prepared_preferences_sha256 =
+                Get-LabSha256 -Path ([string]$preparedPreferences.FullName)
+            $result.deterministic_preferences_match =
+                [Int64]$preparedPreferences.Length -eq
+                    $ExpectedPreparedPreferencesBytes -and
+                [string]$result.prepared_preferences_sha256 -ceq
+                    $ExpectedPreparedPreferencesSha256
+            if (-not [bool]$result.deterministic_preferences_match) {
+                $result.collector_ok = $true
+                $result.collector_error_code = 'NONE'
+                $result.binding_error_code = 'PREPARED_PREFERENCES_MISMATCH'
+                return [pscustomobject]$result
+            }
+            $nodeManifest = Get-Content -LiteralPath (
+                [string]$actual['LAB_NODE.json'].FullName
+            ) -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ([string]$nodeManifest.schema -cne 'ese.lab.node/v1' -or
+                $nodeManifest.launch_performed -isnot [bool] -or
+                [bool]$nodeManifest.launch_performed) {
+                $result.collector_ok = $true
+                $result.collector_error_code = 'NONE'
+                $result.binding_error_code = 'NODE_MANIFEST_INVALID'
+                return [pscustomobject]$result
+            }
+            $rowsToVerify = @($PackageIdentity.files | Where-Object {
+                [string]$_.relative_path -cne 'config/preferences.ini'
+            })
+        } else {
+            $unexpectedStatic = @($actual.Keys | Where-Object {
+                $relative = [string]$_
+                $extension = [IO.Path]::GetExtension($relative)
+                ($extension -cin @('.exe', '.dll')) -and
+                    -not $expected.ContainsKey($relative)
+            })
+            if ($unexpectedStatic.Count -gt 0) {
+                $result.collector_ok = $true
+                $result.collector_error_code = 'NONE'
+                $result.binding_error_code = 'UNEXPECTED_STATIC_FILE'
+                return [pscustomobject]$result
+            }
+            $rowsToVerify = @($PackageIdentity.files | Where-Object {
+                $relative = [string]$_.relative_path
+                $extension = [IO.Path]::GetExtension($relative)
+                $extension -cin @('.exe', '.dll') -or
+                    $relative -ceq 'BUILD_INFO.txt'
+            })
+            if (@($rowsToVerify).Count -lt 3) {
+                $result.collector_ok = $true
+                $result.collector_error_code = 'NONE'
+                $result.binding_error_code = 'STATIC_FILE_SET_INCOMPLETE'
+                return [pscustomobject]$result
+            }
+        }
+
+        foreach ($row in $rowsToVerify) {
+            $relative = [string]$row.relative_path
+            if (-not $actual.ContainsKey($relative)) {
+                $result.collector_ok = $true
+                $result.collector_error_code = 'NONE'
+                $result.binding_error_code = 'IMMUTABLE_FILE_MISSING'
+                return [pscustomobject]$result
+            }
+            $file = $actual[$relative]
+            if ([Int64]$file.Length -ne [Int64]$row.bytes -or
+                (Get-LabSha256 -Path ([string]$file.FullName)) -cne
+                    [string]$row.sha256) {
+                $result.collector_ok = $true
+                $result.collector_error_code = 'NONE'
+                $result.binding_error_code = 'IMMUTABLE_FILE_MISMATCH'
+                return [pscustomobject]$result
+            }
+        }
+        $result.collector_ok = $true
+        $result.collector_error_code = 'NONE'
+        $result.bound = $true
+        $result.binding_error_code = 'NONE'
+        $result.verified_immutable_file_count = @($rowsToVerify).Count
+        $result.verified_immutable_manifest_sha256 =
+            Get-I03PackageManifestSha256 -Entries @($rowsToVerify)
+        return [pscustomobject]$result
+    } catch {
+        $result.collector_error_code = 'NODE_BINDING_COLLECTOR_FAILED'
+        return [pscustomobject]$result
+    }
+}
+
+function Get-I03ZipPackageBinding {
+    param(
+        [Parameter(Mandatory = $true)][string]$ZipPath,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[0-9a-fA-F]{64}$')]
+        [string]$ExpectedZipSha256,
+        [Parameter(Mandatory = $true)][object]$PackageIdentity
+    )
+
+    $zip = Get-LabFullPath -Path $ZipPath
+    if (-not (Test-Path -LiteralPath $zip -PathType Leaf)) {
+        throw 'I03_ZIP_BINDING::MISSING_ZIP'
+    }
+    $zipItem = Get-Item -LiteralPath $zip -Force
+    if (($zipItem.Attributes -band
+            [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'I03_ZIP_BINDING::ZIP_REPARSE_POINT'
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zipStream = [IO.File]::Open(
+        $zip, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        [IO.FileShare]::None)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $zipSha = ([BitConverter]::ToString(
+            $sha256.ComputeHash($zipStream))).Replace('-', '').
+            ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+    if ($zipSha -cne $ExpectedZipSha256.ToLowerInvariant()) {
+        $zipStream.Dispose()
+        throw 'I03_ZIP_BINDING::ZIP_SHA256_MISMATCH'
+    }
+    $zipStream.Position = 0
+    $archive = [IO.Compression.ZipArchive]::new(
+        $zipStream, [IO.Compression.ZipArchiveMode]::Read, $false
+    )
+    try {
+        $packageByPath =
+            [System.Collections.Generic.Dictionary[string,object]]::new(
+                [StringComparer]::OrdinalIgnoreCase
+            )
+        foreach ($file in @($PackageIdentity.files)) {
+            $relative = [string]$file.relative_path
+            if ($packageByPath.ContainsKey($relative)) {
+                throw 'I03_ZIP_BINDING::PACKAGE_CASE_COLLISION'
+            }
+            $packageByPath.Add($relative, $file)
+        }
+
+        $zipByPath =
+            [System.Collections.Generic.Dictionary[string,object]]::new(
+                [StringComparer]::OrdinalIgnoreCase
+            )
+        $rootName = $null
+        foreach ($entry in @($archive.Entries)) {
+            $entryName = [string]$entry.FullName
+            if ([string]::IsNullOrWhiteSpace($entryName) -or
+                $entryName.Contains('\') -or $entryName.StartsWith('/') -or
+                $entryName -match '^[A-Za-z]:' -or
+                $entryName.IndexOf([char]0) -ge 0) {
+                throw 'I03_ZIP_BINDING::UNSAFE_ENTRY_PATH'
+            }
+            $rawSegments = @($entryName.Split('/'))
+            $isDirectoryEntry =
+                [string]::IsNullOrEmpty([string]$entry.Name)
+            for ($segmentIndex = 0;
+                $segmentIndex -lt $rawSegments.Count;
+                $segmentIndex++) {
+                $segment = [string]$rawSegments[$segmentIndex]
+                $allowedTrailingEmpty = $isDirectoryEntry -and
+                    $segmentIndex -eq ($rawSegments.Count - 1)
+                if ((-not $segment -and -not $allowedTrailingEmpty) -or
+                    $segment -in @('.', '..') -or
+                    $segment.Contains(':') -or
+                    $segment.EndsWith('.') -or $segment.EndsWith(' ') -or
+                    $segment -match
+                        '^(?i:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)') {
+                    throw 'I03_ZIP_BINDING::UNSAFE_ENTRY_PATH'
+                }
+            }
+            $trimmed = $entryName.TrimEnd('/')
+            $segments = @($trimmed.Split('/'))
+            if ($segments.Count -eq 0) {
+                throw 'I03_ZIP_BINDING::UNSAFE_ENTRY_PATH'
+            }
+            $entryRoot = [string]$segments[0]
+            if ($null -eq $rootName) { $rootName = $entryRoot }
+            if ($entryRoot -cne $rootName) {
+                throw 'I03_ZIP_BINDING::MULTIPLE_ROOTS'
+            }
+
+            $external = [uint32]([int64]$entry.ExternalAttributes -band
+                0xffffffffL)
+            $unixType = ($external -shr 16) -band 0xf000
+            $dosAttributes = $external -band 0xffff
+            if ($unixType -eq 0xa000 -or
+                ($dosAttributes -band 0x0400) -ne 0) {
+                throw 'I03_ZIP_BINDING::LINK_OR_REPARSE_ENTRY'
+            }
+            if ([string]::IsNullOrEmpty([string]$entry.Name)) {
+                continue
+            }
+            if ($segments.Count -lt 2) {
+                throw 'I03_ZIP_BINDING::FILE_OUTSIDE_SINGLE_ROOT'
+            }
+            $relative = ($segments[1..($segments.Count - 1)] -join '/')
+            if ($zipByPath.ContainsKey($relative)) {
+                throw 'I03_ZIP_BINDING::DUPLICATE_OR_CASE_COLLISION'
+            }
+            $stream = $entry.Open()
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try {
+                $entrySha = ([BitConverter]::ToString(
+                    $sha.ComputeHash($stream))).Replace('-', '').
+                    ToLowerInvariant()
+            } finally {
+                $sha.Dispose()
+                $stream.Dispose()
+            }
+            $zipByPath.Add($relative, [pscustomobject][ordered]@{
+                relative_path = $relative
+                bytes = [Int64]$entry.Length
+                sha256 = $entrySha
+            })
+        }
+        if ($zipByPath.Count -eq 0 -or
+            $zipByPath.Count -ne $packageByPath.Count) {
+            throw 'I03_ZIP_BINDING::FILE_SET_MISMATCH'
+        }
+        foreach ($relative in @($packageByPath.Keys)) {
+            if (-not $zipByPath.ContainsKey($relative)) {
+                throw 'I03_ZIP_BINDING::FILE_SET_MISMATCH'
+            }
+            $packageEntry = $packageByPath[$relative]
+            $zipEntry = $zipByPath[$relative]
+            if ([string]$zipEntry.relative_path -cne
+                    [string]$packageEntry.relative_path -or
+                [Int64]$zipEntry.bytes -ne [Int64]$packageEntry.bytes -or
+                [string]$zipEntry.sha256 -cne
+                    [string]$packageEntry.sha256) {
+                throw 'I03_ZIP_BINDING::ENTRY_MISMATCH'
+            }
+        }
+        $zipEntries = @($zipByPath.Values)
+        $zipManifestSha = Get-I03PackageManifestSha256 `
+            -Entries $zipEntries
+        if ($zipManifestSha -cne
+            [string]$PackageIdentity.manifest_sha256) {
+            throw 'I03_ZIP_BINDING::MANIFEST_MISMATCH'
+        }
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-package-zip-binding/v1'
+            verified = $true
+            zip_sha256 = $zipSha
+            zip_bytes = [Int64]$zipStream.Length
+            archive_root_sha256 = Get-LabStringSha256 -Value $rootName
+            file_count = $zipByPath.Count
+            total_bytes = [Int64]$PackageIdentity.total_bytes
+            manifest_sha256 = $zipManifestSha
+            exact_file_set = $true
+            exact_bytes_and_sha256 = $true
+            safe_single_root = $true
+        }
+    } finally {
+        $archive.Dispose()
+        $zipStream.Dispose()
+    }
+}
+
+function Test-I03FailurePhase {
+    param([AllowNull()][object]$Phase)
+
+    return $Phase -is [string] -and [string]$Phase -cin @(
+        'preflight', 'dualstack_rearm', 'ipv4_prewarm',
+        'peer_restart', 'peer_completion', 'cleanup',
+        'case_setup', 'identity_bootstrap', 'candidate_startup',
+        'link_injection', 'backlog_revalidation',
+        'post_restart_route', 'evidence_finalize'
+    )
+}
+
+function New-I03ProofProjection {
+    param(
+        [Parameter(Mandatory = $true)][string]$Kind,
+        [Parameter(Mandatory = $true)][string]$CaseId,
+        [Parameter(Mandatory = $true)][string]$RunNonce,
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][string]$Policy,
+        [Parameter(Mandatory = $true)][string]$Phase,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[0-9a-fA-F]{64}$')]
+        [string]$SourceEvidenceSha256
+    )
+
+    if (-not (Test-I03FailurePhase -Phase $Phase)) {
+        throw 'I03_FAILURE_PROTOCOL::UNKNOWN_PHASE'
+    }
+    $sourceHash = $SourceEvidenceSha256.ToLowerInvariant()
+    $binding = '{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f
+        $CaseId, $RunNonce, $Role, $Policy, $Phase, $Kind, $sourceHash
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-proof/v1'
+        case_id = $CaseId
+        run_nonce = $RunNonce
+        role = $Role
+        policy = $Policy
+        phase = $Phase
+        kind = $Kind
+        source_evidence_sha256 = $sourceHash
+        binding_sha256 = Get-LabStringSha256 -Value $binding
+    }
+}
+
+function New-I03FailureRecord {
+    param(
+        [Parameter(Mandatory = $true)][string]$CaseId,
+        [Parameter(Mandatory = $true)][string]$RunNonce,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Coordinator', 'Peer')][string]$Role,
+        [ValidateSet('none', 'auto', 'preferred')][string]$Policy = 'none',
+        [Parameter(Mandatory = $true)][string]$Phase,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('LAB_BLOCKED', 'PRODUCT_INVARIANT')][string]$Status,
+        [Parameter(Mandatory = $true)][string]$Category,
+        [Parameter(Mandatory = $true)][string]$Code,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Message,
+        [Parameter(Mandatory = $true)][string]$CandidateCommit,
+        [Parameter(Mandatory = $true)][string]$CandidateEmuleSha256,
+        [Parameter(Mandatory = $true)][string]$CandidateZipSha256,
+        [Parameter(Mandatory = $true)][string]$PackageManifestSha256,
+        [Parameter(Mandatory = $true)][bool]$FixtureCertified,
+        [object[]]$Proofs = @()
+    )
+
+    if (-not (Test-I03FailurePhase -Phase $Phase)) {
+        throw 'I03_FAILURE_PROTOCOL::UNKNOWN_PHASE'
+    }
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-failure/v1'
+        case_id = $CaseId
+        run_nonce = $RunNonce
+        role = $Role
+        policy = $Policy
+        phase = $Phase
+        status = $Status
+        category = $Category
+        code = $Code
+        message_sha256 = Get-LabStringSha256 -Value $Message
+        candidate = [pscustomobject][ordered]@{
+            commit = $CandidateCommit
+            emule_sha256 = $CandidateEmuleSha256
+            zip_sha256 = $CandidateZipSha256
+            manifest_sha256 = $PackageManifestSha256
+        }
+        fixture_certified = $FixtureCertified
+        proofs = @($Proofs)
+        cleanup = [pscustomobject][ordered]@{
+            complete = $false
+            incident_codes = @()
+        }
+    }
+}
+
+function Test-I03FailureRecord {
+    param(
+        [AllowNull()][object]$Record,
+        [Parameter(Mandatory = $true)][string]$ExpectedCaseId,
+        [Parameter(Mandatory = $true)][string]$ExpectedRunNonce,
+        [Parameter(Mandatory = $true)][string]$ExpectedRole,
+        [Parameter(Mandatory = $true)][string]$ExpectedCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedEmuleSha256,
+        [Parameter(Mandatory = $true)][string]$ExpectedZipSha256,
+        [Parameter(Mandatory = $true)][string]$ExpectedManifestSha256,
+        [ValidateSet('', 'none', 'auto', 'preferred')]
+        [string]$ExpectedPolicy = ''
+    )
+
+    if ($null -eq $Record) { return $false }
+    $required = @(
+        'schema', 'case_id', 'run_nonce', 'role', 'policy', 'phase',
+        'status', 'category', 'code', 'message_sha256', 'candidate',
+        'fixture_certified', 'proofs', 'cleanup'
+    )
+    try {
+        $names = @($Record.PSObject.Properties.Name)
+    } catch { return $false }
+    if ($names.Count -ne $required.Count -or
+        @($required | Where-Object { $names -cnotcontains $_ }).Count -gt 0 -or
+        $null -eq $Record.candidate -or
+        $null -eq $Record.cleanup -or
+        $null -eq $Record.proofs) {
+        return $false
+    }
+    try {
+        $candidateNames = @($Record.candidate.PSObject.Properties.Name)
+        $cleanupNames = @($Record.cleanup.PSObject.Properties.Name)
+    } catch { return $false }
+    if ($candidateNames.Count -ne 4 -or
+        @('commit', 'emule_sha256', 'zip_sha256', 'manifest_sha256' |
+            Where-Object { $candidateNames -cnotcontains $_ }).Count -gt 0 -or
+        $cleanupNames.Count -ne 2 -or
+        @('complete', 'incident_codes' | Where-Object {
+                $cleanupNames -cnotcontains $_
+            }).Count -gt 0) {
+        return $false
+    }
+    if (
+        $Record.schema -isnot [string] -or
+        $Record.case_id -isnot [string] -or
+        $Record.run_nonce -isnot [string] -or
+        $Record.role -isnot [string] -or
+        $Record.policy -isnot [string] -or
+        $Record.phase -isnot [string] -or
+        $Record.status -isnot [string] -or
+        $Record.category -isnot [string] -or
+        $Record.code -isnot [string] -or
+        $Record.message_sha256 -isnot [string] -or
+        $Record.candidate.commit -isnot [string] -or
+        $Record.candidate.emule_sha256 -isnot [string] -or
+        $Record.candidate.zip_sha256 -isnot [string] -or
+        $Record.candidate.manifest_sha256 -isnot [string] -or
+        [string]$Record.schema -cne 'ese.v91.i03-failure/v1' -or
+        [string]$Record.case_id -cne $ExpectedCaseId -or
+        [string]$Record.run_nonce -cne $ExpectedRunNonce -or
+        [string]$Record.role -cnotin @('Coordinator', 'Peer') -or
+        [string]$Record.role -cne $ExpectedRole -or
+        [string]$Record.policy -cnotin @('none', 'auto', 'preferred') -or
+        ($ExpectedPolicy -and
+            [string]$Record.policy -cne $ExpectedPolicy) -or
+        -not (Test-I03FailurePhase -Phase $Record.phase) -or
+        [string]$Record.message_sha256 -notmatch '^[0-9a-f]{64}$' -or
+        [string]$Record.candidate.commit -cne $ExpectedCommit -or
+        [string]$Record.candidate.emule_sha256 -cne
+            $ExpectedEmuleSha256 -or
+        [string]$Record.candidate.zip_sha256 -cne $ExpectedZipSha256 -or
+        [string]$Record.candidate.manifest_sha256 -cne
+            $ExpectedManifestSha256 -or
+        $Record.fixture_certified -isnot [bool] -or
+        $Record.cleanup.complete -isnot [bool] -or
+        $Record.cleanup.incident_codes -isnot [System.Array] -or
+        $Record.proofs -isnot [System.Array]) {
+        return $false
+    }
+
+    $productCodes = [ordered]@{
+        CANDIDATE_EXITED = 'PRODUCT_RUNTIME'
+        UI_UNRESPONSIVE = 'PRODUCT_LIVENESS'
+        API_UNAVAILABLE = 'PRODUCT_LIVENESS'
+        API_CONTRACT = 'PRODUCT_CONTRACT'
+        LINK_REJECTED = 'PRODUCT_INPUT'
+        IPV4_PREWARM_INVARIANT = 'PRODUCT_ROUTE'
+        PEER_IDENTITY_CHANGED = 'PRODUCT_IDENTITY'
+        NO_ROUTE = 'PRODUCT_ROUTE'
+        WRONG_FAMILY = 'PRODUCT_ROUTE'
+        DUPLICATE_ROUTE = 'PRODUCT_ROUTE'
+        WRONG_OR_NONPHYSICAL_SOCKET = 'PRODUCT_ATTRIBUTION'
+        CANDIDATE_THIRD_PARTY_SOCKET = 'PRODUCT_ATTRIBUTION'
+    }
+    $labCodes = [ordered]@{
+        PACKAGE_BINDING = 'LAB_PACKAGE'
+        TOPOLOGY = 'LAB_TOPOLOGY'
+        CLOCK = 'LAB_CLOCK'
+        CONTROL_TIMEOUT = 'LAB_CONTROL'
+        COORDINATION_SCHEMA = 'LAB_CONTROL'
+        COLLECTOR_UNAVAILABLE = 'LAB_COLLECTOR'
+        COLLECTOR_AMBIGUOUS = 'LAB_COLLECTOR'
+        EXTERNAL_CONTAMINATION = 'LAB_CONTAMINATION'
+        EVIDENCE_INCOMPLETE = 'LAB_EVIDENCE'
+        CLEANUP_INCOMPLETE = 'LAB_CLEANUP'
+        HARNESS_EXCEPTION = 'LAB_HARNESS'
+    }
+    $code = [string]$Record.code
+    if ([string]$Record.status -ceq 'PRODUCT_INVARIANT') {
+        if (-not $productCodes.Contains($code) -or
+            [string]$Record.category -cne [string]$productCodes[$code] -or
+            -not [bool]$Record.fixture_certified -or
+            @($Record.proofs).Count -ne 1) {
+            return $false
+        }
+        if ([string]$Record.policy -cnotin @('auto', 'preferred')) {
+            return $false
+        }
+    } elseif ([string]$Record.status -ceq 'LAB_BLOCKED') {
+        if (-not $labCodes.Contains($code) -or
+            [string]$Record.category -cne [string]$labCodes[$code] -or
+            @($Record.proofs).Count -ne 0) {
+            return $false
+        }
+    } else { return $false }
+    foreach ($proof in @($Record.proofs)) {
+        if ($null -eq $proof) { return $false }
+        $proofNames = @($proof.PSObject.Properties.Name)
+        if ($proofNames.Count -ne 9 -or
+            @(
+                'schema', 'case_id', 'run_nonce', 'role', 'policy',
+                'phase', 'kind', 'source_evidence_sha256', 'binding_sha256' |
+                Where-Object {
+                    $proofNames -cnotcontains $_
+                }
+            ).Count -gt 0 -or
+            $proof.schema -isnot [string] -or
+            $proof.case_id -isnot [string] -or
+            $proof.run_nonce -isnot [string] -or
+            $proof.role -isnot [string] -or
+            $proof.policy -isnot [string] -or
+            $proof.phase -isnot [string] -or
+            $proof.kind -isnot [string] -or
+            $proof.source_evidence_sha256 -isnot [string] -or
+            $proof.binding_sha256 -isnot [string] -or
+            [string]$proof.schema -cne 'ese.v91.i03-proof/v1' -or
+            [string]$proof.case_id -cne [string]$Record.case_id -or
+            [string]$proof.run_nonce -cne [string]$Record.run_nonce -or
+            [string]$proof.role -cne [string]$Record.role -or
+            [string]$proof.policy -cne [string]$Record.policy -or
+            [string]$proof.phase -cne [string]$Record.phase -or
+            [string]$proof.kind -cne $code.ToLowerInvariant() -or
+            [string]$proof.source_evidence_sha256 -notmatch
+                '^[0-9a-f]{64}$' -or
+            [string]$proof.binding_sha256 -cne (
+                Get-LabStringSha256 -Value (
+                    '{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f
+                    $proof.case_id, $proof.run_nonce, $proof.role,
+                    $proof.policy, $proof.phase, $proof.kind,
+                    $proof.source_evidence_sha256
+                )
+            )) {
+            return $false
+        }
+    }
+    foreach ($incidentCode in @($Record.cleanup.incident_codes)) {
+        if ($incidentCode -isnot [string] -or
+            [string]$incidentCode -cnotin @($labCodes.Keys)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-I03FormalAdjudication {
+    param(
+        [object[]]$FailureRecords = @(),
+        [Parameter(Mandatory = $true)][string[]]$AllowedRolePolicyTuples,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()][string[]]$TrustedProofBindings,
+        [Parameter(Mandatory = $true)][bool]$FixtureComplete,
+        [Parameter(Mandatory = $true)][bool]$BothPoliciesPass,
+        [Parameter(Mandatory = $true)][bool]$EvidenceComplete,
+        [Parameter(Mandatory = $true)][bool]$CleanupComplete,
+        [Parameter(Mandatory = $true)][string]$ExpectedCaseId,
+        [Parameter(Mandatory = $true)][string]$ExpectedRunNonce,
+        [Parameter(Mandatory = $true)][string]$ExpectedCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedEmuleSha256,
+        [Parameter(Mandatory = $true)][string]$ExpectedZipSha256,
+        [Parameter(Mandatory = $true)][string]$ExpectedManifestSha256
+    )
+
+    $allowedContexts = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($tuple in $AllowedRolePolicyTuples) {
+        if ([string]$tuple -notmatch
+            '^(Coordinator|Peer)\|(none|auto|preferred)$') {
+            throw 'I03_ADJUDICATION::INVALID_ALLOWED_CONTEXT'
+        }
+        [void]$allowedContexts.Add([string]$tuple)
+    }
+    $trustedBindings = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($binding in $TrustedProofBindings) {
+        if ([string]$binding -notmatch '^[0-9a-f]{64}$') {
+            throw 'I03_ADJUDICATION::INVALID_TRUSTED_BINDING'
+        }
+        [void]$trustedBindings.Add([string]$binding)
+    }
+    $valid = @($FailureRecords | Where-Object {
+        $context = '{0}|{1}' -f ([string]$_.role),
+            ([string]$_.policy)
+        $allowedContexts.Contains($context) -and
+        (Test-I03FailureRecord -Record $_ `
+            -ExpectedCaseId $ExpectedCaseId `
+            -ExpectedRunNonce $ExpectedRunNonce `
+            -ExpectedRole ([string]$_.role) `
+            -ExpectedPolicy ([string]$_.policy) `
+            -ExpectedCommit $ExpectedCommit `
+            -ExpectedEmuleSha256 $ExpectedEmuleSha256 `
+            -ExpectedZipSha256 $ExpectedZipSha256 `
+            -ExpectedManifestSha256 $ExpectedManifestSha256)
+    })
+    $provenProduct = @($valid | Where-Object {
+        [string]$_.status -ceq 'PRODUCT_INVARIANT' -and
+        @($_.proofs | Where-Object {
+            -not $trustedBindings.Contains(
+                [string]$_.binding_sha256
+            )
+        }).Count -eq 0
+    })
+    $untrustedProduct = @($valid | Where-Object {
+        [string]$_.status -ceq 'PRODUCT_INVARIANT' -and
+        @($_.proofs | Where-Object {
+            -not $trustedBindings.Contains(
+                [string]$_.binding_sha256
+            )
+        }).Count -gt 0
+    })
+    $labIncidents = @($valid | Where-Object {
+        [string]$_.status -ceq 'LAB_BLOCKED'
+    })
+    $status = if ($provenProduct.Count -gt 0) {
+        'FAIL'
+    } elseif ($FixtureComplete -and $BothPoliciesPass -and
+        $EvidenceComplete -and $CleanupComplete -and
+        $labIncidents.Count -eq 0 -and
+        $untrustedProduct.Count -eq 0 -and
+        $valid.Count -eq @($FailureRecords).Count) {
+        'PASS'
+    } else { 'BLOCKED' }
+    return [pscustomobject][ordered]@{
+        formal_status = $status
+        proven_product_failure_count = $provenProduct.Count
+        untrusted_product_failure_count = $untrustedProduct.Count
+        lab_incident_count = $labIncidents.Count
+        malformed_or_stale_failure_count =
+            @($FailureRecords).Count - $valid.Count
+    }
+}
+
+function Test-I03PersistedFailureSources {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()][object[]]$Manifest,
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$ExpectedCaseId,
+        [Parameter(Mandatory = $true)][string]$ExpectedRunNonce,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Coordinator', 'Peer')][string]$ExpectedRole
+    )
+
+    $rootPath = Get-LabFullPath -Path $Root
+    $rootPrefix = $rootPath.TrimEnd('\') + '\'
+    $hashes = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal
+    )
+    $bindingHashes = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal
+    )
+    $bindings = [System.Collections.Generic.List[object]]::new()
+    $productCodes = @(
+        'CANDIDATE_EXITED', 'UI_UNRESPONSIVE',
+        'API_UNAVAILABLE', 'API_CONTRACT', 'LINK_REJECTED',
+        'IPV4_PREWARM_INVARIANT', 'PEER_IDENTITY_CHANGED',
+        'NO_ROUTE', 'WRONG_FAMILY', 'DUPLICATE_ROUTE',
+        'WRONG_OR_NONPHYSICAL_SOCKET',
+        'CANDIDATE_THIRD_PARTY_SOCKET'
+    )
+    try {
+        foreach ($entry in $Manifest) {
+            if ($null -eq $entry) {
+                throw 'MANIFEST_ENTRY_NULL'
+            }
+            $names = @($entry.PSObject.Properties.Name)
+            if ($names.Count -ne 3 -or
+                @('file_name', 'sha256', 'bytes' | Where-Object {
+                    $names -cnotcontains $_
+                }).Count -gt 0 -or
+                [string]$entry.sha256 -notmatch '^[0-9a-f]{64}$' -or
+                [Int64]$entry.bytes -le 0) {
+                throw 'MANIFEST_ENTRY_INVALID'
+            }
+            $namePattern = if ($ExpectedRole -ceq 'Peer') {
+                '^peer-failure-source-[0-9]{3}\.json$'
+            } else { '^failure-source-[0-9]{3}\.json$' }
+            if ([string]$entry.file_name -cnotmatch $namePattern) {
+                throw 'FILE_NAME_INVALID'
+            }
+            $path = Get-LabFullPath -Path (
+                Join-Path $rootPath ([string]$entry.file_name)
+            )
+            if (-not ($path.StartsWith(
+                    $rootPrefix,
+                    [StringComparison]::OrdinalIgnoreCase
+                )) -or
+                -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw 'SOURCE_PATH_INVALID'
+            }
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if (($item.Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                [Int64]$item.Length -ne [Int64]$entry.bytes -or
+                (Get-LabSha256 -Path $path) -cne [string]$entry.sha256) {
+                throw 'SOURCE_BYTES_INVALID'
+            }
+            $source = Get-Content -LiteralPath $path -Raw `
+                -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            $sourceNames = @($source.PSObject.Properties.Name)
+            if ($sourceNames.Count -ne 8 -or
+                @(
+                    'schema', 'case_id', 'run_nonce', 'role',
+                    'policy', 'phase', 'code', 'evidence' |
+                        Where-Object { $sourceNames -cnotcontains $_ }
+                ).Count -gt 0 -or
+                [string]$source.schema -cne
+                    'ese.v91.i03-failure-source/v1' -or
+                [string]$source.case_id -cne $ExpectedCaseId -or
+                [string]$source.run_nonce -cne $ExpectedRunNonce -or
+                [string]$source.role -cne $ExpectedRole -or
+                [string]$source.policy -cnotin @(
+                    'none', 'auto', 'preferred'
+                ) -or
+                -not (Test-I03FailurePhase -Phase $source.phase) -or
+                $source.code -isnot [string] -or
+                [string]$source.code -cnotin $productCodes) {
+                throw 'SOURCE_SCHEMA_INVALID'
+            }
+            $sourceHash = [string]$entry.sha256
+            if (-not $hashes.Add($sourceHash)) {
+                throw 'SOURCE_HASH_DUPLICATE'
+            }
+            $kind = ([string]$source.code).ToLowerInvariant()
+            $bindingInput = '{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f
+                [string]$source.case_id, [string]$source.run_nonce,
+                [string]$source.role, [string]$source.policy,
+                [string]$source.phase, $kind, $sourceHash
+            $bindingHash = Get-LabStringSha256 -Value $bindingInput
+            if (-not $bindingHashes.Add($bindingHash)) {
+                throw 'SOURCE_BINDING_DUPLICATE'
+            }
+            $bindings.Add([pscustomobject][ordered]@{
+                source_sha256 = $sourceHash
+                role = [string]$source.role
+                policy = [string]$source.policy
+                phase = [string]$source.phase
+                code = [string]$source.code
+                kind = $kind
+                binding_sha256 = $bindingHash
+            })
+        }
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-failure-source-verification/v1'
+            ok = $true
+            error_code = 'NONE'
+            verified_count = $hashes.Count
+            source_sha256 = @($hashes)
+            trusted_binding_sha256 = @($bindingHashes)
+            source_bindings = @($bindings)
+        }
+    } catch {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-failure-source-verification/v1'
+            ok = $false
+            error_code = 'FAILURE_SOURCE_INVALID'
+            verified_count = 0
+            source_sha256 = @()
+            trusted_binding_sha256 = @()
+            source_bindings = @()
+        }
+    }
+}
+
+function Get-I03ClockEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string]$T0CoordinatorSendUtc,
+        [Parameter(Mandatory = $true)][string]$T0CoordinatorEchoUtc,
+        [Parameter(Mandatory = $true)][string]$T1PeerReceiveUtc,
+        [Parameter(Mandatory = $true)][string]$T2PeerSendUtc,
+        [Parameter(Mandatory = $true)][string]$T3CoordinatorReceiveUtc
+    )
+
+    $values = @(
+        $T0CoordinatorSendUtc, $T0CoordinatorEchoUtc,
+        $T1PeerReceiveUtc, $T2PeerSendUtc, $T3CoordinatorReceiveUtc
+    )
+    $parsed = [System.Collections.Generic.List[DateTime]]::new()
+    foreach ($value in $values) {
+        $timestamp = [DateTime]::MinValue
+        if ($value -notmatch
+                '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$' -or
+            -not [DateTime]::TryParseExact(
+                $value, 'o', [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind,
+                [ref]$timestamp
+            ) -or $timestamp.Kind -ne [DateTimeKind]::Utc) {
+            return [pscustomobject][ordered]@{
+                schema = 'ese.v91.i03-clock-evidence/v1'
+                collector_ok = $false
+                collector_error_code = 'CLOCK_TIMESTAMP_INVALID'
+                certified_within_1000_ms = $false
+            }
+        }
+        $parsed.Add($timestamp)
+    }
+    $t0 = $parsed[0]
+    $t0Echo = $parsed[1]
+    $t1 = $parsed[2]
+    $t2 = $parsed[3]
+    $t3 = $parsed[4]
+    if ($T0CoordinatorEchoUtc -cne $T0CoordinatorSendUtc -or
+        $t0Echo -ne $t0 -or $t3 -lt $t0 -or $t2 -lt $t1) {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-clock-evidence/v1'
+            collector_ok = $false
+            collector_error_code = 'CLOCK_ORDER_OR_ECHO_INVALID'
+            certified_within_1000_ms = $false
+        }
+    }
+    $delayMs = ($t3 - $t0).TotalMilliseconds -
+        ($t2 - $t1).TotalMilliseconds
+    $offsetMs = (($t1 - $t0).TotalMilliseconds +
+        ($t2 - $t3).TotalMilliseconds) / 2.0
+    if ($delayMs -lt 0) {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-clock-evidence/v1'
+            collector_ok = $false
+            collector_error_code = 'CLOCK_NEGATIVE_DELAY'
+            certified_within_1000_ms = $false
+        }
+    }
+    $uncertaintyMs = $delayMs / 2.0
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-clock-evidence/v1'
+        collector_ok = $true
+        collector_error_code = 'NONE'
+        method = 'four-timestamp shared-coordination challenge'
+        t0_coordinator_send_utc = $T0CoordinatorSendUtc
+        t1_peer_receive_utc = $T1PeerReceiveUtc
+        t2_peer_send_utc = $T2PeerSendUtc
+        t3_coordinator_receive_utc = $T3CoordinatorReceiveUtc
+        round_trip_delay_ms = [Math]::Round($delayMs, 3)
+        estimated_offset_ms = [Math]::Round($offsetMs, 3)
+        uncertainty_ms = [Math]::Round($uncertaintyMs, 3)
+        certified_within_1000_ms =
+            [Math]::Abs($offsetMs) + $uncertaintyMs -le 1000.0
+    }
+}
+
+function Get-I03TopologyDecision {
+    param(
+        [Parameter(Mandatory = $true)][bool]$DifferentMachineIdentities,
+        [Parameter(Mandatory = $true)][bool]$SameIPv4PhysicalPrefix,
+        [Parameter(Mandatory = $true)][bool]$SameIPv6PhysicalPrefix,
+        [Parameter(Mandatory = $true)][bool]$IPv6OnLink,
+        [Parameter(Mandatory = $true)][bool]$NativeIPv4,
+        [Parameter(Mandatory = $true)][bool]$NativeIPv6,
+        [Parameter(Mandatory = $true)][bool]$PhysicalSingleAdapter,
+        [Parameter(Mandatory = $true)][bool]$OverlayDetected,
+        [Parameter(Mandatory = $true)][bool]$RoutedNativeIPv6
+    )
+
+    $baseValid = $DifferentMachineIdentities -and $NativeIPv4 -and
+        $NativeIPv6 -and $PhysicalSingleAdapter -and -not $OverlayDetected
+    $t1 = $baseValid -and $SameIPv4PhysicalPrefix -and
+        $SameIPv6PhysicalPrefix -and $IPv6OnLink
+    $t2 = $baseValid -and -not $t1 -and $RoutedNativeIPv6
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-topology-decision/v1'
+        status = if ($t1 -or $t2) { 'PASS' } else { 'LAB_BLOCKED' }
+        code = if ($t1 -or $t2) { 'NONE' } else { 'TOPOLOGY' }
+        topology_class = if ($t1) { 'T1' } elseif ($t2) { 'T2' } else { '' }
+        t1_proved = $t1
+        t2_proved = $t2
+    }
+}
+
+function Get-I03RouteSelectionDecision {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('auto', 'preferred')][string]$Policy,
+        [Parameter(Mandatory = $true)][bool]$CollectorOk,
+        [Parameter(Mandatory = $true)][bool]$FixtureCertified,
+        [AllowNull()][AllowEmptyCollection()][object[]]$Rows = @(),
+        [AllowNull()][AllowEmptyCollection()][object[]]$SocketProofs = @(),
+        [Parameter(Mandatory = $true)][double]$StableSeconds,
+        [Parameter(Mandatory = $true)][bool]$Contamination,
+        [bool]$AmbiguousSelection = $false,
+        [bool]$WrongFamilyObserved = $false,
+        [ValidateRange(0, 60)][double]$RequiredStableSeconds = 5
+    )
+
+    if ($null -eq $Rows) { $Rows = @() }
+    if ($null -eq $SocketProofs) { $SocketProofs = @() }
+    $result = [ordered]@{
+        schema = 'ese.v91.i03-route-decision/v1'
+        status = 'LAB_BLOCKED'
+        code = 'EVIDENCE_INCOMPLETE'
+        expected_family = if ($Policy -ceq 'auto') { 'IPv4' } else { 'IPv6' }
+        product_match = $false
+    }
+    if (-not $CollectorOk) {
+        $result.code = 'COLLECTOR_UNAVAILABLE'
+        return [pscustomobject]$result
+    }
+    if (-not $FixtureCertified) { return [pscustomobject]$result }
+    if ($Contamination) {
+        $result.code = 'EXTERNAL_CONTAMINATION'
+        return [pscustomobject]$result
+    }
+    if ($AmbiguousSelection) {
+        $result.status = 'PRODUCT_INVARIANT'
+        $result.code = 'DUPLICATE_ROUTE'
+        return [pscustomobject]$result
+    }
+    if ($WrongFamilyObserved) {
+        $result.status = 'PRODUCT_INVARIANT'
+        $result.code = 'WRONG_FAMILY'
+        return [pscustomobject]$result
+    }
+    if (@($SocketProofs | Where-Object {
+                $null -eq $_ -or -not [bool]$_.collector_ok
+            }).Count -gt 0) {
+        $result.code = 'COLLECTOR_AMBIGUOUS'
+        return [pscustomobject]$result
+    }
+    if ($Rows.Count -eq 0) {
+        $result.status = 'PRODUCT_INVARIANT'
+        $result.code = 'NO_ROUTE'
+        return [pscustomobject]$result
+    }
+    if ($Rows.Count -gt 1) {
+        $result.status = 'PRODUCT_INVARIANT'
+        $result.code = 'DUPLICATE_ROUTE'
+        return [pscustomobject]$result
+    }
+    if ([string]$Rows[0].family -cne [string]$result.expected_family) {
+        $result.status = 'PRODUCT_INVARIANT'
+        $result.code = 'WRONG_FAMILY'
+        return [pscustomobject]$result
+    }
+    if ($SocketProofs.Count -ne 1 -or
+        -not [bool]$SocketProofs[0].pid_matches -or
+        -not [bool]$SocketProofs[0].tuple_current_exact -or
+        -not [bool]$SocketProofs[0].local_address_assigned -or
+        -not [bool]$SocketProofs[0].physical_nonvirtual -or
+        ($SocketProofs[0].PSObject.Properties.Name -ccontains
+            'attribution_exact' -and
+            -not [bool]$SocketProofs[0].attribution_exact)) {
+        $result.status = 'PRODUCT_INVARIANT'
+        $result.code = 'WRONG_OR_NONPHYSICAL_SOCKET'
+        return [pscustomobject]$result
+    }
+    if ($StableSeconds -lt $RequiredStableSeconds) {
+        $result.status = 'PRODUCT_INVARIANT'
+        $result.code = 'NO_ROUTE'
+        return [pscustomobject]$result
+    }
+    $result.status = 'PASS'
+    $result.code = 'NONE'
+    $result.product_match = $true
+    return [pscustomobject]$result
 }
 
 function Add-I03JsonLine {
@@ -252,7 +2235,9 @@ function Get-I03AdapterEvidence {
         -ErrorAction Stop
     $overlayPattern =
         '(?i)tailscale|wireguard|cloudflare|warp|zerotier|openvpn|' +
-        'hyper-v|vethernet|loopback|tunnel|tap|vpn'
+        'hyper-v|vethernet|loopback|tunnel|tap|vpn|hamachi|teredo|' +
+        '6to4|isatap|ip[- ]?https|vmware|virtualbox|vbox|' +
+        'parallels|qemu|virtio|xen'
     $overlayLike = ([string]$adapter.Name) -match $overlayPattern -or
         ([string]$adapter.InterfaceDescription) -match $overlayPattern
     $physical = [bool]$adapter.HardwareInterface -and
@@ -284,7 +2269,7 @@ function Get-I03AssignedAddress {
     $familyName = if ($Family -eq
         [Net.Sockets.AddressFamily]::InterNetwork) { 'IPv4' } else { 'IPv6' }
     $item = Get-NetIPAddress -AddressFamily $familyName `
-        -ErrorAction SilentlyContinue | Where-Object {
+        -ErrorAction Stop | Where-Object {
             (Get-I03NormalizedIp -Address ([string]$_.IPAddress)) -eq
                 (Get-I03NormalizedIp -Address $Address) -and
             [string]$_.AddressState -eq 'Preferred'
@@ -296,7 +2281,8 @@ function Get-I03AssignedAddress {
         -InterfaceIndex ([int]$item.InterfaceIndex) -Context $Context
     return [pscustomobject][ordered]@{
         address = Get-I03NormalizedIp -Address ([string]$item.IPAddress)
-        address_class = Get-LabAddressClass -Address ([string]$item.IPAddress)
+        address_class = Get-I03NativeAddressClass `
+            -Address ([string]$item.IPAddress)
         interface_index = [int]$item.InterfaceIndex
         prefix_length = [int]$item.PrefixLength
         adapter = $adapter
@@ -318,15 +2304,17 @@ function Get-I03RouteEvidence {
             available = $true
             family = if ($RemoteAddress.Contains(':')) { 'IPv6' } else { 'IPv4' }
             remote_address = Get-I03NormalizedIp -Address $RemoteAddress
+            remote_class = Get-I03NativeAddressClass `
+                -Address $RemoteAddress
             source_address = $source
-            source_class = Get-LabAddressClass -Address $source
+            source_class = Get-I03NativeAddressClass -Address $source
             interface_index = [int]$route.InterfaceIndex
             next_hop_class = if ([string]$route.NextHop -in @(
                 '0.0.0.0', '::'
             )) {
                 'on-link'
             } else {
-                Get-LabAddressClass -Address ([string]$route.NextHop)
+                Get-I03NativeAddressClass -Address ([string]$route.NextHop)
             }
             adapter = $adapter
             error = $null
@@ -336,6 +2324,8 @@ function Get-I03RouteEvidence {
             available = $false
             family = if ($RemoteAddress.Contains(':')) { 'IPv6' } else { 'IPv4' }
             remote_address = Get-I03NormalizedIp -Address $RemoteAddress
+            remote_class = Get-I03NativeAddressClass `
+                -Address $RemoteAddress
             source_address = ''
             source_class = 'invalid'
             interface_index = $null
@@ -401,10 +2391,12 @@ function Get-I03TupleKey {
         (Get-I03NormalizedIp -Address $RemoteAddress), $RemotePort
 }
 
-function Get-I03TargetConnections {
-    return @(
-        Get-NetTCPConnection -RemotePort $PeerTcpPort `
-            -ErrorAction SilentlyContinue | Where-Object {
+function Get-I03TargetConnectionSnapshot {
+    $capturedAt = Get-LabUtcTimestamp
+    try {
+        $rows = @(
+            Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+                [int]$_.RemotePort -eq $PeerTcpPort -and
                 (Get-I03NormalizedIp -Address ([string]$_.RemoteAddress)) -in
                     @($peerV4Text, $peerV6Text)
             } | ForEach-Object {
@@ -425,7 +2417,353 @@ function Get-I03TargetConnections {
                         -RemoteAddress $remote -RemotePort ([int]$_.RemotePort)
                 }
             }
+        )
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-target-connection-collector/v1'
+            ok = $true
+            error_code = 'NONE'
+            captured_at_utc = $capturedAt
+            rows = $rows
+        }
+    } catch {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-target-connection-collector/v1'
+            ok = $false
+            error_code = 'TARGET_TCP_QUERY_FAILED'
+            captured_at_utc = $capturedAt
+            rows = @()
+        }
+    }
+}
+
+function Get-I03TargetConnections {
+    $snapshot = Get-I03TargetConnectionSnapshot
+    if (-not [bool]$snapshot.ok) {
+        throw "I03_COLLECTOR::$($snapshot.error_code)"
+    }
+    return @($snapshot.rows)
+}
+
+function Get-I03ProcessSocketCensus {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    try {
+        $tcp = @(Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+            [int]$_.OwningProcess -eq $ProcessId
+        } | ForEach-Object {
+            [pscustomobject][ordered]@{
+                transport = 'TCP'
+                state = [string]$_.State
+                local_address = Get-I03NormalizedIp `
+                    -Address ([string]$_.LocalAddress)
+                local_port = [int]$_.LocalPort
+                remote_address = Get-I03NormalizedIp `
+                    -Address ([string]$_.RemoteAddress)
+                remote_port = [int]$_.RemotePort
+                owning_process = [int]$_.OwningProcess
+            }
+        })
+        $udp = @(Get-NetUDPEndpoint -ErrorAction Stop | Where-Object {
+            [int]$_.OwningProcess -eq $ProcessId
+        } | ForEach-Object {
+            [pscustomobject][ordered]@{
+                transport = 'UDP'
+                state = 'Bound'
+                local_address = Get-I03NormalizedIp `
+                    -Address ([string]$_.LocalAddress)
+                local_port = [int]$_.LocalPort
+                remote_address = ''
+                remote_port = 0
+                owning_process = [int]$_.OwningProcess
+            }
+        })
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-process-socket-census/v1'
+            collector_ok = $true
+            collector_error_code = 'NONE'
+            process_id = $ProcessId
+            tcp_rows = $tcp
+            udp_rows = $udp
+            socket_count = $tcp.Count + $udp.Count
+        }
+    } catch {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-process-socket-census/v1'
+            collector_ok = $false
+            collector_error_code = 'PROCESS_SOCKET_QUERY_FAILED'
+            process_id = $ProcessId
+            tcp_rows = @()
+            udp_rows = @()
+            socket_count = 0
+        }
+    }
+}
+
+function Get-I03CandidateSocketCensusDecision {
+    param(
+        [Parameter(Mandatory = $true)][object]$Census,
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [Parameter(Mandatory = $true)][int]$TcpPort,
+        [Parameter(Mandatory = $true)][int]$UdpPort,
+        [Parameter(Mandatory = $true)][int]$WebPort,
+        [Parameter(Mandatory = $true)][string[]]$TargetAddresses,
+        [Parameter(Mandatory = $true)][int]$TargetPort,
+        [Parameter(Mandatory = $true)][string]$ControlAddress,
+        [Parameter(Mandatory = $true)][int]$ControlPort
     )
+
+    $censusShapeValid = [string]$Census.schema -ceq
+            'ese.v91.i03-process-socket-census/v1' -and
+        $Census.collector_ok -is [bool] -and
+        (Test-I03StrictJsonInteger -Value $Census.process_id `
+            -Expected $ProcessId) -and
+        $Census.tcp_rows -is [System.Array] -and
+        $Census.udp_rows -is [System.Array]
+    if (-not $censusShapeValid -or -not [bool]$Census.collector_ok) {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-candidate-socket-decision/v1'
+            collector_ok = $false
+            collector_error_code = if (-not $censusShapeValid) {
+                'INVALID_PROCESS_SOCKET_CENSUS'
+            } elseif (
+                [string]$Census.collector_error_code
+            ) { [string]$Census.collector_error_code } else {
+                'PROCESS_SOCKET_QUERY_FAILED'
+            }
+            process_id = $ProcessId
+            allowed_row_count = 0
+            unexpected_row_count = 0
+            allowed_rows = @()
+            unexpected_rows = @()
+            complete = $false
+        }
+    }
+
+    $targetSet = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($target in $TargetAddresses) {
+        [void]$targetSet.Add((Get-I03NormalizedIp -Address $target))
+    }
+    $control = Get-I03NormalizedIp -Address $ControlAddress
+    $allowed = [System.Collections.Generic.List[object]]::new()
+    $unexpected = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($row in @($Census.tcp_rows)) {
+        $local = Get-I03NormalizedIp -Address ([string]$row.local_address)
+        $remote = Get-I03NormalizedIp -Address ([string]$row.remote_address)
+        $state = [string]$row.state
+        $localPort = [int]$row.local_port
+        $remotePort = [int]$row.remote_port
+        $reason = ''
+        if ([int]$row.owning_process -ne $ProcessId) {
+            $reason = 'wrong_process'
+        } elseif ($state -eq 'Listen' -and
+            $localPort -in @($TcpPort, $WebPort) -and
+            $remotePort -eq 0) {
+            $reason = 'owned_listener'
+        } elseif ($targetSet.Contains($remote) -and
+            $remotePort -eq $TargetPort) {
+            $reason = 'controlled_peer_flow'
+        } elseif ($remote -eq $control -and
+            $remotePort -eq $ControlPort) {
+            $reason = 'controlled_server_flow'
+        } elseif ($localPort -eq $WebPort -and
+            $remote -in @('127.0.0.1', '::1')) {
+            $reason = 'local_api_probe'
+        } else {
+            $reason = 'tcp_not_allowlisted'
+        }
+        $classified = [pscustomobject][ordered]@{
+            transport = 'TCP'
+            state = $state
+            local_address = $local
+            local_port = $localPort
+            remote_address = $remote
+            remote_port = $remotePort
+            owning_process = [int]$row.owning_process
+            classification = $reason
+        }
+        if ($reason -in @(
+                'owned_listener', 'controlled_peer_flow',
+                'controlled_server_flow', 'local_api_probe'
+            )) {
+            $allowed.Add($classified)
+        } else {
+            $unexpected.Add($classified)
+        }
+    }
+    foreach ($row in @($Census.udp_rows)) {
+        $local = Get-I03NormalizedIp -Address ([string]$row.local_address)
+        $isAllowed = [int]$row.owning_process -eq $ProcessId -and
+            [string]$row.state -eq 'Bound' -and
+            [int]$row.local_port -eq $UdpPort -and
+            [int]$row.remote_port -eq 0
+        $classified = [pscustomobject][ordered]@{
+            transport = 'UDP'
+            state = [string]$row.state
+            local_address = $local
+            local_port = [int]$row.local_port
+            remote_address = [string]$row.remote_address
+            remote_port = [int]$row.remote_port
+            owning_process = [int]$row.owning_process
+            classification = if ($isAllowed) {
+                'owned_udp_endpoint'
+            } else { 'udp_not_allowlisted' }
+        }
+        if ($isAllowed) {
+            $allowed.Add($classified)
+        } else {
+            $unexpected.Add($classified)
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-candidate-socket-decision/v1'
+        collector_ok = $true
+        collector_error_code = 'NONE'
+        process_id = $ProcessId
+        allowed_row_count = $allowed.Count
+        unexpected_row_count = $unexpected.Count
+        allowed_rows = @($allowed)
+        unexpected_rows = @($unexpected)
+        complete = $unexpected.Count -eq 0
+    }
+}
+
+function Get-I03PeerInboundConnectionSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [Parameter(Mandatory = $true)][int]$LocalPort
+    )
+
+    $census = Get-I03ProcessSocketCensus -ProcessId $ProcessId
+    if (-not [bool]$census.collector_ok) {
+        throw "I03_COLLECTOR::$($census.collector_error_code)"
+    }
+    return @($census.tcp_rows | Where-Object {
+        [string]$_.state -eq 'Established' -and
+        [int]$_.local_port -eq $LocalPort
+    } | ForEach-Object {
+        [pscustomobject][ordered]@{
+            owning_process = [int]$_.owning_process
+            local_address = Get-I03NormalizedIp `
+                -Address ([string]$_.local_address)
+            family = if ((Get-I03NormalizedIp -Address `
+                    ([string]$_.local_address)).Contains(':')) {
+                'IPv6'
+            } else { 'IPv4' }
+            local_port = [int]$_.local_port
+            remote_address = Get-I03NormalizedIp `
+                -Address ([string]$_.remote_address)
+            remote_port = [int]$_.remote_port
+        }
+    })
+}
+
+function Get-I03EmuleProcessCensus {
+    try {
+        $rows = @(Get-CimInstance -ClassName Win32_Process `
+            -Filter "Name = 'emule.exe'" -ErrorAction Stop |
+            ForEach-Object {
+                $path = [string]$_.ExecutablePath
+                [pscustomobject][ordered]@{
+                    process_id = [int]$_.ProcessId
+                    executable_path = $path
+                    executable_sha256 = if ($path -and
+                        (Test-Path -LiteralPath $path -PathType Leaf)) {
+                        Get-LabSha256 -Path $path
+                    } else { '' }
+                }
+            })
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-emule-process-census/v1'
+            collector_ok = $true
+            collector_error_code = 'NONE'
+            captured_at_utc = Get-LabUtcTimestamp
+            process_count = $rows.Count
+            rows = $rows
+        }
+    } catch {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-emule-process-census/v1'
+            collector_ok = $false
+            collector_error_code = 'EMULE_PROCESS_QUERY_FAILED'
+            captured_at_utc = Get-LabUtcTimestamp
+            process_count = 0
+            rows = @()
+        }
+    }
+}
+
+function Get-I03TerminalSocketCleanupEvidence {
+    param(
+        [Parameter(Mandatory = $true)][int[]]$Ports,
+        [AllowEmptyCollection()][int[]]$OwnedProcessIds = @()
+    )
+
+    try {
+        $portSet = @($Ports | Sort-Object -Unique)
+        $tcpAll = @(Get-NetTCPConnection -ErrorAction Stop)
+        $udpAll = @(Get-NetUDPEndpoint -ErrorAction Stop)
+        $tcpAtPorts = @($tcpAll | Where-Object {
+            [int]$_.LocalPort -in $portSet
+        } | ForEach-Object {
+            [pscustomobject][ordered]@{
+                state = [string]$_.State
+                local_port = [int]$_.LocalPort
+                owning_process = [int]$_.OwningProcess
+            }
+        })
+        $udpAtPorts = @($udpAll | Where-Object {
+            [int]$_.LocalPort -in $portSet
+        } | ForEach-Object {
+            [pscustomobject][ordered]@{
+                local_port = [int]$_.LocalPort
+                owning_process = [int]$_.OwningProcess
+            }
+        })
+        $ownedPids = @($OwnedProcessIds | Sort-Object -Unique)
+        $ownedTcp = @($tcpAll | Where-Object {
+            [int]$_.OwningProcess -in $ownedPids
+        })
+        $ownedUdp = @($udpAll | Where-Object {
+            [int]$_.OwningProcess -in $ownedPids
+        })
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-terminal-socket-cleanup/v1'
+            collector_ok = $true
+            collector_error_code = 'NONE'
+            checked_ports = $portSet
+            checked_process_ids = $ownedPids
+            tcp_port_row_count = $tcpAtPorts.Count
+            udp_port_row_count = $udpAtPorts.Count
+            owned_tcp_row_count = $ownedTcp.Count
+            owned_udp_row_count = $ownedUdp.Count
+            ports_free = $tcpAtPorts.Count -eq 0 -and
+                $udpAtPorts.Count -eq 0
+            owned_process_sockets_free = $ownedTcp.Count -eq 0 -and
+                $ownedUdp.Count -eq 0
+            complete = $tcpAtPorts.Count -eq 0 -and
+                $udpAtPorts.Count -eq 0 -and
+                $ownedTcp.Count -eq 0 -and $ownedUdp.Count -eq 0
+        }
+    } catch {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-terminal-socket-cleanup/v1'
+            collector_ok = $false
+            collector_error_code = 'TERMINAL_SOCKET_QUERY_FAILED'
+            checked_ports = @($Ports | Sort-Object -Unique)
+            checked_process_ids = @($OwnedProcessIds | Sort-Object -Unique)
+            tcp_port_row_count = 0
+            udp_port_row_count = 0
+            owned_tcp_row_count = 0
+            owned_udp_row_count = 0
+            ports_free = $false
+            owned_process_sockets_free = $false
+            complete = $false
+        }
+    }
 }
 
 function Get-I03SocketEvidence {
@@ -437,26 +2775,30 @@ function Get-I03SocketEvidence {
     $assigned = $null
     $adapter = $null
     $currentMatches = @()
+    $collectorOk = $false
+    $collectorErrorCode = 'SOCKET_EVIDENCE_UNAVAILABLE'
     try {
         $familyName = if ([string]$Connection.family -eq 'IPv6') {
             'IPv6'
         } else { 'IPv4' }
-        $assigned = Get-NetIPAddress -AddressFamily $familyName `
+        $assignedMatches = @(Get-NetIPAddress -AddressFamily $familyName `
             -ErrorAction Stop | Where-Object {
                 (Get-I03NormalizedIp -Address ([string]$_.IPAddress)) -eq
                     (Get-I03NormalizedIp -Address ([string]$Connection.local_address))
-            } | Select-Object -First 1
-        if ($null -ne $assigned) {
+            })
+        if ($assignedMatches.Count -ne 1) {
+            $collectorErrorCode = 'LOCAL_ADDRESS_ADAPTER_AMBIGUOUS'
+        } else {
+            $assigned = $assignedMatches[0]
             $adapter = Get-I03AdapterEvidence `
                 -InterfaceIndex ([int]$assigned.InterfaceIndex) `
                 -Context 'candidate-established-socket'
-        }
-        $currentMatches = @(
-            Get-NetTCPConnection -State Established `
-                -OwningProcess $ExpectedProcessId `
-                -LocalPort ([int]$Connection.local_port) `
-                -RemotePort ([int]$Connection.remote_port) `
-                -ErrorAction SilentlyContinue | Where-Object {
+            $currentMatches = @(
+                Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+                    [string]$_.State -eq 'Established' -and
+                    [int]$_.OwningProcess -eq $ExpectedProcessId -and
+                    [int]$_.LocalPort -eq [int]$Connection.local_port -and
+                    [int]$_.RemotePort -eq [int]$Connection.remote_port -and
                     (Get-I03NormalizedIp `
                         -Address ([string]$_.LocalAddress)) -eq
                             (Get-I03NormalizedIp -Address `
@@ -465,17 +2807,31 @@ function Get-I03SocketEvidence {
                         -Address ([string]$_.RemoteAddress)) -eq
                             (Get-I03NormalizedIp -Address `
                                 ([string]$Connection.remote_address))
-                }
-        )
-    } catch {}
+                    }
+            )
+            if ($currentMatches.Count -le 1) {
+                $collectorOk = $true
+                $collectorErrorCode = 'NONE'
+            } else {
+                $collectorErrorCode = 'CURRENT_TUPLE_AMBIGUOUS'
+            }
+        }
+    } catch {
+        $collectorOk = $false
+        $collectorErrorCode = 'SOCKET_QUERY_FAILED'
+    }
     return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-socket-evidence/v2'
+        collector_ok = $collectorOk
+        collector_error_code = $collectorErrorCode
         connection = $Connection
         expected_process_id = $ExpectedProcessId
         pid_matches = [int]$Connection.owning_process -eq $ExpectedProcessId
         current_established_match_count = $currentMatches.Count
-        tuple_current_exact = $currentMatches.Count -eq 1
+        tuple_current_exact = $collectorOk -and
+            $currentMatches.Count -eq 1
         local_address_assigned = $null -ne $assigned
-        local_address_class = Get-LabAddressClass `
+        local_address_class = Get-I03NativeAddressClass `
             -Address ([string]$Connection.local_address)
         adapter = $adapter
         physical_nonvirtual = $null -ne $adapter -and
@@ -568,13 +2924,18 @@ function Wait-I03Listener {
         if ($Process.HasExited) {
             throw "eMule exited before listener $Port became ready"
         }
-        $listeners = @(
-            Get-NetTCPConnection -State Listen -LocalPort $Port `
-                -OwningProcess $Process.Id -ErrorAction SilentlyContinue
-        )
+        $census = Get-I03ProcessSocketCensus -ProcessId $Process.Id
+        if (-not [bool]$census.collector_ok) {
+            throw "I03_COLLECTOR::$($census.collector_error_code)"
+        }
+        $listeners = @($census.tcp_rows | Where-Object {
+            [string]$_.state -eq 'Listen' -and
+            [int]$_.local_port -eq $Port
+        })
         if ($listeners.Count -gt 0) {
             $dual = @($listeners | Where-Object {
-                (Get-I03NormalizedIp -Address ([string]$_.LocalAddress)) -eq '::'
+                (Get-I03NormalizedIp -Address `
+                    ([string]$_.local_address)) -eq '::'
             }).Count -gt 0
             if (-not $RequireDualStack -or $dual) {
                 return [pscustomobject][ordered]@{
@@ -591,6 +2952,22 @@ function Wait-I03Listener {
     throw "Listener $Port did not become ready"
 }
 
+function Test-I03StrictJsonInteger {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][Int64]$Expected
+    )
+
+    if ($null -eq $Value -or $Value -is [bool] -or
+        $Value -isnot [sbyte] -and $Value -isnot [byte] -and
+        $Value -isnot [int16] -and $Value -isnot [uint16] -and
+        $Value -isnot [int32] -and $Value -isnot [uint32] -and
+        $Value -isnot [int64] -and $Value -isnot [uint64]) {
+        return $false
+    }
+    try { return [Int64]$Value -eq $Expected } catch { return $false }
+}
+
 function Test-I03ApiIsolation {
     param(
         [AllowNull()][object]$Data,
@@ -599,19 +2976,104 @@ function Test-I03ApiIsolation {
 
     if ($null -eq $Data) { return $false }
     $names = @($Data.PSObject.Properties.Name)
-    $ed2kStateValid = if ($AllowControlledEd2k) {
-        [bool]$Data.ed2k_connected
-    } else {
-        -not [bool]$Data.ed2k_connected
+    $booleanFalse = @(
+        'upnp_critical_error', 'utp_hole_punch_enabled',
+        'web_upnp_active', 'kad_connected', 'kad2_running',
+        'kad2_connected', 'kad6_running', 'kad6_connected',
+        'netlab_enabled', 'keepalive_running'
+    )
+    $integerZero = @('kad_configured_mask', 'kad_running_mask')
+    $consents = @(
+        'netlab_consent', 'netlab_advanced_consent',
+        'netlab_contribution_consent'
+    )
+    foreach ($required in @(
+        $booleanFalse + $integerZero + $consents +
+        @('ed2k_connected', 'upnp_ports_forwarded')
+    )) {
+        if ($names -notcontains $required) { return $false }
     }
-    return $names -contains 'netlab_enabled' -and
-        $names -contains 'netlab_consent' -and
-        $names -contains 'kad_running_mask' -and
-        $names -contains 'ed2k_connected' -and
-        -not [bool]$Data.netlab_enabled -and
-        [string]$Data.netlab_consent -eq 'declined' -and
-        [int]$Data.kad_running_mask -eq 0 -and
-        $ed2kStateValid
+    foreach ($name in $booleanFalse) {
+        if ($Data.$name -isnot [bool] -or $Data.$name -cne $false) {
+            return $false
+        }
+    }
+    foreach ($name in $integerZero) {
+        if (-not (Test-I03StrictJsonInteger -Value $Data.$name `
+                -Expected 0)) { return $false }
+    }
+    foreach ($name in $consents) {
+        if ($Data.$name -isnot [string] -or
+            [string]$Data.$name -cne 'declined') { return $false }
+    }
+    if ($Data.ed2k_connected -isnot [bool] -or
+        $Data.upnp_ports_forwarded -isnot [string] -or
+        [string]$Data.upnp_ports_forwarded -cnotin @(
+            'false', 'unknown'
+        )) {
+        return $false
+    }
+    $ed2kStateValid = if ($AllowControlledEd2k) {
+        $Data.ed2k_connected -ceq $true
+    } else {
+        $Data.ed2k_connected -ceq $false
+    }
+    return $ed2kStateValid
+}
+
+function Get-I03ApiEvidenceProjection {
+    param(
+        [AllowNull()][object]$Data,
+        [Parameter(Mandatory = $true)][Int64]$DurationMs,
+        [switch]$AllowControlledEd2k,
+        [switch]$RequestFailed
+    )
+
+    $available = $null -ne $Data -and -not $RequestFailed
+    $contractValid = $available -and
+        (Test-I03ApiIsolation -Data $Data `
+            -AllowControlledEd2k:$AllowControlledEd2k)
+    $safeScalars = [ordered]@{}
+    $safeHash = ''
+    if ($contractValid) {
+        $safeScalars = [ordered]@{
+            upnp_critical_error = [bool]$Data.upnp_critical_error
+            utp_hole_punch_enabled = [bool]$Data.utp_hole_punch_enabled
+            web_upnp_active = [bool]$Data.web_upnp_active
+            upnp_ports_forwarded = [string]$Data.upnp_ports_forwarded
+            kad_connected = [bool]$Data.kad_connected
+            kad_configured_mask = [int]$Data.kad_configured_mask
+            netlab_enabled = [bool]$Data.netlab_enabled
+            netlab_consent = [string]$Data.netlab_consent
+            netlab_advanced_consent =
+                [string]$Data.netlab_advanced_consent
+            netlab_contribution_consent =
+                [string]$Data.netlab_contribution_consent
+            kad_running_mask = [int]$Data.kad_running_mask
+            kad2_running = [bool]$Data.kad2_running
+            kad2_connected = [bool]$Data.kad2_connected
+            kad6_running = [bool]$Data.kad6_running
+            kad6_connected = [bool]$Data.kad6_connected
+            ed2k_connected = [bool]$Data.ed2k_connected
+            keepalive_running = [bool]$Data.keepalive_running
+        }
+        $canonical = $safeScalars | ConvertTo-Json -Compress
+        $safeHash = Get-LabStringSha256 -Value $canonical
+    }
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-api-status-evidence/v2'
+        captured_at_utc = Get-LabUtcTimestamp
+        available = $available
+        duration_ms = $DurationMs
+        contract_valid = $contractValid
+        isolation_valid = $contractValid
+        controlled_ed2k_expected = [bool]$AllowControlledEd2k
+        error_code = if ($available) {
+            if ($contractValid) { 'NONE' } else { 'API_CONTRACT_INVALID' }
+        } else { 'API_UNAVAILABLE' }
+        safe_scalars = $safeScalars
+        safe_response_sha256 = $safeHash
+    }
 }
 
 function Get-I03ApiProbe {
@@ -622,24 +3084,19 @@ function Get-I03ApiProbe {
 
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $data = $null
-    $errorText = $null
+    $requestFailed = $false
     try {
         $data = Invoke-RestMethod `
             -Uri "http://127.0.0.1:$Port/api/status" -TimeoutSec 2
     } catch {
-        $errorText = $_.Exception.Message
+        $requestFailed = $true
     } finally {
         $watch.Stop()
     }
-    return [pscustomobject][ordered]@{
-        captured_at_utc = Get-LabUtcTimestamp
-        available = $null -ne $data
-        duration_ms = [Int64]$watch.ElapsedMilliseconds
-        isolation_valid = Test-I03ApiIsolation -Data $data `
-            -AllowControlledEd2k:$AllowControlledEd2k
-        error = $errorText
-        data = $data
-    }
+    return Get-I03ApiEvidenceProjection -Data $data `
+        -DurationMs ([Int64]$watch.ElapsedMilliseconds) `
+        -AllowControlledEd2k:$AllowControlledEd2k `
+        -RequestFailed:$requestFailed
 }
 
 function Initialize-I03UiProbe {
@@ -690,61 +3147,1197 @@ function Get-I03UiProbe {
     }
 }
 
+function Get-I03ProcessIdentity {
+    param([Parameter(Mandatory = $true)][Diagnostics.Process]$Process)
+
+    try {
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            throw 'I03_PRODUCT_RUNTIME::PROCESS_EXITED_BEFORE_IDENTITY'
+        }
+        $path = [IO.Path]::GetFullPath([string]$Process.Path)
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-process-identity/v1'
+            process_id = [int]$Process.Id
+            start_time_utc = $Process.StartTime.ToUniversalTime().ToString('o')
+            executable_path_sha256 = Get-LabStringSha256 -Value $path
+            executable_sha256 = Get-LabSha256 -Path $path
+        }
+    } catch {
+        if ([string]$_.Exception.Message -eq
+            'I03_PRODUCT_RUNTIME::PROCESS_EXITED_BEFORE_IDENTITY') {
+            throw
+        }
+        $exited = $false
+        try {
+            $Process.Refresh()
+            $exited = [bool]$Process.HasExited
+        } catch { $exited = $true }
+        if ($exited) {
+            throw 'I03_PRODUCT_RUNTIME::PROCESS_EXITED_BEFORE_IDENTITY'
+        }
+        throw 'I03_COLLECTOR::PROCESS_IDENTITY_QUERY_FAILED'
+    }
+}
+
+function Test-I03ProcessIdentityMatch {
+    param(
+        [AllowNull()][object]$Expected,
+        [AllowNull()][object]$Actual
+    )
+
+    if ($null -eq $Expected -or $null -eq $Actual) { return $false }
+    $required = @(
+        'schema', 'process_id', 'start_time_utc',
+        'executable_path_sha256', 'executable_sha256'
+    )
+    try {
+        foreach ($identity in @($Expected, $Actual)) {
+            $names = @($identity.PSObject.Properties.Name)
+            if ($names.Count -ne $required.Count -or
+                @($required | Where-Object {
+                    $names -cnotcontains $_
+                }).Count -gt 0 -or
+                $identity.schema -isnot [string] -or
+                $identity.start_time_utc -isnot [string] -or
+                $identity.executable_path_sha256 -isnot [string] -or
+                $identity.executable_sha256 -isnot [string] -or
+                [string]$identity.schema -cne
+                    'ese.v91.i03-process-identity/v1' -or
+                $identity.process_id -isnot [int] -or
+                [int]$identity.process_id -le 0 -or
+                [string]$identity.start_time_utc -notmatch
+                    '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$' -or
+                [string]$identity.executable_path_sha256 -notmatch
+                    '^[0-9a-f]{64}$' -or
+                [string]$identity.executable_sha256 -notmatch
+                    '^[0-9a-f]{64}$') {
+                return $false
+            }
+            $parsed = [DateTime]::MinValue
+            if (-not [DateTime]::TryParseExact(
+                    [string]$identity.start_time_utc,
+                    'o', [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::RoundtripKind,
+                    [ref]$parsed
+                ) -or $parsed.Kind -ne [DateTimeKind]::Utc) {
+                return $false
+            }
+        }
+        return [int]$Expected.process_id -eq [int]$Actual.process_id -and
+            [string]$Expected.start_time_utc -ceq
+                [string]$Actual.start_time_utc -and
+            [string]$Expected.executable_path_sha256 -ceq
+                [string]$Actual.executable_path_sha256 -and
+            [string]$Expected.executable_sha256 -ceq
+                [string]$Actual.executable_sha256
+    } catch { return $false }
+}
+
+function ConvertTo-I03RegistryDataProjection {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Kind
+    )
+
+    if ($null -eq $Value) { return $null }
+    if ($Kind -ceq 'Binary') {
+        return [Convert]::ToBase64String([byte[]]$Value)
+    }
+    if ($Kind -ceq 'MultiString') { return @([string[]]$Value) }
+    return $Value
+}
+
+function Get-I03RegistryValueState {
+    param(
+        [Parameter(Mandatory = $true)][string]$SubKey,
+        [Parameter(Mandatory = $true)][string]$ValueName
+    )
+
+    $base = [Microsoft.Win32.Registry]::CurrentUser
+    $key = $base.OpenSubKey($SubKey, $false)
+    try {
+        $keyExists = $null -ne $key
+        $valueExists = $keyExists -and @($key.GetValueNames()) -contains
+            $ValueName
+        $kind = ''
+        $data = $null
+        if ($valueExists) {
+            $kind = $key.GetValueKind($ValueName).ToString()
+            $data = ConvertTo-I03RegistryDataProjection `
+                -Value ($key.GetValue($ValueName, $null,
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) `
+                -Kind $kind
+        }
+        $state = [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-registry-value-state/v1'
+            subkey_sha256 = Get-LabStringSha256 -Value $SubKey
+            value_name_sha256 = Get-LabStringSha256 -Value $ValueName
+            key_exists = $keyExists
+            value_exists = $valueExists
+            kind = $kind
+            data = $data
+        }
+        $state | Add-Member -NotePropertyName state_sha256 `
+            -NotePropertyValue (Get-LabStringSha256 -Value (
+                $state | ConvertTo-Json -Depth 16 -Compress))
+        return $state
+    } finally {
+        if ($null -ne $key) { $key.Dispose() }
+    }
+}
+
+function Get-I03RegistryTreeState {
+    param([Parameter(Mandatory = $true)][string]$SubKey)
+
+    $base = [Microsoft.Win32.Registry]::CurrentUser
+    $rootKey = $base.OpenSubKey($SubKey, $false)
+    if ($null -eq $rootKey) {
+        $empty = [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-registry-tree-state/v1'
+            subkey_sha256 = Get-LabStringSha256 -Value $SubKey
+            exists = $false
+            entries = @()
+        }
+        $empty | Add-Member -NotePropertyName state_sha256 `
+            -NotePropertyValue (Get-LabStringSha256 -Value (
+                $empty | ConvertTo-Json -Depth 32 -Compress))
+        return $empty
+    }
+    $rootKey.Dispose()
+    $entries = [System.Collections.Generic.List[object]]::new()
+    $pending = [System.Collections.Generic.Stack[string]]::new()
+    $pending.Push('')
+    while ($pending.Count -gt 0) {
+        $relative = $pending.Pop()
+        $path = if ($relative) { "$SubKey\$relative" } else { $SubKey }
+        $key = $base.OpenSubKey($path, $false)
+        if ($null -eq $key) {
+            throw 'I03_REGISTRY_SNAPSHOT::TREE_CHANGED_DURING_READ'
+        }
+        try {
+            $values = @($key.GetValueNames() | Sort-Object | ForEach-Object {
+                $name = [string]$_
+                $kind = $key.GetValueKind($name).ToString()
+                [pscustomobject][ordered]@{
+                    name = $name
+                    kind = $kind
+                    data = ConvertTo-I03RegistryDataProjection `
+                        -Value ($key.GetValue($name, $null,
+                            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)) `
+                        -Kind $kind
+                }
+            })
+            $entries.Add([pscustomobject][ordered]@{
+                relative_path = $relative
+                values = $values
+            })
+            foreach ($child in @($key.GetSubKeyNames() | Sort-Object -Descending)) {
+                $childRelative = if ($relative) {
+                    "$relative\$child"
+                } else { [string]$child }
+                $pending.Push($childRelative)
+            }
+        } finally { $key.Dispose() }
+    }
+    $state = [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-registry-tree-state/v1'
+        subkey_sha256 = Get-LabStringSha256 -Value $SubKey
+        exists = $true
+        entries = @($entries | Sort-Object relative_path)
+    }
+    $state | Add-Member -NotePropertyName state_sha256 `
+        -NotePropertyValue (Get-LabStringSha256 -Value (
+            $state | ConvertTo-Json -Depth 32 -Compress))
+    return $state
+}
+
+function Get-I03ObjectSha256 {
+    param([AllowNull()][object]$Value)
+    return Get-LabStringSha256 -Value (
+        $Value | ConvertTo-Json -Depth 32 -Compress)
+}
+
+function Get-I03RegistryTreeWithoutValueProjection {
+    param(
+        [Parameter(Mandatory = $true)][object]$State,
+        [Parameter(Mandatory = $true)][string]$ValueName
+    )
+
+    if ([string]$State.schema -cne
+        'ese.v91.i03-registry-tree-state/v1') {
+        throw 'I03_REGISTRY_PLAN::TREE_STATE_INVALID'
+    }
+    return [pscustomobject][ordered]@{
+        exists = [bool]$State.exists
+        entries = @($State.entries | ForEach-Object {
+            [pscustomobject][ordered]@{
+                relative_path = [string]$_.relative_path
+                values = @($_.values | Where-Object {
+                    [string]$_.name -ine $ValueName
+                })
+            }
+        })
+    }
+}
+
+function Get-I03RegistryCleanupPlan {
+    param(
+        [Parameter(Mandatory = $true)][object]$Baseline,
+        [Parameter(Mandatory = $true)][object]$CurrentAutostart,
+        [Parameter(Mandatory = $true)][object]$CurrentRunKey,
+        [Parameter(Mandatory = $true)][object]$CurrentEd2kAssociation
+    )
+
+    $valueName = 'eMuleAutoStart'
+    $result = [ordered]@{
+        schema = 'ese.v91.i03-registry-cleanup-plan/v1'
+        decision = 'BLOCK_CONCURRENT'
+        action = 'NONE'
+        remove_empty_run_key = $false
+        baseline_sha256 = Get-I03ObjectSha256 -Value $Baseline
+        current_sha256 = Get-I03ObjectSha256 -Value ([ordered]@{
+            autostart = $CurrentAutostart
+            run_key = $CurrentRunKey
+            ed2k_association = $CurrentEd2kAssociation
+        })
+    }
+    if ([string]$Baseline.schema -cne
+            'ese.v91.i03-mutation-baseline/v2' -or
+        [bool]$Baseline.autostart.value_exists -or
+        -not [bool]$Baseline.run_key.exists -or
+        [bool]$Baseline.ed2k_association.exists -or
+        $Baseline.allowed_autostart_value_sha256 -isnot [System.Array] -or
+        [string]$CurrentAutostart.schema -cne
+            'ese.v91.i03-registry-value-state/v1' -or
+        [string]$CurrentRunKey.schema -cne
+            'ese.v91.i03-registry-tree-state/v1' -or
+        [string]$CurrentEd2kAssociation.schema -cne
+            'ese.v91.i03-registry-tree-state/v1') {
+        $result.decision = 'BLOCK_BASELINE'
+        return [pscustomobject]$result
+    }
+    if ([bool]$CurrentEd2kAssociation.exists -or
+        [string]$CurrentEd2kAssociation.state_sha256 -cne
+            [string]$Baseline.ed2k_association.state_sha256) {
+        return [pscustomobject]$result
+    }
+
+    $targetValues = @($CurrentRunKey.entries | Where-Object {
+        [string]$_.relative_path -ceq ''
+    } | ForEach-Object { $_.values } | Where-Object {
+        [string]$_.name -ieq $valueName
+    })
+    if ([bool]$CurrentAutostart.value_exists -ne
+        ($targetValues.Count -eq 1)) {
+        return [pscustomobject]$result
+    }
+    if ([bool]$CurrentAutostart.value_exists) {
+        $allowedValueHashes = @(
+            $Baseline.allowed_autostart_value_sha256
+        )
+        if ($CurrentAutostart.kind -isnot [string] -or
+            [string]$CurrentAutostart.kind -cne 'String' -or
+            $CurrentAutostart.data -isnot [string] -or
+            [string]$targetValues[0].kind -cne
+                [string]$CurrentAutostart.kind -or
+            [string]$targetValues[0].data -cne
+                [string]$CurrentAutostart.data -or
+            (Get-LabStringSha256 -Value (
+                [string]$CurrentAutostart.data
+            )) -cnotin $allowedValueHashes) {
+            return [pscustomobject]$result
+        }
+    }
+    $baselineSansTarget = Get-I03RegistryTreeWithoutValueProjection `
+        -State $Baseline.run_key -ValueName $valueName
+    $currentSansTarget = Get-I03RegistryTreeWithoutValueProjection `
+        -State $CurrentRunKey -ValueName $valueName
+    if ((Get-I03ObjectSha256 -Value $baselineSansTarget) -cne
+        (Get-I03ObjectSha256 -Value $currentSansTarget)) {
+        return [pscustomobject]$result
+    }
+
+    if ([bool]$CurrentAutostart.value_exists) {
+        $result.decision = 'RESTORE_OWNED_VALUE'
+        $result.action = 'DELETE_AUTOSTART_VALUE'
+    } elseif ([string]$CurrentRunKey.state_sha256 -ceq
+        [string]$Baseline.run_key.state_sha256) {
+        $result.decision = 'NOOP'
+    } else {
+        return [pscustomobject]$result
+    }
+    return [pscustomobject]$result
+}
+
+function Get-I03FirewallProjection {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Rows,
+        [Parameter(Mandatory = $true)][string[]]$Properties
+    )
+
+    return @($Rows | Sort-Object InstanceID, Name | ForEach-Object {
+        $row = $_
+        $projected = [ordered]@{}
+        foreach ($name in $Properties) {
+            $value = $row.$name
+            if ($null -eq $value) {
+                $projected[$name] = $null
+            } elseif ($value -is [string] -or
+                $value.GetType().IsValueType) {
+                $projected[$name] = [string]$value
+            } else {
+                $projected[$name] = @($value | ForEach-Object {
+                    [string]$_
+                } | Sort-Object)
+            }
+        }
+        [pscustomobject]$projected
+    })
+}
+
+function Get-I03SystemStateSnapshot {
+    $adapters = @(Get-NetAdapter -IncludeHidden -ErrorAction Stop |
+        Sort-Object InterfaceGuid | ForEach-Object {
+            [pscustomobject][ordered]@{
+                interface_guid = [string]$_.InterfaceGuid
+                interface_index = [int]$_.InterfaceIndex
+                status = [string]$_.Status
+                hardware = [bool]$_.HardwareInterface
+                virtual = [bool]$_.Virtual
+                mac = [string]$_.MacAddress
+            }
+        })
+    $adapterBindings = @(Get-NetAdapterBinding -AllBindings `
+        -ErrorAction Stop | Sort-Object InterfaceIndex, ComponentID |
+        ForEach-Object {
+            [pscustomobject][ordered]@{
+                interface_index = [int]$_.InterfaceIndex
+                component_id = [string]$_.ComponentID
+                display_name = [string]$_.DisplayName
+                enabled = [bool]$_.Enabled
+            }
+        })
+    $ipAddresses = @(Get-NetIPAddress -ErrorAction Stop |
+        Sort-Object AddressFamily, InterfaceIndex, IPAddress |
+        ForEach-Object {
+            [pscustomobject][ordered]@{
+                family = [string]$_.AddressFamily
+                interface_index = [int]$_.InterfaceIndex
+                address = Get-I03NormalizedIp -Address ([string]$_.IPAddress)
+                prefix_length = [int]$_.PrefixLength
+                type = [string]$_.Type
+                address_state = [string]$_.AddressState
+                prefix_origin = [string]$_.PrefixOrigin
+                suffix_origin = [string]$_.SuffixOrigin
+                skip_as_source = [bool]$_.SkipAsSource
+                policy_store = [string]$_.PolicyStore
+            }
+        })
+    $ipInterfaces = @(Get-NetIPInterface -ErrorAction Stop |
+        Sort-Object AddressFamily, InterfaceIndex | ForEach-Object {
+            [pscustomobject][ordered]@{
+                family = [string]$_.AddressFamily
+                interface_index = [int]$_.InterfaceIndex
+                connection_state = [string]$_.ConnectionState
+                dhcp = [string]$_.Dhcp
+                forwarding = [string]$_.Forwarding
+                advertising = [string]$_.Advertising
+                weak_host_send = [string]$_.WeakHostSend
+                weak_host_receive = [string]$_.WeakHostReceive
+                automatic_metric = [string]$_.AutomaticMetric
+                interface_metric = [int]$_.InterfaceMetric
+                nl_mtu_bytes = [int]$_.NlMtuBytes
+            }
+        })
+    $routes = @(Get-NetRoute -ErrorAction Stop |
+        Sort-Object AddressFamily, DestinationPrefix, InterfaceIndex, NextHop |
+        ForEach-Object {
+            [pscustomobject][ordered]@{
+                family = [string]$_.AddressFamily
+                destination = [string]$_.DestinationPrefix
+                next_hop = [string]$_.NextHop
+                interface_index = [int]$_.InterfaceIndex
+                route_metric = [int]$_.RouteMetric
+                interface_metric = [int]$_.InterfaceMetric
+                state = [string]$_.State
+            }
+        })
+    $dns = @(Get-DnsClientServerAddress -ErrorAction Stop |
+        Sort-Object InterfaceIndex, AddressFamily | ForEach-Object {
+            [pscustomobject][ordered]@{
+                interface_index = [int]$_.InterfaceIndex
+                family = [string]$_.AddressFamily
+                servers = @([string[]]$_.ServerAddresses)
+            }
+        })
+    $firewallRules = Get-I03FirewallProjection -Rows @(
+        Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop
+    ) -Properties @(
+        'InstanceID', 'Name', 'ID', 'DisplayName', 'Group', 'DisplayGroup',
+        'Enabled', 'Profile', 'Profiles', 'Platform', 'Platforms',
+        'Direction', 'Action', 'EdgeTraversalPolicy', 'LocalOnlyMapping',
+        'LooseSourceMapping', 'Owner', 'PackageFamilyName', 'PolicyAppId',
+        'PrimaryStatus', 'Status', 'StatusCode', 'EnforcementStatus',
+        'PolicyStoreSource', 'PolicyStoreSourceType'
+    )
+    $firewallPorts = Get-I03FirewallProjection -Rows @(
+        Get-NetFirewallPortFilter -PolicyStore ActiveStore -ErrorAction Stop
+    ) -Properties @(
+        'InstanceID', 'Protocol', 'LocalPort', 'RemotePort', 'IcmpType',
+        'DynamicTarget', 'DynamicTransport'
+    )
+    $firewallApps = Get-I03FirewallProjection -Rows @(
+        Get-NetFirewallApplicationFilter -PolicyStore ActiveStore `
+            -ErrorAction Stop
+    ) -Properties @('InstanceID', 'Program', 'AppPath', 'Package')
+    $firewallAddresses = Get-I03FirewallProjection -Rows @(
+        Get-NetFirewallAddressFilter -PolicyStore ActiveStore `
+            -ErrorAction Stop
+    ) -Properties @(
+        'InstanceID', 'LocalAddress', 'LocalIP', 'RemoteAddress', 'RemoteIP'
+    )
+    $firewallInterfaces = Get-I03FirewallProjection -Rows @(
+        Get-NetFirewallInterfaceFilter -PolicyStore ActiveStore `
+            -ErrorAction Stop
+    ) -Properties @('InstanceID', 'InterfaceAlias')
+    $firewallInterfaceTypes = Get-I03FirewallProjection -Rows @(
+        Get-NetFirewallInterfaceTypeFilter -PolicyStore ActiveStore `
+            -ErrorAction Stop
+    ) -Properties @('InstanceID', 'InterfaceType')
+    $firewallServices = Get-I03FirewallProjection -Rows @(
+        Get-NetFirewallServiceFilter -PolicyStore ActiveStore `
+            -ErrorAction Stop
+    ) -Properties @('InstanceID', 'Service', 'ServiceName')
+    $firewallSecurity = Get-I03FirewallProjection -Rows @(
+        Get-NetFirewallSecurityFilter -PolicyStore ActiveStore `
+            -ErrorAction Stop
+    ) -Properties @(
+        'InstanceID', 'Authentication', 'Encryption', 'LocalUser',
+        'LocalUsers', 'RemoteUser', 'RemoteUsers', 'RemoteMachine',
+        'RemoteMachines', 'OverrideBlockRules'
+    )
+    $firewallProfiles = Get-I03FirewallProjection -Rows @(
+        Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop
+    ) -Properties @(
+        'InstanceID', 'Name', 'Profile', 'Enabled',
+        'DefaultInboundAction', 'DefaultOutboundAction',
+        'AllowInboundRules', 'AllowLocalFirewallRules',
+        'AllowLocalIPsecRules', 'AllowUserApps', 'AllowUserPorts',
+        'AllowUnicastResponseToMulticast', 'NotifyOnListen',
+        'EnableStealthModeForIPsec', 'DisabledInterfaceAliases',
+        'LogFileName', 'LogMaxSizeKilobytes', 'LogAllowed',
+        'LogBlocked', 'LogIgnored'
+    )
+    $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+    $hostsHash = if (Test-Path -LiteralPath $hostsPath -PathType Leaf) {
+        Get-LabSha256 -Path $hostsPath
+    } else { Get-LabStringSha256 -Value '<missing>' }
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-forbidden-state-digests/v1'
+        adapters_sha256 = Get-I03ObjectSha256 -Value $adapters
+        adapter_bindings_sha256 =
+            Get-I03ObjectSha256 -Value $adapterBindings
+        ip_addresses_sha256 = Get-I03ObjectSha256 -Value $ipAddresses
+        ip_interfaces_sha256 = Get-I03ObjectSha256 -Value $ipInterfaces
+        routes_sha256 = Get-I03ObjectSha256 -Value $routes
+        dns_sha256 = Get-I03ObjectSha256 -Value $dns
+        firewall_rules_sha256 = Get-I03ObjectSha256 -Value $firewallRules
+        firewall_ports_sha256 = Get-I03ObjectSha256 -Value $firewallPorts
+        firewall_apps_sha256 = Get-I03ObjectSha256 -Value $firewallApps
+        firewall_addresses_sha256 =
+            Get-I03ObjectSha256 -Value $firewallAddresses
+        firewall_interfaces_sha256 =
+            Get-I03ObjectSha256 -Value $firewallInterfaces
+        firewall_interface_types_sha256 =
+            Get-I03ObjectSha256 -Value $firewallInterfaceTypes
+        firewall_services_sha256 =
+            Get-I03ObjectSha256 -Value $firewallServices
+        firewall_security_sha256 =
+            Get-I03ObjectSha256 -Value $firewallSecurity
+        firewall_profiles_sha256 =
+            Get-I03ObjectSha256 -Value $firewallProfiles
+        hosts_sha256 = $hostsHash
+    }
+}
+
+function Test-I03SystemStateSnapshot {
+    param(
+        [AllowNull()][object]$Before,
+        [AllowNull()][object]$After
+    )
+
+    if ($null -eq $Before -or $null -eq $After -or
+        [string]$Before.schema -cne
+            'ese.v91.i03-forbidden-state-digests/v1' -or
+        [string]$After.schema -cne
+            'ese.v91.i03-forbidden-state-digests/v1') { return $false }
+    foreach ($name in @(
+        'adapters_sha256', 'adapter_bindings_sha256',
+        'ip_addresses_sha256', 'ip_interfaces_sha256',
+        'routes_sha256', 'dns_sha256',
+        'firewall_rules_sha256', 'firewall_ports_sha256',
+        'firewall_apps_sha256', 'firewall_addresses_sha256',
+        'firewall_interfaces_sha256',
+        'firewall_interface_types_sha256',
+        'firewall_services_sha256', 'firewall_security_sha256',
+        'firewall_profiles_sha256', 'hosts_sha256'
+    )) {
+        if ([string]$Before.$name -cne [string]$After.$name) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-I03MutationBaseline {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()][string[]]$AllowedAutostartValueSha256
+    )
+
+    $runSubKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
+    $runValue = 'eMuleAutoStart'
+    $ed2kSubKey = 'Software\Classes\ed2k'
+    $autostart = Get-I03RegistryValueState -SubKey $runSubKey `
+        -ValueName $runValue
+    $runKey = Get-I03RegistryTreeState -SubKey $runSubKey
+    $ed2k = Get-I03RegistryTreeState -SubKey $ed2kSubKey
+    if (-not [bool]$runKey.exists -or
+        [bool]$autostart.value_exists -or [bool]$ed2k.exists) {
+        throw 'I03_ACCOUNT_GATE::NONEMPTY_AUTOSTART_OR_ED2K'
+    }
+    if ($currentLabSidHash -cne $expectedLabSidHash -or
+        -not $DisposableLabAccountAcknowledged) {
+        throw 'I03_ACCOUNT_GATE::SID_NOT_BOUND'
+    }
+    foreach ($hash in $AllowedAutostartValueSha256) {
+        if ([string]$hash -notmatch '^[0-9a-f]{64}$') {
+            throw 'I03_ACCOUNT_GATE::AUTOSTART_BINDING_INVALID'
+        }
+    }
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-mutation-baseline/v2'
+        lab_user_sid_sha256 = $currentLabSidHash
+        allowed_autostart_value_sha256 =
+            [object[]]@($AllowedAutostartValueSha256)
+        forbidden_state = Get-I03SystemStateSnapshot
+        autostart = $autostart
+        run_key = $runKey
+        ed2k_association = $ed2k
+    }
+}
+
+function Complete-I03MutationTransaction {
+    param([Parameter(Mandatory = $true)][object]$Baseline)
+
+    if ([string]$Baseline.schema -cne
+            'ese.v91.i03-mutation-baseline/v2' -or
+        [string]$Baseline.lab_user_sid_sha256 -cne
+            $currentLabSidHash -or
+        $currentLabSidHash -cne $expectedLabSidHash) {
+        throw 'I03_CLEANUP::MUTATION_BASELINE_INVALID'
+    }
+    $runSubKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
+    $runValue = 'eMuleAutoStart'
+    $ed2kSubKey = 'Software\Classes\ed2k'
+    $currentAutostart = Get-I03RegistryValueState -SubKey $runSubKey `
+        -ValueName $runValue
+    $currentRunKey = Get-I03RegistryTreeState -SubKey $runSubKey
+    $currentEd2k = Get-I03RegistryTreeState -SubKey $ed2kSubKey
+    $plan = Get-I03RegistryCleanupPlan -Baseline $Baseline `
+        -CurrentAutostart $currentAutostart `
+        -CurrentRunKey $currentRunKey `
+        -CurrentEd2kAssociation $currentEd2k
+    $registryMutationPerformed = $false
+    if ([string]$plan.action -ceq 'DELETE_AUTOSTART_VALUE') {
+        $freshAutostart = Get-I03RegistryValueState -SubKey $runSubKey `
+            -ValueName $runValue
+        $freshRunKey = Get-I03RegistryTreeState -SubKey $runSubKey
+        $freshEd2k = Get-I03RegistryTreeState -SubKey $ed2kSubKey
+        $freshPlan = Get-I03RegistryCleanupPlan -Baseline $Baseline `
+            -CurrentAutostart $freshAutostart `
+            -CurrentRunKey $freshRunKey `
+            -CurrentEd2kAssociation $freshEd2k
+        if ([string]$freshPlan.decision -cne
+                'RESTORE_OWNED_VALUE' -or
+            [string]$freshPlan.current_sha256 -cne
+                [string]$plan.current_sha256) {
+            throw 'I03_CLEANUP::REGISTRY_CHANGED_DURING_PLAN'
+        }
+        $base = [Microsoft.Win32.Registry]::CurrentUser
+        $key = $base.OpenSubKey($runSubKey, $true)
+        if ($null -eq $key) {
+            throw 'I03_CLEANUP::RUN_KEY_DISAPPEARED'
+        }
+        try {
+            if (@($key.GetValueNames() | Where-Object {
+                        [string]$_ -ieq $runValue
+                    }).Count -ne 1) {
+                throw 'I03_CLEANUP::AUTOSTART_VALUE_CHANGED'
+            }
+            $liveKind = $key.GetValueKind($runValue).ToString()
+            $liveData = $key.GetValue(
+                $runValue, $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
+            if ($liveKind -cne 'String' -or
+                $liveData -isnot [string] -or
+                (Get-LabStringSha256 -Value ([string]$liveData)) -cnotin
+                    @($Baseline.allowed_autostart_value_sha256)) {
+                throw 'I03_CLEANUP::AUTOSTART_VALUE_NOT_OWNED'
+            }
+            $key.DeleteValue($runValue, $false)
+            $registryMutationPerformed = $true
+        } finally { $key.Dispose() }
+    }
+    $afterAutostart = Get-I03RegistryValueState -SubKey $runSubKey `
+        -ValueName $runValue
+    $afterRunKey = Get-I03RegistryTreeState -SubKey $runSubKey
+    $afterEd2k = Get-I03RegistryTreeState -SubKey $ed2kSubKey
+    $runRestored = [string]$afterAutostart.state_sha256 -ceq
+            [string]$Baseline.autostart.state_sha256 -and
+        [string]$afterRunKey.state_sha256 -ceq
+            [string]$Baseline.run_key.state_sha256
+    $ed2kRestored = -not [bool]$afterEd2k.exists -and
+        [string]$afterEd2k.state_sha256 -ceq
+            [string]$Baseline.ed2k_association.state_sha256
+    $after = Get-I03SystemStateSnapshot
+    $forbiddenUnchanged = Test-I03SystemStateSnapshot `
+        -Before $Baseline.forbidden_state -After $after
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-mutation-cleanup/v1'
+        registry_plan_decision = [string]$plan.decision
+        registry_plan_action = [string]$plan.action
+        registry_mutation_performed = $registryMutationPerformed
+        autostart_restored_exact = $runRestored
+        ed2k_association_restored_exact = $ed2kRestored
+        forbidden_state_unchanged = $forbiddenUnchanged
+        before_digests = $Baseline.forbidden_state
+        after_digests = $after
+        complete = $runRestored -and $ed2kRestored -and
+            $forbiddenUnchanged
+    }
+}
+
+function Convert-I03ProcessCreationTimeUtc {
+    param([Parameter(Mandatory = $true)][object]$Value)
+
+    $parsed = [DateTime]::MinValue
+    if ($Value -is [DateTime]) {
+        $parsed = [DateTime]$Value
+    } elseif ($Value -is [string] -and
+        [DateTime]::TryParse(
+            [string]$Value,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$parsed
+        )) {
+    } elseif ($Value -is [string]) {
+        $parsed = [Management.ManagementDateTimeConverter]::ToDateTime(
+            [string]$Value
+        )
+    } else {
+        throw 'I03_COLLECTOR::PROCESS_CREATION_TIME_INVALID'
+    }
+    return $parsed.ToUniversalTime().ToString('o')
+}
+
+function Get-I03ProcessLineageDecision {
+    param(
+        [Parameter(Mandatory = $true)][int]$ExpectedProcessId,
+        [Parameter(Mandatory = $true)][int]$ExpectedParentProcessId,
+        [Parameter(Mandatory = $true)][string]$ParentStartTimeUtc,
+        [Parameter(Mandatory = $true)][int]$CimProcessId,
+        [Parameter(Mandatory = $true)][int]$CimParentProcessId,
+        [Parameter(Mandatory = $true)][string]$CimCreationTimeUtc,
+        [Parameter(Mandatory = $true)][object]$Identity
+    )
+
+    $result = [ordered]@{
+        schema = 'ese.v91.i03-process-lineage-decision/v1'
+        collector_ok = $false
+        safe_to_control = $false
+        historical_pid_row = $false
+        error_code = 'LINEAGE_INVALID'
+    }
+    $parentStart = [DateTime]::MinValue
+    $cimStart = [DateTime]::MinValue
+    $identityStart = [DateTime]::MinValue
+    if ($null -eq $Identity -or
+        @($Identity.PSObject.Properties.Name) -cnotcontains
+            'start_time_utc' -or
+        -not [DateTime]::TryParseExact(
+            $ParentStartTimeUtc, 'o',
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$parentStart
+        ) -or
+        -not [DateTime]::TryParseExact(
+            $CimCreationTimeUtc, 'o',
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$cimStart
+        ) -or
+        -not [DateTime]::TryParseExact(
+            [string]$Identity.start_time_utc, 'o',
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$identityStart
+        ) -or $parentStart.Kind -ne [DateTimeKind]::Utc -or
+        $cimStart.Kind -ne [DateTimeKind]::Utc -or
+        $identityStart.Kind -ne [DateTimeKind]::Utc -or
+        -not (Test-I03ProcessIdentityMatch -Expected $Identity `
+            -Actual $Identity)) {
+        return [pscustomobject]$result
+    }
+    if ($CimProcessId -ne $ExpectedProcessId -or
+        $CimParentProcessId -ne $ExpectedParentProcessId -or
+        [int]$Identity.process_id -ne $ExpectedProcessId -or
+        $identityStart -ne $cimStart) {
+        $result.error_code = 'IDENTITY_CIM_MISMATCH'
+        return [pscustomobject]$result
+    }
+    $result.collector_ok = $true
+    if ($cimStart -lt $parentStart) {
+        $result.historical_pid_row = $true
+        $result.error_code = 'HISTORICAL_PID_ROW'
+        return [pscustomobject]$result
+    }
+    $result.safe_to_control = $true
+    $result.error_code = 'NONE'
+    return [pscustomobject]$result
+}
+
+function Get-I03DescendantProcessSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][int]$RootProcessId,
+        [Parameter(Mandatory = $true)][string]$RootStartTimeUtc
+    )
+
+    try {
+        $rootStart = [DateTime]::MinValue
+        if (-not [DateTime]::TryParseExact(
+                $RootStartTimeUtc, 'o',
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind,
+                [ref]$rootStart
+            ) -or $rootStart.Kind -ne [DateTimeKind]::Utc) {
+            throw 'Root start time is invalid'
+        }
+        $all = @(Get-CimInstance -ClassName Win32_Process `
+            -ErrorAction Stop)
+        $pending = [System.Collections.Generic.Queue[object]]::new()
+        $pending.Enqueue([pscustomobject]@{
+            process_id = $RootProcessId
+            start_time_utc = $rootStart
+        })
+        $seen = [System.Collections.Generic.HashSet[int]]::new()
+        [void]$seen.Add($RootProcessId)
+        $descendants = [System.Collections.Generic.List[object]]::new()
+        $historical = [System.Collections.Generic.List[object]]::new()
+        while ($pending.Count -gt 0) {
+            $parent = $pending.Dequeue()
+            foreach ($row in @($all | Where-Object {
+                        [int]$_.ParentProcessId -eq
+                            [int]$parent.process_id
+                    })) {
+                $pidValue = [int]$row.ProcessId
+                if ($seen.Contains($pidValue)) { continue }
+                $process = Get-Process -Id $pidValue -ErrorAction Stop
+                $identity = Get-I03ProcessIdentity -Process $process
+                $cimCreationTimeUtc =
+                    Convert-I03ProcessCreationTimeUtc `
+                        -Value $row.CreationDate
+                $lineage = Get-I03ProcessLineageDecision `
+                    -ExpectedProcessId $pidValue `
+                    -ExpectedParentProcessId ([int]$parent.process_id) `
+                    -ParentStartTimeUtc (
+                        ([DateTime]$parent.start_time_utc).ToString('o')
+                    ) -CimProcessId ([int]$row.ProcessId) `
+                    -CimParentProcessId ([int]$row.ParentProcessId) `
+                    -CimCreationTimeUtc $cimCreationTimeUtc `
+                    -Identity $identity
+                if (-not [bool]$lineage.collector_ok) {
+                    throw 'Descendant CIM/identity binding failed'
+                }
+                if ([bool]$lineage.historical_pid_row) {
+                    $historical.Add([pscustomobject][ordered]@{
+                        process_id = $pidValue
+                        parent_process_id = [int]$parent.process_id
+                        start_time_utc = $cimCreationTimeUtc
+                    })
+                    continue
+                }
+                if (-not [bool]$lineage.safe_to_control) {
+                    throw 'Descendant lineage was unsafe'
+                }
+                $childStart = [DateTime]::MinValue
+                if (-not [DateTime]::TryParseExact(
+                        $cimCreationTimeUtc, 'o',
+                        [Globalization.CultureInfo]::InvariantCulture,
+                        [Globalization.DateTimeStyles]::RoundtripKind,
+                        [ref]$childStart
+                    ) -or $childStart.Kind -ne [DateTimeKind]::Utc) {
+                    throw 'Descendant start time is invalid'
+                }
+                [void]$seen.Add($pidValue)
+                $descendants.Add([pscustomobject][ordered]@{
+                    identity = $identity
+                    process = $process
+                    cim_binding = [pscustomobject][ordered]@{
+                        process_id = $pidValue
+                        parent_process_id = [int]$parent.process_id
+                        parent_start_time_utc =
+                            ([DateTime]$parent.start_time_utc).ToString('o')
+                        creation_time_utc = $cimCreationTimeUtc
+                    }
+                })
+                $pending.Enqueue([pscustomobject]@{
+                    process_id = $pidValue
+                    start_time_utc = $childStart
+                })
+            }
+        }
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-descendant-collector/v1'
+            ok = $true
+            error_code = 'NONE'
+            rows = @($descendants)
+            historical_pid_row_count = $historical.Count
+            historical_pid_rows = @($historical)
+        }
+    } catch {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-descendant-collector/v1'
+            ok = $false
+            error_code = 'DESCENDANT_QUERY_FAILED'
+            rows = @()
+            historical_pid_row_count = 0
+            historical_pid_rows = @()
+        }
+    }
+}
+
 function Stop-I03OwnedProcess {
     param(
         [AllowNull()][Diagnostics.Process]$Process,
         [Parameter(Mandatory = $true)][string]$ExpectedPath,
+        [Parameter(Mandatory = $true)][AllowNull()][object]$ExpectedIdentity,
         [switch]$RequireGraceful
     )
 
     if ($null -eq $Process) {
-        return [pscustomobject]@{
+        return [pscustomobject][ordered]@{
             stopped = $true
-            path_owned = $true
-            graceful = $true
+            path_owned = $false
+            identity_matched = $false
+            graceful = $false
+            already_exited = $true
             process_id = $null
+            collector_ok = $true
+            error_code = 'NO_OWNED_PROCESS'
+            unexpected_descendant_count = 0
+            descendants_stopped = $true
         }
     }
-    $actual = Get-Process -Id $Process.Id -ErrorAction SilentlyContinue
-    if ($null -eq $actual) {
-        return [pscustomobject]@{
-            stopped = $true
-            path_owned = $true
-            graceful = $true
-            process_id = $Process.Id
-        }
-    }
-    $actualPath = ''
-    try { $actualPath = [IO.Path]::GetFullPath($actual.Path) } catch {}
-    $pathOwned = $actualPath -and
-        $actualPath -eq [IO.Path]::GetFullPath($ExpectedPath)
-    if (-not $pathOwned) {
-        return [pscustomobject]@{
+    $expectedPathHash = Get-LabStringSha256 -Value (
+        [IO.Path]::GetFullPath($ExpectedPath))
+    $expectedIdentityOwned = $null -ne $ExpectedIdentity -and
+        (Test-I03ProcessIdentityMatch -Expected $ExpectedIdentity `
+            -Actual $ExpectedIdentity) -and
+        [int]$ExpectedIdentity.process_id -eq [int]$Process.Id -and
+        [string]$ExpectedIdentity.executable_path_sha256 -ceq
+            $expectedPathHash
+    if (-not $expectedIdentityOwned) {
+        return [pscustomobject][ordered]@{
             stopped = $false
             path_owned = $false
+            identity_matched = $false
             graceful = $false
-            process_id = $actual.Id
+            already_exited = $false
+            process_id = $Process.Id
+            collector_ok = $false
+            error_code = 'EXPECTED_PROCESS_IDENTITY_MISSING_OR_INVALID'
+            unexpected_descendant_count = 0
+            descendants_stopped = $false
+        }
+    }
+
+    function Get-I03OwnedRootProcessState {
+        param([Parameter(Mandatory = $true)][int]$ProcessId)
+        try {
+            return [pscustomobject][ordered]@{
+                collector_ok = $true
+                present = $true
+                process = Get-Process -Id $ProcessId -ErrorAction Stop
+            }
+        } catch {
+            try {
+                $cimRows = @(Get-CimInstance -ClassName Win32_Process `
+                    -Filter "ProcessId = $ProcessId" -ErrorAction Stop)
+            } catch {
+                return [pscustomobject][ordered]@{
+                    collector_ok = $false
+                    present = $false
+                    process = $null
+                }
+            }
+            return [pscustomobject][ordered]@{
+                collector_ok = $cimRows.Count -eq 0
+                present = $cimRows.Count -gt 0
+                process = $null
+            }
+        }
+    }
+
+    $rootState = Get-I03OwnedRootProcessState -ProcessId $Process.Id
+    if (-not [bool]$rootState.collector_ok) {
+        return [pscustomobject][ordered]@{
+            stopped = $false; path_owned = $true
+            identity_matched = $false; graceful = $false
+            already_exited = $false; process_id = $Process.Id
+            collector_ok = $false; error_code = 'PROCESS_QUERY_FAILED'
+            unexpected_descendant_count = 0
+            descendants_stopped = $false
+        }
+    }
+    $actual = $rootState.process
+    $alreadyExited = -not [bool]$rootState.present
+    $identityMatched = $alreadyExited
+    if (-not $alreadyExited) {
+        try {
+            $actualIdentity = Get-I03ProcessIdentity -Process $actual
+            $identityMatched = Test-I03ProcessIdentityMatch `
+                -Expected $ExpectedIdentity -Actual $actualIdentity
+        } catch {
+            $rootState = Get-I03OwnedRootProcessState `
+                -ProcessId $Process.Id
+            if (-not [bool]$rootState.collector_ok) {
+                return [pscustomobject][ordered]@{
+                    stopped = $false; path_owned = $true
+                    identity_matched = $false; graceful = $false
+                    already_exited = $false; process_id = $Process.Id
+                    collector_ok = $false
+                    error_code = 'PROCESS_IDENTITY_QUERY_FAILED'
+                    unexpected_descendant_count = 0
+                    descendants_stopped = $false
+                }
+            }
+            $alreadyExited = -not [bool]$rootState.present
+            $actual = $rootState.process
+            $identityMatched = $alreadyExited
+        }
+        if (-not $identityMatched) {
+            return [pscustomobject][ordered]@{
+                stopped = $false; path_owned = $false
+                identity_matched = $false; graceful = $false
+                already_exited = $false; process_id = $Process.Id
+                collector_ok = $true
+                error_code = 'PROCESS_IDENTITY_MISMATCH'
+                unexpected_descendant_count = 0
+                descendants_stopped = $false
+            }
+        }
+    }
+
+    $descendantSnapshot = Get-I03DescendantProcessSnapshot `
+        -RootProcessId $Process.Id `
+        -RootStartTimeUtc ([string]$ExpectedIdentity.start_time_utc)
+    if (-not [bool]$descendantSnapshot.ok) {
+        return [pscustomobject][ordered]@{
+            stopped = $false; path_owned = $true
+            identity_matched = $true; graceful = $false
+            already_exited = $alreadyExited; process_id = $Process.Id
+            collector_ok = $false
+            error_code = [string]$descendantSnapshot.error_code
+            unexpected_descendant_count = 0
+            descendants_stopped = $false
+        }
+    }
+    $verifiedDescendantProcesses =
+        [System.Collections.Generic.List[object]]::new()
+    if (-not $alreadyExited) {
+        $preStopRootState = Get-I03OwnedRootProcessState `
+            -ProcessId $Process.Id
+        if (-not [bool]$preStopRootState.collector_ok) {
+            return [pscustomobject][ordered]@{
+                stopped = $false; path_owned = $true
+                identity_matched = $false; graceful = $false
+                already_exited = $false; process_id = $Process.Id
+                collector_ok = $false
+                error_code = 'ROOT_REVALIDATION_QUERY_FAILED'
+                unexpected_descendant_count =
+                    @($descendantSnapshot.rows).Count
+                descendants_stopped = $false
+            }
+        }
+        if (-not [bool]$preStopRootState.present) {
+            $alreadyExited = $true
+            $actual = $null
+        } else {
+            try {
+                [void]$preStopRootState.process.Handle
+                $preStopRootIdentity = Get-I03ProcessIdentity `
+                    -Process $preStopRootState.process
+            } catch {
+                return [pscustomobject][ordered]@{
+                    stopped = $false; path_owned = $true
+                    identity_matched = $false; graceful = $false
+                    already_exited = $false; process_id = $Process.Id
+                    collector_ok = $false
+                    error_code = 'ROOT_REVALIDATION_IDENTITY_FAILED'
+                    unexpected_descendant_count =
+                        @($descendantSnapshot.rows).Count
+                    descendants_stopped = $false
+                }
+            }
+            if (-not (Test-I03ProcessIdentityMatch `
+                    -Expected $ExpectedIdentity `
+                    -Actual $preStopRootIdentity)) {
+                return [pscustomobject][ordered]@{
+                    stopped = $false; path_owned = $false
+                    identity_matched = $false; graceful = $false
+                    already_exited = $false; process_id = $Process.Id
+                    collector_ok = $true
+                    error_code = 'ROOT_IDENTITY_CHANGED_BEFORE_STOP'
+                    unexpected_descendant_count =
+                        @($descendantSnapshot.rows).Count
+                    descendants_stopped = $false
+                }
+            }
+            $actual = $preStopRootState.process
+            # The handle was acquired before identity inspection. Later
+            # CloseMainWindow/Kill targets that object, never a reused PID.
+        }
+    }
+    if (-not $alreadyExited) {
+        try {
+            foreach ($descendant in @($descendantSnapshot.rows)) {
+                $binding = $descendant.cim_binding
+                $descendantPid = [int]$descendant.identity.process_id
+                $currentCim = @(Get-CimInstance `
+                    -ClassName Win32_Process `
+                    -Filter "ProcessId = $descendantPid" `
+                    -ErrorAction Stop)
+                if ($currentCim.Count -ne 1) {
+                    throw 'Descendant CIM row disappeared or became ambiguous'
+                }
+                $currentCreation =
+                    Convert-I03ProcessCreationTimeUtc `
+                        -Value $currentCim[0].CreationDate
+                if ([int]$currentCim[0].ParentProcessId -ne
+                        [int]$binding.parent_process_id -or
+                    $currentCreation -cne
+                        [string]$binding.creation_time_utc) {
+                    throw 'Descendant CIM binding changed'
+                }
+                $current = Get-Process -Id $descendantPid `
+                    -ErrorAction Stop
+                [void]$current.Handle
+                $currentIdentity = Get-I03ProcessIdentity -Process $current
+                $lineage = Get-I03ProcessLineageDecision `
+                    -ExpectedProcessId $descendantPid `
+                    -ExpectedParentProcessId `
+                        ([int]$binding.parent_process_id) `
+                    -ParentStartTimeUtc `
+                        ([string]$binding.parent_start_time_utc) `
+                    -CimProcessId ([int]$currentCim[0].ProcessId) `
+                    -CimParentProcessId `
+                        ([int]$currentCim[0].ParentProcessId) `
+                    -CimCreationTimeUtc $currentCreation `
+                    -Identity $currentIdentity
+                if (-not [bool]$lineage.collector_ok -or
+                    -not [bool]$lineage.safe_to_control -or
+                    -not (Test-I03ProcessIdentityMatch `
+                        -Expected $descendant.identity `
+                        -Actual $currentIdentity)) {
+                    throw 'Descendant identity revalidation failed'
+                }
+                $verifiedDescendantProcesses.Add($current)
+            }
+        } catch {
+            return [pscustomobject][ordered]@{
+                stopped = $false; path_owned = $true
+                identity_matched = $true; graceful = $false
+                already_exited = $false; process_id = $Process.Id
+                collector_ok = $false
+                error_code = 'DESCENDANT_REVALIDATION_FAILED'
+                unexpected_descendant_count =
+                    @($descendantSnapshot.rows).Count
+                descendants_stopped = $false
+            }
         }
     }
 
     $graceful = $false
-    try {
-        $actual.Refresh()
-        if ($actual.MainWindowHandle -ne [IntPtr]::Zero) {
-            $null = $actual.CloseMainWindow()
-            $graceful = $actual.WaitForExit(15000)
+    $stopError = 'NONE'
+    if (-not $alreadyExited) {
+        try {
+            $actual.Refresh()
+            if ($actual.MainWindowHandle -ne [IntPtr]::Zero) {
+                $null = $actual.CloseMainWindow()
+                $graceful = $actual.WaitForExit(15000)
+            }
+            if (-not $graceful -and -not $RequireGraceful) {
+                $actual.Kill()
+                $null = $actual.WaitForExit(10000)
+            }
+        } catch { $stopError = 'PROCESS_STOP_FAILED' }
+    }
+    $descendantsStopped = $true
+    $descendantCollectorOk = $true
+    if ($alreadyExited) {
+        # Once the root is gone, a PID-reuse window makes newly discovered
+        # descendants unsafe to kill. Census them and fail cleanup closed.
+        $descendantsStopped = @($descendantSnapshot.rows).Count -eq 0
+    } else {
+        foreach ($current in @($verifiedDescendantProcesses)) {
+            try {
+                $current.Kill()
+                if (-not $current.WaitForExit(10000)) {
+                    $descendantsStopped = $false
+                }
+            } catch {
+                $descendantCollectorOk = $false
+                $descendantsStopped = $false
+            }
         }
-        if (-not $graceful -and -not $RequireGraceful) {
-            Stop-Process -Id $actual.Id -Force -ErrorAction Stop
-            $null = $actual.WaitForExit(10000)
-        }
-    } catch {}
-    $remaining = Get-Process -Id $actual.Id -ErrorAction SilentlyContinue
-    return [pscustomobject]@{
-        stopped = $null -eq $remaining
+    }
+    $finalDescendantSnapshot = Get-I03DescendantProcessSnapshot `
+        -RootProcessId $Process.Id `
+        -RootStartTimeUtc ([string]$ExpectedIdentity.start_time_utc)
+    if (-not [bool]$finalDescendantSnapshot.ok) {
+        $descendantCollectorOk = $false
+        $descendantsStopped = $false
+    } elseif (@($finalDescendantSnapshot.rows).Count -gt 0) {
+        $descendantsStopped = $false
+    }
+    $finalRootState = Get-I03OwnedRootProcessState -ProcessId $Process.Id
+    $collectorOk = [bool]$finalRootState.collector_ok -and
+        $descendantCollectorOk
+    $stopped = $collectorOk -and -not [bool]$finalRootState.present -and
+        $descendantsStopped
+    return [pscustomobject][ordered]@{
+        stopped = $stopped
         path_owned = $true
+        identity_matched = $true
         graceful = $graceful
-        process_id = $actual.Id
+        already_exited = $alreadyExited
+        process_id = $Process.Id
+        collector_ok = $collectorOk
+        error_code = if ($stopped) {
+            if ($alreadyExited) { 'PROCESS_ALREADY_EXITED_DESCENDANTS_CENSUSED' }
+            elseif ($graceful) { 'NONE' } elseif ($stopError -eq 'NONE') {
+                'FORCED_STOP'
+            } else { $stopError }
+        } elseif (-not $collectorOk) { 'PROCESS_FINAL_CENSUS_FAILED' }
+        else { 'PROCESS_OR_DESCENDANT_REMAINS' }
+        unexpected_descendant_count = [Math]::Max(
+            @($descendantSnapshot.rows).Count,
+            @($finalDescendantSnapshot.rows).Count
+        )
+        descendants_stopped = $descendantsStopped
     }
 }
 
@@ -911,21 +4504,162 @@ public static class V91I03CopyDataTimeout {
     }
 }
 
+function Get-I03ImmutableLogSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$SnapshotRoot,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[a-z0-9-]{1,32}$')][string]$Label,
+        [switch]$Persist
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\') + '\'
+    if (-not $fullPath.StartsWith($root,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'I03_EVIDENCE::LOG_OUTSIDE_SOURCE_ROOT'
+    }
+    $stream = [IO.FileStream]::new(
+        $fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        [IO.FileShare]::ReadWrite
+    )
+    try {
+        $memory = [IO.MemoryStream]::new()
+        try {
+            $stream.CopyTo($memory)
+            $bytes = $memory.ToArray()
+        } finally {
+            $memory.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+    $shaObject = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = ([BitConverter]::ToString(
+            $shaObject.ComputeHash($bytes)
+        )).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $shaObject.Dispose()
+    }
+    $snapshotName = '{0}-{1}.log.snapshot' -f $Label, $hash
+    if ($Persist) {
+        $snapshotDirectory = New-LabDirectory -Path $SnapshotRoot
+        $snapshotPath = Join-Path $snapshotDirectory $snapshotName
+        if (-not (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) {
+            try {
+                $snapshotStream = [IO.FileStream]::new(
+                    $snapshotPath, [IO.FileMode]::CreateNew,
+                    [IO.FileAccess]::Write, [IO.FileShare]::None
+                )
+                try {
+                    $snapshotStream.Write($bytes, 0, $bytes.Length)
+                    $snapshotStream.Flush($true)
+                } finally {
+                    $snapshotStream.Dispose()
+                }
+            } catch [IO.IOException] {
+                if (-not (Test-Path -LiteralPath $snapshotPath `
+                        -PathType Leaf)) {
+                    throw
+                }
+            }
+        }
+        if ((Get-LabSha256 -Path $snapshotPath) -cne $hash -or
+            [Int64](Get-Item -LiteralPath $snapshotPath `
+                -ErrorAction Stop).Length -ne [Int64]$bytes.Length) {
+            throw 'I03_EVIDENCE::IMMUTABLE_LOG_SNAPSHOT_MISMATCH'
+        }
+    }
+
+    $offset = 0
+    $encoding = [Text.Encoding]::UTF8
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and
+        $bytes[1] -eq 0xFE) {
+        $encoding = [Text.Encoding]::Unicode
+        $offset = 2
+    } elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and
+        $bytes[1] -eq 0xFF) {
+        $encoding = [Text.Encoding]::BigEndianUnicode
+        $offset = 2
+    } elseif ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and
+        $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $offset = 3
+    }
+    $content = $encoding.GetString($bytes, $offset, $bytes.Length - $offset)
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-immutable-log-snapshot/v1'
+        relative_source_path = $fullPath.Substring($root.Length)
+        source_bytes = [Int64]$bytes.Length
+        source_sha256 = $hash
+        snapshot_persisted = [bool]$Persist
+        snapshot_file = if ($Persist) { $snapshotName } else { '' }
+        snapshot_bytes = [Int64]$bytes.Length
+        snapshot_sha256 = $hash
+        content = $content
+    }
+}
+
 function Get-I03HelloEvidence {
     param(
         [Parameter(Mandatory = $true)][string]$NodePath,
-        [Parameter(Mandatory = $true)][string]$ExpectedIPv6
+        [Parameter(Mandatory = $true)][string]$ExpectedIPv6,
+        [Parameter(Mandatory = $true)][string]$SnapshotRoot,
+        [switch]$PersistSnapshots
     )
 
     $highId = 0
     $lowIdLike = 0
     $files = @()
-    foreach ($log in @(
-        Get-ChildItem -LiteralPath $NodePath -Recurse -File -Filter '*.log' `
-            -ErrorAction SilentlyContinue
-    )) {
-        $lines = @()
-        try { $lines = @(Get-Content -LiteralPath $log.FullName) } catch {}
+    try {
+        $logs = @(Get-ChildItem -LiteralPath $NodePath -Recurse -File `
+            -Filter '*.log' -ErrorAction Stop)
+    } catch {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-hello-log-collector/v2'
+            collector_ok = $false
+            collector_error_code = 'LOG_ENUMERATION_FAILED'
+            captured_at_utc = Get-LabUtcTimestamp
+            highid_hello_answer_count = 0
+            lowid_like_hello_answer_count = 0
+            learned_public_ipv6_via_hello = $false
+            files = @()
+        }
+    }
+    if ($logs.Count -eq 0) {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-hello-log-collector/v2'
+            collector_ok = $false
+            collector_error_code = 'EXPECTED_LOG_NOT_FOUND'
+            captured_at_utc = Get-LabUtcTimestamp
+            highid_hello_answer_count = 0
+            lowid_like_hello_answer_count = 0
+            learned_public_ipv6_via_hello = $false
+            files = @()
+        }
+    }
+    foreach ($log in $logs) {
+        try {
+            $snapshot = Get-I03ImmutableLogSnapshot `
+                -Path $log.FullName -SourceRoot $NodePath `
+                -SnapshotRoot $SnapshotRoot -Label 'hello' `
+                -Persist:$PersistSnapshots
+            $lines = @([regex]::Split(
+                [string]$snapshot.content, '\r?\n'
+            ))
+        } catch {
+            return [pscustomobject][ordered]@{
+                schema = 'ese.v91.i03-hello-log-collector/v2'
+                collector_ok = $false
+                collector_error_code = 'LOG_READ_FAILED'
+                captured_at_utc = Get-LabUtcTimestamp
+                highid_hello_answer_count = 0
+                lowid_like_hello_answer_count = 0
+                learned_public_ipv6_via_hello = $false
+                files = @()
+            }
+        }
         foreach ($lineObject in $lines) {
             $line = [string]$lineObject
             if ($line -notmatch 'OP_HelloAnswer\s+from\s+([^\s]+)') {
@@ -946,20 +4680,130 @@ function Get-I03HelloEvidence {
             }
         }
         $files += [pscustomobject][ordered]@{
-            relative_path = $log.FullName.Substring(
-                [IO.Path]::GetFullPath($NodePath).Length
-            ).TrimStart('\')
-            bytes = [Int64]$log.Length
-            sha256 = Get-LabSha256 -Path $log.FullName
+            relative_path = [string]$snapshot.relative_source_path
+            bytes = [Int64]$snapshot.source_bytes
+            sha256 = [string]$snapshot.source_sha256
+            snapshot_persisted = [bool]$snapshot.snapshot_persisted
+            snapshot_file = [string]$snapshot.snapshot_file
+            snapshot_bytes = [Int64]$snapshot.snapshot_bytes
+            snapshot_sha256 = [string]$snapshot.snapshot_sha256
         }
     }
     return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-hello-log-collector/v2'
+        collector_ok = $true
+        collector_error_code = 'NONE'
         captured_at_utc = Get-LabUtcTimestamp
-        expected_ipv6 = $ExpectedIPv6
+        expected_ipv6_sha256 = Get-LabStringSha256 -Value $ExpectedIPv6
         highid_hello_answer_count = $highId
         lowid_like_hello_answer_count = $lowIdLike
         learned_public_ipv6_via_hello = $highId -gt 0 -and $lowIdLike -eq 0
         files = $files
+    }
+}
+
+function Get-I03IniExactValueEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Section,
+        [Parameter(Mandatory = $true)][string]$Key,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Expected
+    )
+
+    $sectionCount = 0
+    $keyCount = 0
+    $match = $false
+    $canonicalCasing = $false
+    $currentSection = ''
+    foreach ($line in [IO.File]::ReadAllLines($Path)) {
+        if ($line -match '^\s*\[([^\]]+)\]\s*$') {
+            $currentSection = [string]$Matches[1]
+            if ([StringComparer]::OrdinalIgnoreCase.Equals(
+                    $currentSection, $Section)) { $sectionCount++ }
+            continue
+        }
+        if ([StringComparer]::OrdinalIgnoreCase.Equals(
+                $currentSection, $Section) -and
+            $line -match '^\s*([^;#][^=]*?)\s*=\s*(.*?)\s*$' -and
+            [StringComparer]::OrdinalIgnoreCase.Equals(
+                [string]$Matches[1], $Key)) {
+            $keyCount++
+            $match = [string]$Matches[2] -ceq $Expected
+            $canonicalCasing = $currentSection -ceq $Section -and
+                [string]$Matches[1] -ceq $Key
+        }
+    }
+    return [pscustomobject][ordered]@{
+        section = $Section
+        key = $Key
+        section_count = $sectionCount
+        key_count = $keyCount
+        expected_value_sha256 = Get-LabStringSha256 -Value $Expected
+        exact = $sectionCount -eq 1 -and $keyCount -eq 1 -and
+            $match -and $canonicalCasing
+    }
+}
+
+function Assert-I03PreferenceContract {
+    param(
+        [Parameter(Mandatory = $true)][string]$PreferencesPath,
+        [Parameter(Mandatory = $true)][int]$IPv6Mode,
+        [Parameter(Mandatory = $true)][string]$IPv6BindAddress,
+        [Parameter(Mandatory = $true)][int]$WebPort,
+        [ValidateSet(0, 1)][int]$NetworkEd2k = 0
+    )
+
+    $expected = @(
+        @('eMule', 'OpenPortsOnStartUp', '0'),
+        @('eMule', 'AutoTakeED2KLinks', '0'),
+        @('eMule', 'WatchClipboard4ED2kFilelinks', '0'),
+        @('eMule', 'AutoStart', '0'),
+        @('eMule', 'NetworkKademlia', '0'),
+        @('eMule', 'Serverlist', '0'),
+        @('eMule', 'AddServersFromServer', '0'),
+        @('eMule', 'AddServersFromClient', '0'),
+        @('Connection', 'IPv6Mode', [string]$IPv6Mode),
+        @('Connection', 'IPv6BindAddr', $IPv6BindAddress),
+        @('Connection', 'KadNetworkMask', '0'),
+        @('Connection', 'NetworkED2K', [string]$NetworkEd2k),
+        @('Connection', 'CryptLayerRequested', '0'),
+        @('Connection', 'CryptLayerRequired', '0'),
+        @('Connection', 'CryptLayerSupported', '0'),
+        @('eSE', 'EseNetLabConsent', '1'),
+        @('eSE', 'EseNetLabAdvancedConsent', '1'),
+        @('eSE', 'EseNetLabContributionConsent', '1'),
+        @('eSE', 'EseNetLabEnabled', '0'),
+        @('eSE', 'EseV9Experimental', '0'),
+        @('eSE', 'EnableUtpHolePunch', '0'),
+        @('eSE', 'EseAutoKeepalive', '0'),
+        @('eSE', 'EseKad3Rendezvous', '0'),
+        @('eSE', 'EseReachSelector', '0'),
+        @('eSE', 'EseHolePunchPortPredict', '0'),
+        @('eSE', 'EseEd2kPunch3', '0'),
+        @('eSE', 'EseRelayAccept', '0'),
+        @('eSE', 'EseRelayEgress', '0'),
+        @('eSE', 'Kad6BetaExitOptIn', '0'),
+        @('Proxy', 'ProxyEnableProxy', '0'),
+        @('UPnP', 'EnableUPnP', '0'),
+        @('WebServer', 'Enabled', '1'),
+        @('WebServer', 'Port', [string]$WebPort),
+        @('WebServer', 'AllowedIPs', '127.0.0.1'),
+        @('WebServer', 'WebUseUPnP', '0')
+    )
+    $checks = @($expected | ForEach-Object {
+        Get-I03IniExactValueEvidence -Path $PreferencesPath `
+            -Section ([string]$_[0]) -Key ([string]$_[1]) `
+            -Expected ([string]$_[2])
+    })
+    if (@($checks | Where-Object { -not [bool]$_.exact }).Count -gt 0) {
+        throw 'I03_CONFIG_CONTRACT::MISSING_DUPLICATE_OR_WRONG_VALUE'
+    }
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-effective-config-proof/v1'
+        verified = $true
+        exact_key_count = $checks.Count
+        contract_sha256 = Get-LabStringSha256 -Value (
+            ($checks | ConvertTo-Json -Depth 4 -Compress))
     }
 }
 
@@ -977,7 +4821,8 @@ function Set-I03IsolatedPreferences {
 
     $config = Join-Path $NodePath 'config'
     $preferences = Join-Path $config 'preferences.ini'
-    $removedIdentityFiles = New-Object 'Collections.Generic.List[string]'
+    $removedIdentityFiles =
+        [System.Collections.Generic.List[string]]::new()
     foreach ($identityName in @(
         'preferences.dat', 'cryptkey.dat', 'clients.met'
     )) {
@@ -990,7 +4835,10 @@ function Set-I03IsolatedPreferences {
     }
     foreach ($entry in ([ordered]@{
         Autoconnect = '0'
-        NetworkED2K = '0'
+        OpenPortsOnStartUp = '0'
+        AutoTakeED2KLinks = '0'
+        WatchClipboard4ED2kFilelinks = '0'
+        AutoStart = '0'
         NetworkKademlia = '0'
         Serverlist = '0'
         UpdateNotifyTestClient = '0'
@@ -1002,9 +4850,6 @@ function Set-I03IsolatedPreferences {
         SaveDebugToDisk = '1'
         DebugClientTCP = '1'
         ConfirmExit = '0'
-        CryptLayerRequested = '0'
-        CryptLayerRequired = '0'
-        CryptLayerSupported = '0'
         IncomingDir = ($IncomingPath + '\')
         TempDir = ($TempPath + '\')
     }).GetEnumerator()) {
@@ -1026,6 +4871,10 @@ function Set-I03IsolatedPreferences {
         IPv6Mode = [string]$IPv6Mode
         IPv6BindAddr = $IPv6BindAddress
         KadNetworkMask = '0'
+        NetworkED2K = '0'
+        CryptLayerRequested = '0'
+        CryptLayerRequired = '0'
+        CryptLayerSupported = '0'
     }).GetEnumerator()) {
         Set-LabIniValue -Path $preferences -Section 'Connection' `
             -Key $entry.Key -Value $entry.Value
@@ -1068,16 +4917,24 @@ function Set-I03IsolatedPreferences {
     Set-LabIniValue -Path $preferences -Section 'KRPRelay' `
         -Key 'KrpRelayKillSwitch' -Value '1'
 
+    $effectiveContract = Assert-I03PreferenceContract `
+        -PreferencesPath $preferences -IPv6Mode $IPv6Mode `
+        -IPv6BindAddress $IPv6BindAddress -WebPort $WebPort `
+        -NetworkEd2k 0
+
     # No inherited shared directory may introduce another source. This is an
     # isolated package copy; the candidate package itself is never modified.
     $shares = Join-Path $NodePath 'config\shareddir.dat'
     [IO.File]::WriteAllText($shares, '', (New-Object Text.UTF8Encoding($false)))
     # Route/HELLO evidence must belong to this run, never to a log inherited
     # from the release package copied by prepare_node.ps1.
-    foreach ($runtimeLog in @(
-        Get-ChildItem -LiteralPath $NodePath -Recurse -File -Filter '*.log' `
-            -ErrorAction SilentlyContinue
-    )) {
+    try {
+        $inheritedRuntimeLogs = @(Get-ChildItem -LiteralPath $NodePath `
+            -Recurse -File -Filter '*.log' -ErrorAction Stop)
+    } catch {
+        throw 'I03_COLLECTOR::INHERITED_LOG_ENUMERATION_FAILED'
+    }
+    foreach ($runtimeLog in $inheritedRuntimeLogs) {
         Remove-Item -LiteralPath $runtimeLog.FullName -Force `
             -ErrorAction Stop
     }
@@ -1095,35 +4952,147 @@ function Set-I03IsolatedPreferences {
             ))
         max_upload_kib_per_second = $MaxUploadKiBps
         dynamic_upload_disabled = $MaxUploadKiBps -gt 0
+        startup_mutation_controls = [ordered]@{
+            open_ports_on_startup = $false
+            auto_take_ed2k_links = $false
+            watch_clipboard_ed2k_links = $false
+            auto_start = $false
+        }
+        effective_configuration = $effectiveContract
     }
 }
 
 function Test-I03PortSetFree {
     param([Parameter(Mandatory = $true)][int[]]$Ports)
 
+    try {
+        $tcpRows = @(Get-NetTCPConnection -ErrorAction Stop)
+        $udpRows = @(Get-NetUDPEndpoint -ErrorAction Stop)
+    } catch {
+        throw 'I03_COLLECTOR::PORT_CENSUS_FAILED'
+    }
     foreach ($port in $Ports) {
-        if (Get-NetTCPConnection -State Listen -LocalPort $port `
-            -ErrorAction SilentlyContinue) {
-            throw "TCP port $port is already listening"
+        if (@($tcpRows | Where-Object {
+                [int]$_.LocalPort -eq $port
+            }).Count -gt 0) {
+            throw "I03_PORT_STATE::TCP_PORT_${port}_IN_USE"
         }
-        if (Get-NetUDPEndpoint -LocalPort $port -ErrorAction SilentlyContinue) {
-            throw "UDP port $port is already in use"
+        if (@($udpRows | Where-Object {
+                [int]$_.LocalPort -eq $port
+            }).Count -gt 0) {
+            throw "I03_PORT_STATE::UDP_PORT_${port}_IN_USE"
         }
     }
 }
 
+function Wait-I03PortSetFree {
+    param(
+        [Parameter(Mandatory = $true)][int[]]$Ports,
+        [ValidateRange(1, 120)][int]$TimeoutSeconds = 30
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            Test-I03PortSetFree -Ports $Ports
+            return
+        } catch {
+            if ([string]$_.Exception.Message -match
+                '^I03_COLLECTOR::') {
+                throw
+            }
+            if ([string]$_.Exception.Message -notmatch
+                '^I03_PORT_STATE::') {
+                throw
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'I03_PORT_STATE::RESERVED_PORT_NOT_FREE'
+}
+
+function Get-I03HelloEvidenceDecision {
+    param([AllowNull()][object]$Evidence)
+
+    $result = [ordered]@{
+        schema = 'ese.v91.i03-hello-evidence-decision/v1'
+        status = 'LAB_BLOCKED'
+        code = 'COLLECTOR_UNAVAILABLE'
+    }
+    if ($null -eq $Evidence) {
+        return [pscustomobject]$result
+    }
+    $names = @($Evidence.PSObject.Properties | ForEach-Object {
+        [string]$_.Name
+    })
+    if (@('schema', 'collector_ok', 'collector_error_code' |
+            Where-Object { $names -cnotcontains $_ }).Count -gt 0 -or
+        [string]$Evidence.schema -cne
+        'ese.v91.i03-hello-log-collector/v2' -or
+        $Evidence.collector_ok -isnot [bool] -or
+        $Evidence.collector_error_code -isnot [string]) {
+        return [pscustomobject]$result
+    }
+    if (-not [bool]$Evidence.collector_ok) {
+        if ([string]$Evidence.collector_error_code -ceq
+            'EXPECTED_LOG_NOT_FOUND') {
+            $result.status = 'PRODUCT_INVARIANT'
+            $result.code = 'IPV4_PREWARM_INVARIANT'
+        }
+        return [pscustomobject]$result
+    }
+    if ([string]$Evidence.collector_error_code -cne 'NONE') {
+        return [pscustomobject]$result
+    }
+    $result.status = 'PASS'
+    $result.code = 'NONE'
+    return [pscustomobject]$result
+}
+
 function Get-I03PeerDualStackMarker {
-    param([Parameter(Mandatory = $true)][string]$NodePath)
+    param(
+        [Parameter(Mandatory = $true)][string]$NodePath,
+        [Parameter(Mandatory = $true)][string]$SnapshotRoot,
+        [switch]$PersistSnapshots
+    )
 
     $inbound = 0
     $accepted = 0
     $files = @()
-    foreach ($log in @(
-        Get-ChildItem -LiteralPath $NodePath -Recurse -File -Filter '*.log' `
-            -ErrorAction SilentlyContinue
-    )) {
-        $content = ''
-        try { $content = Get-Content -LiteralPath $log.FullName -Raw } catch {}
+    try {
+        $logs = @(Get-ChildItem -LiteralPath $NodePath -Recurse -File `
+            -Filter '*.log' -ErrorAction Stop)
+    } catch {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i03-peer-dualstack-marker/v1'
+            collector_ok = $false
+            collector_error_code = 'LOG_ENUMERATION_FAILED'
+            captured_at_utc = Get-LabUtcTimestamp
+            inbound_reachability_markers = 0
+            accepted_native_ipv6_markers = 0
+            dualstack_capability_armed = $false
+            files = @()
+        }
+    }
+    foreach ($log in $logs) {
+        try {
+            $snapshot = Get-I03ImmutableLogSnapshot `
+                -Path $log.FullName -SourceRoot $NodePath `
+                -SnapshotRoot $SnapshotRoot -Label 'peer-dualstack' `
+                -Persist:$PersistSnapshots
+            $content = [string]$snapshot.content
+        } catch {
+            return [pscustomobject][ordered]@{
+                schema = 'ese.v91.i03-peer-dualstack-marker/v1'
+                collector_ok = $false
+                collector_error_code = 'LOG_READ_FAILED'
+                captured_at_utc = Get-LabUtcTimestamp
+                inbound_reachability_markers = 0
+                accepted_native_ipv6_markers = 0
+                dualstack_capability_armed = $false
+                files = @()
+            }
+        }
         $inbound += @([regex]::Matches(
             $content, '(?i)native IPv6 inbound TCP observed'
         )).Count
@@ -1131,14 +5100,19 @@ function Get-I03PeerDualStackMarker {
             $content, '(?i)Accepted native IPv6 client'
         )).Count
         $files += [pscustomobject][ordered]@{
-            relative_path = $log.FullName.Substring(
-                [IO.Path]::GetFullPath($NodePath).Length
-            ).TrimStart('\')
-            bytes = [Int64]$log.Length
-            sha256 = Get-LabSha256 -Path $log.FullName
+            relative_path = [string]$snapshot.relative_source_path
+            bytes = [Int64]$snapshot.source_bytes
+            sha256 = [string]$snapshot.source_sha256
+            snapshot_persisted = [bool]$snapshot.snapshot_persisted
+            snapshot_file = [string]$snapshot.snapshot_file
+            snapshot_bytes = [Int64]$snapshot.snapshot_bytes
+            snapshot_sha256 = [string]$snapshot.snapshot_sha256
         }
     }
     return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i03-peer-dualstack-marker/v1'
+        collector_ok = $true
+        collector_error_code = 'NONE'
         captured_at_utc = Get-LabUtcTimestamp
         inbound_reachability_markers = $inbound
         accepted_native_ipv6_markers = $accepted
@@ -1150,9 +5124,16 @@ function Get-I03PeerDualStackMarker {
 function Wait-I03Prewarm {
     param(
         [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][object]$ControlledServer,
         [Parameter(Mandatory = $true)][string]$NodePath,
         [Parameter(Mandatory = $true)][string]$TempPath,
         [Parameter(Mandatory = $true)][int]$WebPort,
+        [Parameter(Mandatory = $true)][int]$TcpPort,
+        [Parameter(Mandatory = $true)][int]$UdpPort,
+        [Parameter(Mandatory = $true)][string[]]$TargetAddresses,
+        [Parameter(Mandatory = $true)][int]$TargetPort,
+        [Parameter(Mandatory = $true)][string]$ControlAddress,
+        [Parameter(Mandatory = $true)][int]$ControlPort,
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
         [Parameter(Mandatory = $true)][string]$SamplesPath
     )
@@ -1169,9 +5150,17 @@ function Wait-I03Prewarm {
     $uiFailures = 0
     $uiMaxMs = 0L
     $otherPid = [System.Collections.Generic.List[object]]::new()
-    $otherPidKeys = New-Object `
-        'Collections.Generic.HashSet[string]' `
-        ([StringComparer]::OrdinalIgnoreCase)
+    $otherPidKeys = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    $unexpectedSockets = [System.Collections.Generic.List[object]]::new()
+    $unexpectedSocketKeys =
+        [System.Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::OrdinalIgnoreCase
+        )
+    $duplicateTargetObservationCount = 0
+    $duplicateTargetObservations =
+        [System.Collections.Generic.List[object]]::new()
     $nextHealth = [DateTime]::UtcNow
     $lastSignature = ''
     $sample = 0
@@ -1179,7 +5168,28 @@ function Wait-I03Prewarm {
     do {
         $Process.Refresh()
         if ($Process.HasExited) { throw 'Client exited during IPv4 prewarm' }
+        Assert-I03ControlledEd2kServerHealthy -Server $ControlledServer
         $connections = @(Get-I03TargetConnections)
+        $processCensus = Get-I03ProcessSocketCensus -ProcessId $Process.Id
+        if (-not [bool]$processCensus.collector_ok) {
+            throw "I03_COLLECTOR::$($processCensus.collector_error_code)"
+        }
+        $censusDecision = Get-I03CandidateSocketCensusDecision `
+            -Census $processCensus -ProcessId $Process.Id `
+            -TcpPort $TcpPort -UdpPort $UdpPort -WebPort $WebPort `
+            -TargetAddresses $TargetAddresses -TargetPort $TargetPort `
+            -ControlAddress $ControlAddress -ControlPort $ControlPort
+        foreach ($unexpectedSocket in @($censusDecision.unexpected_rows)) {
+            $socketKey = '{0}|{1}|{2}|{3}|{4}|{5}' -f
+                $unexpectedSocket.transport, $unexpectedSocket.state,
+                $unexpectedSocket.local_address,
+                $unexpectedSocket.local_port,
+                $unexpectedSocket.remote_address,
+                $unexpectedSocket.remote_port
+            if ($unexpectedSocketKeys.Add($socketKey)) {
+                $unexpectedSockets.Add($unexpectedSocket)
+            }
+        }
         foreach ($other in @($connections | Where-Object {
             [int]$_.owning_process -ne $Process.Id -and
             [string]$_.state -in @('SynSent', 'Established')
@@ -1190,23 +5200,37 @@ function Wait-I03Prewarm {
                 $otherPid.Add($other)
             }
         }
-        $owned = @($connections | Where-Object {
+        $ownedActive = @($connections | Where-Object {
             [int]$_.owning_process -eq $Process.Id -and
-            [string]$_.state -eq 'Established'
+            [string]$_.state -in @('SynSent', 'Established')
         })
-        $ownedV4 = @($owned | Where-Object family -eq 'IPv4')
-        $ownedV6 = @($owned | Where-Object family -eq 'IPv6')
-        if ($ownedV4.Count -eq 1 -and $ownedV6.Count -eq 0) {
-            $selected = $ownedV4[0]
-        } elseif ($owned.Count -gt 1 -or $ownedV6.Count -gt 0) {
-            throw 'Ambiguous or non-IPv4 connection appeared during prewarm'
+        $ownedActiveV4 = @($ownedActive | Where-Object family -eq 'IPv4')
+        $ownedActiveV6 = @($ownedActive | Where-Object family -eq 'IPv6')
+        if ($ownedActive.Count -gt 1) {
+            $duplicateTargetObservationCount++
+            $duplicateTargetObservations.Add(
+                [pscustomobject][ordered]@{
+                    captured_at_utc = Get-LabUtcTimestamp
+                    active_connections = @($ownedActive)
+                }
+            )
+        }
+        if ($ownedActive.Count -eq 1 -and
+            $ownedActiveV4.Count -eq 1 -and
+            [string]$ownedActiveV4[0].state -ceq 'Established') {
+            $selected = $ownedActiveV4[0]
         } else {
             $selected = $null
         }
 
-        $part = Get-ChildItem -LiteralPath $TempPath -File -Filter '*.part' `
-            -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+        try {
+            $part = Get-ChildItem -LiteralPath $TempPath -File `
+                -Filter '*.part' -ErrorAction Stop |
+                Sort-Object LastWriteTimeUtc -Descending |
+                Select-Object -First 1
+        } catch {
+            throw 'I03_COLLECTOR::TEMP_ENUMERATION_FAILED'
+        }
         if ($null -ne $part) {
             if ($null -ne $lastPartWrite -and
                 $part.LastWriteTimeUtc -gt $lastPartWrite) {
@@ -1215,7 +5239,8 @@ function Wait-I03Prewarm {
             $lastPartWrite = $part.LastWriteTimeUtc
         }
         $hello = Get-I03HelloEvidence -NodePath $NodePath `
-            -ExpectedIPv6 $peerV6Text
+            -ExpectedIPv6 $peerV6Text `
+            -SnapshotRoot (Split-Path -Parent $SamplesPath)
 
         $now = [DateTime]::UtcNow
         $health = $null
@@ -1246,6 +5271,8 @@ function Wait-I03Prewarm {
                 sample_number = ++$sample
                 captured_at_utc = Get-LabUtcTimestamp
                 connections = $connections
+                process_socket_census = $processCensus
+                process_socket_decision = $censusDecision
                 transfer_progress = $progress
                 hello = $hello
                 health = $health
@@ -1253,15 +5280,40 @@ function Wait-I03Prewarm {
             $lastSignature = $signature
         }
 
-        if ($null -ne $selected -and $progress -and
-            [bool]$hello.learned_public_ipv6_via_hello) {
+        if ($duplicateTargetObservationCount -gt 0 -or
+            ($null -ne $selected -and $progress -and
+            [bool]$hello.learned_public_ipv6_via_hello)) {
             Start-Sleep -Milliseconds 500
             break
         }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
 
+    $hello = Get-I03HelloEvidence -NodePath $NodePath `
+        -ExpectedIPv6 $peerV6Text `
+        -SnapshotRoot (Split-Path -Parent $SamplesPath) `
+        -PersistSnapshots
+    Assert-I03ControlledEd2kServerHealthy -Server $ControlledServer
     $finalConnections = @(Get-I03TargetConnections)
+    $finalProcessCensus = Get-I03ProcessSocketCensus `
+        -ProcessId $Process.Id
+    if (-not [bool]$finalProcessCensus.collector_ok) {
+        throw "I03_COLLECTOR::$($finalProcessCensus.collector_error_code)"
+    }
+    $finalCensusDecision = Get-I03CandidateSocketCensusDecision `
+        -Census $finalProcessCensus -ProcessId $Process.Id `
+        -TcpPort $TcpPort -UdpPort $UdpPort -WebPort $WebPort `
+        -TargetAddresses $TargetAddresses -TargetPort $TargetPort `
+        -ControlAddress $ControlAddress -ControlPort $ControlPort
+    foreach ($unexpectedSocket in @($finalCensusDecision.unexpected_rows)) {
+        $socketKey = '{0}|{1}|{2}|{3}|{4}|{5}' -f
+            $unexpectedSocket.transport, $unexpectedSocket.state,
+            $unexpectedSocket.local_address, $unexpectedSocket.local_port,
+            $unexpectedSocket.remote_address, $unexpectedSocket.remote_port
+        if ($unexpectedSocketKeys.Add($socketKey)) {
+            $unexpectedSockets.Add($unexpectedSocket)
+        }
+    }
     foreach ($other in @($finalConnections | Where-Object {
         [int]$_.owning_process -ne $Process.Id -and
         [string]$_.state -in @('SynSent', 'Established')
@@ -1272,13 +5324,24 @@ function Wait-I03Prewarm {
             $otherPid.Add($other)
         }
     }
-    $finalOwned = @($finalConnections | Where-Object {
+    $finalOwnedActive = @($finalConnections | Where-Object {
         [int]$_.owning_process -eq $Process.Id -and
-        [string]$_.state -eq 'Established'
+        [string]$_.state -in @('SynSent', 'Established')
     })
-    $finalOwnedV4 = @($finalOwned | Where-Object family -eq 'IPv4')
-    $finalOwnedV6 = @($finalOwned | Where-Object family -eq 'IPv6')
-    if ($finalOwnedV4.Count -eq 1 -and $finalOwnedV6.Count -eq 0) {
+    $finalOwnedV4 = @($finalOwnedActive | Where-Object family -eq 'IPv4')
+    $finalOwnedV6 = @($finalOwnedActive | Where-Object family -eq 'IPv6')
+    if ($finalOwnedActive.Count -gt 1) {
+        $duplicateTargetObservationCount++
+        $duplicateTargetObservations.Add(
+            [pscustomobject][ordered]@{
+                captured_at_utc = Get-LabUtcTimestamp
+                active_connections = @($finalOwnedActive)
+            }
+        )
+    }
+    if ($finalOwnedActive.Count -eq 1 -and
+        $finalOwnedV4.Count -eq 1 -and
+        [string]$finalOwnedV4[0].state -ceq 'Established') {
         $selected = $finalOwnedV4[0]
     } else {
         $selected = $null
@@ -1288,22 +5351,30 @@ function Wait-I03Prewarm {
             -ExpectedProcessId $Process.Id
     } else { $null }
     return [pscustomobject][ordered]@{
-        complete = $null -ne $selected -and $progress -and
+        complete = $duplicateTargetObservationCount -eq 0 -and
+            $null -ne $selected -and $progress -and
             $null -ne $hello -and
             [bool]$hello.learned_public_ipv6_via_hello
         selected_connection = $selected
         socket = $socket
         final_connection_revalidation = [ordered]@{
             captured_at_utc = Get-LabUtcTimestamp
-            current_owned_established_count = $finalOwned.Count
-            current_ipv4_established_count = $finalOwnedV4.Count
-            current_ipv6_established_count = $finalOwnedV6.Count
+            current_owned_active_count = $finalOwnedActive.Count
+            current_ipv4_active_count = $finalOwnedV4.Count
+            current_ipv6_active_count = $finalOwnedV6.Count
             selected_tuple_current = $null -ne $selected
         }
+        duplicate_target_observation_count =
+            $duplicateTargetObservationCount
+        duplicate_target_observations = @($duplicateTargetObservations)
         transfer_progress = $progress
         hello = $hello
         other_pid_connection_count = $otherPid.Count
         other_pid_connections = @($otherPid)
+        process_socket_census = $finalProcessCensus
+        process_socket_decision = $finalCensusDecision
+        unexpected_socket_observation_count = $unexpectedSockets.Count
+        unexpected_socket_observations = @($unexpectedSockets)
         api_probe_count = $apiCount
         api_failure_count = $apiFailures
         api_max_ms = $apiMaxMs
@@ -1319,7 +5390,14 @@ function Wait-I03Prewarm {
 function Wait-I03PostRestartRoute {
     param(
         [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][object]$ControlledServer,
         [Parameter(Mandatory = $true)][int]$WebPort,
+        [Parameter(Mandatory = $true)][int]$TcpPort,
+        [Parameter(Mandatory = $true)][int]$UdpPort,
+        [Parameter(Mandatory = $true)][string[]]$TargetAddresses,
+        [Parameter(Mandatory = $true)][int]$TargetPort,
+        [Parameter(Mandatory = $true)][string]$ControlAddress,
+        [Parameter(Mandatory = $true)][int]$ControlPort,
         [Parameter(Mandatory = $true)][string]$ExpectedFamily,
         [Parameter(Mandatory = $true)][string]$PrewarmTuple,
         [Parameter(Mandatory = $true)][string]$RestartAckPath,
@@ -1338,13 +5416,22 @@ function Wait-I03PostRestartRoute {
     $stableSignature = ''
     $stableSince = $null
     $ambiguousSelectionObserved = $false
+    $duplicateTargetObservationCount = 0
+    $duplicateTargetObservations =
+        [System.Collections.Generic.List[object]]::new()
     $wrongFamily = [System.Collections.Generic.List[object]]::new()
-    $wrongFamilyKeys = New-Object 'Collections.Generic.HashSet[string]' `
-        ([StringComparer]::OrdinalIgnoreCase)
+    $wrongFamilyKeys = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
     $otherPid = [System.Collections.Generic.List[object]]::new()
-    $otherPidKeys = New-Object `
-        'Collections.Generic.HashSet[string]' `
-        ([StringComparer]::OrdinalIgnoreCase)
+    $otherPidKeys = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    $unexpectedSockets = [System.Collections.Generic.List[object]]::new()
+    $unexpectedSocketKeys =
+        [System.Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::OrdinalIgnoreCase
+        )
     $restartAck = $null
     $apiCount = 0
     $apiFailures = 0
@@ -1362,12 +5449,33 @@ function Wait-I03PostRestartRoute {
         if ($Process.HasExited) {
             throw 'Client exited during post-restart route observation'
         }
+        Assert-I03ControlledEd2kServerHealthy -Server $ControlledServer
         if ($null -eq $restartAck -and
             (Test-Path -LiteralPath $RestartAckPath -PathType Leaf)) {
             $restartAck = Get-Content -LiteralPath $RestartAckPath -Raw |
                 ConvertFrom-Json -ErrorAction Stop
         }
         $connections = @(Get-I03TargetConnections)
+        $processCensus = Get-I03ProcessSocketCensus -ProcessId $Process.Id
+        if (-not [bool]$processCensus.collector_ok) {
+            throw "I03_COLLECTOR::$($processCensus.collector_error_code)"
+        }
+        $censusDecision = Get-I03CandidateSocketCensusDecision `
+            -Census $processCensus -ProcessId $Process.Id `
+            -TcpPort $TcpPort -UdpPort $UdpPort -WebPort $WebPort `
+            -TargetAddresses $TargetAddresses -TargetPort $TargetPort `
+            -ControlAddress $ControlAddress -ControlPort $ControlPort
+        foreach ($unexpectedSocket in @($censusDecision.unexpected_rows)) {
+            $socketKey = '{0}|{1}|{2}|{3}|{4}|{5}' -f
+                $unexpectedSocket.transport, $unexpectedSocket.state,
+                $unexpectedSocket.local_address,
+                $unexpectedSocket.local_port,
+                $unexpectedSocket.remote_address,
+                $unexpectedSocket.remote_port
+            if ($unexpectedSocketKeys.Add($socketKey)) {
+                $unexpectedSockets.Add($unexpectedSocket)
+            }
+        }
         $prewarmPresent = @($connections | Where-Object {
             [int]$_.owning_process -eq $Process.Id -and
             [string]$_.tuple_key -eq $PrewarmTuple -and
@@ -1400,28 +5508,34 @@ function Wait-I03PostRestartRoute {
                 }
             }
         }
-        $currentEstablished = @(
+        $currentActive = @(
             if ($prewarmGone) {
                 $connections | Where-Object {
                     [int]$_.owning_process -eq $Process.Id -and
-                    [string]$_.state -eq 'Established'
+                    [string]$_.state -in @('SynSent', 'Established')
                 }
             }
         )
-        $currentExpected = @($currentEstablished | Where-Object {
+        $currentExpected = @($currentActive | Where-Object {
             [string]$_.family -eq $ExpectedFamily
         })
-        $currentWrong = @($currentEstablished | Where-Object {
+        $currentWrong = @($currentActive | Where-Object {
             [string]$_.family -ne $ExpectedFamily
         })
-        if ($currentExpected.Count -gt 1 -or
-            $currentWrong.Count -gt 1 -or
-            ($currentExpected.Count -gt 0 -and
-                $currentWrong.Count -gt 0)) {
+        if ($currentActive.Count -gt 1) {
             $ambiguousSelectionObserved = $true
+            $duplicateTargetObservationCount++
+            $duplicateTargetObservations.Add(
+                [pscustomobject][ordered]@{
+                    captured_at_utc = Get-LabUtcTimestamp
+                    active_connections = @($currentActive)
+                }
+            )
         }
         $currentStableSignature = @(
-            $currentEstablished.tuple_key | Sort-Object
+            $currentActive | ForEach-Object {
+                '{0}|{1}' -f [string]$_.state, [string]$_.tuple_key
+            } | Sort-Object
         ) -join ';'
         if ($currentStableSignature) {
             if ($currentStableSignature -ne $stableSignature) {
@@ -1432,10 +5546,14 @@ function Wait-I03PostRestartRoute {
             $stableSignature = ''
             $stableSince = $null
         }
-        $selected = if ($currentExpected.Count -eq 1) {
+        $selected = if ($currentActive.Count -eq 1 -and
+            $currentExpected.Count -eq 1 -and
+            [string]$currentExpected[0].state -ceq 'Established') {
             $currentExpected[0]
         } else { $null }
-        $wrongSelected = if ($currentWrong.Count -eq 1) {
+        $wrongSelected = if ($currentActive.Count -eq 1 -and
+            $currentWrong.Count -eq 1 -and
+            [string]$currentWrong[0].state -ceq 'Established') {
             $currentWrong[0]
         } else { $null }
         $selectedAt = if ($null -ne $selected) {
@@ -1463,10 +5581,19 @@ function Wait-I03PostRestartRoute {
             $health = [ordered]@{ api = $api; ui = $ui }
             $nextHealth = $now.AddSeconds(1)
         }
-        $signature = (@($connections | ForEach-Object {
+        $connectionSignature = (@($connections | ForEach-Object {
             '{0}:{1}:{2}:{3}' -f $_.owning_process, $_.state,
                 $_.family, $_.tuple_key
         }) -join ';')
+        $censusSignature = (@(
+            @($processCensus.tcp_rows) + @($processCensus.udp_rows) |
+                ForEach-Object {
+                    '{0}:{1}:{2}:{3}:{4}:{5}' -f $_.transport,
+                        $_.state, $_.local_address, $_.local_port,
+                        $_.remote_address, $_.remote_port
+                } | Sort-Object
+        ) -join ';')
+        $signature = "$connectionSignature|$censusSignature"
         if ($signature -ne $lastSignature -or $null -ne $health) {
             Add-I03JsonLine -Path $SamplesPath -Value ([ordered]@{
                 schema = 'ese.v91.i03-route-sample/v1'
@@ -1475,6 +5602,8 @@ function Wait-I03PostRestartRoute {
                 prewarm_gone = $prewarmGone
                 expected_family = $ExpectedFamily
                 connections = $connections
+                process_socket_census = $processCensus
+                process_socket_decision = $censusDecision
                 restart_ack_seen = $null -ne $restartAck
                 current_established_signature =
                     $currentStableSignature
@@ -1485,8 +5614,9 @@ function Wait-I03PostRestartRoute {
             })
             $lastSignature = $signature
         }
-        if ($null -ne $stableSince -and $null -ne $restartAck -and
-            ($now - $stableSince).TotalSeconds -ge $ObservationSeconds) {
+        if ($duplicateTargetObservationCount -gt 0 -or
+            ($null -ne $stableSince -and $null -ne $restartAck -and
+            ($now - $stableSince).TotalSeconds -ge $ObservationSeconds)) {
             break
         }
         Start-Sleep -Milliseconds 75
@@ -1496,7 +5626,27 @@ function Wait-I03PostRestartRoute {
     if ($Process.HasExited) {
         throw 'Client exited during post-restart route observation'
     }
+    Assert-I03ControlledEd2kServerHealthy -Server $ControlledServer
     $finalConnections = @(Get-I03TargetConnections)
+    $finalProcessCensus = Get-I03ProcessSocketCensus `
+        -ProcessId $Process.Id
+    if (-not [bool]$finalProcessCensus.collector_ok) {
+        throw "I03_COLLECTOR::$($finalProcessCensus.collector_error_code)"
+    }
+    $finalCensusDecision = Get-I03CandidateSocketCensusDecision `
+        -Census $finalProcessCensus -ProcessId $Process.Id `
+        -TcpPort $TcpPort -UdpPort $UdpPort -WebPort $WebPort `
+        -TargetAddresses $TargetAddresses -TargetPort $TargetPort `
+        -ControlAddress $ControlAddress -ControlPort $ControlPort
+    foreach ($unexpectedSocket in @($finalCensusDecision.unexpected_rows)) {
+        $socketKey = '{0}|{1}|{2}|{3}|{4}|{5}' -f
+            $unexpectedSocket.transport, $unexpectedSocket.state,
+            $unexpectedSocket.local_address, $unexpectedSocket.local_port,
+            $unexpectedSocket.remote_address, $unexpectedSocket.remote_port
+        if ($unexpectedSocketKeys.Add($socketKey)) {
+            $unexpectedSockets.Add($unexpectedSocket)
+        }
+    }
     foreach ($other in @($finalConnections | Where-Object {
         [int]$_.owning_process -ne $Process.Id -and
         [string]$_.state -in @('SynSent', 'Established')
@@ -1507,22 +5657,27 @@ function Wait-I03PostRestartRoute {
             $otherPid.Add($other)
         }
     }
-    $finalEstablished = @(
+    $finalActive = @(
         if ($prewarmGone) {
             $finalConnections | Where-Object {
                 [int]$_.owning_process -eq $Process.Id -and
-                [string]$_.state -eq 'Established'
+                [string]$_.state -in @('SynSent', 'Established')
             }
         }
     )
-    $finalExpected = @($finalEstablished | Where-Object {
+    $finalEstablished = @($finalActive | Where-Object {
+        [string]$_.state -eq 'Established'
+    })
+    $finalExpectedActive = @($finalActive | Where-Object {
         [string]$_.family -eq $ExpectedFamily
     })
-    $finalWrong = @($finalEstablished | Where-Object {
+    $finalWrongActive = @($finalActive | Where-Object {
         [string]$_.family -ne $ExpectedFamily
     })
     $finalSignature = @(
-        $finalEstablished.tuple_key | Sort-Object
+        $finalActive | ForEach-Object {
+            '{0}|{1}' -f [string]$_.state, [string]$_.tuple_key
+        } | Sort-Object
     ) -join ';'
     $finalMatchesObservedWindow = $finalSignature -and
         $finalSignature -eq $stableSignature
@@ -1532,16 +5687,25 @@ function Wait-I03PostRestartRoute {
             [DateTime]::UtcNow
         } else { $null }
     }
-    if ($finalExpected.Count -gt 1 -or
-        $finalWrong.Count -gt 1 -or
-        ($finalExpected.Count -gt 0 -and $finalWrong.Count -gt 0)) {
+    if ($finalActive.Count -gt 1) {
         $ambiguousSelectionObserved = $true
+        $duplicateTargetObservationCount++
+        $duplicateTargetObservations.Add(
+            [pscustomobject][ordered]@{
+                captured_at_utc = Get-LabUtcTimestamp
+                active_connections = @($finalActive)
+            }
+        )
     }
-    $selected = if ($finalExpected.Count -eq 1) {
-        $finalExpected[0]
+    $selected = if ($finalActive.Count -eq 1 -and
+        $finalExpectedActive.Count -eq 1 -and
+        [string]$finalExpectedActive[0].state -ceq 'Established') {
+        $finalExpectedActive[0]
     } else { $null }
-    $wrongSelected = if ($finalWrong.Count -eq 1) {
-        $finalWrong[0]
+    $wrongSelected = if ($finalActive.Count -eq 1 -and
+        $finalWrongActive.Count -eq 1 -and
+        [string]$finalWrongActive[0].state -ceq 'Established') {
+        $finalWrongActive[0]
     } else { $null }
     $selectedAt = if ($null -ne $selected) {
         $stableSince
@@ -1582,6 +5746,7 @@ function Wait-I03PostRestartRoute {
         } else { $wrongSelectedAt.ToString('o') }
         wrong_family_socket = $wrongSocket
         current_established_connections = @($finalEstablished)
+        current_active_target_connections = @($finalActive)
         current_socket_evidence = @($currentSocketEvidence)
         final_connection_revalidation = [ordered]@{
             captured_at_utc = Get-LabUtcTimestamp
@@ -1589,14 +5754,22 @@ function Wait-I03PostRestartRoute {
             matches_continuous_observation_window =
                 [bool]$finalMatchesObservedWindow
             established_count = @($finalEstablished).Count
-            expected_family_count = $finalExpected.Count
-            wrong_family_count = $finalWrong.Count
+            active_target_count = @($finalActive).Count
+            expected_family_active_count = $finalExpectedActive.Count
+            wrong_family_active_count = $finalWrongActive.Count
         }
         ambiguous_family_selection = $ambiguousSelectionObserved
+        duplicate_target_observation_count =
+            $duplicateTargetObservationCount
+        duplicate_target_observations = @($duplicateTargetObservations)
         wrong_family_observation_count = $wrongFamily.Count
         wrong_family_observations = @($wrongFamily)
         other_pid_connection_count = $otherPid.Count
         other_pid_connections = @($otherPid)
+        process_socket_census = $finalProcessCensus
+        process_socket_decision = $finalCensusDecision
+        unexpected_socket_observation_count = $unexpectedSockets.Count
+        unexpected_socket_observations = @($unexpectedSockets)
         stable_observation_seconds = if ($null -eq $stableSince -or
             -not $finalSignature) {
             0
@@ -1624,13 +5797,14 @@ function Enable-I03ControlledEd2kProfile {
         [Parameter(Mandatory = $true)]
         [ValidateRange(1024, 65535)][int]$ServerPort,
         [Parameter(Mandatory = $true)][string]$RunNonce,
-        [Parameter(Mandatory = $true)][string]$Policy
+        [Parameter(Mandatory = $true)][string]$Policy,
+        [Parameter(Mandatory = $true)][int]$IPv6Mode,
+        [Parameter(Mandatory = $true)][int]$WebPort
     )
 
     $preferences = Join-Path $NodePath 'config\preferences.ini'
     foreach ($entry in ([ordered]@{
         Autoconnect = '1'
-        NetworkED2K = '1'
         NetworkKademlia = '0'
         AutoConnectStaticOnly = '1'
         Reconnect = '1'
@@ -1643,6 +5817,15 @@ function Enable-I03ControlledEd2kProfile {
         ServerKeepAliveTimeout = '60000'
     }).GetEnumerator()) {
         Set-LabIniValue -Path $preferences -Section 'eMule' `
+            -Key $entry.Key -Value $entry.Value
+    }
+    foreach ($entry in ([ordered]@{
+        NetworkED2K = '1'
+        CryptLayerRequested = '0'
+        CryptLayerRequired = '0'
+        CryptLayerSupported = '0'
+    }).GetEnumerator()) {
+        Set-LabIniValue -Path $preferences -Section 'Connection' `
             -Key $entry.Key -Value $entry.Value
     }
 
@@ -1663,6 +5846,9 @@ function Enable-I03ControlledEd2kProfile {
         $staticPath, ($line + "`r`n"),
         (New-Object Text.UnicodeEncoding($false, $true))
     )
+    $effectiveContract = Assert-I03PreferenceContract `
+        -PreferencesPath $preferences -IPv6Mode $IPv6Mode `
+        -IPv6BindAddress '::' -WebPort $WebPort -NetworkEd2k 1
     return [pscustomobject][ordered]@{
         endpoint = "$ServerAddress`:$ServerPort"
         endpoint_scope = 'same-host assigned physical IPv4'
@@ -1674,7 +5860,114 @@ function Enable-I03ControlledEd2kProfile {
         auto_connect_static_only = $true
         filter_lan_ips = $false
         third_party_server_files_removed = $true
+        effective_configuration = $effectiveContract
     }
+}
+
+function New-I03Ed2kFrame {
+    param(
+        [Parameter(Mandatory = $true)][byte]$Opcode,
+        [AllowEmptyCollection()][byte[]]$Payload = @()
+    )
+
+    if ($Payload.Length -gt 16777215) {
+        throw 'I03_ED2K_CODEC::PAYLOAD_TOO_LARGE'
+    }
+    $packetLength = [uint32]($Payload.Length + 1)
+    $frame = New-Object byte[] (6 + $Payload.Length)
+    $frame[0] = 0xE3
+    $frame[1] = [byte]($packetLength -band 0xFF)
+    $frame[2] = [byte](($packetLength -shr 8) -band 0xFF)
+    $frame[3] = [byte](($packetLength -shr 16) -band 0xFF)
+    $frame[4] = [byte](($packetLength -shr 24) -band 0xFF)
+    $frame[5] = $Opcode
+    if ($Payload.Length -gt 0) {
+        [Array]::Copy($Payload, 0, $frame, 6, $Payload.Length)
+    }
+    return ,$frame
+}
+
+function New-I03Ed2kIdChangeFrame {
+    param([uint32]$ClientId = [uint32]0x01000001)
+
+    $payload = New-Object byte[] 4
+    $payload[0] = [byte]($ClientId -band 0xFF)
+    $payload[1] = [byte](($ClientId -shr 8) -band 0xFF)
+    $payload[2] = [byte](($ClientId -shr 16) -band 0xFF)
+    $payload[3] = [byte](($ClientId -shr 24) -band 0xFF)
+    return ,(New-I03Ed2kFrame -Opcode 0x40 -Payload $payload)
+}
+
+function Test-I03Ed2kLoginRequestFrame {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()][byte[]]$Frame
+    )
+
+    $result = [ordered]@{
+        schema = 'ese.v91.i03-ed2k-loginrequest-codec/v1'
+        valid = $false
+        error_code = 'TRUNCATED_HEADER'
+        protocol = if ($Frame.Length -gt 0) { [int]$Frame[0] } else { -1 }
+        opcode = if ($Frame.Length -gt 5) { [int]$Frame[5] } else { -1 }
+        packet_length = 0L
+        payload_length = 0
+        payload_sha256 = ''
+        advertised_tcp_port = 0
+    }
+    if ($Frame.Length -lt 6) { return [pscustomobject]$result }
+    $packetLength = [uint32]$Frame[1] -bor
+        ([uint32]$Frame[2] -shl 8) -bor
+        ([uint32]$Frame[3] -shl 16) -bor
+        ([uint32]$Frame[4] -shl 24)
+    $result.packet_length = [Int64]$packetLength
+    if ($Frame[0] -ne 0xE3) {
+        $result.error_code = 'WRONG_PROTOCOL'
+        return [pscustomobject]$result
+    }
+    if ($Frame[5] -ne 0x01) {
+        $result.error_code = 'WRONG_OPCODE'
+        return [pscustomobject]$result
+    }
+    if ($packetLength -lt 1) {
+        $result.error_code = 'INVALID_PACKET_LENGTH'
+        return [pscustomobject]$result
+    }
+    if ($packetLength -gt 1048576) {
+        $result.error_code = 'OVERSIZED_PACKET'
+        return [pscustomobject]$result
+    }
+    $expectedFrameLength = [Int64]$packetLength + 5
+    if ([Int64]$Frame.Length -lt $expectedFrameLength) {
+        $result.error_code = 'TRUNCATED_PAYLOAD'
+        return [pscustomobject]$result
+    }
+    if ([Int64]$Frame.Length -gt $expectedFrameLength) {
+        $result.error_code = 'TRAILING_BYTES'
+        return [pscustomobject]$result
+    }
+    $payloadLength = [int]$packetLength - 1
+    $result.payload_length = $payloadLength
+    if ($payloadLength -lt 22) {
+        $result.error_code = 'LOGIN_PAYLOAD_TOO_SHORT'
+        return [pscustomobject]$result
+    }
+    $payload = New-Object byte[] $payloadLength
+    [Array]::Copy($Frame, 6, $payload, 0, $payloadLength)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $result.payload_sha256 = ([BitConverter]::ToString(
+            $sha.ComputeHash($payload)
+        )).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+    $result.advertised_tcp_port = [int](
+        [uint16]$payload[20] -bor ([uint16]$payload[21] -shl 8)
+    )
+    $result.valid = $true
+    $result.error_code = 'NONE'
+    return [pscustomobject]$result
 }
 
 function Start-I03ControlledEd2kServer {
@@ -1683,7 +5976,8 @@ function Start-I03ControlledEd2kServer {
         [Parameter(Mandatory = $true)][string]$ListenAddress,
         [Parameter(Mandatory = $true)][string]$ExpectedClientAddress,
         [Parameter(Mandatory = $true)][string]$RunNonce,
-        [Parameter(Mandatory = $true)][string]$Policy
+        [Parameter(Mandatory = $true)][string]$Policy,
+        [Parameter(Mandatory = $true)][int[]]$ForbiddenPorts
     )
 
     $listenIp = [Net.IPAddress]::Parse($ListenAddress)
@@ -1692,17 +5986,48 @@ function Start-I03ControlledEd2kServer {
         [Net.IPAddress]::IsLoopback($listenIp)) {
         throw 'Controlled eD2K server requires an assigned non-loopback IPv4'
     }
-    $listener = New-Object Net.Sockets.TcpListener($listenIp, 0)
-    $listener.Server.ExclusiveAddressUse = $true
-    $listener.Start(1)
-    $port = [int]([Net.IPEndPoint]$listener.LocalEndpoint).Port
-    $state = New-Object `
-        'Collections.Concurrent.ConcurrentDictionary[string,object]'
+    $forbidden = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($forbiddenPort in $ForbiddenPorts) {
+        if ($forbiddenPort -lt 1 -or $forbiddenPort -gt 65535) {
+            throw 'I03_PORT_ALLOCATION::INVALID_FORBIDDEN_PORT'
+        }
+        [void]$forbidden.Add([int]$forbiddenPort)
+    }
+    $listener = $null
+    $port = 0
+    for ($attempt = 1; $attempt -le 64; $attempt++) {
+        $candidateListener =
+            [Net.Sockets.TcpListener]::new($listenIp, 0)
+        $candidateListener.Server.ExclusiveAddressUse = $true
+        try {
+            $candidateListener.Start(1)
+            $candidateEndpoint = [Net.IPEndPoint]
+                $candidateListener.LocalEndpoint
+            $candidatePort = [int]$candidateEndpoint.Port
+            if ($forbidden.Contains($candidatePort)) {
+                $candidateListener.Stop()
+                continue
+            }
+            $listener = $candidateListener
+            $port = $candidatePort
+            break
+        } catch {
+            $candidateListener.Stop()
+            throw
+        }
+    }
+    if ($null -eq $listener -or $port -le 0) {
+        throw 'I03_PORT_ALLOCATION::NO_NONCOLLIDING_PORT'
+    }
+    $state =
+        [System.Collections.Concurrent.ConcurrentDictionary[string,object]]::new()
     $state['phase'] = 'listening'
     $state['stop_requested'] = $false
     $state['logged_in'] = $false
     $state['reply_sent'] = $false
-    $state['error'] = ''
+    $state['error_kind'] = 'none'
+    $state['error_code'] = 'NONE'
+    $state['candidate_attributed'] = $false
     $state['frames_received'] = 0
     $state['listen_port'] = $port
     $state['high_id'] = [uint32]0x01000001
@@ -1713,8 +6038,16 @@ function Start-I03ControlledEd2kServer {
     $serverBody = {
         param(
             $Listener, $State, $ResultPath, $Nonce, $PolicyName,
-            $AllowedClientAddress
+            $AllowedClientAddress, $LoginCodecSource,
+            $FrameCodecSource, $IdChangeCodecSource
         )
+
+        Set-Item -Path Function:\Test-I03Ed2kLoginRequestFrame `
+            -Value ([ScriptBlock]::Create($LoginCodecSource))
+        Set-Item -Path Function:\New-I03Ed2kFrame `
+            -Value ([ScriptBlock]::Create($FrameCodecSource))
+        Set-Item -Path Function:\New-I03Ed2kIdChangeFrame `
+            -Value ([ScriptBlock]::Create($IdChangeCodecSource))
 
         function Read-ExactBytes {
             param(
@@ -1734,27 +6067,6 @@ function Start-I03ControlledEd2kServer {
             return $buffer
         }
 
-        function Send-Ed2kFrame {
-            param(
-                [Parameter(Mandatory = $true)]
-                [Net.Sockets.NetworkStream]$Stream,
-                [Parameter(Mandatory = $true)][byte]$Opcode,
-                [Parameter(Mandatory = $true)][byte[]]$Payload
-            )
-            $header = New-Object byte[] 6
-            $header[0] = 0xE3
-            [Array]::Copy(
-                [BitConverter]::GetBytes([uint32]($Payload.Length + 1)),
-                0, $header, 1, 4
-            )
-            $header[5] = $Opcode
-            $Stream.Write($header, 0, $header.Length)
-            if ($Payload.Length -gt 0) {
-                $Stream.Write($Payload, 0, $Payload.Length)
-            }
-            $Stream.Flush()
-        }
-
         $client = $null
         $stream = $null
         $loginAt = ''
@@ -1765,45 +6077,109 @@ function Start-I03ControlledEd2kServer {
             $State['client'] = $client
             $remote = [Net.IPEndPoint]$client.Client.RemoteEndPoint
             if ($remote.Address.ToString() -ne $AllowedClientAddress) {
-                throw (
-                    "Controlled server accepted unexpected client $remote; " +
-                    "expected $AllowedClientAddress"
-                )
+                throw 'I03_EXTERNAL_CONTAMINATION::UNEXPECTED_SOURCE_ADDRESS'
             }
             $State['accepted_remote'] = $remote.ToString()
+            $identityDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            while (-not $State.ContainsKey('expected_client_process_id') -and
+                [DateTime]::UtcNow -lt $identityDeadline) {
+                Start-Sleep -Milliseconds 10
+            }
+            if (-not $State.ContainsKey('expected_client_process_id')) {
+                throw 'I03_FIXTURE_INTERNAL::EXPECTED_CLIENT_PID_MISSING'
+            }
+            $expectedPid = [int]$State['expected_client_process_id']
+            $reverseRows = @()
+            $reverseDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            do {
+                try {
+                    $allTcpRows = @(
+                        Get-NetTCPConnection -ErrorAction Stop
+                    )
+                    $reverseRows = @($allTcpRows | Where-Object {
+                        [string]$_.State -eq 'Established' -and
+                        ([Net.IPAddress]::Parse(
+                            [string]$_.LocalAddress
+                        )).ToString() -eq $AllowedClientAddress -and
+                        [int]$_.LocalPort -eq [int]$remote.Port -and
+                        ([Net.IPAddress]::Parse(
+                            [string]$_.RemoteAddress
+                        )).ToString() -eq
+                            [string]$State['listen_address'] -and
+                        [int]$_.RemotePort -eq
+                            [int]$State['listen_port']
+                    })
+                } catch {
+                    throw 'I03_COLLECTOR::SERVER_REVERSE_TUPLE_QUERY_FAILED'
+                }
+                $expectedPidRows = @($reverseRows | Where-Object {
+                    [int]$_.OwningProcess -eq $expectedPid
+                })
+                if ($reverseRows.Count -gt 1 -or
+                    ($reverseRows.Count -eq 1 -and
+                    $expectedPidRows.Count -ne 1)) {
+                    throw 'I03_EXTERNAL_CONTAMINATION::REVERSE_TUPLE_AMBIGUOUS'
+                }
+                if ($reverseRows.Count -eq 1) { break }
+                Start-Sleep -Milliseconds 50
+            } while ([DateTime]::UtcNow -lt $reverseDeadline)
+            if ($reverseRows.Count -ne 1 -or
+                $expectedPidRows.Count -ne 1) {
+                throw 'I03_EXTERNAL_CONTAMINATION::REVERSE_TUPLE_NOT_OWNED'
+            }
+            $State['candidate_attributed'] = $true
+            $State['attributed_process_id'] = $expectedPid
+            $State['attributed_local_port'] = [int]$remote.Port
             $stream = $client.GetStream()
             $stream.ReadTimeout = 30000
-            $header = Read-ExactBytes -Stream $stream -Count 6
-            $packetLength = [BitConverter]::ToUInt32($header, 1)
-            if ($header[0] -ne 0xE3 -or $header[5] -ne 0x01 -or
-                $packetLength -lt 23 -or $packetLength -gt 1048576) {
-                throw (
-                    'Expected OP_EDONKEYPROT:OP_LOGINREQUEST with at least ' +
-                    "22 payload bytes; protocol=0x$('{0:X2}' -f $header[0]) " +
-                    "opcode=0x$('{0:X2}' -f $header[5]) length=$packetLength"
-                )
-            }
-            $payload = Read-ExactBytes -Stream $stream `
-                -Count ([int]$packetLength - 1)
-            $sha = [Security.Cryptography.SHA256]::Create()
             try {
-                $payloadSha = ([BitConverter]::ToString(
-                    $sha.ComputeHash($payload)
-                )).Replace('-', '').ToLowerInvariant()
-            } finally {
-                $sha.Dispose()
+                $header = Read-ExactBytes -Stream $stream -Count 6
+            } catch {
+                throw 'I03_CANDIDATE_PROTOCOL::TRUNCATED_HEADER'
             }
-            $State['login_protocol'] = [int]$header[0]
-            $State['login_opcode'] = [int]$header[5]
-            $State['login_payload_bytes'] = $payload.Length
-            $State['login_payload_sha256'] = $payloadSha
+            $packetLength = [uint32]$header[1] -bor
+                ([uint32]$header[2] -shl 8) -bor
+                ([uint32]$header[3] -shl 16) -bor
+                ([uint32]$header[4] -shl 24)
+            $headerCodec = Test-I03Ed2kLoginRequestFrame -Frame $header
+            if ([string]$headerCodec.error_code -ne
+                    'TRUNCATED_PAYLOAD') {
+                throw "I03_CANDIDATE_PROTOCOL::$($headerCodec.error_code)"
+            }
+            $payload = @()
+            if ($packetLength -ge 1 -and $packetLength -le 1048576) {
+                try {
+                    $payload = Read-ExactBytes -Stream $stream `
+                        -Count ([int]$packetLength - 1)
+                } catch {
+                    throw 'I03_CANDIDATE_PROTOCOL::TRUNCATED_PAYLOAD'
+                }
+            }
+            $frame = New-Object byte[] (6 + $payload.Length)
+            [Array]::Copy($header, 0, $frame, 0, 6)
+            if ($payload.Length -gt 0) {
+                [Array]::Copy($payload, 0, $frame, 6, $payload.Length)
+            }
+            $loginCodec = Test-I03Ed2kLoginRequestFrame -Frame $frame
+            if (-not [bool]$loginCodec.valid) {
+                throw "I03_CANDIDATE_PROTOCOL::$($loginCodec.error_code)"
+            }
+            $State['login_protocol'] = [int]$loginCodec.protocol
+            $State['login_opcode'] = [int]$loginCodec.opcode
+            $State['login_payload_bytes'] = [int]$loginCodec.payload_length
+            $State['login_payload_sha256'] =
+                [string]$loginCodec.payload_sha256
             $State['login_advertised_tcp_port'] =
-                [int][BitConverter]::ToUInt16($payload, 20)
+                [int]$loginCodec.advertised_tcp_port
             $loginAt = [DateTime]::UtcNow.ToString('o')
 
-            $idPayload = [BitConverter]::GetBytes([uint32]0x01000001)
-            Send-Ed2kFrame -Stream $stream -Opcode 0x40 `
-                -Payload $idPayload
+            $idChangeFrame = New-I03Ed2kIdChangeFrame
+            try {
+                $stream.Write($idChangeFrame, 0, $idChangeFrame.Length)
+                $stream.Flush()
+            } catch {
+                throw 'I03_CANDIDATE_TRANSPORT::IDCHANGE_WRITE_FAILED'
+            }
             $State['reply_sent'] = $true
             $State['logged_in'] = $true
             $State['phase'] = 'connected'
@@ -1813,22 +6189,37 @@ function Start-I03ControlledEd2kServer {
 
             while (-not [bool]$State['stop_requested']) {
                 if ($stream.DataAvailable) {
-                    $nextHeader = Read-ExactBytes -Stream $stream -Count 6
+                    try {
+                        $nextHeader = Read-ExactBytes -Stream $stream -Count 6
+                    } catch {
+                        throw 'I03_CANDIDATE_TRANSPORT::FOLLOWUP_HEADER_READ_FAILED'
+                    }
                     $nextLength = [BitConverter]::ToUInt32($nextHeader, 1)
-                    if ($nextLength -lt 1 -or $nextLength -gt 16777216) {
-                        throw "Invalid client frame length $nextLength"
+                    if ($nextHeader[0] -ne 0xE3 -or
+                        $nextLength -lt 1 -or $nextLength -gt 16777216) {
+                        throw 'I03_CANDIDATE_PROTOCOL::INVALID_FOLLOWUP_FRAME'
                     }
                     $remaining = [int]$nextLength - 1
                     if ($remaining -gt 0) {
-                        $null = Read-ExactBytes -Stream $stream `
-                            -Count $remaining
+                        try {
+                            $null = Read-ExactBytes -Stream $stream `
+                                -Count $remaining
+                        } catch {
+                            throw 'I03_CANDIDATE_TRANSPORT::FOLLOWUP_PAYLOAD_READ_FAILED'
+                        }
                     }
                     $State['frames_received'] =
                         [int]$State['frames_received'] + 1
                     $State['last_client_opcode'] = [int]$nextHeader[5]
                 } elseif ([DateTime]::UtcNow -ge $nextStatus) {
-                    Send-Ed2kFrame -Stream $stream -Opcode 0x34 `
+                    $statusFrame = New-I03Ed2kFrame -Opcode 0x34 `
                         -Payload (New-Object byte[] 8)
+                    try {
+                        $stream.Write($statusFrame, 0, $statusFrame.Length)
+                        $stream.Flush()
+                    } catch {
+                        throw 'I03_CANDIDATE_TRANSPORT::STATUS_WRITE_FAILED'
+                    }
                     $State['status_frames_sent'] = if (
                         $State.ContainsKey('status_frames_sent')
                     ) {
@@ -1841,7 +6232,31 @@ function Start-I03ControlledEd2kServer {
             }
         } catch {
             if (-not [bool]$State['stop_requested']) {
-                $State['error'] = $_.Exception.Message
+                $errorText = [string]$_.Exception.Message
+                if ($errorText -match
+                    '^I03_CANDIDATE_PROTOCOL::([A-Z0-9_]+)$') {
+                    $State['error_kind'] = 'candidate_protocol'
+                    $State['error_code'] = [string]$Matches[1]
+                } elseif ($errorText -match
+                    '^I03_CANDIDATE_TRANSPORT::([A-Z0-9_]+)$') {
+                    $State['error_kind'] = 'candidate_transport'
+                    $State['error_code'] = [string]$Matches[1]
+                } elseif ($errorText -match
+                    '^I03_EXTERNAL_CONTAMINATION::([A-Z0-9_]+)$') {
+                    $State['error_kind'] = 'external_contamination'
+                    $State['error_code'] = [string]$Matches[1]
+                } elseif ($errorText -match
+                    '^I03_COLLECTOR::([A-Z0-9_]+)$') {
+                    $State['error_kind'] = 'collector'
+                    $State['error_code'] = [string]$Matches[1]
+                } elseif ($errorText -match
+                    '^I03_FIXTURE_INTERNAL::([A-Z0-9_]+)$') {
+                    $State['error_kind'] = 'fixture_internal'
+                    $State['error_code'] = [string]$Matches[1]
+                } else {
+                    $State['error_kind'] = 'fixture_internal'
+                    $State['error_code'] = 'UNEXPECTED_SERVER_EXCEPTION'
+                }
                 $State['phase'] = 'error'
             }
         } finally {
@@ -1869,6 +6284,11 @@ function Start-I03ControlledEd2kServer {
                 phase = [string]$State['phase']
                 logged_in = [bool]$State['logged_in']
                 reply_sent = [bool]$State['reply_sent']
+                candidate_attributed =
+                    [bool]$State['candidate_attributed']
+                attributed_process_id = if (
+                    $State.ContainsKey('attributed_process_id')
+                ) { [int]$State['attributed_process_id'] } else { 0 }
                 login_protocol = if ($State.ContainsKey('login_protocol')) {
                     [int]$State['login_protocol']
                 } else { $null }
@@ -1901,7 +6321,8 @@ function Start-I03ControlledEd2kServer {
                 ) {
                     [string]$State['accepted_remote']
                 } else { '' }
-                error = [string]$State['error']
+                error_kind = [string]$State['error_kind']
+                error_code = [string]$State['error_code']
             }
             [IO.File]::WriteAllText(
                 $ResultPath,
@@ -1919,6 +6340,15 @@ function Start-I03ControlledEd2kServer {
     $null = $powershell.AddArgument($RunNonce)
     $null = $powershell.AddArgument($Policy)
     $null = $powershell.AddArgument($ExpectedClientAddress)
+    $null = $powershell.AddArgument(
+        ${function:Test-I03Ed2kLoginRequestFrame}.ToString()
+    )
+    $null = $powershell.AddArgument(
+        ${function:New-I03Ed2kFrame}.ToString()
+    )
+    $null = $powershell.AddArgument(
+        ${function:New-I03Ed2kIdChangeFrame}.ToString()
+    )
     $async = $powershell.BeginInvoke()
 
     return [pscustomobject][ordered]@{
@@ -1930,6 +6360,27 @@ function Start-I03ControlledEd2kServer {
         evidence_path = $EvidencePath
         started_at_utc = Get-LabUtcTimestamp
     }
+}
+
+function Assert-I03ControlledEd2kServerHealthy {
+    param([Parameter(Mandatory = $true)][object]$Server)
+
+    $kind = [string]$Server.state['error_kind']
+    if (-not $kind -or $kind -eq 'none') { return }
+    $attributed = [bool]$Server.state['candidate_attributed']
+    if ($attributed -and $kind -eq 'candidate_protocol') {
+        throw 'I03_PRODUCT::CONTROLLED_ED2K_PROTOCOL'
+    }
+    if ($attributed -and $kind -eq 'candidate_transport') {
+        throw 'I03_PRODUCT::CONTROLLED_ED2K_TRANSPORT'
+    }
+    if ($kind -eq 'collector') {
+        throw 'I03_COLLECTOR::SERVER_REVERSE_TUPLE_QUERY_FAILED'
+    }
+    if ($kind -eq 'external_contamination') {
+        throw 'I03_FIXTURE::EXTERNAL_CONTAMINATION'
+    }
+    throw 'I03_FIXTURE::CONTROLLED_ED2K_SERVER_FAILED'
 }
 
 function Wait-I03ControlledEd2kLogin {
@@ -1946,23 +6397,34 @@ function Wait-I03ControlledEd2kLogin {
         if ($Process.HasExited) {
             throw 'Candidate exited before controlled eD2K login'
         }
-        if ([string]$Server.state['error']) {
-            throw "Controlled eD2K server failed: $($Server.state['error'])"
-        }
+        Assert-I03ControlledEd2kServerHealthy -Server $Server
         if ([bool]$Server.state['logged_in'] -and
             [bool]$Server.state['reply_sent']) {
-            $connections = @(
-                Get-NetTCPConnection -State Established `
-                    -OwningProcess $Process.Id `
-                    -RemoteAddress ([string]$Server.state['listen_address']) `
-                    -RemotePort $Server.port -ErrorAction SilentlyContinue
-            )
-            if ($connections.Count -eq 1 -and
-                [int]$Server.state['login_protocol'] -eq 0xE3 -and
-                [int]$Server.state['login_opcode'] -eq 0x01 -and
-                [int]$Server.state['login_payload_bytes'] -ge 22 -and
-                [int]$Server.state['login_advertised_tcp_port'] -eq
+            $census = Get-I03ProcessSocketCensus -ProcessId $Process.Id
+            if (-not [bool]$census.collector_ok) {
+                throw "I03_COLLECTOR::$($census.collector_error_code)"
+            }
+            $serverAddress = Get-I03NormalizedIp -Address `
+                ([string]$Server.state['listen_address'])
+            $connections = @($census.tcp_rows | Where-Object {
+                [string]$_.state -eq 'Established' -and
+                (Get-I03NormalizedIp -Address `
+                    ([string]$_.remote_address)) -eq $serverAddress -and
+                [int]$_.remote_port -eq $Server.port
+            })
+            if ($connections.Count -ne 1 -or
+                -not [bool]$Server.state['candidate_attributed'] -or
+                [int]$Server.state['attributed_process_id'] -ne $Process.Id) {
+                throw 'I03_FIXTURE::EXTERNAL_CONTAMINATION'
+            }
+            if ([int]$Server.state['login_protocol'] -ne 0xE3 -or
+                [int]$Server.state['login_opcode'] -ne 0x01 -or
+                [int]$Server.state['login_payload_bytes'] -lt 22 -or
+                [int]$Server.state['login_advertised_tcp_port'] -ne
                     $ExpectedTcpPort) {
+                throw 'I03_PRODUCT::CONTROLLED_ED2K_PROTOCOL'
+            }
+            if ($connections.Count -eq 1) {
                 return [pscustomobject][ordered]@{
                     connected = $true
                     server_address =
@@ -1971,8 +6433,8 @@ function Wait-I03ControlledEd2kLogin {
                     client_process_id = $Process.Id
                     client_local_address =
                         Get-I03NormalizedIp -Address `
-                            ([string]$connections[0].LocalAddress)
-                    client_local_port = [int]$connections[0].LocalPort
+                            ([string]$connections[0].local_address)
+                    client_local_port = [int]$connections[0].local_port
                     login_protocol = [int]$Server.state['login_protocol']
                     login_opcode = [int]$Server.state['login_opcode']
                     login_payload_bytes =
@@ -2048,7 +6510,22 @@ function Invoke-I03PeerRole {
         throw 'Peer role requires the coordinator-issued RunNonce'
     }
     $nonce = $RunNonce.ToLowerInvariant()
-    $outputPath = Get-LabFullPath -Path $OutputRoot
+    $repositoryRoot = Get-LabFullPath -Path (
+        Join-Path $PSScriptRoot '..\..'
+    )
+    $outputPath = Assert-I03PrivateRoot -Path $OutputRoot `
+        -Label 'OUTPUT' -RepositoryRoot $repositoryRoot `
+        -CandidatePackageRoot $candidate.package_path
+    $coordinationRootPath = Assert-I03PrivateRoot `
+        -Path $CoordinationRoot -Label 'COORDINATION' `
+        -RepositoryRoot $repositoryRoot `
+        -CandidatePackageRoot $candidate.package_path
+    if ((Test-I03PathContainedBy -Path $outputPath `
+            -Root $coordinationRootPath) -or
+        (Test-I03PathContainedBy -Path $coordinationRootPath `
+            -Root $outputPath)) {
+        throw 'I03_PRIVATE_ROOT::OUTPUT_COORDINATION_OVERLAP'
+    }
     $packageRootWithSeparator =
         (Get-LabFullPath -Path $candidate.package_path).TrimEnd('\') + '\'
     if (($outputPath.TrimEnd('\') + '\').StartsWith(
@@ -2063,10 +6540,11 @@ function Invoke-I03PeerRole {
         }
     }
     $output = New-LabDirectory -Path $outputPath
-    $evidence = New-LabDirectory -Path (Join-Path $output 'evidence')
+    $evidence = New-LabDirectory -Path (Join-Path $output 'private')
+    $publicEvidence = New-LabDirectory -Path (Join-Path $output 'evidence')
     $nodes = New-LabDirectory -Path (Join-Path $output 'nodes')
     $coordination = Get-LabFullPath -Path (Join-Path `
-        (Get-LabFullPath -Path $CoordinationRoot) "v91-i03-$nonce")
+        $coordinationRootPath "v91-i03-$nonce")
     if (($coordination.TrimEnd('\') + '\').StartsWith(
         $packageRootWithSeparator,
         [StringComparison]::OrdinalIgnoreCase
@@ -2083,6 +6561,11 @@ function Invoke-I03PeerRole {
         throw 'Peer coordination directory is not pristine (expected only run.json)'
     }
     $runPath = Join-Path $coordination 'run.json'
+    $peerPackagePreflight =
+        Get-I03PackageIdentity -PackagePath $candidate.package_path
+    $peerZipPreflight = Get-I03ZipPackageBinding `
+        -ZipPath $candidateZip -ExpectedZipSha256 $expectedZipHash `
+        -PackageIdentity $peerPackagePreflight
     $manifest = Get-Content -LiteralPath $runPath -Raw |
         ConvertFrom-Json -ErrorAction Stop
     if ([string]$manifest.schema -ne 'ese.v91.i03-run/v1' -or
@@ -2094,6 +6577,20 @@ function Invoke-I03PeerRole {
             $candidate.ese_server_sha256 -or
         [string]$manifest.candidate.build_info_sha256 -ne
             $candidate.build_info_sha256 -or
+        [string]$manifest.candidate.zip_sha256 -ne
+            $peerZipPreflight.zip_sha256 -or
+        [Int64]$manifest.candidate.zip_bytes -ne
+            [Int64]$peerZipPreflight.zip_bytes -or
+        [string]$manifest.candidate.package_manifest_sha256 -ne
+            $peerPackagePreflight.manifest_sha256 -or
+        [int]$manifest.candidate.package_file_count -ne
+            [int]$peerPackagePreflight.file_count -or
+        [Int64]$manifest.candidate.package_total_bytes -ne
+            [Int64]$peerPackagePreflight.total_bytes -or
+        -not [bool]$manifest.lab_account.
+            disposable_account_acknowledged -or
+        [string]$manifest.lab_account.
+            coordinator_user_sid_sha256 -notmatch '^[0-9a-f]{64}$' -or
         [string]$manifest.peer.public_ipv4 -ne $peerV4Text -or
         [string]$manifest.peer.local_ipv4 -ne $peerLocalV4Text -or
         [string]$manifest.peer.public_ipv6 -ne $peerV6Text -or
@@ -2110,6 +6607,7 @@ function Invoke-I03PeerRole {
     $stopPath = Join-Path $coordination 'stop.json'
     $peerResultPath = Join-Path $coordination 'peer-result.json'
     $source = $null
+    $sourceExpectedIdentity = $null
     $sourceNode = ''
     $sourceExe = ''
     $sourceIdentity = ''
@@ -2118,18 +6616,155 @@ function Invoke-I03PeerRole {
     $shared = $null
     $peerTopology = $null
     $runtimeFailure = $null
-    $cleanupFailures = New-Object 'Collections.Generic.List[string]'
+    $cleanupFailures = [System.Collections.Generic.List[string]]::new()
     $barriersCompleted = 0
     $peerStopped = $false
     $candidateUnchanged = $false
     $nodeUnchanged = $false
+    $peerPreferencesOracle = $null
+    $peerNodeInitialBinding = $null
+    $peerNodeTerminalBinding = $null
     $packageIdentityBefore = $null
     $packageIdentityAfter = $null
     $packageManifestUnchanged = $false
+    $packageZipBindingBefore = $null
+    $packageZipBindingAfter = $null
+    $packageZipBindingUnchanged = $false
+    $mutationBaseline = $null
+    $mutationCleanup = $null
     $sourcePassword = 'v91-i03-peer'
+    $peerFailureRecords = [System.Collections.Generic.List[object]]::new()
+    $peerFailureSourceFiles = [System.Collections.Generic.List[object]]::new()
+    $peerOwnedProcessIds =
+        [System.Collections.Generic.HashSet[int]]::new()
+    $peerCurrentPolicy = 'none'
+    $peerFailurePhase = 'preflight'
+    $peerFixtureCertified = $false
+
+    function Add-I03PeerFailure {
+        param(
+            [Parameter(Mandatory = $true)][string]$Status,
+            [Parameter(Mandatory = $true)][string]$Code,
+            [Parameter(Mandatory = $true)][string]$Reason,
+            [object[]]$Proofs = @()
+        )
+        if ($null -eq $packageIdentityBefore) { return $null }
+        $categories = [ordered]@{
+            CANDIDATE_EXITED = 'PRODUCT_RUNTIME'
+            API_UNAVAILABLE = 'PRODUCT_LIVENESS'
+            API_CONTRACT = 'PRODUCT_CONTRACT'
+            PEER_IDENTITY_CHANGED = 'PRODUCT_IDENTITY'
+            WRONG_OR_NONPHYSICAL_SOCKET = 'PRODUCT_ATTRIBUTION'
+            PACKAGE_BINDING = 'LAB_PACKAGE'
+            TOPOLOGY = 'LAB_TOPOLOGY'
+            CONTROL_TIMEOUT = 'LAB_CONTROL'
+            COORDINATION_SCHEMA = 'LAB_CONTROL'
+            COLLECTOR_UNAVAILABLE = 'LAB_COLLECTOR'
+            COLLECTOR_AMBIGUOUS = 'LAB_COLLECTOR'
+            EXTERNAL_CONTAMINATION = 'LAB_CONTAMINATION'
+            EVIDENCE_INCOMPLETE = 'LAB_EVIDENCE'
+            CLEANUP_INCOMPLETE = 'LAB_CLEANUP'
+            HARNESS_EXCEPTION = 'LAB_HARNESS'
+        }
+        if (-not $categories.Contains($Code)) {
+            throw 'I03_FAILURE_PROTOCOL::UNKNOWN_PEER_CODE'
+        }
+        $record = New-I03FailureRecord -CaseId $caseId `
+            -RunNonce $nonce -Role 'Peer' -Policy $peerCurrentPolicy `
+            -Phase $peerFailurePhase -Status $Status `
+            -Category ([string]$categories[$Code]) -Code $Code `
+            -Message $Reason -CandidateCommit $candidate.commit `
+            -CandidateEmuleSha256 $expectedHash `
+            -CandidateZipSha256 $expectedZipHash `
+            -PackageManifestSha256 $packageIdentityBefore.manifest_sha256 `
+            -FixtureCertified $peerFixtureCertified -Proofs $Proofs
+        $peerFailureRecords.Add($record)
+        return $record
+    }
+
+    function Stop-I03PeerLab {
+        param(
+            [Parameter(Mandatory = $true)][string]$Code,
+            [Parameter(Mandatory = $true)][string]$Reason
+        )
+        $null = Add-I03PeerFailure -Status 'LAB_BLOCKED' `
+            -Code $Code -Reason $Reason
+        throw "I03_LAB_BLOCKED::$Code"
+    }
+
+    function Assert-I03PeerReservedPortsFree {
+        try {
+            Wait-I03PortSetFree -Ports $allPorts
+        } catch {
+            if ([string]$_.Exception.Message -match
+                '^I03_COLLECTOR::') {
+                Stop-I03PeerLab -Code 'COLLECTOR_UNAVAILABLE' `
+                    -Reason 'Peer reserved-port collector failed'
+            }
+            Stop-I03PeerLab -Code 'EXTERNAL_CONTAMINATION' `
+                -Reason 'A reserved candidate port was not free on peer host'
+        }
+    }
+
+    function Stop-I03PeerProduct {
+        param(
+            [Parameter(Mandatory = $true)][string]$Code,
+            [Parameter(Mandatory = $true)][string]$Reason,
+            [Parameter(Mandatory = $true)][AllowNull()][object]$SourceEvidence
+        )
+        if (-not $peerFixtureCertified -or
+            $peerCurrentPolicy -notin @('auto', 'preferred')) {
+            Stop-I03PeerLab -Code 'EVIDENCE_INCOMPLETE' `
+                -Reason 'Peer product classification preceded certification'
+        }
+        $sourceName = 'peer-failure-source-{0:D3}.json' -f (
+            $peerFailureSourceFiles.Count + 1
+        )
+        $sourcePath = Join-Path $coordination $sourceName
+        try {
+            Write-LabJson -Value ([ordered]@{
+                schema = 'ese.v91.i03-failure-source/v1'
+                case_id = $caseId
+                run_nonce = $nonce
+                role = 'Peer'
+                policy = $peerCurrentPolicy
+                phase = $peerFailurePhase
+                code = $Code
+                evidence = $SourceEvidence
+            }) -Path $sourcePath | Out-Null
+            $sourceHash = Get-LabSha256 -Path $sourcePath
+            $verified = Get-Content -LiteralPath $sourcePath -Raw `
+                -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ([string]$verified.schema -cne
+                    'ese.v91.i03-failure-source/v1' -or
+                [string]$verified.role -cne 'Peer' -or
+                [string]$verified.policy -cne $peerCurrentPolicy -or
+                [string]$verified.phase -cne $peerFailurePhase -or
+                [string]$verified.code -cne $Code -or
+                (Get-LabSha256 -Path $sourcePath) -cne $sourceHash) {
+                throw 'I03_FAILURE_SOURCE::VERIFY_FAILED'
+            }
+            $peerFailureSourceFiles.Add([pscustomobject][ordered]@{
+                file_name = $sourceName
+                sha256 = $sourceHash
+                bytes = [Int64](Get-Item -LiteralPath $sourcePath).Length
+            })
+        } catch {
+            Stop-I03PeerLab -Code 'EVIDENCE_INCOMPLETE' `
+                -Reason 'Peer failure source persistence failed'
+        }
+        $proof = New-I03ProofProjection -Kind ($Code.ToLowerInvariant()) `
+            -CaseId $caseId -RunNonce $nonce -Role 'Peer' `
+            -Policy $peerCurrentPolicy -Phase $peerFailurePhase `
+            -SourceEvidenceSha256 $sourceHash
+        $null = Add-I03PeerFailure -Status 'PRODUCT_INVARIANT' `
+            -Code $Code -Reason $Reason -Proofs @($proof)
+        throw "I03_PRODUCT_INVARIANT::$Code"
+    }
 
     function Start-I03PeerSource {
         $process = $null
+        $processIdentity = $null
         try {
             # Do not use --headless here. The candidate intentionally
             # regenerates its userhash on every headless startup; that would
@@ -2141,6 +6776,8 @@ function Invoke-I03PeerRole {
                     "--tcp-port=$PeerTcpPort",
                     "--udp-port=$PeerUdpPort"
                 ) -WorkingDirectory $sourceNode -PassThru -WindowStyle Hidden
+            $processIdentity = Get-I03ProcessIdentity -Process $process
+            [void]$peerOwnedProcessIds.Add([int]$process.Id)
             $listener = Wait-I03Listener -Port $PeerTcpPort `
                 -Process $process -RequireDualStack
             $api = Wait-I03Api -Port $PeerWebPort -Process $process
@@ -2152,14 +6789,18 @@ function Invoke-I03PeerRole {
             }
             return [pscustomobject][ordered]@{
                 process = $process
+                process_identity = $processIdentity
                 listener = $listener
                 api = $api
             }
         } catch {
             if ($null -ne $process) {
                 $stopped = Stop-I03OwnedProcess -Process $process `
-                    -ExpectedPath $sourceExe
-                if (-not $stopped.stopped) {
+                    -ExpectedPath $sourceExe `
+                    -ExpectedIdentity $processIdentity
+                if (-not $stopped.stopped -or
+                    -not $stopped.collector_ok -or
+                    $stopped.unexpected_descendant_count -ne 0) {
                     $cleanupFailures.Add(
                         "partially started peer process $($process.Id) remains"
                     )
@@ -2172,9 +6813,27 @@ function Invoke-I03PeerRole {
     try {
         $packageIdentityBefore =
             Get-I03PackageIdentity -PackagePath $candidate.package_path
+        $packageZipBindingBefore = Get-I03ZipPackageBinding `
+            -ZipPath $candidateZip -ExpectedZipSha256 $expectedZipHash `
+            -PackageIdentity $packageIdentityBefore
         Write-LabJson -Value $packageIdentityBefore -Path (
             Join-Path $evidence 'package-manifest-before.json'
         ) | Out-Null
+        Write-LabJson -Value $packageZipBindingBefore -Path (
+            Join-Path $evidence 'package-zip-binding-before.json'
+        ) | Out-Null
+        $preexistingProcesses = Get-I03EmuleProcessCensus
+        Write-LabJson -Value $preexistingProcesses -Path (
+            Join-Path $evidence 'preexisting-emule-process-census.json'
+        ) | Out-Null
+        if (-not [bool]$preexistingProcesses.collector_ok) {
+            Stop-I03PeerLab -Code 'COLLECTOR_UNAVAILABLE' `
+                -Reason 'Preexisting eMule process collector failed'
+        }
+        if ([int]$preexistingProcesses.process_count -ne 0) {
+            Stop-I03PeerLab -Code 'EXTERNAL_CONTAMINATION' `
+                -Reason 'Preexisting eMule process detected on peer host'
+        }
         Test-I03PortSetFree -Ports @(
             $PeerTcpPort, $PeerUdpPort, $PeerWebPort
         )
@@ -2187,12 +6846,23 @@ function Invoke-I03PeerRole {
         if ([int]$localV4.interface_index -ne [int]$localV6.interface_index) {
             throw 'Peer local IPv4 and public IPv6 are not on the same adapter'
         }
+        if ([string]$localV6.address_class -cne 'global-native-v6') {
+            throw 'Peer assigned IPv6 is not strict native global unicast'
+        }
         if (-not $localV4.adapter.physical_nonvirtual -or
             -not $localV6.adapter.physical_nonvirtual) {
             throw 'Peer dual-stack addresses are not on an Up physical non-virtual adapter'
         }
+        $peerMachineIdentity = Get-I03MachineIdentityEvidence
+        if (-not [bool]$peerMachineIdentity.physical_host_claim -or
+            [bool]$peerMachineIdentity.virtual_signature_detected) {
+            Stop-I03PeerLab -Code 'TOPOLOGY' `
+                -Reason 'Peer Win32_ComputerSystem identifies a virtual host'
+        }
         $peerTopology = [ordered]@{
-            machine_id_sha256 = Get-I03MachineId
+            machine_id_sha256 =
+                [string]$peerMachineIdentity.machine_id_sha256
+            machine_identity = $peerMachineIdentity
             computer_name_sha256 = Get-LabStringSha256 `
                 -Value $env:COMPUTERNAME
             local_ipv4 = $localV4
@@ -2208,13 +6878,70 @@ function Invoke-I03PeerRole {
             ($PeerWebPort - 4711) -ne $offset) {
             throw 'Peer TCP/UDP/Web ports must share the standard offset'
         }
+        $sourceNode = Join-Path $nodes 'v91-i03-peer-a'
+        $sourceExe = Join-Path $sourceNode 'emule.exe'
+        $peerAutostartValueHash = Get-LabStringSha256 -Value (
+            (Get-LabFullPath -Path $sourceExe) + ' -AutoStart'
+        )
+        $mutationBaseline = Get-I03MutationBaseline `
+            -AllowedAutostartValueSha256 @($peerAutostartValueHash)
+        Write-LabJson -Value ([ordered]@{
+            schema = 'ese.v91.i03-transaction-active/v1'
+            case_id = $caseId
+            run_nonce = $nonce
+            role = 'Peer'
+            candidate_commit = $candidate.commit
+            candidate_emule_sha256 = $expectedHash
+            candidate_zip_sha256 = $expectedZipHash
+            package_manifest_sha256 =
+                $packageIdentityBefore.manifest_sha256
+            lab_user_sid_sha256 = $currentLabSidHash
+            forbidden_state_digests =
+                $mutationBaseline.forbidden_state
+            autostart_state_sha256 =
+                $mutationBaseline.autostart.state_sha256
+            run_key_state_sha256 =
+                $mutationBaseline.run_key.state_sha256
+            ed2k_association_state_sha256 =
+                $mutationBaseline.ed2k_association.state_sha256
+        }) -Path (Join-Path $evidence 'transaction-active.json') | Out-Null
+        $peerPreferencesOracle = New-I03PreparedPreferencesOracle `
+            -PackagePath $candidate.package_path `
+            -PackageIdentity $packageIdentityBefore `
+            -OracleRoot (Join-Path $evidence `
+                'prepared-preferences-oracle-peer') `
+            -NodeRole A -RunId 'v91-i03-peer' -PortOffset $offset
+        Write-LabJson -Value $peerPreferencesOracle -Path (
+            Join-Path $evidence 'prepared-preferences-oracle-peer.json'
+        ) | Out-Null
+        if (-not [bool]$peerPreferencesOracle.collector_ok) {
+            Stop-I03PeerLab -Code 'COLLECTOR_UNAVAILABLE' `
+                -Reason 'Peer deterministic preferences oracle failed'
+        }
+        if (-not [bool]$peerPreferencesOracle.source_bound) {
+            Stop-I03PeerLab -Code 'PACKAGE_BINDING' `
+                -Reason 'Peer source preferences did not match frozen manifest'
+        }
         & (Join-Path $PSScriptRoot 'prepare_node.ps1') -NodeRole A `
             -SourcePackage $candidate.package_path -OutputRoot $nodes `
             -RunId 'v91-i03-peer' -PortOffset $offset
-        $sourceNode = Join-Path $nodes 'v91-i03-peer-a'
-        $sourceExe = Join-Path $sourceNode 'emule.exe'
-        if ((Get-LabSha256 -Path $sourceExe) -ne $expectedHash) {
-            throw 'Prepared peer node is not the exact candidate'
+        $peerNodeInitialBinding = Test-I03PreparedNodeBinding `
+            -NodePath $sourceNode -PackageIdentity $packageIdentityBefore `
+            -Phase Initial `
+            -ExpectedPreparedPreferencesSha256 `
+                $peerPreferencesOracle.expected_prepared_preferences_sha256 `
+            -ExpectedPreparedPreferencesBytes `
+                $peerPreferencesOracle.expected_prepared_preferences_bytes
+        Write-LabJson -Value $peerNodeInitialBinding -Path (
+            Join-Path $evidence 'prepared-node-binding-initial.json'
+        ) | Out-Null
+        if (-not [bool]$peerNodeInitialBinding.collector_ok) {
+            Stop-I03PeerLab -Code 'COLLECTOR_UNAVAILABLE' `
+                -Reason 'Peer prepared-node binding collector failed'
+        }
+        if (-not [bool]$peerNodeInitialBinding.bound) {
+            Stop-I03PeerLab -Code 'PACKAGE_BINDING' `
+                -Reason 'Peer prepared node did not match frozen package manifest'
         }
         $incoming = New-LabDirectory `
             -Path (Join-Path $sourceNode 'I03Incoming')
@@ -2227,11 +6954,16 @@ function Invoke-I03PeerRole {
 
         # One clean normal-mode initialization makes preferences.dat and its
         # userhash durable before the campaign. A graceful stop is mandatory.
+        Assert-I03PeerReservedPortsFree
         $initialized = Start-I03PeerSource
         $source = $initialized.process
+        $sourceExpectedIdentity = $initialized.process_identity
         $initStop = Stop-I03OwnedProcess -Process $source `
-            -ExpectedPath $sourceExe -RequireGraceful
-        if (-not $initStop.stopped -or -not $initStop.graceful) {
+            -ExpectedPath $sourceExe `
+            -ExpectedIdentity $sourceExpectedIdentity -RequireGraceful
+        if (-not $initStop.stopped -or -not $initStop.graceful -or
+            -not $initStop.collector_ok -or
+            $initStop.unexpected_descendant_count -ne 0) {
             throw 'Peer identity initialization did not stop gracefully'
         }
         $source = $null
@@ -2278,8 +7010,10 @@ function Invoke-I03PeerRole {
                 $peerUploadCapKiBps
         }
 
+        Assert-I03PeerReservedPortsFree
         $started = Start-I03PeerSource
         $source = $started.process
+        $sourceExpectedIdentity = $started.process_identity
         $currentSourcePid = $source.Id
         if ((Get-I03UserHashSha256 -NodePath $sourceNode) -ne
             $sourceIdentity) {
@@ -2299,6 +7033,13 @@ function Invoke-I03PeerRole {
             case_id = $caseId
             run_nonce = $nonce
             ready_at_utc = Get-LabUtcTimestamp
+            lab_account = [ordered]@{
+                disposable_account_acknowledged =
+                    [bool]$DisposableLabAccountAcknowledged
+                current_user_sid_sha256 = $currentLabSidHash
+                expected_sid_binding_exact =
+                    $currentLabSidHash -ceq $expectedLabSidHash
+            }
             candidate = [ordered]@{
                 commit = $candidate.commit
                 emule_sha256 = $expectedHash
@@ -2308,6 +7049,10 @@ function Invoke-I03PeerRole {
                     $packageIdentityBefore.manifest_sha256
                 extracted_package_file_count =
                     $packageIdentityBefore.file_count
+                extracted_package_total_bytes =
+                    $packageIdentityBefore.total_bytes
+                zip_sha256 = $packageZipBindingBefore.zip_sha256
+                zip_bytes = $packageZipBindingBefore.zip_bytes
             }
             peer = $peerTopology
             endpoint = [ordered]@{
@@ -2369,19 +7114,8 @@ function Invoke-I03PeerRole {
         $dualMarker = $null
         do {
             $baselineInbound = @(
-                Get-NetTCPConnection -State Established `
-                    -LocalPort $PeerTcpPort -OwningProcess $source.Id `
-                    -ErrorAction SilentlyContinue | ForEach-Object {
-                        [pscustomobject][ordered]@{
-                            owning_process = [int]$_.OwningProcess
-                            local_address = Get-I03NormalizedIp `
-                                -Address ([string]$_.LocalAddress)
-                            local_port = [int]$_.LocalPort
-                            remote_address = Get-I03NormalizedIp `
-                                -Address ([string]$_.RemoteAddress)
-                            remote_port = [int]$_.RemotePort
-                        }
-                    }
+                Get-I03PeerInboundConnectionSnapshot `
+                    -ProcessId $source.Id -LocalPort $PeerTcpPort
             )
             $baselineInboundV4 = @($baselineInbound | Where-Object {
                 $_.local_address -eq $peerLocalV4Text
@@ -2389,7 +7123,11 @@ function Invoke-I03PeerRole {
             $baselineInboundV6 = @($baselineInbound | Where-Object {
                 $_.local_address -eq $peerV6Text
             })
-            $dualMarker = Get-I03PeerDualStackMarker -NodePath $sourceNode
+            $dualMarker = Get-I03PeerDualStackMarker -NodePath $sourceNode `
+                -SnapshotRoot $evidence
+            if (-not [bool]$dualMarker.collector_ok) {
+                throw "I03_COLLECTOR::$($dualMarker.collector_error_code)"
+            }
             if ($baselineInbound.Count -eq 2 -and
                 $baselineInboundV4.Count -eq 1 -and
                 $baselineInboundV6.Count -eq 1 -and
@@ -2398,6 +7136,11 @@ function Invoke-I03PeerRole {
             }
             Start-Sleep -Milliseconds 100
         } while ([DateTime]::UtcNow -lt $baselineDeadline)
+        $dualMarker = Get-I03PeerDualStackMarker -NodePath $sourceNode `
+            -SnapshotRoot $evidence -PersistSnapshots
+        if (-not [bool]$dualMarker.collector_ok) {
+            throw "I03_COLLECTOR::$($dualMarker.collector_error_code)"
+        }
         $peerApi = Get-I03ApiProbe -Port $PeerWebPort
         if ($baselineInbound.Count -ne 2 -or
             $baselineInboundV4.Count -ne 1 -or
@@ -2431,6 +7174,9 @@ function Invoke-I03PeerRole {
             [pscustomobject]@{ name = 'auto'; mode = 1; family = 'IPv4' },
             [pscustomobject]@{ name = 'preferred'; mode = 2; family = 'IPv6' }
         )) {
+            $peerCurrentPolicy = [string]$policy.name
+            $peerFailurePhase = 'dualstack_rearm'
+            $peerFixtureCertified = $false
             $rearmPath = Join-Path $coordination `
                 "$($policy.name)-rearm.json"
             $rearmAckPath = Join-Path $coordination `
@@ -2450,7 +7196,12 @@ function Invoke-I03PeerRole {
             # g_uForkCapsRuntime is process-local and is reset by every peer
             # restart. Require a nonce-scoped native-v6 socket on the CURRENT
             # source PID and a fresh log-marker delta before each prewarm.
-            $markerBefore = Get-I03PeerDualStackMarker -NodePath $sourceNode
+            $markerBefore = Get-I03PeerDualStackMarker `
+                -NodePath $sourceNode -SnapshotRoot $evidence `
+                -PersistSnapshots
+            if (-not [bool]$markerBefore.collector_ok) {
+                throw "I03_COLLECTOR::$($markerBefore.collector_error_code)"
+            }
             $rearmControl = Wait-I03JsonFile -Path $rearmPath `
                 -StopPath $stopPath -TimeoutSeconds $CaseTimeoutSeconds
             if ($null -eq $rearmControl -or
@@ -2471,6 +7222,8 @@ function Invoke-I03PeerRole {
                 [int]$rearm.coordinator_local_port -le 0) {
                 throw "Invalid $($policy.name) DUALSTACK rearm command"
             }
+            $peerFixtureCertified = $true
+            $peerFailurePhase = 'dualstack_rearm'
             $rearmInbound = @()
             $markerAfter = $markerBefore
             $inboundDelta = 0
@@ -2478,22 +7231,15 @@ function Invoke-I03PeerRole {
             $rearmDeadline = [DateTime]::UtcNow.AddSeconds(10)
             do {
                 $rearmInbound = @(
-                    Get-NetTCPConnection -State Established `
-                        -LocalPort $PeerTcpPort -OwningProcess $source.Id `
-                        -ErrorAction SilentlyContinue | ForEach-Object {
-                            [pscustomobject][ordered]@{
-                                owning_process = [int]$_.OwningProcess
-                                local_address = Get-I03NormalizedIp `
-                                    -Address ([string]$_.LocalAddress)
-                                local_port = [int]$_.LocalPort
-                                remote_address = Get-I03NormalizedIp `
-                                    -Address ([string]$_.RemoteAddress)
-                                remote_port = [int]$_.RemotePort
-                            }
-                        }
+                    Get-I03PeerInboundConnectionSnapshot `
+                        -ProcessId $source.Id -LocalPort $PeerTcpPort
                 )
                 $markerAfter =
-                    Get-I03PeerDualStackMarker -NodePath $sourceNode
+                    Get-I03PeerDualStackMarker -NodePath $sourceNode `
+                        -SnapshotRoot $evidence
+                if (-not [bool]$markerAfter.collector_ok) {
+                    throw "I03_COLLECTOR::$($markerAfter.collector_error_code)"
+                }
                 $inboundDelta =
                     [int]$markerAfter.inbound_reachability_markers -
                     [int]$markerBefore.inbound_reachability_markers
@@ -2506,6 +7252,18 @@ function Invoke-I03PeerRole {
                 }
                 Start-Sleep -Milliseconds 100
             } while ([DateTime]::UtcNow -lt $rearmDeadline)
+            $markerAfter = Get-I03PeerDualStackMarker `
+                -NodePath $sourceNode -SnapshotRoot $evidence `
+                -PersistSnapshots
+            if (-not [bool]$markerAfter.collector_ok) {
+                throw "I03_COLLECTOR::$($markerAfter.collector_error_code)"
+            }
+            $inboundDelta =
+                [int]$markerAfter.inbound_reachability_markers -
+                [int]$markerBefore.inbound_reachability_markers
+            $acceptedDelta =
+                [int]$markerAfter.accepted_native_ipv6_markers -
+                [int]$markerBefore.accepted_native_ipv6_markers
             if ($rearmInbound.Count -ne 1 -or
                 $rearmInbound[0].local_address -ne $peerV6Text -or
                 $rearmInbound[0].remote_address -ne
@@ -2516,7 +7274,20 @@ function Invoke-I03PeerRole {
                 $inboundDelta -ne 1 -or $acceptedDelta -ne 1 -or
                 (Get-I03UserHashSha256 -NodePath $sourceNode) -ne
                     $sourceIdentity) {
-                throw "Peer could not prove current-PID $($policy.name) DUALSTACK rearm"
+                $rearmCode = if (
+                    (Get-I03UserHashSha256 -NodePath $sourceNode) -ne
+                        $sourceIdentity
+                ) { 'PEER_IDENTITY_CHANGED' } else {
+                    'WRONG_OR_NONPHYSICAL_SOCKET'
+                }
+                Stop-I03PeerProduct -Code $rearmCode `
+                    -SourceEvidence ([ordered]@{
+                        inbound_connections = $rearmInbound
+                        marker_before = $markerBefore
+                        marker_after = $markerAfter
+                        inbound_delta = $inboundDelta
+                        accepted_delta = $acceptedDelta
+                    }) -Reason 'Peer current-PID dual-stack rearm invariant failed'
             }
             Write-LabJson -Value ([ordered]@{
                 schema = 'ese.v91.i03-peer-rearm-ack/v1'
@@ -2545,6 +7316,7 @@ function Invoke-I03PeerRole {
                 throw "Coordinator stopped before $($policy.name) prewarm"
             }
             $prewarm = $prewarmControl.value
+            $peerFailurePhase = 'ipv4_prewarm'
             if ([string]$prewarm.schema -ne
                     'ese.v91.i03-prewarm-command/v1' -or
                 [string]$prewarm.case_id -ne $caseId -or
@@ -2559,27 +7331,34 @@ function Invoke-I03PeerRole {
                 throw "Invalid $($policy.name) prewarm command"
             }
             $prewarmInbound = @(
-                Get-NetTCPConnection -State Established `
-                    -LocalPort $PeerTcpPort -OwningProcess $source.Id `
-                    -ErrorAction SilentlyContinue | ForEach-Object {
-                        [pscustomobject][ordered]@{
-                            owning_process = [int]$_.OwningProcess
-                            local_address = Get-I03NormalizedIp `
-                                -Address ([string]$_.LocalAddress)
-                            local_port = [int]$_.LocalPort
-                            remote_address = Get-I03NormalizedIp `
-                                -Address ([string]$_.RemoteAddress)
-                            remote_port = [int]$_.RemotePort
-                        }
-                    }
+                Get-I03PeerInboundConnectionSnapshot `
+                    -ProcessId $source.Id -LocalPort $PeerTcpPort
             )
             $peerApi = Get-I03ApiProbe -Port $PeerWebPort
             if ($prewarmInbound.Count -ne 1 -or
-                $prewarmInbound[0].local_address -ne $peerLocalV4Text -or
-                -not $peerApi.available -or -not $peerApi.isolation_valid -or
-                (Get-I03UserHashSha256 -NodePath $sourceNode) -ne
-                    $sourceIdentity) {
-                throw "Peer could not correlate exact IPv4 $($policy.name) prewarm"
+                $prewarmInbound[0].local_address -ne $peerLocalV4Text) {
+                Stop-I03PeerProduct `
+                    -Code 'WRONG_OR_NONPHYSICAL_SOCKET' `
+                    -SourceEvidence $prewarmInbound `
+                    -Reason 'Peer IPv4 prewarm inbound tuple was not exact'
+            }
+            if (-not $peerApi.available) {
+                Stop-I03PeerProduct -Code 'API_UNAVAILABLE' `
+                    -SourceEvidence $peerApi `
+                    -Reason 'Peer API unavailable during IPv4 prewarm'
+            }
+            if (-not $peerApi.isolation_valid) {
+                Stop-I03PeerProduct -Code 'API_CONTRACT' `
+                    -SourceEvidence $peerApi `
+                    -Reason 'Peer API isolation changed during IPv4 prewarm'
+            }
+            if ((Get-I03UserHashSha256 -NodePath $sourceNode) -ne
+                $sourceIdentity) {
+                Stop-I03PeerProduct -Code 'PEER_IDENTITY_CHANGED' `
+                    -SourceEvidence ([ordered]@{
+                        process = $sourceExpectedIdentity
+                        expected_identity_sha256 = $sourceIdentity
+                    }) -Reason 'Peer identity changed during IPv4 prewarm'
             }
             Write-LabJson -Value ([ordered]@{
                 schema = 'ese.v91.i03-peer-prewarm-ack/v1'
@@ -2596,6 +7375,8 @@ function Invoke-I03PeerRole {
                 inbound_connection = $prewarmInbound[0]
                 api = $peerApi
             }) -Path $prewarmAckPath | Out-Null
+            $peerFixtureCertified = $true
+            $peerFailurePhase = 'peer_restart'
 
             $restartControl = Wait-I03JsonFile -Path $restartPath `
                 -StopPath $stopPath -TimeoutSeconds $CaseTimeoutSeconds
@@ -2618,24 +7399,57 @@ function Invoke-I03PeerRole {
             $oldPid = $source.Id
             $watch = [Diagnostics.Stopwatch]::StartNew()
             $stopped = Stop-I03OwnedProcess -Process $source `
-                -ExpectedPath $sourceExe -RequireGraceful
-            if (-not $stopped.stopped -or -not $stopped.graceful) {
-                throw "Peer $($policy.name) source did not stop gracefully"
+                -ExpectedPath $sourceExe `
+                -ExpectedIdentity $sourceExpectedIdentity `
+                -RequireGraceful
+            if (-not $stopped.collector_ok) {
+                Stop-I03PeerLab -Code 'COLLECTOR_UNAVAILABLE' `
+                    -Reason 'Peer owned-process collector was unavailable'
+            }
+            if (-not $stopped.stopped -or -not $stopped.graceful -or
+                $stopped.unexpected_descendant_count -ne 0) {
+                Stop-I03PeerProduct -Code 'CANDIDATE_EXITED' `
+                    -SourceEvidence $stopped `
+                    -Reason 'Peer candidate did not stop under the bounded restart'
             }
             $source = $null
             if ((Get-I03UserHashSha256 -NodePath $sourceNode) -ne
                 $sourceIdentity) {
-                throw "Peer identity changed while stopping $($policy.name)"
+                Stop-I03PeerProduct -Code 'PEER_IDENTITY_CHANGED' `
+                    -SourceEvidence ([ordered]@{
+                        old_process_id = $oldPid
+                        expected_identity_sha256 = $sourceIdentity
+                    }) -Reason 'Peer identity changed during bounded stop'
             }
             Start-Sleep -Milliseconds 250
-            $restarted = Start-I03PeerSource
+            Assert-I03PeerReservedPortsFree
+            try {
+                $restarted = Start-I03PeerSource
+            } catch {
+                if ([string]$_.Exception.Message -match
+                    '^I03_COLLECTOR::') {
+                    Stop-I03PeerLab -Code 'COLLECTOR_UNAVAILABLE' `
+                        -Reason 'Peer restart collector failed'
+                }
+                Stop-I03PeerProduct -Code 'CANDIDATE_EXITED' `
+                    -SourceEvidence ([ordered]@{
+                        old_process_id = $oldPid
+                        phase = 'restart_startup'
+                    }) -Reason 'Peer candidate failed to restart'
+            }
             $source = $restarted.process
+            $sourceExpectedIdentity = $restarted.process_identity
             $watch.Stop()
             $currentSourcePid = $source.Id
             if ($source.Id -eq $oldPid -or
                 (Get-I03UserHashSha256 -NodePath $sourceNode) -ne
                     $sourceIdentity) {
-                throw "Peer $($policy.name) restart changed identity or reused PID"
+                Stop-I03PeerProduct -Code 'PEER_IDENTITY_CHANGED' `
+                    -SourceEvidence ([ordered]@{
+                        old_process_id = $oldPid
+                        new_process = $sourceExpectedIdentity
+                        expected_identity_sha256 = $sourceIdentity
+                    }) -Reason 'Peer restart changed identity or reused PID'
             }
             Write-LabJson -Value ([ordered]@{
                 schema = 'ese.v91.i03-peer-restarted/v1'
@@ -2660,6 +7474,7 @@ function Invoke-I03PeerRole {
                 throw "Coordinator stopped before $($policy.name) completion"
             }
             $done = $doneControl.value
+            $peerFailurePhase = 'peer_completion'
             if ([string]$done.schema -ne
                     'ese.v91.i03-done-command/v1' -or
                 [string]$done.case_id -ne $caseId -or
@@ -2674,23 +7489,8 @@ function Invoke-I03PeerRole {
                 throw "Invalid $($policy.name) done command"
             }
             $finalInbound = @(
-                Get-NetTCPConnection -State Established `
-                    -LocalPort $PeerTcpPort -OwningProcess $source.Id `
-                    -ErrorAction SilentlyContinue | ForEach-Object {
-                        $localAddress = Get-I03NormalizedIp `
-                            -Address ([string]$_.LocalAddress)
-                        [pscustomobject][ordered]@{
-                            owning_process = [int]$_.OwningProcess
-                            family = if ($localAddress.Contains(':')) {
-                                'IPv6'
-                            } else { 'IPv4' }
-                            local_address = $localAddress
-                            local_port = [int]$_.LocalPort
-                            remote_address = Get-I03NormalizedIp `
-                                -Address ([string]$_.RemoteAddress)
-                            remote_port = [int]$_.RemotePort
-                        }
-                    }
+                Get-I03PeerInboundConnectionSnapshot `
+                    -ProcessId $source.Id -LocalPort $PeerTcpPort
             )
             if ([bool]$done.route_observed) {
                 $peerFamilies = @(
@@ -2705,16 +7505,39 @@ function Invoke-I03PeerRole {
                         [int]$done.expected_connection_count -or
                     ($peerFamilies -join ',') -ne
                         ($reportedFamilies -join ',')) {
-                    throw "Peer could not correlate $($policy.name) final inbound socket"
+                    Stop-I03PeerProduct `
+                        -Code 'WRONG_OR_NONPHYSICAL_SOCKET' `
+                        -SourceEvidence ([ordered]@{
+                            done = $done
+                            final_inbound = $finalInbound
+                        }) -Reason 'Peer final inbound socket did not correlate'
                 }
             } elseif ($finalInbound.Count -ne 0) {
-                throw "Peer saw an unreported $($policy.name) final connection"
+                Stop-I03PeerProduct `
+                    -Code 'WRONG_OR_NONPHYSICAL_SOCKET' `
+                    -SourceEvidence ([ordered]@{
+                        done = $done
+                        final_inbound = $finalInbound
+                    }) -Reason 'Peer saw an unreported final connection'
             }
             $peerApi = Get-I03ApiProbe -Port $PeerWebPort
-            if (-not $peerApi.available -or -not $peerApi.isolation_valid -or
-                (Get-I03UserHashSha256 -NodePath $sourceNode) -ne
-                    $sourceIdentity) {
-                throw "Peer $($policy.name) final state is not isolated/exact"
+            if (-not $peerApi.available) {
+                Stop-I03PeerProduct -Code 'API_UNAVAILABLE' `
+                    -SourceEvidence $peerApi `
+                    -Reason 'Peer API became unavailable after restart'
+            }
+            if (-not $peerApi.isolation_valid) {
+                Stop-I03PeerProduct -Code 'API_CONTRACT' `
+                    -SourceEvidence $peerApi `
+                    -Reason 'Peer API isolation contract changed after restart'
+            }
+            if ((Get-I03UserHashSha256 -NodePath $sourceNode) -ne
+                $sourceIdentity) {
+                Stop-I03PeerProduct -Code 'PEER_IDENTITY_CHANGED' `
+                    -SourceEvidence ([ordered]@{
+                        process = $sourceExpectedIdentity
+                        expected_identity_sha256 = $sourceIdentity
+                    }) -Reason 'Peer identity changed after restart'
             }
             Write-LabJson -Value ([ordered]@{
                 schema = 'ese.v91.i03-peer-complete/v1'
@@ -2750,25 +7573,64 @@ function Invoke-I03PeerRole {
             throw 'Peer received an invalid final stop command'
         }
     } catch {
-        $runtimeFailure = $_.Exception.Message
+        $peerError = $_.Exception.Message
+        if ($peerError.StartsWith('I03_LAB_BLOCKED::') -or
+            $peerError.StartsWith('I03_PRODUCT_INVARIANT::')) {
+            $runtimeFailure = $peerError
+        } elseif ($peerError.StartsWith('I03_COLLECTOR::')) {
+            $null = Add-I03PeerFailure -Status 'LAB_BLOCKED' `
+                -Code 'COLLECTOR_UNAVAILABLE' `
+                -Reason 'Peer socket collector failed'
+            $runtimeFailure = 'I03_LAB_BLOCKED::COLLECTOR_UNAVAILABLE'
+        } else {
+            $null = Add-I03PeerFailure -Status 'LAB_BLOCKED' `
+                -Code 'HARNESS_EXCEPTION' -Reason $peerError
+            $runtimeFailure = 'I03_LAB_BLOCKED::HARNESS_EXCEPTION'
+        }
     } finally {
         if ($null -ne $source) {
             $stopped = Stop-I03OwnedProcess -Process $source `
-                -ExpectedPath $sourceExe
+                -ExpectedPath $sourceExe `
+                -ExpectedIdentity $sourceExpectedIdentity
             $peerStopped = [bool]$stopped.stopped
-            if (-not $stopped.stopped) {
+            if (-not $stopped.stopped -or -not $stopped.collector_ok -or
+                $stopped.unexpected_descendant_count -ne 0) {
                 $cleanupFailures.Add('peer source process remains running')
             }
         } else {
             $peerStopped = $true
+        }
+        if ($null -ne $mutationBaseline) {
+            try {
+                $mutationCleanup = Complete-I03MutationTransaction `
+                    -Baseline $mutationBaseline
+                if (-not [bool]$mutationCleanup.complete) {
+                    $cleanupFailures.Add(
+                        'startup registry or forbidden system state changed'
+                    )
+                }
+            } catch {
+                $cleanupFailures.Add(
+                    'startup registry/system-state restoration failed'
+                )
+            }
+        } else {
+            $cleanupFailures.Add('mutation baseline was not captured')
         }
         try {
             $after = Get-LabCandidateInfo -PackagePath $PackagePath `
                 -ExpectedCommit $Commit
             $packageIdentityAfter =
                 Get-I03PackageIdentity -PackagePath $candidate.package_path
+            $packageZipBindingAfter = Get-I03ZipPackageBinding `
+                -ZipPath $candidateZip `
+                -ExpectedZipSha256 $expectedZipHash `
+                -PackageIdentity $packageIdentityAfter
             Write-LabJson -Value $packageIdentityAfter -Path (
                 Join-Path $evidence 'package-manifest-after.json'
+            ) | Out-Null
+            Write-LabJson -Value $packageZipBindingAfter -Path (
+                Join-Path $evidence 'package-zip-binding-after.json'
             ) | Out-Null
             $packageManifestUnchanged =
                 $null -ne $packageIdentityBefore -and
@@ -2778,32 +7640,134 @@ function Invoke-I03PeerRole {
                     $packageIdentityBefore.file_count -and
                 $packageIdentityAfter.total_bytes -eq
                     $packageIdentityBefore.total_bytes
+            $packageZipBindingUnchanged =
+                $null -ne $packageZipBindingBefore -and
+                $packageZipBindingAfter.verified -and
+                $packageZipBindingAfter.zip_sha256 -eq
+                    $packageZipBindingBefore.zip_sha256 -and
+                $packageZipBindingAfter.zip_bytes -eq
+                    $packageZipBindingBefore.zip_bytes -and
+                $packageZipBindingAfter.manifest_sha256 -eq
+                    $packageZipBindingBefore.manifest_sha256
             $candidateUnchanged =
                 $after.emule_sha256 -eq $expectedHash -and
                 $after.ese_server_sha256 -eq $candidate.ese_server_sha256 -and
                 $after.build_info_sha256 -eq $candidate.build_info_sha256 -and
-                $packageManifestUnchanged
+                $packageManifestUnchanged -and
+                $packageZipBindingUnchanged
         } catch {
             $cleanupFailures.Add(
                 "candidate revalidation failed: $($_.Exception.Message)"
             )
         }
-        if ($sourceExe -and
-            (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
+        if ($sourceNode -and $null -ne $packageIdentityBefore -and
+            (Test-Path -LiteralPath $sourceNode -PathType Container)) {
+            $peerNodeTerminalBinding = Test-I03PreparedNodeBinding `
+                -NodePath $sourceNode `
+                -PackageIdentity $packageIdentityBefore -Phase Terminal
+            Write-LabJson -Value $peerNodeTerminalBinding -Path (
+                Join-Path $evidence 'prepared-node-binding-terminal.json'
+            ) | Out-Null
             $nodeUnchanged =
-                (Get-LabSha256 -Path $sourceExe) -eq $expectedHash
+                [bool]$peerNodeTerminalBinding.collector_ok -and
+                [bool]$peerNodeTerminalBinding.bound
         }
         if (-not $candidateUnchanged) {
             $cleanupFailures.Add('candidate package changed during peer run')
         }
         if (-not $nodeUnchanged) {
-            $cleanupFailures.Add('prepared peer executable changed')
+            $cleanupFailures.Add('prepared peer static program files changed')
         }
     }
 
-    $peerStatus = if ($null -eq $runtimeFailure -and
+    $peerTerminalNetwork = Get-I03TerminalSocketCleanupEvidence `
+        -Ports @(
+            $PeerTcpPort, $PeerUdpPort, $PeerWebPort,
+            $AutoTcpPort, $AutoUdpPort, $AutoWebPort,
+            $PreferredTcpPort, $PreferredUdpPort, $PreferredWebPort
+        ) -OwnedProcessIds @($peerOwnedProcessIds)
+    Write-LabJson -Value $peerTerminalNetwork -Path (
+        Join-Path $evidence 'terminal-network-cleanup.json'
+    ) | Out-Null
+    if (-not [bool]$peerTerminalNetwork.collector_ok -or
+        -not [bool]$peerTerminalNetwork.complete) {
+        $cleanupFailures.Add('peer terminal network cleanup is incomplete')
+    }
+    $peerTerminalProcesses = Get-I03EmuleProcessCensus
+    Write-LabJson -Value $peerTerminalProcesses -Path (
+        Join-Path $evidence 'terminal-emule-process-census.json'
+    ) | Out-Null
+    if (-not [bool]$peerTerminalProcesses.collector_ok -or
+        [int]$peerTerminalProcesses.process_count -ne 0) {
+        $cleanupFailures.Add('peer terminal eMule process census is not empty')
+    }
+    $peerFailureSourceVerification = Test-I03PersistedFailureSources `
+        -Manifest @($peerFailureSourceFiles) -Root $coordination `
+        -ExpectedCaseId $caseId -ExpectedRunNonce $nonce `
+        -ExpectedRole 'Peer'
+    $peerReferencedSourceHashes = @($peerFailureRecords |
+        Where-Object status -CEQ 'PRODUCT_INVARIANT' |
+        ForEach-Object { $_.proofs } | ForEach-Object {
+            [string]$_.source_evidence_sha256
+        } | Sort-Object -Unique)
+    $peerReferencedBindingHashes = @($peerFailureRecords |
+        Where-Object status -CEQ 'PRODUCT_INVARIANT' |
+        ForEach-Object { $_.proofs } | ForEach-Object {
+            [string]$_.binding_sha256
+        } | Sort-Object -Unique)
+    $peerVerifiedSourceHashes = @(
+        $peerFailureSourceVerification.source_sha256
+    )
+    $peerVerifiedBindingHashes = @(
+        $peerFailureSourceVerification.trusted_binding_sha256
+    )
+    if (-not [bool]$peerFailureSourceVerification.ok -or
+        @($peerReferencedSourceHashes | Where-Object {
+                [string]$_ -cnotin $peerVerifiedSourceHashes
+            }).Count -gt 0 -or
+        @($peerVerifiedSourceHashes | Where-Object {
+                [string]$_ -cnotin $peerReferencedSourceHashes
+            }).Count -gt 0 -or
+        @($peerReferencedBindingHashes | Where-Object {
+                [string]$_ -cnotin $peerVerifiedBindingHashes
+            }).Count -gt 0 -or
+        @($peerVerifiedBindingHashes | Where-Object {
+                [string]$_ -cnotin $peerReferencedBindingHashes
+            }).Count -gt 0) {
+        $cleanupFailures.Add('peer failure-source evidence is incomplete')
+    }
+    if ($cleanupFailures.Count -gt 0) {
+        $peerCurrentPolicy = 'none'
+        $peerFailurePhase = 'cleanup'
+        $peerFixtureCertified = $false
+        $null = Add-I03PeerFailure -Status 'LAB_BLOCKED' `
+            -Code 'CLEANUP_INCOMPLETE' `
+            -Reason 'Peer transactional cleanup was incomplete'
+    }
+    $peerCleanupComplete = $peerStopped -and $candidateUnchanged -and
+        $nodeUnchanged -and $null -ne $mutationCleanup -and
+        [bool]$mutationCleanup.complete -and
+        [bool]$peerTerminalNetwork.complete -and
+        [bool]$peerTerminalProcesses.collector_ok -and
+        [int]$peerTerminalProcesses.process_count -eq 0 -and
+        $cleanupFailures.Count -eq 0
+    [object[]]$peerCleanupIncidentCodes = @()
+    if ($cleanupFailures.Count -gt 0) {
+        $peerCleanupIncidentCodes = @('CLEANUP_INCOMPLETE')
+    }
+    foreach ($failureRecord in $peerFailureRecords) {
+        $failureRecord.cleanup.complete = $peerCleanupComplete
+        $failureRecord.cleanup.incident_codes =
+            [object[]]$peerCleanupIncidentCodes
+    }
+    $peerHasProductFailure = @($peerFailureRecords | Where-Object {
+        [string]$_.status -ceq 'PRODUCT_INVARIANT'
+    }).Count -gt 0
+    $peerStatus = if ($peerHasProductFailure) {
+        'PRODUCT_INVARIANT'
+    } elseif ($null -eq $runtimeFailure -and
         $barriersCompleted -eq 2 -and $peerStopped -and
-        $cleanupFailures.Count -eq 0) { 'COMPLETE' } else { 'INCOMPLETE' }
+        $cleanupFailures.Count -eq 0) { 'COMPLETE' } else { 'LAB_BLOCKED' }
     $peerResult = [ordered]@{
         schema = 'ese.v91.i03-peer-result/v1'
         case_id = $caseId
@@ -2812,6 +7776,11 @@ function Invoke-I03PeerRole {
         status = $peerStatus
         candidate_commit = $candidate.commit
         candidate_emule_sha256 = $expectedHash
+        candidate_zip_sha256 = $expectedZipHash
+        candidate_package_manifest_sha256 = if (
+            $null -eq $packageIdentityBefore
+        ) { '' } else { $packageIdentityBefore.manifest_sha256 }
+        lab_user_sid_sha256 = $currentLabSidHash
         source_userhash_sha256 = $sourceIdentity
         barriers_completed = $barriersCompleted
         expected_barriers = 2
@@ -2819,17 +7788,29 @@ function Invoke-I03PeerRole {
         topology = $peerTopology
         fixture = $fixture
         runtime_error = $runtimeFailure
+        failure_records = @($peerFailureRecords)
+        failure_source_manifest = @($peerFailureSourceFiles)
+        failure_source_verification = $peerFailureSourceVerification
         cleanup = [ordered]@{
             source_process_stopped = $peerStopped
             candidate_package_unchanged = $candidateUnchanged
             extracted_package_manifest_unchanged =
                 $packageManifestUnchanged
+            package_zip_binding_unchanged =
+                $packageZipBindingUnchanged
             prepared_executable_unchanged = $nodeUnchanged
-            firewall_modified = $false
-            dns_modified = $false
-            hosts_modified = $false
-            routes_modified = $false
-            adapters_modified = $false
+            prepared_node_initial_binding = $peerNodeInitialBinding
+            prepared_node_terminal_binding = $peerNodeTerminalBinding
+            mutation_cleanup = $mutationCleanup
+            autostart_restored_exact = $null -ne $mutationCleanup -and
+                [bool]$mutationCleanup.autostart_restored_exact
+            ed2k_association_restored_exact =
+                $null -ne $mutationCleanup -and
+                [bool]$mutationCleanup.ed2k_association_restored_exact
+            forbidden_state_unchanged = $null -ne $mutationCleanup -and
+                [bool]$mutationCleanup.forbidden_state_unchanged
+            terminal_network = $peerTerminalNetwork
+            terminal_processes = $peerTerminalProcesses
             failures = @($cleanupFailures)
             retained_by_design = @('peer OutputRoot profile', 'fixture', 'evidence')
         }
@@ -2837,6 +7818,131 @@ function Invoke-I03PeerRole {
     Write-LabJson -Value $peerResult `
         -Path (Join-Path $evidence 'peer-result.json') | Out-Null
     Write-LabJson -Value $peerResult -Path $peerResultPath | Out-Null
+    $peerPrivateManifestPath = Join-Path $evidence 'private-manifest.json'
+    $peerPublicRootPrefix = [IO.Path]::GetFullPath(
+        $publicEvidence
+    ).TrimEnd('\') + '\'
+    $peerOutputRootPrefix = [IO.Path]::GetFullPath($output).TrimEnd('\') + '\'
+    $peerCoordinationRootPrefix = [IO.Path]::GetFullPath(
+        $coordination
+    ).TrimEnd('\') + '\'
+    $peerOutputRows = @(Get-ChildItem -LiteralPath $output -File `
+        -Recurse -Force -ErrorAction Stop | Where-Object {
+            -not $_.FullName.StartsWith(
+                $peerPublicRootPrefix,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -and $_.FullName -cne $peerPrivateManifestPath
+        } | ForEach-Object {
+            [pscustomobject][ordered]@{
+                scope = 'output-private-and-nodes'
+                relative_path = $_.FullName.Substring(
+                    $peerOutputRootPrefix.Length
+                )
+                bytes = [Int64]$_.Length
+                sha256 = Get-LabSha256 -Path $_.FullName
+            }
+        })
+    $peerCoordinationRows = @(Get-ChildItem -LiteralPath $coordination `
+        -File -Recurse -Force -ErrorAction Stop | ForEach-Object {
+                [pscustomobject][ordered]@{
+                    scope = 'coordination-private'
+                    relative_path = $_.FullName.Substring(
+                        $peerCoordinationRootPrefix.Length
+                    )
+                    bytes = [Int64]$_.Length
+                    sha256 = Get-LabSha256 -Path $_.FullName
+                }
+            })
+    $peerPrivateRows = @(
+        @($peerOutputRows) + @($peerCoordinationRows) |
+            Sort-Object scope, relative_path
+    )
+    Write-LabJson -Value ([ordered]@{
+        schema = 'ese.v91.i03-private-evidence-manifest/v1'
+        case_id = $caseId
+        run_nonce = $nonce
+        role = 'Peer'
+        retained_by_design = $true
+        files = $peerPrivateRows
+    }) -Path $peerPrivateManifestPath | Out-Null
+    $peerPublicSummary = [ordered]@{
+        schema = 'ese.v91.i03-peer-public-summary/v1'
+        case_id = $caseId
+        role = 'Peer'
+        status = $peerStatus
+        candidate = [ordered]@{
+            commit = $candidate.commit
+            emule_sha256 = $expectedHash
+            zip_sha256 = $expectedZipHash
+            package_unchanged = $candidateUnchanged
+        }
+        barriers_completed = $barriersCompleted
+        expected_barriers = 2
+        failures = @($peerFailureRecords | ForEach-Object {
+            [pscustomobject][ordered]@{
+                policy = [string]$_.policy
+                phase = [string]$_.phase
+                status = [string]$_.status
+                category = [string]$_.category
+                code = [string]$_.code
+                fixture_certified = [bool]$_.fixture_certified
+                cleanup_complete = [bool]$_.cleanup.complete
+            }
+        })
+        cleanup = [ordered]@{
+            complete = $peerCleanupComplete
+            source_process_stopped = $peerStopped
+            candidate_package_unchanged = $candidateUnchanged
+            registry_and_system_state_exact =
+                $null -ne $mutationCleanup -and
+                [bool]$mutationCleanup.complete
+        }
+        retention = [ordered]@{
+            private_artifacts_retained = $true
+            coordination_private_artifacts_retained = $true
+            private_file_count = $peerPrivateRows.Count + 1
+            private_artifact_manifest_sha256 =
+                Get-LabSha256 -Path $peerPrivateManifestPath
+        }
+    }
+    if (-not (Test-I03PublicEvidenceObject -Value $peerPublicSummary)) {
+        throw 'I03_PUBLIC_EVIDENCE::PEER_SUMMARY_REJECTED'
+    }
+    $peerPublicSummaryPath = Join-Path $publicEvidence 'summary.json'
+    Write-LabJson -Value $peerPublicSummary `
+        -Path $peerPublicSummaryPath | Out-Null
+    $peerPublicManifest = [ordered]@{
+        schema = 'ese.v91.i03-public-evidence-manifest/v1'
+        case_id = $caseId
+        role = 'Peer'
+        files = @([ordered]@{
+            name = 'summary.json'
+            bytes = [Int64](Get-Item -LiteralPath `
+                $peerPublicSummaryPath).Length
+            sha256 = Get-LabSha256 -Path $peerPublicSummaryPath
+        })
+        private_artifacts_retained = $true
+        private_artifact_manifest_sha256 =
+            Get-LabSha256 -Path $peerPrivateManifestPath
+        public_scan_passed = $true
+    }
+    if (-not (Test-I03PublicEvidenceObject -Value $peerPublicManifest)) {
+        throw 'I03_PUBLIC_EVIDENCE::PEER_MANIFEST_REJECTED'
+    }
+    $peerPublicManifestPath = Join-Path $publicEvidence `
+        'evidence-manifest.json'
+    Write-LabJson -Value $peerPublicManifest `
+        -Path $peerPublicManifestPath | Out-Null
+    if (-not (Test-I03PublicEvidenceText -Text (
+            Get-Content -LiteralPath $peerPublicSummaryPath -Raw
+        )) -or -not (Test-I03PublicEvidenceText -Text (
+            Get-Content -LiteralPath $peerPublicManifestPath -Raw
+        )) -or -not (Test-I03PublicEvidenceDirectory `
+            -Root $publicEvidence `
+            -ExpectedFiles @('summary.json', 'evidence-manifest.json') `
+            -PrivateManifestPath $peerPrivateManifestPath)) {
+        throw 'I03_PUBLIC_EVIDENCE::PEER_POSTWRITE_SCAN_FAILED'
+    }
     Write-Host "V91-I03 peer status: $peerStatus" -ForegroundColor $(
         if ($peerStatus -eq 'COMPLETE') { 'Green' } else { 'Yellow' }
     )
@@ -2853,7 +7959,22 @@ function Invoke-I03CoordinatorRole {
     }
     $nonce = $RunNonce.ToLowerInvariant()
     $startedAt = [DateTime]::UtcNow
-    $outputPath = Get-LabFullPath -Path $OutputRoot
+    $repositoryRoot = Get-LabFullPath -Path (
+        Join-Path $PSScriptRoot '..\..'
+    )
+    $outputPath = Assert-I03PrivateRoot -Path $OutputRoot `
+        -Label 'OUTPUT' -RepositoryRoot $repositoryRoot `
+        -CandidatePackageRoot $candidate.package_path
+    $coordinationRootPath = Assert-I03PrivateRoot `
+        -Path $CoordinationRoot -Label 'COORDINATION' `
+        -RepositoryRoot $repositoryRoot `
+        -CandidatePackageRoot $candidate.package_path
+    if ((Test-I03PathContainedBy -Path $outputPath `
+            -Root $coordinationRootPath) -or
+        (Test-I03PathContainedBy -Path $coordinationRootPath `
+            -Root $outputPath)) {
+        throw 'I03_PRIVATE_ROOT::OUTPUT_COORDINATION_OVERLAP'
+    }
     $packageRootWithSeparator =
         (Get-LabFullPath -Path $candidate.package_path).TrimEnd('\') + '\'
     if (($outputPath.TrimEnd('\') + '\').StartsWith(
@@ -2868,13 +7989,15 @@ function Invoke-I03CoordinatorRole {
         }
     }
     $output = New-LabDirectory -Path $outputPath
-    $evidence = New-LabDirectory -Path (Join-Path $output 'evidence')
+    $evidence = New-LabDirectory -Path (Join-Path $output 'private')
+    $publicEvidence = New-LabDirectory -Path (Join-Path $output 'evidence')
     $nodes = New-LabDirectory -Path (Join-Path $output 'nodes')
-    $summaryPath = Join-Path $evidence 'summary.json'
+    $privateSummaryPath = Join-Path $evidence 'summary.json'
+    $summaryPath = Join-Path $publicEvidence 'summary.json'
     $cleanupPath = Join-Path $evidence 'cleanup.json'
     $manualPath = Join-Path $evidence 'MANUAL-PEER-COMMAND.txt'
     $coordination = Get-LabFullPath -Path (Join-Path `
-        (Get-LabFullPath -Path $CoordinationRoot) "v91-i03-$nonce")
+        $coordinationRootPath "v91-i03-$nonce")
     if (($coordination.TrimEnd('\') + '\').StartsWith(
         $packageRootWithSeparator,
         [StringComparison]::OrdinalIgnoreCase
@@ -2895,20 +8018,34 @@ function Invoke-I03CoordinatorRole {
     $stopPath = Join-Path $coordination 'stop.json'
     $peerResultPath = Join-Path $coordination 'peer-result.json'
 
-    $blockedReasons = New-Object 'Collections.Generic.List[string]'
-    $productFailures = New-Object 'Collections.Generic.List[string]'
-    $cleanupFailures = New-Object 'Collections.Generic.List[string]'
+    $blockedReasons = [System.Collections.Generic.List[string]]::new()
+    $productFailures = [System.Collections.Generic.List[object]]::new()
+    $failureRecords = [System.Collections.Generic.List[object]]::new()
+    $failureSourceFiles = [System.Collections.Generic.List[object]]::new()
+    $trustedProofBindings =
+        [System.Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::Ordinal
+        )
+    $cleanupFailures = [System.Collections.Generic.List[string]]::new()
     $caseResults = [System.Collections.Generic.List[object]]::new()
     $preparedBinaries = [System.Collections.Generic.List[object]]::new()
+    $ownedCandidateProcessIds =
+        [System.Collections.Generic.HashSet[int]]::new()
+    $controlledServerPorts =
+        [System.Collections.Generic.HashSet[int]]::new()
     $profileIdentityHashes =
-        New-Object 'Collections.Generic.HashSet[string]' `
-            ([StringComparer]::OrdinalIgnoreCase)
+        [System.Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::OrdinalIgnoreCase
+        )
     $runtimeFailure = $null
     $peerReady = $null
     $peerResult = $null
     $peerReadyExact = $false
     $peerResultExact = $false
     $peerCleanupExact = $false
+    $peerFailureProtocolExact = $false
+    $peerFailureSourceVerification = $null
+    $peerProvenProductFailure = $false
     $peerStopWritten = $false
     $baselineProbeV4 = $null
     $baselineProbeV6 = $null
@@ -2929,6 +8066,7 @@ function Invoke-I03CoordinatorRole {
     $sourceIdentity = ''
     $activeClient = $null
     $activeClientExe = ''
+    $activeClientExpectedIdentity = $null
     $activeServer = $null
     $remoteJob = $null
     $candidateAfter = $null
@@ -2936,8 +8074,17 @@ function Invoke-I03CoordinatorRole {
     $packageIdentityBefore = $null
     $packageIdentityAfter = $null
     $packageManifestUnchanged = $false
+    $packageZipBindingBefore = $null
+    $packageZipBindingAfter = $null
+    $packageZipBindingUnchanged = $false
+    $mutationBaseline = $null
+    $mutationCleanup = $null
+    $terminalNetworkCleanup = $null
     $allClientsStopped = $true
     $allControlServersStopped = $true
+    $currentPolicyName = 'none'
+    $currentFailurePhase = 'preflight'
+    $currentFixtureCertified = $false
     $productAdjudication = [ordered]@{
         runtime_failure = $false
         reason = ''
@@ -2950,18 +8097,170 @@ function Invoke-I03CoordinatorRole {
         }
     }
 
+    function Get-I03FailureCategory {
+        param(
+            [Parameter(Mandatory = $true)][string]$Status,
+            [Parameter(Mandatory = $true)][string]$Code
+        )
+        $product = [ordered]@{
+            CANDIDATE_EXITED = 'PRODUCT_RUNTIME'
+            UI_UNRESPONSIVE = 'PRODUCT_LIVENESS'
+            API_UNAVAILABLE = 'PRODUCT_LIVENESS'
+            API_CONTRACT = 'PRODUCT_CONTRACT'
+            LINK_REJECTED = 'PRODUCT_INPUT'
+            IPV4_PREWARM_INVARIANT = 'PRODUCT_ROUTE'
+            PEER_IDENTITY_CHANGED = 'PRODUCT_IDENTITY'
+            NO_ROUTE = 'PRODUCT_ROUTE'
+            WRONG_FAMILY = 'PRODUCT_ROUTE'
+            DUPLICATE_ROUTE = 'PRODUCT_ROUTE'
+            WRONG_OR_NONPHYSICAL_SOCKET = 'PRODUCT_ATTRIBUTION'
+            CANDIDATE_THIRD_PARTY_SOCKET = 'PRODUCT_ATTRIBUTION'
+        }
+        $lab = [ordered]@{
+            PACKAGE_BINDING = 'LAB_PACKAGE'
+            TOPOLOGY = 'LAB_TOPOLOGY'
+            CLOCK = 'LAB_CLOCK'
+            CONTROL_TIMEOUT = 'LAB_CONTROL'
+            COORDINATION_SCHEMA = 'LAB_CONTROL'
+            COLLECTOR_UNAVAILABLE = 'LAB_COLLECTOR'
+            COLLECTOR_AMBIGUOUS = 'LAB_COLLECTOR'
+            EXTERNAL_CONTAMINATION = 'LAB_CONTAMINATION'
+            EVIDENCE_INCOMPLETE = 'LAB_EVIDENCE'
+            CLEANUP_INCOMPLETE = 'LAB_CLEANUP'
+            HARNESS_EXCEPTION = 'LAB_HARNESS'
+        }
+        $map = if ($Status -ceq 'PRODUCT_INVARIANT') {
+            $product
+        } else { $lab }
+        if (-not $map.Contains($Code)) {
+            throw 'I03_FAILURE_PROTOCOL::UNKNOWN_CODE'
+        }
+        return [string]$map[$Code]
+    }
+
+    function Add-I03TypedFailure {
+        param(
+            [Parameter(Mandatory = $true)][string]$Status,
+            [Parameter(Mandatory = $true)][string]$Code,
+            [Parameter(Mandatory = $true)][string]$Reason,
+            [object[]]$Proofs = @()
+        )
+        if ($null -eq $packageIdentityBefore) { return $null }
+        $record = New-I03FailureRecord `
+            -CaseId $caseId -RunNonce $nonce -Role 'Coordinator' `
+            -Policy $currentPolicyName -Phase $currentFailurePhase `
+            -Status $Status `
+            -Category (Get-I03FailureCategory -Status $Status -Code $Code) `
+            -Code $Code -Message $Reason `
+            -CandidateCommit $candidate.commit `
+            -CandidateEmuleSha256 $expectedHash `
+            -CandidateZipSha256 $expectedZipHash `
+            -PackageManifestSha256 $packageIdentityBefore.manifest_sha256 `
+            -FixtureCertified $currentFixtureCertified -Proofs $Proofs
+        $failureRecords.Add($record)
+        return $record
+    }
+
     function Stop-I03Fixture {
-        param([Parameter(Mandatory = $true)][string]$Reason)
-        Add-I03BlockedReason -Reason $Reason
-        throw "I03_FIXTURE_BLOCKED: $Reason"
+        param(
+            [Parameter(Mandatory = $true)][string]$Reason,
+            [ValidateSet(
+                'PACKAGE_BINDING', 'TOPOLOGY', 'CLOCK',
+                'CONTROL_TIMEOUT', 'COORDINATION_SCHEMA',
+                'COLLECTOR_UNAVAILABLE', 'COLLECTOR_AMBIGUOUS',
+                'EXTERNAL_CONTAMINATION', 'EVIDENCE_INCOMPLETE',
+                'CLEANUP_INCOMPLETE', 'HARNESS_EXCEPTION'
+            )][string]$Code = 'HARNESS_EXCEPTION'
+        )
+        Add-I03BlockedReason -Reason $Code
+        $null = Add-I03TypedFailure -Status 'LAB_BLOCKED' `
+            -Code $Code -Reason $Reason
+        throw "I03_LAB_BLOCKED::$Code"
+    }
+
+    function Add-I03ProductFailure {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateSet(
+                'CANDIDATE_EXITED', 'UI_UNRESPONSIVE',
+                'API_UNAVAILABLE', 'API_CONTRACT', 'LINK_REJECTED',
+                'IPV4_PREWARM_INVARIANT', 'PEER_IDENTITY_CHANGED',
+                'NO_ROUTE', 'WRONG_FAMILY', 'DUPLICATE_ROUTE',
+                'WRONG_OR_NONPHYSICAL_SOCKET',
+                'CANDIDATE_THIRD_PARTY_SOCKET'
+            )][string]$Code,
+            [Parameter(Mandatory = $true)][string]$Reason,
+            [Parameter(Mandatory = $true)][AllowNull()][object]$SourceEvidence
+        )
+        if (-not $currentFixtureCertified -or
+            $currentPolicyName -notin @('auto', 'preferred')) {
+            Stop-I03Fixture -Code 'EVIDENCE_INCOMPLETE' `
+                -Reason 'Product classification attempted before fixture certification'
+        }
+        $sourceName = 'failure-source-{0:D3}.json' -f (
+            $failureSourceFiles.Count + 1
+        )
+        $sourcePath = Join-Path $evidence $sourceName
+        try {
+            Write-LabJson -Value ([ordered]@{
+                schema = 'ese.v91.i03-failure-source/v1'
+                case_id = $caseId
+                run_nonce = $nonce
+                role = 'Coordinator'
+                policy = $currentPolicyName
+                phase = $currentFailurePhase
+                code = $Code
+                evidence = $SourceEvidence
+            }) -Path $sourcePath | Out-Null
+            $sourceHash = Get-LabSha256 -Path $sourcePath
+            $sourceLength = (Get-Item -LiteralPath $sourcePath `
+                -Force -ErrorAction Stop).Length
+            $verifiedSource = Get-Content -LiteralPath $sourcePath -Raw `
+                -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ([string]$verifiedSource.schema -cne
+                    'ese.v91.i03-failure-source/v1' -or
+                [string]$verifiedSource.case_id -cne $caseId -or
+                [string]$verifiedSource.run_nonce -cne $nonce -or
+                [string]$verifiedSource.policy -cne $currentPolicyName -or
+                [string]$verifiedSource.phase -cne $currentFailurePhase -or
+                [string]$verifiedSource.code -cne $Code -or
+                (Get-LabSha256 -Path $sourcePath) -cne $sourceHash) {
+                throw 'I03_FAILURE_SOURCE::VERIFY_FAILED'
+            }
+            $failureSourceFiles.Add([pscustomobject][ordered]@{
+                file_name = $sourceName
+                sha256 = $sourceHash
+                bytes = [Int64]$sourceLength
+            })
+        } catch {
+            Stop-I03Fixture -Code 'EVIDENCE_INCOMPLETE' `
+                -Reason 'Product failure source could not be persisted and verified'
+        }
+        $proof = New-I03ProofProjection -Kind ($Code.ToLowerInvariant()) `
+            -CaseId $caseId -RunNonce $nonce -Role 'Coordinator' `
+            -Policy $currentPolicyName -Phase $currentFailurePhase `
+            -SourceEvidenceSha256 $sourceHash
+        [void]$trustedProofBindings.Add([string]$proof.binding_sha256)
+        $record = Add-I03TypedFailure -Status 'PRODUCT_INVARIANT' `
+            -Code $Code -Reason $Reason -Proofs @($proof)
+        if ($null -eq $record) {
+            throw 'I03_LAB_BLOCKED::EVIDENCE_INCOMPLETE'
+        }
+        $productFailures.Add($record)
+        $productAdjudication.runtime_failure = $true
+        $productAdjudication.reason = $Code
+        return $record
     }
 
     function Stop-I03ProductFailure {
-        param([Parameter(Mandatory = $true)][string]$Reason)
-        $productFailures.Add($Reason)
-        $productAdjudication.runtime_failure = $true
-        $productAdjudication.reason = $Reason
-        throw "I03_PRODUCT_FAILURE: $Reason"
+        param(
+            [Parameter(Mandatory = $true)][string]$Code,
+            [Parameter(Mandatory = $true)][string]$Reason,
+            [Parameter(Mandatory = $true)][AllowNull()][object]$SourceEvidence
+        )
+        $null = Add-I03ProductFailure -Code $Code -Reason $Reason `
+            -SourceEvidence $SourceEvidence
+        throw "I03_PRODUCT_INVARIANT::$Code"
     }
 
     function Wait-I03OwnedTupleGone {
@@ -2988,9 +8287,27 @@ function Invoke-I03CoordinatorRole {
     try {
         $packageIdentityBefore =
             Get-I03PackageIdentity -PackagePath $candidate.package_path
+        $packageZipBindingBefore = Get-I03ZipPackageBinding `
+            -ZipPath $candidateZip -ExpectedZipSha256 $expectedZipHash `
+            -PackageIdentity $packageIdentityBefore
         Write-LabJson -Value $packageIdentityBefore -Path (
             Join-Path $evidence 'package-manifest-before.json'
         ) | Out-Null
+        Write-LabJson -Value $packageZipBindingBefore -Path (
+            Join-Path $evidence 'package-zip-binding-before.json'
+        ) | Out-Null
+        $preexistingProcesses = Get-I03EmuleProcessCensus
+        Write-LabJson -Value $preexistingProcesses -Path (
+            Join-Path $evidence 'preexisting-emule-process-census.json'
+        ) | Out-Null
+        if (-not [bool]$preexistingProcesses.collector_ok) {
+            Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                -Reason 'Preexisting eMule process collector failed'
+        }
+        if ([int]$preexistingProcesses.process_count -ne 0) {
+            Stop-I03Fixture -Code 'EXTERNAL_CONTAMINATION' `
+                -Reason 'Preexisting eMule process detected on coordinator'
+        }
         Test-I03PortSetFree -Ports @(
             $AutoTcpPort, $AutoUdpPort, $AutoWebPort,
             $PreferredTcpPort, $PreferredUdpPort, $PreferredWebPort
@@ -3018,26 +8335,44 @@ function Invoke-I03CoordinatorRole {
                 [int]$localV4.interface_index -and
             [int]$routeV6.interface_index -eq
                 [int]$localV6.interface_index -and
-            (Get-LabAddressClass -Address `
-                ([string]$routeV6.source_address)) -eq 'global-v6'
+            [string]$routeV6.source_class -eq 'global-native-v6' -and
+            [string]$routeV6.remote_class -eq 'global-native-v6'
         if (-not $topologyLocalValid) {
             Stop-I03Fixture -Reason (
                 'Coordinator IPv4/IPv6 routes are not on one Up physical ' +
                 'non-virtual interface'
             )
         }
-        $localMachineId = Get-I03MachineId
+        $localMachineIdentity = Get-I03MachineIdentityEvidence
+        if (-not [bool]$localMachineIdentity.physical_host_claim -or
+            [bool]$localMachineIdentity.virtual_signature_detected) {
+            Stop-I03Fixture -Code 'TOPOLOGY' -Reason (
+                'Coordinator Win32_ComputerSystem identifies a virtual host'
+            )
+        }
+        $localMachineId = [string]$localMachineIdentity.machine_id_sha256
         $runManifest = [ordered]@{
             schema = 'ese.v91.i03-run/v1'
             case_id = $caseId
             run_nonce = $nonce
             created_at_utc = Get-LabUtcTimestamp
+            lab_account = [ordered]@{
+                disposable_account_acknowledged =
+                    [bool]$DisposableLabAccountAcknowledged
+                coordinator_user_sid_sha256 = $currentLabSidHash
+            }
             candidate = [ordered]@{
                 commit = $candidate.commit
                 version = $candidate.version
                 emule_sha256 = $expectedHash
                 ese_server_sha256 = $candidate.ese_server_sha256
                 build_info_sha256 = $candidate.build_info_sha256
+                zip_sha256 = $packageZipBindingBefore.zip_sha256
+                zip_bytes = $packageZipBindingBefore.zip_bytes
+                package_manifest_sha256 =
+                    $packageIdentityBefore.manifest_sha256
+                package_file_count = $packageIdentityBefore.file_count
+                package_total_bytes = $packageIdentityBefore.total_bytes
             }
             peer = [ordered]@{
                 public_ipv4 = $peerV4Text
@@ -3049,6 +8384,7 @@ function Invoke-I03CoordinatorRole {
             }
             coordinator = [ordered]@{
                 machine_id_sha256 = $localMachineId
+                machine_identity = $localMachineIdentity
                 route_ipv4_source = $routeV4.source_address
                 route_ipv6_source = $routeV6.source_address
                 interface_index = $routeV4.interface_index
@@ -3090,6 +8426,37 @@ function Invoke-I03CoordinatorRole {
                 'adapters', 'routes', 'DNS', 'hosts file', 'firewall'
             )
         }
+        $coordinatorAutostartHashes = @(
+            'auto', 'preferred' | ForEach-Object {
+                $plannedExe = Join-Path $nodes `
+                    "v91-i03-$_-b\emule.exe"
+                Get-LabStringSha256 -Value (
+                    (Get-LabFullPath -Path $plannedExe) + ' -AutoStart'
+                )
+            }
+        )
+        $mutationBaseline = Get-I03MutationBaseline `
+            -AllowedAutostartValueSha256 $coordinatorAutostartHashes
+        Write-LabJson -Value ([ordered]@{
+            schema = 'ese.v91.i03-transaction-active/v1'
+            case_id = $caseId
+            run_nonce = $nonce
+            role = 'Coordinator'
+            candidate_commit = $candidate.commit
+            candidate_emule_sha256 = $expectedHash
+            candidate_zip_sha256 = $expectedZipHash
+            package_manifest_sha256 =
+                $packageIdentityBefore.manifest_sha256
+            lab_user_sid_sha256 = $currentLabSidHash
+            forbidden_state_digests =
+                $mutationBaseline.forbidden_state
+            autostart_state_sha256 =
+                $mutationBaseline.autostart.state_sha256
+            run_key_state_sha256 =
+                $mutationBaseline.run_key.state_sha256
+            ed2k_association_state_sha256 =
+                $mutationBaseline.ed2k_association.state_sha256
+        }) -Path (Join-Path $evidence 'transaction-active.json') | Out-Null
         Write-LabJson -Value $runManifest -Path $runPath | Out-Null
         Write-LabJson -Value $runManifest `
             -Path (Join-Path $evidence 'run.json') | Out-Null
@@ -3098,19 +8465,12 @@ function Invoke-I03CoordinatorRole {
             captured_at_utc = Get-LabUtcTimestamp
             candidate = $candidate
             local_machine_id_sha256 = $localMachineId
+            local_machine_identity = $localMachineIdentity
             routes = @($routeV4, $routeV6)
             local_addresses = @($localV4, $localV6)
             topology_local_valid = $topologyLocalValid
             existing_emule_processes = @(
-                Get-Process -Name emule -ErrorAction SilentlyContinue |
-                    ForEach-Object {
-                        [pscustomobject][ordered]@{
-                            id = $_.Id
-                            path_sha256 = try {
-                                Get-LabStringSha256 -Value $_.Path
-                            } catch { '' }
-                        }
-                    }
+                $preexistingProcesses.rows
             )
             planned_mutations = @(
                 'isolated profile copies',
@@ -3131,6 +8491,8 @@ coordinator waits:
 & '$PSCommandPath' ``
   -Role Peer ``
   -PackagePath '<exact-package-on-peer>' ``
+  -CandidateZipPath '<matching-candidate-zip-on-peer>' ``
+  -ExpectedCandidateZipSha256 '$expectedZipHash' ``
   -OutputRoot '<new-empty-peer-output-root>' ``
   -Commit '$($candidate.commit)' ``
   -ExpectedEmuleSha256 '$expectedHash' ``
@@ -3139,6 +8501,8 @@ coordinator waits:
   -PeerIPv6 '$peerV6Text' ``
   -CoordinationRoot '$CoordinationRoot' ``
   -ControlledPeerAcknowledged ``
+  -DisposableLabAccountAcknowledged ``
+  -ExpectedLabUserSidSha256 '<peer-current-user-sid-sha256>' ``
   -PeerTcpPort $PeerTcpPort -PeerUdpPort $PeerUdpPort ``
   -PeerWebPort $PeerWebPort ``
   -AutoTcpPort $AutoTcpPort -AutoUdpPort $AutoUdpPort ``
@@ -3174,17 +8538,49 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 'ese.v91.i03-peer-ready/v1' -and
             [string]$peerReady.case_id -eq $caseId -and
             [string]$peerReady.run_nonce -eq $nonce -and
+            [bool]$peerReady.lab_account.
+                disposable_account_acknowledged -and
+            [bool]$peerReady.lab_account.expected_sid_binding_exact -and
+            [string]$peerReady.lab_account.current_user_sid_sha256 -match
+                '^[0-9a-f]{64}$' -and
+            [string]$peerReady.peer.machine_id_sha256 -match
+                '^[0-9a-f]{64}$' -and
+            [string]$peerReady.peer.machine_identity.schema -eq
+                'ese.v91.i03-machine-identity/v1' -and
+            [bool]$peerReady.peer.machine_identity.collector_ok -and
+            [string]$peerReady.peer.machine_identity.
+                collector_error_code -eq 'NONE' -and
+            [string]$peerReady.peer.machine_identity.source -eq
+                'HKLM_MACHINEGUID_AND_WIN32_COMPUTERSYSTEM' -and
+            [string]$peerReady.peer.machine_identity.
+                machine_id_sha256 -eq
+                    [string]$peerReady.peer.machine_id_sha256 -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string]$peerReady.peer.machine_identity.manufacturer
+            ) -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string]$peerReady.peer.machine_identity.model
+            ) -and
+            -not [bool]$peerReady.peer.machine_identity.
+                virtual_signature_detected -and
+            [bool]$peerReady.peer.machine_identity.physical_host_claim -and
             [string]$peerReady.candidate.commit -eq $candidate.commit -and
             [string]$peerReady.candidate.emule_sha256 -eq $expectedHash -and
             [string]$peerReady.candidate.ese_server_sha256 -eq
                 $candidate.ese_server_sha256 -and
             [string]$peerReady.candidate.build_info_sha256 -eq
                 $candidate.build_info_sha256 -and
+            [string]$peerReady.candidate.zip_sha256 -eq
+                $expectedZipHash -and
+            [Int64]$peerReady.candidate.zip_bytes -eq
+                [Int64]$packageZipBindingBefore.zip_bytes -and
             [string]$peerReady.candidate.
                 extracted_package_manifest_sha256 -eq
                     $packageIdentityBefore.manifest_sha256 -and
             [int]$peerReady.candidate.extracted_package_file_count -eq
                 [int]$packageIdentityBefore.file_count -and
+            [Int64]$peerReady.candidate.extracted_package_total_bytes -eq
+                [Int64]$packageIdentityBefore.total_bytes -and
             [string]$peerReady.endpoint.public_ipv4 -eq $peerV4Text -and
             [string]$peerReady.endpoint.local_ipv4 -eq
                 $peerLocalV4Text -and
@@ -3233,50 +8629,48 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
             [string]$peerReady.process.stable_userhash_sha256
         $null = $profileIdentityHashes.Add($sourceIdentity)
         $currentPeerPid = [int]$peerReady.process.id
-        $topologyT1 =
-            $topologyLocalValid -and
-            [string]$peerReady.peer.machine_id_sha256 -ne
-                $localMachineId -and
+        $sameIPv4PhysicalPrefix = Test-I03SamePhysicalPrefix `
+            -LeftAddress ([string]$localV4.address) `
+            -LeftPrefixLength ([int]$localV4.prefix_length) `
+            -RightAddress ([string]$peerReady.peer.local_ipv4.address) `
+            -RightPrefixLength ([int]$peerReady.peer.local_ipv4.prefix_length)
+        $sameIPv6PhysicalPrefix = Test-I03SamePhysicalPrefix `
+            -LeftAddress ([string]$localV6.address) `
+            -LeftPrefixLength ([int]$localV6.prefix_length) `
+            -RightAddress ([string]$peerReady.peer.public_ipv6.address) `
+            -RightPrefixLength ([int]$peerReady.peer.public_ipv6.prefix_length)
+        $physicalSingleAdapter = $topologyLocalValid -and
             [bool]$peerReady.peer.same_adapter -and
             [bool]$peerReady.peer.local_ipv4.adapter.physical_nonvirtual -and
             [bool]$peerReady.peer.public_ipv6.adapter.physical_nonvirtual -and
             [int]$peerReady.peer.local_ipv4.interface_index -eq
-                [int]$peerReady.peer.public_ipv6.interface_index -and
-            ($sameIPv4PhysicalPrefix = Test-I03SamePhysicalPrefix `
-                -LeftAddress ([string]$localV4.address) `
-                -LeftPrefixLength ([int]$localV4.prefix_length) `
-                -RightAddress ([string]$peerReady.peer.local_ipv4.address) `
-                -RightPrefixLength (
-                    [int]$peerReady.peer.local_ipv4.prefix_length
-                )) -and
-            ($sameIPv6PhysicalPrefix = Test-I03SamePhysicalPrefix `
-                -LeftAddress ([string]$localV6.address) `
-                -LeftPrefixLength ([int]$localV6.prefix_length) `
-                -RightAddress (
-                    [string]$peerReady.peer.public_ipv6.address
-                ) -RightPrefixLength (
-                    [int]$peerReady.peer.public_ipv6.prefix_length
-                )) -and
-            [string]$routeV6.next_hop_class -eq 'on-link'
-        $topologyT2 =
-            $topologyLocalValid -and
-            [string]$peerReady.peer.machine_id_sha256 -ne
-                $localMachineId -and
-            [bool]$peerReady.peer.same_adapter -and
-            [bool]$peerReady.peer.local_ipv4.adapter.physical_nonvirtual -and
-            [bool]$peerReady.peer.public_ipv6.adapter.physical_nonvirtual -and
-            [int]$peerReady.peer.local_ipv4.interface_index -eq
-                [int]$peerReady.peer.public_ipv6.interface_index -and
-            -not $topologyT1 -and
-            [string]$routeV6.next_hop_class -in @(
-                'linklocal-v6', 'ula-v6', 'global-v6'
-            )
-        $topologyValid = $topologyT1 -or $topologyT2
-        $topologyClass = if ($topologyT1) { 'T1' } elseif ($topologyT2) {
-            'T2'
-        } else { '' }
+                [int]$peerReady.peer.public_ipv6.interface_index
+        $topologyDecision = Get-I03TopologyDecision `
+            -DifferentMachineIdentities (
+                [string]$peerReady.peer.machine_id_sha256 -ne $localMachineId
+            ) `
+            -SameIPv4PhysicalPrefix $sameIPv4PhysicalPrefix `
+            -SameIPv6PhysicalPrefix $sameIPv6PhysicalPrefix `
+            -IPv6OnLink ([string]$routeV6.next_hop_class -eq 'on-link') `
+            -NativeIPv4 ([string]$routeV4.remote_class -eq
+                'global-public-v4') `
+            -NativeIPv6 (
+                [string]$routeV6.source_class -eq 'global-native-v6' -and
+                [string]$routeV6.remote_class -eq 'global-native-v6' -and
+                [string]$peerReady.peer.public_ipv6.address_class -eq
+                    'global-native-v6'
+            ) `
+            -PhysicalSingleAdapter $physicalSingleAdapter `
+            -OverlayDetected (-not $physicalSingleAdapter) `
+            -RoutedNativeIPv6 ([string]$routeV6.next_hop_class -in @(
+                'linklocal-v6', 'global-native-v6'
+            ))
+        $topologyT1 = [bool]$topologyDecision.t1_proved
+        $topologyT2 = [bool]$topologyDecision.t2_proved
+        $topologyValid = [string]$topologyDecision.status -ceq 'PASS'
+        $topologyClass = [string]$topologyDecision.topology_class
         if (-not $topologyValid) {
-            Stop-I03Fixture -Reason (
+            Stop-I03Fixture -Code 'TOPOLOGY' -Reason (
                 'T1/T2 requires two distinct physical Windows hosts with ' +
                 'both families on one physical interface per host, plus an ' +
                 'observed on-link prefix match (T1) or routed native IPv6 ' +
@@ -3374,51 +8768,21 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 'Baseline tuples do not correlate both hosts'
             )
         }
-        try {
-            $clockT0Echo = [DateTime]::Parse(
-                [string]$baselineAck.clock.t0_coordinator_send_utc,
-                [Globalization.CultureInfo]::InvariantCulture,
-                [Globalization.DateTimeStyles]::RoundtripKind
-            )
-            $clockT1 = [DateTime]::Parse(
-                [string]$baselineAck.clock.t1_peer_receive_utc,
-                [Globalization.CultureInfo]::InvariantCulture,
-                [Globalization.DateTimeStyles]::RoundtripKind
-            )
-            $clockT2 = [DateTime]::Parse(
-                [string]$baselineAck.clock.t2_peer_send_utc,
-                [Globalization.CultureInfo]::InvariantCulture,
-                [Globalization.DateTimeStyles]::RoundtripKind
-            )
-            $clockDelayMs =
-                ($clockT3 - $clockT0).TotalMilliseconds -
-                ($clockT2 - $clockT1).TotalMilliseconds
-            $clockOffsetMs = (
-                ($clockT1 - $clockT0).TotalMilliseconds +
-                ($clockT2 - $clockT3).TotalMilliseconds
-            ) / 2.0
-            $clockUncertaintyMs = [Math]::Max(0.0, $clockDelayMs / 2.0)
-            $clockCertified = $clockT0Echo -eq $clockT0 -and
-                $clockDelayMs -ge 0 -and
-                [Math]::Abs($clockOffsetMs) + $clockUncertaintyMs -le 1000.0
-            $clockEvidence = [ordered]@{
-                method = 'four-timestamp shared-coordination challenge'
-                t0_coordinator_send_utc = $clockT0.ToString('o')
-                t1_peer_receive_utc = $clockT1.ToString('o')
-                t2_peer_send_utc = $clockT2.ToString('o')
-                t3_coordinator_receive_utc = $clockT3.ToString('o')
-                round_trip_delay_ms = [Math]::Round($clockDelayMs, 3)
-                estimated_offset_ms = [Math]::Round($clockOffsetMs, 3)
-                uncertainty_ms = [Math]::Round($clockUncertaintyMs, 3)
-                certified_within_1000_ms = $clockCertified
-            }
-        } catch {
-            Stop-I03Fixture -Reason (
-                "Clock challenge could not be parsed: $($_.Exception.Message)"
-            )
+        $clockEvidence = Get-I03ClockEvidence `
+            -T0CoordinatorSendUtc $clockT0.ToString('o') `
+            -T0CoordinatorEchoUtc `
+                ([string]$baselineAck.clock.t0_coordinator_send_utc) `
+            -T1PeerReceiveUtc `
+                ([string]$baselineAck.clock.t1_peer_receive_utc) `
+            -T2PeerSendUtc `
+                ([string]$baselineAck.clock.t2_peer_send_utc) `
+            -T3CoordinatorReceiveUtc $clockT3.ToString('o')
+        if (-not [bool]$clockEvidence.collector_ok) {
+            Stop-I03Fixture -Code 'CLOCK' `
+                -Reason 'Clock challenge was malformed or reversed'
         }
-        if (-not $clockEvidence.certified_within_1000_ms) {
-            Stop-I03Fixture -Reason (
+        if (-not [bool]$clockEvidence.certified_within_1000_ms) {
+            Stop-I03Fixture -Code 'CLOCK' -Reason (
                 'T1 clock difference could not be certified at <= 1 second'
             )
         }
@@ -3487,6 +8851,9 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 web = $PreferredWebPort
             }
         )) {
+            $currentPolicyName = [string]$policy.name
+            $currentFailurePhase = 'case_setup'
+            $currentFixtureCertified = $false
             $caseStarted = [DateTime]::UtcNow
             $failureCountBefore = $productFailures.Count
             $caseRecord = [ordered]@{
@@ -3497,6 +8864,7 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 started_at_utc = $caseStarted.ToString('o')
                 finished_at_utc = $null
                 fixture_valid = $false
+                fixture_certified = $false
                 product_match = $false
                 client = $null
                 controlled_server = $null
@@ -3513,6 +8881,9 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
             $caseRecorded = $false
             $caseNode = ''
             $caseExe = ''
+            $casePreferencesOracle = $null
+            $caseNodeInitialBinding = $null
+            $caseNodeTerminalBinding = $null
             $caseTemp = ''
             $caseServerStop = $null
             try {
@@ -3526,17 +8897,37 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 }
                 $serverEvidencePath = Join-Path $evidence `
                     "$($policy.name)-controlled-ed2k-server.json"
-                $activeServer = Start-I03ControlledEd2kServer `
-                    -EvidencePath $serverEvidencePath `
-                    -ListenAddress ([string]$routeV4.source_address) `
-                    -ExpectedClientAddress ([string]$routeV4.source_address) `
-                    -RunNonce $nonce -Policy $policy.name
-                $serverListeners = @(
-                    Get-NetTCPConnection -State Listen `
-                        -LocalAddress ([string]$routeV4.source_address) `
-                        -LocalPort $activeServer.port -OwningProcess $PID `
-                        -ErrorAction SilentlyContinue
-                )
+                try {
+                    $activeServer = Start-I03ControlledEd2kServer `
+                        -EvidencePath $serverEvidencePath `
+                        -ListenAddress ([string]$routeV4.source_address) `
+                        -ExpectedClientAddress `
+                            ([string]$routeV4.source_address) `
+                        -RunNonce $nonce -Policy $policy.name `
+                        -ForbiddenPorts @(
+                            @($allPorts) + @($controlledServerPorts)
+                        )
+                } catch {
+                    Stop-I03Fixture -Code 'EXTERNAL_CONTAMINATION' `
+                        -Reason 'No collision-free controlled-server port was available'
+                }
+                [void]$controlledServerPorts.Add([int]$activeServer.port)
+                try {
+                    $allServerTcpRows = @(
+                        Get-NetTCPConnection -ErrorAction Stop
+                    )
+                } catch {
+                    Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                        -Reason 'Controlled server listener collector failed'
+                }
+                $serverListeners = @($allServerTcpRows | Where-Object {
+                    [string]$_.State -eq 'Listen' -and
+                    (Get-I03NormalizedIp -Address `
+                        ([string]$_.LocalAddress)) -eq
+                            [string]$routeV4.source_address -and
+                    [int]$_.LocalPort -eq $activeServer.port -and
+                    [int]$_.OwningProcess -eq $PID
+                })
                 if ($serverListeners.Count -ne 1) {
                     Stop-I03Fixture -Reason (
                         "$($policy.name) controlled server is not one " +
@@ -3544,16 +8935,56 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                     )
                 }
 
+                $casePreferencesOracle =
+                    New-I03PreparedPreferencesOracle `
+                        -PackagePath $candidate.package_path `
+                        -PackageIdentity $packageIdentityBefore `
+                        -OracleRoot (Join-Path $evidence `
+                            "prepared-preferences-oracle-$($policy.name)") `
+                        -NodeRole B `
+                        -RunId "v91-i03-$($policy.name)" `
+                        -PortOffset $offset
+                Write-LabJson -Value $casePreferencesOracle -Path (
+                    Join-Path $evidence `
+                        "$($policy.name)-prepared-preferences-oracle.json"
+                ) | Out-Null
+                if (-not [bool]$casePreferencesOracle.collector_ok) {
+                    Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                        -Reason "$($policy.name) preferences oracle failed"
+                }
+                if (-not [bool]$casePreferencesOracle.source_bound) {
+                    Stop-I03Fixture -Code 'PACKAGE_BINDING' -Reason (
+                        "$($policy.name) source preferences did not match " +
+                        'the frozen package manifest'
+                    )
+                }
                 & (Join-Path $PSScriptRoot 'prepare_node.ps1') -NodeRole B `
                     -SourcePackage $candidate.package_path -OutputRoot $nodes `
                     -RunId "v91-i03-$($policy.name)" -PortOffset $offset
                 $caseNode = Join-Path $nodes `
                     "v91-i03-$($policy.name)-b"
                 $caseExe = Join-Path $caseNode 'emule.exe'
-                if ((Get-LabSha256 -Path $caseExe) -ne $expectedHash) {
-                    Stop-I03Fixture -Reason (
-                        "$($policy.name) prepared executable is not the " +
-                        'exact candidate'
+                $caseNodeInitialBinding = Test-I03PreparedNodeBinding `
+                    -NodePath $caseNode `
+                    -PackageIdentity $packageIdentityBefore -Phase Initial `
+                    -ExpectedPreparedPreferencesSha256 `
+                        $casePreferencesOracle.
+                            expected_prepared_preferences_sha256 `
+                    -ExpectedPreparedPreferencesBytes `
+                        $casePreferencesOracle.
+                            expected_prepared_preferences_bytes
+                Write-LabJson -Value $caseNodeInitialBinding -Path (
+                    Join-Path $evidence `
+                        "$($policy.name)-prepared-node-binding-initial.json"
+                ) | Out-Null
+                if (-not [bool]$caseNodeInitialBinding.collector_ok) {
+                    Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                        -Reason "$($policy.name) node-binding collector failed"
+                }
+                if (-not [bool]$caseNodeInitialBinding.bound) {
+                    Stop-I03Fixture -Code 'PACKAGE_BINDING' -Reason (
+                        "$($policy.name) prepared node did not match the " +
+                        'frozen package manifest'
                     )
                 }
                 $caseIncoming = New-LabDirectory `
@@ -3567,56 +8998,109 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                     -WebPort $policy.web -Password $casePassword `
                     -IncomingPath $caseIncoming -TempPath $caseTemp
 
+                try {
+                    Wait-I03PortSetFree -Ports $allPorts
+                } catch {
+                    if ([string]$_.Exception.Message -match
+                        '^I03_COLLECTOR::') {
+                        Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                            -Reason 'Reserved-port collector failed before certification'
+                    }
+                    Stop-I03Fixture -Code 'EXTERNAL_CONTAMINATION' `
+                        -Reason 'A reserved candidate port was not free before certification'
+                }
+
+                # Package/topology/clock/peer/control-server prerequisites are
+                # now exact. Candidate startup contradictions are product
+                # evidence; collectors and control records remain lab gates.
+                $currentFixtureCertified = $true
+                $currentFailurePhase = 'identity_bootstrap'
+                $caseRecord.fixture_certified = $true
+
                 # preferences.dat is saved on graceful shutdown, not merely
                 # on startup. Bootstrap a fresh identity while eD2K is still
                 # disabled, then reopen that exact profile for the test.
                 $activeClientExe = $caseExe
-                $activeClient = Start-Process -FilePath $caseExe `
-                    -ArgumentList @(
-                        '--portable', '--ignoreinstances',
-                        "--metrics-port=$($policy.web)",
-                        "--tcp-port=$($policy.tcp)",
-                        "--udp-port=$($policy.udp)"
-                    ) -WorkingDirectory $caseNode -PassThru `
-                    -WindowStyle Hidden
-                $identityInitListener = Wait-I03Listener `
-                    -Port $policy.tcp -Process $activeClient `
-                    -RequireDualStack
-                $identityInitApi = Wait-I03Api -Port $policy.web `
-                    -Process $activeClient
+                try {
+                    $activeClient = Start-Process -FilePath $caseExe `
+                        -ArgumentList @(
+                            '--portable', '--ignoreinstances',
+                            "--metrics-port=$($policy.web)",
+                            "--tcp-port=$($policy.tcp)",
+                            "--udp-port=$($policy.udp)"
+                        ) -WorkingDirectory $caseNode -PassThru `
+                        -WindowStyle Hidden
+                    $activeClientExpectedIdentity =
+                        Get-I03ProcessIdentity -Process $activeClient
+                    [void]$ownedCandidateProcessIds.Add(
+                        [int]$activeClient.Id
+                    )
+                    $identityInitListener = Wait-I03Listener `
+                        -Port $policy.tcp -Process $activeClient `
+                        -RequireDualStack
+                    $identityInitApi = Wait-I03Api -Port $policy.web `
+                        -Process $activeClient
+                } catch {
+                    if ([string]$_.Exception.Message -match
+                        '^I03_COLLECTOR::') {
+                        Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                            -Reason 'Identity bootstrap collector failed'
+                    }
+                    Stop-I03ProductFailure -Code 'CANDIDATE_EXITED' `
+                        -SourceEvidence ([ordered]@{
+                            process = $activeClientExpectedIdentity
+                            phase = 'identity_bootstrap'
+                        }) -Reason 'Candidate identity bootstrap did not start'
+                }
                 $identityInitUi =
                     Get-I03UiProbe -Process $activeClient
                 if (-not $identityInitListener.dual_stack -or
-                    -not (Test-I03ApiIsolation -Data $identityInitApi) -or
-                    -not $identityInitUi.main_window_present -or
-                    -not $identityInitUi.message_pump_responsive -or
                     (Get-LabSha256 -Path $activeClient.Path) -ne
                         $expectedHash) {
-                    Stop-I03Fixture -Reason (
-                        "$($policy.name) clean identity initialization " +
-                        'was not exact and isolated'
-                    )
+                    Stop-I03ProductFailure -Code 'CANDIDATE_EXITED' `
+                        -SourceEvidence ([ordered]@{
+                            process = $activeClientExpectedIdentity
+                            listener = $identityInitListener
+                        }) -Reason 'Candidate identity bootstrap listener was invalid'
+                }
+                if (-not (Test-I03ApiIsolation -Data $identityInitApi)) {
+                    Stop-I03ProductFailure -Code 'API_CONTRACT' `
+                        -SourceEvidence (Get-I03ApiEvidenceProjection `
+                            -Data $identityInitApi -DurationMs 0) `
+                        -Reason 'Candidate bootstrap API violated isolation'
+                }
+                if (-not $identityInitUi.main_window_present -or
+                    -not $identityInitUi.message_pump_responsive) {
+                    Stop-I03ProductFailure -Code 'UI_UNRESPONSIVE' `
+                        -SourceEvidence $identityInitUi `
+                        -Reason 'Candidate bootstrap UI was unresponsive'
                 }
                 $identityInitProcessId = $activeClient.Id
                 $identityInitStop = Stop-I03OwnedProcess `
                     -Process $activeClient -ExpectedPath $activeClientExe `
+                    -ExpectedIdentity $activeClientExpectedIdentity `
                     -RequireGraceful
+                if (-not $identityInitStop.collector_ok) {
+                    Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                        -Reason 'Candidate bootstrap process collector failed'
+                }
                 if (-not $identityInitStop.stopped -or
-                    -not $identityInitStop.graceful) {
-                    Stop-I03Fixture -Reason (
-                        "$($policy.name) fresh identity initialization " +
-                        'did not stop gracefully'
-                    )
+                    -not $identityInitStop.graceful -or
+                    $identityInitStop.unexpected_descendant_count -ne 0) {
+                    Stop-I03ProductFailure -Code 'CANDIDATE_EXITED' `
+                        -SourceEvidence $identityInitStop `
+                        -Reason 'Candidate bootstrap did not stop gracefully'
                 }
                 $activeClient = $null
                 try {
                     $clientIdentity =
                         Get-I03UserHashSha256 -NodePath $caseNode
                 } catch {
-                    Stop-I03Fixture -Reason (
-                        "$($policy.name) fresh client identity was not " +
-                        "persisted: $($_.Exception.Message)"
-                    )
+                    Stop-I03ProductFailure -Code 'PEER_IDENTITY_CHANGED' `
+                        -SourceEvidence ([ordered]@{
+                            process_id = $identityInitProcessId
+                            phase = 'identity_persistence'
+                        }) -Reason 'Candidate identity was not persisted'
                 }
                 $identityUnique =
                     $profileIdentityHashes.Add($clientIdentity)
@@ -3626,35 +9110,108 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                         preferences_dat_absent_before_start -or
                     -not $clientIsolation.
                         cryptkey_dat_absent_before_start) {
-                    Stop-I03Fixture -Reason (
-                        "$($policy.name) client and peer profiles do not " +
-                        'have independently bootstrapped identities'
-                    )
+                    Stop-I03ProductFailure -Code 'PEER_IDENTITY_CHANGED' `
+                        -SourceEvidence ([ordered]@{
+                            identity_sha256 = $clientIdentity
+                            unique = $identityUnique
+                            profile = $clientIsolation
+                        }) -Reason 'Candidate identity bootstrap invariant failed'
                 }
                 $controlProfile = Enable-I03ControlledEd2kProfile `
                     -NodePath $caseNode `
                     -ServerAddress ([string]$routeV4.source_address) `
                     -ServerPort $activeServer.port -RunNonce $nonce `
-                    -Policy $policy.name
+                    -Policy $policy.name -IPv6Mode $policy.mode `
+                    -WebPort $policy.web
+                $currentFailurePhase = 'candidate_startup'
+
+                try {
+                    Wait-I03PortSetFree -Ports $allPorts
+                } catch {
+                    if ([string]$_.Exception.Message -match
+                        '^I03_COLLECTOR::') {
+                        Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                            -Reason 'Reserved-port collector failed before candidate startup'
+                    }
+                    Stop-I03Fixture -Code 'EXTERNAL_CONTAMINATION' `
+                        -Reason 'A reserved candidate port was not free before startup'
+                }
 
                 # Normal mode is mandatory: it provides the UI liveness probe
                 # and does not regenerate the userhash on startup.
-                $activeClient = Start-Process -FilePath $caseExe `
-                    -ArgumentList @(
-                        '--portable', '--ignoreinstances',
-                        "--metrics-port=$($policy.web)",
-                        "--tcp-port=$($policy.tcp)",
-                        "--udp-port=$($policy.udp)"
-                    ) -WorkingDirectory $caseNode -PassThru `
-                    -WindowStyle Hidden
-                $activeClientExe = $caseExe
-                $clientListener = Wait-I03Listener -Port $policy.tcp `
-                    -Process $activeClient -RequireDualStack
-                $null = Wait-I03Api -Port $policy.web `
-                    -Process $activeClient
-                $serverLogin = Wait-I03ControlledEd2kLogin `
-                    -Server $activeServer -Process $activeClient `
-                    -ExpectedTcpPort $policy.tcp
+                try {
+                    $activeClient = Start-Process -FilePath $caseExe `
+                        -ArgumentList @(
+                            '--portable', '--ignoreinstances',
+                            "--metrics-port=$($policy.web)",
+                            "--tcp-port=$($policy.tcp)",
+                            "--udp-port=$($policy.udp)"
+                        ) -WorkingDirectory $caseNode -PassThru `
+                        -WindowStyle Hidden
+                    $activeClientExpectedIdentity =
+                        Get-I03ProcessIdentity -Process $activeClient
+                    $activeServer.state['expected_client_process_id'] =
+                        [int]$activeClient.Id
+                    [void]$ownedCandidateProcessIds.Add(
+                        [int]$activeClient.Id
+                    )
+                    $activeClientExe = $caseExe
+                    $clientListener = Wait-I03Listener -Port $policy.tcp `
+                        -Process $activeClient -RequireDualStack
+                    $null = Wait-I03Api -Port $policy.web `
+                        -Process $activeClient
+                    $serverLogin = Wait-I03ControlledEd2kLogin `
+                        -Server $activeServer -Process $activeClient `
+                        -ExpectedTcpPort $policy.tcp
+                } catch {
+                    $startupFailureMessage = [string]$_.Exception.Message
+                    if ($startupFailureMessage -match
+                        '^I03_COLLECTOR::') {
+                        Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                            -Reason 'Candidate startup collector failed'
+                    }
+                    if ($startupFailureMessage -eq
+                        'I03_FIXTURE::CONTROLLED_ED2K_SERVER_FAILED') {
+                        Stop-I03Fixture `
+                            -Code 'HARNESS_EXCEPTION' `
+                            -Reason 'Controlled eD2K fixture failed'
+                    }
+                    if ($startupFailureMessage -eq
+                        'I03_FIXTURE::EXTERNAL_CONTAMINATION') {
+                        Stop-I03Fixture -Code 'EXTERNAL_CONTAMINATION' `
+                            -Reason 'Controlled eD2K endpoint was contaminated'
+                    }
+                    if ($startupFailureMessage -in @(
+                        'I03_PRODUCT::CONTROLLED_ED2K_PROTOCOL',
+                        'I03_PRODUCT::CONTROLLED_ED2K_TRANSPORT'
+                    )) {
+                        Stop-I03ProductFailure -Code 'API_CONTRACT' `
+                            -SourceEvidence ([ordered]@{
+                                process = $activeClientExpectedIdentity
+                                controlled_server_error_kind =
+                                    [string]$activeServer.state['error_kind']
+                                controlled_server_error_code =
+                                    [string]$activeServer.state['error_code']
+                            }) -Reason 'Candidate emitted an invalid eD2K login frame'
+                    }
+                    $activeExited = $false
+                    if ($null -ne $activeClient) {
+                        try {
+                            $activeClient.Refresh()
+                            $activeExited = [bool]$activeClient.HasExited
+                        } catch { $activeExited = $true }
+                    }
+                    $startupCode = if ($activeExited -or
+                        $null -eq $activeClient) {
+                        'CANDIDATE_EXITED'
+                    } else { 'API_UNAVAILABLE' }
+                    Stop-I03ProductFailure -Code $startupCode `
+                        -SourceEvidence ([ordered]@{
+                            process = $activeClientExpectedIdentity
+                            exited = $activeExited
+                            phase = 'candidate_startup'
+                        }) -Reason 'Candidate controlled startup failed'
+                }
                 $apiDeadline = [DateTime]::UtcNow.AddSeconds(60)
                 $clientApi = $null
                 do {
@@ -3671,57 +9228,88 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                     $runtimeClientIdentity =
                         Get-I03UserHashSha256 -NodePath $caseNode
                 } catch {
-                    Stop-I03Fixture -Reason (
-                        "$($policy.name) persisted client identity could not " +
-                        "be read: $($_.Exception.Message)"
-                    )
+                    Stop-I03ProductFailure -Code 'PEER_IDENTITY_CHANGED' `
+                        -SourceEvidence ([ordered]@{
+                            process = $activeClientExpectedIdentity
+                            phase = 'controlled_startup_identity'
+                        }) -Reason 'Candidate persisted identity became unreadable'
                 }
                 if ($runtimeClientIdentity -ne $clientIdentity) {
-                    Stop-I03Fixture -Reason (
-                        "$($policy.name) client identity changed between " +
-                        'clean initialization and controlled startup'
-                    )
+                    Stop-I03ProductFailure -Code 'PEER_IDENTITY_CHANGED' `
+                        -SourceEvidence ([ordered]@{
+                            process = $activeClientExpectedIdentity
+                            expected_identity_sha256 = $clientIdentity
+                            actual_identity_sha256 = $runtimeClientIdentity
+                        }) -Reason 'Candidate identity changed at controlled startup'
                 }
-                $serverConnections = @(
-                    Get-NetTCPConnection -State Established `
-                        -OwningProcess $activeClient.Id `
-                        -RemoteAddress ([string]$routeV4.source_address) `
-                        -RemotePort $activeServer.port `
-                        -ErrorAction SilentlyContinue
-                )
-                $startupConnections = @(
-                    Get-NetTCPConnection -State Established `
-                        -OwningProcess $activeClient.Id `
-                        -ErrorAction SilentlyContinue
-                )
-                $unexpectedStartupConnections = @(
-                    $startupConnections | Where-Object {
-                        $remote = Get-I03NormalizedIp `
-                            -Address ([string]$_.RemoteAddress)
-                        $isControlServer =
-                            $remote -eq
+                $startupCensus = Get-I03ProcessSocketCensus `
+                    -ProcessId $activeClient.Id
+                if (-not [bool]$startupCensus.collector_ok) {
+                    Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                        -Reason 'Candidate startup socket census failed'
+                }
+                $startupSocketDecision =
+                    Get-I03CandidateSocketCensusDecision `
+                        -Census $startupCensus `
+                        -ProcessId $activeClient.Id `
+                        -TcpPort $policy.tcp -UdpPort $policy.udp `
+                        -WebPort $policy.web `
+                        -TargetAddresses @($peerV4Text, $peerV6Text) `
+                        -TargetPort $PeerTcpPort `
+                        -ControlAddress ([string]$routeV4.source_address) `
+                        -ControlPort $activeServer.port
+                Write-LabJson -Value ([ordered]@{
+                    census = $startupCensus
+                    decision = $startupSocketDecision
+                }) -Path (Join-Path $evidence `
+                    "$($policy.name)-startup-socket-census.json") | Out-Null
+                $serverConnections = @($startupCensus.tcp_rows |
+                    Where-Object {
+                        [string]$_.state -eq 'Established' -and
+                        (Get-I03NormalizedIp -Address `
+                            ([string]$_.remote_address)) -eq
                                 [string]$routeV4.source_address -and
-                            [int]$_.RemotePort -eq $activeServer.port
-                        $isLocalWebProbe =
-                            [int]$_.LocalPort -eq $policy.web -and
-                            $remote -in @('127.0.0.1', '::1')
-                        -not $isControlServer -and -not $isLocalWebProbe
-                    }
+                        [int]$_.remote_port -eq $activeServer.port
+                    })
+                $startupConnections = @($startupCensus.tcp_rows |
+                    Where-Object { [string]$_.state -eq 'Established' })
+                $unexpectedStartupConnections = @(
+                    $startupSocketDecision.unexpected_rows
                 )
                 if (-not $clientListener.dual_stack -or
                     (Get-LabSha256 -Path $activeClient.Path) -ne
                         $expectedHash -or
-                    -not $clientApi.available -or
-                    -not $clientApi.isolation_valid -or
-                    -not $clientUi.main_window_present -or
-                    -not $clientUi.message_pump_responsive -or
                     $serverConnections.Count -ne 1 -or
-                    $unexpectedStartupConnections.Count -ne 0 -or
                     -not $serverLogin.endpoint_is_same_host_physical) {
-                    Stop-I03Fixture -Reason (
-                        "$($policy.name) candidate/control-plane startup " +
-                        'could not be proved exact and isolated'
-                    )
+                    Stop-I03ProductFailure -Code 'CANDIDATE_EXITED' `
+                        -SourceEvidence ([ordered]@{
+                            process = $activeClientExpectedIdentity
+                            listener = $clientListener
+                            server_login = $serverLogin
+                            control_connection_count = $serverConnections.Count
+                        }) -Reason 'Candidate control-plane startup invariant failed'
+                }
+                if (-not $clientApi.available) {
+                    Stop-I03ProductFailure -Code 'API_UNAVAILABLE' `
+                        -SourceEvidence $clientApi `
+                        -Reason 'Candidate API unavailable after controlled startup'
+                }
+                if (-not $clientApi.isolation_valid) {
+                    Stop-I03ProductFailure -Code 'API_CONTRACT' `
+                        -SourceEvidence $clientApi `
+                        -Reason 'Candidate API violated isolation contract'
+                }
+                if (-not $clientUi.main_window_present -or
+                    -not $clientUi.message_pump_responsive) {
+                    Stop-I03ProductFailure -Code 'UI_UNRESPONSIVE' `
+                        -SourceEvidence $clientUi `
+                        -Reason 'Candidate UI was unresponsive at startup'
+                }
+                if ($unexpectedStartupConnections.Count -ne 0) {
+                    Stop-I03ProductFailure `
+                        -Code 'CANDIDATE_THIRD_PARTY_SOCKET' `
+                        -SourceEvidence $unexpectedStartupConnections `
+                        -Reason 'Candidate opened an unexpected startup connection'
                 }
                 $clientStartup = [ordered]@{
                     process_id = $activeClient.Id
@@ -3782,13 +9370,13 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                             [pscustomobject][ordered]@{
                                 local_address =
                                     Get-I03NormalizedIp -Address `
-                                        ([string]$_.LocalAddress)
-                                local_port = [int]$_.LocalPort
+                                        ([string]$_.local_address)
+                                local_port = [int]$_.local_port
                                 remote_address =
                                     Get-I03NormalizedIp -Address `
-                                        ([string]$_.RemoteAddress)
-                                remote_port = [int]$_.RemotePort
-                                owning_process = [int]$_.OwningProcess
+                                        ([string]$_.remote_address)
+                                remote_port = [int]$_.remote_port
+                                owning_process = [int]$_.owning_process
                             }
                         }
                     )
@@ -3922,6 +9510,9 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                     )
                 }
                 $caseRecord.literal_ipv4_source_link_validated = $true
+                $currentFixtureCertified = $true
+                $currentFailurePhase = 'link_injection'
+                $caseRecord.fixture_certified = $true
                 $linkDeliveries =
                     [System.Collections.Generic.List[object]]::new()
                 try {
@@ -3936,7 +9527,15 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                     )
                 } catch {
                     $activeClient.Refresh()
-                    Stop-I03ProductFailure -Reason (
+                    $linkCode = if ($activeClient.HasExited) {
+                        'CANDIDATE_EXITED'
+                    } else { 'LINK_REJECTED' }
+                    Stop-I03ProductFailure -Code $linkCode `
+                        -SourceEvidence ([ordered]@{
+                            process = $activeClientExpectedIdentity
+                            exited = [bool]$activeClient.HasExited
+                            completed_deliveries = $linkDeliveries.Count
+                        }) -Reason (
                         "$($policy.name) candidate did not accept the " +
                         "bounded eD2K-link injection: " +
                         "$($_.Exception.Message); exited=" +
@@ -3954,16 +9553,60 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 }
                 $prewarmSamples = Join-Path $evidence `
                     "$($policy.name)-prewarm-samples.jsonl"
+                $currentFailurePhase = 'ipv4_prewarm'
                 try {
                     $prewarm = Wait-I03Prewarm -Process $activeClient `
+                        -ControlledServer $activeServer `
                         -NodePath $caseNode -TempPath $caseTemp `
-                        -WebPort $policy.web `
+                        -WebPort $policy.web -TcpPort $policy.tcp `
+                        -UdpPort $policy.udp `
+                        -TargetAddresses @($peerV4Text, $peerV6Text) `
+                        -TargetPort $PeerTcpPort `
+                        -ControlAddress ([string]$routeV4.source_address) `
+                        -ControlPort $activeServer.port `
                         -TimeoutSeconds $CaseTimeoutSeconds `
                         -SamplesPath $prewarmSamples
                 } catch {
+                    $prewarmFailureMessage = [string]$_.Exception.Message
+                    if ($prewarmFailureMessage -match
+                        '^I03_COLLECTOR::') {
+                        Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                            -Reason 'IPv4 prewarm socket collector failed'
+                    }
+                    if ($prewarmFailureMessage -in @(
+                        'I03_PRODUCT::CONTROLLED_ED2K_PROTOCOL',
+                        'I03_PRODUCT::CONTROLLED_ED2K_TRANSPORT'
+                    )) {
+                        Stop-I03ProductFailure -Code 'API_CONTRACT' `
+                            -SourceEvidence ([ordered]@{
+                                process = $activeClientExpectedIdentity
+                                error_kind =
+                                    [string]$activeServer.state['error_kind']
+                                error_code =
+                                    [string]$activeServer.state['error_code']
+                            }) -Reason 'Candidate violated controlled eD2K transport'
+                    }
+                    if ($prewarmFailureMessage -eq
+                        'I03_FIXTURE::EXTERNAL_CONTAMINATION') {
+                        Stop-I03Fixture -Code 'EXTERNAL_CONTAMINATION' `
+                            -Reason 'Controlled eD2K endpoint was contaminated'
+                    }
+                    if ($prewarmFailureMessage -eq
+                        'I03_FIXTURE::CONTROLLED_ED2K_SERVER_FAILED') {
+                        Stop-I03Fixture -Code 'HARNESS_EXCEPTION' `
+                            -Reason 'Controlled eD2K fixture failed during prewarm'
+                    }
                     if ($_.Exception.Message -match
                         'Client exited|Ambiguous or non-IPv4 connection') {
-                        Stop-I03ProductFailure -Reason (
+                        $prewarmCode = if ($_.Exception.Message -match
+                            'Client exited') {
+                            'CANDIDATE_EXITED'
+                        } else { 'IPV4_PREWARM_INVARIANT' }
+                        Stop-I03ProductFailure -Code $prewarmCode `
+                            -SourceEvidence ([ordered]@{
+                                process = $activeClientExpectedIdentity
+                                phase = 'ipv4_prewarm'
+                            }) -Reason (
                             "$($policy.name) candidate failed during " +
                             "IPv4 prewarm: $($_.Exception.Message)"
                         )
@@ -3974,6 +9617,40 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                     Stop-I03Fixture -Reason (
                         "$($policy.name) IPv4 prewarm was contaminated " +
                         'by another local process'
+                    )
+                }
+                if ([int]$prewarm.
+                    unexpected_socket_observation_count -gt 0) {
+                    Stop-I03ProductFailure `
+                        -Code 'CANDIDATE_THIRD_PARTY_SOCKET' `
+                        -SourceEvidence $prewarm `
+                        -Reason 'Candidate opened a non-allowlisted prewarm socket'
+                }
+                if ([int]$prewarm.
+                    duplicate_target_observation_count -gt 0) {
+                    Stop-I03ProductFailure `
+                        -Code 'IPV4_PREWARM_INVARIANT' `
+                        -SourceEvidence $prewarm `
+                        -Reason 'Candidate opened concurrent active target sockets during prewarm'
+                }
+                $helloDecision = Get-I03HelloEvidenceDecision `
+                    -Evidence $prewarm.hello
+                if ([string]$helloDecision.status -ceq
+                    'PRODUCT_INVARIANT') {
+                    Stop-I03ProductFailure `
+                        -Code ([string]$helloDecision.code) `
+                        -SourceEvidence $prewarm.hello `
+                        -Reason 'Candidate produced no HELLO log on a certified prewarm fixture'
+                }
+                if ([string]$helloDecision.status -ceq 'LAB_BLOCKED') {
+                    Stop-I03Fixture -Code ([string]$helloDecision.code) `
+                        -Reason 'HELLO log enumeration or read collector failed'
+                }
+                if ($null -eq $prewarm.socket -or
+                    -not [bool]$prewarm.socket.collector_ok) {
+                    Stop-I03Fixture -Reason (
+                        "$($policy.name) socket collector was unavailable " +
+                        'or ambiguous during prewarm'
                     )
                 }
                 $prewarmExact =
@@ -3999,7 +9676,9 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                     [int]$prewarm.hello.lowid_like_hello_answer_count -eq 0 -and
                     [bool]$prewarm.health_valid
                 if (-not $prewarmExact) {
-                    Stop-I03ProductFailure -Reason (
+                    Stop-I03ProductFailure `
+                        -Code 'IPV4_PREWARM_INVARIANT' `
+                        -SourceEvidence $prewarm -Reason (
                         "$($policy.name) candidate did not establish the " +
                         'IPv4 HighID HELLO/transfer prewarm on the valid ' +
                         'controlled fixture'
@@ -4107,24 +9786,45 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 )
                 $minimumBacklogBytes = [Int64]$FileSizeBytes -
                     $configuredTransferUpperBytes
-                $partFiles = @(
-                    Get-ChildItem -LiteralPath $caseTemp -File `
-                        -Filter '*.part' -ErrorAction SilentlyContinue
-                )
-                $partMetFiles = @(
-                    Get-ChildItem -LiteralPath $caseTemp -File `
-                        -Filter '*.part.met' -ErrorAction SilentlyContinue
-                )
+                try {
+                    $partFiles = @(Get-ChildItem -LiteralPath $caseTemp `
+                        -File -Filter '*.part' -ErrorAction Stop)
+                    $partMetFiles = @(Get-ChildItem -LiteralPath $caseTemp `
+                        -File -Filter '*.part.met' -ErrorAction Stop)
+                } catch {
+                    Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                        -Reason 'Backlog temp-file collector failed'
+                }
                 $completedFixturePath = Join-Path $caseIncoming `
                     ([string]$peerReady.fixture.name)
-                $currentPrewarmMatches = @(
-                    Get-I03TargetConnections | Where-Object {
-                        [int]$_.owning_process -eq $activeClient.Id -and
-                        [string]$_.state -eq 'Established' -and
-                        [string]$_.tuple_key -eq
-                            [string]$prewarm.selected_connection.tuple_key
-                    }
-                )
+                try {
+                    $currentPrewarmMatches = @(
+                        Get-I03TargetConnections | Where-Object {
+                            [int]$_.owning_process -eq $activeClient.Id -and
+                            [string]$_.state -eq 'Established' -and
+                            [string]$_.tuple_key -eq
+                                [string]$prewarm.selected_connection.tuple_key
+                        }
+                    )
+                } catch {
+                    Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                        -Reason 'Backlog TCP collector was unavailable'
+                }
+                $currentFailurePhase = 'backlog_revalidation'
+                if ($currentPrewarmMatches.Count -eq 0) {
+                    Stop-I03ProductFailure -Code 'NO_ROUTE' `
+                        -SourceEvidence ([ordered]@{
+                            prewarm_tuple_sha256 = Get-LabStringSha256 `
+                                -Value ([string]$prewarm.
+                                    selected_connection.tuple_key)
+                            current_match_count = 0
+                        }) -Reason 'Certified IPv4 prewarm route disappeared before restart'
+                }
+                if ($currentPrewarmMatches.Count -gt 1) {
+                    Stop-I03ProductFailure -Code 'DUPLICATE_ROUTE' `
+                        -SourceEvidence $currentPrewarmMatches `
+                        -Reason 'Certified prewarm tuple became duplicate before restart'
+                }
                 $currentPrewarmSocket = if (
                     $currentPrewarmMatches.Count -eq 1
                 ) {
@@ -4132,6 +9832,13 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                         -Connection $currentPrewarmMatches[0] `
                         -ExpectedProcessId $activeClient.Id
                 } else { $null }
+                if ($null -eq $currentPrewarmSocket -or
+                    -not [bool]$currentPrewarmSocket.collector_ok) {
+                    Stop-I03Fixture -Code 'COLLECTOR_AMBIGUOUS' -Reason (
+                        "$($policy.name) contemporaneous backlog socket " +
+                        'collector was unavailable or ambiguous'
+                    )
+                }
                 $backlogValid =
                     [IO.Path]::GetExtension(
                         [string]$peerReady.fixture.name
@@ -4213,9 +9920,16 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 }) -Path $restartPath | Out-Null
                 $routeSamples = Join-Path $evidence `
                     "$($policy.name)-post-restart-samples.jsonl"
+                $currentFailurePhase = 'post_restart_route'
                 try {
                     $routeObservation = Wait-I03PostRestartRoute `
-                        -Process $activeClient -WebPort $policy.web `
+                        -Process $activeClient -ControlledServer $activeServer `
+                        -WebPort $policy.web `
+                        -TcpPort $policy.tcp -UdpPort $policy.udp `
+                        -TargetAddresses @($peerV4Text, $peerV6Text) `
+                        -TargetPort $PeerTcpPort `
+                        -ControlAddress ([string]$routeV4.source_address) `
+                        -ControlPort $activeServer.port `
                         -ExpectedFamily $policy.expected_family `
                         -PrewarmTuple `
                             ([string]$prewarm.selected_connection.tuple_key) `
@@ -4224,15 +9938,55 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                         -ObservationSeconds $StableObservationSeconds `
                         -SamplesPath $routeSamples
                 } catch {
+                    $routeFailureMessage = [string]$_.Exception.Message
+                    if ($routeFailureMessage -match
+                        '^I03_COLLECTOR::') {
+                        Stop-I03Fixture -Code 'COLLECTOR_UNAVAILABLE' `
+                            -Reason 'Post-restart socket collector failed'
+                    }
+                    if ($routeFailureMessage -in @(
+                        'I03_PRODUCT::CONTROLLED_ED2K_PROTOCOL',
+                        'I03_PRODUCT::CONTROLLED_ED2K_TRANSPORT'
+                    )) {
+                        Stop-I03ProductFailure -Code 'API_CONTRACT' `
+                            -SourceEvidence ([ordered]@{
+                                process = $activeClientExpectedIdentity
+                                error_kind =
+                                    [string]$activeServer.state['error_kind']
+                                error_code =
+                                    [string]$activeServer.state['error_code']
+                            }) -Reason 'Candidate violated controlled eD2K transport'
+                    }
+                    if ($routeFailureMessage -eq
+                        'I03_FIXTURE::EXTERNAL_CONTAMINATION') {
+                        Stop-I03Fixture -Code 'EXTERNAL_CONTAMINATION' `
+                            -Reason 'Controlled eD2K endpoint was contaminated'
+                    }
+                    if ($routeFailureMessage -eq
+                        'I03_FIXTURE::CONTROLLED_ED2K_SERVER_FAILED') {
+                        Stop-I03Fixture -Code 'HARNESS_EXCEPTION' `
+                            -Reason 'Controlled eD2K fixture failed post-restart'
+                    }
                     if ($_.Exception.Message -match
                         'Client exited during post-restart') {
-                        Stop-I03ProductFailure -Reason (
+                        Stop-I03ProductFailure -Code 'CANDIDATE_EXITED' `
+                            -SourceEvidence ([ordered]@{
+                                process = $activeClientExpectedIdentity
+                                phase = 'post_restart_route'
+                            }) -Reason (
                             "$($policy.name) candidate exited during " +
                             "post-restart route selection: " +
                             $_.Exception.Message
                         )
                     }
                     throw
+                }
+                if ([int]$routeObservation.
+                    unexpected_socket_observation_count -gt 0) {
+                    Stop-I03ProductFailure `
+                        -Code 'CANDIDATE_THIRD_PARTY_SOCKET' `
+                        -SourceEvidence $routeObservation `
+                        -Reason 'Candidate opened a non-allowlisted socket'
                 }
                 $restartAck = $routeObservation.restart_ack
                 $restartAckExact =
@@ -4269,21 +10023,26 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 $observedSockets = @(
                     $routeObservation.current_socket_evidence
                 )
-                if (-not $routeObservation.prewarm_disappeared -or
-                    $routeObservation.other_pid_connection_count -ne 0) {
-                    Stop-I03Fixture -Reason (
-                        "$($policy.name) route observation was " +
-                        'contaminated or did not cross the restart boundary'
+                if (@($observedSockets | Where-Object {
+                            -not [bool]$_.collector_ok
+                        }).Count -gt 0) {
+                    Stop-I03Fixture -Code 'COLLECTOR_AMBIGUOUS' -Reason (
+                        "$($policy.name) route socket collector was " +
+                        'unavailable or ambiguous'
                     )
                 }
                 if (-not $routeObservation.health_valid) {
-                    $productFailures.Add(
-                        "$($policy.name): UI/API liveness failed during route observation"
-                    )
+                    $healthCode = if (
+                        [int]$routeObservation.api_probe_count -eq 0 -or
+                        [int]$routeObservation.api_failure_count -ne 0 -or
+                        [double]$routeObservation.api_max_ms -ge 2000
+                    ) { 'API_UNAVAILABLE' } else { 'UI_UNRESPONSIVE' }
+                    $null = Add-I03ProductFailure -Code $healthCode `
+                        -SourceEvidence $routeObservation `
+                        -Reason "$($policy.name) candidate liveness invariant failed"
                 }
-                $socketEvidenceValid =
-                    $observedSockets.Count -eq
-                        $observedConnections.Count
+                $decisionSocketProofs =
+                    [System.Collections.Generic.List[object]]::new()
                 $socketPairCount = [Math]::Min(
                     $observedSockets.Count,
                     $observedConnections.Count
@@ -4303,63 +10062,61 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                     } else {
                         [string]$routeV4.source_address
                     }
-                    if ([int]$connection.owning_process -ne
-                            $activeClient.Id -or
-                        [string]$connection.remote_address -ne
-                            $expectedAddress -or
-                        [int]$connection.remote_port -ne $PeerTcpPort -or
-                        [string]$connection.local_address -ne
-                            $expectedLocal -or
-                        -not [bool]$socket.pid_matches -or
-                        -not [bool]$socket.tuple_current_exact -or
-                        -not [bool]$socket.local_address_assigned -or
-                        -not [bool]$socket.physical_nonvirtual) {
-                        $socketEvidenceValid = $false
-                    }
-                }
-                if (-not $socketEvidenceValid) {
-                    $productFailures.Add(
-                        "$($policy.name): selected route was not the exact candidate-owned physical socket"
-                    )
-                }
-                if ($observedConnections.Count -gt 0 -and
-                    [double]$routeObservation.stable_observation_seconds -lt
-                        $StableObservationSeconds) {
-                    $productFailures.Add(
-                        "$($policy.name): route did not remain stable for " +
-                        "$StableObservationSeconds seconds"
-                    )
+                    $attributionExact =
+                        [int]$connection.owning_process -eq $activeClient.Id -and
+                        [string]$connection.remote_address -eq $expectedAddress -and
+                        [int]$connection.remote_port -eq $PeerTcpPort -and
+                        [string]$connection.local_address -eq $expectedLocal
+                    $decisionSocketProofs.Add([pscustomobject][ordered]@{
+                        collector_ok = [bool]$socket.collector_ok
+                        pid_matches = [bool]$socket.pid_matches
+                        tuple_current_exact =
+                            [bool]$socket.tuple_current_exact
+                        local_address_assigned =
+                            [bool]$socket.local_address_assigned
+                        physical_nonvirtual =
+                            [bool]$socket.physical_nonvirtual
+                        attribution_exact = $attributionExact
+                    })
                 }
 
                 $observedFamilies = @(
                     $observedConnections.family | Sort-Object -Unique
                 )
-                $productMatch = $observedConnections.Count -eq 1 -and
-                    [string]$observedConnections[0].family -eq
-                        $policy.expected_family -and
-                    -not [bool]$routeObservation.ambiguous_family_selection -and
-                    [int]$routeObservation.
-                        wrong_family_observation_count -eq 0 -and
-                    $socketEvidenceValid -and
-                    [bool]$routeObservation.health_valid -and
-                    ($observedConnections.Count -eq 0 -or
-                        [double]$routeObservation.stable_observation_seconds -ge
-                            $StableObservationSeconds)
-                if ($observedConnections.Count -eq 0) {
-                    $productFailures.Add(
-                        "$($policy.name): no post-restart route was established"
+                $routeDecision = Get-I03RouteSelectionDecision `
+                    -Policy $policy.name -CollectorOk $true `
+                    -FixtureCertified $currentFixtureCertified `
+                    -Rows $observedConnections `
+                    -SocketProofs @($decisionSocketProofs) `
+                    -StableSeconds ([double]$routeObservation.
+                        stable_observation_seconds) `
+                    -RequiredStableSeconds $StableObservationSeconds `
+                    -Contamination (
+                        -not [bool]$routeObservation.prewarm_disappeared -or
+                        [int]$routeObservation.other_pid_connection_count -ne 0
+                    ) `
+                    -AmbiguousSelection (
+                        [bool]$routeObservation.ambiguous_family_selection -or
+                        [int]$routeObservation.
+                            duplicate_target_observation_count -ne 0
+                    ) `
+                    -WrongFamilyObserved (
+                        [int]$routeObservation.
+                            wrong_family_observation_count -ne 0
                     )
-                } elseif ($observedConnections.Count -ne 1 -or
-                    [string]$observedConnections[0].family -ne
-                        $policy.expected_family -or
-                    [bool]$routeObservation.ambiguous_family_selection -or
-                    [int]$routeObservation.
-                        wrong_family_observation_count -ne 0) {
-                    $productFailures.Add(
-                        "$($policy.name): expected $($policy.expected_family), " +
-                        "observed $($observedFamilies -join '+')"
-                    )
+                if ([string]$routeDecision.status -ceq 'LAB_BLOCKED') {
+                    Stop-I03Fixture -Code ([string]$routeDecision.code) `
+                        -Reason 'Route decision evidence was unavailable or contaminated'
                 }
+                if ([string]$routeDecision.status -ceq
+                    'PRODUCT_INVARIANT') {
+                    $null = Add-I03ProductFailure `
+                        -Code ([string]$routeDecision.code) `
+                        -SourceEvidence $routeObservation `
+                        -Reason "$($policy.name) route-selection invariant failed"
+                }
+                $productMatch = [bool]$routeDecision.product_match -and
+                    [bool]$routeObservation.health_valid
 
                 $donePath = Join-Path $coordination `
                     "$($policy.name)-done.json"
@@ -4515,10 +10272,40 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                             [string]$caseServerStop.error
                         )
                     }
+                    $expectedServerEvidenceFields = @(
+                        'schema', 'run_nonce', 'policy', 'listen_address',
+                        'listen_port', 'high_id', 'login_at_utc',
+                        'stopped_at_utc', 'phase', 'logged_in', 'reply_sent',
+                        'candidate_attributed', 'attributed_process_id',
+                        'login_protocol', 'login_opcode',
+                        'login_payload_bytes', 'login_payload_sha256',
+                        'login_advertised_tcp_port', 'frames_received',
+                        'status_frames_sent', 'accepted_remote',
+                        'error_kind', 'error_code'
+                    )
+                    $actualServerEvidenceFields = if (
+                        $null -eq $caseServerStop.evidence
+                    ) { @() } else {
+                        @($caseServerStop.evidence.PSObject.Properties.Name)
+                    }
                     if ($null -eq $caseServerStop.evidence -or
+                        $actualServerEvidenceFields.Count -ne
+                            $expectedServerEvidenceFields.Count -or
+                        @($expectedServerEvidenceFields | Where-Object {
+                            $actualServerEvidenceFields -cnotcontains $_
+                        }).Count -ne 0 -or
+                        [string]$caseServerStop.evidence.schema -cne
+                            'ese.v91.i03-controlled-ed2k-server/v1' -or
                         -not [bool]$caseServerStop.evidence.logged_in -or
                         -not [bool]$caseServerStop.evidence.reply_sent -or
-                        [string]$caseServerStop.evidence.error) {
+                        -not [bool]$caseServerStop.evidence.
+                            candidate_attributed -or
+                        [int]$caseServerStop.evidence.
+                            attributed_process_id -ne [int]$activeClient.Id -or
+                        [string]$caseServerStop.evidence.error_kind -cne
+                            'none' -or
+                        [string]$caseServerStop.evidence.error_code -cne
+                            'NONE') {
                         $cleanupFailures.Add(
                             "$($policy.name) controlled server evidence is incomplete"
                         )
@@ -4526,12 +10313,32 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 }
                 if ($null -ne $activeClient) {
                     $clientStop = Stop-I03OwnedProcess `
-                        -Process $activeClient -ExpectedPath $activeClientExe
+                        -Process $activeClient -ExpectedPath $activeClientExe `
+                        -ExpectedIdentity $activeClientExpectedIdentity
                     $clientStopped = [bool]$clientStop.stopped
-                    if (-not $clientStopped) {
+                    if (-not $clientStopped -or
+                        -not $clientStop.collector_ok -or
+                        $clientStop.unexpected_descendant_count -ne 0) {
                         $allClientsStopped = $false
                         $cleanupFailures.Add(
                             "$($policy.name) client process remains running"
+                        )
+                    }
+                }
+                if ($caseNode -and $null -ne $packageIdentityBefore -and
+                    (Test-Path -LiteralPath $caseNode -PathType Container)) {
+                    $caseNodeTerminalBinding =
+                        Test-I03PreparedNodeBinding -NodePath $caseNode `
+                            -PackageIdentity $packageIdentityBefore `
+                            -Phase Terminal
+                    Write-LabJson -Value $caseNodeTerminalBinding -Path (
+                        Join-Path $evidence `
+                            "$($policy.name)-prepared-node-binding-terminal.json"
+                    ) | Out-Null
+                    if (-not [bool]$caseNodeTerminalBinding.collector_ok -or
+                        -not [bool]$caseNodeTerminalBinding.bound) {
+                        $cleanupFailures.Add(
+                            "$($policy.name) prepared static program files changed"
                         )
                     }
                 }
@@ -4546,17 +10353,28 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                     )
                 }
                 if ($caseExe) {
+                    $nodeBindingUnchanged =
+                        $null -ne $caseNodeTerminalBinding -and
+                        [bool]$caseNodeTerminalBinding.collector_ok -and
+                        [bool]$caseNodeTerminalBinding.bound
                     $preparedBinaries.Add([pscustomobject][ordered]@{
                         policy = $policy.name
                         path = $caseExe
                         expected_sha256 = $expectedHash
                         after_sha256 = $clientHashAfter
-                        unchanged = $clientHashAfter -eq $expectedHash
+                        initial_node_binding = $caseNodeInitialBinding
+                        terminal_node_binding = $caseNodeTerminalBinding
+                        unchanged = $clientHashAfter -eq $expectedHash -and
+                            $nodeBindingUnchanged
                     })
                 }
                 $caseRecord.cleanup = [ordered]@{
                     client_stopped = $clientStopped
                     client_executable_sha256_after = $clientHashAfter
+                    prepared_node_initial_binding =
+                        $caseNodeInitialBinding
+                    prepared_node_terminal_binding =
+                        $caseNodeTerminalBinding
                     controlled_server_stopped = if (
                         $null -eq $caseServerStop
                     ) { $true } else { [bool]$caseServerStop.stopped }
@@ -4572,6 +10390,7 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 }
                 $activeClient = $null
                 $activeClientExe = ''
+                $activeClientExpectedIdentity = $null
                 $activeServer = $null
             }
             if ($productFailures.Count -gt $failureCountBefore) {
@@ -4599,6 +10418,17 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
         $peerResult = $peerResultWait.value
     } catch {
         $runtimeFailure = $_.Exception.Message
+        if ($runtimeFailure.StartsWith('I03_COLLECTOR::')) {
+            $null = Add-I03TypedFailure -Status 'LAB_BLOCKED' `
+                -Code 'COLLECTOR_UNAVAILABLE' `
+                -Reason 'Coordinator collector failed'
+            $runtimeFailure = 'I03_LAB_BLOCKED::COLLECTOR_UNAVAILABLE'
+        } elseif (-not $runtimeFailure.StartsWith('I03_LAB_BLOCKED::') -and
+            -not $runtimeFailure.StartsWith('I03_PRODUCT_INVARIANT::')) {
+            $null = Add-I03TypedFailure -Status 'LAB_BLOCKED' `
+                -Code 'HARNESS_EXCEPTION' -Reason $runtimeFailure
+            $runtimeFailure = 'I03_LAB_BLOCKED::HARNESS_EXCEPTION'
+        }
     } finally {
         if ($null -ne $baselineProbeV4) {
             try { $baselineProbeV4.client.Dispose() } catch {}
@@ -4621,14 +10451,34 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
         }
         if ($null -ne $activeClient) {
             $clientStop = Stop-I03OwnedProcess -Process $activeClient `
-                -ExpectedPath $activeClientExe
-            if (-not $clientStop.stopped) {
+                -ExpectedPath $activeClientExe `
+                -ExpectedIdentity $activeClientExpectedIdentity
+            if (-not $clientStop.stopped -or
+                -not $clientStop.collector_ok -or
+                $clientStop.unexpected_descendant_count -ne 0) {
                 $allClientsStopped = $false
                 $cleanupFailures.Add(
                     'active client process remained after outer cleanup'
                 )
             }
             $activeClient = $null
+        }
+        if ($null -ne $mutationBaseline) {
+            try {
+                $mutationCleanup = Complete-I03MutationTransaction `
+                    -Baseline $mutationBaseline
+                if (-not [bool]$mutationCleanup.complete) {
+                    $cleanupFailures.Add(
+                        'startup registry or forbidden system state changed'
+                    )
+                }
+            } catch {
+                $cleanupFailures.Add(
+                    'startup registry/system-state restoration failed'
+                )
+            }
+        } else {
+            $cleanupFailures.Add('mutation baseline was not captured')
         }
         if (-not $peerStopWritten) {
             try {
@@ -4678,8 +10528,15 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                 -PackagePath $PackagePath -ExpectedCommit $Commit
             $packageIdentityAfter =
                 Get-I03PackageIdentity -PackagePath $candidate.package_path
+            $packageZipBindingAfter = Get-I03ZipPackageBinding `
+                -ZipPath $candidateZip `
+                -ExpectedZipSha256 $expectedZipHash `
+                -PackageIdentity $packageIdentityAfter
             Write-LabJson -Value $packageIdentityAfter -Path (
                 Join-Path $evidence 'package-manifest-after.json'
+            ) | Out-Null
+            Write-LabJson -Value $packageZipBindingAfter -Path (
+                Join-Path $evidence 'package-zip-binding-after.json'
             ) | Out-Null
             $packageManifestUnchanged =
                 $null -ne $packageIdentityBefore -and
@@ -4689,13 +10546,23 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                     $packageIdentityBefore.file_count -and
                 $packageIdentityAfter.total_bytes -eq
                     $packageIdentityBefore.total_bytes
+            $packageZipBindingUnchanged =
+                $null -ne $packageZipBindingBefore -and
+                $packageZipBindingAfter.verified -and
+                $packageZipBindingAfter.zip_sha256 -eq
+                    $packageZipBindingBefore.zip_sha256 -and
+                $packageZipBindingAfter.zip_bytes -eq
+                    $packageZipBindingBefore.zip_bytes -and
+                $packageZipBindingAfter.manifest_sha256 -eq
+                    $packageZipBindingBefore.manifest_sha256
             $candidateUnchanged =
                 $candidateAfter.emule_sha256 -eq $expectedHash -and
                 $candidateAfter.ese_server_sha256 -eq
                     $candidate.ese_server_sha256 -and
                 $candidateAfter.build_info_sha256 -eq
                     $candidate.build_info_sha256 -and
-                $packageManifestUnchanged
+                $packageManifestUnchanged -and
+                $packageZipBindingUnchanged
         } catch {
             $cleanupFailures.Add(
                 "Candidate revalidation failed: $($_.Exception.Message)"
@@ -4708,8 +10575,129 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
         }
     }
 
+    $terminalNetworkCleanup = Get-I03TerminalSocketCleanupEvidence `
+        -Ports @(
+            $PeerTcpPort, $PeerUdpPort, $PeerWebPort,
+            $AutoTcpPort, $AutoUdpPort, $AutoWebPort,
+            $PreferredTcpPort, $PreferredUdpPort, $PreferredWebPort,
+            @($controlledServerPorts)
+        ) -OwnedProcessIds @($ownedCandidateProcessIds)
+    Write-LabJson -Value $terminalNetworkCleanup -Path (
+        Join-Path $evidence 'terminal-network-cleanup.json'
+    ) | Out-Null
+    if (-not [bool]$terminalNetworkCleanup.collector_ok -or
+        -not [bool]$terminalNetworkCleanup.complete) {
+        $cleanupFailures.Add('terminal network cleanup is incomplete')
+    }
+    $terminalProcessCleanup = Get-I03EmuleProcessCensus
+    Write-LabJson -Value $terminalProcessCleanup -Path (
+        Join-Path $evidence 'terminal-emule-process-census.json'
+    ) | Out-Null
+    if (-not [bool]$terminalProcessCleanup.collector_ok -or
+        [int]$terminalProcessCleanup.process_count -ne 0) {
+        $cleanupFailures.Add('terminal eMule process census is not empty')
+    }
+
     if ($null -ne $peerResult) {
         try {
+            $peerFailureProtocolExact =
+                $peerResult.failure_records -is [System.Array] -and
+                $peerResult.failure_source_manifest -is [System.Array]
+            $peerValidatedFailures =
+                [System.Collections.Generic.List[object]]::new()
+            if ($peerFailureProtocolExact) {
+                foreach ($record in @($peerResult.failure_records)) {
+                    if (-not (Test-I03FailureRecord -Record $record `
+                        -ExpectedCaseId $caseId -ExpectedRunNonce $nonce `
+                        -ExpectedRole 'Peer' `
+                        -ExpectedCommit $candidate.commit `
+                        -ExpectedEmuleSha256 $expectedHash `
+                        -ExpectedZipSha256 $expectedZipHash `
+                        -ExpectedManifestSha256 `
+                            $packageIdentityBefore.manifest_sha256)) {
+                        $peerFailureProtocolExact = $false
+                        break
+                    }
+                    $peerValidatedFailures.Add($record)
+                }
+            }
+            if ($peerFailureProtocolExact) {
+                $peerFailureSourceVerification =
+                    Test-I03PersistedFailureSources `
+                        -Manifest @($peerResult.failure_source_manifest) `
+                        -Root $coordination -ExpectedCaseId $caseId `
+                        -ExpectedRunNonce $nonce -ExpectedRole 'Peer'
+                $peerFailureProtocolExact =
+                    [bool]$peerFailureSourceVerification.ok
+            }
+            if ($peerFailureProtocolExact) {
+                $peerSourceHashes = @(
+                    $peerFailureSourceVerification.source_sha256
+                )
+                $peerSourceBindings = @(
+                    $peerFailureSourceVerification.
+                        trusted_binding_sha256
+                )
+                $peerProductProofs = @($peerValidatedFailures |
+                    Where-Object status -CEQ 'PRODUCT_INVARIANT' |
+                    ForEach-Object { $_.proofs })
+                if (@($peerProductProofs | Where-Object {
+                            [string]$_.source_evidence_sha256 -cnotin
+                                $peerSourceHashes
+                        }).Count -gt 0 -or
+                    @($peerSourceHashes | Where-Object {
+                            [string]$_ -cnotin @(
+                                $peerProductProofs.source_evidence_sha256
+                            )
+                        }).Count -gt 0 -or
+                    @($peerProductProofs | Where-Object {
+                            [string]$_.binding_sha256 -cnotin
+                                $peerSourceBindings
+                        }).Count -gt 0 -or
+                    @($peerSourceBindings | Where-Object {
+                            [string]$_ -cnotin @(
+                                $peerProductProofs.binding_sha256
+                            )
+                        }).Count -gt 0) {
+                    $peerFailureProtocolExact = $false
+                }
+            }
+            if ($peerFailureProtocolExact) {
+                $peerProductFailureCount = @($peerValidatedFailures |
+                    Where-Object status -CEQ 'PRODUCT_INVARIANT').Count
+                $peerLabFailureCount = @($peerValidatedFailures |
+                    Where-Object status -CEQ 'LAB_BLOCKED').Count
+                $peerStatusFailureExact =
+                    ([string]$peerResult.status -ceq 'COMPLETE' -and
+                        $peerProductFailureCount -eq 0 -and
+                        $peerLabFailureCount -eq 0) -or
+                    ([string]$peerResult.status -ceq
+                        'PRODUCT_INVARIANT' -and
+                        $peerProductFailureCount -gt 0) -or
+                    ([string]$peerResult.status -ceq 'LAB_BLOCKED' -and
+                        $peerProductFailureCount -eq 0 -and
+                        $peerLabFailureCount -gt 0)
+                if (-not $peerStatusFailureExact) {
+                    $peerFailureProtocolExact = $false
+                }
+            }
+            if ($peerFailureProtocolExact) {
+                $peerProvenProductFailure = $peerProductFailureCount -gt 0
+                foreach ($record in $peerValidatedFailures) {
+                    $failureRecords.Add($record)
+                    if ([string]$record.status -ceq
+                        'PRODUCT_INVARIANT') {
+                        foreach ($proof in @($record.proofs)) {
+                            if ([string]$proof.binding_sha256 -cin
+                                $peerSourceBindings) {
+                                [void]$trustedProofBindings.Add(
+                                    [string]$proof.binding_sha256
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             $peerCleanupExact =
                 [string]$peerResult.schema -eq
                     'ese.v91.i03-peer-result/v1' -and
@@ -4719,12 +10707,24 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
                     $candidate.commit -and
                 [string]$peerResult.candidate_emule_sha256 -eq
                     $expectedHash -and
+                [string]$peerResult.candidate_zip_sha256 -eq
+                    $expectedZipHash -and
+                [string]$peerResult.candidate_package_manifest_sha256 -eq
+                    $packageIdentityBefore.manifest_sha256 -and
+                [string]$peerResult.lab_user_sid_sha256 -match
+                    '^[0-9a-f]{64}$' -and
+                $peerFailureProtocolExact -and
                 [string]$peerResult.source_userhash_sha256 -eq
                     $sourceIdentity -and
                 [bool]$peerResult.cleanup.source_process_stopped -and
                 [bool]$peerResult.cleanup.candidate_package_unchanged -and
                 [bool]$peerResult.cleanup.
                     extracted_package_manifest_unchanged -and
+                [bool]$peerResult.cleanup.package_zip_binding_unchanged -and
+                [bool]$peerResult.cleanup.autostart_restored_exact -and
+                [bool]$peerResult.cleanup.
+                    ed2k_association_restored_exact -and
+                [bool]$peerResult.cleanup.forbidden_state_unchanged -and
                 [bool]$peerResult.cleanup.prepared_executable_unchanged -and
                 @($peerResult.cleanup.failures).Count -eq 0
             $peerResultExact = $peerCleanupExact -and
@@ -4740,17 +10740,17 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
         }
     }
     if (-not $peerResultExact -and -not (
-        [bool]$productAdjudication.runtime_failure -and
+        ([bool]$productAdjudication.runtime_failure -or
+            $peerProvenProductFailure) -and
         $peerCleanupExact
     )) {
         Add-I03BlockedReason `
             -Reason 'Peer completion/cleanup evidence is not exact'
     }
     if ($null -ne $runtimeFailure -and
-        -not $runtimeFailure.StartsWith('I03_FIXTURE_BLOCKED:') -and
-        -not $runtimeFailure.StartsWith('I03_PRODUCT_FAILURE:')) {
-        Add-I03BlockedReason `
-            -Reason "Harness/runtime error: $runtimeFailure"
+        -not $runtimeFailure.StartsWith('I03_LAB_BLOCKED::') -and
+        -not $runtimeFailure.StartsWith('I03_PRODUCT_INVARIANT::')) {
+        Add-I03BlockedReason -Reason 'HARNESS_EXCEPTION'
     }
     if ($cleanupFailures.Count -gt 0) {
         Add-I03BlockedReason `
@@ -4761,7 +10761,8 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
             -not [bool]$_.fixture_valid
         }).Count -eq 0
     $productRuntimeFixtureValid =
-        [bool]$productAdjudication.runtime_failure -and
+        ([bool]$productAdjudication.runtime_failure -or
+            $peerProvenProductFailure) -and
         $caseResults.Count -ge 1 -and
         $null -ne $caseResults[$caseResults.Count - 1].client -and
         $null -ne $caseResults[$caseResults.Count - 1].
@@ -4789,8 +10790,14 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
     }
     $cleanupComplete = $allClientsStopped -and
         $allControlServersStopped -and
+        $null -ne $terminalNetworkCleanup -and
+        [bool]$terminalNetworkCleanup.complete -and
+        $null -ne $terminalProcessCleanup -and
+        [bool]$terminalProcessCleanup.collector_ok -and
+        [int]$terminalProcessCleanup.process_count -eq 0 -and
         ($peerResultExact -or
-            ($productRuntimeFixtureValid -and $peerCleanupExact)) -and
+            (([bool]$productAdjudication.runtime_failure -or
+                $peerProvenProductFailure) -and $peerCleanupExact)) -and
         $candidateUnchanged -and $preparedBinariesValid -and
         $cleanupFailures.Count -eq 0
     $cleanup = [ordered]@{
@@ -4804,12 +10811,18 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
         candidate_package_unchanged = $candidateUnchanged
         extracted_package_manifest_unchanged =
             $packageManifestUnchanged
+        package_zip_binding_unchanged = $packageZipBindingUnchanged
         prepared_binaries = @($preparedBinaries)
-        adapters_modified = $false
-        routes_modified = $false
-        dns_modified = $false
-        hosts_modified = $false
-        firewall_modified = $false
+        mutation_cleanup = $mutationCleanup
+        autostart_restored_exact = $null -ne $mutationCleanup -and
+            [bool]$mutationCleanup.autostart_restored_exact
+        ed2k_association_restored_exact =
+            $null -ne $mutationCleanup -and
+            [bool]$mutationCleanup.ed2k_association_restored_exact
+        forbidden_state_unchanged = $null -ne $mutationCleanup -and
+            [bool]$mutationCleanup.forbidden_state_unchanged
+        terminal_network = $terminalNetworkCleanup
+        terminal_processes = $terminalProcessCleanup
         retained_by_design = @(
             'coordinator OutputRoot profiles',
             'peer OutputRoot profile',
@@ -4820,26 +10833,127 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
         complete = $cleanupComplete
         failures = @($cleanupFailures)
     }
+    $localFailureSourceVerification = Test-I03PersistedFailureSources `
+        -Manifest @($failureSourceFiles) -Root $evidence `
+        -ExpectedCaseId $caseId -ExpectedRunNonce $nonce `
+        -ExpectedRole 'Coordinator'
+    $failureSourceEvidenceComplete =
+        [bool]$localFailureSourceVerification.ok
+    $localSourceHashes = @(
+        $localFailureSourceVerification.source_sha256
+    )
+    $localTrustedBindings = @(
+        $localFailureSourceVerification.trusted_binding_sha256
+    )
+    $localProductSourceHashes = @($failureRecords |
+        Where-Object {
+            [string]$_.role -ceq 'Coordinator' -and
+            [string]$_.status -ceq 'PRODUCT_INVARIANT'
+        } | ForEach-Object { $_.proofs } | ForEach-Object {
+            [string]$_.source_evidence_sha256
+        } | Sort-Object -Unique)
+    $localProductBindingHashes = @($failureRecords |
+        Where-Object {
+            [string]$_.role -ceq 'Coordinator' -and
+            [string]$_.status -ceq 'PRODUCT_INVARIANT'
+        } | ForEach-Object { $_.proofs } | ForEach-Object {
+            [string]$_.binding_sha256
+        } | Sort-Object -Unique)
+    if (@($localProductSourceHashes | Where-Object {
+                [string]$_ -cnotin $localSourceHashes
+            }).Count -gt 0 -or
+        @($localSourceHashes | Where-Object {
+                [string]$_ -cnotin $localProductSourceHashes
+            }).Count -gt 0 -or
+        @($localProductBindingHashes | Where-Object {
+                [string]$_ -cnotin $localTrustedBindings
+            }).Count -gt 0 -or
+        @($localTrustedBindings | Where-Object {
+                [string]$_ -cnotin $localProductBindingHashes
+            }).Count -gt 0) {
+        $failureSourceEvidenceComplete = $false
+    }
+    $trustedProofBindings.Clear()
+    foreach ($record in $failureRecords) {
+        if ([string]$record.status -cne 'PRODUCT_INVARIANT') {
+            continue
+        }
+        $verifiedBindings = if ([string]$record.role -ceq 'Peer' -and
+            $null -ne $peerFailureSourceVerification -and
+            [bool]$peerFailureSourceVerification.ok) {
+            @($peerFailureSourceVerification.trusted_binding_sha256)
+        } elseif ([string]$record.role -ceq 'Coordinator' -and
+            $failureSourceEvidenceComplete) {
+            $localTrustedBindings
+        } else { @() }
+        foreach ($proof in @($record.proofs)) {
+            if ([string]$proof.binding_sha256 -cin $verifiedBindings) {
+                [void]$trustedProofBindings.Add(
+                    [string]$proof.binding_sha256
+                )
+            }
+        }
+    }
+    if (-not $failureSourceEvidenceComplete) {
+        Add-I03BlockedReason -Reason 'EVIDENCE_INCOMPLETE'
+        $currentPolicyName = 'none'
+        $currentFailurePhase = 'evidence_finalize'
+        $currentFixtureCertified = $false
+        $null = Add-I03TypedFailure -Status 'LAB_BLOCKED' `
+            -Code 'EVIDENCE_INCOMPLETE' `
+            -Reason 'Persisted product failure sources did not revalidate'
+    }
+    if ($cleanupFailures.Count -gt 0) {
+        $currentPolicyName = 'none'
+        $currentFailurePhase = 'cleanup'
+        $currentFixtureCertified = $false
+        $null = Add-I03TypedFailure -Status 'LAB_BLOCKED' `
+            -Code 'CLEANUP_INCOMPLETE' `
+            -Reason 'Transactional cleanup was incomplete'
+    }
+    [object[]]$cleanupIncidentCodes = @()
+    if ($cleanupFailures.Count -gt 0) {
+        $cleanupIncidentCodes = @('CLEANUP_INCOMPLETE')
+    }
+    foreach ($failureRecord in $failureRecords) {
+        $failureRecord.cleanup.complete = $cleanupComplete
+        $failureRecord.cleanup.incident_codes = @($cleanupIncidentCodes)
+    }
     Write-LabJson -Value $cleanup -Path $cleanupPath | Out-Null
 
     $clockValid = $null -ne $clockEvidence -and
         [bool]$clockEvidence.certified_within_1000_ms
     $adjudicationFixtureValid = $peerReadyExact -and $topologyValid -and
         $null -ne $baselineEvidence -and $clockValid -and
-        ($caseFixtureValid -or $productRuntimeFixtureValid) -and
-        ($peerResultExact -or
-            ($productRuntimeFixtureValid -and $peerCleanupExact)) -and
-        $candidateUnchanged -and $cleanupComplete
-    $fullFixtureValid = $adjudicationFixtureValid -and
-        $caseFixtureValid -and $peerResultExact
-    $formalStatus = if (-not $adjudicationFixtureValid -or
-        $blockedReasons.Count -gt 0) {
-        'BLOCKED'
-    } elseif ($productFailures.Count -gt 0) {
-        'FAIL'
-    } elseif ($fullFixtureValid) {
-        'PASS'
-    } else { 'BLOCKED' }
+        ($caseFixtureValid -or $productRuntimeFixtureValid)
+    $bothPoliciesPass = $caseResults.Count -eq 2 -and
+        @($caseResults | Where-Object {
+            -not [bool]$_.fixture_valid -or
+            -not [bool]$_.product_match
+        }).Count -eq 0
+    $evidenceComplete = $peerResultExact -and $candidateUnchanged -and
+        $packageManifestUnchanged -and $packageZipBindingUnchanged
+    $fixtureCompleteForPass = $adjudicationFixtureValid -and
+        $blockedReasons.Count -eq 0
+    $adjudication = Get-I03FormalAdjudication `
+        -FailureRecords @($failureRecords) `
+        -AllowedRolePolicyTuples @(
+            'Coordinator|none', 'Coordinator|auto',
+            'Coordinator|preferred', 'Peer|none', 'Peer|auto',
+            'Peer|preferred'
+        ) `
+        -TrustedProofBindings @($trustedProofBindings) `
+        -FixtureComplete $fixtureCompleteForPass `
+        -BothPoliciesPass $bothPoliciesPass `
+        -EvidenceComplete $evidenceComplete `
+        -CleanupComplete $cleanupComplete `
+        -ExpectedCaseId $caseId -ExpectedRunNonce $nonce `
+        -ExpectedCommit $candidate.commit `
+        -ExpectedEmuleSha256 $expectedHash `
+        -ExpectedZipSha256 $expectedZipHash `
+        -ExpectedManifestSha256 $packageIdentityBefore.manifest_sha256
+    $formalStatus = [string]$adjudication.formal_status
+    $fullFixtureValid = $formalStatus -ceq 'PASS'
     $controlledLoginValidated = $caseResults.Count -gt 0 -and
         @($caseResults | Where-Object {
             $null -eq $_.controlled_server -or
@@ -4988,6 +11102,9 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
         }
         policies = @($caseResults)
         product_failures = @($productFailures)
+        failure_records = @($failureRecords)
+        failure_source_manifest = @($failureSourceFiles)
+        formal_adjudication = $adjudication
         blocked_reasons = @(
             $blockedReasons | Select-Object -Unique
         )
@@ -5036,19 +11153,171 @@ No adapter, route, DNS, hosts or firewall change is part of V91-I03.
             }
         }
     }
-    Write-LabJson -Value $summary -Path $summaryPath | Out-Null
+    Write-LabJson -Value $summary -Path $privateSummaryPath | Out-Null
+    $privateManifestPath = Join-Path $evidence 'private-manifest.json'
+    $publicRootPrefix = [IO.Path]::GetFullPath(
+        $publicEvidence
+    ).TrimEnd('\') + '\'
+    $outputRootPrefix = [IO.Path]::GetFullPath($output).TrimEnd('\') + '\'
+    $coordinationRootPrefix = [IO.Path]::GetFullPath(
+        $coordination
+    ).TrimEnd('\') + '\'
+    $outputPrivateRows = @(Get-ChildItem -LiteralPath $output -File `
+        -Recurse -Force -ErrorAction Stop | Where-Object {
+            -not $_.FullName.StartsWith(
+                $publicRootPrefix,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -and $_.FullName -cne $privateManifestPath
+        } | ForEach-Object {
+            [pscustomobject][ordered]@{
+                scope = 'output-private-and-nodes'
+                relative_path = $_.FullName.Substring(
+                    $outputRootPrefix.Length
+                )
+                bytes = [Int64]$_.Length
+                sha256 = Get-LabSha256 -Path $_.FullName
+            }
+        })
+    $coordinationPrivateRows = @(Get-ChildItem -LiteralPath $coordination `
+        -File -Recurse -Force -ErrorAction Stop | ForEach-Object {
+                [pscustomobject][ordered]@{
+                    scope = 'coordination-private'
+                    relative_path = $_.FullName.Substring(
+                        $coordinationRootPrefix.Length
+                    )
+                    bytes = [Int64]$_.Length
+                    sha256 = Get-LabSha256 -Path $_.FullName
+                }
+            })
+    $privateFileRows = @(
+        @($outputPrivateRows) + @($coordinationPrivateRows) |
+            Sort-Object scope, relative_path
+    )
+    $privateManifest = [ordered]@{
+        schema = 'ese.v91.i03-private-evidence-manifest/v1'
+        case_id = $caseId
+        run_nonce = $nonce
+        retained_by_design = $true
+        files = $privateFileRows
+    }
+    Write-LabJson -Value $privateManifest -Path $privateManifestPath | Out-Null
+    $publicFailures = @($failureRecords | ForEach-Object {
+        [pscustomobject][ordered]@{
+            role = [string]$_.role
+            policy = [string]$_.policy
+            phase = [string]$_.phase
+            status = [string]$_.status
+            category = [string]$_.category
+            code = [string]$_.code
+            fixture_certified = [bool]$_.fixture_certified
+            cleanup_complete = [bool]$_.cleanup.complete
+            cleanup_incident_codes = @($_.cleanup.incident_codes)
+        }
+    })
+    $publicSummary = [ordered]@{
+        schema = 'ese.v91.i03-public-summary/v1'
+        case_id = $caseId
+        formal_status = $formalStatus
+        candidate = [ordered]@{
+            commit = $candidate.commit
+            emule_sha256 = $expectedHash
+            zip_sha256 = $expectedZipHash
+            package_manifest_sha256 =
+                $packageIdentityBefore.manifest_sha256
+            package_unchanged = $candidateUnchanged
+        }
+        topology = [ordered]@{
+            class = $topologyClass
+            proved = $topologyValid
+            t1_proved = $topologyT1
+            t2_proved = $topologyT2
+        }
+        policies = @($caseResults | ForEach-Object {
+            [pscustomobject][ordered]@{
+                policy = [string]$_.policy
+                ipv6_mode = [int]$_.ipv6_mode
+                expected_family = [string]$_.expected_family
+                fixture_valid = [bool]$_.fixture_valid
+                product_match = [bool]$_.product_match
+            }
+        })
+        adjudication = $adjudication
+        failures = $publicFailures
+        cleanup = [ordered]@{
+            complete = $cleanupComplete
+            candidate_package_unchanged = $candidateUnchanged
+            package_manifest_unchanged = $packageManifestUnchanged
+            package_zip_binding_unchanged = $packageZipBindingUnchanged
+            process_cleanup_complete =
+                $allClientsStopped -and $allControlServersStopped
+            peer_cleanup_complete = $peerCleanupExact
+            registry_and_system_state_exact =
+                $null -ne $mutationCleanup -and
+                [bool]$mutationCleanup.complete
+        }
+        retention = [ordered]@{
+            private_artifacts_retained = $true
+            private_file_count = $privateFileRows.Count + 1
+            private_total_bytes = [Int64](
+                ($privateFileRows | Measure-Object bytes -Sum).Sum +
+                (Get-Item -LiteralPath $privateManifestPath).Length
+            )
+            private_artifact_manifest_sha256 =
+                Get-LabSha256 -Path $privateManifestPath
+            public_allowlist = @('summary.json', 'evidence-manifest.json')
+        }
+    }
+    if (-not (Test-I03PublicEvidenceObject -Value $publicSummary)) {
+        throw 'I03_PUBLIC_EVIDENCE::SUMMARY_REJECTED'
+    }
+    Write-LabJson -Value $publicSummary -Path $summaryPath | Out-Null
+    $publicManifest = [ordered]@{
+        schema = 'ese.v91.i03-public-evidence-manifest/v1'
+        case_id = $caseId
+        files = @(
+            [ordered]@{
+                name = 'summary.json'
+                bytes = [Int64](Get-Item -LiteralPath $summaryPath).Length
+                sha256 = Get-LabSha256 -Path $summaryPath
+            }
+        )
+        private_artifacts_retained = $true
+        private_artifact_manifest_sha256 =
+            Get-LabSha256 -Path $privateManifestPath
+        public_scan_passed = $true
+    }
+    if (-not (Test-I03PublicEvidenceObject -Value $publicManifest)) {
+        throw 'I03_PUBLIC_EVIDENCE::MANIFEST_REJECTED'
+    }
+    $publicManifestPath = Join-Path $publicEvidence `
+        'evidence-manifest.json'
+    Write-LabJson -Value $publicManifest -Path $publicManifestPath | Out-Null
+    if (-not (Test-I03PublicEvidenceText -Text (
+            Get-Content -LiteralPath $summaryPath -Raw
+        )) -or -not (Test-I03PublicEvidenceText -Text (
+            Get-Content -LiteralPath $publicManifestPath -Raw
+        )) -or -not (Test-I03PublicEvidenceDirectory `
+            -Root $publicEvidence `
+            -ExpectedFiles @('summary.json', 'evidence-manifest.json') `
+            -PrivateManifestPath $privateManifestPath)) {
+        throw 'I03_PUBLIC_EVIDENCE::POSTWRITE_SCAN_FAILED'
+    }
 
     if ($formalStatus -eq 'FAIL') {
         throw (
             'V91-I03 FAIL: ' +
-            (@($productFailures) -join '; ') +
+            (@($productFailures | ForEach-Object {
+                [string]$_.code
+            } | Select-Object -Unique) -join ',') +
             ". Evidence: $summaryPath"
         )
     }
     if ($formalStatus -eq 'BLOCKED') {
         throw (
             'V91-I03 BLOCKED: ' +
-            (@($summary.blocked_reasons) -join '; ') +
+            (@($publicFailures | ForEach-Object {
+                [string]$_.code
+            } | Select-Object -Unique) -join ',') +
             ". Evidence: $summaryPath"
         )
     }

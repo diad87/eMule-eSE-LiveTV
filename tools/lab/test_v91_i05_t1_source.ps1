@@ -153,17 +153,17 @@ function New-I05SourceSelfTestContainment {
     )
     $addresses = [ordered]@{
         in_tcp_v4_not_h1 = $sourceComplement
-        in_tcp_v6_all = @('::/0')
+        in_tcp_v6_all = @('::/1', '8000::/1')
         in_udp_v4_all = @('0.0.0.0-255.255.255.255')
-        in_udp_v6_all = @('::/0')
+        in_udp_v6_all = @('::/1', '8000::/1')
         out_tcp_v4_not_h1_loopback = $sourceLoopbackComplement
         out_tcp_v4_h1_wrong_ports = @($SourceIPv4)
         out_tcp_v4_loopback_non_api_local_ports = @(
             '127.0.0.0-127.255.255.255'
         )
-        out_tcp_v6_all = @('::/0')
+        out_tcp_v6_all = @('::/1', '8000::/1')
         out_udp_v4_all = @('0.0.0.0-255.255.255.255')
-        out_udp_v6_all = @('::/0')
+        out_udp_v6_all = @('::/1', '8000::/1')
     }
     $roles = @($addresses.Keys)
     $rules = [Collections.Generic.List[object]]::new()
@@ -197,10 +197,11 @@ function New-I05SourceSelfTestContainment {
         } else {
             @('Any')
         }
-        [string[]]$addressTokens = @($addresses[$role])
-        [Array]::Sort($addressTokens, [StringComparer]::Ordinal)
-        [Array]::Sort($localPorts, [StringComparer]::Ordinal)
-        [Array]::Sort($remotePorts, [StringComparer]::Ordinal)
+        [string[]]$addressTokens = @(
+            $addresses[$role] | Sort-Object -Unique
+        )
+        [string[]]$localPorts = @($localPorts | Sort-Object -Unique)
+        [string[]]$remotePorts = @($remotePorts | Sort-Object -Unique)
         $roleToken = $role.Replace('_', '-')
         $name = "eSE-V91-I05-H3-Isolation-$Nonce-$roleToken"
         $names.Add($name)
@@ -308,23 +309,23 @@ Add-I05SourceSelfTest -Name 'exact-server-hash-length' `
         $constants.candidate_ese_server_sha256 -match
             '^[0-9a-f]{64}$' -and
         $constants.candidate_ese_server_sha256 -eq
-            'eeceef0f0dbe427f3667c033e2b653fc69e432abcc3e8afaf996840a7315e568'
+            'c12e71a1602bb7b55077b82a72000a6980790fdf75d90bdbcba8d2843f7a0ba2'
     )
-Add-I05SourceSelfTest -Name 'exact-rc2-candidate-contract' `
+Add-I05SourceSelfTest -Name 'exact-rc3-candidate-contract' `
     -Passed (
-        $constants.candidate_version -ceq '9.1.0-rc.2' -and
+        $constants.candidate_version -ceq '9.1.0-rc.3' -and
         $constants.candidate_commit -ceq
-            '08aa6521f7d7907edb3584266abc3a9e31693161' -and
+            '815b45ca7a1415bd3e06ff043d53794bc340b346' -and
         $constants.candidate_emule_sha256 -ceq
-            '55c5aa0e968b25330720cfb7f622cbc28ea9875365145333cbcf9d9585c1c44a' -and
+            '94620cf502c954cda29fa7f40f834ef1eebacb753f1fe277865d1d173e0b9b41' -and
         $constants.candidate_build_info_sha256 -ceq
-            '7c87f77268030c2b4da40c6da8c960f968b4e1a033c9987b64e45c49cf4b5915'
+            '48445ff0231908aa1edbb21970bcb38b91397c643c7012b65b62686bc8a63428'
     )
 Add-I05SourceSelfTest -Name 'exact-zip-contract' `
     -Passed (
-        $constants.candidate_zip_bytes -eq 212025531 -and
+        $constants.candidate_zip_bytes -eq 212040831 -and
         $constants.candidate_zip_sha256 -eq
-            '5f17af0edbdda9e1fcc165d2e2f8a33910b40f856343934b970db24259cf3590'
+            '359272c764c532c32cfd97eeb92e2db4feaa620c5d3f6318a82a7453dbf1b56f'
     )
 Add-I05SourceSelfTest -Name 'exact-fixture-contract' `
     -Passed (
@@ -347,11 +348,11 @@ Add-I05SourceSelfTest -Name 'fixed-port-contract' `
     )
 
 Add-I05SourceSelfTest -Name 'subnet-22-positive' -Passed (
-    Test-I05Ipv4SameSubnet -Left '192.168.68.60' `
-        -Right '192.168.71.254' -PrefixLength 22)
+    Test-I05Ipv4SameSubnet -Left '192.168.222.60' `
+        -Right '192.168.223.254' -PrefixLength 22)
 Add-I05SourceSelfTest -Name 'subnet-22-negative' -Passed (
-    -not (Test-I05Ipv4SameSubnet -Left '192.168.68.60' `
-        -Right '192.168.72.1' -PrefixLength 22))
+    -not (Test-I05Ipv4SameSubnet -Left '192.168.222.60' `
+        -Right '192.168.224.1' -PrefixLength 22))
 
 $apiNetworksOff = [pscustomobject][ordered]@{
     kad_connected = $false
@@ -1250,7 +1251,8 @@ if ($bundleFunctionsLoaded) {
             -ApiResponsive $true -TcpListenerOwned $true
         Assert-I05SourceCompleteWireProduct `
             -SocketForbiddenTupleCount 0 `
-            -RequestPartsI64 1 -SendingI64 1 -CompressedI64 0 `
+            -RequestPartsI64 1 -Compressed32 1 `
+            -SendingI64 0 -CompressedI64 0 `
             -Ed2kFramingValid $true -AllowedOpcodesOnly $true
     } catch {
         $remoteProductFactsPositive = $false
@@ -1318,7 +1320,8 @@ if ($bundleFunctionsLoaded) {
     try {
         Assert-I05SourceCompleteWireProduct `
             -SocketForbiddenTupleCount 0 `
-            -RequestPartsI64 1 -SendingI64 1 -CompressedI64 0 `
+            -RequestPartsI64 1 -Compressed32 1 `
+            -SendingI64 0 -CompressedI64 0 `
             -Ed2kFramingValid $true -AllowedOpcodesOnly $false
     } catch {
         $badCompleteWireClassified = (
@@ -1617,6 +1620,7 @@ if ($bundleFunctionsLoaded) {
         third_party_peer_packets = 0
         ipv6_peer_packets = 0
         requestparts_i64 = 2
+        compressedpart_32 = 4
         sendingpart_i64 = 3
         compressedpart_i64 = 0
         invalid_fixture_i64_frames = 0
@@ -1683,6 +1687,9 @@ if ($bundleFunctionsLoaded) {
         before_sha256 = Get-LabStringSha256 -Value 'before'
         armed_bytes = 11
         armed_sha256 = Get-LabStringSha256 -Value 'armed'
+        before_reset_bytes = 12
+        before_reset_sha256 =
+            Get-LabStringSha256 -Value 'before-reset'
         after_bytes = 10
         after_sha256 = Get-LabStringSha256 -Value 'after'
         restored_exactly = $true
@@ -1805,6 +1812,12 @@ if ($bundleFunctionsLoaded) {
             sha256 = $pktmonLogHash
         },
         [pscustomobject]@{
+            kind = 'pktmon_filters_before_reset'
+            path_relative = 'raw\pktmon-filters-before-reset.txt'
+            bytes = 201
+            sha256 = $filterObject.before_reset_sha256
+        },
+        [pscustomobject]@{
             kind = 'component_inventory_pre_raw'
             path_relative = 'raw\component-pre.json'; bytes = 111
             sha256 = $preRawHash
@@ -1915,6 +1928,7 @@ if ($bundleFunctionsLoaded) {
             pcap_bytes = 400
             etl_bytes = 500
             requestparts_i64 = 2
+            compressedpart_32 = 4
             sending_i64 = 3
             compressed_i64 = 0
         }
@@ -2036,8 +2050,8 @@ if (-not $CandidateZipPath) {
     $repoDefault = Join-Path (
         Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
     ) (
-        'dist\v0.70b-eSE9.1.0-rc.2\' +
-        'eSE-LiveTV-v0.70b-eSE9.1.0-rc.2-x64.zip'
+        'dist\v0.70b-eSE9.1.0-rc.3\' +
+        'eSE-LiveTV-v0.70b-eSE9.1.0-rc.3-x64.zip'
     )
     if (Test-Path -LiteralPath $repoDefault -PathType Leaf) {
         $CandidateZipPath = $repoDefault

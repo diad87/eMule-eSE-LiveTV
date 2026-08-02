@@ -1,0 +1,103 @@
+{
+  "schema": "ese.v91.case-result/v2",
+  "case_id": "V91-S02",
+  "status": "PASS",
+  "completed_at_utc": "2026-07-29T21:13:10.2545269+00:00",
+  "candidate": {
+    "version": "9.1.0-rc.3",
+    "commit": "622813d5944951efbdba68a1bd7bd68f4d79a2d2",
+    "dirty": false,
+    "emule_sha256": "0cb269cedc4b9f7d2c3ceeadd77c7ea291e25d59feff060ac1e2d976e8032c77",
+    "candidate_overlay_zip_sha256": "f225d1dea9fbdee6ee3f49f06ef7b0754c17d087cad9bb0a862ae5936f7e5100",
+    "candidate_overlay_zip_bytes": 5009146
+  },
+  "topology": {
+    "profile": "T1",
+    "physical_windows_hosts": 2,
+    "public_projection": true,
+    "source_physical_ipv4_observed": true,
+    "source_ipv6_observed": true,
+    "source_interface": "eth2",
+    "source_mac_observed": true,
+    "source_udp_port": 37307,
+    "target_physical_ipv4_observed": true,
+    "target_ipv6_observed": true,
+    "target_interface": "Wi-Fi",
+    "target_mac_observed": true,
+    "target_udp_port": 49372,
+    "ipv4_data_route_used": false,
+    "overlay_data_route_used": false
+  },
+  "identities": [
+    {
+      "label": "A",
+      "kad_id": "c231f47ec0196075d0f270df4a2dc85a",
+      "node_pub": "c5c8601a645a64c83656ccdf3f3b258b95ec970cd6fb4cc6aff4cd3776797201",
+      "epoch": 1785359574,
+      "valid_until": 1785359582
+    },
+    {
+      "label": "B",
+      "kad_id": "090a9717e863173b10527ecc66ef0e88",
+      "node_pub": "a3158e3108f3508c1e14917c807d55c956713fcf8b05cbd17ce2444086b7d6e4",
+      "epoch": 1785359575,
+      "valid_until": 1785360174
+    }
+  ],
+  "run": {
+    "job_id": "8a125eca91a34e06a5f84f251e33ff20",
+    "probe_started_at_utc": "2026-07-29T21:12:53Z",
+    "probe_completed_at_utc": "2026-07-29T21:13:07Z",
+    "verified_contact_transitions": [
+      {"at_utc": "2026-07-29T21:12:12.1382761+00:00", "count": 0},
+      {"at_utc": "2026-07-29T21:12:56.3883273+00:00", "count": 1},
+      {"at_utc": "2026-07-29T21:13:04.4436418+00:00", "count": 0},
+      {"at_utc": "2026-07-29T21:13:06.4488463+00:00", "count": 1}
+    ],
+    "stale_replay_observation_seconds": 3,
+    "stale_replay_challenges": 0,
+    "stale_replay_semantic_responses": 0,
+    "physical_frame_count": 11,
+    "unexpected_physical_frames": 0,
+    "capture_packets_dropped_by_kernel": 0
+  },
+  "checks": {
+    "same_full_ipv6_reused": true,
+    "same_udp_port_reused": true,
+    "identities_distinct": true,
+    "epochs_strictly_increasing": true,
+    "identity_a_independently_verified": true,
+    "identity_a_expired_before_reuse": true,
+    "identity_b_received_fresh_challenge": true,
+    "identity_b_received_no_inherited_credit": true,
+    "expired_identity_a_replay_rejected": true,
+    "kad6_running_in_all_remote_samples": true,
+    "kad2_stopped_in_all_remote_samples": true,
+    "candidate_identity_matches": true,
+    "physical_capture_matches_probe_events": true,
+    "cleanup_complete": true
+  },
+  "evidence": [
+    {
+      "path": "lab-runs/v91-s02-622813d5/s02-probe.json",
+      "bytes": 13606,
+      "sha256": "e68066ba0a02ac2786d5aae3262bcd6b33d7e6d4c8cd88e2e6d8fe9603025ea5"
+    },
+    {
+      "path": "lab-runs/v91-s02-622813d5/s02-remote.json",
+      "bytes": 10164,
+      "sha256": "ffa9c630e73d00afc391f4fb58e7dd654defa1e52bfda1a3eb90df3238e4b2b2"
+    },
+    {
+      "path": "lab-runs/v91-s02-622813d5/s02.pcap",
+      "bytes": 3916,
+      "sha256": "4fac67d35f4e3d3bff982c3eb6df21e6263424fcb24f6d8460583420c9f38f09"
+    },
+    {
+      "path": "lab-runs/v91-s02-622813d5/s02.txt",
+      "bytes": 19114,
+      "sha256": "0b54c9114325aeedd49062c82b62b171c8dedaf75ff4a73f728da03d51c09503"
+    }
+  ],
+  "adjudication": "A short-lived signed identity was independently verified at one exact IPv6 endpoint, expired, and disappeared from the verified-contact count. A different identity with a higher epoch then reused the same full IPv6 address and UDP port but still had to complete its own signed transaction-bound challenge. Replaying the expired record produced neither a new challenge nor a semantic response. Physical capture, runtime samples, exact candidate identity and complete cleanup agree."
+}

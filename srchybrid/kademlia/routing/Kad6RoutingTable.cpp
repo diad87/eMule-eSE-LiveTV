@@ -82,6 +82,27 @@ namespace
 		return IsPublicV6(normalized) || IsPublicV4(normalized);
 	}
 
+	bool IsDirectRouteAddress(const kad6::Kad6Address& address)
+	{
+		kad6::Kad6Address normalized = address;
+		kad6::Kad6AddressNormalize(normalized);
+		if (IsPublicV6(normalized) || IsPublicV4(normalized))
+			return true;
+		if (normalized.family != kad6::Kad6Address::Family::IPv6)
+			return false;
+		const CAddress hostAddress(normalized.addr.data());
+		if (hostAddress.GetType() != CAddress::IPv6
+			|| !hostAddress.IsUniqueLocalIPv6())
+			return false;
+		LPCTSTR configured = thePrefs.GetIPv6BindAddr();
+		if (configured == NULL || configured[0] == 0
+			|| _tcscmp(configured, _T("::")) == 0)
+			return false;
+		const CAddress configuredV6(configured, false);
+		return configuredV6.GetType() == CAddress::IPv6
+			&& configuredV6.IsUniqueLocalIPv6();
+	}
+
 	CKad6RoutingTable::Entry::Candidate* FindCandidate(
 		CKad6RoutingTable::Entry& entry, const kad6::K6Endpoint& endpoint)
 	{
@@ -275,8 +296,16 @@ std::size_t CKad6RoutingTable::BucketFor(const kad6::KadId& nodeId) const
 bool CKad6RoutingTable::PassesDiversity(
 	const kad6::K6RouteContact& contact, std::size_t ignoreIndex) const
 {
-	if (!IsPublicAddress(contact.endpoint.addr))
+	if (!IsDirectRouteAddress(contact.endpoint.addr))
 		return false;
+	kad6::Kad6Address normalizedCandidate = contact.endpoint.addr;
+	kad6::Kad6AddressNormalize(normalizedCandidate);
+	const CAddress candidateHost(normalizedCandidate.addr.data());
+	const bool explicitUlaLab =
+		normalizedCandidate.family == kad6::Kad6Address::Family::IPv6
+		&& candidateHost.GetType() == CAddress::IPv6
+		&& candidateHost.IsUniqueLocalIPv6()
+		&& thePrefs.IsEseNetLabContributionActive();
 
 	std::size_t same128 = 0;
 	std::size_t same64 = 0;
@@ -318,6 +347,11 @@ bool CKad6RoutingTable::PassesDiversity(
 			&& existingInfo.operator_group == candidateInfo.operator_group)
 			++sameOperator;
 	}
+	// A controlled NetLab places several physical peers in one RFC 4193 /64.
+	// Keep exact-address uniqueness, but do not apply public Internet prefix
+	// or ASN concentration limits to that explicit-consent private topology.
+	if (explicitUlaLab)
+		return same128 < 1;
 	return same128 < 1 && same64 < 1 && same56 < 2 && same48 < 2
 		&& sameAsn < 4 // all unknown-ASN contacts share one fail-closed group
 		&& (!candidateAsnKnown || candidateInfo.operator_group == 0
@@ -335,7 +369,7 @@ bool CKad6RoutingTable::AddOrUpdate(const kad6::K6RouteContact& contact,
 		|| contact.endpoint.observed > 1
 		|| (contact.endpoint.valid_until != 0
 			&& contact.endpoint.valid_until < nowSeconds)
-		|| !IsPublicAddress(contact.endpoint.addr))
+		|| !IsDirectRouteAddress(contact.endpoint.addr))
 		return false;
 	if (verified && record == NULL)
 		return false;
@@ -348,7 +382,7 @@ bool CKad6RoutingTable::AddOrUpdate(const kad6::K6RouteContact& contact,
 			return false;
 		for (std::size_t i = 0; i < record->endpoints.size(); ++i) {
 			const kad6::K6Endpoint& candidate = record->endpoints[i];
-			if (!IsPublicAddress(candidate.addr) || candidate.udp_port == 0
+			if (!IsDirectRouteAddress(candidate.addr) || candidate.udp_port == 0
 				|| (candidate.transport_flags & kad6::kK6EpUdpKad6) == 0
 				|| (candidate.transport_flags & kad6::kK6EpReservedMask) != 0
 				|| candidate.observed > 1 || candidate.valid_until < nowSeconds)
@@ -683,8 +717,14 @@ void CKad6RoutingTable::Expire(std::uint64_t nowSeconds)
 				else
 					++candidate;
 			}
+			// A v2 nodes_v6.dat snapshot pins the signed identity, signature and
+			// selected endpoint, but deliberately does not persist the complete
+			// EndpointSet transcript.  Load() therefore leaves endpointSet empty
+			// until the mandatory HELLO reconstructs and verifies it.  Candidate
+			// expiry remains authoritative during that probation window.
 			if (entry->candidates.empty()
-				|| entry->endpointSet.valid_until <= nowSeconds) {
+				|| (entry->endpointSet.valid_until != 0
+					&& entry->endpointSet.valid_until <= nowSeconds)) {
 				entry = m_entries.erase(entry);
 				continue;
 			}

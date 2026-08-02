@@ -6,7 +6,9 @@ param(
     [ValidateRange(1048576, 17179869184)][Int64]$FileSizeBytes = 4294967296,
     [string]$FixtureSeedPath = '',
     [ValidateSet('IPv6', 'IPv4')][string]$TransportFamily = 'IPv6',
-    [string]$Commit = ''
+    [string]$Commit = '',
+    [string]$CandidateExeOverride = '',
+    [switch]$DirectLinkOffline
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +18,11 @@ $candidate = Get-LabCandidateInfo -PackagePath $PackagePath -ExpectedCommit $Com
 $candidateCommit = $candidate.commit
 $candidateSha256 = $candidate.emule_sha256
 $package = $candidate.package_path
+if ($CandidateExeOverride) {
+    $CandidateExeOverride = (
+        Resolve-Path -LiteralPath $CandidateExeOverride).Path
+    $candidateSha256 = Get-LabSha256 -Path $CandidateExeOverride
+}
 $output = New-LabDirectory -Path $OutputRoot
 $evidence = New-LabDirectory -Path (Join-Path $output 'evidence')
 $nodes = New-LabDirectory -Path (Join-Path $output 'nodes')
@@ -176,7 +183,8 @@ function Stop-TestProcess {
 
 try {
     $packageHash = Get-LabSha256 -Path (Join-Path $package 'emule.exe')
-    if ($packageHash -ne $candidateSha256) {
+    if (-not $CandidateExeOverride -and
+        $packageHash -ne $candidateSha256) {
         throw "Unexpected candidate binary hash: $packageHash"
     }
 
@@ -192,14 +200,26 @@ try {
     $downloaderPorts = [ordered]@{ tcp = 7762; udp = 7772; web = 7811 }
 
     foreach ($node in @($sourceNode, $downloaderNode)) {
+        if ($CandidateExeOverride) {
+            Copy-Item -LiteralPath $CandidateExeOverride `
+                -Destination (Join-Path $node 'emule.exe') -Force
+        }
         $preferences = Join-Path $node 'config\preferences.ini'
         Set-LabIniValue -Path $preferences -Section 'eMule' -Key 'Autoconnect' -Value '0'
-        Set-LabIniValue -Path $preferences -Section 'eMule' -Key 'NetworkKademlia' -Value '1'
+        Set-LabIniValue -Path $preferences -Section 'eMule' `
+            -Key 'NetworkED2K' -Value '0'
+        Set-LabIniValue -Path $preferences -Section 'eMule' `
+            -Key 'NetworkKademlia' `
+            -Value $(if ($DirectLinkOffline) { '0' } else { '1' })
+        Set-LabIniValue -Path $preferences -Section 'eMule' `
+            -Key 'FilterBadIPs' -Value '0'
         Set-LabIniValue -Path $preferences -Section 'eMule' -Key 'VerboseOptions' -Value '1'
         Set-LabIniValue -Path $preferences -Section 'eMule' -Key 'Verbose' -Value '1'
         Set-LabIniValue -Path $preferences -Section 'eMule' -Key 'SaveLogToDisk' -Value '1'
         Set-LabIniValue -Path $preferences -Section 'eMule' -Key 'SaveDebugToDisk' -Value '1'
-        Set-LabIniValue -Path $preferences -Section 'Connection' -Key 'KadNetworkMask' -Value '1'
+        Set-LabIniValue -Path $preferences -Section 'Connection' `
+            -Key 'KadNetworkMask' `
+            -Value $(if ($DirectLinkOffline) { '0' } else { '1' })
         Set-LabIniValue -Path $preferences -Section 'Connection' -Key 'IPv6Mode' `
             -Value $(if ($TransportFamily -eq 'IPv6') { '1' } else { '0' })
         Set-LabIniValue -Path $preferences -Section 'UPnP' -Key 'EnableUPnP' -Value '0'
@@ -265,7 +285,11 @@ try {
         # sslip.io gives us an AAAA-only hostname for the current WARP address.
         # Using a hostname exercises the production A/AAAA resolver and avoids an
         # immediate literal-resolution callback racing initial AddDownload.
-        $sourceHost = ($address -replace ':', '-') + '.sslip.io'
+        $sourceHost = if ($DirectLinkOffline) {
+            "[$address]"
+        } else {
+            ($address -replace ':', '-') + '.sslip.io'
+        }
         $interfaceClass = 'Cloudflare WARP'
     } else {
         # Use the physical LAN address: eMule correctly rejects loopback as a
@@ -284,7 +308,11 @@ try {
         $address = $lanV4.IPAddress
         # Keep hostname resolution asynchronous so the source is not discarded
         # before AddDownload owns the file.
-        $sourceHost = ($address -replace '\.', '-') + '.sslip.io'
+        $sourceHost = if ($DirectLinkOffline) {
+            $address
+        } else {
+            ($address -replace '\.', '-') + '.sslip.io'
+        }
         $interfaceClass = 'physical LAN IPv4'
     }
 
@@ -313,19 +341,34 @@ try {
 
     Wait-Api -Port $sourcePorts.web -Process $source | Out-Null
     Wait-Api -Port $downloaderPorts.web -Process $downloader | Out-Null
-    Invoke-RestMethod -Uri (
-        "http://127.0.0.1:$($downloaderPorts.web)/api/network/connect?ed2k=0&kad=1"
-    ) -TimeoutSec 10 | Out-Null
-    $networkDeadline = [DateTime]::UtcNow.AddMinutes(3)
-    do {
+    if ($DirectLinkOffline) {
         $networkState = Invoke-RestMethod -Uri (
-            "http://127.0.0.1:$($downloaderPorts.web)/api/status"
-        ) -TimeoutSec 5
-        if ($networkState.kad_connected) { break }
-        Start-Sleep -Seconds 2
-    } while ([DateTime]::UtcNow -lt $networkDeadline)
-    if (-not $networkState.kad_connected) {
-        throw 'Downloader did not reach a connected Kad state required by the legacy download scheduler'
+            "http://127.0.0.1:$($downloaderPorts.web)" +
+            '/api/network/connect?ed2k=0&kad=0'
+        ) -TimeoutSec 10
+        if ([bool]$networkState.state.ed2k_connected -or
+            [bool]$networkState.state.kad_connected) {
+            throw 'Direct-link offline profile unexpectedly connected discovery.'
+        }
+    } else {
+        Invoke-RestMethod -Uri (
+            "http://127.0.0.1:$($downloaderPorts.web)" +
+            '/api/network/connect?ed2k=0&kad=1'
+        ) -TimeoutSec 10 | Out-Null
+        $networkDeadline = [DateTime]::UtcNow.AddMinutes(3)
+        do {
+            $networkState = Invoke-RestMethod -Uri (
+                "http://127.0.0.1:$($downloaderPorts.web)/api/status"
+            ) -TimeoutSec 5
+            if ($networkState.kad_connected) { break }
+            Start-Sleep -Seconds 2
+        } while ([DateTime]::UtcNow -lt $networkDeadline)
+        if (-not $networkState.kad_connected) {
+            throw (
+                'Downloader did not reach a connected Kad state required ' +
+                'by the legacy download scheduler.'
+            )
+        }
     }
     $session = Get-ClassicSession -Port $sourcePorts.web
     $shared = Get-SharedLink -Port $sourcePorts.web -Session $session
@@ -336,8 +379,10 @@ try {
     # The first link creates the part file.  Re-submit after the queue owns
     # that file so an asynchronously resolved IPv6 source cannot race the
     # AddDownload path and be discarded before GetFileByID can find it.
-    Start-Sleep -Seconds 3
-    Send-Ed2kLink -Process $downloader -Link $directLink
+    if (-not $DirectLinkOffline) {
+        Start-Sleep -Seconds 3
+        Send-Ed2kLink -Process $downloader -Link $directLink
+    }
     $destinationFile = Join-Path (Join-Path $downloaderNode 'Incoming') $fileName
     $samplePath = Join-Path $evidence 'samples.jsonl'
     $sampleNumber = 0

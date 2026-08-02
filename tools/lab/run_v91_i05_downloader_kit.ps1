@@ -3,7 +3,7 @@
 Arms the physical H3 downloader for the formal V91-I05 T1 run.
 
 .DESCRIPTION
-This parameterless kit entry point validates the exact RC2 candidate, a
+This parameterless kit entry point validates the exact RC3 candidate, a
 physical on-link IPv4 LAN path to H1, at least 10 GiB on local NTFS, and a real
 IPv6 challenge/response over that same physical NIC. Only after the IPv6 probe
 succeeds does it create a clean portable profile with IPv6Mode=0.
@@ -20,17 +20,17 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
-$expectedCommit = '08aa6521f7d7907edb3584266abc3a9e31693161'
-$expectedVersion = '9.1.0-rc.2'
+$expectedCommit = '815b45ca7a1415bd3e06ff043d53794bc340b346'
+$expectedVersion = '9.1.0-rc.3'
 $expectedEmuleSha256 =
-    '55c5aa0e968b25330720cfb7f622cbc28ea9875365145333cbcf9d9585c1c44a'
+    '94620cf502c954cda29fa7f40f834ef1eebacb753f1fe277865d1d173e0b9b41'
 $expectedEseServerSha256 =
-    'eeceef0f0dbe427f3667c033e2b653fc69e432abcc3e8afaf996840a7315e568'
+    'c12e71a1602bb7b55077b82a72000a6980790fdf75d90bdbcba8d2843f7a0ba2'
 $expectedBuildInfoSha256 =
-    '7c87f77268030c2b4da40c6da8c960f968b4e1a033c9987b64e45c49cf4b5915'
-$expectedArchiveBytes = 212025531L
+    '48445ff0231908aa1edbb21970bcb38b91397c643c7012b65b62686bc8a63428'
+$expectedArchiveBytes = 212040831L
 $expectedArchiveSha256 =
-    '5f17af0edbdda9e1fcc165d2e2f8a33910b40f856343934b970db24259cf3590'
+    '359272c764c532c32cfd97eeb92e2db4feaa620c5d3f6318a82a7453dbf1b56f'
 $fixtureName = 'v91-i05-canonical-4294967296.bin'
 $fixtureBytes = 4294967296L
 $fixtureSha256 =
@@ -69,8 +69,15 @@ $kitRoot = if (Test-Path -LiteralPath $configAtScripts -PathType Leaf) {
 }
 $configPath = Join-Path $kitRoot 'V91-I05-T1-CONFIG.json'
 $archivePath = Join-Path $kitRoot (
-    'payload\eSE-LiveTV-v0.70b-eSE9.1.0-rc.2-x64.zip')
-$baseManifestPath = Join-Path $kitRoot 'I05-BASE-MANIFEST.json'
+    'payload\candidates\eSE-LiveTV-v0.70b-eSE9.1.0-rc.3-x64.zip')
+$deployedBaseManifestPath = Join-Path $kitRoot (
+    'tools\lab\I05-BASE-MANIFEST.json')
+$baseManifestPath = if (Test-Path -LiteralPath $deployedBaseManifestPath `
+        -PathType Leaf) {
+    $deployedBaseManifestPath
+} else {
+    Join-Path $kitRoot 'I05-BASE-MANIFEST.json'
+}
 $packagePath = ''
 $activePath = Join-Path $kitRoot 'ACTIVE-V91-I05-T1.json'
 $latestReadyPath = Join-Path $kitRoot 'READY-V91-I05-T1.json'
@@ -624,16 +631,26 @@ function Invoke-I05CandidateApi {
     param(
         [Parameter(Mandatory = $true)][string]$Uri,
         [ValidateRange(1, 30)][int]$TimeoutSec = 3,
-        [Parameter(Mandatory = $true)][string]$Context
+        [Parameter(Mandatory = $true)][string]$Context,
+        [ValidateRange(1, 8)][int]$MaxAttempts = 4,
+        [ValidateRange(0, 5000)][int]$RetryDelayMilliseconds = 250
     )
-    try {
-        return Invoke-RestMethod -Uri $Uri -TimeoutSec $TimeoutSec `
-            -ErrorAction Stop
-    } catch {
-        Throw-I05ClassifiedFailure -Classification PRODUCT_INVARIANT `
-            -Category 'candidate_api_unavailable' `
-            -Message "La API del candidato no respondio en $Context."
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            return Invoke-RestMethod -Uri $Uri -TimeoutSec $TimeoutSec `
+                -ErrorAction Stop
+        } catch {
+            if ($attempt -lt $MaxAttempts -and
+                $RetryDelayMilliseconds -gt 0) {
+                Start-Sleep -Milliseconds $RetryDelayMilliseconds
+            }
+        }
     }
+    Throw-I05ClassifiedFailure -Classification PRODUCT_INVARIANT `
+        -Category 'candidate_api_unavailable' `
+        -Message (
+            "La API del candidato no respondio de forma estable en $Context."
+        )
 }
 
 function Assert-I05FirewallEnforcementSnapshot {
@@ -1772,13 +1789,14 @@ function Assert-I05WireEvidence {
             )
     }
     if ([Int64]$Wire.RequestPartsI64 -le 0 -or
-        ([Int64]$Wire.SendingPartI64 +
+        ([Int64]$Wire.CompressedPart32 +
+            [Int64]$Wire.SendingPartI64 +
             [Int64]$Wire.CompressedPartI64) -le 0 -or
         [Int64]$Wire.InvalidFixtureI64Frames -ne 0) {
         Throw-I05ClassifiedFailure -Classification PRODUCT_INVARIANT `
             -Category 'wire_invariant' -Message (
                 'Una captura valida, completa y aislada contradice los ' +
-                'opcodes I64 C5:A3 + C5:A2/A1 o la identidad del fixture.'
+                'opcodes C5:A3 + C5:40/A2/A1 o la identidad del fixture.'
             )
     }
 }
@@ -1841,6 +1859,32 @@ function Invoke-I05Pktmon {
     }
 }
 
+function Get-I05PktMonFilterRows {
+    param([Parameter(Mandatory = $true)][object[]]$Lines)
+
+    return @($Lines | ForEach-Object {
+        $line = [string]$_
+        if ($line -match '^\s*\d+\s+(.+?)\s*$') {
+            ([regex]::Replace($Matches[1], '\s+', ' ')).
+                ToLowerInvariant()
+        }
+    } | Sort-Object)
+}
+
+function Assert-I05PktMonFilterRowsExact {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$ExpectedLines,
+        [Parameter(Mandatory = $true)][object[]]$ActualLines
+    )
+
+    $expected = @(Get-I05PktMonFilterRows -Lines $ExpectedLines)
+    $actual = @(Get-I05PktMonFilterRows -Lines $ActualLines)
+    if ($expected.Count -eq 0 -or
+        ($expected -join "`n") -cne ($actual -join "`n")) {
+        throw 'El inventario PktMon cambio mientras la captura estaba activa.'
+    }
+}
+
 function Start-I05Capture {
     param(
         [Parameter(Mandatory = $true)][string]$Evidence,
@@ -1865,6 +1909,8 @@ function Start-I05Capture {
         filters_verified = $false
         filters_before = Join-Path $Evidence 'pktmon-filters-before.txt'
         filters_armed = Join-Path $Evidence 'pktmon-filters-armed.txt'
+        filters_before_reset =
+            Join-Path $Evidence 'pktmon-filters-before-reset.txt'
         filters_after = Join-Path $Evidence 'pktmon-filters-after.txt'
         command_log = Join-Path $Evidence 'pktmon.log'
         counters_path = Join-Path $Evidence 'pktmon-counters.txt'
@@ -2941,8 +2987,18 @@ public static class V91I05EtwTraceQuery {
         UInt32 controlCode);
     private static Result Control(string sessionName, UInt32 controlCode) {
         int size = Marshal.SizeOf(typeof(EVENT_TRACE_PROPERTIES));
+        const int loggerNameCapacityChars = 1024;
+        const int logFileNameCapacityChars = 32768;
+        int loggerNameCapacityBytes =
+            loggerNameCapacityChars * sizeof(char);
+        int logFileNameCapacityBytes =
+            logFileNameCapacityChars * sizeof(char);
         byte[] name = Encoding.Unicode.GetBytes(sessionName + "\0");
-        int total = size + name.Length + 2;
+        if (name.Length > loggerNameCapacityBytes) {
+            throw new ArgumentOutOfRangeException("sessionName");
+        }
+        int total = checked(
+            size + loggerNameCapacityBytes + logFileNameCapacityBytes);
         IntPtr buffer = Marshal.AllocHGlobal(total);
         try {
             Marshal.Copy(new byte[total], 0, buffer, total);
@@ -2950,6 +3006,8 @@ public static class V91I05EtwTraceQuery {
             value.Wnode.BufferSize = (UInt32)total;
             value.Wnode.Flags = 0x00020000;
             value.LoggerNameOffset = (UInt32)size;
+            value.LogFileNameOffset =
+                (UInt32)(size + loggerNameCapacityBytes);
             Marshal.StructureToPtr(value, buffer, false);
             Marshal.Copy(name, 0, IntPtr.Add(buffer, size), name.Length);
             UInt32 error = ControlTrace(
@@ -3025,15 +3083,19 @@ public static class V91I05PcapAnalyzer {
         public long Sections;
         public long Interfaces;
         public string[] InterfaceNames;
+        public long IEEE80211Packets;
         public long IPv4PeerPackets;
         public long IPv4PhysicalInterfacePackets;
         public long IPv6PeerPackets;
         public long RejectedPeerTuplePackets;
         public long ThirdPartyPeerPackets;
         public long RequestPartsI64;
+        public long CompressedPart32;
         public long SendingPartI64;
         public long CompressedPartI64;
         public long InvalidFixtureI64Frames;
+        public long FixtureHashFrames;
+        public string[] FixtureHashFrameSignatures;
         public long TruncatedIPv4PeerPackets;
         public int[] AllowedLocalPorts;
         public string Method;
@@ -3055,6 +3117,8 @@ public static class V91I05PcapAnalyzer {
             new Dictionary<uint,Iface>();
         public Dictionary<string,Flow> Flows =
             new Dictionary<string,Flow>();
+        public Dictionary<string,long> Signatures =
+            new Dictionary<string,long>();
         public string H1;
         public string H3;
         public HashSet<int> AllowedPorts = new HashSet<int>();
@@ -3112,6 +3176,30 @@ public static class V91I05PcapAnalyzer {
             if (b[o+i] != hash[i]) return false;
         return true;
     }
+    private static bool Try80211(
+        byte[] p, out int ip, out int family) {
+        ip=0; family=0;
+        if (p.Length<32) return false;
+        int fc0=p[0], fc1=p[1];
+        if ((fc0&0x0c)!=0x08) return false;
+        int subtype=(fc0>>4)&0x0f;
+        int header=24;
+        if ((fc1&0x03)==0x03) header+=6;
+        bool qos=(subtype&0x08)!=0;
+        if (qos) header+=2;
+        if (qos && (fc1&0x80)!=0) header+=4;
+        if (header+8>p.Length ||
+            p[header]!=0xaa || p[header+1]!=0xaa ||
+            p[header+2]!=0x03 || p[header+3]!=0x00 ||
+            p[header+4]!=0x00 || p[header+5]!=0x00)
+            return false;
+        int ether=BE16(p,header+6);
+        if (ether==0x0800) family=4;
+        else if (ether==0x86DD) family=6;
+        else return false;
+        ip=header+8;
+        return true;
+    }
     private static void ScanFrames(
         Work w, byte[] b, bool requestDirection, bool responseDirection) {
         for (int i=0; i+22<=b.Length; i++) {
@@ -3119,8 +3207,16 @@ public static class V91I05PcapAnalyzer {
             uint length = U32(b,i+1,true);
             byte opcode = b[i+5];
             if (!HashAt(b,i+6,w.Hash)) continue;
+            w.R.FixtureHashFrames++;
+            string signature=opcode.ToString("X2")+":"+length;
+            if (!w.Signatures.ContainsKey(signature))
+                w.Signatures[signature]=0;
+            w.Signatures[signature]++;
             if (requestDirection && opcode==0xA3 && length==65)
                 w.R.RequestPartsI64++;
+            else if (responseDirection && opcode==0x40 &&
+                length>=25 && length<=16777216)
+                w.R.CompressedPart32++;
             else if (responseDirection && opcode==0xA2 &&
                 length>=33 && length<=16777216)
                 w.R.SendingPartI64++;
@@ -3134,6 +3230,7 @@ public static class V91I05PcapAnalyzer {
     private static void AnalyzePacket(
         Work w, byte[] p, Iface iface, uint originalLength) {
         int ip=0; int family=0;
+        bool ieee80211=false;
         if (iface.LinkType==1) {
             if (p.Length<14) return;
             int ether=BE16(p,12); ip=14;
@@ -3143,11 +3240,16 @@ public static class V91I05PcapAnalyzer {
             }
             if (ether==0x0800) family=4;
             else if (ether==0x86DD) family=6;
+            else if (Try80211(p,out ip,out family)) ieee80211=true;
             else return;
+        } else if (iface.LinkType==105) {
+            if (!Try80211(p,out ip,out family)) return;
+            ieee80211=true;
         } else if (iface.LinkType==101) {
             if (p.Length<1) return;
             family=p[0]>>4;
         } else return;
+        if (ieee80211) w.R.IEEE80211Packets++;
 
         string src, dst; int proto; int transport;
         int wireTransport;
@@ -3346,6 +3448,11 @@ public static class V91I05PcapAnalyzer {
             w.R.Interfaces>0;
         w.R.Errors=w.Errors.ToArray();
         w.R.InterfaceNames=w.Names.ToArray();
+        List<string> signatures=new List<string>();
+        foreach (KeyValuePair<string,long> item in w.Signatures)
+            signatures.Add(item.Key+"="+item.Value);
+        signatures.Sort(StringComparer.Ordinal);
+        w.R.FixtureHashFrameSignatures=signatures.ToArray();
         w.R.Method="streaming-pcapng; PID-watchdog-derived H1/H3 tuple " +
             "allowlist (not direct PCAP PID attribution); bounded " +
             "sequence-aware TCP header reassembly; C5 frame length/opcode/" +
@@ -3399,6 +3506,21 @@ function Complete-I05Capture {
             'LogBuffersLost/RealTimeBuffersLost=0.'
         )
     }
+    @(& pktmon.exe filter list 2>&1) |
+        Set-Content -LiteralPath $State.filters_before_reset -Encoding utf8
+    if ($LASTEXITCODE -ne 0) {
+        throw 'No se pudo inventariar PktMon antes del reset.'
+    }
+    Assert-I05PktMonFilterRowsExact `
+        -ExpectedLines @(Get-Content -LiteralPath $State.filters_armed) `
+        -ActualLines @(Get-Content -LiteralPath $State.filters_before_reset)
+    $pktmonReset = @(& pktmon.exe stop 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw (
+            'El STOP ETW fue valido, pero PktMon no reseteo su estado ' +
+            "interno: $($pktmonReset -join ' ')"
+        )
+    }
     $State.started = $false
     $State.session_owned = $false
     @(& logman.exe query -ets PktMon 2>&1) |
@@ -3413,12 +3535,6 @@ function Complete-I05Capture {
     $limitBytes = [Int64]$captureFileSizeMiB * 1MB
     if ($etlBytes -le 0 -or $etlBytes -ge $limitBytes) {
         throw 'El ETL alcanzo el limite circular o esta vacio.'
-    }
-    $beforeRemove = @(& pktmon.exe filter list 2>&1)
-    if ($LASTEXITCODE -ne 0 -or
-        ($beforeRemove -join "`n").Trim() -cne
-            (Get-Content -LiteralPath $State.filters_armed -Raw).Trim()) {
-        throw 'El inventario PktMon cambio mientras la captura estaba activa.'
     }
     $remove = Invoke-I05Pktmon -Arguments @('filter', 'remove') `
         -LogPath $State.command_log
@@ -3566,16 +3682,21 @@ function Complete-I05Capture {
         conversion_component_id = [int]$winner.component_id
         allowed_local_ports = @($AllowedLocalPorts | Sort-Object -Unique)
         exact_peer_packets = [Int64]$wire.IPv4PeerPackets
+        ieee80211_packets = [Int64]$wire.IEEE80211Packets
         rejected_peer_tuple_packets =
             [Int64]$wire.RejectedPeerTuplePackets
         third_party_peer_packets =
             [Int64]$wire.ThirdPartyPeerPackets
         ipv6_peer_packets = [Int64]$wire.IPv6PeerPackets
         requestparts_i64 = [Int64]$wire.RequestPartsI64
+        compressedpart_32 = [Int64]$wire.CompressedPart32
         sendingpart_i64 = [Int64]$wire.SendingPartI64
         compressedpart_i64 = [Int64]$wire.CompressedPartI64
         invalid_fixture_i64_frames =
             [Int64]$wire.InvalidFixtureI64Frames
+        fixture_hash_frames = [Int64]$wire.FixtureHashFrames
+        fixture_hash_frame_signatures =
+            @($wire.FixtureHashFrameSignatures)
         truncated_ipv4_peer_packets =
             [Int64]$wire.TruncatedIPv4PeerPackets
         candidate_pid = $CandidatePid
@@ -3601,6 +3722,11 @@ function Complete-I05Capture {
         armed_bytes =
             [Int64](Get-Item -LiteralPath $State.filters_armed).Length
         armed_sha256 = Get-LabSha256 -Path $State.filters_armed
+        before_reset_bytes =
+            [Int64](Get-Item -LiteralPath $State.filters_before_reset).Length
+        before_reset_sha256 =
+            Get-LabSha256 -Path $State.filters_before_reset
+        active_inventory_rows_exact = $true
         after_bytes =
             [Int64](Get-Item -LiteralPath $State.filters_after).Length
         after_sha256 = Get-LabSha256 -Path $State.filters_after
@@ -3655,6 +3781,7 @@ function Complete-I05Capture {
         physical_component_guid_match = $true
         ipv6_peer_packets = [Int64]$wire.IPv6PeerPackets
         requestparts_i64 = [Int64]$wire.RequestPartsI64
+        compressedpart_32 = [Int64]$wire.CompressedPart32
         sendingpart_i64 = [Int64]$wire.SendingPartI64
         compressedpart_i64 = [Int64]$wire.CompressedPartI64
         sending_i64 = [Int64]$wire.SendingPartI64
@@ -3687,7 +3814,8 @@ function Complete-I05Capture {
         process_scoped_containment = $true
         ed2k_framing_valid =
             [Int64]$wire.RequestPartsI64 -gt 0 -and
-            ([Int64]$wire.SendingPartI64 +
+            ([Int64]$wire.CompressedPart32 +
+                [Int64]$wire.SendingPartI64 +
                 [Int64]$wire.CompressedPartI64) -gt 0
         allowed_opcodes_only =
             [Int64]$wire.InvalidFixtureI64Frames -eq 0
@@ -3775,6 +3903,8 @@ function New-I05CompactEvidenceBundle {
             pcapng = [string]$CaptureState.pcapng_path
             transfer_samples = $SamplesPath
             pktmon_log = [string]$CaptureState.command_log
+            pktmon_filters_before_reset =
+                [string]$CaptureState.filters_before_reset
             component_inventory_pre_raw =
                 [string]$CaptureState.component_pre_raw_path
             component_inventory_armed_raw =
@@ -4062,7 +4192,7 @@ try {
         [Int64]$archiveItem.Length -ne $expectedArchiveBytes -or
         (Get-LabSha256 -Path $archivePath) -cne
             $expectedArchiveSha256) {
-        throw 'El ZIP RC2 completo no coincide en bytes/SHA-256.'
+        throw 'El ZIP RC3 completo no coincide en bytes/SHA-256.'
     }
     Write-I05BootProgress -Stage 'candidate_hash_ok'
     $baseManifest = Get-Content -LiteralPath $baseManifestPath -Raw |
@@ -4083,7 +4213,7 @@ try {
             windows_ipv6_stack_must_remain_enabled -or
         -not [bool]$baseManifest.measurement.
             preflight_ipv6_lan_probe_required) {
-        throw 'I05-BASE-MANIFEST no conserva el contrato T1/RC2.'
+        throw 'I05-BASE-MANIFEST no conserva el contrato T1/RC3.'
     }
 
     Write-I05BootProgress -Stage 'storage_context'
@@ -4150,8 +4280,8 @@ try {
     }
     $evidenceRoot = New-LabDirectory -Path (Join-Path $runRoot 'evidence')
     $nodesRoot = Join-Path $runRoot 'nodes'
-    $packagePath = Join-Path $runRoot 'pinned-rc2-package'
-    $exactPackage = Expand-I05ExactRc2Zip -ZipPath $archivePath `
+    $packagePath = Join-Path $runRoot 'pinned-rc3-package'
+    $exactPackage = Expand-I05ExactCandidateZip -ZipPath $archivePath `
         -Destination $packagePath
     $candidate = $exactPackage.candidate
 
@@ -4160,7 +4290,7 @@ try {
     $nodePath = Join-Path $nodesRoot 'v91-i05-t1-b'
     $emulePath = Join-Path $nodePath 'emule.exe'
     if ((Get-LabSha256 -Path $emulePath) -cne $expectedEmuleSha256) {
-        throw 'El emule.exe copiado al perfil ya no coincide con RC2.'
+        throw 'El emule.exe copiado al perfil ya no coincide con RC3.'
     }
 
     # The real IPv6 probe above must precede this write.
@@ -4234,6 +4364,8 @@ try {
             Join-Path $evidenceRoot 'pktmon-filters-before.txt'
         filters_armed =
             Join-Path $evidenceRoot 'pktmon-filters-armed.txt'
+        filters_before_reset =
+            Join-Path $evidenceRoot 'pktmon-filters-before-reset.txt'
         filters_after =
             Join-Path $evidenceRoot 'pktmon-filters-after.txt'
         etl_path = Join-Path $evidenceRoot 'v91-i05-t1-packets.etl'
@@ -5152,6 +5284,7 @@ try {
         third_party_peer_packets = 0
         ipv6_peer_packets = 0
         requestparts_i64 = $captureResult.requestparts_i64
+        compressedpart_32 = $captureResult.compressedpart_32
         sendingpart_i64 = $captureResult.sendingpart_i64
         compressedpart_i64 = $captureResult.compressedpart_i64
         sending_i64 = $captureResult.sending_i64
@@ -5326,6 +5459,53 @@ try {
         $containmentCreated -or
         $processId -gt 0 -or
         ($null -ne $capture -and [bool]$capture.started)
+    # Notify H1 while the nonce-owned physical control channel is still
+    # intact.  Cleanup removes that channel's firewall rule, so waiting until
+    # afterwards could leave H1 blocked until its two-hour transfer timeout.
+    # The wire document truthfully reports that cleanup has not started yet;
+    # the final local FAILURE below is rewritten with the completed outcome.
+    $failureDelivered = $false
+    if ($null -ne $controlStream -and
+        $nonce -match '^[0-9a-f]{32}$') {
+        try {
+            $pendingFailure = [ordered]@{
+                schema = 'ese.v91.i05.t1-failure/v1'
+                case_id = 'V91-I05'
+                status = $classification
+                nonce = $nonce
+                created_at_utc = Get-LabUtcTimestamp
+                phase = [string]$phase
+                category = $category
+                message_sha256 = Get-LabStringSha256 -Value (
+                    Protect-LabText -Value $message -RedactAddresses)
+                candidate = [ordered]@{
+                    version = $expectedVersion
+                    commit = $expectedCommit
+                    dirty = $false
+                    emule_sha256 = $expectedEmuleSha256
+                    zip_sha256 = $expectedArchiveSha256
+                    zip_bytes = $expectedArchiveBytes
+                }
+                cleanup = [ordered]@{
+                    attempted = $false
+                    complete = $false
+                    status = 'NOT_ATTEMPTED'
+                    error_sha256 = $null
+                }
+            }
+            $pendingFailurePath = Write-LabJson -Value $pendingFailure `
+                -Path (Join-Path $runRoot `
+                    'evidence\FAILURE-PENDING-V91-I05-T1.json')
+            $controlStream.ReadTimeout = 30000
+            $controlStream.WriteTimeout = 30000
+            $null = Send-I05ControlDocument -Stream $controlStream `
+                -Type FAILURE -Nonce $nonce -Path $pendingFailurePath
+            $failureDelivered = $true
+        } catch {
+            # A final delivery is retried after cleanup. Local evidence is
+            # always authoritative for the unattended agent.
+        }
+    }
     $centralCleanupError = $null
     $cleanupAttempted = $false
     if (-not $cleanupInvoked -and
@@ -5405,7 +5585,8 @@ try {
                 -Path (Join-Path $runRoot 'evidence\FAILURE-V91-I05-T1.json')
         }
     } catch {}
-    if ($null -ne $controlStream -and $failurePath -and
+    if (-not $failureDelivered -and
+        $null -ne $controlStream -and $failurePath -and
         $nonce -match '^[0-9a-f]{32}$') {
         try {
             $controlStream.ReadTimeout = 30000

@@ -2,6 +2,19 @@
 param(
     [ValidateSet('Coordinator', 'Peer')][string]$Role = 'Coordinator',
     [Parameter(Mandatory = $true)][string]$PackagePath,
+    [Parameter(Mandatory = $true)][string]$PackageZipPath,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedPackageZipSha256,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedHarnessSha256,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedCommonSha256,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedPrepareNodeSha256,
     [Parameter(Mandatory = $true)][string]$OutputRoot,
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-fA-F]{40}$')][string]$Commit,
@@ -15,6 +28,20 @@ param(
     [string]$CoordinatorIPv6 = '',
     [Parameter(Mandatory = $true)][string]$CoordinationRoot,
     [Parameter(Mandatory = $true)][switch]$ControlledPeerAcknowledged,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedCoordinatorMachineIdSha256,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedPeerMachineIdSha256,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedCoordinatorUserSidSha256,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedPeerUserSidSha256,
+    [Parameter(Mandatory = $true)]
+    [switch]$DisposableLabAccountAcknowledged,
     [ValidateRange(1024, 65535)][int]$PeerTcpPort = 9462,
     [ValidateRange(1024, 65535)][int]$PeerUdpPort = 9472,
     [ValidateRange(1024, 65535)][int]$PeerWebPort = 9511,
@@ -32,6 +59,7 @@ param(
     [Management.Automation.PSCredential]$PeerCredential,
     [string]$RemoteScriptPath = '',
     [string]$RemotePackagePath = '',
+    [string]$RemotePackageZipPath = '',
     [string]$RemoteOutputRoot = '',
     [string]$RemoteCoordinationRoot = '',
     [ValidatePattern('^[0-9a-fA-F]{32}$')][string]$RunNonce = ''
@@ -39,18 +67,1472 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
+
+function Get-I04BootstrapSha256FromStream {
+    param([Parameter(Mandatory = $true)][IO.Stream]$Stream)
+
+    if ($Stream.CanSeek) { $Stream.Position = 0 }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash($Stream)
+    } finally {
+        $sha.Dispose()
+        if ($Stream.CanSeek) { $Stream.Position = 0 }
+    }
+    return ([BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
+}
+
+function Get-I04BootstrapStringSha256 {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Value)
+    $stream = [IO.MemoryStream]::new($bytes, $false)
+    try { return Get-I04BootstrapSha256FromStream -Stream $stream }
+    finally { $stream.Dispose() }
+}
+
+if ([string]::IsNullOrWhiteSpace([string]$PSCommandPath)) {
+    throw 'I04 physical harness must be invoked as a script file'
+}
+$script:i04HarnessBundleLocks =
+    [Collections.Generic.List[IDisposable]]::new()
+$bootstrapFiles = [ordered]@{
+    harness = [pscustomobject]@{
+        path = [IO.Path]::GetFullPath($PSCommandPath)
+        expected = $ExpectedHarnessSha256.ToLowerInvariant()
+    }
+    common = [pscustomobject]@{
+        path = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'common.ps1'))
+        expected = $ExpectedCommonSha256.ToLowerInvariant()
+    }
+    prepare_node = [pscustomobject]@{
+        path = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'prepare_node.ps1'))
+        expected = $ExpectedPrepareNodeSha256.ToLowerInvariant()
+    }
+}
+$bootstrapObserved = [ordered]@{}
+try {
+    foreach ($entry in $bootstrapFiles.GetEnumerator()) {
+        $stream = [IO.File]::Open(
+            [string]$entry.Value.path,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read
+        )
+        $script:i04HarnessBundleLocks.Add($stream)
+        $observed = Get-I04BootstrapSha256FromStream -Stream $stream
+        if ($observed -cne [string]$entry.Value.expected) {
+            throw "I04 harness bundle hash mismatch: $($entry.Key)"
+        }
+        $bootstrapObserved[$entry.Key] = $observed
+    }
+} catch {
+    foreach ($stream in @($script:i04HarnessBundleLocks.ToArray())) {
+        try { $stream.Dispose() } catch {}
+    }
+    $script:i04HarnessBundleLocks.Clear()
+    throw
+}
+$bundleCanonical = @(
+    'harness=' + [string]$bootstrapObserved.harness
+    'common=' + [string]$bootstrapObserved.common
+    'prepare_node=' + [string]$bootstrapObserved.prepare_node
+) -join "`n"
+$script:i04HarnessBundle = [pscustomobject][ordered]@{
+    schema = 'ese.v91.i04-harness-bundle/v1'
+    harness_sha256 = [string]$bootstrapObserved.harness
+    common_sha256 = [string]$bootstrapObserved.common
+    prepare_node_sha256 = [string]$bootstrapObserved.prepare_node
+    bundle_sha256 = Get-I04BootstrapStringSha256 -Value $bundleCanonical
+    immutable_read_locks_held = $true
+}
 . (Join-Path $PSScriptRoot 'common.ps1')
 
+function Assert-I04ManagedTypeContract {
+    param(
+        [Parameter(Mandatory = $true)][string]$TypeName,
+        [Parameter(Mandatory = $true)][string]$ExpectedContractId
+    )
+
+    $type = $TypeName -as [type]
+    if ($null -eq $type) {
+        throw "Required managed helper type is unavailable: $TypeName"
+    }
+    $field = $type.GetField(
+        'ContractId',
+        [Reflection.BindingFlags]::Public -bor
+            [Reflection.BindingFlags]::Static
+    )
+    if ($null -eq $field -or
+        [string]$field.GetValue($null) -cne $ExpectedContractId) {
+        throw "Managed helper contract mismatch; start a fresh PowerShell process: $TypeName"
+    }
+    return $true
+}
+
+function Open-I04ImmutableEvidenceSnapshot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $safePath = Assert-I04NoReparsePath -Path $Path -Kind File
+    $stream = [IO.File]::Open(
+        $safePath, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    try {
+        if ($stream.Length -gt [int]::MaxValue) {
+            throw 'Evidence snapshot exceeds the bounded in-memory parser limit'
+        }
+        $bytes = New-Object byte[] ([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($read -le 0) { throw 'Evidence snapshot ended before its length' }
+            $offset += $read
+        }
+        $memory = [IO.MemoryStream]::new($bytes, $false)
+        try { $sha256 = Get-I04Sha256FromStream -Stream $memory }
+        finally { $memory.Dispose() }
+        $script:i04EvidenceLocks.Add($stream)
+        return [pscustomobject][ordered]@{
+            bytes = $bytes
+            byte_count = [Int64]$bytes.Length
+            sha256 = $sha256
+            immutable_read_lock_held = $true
+        }
+    } catch {
+        $stream.Dispose()
+        throw
+    }
+}
+
+function Get-I04Sha256FromStream {
+    param([Parameter(Mandatory = $true)][IO.Stream]$Stream)
+
+    if ($Stream.CanSeek) { $Stream.Position = 0 }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash($Stream)
+    } finally {
+        $sha.Dispose()
+        if ($Stream.CanSeek) { $Stream.Position = 0 }
+    }
+    return ([BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
+}
+
+function Get-I04StringSha256 {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Value)
+    $stream = [IO.MemoryStream]::new($bytes, $false)
+    try { return Get-I04Sha256FromStream -Stream $stream } finally {
+        $stream.Dispose()
+    }
+}
+
+function Get-I04SafeErrorToken {
+    param(
+        [Parameter(Mandatory = $true)][string]$Context,
+        [AllowEmptyString()][string]$Message = ''
+    )
+    return '{0} [error_sha256={1}]' -f $Context,
+        (Get-I04StringSha256 -Value $Message)
+}
+
+function Convert-I04PrivateText {
+    param([AllowEmptyString()][string]$Value = '')
+
+    $result = $Value
+    $privateRoots = [System.Collections.Generic.List[string]]::new()
+    foreach ($rootValue in @(
+        $env:USERPROFILE, $PackagePath, $PackageZipPath, $OutputRoot,
+        $CoordinationRoot, $RemotePackagePath, $RemotePackageZipPath,
+        $RemoteOutputRoot, $RemoteCoordinationRoot
+    )) {
+        if ([string]::IsNullOrWhiteSpace([string]$rootValue)) { continue }
+        if ([IO.Path]::IsPathRooted([string]$rootValue)) {
+            $privateRoots.Add([string]$rootValue)
+        }
+        try { $privateRoots.Add([IO.Path]::GetFullPath([string]$rootValue)) }
+        catch {}
+    }
+    foreach ($rootValue in @($privateRoots.ToArray() |
+        Sort-Object Length -Descending -Unique)) {
+        if (-not $rootValue) { continue }
+        $result = [regex]::Replace(
+            $result, [regex]::Escape($rootValue), '<private-path>',
+            [Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+    }
+    if ($env:USERNAME) {
+        $result = [regex]::Replace(
+            $result, [regex]::Escape($env:USERNAME), '<private-user>',
+            [Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+    }
+    return $result
+}
+
+function Assert-I04NoReparsePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [ValidateSet('File', 'Directory')][string]$Kind
+    )
+
+    $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    if ($Kind -eq 'File' -and
+        -not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        throw "Required file is not a regular file: $resolved"
+    }
+    if ($Kind -eq 'Directory' -and
+        -not (Test-Path -LiteralPath $resolved -PathType Container)) {
+        throw "Required directory is not a directory: $resolved"
+    }
+    $cursor = $resolved
+    if ($Kind -eq 'File') { $cursor = Split-Path -Parent $cursor }
+    $volumeRoot = [IO.Path]::GetPathRoot($cursor).TrimEnd('\')
+    while ($cursor -and $cursor.TrimEnd('\') -ne $volumeRoot) {
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Candidate path crosses a reparse point: $cursor"
+        }
+        $parent = Split-Path -Parent $cursor
+        if (-not $parent -or $parent -eq $cursor) { break }
+        $cursor = $parent
+    }
+    $leaf = Get-Item -LiteralPath $resolved -Force -ErrorAction Stop
+    if (($leaf.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Candidate leaf is a reparse point: $resolved"
+    }
+    return $resolved
+}
+
+function Assert-I04SafeCreationPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $full = [IO.Path]::GetFullPath($Path)
+    $cursor = $full
+    while (-not (Test-Path -LiteralPath $cursor)) {
+        $parent = Split-Path -Parent $cursor
+        if (-not $parent -or $parent -eq $cursor) {
+            throw "No existing safe ancestor was found for: $full"
+        }
+        $cursor = $parent
+    }
+    $null = Assert-I04NoReparsePath -Path $cursor -Kind Directory
+    return $full
+}
+
+function Convert-I04SafeRelativePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$AllowTrailingSlash
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or $Path.Contains('\') -or
+        $Path.StartsWith('/') -or $Path.Contains(':') -or
+        [IO.Path]::IsPathRooted($Path)) {
+        throw "Unsafe archive path: '$Path'"
+    }
+    $normalized = $Path.Normalize([Text.NormalizationForm]::FormC)
+    if (-not [StringComparer]::Ordinal.Equals($normalized, $Path)) {
+        throw "Archive path is not canonical Unicode NFC: '$Path'"
+    }
+    $plain = if ($AllowTrailingSlash) { $Path.TrimEnd('/') } else { $Path }
+    if (-not $plain -or (-not $AllowTrailingSlash -and $Path.EndsWith('/'))) {
+        throw "Unsafe archive file path: '$Path'"
+    }
+    $segments = @($plain -split '/')
+    foreach ($segment in $segments) {
+        if (-not $segment -or $segment -in @('.', '..') -or
+            $segment -match '[<>:"|?*]' -or
+            $segment.EndsWith('.') -or $segment.EndsWith(' ')) {
+            throw "Unsafe archive path segment '$segment' in '$Path'"
+        }
+        $deviceStem = ($segment -split '\.')[0]
+        if ($deviceStem -match
+            '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$') {
+            throw "Reserved Windows device segment '$segment' in '$Path'"
+        }
+    }
+    return $plain
+}
+
+function Get-I04SafeTreeFiles {
+    param([Parameter(Mandatory = $true)][string]$Root)
+
+    $resolvedRoot = Assert-I04NoReparsePath -Path $Root -Kind Directory
+    $rootPrefix = $resolvedRoot.TrimEnd('\') + '\'
+    $queue = New-Object 'Collections.Generic.Queue[IO.DirectoryInfo]'
+    $queue.Enqueue((Get-Item -LiteralPath $resolvedRoot -Force))
+    $files = [Collections.Generic.List[object]]::new()
+    $seen = New-Object 'Collections.Generic.HashSet[string]' `
+        ([StringComparer]::OrdinalIgnoreCase)
+    while ($queue.Count -gt 0) {
+        $directory = $queue.Dequeue()
+        foreach ($item in @(Get-ChildItem -LiteralPath $directory.FullName `
+            -Force -ErrorAction Stop)) {
+            if (($item.Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Candidate tree contains a reparse point: $($item.FullName)"
+            }
+            if ($item.PSIsContainer) {
+                $queue.Enqueue([IO.DirectoryInfo]$item)
+                continue
+            }
+            if (-not (Test-Path -LiteralPath $item.FullName -PathType Leaf)) {
+                throw "Candidate tree contains a non-regular entry: $($item.FullName)"
+            }
+            $relative = $item.FullName.Substring($rootPrefix.Length).
+                Replace('\', '/')
+            $relative = Convert-I04SafeRelativePath -Path $relative
+            if (-not $seen.Add($relative)) {
+                throw "Candidate tree has a case/Unicode path collision: $relative"
+            }
+            $files.Add([pscustomobject][ordered]@{
+                relative_path = $relative
+                full_path = $item.FullName
+                length = [Int64]$item.Length
+            })
+        }
+    }
+    return @($files.ToArray() | Sort-Object relative_path)
+}
+
+function Open-I04LockedFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $resolved = Assert-I04NoReparsePath -Path $Path -Kind File
+    # First demand an exclusive open. This fails closed if a pre-existing
+    # writer/renamer already owns the candidate. Reopen read-shared so the
+    # verified bytes can be copied/executed while writes and deletes stay denied.
+    $exclusive = New-Object IO.FileStream(
+        $resolved, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        [IO.FileShare]::None
+    )
+    try {
+        $exclusiveHash = Get-I04Sha256FromStream -Stream $exclusive
+        $exclusiveLength = $exclusive.Length
+    } finally {
+        $exclusive.Dispose()
+    }
+    $locked = New-Object IO.FileStream(
+        $resolved, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    try {
+        $lockedHash = Get-I04Sha256FromStream -Stream $locked
+        if ($lockedHash -ne $exclusiveHash -or
+            $locked.Length -ne $exclusiveLength) {
+            throw "Candidate changed while its immutable lock was acquired: $resolved"
+        }
+        $script:i04CandidateLocks.Add($locked)
+    } catch {
+        $locked.Dispose()
+        throw
+    }
+    return [pscustomobject]@{
+        path = $resolved
+        length = [Int64]$exclusiveLength
+        sha256 = $lockedHash
+        stream = $locked
+    }
+}
+
+function Get-I04CandidateBinding {
+    param(
+        [Parameter(Mandatory = $true)][string]$DirectoryPath,
+        [Parameter(Mandatory = $true)][string]$ZipPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedZipSha256,
+        [Parameter(Mandatory = $true)][string]$ExpectedExeSha256,
+        [Parameter(Mandatory = $true)][string]$ExpectedCommit
+    )
+
+    $packageRoot = Assert-I04NoReparsePath -Path $DirectoryPath `
+        -Kind Directory
+    $zipLock = Open-I04LockedFile -Path $ZipPath
+    if ($zipLock.sha256 -ne $ExpectedZipSha256.ToLowerInvariant()) {
+        throw "Package ZIP hash mismatch: $($zipLock.sha256)"
+    }
+    $packageFiles = @(Get-I04SafeTreeFiles -Root $packageRoot)
+    if ($packageFiles.Count -eq 0) { throw 'Candidate package is empty' }
+    $packageMap = New-Object `
+        'Collections.Generic.Dictionary[string,object]' `
+        ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in $packageFiles) {
+        $locked = Open-I04LockedFile -Path $file.full_path
+        $packageMap.Add([string]$file.relative_path, [pscustomobject]@{
+            length = [Int64]$locked.length
+            sha256 = [string]$locked.sha256
+        })
+    }
+
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+    $zipLock.stream.Position = 0
+    $archive = [IO.Compression.ZipArchive]::new(
+        $zipLock.stream, [IO.Compression.ZipArchiveMode]::Read, $true
+    )
+    try {
+        $entryRecords = [Collections.Generic.List[object]]::new()
+        $entryNames = New-Object 'Collections.Generic.HashSet[string]' `
+            ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($entry in $archive.Entries) {
+            $isDirectory = $entry.FullName.EndsWith('/')
+            $safeName = Convert-I04SafeRelativePath -Path $entry.FullName `
+                -AllowTrailingSlash:$isDirectory
+            $external = [UInt32]([Int64]$entry.ExternalAttributes -band
+                [Int64]0xffffffffL)
+            $unixType = (($external -shr 16) -band 0xF000)
+            if ($unixType -eq 0xA000 -or ($external -band 0x400) -ne 0) {
+                throw "Package ZIP contains a symlink/reparse entry: $safeName"
+            }
+            if ($isDirectory) { continue }
+            if (-not $entryNames.Add($safeName)) {
+                throw "Package ZIP has a case/Unicode path collision: $safeName"
+            }
+            $entryRecords.Add([pscustomobject]@{
+                safe_name = $safeName
+                entry = $entry
+            })
+        }
+        $exeEntries = @($entryRecords.ToArray() | Where-Object {
+            ([string]$_.safe_name).Split('/')[-1] -ieq 'emule.exe'
+        })
+        if ($exeEntries.Count -ne 1) {
+            throw "Package ZIP must contain exactly one emule.exe; found $($exeEntries.Count)"
+        }
+        $exeEntryName = [string]$exeEntries[0].safe_name
+        $zipRootPrefix = $exeEntryName.Substring(
+            0, $exeEntryName.Length - 'emule.exe'.Length
+        )
+        $zipMap = New-Object `
+            'Collections.Generic.Dictionary[string,object]' `
+            ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($record in $entryRecords.ToArray()) {
+            $entryName = [string]$record.safe_name
+            if (-not $entryName.StartsWith(
+                $zipRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "ZIP file entry is outside the candidate root: $entryName"
+            }
+            $relative = $entryName.Substring($zipRootPrefix.Length)
+            $relative = Convert-I04SafeRelativePath -Path $relative
+            if ($zipMap.ContainsKey($relative)) {
+                throw "ZIP logical-root collision: $relative"
+            }
+            $entryStream = $record.entry.Open()
+            try {
+                $entryHash = Get-I04Sha256FromStream -Stream $entryStream
+            } finally {
+                $entryStream.Dispose()
+            }
+            $zipMap.Add($relative, [pscustomobject]@{
+                length = [Int64]$record.entry.Length
+                sha256 = $entryHash
+            })
+        }
+    } finally {
+        $archive.Dispose()
+        $zipLock.stream.Position = 0
+    }
+
+    if ($zipMap.Count -ne $packageMap.Count) {
+        throw "ZIP/package file-count mismatch: zip=$($zipMap.Count) directory=$($packageMap.Count)"
+    }
+    foreach ($relative in @($packageMap.Keys)) {
+        if (-not $zipMap.ContainsKey($relative)) {
+            throw "Package file is absent from ZIP: $relative"
+        }
+        if ([Int64]$zipMap[$relative].length -ne
+                [Int64]$packageMap[$relative].length -or
+            [string]$zipMap[$relative].sha256 -ne
+                [string]$packageMap[$relative].sha256) {
+            throw "ZIP/package content mismatch: $relative"
+        }
+    }
+    if (-not $packageMap.ContainsKey('emule.exe') -or
+        [string]$packageMap['emule.exe'].sha256 -ne
+            $ExpectedExeSha256.ToLowerInvariant()) {
+        throw 'ZIP/package emule.exe does not match ExpectedEmuleSha256'
+    }
+    if ($packageMap.ContainsKey('LAB_NODE.json')) {
+        throw 'Candidate package may not predefine the harness-owned LAB_NODE.json'
+    }
+
+    $candidateInfo = Get-LabCandidateInfo -PackagePath $packageRoot `
+        -ExpectedCommit $ExpectedCommit
+    if ($candidateInfo.emule_sha256 -ne
+        $ExpectedExeSha256.ToLowerInvariant()) {
+        throw 'Strict package binding disagrees with BUILD_INFO candidate hash'
+    }
+    $manifestLines = @($packageMap.Keys | Sort-Object | ForEach-Object {
+        '{0}|{1}|{2}' -f $_, $packageMap[$_].length,
+            $packageMap[$_].sha256
+    })
+    return [pscustomobject][ordered]@{
+        package_path = $packageRoot
+        package_zip_path = $zipLock.path
+        package_zip_sha256 = $zipLock.sha256
+        package_manifest_sha256 = Get-I04StringSha256 `
+            -Value ($manifestLines -join "`n")
+        package_file_count = $packageMap.Count
+        package_file_hashes = $packageMap
+        release = $candidateInfo.release
+        version = $candidateInfo.version
+        commit = $candidateInfo.commit
+        dirty = $candidateInfo.dirty
+        emule_sha256 = $candidateInfo.emule_sha256
+        ese_server_sha256 = $candidateInfo.ese_server_sha256
+        build_info_sha256 = $candidateInfo.build_info_sha256
+        immutable_locks_held = $true
+    }
+}
+
+function Assert-I04CandidateBindingUnchanged {
+    param([Parameter(Mandatory = $true)][object]$Binding)
+
+    if ((Get-LabSha256 -Path $Binding.package_zip_path) -ne
+        [string]$Binding.package_zip_sha256) {
+        throw 'Locked package ZIP changed after binding'
+    }
+    $files = @(Get-I04SafeTreeFiles -Root $Binding.package_path)
+    if ($files.Count -ne [int]$Binding.package_file_count) {
+        throw 'Candidate package file set changed after binding'
+    }
+    $lines = foreach ($file in $files) {
+        if (-not $Binding.package_file_hashes.ContainsKey(
+            [string]$file.relative_path)) {
+            throw "New candidate package file appeared: $($file.relative_path)"
+        }
+        $hash = Get-LabSha256 -Path $file.full_path
+        $expected = $Binding.package_file_hashes[$file.relative_path]
+        if ($hash -ne [string]$expected.sha256 -or
+            [Int64]$file.length -ne [Int64]$expected.length) {
+            throw "Candidate package file changed: $($file.relative_path)"
+        }
+        '{0}|{1}|{2}' -f $file.relative_path, $file.length, $hash
+    }
+    $fingerprint = Get-I04StringSha256 -Value (
+        @($lines | Sort-Object) -join "`n"
+    )
+    if ($fingerprint -ne [string]$Binding.package_manifest_sha256) {
+        throw 'Candidate package manifest fingerprint changed'
+    }
+    return $true
+}
+
+function Get-I04CandidateEvidence {
+    param([Parameter(Mandatory = $true)][object]$Binding)
+
+    return [pscustomobject][ordered]@{
+        release = $Binding.release
+        version = $Binding.version
+        commit = $Binding.commit
+        dirty = $Binding.dirty
+        emule_sha256 = $Binding.emule_sha256
+        ese_server_sha256 = $Binding.ese_server_sha256
+        build_info_sha256 = $Binding.build_info_sha256
+        package_zip_sha256 = $Binding.package_zip_sha256
+        package_manifest_sha256 = $Binding.package_manifest_sha256
+        package_file_count = $Binding.package_file_count
+        immutable_locks_held = [bool]$Binding.immutable_locks_held
+    }
+}
+
+function Get-I04StrictAddressClass {
+    param([Parameter(Mandatory = $true)][string]$Address)
+
+    $parsed = $null
+    if (-not [Net.IPAddress]::TryParse($Address.Split('%')[0], [ref]$parsed)) {
+        return 'invalid'
+    }
+    $bytes = $parsed.GetAddressBytes()
+    if ($parsed.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork) {
+        if ($bytes[0] -eq 0) { return 'unspecified-or-this-network-v4' }
+        if ($bytes[0] -eq 10 -or
+            ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and
+                $bytes[1] -le 31) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 168)) {
+            return 'private-v4'
+        }
+        if ($bytes[0] -eq 100 -and $bytes[1] -ge 64 -and
+            $bytes[1] -le 127) { return 'shared-cgnat-v4' }
+        if ($bytes[0] -eq 127) { return 'loopback-v4' }
+        if ($bytes[0] -eq 169 -and $bytes[1] -eq 254) {
+            return 'linklocal-v4'
+        }
+        if (($bytes[0] -eq 192 -and $bytes[1] -eq 0 -and
+                ($bytes[2] -in @(0, 2))) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 31 -and
+                $bytes[2] -eq 196) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 52 -and
+                $bytes[2] -eq 193) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 88 -and
+                $bytes[2] -eq 99) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 175 -and
+                $bytes[2] -eq 48) -or
+            ($bytes[0] -eq 198 -and $bytes[1] -in @(18, 19)) -or
+            ($bytes[0] -eq 198 -and $bytes[1] -eq 51 -and
+                $bytes[2] -eq 100) -or
+            ($bytes[0] -eq 203 -and $bytes[1] -eq 0 -and
+                $bytes[2] -eq 113)) {
+            return 'special-purpose-v4'
+        }
+        if ($bytes[0] -ge 224) { return 'multicast-or-reserved-v4' }
+        return 'public-unicast-v4'
+    }
+    if ($parsed.AddressFamily -ne
+        [Net.Sockets.AddressFamily]::InterNetworkV6 -or
+        $parsed.IsIPv4MappedToIPv6) { return 'non-native-v6' }
+    if ([Net.IPAddress]::IsLoopback($parsed)) { return 'loopback-v6' }
+    if ($parsed.IsIPv6LinkLocal) { return 'linklocal-v6' }
+    if ($parsed.IsIPv6Multicast) { return 'multicast-v6' }
+    if (($bytes[0] -band 0xfe) -eq 0xfc) { return 'ula-v6' }
+    if (($bytes[0] -band 0xe0) -ne 0x20) {
+        return 'non-global-unicast-v6'
+    }
+    # Reject transition/documentation/IETF-special blocks even though they sit
+    # inside 2000::/3. I04 requires a native provider-routed IPv6 endpoint.
+    if (($bytes[0] -eq 0x20 -and $bytes[1] -eq 0x01 -and
+            $bytes[2] -le 0x01) -or
+        ($bytes[0] -eq 0x20 -and $bytes[1] -eq 0x01 -and
+            $bytes[2] -eq 0x0d -and $bytes[3] -eq 0xb8) -or
+        ($bytes[0] -eq 0x20 -and $bytes[1] -eq 0x02) -or
+        ($bytes[0] -eq 0x3f -and $bytes[1] -eq 0xfe) -or
+        ($bytes[0] -eq 0x20 -and $bytes[1] -eq 0x01 -and
+            $bytes[2] -eq 0x00 -and $bytes[3] -eq 0x04 -and
+            $bytes[4] -eq 0x01 -and $bytes[5] -eq 0x12) -or
+        ($bytes[0] -eq 0x26 -and $bytes[1] -eq 0x20 -and
+            $bytes[2] -eq 0x00 -and $bytes[3] -eq 0x4f -and
+            $bytes[4] -eq 0x80 -and $bytes[5] -eq 0x00) -or
+        ($bytes[0] -eq 0x3f -and $bytes[1] -eq 0xff -and
+            ($bytes[2] -band 0xf0) -eq 0)) {
+        return 'transition-or-documentation-v6'
+    }
+    return 'native-global-v6'
+}
+
+function Test-I04UsableLocalIPv4 {
+    param([Parameter(Mandatory = $true)][string]$Address)
+    return (Get-I04StrictAddressClass -Address $Address) -in @(
+        'private-v4', 'shared-cgnat-v4', 'public-unicast-v4'
+    )
+}
+
+function New-I04EphemeralSecret {
+    $bytes = New-Object byte[] 32
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    return ([Convert]::ToBase64String($bytes)).TrimEnd('=').
+        Replace('+', '-').Replace('/', '_')
+}
+
+function Assert-I04PortsInitiallyFree {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()][int[]]$Ports,
+        [Parameter(Mandatory = $true)][string]$HostRole
+    )
+
+    try {
+        $tcp = @(Get-NetTCPConnection -ErrorAction Stop)
+        $udp = @(Get-NetUDPEndpoint -ErrorAction Stop)
+    } catch {
+        throw (Get-I04SafeErrorToken `
+            -Context "$HostRole port ownership could not be enumerated" `
+            -Message $_.Exception.Message)
+    }
+    $collisions = [System.Collections.Generic.List[object]]::new()
+    foreach ($port in @($Ports | Sort-Object -Unique)) {
+        foreach ($endpoint in @($tcp | Where-Object {
+            [int]$_.LocalPort -eq $port
+        })) {
+            $collisions.Add([pscustomobject][ordered]@{
+                protocol = 'TCP'
+                port = $port
+                owning_process = [int]$endpoint.OwningProcess
+                state = [string]$endpoint.State
+            })
+        }
+        foreach ($endpoint in @($udp | Where-Object {
+            [int]$_.LocalPort -eq $port
+        })) {
+            $collisions.Add([pscustomobject][ordered]@{
+                protocol = 'UDP'
+                port = $port
+                owning_process = [int]$endpoint.OwningProcess
+                state = 'Bound'
+            })
+        }
+    }
+    if ($collisions.Count -gt 0) {
+        $description = @($collisions.ToArray() | ForEach-Object {
+            "$($_.protocol)/$($_.port)/PID$($_.owning_process)/$($_.state)"
+        }) -join ', '
+        throw "$HostRole configured ports were already owned: $description"
+    }
+    return [pscustomobject][ordered]@{
+        checked_at_utc = Get-LabUtcTimestamp
+        role = $HostRole
+        ports = @($Ports | Sort-Object -Unique)
+        collisions = @()
+        all_free = $true
+    }
+}
+
+function Get-I04TerminalOwnershipCensus {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()][int[]]$ProcessIds,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()][object[]]$OwnedProcesses,
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()][int[]]$Ports,
+        [Parameter(Mandatory = $true)][string]$HostRole
+    )
+
+    $descendantAudits = [System.Collections.Generic.List[object]]::new()
+    try {
+        $allProcesses = @(Get-Process -ErrorAction Stop)
+        $allTcp = @(Get-NetTCPConnection -ErrorAction Stop)
+        $allUdp = @(Get-NetUDPEndpoint -ErrorAction Stop)
+        $descendantCollectorOk = $true
+        $descendantsClear = $true
+        foreach ($ownedProcess in $OwnedProcesses) {
+            $required = @(
+                'i04_owner_pid', 'i04_owner_cim_creation_utc_ticks',
+                'i04_descendant_collector_failed',
+                'i04_descendant_root_identity_contradicted',
+                'i04_descendant_observed',
+                'i04_descendant_observed_process_ids',
+                'i04_descendant_error_sha256',
+                'i04_descendant_last_census',
+                'i04_job_contract_id', 'i04_job_active_process_limit',
+                'i04_job_assigned_before_resume',
+                'i04_job_last_accounting'
+            )
+            $bindingPresent = @($required | Where-Object {
+                $ownedProcess.PSObject.Properties.Name -notcontains $_
+            }).Count -eq 0
+            if (-not $bindingPresent) {
+                $descendantsClear = $false
+                $descendantAudits.Add([pscustomobject][ordered]@{
+                    ownership_binding_present = $false
+                    root_process_id = [int]$ownedProcess.Id
+                    root_creation_utc_ticks = $null
+                    collector_ok = $false
+                    root_identity_exact = $false
+                    descendant_observed = $false
+                    descendant_process_ids = @()
+                    restricted_job_accounting = $null
+                    clear = $false
+                })
+                $descendantCollectorOk = $false
+                continue
+            }
+            $auditClear = Test-I04OwnedProcessDescendants `
+                -Process $ownedProcess -RootMayHaveExited
+            $collectorOk =
+                -not [bool]$ownedProcess.i04_descendant_collector_failed
+            $rootExact = -not [bool]$ownedProcess.
+                i04_descendant_root_identity_contradicted
+            $observed = [bool]$ownedProcess.i04_descendant_observed
+            $descendantAudits.Add([pscustomobject][ordered]@{
+                ownership_binding_present = $true
+                root_process_id = [int]$ownedProcess.i04_owner_pid
+                root_creation_utc_ticks =
+                    [Int64]$ownedProcess.i04_owner_cim_creation_utc_ticks
+                collector_ok = $collectorOk
+                collector_error_sha256 =
+                    [string]$ownedProcess.i04_descendant_error_sha256
+                root_identity_exact = $rootExact
+                descendant_observed = $observed
+                descendant_process_ids = @(
+                    $ownedProcess.i04_descendant_observed_process_ids
+                )
+                last_census = $ownedProcess.i04_descendant_last_census
+                restricted_job_accounting =
+                    $ownedProcess.i04_job_last_accounting
+                clear = [bool]$auditClear
+            })
+            if (-not $collectorOk) { $descendantCollectorOk = $false }
+            if (-not $auditClear) { $descendantsClear = $false }
+        }
+        $remainingProcesses = @($allProcesses | Where-Object {
+            [int]$_.Id -in $ProcessIds
+        } | ForEach-Object {
+            [pscustomobject][ordered]@{ process_id = [int]$_.Id }
+        })
+        $tcp = @($allTcp | Where-Object {
+            [int]$_.OwningProcess -in $ProcessIds -or
+            [int]$_.LocalPort -in $Ports
+        } | ForEach-Object {
+            [pscustomobject][ordered]@{
+                owning_process = [int]$_.OwningProcess
+                local_port = [int]$_.LocalPort
+                remote_port = [int]$_.RemotePort
+                state = [string]$_.State
+            }
+        })
+        $udp = @($allUdp | Where-Object {
+            [int]$_.OwningProcess -in $ProcessIds -or
+            [int]$_.LocalPort -in $Ports
+        } | ForEach-Object {
+            [pscustomobject][ordered]@{
+                owning_process = [int]$_.OwningProcess
+                local_port = [int]$_.LocalPort
+            }
+        })
+        return [pscustomobject][ordered]@{
+            collected_at_utc = Get-LabUtcTimestamp
+            role = $HostRole
+            collector_ok = $descendantCollectorOk
+            collector_error = $null
+            process_ids = @($ProcessIds | Sort-Object -Unique)
+            ports = @($Ports | Sort-Object -Unique)
+            remaining_processes = $remainingProcesses
+            remaining_tcp = $tcp
+            remaining_udp = $udp
+            descendant_census = $descendantAudits.ToArray()
+            all_clear = $descendantCollectorOk -and $descendantsClear -and
+                $remainingProcesses.Count -eq 0 -and $tcp.Count -eq 0 -and
+                $udp.Count -eq 0
+        }
+    } catch {
+        return [pscustomobject][ordered]@{
+            collected_at_utc = Get-LabUtcTimestamp
+            role = $HostRole
+            collector_ok = $false
+            collector_error = Get-I04SafeErrorToken `
+                -Context "$HostRole terminal ownership census failed" `
+                -Message $_.Exception.Message
+            process_ids = @($ProcessIds | Sort-Object -Unique)
+            ports = @($Ports | Sort-Object -Unique)
+            remaining_processes = @()
+            remaining_tcp = @()
+            remaining_udp = @()
+            descendant_census = $descendantAudits.ToArray()
+            all_clear = $false
+        }
+    }
+}
+
+function Lock-I04PreparedNodeCode {
+    param(
+        [Parameter(Mandatory = $true)][string]$NodePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedExeSha256
+    )
+
+    $root = Assert-I04NoReparsePath -Path $NodePath -Kind Directory
+    $codeFiles = @(Get-I04SafeTreeFiles -Root $root | Where-Object {
+        [IO.Path]::GetExtension([string]$_.relative_path) -in @('.exe', '.dll')
+    })
+    $exeFiles = @($codeFiles | Where-Object {
+        [string]$_.relative_path -ieq 'emule.exe'
+    })
+    if ($exeFiles.Count -ne 1) {
+        throw "Prepared node must contain exactly one root emule.exe; found $($exeFiles.Count)"
+    }
+    $records = [System.Collections.Generic.List[object]]::new()
+    foreach ($file in $codeFiles) {
+        $lock = Open-I04LockedFile -Path $file.full_path
+        $records.Add([pscustomobject][ordered]@{
+            relative_path_sha256 = Get-I04StringSha256 -Value (
+                [string]$file.relative_path
+            )
+            length = [Int64]$lock.length
+            sha256 = [string]$lock.sha256
+        })
+    }
+    $exe = @($records.ToArray() | Where-Object {
+        [string]$_.sha256 -eq $ExpectedExeSha256.ToLowerInvariant() -and
+        [Int64]$_.length -eq [Int64]$exeFiles[0].length
+    })
+    $rootExeHash = Get-LabSha256 -Path (Join-Path $root 'emule.exe')
+    if ($rootExeHash -ne $ExpectedExeSha256.ToLowerInvariant()) {
+        throw 'Prepared node emule.exe does not match the mandatory candidate hash'
+    }
+    return [pscustomobject][ordered]@{
+        executable_sha256 = $rootExeHash
+        code_module_count = $records.Count
+        code_modules = @($records.ToArray())
+        immutable_code_locks_held = $true
+    }
+}
+
+function Assert-I04PreparedNodeDerivedFromBinding {
+    param(
+        [Parameter(Mandatory = $true)][string]$NodePath,
+        [Parameter(Mandatory = $true)][object]$Binding
+    )
+
+    $files = @(Get-I04SafeTreeFiles -Root $NodePath)
+    if ($files.Count -ne ([int]$Binding.package_file_count + 1)) {
+        throw 'Prepared node file set is not exactly package plus LAB_NODE.json'
+    }
+    $seen = New-Object 'Collections.Generic.HashSet[string]' `
+        ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in $files) {
+        $relative = [string]$file.relative_path
+        if ($relative -ieq 'LAB_NODE.json') { continue }
+        if (-not $Binding.package_file_hashes.ContainsKey($relative)) {
+            throw "Prepared node contains a file outside the bound package: $relative"
+        }
+        $null = $seen.Add($relative)
+        if ($relative -ieq 'config/preferences.ini') { continue }
+        $expected = $Binding.package_file_hashes[$relative]
+        if ([Int64]$file.length -ne [Int64]$expected.length -or
+            (Get-LabSha256 -Path $file.full_path) -ne
+                [string]$expected.sha256) {
+            throw "Prepared node file differs from the bound package: $relative"
+        }
+    }
+    foreach ($relative in @($Binding.package_file_hashes.Keys)) {
+        if (-not $seen.Contains([string]$relative)) {
+            throw "Prepared node omitted a bound package file: $relative"
+        }
+    }
+    return $true
+}
+
+function Get-I04CurrentHostIdentity {
+    $machineGuidText = [string](Get-ItemProperty `
+        -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Cryptography' `
+        -Name MachineGuid -ErrorAction Stop).MachineGuid
+    $machineGuid = [Guid]::Empty
+    if (-not [Guid]::TryParse($machineGuidText, [ref]$machineGuid) -or
+        $machineGuid -eq [Guid]::Empty) {
+        throw 'MachineGuid is absent or invalid; host identity is unprovable'
+    }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity.User) {
+        throw 'Current Windows account has no SID'
+    }
+    $sid = $identity.User.Value
+    if ($sid -in @('S-1-5-18', 'S-1-5-19', 'S-1-5-20') -or
+        $sid -match '-500$') {
+        throw 'Built-in Administrator/service identities are forbidden; use the acknowledged disposable lab account'
+    }
+    $profile = Assert-I04NoReparsePath -Path $env:USERPROFILE -Kind Directory
+    return [pscustomobject][ordered]@{
+        machine_id_sha256 = Get-I04StringSha256 `
+            -Value $machineGuid.ToString('D').ToLowerInvariant()
+        user_sid = $sid
+        user_sid_sha256 = Get-I04StringSha256 -Value $sid
+        account_name_sha256 = Get-I04StringSha256 -Value $identity.Name
+        profile_path_sha256 = Get-I04StringSha256 -Value (
+            [IO.Path]::GetFullPath($profile).ToLowerInvariant()
+        )
+        builtin_or_service = $false
+        disposable_account_operator_attested = $true
+    }
+}
+
+function Get-I04HostIdentityEvidence {
+    return [pscustomobject][ordered]@{
+        machine_id_sha256 = $script:i04HostIdentity.machine_id_sha256
+        user_sid_sha256 = $script:i04HostIdentity.user_sid_sha256
+        account_name_sha256 = $script:i04HostIdentity.account_name_sha256
+        profile_path_sha256 = $script:i04HostIdentity.profile_path_sha256
+        builtin_or_service = $script:i04HostIdentity.builtin_or_service
+        disposable_account_operator_attested =
+            $script:i04HostIdentity.disposable_account_operator_attested
+    }
+}
+
+function ConvertTo-I04RegistryValueCanonical {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [byte[]]) {
+        return 'bytes:' + [Convert]::ToBase64String([byte[]]$Value)
+    }
+    if ($Value -is [string[]]) {
+        return 'multi:' + (@([string[]]$Value | ForEach-Object {
+                    ([string]$_).Length.ToString(
+                        [Globalization.CultureInfo]::InvariantCulture) + ':' +
+                        [string]$_
+                }) -join '|')
+    }
+    if ($Value -is [string]) {
+        return 'string:' + ([string]$Value).Length.ToString(
+            [Globalization.CultureInfo]::InvariantCulture) + ':' +
+            [string]$Value
+    }
+    if ($Value -is [int] -or $Value -is [Int64]) {
+        return 'integer:' + ([IConvertible]$Value).ToString(
+            [Globalization.CultureInfo]::InvariantCulture)
+    }
+    throw "Unsupported registry value type: $($Value.GetType().FullName)"
+}
+
+function Get-I04RegistrySubtreeSnapshotOnce {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [AllowEmptyString()][string]$TrackedRootValueName = ''
+    )
+
+    $root = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+        $RelativePath, $false)
+    if ($null -eq $root) {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-registry-subtree/v2'
+            path_sha256 = Get-I04StringSha256 -Value $RelativePath
+            exists = $false
+            node_count = 0
+            value_count = 0
+            tracked_root_value_count = 0
+            canonical_sha256 = Get-I04StringSha256 -Value 'absent'
+        }
+    }
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $state = [pscustomobject]@{ node_count = 0; value_count = 0 }
+    $visit = $null
+    $visit = {
+        param(
+            [Parameter(Mandatory = $true)]
+            [Microsoft.Win32.RegistryKey]$Key,
+            [Parameter(Mandatory = $true)][string]$LogicalPath
+        )
+
+        $state.node_count++
+        $lines.Add(('K|{0}' -f $LogicalPath.ToLowerInvariant()))
+        $valueNames = @($Key.GetValueNames() | Sort-Object)
+        $subkeyNames = @($Key.GetSubKeyNames() | Sort-Object)
+        foreach ($valueName in $valueNames) {
+            $kind = $Key.GetValueKind([string]$valueName)
+            $value = $Key.GetValue(
+                [string]$valueName, $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $canonicalValue = ConvertTo-I04RegistryValueCanonical -Value $value
+            $valueAgain = $Key.GetValue(
+                [string]$valueName, $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ($kind -ne $Key.GetValueKind([string]$valueName) -or
+                $canonicalValue -cne
+                    (ConvertTo-I04RegistryValueCanonical -Value $valueAgain)) {
+                throw 'Registry value changed during fail-closed capture'
+            }
+            $lines.Add(('V|{0}|{1}|{2}' -f
+                    ([string]$valueName).ToLowerInvariant(), [string]$kind,
+                    (Get-I04StringSha256 -Value $canonicalValue)))
+            $state.value_count++
+        }
+        foreach ($subkeyName in $subkeyNames) {
+            $child = $Key.OpenSubKey([string]$subkeyName, $false)
+            if ($null -eq $child) {
+                throw 'Registry subtree changed during fail-closed capture'
+            }
+            try {
+                & $visit -Key $child `
+                    -LogicalPath ($LogicalPath + '\' + [string]$subkeyName)
+            } finally { $child.Dispose() }
+        }
+        if ((@($Key.GetValueNames() | Sort-Object) -join "`n") -cne
+                ($valueNames -join "`n") -or
+            (@($Key.GetSubKeyNames() | Sort-Object) -join "`n") -cne
+                ($subkeyNames -join "`n")) {
+            throw 'Registry subtree names changed during fail-closed capture'
+        }
+    }
+
+    try {
+        $trackedCount = if ([string]::IsNullOrEmpty($TrackedRootValueName)) {
+            0
+        } else {
+            @($root.GetValueNames() | Where-Object {
+                    [string]$_ -ieq $TrackedRootValueName
+                }).Count
+        }
+        & $visit -Key $root -LogicalPath $RelativePath
+    } finally { $root.Dispose() }
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i04-registry-subtree/v2'
+        path_sha256 = Get-I04StringSha256 -Value $RelativePath
+        exists = $true
+        node_count = [int]$state.node_count
+        value_count = [int]$state.value_count
+        tracked_root_value_count = [int]$trackedCount
+        canonical_sha256 = Get-I04StringSha256 -Value ($lines -join "`n")
+    }
+}
+
+function Test-I04RegistrySubtreeSnapshotEqual {
+    param(
+        [Parameter(Mandatory = $true)]$Left,
+        [Parameter(Mandatory = $true)]$Right
+    )
+
+    return [string]$Left.schema -ceq [string]$Right.schema -and
+        [string]$Left.path_sha256 -ceq [string]$Right.path_sha256 -and
+        [bool]$Left.exists -eq [bool]$Right.exists -and
+        [int]$Left.node_count -eq [int]$Right.node_count -and
+        [int]$Left.value_count -eq [int]$Right.value_count -and
+        [int]$Left.tracked_root_value_count -eq
+            [int]$Right.tracked_root_value_count -and
+        [string]$Left.canonical_sha256 -ceq [string]$Right.canonical_sha256
+}
+
+function Get-I04RegistrySubtreeSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [AllowEmptyString()][string]$TrackedRootValueName = ''
+    )
+
+    $first = Get-I04RegistrySubtreeSnapshotOnce `
+        -RelativePath $RelativePath `
+        -TrackedRootValueName $TrackedRootValueName
+    $second = Get-I04RegistrySubtreeSnapshotOnce `
+        -RelativePath $RelativePath `
+        -TrackedRootValueName $TrackedRootValueName
+    if (-not (Test-I04RegistrySubtreeSnapshotEqual `
+            -Left $first -Right $second)) {
+        throw 'Registry subtree was not stable across the baseline capture'
+    }
+    return $second
+}
+
+function ConvertTo-I04FirewallValueCanonical {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [Array]) {
+        [string[]]$members = @($Value | ForEach-Object {
+                ConvertTo-I04FirewallValueCanonical -Value $_
+            })
+        [Array]::Sort($members, [StringComparer]::Ordinal)
+        return 'array:[' + ($members -join ',') + ']'
+    }
+    if ($Value -is [string]) {
+        return 'string:' + ([string]$Value).Length.ToString(
+            [Globalization.CultureInfo]::InvariantCulture) + ':' +
+            [string]$Value
+    }
+    if ($Value -is [bool]) {
+        return 'bool:' + ([bool]$Value).ToString().ToLowerInvariant()
+    }
+    if ($Value -is [DateTime]) {
+        return 'datetime:' + ([DateTime]$Value).ToUniversalTime().ToString('o')
+    }
+    if ($Value -is [Guid]) {
+        return 'guid:' + ([Guid]$Value).ToString('D').ToLowerInvariant()
+    }
+    if ($Value -is [IFormattable]) {
+        return $Value.GetType().FullName + ':' +
+            ([IFormattable]$Value).ToString(
+                $null, [Globalization.CultureInfo]::InvariantCulture)
+    }
+    return $Value.GetType().FullName + ':' + [string]$Value
+}
+
+function Get-I04FirewallCimCanonical {
+    param([Parameter(Mandatory = $true)]$Instance)
+
+    $properties = @($Instance.CimInstanceProperties)
+    if ($properties.Count -eq 0) {
+        throw 'Firewall collector returned an object without CIM properties'
+    }
+    [string[]]$lines = @($properties | Sort-Object Name | ForEach-Object {
+            '{0}|{1}|{2}' -f ([string]$_.Name).ToLowerInvariant(),
+                [string]$_.CimType,
+                (ConvertTo-I04FirewallValueCanonical -Value $_.Value)
+        })
+    return $lines -join "`n"
+}
+
+function Get-I04GlobalFirewallSnapshotOnce {
+    $collectors = [ordered]@{
+        rules = 'Get-NetFirewallRule'
+        port_filters = 'Get-NetFirewallPortFilter'
+        application_filters = 'Get-NetFirewallApplicationFilter'
+        address_filters = 'Get-NetFirewallAddressFilter'
+        interface_filters = 'Get-NetFirewallInterfaceFilter'
+        interface_type_filters = 'Get-NetFirewallInterfaceTypeFilter'
+        service_filters = 'Get-NetFirewallServiceFilter'
+        security_filters = 'Get-NetFirewallSecurityFilter'
+    }
+    $categories = [ordered]@{}
+    [string[]]$aggregateLines = @()
+    foreach ($entry in $collectors.GetEnumerator()) {
+        $command = Get-Command -Name $entry.Value -ErrorAction Stop
+        $items = @(& $command -PolicyStore ActiveStore -ErrorAction Stop)
+        if ($items.Count -eq 0) {
+            throw "Global firewall collector returned no $($entry.Key)"
+        }
+        [string[]]$records = @($items | ForEach-Object {
+                Get-I04FirewallCimCanonical -Instance $_
+            })
+        [Array]::Sort($records, [StringComparer]::Ordinal)
+        $digest = Get-I04StringSha256 -Value ($records -join "`n--ITEM--`n")
+        $categories[$entry.Key] = [pscustomobject][ordered]@{
+            item_count = $items.Count
+            canonical_sha256 = $digest
+        }
+        $aggregateLines += ('{0}|{1}|{2}' -f $entry.Key,
+            $items.Count, $digest)
+    }
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i04-global-firewall-snapshot/v2'
+        captured_at_utc = Get-LabUtcTimestamp
+        policy_store = 'ActiveStore'
+        privacy_safe = $true
+        categories = [pscustomobject]$categories
+        canonical_sha256 = Get-I04StringSha256 -Value (
+            $aggregateLines -join "`n")
+    }
+}
+
+function Get-I04GlobalFirewallSnapshot {
+    $first = Get-I04GlobalFirewallSnapshotOnce
+    $second = Get-I04GlobalFirewallSnapshotOnce
+    if ([string]$first.schema -cne [string]$second.schema -or
+        [string]$first.policy_store -cne [string]$second.policy_store -or
+        [string]$first.canonical_sha256 -cne
+            [string]$second.canonical_sha256) {
+        throw 'Global firewall inventory was not stable across capture'
+    }
+    return $second
+}
+
+function Get-I04AccountRegistrySnapshot {
+    param([Parameter(Mandatory = $true)][string]$ExpectedUserSidSha256)
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity -or $null -eq $identity.User) {
+        throw 'Current Windows account SID is unavailable for registry capture'
+    }
+    $sidHash = Get-I04StringSha256 -Value ([string]$identity.User.Value)
+    if ($sidHash -cne $ExpectedUserSidSha256.ToLowerInvariant()) {
+        throw 'Registry capture account SID differs from the bound lab account'
+    }
+    $run = Get-I04RegistrySubtreeSnapshot `
+        -RelativePath 'Software\Microsoft\Windows\CurrentVersion\Run' `
+        -TrackedRootValueName 'eMuleAutoStart'
+    $ed2k = Get-I04RegistrySubtreeSnapshot `
+        -RelativePath 'Software\Classes\ed2k'
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i04-account-registry-snapshot/v2'
+        captured_at_utc = Get-LabUtcTimestamp
+        user_sid_sha256 = $sidHash
+        run_subtree = $run
+        ed2k_subtree = $ed2k
+        emule_autostart_absent =
+            [int]$run.tracked_root_value_count -eq 0
+        ed2k_subtree_absent = -not [bool]$ed2k.exists
+    }
+}
+
+function Start-I04AccountRegistryTransaction {
+    param([Parameter(Mandatory = $true)][string]$ExpectedUserSidSha256)
+
+    $baseline = Get-I04AccountRegistrySnapshot `
+        -ExpectedUserSidSha256 $ExpectedUserSidSha256
+    if (-not [bool]$baseline.run_subtree.exists -or
+        -not [bool]$baseline.emule_autostart_absent -or
+        -not [bool]$baseline.ed2k_subtree_absent) {
+        throw 'I04 requires the HKCU Run key to exist and eMuleAutoStart/the HKCU ed2k subtree to be absent before mutation'
+    }
+    $firewallBaseline = Get-I04GlobalFirewallSnapshot
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i04-account-registry-transaction/v2'
+        expected_user_sid_sha256 = $ExpectedUserSidSha256.ToLowerInvariant()
+        disposable_lab_account_attested = $true
+        baseline = $baseline
+        global_firewall_baseline = $firewallBaseline
+        initial_absence_proved = $true
+        destructive_restore_permitted = $false
+    }
+}
+
+function Get-I04AccountRegistryPostcheckEvidence {
+    param([Parameter(Mandatory = $true)]$Transaction)
+
+    try {
+        $after = Get-I04AccountRegistrySnapshot `
+            -ExpectedUserSidSha256 (
+                [string]$Transaction.expected_user_sid_sha256)
+        $runUnchanged = Test-I04RegistrySubtreeSnapshotEqual `
+            -Left $Transaction.baseline.run_subtree `
+            -Right $after.run_subtree
+        $ed2kUnchanged = Test-I04RegistrySubtreeSnapshotEqual `
+            -Left $Transaction.baseline.ed2k_subtree `
+            -Right $after.ed2k_subtree
+        $firewallAfter = Get-I04GlobalFirewallSnapshot
+        $firewallUnchanged = [string]$firewallAfter.canonical_sha256 -ceq
+            [string]$Transaction.global_firewall_baseline.canonical_sha256
+        $safe = $runUnchanged -and $ed2kUnchanged -and $firewallUnchanged -and
+            [string]$after.user_sid_sha256 -ceq
+                [string]$Transaction.expected_user_sid_sha256 -and
+            [bool]$Transaction.baseline.run_subtree.exists -and
+            [bool]$after.run_subtree.exists -and
+            [bool]$after.emule_autostart_absent -and
+            [bool]$after.ed2k_subtree_absent
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-account-registry-postcheck/v2'
+            collector_ok = $true
+            baseline = $Transaction.baseline
+            post_state = $after
+            global_firewall_baseline = $Transaction.global_firewall_baseline
+            global_firewall_post_state = $firewallAfter
+            bound_sid_unchanged = [string]$after.user_sid_sha256 -ceq
+                [string]$Transaction.expected_user_sid_sha256
+            run_subtree_unchanged = $runUnchanged
+            run_subtree_existed_before =
+                [bool]$Transaction.baseline.run_subtree.exists
+            run_subtree_exists_after = [bool]$after.run_subtree.exists
+            ed2k_subtree_unchanged = $ed2kUnchanged
+            global_firewall_unchanged = $firewallUnchanged
+            emule_autostart_absent_after =
+                [bool]$after.emule_autostart_absent
+            ed2k_subtree_absent_after = [bool]$after.ed2k_subtree_absent
+            destructive_restore_attempted = $false
+            nonce_owned_firewall_cleanup_only = $true
+            safe_to_pass = $safe
+            error = ''
+        }
+    } catch {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-account-registry-postcheck/v2'
+            collector_ok = $false
+            baseline = $Transaction.baseline
+            post_state = $null
+            global_firewall_baseline = $Transaction.global_firewall_baseline
+            global_firewall_post_state = $null
+            bound_sid_unchanged = $false
+            run_subtree_unchanged = $false
+            run_subtree_existed_before =
+                [bool]$Transaction.baseline.run_subtree.exists
+            run_subtree_exists_after = $false
+            ed2k_subtree_unchanged = $false
+            global_firewall_unchanged = $false
+            emule_autostart_absent_after = $false
+            ed2k_subtree_absent_after = $false
+            destructive_restore_attempted = $false
+            nonce_owned_firewall_cleanup_only = $true
+            safe_to_pass = $false
+            error = Get-I04SafeErrorToken `
+                -Context 'account/registry postcheck collector failed' `
+                -Message $_.Exception.Message
+        }
+    }
+}
+
+function Assert-I04DisjointOperationalPaths {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryDirectory,
+        [Parameter(Mandatory = $true)][string]$PackageDirectory,
+        [Parameter(Mandatory = $true)][string]$PackageZip,
+        [Parameter(Mandatory = $true)][string]$OutputDirectory,
+        [Parameter(Mandatory = $true)][string]$CoordinationDirectory
+    )
+
+    $entries = @(
+        [pscustomobject]@{ name = 'repository'; path = $RepositoryDirectory; directory = $true },
+        [pscustomobject]@{ name = 'package'; path = $PackageDirectory; directory = $true },
+        [pscustomobject]@{ name = 'package_zip'; path = $PackageZip; directory = $false },
+        [pscustomobject]@{ name = 'output'; path = $OutputDirectory; directory = $true },
+        [pscustomobject]@{ name = 'coordination'; path = $CoordinationDirectory; directory = $true }
+    )
+    foreach ($entry in $entries) {
+        if ([string]::IsNullOrWhiteSpace([string]$entry.path)) {
+            throw "I04 operational path is empty: $($entry.name)"
+        }
+        $entry.path = [IO.Path]::GetFullPath([string]$entry.path).TrimEnd('\')
+    }
+    for ($leftIndex = 0; $leftIndex -lt $entries.Count; $leftIndex++) {
+        for ($rightIndex = $leftIndex + 1;
+            $rightIndex -lt $entries.Count; $rightIndex++) {
+            $left = $entries[$leftIndex]
+            $right = $entries[$rightIndex]
+            $equal = [string]::Equals(
+                [string]$left.path, [string]$right.path,
+                [StringComparison]::OrdinalIgnoreCase)
+            $leftContainsRight = [bool]$left.directory -and
+                ([string]$right.path).StartsWith(
+                    ([string]$left.path) + '\',
+                    [StringComparison]::OrdinalIgnoreCase)
+            $rightContainsLeft = [bool]$right.directory -and
+                ([string]$left.path).StartsWith(
+                    ([string]$right.path) + '\',
+                    [StringComparison]::OrdinalIgnoreCase)
+            if ($equal -or $leftContainsRight -or $rightContainsLeft) {
+                throw "I04 operational roots overlap: $($left.name)/$($right.name)"
+            }
+        }
+    }
+    return $true
+}
+
+$script:i04CandidateLocks = [Collections.Generic.List[IDisposable]]::new()
+$script:i04EvidenceLocks = [Collections.Generic.List[IDisposable]]::new()
+$script:i04RestrictedJobPids = New-Object 'Collections.Generic.HashSet[int]'
+$script:i04RestrictedJobLeaseCleanup = $null
+$script:i04PeerTerminalReceiptPath = $null
+$script:i04PeerResultSha256 = ''
+$script:i04CoordinatorPublication = $null
+$script:i04RoleCompleted = $false
+$script:i04PktmonMutex = $null
+$script:i04PktmonMutexEvidence = $null
+$script:i04PreferenceContracts = New-Object `
+    'Collections.Generic.Dictionary[string,object]' `
+    ([StringComparer]::OrdinalIgnoreCase)
+$script:i04AccountRegistryTransaction = $null
+$script:i04AccountRegistryPostcheck = $null
+$script:i04AccountRegistryPostcheckComplete = $false
+$i04TerminalRegistryFailure = $null
+$i04TerminalJobFailure = $null
+$i04TerminalPktmonFailure = $null
+$i04TerminalLockFailure = $null
+try {
 $caseId = 'V91-I04'
 $expectedHash = $ExpectedEmuleSha256.ToLowerInvariant()
-$candidate = Get-LabCandidateInfo -PackagePath $PackagePath `
-    -ExpectedCommit $Commit
+$expectedZipHash = $ExpectedPackageZipSha256.ToLowerInvariant()
+if ($ExpectedCoordinatorMachineIdSha256 -ieq $ExpectedPeerMachineIdSha256) {
+    throw 'I04 requires two distinct bound physical machine identities'
+}
+$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+$null = Assert-I04DisjointOperationalPaths `
+    -RepositoryDirectory $repositoryRoot `
+    -PackageDirectory $PackagePath -PackageZip $PackageZipPath `
+    -OutputDirectory $OutputRoot -CoordinationDirectory $CoordinationRoot
+$preexistingEmuleProcesses = @(
+    Get-Process -ErrorAction Stop | Where-Object {
+        [string]$_.ProcessName -ieq 'emule'
+    }
+)
+if ($preexistingEmuleProcesses.Count -ne 0) {
+    throw 'I04 requires zero pre-existing eMule processes before either role starts'
+}
+$preexistingEmuleProcessCount = 0
+$candidate = Get-I04CandidateBinding -DirectoryPath $PackagePath `
+    -ZipPath $PackageZipPath -ExpectedZipSha256 $expectedZipHash `
+    -ExpectedExeSha256 $expectedHash -ExpectedCommit $Commit
 if ($candidate.emule_sha256 -ne $expectedHash) {
     throw "Candidate hash mismatch: package=$($candidate.emule_sha256) expected=$expectedHash"
 }
 if (-not $ControlledPeerAcknowledged) {
     throw 'I04 may only target a peer controlled by, or explicitly authorized for, the operator'
 }
+if (-not $DisposableLabAccountAcknowledged) {
+    throw 'I04 requires an explicitly acknowledged disposable lab account on both hosts'
+}
+$expectedCoordinatorSidHash =
+    $ExpectedCoordinatorUserSidSha256.ToLowerInvariant()
+$expectedPeerSidHash = $ExpectedPeerUserSidSha256.ToLowerInvariant()
+$script:i04HostIdentity = Get-I04CurrentHostIdentity
+$expectedLocalMachine = if ($Role -eq 'Peer') {
+    $ExpectedPeerMachineIdSha256.ToLowerInvariant()
+} else { $ExpectedCoordinatorMachineIdSha256.ToLowerInvariant() }
+$expectedLocalSid = if ($Role -eq 'Peer') {
+    $expectedPeerSidHash
+} else { $expectedCoordinatorSidHash }
+if ([string]$script:i04HostIdentity.machine_id_sha256 -ne
+        $expectedLocalMachine -or
+    [string]$script:i04HostIdentity.user_sid_sha256 -ne $expectedLocalSid) {
+    throw 'Current host/account identity does not match the mandatory campaign binding'
+}
+$script:i04AccountRegistryTransaction =
+    Start-I04AccountRegistryTransaction `
+        -ExpectedUserSidSha256 $expectedLocalSid
 
 $canonicalHostname = $PeerHostname.Trim().TrimEnd('.').ToLowerInvariant()
 if ($canonicalHostname -and (
@@ -86,13 +1568,17 @@ if (-not [Net.IPAddress]::TryParse($PeerIPv6.Split('%')[0],
 $peerV4Text = $peerV4Address.ToString()
 $peerLocalV4Text = $peerLocalV4Address.ToString()
 $peerV6Text = $peerV6Address.ToString()
-if ((Get-LabAddressClass -Address $peerV4Text) -ne 'global-v4') {
+if ((Get-I04StrictAddressClass -Address $peerV4Text) -ne
+    'public-unicast-v4') {
     throw 'PeerIPv4 must be the real globally routable HighID endpoint'
 }
-if ((Get-LabAddressClass -Address $peerLocalV4Text) -in @(
-    'invalid', 'loopback-v4', 'linklocal-v4', 'special-v4'
-)) {
+if (-not (Test-I04UsableLocalIPv4 -Address $peerLocalV4Text)) {
     throw 'PeerLocalIPv4 must be an assigned unicast address on the peer adapter'
+}
+if ($PeerIPv6.Contains('%') -or
+    (Get-I04StrictAddressClass -Address $peerV6Text) -ne
+        'native-global-v6') {
+    throw 'PeerIPv6 must be an unscoped native provider-routed global IPv6 address'
 }
 $expectedFallbackDelayMs = 3000
 $captureTimingToleranceMs = 250
@@ -102,7 +1588,8 @@ $schedulerReconnectFloorSeconds = 1205
 $fileBSizeBytes = 67108864
 $overlayPattern =
     '(?i)tailscale|wireguard|cloudflare|warp|zerotier|openvpn|' +
-    'hyper-v|vethernet|loopback|tunnel|tap|vpn|hamachi'
+    'hyper-v|vethernet|loopback|tunnel|tap|vpn|hamachi|' +
+    'teredo|6to4|isatap|ip-?https'
 
 $uniquePorts = @(
     $PeerTcpPort, $PeerUdpPort, $PeerWebPort,
@@ -113,16 +1600,11 @@ if ($uniquePorts.Count -ne 6) {
 }
 
 function Get-I04MachineId {
-    $machineGuid = ''
-    try {
-        $machineGuid = [string](Get-ItemProperty `
-            -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Cryptography' `
-            -Name MachineGuid -ErrorAction Stop).MachineGuid
-    } catch {
-        $machineGuid = '{0}|{1}' -f $env:COMPUTERNAME,
-            [Environment]::OSVersion.VersionString
+    if ($null -eq $script:i04HostIdentity -or
+        -not [string]$script:i04HostIdentity.machine_id_sha256) {
+        throw 'Strict local host identity was not initialized'
     }
-    return Get-LabStringSha256 -Value $machineGuid
+    return [string]$script:i04HostIdentity.machine_id_sha256
 }
 
 function Test-I04Administrator {
@@ -208,9 +1690,9 @@ function Add-I04RollbackJournal {
         Add-I04Journal -Path $Path -Mutation $Mutation -State $State `
             -Detail $Detail
     } catch {
-        $CleanupFailures.Add(
-            "rollback journal write failed for '$Mutation': $($_.Exception.Message)"
-        )
+        $CleanupFailures.Add((Get-I04SafeErrorToken `
+            -Context "rollback journal write failed for $Mutation" `
+            -Message $_.Exception.Message))
     }
 }
 
@@ -238,6 +1720,171 @@ function Get-I04IniValue {
     return $value
 }
 
+function Assert-I04PreferenceContract {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()][object[]]$Contract
+    )
+
+    $targetSections = New-Object 'Collections.Generic.HashSet[string]' `
+        ([StringComparer]::OrdinalIgnoreCase)
+    $expected = New-Object `
+        'Collections.Generic.Dictionary[string,object]' `
+        ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in $Contract) {
+        $section = [string]$entry.section
+        $key = [string]$entry.key
+        if ([string]::IsNullOrWhiteSpace($section) -or
+            [string]::IsNullOrWhiteSpace($key)) {
+            throw 'Preference contract contains an empty section/key'
+        }
+        $id = $section + [char]0x1f + $key
+        if ($expected.ContainsKey($id)) {
+            throw "Preference contract itself duplicates [$section] $key"
+        }
+        $expected.Add($id, $entry)
+        $null = $targetSections.Add($section)
+    }
+
+    $sectionCounts = New-Object `
+        'Collections.Generic.Dictionary[string,int]' `
+        ([StringComparer]::OrdinalIgnoreCase)
+    $observed = New-Object `
+        'Collections.Generic.Dictionary[string,object]' `
+        ([StringComparer]::OrdinalIgnoreCase)
+    $section = ''
+    foreach ($lineValue in @(Get-Content -LiteralPath $Path -ErrorAction Stop)) {
+        $line = [string]$lineValue
+        if ($line -match '^\s*\[(?<section>[^\]]+)\]\s*$') {
+            $section = [string]$Matches.section
+            if ($targetSections.Contains($section)) {
+                if (-not $sectionCounts.ContainsKey($section)) {
+                    $sectionCounts.Add($section, 0)
+                }
+                $sectionCounts[$section]++
+            }
+            continue
+        }
+        if (-not $targetSections.Contains($section) -or
+            $line -notmatch '^\s*(?<key>[^;#][^=]*?)\s*=\s*(?<value>.*?)\s*$') {
+            continue
+        }
+        $key = ([string]$Matches.key).Trim()
+        $id = $section + [char]0x1f + $key
+        if (-not $expected.ContainsKey($id)) { continue }
+        if (-not $observed.ContainsKey($id)) {
+            $observed.Add($id, [System.Collections.Generic.List[string]]::new())
+        }
+        $observed[$id].Add([string]$Matches.value)
+    }
+
+    foreach ($targetSection in @($targetSections)) {
+        if (-not $sectionCounts.ContainsKey($targetSection) -or
+            $sectionCounts[$targetSection] -ne 1) {
+            throw "Preference section [$targetSection] must occur exactly once"
+        }
+    }
+    $fingerprintLines = [System.Collections.Generic.List[string]]::new()
+    foreach ($id in @($expected.Keys | Sort-Object)) {
+        $entry = $expected[$id]
+        if (-not $observed.ContainsKey($id) -or
+            $observed[$id].Count -ne 1 -or
+            -not [StringComparer]::Ordinal.Equals(
+                [string]$observed[$id][0], [string]$entry.value
+            )) {
+            throw "Preference [$($entry.section)] $($entry.key) must occur once with its exact value"
+        }
+        $fingerprintLines.Add(('{0}|{1}|{2}' -f
+                $entry.section, $entry.key,
+                (Get-I04StringSha256 -Value ([string]$entry.value))))
+    }
+    return [pscustomobject][ordered]@{
+        exact = $true
+        target_section_count = $targetSections.Count
+        target_key_count = $expected.Count
+        contract_sha256 = Get-I04StringSha256 -Value (
+            @($fingerprintLines.ToArray() | Sort-Object) -join "`n"
+        )
+        duplicate_sections_rejected = $true
+        duplicate_keys_rejected = $true
+    }
+}
+
+function Set-I04StoredPreferenceContract {
+    param(
+        [Parameter(Mandatory = $true)][string]$NodePath,
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()][object[]]$Contract,
+        [switch]$Merge
+    )
+
+    $canonicalNode = Assert-I04NoReparsePath `
+        -Path $NodePath -Kind Directory
+    $nodeKey = [IO.Path]::GetFullPath($canonicalNode)
+    $entries = New-Object `
+        'Collections.Generic.Dictionary[string,object]' `
+        ([StringComparer]::OrdinalIgnoreCase)
+    if ($Merge) {
+        if (-not $script:i04PreferenceContracts.ContainsKey($nodeKey)) {
+            throw 'Cannot merge a preference contract before its isolated baseline is stored'
+        }
+        foreach ($entry in [object[]]$script:i04PreferenceContracts[$nodeKey]) {
+            $id = [string]$entry.section + [char]0x1f + [string]$entry.key
+            $entries.Add($id, $entry)
+        }
+    }
+    foreach ($entry in $Contract) {
+        $section = [string]$entry.section
+        $key = [string]$entry.key
+        if ([string]::IsNullOrWhiteSpace($section) -or
+            [string]::IsNullOrWhiteSpace($key)) {
+            throw 'Stored preference contract contains an empty section/key'
+        }
+        $id = $section + [char]0x1f + $key
+        $copy = [pscustomobject]@{
+            section = $section
+            key = $key
+            value = [string]$entry.value
+        }
+        if ($entries.ContainsKey($id)) {
+            $entries[$id] = $copy
+        } else {
+            $entries.Add($id, $copy)
+        }
+    }
+    $stored = [System.Collections.Generic.List[object]]::new()
+    foreach ($id in @($entries.Keys | Sort-Object)) {
+        $stored.Add($entries[$id])
+    }
+    if ($stored.Count -eq 0) {
+        throw 'Stored preference contract cannot be empty'
+    }
+    $contractArray = $stored.ToArray()
+    $script:i04PreferenceContracts[$nodeKey] = $contractArray
+    return Assert-I04PreferenceContract `
+        -Path (Join-Path $canonicalNode 'config\preferences.ini') `
+        -Contract $contractArray
+}
+
+function Assert-I04StoredPreferenceContract {
+    param([Parameter(Mandatory = $true)][string]$NodePath)
+
+    $canonicalNode = Assert-I04NoReparsePath `
+        -Path $NodePath -Kind Directory
+    $nodeKey = [IO.Path]::GetFullPath($canonicalNode)
+    if (-not $script:i04PreferenceContracts.ContainsKey($nodeKey)) {
+        throw 'No complete preference contract is stored for this node'
+    }
+    $contract = [object[]]$script:i04PreferenceContracts[$nodeKey]
+    if ($contract.Count -eq 0) {
+        throw 'The stored preference contract is empty'
+    }
+    return Assert-I04PreferenceContract `
+        -Path (Join-Path $canonicalNode 'config\preferences.ini') `
+        -Contract $contract
+}
+
 function Get-I04PersistedUserHash {
     param([Parameter(Mandatory = $true)][string]$NodePath)
 
@@ -261,7 +1908,7 @@ function Get-I04PersistedUserHash {
         throw "Peer preferences.dat does not contain a valid eMule user hash"
     }
     return [pscustomobject][ordered]@{
-        path = $path
+        relative_path = 'config\preferences.dat'
         file_sha256 = Get-LabSha256 -Path $path
         format_version = [int]$bytes[0]
         user_hash = $hash
@@ -284,7 +1931,8 @@ function Set-I04IsolatedPreferences {
 
     $config = Join-Path $NodePath 'config'
     $preferences = Join-Path $config 'preferences.ini'
-    $removedIdentityFiles = New-Object 'Collections.Generic.List[string]'
+    $preferenceContract = [System.Collections.Generic.List[object]]::new()
+    $removedIdentityFiles = [Collections.Generic.List[string]]::new()
     foreach ($identityName in @(
         'preferences.dat', 'cryptkey.dat', 'clients.met'
     )) {
@@ -296,7 +1944,10 @@ function Set-I04IsolatedPreferences {
     }
     foreach ($entry in ([ordered]@{
         Autoconnect = '0'
-        NetworkED2K = '0'
+        OpenPortsOnStartUp = '0'
+        AutoStart = '0'
+        AutoTakeED2KLinks = '0'
+        WatchClipboard4ED2kFilelinks = '0'
         NetworkKademlia = '0'
         Serverlist = '0'
         UpdateNotifyTestClient = '0'
@@ -310,14 +1961,14 @@ function Set-I04IsolatedPreferences {
         LogA4AF = '1'
         A4AFSaveCpu = '0'
         ConfirmExit = '0'
-        CryptLayerRequested = '0'
-        CryptLayerRequired = '0'
-        CryptLayerSupported = '0'
         IncomingDir = ($IncomingPath + '\')
         TempDir = ($TempPath + '\')
     }).GetEnumerator()) {
         Set-LabIniValue -Path $preferences -Section 'eMule' `
             -Key $entry.Key -Value $entry.Value
+        $preferenceContract.Add([pscustomobject]@{
+            section = 'eMule'; key = $entry.Key; value = $entry.Value
+        })
     }
     if ($MaxUploadKiBps -gt 0) {
         foreach ($entry in ([ordered]@{
@@ -328,20 +1979,30 @@ function Set-I04IsolatedPreferences {
         }).GetEnumerator()) {
             Set-LabIniValue -Path $preferences -Section 'eMule' `
                 -Key $entry.Key -Value $entry.Value
+            $preferenceContract.Add([pscustomobject]@{
+                section = 'eMule'; key = $entry.Key; value = $entry.Value
+            })
         }
     }
     foreach ($entry in ([ordered]@{
         IPv6Mode = [string]$IPv6Mode
         IPv6BindAddr = $IPv6BindAddress
         KadNetworkMask = '0'
+        NetworkED2K = '0'
+        CryptLayerRequested = '0'
+        CryptLayerRequired = '0'
+        CryptLayerSupported = '0'
     }).GetEnumerator()) {
         Set-LabIniValue -Path $preferences -Section 'Connection' `
             -Key $entry.Key -Value $entry.Value
+        $preferenceContract.Add([pscustomobject]@{
+            section = 'Connection'; key = $entry.Key; value = $entry.Value
+        })
     }
     foreach ($entry in ([ordered]@{
-        EseNetLabConsent = '1'
-        EseNetLabAdvancedConsent = '1'
-        EseNetLabContributionConsent = '1'
+        EseNetLabConsent = '0'
+        EseNetLabAdvancedConsent = '0'
+        EseNetLabContributionConsent = '0'
         EseNetLabEnabled = '0'
         EseV9Experimental = '0'
         EnableUtpHolePunch = '0'
@@ -357,11 +2018,20 @@ function Set-I04IsolatedPreferences {
     }).GetEnumerator()) {
         Set-LabIniValue -Path $preferences -Section 'eSE' `
             -Key $entry.Key -Value $entry.Value
+        $preferenceContract.Add([pscustomobject]@{
+            section = 'eSE'; key = $entry.Key; value = $entry.Value
+        })
     }
     Set-LabIniValue -Path $preferences -Section 'Proxy' `
         -Key 'ProxyEnableProxy' -Value '0'
+    $preferenceContract.Add([pscustomobject]@{
+        section = 'Proxy'; key = 'ProxyEnableProxy'; value = '0'
+    })
     Set-LabIniValue -Path $preferences -Section 'UPnP' `
         -Key 'EnableUPnP' -Value '0'
+    $preferenceContract.Add([pscustomobject]@{
+        section = 'UPnP'; key = 'EnableUPnP'; value = '0'
+    })
     foreach ($entry in ([ordered]@{
         Enabled = '1'
         Port = [string]$WebPort
@@ -371,11 +2041,23 @@ function Set-I04IsolatedPreferences {
     }).GetEnumerator()) {
         Set-LabIniValue -Path $preferences -Section 'WebServer' `
             -Key $entry.Key -Value $entry.Value
+        $preferenceContract.Add([pscustomobject]@{
+            section = 'WebServer'; key = $entry.Key; value = $entry.Value
+        })
     }
     Set-LabIniValue -Path $preferences -Section 'KRPRelay' `
         -Key 'KrpRelayEnabled' -Value '0'
+    $preferenceContract.Add([pscustomobject]@{
+        section = 'KRPRelay'; key = 'KrpRelayEnabled'; value = '0'
+    })
     Set-LabIniValue -Path $preferences -Section 'KRPRelay' `
         -Key 'KrpRelayKillSwitch' -Value '1'
+    $preferenceContract.Add([pscustomobject]@{
+        section = 'KRPRelay'; key = 'KrpRelayKillSwitch'; value = '1'
+    })
+
+    $preferenceContractEvidence = Set-I04StoredPreferenceContract `
+        -NodePath $NodePath -Contract $preferenceContract.ToArray()
 
     foreach ($serverFile in @(
         'server.met', 'server_met.old', 'server_met.download',
@@ -392,15 +2074,17 @@ function Set-I04IsolatedPreferences {
     )
     foreach ($runtimeLog in @(
         Get-ChildItem -LiteralPath $NodePath -Recurse -File -Filter '*.log' `
-            -ErrorAction SilentlyContinue
+            -ErrorAction Stop
     )) {
         Remove-Item -LiteralPath $runtimeLog.FullName -Force `
             -ErrorAction Stop
     }
     return [pscustomobject][ordered]@{
-        preferences_ini_path = $preferences
+        preferences_ini_relative_path = 'config\preferences.ini'
+        preference_contract = $preferenceContractEvidence
         identity_bootstrap = 'fresh isolated profile'
-        inherited_identity_files_removed = @($removedIdentityFiles)
+        inherited_identity_files_removed =
+            @($removedIdentityFiles.ToArray())
         preferences_dat_absent_before_start =
             -not (Test-Path -LiteralPath (
                 Join-Path $config 'preferences.dat'
@@ -605,8 +2289,8 @@ function Get-I04TargetConnections {
     )
 
     return @(
-        Get-NetTCPConnection -RemotePort $Port `
-            -ErrorAction SilentlyContinue | Where-Object {
+        Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+            [int]$_.RemotePort -eq $Port -and
             @($IPv4, $IPv6) -contains
                 (Get-I04NormalizedIp -Address $_.RemoteAddress)
         } | ForEach-Object {
@@ -630,6 +2314,106 @@ function Get-I04TargetConnections {
     )
 }
 
+function Get-I04RequiredJsonProperty {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Boolean', 'Integer', 'String', 'Object')]
+        [string]$ExpectedType
+    )
+
+    if ($null -eq $Object) {
+        throw "JSON parent object is null for property '$Name'"
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        throw "Required JSON property is absent: $Name"
+    }
+    $value = $property.Value
+    $valid = switch ($ExpectedType) {
+        'Boolean' { $value -is [bool]; break }
+        'Integer' { $value -is [int] -or $value -is [Int64]; break }
+        'String' { $value -is [string]; break }
+        'Object' {
+            $null -ne $value -and -not ($value -is [Array]) -and
+                @($value.PSObject.Properties).Count -gt 0
+            break
+        }
+    }
+    if (-not $valid) {
+        $actual = if ($null -eq $value) { 'null' } else {
+            $value.GetType().FullName
+        }
+        throw "JSON property '$Name' is $actual, expected $ExpectedType"
+    }
+    return $value
+}
+
+function Assert-I04ApiStatusContract {
+    param([Parameter(Mandatory = $true)]$Status)
+
+    foreach ($name in @(
+        'user_hash', 'netlab_consent', 'netlab_advanced_consent',
+        'netlab_contribution_consent'
+    )) {
+        $null = Get-I04RequiredJsonProperty -Object $Status `
+            -Name $name -ExpectedType String
+    }
+    foreach ($name in @(
+        'ed2k_connected', 'kad2_running', 'kad6_running', 'netlab_enabled',
+        'utp_hole_punch_enabled'
+    )) {
+        $null = Get-I04RequiredJsonProperty -Object $Status `
+            -Name $name -ExpectedType Boolean
+    }
+    foreach ($name in @(
+        'kad_running_mask', 'connecting_client_count',
+        'connecting_client_adds', 'connecting_client_high_water',
+        'connecting_client_duplicate_adds'
+    )) {
+        $null = Get-I04RequiredJsonProperty -Object $Status `
+            -Name $name -ExpectedType Integer
+    }
+    return $true
+}
+
+function Assert-I04ApiV9Contract {
+    param([Parameter(Mandatory = $true)]$Value)
+
+    $null = Get-I04RequiredJsonProperty -Object $Value `
+        -Name 'success' -ExpectedType Boolean
+    $netlab = Get-I04RequiredJsonProperty -Object $Value `
+        -Name 'netlab' -ExpectedType Object
+    $v9 = Get-I04RequiredJsonProperty -Object $Value `
+        -Name 'v9' -ExpectedType Object
+    foreach ($name in @('enabled', 'capability_advertised',
+            'keepalive_running')) {
+        $null = Get-I04RequiredJsonProperty -Object $netlab `
+            -Name $name -ExpectedType Boolean
+    }
+    $staged = Get-I04RequiredJsonProperty -Object $netlab `
+        -Name 'staged' -ExpectedType Object
+    foreach ($name in @('selector', 'port_predict', 'ed2k_punch3',
+            'kad3_rendezvous')) {
+        $null = Get-I04RequiredJsonProperty -Object $staged `
+            -Name $name -ExpectedType Boolean
+    }
+    $independent = Get-I04RequiredJsonProperty -Object $netlab `
+        -Name 'independent' -ExpectedType Object
+    foreach ($name in @('relay_accept', 'relay_egress', 'krp',
+            'kad6_beta_exit', 'kad6_stable_public_exit')) {
+        $null = Get-I04RequiredJsonProperty -Object $independent `
+            -Name $name -ExpectedType Boolean
+    }
+    foreach ($name in @('experimental', 'port_predict', 'ed2k_punch3',
+            'kad3_rendezvous', 'keepalive_running', 'hole_punch_master')) {
+        $null = Get-I04RequiredJsonProperty -Object $v9 `
+            -Name $name -ExpectedType Boolean
+    }
+    return $true
+}
+
 function Wait-I04Api {
     param(
         [Parameter(Mandatory = $true)][int]$Port,
@@ -643,9 +2427,11 @@ function Wait-I04Api {
             throw "eMule exited before API readiness (exit $($Process.ExitCode))"
         }
         try {
-            return Invoke-RestMethod `
+            $status = Invoke-RestMethod `
                 -Uri "http://127.0.0.1:$Port/api/status" `
                 -TimeoutSec 2
+            $null = Assert-I04ApiStatusContract -Status $status
+            return $status
         } catch {
             Start-Sleep -Milliseconds 400
         }
@@ -667,8 +2453,11 @@ function Wait-I04Listener {
             throw "eMule exited before listener $Port became ready"
         }
         $listeners = @(
-            Get-NetTCPConnection -State Listen -LocalPort $Port `
-                -OwningProcess $Process.Id -ErrorAction SilentlyContinue
+            Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+                [string]$_.State -eq 'Listen' -and
+                [int]$_.LocalPort -eq $Port -and
+                [int]$_.OwningProcess -eq $Process.Id
+            }
         )
         if ($listeners.Count -gt 0) {
             if (-not $RequireDualStack -or @(
@@ -687,6 +2476,910 @@ function Wait-I04Listener {
     throw "Listener $Port did not become ready"
 }
 
+function Initialize-I04RestrictedProcessLauncher {
+    $contractId = 'ese.v91.i04-restricted-process-launcher/2026-08-01.v1'
+    if ('V91I04RestrictedProcessLauncher' -as [type]) {
+        $null = Assert-I04ManagedTypeContract `
+            -TypeName 'V91I04RestrictedProcessLauncher' `
+            -ExpectedContractId $contractId
+        return
+    }
+    Add-Type @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class V91I04RestrictedProcessLauncher {
+    public const string ContractId = "ese.v91.i04-restricted-process-launcher/2026-08-01.v1";
+    private const uint CREATE_SUSPENDED = 0x00000004;
+    private const uint STARTF_USESHOWWINDOW = 0x00000001;
+    private const short SW_HIDE = 0;
+    private const uint JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    private const int JobObjectBasicAccountingInformation = 1;
+    private const int JobObjectExtendedLimitInformation = 9;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX;
+        public int dwY;
+        public int dwXSize;
+        public int dwYSize;
+        public int dwXCountChars;
+        public int dwYCountChars;
+        public int dwFillAttribute;
+        public int dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public int dwProcessId;
+        public int dwThreadId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS {
+        public UInt64 ReadOperationCount;
+        public UInt64 WriteOperationCount;
+        public UInt64 OtherOperationCount;
+        public UInt64 ReadTransferCount;
+        public UInt64 WriteTransferCount;
+        public UInt64 OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+        public Int64 PerProcessUserTimeLimit;
+        public Int64 PerJobUserTimeLimit;
+        public UInt32 LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public UInt32 ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public UInt32 PriorityClass;
+        public UInt32 SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION {
+        public Int64 TotalUserTime;
+        public Int64 TotalKernelTime;
+        public Int64 ThisPeriodTotalUserTime;
+        public Int64 ThisPeriodTotalKernelTime;
+        public UInt32 TotalPageFaultCount;
+        public UInt32 TotalProcesses;
+        public UInt32 ActiveProcesses;
+        public UInt32 TotalTerminatedProcesses;
+    }
+
+    private sealed class Lease {
+        public IntPtr Job;
+        public IntPtr Process;
+        public int ProcessId;
+    }
+
+    public sealed class LaunchResult {
+        public int ProcessId;
+        public string Contract;
+        public uint ActiveProcessLimit;
+        public bool StartedSuspended;
+        public bool AssignedBeforeResume;
+    }
+
+    public sealed class AccountingResult {
+        public string Contract;
+        public int ProcessId;
+        public uint ActiveProcessLimit;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+        public bool ChildProcessesStructurallyForbidden;
+    }
+
+    private static readonly object Gate = new object();
+    private static readonly Dictionary<int, Lease> Leases =
+        new Dictionary<int, Lease>();
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcessW(
+        string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes,
+        bool inheritHandles, uint creationFlags, IntPtr environment,
+        string currentDirectory, ref STARTUPINFO startupInfo,
+        out PROCESS_INFORMATION processInformation);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateJobObject(
+        IntPtr jobAttributes, string name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(
+        IntPtr job, int infoClass, IntPtr info, uint length);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(
+        IntPtr job, int infoClass,
+        out JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info,
+        uint length, IntPtr returnLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(
+        IntPtr job, IntPtr process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(IntPtr thread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    private static string Quote(string value) {
+        if (value == null) value = "";
+        bool quote = value.Length == 0;
+        for (int i = 0; i < value.Length && !quote; ++i) {
+            char c = value[i];
+            quote = Char.IsWhiteSpace(c) || c == '"';
+        }
+        if (!quote) return value;
+        StringBuilder result = new StringBuilder();
+        result.Append('"');
+        int slashes = 0;
+        foreach (char c in value) {
+            if (c == '\\') {
+                ++slashes;
+                continue;
+            }
+            if (c == '"') {
+                result.Append('\\', slashes * 2 + 1);
+                result.Append('"');
+                slashes = 0;
+                continue;
+            }
+            result.Append('\\', slashes);
+            slashes = 0;
+            result.Append(c);
+        }
+        result.Append('\\', slashes * 2);
+        result.Append('"');
+        return result.ToString();
+    }
+
+    private static string BuildCommandLine(string application, string[] args) {
+        StringBuilder result = new StringBuilder(Quote(application));
+        if (args != null) {
+            foreach (string arg in args) {
+                result.Append(' ');
+                result.Append(Quote(arg));
+            }
+        }
+        return result.ToString();
+    }
+
+    public static LaunchResult Start(
+        string application, string[] args, string currentDirectory) {
+        if (String.IsNullOrWhiteSpace(application))
+            throw new ArgumentException("application");
+        if (String.IsNullOrWhiteSpace(currentDirectory))
+            throw new ArgumentException("currentDirectory");
+
+        PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
+        IntPtr job = IntPtr.Zero;
+        bool stored = false;
+        try {
+            STARTUPINFO si = new STARTUPINFO();
+            si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            si.dwFlags = (int)STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            StringBuilder command = new StringBuilder(
+                BuildCommandLine(application, args));
+            if (!CreateProcessW(
+                application, command, IntPtr.Zero, IntPtr.Zero, false,
+                CREATE_SUSPENDED, IntPtr.Zero, currentDirectory, ref si,
+                out pi))
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "CreateProcessW(CREATE_SUSPENDED) failed");
+
+            job = CreateJobObject(IntPtr.Zero, null);
+            if (job == IntPtr.Zero)
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "CreateJobObject failed");
+
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits =
+                new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+            limits.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_ACTIVE_PROCESS |
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            limits.BasicLimitInformation.ActiveProcessLimit = 1;
+            int size = Marshal.SizeOf(typeof(
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+            IntPtr buffer = Marshal.AllocHGlobal(size);
+            try {
+                Marshal.StructureToPtr(limits, buffer, false);
+                if (!SetInformationJobObject(
+                    job, JobObjectExtendedLimitInformation, buffer,
+                    (uint)size))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(),
+                        "SetInformationJobObject failed");
+            } finally {
+                Marshal.FreeHGlobal(buffer);
+            }
+            if (!AssignProcessToJobObject(job, pi.hProcess))
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "AssignProcessToJobObject before resume failed");
+            if (ResumeThread(pi.hThread) == UInt32.MaxValue)
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "ResumeThread failed");
+            CloseHandle(pi.hThread);
+            pi.hThread = IntPtr.Zero;
+            lock (Gate) {
+                if (Leases.ContainsKey(pi.dwProcessId))
+                    throw new InvalidOperationException(
+                        "Restricted process PID already leased");
+                Leases.Add(pi.dwProcessId, new Lease {
+                    Job = job, Process = pi.hProcess,
+                    ProcessId = pi.dwProcessId
+                });
+                stored = true;
+            }
+            return new LaunchResult {
+                ProcessId = pi.dwProcessId,
+                Contract = ContractId,
+                ActiveProcessLimit = 1,
+                StartedSuspended = true,
+                AssignedBeforeResume = true
+            };
+        } catch {
+            if (!stored && pi.hProcess != IntPtr.Zero)
+                TerminateProcess(pi.hProcess, 0xE5040001);
+            if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
+            if (!stored && pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
+            if (!stored && job != IntPtr.Zero) CloseHandle(job);
+            throw;
+        }
+    }
+
+    public static AccountingResult Query(int processId) {
+        lock (Gate) {
+            Lease lease;
+            if (!Leases.TryGetValue(processId, out lease))
+                throw new InvalidOperationException(
+                    "Restricted process lease is unavailable");
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info;
+            if (!QueryInformationJobObject(
+                lease.Job, JobObjectBasicAccountingInformation, out info,
+                (uint)Marshal.SizeOf(typeof(
+                    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)), IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "QueryInformationJobObject failed");
+            return new AccountingResult {
+                Contract = ContractId,
+                ProcessId = processId,
+                ActiveProcessLimit = 1,
+                TotalProcesses = info.TotalProcesses,
+                ActiveProcesses = info.ActiveProcesses,
+                TotalTerminatedProcesses = info.TotalTerminatedProcesses,
+                ChildProcessesStructurallyForbidden = true
+            };
+        }
+    }
+
+    public static bool Release(int processId) {
+        Lease lease;
+        lock (Gate) {
+            if (!Leases.TryGetValue(processId, out lease)) return false;
+            Leases.Remove(processId);
+        }
+        bool processClosed = CloseHandle(lease.Process);
+        bool jobClosed = CloseHandle(lease.Job);
+        return processClosed && jobClosed;
+    }
+}
+'@
+    $null = Assert-I04ManagedTypeContract `
+        -TypeName 'V91I04RestrictedProcessLauncher' `
+        -ExpectedContractId $contractId
+}
+
+function Get-I04RestrictedJobAccounting {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    Initialize-I04RestrictedProcessLauncher
+    $accounting = [V91I04RestrictedProcessLauncher]::Query($ProcessId)
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i04-restricted-job-accounting/v1'
+        contract_id = [string]$accounting.Contract
+        process_id = [int]$accounting.ProcessId
+        active_process_limit = [int]$accounting.ActiveProcessLimit
+        total_processes = [int]$accounting.TotalProcesses
+        active_processes = [int]$accounting.ActiveProcesses
+        total_terminated_processes =
+            [int]$accounting.TotalTerminatedProcesses
+        child_processes_structurally_forbidden =
+            [bool]$accounting.ChildProcessesStructurallyForbidden
+    }
+}
+
+function Assert-I04RestrictedJobAccountingContract {
+    param(
+        [Parameter(Mandatory = $true)][object]$Accounting,
+        [Parameter(Mandatory = $true)][int]$ExpectedProcessId,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(0, 1)][int]$ExpectedActiveProcesses
+    )
+
+    $expectedProperties = @(
+        'schema', 'contract_id', 'process_id', 'active_process_limit',
+        'total_processes', 'active_processes',
+        'total_terminated_processes',
+        'child_processes_structurally_forbidden'
+    )
+    $actualProperties = @($Accounting.PSObject.Properties.Name)
+    $actualPropertySet = @($actualProperties | Sort-Object) -join "`n"
+    $expectedPropertySet = @($expectedProperties | Sort-Object) -join "`n"
+    if ($actualPropertySet -cne $expectedPropertySet -or
+        -not ($Accounting.schema -is [string]) -or
+        [string]$Accounting.schema -cne
+            'ese.v91.i04-restricted-job-accounting/v1' -or
+        -not ($Accounting.contract_id -is [string]) -or
+        [string]$Accounting.contract_id -cne
+            'ese.v91.i04-restricted-process-launcher/2026-08-01.v1' -or
+        -not ($Accounting.process_id -is [int]) -or
+        [int]$Accounting.process_id -ne $ExpectedProcessId -or
+        -not ($Accounting.active_process_limit -is [int]) -or
+        [int]$Accounting.active_process_limit -ne 1 -or
+        -not ($Accounting.total_processes -is [int]) -or
+        [int]$Accounting.total_processes -ne 1 -or
+        -not ($Accounting.active_processes -is [int]) -or
+        [int]$Accounting.active_processes -ne $ExpectedActiveProcesses -or
+        -not ($Accounting.total_terminated_processes -is [int]) -or
+        [int]$Accounting.total_terminated_processes -ne 0 -or
+        -not ($Accounting.child_processes_structurally_forbidden -is [bool]) -or
+        -not [bool]$Accounting.child_processes_structurally_forbidden) {
+        throw 'Restricted job accounting violated its exact typed contract'
+    }
+    return $true
+}
+
+function Start-I04RestrictedProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+
+    Initialize-I04RestrictedProcessLauncher
+    $launch = [V91I04RestrictedProcessLauncher]::Start(
+        $FilePath, $ArgumentList, $WorkingDirectory
+    )
+    if (-not ($launch.ProcessId -is [int]) -or
+        [int]$launch.ProcessId -le 0) {
+        throw 'Restricted process launcher returned no exact root PID'
+    }
+    # Track the managed lease before validating the rest of the returned
+    # envelope. A corrupted envelope must still reach the outer release path.
+    $script:i04RestrictedJobPids.Add([int]$launch.ProcessId) | Out-Null
+    if (-not ($launch.Contract -is [string]) -or
+        [string]$launch.Contract -cne
+            'ese.v91.i04-restricted-process-launcher/2026-08-01.v1' -or
+        -not ($launch.ActiveProcessLimit -is [UInt32]) -or
+        [UInt32]$launch.ActiveProcessLimit -ne 1 -or
+        -not ($launch.StartedSuspended -is [bool]) -or
+        -not [bool]$launch.StartedSuspended -or
+        -not ($launch.AssignedBeforeResume -is [bool]) -or
+        -not [bool]$launch.AssignedBeforeResume) {
+        throw 'Restricted process launcher did not prove assignment-before-resume'
+    }
+    $process = [Diagnostics.Process]::GetProcessById([int]$launch.ProcessId)
+    $accounting = Get-I04RestrictedJobAccounting -ProcessId $process.Id
+    $null = Assert-I04RestrictedJobAccountingContract `
+        -Accounting $accounting -ExpectedProcessId $process.Id `
+        -ExpectedActiveProcesses 1
+    $process | Add-Member -NotePropertyName i04_job_contract_id `
+        -NotePropertyValue ([string]$accounting.contract_id) -Force
+    $process | Add-Member -NotePropertyName i04_job_active_process_limit `
+        -NotePropertyValue 1 -Force
+    $process | Add-Member -NotePropertyName i04_job_assigned_before_resume `
+        -NotePropertyValue $true -Force
+    $process | Add-Member -NotePropertyName i04_job_last_accounting `
+        -NotePropertyValue $accounting -Force
+    return $process
+}
+
+function Complete-I04RestrictedJobLeaseCleanup {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Peer', 'Coordinator', 'OuterFinally')]
+        [string]$Context
+    )
+
+    if ($null -ne $script:i04RestrictedJobLeaseCleanup) {
+        return $script:i04RestrictedJobLeaseCleanup
+    }
+
+    $processIds = @($script:i04RestrictedJobPids | Sort-Object)
+    $terminalAccountingExactCount = 0
+    $releasedCount = 0
+    $leaseUnavailableCount = 0
+    $failures = [Collections.Generic.List[string]]::new()
+    foreach ($processId in $processIds) {
+        try {
+            $accounting = Get-I04RestrictedJobAccounting `
+                -ProcessId ([int]$processId)
+            $null = Assert-I04RestrictedJobAccountingContract `
+                -Accounting $accounting `
+                -ExpectedProcessId ([int]$processId) `
+                -ExpectedActiveProcesses 0
+            $terminalAccountingExactCount++
+        } catch {
+            $failures.Add((Get-I04SafeErrorToken `
+                -Context 'restricted job terminal accounting failed' `
+                -Message $_.Exception.Message))
+        }
+
+        $released = $false
+        try {
+            $released = [V91I04RestrictedProcessLauncher]::Release(
+                [int]$processId)
+            if (-not $released) {
+                throw 'Restricted job lease was unavailable before release'
+            }
+            $releasedCount++
+        } catch {
+            $failures.Add((Get-I04SafeErrorToken `
+                -Context 'restricted job lease release failed' `
+                -Message $_.Exception.Message))
+        }
+
+        if ($released) {
+            try {
+                $null = Get-I04RestrictedJobAccounting `
+                    -ProcessId ([int]$processId)
+                $failures.Add(
+                    'restricted job lease remained queryable after release'
+                )
+            } catch {
+                if ([string]$_.Exception.GetBaseException().Message -cne
+                    'Restricted process lease is unavailable') {
+                    $failures.Add((Get-I04SafeErrorToken `
+                        -Context 'restricted job post-release proof failed' `
+                        -Message $_.Exception.Message))
+                } else {
+                    $leaseUnavailableCount++
+                    $null = $script:i04RestrictedJobPids.Remove(
+                        [int]$processId)
+                }
+            }
+        }
+    }
+
+    $requestedCount = $processIds.Count
+    $complete = $terminalAccountingExactCount -eq $requestedCount -and
+        $releasedCount -eq $requestedCount -and
+        $leaseUnavailableCount -eq $requestedCount -and
+        $script:i04RestrictedJobPids.Count -eq 0 -and
+        $failures.Count -eq 0
+    $script:i04RestrictedJobLeaseCleanup = [pscustomobject][ordered]@{
+        schema = 'ese.v91.i04-restricted-job-lease-cleanup/v1'
+        context = $Context
+        completed_at_utc = Get-LabUtcTimestamp
+        requested_process_count = [int]$requestedCount
+        terminal_accounting_exact_count =
+            [int]$terminalAccountingExactCount
+        released_count = [int]$releasedCount
+        lease_unavailable_after_release_count =
+            [int]$leaseUnavailableCount
+        remaining_registered_process_count =
+            [int]$script:i04RestrictedJobPids.Count
+        failures = @($failures.ToArray())
+        complete = [bool]$complete
+    }
+    return $script:i04RestrictedJobLeaseCleanup
+}
+
+function Test-I04PeerTerminalContract {
+    param(
+        [Parameter(Mandatory = $true)][object]$Terminal,
+        [Parameter(Mandatory = $true)][string]$ExpectedCaseId,
+        [Parameter(Mandatory = $true)][string]$ExpectedRunNonce,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[0-9a-fA-F]{64}$')]
+        [string]$ExpectedPeerResultSha256
+    )
+
+    try {
+        $expectedProperties = @(
+            'schema', 'case_id', 'run_nonce', 'status',
+            'peer_result_sha256', 'restricted_job_lease_cleanup',
+            'candidate_locks_released', 'evidence_locks_released',
+            'harness_bundle_locks_released',
+            'account_registry_postcheck_complete',
+            'account_registry_safe_to_pass', 'outer_cleanup_complete',
+            'completed_at_utc'
+        )
+        $actualProperties = @($Terminal.PSObject.Properties.Name)
+        if ((@($actualProperties | Sort-Object) -join "`n") -cne
+            (@($expectedProperties | Sort-Object) -join "`n")) {
+            return $false
+        }
+        $lease = $Terminal.restricted_job_lease_cleanup
+        $expectedLeaseProperties = @(
+            'schema', 'context', 'completed_at_utc',
+            'requested_process_count', 'terminal_accounting_exact_count',
+            'released_count', 'lease_unavailable_after_release_count',
+            'remaining_registered_process_count', 'failures', 'complete'
+        )
+        if ($null -eq $lease -or
+            (@($lease.PSObject.Properties.Name | Sort-Object) -join "`n") -cne
+                (@($expectedLeaseProperties | Sort-Object) -join "`n") -or
+            -not ($lease.requested_process_count -is [int]) -or
+            -not ($lease.terminal_accounting_exact_count -is [int]) -or
+            -not ($lease.released_count -is [int]) -or
+            -not ($lease.lease_unavailable_after_release_count -is [int]) -or
+            -not ($lease.remaining_registered_process_count -is [int]) -or
+            -not ($lease.failures -is [object[]]) -or
+            -not ($lease.complete -is [bool]) -or
+            -not ($Terminal.candidate_locks_released -is [bool]) -or
+            -not ($Terminal.evidence_locks_released -is [bool]) -or
+            -not ($Terminal.harness_bundle_locks_released -is [bool]) -or
+            -not ($Terminal.account_registry_postcheck_complete -is [bool]) -or
+            -not ($Terminal.account_registry_safe_to_pass -is [bool]) -or
+            -not ($Terminal.outer_cleanup_complete -is [bool])) {
+            return $false
+        }
+        $requested = [int]$lease.requested_process_count
+        return $requested -ge 0 -and
+            [string]$Terminal.schema -ceq
+                'ese.v91.i04-peer-terminal/v1' -and
+            [string]$Terminal.case_id -ceq $ExpectedCaseId -and
+            [string]$Terminal.run_nonce -ceq
+                $ExpectedRunNonce.ToLowerInvariant() -and
+            [string]$Terminal.status -ceq 'COMPLETE' -and
+            [string]$Terminal.peer_result_sha256 -ceq
+                $ExpectedPeerResultSha256.ToLowerInvariant() -and
+            [string]$lease.schema -ceq
+                'ese.v91.i04-restricted-job-lease-cleanup/v1' -and
+            [string]$lease.context -ceq 'Peer' -and
+            [bool]$lease.complete -and
+            [int]$lease.terminal_accounting_exact_count -eq $requested -and
+            [int]$lease.released_count -eq $requested -and
+            [int]$lease.lease_unavailable_after_release_count -eq
+                $requested -and
+            [int]$lease.remaining_registered_process_count -eq 0 -and
+            @($lease.failures).Count -eq 0 -and
+            [bool]$Terminal.candidate_locks_released -and
+            [bool]$Terminal.evidence_locks_released -and
+            [bool]$Terminal.harness_bundle_locks_released -and
+            [bool]$Terminal.account_registry_postcheck_complete -and
+            [bool]$Terminal.account_registry_safe_to_pass -and
+            [bool]$Terminal.outer_cleanup_complete
+    } catch {
+        return $false
+    }
+}
+
+function Get-I04ProcessOwnerSidHash {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    $rows = @(Get-CimInstance -ClassName Win32_Process `
+        -Filter "ProcessId = $ProcessId" -ErrorAction Stop)
+    if ($rows.Count -ne 1) {
+        throw "Process owner query returned $($rows.Count) rows for PID $ProcessId"
+    }
+    $owner = Invoke-CimMethod -InputObject $rows[0] `
+        -MethodName GetOwnerSid -ErrorAction Stop
+    if ([UInt32]$owner.ReturnValue -ne 0 -or
+        [string]::IsNullOrWhiteSpace([string]$owner.Sid)) {
+        throw "Process owner SID query failed for PID $ProcessId"
+    }
+    $sid = [Security.Principal.SecurityIdentifier]::new(
+        [string]$owner.Sid
+    ).Value
+    return Get-I04StringSha256 -Value $sid
+}
+
+function Get-I04CimProcessCreationUtcTicks {
+    param([Parameter(Mandatory = $true)][object]$ProcessRow)
+
+    $value = $ProcessRow.CreationDate
+    if ($value -is [DateTimeOffset]) {
+        return [Int64]$value.UtcDateTime.Ticks
+    }
+    if ($value -is [DateTime]) {
+        return [Int64]$value.ToUniversalTime().Ticks
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$value)) {
+        throw 'CIM process row has no CreationDate'
+    }
+    $parsed = [System.Management.ManagementDateTimeConverter]::ToDateTime(
+        [string]$value
+    )
+    return [Int64]$parsed.ToUniversalTime().Ticks
+}
+
+function Get-I04DescendantCensus {
+    param(
+        [Parameter(Mandatory = $true)][int]$RootProcessId,
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, [Int64]::MaxValue)][Int64]$RootCreationUtcTicks,
+        [switch]$RootMayHaveExited
+    )
+
+    $rows = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+    $rootRows = @($rows | Where-Object {
+        [int]$_.ProcessId -eq $RootProcessId
+    })
+    if ($rootRows.Count -gt 1) {
+        throw 'CIM returned duplicate rows for an owned root PID'
+    }
+    $rootPresent = $rootRows.Count -eq 1
+    $rootIdentityExact = $false
+    $observedRootCreationTicks = $null
+    if ($rootPresent) {
+        $observedRootCreationTicks =
+            Get-I04CimProcessCreationUtcTicks -ProcessRow $rootRows[0]
+        $rootIdentityExact = [Int64]$observedRootCreationTicks -eq
+            $RootCreationUtcTicks
+    } elseif ($RootMayHaveExited) {
+        $rootIdentityExact = $true
+    }
+
+    $knownAncestors = New-Object 'Collections.Generic.HashSet[int]'
+    $seen = New-Object 'Collections.Generic.HashSet[int]'
+    $null = $knownAncestors.Add($RootProcessId)
+    $descendants = [System.Collections.Generic.List[object]]::new()
+    do {
+        $added = $false
+        foreach ($row in $rows) {
+            $processId = [int]$row.ProcessId
+            if ($processId -eq $RootProcessId -or $seen.Contains($processId) -or
+                -not $knownAncestors.Contains([int]$row.ParentProcessId)) {
+                continue
+            }
+            $creationTicks =
+                Get-I04CimProcessCreationUtcTicks -ProcessRow $row
+            if ($creationTicks -lt $RootCreationUtcTicks) {
+                continue
+            }
+            $null = $seen.Add($processId)
+            $null = $knownAncestors.Add($processId)
+            $descendants.Add([pscustomobject][ordered]@{
+                process_id = $processId
+                parent_process_id = [int]$row.ParentProcessId
+                creation_utc_ticks = [Int64]$creationTicks
+            })
+            $added = $true
+        }
+    } while ($added)
+
+    return [pscustomobject][ordered]@{
+        root_process_id = $RootProcessId
+        root_creation_utc_ticks = $RootCreationUtcTicks
+        root_present = $rootPresent
+        root_identity_exact = $rootIdentityExact
+        observed_root_creation_utc_ticks = $observedRootCreationTicks
+        descendant_count = $descendants.Count
+        descendants = $descendants.ToArray()
+        clear = $rootIdentityExact -and $descendants.Count -eq 0
+    }
+}
+
+function Test-I04OwnedProcessDescendants {
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [switch]$RootMayHaveExited
+    )
+
+    try {
+        $jobAccounting = Get-I04RestrictedJobAccounting `
+            -ProcessId ([int]$Process.i04_owner_pid)
+        $Process.i04_job_last_accounting = $jobAccounting
+        $expectedActive = if ($RootMayHaveExited -or $Process.HasExited) {
+            0
+        } else { 1 }
+        $null = Assert-I04RestrictedJobAccountingContract `
+            -Accounting $jobAccounting `
+            -ExpectedProcessId ([int]$Process.i04_owner_pid) `
+            -ExpectedActiveProcesses $expectedActive
+        $audit = Get-I04DescendantCensus `
+            -RootProcessId ([int]$Process.i04_owner_pid) `
+            -RootCreationUtcTicks (
+                [Int64]$Process.i04_owner_cim_creation_utc_ticks
+            ) -RootMayHaveExited:$RootMayHaveExited
+        $Process | Add-Member -NotePropertyName i04_descendant_last_census `
+            -NotePropertyValue $audit -Force
+        if (-not [bool]$audit.root_identity_exact) {
+            $Process.i04_descendant_root_identity_contradicted = $true
+        }
+        if ([int]$audit.descendant_count -gt 0) {
+            $Process.i04_descendant_observed = $true
+            $ids = @(
+                @($Process.i04_descendant_observed_process_ids) +
+                @($audit.descendants | ForEach-Object { [int]$_.process_id }) |
+                    Sort-Object -Unique
+            )
+            $Process.i04_descendant_observed_process_ids = $ids
+        }
+    } catch {
+        $Process.i04_descendant_collector_failed = $true
+        $Process.i04_descendant_error_sha256 =
+            Get-I04StringSha256 -Value $_.Exception.Message
+        return $false
+    }
+    return -not [bool]$Process.i04_descendant_collector_failed -and
+        -not [bool]$Process.i04_descendant_root_identity_contradicted -and
+        -not [bool]$Process.i04_descendant_observed -and
+        [bool]$Process.i04_descendant_last_census.clear
+}
+
+function Register-I04OwnedProcess {
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$ExpectedPath,
+        [Parameter(Mandatory = $true)][string]$OwnerRole,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[0-9a-fA-F]{32}$')][string]$Nonce
+    )
+
+    $jobRequired = @(
+        'i04_job_contract_id', 'i04_job_active_process_limit',
+        'i04_job_assigned_before_resume', 'i04_job_last_accounting'
+    )
+    if (@($jobRequired | Where-Object {
+        $Process.PSObject.Properties.Name -notcontains $_
+    }).Count -ne 0 -or
+        [string]$Process.i04_job_contract_id -cne
+            'ese.v91.i04-restricted-process-launcher/2026-08-01.v1' -or
+        [int]$Process.i04_job_active_process_limit -ne 1 -or
+        -not [bool]$Process.i04_job_assigned_before_resume) {
+        throw 'Started process lacks the mandatory assignment-before-resume job contract'
+    }
+    [void]$Process.Handle
+    $Process.Refresh()
+    if ($Process.HasExited) { throw 'Started process exited before ownership binding' }
+    $path = Assert-I04NoReparsePath -Path $Process.Path -Kind File
+    if ([IO.Path]::GetFullPath($path) -ne
+        [IO.Path]::GetFullPath($ExpectedPath)) {
+        throw 'Started process path differs from the intended owned executable'
+    }
+    $pathHash = Get-I04StringSha256 -Value $path.ToLowerInvariant()
+    $exeHash = Get-LabSha256 -Path $path
+    if ($exeHash -ne $expectedHash) {
+        throw 'Started process executable differs from the bound candidate'
+    }
+    $creationTicks = $Process.StartTime.ToUniversalTime().Ticks
+    $cimRows = @(Get-CimInstance -ClassName Win32_Process `
+        -Filter "ProcessId = $($Process.Id)" -ErrorAction Stop)
+    if ($cimRows.Count -ne 1) {
+        throw 'Started process CIM creation binding was not unique'
+    }
+    $cimCreationTicks =
+        Get-I04CimProcessCreationUtcTicks -ProcessRow $cimRows[0]
+    if ([Math]::Abs([double]($cimCreationTicks - $creationTicks)) -gt
+        [TimeSpan]::TicksPerSecond) {
+        throw 'Started process creation clocks do not identify the same process'
+    }
+    $ownerSidHash = Get-I04ProcessOwnerSidHash -ProcessId $Process.Id
+    if ($ownerSidHash -ne [string]$script:i04HostIdentity.user_sid_sha256) {
+        throw 'Started process is not owned by the bound disposable account'
+    }
+    $ownershipId = Get-I04StringSha256 -Value (
+        '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}' -f
+        $Nonce.ToLowerInvariant(), $OwnerRole, $Process.Id, $creationTicks,
+        $cimCreationTicks, $pathHash, $exeHash, $ownerSidHash
+    )
+    foreach ($entry in ([ordered]@{
+        i04_owner_nonce = $Nonce.ToLowerInvariant()
+        i04_owner_role = $OwnerRole
+        i04_owner_pid = [int]$Process.Id
+        i04_owner_creation_utc_ticks = [Int64]$creationTicks
+        i04_owner_cim_creation_utc_ticks = [Int64]$cimCreationTicks
+        i04_owner_path_sha256 = $pathHash
+        i04_owner_executable_sha256 = $exeHash
+        i04_owner_sid_sha256 = $ownerSidHash
+        i04_ownership_id_sha256 = $ownershipId
+        i04_descendant_collector_failed = $false
+        i04_descendant_root_identity_contradicted = $false
+        i04_descendant_observed = $false
+        i04_descendant_observed_process_ids = @()
+        i04_descendant_error_sha256 = ''
+        i04_descendant_last_census = $null
+    }).GetEnumerator()) {
+        $Process | Add-Member -NotePropertyName $entry.Key `
+            -NotePropertyValue $entry.Value -Force
+    }
+    return $Process
+}
+
+function Test-I04OwnedProcessBinding {
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$ExpectedPath
+    )
+
+    $required = @(
+        'i04_owner_nonce', 'i04_owner_role', 'i04_owner_pid',
+        'i04_owner_creation_utc_ticks',
+        'i04_owner_cim_creation_utc_ticks', 'i04_owner_path_sha256',
+        'i04_owner_executable_sha256', 'i04_owner_sid_sha256',
+        'i04_ownership_id_sha256', 'i04_descendant_collector_failed',
+        'i04_descendant_root_identity_contradicted',
+        'i04_descendant_observed', 'i04_descendant_observed_process_ids',
+        'i04_descendant_error_sha256', 'i04_descendant_last_census',
+        'i04_job_contract_id', 'i04_job_active_process_limit',
+        'i04_job_assigned_before_resume', 'i04_job_last_accounting'
+    )
+    if (@($required | Where-Object {
+        $Process.PSObject.Properties.Name -notcontains $_
+    }).Count -ne 0) { return $false }
+    [void]$Process.Handle
+    $Process.Refresh()
+    if ($Process.HasExited -or
+        [int]$Process.Id -ne [int]$Process.i04_owner_pid -or
+        [string]$Process.i04_owner_nonce -ne
+            $RunNonce.ToLowerInvariant()) { return $false }
+    $actualPath = Assert-I04NoReparsePath -Path $Process.Path -Kind File
+    $creationTicks = $Process.StartTime.ToUniversalTime().Ticks
+    $pathHash = Get-I04StringSha256 -Value $actualPath.ToLowerInvariant()
+    $exeHash = Get-LabSha256 -Path $actualPath
+    $ownerSidHash = Get-I04ProcessOwnerSidHash -ProcessId $Process.Id
+    $expectedOwnerRole = if ($Role -eq 'Peer') {
+        'PeerSource'
+    } else { 'CoordinatorClient' }
+    $ownershipId = Get-I04StringSha256 -Value (
+        '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}' -f
+            [string]$Process.i04_owner_nonce,
+            [string]$Process.i04_owner_role,
+            [int]$Process.i04_owner_pid,
+            [Int64]$Process.i04_owner_creation_utc_ticks,
+            [Int64]$Process.i04_owner_cim_creation_utc_ticks,
+            [string]$Process.i04_owner_path_sha256,
+            [string]$Process.i04_owner_executable_sha256,
+            [string]$Process.i04_owner_sid_sha256
+    )
+    if ([IO.Path]::GetFullPath($actualPath) -ne
+            [IO.Path]::GetFullPath($ExpectedPath) -or
+        [string]$Process.i04_owner_role -ne $expectedOwnerRole -or
+        [Int64]$creationTicks -ne
+            [Int64]$Process.i04_owner_creation_utc_ticks -or
+        $pathHash -ne [string]$Process.i04_owner_path_sha256 -or
+        $exeHash -ne [string]$Process.i04_owner_executable_sha256 -or
+        $ownerSidHash -ne [string]$Process.i04_owner_sid_sha256 -or
+        $ownerSidHash -ne [string]$script:i04HostIdentity.user_sid_sha256 -or
+        $ownershipId -ne [string]$Process.i04_ownership_id_sha256) {
+        return $false
+    }
+    # I04 never claims descendants. A recursive CIM census is persisted on the
+    # retained Process object; any observation, identity contradiction or
+    # collector failure permanently forbids termination of the root.
+    return Test-I04OwnedProcessDescendants -Process $Process
+}
+
 function Stop-I04OwnedProcess {
     param(
         [AllowNull()][Diagnostics.Process]$Process,
@@ -699,25 +3392,37 @@ function Stop-I04OwnedProcess {
         throw 'ForceImmediate and RequireGraceful are mutually exclusive'
     }
     if ($null -eq $Process) { return $true }
-    $actual = Get-Process -Id $Process.Id -ErrorAction SilentlyContinue
-    if ($null -eq $actual) { return $true }
-    $actualPath = ''
-    try { $actualPath = [IO.Path]::GetFullPath($actual.Path) } catch { return $false }
-    if ($actualPath -ne [IO.Path]::GetFullPath($ExpectedPath)) {
-        return $false
-    }
     try {
-        if ($ForceImmediate) {
-            Stop-Process -Id $actual.Id -Force -ErrorAction Stop
-            return $actual.WaitForExit(10000)
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            return Test-I04OwnedProcessDescendants -Process $Process `
+                -RootMayHaveExited
         }
-        if ($actual.MainWindowHandle -ne [IntPtr]::Zero) {
-            $null = $actual.CloseMainWindow()
-            if ($actual.WaitForExit(10000)) { return $true }
+        [void]$Process.Handle
+        if (-not (Test-I04OwnedProcessBinding -Process $Process `
+            -ExpectedPath $ExpectedPath)) { return $false }
+        if (-not $ForceImmediate -and
+            $Process.MainWindowHandle -ne [IntPtr]::Zero) {
+            $null = $Process.CloseMainWindow()
+            if ($Process.WaitForExit(10000)) {
+                return Test-I04OwnedProcessDescendants -Process $Process `
+                    -RootMayHaveExited
+            }
         }
         if ($RequireGraceful) { return $false }
-        Stop-Process -Id $actual.Id -Force -ErrorAction Stop
-        return $actual.WaitForExit(10000)
+        # Both forced branches converge here. Revalidate the complete immutable
+        # binding and descendants immediately before killing the retained handle.
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            return Test-I04OwnedProcessDescendants -Process $Process `
+                -RootMayHaveExited
+        }
+        if (-not (Test-I04OwnedProcessBinding -Process $Process `
+            -ExpectedPath $ExpectedPath)) { return $false }
+        $Process.Kill()
+        if (-not $Process.WaitForExit(10000)) { return $false }
+        return Test-I04OwnedProcessDescendants -Process $Process `
+            -RootMayHaveExited
     } catch {
         return $false
     }
@@ -948,17 +3653,19 @@ function Invoke-I04DownloadOperation {
     }
 }
 
-function Send-I04Ed2kLink {
-    param(
-        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
-        [Parameter(Mandatory = $true)][string]$Link
-    )
+function Initialize-I04CopyData {
+    $contractId = 'ese.v91.i04-copydata/2026-08-01.v1'
+    if ('V91I04CopyData' -as [type]) {
+        $null = Assert-I04ManagedTypeContract `
+            -TypeName 'V91I04CopyData' -ExpectedContractId $contractId
+        return
+    }
 
-    if (-not ('V91I04CopyData' -as [type])) {
-        Add-Type @'
+    Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class V91I04CopyData {
+    public const string ContractId = "ese.v91.i04-copydata/2026-08-01.v1";
     [StructLayout(LayoutKind.Sequential)]
     public struct COPYDATASTRUCT {
         public IntPtr dwData;
@@ -971,7 +3678,17 @@ public static class V91I04CopyData {
         uint flags, uint timeoutMilliseconds, out IntPtr result);
 }
 '@
-    }
+    $null = Assert-I04ManagedTypeContract `
+        -TypeName 'V91I04CopyData' -ExpectedContractId $contractId
+}
+
+function Send-I04Ed2kLink {
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$Link
+    )
+
+    Initialize-I04CopyData
 
     $handle = [IntPtr]::Zero
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -1068,17 +3785,25 @@ function Test-I04TcpEndpoint {
 }
 
 function Initialize-I04UiProbe {
-    if ('V91I04UiProbe' -as [type]) { return }
+    $contractId = 'ese.v91.i04-ui-probe/2026-08-01.v1'
+    if ('V91I04UiProbe' -as [type]) {
+        $null = Assert-I04ManagedTypeContract -TypeName 'V91I04UiProbe' `
+            -ExpectedContractId $contractId
+        return
+    }
     Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class V91I04UiProbe {
+    public const string ContractId = "ese.v91.i04-ui-probe/2026-08-01.v1";
     [DllImport("user32.dll", SetLastError=true)]
     public static extern IntPtr SendMessageTimeout(
         IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam,
         uint flags, uint timeout, out IntPtr result);
 }
 '@
+    $null = Assert-I04ManagedTypeContract -TypeName 'V91I04UiProbe' `
+        -ExpectedContractId $contractId
 }
 
 function Get-I04UiProbe {
@@ -1124,14 +3849,17 @@ function Get-I04ApiProbe {
         $status = Invoke-RestMethod `
             -Uri "http://127.0.0.1:$Port/api/status" `
             -TimeoutSec 2
+        $null = Assert-I04ApiStatusContract -Status $status
         $statusAvailable = $true
         $v9 = Invoke-RestMethod `
             -Uri "http://127.0.0.1:$Port/api/ese/v9" `
             -TimeoutSec 2
+        $null = Assert-I04ApiV9Contract -Value $v9
         $v9Available = $true
         $available = $statusAvailable -and $v9Available
     } catch {
-        $errorText = $_.Exception.Message
+        $errorText = Get-I04SafeErrorToken -Context 'API probe failed' `
+            -Message $_.Exception.Message
     } finally {
         $watch.Stop()
     }
@@ -1245,6 +3973,7 @@ function Get-I04ProductLogCounts {
     $a4afSwap = 0
     $ambiguous = 0
     $files = @()
+    $collectorErrors = [System.Collections.Generic.List[string]]::new()
     $v4 = [regex]::Escape($PeerIPv4)
     $v6 = [regex]::Escape($PeerIPv6)
     $port = [regex]::Escape([string]$PeerPort)
@@ -1255,12 +3984,68 @@ function Get-I04ProductLogCounts {
     # ":port" here would reject every genuine product marker.
     $exactTarget = '(?i)(?:' + $v4 + '|\[?' + $v6 + '\]?)'
     $possiblyRelevant = '(?i)(?<!\d)' + $port + '(?!\d)'
-    foreach ($log in @(
-        Get-ChildItem -LiteralPath $NodePath -Recurse -File -Filter '*.log' `
-            -ErrorAction SilentlyContinue
-    )) {
-        $lines = @()
-        try { $lines = @(Get-Content -LiteralPath $log.FullName) } catch {}
+    $logs = @()
+    try {
+        $logs = @(Get-ChildItem -LiteralPath $NodePath -Recurse -File `
+            -Filter '*.log' -ErrorAction Stop)
+    } catch {
+        $collectorErrors.Add((Get-I04SafeErrorToken `
+            -Context 'product log enumeration failed' `
+            -Message $_.Exception.Message))
+    }
+    foreach ($log in $logs) {
+        try {
+            # Read each active log exactly once.  Counts, byte length and hash
+            # must describe the same immutable in-memory snapshot even when
+            # eMule appends to the underlying file concurrently.
+            $stream = [IO.FileStream]::new(
+                $log.FullName, [IO.FileMode]::Open,
+                [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite
+            )
+            try {
+                $memory = [IO.MemoryStream]::new()
+                try {
+                    $stream.CopyTo($memory)
+                    $logBytes = $memory.ToArray()
+                } finally {
+                    $memory.Dispose()
+                }
+            } finally {
+                $stream.Dispose()
+            }
+            $shaObject = [Security.Cryptography.SHA256]::Create()
+            try {
+                $logSha256 = ([BitConverter]::ToString(
+                    $shaObject.ComputeHash($logBytes)
+                )).Replace('-', '').ToLowerInvariant()
+            } finally {
+                $shaObject.Dispose()
+            }
+            $offset = 0
+            $encoding = [Text.Encoding]::UTF8
+            if ($logBytes.Length -ge 2 -and
+                $logBytes[0] -eq 0xFF -and $logBytes[1] -eq 0xFE) {
+                $encoding = [Text.Encoding]::Unicode
+                $offset = 2
+            } elseif ($logBytes.Length -ge 2 -and
+                $logBytes[0] -eq 0xFE -and $logBytes[1] -eq 0xFF) {
+                $encoding = [Text.Encoding]::BigEndianUnicode
+                $offset = 2
+            } elseif ($logBytes.Length -ge 3 -and
+                $logBytes[0] -eq 0xEF -and
+                $logBytes[1] -eq 0xBB -and $logBytes[2] -eq 0xBF) {
+                $offset = 3
+            }
+            $logContent = $encoding.GetString(
+                $logBytes, $offset, $logBytes.Length - $offset
+            )
+            $lines = @([regex]::Split($logContent, '\r\n|\n|\r'))
+        } catch {
+            $collectorErrors.Add((Get-I04SafeErrorToken `
+                -Context 'product log collection failed' `
+                -Message $_.Exception.Message))
+            continue
+        }
         foreach ($lineValue in $lines) {
             $line = [string]$lineValue
             $isFallback = $line -match
@@ -1294,12 +4079,17 @@ function Get-I04ProductLogCounts {
             relative_path = $log.FullName.Substring(
                 [IO.Path]::GetFullPath($NodePath).Length
             ).TrimStart('\')
-            bytes = $log.Length
-            sha256 = Get-LabSha256 -Path $log.FullName
+            bytes = [Int64]$logBytes.Length
+            sha256 = $logSha256
         }
     }
     return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i04-product-log-counts/v2'
         captured_at_utc = Get-LabUtcTimestamp
+        collector_ok = ($collectorErrors.Count -eq 0)
+        adjudicable = $collectorErrors.Count -eq 0 -and $files.Count -gt 0
+        log_file_count = $files.Count
+        collector_errors = @($collectorErrors.ToArray())
         fallback_count = $fallback
         bounded_fallback_count = $boundedFallback
         hello_send_count = $hello
@@ -1330,13 +4120,13 @@ function Enable-I04ControlledEd2kProfile {
     $serverIp = [Net.IPAddress]::Parse($ServerAddress)
     if ($serverIp.AddressFamily -ne
         [Net.Sockets.AddressFamily]::InterNetwork -or
-        [Net.IPAddress]::IsLoopback($serverIp)) {
+        -not (Test-I04UsableLocalIPv4 -Address $serverIp.ToString())) {
         throw 'Controlled eD2K profile requires a non-loopback IPv4 server'
     }
     $preferences = Join-Path $NodePath 'config\preferences.ini'
+    $contract = [System.Collections.Generic.List[object]]::new()
     foreach ($entry in ([ordered]@{
         Autoconnect = '1'
-        NetworkED2K = '1'
         NetworkKademlia = '0'
         AutoConnectStaticOnly = '1'
         Reconnect = '1'
@@ -1350,7 +4140,24 @@ function Enable-I04ControlledEd2kProfile {
     }).GetEnumerator()) {
         Set-LabIniValue -Path $preferences -Section 'eMule' `
             -Key $entry.Key -Value $entry.Value
+        $contract.Add([pscustomobject]@{
+            section = 'eMule'; key = $entry.Key; value = $entry.Value
+        })
     }
+    foreach ($entry in ([ordered]@{
+        NetworkED2K = '1'
+        CryptLayerRequested = '0'
+        CryptLayerRequired = '0'
+        CryptLayerSupported = '0'
+    }).GetEnumerator()) {
+        Set-LabIniValue -Path $preferences -Section 'Connection' `
+            -Key $entry.Key -Value $entry.Value
+        $contract.Add([pscustomobject]@{
+            section = 'Connection'; key = $entry.Key; value = $entry.Value
+        })
+    }
+    $preferenceContractEvidence = Set-I04StoredPreferenceContract `
+        -NodePath $NodePath -Contract $contract.ToArray() -Merge
 
     $config = Join-Path $NodePath 'config'
     foreach ($name in @(
@@ -1372,7 +4179,7 @@ function Enable-I04ControlledEd2kProfile {
     return [pscustomobject][ordered]@{
         endpoint = "$ServerAddress`:$ServerPort"
         endpoint_scope = 'same-host assigned physical IPv4'
-        staticservers_path = $staticPath
+        staticservers_relative_path = 'config\staticservers.dat'
         staticservers_sha256 = Get-LabSha256 -Path $staticPath
         preferences_sha256 = Get-LabSha256 -Path $preferences
         network_ed2k = $true
@@ -1380,6 +4187,7 @@ function Enable-I04ControlledEd2kProfile {
         auto_connect_static_only = $true
         filter_lan_ips = $false
         third_party_server_files_removed = $true
+        preference_contract = $preferenceContractEvidence
     }
 }
 
@@ -1416,7 +4224,9 @@ function Start-I04ControlledEd2kServer {
     # caller can therefore retry cleanup even when construction throws before
     # this function can return its normal server handle.
     $owner = [pscustomobject][ordered]@{
-        owner_id = '{0}|{1}|{2}' -f $RunNonce, $OwnerRole, $EvidencePath
+        owner_id = Get-I04StringSha256 -Value (
+            '{0}|{1}|{2}' -f $RunNonce, $OwnerRole, $EvidencePath
+        )
         owner_role = $OwnerRole
         evidence_path = $EvidencePath
         started_at_utc = Get-LabUtcTimestamp
@@ -1628,7 +4438,16 @@ function Start-I04ControlledEd2kServer {
             }
         } catch {
             if (-not [bool]$State['stop_requested']) {
-                $State['error'] = $_.Exception.Message
+                $sha = [Security.Cryptography.SHA256]::Create()
+                try {
+                    $digest = $sha.ComputeHash(
+                        [Text.Encoding]::UTF8.GetBytes($_.Exception.Message)
+                    )
+                } finally { $sha.Dispose() }
+                $State['error'] = 'controlled server runtime failed ' +
+                    '[error_sha256=' +
+                    ([BitConverter]::ToString($digest)).Replace('-', '').
+                        ToLowerInvariant() + ']'
                 $State['phase'] = 'error'
             }
         } finally {
@@ -1676,14 +4495,18 @@ function Start-I04ControlledEd2kServer {
         return $owner
     } catch {
         $constructionFailure = $_
-        $owner.construction_error = $_.Exception.Message
+        $owner.construction_error = Get-I04SafeErrorToken `
+            -Context 'controlled server construction failed' `
+            -Message $_.Exception.Message
         try {
             $owner.construction_rollback =
                 Stop-I04ControlledEd2kServer -Server $owner
         } catch {
             $owner.construction_rollback = [pscustomobject][ordered]@{
                 stopped = $false
-                error = $_.Exception.Message
+                error = Get-I04SafeErrorToken `
+                    -Context 'controlled server construction rollback failed' `
+                    -Message $_.Exception.Message
                 evidence = $null
             }
         }
@@ -1714,11 +4537,13 @@ function Wait-I04ControlledEd2kLogin {
         if ($loginCount -ge $MinimumLoginCount -and
             [bool]$Server.state['reply_sent']) {
             $connections = @(
-                Get-NetTCPConnection -State Established `
-                    -OwningProcess $Process.Id `
-                    -RemoteAddress (
-                        [string]$Server.state['listen_address']
-                    ) -RemotePort $Server.port -ErrorAction SilentlyContinue
+                Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+                    [string]$_.State -eq 'Established' -and
+                    [int]$_.OwningProcess -eq $Process.Id -and
+                    (Get-I04NormalizedIp -Address $_.RemoteAddress) -eq
+                        [string]$Server.state['listen_address'] -and
+                    [int]$_.RemotePort -eq [int]$Server.port
+                }
             )
             if ($connections.Count -eq 1 -and
                 [int]$Server.state['latest_advertised_tcp_port'] -eq
@@ -1781,7 +4606,7 @@ function Stop-I04ControlledEd2kServer {
             [int]$Server.cleanup_attempt_count + 1
     }
 
-    $errors = New-Object 'Collections.Generic.List[string]'
+    $errors = [Collections.Generic.List[string]]::new()
     $state = if ('state' -in $properties) { $Server.state } else { $null }
     $listener = if ('listener' -in $properties) {
         $Server.listener
@@ -1799,17 +4624,15 @@ function Stop-I04ControlledEd2kServer {
             if ($state.ContainsKey('client') -and
                 $null -ne $state['client']) {
                 try { $state['client'].Close() } catch {
-                    $errors.Add(
-                        "controlled server client close failed: " +
-                        $_.Exception.Message
-                    )
+                    $errors.Add((Get-I04SafeErrorToken `
+                        -Context 'controlled server client close failed' `
+                        -Message $_.Exception.Message))
                 }
             }
         } catch {
-            $errors.Add(
-                "controlled server state stop failed: " +
-                $_.Exception.Message
-            )
+            $errors.Add((Get-I04SafeErrorToken `
+                -Context 'controlled server state stop failed' `
+                -Message $_.Exception.Message))
         }
     }
     if ($null -ne $listener) {
@@ -1817,10 +4640,9 @@ function Stop-I04ControlledEd2kServer {
             $listener.Stop()
             $listenerStopped = $true
         } catch {
-            $errors.Add(
-                "controlled server listener stop failed: " +
-                $_.Exception.Message
-            )
+            $errors.Add((Get-I04SafeErrorToken `
+                -Context 'controlled server listener stop failed' `
+                -Message $_.Exception.Message))
         }
     }
     if ($null -ne $powershell) {
@@ -1841,10 +4663,9 @@ function Stop-I04ControlledEd2kServer {
                     $stopRequested = $null -ne $state -and
                         [bool]$state['stop_requested']
                     if (-not $stopRequested) {
-                        $errors.Add(
-                            "controlled server EndInvoke failed: " +
-                            $_.Exception.Message
-                        )
+                        $errors.Add((Get-I04SafeErrorToken `
+                            -Context 'controlled server EndInvoke failed' `
+                            -Message $_.Exception.Message))
                     }
                 }
                 $powershellStopped = $completed -or $async.IsCompleted
@@ -1860,18 +4681,16 @@ function Stop-I04ControlledEd2kServer {
                 $powershellStopped = $true
             }
         } catch {
-            $errors.Add(
-                "controlled server runspace stop failed: " +
-                $_.Exception.Message
-            )
+            $errors.Add((Get-I04SafeErrorToken `
+                -Context 'controlled server runspace stop failed' `
+                -Message $_.Exception.Message))
         } finally {
             try {
                 $powershell.Dispose()
             } catch {
-                $errors.Add(
-                    "controlled server runspace dispose failed: " +
-                    $_.Exception.Message
-                )
+                $errors.Add((Get-I04SafeErrorToken `
+                    -Context 'controlled server runspace dispose failed' `
+                    -Message $_.Exception.Message))
             }
         }
     }
@@ -1886,10 +4705,9 @@ function Stop-I04ControlledEd2kServer {
             $evidence = Get-Content -LiteralPath $evidencePath -Raw |
                 ConvertFrom-Json -ErrorAction Stop
         } catch {
-            $errors.Add(
-                "controlled server evidence parse failed: " +
-                $_.Exception.Message
-            )
+            $errors.Add((Get-I04SafeErrorToken `
+                -Context 'controlled server evidence parse failed' `
+                -Message $_.Exception.Message))
         }
     }
 
@@ -1982,14 +4800,14 @@ function Get-I04RouteEvidence {
         $route = Find-NetRoute -RemoteIPAddress $RemoteAddress `
             -ErrorAction Stop | Select-Object -First 1
         $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex `
-            -ErrorAction SilentlyContinue
+            -ErrorAction Stop
         $onLink = $route.NextHop -eq '0.0.0.0' -or $route.NextHop -eq '::'
         $isVirtual = $true
         $overlayLike = $true
         $physicalNonvirtual = $false
         if ($adapter) {
-            $isVirtual = $false
-            if ($adapter.PSObject.Properties.Name -contains 'Virtual') {
+            if ($adapter.PSObject.Properties.Name -contains 'Virtual' -and
+                $adapter.Virtual -is [bool]) {
                 $isVirtual = [bool]$adapter.Virtual
             }
             $overlayLike =
@@ -2026,7 +4844,7 @@ function Get-I04RouteEvidence {
             next_hop_class = if ($onLink) {
                 'on-link'
             } else {
-                Get-LabAddressClass -Address ([string]$route.NextHop)
+                Get-I04StrictAddressClass -Address ([string]$route.NextHop)
             }
             error = $null
         }
@@ -2046,7 +4864,8 @@ function Get-I04RouteEvidence {
             source_address = ''
             next_hop = ''
             next_hop_class = 'unknown'
-            error = $_.Exception.Message
+            error = Get-I04SafeErrorToken -Context 'route query failed' `
+                -Message $_.Exception.Message
         }
     }
 }
@@ -2055,13 +4874,21 @@ function Get-I04IsolationEvidence {
     $adapterQueryError = $null
     $adapters = @()
     try {
-        $adapters = @(Get-NetAdapter -ErrorAction Stop)
+        # Hidden tunnel/virtual adapters are still part of the host network
+        # state and must not escape the fail-closed isolation inventory.
+        $adapters = @(Get-NetAdapter -IncludeHidden -ErrorAction Stop)
     } catch {
-        $adapterQueryError = $_.Exception.Message
+        $adapterQueryError = Get-I04SafeErrorToken `
+            -Context 'adapter inventory failed' -Message $_.Exception.Message
     }
     $overlays = @(
         $adapters | Where-Object {
+            $adapterVirtual = if (
+                $_.PSObject.Properties.Name -contains 'Virtual' -and
+                $_.Virtual -is [bool]
+            ) { [bool]$_.Virtual } else { $true }
             [string]$_.Status -eq 'Up' -and (
+                $adapterVirtual -or
                 ([string]$_.Name) -match $overlayPattern -or
                 ([string]$_.InterfaceDescription) -match $overlayPattern
             )
@@ -2153,17 +4980,17 @@ function Get-I04FirewallRuleEvidence {
     )
 
     $rules = @(Get-NetFirewallRule -DisplayName $DisplayName `
-        -ErrorAction SilentlyContinue)
+        -ErrorAction Stop)
     $application = @()
     $address = @()
     $port = @()
     if ($rules.Count -eq 1) {
         $application = @($rules[0] | Get-NetFirewallApplicationFilter `
-            -ErrorAction SilentlyContinue)
+            -ErrorAction Stop)
         $address = @($rules[0] | Get-NetFirewallAddressFilter `
-            -ErrorAction SilentlyContinue)
+            -ErrorAction Stop)
         $port = @($rules[0] | Get-NetFirewallPortFilter `
-            -ErrorAction SilentlyContinue)
+            -ErrorAction Stop)
     }
     $protocolExact = $port.Count -eq 1 -and
         @('6', 'tcp') -contains ([string]$port[0].Protocol).ToLowerInvariant()
@@ -2197,8 +5024,14 @@ function Get-I04FirewallRuleEvidence {
         profile = if ($rules.Count -eq 1) {
             [string]$rules[0].Profile
         } else { '' }
-        program = if ($application.Count -eq 1) {
-            [string]$application[0].Program
+        program_relative_path = if ($application.Count -eq 1) {
+            [IO.Path]::GetFileName([string]$application[0].Program)
+        } else { '' }
+        program_path_sha256 = if ($application.Count -eq 1) {
+            Get-I04StringSha256 -Value (
+                [IO.Path]::GetFullPath([string]$application[0].Program).
+                    ToLowerInvariant()
+            )
         } else { '' }
         program_file_sha256 = if ($application.Count -eq 1 -and
             (Test-Path -LiteralPath ([string]$application[0].Program) `
@@ -2224,8 +5057,9 @@ function Get-I04FirewallRuleEvidence {
     }
 }
 
-function Invoke-I04Pktmon {
+function Invoke-I04BoundedNative {
     param(
+        [Parameter(Mandatory = $true)][string]$FileName,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$LogPath,
         [ValidateRange(1, 300)][int]$TimeoutSeconds = 30
@@ -2238,7 +5072,7 @@ function Invoke-I04Pktmon {
     $exitCode = 9009
     try {
         $startInfo = New-Object Diagnostics.ProcessStartInfo
-        $startInfo.FileName = (Get-Command pktmon.exe -ErrorAction Stop).Source
+        $startInfo.FileName = (Get-Command $FileName -ErrorAction Stop).Source
         # Quote according to CommandLineToArgvW rules. All values are
         # harness-derived, but paths may contain whitespace or quotes.
         $quotedArguments = foreach ($argumentValue in $Arguments) {
@@ -2281,42 +5115,60 @@ function Invoke-I04Pktmon {
         $process = New-Object Diagnostics.Process
         $process.StartInfo = $startInfo
         if (-not $process.Start()) {
-            throw 'pktmon process did not start'
+            throw "$FileName process did not start"
         }
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        $processExited = $process.WaitForExit($TimeoutSeconds * 1000)
+        if (-not $processExited) {
             $timedOut = $true
             try { $process.Kill() } catch {}
-            $null = $process.WaitForExit(10000)
+            $processExited = $process.WaitForExit(10000)
         }
-        $stdout = $stdoutTask.GetAwaiter().GetResult()
-        $stderr = $stderrTask.GetAwaiter().GetResult()
+        $stdout = if ($processExited) {
+            $stdoutTask.GetAwaiter().GetResult()
+        } else { '' }
+        $stderr = if ($processExited) {
+            $stderrTask.GetAwaiter().GetResult()
+        } else { "$FileName did not exit after timeout and forced termination" }
         $output = if ($stdout) { @($stdout -split '\r?\n') } else { @() }
         $errorOutput = if ($stderr) { @($stderr -split '\r?\n') } else { @() }
         if ($timedOut) {
             $exitCode = 1460
-        } elseif ($process.HasExited) {
+        } elseif ($processExited -and $process.HasExited) {
             $exitCode = $process.ExitCode
         }
     } catch {
-        $errorOutput += $_.Exception.Message
+        $errorOutput += Get-I04SafeErrorToken `
+            -Context 'native command invocation failed' `
+            -Message $_.Exception.Message
         $exitCode = 9009
     } finally {
         if ($null -ne $process) { $process.Dispose() }
     }
+    $output = @($output | ForEach-Object {
+        Convert-I04PrivateText -Value ([string]$_)
+    })
+    $errorOutput = @($errorOutput | ForEach-Object {
+        Convert-I04PrivateText -Value ([string]$_)
+    })
+    $loggedArguments = @($Arguments | ForEach-Object {
+        Convert-I04PrivateText -Value ([string]$_)
+    })
     $logError = $null
     try {
         Add-Content -LiteralPath $LogPath -Encoding utf8 -Value @(
-            ('[{0}] pktmon {1}' -f (Get-LabUtcTimestamp),
-                ($Arguments -join ' ')),
+            ('[{0}] {1} {2}' -f (Get-LabUtcTimestamp), $FileName,
+                ($loggedArguments -join ' ')),
             ($output | ForEach-Object { [string]$_ }),
             ($errorOutput | ForEach-Object { [string]$_ }),
             "timed_out=$timedOut",
             "exit_code=$exitCode"
         )
     } catch {
-        $logError = $_.Exception.Message
+        $logError = Get-I04SafeErrorToken `
+            -Context 'native command log write failed' `
+            -Message $_.Exception.Message
     }
     return [pscustomobject][ordered]@{
         exit_code = $exitCode
@@ -2326,16 +5178,44 @@ function Invoke-I04Pktmon {
     }
 }
 
+function Invoke-I04Pktmon {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$LogPath,
+        [ValidateRange(1, 300)][int]$TimeoutSeconds = 30
+    )
+    return Invoke-I04BoundedNative -FileName 'pktmon.exe' `
+        -Arguments $Arguments -LogPath $LogPath `
+        -TimeoutSeconds $TimeoutSeconds
+}
+
+function Invoke-I04Logman {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$LogPath,
+        [ValidateRange(1, 300)][int]$TimeoutSeconds = 30
+    )
+    return Invoke-I04BoundedNative -FileName 'logman.exe' `
+        -Arguments $Arguments -LogPath $LogPath `
+        -TimeoutSeconds $TimeoutSeconds
+}
+
 function Get-I04EtwLossEvidence {
     param([Parameter(Mandatory = $true)][string]$SessionName)
 
-    if (-not ('V91I04EtwTraceQuery' -as [type])) {
+    $contractId = 'ese.v91.i04-etw-trace-control/2026-08-01.v1'
+    if ('V91I04EtwTraceControlV2' -as [type]) {
+        $null = Assert-I04ManagedTypeContract `
+            -TypeName 'V91I04EtwTraceControlV2' `
+            -ExpectedContractId $contractId
+    } else {
         Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-public static class V91I04EtwTraceQuery {
+public static class V91I04EtwTraceControlV2 {
+    public const string ContractId = "ese.v91.i04-etw-trace-control/2026-08-01.v1";
     [StructLayout(LayoutKind.Sequential)]
     private struct WNODE_HEADER {
         public UInt32 BufferSize;
@@ -2382,7 +5262,7 @@ public static class V91I04EtwTraceQuery {
         UInt64 sessionHandle, string sessionName, IntPtr properties,
         UInt32 controlCode);
 
-    public static Result Query(string sessionName) {
+    private static Result Control(string sessionName, UInt32 controlCode) {
         int propertiesSize = Marshal.SizeOf(typeof(EVENT_TRACE_PROPERTIES));
         byte[] encodedName = Encoding.Unicode.GetBytes(sessionName + "\0");
         int totalSize = propertiesSize + encodedName.Length + 2;
@@ -2397,7 +5277,8 @@ public static class V91I04EtwTraceQuery {
             Marshal.StructureToPtr(properties, buffer, false);
             Marshal.Copy(encodedName, 0, IntPtr.Add(buffer, propertiesSize),
                 encodedName.Length);
-            UInt32 error = ControlTrace(0, sessionName, buffer, 0);
+            UInt32 error = ControlTrace(
+                0, sessionName, buffer, controlCode);
             Result result = new Result();
             result.ErrorCode = error;
             if (error == 0) {
@@ -2414,12 +5295,23 @@ public static class V91I04EtwTraceQuery {
             Marshal.FreeHGlobal(buffer);
         }
     }
+
+    public static Result Query(string sessionName) {
+        return Control(sessionName, 0); // EVENT_TRACE_CONTROL_QUERY
+    }
+
+    public static Result Flush(string sessionName) {
+        return Control(sessionName, 3); // EVENT_TRACE_CONTROL_FLUSH
+    }
 }
 '@
+        $null = Assert-I04ManagedTypeContract `
+            -TypeName 'V91I04EtwTraceControlV2' `
+            -ExpectedContractId $contractId
     }
 
     try {
-        $query = [V91I04EtwTraceQuery]::Query($SessionName)
+        $query = [V91I04EtwTraceControlV2]::Query($SessionName)
         $buffersLost = [UInt64]$query.LogBuffersLost +
             [UInt64]$query.RealTimeBuffersLost
         return [pscustomobject][ordered]@{
@@ -2448,9 +5340,611 @@ public static class V91I04EtwTraceQuery {
             buffers_lost = $null
             buffers_written = $null
             proved_zero = $false
-            error = $_.Exception.Message
+            error = Get-I04SafeErrorToken `
+                -Context 'ControlTrace query failed' `
+                -Message $_.Exception.Message
         }
     }
+}
+
+function Invoke-I04EtwFinalFlush {
+    param([Parameter(Mandatory = $true)][string]$SessionName)
+
+    # Get-I04EtwLossEvidence initializes the V2 controller type in a fresh
+    # harness process. Calling it here also makes a missing/redefined helper a
+    # fail-closed condition instead of relying on Add-Type replacement.
+    $preFlushDiagnostic = Get-I04EtwLossEvidence -SessionName $SessionName
+    try {
+        if (-not ('V91I04EtwTraceControlV2' -as [type])) {
+            throw 'ETW V2 trace-control helper is unavailable'
+        }
+        $flush = [V91I04EtwTraceControlV2]::Flush($SessionName)
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-etw-final-flush/v1'
+            sample_phase = 'final-flush-before-stop'
+            attempted_at_utc = Get-LabUtcTimestamp
+            succeeded = [UInt32]$flush.ErrorCode -eq 0
+            error_code = [UInt32]$flush.ErrorCode
+            pre_flush_diagnostic = $preFlushDiagnostic
+        }
+    } catch {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-etw-final-flush/v1'
+            sample_phase = 'final-flush-before-stop'
+            attempted_at_utc = Get-LabUtcTimestamp
+            succeeded = $false
+            error_code = $null
+            pre_flush_diagnostic = $preFlushDiagnostic
+            error = Get-I04SafeErrorToken `
+                -Context 'ControlTrace final flush failed' `
+                -Message $_.Exception.Message
+        }
+    }
+}
+
+function Test-I04PktmonInventoryMetadataLine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()][string]$Line
+    )
+
+    $value = $Line.Trim()
+    if ([string]::IsNullOrWhiteSpace($value) -or
+        $value -match '^[\s\-=|+]+$' -or
+        $value -match
+            '(?i)^(?:packet\s+filters?|filtros?\s+de\s+paquete)\s*:?\s*$') {
+        return $true
+    }
+    $residual = $value
+    foreach ($label in @(
+        'direcci\S+n\s+mac', 'mac\s+address',
+        'puerto\s+vxlan', 'vxlan\s+port',
+        'direcci\S+n\s+ip', 'ip\s+address',
+        'id\.?\s+de\s+vlan', 'vlan\s+id',
+        'encapsulaci\S+n', 'encapsulation',
+        'protocolo', 'protocol', 'ethertype', 'dscp',
+        'nombre', 'name', 'puerto', 'port', 'id\.?'
+    )) {
+        $residual = [regex]::Replace(
+            $residual, '(?i)(?<![A-Z0-9])' + $label + '(?![A-Z0-9])', '')
+    }
+    $residual = [regex]::Replace($residual, '[\s\-=|:+#().\[\]]+', '')
+    return [string]::IsNullOrEmpty($residual)
+}
+
+function Get-I04PktmonInventoryCensus {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()][string]$Text
+    )
+
+    $normalized = (($Text -replace "`r`n", "`n") -replace "`r", "`n").Trim()
+    $canonicalSha256 = if ([string]::IsNullOrWhiteSpace($normalized)) {
+        $null
+    } else { Get-I04StringSha256 -Value $normalized }
+    $invalid = {
+        param([string]$Reason, [string]$Mode)
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-pktmon-filter-census/v1'
+            exact = $false
+            empty = $false
+            reason = $Reason
+            inventory_mode = $Mode
+            canonical_sha256 = $canonicalSha256
+            line_count = 0
+            entry_count = 0
+            numeric_ids_unique = $false
+            names_unique = $false
+            entries = @()
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return & $invalid 'empty-output' 'none'
+    }
+
+    $lines = @($normalized -split "`n" | ForEach-Object {
+        ([string]$_).Trim()
+    } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $numberedPattern =
+        '^\s*(?<id>\d+)\s+(?<name>\S+)(?<rest>(?:\s+.*)?)$'
+    $namePattern =
+        '(?i)^\s*(?:filter\s+name|name|nombre(?:\s+de(?:l)?\s+filtro)?)' +
+        '\s*:\s*(?<name>\S+)\s*$'
+    $fieldPattern =
+        '(?i)^\s*(?<field>address|direcci\S+n|protocol|protocolo|port|puerto)' +
+        '\s*:\s*(?<value>\S(?:.*\S)?)\s*$'
+    $emptyPattern =
+        '(?i)^\s*(?:none|no\s+packet\s+filters?\s+specified|' +
+        'no\s+filters(?:\s+(?:are\s+)?(?:configured|present|specified))?|' +
+        'ning\S+n[oa]?|ning\S+n\s+filtro|no\s+hay\s+filtros|' +
+        'sin\s+filtros|no\s+se\s+especificaron\s+filtros\s+de\s+paquete)' +
+        '\.?\s*$'
+    $numberedMatches = @($lines | Where-Object {
+        [regex]::IsMatch([string]$_, $numberedPattern)
+    })
+    $nameMatches = @($lines | Where-Object {
+        [regex]::IsMatch([string]$_, $namePattern)
+    })
+
+    if ($numberedMatches.Count -gt 0) {
+        if ($nameMatches.Count -gt 0) {
+            return & $invalid 'mixed-inventory-representations' 'invalid'
+        }
+        $entries = [System.Collections.Generic.List[object]]::new()
+        $ids = [Collections.Generic.HashSet[UInt64]]::new()
+        $names = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::OrdinalIgnoreCase)
+        foreach ($line in $lines) {
+            $match = [regex]::Match([string]$line, $numberedPattern)
+            if ($match.Success) {
+                $id = [UInt64]0
+                if (-not [UInt64]::TryParse(
+                    [string]$match.Groups['id'].Value, [ref]$id) -or
+                    -not $ids.Add($id)) {
+                    return & $invalid 'filter-id-census' 'numbered-rows'
+                }
+                $name = [string]$match.Groups['name'].Value
+                if (-not $names.Add($name)) {
+                    return & $invalid 'filter-name-census' 'numbered-rows'
+                }
+                $entries.Add([pscustomobject][ordered]@{
+                    id = [UInt64]$id
+                    name = $name
+                    text = [string]$line
+                })
+            } elseif (-not (Test-I04PktmonInventoryMetadataLine -Line $line)) {
+                return & $invalid 'unrecognized-inventory-line' 'numbered-rows'
+            }
+        }
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-pktmon-filter-census/v1'
+            exact = $true
+            empty = $false
+            reason = ''
+            inventory_mode = 'numbered-rows'
+            canonical_sha256 = $canonicalSha256
+            line_count = $lines.Count
+            entry_count = $entries.Count
+            numeric_ids_unique = $true
+            names_unique = $true
+            entries = $entries.ToArray()
+        }
+    }
+
+    if ($nameMatches.Count -gt 0) {
+        $entries = [System.Collections.Generic.List[object]]::new()
+        $names = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::OrdinalIgnoreCase)
+        $currentName = $null
+        $currentLines = [System.Collections.Generic.List[string]]::new()
+        foreach ($line in $lines) {
+            $nameMatch = [regex]::Match([string]$line, $namePattern)
+            if ($nameMatch.Success) {
+                if ($null -ne $currentName) {
+                    $entries.Add([pscustomobject][ordered]@{
+                        id = $null; name = [string]$currentName
+                        text = $currentLines.ToArray() -join "`n"
+                    })
+                }
+                $currentName = [string]$nameMatch.Groups['name'].Value
+                if (-not $names.Add($currentName)) {
+                    return & $invalid 'filter-name-census' 'named-fields'
+                }
+                $currentLines.Clear()
+                $currentLines.Add([string]$line)
+                continue
+            }
+            if ($null -eq $currentName) {
+                if (Test-I04PktmonInventoryMetadataLine -Line $line) {
+                    continue
+                }
+                return & $invalid 'unrecognized-inventory-line' 'named-fields'
+            }
+            if (-not [regex]::IsMatch([string]$line, $fieldPattern)) {
+                return & $invalid 'unrecognized-inventory-line' 'named-fields'
+            }
+            $currentLines.Add([string]$line)
+        }
+        if ($null -ne $currentName) {
+            $entries.Add([pscustomobject][ordered]@{
+                id = $null; name = [string]$currentName
+                text = $currentLines.ToArray() -join "`n"
+            })
+        }
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-pktmon-filter-census/v1'
+            exact = $true
+            empty = $false
+            reason = ''
+            inventory_mode = 'named-fields'
+            canonical_sha256 = $canonicalSha256
+            line_count = $lines.Count
+            entry_count = $entries.Count
+            numeric_ids_unique = $true
+            names_unique = $true
+            entries = $entries.ToArray()
+        }
+    }
+
+    $emptyMarkers = 0
+    foreach ($line in $lines) {
+        if ([regex]::IsMatch([string]$line, $emptyPattern)) {
+            $emptyMarkers++
+        } elseif (-not (Test-I04PktmonInventoryMetadataLine -Line $line)) {
+            return & $invalid 'unrecognized-inventory-line' 'empty'
+        }
+    }
+    if ($emptyMarkers -ne 1) {
+        return & $invalid 'empty-inventory-census' 'empty'
+    }
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i04-pktmon-filter-census/v1'
+        exact = $true
+        empty = $true
+        reason = ''
+        inventory_mode = 'empty'
+        canonical_sha256 = $canonicalSha256
+        line_count = $lines.Count
+        entry_count = 0
+        numeric_ids_unique = $true
+        names_unique = $true
+        entries = @()
+    }
+}
+
+function Test-I04PktmonArmedFilterContracts {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory = $true)][string]$FilterV4,
+        [Parameter(Mandatory = $true)][string]$FilterV6,
+        [Parameter(Mandatory = $true)][string]$FilterIcmpV6,
+        [Parameter(Mandatory = $true)][string]$IPv4,
+        [Parameter(Mandatory = $true)][string]$IPv6,
+        [Parameter(Mandatory = $true)][int]$Port
+    )
+
+    $definitions = @(
+        [pscustomobject]@{
+            name = $FilterV4; address = $IPv4; other_address = $IPv6
+            protocol = 'TCP'; requires_port = $true; family = 'ipv4'
+        },
+        [pscustomobject]@{
+            name = $FilterV6; address = $IPv6; other_address = $IPv4
+            protocol = 'TCP'; requires_port = $true; family = 'ipv6'
+        },
+        [pscustomobject]@{
+            name = $FilterIcmpV6; address = ''; other_address = ''
+            protocol = 'ICMPV6'; requires_port = $false; family = 'icmpv6'
+        }
+    )
+
+    $census = Get-I04PktmonInventoryCensus -Text $Text
+    if (-not [bool]$census.exact -or [bool]$census.empty) {
+        return [pscustomobject][ordered]@{
+            exact = $false; reason = [string]$census.reason
+            inventory_mode = [string]$census.inventory_mode
+            canonical_sha256 = $census.canonical_sha256
+            contracts = @()
+        }
+    }
+    $inventoryMode = [string]$census.inventory_mode
+    $inventoryEntries = @($census.entries)
+    $segments = [System.Collections.Generic.List[object]]::new()
+    if ($inventoryEntries.Count -ne $definitions.Count) {
+        return [pscustomobject][ordered]@{
+            exact = $false
+            reason = if ($inventoryMode -eq 'numbered-rows') {
+                'filter-row-census'
+            } else { 'filter-name-census' }
+            inventory_mode = $inventoryMode
+            canonical_sha256 = $census.canonical_sha256
+            contracts = @()
+        }
+    }
+    foreach ($definition in $definitions) {
+        $matchingEntries = @($inventoryEntries | Where-Object {
+            $_.name -is [string] -and
+            [string]$_.name -ceq [string]$definition.name
+        })
+        if ($matchingEntries.Count -ne 1) {
+            return [pscustomobject][ordered]@{
+                exact = $false; reason = 'filter-name-census'
+                inventory_mode = $inventoryMode
+                canonical_sha256 = $census.canonical_sha256
+                contracts = @()
+            }
+        }
+        $segments.Add([pscustomobject]@{
+            definition = $definition
+            text = [string]$matchingEntries[0].text
+        })
+    }
+
+    $contracts = [System.Collections.Generic.List[object]]::new()
+    foreach ($entry in $segments.ToArray()) {
+        $definition = $entry.definition
+        $segment = [string]$entry.text
+        $namePattern = '(?i)(?<![A-Z0-9])' +
+            [regex]::Escape([string]$definition.name) + '(?![A-Z0-9])'
+        $nameOccurrences = @([regex]::Matches($segment, $namePattern))
+        $nameExact = $nameOccurrences.Count -eq 1
+        $protocolMatches = @([regex]::Matches(
+            $segment,
+            '(?i)(?<![A-Z0-9])(TCP|UDP|ICMPV6|ICMP|ARP|ESP|AH)(?![A-Z0-9])'
+        ))
+        $protocolPresent = $protocolMatches.Count -eq 1 -and
+            [string]$protocolMatches[0].Value -ieq
+                [string]$definition.protocol
+        $addressPattern = if ([string]$definition.address) {
+            [regex]::Escape([string]$definition.address) +
+                $(if ([string]$definition.family -eq 'ipv4') {
+                    '(?:/32)?'
+                } else { '(?:/128)?' })
+        } else { '' }
+        [Text.RegularExpressions.Match[]]$addressOccurrences = @()
+        if ($addressPattern) {
+            $addressOccurrences = @([regex]::Matches(
+                $segment, $addressPattern,
+                [Text.RegularExpressions.RegexOptions]::IgnoreCase
+            ) | ForEach-Object { $_ })
+        }
+        $addressPresent = if ([string]$definition.address) {
+            $addressOccurrences.Count -eq 1
+        } else { $true }
+        $otherAddressAbsent = if ([string]$definition.other_address) {
+            $segment.IndexOf(
+                [string]$definition.other_address,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -lt 0
+        } else { $true }
+        $portOccurrences = @([regex]::Matches(
+            $segment, '(?<!\d)' + [string]$Port + '(?!\d)'
+        ))
+        $portPresent = $portOccurrences.Count -eq 1
+        $portExact = if ([bool]$definition.requires_port) {
+            $portPresent
+        } else { -not $portPresent }
+
+        $fieldSetExact = $true
+        if ($inventoryMode -eq 'named-fields') {
+            $actualFields = @($segment -split "`n" | ForEach-Object {
+                ([string]$_).Trim()
+            } | Where-Object { $_ })
+            $expectedFields = if ([bool]$definition.requires_port) {
+                @(
+                    ('Name: ' + [string]$definition.name),
+                    ('Address: ' + [string]$definition.address),
+                    ('Protocol: ' + [string]$definition.protocol),
+                    ('Port: ' + [string]$Port)
+                )
+            } else {
+                @(
+                    ('Name: ' + [string]$definition.name),
+                    ('Protocol: ' + [string]$definition.protocol)
+                )
+            }
+            $actualCanonical = @($actualFields | ForEach-Object {
+                ([regex]::Replace([string]$_, '\s+', ' ')).ToLowerInvariant()
+            } | Sort-Object)
+            $expectedCanonical = @($expectedFields | ForEach-Object {
+                ([regex]::Replace([string]$_, '\s+', ' ')).ToLowerInvariant()
+            } | Sort-Object)
+            $fieldSetExact = ($actualCanonical -join "`n") -ceq
+                ($expectedCanonical -join "`n")
+        } else {
+            # Strip the one allowed value for every constrained dimension and
+            # reject any residual address, MAC, TCP flag, encapsulation token
+            # or non-default numeric value. PktMon prints zeroes/dashes for
+            # unconstrained dimensions; those are the only residual values
+            # admitted. Host-prefix lengths and protocol numbers are harmless
+            # canonical renderings of the exact command we issued.
+            $residual = [regex]::Replace($segment, '^\s*\d+\s+', '')
+            $residual = [regex]::Replace(
+                $residual, $namePattern, '')
+            if ([string]$definition.address) {
+                $residual = [regex]::Replace(
+                    $residual, $addressPattern, '',
+                    [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            }
+            $protocolNumber = if ([string]$definition.protocol -eq 'TCP') {
+                6
+            } else { 58 }
+            $residual = [regex]::Replace(
+                $residual, '(?i)(?<![A-Z0-9])' +
+                    [regex]::Escape([string]$definition.protocol) +
+                    '(?![A-Z0-9])(?:\s*\(' +
+                    [string]$protocolNumber + '\))?', '')
+            $implicitFamily = if ([string]$definition.family -eq 'ipv4') {
+                'IPv4'
+            } else { 'IPv6' }
+            $implicitFamilyPattern = '(?i)(?<![A-Z0-9])' +
+                $implicitFamily + '(?![A-Z0-9])'
+            $implicitFamilyOccurrences = @([regex]::Matches(
+                $residual, $implicitFamilyPattern
+            ))
+            $implicitFamilyExact = $implicitFamilyOccurrences.Count -le 1
+            $residual = [regex]::Replace(
+                $residual, $implicitFamilyPattern, '')
+            if ([bool]$definition.requires_port) {
+                $residual = [regex]::Replace(
+                    $residual, '(?<!\d)' + [string]$Port + '(?!\d)', '')
+            }
+            $residual = [regex]::Replace(
+                $residual, '(?i)(?<![0-9a-f])(?:00[:-]){5}00(?![0-9a-f])', '')
+            $residual = [regex]::Replace(
+                $residual, '(?i)(?<![A-Z0-9])0x0+(?![A-Z0-9])', '')
+            $residual = [regex]::Replace(
+                $residual, '(?<!\d)0\.0\.0\.0(?:/0)?(?!\d)', '')
+            $residual = [regex]::Replace(
+                $residual,
+                '(?i)(?<![0-9a-f:])0:0:0:0:0:0:0:0(?:/0)?(?![0-9a-f:])', '')
+            $residual = $residual.Replace('::', '')
+            $unexpectedIpv4 = [regex]::IsMatch(
+                $residual,
+                '(?<!\d)(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?!\d)'
+            )
+            $unexpectedIpv6 = [regex]::IsMatch(
+                $residual,
+                '(?i)(?<![0-9a-f:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![0-9a-f:])'
+            )
+            $unexpectedMac = [regex]::IsMatch(
+                $residual,
+                '(?i)(?<![0-9a-f])(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}(?![0-9a-f])'
+            )
+            $unexpectedFlagOrEncapsulation = [regex]::IsMatch(
+                $residual,
+                '(?i)(?<![A-Z0-9])(?:FIN|SYN|RST|PSH|ACK|URG|ECE|CWR|VXLAN|GRE|NVGRE|IPIP|UDP|ICMP|ARP|ESP|AH)(?![A-Z0-9])'
+            )
+            $unexpectedNumbers = @([regex]::Matches(
+                $residual, '(?<![A-Z0-9])\d+(?![A-Z0-9])'
+            ) | Where-Object {
+                [int64]$_.Value -ne 0
+            })
+            $alphabeticResidual = [regex]::Replace(
+                $residual,
+                '(?i)(?<![A-Z0-9])(?:ANY|ALL|NONE|N/?A|NOTSET|' +
+                    'UNSPECIFIED|FALSE|DISABLED|CUALQUIERA|TODOS|' +
+                    'NINGUN[OA]?|VAC[IÍ]O|SIN|FALSO|NO|DESHABILITADO)' +
+                    '(?![A-Z0-9])', '')
+            $unexpectedAlphabetic = [regex]::IsMatch(
+                $alphabeticResidual, '(?i)[A-Z]')
+            $fieldSetExact = -not $unexpectedIpv4 -and
+                -not $unexpectedIpv6 -and -not $unexpectedMac -and
+                -not $unexpectedFlagOrEncapsulation -and
+                $unexpectedNumbers.Count -eq 0 -and
+                -not $unexpectedAlphabetic -and $implicitFamilyExact
+        }
+        $exact = $nameExact -and $protocolPresent -and $addressPresent -and
+            $otherAddressAbsent -and $portExact -and $fieldSetExact
+        $contracts.Add([pscustomobject][ordered]@{
+            name_sha256 = Get-I04StringSha256 -Value ([string]$definition.name)
+            name_contract_exact = $nameExact
+            protocol = [string]$definition.protocol
+            address_present = $addressPresent
+            other_target_address_absent = $otherAddressAbsent
+            port_contract_exact = $portExact
+            field_set_exact = $fieldSetExact
+            exact = $exact
+        })
+    }
+    return [pscustomobject][ordered]@{
+        exact = @($contracts.ToArray() | Where-Object { -not $_.exact }).Count -eq 0
+        reason = if (@($contracts.ToArray() | Where-Object {
+            -not $_.exact
+        }).Count -eq 0) { '' } else { 'filter-field-contract' }
+        inventory_mode = $inventoryMode
+        canonical_sha256 = $census.canonical_sha256
+        contracts = $contracts.ToArray()
+    }
+}
+
+function Enter-I04PktmonGlobalMutex {
+    if ($null -ne $script:i04PktmonMutex) {
+        throw 'PktMon global mutex is already held by this harness instance'
+    }
+
+    $mutexName = 'Global\eSE-V91-I04-PktMon-v1'
+    $createdNew = $false
+    $mutex = [Threading.Mutex]::new($false, $mutexName, [ref]$createdNew)
+    $acquired = $false
+    try {
+        try {
+            $acquired = $mutex.WaitOne(0)
+        } catch [Threading.AbandonedMutexException] {
+            try { $mutex.ReleaseMutex() } catch {}
+            throw 'PktMon global mutex was abandoned; global capture state is not trustworthy'
+        }
+        if (-not $acquired) {
+            throw 'PktMon global mutex is owned by another harness/process'
+        }
+        $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
+        try {
+            $processStartUtcTicks =
+                [Int64]$currentProcess.StartTime.ToUniversalTime().Ticks
+        } finally {
+            $currentProcess.Dispose()
+        }
+        $script:i04PktmonMutex = $mutex
+        $script:i04PktmonMutexEvidence = [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-pktmon-global-mutex/v1'
+            name_sha256 = Get-I04StringSha256 -Value $mutexName
+            owner_process_id = [int]$PID
+            owner_process_start_utc_ticks = $processStartUtcTicks
+            owner_managed_thread_id =
+                [int][Threading.Thread]::CurrentThread.ManagedThreadId
+            created_new = [bool]$createdNew
+            acquired = $true
+            abandoned = $false
+            acquired_at_utc = Get-LabUtcTimestamp
+            released = $false
+            release_exact = $false
+            released_at_utc = $null
+        }
+        return $script:i04PktmonMutexEvidence
+    } catch {
+        if ($acquired) {
+            try { $mutex.ReleaseMutex() } catch {}
+        }
+        try { $mutex.Dispose() } catch {}
+        throw
+    }
+}
+
+function Assert-I04PktmonGlobalMutexOwnership {
+    if ($null -eq $script:i04PktmonMutex -or
+        $null -eq $script:i04PktmonMutexEvidence) {
+        throw 'PktMon global mutex is not held'
+    }
+    $evidence = $script:i04PktmonMutexEvidence
+    $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
+    try {
+        $processStartUtcTicks =
+            [Int64]$currentProcess.StartTime.ToUniversalTime().Ticks
+    } finally {
+        $currentProcess.Dispose()
+    }
+    $expectedNameSha256 = Get-I04StringSha256 `
+        -Value 'Global\eSE-V91-I04-PktMon-v1'
+    if ([string]$evidence.schema -cne
+            'ese.v91.i04-pktmon-global-mutex/v1' -or
+        [string]$evidence.name_sha256 -cne
+            $expectedNameSha256 -or
+        [int]$evidence.owner_process_id -ne [int]$PID -or
+        [Int64]$evidence.owner_process_start_utc_ticks -ne
+            $processStartUtcTicks -or
+        [int]$evidence.owner_managed_thread_id -ne
+            [int][Threading.Thread]::CurrentThread.ManagedThreadId -or
+        -not [bool]$evidence.acquired -or [bool]$evidence.abandoned -or
+        [bool]$evidence.released) {
+        throw 'PktMon global mutex ownership identity is not exact'
+    }
+    return $true
+}
+
+function Exit-I04PktmonGlobalMutex {
+    $null = Assert-I04PktmonGlobalMutexOwnership
+    $mutex = $script:i04PktmonMutex
+    $evidence = $script:i04PktmonMutexEvidence
+    $releaseFailure = $null
+    try {
+        $mutex.ReleaseMutex()
+        $evidence.released = $true
+        $evidence.release_exact = $true
+        $evidence.released_at_utc = Get-LabUtcTimestamp
+    } catch {
+        $releaseFailure = $_
+        $evidence.release_exact = $false
+    } finally {
+        try {
+            $mutex.Dispose()
+        } catch {
+            $evidence.release_exact = $false
+            if ($null -eq $releaseFailure) { $releaseFailure = $_ }
+        }
+        $script:i04PktmonMutex = $null
+    }
+    if ($null -ne $releaseFailure) { throw $releaseFailure }
+    return $evidence
 }
 
 function Start-I04PacketCapture {
@@ -2462,6 +5956,8 @@ function Start-I04PacketCapture {
         [Parameter(Mandatory = $true)][int]$Port,
         [Parameter(Mandatory = $true)][string]$JournalPath
     )
+
+    $null = Assert-I04PktmonGlobalMutexOwnership
 
     $state = [ordered]@{
         available = $false
@@ -2475,6 +5971,8 @@ function Start-I04PacketCapture {
         command_log = Join-Path $EvidencePath 'pktmon.log'
         filters_before_path = Join-Path $EvidencePath 'pktmon-filters-before.txt'
         filters_armed_path = Join-Path $EvidencePath 'pktmon-filters-armed.txt'
+        filters_pre_stop_path =
+            Join-Path $EvidencePath 'pktmon-filters-pre-stop.txt'
         session_started_path =
             Join-Path $EvidencePath 'pktmon-etw-session-started.txt'
         status_after_path = Join-Path $EvidencePath 'pktmon-status-after.txt'
@@ -2485,7 +5983,22 @@ function Start-I04PacketCapture {
         owned_filters_absent_verified = $null
         filter_inventory_restored_verified = $null
         filters_applied_verified = $false
+        filter_contracts = $null
+        filter_inventory_armed_sha256 = $null
+        filter_inventory_pre_stop_sha256 = $null
+        filter_inventory_scenario_unchanged = $false
+        expected_filter_v4 = $null
+        expected_filter_v6 = $null
+        expected_filter_icmpv6 = $null
+        expected_ipv4 = $IPv4
+        expected_ipv6 = $IPv6
+        expected_port = $Port
         etw_loss_proved_zero = $false
+        etw_loss_schema = 'ese.v91.i04-etw-loss/v2'
+        etw_loss_sample_phase = 'not-sampled'
+        etw_final_flush_succeeded = $false
+        etw_final_flush_error_code = $null
+        etw_post_flush_query_ok = $false
         etw_events_lost = $null
         etw_buffers_lost = $null
         etw_log_buffers_lost = $null
@@ -2503,25 +6016,50 @@ function Start-I04PacketCapture {
 
     $statusPath = Join-Path $EvidencePath 'pktmon-status-before.txt'
     $filterPath = $state.filters_before_path
-    @(& pktmon.exe status 2>&1) | Set-Content -LiteralPath $statusPath -Encoding utf8
-    $filtersBefore = @(& pktmon.exe filter list 2>&1)
-    $filtersBeforeExit = $LASTEXITCODE
+    $statusBeforeResult = Invoke-I04Pktmon -LogPath $state.command_log `
+        -Arguments @('status')
+    @($statusBeforeResult.output) | Set-Content -LiteralPath $statusPath `
+        -Encoding utf8
+    $filtersBeforeResult = Invoke-I04Pktmon -LogPath $state.command_log `
+        -Arguments @('filter', 'list')
+    $filtersBefore = @($filtersBeforeResult.output)
+    $filtersBeforeExit = $filtersBeforeResult.exit_code
     $filtersBefore |
         Set-Content -LiteralPath $filterPath -Encoding utf8
     $etwProbePath = Join-Path $EvidencePath 'pktmon-etw-session-before.txt'
-    $etwProbe = @(& logman.exe query -ets PktMon 2>&1)
-    $etwProbeExit = $LASTEXITCODE
+    $etwProbeResult = Invoke-I04Logman -LogPath $state.command_log `
+        -Arguments @('query', '-ets', 'PktMon')
+    $etwProbe = @($etwProbeResult.output)
+    $etwProbeExit = $etwProbeResult.exit_code
     $etwProbe | Set-Content -LiteralPath $etwProbePath -Encoding utf8
+    $etwAbsence = Get-I04EtwLossEvidence -SessionName 'PktMon'
     Add-I04Journal -Path $JournalPath -Mutation 'pktmon-state' `
         -State 'backed_up' -Detail 'Status and filter list captured before mutation'
-    if ($etwProbeExit -eq 0) {
+    if ($statusBeforeResult.exit_code -ne 0 -or
+        $statusBeforeResult.timed_out -or $statusBeforeResult.log_error -or
+        $filtersBeforeResult.timed_out -or $filtersBeforeResult.log_error -or
+        $etwProbeResult.timed_out -or $etwProbeResult.log_error) {
+        $state.error = 'PktMon/logman preflight could not be completed exactly within its native timeout'
+        return [pscustomobject]$state
+    }
+    if ([bool]$etwAbsence.available -or $etwProbeExit -eq 0) {
         $state.error = 'An existing PktMon ETW capture owns the global session; refusing to alter its filters or stop it'
         return [pscustomobject]$state
     }
+    if ([UInt32]$etwAbsence.error_code -ne 4201) {
+        $state.error = "PktMon ETW absence was not proved (Win32 $($etwAbsence.error_code))"
+        return [pscustomobject]$state
+    }
     $filtersBeforeText = $filtersBefore -join "`n"
+    $filtersBeforeCensus =
+        Get-I04PktmonInventoryCensus -Text $filtersBeforeText
     $emptyFilterInventory = $filtersBeforeExit -eq 0 -and
-        $filtersBeforeText -match
-            '(?im)^\s*(?:none|no\s+filters(?:\s+(?:are\s+)?(?:configured|present))?|ning[uú]n[oa]?|ning[uú]n\s+filtro|no\s+hay\s+filtros|sin\s+filtros|no\s+se\s+especificaron\s+filtros\s+de\s+paquete)\.?\s*$'
+        $filtersBeforeCensus.exact -is [bool] -and
+        [bool]$filtersBeforeCensus.exact -and
+        $filtersBeforeCensus.empty -is [bool] -and
+        [bool]$filtersBeforeCensus.empty -and
+        $filtersBeforeCensus.entry_count -is [int] -and
+        [int]$filtersBeforeCensus.entry_count -eq 0
     if (-not $emptyFilterInventory) {
         $state.error = (
             'PktMon filter inventory was not provably empty before the run; ' +
@@ -2533,6 +6071,9 @@ function Start-I04PacketCapture {
     $filterV4 = "$FilterPrefix-v4"
     $filterV6 = "$FilterPrefix-v6"
     $filterIcmp = "$FilterPrefix-icmp6"
+    $state.expected_filter_v4 = $filterV4
+    $state.expected_filter_v6 = $filterV6
+    $state.expected_filter_icmpv6 = $filterIcmp
     $preexistingFilterText = (
         Get-Content -LiteralPath $filterPath -Raw -ErrorAction Stop
     )
@@ -2587,19 +6128,26 @@ function Start-I04PacketCapture {
         Add-I04Journal -Path $JournalPath -Mutation 'pktmon-filters' `
             -State 'applied' -Detail ($state.filters -join ',')
 
-        $armedFilters = @(& pktmon.exe filter list 2>&1)
-        $armedFilterExit = $LASTEXITCODE
+        $armedFilterResult = Invoke-I04Pktmon -LogPath $state.command_log `
+            -Arguments @('filter', 'list')
+        $armedFilters = @($armedFilterResult.output)
+        $armedFilterExit = $armedFilterResult.exit_code
         $armedFilters | Set-Content -LiteralPath $state.filters_armed_path `
             -Encoding utf8
         $armedFilterText = $armedFilters -join "`n"
-        $state.filters_applied_verified = $armedFilterExit -eq 0 -and
-            @($state.filters | Where-Object {
-                $armedFilterText.IndexOf(
-                    [string]$_, [StringComparison]::OrdinalIgnoreCase
-                ) -lt 0
-            }).Count -eq 0
+        $filterContracts = Test-I04PktmonArmedFilterContracts `
+            -Text $armedFilterText -FilterV4 $filterV4 -FilterV6 $filterV6 `
+            -FilterIcmpV6 $filterIcmp -IPv4 $IPv4 -IPv6 $IPv6 -Port $Port
+        $state.filter_contracts = $filterContracts
+        $state.filter_inventory_armed_sha256 =
+            [string]$filterContracts.canonical_sha256
+        $state.filters_applied_verified =
+            -not $armedFilterResult.timed_out -and
+            -not $armedFilterResult.log_error -and
+            $armedFilterExit -eq 0 -and
+            [bool]$filterContracts.exact
         if (-not $state.filters_applied_verified) {
-            throw 'PktMon did not list every run-owned filter before capture'
+            throw 'PktMon did not prove the exact IPv4/IPv6/ICMPv6 filter contracts before capture'
         }
 
         $state.start_attempted = $true
@@ -2608,11 +6156,17 @@ function Start-I04PacketCapture {
             'start', '--capture', '--comp', 'nics', '--pkt-size', '0',
             '--file-name', $state.etl_path, '--file-size', '256'
         )
-        $sessionProbe = @(& logman.exe query -ets PktMon 2>&1)
-        $sessionProbeExit = $LASTEXITCODE
+        $sessionProbeResult = Invoke-I04Logman `
+            -LogPath $state.command_log `
+            -Arguments @('query', '-ets', 'PktMon')
+        $sessionProbe = @($sessionProbeResult.output)
+        $sessionProbeExit = $sessionProbeResult.exit_code
+        $sessionEtw = Get-I04EtwLossEvidence -SessionName 'PktMon'
         $sessionProbe | Set-Content `
             -LiteralPath $state.session_started_path -Encoding utf8
-        if ($sessionProbeExit -eq 0) {
+        if (-not $sessionProbeResult.timed_out -and
+            -not $sessionProbeResult.log_error -and
+            $sessionProbeExit -eq 0 -and [bool]$sessionEtw.available) {
             # Preflight proved this global session absent immediately before
             # the unique start attempt. Even an ambiguous controller return
             # therefore creates an owned cleanup obligation.
@@ -2623,7 +6177,8 @@ function Start-I04PacketCapture {
         if ($startResult.exit_code -ne 0 -or $startResult.log_error) {
             throw 'pktmon capture could not start; another capture may own the global session'
         }
-        if ($sessionProbeExit -ne 0) {
+        if ($sessionProbeResult.timed_out -or $sessionProbeResult.log_error -or
+            $sessionProbeExit -ne 0 -or -not [bool]$sessionEtw.available) {
             throw 'pktmon start returned success but no PktMon ETW session exists'
         }
         $state.started = $true
@@ -2633,7 +6188,9 @@ function Start-I04PacketCapture {
         $state.available = $true
     } catch {
         $state.available = $false
-        $state.error = $_.Exception.Message
+        $state.error = Get-I04SafeErrorToken `
+            -Context 'packet capture setup failed' `
+            -Message $_.Exception.Message
     }
     return [pscustomobject]$state
 }
@@ -2646,6 +6203,8 @@ function Stop-I04PacketCapture {
         [AllowEmptyCollection()]
         [Collections.Generic.List[string]]$CleanupFailures
     )
+
+    $null = Assert-I04PktmonGlobalMutexOwnership
 
     $pktmonCommand = Get-Command pktmon.exe -ErrorAction SilentlyContinue
     $logmanCommand = Get-Command logman.exe -ErrorAction SilentlyContinue
@@ -2664,34 +6223,102 @@ function Stop-I04PacketCapture {
     $sessionPresent = $false
     if ([bool]$State.start_attempted) {
         try {
-            $sessionProbe = @(& logman.exe query -ets PktMon 2>&1)
-            $sessionPresent = $LASTEXITCODE -eq 0
+            $sessionProbeResult = Invoke-I04Logman `
+                -LogPath $State.command_log `
+                -Arguments @('query', '-ets', 'PktMon')
+            if ($sessionProbeResult.timed_out -or
+                $sessionProbeResult.log_error) {
+                throw 'Bounded PktMon ownership probe was inconclusive'
+            }
+            $sessionEtwProbe = Get-I04EtwLossEvidence -SessionName 'PktMon'
+            if (-not [bool]$sessionEtwProbe.available -and
+                [UInt32]$sessionEtwProbe.error_code -ne 4201) {
+                throw 'ControlTrace PktMon ownership probe was inconclusive'
+            }
+            $sessionPresent = [bool]$sessionEtwProbe.available
+            if (($sessionProbeResult.exit_code -eq 0) -ne $sessionPresent) {
+                throw 'logman and ControlTrace disagreed about PktMon ownership'
+            }
             if ($sessionPresent) {
                 $State.etw_session_owned_by_start_attempt = $true
                 $State.started = $true
                 $State.ever_started = $true
             }
         } catch {
-            $CleanupFailures.Add(
-                "PktMon ownership probe failed: $($_.Exception.Message)"
-            )
+            $CleanupFailures.Add((Get-I04SafeErrorToken `
+                -Context 'PktMon ownership probe failed' `
+                -Message $_.Exception.Message))
         }
     }
     $captureStopped = -not $sessionPresent -and -not [bool]$State.started
     if ($sessionPresent -or [bool]$State.started) {
         try {
             # This is the conservative upper boundary of admissible packet
-            # observation. It is recorded before ETW loss inspection and stop.
+            # observation. Immediately after fixing it, query the complete
+            # filter inventory while the owned session is still alive. Thus a
+            # removed, narrowed, replaced or additional filter at the boundary
+            # invalidates packet-absence evidence before flush/stop can hide it.
             $captureEnd = [DateTimeOffset]::UtcNow
             $State.capture_ended_epoch_ms =
                 Get-I04EpochMilliseconds -Timestamp $captureEnd
+            try {
+                $preStopFilterResult = Invoke-I04Pktmon `
+                    -LogPath $State.command_log `
+                    -Arguments @('filter', 'list')
+                $preStopFilters = @($preStopFilterResult.output)
+                $preStopFilters | Set-Content `
+                    -LiteralPath $State.filters_pre_stop_path -Encoding utf8
+                if ($preStopFilterResult.timed_out -or
+                    $preStopFilterResult.log_error -or
+                    $preStopFilterResult.exit_code -ne 0) {
+                    throw 'Bounded pre-stop filter inventory was inconclusive'
+                }
+                $preStopContracts = Test-I04PktmonArmedFilterContracts `
+                    -Text ($preStopFilters -join "`n") `
+                    -FilterV4 ([string]$State.expected_filter_v4) `
+                    -FilterV6 ([string]$State.expected_filter_v6) `
+                    -FilterIcmpV6 ([string]$State.expected_filter_icmpv6) `
+                    -IPv4 ([string]$State.expected_ipv4) `
+                    -IPv6 ([string]$State.expected_ipv6) `
+                    -Port ([int]$State.expected_port)
+                $State.filter_inventory_pre_stop_sha256 =
+                    [string]$preStopContracts.canonical_sha256
+                $State.filter_inventory_scenario_unchanged =
+                    [bool]$preStopContracts.exact -and
+                    [string]$State.filter_inventory_armed_sha256 -match
+                        '^[0-9a-f]{64}$' -and
+                    [string]$State.filter_inventory_pre_stop_sha256 -ceq
+                        [string]$State.filter_inventory_armed_sha256
+                if (-not [bool]$State.filter_inventory_scenario_unchanged) {
+                    throw 'PktMon filter inventory changed during the adjudicated capture window'
+                }
+            } catch {
+                $State.filter_inventory_scenario_unchanged = $false
+                $CleanupFailures.Add((Get-I04SafeErrorToken `
+                    -Context 'PktMon scenario filter census failed' `
+                    -Message $_.Exception.Message))
+            }
+
+            # Frames arriving during final flush/stop are outside the
+            # adjudicated interval, but the flush must still account for every
+            # buffer carrying a frame at or before the boundary above.
+            $flush = Invoke-I04EtwFinalFlush -SessionName 'PktMon'
+            $State.etw_final_flush_succeeded = [bool]$flush.succeeded
+            $State.etw_final_flush_error_code = $flush.error_code
             $loss = Get-I04EtwLossEvidence -SessionName 'PktMon'
+            $State.etw_loss_sample_phase = 'post-final-flush-pre-stop'
+            $State.etw_post_flush_query_ok =
+                [bool]$flush.succeeded -and [bool]$loss.available -and
+                [UInt32]$loss.error_code -eq 0
             $State.etw_events_lost = $loss.events_lost
             $State.etw_buffers_lost = $loss.buffers_lost
             $State.etw_log_buffers_lost = $loss.log_buffers_lost
             $State.etw_realtime_buffers_lost = $loss.realtime_buffers_lost
             $State.etw_buffers_written = $loss.buffers_written
-            $State.etw_loss_proved_zero = [bool]$loss.proved_zero
+            $State.etw_loss_proved_zero =
+                [bool]$State.etw_final_flush_succeeded -and
+                [bool]$State.etw_post_flush_query_ok -and
+                [bool]$loss.proved_zero
             $State.etw_query_error = $loss.error
             $stopResult = Invoke-I04Pktmon -LogPath $State.command_log `
                 -Arguments @('stop')
@@ -2700,6 +6327,11 @@ function Stop-I04PacketCapture {
             }
             $State.started = $false
             $captureStopped = $true
+            if (-not [bool]$State.etw_loss_proved_zero) {
+                $CleanupFailures.Add(
+                    'PktMon loss counters were not proved zero after the final ETW flush'
+                )
+            }
             if (Test-Path -LiteralPath $State.etl_path -PathType Leaf) {
                 $State.etl_size_bytes =
                     (Get-Item -LiteralPath $State.etl_path `
@@ -2717,7 +6349,9 @@ function Stop-I04PacketCapture {
                 -Mutation 'pktmon-capture' -State 'rolled_back' `
                 -Detail 'capture stopped' -CleanupFailures $CleanupFailures
         } catch {
-            $CleanupFailures.Add($_.Exception.Message)
+            $CleanupFailures.Add((Get-I04SafeErrorToken `
+                -Context 'PktMon capture stop failed' `
+                -Message $_.Exception.Message))
         }
     }
     if ($captureStopped -and
@@ -2732,42 +6366,86 @@ function Stop-I04PacketCapture {
                 throw 'pktmon ETL to PCAPNG conversion failed'
             }
         } catch {
-            $CleanupFailures.Add($_.Exception.Message)
+            $CleanupFailures.Add((Get-I04SafeErrorToken `
+                -Context 'PktMon ETL conversion failed' `
+                -Message $_.Exception.Message))
         }
     }
 
     $ownedFilterNames = @($State.filters)
-    $remainingFilters = New-Object 'Collections.Generic.List[string]'
+    $remainingFilters = [Collections.Generic.List[string]]::new()
+    foreach ($ownedName in $ownedFilterNames) {
+        $remainingFilters.Add([string]$ownedName)
+    }
     try {
-        $filterInventory = @(& pktmon.exe filter list 2>&1)
-        $filterInventoryExit = $LASTEXITCODE
+        $filterInventoryResult = Invoke-I04Pktmon `
+            -LogPath $State.command_log -Arguments @('filter', 'list')
+        if ($filterInventoryResult.timed_out -or
+            $filterInventoryResult.log_error) {
+            throw 'Bounded pktmon filter inventory query was inconclusive'
+        }
+        $filterInventory = @($filterInventoryResult.output)
+        $filterInventoryExit = $filterInventoryResult.exit_code
         $filterInventoryText = $filterInventory -join "`n"
     } catch {
         $filterInventory = @()
         $filterInventoryExit = -1
         $filterInventoryText = ''
-        $CleanupFailures.Add(
-            "pktmon filter inventory query failed: $($_.Exception.Message)"
-        )
+        $CleanupFailures.Add((Get-I04SafeErrorToken `
+            -Context 'pktmon filter inventory query failed' `
+            -Message $_.Exception.Message))
     }
-    foreach ($filter in $ownedFilterNames) {
-        $listed = $filterInventoryExit -ne 0 -or
-            $filterInventoryText.IndexOf(
-                [string]$filter, [StringComparison]::OrdinalIgnoreCase
-            ) -ge 0
-        if (-not $listed) { continue }
+    if ($filterInventoryExit -eq 0) {
         try {
-            $removeResult = Invoke-I04Pktmon `
-                -LogPath $State.command_log -Arguments @(
-                'filter', 'remove', [string]$filter
-            )
-            if ($removeResult.exit_code -ne 0 -or
-                $removeResult.log_error) {
-                throw "pktmon filter '$filter' could not be removed"
+            # One full-inventory census is the mandatory gate for cleanup.
+            # The ownership projection below may only consume entries after
+            # this parser has rejected mixed modes, duplicate IDs and every
+            # unrecognized line; global removal is otherwise forbidden.
+            $filterInventoryCensus =
+                Get-I04PktmonInventoryCensus -Text $filterInventoryText
+            if (-not ($filterInventoryCensus.exact -is [bool]) -or
+                -not [bool]$filterInventoryCensus.exact) {
+                throw (
+                    'PktMon filter inventory was not exact: ' +
+                    [string]$filterInventoryCensus.reason
+                )
+            }
+            $listedOwned = [Collections.Generic.List[string]]::new()
+            $foreignFilterCount = 0
+            foreach ($entry in @($filterInventoryCensus.entries)) {
+                $ownedMatch = @($ownedFilterNames | Where-Object {
+                    [string]$_ -ceq [string]$entry.name
+                })
+                if ($ownedMatch.Count -eq 1) {
+                    $listedOwned.Add([string]$ownedMatch[0])
+                } else { $foreignFilterCount++ }
+            }
+            $remainingFilters.Clear()
+            foreach ($listedName in @($listedOwned.ToArray() |
+                Sort-Object -Unique)) {
+                $remainingFilters.Add([string]$listedName)
+            }
+            if ($foreignFilterCount -ne 0) {
+                throw 'A foreign PktMon filter appeared; refusing global filter removal'
+            }
+            if ($listedOwned.Count -gt 0) {
+                # `pktmon filter remove` is a global operation; current Windows
+                # versions do not accept a filter name. It is safe here only
+                # because preflight was empty and the exact current census above
+                # proved that every listed row belongs to this run.
+                $removeResult = Invoke-I04Pktmon `
+                    -LogPath $State.command_log `
+                    -Arguments @('filter', 'remove')
+                if ($removeResult.timed_out -or $removeResult.log_error -or
+                    $removeResult.exit_code -ne 0) {
+                    throw 'pktmon global owned-filter removal failed'
+                }
+                $remainingFilters.Clear()
             }
         } catch {
-            $CleanupFailures.Add($_.Exception.Message)
-            $remainingFilters.Add([string]$filter)
+            $CleanupFailures.Add((Get-I04SafeErrorToken `
+                -Context 'pktmon owned filter removal failed' `
+                -Message $_.Exception.Message))
         }
     }
     if ($ownedFilterNames.Count -gt 0 -and $remainingFilters.Count -eq 0) {
@@ -2776,13 +6454,25 @@ function Stop-I04PacketCapture {
             -Detail ($ownedFilterNames -join ',') `
             -CleanupFailures $CleanupFailures
     }
-    $State.filters = @($remainingFilters)
+    $State.filters = @($remainingFilters.ToArray())
 
     try {
-        $statusAfter = @(& pktmon.exe status 2>&1)
+        $statusAfterResult = Invoke-I04Pktmon `
+            -LogPath $State.command_log -Arguments @('status')
+        $filtersAfterResult = Invoke-I04Pktmon `
+            -LogPath $State.command_log -Arguments @('filter', 'list')
+        if ($statusAfterResult.timed_out -or
+            $statusAfterResult.log_error -or
+            $statusAfterResult.exit_code -ne 0 -or
+            $filtersAfterResult.timed_out -or
+            $filtersAfterResult.log_error -or
+            $filtersAfterResult.exit_code -ne 0) {
+            throw 'Bounded pktmon post-cleanup inventory was inconclusive'
+        }
+        $statusAfter = @($statusAfterResult.output)
         $statusAfter | Set-Content -LiteralPath $State.status_after_path `
             -Encoding utf8
-        $filtersAfter = @(& pktmon.exe filter list 2>&1)
+        $filtersAfter = @($filtersAfterResult.output)
         $filtersAfter | Set-Content -LiteralPath $State.filters_after_path `
             -Encoding utf8
         $filterText = $filtersAfter -join "`n"
@@ -2815,10 +6505,20 @@ function Stop-I04PacketCapture {
             )
         }
 
-        $etwAfter = @(& logman.exe query -ets PktMon 2>&1)
-        $etwAfterExit = $LASTEXITCODE
+        $etwAfterResult = Invoke-I04Logman `
+            -LogPath $State.command_log `
+            -Arguments @('query', '-ets', 'PktMon')
+        if ($etwAfterResult.timed_out -or $etwAfterResult.log_error) {
+            throw 'Bounded logman post-cleanup session query was inconclusive'
+        }
+        $etwAfter = @($etwAfterResult.output)
+        $etwAfterExit = $etwAfterResult.exit_code
         $etwAfter | Set-Content -LiteralPath $State.etw_after_path -Encoding utf8
-        $State.etw_session_stopped_verified = $etwAfterExit -ne 0
+        $etwAfterControl = Get-I04EtwLossEvidence -SessionName 'PktMon'
+        $State.etw_session_stopped_verified =
+            $etwAfterExit -ne 0 -and
+            -not [bool]$etwAfterControl.available -and
+            [UInt32]$etwAfterControl.error_code -eq 4201
         if ($State.ever_started -and
             -not $State.etw_session_stopped_verified) {
             $State.started = $true
@@ -2827,14 +6527,20 @@ function Stop-I04PacketCapture {
             )
         }
     } catch {
-        $CleanupFailures.Add(
-            "pktmon post-cleanup state could not be verified: $($_.Exception.Message)"
-        )
+        $CleanupFailures.Add((Get-I04SafeErrorToken `
+            -Context 'pktmon post-cleanup state could not be verified' `
+            -Message $_.Exception.Message))
     }
 }
 
 function Initialize-I04SocketSampler {
-    if ('V91I04SocketSampler' -as [type]) { return }
+    $contractId = 'ese.v91.i04-socket-sampler/2026-08-01.v1'
+    if ('V91I04SocketSampler' -as [type]) {
+        $null = Assert-I04ManagedTypeContract `
+            -TypeName 'V91I04SocketSampler' `
+            -ExpectedContractId $contractId
+        return
+    }
     Add-Type @'
 using System;
 using System.Collections.Generic;
@@ -2848,6 +6554,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 public static class V91I04SocketSampler {
+    public const string ContractId = "ese.v91.i04-socket-sampler/2026-08-01.v1";
     private const int AF_INET = 2;
     private const int AF_INET6 = 23;
     private const int TCP_TABLE_OWNER_PID_ALL = 5;
@@ -3113,6 +6820,9 @@ public static class V91I04SocketSampler {
     }
 }
 '@
+    $null = Assert-I04ManagedTypeContract `
+        -TypeName 'V91I04SocketSampler' `
+        -ExpectedContractId $contractId
 }
 
 function Start-I04SocketSampler {
@@ -3147,14 +6857,14 @@ function Stop-I04SocketSampler {
             )
         }
         if ([string]$Sampler.Error) {
-            $CleanupFailures.Add(
-                "PID socket sampler failed: $($Sampler.Error)"
-            )
+            $CleanupFailures.Add((Get-I04SafeErrorToken `
+                -Context 'PID socket sampler failed' `
+                -Message ([string]$Sampler.Error)))
         }
     } catch {
-        $CleanupFailures.Add(
-            "PID socket sampler cleanup failed: $($_.Exception.Message)"
-        )
+        $CleanupFailures.Add((Get-I04SafeErrorToken `
+            -Context 'PID socket sampler cleanup failed' `
+            -Message $_.Exception.Message))
     }
     return $stopped
 }
@@ -3341,9 +7051,10 @@ function Get-I04SocketSamplerEvidence {
     $parseErrors = 0
     $v4Established = $false
     $v6Attempt = $false
-    foreach ($lineValue in @(
-        Get-Content -LiteralPath $Path -ErrorAction Stop
-    )) {
+    $snapshot = Open-I04ImmutableEvidenceSnapshot -Path $Path
+    $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+    $snapshotText = $strictUtf8.GetString([byte[]]$snapshot.bytes)
+    foreach ($lineValue in @($snapshotText -split "\r?\n")) {
         if ([string]::IsNullOrWhiteSpace([string]$lineValue)) { continue }
         try {
             $sample = [string]$lineValue | ConvertFrom-Json -ErrorAction Stop
@@ -3420,7 +7131,11 @@ function Get-I04SocketSamplerEvidence {
         -BoundaryEpochMs $BoundaryEpochMs -BoundaryQpc $BoundaryQpc
     return [pscustomobject][ordered]@{
         schema = 'ese.v91.i04-pid-socket-sampler/v1'
-        path = $Path
+        path = 'evidence\socket-samples.ndjson'
+        source_byte_count = [Int64]$snapshot.byte_count
+        source_sha256 = [string]$snapshot.sha256
+        source_immutable_read_lock_held =
+            [bool]$snapshot.immutable_read_lock_held
         candidate_process_id = $CandidateProcessId
         boundary_epoch_ms = $BoundaryEpochMs
         boundary_qpc = $BoundaryQpc
@@ -3512,9 +7227,16 @@ function Convert-I04Packet {
     }
 
     if ($etherType -eq 0x0800) {
-        if ($Packet.Length -lt $offset + 20) { return $null }
+        if ($Packet.Length -lt $offset + 20 -or
+            ($Packet[$offset] -shr 4) -ne 4) { return $null }
         $ihl = ($Packet[$offset] -band 0x0f) * 4
         if ($ihl -lt 20 -or $Packet.Length -lt $offset + $ihl) { return $null }
+        $totalLength = Read-I04UInt16BE -Bytes $Packet -Offset ($offset + 2)
+        $ipEnd = $offset + $totalLength
+        $fragmentField = Read-I04UInt16BE -Bytes $Packet `
+            -Offset ($offset + 6)
+        if ($totalLength -lt $ihl + 20 -or $ipEnd -gt $Packet.Length -or
+            ($fragmentField -band 0x3fff) -ne 0) { return $null }
         $protocol = [int]$Packet[$offset + 9]
         $sourceBytes = New-Object byte[] 4
         $destinationBytes = New-Object byte[] 4
@@ -3523,9 +7245,12 @@ function Convert-I04Packet {
         $source = ([Net.IPAddress]::new($sourceBytes)).ToString()
         $destination = ([Net.IPAddress]::new($destinationBytes)).ToString()
         $transportOffset = $offset + $ihl
-        if ($protocol -ne 6 -or $Packet.Length -lt $transportOffset + 20) {
+        if ($protocol -ne 6 -or $ipEnd -lt $transportOffset + 20) {
             return $null
         }
+        $tcpHeaderLength = ($Packet[$transportOffset + 12] -shr 4) * 4
+        if ($tcpHeaderLength -lt 20 -or
+            $transportOffset + $tcpHeaderLength -gt $ipEnd) { return $null }
         $sourcePort = Read-I04UInt16BE -Bytes $Packet -Offset $transportOffset
         $destinationPort = Read-I04UInt16BE -Bytes $Packet `
             -Offset ($transportOffset + 2)
@@ -3554,12 +7279,21 @@ function Convert-I04Packet {
             quoted_source_port = $null
             quoted_destination_port = $null
             quoted_sequence_number = $null
+            quoted_parse_complete = $null
         }
     }
 
-    if ($etherType -ne 0x86dd -or $Packet.Length -lt $offset + 40) {
+    if ($etherType -ne 0x86dd -or $Packet.Length -lt $offset + 40 -or
+        ($Packet[$offset] -shr 4) -ne 6) {
         return $null
     }
+    $ipv6PayloadLength = Read-I04UInt16BE -Bytes $Packet `
+        -Offset ($offset + 4)
+    if ($ipv6PayloadLength -eq 0 -or
+        $offset + 40 + $ipv6PayloadLength -gt $Packet.Length) {
+        return $null
+    }
+    $ipv6End = $offset + 40 + $ipv6PayloadLength
     $nextHeader = [int]$Packet[$offset + 6]
     $sourceV6Bytes = New-Object byte[] 16
     $destinationV6Bytes = New-Object byte[] 16
@@ -3569,7 +7303,9 @@ function Convert-I04Packet {
     $destinationV6 = ([Net.IPAddress]::new($destinationV6Bytes)).ToString()
     $transport = $offset + 40
     while ($nextHeader -in @(0, 43, 44, 51, 60)) {
-        if ($Packet.Length -lt $transport + 8) { return $null }
+        if ($nextHeader -eq 44 -or $ipv6End -lt $transport + 8) {
+            return $null
+        }
         $following = [int]$Packet[$transport]
         $extensionBytes = if ($nextHeader -eq 44) {
             8
@@ -3580,9 +7316,9 @@ function Convert-I04Packet {
         }
         $transport += $extensionBytes
         $nextHeader = $following
-        if ($Packet.Length -lt $transport) { return $null }
+        if ($ipv6End -lt $transport) { return $null }
     }
-    if ($nextHeader -eq 58 -and $Packet.Length -ge $transport + 4) {
+    if ($nextHeader -eq 58 -and $ipv6End -ge $transport + 8) {
         $quotedFamily = $null
         $quotedProtocol = $null
         $quotedSource = $null
@@ -3590,8 +7326,9 @@ function Convert-I04Packet {
         $quotedSourcePort = $null
         $quotedDestinationPort = $null
         $quotedSequence = $null
+        $quotedParseComplete = $false
         $quotedOffset = $transport + 8
-        if ($Packet.Length -ge $quotedOffset + 40 -and
+        if ($ipv6End -ge $quotedOffset + 40 -and
             ($Packet[$quotedOffset] -shr 4) -eq 6) {
             $quotedFamily = 'IPv6'
             $quotedNext = [int]$Packet[$quotedOffset + 6]
@@ -3611,7 +7348,7 @@ function Convert-I04Packet {
             )).ToString()
             $quotedTransport = $quotedOffset + 40
             while ($quotedNext -in @(0, 43, 44, 51, 60)) {
-                if ($Packet.Length -lt $quotedTransport + 8) { break }
+                if ($ipv6End -lt $quotedTransport + 8) { break }
                 $quotedFollowing = [int]$Packet[$quotedTransport]
                 $quotedExtensionBytes = if ($quotedNext -eq 44) {
                     8
@@ -3624,7 +7361,7 @@ function Convert-I04Packet {
                 $quotedNext = $quotedFollowing
             }
             if ($quotedNext -eq 6 -and
-                $Packet.Length -ge $quotedTransport + 8) {
+                $ipv6End -ge $quotedTransport + 8) {
                 $quotedProtocol = 'TCP'
                 $quotedSourcePort = Read-I04UInt16BE -Bytes $Packet `
                     -Offset $quotedTransport
@@ -3632,7 +7369,19 @@ function Convert-I04Packet {
                     -Offset ($quotedTransport + 2)
                 $quotedSequence = Read-I04UInt32BE -Bytes $Packet `
                     -Offset ($quotedTransport + 4)
+                $quotedParseComplete = $true
+            } elseif ($quotedNext -notin @(0, 43, 44, 51, 60)) {
+                $quotedProtocol = 'IPPROTO-' + [string]$quotedNext
+                $quotedParseComplete = $true
             }
+        }
+        $icmpType = [int]$Packet[$transport]
+        if ($icmpType -in @(1, 2, 3, 4) -and
+            -not $quotedParseComplete) {
+            # A truncated ICMPv6 error quote could be the only evidence that
+            # the target SYN was rejected. Treat it as non-adjudicable rather
+            # than silently converting it into a proved blackhole.
+            return $null
         }
         return [pscustomobject][ordered]@{
             timestamp_ms = $TimestampMs
@@ -3648,7 +7397,7 @@ function Convert-I04Packet {
             ack = $false
             rst = $false
             fin = $false
-            icmp_type = [int]$Packet[$transport]
+            icmp_type = $icmpType
             quoted_family = $quotedFamily
             quoted_protocol = $quotedProtocol
             quoted_source = $quotedSource
@@ -3656,11 +7405,15 @@ function Convert-I04Packet {
             quoted_source_port = $quotedSourcePort
             quoted_destination_port = $quotedDestinationPort
             quoted_sequence_number = $quotedSequence
+            quoted_parse_complete = $quotedParseComplete
         }
     }
-    if ($nextHeader -ne 6 -or $Packet.Length -lt $transport + 20) {
+    if ($nextHeader -ne 6 -or $ipv6End -lt $transport + 20) {
         return $null
     }
+    $v6TcpHeaderLength = ($Packet[$transport + 12] -shr 4) * 4
+    if ($v6TcpHeaderLength -lt 20 -or
+        $transport + $v6TcpHeaderLength -gt $ipv6End) { return $null }
     $sourceV6Port = Read-I04UInt16BE -Bytes $Packet -Offset $transport
     $destinationV6Port = Read-I04UInt16BE -Bytes $Packet -Offset ($transport + 2)
     $v6Flags = [int]$Packet[$transport + 13]
@@ -3688,40 +7441,110 @@ function Convert-I04Packet {
         quoted_source_port = $null
         quoted_destination_port = $null
         quoted_sequence_number = $null
+        quoted_parse_complete = $null
     }
 }
 
 function Read-I04PcapNg {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    $bytes = [IO.File]::ReadAllBytes($Path)
+    $snapshot = Open-I04ImmutableEvidenceSnapshot -Path $Path
+    $bytes = [byte[]]$snapshot.bytes
     if ($bytes.Length -lt 28 -or
         (Read-I04UInt32LE -Bytes $bytes -Offset 0) -ne 0x0a0d0d0a -or
         (Read-I04UInt32LE -Bytes $bytes -Offset 8) -ne 0x1a2b3c4d) {
         throw 'Only little-endian PCAPNG produced by pktmon is supported'
     }
     $interfaces = @{}
-    $interfaceNumber = 0
+    $interfaceRecords = [System.Collections.Generic.List[object]]::new()
     $packets = [System.Collections.Generic.List[object]]::new()
+    $parserComplete = $true
+    $blockErrorCount = 0
+    $idbOptionErrorCount = 0
+    $unknownInterfaceFrameCount = 0
+    $unsupportedLinkTypeFrameCount = 0
+    $unsupportedPacketBlockCount = 0
+    $truncatedFrameCount = 0
+    $nonAdjudicableFrameCount = 0
+    $parseNullFrameCount = 0
+    $enhancedPacketCount = 0
+    $sectionIndex = -1
+    $interfaceNumber = 0
     $offset = 0
     while ($offset + 12 -le $bytes.Length) {
         $type = Read-I04UInt32LE -Bytes $bytes -Offset $offset
         $length = [int](Read-I04UInt32LE -Bytes $bytes -Offset ($offset + 4))
-        if ($length -lt 12 -or $offset + $length -gt $bytes.Length -or
+        if ($length -lt 12 -or ($length % 4) -ne 0 -or
+            $offset + $length -gt $bytes.Length -or
             (Read-I04UInt32LE -Bytes $bytes -Offset ($offset + $length - 4)) -ne
                 [uint32]$length) {
-            throw "Invalid PCAPNG block at offset $offset"
+            $parserComplete = $false
+            $blockErrorCount++
+            break
         }
-        if ($type -eq 1 -and $length -ge 20) {
+        if ($type -eq 0x0a0d0d0a) {
+            if ($length -lt 28 -or
+                (Read-I04UInt32LE -Bytes $bytes -Offset ($offset + 8)) -ne
+                    0x1a2b3c4d) {
+                $parserComplete = $false
+                $blockErrorCount++
+            } else {
+                $sectionIndex++
+                $interfaceNumber = 0
+                $interfaces = @{}
+            }
+        } elseif ($type -eq 1) {
+            if ($sectionIndex -lt 0 -or $length -lt 20) {
+                $parserComplete = $false
+                $blockErrorCount++
+                $offset += $length
+                continue
+            }
             $linkType = Read-I04UInt16LE -Bytes $bytes -Offset ($offset + 8)
             $resolution = 0.000001
+            $timestampOffsetSeconds = 0L
+            $interfaceName = ''
+            $interfaceDescription = ''
+            $optionsValid = $true
             $option = $offset + 16
-            while ($option + 4 -le $offset + $length - 4) {
+            $optionEnd = $offset + $length - 4
+            while ($option -lt $optionEnd) {
+                if ($option + 4 -gt $optionEnd) {
+                    $optionsValid = $false
+                    break
+                }
                 $code = Read-I04UInt16LE -Bytes $bytes -Offset $option
                 $optionLength = Read-I04UInt16LE -Bytes $bytes `
                     -Offset ($option + 2)
-                if ($code -eq 0) { break }
-                if ($code -eq 9 -and $optionLength -ge 1) {
+                $paddedOptionLength = ($optionLength + 3) -band (-bnot 3)
+                if ($code -eq 0) {
+                    if ($optionLength -ne 0) { $optionsValid = $false }
+                    break
+                }
+                if ($option + 4 + $paddedOptionLength -gt $optionEnd) {
+                    $optionsValid = $false
+                    break
+                }
+                if ($code -in @(2, 3)) {
+                    try {
+                        $optionText = [Text.Encoding]::UTF8.GetString(
+                            $bytes, $option + 4, $optionLength
+                        ).Trim([char]0)
+                        if ($code -eq 2) {
+                            $interfaceName = $optionText
+                        } else {
+                            $interfaceDescription = $optionText
+                        }
+                    } catch {
+                        $optionsValid = $false
+                        break
+                    }
+                }
+                if ($code -eq 9 -and $optionLength -ne 1) {
+                    $optionsValid = $false
+                    break
+                }
+                if ($code -eq 9) {
                     $value = [int]$bytes[$option + 4]
                     if (($value -band 0x80) -ne 0) {
                         $resolution = [Math]::Pow(2, -($value -band 0x7f))
@@ -3729,40 +7552,157 @@ function Read-I04PcapNg {
                         $resolution = [Math]::Pow(10, -$value)
                     }
                 }
-                $option += 4 + (($optionLength + 3) -band (-bnot 3))
+                if ($code -eq 10) {
+                    # Deprecated if_tzone would make epoch normalization
+                    # ambiguous across tool versions.
+                    $optionsValid = $false
+                    break
+                }
+                if ($code -eq 14) {
+                    if ($optionLength -ne 8) {
+                        $optionsValid = $false
+                        break
+                    }
+                    $timestampOffsetSeconds = [BitConverter]::ToInt64(
+                        $bytes, $option + 4)
+                }
+                $option += 4 + $paddedOptionLength
             }
-            $interfaces[$interfaceNumber] = [pscustomobject]@{
+            if (-not $optionsValid) {
+                $parserComplete = $false
+                $idbOptionErrorCount++
+            }
+            $interfaceRecord = [pscustomobject][ordered]@{
+                section_index = $sectionIndex
+                interface_id = $interfaceNumber
                 link_type = [int]$linkType
                 timestamp_resolution = [double]$resolution
+                timestamp_offset_seconds = [Int64]$timestampOffsetSeconds
+                supported_link_type = [int]$linkType -in @(1, 101, 228, 229)
+                interface_name_sha256 = if ($interfaceName) {
+                    Get-I04StringSha256 -Value $interfaceName
+                } else { '' }
+                interface_description_sha256 = if ($interfaceDescription) {
+                    Get-I04StringSha256 -Value $interfaceDescription
+                } else { '' }
+                options_valid = $optionsValid
+                _interface_name = $interfaceName
+                _interface_description = $interfaceDescription
             }
+            $interfaces[$interfaceNumber] = $interfaceRecord
+            $interfaceRecords.Add($interfaceRecord)
             $interfaceNumber++
-        } elseif ($type -eq 6 -and $length -ge 32) {
+        } elseif ($type -in @(2, 3)) {
+            # Obsolete Packet Blocks and Simple Packet Blocks also carry frame
+            # bytes. This parser cannot preserve their interface/timestamp
+            # binding, so their presence makes absence evidence inadmissible.
+            $unsupportedPacketBlockCount++
+            $nonAdjudicableFrameCount++
+            $parserComplete = $false
+        } elseif ($type -eq 6) {
+            $enhancedPacketCount++
+            if ($sectionIndex -lt 0 -or $length -lt 32) {
+                $parserComplete = $false
+                $blockErrorCount++
+                $nonAdjudicableFrameCount++
+                $offset += $length
+                continue
+            }
             $interfaceId = [int](Read-I04UInt32LE -Bytes $bytes `
                 -Offset ($offset + 8))
             $capturedLength = [int](Read-I04UInt32LE -Bytes $bytes `
                 -Offset ($offset + 20))
-            if ($interfaces.ContainsKey($interfaceId) -and
-                $capturedLength -ge 0 -and
-                $offset + 28 + $capturedLength -le $offset + $length - 4) {
+            $originalLength = [int](Read-I04UInt32LE -Bytes $bytes `
+                -Offset ($offset + 24))
+            $paddedCapturedLength = ($capturedLength + 3) -band (-bnot 3)
+            if (-not $interfaces.ContainsKey($interfaceId)) {
+                $unknownInterfaceFrameCount++
+                $nonAdjudicableFrameCount++
+                $parserComplete = $false
+            } elseif ($capturedLength -lt 0 -or $originalLength -lt 0 -or
+                $capturedLength -ne $originalLength -or
+                $offset + 28 + $paddedCapturedLength -gt
+                    $offset + $length - 4) {
+                $truncatedFrameCount++
+                $nonAdjudicableFrameCount++
+                $parserComplete = $false
+            } elseif (-not [bool]$interfaces[$interfaceId].supported_link_type) {
+                $unsupportedLinkTypeFrameCount++
+                $nonAdjudicableFrameCount++
+                $parserComplete = $false
+            } else {
                 $high = [UInt64](Read-I04UInt32LE -Bytes $bytes `
                     -Offset ($offset + 12))
                 $low = [UInt64](Read-I04UInt32LE -Bytes $bytes `
                     -Offset ($offset + 16))
                 $ticks = ($high -shl 32) -bor $low
                 $timeMs = [double]$ticks *
-                    [double]$interfaces[$interfaceId].timestamp_resolution * 1000.0
+                    [double]$interfaces[$interfaceId].timestamp_resolution *
+                    1000.0 +
+                    ([double]$interfaces[$interfaceId].
+                        timestamp_offset_seconds * 1000.0)
                 $packetBytes = New-Object byte[] $capturedLength
                 [Array]::Copy($bytes, $offset + 28, $packetBytes, 0,
                     $capturedLength)
                 $parsed = Convert-I04Packet -Packet $packetBytes `
                     -LinkType $interfaces[$interfaceId].link_type `
                     -TimestampMs $timeMs
-                if ($null -ne $parsed) { $packets.Add($parsed) }
+                if ($null -eq $parsed) {
+                    $parseNullFrameCount++
+                    $nonAdjudicableFrameCount++
+                    $parserComplete = $false
+                } else {
+                    $parsed | Add-Member -NotePropertyName section_index `
+                        -NotePropertyValue $sectionIndex
+                    $parsed | Add-Member -NotePropertyName capture_interface_id `
+                        -NotePropertyValue $interfaceId
+                    $parsed | Add-Member -NotePropertyName capture_link_type `
+                        -NotePropertyValue ([int]$interfaces[$interfaceId].link_type)
+                    $parsed | Add-Member -NotePropertyName captured_length `
+                        -NotePropertyValue $capturedLength
+                    $parsed | Add-Member -NotePropertyName original_length `
+                        -NotePropertyValue $originalLength
+                    $parsed | Add-Member -NotePropertyName frame_complete `
+                        -NotePropertyValue $true
+                    $packets.Add($parsed)
+                }
             }
         }
         $offset += $length
     }
-    return @($packets)
+    $trailingByteCount = $bytes.Length - $offset
+    if ($trailingByteCount -ne 0) { $parserComplete = $false }
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i04-pcapng-parse/v2'
+        source_byte_count = [Int64]$snapshot.byte_count
+        source_sha256 = [string]$snapshot.sha256
+        source_immutable_read_lock_held =
+            [bool]$snapshot.immutable_read_lock_held
+        parser_complete = $parserComplete -and
+            $blockErrorCount -eq 0 -and $idbOptionErrorCount -eq 0 -and
+            $unknownInterfaceFrameCount -eq 0 -and
+            $unsupportedLinkTypeFrameCount -eq 0 -and
+            $unsupportedPacketBlockCount -eq 0 -and
+            $truncatedFrameCount -eq 0 -and
+            $parseNullFrameCount -eq 0 -and
+            $nonAdjudicableFrameCount -eq 0 -and
+            $trailingByteCount -eq 0 -and $sectionIndex -eq 0
+        section_count = $sectionIndex + 1
+        interface_count = $interfaceRecords.Count
+        enhanced_packet_count = $enhancedPacketCount
+        parsed_packet_count = $packets.Count
+        trailing_byte_count = $trailingByteCount
+        block_error_count = $blockErrorCount
+        idb_option_error_count = $idbOptionErrorCount
+        truncated_frame_count = $truncatedFrameCount
+        unknown_interface_frame_count = $unknownInterfaceFrameCount
+        unsupported_linktype_frame_count = $unsupportedLinkTypeFrameCount
+        unsupported_packet_block_count = $unsupportedPacketBlockCount
+        parse_null_frame_count = $parseNullFrameCount
+        non_adjudicable_frame_count = $nonAdjudicableFrameCount
+        interfaces = @($interfaceRecords.ToArray())
+        packets = @($packets.ToArray())
+    }
 }
 
 function Get-I04SynPidCorrelation {
@@ -3853,14 +7793,1037 @@ function Get-I04SynPidCorrelation {
     }
 }
 
+function Get-I04CandidateBindingContract {
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$ExpectedPath
+    )
+
+    $required = @(
+        'i04_owner_nonce', 'i04_owner_role', 'i04_owner_pid',
+        'i04_owner_creation_utc_ticks',
+        'i04_owner_cim_creation_utc_ticks', 'i04_owner_path_sha256',
+        'i04_owner_executable_sha256', 'i04_owner_sid_sha256',
+        'i04_ownership_id_sha256', 'i04_job_contract_id',
+        'i04_job_active_process_limit', 'i04_job_assigned_before_resume',
+        'i04_job_last_accounting'
+    )
+    $metadataPresent = @($required | Where-Object {
+        $Process.PSObject.Properties.Name -notcontains $_
+    }).Count -eq 0
+    $metadataExact = $false
+    $expectedPathSha256 = ''
+    $expectedExeSha256 = ''
+    if ($metadataPresent) {
+        try {
+            $expectedFullPath = Assert-I04NoReparsePath `
+                -Path $ExpectedPath -Kind File
+            $expectedPathSha256 = Get-I04StringSha256 `
+                -Value $expectedFullPath.ToLowerInvariant()
+            $expectedExeSha256 = Get-LabSha256 -Path $expectedFullPath
+            $recomputedOwnershipId = Get-I04StringSha256 -Value (
+                '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}' -f
+                    [string]$Process.i04_owner_nonce,
+                    [string]$Process.i04_owner_role,
+                    [int]$Process.i04_owner_pid,
+                    [Int64]$Process.i04_owner_creation_utc_ticks,
+                    [Int64]$Process.i04_owner_cim_creation_utc_ticks,
+                    [string]$Process.i04_owner_path_sha256,
+                    [string]$Process.i04_owner_executable_sha256,
+                    [string]$Process.i04_owner_sid_sha256
+            )
+            $metadataExact =
+                [string]$Process.i04_owner_nonce -ceq
+                    $RunNonce.ToLowerInvariant() -and
+                [string]$Process.i04_owner_role -ceq
+                    'CoordinatorClient' -and
+                [int]$Process.i04_owner_pid -eq [int]$Process.Id -and
+                [Int64]$Process.i04_owner_creation_utc_ticks -gt 0 -and
+                [Int64]$Process.i04_owner_cim_creation_utc_ticks -gt 0 -and
+                [string]$Process.i04_owner_path_sha256 -ceq
+                    $expectedPathSha256 -and
+                [string]$Process.i04_owner_executable_sha256 -ceq
+                    $expectedExeSha256 -and
+                [string]$Process.i04_owner_sid_sha256 -ceq
+                    [string]$script:i04HostIdentity.user_sid_sha256 -and
+                [string]$Process.i04_ownership_id_sha256 -ceq
+                    $recomputedOwnershipId -and
+                [string]$Process.i04_job_contract_id -ceq
+                    'ese.v91.i04-restricted-process-launcher/2026-08-01.v1' -and
+                [int]$Process.i04_job_active_process_limit -eq 1 -and
+                [bool]$Process.i04_job_assigned_before_resume
+        } catch { $metadataExact = $false }
+    }
+    $exitStateCollectorOk = $false
+    $hasExited = $null
+    $liveBindingExact = $false
+    $jobAccounting = $null
+    $jobAccountingExact = $false
+    try {
+        $Process.Refresh()
+        $hasExited = [bool]$Process.HasExited
+        $exitStateCollectorOk = $true
+        if (-not $hasExited -and $metadataExact) {
+            $liveBindingExact = Test-I04OwnedProcessBinding `
+                -Process $Process -ExpectedPath $ExpectedPath
+        }
+        if ($metadataExact) {
+            $jobAccounting = Get-I04RestrictedJobAccounting `
+                -ProcessId ([int]$Process.Id)
+            $Process.i04_job_last_accounting = $jobAccounting
+            $jobAccountingExact =
+                Assert-I04RestrictedJobAccountingContract `
+                    -Accounting $jobAccounting `
+                    -ExpectedProcessId ([int]$Process.Id) `
+                    -ExpectedActiveProcesses $(if ($hasExited) { 0 } else { 1 })
+        }
+    } catch {
+        $exitStateCollectorOk = $false
+    }
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i04-candidate-binding/v1'
+        pid = [int]$Process.Id
+        creation_utc_ticks = if ($metadataPresent) {
+            [Int64]$Process.i04_owner_creation_utc_ticks
+        } else { 0L }
+        cim_creation_utc_ticks = if ($metadataPresent) {
+            [Int64]$Process.i04_owner_cim_creation_utc_ticks
+        } else { 0L }
+        ownership_id_sha256 = if ($metadataPresent) {
+            [string]$Process.i04_ownership_id_sha256
+        } else { '' }
+        executable_sha256 = if ($metadataPresent) {
+            [string]$Process.i04_owner_executable_sha256
+        } else { '' }
+        expected_executable_sha256 = $expectedExeSha256
+        user_sid_sha256 = if ($metadataPresent) {
+            [string]$Process.i04_owner_sid_sha256
+        } else { '' }
+        metadata_present = $metadataPresent
+        exact = $metadataExact -and $jobAccountingExact
+        exit_state_collector_ok = $exitStateCollectorOk
+        has_exited = $hasExited
+        current_live_binding_exact = $liveBindingExact
+        restricted_job_contract_id = if ($metadataPresent) {
+            [string]$Process.i04_job_contract_id
+        } else { '' }
+        restricted_job_active_process_limit = if ($metadataPresent) {
+            [int]$Process.i04_job_active_process_limit
+        } else { 0 }
+        restricted_job_assigned_before_resume = $metadataPresent -and
+            [bool]$Process.i04_job_assigned_before_resume
+        restricted_job_accounting = $jobAccounting
+        restricted_job_accounting_exact = $jobAccountingExact
+    }
+}
+
+function Get-I04WebEndpointOwnershipEvidence {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][int]$CandidateProcessId
+    )
+
+    try {
+        $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen `
+            -ErrorAction Stop | Where-Object {
+                [string]$_.LocalAddress -in @(
+                    '127.0.0.1', '::1', '0.0.0.0', '::'
+                )
+            })
+        $ownerPids = @($listeners | ForEach-Object {
+            [int]$_.OwningProcess
+        } | Sort-Object -Unique)
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-web-endpoint-ownership/v1'
+            collector_ok = $true
+            endpoint = "loopback-or-wildcard:$Port"
+            listener_count = $listeners.Count
+            owner_process_ids = $ownerPids
+            endpoint_owner_pid = if ($ownerPids.Count -eq 1) {
+                [int]$ownerPids[0]
+            } else { $null }
+            endpoint_bound_to_candidate = $listeners.Count -gt 0 -and
+                $ownerPids.Count -eq 1 -and
+                [int]$ownerPids[0] -eq $CandidateProcessId
+            error_sha256 = ''
+        }
+    } catch {
+        return [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-web-endpoint-ownership/v1'
+            collector_ok = $false
+            endpoint = "loopback-or-wildcard:$Port"
+            listener_count = 0
+            owner_process_ids = @()
+            endpoint_owner_pid = $null
+            endpoint_bound_to_candidate = $false
+            error_sha256 = Get-I04StringSha256 -Value $_.Exception.Message
+        }
+    }
+}
+
+function Test-I04PacketFailureSourceContract {
+    param(
+        [AllowNull()][object]$Evidence,
+        [Parameter(Mandatory = $true)][int]$ExpectedProcessId,
+        [Parameter(Mandatory = $true)][double]$ExpectedBoundaryEpochMs
+    )
+
+    try {
+        return ($null -ne $Evidence -and
+            $Evidence.schema -is [string] -and
+            [string]$Evidence.schema -ceq
+                'ese.v91.i04-packet-verdict/v2' -and
+            $Evidence.candidate_process_id -is [int] -and
+            [int]$Evidence.candidate_process_id -eq $ExpectedProcessId -and
+            $Evidence.pcapng_source_byte_count -is [Int64] -and
+            [Int64]$Evidence.pcapng_source_byte_count -gt 0 -and
+            $Evidence.pcapng_source_sha256 -is [string] -and
+            [string]$Evidence.pcapng_source_sha256 -cmatch
+                '^[0-9a-f]{64}$' -and
+            $Evidence.pcapng_source_immutable_read_lock_held -is [bool] -and
+            [bool]$Evidence.pcapng_source_immutable_read_lock_held -and
+            $Evidence.pcapng_parser_complete -is [bool] -and
+            [bool]$Evidence.pcapng_parser_complete -and
+            $Evidence.capture_interface_binding_exact -is [bool] -and
+            [bool]$Evidence.capture_interface_binding_exact -and
+            $Evidence.target_frames_on_expected_physical_nic -is [bool] -and
+            [bool]$Evidence.target_frames_on_expected_physical_nic -and
+            $Evidence.coordinator_stop_a_boundary_epoch_ms -is [double] -and
+            [double]$Evidence.coordinator_stop_a_boundary_epoch_ms -eq
+                $ExpectedBoundaryEpochMs)
+    } catch { return $false }
+}
+
+function Test-I04SocketFailureSourceContract {
+    param(
+        [AllowNull()][object]$Evidence,
+        [Parameter(Mandatory = $true)][int]$ExpectedProcessId,
+        [Parameter(Mandatory = $true)][double]$ExpectedBoundaryEpochMs
+    )
+
+    try {
+        $clock = $Evidence.clock_validation
+        return ($null -ne $Evidence -and
+            $Evidence.schema -is [string] -and
+            [string]$Evidence.schema -ceq
+                'ese.v91.i04-pid-socket-sampler/v1' -and
+            $Evidence.candidate_process_id -is [int] -and
+            [int]$Evidence.candidate_process_id -eq $ExpectedProcessId -and
+            $Evidence.source_byte_count -is [Int64] -and
+            [Int64]$Evidence.source_byte_count -gt 0 -and
+            $Evidence.source_sha256 -is [string] -and
+            [string]$Evidence.source_sha256 -cmatch '^[0-9a-f]{64}$' -and
+            $Evidence.source_immutable_read_lock_held -is [bool] -and
+            [bool]$Evidence.source_immutable_read_lock_held -and
+            $Evidence.boundary_epoch_ms -is [double] -and
+            [double]$Evidence.boundary_epoch_ms -eq
+                $ExpectedBoundaryEpochMs -and
+            $Evidence.boundary_qpc -is [Int64] -and
+            [Int64]$Evidence.boundary_qpc -gt 0 -and
+            $Evidence.qpc_frequency -is [Int64] -and
+            [Int64]$Evidence.qpc_frequency -eq
+                [Int64][Diagnostics.Stopwatch]::Frequency -and
+            $Evidence.clock_coherence_valid -is [bool] -and
+            [bool]$Evidence.clock_coherence_valid -and
+            $Evidence.sample_count -is [int] -and
+            [int]$Evidence.sample_count -ge 2 -and
+            $Evidence.parse_error_count -is [int] -and
+            [int]$Evidence.parse_error_count -eq 0 -and
+            $Evidence.sampler_coverage_valid -is [bool] -and
+            [bool]$Evidence.sampler_coverage_valid -and
+            $null -ne $clock -and
+            $clock.valid -is [bool] -and [bool]$clock.valid -and
+            $clock.sample_count -is [int] -and
+            [int]$clock.sample_count -eq [int]$Evidence.sample_count -and
+            $clock.boundary_epoch_ms -is [double] -and
+            [double]$clock.boundary_epoch_ms -eq
+                [double]$Evidence.boundary_epoch_ms -and
+            $clock.boundary_qpc -is [Int64] -and
+            [Int64]$clock.boundary_qpc -eq [Int64]$Evidence.boundary_qpc -and
+            $clock.qpc_frequency -is [Int64] -and
+            [Int64]$clock.qpc_frequency -eq [Int64]$Evidence.qpc_frequency)
+    } catch { return $false }
+}
+
+function New-I04ProductFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(
+            'process_exit', 'classic_web_timeout', 'api_unavailable',
+            'api_contract_invalid', 'ipv6_syn_missing',
+            'fallback_window', 'ipv4_connectivity',
+            'transport_attempt_count', 'product_log_contract',
+            'transfer_contract', 'observation_window', 'socket_contract',
+            'telemetry_contract', 'api_liveness', 'ui_liveness'
+        )][string]$FailureType,
+        [Parameter(Mandatory = $true)][string]$DisplayMessage,
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$ExpectedPath,
+        [Parameter(Mandatory = $true)][double]$BoundaryEpochMs,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet(
+            'process_handle', 'classic_web_request', 'api_probe',
+            'packet_verdict', 'product_log_counts', 'transfer_snapshot',
+            'socket_sampler', 'telemetry_snapshot', 'ui_probe'
+        )][string]$SourceKind,
+        [AllowNull()][object]$SourceEvidence = $null,
+        [bool]$SourceCollectorOk = $true,
+        [switch]$RequireWebEndpoint,
+        [switch]$RequireExitedProcess,
+        [switch]$RequireLiveProcess
+    )
+
+    $observedEpochMs = Get-I04EpochMilliseconds `
+        -Timestamp ([DateTimeOffset]::UtcNow)
+    $binding = Get-I04CandidateBindingContract -Process $Process `
+        -ExpectedPath $ExpectedPath
+    $endpoint = if ($RequireWebEndpoint) {
+        Get-I04WebEndpointOwnershipEvidence -Port $ClientWebPort `
+            -CandidateProcessId ([int]$Process.Id)
+    } else { $null }
+    $sourceJson = if ($null -eq $SourceEvidence) {
+        ''
+    } else {
+        $SourceEvidence | ConvertTo-Json -Compress -Depth 32
+    }
+    $sourceError = if ($null -eq $SourceEvidence) {
+        ''
+    } elseif ($SourceEvidence.PSObject.Properties.Name -contains 'error' -and
+        $SourceEvidence.error) {
+        [string]$SourceEvidence.error
+    } elseif ($SourceEvidence.PSObject.Properties.Name -contains
+        'request_error' -and $SourceEvidence.request_error) {
+        [string]$SourceEvidence.request_error
+    } else { '' }
+    $sourceProperties = if ($null -eq $SourceEvidence) { @() } else {
+        @($SourceEvidence.PSObject.Properties.Name)
+    }
+    $sourceEvidenceContractValid = switch ($SourceKind) {
+        'process_handle' {
+            [bool]$RequireExitedProcess
+            break
+        }
+        'classic_web_request' {
+            $null -ne $SourceEvidence -and
+                'operation' -in $sourceProperties -and
+                [string]$SourceEvidence.operation -ceq 'stop' -and
+                'request_completed' -in $sourceProperties -and
+                $SourceEvidence.request_completed -is [bool] -and
+                -not [bool]$SourceEvidence.request_completed
+            break
+        }
+        'api_probe' {
+            $null -ne $SourceEvidence -and
+                'available' -in $sourceProperties -and
+                $SourceEvidence.available -is [bool]
+            break
+        }
+        'packet_verdict' {
+            Test-I04PacketFailureSourceContract `
+                -Evidence $SourceEvidence `
+                -ExpectedProcessId ([int]$Process.Id) `
+                -ExpectedBoundaryEpochMs $BoundaryEpochMs
+            break
+        }
+        'product_log_counts' {
+            $null -ne $SourceEvidence -and
+                [string]$SourceEvidence.schema -ceq
+                    'ese.v91.i04-product-log-delta-evidence/v1' -and
+                [string]$SourceEvidence.candidate_ownership_id_sha256 -ceq
+                    [string]$Process.i04_ownership_id_sha256 -and
+                $SourceEvidence.collector_ok -is [bool] -and
+                [bool]$SourceEvidence.collector_ok -and
+                $SourceEvidence.adjudicable -is [bool] -and
+                [bool]$SourceEvidence.adjudicable -and
+                $null -ne $SourceEvidence.before -and
+                $null -ne $SourceEvidence.after -and
+                [string]$SourceEvidence.before.schema -ceq
+                    'ese.v91.i04-product-log-counts/v2' -and
+                [string]$SourceEvidence.after.schema -ceq
+                    'ese.v91.i04-product-log-counts/v2' -and
+                [bool]$SourceEvidence.before.collector_ok -and
+                [bool]$SourceEvidence.after.collector_ok -and
+                [bool]$SourceEvidence.before.adjudicable -and
+                [bool]$SourceEvidence.after.adjudicable -and
+                $SourceEvidence.fallback_delta -is [ValueType] -and
+                -not ($SourceEvidence.fallback_delta -is [bool]) -and
+                $SourceEvidence.bounded_fallback_delta -is [ValueType] -and
+                -not ($SourceEvidence.bounded_fallback_delta -is [bool]) -and
+                $SourceEvidence.hello_send_delta -is [ValueType] -and
+                -not ($SourceEvidence.hello_send_delta -is [bool]) -and
+                $SourceEvidence.hello_answer_receive_delta -is
+                    [ValueType] -and
+                -not ($SourceEvidence.hello_answer_receive_delta -is
+                    [bool]) -and
+                $SourceEvidence.a4af_swap_a_to_b_delta -is [ValueType] -and
+                -not ($SourceEvidence.a4af_swap_a_to_b_delta -is [bool]) -and
+                [int]$SourceEvidence.fallback_delta -eq (
+                    [int]$SourceEvidence.after.fallback_count -
+                    [int]$SourceEvidence.before.fallback_count) -and
+                [int]$SourceEvidence.bounded_fallback_delta -eq (
+                    [int]$SourceEvidence.after.bounded_fallback_count -
+                    [int]$SourceEvidence.before.bounded_fallback_count) -and
+                [int]$SourceEvidence.hello_send_delta -eq (
+                    [int]$SourceEvidence.after.hello_send_count -
+                    [int]$SourceEvidence.before.hello_send_count) -and
+                [int]$SourceEvidence.hello_answer_receive_delta -eq (
+                    [int]$SourceEvidence.after.hello_answer_receive_count -
+                    [int]$SourceEvidence.before.hello_answer_receive_count) -and
+                [int]$SourceEvidence.a4af_swap_a_to_b_delta -eq (
+                    [int]$SourceEvidence.after.a4af_swap_a_to_b_count -
+                    [int]$SourceEvidence.before.a4af_swap_a_to_b_count)
+            break
+        }
+        'transfer_snapshot' {
+            $null -ne $SourceEvidence -and
+                'found' -in $sourceProperties -and
+                $SourceEvidence.found -is [bool] -and
+                'file_hash' -in $sourceProperties -and
+                [string]$SourceEvidence.file_hash -match
+                    '^[0-9A-F]{32}$'
+            break
+        }
+        'socket_sampler' {
+            Test-I04SocketFailureSourceContract `
+                -Evidence $SourceEvidence `
+                -ExpectedProcessId ([int]$Process.Id) `
+                -ExpectedBoundaryEpochMs $BoundaryEpochMs
+            break
+        }
+        'telemetry_snapshot' {
+            $null -ne $SourceEvidence -and
+                [string]$SourceEvidence.schema -ceq
+                    'ese.v91.i04-telemetry-delta-evidence/v1' -and
+                [string]$SourceEvidence.candidate_ownership_id_sha256 -ceq
+                    [string]$Process.i04_ownership_id_sha256 -and
+                $SourceEvidence.collector_ok -is [bool] -and
+                [bool]$SourceEvidence.collector_ok -and
+                $SourceEvidence.adjudicable -is [bool] -and
+                [bool]$SourceEvidence.adjudicable -and
+                $null -ne $SourceEvidence.baseline -and
+                $null -ne $SourceEvidence.final -and
+                $SourceEvidence.baseline.available -is [bool] -and
+                [bool]$SourceEvidence.baseline.available -and
+                $SourceEvidence.final.available -is [bool] -and
+                [bool]$SourceEvidence.final.available -and
+                $SourceEvidence.adds_delta -is [ValueType] -and
+                -not ($SourceEvidence.adds_delta -is [bool]) -and
+                $SourceEvidence.duplicate_adds_delta -is [ValueType] -and
+                -not ($SourceEvidence.duplicate_adds_delta -is [bool]) -and
+                $SourceEvidence.observed_current_max -is [ValueType] -and
+                -not ($SourceEvidence.observed_current_max -is [bool]) -and
+                $SourceEvidence.observed_adds_max -is [ValueType] -and
+                -not ($SourceEvidence.observed_adds_max -is [bool]) -and
+                $SourceEvidence.observed_duplicate_adds_max -is
+                    [ValueType] -and
+                -not ($SourceEvidence.observed_duplicate_adds_max -is
+                    [bool]) -and
+                $SourceEvidence.observed_high_water_max -is [ValueType] -and
+                -not ($SourceEvidence.observed_high_water_max -is [bool]) -and
+                [Int64]$SourceEvidence.adds_delta -eq (
+                    [Int64]$SourceEvidence.final.connecting_client_adds -
+                    [Int64]$SourceEvidence.baseline.connecting_client_adds) -and
+                [Int64]$SourceEvidence.duplicate_adds_delta -eq (
+                    [Int64]$SourceEvidence.final.
+                        connecting_client_duplicate_adds -
+                    [Int64]$SourceEvidence.baseline.
+                        connecting_client_duplicate_adds)
+            break
+        }
+        'ui_probe' {
+            $null -ne $SourceEvidence -and
+                'process_id' -in $sourceProperties -and
+                [int]$SourceEvidence.process_id -eq [int]$Process.Id -and
+                'main_window_present' -in $sourceProperties -and
+                $SourceEvidence.main_window_present -is [bool] -and
+                'message_pump_responsive' -in $sourceProperties -and
+                $SourceEvidence.message_pump_responsive -is [bool]
+            break
+        }
+    }
+    $sourceBound = [bool]$binding.exact -and
+        [bool]$sourceEvidenceContractValid
+    if ($RequireExitedProcess) {
+        $sourceBound = $sourceBound -and
+            [bool]$binding.exit_state_collector_ok -and
+            $binding.has_exited -is [bool] -and [bool]$binding.has_exited
+    }
+    if ($RequireLiveProcess) {
+        $sourceBound = $sourceBound -and
+            [bool]$binding.exit_state_collector_ok -and
+            $binding.has_exited -is [bool] -and
+            -not [bool]$binding.has_exited -and
+            [bool]$binding.current_live_binding_exact
+    }
+    if ($RequireWebEndpoint) {
+        $sourceBound = $sourceBound -and
+            [bool]$binding.exit_state_collector_ok -and
+            $binding.has_exited -is [bool] -and
+            -not [bool]$binding.has_exited -and
+            [bool]$binding.current_live_binding_exact -and
+            [bool]$endpoint.collector_ok -and
+            [bool]$endpoint.endpoint_bound_to_candidate
+    }
+    $postBoundary = $BoundaryEpochMs -gt 0 -and
+        $observedEpochMs -ge $BoundaryEpochMs
+    $collectorOk = $SourceCollectorOk -and
+        [bool]$sourceEvidenceContractValid -and (
+        -not $RequireWebEndpoint -or [bool]$endpoint.collector_ok
+    )
+    return [pscustomobject][ordered]@{
+        schema = 'ese.v91.i04-product-failure/v1'
+        failure_type = $FailureType
+        display_message = $DisplayMessage
+        observed_at_epoch_ms = [double]$observedEpochMs
+        boundary_epoch_ms = [double]$BoundaryEpochMs
+        post_boundary = $postBoundary
+        case_id = $caseId
+        run_nonce = $RunNonce.ToLowerInvariant()
+        candidate_binding = $binding
+        source = [pscustomobject][ordered]@{
+            kind = $SourceKind
+            collector_ok = [bool]$collectorOk
+            evidence_contract_valid =
+                [bool]$sourceEvidenceContractValid
+            endpoint = if ($null -eq $endpoint) { '' } else {
+                [string]$endpoint.endpoint
+            }
+            endpoint_owner_pid = if ($null -eq $endpoint) {
+                $null
+            } else { $endpoint.endpoint_owner_pid }
+            endpoint_bound_to_candidate = $null -ne $endpoint -and
+                [bool]$endpoint.endpoint_bound_to_candidate
+            evidence_sha256 = if ($sourceJson) {
+                Get-I04StringSha256 -Value $sourceJson
+            } else { '' }
+            # Retain the exact private evidence whose digest is published.
+            # The public projection deliberately omits this field.
+            evidence = $SourceEvidence
+            error_fingerprint_sha256 = if ($sourceError) {
+                Get-I04StringSha256 -Value $sourceError
+            } else { '' }
+        }
+        source_bound = [bool]$sourceBound
+        adjudicable = [bool]$collectorOk -and [bool]$sourceBound -and
+            $postBoundary
+    }
+}
+
+function Assert-I04ProductFailureContract {
+    param([Parameter(Mandatory = $true)][object]$Failure)
+
+    $failureTypes = @(
+        'process_exit', 'classic_web_timeout', 'api_unavailable',
+        'api_contract_invalid', 'ipv6_syn_missing', 'fallback_window',
+        'ipv4_connectivity', 'transport_attempt_count',
+        'product_log_contract', 'transfer_contract', 'observation_window',
+        'socket_contract', 'telemetry_contract', 'api_liveness',
+        'ui_liveness'
+    )
+    $sourceKinds = @(
+        'process_handle', 'classic_web_request', 'api_probe',
+        'packet_verdict', 'product_log_counts', 'transfer_snapshot',
+        'socket_sampler', 'telemetry_snapshot', 'ui_probe'
+    )
+    $observedValue = $Failure.observed_at_epoch_ms
+    $boundaryValue = $Failure.boundary_epoch_ms
+    $observedFinite = $observedValue -is [ValueType] -and
+        -not ($observedValue -is [bool]) -and
+        -not [double]::IsNaN([double]$observedValue) -and
+        -not [double]::IsInfinity([double]$observedValue)
+    $boundaryFinite = $boundaryValue -is [ValueType] -and
+        -not ($boundaryValue -is [bool]) -and
+        -not [double]::IsNaN([double]$boundaryValue) -and
+        -not [double]::IsInfinity([double]$boundaryValue)
+    $expectedPostBoundary = $observedFinite -and $boundaryFinite -and
+        [double]$boundaryValue -gt 0 -and
+        [double]$observedValue -ge [double]$boundaryValue
+    $sourceEvidenceJson = if ($null -eq $Failure.source.evidence) {
+        ''
+    } else {
+        $Failure.source.evidence | ConvertTo-Json -Compress -Depth 32
+    }
+    $sourceEvidenceHashExact = if ($sourceEvidenceJson) {
+        [string]$Failure.source.evidence_sha256 -match '^[0-9a-f]{64}$' -and
+            [string]$Failure.source.evidence_sha256 -ceq
+                (Get-I04StringSha256 -Value $sourceEvidenceJson)
+    } else {
+        [string]$Failure.source.kind -ceq 'process_handle' -and
+            [string]$Failure.source.evidence_sha256 -ceq ''
+    }
+    $expectedSourceKinds = @(switch ([string]$Failure.failure_type) {
+        'process_exit' { 'process_handle' }
+        'classic_web_timeout' { 'classic_web_request' }
+        { $_ -in @('api_unavailable', 'api_contract_invalid',
+                'api_liveness') } { 'api_probe' }
+        { $_ -in @('ipv6_syn_missing', 'fallback_window',
+                'ipv4_connectivity', 'transport_attempt_count',
+                'observation_window') } { 'packet_verdict' }
+        'product_log_contract' { 'product_log_counts' }
+        'transfer_contract' { 'transfer_snapshot' }
+        'socket_contract' { 'socket_sampler' }
+        'telemetry_contract' { 'telemetry_snapshot' }
+        'ui_liveness' { 'ui_probe' }
+    })
+    $failureSourceKindExact = $expectedSourceKinds.Count -eq 1 -and
+        [string]$Failure.source.kind -ceq [string]$expectedSourceKinds[0]
+    $evidence = $Failure.source.evidence
+    $evidenceProperties = if ($null -eq $evidence) { @() } else {
+        @($evidence.PSObject.Properties.Name)
+    }
+    $sourceEvidenceRevalidated = switch ([string]$Failure.source.kind) {
+        'process_handle' {
+            $Failure.candidate_binding.exit_state_collector_ok -is [bool] -and
+                [bool]$Failure.candidate_binding.exit_state_collector_ok -and
+                $Failure.candidate_binding.has_exited -is [bool] -and
+                [bool]$Failure.candidate_binding.has_exited
+            break
+        }
+        'classic_web_request' {
+            $null -ne $evidence -and 'operation' -in $evidenceProperties -and
+                [string]$evidence.operation -ceq 'stop' -and
+                'request_completed' -in $evidenceProperties -and
+                $evidence.request_completed -is [bool] -and
+                -not [bool]$evidence.request_completed
+            break
+        }
+        'api_probe' {
+            $null -ne $evidence -and 'available' -in $evidenceProperties -and
+                $evidence.available -is [bool]
+            break
+        }
+        'packet_verdict' {
+            Test-I04PacketFailureSourceContract `
+                -Evidence $evidence `
+                -ExpectedProcessId ([int]$Failure.candidate_binding.pid) `
+                -ExpectedBoundaryEpochMs $boundaryValue
+            break
+        }
+        'product_log_counts' {
+            $null -ne $evidence -and [string]$evidence.schema -ceq
+                'ese.v91.i04-product-log-delta-evidence/v1' -and
+                [string]$evidence.candidate_ownership_id_sha256 -ceq
+                    [string]$Failure.candidate_binding.ownership_id_sha256 -and
+                $evidence.collector_ok -is [bool] -and
+                [bool]$evidence.collector_ok -and
+                $evidence.adjudicable -is [bool] -and
+                [bool]$evidence.adjudicable -and
+                $null -ne $evidence.before -and $null -ne $evidence.after -and
+                [string]$evidence.before.schema -ceq
+                    'ese.v91.i04-product-log-counts/v2' -and
+                [string]$evidence.after.schema -ceq
+                    'ese.v91.i04-product-log-counts/v2' -and
+                [int]$evidence.fallback_delta -eq
+                    ([int]$evidence.after.fallback_count -
+                     [int]$evidence.before.fallback_count) -and
+                [int]$evidence.bounded_fallback_delta -eq
+                    ([int]$evidence.after.bounded_fallback_count -
+                     [int]$evidence.before.bounded_fallback_count) -and
+                [int]$evidence.hello_send_delta -eq
+                    ([int]$evidence.after.hello_send_count -
+                     [int]$evidence.before.hello_send_count) -and
+                [int]$evidence.hello_answer_receive_delta -eq
+                    ([int]$evidence.after.hello_answer_receive_count -
+                     [int]$evidence.before.hello_answer_receive_count) -and
+                [int]$evidence.a4af_swap_a_to_b_delta -eq
+                    ([int]$evidence.after.a4af_swap_a_to_b_count -
+                     [int]$evidence.before.a4af_swap_a_to_b_count)
+            break
+        }
+        'transfer_snapshot' {
+            $null -ne $evidence -and 'found' -in $evidenceProperties -and
+                $evidence.found -is [bool] -and
+                'file_hash' -in $evidenceProperties -and
+                [string]$evidence.file_hash -match '^[0-9A-F]{32}$'
+            break
+        }
+        'socket_sampler' {
+            Test-I04SocketFailureSourceContract `
+                -Evidence $evidence `
+                -ExpectedProcessId ([int]$Failure.candidate_binding.pid) `
+                -ExpectedBoundaryEpochMs $boundaryValue
+            break
+        }
+        'telemetry_snapshot' {
+            $null -ne $evidence -and [string]$evidence.schema -ceq
+                'ese.v91.i04-telemetry-delta-evidence/v1' -and
+                [string]$evidence.candidate_ownership_id_sha256 -ceq
+                    [string]$Failure.candidate_binding.ownership_id_sha256 -and
+                $evidence.collector_ok -is [bool] -and
+                [bool]$evidence.collector_ok -and
+                $evidence.adjudicable -is [bool] -and
+                [bool]$evidence.adjudicable -and
+                $null -ne $evidence.baseline -and $null -ne $evidence.final -and
+                [Int64]$evidence.adds_delta -eq
+                    ([Int64]$evidence.final.connecting_client_adds -
+                     [Int64]$evidence.baseline.connecting_client_adds) -and
+                [Int64]$evidence.duplicate_adds_delta -eq
+                    ([Int64]$evidence.final.connecting_client_duplicate_adds -
+                     [Int64]$evidence.baseline.connecting_client_duplicate_adds)
+            break
+        }
+        'ui_probe' {
+            $null -ne $evidence -and 'process_id' -in $evidenceProperties -and
+                $evidence.process_id -is [ValueType] -and
+                -not ($evidence.process_id -is [bool]) -and
+                [int]$evidence.process_id -eq
+                    [int]$Failure.candidate_binding.pid -and
+                'main_window_present' -in $evidenceProperties -and
+                $evidence.main_window_present -is [bool] -and
+                'message_pump_responsive' -in $evidenceProperties -and
+                $evidence.message_pump_responsive -is [bool]
+            break
+        }
+        default { $false }
+    }
+    $candidateExitedExact =
+        $Failure.candidate_binding.exit_state_collector_ok -is [bool] -and
+        [bool]$Failure.candidate_binding.exit_state_collector_ok -and
+        $Failure.candidate_binding.has_exited -is [bool]
+    $expectedJobActiveProcesses = if ($candidateExitedExact -and
+        [bool]$Failure.candidate_binding.has_exited) { 0 } else { 1 }
+    $jobAccountingRevalidated = $false
+    try {
+        $jobAccountingRevalidated =
+            Assert-I04RestrictedJobAccountingContract `
+                -Accounting (
+                    $Failure.candidate_binding.restricted_job_accounting) `
+                -ExpectedProcessId ([int]$Failure.candidate_binding.pid) `
+                -ExpectedActiveProcesses $expectedJobActiveProcesses
+    } catch { $jobAccountingRevalidated = $false }
+    if ([string]$Failure.schema -cne
+            'ese.v91.i04-product-failure/v1' -or
+        [string]$Failure.failure_type -notin $failureTypes -or
+        -not ($Failure.display_message -is [string]) -or
+        -not $observedFinite -or -not $boundaryFinite -or
+        -not ($Failure.post_boundary -is [bool]) -or
+        [bool]$Failure.post_boundary -ne $expectedPostBoundary -or
+        [string]$Failure.case_id -cne $caseId -or
+        [string]$Failure.run_nonce -cne $RunNonce.ToLowerInvariant() -or
+        [string]$Failure.candidate_binding.schema -cne
+            'ese.v91.i04-candidate-binding/v1' -or
+        -not ($Failure.candidate_binding.pid -is [int]) -or
+        -not ($Failure.candidate_binding.exact -is [bool]) -or
+        -not [bool]$Failure.candidate_binding.exact -or
+        [string]$Failure.candidate_binding.ownership_id_sha256 -notmatch
+            '^[0-9a-f]{64}$' -or
+        [string]$Failure.candidate_binding.executable_sha256 -notmatch
+            '^[0-9a-f]{64}$' -or
+        [string]$Failure.candidate_binding.user_sid_sha256 -notmatch
+            '^[0-9a-f]{64}$' -or
+        [string]$Failure.candidate_binding.restricted_job_contract_id -cne
+            'ese.v91.i04-restricted-process-launcher/2026-08-01.v1' -or
+        -not ($Failure.candidate_binding.restricted_job_active_process_limit `
+            -is [int]) -or
+        [int]$Failure.candidate_binding.
+            restricted_job_active_process_limit -ne 1 -or
+        -not ($Failure.candidate_binding.restricted_job_assigned_before_resume `
+            -is [bool]) -or
+        -not [bool]$Failure.candidate_binding.
+            restricted_job_assigned_before_resume -or
+        -not ($Failure.candidate_binding.restricted_job_accounting_exact `
+            -is [bool]) -or
+        -not [bool]$Failure.candidate_binding.
+            restricted_job_accounting_exact -or
+        -not $candidateExitedExact -or
+        ([bool]$Failure.candidate_binding.has_exited -and
+            [string]$Failure.failure_type -cne 'process_exit') -or
+        (-not [bool]$Failure.candidate_binding.has_exited -and
+            (-not ($Failure.candidate_binding.current_live_binding_exact `
+                -is [bool]) -or
+             -not [bool]$Failure.candidate_binding.current_live_binding_exact)) `
+            -or
+        -not [bool]$jobAccountingRevalidated -or
+        [string]$Failure.source.kind -notin $sourceKinds -or
+        -not $failureSourceKindExact -or
+        -not [bool]$sourceEvidenceRevalidated -or
+        -not ($Failure.source.collector_ok -is [bool]) -or
+        -not ($Failure.source.evidence_contract_valid -is [bool]) -or
+        -not [bool]$Failure.source.evidence_contract_valid -or
+        -not $sourceEvidenceHashExact -or
+        -not ($Failure.source.endpoint_bound_to_candidate -is [bool]) -or
+        -not ($Failure.source_bound -is [bool]) -or
+        -not [bool]$Failure.source_bound -or
+        ([string]$Failure.source.kind -in @(
+            'classic_web_request', 'api_probe'
+        ) -and -not [bool]$Failure.source.endpoint_bound_to_candidate) -or
+        -not ($Failure.adjudicable -is [bool]) -or
+        [bool]$Failure.adjudicable -ne (
+            [bool]$Failure.post_boundary -and
+            [bool]$Failure.source_bound -and
+            [bool]$Failure.source.collector_ok
+        )) {
+        throw 'Product failure does not satisfy the exact typed v1 contract'
+    }
+    return $true
+}
+
+function Add-I04TypedProductFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Collections.Generic.List[object]]$Failures,
+        [Parameter(Mandatory = $true)][string]$FailureType,
+        [Parameter(Mandatory = $true)][string]$DisplayMessage,
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$ExpectedPath,
+        [Parameter(Mandatory = $true)][double]$BoundaryEpochMs,
+        [Parameter(Mandatory = $true)][string]$SourceKind,
+        [AllowNull()][object]$SourceEvidence = $null
+    )
+
+    $failure = New-I04ProductFailure -FailureType $FailureType `
+        -DisplayMessage $DisplayMessage -Process $Process `
+        -ExpectedPath $ExpectedPath -BoundaryEpochMs $BoundaryEpochMs `
+        -SourceKind $SourceKind -SourceEvidence $SourceEvidence
+    $null = Assert-I04ProductFailureContract -Failure $failure
+    if (-not [bool]$failure.source_bound -or
+        -not [bool]$failure.adjudicable) {
+        throw 'Typed product failure was not source-bound/adjudicable'
+    }
+    $Failures.Add($failure)
+}
+
+function Assert-I04ProjectionPropertySet {
+    param(
+        [Parameter(Mandatory = $true)][object]$Object,
+        [Parameter(Mandatory = $true)][string[]]$Allowed,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $actual = @($Object.PSObject.Properties.Name)
+    $missing = @($Allowed | Where-Object { $_ -notin $actual })
+    $extra = @($actual | Where-Object { $_ -notin $Allowed })
+    if ($missing.Count -ne 0 -or $extra.Count -ne 0) {
+        throw "$Context public projection property set is not exact"
+    }
+    return $true
+}
+
+function Get-I04PublicSummaryProjection {
+    param(
+        [Parameter(Mandatory = $true)][object]$Summary,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[0-9a-fA-F]{64}$')]
+        [string]$SourceSummarySha256
+    )
+
+    # This projection is constructed exclusively from this explicit list.
+    # It intentionally omits host/user IDs, PIDs, ownership IDs, IPs, ports,
+    # adapter names/IDs, routes, paths, log names, raw errors and evidence.
+    $projection = [pscustomobject][ordered]@{
+        schema = 'ese.v91.i04-public-summary/v1'
+        projection_policy = 'explicit-allowlist-v1'
+        source_summary_sha256 = $SourceSummarySha256.ToLowerInvariant()
+        case_id = [string]$Summary.case_id
+        formal_status = [string]$Summary.formal_status
+        partial_verdict = [string]$Summary.partial_verdict
+        formal_v91_i04_eligible =
+            [bool]$Summary.formal_v91_i04_eligible
+        candidate = [pscustomobject][ordered]@{
+            commit = [string]$Summary.candidate.commit
+            version = [string]$Summary.candidate.version
+            executable_sha256 =
+                [string]$Summary.candidate.expected_emule_sha256
+            package_zip_sha256 =
+                [string]$Summary.candidate.package_zip_sha256
+            package_manifest_sha256 =
+                [string]$Summary.candidate.package_manifest_sha256
+            unchanged = [bool]$Summary.candidate.unchanged
+        }
+        adjudication = [pscustomobject][ordered]@{
+            fixture_proof_complete =
+                [bool]$Summary.adjudication.fixture_proof_complete
+            product_failure_proved =
+                [bool]$Summary.adjudication.product_failure_proved
+            product_failures_typed_and_source_bound =
+                [bool]$Summary.adjudication.
+                    product_failures_typed_and_source_bound
+            proof_contradicted =
+                [bool]$Summary.adjudication.proof_contradicted
+            cleanup_complete =
+                [bool]$Summary.adjudication.cleanup_complete
+        }
+        topology = [pscustomobject][ordered]@{
+            required = [string]$Summary.topology.required
+            observed = [string]$Summary.topology.observed_topology
+            proved = [bool]$Summary.topology.proved
+            distinct_physical_hosts =
+                [bool]$Summary.topology.distinct_physical_hosts
+            native_global_ipv6 =
+                [bool]$Summary.topology.native_global_ipv6
+            physical_adapters_and_sockets =
+                [bool]$Summary.topology.physical_adapters_and_sockets
+            overlay_vpn_proxy_absent =
+                [bool]$Summary.topology.overlay_vpn_proxy_absent
+        }
+        proof = [pscustomobject][ordered]@{
+            logs_adjudicable =
+                [bool]$Summary.fixture.trigger_runtime_valid -and
+                $null -ne $Summary.single_retry.fallback_log_delta
+            pcapng_parser_complete = $null -ne
+                $Summary.timing.packet_verdict -and
+                [bool]$Summary.timing.packet_verdict.
+                    pcapng_parser_complete
+            capture_interface_binding_exact = $null -ne
+                $Summary.timing.packet_verdict -and
+                [bool]$Summary.timing.packet_verdict.
+                    capture_interface_binding_exact
+            target_frames_on_expected_physical_nic = $null -ne
+                $Summary.timing.packet_verdict -and
+                [bool]$Summary.timing.packet_verdict.
+                    target_frames_on_expected_physical_nic
+            packet_capture_zero_loss =
+                [bool]$Summary.fixture.packet_capture_zero_loss
+            packet_capture_below_circular_limit =
+                [bool]$Summary.fixture.packet_capture_below_circular_limit
+            socket_sampler_coverage_valid = $null -ne
+                $Summary.fixture.socket_sampler -and
+                [bool]$Summary.fixture.socket_sampler.
+                    sampler_coverage_valid
+        }
+        measurements = [pscustomobject][ordered]@{
+            fallback_log_delta = $Summary.single_retry.fallback_log_delta
+            bounded_fallback_log_delta =
+                $Summary.single_retry.bounded_fallback_log_delta
+            hello_send_delta = $Summary.single_retry.hello_send_delta
+            hello_answer_receive_delta =
+                $Summary.single_retry.hello_answer_receive_delta
+            a4af_swap_a_to_b_delta =
+                $Summary.single_retry.a4af_swap_a_to_b_delta
+            ipv6_syn_count = if ($null -eq
+                $Summary.timing.packet_verdict) { $null } else {
+                [int]$Summary.timing.packet_verdict.ipv6_syn_count
+            }
+            ipv4_syn_count = if ($null -eq
+                $Summary.timing.packet_verdict) { $null } else {
+                [int]$Summary.timing.packet_verdict.ipv4_syn_count
+            }
+            syn6_to_syn4_ms = if ($null -eq
+                $Summary.timing.packet_verdict) { $null } else {
+                $Summary.timing.packet_verdict.syn6_to_syn4_ms
+            }
+            syn6_to_ipv4_connected_ms = if ($null -eq
+                $Summary.timing.packet_verdict) { $null } else {
+                $Summary.timing.packet_verdict.syn6_to_ipv4_connected_ms
+            }
+            api_probe_count = [int]$Summary.liveness.api_probe_count
+            api_failure_count = [int]$Summary.liveness.api_failure_count
+            ui_probe_count = [int]$Summary.liveness.ui_probe_count
+            ui_failure_count = [int]$Summary.liveness.ui_unresponsive_count
+        }
+        product_failures = @($Summary.product_failures | ForEach-Object {
+            [pscustomobject][ordered]@{
+                schema = [string]$_.schema
+                failure_type = [string]$_.failure_type
+                post_boundary = [bool]$_.post_boundary
+                source_kind = [string]$_.source.kind
+                source_bound = [bool]$_.source_bound
+                adjudicable = [bool]$_.adjudicable
+            }
+        })
+        counts = [pscustomobject][ordered]@{
+            product_failure_count = @($Summary.product_failures).Count
+            blocked_reason_count = @($Summary.blocked_reasons).Count
+            cleanup_failure_count = @(
+                $Summary.cleanup.failures
+            ).Count
+        }
+        privacy = [pscustomobject][ordered]@{
+            direct_identifiers_included = $false
+            raw_paths_included = $false
+            raw_network_endpoints_included = $false
+            raw_logs_or_errors_included = $false
+            stable_host_or_user_ids_included = $false
+        }
+    }
+    $null = Assert-I04ProjectionPropertySet -Object $projection `
+        -Allowed @(
+            'schema', 'projection_policy', 'source_summary_sha256',
+            'case_id', 'formal_status', 'partial_verdict',
+            'formal_v91_i04_eligible', 'candidate', 'adjudication',
+            'topology', 'proof', 'measurements', 'product_failures',
+            'counts', 'privacy'
+        ) -Context 'root'
+    $null = Assert-I04ProjectionPropertySet -Object $projection.candidate `
+        -Allowed @(
+            'commit', 'version', 'executable_sha256',
+            'package_zip_sha256', 'package_manifest_sha256', 'unchanged'
+        ) -Context 'candidate'
+    $null = Assert-I04ProjectionPropertySet -Object $projection.adjudication `
+        -Allowed @(
+            'fixture_proof_complete', 'product_failure_proved',
+            'product_failures_typed_and_source_bound',
+            'proof_contradicted', 'cleanup_complete'
+        ) -Context 'adjudication'
+    $null = Assert-I04ProjectionPropertySet -Object $projection.topology `
+        -Allowed @(
+            'required', 'observed', 'proved', 'distinct_physical_hosts',
+            'native_global_ipv6', 'physical_adapters_and_sockets',
+            'overlay_vpn_proxy_absent'
+        ) -Context 'topology'
+    $null = Assert-I04ProjectionPropertySet -Object $projection.proof `
+        -Allowed @(
+            'logs_adjudicable', 'pcapng_parser_complete',
+            'capture_interface_binding_exact',
+            'target_frames_on_expected_physical_nic',
+            'packet_capture_zero_loss',
+            'packet_capture_below_circular_limit',
+            'socket_sampler_coverage_valid'
+        ) -Context 'proof'
+    $null = Assert-I04ProjectionPropertySet -Object $projection.measurements `
+        -Allowed @(
+            'fallback_log_delta', 'bounded_fallback_log_delta',
+            'hello_send_delta', 'hello_answer_receive_delta',
+            'a4af_swap_a_to_b_delta', 'ipv6_syn_count', 'ipv4_syn_count',
+            'syn6_to_syn4_ms', 'syn6_to_ipv4_connected_ms',
+            'api_probe_count', 'api_failure_count', 'ui_probe_count',
+            'ui_failure_count'
+        ) -Context 'measurements'
+    $null = Assert-I04ProjectionPropertySet -Object $projection.counts `
+        -Allowed @(
+            'product_failure_count', 'blocked_reason_count',
+            'cleanup_failure_count'
+        ) -Context 'counts'
+    $null = Assert-I04ProjectionPropertySet -Object $projection.privacy `
+        -Allowed @(
+            'direct_identifiers_included', 'raw_paths_included',
+            'raw_network_endpoints_included',
+            'raw_logs_or_errors_included',
+            'stable_host_or_user_ids_included'
+        ) -Context 'privacy'
+    foreach ($failure in @($projection.product_failures)) {
+        $null = Assert-I04ProjectionPropertySet -Object $failure `
+            -Allowed @(
+                'schema', 'failure_type', 'post_boundary', 'source_kind',
+                'source_bound', 'adjudicable'
+            ) -Context 'product_failure'
+    }
+    return $projection
+}
+
 function Get-I04FailureDisposition {
     param(
         [Parameter(Mandatory = $true)][bool]$CaseArmed,
         [Parameter(Mandatory = $true)][bool]$FormalBoundaryPublished,
+        [AllowNull()][object]$CandidateFailure,
+        [Parameter(Mandatory = $true)][bool]$ProofContradicted,
         [AllowEmptyString()][string]$ExceptionMessage = ''
     )
 
-    $candidatePostBoundary = $CaseArmed -and $FormalBoundaryPublished
+    $contractValid = $false
+    if ($null -ne $CandidateFailure) {
+        try {
+            $null = Assert-I04ProductFailureContract `
+                -Failure $CandidateFailure
+            $contractValid = $true
+        } catch { $contractValid = $false }
+    }
+    $candidatePostBoundary = $CaseArmed -and $FormalBoundaryPublished -and
+        $contractValid -and [bool]$CandidateFailure.post_boundary -and
+        [bool]$CandidateFailure.candidate_binding.exact -and
+        [bool]$CandidateFailure.source_bound -and
+        [bool]$CandidateFailure.source.collector_ok -and
+        [bool]$CandidateFailure.adjudicable -and -not $ProofContradicted
     return [pscustomobject][ordered]@{
         classification = if ($candidatePostBoundary) {
             'FAIL'
@@ -3868,24 +8831,37 @@ function Get-I04FailureDisposition {
         candidate_post_boundary = $candidatePostBoundary
         case_armed = $CaseArmed
         formal_boundary_published = $FormalBoundaryPublished
-        exception_message = $ExceptionMessage
+        candidate_failure_contract_valid = $contractValid
+        candidate_failure_proved = $candidatePostBoundary
+        proof_contradicted = $ProofContradicted
+        exception_present = -not [string]::IsNullOrWhiteSpace($ExceptionMessage)
+        exception_fingerprint_sha256 = if (
+            [string]::IsNullOrWhiteSpace($ExceptionMessage)
+        ) { '' } else { Get-I04StringSha256 -Value $ExceptionMessage }
     }
 }
 
 function Get-I04PartialVerdict {
     param(
-        [Parameter(Mandatory = $true)][bool]$AdjudicationClean,
-        [Parameter(Mandatory = $true)]
-        [bool]$PostBoundaryCandidateFailure,
+        [Parameter(Mandatory = $true)][bool]$FixtureProofComplete,
+        [Parameter(Mandatory = $true)][bool]$ProductFailureProved,
+        [Parameter(Mandatory = $true)][bool]$ProofContradicted,
         [Parameter(Mandatory = $true)]
         [ValidateRange(0, [int]::MaxValue)][int]$ProductFailureCount
     )
 
-    if ($PostBoundaryCandidateFailure -and $AdjudicationClean) {
+    # A product invariant proved on an exact fixture is historical evidence:
+    # later cleanup/lab incidents are reported but cannot turn it into BLOCKED.
+    # Only a contradiction in the binding/attribution proof can invalidate it.
+    if ($ProductFailureProved -and $ProductFailureCount -gt 0 -and
+        -not $ProofContradicted) {
         return 'FAIL'
     }
-    if (-not $AdjudicationClean) { return 'BLOCKED' }
-    if ($ProductFailureCount -gt 0) { return 'FAIL' }
+    if ($ProductFailureProved -and $ProductFailureCount -eq 0) {
+        return 'BLOCKED'
+    }
+    if ($ProofContradicted -or -not $FixtureProofComplete -or
+        $ProductFailureCount -gt 0) { return 'BLOCKED' }
     return 'PASS'
 }
 
@@ -3904,6 +8880,7 @@ function Get-I04PacketVerdict {
         [Parameter(Mandatory = $true)][int]$MinimumSilentWindowMs,
         [Parameter(Mandatory = $true)][int]$CandidateProcessId,
         [Parameter(Mandatory = $true)][object]$SocketSamplerEvidence,
+        [Parameter(Mandatory = $true)][object]$ExpectedAdapterEvidence,
         [Parameter(Mandatory = $true)]
         [ValidateRange(1, 1000)][int]$SynCorrelationToleranceMs,
         [string[]]$ExcludedTupleKeys = @()
@@ -3941,10 +8918,122 @@ function Get-I04PacketVerdict {
     foreach ($tuple in @($ExcludedTupleKeys)) {
         $null = $excluded.Add([string]$tuple)
     }
-    $packets = @(Read-I04PcapNg -Path $PcapNgPath | Where-Object {
+    $pcap = Read-I04PcapNg -Path $PcapNgPath
+    if ([string]$pcap.schema -ne 'ese.v91.i04-pcapng-parse/v2') {
+        throw 'PCAPNG parser did not return the required v2 contract'
+    }
+    $expectedAdapterId = [string]$ExpectedAdapterEvidence.interface_id
+    $expectedAdapterName = [string]$ExpectedAdapterEvidence.name
+    $expectedAdapterDescription =
+        [string]$ExpectedAdapterEvidence.description
+    $adapterInventory = try {
+        @(Get-NetAdapter -IncludeHidden -ErrorAction Stop)
+    } catch { @() }
+    $expectedInventoryAdapters = @($adapterInventory | Where-Object {
+        $virtualTyped = $_.PSObject.Properties.Name -contains 'Virtual' -and
+            $_.Virtual -is [bool]
+        $inventoryId = if ($virtualTyped) {
+            Get-LabInterfaceId -Id ([string]$_.InterfaceGuid) `
+                -Name ([string]$_.Name) `
+                -Description ([string]$_.InterfaceDescription)
+        } else { '' }
+        $virtualTyped -and -not [bool]$_.Virtual -and
+            [int]$_.InterfaceIndex -eq
+                [int]$ExpectedAdapterEvidence.interface_index -and
+            [string]$inventoryId -ceq $expectedAdapterId -and
+            [string]$_.Name -ceq $expectedAdapterName -and
+            [string]$_.InterfaceDescription -ceq
+                $expectedAdapterDescription -and
+            [bool]$_.HardwareInterface -and
+            [string]$_.Status -ceq 'Up'
+    })
+    $expectedNameInventoryCount = @($adapterInventory | Where-Object {
+        [string]$_.Name -ceq $expectedAdapterName
+    }).Count
+    $expectedDescriptionInventoryCount = @($adapterInventory | Where-Object {
+        [string]$_.InterfaceDescription -ceq $expectedAdapterDescription
+    }).Count
+    $expectedAdapterPhysical =
+        [bool]$ExpectedAdapterEvidence.hardware_interface -and
+        -not [bool]$ExpectedAdapterEvidence.virtual -and
+        -not [bool]$ExpectedAdapterEvidence.overlay_or_vpn_like -and
+        [string]$ExpectedAdapterEvidence.status -ceq 'Up' -and
+        [int]$ExpectedAdapterEvidence.interface_index -gt 0 -and
+        -not [string]::IsNullOrWhiteSpace($expectedAdapterId) -and
+        $expectedInventoryAdapters.Count -eq 1
+    $matchingCaptureInterfaces = @($pcap.interfaces | Where-Object {
+        $name = [string]$_._interface_name
+        $description = [string]$_._interface_description
+        $namePresent = -not [string]::IsNullOrWhiteSpace($name)
+        $descriptionPresent =
+            -not [string]::IsNullOrWhiteSpace($description)
+        $homologousFieldsExact = ($namePresent -or $descriptionPresent) -and
+            (-not $namePresent -or $name -ceq $expectedAdapterName) -and
+            (-not $descriptionPresent -or
+                $description -ceq $expectedAdapterDescription)
+        $identityUnique = if ($namePresent -and $descriptionPresent) {
+            $expectedInventoryAdapters.Count -eq 1
+        } elseif ($namePresent) {
+            $expectedNameInventoryCount -eq 1
+        } else {
+            $expectedDescriptionInventoryCount -eq 1
+        }
+        [bool]$_.options_valid -and [bool]$_.supported_link_type -and
+            $homologousFieldsExact -and $identityUnique
+    })
+    $captureInterfaceBindingExact = [bool]$pcap.parser_complete -and
+        $expectedAdapterPhysical -and $matchingCaptureInterfaces.Count -eq 1
+    $expectedCaptureInterface = if ($matchingCaptureInterfaces.Count -eq 1) {
+        $matchingCaptureInterfaces[0]
+    } else { $null }
+    $expectedCaptureInterfaceKey = if ($null -eq $expectedCaptureInterface) {
+        ''
+    } else {
+        '{0}|{1}' -f $expectedCaptureInterface.section_index,
+            $expectedCaptureInterface.interface_id
+    }
+    $packets = @($pcap.packets | Where-Object {
         $_.timestamp_ms -ge $NotBeforeEpochMs -and
         $_.timestamp_ms -le $ObservationEndEpochMs
     } | Sort-Object timestamp_ms)
+    $targetFrames = @($packets | Where-Object {
+        if ($_.protocol -eq 'TCP') {
+            return (
+                $_.family -eq 'IPv4' -and (
+                    ($_.source -eq $CoordinatorIPv4 -and
+                        $_.destination -eq $IPv4 -and
+                        $_.destination_port -eq $Port) -or
+                    ($_.source -eq $IPv4 -and
+                        $_.destination -eq $CoordinatorIPv4 -and
+                        $_.source_port -eq $Port)
+                )
+            ) -or (
+                $_.family -eq 'IPv6' -and (
+                    ($_.source -eq $CoordinatorIPv6 -and
+                        $_.destination -eq $IPv6 -and
+                        $_.destination_port -eq $Port) -or
+                    ($_.source -eq $IPv6 -and
+                        $_.destination -eq $CoordinatorIPv6 -and
+                        $_.source_port -eq $Port)
+                )
+            )
+        }
+        return $_.protocol -eq 'ICMPv6' -and
+            $_.quoted_family -eq 'IPv6' -and
+            $_.quoted_protocol -eq 'TCP' -and
+            $_.quoted_source -eq $CoordinatorIPv6 -and
+            $_.quoted_destination -eq $IPv6 -and
+            $_.quoted_destination_port -eq $Port
+    })
+    $foreignInterfaceTargetFrames = @($targetFrames | Where-Object {
+        $frameInterfaceKey = '{0}|{1}' -f $_.section_index,
+            $_.capture_interface_id
+        -not $captureInterfaceBindingExact -or
+            $frameInterfaceKey -cne $expectedCaptureInterfaceKey
+    })
+    $targetFramesOnExpectedPhysicalNic =
+        $captureInterfaceBindingExact -and
+        $foreignInterfaceTargetFrames.Count -eq 0
 
     $outboundTargetSyn = @($packets | Where-Object {
         $_.protocol -eq 'TCP' -and $_.syn -and -not $_.ack -and
@@ -4172,7 +9261,84 @@ function Get-I04PacketVerdict {
         $uncorrelated.Count -eq 0 -and $ambiguous.Count -eq 0
     $planningUpperBoundMs = [Math]::Min($limitMs, 8000)
     return [pscustomobject][ordered]@{
-        schema = 'ese.v91.i04-packet-verdict/v1'
+        schema = 'ese.v91.i04-packet-verdict/v2'
+        candidate_process_id = $CandidateProcessId
+        pcapng_source_byte_count = [Int64]$pcap.source_byte_count
+        pcapng_source_sha256 = [string]$pcap.source_sha256
+        pcapng_source_immutable_read_lock_held =
+            [bool]$pcap.source_immutable_read_lock_held
+        pcapng_parser_complete = [bool]$pcap.parser_complete
+        pcapng_section_count = [int]$pcap.section_count
+        pcapng_interface_count = [int]$pcap.interface_count
+        pcapng_enhanced_packet_count = [int]$pcap.enhanced_packet_count
+        pcapng_trailing_byte_count = [int]$pcap.trailing_byte_count
+        pcapng_block_error_count = [int]$pcap.block_error_count
+        pcapng_idb_option_error_count = [int]$pcap.idb_option_error_count
+        pcapng_truncated_frame_count = [int]$pcap.truncated_frame_count
+        pcapng_unknown_interface_frame_count =
+            [int]$pcap.unknown_interface_frame_count
+        pcapng_unsupported_linktype_frame_count =
+            [int]$pcap.unsupported_linktype_frame_count
+        pcapng_unsupported_packet_block_count =
+            [int]$pcap.unsupported_packet_block_count
+        pcapng_parse_null_frame_count =
+            [int]$pcap.parse_null_frame_count
+        pcapng_non_adjudicable_frame_count =
+            [int]$pcap.non_adjudicable_frame_count
+        capture_interface_binding = [ordered]@{
+            schema = 'ese.v91.i04-capture-interface-binding/v1'
+            adapter_interface_index =
+                [int]$ExpectedAdapterEvidence.interface_index
+            adapter_interface_id = $expectedAdapterId
+            adapter_name_sha256 = if ($expectedAdapterName) {
+                Get-I04StringSha256 -Value $expectedAdapterName
+            } else { '' }
+            adapter_description_sha256 = if ($expectedAdapterDescription) {
+                Get-I04StringSha256 -Value $expectedAdapterDescription
+            } else { '' }
+            hardware_interface =
+                [bool]$ExpectedAdapterEvidence.hardware_interface
+            virtual = [bool]$ExpectedAdapterEvidence.virtual
+            overlay_or_vpn_like =
+                [bool]$ExpectedAdapterEvidence.overlay_or_vpn_like
+            status = [string]$ExpectedAdapterEvidence.status
+            adapter_inventory_match_count =
+                $expectedInventoryAdapters.Count
+            adapter_name_inventory_match_count =
+                $expectedNameInventoryCount
+            adapter_description_inventory_match_count =
+                $expectedDescriptionInventoryCount
+            pcapng_section_index = if ($null -eq
+                $expectedCaptureInterface) { $null } else {
+                [int]$expectedCaptureInterface.section_index
+            }
+            pcapng_interface_id = if ($null -eq
+                $expectedCaptureInterface) { $null } else {
+                [int]$expectedCaptureInterface.interface_id
+            }
+            pcapng_link_type = if ($null -eq
+                $expectedCaptureInterface) { $null } else {
+                [int]$expectedCaptureInterface.link_type
+            }
+            pcapng_interface_name_sha256 = if ($null -eq
+                $expectedCaptureInterface) { '' } else {
+                [string]$expectedCaptureInterface.interface_name_sha256
+            }
+            pcapng_interface_description_sha256 = if ($null -eq
+                $expectedCaptureInterface) { '' } else {
+                [string]$expectedCaptureInterface.
+                    interface_description_sha256
+            }
+            matching_pcapng_interface_count =
+                $matchingCaptureInterfaces.Count
+            exact = $captureInterfaceBindingExact
+        }
+        capture_interface_binding_exact = $captureInterfaceBindingExact
+        target_frame_count = $targetFrames.Count
+        foreign_interface_target_frame_count =
+            $foreignInterfaceTargetFrames.Count
+        target_frames_on_expected_physical_nic =
+            $targetFramesOnExpectedPhysicalNic
         not_before_epoch_ms = $NotBeforeEpochMs
         coordinator_stop_a_boundary_epoch_ms = $ScenarioBoundaryEpochMs
         coordinator_observation_end_epoch_ms = $ObservationEndEpochMs
@@ -4250,7 +9416,12 @@ function Invoke-I04PeerRole {
     foreach ($firewallCommand in @(
         'Get-NetFirewallRule', 'New-NetFirewallRule',
         'Remove-NetFirewallRule', 'Get-NetFirewallAddressFilter',
-        'Get-NetFirewallApplicationFilter', 'Get-NetFirewallPortFilter'
+        'Get-NetFirewallApplicationFilter', 'Get-NetFirewallPortFilter',
+        'Get-NetFirewallInterfaceFilter',
+        'Get-NetFirewallInterfaceTypeFilter',
+        'Get-NetFirewallServiceFilter', 'Get-NetFirewallSecurityFilter',
+        'Get-NetTCPConnection', 'Get-NetUDPEndpoint', 'Get-NetIPAddress',
+        'Get-NetAdapter', 'Find-NetRoute'
     )) {
         if ($null -eq (Get-Command $firewallCommand `
             -ErrorAction SilentlyContinue)) {
@@ -4260,25 +9431,32 @@ function Invoke-I04PeerRole {
     if (-not $RunNonce) {
         throw 'Peer role requires -RunNonce from the coordinator'
     }
-    $outputPath = Get-LabFullPath -Path $OutputRoot
+    $peerPortPreflight = Assert-I04PortsInitiallyFree `
+        -Ports @($PeerTcpPort, $PeerUdpPort, $PeerWebPort) -HostRole 'Peer'
+    $outputPath = Assert-I04SafeCreationPath -Path $OutputRoot
     if (Test-Path -LiteralPath $outputPath) {
+        $null = Assert-I04NoReparsePath -Path $outputPath -Kind Directory
         if (@(Get-ChildItem -LiteralPath $outputPath -Force).Count -ne 0) {
             throw "Peer OutputRoot must be absent or empty: $outputPath"
         }
     }
     $output = New-LabDirectory -Path $outputPath
+    $null = Assert-I04NoReparsePath -Path $output -Kind Directory
     $evidence = New-LabDirectory -Path (Join-Path $output 'evidence')
     $nodes = New-LabDirectory -Path (Join-Path $output 'nodes')
     $journal = Join-Path $evidence 'mutation-journal.jsonl'
     $cleanupPath = Join-Path $evidence 'cleanup.json'
     $formalTriggerBoundaryPath =
         Join-Path $evidence 'formal-trigger-boundary.json'
+    $coordinationRootSafe = Assert-I04NoReparsePath `
+        -Path $CoordinationRoot -Kind Directory
     $coordination = Get-LabFullPath -Path (Join-Path `
-        -Path (Get-LabFullPath -Path $CoordinationRoot) `
+        -Path $coordinationRootSafe `
         -ChildPath "v91-i04-$($RunNonce.ToLowerInvariant())")
     if (-not (Test-Path -LiteralPath $coordination -PathType Container)) {
         throw "Peer requires the coordinator-created run directory: $coordination"
     }
+    $null = Assert-I04NoReparsePath -Path $coordination -Kind Directory
     $initialCoordinationEntries = @(
         Get-ChildItem -LiteralPath $coordination -Force -ErrorAction Stop
     )
@@ -4287,6 +9465,7 @@ function Invoke-I04PeerRole {
         throw 'Peer coordination run directory is stale or was not pristine (expected only run.json)'
     }
     $runPath = Join-Path $coordination 'run.json'
+    $null = Open-I04LockedFile -Path $runPath
     $runManifest = Get-Content -LiteralPath $runPath -Raw |
         ConvertFrom-Json -ErrorAction Stop
     if ([string]$runManifest.schema -ne 'ese.v91.i04-run/v1' -or
@@ -4294,6 +9473,44 @@ function Invoke-I04PeerRole {
         [string]$runManifest.run_nonce -ne $RunNonce.ToLowerInvariant() -or
         [string]$runManifest.expected_candidate_commit -ne $candidate.commit -or
         [string]$runManifest.expected_emule_sha256 -ne $expectedHash -or
+        [string]$runManifest.expected_package_zip_sha256 -ne
+            $expectedZipHash -or
+        [string]$runManifest.expected_package_manifest_sha256 -ne
+            [string]$candidate.package_manifest_sha256 -or
+        [string]$runManifest.harness_bundle.schema -ne
+            'ese.v91.i04-harness-bundle/v1' -or
+        [string]$runManifest.harness_bundle.bundle_sha256 -ne
+            [string]$script:i04HarnessBundle.bundle_sha256 -or
+        [string]$runManifest.harness_bundle.harness_sha256 -ne
+            [string]$script:i04HarnessBundle.harness_sha256 -or
+        [string]$runManifest.harness_bundle.common_sha256 -ne
+            [string]$script:i04HarnessBundle.common_sha256 -or
+        [string]$runManifest.harness_bundle.prepare_node_sha256 -ne
+            [string]$script:i04HarnessBundle.prepare_node_sha256 -or
+        -not [bool]$runManifest.harness_bundle.immutable_read_locks_held -or
+        [string]$runManifest.identity.coordinator_machine_id_sha256 -ne
+            $ExpectedCoordinatorMachineIdSha256.ToLowerInvariant() -or
+        [string]$runManifest.identity.peer_machine_id_sha256 -ne
+            $ExpectedPeerMachineIdSha256.ToLowerInvariant() -or
+        [string]$runManifest.identity.coordinator_user_sid_sha256 -ne
+            $expectedCoordinatorSidHash -or
+        [string]$runManifest.identity.peer_user_sid_sha256 -ne
+            $expectedPeerSidHash -or
+        -not [bool]$runManifest.identity.
+            disposable_accounts_operator_attested -or
+        [string]$runManifest.identity.manifest_creator.
+            machine_id_sha256 -ne
+                $ExpectedCoordinatorMachineIdSha256.ToLowerInvariant() -or
+        [string]$runManifest.identity.manifest_creator.user_sid_sha256 -ne
+            $expectedCoordinatorSidHash -or
+        [string]$runManifest.identity.account_registry_transaction.schema -ne
+            'ese.v91.i04-account-registry-transaction/v2' -or
+        [string]$runManifest.identity.account_registry_transaction.
+            expected_user_sid_sha256 -ne $expectedCoordinatorSidHash -or
+        -not [bool]$runManifest.identity.account_registry_transaction.
+            initial_absence_proved -or
+        -not [bool]$runManifest.identity.account_registry_transaction.
+            baseline.run_subtree.exists -or
         [string]$runManifest.peer.hostname -ne $canonicalHostname -or
         [string]$runManifest.peer.ipv4 -ne $peerV4Text -or
         [string]$runManifest.peer.local_ipv4 -ne $peerLocalV4Text -or
@@ -4341,9 +9558,12 @@ function Invoke-I04PeerRole {
     $resumedPath = Join-Path $coordination 'peer-resumed.json'
     $stopPath = Join-Path $coordination 'stop.json'
     $resultPath = Join-Path $coordination 'peer-result.json'
+    $script:i04PeerTerminalReceiptPath =
+        Join-Path $coordination 'peer-terminal.json'
 
-    $password = 'v91-i04-peer'
+    $password = New-I04EphemeralSecret
     $source = $null
+    $peerOwnedProcesses = [System.Collections.Generic.List[object]]::new()
     $sourceExe = ''
     $sourceNode = ''
     $controlledServer = $null
@@ -4358,9 +9578,12 @@ function Invoke-I04PeerRole {
     $allow6RuleName =
         "ese-v91-i04-allow6-$($RunNonce.ToLowerInvariant())"
     $dropRuleName = "ese-v91-i04-drop6-$($RunNonce.ToLowerInvariant())"
+    $peerFirewallArmedSnapshot = $null
+    $peerFirewallPreRemovalSnapshot = $null
+    $peerFirewallScenarioUnchanged = $false
     $firewallNamesOwned = $false
     $runtimeFailure = $null
-    $cleanupFailures = New-Object 'Collections.Generic.List[string]'
+    $cleanupFailures = [Collections.Generic.List[string]]::new()
     $armedAt = $null
     $oldPid = $null
     $newPid = $null
@@ -4394,13 +9617,13 @@ function Invoke-I04PeerRole {
             throw 'Peer has an active overlay/VPN adapter or proxy environment'
         }
         $assignedV4 = Get-NetIPAddress -AddressFamily IPv4 `
-            -ErrorAction SilentlyContinue | Where-Object {
+            -ErrorAction Stop | Where-Object {
                 (Get-I04NormalizedIp -Address $_.IPAddress) -eq
                     $peerLocalV4Text -and
                 $_.AddressState -eq 'Preferred'
             } | Select-Object -First 1
         $assignedV6 = Get-NetIPAddress -AddressFamily IPv6 `
-            -ErrorAction SilentlyContinue | Where-Object {
+            -ErrorAction Stop | Where-Object {
                 (Get-I04NormalizedIp -Address $_.IPAddress) -eq $peerV6Text -and
                 $_.AddressState -eq 'Preferred'
             } | Select-Object -First 1
@@ -4411,13 +9634,15 @@ function Invoke-I04PeerRole {
             [int]$assignedV6.InterfaceIndex) {
             throw 'Peer IPv4 and IPv6 must be assigned to the same adapter'
         }
-        if ((Get-LabAddressClass -Address $peerV6Text) -ne 'global-v6') {
+        if ((Get-I04StrictAddressClass -Address $peerV6Text) -ne
+            'native-global-v6') {
             throw 'The real peer must advertise a native global IPv6 address; ULA/overlay-only is not a direct T1/T2 I04 fixture'
         }
         $adapter = Get-NetAdapter -InterfaceIndex $assignedV6.InterfaceIndex `
             -ErrorAction Stop
-        $adapterVirtual = $false
-        if ($adapter.PSObject.Properties.Name -contains 'Virtual') {
+        $adapterVirtual = $true
+        if ($adapter.PSObject.Properties.Name -contains 'Virtual' -and
+            $adapter.Virtual -is [bool]) {
             $adapterVirtual = [bool]$adapter.Virtual
         }
         $adapterOverlayLike =
@@ -4439,6 +9664,9 @@ function Invoke-I04PeerRole {
         }
         $peerEvidence = [ordered]@{
             machine_id_sha256 = Get-I04MachineId
+            operator_identity = Get-I04HostIdentityEvidence
+            account_registry_transaction =
+                $script:i04AccountRegistryTransaction
             computer_name_sha256 = Get-LabStringSha256 -Value $env:COMPUTERNAME
             interface_id = Get-LabInterfaceId `
                 -Id ([string]$adapter.InterfaceGuid) `
@@ -4466,14 +9694,17 @@ function Invoke-I04PeerRole {
             ($PeerWebPort - 4711) -ne $offset) {
             throw 'Peer TCP/UDP/Web ports must share the standard 4662/4672/4711 offset'
         }
+        $null = Assert-I04CandidateBindingUnchanged -Binding $candidate
         & (Join-Path $PSScriptRoot 'prepare_node.ps1') -NodeRole A `
             -SourcePackage $candidate.package_path -OutputRoot $nodes `
             -RunId 'v91-i04-peer' -PortOffset $offset
         $sourceNode = Join-Path $nodes 'v91-i04-peer-a'
         $sourceExe = Join-Path $sourceNode 'emule.exe'
-        if ((Get-LabSha256 -Path $sourceExe) -ne $expectedHash) {
-            throw 'Prepared peer node is not the exact candidate binary'
-        }
+        $null = Assert-I04CandidateBindingUnchanged -Binding $candidate
+        $null = Assert-I04PreparedNodeDerivedFromBinding `
+            -NodePath $sourceNode -Binding $candidate
+        $sourceCodeBinding = Lock-I04PreparedNodeCode `
+            -NodePath $sourceNode -ExpectedExeSha256 $expectedHash
         $incoming = New-LabDirectory -Path (Join-Path $sourceNode 'Incoming')
         $temp = New-LabDirectory -Path (Join-Path $sourceNode 'Temp')
         $isolation = Set-I04IsolatedPreferences -NodePath $sourceNode `
@@ -4570,13 +9801,19 @@ function Invoke-I04PeerRole {
 
             $process = $null
             try {
-                $process = Start-Process -FilePath $sourceExe `
+                $preferenceProof = Assert-I04StoredPreferenceContract `
+                    -NodePath $sourceNode
+                $process = Start-I04RestrictedProcess -FilePath $sourceExe `
                     -ArgumentList @(
                         '--portable', '--ignoreinstances',
                         "--metrics-port=$PeerWebPort",
                         "--tcp-port=$PeerTcpPort",
                         "--udp-port=$PeerUdpPort"
-                    ) -WorkingDirectory $sourceNode -PassThru -WindowStyle Hidden
+                    ) -WorkingDirectory $sourceNode
+                $peerOwnedProcesses.Add($process)
+                $process = Register-I04OwnedProcess -Process $process `
+                    -ExpectedPath $sourceExe -OwnerRole 'PeerSource' `
+                    -Nonce $RunNonce
                 $listeners = Wait-I04Listener -Port $PeerTcpPort `
                     -Process $process -RequireDualStack
                 $listenerReadyMs = if ($null -eq $RestartWatch) {
@@ -4616,6 +9853,7 @@ function Invoke-I04PeerRole {
                     listener_ready_elapsed_ms = $listenerReadyMs
                     api = $api
                     controlled_server_login = $serverLogin
+                    preference_contract = $preferenceProof
                 }
             } catch {
                 if ($null -ne $process -and -not (
@@ -4690,11 +9928,16 @@ function Invoke-I04PeerRole {
             case_id = $caseId
             run_nonce = $RunNonce.ToLowerInvariant()
             ready_at_utc = Get-LabUtcTimestamp
+            harness_bundle = $script:i04HarnessBundle
             candidate = [ordered]@{
                 commit = $candidate.commit
                 version = $candidate.version
                 emule_sha256 = $candidate.emule_sha256
                 process_emule_sha256 = Get-LabSha256 -Path $sourceExe
+                package_zip_sha256 = $candidate.package_zip_sha256
+                package_manifest_sha256 =
+                    $candidate.package_manifest_sha256
+                prepared_code_binding = $sourceCodeBinding
             }
             peer = $peerEvidence
             endpoint = [ordered]@{
@@ -4750,6 +9993,7 @@ function Invoke-I04PeerRole {
                 allow4_rule_provisional = $allow4Evidence
                 allow6_rule = $allow6Evidence
             }
+            port_preflight = $peerPortPreflight
             runtime_isolation = $sourceRuntimeInitial
         }
         Write-LabJson -Value $ready -Path $readyPath | Out-Null
@@ -4803,13 +10047,17 @@ function Invoke-I04PeerRole {
             $oldPid = $source.Id
             $source.Refresh()
             $oldListeners = @(
-                Get-NetTCPConnection -State Listen -LocalPort $PeerTcpPort `
-                    -OwningProcess $oldPid -ErrorAction SilentlyContinue
+                Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+                    [string]$_.State -eq 'Listen' -and
+                    [int]$_.LocalPort -eq $PeerTcpPort -and
+                    [int]$_.OwningProcess -eq $oldPid
+                }
             )
             $prewarmInbound = @(
-                Get-NetTCPConnection -State Established -LocalPort $PeerTcpPort `
-                    -OwningProcess $oldPid -ErrorAction SilentlyContinue |
-                    Where-Object {
+                Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+                        [string]$_.State -eq 'Established' -and
+                        [int]$_.LocalPort -eq $PeerTcpPort -and
+                        [int]$_.OwningProcess -eq $oldPid -and
                         (Get-I04NormalizedIp -Address $_.LocalAddress) -eq
                             $peerLocalV4Text -and
                         -not (
@@ -4829,9 +10077,8 @@ function Invoke-I04PeerRole {
                 [string]$prewarmInbound[0].RemoteAddress
             )
             $observedCoordinatorPort = [int]$prewarmInbound[0].RemotePort
-            if ((Get-LabAddressClass -Address $observedCoordinatorV4) -in @(
-                'invalid', 'loopback-v4', 'linklocal-v4', 'special-v4'
-            )) {
+            if (-not (Test-I04UsableLocalIPv4 `
+                -Address $observedCoordinatorV4)) {
                 throw 'Peer observed an inadmissible post-NAT IPv4 source'
             }
             $peerRouteV4Observed = Get-I04RouteEvidence `
@@ -4849,6 +10096,22 @@ function Invoke-I04PeerRole {
             # any remote IPv4 long enough to observe the unique established
             # prewarm, then atomically replace it with that observed IP.  The
             # remote port deliberately remains Any because NAT may rewrite it.
+            $provisionalRule = @(
+                Get-NetFirewallRule -PolicyStore ActiveStore `
+                    -ErrorAction Stop | Where-Object {
+                    [string]$_.Name -eq $allow4RuleName
+                }
+            )
+            $provisionalEvidence = Get-I04FirewallRuleEvidence `
+                -DisplayName $allow4Rule -Action Allow -Program $sourceExe `
+                -LocalAddresses @($peerLocalV4Text) `
+                -RemoteAddresses @('Any') -LocalPort $PeerTcpPort
+            if ($provisionalRule.Count -ne 1 -or
+                [string]$provisionalRule[0].Name -ne $allow4RuleName -or
+                [string]$provisionalRule[0].DisplayName -ne $allow4Rule -or
+                -not [bool]$provisionalEvidence.exact) {
+                throw 'Provisional IPv4 allow rule lost exact nonce-scoped ownership before replacement'
+            }
             Remove-NetFirewallRule -Name $allow4RuleName -ErrorAction Stop
             New-NetFirewallRule `
                 -Name $allow4RuleName -DisplayName $allow4Rule `
@@ -4888,16 +10151,20 @@ function Invoke-I04PeerRole {
                 -LocalPort $PeerTcpPort
             $source.Refresh()
             $listenersAfterDrop = @(
-                Get-NetTCPConnection -State Listen -LocalPort $PeerTcpPort `
-                    -OwningProcess $oldPid -ErrorAction SilentlyContinue
+                Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+                    [string]$_.State -eq 'Listen' -and
+                    [int]$_.LocalPort -eq $PeerTcpPort -and
+                    [int]$_.OwningProcess -eq $oldPid
+                }
             )
             $dualStackStillAlive = @($listenersAfterDrop | Where-Object {
                 (Get-I04NormalizedIp -Address $_.LocalAddress) -eq '::'
             }).Count -gt 0
             $prewarmStillAlive = @(
-                Get-NetTCPConnection -State Established -LocalPort $PeerTcpPort `
-                    -OwningProcess $oldPid -ErrorAction SilentlyContinue |
-                    Where-Object {
+                Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+                        [string]$_.State -eq 'Established' -and
+                        [int]$_.LocalPort -eq $PeerTcpPort -and
+                        [int]$_.OwningProcess -eq $oldPid -and
                         (Get-I04NormalizedIp -Address $_.RemoteAddress) -eq
                             $observedCoordinatorV4 -and
                         [int]$_.RemotePort -eq $observedCoordinatorPort
@@ -4911,6 +10178,7 @@ function Invoke-I04PeerRole {
                 (Get-LabSha256 -Path $source.Path) -ne $expectedHash) {
                 throw 'DROP/allow rules or old source/prewarm failed exact armed verification'
             }
+            $peerFirewallArmedSnapshot = Get-I04GlobalFirewallSnapshot
             $armedAt = [DateTime]::UtcNow
             Add-I04Journal -Path $journal -Mutation 'peer-ipv6-silent-drop' `
                 -State 'applied' -Detail $dropRule
@@ -4937,6 +10205,7 @@ function Invoke-I04PeerRole {
                 allow4_rule = $allow4Evidence
                 allow6_rule = $allow6Evidence
                 drop_rule = $dropEvidence
+                global_firewall_armed = $peerFirewallArmedSnapshot
                 semantic = 'remote inbound WFP DROP; no local reject/reset rule'
             }) -Path $armedPath | Out-Null
 
@@ -4978,9 +10247,10 @@ function Invoke-I04PeerRole {
                 }
                 $source.Refresh()
                 $prewarmAtQuiesce = @(
-                    Get-NetTCPConnection -State Established `
-                        -LocalPort $PeerTcpPort -OwningProcess $oldPid `
-                        -ErrorAction SilentlyContinue | Where-Object {
+                    Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+                            [string]$_.State -eq 'Established' -and
+                            [int]$_.LocalPort -eq $PeerTcpPort -and
+                            [int]$_.OwningProcess -eq $oldPid -and
                             (Get-I04NormalizedIp -Address $_.RemoteAddress) -eq
                                 $observedCoordinatorV4 -and
                             [int]$_.RemotePort -eq $observedCoordinatorPort
@@ -5010,16 +10280,23 @@ function Invoke-I04PeerRole {
                     [DateTime]::UtcNow.AddSeconds(30)
                 do {
                     $oldSockets = @(
-                        Get-NetTCPConnection -OwningProcess $oldPid `
-                            -ErrorAction SilentlyContinue
+                        Get-NetTCPConnection -ErrorAction Stop |
+                            Where-Object { [int]$_.OwningProcess -eq $oldPid }
                     )
                     if ($oldSockets.Count -eq 0) { break }
                     Start-Sleep -Milliseconds 100
                 } while ([DateTime]::UtcNow -lt $oldTupleGoneDeadline)
-                if ($oldSockets.Count -ne 0 -or
-                    $null -ne (
-                        Get-Process -Id $oldPid -ErrorAction SilentlyContinue
-                    )) {
+                $oldOwnedProcess = @($peerOwnedProcesses.ToArray() |
+                    Where-Object {
+                    $_.PSObject.Properties.Name -contains 'i04_owner_pid' -and
+                    [int]$_.i04_owner_pid -eq $oldPid
+                } | Select-Object -Last 1)
+                $oldProcessStillAlive = $oldOwnedProcess.Count -ne 1
+                if ($oldOwnedProcess.Count -eq 1) {
+                    $oldOwnedProcess[0].Refresh()
+                    $oldProcessStillAlive = -not $oldOwnedProcess[0].HasExited
+                }
+                if ($oldSockets.Count -ne 0 -or $oldProcessStillAlive) {
                     throw 'Old peer PID/tuple remained after quiesce'
                 }
                 $quiescedAt = [DateTimeOffset]::UtcNow
@@ -5178,15 +10455,38 @@ function Invoke-I04PeerRole {
     } catch {
         $runtimeFailure = $_
     } finally {
-        if ($null -ne $source -and -not (
-            Stop-I04OwnedProcess -Process $source -ExpectedPath $sourceExe
+        if ($null -ne $peerFirewallArmedSnapshot) {
+            try {
+                $peerFirewallPreRemovalSnapshot =
+                    Get-I04GlobalFirewallSnapshot
+                $peerFirewallScenarioUnchanged =
+                    [string]$peerFirewallPreRemovalSnapshot.canonical_sha256 -ceq
+                        [string]$peerFirewallArmedSnapshot.canonical_sha256
+                if (-not $peerFirewallScenarioUnchanged) {
+                    $cleanupFailures.Add(
+                        'global firewall inventory drifted while the peer scenario was armed'
+                    )
+                }
+            } catch {
+                $cleanupFailures.Add((Get-I04SafeErrorToken `
+                    -Context 'peer pre-removal firewall snapshot failed' `
+                    -Message $_.Exception.Message))
+            }
+        }
+        foreach ($ownedPeerProcess in @(
+            $peerOwnedProcesses | Sort-Object Id -Unique
         )) {
-            $cleanupFailures.Add('peer source process could not be stopped safely')
-        } elseif ($null -ne $source) {
-            Add-I04RollbackJournal -Path $journal `
-                -Mutation 'peer-process' -State 'rolled_back' `
-                -Detail "pid=$($source.Id)" `
-                -CleanupFailures $cleanupFailures
+            if (-not (Stop-I04OwnedProcess -Process $ownedPeerProcess `
+                -ExpectedPath $sourceExe)) {
+                $cleanupFailures.Add(
+                    "peer owned process $($ownedPeerProcess.Id) could not be stopped safely"
+                )
+            } else {
+                Add-I04RollbackJournal -Path $journal `
+                    -Mutation 'peer-process' -State 'rolled_back' `
+                    -Detail "pid=$($ownedPeerProcess.Id)" `
+                    -CleanupFailures $cleanupFailures
+            }
         }
         $controlledServerStop =
             Stop-I04ControlledEd2kServerInventory `
@@ -5205,16 +10505,27 @@ function Invoke-I04PeerRole {
                     name = $dropRuleName
                     display = $dropRule
                     mutation = 'peer-ipv6-silent-drop'
+                    action = 'Block'
+                    local_addresses = @($peerV6Text)
+                    remote_addresses = @($coordinatorV6Text)
                 },
                 [pscustomobject]@{
                     name = $allow6RuleName
                     display = $allow6Rule
                     mutation = 'peer-firewall-allow6'
+                    action = 'Allow'
+                    local_addresses = @($peerV6Text)
+                    remote_addresses = @($coordinatorV6Text)
                 },
                 [pscustomobject]@{
                     name = $allow4RuleName
                     display = $allow4Rule
                     mutation = 'peer-firewall-allow4'
+                    action = 'Allow'
+                    local_addresses = @($peerLocalV4Text)
+                    remote_addresses = if ($observedCoordinatorV4) {
+                        @($observedCoordinatorV4)
+                    } else { @('Any') }
                 }
             )) {
                 try {
@@ -5224,7 +10535,24 @@ function Invoke-I04PeerRole {
                                 [string]$_.Name -eq $ownedRule.name
                             }
                     )
-                    if ($existing.Count -gt 0) {
+                    if ($existing.Count -gt 1) {
+                        throw 'firewall ownership query returned multiple rules'
+                    }
+                    if ($existing.Count -eq 1) {
+                        if ([string]$existing[0].Name -ne $ownedRule.name -or
+                            [string]$existing[0].DisplayName -ne
+                                $ownedRule.display) {
+                            throw 'firewall rule name/display ownership changed'
+                        }
+                        $ownedEvidence = Get-I04FirewallRuleEvidence `
+                            -DisplayName $ownedRule.display `
+                            -Action $ownedRule.action -Program $sourceExe `
+                            -LocalAddresses $ownedRule.local_addresses `
+                            -RemoteAddresses $ownedRule.remote_addresses `
+                            -LocalPort $PeerTcpPort
+                        if (-not [bool]$ownedEvidence.exact) {
+                            throw 'firewall rule content no longer matches its owned nonce-scoped definition'
+                        }
                         Remove-NetFirewallRule -Name $ownedRule.name `
                             -ErrorAction Stop
                     }
@@ -5242,9 +10570,9 @@ function Invoke-I04PeerRole {
                         -Detail $ownedRule.display `
                         -CleanupFailures $cleanupFailures
                 } catch {
-                    $cleanupFailures.Add(
-                        "firewall cleanup failed for '$($ownedRule.name)': $($_.Exception.Message)"
-                    )
+                    $cleanupFailures.Add((Get-I04SafeErrorToken `
+                        -Context "firewall cleanup failed for $($ownedRule.name)" `
+                        -Message $_.Exception.Message))
                 }
             }
         }
@@ -5267,9 +10595,9 @@ function Invoke-I04PeerRole {
         $dropStillPresent = $true
         $allow4StillPresent = $true
         $allow6StillPresent = $true
-        $cleanupFailures.Add(
-            "firewall absence could not be verified: $($_.Exception.Message)"
-        )
+        $cleanupFailures.Add((Get-I04SafeErrorToken `
+            -Context 'firewall absence could not be verified' `
+            -Message $_.Exception.Message))
     }
     if ($dropStillPresent) { $cleanupFailures.Add('DROP rule is still present') }
     if ($allow4StillPresent) {
@@ -5278,10 +10606,12 @@ function Invoke-I04PeerRole {
     if ($allow6StillPresent) {
         $cleanupFailures.Add('allow6 rule is still present')
     }
-    $candidateAfter = Get-LabCandidateInfo -PackagePath $PackagePath `
-        -ExpectedCommit $Commit
-    if ($candidateAfter.emule_sha256 -ne $expectedHash) {
-        $cleanupFailures.Add('peer candidate package changed during execution')
+    try {
+        $null = Assert-I04CandidateBindingUnchanged -Binding $candidate
+    } catch {
+        $cleanupFailures.Add((Get-I04SafeErrorToken `
+            -Context 'peer candidate binding changed during execution' `
+            -Message $_.Exception.Message))
     }
     $peerIsolationFinal = Get-I04IsolationEvidence
     Write-LabJson -Value $peerIsolationFinal -Path (
@@ -5292,14 +10622,45 @@ function Invoke-I04PeerRole {
             'peer overlay/VPN/proxy isolation was not intact at final audit'
         )
     }
+    $peerOwnedProcessIds = @(
+        $peerOwnedProcesses | ForEach-Object { [int]$_.Id } |
+            Sort-Object -Unique
+    )
+    $peerTerminalCensus = Get-I04TerminalOwnershipCensus `
+        -ProcessIds $peerOwnedProcessIds `
+        -OwnedProcesses ([object[]]$peerOwnedProcesses.ToArray()) `
+        -Ports @($PeerTcpPort, $PeerUdpPort, $PeerWebPort) `
+        -HostRole 'Peer'
+    if (-not [bool]$peerTerminalCensus.collector_ok -or
+        -not [bool]$peerTerminalCensus.all_clear) {
+        $cleanupFailures.Add(
+            'peer terminal process/TCP/UDP ownership census was not clear'
+        )
+    }
+    $peerAccountRegistryPostcheck =
+        Get-I04AccountRegistryPostcheckEvidence `
+            -Transaction $script:i04AccountRegistryTransaction
+    $script:i04AccountRegistryPostcheck = $peerAccountRegistryPostcheck
+    $script:i04AccountRegistryPostcheckComplete = $true
+    if (-not [bool]$peerAccountRegistryPostcheck.safe_to_pass) {
+        $cleanupFailures.Add(
+            'peer account/registry/global-firewall postcheck was not exact'
+        )
+    }
+    $restrictedJobLeaseCleanup =
+        Complete-I04RestrictedJobLeaseCleanup -Context Peer
+    if (-not [bool]$restrictedJobLeaseCleanup.complete) {
+        $cleanupFailures.Add(
+            'peer restricted Job Object leases were not terminally released'
+        )
+    }
     $cleanup = [ordered]@{
         schema = 'ese.v91.i04-peer-cleanup/v1'
         captured_at_utc = Get-LabUtcTimestamp
-        source_process_stopped = if ($null -eq $source) {
-            $true
-        } else {
-            $null -eq (Get-Process -Id $source.Id -ErrorAction SilentlyContinue)
-        }
+        source_process_stopped = [bool]$peerTerminalCensus.collector_ok -and
+            @($peerTerminalCensus.remaining_processes).Count -eq 0
+        source_process_ids = $peerOwnedProcessIds
+        terminal_ownership_census = $peerTerminalCensus
         drop_rule_present = $dropStillPresent
         allow4_rule_present = $allow4StillPresent
         allow6_rule_present = $allow6StillPresent
@@ -5313,8 +10674,13 @@ function Invoke-I04PeerRole {
         adapters_modified = $false
         isolation_initial = $peerIsolationInitial
         isolation_final = $peerIsolationFinal
+        account_registry_transaction = $peerAccountRegistryPostcheck
+        restricted_job_lease_cleanup = $restrictedJobLeaseCleanup
+        global_firewall_armed = $peerFirewallArmedSnapshot
+        global_firewall_pre_removal = $peerFirewallPreRemovalSnapshot
+        global_firewall_scenario_unchanged = $peerFirewallScenarioUnchanged
         retained_by_design = @('peer OutputRoot profile', 'fixture', 'evidence')
-        failures = @($cleanupFailures)
+        failures = @($cleanupFailures.ToArray())
     }
     Write-LabJson -Value $cleanup -Path $cleanupPath | Out-Null
     $peerResult = [ordered]@{
@@ -5322,10 +10688,14 @@ function Invoke-I04PeerRole {
         case_id = $caseId
         run_nonce = $RunNonce.ToLowerInvariant()
         finished_at_utc = Get-LabUtcTimestamp
+        harness_bundle = $script:i04HarnessBundle
         status = if ($null -eq $runtimeFailure -and
             $cleanupFailures.Count -eq 0 -and -not $dropStillPresent -and
             -not $allow4StillPresent -and
-            -not $allow6StillPresent) { 'COMPLETE' } else { 'BLOCKED' }
+            -not $allow6StillPresent -and
+            [bool]$restrictedJobLeaseCleanup.complete) {
+                'COMPLETE'
+            } else { 'BLOCKED' }
         candidate_commit = $candidate.commit
         candidate_emule_sha256 = $candidate.emule_sha256
         old_process_id = $oldPid
@@ -5344,10 +10714,14 @@ function Invoke-I04PeerRole {
         cleanup = $cleanup
         runtime_error = if ($null -eq $runtimeFailure) {
             $null
-        } else { $runtimeFailure.Exception.Message }
-        evidence_root = $output
+        } else {
+            Get-I04SafeErrorToken -Context 'peer runtime failed' `
+                -Message $runtimeFailure.Exception.Message
+        }
+        evidence_retained_locally = $true
     }
     Write-LabJson -Value $peerResult -Path $resultPath | Out-Null
+    $script:i04PeerResultSha256 = Get-LabSha256 -Path $resultPath
     Write-LabJson -Value $peerResult `
         -Path (Join-Path $evidence 'peer-result.json') | Out-Null
     $password = $null
@@ -5363,27 +10737,44 @@ function Invoke-I04CoordinatorRole {
     if (-not (Test-I04Administrator)) {
         throw 'Coordinator role requires an elevated Administrator PowerShell for pktmon capture'
     }
-    foreach ($captureCommand in @('pktmon.exe', 'logman.exe')) {
+    foreach ($captureCommand in @(
+        'pktmon.exe', 'logman.exe', 'Get-NetTCPConnection',
+        'Get-NetUDPEndpoint', 'Get-NetIPAddress', 'Get-NetAdapter',
+        'Find-NetRoute', 'Get-NetFirewallRule', 'New-NetFirewallRule',
+        'Remove-NetFirewallRule', 'Get-NetFirewallPortFilter',
+        'Get-NetFirewallApplicationFilter',
+        'Get-NetFirewallAddressFilter', 'Get-NetFirewallInterfaceFilter',
+        'Get-NetFirewallInterfaceTypeFilter',
+        'Get-NetFirewallServiceFilter', 'Get-NetFirewallSecurityFilter'
+    )) {
         if ($null -eq (Get-Command $captureCommand -ErrorAction SilentlyContinue)) {
             throw "Coordinator capture prerequisite is missing: $captureCommand"
         }
     }
-    $existingPktmonSession = @(& logman.exe query -ets PktMon 2>&1)
-    $existingPktmonExit = $LASTEXITCODE
-    if ($existingPktmonExit -eq 0) {
+    $null = Enter-I04PktmonGlobalMutex
+    $existingPktmonSession = Get-I04EtwLossEvidence -SessionName 'PktMon'
+    if ([bool]$existingPktmonSession.available) {
         throw 'Coordinator found an existing PktMon ETW session; stop its owner before V91-I04'
+    }
+    if ([UInt32]$existingPktmonSession.error_code -ne 4201) {
+        throw "Coordinator could not prove the PktMon ETW session absent (Win32 $($existingPktmonSession.error_code))"
     }
     if (-not $RunNonce) {
         $script:RunNonce = [Guid]::NewGuid().ToString('N')
     }
     $nonce = $RunNonce.ToLowerInvariant()
-    $outputPath = Get-LabFullPath -Path $OutputRoot
+    $clientPortPreflight = Assert-I04PortsInitiallyFree `
+        -Ports @($ClientTcpPort, $ClientUdpPort, $ClientWebPort) `
+        -HostRole 'Coordinator'
+    $outputPath = Assert-I04SafeCreationPath -Path $OutputRoot
     if (Test-Path -LiteralPath $outputPath) {
+        $null = Assert-I04NoReparsePath -Path $outputPath -Kind Directory
         if (@(Get-ChildItem -LiteralPath $outputPath -Force).Count -ne 0) {
             throw "Coordinator OutputRoot must be absent or empty: $outputPath"
         }
     }
     $output = New-LabDirectory -Path $outputPath
+    $null = Assert-I04NoReparsePath -Path $output -Kind Directory
     $evidence = New-LabDirectory -Path (Join-Path $output 'evidence')
     $nodes = New-LabDirectory -Path (Join-Path $output 'nodes')
     $captureEvidence = New-LabDirectory -Path (Join-Path $evidence 'capture')
@@ -5391,16 +10782,18 @@ function Invoke-I04CoordinatorRole {
     $samplesPath = Join-Path $evidence 'runtime-samples.jsonl'
     $socketSamplesPath = Join-Path $evidence 'socket-samples.ndjson'
     $summaryPath = Join-Path $evidence 'summary.json'
+    $publicSummaryPath = Join-Path $evidence 'public-summary.json'
     $cleanupPath = Join-Path $evidence 'cleanup.json'
+    $coordinationRootSafe = Assert-I04NoReparsePath `
+        -Path $CoordinationRoot -Kind Directory
     $coordination = Get-LabFullPath -Path (Join-Path `
-        -Path (Get-LabFullPath -Path $CoordinationRoot) `
+        -Path $coordinationRootSafe `
         -ChildPath "v91-i04-$nonce")
     if (Test-Path -LiteralPath $coordination) {
         throw "Coordinator run directory must be fresh/absent: $coordination"
     }
-    $coordinationParent = Split-Path -Parent $coordination
-    $null = New-LabDirectory -Path $coordinationParent
     $null = New-Item -ItemType Directory -Path $coordination -ErrorAction Stop
+    $null = Assert-I04NoReparsePath -Path $coordination -Kind Directory
     $runPath = Join-Path $coordination 'run.json'
     $readyPath = Join-Path $coordination 'peer-ready.json'
     $armPath = Join-Path $coordination 'arm-drop.json'
@@ -5411,15 +10804,17 @@ function Invoke-I04CoordinatorRole {
     $resumedPath = Join-Path $coordination 'peer-resumed.json'
     $stopPath = Join-Path $coordination 'stop.json'
     $peerResultPath = Join-Path $coordination 'peer-result.json'
+    $peerTerminalPath = Join-Path $coordination 'peer-terminal.json'
     $manualPath = Join-Path $evidence 'MANUAL-PEER-COMMAND.txt'
 
     $client = $null
     $clientOwnedProcesses =
         [System.Collections.Generic.List[object]]::new()
     $clientProcessesStopped = $false
-    $clientPassword = 'v91-i04-client'
+    $clientPassword = New-I04EphemeralSecret
     $clientNode = ''
     $clientExe = ''
+    $clientCodeBinding = $null
     $clientControlledServer = $null
     $clientControlledServersOwned =
         [System.Collections.Generic.List[object]]::new()
@@ -5432,13 +10827,17 @@ function Invoke-I04CoordinatorRole {
     $socketSampler = $null
     $socketSamplerEvidence = $null
     $remoteJob = $null
+    $remoteJobTerminalExact = $PeerControlMode -ne 'PowerShellRemoting'
+    $peerTerminal = $null
+    $peerTerminalExact = $false
     $runtimeFailure = $null
-    $candidatePostTriggerFailure = ''
+    $candidatePostTriggerFailure = $null
+    $failureDisposition = $null
     $caseArmed = $false
     $formalBoundaryPublished = $false
-    $cleanupFailures = New-Object 'Collections.Generic.List[string]'
-    $blockedReasons = New-Object 'Collections.Generic.List[string]'
-    $productFailures = New-Object 'Collections.Generic.List[string]'
+    $cleanupFailures = [Collections.Generic.List[string]]::new()
+    $blockedReasons = [Collections.Generic.List[string]]::new()
+    $productFailures = [Collections.Generic.List[object]]::new()
     $peerReady = $null
     $peerArmed = $null
     $peerResumed = $null
@@ -5448,6 +10847,7 @@ function Invoke-I04CoordinatorRole {
     $peerResumedExact = $false
     $peerResultExact = $false
     $peerRestorationExact = $false
+    $peerScenarioExact = $false
     $peerExact = $false
     $baselineV4 = $null
     $baselineV6 = $null
@@ -5511,6 +10911,9 @@ function Invoke-I04CoordinatorRole {
     $clientIsolationExact = $false
     $coordinatorIsolationInitial = $null
     $coordinatorIsolationFinal = $null
+    $coordinatorFirewallBeforeBoundary = $null
+    $coordinatorFirewallAfterObservation = $null
+    $coordinatorFirewallScenarioUnchanged = $false
 
     $localMachineId = Get-I04MachineId
     $coordinatorIsolationInitial = Get-I04IsolationEvidence
@@ -5550,7 +10953,9 @@ function Invoke-I04CoordinatorRole {
         $coordinatorV6Address.Equals([Net.IPAddress]::IPv6Any) -or
         [Net.IPAddress]::IsLoopback($coordinatorV6Address) -or
         $coordinatorV6Address.IsIPv6Multicast -or
-        (Get-LabAddressClass -Address $coordinatorV6Text) -ne 'global-v6' -or
+        $CoordinatorIPv6.Contains('%') -or
+        (Get-I04StrictAddressClass -Address $coordinatorV6Text) -ne
+            'native-global-v6' -or
         $coordinatorV4Text -eq $peerV4Text -or
         $coordinatorV6Text -eq $peerV6Text -or
         (Get-I04NormalizedIp -Address $routeV4.source_address) -ne
@@ -5560,12 +10965,12 @@ function Invoke-I04CoordinatorRole {
         throw 'Coordinator source addresses must be exact non-loopback route sources distinct from the peer'
     }
     $coordinatorAssignedV4 = Get-NetIPAddress -AddressFamily IPv4 `
-        -ErrorAction SilentlyContinue | Where-Object {
+        -ErrorAction Stop | Where-Object {
             (Get-I04NormalizedIp -Address $_.IPAddress) -eq
                 $coordinatorV4Text -and $_.AddressState -eq 'Preferred'
         } | Select-Object -First 1
     $coordinatorAssignedV6 = Get-NetIPAddress -AddressFamily IPv6 `
-        -ErrorAction SilentlyContinue | Where-Object {
+        -ErrorAction Stop | Where-Object {
             (Get-I04NormalizedIp -Address $_.IPAddress) -eq
                 $coordinatorV6Text -and $_.AddressState -eq 'Preferred'
         } | Select-Object -First 1
@@ -5577,8 +10982,9 @@ function Invoke-I04CoordinatorRole {
     }
     $coordinatorAdapter = Get-NetAdapter `
         -InterfaceIndex $coordinatorAssignedV4.InterfaceIndex -ErrorAction Stop
-    $coordinatorAdapterVirtual = $false
-    if ($coordinatorAdapter.PSObject.Properties.Name -contains 'Virtual') {
+    $coordinatorAdapterVirtual = $true
+    if ($coordinatorAdapter.PSObject.Properties.Name -contains 'Virtual' -and
+        $coordinatorAdapter.Virtual -is [bool]) {
         $coordinatorAdapterVirtual = [bool]$coordinatorAdapter.Virtual
     }
     $coordinatorAdapterOverlayLike =
@@ -5600,6 +11006,22 @@ function Invoke-I04CoordinatorRole {
         created_at_utc = Get-LabUtcTimestamp
         expected_candidate_commit = $candidate.commit
         expected_emule_sha256 = $expectedHash
+        expected_package_zip_sha256 = $expectedZipHash
+        expected_package_manifest_sha256 =
+            $candidate.package_manifest_sha256
+        harness_bundle = $script:i04HarnessBundle
+        identity = [ordered]@{
+            coordinator_machine_id_sha256 =
+                $ExpectedCoordinatorMachineIdSha256.ToLowerInvariant()
+            peer_machine_id_sha256 =
+                $ExpectedPeerMachineIdSha256.ToLowerInvariant()
+            coordinator_user_sid_sha256 = $expectedCoordinatorSidHash
+            peer_user_sid_sha256 = $expectedPeerSidHash
+            disposable_accounts_operator_attested = $true
+            manifest_creator = Get-I04HostIdentityEvidence
+            account_registry_transaction =
+                $script:i04AccountRegistryTransaction
+        }
         peer = [ordered]@{
             hostname = $canonicalHostname
             ipv4 = $peerV4Text
@@ -5636,8 +11058,11 @@ function Invoke-I04CoordinatorRole {
     Write-LabJson -Value ([ordered]@{
         schema = 'ese.v91.i04-pre-mutation/v1'
         captured_at_utc = Get-LabUtcTimestamp
-        candidate = $candidate
+        candidate = Get-I04CandidateEvidence -Binding $candidate
         local_machine_id_sha256 = $localMachineId
+        operator_identity = Get-I04HostIdentityEvidence
+        account_registry_transaction = $script:i04AccountRegistryTransaction
+        port_preflight = $clientPortPreflight
         routes = @($routeV4, $routeV6)
         coordinator = [ordered]@{
             ipv4 = $coordinatorV4Text
@@ -5651,17 +11076,9 @@ function Invoke-I04CoordinatorRole {
             physical = $coordinatorPhysical
             isolation = $coordinatorIsolationInitial
         }
-        existing_target_processes = @(
-            Get-Process -Name emule -ErrorAction SilentlyContinue |
-                ForEach-Object {
-                    [pscustomobject]@{
-                        id = $_.Id
-                        path_sha256 = try {
-                            Get-LabStringSha256 -Value $_.Path
-                        } catch { '' }
-                    }
-                }
-        )
+        preexisting_emule_process_count = $preexistingEmuleProcessCount
+        preexisting_emule_process_absence_proved =
+            $preexistingEmuleProcessCount -eq 0
         planned_mutations = @(
             'isolated client profile/process',
             'unique pktmon filters/global capture',
@@ -5678,15 +11095,24 @@ function Invoke-I04CoordinatorRole {
         if ($PeerControlMode -eq 'PowerShellRemoting') {
             foreach ($required in @(
                 $PeerComputerName, $RemoteScriptPath, $RemotePackagePath,
-                $RemoteOutputRoot, $RemoteCoordinationRoot
+                $RemotePackageZipPath, $RemoteOutputRoot,
+                $RemoteCoordinationRoot
             )) {
                 if ([string]::IsNullOrWhiteSpace($required)) {
-                    throw 'PowerShellRemoting requires PeerComputerName, RemoteScriptPath, RemotePackagePath, RemoteOutputRoot and RemoteCoordinationRoot'
+                    throw 'PowerShellRemoting requires PeerComputerName, RemoteScriptPath, RemotePackagePath, RemotePackageZipPath, RemoteOutputRoot and RemoteCoordinationRoot'
                 }
             }
             $remoteArguments = @{
                 Role = 'Peer'
                 PackagePath = $RemotePackagePath
+                PackageZipPath = $RemotePackageZipPath
+                ExpectedPackageZipSha256 = $expectedZipHash
+                ExpectedHarnessSha256 =
+                    [string]$script:i04HarnessBundle.harness_sha256
+                ExpectedCommonSha256 =
+                    [string]$script:i04HarnessBundle.common_sha256
+                ExpectedPrepareNodeSha256 =
+                    [string]$script:i04HarnessBundle.prepare_node_sha256
                 OutputRoot = $RemoteOutputRoot
                 Commit = $candidate.commit
                 ExpectedEmuleSha256 = $expectedHash
@@ -5698,6 +11124,14 @@ function Invoke-I04CoordinatorRole {
                 CoordinatorIPv6 = $coordinatorV6Text
                 CoordinationRoot = $RemoteCoordinationRoot
                 ControlledPeerAcknowledged = $true
+                ExpectedCoordinatorMachineIdSha256 =
+                    $ExpectedCoordinatorMachineIdSha256.ToLowerInvariant()
+                ExpectedPeerMachineIdSha256 =
+                    $ExpectedPeerMachineIdSha256.ToLowerInvariant()
+                ExpectedCoordinatorUserSidSha256 =
+                    $expectedCoordinatorSidHash
+                ExpectedPeerUserSidSha256 = $expectedPeerSidHash
+                DisposableLabAccountAcknowledged = $true
                 PeerTcpPort = $PeerTcpPort
                 PeerUdpPort = $PeerUdpPort
                 PeerWebPort = $PeerWebPort
@@ -5727,9 +11161,14 @@ function Invoke-I04CoordinatorRole {
             $manualCommand = @"
 Run this on the controlled physical peer while this coordinator waits:
 
-& '$PSCommandPath' ``
+& '<path-to-test_v91_i04_fallback.ps1>' ``
   -Role Peer ``
   -PackagePath '<exact-package-on-peer>' ``
+  -PackageZipPath '<exact-package-zip-on-peer>' ``
+  -ExpectedPackageZipSha256 '$expectedZipHash' ``
+  -ExpectedHarnessSha256 '$([string]$script:i04HarnessBundle.harness_sha256)' ``
+  -ExpectedCommonSha256 '$([string]$script:i04HarnessBundle.common_sha256)' ``
+  -ExpectedPrepareNodeSha256 '$([string]$script:i04HarnessBundle.prepare_node_sha256)' ``
   -OutputRoot '<new-empty-peer-output-root>' ``
   -Commit '$($candidate.commit)' ``
   -ExpectedEmuleSha256 '$expectedHash' ``
@@ -5739,8 +11178,13 @@ Run this on the controlled physical peer while this coordinator waits:
   -PeerIPv6 '$peerV6Text' ``
   -CoordinatorIPv4 '$coordinatorV4Text' ``
   -CoordinatorIPv6 '$coordinatorV6Text' ``
-  -CoordinationRoot '$CoordinationRoot' ``
+  -CoordinationRoot '<same-shared-coordination-root-on-peer>' ``
   -ControlledPeerAcknowledged ``
+  -ExpectedCoordinatorMachineIdSha256 '$($ExpectedCoordinatorMachineIdSha256.ToLowerInvariant())' ``
+  -ExpectedPeerMachineIdSha256 '$($ExpectedPeerMachineIdSha256.ToLowerInvariant())' ``
+  -ExpectedCoordinatorUserSidSha256 '$expectedCoordinatorSidHash' ``
+  -ExpectedPeerUserSidSha256 '$expectedPeerSidHash' ``
+  -DisposableLabAccountAcknowledged ``
   -PeerTcpPort $PeerTcpPort -PeerUdpPort $PeerUdpPort -PeerWebPort $PeerWebPort ``
   -ClientTcpPort $ClientTcpPort -ClientUdpPort $ClientUdpPort -ClientWebPort $ClientWebPort ``
   -FileSizeBytes $FileSizeBytes ``
@@ -5774,6 +11218,43 @@ on the remote peer and restores it transactionally.
             [string]$peerReady.candidate.emule_sha256 -eq $expectedHash -and
             [string]$peerReady.candidate.process_emule_sha256 -eq
                 $expectedHash -and
+            [string]$peerReady.candidate.package_zip_sha256 -eq
+                $expectedZipHash -and
+            [string]$peerReady.candidate.package_manifest_sha256 -eq
+                [string]$candidate.package_manifest_sha256 -and
+            [string]$peerReady.harness_bundle.schema -eq
+                'ese.v91.i04-harness-bundle/v1' -and
+            [string]$peerReady.harness_bundle.bundle_sha256 -eq
+                [string]$script:i04HarnessBundle.bundle_sha256 -and
+            [string]$peerReady.harness_bundle.harness_sha256 -eq
+                [string]$script:i04HarnessBundle.harness_sha256 -and
+            [string]$peerReady.harness_bundle.common_sha256 -eq
+                [string]$script:i04HarnessBundle.common_sha256 -and
+            [string]$peerReady.harness_bundle.prepare_node_sha256 -eq
+                [string]$script:i04HarnessBundle.prepare_node_sha256 -and
+            [bool]$peerReady.harness_bundle.immutable_read_locks_held -and
+            [bool]$peerReady.candidate.prepared_code_binding.
+                immutable_code_locks_held -and
+            [string]$peerReady.candidate.prepared_code_binding.
+                executable_sha256 -eq $expectedHash -and
+            [string]$peerReady.peer.operator_identity.machine_id_sha256 -eq
+                $ExpectedPeerMachineIdSha256.ToLowerInvariant() -and
+            [string]$peerReady.peer.operator_identity.user_sid_sha256 -eq
+                $expectedPeerSidHash -and
+            [bool]$peerReady.peer.operator_identity.
+                disposable_account_operator_attested -and
+            [string]$peerReady.peer.account_registry_transaction.schema -eq
+                'ese.v91.i04-account-registry-transaction/v2' -and
+            [string]$peerReady.peer.account_registry_transaction.
+                expected_user_sid_sha256 -eq $expectedPeerSidHash -and
+            [bool]$peerReady.peer.account_registry_transaction.
+                initial_absence_proved -and
+            [bool]$peerReady.peer.account_registry_transaction.
+                baseline.run_subtree.exists -and
+            [bool]$peerReady.port_preflight.all_free -and
+            (Test-I04ValueSetEqual `
+                -Actual @($peerReady.port_preflight.ports) `
+                -Expected @($PeerTcpPort, $PeerUdpPort, $PeerWebPort)) -and
             [bool]$peerReady.peer.physical -and
             [bool]$peerReady.peer.same_interface -and
             -not [bool]$peerReady.peer.overlay_or_vpn_like -and
@@ -5881,14 +11362,17 @@ on the remote peer and restores it transactionally.
             ($ClientWebPort - 4711) -ne $offset) {
             throw 'Client TCP/UDP/Web ports must share the standard 4662/4672/4711 offset'
         }
+        $null = Assert-I04CandidateBindingUnchanged -Binding $candidate
         & (Join-Path $PSScriptRoot 'prepare_node.ps1') -NodeRole B `
             -SourcePackage $candidate.package_path -OutputRoot $nodes `
             -RunId 'v91-i04-client' -PortOffset $offset
         $clientNode = Join-Path $nodes 'v91-i04-client-b'
         $clientExe = Join-Path $clientNode 'emule.exe'
-        if ((Get-LabSha256 -Path $clientExe) -ne $expectedHash) {
-            throw 'Prepared client node is not the exact candidate binary'
-        }
+        $null = Assert-I04CandidateBindingUnchanged -Binding $candidate
+        $null = Assert-I04PreparedNodeDerivedFromBinding `
+            -NodePath $clientNode -Binding $candidate
+        $clientCodeBinding = Lock-I04PreparedNodeCode `
+            -NodePath $clientNode -ExpectedExeSha256 $expectedHash
         $incoming = New-LabDirectory -Path (Join-Path $clientNode 'Incoming')
         $temp = New-LabDirectory -Path (Join-Path $clientNode 'Temp')
         $clientIsolation = Set-I04IsolatedPreferences `
@@ -5904,19 +11388,26 @@ on the remote peer and restores it transactionally.
         function Start-ClientSource {
             $process = $null
             try {
-                $process = Start-Process -FilePath $clientExe `
+                $preferenceProof = Assert-I04StoredPreferenceContract `
+                    -NodePath $clientNode
+                $process = Start-I04RestrictedProcess -FilePath $clientExe `
                     -ArgumentList @(
                         '--portable', '--ignoreinstances',
                         "--metrics-port=$ClientWebPort",
                         "--tcp-port=$ClientTcpPort",
                         "--udp-port=$ClientUdpPort"
-                    ) -WorkingDirectory $clientNode -PassThru `
-                    -WindowStyle Hidden
+                    ) -WorkingDirectory $clientNode
                 $clientOwnedProcesses.Add($process)
+                $process = Register-I04OwnedProcess -Process $process `
+                    -ExpectedPath $clientExe `
+                    -OwnerRole 'CoordinatorClient' -Nonce $nonce
                 Wait-I04Api -Port $ClientWebPort -Process $process |
                     Out-Null
                 Wait-I04Listener -Port $ClientTcpPort -Process $process |
                     Out-Null
+                $process | Add-Member `
+                    -NotePropertyName i04_preference_contract_sha256 `
+                    -NotePropertyValue $preferenceProof.contract_sha256 -Force
                 return $process
             } catch {
                 # The caller cannot receive $process when startup validation
@@ -6022,8 +11513,8 @@ on the remote peer and restores it transactionally.
             $client.Refresh()
             if ($client.HasExited) { throw 'Client exited during peer prewarm' }
             $connections = @(
-                Get-NetTCPConnection -OwningProcess $client.Id `
-                    -ErrorAction SilentlyContinue | Where-Object {
+                Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+                        [int]$_.OwningProcess -eq $client.Id -and
                         $_.RemotePort -eq $PeerTcpPort -and
                         (Get-I04NormalizedIp -Address $_.RemoteAddress) -eq
                             $peerV4Text
@@ -6268,6 +11759,11 @@ on the remote peer and restores it transactionally.
             [bool]$peerArmed.allow4_rule.exact -and
             [bool]$peerArmed.allow6_rule.exact -and
             [bool]$peerArmed.drop_rule.exact -and
+            [string]$peerArmed.global_firewall_armed.schema -eq
+                'ese.v91.i04-global-firewall-snapshot/v2' -and
+            [bool]$peerArmed.global_firewall_armed.privacy_safe -and
+            [string]$peerArmed.global_firewall_armed.canonical_sha256 -match
+                '^[0-9a-f]{64}$' -and
             [string]$peerArmed.allow4_rule.program_file_sha256 -eq
                 $expectedHash -and
             [string]$peerArmed.allow6_rule.program_file_sha256 -eq
@@ -6325,22 +11821,23 @@ on the remote peer and restores it transactionally.
             -not ([string]$peerArmed.observed_ipv4_client.address).Contains(
                 ':'
             ) -and
-            (Get-LabAddressClass -Address (
+            (Test-I04UsableLocalIPv4 -Address (
                 [string]$peerArmed.observed_ipv4_client.address
-            )) -notin @(
-                'invalid', 'loopback-v4', 'linklocal-v4', 'special-v4'
-            ) -and
+            )) -and
             [int]$peerArmed.observed_ipv4_client.port -gt 0
         $coordinatorPrewarmAlive = @(
-            Get-NetTCPConnection -OwningProcess $client.Id -State Established `
-                -ErrorAction SilentlyContinue | Where-Object {
-                    $tuple = Get-I04TupleKey -Family 'IPv4' `
-                        -LocalAddress $_.LocalAddress `
-                        -LocalPort ([int]$_.LocalPort) `
-                        -RemoteAddress $_.RemoteAddress `
-                        -RemotePort ([int]$_.RemotePort)
-                    $prewarmTuples.Contains($tuple)
+            Get-NetTCPConnection -ErrorAction Stop | Where-Object {
+                if ([int]$_.OwningProcess -ne $client.Id -or
+                    [string]$_.State -ne 'Established') {
+                    return $false
                 }
+                $tuple = Get-I04TupleKey -Family 'IPv4' `
+                    -LocalAddress $_.LocalAddress `
+                    -LocalPort ([int]$_.LocalPort) `
+                    -RemoteAddress $_.RemoteAddress `
+                    -RemotePort ([int]$_.RemotePort)
+                return $prewarmTuples.Contains($tuple)
+            }
         ).Count -gt 0
         if (-not $peerArmedExact -or -not $coordinatorPrewarmAlive) {
             $blockedReasons.Add(
@@ -6458,16 +11955,35 @@ on the remote peer and restores it transactionally.
                 $ui = Get-I04UiProbe -Process $client
                 $apiProbeCount++
                 if (-not [bool]$api.available) {
-                    $candidatePostTriggerFailure =
-                        'candidate API became unavailable during the formal scenario'
+                    $candidatePostTriggerFailure = New-I04ProductFailure `
+                        -FailureType 'api_unavailable' `
+                        -DisplayMessage (
+                            'candidate API became unavailable during the ' +
+                            'scheduler-floor observation'
+                        ) -Process $client -ExpectedPath $clientExe `
+                        -BoundaryEpochMs $(if ($null -eq
+                            $restartBoundaryEpochMs) { 0.0 } else {
+                            [double]$restartBoundaryEpochMs
+                        }) -SourceKind 'api_probe' -SourceEvidence $api `
+                        -RequireWebEndpoint
                     throw 'I04_CANDIDATE_FAILED_AFTER_TRIGGER'
                 }
                 if (-not (Test-I04ApiIsolation -Data $api `
                         -RequireEd2k $true)) {
                     $apiFailureCount++
+                    $blockedReasons.Add(
+                        'Candidate API isolation changed before the formal Stop A boundary'
+                    )
+                    throw 'I04_FIXTURE_BLOCKED'
                 }
                 $apiMaxMs =
                     [Math]::Max($apiMaxMs, [Int64]$api.duration_ms)
+                if ([Int64]$api.duration_ms -ge 1000) {
+                    $blockedReasons.Add(
+                        'Candidate API exceeded the liveness limit before the formal Stop A boundary'
+                    )
+                    throw 'I04_FIXTURE_BLOCKED'
+                }
                 $uiProbeCount++
                 if (-not $ui.main_window_present) { $uiMissingCount++ }
                 if ($ui.main_window_present -and
@@ -6477,6 +11993,14 @@ on the remote peer and restores it transactionally.
                 $uiMaxMs = [Math]::Max(
                     $uiMaxMs, [Int64]$ui.probe_duration_ms
                 )
+                if (-not [bool]$ui.main_window_present -or
+                    -not [bool]$ui.message_pump_responsive -or
+                    [Int64]$ui.probe_duration_ms -ge 500) {
+                    $blockedReasons.Add(
+                        'Candidate UI liveness failed before the formal Stop A boundary'
+                    )
+                    throw 'I04_FIXTURE_BLOCKED'
+                }
                 $pausedCheck = Get-I04TransferSnapshot `
                     -Port $ClientWebPort -Session $clientSession `
                     -FileHash ([string]$peerReady.ed2k.a.hash)
@@ -6729,6 +12253,24 @@ on the remote peer and restores it transactionally.
             -PeerPort $PeerTcpPort -FileAName (
                 [string]$peerReady.fixtures.a.name
             ) -FileBName ([string]$peerReady.fixtures.b.name)
+        if (-not [bool]$logBefore.collector_ok -or
+            -not [bool]$logBefore.adjudicable -or
+            [int]$logBefore.log_file_count -lt 1) {
+            $blockedReasons.Add(
+                'Product log baseline collector did not complete exactly'
+            )
+            throw 'I04_FIXTURE_BLOCKED'
+        }
+        $coordinatorFirewallBeforeBoundary =
+            Get-I04GlobalFirewallSnapshot
+        if ([string]$coordinatorFirewallBeforeBoundary.canonical_sha256 -cne
+            [string]$script:i04AccountRegistryTransaction.
+                global_firewall_baseline.canonical_sha256) {
+            $blockedReasons.Add(
+                'Coordinator global firewall changed before the formal boundary'
+            )
+            throw 'I04_FIXTURE_BLOCKED'
+        }
         Write-LabJson -Value ([ordered]@{
             schema = 'ese.v91.i04-formal-trigger-baseline/v1'
             captured_at_utc = Get-LabUtcTimestamp
@@ -6736,6 +12278,7 @@ on the remote peer and restores it transactionally.
             api = $apiTelemetryBaseline
             file_a = $preStopA
             file_b = $preStopB
+            global_firewall = $coordinatorFirewallBeforeBoundary
         }) -Path (Join-Path $evidence 'formal-trigger-baseline.json') |
             Out-Null
 
@@ -6744,6 +12287,13 @@ on the remote peer and restores it transactionally.
         # Once the boundary artifact is published, candidate/API/telemetry
         # failures take FAIL precedence; pre-boundary setup failures remain
         # BLOCKED.
+        $apiProbeCount = 0
+        $apiFailureCount = 0
+        $apiMaxMs = 0L
+        $uiProbeCount = 0
+        $uiMissingCount = 0
+        $uiFailureCount = 0
+        $uiMaxMs = 0L
         $caseArmed = $true
         # The only formal trigger boundary is immediately before this Classic
         # Web Stop A request. Publish and assign it before entering the
@@ -6787,7 +12337,9 @@ on the remote peer and restores it transactionally.
                 -FileHash ([string]$peerReady.ed2k.a.hash) `
                 -PreparedBoundary $stopABoundary
         } catch {
-            $requestFailure = $_.Exception.Message
+            $requestFailure = Get-I04SafeErrorToken `
+                -Context 'formal Stop A request failed' `
+                -Message $_.Exception.Message
             $requestAfter = [DateTimeOffset]::UtcNow
             $stopAOperation = [pscustomobject][ordered]@{
                 operation = 'stop'
@@ -6811,12 +12363,24 @@ on the remote peer and restores it transactionally.
                 response_sha256 = ''
             }
             $client.Refresh()
-            $candidatePostTriggerFailure = if ($client.HasExited) {
-                "candidate exited while processing formal Stop A (exit " +
-                    "$($client.ExitCode))"
+            $candidatePostTriggerFailure = if ([bool]$client.HasExited) {
+                $message = "candidate exited while processing formal Stop A (exit $($client.ExitCode))"
+                New-I04ProductFailure -FailureType 'process_exit' `
+                    -DisplayMessage $message -Process $client `
+                    -ExpectedPath $clientExe `
+                    -BoundaryEpochMs $restartBoundaryEpochMs `
+                    -SourceKind 'process_handle' `
+                    -SourceEvidence $stopAOperation `
+                    -RequireExitedProcess
             } else {
-                'candidate Classic Web Stop A request failed or timed out ' +
-                    "after the formal boundary: $requestFailure"
+                $message = 'candidate Classic Web Stop A request failed or ' +
+                    "timed out after the formal boundary: $requestFailure"
+                New-I04ProductFailure -FailureType 'classic_web_timeout' `
+                    -DisplayMessage $message -Process $client `
+                    -ExpectedPath $clientExe `
+                    -BoundaryEpochMs $restartBoundaryEpochMs `
+                    -SourceKind 'classic_web_request' `
+                    -SourceEvidence $stopAOperation -RequireWebEndpoint
             }
             throw 'I04_CANDIDATE_FAILED_AFTER_TRIGGER'
         }
@@ -6827,9 +12391,17 @@ on the remote peer and restores it transactionally.
             $null -eq $apiTelemetryTrigger.connecting_client_high_water -or
             $null -eq
                 $apiTelemetryTrigger.connecting_client_duplicate_adds) {
-            $candidatePostTriggerFailure =
-                'candidate API/connecting telemetry was unavailable ' +
-                'immediately after formal Stop A'
+            $failureType = if ([bool]$apiTelemetryTrigger.available) {
+                'api_contract_invalid'
+            } else { 'api_unavailable' }
+            $candidatePostTriggerFailure = New-I04ProductFailure `
+                -FailureType $failureType -DisplayMessage (
+                    'candidate API/connecting telemetry was unavailable ' +
+                    'immediately after formal Stop A'
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'api_probe' `
+                -SourceEvidence $apiTelemetryTrigger -RequireWebEndpoint
             throw 'I04_CANDIDATE_FAILED_AFTER_TRIGGER'
         }
         $telemetryObservedCurrentMax = [Math]::Max(
@@ -6858,9 +12430,12 @@ on the remote peer and restores it transactionally.
             $now = [DateTime]::UtcNow
             $client.Refresh()
             if ($client.HasExited) {
-                $candidatePostTriggerFailure =
-                    "candidate exited during formal scenario (exit " +
-                    "$($client.ExitCode))"
+                $message = "candidate exited during formal scenario (exit $($client.ExitCode))"
+                $candidatePostTriggerFailure = New-I04ProductFailure `
+                    -FailureType 'process_exit' -DisplayMessage $message `
+                    -Process $client -ExpectedPath $clientExe `
+                    -BoundaryEpochMs $restartBoundaryEpochMs `
+                    -SourceKind 'process_handle' -RequireExitedProcess
                 throw 'I04_CANDIDATE_FAILED_AFTER_TRIGGER'
             }
             $matching = @(Get-I04TargetConnections `
@@ -6898,8 +12473,16 @@ on the remote peer and restores it transactionally.
                     $null -eq $telemetry.connecting_client_high_water -or
                     $null -eq
                         $telemetry.connecting_client_duplicate_adds) {
-                    $candidatePostTriggerFailure =
-                        'candidate API/connecting telemetry became unavailable'
+                    $failureType = if ([bool]$telemetry.available) {
+                        'api_contract_invalid'
+                    } else { 'api_unavailable' }
+                    $candidatePostTriggerFailure = New-I04ProductFailure `
+                        -FailureType $failureType -DisplayMessage (
+                            'candidate API/connecting telemetry became unavailable'
+                        ) -Process $client -ExpectedPath $clientExe `
+                        -BoundaryEpochMs $restartBoundaryEpochMs `
+                        -SourceKind 'api_probe' -SourceEvidence $telemetry `
+                        -RequireWebEndpoint
                     throw 'I04_CANDIDATE_FAILED_AFTER_TRIGGER'
                 }
                 $telemetryObservedCurrentMax = [Math]::Max(
@@ -6935,8 +12518,31 @@ on the remote peer and restores it transactionally.
                     -not (Test-I04ApiIsolation -Data $api `
                         -RequireEd2k $true)) {
                     $apiFailureCount++
+                    $failureType = if ([bool]$api.available) {
+                        'api_contract_invalid'
+                    } else { 'api_unavailable' }
+                    $candidatePostTriggerFailure = New-I04ProductFailure `
+                        -FailureType $failureType -DisplayMessage (
+                            'Candidate API liveness/isolation failed after ' +
+                            'formal Stop A'
+                        ) -Process $client -ExpectedPath $clientExe `
+                        -BoundaryEpochMs $restartBoundaryEpochMs `
+                        -SourceKind 'api_probe' -SourceEvidence $api `
+                        -RequireWebEndpoint
+                    throw 'I04_CANDIDATE_FAILED_AFTER_TRIGGER'
                 }
                 $apiMaxMs = [Math]::Max($apiMaxMs, [Int64]$api.duration_ms)
+                if ([Int64]$api.duration_ms -ge 1000) {
+                    $candidatePostTriggerFailure = New-I04ProductFailure `
+                        -FailureType 'api_liveness' -DisplayMessage (
+                            'Candidate API exceeded the post-boundary ' +
+                            'one-second liveness limit'
+                        ) -Process $client -ExpectedPath $clientExe `
+                        -BoundaryEpochMs $restartBoundaryEpochMs `
+                        -SourceKind 'api_probe' -SourceEvidence $api `
+                        -RequireWebEndpoint
+                    throw 'I04_CANDIDATE_FAILED_AFTER_TRIGGER'
+                }
                 $uiProbeCount++
                 if (-not $ui.main_window_present) { $uiMissingCount++ }
                 if ($ui.main_window_present -and
@@ -6944,6 +12550,18 @@ on the remote peer and restores it transactionally.
                     $uiFailureCount++
                 }
                 $uiMaxMs = [Math]::Max($uiMaxMs, [Int64]$ui.probe_duration_ms)
+                if (-not [bool]$ui.main_window_present -or
+                    -not [bool]$ui.message_pump_responsive -or
+                    [Int64]$ui.probe_duration_ms -ge 500) {
+                    $candidatePostTriggerFailure = New-I04ProductFailure `
+                        -FailureType 'ui_liveness' -DisplayMessage (
+                            'Candidate UI failed the post-boundary liveness contract'
+                        ) -Process $client -ExpectedPath $clientExe `
+                        -BoundaryEpochMs $restartBoundaryEpochMs `
+                        -SourceKind 'ui_probe' -SourceEvidence $ui `
+                        -RequireLiveProcess
+                    throw 'I04_CANDIDATE_FAILED_AFTER_TRIGGER'
+                }
                 Add-I04JsonLine -Path $samplesPath -Value ([ordered]@{
                     schema = 'ese.v91.i04-runtime-sample/v1'
                     sample_number = ++$sample
@@ -6966,6 +12584,14 @@ on the remote peer and restores it transactionally.
                     ) -FileBName (
                         [string]$peerReady.fixtures.b.name
                     )
+                if (-not [bool]$liveLog.collector_ok -or
+                    -not [bool]$liveLog.adjudicable -or
+                    [int]$liveLog.log_file_count -lt 1) {
+                    $blockedReasons.Add(
+                        'Product log live collector did not complete exactly'
+                    )
+                    throw 'I04_LOG_COLLECTOR_BLOCKED'
+                }
                 $fallbackDeltaObserved = $liveLog.fallback_count -
                     $logBefore.fallback_count
                 $nextLogCheck = $now.AddSeconds(1)
@@ -7006,8 +12632,16 @@ on the remote peer and restores it transactionally.
             $null -eq $apiTelemetryFinal.connecting_client_high_water -or
             $null -eq
                 $apiTelemetryFinal.connecting_client_duplicate_adds) {
-            $candidatePostTriggerFailure =
-                'candidate final API/connecting telemetry remained unavailable'
+            $failureType = if ([bool]$apiTelemetryFinal.available) {
+                'api_contract_invalid'
+            } else { 'api_unavailable' }
+            $candidatePostTriggerFailure = New-I04ProductFailure `
+                -FailureType $failureType -DisplayMessage (
+                    'candidate final API/connecting telemetry remained unavailable'
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'api_probe' `
+                -SourceEvidence $apiTelemetryFinal -RequireWebEndpoint
             throw 'I04_CANDIDATE_FAILED_AFTER_TRIGGER'
         }
         $telemetryObservedCurrentMax = [Math]::Max(
@@ -7040,7 +12674,7 @@ on the remote peer and restores it transactionally.
             ipv6_local_ports = @($scenarioV6LocalPorts | Sort-Object)
             prewarm_tuple_keys = @($prewarmTuples | Sort-Object)
             other_pid_observed = $otherPidObserved
-            other_pid_connections = @($otherPidConnections)
+            other_pid_connections = @($otherPidConnections.ToArray())
             telemetry = [ordered]@{
                 baseline = $apiTelemetryBaseline
                 immediate_after_stop_a = $apiTelemetryTrigger
@@ -7071,21 +12705,41 @@ on the remote peer and restores it transactionally.
         $failureDisposition = Get-I04FailureDisposition `
             -CaseArmed $caseArmed `
             -FormalBoundaryPublished $formalBoundaryPublished `
+            -CandidateFailure $candidatePostTriggerFailure `
+            -ProofContradicted $false `
             -ExceptionMessage $_.Exception.Message
         if ([string]$failureDisposition.classification -eq 'FAIL') {
-            # Once the exact fixture and formal boundary are published, any
-            # exception in the candidate scenario is a post-trigger product
-            # failure. Capture and transactional cleanup still continue so
-            # unrelated external integrity failures can remain BLOCKED.
-            if (-not $candidatePostTriggerFailure) {
-                $candidatePostTriggerFailure =
-                    'candidate scenario raised an exception after the formal ' +
-                    "Stop A boundary: $($_.Exception.Message)"
-            }
+            # The product symptom was set explicitly at its observation site;
+            # timing alone never promotes an arbitrary harness exception.
+            $null = $candidatePostTriggerFailure
+        } elseif ($null -ne $candidatePostTriggerFailure) {
+            $blockedReasons.Add(
+                'A candidate symptom occurred without a complete formal ' +
+                'post-boundary proof and is therefore not adjudicable'
+            )
         } elseif ($_.Exception.Message -ne 'I04_FIXTURE_BLOCKED') {
             $runtimeFailure = $_
         }
     } finally {
+        if ($caseArmed -and $null -ne $coordinatorFirewallBeforeBoundary) {
+            try {
+                $coordinatorFirewallAfterObservation =
+                    Get-I04GlobalFirewallSnapshot
+                $coordinatorFirewallScenarioUnchanged =
+                    [string]$coordinatorFirewallAfterObservation.
+                        canonical_sha256 -ceq
+                    [string]$coordinatorFirewallBeforeBoundary.canonical_sha256
+                if (-not $coordinatorFirewallScenarioUnchanged) {
+                    $blockedReasons.Add(
+                        'Coordinator global firewall drifted during the formal scenario'
+                    )
+                }
+            } catch {
+                $blockedReasons.Add((Get-I04SafeErrorToken `
+                    -Context 'Coordinator post-observation firewall snapshot failed' `
+                    -Message $_.Exception.Message))
+            }
+        }
         if ($null -ne $socketSampler) {
             $null = Stop-I04SocketSampler -Sampler $socketSampler `
                 -CleanupFailures $cleanupFailures
@@ -7139,17 +12793,35 @@ on the remote peer and restores it transactionally.
                             Join-Path $evidence 'socket-sampler.json'
                         ) | Out-Null
                 } catch {
-                    $cleanupFailures.Add(
-                        "socket sampler evidence failed: " +
-                        $_.Exception.Message
-                    )
+                    $cleanupFailures.Add((Get-I04SafeErrorToken `
+                        -Context 'socket sampler evidence failed' `
+                        -Message $_.Exception.Message))
                 }
             }
         }
-        if ($null -ne $capture) {
-            Stop-I04PacketCapture -State $capture -JournalPath $journal `
-                -CleanupFailures $cleanupFailures
-            $captureStoppedEpochMs = $capture.capture_ended_epoch_ms
+        try {
+            if ($null -ne $capture) {
+                Stop-I04PacketCapture -State $capture -JournalPath $journal `
+                    -CleanupFailures $cleanupFailures
+                $captureStoppedEpochMs = $capture.capture_ended_epoch_ms
+            }
+        } catch {
+            $cleanupFailures.Add((Get-I04SafeErrorToken `
+                -Context 'PktMon terminal cleanup failed' `
+                -Message $_.Exception.Message))
+        } finally {
+            if ($null -ne $script:i04PktmonMutex) {
+                try {
+                    $pktmonMutexRelease = Exit-I04PktmonGlobalMutex
+                    if (-not [bool]$pktmonMutexRelease.release_exact) {
+                        throw 'PktMon global mutex release was not exact'
+                    }
+                } catch {
+                    $cleanupFailures.Add((Get-I04SafeErrorToken `
+                        -Context 'PktMon global mutex release failed' `
+                        -Message $_.Exception.Message))
+                }
+            }
         }
         # Publish stop even when peer-ready timed out. A manually launched or
         # delayed remote peer will then see stop before arm and restore/exit
@@ -7167,9 +12839,9 @@ on the remote peer and restores it transactionally.
                 }) -Path $stopPath | Out-Null
                 $stopCommandWritten = $true
             } catch {
-                $cleanupFailures.Add(
-                    "peer stop command could not be written: $($_.Exception.Message)"
-                )
+                    $cleanupFailures.Add((Get-I04SafeErrorToken `
+                        -Context 'peer stop command could not be written' `
+                        -Message $_.Exception.Message))
             }
         }
         if ($stopCommandWritten -and $null -ne $peerReady) {
@@ -7177,10 +12849,40 @@ on the remote peer and restores it transactionally.
             if ($null -eq $peerResult) {
                 $cleanupFailures.Add('peer did not publish restoration evidence')
             } else {
+                $peerTerminal = Wait-I04File -Path $peerTerminalPath `
+                    -TimeoutSeconds 90
+                if ($null -eq $peerTerminal) {
+                    $cleanupFailures.Add(
+                        'peer did not publish terminal outer-cleanup evidence'
+                    )
+                } else {
+                    Write-LabJson -Value $peerTerminal -Path (
+                        Join-Path $evidence 'peer-terminal.json'
+                    ) | Out-Null
+                    try {
+                        $peerTerminalExact = Test-I04PeerTerminalContract `
+                            -Terminal $peerTerminal `
+                            -ExpectedCaseId $caseId `
+                            -ExpectedRunNonce $nonce `
+                            -ExpectedPeerResultSha256 (
+                                Get-LabSha256 -Path $peerResultPath
+                            )
+                    } catch {
+                        $peerTerminalExact = $false
+                        $cleanupFailures.Add((Get-I04SafeErrorToken `
+                            -Context 'peer terminal receipt validation failed' `
+                            -Message $_.Exception.Message))
+                    }
+                    if (-not $peerTerminalExact) {
+                        $cleanupFailures.Add(
+                            'peer terminal outer-cleanup receipt was not exact'
+                        )
+                    }
+                }
                 Write-LabJson -Value $peerResult `
                     -Path (Join-Path $evidence 'peer-result.json') | Out-Null
                 try {
-                    $peerRestorationExact =
+                    $peerRestorationExact = $peerTerminalExact -and
                         [string]$peerResult.schema -eq
                             'ese.v91.i04-peer-result/v1' -and
                         [string]$peerResult.case_id -eq $caseId -and
@@ -7189,9 +12891,31 @@ on the remote peer and restores it transactionally.
                             $candidate.commit -and
                         [string]$peerResult.candidate_emule_sha256 -eq
                             $expectedHash -and
+                        [string]$peerResult.harness_bundle.schema -eq
+                            'ese.v91.i04-harness-bundle/v1' -and
+                        [string]$peerResult.harness_bundle.bundle_sha256 -eq
+                            [string]$script:i04HarnessBundle.bundle_sha256 -and
+                        [string]$peerResult.harness_bundle.harness_sha256 -eq
+                            [string]$script:i04HarnessBundle.harness_sha256 -and
+                        [string]$peerResult.harness_bundle.common_sha256 -eq
+                            [string]$script:i04HarnessBundle.common_sha256 -and
+                        [string]$peerResult.harness_bundle.prepare_node_sha256 -eq
+                            [string]$script:i04HarnessBundle.prepare_node_sha256 -and
+                        [bool]$peerResult.harness_bundle.
+                            immutable_read_locks_held -and
                         [string]$peerResult.status -eq 'COMPLETE' -and
                         $null -eq $peerResult.runtime_error -and
                         [bool]$peerResult.cleanup.source_process_stopped -and
+                        [bool]$peerResult.cleanup.terminal_ownership_census.
+                            collector_ok -and
+                        [bool]$peerResult.cleanup.terminal_ownership_census.
+                            all_clear -and
+                        @($peerResult.cleanup.terminal_ownership_census.
+                            remaining_processes).Count -eq 0 -and
+                        @($peerResult.cleanup.terminal_ownership_census.
+                            remaining_tcp).Count -eq 0 -and
+                        @($peerResult.cleanup.terminal_ownership_census.
+                            remaining_udp).Count -eq 0 -and
                         [bool]$peerResult.cleanup.controlled_ed2k_server_stopped -and
                         -not [bool]$peerResult.cleanup.drop_rule_present -and
                         -not [bool]$peerResult.cleanup.allow4_rule_present -and
@@ -7200,6 +12924,36 @@ on the remote peer and restores it transactionally.
                             strict_isolation_valid -and
                         [bool]$peerResult.cleanup.isolation_final.
                             strict_isolation_valid -and
+                        [bool]$peerResult.cleanup.account_registry_transaction.
+                            collector_ok -and
+                        [bool]$peerResult.cleanup.account_registry_transaction.
+                            safe_to_pass -and
+                        [bool]$peerResult.cleanup.account_registry_transaction.
+                            global_firewall_unchanged -and
+                        [bool]$peerResult.cleanup.account_registry_transaction.
+                            run_subtree_existed_before -and
+                        [bool]$peerResult.cleanup.account_registry_transaction.
+                            run_subtree_exists_after -and
+                        [bool]$peerResult.cleanup.
+                            global_firewall_scenario_unchanged -and
+                        [string]$peerResult.cleanup.global_firewall_armed.
+                            canonical_sha256 -eq
+                            [string]$peerArmed.global_firewall_armed.
+                                canonical_sha256 -and
+                        [string]$peerResult.cleanup.global_firewall_pre_removal.
+                            canonical_sha256 -eq
+                            [string]$peerArmed.global_firewall_armed.
+                                canonical_sha256 -and
+                        -not [bool]$peerResult.cleanup.
+                            account_registry_transaction.
+                            destructive_restore_attempted -and
+                        [bool]$peerResult.cleanup.
+                            restricted_job_lease_cleanup.complete -and
+                        [int]$peerResult.cleanup.
+                            restricted_job_lease_cleanup.
+                            remaining_registered_process_count -eq 0 -and
+                        @($peerResult.cleanup.
+                            restricted_job_lease_cleanup.failures).Count -eq 0 -and
                         @($peerResult.cleanup.failures).Count -eq 0
                     $peerResultExact = $peerRestorationExact -and
                         [bool]$peerResult.barrier_completed -and
@@ -7211,9 +12965,9 @@ on the remote peer and restores it transactionally.
                 } catch {
                     $peerRestorationExact = $false
                     $peerResultExact = $false
-                    $cleanupFailures.Add(
-                        "peer result schema could not be validated: $($_.Exception.Message)"
-                    )
+                    $cleanupFailures.Add((Get-I04SafeErrorToken `
+                        -Context 'peer result schema could not be validated' `
+                        -Message $_.Exception.Message))
                 }
                 if (-not $peerRestorationExact) {
                     $cleanupFailures.Add('peer restoration did not complete')
@@ -7223,10 +12977,8 @@ on the remote peer and restores it transactionally.
         foreach ($ownedClientProcess in @(
             $clientOwnedProcesses | Sort-Object Id -Unique
         )) {
-            $ownedWasRunning = $null -ne (
-                Get-Process -Id $ownedClientProcess.Id `
-                    -ErrorAction SilentlyContinue
-            )
+            $ownedClientProcess.Refresh()
+            $ownedWasRunning = -not $ownedClientProcess.HasExited
             if (-not (Stop-I04OwnedProcess `
                 -Process $ownedClientProcess -ExpectedPath $clientExe)) {
                 $cleanupFailures.Add(
@@ -7239,13 +12991,6 @@ on the remote peer and restores it transactionally.
                     -CleanupFailures $cleanupFailures
             }
         }
-        $clientProcessesStopped = @(
-            $clientOwnedProcesses | Where-Object {
-                $null -ne (
-                    Get-Process -Id $_.Id -ErrorAction SilentlyContinue
-                )
-            }
-        ).Count -eq 0
         $clientControlledServerStop =
             Stop-I04ControlledEd2kServerInventory `
                 -OwnerInventory $clientControlledServersOwned `
@@ -7259,32 +13004,81 @@ on the remote peer and restores it transactionally.
         }
         if ($null -ne $remoteJob) {
             try {
-                $null = Receive-Job -Job $remoteJob -Wait -ErrorAction Continue
-                Remove-Job -Job $remoteJob -Force -ErrorAction SilentlyContinue
+                $completedRemoteJob = Wait-Job -Job $remoteJob `
+                    -Timeout 90 -ErrorAction Stop
+                if ($null -eq $completedRemoteJob -or
+                    [string]$remoteJob.State -cne 'Completed') {
+                    throw 'remote peer job did not reach Completed state'
+                }
+                $null = Receive-Job -Job $remoteJob -Wait -ErrorAction Stop
+                $remoteChildren = @($remoteJob.ChildJobs)
+                if ($remoteChildren.Count -eq 0 -or
+                    @($remoteChildren | Where-Object {
+                        [string]$_.State -cne 'Completed' -or
+                        @($_.Error).Count -ne 0
+                    }).Count -ne 0 -or @($remoteJob.Error).Count -ne 0) {
+                    throw 'remote peer job or child job contained terminal errors'
+                }
+                $remoteJobTerminalExact = $true
+                Remove-Job -Job $remoteJob -Force -ErrorAction Stop
             } catch {
-                $cleanupFailures.Add(
-                    "remote peer job cleanup failed: $($_.Exception.Message)"
-                )
+                $remoteJobTerminalExact = $false
+                $cleanupFailures.Add((Get-I04SafeErrorToken `
+                    -Context 'remote peer job cleanup failed' `
+                    -Message $_.Exception.Message))
+                try {
+                    Stop-Job -Job $remoteJob -ErrorAction Stop
+                } catch {}
+                try {
+                    Remove-Job -Job $remoteJob -Force -ErrorAction Stop
+                } catch {}
             }
+        }
+        $peerRestorationExact = $peerRestorationExact -and
+            $peerTerminalExact -and $remoteJobTerminalExact
+        $peerResultExact = $peerResultExact -and
+            $peerTerminalExact -and $remoteJobTerminalExact
+        if ($PeerControlMode -eq 'PowerShellRemoting' -and
+            -not $remoteJobTerminalExact) {
+            $cleanupFailures.Add(
+                'remote peer process did not terminate Completed/error-free'
+            )
         }
         if ($null -eq $scenarioFinished -and $null -ne $scenarioStarted) {
             $scenarioFinished = [DateTime]::UtcNow
         }
     }
 
-    if ($clientNode -and (Test-Path -LiteralPath $clientNode)) {
+    if ($clientNode -and (Test-Path -LiteralPath $clientNode) -and
+        $null -ne $peerReady) {
         $logAfter = Get-I04ProductLogCounts -NodePath $clientNode `
             -PeerIPv4 $peerV4Text -PeerIPv6 $peerV6Text `
             -PeerPort $PeerTcpPort -FileAName (
                 [string]$peerReady.fixtures.a.name
             ) -FileBName ([string]$peerReady.fixtures.b.name)
+        if (-not [bool]$logAfter.collector_ok -or
+            -not [bool]$logAfter.adjudicable -or
+            [int]$logAfter.log_file_count -lt 1) {
+            $blockedReasons.Add(
+                'Product log final collector did not complete exactly'
+            )
+        }
         Write-LabJson -Value $logAfter `
             -Path (Join-Path $evidence 'logs-after-drop.json') | Out-Null
+    } else {
+        $blockedReasons.Add(
+            'Product log final collector source directory was unavailable'
+        )
     }
     if ($null -ne $capture) {
         Write-LabJson -Value ([ordered]@{
-            schema = 'ese.v91.i04-etw-loss/v1'
+            schema = 'ese.v91.i04-etw-loss/v2'
             captured_at_utc = Get-LabUtcTimestamp
+            sample_phase = [string]$capture.etw_loss_sample_phase
+            final_flush_succeeded =
+                [bool]$capture.etw_final_flush_succeeded
+            final_flush_error_code = $capture.etw_final_flush_error_code
+            post_flush_query_ok = [bool]$capture.etw_post_flush_query_ok
             query_error = $capture.etw_query_error
             events_lost = $capture.etw_events_lost
             log_buffers_lost = $capture.etw_log_buffers_lost
@@ -7313,43 +13107,63 @@ on the remote peer and restores it transactionally.
                 -MinimumSilentWindowMs $minimumSilentWindowMs `
                 -CandidateProcessId $client.Id `
                 -SocketSamplerEvidence $socketSamplerEvidence `
+                -ExpectedAdapterEvidence ([pscustomobject][ordered]@{
+                    interface_index =
+                        [int]$coordinatorAssignedV4.InterfaceIndex
+                    interface_id = [string]$routeV4.interface_id
+                    name = [string]$coordinatorAdapter.Name
+                    description =
+                        [string]$coordinatorAdapter.InterfaceDescription
+                    hardware_interface =
+                        [bool]$coordinatorAdapter.HardwareInterface
+                    virtual = $coordinatorAdapterVirtual
+                    overlay_or_vpn_like = $coordinatorAdapterOverlayLike
+                    status = [string]$coordinatorAdapter.Status
+                }) `
                 -SynCorrelationToleranceMs $captureTimingToleranceMs `
                 -ExcludedTupleKeys @($prewarmTuples)
             Write-LabJson -Value $packetVerdict `
                 -Path (Join-Path $evidence 'packet-verdict.json') | Out-Null
         } catch {
-            $blockedReasons.Add(
-                "Packet capture could not be adjudicated: $($_.Exception.Message)"
-            )
+            $blockedReasons.Add((Get-I04SafeErrorToken `
+                -Context 'Packet capture could not be adjudicated' `
+                -Message $_.Exception.Message))
         }
     }
 
-    $fallbackDelta = if ($null -ne $logBefore -and $null -ne $logAfter) {
+    $logsAdjudicable = $null -ne $logBefore -and
+        $null -ne $logAfter -and
+        [bool]$logBefore.collector_ok -and [bool]$logAfter.collector_ok -and
+        [bool]$logBefore.adjudicable -and [bool]$logAfter.adjudicable -and
+        [int]$logBefore.log_file_count -gt 0 -and
+        [int]$logAfter.log_file_count -gt 0
+    if (-not $logsAdjudicable) {
+        $blockedReasons.Add(
+            'Product log snapshots are absent, empty or non-adjudicable'
+        )
+    }
+    $fallbackDelta = if ($logsAdjudicable) {
         [int]$logAfter.fallback_count - [int]$logBefore.fallback_count
-    } else { 0 }
-    $boundedFallbackDelta = if ($null -ne $logBefore -and
-        $null -ne $logAfter) {
+    } else { $null }
+    $boundedFallbackDelta = if ($logsAdjudicable) {
         [int]$logAfter.bounded_fallback_count -
             [int]$logBefore.bounded_fallback_count
-    } else { 0 }
-    $helloDelta = if ($null -ne $logBefore -and $null -ne $logAfter) {
+    } else { $null }
+    $helloDelta = if ($logsAdjudicable) {
         [int]$logAfter.hello_send_count - [int]$logBefore.hello_send_count
-    } else { 0 }
-    $helloAnswerDelta = if ($null -ne $logBefore -and
-        $null -ne $logAfter) {
+    } else { $null }
+    $helloAnswerDelta = if ($logsAdjudicable) {
         [int]$logAfter.hello_answer_receive_count -
             [int]$logBefore.hello_answer_receive_count
-    } else { 0 }
-    $a4afSwapDelta = if ($null -ne $logBefore -and
-        $null -ne $logAfter) {
+    } else { $null }
+    $a4afSwapDelta = if ($logsAdjudicable) {
         [int]$logAfter.a4af_swap_a_to_b_count -
             [int]$logBefore.a4af_swap_a_to_b_count
-    } else { 0 }
-    $ambiguousMarkerDelta = if ($null -ne $logBefore -and
-        $null -ne $logAfter) {
+    } else { $null }
+    $ambiguousMarkerDelta = if ($logsAdjudicable) {
         [int]$logAfter.ambiguous_target_marker_count -
             [int]$logBefore.ambiguous_target_marker_count
-    } else { 0 }
+    } else { $null }
 
     $telemetryFieldsComplete =
         $null -ne $apiTelemetryBaseline -and
@@ -7372,20 +13186,82 @@ on the remote peer and restores it transactionally.
         [Int64]$apiTelemetryFinal.connecting_client_duplicate_adds -
         [Int64]$apiTelemetryBaseline.connecting_client_duplicate_adds
     } else { $null }
-    $apiFinalIsolationExact = [bool]$candidatePostTriggerFailure -or (
+    $productLogFailureEvidence = if ($logsAdjudicable) {
+        [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-product-log-delta-evidence/v1'
+            candidate_ownership_id_sha256 =
+                [string]$client.i04_ownership_id_sha256
+            collector_ok = $true
+            adjudicable = $true
+            before = $logBefore
+            after = $logAfter
+            fallback_delta = [int]$fallbackDelta
+            bounded_fallback_delta = [int]$boundedFallbackDelta
+            hello_send_delta = [int]$helloDelta
+            hello_answer_receive_delta = [int]$helloAnswerDelta
+            a4af_swap_a_to_b_delta = [int]$a4afSwapDelta
+        }
+    } else { $null }
+    $telemetryFailureEvidence = if ($telemetryFieldsComplete) {
+        [pscustomobject][ordered]@{
+            schema = 'ese.v91.i04-telemetry-delta-evidence/v1'
+            candidate_ownership_id_sha256 =
+                [string]$client.i04_ownership_id_sha256
+            collector_ok = [bool]$apiTelemetryBaseline.available -and
+                [bool]$apiTelemetryFinal.available
+            adjudicable = [bool]$apiTelemetryBaseline.available -and
+                [bool]$apiTelemetryFinal.available
+            baseline = $apiTelemetryBaseline
+            final = $apiTelemetryFinal
+            adds_delta = [Int64]$telemetryAddsDelta
+            duplicate_adds_delta = [Int64]$telemetryDuplicateDelta
+            observed_current_max = [Int64]$telemetryObservedCurrentMax
+            observed_adds_max = [Int64]$telemetryObservedAddsMax
+            observed_duplicate_adds_max =
+                [Int64]$telemetryObservedDuplicateMax
+            observed_high_water_max =
+                [Int64]$telemetryObservedHighWaterMax
+        }
+    } else { $null }
+    $candidateFailureAdjudicable = $null -ne
+        $candidatePostTriggerFailure -and
+        $null -ne $failureDisposition -and
+        [string]$failureDisposition.classification -ceq 'FAIL' -and
+        [bool]$failureDisposition.candidate_failure_contract_valid -and
+        [bool]$candidatePostTriggerFailure.source_bound -and
+        [bool]$candidatePostTriggerFailure.adjudicable
+    $apiFinalIsolationExact = $candidateFailureAdjudicable -or (
         $telemetryFieldsComplete -and
         (Test-I04ApiIsolation -Data $apiTelemetryFinal `
             -RequireEd2k $true)
     )
 
-    $peerExact = $peerReadyExact -and $peerArmedExact -and
-        $peerResumedExact -and $peerResultExact
+    $peerScenarioExact = $peerReadyExact -and $peerArmedExact -and
+        $peerResumedExact
+    $peerFirewallScenarioEvidenceExact =
+        $null -ne $peerResult -and $null -ne $peerArmed -and
+        [bool]$peerResult.cleanup.global_firewall_scenario_unchanged -and
+        [string]$peerArmed.global_firewall_armed.canonical_sha256 -match
+            '^[0-9a-f]{64}$' -and
+        [string]$peerResult.cleanup.global_firewall_armed.canonical_sha256 `
+            -ceq [string]$peerArmed.global_firewall_armed.canonical_sha256 -and
+        [string]$peerResult.cleanup.global_firewall_pre_removal.
+            canonical_sha256 -ceq
+            [string]$peerArmed.global_firewall_armed.canonical_sha256
+    $peerFirewallScenarioContradicted = $caseArmed -and
+        -not $peerFirewallScenarioEvidenceExact
+    $peerExact = $peerScenarioExact -and $peerResultExact
+    if ($peerFirewallScenarioContradicted) {
+        $blockedReasons.Add(
+            'Peer global firewall drifted or lacked exact armed-to-pre-removal scenario evidence'
+        )
+    }
     if ($otherPidObserved) {
         $blockedReasons.Add(
             'A non-candidate PID owned a post-boundary target connection'
         )
     }
-    if ($ambiguousMarkerDelta -ne 0) {
+    if ($logsAdjudicable -and $ambiguousMarkerDelta -ne 0) {
         $blockedReasons.Add(
             "Target log attribution is ambiguous ($ambiguousMarkerDelta marker(s))"
         )
@@ -7396,10 +13272,49 @@ on the remote peer and restores it transactionally.
             'PCAP target SYNs were ambiguous or lacked a nearby exact 5-tuple sample owned only by the candidate PID'
         )
     }
+    if ($null -ne $packetVerdict -and (
+        -not [bool]$packetVerdict.pcapng_parser_complete -or
+        [int]$packetVerdict.pcapng_trailing_byte_count -ne 0 -or
+        [int]$packetVerdict.pcapng_block_error_count -ne 0 -or
+        [int]$packetVerdict.pcapng_idb_option_error_count -ne 0 -or
+        [int]$packetVerdict.pcapng_truncated_frame_count -ne 0 -or
+        [int]$packetVerdict.pcapng_unknown_interface_frame_count -ne 0 -or
+        [int]$packetVerdict.pcapng_unsupported_linktype_frame_count -ne 0 -or
+        [int]$packetVerdict.pcapng_unsupported_packet_block_count -ne 0 -or
+        [int]$packetVerdict.pcapng_parse_null_frame_count -ne 0 -or
+        [int]$packetVerdict.pcapng_non_adjudicable_frame_count -ne 0)) {
+        $blockedReasons.Add(
+            'PCAPNG contained truncated, unsupported, unparseable or structurally incomplete frame evidence'
+        )
+    }
+    if ($null -ne $packetVerdict -and (
+        -not [bool]$packetVerdict.capture_interface_binding_exact -or
+        -not [bool]$packetVerdict.target_frames_on_expected_physical_nic -or
+        [int]$packetVerdict.foreign_interface_target_frame_count -ne 0)) {
+        $blockedReasons.Add(
+            'PCAPNG target frames were not bound uniquely to the proved physical coordinator NIC'
+        )
+    }
     if ($null -eq $capture -or
+        [string]$capture.etw_loss_schema -cne
+            'ese.v91.i04-etw-loss/v2' -or
+        [string]$capture.etw_loss_sample_phase -cne
+            'post-final-flush-pre-stop' -or
+        -not [bool]$capture.etw_final_flush_succeeded -or
+        -not [bool]$capture.etw_post_flush_query_ok -or
         -not [bool]$capture.etw_loss_proved_zero) {
         $blockedReasons.Add(
             'PktMon ETW zero-loss capture was not proved; packet absence is inadmissible'
+        )
+    }
+    if ($null -eq $capture -or
+        -not [bool]$capture.filter_inventory_scenario_unchanged -or
+        [string]$capture.filter_inventory_armed_sha256 -notmatch
+            '^[0-9a-f]{64}$' -or
+        [string]$capture.filter_inventory_pre_stop_sha256 -cne
+            [string]$capture.filter_inventory_armed_sha256) {
+        $blockedReasons.Add(
+            'PktMon exact filter inventory was not stable through the capture boundary'
         )
     }
     if ($null -ne $capture -and
@@ -7436,13 +13351,13 @@ on the remote peer and restores it transactionally.
         [int]$packetVerdict.ipv6_syn_count -gt 0 -and
         [double]$packetVerdict.capture_coverage_after_syn6_ms -lt
             $minimumSilentWindowMs -and
-        -not $candidatePostTriggerFailure) {
+        -not $candidateFailureAdjudicable) {
         $blockedReasons.Add(
             'Capture did not cover the full fixed 2.75-second environment window after SYN6'
         )
     }
     if (-not $telemetryFieldsComplete -and
-        -not $candidatePostTriggerFailure) {
+        -not $candidateFailureAdjudicable) {
         $blockedReasons.Add(
             'Final connecting-client telemetry is absent; product deltas are not adjudicable'
         )
@@ -7452,7 +13367,21 @@ on the remote peer and restores it transactionally.
             'Final client eD2K/Kad/NetLab isolation gates were not proved'
         )
     }
-    $triggerFixtureRuntimeValid = $peerExact -and
+    $livenessEvidenceComplete = $apiProbeCount -gt 0 -and
+        $apiFailureCount -eq 0 -and $apiMaxMs -lt 1000 -and
+        $uiProbeCount -gt 0 -and $uiMissingCount -eq 0 -and
+        $uiFailureCount -eq 0 -and $uiMaxMs -lt 500
+    if (-not $candidateFailureAdjudicable -and
+        -not $livenessEvidenceComplete) {
+        $blockedReasons.Add(
+            'Post-boundary API/UI liveness evidence was incomplete or non-adjudicable'
+        )
+    }
+    $triggerFixtureRuntimeValid = $peerScenarioExact -and
+        $peerFirewallScenarioEvidenceExact -and
+        $null -eq $runtimeFailure -and
+        $logsAdjudicable -and
+        ($candidateFailureAdjudicable -or $livenessEvidenceComplete) -and
         $null -ne $baselineV4 -and $baselineV4.connected -and
         $null -ne $baselineV6 -and $baselineV6.connected -and
         $prewarmEstablished -and $prewarmProgress -and
@@ -7469,104 +13398,188 @@ on the remote peer and restores it transactionally.
             [string]$peerReady.process.persisted_identity.user_hash -and
         $null -ne $packetVerdict -and
         $null -ne $capture -and
+        [string]$capture.etw_loss_schema -ceq
+            'ese.v91.i04-etw-loss/v2' -and
+        [string]$capture.etw_loss_sample_phase -ceq
+            'post-final-flush-pre-stop' -and
+        [bool]$capture.etw_final_flush_succeeded -and
+        [bool]$capture.etw_post_flush_query_ok -and
         [bool]$capture.etw_loss_proved_zero -and
+        [bool]$capture.filter_inventory_scenario_unchanged -and
+        [string]$capture.filter_inventory_armed_sha256 -match
+            '^[0-9a-f]{64}$' -and
+        [string]$capture.filter_inventory_pre_stop_sha256 -ceq
+            [string]$capture.filter_inventory_armed_sha256 -and
         [bool]$capture.etl_below_circular_limit -and
         $null -ne $socketSamplerEvidence -and
         [bool]$socketSamplerEvidence.sampler_coverage_valid -and
         [int]$packetVerdict.pre_boundary_target_syn_count -eq 0 -and
+        [bool]$packetVerdict.pcapng_parser_complete -and
+        [int]$packetVerdict.pcapng_trailing_byte_count -eq 0 -and
+        [int]$packetVerdict.pcapng_block_error_count -eq 0 -and
+        [int]$packetVerdict.pcapng_idb_option_error_count -eq 0 -and
+        [int]$packetVerdict.pcapng_truncated_frame_count -eq 0 -and
+        [int]$packetVerdict.pcapng_unknown_interface_frame_count -eq 0 -and
+        [int]$packetVerdict.pcapng_unsupported_linktype_frame_count -eq 0 -and
+        [int]$packetVerdict.pcapng_unsupported_packet_block_count -eq 0 -and
+        [int]$packetVerdict.pcapng_parse_null_frame_count -eq 0 -and
+        [int]$packetVerdict.pcapng_non_adjudicable_frame_count -eq 0 -and
+        [bool]$packetVerdict.capture_interface_binding_exact -and
+        [bool]$packetVerdict.target_frames_on_expected_physical_nic -and
+        [int]$packetVerdict.foreign_interface_target_frame_count -eq 0 -and
         [bool]$packetVerdict.pid_packet_correlation_complete -and
-        ($candidatePostTriggerFailure -or
+        ($candidateFailureAdjudicable -or
             [int]$packetVerdict.ipv6_syn_count -eq 0 -or
             [bool]$packetVerdict.silent_drop_proved) -and
         -not [bool]$packetVerdict.environment_rejected_blackhole_in_fixed_window -and
         -not $otherPidObserved -and $ambiguousMarkerDelta -eq 0
     if ($triggerFixtureRuntimeValid) {
-        if ($candidatePostTriggerFailure) {
+        if ($candidateFailureAdjudicable) {
+            $null = Assert-I04ProductFailureContract `
+                -Failure $candidatePostTriggerFailure
             $productFailures.Add($candidatePostTriggerFailure)
         } elseif ([int]$packetVerdict.ipv6_syn_count -eq 0) {
-            $productFailures.Add(
-                'Candidate emitted no IPv6 SYN after formal Stop A'
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'ipv6_syn_missing' -DisplayMessage (
+                    'Candidate emitted no IPv6 SYN after formal Stop A'
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'packet_verdict' `
+                -SourceEvidence $packetVerdict
         }
         if ([int]$packetVerdict.ipv6_syn_count -gt 0 -and
             -not $packetVerdict.fallback_in_planning_window) {
-            $productFailures.Add(
-                'First IPv4 SYN was not in the required 2.75-to-<8 second planning window'
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'fallback_window' -DisplayMessage (
+                    'First IPv4 SYN was not in the required ' +
+                    '2.75-to-<8 second planning window'
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'packet_verdict' `
+                -SourceEvidence $packetVerdict
         }
         if ([int]$packetVerdict.ipv6_syn_count -gt 0 -and (
             -not $packetVerdict.connection_under_limit -or
             -not $packetVerdict.ipv4_final_ack_observed)) {
-            $productFailures.Add(
-                "IPv4 did not complete below $FallbackLimitSeconds seconds"
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'ipv4_connectivity' -DisplayMessage (
+                    "IPv4 did not complete below $FallbackLimitSeconds seconds"
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'packet_verdict' `
+                -SourceEvidence $packetVerdict
         }
         if ([int]$packetVerdict.ipv6_syn_count -gt 0 -and
             [int]$packetVerdict.distinct_ipv4_connection_attempts -ne 1) {
-            $productFailures.Add(
-                "Expected one IPv4 fallback transport, observed $($packetVerdict.distinct_ipv4_connection_attempts)"
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'transport_attempt_count' -DisplayMessage (
+                    'Expected one IPv4 fallback transport, observed ' +
+                    [string]$packetVerdict.distinct_ipv4_connection_attempts
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'packet_verdict' `
+                -SourceEvidence $packetVerdict
         }
         if ([int]$packetVerdict.ipv6_syn_count -gt 0 -and
             [int]$packetVerdict.distinct_ipv6_connection_attempts -ne 1) {
-            $productFailures.Add(
-                "Expected one IPv6 transport attempt (retransmissions share ISN), observed $($packetVerdict.distinct_ipv6_connection_attempts)"
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'transport_attempt_count' -DisplayMessage (
+                    'Expected one IPv6 transport attempt (retransmissions ' +
+                    'share ISN), observed ' +
+                    [string]$packetVerdict.distinct_ipv6_connection_attempts
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'packet_verdict' `
+                -SourceEvidence $packetVerdict
         }
-        if (-not $candidatePostTriggerFailure -and (
+        if (-not $candidateFailureAdjudicable -and (
             $fallbackDelta -ne 1 -or $boundedFallbackDelta -ne 1)) {
-            $productFailures.Add(
-                "Expected one bounded fallback log, observed fallback=$fallbackDelta bounded=$boundedFallbackDelta"
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'product_log_contract' -DisplayMessage (
+                    "Expected one bounded fallback log, observed fallback=$fallbackDelta bounded=$boundedFallbackDelta"
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'product_log_counts' `
+                -SourceEvidence $productLogFailureEvidence
         }
-        if (-not $candidatePostTriggerFailure -and
+        if (-not $candidateFailureAdjudicable -and
             $helloDelta -ne 1) {
-            $productFailures.Add(
-                "Expected one queued HELLO after fallback, observed $helloDelta"
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'product_log_contract' -DisplayMessage (
+                    "Expected one queued HELLO after fallback, observed $helloDelta"
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'product_log_counts' `
+                -SourceEvidence $productLogFailureEvidence
         }
-        if (-not $candidatePostTriggerFailure -and
+        if (-not $candidateFailureAdjudicable -and
             $helloAnswerDelta -ne 1) {
-            $productFailures.Add(
-                "Expected one HELLOANSWER after fallback, observed $helloAnswerDelta"
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'product_log_contract' -DisplayMessage (
+                    "Expected one HELLOANSWER after fallback, observed $helloAnswerDelta"
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'product_log_counts' `
+                -SourceEvidence $productLogFailureEvidence
         }
-        if (-not $candidatePostTriggerFailure -and
+        if (-not $candidateFailureAdjudicable -and
             $a4afSwapDelta -ne 1) {
-            $productFailures.Add(
-                "Expected one A-to-B A4AF swap log, observed $a4afSwapDelta"
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'product_log_contract' -DisplayMessage (
+                    "Expected one A-to-B A4AF swap log, observed $a4afSwapDelta"
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'product_log_counts' `
+                -SourceEvidence $productLogFailureEvidence
         }
-        if (-not $candidatePostTriggerFailure -and (
+        if (-not $candidateFailureAdjudicable -and (
             $null -eq $fileAStopped -or
             [string]$fileAStopped.state -ne 'stopped')) {
-            $productFailures.Add(
-                'Classic Web did not prove file A stopped after the formal request'
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'transfer_contract' -DisplayMessage (
+                    'Classic Web did not prove file A stopped after the formal request'
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'transfer_snapshot' -SourceEvidence $fileAStopped
         }
-        if (-not $candidatePostTriggerFailure -and (
+        if (-not $candidateFailureAdjudicable -and (
             $null -eq $fileBAfterTrigger -or
             -not [bool]$fileBAfterTrigger.found -or
             $null -eq $fileBAfterTrigger.source_total -or
             [int]$fileBAfterTrigger.source_total -lt 1 -or
             -not [bool]$fileBAfterTrigger.transferred_nonzero)) {
-            $productFailures.Add(
-                'Classic Web did not prove file B retained the source and advanced data after A-to-B swap'
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'transfer_contract' -DisplayMessage (
+                    'Classic Web did not prove file B retained the source ' +
+                    'and advanced data after A-to-B swap'
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'transfer_snapshot' `
+                -SourceEvidence $fileBAfterTrigger
         }
         if ([bool]$packetVerdict.ipv4_final_ack_observed -and
             [double]$packetVerdict.post_ipv4_connected_observation_ms -lt
                 10000) {
-            $productFailures.Add(
-                'The required 10-second late-retry observation window did not complete'
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'observation_window' -DisplayMessage (
+                    'The required 10-second late-retry observation window did not complete'
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'packet_verdict' `
+                -SourceEvidence $packetVerdict
         }
         if ([int]$packetVerdict.ipv6_syn_count -gt 0 -and (
             -not $scenarioV4SocketObserved -or
             -not $scenarioV4Established)) {
-            $productFailures.Add('No working candidate IPv4 fallback socket was observed')
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'socket_contract' -DisplayMessage (
+                    'No working candidate IPv4 fallback socket was observed'
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'socket_sampler' `
+                -SourceEvidence $socketSamplerEvidence
         }
-        if (-not $candidatePostTriggerFailure -and
+        if (-not $candidateFailureAdjudicable -and
             $telemetryFieldsComplete -and (
                 [Int64]$apiTelemetryBaseline.connecting_client_count -ne 0 -or
                 [Int64]$apiTelemetryBaseline.connecting_client_high_water -ne 1 -or
@@ -7581,21 +13594,14 @@ on the remote peer and restores it transactionally.
                 [Int64]$apiTelemetryFinal.connecting_client_high_water -ne 1 -or
                 [Int64]$apiTelemetryFinal.connecting_client_count -ne 0
             )) {
-            $productFailures.Add(
-                'connecting_client_* telemetry did not prove exactly one logical A-to-B dial with no duplicate/re-add'
-            )
-        }
-        if ($apiProbeCount -eq 0 -or $apiFailureCount -ne 0 -or
-            $apiMaxMs -ge 1000) {
-            $productFailures.Add(
-                "API liveness failed: probes=$apiProbeCount failures=$apiFailureCount max_ms=$apiMaxMs"
-            )
-        }
-        if ($uiProbeCount -eq 0 -or $uiMissingCount -ne 0 -or
-            $uiFailureCount -ne 0 -or $uiMaxMs -ge 500) {
-            $productFailures.Add(
-                "UI liveness failed: probes=$uiProbeCount missing=$uiMissingCount failures=$uiFailureCount max_ms=$uiMaxMs"
-            )
+            Add-I04TypedProductFailure -Failures $productFailures `
+                -FailureType 'telemetry_contract' -DisplayMessage (
+                    'connecting_client_* telemetry did not prove exactly ' +
+                    'one logical A-to-B dial with no duplicate/re-add'
+                ) -Process $client -ExpectedPath $clientExe `
+                -BoundaryEpochMs $restartBoundaryEpochMs `
+                -SourceKind 'telemetry_snapshot' `
+                -SourceEvidence $telemetryFailureEvidence
         }
     } elseif ($blockedReasons.Count -eq 0) {
         $blockedReasons.Add(
@@ -7603,18 +13609,32 @@ on the remote peer and restores it transactionally.
         )
     }
 
-    $candidateAfter = Get-LabCandidateInfo -PackagePath $PackagePath `
-        -ExpectedCommit $Commit
-    $candidateUnchanged = $candidateAfter.emule_sha256 -eq $expectedHash
-    $clientHashAfter = if ($clientExe -and
-        (Test-Path -LiteralPath $clientExe -PathType Leaf)) {
-        Get-LabSha256 -Path $clientExe
-    } else { ''
+    $candidateAfter = Get-I04CandidateEvidence -Binding $candidate
+    $candidateUnchanged = $false
+    try {
+        $null = Assert-I04CandidateBindingUnchanged -Binding $candidate
+        $candidateUnchanged = $true
+    } catch {
+        $cleanupFailures.Add((Get-I04SafeErrorToken `
+            -Context 'candidate binding changed during execution' `
+            -Message $_.Exception.Message))
+    }
+    $clientHashAfter = ''
+    if ($clientExe) {
+        try {
+            $clientExeSafe = Assert-I04NoReparsePath `
+                -Path $clientExe -Kind File
+            $clientHashAfter = Get-LabSha256 -Path $clientExeSafe
+        } catch {
+            $cleanupFailures.Add((Get-I04SafeErrorToken `
+                -Context 'isolated client binary could not be rebound' `
+                -Message $_.Exception.Message))
+        }
     }
     if (-not $candidateUnchanged) {
         $cleanupFailures.Add('candidate package changed during execution')
     }
-    if ($clientHashAfter -and $clientHashAfter -ne $expectedHash) {
+    if ($clientExe -and $clientHashAfter -ne $expectedHash) {
         $cleanupFailures.Add('isolated client binary changed during execution')
     }
     $coordinatorIsolationFinal = Get-I04IsolationEvidence
@@ -7626,14 +13646,54 @@ on the remote peer and restores it transactionally.
             'coordinator overlay/VPN/proxy isolation was not intact at final audit'
         )
     }
+    $clientOwnedProcessIds = @(
+        $clientOwnedProcesses | ForEach-Object { [int]$_.Id } |
+            Sort-Object -Unique
+    )
+    $clientTerminalCensus = Get-I04TerminalOwnershipCensus `
+        -ProcessIds $clientOwnedProcessIds `
+        -OwnedProcesses ([object[]]$clientOwnedProcesses.ToArray()) `
+        -Ports @($ClientTcpPort, $ClientUdpPort, $ClientWebPort) `
+        -HostRole 'Coordinator'
+    $clientProcessesStopped = [bool]$clientTerminalCensus.collector_ok -and
+        @($clientTerminalCensus.remaining_processes).Count -eq 0
+    if (-not [bool]$clientTerminalCensus.collector_ok -or
+        -not [bool]$clientTerminalCensus.all_clear) {
+        $cleanupFailures.Add(
+            'coordinator terminal process/TCP/UDP ownership census was not clear'
+        )
+    }
+    $coordinatorAccountRegistryPostcheck =
+        Get-I04AccountRegistryPostcheckEvidence `
+            -Transaction $script:i04AccountRegistryTransaction
+    $script:i04AccountRegistryPostcheck = $coordinatorAccountRegistryPostcheck
+    $script:i04AccountRegistryPostcheckComplete = $true
+    if (-not [bool]$coordinatorAccountRegistryPostcheck.safe_to_pass) {
+        $cleanupFailures.Add(
+            'coordinator account/registry/global-firewall postcheck was not exact'
+        )
+    }
+    $restrictedJobLeaseCleanup =
+        Complete-I04RestrictedJobLeaseCleanup -Context Coordinator
+    if (-not [bool]$restrictedJobLeaseCleanup.complete) {
+        $cleanupFailures.Add(
+            'coordinator restricted Job Object leases were not terminally released'
+        )
+    }
+    if ($null -eq $script:i04PktmonMutexEvidence -or
+        -not [bool]$script:i04PktmonMutexEvidence.acquired -or
+        -not [bool]$script:i04PktmonMutexEvidence.released -or
+        -not [bool]$script:i04PktmonMutexEvidence.release_exact) {
+        $cleanupFailures.Add(
+            'PktMon global mutex ownership/release was not proved exactly'
+        )
+    }
     $cleanup = [ordered]@{
         schema = 'ese.v91.i04-coordinator-cleanup/v1'
         captured_at_utc = Get-LabUtcTimestamp
         client_process_stopped = $clientProcessesStopped
-        client_process_ids = @(
-            $clientOwnedProcesses | ForEach-Object { [int]$_.Id } |
-                Sort-Object -Unique
-        )
+        client_process_ids = $clientOwnedProcessIds
+        terminal_ownership_census = $clientTerminalCensus
         controlled_ed2k_server_stopped =
             $null -ne $clientControlledServerStop -and
             [bool]$clientControlledServerStop.stopped -and
@@ -7668,7 +13728,10 @@ on the remote peer and restores it transactionally.
         pktmon_etl_below_circular_limit = if ($null -eq $capture) {
             $false
         } else { [bool]$capture.etl_below_circular_limit }
+        pktmon_global_mutex = $script:i04PktmonMutexEvidence
         peer_restoration_confirmed = $peerRestorationExact
+        peer_terminal_receipt_exact = $peerTerminalExact
+        remote_job_terminal_exact = $remoteJobTerminalExact
         hosts_file_modified = $false
         dns_cache_modified = $false
         routes_modified = $false
@@ -7676,19 +13739,23 @@ on the remote peer and restores it transactionally.
         local_firewall_modified = $false
         isolation_initial = $coordinatorIsolationInitial
         isolation_final = $coordinatorIsolationFinal
+        account_registry_transaction = $coordinatorAccountRegistryPostcheck
+        restricted_job_lease_cleanup = $restrictedJobLeaseCleanup
         retained_by_design = @(
             'coordinator OutputRoot profile', 'partial fixture', 'evidence',
             'nonce-scoped coordination records'
         )
-        failures = @($cleanupFailures)
+        failures = @($cleanupFailures.ToArray())
     }
     Write-LabJson -Value $cleanup -Path $cleanupPath | Out-Null
 
     $distinctPhysicalHosts = $peerReadyExact -and
         [string]$peerReady.peer.machine_id_sha256 -ne $localMachineId
-    $nativeGlobalIpv6 = (Get-LabAddressClass -Address $peerV6Text) -eq
-            'global-v6' -and
-        (Get-LabAddressClass -Address $coordinatorV6Text) -eq 'global-v6'
+    $nativeGlobalIpv6 =
+        (Get-I04StrictAddressClass -Address $peerV6Text) -eq
+            'native-global-v6' -and
+        (Get-I04StrictAddressClass -Address $coordinatorV6Text) -eq
+            'native-global-v6'
     $coordinatorNativeRoutes = $routeV4.available -and
         $routeV6.available -and
         [bool]$routeV4.physical_nonvirtual -and
@@ -7724,12 +13791,8 @@ on the remote peer and restores it transactionally.
         [bool]$peerReady.endpoint.dual_stack_listener -and
         $prewarmEstablished
     $overlayVpnProxyAbsent = $peerReadyExact -and
-        $peerResultExact -and
         [bool]$peerReady.peer.isolation.strict_isolation_valid -and
-        [bool]$peerResult.cleanup.isolation_initial.strict_isolation_valid -and
-        [bool]$peerResult.cleanup.isolation_final.strict_isolation_valid -and
-        [bool]$coordinatorIsolationInitial.strict_isolation_valid -and
-        [bool]$coordinatorIsolationFinal.strict_isolation_valid
+        [bool]$coordinatorIsolationInitial.strict_isolation_valid
     $relayAbsentBeforeTrigger = $peerReadyExact -and $peerResumedExact -and
         $clientIsolationExact -and $null -ne $apiTelemetryBaseline -and
         (Test-I04ApiIsolation -Data $peerReady.runtime_isolation `
@@ -7760,7 +13823,7 @@ on the remote peer and restores it transactionally.
             -not [bool]$peerReady.peer.route_to_coordinator_ipv6.on_link
         )
     $admissibleT2Ipv6NextHopClasses = @(
-        'linklocal-v6', 'ula-v6', 'global-v6'
+        'linklocal-v6', 'ula-v6', 'native-global-v6'
     )
     $topologyT2BilateralNativeNextHops =
         $topologyT2Discriminator -and
@@ -7784,13 +13847,28 @@ on the remote peer and restores it transactionally.
         )
     }
     $cleanupComplete = [bool]$cleanup.client_process_stopped -and
+        [bool]$cleanup.terminal_ownership_census.collector_ok -and
+        [bool]$cleanup.terminal_ownership_census.all_clear -and
         [bool]$cleanup.controlled_ed2k_server_stopped -and
         [bool]$cleanup.socket_sampler_stopped -and
         [bool]$cleanup.pktmon_capture_stopped -and
         [int]$cleanup.pktmon_owned_filters_remaining -eq 0 -and
         [bool]$cleanup.pktmon_owned_filters_absent_verified -and
         [bool]$cleanup.pktmon_filter_inventory_restored -and
+        [bool]$cleanup.pktmon_global_mutex.acquired -and
+        [bool]$cleanup.pktmon_global_mutex.released -and
+        [bool]$cleanup.pktmon_global_mutex.release_exact -and
         [bool]$cleanup.peer_restoration_confirmed -and
+        [bool]$cleanup.peer_terminal_receipt_exact -and
+        [bool]$cleanup.remote_job_terminal_exact -and
+        [bool]$cleanup.restricted_job_lease_cleanup.complete -and
+        [int]$cleanup.restricted_job_lease_cleanup.
+            remaining_registered_process_count -eq 0 -and
+        [bool]$cleanup.account_registry_transaction.collector_ok -and
+        [bool]$cleanup.account_registry_transaction.safe_to_pass -and
+        [bool]$cleanup.account_registry_transaction.global_firewall_unchanged -and
+        -not [bool]$cleanup.account_registry_transaction.
+            destructive_restore_attempted -and
         [bool]$cleanup.isolation_initial.strict_isolation_valid -and
         [bool]$cleanup.isolation_final.strict_isolation_valid
     if ($cleanupFailures.Count -gt 0) {
@@ -7800,13 +13878,64 @@ on the remote peer and restores it transactionally.
         $blockedReasons.Add('Cleanup postconditions were not all proved')
     }
     if ($null -ne $runtimeFailure) {
-        $blockedReasons.Add(
-            "Harness/runtime error: $($runtimeFailure.Exception.Message)"
-        )
+        $blockedReasons.Add((Get-I04SafeErrorToken `
+            -Context 'Harness/runtime error' `
+            -Message $runtimeFailure.Exception.Message))
     }
 
-    $triggerFixtureValid = $triggerFixtureRuntimeValid -and
-        $topologyDirectStrict -and $cleanupComplete -and
+    $packetSamplerContradiction = $caseArmed -and
+        $null -ne $packetVerdict -and
+        $null -ne $socketSamplerEvidence -and
+        [bool]$socketSamplerEvidence.sampler_coverage_valid -and (
+            ($scenarioV6SocketObserved -and
+                [int]$packetVerdict.ipv6_syn_count -eq 0) -or
+            ($scenarioV4SocketObserved -and
+                [int]$packetVerdict.ipv4_syn_count -eq 0) -or
+            ($scenarioV4Established -and
+                (-not [bool]$packetVerdict.ipv4_synack_observed -or
+                 -not [bool]$packetVerdict.ipv4_final_ack_observed))
+        )
+    if ($packetSamplerContradiction) {
+        $blockedReasons.Add(
+            'PCAPNG and PID socket sampler contradicted each other'
+        )
+    }
+    $pktmonFilterScenarioContradiction = $caseArmed -and (
+        $null -eq $capture -or
+        -not [bool]$capture.filter_inventory_scenario_unchanged -or
+        [string]$capture.filter_inventory_armed_sha256 -notmatch
+            '^[0-9a-f]{64}$' -or
+        [string]$capture.filter_inventory_pre_stop_sha256 -cne
+            [string]$capture.filter_inventory_armed_sha256
+    )
+    $proofContradicted = $caseArmed -and (
+        -not $candidateUnchanged -or
+        ($clientExe -and $clientHashAfter -ne $expectedHash) -or
+        -not $coordinatorFirewallScenarioUnchanged -or
+        $peerFirewallScenarioContradicted -or
+        $pktmonFilterScenarioContradiction -or
+        $packetSamplerContradiction
+    )
+    $fixtureProofComplete = $triggerFixtureRuntimeValid -and
+        $topologyDirectStrict -and -not $proofContradicted
+    $typedSourceBoundFailures = @($productFailures.ToArray() | Where-Object {
+        try {
+            $null = Assert-I04ProductFailureContract -Failure $_
+            [bool]$_.source_bound -and [bool]$_.source.collector_ok -and
+                [bool]$_.post_boundary -and [bool]$_.adjudicable
+        } catch { $false }
+    })
+    $productFailuresTypedAndSourceBound =
+        $typedSourceBoundFailures.Count -eq $productFailures.Count
+    if (-not $productFailuresTypedAndSourceBound) {
+        $blockedReasons.Add(
+            'A product failure entry was not typed, source-bound and adjudicable'
+        )
+    }
+    $productFailureProved = $fixtureProofComplete -and
+        $productFailures.Count -gt 0 -and
+        $productFailuresTypedAndSourceBound
+    $triggerFixtureValid = $fixtureProofComplete -and $cleanupComplete -and
         $cleanupFailures.Count -eq 0 -and
         $null -eq $runtimeFailure -and
         $blockedReasons.Count -eq 0
@@ -7814,19 +13943,17 @@ on the remote peer and restores it transactionally.
         $null -eq $runtimeFailure -and $blockedReasons.Count -eq 0 -and
         $cleanupFailures.Count -eq 0 -and $cleanupComplete
     $adjudicablePostBoundaryCandidateFailure =
-        $caseArmed -and $formalBoundaryPublished -and
-        [bool]$candidatePostTriggerFailure -and $adjudicationClean
+        $productFailureProved -and $caseArmed -and
+        $formalBoundaryPublished -and $candidateFailureAdjudicable
     $partialVerdict = Get-I04PartialVerdict `
-        -AdjudicationClean $adjudicationClean `
-        -PostBoundaryCandidateFailure `
-            $adjudicablePostBoundaryCandidateFailure `
+        -FixtureProofComplete $fixtureProofComplete `
+        -ProductFailureProved $productFailureProved `
+        -ProofContradicted $proofContradicted `
         -ProductFailureCount $productFailures.Count
-    $formalStatus = if ($partialVerdict -eq 'PASS' -and
-        $topologyDirectStrict) {
-        'PASS'
-    } elseif ($partialVerdict -eq 'FAIL' -and
-        $topologyDirectStrict) {
+    $formalStatus = if ($partialVerdict -eq 'FAIL') {
         'FAIL'
+    } elseif ($partialVerdict -eq 'PASS' -and $adjudicationClean) {
+        'PASS'
     } else {
         'BLOCKED'
     }
@@ -7836,21 +13963,54 @@ on the remote peer and restores it transactionally.
         case_id = $caseId
         formal_status = $formalStatus
         partial_verdict = $partialVerdict
-        formal_v91_i04_eligible =
-            $topologyDirectStrict -and $adjudicationClean
+        formal_v91_i04_eligible = $formalStatus -in @('PASS', 'FAIL')
         candidate = [ordered]@{
             commit = $candidate.commit
             version = $candidate.version
             expected_emule_sha256 = $expectedHash
             package_sha256_before = $candidate.emule_sha256
-            package_sha256_after = $candidateAfter.emule_sha256
+            package_sha256_after = if ($candidateUnchanged) {
+                $expectedHash
+            } else { '' }
+            package_zip_sha256 = $candidate.package_zip_sha256
+            package_manifest_sha256 = $candidate.package_manifest_sha256
+            prepared_client_code_binding = $clientCodeBinding
             client_sha256_after = $clientHashAfter
             unchanged = $candidateUnchanged
             post_trigger_failure = $candidatePostTriggerFailure
+            failure_disposition = $failureDisposition
             case_armed = $caseArmed
             formal_boundary_published = $formalBoundaryPublished
             post_boundary_failure_fail_precedence =
+                $productFailureProved
+        }
+        harness_bundle = $script:i04HarnessBundle
+        adjudication = [ordered]@{
+            fixture_proof_complete = $fixtureProofComplete
+            product_failure_proved = $productFailureProved
+            product_failures_typed_and_source_bound =
+                $productFailuresTypedAndSourceBound
+            proof_contradicted = $proofContradicted
+            packet_socket_sampler_contradiction =
+                $packetSamplerContradiction
+            pktmon_filter_scenario_contradiction =
+                $pktmonFilterScenarioContradiction
+            pktmon_filter_inventory_armed_sha256 = if ($null -ne $capture) {
+                [string]$capture.filter_inventory_armed_sha256
+            } else { $null }
+            pktmon_filter_inventory_pre_stop_sha256 = if ($null -ne $capture) {
+                [string]$capture.filter_inventory_pre_stop_sha256
+            } else { $null }
+            coordinator_global_firewall_scenario_unchanged =
+                $coordinatorFirewallScenarioUnchanged
+            peer_global_firewall_scenario_unchanged =
+                $peerFirewallScenarioEvidenceExact
+            peer_global_firewall_scenario_contradicted =
+                $peerFirewallScenarioContradicted
+            cleanup_complete = $cleanupComplete
+            post_boundary_candidate_failure_adjudicable =
                 $adjudicablePostBoundaryCandidateFailure
+            proven_product_failure_survives_later_cleanup_incident = $true
         }
         topology = [ordered]@{
             required = 'T1_OR_T2_DIRECT_STRICT'
@@ -7902,7 +14062,8 @@ on the remote peer and restores it transactionally.
             trigger_and_cleanup_valid = $triggerFixtureValid
             controlled_peer_acknowledged = $true
             dns_dependency = 'NOT_IN_SCOPE_V91_D01'
-            exact_peer_artifacts = $peerExact
+            exact_peer_scenario_artifacts = $peerScenarioExact
+            exact_peer_artifacts_including_cleanup = $peerExact
             peer_ready_exact = $peerReadyExact
             peer_armed_exact = $peerArmedExact
             peer_resumed_exact = $peerResumedExact
@@ -8054,8 +14215,10 @@ on the remote peer and restores it transactionally.
             ui_unresponsive_count = $uiFailureCount
             ui_max_duration_ms = $uiMaxMs
         }
-        product_failures = @($productFailures)
-        blocked_reasons = @($blockedReasons | Select-Object -Unique)
+        product_failures = @($productFailures.ToArray())
+        blocked_reasons = @(
+            $blockedReasons.ToArray() | Select-Object -Unique
+        )
         cleanup = $cleanup
         evidence = [ordered]@{
             dns_scope = 'evidence\dns-scope.json'
@@ -8067,6 +14230,7 @@ on the remote peer and restores it transactionally.
             peer_quiesced = 'evidence\peer-quiesced.json'
             peer_resumed = 'evidence\peer-resumed.json'
             peer_result = 'evidence\peer-result.json'
+            peer_terminal = 'evidence\peer-terminal.json'
             runtime_samples = 'evidence\runtime-samples.jsonl'
             socket_samples = 'evidence\socket-samples.ndjson'
             socket_sampler = 'evidence\socket-sampler.json'
@@ -8082,31 +14246,222 @@ on the remote peer and restores it transactionally.
                 'evidence\client-controlled-ed2k-server.json'
             mutation_journal = 'evidence\mutation-journal.jsonl'
             cleanup = 'evidence\cleanup.json'
+            public_summary = 'evidence\public-summary.json'
+            coordinator_terminal = 'evidence\coordinator-terminal.json'
             manual_peer_command = if ($PeerControlMode -eq 'Manual') {
                 'evidence\MANUAL-PEER-COMMAND.txt'
             } else { $null }
         }
     }
-    Write-LabJson -Value $summary -Path $summaryPath | Out-Null
-
-    if ($formalStatus -eq 'FAIL') {
-        throw "V91-I04 FAIL: $($productFailures -join '; '). Evidence: $summaryPath"
+    $script:i04CoordinatorPublication = [pscustomobject][ordered]@{
+        summary = $summary
+        summary_path = $summaryPath
+        public_summary_path = $publicSummaryPath
+        terminal_receipt_path = Join-Path $evidence 'coordinator-terminal.json'
+        formal_status = $formalStatus
+        observed_topology = $observedTopology
+        output_path = $output
+        failure_messages = @($productFailures.ToArray() | ForEach-Object {
+            [string]$_.display_message
+        })
     }
-    if ($formalStatus -eq 'BLOCKED') {
-        throw (
-            'V91-I04 BLOCKED: ' +
-            (@($summary.blocked_reasons) -join '; ') +
-            ". Evidence: $summaryPath"
-        )
-    }
-    Write-Host (
-        "V91-I04 PASS on exact candidate/${observedTopology}: $output"
-    ) `
-        -ForegroundColor Green
 }
 
 if ($Role -eq 'Peer') {
     Invoke-I04PeerRole
 } else {
     Invoke-I04CoordinatorRole
+}
+$script:i04RoleCompleted = $true
+} finally {
+    if ($null -ne $script:i04AccountRegistryTransaction -and
+        -not $script:i04AccountRegistryPostcheckComplete) {
+        try {
+            $script:i04AccountRegistryPostcheck =
+                Get-I04AccountRegistryPostcheckEvidence `
+                    -Transaction $script:i04AccountRegistryTransaction
+            $script:i04AccountRegistryPostcheckComplete = $true
+            if (-not [bool]$script:i04AccountRegistryPostcheck.safe_to_pass) {
+                throw 'Terminal account/registry/global-firewall postcheck was not exact'
+            }
+        } catch { $i04TerminalRegistryFailure = $_ }
+    }
+    foreach ($lockedResource in @($script:i04CandidateLocks.ToArray())) {
+        try { $lockedResource.Dispose() } catch {
+            if ($null -eq $i04TerminalLockFailure) {
+                $i04TerminalLockFailure = $_
+            }
+        }
+    }
+    $script:i04CandidateLocks.Clear()
+    foreach ($lockedResource in @($script:i04EvidenceLocks.ToArray())) {
+        try { $lockedResource.Dispose() } catch {
+            if ($null -eq $i04TerminalLockFailure) {
+                $i04TerminalLockFailure = $_
+            }
+        }
+    }
+    $script:i04EvidenceLocks.Clear()
+    try {
+        $terminalJobCleanup =
+            Complete-I04RestrictedJobLeaseCleanup -Context OuterFinally
+        if (-not [bool]$terminalJobCleanup.complete) {
+            throw 'Restricted Job Object terminal release was not exact'
+        }
+    } catch {
+        $i04TerminalJobFailure = $_
+    }
+    if ($null -ne $script:i04PktmonMutex) {
+        try {
+            $terminalPktmonCleanup = Exit-I04PktmonGlobalMutex
+            if (-not [bool]$terminalPktmonCleanup.release_exact) {
+                throw 'PktMon global mutex terminal release was not exact'
+            }
+        } catch {
+            $i04TerminalPktmonFailure = $_
+        }
+    } elseif ($null -ne $script:i04PktmonMutexEvidence -and
+        [bool]$script:i04PktmonMutexEvidence.acquired -and
+        -not [bool]$script:i04PktmonMutexEvidence.release_exact) {
+        $i04TerminalPktmonFailure =
+            [InvalidOperationException]::new(
+                'PktMon global mutex release evidence was not exact')
+    }
+    foreach ($lockedResource in @($script:i04HarnessBundleLocks.ToArray())) {
+        try { $lockedResource.Dispose() } catch {
+            if ($null -eq $i04TerminalLockFailure) {
+                $i04TerminalLockFailure = $_
+            }
+        }
+    }
+    $script:i04HarnessBundleLocks.Clear()
+    if ($null -ne $i04TerminalRegistryFailure) {
+        throw $i04TerminalRegistryFailure
+    }
+    if ($null -ne $i04TerminalJobFailure) {
+        throw $i04TerminalJobFailure
+    }
+    if ($null -ne $i04TerminalPktmonFailure) {
+        throw $i04TerminalPktmonFailure
+    }
+    if ($null -ne $i04TerminalLockFailure) {
+        throw $i04TerminalLockFailure
+    }
+    if ($Role -eq 'Peer' -and $script:i04RoleCompleted) {
+        if ($null -eq $script:i04PeerTerminalReceiptPath -or
+            [string]$script:i04PeerResultSha256 -notmatch
+                '^[0-9a-f]{64}$' -or
+            $null -eq $script:i04RestrictedJobLeaseCleanup -or
+            -not [bool]$script:i04RestrictedJobLeaseCleanup.complete) {
+            throw 'Peer terminal receipt prerequisites were not exact'
+        }
+        Write-LabJson -Value ([ordered]@{
+            schema = 'ese.v91.i04-peer-terminal/v1'
+            case_id = $caseId
+            run_nonce = $RunNonce.ToLowerInvariant()
+            status = 'COMPLETE'
+            peer_result_sha256 = $script:i04PeerResultSha256
+            restricted_job_lease_cleanup =
+                $script:i04RestrictedJobLeaseCleanup
+            candidate_locks_released =
+                $script:i04CandidateLocks.Count -eq 0
+            evidence_locks_released =
+                $script:i04EvidenceLocks.Count -eq 0
+            harness_bundle_locks_released =
+                $script:i04HarnessBundleLocks.Count -eq 0
+            account_registry_postcheck_complete =
+                [bool]$script:i04AccountRegistryPostcheckComplete
+            account_registry_safe_to_pass =
+                [bool]$script:i04AccountRegistryPostcheck.safe_to_pass
+            outer_cleanup_complete = $true
+            completed_at_utc = Get-LabUtcTimestamp
+        }) -Path $script:i04PeerTerminalReceiptPath | Out-Null
+    }
+}
+
+if ($Role -eq 'Coordinator' -and $script:i04RoleCompleted) {
+    $publication = $script:i04CoordinatorPublication
+    $expectedPublicationProperties = @(
+        'summary', 'summary_path', 'public_summary_path',
+        'terminal_receipt_path', 'formal_status', 'observed_topology',
+        'output_path', 'failure_messages'
+    )
+    if ($null -eq $publication -or
+        (@($publication.PSObject.Properties.Name | Sort-Object) -join "`n") -cne
+            (@($expectedPublicationProperties | Sort-Object) -join "`n") -or
+        $null -eq $publication.summary -or
+        [string]$publication.formal_status -notin @('PASS', 'FAIL', 'BLOCKED') -or
+        [string]$publication.summary.formal_status -cne
+            [string]$publication.formal_status -or
+        $script:i04CandidateLocks.Count -ne 0 -or
+        $script:i04EvidenceLocks.Count -ne 0 -or
+        $script:i04HarnessBundleLocks.Count -ne 0 -or
+        $null -eq $script:i04RestrictedJobLeaseCleanup -or
+        -not [bool]$script:i04RestrictedJobLeaseCleanup.complete -or
+        -not [bool]$script:i04AccountRegistryPostcheckComplete -or
+        -not [bool]$script:i04AccountRegistryPostcheck.safe_to_pass -or
+        ($null -ne $script:i04PktmonMutexEvidence -and
+            [bool]$script:i04PktmonMutexEvidence.acquired -and
+            -not [bool]$script:i04PktmonMutexEvidence.release_exact)) {
+        throw 'Coordinator terminal publication prerequisites were not exact'
+    }
+
+    $publication.summary.outer_terminal_cleanup = [pscustomobject][ordered]@{
+        restricted_job_lease_cleanup = $script:i04RestrictedJobLeaseCleanup
+        candidate_locks_released = $true
+        evidence_locks_released = $true
+        harness_bundle_locks_released = $true
+        pktmon_global_mutex_released = if (
+            $null -eq $script:i04PktmonMutexEvidence
+        ) { $true } else {
+            [bool]$script:i04PktmonMutexEvidence.release_exact
+        }
+        account_registry_postcheck_complete = $true
+        account_registry_safe_to_pass = $true
+        outer_cleanup_complete = $true
+    }
+    Write-LabJson -Value $publication.summary `
+        -Path ([string]$publication.summary_path) | Out-Null
+    $summarySha256 = Get-LabSha256 `
+        -Path ([string]$publication.summary_path)
+    $publicProjection = Get-I04PublicSummaryProjection `
+        -Summary $publication.summary -SourceSummarySha256 $summarySha256
+    Write-LabJson -Value $publicProjection `
+        -Path ([string]$publication.public_summary_path) | Out-Null
+    $publicSummarySha256 = Get-LabSha256 `
+        -Path ([string]$publication.public_summary_path)
+    Write-LabJson -Value ([ordered]@{
+        schema = 'ese.v91.i04-coordinator-terminal/v1'
+        case_id = $caseId
+        run_nonce = $RunNonce.ToLowerInvariant()
+        formal_status = [string]$publication.formal_status
+        summary_sha256 = $summarySha256
+        public_summary_sha256 = $publicSummarySha256
+        restricted_job_lease_cleanup = $script:i04RestrictedJobLeaseCleanup
+        candidate_locks_released = $true
+        evidence_locks_released = $true
+        harness_bundle_locks_released = $true
+        pktmon_global_mutex_released = [bool](
+            $publication.summary.outer_terminal_cleanup.
+                pktmon_global_mutex_released)
+        account_registry_postcheck_complete = $true
+        account_registry_safe_to_pass = $true
+        outer_cleanup_complete = $true
+        completed_at_utc = Get-LabUtcTimestamp
+    }) -Path ([string]$publication.terminal_receipt_path) | Out-Null
+
+    if ([string]$publication.formal_status -ceq 'FAIL') {
+        throw "V91-I04 FAIL: $(@($publication.failure_messages) -join '; '). Evidence: $($publication.summary_path)"
+    }
+    if ([string]$publication.formal_status -ceq 'BLOCKED') {
+        throw (
+            'V91-I04 BLOCKED: ' +
+            (@($publication.summary.blocked_reasons) -join '; ') +
+            ". Evidence: $($publication.summary_path)"
+        )
+    }
+    Write-Host (
+        "V91-I04 PASS on exact candidate/$($publication.observed_topology): " +
+        [string]$publication.output_path
+    ) -ForegroundColor Green
 }

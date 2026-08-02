@@ -71,6 +71,18 @@ foreach ($requiredCommand in @(
         throw "Missing unattended command: $requiredCommand"
     }
 }
+foreach ($requiredTopologyTerm in @(
+    '[string]$I05SourceIPv4',
+    '[string]$I05DownloaderIPv4',
+    'i05_source_ipv4 = $I05SourceIPv4',
+    'i05_downloader_ipv4 = $I05DownloaderIPv4',
+    '[string]$config.source.ipv4_address -cne $I05SourceIPv4',
+    '$I05DownloaderIPv4'
+)) {
+    if (-not $agentText.Contains($requiredTopologyTerm)) {
+        throw "Missing separated control/test topology: $requiredTopologyTerm"
+    }
+}
 $installerText = Get-Content -LiteralPath $installer -Raw
 foreach ($requiredInstallerTerm in @(
     'New-ScheduledTaskTrigger -AtStartup',
@@ -115,6 +127,7 @@ if ($agentText -match
     remote_job = 'PASS'
     remote_results = 'PASS'
     remote_restart = 'PASS'
+    separated_control_test_topology = 'PASS'
     scheduled_task_system_startup = 'PASS'
     scheduled_task_restart_policy = 'PASS'
 }

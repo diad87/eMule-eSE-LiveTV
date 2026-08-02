@@ -285,7 +285,8 @@ void CDownloadQueue::AddFileLinkToDownload(const CED2KFileLink &Link, int cat)
 		CFileIdentifier &fileid = partfile->GetFileIdentifier();
 		if (fileid.CompareRelaxed(tmpFileIdent)) {
 			if (Link.HasValidSources())
-				partfile->AddClientSources(Link.SourcesList, 1, false);
+				partfile->AddClientSources(
+					Link.SourcesList, 1, false, NULL, true);
 			if (!fileid.HasAICHHash() && tmpFileIdent.HasAICHHash()) {
 				fileid.SetAICHHash(tmpFileIdent.GetAICHHash());
 				partfile->GetAICHRecoveryHashSet()->SetMasterHash(tmpFileIdent.GetAICHHash(), AICH_VERIFIED);
@@ -1627,7 +1628,14 @@ static CStringA SourceResolutionMaterializeCandidate(CPartFile* file,
 {
 	if (file == NULL || file->IsStopped())
 		return "rejected";
-	if (port == 0 || !address.IsUsablePublic())
+	const CString configured(thePrefs.GetIPv6BindAddr());
+	const CAddress configuredV6(configured, false);
+	const bool explicitNetLabUla =
+		address.IsUniqueLocalIPv6()
+		&& thePrefs.IsEseNetLabContributionActive()
+		&& configuredV6.GetType() == CAddress::IPv6
+		&& configuredV6.IsUniqueLocalIPv6();
+	if (port == 0 || (!address.IsUsablePublic() && !explicitNetLabUla))
 		return "rejected_unusable";
 
 	const bool existedBefore =
@@ -1661,7 +1669,10 @@ static CStringA SourceResolutionMaterializeCandidate(CPartFile* file,
 		}
 		const uint32 syntheticIPv4 = address.ToSyntheticUInt32();
 		source = new CUpDownClient(file, port, syntheticIPv4, 0, 0, false);
-		source->SetIPv6Address(address);
+		// This path is an explicit link/manual source. Preserve an admitted
+		// NetLab ULA through the direct-address setter; the ordinary setter
+		// intentionally remains public-only for discovery, PeX and servers.
+		source->SetDirectIPv6Address(address);
 		source->SetIP(syntheticIPv4);
 		source->SetDirectIPv6Source();
 		source->SetSourceFrom(SF_LINK);

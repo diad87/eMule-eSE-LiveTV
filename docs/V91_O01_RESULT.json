@@ -1,0 +1,60 @@
+{
+  "schema": "ese.v91.o01-result/v1",
+  "case_id": "V91-O01",
+  "status": "PASS",
+  "completed_at_utc": "2026-08-01T05:57:41.9427417+00:00",
+  "run_id": "9108ff953fb044ef91f4d6c3cab521cc",
+  "candidate": {
+    "source_base_commit": "1a0f8a272a56af4999902d49ac868388c47e1732",
+    "source_delta_committed": false,
+    "emule_sha256": "0bc2ca4e0d161fc90c1f42009bc1c2e793f6dc1c13c973bebb935d65aff839bd"
+  },
+  "workload": {
+    "requested_duration_seconds": 43200,
+    "live_transport_family": "IPv6",
+    "file_transport_family": "IPv4",
+    "fixture_bytes": 4294967296,
+    "fixture_sha256": "1016d6f63ae1649a879a7c0de30865ed132deb37b1c3b2bc9ca004c88feee26c",
+    "fixture_ed2k": "796A95E75DF8E78D54A57CDEA1FEDE84"
+  },
+  "h1": {
+    "role": "source",
+    "status": "PASS",
+    "wall_seconds": 43213.924,
+    "samples": 2816,
+    "sample_span_seconds": 43197.526,
+    "maximum_sample_gap_seconds": 26.245,
+    "peer_route_seen": true,
+    "ipv4_file_peer_seen": true,
+    "ipv6_live_peer_seen": true,
+    "playlist_seen": true,
+    "segment_seen": true,
+    "working_set_growth_bytes": -21549056,
+    "handle_growth": 4
+  },
+  "h3": {
+    "role": "viewer",
+    "status": "PASS",
+    "wall_seconds": 43305.373,
+    "samples": 2849,
+    "sample_span_seconds": 43199.336,
+    "maximum_sample_gap_seconds": 17.667,
+    "initial_chunks": 62,
+    "final_chunks": 44631,
+    "chunk_delta": 44569,
+    "duplicate_delta_ratio": 0.0324216383585003,
+    "cumulative_ratio_drift": 0.032376599224754096,
+    "peer_route_seen": true,
+    "ipv4_file_peer_seen": true,
+    "ipv6_live_peer_seen": true,
+    "playlist_seen": true,
+    "segment_seen": true,
+    "working_set_growth_bytes": -109584384,
+    "handle_growth": -5
+  },
+  "raw_evidence": {
+    "aggregate": "lab-runs/v91-k04/9108ff953fb044ef91f4d6c3cab521cc/aggregate-result.json",
+    "aggregate_bytes": 5540420,
+    "aggregate_sha256": "7638d4c29c96fb92b290063332e82ee63902825e07b2528e28f32aac70ab197d"
+  }
+}

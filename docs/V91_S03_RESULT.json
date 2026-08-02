@@ -1,0 +1,149 @@
+{
+  "schema": "ese.v91.case-result/v2",
+  "case_id": "V91-S03",
+  "status": "PASS",
+  "completed_at_utc": "2026-07-29T19:54:08.1041852+00:00",
+  "candidate": {
+    "version": "9.1.0-rc.3",
+    "commit": "622813d5944951efbdba68a1bd7bd68f4d79a2d2",
+    "dirty": false,
+    "emule_sha256": "0cb269cedc4b9f7d2c3ceeadd77c7ea291e25d59feff060ac1e2d976e8032c77",
+    "candidate_overlay_zip_sha256": "f225d1dea9fbdee6ee3f49f06ef7b0754c17d087cad9bb0a862ae5936f7e5100",
+    "candidate_overlay_zip_bytes": 5009146
+  },
+  "topology": {
+    "profile": "T1",
+    "physical_windows_hosts": 2,
+    "public_projection": true,
+    "source_physical_ipv4_observed": true,
+    "source_ipv6_observed": true,
+    "source_interface": "eth2",
+    "source_mac_observed": true,
+    "target_physical_ipv4_observed": true,
+    "target_ipv6_observed": true,
+    "target_interface": "Wi-Fi",
+    "target_mac_observed": true,
+    "target_udp_port": 49372,
+    "ipv4_data_route_used": false,
+    "overlay_data_route_used": false
+  },
+  "subcases": [
+    {
+      "name": "BOOTSTRAP_REQ",
+      "job_id": "fc25354ddbaf493d89c2fc3bc5e1ef9f",
+      "request_opcode": 2,
+      "request_bytes": 260,
+      "request_sha256": "31ddcfb781e19fbc753a5afa194a72dc3a74ccb420431145b53ba02be463063d",
+      "response_opcode": 18,
+      "response_bytes": 260,
+      "response_sha256": "2927b3f221801135f387d3dc137bd8a14314d72406bb5f668c63c9fecedb8fc1",
+      "challenge_count": 1,
+      "valid_signature": true,
+      "amplified_count": 0,
+      "unexpected_count": 0,
+      "physical_frame_count": 2,
+      "capture_status": "PASS",
+      "remote_status": "PASS",
+      "cleanup_complete": true,
+      "status": "PASS"
+    },
+    {
+      "name": "REQ",
+      "job_id": "a16c3bc0876c422993851b7b0f8885a4",
+      "request_opcode": 35,
+      "request_bytes": 280,
+      "request_sha256": "10f31a5cb512fba7ff48eb472114ad1fbba1c4bb7b151d724736a4fd5aa57f93",
+      "response_opcode": 18,
+      "response_bytes": 260,
+      "response_sha256": "5ab6bbe7f051dbf0256f61341f4d5759b34dc7053c46e24545d6af124d6e1166",
+      "challenge_count": 1,
+      "valid_signature": true,
+      "amplified_count": 0,
+      "unexpected_count": 0,
+      "physical_frame_count": 2,
+      "capture_status": "PASS",
+      "remote_status": "PASS",
+      "cleanup_complete": true,
+      "status": "PASS"
+    },
+    {
+      "name": "FIND_SOURCE_REQ",
+      "job_id": "286627a642554f278346acdccc649429",
+      "request_opcode": 72,
+      "request_bytes": 280,
+      "request_sha256": "305c8a4bd87bc2597245c92940818e09fff7324e6b575391487da427cd78bd9a",
+      "response_opcode": 18,
+      "response_bytes": 260,
+      "response_sha256": "500708cd4811845a228f97db4768670a00dd5274c71c8195accbabd933041d83",
+      "challenge_count": 1,
+      "valid_signature": true,
+      "amplified_count": 0,
+      "unexpected_count": 0,
+      "physical_frame_count": 2,
+      "capture_status": "PASS",
+      "remote_status": "PASS",
+      "cleanup_complete": true,
+      "status": "PASS"
+    }
+  ],
+  "checks": {
+    "fresh_candidate_process_per_opcode": true,
+    "kad6_running_in_all_remote_samples": true,
+    "kad2_stopped_in_all_remote_samples": true,
+    "exactly_one_signed_bounded_challenge_per_request": true,
+    "amplified_responses": 0,
+    "unexpected_responses": 0,
+    "unexpected_physical_frames": 0,
+    "capture_packets_dropped_by_kernel": 0,
+    "candidate_identity_matches_all_runs": true,
+    "cleanup_complete_all_runs": true
+  },
+  "evidence": [
+    {
+      "path": "lab-runs/v91-s03-622813d5/bootstrap-probe.json",
+      "bytes": 3711,
+      "sha256": "4e2f3c19eaf07d4314839ba141d36a0e2c2604cc688198ab950f0a3d70685f03"
+    },
+    {
+      "path": "lab-runs/v91-s03-622813d5/bootstrap-remote.json",
+      "bytes": 5887,
+      "sha256": "c0654a21c0395d383d53586a11361a7548c67bbc34cb84a8abbc297e22872973"
+    },
+    {
+      "path": "lab-runs/v91-s03-622813d5/bootstrap.pcap",
+      "bytes": 700,
+      "sha256": "94a929af7b460b48af9725bba3490517b8dca17d38ad30c9c1c37f6f2c7f1b28"
+    },
+    {
+      "path": "lab-runs/v91-s03-622813d5/req-settled-probe.json",
+      "bytes": 3698,
+      "sha256": "bd2965562ad22db09fe89a1447647468dcfb3d0359a169bd2eb385b01f1911e4"
+    },
+    {
+      "path": "lab-runs/v91-s03-622813d5/req-settled-remote.json",
+      "bytes": 5886,
+      "sha256": "137b2efaca046a07bad15611d06b2ebd16bc18094288ad467c1136746353b75e"
+    },
+    {
+      "path": "lab-runs/v91-s03-622813d5/req-settled.pcap",
+      "bytes": 720,
+      "sha256": "fa78a9494eeba16acc31a9250717f6f955d94a77e686e981e5aa8803c4d1a2d5"
+    },
+    {
+      "path": "lab-runs/v91-s03-622813d5/find-source-probe.json",
+      "bytes": 3722,
+      "sha256": "af0b73110d941256a77064178c3565ae15fc1b4116b6ed76f94b931afec407e7"
+    },
+    {
+      "path": "lab-runs/v91-s03-622813d5/find-source-remote.json",
+      "bytes": 5887,
+      "sha256": "2eda3a49d23810fa11bda164076e13f9cb7e731b1c67f2fe1fc37ae31e2bf4e3"
+    },
+    {
+      "path": "lab-runs/v91-s03-622813d5/find-source.pcap",
+      "bytes": 720,
+      "sha256": "069a504f5f0f40d9a2805ae75962787dbd83bd9474559b7b167078c864d99001"
+    }
+  ],
+  "adjudication": "The three unverified Kad6 requests were exercised independently against fresh processes of the exact candidate. Each emitted one valid signed HELLO_REQ challenge no larger than the request. No amplified, semantic, additional or off-path response was observed. The physical capture and remote runtime evidence agree, and every fixture was cleaned."
+}

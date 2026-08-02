@@ -4,18 +4,18 @@ function Get-I05T1Constants {
     return [pscustomobject][ordered]@{
         case_id = 'V91-I05'
         topology = 'T1'
-        candidate_version = '9.1.0-rc.2'
+        candidate_version = '9.1.0-rc.3'
         candidate_commit =
-            '08aa6521f7d7907edb3584266abc3a9e31693161'
+            '815b45ca7a1415bd3e06ff043d53794bc340b346'
         candidate_emule_sha256 =
-            '55c5aa0e968b25330720cfb7f622cbc28ea9875365145333cbcf9d9585c1c44a'
+            '94620cf502c954cda29fa7f40f834ef1eebacb753f1fe277865d1d173e0b9b41'
         candidate_ese_server_sha256 =
-            'eeceef0f0dbe427f3667c033e2b653fc69e432abcc3e8afaf996840a7315e568'
+            'c12e71a1602bb7b55077b82a72000a6980790fdf75d90bdbcba8d2843f7a0ba2'
         candidate_build_info_sha256 =
-            '7c87f77268030c2b4da40c6da8c960f968b4e1a033c9987b64e45c49cf4b5915'
+            '48445ff0231908aa1edbb21970bcb38b91397c643c7012b65b62686bc8a63428'
         candidate_zip_sha256 =
-            '5f17af0edbdda9e1fcc165d2e2f8a33910b40f856343934b970db24259cf3590'
-        candidate_zip_bytes = [Int64]212025531
+            '359272c764c532c32cfd97eeb92e2db4feaa620c5d3f6318a82a7453dbf1b56f'
+        candidate_zip_bytes = [Int64]212040831
         fixture_seed_sha256 =
             'd1e2a156261ecc675081943197a85f08f2868784a0af499171ede89353edad31'
         fixture_name = 'v91-i05-canonical-4294967296.bin'
@@ -48,7 +48,7 @@ function Get-I05T1Constants {
     }
 }
 
-function Expand-I05ExactRc2Zip {
+function Expand-I05ExactCandidateZip {
     param(
         [Parameter(Mandatory = $true)][string]$ZipPath,
         [Parameter(Mandatory = $true)][string]$Destination
@@ -56,30 +56,30 @@ function Expand-I05ExactRc2Zip {
 
     $constants = Get-I05T1Constants
     if (-not (Test-Path -LiteralPath $ZipPath -PathType Leaf)) {
-        throw 'The pinned RC2 ZIP is missing.'
+        throw 'The pinned candidate ZIP is missing.'
     }
     $zip = (Resolve-Path -LiteralPath $ZipPath).Path
     $zipItem = Get-Item -LiteralPath $zip -Force
     if (($zipItem.Attributes -band
             [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw 'The pinned RC2 ZIP cannot be a reparse point.'
+        throw 'The pinned candidate ZIP cannot be a reparse point.'
     }
     if ([Int64]$zipItem.Length -ne $constants.candidate_zip_bytes) {
-        throw 'The pinned RC2 ZIP byte length does not match.'
+        throw 'The pinned candidate ZIP byte length does not match.'
     }
     $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).
         Hash.ToLowerInvariant()
     if ($zipHash -cne $constants.candidate_zip_sha256) {
-        throw 'The pinned RC2 ZIP SHA-256 does not match.'
+        throw 'The pinned candidate ZIP SHA-256 does not match.'
     }
 
     $target = [IO.Path]::GetFullPath($Destination)
     if (Test-Path -LiteralPath $target) {
-        throw 'The exact RC2 extraction destination must be new.'
+        throw 'The exact candidate extraction destination must be new.'
     }
     $parent = Split-Path -Parent $target
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
-        throw 'The exact RC2 extraction parent does not exist.'
+        throw 'The exact candidate extraction parent does not exist.'
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [IO.Compression.ZipFile]::OpenRead($zip)
@@ -90,7 +90,7 @@ function Expand-I05ExactRc2Zip {
             if (-not $entryPath.StartsWith(
                     ($target.TrimEnd('\', '/') + '\'),
                     [StringComparison]::OrdinalIgnoreCase)) {
-                throw 'The pinned RC2 ZIP contains an escaping path.'
+                throw 'The pinned candidate ZIP contains an escaping path.'
             }
         }
     } finally {
@@ -103,7 +103,7 @@ function Expand-I05ExactRc2Zip {
                 -Recurse -Force) {
             if (($item.Attributes -band
                     [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw 'The exact RC2 extraction contains a reparse point.'
+                throw 'The exact candidate extraction contains a reparse point.'
             }
         }
         $candidate = Get-LabCandidateInfo -PackagePath $target `
@@ -116,7 +116,7 @@ function Expand-I05ExactRc2Zip {
                 $constants.candidate_ese_server_sha256 -or
             [string]$candidate.build_info_sha256 -cne
                 $constants.candidate_build_info_sha256) {
-            throw 'The extracted RC2 candidate identity does not match.'
+            throw 'The extracted candidate identity does not match.'
         }
         return [pscustomobject][ordered]@{
             zip_path = $zip

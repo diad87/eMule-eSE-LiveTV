@@ -2,7 +2,7 @@
 param(
     [string]$TaskName = 'eSE Lab Agent',
     [string]$InstallRoot = 'C:\ProgramData\eSE-Lab-Agent',
-    [string]$ReturnNode = 'iaki-casa-1'
+    [string]$ReturnNode = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -120,6 +120,14 @@ foreach ($name in @('AGENT-FATAL.json', 'AGENT-STATUS.json')) {
 $zip = "$root.zip"
 Compress-Archive -LiteralPath $root -DestinationPath $zip `
     -CompressionLevel Optimal
+if ([string]::IsNullOrWhiteSpace($ReturnNode)) {
+    Write-Host ''
+    Write-Host 'DIAGNOSTICO GUARDADO LOCALMENTE' -ForegroundColor Green
+    Write-Host $zip
+    Write-Host (
+        'Use -ReturnNode <nombre-taildrop> para enviarlo automaticamente.')
+    return
+}
 $tailscale = (Get-Command tailscale.exe -ErrorAction Stop).Source
 & $tailscale file cp $zip "$ReturnNode`:"
 if ($LASTEXITCODE -ne 0) {

@@ -2417,7 +2417,14 @@ uint32 CPartFile::Process(uint32 reducedownload, UINT icounter/*in percent*/)
 			case DS_NONE:
 			case DS_WAITCALLBACK:
 			case DS_WAITCALLBACKKAD:
-				if (theApp.IsConnected() && cur_src->GetTimeUntilReask() == 0) { // ZZ:DownloadManager (one re-ask timestamp for each file)
+				// A literal/hostname source supplied by the user is already a
+				// complete direct route.  It must remain dialable when both
+				// discovery networks are disabled; requiring a server or Kad
+				// connection here made direct-link-only downloads inert.
+				if ((theApp.IsConnected()
+						|| (cur_src->GetSourceFrom() == SF_LINK
+							&& !cur_src->HasLowID()))
+					&& cur_src->GetTimeUntilReask() == 0) { // ZZ:DownloadManager (one re-ask timestamp for each file)
 					if (cur_src->socket && cur_src->socket->IsConnected() && cur_src->CheckHandshakeFinished() && cur_src->GetUploadState() != US_BANNED) {
 						// netfinity: Ask immediately if already connected and if allowed, or we may lose the source
 						cur_src->SetDownloadState(DS_CONNECTED);
@@ -2434,7 +2441,17 @@ uint32 CPartFile::Process(uint32 reducedownload, UINT icounter/*in percent*/)
 			NotifyStatusChange();
 
 		if (GetMaxSourcePerFileUDP() > GetSourceCount()) {
-			if (theApp.downloadqueue->DoKademliaFileRequest() && (Kademlia::CKademlia::GetTotalFile() < KADEMLIATOTALFILE) && (curTick >= m_LastSearchTimeKad) && Kademlia::CKademlia::IsAnyConnected() && !m_stopped) {
+			const bool hasKad6Gateway =
+				eSELive::CLiveTunnel::Get().HasActiveCircuitWithExitCaps(ESE_CAP_KAD6);
+			const bool kadRequestDue =
+				theApp.downloadqueue->DoKademliaFileRequest();
+			const uint32 kadFileSearches = Kademlia::CKademlia::GetTotalFile();
+			const bool kadFileSlot = kadFileSearches < KADEMLIATOTALFILE;
+			const bool kadReaskDue = curTick >= m_LastSearchTimeKad;
+			const bool kadReachable =
+				Kademlia::CKademlia::IsAnyConnected() || hasKad6Gateway;
+			if (kadRequestDue && kadFileSlot && kadReaskDue &&
+				kadReachable && !m_stopped) {
 				//Kademlia
 				theApp.downloadqueue->SetLastKademliaFileRequest();
 				if (!GetKadFileSearchID()) {
@@ -4009,7 +4026,9 @@ Packet* CPartFile::CreateSrcInfoPacket(const CUpDownClient *forClient, uint8 byR
 	return result;
 }
 
-void CPartFile::AddClientSources(CSafeMemFile *sources, uint8 uClientSXVersion, bool bSourceExchange2, const CUpDownClient *pClient)
+void CPartFile::AddClientSources(CSafeMemFile *sources,
+	uint8 uClientSXVersion, bool bSourceExchange2,
+	const CUpDownClient *pClient, bool bFromLink)
 {
 	if (m_stopped)
 		return;
@@ -4183,7 +4202,8 @@ void CPartFile::AddClientSources(CSafeMemFile *sources, uint8 uClientSXVersion, 
 			//if (thePrefs.GetDebugSourceExchange()) // remove this log later
 			//	AddDebugLogLine(false, _T("Received CryptLayer aware (%u) source from V4 Sourceexchange (%s)"), byCryptOptions, (LPCTSTR)newsource->DbgGetClientInfo());
 		}
-		newsource->SetSourceFrom(SF_SOURCE_EXCHANGE);
+		newsource->SetSourceFrom(
+			bFromLink ? SF_LINK : SF_SOURCE_EXCHANGE);
 		theApp.downloadqueue->CheckAndAddSource(this, newsource);
 	}
 }

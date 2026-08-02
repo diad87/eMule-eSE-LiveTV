@@ -613,8 +613,21 @@ bool CKademlia::GetPublish()
 
 void CKademlia::Bootstrap(LPCTSTR szHost, uint16 uPort)
 {
-	if (IsKad2Running() && m_pInstance && m_pInstance->m_pUDPListener
-		&& !IsConnected() && time(NULL) >= m_tBootstrap + 10) {
+	const bool running = IsKad2Running() || IsKad6Running();
+	// The string overload may resolve to either family. A connected Kad2 plane
+	// must not suppress bootstrap of an empty Kad6 plane (or vice versa).
+	const bool allRunningPlanesConnected =
+		(!IsKad2Running() || IsKad2Connected())
+		&& (!IsKad6Running() || IsKad6Connected());
+	const bool elapsed = time(NULL) >= m_tBootstrap + 10;
+	AddDebugLogLine(false,
+		_T("Kad bootstrap wrapper: running=%u all_connected=%u elapsed=%u port=%u"),
+		running ? 1u : 0u, allRunningPlanesConnected ? 1u : 0u,
+		elapsed ? 1u : 0u,
+		static_cast<unsigned>(uPort));
+	if (running
+		&& m_pInstance && m_pInstance->m_pUDPListener
+		&& !allRunningPlanesConnected && elapsed) {
 		m_tBootstrap = time(NULL);
 		m_pInstance->m_pUDPListener->Bootstrap(szHost, uPort);
 	}

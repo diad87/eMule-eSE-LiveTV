@@ -1,6 +1,6 @@
 # Kad6: diseño, fronteras y política de promoción
 
-Estado: especificación viva del runtime presente en eSE 9.1.0-rc.2.
+Estado: especificación viva del runtime presente en eSE 9.1.0-rc.3.
 
 Este documento describe el Kad6 que realmente existe en el árbol. No convierte
 una beta en una promesa de soporte y no autoriza infraestructura pública.
@@ -114,6 +114,13 @@ Además:
 
 `V91-S03` convierte la protección anti-amplificación en un gate de red
 reproducible, no solo en una propiedad inspeccionada del código.
+
+La topología `T5` usa ULA RFC 4193 configuradas explícitamente. Esa excepción
+solo habilita transporte y routing Kad6 directo: no amplía la admisión de
+Kad2/uTP/UDP, no alimenta el prober de IPv6 pública y no cuenta como identidad
+ni diversidad de salida pública. El gate ejecuta cada petición no verificada
+contra un proceso fresco y exige un único challenge firmado y no mayor que la
+petición, sin respuesta amplificada.
 
 ## 7. Evolución del wire beta
 

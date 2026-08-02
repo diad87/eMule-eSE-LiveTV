@@ -9,10 +9,10 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $expectedArchiveName =
-    'eSE-LiveTV-v0.70b-eSE9.1.0-rc.2-x64.zip'
-$expectedArchiveBytes = 212025531L
+    'eSE-LiveTV-v0.70b-eSE9.1.0-rc.3-x64.zip'
+$expectedArchiveBytes = 212040831L
 $expectedArchiveSha256 =
-    '5f17af0edbdda9e1fcc165d2e2f8a33910b40f856343934b970db24259cf3590'
+    '359272c764c532c32cfd97eeb92e2db4feaa620c5d3f6318a82a7453dbf1b56f'
 $minimumFreeBytes = 10737418240L
 
 $commonPath = Join-Path $PSScriptRoot 'common.ps1'
@@ -116,10 +116,10 @@ try {
     Assert-I05ExactText -Actual (
         ([string]$baseManifest.candidate.archive_sha256).ToLowerInvariant()
     ) -Expected $expectedArchiveSha256 `
-        -Context 'Base manifest RC2 ZIP SHA'
+        -Context 'Base manifest RC3 ZIP SHA'
     if ([Int64]$baseManifest.candidate.archive_bytes -ne
             $expectedArchiveBytes) {
-        throw 'Base manifest RC2 ZIP bytes no coincide.'
+        throw 'Base manifest RC3 ZIP bytes no coincide.'
     }
     $candidateEntryName =
         [string]$baseManifest.candidate.archive_entry
@@ -128,7 +128,7 @@ try {
     })
     if ($candidateEntries.Count -ne 1 -or
         [Int64]$candidateEntries[0].Length -ne $expectedArchiveBytes) {
-        throw 'El ZIP RC2 nested no es unico/exacto por tamano.'
+        throw 'El ZIP RC3 nested no es unico/exacto por tamano.'
     }
     foreach ($entry in $archive.Entries) {
         $null = Get-I05KitSafePath -Root $output `
@@ -142,13 +142,13 @@ $null = New-Item -ItemType Directory -Path $output
 try {
     [IO.Compression.ZipFile]::ExtractToDirectory($baseZip, $output)
     $nestedArchive = Join-Path $output (
-        "payload\$expectedArchiveName")
+        "payload\candidates\$expectedArchiveName")
     if (-not (Test-Path -LiteralPath $nestedArchive -PathType Leaf) -or
         [Int64](Get-Item -LiteralPath $nestedArchive).Length -ne
             $expectedArchiveBytes -or
         (Get-LabSha256 -Path $nestedArchive) -cne
             $expectedArchiveSha256) {
-        throw 'El ZIP RC2 extraido no coincide en bytes/SHA-256.'
+        throw 'El ZIP RC3 extraido no coincide en bytes/SHA-256.'
     }
 
     $dependencies = @(

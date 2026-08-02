@@ -4440,12 +4440,25 @@ LRESULT CemuleDlg::OnWebGUIInteraction(WPARAM wParam, LPARAM lParam)
 		break;
 	case WEBGUIIA_KAD_BOOTSTRAP:
 		{
-			CString ip((LPCTSTR)lParam);
-			int pos = ip.Find(_T(':'));
-			if (pos >= 0) {
-				uint16 port = (uint16)_tstoi(CPTR(ip, pos + 1));
-				ip.Truncate(pos);
-				Kademlia::CKademlia::Bootstrap(ip, port);
+			CString destination((LPCTSTR)lParam);
+			CString host;
+			CString portText;
+			if (!destination.IsEmpty() && destination[0] == _T('[')) {
+				const int close = destination.Find(_T("]:"));
+				if (close > 1) {
+					host = destination.Mid(1, close - 1);
+					portText = destination.Mid(close + 2);
+				}
+			} else {
+				const int separator = destination.ReverseFind(_T(':'));
+				if (separator > 0) {
+					host = destination.Left(separator);
+					portText = destination.Mid(separator + 1);
+				}
+			}
+			const uint16 port = (uint16)_tstoi(portText);
+			if (!host.IsEmpty() && port != 0) {
+				Kademlia::CKademlia::Bootstrap(host, port);
 			}
 		}
 		break;

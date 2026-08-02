@@ -35,6 +35,8 @@ changelog_full.txt
 analysis/
 audit-tools/
 labs/
+lab-runs/
+artifacts/
 docs/archive/
 docs/*.docx
 docs/*_PLAN*.md
@@ -82,6 +84,14 @@ miniupnp_temp/
 cache.met
 msbuild_path.txt
 node_modules/
+
+# Local unattended-lab requests and copied operator launchers
+tools/lab/*_request.json
+tools/lab/*.cmd
+/INSTALL-ESE-SMALLFRAME-AGENT.cmd
+/MONTAR-ESE-SMALLFRAME.cmd
+/RECUPERAR-AGENTE-ESE-2.cmd
+/REINICIAR-AGENTE-ESE.cmd
 
 # Dist folder (binaries go in GitHub Releases, not in repo)
 dist/

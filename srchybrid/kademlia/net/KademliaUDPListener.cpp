@@ -92,6 +92,17 @@ static bool EseHolePunchTransportReady()
 		&& theApp.clientudp != NULL && theApp.clientudp->IsUtpReady();
 }
 
+static bool IsExplicitKad6UlaMode()
+{
+	LPCTSTR configured = thePrefs.GetIPv6BindAddr();
+	if (configured == NULL || configured[0] == 0
+		|| _tcscmp(configured, _T("::")) == 0)
+		return false;
+	const CAddress configuredV6(configured, false);
+	return configuredV6.GetType() == CAddress::IPv6
+		&& configuredV6.IsUniqueLocalIPv6();
+}
+
 struct SEsePendingHolePunch {
 	uint32 uIP;
 	uint16 uUDPPort;
@@ -466,11 +477,28 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 	const uint16 internalKadPort = CPrefs::GetInternKadPort();
 	if (thePrefs.IsIPv6Enabled() && theApp.clientudp->IsDualStack()
 		&& internalKadPort != 0) {
-		const CAddress publicV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
-		if (publicV6.GetType() == CAddress::IPv6 && publicV6.IsPublicIP()) {
+		// An explicit bind is authoritative. In particular, T5 deliberately
+		// binds an RFC 4193 address while a host may also expose a public IPv6
+		// on a VPN adapter. Advertising that unrelated public address makes the
+		// signed sender endpoint disagree with the packet's ULA source and every
+		// peer must reject the otherwise valid bootstrap.
+		CAddress routeV6;
+		LPCTSTR configured = thePrefs.GetIPv6BindAddr();
+		if (configured != NULL && configured[0] != 0
+			&& _tcscmp(configured, _T("::")) != 0) {
+			CAddress configuredV6(configured, false);
+			if (configuredV6.GetType() == CAddress::IPv6
+				&& (configuredV6.IsPublicIP()
+					|| configuredV6.IsUniqueLocalIPv6()))
+				routeV6 = configuredV6;
+		}
+		if (routeV6.IsNull())
+			routeV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+		if (routeV6.GetType() == CAddress::IPv6
+			&& (routeV6.IsPublicIP() || routeV6.IsUniqueLocalIPv6())) {
 			kad6::K6Endpoint endpoint;
 			endpoint.addr.family = kad6::Kad6Address::Family::IPv6;
-			std::memcpy(endpoint.addr.addr.data(), publicV6.Data(), 16);
+			std::memcpy(endpoint.addr.addr.data(), routeV6.Data(), 16);
 			endpoint.udp_port = internalKadPort;
 			endpoint.tcp_port = theApp.GetAdvertisedV6TcpPort();
 			endpoint.transport_flags = kad6::kK6EpUdpKad6;
@@ -739,6 +767,10 @@ void CKademliaUDPListener::SendKad6SourceResponse(uint32 txid,
 			break;
 		}
 	}
+	AddDebugLogLine(false,
+		_T("Kad6 native source response: matches=%u records=%u"),
+		static_cast<unsigned>(matches.size()),
+		static_cast<unsigned>(response.records.size()));
 	if (kad6::EncodeK6FindSourceResponse(response, wire) == kad6::Kad6Status::Ok)
 		SendKad6Payload(KADEMLIA3_FIND_SOURCE_RES, wire, address, port);
 }
@@ -876,6 +908,10 @@ bool CKademliaUDPListener::DispatchKad6SourceRound(uint64 lookupKey)
 		++sent;
 	}
 	lookup.roundStarted = GetTickCount();
+	AddDebugLogLine(false,
+		_T("Kad6 native source lookup dispatch: contacts=%u sent=%u total=%u"),
+		static_cast<unsigned>(contacts.size()), static_cast<unsigned>(sent),
+		static_cast<unsigned>(lookup.totalSent));
 	return sent != 0;
 }
 
@@ -889,14 +925,32 @@ bool CKademliaUDPListener::StartKad6SourceLookup(
 	kad6::Byte any = 0;
 	for (kad6::Byte value : targetHash) any = static_cast<kad6::Byte>(any | value);
 	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
-	if (any == 0 || !table || table->VerifiedSize() == 0) return false;
+	if (any == 0 || !table) return false;
 	const uint64 key = (static_cast<uint64>(circuitId) << 32) | requestId;
 	if (m_kad6SourceLookups.find(key) != m_kad6SourceLookups.end()) return false;
+	std::vector<kad6::K6SourceRecord> localRecords;
+	m_kad6StoredSources.Find(targetHash,
+		static_cast<std::uint64_t>(time(NULL)), maximum, localRecords);
+	uint16 localAccepted = 0;
+	for (const kad6::K6SourceRecord& record : localRecords)
+		if (eSELive::CLiveTunnel::Get().OnKad6NativeSourceRecord(
+				circuitId, requestId, record))
+			++localAccepted;
+	AddDebugLogLine(false,
+		_T("Kad6 native source lookup local: matches=%u accepted=%u verified=%u"),
+		static_cast<unsigned>(localRecords.size()),
+		static_cast<unsigned>(localAccepted),
+		static_cast<unsigned>(table->VerifiedSize()));
+	if (localAccepted >= maximum)
+		return true;
+	if (table->VerifiedSize() == 0)
+		return localAccepted != 0;
 	SKad6SourceLookup lookup;
 	lookup.target = targetHash;
 	lookup.circuitId = circuitId;
 	lookup.requestId = requestId;
 	lookup.maximum = (std::min<uint16>)(maximum, 100);
+	lookup.received = localAccepted;
 	lookup.started = GetTickCount();
 	lookup.deadline = lookup.started + 12000;
 	m_kad6SourceLookups[key] = lookup;
@@ -910,17 +964,27 @@ bool CKademliaUDPListener::StartKad6SourceLookup(
 bool CKademliaUDPListener::PublishKad6SourceRecord(uint64 publishLeaseId,
 	const kad6::K6SourceRecord& record)
 {
+	const std::uint64_t now = static_cast<std::uint64_t>(time(NULL));
 	if (!CKademlia::IsKad6Running() || publishLeaseId == 0 ||
 		kad6::VerifyK6SourceRecord(MakeKad6HostCryptoHooks(), record) != kad6::Kad6Status::Ok ||
-		kad6::K6SourceRecordCheckFresh(record,
-			static_cast<std::uint64_t>(time(NULL))) != kad6::Kad6Status::Ok)
+		kad6::K6SourceRecordCheckFresh(record, now) != kad6::Kad6Status::Ok)
 		return false;
 	CKad6RoutingTable* table = CKademlia::GetKad6RoutingTable();
 	if (table == NULL)
 		return false;
+	// The publishing node is itself a valid DHT custodian. Persist the signed
+	// record locally before best-effort replication so a temporarily sparse
+	// routing table does not make an otherwise valid native publish disappear.
+	std::uint64_t acceptedEpoch = 0;
+	const kad6::K6StoreStatus localStatus = m_kad6StoredSources.Put(
+		MakeKad6HostCryptoHooks(), record, now, &acceptedEpoch);
 	const std::vector<kad6::K6RouteContact> contacts = table->Closest(
 		record.object_hash, KAD6_ROUTING_K, true);
-	bool sent = false;
+	AddDebugLogLine(false,
+		_T("Kad6 native source publish: local_status=%u contacts=%u"),
+		static_cast<unsigned>(localStatus),
+		static_cast<unsigned>(contacts.size()));
+	bool sent = localStatus == kad6::K6StoreStatus::Stored;
 	for (const kad6::K6RouteContact& destination : contacts) {
 		const uint32 txid = NextKad6Transaction();
 		kad6::K6StoreSourceRequest request;
@@ -928,7 +992,7 @@ bool CKademliaUDPListener::PublishKad6SourceRecord(uint64 publishLeaseId,
 		request.record = record;
 		std::vector<kad6::K6EndpointAttempt> attempts;
 		table->BuildEndpointRace(destination.node_id,
-			static_cast<std::uint64_t>(time(NULL)), attempts);
+			now, attempts);
 		const kad6::K6Endpoint primary = attempts.empty()
 			? destination.endpoint : attempts.front().endpoint;
 		std::vector<kad6::Byte> wire;
@@ -970,11 +1034,27 @@ bool CKademliaUDPListener::PublishKad6SourceRecord(uint64 publishLeaseId,
 
 bool CKademliaUDPListener::BootstrapV6(const byte address[16], uint16 port)
 {
-	if (!CKademlia::IsKad6Running() || address == NULL || port == 0)
+	if (!CKademlia::IsKad6Running() || address == NULL || port == 0) {
+		AddDebugLogLine(false,
+			_T("Kad6 bootstrap v6 rejected: running=%u address=%u port=%u"),
+			CKademlia::IsKad6Running() ? 1u : 0u,
+			address != NULL ? 1u : 0u, static_cast<unsigned>(port));
 		return false;
+	}
 	CAddress hostAddress(address);
-	if (hostAddress.GetType() != CAddress::IPv6 || !hostAddress.IsPublicIP())
+	if (hostAddress.GetType() != CAddress::IPv6
+		|| !(hostAddress.IsPublicIP()
+			|| (hostAddress.IsUniqueLocalIPv6()
+				&& IsExplicitKad6UlaMode()))) {
+		AddDebugLogLine(false,
+			_T("Kad6 bootstrap v6 rejected target: type=%u public=%u ula=%u lab=%u port=%u"),
+			static_cast<unsigned>(hostAddress.GetType()),
+			hostAddress.IsPublicIP() ? 1u : 0u,
+			hostAddress.IsUniqueLocalIPv6() ? 1u : 0u,
+			IsExplicitKad6UlaMode() ? 1u : 0u,
+			static_cast<unsigned>(port));
 		return false;
+	}
 	kad6::Kad6Address destination;
 	destination.family = kad6::Kad6Address::Family::IPv6;
 	std::memcpy(destination.addr.data(), address, 16);
@@ -984,8 +1064,15 @@ bool CKademliaUDPListener::BootstrapV6(const byte address[16], uint16 port)
 		kad6::Kad6Address::Family::IPv6))
 		return false;
 	std::vector<kad6::Byte> wire;
-	if (kad6::EncodeK6BootstrapRequest(request, wire) != kad6::Kad6Status::Ok
-		|| !SendKad6Payload(KADEMLIA3_BOOTSTRAP_REQ, wire, destination, port))
+	const kad6::Kad6Status encoded =
+		kad6::EncodeK6BootstrapRequest(request, wire);
+	const bool sent = encoded == kad6::Kad6Status::Ok
+		&& SendKad6Payload(KADEMLIA3_BOOTSTRAP_REQ, wire, destination, port);
+	AddDebugLogLine(false,
+		_T("Kad6 bootstrap v6 send: txid=%u port=%u encoded=%u sent=%u"),
+		static_cast<unsigned>(txid), static_cast<unsigned>(port),
+		static_cast<unsigned>(encoded), sent ? 1u : 0u);
+	if (!sent)
 		return false;
 
 	SKad6Pending pending = {};
@@ -1010,7 +1097,7 @@ CKademliaUDPListener::~CKademliaUDPListener()
 // Used by Kad1.0 and Kad 2.0
 void CKademliaUDPListener::Bootstrap(LPCTSTR szHost, uint16 uUDPPort)
 {
-	if (!CKademlia::IsKad2Running())
+	if (!CKademlia::IsKad2Running() && !CKademlia::IsKad6Running())
 		return;
 	if (szHost == NULL || szHost[0] == 0 || uUDPPort == 0)
 		return;
@@ -4092,8 +4179,14 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 				&& pending.expectedNode != response.header.sender_id)
 				return;
 			const kad6::K6RouteContact contact = Kad6ContactFromHeader(response.header);
-			if (!table->MarkVerified(contact,
-				response.header.sender_record, now))
+			const bool verified = table->MarkVerified(contact,
+				response.header.sender_record, now);
+			AddDebugLogLine(false,
+				_T("Kad6 hello response: txid=%u port=%u pending=%d verified=%u after=%u"),
+				static_cast<unsigned>(response.header.txid),
+				static_cast<unsigned>(port), index, verified ? 1u : 0u,
+				static_cast<unsigned>(pending.afterVerify));
+			if (!verified)
 				return;
 			NoteKad6Authenticated();
 			m_kad6Pending.erase(m_kad6Pending.begin() + index);
@@ -4116,15 +4209,27 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 				|| request.header.version != kad6::kK6RouteWireVersion)
 				return;
 			const kad6::K6RouteContact contact = Kad6ContactFromHeader(request.header);
-			if (!table->AddSignedProbation(contact,
-				request.header.sender_record, now))
+			const bool probation = table->AddSignedProbation(contact,
+				request.header.sender_record, now);
+			if (!probation) {
+				AddDebugLogLine(false,
+					_T("Kad6 bootstrap request rejected: txid=%u port=%u probation=0"),
+					static_cast<unsigned>(request.header.txid),
+					static_cast<unsigned>(port));
 				return;
+			}
 			// The response is larger than the request. Require a fresh,
 			// transaction-bound return-routability proof even for a contact which
 			// was verified earlier; historical state is not packet authentication.
-			if (!HasKad6PendingFor(contact.node_id))
-				SendKad6HelloChallenge(contact, K6_AFTER_BOOTSTRAP_RESPONSE,
+			const bool alreadyPending = HasKad6PendingFor(contact.node_id);
+			const bool challenged = !alreadyPending
+				&& SendKad6HelloChallenge(contact, K6_AFTER_BOOTSTRAP_RESPONSE,
 					request.header.txid);
+			AddDebugLogLine(false,
+				_T("Kad6 bootstrap request: txid=%u port=%u pending=%u challenged=%u"),
+				static_cast<unsigned>(request.header.txid),
+				static_cast<unsigned>(port), alreadyPending ? 1u : 0u,
+				challenged ? 1u : 0u);
 			break;
 		}
 
@@ -4143,8 +4248,15 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 			if (pending.hasExpectedNode
 				&& pending.expectedNode != response.header.sender_id)
 				return;
-			if (!table->MarkVerified(Kad6ContactFromHeader(response.header),
-				response.header.sender_record, now))
+			const bool verified = table->MarkVerified(
+				Kad6ContactFromHeader(response.header),
+				response.header.sender_record, now);
+			AddDebugLogLine(false,
+				_T("Kad6 bootstrap response: txid=%u port=%u pending=%d verified=%u contacts=%u"),
+				static_cast<unsigned>(response.header.txid),
+				static_cast<unsigned>(port), index, verified ? 1u : 0u,
+				static_cast<unsigned>(response.contacts.size()));
+			if (!verified)
 				return;
 			NoteKad6Authenticated();
 			m_kad6Pending.erase(m_kad6Pending.begin() + index);
@@ -4223,11 +4335,17 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 				request.header.version != kad6::kK6RouteWireVersion)
 				return;
 			const kad6::K6RouteContact contact = Kad6ContactFromHeader(request.header);
-			if (!table->AddSignedProbation(contact, request.header.sender_record, now))
+			const bool signedContact = table->AddSignedProbation(
+				contact, request.header.sender_record, now);
+			const bool challengeBusy = HasKad6PendingFor(contact.node_id);
+			AddDebugLogLine(false,
+				_T("Kad6 native source request: signed=%u challenge_busy=%u"),
+				signedContact ? 1u : 0u, challengeBusy ? 1u : 0u);
+			if (!signedContact)
 				return;
 			// The answer can be much larger than the request. Require a fresh,
 			// transaction-bound return-routability proof before emitting records.
-			if (!HasKad6PendingFor(contact.node_id))
+			if (!challengeBusy)
 				SendKad6HelloChallenge(contact, K6_AFTER_FIND_SOURCE_RESPONSE,
 					request.header.txid, &request.target_hash, request.max_records);
 			break;
@@ -4267,6 +4385,10 @@ void CKademliaUDPListener::ProcessPacketKad6(byte opcode, const byte* payload,
 			}
 			eSELive::CLiveTunnel::Get().OnKad6SourceLookupRpc(
 				pending.sourceAlpha, accepted != 0 ? 0 : 1);
+			AddDebugLogLine(false,
+				_T("Kad6 native source result: records=%u accepted=%u"),
+				static_cast<unsigned>(response.records.size()),
+				static_cast<unsigned>(accepted));
 			const uint64 lookupKey = (static_cast<uint64>(pending.sourceCircuitId) << 32) |
 				pending.sourceRequestId;
 			auto lookup = m_kad6SourceLookups.find(lookupKey);

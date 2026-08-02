@@ -10,7 +10,7 @@ $jobsRoot = Split-Path -Parent $jobRoot
 $kitRoot = Split-Path -Parent $jobsRoot
 $activePath = Join-Path $kitRoot 'ACTIVE-V91-I05-T1.json'
 $candidateSha =
-    '55c5aa0e968b25330720cfb7f622cbc28ea9875365145333cbcf9d9585c1c44a'
+    '94620cf502c954cda29fa7f40f834ef1eebacb753f1fe277865d1d173e0b9b41'
 
 $jobRequest = Get-Content -LiteralPath $JobRequestPath -Raw |
     ConvertFrom-Json

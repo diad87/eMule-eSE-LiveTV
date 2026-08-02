@@ -3,11 +3,17 @@ param(
     [ValidatePattern('^$|^[0-9A-Fa-f]{64}$')]
     [string]$Token = $env:ESE_LAB_AGENT_TOKEN,
 
-    [ValidatePattern('^\d{1,3}(\.\d{1,3}){3}$')]
-    [string]$ListenIPv4 = '192.168.68.64',
+    [ValidatePattern('^$|^\d{1,3}(\.\d{1,3}){3}$')]
+    [string]$ListenIPv4 = '',
 
-    [ValidatePattern('^\d{1,3}(\.\d{1,3}){3}$')]
-    [string]$AllowedSourceIPv4 = '192.168.68.60',
+    [ValidatePattern('^$|^\d{1,3}(\.\d{1,3}){3}$')]
+    [string]$AllowedSourceIPv4 = '',
+
+    [ValidatePattern('^$|^\d{1,3}(\.\d{1,3}){3}$')]
+    [string]$I05SourceIPv4 = '',
+
+    [ValidatePattern('^$|^\d{1,3}(\.\d{1,3}){3}$')]
+    [string]$I05DownloaderIPv4 = '',
 
     [ValidateRange(1024, 65535)]
     [int]$Port = 8013,
@@ -24,6 +30,27 @@ if ($Token -notmatch '^[0-9A-Fa-f]{64}$') {
         'Falta ESE_LAB_AGENT_TOKEN o -Token con una credencial aleatoria ' +
         'de 256 bits (64 caracteres hexadecimales).'
     )
+}
+if ($LoopbackSelfTest) {
+    foreach ($name in @(
+            'ListenIPv4',
+            'AllowedSourceIPv4',
+            'I05SourceIPv4',
+            'I05DownloaderIPv4')) {
+        if ([string]::IsNullOrWhiteSpace((Get-Variable $name).Value)) {
+            Set-Variable -Name $name -Value '127.0.0.1'
+        }
+    }
+} else {
+    foreach ($name in @(
+            'ListenIPv4',
+            'AllowedSourceIPv4',
+            'I05SourceIPv4',
+            'I05DownloaderIPv4')) {
+        if ([string]::IsNullOrWhiteSpace((Get-Variable $name).Value)) {
+            throw "Falta el parametro obligatorio -$name."
+        }
+    }
 }
 $kitRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $runnerPath = Join-Path $kitRoot 'run_v91_i05_downloader_kit.ps1'
@@ -184,6 +211,8 @@ function Get-AgentStatus {
         agent_pid = $PID
         listen = "$ListenIPv4`:$Port"
         allowed_source = $AllowedSourceIPv4
+        i05_source_ipv4 = $I05SourceIPv4
+        i05_downloader_ipv4 = $I05DownloaderIPv4
         test_pid = if ($null -ne $script:child) {
             [int]$script:child.Id
         } else {
@@ -260,11 +289,12 @@ function Start-AgentTest {
     if ([string]$config.schema -cne 'ese.v91.i05.t1-config/v1') {
         throw 'La configuracion no tiene el schema V91-I05 T1 esperado.'
     }
-    if ([string]$config.source.ipv4_address -cne $AllowedSourceIPv4) {
-        throw 'La configuracion no pertenece al H1 autorizado.'
+    if ([string]$config.source.ipv4_address -cne $I05SourceIPv4) {
+        throw 'La configuracion no pertenece al H1 fisico autorizado.'
     }
-    if ([string]$config.downloader.expected_ipv4_address -cne $ListenIPv4) {
-        throw 'La configuracion no pertenece a este H3.'
+    if ([string]$config.downloader.expected_ipv4_address -cne
+            $I05DownloaderIPv4) {
+        throw 'La configuracion no pertenece al H3 fisico autorizado.'
     }
     $expires = [DateTimeOffset]::Parse([string]$config.expires_at_utc)
     if ($expires -le [DateTimeOffset]::UtcNow.AddMinutes(5)) {
@@ -305,8 +335,9 @@ function Set-AgentConfig {
     }
     $json = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
     if ([string]$json.schema -cne 'ese.v91.i05.t1-config/v1' -or
-        [string]$json.source.ipv4_address -cne $AllowedSourceIPv4 -or
-        [string]$json.downloader.expected_ipv4_address -cne $ListenIPv4) {
+        [string]$json.source.ipv4_address -cne $I05SourceIPv4 -or
+        [string]$json.downloader.expected_ipv4_address -cne
+            $I05DownloaderIPv4) {
         throw 'La configuracion no corresponde a la topologia autorizada.'
     }
     $temp = $configPath + '.incoming'

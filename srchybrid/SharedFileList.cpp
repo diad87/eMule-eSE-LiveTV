@@ -1309,10 +1309,20 @@ void CSharedFileList::Publish()
 		CKnownFile* k6File = GetFileByIndex(m_currFileK6++);
 		kad6::K6CommitmentKind commitmentKind;
 		kad6::Hash32 commitment;
-		if (BuildK6ContentCommitment(k6File, commitmentKind, commitment))
-			eSELive::CLiveTunnel::Get().QueueK6SourceAdvertise(k6File->GetFileHash(),
-				k6File->GetFileSize(), commitmentKind, commitment.data());
-		m_lastPublishK6Src = k6Now + KADEMLIAPUBLISHTIME;
+		const bool commitmentReady = BuildK6ContentCommitment(
+			k6File, commitmentKind, commitment);
+		const bool queued = commitmentReady &&
+			eSELive::CLiveTunnel::Get().QueueK6SourceAdvertise(
+				k6File->GetFileHash(), k6File->GetFileSize(),
+				commitmentKind, commitment.data());
+		if (!queued) {
+			AddDebugLogLine(false,
+				_T("Kad6 source advertise deferred: commitment=%u size=%I64u"),
+				commitmentReady ? 1u : 0u,
+				k6File ? k6File->GetFileSize() : 0);
+		}
+		m_lastPublishK6Src = k6Now +
+			(queued ? KADEMLIAPUBLISHTIME : 30);
 	}
 
 	if (!Kademlia::CKademlia::IsConnected()

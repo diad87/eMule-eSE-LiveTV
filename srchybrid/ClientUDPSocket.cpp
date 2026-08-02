@@ -48,6 +48,17 @@
 static char THIS_FILE[] = __FILE__;
 #endif
 
+static bool IsExplicitKad6UlaMode()
+{
+	LPCTSTR configured = thePrefs.GetIPv6BindAddr();
+	if (configured == NULL || configured[0] == 0
+		|| _tcscmp(configured, _T("::")) == 0)
+		return false;
+	const CAddress configuredV6(configured, false);
+	return configuredV6.GetType() == CAddress::IPv6
+		&& configuredV6.IsUniqueLocalIPv6();
+}
+
 
 // CClientUDPSocket
 
@@ -137,8 +148,16 @@ void CClientUDPSocket::OnReceive(int nErrorCode)
 
 	// Native IPv6 never enters legacy UDP obfuscation or the uint32-keyed Kad2
 	// routing table. K6-2 owns only these bounded plaintext routing opcodes.
+	// An explicitly configured RFC 4193 network is also valid for the isolated
+	// T5 lab topology. Keep that exception scoped to the native discriminator:
+	// ULA must never widen legacy Kad, uTP or arbitrary UDP admission.
 	if (sourceAddress.GetType() == CAddress::IPv6) {
-		if (!sourceAddress.IsPublicIP())
+		const bool bNativeKad6Datagram = nRealLen >= 2
+			&& buffer[0] == OP_KAD6HEADER
+			&& IsNativeKad6Opcode(buffer[1]);
+		if (!sourceAddress.IsPublicIP()
+			&& !(bNativeKad6Datagram && sourceAddress.IsUniqueLocalIPv6()
+				&& IsExplicitKad6UlaMode()))
 			return;
 		if (nRealLen > 0 && CUtpSocket::FeedRawUdp(buffer, nRealLen,
 				(const sockaddr*)&rawSockAddr, iRawSockAddrLen))

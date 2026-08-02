@@ -5,10 +5,10 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $expectedEmuleSha256 =
-    '55c5aa0e968b25330720cfb7f622cbc28ea9875365145333cbcf9d9585c1c44a'
+    '94620cf502c954cda29fa7f40f834ef1eebacb753f1fe277865d1d173e0b9b41'
 $expectedZipSha256 =
-    '5f17af0edbdda9e1fcc165d2e2f8a33910b40f856343934b970db24259cf3590'
-$expectedZipBytes = 212025531L
+    '359272c764c532c32cfd97eeb92e2db4feaa620c5d3f6318a82a7453dbf1b56f'
+$expectedZipBytes = 212040831L
 $peerPort = 7962
 $controlPort = 8012
 
@@ -349,7 +349,7 @@ if ([string]$session.schema -cne
     [string]$session.candidate.zip_sha256 -cne
         $expectedZipSha256 -or
     [Int64]$session.candidate.zip_bytes -ne $expectedZipBytes) {
-    throw 'La sesion privada no fija el candidato RC2 exacto.'
+    throw 'La sesion privada no fija el candidato RC3 exacto.'
 }
 $containment = $session.containment
 if ($null -eq $containment -or
@@ -528,8 +528,8 @@ $containmentCurrent = Get-I05CleanupContainmentInventory `
     -Plan $containment -Stage 'cleanup-before' `
     -Path $containmentCleanupBeforePath
 if ($containmentState -eq 'OWNED' -and
-        [int]$containmentCurrent.present_count -ne 10) {
-    throw 'Containment OWNED no conserva sus diez reglas.'
+        [int]$containmentCurrent.present_count -notin @(0, 10)) {
+    throw 'Containment OWNED conserva solo parte de sus diez reglas.'
 }
 if ($containmentState -eq 'NOT_STARTED' -and
         [int]$containmentCurrent.present_count -ne 0) {
@@ -630,6 +630,22 @@ if ($LASTEXITCODE -eq 0) {
     if ($LASTEXITCODE -ne 0) {
         throw 'No se pudo detener la sesion PktMon propia.'
     }
+} elseif ([bool]$capture.started -and [bool]$capture.session_owned -and
+    [string]$active.capture_state -cne 'COMPLETED') {
+    # ControlTrace STOP may already have removed the ETW session before a
+    # later proof failed. PktMon still retains an internal "started" state;
+    # the persisted owned capture and nonce-scoped filters prove authority to
+    # reset that state even though logman can no longer enumerate the session.
+    # A non-zero exit is also valid here when ControlTrace already reset the
+    # internal monitor. The exact owned filters and absent ETW session are
+    # verified below before cleanup can be committed.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & pktmon.exe stop 2>$null | Out-Null
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 }
 $filterList = @(& pktmon.exe filter list 2>&1)
 if ($LASTEXITCODE -ne 0) {
@@ -719,14 +735,14 @@ $cleanup = [ordered]@{
     nonce = $nonce
     created_at_utc = Get-LabUtcTimestamp
     candidate = [ordered]@{
-        version = '9.1.0-rc.2'
-        commit = '08aa6521f7d7907edb3584266abc3a9e31693161'
+        version = '9.1.0-rc.3'
+        commit = '815b45ca7a1415bd3e06ff043d53794bc340b346'
         dirty = $false
         emule_sha256 = $expectedEmuleSha256
         ese_server_sha256 =
-            'eeceef0f0dbe427f3667c033e2b653fc69e432abcc3e8afaf996840a7315e568'
+            'c12e71a1602bb7b55077b82a72000a6980790fdf75d90bdbcba8d2843f7a0ba2'
         build_info_sha256 =
-            '7c87f77268030c2b4da40c6da8c960f968b4e1a033c9987b64e45c49cf4b5915'
+            '48445ff0231908aa1edbb21970bcb38b91397c643c7012b65b62686bc8a63428'
         zip_sha256 = $expectedZipSha256
         zip_bytes = $expectedZipBytes
     }

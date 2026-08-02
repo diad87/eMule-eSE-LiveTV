@@ -2541,11 +2541,26 @@ uint32_t CLiveTunnel::BuildTestCircuit2Hop()
         theApp.clientlist->GetConnectedSnapshot(forkCands, 5, /*tunnelOnly=*/true);
     if (forkCands.size() < 2) return 0;
 
-    CUpDownClient* hop1 = forkCands[0];
+    std::vector<CUpDownClient*> eligible;
+    for (CUpDownClient* peer : forkCands) {
+        if (!peer || !peer->socket || !peer->socket->IsConnected() ||
+            !peer->HasValidHash() || !peer->HasEseNodePub() ||
+            !peer->SupportsEseTunnelAuth() ||
+            !peer->SupportsEseTunnelDataplane())
+            continue;
+        eligible.push_back(peer);
+    }
+    if (eligible.size() < 2) return 0;
+
+    CUpDownClient* hop1 = eligible[0];
     CUpDownClient* hop2 = NULL;
-    for (size_t i = 1; i < forkCands.size(); ++i) {
-        CUpDownClient* candidate = forkCands[i];
+    for (size_t i = 1; i < eligible.size(); ++i) {
+        CUpDownClient* candidate = eligible[i];
         if (!candidate || candidate == hop1) continue;
+        if (hop1->HasEseNodePub() && candidate->HasEseNodePub() &&
+            kad6::Kad6CtEqual(
+                hop1->GetEseNodePub(), candidate->GetEseNodePub(), 32))
+            continue;
         const uchar* firstHash = hop1->GetUserHash();
         const uchar* candidateHash = candidate->GetUserHash();
         if (firstHash && candidateHash && memcmp(firstHash, candidateHash, 16) == 0)
@@ -2610,6 +2625,8 @@ void CLiveTunnel::GetK6HardeningSnapshot(K6HardeningRuntimeSnapshot& out)
             if (pair.second.state != kad6::K6SourceLeaseState::Closed)
                 ++out.active_leases;
         out.active_publishes = static_cast<uint64>(m_k6Publishes.size());
+        out.origin_advertise_success_total = m_k6OriginAdvertiseSuccessTotal;
+        out.origin_source_recovered_total = m_k6OriginSourceRecoveredTotal;
         for (const auto& pair : m_k6ExitStreams) {
             if (pair.second.inbound) ++out.full_streams;
             else ++out.dial_streams;
@@ -3161,10 +3178,46 @@ bool CLiveTunnel::K6QuotaIssuerTrusted(const uint8_t nodePub[32]) const
     const uint8_t* own = NodeIdentityPub();
     if (own && kad6::Kad6CtEqual(own, nodePub, 32)) return true;
     Kademlia::CKad6RoutingTable* table = Kademlia::CKademlia::GetKad6RoutingTable();
-    if (!table) return false;
-    kad6::Kad6Address address;
-    kad6::K6AsnInfo asn;
-    return table->LookupVerifiedIdentity(nodePub, address, asn);
+    if (table) {
+        kad6::Kad6Address address;
+        kad6::K6AsnInfo asn;
+        if (table->LookupVerifiedIdentity(nodePub, address, asn))
+            return true;
+    }
+
+    // Production issuers remain restricted to public, signed Kad6 routing
+    // identities with ASN evidence. A ULA-only laboratory cannot satisfy that
+    // Internet condition by construction. With every NetLab consent level
+    // explicitly active, treat a currently connected ULA peer as an ephemeral
+    // allowlist entry only after eSE tunnel authentication, node-key binding
+    // and Kad6 economy capability negotiation. The certificate signature is
+    // still verified by VerifyAndSpendK6Quota; a self-asserted key or a
+    // disconnected/stale peer never reaches this branch.
+    if (!thePrefs.IsEseNetLabContributionActive() || !theApp.clientlist)
+        return false;
+    std::vector<CUpDownClient*> peers;
+    theApp.clientlist->GetConnectedSnapshot(peers, 32, /*tunnelOnly=*/true);
+    for (CUpDownClient* peer : peers) {
+        if (!peer || !peer->socket || !peer->socket->IsConnected() ||
+            !peer->HasValidHash() || !peer->HasEseNodePub() ||
+            !peer->SupportsEseTunnelAuth() ||
+            !peer->SupportsEseTunnelDataplane() ||
+            (peer->GetEseCapabilities() &
+                (ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY)) !=
+                (ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY) ||
+            !kad6::Kad6CtEqual(peer->GetEseNodePub(), nodePub, 32))
+            continue;
+        CAddress peerAddress = peer->socket->GetPeerCAddress();
+        if (peerAddress.GetType() == CAddress::None && peer->HasIPv6Address())
+            peerAddress = peer->GetIPv6Address();
+        if (peerAddress.GetType() == CAddress::IPv6 &&
+            peerAddress.IsUniqueLocalIPv6()) {
+            LIVE_LOG("K6",
+                "quota issuer accepted via explicit NetLab ULA allowlist");
+            return true;
+        }
+    }
+    return false;
 }
 
 uint32 CLiveTunnel::K6SelectOriginCircuit(uint32 requiredCaps,
@@ -3276,13 +3329,20 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
             break;
         }
     }
-    if (guardCircId == 0) return false;
+    if (guardCircId == 0) {
+        LIVE_LOG("K6", "quota failed: no independent guard target=0x%08x",
+            targetCircId);
+        return false;
+    }
 
     const uint32 stageTimeout = (std::max<uint32>)(1, timeoutMs / 3);
     kad6::K6Frame keyFrame;
     if (!K6QuotaRoundTrip(guardCircId, kad6::kK6MsgQuotaKeyReq,
-            std::vector<uint8_t>(), kad6::kK6MsgQuotaKey, stageTimeout, keyFrame))
+            std::vector<uint8_t>(), kad6::kK6MsgQuotaKey, stageTimeout, keyFrame)) {
+        LIVE_LOG("K6", "quota failed: key guard=0x%08x timeout=%u",
+            guardCircId, stageTimeout);
         return false;
+    }
     kad6::K6QuotaIssuerCertificate certificate;
     size_t consumed = 0;
     if (kad6::DecodeK6QuotaIssuerCertificate(keyFrame.body.data(), keyFrame.body.size(),
@@ -3320,8 +3380,10 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
         return false;
     kad6::K6Frame issuedFrame;
     if (!K6QuotaRoundTrip(guardCircId, kad6::kK6MsgQuotaIssue, issueBody,
-            kad6::kK6MsgQuotaIssued, stageTimeout, issuedFrame))
+            kad6::kK6MsgQuotaIssued, stageTimeout, issuedFrame)) {
+        LIVE_LOG("K6", "quota failed: issue guard=0x%08x", guardCircId);
         return false;
+    }
     kad6::K6QuotaBlindResponse issued;
     consumed = 0;
     if (kad6::DecodeK6QuotaBlindResponse(issuedFrame.body.data(),
@@ -3341,19 +3403,30 @@ bool CLiveTunnel::K6AcquireAnonymousQuota(
         return false;
     kad6::K6Frame statusFrame;
     if (!K6QuotaRoundTrip(targetCircId, kad6::kK6MsgQuotaPresent,
-            presentationBody, kad6::kK6MsgQuotaStatus, stageTimeout, statusFrame))
+            presentationBody, kad6::kK6MsgQuotaStatus, stageTimeout, statusFrame)) {
+        LIVE_LOG("K6", "quota failed: present target=0x%08x", targetCircId);
         return false;
+    }
     kad6::K6QuotaPresentationResult status;
     consumed = 0;
     kad6::Hash32 expectedUnitHash{};
-    return kad6::DecodeK6QuotaPresentationResult(statusFrame.body.data(),
-               statusFrame.body.size(), status, &consumed) == kad6::Kad6Status::Ok &&
+    const kad6::Kad6Status decodeStatus =
+        kad6::DecodeK6QuotaPresentationResult(statusFrame.body.data(),
+            statusFrame.body.size(), status, &consumed);
+    const bool accepted = decodeStatus == kad6::Kad6Status::Ok &&
         consumed == statusFrame.body.size() && status.status == kad6::K6QuotaStatus::Ok &&
         status.valid_epoch == token.valid_epoch && identity.sha256 &&
         identity.sha256(token.admission_unit.data(), token.admission_unit.size(),
             expectedUnitHash.data()) &&
         kad6::Kad6CtEqual(status.admission_unit_hash.data(), expectedUnitHash.data(),
             expectedUnitHash.size());
+    LIVE_LOG("K6",
+        "quota %s guard=0x%08x target=0x%08x status=%u decode=%u used=%u bytes=%u",
+        accepted ? "ok" : "failed", guardCircId, targetCircId,
+        static_cast<unsigned>(status.status), static_cast<unsigned>(decodeStatus),
+        static_cast<unsigned>(consumed),
+        static_cast<unsigned>(statusFrame.body.size()));
+    return accepted;
 }
 
 std::string CLiveTunnel::K6QuotaGrantKey(uint32 circId,
@@ -4313,6 +4386,12 @@ void CLiveTunnel::RebuildPeersCache()
             p.port      = c->GetUserPort();
             p.fork_caps = c->GetForkCaps();
             p.ese_caps  = c->GetEseCapabilities();
+            p.hash_ready = c->HasValidHash();
+            p.node_pub_ready = c->HasEseNodePub();
+            p.auth_cap = c->SupportsEseTunnelAuth();
+            p.dataplane_cap = c->SupportsEseTunnelDataplane();
+            p.auth_ready = p.hash_ready && p.node_pub_ready &&
+                p.auth_cap && p.dataplane_cap;
             p.has_ipv4  = !c->IsIPv6OnlyEndpoint()
                        && c->GetIP() != 0
                        && c->GetIP() != 0xFFFFFFFFu;
@@ -4386,6 +4465,15 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
             if (!e.started) e.first_seen_tick = GetTickCount();
             ReassemblyResult r = ReassemblyIngest(e, fragIndex, fragCount,
                                                   msgTotal, fragData, fragDataLen);
+            if (sub_cmd == TUN_OP_KAD6_GATEWAY) {
+                AddDebugLogLine(false,
+                    _T("Kad6 gateway reply fragment: req=%u index=%u count=%u total=%u bytes=%u state=%u"),
+                    req_id, static_cast<unsigned>(fragIndex),
+                    static_cast<unsigned>(fragCount),
+                    static_cast<unsigned>(msgTotal),
+                    static_cast<unsigned>(fragDataLen),
+                    static_cast<unsigned>(r));
+            }
             if (r == ReassemblyResult::Incomplete) return true;
             if (r == ReassemblyResult::Error) {
                 m_reassembly.erase(rkey);
@@ -4404,8 +4492,12 @@ bool CLiveTunnel::HandleRelay_Originator(std::shared_ptr<CLiveCircuit>& circ,
         if (sub_cmd == TUN_OP_KAD_RESULT_V2 && theApp.liveStreamManager) {
             theApp.liveStreamManager->GetKadBridge().FeedTunneledSearchResults(msg);
         }
-        if (sub_cmd == TUN_OP_KAD6_GATEWAY)
+        if (sub_cmd == TUN_OP_KAD6_GATEWAY) {
+            AddDebugLogLine(false,
+                _T("Kad6 gateway reply complete: req=%u bytes=%u"),
+                req_id, static_cast<unsigned>(msg.size()));
             return HandleK6SearchReply(circ, req_id, msg);
+        }
         // v8.1 A3 - wake the blocked TunnelEchoLarge()/TunneledKadSearch() call. SignalReply
         // re-takes m_pendingLock (CCriticalSection is recursive).
         SignalReply(req_id, msg.data(), msg.size(), 0);
@@ -4491,8 +4583,16 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
     if (!circ || wire.empty()) return false;
     kad6::K6Frame frame;
     size_t consumed = 0;
-    if (kad6::DecodeK6Frame(wire.data(), wire.size(), frame, &consumed) !=
-            kad6::Kad6Status::Ok || consumed != wire.size() ||
+    const kad6::Kad6Status decodeStatus =
+        kad6::DecodeK6Frame(wire.data(), wire.size(), frame, &consumed);
+    AddDebugLogLine(false,
+        _T("Kad6 gateway reply frame: req=%u frame_req=%u type=%u flags=0x%04x decode=%u consumed=%u bytes=%u"),
+        req_id, frame.request_id, static_cast<unsigned>(frame.msg_type),
+        static_cast<unsigned>(frame.flags),
+        static_cast<unsigned>(decodeStatus),
+        static_cast<unsigned>(consumed),
+        static_cast<unsigned>(wire.size()));
+    if (decodeStatus != kad6::Kad6Status::Ok || consumed != wire.size() ||
         frame.request_id != req_id || frame.session_id != 0 ||
         (frame.flags & kad6::kK6FlagResponse) == 0)
         return false;
@@ -4932,6 +5032,9 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
             }
 
             bool materialized = false;
+            uint16_t rejectedEnvelope = 0;
+            uint16_t rejectedCodec = 0;
+            uint16_t rejectedTarget = 0;
             for (const kad6::K6TargetTicket& ticket : result.tickets) {
                 if (ticket.service != static_cast<kad6::Byte>(kad6::K6TicketService::Ed2kTcp) ||
                     (ticket.provenance_kind != static_cast<kad6::Byte>(kad6::K6Provenance::KadResult) &&
@@ -4941,12 +5044,16 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
                     ticket.object_hash != lookup.file_hash ||
                     ticket.max_connections != 1 || ticket.max_bytes == 0 ||
                     ticket.expires_at <= static_cast<uint64>(time(NULL)) ||
-                    ticket.target_endpoint.tcp_port == 0)
+                    ticket.target_endpoint.tcp_port == 0) {
+                    ++rejectedEnvelope;
                     continue;
+                }
 
                 std::vector<uint8_t> ticketWire;
-                if (kad6::EncodeK6TargetTicket(ticket, ticketWire) != kad6::Kad6Status::Ok)
+                if (kad6::EncodeK6TargetTicket(ticket, ticketWire) != kad6::Kad6Status::Ok) {
+                    ++rejectedCodec;
                     continue;
+                }
                 Kademlia::CUInt128 contact(result.result_id.data());
                 Kademlia::CUInt128 buddy;
                 uint32 ip = 0;
@@ -4956,11 +5063,17 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
                     memcpy(&ip, ticket.target_endpoint.addr.addr.data(), 4);
                 } else if (ticket.target_endpoint.addr.family == kad6::Kad6Address::Family::IPv6) {
                     sourceV6 = CAddress(ticket.target_endpoint.addr.addr.data());
-                    if (sourceV6.GetType() != CAddress::IPv6 || !sourceV6.IsPublicIP())
+                    if (sourceV6.GetType() != CAddress::IPv6 ||
+                        !K6AllowTicketTarget(this,
+                            static_cast<kad6::Byte>(kad6::K6TicketService::Ed2kTcp),
+                            ticket.target_endpoint)) {
+                        ++rejectedTarget;
                         continue;
+                    }
                     sourceV6Ptr = &sourceV6;
                     ip = 0x01000001u; // HighID-shaped placeholder; no direct dial is allowed.
                 } else {
+                    ++rejectedTarget;
                     continue;
                 }
                 if (theApp.downloadqueue == NULL) return false;
@@ -4974,9 +5087,17 @@ bool CLiveTunnel::HandleK6SearchReply(const std::shared_ptr<CLiveCircuit>& circ,
                 CSingleLock pl(&m_pendingLock, TRUE);
                 auto pendingLookup = m_k6OriginSourceLookups.find(req_id);
                 if (pendingLookup != m_k6OriginSourceLookups.end() &&
-                    pendingLookup->second.received != 0xffff)
+                    pendingLookup->second.received != 0xffff) {
                     ++pendingLookup->second.received;
+                    ++m_k6OriginSourceRecoveredTotal;
+                }
             }
+            AddDebugLogLine(false,
+                _T("Kad6 gateway source result: tickets=%u materialized=%u envelope=%u codec=%u target=%u"),
+                static_cast<unsigned>(result.tickets.size()), materialized ? 1u : 0u,
+                static_cast<unsigned>(rejectedEnvelope),
+                static_cast<unsigned>(rejectedCodec),
+                static_cast<unsigned>(rejectedTarget));
             return materialized;
         }
 
@@ -5534,6 +5655,7 @@ void CLiveTunnel::ExitHandle_Kad6Gateway(const TunnelRequestCtx& ctx)
         }
         TunnelSearchJob job;
         job.circ_id = ctx.circ->Id();
+        job.origin_circ_id = ctx.circ->m_originCircContext;
         job.req_id = ctx.req_id;
         job.canonicalK6 = true;
         job.searchKind = kad6::kK6SearchKindSourceHash;
@@ -5620,6 +5742,7 @@ void CLiveTunnel::ExitHandle_Kad6Gateway(const TunnelRequestCtx& ctx)
 
     TunnelSearchJob job;
     job.circ_id = ctx.circ->Id();
+    job.origin_circ_id = ctx.circ->m_originCircContext;
     job.req_id = ctx.req_id;
     job.keyword = keyword;
     job.canonicalK6 = true;
@@ -6082,7 +6205,10 @@ void CLiveTunnel::ExitHandle_Kad6QuotaPresent(const TunnelRequestCtx& ctx,
     const uint64 now = static_cast<uint64>(time(NULL));
     kad6::K6QuotaToken token;
     kad6::K6QuotaIssuerCertificate certificate;
-    if (!EnsureK6QuotaAuthority(now))
+    const bool authorityReady = EnsureK6QuotaAuthority(now);
+    bool issuerTrusted = false;
+    bool contextNonzero = false;
+    if (!authorityReady)
         result.status = kad6::K6QuotaStatus::CryptoFailure;
     else if (kad6::DecodeK6QuotaPreparedMessage(presentation.prepared_message.data(),
                  presentation.prepared_message.size(), token) != kad6::Kad6Status::Ok ||
@@ -6091,11 +6217,15 @@ void CLiveTunnel::ExitHandle_Kad6QuotaPresent(const TunnelRequestCtx& ctx,
                  kad6::Kad6Status::Ok || consumed != presentation.issuer_certificate.size())
         result.status = kad6::K6QuotaStatus::InvalidProof;
     else {
+        for (uint8_t value : token.presentation_context_hash)
+            contextNonzero = contextNonzero || value != 0;
+        issuerTrusted = K6QuotaIssuerTrusted(
+            certificate.issuer_node_pub.data());
         result.status = kad6::VerifyAndSpendK6Quota(MakeKad6HostCryptoHooks(),
             m_k6QuotaCrypto.Hooks(), m_k6QuotaSpent, presentation, token.service,
             token.policy_id, kad6::K6QuotaEpoch(now), kad6::K6QuotaSubepoch(now),
             token.presentation_context_hash,
-            K6QuotaIssuerTrusted(certificate.issuer_node_pub.data()), &token, &certificate);
+            issuerTrusted, NULL, NULL);
         if (result.status == kad6::K6QuotaStatus::Ok) {
             const kad6::Kad6CryptoHooks identity = MakeKad6HostCryptoHooks();
             if (!identity.sha256 || !identity.sha256(token.admission_unit.data(),
@@ -6132,6 +6262,12 @@ void CLiveTunnel::ExitHandle_Kad6QuotaPresent(const TunnelRequestCtx& ctx,
             }
         }
     }
+    AddDebugLogLine(false,
+        _T("Kad6 quota present: circ=0x%08x status=%u authority=%u crypto=%u trusted=%u service=%u policy=%u epoch=%I64u slot=%u context=%u"),
+        ctx.circ ? ctx.circ->Id() : 0, static_cast<unsigned>(result.status),
+        authorityReady, kad6::K6QuotaCryptoReady(m_k6QuotaCrypto.Hooks()),
+        issuerTrusted, static_cast<unsigned>(token.service), token.policy_id,
+        token.valid_epoch, token.subepoch_slot, contextNonzero);
     std::vector<uint8_t> body;
     if (kad6::EncodeK6QuotaPresentationResult(result, body) != kad6::Kad6Status::Ok)
         AbortExitOperation(ctx.circ->Id(), ctx.req_id);
@@ -6145,9 +6281,20 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
     kad6::K6SourceBind bind;
     size_t consumed = 0;
     if (kad6::DecodeK6SourceBind(frame.body.data(), frame.body.size(), bind,
-            &consumed) != kad6::Kad6Status::Ok || consumed != frame.body.size())
+            &consumed) != kad6::Kad6Status::Ok || consumed != frame.body.size()) {
+        AddDebugLogLine(false, _T("Kad6 source bind: malformed request circ=0x%08x"),
+            ctx.circ ? ctx.circ->Id() : 0);
         return;
-    if (!BeginExitOperation(ctx, TUN_OP_KAD6_GATEWAY)) return;
+    }
+    if (!BeginExitOperation(ctx, TUN_OP_KAD6_GATEWAY)) {
+        AddDebugLogLine(false, _T("Kad6 source bind: exit operation refused circ=0x%08x"),
+            ctx.circ ? ctx.circ->Id() : 0);
+        return;
+    }
+    AddDebugLogLine(false,
+        _T("Kad6 source bind: received circ=0x%08x family=%u mode=%u flags=0x%04x"),
+        ctx.circ ? ctx.circ->Id() : 0, bind.desired_family,
+        static_cast<unsigned>(bind.requested_mode), bind.flags);
 
     const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
     const uint8_t* exitPub = NodeIdentityPub();
@@ -6170,12 +6317,18 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
     };
 
     if (!ConsumeK6QuotaGrant(ctx, kad6::K6QuotaService::ExitKad, frame)) {
+        AddDebugLogLine(false,
+            _T("Kad6 source bind: quota denied circ=0x%08x"),
+            ctx.circ ? ctx.circ->Id() : 0);
         finish(kad6::K6SourceBoundStatus::Overloaded, NULL);
         return;
     }
 
     if (!m_k6Hardening.CanAdmit(kad6::K6Service::ExitKad) ||
         !K6EconomyAdmit(kad6::K6Service::ExitKad)) {
+        AddDebugLogLine(false,
+            _T("Kad6 source bind: service/economy denied circ=0x%08x"),
+            ctx.circ ? ctx.circ->Id() : 0);
         const uint64 now = static_cast<uint64>(time(NULL));
         m_k6Metrics.Add(kad6::K6MetricFamily::ExitRejectTotal, 8, 0, 0, 1, now);
         m_k6Metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 1, 1, 0, 1, now);
@@ -6184,6 +6337,9 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
     }
 
     if (!exitPub || kad6::VerifyK6CompatProofV1(crypto, bind) != kad6::Kad6Status::Ok) {
+        AddDebugLogLine(false,
+            _T("Kad6 source bind: compatibility proof denied circ=0x%08x"),
+            ctx.circ ? ctx.circ->Id() : 0);
         finish(kad6::K6SourceBoundStatus::BadProof, NULL);
         return;
     }
@@ -6192,6 +6348,9 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
         CSingleLock pl(&m_pendingLock, TRUE);
         if (!EnsureK6SourceEpochsLoaded()) {
             pl.Unlock();
+            AddDebugLogLine(false,
+                _T("Kad6 source bind: source epochs unavailable circ=0x%08x"),
+                ctx.circ ? ctx.circ->Id() : 0);
             finish(kad6::K6SourceBoundStatus::Overloaded, NULL);
             return;
         }
@@ -6212,6 +6371,9 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
                 kad6::Kad6CtEqual(old.bind.file_hash.data(), bind.file_hash.data(), 16)) {
                 kad6::K6SourceBound copy = old.bound;
                 pl.Unlock();
+                AddDebugLogLine(false,
+                    _T("Kad6 source bind: idempotent lease circ=0x%08x"),
+                    ctx.circ ? ctx.circ->Id() : 0);
                 finish(kad6::K6SourceBoundStatus::Ok, &copy);
                 return;
             }
@@ -6220,6 +6382,9 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
         auto seen = m_k6SourceEpochs.find(identity);
         if (seen != m_k6SourceEpochs.end() && bind.source_epoch <= seen->second) {
             pl.Unlock();
+            AddDebugLogLine(false,
+                _T("Kad6 source bind: stale epoch circ=0x%08x"),
+                ctx.circ ? ctx.circ->Id() : 0);
             finish(kad6::K6SourceBoundStatus::StaleEpoch, NULL);
             return;
         }
@@ -6237,6 +6402,11 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
         bind.commitment_kind == kad6::K6CommitmentKind::None ||
         (bind.transport_mask & kad6::kK6TransportTcp) == 0 ||
         (bind.flags & kad6::kK6SourceAllowInbound) == 0) {
+        AddDebugLogLine(false,
+            _T("Kad6 source bind: unsupported profile circ=0x%08x mode=%u commitment=%u transport=0x%02x flags=0x%04x"),
+            ctx.circ ? ctx.circ->Id() : 0, static_cast<unsigned>(effective),
+            static_cast<unsigned>(bind.commitment_kind), bind.transport_mask,
+            bind.flags);
         finish(kad6::K6SourceBoundStatus::Unsupported, NULL);
         return;
     }
@@ -6267,7 +6437,27 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
     uint16_t udpPort = Kademlia::CKademlia::GetPrefs()->GetUseExternKadPort()
         ? Kademlia::CKademlia::GetPrefs()->GetExternalKadPort() : 0;
     if (udpPort == 0) udpPort = Kademlia::CKademlia::GetPrefs()->GetInternKadPort();
-    if (publicIp == 0 || theApp.GetAdvertisedTcpPort() == 0 || udpPort == 0) {
+    CAddress advertisedV6;
+    if (bind.desired_family == 6) {
+        const CString configured(thePrefs.GetIPv6BindAddr());
+        if (!configured.IsEmpty() && configured != _T("::")) {
+            const CAddress candidate(configured, false);
+            if (candidate.GetType() == CAddress::IPv6 &&
+                (candidate.IsPublicIP() || candidate.IsUniqueLocalIPv6()))
+                advertisedV6 = candidate;
+        }
+        if (advertisedV6.IsNull()) {
+            const CAddress detected = CFirewallProberV6::Instance().GetDetectedV6IP();
+            if (detected.GetType() == CAddress::IPv6 && detected.IsPublicIP())
+                advertisedV6 = detected;
+        }
+    }
+    const bool useV6 = bind.desired_family == 6 && !advertisedV6.IsNull();
+    if ((!useV6 && publicIp == 0) || theApp.GetAdvertisedTcpPort() == 0 || udpPort == 0) {
+        AddDebugLogLine(false,
+            _T("Kad6 source bind: endpoint unavailable circ=0x%08x use_v6=%u tcp=%u udp=%u"),
+            ctx.circ ? ctx.circ->Id() : 0, useV6,
+            theApp.GetAdvertisedTcpPort(), udpPort);
         finish(kad6::K6SourceBoundStatus::Overloaded, NULL);
         return;
     }
@@ -6285,6 +6475,11 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
             (static_cast<uint32_t>(randomLease[1]) << 8)) % 1000u;
         if (m_k6SourceLeases.ActiveSize() >= 4096 || sample >= admission) {
             pl.Unlock();
+            AddDebugLogLine(false,
+                _T("Kad6 source bind: admission denied circ=0x%08x active=%u sample=%u threshold=%u"),
+                ctx.circ ? ctx.circ->Id() : 0,
+                static_cast<unsigned>(m_k6SourceLeases.ActiveSize()),
+                sample, admission);
             finish(kad6::K6SourceBoundStatus::Overloaded, NULL);
             return;
         }
@@ -6307,14 +6502,20 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
     bound.refresh_after_s = (std::max)(1u, bound.lifetime_s / 2u);
     bound.commitment_kind = bind.commitment_kind;
     bound.content_commitment = bind.content_commitment;
-    bound.virtual_endpoint.addr.family = kad6::Kad6Address::Family::IPv4;
-    bound.virtual_endpoint.addr.addr = {
-        static_cast<uint8_t>(publicIp), static_cast<uint8_t>(publicIp >> 8),
-        static_cast<uint8_t>(publicIp >> 16), static_cast<uint8_t>(publicIp >> 24)};
+    if (useV6) {
+        bound.virtual_endpoint.addr.family = kad6::Kad6Address::Family::IPv6;
+        memcpy(bound.virtual_endpoint.addr.addr.data(), advertisedV6.Data(), 16);
+    } else {
+        bound.virtual_endpoint.addr.family = kad6::Kad6Address::Family::IPv4;
+        bound.virtual_endpoint.addr.addr = {
+            static_cast<uint8_t>(publicIp), static_cast<uint8_t>(publicIp >> 8),
+            static_cast<uint8_t>(publicIp >> 16), static_cast<uint8_t>(publicIp >> 24)};
+    }
     bound.virtual_endpoint.tcp_port = theApp.GetAdvertisedTcpPort();
     bound.virtual_endpoint.udp_port = udpPort;
     bound.virtual_endpoint.transport_flags = kad6::kK6EpTcpEd2k |
-        kad6::kK6EpKad2Gateway | kad6::kK6EpEd2kGateway;
+        kad6::kK6EpEd2kGateway |
+        (useV6 ? kad6::kK6EpUdpKad6 : kad6::kK6EpKad2Gateway);
     bound.virtual_endpoint.valid_until = now + bound.lifetime_s;
     bound.exit_apparent_ip = bound.virtual_endpoint.addr;
     memcpy(bound.exit_node_pub.data(), exitPub, bound.exit_node_pub.size());
@@ -6369,17 +6570,27 @@ void CLiveTunnel::ExitHandle_Kad6SourceBind(const TunnelRequestCtx& ctx,
             if (hadPrevious) m_k6SourceEpochs[identity] = previousEpoch;
             else m_k6SourceEpochs.erase(identity);
             pl.Unlock();
+            AddDebugLogLine(false,
+                _T("Kad6 source bind: epoch persistence failed circ=0x%08x"),
+                ctx.circ ? ctx.circ->Id() : 0);
             finish(kad6::K6SourceBoundStatus::Overloaded, NULL);
             return;
         }
         if (m_k6SourceLeases.AddBound(ctx.circ->Id(), pseudonym, bind, bound, now) !=
                 kad6::Kad6Status::Ok) {
             pl.Unlock();
+            AddDebugLogLine(false,
+                _T("Kad6 source bind: lease registration failed circ=0x%08x"),
+                ctx.circ ? ctx.circ->Id() : 0);
             finish(kad6::K6SourceBoundStatus::Overloaded, NULL);
             return;
         }
     }
     m_k6Metrics.Add(kad6::K6MetricFamily::ExitAdmissionTotal, 1, 0, 0, 1, now);
+    AddDebugLogLine(false,
+        _T("Kad6 source bind: accepted circ=0x%08x lease=%I64u family=%u"),
+        ctx.circ ? ctx.circ->Id() : 0, bound.source_lease_id,
+        static_cast<unsigned>(bound.virtual_endpoint.addr.family));
     SendK6GatewayResponse(ctx, kad6::kK6MsgSourceBound, encoded);
 }
 
@@ -6730,7 +6941,10 @@ bool CLiveTunnel::K6AllowTicketTarget(void*, kad6::Byte service,
     }
     if (endpoint.addr.family == kad6::Kad6Address::Family::IPv6) {
         CAddress address(endpoint.addr.addr.data());
-        return address.GetType() == CAddress::IPv6 && address.IsPublicIP();
+        if (address.GetType() != CAddress::IPv6) return false;
+        if (address.IsPublicIP()) return true;
+        if (!address.IsUniqueLocalIPv6()) return false;
+        return thePrefs.IsEseNetLabContributionActive();
     }
     return false;
 }
@@ -6753,6 +6967,7 @@ kad6::K6TargetPolicy CLiveTunnel::K6TicketPolicy()
     kad6::K6TargetPolicy policy;
     policy.context = this;
     policy.allow_target = &CLiveTunnel::K6AllowTicketTarget;
+    policy.allow_ula_target = thePrefs.IsEseNetLabContributionActive();
     policy.consume_use = &CLiveTunnel::K6ConsumeTicket;
     return policy;
 }
@@ -8779,6 +8994,9 @@ uint16_t CLiveTunnel::SendK6SearchResults(const TunnelSearchJob& job)
     uint16_t sent = 0;
     try {
         if (job.searchKind == kad6::kK6SearchKindSourceHash) {
+            uint16_t ticketIssueFailed = 0;
+            uint16_t codecFailed = 0;
+            uint16_t transportFailed = 0;
             std::vector<const TunnelSearchJob::SourceCandidate*> ranked;
             ranked.reserve(job.sourceCandidates.size());
             for (const auto& source : job.sourceCandidates) ranked.push_back(&source);
@@ -8806,30 +9024,42 @@ uint16_t CLiveTunnel::SendK6SearchResults(const TunnelSearchJob& job)
                 authorized.expires_at = authorized.endpoint.valid_until;
 
                 std::vector<uint8_t> unsignedBody;
-                if (kad6::EncodeK6SearchResult(result, unsignedBody) != kad6::Kad6Status::Ok)
+                if (kad6::EncodeK6SearchResult(result, unsignedBody) != kad6::Kad6Status::Ok) {
+                    ++codecFailed;
                     continue;
+                }
                 const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
                 if (source.provenance == kad6::K6Provenance::Routing)
                     authorized.digest = source.provenanceDigest;
                 else if (!crypto.sha256 || !crypto.sha256(unsignedBody.data(),
-                        unsignedBody.size(), authorized.digest.data()))
+                        unsignedBody.size(), authorized.digest.data())) {
+                    ++codecFailed;
                     continue;
+                }
 
                 std::vector<uint8_t> ticketWire;
-                if (!IssueK6RuntimeTicket(authorized, 4ull * 1024ull * 1024ull * 1024ull,
-                        source.provenance, job.circ_id, job.req_id, i,
-                        ticketWire))
+                if (job.origin_circ_id == 0 ||
+                    !IssueK6RuntimeTicket(authorized,
+                        4ull * 1024ull * 1024ull * 1024ull,
+                        source.provenance, job.origin_circ_id, job.req_id, i,
+                        ticketWire)) {
+                    ++ticketIssueFailed;
                     continue;
+                }
                 kad6::K6TargetTicket ticket;
                 size_t ticketUsed = 0;
                 if (kad6::DecodeK6TargetTicket(ticketWire.data(), ticketWire.size(), ticket,
-                        &ticketUsed) != kad6::Kad6Status::Ok || ticketUsed != ticketWire.size())
+                        &ticketUsed) != kad6::Kad6Status::Ok || ticketUsed != ticketWire.size()) {
+                    ++codecFailed;
                     continue;
+                }
                 result.tickets.push_back(std::move(ticket));
 
                 std::vector<uint8_t> resultBody, resultWire;
-                if (kad6::EncodeK6SearchResult(result, resultBody) != kad6::Kad6Status::Ok)
+                if (kad6::EncodeK6SearchResult(result, resultBody) != kad6::Kad6Status::Ok) {
+                    ++codecFailed;
                     continue;
+                }
                 {
                     CSingleLock pl(&m_pendingLock, TRUE);
                     m_k6AuthorizedTargets[K6AuthorizedTargetKey(job.circ_id, job.req_id,
@@ -8844,10 +9074,19 @@ uint16_t CLiveTunnel::SendK6SearchResults(const TunnelSearchJob& job)
                 frame.body = std::move(resultBody);
                 if (kad6::EncodeK6Frame(frame, resultWire) != kad6::Kad6Status::Ok ||
                     !SendExitOperationPart(job.circ_id, job.req_id,
-                        resultWire.data(), resultWire.size()))
+                        resultWire.data(), resultWire.size())) {
+                    ++transportFailed;
                     break;
+                }
                 ++sent;
             }
+            AddDebugLogLine(false,
+                _T("Kad6 gateway source send: candidates=%u limit=%u sent=%u ticket=%u codec=%u transport=%u"),
+                static_cast<unsigned>(job.sourceCandidates.size()),
+                static_cast<unsigned>(limit), static_cast<unsigned>(sent),
+                static_cast<unsigned>(ticketIssueFailed),
+                static_cast<unsigned>(codecFailed),
+                static_cast<unsigned>(transportFailed));
             return sent;
         }
 
@@ -9207,13 +9446,27 @@ bool CLiveTunnel::K6BindSource(const kad6::K6SourceBind& bind,
         | ((bind.flags & kad6::kK6SourceStrict)
             ? (ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED) : 0);
     const uint32 targetCircuit = K6SelectOriginCircuit(requiredCaps, 0, 2);
-    if (targetCircuit == 0) return false;
+    if (targetCircuit == 0) {
+        LIVE_LOG("K6", "source bind failed: no circuit caps=0x%08x strict=%u",
+            requiredCaps, (bind.flags & kad6::kK6SourceStrict) != 0);
+        return false;
+    }
     std::vector<uint8_t> body, wire;
-    if (kad6::EncodeK6SourceBind(bind, body) != kad6::Kad6Status::Ok) return false;
-    if (K6CircuitHasExitCaps(targetCircuit, ESE_CAP_KAD6_ECONOMY, 2) &&
-        !K6AcquireAnonymousQuota(targetCircuit, kad6::K6QuotaService::ExitKad,
-            kad6::kK6MsgSourceBind, body,
-            (std::max<uint32>)(3, timeoutMs / 2)) && IsK6PublicReleaseEnabled())
+    if (kad6::EncodeK6SourceBind(bind, body) != kad6::Kad6Status::Ok) {
+        LIVE_LOG("K6", "source bind failed: encode circuit=0x%08x", targetCircuit);
+        return false;
+    }
+    const bool economy = K6CircuitHasExitCaps(
+        targetCircuit, ESE_CAP_KAD6_ECONOMY, 2);
+    bool quotaOk = true;
+    if (economy)
+        quotaOk = K6AcquireAnonymousQuota(targetCircuit,
+            kad6::K6QuotaService::ExitKad, kad6::kK6MsgSourceBind, body,
+            (std::max<uint32>)(3, timeoutMs / 2));
+    LIVE_LOG("K6",
+        "source bind route circuit=0x%08x economy=%u quota=%u public=%u timeout=%u",
+        targetCircuit, economy, quotaOk, IsK6PublicReleaseEnabled(), timeoutMs);
+    if (economy && !quotaOk && IsK6PublicReleaseEnabled())
         return false;
     uint32_t reqId;
     PendingRequest* pending = RegisterPending(reqId);
@@ -9239,17 +9492,30 @@ bool CLiveTunnel::K6BindSource(const kad6::K6SourceBind& bind,
         targetCircuit);
     std::vector<uint8_t> reply;
     uint32 pinnedCircuit = 0;
-    if (!WaitPending(reqId, pending, timeoutMs, reply, NULL, &pinnedCircuit)) return false;
+    if (!WaitPending(reqId, pending, timeoutMs, reply, NULL, &pinnedCircuit)) {
+        LIVE_LOG("K6",
+            "source bind failed: response timeout req=%u target=0x%08x timeout=%u",
+            reqId, targetCircuit, timeoutMs);
+        return false;
+    }
     kad6::K6Frame response;
     size_t consumed = 0;
     if (kad6::DecodeK6Frame(reply.data(), reply.size(), response, &consumed) !=
             kad6::Kad6Status::Ok || consumed != reply.size() ||
         response.msg_type != kad6::kK6MsgSourceBound || response.request_id != reqId ||
         kad6::DecodeK6SourceBound(response.body.data(), response.body.size(), boundOut,
-            &consumed) != kad6::Kad6Status::Ok || consumed != response.body.size())
+            &consumed) != kad6::Kad6Status::Ok || consumed != response.body.size()) {
+        LIVE_LOG("K6",
+            "source bind failed: malformed response req=%u bytes=%u pinned=0x%08x",
+            reqId, static_cast<unsigned>(reply.size()), pinnedCircuit);
         return false;
-    if (boundOut.status != kad6::K6SourceBoundStatus::Ok || pinnedCircuit == 0)
+    }
+    if (boundOut.status != kad6::K6SourceBoundStatus::Ok || pinnedCircuit == 0) {
+        LIVE_LOG("K6",
+            "source bind rejected req=%u status=%u pinned=0x%08x",
+            reqId, static_cast<unsigned>(boundOut.status), pinnedCircuit);
         return false;
+    }
     std::array<uint8_t, kad6::kEd25519PubSize> expectedExit{};
     bool exitPinned = false;
     {
@@ -9271,12 +9537,21 @@ bool CLiveTunnel::K6BindSource(const kad6::K6SourceBind& bind,
     // Bind it to the last authenticated hop of the exact response circuit.
     if (!exitPinned ||
         kad6::VerifyK6SourceBound(MakeKad6HostCryptoHooks(), bind, boundOut,
-            expectedExit.data()) != kad6::Kad6Status::Ok)
+            expectedExit.data()) != kad6::Kad6Status::Ok) {
+        LIVE_LOG("K6",
+            "source bind failed: exit verification req=%u pinned=0x%08x exit=%u",
+            reqId, pinnedCircuit, exitPinned);
         return false;
+    }
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         m_k6OriginSourceLeaseRoutes[boundOut.source_lease_id] = pinnedCircuit;
     }
+    LIVE_LOG("K6",
+        "source bind ok req=%u pinned=0x%08x lease=%llu lifetime=%u",
+        reqId, pinnedCircuit,
+        static_cast<unsigned long long>(boundOut.source_lease_id),
+        boundOut.lifetime_s);
     return true;
 }
 
@@ -9411,19 +9686,37 @@ void CLiveTunnel::K6UnpublishNoWait(const kad6::K6Unpublish& unpublish)
             ESE_CAP_KAD6, pinnedCircuit);
 }
 
-void CLiveTunnel::QueueK6SourceAdvertise(const uint8_t fileHash[16], uint64 fileSize,
+bool CLiveTunnel::QueueK6SourceAdvertise(const uint8_t fileHash[16], uint64 fileSize,
                                          kad6::K6CommitmentKind commitmentKind,
                                          const uint8_t commitment[32])
 {
-    if (!fileHash || !commitment || fileSize == 0 || theApp.IsClosing() ||
-        !thePrefs.IsKad2Enabled() ||
+    const uint8 networkMask = thePrefs.GetEffectiveKadNetworkMask();
+    const bool closing = theApp.IsClosing();
+    const bool identityReady = NodeIdentityIsPersistent();
+    const bool circuitReady = HasActiveCircuitWithExitCaps(ESE_CAP_KAD6);
+    if (!fileHash || !commitment || fileSize == 0 || closing ||
+        networkMask == KadNetworkPolicy::None ||
         commitmentKind == kad6::K6CommitmentKind::None ||
-        !NodeIdentityIsPersistent() || !HasActiveCircuitWithExitCaps(ESE_CAP_KAD6))
-        return;
+        !identityReady || !circuitReady) {
+        LIVE_LOG("K6",
+            "source advertise preflight deferred: hash=%u commitment=%u size=%llu "
+            "closing=%u network_mask=%u kind=%u identity=%u circuit=%u",
+            fileHash ? 1u : 0u, commitment ? 1u : 0u,
+            static_cast<unsigned long long>(fileSize), closing ? 1u : 0u,
+            static_cast<unsigned>(networkMask),
+            static_cast<unsigned>(commitmentKind), identityReady ? 1u : 0u,
+            circuitReady ? 1u : 0u);
+        return false;
+    }
     uint8 anyHash = 0, anyCommitment = 0;
     for (size_t i = 0; i < 16; ++i) anyHash |= fileHash[i];
     for (size_t i = 0; i < 32; ++i) anyCommitment |= commitment[i];
-    if (!anyHash || !anyCommitment) return;
+    if (!anyHash || !anyCommitment) {
+        LIVE_LOG("K6",
+            "source advertise preflight deferred: zero_hash=%u zero_commitment=%u",
+            anyHash ? 0u : 1u, anyCommitment ? 0u : 1u);
+        return false;
+    }
 
     const uint64 now = static_cast<uint64>(time(NULL));
     const std::string key = K6BinaryKey(fileHash, 16);
@@ -9431,15 +9724,29 @@ void CLiveTunnel::QueueK6SourceAdvertise(const uint8_t fileHash[16], uint64 file
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         K6OriginAdvertiseState& state = m_k6OriginAdvertisements[key];
-        if (state.in_flight || state.next_attempt > now) return;
+        if (state.in_flight || state.next_attempt > now) {
+            LIVE_LOG("K6",
+                "source advertise deferred: in_flight=%u retry_after=%llu",
+                state.in_flight ? 1u : 0u,
+                static_cast<unsigned long long>(
+                    state.next_attempt > now ? state.next_attempt - now : 0));
+            return false;
+        }
         size_t workers = 0;
         for (const auto& pair : m_k6OriginAdvertisements)
             if (pair.second.in_flight) ++workers;
-        if (workers >= 2) return;
+        if (workers >= 2) {
+            LIVE_LOG("K6", "source advertise deferred: worker_limit=%u",
+                static_cast<unsigned>(workers));
+            return false;
+        }
         const uint64 timeBase = now <= ((std::numeric_limits<uint64>::max)() >> 20)
             ? now << 20 : now;
         if (m_k6OriginSourceEpoch < timeBase) m_k6OriginSourceEpoch = timeBase;
-        if (m_k6OriginSourceEpoch == (std::numeric_limits<uint64>::max)()) return;
+        if (m_k6OriginSourceEpoch == (std::numeric_limits<uint64>::max)()) {
+            LIVE_LOG("K6", "source advertise deferred: source_epoch_exhausted=1");
+            return false;
+        }
         epoch = ++m_k6OriginSourceEpoch;
         state.in_flight = true;
         state.next_attempt = now + 30;
@@ -9450,14 +9757,25 @@ void CLiveTunnel::QueueK6SourceAdvertise(const uint8_t fileHash[16], uint64 file
     K6OriginAdvertiseWork* work = new K6OriginAdvertiseWork();
     work->owner = this;
     work->key = key;
+    work->network_mask = networkMask;
     memcpy(work->bind.file_hash.data(), fileHash, work->bind.file_hash.size());
     work->bind.file_size = fileSize;
     memcpy(work->bind.compat_user_hash.data(), thePrefs.GetUserHash(),
         work->bind.compat_user_hash.size());
-    work->bind.desired_family = 4;
+    work->bind.desired_family =
+        KadNetworkPolicy::HasKad6(networkMask) &&
+        !KadNetworkPolicy::HasKad2(networkMask) ? 6 : 4;
     work->bind.transport_mask = kad6::kK6TransportTcp;
-    work->bind.flags = kad6::kK6SourceAllowInbound | kad6::kK6SourceStrict |
-        kad6::kK6SourceFile;
+    work->bind.flags = kad6::kK6SourceAllowInbound | kad6::kK6SourceFile;
+    // A source advertisement inherits the strongest path that is actually
+    // available.  Marking every bind STRICT made the ordinary Kad6 Private
+    // profile impossible: K6BindSource correctly interprets that bit as a
+    // diverse, shaped three-hop requirement, while Private is two hops.
+    // Never downgrade an existing Strict circuit, but do not manufacture a
+    // three-hop requirement for a two-hop source path.
+    if (HasActiveCircuitWithExitCaps(ESE_CAP_KAD6 |
+            ESE_CAP_TUNNEL_STRICT3 | ESE_CAP_TUNNEL_SHAPED))
+        work->bind.flags |= kad6::kK6SourceStrict;
     work->bind.requested_lifetime_s = 2u * 60u * 60u;
     const uint64 maxUpload = static_cast<uint64>(thePrefs.GetMaxUpload()) * 1024ull;
     work->bind.max_upload_bps = static_cast<uint32>((std::min<uint64>)(
@@ -9479,7 +9797,12 @@ void CLiveTunnel::QueueK6SourceAdvertise(const uint8_t fileHash[16], uint64 file
         K6OriginAdvertiseState& state = m_k6OriginAdvertisements[key];
         state.in_flight = false;
         state.next_attempt = now + 60;
+        LIVE_LOG("K6",
+            "source advertise deferred: worker_start_failed=1 prepared=%u",
+            prepared ? 1u : 0u);
+        return false;
     }
+    return true;
 }
 
 UINT AFX_CDECL CLiveTunnel::K6OriginAdvertiseWorker(LPVOID context)
@@ -9492,21 +9815,57 @@ UINT AFX_CDECL CLiveTunnel::K6OriginAdvertiseWorker(LPVOID context)
     bool success = work->owner->K6BindSource(work->bind, bound, 15000);
     if (success) {
         kad6::K6Publish publish;
-        publish.record_kind = kad6::K6RecordKind::Source;
-        publish.network_mask = kad6::kK6PublishNetKad2;
+        const bool publishKad2 = KadNetworkPolicy::HasKad2(work->network_mask);
+        const bool publishKad6 = KadNetworkPolicy::HasKad6(work->network_mask);
+        publish.network_mask =
+            (publishKad2 ? kad6::kK6PublishNetKad2 : 0) |
+            (publishKad6 ? kad6::kK6PublishNetKad6 : 0);
         publish.flags = kad6::kK6PublishFlagSigned | kad6::kK6PublishFlagRefresh;
         publish.requested_ttl_s = bound.lifetime_s;
         publish.record_epoch = work->bind.source_epoch;
         publish.target_hash = work->bind.file_hash;
-        publish.source_id = work->bind.compat_user_hash;
-        publish.record.resize(17);
-        publish.record[0] = 1;
-        for (size_t i = 0; i < 8; ++i) {
-            publish.record[1 + i] = static_cast<uint8_t>(bound.source_lease_id >> (8 * i));
-            publish.record[9 + i] = static_cast<uint8_t>(work->bind.file_size >> (8 * i));
+        if (publishKad6) {
+            const kad6::Kad6CryptoHooks crypto = MakeKad6HostCryptoHooks();
+            const uint8_t* publicKey = NodeIdentityPub();
+            kad6::K6SourceRecord record;
+            record.object_hash = work->bind.file_hash;
+            record.source_epoch = work->bind.source_epoch;
+            record.created_at = static_cast<uint64>(time(NULL));
+            record.expires_at = (std::min<uint64>)(
+                record.created_at + bound.lifetime_s,
+                bound.virtual_endpoint.valid_until);
+            record.metadata_hash = work->bind.content_commitment;
+            if (publicKey)
+                memcpy(record.pub_key.data(), publicKey, record.pub_key.size());
+            kad6::K6ExitDescriptor descriptor;
+            descriptor.exit_node_pub = bound.exit_node_pub;
+            descriptor.endpoint = bound.virtual_endpoint;
+            descriptor.lease_hint = bound.source_lease_id;
+            descriptor.caps = ESE_CAP_KAD6;
+            descriptor.exit_expires_at = record.expires_at;
+            record.exits.push_back(descriptor);
+            success = publicKey && crypto.random_bytes &&
+                crypto.random_bytes(record.service_token.data(),
+                    record.service_token.size()) &&
+                kad6::SignK6SourceRecord(crypto, NULL, 0, record,
+                    publish.record) == kad6::Kad6Status::Ok;
+            publish.record_kind = kad6::K6RecordKind::Kad6SourceDescriptor;
+            publish.source_id = record.source_pseudonym;
+        } else {
+            publish.record_kind = kad6::K6RecordKind::Source;
+            publish.source_id = work->bind.compat_user_hash;
+            publish.record.resize(17);
+            publish.record[0] = 1;
+            for (size_t i = 0; i < 8; ++i) {
+                publish.record[1 + i] = static_cast<uint8_t>(
+                    bound.source_lease_id >> (8 * i));
+                publish.record[9 + i] = static_cast<uint8_t>(
+                    work->bind.file_size >> (8 * i));
+            }
         }
         std::vector<uint8_t> canonical;
-        success = kad6::SignK6Publish(MakeKad6HostCryptoHooks(), NULL, 0,
+        success = success &&
+            kad6::SignK6Publish(MakeKad6HostCryptoHooks(), NULL, 0,
             publish, canonical) == kad6::Kad6Status::Ok &&
             work->owner->K6PublishRecord(publish, ack, 15000);
     }
@@ -9539,6 +9898,7 @@ void CLiveTunnel::FinishK6OriginAdvertise(const std::string& key, bool success,
     if (success) {
         state.source_lease_id = sourceLeaseId;
         state.publish_lease_id = publishLeaseId;
+        ++m_k6OriginAdvertiseSuccessTotal;
         LIVE_LOG("K6", "source advertised lease=%llu publish=%llu refresh=%u",
             static_cast<unsigned long long>(sourceLeaseId),
             static_cast<unsigned long long>(publishLeaseId), refreshAfter);
@@ -9551,10 +9911,20 @@ bool CLiveTunnel::StartK6SourceLookup(const uint8_t fileHash[16],
                                       uint32_t& requestIdOut)
 {
     requestIdOut = 0;
-    if (fileHash == NULL || !HasActiveCircuitWithExitCaps(ESE_CAP_KAD6)) return false;
+    if (fileHash == NULL) {
+        LIVE_LOG("K6", "source-hash lookup rejected: null hash");
+        return false;
+    }
+    if (!HasActiveCircuitWithExitCaps(ESE_CAP_KAD6)) {
+        LIVE_LOG("K6", "source-hash lookup deferred: no Kad6 exit circuit");
+        return false;
+    }
     uint8_t any = 0;
     for (size_t i = 0; i < 16; ++i) any |= fileHash[i];
-    if (any == 0) return false;
+    if (any == 0) {
+        LIVE_LOG("K6", "source-hash lookup rejected: zero hash");
+        return false;
+    }
 
     uint32_t reqId = 0;
     for (;;) {
@@ -9573,13 +9943,18 @@ bool CLiveTunnel::StartK6SourceLookup(const uint8_t fileHash[16],
         start.network_mask |= kad6::kK6NetMaskKad2;
     if (KadNetworkPolicy::HasKad6(selectedNetworks))
         start.network_mask |= kad6::kK6NetMaskKad6;
-    if (start.network_mask == 0)
+    if (start.network_mask == 0) {
+        LIVE_LOG("K6", "source-hash lookup deferred: no selected Kad network");
         return false;
+    }
     start.max_results = 100;
     start.deadline_ms = TUN_SEARCH_WINDOW_MS;
     memcpy(start.target_hash.data(), fileHash, start.target_hash.size());
     std::vector<uint8_t> body, wire;
-    if (kad6::EncodeK6SearchStart(start, body) != kad6::Kad6Status::Ok) return false;
+    if (kad6::EncodeK6SearchStart(start, body) != kad6::Kad6Status::Ok) {
+        LIVE_LOG("K6", "source-hash lookup rejected: encode body");
+        return false;
+    }
     kad6::K6Frame frame;
     frame.msg_type = kad6::kK6MsgSearchStart;
     frame.flags = kad6::kK6FlagCancelable |
@@ -9589,19 +9964,91 @@ bool CLiveTunnel::StartK6SourceLookup(const uint8_t fileHash[16],
             ? kad6::kK6FlagNativeKad6 : 0);
     frame.request_id = reqId;
     frame.body = std::move(body);
-    if (kad6::EncodeK6Frame(frame, wire) != kad6::Kad6Status::Ok) return false;
+    if (kad6::EncodeK6Frame(frame, wire) != kad6::Kad6Status::Ok) {
+        LIVE_LOG("K6", "source-hash lookup rejected: encode frame");
+        return false;
+    }
 
+    const uint32 pinnedCircuit = K6SelectOriginCircuit(ESE_CAP_KAD6, 0, 2);
+    if (pinnedCircuit == 0) {
+        LIVE_LOG("K6", "source-hash lookup deferred: no pinnable Kad6 exit");
+        return false;
+    }
     K6OriginSourceLookup lookup;
     memcpy(lookup.file_hash.data(), fileHash, lookup.file_hash.size());
-    lookup.deadline = GetTickCount() + TUN_SEARCH_WINDOW_MS + 15000u;
+    // Anonymous quota acquisition runs off the UI thread and can consume
+    // several network round trips before the actual search starts.
+    lookup.deadline = GetTickCount() + 60000u;
     {
         CSingleLock pl(&m_pendingLock, TRUE);
         m_k6OriginSourceLookups[reqId] = lookup;
     }
-    EnqueueSendMsg(reqId, TUN_OP_KAD6_GATEWAY, wire.data(), wire.size(), ESE_CAP_KAD6);
+
+    std::unique_ptr<K6OriginSourceLookupWork> work(
+        new K6OriginSourceLookupWork());
+    work->owner = this;
+    work->request_id = reqId;
+    work->pinned_circuit = pinnedCircuit;
+    work->economy = K6CircuitHasExitCaps(
+        pinnedCircuit, ESE_CAP_KAD6_ECONOMY, 2);
+    work->operation_body = frame.body;
+    work->wire = std::move(wire);
+    CWinThread* thread = AfxBeginThread(&CLiveTunnel::K6OriginSourceLookupWorker,
+        work.get(), THREAD_PRIORITY_BELOW_NORMAL);
+    if (!thread) {
+        CSingleLock pl(&m_pendingLock, TRUE);
+        m_k6OriginSourceLookups.erase(reqId);
+        LIVE_LOG("K6", "source-hash lookup deferred: worker start failed");
+        return false;
+    }
+    work.release();
     requestIdOut = reqId;
-    LIVE_LOG("K6", "source-hash lookup queued req=%u", reqId);
+    LIVE_LOG("K6",
+        "source-hash lookup scheduled req=%u circuit=0x%08x economy=%u",
+        reqId, pinnedCircuit,
+        K6CircuitHasExitCaps(pinnedCircuit, ESE_CAP_KAD6_ECONOMY, 2) ? 1u : 0u);
     return true;
+}
+
+UINT AFX_CDECL CLiveTunnel::K6OriginSourceLookupWorker(LPVOID context)
+{
+    std::unique_ptr<K6OriginSourceLookupWork> work(
+        static_cast<K6OriginSourceLookupWork*>(context));
+    if (!work || !work->owner || work->request_id == 0 ||
+        work->pinned_circuit == 0 || work->wire.empty())
+        return 1;
+
+    bool quotaOk = !work->economy;
+    if (work->economy) {
+        for (unsigned attempt = 0; attempt < 3 && !quotaOk; ++attempt) {
+            quotaOk = work->owner->K6AcquireAnonymousQuota(
+                work->pinned_circuit, kad6::K6QuotaService::Control,
+                kad6::kK6MsgSearchStart, work->operation_body, 15000);
+            if (!quotaOk && attempt != 2) ::Sleep(1000);
+        }
+    }
+    if (work->economy && !quotaOk &&
+        work->owner->IsK6PublicReleaseEnabled()) {
+        {
+            CSingleLock pl(&work->owner->m_pendingLock, TRUE);
+            auto lookup = work->owner->m_k6OriginSourceLookups.find(
+                work->request_id);
+            if (lookup != work->owner->m_k6OriginSourceLookups.end())
+                lookup->second.deadline = GetTickCount();
+        }
+        LIVE_LOG("K6",
+            "source-hash lookup aborted: quota req=%u circuit=0x%08x",
+            work->request_id, work->pinned_circuit);
+        return 1;
+    }
+
+    work->owner->EnqueueSendMsg(work->request_id, TUN_OP_KAD6_GATEWAY,
+        work->wire.data(), work->wire.size(), ESE_CAP_KAD6,
+        work->pinned_circuit);
+    LIVE_LOG("K6",
+        "source-hash lookup queued req=%u circuit=0x%08x quota=%u",
+        work->request_id, work->pinned_circuit, quotaOk ? 1u : 0u);
+    return 0;
 }
 
 bool CLiveTunnel::BeginK6Download(CUpDownClient* client)
@@ -11278,6 +11725,37 @@ void CLiveTunnel::Tick()
             if (c->m_private2 || c->m_strict3) DestroyCircuitFailClosed(c);
             else c->SetState(CircuitState::Destroyed);
         }
+    }
+
+    // K6 economy requests need an unlinkable one-hop issuer circuit whose
+    // node is not present anywhere in the private data path. The builder was
+    // previously only an inert helper, so every public/beta operation that
+    // advertised ESE_CAP_KAD6_ECONOMY could wait forever for a guard that no
+    // runtime path ever created. Build it lazily, after a real two-hop path is
+    // active, and retry at a bounded cadence if its handshake dies.
+    bool haveK6EconomyPath = false;
+    bool haveK6QuotaGuard = false;
+    for (const auto& circuit : m_circuits) {
+        if (!circuit || circuit->State() == CircuitState::Destroyed) continue;
+        if (circuit->m_k6QuotaIssuerCircuit) {
+            haveK6QuotaGuard = true;
+            continue;
+        }
+        if (circuit->m_role == CircuitRole::Originator &&
+            circuit->State() == CircuitState::Active &&
+            circuit->HopCount() >= 2 && circuit->m_auth_ok &&
+            (circuit->m_exit_signed_caps &
+                (ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY)) ==
+                (ESE_CAP_KAD6 | ESE_CAP_KAD6_ECONOMY))
+            haveK6EconomyPath = true;
+    }
+    if ((IsK6PublicReleaseEnabled()
+            || thePrefs.IsEseNetLabContributionActive())
+        && haveK6EconomyPath &&
+        !haveK6QuotaGuard &&
+        (DWORD)(now - m_lastK6QuotaGuardAttemptTick) >= 5000u) {
+        m_lastK6QuotaGuardAttemptTick = now;
+        BuildQuotaGuardCircuit();
     }
 
     // 3. v0.71 P0.A — cover traffic emission. For each Active originator

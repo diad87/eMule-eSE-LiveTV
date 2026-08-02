@@ -1,0 +1,79 @@
+{
+  "schema": "ese.v91.i02-result/v1",
+  "case_id": "V91-I02",
+  "status": "PASS",
+  "completed_at_utc": "2026-07-30T16:54:30.7898006+00:00",
+  "candidate": {
+    "source_base_commit": "1a0f8a272a56af4999902d49ac868388c47e1732",
+    "source_delta_committed": false,
+    "emule_sha256": "6f3d7ce29a0c1df42d3b37eb378b4be3b2adcdb7802b3a22696454229e5a3dc2",
+    "emule_bytes": 11253248
+  },
+  "topology": {
+    "kind": "T5",
+    "control_plane": "Tailscale",
+    "data_plane": "physical Ethernet/Wi-Fi with nonce-owned ULA /128 routes",
+    "public_projection": true,
+    "h1": {
+      "role": "source",
+      "ipv6_observed": true,
+      "interface": "Ethernet",
+      "interface_index": 7,
+      "tcp_port": 48062
+    },
+    "h3": {
+      "role": "viewer",
+      "ipv6_observed": true,
+      "interface": "Wi-Fi",
+      "interface_index": 22,
+      "tcp_port": 48262
+    }
+  },
+  "workload": {
+    "kind": "LiveTV test pattern",
+    "bitrate_kbps": 12000,
+    "requested_duration_seconds": 7200,
+    "stream_key_sha256": "16dae456b1c9d45a8302bb15a8fbd70d993481daf35c53db20cff54e21e9d6d5"
+  },
+  "h1": {
+    "status": "PASS",
+    "started_at_utc": "2026-07-30T14:54:08.9217990+00:00",
+    "completed_at_utc": "2026-07-30T16:54:16.8115365+00:00",
+    "wall_seconds": 7207.9,
+    "samples": 470,
+    "inactive_samples": 0,
+    "unexpected_ipv4_samples": 0,
+    "peer_ipv6_seen": true,
+    "playlist_seen": true,
+    "segment_seen": true,
+    "max_working_set_bytes": 91975680,
+    "max_handles": 555
+  },
+  "h3": {
+    "status": "PASS",
+    "started_at_utc": "2026-07-30T14:54:21.7456335+00:00",
+    "completed_at_utc": "2026-07-30T16:54:30.7898006+00:00",
+    "wall_seconds": 7209.0,
+    "samples": 475,
+    "inactive_samples": 0,
+    "unexpected_ipv4_samples": 0,
+    "initial_chunks": 0,
+    "final_chunks": 3749,
+    "peer_ipv6_seen": true,
+    "playlist_seen": true,
+    "segment_seen": true,
+    "max_working_set_bytes": 88989696,
+    "max_handles": 415
+  },
+  "local_gates": {
+    "live_tv_regression": "36/36 PASS",
+    "release_x64_build": "PASS",
+    "preflight_120_seconds": "PASS"
+  },
+  "raw_evidence": {
+    "formal_manifest": "lab-runs/v91-k04/f0100c75f4374008bf83a58c0c806888/manifest.json",
+    "h1_result": "lab-runs/v91-k04/f0100c75f4374008bf83a58c0c806888/h1-i02-result.json",
+    "h3_result": "lab-runs/v91-k04/f0100c75f4374008bf83a58c0c806888/h3-i02-result.json",
+    "preflight_manifest": "lab-runs/v91-k04/4cfeecc532ed403da63817fb4ae3dda4/manifest.json"
+  }
+}

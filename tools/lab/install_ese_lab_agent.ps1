@@ -29,7 +29,7 @@ $required = @(
     $agentRelative,
     'run_v91_i05_downloader_kit.ps1',
     'cleanup_v91_i05_downloader.ps1',
-    'payload\eSE-LiveTV-v0.70b-eSE9.1.0-rc.2-x64.zip'
+    'payload\candidates\eSE-LiveTV-v0.70b-eSE9.1.0-rc.3-x64.zip'
 )
 foreach ($relative in $required) {
     if (-not (Test-Path -LiteralPath (
@@ -39,13 +39,13 @@ foreach ($relative in $required) {
 }
 $expectedSha256 = [ordered]@{
     'tools\lab\run_ese_lab_agent.ps1' =
-        '4fd7ed1c3418d98be11aab99fefb6ab811659af7e1c5510494cb01609d40de83'
+        '0cddb94e37f4810b9243cdaee5741da68c74569b012549bbbb803b57a38e0b7d'
     'run_v91_i05_downloader_kit.ps1' =
-        '3ebbc495b62e134fbe05baaf420c51037544046180e21f0c00b9053d59abe1b1'
+        'e89fb4e86a4bb3d1a508dc46477b63037b2f95a408b259aef92683c8eddd93b1'
     'cleanup_v91_i05_downloader.ps1' =
-        'e5f90abd7bb564ce532e93f9b9b1c097a3ca598cbe833a69f38a5b8dc538542c'
-    'payload\eSE-LiveTV-v0.70b-eSE9.1.0-rc.2-x64.zip' =
-        '5f17af0edbdda9e1fcc165d2e2f8a33910b40f856343934b970db24259cf3590'
+        '226bb82d17177a4217268239ba5f66df1068cfab58297ef8a366b2c1da6ea02f'
+    'payload\candidates\eSE-LiveTV-v0.70b-eSE9.1.0-rc.3-x64.zip' =
+        '359272c764c532c32cfd97eeb92e2db4feaa620c5d3f6318a82a7453dbf1b56f'
 }
 foreach ($relative in $expectedSha256.Keys) {
     $actual = (Get-FileHash -LiteralPath (
@@ -140,7 +140,8 @@ $receipt = [ordered]@{
     candidate_sha256 = (
         Get-FileHash -LiteralPath (
             Join-Path $installRoot (
-                'payload\eSE-LiveTV-v0.70b-eSE9.1.0-rc.2-x64.zip'
+                'payload\candidates\' +
+                'eSE-LiveTV-v0.70b-eSE9.1.0-rc.3-x64.zip'
             )) -Algorithm SHA256
     ).Hash.ToLowerInvariant()
 }

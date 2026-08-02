@@ -1,0 +1,63 @@
+{
+  "schema": "ese.v91.i05-remote-base/v1",
+  "case_id": "V91-I05",
+  "created_at_utc": "2026-07-28T14:39:48.1717926+00:00",
+  "purpose": "Pinned RC3 payload and canonical fixture tooling for the physical T1 IPv4 control",
+  "candidate": {
+    "release": "v0.70b-eSE9.1.0-rc.3",
+    "commit": "815b45ca7a1415bd3e06ff043d53794bc340b346",
+    "dirty": false,
+    "archive_entry": "payload/candidates/eSE-LiveTV-v0.70b-eSE9.1.0-rc.3-x64.zip",
+    "archive_name": "eSE-LiveTV-v0.70b-eSE9.1.0-rc.3-x64.zip",
+    "archive_bytes": 212040831,
+    "archive_sha256": "359272c764c532c32cfd97eeb92e2db4feaa620c5d3f6318a82a7453dbf1b56f",
+    "emule": {
+      "path": "emule.exe",
+      "bytes": 11251200,
+      "sha256": "94620cf502c954cda29fa7f40f834ef1eebacb753f1fe277865d1d173e0b9b41"
+    },
+    "ese_server": {
+      "path": "ese-server.exe",
+      "bytes": 70502450,
+      "sha256": "c12e71a1602bb7b55077b82a72000a6980790fdf75d90bdbcba8d2843f7a0ba2"
+    },
+    "build_info": {
+      "path": "BUILD_INFO.txt",
+      "bytes": 502,
+      "sha256": "48445ff0231908aa1edbb21970bcb38b91397c643c7012b65b62686bc8a63428"
+    },
+    "sha256_sums": {
+      "path": "SHA256SUMS.txt",
+      "bytes": 14782,
+      "sha256": "492798b701e8c16f56f91630b6414ede72be76424e467cda80c5b38321949ff9"
+    },
+    "ffmpeg": {
+      "path": "ffmpeg.exe",
+      "bytes": 223360000,
+      "sha256": "d1e2a156261ecc675081943197a85f08f2868784a0af499171ede89353edad31"
+    }
+  },
+  "canonical_fixture": {
+    "generator_entry": "tools/lab/ensure_v91_i05_canonical_fixture.ps1",
+    "generator_bytes": 29504,
+    "generator_sha256": "46561883ad6ad95ee5093ba199af8a12185a10524f0ecef864740ebd607b8fe7",
+    "seed_package_path": "ffmpeg.exe",
+    "seed_bytes": 223360000,
+    "seed_sha256": "d1e2a156261ecc675081943197a85f08f2868784a0af499171ede89353edad31",
+    "full_repetitions": 19,
+    "trailing_bytes": 51127296,
+    "bytes": 4294967296,
+    "sha256": "1016d6f63ae1649a879a7c0de30865ed132deb37b1c3b2bc9ca004c88feee26c",
+    "ed2k": "796A95E75DF8E78D54A57CDEA1FEDE84"
+  },
+  "measurement": {
+    "topology": "T1",
+    "transport_family": "IPv4",
+    "physical_windows_hosts_required": 2,
+    "application_ipv6_mode": "Off",
+    "windows_ipv6_stack_must_remain_enabled": true,
+    "preflight_ipv6_lan_probe_required": true,
+    "overlays_are_control_plane_only": true,
+    "overlay_data_path_is_formal_pass": false
+  }
+}

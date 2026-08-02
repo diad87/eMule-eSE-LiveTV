@@ -73,6 +73,10 @@ struct K6TargetPolicy {
     void* context = nullptr;
     bool (*allow_target)(void* context, Byte service,
                          const K6Endpoint& endpoint) = nullptr;
+    // Disabled by default. A host may opt into ULA targets only for an
+    // explicitly consented private lab; all other special-purpose ranges
+    // remain blocked by libkad6's baseline gate.
+    bool allow_ula_target = false;
     // Called exactly once after canonical decode, MAC, time and target policy
     // all pass. The host must atomically reserve one use keyed by the issuing
     // secret scope + ticket nonce/lease and enforce max_connections. False
@@ -90,7 +94,9 @@ struct K6TargetPolicy {
 bool K6TicketTargetForbidden(const K6TargetTicket& t) noexcept;
 
 // Baseline gate + mandatory host policy. Missing policy -> BadValue (fail
-// closed); denied target -> TargetForbidden.
+// closed); denied target -> TargetForbidden. ULA is the sole baseline
+// exception and only when allow_ula_target is explicitly set and the host
+// hook independently accepts the endpoint.
 Kad6Status K6TicketCheckTarget(const K6TargetTicket& t,
                                const K6TargetPolicy& policy) noexcept;
 

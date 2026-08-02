@@ -1,6 +1,6 @@
 # 🐴 eMule eSE — Live TV Edition
 
-[![Release candidate](https://img.shields.io/badge/release%20candidate-9.1.0--rc.2-yellow)](docs/RELEASE_NOTES_v9.1.0-rc.2.md)
+[![Release candidate](https://img.shields.io/badge/release%20candidate-9.1.0--rc.3-yellow)](docs/RELEASE_NOTES_v9.1.0-rc.3.md)
 [![CodeQL](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/codeql.yml/badge.svg)](https://github.com/diad87/eMule-eSE-LiveTV/actions/workflows/codeql.yml)
 [![License: GPL-2.0](https://img.shields.io/badge/license-GPL--2.0-blue.svg)](license.txt)
 
@@ -11,21 +11,22 @@ Windows x64 package.
 
 ## Release candidate
 
-### eSE 9.1.0-rc.2 for Windows x64
+### eSE 9.1.0-rc.3 for Windows x64
 
-This source tree builds the exact `9.1.0-rc.2` qualification candidate. Its
+This source tree builds the exact `9.1.0-rc.3` qualification candidate. Its
 immutable package is frozen before the physical release matrix runs; check the
 matching release page and 27-case ledger before treating it as promoted.
 
-[RC.2 release notes](docs/RELEASE_NOTES_v9.1.0-rc.2.md)
-· [Current 27-case ledger](docs/V91_RC2_CASE_RESULTS.json)
+[RC.3 release notes](docs/RELEASE_NOTES_v9.1.0-rc.3.md)
+· [Latest completed ledger (RC.3)](docs/V91_RC3_CASE_RESULTS.json)
 · [All releases](https://github.com/diad87/eMule-eSE-LiveTV/releases)
 · [Previous public beta.1](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE9.1.0-beta.1)
 
 > [!IMPORTANT]
-> 9.1.0-rc.2 is a prerelease IPv6/Kad6 candidate, not the stable channel.
-> Its current exact-candidate ledger is 11 PASS, 0 FAIL and 16 BLOCKED
-> (`NO_GO` for final promotion).
+> 9.1.0-rc.3 is a prerelease IPv6/Kad6 candidate, not the stable channel.
+> Its exact-candidate qualification records 12 PASS, 0 FAIL and 15 BLOCKED.
+> `V91-I05` passed on two physical Windows hosts with the exact RC.3 package;
+> the remaining blocked cases still prevent final 9.1 promotion.
 > The latest stable build remains
 > [eSE 8.1.0](https://github.com/diad87/eMule-eSE-LiveTV/releases/tag/v0.70b-eSE8.1.0).
 
@@ -102,10 +103,10 @@ and **OFF by default**.
 
 - Dashboard and stream browser on `127.0.0.1:8080`.
 - Native status/control API on `127.0.0.1:4711`.
-- Dashboard, API and received-HLS access are localhost-only in 9.1.0-rc.2.
+- Dashboard, API and received-HLS access are localhost-only in 9.1.0-rc.3.
   LAN/remote access is postponed to a later version.
 - Legacy pairing/remote routes fail closed and the remote launcher is not
-  shipped in the rc.2 package.
+  shipped in the rc.3 package.
 - Port 8080 is never exposed automatically through UPnP.
 - Automatic updating is disabled. No updater executable or installer is
   packaged; updates are manual, after a profile/download backup and with the
@@ -137,13 +138,13 @@ ISP/router combination or traversal of every NAT.
 |---|---:|---|---|
 | eMule client | 4662 | TCP | Inbound P2P |
 | eMule/Kad | 4672 | UDP | Kad and UDP transport |
-| Native WebServer/API | 4711 | TCP | Loopback only in rc.2 |
-| eSE dashboard | 8080 | TCP | Loopback only in rc.2; never auto-mapped |
+| Native WebServer/API | 4711 | TCP | Loopback only in rc.3 |
+| eSE dashboard | 8080 | TCP | Loopback only in rc.3; never auto-mapped |
 | RTMP ingest | 1935 | TCP | Needed remotely only when OBS is on another PC |
 | LAN discovery | 5354 | UDP multicast | TTL 1; local subnet only |
 
 Do not forward ports 4711 or 8080: remote dashboard/API access is not part of
-9.1.0-rc.2. Expose RTMP only when OBS intentionally runs on another PC.
+9.1.0-rc.3. Expose RTMP only when OBS intentionally runs on another PC.
 
 ## Build from source
 
@@ -164,7 +165,7 @@ For a local developer build:
 
 ```powershell
 .\tools\build_all.ps1 `
-  -ReleaseTag v0.70b-eSE9.1.0-rc.2 `
+  -ReleaseTag v0.70b-eSE9.1.0-rc.3 `
   -AllowDirty `
   -MaxCpuCount 1
 ```
@@ -196,7 +197,8 @@ Run the complete local test set with:
 | Document | Purpose |
 |---|---|
 | [User guide](docs/USER_GUIDE.md) | Install, watch, broadcast and troubleshoot |
-| [RC.2 release notes](docs/RELEASE_NOTES_v9.1.0-rc.2.md) | IPv6 fallback changes, qualification gates, safety limits and rollback |
+| [RC.3 release notes](docs/RELEASE_NOTES_v9.1.0-rc.3.md) | Direct-link scheduling fix, qualification gates, safety limits and rollback |
+| [RC.2 release notes](docs/RELEASE_NOTES_v9.1.0-rc.2.md) | Previous IPv6 fallback candidate and retained qualification record |
 | [Architecture](ARCHITECTURE.md) | Runtime processes, data flow and code layout |
 | [Changes from eMule 0.70b](CHANGES_FROM_EMULE_0.70b.md) | Implemented fork changes |
 | [Protocol registry](docs/protocol/PROTOCOL_REGISTRY.md) | Fork wire namespaces and compatibility rules |

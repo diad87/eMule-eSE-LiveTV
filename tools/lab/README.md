@@ -210,7 +210,7 @@ host's physical on-link address:
 ```powershell
 powershell -ExecutionPolicy Bypass `
   -File tools\lab\run_v91_i05_t1_source.ps1 `
-  -CandidateZipPath C:\tmp\eSE-v91-rc2-x64.zip `
+  -CandidateZipPath C:\tmp\eSE-v91-rc3-x64.zip `
   -FixturePath D:\eSE-Lab\V91-I05\v91-i05-canonical-4294967296.bin `
   -ExpectedFixtureSha256 `
     1016D6F63AE1649A879A7C0DE30865ED132DEB37B1C3B2BC9CA004C88FEEE26C `

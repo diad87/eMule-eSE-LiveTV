@@ -48,6 +48,37 @@ if ($mutationCopy.Count -ne 6 -or
     (Get-Content -LiteralPath $runner -Raw) -match '\.Clone\s*\(') {
     throw 'The PowerShell 5.1 mutation-state copy self-test failed.'
 }
+$filterRowsArmed = @(
+    'Filtros de paquete:',
+    '  1 ese-i05-test-v4-data TCP 192.168.222.60 7862',
+    '  2 ese-i05-test-v6-src-tcp IPv6 TCP 7862'
+)
+$filterRowsBeforeReset = @(
+    'Packet filters:',
+    '  2   ese-i05-test-v6-src-tcp  IPv6 TCP  7862',
+    '  1 ese-i05-test-v4-data   TCP 192.168.222.60 7862'
+)
+Assert-I05PktMonFilterRowsExact `
+    -ExpectedLines $filterRowsArmed -ActualLines $filterRowsBeforeReset
+foreach ($invalidFilterRows in @(
+    @($filterRowsBeforeReset +
+        '  3 foreign-filter IPv4 UDP 53'),
+    @(
+        '  1 ese-i05-test-v4-data TCP 192.168.222.60 9999',
+        '  2 ese-i05-test-v6-src-tcp IPv6 TCP 7862'
+    )
+)) {
+    try {
+        Assert-I05PktMonFilterRowsExact `
+            -ExpectedLines $filterRowsArmed -ActualLines $invalidFilterRows
+        throw 'Expected semantic PktMon inventory rejection.'
+    } catch {
+        if ($_.Exception.Message -cne
+            'El inventario PktMon cambio mientras la captura estaba activa.') {
+            throw
+        }
+    }
+}
 $iniSelftestPath = Join-Path ([IO.Path]::GetTempPath()) (
     'v91-i05-ini-selftest-' + [Guid]::NewGuid().ToString('N') + '.ini')
 try {
@@ -111,6 +142,16 @@ if ($runnerTextForOperator -notmatch
     throw 'The exact peer-socket fail-fast deadline is missing.'
 }
 if ($runnerTextForOperator -notmatch
+        'FAILURE-PENDING-V91-I05-T1\.json' -or
+    $runnerTextForOperator -notmatch
+        '\$failureDelivered\s*=\s*\$true' -or
+    $runnerTextForOperator.IndexOf(
+        'FAILURE-PENDING-V91-I05-T1.json') -gt
+    $runnerTextForOperator.IndexOf(
+        '$cleanupFallback = & $cleanupPath')) {
+    throw 'The pre-cleanup FAILURE delivery contract is missing.'
+}
+if ($runnerTextForOperator -notmatch
         'function Assert-I05LanApiForbidden' -or
     $runnerTextForOperator -notmatch
         '\$statusCode\s*-eq\s*403' -or
@@ -123,10 +164,10 @@ if ($runnerTextForOperator -notmatch
     throw 'The native API LAN HTTP 403 contract is missing.'
 }
 if (-not (Test-I05Ipv4SameSubnet `
-        -Left '192.168.68.60' -Right '192.168.71.20' `
+        -Left '192.168.222.60' -Right '192.168.223.20' `
         -PrefixLength 22) -or
     (Test-I05Ipv4SameSubnet `
-        -Left '192.168.68.60' -Right '192.168.72.20' `
+        -Left '192.168.222.60' -Right '192.168.224.20' `
         -PrefixLength 22)) {
     throw 'The /22 prefix self-test failed.'
 }
@@ -134,7 +175,7 @@ if ((Get-I05HostIdSha256) -notmatch '^[0-9a-f]{64}$') {
     throw 'The canonical host-id self-test failed.'
 }
 $selftestNonce = '00112233445566778899aabbccddeeff'
-$selftestH1 = '192.168.68.60'
+$selftestH1 = '192.168.222.60'
 $selftestBaseLink = 'ed2k://|file|{0}|{1}|{2}|/' -f `
     $fixtureName, $fixtureBytes, $fixtureEd2k
 $selftestDirectLink = $selftestBaseLink +
@@ -285,11 +326,17 @@ $wirePositive = [pscustomobject][ordered]@{
     ThirdPartyPeerPackets = 0L
     IPv6PeerPackets = 0L
     RequestPartsI64 = 1L
+    CompressedPart32 = 0L
     SendingPartI64 = 1L
     CompressedPartI64 = 0L
     InvalidFixtureI64Frames = 0L
 }
 $null = Assert-I05WireEvidence -Wire $wirePositive
+$classicWire = ($wirePositive | ConvertTo-Json -Depth 4) |
+    ConvertFrom-Json
+$classicWire.CompressedPart32 = 1L
+$classicWire.SendingPartI64 = 0L
+$null = Assert-I05WireEvidence -Wire $classicWire
 $snaplenWire = ($wirePositive | ConvertTo-Json -Depth 4) |
     ConvertFrom-Json
 $snaplenWire.TruncatedIPv4PeerPackets = 1L
@@ -313,6 +360,10 @@ foreach ($wireCase in @(
     },
     [pscustomobject]@{
         Name = 'missing-request-i64'; Property = 'RequestPartsI64'; Value = 0L
+        Expected = 'PRODUCT_INVARIANT'
+    },
+    [pscustomobject]@{
+        Name = 'missing-response'; Property = 'SendingPartI64'; Value = 0L
         Expected = 'PRODUCT_INVARIANT'
     },
     [pscustomobject]@{
@@ -360,7 +411,7 @@ foreach ($forbiddenApiRow in @(
         RemoteAddress = '::'; State = 'Listen'
     },
     [pscustomobject]@{
-        LocalAddress = '192.168.68.64'; LocalPort = $webPort
+        LocalAddress = '192.168.222.64'; LocalPort = $webPort
         RemoteAddress = '0.0.0.0'; State = 'Listen'
     },
     [pscustomobject]@{
@@ -568,7 +619,7 @@ try {
         }).Count -lt 1) {
         throw 'UDP loopback is not blocked in both directions/all ports.'
     }
-    foreach ($thirdParty in @('192.168.68.99', '100.64.0.1')) {
+    foreach ($thirdParty in @('192.168.222.99', '100.64.0.1')) {
         if (@($outTcpRules | Where-Object {
                 Test-I05SelftestV4RuleMatch -Rule $_ `
                     -RemoteAddress $thirdParty -LocalPort 50000 `
@@ -805,12 +856,55 @@ if ($runtimePreferenceStart -lt 0 -or
         "-Section 'eMule' -Key 'NetworkED2K'") {
     throw 'Runtime does not fail closed if NetworkED2K changes.'
 }
+$candidateApiStart = $runnerText.IndexOf(
+    'function Invoke-I05CandidateApi',
+    [StringComparison]::Ordinal)
+$candidateApiEnd = $runnerText.IndexOf(
+    'function Assert-I05FirewallEnforcementSnapshot',
+    $candidateApiStart, [StringComparison]::Ordinal)
+if ($candidateApiStart -lt 0 -or
+    $candidateApiEnd -le $candidateApiStart) {
+    throw 'The candidate API fail-closed helper is missing.'
+}
+$candidateApiText = $runnerText.Substring(
+    $candidateApiStart, $candidateApiEnd - $candidateApiStart)
+foreach ($requiredApiRetry in @(
+    '[int]$MaxAttempts = 4',
+    '$attempt -le $MaxAttempts',
+    '$attempt -lt $MaxAttempts',
+    "Category 'candidate_api_unavailable'"
+)) {
+    if ($candidateApiText.IndexOf(
+            $requiredApiRetry, [StringComparison]::Ordinal) -lt 0) {
+        throw "Candidate API retry contract is missing: $requiredApiRetry"
+    }
+}
 if ($runnerText -match
         'Get-Net(?:TCPConnection|UDPEndpoint)[^\r\n]*SilentlyContinue' -or
     $runnerText -match 'Stop-I05(?:Capture|Process)OnFailure' -or
-    $runnerText -match 'pktmon\.exe\s+stop' -or
     $runnerText -match "Arguments\s+@\('stop'\)") {
     throw 'A socket/PktMon/cleanup fail-open fallback remains.'
+}
+$lossProofOffset = $runnerText.IndexOf(
+    'if (-not [bool]$loss.proved_zero)',
+    [StringComparison]::Ordinal)
+$pktmonResetOffset = $runnerText.IndexOf(
+    '$pktmonReset = @(& pktmon.exe stop',
+    [StringComparison]::Ordinal)
+$filterSnapshotOffset = $runnerText.IndexOf(
+    'Set-Content -LiteralPath $State.filters_before_reset',
+    [StringComparison]::Ordinal)
+$filterAssertionOffset = $runnerText.IndexOf(
+    'Assert-I05PktMonFilterRowsExact',
+    $filterSnapshotOffset,
+    [StringComparison]::Ordinal)
+if ($lossProofOffset -lt 0 -or
+    $filterSnapshotOffset -le $lossProofOffset -or
+    $filterAssertionOffset -le $filterSnapshotOffset -or
+    $pktmonResetOffset -le $filterAssertionOffset) {
+    throw (
+        'PktMon reset is not gated by loss proof and exact armed filters.'
+    )
 }
 if ($runnerText -notmatch "Category 'fixture_io_unavailable'" -or
     $runnerText -notmatch
@@ -913,7 +1007,13 @@ $etwCsharp = $ast.FindAll({
 }, $true)
 if ($etwCsharp.Count -ne 1 -or
     $etwCsharp[0].Value -notmatch
-        'public static Result Stop\(string sessionName\)') {
+        'public static Result Stop\(string sessionName\)' -or
+    $etwCsharp[0].Value -notmatch
+        'logFileNameCapacityChars\s*=\s*32768' -or
+    $etwCsharp[0].Value -notmatch
+        'value\.LogFileNameOffset\s*=' -or
+    $etwCsharp[0].Value -notmatch
+        'size \+ loggerNameCapacityBytes \+ logFileNameCapacityBytes') {
     throw 'The final ETW STOP/loss proof implementation is missing.'
 }
 Add-Type -Language CSharp -TypeDefinition $etwCsharp[0].Value
@@ -1045,6 +1145,7 @@ try {
     }
     $rawNames = @(
         'capture.etl', 'capture.pcapng', 'samples.jsonl', 'pktmon.log',
+        'pktmon-filters-before-reset.txt',
         'components-pre.json', 'components-armed.json',
         'components-post.json', 'firewall-containment-spec.json',
         'firewall-containment-inventory-before.json',
@@ -1060,6 +1161,8 @@ try {
         etl_path = Join-Path $bundleEvidence 'capture.etl'
         pcapng_path = Join-Path $bundleEvidence 'capture.pcapng'
         command_log = Join-Path $bundleEvidence 'pktmon.log'
+        filters_before_reset =
+            Join-Path $bundleEvidence 'pktmon-filters-before-reset.txt'
         component_mapping_path =
             Join-Path $bundleEvidence 'component-mapping.json'
         component_pre_compact_path =
@@ -1129,7 +1232,7 @@ try {
             $reader.Dispose()
         }
         if (@($bundleManifest.entries).Count -ne 10 -or
-            @($bundleManifest.retained_raw).Count -ne 11) {
+            @($bundleManifest.retained_raw).Count -ne 12) {
             throw 'The evidence manifest cardinality self-test failed.'
         }
     } finally {
@@ -1196,6 +1299,40 @@ function New-I05SelfTestPacket {
     return $packet
 }
 
+function New-I05SelfTestWifiPacket {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][int]$SourcePort,
+        [Parameter(Mandatory = $true)][int]$DestinationPort,
+        [Parameter(Mandatory = $true)][uint32]$Sequence,
+        [Parameter(Mandatory = $true)][byte[]]$Payload,
+        [switch]$Qos,
+        [switch]$InvalidSnap
+    )
+    $ethernet = New-I05SelfTestPacket -Source $Source `
+        -Destination $Destination -SourcePort $SourcePort `
+        -DestinationPort $DestinationPort -Sequence $Sequence `
+        -Payload $Payload
+    $headerBytes = if ($Qos) { 26 } else { 24 }
+    $packet = New-Object byte[] (
+        $headerBytes + 8 + $ethernet.Length - 14)
+    $packet[0] = if ($Qos) { 0x88 } else { 0x08 }
+    $packet[1] = 0x01
+    foreach ($index in 4..21) {
+        $packet[$index] = [byte](0x20 + $index)
+    }
+    $packet[$headerBytes] = if ($InvalidSnap) { 0xab } else { 0xaa }
+    $packet[$headerBytes + 1] = 0xaa
+    $packet[$headerBytes + 2] = 0x03
+    $packet[$headerBytes + 6] = 0x08
+    $packet[$headerBytes + 7] = 0x00
+    [Array]::Copy(
+        $ethernet, 14, $packet, $headerBytes + 8,
+        $ethernet.Length - 14)
+    return $packet
+}
+
 function Write-I05SelfTestBlock {
     param(
         [Parameter(Mandatory = $true)][IO.BinaryWriter]$Writer,
@@ -1245,12 +1382,23 @@ try {
         $request = New-I05SelfTestFrame -Opcode 0xA3 -PacketLength 65
         $response = New-I05SelfTestFrame -Opcode 0xA2 -PacketLength 37
         $packets = @(
-            (New-I05SelfTestPacket -Source '192.168.68.61' `
-                -Destination '192.168.68.60' -SourcePort 50000 `
+            (New-I05SelfTestPacket -Source '192.168.222.61' `
+                -Destination '192.168.222.60' -SourcePort 50000 `
                 -DestinationPort 7862 -Sequence 1000 -Payload $request),
-            (New-I05SelfTestPacket -Source '192.168.68.60' `
-                -Destination '192.168.68.61' -SourcePort 7862 `
-                -DestinationPort 50000 -Sequence 2000 -Payload $response)
+            (New-I05SelfTestPacket -Source '192.168.222.60' `
+                -Destination '192.168.222.61' -SourcePort 7862 `
+                -DestinationPort 50000 -Sequence 2000 -Payload $response),
+            (New-I05SelfTestWifiPacket -Source '192.168.222.61' `
+                -Destination '192.168.222.60' -SourcePort 50000 `
+                -DestinationPort 7862 -Sequence 3000 -Payload $request),
+            (New-I05SelfTestWifiPacket -Source '192.168.222.60' `
+                -Destination '192.168.222.61' -SourcePort 7862 `
+                -DestinationPort 50000 -Sequence 4000 -Payload $response `
+                -Qos),
+            (New-I05SelfTestWifiPacket -Source '192.168.222.61' `
+                -Destination '192.168.222.60' -SourcePort 50000 `
+                -DestinationPort 7862 -Sequence 5000 -Payload $request `
+                -InvalidSnap)
         )
         foreach ($packet in $packets) {
             $enhanced = New-Object IO.MemoryStream
@@ -1272,30 +1420,35 @@ try {
     }
 
     $result = [V91I05PcapAnalyzer]::Analyze(
-        $temporary, '192.168.68.60', '192.168.68.61', [int[]]@(50000))
-    if (-not $result.Valid -or $result.IPv4PeerPackets -ne 2 -or
-        $result.IPv4PhysicalInterfacePackets -ne 2 -or
+        $temporary, '192.168.222.60', '192.168.222.61', [int[]]@(50000))
+    if (-not $result.Valid -or $result.IPv4PeerPackets -ne 4 -or
+        $result.IPv4PhysicalInterfacePackets -ne 4 -or
+        $result.IEEE80211Packets -ne 2 -or
         $result.IPv6PeerPackets -ne 0 -or
-        $result.RequestPartsI64 -ne 1 -or
-        $result.SendingPartI64 -ne 1 -or
+        $result.RequestPartsI64 -ne 2 -or
+        $result.SendingPartI64 -ne 2 -or
         $result.CompressedPartI64 -ne 0 -or
         $result.InvalidFixtureI64Frames -ne 0 -or
+        $result.FixtureHashFrames -ne 4 -or
+        ($result.FixtureHashFrameSignatures -join ',') -cne
+            'A2:37=2,A3:65=2' -or
         $result.RejectedPeerTuplePackets -ne 0 -or
         $result.ThirdPartyPeerPackets -ne 0) {
         throw 'The synthetic PCAPNG positive self-test failed.'
     }
     $wrongTuple = [V91I05PcapAnalyzer]::Analyze(
-        $temporary, '192.168.68.60', '192.168.68.61', [int[]]@(50001))
+        $temporary, '192.168.222.60', '192.168.222.61', [int[]]@(50001))
     if (-not $wrongTuple.Valid -or
         $wrongTuple.IPv4PeerPackets -ne 0 -or
-        $wrongTuple.RejectedPeerTuplePackets -ne 2) {
+        $wrongTuple.RejectedPeerTuplePackets -ne 4 -or
+        $wrongTuple.IEEE80211Packets -ne 2) {
         throw 'The unrecorded ephemeral-port self-test failed.'
     }
     foreach ($fixedPort in $reservedI05Ports) {
         $fixedPortRejected = $false
         try {
             $null = [V91I05PcapAnalyzer]::Analyze(
-                $temporary, '192.168.68.60', '192.168.68.61',
+                $temporary, '192.168.222.60', '192.168.222.61',
                 [int[]]@([int]$fixedPort))
         } catch {
             $fixedPortRejected = $true
@@ -1309,7 +1462,7 @@ try {
     $bytes[$bytes.Length - 1] = $bytes[$bytes.Length - 1] -bxor 0xff
     [IO.File]::WriteAllBytes($temporary, $bytes)
     $negative = [V91I05PcapAnalyzer]::Analyze(
-        $temporary, '192.168.68.60', '192.168.68.61', [int[]]@(50000))
+        $temporary, '192.168.222.60', '192.168.222.61', [int[]]@(50000))
     if ($negative.Valid) {
         throw 'The corrupt-PCAPNG negative self-test failed.'
     }
@@ -1334,6 +1487,7 @@ try {
     started_injection_exact = 'PASS'
     active_pending_before_mutations = 'PASS'
     mutation_state_copy_ps51 = 'PASS'
+    pktmon_semantic_inventory_exact_negative_2 = 'PASS'
     ini_regex_state_ps51 = 'PASS'
     single_instance_and_operator_error = 'PASS'
     candidate_peer_listener_startup_grace = 'PASS'
@@ -1380,6 +1534,8 @@ try {
     component_conversion_zero_two_hits_rejected = 'PASS'
     compact_evidence_bundle_allowlist = 'PASS'
     pcapng_positive = 'PASS'
+    pcapng_ieee80211_llc_snap = 'PASS'
+    pcapng_ieee80211_invalid_snap_ignored = 'PASS'
     pcapng_unrecorded_tuple_rejected = 'PASS'
     pcapng_fixed_local_ports_rejected = 'PASS'
     pcapng_corrupt_rejected = 'PASS'

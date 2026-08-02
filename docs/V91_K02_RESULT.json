@@ -1,0 +1,135 @@
+{
+  "schema": "ese.v91.case-result/v2",
+  "case_id": "V91-K02",
+  "status": "PASS",
+  "completed_at_utc": "2026-07-29T22:10:27.5203172+00:00",
+  "candidate": {
+    "version": "9.1.0-rc.3",
+    "commit": "622813d5944951efbdba68a1bd7bd68f4d79a2d2",
+    "dirty": false,
+    "emule_sha256": "0cb269cedc4b9f7d2c3ceeadd77c7ea291e25d59feff060ac1e2d976e8032c77",
+    "candidate_overlay_zip_sha256": "f225d1dea9fbdee6ee3f49f06ef7b0754c17d087cad9bb0a862ae5936f7e5100",
+    "candidate_overlay_zip_bytes": 5009146
+  },
+  "topology": {
+    "profile": "T1",
+    "physical_windows_hosts": 2,
+    "public_projection": true,
+    "probe_physical_ipv4_observed": true,
+    "probe_interface": "eth2",
+    "probe_mac_observed": true,
+    "candidate_physical_ipv4_observed": true,
+    "candidate_interface": "Wi-Fi",
+    "candidate_mac_observed": true,
+    "candidate_ipv6_observed": true,
+    "probe_ipv6_count": 3,
+    "probe_ipv6_prefixes_distinct": true,
+    "ipv6_prefix_purpose": "RFC 5180 benchmarking, locally routed only",
+    "candidate_udp_port": 49372,
+    "overlay_data_route_used": false
+  },
+  "run": {
+    "job_id": "c1296ee9d6cd41d39dd27b702939805d",
+    "process_id": 11316,
+    "process_restarts_during_sequence": 0,
+    "phase_seconds": 18,
+    "runtime_samples": 54,
+    "bad_runtime_samples": 0,
+    "declared_protocol_event_count": 14,
+    "enabled_plane_background_frame_count": 1,
+    "physical_frame_count": 15,
+    "unexpected_physical_frames": 0,
+    "capture_packets_dropped_by_kernel": 0,
+    "phases": [
+      {
+        "name": "both",
+        "configured_mask": 3,
+        "running_mask": 3,
+        "runtime_samples": 18,
+        "kad2_bootstrap_response": true,
+        "kad6_challenge": true,
+        "kad6_bootstrap_response": true,
+        "declared_protocol_events": 6,
+        "enabled_plane_background_frames": 1,
+        "physical_frames": 7,
+        "status": "PASS"
+      },
+      {
+        "name": "kad6-only",
+        "configured_mask": 2,
+        "running_mask": 2,
+        "runtime_samples": 18,
+        "kad2_bootstrap_response": false,
+        "kad6_challenge": true,
+        "kad6_bootstrap_response": true,
+        "declared_protocol_events": 5,
+        "enabled_plane_background_frames": 0,
+        "physical_frames": 5,
+        "status": "PASS"
+      },
+      {
+        "name": "kad2-only",
+        "configured_mask": 1,
+        "running_mask": 1,
+        "runtime_samples": 18,
+        "kad2_bootstrap_response": true,
+        "kad6_challenge": false,
+        "kad6_bootstrap_response": false,
+        "declared_protocol_events": 3,
+        "enabled_plane_background_frames": 0,
+        "physical_frames": 3,
+        "status": "PASS"
+      }
+    ]
+  },
+  "checks": {
+    "single_candidate_process_for_all_phases": true,
+    "mask_changes_applied_through_preferences_ui": true,
+    "configured_and_running_masks_match_every_sample": true,
+    "kad2_continues_when_kad6_is_stopped": true,
+    "kad6_continues_when_kad2_is_stopped": true,
+    "stopped_kad2_emits_no_response": true,
+    "stopped_kad6_emits_no_challenge_or_semantic_response": true,
+    "candidate_identity_matches": true,
+    "physical_capture_matches_probe_events": true,
+    "cleanup_complete": true
+  },
+  "evidence": [
+    {
+      "path": "lab-runs/v91-k02-622813d5-attempt15/remote-result.json",
+      "bytes": 29712,
+      "sha256": "2766b6b5766475adb1fd2f1e5c5ce00e67d25eb545eb724e92d89c419356a49d"
+    },
+    {
+      "path": "lab-runs/v91-k02-622813d5-attempt15/both-probe.json",
+      "bytes": 8753,
+      "sha256": "0e80f8e6b4fa13c2fa913e0484865f336c10e7ef970ed3b360b9229123e27432"
+    },
+    {
+      "path": "lab-runs/v91-k02-622813d5-attempt15/kad6-only-probe.json",
+      "bytes": 6572,
+      "sha256": "6476a98571de73c7cbd4d285762ca6924e2acb26f6844e29a801e4073d2a98f4"
+    },
+    {
+      "path": "lab-runs/v91-k02-622813d5-attempt15/kad2-only-probe.json",
+      "bytes": 4481,
+      "sha256": "733306cd308cd0ae34606547ad2a5906ad67d41b05b703a94a1ee879408dc9ed"
+    },
+    {
+      "path": "lab-runs/v91-k02-622813d5-attempt15/both.pcap",
+      "bytes": 2442,
+      "sha256": "bb69c86cba31d863eaa0728355d7a363bacbb9b70bc1cd83f7463d27f5c652b5"
+    },
+    {
+      "path": "lab-runs/v91-k02-622813d5-attempt15/kad6-only.pcap",
+      "bytes": 1569,
+      "sha256": "983feae6db4f5aab8d76053a89853c56f90d2f5c88e1f7474cb272c80051d99b"
+    },
+    {
+      "path": "lab-runs/v91-k02-622813d5-attempt15/kad2-only.pcap",
+      "bytes": 1003,
+      "sha256": "86945836ce643c0548ecf4bc4d9524caae13f6278c176360f94a63f3066b3f3c"
+    }
+  ],
+  "adjudication": "One exact candidate process changed live from Kad2+Kad6 to Kad6-only and then Kad2-only through the Preferences UI. All 54 runtime samples matched the configured and running masks. The enabled plane completed its authenticated protocol exchange in every phase, while the disabled plane produced no response. The physical capture contains all 14 declared probe events plus one Kad6 FIND_NODE_REQ emitted by the enabled plane, with no missing or unexpected frame and no kernel drops; candidate, capture and network fixtures were cleaned completely."
+}

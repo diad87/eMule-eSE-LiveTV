@@ -26,7 +26,7 @@ if (-not (Test-Path -LiteralPath $agentPath -PathType Leaf)) {
     throw "No existe el agente instalado: $agentPath"
 }
 $expectedAgentSha256 =
-    '4fd7ed1c3418d98be11aab99fefb6ab811659af7e1c5510494cb01609d40de83'
+    '0cddb94e37f4810b9243cdaee5741da68c74569b012549bbbb803b57a38e0b7d'
 $actualAgentSha256 = (Get-FileHash -LiteralPath $agentPath `
     -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualAgentSha256 -cne $expectedAgentSha256) {

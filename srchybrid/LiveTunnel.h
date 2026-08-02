@@ -301,7 +301,7 @@ public:
     // starts an asynchronous DIAL pinned to its issuing circuit.
     bool StartK6SourceLookup(const uint8_t fileHash[16], uint32_t& requestIdOut);
     bool BeginK6Download(CUpDownClient* client);
-    void QueueK6SourceAdvertise(const uint8_t fileHash[16], uint64 fileSize,
+    bool QueueK6SourceAdvertise(const uint8_t fileHash[16], uint64 fileSize,
                                 kad6::K6CommitmentKind commitmentKind,
                                 const uint8_t commitment[32]);
 
@@ -411,6 +411,8 @@ public:
         uint64 active_publishes = 0;
         uint64 dial_streams = 0;
         uint64 full_streams = 0;
+        uint64 origin_advertise_success_total = 0;
+        uint64 origin_source_recovered_total = 0;
         uint32 shaping_exposed_circuits = 0;
         bool source_epoch_store_failed = false;
         bool economy_measurement_ready = false;
@@ -477,6 +479,13 @@ public:
         // synthetic legacy uint32 identity stored in `ip`.
         std::string address;
         bool has_ipv4;
+        // The signed CREATE path needs all three pieces. A peer that only
+        // advertises the capability is not yet safe to select.
+        bool auth_ready;
+        bool hash_ready;
+        bool node_pub_ready;
+        bool auth_cap;
+        bool dataplane_cap;
     };
     // Worker-thread safe. Copies the peer snapshot the main thread refreshes
     // in ProcessMainThreadWork(). outTunnelingCount = connected peers that
@@ -808,6 +817,7 @@ private:
     // and completes the deferred op. All of THIS runs on the main thread.
     struct TunnelSearchJob {
         uint32_t              circ_id  = 0;
+        uint32_t              origin_circ_id = 0;
         uint32_t              req_id   = 0;
         std::string           keyword;          // normalized (lowercase)
         bool                  canonicalK6 = false;
@@ -1110,6 +1120,14 @@ private:
         DWORD deadline = 0;
         uint16 received = 0;
     };
+    struct K6OriginSourceLookupWork {
+        CLiveTunnel* owner = nullptr;
+        uint32 request_id = 0;
+        uint32 pinned_circuit = 0;
+        bool economy = false;
+        std::vector<uint8_t> operation_body;
+        std::vector<uint8_t> wire;
+    };
     struct K6DownloadActivation {
         CUpDownClient* client = nullptr;
         uint32 circ_id = 0;
@@ -1128,10 +1146,14 @@ private:
     struct K6OriginAdvertiseWork {
         CLiveTunnel* owner = nullptr;
         std::string key;
+        uint8 network_mask = 0;
         kad6::K6SourceBind bind;
     };
     std::map<std::string, K6OriginAdvertiseState> m_k6OriginAdvertisements;
     uint64 m_k6OriginSourceEpoch = 0;
+    uint64 m_k6OriginAdvertiseSuccessTotal = 0;
+    uint64 m_k6OriginSourceRecoveredTotal = 0;
+    static UINT AFX_CDECL K6OriginSourceLookupWorker(LPVOID context);
     static UINT AFX_CDECL K6OriginAdvertiseWorker(LPVOID context);
     void FinishK6OriginAdvertise(const std::string& key, bool success,
                                  uint64 sourceLeaseId, uint64 publishLeaseId,
@@ -1329,6 +1351,7 @@ private:
     std::vector<std::shared_ptr<CLiveCircuit>> m_circuits;
     size_t m_rrNextIdx;
     DWORD m_lastTickMs;
+    DWORD m_lastK6QuotaGuardAttemptTick = 0;
     std::array<uint8_t, 32> m_k6GuardNodePub{};
     uint64_t m_k6GuardExpiresAt = 0;
     bool m_k6GuardLoaded = false;

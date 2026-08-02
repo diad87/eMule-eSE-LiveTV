@@ -1542,9 +1542,9 @@ function Assert-I05SourceFirewallContainment {
     )
     $expectedAddresses = [ordered]@{
         in_tcp_v4_not_h1 = $complementSource
-        in_tcp_v6_all = @('::/0')
+        in_tcp_v6_all = @('::/1', '8000::/1')
         in_udp_v4_all = @('0.0.0.0-255.255.255.255')
-        in_udp_v6_all = @('::/0')
+        in_udp_v6_all = @('::/1', '8000::/1')
         out_tcp_v4_not_h1_loopback = $complementSourceAndLoopback
         out_tcp_v4_h1_wrong_ports = @(
             ConvertTo-I05CanonicalIPv4 -Value $SourceIPv4 `
@@ -1553,9 +1553,9 @@ function Assert-I05SourceFirewallContainment {
         out_tcp_v4_loopback_non_api_local_ports = @(
             '127.0.0.0-127.255.255.255'
         )
-        out_tcp_v6_all = @('::/0')
+        out_tcp_v6_all = @('::/1', '8000::/1')
         out_udp_v4_all = @('0.0.0.0-255.255.255.255')
-        out_udp_v6_all = @('::/0')
+        out_udp_v6_all = @('::/1', '8000::/1')
     }
     $ruleProperties = @(
         'role',
@@ -1671,8 +1671,9 @@ function Assert-I05SourceFirewallContainment {
             [Int64]$remoteAddressCount -lt 1) {
             throw "$Context $role remote_address_count is invalid."
         }
-        [string[]]$addressTokens = @($expectedAddresses[$role])
-        [Array]::Sort($addressTokens, [StringComparer]::Ordinal)
+        [string[]]$addressTokens = @(
+            $expectedAddresses[$role] | Sort-Object -Unique
+        )
         $expectedAddressSha256 =
             Get-LabStringSha256 -Value ($addressTokens -join "`n")
         Assert-I05ExactText -Actual $remoteAddressesSha256 `
@@ -2003,6 +2004,7 @@ function Import-I05SourceEvidenceBundle {
         'pcapng',
         'transfer_samples',
         'pktmon_log',
+        'pktmon_filters_before_reset',
         'component_inventory_pre_raw',
         'component_inventory_armed_raw',
         'component_inventory_post_raw',
@@ -2559,6 +2561,9 @@ function Import-I05SourceEvidenceBundle {
     $analysisRequestPartsI64 = Get-I05RequiredProperty `
         -Object $analysis -Name 'requestparts_i64' `
         -Context 'PCAP analysis evidence'
+    $analysisCompressed32 = Get-I05RequiredProperty `
+        -Object $analysis -Name 'compressedpart_32' `
+        -Context 'PCAP analysis evidence'
     $analysisSendingI64 = Get-I05RequiredProperty `
         -Object $analysis -Name 'sendingpart_i64' `
         -Context 'PCAP analysis evidence'
@@ -2569,20 +2574,24 @@ function Import-I05SourceEvidenceBundle {
         -Object $analysis -Name 'invalid_fixture_i64_frames' `
         -Context 'PCAP analysis evidence'
     if ([Int64]$analysisRequestPartsI64 -le 0 -or
+        [Int64]$analysisCompressed32 -lt 0 -or
         [Int64]$analysisSendingI64 -lt 0 -or
         [Int64]$analysisCompressedI64 -lt 0 -or
-        ([Int64]$analysisSendingI64 +
+        ([Int64]$analysisCompressed32 +
+            [Int64]$analysisSendingI64 +
             [Int64]$analysisCompressedI64) -le 0 -or
         [Int64]$analysisInvalidI64 -ne 0) {
         Throw-I05SourceProductInvariant `
             -Category 'h3-wire-invariant-evidence' `
             -Message (
-                'Valid exact capture contradicts the required I64 wire ' +
-                'framing or opcodes.'
+                'Valid exact capture contradicts the required large-file ' +
+                'request/response framing or opcodes.'
             )
     }
     if ([Int64]$analysisRequestPartsI64 -ne
             [Int64]$capture.requestparts_i64 -or
+        [Int64]$analysisCompressed32 -ne
+            [Int64]$capture.compressedpart_32 -or
         [Int64]$analysisSendingI64 -ne
             [Int64]$capture.sending_i64 -or
         [Int64]$analysisCompressedI64 -ne
@@ -2611,7 +2620,7 @@ function Import-I05SourceEvidenceBundle {
         @($filtersProperty.Value).Count -lt 1) {
         throw 'PktMon filter evidence has no exact filter descriptors.'
     }
-    foreach ($snapshotName in @('before', 'armed', 'after')) {
+    foreach ($snapshotName in @('before', 'armed', 'before_reset', 'after')) {
         if ([Int64](Get-I05RequiredProperty -Object $filterEvidence `
                 -Name "${snapshotName}_bytes" `
                 -Context 'PktMon filter evidence') -lt 1) {
@@ -2626,6 +2635,11 @@ function Import-I05SourceEvidenceBundle {
         -Object $filterEvidence -Name 'restored_exactly' `
         -Context 'PktMon filter evidence') `
         -Context 'PktMon filter restoration'
+    Assert-I05ExactText -Actual $rawByKind[
+        'pktmon_filters_before_reset'].sha256 `
+        -Expected ([string]$filterEvidence.before_reset_sha256) `
+        -Context 'Retained pre-reset PktMon filter inventory hash' `
+        -IgnoreCase
     $filterContainment = Assert-I05SourceFirewallContainment `
         -Containment (Get-I05RequiredProperty -Object $filterEvidence `
             -Name 'third_party_containment' `
@@ -3001,6 +3015,7 @@ function Assert-I05SourceCompleteWireProduct {
     param(
         [Parameter(Mandatory = $true)][object]$SocketForbiddenTupleCount,
         [Parameter(Mandatory = $true)][object]$RequestPartsI64,
+        [Parameter(Mandatory = $true)][object]$Compressed32,
         [Parameter(Mandatory = $true)][object]$SendingI64,
         [Parameter(Mandatory = $true)][object]$CompressedI64,
         [Parameter(Mandatory = $true)][object]$Ed2kFramingValid,
@@ -3014,10 +3029,12 @@ function Assert-I05SourceCompleteWireProduct {
         if ([Int64]$RequestPartsI64 -le 0) {
             throw 'COMPLETE capture has no OP_REQUESTPARTS_I64 frame.'
         }
-        if ([Int64]$SendingI64 -lt 0 -or
+        if ([Int64]$Compressed32 -lt 0 -or
+            [Int64]$SendingI64 -lt 0 -or
             [Int64]$CompressedI64 -lt 0 -or
-            ([Int64]$SendingI64 + [Int64]$CompressedI64) -le 0) {
-            throw 'COMPLETE capture has no I64 data response frame.'
+            ([Int64]$Compressed32 + [Int64]$SendingI64 +
+                [Int64]$CompressedI64) -le 0) {
+            throw 'COMPLETE capture has no valid data response frame.'
         }
         Assert-I05True -Value $Ed2kFramingValid `
             -Context 'COMPLETE capture ed2k_framing_valid'
@@ -3245,6 +3262,8 @@ function Assert-I05SourceRemoteComplete {
         -Context 'COMPLETE capture analysis hash'
     $requestPartsI64 = Get-I05RequiredProperty -Object $capture `
         -Name 'requestparts_i64' -Context 'COMPLETE.capture'
+    $compressed32 = Get-I05RequiredProperty -Object $capture `
+        -Name 'compressedpart_32' -Context 'COMPLETE.capture'
     $sendingI64 = Get-I05RequiredProperty -Object $capture `
         -Name 'sending_i64' -Context 'COMPLETE.capture'
     $compressedI64 = Get-I05RequiredProperty -Object $capture `
@@ -3300,6 +3319,7 @@ function Assert-I05SourceRemoteComplete {
     Assert-I05SourceCompleteWireProduct `
         -SocketForbiddenTupleCount $socketForbiddenTupleCount `
         -RequestPartsI64 $requestPartsI64 `
+        -Compressed32 $compressed32 `
         -SendingI64 $sendingI64 `
         -CompressedI64 $compressedI64 `
         -Ed2kFramingValid $ed2kFramingValid `
@@ -3653,6 +3673,10 @@ function Save-I05SourceControlFrame {
     $null = Write-LabText -Value $Frame.raw -Path $coordinationPath
 }
 
+if ($env:ESE_V91_I05_SOURCE_LIBRARY_ONLY -ceq '1') {
+    return
+}
+
 try {
     $expectedFixtureHash =
         $ExpectedFixtureSha256.ToLowerInvariant()
@@ -3661,19 +3685,19 @@ try {
         -Context 'Expected canonical fixture SHA-256' -IgnoreCase
 
     if (-not (Test-Path -LiteralPath $CandidateZipPath -PathType Leaf)) {
-        throw 'Exact RC2 candidate ZIP does not exist.'
+        throw 'Exact RC3 candidate ZIP does not exist.'
     }
     $candidateZip = Assert-I05SourceNoReparsePoint `
         -Path (Resolve-Path -LiteralPath $CandidateZipPath).Path `
-        -Context 'Exact RC2 candidate ZIP'
+        -Context 'Exact RC3 candidate ZIP'
     if ([Int64]$candidateZip.Length -ne
         $constants.candidate_zip_bytes) {
-        throw 'RC2 candidate ZIP has the wrong exact byte length.'
+        throw 'RC3 candidate ZIP has the wrong exact byte length.'
     }
     Assert-I05ExactText -Actual (
         Get-LabSha256 -Path $candidateZip.FullName
     ) -Expected $constants.candidate_zip_sha256 `
-        -Context 'RC2 candidate ZIP SHA-256' -IgnoreCase
+        -Context 'RC3 candidate ZIP SHA-256' -IgnoreCase
 
     $candidateObject = [ordered]@{
         version = $constants.candidate_version
@@ -3822,7 +3846,7 @@ try {
     try {
         if ($archive.Entries.Count -lt 1 -or
             $archive.Entries.Count -gt 5000) {
-            throw 'RC2 ZIP entry count is outside the bounded range.'
+            throw 'RC3 ZIP entry count is outside the bounded range.'
         }
         $entryNames = New-Object 'Collections.Generic.HashSet[string]' `
             ([StringComparer]::OrdinalIgnoreCase)
@@ -3832,25 +3856,25 @@ try {
             if ([string]::IsNullOrWhiteSpace($name) -or
                 [IO.Path]::IsPathRooted($name) -or
                 $name.Contains(':')) {
-                throw 'RC2 ZIP contains an unsafe path.'
+                throw 'RC3 ZIP contains an unsafe path.'
             }
             $segments = @($name -split '\\')
             if (@($segments | Where-Object {
                     $_ -eq '.' -or $_ -eq '..'
                 }).Count -gt 0) {
-                throw 'RC2 ZIP contains a traversal segment.'
+                throw 'RC3 ZIP contains a traversal segment.'
             }
             if (-not $entryNames.Add($name)) {
-                throw 'RC2 ZIP contains a case-insensitive duplicate path.'
+                throw 'RC3 ZIP contains a case-insensitive duplicate path.'
             }
             $unixType = ([uint32]$entry.ExternalAttributes `
                 -shr 16) -band 0xf000
             if ($unixType -eq 0xa000) {
-                throw 'RC2 ZIP contains a symbolic link.'
+                throw 'RC3 ZIP contains a symbolic link.'
             }
             $totalExpandedBytes += [Int64]$entry.Length
             if ($totalExpandedBytes -gt 2147483648) {
-                throw 'RC2 ZIP expanded size exceeds the 2 GiB bound.'
+                throw 'RC3 ZIP expanded size exceeds the 2 GiB bound.'
             }
         }
     } finally {
@@ -3866,7 +3890,7 @@ try {
             }
     )
     if ($reparseEntries.Count -gt 0) {
-        throw 'Extracted RC2 package contains a reparse point.'
+        throw 'Extracted RC3 package contains a reparse point.'
     }
     $candidate = Get-LabCandidateInfo -PackagePath $packageExtract `
         -ExpectedCommit $constants.candidate_commit
@@ -3878,7 +3902,7 @@ try {
         $constants.candidate_zip_bytes
     Assert-I05CandidateContract -Candidate (
         [pscustomobject]$validatedCandidateObject
-    ) -Context 'Extracted RC2 candidate'
+    ) -Context 'Extracted RC3 candidate'
     $candidateObject = $validatedCandidateObject
 
     $stage = 'source-prepare'

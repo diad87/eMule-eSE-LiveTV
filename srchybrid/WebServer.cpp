@@ -71,6 +71,176 @@
 
 static CryptoPP::AutoSeededRandomPool webRng;
 
+namespace {
+
+bool EseI08WaitWritable(SOCKET socketValue, DWORD timeoutMs, int& errorCode)
+{
+	fd_set writable;
+	fd_set exceptional;
+	FD_ZERO(&writable);
+	FD_ZERO(&exceptional);
+	FD_SET(socketValue, &writable);
+	FD_SET(socketValue, &exceptional);
+	timeval timeout;
+	timeout.tv_sec = timeoutMs / 1000;
+	timeout.tv_usec = (timeoutMs % 1000) * 1000;
+	const int selected = select(0, NULL, &writable, &exceptional, &timeout);
+	if (selected <= 0 || FD_ISSET(socketValue, &exceptional)) {
+		errorCode = selected == 0 ? WSAETIMEDOUT : WSAGetLastError();
+		return false;
+	}
+	int pendingError = 0;
+	int pendingLength = sizeof(pendingError);
+	if (getsockopt(socketValue, SOL_SOCKET, SO_ERROR,
+		reinterpret_cast<char*>(&pendingError), &pendingLength) != 0
+		|| pendingError != 0) {
+		errorCode = pendingError != 0 ? pendingError : WSAGetLastError();
+		return false;
+	}
+	return true;
+}
+
+bool EseI08TcpEcho(const sockaddr* target, int targetLength,
+	const std::vector<uint8_t>& payload, DWORD timeoutMs,
+	unsigned& receivedBytes, int& errorCode)
+{
+	receivedBytes = 0;
+	errorCode = 0;
+	SOCKET socketValue = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+	if (socketValue == INVALID_SOCKET) {
+		errorCode = WSAGetLastError();
+		return false;
+	}
+
+	u_long nonBlocking = 1;
+	if (ioctlsocket(socketValue, FIONBIO, &nonBlocking) != 0) {
+		errorCode = WSAGetLastError();
+		closesocket(socketValue);
+		return false;
+	}
+	if (connect(socketValue, target, targetLength) == SOCKET_ERROR) {
+		const int connectError = WSAGetLastError();
+		if (connectError != WSAEWOULDBLOCK
+			&& connectError != WSAEINPROGRESS
+			&& connectError != WSAEINVAL) {
+			errorCode = connectError;
+			closesocket(socketValue);
+			return false;
+		}
+		if (!EseI08WaitWritable(socketValue, timeoutMs, errorCode)) {
+			closesocket(socketValue);
+			return false;
+		}
+	}
+	nonBlocking = 0;
+	if (ioctlsocket(socketValue, FIONBIO, &nonBlocking) != 0) {
+		errorCode = WSAGetLastError();
+		closesocket(socketValue);
+		return false;
+	}
+	setsockopt(socketValue, SOL_SOCKET, SO_RCVTIMEO,
+		reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+	setsockopt(socketValue, SOL_SOCKET, SO_SNDTIMEO,
+		reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+
+	size_t sent = 0;
+	while (sent < payload.size()) {
+		const int part = send(socketValue,
+			reinterpret_cast<const char*>(payload.data() + sent),
+			static_cast<int>(payload.size() - sent), 0);
+		if (part <= 0) {
+			errorCode = WSAGetLastError();
+			closesocket(socketValue);
+			return false;
+		}
+		sent += static_cast<size_t>(part);
+	}
+	if (shutdown(socketValue, SD_SEND) != 0) {
+		errorCode = WSAGetLastError();
+		closesocket(socketValue);
+		return false;
+	}
+
+	std::vector<uint8_t> reply(payload.size());
+	while (receivedBytes < reply.size()) {
+		const int part = recv(socketValue,
+			reinterpret_cast<char*>(reply.data() + receivedBytes),
+			static_cast<int>(reply.size() - receivedBytes), 0);
+		if (part <= 0) {
+			errorCode = part == 0 ? WSAECONNRESET : WSAGetLastError();
+			closesocket(socketValue);
+			return false;
+		}
+		receivedBytes += static_cast<unsigned>(part);
+	}
+	closesocket(socketValue);
+	if (reply != payload) {
+		errorCode = -1;
+		return false;
+	}
+	return true;
+}
+
+bool EseI08UdpEcho(const sockaddr* target, int targetLength,
+	const CAddress& expectedAddress, uint16 expectedPort,
+	const std::vector<uint8_t>& payload, DWORD timeoutMs,
+	unsigned& receivedBytes, int& errorCode)
+{
+	receivedBytes = 0;
+	errorCode = 0;
+	SOCKET socketValue = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+	if (socketValue == INVALID_SOCKET) {
+		errorCode = WSAGetLastError();
+		return false;
+	}
+	setsockopt(socketValue, SOL_SOCKET, SO_RCVTIMEO,
+		reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+	setsockopt(socketValue, SOL_SOCKET, SO_SNDTIMEO,
+		reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+	const int sent = sendto(socketValue,
+		reinterpret_cast<const char*>(payload.data()),
+		static_cast<int>(payload.size()), 0, target, targetLength);
+	if (sent != static_cast<int>(payload.size())) {
+		errorCode = WSAGetLastError();
+		closesocket(socketValue);
+		return false;
+	}
+
+	std::vector<uint8_t> reply(payload.size() + 1);
+	sockaddr_storage source;
+	memset(&source, 0, sizeof(source));
+	int sourceLength = sizeof(source);
+	const int received = recvfrom(socketValue,
+		reinterpret_cast<char*>(reply.data()),
+		static_cast<int>(reply.size()), 0,
+		reinterpret_cast<sockaddr*>(&source), &sourceLength);
+	if (received <= 0) {
+		errorCode = WSAGetLastError();
+		closesocket(socketValue);
+		return false;
+	}
+	closesocket(socketValue);
+	receivedBytes = static_cast<unsigned>(received);
+
+	CAddress sourceAddress;
+	uint16 sourcePort = 0;
+	if (!CAddress::TryFromSA(reinterpret_cast<sockaddr*>(&source),
+		sourceLength, sourceAddress, &sourcePort)
+		|| sourceAddress != expectedAddress || sourcePort != expectedPort) {
+		errorCode = -2;
+		return false;
+	}
+	if (reply.size() < payload.size()
+		|| receivedBytes != payload.size()
+		|| memcmp(reply.data(), payload.data(), payload.size()) != 0) {
+		errorCode = -1;
+		return false;
+	}
+	return true;
+}
+
+} // namespace
+
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #undef THIS_FILE
@@ -3352,6 +3522,13 @@ CString CWebServer::_GetKadDlg(const ThreadData &Data)
 	if (_IsSessionAdmin(Data, sSession)) {
 		if (!_ParseURL(Data.sURL, _T("bootstrap")).IsEmpty()) {
 			CString dest(_ParseURL(Data.sURL, _T("ip")));
+			// Preserve an IPv6 literal as one host when passing host:port
+			// through the GUI-thread message. The old unbracketed form was
+			// split at its first colon and silently bootstrapped an empty
+			// Kad6 destination.
+			if (dest.Find(_T(':')) >= 0 &&
+				(dest.IsEmpty() || dest[0] != _T('[')))
+				dest = _T("[") + dest + _T("]");
 			dest.AppendFormat(_T(":%s"), (LPCTSTR)_ParseURL(Data.sURL, _T("port")));
 			SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_KAD_BOOTSTRAP, (LPARAM)(LPCTSTR)dest);
 		}
@@ -5650,6 +5827,126 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
+	// --- /api/ese/netlab/ipv6_echo -----------------------------------------
+	// V91-I08 production-client action. This is deliberately a literal-only,
+	// bounded NetLab operation: eMule itself opens one TCP and one UDP socket
+	// to the same native IPv6 address, sends a nonce-bound payload and requires
+	// an exact echo from both transports. The independent fixture records the
+	// destination sockaddr, so the adjudicator can prove that all 128 address
+	// bits survived instead of accepting a test-runner socket as client proof.
+	if (sURL.Left(25) == "/api/ese/netlab/ipv6_echo") {
+		bool ok = false;
+		const char* error = "";
+		unsigned tcpBytes = 0;
+		unsigned udpBytes = 0;
+		int tcpError = 0;
+		int udpError = 0;
+		CStringA canonicalAddress;
+
+		const CString targetArg = _ParseURL(Data.sURL, _T("target"));
+		const int tcpPortValue = _ttoi(_ParseURL(Data.sURL, _T("tcp_port")));
+		const int udpPortValue = _ttoi(_ParseURL(Data.sURL, _T("udp_port")));
+		const CString nonceArg = _ParseURL(Data.sURL, _T("nonce"));
+		int timeoutValue = _ttoi(_ParseURL(Data.sURL, _T("timeout_ms")));
+		if (timeoutValue == 0)
+			timeoutValue = 5000;
+
+		bool nonceValid = nonceArg.GetLength() == 32;
+		for (int i = 0; nonceValid && i < nonceArg.GetLength(); ++i) {
+			const TCHAR c = nonceArg[i];
+			nonceValid = (c >= _T('0') && c <= _T('9'))
+				|| (c >= _T('a') && c <= _T('f'))
+				|| (c >= _T('A') && c <= _T('F'));
+		}
+		CAddress targetAddress;
+		const bool addressParsed = targetAddress.FromString(targetArg, false);
+		const bool targetAllowed = addressParsed
+			&& targetAddress.GetType() == CAddress::IPv6
+			&& !targetAddress.IsMappedIPv4()
+			&& (targetAddress.IsPublicIP()
+				|| (thePrefs.IsEseNetLabContributionActive()
+					&& targetAddress.IsUniqueLocalIPv6()));
+
+		static DWORD s_lastI08Probe = 0;
+		const DWORD now = GetTickCount();
+		if (bTokenAuth && !bTokenAdmin) {
+			error = "admin_session_required";
+		} else if (!thePrefs.IsEseNetLabContributionActive()) {
+			error = "netlab_contribution_required";
+		} else if (!targetAllowed) {
+			error = "native_ipv6_literal_required";
+		} else if (tcpPortValue < 1024 || tcpPortValue > 65535
+			|| udpPortValue < 1024 || udpPortValue > 65535) {
+			error = "invalid_port";
+		} else if (!nonceValid) {
+			error = "nonce_must_be_32_hex";
+		} else if (timeoutValue < 1000 || timeoutValue > 8000) {
+			error = "invalid_timeout";
+		} else if (s_lastI08Probe != 0 && (now - s_lastI08Probe) < 2000) {
+			error = "rate_limited";
+		} else {
+			s_lastI08Probe = now;
+			canonicalAddress = CStringA(targetAddress.ToStringC());
+			CStringA payloadText;
+			payloadText.Format("ese-v91-i08-v1:%s|target=%s",
+				(LPCSTR)CStringA(nonceArg), (LPCSTR)canonicalAddress);
+			const uint8_t* payloadStart =
+				reinterpret_cast<const uint8_t*>((LPCSTR)payloadText);
+			std::vector<uint8_t> payload(payloadStart,
+				payloadStart + payloadText.GetLength());
+
+			sockaddr_storage tcpTarget;
+			memset(&tcpTarget, 0, sizeof(tcpTarget));
+			int tcpTargetLength = sizeof(tcpTarget);
+			sockaddr_storage udpTarget;
+			memset(&udpTarget, 0, sizeof(udpTarget));
+			int udpTargetLength = sizeof(udpTarget);
+			if (!targetAddress.TryToSA(
+					reinterpret_cast<sockaddr*>(&tcpTarget),
+					&tcpTargetLength, static_cast<uint16>(tcpPortValue))
+				|| !targetAddress.TryToSA(
+					reinterpret_cast<sockaddr*>(&udpTarget),
+					&udpTargetLength, static_cast<uint16>(udpPortValue))) {
+				error = "sockaddr_conversion_failed";
+			} else {
+				const bool tcpOk = EseI08TcpEcho(
+					reinterpret_cast<sockaddr*>(&tcpTarget), tcpTargetLength,
+					payload, static_cast<DWORD>(timeoutValue),
+					tcpBytes, tcpError);
+				const bool udpOk = EseI08UdpEcho(
+					reinterpret_cast<sockaddr*>(&udpTarget), udpTargetLength,
+					targetAddress, static_cast<uint16>(udpPortValue),
+					payload, static_cast<DWORD>(timeoutValue),
+					udpBytes, udpError);
+				ok = tcpOk && udpOk;
+				if (!ok)
+					error = "echo_failed";
+			}
+		}
+
+		const CStringA responseNonce = nonceValid
+			? CStringA(nonceArg) : CStringA("");
+		CStringA json;
+		json.Format(
+			"{\"schema\":\"ese.v91.i08-client-action/v1\","
+			"\"success\":%s,\"error\":\"%s\","
+			"\"target\":\"%s\",\"tcp_port\":%d,\"udp_port\":%d,"
+			"\"nonce\":\"%s\",\"tcp\":{\"bytes\":%u,\"error\":%d},"
+			"\"udp\":{\"bytes\":%u,\"error\":%d}}",
+			ok ? "true" : "false", error, (LPCSTR)canonicalAddress,
+			tcpPortValue, udpPortValue, (LPCSTR)responseNonce,
+			tcpBytes, tcpError, udpBytes, udpError);
+		CStringA hdr;
+		hdr.Format(
+			"HTTP/1.1 %s\r\nContent-Type: application/json\r\n"
+			"Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"
+			"Content-Length: %d\r\n\r\n",
+			ok ? "200 OK" : "409 Conflict", json.GetLength());
+		Data.pSocket->SendData(hdr, hdr.GetLength());
+		Data.pSocket->SendData(json, json.GetLength());
+		return;
+	}
+
 	// Local, sanitized cohort report. It deliberately contains no address,
 	// node ID, peer identifier, filename, stream key or central upload hook.
 	if (sURL == "/api/ese/netlab/report") {
@@ -6277,6 +6574,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		} catch (...) {}
 
 		CStringA peersJson;
+		size_t authenticatedCount = 0;
 		for (size_t i = 0; i < all.size(); ++i) {
 			if (i > 0) peersJson += ",";
 			const eSELive::CLiveTunnel::PeerSnapshot& p = all[i];
@@ -6284,20 +6582,30 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			line.Format(
 			    "{\"ip\":\"%s\",\"address\":\"%s\",\"port\":%u,"
 			    "\"forkCaps\":\"0x%08X\",\"eseCaps\":\"0x%08X\","
-			    "\"isFork\":%s}",
+			    "\"isFork\":%s,\"authReady\":%s,"
+			    "\"hashReady\":%s,\"nodePubReady\":%s,"
+			    "\"authCap\":%s,\"dataplaneCap\":%s}",
 			    p.has_ipv4 ? CAddress::FromIPv4NetworkOrder(p.ip).ToString().c_str() : "",
 			    p.address.c_str(),
 			    (unsigned)p.port,
 			    p.fork_caps, p.ese_caps,
-			    (p.ese_caps & 0x00000100) ? "true" : "false");
+			    (p.ese_caps & 0x00000100) ? "true" : "false",
+			    p.auth_ready ? "true" : "false",
+			    p.hash_ready ? "true" : "false",
+			    p.node_pub_ready ? "true" : "false",
+			    p.auth_cap ? "true" : "false",
+			    p.dataplane_cap ? "true" : "false");
+			if (p.auth_ready) ++authenticatedCount;
 			peersJson += line;
 		}
 
 		CStringA json;
 		json.Format(
-		    "{\"totalConnected\":%u,\"forkTunnelingCapable\":%u,\"peers\":[%s]}",
+		    "{\"totalConnected\":%u,\"forkTunnelingCapable\":%u,"
+		    "\"authenticatedTunnelCapable\":%u,\"peers\":[%s]}",
 		    (unsigned)all.size(),
 		    (unsigned)tunnelingCount,
+		    (unsigned)authenticatedCount,
 		    (LPCSTR)peersJson);
 
 		CStringA header;
@@ -6567,6 +6875,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"\"revision\":%llu,\"services\":[%s],"
 			"\"occupancy\":{\"leases\":\"%s\",\"publishes\":\"%s\","
 			"\"dial_streams\":\"%s\",\"full_streams\":\"%s\",\"shaping_exposed\":%s},"
+			"\"source_pipeline\":{\"advertised\":%llu,\"recovered\":%llu},"
 			"\"source_epoch_store_failed\":%s,"
 			"\"metrics\":{\"window_ready\":%s,\"window_start\":%llu,\"window_end\":%llu,"
 			"\"fixed_series\":%u,\"exported_series\":%u},"
@@ -6580,6 +6889,8 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			occupancyBand(snap.active_leases), occupancyBand(snap.active_publishes),
 			occupancyBand(snap.dial_streams), occupancyBand(snap.full_streams),
 			snap.shaping_exposed_circuits != 0 ? "true" : "false",
+			static_cast<unsigned long long>(snap.origin_advertise_success_total),
+			static_cast<unsigned long long>(snap.origin_source_recovered_total),
 			snap.source_epoch_store_failed ? "true" : "false",
 			snap.metrics.ready ? "true" : "false",
 			static_cast<unsigned long long>(snap.metrics.start),

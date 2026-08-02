@@ -279,7 +279,9 @@ public:
 	}
 
 	virtual Packet* CreateSrcInfoPacket(const CUpDownClient *forClient, uint8 byRequestedVersion, uint16 nRequestedOptions) const;
-	void	AddClientSources(CSafeMemFile *sources, uint8 uClientSXVersion, bool bSourceExchange2, const CUpDownClient *pClient = NULL);
+	void	AddClientSources(CSafeMemFile *sources, uint8 uClientSXVersion,
+				bool bSourceExchange2, const CUpDownClient *pClient = NULL,
+				bool bFromLink = false);
 
 	UINT	GetAvailablePartCount() const				{ return (status == PS_COMPLETING || status == PS_COMPLETE) ? GetPartCount() : availablePartsCount; }
 	void	UpdateAvailablePartsCount();

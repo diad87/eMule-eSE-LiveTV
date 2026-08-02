@@ -157,20 +157,18 @@
         "CWebServer::_ProcessLiveAPI"
       ],
       "token_sha256": {
-        "CWebServer::_ProcessLiveAPI": "faf6f96cb6b02e18cb22fd19ac3e159881a2815862882a978a25a0a594bdc359"
+        "CWebServer::_ProcessLiveAPI": "8da7292abc7c0f73ea7e5518cfefe91b78421b7388a9e47249e3e75020cdfa40"
       }
     },
     "web_parser_security": {
       "production_file": "srchybrid/WebServer.cpp",
       "symbols": [
-        "EseHexToKey16A",
         "CWebServer::_ProcessLiveAPI",
         "CWebServer::_SpecialChars"
       ],
       "token_sha256": {
-        "CWebServer::_ProcessLiveAPI": "faf6f96cb6b02e18cb22fd19ac3e159881a2815862882a978a25a0a594bdc359",
-        "CWebServer::_SpecialChars": "fe6e48d488da3cf377aa9b426a88a5ca856d2354f9bcc8b8c777b7025bfaf6c2",
-        "EseHexToKey16A": "c525d949eaf1ca702f4ecf188b6c6c269021ac9267fbed966e29c16e9fd8d905"
+        "CWebServer::_ProcessLiveAPI": "8da7292abc7c0f73ea7e5518cfefe91b78421b7388a9e47249e3e75020cdfa40",
+        "CWebServer::_SpecialChars": "fe6e48d488da3cf377aa9b426a88a5ca856d2354f9bcc8b8c777b7025bfaf6c2"
       }
     },
     "web_request_dispatch": {

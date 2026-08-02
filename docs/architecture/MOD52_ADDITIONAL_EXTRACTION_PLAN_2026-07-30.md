@@ -193,9 +193,14 @@ Budget fijo (máximo LOC del módulo / A máximo / D mínimo / neto máximo): W1
 `1050/1250/900/+350`, W5 `1050/1250/900/+350`, W6 `900/1100/750/+350`, W7
 `600/650/0/+650` (sólo inventario/tests, sin crecimiento del coordinador),
 W8 `900/1100/800/+300`, W9 `900/1100/800/+300`, W10 `900/1100/800/+300`,
-W11 `1100/1300/1050/+250`, W12 `700/800/600/+200`. Todos los módulos y
+W11 `1100/1300/850/+250`, W12 `700/800/600/+200`. Todos los módulos y
 tarjetas quedan <1.500 LOC/net y la fachada añade ≤80/elimina más de lo que
 añade dentro de `WebServer.cpp`.
+Los máximos A/neto y el mínimo D siguen siendo límites independientes. La
+autorización del propietario de 2026-08-02 corrige únicamente el mínimo D de
+W11 de 1.050 a 850 LOC, de acuerdo con las 848 LOC de cuerpos inventariados
+más el armazón eliminable del dispatcher; no amplía el alcance ni relaja LOC
+de módulo, A, neto o fachada.
 
 Dependencias: W1 y W2 primero; W3–W6 después de W1; W7 después de W1–W6;
 W8–W11 se ejecutan en orden de la tabla de operaciones congelada; W12 al final.

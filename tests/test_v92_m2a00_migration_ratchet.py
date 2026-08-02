@@ -94,6 +94,37 @@ class M2A00RatchetTest(unittest.TestCase):
         ):
             GATE.validate_inputs(self.contract, candidate, self.baseline)
 
+    def test_w11_corrected_delete_budget_is_consistent_and_narrow(self):
+        function = next(
+            item
+            for item in self.matrix["function_matrix"]
+            if item["name"] == "CWebServer::_ProcessLiveAPI"
+        )
+        module = next(
+            item
+            for item in self.matrix["additional_modules"]
+            if item["name"] == "WebLiveApiLegacyController"
+        )
+        expected = {
+            "module_loc": 1100,
+            "add": 1300,
+            "delete": 850,
+            "net": 250,
+        }
+        self.assertEqual(function["budget"], expected)
+        self.assertEqual(module["budget"], expected)
+        self.assertEqual(
+            self.matrix["card_budgets"]["W11"],
+            {
+                "add": 1300,
+                "delete": 850,
+                "net": 250,
+                "coordinator": "WebServer",
+                "facade_add_max": 80,
+                "reduction_required": True,
+            },
+        )
+
     def test_catalogue_rejects_collapsed_live_api_or_placeholder_dependencies(self):
         candidate = copy.deepcopy(self.matrix)
         candidate["additional_modules"] = [item for item in candidate["additional_modules"] if not item["name"].startswith("WebLiveApi")]

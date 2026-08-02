@@ -1,0 +1,24 @@
+Lab inventory written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\inventory.json
+Lab node B prepared: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\nodes\wp0-smoke-b
+Manifest: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\nodes\wp0-smoke-b\LAB_NODE.json
+Lab status written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\status.json
+Data-route assertion PASS: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\route.json
+Soak monitor PASS: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\soak.json
+Canonical lab report written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\REPORT-WP0-SMOKE.json
+Human-readable report written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\REPORT-WP0-SMOKE.md
+V91 RC ledger written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\V91-RC-LEDGER.json
+PASS=0 FAIL=0 BLOCKED=27
+Campaign final JSON written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\V91-CAMPAIGN-FINAL.json
+Campaign final Markdown written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\V91-CAMPAIGN-FINAL.md
+Evidence SHA-256 manifest written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\V91-EVIDENCE-MANIFEST.json
+V91 RC ledger written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\k03-ledger.json
+PASS=1 FAIL=0 BLOCKED=26
+V91 RC ledger written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\V91-RC-LEDGER-GO.json
+PASS=27 FAIL=0 BLOCKED=0
+Campaign final JSON written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\V91-CAMPAIGN-FINAL.json
+Campaign final Markdown written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\V91-CAMPAIGN-FINAL.md
+Evidence SHA-256 manifest written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\V91-EVIDENCE-MANIFEST.json
+Campaign final JSON written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\V91-CAMPAIGN-FINAL.json
+Campaign final Markdown written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\V91-CAMPAIGN-FINAL.md
+Evidence SHA-256 manifest written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5\run\V91-EVIDENCE-MANIFEST.json
+WP0 lab tools smoke PASS: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-f47ae232420d44fdada8f7d5f806f8e5

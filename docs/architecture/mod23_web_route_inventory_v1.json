@@ -1,0 +1,83 @@
+{
+  "schema": "ese.mod23.web-route-inventory/v1",
+  "task": "MOD-2.3",
+  "default_policy": "deny_unknown_method_or_route",
+  "exact_get_routes": [
+    "/dashboard",
+    "/dashboard/",
+    "/live",
+    "/live/",
+    "/api/network/connect",
+    "/api/debug/source-resolutions",
+    "/api/status",
+    "/api/live/join",
+    "/api/live/leave",
+    "/api/live/player-alive",
+    "/api/live/broadcast/start",
+    "/api/live/broadcast/stop",
+    "/api/holepunch/rdv_test",
+    "/api/keepalive/start",
+    "/api/keepalive/stop",
+    "/api/ese/v9",
+    "/api/ese/netlab/ipv6_echo",
+    "/api/ese/netlab/report",
+    "/api/krp/status",
+    "/api/relay/accept",
+    "/api/relay/egress",
+    "/api/relay/selector",
+    "/api/relay/connect",
+    "/api/holepunch/test",
+    "/api/live/preflight",
+    "/api/live/privacy/subscriptions",
+    "/api/live/privacy/tunnel_search",
+    "/api/live/privacy/tunnel_echo",
+    "/api/live/privacy/tunnel_ping",
+    "/api/live/privacy/circuits",
+    "/api/live/privacy/peers",
+    "/api/live/privacy/test_circuit",
+    "/api/live/privacy/kad6/release",
+    "/api/live/privacy/kad6/hardening",
+    "/api/live/privacy",
+    "/api/live/metrics",
+    "/api/live/log",
+    "/api/live/diagnose",
+    "/api/live/direct_join",
+    "/api/live/channels",
+    "/api/live/mesh",
+    "/api/live/kad/streams",
+    "/api/live/test/edge_sabotage",
+    "/api/live/debug"
+  ],
+  "dynamic_get_routes": [
+    {
+      "name": "legacy_hls",
+      "shape": "/hls/{safe-leaf.m3u8|safe-leaf.ts}",
+      "handler": "LiveApi"
+    },
+    {
+      "name": "live_player",
+      "shape": "/live/{32-hex}",
+      "handler": "LiveApi"
+    },
+    {
+      "name": "live_stream",
+      "shape": "/api/live/{32-hex}/{stream.m3u8|stream_*.m3u8|seg_*.ts}",
+      "handler": "LiveApi"
+    },
+    {
+      "name": "token_namespace",
+      "shape": "/s/{positive-int31}/{registered-live-route}",
+      "handler": "LiveApi"
+    },
+    {
+      "name": "static_asset",
+      "shape": "/{safe-path}.{gif|jpg|png|ico|css|bmp|js|jpeg}",
+      "handler": "StaticAsset"
+    }
+  ],
+  "method_policy": {
+    "GET": "all registered routes",
+    "POST": "classic root only",
+    "OPTIONS": "registered LiveApi routes only"
+  }
+}

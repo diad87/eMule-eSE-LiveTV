@@ -19,6 +19,10 @@ using OwnershipDescription =
 
 OwnershipDescription BuildOwnershipDescription(
     std::uint64_t owner_token, Transport transport) noexcept;
+bool ParseOwnershipDescription(
+    const char* text,
+    std::size_t available,
+    OwnershipDescription& description) noexcept;
 
 // Durable proof of a UPnP rule created by this eMule instance. The host writes
 // the ledger atomically only after the router returns the exact description,
@@ -61,9 +65,40 @@ enum class OwnershipDecision : std::uint8_t {
     DescriptionMismatch = 8,
 };
 
+enum class OwnershipJournalStep : std::uint8_t {
+    Encoded = 0,
+    TemporaryWritten = 1,
+    TemporaryFlushed = 2,
+    TemporaryClosed = 3,
+    FinalReplaced = 4,
+    FinalVerified = 5
+};
+
+// Pure fail-closed ordering guard for the host filesystem transaction. A
+// journal is never considered persisted before the replaced final file has
+// been reopened and verified byte-for-byte.
+class OwnershipJournalCommit {
+public:
+    bool Complete(OwnershipJournalStep step) noexcept;
+    void Fail() noexcept { failed_ = true; }
+
+    bool IsPersisted() const noexcept {
+        return !failed_ && next_step_ == 6;
+    }
+    bool HasFailed() const noexcept { return failed_; }
+
+private:
+    std::uint8_t next_step_ = 0;
+    bool failed_ = false;
+};
+
 // This is the only authorization gate for crash-recovery deletion. A persisted
 // port number alone is never sufficient.
 OwnershipDecision EvaluateOwnershipForDeletion(
+    const UpnpOwnershipRecord& record,
+    std::uint64_t current_gateway_fingerprint,
+    const ObservedUpnpMapping& observed) noexcept;
+bool IsUpnpCleanupAuthorized(
     const UpnpOwnershipRecord& record,
     std::uint64_t current_gateway_fingerprint,
     const ObservedUpnpMapping& observed) noexcept;

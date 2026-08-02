@@ -3,10 +3,19 @@ const fs           = require('fs');
 const path         = require('path');
 const aiAssistant  = require('../ai_assistant');
 const utils         = require('../utils');
+const { validateRouteContext } = require('./route_context');
 
+/** @type {Pick<import('./route_context').SharedRouteContext, 'EMULE_INCOMING'|'loadSettings'|'saveSettings'> & Record<string, Function|object|string>} */
 let _ctx = {};
 
-function init(ctx) { _ctx = ctx; }
+function init(ctx) {
+  _ctx = validateRouteContext(ctx, 'emule', {
+    EMULE_INCOMING: 'string', loadSettings: 'function', saveSettings: 'function',
+    emuleLogin: 'function', emuleSearch: 'function', emuleDownload: 'function',
+    emuleTransferAction: 'function', emuleAddEd2kLink: 'function', getSession: 'function',
+    security: 'security',
+  });
+}
 
 function readJsonBody(req, callback) {
   utils.readBodyLimited(req, (err, body) => {
@@ -175,27 +184,31 @@ function handle(url, req, res) {
 
   if (url.pathname === '/api/emule/downloads') {
     const EMULE_TEMP = path.join(path.dirname(_ctx.EMULE_INCOMING), 'Temp');
-    try {
-      const partFiles = fs.readdirSync(EMULE_TEMP).filter(f => /^\d+\.part$/.test(f));
-      const downloads = [];
-      for (const pf of partFiles) {
+    fs.promises.readdir(EMULE_TEMP).then(async files => {
+      const partFiles = files.filter(f => /^\d+\.part$/.test(f));
+      const downloads = (await Promise.all(partFiles.map(async pf => {
         const metFile = path.join(EMULE_TEMP, pf + '.met');
         const partPath = path.join(EMULE_TEMP, pf);
-        if (fs.existsSync(metFile)) {
-          const metText = fs.readFileSync(metFile).toString('latin1');
+        try {
+          const [metBuffer, stat] = await Promise.all([
+            fs.promises.readFile(metFile),
+            fs.promises.stat(partPath),
+          ]);
+          const metText = metBuffer.toString('latin1');
           const fnMatch = metText.match(/[^\x00-\x1F\x7F-\x9F]{5,}\.(avi|mkv|mp4|wmv|mov|webm|flv)/i);
           const fileName = fnMatch ? fnMatch[0] : pf;
-          const stat = fs.statSync(partPath);
           const isActive = (Date.now() - stat.mtimeMs) < 30000;
-          downloads.push({ partFile: pf, fileName, sizeMB: Math.round(stat.size / (1024 * 1024)), sizeBytes: stat.size, partPath, lastModified: stat.mtimeMs, active: isActive });
+          return { partFile: pf, fileName, sizeMB: Math.round(stat.size / (1024 * 1024)), sizeBytes: stat.size, partPath, lastModified: stat.mtimeMs, active: isActive };
+        } catch (_) {
+          return null;
         }
-      }
+      }))).filter(Boolean);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(downloads));
-    } catch(e) {
+    }).catch(() => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('[]');
-    }
+    });
     return true;
   }
 
@@ -346,7 +359,7 @@ function handle(url, req, res) {
   // "Mi Biblioteca" panel. Guarded by safeBasename + isPathWithin to refuse
   // any path-traversal attempts; the server is publicly reachable via UPnP.
   if (url.pathname === '/api/emule/completed/delete' && req.method === 'POST') {
-    readJsonBody(req, (err, body) => {
+    readJsonBody(req, async (err, body) => {
       if (err) return sendBodyError(res, err);
       try {
         const { fileName } = body || {};
@@ -357,10 +370,14 @@ function handle(url, req, res) {
         if (typeof utils.isPathWithin === 'function' && !utils.isPathWithin(filePath, incoming)) {
           return sendJson(res, 400, { success: false, error: 'path_traversal' });
         }
-        if (!fs.existsSync(filePath)) {
-          return sendJson(res, 404, { success: false, error: 'not_found' });
+        try {
+          await fs.promises.unlink(filePath);
+        } catch (error) {
+          if (error.code === 'ENOENT') {
+            return sendJson(res, 404, { success: false, error: 'not_found' });
+          }
+          throw error;
         }
-        fs.unlinkSync(filePath);
         console.log('[delete] Removed completed file: ' + safe);
         // eMule's sharedfiles list refreshes lazily; users who want the file
         // gone from search results can re-share or restart. Not auto-nudging

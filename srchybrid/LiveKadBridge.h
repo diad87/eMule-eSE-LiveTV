@@ -6,8 +6,7 @@
 
 #include <vector>          // v8.1 B1.3 - SearchStreams out-param of CSearch ids
 #include "LiveProtocol.h"
-
-struct KadDebugSnapshot;  // Forward declaration (defined in LiveStreamManager.h)
+#include "LiveStreamSnapshot.h"
 
 class CUpDownClient;
 namespace Kademlia { class CUInt128; }  // for StartLivePublishSearch helper

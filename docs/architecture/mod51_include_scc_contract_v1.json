@@ -1,0 +1,118 @@
+{
+  "schema": "ese.mod51.include-scc-contract/v1",
+  "gate_id": "urn:emule:architecture:mod-5.1:include-scc-gate:v1",
+  "status": "PASS",
+  "scope": "reproducible inter-module include graph for completed MOD-1 through MOD-3 extractions; no new SCC/cycle is permitted",
+  "inputs": {
+    "mod03_contract": "docs/architecture/mod03_ownership_layering_contract_v1.json",
+    "mod04_catalog": "docs/architecture/mod04_architecture_gate_baseline_v1.json",
+    "completed_module_count": 30
+  },
+  "normalization": {
+    "include_parser": "one leading BOM removal, CRLF/CR-to-LF normalization, raw-literal candidate plus physical backslash-LF reject, phase-2 splice, raw/string/comment masking, # or %: literal include parser; non-literal active #include fails closed",
+    "include_resolution": "MOD-0.4 current-parent, repository-root, srchybrid-root casefold lookup",
+    "path_separator": "forward-slash",
+    "path_case": "casefold for repository-local lookup",
+    "graph_scope": "inter-module includes only; intra-module includes do not form module edges"
+  },
+  "completed_modules": {
+    "names": [
+      "LiveBroadcastSession",
+      "LiveChunkWindow",
+      "LiveCircuitHandshake",
+      "LiveCircuitRegistry",
+      "LiveExitServices",
+      "LiveHandshakeWire",
+      "LivePeerSet",
+      "LiveRelayDispatcher",
+      "LiveStreamAnnouncer",
+      "LiveStreamFanout",
+      "LiveStreamRecovery",
+      "LiveStreamSecurity",
+      "LiveStreamSnapshot",
+      "LiveTunnelFraming",
+      "LiveTunnelKadBridge",
+      "LiveTunnelMetrics",
+      "LiveTunnelPeerState",
+      "LiveTunnelPending",
+      "LiveTunnelScheduler",
+      "LiveViewerSession",
+      "WebApiSerializer",
+      "WebAuthPolicy",
+      "WebDiagnostics",
+      "WebRequestParser",
+      "WebRouteTable",
+      "WebSearchController",
+      "WebSharedController",
+      "WebSocketResponse",
+      "WebStaticAssets",
+      "WebTransferController"
+    ],
+    "sha256": "dcbeee3bc4a226292a77d9e44a98d9dfcbf058c0facdc561a13692daf21017d8"
+  },
+  "baseline_graph": {
+    "nodes": [
+      "LiveBroadcastSession",
+      "LiveChunkWindow",
+      "LiveCircuitHandshake",
+      "LiveCircuitRegistry",
+      "LiveExitServices",
+      "LiveHandshakeWire",
+      "LivePeerSet",
+      "LiveRelayDispatcher",
+      "LiveStreamAnnouncer",
+      "LiveStreamFanout",
+      "LiveStreamRecovery",
+      "LiveStreamSecurity",
+      "LiveStreamSnapshot",
+      "LiveTunnelFraming",
+      "LiveTunnelKadBridge",
+      "LiveTunnelMetrics",
+      "LiveTunnelPeerState",
+      "LiveTunnelPending",
+      "LiveTunnelScheduler",
+      "LiveViewerSession",
+      "WebApiSerializer",
+      "WebAuthPolicy",
+      "WebDiagnostics",
+      "WebRequestParser",
+      "WebRouteTable",
+      "WebSearchController",
+      "WebSharedController",
+      "WebSocketResponse",
+      "WebStaticAssets",
+      "WebTransferController"
+    ],
+    "edges": [
+      ["LiveCircuitHandshake", "LiveCircuitRegistry"],
+      ["LiveCircuitHandshake", "LiveHandshakeWire"],
+      ["LiveHandshakeWire", "LiveTunnelFraming"]
+    ],
+    "includes": [
+      {
+        "source_module": "LiveCircuitHandshake",
+        "source_file": "srchybrid/LiveCircuitHandshake.h",
+        "target_module": "LiveCircuitRegistry",
+        "target_file": "srchybrid/LiveCircuitRegistry.h"
+      },
+      {
+        "source_module": "LiveCircuitHandshake",
+        "source_file": "srchybrid/LiveCircuitHandshake.h",
+        "target_module": "LiveHandshakeWire",
+        "target_file": "srchybrid/LiveHandshakeWire.h"
+      },
+      {
+        "source_module": "LiveHandshakeWire",
+        "source_file": "srchybrid/LiveHandshakeWire.cpp",
+        "target_module": "LiveTunnelFraming",
+        "target_file": "srchybrid/LiveTunnelFraming.h"
+      }
+    ],
+    "sccs": []
+  },
+  "baseline_graph_sha256": "254138a09563255244172aabdc0aa15e91b2f4290dc37c956aca0ecb4442b16c",
+  "policy": {
+    "baseline_sccs_are_allowlist": true,
+    "new_sccs_must_be_empty": true
+  }
+}

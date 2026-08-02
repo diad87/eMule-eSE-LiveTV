@@ -19,6 +19,11 @@
 #include "TaskbarNotifier.h"
 #include "TitleMenu.h"
 #include "TrayDialog.h"
+#include "natmap/mapping_request.h"
+#include "natmap/mapping_result_mailbox.h"
+#include "natmap/network_signature.h"
+#include "natmap/natmap_policy.h"
+#include <memory>
 
 namespace Kademlia
 {
@@ -137,7 +142,9 @@ public:
 	bool IsPreferencesDlgOpen() const;
 	bool IsTrayIconToFlash()				{ return m_iMsgIcon != 0; }
 	void SetToolTipsDelay(UINT uMilliseconds);
-	void StartUPnP(bool bReset = true, uint16 nForceTCPPort = 0, uint16 nForceUDPPort = 0);
+	void StartUPnP(bool bReset = true, uint16 nForceTCPPort = 0,
+		uint16 nForceUDPPort = 0, bool bExplicitRequest = false);
+	void StopUPnP();
 	void RefreshUPnP(bool bRequestAnswer = false);
 	HBRUSH GetCtlColor(CDC*, CWnd*, UINT);
 
@@ -244,13 +251,34 @@ protected:
 	// UPnP TimeOutTimer
 	UINT_PTR m_hUPnPTimeOutTimer;
 	bool m_bUPnPTimeoutForRefresh;
+	uint32 m_nUPnPTimeoutToken;
+	uint32 m_nNextUPnPTimeoutToken;
+	bool m_bUPnPTimeoutTokenExhausted;
+	uint32 m_nPendingUPnPLocalFailureToken;
+	uint32 m_nNextUPnPLocalFailureToken;
+	bool m_bUPnPLocalFailureTokenExhausted;
 	static void CALLBACK UPnPTimeOutTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
 	// Finite UPnP/PCP/NAT-PMP leases are renewed independently of Kad's
 	// hourly firewall-check cadence.
 	UINT_PTR m_hUPnPLeaseTimer;
-	uint64 m_uUPnPNetworkSignature;
+	UINT_PTR m_hIPv6HealthTimer;
+	bool m_bUPnPExplicitRequest;
+	bool m_bUPnPRouteRecoveryPending;
+	bool m_bUPnPResumeMappingRequired;
+	natmap::NetworkSignature m_upnpNetworkSignature;
+	natmap::MappingRecoverySchedule m_upnpRecoverySchedule;
+	natmap::MappingRequestSequence m_mappingRequestSequence;
+	natmap::MappingResultGate m_mappingResultGate;
+	std::shared_ptr<natmap::MappingResultMailbox> m_mappingResultMailbox;
 	static void CALLBACK UPnPLeaseTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
-	void CheckUPnPLease();
+	static void CALLBACK IPv6HealthTimer(HWND hwnd, UINT uiMsg, UINT_PTR idEvent, DWORD dwTime) noexcept;
+	bool CheckUPnPLease();
+	bool HandleUPnPNetworkChange(
+		const natmap::NetworkSignature& observedSignature);
+	bool ArmUPnPTimeout(UINT nMilliseconds);
+	void RetireUPnPTimeout();
+	bool PostLocalUPnPFailure(bool bWasRefresh);
+	void InvalidateLocalUPnPFailure();
 
 	// V2-S06/S27: runs viewer auto-join from UM_LIVE_HEADLESS_ACTION, or the
 	// signed-chunk selftest directly during isolated pre-network startup.
@@ -410,7 +438,8 @@ enum EWebinterfaceOrders
 	WEBGUIIA_KAD_START,
 	WEBGUIIA_KAD_STOP,
 	WEBGUIIA_KAD_RCFW,
-	WEBGUIIA_FILE_OPERATION
+	WEBGUIIA_FILE_OPERATION,
+	WEBGUIIA_TRANSFER_SNAPSHOT
 };
 
 enum EWebFileOperation
@@ -438,4 +467,12 @@ struct WebFileOperationRequest
 	EWebFileOperation operation = WEBFILEOP_STOP;
 	int value = 0;
 	CString text;
+};
+
+// Synchronous, stack-owned request. SendMessage keeps the payload alive while
+// the GUI thread captures transfer state without racing list/widget mutation.
+struct WebTransferSnapshotRequest
+{
+	void (*capture)(void*) = nullptr;
+	void* context = nullptr;
 };

@@ -1,5 +1,10 @@
 // K6-NOTICE-001: isolated, read-only, bounded HTTP surface.
 #include "Kad6ExitNoticeServer.h"
+#include "LiveTunnelMetrics.h"
+#include "LiveTunnelReleaseGate.h"
+#include "LiveTunnelScheduler.h"
+#include "kad6/kad6_exit_notice.h"
+#include "kad6/kad6_release.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -10,6 +15,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
+#include <fstream>
 #include <mutex>
 #include <thread>
 
@@ -52,6 +59,8 @@ struct CKad6ExitNoticeServer::Impl {
     std::atomic<std::uint64_t> bytes_sent{0};
     std::atomic<std::uint16_t> port{0};
     bool winsock_started = false;
+    std::mutex evidence_lock;
+    std::wstring evidence_path;
 
     bool RateAllowed() noexcept {
         using Clock = std::chrono::steady_clock;
@@ -235,3 +244,168 @@ K6ExitNoticeServerSnapshot CKad6ExitNoticeServer::Snapshot() const noexcept {
     value.bytes_sent = impl_->bytes_sent.load(std::memory_order_relaxed);
     return value;
 }
+
+void CKad6ExitNoticeServer::ConfigureEvidencePath(std::wstring path) {
+    std::lock_guard<std::mutex> guard(impl_->evidence_lock);
+    impl_->evidence_path = std::move(path);
+}
+bool CKad6ExitNoticeServer::LoadEvidence(
+    std::vector<std::uint8_t>& wire, std::uint32_t& status) {
+    std::lock_guard<std::mutex> guard(impl_->evidence_lock);
+    std::ifstream file(impl_->evidence_path, std::ios::binary | std::ios::ate);
+    status = static_cast<std::uint32_t>(kad6::K6ReleaseGateStatus::Missing);
+    if (!file) return false;
+    const auto invalid = [&] {
+        wire.clear(); status = static_cast<std::uint32_t>(
+            kad6::K6ReleaseGateStatus::BadEncoding); return false;
+    };
+    const std::streamoff size = file.tellg();
+    if (size < 0 || static_cast<std::size_t>(size) !=
+            kad6::kK6ReleaseEvidenceWireSize) return invalid();
+    wire.resize(static_cast<std::size_t>(size));
+    file.seekg(0);
+    kad6::K6ReleaseEvidence decoded;
+    const bool valid = file.read(reinterpret_cast<char*>(wire.data()),
+        static_cast<std::streamsize>(wire.size())) &&
+        kad6::DecodeK6ReleaseEvidence(wire.data(), wire.size(), decoded) ==
+            kad6::Kad6Status::Ok;
+    return valid ? true : invalid();
+}
+bool CKad6ExitNoticeServer::SaveEvidence(
+    const std::vector<std::uint8_t>& wire) {
+    std::lock_guard<std::mutex> guard(impl_->evidence_lock);
+    const std::wstring temporary = impl_->evidence_path + L".new";
+    std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+    if (!file || !file.write(reinterpret_cast<const char*>(wire.data()),
+            static_cast<std::streamsize>(wire.size())) || !file.flush()) {
+        file.close(); DeleteFileW(temporary.c_str()); return false;
+    }
+    file.close();
+    if (MoveFileExW(temporary.c_str(), impl_->evidence_path.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+    DeleteFileW(temporary.c_str());
+    return false;
+}
+
+namespace eSELive {
+namespace {
+bool LoadReleaseEvidenceAdapter(
+    void* raw, std::vector<std::uint8_t>& wire, std::uint32_t& status)
+{ return static_cast<CKad6ExitNoticeServer*>(raw)->LoadEvidence(wire, status); }
+bool SaveReleaseEvidenceAdapter(
+    void* raw, const std::vector<std::uint8_t>& wire)
+{ return wire.size() == kad6::kK6ReleaseEvidenceWireSize &&
+    static_cast<CKad6ExitNoticeServer*>(raw)->SaveEvidence(wire); }
+bool StartReleaseNoticeAdapter(
+    void* raw, std::uint16_t port, const std::string& notice)
+{
+    auto* adapter = static_cast<CKad6ExitNoticeServer*>(raw);
+    adapter->Stop();
+    return adapter->Start(port, notice);
+}
+void StopReleaseNoticeAdapter(void* raw) noexcept
+{ static_cast<CKad6ExitNoticeServer*>(raw)->Stop(); }
+LiveTunnelReleaseNoticeSnapshot ReleaseNoticeSnapshotAdapter(
+    void* raw) noexcept
+{
+    const K6ExitNoticeServerSnapshot source =
+        static_cast<CKad6ExitNoticeServer*>(raw)->Snapshot();
+    return {source.running, source.port, source.requests,
+        source.rejected, source.bytes_sent};
+}
+} // namespace
+
+void M2A_LT1_ConfigureBridge(M2AModuleHandle& binding,
+    CKad6ExitNoticeServer& adapter,
+    const std::wstring& evidencePath,
+    bool (*random)(void*, std::uint8_t*, std::size_t),
+    void* serviceContext, bool (*services)(void*, bool, std::uint32_t))
+{
+    adapter.ConfigureEvidencePath(evidencePath);
+    LiveTunnelReleaseStorePort port;
+    port.context = &adapter;
+    port.services_context = serviceContext;
+    port.load = LoadReleaseEvidenceAdapter; port.save = SaveReleaseEvidenceAdapter;
+    port.random = random;
+    port.notice_start = StartReleaseNoticeAdapter;
+    port.notice_stop = StopReleaseNoticeAdapter;
+    port.notice_snapshot = ReleaseNoticeSnapshotAdapter;
+    port.services = services;
+    ResolveLiveTunnelReleaseGate(binding)->Configure(port);
+}
+bool M2A_LT1_SaveEvidenceBridge(M2AModuleHandle& binding, kad6::K6ReleaseEvidence evidence,
+    const kad6::Kad6CryptoHooks& crypto, const std::uint8_t* pub, std::uint64_t now)
+{
+    evidence.version = kad6::kK6ReleaseEvidenceVersion;
+    std::memcpy(evidence.node_pub.data(), pub, evidence.node_pub.size());
+    if (!evidence.issued_at) evidence.issued_at = now;
+    if (!evidence.valid_until) evidence.valid_until =
+        evidence.issued_at + 30ull * 24 * 60 * 60;
+    std::vector<std::uint8_t> wire;
+    return kad6::SignK6ReleaseEvidence(crypto, evidence, wire) == kad6::Kad6Status::Ok
+        && kad6::EvaluateK6ReleaseEvidence(crypto, evidence, pub, now) ==
+            kad6::K6ReleaseGateStatus::Ok &&
+        ResolveLiveTunnelReleaseGate(binding)->SaveEvidence(wire);
+}
+bool M2A_LT1_StartNoticeBridge(M2AModuleHandle& binding, std::uint16_t port,
+    const kad6::K6ExitNotice& source, const kad6::Kad6CryptoHooks& crypto,
+    const std::uint8_t* pub)
+{
+    if (!port || !pub) return false;
+    kad6::K6ExitNotice notice = source;
+    std::memcpy(notice.node_pub.data(), pub, notice.node_pub.size());
+    std::string json;
+    if (kad6::SignK6ExitNotice(crypto, notice, json) != kad6::Kad6Status::Ok) return false;
+    auto* gate = ResolveLiveTunnelReleaseGate(binding);
+    gate->StopNotice(); return gate->StartNotice(port, json);
+}
+void M2A_LT1_StopNoticeBridge(M2AModuleHandle& binding) noexcept
+{ ResolveLiveTunnelReleaseGate(binding)->StopNotice(); }
+K6ExitNoticeServerSnapshot M2A_LT1_NoticeSnapshotBridge(const M2AModuleHandle& binding) noexcept
+{
+    const auto source =
+        ResolveLiveTunnelReleaseGate(binding)->NoticeSnapshot();
+    return {source.running, source.port, source.requests,
+        source.rejected, source.bytes_sent};
+}
+kad6::K6ReleaseGateStatus M2A_LT1_GetSnapshotBridge(M2AModuleHandle& binding,
+    LiveK6ReleaseRuntimeSnapshot& out,
+    bool optIn, bool betaOptIn, const std::uint8_t* pub,
+    const kad6::Kad6CryptoHooks& crypto, std::uint64_t now)
+{
+    out = {}; out.operator_opt_in = optIn; out.beta_exit_opt_in = betaOptIn;
+    auto* gate = ResolveLiveTunnelReleaseGate(binding);
+    (void)gate->LoadEvidence();
+    const auto state = gate->Snapshot();
+    out.runtime_healthy = state.runtime_healthy;
+    out.public_exit_enabled = state.public_enabled; out.beta_exit_enabled = state.beta_enabled;
+    out.status = static_cast<kad6::K6ReleaseGateStatus>(state.status);
+    out.evidence_present = state.evidence_present && kad6::DecodeK6ReleaseEvidence(
+        state.evidence_wire.data(), state.evidence_wire.size(), out.evidence) ==
+        kad6::Kad6Status::Ok;
+    const kad6::K6ReleaseGateStatus evidenceStatus =
+        out.evidence_present && pub ? kad6::EvaluateK6ReleaseEvidence(
+            crypto, out.evidence, pub, now) : kad6::K6ReleaseGateStatus::Missing;
+    out.evidence_valid = evidenceStatus == kad6::K6ReleaseGateStatus::Ok;
+    return evidenceStatus;
+}
+void M2A_LT1_ApplyEvaluationBridge(M2AModuleHandle& binding,
+    bool optIn, bool betaOptIn, bool healthy,
+    kad6::K6ReleaseGateStatus evidence, std::uint32_t drain)
+{
+    ResolveLiveTunnelReleaseGate(binding)->ApplyEvaluation(
+        optIn, betaOptIn, healthy, static_cast<std::uint32_t>(evidence),
+        static_cast<std::uint32_t>(kad6::K6ReleaseGateStatus::Ok),
+        static_cast<std::uint32_t>(kad6::K6ReleaseGateStatus::OperatorOptOut),
+        static_cast<std::uint32_t>(kad6::K6ReleaseGateStatus::RuntimeUnhealthy),
+        drain);
+}
+bool M2A_LT1_IsEnabledBridge(const M2AModuleHandle& binding) noexcept
+{ return ResolveLiveTunnelReleaseGate(binding)->IsEnabled(); }
+bool M2A_LT1_GetChallengeBridge(
+    M2AModuleHandle& binding, std::string& challenge, std::uint64_t now)
+{ return ResolveLiveTunnelReleaseGate(binding)->GetChallenge(challenge, now); }
+bool M2A_LT1_ConsumeChallengeBridge(M2AModuleHandle& binding,
+    const std::string& challenge, std::uint64_t now) noexcept
+{ return ResolveLiveTunnelReleaseGate(binding)->ConsumeChallenge(challenge, now); }
+} // namespace eSELive

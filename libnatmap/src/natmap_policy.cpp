@@ -81,6 +81,26 @@ PortIntent BuildAutomaticPortIntent(Transport transport,
     return intent;
 }
 
+bool RequiresAdvertisementRelogin(
+    const AdvertisementObservation& observation) noexcept {
+    if (!observation.observed)
+        return false;
+    return observation.current_generation
+            != observation.previous_generation
+        || (observation.was_enabled && !observation.is_enabled)
+        || (!observation.was_enabled && observation.is_enabled);
+}
+
+bool ShouldRestartAdvertisementLogin(
+    const AdvertisementObservation& observation,
+    bool server_connected,
+    bool server_connecting,
+    bool connected_via_relay) noexcept {
+    return RequiresAdvertisementRelogin(observation) &&
+           (server_connected || server_connecting) &&
+           !connected_via_relay;
+}
+
 LeaseTiming LeaseController::Schedule(const PortLease& lease,
                                       std::uint64_t now_ms) noexcept {
     return ScheduleLifetime(lease.lifetime_seconds, now_ms);
@@ -157,14 +177,115 @@ void PermanentMappingProbeSchedule::Clear() noexcept {
     active_ = false;
 }
 
+bool MappingRecoverySchedule::ResetForNetworkChange(
+    std::uint64_t generation, std::uint64_t now_ms) noexcept {
+    if (generation == 0 ||
+        (active_ && generation <= generation_) ||
+        (active_ && now_ms < last_observed_ms_))
+        return false;
+    generation_ = generation;
+    next_attempt_ms_ = now_ms;
+    last_observed_ms_ = now_ms;
+    attempt_count_ = 0;
+    active_ = true;
+    return true;
+}
+
+bool MappingRecoverySchedule::ShouldAttempt(
+    std::uint64_t generation, std::uint64_t now_ms) const noexcept {
+    return active_ && generation == generation_ &&
+           attempt_count_ < kMaximumAttempts &&
+           now_ms >= last_observed_ms_ &&
+           now_ms >= next_attempt_ms_;
+}
+
+bool MappingRecoverySchedule::BeginAttempt(
+    std::uint64_t generation, std::uint64_t now_ms) noexcept {
+    if (!ShouldAttempt(generation, now_ms))
+        return false;
+    ++attempt_count_;
+    const std::uint32_t shift =
+        attempt_count_ > 4 ? 4 : attempt_count_ - 1;
+    std::uint64_t delay_ms = kFirstRetryDelayMs << shift;
+    if (delay_ms > kMaximumRetryDelayMs)
+        delay_ms = kMaximumRetryDelayMs;
+    next_attempt_ms_ = SaturatingAdd(now_ms, delay_ms);
+    last_observed_ms_ = now_ms;
+    return true;
+}
+
+bool MappingRecoverySchedule::RecordSuccess(
+    std::uint64_t generation) noexcept {
+    if (!active_ || generation == 0 || generation != generation_)
+        return false;
+    Cancel();
+    return true;
+}
+
+void MappingRecoverySchedule::Cancel() noexcept {
+    generation_ = 0;
+    next_attempt_ms_ = 0;
+    last_observed_ms_ = 0;
+    attempt_count_ = 0;
+    active_ = false;
+}
+
 bool LeaseController::SameIdentity(const PortLease& left,
                                    const PortLease& right) noexcept {
     return left.mapper == right.mapper && left.transport == right.transport &&
            left.generation == right.generation &&
            left.granted_external_port == right.granted_external_port &&
+           SameEndpoint(left.gateway, right.gateway) &&
            SameEndpoint(left.local, right.local) &&
            SameEndpoint(left.public_endpoint, right.public_endpoint);
 }
+
+namespace {
+
+bool EpochAppearsReset(
+    const PortLease& previous,
+    const PortLease& current,
+    bool has_previous_observation,
+    std::uint64_t previous_client_seconds,
+    std::uint64_t current_client_seconds) noexcept {
+    if (previous.mapper != MapperKind::Pcp)
+        return previous.mapper_epoch != 0
+            && current.mapper_epoch != 0
+            && current.mapper_epoch < previous.mapper_epoch;
+    if (!has_previous_observation)
+        return false;
+    if (current_client_seconds < previous_client_seconds)
+        return true;
+    if (current.mapper_epoch < previous.mapper_epoch) {
+        const std::uint32_t regression =
+            previous.mapper_epoch - current.mapper_epoch;
+        // RFC 6887 section 8.5 explicitly tolerates one second of apparent
+        // backward time for response reordering.
+        return regression > 1;
+    }
+
+    const std::uint64_t client_delta =
+        current_client_seconds - previous_client_seconds;
+    const std::uint64_t server_delta =
+        static_cast<std::uint64_t>(current.mapper_epoch)
+        - previous.mapper_epoch;
+    const std::uint64_t server_lower_bound =
+        server_delta - server_delta / 16;
+    const std::uint64_t client_lower_bound =
+        client_delta - client_delta / 16;
+    const std::uint64_t maximum =
+        (std::numeric_limits<std::uint64_t>::max)();
+    const std::uint64_t client_plus_two =
+        client_delta > maximum - 2
+            ? maximum : client_delta + 2;
+    const std::uint64_t server_plus_two =
+        server_delta > maximum - 2
+            ? maximum : server_delta + 2;
+    return client_plus_two < server_lower_bound
+        || server_plus_two < client_lower_bound;
+}
+
+} // namespace
 
 bool LeaseController::Activate(const PortLease& lease,
                                std::uint64_t now_ms) noexcept {
@@ -172,7 +293,9 @@ bool LeaseController::Activate(const PortLease& lease,
         return false;
     lease_ = lease;
     timing_ = Schedule(lease, now_ms);
+    last_epoch_observation_seconds_ = now_ms / 1000;
     has_lease_ = true;
+    has_epoch_observation_ = lease.mapper == MapperKind::Pcp;
     last_epoch_reset_ = false;
     return true;
 }
@@ -182,10 +305,14 @@ bool LeaseController::AcceptRenewal(const PortLease& lease,
     if (!has_lease_ || !lease.IsStructurallyValid() || !lease.owned_by_us ||
         !SameIdentity(lease_, lease))
         return false;
-    last_epoch_reset_ = lease_.mapper_epoch != 0 && lease.mapper_epoch != 0 &&
-                        lease.mapper_epoch < lease_.mapper_epoch;
+    const std::uint64_t current_client_seconds = now_ms / 1000;
+    last_epoch_reset_ = EpochAppearsReset(
+        lease_, lease, has_epoch_observation_,
+        last_epoch_observation_seconds_, current_client_seconds);
     lease_ = lease;
     timing_ = Schedule(lease, now_ms);
+    last_epoch_observation_seconds_ = current_client_seconds;
+    has_epoch_observation_ = lease.mapper == MapperKind::Pcp;
     return true;
 }
 
@@ -205,7 +332,9 @@ bool LeaseController::TakeOwnedForDeletion(std::uint64_t generation,
     lease = lease_;
     lease_ = PortLease{};
     timing_ = LeaseTiming{};
+    last_epoch_observation_seconds_ = 0;
     has_lease_ = false;
+    has_epoch_observation_ = false;
     last_epoch_reset_ = false;
     return true;
 }

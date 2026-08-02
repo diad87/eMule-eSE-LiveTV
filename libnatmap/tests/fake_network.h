@@ -73,15 +73,18 @@ struct LoginResult {
 class FakeEd2kServer {
 public:
     LoginResult Login(const Endpoint& advertised, bool callback_reached,
-                      std::uint64_t generation) const noexcept {
+                      std::uint64_t generation,
+                      std::uint64_t verification_attempt_id = 1) const noexcept {
         LoginResult result{};
         result.client_id = callback_reached ? 0x580B1604u : 0x00119752u;
         result.high_id = callback_reached && advertised.IsUsable();
         if (result.high_id) {
             result.server_evidence = Evidence{
-                EvidenceKind::ServerHighId, advertised, generation, 1000};
+                EvidenceKind::ServerHighId, advertised, generation, 1000,
+                verification_attempt_id};
             result.inbound_evidence = Evidence{
-                EvidenceKind::InboundTcpAccept, advertised, generation, 1001};
+                EvidenceKind::InboundTcpAccept, advertised, generation, 1001,
+                verification_attempt_id};
         }
         return result;
     }

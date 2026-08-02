@@ -1,0 +1,311 @@
+{
+  "schema": "ese.mod03.ownership-layering-contract/v1",
+  "contract_id": "urn:emule:architecture:mod-0.3:ownership-layering:v1",
+  "status": "PASS",
+  "scope": "architecture contract only; no extraction and no production behavior change",
+  "baselines": {
+    "inventory": {
+      "path": "docs/architecture/mod01_architecture_inventory_v1.json",
+      "inventory_id": "urn:emule:architecture-inventory:mod-0.1:v1",
+      "baseline_commit": "b875d3dd61a2d675b2138d61161f0a8fec9d9888",
+      "sha256": "56d9b3c26add68bdf9e490e2ea98a6078775d8f6e56c27ebd09475fd74b1cff8"
+    },
+    "characterization": {
+      "matrix_path": "docs/architecture/mod02_characterization_matrix_v1.json",
+      "matrix_id": "urn:emule:architecture:mod-0.2:characterization:v1",
+      "required_status": "PASS"
+    }
+  },
+  "non_goals": {
+    "wire_change": false,
+    "persistence_change": false,
+    "behavior_change": false,
+    "coordinator_extraction_started": false
+  },
+  "layer_model": {
+    "layers": [
+      "composition",
+      "facade",
+      "application",
+      "domain_state",
+      "ports",
+      "adapters",
+      "foundation"
+    ],
+    "edge_policy": "deny_unlisted",
+    "acyclic": true,
+    "allowed_edges": [
+      ["composition", "facade"],
+      ["composition", "adapters"],
+      ["facade", "application"],
+      ["facade", "ports"],
+      ["application", "domain_state"],
+      ["application", "ports"],
+      ["adapters", "ports"],
+      ["adapters", "foundation"],
+      ["domain_state", "foundation"],
+      ["ports", "foundation"]
+    ],
+    "forbidden_edges": [
+      ["composition", "application"],
+      ["composition", "domain_state"],
+      ["composition", "ports"],
+      ["composition", "foundation"],
+      ["facade", "composition"],
+      ["facade", "domain_state"],
+      ["facade", "adapters"],
+      ["facade", "foundation"],
+      ["application", "composition"],
+      ["application", "facade"],
+      ["application", "adapters"],
+      ["application", "foundation"],
+      ["domain_state", "composition"],
+      ["domain_state", "facade"],
+      ["domain_state", "application"],
+      ["domain_state", "ports"],
+      ["domain_state", "adapters"],
+      ["ports", "composition"],
+      ["ports", "facade"],
+      ["ports", "application"],
+      ["ports", "domain_state"],
+      ["ports", "adapters"],
+      ["adapters", "composition"],
+      ["adapters", "facade"],
+      ["adapters", "application"],
+      ["adapters", "domain_state"],
+      ["foundation", "composition"],
+      ["foundation", "facade"],
+      ["foundation", "application"],
+      ["foundation", "domain_state"],
+      ["foundation", "ports"],
+      ["foundation", "adapters"]
+    ]
+  },
+  "global_rules": {
+    "ownership": "Every mutable field and state record keeps the single owner recorded by MOD-0.1 until a later approved extraction transfers it atomically.",
+    "lock_order": ["registry", "pending", "queue", "timer_or_leaf"],
+    "lock_rule": "Acquire only from lower to higher rank; release before calling an external callback. An opposite baseline path is a STOP requiring a dedicated concurrency proof, not an exception.",
+    "external_callbacks": "snapshot_unlock_invoke",
+    "marshaling": "Cross-thread commands carry immutable values or owned buffers through an explicit queue/message port; they never lend coordinator internals.",
+    "composition": "The existing coordinator remains composition root and lifetime owner; extracted collaborators arrive through explicit constructor/factory parameters or narrow ports.",
+    "includes": "New extracted modules never include a coordinator header. Facades may include narrow module interfaces; implementations depend inward through ports and deny unlisted layer edges."
+  },
+  "coordinators": [
+    {
+      "name": "LiveTunnel",
+      "owner": "CLiveTunnel",
+      "files": ["srchybrid/LiveTunnel.cpp", "srchybrid/LiveTunnel.h"],
+      "inventory_projection": {
+        "mutable_fields": {"count": 106, "sha256": "273fa511ee6e04dee672afc8bb71f065c085b6bd80e7842a64e5b3a414a65a5e"},
+        "state_records": {"count": 34, "sha256": "f318386ed953169af66aab35d095efb9ff9a9c6f3786efcb8f78e44ff5cab1af"},
+        "thread_entrypoints": {"count": 37, "sha256": "305b4e6dd3a44df57e086a8027f0fa98f90e50422d817e48e7fe3c1423bd0814"},
+        "external_async_callback_edges": {"count": 0, "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"},
+        "direct_includes": {"count": 73, "sha256": "cf2581ea2c376f95358ccaf11d9e4794cc8d62a0f32257c5eabf0e46e71ed490"}
+      },
+      "record_ownership": [
+        {"record":"TunnelRequestCtx","record_owner":"TunnelRequestCtx","contained_by_owner":"CLiveTunnel","contained_by_fields":[]},
+        {"record":"CircuitSnapshot","record_owner":"CircuitSnapshot","contained_by_owner":"CLiveTunnel","contained_by_fields":[]},
+        {"record":"K6HardeningRuntimeSnapshot","record_owner":"K6HardeningRuntimeSnapshot","contained_by_owner":"CLiveTunnel","contained_by_fields":[]},
+        {"record":"K6ReleaseRuntimeSnapshot","record_owner":"K6ReleaseRuntimeSnapshot","contained_by_owner":"CLiveTunnel","contained_by_fields":[]},
+        {"record":"PeerSnapshot","record_owner":"PeerSnapshot","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_peersCacheAll"]},
+        {"record":"K6ShapedQueuedRecord","record_owner":"K6ShapedQueuedRecord","contained_by_owner":"CLiveTunnel","contained_by_fields":["records"]},
+        {"record":"K6ShapedLinkState","record_owner":"K6ShapedLinkState","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6ShapeReverse"]},
+        {"record":"BulkReasmEntry","record_owner":"BulkReasmEntry","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_bulkReasm"]},
+        {"record":"ProxyFrag","record_owner":"ProxyFrag","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_proxyFragReasm"]},
+        {"record":"BulkSub","record_owner":"BulkSub","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_bulkSubs"]},
+        {"record":"ProxyRecentRec","record_owner":"ProxyRecentRec","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_proxyRecent"]},
+        {"record":"ProxyStreamCtl","record_owner":"ProxyStreamCtl","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_proxyCtl"]},
+        {"record":"ExitOperation","record_owner":"ExitOperation","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_exitOps"]},
+        {"record":"TunnelSearchJob","record_owner":"TunnelSearchJob","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_searchJobs"]},
+        {"record":"SourceCandidate","record_owner":"SourceCandidate","contained_by_owner":"CLiveTunnel","contained_by_fields":["sourceCandidates"]},
+        {"record":"K6ExitPublishRuntime","record_owner":"K6ExitPublishRuntime","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6Publishes"]},
+        {"record":"K6AuthorizedTarget","record_owner":"K6AuthorizedTarget","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6AuthorizedTargets"]},
+        {"record":"K6UsedTicket","record_owner":"K6UsedTicket","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6UsedTickets"]},
+        {"record":"K6ExitStreamRuntime","record_owner":"K6ExitStreamRuntime","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6ExitStreams"]},
+        {"record":"K6QueuedOriginFrame","record_owner":"K6QueuedOriginFrame","contained_by_owner":"CLiveTunnel","contained_by_fields":["pending_credit_frames"]},
+        {"record":"K6OriginStreamRuntime","record_owner":"K6OriginStreamRuntime","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6OriginStreams"]},
+        {"record":"K6SourceScore","record_owner":"K6SourceScore","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6SourceScores"]},
+        {"record":"K6FairPayload","record_owner":"K6FairPayload","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6FairPayloads"]},
+        {"record":"K6QuotaGrant","record_owner":"K6QuotaGrant","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6QuotaGrants"]},
+        {"record":"K6OriginSourceLookup","record_owner":"K6OriginSourceLookup","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6OriginSourceLookups"]},
+        {"record":"K6DownloadActivation","record_owner":"K6DownloadActivation","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6DownloadActivations"]},
+        {"record":"K6OriginAdvertiseState","record_owner":"K6OriginAdvertiseState","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6OriginAdvertisements"]},
+        {"record":"K6OriginAdvertiseWork","record_owner":"K6OriginAdvertiseWork","contained_by_owner":"CLiveTunnel","contained_by_fields":[]},
+        {"record":"K6OriginTargetRoute","record_owner":"K6OriginTargetRoute","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6OriginLiveRoutes","m_k6OriginTargetRoutes"]},
+        {"record":"ExitLiveSub","record_owner":"ExitLiveSub","contained_by_owner":"CLiveTunnel","contained_by_fields":["circuits"]},
+        {"record":"ExitStreamProxy","record_owner":"ExitStreamProxy","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_exitLiveSubs"]},
+        {"record":"PendingRequest","record_owner":"PendingRequest","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_pending"]},
+        {"record":"MainThreadReq","record_owner":"MainThreadReq","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_mtQueue"]},
+        {"record":"K6SearchReplyAggregate","record_owner":"K6SearchReplyAggregate","contained_by_owner":"CLiveTunnel","contained_by_fields":["m_k6SearchReplies"]}
+      ],
+      "planned_modules": [
+        {"module":"LiveTunnelFraming","layer":"foundation","responsibility":"headers, fragmentation and reassembly","owner_before":"CLiveTunnel","owner_after":"LiveTunnelFraming","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveHandshakeWire","layer":"ports","responsibility":"byte-exact CREATE, CREATED, EXTEND and EXTENDED transcript and cell serialization","owner_before":"CLiveTunnel","owner_after":"LiveHandshakeWire","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveTunnelPending","layer":"domain_state","responsibility":"pending requests, deadlines, retry and single completion","owner_before":"CLiveTunnel","owner_after":"LiveTunnelPending","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveCircuitRegistry","layer":"domain_state","responsibility":"circuit identity, state and lookup","owner_before":"CLiveTunnel","owner_after":"LiveCircuitRegistry","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveCircuitHandshake","layer":"application","responsibility":"CREATE, CREATED, EXTEND and EXTENDED orchestration","owner_before":"CLiveTunnel","owner_after":"LiveCircuitHandshake","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveRelayDispatcher","layer":"application","responsibility":"sub-opcode validation and dispatch","owner_before":"CLiveTunnel","owner_after":"LiveRelayDispatcher","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveExitServices","layer":"application","responsibility":"exit handler registry and lifecycle","owner_before":"CLiveTunnel","owner_after":"LiveExitServices","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveTunnelScheduler","layer":"application","responsibility":"ticks, timers, shaping and deferred work","owner_before":"CLiveTunnel","owner_after":"LiveTunnelScheduler","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveTunnelPeerState","layer":"domain_state","responsibility":"disconnect, cooldown, penalty and peer selection","owner_before":"CLiveTunnel","owner_after":"LiveTunnelPeerState","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveTunnelKadBridge","layer":"adapters","responsibility":"explicit Kad2/Kad6 to tunnel boundary","owner_before":"CLiveTunnel","owner_after":"LiveTunnelKadBridge","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveTunnelMetrics","layer":"application","responsibility":"immutable snapshots and counters","owner_before":"CLiveTunnel","owner_after":"LiveTunnelMetrics","transfer_rule":"only after atomic ownership transfer in its approved slice"}
+      ],
+      "lock_contract": {
+        "inventory_member_locks": ["m_k6ReleaseLock","m_lock","m_mtLock","m_peersCacheLock","m_pendingLock","m_proxyIngestLock"],
+        "inventory_local_locks": [],
+        "domains": [
+          {"domain":"registry","rank":10,"locks":["m_lock"]},
+          {"domain":"pending","rank":20,"locks":["m_pendingLock"]},
+          {"domain":"queue","rank":30,"locks":["m_mtLock"]},
+          {"domain":"timer_or_leaf","rank":40,"locks":["m_k6ReleaseLock","m_peersCacheLock","m_proxyIngestLock"]}
+        ],
+        "permitted_nested_edges": [["registry","pending"],["registry","queue"],["registry","timer_or_leaf"],["pending","queue"],["pending","timer_or_leaf"],["queue","timer_or_leaf"]]
+      },
+      "thread_affinity": [
+        {"group":"main_thread_drain_and_tick","entrypoints":["CLiveTunnel::ProcessMainThreadWork","CLiveTunnel::ProcessK6FairTick","CLiveTunnel::ProcessClass5Tick"],"affinity":"main_thread","marshal":"m_mtQueue protected by m_mtLock"},
+        {"group":"network_and_kad_ingress","entrypoint_projection":"remaining MOD-0.1 On*/Handle* callbacks","affinity":"ingress_callback_thread","marshal":"validate/copy, enqueue immutable command, mutate only under declared owner lock"},
+        {"group":"timer_callback","entrypoints":["K6Class5TimerProc"],"affinity":"timer_callback","marshal":"post bounded work; timer owns no coordinator state"},
+        {"group":"origin_advertise_worker","entrypoints":["CLiveTunnel::K6OriginAdvertiseWorker"],"affinity":"worker_thread","marshal":"owned input/result and lifetime fence before main-thread apply"}
+      ],
+      "external_callback_contracts": [
+        {"boundary":"socket/Kad completion","under_internal_lock":false,"rule":"snapshot_unlock_invoke"},
+        {"boundary":"LiveStreamManager calls","under_internal_lock":false,"rule":"snapshot_unlock_invoke"},
+        {"boundary":"event completion SetEvent","under_internal_lock":false,"rule":"complete once after state commit"}
+      ],
+      "composition": {"composition_root":"CLiveTunnel","lifetime_owner":"CLiveTunnel","injection":"explicit narrow ports/factory parameters","service_locator_in_extracted_modules":false},
+      "include_rules": {"coordinator_header_in_extracted_module":"forbidden","sibling_coordinator_header":"forbidden; use port","public_header_concrete_socket_kad_ui_types":"forbidden","adapter_cpp_concrete_dependencies":"allowed"},
+      "inventory_stop_conditions": [
+        "Do not extract while a proposed seam needs a new lock order without a dedicated concurrency proof.",
+        "Stop if callback ownership or pending-request completion cannot be expressed as an explicit contract."
+      ]
+    },
+    {
+      "name": "WebServer",
+      "owner": "CWebServer",
+      "files": ["srchybrid/WebServer.cpp", "srchybrid/WebServer.h"],
+      "inventory_projection": {
+        "mutable_fields": {"count": 8, "sha256": "4245c97b29f5a5b5f01efa817d5bda32ed80c2d2eb2e9e383384ef7e82329955"},
+        "state_records": {"count": 2, "sha256": "ea32da5662196d3e284b0f6888172254f65778948dd67dbc31b755c0caa85c39"},
+        "thread_entrypoints": {"count": 57, "sha256": "89c008da23f1b72ebf757cfa4b570beca8929128c6e06f4e57b4f2ff36bab6f1"},
+        "external_async_callback_edges": {"count": 0, "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"},
+        "direct_includes": {"count": 67, "sha256": "91a2ea0dd19614a2ba622b689a95d4eb53c5a9f6b67db7f4531d782fe0ff13b2"}
+      },
+      "record_ownership": [
+        {"record":"GlobalParams","record_owner":"GlobalParams","contained_by_owner":"CWebServer","contained_by_fields":["m_Params"]},
+        {"record":"WebTemplates","record_owner":"WebTemplates","contained_by_owner":"CWebServer","contained_by_fields":["m_Templates"]}
+      ],
+      "planned_modules": [
+        {"module":"WebRequestParser","layer":"application","responsibility":"request line, headers, limits and normalization","owner_before":"CWebServer","owner_after":"WebRequestParser","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"WebAuthPolicy","layer":"application","responsibility":"session, CSRF, permissions and rate limiting","owner_before":"CWebServer","owner_after":"WebAuthPolicy","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"WebRouteTable","layer":"application","responsibility":"method and route to handler dispatch","owner_before":"CWebServer","owner_after":"WebRouteTable","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"WebApiSerializer","layer":"application","responsibility":"escaped JSON, XML, HTML and response models","owner_before":"CWebServer","owner_after":"WebApiSerializer","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"WebTransferController","layer":"application","responsibility":"download and upload actions","owner_before":"CWebServer","owner_after":"WebTransferController","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"WebSearchController","layer":"application","responsibility":"search and result projection","owner_before":"CWebServer","owner_after":"WebSearchController","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"WebSharedController","layer":"application","responsibility":"shared catalog projection","owner_before":"CWebServer","owner_after":"WebSharedController","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"WebStaticAssets","layer":"application","responsibility":"static resources, MIME, cache and ranges","owner_before":"CWebServer","owner_after":"WebStaticAssets","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"WebSocketResponse","layer":"adapters","responsibility":"socket backpressure, streaming and close","owner_before":"CWebServer","owner_after":"WebSocketResponse","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"WebDiagnostics","layer":"application","responsibility":"sanitized status without secrets or private paths","owner_before":"CWebServer","owner_after":"WebDiagnostics","transfer_rule":"only after atomic ownership transfer in its approved slice"}
+      ],
+      "lock_contract": {
+        "inventory_member_locks": [],
+        "inventory_local_locks": [],
+        "domains": [],
+        "permitted_nested_edges": []
+      },
+      "thread_affinity": [
+        {"group":"request_dispatch","entrypoints":["CWebServer::_ProcessURL","CWebServer::_ProcessLiveAPI","CWebServer::_ProcessFileReq"],"affinity":"web_request_thread","marshal":"parse/authorize there; use immutable DTOs for crossings"},
+        {"group":"gui_bridge","entrypoint_projection":"MOD-0.1 SendMessage/PostMessage sites","affinity":"gui_main_thread_target","marshal":"explicit message port; never direct UI mutation from request thread"},
+        {"group":"comparators","entrypoints":["CWebServer::_DownloadCmp","CWebServer::_ServerCmp","CWebServer::_SharedCmp","CWebServer::_UploadCmp"],"affinity":"synchronous caller","marshal":"pure comparison over caller-owned snapshot"}
+      ],
+      "external_callback_contracts": [
+        {"boundary":"GUI SendMessage/PostMessage","under_internal_lock":false,"rule":"snapshot_unlock_invoke"},
+        {"boundary":"socket response writes","under_internal_lock":false,"rule":"serialize owned response then invoke"},
+        {"boundary":"sort callbacks","under_internal_lock":false,"rule":"pure caller-owned snapshot"}
+      ],
+      "composition": {"composition_root":"CWebServer","lifetime_owner":"CWebServer","injection":"route/auth/projection/static-response ports","service_locator_in_extracted_modules":false},
+      "include_rules": {"coordinator_header_in_extracted_module":"forbidden","gui_headers_outside_adapter":"forbidden","public_header_global_theApp_or_concrete_socket":"forbidden","adapter_cpp_concrete_dependencies":"allowed"},
+      "inventory_stop_conditions": [
+        "Do not extract handlers that require synchronous GUI calls before defining a marshalled boundary.",
+        "Stop if a projection would expose raw endpoint, credential or session material."
+      ]
+    },
+    {
+      "name": "LiveStreamManager",
+      "owner": "CLiveStreamManager",
+      "files": ["srchybrid/LiveStreamManager.cpp", "srchybrid/LiveStreamManager.h"],
+      "inventory_projection": {
+        "mutable_fields": {"count": 65, "sha256": "890483bc3841f71733df46495271439004bcfdfffede4a040427178e73f85de8"},
+        "state_records": {"count": 8, "sha256": "2a59d06b03c87f932ef18e70c84553913726487ef4a7153e6283abd3b06a4630"},
+        "thread_entrypoints": {"count": 16, "sha256": "d335da9feefc349ec3b21a6000479487becec35d85397cc4331d047f45ec883f"},
+        "external_async_callback_edges": {"count": 1, "sha256": "97529d89c37a9f68572e32f5cc2ef5f7435160fbf1bdcdea555362f4891bfa78"},
+        "direct_includes": {"count": 43, "sha256": "ba029c131f949ec7db6924e8c3ca04fea374caee3e5b4d4a5ff6bc37408dcc08"}
+      },
+      "record_ownership": [
+        {"record":"FragReasm","record_owner":"FragReasm","contained_by_owner":"CLiveStreamManager","contained_by_fields":["m_fragReasm"]},
+        {"record":"FragKeyLess","record_owner":"FragKeyLess","contained_by_owner":"CLiveStreamManager","contained_by_fields":["m_fragReasm"]},
+        {"record":"PendingPing","record_owner":"PendingPing","contained_by_owner":"CLiveStreamManager","contained_by_fields":["m_pendingPings"]},
+        {"record":"ReachState","record_owner":"ReachState","contained_by_owner":"CLiveStreamManager","contained_by_fields":["m_escalation"]},
+        {"record":"SubRateState","record_owner":"SubRateState","contained_by_owner":"CLiveStreamManager","contained_by_fields":["m_subscribeRate"]},
+        {"record":"PubkeyPin","record_owner":"PubkeyPin","contained_by_owner":"CLiveStreamManager","contained_by_fields":["m_streamPubkeyPin"]},
+        {"record":"InflightSegReq","record_owner":"InflightSegReq","contained_by_owner":"CLiveStreamManager","contained_by_fields":["m_inflightSegReqs"]},
+        {"record":"TestDeferredSend","record_owner":"TestDeferredSend","contained_by_owner":"CLiveStreamManager","contained_by_fields":["m_testDeferredSends"]}
+      ],
+      "planned_modules": [
+        {"module":"LiveBroadcastSession","layer":"domain_state","responsibility":"broadcaster start, stop and state","owner_before":"CLiveStreamManager","owner_after":"LiveBroadcastSession","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveViewerSession","layer":"domain_state","responsibility":"viewer join, leave and lifecycle","owner_before":"CLiveStreamManager","owner_after":"LiveViewerSession","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LivePeerSet","layer":"domain_state","responsibility":"peer selection, replacement, limits and diversity","owner_before":"CLiveStreamManager","owner_after":"LivePeerSet","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveChunkWindow","layer":"domain_state","responsibility":"chunk ingest, order, expiry and availability","owner_before":"CLiveStreamManager","owner_after":"LiveChunkWindow","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveStreamSecurity","layer":"domain_state","responsibility":"signature, pinning, replay and trust","owner_before":"CLiveStreamManager","owner_after":"LiveStreamSecurity","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveStreamFanout","layer":"application","responsibility":"queues, backpressure and child delivery","owner_before":"CLiveStreamManager","owner_after":"LiveStreamFanout","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveStreamRecovery","layer":"application","responsibility":"NACK, FEC, replenishment and emergency","owner_before":"CLiveStreamManager","owner_after":"LiveStreamRecovery","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveStreamAnnouncer","layer":"adapters","responsibility":"announces and wire compatibility","owner_before":"CLiveStreamManager","owner_after":"LiveStreamAnnouncer","transfer_rule":"only after atomic ownership transfer in its approved slice"},
+        {"module":"LiveStreamSnapshot","layer":"application","responsibility":"immutable observability snapshots","owner_before":"CLiveStreamManager","owner_after":"LiveStreamSnapshot","transfer_rule":"only after atomic ownership transfer in its approved slice"}
+      ],
+      "lock_contract": {
+        "inventory_member_locks": ["m_lock"],
+        "inventory_local_locks": ["s_liveRequestRateLock"],
+        "domains": [
+          {"domain":"registry","rank":10,"locks":["m_lock"]},
+          {"domain":"timer_or_leaf","rank":40,"locks":["s_liveRequestRateLock"]}
+        ],
+        "permitted_nested_edges": [["registry","timer_or_leaf"]]
+      },
+      "thread_affinity": [
+        {"group":"main_thread_commands","entrypoints":["CLiveStreamManager::Process"],"affinity":"main_thread","marshal":"UI/web actions become immutable commands before mutation"},
+        {"group":"protocol_ingress","entrypoint_projection":"MOD-0.1 On* entrypoints","affinity":"network_dispatch_thread","marshal":"validate/copy then lock manager; outbound work after unlock"},
+        {"group":"rtmp_chunk_callback","entrypoints":["chunkCb","CLiveStreamManager::FeedSegment"],"affinity":"rtmp_watcher_thread","marshal":"owned segment bytes plus shutdown/generation fence"},
+        {"group":"snapshot_readers","entrypoint_projection":"web/UI snapshot APIs","affinity":"caller_thread","marshal":"return immutable copies only"}
+      ],
+      "external_callback_contracts": [
+        {"boundary":"CRTMPIngest watcher callback","under_internal_lock":false,"rule":"owned buffer and lifetime fence"},
+        {"boundary":"peer/socket sends","under_internal_lock":false,"rule":"collect work under lock, invoke after unlock"},
+        {"boundary":"tunnel/Kad bridge calls","under_internal_lock":false,"rule":"snapshot_unlock_invoke"}
+      ],
+      "composition": {"composition_root":"CLiveStreamManager","lifetime_owner":"CLiveStreamManager","injection":"ingest/Kad/mesh/transport/clock ports","service_locator_in_extracted_modules":false},
+      "include_rules": {"coordinator_header_in_extracted_module":"forbidden","LiveTunnel_header_outside_adapter":"forbidden; use port","public_header_concrete_peer_socket_ui_types":"forbidden","adapter_cpp_concrete_dependencies":"allowed"},
+      "inventory_stop_conditions": [
+        "Do not extract shared state before snapshot ownership and caller thread are explicit.",
+        "Stop if protocol callback lifetime crosses a manager boundary without a cancellation/fence contract."
+      ]
+    }
+  ],
+  "global_stop_conditions": [
+    {"id":"wire_change","condition":"any wire byte or opcode behavior changes"},
+    {"id":"persistence_change","condition":"a persistence migration or format change is required"},
+    {"id":"duplicate_owner","condition":"two owners exist for one mutable state or record"},
+    {"id":"callback_under_lock","condition":"an external callback requires an internal lock to remain held"},
+    {"id":"reverse_include","condition":"an extracted module includes its coordinator or a sibling coordinator"},
+    {"id":"dependency_cycle","condition":"a new include/dependency cycle or SCC appears"},
+    {"id":"uncharacterized_behavior","condition":"tests cannot distinguish baseline and proposed behavior"},
+    {"id":"oversized_slice","condition":"the extraction diff exceeds 1500 net lines without independent slices"},
+    {"id":"functional_fix_mixed","condition":"a functional S1/S2 fix is required in the extraction slice"},
+    {"id":"missing_concurrency_proof","condition":"a path needs an order opposite to registry->pending->queue->timer_or_leaf"}
+  ],
+  "approval": {
+    "mod03_status": "PASS",
+    "extraction_authorized_before_pass": false,
+    "next_gate": "MOD-0.4",
+    "review_policy": "implementation Sol/high plus independent Sol/high review"
+  }
+}

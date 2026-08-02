@@ -114,6 +114,23 @@ void TestHighIdNeedsBothPiecesOfEvidence() {
     snapshot.state = ReachabilityState::Reachable;
     snapshot.generation = 11;
     snapshot.advertised = advertised;
+    snapshot.lease.mapper = MapperKind::Pcp;
+    snapshot.lease.transport = Transport::Tcp;
+    snapshot.lease.local = Ep(
+        192, 168, 1, 20, 4662, EndpointSource::LocalInterface);
+    snapshot.lease.public_endpoint = advertised;
+    snapshot.lease.requested_external_port = 4662;
+    snapshot.lease.granted_external_port = advertised.port;
+    snapshot.lease.lifetime_seconds = 3600;
+    snapshot.lease.generation = 11;
+    snapshot.lease.owned_by_us = true;
+    snapshot.verification_attempt.attempt_id = 1;
+    snapshot.verification_attempt.topology_generation = 11;
+    snapshot.verification_attempt.endpoint = advertised;
+    snapshot.verification_attempt.transport = Transport::Tcp;
+    snapshot.verification_attempt.path = VerificationPath::Direct;
+    snapshot.verification_attempt.started_monotonic_ms = 1000;
+    snapshot.verification_attempt.deadline_monotonic_ms = 31000;
     snapshot.primary_evidence = high.server_evidence;
     snapshot.inbound_evidence = high.inbound_evidence;
     CHECK(snapshot.HasClassicHighIdEvidence());

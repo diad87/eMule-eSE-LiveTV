@@ -1,0 +1,25 @@
+{
+  "schema": "ese.v92.wp92-0-selftest/v1",
+  "case_id": "G-SELFTEST",
+  "verdict": "PASS",
+  "exit_code": 0,
+  "candidate": {
+    "version": "9.1.0-rc.2",
+    "commit": "08aa6521f7d7907edb3584266abc3a9e31693161",
+    "emule_bytes": 11250688,
+    "emule_sha256": "55C5AA0E968B25330720CFB7F622CBC28EA9875365145333CBCF9D9585C1C44A"
+  },
+  "execution": {
+    "portable": true,
+    "isolated_profile": true,
+    "started_at_utc": "2026-07-27T17:34:19.4917707Z",
+    "finished_at_utc": "2026-07-27T17:34:29.7334273Z",
+    "duration_seconds": 10.242,
+    "executed_binary_sha256": "55C5AA0E968B25330720CFB7F622CBC28EA9875365145333CBCF9D9585C1C44A"
+  },
+  "source_report": {
+    "schema": "ese.lab.report/v1",
+    "sha256": "0E99BBCE2B511C276AE50AC9F40552F3312E0505E68EEB31F7CFC08D8FF38E6A",
+    "privacy_sensitive_values_included": false
+  }
+}

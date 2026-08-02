@@ -1,0 +1,204 @@
+{
+  "golden_id": "urn:emule:architecture:mod-0.2:production-structural-goldens:v1",
+  "goldens": {
+    "live_circuit_handshake": {
+      "production_file": "srchybrid/LiveCircuitHandshake.cpp",
+      "symbols": [
+        "LiveCircuitHandshake::HandleCreatedOriginator",
+        "LiveCircuitHandshake::ContinueOriginatorBuild",
+        "LiveCircuitHandshake::HandleCreateRelay",
+        "LiveCircuitHandshake::BuildExtend",
+        "LiveCircuitHandshake::HandleExtendRelay",
+        "LiveCircuitHandshake::ForwardCreatedAsExtendedRelay",
+        "LiveCircuitHandshake::ForwardExtendCellForward",
+        "LiveCircuitHandshake::ForwardExtendedCellReverse",
+        "LiveCircuitHandshake::HandleExtendedOriginator"
+      ],
+      "token_sha256": {
+        "LiveCircuitHandshake::BuildExtend": "75f92da5fcb6aa6586e41b1dda1430755e5561d55210e7d3a4b90eadc530da20",
+        "LiveCircuitHandshake::ContinueOriginatorBuild": "48affd2868c6d0349d5f18f0e9d835c1bf8deaf2c834984cca60e76f0897eafc",
+        "LiveCircuitHandshake::ForwardCreatedAsExtendedRelay": "b9edcb759e9fbec9527e71efe6856439c258d07452ba2ac5ef1d2bfd6dfe9c2a",
+        "LiveCircuitHandshake::ForwardExtendCellForward": "3ec1cd39b574c3f8dea1d00e881c77aedf1bccbedf0006cecdb32c2d2e24c1b1",
+        "LiveCircuitHandshake::ForwardExtendedCellReverse": "1b5bd9baf3810ce564a48935ed54c9f8319ffc24603b33b572b961659e9c58bb",
+        "LiveCircuitHandshake::HandleCreateRelay": "1814ccb066a4265054aed390e0703e693cad7a2339a72701e5f9273168cb2043",
+        "LiveCircuitHandshake::HandleCreatedOriginator": "586b0221b4873b21559645ff57deb2ed4071e02fd1c22e1ad9898e8201a18ba9",
+        "LiveCircuitHandshake::HandleExtendRelay": "70581178bd85bf9b0de3ab050c66dff3dcbb4aaf46fd5afb74f173400f4783f7",
+        "LiveCircuitHandshake::HandleExtendedOriginator": "33aa0c5288f469d5d625af7e6eda3b528adf67c4b69287b3c0bd245d90c73aa0"
+      }
+    },
+    "live_circuit_registry": {
+      "production_file": "srchybrid/LiveCircuitRegistry.cpp",
+      "symbols": [
+        "LiveCircuitRegistry::Add",
+        "LiveCircuitRegistry::Clear",
+        "LiveCircuitRegistry::RemoveDestroyed",
+        "LiveCircuitRegistry::ContainsIncomingId",
+        "LiveCircuitRegistry::ContainsAnyLegId",
+        "LiveCircuitRegistry::FindById",
+        "LiveCircuitRegistry::FindRelayByOutgoingId",
+        "LiveCircuitRegistry::NextRoundRobin",
+        "LiveCircuitRegistry::Transition",
+        "RunCircuitRegistryCharacterizationSelfTest"
+      ],
+      "token_sha256": {
+        "LiveCircuitRegistry::Add": "6a841034e5b182844c819cc86387f6de40c1dfeacbe1894ae9eaddef037d7034",
+        "LiveCircuitRegistry::Clear": "c845ea03d8215bfffadf469ba8eacd6099281e67c597c3076167e27835021bb1",
+        "LiveCircuitRegistry::ContainsAnyLegId": "d0f52b8302e453ab52a273663b612daffd642b1722ac0c214c8e087fdd61f114",
+        "LiveCircuitRegistry::ContainsIncomingId": "15268902813c9f04167d3dba284cefc667d671fabd1931f26c682f1702e7fdae",
+        "LiveCircuitRegistry::FindById": "379cf1434ef7f8a8dcfc36fe894d176a50545564225b7fa0e3c71cf495c70238",
+        "LiveCircuitRegistry::FindRelayByOutgoingId": "8322790dd5cc695962b46b73c8786bc6fabf9eea70217e1962a08824380d2585",
+        "LiveCircuitRegistry::NextRoundRobin": "392977710f1710575ff1bf2e5a3400c54571de9287bf8b346a75e6a1ad699699",
+        "LiveCircuitRegistry::RemoveDestroyed": "b8240293dd682143090dcd97d75482096b41a2d15f51f9d9461d620d5dc8bcef",
+        "LiveCircuitRegistry::Transition": "78ae47885db26c7fb61aff494bac2ae22669ba07800093625915dae6862b2e1f",
+        "RunCircuitRegistryCharacterizationSelfTest": "f7c66c4fce8d3db346a4b2f3d7b2bebd2c564e7f73ed1092586668e548fdeb66"
+      }
+    },
+    "live_exit_services": {
+      "production_file": "srchybrid/LiveExitServices.cpp",
+      "symbols": [
+        "LiveExitServices::RegisterHandler",
+        "LiveExitServices::Dispatch",
+        "LiveExitServices::Begin",
+        "LiveExitServices::TakeCompletion",
+        "LiveExitServices::FindPart",
+        "LiveExitServices::Abort",
+        "LiveExitServices::AbortCircuit",
+        "LiveExitServices::Clear",
+        "LiveExitServices::Sweep",
+        "RunLiveExitServicesCharacterizationSelfTest"
+      ],
+      "token_sha256": {
+        "LiveExitServices::Abort": "49bb0058eb1ccf9a02667337c3d14bb0b541d96578e36c6f5b8d753791d7ae9b",
+        "LiveExitServices::AbortCircuit": "48db6a7651234d07112b1b2c8606ab273f778d490e4f25b837e0d9b5678d017b",
+        "LiveExitServices::Begin": "ba2c74fd980ad8fd563c9ee3ac270cdbf37ed778c6169bf8499ee574056c18c9",
+        "LiveExitServices::Clear": "942beea3b04d7209e9b131fbea6fb92850ffb26cd7954051e28633a51c6a549e",
+        "LiveExitServices::Dispatch": "f347310fc88eeb6422c69da36db295c8cc01378a40d83cfbf8b1f50a1e1578c8",
+        "LiveExitServices::FindPart": "33ce631714243ad0abe95f9b48c746d88361f0befc274530be0c165bbba5515d",
+        "LiveExitServices::RegisterHandler": "181a41ad4b7b14edaf632a212cb0e4bed5aa693c63a5c547d41c54a8a32199a3",
+        "LiveExitServices::Sweep": "9008a8eeb78fc6fb902259c1a345b56921a6c4e131fe8a88fc789e1f39e16d06",
+        "LiveExitServices::TakeCompletion": "bf908badb0939190357a00e75f3fefff93990f2883118e726583f4c57232e21b",
+        "RunLiveExitServicesCharacterizationSelfTest": "c778b2d895ce7757e8fc7384af3cd45ef2311b49a0ada13b108b97dd61a28654"
+      }
+    },
+    "live_relay_dispatcher": {
+      "production_file": "srchybrid/LiveRelayDispatcher.cpp",
+      "symbols": [
+        "LiveRelayDispatcher::DispatchExitPlain",
+        "RunLiveRelayDispatcherCharacterizationSelfTest"
+      ],
+      "token_sha256": {
+        "LiveRelayDispatcher::DispatchExitPlain": "c7788e6cb240b030bf129d41c79a5b3060bfb0fe7ff79bb654f7ffb23ee1aba5",
+        "RunLiveRelayDispatcherCharacterizationSelfTest": "bc1d4dc22deed3340fa5bc830168be83f39c556eb02f1951f1dd6588cd2d21b3"
+      }
+    },
+    "live_stream_session_chunk_callback": {
+      "production_file": "srchybrid/LiveStreamManager.cpp",
+      "symbols": [
+        "CLiveStreamManager::StartBroadcast",
+        "CLiveStreamManager::FeedSegment",
+        "CLiveStreamManager::OnChunkReceived"
+      ],
+      "token_sha256": {
+        "CLiveStreamManager::FeedSegment": "3c5c468a2ee94f8c7f0dc5d991252c26e2e4bd843e042e9e2fce73de0859ee9f",
+        "CLiveStreamManager::OnChunkReceived": "d6648776c00b4dafe6b8a259c57334b1d893bfdbeab25d54517d79710a6ecc71",
+        "CLiveStreamManager::StartBroadcast": "578e6317174e6df6e47bd45c349c65a469aca60a8fa3f723a0803b3386649148"
+      }
+    },
+    "live_tunnel_dispatch": {
+      "production_file": "srchybrid/LiveTunnelCoordinatorMethods.inl",
+      "symbols": [
+        "CLiveTunnel::SendThrough",
+        "CLiveTunnel::OnCellReceived",
+        "CLiveTunnel::DestroyCircuitFailClosed"
+      ],
+      "token_sha256": {
+        "CLiveTunnel::DestroyCircuitFailClosed": "7e96dcca78287489d473a982c529255d2135bca2b2f7eda46bf63f269e5dcd03",
+        "CLiveTunnel::OnCellReceived": "007be932c3cb6f76d6d61734595e8bdfc2ace9fdcd6ac4bf3036187cbdb31127",
+        "CLiveTunnel::SendThrough": "f8f3eba53ad91a8d33a9e168b4ef8f5f9bd6a86cc90658c9d309fd849b167fb4"
+      }
+    },
+    "live_tunnel_framing": {
+      "production_file": "srchybrid/LiveTunnelFraming.cpp",
+      "symbols": [
+        "PackSubHeader",
+        "ParseSubHeader",
+        "PackFragHeader",
+        "ParseFragHeader"
+      ],
+      "token_sha256": {
+        "PackFragHeader": "07366809009ed29f0174188045a7c6e422154a3f6008bced5b05a103ee02bbab",
+        "PackSubHeader": "cfb693f69da2c0f26356bd9f7d272aea3296367c63819aa657d4b23c2e4a38bc",
+        "ParseFragHeader": "034c6dcc3c6e3d63f023a55d17c47654f48fa85fd27ea66a2615d4762b7ee54d",
+        "ParseSubHeader": "312f10b21546aa2a5eb27e50b23ec670b0d42bdbd9b2ca295b3d1dc1eedb9a49"
+      }
+    },
+    "live_tunnel_pending": {
+      "production_file": "srchybrid/LiveTunnelPending.cpp",
+      "symbols": [
+        "LiveTunnelPending::Register",
+        "LiveTunnelPending::Configure",
+        "LiveTunnelPending::SetCircuit",
+        "LiveTunnelPending::Complete",
+        "LiveTunnelPending::Wait",
+        "LiveTunnelPending::CollectRetries"
+      ],
+      "token_sha256": {
+        "LiveTunnelPending::CollectRetries": "0b0afed8ea4bd6272f4222d4137755d3f016404f70e7595ebf1dc38996d2882d",
+        "LiveTunnelPending::Complete": "4b80b2a22e819460437db87276e067f968a32772b27bdda7a929504afa47838c",
+        "LiveTunnelPending::Configure": "75ca28f1d628f069770ee3ea99d802ec5edd41768ec11b2b4b39f6270bd9e3bd",
+        "LiveTunnelPending::Register": "8f7db88d64fbb7669c3abf071dfb0d13271fb2d8c6da3ae7b1fdaf491810f60a",
+        "LiveTunnelPending::SetCircuit": "c109071f3f7a7f4db5a2c5a36cc54d5c18290d0821e6fb40d1806b20f028450a",
+        "LiveTunnelPending::Wait": "6618672af4ca9cfd33a1fac3052925bf60cdaba803c9a6f77f91d32db931322d"
+      }
+    },
+    "web_live_dispatch": {
+      "production_file": "srchybrid/WebServer.cpp",
+      "symbols": [
+        "CWebServer::_ProcessLiveAPI"
+      ],
+      "token_sha256": {
+        "CWebServer::_ProcessLiveAPI": "700f3aa142fb9340b79724d88e194ec288cadda56cc27d56c4bb9c0fc7fa439d"
+      }
+    },
+    "web_parser_security": {
+      "production_file": "srchybrid/WebServer.cpp",
+      "symbols": [
+        "CWebServer::_ProcessLiveAPI",
+        "CWebServer::_SpecialChars"
+      ],
+      "token_sha256": {
+        "CWebServer::_ProcessLiveAPI": "700f3aa142fb9340b79724d88e194ec288cadda56cc27d56c4bb9c0fc7fa439d",
+        "CWebServer::_SpecialChars": "fe6e48d488da3cf377aa9b426a88a5ca856d2354f9bcc8b8c777b7025bfaf6c2"
+      }
+    },
+    "web_request_dispatch": {
+      "production_file": "srchybrid/WebRequestDispatch.cpp",
+      "symbols": [
+        "WebRequestDispatch::Process",
+        "CompressWebGzip",
+        "ResolveWebClassicView",
+        "ValidateWebChallengeDigest"
+      ],
+      "token_sha256": {
+        "CompressWebGzip": "33e40b870cf86ccf6bda5f2cd7fb3c2b8841dd9db8846bf7bcde8e816dc97f4e",
+        "ResolveWebClassicView": "e15610e6dd7c43310d7ff16f2c3f8ffc091474894ed85eca992b4d7a533b0ad2",
+        "ValidateWebChallengeDigest": "c4f0962e22c982492392e43c9fc3487f3b352498658f34d4c6966899d0ab862e",
+        "WebRequestDispatch::Process": "66928afe05c4ce6ccd95d7ddba2eb4b02cfe66eee7a5cf338a35688dc80327a8"
+      }
+    },
+    "web_serialization": {
+      "production_file": "srchybrid/WebServer.cpp",
+      "symbols": [
+        "CWebServer::_ProcessURL",
+        "CWebServer::_GetServerInfo",
+        "CWebServer::_GetStats"
+      ],
+      "token_sha256": {
+        "CWebServer::_GetServerInfo": "864c39e76209a55ba8384bb88dcc9c7792fa5e52ae681510482d977c717b79bd",
+        "CWebServer::_GetStats": "005c112cb432712a2792baf216bd52c90790fa2c94cb4d5b8176cd5c924529f8",
+        "CWebServer::_ProcessURL": "78a846aed1de01687515910ecfb1434850d66a521183407cd4e1d9fdcac4def5"
+      }
+    }
+  },
+  "tokenization": "comment and whitespace insensitive C++ lexical tokens; string literals preserved exactly"
+}

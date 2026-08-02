@@ -1,0 +1,148 @@
+{
+  "schema": "ese.mod25.web-controllers-contract/v1",
+  "baseline_commit": "6412eb1e418db658b71e645c57fdcd63e10fbca2",
+  "source_coordinator": "srchybrid/WebServer.cpp",
+  "valid_input_compatibility": "token_and_output_exact",
+  "invalid_input_policy": "fail_closed_without_mutation",
+  "modules": [
+    {
+      "name": "WebTransferController",
+      "owner_before": "CWebServer",
+      "owner_after": "WebTransferController",
+      "layer": "application",
+      "responsibility": "download and upload actions",
+      "symbols": {
+        "CWebServer::_GetTransferList": "17925148c4f541b989b05a96c04b03f105201c23f3ee713511575a670e3a7ba4",
+        "CWebServer::_MakeTransferList": "292a257e4b8c4070d51b2c38a59eed2ebb1399542fab1e9e80fd2a458dae8a33",
+        "CWebServer::_GetDownloadGraph": "1233734894da9620a59e60368e307bf83b91493fd2c4e875f43a49a4f1f9cbb4",
+        "CWebServer::_DownloadCmp": "760a8b3a7d8b3ba92f4a324800f92ef35e560a522bb1d8fef098634f72839430",
+        "CWebServer::_UploadCmp": "0801567cae16314bff01aa9e1e04de592c62de49beb7f21d7acc5859ba8b1347"
+      },
+      "file_operations": [
+        "stop",
+        "pause",
+        "resume",
+        "cancel",
+        "getflc",
+        "rename",
+        "priolow",
+        "prionormal",
+        "priohigh",
+        "prioauto",
+        "setcat",
+        "streamseek"
+      ],
+      "friend_operations": ["addfriend", "removefriend"],
+      "sort_tokens": [
+        "dstate",
+        "dtype",
+        "dname",
+        "dsize",
+        "dtransferred",
+        "dspeed",
+        "dprogress",
+        "dsources",
+        "dpriority",
+        "dcategory",
+        "uuser",
+        "uclient",
+        "uversion",
+        "ufilename",
+        "utransferred",
+        "uspeed",
+        "qclient",
+        "quser",
+        "qversion",
+        "qfilename",
+        "qscore"
+      ]
+    },
+    {
+      "name": "WebSearchController",
+      "owner_before": "CWebServer",
+      "owner_after": "WebSearchController",
+      "layer": "application",
+      "responsibility": "search and result projection",
+      "symbols": {
+        "CWebServer::_GetSearch": "a2115bdcd466383776544a24f793f951ae1fe57a7ead37cb6289e9e9f258d49b"
+      },
+      "methods": {
+        "kademlia": "SearchTypeKademlia",
+        "global": "SearchTypeEd2kGlobal",
+        "default": "SearchTypeEd2kServer"
+      },
+      "file_types": [
+        "Arc",
+        "Audio",
+        "Iso",
+        "Doc",
+        "Image",
+        "Pro",
+        "Video",
+        "EmuleCollection"
+      ],
+      "availability_max": 1000000,
+      "download_hash_hex_length": 32
+    },
+    {
+      "name": "WebSharedController",
+      "owner_before": "CWebServer",
+      "owner_after": "WebSharedController",
+      "layer": "application",
+      "responsibility": "shared catalog projection",
+      "symbols": {
+        "CWebServer::_GetSharedFilesList": "e8d4e92b16dad33bdae36a8e5387f769f7d2a3d933fe19597b96c987cf81447d",
+        "CWebServer::_SharedCmp": "1321a68a18ce450c9bcd366cf64be1f811442afde40ec0faca5919f497fd3e56"
+      },
+      "sort_tokens": [
+        "state",
+        "type",
+        "name",
+        "size",
+        "transferred",
+        "alltimetransferred",
+        "requests",
+        "alltimerequests",
+        "accepts",
+        "alltimeaccepts",
+        "completes",
+        "priority"
+      ],
+      "priority_tokens": [
+        "verylow",
+        "low",
+        "normal",
+        "high",
+        "release",
+        "auto"
+      ]
+    }
+  ],
+  "hardening": {
+    "column_index_limits": {
+      "download": 8,
+      "upload": 5,
+      "queue": 4,
+      "search": 4,
+      "shared": 7
+    },
+    "admin_required_for_mutation": true,
+    "unknown_operation": "ignored",
+    "unknown_priority": "ignored",
+    "invalid_hash": "ignored",
+    "numeric_overflow": "rejected"
+  },
+  "boundary": {
+    "owned_by_controllers": [
+      "request-to-action decisions",
+      "sort and projection policy",
+      "bounded hostile-input validation"
+    ],
+    "retained_by_CWebServer": [
+      "MFC and application snapshots",
+      "GUI-thread message dispatch",
+      "template resource lookup",
+      "HTTP and socket framing"
+    ]
+  }
+}

@@ -1,0 +1,267 @@
+{
+  "schema": "ese.v92.quality-manifest/v1",
+  "scope": "WP92-0 / A01-A04",
+  "verdict": "PASS_WITH_INHERITED_WARNINGS",
+  "tested_head_commit": "e68412e1a047df9ce4529420c38d152974961a3f",
+  "code_base_commit": "08aa6521f7d7907edb3584266abc3a9e31693161",
+  "branch": "codex/v9.2-dev",
+  "worktree": "C:\\tmp\\eSE-v9.2-dev",
+  "provisional_gate": "G91-92-DEV=PASS",
+  "release_promotion_authorized": false,
+  "toolchain": {
+    "os": "Microsoft Windows NT 10.0.26200.0",
+    "git": "2.51.0.windows.1",
+    "python": "3.12.10",
+    "node": "24.5.0",
+    "npm": "11.5.2",
+    "msbuild": "17.14.40.60911",
+    "msvc_x64": "19.44.35224.0"
+  },
+  "models": {
+    "A01": {
+      "execution_requested": "gpt-5.6-luna/medium",
+      "execution_actual": "gpt-5.6-terra/medium",
+      "fallback": "LUNA_UNAVAILABLE"
+    },
+    "A02": {
+      "execution_requested": "gpt-5.6-terra/medium",
+      "execution_actual": "gpt-5.6-terra/medium"
+    },
+    "A03": {
+      "execution_requested": "gpt-5.6-sol/high",
+      "execution_actual": "gpt-5.6-sol/high",
+      "independent_review": "PASS"
+    },
+    "A04": {
+      "execution_requested": "gpt-5.6-luna/medium",
+      "execution_actual": "gpt-5.6-terra/medium",
+      "fallback": "LUNA_UNAVAILABLE",
+      "review_requested": "gpt-5.6-terra/medium",
+      "review_actual": "gpt-5.6-terra/high",
+      "review_escalation": "Independent evidence-integrity audit",
+      "review_status": "PASS"
+    }
+  },
+  "gates": [
+    {
+      "id": "A04-LIBNATMAP",
+      "command": "cmd /d /c .\\libnatmap\\make.bat",
+      "started_at_utc": "2026-07-27T17:13:16.1941878Z",
+      "finished_at_utc": "2026-07-27T17:13:21.6009657Z",
+      "exit_code": 0,
+      "verdict": "PASS",
+      "summary": "25 D0 + 182789 state + 50 codec + 73 lease + 30 chain + 42 ownership checks; 0 failures.",
+      "evidence": [
+        {
+          "path": "wp92-0-baseline/01-libnatmap.log",
+          "bytes": 672,
+          "sha256": "86E08528D329473D29DC01C848B2CDFE5B31D1056E75EB2CEE7EB58FE8A603C5"
+        }
+      ]
+    },
+    {
+      "id": "A04-DIRECT-PORT-LINTER",
+      "command": "python .\\tools\\check_direct_port_usage.py",
+      "started_at_utc": "2026-07-27T17:13:26.3478359Z",
+      "finished_at_utc": "2026-07-27T17:13:26.3488357Z",
+      "exit_code": 0,
+      "verdict": "PASS",
+      "summary": "Legacy inventory stable: 55 calls on 54 lines in 17 files.",
+      "evidence": [
+        {
+          "path": "wp92-0-baseline/02-direct-port-usage.log",
+          "bytes": 71,
+          "sha256": "A47BA1801F5A67E5C178690B8720B031F3D323D13DDBC20E0C080498DD815739"
+        }
+      ]
+    },
+    {
+      "id": "A04-WP0",
+      "command": "powershell -ExecutionPolicy Bypass -File .\\tools\\lab\\test_lab_tools.ps1 -RepoRoot .",
+      "started_at_utc": "2026-07-27T17:13:59.4610635Z",
+      "finished_at_utc": "2026-07-27T17:14:08.6546073Z",
+      "exit_code": 0,
+      "verdict": "PASS",
+      "summary": "Laboratory inventory, node preparation, status, route, soak and evidence helpers passed.",
+      "evidence": [
+        {
+          "path": "wp92-0-baseline/03-lab-tools.log",
+          "bytes": 2939,
+          "sha256": "6CAC289B8F5F1A1DAD8F05CC182C6BFC84931719585FC5B4954A8AEB4316459C"
+        }
+      ]
+    },
+    {
+      "id": "A04-ALPHA-ALL",
+      "command": "powershell -ExecutionPolicy Bypass -File .\\tools\\run_alpha_tests.ps1 -RepoRoot . -Suite All",
+      "started_at_utc": "2026-07-27T17:37:56.6338607Z",
+      "finished_at_utc": "2026-07-27T17:42:56.4431593Z",
+      "exit_code": 0,
+      "verdict": "PASS",
+      "summary": "Core and Integration passed in one run; 2.8M Kad6 fuzz iterations, normal and ASan, 0 failures; real TLS/WSS relay E2E passed.",
+      "evidence": [
+        {
+          "path": "wp92-0-baseline/10-alpha-all-final.stdout.log",
+          "bytes": 27837,
+          "sha256": "8659EF954008044AF609CB62C9B68A180A86B30F9953B6ED915F8E2BDD949C1A"
+        },
+        {
+          "path": "wp92-0-baseline/10-alpha-all-final.stderr.log",
+          "bytes": 97356,
+          "sha256": "51C089A9BD5511D89D235008674E6958953A8C68A87FFBC75CA8C52859FD1C80"
+        },
+        {
+          "path": "wp92-0-baseline/10-alpha-all-final.exit.log",
+          "bytes": 1,
+          "sha256": "5FECEB66FFC86F38D952786C6D696C79C2DBC239DD4E91B46729D73A27FB57E9"
+        }
+      ]
+    },
+    {
+      "id": "A04-RELEASE-X64",
+      "command": "MSBuild libutp.vcxproj /t:Rebuild Release|x64, then MSBuild srchybrid\\emule.sln /t:Rebuild Release|x64",
+      "started_at_utc": "2026-07-27T17:27:57.0011858Z",
+      "finished_at_utc": "2026-07-27T17:33:23.9432557Z",
+      "exit_code": 0,
+      "verdict": "PASS",
+      "summary": "Complete Release x64 rebuild produced emule.exe 9.1.0-rc.2.",
+      "binary": {
+        "path": "srchybrid/x64/Release/emule.exe",
+        "bytes": 11250688,
+        "sha256": "13659C3AE3C03FA1926B870D444B54368E53C7687588AF9894ED10A382E41F84",
+        "file_version": "0.70.1 - eSE 9.1.0-rc.2 Unicode"
+      },
+      "evidence": [
+        {
+          "path": "wp92-0-baseline/08-release-x64.stdout.log",
+          "bytes": 883441,
+          "sha256": "805301D746FD508E4AD48DFCB8EC85B042062FD1D51DCB31E194B3267522C51D"
+        },
+        {
+          "path": "wp92-0-baseline/08-release-x64.stderr.log",
+          "bytes": 400,
+          "sha256": "06A2C257B34F325E15C95753D24D5FCE54CCA035736EDB353272FB5E07278EFA"
+        },
+        {
+          "path": "wp92-0-baseline/08-release-x64.msbuild.log",
+          "bytes": 1782916,
+          "sha256": "8EA79D6EC00F6EA88F0617EF8C450080AFF58B376E67A3A572DAB975FFA5DF7E"
+        },
+        {
+          "path": "wp92-0-baseline/08-release-x64.exit.log",
+          "bytes": 1,
+          "sha256": "5FECEB66FFC86F38D952786C6D696C79C2DBC239DD4E91B46729D73A27FB57E9"
+        }
+      ]
+    },
+    {
+      "id": "A04-FROZEN-PACKAGE-SELFTEST",
+      "command": "test_v91_selftest.ps1 against the frozen 08aa652 package",
+      "started_at_utc": "2026-07-27T17:34:19.4917707Z",
+      "finished_at_utc": "2026-07-27T17:34:29.7334273Z",
+      "exit_code": 0,
+      "verdict": "PASS",
+      "summary": "Manifest-verified candidate executed --portable --ignoreinstances --selftest in an isolated profile.",
+      "candidate_commit": "08aa6521f7d7907edb3584266abc3a9e31693161",
+      "candidate_binary_sha256": "55C5AA0E968B25330720CFB7F622CBC28EA9875365145333CBCF9D9585C1C44A",
+      "evidence": [
+        {
+          "path": "wp92-0-baseline/09-frozen-package-selftest-summary.json",
+          "bytes": 838,
+          "sha256": "2C9737389ADD4EC8D29D52B17650425E2BB179A8FA7D91C4379BF85567509D32"
+        }
+      ]
+    },
+    {
+      "id": "A04-API-SNAPSHOT",
+      "command": "SHA-256 snapshot of the reachability and natmap public headers",
+      "exit_code": 0,
+      "verdict": "PASS",
+      "summary": "Six public contract files fingerprinted; planned RED deltas recorded without changing production.",
+      "evidence": [
+        {
+          "path": "wp92-0-baseline/api-snapshot.json",
+          "bytes": 2128,
+          "sha256": "4210AE65AD0B7C835152B99C3DE8394D8514E19F59284254EF26D566BDF87A40"
+        }
+      ]
+    }
+  ],
+  "environment_preparation": [
+    "Initialized the pinned libutp submodule at 2b364cbb0650bdab64a5de2abb4518f9f228ec44.",
+    "Built mbedTLS from tracked mbedtls/visualc/vs2017/mbedTLS.vcxproj and staged its generated Release x64 library for the relay gates.",
+    "Removed generated libutp output after the Release build; no source change was retained."
+  ],
+  "diagnostic_attempts_not_counted_as_gate_failures": [
+    {
+      "attempt": "Initial Suite All",
+      "outcome": "ENVIRONMENT_INCOMPLETE",
+      "reason": "relayedge expected the generated srchybrid/x64/Release/mbedTLS.lib before it had been built",
+      "resolution": "built the dependency from the tracked project; the final Suite All passed"
+    },
+    {
+      "attempt": "First Release x64 invocation",
+      "outcome": "ENVIRONMENT_INCOMPLETE",
+      "reason": "the pinned libutp submodule had not been initialized in the new worktree",
+      "resolution": "initialized the pinned submodule; the complete rebuild passed"
+    },
+    {
+      "attempt": "Short command-runner timeouts",
+      "outcome": "HARNESS_TIMEOUT",
+      "reason": "the caller timeout was shorter than the long-running test command",
+      "resolution": "reran through a monitored background process and captured the native exit code"
+    }
+  ],
+  "inherited_warnings": [
+    {
+      "id": "NPM-GHSA-r292-9mhp-454m",
+      "severity": "moderate",
+      "component": "node-tar <=7.5.20",
+      "gate_effect": "non-blocking under the repository's npm audit --audit-level=high policy"
+    },
+    {
+      "id": "MSVC-LEGACY-WARNINGS",
+      "severity": "warning",
+      "counted_warning_lines": 2615,
+      "gate_effect": "non-blocking baseline debt; Release x64 completed with exit code 0"
+    }
+  ],
+  "evidence_privacy": {
+    "sanitized_before_versioning": true,
+    "replacements": [
+      "local user profile path",
+      "local account name",
+      "local computer name"
+    ],
+    "credentials_or_private_keys_found": false
+  },
+  "independent_review_history": [
+    {
+      "commit": "5da546c",
+      "verdict": "FAIL",
+      "severity": "S2",
+      "finding": "Ten referenced log/exit artifacts were locally present but ignored by Git.",
+      "remediation": "Version the exact referenced artifacts after local-identity sanitization and refresh every size/hash."
+    },
+    {
+      "commit": "cb808a1",
+      "verdict": "FAIL",
+      "severity": "S2",
+      "finding": "Eight first-added log blobs had been normalized before the no-filter attribute took effect.",
+      "remediation": "Reinsert the blobs under quality/** -text and validate from a Git archive rather than from the worktree."
+    },
+    {
+      "commit": "594c7fc",
+      "verdict": "PASS",
+      "severity": "NONE",
+      "finding": "Independent review verified 12/12 Git blobs, archive extraction, privacy sanitization and gate semantics; no S0-S3 remain open."
+    }
+  ],
+  "wp92_0_definition_of_done": {
+    "clean_isolated_base": "PASS",
+    "fourteen_requirements_traced": "PASS",
+    "state_contract_reviewed": "PASS",
+    "baseline_archived": "PASS",
+    "independent_A04_review": "PASS"
+  }
+}

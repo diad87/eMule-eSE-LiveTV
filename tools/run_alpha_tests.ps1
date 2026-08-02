@@ -49,6 +49,23 @@ if ($Suite -eq 'Core' -or $Suite -eq 'All') {
     Run 'WP0 laboratory toolkit' {
         & (Join-Path $RepoRoot 'tools\lab\test_lab_tools.ps1') -RepoRoot $RepoRoot
     }
+    Run 'V9.2 T8 fixture autotest' {
+        $fixtureRoot = Join-Path $RepoRoot 'tools\lab\nat_gateway'
+        Push-Location $fixtureRoot
+        try {
+            $npmOutput = @(
+                & cmd.exe /d /s /c 'npm.cmd ci --no-audit --no-fund 2>&1')
+            $npmExit = $LASTEXITCODE
+            $npmOutput | ForEach-Object { Write-Host $_ }
+            if ($npmExit -ne 0) {
+                throw "T8 npm ci failed with exit code $npmExit"
+            }
+        } finally {
+            Pop-Location
+        }
+        & (Join-Path $RepoRoot 'tools\lab\test_t8_wp0.ps1') `
+            -RepoRoot $RepoRoot
+    }
     Run 'language resources' { & (Join-Path $RepoRoot 'tools\check_languages.ps1') -RepoRoot $RepoRoot }
     Run 'protocol registry' { & python (Join-Path $RepoRoot 'tools\check_protocol_registry.py') }
     Run 'direct port ownership linter' { & python (Join-Path $RepoRoot 'tools\check_direct_port_usage.py') }

@@ -2,6 +2,9 @@
 #include "OtherFunctions.h"
 #include "WebSocket.h"
 #include "WebServer.h"
+#include "WebRequestParser.h"
+#include "WebRouteTable.h"
+#include "WebStaticAssets.h"
 #include "Preferences.h"
 #include "StringConversion.h"
 #include "Log.h"
@@ -39,6 +42,63 @@ static const DWORD WEBSOCKET_MAX_LIFETIME_MS    = 30000;
 static const LONG  WEBSOCKET_MAX_WORKER_THREADS = 64;
 static volatile LONG s_lActiveWebThreads        = 0;
 
+namespace {
+
+class WebFileResponseSource final : public ese::web::IWebResponseSource
+{
+public:
+	explicit WebFileResponseSource(std::unique_ptr<CFile> file)
+		: m_file(std::move(file))
+	{
+	}
+
+	bool Read(
+		std::uint8_t* destination,
+		std::size_t capacity,
+		std::size_t& bytesRead) override
+	{
+		bytesRead = 0;
+		if (!m_file || capacity == 0u || capacity > UINT_MAX)
+			return false;
+		try {
+			bytesRead = m_file->Read(
+				destination,
+				static_cast<UINT>(capacity));
+		} catch (...) {
+			return false;
+		}
+		return true;
+	}
+
+private:
+	std::unique_ptr<CFile> m_file;
+};
+
+} // namespace
+
+static void RejectMalformedRequest(CWebSocket *socket, ese::web::ParseStatus status)
+{
+	const char *reply =
+		"HTTP/1.1 400 Bad Request\r\n"
+		"Connection: close\r\n"
+		"Content-Length: 0\r\n";
+	if (status == ese::web::ParseStatus::HeaderTooLarge) {
+		reply =
+			"HTTP/1.1 431 Request Header Fields Too Large\r\n"
+			"Connection: close\r\n"
+			"Content-Length: 0\r\n";
+	} else if (status == ese::web::ParseStatus::TargetTooLarge ||
+			   status == ese::web::ParseStatus::BodyTooLarge) {
+		reply =
+			"HTTP/1.1 413 Content Too Large\r\n"
+			"Connection: close\r\n"
+			"Content-Length: 0\r\n";
+	}
+	socket->SendReply(reply);
+	socket->Disconnect();
+	socket->m_bCanRecv = false;
+}
+
 mbedtls_ssl_config conf;
 mbedtls_x509_crt srvcert;
 mbedtls_pk_context pkey;
@@ -52,40 +112,105 @@ typedef struct
 	in_addr incomingaddr;
 } SocketData;
 
-void CWebSocket::OnRequestReceived(const char *pHeader, DWORD dwHeaderLen, const char *pData, DWORD dwDataLen, const in_addr inad)
+void CWebSocket::OnRequestReceived(const ese::web::ParsedRequest &request, const char *pData, DWORD dwDataLen, const in_addr inad)
 {
-	CStringA sHeader(pHeader, dwHeaderLen);
-	CStringA sURL;
+	ese::web::WebRouteMethod routeMethod = ese::web::WebRouteMethod::Get;
+	switch (request.method) {
+	case ese::web::Method::Get:
+		routeMethod = ese::web::WebRouteMethod::Get;
+		break;
+	case ese::web::Method::Post:
+		routeMethod = ese::web::WebRouteMethod::Post;
+		break;
+	case ese::web::Method::Options:
+		routeMethod = ese::web::WebRouteMethod::Options;
+		break;
+	default:
+		SendReply(
+			"HTTP/1.1 400 Bad Request\r\n"
+			"Connection: close\r\n"
+			"Content-Length: 0\r\n");
+		Disconnect();
+		return;
+	}
+	const ese::web::WebRouteMatch route =
+		ese::web::ResolveWebRoute(routeMethod, request.target);
+	if (route.status != ese::web::WebRouteStatus::Matched) {
+		if (route.status == ese::web::WebRouteStatus::MethodNotAllowed) {
+			const char* allowed = "GET, OPTIONS";
+			if (route.route == ese::web::WebRouteId::ClassicPage)
+				allowed = "GET, POST";
+			else if (route.route == ese::web::WebRouteId::StaticAsset)
+				allowed = "GET";
+			CStringA response;
+			response.Format(
+				"HTTP/1.1 405 Method Not Allowed\r\n"
+				"Allow: %s\r\n"
+				"Connection: close\r\n"
+				"Content-Length: 0\r\n",
+				allowed);
+			SendReply(response);
+		} else {
+			SendReply(
+				"HTTP/1.1 404 Not Found\r\n"
+				"Connection: close\r\n"
+				"Content-Length: 0\r\n");
+		}
+		Disconnect();
+		return;
+	}
 
-	if (strncmp(sHeader, "GET", 3) == 0)
-		sURL = sHeader.Trim();
-	else if (strncmp(sHeader, "POST", 4) == 0) {
+	CStringA sURL(request.target.data(), static_cast<int>(request.target.size()));
+	if (request.method == ese::web::Method::Post) {
 		CStringA sData(pData, dwDataLen);
 		sURL = '?' + sData.Trim();	// '?' to imitate GET syntax for ParseURL
 	}
-	sURL.Delete(0, sURL.Find(' ') + 1);
-	int i = sURL.Find(' ');
-	if (i >= 0)
-		sURL.Truncate(i);
-	bool filereq = sURL.GetLength() >= 3 && sURL.Find("..") < 0; // prevent file access in the eMule's webserver folder
-	if (filereq) {
-		CStringA ext(sURL.Right(5).MakeLower());
-		i = ext.ReverseFind('.') + 1;
-		ext.Delete(0, i);
-		filereq = (i > 0) && ext.GetLength() > 1 && (ext == "gif" || ext == "jpg" || ext == "png"
-			|| ext == "ico" || ext == "css" || ext == "bmp" || ext == "js" || ext == "jpeg");
-	}
 	ThreadData Data;
-	Data.sURL = sURL;
+	if (route.handler == ese::web::WebHandler::StaticAsset) {
+		const CStringA canonical(
+			route.canonical_path.data(),
+			static_cast<int>(route.canonical_path.size()));
+		Data.sURL = canonical;
+	} else {
+		Data.sURL = sURL;
+	}
+	Data.webRoute = route.route;
+	bool rangeSeen = false;
+	std::string collectedRange;
+	for (const ese::web::HeaderField& header : request.headers) {
+		if (header.name == "x-csrf-token") {
+			Data.sCsrfToken = CStringA(
+				header.value.data(), static_cast<int>(header.value.size()));
+		} else if (header.name == "sec-fetch-site") {
+			Data.sFetchSite = CStringA(
+				header.value.data(), static_cast<int>(header.value.size()));
+			Data.sFetchSite.MakeLower();
+		} else if (header.name == "host") {
+			Data.sHost = CStringA(
+				header.value.data(), static_cast<int>(header.value.size()));
+		} else if (header.name == "origin") {
+			Data.sOrigin = CStringA(
+				header.value.data(), static_cast<int>(header.value.size()));
+		} else if (header.name == "range") {
+			ese::web::WebStaticAssets::CollectRangeHeader(
+				collectedRange,
+				rangeSeen,
+				header.value);
+		}
+	}
+	Data.sRange = CStringA(
+		collectedRange.data(),
+		static_cast<int>(collectedRange.size()));
 	Data.pThis = (void*)m_pParent;
 	Data.inadr = inad;
 	Data.pSocket = this;
-	// eSE: Handle CORS preflight (OPTIONS) for React frontend
-	if (strncmp(sHeader, "OPTIONS", 7) == 0) {
+	// CORS preflight is available only for a registered live route. Unknown
+	// method/route pairs have already failed closed in WebRouteTable.
+	if (route.handler == ese::web::WebHandler::CorsPreflight) {
 		Data.pSocket->SendReply(
 			"HTTP/1.1 204 No Content\r\n"
 			"Access-Control-Allow-Origin: http://localhost:3000\r\n"
-			"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+			"Access-Control-Allow-Methods: GET, OPTIONS\r\n"
 			"Access-Control-Allow-Headers: Authorization, X-CSRF-Token, Content-Type\r\n"
 			"Access-Control-Max-Age: 86400\r\n"
 			"Content-Length: 0\r\n");
@@ -100,18 +225,18 @@ void CWebSocket::OnRequestReceived(const char *pHeader, DWORD dwHeaderLen, const
 	// M1 (mobile track): /s/{ses}/* is the token-prefixed remote namespace and
 	// /live* are the embedded channel/player pages — both handled (and the
 	// token validated) in _ProcessLiveAPI.
-	if (!filereq && (
-		sURL.Left(5) == "/api/" ||
-		sURL == "/dashboard" || sURL == "/dashboard/" ||
-		sURL.Left(5) == "/hls/" ||
-		sURL.Left(3) == "/s/" ||
-		sURL == "/live" || sURL.Left(6) == "/live/"
-	)) {
+	if (route.handler == ese::web::WebHandler::LiveApi) {
 		m_pParent->_ProcessLiveAPI(Data);
-	} else if (!filereq)
+	} else if (route.handler == ese::web::WebHandler::ClassicPage) {
 		m_pParent->_ProcessURL(Data);
-	else
+	} else if (route.handler == ese::web::WebHandler::StaticAsset) {
 		m_pParent->_ProcessFileReq(Data);
+	} else {
+		Data.pSocket->SendReply(
+			"HTTP/1.1 500 Internal Server Error\r\n"
+			"Connection: close\r\n"
+			"Content-Length: 0\r\n");
+	}
 
 	Disconnect();
 }
@@ -120,14 +245,29 @@ void CWebSocket::OnReceived(const void *pData, DWORD dwSize, const in_addr inad)
 {
 	static const DWORD SIZE_PRESERVE = 0x1000u;
 
-	if (m_dwBufSize < dwSize + m_dwRecv) {
+	if ((pData == NULL && dwSize != 0u) ||
+		static_cast<std::size_t>(dwSize) > ese::web::kMaxRequestBytes - m_dwRecv) {
+		RejectMalformedRequest(this, ese::web::ParseStatus::BodyTooLarge);
+		m_dwRecv = 0;
+		m_dwHttpHeaderLen = 0;
+		m_dwHttpContentLen = 0;
+		return;
+	}
+
+	const std::size_t required =
+		static_cast<std::size_t>(m_dwRecv) + static_cast<std::size_t>(dwSize);
+	if (m_dwBufSize < required) {
 		// reallocate
 		char *pNewBuf;
 		try {
-			m_dwBufSize = dwSize + m_dwRecv + SIZE_PRESERVE;
+			const std::size_t preserve =
+				ese::web::kMaxRequestBytes - required < SIZE_PRESERVE
+					? ese::web::kMaxRequestBytes - required
+					: SIZE_PRESERVE;
+			m_dwBufSize = static_cast<DWORD>(required + preserve);
 			pNewBuf = new char[m_dwBufSize];
 		} catch (...) {
-			AddDebugLogLine(DLP_VERYHIGH, false, _T("WebSocket::OnReceived: Buffer realloc failed (OOM), requested %u bytes"), dwSize + m_dwRecv + SIZE_PRESERVE);
+			AddDebugLogLine(DLP_VERYHIGH, false, _T("WebSocket::OnReceived: bounded buffer allocation failed (OOM), requested %u bytes"), m_dwBufSize);
 			m_bValid = false; // internal problem
 			return;
 		}
@@ -143,130 +283,78 @@ void CWebSocket::OnReceived(const void *pData, DWORD dwSize, const in_addr inad)
 		memcpy(&m_pBuf[m_dwRecv], pData, dwSize);
 		m_dwRecv += dwSize;
 	}
-	// check if we have all that we want
-	if (!m_dwHttpHeaderLen) {
-		// try to find it
-		bool bPrevEndl = false;
-		for (DWORD dwPos = 0; dwPos < m_dwRecv; ++dwPos)
-			if ('\n' == m_pBuf[dwPos]) {
-				if (bPrevEndl) {
-					// We just found the end of the http header
-					// Now write the message's position into two first DWORDs of the buffer
-					m_dwHttpHeaderLen = dwPos + 1;
 
-					// try to find now the 'Content-Length' header
-					for (dwPos = 0; dwPos < m_dwHttpHeaderLen;) {
-						// Elandal: pPtr is actually a char*, not a void*
-						const char *pPtr = (char*)memchr(&m_pBuf[dwPos], '\n', m_dwHttpHeaderLen - dwPos);
-						if (!pPtr)
-							break;
-						// Elandal: And thus now the pointer subtraction works as it should
-						DWORD dwNextPos = (DWORD)(pPtr - m_pBuf);
-
-						// check this header
-						static const char szMatch[] = "content-length";
-						if (!_strnicmp(&m_pBuf[dwPos], szMatch, sizeof szMatch - 1)) {
-							dwPos += sizeof szMatch - 1;
-							pPtr = (char*)memchr(&m_pBuf[dwPos], ':', m_dwHttpHeaderLen - dwPos);
-							if (pPtr)
-								m_dwHttpContentLen = atol(&pPtr[1]);
-
-							break;
-						}
-						dwPos = dwNextPos + 1;
-					}
-
-					break;
-				}
-				bPrevEndl = true;
-			} else if ('\r' != m_pBuf[dwPos])
-				bPrevEndl = false;
-
-	}
-	if (m_dwHttpHeaderLen && !m_bCanRecv && !m_dwHttpContentLen)
-		m_dwHttpContentLen = m_dwRecv - m_dwHttpHeaderLen; // of course
-
-	if (m_dwHttpHeaderLen && m_dwHttpContentLen < m_dwRecv && (!m_dwHttpContentLen || (m_dwHttpHeaderLen + m_dwHttpContentLen <= m_dwRecv))) {
-		OnRequestReceived(m_pBuf, m_dwHttpHeaderLen, m_pBuf + m_dwHttpHeaderLen, m_dwHttpContentLen, inad);
-
-		if (m_bCanRecv && (m_dwRecv > m_dwHttpHeaderLen + m_dwHttpContentLen)) {
-			// move our data
-			m_dwRecv -= m_dwHttpHeaderLen + m_dwHttpContentLen;
-			memmove(m_pBuf, m_pBuf + m_dwHttpHeaderLen + m_dwHttpContentLen, m_dwRecv);
-		} else
-			m_dwRecv = 0;
-
+	ese::web::ParsedRequest parsed;
+	const ese::web::ParseStatus parse_status =
+		ese::web::InspectRequest(m_pBuf, m_dwRecv, parsed);
+	if (parse_status == ese::web::ParseStatus::NeedMore)
+		return;
+	if (parse_status != ese::web::ParseStatus::Ready) {
+		RejectMalformedRequest(this, parse_status);
+		m_dwRecv = 0;
 		m_dwHttpHeaderLen = 0;
 		m_dwHttpContentLen = 0;
+		return;
 	}
+
+	m_dwHttpHeaderLen = static_cast<DWORD>(parsed.header_bytes);
+	m_dwHttpContentLen = static_cast<DWORD>(parsed.content_length);
+	OnRequestReceived(
+		parsed,
+		m_pBuf + m_dwHttpHeaderLen,
+		m_dwHttpContentLen,
+		inad);
+
+	if (m_bCanRecv && (m_dwRecv > m_dwHttpHeaderLen + m_dwHttpContentLen)) {
+		// move our data
+		m_dwRecv -= m_dwHttpHeaderLen + m_dwHttpContentLen;
+		memmove(m_pBuf, m_pBuf + m_dwHttpHeaderLen + m_dwHttpContentLen, m_dwRecv);
+	} else
+		m_dwRecv = 0;
+
+	m_dwHttpHeaderLen = 0;
+	m_dwHttpContentLen = 0;
 }
 
 void CWebSocket::SendData(const void *pData, DWORD dwDataSize)
 {
 	ASSERT(pData);
 	if (m_bValid && m_bCanSend) {
-		if (!m_pHead) {
+		if (!m_response.Pending()) {
 			if (thePrefs.GetWebUseHttps()) {
-				for (;;) {
-					int nRes = mbedtls_ssl_write((mbedtls_ssl_context*)m_ssl, (unsigned char*)pData, dwDataSize);
-					if (nRes > 0) {
-						reinterpret_cast<const char*&>(pData) += nRes;
-						dwDataSize -= nRes;
-						if (dwDataSize)
-							continue;
-					}
-					if (!dwDataSize)
-						break;
-					if (nRes == MBEDTLS_ERR_NET_CONN_RESET || (nRes != MBEDTLS_ERR_SSL_WANT_READ && nRes != MBEDTLS_ERR_SSL_WANT_WRITE)) {
-						m_bValid = false;
-						break;
-					}
-				}
-			} else {
-				// try to send it directly
-				//-- remember: "nRes" could be "-1" after "send" call
-				int nRes = send(m_hSocket, (char*)pData, dwDataSize, 0);
-
-				if (nRes < (int)dwDataSize && WSAEWOULDBLOCK != WSAGetLastError())
-					m_bValid = false;
-
+				const int nRes = mbedtls_ssl_write(
+					(mbedtls_ssl_context*)m_ssl,
+					(const unsigned char*)pData,
+					dwDataSize);
 				if (nRes > 0) {
 					reinterpret_cast<const char*&>(pData) += nRes;
 					dwDataSize -= nRes;
+				} else if (nRes != MBEDTLS_ERR_SSL_WANT_READ &&
+					nRes != MBEDTLS_ERR_SSL_WANT_WRITE) {
+					m_response.Fail();
+					m_bValid = false;
+				}
+			} else {
+				const int nRes = send(m_hSocket, (const char*)pData, dwDataSize, 0);
+				if (nRes > 0) {
+					reinterpret_cast<const char*&>(pData) += nRes;
+					dwDataSize -= nRes;
+				} else if (nRes == 0 ||
+					WSAGetLastError() != WSAEWOULDBLOCK) {
+					m_response.Fail();
+					m_bValid = false;
 				}
 			}
 		}
 
-		if (dwDataSize && m_bValid) {
-			// push it to our tails
-			CChunk *pChunk = NULL;
-			try {
-				pChunk = new CChunk;
-			} catch (...) {
-				AddDebugLogLine(DLP_VERYHIGH, false, _T("WebSocket::SendData: CChunk allocation failed (OOM)"));
-				return;
-			}
-			pChunk->m_pNext = NULL;
-			pChunk->m_dwSize = dwDataSize;
-			try {
-				pChunk->m_pData = new char[dwDataSize];
-			} catch (...) {
-				AddDebugLogLine(DLP_VERYHIGH, false, _T("WebSocket::SendData: Chunk data allocation failed (OOM), size=%u"), dwDataSize);
-				delete pChunk; // oops, no memory (???)
-				return;
-			}
-			//-- data should be copied into "pChunk->m_pData" anyhow
-			//-- possible solution is simple:
-
-			memcpy(pChunk->m_pData, pData, dwDataSize);
-
-			// push it to the end of our queue
-			pChunk->m_pToSend = pChunk->m_pData;
-			if (m_pTail)
-				m_pTail->m_pNext = pChunk;
-			else
-				m_pHead = pChunk;
-			m_pTail = pChunk;
+		if (dwDataSize && m_bValid &&
+			!m_response.Enqueue(pData, dwDataSize)) {
+			AddDebugLogLine(
+				DLP_VERYHIGH,
+				false,
+				_T("WebSocket::SendData: bounded response queue exhausted, size=%u"),
+				dwDataSize);
+			m_bValid = false;
 		}
 	}
 }
@@ -295,19 +383,162 @@ void CWebSocket::SendContent(LPCSTR szStdResponse, const CString &rstr)
 	SendContent(szStdResponse, strA, strA.GetLength());
 }
 
+bool CWebSocket::SendFile(
+	CFile* pFile,
+	ULONGLONG offset,
+	ULONGLONG byteCount)
+{
+	std::unique_ptr<CFile> file(pFile);
+	if (!file || byteCount == 0u ||
+		offset > static_cast<ULONGLONG>(_I64_MAX) ||
+		byteCount > static_cast<ULONGLONG>(_I64_MAX)) {
+		m_response.Fail();
+		m_bValid = false;
+		return false;
+	}
+	try {
+		if (file->Seek(static_cast<LONGLONG>(offset), CFile::begin) != offset) {
+			m_response.Fail();
+			m_bValid = false;
+			return false;
+		}
+	} catch (...) {
+		m_response.Fail();
+		m_bValid = false;
+		return false;
+	}
+	std::unique_ptr<ese::web::IWebResponseSource> source;
+	try {
+		source.reset(new WebFileResponseSource(std::move(file)));
+	} catch (...) {
+		m_response.Fail();
+		m_bValid = false;
+		return false;
+	}
+	if (!m_response.AttachSource(
+		std::move(source),
+		static_cast<std::uint64_t>(byteCount))) {
+		m_bValid = false;
+		return false;
+	}
+	FlushResponseQueue();
+	return m_bValid;
+}
+
+void CWebSocket::SendFileResponse(
+	const CString& filePath,
+	const CStringA& publicPath,
+	const CStringA& rangeHeader,
+	const ese::web::WebFileResponseOptions& options,
+	ULONGLONG maximumBytes,
+	bool allowConcurrentWrite,
+	bool allowEmpty)
+{
+	std::unique_ptr<CFile> file;
+	try {
+		file = std::make_unique<CFile>();
+	} catch (...) {
+		SendReply(
+			"HTTP/1.1 500 Internal Server Error\r\n"
+			"Connection: close\r\nContent-Length: 0\r\n");
+		return;
+	}
+	if (!file->Open(
+		filePath,
+		CFile::modeRead |
+			(allowConcurrentWrite
+				? CFile::shareDenyNone
+				: CFile::shareDenyWrite) |
+			CFile::typeBinary)) {
+		SendReply(
+			"HTTP/1.1 404 Not Found\r\n"
+			"Connection: close\r\nContent-Length: 0\r\n");
+		return;
+	}
+
+	ULONGLONG representationSize = 0;
+	try {
+		representationSize = file->GetLength();
+	} catch (...) {
+		SendReply(
+			"HTTP/1.1 500 Internal Server Error\r\n"
+			"Connection: close\r\nContent-Length: 0\r\n");
+		return;
+	}
+	if ((maximumBytes != 0u && representationSize > maximumBytes) ||
+		(!allowEmpty && representationSize == 0u)) {
+		SendReply(
+			"HTTP/1.1 403 Forbidden\r\n"
+			"Connection: close\r\nContent-Length: 0\r\n");
+		return;
+	}
+
+	ese::web::WebFileResponsePlan plan;
+	try {
+		plan = ese::web::WebStaticAssets::PlanResponse(
+			std::string((LPCSTR)publicPath, publicPath.GetLength()),
+			std::string((LPCSTR)rangeHeader, rangeHeader.GetLength()),
+			static_cast<std::uint64_t>(representationSize),
+			options);
+	} catch (...) {
+		m_response.Fail();
+		m_bValid = false;
+		return;
+	}
+	SendData(plan.headers.data(), static_cast<DWORD>(plan.headers.size()));
+	if (plan.IsSuccess() && plan.length != 0u)
+		SendFile(file.release(), plan.offset, plan.length);
+}
+
+void CWebSocket::FlushResponseQueue()
+{
+	while (m_bValid && m_response.Pending()) {
+		if (m_response.Empty() &&
+			!m_response.PumpSource(
+				ese::web::WebStaticAssets::ReadChunkBytes())) {
+			m_bValid = false;
+			break;
+		}
+
+		const std::size_t queued = m_response.FrontSize();
+		int nRes;
+		if (thePrefs.GetWebUseHttps()) {
+			nRes = mbedtls_ssl_write(
+				(mbedtls_ssl_context*)m_ssl,
+				m_response.FrontData(),
+				static_cast<int>(queued));
+			if (nRes == MBEDTLS_ERR_SSL_WANT_READ ||
+				nRes == MBEDTLS_ERR_SSL_WANT_WRITE)
+				break;
+		} else {
+			nRes = send(
+				m_hSocket,
+				(const char*)m_response.FrontData(),
+				static_cast<int>(queued),
+				0);
+			if (nRes < 0 && WSAGetLastError() == WSAEWOULDBLOCK)
+				break;
+		}
+		if (nRes <= 0 ||
+			!m_response.Consume(static_cast<std::size_t>(nRes))) {
+			m_response.Fail();
+			m_bValid = false;
+			break;
+		}
+	}
+	if (m_bValid && !m_response.Pending() &&
+		m_response.CloseRequested() &&
+		shutdown(m_hSocket, SD_SEND)) {
+		m_bValid = false;
+	}
+}
+
 void CWebSocket::Disconnect()
 {
 	if (m_bValid && m_bCanSend) {
 		m_bCanSend = false;
-		if (m_pTail)
-			try {
-				// push an empty chunk as the tail
-				m_pTail->m_pNext = new CChunk();
-			} catch (...) {
-				AddDebugLogLine(DLP_VERYHIGH, false, _T("WebSocket::Disconnect: Failed to allocate terminal chunk (OOM)"));
-			}
-		else if (shutdown(m_hSocket, SD_SEND))
-			m_bValid = false;
+		m_response.RequestClose();
+		FlushResponseQueue();
 	}
 }
 
@@ -338,8 +569,6 @@ UINT AFX_CDECL WebSocketAcceptedFunc(LPVOID pD)
 			mbedtls_ssl_context ssl;
 			CWebSocket stWebSocket;
 			stWebSocket.SetParent(pThis);
-			stWebSocket.m_pHead = NULL;
-			stWebSocket.m_pTail = NULL;
 			stWebSocket.m_bValid = true;
 			stWebSocket.m_bCanRecv = true;
 			stWebSocket.m_bCanSend = true;
@@ -361,11 +590,29 @@ UINT AFX_CDECL WebSocketAcceptedFunc(LPVOID pD)
 				if (ret)
 					goto thread_exit;
 				mbedtls_ssl_set_bio(&ssl, (void*)&hSocket, mbedtls_net_send, mbedtls_net_recv, NULL);
-				while ((ret = mbedtls_ssl_handshake(&ssl)) != 0)
+				while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
 					if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
 						DebugLogWarning(_T("Web Interface handshake failed: %s"), (LPCTSTR)SSLerror(ret));
 						goto thread_exit;
 					}
+					if (::GetTickCount() - dwWorkerStartTick >
+						WEBSOCKET_MAX_LIFETIME_MS)
+						goto thread_exit;
+					const DWORD waitResult = ::WaitForSingleObject(
+						hEvent,
+						WEBSOCKET_WAIT_SLICE_MS);
+					if (waitResult == WAIT_FAILED)
+						goto thread_exit;
+					if (waitResult == WAIT_OBJECT_0) {
+						WSANETWORKEVENTS handshakeEvents;
+						if (WSAEnumNetworkEvents(
+							hSocket,
+							NULL,
+							&handshakeEvents) ||
+							(handshakeEvents.lNetworkEvents & FD_CLOSE))
+							goto thread_exit;
+					}
+				}
 			}
 			HANDLE pWait[] = {hEvent, s_hTerminate};
 
@@ -403,7 +650,7 @@ UINT AFX_CDECL WebSocketAcceptedFunc(LPVOID pD)
 								else
 									nRes = recv(hSocket, pBuf, sizeof pBuf, 0);
 								if (nRes == MBEDTLS_ERR_SSL_WANT_READ || nRes == MBEDTLS_ERR_SSL_WANT_WRITE)
-									continue;
+									break;
 								if (nRes <= 0) {
 									if (!nRes) {
 										stWebSocket.m_bCanRecv = false;
@@ -418,53 +665,14 @@ UINT AFX_CDECL WebSocketAcceptedFunc(LPVOID pD)
 						if (FD_CLOSE & stEvents.lNetworkEvents)
 							stWebSocket.m_bCanRecv = false;
 
-						if (FD_WRITE & stEvents.lNetworkEvents)
-							// send what is left in our tails
-							while (stWebSocket.m_pHead) {
-								if (stWebSocket.m_pHead->m_pToSend) {
-									if (thePrefs.GetWebUseHttps()) {
-										for (;;) {
-											int nRes = mbedtls_ssl_write((mbedtls_ssl_context*)stWebSocket.m_ssl, (unsigned char*)stWebSocket.m_pHead->m_pToSend, stWebSocket.m_pHead->m_dwSize);
-											if (nRes > 0) {
-												stWebSocket.m_pHead->m_pToSend += nRes;
-												stWebSocket.m_pHead->m_dwSize -= nRes;
-												if (stWebSocket.m_pHead->m_dwSize)
-													continue;
-											}
-											if (!stWebSocket.m_pHead->m_dwSize)
-												break;
-											if (nRes == MBEDTLS_ERR_NET_CONN_RESET || (nRes != MBEDTLS_ERR_SSL_WANT_READ && nRes != MBEDTLS_ERR_SSL_WANT_WRITE))
-												goto thread_exit;
-										};
-									} else {
-										int nRes = send(hSocket, stWebSocket.m_pHead->m_pToSend, stWebSocket.m_pHead->m_dwSize, 0);
-										if (nRes != (int)stWebSocket.m_pHead->m_dwSize) {
-											if (nRes)
-												if ((nRes > 0) && (nRes < (int)stWebSocket.m_pHead->m_dwSize)) {
-													stWebSocket.m_pHead->m_pToSend += nRes;
-													stWebSocket.m_pHead->m_dwSize -= nRes;
-
-												} else if (WSAEWOULDBLOCK != WSAGetLastError())
-													stWebSocket.m_bValid = false;
-												break;
-										}
-									}
-								} else if (shutdown(hSocket, SD_SEND)) {
-									stWebSocket.m_bValid = false;
-									break;
-								}
-
-								// erase this chunk
-								CWebSocket::CChunk *pNext = stWebSocket.m_pHead->m_pNext;
-								delete stWebSocket.m_pHead;
-								stWebSocket.m_pHead = pNext;
-								if (stWebSocket.m_pHead == NULL)
-									stWebSocket.m_pTail = NULL;
-							}
+						if ((FD_READ | FD_WRITE) & stEvents.lNetworkEvents)
+							stWebSocket.FlushResponseQueue();
 					}
 				}
 
-				if (!stWebSocket.m_bValid || (!stWebSocket.m_bCanRecv && !stWebSocket.m_pHead))
+				if (!stWebSocket.m_bValid ||
+					(!stWebSocket.m_bCanRecv &&
+						!stWebSocket.m_response.Pending()))
 					break;
 				if (::GetTickCount() - dwWorkerStartTick > WEBSOCKET_MAX_LIFETIME_MS) {
 					CLiveDebugLog::Get().Append("WS",
@@ -475,17 +683,13 @@ UINT AFX_CDECL WebSocketAcceptedFunc(LPVOID pD)
 			}
 thread_exit:
 			stWebSocket.m_bValid = false;
-			while (stWebSocket.m_pHead) {
-				CWebSocket::CChunk *pNext = stWebSocket.m_pHead->m_pNext;
-				delete stWebSocket.m_pHead;
-				stWebSocket.m_pHead = pNext;
-			}
+			stWebSocket.m_response.Fail();
 			delete[] stWebSocket.m_pBuf;
 			if (thePrefs.GetWebUseHttps()) {
-				int ret;
-				while ((ret = mbedtls_ssl_close_notify((mbedtls_ssl_context*)stWebSocket.m_ssl)) < 0)
-					if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
-						break;
+				// Best-effort only: the socket is non-blocking and cleanup must
+				// never spin on WANT_READ/WANT_WRITE.
+				mbedtls_ssl_close_notify(
+					(mbedtls_ssl_context*)stWebSocket.m_ssl);
 				mbedtls_ssl_free((mbedtls_ssl_context*)stWebSocket.m_ssl);
 			}
 		}
@@ -506,10 +710,13 @@ UINT AFX_CDECL WebSocketListeningFunc(LPVOID pThis)
 	InitThreadLocale();
 
 	uint16 wsPort = (uint16)thePrefs.GetWSPort();
+	const char* configuredBind = thePrefs.GetBindAddrA();
+	const char* effectiveBind =
+		configuredBind ? configuredBind : "127.0.0.1";
 	CLiveDebugLog::Get().Append("WS",
 		"Listener thread started: port=%u  bindAddr=\"%s\"",
 		(unsigned)wsPort,
-		thePrefs.GetBindAddrA() ? thePrefs.GetBindAddrA() : "INADDR_ANY");
+		effectiveBind);
 
 	SOCKET hSocket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, 0);
 	if (INVALID_SOCKET == hSocket) {
@@ -521,7 +728,8 @@ UINT AFX_CDECL WebSocketListeningFunc(LPVOID pThis)
 		SOCKADDR_IN stAddr;
 		stAddr.sin_family = AF_INET;
 		stAddr.sin_port = htons(wsPort);
-		stAddr.sin_addr.s_addr = thePrefs.GetBindAddrA() ? inet_addr(thePrefs.GetBindAddrA()) : INADDR_ANY;
+		stAddr.sin_addr.s_addr = configuredBind
+			? inet_addr(configuredBind) : htonl(INADDR_LOOPBACK);
 
 		int bindRv = bind(hSocket, (LPSOCKADDR)&stAddr, sizeof stAddr);
 		if (bindRv != 0) {

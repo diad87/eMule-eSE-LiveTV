@@ -74,23 +74,31 @@ test('legacy start routes are bridged to the P2P broadcaster', () => {
 test('C++ broadcaster rolls back failed prebuffer and removes HLS output', () => {
   const manager = read(repoRoot, 'srchybrid', 'LiveStreamManager.cpp');
   const ingest = read(repoRoot, 'srchybrid', 'RTMPIngest.cpp');
-  const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const streamController = read(repoRoot, 'srchybrid', 'WebLiveApiStreamController.cpp');
+  const statusController = read(repoRoot, 'srchybrid', 'WebLiveApiStatusController.cpp');
 
   assert.match(manager, /Prebuffer TIMEOUT:[\s\S]*StopBroadcast\(\);[\s\S]*return false;/);
   assert.match(manager, /ResetViewerHlsOutput\(true\)/);
   assert.match(ingest, /_T\("\\\\\*\.m3u8"\)/);
   assert.match(ingest, /RTMPCleanOutputDir\(m_strOutputDir\)/);
-  assert.match(web, /\\"ready\\":%s,\\"state\\":\\"%s\\",\\"chunks\\":%d/);
-  assert.match(web, /ch\.category/);
-  assert.match(web, /ch\.startedAt/);
+  assert.match(streamController, /\\"ready\\":[\s\S]{0,80}Bool\(ready\)[\s\S]{0,80}\\"state\\":[\s\S]{0,80}state[\s\S]{0,80}\\"chunks\\":/);
+  assert.match(statusController, /Text\(o,"category",c\.category\)/);
+  assert.match(statusController, /Field\(o,"startedAt",c\.started_at\)/);
 });
 
 test('legacy C++ HLS route falls back to the active viewer stream namespace', () => {
-  const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const web = [
+    read(repoRoot, 'srchybrid', 'WebServer.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiStatusController.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiLegacyController.cpp')
+  ].join('\n');
+  const legacyHls = read(repoRoot, 'srchybrid', 'WebLiveApiLegacyController.cpp');
 
-  assert.match(web, /hF == INVALID_HANDLE_VALUE && theApp\.liveStreamManager != NULL/);
-  assert.match(web, /IsViewingLive\(\)[\s\S]{0,160}GetViewerStreamKey\(\)/);
-  assert.match(web, /eMule_RTMP\\\\%hs\\\\%hs/);
+  assert.match(web, /o\.root_exists=PathFileExists\(p\)!=FALSE;[\s\S]{0,180}!o\.root_exists&&theApp\.liveStreamManager/);
+  assert.match(web, /CopyViewerStreamKey\(key\.data\(\)\)/);
+  assert.match(legacyHls, /response\.file_path = snapshot\.root_path \+ \(fallback \? "\\\\" \+ snapshot\.viewer_key : ""\) \+ "\\\\" \+ request\.resource/);
+  assert.match(web, /SendFileResponse\([\s\S]{0,320}r\.file_range[\s\S]{0,220}r\.concurrent,r\.allow_empty\)/);
+  assert.doesNotMatch(legacyHls, /CFile|Read\(|new BYTE|new char/);
 });
 
 test('I02 unattended soak mirrors the browser player heartbeat', () => {
@@ -141,14 +149,15 @@ test('I02 unattended soak mirrors the browser player heartbeat', () => {
 test('simultaneous broadcast and viewing keep native identities and buffers isolated', () => {
   const header = read(repoRoot, 'srchybrid', 'LiveStreamManager.h');
   const manager = read(repoRoot, 'srchybrid', 'LiveStreamManager.cpp');
-  const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
+  const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnelCoordinatorMethods.inl');
   const buddy = read(repoRoot, 'srchybrid', 'LiveBuddyRelay.cpp');
   const mesh = read(repoRoot, 'srchybrid', 'LiveMeshManager.cpp');
 
   assert.match(header, /LiveStreamInfo\s+m_broadcastStreamInfo/);
-  assert.match(header, /CLiveChunkBuffer\s+m_broadcastChunkBuffer/);
-  assert.match(header, /GetBroadcastStreamKey\(\)/);
-  assert.match(header, /GetViewerStreamKey\(\)/);
+  assert.match(header, /ese::live::LiveChunkWindow\s+m_chunkBuffer/);
+  assert.match(header, /ese::live::LiveChunkWindow\s+m_broadcastChunkBuffer/);
+  assert.match(header, /CopyBroadcastStreamKey\(uchar outKey\[16\]\)/);
+  assert.match(header, /CopyViewerStreamKey\(uchar outKey\[16\]\)/);
 
   const start = manager.slice(
     manager.indexOf('bool CLiveStreamManager::StartBroadcast('),
@@ -173,18 +182,18 @@ test('simultaneous broadcast and viewing keep native identities and buffers isol
   assert.match(join, /m_chunkBuffer\.Clear\(\)/);
   assert.doesNotMatch(join, /m_broadcastChunkBuffer\.Clear\(\)/);
 
-  assert.match(manager, /if \(!m_bBroadcasting && !m_broadcastPeers\.IsEmpty\(\)\)/);
+  assert.match(manager, /if \(!m_broadcastSession\.IsActive\(\) && !m_peerSet\.DownstreamsEmpty\(\)\)/);
   assert.match(manager, /SendBitmapToAll\(true\)/);
   assert.match(manager, /SendBitmapToAll\(false\)/);
   assert.match(manager, /GetChannelSnapshot\(\)[\s\S]{0,450}m_broadcastStreamInfo\.streamKey/);
   assert.match(join, /m_meshManager\.ResetSessionPeers\(\)/);
-  assert.match(manager, /LeaveStream\(\)[\s\S]{0,1600}ResetSessionPeers\(\)[\s\S]{0,220}m_bBroadcasting/);
+  assert.match(manager, /ResetViewerCoordinatorState\(\)[\s\S]{0,500}ResetSessionPeers\(\)[\s\S]{0,300}m_broadcastSession\.IsActive\(\)/);
   assert.match(mesh, /ResetSessionPeers\(\)[\s\S]{0,300}m_meshPeers\.RemoveAll\(\)/);
   assert.match(manager, /simultaneous broadcast\/view state or buffers crossed/);
   assert.match(manager, /m_broadcastChunkBuffer\.GetNewestSeq\(\) > broadcastNewestBefore/);
   assert.match(manager, /m_chunkBuffer\.GetCount\(\) == 0/);
-  assert.match(tunnel, /BulkSubscribe\(theApp\.liveStreamManager->GetViewerStreamKey\(\)\)/);
-  assert.match(buddy, /GetBroadcastStreamKey\(\)/);
+  assert.match(tunnel, /CopyViewerStreamKey\(viewerKey\)[\s\S]{0,800}BulkSubscribe\(viewerKey\)/);
+  assert.match(buddy, /CopyBroadcastStreamKey\(sk\)/);
 });
 
 test('directory deduplicates canonical stream keys and never reuses a local thumbnail for a remote channel', () => {
@@ -212,13 +221,14 @@ test('directory deduplicates canonical stream keys and never reuses a local thum
 test('player lifecycle messages are scoped to the viewed stream key', () => {
   const api = read(eseRoot, 'eSE-live', 'channel_api.js');
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const streamController = read(repoRoot, 'srchybrid', 'WebLiveApiStreamController.cpp');
   const dlg = read(repoRoot, 'srchybrid', 'EmuleDlg.cpp');
 
   assert.match(api, /player-alive' \+ suffix/);
   assert.match(api, /api\/live\/leave\?key=\$\{hash\}/);
-  assert.match(web, /req\.hasStreamKey = EseHexToKey16A/);
-  assert.match(web, /GetViewerStreamKey\(\)/);
-  assert.match(dlg, /!r->hasStreamKey[\s\S]{0,150}GetViewerStreamKey\(\)/);
+  assert.match(web, /ApiLiveLeave:[\s\S]{0,180}request\.key=W8Legacy\(_ParseURL/);
+  assert.match(streamController, /W8LiveStreamOperation::PlayerAlive[\s\S]{0,280}W8DecodeKey16\(in\.key,\s*key\)[\s\S]{0,120}service\.CopyViewerKey\(current\)/);
+  assert.match(dlg, /CopyViewerStreamKey\(viewerKey\)[\s\S]{0,150}!r->hasStreamKey/);
 });
 
 test('controlled 30 fps sources align two-second GOPs with independent HLS segments', () => {
@@ -276,6 +286,7 @@ test('package manifest includes every offline player asset', () => {
 test('release dashboard is loopback-only and legacy updates fail closed', () => {
   const pkg = JSON.parse(read(eseRoot, 'package.json'));
   const server = read(eseRoot, 'server.js');
+  const domainRouter = read(eseRoot, 'routes', 'http_domain_router.js');
   const legacyPlayer = read(eseRoot, 'live_player_server.js');
   const miscPages = read(eseRoot, 'pages', 'misc_pages.js');
   const channelApi = read(eseRoot, 'eSE-live', 'channel_api.js');
@@ -294,7 +305,7 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.doesNotMatch(server, /eSE v6\.2/);
   assert.doesNotMatch(miscPages, /version:\s*'7\.5\.2'/);
   assert.match(server, /server\.listen\(PORT,\s*'127\.0\.0\.1'/);
-  assert.match(server, /url\.pathname === '\/api\/eSE\/update\/check'/);
+  assert.match(domainRouter, /pathname === ["']\/api\/eSE\/update\/check["']/);
   assert.match(legacyPlayer, /server\.listen\(PORT,\s*'127\.0\.0\.1'/);
   assert.match(
     webSocketTunnel,
@@ -323,7 +334,7 @@ test('release dashboard is loopback-only and legacy updates fail closed', () => 
   assert.doesNotMatch(packageScript, /update_check\.ps1/);
   assert.match(packageScript, /Copy-GitTrackedTopLevelFiles/);
   assert.match(packageScript, /Assert-GitTrackedSource/);
-  assert.match(packageScript, /Assert-ZipMatchesPackage/);
+  assert.match(packageScript, /Test-ReleaseZipIntegrity/);
   assert.doesNotMatch(packageScript, /function\s+Copy-Tree/);
   assert.match(buildAll, /\$Skip\.Count\s+-gt\s+0\s+-and\s+-not\s+\$AllowDirty/);
   assert.match(buildAll, /\$DryRun\s+-and\s+-not\s+\$AllowDirty/);
@@ -458,7 +469,11 @@ test('Kad2 and Kad6 are independently selectable with dual mode as the default',
   const clientUdp = read(repoRoot, 'srchybrid', 'ClientUDPSocket.cpp');
   const connectionPage = read(repoRoot, 'srchybrid', 'PPgConnection.cpp');
   const resources = read(repoRoot, 'srchybrid', 'emule.rc');
-  const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const web = [
+    read(repoRoot, 'srchybrid', 'WebServer.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiStatusController.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiLegacyController.cpp')
+  ].join('\n');
   const natHealth = read(eseRoot, 'pages', 'misc_pages.js');
 
   assert.match(policy, /Kad2\s*=\s*1u\s*<<\s*0/);
@@ -491,7 +506,7 @@ test('Kad2 and Kad6 are independently selectable with dual mode as the default',
   );
   assert.match(
     kadUdp,
-    /CAddress routeV6;[\s\S]{0,240}GetIPv6BindAddr\(\)[\s\S]{0,500}configuredV6\.IsUniqueLocalIPv6\(\)[\s\S]{0,180}routeV6 = configuredV6;[\s\S]{0,180}routeV6\.IsNull\(\)[\s\S]{0,120}GetDetectedV6IP\(\)/,
+    /CAddress routeV6;[\s\S]{0,240}GetIPv6BindAddr\(\)[\s\S]{0,500}configuredV6\.IsUniqueLocalIPv6\(\)[\s\S]{0,180}routeV6 = configuredV6;[\s\S]{0,300}routeV6\.IsNull\(\)[\s\S]{0,500}GetDetectedV6IP\(\)/,
     'Kad6 must advertise only an explicitly bound ULA in T5'
   );
   assert.match(
@@ -505,7 +520,10 @@ test('Kad2 and Kad6 are independently selectable with dual mode as the default',
     'Kad6 routing probation must require an explicitly bound ULA'
   );
 
-  const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
+  const tunnel = [
+    read(repoRoot, 'srchybrid', 'Kad6GatewaySocket.cpp'),
+    read(repoRoot, 'srchybrid', 'LiveTunnelCoordinatorMethods.inl')
+  ].join('\n');
   const sharedFiles = read(repoRoot, 'srchybrid', 'SharedFileList.cpp');
   assert.doesNotMatch(
     tunnel,
@@ -519,7 +537,7 @@ test('Kad2 and Kad6 are independently selectable with dual mode as the default',
   );
   assert.match(
     tunnel,
-    /K6OriginAdvertiseWorker[\s\S]{0,5500}SignK6SourceRecord[\s\S]{0,500}Kad6SourceDescriptor/,
+    /SignK6SourceRecord\(recordCrypto, NULL, 0, record,[\s\S]{0,180}publish\.record_kind\s*=\s*kad6::K6RecordKind::Kad6SourceDescriptor/,
     'the production origin worker must create a signed native source descriptor'
   );
   assert.doesNotMatch(
@@ -529,19 +547,19 @@ test('Kad2 and Kad6 are independently selectable with dual mode as the default',
   );
   assert.match(
     tunnel,
-    /HasActiveCircuitWithExitCaps\(ESE_CAP_KAD6\s*\|[\s\S]{0,180}ESE_CAP_TUNNEL_STRICT3\s*\|[\s\S]{0,180}ESE_CAP_TUNNEL_SHAPED\)[\s\S]{0,120}work->bind\.flags\s*\|=\s*kad6::kK6SourceStrict/,
+    /HasActiveCircuitWithExitCaps\(ESE_CAP_KAD6\s*\|[\s\S]{0,180}ESE_CAP_TUNNEL_STRICT3\s*\|[\s\S]{0,180}ESE_CAP_TUNNEL_SHAPED\)[\s\S]{0,120}bind\.flags\s*\|=\s*kad6::kK6SourceStrict/,
     'source publication may request Strict only when a shaped three-hop circuit exists'
   );
   assert.match(
     tunnel,
-    /haveK6EconomyPath[\s\S]{0,900}m_lastK6QuotaGuardAttemptTick[\s\S]{0,160}BuildQuotaGuardCircuit\(\)/,
+    /haveK6EconomyPath[\s\S]{0,900}LT9ShouldAttemptQuotaGuard\(now, 5000u\)[\s\S]{0,160}BuildQuotaGuardCircuit\(\)/,
     'the runtime must build the independent economy issuer after a private path exists'
   );
   assert.match(web, /source_pipeline/);
-  assert.match(web, /snap\.origin_advertise_success_total/);
+  assert.match(web, /o\.origin_advertise_success_total=s\.origin_advertise_success_total/);
   assert.match(
     web,
-    /snap\.origin_source_recovered_total/,
+    /o\.origin_source_recovered_total=s\.origin_source_recovered_total/,
     'K01 adjudication must expose exact monotonic publish/recovery counters'
   );
   assert.match(
@@ -586,17 +604,21 @@ test('hole-punch keeps Kad identity separate from the eD2K user hash', () => {
 
 test('I08 IPv6 echo is a bounded production-client NetLab action', () => {
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const routes = read(repoRoot, 'srchybrid', 'WebRouteTable.cpp');
+  const diagnostics = read(repoRoot, 'srchybrid', 'WebLiveApiDiagnosticsController.cpp');
   const runner = read(repoRoot, 'tools', 'lab', 'run_v91_k04_node.ps1');
   const controller = read(repoRoot, 'tools', 'lab', 'control_v91_k04.ps1');
 
-  assert.match(web, /sURL\.Left\(25\) == "\/api\/ese\/netlab\/ipv6_echo"/);
+  assert.match(routes, /"\/api\/ese\/netlab\/ipv6_echo"[\s\S]{0,80}ApiEseNetlabIpv6Echo/);
+  assert.match(web, /ApiEseNetlabIpv6Echo:[\s\S]{0,120}W10DiagnosticsOperation::Ipv6Echo/);
+  assert.match(diagnostics, /W10DiagnosticsOperation::Ipv6Echo[\s\S]{0,260}run_ipv6_echo/);
   assert.match(
     web,
-    /ipv6_echo[\s\S]{0,3600}!thePrefs\.IsEseNetLabContributionActive\(\)[\s\S]{0,500}native_ipv6_literal_required/
+    /W10DiagnosticsContext::Ipv6Echo[\s\S]{0,1800}!thePrefs\.IsEseNetLabContributionActive\(\)[\s\S]{0,500}native_ipv6_literal_required/
   );
   assert.match(
     web,
-    /targetAddress\.GetType\(\) == CAddress::IPv6[\s\S]{0,140}!targetAddress\.IsMappedIPv4\(\)/
+    /targetAddress\.GetType\(\)\s*==\s*CAddress::IPv6[\s\S]{0,140}!targetAddress\.IsMappedIPv4\(\)/
   );
   assert.match(web, /targetAddress\.TryToSA\([\s\S]{0,900}EseI08TcpEcho\(/);
   assert.match(web, /EseI08TcpEcho\([\s\S]{0,500}EseI08UdpEcho\(/);
@@ -605,11 +627,11 @@ test('I08 IPv6 echo is a bounded production-client NetLab action', () => {
     web,
     /sourceAddress != expectedAddress \|\| sourcePort != expectedPort/
   );
-  assert.match(web, /timeoutValue < 1000 \|\| timeoutValue > 8000/);
-  assert.match(web, /nonceArg\.GetLength\(\) == 32/);
+  assert.match(web, /q\.timeout_ms<1000\|\|q\.timeout_ms>8000/);
+  assert.match(web, /q\.nonce\.size\(\)==32/);
   assert.doesNotMatch(
     web,
-    /ipv6_echo[\s\S]{0,4200}(getaddrinfo|GetAddrInfo|DnsQuery)/
+    /W10DiagnosticsContext::Ipv6Echo[\s\S]{0,4200}(getaddrinfo|GetAddrInfo|DnsQuery)/
   );
   assert.match(
     controller,
@@ -653,10 +675,25 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   const client = read(repoRoot, 'srchybrid', 'UpdownClient.h');
   const downloads = read(repoRoot, 'srchybrid', 'DownloadQueue.cpp');
   const kadSearch = read(repoRoot, 'srchybrid', 'kademlia', 'kademlia', 'Search.cpp');
-  const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
+  const tunnel = [
+    read(repoRoot, 'srchybrid', 'Kad6GatewaySocket.cpp'),
+    read(repoRoot, 'srchybrid', 'LiveTunnelCoordinatorMethods.inl'),
+    read(repoRoot, 'srchybrid', 'LiveTunnelSearchFacade.inl'),
+    read(repoRoot, 'srchybrid', 'LiveTunnel.cpp'),
+    read(repoRoot, 'srchybrid', 'LiveTunnelReleaseGate.cpp')
+  ].join('\n');
   const relay = read(repoRoot, 'srchybrid', 'RelayClient.cpp');
   const kadUdp = read(repoRoot, 'srchybrid', 'kademlia', 'net', 'KademliaUDPListener.cpp');
-  const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const web = [
+    read(repoRoot, 'srchybrid', 'WebServer.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiSettingsController.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiStreamController.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiLegacyController.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiTransferController.cpp')
+  ].join('\n');
+  const webRoutes = read(repoRoot, 'srchybrid', 'WebRouteTable.cpp');
+  const webStream = read(repoRoot, 'srchybrid', 'WebLiveApiStreamController.cpp');
+  const webAuth = read(repoRoot, 'srchybrid', 'WebAuthPolicy.cpp');
   const partFile = read(repoRoot, 'srchybrid', 'PartFile.cpp');
   const partWriteThread = read(repoRoot, 'srchybrid', 'PartFileWriteThread.cpp');
   const packaging = read(repoRoot, 'build_package.ps1');
@@ -711,7 +748,7 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   assert.match(kadUdp, /SendEseHolePunchReq\([\s\S]{0,500}SupportsEseNetLabV1Target\(\)/);
   assert.match(utp, /on_utp_accept[\s\S]{0,300}IsEseNetLabActive\(\)/);
   assert.match(tunnel, /!thePrefs\.GetEseV9Experimental\(\)[\s\S]{0,100}ESE_CAP_KAD6/);
-  assert.match(tunnel, /!optIn \? kad6::K6ReleaseGateStatus::OperatorOptOut/);
+  assert.match(tunnel, /const std::uint32_t stable = !optIn \? optOut[\s\S]{0,180}const bool enable = stable == ok \|\| beta/);
   assert.match(tunnel, /BuildTestCircuit\(CUpDownClient\* clientHint\)[\s\S]{0,900}GetConnectedSnapshot\(cands, 3, \/\*tunnelOnly=\*\/true\)/);
   assert.doesNotMatch(tunnel, /BuildTestCircuit\(CUpDownClient\* clientHint\)[\s\S]{0,1200}GetConnectedSnapshot\(cands, 3, \/\*tunnelOnly=\*\/false\)/);
   assert.match(relay, /config\.enabled = thePrefs\.GetKrpRelayEnabled\(\)/);
@@ -726,27 +763,87 @@ test('v9 capabilities and remote administration fail closed by default', () => {
   // Experimental service/exit capabilities remain fail-closed elsewhere.
   assert.match(kadUdp, /ProcessPacketKad6[\s\S]{0,500}!CKademlia::IsKad6Running\(\)/);
   assert.match(web, /explicit_consent_required/);
-  assert.match(web, /ApplyEseNetLabPreferenceState\(false\)/);
+  assert.match(
+    web,
+    /request\.on == "0"[\s\S]{0,900}Call\(port\.apply_netlab, port, false\)[\s\S]{0,320}persist_disable_and_verify/,
+    'the extracted settings controller must disable NetLab and verify persistence'
+  );
+  assert.match(
+    web,
+    /void W10SettingsContext::Apply\(void\*,bool on\)[\s\S]{0,100}thePrefs\.ApplyEseNetLabPreferenceState\(on\)/,
+    'the WebServer adapter must map the typed settings port to preferences'
+  );
   assert.doesNotMatch(web, /\/api\/ese\/v9[\s\S]{0,900}RequestK6PublicRelease\(/);
   assert.doesNotMatch(web, /\/api\/ese\/v9[\s\S]{0,900}SetKad6PublicExitOptIn\(false\)/);
-  assert.match(web, /ApplyEseNetLabPreferenceState\(true\)/);
+  assert.match(
+    web,
+    /request\.on == "1"[\s\S]{0,900}netlab_consent_accepted[\s\S]{0,520}Call\(port\.apply_netlab, port, true\)/,
+    'the extracted settings controller must require consent before enabling NetLab'
+  );
   assert.match(web, /advanced_consent/);
   assert.match(web, /contribution_consent/);
   assert.match(web, /kad6_beta_exit/);
-  assert.match(web, /sURL\.Left\(15\) == "\/api\/ese\/netlab"/);
+  assert.match(web, /WebAuthPolicy::AuthorizeLiveRequest/);
+  assert.match(webAuth, /path\.compare\(0, 5, "\/api\/"\) == 0[\s\S]{0,60}return WebRole::Admin/);
   assert.match(prober, /previewMask[\s\S]{0,360}ESE_CAP_HOLEPUNCH_RDV[\s\S]{0,180}InterlockedAnd\(caps, ~previewMask\)/);
   assert.match(web, /netlab_target_required/);
   assert.doesNotMatch(web, /\/api\/ese\/v9[\s\S]{0,1800}SetEseRelayAccept\(bOn\)/);
   assert.doesNotMatch(web, /\/api\/ese\/v9[\s\S]{0,1800}SetEseRelayEgress\(bOn\)/);
-  assert.match(web, /\/api\/live\/direct_join[\s\S]{0,9000}PROXYTYPE_SOCKS4[\s\S]{0,160}PROXYTYPE_SOCKS4A/);
-  assert.match(web, /\/api\/live\/direct_join[\s\S]{0,10000}ipv6_not_supported_by_socks4/);
+  assert.match(
+    webRoutes,
+    /\{"\/api\/live\/direct_join", WebRouteId::ApiLiveDirectJoin\}/,
+    'the direct-join API must retain its exact route mapping'
+  );
+  assert.match(
+    web,
+    /ApiLiveDirectJoin: request\.operation=W8LiveStreamOperation::DirectJoin[\s\S]{0,620}hasStream=true/,
+    'the WebServer adapter must translate the direct-join route into the typed request'
+  );
+  assert.match(
+    web,
+    /IsUnsupportedIPv6Socks4\(\) const override[\s\S]{0,180}PROXYTYPE_SOCKS4 \|\| proxy\.type == PROXYTYPE_SOCKS4A/,
+    'the app adapter must identify both SOCKS4 variants as IPv6-incompatible'
+  );
+  assert.match(
+    webStream,
+    /W8LiveStreamOperation::DirectJoin[\s\S]{0,900}IsUnsupportedIPv6Socks4\(\)[\s\S]{0,520}ipv6_not_supported_by_socks4/,
+    'the stream controller must fail closed for an IPv6 destination over SOCKS4'
+  );
   assert.match(web, /ESE_NETLAB_REPORT_V1/);
   assert.match(web, /GetConnectedSocketCount\(\)/);
   assert.match(web, /\\"central_telemetry\\":false/);
-  assert.match(web, /sURL\.Left\(13\) == "\/api\/network\/"/);
-  assert.match(web, /\/api\/network\/connect[\s\S]{0,1800}WEBGUIIA_CONNECTTOSERVER/);
-  assert.match(web, /\/api\/network\/connect[\s\S]{0,2200}WEBGUIIA_KAD_START/);
-  assert.match(web, /WebFileOperationRequest \*request[\s\S]{0,2200}WEBGUIIA_FILE_OPERATION/);
+  assert.match(webAuth, /Unknown APIs are treated as mutations until explicitly proven read-only/);
+  assert.match(
+    webRoutes,
+    /\{"\/api\/network\/connect", WebRouteId::ApiNetworkConnect\}/,
+    'the network-connect API must retain its exact route mapping'
+  );
+  assert.match(
+    web,
+    /ApiNetworkConnect:transfer\.operation=W9LiveTransferOperation::NetworkConnect[\s\S]{0,260}transfer\.kad=[\s\S]{0,180}hasTransfer=true/,
+    'the WebServer adapter must preserve both network-connect selectors'
+  );
+  assert.match(
+    web,
+    /void W9TransferContext::Network\(void\*,bool ed2k,bool kad[\s\S]{0,420}WEBGUIIA_CONNECTTOSERVER[\s\S]{0,420}WEBGUIIA_KAD_START/,
+    'the typed network port must retain both GUI connection actions'
+  );
+  assert.match(
+    web,
+    /W9LiveTransferOperation::NetworkConnect[\s\S]{0,400}p\.request_network\(p\.context,On\(q\.ed2k\),On\(q\.kad\),e,k\)/,
+    'the transfer controller must forward the requested eD2K and Kad planes'
+  );
+  assert.match(web, /RunWebTransferActions/);
+  assert.match(
+    web,
+    /WebFileOperationRequest\* request = new WebFileOperationRequest[\s\S]{0,220}strmd4\(hash, request->fileHash\)[\s\S]{0,100}delete request; break/,
+    'file operations must materialize a validated owned hash request and release invalid input'
+  );
+  assert.match(
+    web,
+    /case WebTransferActionKind::FileCancel: request->operation = WEBFILEOP_CANCEL[\s\S]{0,1100}WEBGUIIA_FILE_OPERATION, reinterpret_cast<LPARAM>\(request\)/,
+    'validated file-operation ownership must transfer to the GUI dispatcher'
+  );
   assert.doesNotMatch(web, /WithFileByID\(FileHash,[\s\S]{0,900}DeletePartFile\(\)/);
   assert.match(dlg, /WEBGUIIA_FILE_OPERATION[\s\S]{0,500}WithFileByID[\s\S]{0,650}WEBFILEOP_CANCEL[\s\S]{0,120}DeletePartFile\(\)/);
   assert.match(partFile, /m_FlushList\.AddHead\(ToWrite\{[\s\S]{0,220}PART_WRITE_SET_LENGTH/);
@@ -755,13 +852,24 @@ test('v9 capabilities and remote administration fail closed by default', () => {
     partFile,
     /const bool hasKad6Gateway\s*=\s*[\s\S]{0,140}HasActiveCircuitWithExitCaps\(ESE_CAP_KAD6\)[\s\S]{0,500}IsAnyConnected\(\) \|\| hasKad6Gateway/
   );
+  const sourceLookupStart = tunnel.indexOf(
+    'bool CLiveTunnel::StartK6SourceLookup');
+  const sourceLookupEnd = tunnel.indexOf(
+    'bool CLiveTunnel::BeginK6Download', sourceLookupStart);
+  assert.ok(sourceLookupStart >= 0 && sourceLookupEnd > sourceLookupStart,
+    'the Kad6 source-lookup boundary must remain inspectable');
+  const sourceLookup = tunnel.slice(sourceLookupStart, sourceLookupEnd);
+  assert.match(sourceLookup,
+    /frame\.msg_type = kad6::kK6MsgSearchStart[\s\S]{0,1000}LT6SubmitAdvertise/);
+  assert.match(sourceLookup,
+    /K6AcquireAnonymousQuota\(pinnedCircuit,[\s\S]{0,160}K6QuotaService::Control, kad6::kK6MsgSearchStart[\s\S]{0,900}EnqueueSendMsg/,
+    'economy source lookup must obtain anonymous control quota before enqueueing the request');
+  assert.match(sourceLookup,
+    /economy && !quotaOk && IsK6PublicReleaseEnabled\(\)[\s\S]{0,400}return;[\s\S]{0,160}EnqueueSendMsg/,
+    'public-release source lookup must fail closed before transport when quota acquisition fails');
   assert.match(
     tunnel,
-    /K6OriginSourceLookupWorker[\s\S]{0,1800}K6AcquireAnonymousQuota\([\s\S]{0,220}K6QuotaService::Control[\s\S]{0,180}kK6MsgSearchStart[\s\S]{0,900}EnqueueSendMsg/
-  );
-  assert.match(
-    tunnel,
-    /result\.result_kind == kad6::kK6SearchKindSourceHash[\s\S]{0,2600}sourceV6 = CAddress\([\s\S]{0,420}K6AllowTicketTarget\(this,[\s\S]{0,220}K6TicketService::Ed2kTcp/
+    /result\.result_kind == kad6::kK6SearchKindSourceHash[\s\S]{0,2600}sourceV6\s*=\s*CAddress\([\s\S]{0,420}host\.K6AllowTicketTarget\(&host,[\s\S]{0,220}K6TicketService::Ed2kTcp/
   );
   assert.match(
     tunnel,
@@ -806,6 +914,7 @@ test('Live send queues are bounded and ratio drops release their packet', () => 
   const clientHeader = read(repoRoot, 'srchybrid', 'UpdownClient.h');
   const protocol = read(repoRoot, 'srchybrid', 'LiveProtocol.h');
   const manager = read(repoRoot, 'srchybrid', 'LiveStreamManager.cpp');
+  const fanoutAdapter = read(repoRoot, 'srchybrid', 'LiveFanoutTransportAdapter.cpp');
 
   assert.match(socketHeader, /GetQueuedDataBytes\(\) const/);
   assert.match(socket, /CSingleLock lock\(&self->sendLocker, TRUE\)/);
@@ -816,9 +925,19 @@ test('Live send queues are bounded and ratio drops release their packet', () => 
     read(repoRoot, 'srchybrid', 'LivePackets.h'),
     /ESE_FRAG_REASM_TTL\s*=\s*15000/
   );
+  assert.match(
+    fanoutAdapter,
+    /BeginDelivery\([\s\S]{0,180}GetSocketQueuedBytes\(\),\s*wire_bytes\)/,
+    'the transport adapter must project queued bytes into atomic batch admission'
+  );
   assert.ok(
-    (manager.match(/GetSocketQueuedBytes\(\) > ESE_LIVE_MAX_PEER_QUEUE_BYTES/g) || []).length >= 3,
-    'initial push, requested chunks and relay fanout must all apply backpressure'
+    (manager.match(/LiveStreamFanoutAdapter::ReservePackets\(/g) || []).length >= 2,
+    'initial push and requested chunks must reserve their whole packet batch'
+  );
+  assert.match(
+    manager,
+    /LiveStreamFanoutAdapter::PrepareRelayBatches\(/,
+    'relay fanout must use the same bounded batch admission'
   );
   assert.match(
     manager,
@@ -843,7 +962,18 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   const base = read(repoRoot, 'srchybrid', 'BaseClient.cpp');
   const prefs = read(repoRoot, 'srchybrid', 'Preferences.cpp');
   const prober = read(repoRoot, 'srchybrid', 'FirewallProberV6.cpp');
-  const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const web = [
+    read(repoRoot, 'srchybrid', 'WebServer.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiSettingsController.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiStreamController.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiStatusController.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiSearchController.cpp')
+  ].join('\n');
+  const webDiagnostics = read(repoRoot, 'srchybrid', 'WebDiagnostics.cpp');
+  const webRoutes = read(repoRoot, 'srchybrid', 'WebRouteTable.cpp');
+  const webSearch = read(repoRoot, 'srchybrid', 'WebLiveApiSearchController.cpp');
+  const webSettings = read(repoRoot, 'srchybrid', 'WebLiveApiSettingsController.cpp');
+  const webStream = read(repoRoot, 'srchybrid', 'WebLiveApiStreamController.cpp');
   const client = read(repoRoot, 'srchybrid', 'UpdownClient.h');
   const clientUdp = read(repoRoot, 'srchybrid', 'ClientUDPSocket.cpp');
   const utp = read(repoRoot, 'srchybrid', 'eMuleAI', 'UtpSocket.cpp');
@@ -902,22 +1032,35 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
     assert.match(web, new RegExp(field),
       `/api/status must retain ${field} for I04 adjudication`);
   }
-  const statusStart = web.indexOf('// --- /api/status');
   const localDiagnosticsStart = web.indexOf(
-    'if (Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK))', statusStart);
+    'bool W8StatusContext::ReadStatus');
   const localDiagnosticsEnd = web.indexOf(
-    'CKadKeepalive::Stats', localDiagnosticsStart);
-  assert.ok(statusStart >= 0 && localDiagnosticsStart > statusStart &&
+    'bool W8StatusContext::ReadChannel', localDiagnosticsStart);
+  assert.ok(localDiagnosticsStart >= 0 &&
     localDiagnosticsEnd > localDiagnosticsStart,
   'the /api/status loopback diagnostic boundary must remain inspectable');
   const localDiagnostics = web.slice(localDiagnosticsStart, localDiagnosticsEnd);
   assert.match(localDiagnostics, /user_hash/);
-  assert.match(localDiagnostics, /user_hash\\":null/);
-  assert.match(localDiagnostics, /connecting_client_count\\":null/);
-  assert.match(web, /\/api\/debug\/source-resolutions/);
-  assert.match(web, /ese\.debug\.source-resolutions\/v1/);
-  assert.match(web,
-    /source-resolutions[\s\S]{0,900}clientIP != htonl\(INADDR_LOOPBACK\)/);
+  assert.match(localDiagnostics, /connecting_client_count/);
+  assert.match(webDiagnostics, /user_hash\\":/);
+  assert.match(webDiagnostics, /connecting_client_count\\":/);
+  assert.match(webDiagnostics, /if \(local\.exposed\)[\s\S]{0,120}else[\s\S]{0,80}"null"/);
+  assert.match(
+    webRoutes,
+    /\{"\/api\/debug\/source-resolutions", WebRouteId::ApiDebugSourceResolutions\}/,
+    'the source-resolution diagnostic must retain its exact route mapping'
+  );
+  assert.match(webSearch, /ese\.debug\.source-resolutions\/v1/);
+  assert.match(
+    web,
+    /ApiDebugSourceResolutions:search\.operation=ese::web::W9SearchOperation::SourceResolutions;search\.loopback=Data\.inadr\.S_un\.S_addr==htonl\(INADDR_LOOPBACK\)/,
+    'the WebServer adapter must propagate the loopback decision to the diagnostic controller'
+  );
+  assert.match(
+    webSearch,
+    /W9SearchOperation::SourceResolutions\)\{if\(!r\.loopback\)[\s\S]{0,180}403 Forbidden/,
+    'the extracted search controller must reject non-loopback diagnostics'
+  );
   assert.match(downloadQueue,
     /if \(!ResolveSourceHostAddresses\([\s\S]{0,100}addresses\.swap\(legacyAddresses\)/,
     'one modern DNS answer set must win instead of mixing two resolution instants');
@@ -943,9 +1086,16 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   assert.match(prober, /uni->DadState != IpDadStatePreferred/);
   assert.match(prober, /uni->SuffixOrigin == IpSuffixOriginRandom/);
   assert.match(prober, /first validated candidate wins/);
-  // Leave enough room for CRLF checkouts while keeping both operations in the
-  // same compact kill-switch branch.
-  assert.match(web, /ApplyEseNetLabPreferenceState\(false\)[\s\S]{0,480}RequestStop\(\)/);
+  assert.match(
+    webSettings,
+    /request\.on == "0"[\s\S]{0,900}Call\(port\.apply_netlab, port, false\)[\s\S]{0,220}Call\(port\.request_keepalive, port, false\)/,
+    'the NetLab off transition must request the keepalive shutdown through its typed port'
+  );
+  assert.match(
+    web,
+    /void W10SettingsContext::Keepalive\(void\*,bool on\)[\s\S]{0,120}if\(on\)CKadKeepalive::Instance\(\)\.RequestStart\(\);else CKadKeepalive::Instance\(\)\.RequestStop\(\)/,
+    'the app adapter must map the false keepalive request to RequestStop'
+  );
   assert.match(web, /capability_advertised/);
   assert.match(client, /SupportsEseHolePunchRdvTarget\(\)[\s\S]{0,120}SupportsReachPunch3\(\)/);
   assert.match(kadSearch, /bPunch3[\s\S]{0,300}KAD_REACH_CAP_PUNCH_3W/);
@@ -960,15 +1110,37 @@ test('IPv6, capability and share-link regressions remain guarded', () => {
   assert.match(channelApi, /localhost:\$\{dashboardPort\}\/live\/watch/);
   assert.doesNotMatch(channelApi, /localhost:8080\/live\/watch/);
   assert.match(liveManagerHeader, /const CAddress& address, uint16 port/);
-  assert.match(web, /ed2k:\/\/\|live\|HEXKEY\|\[IPv6\]:PORT\|TITLE\|\//);
-  assert.match(web, /closeBracket[\s\S]{0,260}ReverseFind\(_T\(':'\)\)/);
-  assert.match(web, /validIPv6[\s\S]{0,180}parsed\.IsUsableDirectIPv6\(\)/);
+  assert.match(
+    webStream,
+    /request\.link = "ed2k:\/\/\|live\|" \+ hex \+ "\|\[::1\]:4662\|TitleFromLink\|\/"[\s\S]{0,620}W8LiveStreamAddress::Family::IPv6/,
+    'the controller self-test must retain a successful bracketed IPv6 share link'
+  );
+  assert.match(
+    webStream,
+    /endpoint\[0\] == '\['[\s\S]{0,180}endpoint\.find\('\]'\)[\s\S]{0,220}endpoint\[close \+ 1\] == ':'/,
+    'the extracted share-link parser must split bracketed IPv6 without treating an address colon as the port separator'
+  );
+  assert.match(
+    webStream,
+    /const bool ipv6 = ip\.find\(':'.*?\) != std::string::npos[\s\S]{0,180}service\.IsUsableAddress\(ip, ipv6\)[\s\S]{0,180}Family::IPv6/,
+    'the extracted address parser must validate IPv6 before selecting its address family'
+  );
+  assert.match(
+    web,
+    /IsUsableAddress\(const std::string& text, bool ipv6\) const override[\s\S]{0,300}address\.IsUsableDirectIPv6\(\)/,
+    'the app adapter must apply the production direct-IPv6 policy'
+  );
   assert.match(addressHeader, /bool IsUniqueLocalIPv6\(\) const;/);
   assert.match(addressHeader, /bool IsUsableDirectIPv6\(\) const;/);
   assert.match(address, /IsUniqueLocalIPv6[\s\S]{0,360}\(m_IP\[0\] & 0xfe\) == 0xfc/);
   assert.match(address, /IsUsableDirectIPv6[\s\S]{0,360}IsPublicIP\(\) \|\| IsUniqueLocalIPv6\(\)/);
   assert.match(liveManager, /address\.IsUsableDirectIPv6\(\)/);
-  assert.match(base, /bDirectOverlayRoute[\s\S]{0,900}m_ipv6Address\.IsPublicIP\(\) \|\| bDirectOverlayRoute/);
+  assert.match(base, /const bool bSameLanDirectRoute = bDirectRoute/);
+  assert.match(base,
+    /bSameLanDirectRoute = bDirectRoute[\s\S]{0,260}ObserveSameLanRouteToPeer\(/);
+  assert.match(base,
+    /bSameLanDirectRoute = bDirectRoute[\s\S]{0,420}CanUseSameLanEndpoint\(/);
+  assert.match(base, /m_ipv6Address\.IsPublicIP\(\) \|\| bSameLanDirectRoute/);
   assert.match(liveManager, /native IPv6 Live source/);
   assert.match(client, /SetDirectIPv6Address[\s\S]{0,300}IsUsableDirectIPv6\(\)/);
   assert.match(liveManager, /SetDirectIPv6Address\(address\)/);
@@ -1130,25 +1302,31 @@ test('nodes.dat bootstrap is disabled by default and requires verified determini
 test('source loss schedules bounded rotating peer replenishment', () => {
   const manager = read(repoRoot, 'srchybrid', 'LiveStreamManager.cpp');
   const mesh = read(repoRoot, 'srchybrid', 'LiveMeshManager.cpp');
-  const policy = read(repoRoot, 'srchybrid', 'LivePeerRefreshPolicy.h');
+  const policy = read(repoRoot, 'srchybrid', 'LiveStreamRecovery.h');
 
   assert.doesNotMatch(manager, /TODO:\s*Request more peers from broadcaster/);
-  assert.match(manager, /m_peerRefreshPolicy\.OnSourceLost/);
-  assert.match(manager, /if \(m_peerRefreshPolicy\.IsPending\(\)\)[\s\S]{0,100}RequestMorePeers\(\)/);
+  assert.match(manager, /m_streamRecovery\.OnSourceLost/);
+  assert.match(manager, /if \(m_streamRecovery\.IsPeerRefreshPending\(\)\)[\s\S]{0,100}RequestMorePeers\(\)/);
   assert.match(manager, /Peer refresh via tunnel/);
-  assert.match(manager, /m_strictTunnelOnly/);
+  assert.match(manager, /m_viewerSession\.StrictTunnelOnly\(\)/);
   assert.match(mesh, /m_pManager->RequestMorePeers\(\)/);
-  assert.match(policy, /LOSS_GRACE_MS = 2000/);
-  assert.match(policy, /REQUEST_COOLDOWN_MS = 15000/);
-  assert.match(policy, /TakeCandidate/);
-  assert.match(policy, /\(int32_t\)\(now - target\) >= 0/);
+  assert.match(policy, /kPeerLossGraceMs = 2000u/);
+  assert.match(policy, /kPeerRequestCooldownMs = 15000u/);
+  assert.match(policy, /TakePeerCandidate/);
+  assert.match(policy, /ShouldRequestPeers/);
 });
 
 test('Adaptive is Kad6-first, auto-seeds, and reports the real route state', () => {
   const selector = read(repoRoot, 'srchybrid', 'kademlia', 'kademlia', 'KadV2ModeSelector.cpp');
   const pool = read(repoRoot, 'srchybrid', 'kademlia', 'kademlia', 'KadV2TunnelPool.cpp');
-  const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
-  const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
+  const tunnel = [
+    read(repoRoot, 'srchybrid', 'LiveTunnelCoordinatorMethods.inl'),
+    read(repoRoot, 'srchybrid', 'LiveTunnel.cpp')
+  ].join('\n');
+  const web = [
+    read(repoRoot, 'srchybrid', 'WebServer.cpp'),
+    read(repoRoot, 'srchybrid', 'WebLiveApiSettingsController.cpp')
+  ].join('\n');
   const api = read(eseRoot, 'eSE-live', 'channel_api.js');
 
   assert.match(selector, /case CKadV2Mode::Adaptive:[\s\S]{0,900}return CKadV2Mode::Tunneled;/);
@@ -1157,8 +1335,8 @@ test('Adaptive is Kad6-first, auto-seeds, and reports the real route state', () 
   assert.match(tunnel, /Prefer a Kad6-capable EXIT[\s\S]{0,400}ESE_CAP_KAD6/);
   assert.match(tunnel, /HasEseNodePub\(\)[\s\S]{0,180}Kad6CtEqual/);
   assert.match(tunnel, /kK6FlagStrict[\s\S]{0,100}minimumHops = 3;[\s\S]{0,100}else if \(quotaMessage\)/);
-  assert.ok(web.includes('\\\"kad6CircuitActive\\\":%s'));
-  assert.ok(web.includes('\\\"routeState\\\":\\\"%s\\\"'));
+  assert.ok(web.includes('\\\"kad6CircuitActive\\\":'));
+  assert.ok(web.includes('\\\"routeState\\\":\\\"'));
   for (const state of ['kad6', 'tunnel_kad2_compat', 'kad2_fallback',
                        'kad2_direct', 'blocked_waiting_kad6']) {
     assert.match(api, new RegExp(state));
@@ -1166,7 +1344,11 @@ test('Adaptive is Kad6-first, auto-seeds, and reports the real route state', () 
 });
 
 test('Kad6 Private and Strict paths fail closed at their declared hop counts', () => {
-  const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
+  const tunnel = [
+    read(repoRoot, 'srchybrid', 'LiveTunnelCoordinatorMethods.inl'),
+    read(repoRoot, 'srchybrid', 'LiveTunnel.cpp')
+  ].join('\n');
+  const handshake = read(repoRoot, 'srchybrid', 'LiveCircuitHandshake.cpp');
   const circuit = read(repoRoot, 'srchybrid', 'LiveCircuit.h');
   const keepalive = read(repoRoot, 'srchybrid', 'KadKeepalive.cpp');
   const successor = tunnel.slice(
@@ -1185,13 +1367,15 @@ test('Kad6 Private and Strict paths fail closed at their declared hop counts', (
   assert.match(labTwoHop, /c->m_private2 = true;[\s\S]{0,80}m_pendingHopClients\.push_back\(hop2\)/);
   assert.match(circuit, /enum class CircuitAbortReason[\s\S]{0,300}HandshakeTimeout[\s\S]{0,100}ExtendTimeout/);
   for (const reason of ['StrictV1', 'PinMismatch', 'CapsFloor', 'SigFail']) {
-    assert.match(tunnel, new RegExp(`m_abort_reason = CircuitAbortReason::${reason}`));
+    assert.match(handshake, new RegExp(`m_abort_reason = CircuitAbortReason::${reason}`));
   }
-  assert.match(tunnel, /void CLiveTunnel::DestroyCircuitFailClosed[\s\S]{0,900}m_auth_ok = false/);
+  assert.match(tunnel, /void CLiveTunnel::DestroyCircuitFailClosed[\s\S]{0,900}TransitionCircuitDestroyed\(circ\)/);
+  assert.match(tunnel, /void CLiveTunnel::TransitionCircuitDestroyed[\s\S]{0,900}m_exitServices\.AbortCircuit\(circuitId\)[\s\S]{0,1200}LT7_STATE\(RelayReassemblyState\)\.erase\(entry\)/);
+  assert.match(tunnel, /void CLiveTunnel::DestroyCircuitFailClosed[\s\S]{0,1600}m_auth_ok = false/);
   assert.match(tunnel, /HandshakeTimeout;[\s\S]{0,160}m_private2 \|\| c->m_strict3\) DestroyCircuitFailClosed/);
   assert.match(tunnel, /ExtendTimeout;[\s\S]{0,160}m_private2 \|\| c->m_strict3\) DestroyCircuitFailClosed/);
   assert.match(tunnel, /Kad6CtEqual\(a->GetEseNodePub\(\), b->GetEseNodePub\(\), 32\)/);
-  assert.match(tunnel, /circ->m_private2 \|\| circ->m_strict3[\s\S]{0,500}DestroyCircuitFailClosed\(circ\)/);
+  assert.match(handshake, /circ->m_private2 \|\| circ->m_strict3[\s\S]{0,500}DestroyHandshakeCircuit\(circ\)/);
   assert.match(tunnel, /minimumHops = sub_cmd == TUN_OP_KAD6_GATEWAY \? 2 : 1;/);
   assert.match(tunnel, /quotaMessage[\s\S]{0,500}minimumHops = 3;[\s\S]{0,300}minimumHops = 1;/);
   assert.match(keepalive, /InterlockedCompareExchange[\s\S]{0,200}m_running/);
@@ -1252,6 +1436,8 @@ test('K01 relay proves native DHT custodian reachability before circuit use', ()
 
 test('K01 ULA quota issuer trust is explicit-consent and authenticated-peer only', () => {
     const tunnel = read(repoRoot, 'srchybrid', 'LiveTunnel.cpp');
+    const gateway = read(repoRoot, 'srchybrid', 'Kad6GatewaySocket.cpp');
+    const coordinator = read(repoRoot, 'srchybrid', 'LiveTunnelCoordinatorMethods.inl');
     const ticketHeader = read(
         repoRoot, 'libkad6', 'include', 'kad6', 'kad6_ticket.h'
     );
@@ -1273,25 +1459,25 @@ test('K01 ULA quota issuer trust is explicit-consent and authenticated-peer only
         /policy\.allow_ula_target && AddressIsUla\(t\.target_endpoint\.addr\)/
     );
     assert.match(
-        tunnel,
-        /K6TicketPolicy\(\)[\s\S]{0,260}allow_ula_target = thePrefs\.IsEseNetLabContributionActive\(\)/
+        gateway,
+        /LT4TicketPolicy\(CLiveTunnel& host\)[\s\S]{0,360}allow_ula_target=thePrefs\.IsEseNetLabContributionActive\(\)/
     );
-    const quotaGuardBuilder = tunnel.slice(
-        tunnel.indexOf('bool haveK6EconomyPath = false;'),
-        tunnel.indexOf('// 3. v0.71 P0.A')
+    const quotaGuardBuilder = coordinator.slice(
+        coordinator.indexOf('bool haveK6EconomyPath = false;'),
+        coordinator.indexOf('// 4. Cover traffic emission')
     );
     assert.match(quotaGuardBuilder, /IsK6PublicReleaseEnabled\(\)/);
     assert.match(
         quotaGuardBuilder,
         /IsEseNetLabContributionActive\(\)[\s\S]{0,240}BuildQuotaGuardCircuit\(\)/
     );
-    const targetPolicy = tunnel.slice(
-        tunnel.indexOf('bool CLiveTunnel::K6AllowTicketTarget'),
-        tunnel.indexOf('bool CLiveTunnel::K6ConsumeTicket')
+    const targetPolicy = gateway.slice(
+        gateway.indexOf('bool CKad6OriginSocket::LT4AllowTarget'),
+        gateway.indexOf('kad6::K6TargetPolicy CKad6OriginSocket::LT4TicketPolicy')
     );
     assert.match(
         targetPolicy,
-        /IsUniqueLocalIPv6\(\)[\s\S]{0,100}IsEseNetLabContributionActive\(\)/
+        /IsEseNetLabContributionActive\(\)[\s\S]{0,100}IsUniqueLocalIPv6\(\)/
     );
 
     const runner = read(repoRoot, 'tools', 'lab', 'run_v91_k04_node.ps1');
@@ -1309,10 +1495,13 @@ test('K01 ULA quota issuer trust is explicit-consent and authenticated-peer only
     );
     assert.doesNotMatch(
         quotaPresent,
-        /issuerTrusted,\s*&token,\s*&certificate/,
-        'decoded quota input must not alias outputs that the verifier clears'
+        /LT2PresentQuota\(\s*result/,
+        'decoded quota input must not alias the output object'
     );
-    assert.match(quotaPresent, /issuerTrusted,\s*NULL,\s*NULL/);
+    assert.match(
+        quotaPresent,
+        /LT2PresentQuota\(\s*presentation,[\s\S]{0,220}K6QuotaIssuerTrusted\([\s\S]{0,260}result\)/
+    );
 });
 
 test('--selftest verifies signed chunk ingest and returns failure to the caller', () => {
@@ -1329,12 +1518,17 @@ test('--selftest verifies signed chunk ingest and returns failure to the caller'
   assert.match(dialog, /if \(!theApp\.m_bSelfTest && theApp\.m_uHeadlessMetricsPort == 0\)[\s\S]{0,80}LaunchEseServer/);
   assert.match(dialog, /Metrics isolation: dashboard auto-spawn skipped \(port=%u\)/);
   const web = read(repoRoot, 'srchybrid', 'WebServer.cpp');
-  const netlabSwitch = web.slice(
-    web.indexOf('if (sURL.Left(11) == "/api/ese/v9")'),
-    web.indexOf('// Local, sanitized cohort report'));
-  assert.match(netlabSwitch, /onArg == _T\("0"\)[\s\S]{0,360}WriteBool\(_T\("EseNetLabEnabled"\), false, _T\("eSE"\)\)/);
-  assert.match(netlabSwitch, /GetBool\(_T\("EseNetLabEnabled"\), true, _T\("eSE"\)\)/);
-  assert.match(netlabSwitch, /else if \(ok && CPreferences::Save\(\)\)/);
+  const settingsController = read(repoRoot, 'srchybrid', 'WebLiveApiSettingsController.cpp');
+  const netlabSwitch = settingsController.slice(
+    settingsController.indexOf('W10SettingsOperation::EseV9'),
+    settingsController.indexOf('const bool changed = !request.mode.empty()'));
+  const netlabAdapter = web.slice(
+    web.indexOf('bool W10SettingsContext::PersistDisable'),
+    web.indexOf('struct W10DiagnosticsContext'));
+  assert.match(netlabSwitch, /request\.on == "0"[\s\S]{0,700}persist_disable_and_verify/);
+  assert.match(netlabAdapter, /WriteBool\(_T\("EseNetLabEnabled"\),false,_T\("eSE"\)\)/);
+  assert.match(netlabAdapter, /GetBool\(_T\("EseNetLabEnabled"\),true,_T\("eSE"\)\)/);
+  assert.match(netlabAdapter, /CPreferences::Save\(\)!=0/);
   assert.match(netlabSwitch, /error = "persist_failed"/);
   assert.match(dialog, /AfxBeginThread\(HeadlessActionDelayThread/);
   assert.match(dialog, /PostMessage\(hwnd, UM_LIVE_HEADLESS_ACTION/);
@@ -1425,12 +1619,12 @@ test('request body reader enforces its byte limit', async () => {
 });
 
 test('log and download UI render untrusted text without HTML event handlers', () => {
-  const server = read(eseRoot, 'server.js');
+  const debugPage = read(eseRoot, 'pages', 'debug_page.js');
   const logRoute = read(eseRoot, 'debug_log.js');
   const myList = read(eseRoot, 'pages', 'mylist_page.js');
 
-  assert.match(server, /document\.createTextNode/);
-  assert.doesNotMatch(server, /pre\.innerHTML\s*=\s*colorize/);
+  assert.match(debugPage, /document\.createTextNode/);
+  assert.doesNotMatch(debugPage, /pre\.innerHTML\s*=\s*colorize/);
   assert.doesNotMatch(logRoute, /Access-Control-Allow-Origin['"]?\s*:\s*['"]\*/);
   assert.match(myList, /data-dl-cancel/);
   assert.doesNotMatch(myList, /onclick="dlCancel/);

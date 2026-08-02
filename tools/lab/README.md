@@ -281,6 +281,74 @@ redaction, profile isolation, safe defaults, status capture, route attribution,
 short-soak accounting, report hashing, and cleanup. No eMule process or remote
 machine is needed.
 
+## V9.2 T8 Hyper-V network
+
+The T8 Hyper-V setup is additive and uses per-run switch and NAT names. Planning
+captures adapters, routes, existing NAT prefixes, the management route and an
+exact teardown recipe before any mutation. Apply refuses a changed host,
+overlapping prefix, name collision, generic switch, or ambiguous management
+route. Teardown revalidates the management route before every removal and binds
+the exact switch ID to its management-OS adapter and interface GUID.
+
+The deterministic tests do not require Hyper-V or administrator privileges:
+
+```powershell
+& .\tools\lab\test_t8_hyperv_plan.ps1
+```
+
+The physical create/verify/teardown proof requires a PowerShell console that
+the operator has already opened with **Run as administrator**, plus a new
+evidence directory whose final component follows the guarded naming convention:
+
+```powershell
+& .\tools\lab\test_t8_hyperv_live.ps1 `
+  -EvidenceRoot C:\tmp\eSE-v9.2-f04-live-0123456789ab
+```
+
+Do not automate elevation, hide the elevated console, change execution policy,
+or add a Microsoft Defender exclusion for this fixture.
+
+The live runner always attempts teardown in `finally`, proves that the original
+management route, switches and NATs were restored, and records a final
+`TORN_DOWN` state. T8 never changes the home router or an existing external
+switch.
+
+The F05 route probe extends that proof with a real NAT-PMP request sourced from
+a second synthetic address on the T8 adapter and an established TCP socket
+bound explicitly from the T8 client address to the T8 gateway address:
+
+```powershell
+& .\tools\lab\test_t8_routes_live.ps1 `
+  -EvidenceRoot C:\tmp\eSE-v9.2-f05-live-0123456789ab `
+  -NodePath C:\path\to\node.exe
+```
+
+It repeats mapper and data observations with no proxy environment and with all
+six uppercase/lowercase HTTP(S)/ALL proxy variables pointing at a deliberately
+invalid endpoint. Gateway, client and data targets are numeric addresses, so
+hostname DNS resolution cannot affect either case. PASS requires the same
+mapper result and interface evidence in both modes, no Tailscale data socket,
+exact source observation at the gateway, complete cleanup and the original
+Hyper-V baseline.
+
+The F06 WP0 gate runs every deterministic gateway test, verifies a
+machine-readable coverage map for all mandatory T8 capabilities, executes the
+pure Hyper-V plan tests, and writes a privacy-checked canonical report:
+
+```powershell
+& .\tools\lab\test_t8_wp0.ps1 `
+  -OutputRoot C:\tmp\eSE-v9.2-f06-0123456789ab `
+  -PhysicalEvidencePath C:\tmp\eSE-v9.2-f05-live-0123456789ab\live-result.json
+```
+
+`-PhysicalEvidencePath` is optional. Without it, the common Core gate records a
+safe degraded physical mode and still exercises all pure tests without
+administrator privileges or Hyper-V. When evidence is supplied, F06 validates
+its PASS/teardown invariants and records only its SHA-256, never its path,
+addresses, interface IDs, or host details. `tools\run_alpha_tests.ps1 -Suite
+Core` installs the pinned fixture dependencies and invokes this gate
+automatically.
+
 ## V91 RC ledger
 
 The normative matrix contains 27 cases, including `V91-A02`. Reconcile a

@@ -1,0 +1,73 @@
+{
+  "schema": "ese.mod44.runtime-evidence/v1",
+  "source_commit": "b5dc41fe7a0c2dff8a4fce58fc69ff27f4f7c559",
+  "status": "PASS",
+  "composition_root": {
+    "file": "srchybrid/eSE/server.js",
+    "physical_lines": 250,
+    "maximum_physical_lines": 300
+  },
+  "route_modules": {
+    "largest_file": "srchybrid/eSE/routes/stream_completed.js",
+    "largest_physical_lines": 426,
+    "maximum_physical_lines": 500,
+    "validated_initializers": 6,
+    "validated_factories": 2
+  },
+  "context_validation": {
+    "required_properties_are_own": true,
+    "validated_snapshot": true,
+    "caller_context_not_retained": true,
+    "safe_errors": true,
+    "undeclared_context_reads": 0
+  },
+  "packaged_executable": {
+    "path": "srchybrid/eSE/ese-server.exe",
+    "bytes": 70730772,
+    "sha256": "06e3cdf3e10a121ba80903e6130eb36c70a820e8acfca324facfed45c14fe4b0"
+  },
+  "real_http": {
+    "source": {
+      "status": 200,
+      "lifecycle": 200,
+      "debug": 200,
+      "live_first_run": 200,
+      "mascot": 200,
+      "favicon": 200,
+      "unknown": 404
+    },
+    "packaged": {
+      "status": 200,
+      "lifecycle": 200,
+      "debug": 200,
+      "live_first_run": 200,
+      "mascot": 200,
+      "favicon": 200,
+      "unknown": 404
+    }
+  },
+  "suites": {
+    "python": "409/409 PASS",
+    "mod41_mod42_mod43_mod44_focal": "24/24 PASS",
+    "node": "71/71 PASS; 1 POSIX-only SKIP; 72 total",
+    "native_prebuilt": "32/32 PASS",
+    "node_package_build": "PASS"
+  },
+  "independent_review": {
+    "model": "GPT-5.6 Sol",
+    "effort": "high",
+    "context": "/root/v92_mod44_sol_review",
+    "initial_findings": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 1
+    },
+    "final_findings": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 0
+    },
+    "decision": "PASS"
+  },
+  "runtime_ports_released": true
+}

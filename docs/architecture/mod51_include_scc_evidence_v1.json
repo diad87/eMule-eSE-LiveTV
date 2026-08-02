@@ -1,0 +1,62 @@
+{
+  "schema": "ese.mod51.include-scc-evidence/v1",
+  "source_commit": "cae596d11b6c9163162d94cfff2bed83735e4ffd",
+  "status": "PASS",
+  "graph": {
+    "completed_modules": 30,
+    "edges": 3,
+    "include_provenance_records": 3,
+    "baseline_sccs": 0,
+    "new_sccs": 0,
+    "baseline_graph_sha256": "254138a09563255244172aabdc0aa15e91b2f4290dc37c956aca0ecb4442b16c",
+    "report_sha256": "aa7ecb18a278a5d41b912922e31fc17095a736da90158cd542c93c0cba6a4f78"
+  },
+  "normalization_and_safety": {
+    "single_leading_utf8_bom_removed": true,
+    "crlf_and_bare_cr_normalized": true,
+    "phase_two_line_splicing": true,
+    "raw_string_prefixes": [
+      "R",
+      "u8R",
+      "uR",
+      "UR",
+      "LR"
+    ],
+    "raw_and_physical_splice_combination": "fail-closed",
+    "preprocessor_hash_tokens": [
+      "#",
+      "%:"
+    ],
+    "nonliteral_include": "fail-closed",
+    "windows_casefold_resolution": true,
+    "report_output_restricted_to_artifacts": true,
+    "baseline_digest_pinned_in_verifier": true
+  },
+  "suites": {
+    "mod51_focal": "14/14 PASS",
+    "negative_fixtures": "15/15 rejected with exact reasons",
+    "python": "423/423 PASS",
+    "node": "71/71 PASS; 1 POSIX-only SKIP; 72 total",
+    "cli_verify": "PASS; modules=30; edges=3; includes=3; new_sccs=0",
+    "ci_binding": "PASS; architecture gate runs before package build"
+  },
+  "independent_review": {
+    "model": "GPT-5.6 Sol",
+    "effort": "high",
+    "context": "/root/v92_mod51_sol_review",
+    "closed_findings": [
+      "P1 macro and line-spliced include bypass",
+      "P2 fixed artifact-name cleanup",
+      "P1 raw strings, digraph and preprocessing whitespace",
+      "P2 raw-string false positive",
+      "P1 UTF-8 BOM and bare-CR line starts",
+      "P1 raw-string phase-reversion splice bypass"
+    ],
+    "final_findings": {
+      "P0": 0,
+      "P1": 0,
+      "P2": 0
+    },
+    "decision": "PASS"
+  }
+}

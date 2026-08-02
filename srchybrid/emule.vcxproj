@@ -418,7 +418,42 @@
 		<LanguageStandard>stdcpp17</LanguageStandard>
 		<WarningLevel>Level4</WarningLevel>
 	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\address_policy.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+		<LanguageStandard>stdcpp17</LanguageStandard>
+		<WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\network_signature.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+		<LanguageStandard>stdcpp17</LanguageStandard>
+		<WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\network_change.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+		<LanguageStandard>stdcpp17</LanguageStandard>
+		<WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\direct_route_selection.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+		<LanguageStandard>stdcpp17</LanguageStandard>
+		<WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\ipv6_scope_policy.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+		<LanguageStandard>stdcpp17</LanguageStandard>
+		<WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\instance_isolation.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+		<LanguageStandard>stdcpp17</LanguageStandard>
+		<WarningLevel>Level4</WarningLevel>
+	</ClCompile>
 	<ClCompile Include="..\libnatmap\src\natmap_chain.cpp">
+		<PrecompiledHeader>NotUsing</PrecompiledHeader>
+		<LanguageStandard>stdcpp17</LanguageStandard>
+		<WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\pcp_upstream_policy.cpp">
 		<PrecompiledHeader>NotUsing</PrecompiledHeader>
 		<LanguageStandard>stdcpp17</LanguageStandard>
 		<WarningLevel>Level4</WarningLevel>
@@ -428,12 +463,97 @@
 	  <LanguageStandard>stdcpp17</LanguageStandard>
 	  <WarningLevel>Level4</WarningLevel>
 	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\natpmp_epoch_policy.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\natpmp_gateway_policy.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\natpmp_pair_transaction.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
 	<ClCompile Include="..\libnatmap\src\pcp_codec.cpp">
 	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
 	  <LanguageStandard>stdcpp17</LanguageStandard>
 	  <WarningLevel>Level4</WarningLevel>
 	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\pcp_route_binding.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\pcp_mapping_identity.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\pcp_map_projection.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\pcp_pair_transaction.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\pcp_response_guard.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
 	<ClCompile Include="..\libnatmap\src\ownership_ledger.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\mapper_result.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\mapping_request.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\legacy_mapper_projection.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\mapped_candidate_adapter.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\mapping_result_mailbox.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\upnp_discovery.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\upnp_lease_policy.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\upnp_mapping_result.cpp">
+	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
+	  <LanguageStandard>stdcpp17</LanguageStandard>
+	  <WarningLevel>Level4</WarningLevel>
+	</ClCompile>
+	<ClCompile Include="..\libnatmap\src\upnp_recovery_policy.cpp">
 	  <PrecompiledHeader>NotUsing</PrecompiledHeader>
 	  <LanguageStandard>stdcpp17</LanguageStandard>
 	  <WarningLevel>Level4</WarningLevel>
@@ -605,7 +725,46 @@
     <ClCompile Include="ListCtrlEditable.cpp" />
     <ClCompile Include="ListCtrlX.cpp" />
     <ClCompile Include="ListenSocket.cpp" />
-    <ClCompile Include="LiveChunkBuffer.cpp" />
+    <ClCompile Include="LiveChunkWindow.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveStreamSecurity.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveStreamFanout.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveStreamRecovery.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveStreamAnnouncer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveStreamSnapshot.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveAnnounceTransportAdapter.cpp" />
+    <ClCompile Include="LiveRecoveryTransportAdapter.cpp" />
+    <ClCompile Include="LiveFanoutTransportAdapter.cpp" />
+    <ClCompile Include="LiveStreamTrustAdapter.cpp" />
     <ClCompile Include="LiveDebugLog.cpp" />
     <ClCompile Include="LiveKadBridge.cpp" />
     <ClCompile Include="LiveMeshManager.cpp" />
@@ -620,6 +779,251 @@
     <ClCompile Include="LiveSubscriberPinning.cpp" />
     <ClCompile Include="SubscriberPinScheduler.cpp" />
     <ClCompile Include="LiveTunnel.cpp" />
+    <ClCompile Include="LiveCircuitHandshake.cpp" />
+    <ClCompile Include="LiveRelayDispatcher.cpp" />
+    <ClCompile Include="LiveExitServices.cpp" />
+    <ClCompile Include="M2ABindingPort.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelReleaseGate.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelQuotaAuthority.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelGatewayLeaseState.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelTicketPolicy.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelSourcePublisher.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelStreamFlow.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="Kad6StreamTransportAdapter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelOriginService.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelOriginWorker.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelBulkProxy.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelBulkTransportAdapter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelSearchService.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelCoordinatorFacade.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelScheduler.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelPeerState.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelKadBridge.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelMetrics.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebRequestParser.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebAuthPolicy.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebRouteTable.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebRequestDispatch.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebTemplateRenderer.cpp" />
+    <ClCompile Include="WebHeaderFooter.cpp" />
+    <ClCompile Include="WebApiSerializer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebTransferController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebTransferActions.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebSearchController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebSearchProjection.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebSharedFilesController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebLiveApiStreamController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebLiveApiStatusController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebLiveApiTransferController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebLiveApiSearchController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebLiveApiSettingsController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebLiveApiDiagnosticsController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebLiveApiLegacyController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebSharedController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebStaticAssets.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebDiagnostics.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebSocketResponse.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveHandshakeWire.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="LiveCircuit.cpp" />
     <ClCompile Include="LiveFec.cpp">
       <PrecompiledHeader />
@@ -632,6 +1036,22 @@
       <PrecompiledHeader />
     </ClCompile>
     <ClCompile Include="LiveCellQueue.cpp" />
+    <ClCompile Include="LiveTunnelFraming.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveTunnelPending.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveCircuitRegistry.cpp">
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>stdafx.h</PrecompiledHeaderFile>
+    </ClCompile>
     <ClCompile Include="LiveCoverTraffic.cpp" />
     <ClCompile Include="LiveMigrationV7.cpp" />
     <ClCompile Include="FirewallProberV6.cpp" />
@@ -641,6 +1061,24 @@
     <ClCompile Include="LiveStreamDlg.cpp" />
     <ClCompile Include="LiveStreamDlgUI.cpp" />
     <ClCompile Include="LiveStreamHandlers.cpp" />
+    <ClCompile Include="LiveBroadcastSession.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LiveViewerSession.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="LivePeerSet.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="LiveStreamManager.cpp" />
     <ClCompile Include="RTMPIngest.cpp" />
     <ClCompile Include="ListViewSearchDlg.cpp" />
@@ -772,6 +1210,8 @@
     <ClCompile Include="Version.cpp" />
     <ClCompile Include="VisualStylesXP.cpp" />
     <ClCompile Include="WebServer.cpp" />
+    <ClCompile Include="WebServerListController.cpp" />
+    <ClCompile Include="WebTransferProjection.cpp" />
     <ClCompile Include="eMuleAI\DirectoryWatcher.cpp" />
     <ClCompile Include="eMuleAI\Address.cpp" />
     <ClCompile Include="eMuleAI\UtpSocket.cpp" />
@@ -955,15 +1395,47 @@
     <ClInclude Include="ListCtrlItemWalk.h" />
     <ClInclude Include="ListCtrlX.h" />
     <ClInclude Include="ListenSocket.h" />
-    <ClInclude Include="LiveChunkBuffer.h" />
+    <ClInclude Include="LiveChunkWindow.h" />
+    <ClInclude Include="LiveStreamSecurity.h" />
+    <ClInclude Include="LiveStreamFanout.h" />
+    <ClInclude Include="LiveStreamRecovery.h" />
+    <ClInclude Include="LiveStreamAnnouncer.h" />
+    <ClInclude Include="LiveStreamSnapshot.h" />
+    <ClInclude Include="LiveAnnounceTransportAdapter.h" />
+    <ClInclude Include="LiveRecoveryTransportAdapter.h" />
+    <ClInclude Include="LiveFanoutTransportAdapter.h" />
+    <ClInclude Include="LiveStreamTrustAdapter.h" />
 	<ClInclude Include="DirectReachabilityManager.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natmap_state.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natmap_policy.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\address_policy.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\network_signature.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\network_change.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\direct_route_selection.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\ipv6_scope_policy.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\instance_isolation.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natmap_chain.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\pcp_upstream_policy.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natmap_types.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\natpmp_codec.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\natpmp_epoch_policy.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\natpmp_gateway_policy.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\natpmp_pair_transaction.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\pcp_codec.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\pcp_mapping_identity.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\pcp_map_projection.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\pcp_pair_transaction.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\pcp_response_guard.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\pcp_route_binding.h" />
 	<ClInclude Include="..\libnatmap\include\natmap\ownership_ledger.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\mapper_result.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\mapping_request.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\legacy_mapper_projection.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\mapping_result_mailbox.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\upnp_discovery.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\upnp_lease_policy.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\upnp_mapping_result.h" />
+	<ClInclude Include="..\libnatmap\include\natmap\upnp_recovery_policy.h" />
     <ClInclude Include="LiveDebugLog.h" />
     <ClInclude Include="LiveKadBridge.h" />
     <ClInclude Include="LiveMeshManager.h" />
@@ -978,10 +1450,66 @@
     <ClInclude Include="LiveSubscriberPinning.h" />
     <ClInclude Include="SubscriberPinScheduler.h" />
     <ClInclude Include="LiveTunnel.h" />
+    <ClInclude Include="LiveCircuitHandshake.h" />
+    <ClInclude Include="LiveRelayDispatcher.h" />
+    <ClInclude Include="LiveExitServices.h" />
+    <ClInclude Include="LiveRelayTypes.h" />
+    <ClInclude Include="LiveTunnelScheduler.h" />
+    <ClInclude Include="M2ABindingPort.h" />
+    <ClInclude Include="LiveTunnelReleaseGate.h" />
+    <ClInclude Include="LiveTunnelQuotaAuthority.h" />
+    <ClInclude Include="LiveTunnelGatewayLeaseState.h" />
+    <ClInclude Include="LiveTunnelTicketPolicy.h" />
+    <ClInclude Include="LiveTunnelSourcePublisher.h" />
+    <ClInclude Include="LiveTunnelSourcePublisherPort.h" />
+    <ClInclude Include="LiveTunnelStreamFlow.h" />
+    <ClInclude Include="LiveTunnelStreamFlowPort.h" />
+    <ClInclude Include="Kad6StreamTransportAdapter.h" />
+    <ClInclude Include="LiveTunnelOriginService.h" />
+    <ClInclude Include="LiveTunnelOriginWorker.h" />
+    <ClInclude Include="LiveTunnelOriginPort.h" />
+    <ClInclude Include="LiveTunnelBulkProxy.h" />
+    <ClInclude Include="LiveTunnelBulkTransportAdapter.h" />
+    <ClInclude Include="LiveTunnelSearchService.h" />
+    <ClInclude Include="LiveTunnelSearchPort.h" />
+    <ClInclude Include="LiveTunnelSearchFacade.inl" />
+    <ClInclude Include="LiveTunnelCoordinatorPort.h" />
+    <ClInclude Include="LiveTunnelCoordinatorFacade.h" />
+    <ClInclude Include="LiveTunnelCoordinatorMethods.inl" />
+    <ClInclude Include="LiveTunnelPeerState.h" />
+    <ClInclude Include="LiveTunnelKadBridge.h" />
+    <ClInclude Include="LiveTunnelMetrics.h" />
+    <ClInclude Include="WebRequestParser.h" />
+    <ClInclude Include="WebAuthPolicy.h" />
+    <ClInclude Include="WebRouteTable.h" />
+    <ClInclude Include="WebRequestDispatch.h" />
+    <ClInclude Include="WebTemplateRenderer.h" />
+    <ClInclude Include="WebHeaderFooter.h" />
+    <ClInclude Include="WebApiSerializer.h" />
+    <ClInclude Include="WebTransferController.h" />
+    <ClInclude Include="WebTransferActions.h" />
+    <ClInclude Include="WebSearchController.h" />
+    <ClInclude Include="WebSearchProjection.h" />
+    <ClInclude Include="WebSharedFilesController.h" />
+    <ClInclude Include="WebLiveApiStreamController.h" />
+    <ClInclude Include="WebLiveApiStatusController.h" />
+    <ClInclude Include="WebLiveApiTransferController.h" />
+    <ClInclude Include="WebLiveApiSearchController.h" />
+    <ClInclude Include="WebLiveApiSettingsController.h" />
+    <ClInclude Include="WebLiveApiDiagnosticsController.h" />
+    <ClInclude Include="WebLiveApiLegacyController.h" />
+    <ClInclude Include="WebSharedController.h" />
+    <ClInclude Include="WebStaticAssets.h" />
+    <ClInclude Include="WebDiagnostics.h" />
+    <ClInclude Include="WebSocketResponse.h" />
+    <ClInclude Include="LiveHandshakeWire.h" />
     <ClInclude Include="LiveCircuit.h" />
     <ClInclude Include="LiveFec.h" />
     <ClInclude Include="LiveBulk.h" />
     <ClInclude Include="LiveCellQueue.h" />
+    <ClInclude Include="LiveTunnelFraming.h" />
+    <ClInclude Include="LiveTunnelPending.h" />
+    <ClInclude Include="LiveCircuitRegistry.h" />
     <ClInclude Include="LiveCoverTraffic.h" />
     <ClInclude Include="LiveMigrationV7.h" />
     <ClInclude Include="FirewallProberV6.h" />
@@ -991,6 +1519,9 @@
     <ClInclude Include="LiveBuddyRelay.h" />
     <ClInclude Include="LivePackets.h" />
     <ClInclude Include="LiveProtocol.h" />
+    <ClInclude Include="LiveBroadcastSession.h" />
+    <ClInclude Include="LiveViewerSession.h" />
+    <ClInclude Include="LivePeerSet.h" />
     <ClInclude Include="LiveStreamDlg.h" />
     <ClInclude Include="LiveStreamManager.h" />
     <ClInclude Include="ListViewSearchDlg.h" />
@@ -1125,6 +1656,8 @@
     <ClInclude Include="VistaDefines.h" />
     <ClInclude Include="VisualStylesXP.h" />
     <ClInclude Include="WebServer.h" />
+    <ClInclude Include="WebServerListController.h" />
+    <ClInclude Include="WebTransferProjection.h" />
     <ClInclude Include="WebServices.h" />
     <ClInclude Include="eMuleAI\DirectoryWatcher.h" />
     <ClInclude Include="eMuleAI\Address.h" />

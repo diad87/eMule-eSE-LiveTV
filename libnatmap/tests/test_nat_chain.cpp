@@ -27,19 +27,111 @@ MapResult Map(FakeGateway& gateway, const Endpoint& local,
     return gateway.Map(intent, generation);
 }
 
-void TestDiscoveryIsBounded() {
-    const auto privateWan = BuildUpstreamGatewayCandidates(
-        IpAddress::V4(192, 168, 1, 77));
+UpstreamGatewayEvidence GatewayEvidence(
+    const IpAddress& address, std::uint32_t interface_index,
+    GatewayCandidateSource source =
+        GatewayCandidateSource::InterfaceRoute) {
+    UpstreamGatewayEvidence evidence{};
+    evidence.address = address;
+    evidence.interface_index = interface_index;
+    evidence.source = source;
+    evidence.interface_present = true;
+    return evidence;
+}
+
+void TestDiscoveryRequiresAuthorizedEvidence() {
+    UpstreamDiscoveryInput input{};
+    input.mapper_wan_address = IpAddress::V4(192, 168, 1, 77);
+    input.mapper_origin = NetworkOrigin::Native;
+    input.interface_index = 17;
+    const auto noEvidence = BuildUpstreamGatewayCandidates(input);
+    CHECK(noEvidence.status ==
+          UpstreamDiscoveryStatus::NoAuthorizedCandidate);
+    CHECK(noEvidence.reason == ReasonCode::NoRoute);
+    CHECK(noEvidence.count == 0);
+
+    input.evidence[0] = GatewayEvidence(
+        IpAddress::V4(192, 168, 1, 1), 17);
+    input.evidence[1] = GatewayEvidence(
+        IpAddress::V4(172, 20, 0, 1), 17,
+        GatewayCandidateSource::DhcpOption);
+    input.evidence_count = 2;
+    const auto privateWan = BuildUpstreamGatewayCandidates(input);
     CHECK(privateWan.status == UpstreamDiscoveryStatus::CandidateGateways);
     CHECK(privateWan.count == 2);
     CHECK(privateWan.addresses[0].bytes[3] == 1);
-    CHECK(privateWan.addresses[1].bytes[3] == 254);
-    const auto cgnat = BuildUpstreamGatewayCandidates(
-        IpAddress::V4(100, 69, 24, 30));
+    CHECK(privateWan.sources[0] ==
+          GatewayCandidateSource::InterfaceRoute);
+    CHECK(privateWan.addresses[1].bytes[0] == 172);
+    CHECK(privateWan.sources[1] ==
+          GatewayCandidateSource::DhcpOption);
+    CHECK(privateWan.reason == ReasonCode::None);
+
+    input.mapper_wan_address = IpAddress::V4(100, 69, 24, 30);
+    const auto cgnat = BuildUpstreamGatewayCandidates(input);
     CHECK(cgnat.status == UpstreamDiscoveryStatus::OperatorCgnat);
+    CHECK(cgnat.reason == ReasonCode::CgnatWithoutLease);
     CHECK(cgnat.count == 0);
-    CHECK(BuildUpstreamGatewayCandidates(IpAddress::V4(88, 11, 22, 4)).status
-          == UpstreamDiscoveryStatus::NotNeeded);
+    input.mapper_origin = NetworkOrigin::Overlay;
+    const auto overlayCgnat = BuildUpstreamGatewayCandidates(input);
+    CHECK(overlayCgnat.status ==
+          UpstreamDiscoveryStatus::NoAuthorizedCandidate);
+    CHECK(overlayCgnat.reason == ReasonCode::NoRoute);
+    input.mapper_origin = NetworkOrigin::Native;
+    input.mapper_wan_address = IpAddress::V4(88, 11, 22, 4);
+    CHECK(BuildUpstreamGatewayCandidates(input).status ==
+          UpstreamDiscoveryStatus::NotNeeded);
+}
+
+void TestDiscoveryRejectsUnauthorizedAndHostileCandidates() {
+    UpstreamDiscoveryInput input{};
+    input.mapper_wan_address = IpAddress::V4(10, 20, 30, 40);
+    input.mapper_origin = NetworkOrigin::Native;
+    input.interface_index = 7;
+    input.evidence[0] = GatewayEvidence(
+        IpAddress::V4(10, 20, 30, 1), 8);
+    input.evidence[1] = GatewayEvidence(
+        IpAddress::V4(10, 20, 30, 2), 7,
+        GatewayCandidateSource::None);
+    input.evidence[2] = GatewayEvidence(
+        IpAddress::V4(88, 11, 22, 4), 7);
+    input.evidence[3] = GatewayEvidence(
+        input.mapper_wan_address, 7,
+        GatewayCandidateSource::ExplicitConfiguration);
+    input.evidence_count = 4;
+    const auto rejected = BuildUpstreamGatewayCandidates(input);
+    CHECK(rejected.status ==
+          UpstreamDiscoveryStatus::NoAuthorizedCandidate);
+    CHECK(rejected.count == 0);
+
+    input.evidence[0] = GatewayEvidence(
+        IpAddress::V4(10, 20, 30, 1), 7,
+        GatewayCandidateSource::OperatorPolicy);
+    input.evidence[1] = input.evidence[0];
+    input.evidence[2] = GatewayEvidence(
+        IpAddress::V4(172, 20, 0, 1), 7,
+        GatewayCandidateSource::ExplicitConfiguration);
+    input.evidence_count = 3;
+    const auto deduplicated = BuildUpstreamGatewayCandidates(input);
+    CHECK(deduplicated.status ==
+          UpstreamDiscoveryStatus::CandidateGateways);
+    CHECK(deduplicated.count == 2);
+
+    input.evidence_count = static_cast<std::uint8_t>(
+        input.evidence.size() + 1);
+    CHECK(BuildUpstreamGatewayCandidates(input).status ==
+          UpstreamDiscoveryStatus::InvalidInput);
+
+    input = UpstreamDiscoveryInput{};
+    input.mapper_wan_address = IpAddress::V4(192, 168, 1, 77);
+    input.mapper_origin = NetworkOrigin::Native;
+    input.interface_index = 17;
+    input.evidence[0] = GatewayEvidence(
+        IpAddress::V4(192, 168, 1, 1), 17);
+    input.evidence[0].interface_present = false;
+    input.evidence_count = 1;
+    CHECK(BuildUpstreamGatewayCandidates(input).status ==
+          UpstreamDiscoveryStatus::NoAuthorizedCandidate);
 }
 
 void TestTwoLayerCreateRenewAndRollback() {
@@ -60,11 +152,14 @@ void TestTwoLayerCreateRenewAndRollback() {
     MapResult second = Map(outer, first.lease.public_endpoint, 41, 52000);
 
     NatChainTransaction chain;
-    CHECK(chain.Begin(41));
+    CHECK(chain.Begin(41, NetworkOrigin::Native));
     CHECK(chain.AppendLease(first.lease, 1000));
     CHECK(chain.NeedsUpstream());
+    CHECK(chain.Evaluate() ==
+          NatChainStatus::NeedsAuthorizedUpstream);
     CHECK(chain.AppendLease(second.lease, 1000));
     CHECK(chain.IsComplete());
+    CHECK(chain.Evaluate() == NatChainStatus::CompletePublic);
     CHECK(chain.FinalEndpoint().port == 443);
     CHECK(chain.ShouldRenew(0, 46000));
     first.lease.mapper_epoch = 10;
@@ -87,7 +182,7 @@ void TestIntermediateFailureAndDiscontinuity() {
     MapResult first = Map(inner, Ep(10, 0, 0, 20, 4662), 50, 4662);
 
     NatChainTransaction chain;
-    CHECK(chain.Begin(50));
+    CHECK(chain.Begin(50, NetworkOrigin::Native));
     CHECK(chain.AppendLease(first.lease, 0));
     PortLease disconnected = first.lease;
     disconnected.mapper = MapperKind::Pcp;
@@ -109,20 +204,83 @@ void TestCgnatStopsAutomaticChain() {
     operatorNat.forced_external_port = 4662;
     MapResult mapped = Map(operatorNat, Ep(192, 168, 68, 54, 4662), 60, 4662);
     NatChainTransaction chain;
-    CHECK(chain.Begin(60));
+    CHECK(chain.Begin(60, NetworkOrigin::Native));
     CHECK(chain.AppendLease(mapped.lease, 0));
     CHECK(chain.IsBlockedByCgnat());
+    CHECK(chain.Evaluate() == NatChainStatus::OperatorCgnat);
     CHECK(!chain.NeedsUpstream());
     CHECK(!chain.IsComplete());
+
+    NatChainTransaction overlay;
+    CHECK(overlay.Begin(61, NetworkOrigin::Overlay));
+    mapped.lease.generation = 61;
+    CHECK(overlay.AppendLease(mapped.lease, 0));
+    CHECK(overlay.Evaluate() ==
+          NatChainStatus::NonPublishableEndpoint);
+    CHECK(!overlay.IsBlockedByCgnat());
+
+    NatChainTransaction unknown;
+    CHECK(unknown.Begin(62, NetworkOrigin::Unknown));
+    mapped.lease.generation = 62;
+    CHECK(unknown.AppendLease(mapped.lease, 0));
+    CHECK(unknown.Evaluate() ==
+          NatChainStatus::NonPublishableEndpoint);
+    CHECK(!unknown.IsBlockedByCgnat());
+}
+
+void TestDepthAndNonRoutablePromotionFailClosed() {
+    FakeGateway firstGateway{};
+    firstGateway.mapper = MapperKind::UpnpIgd;
+    firstGateway.gateway = Ep(10, 0, 0, 1, 1900);
+    firstGateway.external_address = IpAddress::V4(172, 20, 0, 5);
+    firstGateway.forced_external_port = 50000;
+    MapResult first = Map(
+        firstGateway, Ep(10, 0, 0, 20, 4662), 70, 4662);
+
+    FakeGateway secondGateway{};
+    secondGateway.mapper = MapperKind::Pcp;
+    secondGateway.gateway = Ep(172, 20, 0, 1, 5351);
+    secondGateway.external_address = IpAddress::V4(192, 168, 1, 2);
+    secondGateway.forced_external_port = 51000;
+    MapResult second = Map(
+        secondGateway, first.lease.public_endpoint, 70, 50000);
+
+    NatChainTransaction chain;
+    CHECK(chain.Begin(70, NetworkOrigin::Native));
+    CHECK(chain.AppendLease(first.lease, 0));
+    CHECK(chain.AppendLease(second.lease, 0));
+    CHECK(chain.Evaluate() == NatChainStatus::DepthLimitReached);
+    CHECK(!chain.NeedsUpstream());
+    CHECK(!chain.IsComplete());
+
+    PortLease third = second.lease;
+    third.local = second.lease.public_endpoint;
+    third.public_endpoint =
+        Ep(88, 11, 22, 4, 52000, EndpointSource::PcpMap);
+    third.granted_external_port = 52000;
+    CHECK(!chain.AppendLease(third, 0));
+
+    NatChainTransaction unroutable;
+    CHECK(unroutable.Begin(71, NetworkOrigin::Native));
+    PortLease documentation = first.lease;
+    documentation.generation = 71;
+    documentation.public_endpoint =
+        Ep(192, 0, 2, 1, 50000, EndpointSource::UpnpExternalAddress);
+    CHECK(unroutable.AppendLease(documentation, 0));
+    CHECK(unroutable.Evaluate() ==
+          NatChainStatus::NonPublishableEndpoint);
+    CHECK(!unroutable.IsComplete());
 }
 
 } // namespace
 
 int main() {
-    TestDiscoveryIsBounded();
+    TestDiscoveryRequiresAuthorizedEvidence();
+    TestDiscoveryRejectsUnauthorizedAndHostileCandidates();
     TestTwoLayerCreateRenewAndRollback();
     TestIntermediateFailureAndDiscontinuity();
     TestCgnatStopsAutomaticChain();
+    TestDepthAndNonRoutablePromotionFailClosed();
     std::printf("test_nat_chain: %d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

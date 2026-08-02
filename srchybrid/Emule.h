@@ -175,6 +175,7 @@ public:
 	bool		IsPortchangeAllowed();
 	bool		IsConnected(bool bIgnoreEd2k = false, bool bIgnoreKad = false);
 	bool		IsFirewalled();
+	bool		HasVerifiedEd2kHighId() const;
 	bool		CanDoCallback(CUpDownClient *client);
 	uint32		GetID();
 	uint32		GetED2KPublicIP() const;	// return current (valid) public IP or 0 if unknown (ignore KAD connection)

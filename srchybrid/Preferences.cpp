@@ -18,6 +18,7 @@
 #include <io.h>
 #include <share.h>
 #include <iphlpapi.h>
+#include <bcrypt.h>
 #include "emule.h"
 #include "Preferences.h"
 #include "UploadLimitPolicy.h"
@@ -52,6 +53,31 @@ LPCTSTR const strPreferencesDat = _T("preferences.dat");
 // eSE default toolbar: Connect│sep│Kad│Svr│Trans│Search│SharedFiles│Msg│IRC│sep│Stats│Options│Tools│Help│LiveStream│eSE
 LPCTSTR const strDefaultToolbar = _T("009901020304050607990809101112" "13");
 CPreferences thePrefs;
+
+namespace {
+
+bool GetUniformSystemRandomPort(uint16& port)
+{
+	static const uint16 kFirstPort = 4096;
+	static const uint16 kPortCount = 61000;
+	port = 0;
+	for (unsigned attempt = 0; attempt < 32; ++attempt) {
+		uint16 entropy = 0;
+		if (BCryptGenRandom(NULL, reinterpret_cast<PUCHAR>(&entropy),
+			static_cast<ULONG>(sizeof(entropy)),
+			BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
+			return false;
+		// 65536 = 61000 + 4536. Reject the tail instead of using modulo,
+		// which would make 4536 ports twice as likely as the others.
+		if (entropy < kPortCount) {
+			port = static_cast<uint16>(kFirstPort + entropy);
+			return true;
+		}
+	}
+	return false;
+}
+
+}
 
 CString CPreferences::m_astrDefaultDirs[13];
 bool	CPreferences::m_abDefaultDirsCreated[13] = {};
@@ -1857,7 +1883,7 @@ void CPreferences::SavePreferences()
 	ini.WriteString(_T("Password"), GetWSPass(), _T("WebServer"));
 	ini.WriteString(_T("PasswordLow"), GetWSLowPass());
 	ini.WriteInt(_T("Port"), m_nWebPort);
-	ini.WriteBool(_T("WebUseUPnP"), m_bWebUseUPnP);
+	ini.WriteBool(_T("WebUseUPnP"), false);
 	ini.WriteBool(_T("Enabled"), m_bWebEnabled);
 	ini.WriteBool(_T("UseGzip"), m_bWebUseGzip);
 	ini.WriteInt(_T("PageRefreshTime"), m_nWebPageRefresh);
@@ -2500,15 +2526,9 @@ void CPreferences::LoadPreferences()
 	m_strWebPassword = ini.GetString(_T("Password"), _T(""), _T("WebServer"));
 	m_strWebLowPassword = ini.GetString(_T("PasswordLow"), _T(""));
 	m_nWebPort = (uint16)ini.GetInt(_T("Port"), 4711);
-	// eSE: Migración segura de WebUseUPnP con retrocompatibilidad INI
-	// Si la clave ya existía (usuario legacy), heredar su valor para no exponerle.
-	// Si es instalación limpia, activar por defecto (true).
-	m_bWebUseUPnP = ini.GetBool(_T("WebUseUPnP"), true);
-
-	// SEGURIDAD CRÍTICA: Deshabilitar UPnP forzosamente si no hay contraseña de admin
-	if (m_bWebUseUPnP && m_strWebPassword.IsEmpty()) {
-		m_bWebUseUPnP = false;
-	}
+	// V9.2: the WebServer remains local and is never router-mapped. Ignore
+	// legacy opt-in values and persist the safe value on the next save.
+	m_bWebUseUPnP = false;
 
 	// eSE: Inicializar estado de error de red (siempre limpio al arrancar)
 	m_bUPnPCriticalError = false;
@@ -3125,11 +3145,14 @@ uint16 CPreferences::GetRandomTCPPort()
 
 	static const UINT uValidPortRange = 61000;
 	int iMaxTests = uValidPortRange; // just in case, avoid endless loop
-	uint16 nPort;
-	bool bPortIsFree;
+	uint16 nPort = 0;
+	bool bPortIsFree = false;
 	do {
-		// Get random port
-		nPort = 4096 + (GetRandomUInt16() % uValidPortRange);
+		if (!GetUniformSystemRandomPort(nPort)) {
+			DebugLogError(_T("Secure TCP port selection failed"));
+			nPort = 0;
+			break;
+		}
 
 		// The port is assumed to be available by default. If we got a table of currently
 		// used TCP ports, verify that the port is not in this table.
@@ -3146,6 +3169,11 @@ uint16 CPreferences::GetRandomTCPPort()
 			}
 		}
 	} while (!bPortIsFree && --iMaxTests > 0);
+	if (!bPortIsFree) {
+		if (nPort != 0)
+			DebugLogError(_T("Secure TCP port selection exhausted"));
+		nPort = 0;
+	}
 	free(pTCPTab);
 	return nPort;
 }
@@ -3168,11 +3196,14 @@ uint16 CPreferences::GetRandomUDPPort()
 
 	static const UINT uValidPortRange = 61000;
 	int iMaxTests = uValidPortRange; // just in case, avoid endless loop
-	uint16 nPort;
-	bool bPortIsFree;
+	uint16 nPort = 0;
+	bool bPortIsFree = false;
 	do {
-		// Get random port
-		nPort = 4096 + (GetRandomUInt16() % uValidPortRange);
+		if (!GetUniformSystemRandomPort(nPort)) {
+			DebugLogError(_T("Secure UDP port selection failed"));
+			nPort = 0;
+			break;
+		}
 
 		// The port is assumed to be available by default. If we got a table of currently
 		// used UDP ports, verify that the port is not in this table.
@@ -3187,6 +3218,11 @@ uint16 CPreferences::GetRandomUDPPort()
 			}
 		}
 	} while (!bPortIsFree && --iMaxTests > 0);
+	if (!bPortIsFree) {
+		if (nPort != 0)
+			DebugLogError(_T("Secure UDP port selection exhausted"));
+		nPort = 0;
+	}
 	free(pUDPTab);
 	return nPort;
 }

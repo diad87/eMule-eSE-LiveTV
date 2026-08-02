@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "topology_generation": 7,
+  "created_at_monotonic": 1000,
+  "candidates": [],
+  "terminal_reason": "NO_ROUTE"
+}

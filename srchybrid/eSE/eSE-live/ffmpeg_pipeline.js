@@ -6,9 +6,10 @@
  */
 'use strict';
 
-const { spawn, execSync } = require('child_process');
-
-// spawn & execSync imported above
+const {
+  spawnManaged,
+  killProcessTree,
+} = require('../bounded_process_runner');
 const path = require('path');
 const fs = require('fs');
 const sourceSelector = require('./source_selector');
@@ -35,7 +36,7 @@ let pipelineGeneration = 0; // BUG-057 FIX: monotonic ID to prevent race in stop
  * @param {Function} [opts.onStatus] - Callback for status changes
  * @returns {{success: boolean, error?: string}}
  */
-function start(opts) {
+async function start(opts) {
   if (ffmpegProcess) {
     return { success: false, error: 'Pipeline already running. Stop it first.' };
   }
@@ -65,7 +66,7 @@ function start(opts) {
   cleanSegments(outputDir);
   // Auto-detect audio loopback for screen capture (if no explicit audio device)
   if (opts.source.type === 'screen' && !opts.source.audioDevice) {
-    const loopback = sourceSelector.findLoopbackDevice(opts.ffmpegPath);
+    const loopback = await sourceSelector.findLoopbackDevice(opts.ffmpegPath);
     if (loopback) {
       opts.source._loopbackDevice = loopback;
     }
@@ -89,11 +90,20 @@ function start(opts) {
 
   console.log('[eSE Live] Starting pipeline:', opts.ffmpegPath, fullArgs.join(' '));
 
+  // A screen-source start may have yielded while discovering loopback audio.
+  // Re-check ownership before spawning so concurrent starts cannot both win.
+  if (ffmpegProcess) {
+    return { success: false, error: 'Pipeline already running. Stop it first.' };
+  }
+
   // Spawn ffmpeg
+  const generation = ++pipelineGeneration;
+  let proc;
   try {
-    ffmpegProcess = spawn(opts.ffmpegPath, fullArgs, {
+    proc = spawnManaged(opts.ffmpegPath, fullArgs, {
       stdio: ['ignore', 'pipe', 'pipe']
     });
+    ffmpegProcess = proc;
   } catch (e) {
     pipelineStatus = 'error';
     pipelineError = e.message;
@@ -106,7 +116,8 @@ function start(opts) {
   startTime = Date.now();
   currentSource = opts.source;
 
-  ffmpegProcess.stderr.on('data', (data) => {
+  proc.stderr.on('data', (data) => {
+    if (pipelineGeneration !== generation || ffmpegProcess !== proc) return;
     const line = data.toString();
     // Detect first segment written
     if (line.includes('.ts') && pipelineStatus === 'starting') {
@@ -120,8 +131,9 @@ function start(opts) {
     }
   });
 
-  ffmpegProcess.on('close', (code) => {
+  proc.on('close', (code) => {
     console.log('[eSE Live] ffmpeg exited with code', code);
+    if (pipelineGeneration !== generation || ffmpegProcess !== proc) return;
     ffmpegProcess = null;
     if (pipelineStatus !== 'stopped') {
       pipelineStatus = code === 0 ? 'stopped' : 'error';
@@ -130,8 +142,9 @@ function start(opts) {
     if (opts.onStatus) opts.onStatus(pipelineStatus);
   });
 
-  ffmpegProcess.on('error', (err) => {
+  proc.on('error', (err) => {
     console.error('[eSE Live] ffmpeg error:', err.message);
+    if (pipelineGeneration !== generation || ffmpegProcess !== proc) return;
     pipelineStatus = 'error';
     pipelineError = err.message;
     ffmpegProcess = null;
@@ -152,9 +165,9 @@ async function startResolved(opts) {
 
 /**
  * Stop the running pipeline.
- * @returns {{success: boolean}}
+ * @returns {Promise<{success: boolean}>}
  */
-function stop() {
+async function stop() {
   if (!ffmpegProcess) {
     pipelineStatus = 'idle';
     return { success: true };
@@ -162,46 +175,26 @@ function stop() {
 
   pipelineStatus = 'stopped';
   const pid = ffmpegProcess.pid;
+  const proc = ffmpegProcess;
+  const stopGeneration = pipelineGeneration;
   console.log('[eSE Live] Stopping pipeline, ffmpeg PID:', pid);
 
-  // On Windows SIGTERM is unreliable — use taskkill /F
   try {
-    if (process.platform === 'win32' && pid) {
-      try {
-        execSync('taskkill /F /T /PID ' + pid, { stdio: 'ignore' });
-        console.log('[eSE Live] taskkill sent to PID', pid);
-      } catch (e) {
-        // Process may already be dead
-        console.log('[eSE Live] taskkill failed (process may be gone):', e.message);
-      }
+    if (pid) {
+      const result = await killProcessTree(pid);
+      if (result.ok) console.log('[eSE Live] Process tree stopped for PID', pid);
+      else console.log('[eSE Live] Process-tree stop failed:', result.error || result.stderr);
     } else {
-      ffmpegProcess.kill('SIGTERM');
+      proc.kill('SIGTERM');
     }
   } catch (e) {
     console.log('[eSE Live] kill error:', e.message);
   }
 
-  // BUG-057 FIX: capture generation ID instead of object reference to prevent race
-  const stopGeneration = ++pipelineGeneration;
-  const proc = ffmpegProcess;
-  setTimeout(() => {
-    try {
-      if (proc && !proc.killed && pid) {
-        if (process.platform === 'win32') {
-          execSync('taskkill /F /T /PID ' + pid, { stdio: 'ignore' });
-        } else {
-          proc.kill('SIGKILL');
-        }
-        console.log('[eSE Live] Force-killed ffmpeg PID', pid);
-      }
-    } catch (e) {}
-    // Only clean state if no new pipeline started since stop()
-    if (pipelineGeneration === stopGeneration) {
-      ffmpegProcess = null;
-    }
-  }, 5000);
-
-  currentSource = null;
+  if (pipelineGeneration === stopGeneration) {
+    if (ffmpegProcess === proc) ffmpegProcess = null;
+    currentSource = null;
+  }
   return { success: true };
 }
 

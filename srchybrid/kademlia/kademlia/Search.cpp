@@ -63,6 +63,7 @@ their client on the eMule forum.
 #include "eMuleAI/FastKad.h" // eSE: Adaptive Kad response time estimation
 #include "eMuleAI/Address.h"
 #include "FirewallProberV6.h"
+#include "DirectReachabilityManager.h"
 #include "ReachabilityWire.h"
 #include "ClientUDPSocket.h"
 
@@ -798,11 +799,21 @@ void CSearch::StorePacket()
 			if (bUdpVerified)
 				uReachCaps |= KAD_REACH_CAP_V4_UDP_IN;
 
-			const CAddress publicV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+			const uint64 topologyGeneration =
+				theApp.directreachability != NULL
+					? theApp.directreachability
+						->GetTopologyGeneration() : 0;
+			const natmap::CandidateObservation directV6 =
+				CFirewallProberV6::Instance()
+					.GetDirectRouteObservation(
+						topologyGeneration, natmap::Transport::Udp);
+			const CAddress publicV6 =
+				CFirewallProberV6::Instance().GetDetectedV6IP();
 			const bool bHasPublicV6 = thePrefs.IsIPv6Enabled()
+				&& directV6.IsVerifiedFor(topologyGeneration)
 				&& publicV6.GetType() == CAddress::IPv6 && publicV6.IsPublicIP();
-			const bool bV6Inbound = bHasPublicV6
-				&& CFirewallProberV6::Instance().HasInboundV6Observation();
+			const bool bV6Inbound =
+				directV6.IsVerifiedFor(topologyGeneration);
 			if (bHasPublicV6)
 				uReachCaps |= KAD_REACH_CAP_V6_OUT;
 			if (bV6Inbound)
@@ -833,8 +844,11 @@ void CSearch::StorePacket()
 			// A punch-capable source must let each indexer stamp the UDP port it
 			// actually observes. This stays correct with a buddy or open TCP and is
 			// the useful value for endpoint-dependent CGNAT mappings.
-			const bool bPublishInternalKadPort = !bPunch2
-				&& !CKademlia::GetPrefs()->GetUseExternKadPort();
+			const uint16 advertisedKadPort =
+				theApp.GetAdvertisedUdpPort();
+			const bool bPublishAdvertisedKadPort = !bPunch2
+				&& !CKademlia::GetPrefs()->GetUseExternKadPort()
+				&& advertisedKadPort != 0;
 
 			TagList listTag;
 			if (theApp.IsFirewalled()) {
@@ -852,8 +866,9 @@ void CSearch::StorePacket()
 					// firewalled, but direct UDP callback is possible without buddies
 					listTag.push_back(new CKadTagUInt(TAG_SOURCETYPE, 6));
 					listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, theApp.GetAdvertisedTcpPort()));
-					if (bPublishInternalKadPort)
-						listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
+					if (bPublishAdvertisedKadPort)
+						listTag.push_back(new CKadTagUInt16(
+							TAG_SOURCEUPORT, advertisedKadPort));
 					if (pFromContact->GetVersion() >= KADEMLIA_VERSION2_47a)
 						listTag.push_back(new CKadTagUInt(TAG_FILESIZE, pFile->GetFileSize()));
 				} else if (theApp.clientlist->GetBuddy() != NULL
@@ -866,8 +881,9 @@ void CSearch::StorePacket()
 					listTag.push_back(new CKadTagUInt(TAG_SERVERPORT, theApp.clientlist->GetBuddy()->GetUDPPort()));
 					listTag.push_back(new CKadTagStr(TAG_BUDDYHASH, (CStringW)md4str(uBuddyID.GetData())));
 					listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, theApp.GetAdvertisedTcpPort()));
-					if (bPublishInternalKadPort)
-						listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
+					if (bPublishAdvertisedKadPort)
+						listTag.push_back(new CKadTagUInt16(
+							TAG_SOURCEUPORT, advertisedKadPort));
 
 					if (pFromContact->GetVersion() >= KADEMLIA_VERSION2_47a)
 						listTag.push_back(new CKadTagUInt(TAG_FILESIZE, pFile->GetFileSize()));
@@ -893,8 +909,9 @@ void CSearch::StorePacket()
 				else
 					listTag.push_back(new CKadTagUInt(TAG_SOURCETYPE, 1));
 				listTag.push_back(new CKadTagUInt(TAG_SOURCEPORT, theApp.GetAdvertisedTcpPort()));
-				if (bPublishInternalKadPort)
-					listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
+				if (bPublishAdvertisedKadPort)
+					listTag.push_back(new CKadTagUInt16(
+						TAG_SOURCEUPORT, advertisedKadPort));
 
 				if (pFromContact->GetVersion() >= KADEMLIA_VERSION2_47a)
 					listTag.push_back(new CKadTagUInt(TAG_FILESIZE, pFile->GetFileSize()));
@@ -1971,12 +1988,11 @@ void CSearch::PrepareLivePacketForTags(CByteIO *byIO) const
 			// broadcaster's Kad UDP port. Publishing with uport=0 disabled the
 			// A.4 UDP hole-punch fallback entirely (the "uport:0" bug): NATed
 			// broadcasters were unreachable even though the punch path existed.
-			// Prefer the externally-visible port when the prefs say to use it.
+			// Use the common confirmed advertised port. It already falls back
+			// to the classic local port when mappings are disabled.
 			{
-				uint16 uLiveKadUDP = CKademlia::GetPrefs()->GetUseExternKadPort()
-					? CKademlia::GetPrefs()->GetExternalKadPort() : (uint16)0;
-				if (uLiveKadUDP == 0)
-					uLiveKadUDP = CKademlia::GetPrefs()->GetInternKadPort();
+				const uint16 uLiveKadUDP =
+					theApp.GetAdvertisedUdpPort();
 				if (uLiveKadUDP != 0)
 					listTag.push_back(new CKadTagUInt16(TAG_SOURCEUPORT, uLiveKadUDP));
 			}

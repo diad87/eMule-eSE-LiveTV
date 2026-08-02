@@ -1,5 +1,7 @@
 #pragma once
 
+#include "WebAuthPolicy.h"
+#include "WebRouteTable.h"
 #include "WebSocket.h"
 #include "PartFile.h"
 #include "zlib/zlib.h"
@@ -21,28 +23,6 @@ typedef struct
 
 typedef struct
 {
-	CTime	startTime;
-	long	lSession;
-	int		lastcat;
-	bool	admin;
-} Session;
-
-struct BadLogin
-{
-	uint32	datalen;
-	DWORD	timestamp;
-};
-
-// eSE 8.14: Challenge-Response pending nonce
-struct PendingChallenge
-{
-	CStringA  sNonce;       // 64-char hex string (32 random bytes)
-	DWORD     dwTimestamp;  // GetTickCount() at creation
-	uint32    dwClientIP;   // requestor IP for binding
-};
-
-typedef struct
-{
 	CString	sCategory;
 	CString	sED2kLink;
 	CString	sFileHash;
@@ -50,7 +30,7 @@ typedef struct
 	CString	sFileName;
 	CString	sFileNameJS;
 	CString	sFileState;
-	CString	sFileType;
+	CString	sFileType, sDownloadGraph;
 	double	m_dblCompleted;
 	uint64	m_qwFileSize;
 	uint64	m_qwFileTransferred;
@@ -62,33 +42,11 @@ typedef struct
 	int		iComment;
 	int		iFileState;
 	int		nFilePrio;
-	int		nFileStatus;
+	int		nFileStatus, nCategory;
 	bool	bIsComplete;
 	bool	bIsGetFLC;
 	bool	bIsPreview;
 } DownloadFiles;
-
-typedef struct
-{
-	CString sFileCompletes;
-	CString sFileHash;
-	CString sFilePriority;
-	CString sFileType;
-	CString	sED2kLink;
-	CString	sFileName;
-	CString	sFileState;
-	double	dblFileCompletes;
-	uint64	m_qwFileSize;
-	uint64	nFileAllTimeTransferred;
-	uint64	nFileTransferred;
-	uint32	nFileAllTimeRequests;
-	uint32	nFileAllTimeAccepts;
-	UINT	nFileRequests;
-	UINT	nFileAccepts;
-	byte	nFilePriority;
-	bool	bIsPartFile;
-	bool	bFileAutoPriority;
-} SharedFiles;
 
 typedef struct
 {
@@ -178,27 +136,6 @@ typedef enum
 	SHARED_SORT_PRIORITY
 } SharedSort;
 
-typedef struct
-{
-	CString	sServerDescription;
-	CString	sServerFullIP; //for sorting
-	CString	sServerIP;
-	CString	sServerName;
-	CString	sServerPriority;
-	CString	sServerState;
-	CString	sServerVersion;
-	uint32	nServerFiles;
-	uint32	nServerHardLimit;
-	uint32	nServerMaxUsers;
-	uint32	nServerPing;
-	uint32	nServerSoftLimit;
-	uint32	nServerUsers;
-	int		nServerFailed;
-	int		nServerPort;
-	byte	nServerPriority;
-	bool	bServerStatic;
-} ServerEntry;
-
 typedef enum
 {
 	SERVER_SORT_STATE,
@@ -217,12 +154,6 @@ typedef enum
 typedef struct
 {
 	CArray<UpDown>	PointsForWeb;
-	CArray<Session>	Sessions;
-	CArray<BadLogin> badlogins;	//TransferredData= IP : time
-	CArray<PendingChallenge> pendingChallenges;  // eSE 8.14: active login challenges
-
-	CString			sETag;
-	CString			sLastModified;
 	CString			sShowServerIP;		//Purity: Action Buttons
 	CString			sShowSharedFile;	//Purity: Action Buttons
 	CString			sShowTransferFile;	//Purity: Action Buttons
@@ -249,62 +180,16 @@ typedef struct
 typedef struct
 {
 	CString			sURL;
+	CStringA		sCsrfToken;
+	CStringA		sFetchSite;
+	CStringA		sHost;
+	CStringA		sOrigin;
+	CStringA		sRange;
+	ese::web::WebRouteId webRoute;
 	void			*pThis;
 	CWebSocket		*pSocket;
 	in_addr			inadr;
 } ThreadData;
-
-typedef struct
-{
-	CString	sAddServerBox;
-	CString	sBootstrapLine;
-	CString	sCatArrow;
-	CString	sCommentList;
-	CString	sCommentListLine;
-	CString	sDebugLog;
-	CString	sDownArrow;
-	CString	sDownDoubleArrow;
-	CString	sFooter;
-	CString	sGraphs;
-	CString	sHeader;
-	CString	sHeaderStylesheet;
-	CString	sKad;
-	CString	sLog;
-	CString	sLogin;
-	CString	sMyInfoLog;
-	CString	sPreferences;
-	CString	sProgressbarImgs;
-	CString	sProgressbarImgsPercent;
-	CString	sSearch;
-	CString	sSearchHeader;
-	CString	sSearchResultLine;
-	CString	sServerInfo;
-	CString	sServerLine;
-	CString	sServerList;
-	CString	sSharedLine;
-	CString	sSharedList;
-	CString	sStats;
-	CString	sTransferDownFooter;
-	CString	sTransferDownHeader;
-	CString	sTransferDownLine;
-	CString	sTransferImages;
-	CString	sTransferList;
-	CString	sTransferUpFooter;
-	CString	sTransferUpHeader;
-	CString	sTransferUpLine;
-	CString	sTransferUpQueueBannedHide;
-	CString	sTransferUpQueueBannedLine;
-	CString	sTransferUpQueueBannedShow;
-	CString	sTransferUpQueueFriendHide;
-	CString	sTransferUpQueueFriendLine;
-	CString	sTransferUpQueueFriendShow;
-	CString	sTransferUpQueueHide;
-	CString	sTransferUpQueueLine;
-	CString	sTransferUpQueueShow;
-	CString	sUpArrow;
-	CString	sUpDoubleArrow;
-	uint16	iProgressbarWidth;
-} WebTemplates;
 
 class CWebServer
 {
@@ -321,8 +206,10 @@ public:
 	void RestartSockets();
 	void AddStatsLine(const UpDown &line);
 	bool ReloadTemplates();
-	INT_PTR GetSessionCount()					{ return m_Params.Sessions.GetCount(); }
+	INT_PTR GetSessionCount()					{ return static_cast<INT_PTR>(m_authPolicy.SessionCount()); }
 	bool IsRunning() const						{ return m_bServerWorking; }
+	// MOD-0.2: headless production parser/security/serialization seam.
+	static bool RunCharacterizationSelfTest(CString& outFailure);
 protected:
 	//all static method names have an underscore prefix
 	static void		_ProcessURL(const ThreadData &Data);
@@ -343,44 +230,30 @@ private:
 	static CString  _GetKadDlg(const ThreadData &Data);
 	static CString	_GetPreferences(const ThreadData &Data);
 	static CString	_GetLoginScreen(const ThreadData &Data);
-	//static CString	_GetConnectedServer(const ThreadData &Data);
-	static CString	_GetAddServerBox(const ThreadData &Data);
 	static CString	_GetCommentlist(const ThreadData &Data);
-	static void		_RemoveServer(const CString &sIP, int nPort);
-	static void		_AddToStatic(const CString &sIP, int nPort);
-	static void		_RemoveFromStatic(const CString &sIP, int nPort);
 
-	//static CString	_GetWebSearch(const ThreadData &Data);
 	static CString	_GetSearch(const ThreadData &Data);
 
 	static CString	_ParseURL(const CString &URL, const CString &fieldname);
 	static CString	_ParseURLArray(CString URL, CString fieldname);
-	static void		_ConnectToServer(const CString &sIP, int nPort);
 	static bool		_IsLoggedIn(const ThreadData &Data, long lSession);
 	static void		_RemoveTimeOuts(const ThreadData &Data);
 	static bool		_RemoveSession(const ThreadData &Data, long lSession);
 	static CString	_SpecialChars(const CString &cstr, bool noquote = true);
 	static CString	_GetPlainResString(UINT nID, bool noquote = true);
 	static void		_GetPlainResString(CString &rstrOut, UINT nID, bool noquote = true);
-	static int		_GzipCompress(Bytef *dest, uLongf *destLen, const Bytef *source, uLong sourceLen, int level);
-	static CString	_LoadTemplate(const CString &sAll, const CString &sTemplateName);
-	static Session	_GetSessionByID(const ThreadData &Data, long sessionID);
 	static bool		_IsSessionAdmin(const ThreadData &Data, long sessionID);
 	static bool		_IsSessionAdmin(const ThreadData &Data, const CString &strSsessionID);
 	// eSE 8.14: Challenge-Response authentication
 	static CStringA	_GenerateNonce(const ThreadData &Data);
-	static void		_PurgeStaleChallenges(const ThreadData &Data);
 	static bool		_ValidateChallengeResponse(const ThreadData &Data, const CString &sNonce, const CString &sResponse, bool &outIsAdmin);
-	static CString	_GetPermissionDenied();
 	static CString	_GetDownloadGraph(const ThreadData &Data, const CString &filehash);
 	static void		_InsertCatBox(CString &Out, int preselect, LPCTSTR boxlabel, bool jump, bool extraCats, const CString &sSession, const CString &sFileHash, bool ed2kbox = false);
-	static CString	_GetSubCatLabel(int cat);
 	static CString  _GetRemoteLinkAddedOk(const ThreadData &Data);
 	static CString  _GetRemoteLinkAddedFailed(const ThreadData &Data);
 	static void		_SetLastUserCat(const ThreadData &Data, long lSession, int cat);
 	static int		_GetLastUserCat(const ThreadData &Data, long lSession);
 	static void		_MakeTransferList(CString &Out, CWebServer *pThis, const ThreadData &Data, void *FilesArray, void *UploadArray, bool bAdmin);
-	static void		_SetBoolean(bool &var, const CString &URL, LPCTSTR pFieldname);
 
 	static void		_SaveWIConfigArray(BOOL *array, int size, LPCTSTR key);
 	static CString	_GetWebImageNameForFileType(const CString &filename);
@@ -392,13 +265,11 @@ private:
 
 	//comparators for quick sort
 	static int AFX_CDECL _DownloadCmp(void *prm, void const *pv1, void const *pv2);
-	static int AFX_CDECL _ServerCmp(void *prm, void const *pv1, void const *pv2);
-	static int AFX_CDECL _SharedCmp(void *prm, void const *pv1, void const *pv2);
 	static int AFX_CDECL _UploadCmp(void *prm, void const *pv1, void const *pv2);
 
 	// Common data
+	ese::web::WebAuthPolicy m_authPolicy;
 	GlobalParams	m_Params;
-	WebTemplates	m_Templates;
 	u_long			m_uCurIP;
 	int				m_iSearchSortby;
 	uint16			m_nIntruderDetect;

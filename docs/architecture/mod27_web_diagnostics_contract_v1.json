@@ -1,0 +1,42 @@
+{
+  "schema": "ese.mod27.web-diagnostics-contract/v1",
+  "baseline_commit": "ffd76e14779012d7b26d79290cd03fe57302cf00",
+  "valid_input_compatibility": "field_order_names_values_and_nullability_exact",
+  "invalid_input_policy": "escape_hostile_text_and_hide_local_identity_by_default",
+  "module": {
+    "name": "WebDiagnostics",
+    "owner_before": "CWebServer",
+    "owner_after": "WebDiagnostics",
+    "layer": "application",
+    "responsibility": "value-only status and mesh diagnostic projection",
+    "source": "srchybrid/WebServer.cpp",
+    "routes": [
+      "/api/status",
+      "/api/live/mesh"
+    ],
+    "declared_direct_dependencies": []
+  },
+  "privacy": {
+    "remote_user_hash": null,
+    "remote_connecting_client_counters": null,
+    "local_identity_default": "hidden",
+    "hostile_text": "json_escaped",
+    "private_paths": "forbidden"
+  },
+  "bounds": {
+    "ownership": "value_only",
+    "pointers_or_iterators": "forbidden"
+  },
+  "boundary": {
+    "owned_by_WebDiagnostics": [
+      "diagnostic field order and JSON projection",
+      "local-only field nullability"
+    ],
+    "retained_by_CWebServer": [
+      "application singleton reads",
+      "lock-correct snapshot acquisition",
+      "loopback classification",
+      "HTTP framing and socket writes"
+    ]
+  }
+}

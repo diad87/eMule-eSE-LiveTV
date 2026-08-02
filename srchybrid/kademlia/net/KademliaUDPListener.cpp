@@ -69,6 +69,7 @@ their client on the eMule forum.
 #include "LiveTunnel.h"
 #include "NodeIdentity.h"
 #include "FirewallProberV6.h"   // [eSE v9] root link: GetDetectedV6IP() for the HELLO v6 tag
+#include "DirectReachabilityManager.h"
 #include "eMuleAI/Address.h"     // [eSE v9] CAddress::Data()/GetType()/IsPublicIP()
 #include "kademlia/utils/KadUDPKey.h"
 #include "kademlia/utils/KadClientSearcher.h"
@@ -475,6 +476,24 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 		return false;
 	std::vector<kad6::K6Endpoint> endpoints;
 	const uint16 internalKadPort = CPrefs::GetInternKadPort();
+	const uint64 topologyGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+	const natmap::CandidateObservation directV6 =
+		CFirewallProberV6::Instance().GetDirectRouteObservation(
+			topologyGeneration, natmap::Transport::Udp);
+	const uint32 publicV4 = theApp.GetPublicIP();
+	const natmap::DirectRouteSelection routeSelection =
+		theApp.directreachability != NULL
+			? theApp.directreachability->SelectPreferredRoute(
+				directV6,
+				thePrefs.IsIPv6Enabled(),
+				thePrefs.IsUPnPEnabled(),
+				true,
+				publicV4,
+				theApp.GetLocalTcpPort())
+			: natmap::DirectRouteSelection{};
+	bool explicitV6Route = false;
 	if (thePrefs.IsIPv6Enabled() && theApp.clientudp->IsDualStack()
 		&& internalKadPort != 0) {
 		// An explicit bind is authoritative. In particular, T5 deliberately
@@ -489,40 +508,69 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 			CAddress configuredV6(configured, false);
 			if (configuredV6.GetType() == CAddress::IPv6
 				&& (configuredV6.IsPublicIP()
-					|| configuredV6.IsUniqueLocalIPv6()))
+					|| configuredV6.IsUniqueLocalIPv6())) {
 				routeV6 = configuredV6;
+				explicitV6Route = true;
+			}
 		}
-		if (routeV6.IsNull())
-			routeV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+		// Automatic publication remains generation-fenced. The explicit bind
+		// above is a distinct, authoritative socket identity (including the
+		// opt-in ULA qualification topology), not an unverified observation.
+		if (routeV6.IsNull()
+			&& directV6.IsVerifiedFor(topologyGeneration)
+			&& routeSelection.route
+				== natmap::PreferredDirectRoute::DirectV6) {
+			const CAddress detectedV6 =
+				CFirewallProberV6::Instance().GetDetectedV6IP();
+			if (detectedV6.GetType() == CAddress::IPv6
+				&& detectedV6.IsPublicIP())
+				routeV6 = detectedV6;
+		}
 		if (routeV6.GetType() == CAddress::IPv6
 			&& (routeV6.IsPublicIP() || routeV6.IsUniqueLocalIPv6())) {
-			kad6::K6Endpoint endpoint;
-			endpoint.addr.family = kad6::Kad6Address::Family::IPv6;
-			std::memcpy(endpoint.addr.addr.data(), routeV6.Data(), 16);
-			endpoint.udp_port = internalKadPort;
-			endpoint.tcp_port = theApp.GetAdvertisedV6TcpPort();
-			endpoint.transport_flags = kad6::kK6EpUdpKad6;
-			endpoint.observed = 0;
-			endpoints.push_back(endpoint);
+			const uint16 publicV6KadPort =
+				explicitV6Route ? internalKadPort
+					: theApp.GetAdvertisedV6UdpPort();
+			if (publicV6KadPort != 0) {
+				kad6::K6Endpoint endpoint;
+				endpoint.addr.family = kad6::Kad6Address::Family::IPv6;
+				std::memcpy(endpoint.addr.addr.data(), routeV6.Data(), 16);
+				endpoint.udp_port = publicV6KadPort;
+				endpoint.tcp_port = theApp.GetAdvertisedV6TcpPort();
+				endpoint.transport_flags = kad6::kK6EpUdpKad6;
+				endpoint.observed = 0;
+				endpoint.priority =
+					explicitV6Route || routeSelection.route
+						== natmap::PreferredDirectRoute::DirectV6
+							? 0 : 1;
+				endpoints.push_back(endpoint);
+			}
 		}
 	}
-	const uint32 publicV4 = theApp.GetPublicIP();
 	if (publicV4 != 0) {
 		const CAddress addressV4(publicV4, false);
 		if (addressV4.GetType() == CAddress::IPv4 && addressV4.IsPublicIP()) {
-			uint16 publicKadPort = internalKadPort;
-			if (CKademlia::GetPrefs()->GetUseExternKadPort()
-				&& CKademlia::GetPrefs()->GetExternalKadPort() != 0)
-				publicKadPort = CKademlia::GetPrefs()->GetExternalKadPort();
+			const uint16 publicKadPort =
+				routeSelection.route
+					== natmap::PreferredDirectRoute::MappedV4
+						? theApp.GetAdvertisedUdpPort()
+						: theApp.GetLocalUdpPort();
 			if (publicKadPort != 0) {
 				kad6::K6Endpoint endpoint;
 				endpoint.addr.family = kad6::Kad6Address::Family::IPv4;
 				std::memcpy(endpoint.addr.addr.data(), &publicV4, sizeof publicV4);
 				endpoint.udp_port = publicKadPort;
-				endpoint.tcp_port = theApp.GetAdvertisedTcpPort();
+				endpoint.tcp_port =
+					routeSelection.route
+						== natmap::PreferredDirectRoute::MappedV4
+							? theApp.GetAdvertisedTcpPort()
+							: theApp.GetLocalTcpPort();
 				endpoint.transport_flags = kad6::kK6EpUdpKad6;
 				endpoint.observed = 0;
-				endpoint.priority = 1; // prefer native IPv6 when both are healthy
+				endpoint.priority =
+					explicitV6Route || routeSelection.route
+						== natmap::PreferredDirectRoute::DirectV6
+							? 1 : 0;
 				endpoints.push_back(endpoint);
 			}
 		}
@@ -570,16 +618,19 @@ bool CKademliaUDPListener::BuildKad6Header(uint32 txid,
 		}
 		m_kad6LocalRecordReady = true;
 	}
-	kad6::K6Endpoint endpoint = m_kad6LocalRecord.endpoints[0];
-	if (preferredFamily != kad6::Kad6Address::Family::None)
-		for (const kad6::K6Endpoint& candidate : m_kad6LocalRecord.endpoints)
-			if (candidate.addr.family == preferredFamily) {
-				endpoint = candidate;
-				break;
-			}
-	if (preferredFamily != kad6::Kad6Address::Family::None
-		&& endpoint.addr.family != preferredFamily)
+	const kad6::K6Endpoint* selectedEndpoint = NULL;
+	for (const kad6::K6Endpoint& candidate :
+			m_kad6LocalRecord.endpoints) {
+		if (preferredFamily != kad6::Kad6Address::Family::None
+			&& candidate.addr.family != preferredFamily)
+			continue;
+		if (selectedEndpoint == NULL
+			|| candidate.priority < selectedEndpoint->priority)
+			selectedEndpoint = &candidate;
+	}
+	if (selectedEndpoint == NULL)
 		return false;
+	const kad6::K6Endpoint endpoint = *selectedEndpoint;
 
 	out.txid = txid;
 	CUInt128 localId = CKademlia::GetPrefs()->GetKadID();
@@ -1225,7 +1276,13 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 		byteIOResponse.WriteUInt8(KADEMLIA_VERSION);
 
 		// Tag Count.
-		uint8 byTagCount = static_cast<uint8>(!CKademlia::GetPrefs()->GetUseExternKadPort());
+		const uint16 advertisedKadPort =
+			theApp.GetAdvertisedUdpPort();
+		const bool bSendSourceUdpPort =
+			!CKademlia::GetPrefs()->GetUseExternKadPort()
+			&& advertisedKadPort != 0;
+		uint8 byTagCount =
+			static_cast<uint8>(bSendSourceUdpPort);
 		if (byKadVersion >= KADEMLIA_VERSION8_49b
 			&& (bRequestAckPackage || CKademlia::GetPrefs()->GetFirewalled() || CUDPFirewallTester::IsFirewalledUDP(true)))
 		{
@@ -1236,6 +1293,11 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 		// Compute ONCE (myV6 captured once — re-calling GetDetectedV6IP would be racy w.r.t. the
 		// ++byTagCount / WriteTag pair). v8+ only; upstream ignores the unknown tag (additive).
 		const CAddress myV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+		const uint64 v6TopologyGeneration = theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+		const natmap::CandidateObservation v6UdpObservation =
+			CFirewallProberV6::Instance().GetDirectRouteObservation(
+				v6TopologyGeneration, natmap::Transport::Udp);
 		extern uint32 g_uForkCapsRuntime;
 		const LONG forkCaps = ::InterlockedCompareExchange(
 			reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime), 0, 0);
@@ -1243,12 +1305,14 @@ void CKademliaUDPListener::SendMyDetails(byte byOpcode, uint32 uIP, uint16 uUDPP
 			&& (thePrefs.GetEseKadV6Tag()
 				|| (forkCaps & CAP_FORK_IPV6_KAD) != 0)
 			&& byKadVersion >= KADEMLIA_VERSION8_49b
-			&& myV6.GetType() == CAddress::IPv6 && myV6.IsPublicIP();
+			&& myV6.GetType() == CAddress::IPv6 && myV6.IsPublicIP()
+			&& v6UdpObservation.IsVerifiedFor(v6TopologyGeneration);
 		if (bSendV6)
 			++byTagCount;
 		byteIOResponse.WriteUInt8(byTagCount);
-		if (!CKademlia::GetPrefs()->GetUseExternKadPort())
-			byteIOResponse.WriteTag(CKadTagUInt16(TAG_SOURCEUPORT, CKademlia::GetPrefs()->GetInternKadPort()));
+		if (bSendSourceUdpPort)
+			byteIOResponse.WriteTag(
+				CKadTagUInt16(TAG_SOURCEUPORT, advertisedKadPort));
 
 		if (byKadVersion >= KADEMLIA_VERSION8_49b
 			&& (bRequestAckPackage || CKademlia::GetPrefs()->GetFirewalled() || CUDPFirewallTester::IsFirewalledUDP(true)))

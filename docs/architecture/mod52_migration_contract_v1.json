@@ -1,0 +1,29 @@
+{
+  "schema": "ese.mod52.migration-contract/v1",
+  "baseline_commit": "8534bf9ee48a16084c0368bf33dcafb4ba12558d",
+  "scope": "green migration ratchet for M2A additional extractions; final M2 hard stops remain independently blocking until M2A-CLOSE",
+  "inputs": {
+    "mod01_inventory": "docs/architecture/mod01_architecture_inventory_v1.json",
+    "mod03_v1": "docs/architecture/mod03_ownership_layering_contract_v1.json",
+    "mod04_v1": "docs/architecture/mod04_architecture_gate_baseline_v1.json",
+    "mod51_v1": "docs/architecture/mod51_include_scc_contract_v1.json",
+    "matrix": "docs/architecture/mod52_migration_matrix_v1.json",
+    "mod03_v2": "docs/architecture/mod03_ownership_layering_contract_v2.json",
+    "mod04_v2": "docs/architecture/mod04_architecture_gate_catalog_v2.json",
+    "activation_ledger": "docs/architecture/mod52_migration_activation_ledger_v1.json"
+  },
+  "ratchet": {
+    "coordinator_physical_loc": "no growth from baseline per governed coordinator file",
+    "mutable_fields": "no new class-depth-one m_ field and no count growth in CLiveTunnel or CLiveStreamManager",
+    "oversized_functions": "no new >150 MOD-0.1 lexical function and no baseline oversized function may grow",
+    "include_scc": "zero new SCCs under MOD-5.1",
+    "coordinator_new_references": "no new direct field, pointer or reference to an additional module in a coordinator"
+  },
+  "module_policy": {
+    "target_physical_loc_max": 1200,
+    "hard_physical_loc_max": 1500,
+    "direct_dependencies_max": 8,
+    "budget_source": "versioned M2A card budget in the matrix; module growth is permitted only inside that budget"
+  },
+  "status": "PASS"
+}

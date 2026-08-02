@@ -21,26 +21,36 @@ bool ValidTransport(Transport transport) noexcept {
     return transport == Transport::Tcp || transport == Transport::Udp;
 }
 
+bool IsCanonicalV4(const IpAddress& address) noexcept {
+    if (address.family != AddressFamily::IPv4)
+        return false;
+    return std::all_of(
+        address.bytes.begin() + 4, address.bytes.end(),
+        [](std::uint8_t byte) { return byte == 0; });
+}
+
 bool IsTerminatedPrintable(const OwnershipDescription& value) noexcept {
+    bool terminated = false;
     for (char ch : value) {
-        if (ch == 0)
-            return true;
+        if (terminated) {
+            if (ch != 0)
+                return false;
+            continue;
+        }
+        if (ch == 0) {
+            terminated = true;
+            continue;
+        }
         const unsigned char byte = static_cast<unsigned char>(ch);
         if (byte < 0x20 || byte > 0x7e)
             return false;
     }
-    return false;
+    return terminated;
 }
 
 bool SameDescription(const OwnershipDescription& left,
                      const OwnershipDescription& right) noexcept {
-    for (std::size_t i = 0; i < left.size(); ++i) {
-        if (left[i] != right[i])
-            return false;
-        if (left[i] == 0)
-            return true;
-    }
-    return false;
+    return left == right;
 }
 
 void Put16(std::uint8_t*& out, std::uint16_t value) noexcept {
@@ -130,10 +140,43 @@ OwnershipDescription BuildOwnershipDescription(
     return result;
 }
 
+bool ParseOwnershipDescription(
+    const char* text,
+    std::size_t available,
+    OwnershipDescription& description) noexcept {
+    description = OwnershipDescription{};
+    if (text == nullptr || available == 0)
+        return false;
+    std::size_t length = 0;
+    while (length < available && text[length] != 0) {
+        const unsigned char byte =
+            static_cast<unsigned char>(text[length]);
+        if (byte < 0x20 || byte > 0x7e
+            || length + 1 >= description.size())
+            return false;
+        ++length;
+    }
+    if (length == available)
+        return false;
+    std::copy(text, text + length, description.begin());
+    return true;
+}
+
+bool OwnershipJournalCommit::Complete(
+    OwnershipJournalStep step) noexcept {
+    if (failed_ || static_cast<std::uint8_t>(step) != next_step_
+        || next_step_ >= 6) {
+        failed_ = true;
+        return false;
+    }
+    ++next_step_;
+    return true;
+}
+
 bool UpnpOwnershipRecord::IsStructurallyValid() const noexcept {
     return owner_token != 0 && gateway_fingerprint != 0 &&
         ValidTransport(transport) &&
-        local_address.family == AddressFamily::IPv4 &&
+        IsCanonicalV4(local_address) &&
         !local_address.IsUnspecified() && local_port != 0 &&
         external_port != 0 && acquired_unix_seconds != 0 &&
         generation != 0 && IsTerminatedPrintable(description) &&
@@ -148,7 +191,7 @@ bool UpnpOwnershipRecord::IsStructurallyValid() const noexcept {
 
 bool ObservedUpnpMapping::IsStructurallyValid() const noexcept {
     return ValidTransport(transport) &&
-        local_address.family == AddressFamily::IPv4 &&
+        IsCanonicalV4(local_address) &&
         !local_address.IsUnspecified() && local_port != 0 &&
         external_port != 0 && IsTerminatedPrintable(description);
 }
@@ -175,6 +218,15 @@ OwnershipDecision EvaluateOwnershipForDeletion(
     if (!SameDescription(record.description, observed.description))
         return OwnershipDecision::DescriptionMismatch;
     return OwnershipDecision::Owned;
+}
+
+bool IsUpnpCleanupAuthorized(
+    const UpnpOwnershipRecord& record,
+    std::uint64_t current_gateway_fingerprint,
+    const ObservedUpnpMapping& observed) noexcept {
+    return EvaluateOwnershipForDeletion(
+        record, current_gateway_fingerprint, observed) ==
+        OwnershipDecision::Owned;
 }
 
 bool OwnershipLedger::IsStructurallyValid() const noexcept {

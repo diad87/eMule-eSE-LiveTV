@@ -2,6 +2,9 @@
 // v0.71 IPv6 Sprint 3 — Firewall probe skeleton. See FirewallProberV6.h.
 #include "stdafx.h"
 #include "FirewallProberV6.h"
+#include "DirectReachabilityManager.h"
+#include "natmap/ipv6_scope_policy.h"
+#include "natmap/pcp_upstream_policy.h"
 #include "LiveDebugLog.h"
 #include "Preferences.h"
 #include "emule.h"          // theApp.IsClosing() — shutdown guard for the worker
@@ -16,6 +19,9 @@
 #include <iphlpapi.h>
 #include <netioapi.h>
 #include <ws2tcpip.h>
+#include <limits>
+#include <string>
+#include <vector>
 
 #pragma comment(lib, "bcrypt.lib")
 
@@ -46,6 +52,81 @@ bool GeneratePcpNonce(std::array<uint8, 12>& nonce)
 	for (size_t i = 0; i < nonce.size(); ++i)
 		if (nonce[i] != 0)
 			return true;
+	return false;
+}
+
+// RFC 6887 permits a one-second apparent regression from response ordering.
+// Anything beyond it is a mapper reboot/discontinuity and old lease evidence
+// must not be renewed across the boundary.
+bool IsPcpEpochDiscontinuity(uint32 previous, uint32 current)
+{
+	return current < previous && previous - current > 1;
+}
+
+bool ArePcpPairEpochsCoherent(uint32 tcpEpoch, uint32 udpEpoch)
+{
+	return udpEpoch >= tcpEpoch || tcpEpoch - udpEpoch <= 1;
+}
+
+// A routable IPv6 literal is not by itself a native transport binding.  In
+// particular, tunnel and loopback adapters must never become an externally
+// advertised v6 route merely because Windows can route through them.
+std::string NarrowAdapterText(const WCHAR* value)
+{
+	if (value == NULL || *value == L'\0')
+		return std::string();
+	const int size = WideCharToMultiByte(CP_UTF8, 0, value, -1, NULL, 0,
+		NULL, NULL);
+	if (size <= 1)
+		return std::string();
+	std::vector<char> bytes(static_cast<size_t>(size));
+	if (WideCharToMultiByte(CP_UTF8, 0, value, -1, bytes.data(), size,
+		NULL, NULL) != size)
+		return std::string();
+	return std::string(bytes.data());
+}
+
+bool IsNativeV6Interface(ULONG interfaceIndex, bool hasDefaultGateway,
+	bool requireNative)
+{
+	if (interfaceIndex == 0)
+		return false;
+	ULONG bytes = 0;
+	DWORD status = GetAdaptersAddresses(AF_INET6, GAA_FLAG_INCLUDE_PREFIX,
+		NULL, NULL, &bytes);
+	if (status != ERROR_BUFFER_OVERFLOW || bytes == 0)
+		return false;
+	std::vector<uint8> buffer(bytes);
+	PIP_ADAPTER_ADDRESSES adapters =
+		reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data());
+	if (GetAdaptersAddresses(AF_INET6, GAA_FLAG_INCLUDE_PREFIX, NULL,
+		adapters, &bytes) != NO_ERROR)
+		return false;
+	for (PIP_ADAPTER_ADDRESSES adapter = adapters; adapter != NULL;
+		adapter = adapter->Next) {
+		if (adapter->Ipv6IfIndex != interfaceIndex)
+			continue;
+		if (adapter->OperStatus != IfOperStatusUp)
+			return false;
+		std::string description = NarrowAdapterText(adapter->Description);
+		const std::string friendlyName = NarrowAdapterText(adapter->FriendlyName);
+		if (!friendlyName.empty()) {
+			if (!description.empty())
+				description += " ";
+			description += friendlyName;
+		}
+		const natmap::NetworkOriginEvidence originEvidence = {
+			adapter->AdapterName, description.empty() ? NULL : description.c_str(),
+			adapter->IfType == IF_TYPE_TUNNEL,
+			adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK,
+			hasDefaultGateway
+		};
+		const natmap::NetworkOrigin origin =
+			natmap::ClassifyNetworkOrigin(originEvidence).origin;
+		return requireNative ? origin == natmap::NetworkOrigin::Native
+			: origin != natmap::NetworkOrigin::Overlay
+				&& !originEvidence.is_tunnel && !originEvidence.is_loopback;
+	}
 	return false;
 }
 
@@ -104,11 +185,121 @@ bool GetDefaultGatewayV6(const CAddress& clientAddress, CAddress& gateway,
 	gateway = CAddress(reinterpret_cast<const byte*>(&nextHop));
 	if (gateway.GetType() != CAddress::IPv6 || gateway.IsNull())
 		return false;
+	if (!IsNativeV6Interface(route.InterfaceIndex, true, true))
+		return false;
 	interfaceIndex = route.InterfaceIndex;
 	return true;
 }
 
-bool ExchangePcpMapV6(const CAddress& gateway, ULONG interfaceIndex,
+uint64 MonotonicMilliseconds64()
+{
+	typedef ULONGLONG (WINAPI *GetTickCount64Fn)();
+	static GetTickCount64Fn getTickCount64 =
+		reinterpret_cast<GetTickCount64Fn>(GetProcAddress(
+			GetModuleHandleW(L"kernel32.dll"), "GetTickCount64"));
+	if (getTickCount64 != NULL)
+		return static_cast<uint64>(getTickCount64());
+	// Legacy fallback for old Windows targets: extend the 32-bit monotonic
+	// tick under a lock. This function is called from UI, network and PCP
+	// worker paths, so unsynchronised static wrap state would be a data race.
+	static DWORD previous = 0;
+	static uint64 high = 0;
+	static CCriticalSection legacyTickLock;
+	CSingleLock lock(&legacyTickLock, TRUE);
+	const DWORD now = GetTickCount();
+	if (now < previous)
+		high += (static_cast<uint64>(1) << 32);
+	previous = now;
+	return high + now;
+}
+
+bool GetOnLinkRouteV6(const CAddress& peerAddress, CAddress& localAddress,
+	ULONG& interfaceIndex, uint8& prefixLength)
+{
+	if (peerAddress.GetType() != CAddress::IPv6)
+		return false;
+	HMODULE ipHelper = GetModuleHandleW(L"iphlpapi.dll");
+	if (ipHelper == NULL)
+		ipHelper = LoadLibraryW(L"iphlpapi.dll");
+	if (ipHelper == NULL)
+		return false;
+	typedef NETIO_STATUS (WINAPI *GetBestRoute2Fn)(
+		NET_LUID*, NET_IFINDEX, const SOCKADDR_INET*, const SOCKADDR_INET*,
+		ULONG, PMIB_IPFORWARD_ROW2, SOCKADDR_INET*);
+	GetBestRoute2Fn getBestRoute2 = reinterpret_cast<GetBestRoute2Fn>(
+		GetProcAddress(ipHelper, "GetBestRoute2"));
+	if (getBestRoute2 == NULL)
+		return false;
+	SOCKADDR_INET destination{};
+	destination.Ipv6.sin6_family = AF_INET6;
+	memcpy(&destination.Ipv6.sin6_addr, peerAddress.Data(), 16);
+	MIB_IPFORWARD_ROW2 route{};
+	SOCKADDR_INET bestSource{};
+	if (getBestRoute2(NULL, 0, NULL, &destination, 0, &route,
+		&bestSource) != NO_ERROR ||
+		route.NextHop.si_family != AF_INET6 ||
+		route.DestinationPrefix.Prefix.si_family != AF_INET6 ||
+		route.InterfaceIndex == 0 || bestSource.si_family != AF_INET6)
+		return false;
+	static const IN6_ADDR unspecified = IN6ADDR_ANY_INIT;
+	if (memcmp(&route.NextHop.Ipv6.sin6_addr, &unspecified,
+		sizeof(unspecified)) != 0)
+		return false; // A gateway route is never positive SAME_LAN proof.
+	localAddress = CAddress(reinterpret_cast<const byte*>(
+		&bestSource.Ipv6.sin6_addr));
+	if (localAddress.GetType() != CAddress::IPv6 || localAddress.IsNull())
+		return false;
+	// SAME_LAN is allowed on an isolated physical segment without a default
+	// gateway. It is intentionally bound as Unknown below, never promoted to
+	// a global Native route; known overlays/tunnels/loopback remain excluded.
+	if (!IsNativeV6Interface(route.InterfaceIndex, false, false))
+		return false;
+	interfaceIndex = route.InterfaceIndex;
+	prefixLength = route.DestinationPrefix.PrefixLength;
+	return prefixLength <= 128;
+}
+
+enum class PcpMapExchangeResult {
+	RequestNotSent = 0,
+	RequestSentNoResponse,
+	ProtocolFailure,
+	Mapped,
+	ZeroLifetime,
+	Deleted
+};
+
+bool PcpMapResponseReceived(PcpMapExchangeResult result)
+{
+	return result != PcpMapExchangeResult::RequestNotSent &&
+		result != PcpMapExchangeResult::RequestSentNoResponse;
+}
+
+natmap::PcpExchangeDisposition ToPcpCleanupDisposition(
+	PcpMapExchangeResult result)
+{
+	switch (result) {
+	case PcpMapExchangeResult::RequestNotSent:
+		return natmap::PcpExchangeDisposition::RequestNotSent;
+	case PcpMapExchangeResult::RequestSentNoResponse:
+		return natmap::PcpExchangeDisposition::RequestSentNoResponse;
+	case PcpMapExchangeResult::ProtocolFailure:
+		return natmap::PcpExchangeDisposition::ResponseRejected;
+	case PcpMapExchangeResult::Mapped:
+		return natmap::PcpExchangeDisposition::Mapped;
+	case PcpMapExchangeResult::ZeroLifetime:
+		return natmap::PcpExchangeDisposition::ZeroLifetime;
+	case PcpMapExchangeResult::Deleted:
+		return natmap::PcpExchangeDisposition::Deleted;
+	}
+	return natmap::PcpExchangeDisposition::RequestNotSent;
+}
+
+bool PcpMapCreated(PcpMapExchangeResult result)
+{
+	return result == PcpMapExchangeResult::Mapped;
+}
+
+PcpMapExchangeResult ExchangePcpMapV6(const CAddress& gateway, ULONG interfaceIndex,
 	const CAddress& clientAddress, uint16 internalPort,
 	uint16 suggestedExternalPort, const CAddress& suggestedExternalIP,
 	uint8 protocol, uint32 lifetime, const std::array<uint8, 12>& nonce,
@@ -119,7 +310,7 @@ bool ExchangePcpMapV6(const CAddress& gateway, ULONG interfaceIndex,
 		|| clientAddress.IsNull() || interfaceIndex == 0
 		|| internalPort == 0 || (protocol != kPcpProtocolTcp
 			&& protocol != kPcpProtocolUdp))
-		return false;
+		return PcpMapExchangeResult::RequestNotSent;
 
 	natmap::PcpMapRequest request;
 	request.lifetime_seconds = lifetime;
@@ -134,14 +325,16 @@ bool ExchangePcpMapV6(const CAddress& gateway, ULONG interfaceIndex,
 			suggestedExternalIP.Data(), request.suggested_external_ip.size());
 
 	uint8 packet[natmap::kPcpMaximumMessageSize];
-	const size_t packetSize = natmap::EncodePcpMapRequest(request, packet,
-		sizeof(packet));
+	natmap::PcpMapRequestPolicyInput requestPolicy;
+	requestPolicy.request = &request;
+	const size_t packetSize = natmap::EncodePcpMapRequestForProduction(
+		request, requestPolicy, packet, sizeof(packet));
 	if (packetSize == 0)
-		return false;
+		return PcpMapExchangeResult::RequestNotSent;
 
 	SOCKET sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
 	if (sock == INVALID_SOCKET)
-		return false;
+		return PcpMapExchangeResult::RequestNotSent;
 
 	sockaddr_in6 local;
 	memset(&local, 0, sizeof(local));
@@ -150,7 +343,7 @@ bool ExchangePcpMapV6(const CAddress& gateway, ULONG interfaceIndex,
 	if (bind(sock, reinterpret_cast<sockaddr*>(&local), sizeof(local)) != 0) {
 		LIVE_LOG("NETV6", "PCP-v6 bind failed err=%d", WSAGetLastError());
 		closesocket(sock);
-		return false;
+		return PcpMapExchangeResult::RequestNotSent;
 	}
 
 	sockaddr_in6 destinationAddress;
@@ -162,14 +355,16 @@ bool ExchangePcpMapV6(const CAddress& gateway, ULONG interfaceIndex,
 
 	const DWORD normalTimeouts[] = { 700, 1400, 2800 };
 	const size_t attemptCount = fastDelete ? 1 : _countof(normalTimeouts);
+	bool requestSent = false;
 	for (size_t attempt = 0; attempt < attemptCount; ++attempt) {
 		if (!fastDelete && theApp.IsClosing())
 			break;
 		if (sendto(sock, reinterpret_cast<const char*>(packet),
 			static_cast<int>(packetSize), 0,
 			reinterpret_cast<sockaddr*>(&destinationAddress),
-			sizeof(destinationAddress)) != static_cast<int>(packetSize))
+			 sizeof(destinationAddress)) != static_cast<int>(packetSize))
 			continue;
+		requestSent = true;
 
 		const DWORD waitTime = fastDelete ? 150 : normalTimeouts[attempt];
 		const DWORD started = GetTickCount();
@@ -211,12 +406,13 @@ bool ExchangePcpMapV6(const CAddress& gateway, ULONG interfaceIndex,
 			response = candidate;
 			if (candidate.result != natmap::PcpResultCode::Success) {
 				closesocket(sock);
-				return false;
+				return PcpMapExchangeResult::ProtocolFailure;
 			}
 			if (lifetime == 0) {
 				const bool deleted = candidate.lifetime_seconds == 0;
 				closesocket(sock);
-				return deleted;
+				return deleted ? PcpMapExchangeResult::Deleted
+					: PcpMapExchangeResult::ProtocolFailure;
 			}
 
 			CAddress external(candidate.external_ip.data());
@@ -226,13 +422,18 @@ bool ExchangePcpMapV6(const CAddress& gateway, ULONG interfaceIndex,
 				&& external.IsPublicIP();
 			if (mapped) {
 				closesocket(sock);
-				return true;
+				return PcpMapExchangeResult::Mapped;
+			}
+			if (candidate.lifetime_seconds == 0) {
+				closesocket(sock);
+				return PcpMapExchangeResult::ZeroLifetime;
 			}
 		}
 	}
 
 	closesocket(sock);
-	return false;
+	return requestSent ? PcpMapExchangeResult::RequestSentNoResponse
+		: PcpMapExchangeResult::RequestNotSent;
 }
 
 } // namespace
@@ -306,15 +507,104 @@ CFirewallProberV6& CFirewallProberV6::Instance()
 CFirewallProberV6::CFirewallProberV6()
     : m_eLayer(LayerUnknown)
 	, m_eOverrideLayer(LayerUnknown)
+	, m_nDetectedV6Generation(0)
+	, m_nInboundV6Generation(0)
+	, m_nDetectedV6InterfaceIndex(0)
+	, m_nInboundV6InterfaceIndex(0)
+	, m_nPcpV6Generation(0)
+	, m_nPublishedTopologyGeneration(0)
+	, m_nAppliedTopologyGeneration(0)
+	, m_nProbeToken(0)
+	, m_nActiveProbeToken(0)
 	, m_lProbeStarted(0)
 	, m_lDetectedV6ExternallyObserved(0)
 	, m_lInboundV6Observed(0)
 	, m_lPcpOperationActive(0)
+	, m_lPcpRetryPending(0)
+	, m_lShuttingDown(0)
 	, m_pcpIfIndex(0)
 	, m_pcpRefreshFailures(0)
+	, m_pcpPolicyAuthorized(false)
 	, m_pcpInboundConfirmed(false)
     , m_dwLastProbeTick(0)
 {
+}
+
+void CFirewallProberV6::BeginShutdownFence()
+{
+	::InterlockedExchange(&m_lShuttingDown, 1);
+	// Synchronize with the final PCP promotion: if it was already in the
+	// critical section it completes first, then this clears its cap; if not,
+	// the worker observes the fence before it can publish.
+	CSingleLock l(&m_lock, TRUE);
+	m_pcpPolicyAuthorized = false;
+	::InterlockedAnd(reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+		~static_cast<LONG>(CAP_FORK_IPV6_DUALSTACK));
+}
+
+void CFirewallProberV6::PublishTopologyGeneration(uint64 topologyGeneration)
+{
+	if (topologyGeneration == 0)
+		return;
+	CSingleLock l(&m_lock, TRUE);
+	if (topologyGeneration > m_nPublishedTopologyGeneration)
+		m_nPublishedTopologyGeneration = topologyGeneration;
+}
+
+uint64 CFirewallProberV6::GetPublishedTopologyGeneration() const
+{
+	CSingleLock l(&m_lock, TRUE);
+	return m_nPublishedTopologyGeneration;
+}
+
+void CFirewallProberV6::OnTopologyGenerationChanged(uint64 topologyGeneration)
+{
+	if (topologyGeneration == 0)
+		return;
+	natmap::TopologyApplyDecision topologyDecision =
+		natmap::TopologyApplyDecision::Ignore;
+	{
+		CSingleLock l(&m_lock, TRUE);
+		topologyDecision = natmap::EvaluateTopologyGenerationApply(
+			m_nAppliedTopologyGeneration, topologyGeneration);
+		m_nPublishedTopologyGeneration = topologyGeneration;
+		if (topologyDecision == natmap::TopologyApplyDecision::Initialize) {
+			m_nAppliedTopologyGeneration = topologyGeneration;
+			return; // First observed generation is a baseline, not a teardown.
+		}
+		if (topologyDecision == natmap::TopologyApplyDecision::Invalidate) {
+			m_nAppliedTopologyGeneration = topologyGeneration;
+			m_sameLanEvidence = natmap::PrivateSameLanEvidence{};
+			m_sameLanLocalEndpoint = natmap::Endpoint{};
+		}
+	}
+	if (topologyDecision != natmap::TopologyApplyDecision::Invalidate)
+		return;
+	// Fence leases before re-probing. A PCP worker that started on the old
+	// generation sees the published-generation mismatch and can only DELETE.
+	DeletePcpMappingsBestEffort();
+	{
+		CSingleLock l(&m_lock, TRUE);
+		// Neither an accepted socket nor a local address observation may cross
+		// a route-generation boundary. The new probe must collect fresh proof.
+		m_detectedIP = CAddress();
+		m_nDetectedV6Generation = 0;
+		m_nDetectedV6InterfaceIndex = 0;
+		m_nInboundV6Generation = 0;
+		m_nInboundV6InterfaceIndex = 0;
+		m_nPcpV6Generation = 0;
+		m_pcpPolicyAuthorized = false;
+		m_pcpInboundConfirmed = false;
+		if (m_eLayer == LayerPCP || m_eLayer == LayerHighID)
+			m_eLayer = LayerUnreachable;
+		::InterlockedExchange(&m_lInboundV6Observed, 0);
+	}
+	::InterlockedAnd(reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+		~static_cast<LONG>(CAP_FORK_IPV6_DUALSTACK));
+	if (!theApp.IsClosing()) {
+		::InterlockedExchange(&m_lProbeStarted, 0);
+		ProbeAsync();
+	}
 }
 
 void CFirewallProberV6::ProbeAsync()
@@ -338,14 +628,29 @@ void CFirewallProberV6::ProbeAsync()
         return;
     }
 
-    if (::InterlockedExchange(&m_lProbeStarted, 1) != 0)
+	if (::InterlockedExchange(&m_lProbeStarted, 1) != 0)
         return; // already in flight or done
+	ProbeWork* work = new ProbeWork;
+	{
+		CSingleLock l(&m_lock, TRUE);
+		work->prober = this;
+		work->generation = m_nPublishedTopologyGeneration;
+		work->token = ++m_nProbeToken;
+		m_nActiveProbeToken = work->token;
+	}
+	if (work->generation == 0 ||
+		::InterlockedCompareExchange(&m_lShuttingDown, 0, 0) != 0) {
+		delete work;
+		::InterlockedExchange(&m_lProbeStarted, 0);
+		return;
+	}
 
     m_dwLastProbeTick = GetTickCount();
     LIVE_LOG("NETV6", "starting IPv6 firewall probe cascade (worker thread)");
-	CWinThread* thread = AfxBeginThread(ProbeThreadProc, this,
+	CWinThread* thread = AfxBeginThread(ProbeThreadProc, work,
 		THREAD_PRIORITY_BELOW_NORMAL);
 	if (thread == NULL) {
+		delete work;
 		::InterlockedExchange(&m_lProbeStarted, 0);
 		LIVE_LOG("NETV6", "IPv6 firewall probe thread creation failed");
 	}
@@ -354,33 +659,53 @@ void CFirewallProberV6::ProbeAsync()
 UINT AFX_CDECL CFirewallProberV6::ProbeThreadProc(LPVOID pParam)
 {
     DbgSetThreadName("FirewallProberV6");
-    static_cast<CFirewallProberV6*>(pParam)->RunCascade();
+	ProbeWork* work = static_cast<ProbeWork*>(pParam);
+	CFirewallProberV6* prober = work->prober;
+	const uint64 generation = work->generation;
+	const uint64 token = work->token;
+	delete work;
+	prober->RunCascade(generation, token);
     return 0;
 }
 
-void CFirewallProberV6::RunCascade()
+void CFirewallProberV6::RunCascade(uint64 generation, uint64 token)
 {
-    DetectLocalPublicV6();
+    DetectLocalPublicV6(generation, token);
     ECascadeLayer verdict = LayerUnreachable;
     if (TryHighID())          verdict = LayerHighID;
-    else if (TryPCP())        verdict = LayerPCP;
-    else if (TryIGDv2())      verdict = LayerIGDv2;
-    else if (TryKeepalive())  verdict = LayerKeepalive;
-    else if (TryHolePunch())  verdict = LayerHolePunch;
-    else if (TryBuddyRelay()) verdict = LayerBuddyRelay;
+    else {
+        const natmap::PcpCascadeOutcome pcp = TryPCP(generation, token);
+        if (!natmap::MayPublishCascadeVerdict(pcp))
+            return; // The PCP owner, not this waiter, will wake one retry.
+        if (pcp == natmap::PcpCascadeOutcome::Mapped) verdict = LayerPCP;
+        else if (TryIGDv2())      verdict = LayerIGDv2;
+        else if (TryKeepalive())  verdict = LayerKeepalive;
+        else if (TryHolePunch())  verdict = LayerHolePunch;
+        else if (TryBuddyRelay()) verdict = LayerBuddyRelay;
+    }
 
     // Past this point we only touch our own singleton (static storage) and the
     // thread-safe live log. Re-check the inbound proof while holding the same
     // lock used by ReportInboundV6Reachable: otherwise an accept between the
     // old pre-lock check and this assignment could be overwritten as
     // Unreachable by the one-shot worker.
+    bool mayPublish = false;
     {
         CSingleLock l(&m_lock, TRUE);
-        if (::InterlockedCompareExchange(&m_lInboundV6Observed, 0, 0) != 0)
-			verdict = m_pcpInboundConfirmed && m_pcpTcp.active
+		const natmap::ProbeIncarnation captured = {generation, token, false};
+		const natmap::ProbeIncarnation current = {
+			m_nPublishedTopologyGeneration, m_nActiveProbeToken,
+			::InterlockedCompareExchange(&m_lShuttingDown, 0, 0) != 0};
+		mayPublish = natmap::CanPublishProbeVerdict(captured, current);
+		if (mayPublish
+			&& ::InterlockedCompareExchange(&m_lInboundV6Observed, 0, 0) != 0)
+			verdict = m_pcpPolicyAuthorized && m_pcpTcp.active
 				? LayerPCP : LayerHighID;
-        m_eLayer = verdict;
+		if (mayPublish)
+			m_eLayer = verdict;
     }
+	if (!mayPublish)
+		return;
     if (!theApp.IsClosing())
         LIVE_LOG("NETV6", "layer settled: %s", GetLayerLabel());
 }
@@ -430,22 +755,238 @@ uint16 CFirewallProberV6::GetPcpExternalPort() const
 	return m_pcpTcp.externalPort;
 }
 
+natmap::IpAddress ToNatmapAddress(const CAddress& address)
+{
+	natmap::IpAddress result{};
+	if (address.GetType() == CAddress::IPv6) {
+		result.family = natmap::AddressFamily::IPv6;
+		memcpy(result.bytes.data(), address.Data(), 16);
+	} else if (address.GetType() == CAddress::IPv4) {
+		result.family = natmap::AddressFamily::IPv4;
+		memcpy(result.bytes.data(), address.Data(), 4);
+	}
+	return result;
+}
+
+natmap::Endpoint ToNatmapEndpoint(const CAddress& address, uint16 port)
+{
+	natmap::Endpoint result{};
+	result.address = ToNatmapAddress(address);
+	result.port = port;
+	result.source = natmap::EndpointSource::LocalInterface;
+	return result;
+}
+
+natmap::RouteBindingIdentity ToNativeV6Binding(
+	const CAddress& address, ULONG interfaceIndex,
+	natmap::NetworkOrigin origin = natmap::NetworkOrigin::Native)
+{
+	natmap::RouteBindingIdentity result{};
+	result.local_address = ToNatmapAddress(address);
+	result.interface_index = interfaceIndex;
+	result.family = natmap::AddressFamily::IPv6;
+	result.origin = origin;
+	result.interface_present = interfaceIndex != 0;
+	return result;
+}
+
+natmap::IpAddress NetworkForPrefix(natmap::IpAddress address,
+	uint8 prefixLength)
+{
+	const size_t length = address.family == natmap::AddressFamily::IPv4
+		? 4u : address.family == natmap::AddressFamily::IPv6 ? 16u : 0u;
+	if (length == 0 || prefixLength > length * 8)
+		return natmap::IpAddress{};
+	const size_t wholeBytes = prefixLength / 8;
+	const uint8 remainder = prefixLength % 8;
+	if (remainder != 0 && wholeBytes < length)
+		address.bytes[wholeBytes] &= static_cast<uint8>(
+			0xffu << (8u - remainder));
+	for (size_t index = wholeBytes + (remainder != 0 ? 1u : 0u);
+		index < length; ++index)
+		address.bytes[index] = 0;
+	return address;
+}
+
+natmap::CandidateObservation
+CFirewallProberV6::GetDirectRouteObservation(
+	uint64 currentGeneration, natmap::Transport transport) const
+{
+	if (currentGeneration == 0)
+		return natmap::CandidateObservation{};
+	CSingleLock l(&m_lock, TRUE);
+	if (m_detectedIP.GetType() != CAddress::IPv6
+		|| !m_detectedIP.IsPublicIP()
+		|| m_nPublishedTopologyGeneration != currentGeneration
+		|| m_nDetectedV6Generation != currentGeneration
+		|| m_nDetectedV6InterfaceIndex == 0)
+		return natmap::CandidateObservation{};
+
+	natmap::Ipv6ScopeInput input{};
+	input.current_endpoint = ToNatmapEndpoint(m_detectedIP,
+		transport == natmap::Transport::Tcp
+			? thePrefs.GetPort() : thePrefs.GetUDPPort());
+	input.transport = transport;
+	input.current_route_binding = ToNativeV6Binding(
+		m_detectedIP, m_nDetectedV6InterfaceIndex);
+	input.current_generation = currentGeneration;
+	input.now_monotonic_ms = MonotonicMilliseconds64();
+	const PcpLeaseV6& lease = transport == natmap::Transport::Tcp
+		? m_pcpTcp : m_pcpUdp;
+	if (lease.active) {
+		input.pinhole.present = true;
+		input.pinhole.owned_by_us = true;
+		input.pinhole.authorized = true;
+		input.pinhole.endpoint = ToNatmapEndpoint(
+			m_pcpClientV6, lease.internalPort);
+		input.pinhole.public_endpoint = ToNatmapEndpoint(
+			lease.externalIP, lease.externalPort);
+		input.pinhole.transport = transport;
+		input.pinhole.route_binding = ToNativeV6Binding(
+			m_pcpClientV6, m_pcpIfIndex);
+		input.pinhole.generation = m_nPcpV6Generation;
+		input.pinhole.expires_monotonic_ms =
+			lease.acquiredTick +
+			static_cast<uint64>(lease.lifetimeSeconds) * 1000;
+	}
+	if (::InterlockedCompareExchange(
+		const_cast<volatile LONG*>(&m_lInboundV6Observed), 0, 0) != 0
+		&& transport == natmap::Transport::Tcp) {
+		input.inbound.present = true;
+		input.inbound.endpoint = input.current_endpoint;
+		input.inbound.transport = transport;
+		input.inbound.route_binding = ToNativeV6Binding(
+			m_detectedIP, m_nInboundV6InterfaceIndex);
+		input.inbound.generation = m_nInboundV6Generation;
+		input.inbound.expires_monotonic_ms =
+			(std::numeric_limits<uint64>::max)();
+	}
+	return natmap::GlobalRouteObservation(
+		natmap::EvaluateIpv6ScopeAdmission(input));
+}
+
+bool CFirewallProberV6::ObserveSameLanRouteToPeer(
+	const CAddress& peerAddress, uint16 peerPort,
+	uint64 topologyGeneration)
+{
+	if (peerAddress.GetType() != CAddress::IPv6 || peerPort == 0 ||
+		topologyGeneration == 0 ||
+		topologyGeneration != GetPublishedTopologyGeneration())
+		return false;
+	CAddress localAddress;
+	ULONG interfaceIndex = 0;
+	uint8 prefixLength = 0;
+	if (!GetOnLinkRouteV6(peerAddress, localAddress, interfaceIndex,
+		prefixLength))
+		return false;
+	ReportSameLanV6Evidence(localAddress, thePrefs.GetPort(), peerAddress,
+		peerPort, interfaceIndex, prefixLength, topologyGeneration,
+		MonotonicMilliseconds64() + MIN2MS(2));
+	return CanUseSameLanEndpoint(peerAddress, peerPort, topologyGeneration);
+}
+
+void CFirewallProberV6::ReportSameLanV6Evidence(
+	const CAddress& localAddress, uint16 localPort,
+	const CAddress& peerAddress, uint16 peerPort, ULONG interfaceIndex,
+	uint8 prefixLength, uint64 topologyGeneration,
+	uint64 expiresMonotonicMs)
+{
+	natmap::Ipv6ScopeInput input{};
+	input.current_endpoint = ToNatmapEndpoint(localAddress, localPort);
+	input.transport = natmap::Transport::Tcp;
+	input.current_route_binding = ToNativeV6Binding(
+		localAddress, interfaceIndex, natmap::NetworkOrigin::Unknown);
+	input.current_generation = topologyGeneration;
+	input.now_monotonic_ms = MonotonicMilliseconds64();
+	input.requested_scope = natmap::Ipv6ScopeRequest::SameLan;
+	input.same_lan.present = true;
+	input.same_lan.positive_same_lan_domain = true;
+	input.same_lan.endpoint = input.current_endpoint;
+	input.same_lan.peer_endpoint = ToNatmapEndpoint(peerAddress, peerPort);
+	input.same_lan.peer_endpoint.source = natmap::EndpointSource::PeerProbe;
+	input.same_lan.transport = input.transport;
+	input.same_lan.route_binding = input.current_route_binding;
+	input.same_lan.generation = topologyGeneration;
+	input.same_lan.expires_monotonic_ms = expiresMonotonicMs;
+	input.same_lan.scope.enabled = true;
+	input.same_lan.scope.interface_index = interfaceIndex;
+	input.same_lan.scope.family = input.current_endpoint.address.family;
+	input.same_lan.scope.network = NetworkForPrefix(
+		input.current_endpoint.address, prefixLength);
+	input.same_lan.scope.prefix_length = prefixLength;
+
+	const natmap::Ipv6ScopeDecision admitted =
+		natmap::EvaluateIpv6ScopeAdmission(input);
+	CSingleLock l(&m_lock, TRUE);
+	if (natmap::CanUseSameLanEndpoint(admitted)) {
+		m_sameLanLocalEndpoint = input.current_endpoint;
+		m_sameLanEvidence = input.same_lan;
+	} else {
+		m_sameLanLocalEndpoint = natmap::Endpoint{};
+		m_sameLanEvidence = natmap::PrivateSameLanEvidence{};
+	}
+}
+
+bool CFirewallProberV6::CanUseSameLanEndpoint(
+	const CAddress& peerAddress, uint16 peerPort,
+	uint64 topologyGeneration, ULONG* interfaceIndex) const
+{
+	CSingleLock l(&m_lock, TRUE);
+	if (!m_sameLanEvidence.present)
+		return false;
+	const natmap::Endpoint requestedPeer = ToNatmapEndpoint(peerAddress, peerPort);
+	if (!m_sameLanEvidence.peer_endpoint.SameSocketEndpoint(requestedPeer)
+		|| m_sameLanEvidence.peer_endpoint.source != natmap::EndpointSource::PeerProbe)
+		return false; // A LAN proof belongs to one exact remote socket only.
+	natmap::Ipv6ScopeInput input{};
+	input.current_endpoint = m_sameLanLocalEndpoint;
+	input.transport = m_sameLanEvidence.transport;
+	input.current_route_binding = m_sameLanEvidence.route_binding;
+	input.current_generation = topologyGeneration;
+	input.now_monotonic_ms = MonotonicMilliseconds64();
+	input.requested_scope = natmap::Ipv6ScopeRequest::SameLan;
+	input.same_lan = m_sameLanEvidence;
+	// Keep the originally admitted peer evidence intact; replacing it here
+	// would let another port/address inherit a bounded LAN exception.
+	const bool usable = natmap::CanUseSameLanEndpoint(
+		natmap::EvaluateIpv6ScopeAdmission(input));
+	if (usable && interfaceIndex != NULL)
+		*interfaceIndex = m_sameLanEvidence.route_binding.interface_index;
+	return usable;
+}
+
 // v0.71 IPv6 Sprint 6 — record our public v6 address as observed by a peer.
 // See header. Thread-safe; an inbound-proven exact address always wins.
-void CFirewallProberV6::SetDetectedV6IP(const CAddress& addr)
+void CFirewallProberV6::SetDetectedV6IP(
+	const CAddress& addr, uint64 topologyGeneration)
 {
     // Only a genuine, public, native-v6 address is worth recording. FromSA (the
     // source of the answered CAddress) already folds v4-mapped v6 to IPv4, so a
     // CAddress::IPv6 here is native; the public-IP check rejects link-local /
     // ULA / loopback / Teredo etc. The receiver also validates, but re-check
     // here so no caller can poison the published value.
-    if (addr.GetType() != CAddress::IPv6 || !addr.IsPublicIP())
+    if (addr.GetType() != CAddress::IPv6 || !addr.IsPublicIP()
+		|| topologyGeneration == 0
+		|| topologyGeneration != GetPublishedTopologyGeneration())
         return;
+	CAddress gateway;
+	ULONG interfaceIndex = 0;
+	if (!GetDefaultGatewayV6(addr, gateway, interfaceIndex))
+		return;
+	if (interfaceIndex == 0)
+		return;
     {
         CSingleLock l(&m_lock, TRUE);
-        if (!m_detectedIP.IsNull())
-            return;             // first validated candidate wins — ignore later peers
+		if (m_nDetectedV6Generation > topologyGeneration)
+			return;
+        if (!m_detectedIP.IsNull()
+			&& m_nDetectedV6Generation == topologyGeneration)
+            return;             // first validated candidate wins per generation
         m_detectedIP = addr;
+		m_nDetectedV6Generation = topologyGeneration;
+		m_nDetectedV6InterfaceIndex = interfaceIndex;
+		if (m_nInboundV6Generation != topologyGeneration)
+			::InterlockedExchange(&m_lInboundV6Observed, 0);
     }
     if (!theApp.IsClosing())
         LIVE_LOG("NETV6", "detected public v6 = %hs (peer connect-back, egress OK, inbound unconfirmed)",
@@ -463,23 +1004,32 @@ bool CFirewallProberV6::CanAdvertiseModernKadSource()
 		return true;
 
 	CFirewallProberV6& prober = Instance();
-	const CAddress address = prober.GetDetectedV6IP();
+	const uint64 currentGeneration = prober.GetPublishedTopologyGeneration();
+	const natmap::CandidateObservation observation =
+		prober.GetDirectRouteObservation(
+			currentGeneration, natmap::Transport::Udp);
 	return thePrefs.IsIPv6Enabled()
-		&& address.GetType() == CAddress::IPv6 && address.IsPublicIP()
-		&& prober.HasInboundV6Observation();
+		&& observation.IsVerifiedFor(currentGeneration);
 }
 
-void CFirewallProberV6::DetectLocalPublicV6()
+void CFirewallProberV6::DetectLocalPublicV6(uint64 currentGeneration,
+	uint64 token)
 {
+	if (currentGeneration == 0)
+		return;
+	{
+		CSingleLock l(&m_lock, TRUE);
+		if (m_nPublishedTopologyGeneration != currentGeneration
+			|| m_nActiveProbeToken != token)
+			return;
+	}
     // A configured bind address is authoritative and avoids selecting a
     // privacy/temporary address when the host has several global addresses.
     const CString configured(thePrefs.GetIPv6BindAddr());
     if (!configured.IsEmpty() && configured != _T("::")) {
         CAddress addr(configured, false);
         if (addr.GetType() == CAddress::IPv6 && addr.IsPublicIP()) {
-            CSingleLock l(&m_lock, TRUE);
-            if (m_detectedIP.IsNull())
-                m_detectedIP = addr;
+			SetDetectedV6IP(addr, currentGeneration);
             return;
         }
     }
@@ -524,12 +1074,7 @@ void CFirewallProberV6::DetectLocalPublicV6()
                         randomSuffixFallback = addr;
                     continue;
                 }
-                {
-                    CSingleLock l(&m_lock, TRUE);
-                    if (!m_detectedIP.IsNull())
-                        return;
-                    m_detectedIP = addr;
-                }
+				SetDetectedV6IP(addr, currentGeneration);
                 if (!theApp.IsClosing())
                     LIVE_LOG("NETV6", "local public v6 candidate = %hs", addr.ToString().c_str());
                 return;
@@ -537,27 +1082,41 @@ void CFirewallProberV6::DetectLocalPublicV6()
         }
     }
     if (!randomSuffixFallback.IsNull()) {
-        {
-            CSingleLock l(&m_lock, TRUE);
-            if (!m_detectedIP.IsNull())
-                return;
-            m_detectedIP = randomSuffixFallback;
-        }
+		SetDetectedV6IP(randomSuffixFallback, currentGeneration);
         if (!theApp.IsClosing())
             LIVE_LOG("NETV6", "local public v6 privacy fallback = %hs",
                 randomSuffixFallback.ToString().c_str());
     }
 }
 
-void CFirewallProberV6::ReportInboundV6Reachable(const CAddress& localAddress)
+void CFirewallProberV6::ReportInboundV6Reachable(
+	const CAddress& localAddress, uint64 topologyGeneration)
 {
-	if (localAddress.GetType() != CAddress::IPv6 || !localAddress.IsPublicIP())
+	if (localAddress.GetType() != CAddress::IPv6
+		|| !localAddress.IsPublicIP() || topologyGeneration == 0)
 		return;
 	bool pcpConfirmed = false;
     {
         CSingleLock l(&m_lock, TRUE);
-		m_detectedIP = localAddress;
-		pcpConfirmed = m_pcpTcp.active;
+		// An accept can have waited in the listener backlog across a topology
+		// change. It may only confirm an address independently observed for the
+		// current generation; it can never relabel the accepted socket itself.
+		if (::InterlockedCompareExchange(&m_lShuttingDown, 0, 0) != 0
+			|| m_nPublishedTopologyGeneration != topologyGeneration
+			|| m_nDetectedV6Generation != topologyGeneration
+			|| m_detectedIP != localAddress
+			|| m_nDetectedV6InterfaceIndex == 0)
+			return;
+		m_nInboundV6Generation = topologyGeneration;
+		m_nInboundV6InterfaceIndex = m_nDetectedV6InterfaceIndex;
+		pcpConfirmed = m_pcpTcp.active
+			&& m_pcpPolicyAuthorized
+			&& m_pcpClientV6 == localAddress
+			&& m_pcpIfIndex == m_nDetectedV6InterfaceIndex
+			&& m_nPcpV6Generation == topologyGeneration
+			&& MonotonicMilliseconds64() <
+				m_pcpTcp.acquiredTick +
+					static_cast<uint64>(m_pcpTcp.lifetimeSeconds) * 1000;
 		m_pcpInboundConfirmed = pcpConfirmed;
         m_eLayer = pcpConfirmed ? LayerPCP : LayerHighID;
 		// Publish the proof while holding the same lock used by SetDetectedV6IP.
@@ -565,9 +1124,11 @@ void CFirewallProberV6::ReportInboundV6Reachable(const CAddress& localAddress)
 		// destination address of the accepted native-v6 connection.
 		::InterlockedExchange(&m_lInboundV6Observed, 1);
 		::InterlockedExchange(&m_lDetectedV6ExternallyObserved, 1);
+		// BeginShutdownFence synchronizes on m_lock, so it either observes and
+		// clears this CAP or this branch sees the shutdown flag before publish.
+		::InterlockedOr(reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+			(LONG)CAP_FORK_IPV6_DUALSTACK);
 	}
-    ::InterlockedOr(reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
-        (LONG)CAP_FORK_IPV6_DUALSTACK);
     if (!theApp.IsClosing())
         LIVE_LOG("NETV6", pcpConfirmed
 			? "native IPv6 inbound TCP observed; PCP pinhole confirmed"
@@ -601,30 +1162,92 @@ bool CFirewallProberV6::TryHighID()
     return ::InterlockedCompareExchange(&m_lInboundV6Observed, 0, 0) != 0;
 }
 
-bool CFirewallProberV6::TryPCP()
+void CFirewallProberV6::ScheduleDeferredPcpRetry()
+{
+	if (theApp.IsClosing()
+		|| ::InterlockedCompareExchange(&m_lShuttingDown, 0, 0) != 0)
+		return;
+	// The caller has atomically consumed the one pending-retry token.  Reset
+	// the one-shot cascade guard before starting its replacement incarnation.
+	::InterlockedExchange(&m_lProbeStarted, 0);
+	ProbeAsync();
+}
+
+bool CFirewallProberV6::TryClaimPcpOperationOrScheduleRetry()
+{
+	if (::InterlockedExchange(&m_lPcpOperationActive, 1) == 0)
+		return true;
+
+	// Publish demand first, then re-read the guard.  This closes the narrow
+	// owner-release-before-pending race: either the current owner sees demand,
+	// or this waiter consumes the demand and starts exactly one replacement.
+	::InterlockedExchange(&m_lPcpRetryPending, 1);
+	const bool stillActive =
+		::InterlockedCompareExchange(&m_lPcpOperationActive, 0, 0) != 0;
+	if (natmap::SelectPcpBusyRetryOwner(stillActive) ==
+		natmap::PcpBusyRetryOwner::WaitingWorker
+		&& ::InterlockedCompareExchange(&m_lPcpRetryPending, 0, 1) == 1)
+		ScheduleDeferredPcpRetry();
+	return false;
+}
+
+bool CFirewallProberV6::ReleasePcpOperationAndRetry()
+{
+	if (::InterlockedExchange(&m_lPcpOperationActive, 0) == 0)
+		return false;
+	// Exactly one caller consumes the retry latch.  A waiting worker can do so
+	// only after observing the released guard; otherwise the owner does it here.
+	if (::InterlockedCompareExchange(&m_lPcpRetryPending, 0, 1) == 1) {
+		ScheduleDeferredPcpRetry();
+		return true;
+	}
+	return false;
+}
+
+natmap::PcpCascadeOutcome CFirewallProberV6::TryPCP(uint64 operationGeneration, uint64 token)
 {
 	if (!CPreferences::IsIPv6Enabled()
-		|| ::InterlockedExchange(&m_lPcpOperationActive, 1) != 0)
-		return false;
+		|| ::InterlockedCompareExchange(&m_lShuttingDown, 0, 0) != 0)
+		return natmap::PcpCascadeOutcome::Failed;
+	if (!TryClaimPcpOperationOrScheduleRetry())
+		return natmap::PcpCascadeOutcome::Deferred;
+	if (operationGeneration == 0) {
+		ReleasePcpOperationAndRetry();
+		return natmap::PcpCascadeOutcome::Failed;
+	}
 
 	CAddress clientAddress;
 	{
 		CSingleLock l(&m_lock, TRUE);
+		if (m_nPublishedTopologyGeneration != operationGeneration
+			|| m_nActiveProbeToken != token) {
+			ReleasePcpOperationAndRetry();
+			return natmap::PcpCascadeOutcome::Failed;
+		}
 		clientAddress = m_detectedIP;
 	}
 	if (clientAddress.GetType() != CAddress::IPv6
 		|| !clientAddress.IsPublicIP()) {
-		::InterlockedExchange(&m_lPcpOperationActive, 0);
+		ReleasePcpOperationAndRetry();
 		LIVE_LOG("NETV6", "PCP-v6 skipped: no stable public client address");
-		return false;
+		return natmap::PcpCascadeOutcome::Failed;
 	}
 
 	CAddress gateway;
 	ULONG interfaceIndex = 0;
 	if (!GetDefaultGatewayV6(clientAddress, gateway, interfaceIndex)) {
-		::InterlockedExchange(&m_lPcpOperationActive, 0);
+		ReleasePcpOperationAndRetry();
 		LIVE_LOG("NETV6", "PCP-v6 skipped: no IPv6 default gateway");
-		return false;
+		return natmap::PcpCascadeOutcome::Failed;
+	}
+	{
+		CSingleLock l(&m_lock, TRUE);
+		if (m_nDetectedV6Generation != operationGeneration ||
+			m_detectedIP != clientAddress ||
+			m_nDetectedV6InterfaceIndex != interfaceIndex) {
+			ReleasePcpOperationAndRetry();
+			return natmap::PcpCascadeOutcome::Failed;
+		}
 	}
 
 	PcpLeaseV6 tcp;
@@ -635,35 +1258,71 @@ bool CFirewallProberV6::TryPCP()
 	udp.internalPort = thePrefs.GetUDPPort();
 	if (tcp.internalPort == 0 || !GeneratePcpNonce(tcp.nonce)
 		|| (udp.internalPort != 0 && !GeneratePcpNonce(udp.nonce))) {
-		::InterlockedExchange(&m_lPcpOperationActive, 0);
+		ReleasePcpOperationAndRetry();
 		LIVE_LOG("NETV6", "PCP-v6 skipped: invalid port or nonce generation failed");
-		return false;
+		return natmap::PcpCascadeOutcome::Failed;
 	}
 
 	natmap::PcpMapResponse tcpResponse;
-	const bool tcpMapped = ExchangePcpMapV6(gateway, interfaceIndex,
+	const PcpMapExchangeResult tcpMapResult = ExchangePcpMapV6(gateway, interfaceIndex,
 		clientAddress, tcp.internalPort, tcp.internalPort, CAddress(),
 		tcp.protocol, kPcpRequestedLifetime, tcp.nonce, tcpResponse, false);
+	const bool tcpMapped = PcpMapCreated(tcpMapResult);
 	if (!tcpMapped) {
-		::InterlockedExchange(&m_lPcpOperationActive, 0);
-		LIVE_LOG("NETV6", "PCP-v6 TCP MAP failed result=%u",
+		if (natmap::MustCleanupPcpNonce(
+			ToPcpCleanupDisposition(tcpMapResult))) {
+			natmap::PcpMapResponse ignored;
+			ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+				tcp.internalPort, 0, CAddress(), tcp.protocol, 0, tcp.nonce,
+				ignored, true);
+		}
+		ReleasePcpOperationAndRetry();
+		LIVE_LOG("NETV6", "PCP-v6 TCP MAP failed/withdrawn received=%d result=%u",
+			PcpMapResponseReceived(tcpMapResult) ? 1 : 0,
 			static_cast<unsigned>(tcpResponse.result));
-		return false;
+		return natmap::PcpCascadeOutcome::Failed;
 	}
 
 	natmap::PcpMapResponse udpResponse;
 	bool udpMapped = true;
+	PcpMapExchangeResult udpMapResult = PcpMapExchangeResult::RequestNotSent;
 	if (udp.internalPort != 0) {
-		udpMapped = ExchangePcpMapV6(gateway, interfaceIndex,
+		udpMapResult = ExchangePcpMapV6(gateway, interfaceIndex,
 			clientAddress, udp.internalPort, udp.internalPort, CAddress(),
 			udp.protocol, kPcpRequestedLifetime, udp.nonce, udpResponse, false);
+		udpMapped = PcpMapCreated(udpMapResult);
 	}
 	if (!udpMapped && udp.internalPort != 0)
+	{
+		if (natmap::MustCleanupPcpNonce(
+			ToPcpCleanupDisposition(udpMapResult))) {
+			natmap::PcpMapResponse ignored;
+			ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+				udp.internalPort, 0, CAddress(), udp.protocol, 0, udp.nonce,
+				ignored, true);
+		}
 		LIVE_LOG("NETV6",
 			"PCP-v6 UDP MAP unavailable result=%u; keeping TCP mapping",
 			static_cast<unsigned>(udpResponse.result));
+	}
+	if (udpMapped && udp.internalPort != 0
+		&& !ArePcpPairEpochsCoherent(tcpResponse.epoch, udpResponse.epoch)) {
+		// Both MAPs may have succeeded on the wire, but they do not describe
+		// one continuous mapper lifetime. Delete the owned nonces and force a
+		// fresh generation rather than publishing a mixed-epoch pair.
+		natmap::PcpMapResponse ignored;
+		ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+			tcp.internalPort, 0, CAddress(), tcp.protocol, 0, tcp.nonce,
+			ignored, true);
+		ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+			udp.internalPort, 0, CAddress(), udp.protocol, 0, udp.nonce,
+			ignored, true);
+		ReleasePcpOperationAndRetry();
+		LIVE_LOG("NETV6", "PCP-v6 MAP pair rejected: mapper epoch discontinuity");
+		return natmap::PcpCascadeOutcome::Failed;
+	}
 
-	const DWORD acquired = GetTickCount();
+	const uint64 acquired = MonotonicMilliseconds64();
 	tcp.active = true;
 	tcp.externalPort = tcpResponse.external_port;
 	tcp.externalIP = CAddress(tcpResponse.external_ip.data());
@@ -671,6 +1330,20 @@ bool CFirewallProberV6::TryPCP()
 		tcpResponse.lifetime_seconds);
 	tcp.mapperEpoch = tcpResponse.epoch;
 	tcp.acquiredTick = acquired;
+	tcp.ownerToken = token;
+	if (tcp.lifetimeSeconds == 0) {
+		natmap::PcpMapResponse ignored;
+		ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+			tcp.internalPort, 0, CAddress(), tcp.protocol, 0, tcp.nonce,
+			ignored, true);
+		if (udpMapped && udp.internalPort != 0)
+			ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+				udp.internalPort, 0, CAddress(), udp.protocol, 0, udp.nonce,
+				ignored, true);
+		ReleasePcpOperationAndRetry();
+		LIVE_LOG("NETV6", "PCP-v6 MAP granted zero TCP lifetime; pinhole withdrawn");
+		return natmap::PcpCascadeOutcome::Failed;
+	}
 	if (udp.internalPort != 0) {
 		udp.active = udpMapped;
 		if (udpMapped) {
@@ -679,8 +1352,35 @@ bool CFirewallProberV6::TryPCP()
 			udp.lifetimeSeconds = EffectivePcpLifetime(
 				udpResponse.lifetime_seconds);
 			udp.mapperEpoch = udpResponse.epoch;
+			udp.active = udp.lifetimeSeconds != 0;
 		}
 		udp.acquiredTick = acquired;
+		udp.ownerToken = token;
+	}
+	bool operationCurrent = false;
+	{
+		CSingleLock l(&m_lock, TRUE);
+		operationCurrent = !theApp.IsClosing()
+			&& ::InterlockedCompareExchange(&m_lShuttingDown, 0, 0) == 0
+			&& m_nPublishedTopologyGeneration == operationGeneration
+			&& m_nActiveProbeToken == token
+			&& m_nDetectedV6Generation == operationGeneration
+			&& m_detectedIP == clientAddress
+			&& m_nDetectedV6InterfaceIndex == interfaceIndex;
+	}
+	if (!operationCurrent) {
+		natmap::PcpMapResponse ignored;
+		ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+			tcp.internalPort, 0, CAddress(), tcp.protocol, 0, tcp.nonce,
+			ignored, true);
+		if (udp.active || natmap::MustCleanupPcpNonce(
+			ToPcpCleanupDisposition(udpMapResult)))
+			ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+				udp.internalPort, 0, CAddress(), udp.protocol, 0, udp.nonce,
+				ignored, true);
+		ReleasePcpOperationAndRetry();
+		LIVE_LOG("NETV6", "discarded stale PCP-v6 MAP result after topology change");
+		return natmap::PcpCascadeOutcome::Failed;
 	}
 	{
 		CSingleLock l(&m_lock, TRUE);
@@ -689,58 +1389,147 @@ bool CFirewallProberV6::TryPCP()
 		m_pcpIfIndex = interfaceIndex;
 		m_pcpTcp = tcp;
 		m_pcpUdp = udp;
+		m_nPcpV6Generation = operationGeneration;
 		m_pcpRefreshFailures = 0;
+		m_pcpPolicyAuthorized = false;
 		m_pcpInboundConfirmed = false;
 	}
-	::InterlockedExchange(&m_lPcpOperationActive, 0);
+	const natmap::CandidateObservation pinholeObservation =
+		GetDirectRouteObservation(operationGeneration, natmap::Transport::Tcp);
+	bool policyAuthorized =
+		pinholeObservation.IsVerifiedFor(operationGeneration);
+	bool retireOwnedLease = false;
+	{
+		CSingleLock l(&m_lock, TRUE);
+		const natmap::PcpLeaseOwnerIdentity expectedOwner = {
+			operationGeneration, token, tcp.nonce};
+		const natmap::PcpLeaseOwnerIdentity currentOwner = {
+			m_nPcpV6Generation, m_pcpTcp.ownerToken, m_pcpTcp.nonce};
+		if (theApp.IsClosing()
+			|| ::InterlockedCompareExchange(&m_lShuttingDown, 0, 0) != 0
+			|| m_nPublishedTopologyGeneration != operationGeneration
+			|| m_nActiveProbeToken != token
+			|| m_nPcpV6Generation != operationGeneration
+			|| !m_pcpTcp.active || m_pcpTcp.nonce != tcp.nonce)
+			policyAuthorized = false;
+		m_pcpPolicyAuthorized = policyAuthorized;
+		if (policyAuthorized) {
+			m_eLayer = LayerPCP;
+			// This update shares the shutdown/lease lock. BeginShutdownFence()
+			// synchronizes on this same lock and clears any already-published cap.
+			::InterlockedOr(reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+				static_cast<LONG>(CAP_FORK_IPV6_DUALSTACK));
+		} else if (natmap::IsCurrentPcpLeaseOwner(expectedOwner, currentOwner)) {
+			// This worker may retire only the exact generation/token/nonce it
+			// installed.  A topology/shutdown UI path is the sole unconditional
+			// cleanup owner.
+			m_pcpTcp.active = false;
+			m_pcpUdp.active = false;
+			m_nPcpV6Generation = 0;
+			m_pcpPolicyAuthorized = false;
+			m_pcpInboundConfirmed = false;
+			::InterlockedAnd(reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+				~static_cast<LONG>(CAP_FORK_IPV6_DUALSTACK));
+			retireOwnedLease = true;
+		}
+	}
 
+	if (!policyAuthorized) {
+		// A valid MAP that fails endpoint/binding policy is retired only if this
+		// exact worker still owns its lease incarnation.
+		if (retireOwnedLease) {
+			natmap::PcpMapResponse ignored;
+			ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+				tcp.internalPort, 0, CAddress(), tcp.protocol, 0, tcp.nonce,
+				ignored, true);
+			if (udp.active || natmap::MustCleanupPcpNonce(
+				ToPcpCleanupDisposition(udpMapResult)))
+				ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+					udp.internalPort, 0, CAddress(), udp.protocol, 0, udp.nonce,
+					ignored, true);
+		}
+		ReleasePcpOperationAndRetry();
+		LIVE_LOG("NETV6", "PCP-v6 MAP rejected by exact pinhole policy");
+		return natmap::PcpCascadeOutcome::Failed;
+	}
+	ReleasePcpOperationAndRetry();
 	LIVE_LOG("NETV6",
-		"PCP-v6 MAP active gateway=%hs%%%lu TCP=%u->%u UDP=%u->%u lease=%us; inbound unconfirmed",
+		"PCP-v6 exact pinhole authorized gateway=%hs%%%lu TCP=%u->%u UDP=%u->%u lease=%us; inbound unconfirmed",
 		gateway.ToString().c_str(), interfaceIndex, tcp.internalPort,
 		tcp.externalPort, udp.internalPort, udp.externalPort,
 		tcp.lifetimeSeconds);
-	return ConfirmPcpInboundV6();
-}
-
-bool CFirewallProberV6::ConfirmPcpInboundV6()
-{
-	const bool inbound = ::InterlockedCompareExchange(
-		&m_lInboundV6Observed, 0, 0) != 0;
-	if (inbound) {
-		CSingleLock l(&m_lock, TRUE);
-		m_pcpInboundConfirmed = true;
-		return true;
-	}
-	LIVE_LOG("NETV6",
-		"PCP-v6 MAP accepted; waiting for native inbound observation before promoting reachability");
-	return false;
+	return natmap::PcpCascadeOutcome::Mapped;
 }
 
 void CFirewallProberV6::OnTimerTick()
 {
 	if (!CPreferences::IsIPv6Enabled() || theApp.IsClosing())
 		return;
-
-	bool renewalDue = false;
-	const DWORD now = GetTickCount();
+	uint64 publishedGeneration = 0;
+	uint64 appliedGeneration = 0;
 	{
 		CSingleLock l(&m_lock, TRUE);
-		if (m_pcpTcp.active && m_pcpTcp.lifetimeSeconds != 0) {
-			const DWORD renewAfter = static_cast<DWORD>(
-				static_cast<uint64>(m_pcpTcp.lifetimeSeconds) * 1000 / 2);
+		publishedGeneration = m_nPublishedTopologyGeneration;
+		appliedGeneration = m_nAppliedTopologyGeneration;
+	}
+	if (publishedGeneration != 0 && publishedGeneration != appliedGeneration) {
+		// Fallback for a route notification delivered while the UI transition
+		// handler was unavailable. It cannot advance the manager generation:
+		// it applies exactly the generation already published by the UI.
+		OnTopologyGenerationChanged(publishedGeneration);
+		return;
+	}
+
+	bool renewalDue = false;
+	bool pinholeExpired = false;
+	const uint64 now = MonotonicMilliseconds64();
+	{
+		CSingleLock l(&m_lock, TRUE);
+		const uint64 nowMonotonic = now;
+		if (m_pcpTcp.active
+			&& nowMonotonic >= static_cast<uint64>(m_pcpTcp.acquiredTick) +
+				static_cast<uint64>(m_pcpTcp.lifetimeSeconds) * 1000) {
+			m_pcpTcp.active = false;
+			m_pcpUdp.active = false;
+			m_nPcpV6Generation = 0;
+			m_pcpPolicyAuthorized = false;
+			m_pcpInboundConfirmed = false;
+			const bool independentInbound =
+				::InterlockedCompareExchange(&m_lInboundV6Observed, 0, 0) != 0
+				&& m_nInboundV6Generation == m_nDetectedV6Generation
+				&& m_nInboundV6InterfaceIndex == m_nDetectedV6InterfaceIndex
+				&& m_nInboundV6Generation != 0;
+			if (m_eLayer == LayerPCP)
+				m_eLayer = independentInbound ? LayerHighID : LayerUnreachable;
+			pinholeExpired = true;
+			if (!independentInbound) {
+				::InterlockedExchange(&m_lInboundV6Observed, 0);
+			::InterlockedAnd(
+				reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+				~static_cast<LONG>(CAP_FORK_IPV6_DUALSTACK));
+			}
+		}
+		if (!pinholeExpired && m_pcpTcp.active
+			&& m_pcpTcp.lifetimeSeconds != 0) {
+			const uint64 renewAfter =
+				static_cast<uint64>(m_pcpTcp.lifetimeSeconds) * 1000 / 2;
 			renewalDue = now - m_pcpTcp.acquiredTick >= renewAfter;
 		}
-		if (!renewalDue && m_pcpUdp.active
+		if (!pinholeExpired && !renewalDue && m_pcpUdp.active
 			&& m_pcpUdp.lifetimeSeconds != 0) {
-			const DWORD renewAfter = static_cast<DWORD>(
-				static_cast<uint64>(m_pcpUdp.lifetimeSeconds) * 1000 / 2);
+			const uint64 renewAfter =
+				static_cast<uint64>(m_pcpUdp.lifetimeSeconds) * 1000 / 2;
 			renewalDue = now - m_pcpUdp.acquiredTick >= renewAfter;
 		}
 		// UDP is useful for Kad but not required to make the TCP listener
 		// reachable. Retry a failed optional UDP MAP at a low rate.
-		if (!renewalDue && m_pcpTcp.active && !m_pcpUdp.active
+		if (!pinholeExpired && !renewalDue && m_pcpTcp.active && !m_pcpUdp.active
 			&& m_pcpUdp.internalPort != 0)
 			renewalDue = now - m_pcpUdp.acquiredTick >= MIN2MS(5);
+	}
+	if (pinholeExpired) {
+		LIVE_LOG("NETV6", "PCP-v6 pinhole expired; direct IPv6 withdrawn");
+		return;
 	}
 	if (!renewalDue
 		|| ::InterlockedExchange(&m_lPcpOperationActive, 1) != 0)
@@ -749,7 +1538,7 @@ void CFirewallProberV6::OnTimerTick()
 	CWinThread* thread = AfxBeginThread(PcpRefreshThreadProc, this,
 		THREAD_PRIORITY_BELOW_NORMAL);
 	if (thread == NULL) {
-		::InterlockedExchange(&m_lPcpOperationActive, 0);
+		ReleasePcpOperationAndRetry();
 		LIVE_LOG("NETV6", "PCP-v6 refresh thread creation failed");
 	}
 }
@@ -766,6 +1555,7 @@ void CFirewallProberV6::RefreshPcpMappings()
 	CAddress gateway;
 	CAddress clientAddress;
 	ULONG interfaceIndex = 0;
+	uint64 generation = 0;
 	PcpLeaseV6 tcp;
 	PcpLeaseV6 udp;
 	{
@@ -773,83 +1563,186 @@ void CFirewallProberV6::RefreshPcpMappings()
 		gateway = m_pcpGatewayV6;
 		clientAddress = m_pcpClientV6;
 		interfaceIndex = m_pcpIfIndex;
+		generation = m_nPcpV6Generation;
 		tcp = m_pcpTcp;
 		udp = m_pcpUdp;
 	}
 
 	natmap::PcpMapResponse tcpResponse;
-	const bool tcpSucceeded = tcp.active && ExchangePcpMapV6(gateway, interfaceIndex,
+	const PcpMapExchangeResult tcpRefreshResult = tcp.active
+		? ExchangePcpMapV6(gateway, interfaceIndex,
 		clientAddress, tcp.internalPort, tcp.externalPort, tcp.externalIP,
-		tcp.protocol, kPcpRequestedLifetime, tcp.nonce, tcpResponse, false);
+		tcp.protocol, kPcpRequestedLifetime, tcp.nonce, tcpResponse, false)
+		: PcpMapExchangeResult::RequestNotSent;
+	const bool tcpSucceeded = PcpMapCreated(tcpRefreshResult);
+	const bool tcpRefreshRequiresImmediateRetirement =
+		natmap::MustCleanupPcpNonce(
+			ToPcpCleanupDisposition(tcpRefreshResult))
+		&& !tcpSucceeded;
 	natmap::PcpMapResponse udpResponse;
 	bool udpSucceeded = true;
+	PcpMapExchangeResult udpRefreshResult = PcpMapExchangeResult::RequestNotSent;
 	if (udp.internalPort != 0) {
-		udpSucceeded = ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+		udpRefreshResult = ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
 			udp.internalPort, udp.externalPort, udp.externalIP, udp.protocol,
 			kPcpRequestedLifetime, udp.nonce, udpResponse, false);
+		udpSucceeded = PcpMapCreated(udpRefreshResult);
 	}
 	const bool tcpEndpointChanged = tcpSucceeded
 		&& (tcp.externalPort != tcpResponse.external_port
 			|| memcmp(tcp.externalIP.Data(), tcpResponse.external_ip.data(),
 				tcpResponse.external_ip.size()) != 0);
+	const bool epochDiscontinuity =
+		(tcpSucceeded && IsPcpEpochDiscontinuity(
+			tcp.mapperEpoch, tcpResponse.epoch))
+		|| (udpSucceeded && udp.active && IsPcpEpochDiscontinuity(
+			udp.mapperEpoch, udpResponse.epoch))
+		|| (tcpSucceeded && udpSucceeded && udp.internalPort != 0
+			&& !ArePcpPairEpochsCoherent(tcpResponse.epoch,
+				udpResponse.epoch));
+	const bool tcpLifetimeZero = tcpRefreshResult == PcpMapExchangeResult::ZeroLifetime;
+	const bool udpLifetimeZero = udp.internalPort != 0
+		&& udpSucceeded && EffectivePcpLifetime(udpResponse.lifetime_seconds) == 0;
 
 	bool restartProbe = false;
+	bool discardRefreshResult = false;
+	bool retirePinhole = false;
+	bool preservedTcpRefreshResult = false;
+	bool preservedUdpRefreshResult = false;
 	{
 		CSingleLock l(&m_lock, TRUE);
-		// Shutdown/delete may have invalidated the snapshot while I/O ran.
-		if (!m_pcpTcp.active || m_pcpTcp.nonce != tcp.nonce) {
-			::InterlockedExchange(&m_lPcpOperationActive, 0);
-			return;
-		}
-		const DWORD acquired = GetTickCount();
-		if (tcpSucceeded) {
-			if (tcpEndpointChanged && m_pcpInboundConfirmed) {
-				m_pcpInboundConfirmed = false;
-				if (m_eLayer == LayerPCP)
-					m_eLayer = LayerUnreachable;
-				::InterlockedExchange(&m_lInboundV6Observed, 0);
-				::InterlockedAnd(
-					reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
-					~static_cast<LONG>(CAP_FORK_IPV6_DUALSTACK));
+		// No response obtained while I/O ran may overwrite a new topology,
+		// address, gateway, interface or nonce incarnation.
+		const bool snapshotCurrent = m_pcpTcp.active
+			&& natmap::IsCurrentPcpLeaseOwner(
+				natmap::PcpLeaseOwnerIdentity{generation, tcp.ownerToken, tcp.nonce},
+				natmap::PcpLeaseOwnerIdentity{m_nPcpV6Generation,
+					m_pcpTcp.ownerToken, m_pcpTcp.nonce})
+			&& m_nPcpV6Generation == generation
+			&& m_nDetectedV6Generation == generation
+			&& m_detectedIP == clientAddress
+			&& m_nDetectedV6InterfaceIndex == interfaceIndex
+			&& m_pcpGatewayV6 == gateway && m_pcpClientV6 == clientAddress
+			&& m_pcpIfIndex == interfaceIndex
+			&& !theApp.IsClosing()
+			&& m_nPublishedTopologyGeneration == generation;
+		if (!snapshotCurrent) {
+			discardRefreshResult = true;
+			// Retire the snapshot generation atomically. If a newer generation
+			// has already installed its own lease, do not touch that new owner.
+			if (m_nPcpV6Generation == generation) {
+				retirePinhole = true;
+				restartProbe = !theApp.IsClosing();
 			}
+		} else if (epochDiscontinuity || tcpEndpointChanged || tcpLifetimeZero
+			|| tcpRefreshRequiresImmediateRetirement) {
+			retirePinhole = true;
+			restartProbe = true;
+		} else if (tcpSucceeded) {
+			const uint64 acquired = MonotonicMilliseconds64();
 			m_pcpTcp.externalPort = tcpResponse.external_port;
 			m_pcpTcp.externalIP = CAddress(tcpResponse.external_ip.data());
 			m_pcpTcp.lifetimeSeconds = EffectivePcpLifetime(
 				tcpResponse.lifetime_seconds);
 			m_pcpTcp.mapperEpoch = tcpResponse.epoch;
 			m_pcpTcp.acquiredTick = acquired;
+			preservedTcpRefreshResult = true;
 			m_pcpRefreshFailures = 0;
-		} else {
-			++m_pcpRefreshFailures;
-			if (m_pcpRefreshFailures >= 3) {
-				m_pcpTcp.active = false;
+			if (udpSucceeded && m_pcpUdp.internalPort != 0) {
+				m_pcpUdp.active = !udpLifetimeZero;
+				m_pcpUdp.externalPort = udpResponse.external_port;
+				m_pcpUdp.externalIP = CAddress(udpResponse.external_ip.data());
+				m_pcpUdp.lifetimeSeconds = EffectivePcpLifetime(
+					udpResponse.lifetime_seconds);
+				m_pcpUdp.mapperEpoch = udpResponse.epoch;
+				m_pcpUdp.acquiredTick = acquired;
+				preservedUdpRefreshResult = m_pcpUdp.active;
+			} else if (m_pcpUdp.internalPort != 0) {
 				m_pcpUdp.active = false;
-				if (m_pcpInboundConfirmed) {
-					m_pcpInboundConfirmed = false;
-					::InterlockedExchange(&m_lInboundV6Observed, 0);
-					::InterlockedAnd(
-						reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
-						~static_cast<LONG>(CAP_FORK_IPV6_DUALSTACK));
-				}
-				if (m_eLayer == LayerPCP)
-					m_eLayer = LayerUnreachable;
-				restartProbe = true;
+				m_pcpUdp.acquiredTick = acquired;
+			}
+		} else if (++m_pcpRefreshFailures >= 3) {
+			retirePinhole = true;
+			restartProbe = true;
+		}
+
+		if (retirePinhole) {
+			m_pcpTcp.active = false;
+			m_pcpUdp.active = false;
+			m_nPcpV6Generation = 0;
+			m_pcpPolicyAuthorized = false;
+			m_pcpInboundConfirmed = false;
+			const bool independentInbound =
+				::InterlockedCompareExchange(&m_lInboundV6Observed, 0, 0) != 0
+				&& m_nInboundV6Generation == m_nDetectedV6Generation
+				&& m_nInboundV6InterfaceIndex == m_nDetectedV6InterfaceIndex
+				&& m_nInboundV6Generation != 0;
+			if (m_eLayer == LayerPCP)
+				m_eLayer = independentInbound ? LayerHighID : LayerUnreachable;
+			if (!independentInbound) {
+				::InterlockedExchange(&m_lInboundV6Observed, 0);
+				::InterlockedAnd(
+					reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
+					~static_cast<LONG>(CAP_FORK_IPV6_DUALSTACK));
 			}
 		}
-		if (!restartProbe && udpSucceeded && m_pcpUdp.internalPort != 0) {
-			m_pcpUdp.active = true;
-			m_pcpUdp.externalPort = udpResponse.external_port;
-			m_pcpUdp.externalIP = CAddress(udpResponse.external_ip.data());
-			m_pcpUdp.lifetimeSeconds = EffectivePcpLifetime(
-				udpResponse.lifetime_seconds);
-			m_pcpUdp.mapperEpoch = udpResponse.epoch;
-			m_pcpUdp.acquiredTick = acquired;
-		} else if (!restartProbe && tcpSucceeded
-			&& m_pcpUdp.internalPort != 0) {
-			m_pcpUdp.acquiredTick = acquired;
-		}
 	}
-	::InterlockedExchange(&m_lPcpOperationActive, 0);
+	const bool cleanupTcpRefreshNonce = tcp.internalPort != 0
+		&& natmap::MustCleanupPcpNonce(
+			ToPcpCleanupDisposition(tcpRefreshResult))
+		&& !preservedTcpRefreshResult;
+	const bool cleanupUdpRefreshNonce = udp.internalPort != 0
+		&& natmap::MustCleanupPcpNonce(
+			ToPcpCleanupDisposition(udpRefreshResult))
+		&& !preservedUdpRefreshResult;
+	if (discardRefreshResult || retirePinhole) {
+		// A stale/failed response can still have created our nonce-owned MAP.
+		// Best-effort DELETE prevents it from becoming a silent orphan.
+		natmap::PcpMapResponse ignored;
+		if (tcp.internalPort != 0
+			&& (cleanupTcpRefreshNonce
+				|| ((retirePinhole || tcpSucceeded) && tcp.active)))
+			ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+				tcp.internalPort, 0, CAddress(), tcp.protocol, 0, tcp.nonce,
+				ignored, true);
+		if (udp.internalPort != 0
+			&& (cleanupUdpRefreshNonce
+				|| ((retirePinhole || udpSucceeded) && udp.active)))
+			ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+				udp.internalPort, 0, CAddress(), udp.protocol, 0, udp.nonce,
+				ignored, true);
+		const bool deferredRetryScheduled = ReleasePcpOperationAndRetry();
+		LIVE_LOG("NETV6", discardRefreshResult
+			? "discarded stale PCP-v6 refresh result"
+			: (epochDiscontinuity
+				? "PCP-v6 mapper epoch discontinuity; pinhole withdrawn"
+				: (tcpLifetimeZero
+					? "PCP-v6 refresh granted zero TCP lifetime; pinhole withdrawn"
+					: "PCP-v6 pinhole withdrawn after endpoint change/failures")));
+		if (restartProbe && !deferredRetryScheduled && !theApp.IsClosing()) {
+			::InterlockedExchange(&m_lProbeStarted, 0);
+			ProbeAsync();
+		}
+		return;
+	}
+	if (cleanupTcpRefreshNonce) {
+		// A TCP MAP that was sent but cannot be preserved must not outlive the
+		// local lease state. The refresh guard still owns this exact nonce.
+		natmap::PcpMapResponse ignored;
+		ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+			tcp.internalPort, 0, CAddress(), tcp.protocol, 0, tcp.nonce,
+			ignored, true);
+	}
+	if (cleanupUdpRefreshNonce) {
+		// This refresh owns the operation guard and therefore its snapshot nonce.
+		// The response was not preserved in the current lease (including an
+		// ambiguous sent/no-response case), so retire that exact nonce now.
+		natmap::PcpMapResponse ignored;
+		ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
+			udp.internalPort, 0, CAddress(), udp.protocol, 0, udp.nonce,
+			ignored, true);
+	}
+	const bool deferredRetryScheduled = ReleasePcpOperationAndRetry();
 
 	if (tcpSucceeded)
 		LIVE_LOG("NETV6", tcpEndpointChanged
@@ -859,7 +1752,7 @@ void CFirewallProberV6::RefreshPcpMappings()
 				: "PCP-v6 TCP refreshed; optional UDP MAP still unavailable"));
 	else
 		LIVE_LOG("NETV6", "PCP-v6 TCP lease refresh failed");
-	if (restartProbe && !theApp.IsClosing()) {
+	if (restartProbe && !deferredRetryScheduled && !theApp.IsClosing()) {
 		::InterlockedExchange(&m_lProbeStarted, 0);
 		ProbeAsync();
 	}
@@ -867,6 +1760,12 @@ void CFirewallProberV6::RefreshPcpMappings()
 
 void CFirewallProberV6::DeletePcpMappingsBestEffort()
 {
+	// UI cleanup is a terminal consumer of retry demand.  It clears the latch
+	// even when a worker owns the guard, so that worker cannot start a duplicate
+	// probe after shutdown; OnTopologyGenerationChanged owns the one explicit
+	// replacement probe after this method returns.
+	ASSERT(!natmap::UiPcpCleanupMayScheduleRetry());
+	::InterlockedExchange(&m_lPcpRetryPending, 0);
 	CAddress gateway;
 	CAddress clientAddress;
 	ULONG interfaceIndex = 0;
@@ -883,15 +1782,22 @@ void CFirewallProberV6::DeletePcpMappingsBestEffort()
 		udp = m_pcpUdp;
 		m_pcpTcp.active = false;
 		m_pcpUdp.active = false;
-		if (m_pcpInboundConfirmed) {
-			m_pcpInboundConfirmed = false;
+		m_nPcpV6Generation = 0;
+		m_pcpPolicyAuthorized = false;
+		m_pcpInboundConfirmed = false;
+		const bool independentInbound =
+			::InterlockedCompareExchange(&m_lInboundV6Observed, 0, 0) != 0
+			&& m_nInboundV6Generation == m_nDetectedV6Generation
+			&& m_nInboundV6InterfaceIndex == m_nDetectedV6InterfaceIndex
+			&& m_nInboundV6Generation != 0;
+		if (!independentInbound) {
 			::InterlockedExchange(&m_lInboundV6Observed, 0);
 			::InterlockedAnd(
 				reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime),
 				~static_cast<LONG>(CAP_FORK_IPV6_DUALSTACK));
 		}
 		if (m_eLayer == LayerPCP)
-			m_eLayer = LayerUnreachable;
+			m_eLayer = independentInbound ? LayerHighID : LayerUnreachable;
 	}
 
 	const bool ownsOperationGuard =
@@ -905,8 +1811,12 @@ void CFirewallProberV6::DeletePcpMappingsBestEffort()
 		ExchangePcpMapV6(gateway, interfaceIndex, clientAddress,
 			udp.internalPort, 0, CAddress(), udp.protocol, 0, udp.nonce,
 			ignored, true);
-	if (ownsOperationGuard)
+	if (ownsOperationGuard) {
+		// Keep the latch clear through guard release. A UI caller deliberately
+		// never invokes ReleasePcpOperationAndRetry().
+		::InterlockedExchange(&m_lPcpRetryPending, 0);
 		::InterlockedExchange(&m_lPcpOperationActive, 0);
+	}
 	LIVE_LOG("NETV6", "PCP-v6 delete requests sent");
 }
 

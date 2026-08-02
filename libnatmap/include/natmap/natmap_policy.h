@@ -17,6 +17,26 @@ struct LeaseTiming {
     std::uint64_t expires_monotonic_ms = 0;
 };
 
+// Snapshot of one mapper-result observation at the application boundary.
+// A server re-login is required only when a consumed result changes the
+// externally visible generation, withdraws a previously enabled endpoint, or
+// publishes an endpoint after recovery inside an already-prepared generation.
+struct AdvertisementObservation {
+    std::uint64_t previous_generation = 0;
+    std::uint64_t current_generation = 0;
+    bool observed = false;
+    bool was_enabled = false;
+    bool is_enabled = false;
+};
+
+bool RequiresAdvertisementRelogin(
+    const AdvertisementObservation& observation) noexcept;
+bool ShouldRestartAdvertisementLogin(
+    const AdvertisementObservation& observation,
+    bool server_connected,
+    bool server_connecting,
+    bool connected_via_relay) noexcept;
+
 // Drives application-level refresh attempts for a finite mapping lease.
 // The first attempt is due at 45% of the granted lifetime. Failed attempts
 // use a bounded exponential backoff, leaving the caller free to perform the
@@ -66,6 +86,43 @@ private:
     bool active_ = false;
 };
 
+// Bounds complete mapper-recovery rounds after a mapping or route is lost.
+// One round may try each configured mapper implementation, but only the start
+// of the round consumes an attempt. A newer topology generation is the sole
+// event allowed to reset an active failure budget.
+class MappingRecoverySchedule {
+public:
+    static constexpr std::uint32_t kMaximumAttempts = 6;
+    static constexpr std::uint64_t kFirstRetryDelayMs = 30000;
+    static constexpr std::uint64_t kMaximumRetryDelayMs = 300000;
+
+    bool ResetForNetworkChange(
+        std::uint64_t generation, std::uint64_t now_ms) noexcept;
+    bool ShouldAttempt(
+        std::uint64_t generation, std::uint64_t now_ms) const noexcept;
+    bool BeginAttempt(
+        std::uint64_t generation, std::uint64_t now_ms) noexcept;
+    bool RecordSuccess(std::uint64_t generation) noexcept;
+    void Cancel() noexcept;
+
+    bool IsActive() const noexcept { return active_; }
+    bool IsExhausted() const noexcept {
+        return active_ && attempt_count_ >= kMaximumAttempts;
+    }
+    std::uint64_t generation() const noexcept { return generation_; }
+    std::uint64_t next_attempt_ms() const noexcept {
+        return next_attempt_ms_;
+    }
+    std::uint32_t attempt_count() const noexcept { return attempt_count_; }
+
+private:
+    std::uint64_t generation_ = 0;
+    std::uint64_t next_attempt_ms_ = 0;
+    std::uint64_t last_observed_ms_ = 0;
+    std::uint32_t attempt_count_ = 0;
+    bool active_ = false;
+};
+
 // Owns lease timing and identity rules, but performs no network I/O.
 class LeaseController {
 public:
@@ -91,7 +148,9 @@ private:
 
     PortLease lease_{};
     LeaseTiming timing_{};
+    std::uint64_t last_epoch_observation_seconds_ = 0;
     bool has_lease_ = false;
+    bool has_epoch_observation_ = false;
     bool last_epoch_reset_ = false;
 };
 

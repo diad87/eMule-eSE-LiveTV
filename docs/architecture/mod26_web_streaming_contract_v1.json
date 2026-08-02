@@ -1,0 +1,79 @@
+{
+  "schema": "ese.mod26.web-streaming-contract/v1",
+  "baseline_commit": "42d3d34a488ff9ff2a605e8df94f19ccec15558c",
+  "valid_input_compatibility": "http_status_headers_and_body_exact_except_documented_range_cache_and_streaming_hardening",
+  "invalid_input_policy": "fail_closed_without_unbounded_allocation_or_busy_spin",
+  "modules": [
+    {
+      "name": "WebStaticAssets",
+      "owner_before": "CWebServer",
+      "owner_after": "WebStaticAssets",
+      "layer": "application",
+      "responsibility": "static resources, MIME, cache and ranges",
+      "source": "srchybrid/WebServer.cpp",
+      "symbols": {
+        "CWebServer::_ProcessURL": "7f212e067454ea675615aff7b5773e3a5df4666b2eafbcaad206da617823baa6",
+        "CWebServer::_ProcessLiveAPI": "15751d8798ddf9f5ddb5ae83dc4da560f62d860130616d8d3ad48c9acd7f0539",
+        "CWebServer::_ProcessFileReq": "be2e5cccdec7ddabcc54d8237ca387b913d8e7c38268bb0c422a885e92e75dc5"
+      }
+    },
+    {
+      "name": "WebSocketResponse",
+      "owner_before": "CWebServer",
+      "owner_after": "WebSocketResponse",
+      "layer": "adapters",
+      "responsibility": "socket backpressure, streaming and close",
+      "source": "srchybrid/WebSocket.cpp",
+      "symbols": {
+        "CWebSocket::SendData": "4a8a4c789925699427314ab2838562252c4ce7b1d32b1c6aba0f793bcda31482",
+        "CWebSocket::SendContent": "9d6273708c85358a4fd8f4b98b47d64a40017e1c3d89368361b2a2274f47f6bc",
+        "CWebSocket::Disconnect": "f3d64634250af64c356647752607b9224e0bb39575eb8e912b52ff37bc3827b3",
+        "WebSocketAcceptedFunc": "79a5c311ed6ce699a8ba322dc3aed8fa7e3323bc8e3ec875e50950ec1423599e"
+      }
+    }
+  ],
+  "hardening": {
+    "range_unit": "bytes",
+    "supported_ranges": [
+      "start-end",
+      "start-",
+      "-suffix"
+    ],
+    "multiple_ranges": "rejected_with_416",
+    "unsatisfiable_range": "416_with_content_range_wildcard",
+    "arithmetic": "unsigned_64_bit_overflow_safe",
+    "static_file_buffering": "bounded_chunks",
+    "socket_queue_bytes_max": 2097152,
+    "socket_queue_chunks_max": 64,
+    "queue_exhaustion": "fail_closed",
+    "allocation_failure": "fail_closed",
+    "tls_want_read_or_write": "yield_to_event_loop",
+    "partial_write": "retain_exact_unsent_suffix",
+    "close": "after_queued_bytes_or_immediately_on_failure",
+    "content_type_options": "nosniff",
+    "private_path_disclosure": "forbidden"
+  },
+  "boundary": {
+    "owned_by_WebStaticAssets": [
+      "single byte-range parsing and response planning",
+      "extension-to-MIME policy",
+      "cache and content-disposition header policy",
+      "bounded file read plans"
+    ],
+    "owned_by_WebSocketResponse": [
+      "bounded response queue",
+      "partial-write accounting",
+      "backpressure and terminal-close state"
+    ],
+    "retained_by_CWebServer": [
+      "route-specific authorization",
+      "application object lookup",
+      "route-specific filesystem path selection and sharing policy"
+    ],
+    "retained_by_CWebSocket": [
+      "WinSock and mbedTLS system calls",
+      "filesystem handle acquisition after validated routing",
+      "worker event-loop lifetime"
+    ]
+  }
+}

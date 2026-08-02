@@ -39,6 +39,22 @@ try { if (!fs.existsSync(LIVE_DIR)) fs.mkdirSync(LIVE_DIR, { recursive: true });
 // Stream metadata (title, category, language)
 let streamMeta = { title: '', category: 'general', language: 'es' };
 
+async function pipeFileResponse(res, filePath, headers, missingStatus, missingBody) {
+  try {
+    const stat = await fs.promises.stat(filePath);
+    res.writeHead(200, Object.assign({ 'Content-Length': stat.size }, headers));
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', error => {
+      console.warn('[eSE Live] File stream failed:', error.message);
+      if (!res.writableEnded) res.end();
+    });
+    stream.pipe(res);
+  } catch (_) {
+    if (!res.headersSent) res.writeHead(missingStatus || 404);
+    if (!res.writableEnded) res.end(missingBody || '');
+  }
+}
+
 // Ghost-viewer fix (2026-06) — player-alive heartbeat relay.
 // The watch pages fetch HLS from THIS server (/hls-local, /hls), so eMule's
 // own ghost-viewer watchdog never sees those fetches. Relay a throttled
@@ -76,13 +92,18 @@ nodesBootstrap.startFromEnv().then(result => {
 // under the user's eMule config dir so reinstalling doesn't reset the flag,
 // but a fresh ZIP extraction (zero-config first run) shows the wizard.
 const ESE_FLAG_FILE = path.join(os.homedir(), 'AppData', 'Roaming', 'eMule', 'config', 'eSE_seen.flag');
-function isFirstRun() {
-  try { return !fs.existsSync(ESE_FLAG_FILE); } catch (e) { return true; }
-}
-function markFirstRunSeen() {
+async function isFirstRun() {
   try {
-    fs.mkdirSync(path.dirname(ESE_FLAG_FILE), { recursive: true });
-    fs.writeFileSync(ESE_FLAG_FILE, String(Date.now()));
+    await fs.promises.access(ESE_FLAG_FILE);
+    return false;
+  } catch (_) {
+    return true;
+  }
+}
+async function markFirstRunSeen() {
+  try {
+    await fs.promises.mkdir(path.dirname(ESE_FLAG_FILE), { recursive: true });
+    await fs.promises.writeFile(ESE_FLAG_FILE, String(Date.now()));
     return true;
   } catch (e) { return false; }
 }
@@ -107,14 +128,14 @@ let externalStreamDetected = false;
 const STREAM_STALE_MS = 15000; // 15s sin actualización = stream muerto
 
 /** Devuelve true si el .m3u8 fue escrito en los últimos STREAM_STALE_MS ms */
-function isStreamFresh() {
+async function isStreamFresh() {
   const candidates = [
     path.join(HLS_LIVE_DIR, 'stream_0.m3u8'),
     path.join(HLS_LIVE_DIR, 'stream.m3u8')
   ];
   for (const candidate of candidates) {
     try {
-      const stat = fs.statSync(candidate);
+      const stat = await fs.promises.stat(candidate);
       if ((Date.now() - stat.mtimeMs) < STREAM_STALE_MS) return true;
     } catch (e) { /* no existe */ }
   }
@@ -122,19 +143,20 @@ function isStreamFresh() {
 }
 
 /** Borra archivos HLS obsoletos para evitar redetecciones fantasma */
-function cleanHLSFiles(options) {
+async function cleanHLSFiles(options) {
   const opts = options || {};
   const staleOnly = opts.staleOnly === true;
   const maxAgeMs = opts.maxAgeMs || STREAM_STALE_MS;
   try {
-    const files = fs.readdirSync(HLS_LIVE_DIR);
+    const files = await fs.promises.readdir(HLS_LIVE_DIR);
     let deleted = 0;
     for (const f of files) {
       if (f.endsWith('.m3u8') || f.endsWith('.ts')) {
         const fp = path.join(HLS_LIVE_DIR, f);
         try {
-          if (!staleOnly || (Date.now() - fs.statSync(fp).mtimeMs) > maxAgeMs) {
-            fs.unlinkSync(fp);
+          const stat = await fs.promises.stat(fp);
+          if (!staleOnly || (Date.now() - stat.mtimeMs) > maxAgeMs) {
+            await fs.promises.unlink(fp);
             deleted++;
           }
         } catch (e) {}
@@ -144,9 +166,9 @@ function cleanHLSFiles(options) {
   } catch (e) { /* ignorar si el directorio no existe */ }
 }
 
-function detectExternalStream() {
+async function detectExternalStream() {
   try {
-    const fresh = isStreamFresh();
+    const fresh = await isStreamFresh();
     const pipelineStatus = pipeline.getStatus().status;
     const pipelineActive = pipelineStatus === 'streaming' || pipelineStatus === 'starting';
 
@@ -161,15 +183,15 @@ function detectExternalStream() {
       // El .m3u8 no se actualiza — el stream ha muerto
       externalStreamDetected = false;
       console.log('[eSE Live] HLS output ended');
-      cleanHLSFiles(); // evitar redetección en el próximo ciclo
+      await cleanHLSFiles(); // evitar redetección en el próximo ciclo
     }
   } catch (e) { console.warn('[eSE Live] External stream detection error:', e.message); }
 }
 if (process.env.ESE_TEST_MODE !== '1') {
-  setInterval(detectExternalStream, 5000);
+  setInterval(() => { void detectExternalStream(); }, 5000);
   // Al arrancar: limpiar archivos HLS viejos antes de la primera detección
-  cleanHLSFiles({ staleOnly: true, maxAgeMs: STREAM_STALE_MS });
-  detectExternalStream();
+  void cleanHLSFiles({ staleOnly: true, maxAgeMs: STREAM_STALE_MS });
+  void detectExternalStream();
 }
 
 
@@ -179,19 +201,16 @@ function handleRoute(url, req, res, ctx) {
   // Keep browser playback independent from Internet/CDN availability.  The
   // file is packaged with ese-server.exe and also works from a source checkout.
   if (p === '/live/vendor/hls.min.js') {
-    if (!HLS_JS_BUNDLE || !fs.existsSync(HLS_JS_BUNDLE)) {
+    if (!HLS_JS_BUNDLE) {
       res.writeHead(503, { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end('/* bundled hls.js unavailable */');
       return true;
     }
-    const stat = fs.statSync(HLS_JS_BUNDLE);
-    res.writeHead(200, {
+    void pipeFileResponse(res, HLS_JS_BUNDLE, {
       'Content-Type': 'application/javascript; charset=utf-8',
-      'Content-Length': stat.size,
       'Cache-Control': 'public, max-age=31536000, immutable',
       'X-Content-Type-Options': 'nosniff'
-    });
-    fs.createReadStream(HLS_JS_BUNDLE).pipe(res);
+    }, 503, '/* bundled hls.js unavailable */');
     return true;
   }
 
@@ -210,12 +229,12 @@ function handleRoute(url, req, res, ctx) {
     if (ext !== '.m3u8' && ext !== '.ts') { res.writeHead(403); res.end('Forbidden'); return true; }
     relayPlayerAlive(parts[1]);  // key-scoped proof that this player lives
     const filePath = require('path').join(HLS_LIVE_DIR, parts[1].toLowerCase(), fileName);
-    try {
-      const fstat = require('fs').statSync(filePath);
-      const mime = ext === '.m3u8' ? 'application/vnd.apple.mpegurl' : 'video/mp2t';
-      res.writeHead(200, { 'Content-Type': mime, 'Content-Length': fstat.size, 'Cache-Control': ext === '.m3u8' ? 'no-cache' : 'max-age=30', 'Access-Control-Allow-Origin': '*' });
-      require('fs').createReadStream(filePath).pipe(res);
-    } catch(e) { res.writeHead(404); res.end('Not found: ' + filePath); }
+    const mime = ext === '.m3u8' ? 'application/vnd.apple.mpegurl' : 'video/mp2t';
+    void pipeFileResponse(res, filePath, {
+      'Content-Type': mime,
+      'Cache-Control': ext === '.m3u8' ? 'no-cache' : 'max-age=30',
+      'Access-Control-Allow-Origin': '*',
+    }, 404, 'Not found: ' + filePath);
     return true;
   }
   if (p.startsWith('/hls/')) {
@@ -223,12 +242,12 @@ function handleRoute(url, req, res, ctx) {
     const ext = require('path').extname(fileName).toLowerCase();
     if (ext !== '.m3u8' && ext !== '.ts') { res.writeHead(403); res.end('Forbidden'); return true; }
     const filePath = require('path').join(HLS_LIVE_DIR, fileName);
-    try {
-      const fstat = require('fs').statSync(filePath);
-      const mime = ext === '.m3u8' ? 'application/vnd.apple.mpegurl' : 'video/mp2t';
-      res.writeHead(200, { 'Content-Type': mime, 'Content-Length': fstat.size, 'Cache-Control': ext === '.m3u8' ? 'no-cache' : 'max-age=30', 'Access-Control-Allow-Origin': '*' });
-      require('fs').createReadStream(filePath).pipe(res);
-    } catch(e) { res.writeHead(404); res.end('Not found'); }
+    const mime = ext === '.m3u8' ? 'application/vnd.apple.mpegurl' : 'video/mp2t';
+    void pipeFileResponse(res, filePath, {
+      'Content-Type': mime,
+      'Cache-Control': ext === '.m3u8' ? 'no-cache' : 'max-age=30',
+      'Access-Control-Allow-Origin': '*',
+    }, 404, 'Not found');
     return true;
   }
   if (p === '/live/watch/local') {
@@ -529,33 +548,44 @@ function handleRoute(url, req, res, ctx) {
       path.join(os.homedir(), 'AppData', 'Roaming', 'eMule', 'logs', 'eMule.log'),
       path.join(os.homedir(), 'AppData', 'Local',   'eMule', 'eMule.log'),
     ];
-    let logPath = null;
-    for (const c of candidates) { try { fs.statSync(c); logPath = c; break; } catch(e) {} }
-    if (!logPath) { jsonResponse(res, 200, { lines: [], path: null, error: 'no_log_found' }); return true; }
-    try {
-      // Open first, then fstat the descriptor — no stat/open race on a file
-      // that rotates while we read it.
-      const fd = fs.openSync(logPath, 'r');
-      let buf;
-      try {
-        const stat = fs.fstatSync(fd);
-        // Read at most last 256 KB to keep the request snappy on huge logs
-        const startAt = Math.max(0, stat.size - 256 * 1024);
-        buf = Buffer.alloc(stat.size - startAt);
-        fs.readSync(fd, buf, 0, buf.length, startAt);
-      } finally {
-        fs.closeSync(fd);
+    void (async () => {
+      let logPath = null;
+      for (const candidate of candidates) {
+        try {
+          await fs.promises.access(candidate);
+          logPath = candidate;
+          break;
+        } catch (_) {}
       }
-      const lines = buf.toString('utf8').split(/\r?\n/);
-      jsonResponse(res, 200, {
-        lines: lines.slice(-n),
-        path: logPath,
-        size: stat.size,
-        truncated: startAt > 0,
-      });
-    } catch (e) {
-      jsonResponse(res, 200, { lines: [], path: logPath, error: e.message });
-    }
+      if (!logPath) {
+        jsonResponse(res, 200, { lines: [], path: null, error: 'no_log_found' });
+        return;
+      }
+      try {
+        // Open first, then stat/read the descriptor to avoid rotation races.
+        const file = await fs.promises.open(logPath, 'r');
+        let buf;
+        let stat;
+        let startAt;
+        try {
+          stat = await file.stat();
+          startAt = Math.max(0, stat.size - 256 * 1024);
+          buf = Buffer.alloc(stat.size - startAt);
+          await file.read(buf, 0, buf.length, startAt);
+        } finally {
+          await file.close();
+        }
+        const lines = buf.toString('utf8').split(/\r?\n/);
+        jsonResponse(res, 200, {
+          lines: lines.slice(-n),
+          path: logPath,
+          size: stat.size,
+          truncated: startAt > 0,
+        });
+      } catch (error) {
+        jsonResponse(res, 200, { lines: [], path: logPath, error: error.message });
+      }
+    })();
     return true;
   }
 
@@ -612,7 +642,7 @@ function handleRoute(url, req, res, ctx) {
 
   // === GET /api/live/first_run — Tier 2.1: should we show the wizard? ===
   if (p === '/api/live/first_run') {
-    jsonResponse(res, 200, { first_run: isFirstRun() });
+    isFirstRun().then(firstRun => jsonResponse(res, 200, { first_run: firstRun }));
     return true;
   }
 
@@ -623,8 +653,7 @@ function handleRoute(url, req, res, ctx) {
       jsonResponse(res, 405, { error: 'method_not_allowed', expected: 'POST' });
       return true;
     }
-    const ok = markFirstRunSeen();
-    jsonResponse(res, 200, { success: ok });
+    markFirstRunSeen().then(ok => jsonResponse(res, 200, { success: ok }));
     return true;
   }
 
@@ -823,8 +852,14 @@ function handleRoute(url, req, res, ctx) {
 
   // === GET /api/live/sources ===
   if (p === '/api/live/sources') {
-    const sources = deviceScanner.getSourcesForAPI(ctx.ffmpegPath);
-    jsonResponse(res, 200, { sources });
+    deviceScanner.getSourcesForAPI(ctx.ffmpegPath).then(
+      sources => jsonResponse(res, 200, { sources }),
+      error => jsonResponse(res, 503, {
+        sources: [],
+        error: 'source_scan_failed',
+        detail: error.message,
+      }),
+    );
     return true;
   }
 
@@ -877,8 +912,8 @@ function handleRoute(url, req, res, ctx) {
 
     // Clean any legacy local process left by a previous version, then stop the
     // canonical C++ broadcaster (which also sends OP_LIVE_END to P2P peers).
-    pipeline.stop();
-    rtmpServer.stop();
+    void pipeline.stop();
+    void rtmpServer.stop();
     streamMeta = { title: '', category: 'general', language: 'es' };
 
     proxyEmuleJson(res, '/api/live/broadcast/stop', 5000);
@@ -1065,36 +1100,22 @@ function handleRoute(url, req, res, ctx) {
   // === GET /live/stream.m3u8 — HLS playlist ===
   if (p === '/live/stream.m3u8') {
     const m3u8 = path.join(LIVE_DIR, 'stream.m3u8');
-    if (!fs.existsSync(m3u8)) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Stream not active');
-      return true;
-    }
-    res.writeHead(200, {
+    void pipeFileResponse(res, m3u8, {
       'Content-Type': 'application/vnd.apple.mpegurl',
       'Cache-Control': 'no-cache, no-store',
       'Access-Control-Allow-Origin': '*'
-    });
-    fs.createReadStream(m3u8).pipe(res);
+    }, 404, 'Stream not active');
     return true;
   }
 
   // === GET /live/seg_XXXXX.ts — HLS segments ===
   if (p.startsWith('/live/') && p.endsWith('.ts')) {
     const segFile = path.join(LIVE_DIR, path.basename(p));
-    if (!fs.existsSync(segFile)) {
-      res.writeHead(404);
-      res.end('Segment not found');
-      return true;
-    }
-    const stat = fs.statSync(segFile);
-    res.writeHead(200, {
+    void pipeFileResponse(res, segFile, {
       'Content-Type': 'video/mp2t',
-      'Content-Length': stat.size,
       'Cache-Control': 'no-cache',
       'Access-Control-Allow-Origin': '*'
-    });
-    fs.createReadStream(segFile).pipe(res);
+    }, 404, 'Segment not found');
     return true;
   }
 
@@ -1107,14 +1128,11 @@ function handleRoute(url, req, res, ctx) {
       res.end('No thumbnail');
       return true;
     }
-    const stat = fs.statSync(thumbPath);
-    res.writeHead(200, {
+    void pipeFileResponse(res, thumbPath, {
       'Content-Type': 'image/jpeg',
-      'Content-Length': stat.size,
       'Cache-Control': 'public, max-age=10',
       'Access-Control-Allow-Origin': '*'
-    });
-    fs.createReadStream(thumbPath).pipe(res);
+    }, 404, 'No thumbnail');
     return true;
   }
 

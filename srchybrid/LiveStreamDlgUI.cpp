@@ -156,10 +156,7 @@ void CLiveStreamDlg::UpdateStatusBar()
 	// MFC user has the same situational awareness without opening a browser.
 	bool kadConn = Kademlia::CKademlia::IsConnected();
 	bool fwVer   = Kademlia::CUDPFirewallTester::IsVerified();
-	bool kadFw   = theApp.IsFirewalled();
-	bool ed2kFw  = (theApp.serverconnect && theApp.serverconnect->IsConnected()
-	                && theApp.serverconnect->IsLowID());
-	bool highId  = !kadFw && !ed2kFw;
+	bool highId  = theApp.HasVerifiedEd2kHighId();
 	uint32 pubIP = theApp.GetPublicIP();
 	CString ffPath = CRTMPIngest::FindFFmpeg();
 	bool ffOk    = (GetFileAttributes(ffPath) != INVALID_FILE_ATTRIBUTES);
@@ -176,7 +173,7 @@ void CLiveStreamDlg::UpdateStatusBar()
 		w->SetWindowText(s);
 	};
 	Pf(IDC_LIVE_PF_KAD,    kadConn, false, _T("Kad"));
-	Pf(IDC_LIVE_PF_HIGHID, highId,  !fwVer && kadConn, _T("HighID"));
+	Pf(IDC_LIVE_PF_HIGHID, highId, !fwVer && kadConn, _T("HighID"));
 	Pf(IDC_LIVE_PF_FFMPEG, ffOk,    false, _T("FFmpeg"));
 
 	CWnd* ip = GetDlgItem(IDC_LIVE_PF_PUBIP);
@@ -259,8 +256,8 @@ void CLiveStreamDlg::PopulateSharePanel()
 	// If the public IP is unknown (LowID, Kad/UPnP not yet ready) we fall back
 	// to the legacy stream link without endpoint, which still works via Kad.
 	CString ed2k;
-	const uchar* key = theApp.liveStreamManager->GetBroadcastStreamKey();
-	if (key) {
+	uchar key[16];
+	if (theApp.liveStreamManager->CopyBroadcastStreamKey(key)) {
 		CString hexKey;
 		for (int i = 0; i < 16; i++)
 			hexKey.AppendFormat(_T("%02X"), key[i]);

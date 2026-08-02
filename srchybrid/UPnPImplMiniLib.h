@@ -18,6 +18,8 @@
 #include "UPnPImpl.h"
 #include "natmap/ownership_ledger.h"
 
+#include <atomic>
+
 struct UPNPUrls;
 struct IGDdatas;
 
@@ -33,21 +35,38 @@ public:
 	virtual void DeletePorts();
 	virtual bool IsReady();
 	virtual int GetImplementationID()				{ return UPNP_IMPL_MINIUPNPLIB; }
+	virtual natmap::MapperKind GetMapperKind() const
+		{ return natmap::MapperKind::UpnpIgd; }
+	virtual natmap::MapperSource GetMapperSource() const
+		{ return natmap::MapperSource::UpnpIgd; }
 
 	class CStartDiscoveryThread : public CWinThread
 	{
 		DECLARE_DYNCREATE(CStartDiscoveryThread)
 	protected:
 		CStartDiscoveryThread();
-		bool OpenPort(uint16 nPort, bool bTCP, char *pachLANIP, bool bCheckAndRefresh);
+		bool OpenPort(
+			uint16 nPort,
+			bool bTCP,
+			char *pachLANIP,
+			bool bCheckAndRefresh,
+			bool *pReadbackMatches = NULL,
+			bool *pOwnershipMatches = NULL,
+			bool *pCreatedByOperation = NULL);
 
 	public:
 		virtual BOOL InitInstance();
 		virtual int Run();
-		void SetValues(CUPnPImplMiniLib *pOwner)	{ m_pOwner = pOwner; }
+		void SetValues(CUPnPImplMiniLib *pOwner)
+		{
+			m_pOwner = pOwner;
+			m_operation = pOwner->CaptureMappingOperation();
+		}
 
 	private:
+		void SendFailure(natmap::ReasonCode reason);
 		CUPnPImplMiniLib *m_pOwner;
+		MappingOperationContext m_operation;
 	};
 
 protected:
@@ -64,7 +83,15 @@ private:
 	bool RecordOwnedMapping(uint16 nLocalPort, uint16 nExternalPort,
 		bool bTCP, const char* pachLANIP, uint32 nLifetimeSeconds,
 		const natmap::OwnershipDescription& description);
+	bool DeleteEphemeralOwnedMapping(uint16 nLocalPort,
+		uint16 nExternalPort, bool bTCP, const char* pachLANIP,
+		uint32 nLifetimeSeconds,
+		const natmap::OwnershipDescription& description,
+		const char* observedClient, const char* observedPort,
+		const char* observedDescription,
+		std::size_t observedDescriptionCapacity);
 	void RemoveOwnershipRecord(std::size_t index);
+	bool RemoveOwnershipRecordDurably(std::size_t index);
 	std::uint64_t CurrentGatewayFingerprint() const;
 	static bool GenerateOwnerToken(std::uint64_t& token);
 	static bool ParseIPv4(const char* text, natmap::IpAddress& address);
@@ -79,8 +106,10 @@ private:
 	natmap::OwnershipLedger m_ownershipLedger;
 	std::uint64_t m_ownerToken;
 	std::uint64_t m_mappingGeneration;
+	natmap::IpAddress m_mappingLocalAddress;
+	natmap::IpAddress m_mappingGatewayAddress;
 	bool m_bOwnershipLedgerLoaded;
 
 	bool m_bSucceededOnce;
-	volatile bool m_bAbortDiscovery;
+	std::atomic_bool m_bAbortDiscovery;
 };

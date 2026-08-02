@@ -335,9 +335,24 @@ private:
     std::uint64_t epoch_floor_ = 0;
 };
 
-// Full verifier, including certificate, application structure, context and
-// single-use enforcement. `issuer_trusted` is a host decision based on its
-// verified routing/allowlist policy, never on a key self-assertion.
+// Pure verifier. Host callbacks run here, before the caller enters the
+// single-use mutation critical section.
+K6QuotaStatus VerifyK6QuotaPresentation(
+    const Kad6CryptoHooks& identity_crypto,
+    const K6QuotaCryptoHooks& quota_crypto,
+    const K6QuotaPresentation& presentation,
+    K6QuotaService expected_service,
+    std::uint32_t expected_policy,
+    std::uint64_t current_epoch,
+    std::uint16_t current_subepoch,
+    const Hash32& expected_context,
+    bool issuer_trusted,
+    K6QuotaToken* token_out = nullptr,
+    K6QuotaIssuerCertificate* certificate_out = nullptr);
+
+// Full verifier plus single-use enforcement. `issuer_trusted` is a host
+// decision based on its verified routing/allowlist policy, never on a key
+// self-assertion.
 K6QuotaStatus VerifyAndSpendK6Quota(
     const Kad6CryptoHooks& identity_crypto,
     const K6QuotaCryptoHooks& quota_crypto,

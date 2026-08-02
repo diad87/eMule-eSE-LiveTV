@@ -13,6 +13,7 @@
 #include "miniupnpc.h"
 #include "portlistingparse.h"
 #include "upnpreplyparse.h"
+#include "checked_copy.h"
 
 /*! \file upnpcommands.c
  * \brief Internet Gateway Device methods implementations
@@ -736,6 +737,29 @@ UPNP_GetSpecificPortMappingEntryExt(const char * controlURL,
                                     char * enabled,
                                     char * leaseDuration)
 {
+	return UPNP_GetSpecificPortMappingEntryChecked(
+		controlURL, servicetype, extPort, proto, remoteHost,
+		intClient, 16, intPort, 6, desc, desclen,
+		enabled, 4, leaseDuration, 16);
+}
+
+MINIUPNP_LIBSPEC int
+UPNP_GetSpecificPortMappingEntryChecked(const char * controlURL,
+                                    const char * servicetype,
+                                    const char * extPort,
+                                    const char * proto,
+                                    const char * remoteHost,
+                                    char * intClient,
+                                    size_t intClientLen,
+                                    char * intPort,
+                                    size_t intPortLen,
+                                    char * desc,
+                                    size_t descLen,
+                                    char * enabled,
+                                    size_t enabledLen,
+                                    char * leaseDuration,
+                                    size_t leaseDurationLen)
+{
 	struct NameValueParserData pdata;
 	struct UPNParg GetPortMappingArgs[] = {
 		{"NewRemoteHost", remoteHost},
@@ -747,8 +771,14 @@ UPNP_GetSpecificPortMappingEntryExt(const char * controlURL,
 	int bufsize;
 	char * p;
 	int ret = UPNPCOMMAND_UNKNOWN_ERROR;
+	int malformed = 0;
 
-	if(!intPort || !intClient || !extPort || !proto)
+	if(!intPort || intPortLen == 0 ||
+	   !intClient || intClientLen == 0 ||
+	   !extPort || !proto ||
+	   (desc && descLen == 0) ||
+	   (enabled && enabledLen == 0) ||
+	   (leaseDuration && leaseDurationLen == 0))
 		return UPNPCOMMAND_INVALID_ARGS;
 
 	buffer = simpleUPnPcommand(controlURL, servicetype,
@@ -762,37 +792,33 @@ UPNP_GetSpecificPortMappingEntryExt(const char * controlURL,
 	free(buffer);
 
 	p = GetValueFromNameValueList(&pdata, "NewInternalClient");
-	if(p) {
-		strncpy(intClient, p, 16);
-		intClient[15] = '\0';
+	if(copyCheckedValue(intClient, intClientLen, p))
 		ret = UPNPCOMMAND_SUCCESS;
-	} else
-		intClient[0] = '\0';
+	else
+		malformed = 1;
 
 	p = GetValueFromNameValueList(&pdata, "NewInternalPort");
-	if(p) {
-		strncpy(intPort, p, 6);
-		intPort[5] = '\0';
-	} else
-		intPort[0] = '\0';
+	if(!copyCheckedValue(intPort, intPortLen, p))
+		malformed = 1;
 
 	p = GetValueFromNameValueList(&pdata, "NewEnabled");
 	if(p && enabled) {
-		strncpy(enabled, p, 4);
-		enabled[3] = '\0';
+		if(!copyCheckedValue(enabled, enabledLen, p))
+			malformed = 1;
 	}
 
 	p = GetValueFromNameValueList(&pdata, "NewPortMappingDescription");
-	if(p && desc) {
-		strncpy(desc, p, desclen);
-		desc[desclen-1] = '\0';
+	if(desc) {
+		if(!copyCheckedValue(desc, descLen, p))
+			malformed = 1;
 	}
 
 	p = GetValueFromNameValueList(&pdata, "NewLeaseDuration");
 	if(p && leaseDuration)
 	{
-		strncpy(leaseDuration, p, 16);
-		leaseDuration[15] = '\0';
+		if(!copyCheckedValue(
+				leaseDuration, leaseDurationLen, p))
+			malformed = 1;
 	}
 
 	p = GetValueFromNameValueList(&pdata, "errorCode");
@@ -800,6 +826,7 @@ UPNP_GetSpecificPortMappingEntryExt(const char * controlURL,
 		if(sscanf(p, "%d", &ret) != 1)
 			ret = UPNPCOMMAND_UNKNOWN_ERROR;
 	}
+	ret = checkedResponseResult(ret, malformed);
 
 	ClearNameValueList(&pdata);
 	return ret;

@@ -1,0 +1,48 @@
+{
+  "schema": "ese.mod42.runtime-evidence/v1",
+  "source_commit": "3790cae5471b28a962fafb5fc520fc775c7b00cd",
+  "status": "PASS",
+  "packaged_executable": {
+    "path": "srchybrid/eSE/ese-server.exe",
+    "bytes": 70723823,
+    "sha256": "ff747d707c327b1163b067b19c80f6f6847bf800d1447c07d8c333055e3f63de"
+  },
+  "source_runtime": {
+    "port": 18095,
+    "status": 200,
+    "lifecycle": 200,
+    "vendor_hls_bytes": 543004,
+    "logs": 200,
+    "first_run": 200,
+    "completed_list": 200,
+    "sources": 200,
+    "source_count": 3,
+    "debug_while_source_probe_ms": 11,
+    "termination_confirmed": true
+  },
+  "packaged_runtime": {
+    "port": 18096,
+    "status": 200,
+    "lifecycle": 200,
+    "vendor_hls_bytes": 543004,
+    "logs": 200,
+    "first_run": 200,
+    "completed_list": 200,
+    "sources": 200,
+    "source_count": 3,
+    "debug_while_source_probe_ms": 12,
+    "termination_confirmed": true
+  },
+  "suites": {
+    "python": "399/399",
+    "node": "63/63 PASS; 1 POSIX-only SKIP; 64 total",
+    "mod42_focal": "16/16",
+    "native": "40/40 PASS; FEC 21659/21659; Bulk 183/183; standalone 14/14",
+    "node_package_build": "PASS"
+  },
+  "post_fix_smoke": {
+    "source": "status=200; lifecycle=200; completed_list=200; logs=200",
+    "packaged": "status=200; lifecycle=200; completed_list=200; logs=200"
+  },
+  "runtime_ports_released": true
+}

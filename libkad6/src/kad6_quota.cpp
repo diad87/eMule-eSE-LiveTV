@@ -887,10 +887,9 @@ std::size_t K6QuotaSpentSet::size(std::uint64_t epoch) const noexcept {
     return found == epochs_.end() ? 0 : found->second.size();
 }
 
-K6QuotaStatus VerifyAndSpendK6Quota(
+K6QuotaStatus VerifyK6QuotaPresentation(
     const Kad6CryptoHooks& identity_crypto,
     const K6QuotaCryptoHooks& quota_crypto,
-    K6QuotaSpentSet& spent,
     const K6QuotaPresentation& presentation,
     K6QuotaService expected_service,
     std::uint32_t expected_policy,
@@ -939,9 +938,42 @@ K6QuotaStatus VerifyAndSpendK6Quota(
             presentation.prepared_message.data(), presentation.prepared_message.size(),
             presentation.signature.data(), presentation.signature.size()))
         return K6QuotaStatus::InvalidProof;
-    const K6QuotaStatus consumed = spent.Consume(token.valid_epoch,
-        token.admission_unit, current_epoch);
-    if (consumed != K6QuotaStatus::Ok) return consumed;
+    if (token_out) *token_out = token;
+    if (certificate_out) *certificate_out = certificate;
+    return K6QuotaStatus::Ok;
+}
+
+K6QuotaStatus VerifyAndSpendK6Quota(
+    const Kad6CryptoHooks& identity_crypto,
+    const K6QuotaCryptoHooks& quota_crypto,
+    K6QuotaSpentSet& spent,
+    const K6QuotaPresentation& presentation,
+    K6QuotaService expected_service,
+    std::uint32_t expected_policy,
+    std::uint64_t current_epoch,
+    std::uint16_t current_subepoch,
+    const Hash32& expected_context,
+    bool issuer_trusted,
+    K6QuotaToken* token_out,
+    K6QuotaIssuerCertificate* certificate_out) {
+    K6QuotaToken token;
+    K6QuotaIssuerCertificate certificate;
+    const K6QuotaStatus verified = VerifyK6QuotaPresentation(
+        identity_crypto, quota_crypto, presentation, expected_service,
+        expected_policy, current_epoch, current_subepoch, expected_context,
+        issuer_trusted, &token, &certificate);
+    if (verified != K6QuotaStatus::Ok) {
+        if (token_out) *token_out = K6QuotaToken{};
+        if (certificate_out) *certificate_out = K6QuotaIssuerCertificate{};
+        return verified;
+    }
+    const K6QuotaStatus consumed = spent.Consume(
+        token.valid_epoch, token.admission_unit, current_epoch);
+    if (consumed != K6QuotaStatus::Ok) {
+        if (token_out) *token_out = K6QuotaToken{};
+        if (certificate_out) *certificate_out = K6QuotaIssuerCertificate{};
+        return consumed;
+    }
     if (token_out) *token_out = token;
     if (certificate_out) *certificate_out = certificate;
     return K6QuotaStatus::Ok;

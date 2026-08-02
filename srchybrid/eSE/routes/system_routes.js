@@ -2,12 +2,16 @@
 const aiAssistant = require('../ai_assistant');
 const aiOAuth     = require('../ai_oauth');
 const utils       = require('../utils');
+const { validateRouteContext } = require('./route_context');
 
+/** @type {{PORT: number, cleanup: {cleanupAll: Function}, loadSettings: Function, saveSettings: Function}} */
 let _ctx = {};
 
 function init(ctx) {
-  _ctx = ctx;
-  aiOAuth.init(ctx.loadSettings, ctx.saveSettings);
+  _ctx = validateRouteContext(ctx, 'system', {
+    PORT: 'port', cleanup: 'cleanup', loadSettings: 'function', saveSettings: 'function',
+  });
+  aiOAuth.init(_ctx.loadSettings, _ctx.saveSettings);
 }
 
 function handle(url, req, res) {
@@ -86,9 +90,16 @@ function handle(url, req, res) {
       res.end(JSON.stringify({ error: 'method_not_allowed', expected: 'POST' }));
       return true;
     }
-    _ctx.cleanup.cleanupAll();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ cleaned: true }));
+    Promise.resolve(_ctx.cleanup.cleanupAll()).then(
+      () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ cleaned: true }));
+      },
+      error => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ cleaned: false, error: error.message }));
+      },
+    );
     return true;
   }
 

@@ -16,7 +16,11 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
 #include <exception>
+#include <memory>
+#include <mutex>
 #include "natmap/natmap_policy.h"
+#include "natmap/mapping_request.h"
+#include "natmap/mapping_result_mailbox.h"
 
 enum TRISTATE
 {
@@ -54,12 +58,19 @@ enum UPNP_DIAGNOSTIC_STAGE
 
 class CUPnPImpl
 {
-	CWnd* m_wndResultMessage;
+	HWND m_hResultWindow;
 	UINT m_nResultMessageID;
 
 public:
 	CUPnPImpl();
 	virtual	~CUPnPImpl() = default;
+	struct MappingOperationContext
+	{
+		natmap::MappingRequestContext request;
+		std::uint32_t interface_index = 0;
+		natmap::IpAddress local_address;
+		natmap::IpAddress gateway_address;
+	};
 	struct UPnPError : public std::exception	{};
 	enum
 	{
@@ -72,13 +83,25 @@ public:
 	virtual bool CheckAndRefresh() = 0;
 	virtual void StopAsyncFind() = 0;
 	virtual void DeletePorts() = 0;
+	virtual void DeletePortsForGeneration(std::uint64_t generation)
+		{ (void)generation; DeletePorts(); }
 	virtual bool IsReady() = 0;
 	virtual int GetImplementationID() = 0;
+	virtual natmap::MapperKind GetMapperKind() const
+		{ return natmap::MapperKind::None; }
+	virtual natmap::MapperSource GetMapperSource() const
+		{ return natmap::MapperSource::None; }
 	virtual bool SupportsMappingHealthCheck() const { return true; }
 
-	void LateEnableWebServerPort(uint16 nPort);	// Add Web Server port to already existing port mapping
+	void LateEnableWebServerPort(uint16 nPort);	// V9.2 compatibility no-op; WebServer is never mapped
 
-	void SetMessageOnResult(CWnd *cwnd, UINT nMessageID);
+	void SetMessageOnResult(CWnd *cwnd, UINT nMessageID,
+		const std::shared_ptr<natmap::MappingResultMailbox>& mailbox =
+			std::shared_ptr<natmap::MappingResultMailbox>());
+	void BeginMappingRequest(const natmap::MappingRequestContext& context,
+		std::uint32_t interfaceIndex,
+		const natmap::IpAddress& localAddress,
+		const natmap::IpAddress& gatewayAddress);
 	TRISTATE ArePortsForwarded() const					{ return m_bUPnPPortsForwarded; }
 	uint16 GetUsedTCPPort() const						{ return m_nTCPPort; }
 	uint16 GetUsedUDPPort() const						{ return m_nUDPPort; }
@@ -100,7 +123,25 @@ public:
 
 // Implementation
 protected:
+	MappingOperationContext CaptureMappingOperation() const;
+	bool IsCurrentMappingOperation(
+		const MappingOperationContext& operation) const;
+	// Source-compatible fail-closed seam for external legacy subclasses.
+	// Native producers must use the operation-bound overload below.
 	void SendResultMessage();
+	// True means the exact current operation was published and queued.
+	bool SendResultMessage(const MappingOperationContext& operation);
+	bool SendMapperResultMessage(
+		const MappingOperationContext& operation,
+		const natmap::MapperResultData& resultData);
+	bool SendPcpUpstreamBundleMessage(
+		const MappingOperationContext& operation,
+		const natmap::PcpUpstreamResultBundle& bundle);
+	natmap::MapperResultData BuildMapperResultData(
+		const MappingOperationContext& operation) const;
+	virtual uint16 RequestedExternalPort(
+		natmap::Transport, uint16 localPort) const
+		{ return localPort; }
 	volatile TRISTATE m_bUPnPPortsForwarded;
 	uint16 m_nOldTCPPort;
 	uint16 m_nOldTCPWebPort;
@@ -114,10 +155,19 @@ protected:
 	uint32 m_dwMappingExternalIP;
 	uint32 m_dwMappingLeaseLifetime;
 	uint32 m_dwMapperEpoch;
+	bool m_bMapperEpochReset;
 	volatile LONG m_nDiagnosticStage;
 	bool m_bCheckAndRefresh;
 	natmap::LeaseRefreshSchedule m_leaseRefreshSchedule;
 	natmap::PermanentMappingProbeSchedule m_permanentProbeSchedule;
+
+private:
+	mutable std::mutex m_resultMutex;
+	std::shared_ptr<natmap::MappingResultMailbox> m_resultMailbox;
+	natmap::MappingRequestContext m_requestContext;
+	std::uint32_t m_requestInterfaceIndex;
+	natmap::IpAddress m_requestLocalAddress;
+	natmap::IpAddress m_requestGatewayAddress;
 };
 
 // Dummy Implementation to be used when no other implementation is available
@@ -130,4 +180,8 @@ public:
 	virtual void DeletePorts()							{}
 	virtual bool IsReady()								{ return false; }
 	virtual int GetImplementationID()					{ return UPNP_IMPL_NONE; }
+	virtual natmap::MapperKind GetMapperKind() const
+		{ return natmap::MapperKind::None; }
+	virtual natmap::MapperSource GetMapperSource() const
+		{ return natmap::MapperSource::None; }
 };

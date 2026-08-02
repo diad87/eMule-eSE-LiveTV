@@ -1,0 +1,756 @@
+
+--- WP0 laboratory toolkit ---
+Lab inventory written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\inventory.json
+Lab node B prepared: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\nodes\wp0-smoke-b
+Manifest: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\nodes\wp0-smoke-b\LAB_NODE.json
+Lab status written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\status.json
+Data-route assertion PASS: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\route.json
+Soak monitor PASS: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\soak.json
+Canonical lab report written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\REPORT-WP0-SMOKE.json
+Human-readable report written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\REPORT-WP0-SMOKE.md
+V91 RC ledger written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\V91-RC-LEDGER.json
+PASS=0 FAIL=0 BLOCKED=27
+Campaign final JSON written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\V91-CAMPAIGN-FINAL.json
+Campaign final Markdown written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\V91-CAMPAIGN-FINAL.md
+Evidence SHA-256 manifest written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\V91-EVIDENCE-MANIFEST.json
+V91 RC ledger written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\k03-ledger.json
+PASS=1 FAIL=0 BLOCKED=26
+V91 RC ledger written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\V91-RC-LEDGER-GO.json
+PASS=27 FAIL=0 BLOCKED=0
+Campaign final JSON written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\V91-CAMPAIGN-FINAL.json
+Campaign final Markdown written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\V91-CAMPAIGN-FINAL.md
+Evidence SHA-256 manifest written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\V91-EVIDENCE-MANIFEST.json
+Campaign final JSON written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\V91-CAMPAIGN-FINAL.json
+Campaign final Markdown written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\V91-CAMPAIGN-FINAL.md
+Evidence SHA-256 manifest written: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83\run\V91-EVIDENCE-MANIFEST.json
+WP0 lab tools smoke PASS: %USERPROFILE%\AppData\Local\Temp\eSE-lab-tool-tests-055da8c25d5643d1af46fce413f08a83
+
+--- language resources ---
+Language check PASS: 43 translations declared
+
+--- protocol registry ---
+protocol registry: 180 entries, 180 fork symbols in code
+OK: registry is internally consistent and matches code.
+
+--- direct port ownership linter ---
+Legacy local-port inventory stable: 55 calls on 54 lines in 17 files.
+
+--- address wire tests ---
+PASS: roundtrip
+PASS: wire byte layout
+PASS: malformed wire rejected
+PASS: hash distribution
+PASS: subnet ops
+PASS: synthetic uint32
+
+TOTAL: 6/6 passed
+
+--- server IPv6 source wire tests ---
+PASS: exact layout
+PASS: roundtrip and count
+PASS: empty response
+PASS: legacy collision/raw address rejected
+PASS: truncation/zero port rejected
+
+TOTAL: 5/5 passed
+
+--- IPv6 callback wire tests ---
+PASS: layout and roundtrip
+PASS: IPv4/zero/trailing rejected
+
+TOTAL: 2/2 passed
+
+--- IPv6 transport wire tests ---
+IPv6 transport wire tests: PASS (6)
+
+--- tunnel framing tests ---
+PASS: sub-header roundtrip
+PASS: sub-header byte layout
+PASS: sub-header rejects short buffer
+PASS: sub-header rejects body overrun
+PASS: frag-header roundtrip
+PASS: frag-header byte layout
+PASS: frag-header rejects short buffer
+PASS: little-endian high bytes
+PASS: multi-cell op threshold
+PASS: per-cell frag_data budget
+PASS: message fragmentation round-trip
+PASS: message size cap (A1.6)
+PASS: ESE_CAP_TUNNEL_DATAPLANE bit (A7)
+
+TOTAL: 13/13 passed
+
+--- libreach ---
+test_reach_codec.cpp
+reach_codec.cpp
+Generando c�digo...
+test_reach_codec — KEP-1 Appendix A golden vectors
+
+TOTAL: 103 passed, 0 failed
+test_reach_facade.cpp
+reach_context.cpp
+reach_codec.cpp
+reach_cascade.cpp
+Generando c�digo...
+test_reach_facade — libreach L2 C-ABI / IoC / lifecycle
+
+TOTAL: 43 passed, 0 failed
+test_reach_cascade.cpp
+reach_cascade.cpp
+Generando c�digo...
+test_reach_cascade: 34 checks, 0 failures
+test_reach_actuator.cpp
+reach_context.cpp
+reach_codec.cpp
+reach_cascade.cpp
+Generando c�digo...
+test_reach_actuator — libreach L3 actuator / persistence / eviction
+
+TOTAL: 26 passed, 0 failed
+libreach complete gate: PASS
+
+--- libnatmap ---
+test_d0_contracts.cpp
+test_d0_contracts: 25 checks, 0 failures
+test_state_machine.cpp
+natmap_state.cpp
+Generando c�digo...
+test_state_machine: 182789 checks, 0 failures
+test_mapping_codecs.cpp
+natpmp_codec.cpp
+pcp_codec.cpp
+Generando c�digo...
+test_mapping_codecs: 50 checks, 0 failures
+test_lease_policy.cpp
+natmap_policy.cpp
+Generando c�digo...
+test_lease_policy: 73 checks, 0 failures
+test_nat_chain.cpp
+natmap_policy.cpp
+natmap_chain.cpp
+Generando c�digo...
+test_nat_chain: 30 checks, 0 failures
+test_ownership_ledger.cpp
+ownership_ledger.cpp
+Generando c�digo...
+test_ownership_ledger: 42 checks, 0 failures
+libnatmap complete gate: PASS
+
+--- Crypto++ Release x64 dependency ---
+
+--- libkad6 ---
+test_kad6_smoke.cpp
+--- running build\test_kad6_smoke.exe ---
+test_kad6_smoke: 14 passed, 0 failed
+test_kad6_address.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_address.exe ---
+test_kad6_address: 51 passed, 0 failed
+test_kad6_asn.cpp
+kad6_asn.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_asn.exe ---
+test_kad6_asn: 4227 passed, 0 failed
+test_kad6_bootstrap.cpp
+kad6_bootstrap.cpp
+kad6_records.cpp
+kad6_endpoint.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_bootstrap.exe ---
+test_kad6_bootstrap: 10299 passed, 0 failed
+test_kad6_role.cpp
+kad6_role.cpp
+kad6_records.cpp
+kad6_endpoint.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_role.exe ---
+test_kad6_role: 17 passed, 0 failed
+test_kad6_frame.cpp
+kad6_frame.cpp
+Generando c�digo...
+--- running build\test_kad6_frame.exe ---
+  (fuzz: 0/1000 buffers decoded Ok)
+test_kad6_frame: 1054 passed, 0 failed
+test_kad6_gateway.cpp
+kad6_gateway.cpp
+kad6_hints.cpp
+kad6_vep.cpp
+kad6_ed2k_policy.cpp
+kad6_ticket.cpp
+kad6_endpoint.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_gateway.exe ---
+test_kad6_gateway: 72 passed, 0 failed
+test_kad6_tags.cpp
+kad6_tags.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_tags.exe ---
+test_kad6_tags: 55 passed, 0 failed
+test_kad6_ticket.cpp
+kad6_ticket.cpp
+kad6_endpoint.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_ticket.exe ---
+test_kad6_ticket: 68 passed, 0 failed
+test_kad6_records.cpp
+kad6_records.cpp
+kad6_endpoint.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_records.exe ---
+test_kad6_records: 170 passed, 0 failed
+test_kad6_shaped_bulk.cpp
+kad6_shaped_bulk.cpp
+Generando c�digo...
+--- running build\test_kad6_shaped_bulk.exe ---
+test_kad6_shaped_bulk: 145 passed, 0 failed
+test_kad6_shaper.cpp
+kad6_shaper.cpp
+Generando c�digo...
+--- running build\test_kad6_shaper.exe ---
+kad6 class-5 scheduler tests: 199 checks, PASS
+test_kad6_path.cpp
+kad6_path.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_path.exe ---
+kad6 strict path tests: 32 checks, PASS
+test_kad6_search.cpp
+kad6_search.cpp
+kad6_tags.cpp
+kad6_ticket.cpp
+kad6_endpoint.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_search.exe ---
+test_kad6_search: 124 passed, 0 failed
+test_kad6_live_search.cpp
+kad6_live_search.cpp
+kad6_search.cpp
+kad6_tags.cpp
+kad6_ticket.cpp
+kad6_endpoint.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_live_search.exe ---
+kad6 live-search mapping: 25 passed, 0 failed
+test_kad6_economy.cpp
+kad6_economy.cpp
+Generando c�digo...
+--- running build\test_kad6_economy.exe ---
+test_kad6_economy: 90 passed, 0 failed
+test_kad6_quota.cpp
+kad6_quota.cpp
+Generando c�digo...
+--- running build\test_kad6_quota.exe ---
+test_kad6_quota: 65 passed, 0 failed
+test_kad6_exit_notice.cpp
+kad6_exit_notice.cpp
+kad6_tags.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_exit_notice.exe ---
+test_kad6_exit_notice: 16 passed, 0 failed
+test_kad6_hardening.cpp
+kad6_hardening.cpp
+Generando c�digo...
+--- running build\test_kad6_hardening.exe ---
+test_kad6_hardening: 61 passed, 0 failed
+test_kad6_release.cpp
+kad6_release.cpp
+Generando c�digo...
+--- running build\test_kad6_release.exe ---
+test_kad6_release: 8 passed, 0 failed
+test_kad6_lease.cpp
+kad6_lease.cpp
+kad6_endpoint.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_lease.exe ---
+test_kad6_lease: 8415 passed, 0 failed
+test_kad6_frontdoor.cpp
+kad6_frontdoor.cpp
+Generando c�digo...
+--- running build\test_kad6_frontdoor.exe ---
+G10: attempts=5000 peak_slots=512 capacity_rejected=4488 slowloris_timed_out=513
+G10-retry: invalid_attempts=5000 pre_cookie_slots=0 anonymous=480 reserved=32
+G11: target_backends=2 isolation_backends=1 streams=3 fanout=0 stable_pins=3 fair_after_interleave=1
+K6-5 front-door gates G10/G11: PASS
+test_kad6_publish.cpp
+kad6_publish.cpp
+kad6_tags.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_publish.exe ---
+test_kad6_publish: 5089 passed, 0 failed
+test_kad6_store.cpp
+kad6_store.cpp
+kad6_routing.cpp
+kad6_records.cpp
+kad6_endpoint.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_store.exe ---
+test_kad6_store: 23 passed, 0 failed
+test_kad6_routing.cpp
+kad6_routing.cpp
+kad6_records.cpp
+kad6_endpoint.cpp
+kad6_address.cpp
+Generando c�digo...
+--- running build\test_kad6_routing.exe ---
+test_kad6_routing: 4411 passed, 0 failed
+test_kad6_vectors.cpp
+kad6_address.cpp
+kad6_endpoint.cpp
+kad6_frame.cpp
+kad6_tags.cpp
+kad6_ticket.cpp
+kad6_records.cpp
+kad6_shaped_bulk.cpp
+Generando c�digo...
+--- running build\test_kad6_vectors.exe ---
+test_kad6_vectors: 33 passed, 0 failed
+test_kad6_crypto_vectors.cpp
+kad6_cryptopp_test_adapter.cpp
+kad6_address.cpp
+kad6_endpoint.cpp
+kad6_ticket.cpp
+kad6_records.cpp
+Generando c�digo...
+--- running build\test_kad6_crypto_vectors.exe ---
+test_kad6_crypto_vectors: 44 passed, 0 failed
+test_kad6_quota_crypto.cpp
+Kad6QuotaCrypto.cpp
+NodeIdentityStorage.cpp
+kad6_quota.cpp
+Generando c�digo...
+--- running build\test_kad6_quota_crypto.exe ---
+test_kad6_quota_crypto: 15 passed, 0 failed
+test_kad6_exit_notice_server.cpp
+Kad6ExitNoticeServer.cpp
+Generando c�digo...
+--- running build\test_kad6_exit_notice_server.exe ---
+Kad6 exit notice server: 16/16 checks passed
+Kad6 vectors: 7 files, 17 vectors, schema and hex OK
+fuzz_runner.cpp
+fuzz_address.cpp
+fuzz_asn.cpp
+fuzz_bootstrap.cpp
+fuzz_frame.cpp
+fuzz_gateway.cpp
+fuzz_lease.cpp
+fuzz_path.cpp
+fuzz_publish.cpp
+fuzz_store.cpp
+fuzz_tags.cpp
+fuzz_ticket.cpp
+fuzz_records.cpp
+fuzz_routing.cpp
+fuzz_shaped.cpp
+kad6_address.cpp
+kad6_asn.cpp
+kad6_bootstrap.cpp
+kad6_endpoint.cpp
+kad6_frame.cpp
+Generando c�digo...
+Compilando...
+kad6_gateway.cpp
+kad6_hints.cpp
+kad6_vep.cpp
+kad6_ed2k_policy.cpp
+kad6_lease.cpp
+kad6_path.cpp
+kad6_publish.cpp
+kad6_store.cpp
+kad6_tags.cpp
+kad6_ticket.cpp
+kad6_records.cpp
+kad6_routing.cpp
+kad6_shaped_bulk.cpp
+Generando c�digo...
+--- running build\fuzz_runner.exe ---
+fuzz_address: 100000 iterations, 117729 checks, max-in=64, max-out=0, rss=3476 KiB (delta=8), private=512 KiB (delta=0)
+fuzz_asn    : 100000 iterations, 3094 checks, max-in=8169, max-out=32, rss=3544 KiB (delta=56), private=552 KiB (delta=40)
+fuzz_bootstrap: 100000 iterations, 363 checks, max-in=65383, max-out=5632, rss=3944 KiB (delta=400), private=992 KiB (delta=440)
+fuzz_frame  : 100000 iterations, 108112 checks, max-in=4096, max-out=4, rss=3860 KiB (delta=0), private=892 KiB (delta=0)
+fuzz_gateway: 100000 iterations, 1200000 checks, max-in=261217, max-out=0, rss=3884 KiB (delta=24), private=880 KiB (delta=0)
+fuzz_lease  : 100000 iterations, 34341 checks, max-in=4094, max-out=96, rss=4004 KiB (delta=120), private=1316 KiB (delta=436)
+fuzz_path   : 100000 iterations, 9824 checks, max-in=65337, max-out=128, rss=4028 KiB (delta=24), private=1004 KiB (delta=0)
+fuzz_publish: 100000 iterations, 57137 checks, max-in=70000, max-out=3, rss=4040 KiB (delta=12), private=1004 KiB (delta=0)
+fuzz_store  : 100000 iterations, 2990 checks, max-in=1232, max-out=0, rss=4148 KiB (delta=108), private=1324 KiB (delta=320)
+fuzz_tags   : 100000 iterations, 111272 checks, max-in=4096, max-out=2, rss=4160 KiB (delta=12), private=1324 KiB (delta=0)
+fuzz_ticket : 100000 iterations, 115039 checks, max-in=1016, max-out=184, rss=4184 KiB (delta=24), private=1324 KiB (delta=0)
+fuzz_records: 100000 iterations, 49387 checks, max-in=4094, max-out=96, rss=4256 KiB (delta=72), private=1328 KiB (delta=4)
+fuzz_routing: 100000 iterations, 2 checks, max-in=4092, max-out=0, rss=4260 KiB (delta=4), private=1328 KiB (delta=0)
+fuzz_shaped : 100000 iterations, 126466 checks, max-in=19988, max-out=16510, rss=4232 KiB (delta=0), private=1328 KiB (delta=0)
+fuzz_runner: 1400000 total iterations, 0 failures, peak RSS=4292 KiB, final RSS delta=764 KiB
+fuzz_runner.cpp
+fuzz_address.cpp
+fuzz_asn.cpp
+fuzz_bootstrap.cpp
+fuzz_frame.cpp
+fuzz_gateway.cpp
+fuzz_lease.cpp
+fuzz_path.cpp
+fuzz_publish.cpp
+fuzz_store.cpp
+fuzz_tags.cpp
+fuzz_ticket.cpp
+fuzz_records.cpp
+fuzz_routing.cpp
+fuzz_shaped.cpp
+kad6_address.cpp
+kad6_asn.cpp
+kad6_bootstrap.cpp
+kad6_endpoint.cpp
+kad6_frame.cpp
+Generando c�digo...
+Compilando...
+kad6_gateway.cpp
+kad6_hints.cpp
+kad6_vep.cpp
+kad6_ed2k_policy.cpp
+kad6_lease.cpp
+kad6_path.cpp
+kad6_publish.cpp
+kad6_store.cpp
+kad6_tags.cpp
+kad6_ticket.cpp
+kad6_records.cpp
+kad6_routing.cpp
+kad6_shaped_bulk.cpp
+Generando c�digo...
+--- running build\fuzz_runner_asan.exe ---
+fuzz_address: 100000 iterations, 117729 checks, max-in=64, max-out=0, rss=17328 KiB (delta=5980), private=59100 KiB (delta=9668)
+fuzz_asn    : 100000 iterations, 3094 checks, max-in=8169, max-out=32, rss=41284 KiB (delta=23864), private=89124 KiB (delta=30024)
+fuzz_bootstrap: 100000 iterations, 363 checks, max-in=65383, max-out=5632, rss=65088 KiB (delta=23804), private=114528 KiB (delta=25404)
+fuzz_frame  : 100000 iterations, 108112 checks, max-in=4096, max-out=4, rss=68032 KiB (delta=2944), private=118668 KiB (delta=4140)
+fuzz_gateway: 100000 iterations, 1200000 checks, max-in=261217, max-out=0, rss=87468 KiB (delta=19432), private=139028 KiB (delta=20360)
+fuzz_lease  : 100000 iterations, 34341 checks, max-in=4094, max-out=96, rss=97220 KiB (delta=9752), private=148868 KiB (delta=9840)
+fuzz_path   : 100000 iterations, 9824 checks, max-in=65337, max-out=128, rss=100124 KiB (delta=2904), private=158232 KiB (delta=9364)
+fuzz_publish: 100000 iterations, 57137 checks, max-in=70000, max-out=3, rss=116208 KiB (delta=16080), private=168272 KiB (delta=10040)
+fuzz_store  : 100000 iterations, 2990 checks, max-in=1232, max-out=0, rss=136572 KiB (delta=20364), private=188756 KiB (delta=20484)
+fuzz_tags   : 100000 iterations, 111272 checks, max-in=4096, max-out=2, rss=137256 KiB (delta=680), private=189476 KiB (delta=720)
+fuzz_ticket : 100000 iterations, 115039 checks, max-in=1016, max-out=184, rss=156592 KiB (delta=19336), private=211268 KiB (delta=21792)
+fuzz_records: 100000 iterations, 49387 checks, max-in=4094, max-out=96, rss=160344 KiB (delta=3752), private=215304 KiB (delta=4036)
+fuzz_routing: 100000 iterations, 2 checks, max-in=4092, max-out=0, rss=163660 KiB (delta=3316), private=218264 KiB (delta=2960)
+fuzz_shaped : 100000 iterations, 126466 checks, max-in=19988, max-out=16510, rss=183112 KiB (delta=19448), private=238752 KiB (delta=20488)
+fuzz_runner: 1400000 total iterations, 0 failures, peak RSS=183112 KiB, final RSS delta=171764 KiB
+protocol registry: 180 entries, 180 fork symbols in code
+OK: registry is internally consistent and matches code.
+libkad6 complete gate: PASS
+
+--- eSE npm tests ---
+npm warn deprecated prebuild-install@7.1.1: No longer maintained. Please contact the author of the relevant native addon; alternatives are available.
+
+added 158 packages in 3s
+
+> eSE@9.1.0-rc.2 test
+> npm run test:live
+
+
+> eSE@9.1.0-rc.2 test:live
+> node --test test/live_tv_regression.test.js
+
+✔ browser players use the packaged HLS runtime and guard missing support (2.8255ms)
+✔ first-run action points at the real local watch route (1.3761ms)
+✔ category and language aliases are canonical and searchable (10.5883ms)
+✔ DirectShow input validation rejects device-name injection (0.4075ms)
+✔ legacy start routes are bridged to the P2P broadcaster (0.5923ms)
+✔ C++ broadcaster rolls back failed prebuffer and removes HLS output (2.5611ms)
+✔ legacy C++ HLS route falls back to the active viewer stream namespace (1.2745ms)
+✔ simultaneous broadcast and viewing keep native identities and buffers isolated (3.6103ms)
+✔ directory deduplicates canonical stream keys and never reuses a local thumbnail for a remote channel (1.643ms)
+✔ player lifecycle messages are scoped to the viewed stream key (2.1501ms)
+✔ controlled 30 fps sources align two-second GOPs with independent HLS segments (1.1603ms)
+✔ hardware encoder selection proves the GPU can initialize and falls back safely (0.4961ms)
+✔ package manifest includes every offline player asset (2.017ms)
+✔ release dashboard is loopback-only and legacy updates fail closed (2.0881ms)
+✔ postponed dashboard remote access is inert and leaks no pairing state (9.0431ms)
+✔ restarting the dashboard does not delete C++-owned HLS output (0.3462ms)
+✔ Kad2 and Kad6 are independently selectable with dual mode as the default (5.6365ms)
+✔ hole-punch keeps Kad identity separate from the eD2K user hash (1.3017ms)
+✔ v9 capabilities and remote administration fail closed by default (12.9048ms)
+✔ Live send queues are bounded and ratio drops release their packet (1.6023ms)
+✔ download session expiry is reported as failure (0.3774ms)
+✔ IPv6, capability and share-link regressions remain guarded (9.3384ms)
+✔ received HLS is local-only unless the remote request is authenticated (2.0533ms)
+✔ dashboard rate limiting is bounded and only trusts configured proxies (4.6578ms)
+✔ nodes.dat bootstrap is disabled by default and requires verified deterministic input (17.7954ms)
+✔ source loss schedules bounded rotating peer replenishment (1.6412ms)
+✔ Adaptive is Kad6-first, auto-seeds, and reports the real route state (4.2055ms)
+✔ Kad6 Private and Strict paths fail closed at their declared hop counts (2.4243ms)
+✔ --selftest verifies signed chunk ingest and returns failure to the caller (3.963ms)
+✔ cross-site browser requests cannot inherit localhost trust (0.5131ms)
+✔ malformed percent escapes in cookies fail closed instead of throwing (0.3564ms)
+✔ request body reader enforces its byte limit (1.8126ms)
+✔ log and download UI render untrusted text without HTML event handlers (0.6533ms)
+✔ download metadata reaches the eMule API adapter (0.3325ms)
+✔ URL sources resolve publicly and are pinned before FFmpeg starts (1.4321ms)
+ℹ tests 35
+ℹ suites 0
+ℹ pass 35
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 210.8512
+# npm audit report
+
+tar  <=7.5.20
+Severity: moderate
+node-tar: Uncontrolled recursion in mapHas/filesFilter allows uncatchable stack-overflow DoS via crafted long-path tar with member selection - https://github.com/advisories/GHSA-r292-9mhp-454m
+fix available via `npm audit fix`
+node_modules/tar
+
+1 moderate severity vulnerability
+
+To address all issues, run:
+  npm audit fix
+
+--- srchybrid standalone tests ---
+test_livefec.cpp
+LiveFec.cpp
+Generando c�digo...
+=== LiveFec unit tests (E8.4) ===
+[1] GF(256) field axioms
+[2] RS encode/decode round-trips (exhaustive small, randomized large)
+[3] worst case (drop exactly r, incl. all-in-data) + [4] extra symbols
+[5] realistic ~500 KB CHUNK_V2 segment through FEC
+[6] multi-block 3 MB segment (12000 kbps operating point)
+
+21659 checks passed, 0 failed.
+ALL PASS
+test_livebulk.cpp
+LiveBulk.cpp
+LiveFec.cpp
+Generando c�digo...
+=== LiveBulk unit tests (wire + E8.2 multi-block) ===
+[1] wire round-trips (BULK_CELL / BULK_DATA / BULK_ACK)
+[2] multi-block layout (segment -> blocks)
+[3] multi-block segment round-trip (random + worst-case drops)
+[4] over-loss decode fails gracefully
+[5] anti-replay sliding window (B2)
+
+183 checks passed, 0 failed.
+ALL PASS
+test_livepeerrefresh.cpp
+Live peer refresh policy tests passed.
+test_liveratelimiter.cpp
+Live request limiter tests passed.
+test_upload_limit_policy.cpp
+upload limit policy: PASS
+test_known2_offsets.cpp
+known2.met 64-bit offsets: PASS
+test_partfile_io_policy.cpp
+eMule 0.70b part-file I/O policy: PASS
+test_core_regression_policy.cpp
+eMule 0.70b core regression policies: PASS
+test_shared_file_intake_policy.cpp
+shared file intake policy: PASS
+test_shared_file_intake_policy_ab.cpp
+AI-I03 A/B baseline=de8e27e2029044d533f7090f173c95856fe4635a corpus=31 ai_fp=0 ai_fn=7 ese_fp=0 ese_fn=0
+AI-I03 A/B: PASS
+test_kad_protocol_policy.cpp
+Kad protocol regression policies: PASS
+test_kad_network_policy.cpp
+Kad network policy: PASS
+test_holepunch_cookie.cpp
+test_holepunch_cookie — P0 stateless return-routability
+  GOLDEN cookie = f3e8161932a641a983b466abcd0c6e05
+
+TOTAL: 14 passed, 0 failed
+srchybrid standalone gate: PASS
+
+--- librelaycore release ---
+relay_core.cpp
+krp_control.cpp
+krp_tcp_wire.cpp
+krp_auth.cpp
+krp_session.cpp
+krp_authority.cpp
+krp_flow.cpp
+epr_lease.cpp
+Generando c�digo...
+test_relay_core.cpp
+test_relay_core: 6 passed, 0 failed
+test_krp_control.cpp
+  deterministic fuzz: 100000 inputs, 1728 valid frames
+test_krp_control: 12136 passed, 0 failed
+test_krp_tcp_wire.cpp
+test_krp_tcp_wire: 30335 passed, 10000 bounded data round trips
+test_krp_session.cpp
+  deterministic state fuzz: 100000 actions
+test_krp_session: 300047 passed, 0 failed
+test_krp_auth.cpp
+  deterministic auth fuzz: 10000 transcripts
+test_krp_auth: 30013 passed, 0 failed
+test_krp_flow.cpp
+  deterministic flow fuzz: 100000 actions
+test_krp_flow: 309661 passed, 0 failed
+test_kad6_authority_adapter.cpp
+kad6_authority_adapter.cpp
+kad6_ticket.cpp
+kad6_endpoint.cpp
+kad6_address.cpp
+Generando c�digo...
+test_kad6_authority_adapter: 5 passed, 0 failed
+test_epr_lease.cpp
+  deterministic lease fuzz: 100000 actions
+test_epr_lease: 300027 passed, 0 failed
+test_krp_p1_gate.cpp
+test_krp_p1_gate: 14 passed, 0 failed
+
+--- librelaycore ASan ---
+relay_core.cpp
+krp_control.cpp
+krp_tcp_wire.cpp
+krp_auth.cpp
+krp_session.cpp
+krp_authority.cpp
+krp_flow.cpp
+epr_lease.cpp
+Generando c�digo...
+test_relay_core.cpp
+test_relay_core: 6 passed, 0 failed
+test_krp_control.cpp
+  deterministic fuzz: 100000 inputs, 1728 valid frames
+test_krp_control: 12136 passed, 0 failed
+test_krp_tcp_wire.cpp
+test_krp_tcp_wire: 30335 passed, 10000 bounded data round trips
+test_krp_session.cpp
+  deterministic state fuzz: 100000 actions
+test_krp_session: 300047 passed, 0 failed
+test_krp_auth.cpp
+  deterministic auth fuzz: 10000 transcripts
+test_krp_auth: 30013 passed, 0 failed
+test_krp_flow.cpp
+  deterministic flow fuzz: 100000 actions
+test_krp_flow: 309661 passed, 0 failed
+test_kad6_authority_adapter.cpp
+kad6_authority_adapter.cpp
+kad6_ticket.cpp
+kad6_endpoint.cpp
+kad6_address.cpp
+Generando c�digo...
+test_kad6_authority_adapter: 5 passed, 0 failed
+test_epr_lease.cpp
+  deterministic lease fuzz: 100000 actions
+test_epr_lease: 300027 passed, 0 failed
+test_krp_p1_gate.cpp
+test_krp_p1_gate: 14 passed, 0 failed
+
+--- relayedge release and ASan ---
+main.cpp
+edge_runtime.cpp
+edge_session_table.cpp
+edge_auth.cpp
+edge_policy.cpp
+edge_allocator.cpp
+edge_daemon.cpp
+wss_h1.cpp
+wss_carrier.cpp
+tls_tcp_carrier.cpp
+krp_p4_crypto.cpp
+krp_tcp_session.cpp
+Generando c�digo...
+Generando c�digo
+Generaci�n de c�digo finalizada
+test_p2.cpp
+edge_runtime.cpp
+edge_session_table.cpp
+edge_auth.cpp
+edge_policy.cpp
+edge_allocator.cpp
+edge_daemon.cpp
+wss_h1.cpp
+wss_carrier.cpp
+tls_tcp_carrier.cpp
+krp_p4_crypto.cpp
+krp_tcp_session.cpp
+Generando c�digo...
+Generando c�digo
+Generaci�n de c�digo finalizada
+relayedge P4: PASS (KRP 1.0, default OFF, explicit activation required)
+relayedge config: VALID (lab-loopback 127.0.0.1:0, sessions=256)
+relayedge health: HEALTHY (loopback port 50910)
+relayedge shutdown: DRAINED (no listener orphan)
+relayedge P2: PASS (30145 checks, real TLS/WSS loopback)
+test_p2.cpp
+edge_runtime.cpp
+edge_session_table.cpp
+edge_auth.cpp
+edge_policy.cpp
+edge_allocator.cpp
+edge_daemon.cpp
+wss_h1.cpp
+wss_carrier.cpp
+tls_tcp_carrier.cpp
+Generando c�digo...
+mbedTLS.lib(psa_crypto.obj) : se encontr� .netmodule MSIL o un m�dulo compilado con /GL; reiniciando la vinculaci�n con /LTCG; agregue /LTCG a la l�nea de comandos de v�nculo para mejorar el rendimiento del vinculador
+Generando c�digo
+Generaci�n de c�digo finalizada
+relayedge P2: PASS (30145 checks, real TLS/WSS loopback)
+RELAYEDGE P2 GATE BUILD PASS
+
+--- librelayclient release and ASan ---
+relay_client.cpp
+test_relay_client.cpp
+LINK : se especific� /LTCG pero no se requiere generaci�n de c�digo; quite /LTCG de la l�nea de comandos de v�nculo para mejorar el rendimiento del vinculador
+librelayclient P3 tests passed: 70697 checks, 100000 concurrent queue actions, 10000 lifetime cycles
+test_relay_wss_transport.cpp
+relay_client.cpp
+relay_wss_transport.cpp
+wss_h1.cpp
+wss_carrier.cpp
+tls_tcp_carrier.cpp
+krp_p4_crypto.cpp
+Generando c�digo...
+Generando c�digo
+Generaci�n de c�digo finalizada
+librelayclient P3 TLS/WSS transport passed: 35 checks, worker-to-main queue only
+test_p4_e2e.cpp
+relay_client.cpp
+relay_wss_transport.cpp
+wss_h1.cpp
+wss_carrier.cpp
+tls_tcp_carrier.cpp
+krp_p4_crypto.cpp
+edge_runtime.cpp
+edge_session_table.cpp
+edge_auth.cpp
+edge_policy.cpp
+edge_allocator.cpp
+edge_daemon.cpp
+krp_tcp_session.cpp
+Generando c�digo...
+Generando c�digo
+Generaci�n de c�digo finalizada
+P4 E2E PASS: 52 checks; real TLS/WSS auth, lease, server flow, callback, peer, IDCHANGE and 256 KiB bidirectional data
+test_relay_client.cpp
+relay_client.cpp
+Generando c�digo...
+librelayclient P3 tests passed: 70697 checks, 100000 concurrent queue actions, 10000 lifetime cycles
+test_relay_wss_transport.cpp
+relay_client.cpp
+relay_wss_transport.cpp
+wss_h1.cpp
+wss_carrier.cpp
+tls_tcp_carrier.cpp
+krp_p4_crypto.cpp
+Generando c�digo...
+mbedTLS.lib(psa_crypto.obj) : se encontr� .netmodule MSIL o un m�dulo compilado con /GL; reiniciando la vinculaci�n con /LTCG; agregue /LTCG a la l�nea de comandos de v�nculo para mejorar el rendimiento del vinculador
+Generando c�digo
+Generaci�n de c�digo finalizada
+librelayclient P3 TLS/WSS transport passed: 35 checks, worker-to-main queue only
+LIBRELAYCLIENT P3 GATE BUILD PASS
+
+eSE test suite PASS: All

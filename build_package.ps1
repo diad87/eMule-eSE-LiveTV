@@ -10,6 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not $RepoRoot) { $RepoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path } }
 $RepoRoot = (Resolve-Path $RepoRoot).Path
+. (Join-Path $RepoRoot 'tools\release_zip_integrity.ps1')
 
 $preflightArgs = @{
     ReleaseTag = $ReleaseTag
@@ -200,117 +201,11 @@ function Copy-GitTrackedTopLevelFiles(
 }
 function Hash([string]$Path) { return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToUpperInvariant() }
 
-function Get-FileHashMap([string]$Root) {
-    $resolvedRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\')
-    $map = @{}
-    foreach ($file in Get-ChildItem -LiteralPath $resolvedRoot -Recurse -File -Force |
-        Sort-Object FullName) {
-        if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "Archive input contains a reparse-point file: $($file.FullName)"
-        }
-        $relative = $file.FullName.Substring(
-            $resolvedRoot.Length + 1
-        ).Replace('\', '/')
-        if ($map.ContainsKey($relative)) {
-            throw "Archive input contains a duplicate path: $relative"
-        }
-        $map[$relative] = Hash $file.FullName
-    }
-    return $map
-}
-
 function Assert-NoHiddenOrSystemEntries([string]$Root) {
     foreach ($entry in Get-ChildItem -LiteralPath $Root -Recurse -Force) {
         if (($entry.Attributes -band [IO.FileAttributes]::Hidden) -ne 0 -or
             ($entry.Attributes -band [IO.FileAttributes]::System) -ne 0) {
             throw "Archive input contains a hidden/system entry: $($entry.FullName)"
-        }
-    }
-}
-
-function Assert-ZipMatchesPackage([string]$SourceDirectory, [string]$Archive) {
-    $verifyRoot = Join-Path $releaseRoot (
-        '.zip-verify-' + [Guid]::NewGuid().ToString('N')
-    )
-    $resolvedVerify = [IO.Path]::GetFullPath($verifyRoot).TrimEnd('\') + '\'
-    if (-not $resolvedVerify.StartsWith(
-            $resolvedRelease, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "ZIP verification path escaped release root: $resolvedVerify"
-    }
-    try {
-        New-Item -ItemType Directory -Path $verifyRoot -Force | Out-Null
-        Expand-Archive -LiteralPath $Archive -DestinationPath $verifyRoot
-        $reparseDirectories = @(
-            Get-ChildItem -LiteralPath $verifyRoot -Recurse -Directory -Force |
-                Where-Object {
-                    ($_.Attributes -band
-                        [IO.FileAttributes]::ReparsePoint) -ne 0
-                }
-        )
-        if ($reparseDirectories.Count -ne 0) {
-            throw 'ZIP verification found a reparse-point directory'
-        }
-
-        $expected = Get-FileHashMap -Root $SourceDirectory
-        $actual = Get-FileHashMap -Root $verifyRoot
-        if ($expected.Count -ne $actual.Count) {
-            throw (
-                "ZIP file count mismatch: package=$($expected.Count), " +
-                "archive=$($actual.Count)"
-            )
-        }
-        foreach ($relative in $expected.Keys) {
-            if (-not $actual.ContainsKey($relative)) {
-                throw "ZIP is missing package file: $relative"
-            }
-            if ($actual[$relative] -ne $expected[$relative]) {
-                throw "ZIP content differs from package file: $relative"
-            }
-        }
-
-        $manifest = Join-Path $verifyRoot 'SHA256SUMS.txt'
-        if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
-            throw 'ZIP verification is missing SHA256SUMS.txt'
-        }
-        $manifestEntries = @{}
-        foreach ($line in Get-Content -LiteralPath $manifest) {
-            if ($line -notmatch '^([0-9A-Fa-f]{64})  ([^:]+)$') {
-                throw "Malformed ZIP manifest entry: $line"
-            }
-            $relative = $Matches[2].Replace('\', '/')
-            if ([IO.Path]::IsPathRooted($relative) -or
-                $relative -match '(^|/)\.\.?(/|$)') {
-                throw "Unsafe ZIP manifest path: $relative"
-            }
-            if ($manifestEntries.ContainsKey($relative)) {
-                throw "Duplicate ZIP manifest path: $relative"
-            }
-            $manifestEntries[$relative] = $Matches[1].ToUpperInvariant()
-        }
-        $payloadKeys = @($actual.Keys | Where-Object {
-                $_ -ne 'SHA256SUMS.txt'
-            })
-        if ($manifestEntries.Count -ne $payloadKeys.Count) {
-            throw 'ZIP manifest does not cover the exact archive payload'
-        }
-        foreach ($relative in $payloadKeys) {
-            if (-not $manifestEntries.ContainsKey($relative) -or
-                $manifestEntries[$relative] -ne $actual[$relative]) {
-                throw "ZIP manifest mismatch: $relative"
-            }
-        }
-    } finally {
-        if (Test-Path -LiteralPath $verifyRoot) {
-            Assert-NoReparseTree -Root $verifyRoot
-            $deleteTarget = [IO.Path]::GetFullPath(
-                $verifyRoot
-            ).TrimEnd('\') + '\'
-            if (-not $deleteTarget.StartsWith(
-                    $resolvedRelease,
-                    [StringComparison]::OrdinalIgnoreCase)) {
-                throw "Refusing to remove unsafe ZIP verification path"
-            }
-            Remove-Item -LiteralPath $verifyRoot -Recurse -Force
         }
     }
 }
@@ -507,7 +402,8 @@ $manifestLines | Out-File $manifestPath -Encoding ASCII
 Write-Host '[7/7] ZIP and external checksum'
 Assert-NoHiddenOrSystemEntries -Root $packageDir
 Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $zipPath -CompressionLevel Optimal -Force
-Assert-ZipMatchesPackage -SourceDirectory $packageDir -Archive $zipPath
+Test-ReleaseZipIntegrity -SourceDirectory $packageDir -Archive $zipPath `
+    -VerificationRoot $releaseRoot | Out-Null
 Write-Host 'ZIP content verification PASS'
 $zipHash = Hash $zipPath
 "$zipHash  $([IO.Path]::GetFileName($zipPath))" | Out-File "$zipPath.sha256" -Encoding ASCII

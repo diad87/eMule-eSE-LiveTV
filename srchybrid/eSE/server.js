@@ -62,20 +62,18 @@ if (!TEST_MODE) {
 
 // Auto-detect hardware encoder at startup
 const hwEncoderMod = require('./hw_encoder');
-if (!TEST_MODE) hwEncoderMod.detect(FFMPEG_PATH, TEMP_DIR);
+async function startServer() {
+if (!TEST_MODE) await hwEncoderMod.detect(FFMPEG_PATH, TEMP_DIR);
 let HW_ENCODER      = hwEncoderMod.HW_ENCODER;
 let HW_ENCODER_OPTS = hwEncoderMod.HW_ENCODER_OPTS;
-
 const CACHE_DIR    = path.join(EMULE_INCOMING, 'film_cache');
 const SETTINGS_FILE = path.join(CACHE_DIR, 'settings.json');
-
-
 // Ensure cache dir exists
 try { if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch(e) {}
 
 // ━━━ MODULE WRAPPERS (only wrappers used by routes/pages ctx) ━━━━━━━━━━━━━
-function resolveMediaFile(fileName) { return mediaResolver.resolveMediaFile(fileName, EMULE_INCOMING, EMULE_TEMP); }
-function getDownloads() { return mediaResolver.listDownloads(EMULE_TEMP); }
+function resolveMediaFile(fileName, options) { return mediaResolver.resolveMediaFile(fileName, EMULE_INCOMING, EMULE_TEMP, options); }
+function getDownloads(options) { return mediaResolver.listDownloads(EMULE_TEMP, options); }
 
 function loadSettings() { return utils.loadSettings(SETTINGS_FILE); }
 function saveSettings(s) { return utils.saveSettings(s, SETTINGS_FILE); }
@@ -97,13 +95,12 @@ function emuleDownload(h, cb, meta) { return emuleApi.emuleDownload(h, cb, meta)
 function emuleTransferAction(params, cb) { return emuleApi.emuleTransferAction(params, cb); }
 function emuleAddEd2kLink(l, cb){ return emuleApi.emuleAddEd2kLink(l, cb); }
 function autoLoginEmule()       { return emuleApi.autoLoginEmule(); }
-
 // NOTE: pass-through to tmdb_api's full 5-arg signature
 // (title, cacheDir, callback, rawFilename, settings). The old 2-arg wrapper
 // shifted CACHE_DIR into `callback` when movies_routes called it with 5 args
 // -> "TypeError: callback is not a function". Keep the arity aligned.
 function fetchAndCacheMovie(title, cacheDir, cb, rawFilename, settings) { return tmdbApi.fetchAndCacheMovie(title, cacheDir, cb, rawFilename, settings); }
-function getCompletedFiles() { return mediaResolver.getCompletedFiles(EMULE_INCOMING); }
+function getCompletedFiles(options) { return mediaResolver.getCompletedFiles(EMULE_INCOMING, options); }
 
 // Auto-login eMule + keepalive
 setTimeout(autoLoginEmule, 3000);
@@ -116,8 +113,6 @@ emuleApi.onRevived(function(epoch) {
   console.log('[lifecycle] eMule revived (epoch=' + epoch + ').');
   setTimeout(autoLoginEmule, 2000);
 });
-
-
 // Pages (HTML + static routes)
 const miscPages    = require('./pages/misc_pages');
 const connectPage  = require('./pages/connect_page');
@@ -126,6 +121,7 @@ const appPage      = require('./pages/app_page');
 const mainPage     = require('./pages/main_page');
 const explorePage  = require('./pages/explore_page');
 const mylistPage   = require('./pages/mylist_page');
+const debugPage    = require('./pages/debug_page');
 
 //     Routes (API handlers)                                                  
 const moviesRoutes   = require('./routes/movies_routes');
@@ -134,13 +130,11 @@ const streamPart     = require('./routes/stream_part');
 const streamCompleted = require('./routes/stream_completed');
 const systemRoutes   = require('./routes/system_routes');
 const v1Routes       = require('./routes/v1_routes');
+const { createHttpDomainRouter } = require('./routes/http_domain_router');
+const { createStaticRoutes } = require('./routes/static_routes');
 
 // Init pages with shared context (done after all helpers are defined)
 // See initPages() call at bottom of file
-
-
-
-
 const activeStreams = {};
 
 // Módulo de limpieza — movido a cleanup.js
@@ -218,155 +212,19 @@ v1Routes.init({
     hwEncoderOpts: HW_ENCODER_OPTS
   }
 });
-
-
 // Init tunnel (must be before server handles requests that use tunnel.*)
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost:' + PORT);
-
-  if (!security.apply(url, req, res)) return;
-
-  // ━━━ Debug log endpoint + /debug viewer page (always-on, no auth) ━━━
-  if (debugLog.handle(url, req, res)) return;
-  if (url.pathname === '/debug' || url.pathname === '/debug/') {
-    res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
-    res.end(`<!doctype html><html><head><meta charset="utf-8"><title>eSE/eMule debug log</title>
-<style>
-body{font-family:Segoe UI,Arial,sans-serif;margin:0;padding:0;background:#111;color:#ddd}
-header{padding:8px 14px;background:#1d1d1d;border-bottom:1px solid #333;display:flex;align-items:center;gap:18px}
-h1{margin:0;font-size:14px;font-weight:600}
-.tabs{display:flex;gap:4px}
-.tabs button{background:#222;color:#ddd;border:1px solid #333;padding:4px 12px;cursor:pointer;font-size:12px}
-.tabs button.active{background:#0066b3;border-color:#0088dd}
-.controls{margin-left:auto;font-size:12px;display:flex;gap:10px;align-items:center}
-.controls label{cursor:pointer}
-pre{margin:0;padding:10px 14px;height:calc(100vh - 50px);overflow:auto;font-family:Consolas,monospace;font-size:11px;line-height:1.4;white-space:pre;color:#bbb}
-pre b{color:#fff}
-.hl-RTMP{color:#88c0ff}.hl-CHUNK{color:#9bd96b}.hl-RECV{color:#9bd96b}.hl-MGR{color:#fdd835}
-.hl-KAD{color:#ce93d8}.hl-DIAL{color:#ffab40}.hl-HOLE{color:#ff7043}.hl-WARN{color:#ffb74d}.hl-ERR{color:#ef5350}
-</style></head><body>
-<header>
-  <h1>Debug log</h1>
-  <div class="tabs">
-    <button id="t-emu" class="active" onclick="setSrc('emu')">eMule (C++)</button>
-    <button id="t-ese" onclick="setSrc('ese')">eSE (Node)</button>
-    <button id="t-both" onclick="setSrc('both')">Both</button>
-  </div>
-  <div class="controls">
-    <label><input type="checkbox" id="auto" checked> auto-refresh 1s</label>
-    <button onclick="load()">Refresh</button>
-    <span id="status"></span>
-  </div>
-</header>
-<pre id="log">loading...</pre>
-<script>
-let src='emu', timer=null;
-function renderLog(pre,s){
-  const tags=/^\\[(RTMP|CHUNK|RECV|MGR|KAD|DIAL|HOLE|WARN|ERR)\\]$/;
-  const parts=String(s||'(empty)').split(/(\\[(?:RTMP|CHUNK|RECV|MGR|KAD|DIAL|HOLE|WARN|ERR)\\])/);
-  pre.textContent='';
-  for(let i=0;i<parts.length;i++){
-    const match=parts[i].match(tags);
-    if(match){
-      const b=document.createElement('b');
-      b.className='hl-'+match[1];
-      b.textContent=parts[i];
-      pre.appendChild(b);
-    }else{
-      pre.appendChild(document.createTextNode(parts[i]));
-    }
-  }
-}
-async function fetchOne(url, label){
-  try{
-    const r = await fetch(url, {cache:'no-store'});
-    const j = await r.json();
-    return (j.items||[]).map(l => label?(label+'  '+l):l);
-  } catch(e){ return ['(fetch '+url+' failed: '+e.message+')']; }
-}
-async function load(){
-  const st=document.getElementById('status'); st.textContent='loading...';
-  let items=[];
-  if(src==='emu')  items = await fetchOne('http://localhost:4711/api/live/log?n=200');
-  else if(src==='ese') items = await fetchOne('/api/ese/log?n=200');
-  else {
-    const [e,s] = await Promise.all([
-      fetchOne('http://localhost:4711/api/live/log?n=200', '[emu]'),
-      fetchOne('/api/ese/log?n=200', '[ese]')]);
-    items = e.concat(s).sort();
-  }
-  const pre=document.getElementById('log');
-  renderLog(pre,items.join('\\n'));
-  pre.scrollTop = pre.scrollHeight;
-  st.textContent = items.length+' lines · '+new Date().toLocaleTimeString();
-}
-function setSrc(s){
-  src=s;
-  document.getElementById('t-emu').classList.toggle('active', s==='emu');
-  document.getElementById('t-ese').classList.toggle('active', s==='ese');
-  document.getElementById('t-both').classList.toggle('active', s==='both');
-  load();
-}
-function startTimer(){ if(timer) clearInterval(timer); if(document.getElementById('auto').checked) timer=setInterval(load,1000); }
-document.getElementById('auto').onchange=startTimer;
-load(); startTimer();
-</script>
-</body></html>`);
-    return;
-  }
-
-  // ━━━ eSE LIVE routes (/api/live/*, /live/*) ━━━
-
-  // 2026-05-17: '/hls/' (with trailing slash) missed '/hls-local/...' so the
-  // per-stream HLS endpoint in channel_api.js never fired and self-viewing on
-  // the same PC failed silently with a generic 404. Use '/hls' to catch both.
-  if (url.pathname.startsWith('/api/live/') ||
-      url.pathname.startsWith('/live') ||
-      url.pathname.startsWith('/hls') ||
-      url.pathname === '/privacy' ||
-      url.pathname === '/api/eSE/update/check') {
-    const handled = liveApi.handleRoute(url, req, res, {
-      port: PORT,
-      ffmpegPath: FFMPEG_PATH,
-      hwEncoder: HW_ENCODER,
-      hwEncoderOpts: HW_ENCODER_OPTS
-    });
-    if (handled) return;
-  }
-  
-  
-    
-
-  // ── API routes ───────────────────────────────────
-  if (v1Routes.handle(url, req, res))        return;
-  if (moviesRoutes.handle(url, req, res))    return;
-  if (emuleRoutes.handle(url, req, res))     return;
-  if (streamCompleted.handle(url, req, res)) return;
-  if (streamPart.handle(url, req, res))      return;
-  if (systemRoutes.handle(url, req, res))    return;
-
-  // ── Page modules ───────────────────────────────────
-  if (miscPages.handle(url, req, res))   return;
-  if (connectPage.handle(url, req, res)) return;
-  if (searchPage.handle(url, req, res))  return;
-  if (appPage.handle(url, req, res))     return;
-  if (explorePage.handle(url, req, res)) return;
-  if (mylistPage.handle(url, req, res))  return;
-  if (mainPage.handle(url, req, res))    return;
-
-  // ── Static assets ─────────────────────────────────
-  if (url.pathname === '/emule_mascot.svg' || url.pathname === '/favicon.ico') {
-    const svgPath = path.join(__dirname, 'emule_mascot.svg');
-    if (fs.existsSync(svgPath)) {
-      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' });
-      fs.createReadStream(svgPath).pipe(res);
-      return;
-    }
-  }
-
-  // 404 fallback
-  res.writeHead(404); res.end('Not found');
+const routeHttpRequest = createHttpDomainRouter({
+  port: PORT,
+  security,
+  debugLog,
+  debugPage,
+  liveApi,
+  liveRouteContext: { port: PORT, ffmpegPath: FFMPEG_PATH, hwEncoder: HW_ENCODER, hwEncoderOpts: HW_ENCODER_OPTS },
+  apiRoutes: [v1Routes, moviesRoutes, emuleRoutes, streamCompleted, streamPart, systemRoutes],
+  pageRoutes: [miscPages, connectPage, searchPage, appPage, explorePage, mylistPage, mainPage],
+  staticRoutes: createStaticRoutes({ rootDir: __dirname })
 });
+const server = http.createServer(routeHttpRequest);
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log('');
@@ -382,8 +240,11 @@ server.listen(PORT, '127.0.0.1', () => {
 // HLS files belong to the C++ broadcast/view session.  Deleting them when the
 // dashboard restarts used to cut off an otherwise healthy eMule stream.  The
 // C++ manager now removes its own root and per-stream output on Stop/Leave.
-process.on('SIGINT',  () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
-process.on('SIGHUP',  () => process.exit(0));
 // Windows-specific: when parent (emule.exe) closes, child receives a CTRL_CLOSE
-// which becomes SIGHUP via Node's compat layer. Above handlers cover it.
+// which becomes SIGHUP via Node's compat layer. cleanup.js owns those signals.
+}
+
+startServer().catch(error => {
+  console.error('[startup] Fatal initialization error:', error);
+  process.exitCode = 1;
+});

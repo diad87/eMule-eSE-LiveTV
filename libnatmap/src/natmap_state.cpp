@@ -22,10 +22,7 @@ bool SameEndpoint(const Endpoint& left, const Endpoint& right) noexcept {
 }
 
 bool HasBothReachabilityEvidence(const PlaneSnapshot& snapshot) noexcept {
-    return snapshot.primary_evidence.kind == EvidenceKind::ServerHighId &&
-           snapshot.primary_evidence.IsCurrent(snapshot.generation) &&
-           snapshot.inbound_evidence.kind == EvidenceKind::InboundTcpAccept &&
-           snapshot.inbound_evidence.IsCurrent(snapshot.generation);
+    return snapshot.HasCompleteClassicHighIdEvidence();
 }
 
 } // namespace
@@ -40,11 +37,26 @@ bool IsSnapshotConsistent(const PlaneSnapshot& snapshot) noexcept {
         if (!snapshot.lease.IsStructurallyValid() ||
             snapshot.lease.generation != snapshot.generation ||
             !snapshot.advertised.IsUsable() ||
-            snapshot.advertised.port != snapshot.lease.granted_external_port)
+            snapshot.advertised.port !=
+                snapshot.lease.granted_external_port ||
+            !SameEndpoint(
+                snapshot.advertised,
+                snapshot.lease.public_endpoint))
+            return false;
+    }
+    if (snapshot.state == ReachabilityState::Verifying ||
+        snapshot.state == ReachabilityState::Reachable) {
+        if (!snapshot.verification_attempt.IsValid() ||
+            snapshot.verification_attempt.topology_generation !=
+                snapshot.generation ||
+            snapshot.verification_attempt.transport != Transport::Tcp ||
+            !SameEndpoint(
+                snapshot.verification_attempt.endpoint,
+                snapshot.advertised))
             return false;
     }
     if (snapshot.state == ReachabilityState::Reachable) {
-        if (!snapshot.primary_evidence.IsCurrent(snapshot.generation))
+        if (!HasBothReachabilityEvidence(snapshot))
             return false;
     }
     return true;
@@ -106,23 +118,35 @@ TransitionResult ApplyEvent(const PlaneSnapshot& current,
               current.state == ReachabilityState::Reachable) ||
             !current.lease.IsStructurallyValid() ||
             current.lease.generation != current.generation ||
-            !current.advertised.IsUsable())
+            !current.advertised.IsUsable() ||
+            !event.verification_attempt.IsValid() ||
+            event.verification_attempt.topology_generation !=
+                current.generation ||
+            event.verification_attempt.transport != Transport::Tcp ||
+            !SameEndpoint(
+                event.verification_attempt.endpoint,
+                current.advertised))
             return Reject(current, TransitionDisposition::Invalid);
         next.state = ReachabilityState::Verifying;
         next.reason = ReasonCode::None;
         next.primary_evidence = Evidence{};
+        next.inbound_evidence = Evidence{};
+        next.verification_attempt = event.verification_attempt;
         break;
 
     case EventType::VerificationSucceeded:
         if (current.state != ReachabilityState::Verifying ||
-            !event.primary_evidence.IsCurrent(current.generation) ||
+            !HasBothReachabilityEvidence(current) ||
+            event.primary_evidence.kind != EvidenceKind::None ||
+            event.inbound_evidence.kind != EvidenceKind::None ||
+            !event.verification_attempt.SameIdentity(
+                current.verification_attempt) ||
             !event.advertised.IsUsable() ||
+            !SameEndpoint(event.advertised, current.advertised) ||
             event.advertised.port != current.lease.granted_external_port)
             return Reject(current, TransitionDisposition::Invalid);
         next.state = ReachabilityState::Reachable;
         next.advertised = event.advertised;
-        next.primary_evidence = event.primary_evidence;
-        next.inbound_evidence = event.inbound_evidence;
         break;
 
     case EventType::RenewalDue:
@@ -135,7 +159,8 @@ TransitionResult ApplyEvent(const PlaneSnapshot& current,
         if (current.state != ReachabilityState::Renewing ||
             !event.lease.IsStructurallyValid() ||
             event.lease.generation != current.generation ||
-            event.lease.public_endpoint.port != current.advertised.port)
+            !SameEndpoint(
+                event.lease.public_endpoint, current.advertised))
             return Reject(current, TransitionDisposition::Invalid);
         next.state = ReachabilityState::Reachable;
         next.lease = event.lease;
@@ -174,37 +199,33 @@ TransitionResult ApplyEvent(const PlaneSnapshot& current,
         if (!In(current.state, ReachabilityState::Verifying,
                 ReachabilityState::Reachable) ||
             event.primary_evidence.kind != EvidenceKind::ServerHighId ||
-            !event.primary_evidence.IsCurrent(current.generation) ||
-            !SameEndpoint(event.primary_evidence.endpoint, current.advertised))
+            !event.primary_evidence.IsFreshFor(
+                current.verification_attempt))
             return Reject(current, TransitionDisposition::Invalid);
         next.primary_evidence = event.primary_evidence;
-        if (HasBothReachabilityEvidence(next))
-            next.state = ReachabilityState::Reachable;
         break;
 
     case EventType::InboundEvidenceObserved:
-        if (!(current.state == ReachabilityState::CandidateMapped ||
-              current.state == ReachabilityState::Verifying ||
-              current.state == ReachabilityState::Reachable ||
-              current.state == ReachabilityState::Degraded) ||
+        if (!In(current.state, ReachabilityState::Verifying,
+                ReachabilityState::Reachable) ||
             event.inbound_evidence.kind != EvidenceKind::InboundTcpAccept ||
-            !event.inbound_evidence.IsCurrent(current.generation) ||
-            !SameEndpoint(event.inbound_evidence.endpoint, current.advertised))
+            !event.inbound_evidence.IsFreshFor(
+                current.verification_attempt))
             return Reject(current, TransitionDisposition::Invalid);
         next.inbound_evidence = event.inbound_evidence;
-        if ((current.state == ReachabilityState::Verifying ||
-             current.state == ReachabilityState::Reachable) &&
-            HasBothReachabilityEvidence(next))
-            next.state = ReachabilityState::Reachable;
         break;
 
     case EventType::VerificationFailed:
-        if (current.state != ReachabilityState::Verifying)
+        if (current.state != ReachabilityState::Verifying ||
+            !event.verification_attempt.SameIdentity(
+                current.verification_attempt))
             return Reject(current, TransitionDisposition::Invalid);
         next.state = ReachabilityState::Degraded;
         next.reason = event.reason == ReasonCode::None
             ? ReasonCode::ServerCallbackFailed : event.reason;
         next.primary_evidence = Evidence{};
+        next.inbound_evidence = Evidence{};
+        next.verification_attempt = VerificationAttempt{};
         break;
 
     case EventType::BeginGeneration:
@@ -215,6 +236,33 @@ TransitionResult ApplyEvent(const PlaneSnapshot& current,
     if (!IsSnapshotConsistent(next))
         return Reject(current, TransitionDisposition::Invalid);
     return TransitionResult{next, TransitionDisposition::Applied};
+}
+
+TransitionResult InvalidateForMapperEpochReset(
+    const PlaneSnapshot& current,
+    std::uint64_t new_generation) noexcept {
+    return InvalidateForLeaseExpiry(current, new_generation);
+}
+
+TransitionResult InvalidateForLeaseExpiry(
+    const PlaneSnapshot& current,
+    std::uint64_t new_generation) noexcept {
+    TransitionResult result = ApplyEvent(
+        current,
+        StateEvent{EventType::BeginGeneration, new_generation});
+    if (result.disposition != TransitionDisposition::Applied)
+        return result;
+    result = ApplyEvent(
+        result.snapshot,
+        StateEvent{EventType::MappingStarted, new_generation});
+    if (result.disposition != TransitionDisposition::Applied)
+        return result;
+    return ApplyEvent(
+        result.snapshot,
+        StateEvent{
+            EventType::LeaseLost,
+            new_generation,
+            ReasonCode::LeaseExpired});
 }
 
 } // namespace natmap

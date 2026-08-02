@@ -69,6 +69,57 @@ void TestDifferentPortRenewAndDelete() {
     CHECK(!controller.HasLease());
 }
 
+void TestPcpEpochToleranceAndResetSignal() {
+    FakeGateway gateway{};
+    gateway.mapper = MapperKind::Pcp;
+    gateway.gateway = Ep(192, 168, 1, 1, 5351);
+    gateway.external_address = IpAddress::V4(88, 11, 22, 4);
+    gateway.forced_external_port = 52144;
+    gateway.lifetime_seconds = 100;
+    const PortIntent intent = BuildAutomaticPortIntent(
+        Transport::Tcp, Ep(192, 168, 1, 20, 4662), 100, 17);
+    MapResult mapped = gateway.Map(intent, 17);
+    mapped.lease.mapper_epoch = 500;
+
+    LeaseController valid;
+    CHECK(valid.Activate(mapped.lease, 1000));
+    PortLease advanced = mapped.lease;
+    advanced.mapper_epoch = 560;
+    CHECK(valid.AcceptRenewal(advanced, 61000));
+    CHECK(!valid.LastRenewalObservedEpochReset());
+    CHECK(valid.lease().generation == 17);
+
+    LeaseController reordered;
+    CHECK(reordered.Activate(mapped.lease, 0));
+    PortLease one_second_older = mapped.lease;
+    one_second_older.mapper_epoch = 499;
+    CHECK(reordered.AcceptRenewal(one_second_older, 1000));
+    CHECK(!reordered.LastRenewalObservedEpochReset());
+    CHECK(reordered.lease().generation == 17);
+
+    LeaseController rebooted;
+    CHECK(rebooted.Activate(mapped.lease, 0));
+    PortLease reset = mapped.lease;
+    reset.mapper_epoch = 0;
+    CHECK(rebooted.AcceptRenewal(reset, 1000));
+    CHECK(rebooted.LastRenewalObservedEpochReset());
+    CHECK(rebooted.lease().generation == 17);
+
+    LeaseController too_slow;
+    CHECK(too_slow.Activate(mapped.lease, 0));
+    PortLease barely_advanced = mapped.lease;
+    barely_advanced.mapper_epoch = 501;
+    CHECK(too_slow.AcceptRenewal(barely_advanced, 3600000));
+    CHECK(too_slow.LastRenewalObservedEpochReset());
+
+    LeaseController too_fast;
+    CHECK(too_fast.Activate(mapped.lease, 0));
+    PortLease jumped = mapped.lease;
+    jumped.mapper_epoch = 4100;
+    CHECK(too_fast.AcceptRenewal(jumped, 1000));
+    CHECK(too_fast.LastRenewalObservedEpochReset());
+}
+
 void TestChangedEndpointIsNotSilentRenewal() {
     FakeGateway gateway{};
     gateway.mapper = MapperKind::NatPmp;
@@ -86,6 +137,11 @@ void TestChangedEndpointIsNotSilentRenewal() {
     mapped.lease.granted_external_port = 50001;
     mapped.lease.public_endpoint.port = 50001;
     CHECK(!controller.AcceptRenewal(mapped.lease, 1000));
+
+    PortLease changed_gateway = controller.lease();
+    changed_gateway.gateway =
+        Ep(192, 168, 1, 254, 5351);
+    CHECK(!controller.AcceptRenewal(changed_gateway, 1000));
 }
 
 void TestApplicationRefreshSchedule() {
@@ -113,6 +169,49 @@ void TestApplicationRefreshSchedule() {
     CHECK(schedule.Activate(7200, 80000));
     CHECK(schedule.attempt_count() == 0);
     CHECK(schedule.next_attempt_ms() == 3320000);
+}
+
+void TestThreeNatPmpRenewalsWithFakeClock() {
+    PortLease lease{};
+    lease.mapper = MapperKind::NatPmp;
+    lease.transport = Transport::Tcp;
+    lease.local = Ep(
+        192, 168, 1, 20, 4662,
+        EndpointSource::LocalInterface);
+    lease.public_endpoint = Ep(
+        88, 11, 22, 4, 52144,
+        EndpointSource::NatPmpPublicAddress);
+    lease.requested_external_port = 4662;
+    lease.granted_external_port = 52144;
+    lease.lifetime_seconds = 100;
+    lease.mapper_epoch = 10;
+    lease.generation = 77;
+    lease.owned_by_us = true;
+
+    std::uint64_t fakeNowMs = 1000;
+    LeaseController controller;
+    LeaseRefreshSchedule schedule;
+    CHECK(controller.Activate(lease, fakeNowMs));
+    CHECK(schedule.Activate(lease.lifetime_seconds, fakeNowMs));
+
+    for (std::uint32_t renewal = 1; renewal <= 3; ++renewal) {
+        const std::uint64_t due = fakeNowMs + 45000;
+        CHECK(schedule.next_attempt_ms() == due);
+        CHECK(!schedule.ShouldAttempt(due - 1));
+        CHECK(schedule.ShouldAttempt(due));
+        fakeNowMs = due;
+        lease.mapper_epoch += 45;
+        CHECK(controller.AcceptRenewal(lease, fakeNowMs));
+        CHECK(!controller.LastRenewalObservedEpochReset());
+        CHECK(controller.lease().generation == 77);
+        CHECK(controller.lease().local.port == 4662);
+        CHECK(controller.lease().public_endpoint.port == 52144);
+        CHECK(controller.lease().mapper_epoch == 10 + renewal * 45);
+        CHECK(schedule.Activate(lease.lifetime_seconds, fakeNowMs));
+        CHECK(schedule.attempt_count() == 0);
+        CHECK(schedule.timing().expires_monotonic_ms
+            == fakeNowMs + 100000);
+    }
 }
 
 void TestPermanentLeaseHasNoRefreshClock() {
@@ -173,16 +272,83 @@ void TestPermanentMappingHealthProbe() {
     CHECK(schedule.next_attempt_ms() == 0);
 }
 
+void TestAdvertisementReloginIsExactlyOnce() {
+    unsigned relogins = 0;
+    const auto observe = [&relogins](
+        std::uint64_t previous_generation,
+        std::uint64_t current_generation,
+        bool was_enabled,
+        bool is_enabled,
+        bool observed = true) {
+        const bool required = RequiresAdvertisementRelogin(
+            AdvertisementObservation{
+                previous_generation,
+                current_generation,
+                observed,
+                was_enabled,
+                is_enabled});
+        if (required)
+            ++relogins;
+        return required;
+    };
+
+    // One atomic TCP/UDP publication produces exactly one re-login.
+    CHECK(observe(1, 2, false, true));
+    CHECK(relogins == 1);
+
+    // An identical renewal preserves the generation and produces none.
+    CHECK(!observe(2, 2, true, true));
+    CHECK(relogins == 1);
+
+    // One real endpoint change advances once and produces exactly one.
+    CHECK(observe(2, 3, true, true));
+    CHECK(relogins == 2);
+
+    // A duplicate delivery of that callback produces no additional re-login.
+    CHECK(!observe(3, 3, true, true));
+    CHECK(relogins == 2);
+
+    // A terminal withdrawal at the generation limit must still be advertised.
+    CHECK(observe(3, 3, true, false));
+    CHECK(relogins == 3);
+
+    // Network-change rediscovery publishes inside the generation that already
+    // fenced the old mapping. Disabled-to-enabled therefore needs one re-login
+    // even though the generation number deliberately remains unchanged.
+    CHECK(observe(3, 3, false, true));
+    CHECK(relogins == 4);
+    CHECK(!observe(3, 3, true, true));
+    CHECK(relogins == 4);
+
+    // Unconsumed/stale observations never trigger external side effects.
+    CHECK(!observe(3, 4, false, true, false));
+    CHECK(relogins == 4);
+
+    const AdvertisementObservation republished{
+        3, 3, true, false, true};
+    CHECK(ShouldRestartAdvertisementLogin(
+        republished, false, true, false));
+    CHECK(ShouldRestartAdvertisementLogin(
+        republished, true, false, false));
+    CHECK(!ShouldRestartAdvertisementLogin(
+        republished, false, false, false));
+    CHECK(!ShouldRestartAdvertisementLogin(
+        republished, true, false, true));
+}
+
 } // namespace
 
 int main() {
     TestCandidatePolicy();
     TestDifferentPortRenewAndDelete();
+    TestPcpEpochToleranceAndResetSignal();
     TestChangedEndpointIsNotSilentRenewal();
     TestApplicationRefreshSchedule();
+    TestThreeNatPmpRenewalsWithFakeClock();
     TestPermanentLeaseHasNoRefreshClock();
     TestRefreshBackoffIsBounded();
 	TestPermanentMappingHealthProbe();
+    TestAdvertisementReloginIsExactlyOnce();
     std::printf("test_lease_policy: %d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

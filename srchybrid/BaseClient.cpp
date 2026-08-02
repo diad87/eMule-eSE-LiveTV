@@ -35,6 +35,7 @@
 #include "Preferences.h"
 #include "Server.h"
 #include "ClientCredits.h"
+#include "DirectReachabilityManager.h"
 #include "FirewallProberV6.h"   // v0.71 IPv6 Sprint 6 — in-band public v6 detection
 #include "IPv6RoutePolicy.h"
 #include "kademlia/kademlia/KadV2ModeSelector.h"
@@ -206,8 +207,16 @@ bool CUpDownClient::CanUseIPv6Direct() const
 	const bool bCallbackRoute = m_bIPv6CallbackSource && HasIPv6Address();
 	const bool bLiveRoute = m_bLiveIPv6Source && HasIPv6Address();
 	const bool bDirectRoute = m_bDirectIPv6Source && HasIPv6Address();
-	const bool bDirectOverlayRoute = bDirectRoute
-		&& m_ipv6Address.IsUniqueLocalIPv6();
+	// A ULA is never a global route.  The narrow LAN exception is evaluated
+	// against the exact peer endpoint and a previously accepted, bounded
+	// same-domain proof; address class alone can never open this path.
+	const uint64 topologyGeneration =
+		CFirewallProberV6::Instance().GetPublishedTopologyGeneration();
+	const bool bSameLanDirectRoute = bDirectRoute
+		&& CFirewallProberV6::Instance().ObserveSameLanRouteToPeer(
+			m_ipv6Address, GetUserPort(), topologyGeneration)
+		&& CFirewallProberV6::Instance().CanUseSameLanEndpoint(
+			m_ipv6Address, GetUserPort(), topologyGeneration);
 	const ProxySettings& proxy = thePrefs.GetProxySettings();
 	const bool bIPv6CapableProxy = proxy.bUseProxy
 		&& (proxy.type == PROXYTYPE_SOCKS5
@@ -221,10 +230,10 @@ bool CUpDownClient::CanUseIPv6Direct() const
 		// SOCKS5 and HTTP CONNECT carry the native IPv6 destination through
 		// an IPv4 proxy connection; only a direct route needs local public v6.
 		&& (bIPv6CapableProxy
-			|| bDirectOverlayRoute
+			|| bSameLanDirectRoute
 			|| (localV6.GetType() == CAddress::IPv6 && localV6.IsPublicIP()))
 		&& HasIPv6Address()
-		&& (m_ipv6Address.IsPublicIP() || bDirectOverlayRoute)
+		&& (m_ipv6Address.IsPublicIP() || bSameLanDirectRoute)
 		&& GetUserPort() != 0;
 	if (bDirectRoute) {
 		LIVE_LOG("CONN",
@@ -234,7 +243,7 @@ bool CUpDownClient::CanUseIPv6Direct() const
 			bV6Backoff ? 1 : 0,
 			proxy.bUseProxy ? 1 : 0,
 			bIPv6CapableProxy ? 1 : 0,
-			bDirectOverlayRoute ? 1 : 0,
+			bSameLanDirectRoute ? 1 : 0,
 			(localV6.GetType() == CAddress::IPv6 && localV6.IsPublicIP()) ? 1 : 0,
 			HasIPv6Address() ? 1 : 0,
 			(unsigned)GetUserPort());
@@ -477,6 +486,7 @@ void CUpDownClient::Init()
 	m_lastRefreshedDLDisplay = 0;
 	m_lastRefreshedULDisplay = ::GetTickCount();
 	m_random_update_wait = (DWORD)(rand() % SEC2MS(1));
+	m_nPublicIPV6RequestGeneration = 0;
 
 	m_fHashsetRequestingMD4 = 0;
 	m_fSharedDirectories = 0;
@@ -1301,8 +1311,15 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 
 	uint32 tagcount = 7;
 	const CAddress helloV6 = CFirewallProberV6::Instance().GetDetectedV6IP();
+	const uint64 helloGeneration = theApp.directreachability != NULL
+		? theApp.directreachability->GetTopologyGeneration() : 0;
+	const natmap::CandidateObservation helloV6Observation =
+		CFirewallProberV6::Instance().GetDirectRouteObservation(
+			helloGeneration, natmap::Transport::Tcp);
 	const bool bSendHelloV6 = thePrefs.IsIPv6Enabled()
-		&& helloV6.GetType() == CAddress::IPv6 && helloV6.IsPublicIP();
+		&& helloV6.GetType() == CAddress::IPv6 && helloV6.IsPublicIP()
+		&& helloV6Observation.IsVerifiedFor(helloGeneration)
+		&& theApp.GetAdvertisedV6TcpPort() == thePrefs.GetPort();
 	if (bSendHelloV6)
 		++tagcount;
 
@@ -1343,17 +1360,8 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 	tagModVersion.WriteTagToFile(data);
 
 	// eMule UDP Ports
-	uint16 kadUDPPort;
-	if (Kademlia::CKademlia::IsConnected()) {
-		if (Kademlia::CKademlia::GetPrefs()->GetExternalKadPort() != 0
-			&& Kademlia::CKademlia::GetPrefs()->GetUseExternKadPort()
-			&& Kademlia::CUDPFirewallTester::IsVerified())
-		{
-			kadUDPPort = Kademlia::CKademlia::GetPrefs()->GetExternalKadPort();
-		} else
-			kadUDPPort = Kademlia::CKademlia::GetPrefs()->GetInternKadPort();
-	} else
-		kadUDPPort = 0;
+	const uint16 kadUDPPort = Kademlia::CKademlia::IsConnected()
+		? theApp.GetAdvertisedUdpPort() : 0;
 	CTag tagUdpPorts(CT_EMULE_UDPPORTS,
 				((uint32)kadUDPPort			   << 16) |
 				((uint32)theApp.GetAdvertisedUdpPort() <<  0)
@@ -1457,7 +1465,8 @@ void CUpDownClient::SendHelloTypePacket(CSafeMemFile &data)
 		// native Kad6 plane and is set only while a signed public v4 or v6
 		// endpoint can be built. Neither bit is advertised speculatively.
 		extern uint32 g_uForkCapsRuntime;  // defined in FirewallProberV6.cpp
-		forkCaps |= g_uForkCapsRuntime;
+		forkCaps |= static_cast<uint32>(::InterlockedCompareExchange(
+			reinterpret_cast<volatile LONG*>(&g_uForkCapsRuntime), 0, 0));
 	}
 	CTag tagForkCaps(CT_FORK_CAPABILITIES, forkCaps);
 	tagForkCaps.WriteTagToFile(data);
@@ -2145,9 +2154,31 @@ void CUpDownClient::Connect()
 		&& connectAddress.GetType() == CAddress::IPv6 && bPreferIPv6) {
 		SOCKADDR_STORAGE sockAddr = {};
 		int sockAddrLen = sizeof sockAddr;
-		if (connectAddress.TryToSA((LPSOCKADDR)&sockAddr, &sockAddrLen, GetUserPort()))
+		if (connectAddress.TryToSA((LPSOCKADDR)&sockAddr, &sockAddrLen, GetUserPort())) {
+			ULONG sameLanInterface = 0;
+			const uint64 topologyGeneration =
+				CFirewallProberV6::Instance().GetPublishedTopologyGeneration();
+			if (!connectAddress.IsPublicIP()
+				&& !CFirewallProberV6::Instance().CanUseSameLanEndpoint(
+					connectAddress, GetUserPort(), topologyGeneration,
+					&sameLanInterface))
+				return;
+			if (sameLanInterface != 0) {
+				// Link-local and ULA routes are interface-relative. The scope id
+				// comes from the exact proof just revalidated for this peer/port.
+				reinterpret_cast<SOCKADDR_IN6*>(&sockAddr)->sin6_scope_id =
+					sameLanInterface;
+				const DWORD scopedInterface = htonl(sameLanInterface);
+				const int scopeResult = ::setsockopt(socket->GetSocketHandle(), IPPROTO_IPV6,
+					IPV6_UNICAST_IF,
+					reinterpret_cast<const char*>(&scopedInterface),
+					sizeof(scopedInterface));
+				if (natmap::EvaluateScopedSocketBind(true, sameLanInterface,
+					scopeResult) != natmap::ScopedSocketBindDecision::Connect)
+					return;
+			}
 			socket->Connect((LPSOCKADDR)&sockAddr, sockAddrLen);
-		else
+		} else
 			return;
 	} else {
 		SOCKADDR_IN sockAddr = {};
@@ -2196,10 +2227,16 @@ void CUpDownClient::ConnectionEstablished()
 	// OP_PUBLICIP_ANSWER_V6 — but only when the connection is actually over IPv6,
 	// so a v4 peer is a no-op. No third party, no correlation point. Fires per
 	// peer until one answers (m_detectedIP non-null), then stops.
+	const uint64 currentTopologyGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+	const natmap::CandidateObservation currentV6 =
+		CFirewallProberV6::Instance().GetDirectRouteObservation(
+			currentTopologyGeneration);
 	if (thePrefs.IsIPv6Enabled()
 		&& SupportsIPv6Wire()
 		&& !m_fNeedOurPublicIPV6
-		&& !CFirewallProberV6::Instance().HasExternallyObservedV6()
+		&& currentV6.generation != currentTopologyGeneration
 		&& socket != NULL
 		&& socket->GetPeerCAddress().GetType() == CAddress::IPv6)
 	{
@@ -3280,11 +3317,17 @@ void CUpDownClient::ProcessPublicIPAnswer(const BYTE *pbyData, UINT uSize)
 void CUpDownClient::SendPublicIPRequestV6()
 {
 	if (socket && socket->IsConnected()) {
+		const uint64 requestGeneration =
+			theApp.directreachability != NULL
+				? theApp.directreachability->GetTopologyGeneration() : 0;
+		if (requestGeneration == 0)
+			return;
 		if (thePrefs.GetDebugClientTCPLevel() > 0)
 			DebugSend("OP_PublicIPReq(v6)", this);
 		Packet *packet = new Packet(OP_PUBLICIP_REQ, 0, OP_EMULEPROT);
 		theStats.AddUpDataOverheadOther(packet->size);
 		SendPacket(packet);
+		m_nPublicIPV6RequestGeneration = requestGeneration;
 		m_fNeedOurPublicIPV6 = 1;
 	}
 }
@@ -3300,7 +3343,16 @@ void CUpDownClient::ProcessPublicIPAnswerV6(const BYTE *pbyData, UINT uSize)
 	if (!addr.ReadFromBuffer(&data) || data.GetPosition() != data.GetLength())
 		throw GetResString(IDS_ERR_WRONGPACKETSIZE);
 	if (m_fNeedOurPublicIPV6 == 1) { // did we ask this peer?
+		const uint64 requestGeneration =
+			m_nPublicIPV6RequestGeneration;
 		m_fNeedOurPublicIPV6 = 0;
+		m_nPublicIPV6RequestGeneration = 0;
+		const uint64 currentGeneration =
+			theApp.directreachability != NULL
+				? theApp.directreachability->GetTopologyGeneration() : 0;
+		if (requestGeneration == 0
+			|| requestGeneration != currentGeneration)
+			return;
 		// A peer answer is advisory. Pin it to the actual local endpoint of this
 		// established v6 socket so a malicious peer cannot poison our HELLO/Kad
 		// candidate with an arbitrary victim address.
@@ -3313,7 +3365,8 @@ void CUpDownClient::ProcessPublicIPAnswerV6(const BYTE *pbyData, UINT uSize)
 			localAddress.FromSA((SOCKADDR*)&local, localLength);
 		if (bHaveLocal && localAddress == addr)
 		{
-			CFirewallProberV6::Instance().SetDetectedV6IP(addr);
+			CFirewallProberV6::Instance().SetDetectedV6IP(
+				addr, requestGeneration);
 		} else {
 			DebugLogWarning(_T("Ignored mismatched OP_PUBLICIP_ANSWER_V6 from %s"),
 				(LPCTSTR)DbgGetClientInfo());

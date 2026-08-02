@@ -56,6 +56,95 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_kad_network_policy.e
 if errorlevel 1 exit /b 1
 tests\build\test_kad_network_policy.exe
 if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_tunnel_framing.exe tests\test_live_tunnel_framing.cpp LiveTunnelFraming.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_tunnel_framing.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_tunnel_pending.exe tests\test_live_tunnel_pending.cpp LiveTunnelPending.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_tunnel_pending.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /I..\libkad6\include /Fetests\build\test_live_tunnel_peer_kad.exe tests\test_live_tunnel_peer_kad.cpp LiveTunnelPeerState.cpp LiveTunnelKadBridge.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_tunnel_peer_kad.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /I..\libkad6\include /Fetests\build\test_live_tunnel_metrics.exe tests\test_live_tunnel_metrics.cpp LiveTunnelMetrics.cpp ..\libkad6\src\kad6_hardening.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_tunnel_metrics.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_stream_sessions.exe tests\test_live_stream_sessions.cpp LiveBroadcastSession.cpp LiveViewerSession.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_stream_sessions.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_peer_set.exe tests\test_live_peer_set.cpp LivePeerSet.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_peer_set.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_chunk_window.exe tests\test_live_chunk_window.cpp LiveChunkWindow.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_chunk_window.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_stream_security.exe tests\test_live_stream_security.cpp LiveStreamSecurity.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_stream_security.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_stream_fanout.exe tests\test_live_stream_fanout.cpp LiveStreamFanout.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_stream_fanout.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_stream_recovery.exe tests\test_live_stream_recovery.cpp LiveStreamRecovery.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_stream_recovery.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_stream_announcer.exe tests\test_live_stream_announcer.cpp LiveStreamAnnouncer.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_stream_announcer.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_stream_snapshot.exe tests\test_live_stream_snapshot.cpp LiveStreamSnapshot.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_live_stream_snapshot.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_request_parser.exe tests\test_web_request_parser.cpp WebRequestParser.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_web_request_parser.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_auth_policy.exe tests\test_web_auth_policy.cpp WebAuthPolicy.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_web_auth_policy.exe
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_route_table.exe tests\test_web_route_table.cpp WebRouteTable.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_web_route_table.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_api_serializer.exe tests\test_web_api_serializer.cpp WebApiSerializer.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_web_api_serializer.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_controllers.exe tests\test_web_controllers.cpp WebTransferController.cpp WebSearchController.cpp WebSharedController.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_web_controllers.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_streaming.exe tests\test_web_streaming.cpp WebStaticAssets.cpp WebSocketResponse.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_web_streaming.exe
+if errorlevel 1 exit /b 1
+
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_web_diagnostics.exe tests\test_web_diagnostics.cpp WebDiagnostics.cpp
+if errorlevel 1 exit /b 1
+tests\build\test_web_diagnostics.exe
+if errorlevel 1 exit /b 1
 
 set "CRYPTLIB=%ROOT%\..\cryptopp\x64\Output\Release\cryptlib.lib"
 if not exist "%CRYPTLIB%" (echo ERROR: cryptlib.lib missing; run the core gate or build emule first & exit /b 2)

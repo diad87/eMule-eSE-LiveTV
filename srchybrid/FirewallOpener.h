@@ -20,6 +20,7 @@
 #include <comdef.h>
 #include <initguid.h>
 #include <Netcon.h>
+#include <cstdint>
 
 typedef _com_ptr_t<_com_IIID<INetSharingEveryConnectionCollection, &IID_INetSharingEveryConnectionCollection> >	INetSharingEveryConnectionCollectionPtr;
 typedef _com_ptr_t<_com_IIID<INetConnection, &IID_INetConnection> >												INetConnectionPtr;
@@ -110,6 +111,8 @@ protected:
 	CArray<CICSRuleInfo> m_liAddedRules;
 
 private:
+	bool				BuildOwnedRuleInfo(const CICSRuleInfo &source, CICSRuleInfo &owned) const;
 	INetSharingManager	*m_pINetSM;
+	std::uint64_t		m_profileOwnerToken;
 	bool				m_bInited;
 };

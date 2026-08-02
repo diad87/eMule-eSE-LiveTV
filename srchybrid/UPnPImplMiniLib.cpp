@@ -18,14 +18,22 @@
 #include "emule.h"
 #include "preferences.h"
 #include "UPnPImplMiniLib.h"
+#include "natmap/upnp_discovery.h"
+#include "natmap/upnp_lease_policy.h"
+#include "natmap/upnp_mapping_result.h"
+#include "natmap/upnp_recovery_policy.h"
 #include "Log.h"
 #include "Otherfunctions.h"
 #include "miniupnpc\include\miniupnpc.h"
 #include "miniupnpc\include\upnpcommands.h"
 #include "miniupnpc\include\upnperrors.h"
 #include "opcodes.h"
+#include "../cryptopp/sha.h"
 
+#include <algorithm>
+#include <array>
 #include <bcrypt.h>
+#include <chrono>
 #include <ctime>
 #include <iphlpapi.h>
 #include <vector>
@@ -49,6 +57,25 @@ namespace {
 
 constexpr uint32 kPreferredLeaseSeconds = 7200;
 constexpr unsigned kMaximumDiscoveryInterfaces = 5;
+static_assert(UPNP_CONNECTED_IGD
+	== static_cast<int>(natmap::UpnpIgdQuality::Connected),
+	"miniupnpc connected-IGD value changed");
+static_assert(UPNP_PRIVATEIP_IGD
+	== static_cast<int>(natmap::UpnpIgdQuality::PrivateAddress),
+	"miniupnpc private-IGD value changed");
+static_assert(UPNP_DISCONNECTED_IGD
+	== static_cast<int>(natmap::UpnpIgdQuality::Disconnected),
+	"miniupnpc disconnected-IGD value changed");
+static_assert(UPNP_UNKNOWN_DEVICE
+	== static_cast<int>(natmap::UpnpIgdQuality::UnknownDevice),
+	"miniupnpc unknown-device value changed");
+
+static std::uint64_t MonotonicMilliseconds()
+{
+	return static_cast<std::uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 
 struct DiscoveryTarget {
 	CStringA address;
@@ -83,15 +110,9 @@ public:
 	int state;
 };
 
-static bool IsBetterIgdState(int candidate, int current)
-{
-	return candidate >= UPNP_CONNECTED_IGD
-		&& candidate <= UPNP_UNKNOWN_DEVICE
-		&& (current == UPNP_NO_IGD || candidate < current);
-}
-
 static void ConsiderDiscoveredDevices(UPNPDev* devices,
-	SelectedIgd& selected)
+	SelectedIgd& selected,
+	natmap::UpnpDiscoverySelection& selection)
 {
 	if (devices == NULL)
 		return;
@@ -107,10 +128,12 @@ static void ConsiderDiscoveredDevices(UPNPDev* devices,
 	const int candidateState = UPNP_GetValidIGD(devices, &candidateUrls,
 		&candidateData, candidateLan, sizeof candidateLan,
 		candidateWan, sizeof candidateWan);
-	const bool usable = candidateState != UPNP_NO_IGD
-		&& candidateUrls.controlURL != NULL
-		&& candidateData.first.servicetype[0] != 0;
-	if (usable && IsBetterIgdState(candidateState, selected.state)) {
+	const natmap::UpnpIgdObservation observation = {
+		static_cast<natmap::UpnpIgdQuality>(candidateState),
+		candidateUrls.controlURL != NULL,
+		candidateData.first.servicetype[0] != 0
+	};
+	if (selection.Consider(observation)) {
 		FreeUPNPUrls(&selected.urls);
 		selected.urls = candidateUrls;
 		memset(&candidateUrls, 0, sizeof candidateUrls);
@@ -228,15 +251,52 @@ static bool SameIPv4Address(const char* left, const char* right)
 		&& leftAddress == rightAddress;
 }
 
+static natmap::IpAddress NatmapIPv4(uint32 networkOrderAddress)
+{
+	const uint8* bytes = reinterpret_cast<const uint8*>(
+		&networkOrderAddress);
+	return natmap::IpAddress::V4(
+		bytes[0], bytes[1], bytes[2], bytes[3]);
+}
+
+static bool SameNatmapAddress(
+	const natmap::IpAddress& left,
+	const natmap::IpAddress& right)
+{
+	return left.family == right.family && left.bytes == right.bytes;
+}
+
+static std::array<std::uint8_t, 32> UpnpOwnershipDigest(
+	std::uint64_t ownerToken)
+{
+	std::array<std::uint8_t, 32> digest = {};
+	if (ownerToken == 0)
+		return digest;
+	static const CryptoPP::byte domain[] = {
+		'e', 's', 'e', '.', 'u', 'p', 'n', 'p', '.',
+		'o', 'w', 'n', 'e', 'r', '.', 'v', '1'
+	};
+	CryptoPP::byte token[8] = {};
+	for (size_t i = 0; i < _countof(token); ++i) {
+		token[_countof(token) - 1 - i] = static_cast<CryptoPP::byte>(
+			ownerToken >> (i * 8));
+	}
+	CryptoPP::SHA256 hash;
+	hash.Update(domain, _countof(domain));
+	hash.Update(token, _countof(token));
+	hash.Final(reinterpret_cast<CryptoPP::byte*>(digest.data()));
+	return digest;
+}
+
 static bool MappingTargetsLocalSocket(const char* internalClient,
 	const char* internalPort, const char* enabled, const char* lanAddress,
 	uint16 localPort)
 {
-	char* end = NULL;
-	const unsigned long parsedPort = strtoul(internalPort, &end, 10);
+	uint16 parsedPort = 0;
 	const bool mappingEnabled = enabled == NULL || enabled[0] == 0
 		|| (strcmp(enabled, "0") != 0 && _stricmp(enabled, "false") != 0);
-	return end != internalPort && *end == 0 && parsedPort == localPort
+	return natmap::ParseUpnpDecimalPort(internalPort, parsedPort)
+		&& parsedPort == localPort
 		&& mappingEnabled && SameIPv4Address(internalClient, lanAddress);
 }
 
@@ -377,33 +437,88 @@ bool CUPnPImplMiniLib::SaveOwnershipLedger()
 	const CString path = thePrefs.GetMuleDirectory(EMULE_CONFIGDIR)
 		+ _T("natmap-ownership.dat");
 	const CString temporary = path + _T(".new");
-	if (m_ownershipLedger.count == 0) {
-		::DeleteFile(temporary);
-		return ::DeleteFile(path) != FALSE
-			|| ::GetLastError() == ERROR_FILE_NOT_FOUND;
-	}
-
 	std::array<std::uint8_t, natmap::kOwnershipLedgerMaxEncodedSize> bytes{};
 	const size_t length = natmap::EncodeOwnershipLedger(
 		m_ownershipLedger, bytes.data(), bytes.size());
 	if (length == 0)
 		return false;
+	natmap::OwnershipJournalCommit commit;
+	if (!commit.Complete(natmap::OwnershipJournalStep::Encoded))
+		return false;
 
 	HANDLE file = ::CreateFile(temporary, GENERIC_WRITE, 0, NULL,
-		CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
 	if (file == INVALID_HANDLE_VALUE)
 		return false;
 	DWORD written = 0;
 	const bool wrote = ::WriteFile(file, bytes.data(),
 		static_cast<DWORD>(length), &written, NULL) != FALSE
-		&& written == static_cast<DWORD>(length)
-		&& ::FlushFileBuffers(file) != FALSE;
-	::CloseHandle(file);
-	const bool replaced = wrote && ::MoveFileEx(temporary, path,
-		MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
-	if (!replaced)
+		&& written == static_cast<DWORD>(length);
+	if (!wrote
+		|| !commit.Complete(
+			natmap::OwnershipJournalStep::TemporaryWritten)) {
+		commit.Fail();
+		::CloseHandle(file);
 		::DeleteFile(temporary);
-	return replaced;
+		return false;
+	}
+	if (::FlushFileBuffers(file) == FALSE
+		|| !commit.Complete(
+			natmap::OwnershipJournalStep::TemporaryFlushed)) {
+		commit.Fail();
+		::CloseHandle(file);
+		::DeleteFile(temporary);
+		return false;
+	}
+	if (::CloseHandle(file) == FALSE
+		|| !commit.Complete(
+			natmap::OwnershipJournalStep::TemporaryClosed)) {
+		commit.Fail();
+		::DeleteFile(temporary);
+		return false;
+	}
+	if (::MoveFileEx(temporary, path,
+			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE
+		|| !commit.Complete(
+			natmap::OwnershipJournalStep::FinalReplaced)) {
+		commit.Fail();
+		::DeleteFile(temporary);
+		return false;
+	}
+
+	std::array<std::uint8_t,
+		natmap::kOwnershipLedgerMaxEncodedSize> persistedBytes{};
+	HANDLE persisted = ::CreateFile(path, GENERIC_READ, FILE_SHARE_READ,
+		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (persisted == INVALID_HANDLE_VALUE) {
+		commit.Fail();
+		return false;
+	}
+	LARGE_INTEGER persistedSize = {};
+	DWORD persistedRead = 0;
+	const bool readBack =
+		::GetFileSizeEx(persisted, &persistedSize) != FALSE
+		&& persistedSize.QuadPart
+			== static_cast<LONGLONG>(length)
+		&& ::ReadFile(persisted, persistedBytes.data(),
+			static_cast<DWORD>(length), &persistedRead, NULL) != FALSE
+		&& persistedRead == static_cast<DWORD>(length);
+	const bool closed = ::CloseHandle(persisted) != FALSE;
+	natmap::OwnershipLedger decoded;
+	const bool verified = readBack && closed
+		&& std::equal(bytes.begin(), bytes.begin() + length,
+			persistedBytes.begin())
+		&& natmap::DecodeOwnershipLedger(
+			persistedBytes.data(), length, decoded)
+			== natmap::OwnershipLedgerDecodeStatus::Ok;
+	if (!verified
+		|| !commit.Complete(
+			natmap::OwnershipJournalStep::FinalVerified)) {
+		commit.Fail();
+		DebugLogError(_T("UPNP ownership: atomically replaced journal failed readback verification"));
+		return false;
+	}
+	return commit.IsPersisted();
 }
 
 void CUPnPImplMiniLib::RemoveOwnershipRecord(std::size_t index)
@@ -415,6 +530,19 @@ void CUPnPImplMiniLib::RemoveOwnershipRecord(std::size_t index)
 	--m_ownershipLedger.count;
 	m_ownershipLedger.records[m_ownershipLedger.count] =
 		natmap::UpnpOwnershipRecord{};
+}
+
+bool CUPnPImplMiniLib::RemoveOwnershipRecordDurably(std::size_t index)
+{
+	if (index >= m_ownershipLedger.count)
+		return false;
+	const natmap::OwnershipLedger previous = m_ownershipLedger;
+	RemoveOwnershipRecord(index);
+	if (SaveOwnershipLedger())
+		return true;
+	m_ownershipLedger = previous;
+	DebugLogWarning(_T("UPNP ownership: journal removal did not commit; restored in-memory proof for safe retry"));
+	return false;
 }
 
 bool CUPnPImplMiniLib::RecordOwnedMapping(uint16 nLocalPort,
@@ -466,6 +594,60 @@ bool CUPnPImplMiniLib::RecordOwnedMapping(uint16 nLocalPort,
 	return false;
 }
 
+bool CUPnPImplMiniLib::DeleteEphemeralOwnedMapping(
+	uint16 nLocalPort, uint16 nExternalPort, bool bTCP,
+	const char* pachLANIP, uint32 nLifetimeSeconds,
+	const natmap::OwnershipDescription& description,
+	const char* observedClient, const char* observedPort,
+	const char* observedDescription,
+	std::size_t observedDescriptionCapacity)
+{
+	natmap::UpnpOwnershipRecord record{};
+	record.owner_token = m_ownerToken;
+	record.gateway_fingerprint = CurrentGatewayFingerprint();
+	record.transport =
+		bTCP ? natmap::Transport::Tcp : natmap::Transport::Udp;
+	if (!ParseIPv4(pachLANIP, record.local_address))
+		return false;
+	record.local_port = nLocalPort;
+	record.external_port = nExternalPort;
+	record.lifetime_seconds = nLifetimeSeconds;
+	const time_t now = std::time(NULL);
+	if (now <= 0)
+		return false;
+	record.acquired_unix_seconds =
+		static_cast<std::uint64_t>(now);
+	record.generation = m_mappingGeneration;
+	record.description = description;
+
+	natmap::ObservedUpnpMapping observed{};
+	observed.transport = record.transport;
+	observed.external_port = nExternalPort;
+	if (!ParseIPv4(observedClient, observed.local_address)
+		|| !natmap::ParseUpnpDecimalPort(
+			observedPort, observed.local_port)
+		|| !natmap::ParseOwnershipDescription(
+			observedDescription,
+			observedDescriptionCapacity,
+			observed.description)
+		|| !natmap::IsUpnpCleanupAuthorized(
+			record, record.gateway_fingerprint, observed)) {
+		DebugLogWarning(_T("UPNP ownership: refusing rollback without complete ephemeral ownership proof"));
+		return false;
+	}
+
+	char externalPort[8] = {};
+	_snprintf_s(externalPort, _countof(externalPort), _TRUNCATE,
+		"%hu", nExternalPort);
+	const int result = UPNP_DeletePortMapping(
+		m_pURLs->controlURL, m_pIGDData->first.servicetype,
+		externalPort, bTCP ? sTCPa : sUDPa, NULL);
+	if (result != UPNPCOMMAND_SUCCESS)
+		DebugLogWarning(_T("UPNP ownership: strict rollback failed for %s port %hu"),
+			bTCP ? sTCP : sUDP, nExternalPort);
+	return result == UPNPCOMMAND_SUCCESS;
+}
+
 void CUPnPImplMiniLib::RecoverOwnedMappings()
 {
 	const natmap::OwnershipLedger pending = m_ownershipLedger;
@@ -482,6 +664,8 @@ CUPnPImplMiniLib::CUPnPImplMiniLib()
 	, m_hThreadHandle()
 	, m_ownerToken()
 	, m_mappingGeneration()
+	, m_mappingLocalAddress()
+	, m_mappingGatewayAddress()
 	, m_bOwnershipLedgerLoaded()
 	, m_bSucceededOnce()
 	, m_bAbortDiscovery()
@@ -546,6 +730,12 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 	if (port == 0 || m_pURLs == NULL || m_pURLs->controlURL == NULL
 		|| m_pIGDData == NULL)
 		return;
+	if (prot == NULL
+		|| (_tcscmp(prot, sTCP) != 0
+			&& _tcscmp(prot, sUDP) != 0)) {
+		DebugLogWarning(_T("UPNP ownership: refusing cleanup for unknown protocol"));
+		return;
+	}
 
 	const natmap::Transport transport = _tcscmp(prot, sUDP) == 0
 		? natmap::Transport::Udp : natmap::Transport::Tcp;
@@ -571,11 +761,23 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 
 	const natmap::UpnpOwnershipRecord record =
 		m_ownershipLedger.records[index];
-	if (gateway == 0 || record.gateway_fingerprint != gateway) {
+	if (!record.IsStructurallyValid()) {
+		DebugLogWarning(_T("UPNP ownership: refusing cleanup for invalid local %s proof on port %hu"),
+			prot, port);
+		return;
+	}
+	if (gateway == 0) {
+		DebugLogWarning(_T("UPNP ownership: current gateway identity is unavailable; retaining %s proof for port %hu"),
+			prot, port);
+		return;
+	}
+	if (record.gateway_fingerprint != gateway) {
 		DebugLogWarning(_T("UPNP ownership: stale %s port %hu belongs to a different gateway; dropping local proof only"),
 			prot, port);
-		RemoveOwnershipRecord(index);
-		SaveOwnershipLedger();
+		if (natmap::EvaluateUpnpRecovery(
+				natmap::UpnpRecoveryObservation::GatewayMismatch)
+			== natmap::UpnpRecoveryAction::DropLocalProof)
+			RemoveOwnershipRecordDurably(index);
 		return;
 	}
 
@@ -585,46 +787,69 @@ void CUPnPImplMiniLib::DeletePort(uint16 port, LPCTSTR prot)
 	char achDescription[80] = {};
 	char achLeaseDuration[16] = {};
 	_snprintf_s(achPort, _countof(achPort), _TRUNCATE, "%hu", port);
-	const int queryResult = UPNP_GetSpecificPortMappingEntry(
+	const int queryResult = UPNP_GetSpecificPortMappingEntryChecked(
 		m_pURLs->controlURL, m_pIGDData->first.servicetype, achPort,
 		transport == natmap::Transport::Tcp ? sTCPa : sUDPa, NULL,
-		achOutIP, achOutPort, achDescription, NULL, achLeaseDuration);
+		achOutIP, _countof(achOutIP),
+		achOutPort, _countof(achOutPort),
+		achDescription, _countof(achDescription),
+		NULL, 0,
+		achLeaseDuration, _countof(achLeaseDuration));
 	if (queryResult != UPNPCOMMAND_SUCCESS) {
-		if (queryResult == 714) {
-			RemoveOwnershipRecord(index);
-			SaveOwnershipLedger();
+		const natmap::UpnpRecoveryAction recoveryAction =
+			natmap::EvaluateUpnpRecovery(queryResult == 714
+				? natmap::UpnpRecoveryObservation::MappingAbsent
+				: natmap::UpnpRecoveryObservation::
+					TransientReadbackFailure);
+		if (recoveryAction
+			== natmap::UpnpRecoveryAction::DropLocalProof) {
+			RemoveOwnershipRecordDurably(index);
 			DebugLog(_T("UPNP ownership: %s port %hu is already absent"),
 				prot, port);
-		} else
+		} else {
+			ASSERT(recoveryAction
+				== natmap::UpnpRecoveryAction::KeepLocalProof);
 			DebugLogWarning(_T("UPNP ownership: cannot verify %s port %hu (%d: %S); mapping was not removed"),
 				prot, port, queryResult, strupnperror(queryResult));
+		}
 		return;
 	}
 
 	natmap::ObservedUpnpMapping observed{};
 	observed.transport = transport;
-	observed.local_port = static_cast<uint16>(strtoul(achOutPort, NULL, 10));
+	natmap::ParseUpnpDecimalPort(achOutPort, observed.local_port);
 	observed.external_port = port;
 	ParseIPv4(achOutIP, observed.local_address);
-	strncpy_s(observed.description.data(), observed.description.size(),
-		achDescription, _TRUNCATE);
-	const natmap::OwnershipDecision decision =
-		natmap::EvaluateOwnershipForDeletion(record, gateway, observed);
-	if (decision != natmap::OwnershipDecision::Owned) {
-		DebugLogWarning(_T("UPNP ownership: %s port %hu no longer matches proof (decision=%u); mapping was not removed"),
-			prot, port, static_cast<unsigned>(decision));
-		RemoveOwnershipRecord(index);
-		SaveOwnershipLedger();
+	if (!natmap::ParseOwnershipDescription(
+			achDescription, _countof(achDescription),
+			observed.description)) {
+		DebugLogWarning(_T("UPNP ownership: router returned an overlong, unterminated or non-printable description for %s port %hu; retaining proof"),
+			prot, port);
 		return;
 	}
+	const natmap::OwnershipDecision decision =
+		natmap::EvaluateOwnershipForDeletion(record, gateway, observed);
+	const bool cleanupAuthorized =
+		natmap::IsUpnpCleanupAuthorized(record, gateway, observed);
+	const natmap::UpnpRecoveryAction recoveryAction =
+		natmap::EvaluateUpnpRecovery(decision);
+	if (!cleanupAuthorized) {
+		DebugLogWarning(_T("UPNP ownership: %s port %hu no longer matches proof (decision=%u); mapping was not removed"),
+			prot, port, static_cast<unsigned>(decision));
+		if (recoveryAction
+			== natmap::UpnpRecoveryAction::DropLocalProof)
+			RemoveOwnershipRecordDurably(index);
+		return;
+	}
+	ASSERT(recoveryAction
+		== natmap::UpnpRecoveryAction::DeleteOwnedMapping);
 
 	const int nResult = UPNP_DeletePortMapping(m_pURLs->controlURL,
 		m_pIGDData->first.servicetype, achPort, CStringA(prot), NULL);
 	if (nResult == UPNPCOMMAND_SUCCESS) {
 		DebugLog(_T("Successfully removed owned mapping for %s port %hu"),
 			prot, port);
-		RemoveOwnershipRecord(index);
-		if (!SaveOwnershipLedger())
+		if (!RemoveOwnershipRecordDurably(index))
 			DebugLogWarning(_T("UPNP ownership: mapping removed but journal update failed"));
 	} else
 		DebugLogWarning(_T("Failed to remove owned mapping for %s port %hu"),
@@ -671,6 +896,7 @@ void CUPnPImplMiniLib::DeletePorts(bool bSkipLock)
 
 void CUPnPImplMiniLib::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 nTCPWebPort)
 {
+	UNREFERENCED_PARAMETER(nTCPWebPort);
 	DebugLog(_T("Using MiniUPnPLib based implementation"));
 	DebugLog(_T("miniupnpc (c) 2005-2024 Thomas Bernard - http://miniupnp.free.fr/"));
 	LoadOwnershipLedger();
@@ -683,15 +909,19 @@ void CUPnPImplMiniLib::StartDiscovery(uint16 nTCPPort, uint16 nUDPPort, uint16 n
 	GetOldPorts();
 	m_nUDPPort = nUDPPort;
 	m_nTCPPort = nTCPPort;
-	m_nTCPWebPort = nTCPWebPort;
+	m_nTCPWebPort = 0;
 	m_nExternalUDPPort = nUDPPort;
 	m_nExternalTCPPort = nTCPPort;
-	m_nExternalTCPWebPort = nTCPWebPort;
+	m_nExternalTCPWebPort = 0;
 	m_dwMappingLeaseLifetime = 0;
+	m_dwMappingExternalIP = 0;
 	m_dwMapperEpoch = 0;
 	m_nDiagnosticStage = UPNP_DIAG_DISCOVERING;
 	m_bUPnPPortsForwarded = TRIS_UNKNOWN;
+	m_bSucceededOnce = false;
 	m_bCheckAndRefresh = false;
+	m_mappingLocalAddress = natmap::IpAddress{};
+	m_mappingGatewayAddress = natmap::IpAddress{};
 
 	Cleanup();
 	if (!m_bAbortDiscovery)
@@ -737,6 +967,18 @@ BOOL CUPnPImplMiniLib::CStartDiscoveryThread::InitInstance()
 	return TRUE;
 }
 
+void CUPnPImplMiniLib::CStartDiscoveryThread::SendFailure(
+	natmap::ReasonCode reason)
+{
+	natmap::UpnpPairResultInput input;
+	input.request = m_operation.request;
+	input.gateway_address = m_operation.gateway_address;
+	input.local_address = m_operation.local_address;
+	input.failure_reason = reason;
+	m_pOwner->SendMapperResultMessage(
+		m_operation, natmap::BuildUpnpPairMapperResult(input));
+}
+
 int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 {
 	DbgSetThreadName("CUPnPImplMiniLib::CStartDiscoveryThread");
@@ -755,6 +997,12 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 		m_pOwner->m_dwMappingLeaseLifetime = 0;
 
 	bool bSucceeded = false;
+	bool tcpReadbackMatches = false;
+	bool tcpOwnershipMatches = false;
+	bool tcpCreatedByOperation = false;
+	bool udpReadbackMatches = false;
+	bool udpOwnershipMatches = false;
+	bool udpCreatedByOperation = false;
 #if !(defined(_DEBUG) || defined(_BETA) || defined(_DEVBUILD))
 	try
 #endif
@@ -763,14 +1011,14 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			const std::vector<DiscoveryTarget> targets =
 				GetDiscoveryTargets();
 			SelectedIgd selected;
+			natmap::UpnpDiscoverySelection discoverySelection;
 			int lastError = UPNPDISCOVER_UNKNOWN_ERROR;
 
 			// First use an ephemeral SSDP source port. It avoids colliding with
 			// the Windows SSDP service and is accepted by standards-compliant
 			// IGD v1/v2 devices.
 			for (size_t i = 0; i < targets.size()
-				&& (selected.state == UPNP_NO_IGD
-					|| selected.state > UPNP_PRIVATEIP_IGD)
+				&& discoverySelection.should_continue()
 				&& !m_pOwner->m_bAbortDiscovery; ++i) {
 				const char* const multicastInterface =
 					targets[i].address.IsEmpty()
@@ -778,7 +1026,8 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 				const int delay = i == 0 ? 2500 : 1200;
 				UPNPDev* devices = DiscoverIgdDevices(multicastInterface,
 					delay, UPNP_LOCAL_PORT_ANY, false, lastError);
-				ConsiderDiscoveredDevices(devices, selected);
+				ConsiderDiscoveredDevices(
+					devices, selected, discoverySelection);
 				freeUPNPDevlist(devices);
 			}
 
@@ -786,15 +1035,15 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			// UDP/1900. Retry that exact legacy behavior on every useful LAN
 			// interface, but only when no connected gateway was selected.
 			for (size_t i = 0; i < targets.size()
-				&& (selected.state == UPNP_NO_IGD
-					|| selected.state > UPNP_PRIVATEIP_IGD)
+				&& discoverySelection.should_continue()
 				&& !m_pOwner->m_bAbortDiscovery; ++i) {
 				const char* const multicastInterface =
 					targets[i].address.IsEmpty()
 					? NULL : targets[i].address.GetString();
 				UPNPDev* devices = DiscoverIgdDevices(multicastInterface,
 					1200, UPNP_LOCAL_PORT_SAME, false, lastError);
-				ConsiderDiscoveredDevices(devices, selected);
+				ConsiderDiscoveredDevices(
+					devices, selected, discoverySelection);
 				freeUPNPDevlist(devices);
 			}
 
@@ -802,26 +1051,30 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			// answering ssdp:all. Keep this as the final, broader discovery
 			// pass so normal networks do not download unrelated descriptions.
 			for (size_t i = 0; i < targets.size()
-				&& (selected.state == UPNP_NO_IGD
-					|| selected.state > UPNP_PRIVATEIP_IGD)
+				&& discoverySelection.should_continue()
 				&& !m_pOwner->m_bAbortDiscovery; ++i) {
 				const char* const multicastInterface =
 					targets[i].address.IsEmpty()
 					? NULL : targets[i].address.GetString();
 				UPNPDev* devices = DiscoverIgdDevices(multicastInterface,
 					1200, UPNP_LOCAL_PORT_ANY, true, lastError);
-				ConsiderDiscoveredDevices(devices, selected);
+				ConsiderDiscoveredDevices(
+					devices, selected, discoverySelection);
 				freeUPNPDevlist(devices);
 			}
 
-			if (m_pOwner->m_bAbortDiscovery)
+			if (m_pOwner->m_bAbortDiscovery) {
+				discoverySelection.Cancel();
 				return 0;
-			if (selected.state == UPNP_NO_IGD) {
+			}
+			discoverySelection.Complete();
+			if (discoverySelection.status()
+				== natmap::UpnpDiscoveryStatus::TimedOut) {
 				DebugLog(_T("UPNP: No Internet Gateway Device found across %u interface candidate(s), last error %d"),
 					static_cast<unsigned>(targets.size()), lastError);
 				m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
 				m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-				m_pOwner->SendResultMessage();
+				SendFailure(natmap::ReasonCode::NoGateway);
 				return 0;
 			}
 
@@ -831,6 +1084,18 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			*m_pOwner->m_pIGDData = selected.data;
 			strncpy_s(m_pOwner->m_achLanIP, selected.lanAddress, _TRUNCATE);
 			strncpy_s(m_pOwner->m_achWanIP, selected.wanAddress, _TRUNCATE);
+			natmap::IpAddress selectedLocalAddress;
+			if (!CUPnPImplMiniLib::ParseIPv4(
+					m_pOwner->m_achLanIP, selectedLocalAddress)
+				|| !SameNatmapAddress(
+					selectedLocalAddress,
+					m_operation.local_address)) {
+				DebugLogWarning(_T("UPNP: selected IGD uses a different local interface than the correlated route; rejecting it"));
+				m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
+				m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
+				SendFailure(natmap::ReasonCode::InterfaceChanged);
+				return 0;
+			}
 			const int iResult = selected.state;
 			bool bNotFound = false;
 			switch (iResult) {
@@ -856,7 +1121,7 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			if (bNotFound || m_pOwner->m_pURLs->controlURL == NULL) {
 				m_pOwner->m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
 				m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-				m_pOwner->SendResultMessage();
+				SendFailure(natmap::ReasonCode::NoMappingProtocol);
 				return 0;
 			}
 			DebugLog(_T("Our LAN IP: %S"), m_pOwner->m_achLanIP);
@@ -891,21 +1156,117 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 			m_pOwner->m_nOldTCPPort = 0;
 			m_pOwner->m_nOldUDPPort = 0;
 			m_pOwner->m_nOldTCPWebPort = 0;
+		} else {
+			natmap::IpAddress refreshLocalAddress;
+			const bool sameRoute =
+				CUPnPImplMiniLib::ParseIPv4(
+					m_pOwner->m_achLanIP, refreshLocalAddress)
+				&& SameNatmapAddress(
+					refreshLocalAddress,
+					m_operation.local_address)
+				&& SameNatmapAddress(
+					m_pOwner->m_mappingLocalAddress,
+					m_operation.local_address)
+				&& SameNatmapAddress(
+					m_pOwner->m_mappingGatewayAddress,
+					m_operation.gateway_address);
+			if (!sameRoute) {
+				DebugLogWarning(_T("UPNP: active local interface or gateway changed since initial mapping; refusing refresh on the stale IGD"));
+				m_pOwner->m_nDiagnosticStage = UPNP_DIAG_NO_GATEWAY;
+				m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
+				SendFailure(natmap::ReasonCode::InterfaceChanged);
+				return 0;
+			}
 		}
 
 		m_pOwner->m_nDiagnosticStage = UPNP_DIAG_TCP_MAPPING;
-		bSucceeded = OpenPort(m_pOwner->m_nTCPPort, true, m_pOwner->m_achLanIP, m_pOwner->m_bCheckAndRefresh);
+		bSucceeded = OpenPort(
+			m_pOwner->m_nTCPPort, true, m_pOwner->m_achLanIP,
+			m_pOwner->m_bCheckAndRefresh,
+			&tcpReadbackMatches, &tcpOwnershipMatches,
+			&tcpCreatedByOperation);
+		natmap::UpnpTransportObservation tcpObservation = {
+			natmap::Transport::Tcp,
+			m_pOwner->m_nTCPPort,
+			m_pOwner->m_nTCPPort,
+			m_pOwner->m_nExternalTCPPort,
+			tcpReadbackMatches,
+			tcpOwnershipMatches,
+			tcpCreatedByOperation
+		};
+		if (bSucceeded
+			&& (!tcpReadbackMatches || !tcpOwnershipMatches)) {
+			DebugLogWarning(_T("UPNP: TCP mapping is usable but lacks exact owned readback; refusing to create the UDP half"));
+			bSucceeded = false;
+		}
 		if (bSucceeded && m_pOwner->m_nUDPPort != 0) {
 			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_UDP_MAPPING;
-			bSucceeded = OpenPort(m_pOwner->m_nUDPPort, false, m_pOwner->m_achLanIP, m_pOwner->m_bCheckAndRefresh);
-			if (!bSucceeded) {
-				// TCP+UDP is one direct-reachability transaction. Do not leave
-				// a half-created mapping when Kad UDP creation fails.
-				m_pOwner->DeletePort(m_pOwner->m_nExternalTCPPort, sTCP);
+			bSucceeded = OpenPort(
+				m_pOwner->m_nUDPPort, false, m_pOwner->m_achLanIP,
+				m_pOwner->m_bCheckAndRefresh,
+				&udpReadbackMatches, &udpOwnershipMatches,
+				&udpCreatedByOperation);
+		} else if (bSucceeded)
+			bSucceeded = false;
+		const natmap::UpnpTransportObservation udpObservation = {
+			natmap::Transport::Udp,
+			m_pOwner->m_nUDPPort,
+			m_pOwner->m_nUDPPort,
+			m_pOwner->m_nExternalUDPPort,
+			udpReadbackMatches,
+			udpOwnershipMatches,
+			udpCreatedByOperation
+		};
+		if (bSucceeded) {
+			natmap::UpnpPairResultInput pairInput;
+			pairInput.request = m_operation.request;
+			pairInput.gateway_address = m_operation.gateway_address;
+			pairInput.local_address = m_operation.local_address;
+			pairInput.external_address =
+				NatmapIPv4(m_pOwner->m_dwMappingExternalIP);
+			pairInput.tcp = tcpObservation;
+			pairInput.udp = udpObservation;
+			pairInput.lifetime_seconds =
+				m_pOwner->m_dwMappingLeaseLifetime;
+			pairInput.now_monotonic_ms = MonotonicMilliseconds();
+			pairInput.ownership_identity_digest =
+				UpnpOwnershipDigest(m_pOwner->m_ownerToken);
+			pairInput.failure_reason =
+				natmap::ReasonCode::InvalidResponse;
+			const natmap::MapperResultData pairResult =
+				natmap::BuildUpnpPairMapperResult(pairInput);
+			bSucceeded = pairResult.status
+				== (m_operation.request.operation
+					== natmap::MappingOperation::Refresh
+					? natmap::MappingStatus::Renewed
+					: natmap::MappingStatus::Created);
+		}
+		if (!bSucceeded) {
+			// TCP+UDP is one direct-reachability transaction. Remove only
+			// mappings proven to have been created by this exact operation;
+			// pre-existing and refreshed rules are never transaction rollback
+			// candidates.
+			if (natmap::ShouldRollbackUpnpMappingAfterAtomicFailure(
+					tcpObservation)) {
+				m_pOwner->DeletePort(
+					m_pOwner->m_nExternalTCPPort, sTCP);
 				m_pOwner->m_nExternalTCPPort = 0;
+			}
+			if (natmap::ShouldRollbackUpnpMappingAfterAtomicFailure(
+					udpObservation)) {
+				m_pOwner->DeletePort(
+					m_pOwner->m_nExternalUDPPort, sUDP);
+				m_pOwner->m_nExternalUDPPort = 0;
 			}
 		}
 		if (bSucceeded) {
+			if (m_operation.request.operation
+				== natmap::MappingOperation::Initial) {
+				m_pOwner->m_mappingLocalAddress =
+					m_operation.local_address;
+				m_pOwner->m_mappingGatewayAddress =
+					m_operation.gateway_address;
+			}
 			if (m_pOwner->m_nOldTCPWebPort)
 				m_pOwner->DeletePort(m_pOwner->m_nOldTCPWebPort, sTCP);	//unmap WebServer port (late binding)
 			if (m_pOwner->m_nTCPWebPort)
@@ -918,18 +1279,75 @@ int CUPnPImplMiniLib::CStartDiscoveryThread::Run()
 #endif
 	}
 	if (!m_pOwner->m_bAbortDiscovery) {	// don't send the result on an abort request
+		natmap::UpnpPairResultInput pairInput;
+		pairInput.request = m_operation.request;
+		pairInput.gateway_address = m_operation.gateway_address;
+		pairInput.local_address = m_operation.local_address;
+		pairInput.external_address =
+			NatmapIPv4(m_pOwner->m_dwMappingExternalIP);
+		pairInput.tcp = natmap::UpnpTransportObservation{
+			natmap::Transport::Tcp,
+			m_pOwner->m_nTCPPort,
+			m_pOwner->m_nTCPPort,
+			m_pOwner->m_nExternalTCPPort,
+			tcpReadbackMatches,
+			tcpOwnershipMatches,
+			tcpCreatedByOperation
+		};
+		pairInput.udp = natmap::UpnpTransportObservation{
+			natmap::Transport::Udp,
+			m_pOwner->m_nUDPPort,
+			m_pOwner->m_nUDPPort,
+			m_pOwner->m_nExternalUDPPort,
+			udpReadbackMatches,
+			udpOwnershipMatches,
+			udpCreatedByOperation
+		};
+		pairInput.lifetime_seconds =
+			m_pOwner->m_dwMappingLeaseLifetime;
+		pairInput.now_monotonic_ms = MonotonicMilliseconds();
+		pairInput.ownership_identity_digest =
+			UpnpOwnershipDigest(m_pOwner->m_ownerToken);
+		pairInput.failure_reason =
+			m_pOwner->m_nDiagnosticStage == UPNP_DIAG_NO_GATEWAY
+				? natmap::ReasonCode::NoGateway
+				: m_pOwner->m_nDiagnosticStage
+					== UPNP_DIAG_PROTOCOL_UNAVAILABLE
+					? natmap::ReasonCode::NoMappingProtocol
+					: m_pOwner->m_nDiagnosticStage
+						== UPNP_DIAG_TABLE_FULL
+						? natmap::ReasonCode::MappingConflict
+						: natmap::ReasonCode::InvalidResponse;
+		if (!bSucceeded)
+			pairInput.udp.readback_matches = false;
+		const natmap::MapperResultData pairResult =
+			natmap::BuildUpnpPairMapperResult(pairInput);
 		if (bSucceeded) {
 			m_pOwner->m_bUPnPPortsForwarded = TRIS_TRUE;
 			m_pOwner->m_bSucceededOnce = true;
 		} else
 			m_pOwner->m_bUPnPPortsForwarded = TRIS_FALSE;
-		m_pOwner->SendResultMessage();
+		m_pOwner->SendMapperResultMessage(
+			m_operation, pairResult);
 	}
 	return 0;
 }
 
-bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, char *pachLANIP, bool bCheckAndRefresh)
+bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(
+	uint16 nPort,
+	bool bTCP,
+	char *pachLANIP,
+	bool bCheckAndRefresh,
+	bool *pReadbackMatches,
+	bool *pOwnershipMatches,
+	bool *pCreatedByOperation)
 {
+	if (pReadbackMatches != NULL)
+		*pReadbackMatches = false;
+	if (pOwnershipMatches != NULL)
+		*pOwnershipMatches = false;
+	if (pCreatedByOperation != NULL)
+		*pCreatedByOperation = false;
 	if (m_pOwner->m_bAbortDiscovery)
 		return false;
 
@@ -966,11 +1384,15 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 		achOutDescription[0] = 0;
 		achEnabled[0] = 0;
 		achLeaseDuration[0] = 0;
-		return UPNP_GetSpecificPortMappingEntry(
+		return UPNP_GetSpecificPortMappingEntryChecked(
 			m_pOwner->m_pURLs->controlURL,
 			m_pOwner->m_pIGDData->first.servicetype, achExternalPort,
-			(bTCP ? sTCPa : sUDPa), NULL, achOutIP, achOutPort,
-			achOutDescription, achEnabled, achLeaseDuration);
+			(bTCP ? sTCPa : sUDPa), NULL,
+			achOutIP, _countof(achOutIP),
+			achOutPort, _countof(achOutPort),
+			achOutDescription, _countof(achOutDescription),
+			achEnabled, _countof(achEnabled),
+			achLeaseDuration, _countof(achLeaseDuration));
 	};
 	const auto observedTargetMatches = [&]() {
 		return MappingTargetsLocalSocket(achOutIP, achOutPort, achEnabled,
@@ -982,17 +1404,44 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 	// exact same local socket. Adopting it avoids false 718 conflicts and never
 	// grants this process permission to delete that foreign rule.
 	int nResult = queryMapping();
-	if (nResult == UPNPCOMMAND_SUCCESS && observedTargetMatches()) {
-		const uint32 remaining = ParseLeaseDuration(achLeaseDuration, 0);
-		const bool ownedDescription =
-			strcmp(achOutDescription, pachDescription) == 0;
-		if (!bCheckAndRefresh || !ownedDescription || remaining == 0) {
-			noteFiniteLease(remaining);
-			DebugLog(_T("UPNP: Reusing compatible mapping %hu -> %hu (%s) on %S%s"),
-				*pExternalPort, nPort, (bTCP ? sTCP : sUDP), achOutIP,
-				ownedDescription ? _T("") : _T(" (router-managed description)"));
-			return true;
+	const bool mappingProvenAbsentBeforeAdd = nResult == 714;
+	const bool existingTargetMatches =
+		nResult == UPNPCOMMAND_SUCCESS && observedTargetMatches();
+	const uint32 remaining = existingTargetMatches
+		? ParseLeaseDuration(achLeaseDuration, 0) : 0;
+	const bool ownedDescription = existingTargetMatches
+		&& strcmp(achOutDescription, pachDescription) == 0;
+	const natmap::UpnpExistingLeaseAction existingAction =
+		natmap::EvaluateUpnpExistingLease(
+			natmap::UpnpExistingLeaseObservation{
+				bCheckAndRefresh,
+				nResult == UPNPCOMMAND_SUCCESS,
+				existingTargetMatches,
+				ownedDescription,
+				remaining
+			});
+	if (existingAction == natmap::UpnpExistingLeaseAction::Reuse) {
+		noteFiniteLease(remaining);
+		const bool ownershipPersisted = !ownedDescription
+			|| m_pOwner->RecordOwnedMapping(
+				nPort, *pExternalPort, bTCP, pachLANIP,
+				remaining, ownershipDescription);
+		if (pReadbackMatches != NULL)
+			*pReadbackMatches = true;
+		if (pOwnershipMatches != NULL)
+			*pOwnershipMatches =
+				ownedDescription && ownershipPersisted;
+		if (!ownershipPersisted) {
+			m_pOwner->m_nDiagnosticStage =
+				UPNP_DIAG_OWNERSHIP_PERSISTENCE;
+			return false;
 		}
+		DebugLog(_T("UPNP: Reusing compatible mapping %hu -> %hu (%s) on %S%s"),
+			*pExternalPort, nPort, (bTCP ? sTCP : sUDP), achOutIP,
+			ownedDescription ? _T("") : _T(" (router-managed description)"));
+		return true;
+	}
+	if (existingAction == natmap::UpnpExistingLeaseAction::RenewFinite) {
 		// Observing a finite rule does not renew it. Only renew rules whose
 		// ownership description survived the router unchanged.
 		DebugLog(_T("Checking UPnP: Owned finite mapping %hu -> %hu (%s) has %u seconds left; renewing it now"),
@@ -1014,6 +1463,34 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 			return false;
 		const uint32 remaining = ParseLeaseDuration(achLeaseDuration, 0);
 		noteFiniteLease(remaining);
+		const bool ownedDescription =
+			strcmp(achOutDescription, pachDescription) == 0;
+		const bool ownershipPersisted = !ownedDescription
+			|| m_pOwner->RecordOwnedMapping(
+				nPort, *pExternalPort, bTCP, pachLANIP,
+				remaining, ownershipDescription);
+		if (pReadbackMatches != NULL)
+			*pReadbackMatches = true;
+		if (pOwnershipMatches != NULL)
+			*pOwnershipMatches =
+				ownedDescription && ownershipPersisted;
+		if (!ownershipPersisted) {
+			m_pOwner->m_nDiagnosticStage =
+				UPNP_DIAG_OWNERSHIP_PERSISTENCE;
+			if (mappingProvenAbsentBeforeAdd && ownedDescription) {
+				DebugLogError(_T("UPNP ownership: add response was lost and proof persistence failed for newly created %s port %hu; rolling mapping back"),
+					(bTCP ? sTCP : sUDP), *pExternalPort);
+				m_pOwner->DeleteEphemeralOwnedMapping(
+					nPort, *pExternalPort, bTCP, pachLANIP,
+					remaining, ownershipDescription,
+					achOutIP, achOutPort, achOutDescription,
+					_countof(achOutDescription));
+			}
+			return false;
+		}
+		if (pCreatedByOperation != NULL)
+			*pCreatedByOperation =
+				mappingProvenAbsentBeforeAdd && ownedDescription;
 		DebugLog(_T("UPNP: Add returned an error but the requested mapping %hu -> %hu (%s) already exists; reusing it"),
 			*pExternalPort, nPort, (bTCP ? sTCP : sUDP));
 		return true;
@@ -1030,7 +1507,10 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 	if (nResult != UPNPCOMMAND_SUCCESS && adoptMappingAfterFailedAdd())
 		return true;
 
-	if (nResult != UPNPCOMMAND_SUCCESS) {
+	if (natmap::EvaluateUpnpLeaseAttempt(
+			natmap::UpnpLeaseRequestKind::Finite,
+			nResult == UPNPCOMMAND_SUCCESS)
+		== natmap::UpnpLeaseAttemptAction::TryPermanent) {
 		// Error 725 explicitly requires this, while a number of non-compliant
 		// IGD v1 routers report only 402/501 for the same lease restriction.
 		DebugLog(_T("Adding finite PortMapping failed (%d: %S), retrying with lease 0..."),
@@ -1043,11 +1523,19 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 		}
 		if (nResult != UPNPCOMMAND_SUCCESS && adoptMappingAfterFailedAdd())
 			return true;
+		const natmap::UpnpLeaseAttemptAction permanentAction =
+			natmap::EvaluateUpnpLeaseAttempt(
+				natmap::UpnpLeaseRequestKind::Permanent,
+				nResult == UPNPCOMMAND_SUCCESS);
+		if (permanentAction
+			== natmap::UpnpLeaseAttemptAction::AcceptPermanent)
+			requestedLifetime = 0;
 	}
 
 	// IGDv2 can reserve a different free external port. Try both a suggested
 	// port and a true wildcard because deployed IGDv2 firmware disagrees on
 	// which form AddAnyPortMapping accepts.
+	bool addAnySucceeded = false;
 	const bool bDirectMapping = bTCP
 		? nPort == m_pOwner->m_nTCPPort : nPort == m_pOwner->m_nUDPPort;
 	if (nResult != UPNPCOMMAND_SUCCESS && bDirectMapping) {
@@ -1062,12 +1550,12 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 				m_pOwner->m_pIGDData->first.servicetype, externalPort,
 				achPort, pachLANIP, pachDescription,
 				(bTCP ? sTCPa : sUDPa), NULL, leaseDuration, reservedPort);
-			char* end = NULL;
-			const unsigned long reserved = strtoul(reservedPort, &end, 10);
+			uint16 reserved = 0;
 			if (result == UPNPCOMMAND_SUCCESS
-				&& end != reservedPort && *end == 0
-				&& reserved > 0 && reserved <= 65535) {
-				*pExternalPort = static_cast<uint16>(reserved);
+				&& natmap::ParseUpnpDecimalPort(
+					reservedPort, reserved)) {
+				addAnySucceeded = true;
+				*pExternalPort = reserved;
 				_snprintf_s(achExternalPort, _countof(achExternalPort),
 					_TRUNCATE, "%hu", *pExternalPort);
 				requestedLifetime = lifetime;
@@ -1132,6 +1620,8 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 			requestedLifetime);
 		noteFiniteLease(verifiedLifetime);
 		if (strcmp(achOutDescription, pachDescription) != 0) {
+			if (pReadbackMatches != NULL)
+				*pReadbackMatches = true;
 			DebugLogWarning(_T("UPNP: Router changed or omitted the mapping description for %hu (%s); mapping accepted but excluded from ownership-based deletion"),
 				*pExternalPort, (bTCP ? sTCP : sUDP));
 			DebugLog(_T("Successfully added compatible mapping %hu -> %hu (%s) on local IP %S"),
@@ -1143,11 +1633,20 @@ bool CUPnPImplMiniLib::CStartDiscoveryThread::OpenPort(uint16 nPort, bool bTCP, 
 			m_pOwner->m_nDiagnosticStage = UPNP_DIAG_OWNERSHIP_PERSISTENCE;
 			DebugLogError(_T("UPNP ownership: could not persist proof for %s port %hu; rolling mapping back"),
 				(bTCP ? sTCP : sUDP), *pExternalPort);
-			UPNP_DeletePortMapping(m_pOwner->m_pURLs->controlURL,
-				m_pOwner->m_pIGDData->first.servicetype, achExternalPort,
-				(bTCP ? sTCPa : sUDPa), NULL);
+			m_pOwner->DeleteEphemeralOwnedMapping(
+				nPort, *pExternalPort, bTCP, pachLANIP,
+				verifiedLifetime, ownershipDescription,
+				achOutIP, achOutPort, achOutDescription,
+				_countof(achOutDescription));
 			return false;
 		}
+		if (pReadbackMatches != NULL)
+			*pReadbackMatches = true;
+		if (pOwnershipMatches != NULL)
+			*pOwnershipMatches = true;
+		if (pCreatedByOperation != NULL)
+			*pCreatedByOperation =
+				mappingProvenAbsentBeforeAdd || addAnySucceeded;
 		DebugLog(_T("Successfully added mapping %hu -> %hu (%s) on local IP %S"), *pExternalPort, nPort, (bTCP ? sTCP : sUDP), achOutIP);
 		return true;
 	}
@@ -1183,6 +1682,22 @@ void CUPnPImplMiniLib::Cleanup()
 void CUPnPImplMiniLib::StartThread()
 {
 	CStartDiscoveryThread *pStartDiscoveryThread = (CStartDiscoveryThread*)AfxBeginThread(RUNTIME_CLASS(CStartDiscoveryThread), THREAD_PRIORITY_NORMAL, 0, CREATE_SUSPENDED);
+	if (pStartDiscoveryThread == NULL) {
+		m_hThreadHandle = NULL;
+		m_bUPnPPortsForwarded = TRIS_FALSE;
+		m_nDiagnosticStage = UPNP_DIAG_PROTOCOL_UNAVAILABLE;
+		const MappingOperationContext operation =
+			CaptureMappingOperation();
+		natmap::UpnpPairResultInput input;
+		input.request = operation.request;
+		input.gateway_address = operation.gateway_address;
+		input.local_address = operation.local_address;
+		input.failure_reason =
+			natmap::ReasonCode::NoMappingProtocol;
+		SendMapperResultMessage(
+			operation, natmap::BuildUpnpPairMapperResult(input));
+		return;
+	}
 	m_hThreadHandle = pStartDiscoveryThread->m_hThread;
 	pStartDiscoveryThread->SetValues(this);
 	pStartDiscoveryThread->ResumeThread();

@@ -3,10 +3,16 @@ const fs    = require('fs');
 const https = require('https');
 const path  = require('path');
 const { TMDB_KEY } = require('../api_keys');
+const { validateRouteContext } = require('./route_context');
 
+/** @type {Pick<import('./route_context').SharedRouteContext, 'CACHE_DIR'|'loadSettings'> & Record<string, Function|string>} */
 let _ctx = {};
 
-function init(ctx) { _ctx = ctx; }
+function init(ctx) {
+  _ctx = validateRouteContext(ctx, 'movies', {
+    CACHE_DIR: 'string', loadSettings: 'function', fetchAndCacheMovie: 'function', proxyOMDB: 'function',
+  });
+}
 
 // ── /api/tmdb/* proxy ──────────────────────────────────────────────────────────
 // Forwards any TMDB v3 path to api.themoviedb.org, injecting the server-side
@@ -62,12 +68,12 @@ function handle(url, req, res) {
     const title    = url.searchParams.get('title') || '';
     const safeName = title.replace(/[^a-z0-9]/gi, '_').substring(0, 60);
     const posterPath = path.join(_ctx.CACHE_DIR, safeName + '.jpg');
-    if (fs.existsSync(posterPath)) {
+    fs.promises.access(posterPath).then(() => {
       res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
       fs.createReadStream(posterPath).pipe(res);
-    } else {
+    }).catch(() => {
       res.writeHead(404); res.end('');
-    }
+    });
     return true;
   }
 

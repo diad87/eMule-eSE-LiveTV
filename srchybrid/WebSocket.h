@@ -1,6 +1,15 @@
 #pragma once
 
+#include "WebSocketResponse.h"
+
 class CWebServer;
+class CFile;
+namespace ese {
+namespace web {
+struct ParsedRequest;
+struct WebFileResponseOptions;
+}
+}
 
 void StartSockets(CWebServer *pThis);
 void StopSockets();
@@ -11,19 +20,7 @@ public:
 	void SetParent(CWebServer *pParent)		{ m_pParent = pParent; }
 	CWebServer *m_pParent;
 
-	class CChunk
-	{
-	public:
-		char *m_pData;
-		char *m_pToSend;
-		CChunk *m_pNext;
-		DWORD m_dwSize;
-
-		~CChunk()			{ delete[] m_pData; }
-	};
-
-	CChunk *m_pHead; // tails of what has to be sent
-	CChunk *m_pTail;
+	ese::web::WebSocketResponse m_response;
 
 	char *m_pBuf;
 	void *m_ssl; //mbedtls_ssl_context *
@@ -42,8 +39,18 @@ public:
 	void SendData(LPCSTR szText)			{ SendData(szText, (DWORD)strlen(szText)); }
 	void SendContent(LPCSTR szStdResponse, const void *pContent, DWORD dwContentSize);
 	void SendContent(LPCSTR szStdResponse, const CString &rstr);
+	bool SendFile(CFile *pFile, ULONGLONG offset, ULONGLONG byteCount);
+	void SendFileResponse(
+		const CString& filePath,
+		const CStringA& publicPath,
+		const CStringA& rangeHeader,
+		const ese::web::WebFileResponseOptions& options,
+		ULONGLONG maximumBytes,
+		bool allowConcurrentWrite,
+		bool allowEmpty);
+	void FlushResponseQueue();
 	void SendReply(LPCSTR szReply);
 	void Disconnect();
 
-	void OnRequestReceived(const char *pHeader, DWORD dwHeaderLen, const char *pData, DWORD dwDataLen, const in_addr inad);
+	void OnRequestReceived(const ese::web::ParsedRequest &request, const char *pData, DWORD dwDataLen, const in_addr inad);
 };

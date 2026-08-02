@@ -79,6 +79,41 @@ void CLiveMeshManager::RemoveMeshPeer(CUpDownClient* peer)
     }
 }
 
+bool CLiveMeshManager::ReplaceMeshPeer(
+    CUpDownClient* previous,
+    CUpDownClient* replacement)
+{
+    if (previous == NULL || replacement == NULL || previous == replacement)
+        return false;
+
+    CSingleLock lock(&m_lock, TRUE);
+    POSITION previousPos = m_meshPeers.Find(previous);
+    if (previousPos == NULL)
+        return false;
+
+    if (m_meshPeers.Find(replacement) != NULL)
+        m_meshPeers.RemoveAt(previousPos);
+    else
+        m_meshPeers.SetAt(previousPos, replacement);
+
+    uint64 previousBytes = 0;
+    if (m_uploadTracker.Lookup(previous, previousBytes)) {
+        uint64 replacementBytes = 0;
+        m_uploadTracker.Lookup(replacement, replacementBytes);
+        const uint64 maximum = ~(uint64)0;
+        m_uploadTracker[replacement] =
+            maximum - replacementBytes < previousBytes
+                ? maximum
+                : replacementBytes + previousBytes;
+        m_uploadTracker.RemoveKey(previous);
+    }
+    for (INT_PTR i = 0; i < m_pendingRequests.GetCount(); ++i) {
+        if (m_pendingRequests[i].peer == previous)
+            m_pendingRequests[i].peer = replacement;
+    }
+    return true;
+}
+
 void CLiveMeshManager::ResetSessionPeers()
 {
     CSingleLock lock(&m_lock, TRUE);
@@ -113,14 +148,16 @@ void CLiveMeshManager::CalculateRarities(CArray<SegmentRarity>& outRarities)
 
     if (!m_pManager) return;
 
-    const CLiveChunkBuffer& buffer = m_pManager->GetBuffer();
+    const ese::live::LiveChunkWindow& buffer = m_pManager->GetBuffer();
     uint32 oldest = buffer.GetOldestSeq();
     uint32 newest = buffer.GetNewestSeq();
+    const uint32 span = newest - oldest + 1u;
 
     outRarities.RemoveAll();
 
     // For each possible segment in the window
-    for (uint32 seq = oldest; seq <= newest + 2; seq++) {
+    for (uint32 offset = 0u; offset < span + 2u; ++offset) {
+        const uint32 seq = oldest + offset;
         SegmentRarity rarity;
         rarity.seqNum = seq;
         rarity.haveIt = buffer.HasSegment(seq);
@@ -153,7 +190,9 @@ int CLiveMeshManager::CountPeersWithSegment(uint32 seqNum) const
     while (pos) {
         CUpDownClient* peer = m_meshPeers.GetNext(pos);
         PeerBitmapInfo info;
-        if (m_pManager->GetPeerBitmap(peer, info) && info.Has(seqNum))
+        if (m_pManager->GetPeerBitmap(peer, info)
+            && ese::live::LiveChunkWindow::IsSequenceAvailable(
+                info.bitmap, info.oldestSeq, seqNum))
             count++;
     }
     return count;
@@ -175,7 +214,8 @@ CUpDownClient* CLiveMeshManager::SelectBestPeerForSegment(uint32 seqNum)
         CUpDownClient* peer = m_meshPeers.GetNext(pos);
         PeerBitmapInfo info;
         if (!m_pManager->GetPeerBitmap(peer, info)) continue;
-        if (!info.Has(seqNum)) continue;
+        if (!ese::live::LiveChunkWindow::IsSequenceAvailable(
+                info.bitmap, info.oldestSeq, seqNum)) continue;
 
         // Score: trust-based + load-balanced
         int score = 50; // base score

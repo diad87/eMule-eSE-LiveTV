@@ -344,8 +344,19 @@ static void TestBlindLifecycleAndSingleUse() {
     CHECK(DecodeK6QuotaPresentation(wire.data(), wire.size(), decoded, &used) ==
           Kad6Status::Ok && used == wire.size(), "presentation wire round trip");
 
-    K6QuotaSpentSet spent(8);
     K6QuotaToken verified;
+    CHECK(VerifyK6QuotaPresentation(identity, quota, decoded,
+          K6QuotaService::ExitEd2kFull, 7, epoch, token.subepoch_slot,
+          token.presentation_context_hash,
+          true, &verified) == K6QuotaStatus::Ok,
+          "pure verification succeeds without spending");
+    CHECK(VerifyK6QuotaPresentation(identity, quota, decoded,
+          K6QuotaService::ExitEd2kFull, 7, epoch, token.subepoch_slot,
+          token.presentation_context_hash,
+          true) == K6QuotaStatus::Ok,
+          "pure verification is repeatable before atomic consume");
+
+    K6QuotaSpentSet spent(8);
     CHECK(VerifyAndSpendK6Quota(identity, quota, spent, decoded,
           K6QuotaService::ExitEd2kFull, 7, epoch, token.subepoch_slot,
           token.presentation_context_hash,

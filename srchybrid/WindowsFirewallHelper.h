@@ -21,6 +21,7 @@
 #pragma once
 
 #include <netfw.h>
+#include <cstdint>
 
 class CWindowsFirewallHelper
 {
@@ -34,15 +35,13 @@ public:
 	bool	IsInited() const							{ return m_bInited; }
 
 	// Core operations - these match the old CFirewallOpener interface signatures
-	bool	AddPortRule(uint16 nPort, bool bTCP, LPCTSTR szRuleName, LPCTSTR szDescription = NULL);
-	bool	RemoveRule(LPCTSTR szRuleName);
+	bool	AddPortRule(uint16 nPort, bool bTCP, LPCTSTR szRuleName,
+		std::uint64_t profileOwnerToken, LPCTSTR szDescription = NULL);
+	bool	RemoveOwnedPortRule(uint16 expectedPort, bool bTCP,
+		LPCTSTR szRuleName, std::uint64_t profileOwnerToken);
 	bool	DoesRuleExist(LPCTSTR szRuleName);
 	bool	DoesPortRuleExist(uint16 nPort, bool bTCP);
 	bool	IsFirewallEnabled();
-
-	// High-level convenience methods
-	bool	EnsureEmulePorts(uint16 nTCPPort, uint16 nUDPPort);
-	bool	RemoveEmuleRules();
 
 	// Static helper: check if the modern API is available (Vista+)
 	static bool	IsModernFirewallAvailable();

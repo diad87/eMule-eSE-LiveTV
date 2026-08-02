@@ -248,6 +248,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\addr_is_reserved.h" />
+    <ClInclude Include="..\src\checked_copy.h" />
     <ClInclude Include="..\src\connecthostport.h" />
     <ClInclude Include="..\include\igd_desc_parse.h" />
     <ClInclude Include="..\src\minisoap.h" />

@@ -1,0 +1,440 @@
+{
+  "schema": "ese.v92.t8-wp0-coverage/v1",
+  "minimum_node_tests": 295,
+  "checks": [
+    {
+      "id": "SCENARIO_SCHEMA_AND_LOADER",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/scenario_loader.test.js",
+          "contains": "loads the smallest valid scenario from object, text and explicit file"
+        }
+      ]
+    },
+    {
+      "id": "NATPMP_CODEC",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/natpmp_vectors.test.js",
+          "contains": "NAT-PMP goldens have exact length, hex, and immutable traceability"
+        }
+      ]
+    },
+    {
+      "id": "PCP_CODEC",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/pcp_vectors.test.js",
+          "contains": "PCP goldens have exact literal bytes and immutable traceability"
+        }
+      ]
+    },
+    {
+      "id": "UPNP_SUCCESS",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/upnp_add_port_mapping.test.js",
+          "contains": "a permanent mapping is created and encoded as SOAP success"
+        }
+      ]
+    },
+    {
+      "id": "PCP_SUCCESS",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/pcp_mapping_lifecycle.test.js",
+          "contains": "creates one PCP mapping with nonce-bound ownership and exact lease"
+        }
+      ]
+    },
+    {
+      "id": "NATPMP_SUCCESS",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/natpmp_diagnostic_client.test.js",
+          "contains": "real diagnostic client observes request, parses response and reaches mapped state"
+        }
+      ]
+    },
+    {
+      "id": "SLOW_OR_LOST_RESPONSE",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/natpmp_fault_injector.test.js",
+          "contains": "C05 delay: waits through the injected cancellable scheduler"
+        },
+        {
+          "file": "tools/lab/nat_gateway/test/natpmp_fault_injector.test.js",
+          "contains": "C05 drop: deterministically suppresses the response"
+        }
+      ]
+    },
+    {
+      "id": "ALTERNATE_EXTERNAL_PORT",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/natpmp_response_encoder.test.js",
+          "contains": "encodes alternate ports, reduced leases, epochs and uint limits big-endian"
+        }
+      ]
+    },
+    {
+      "id": "SHORT_LEASE",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/natpmp_fault_injector.test.js",
+          "contains": "C05 short lease: caps only the lease"
+        }
+      ]
+    },
+    {
+      "id": "EPOCH_RESTART",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/pcp_epoch_recovery.test.js",
+          "contains": "epoch restart clears mappings, cancels pending responses and advances generation once"
+        }
+      ]
+    },
+    {
+      "id": "PRIVATE_OR_CGNAT_EXTERNAL",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/upnp_soap_query.test.js",
+          "contains": "public, RFC1918 and CGNAT IPv4 are reported exactly"
+        }
+      ]
+    },
+    {
+      "id": "PORT_COLLISION",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/mapping_model.test.js",
+          "contains": "collision is semantic, IPv6 canonical"
+        }
+      ]
+    },
+    {
+      "id": "RENEWAL_REJECTED",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/pcp_mapping_lifecycle.test.js",
+          "contains": "different nonce on the same tuple is NOT_AUTHORIZED"
+        }
+      ]
+    },
+    {
+      "id": "MAPPING_DISAPPEARED",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/clock.test.js",
+          "contains": "mapping expiry is exact, renewal moves deadline, and an expired mapping cannot revive"
+        }
+      ]
+    },
+    {
+      "id": "DOUBLE_NAT_FIRST_LAYER",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/upnp_soap_query.test.js",
+          "contains": "public, RFC1918 and CGNAT IPv4 are reported exactly"
+        },
+        {
+          "file": "tools/lab/nat_gateway/test/scenario_loader.test.js",
+          "contains": "loader-accepted non-canonical IPv6 change-wan as canonical data"
+        }
+      ]
+    },
+    {
+      "id": "DOUBLE_NAT_POLICY",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_nat_chain.cpp",
+          "contains": "TestDiscoveryRequiresAuthorizedEvidence"
+        },
+        {
+          "file": "libnatmap/tests/test_nat_chain.cpp",
+          "contains": "TestDepthAndNonRoutablePromotionFailClosed"
+        },
+        {
+          "file": "tests/test_v92_m02_double_nat.py",
+          "contains": "test_no_gateway_is_invented_or_subnet_scanned"
+        },
+        {
+          "file": "libnatmap/include/natmap/natmap_chain.h",
+          "contains": "kMaximumLayers = 2"
+        }
+      ]
+    },
+    {
+      "id": "TWO_CLIENT_OWNERSHIP",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/two_client_lab.test.js",
+          "contains": "B delete A: ownership mismatch cannot remove or mutate A mapping"
+        },
+        {
+          "file": "tools/lab/nat_gateway/test/two_client_lab.test.js",
+          "contains": "expired crash residue is removed at the exact deadline"
+        },
+        {
+          "file": "libnatmap/tests/test_two_instance_isolation.cpp",
+          "contains": "TestSessionScopedMapperProofsStaySeparate"
+        },
+        {
+          "file": "tests/test_v92_l04_two_instances.py",
+          "contains": "test_legacy_backend_never_borrows_foreign_port_rule"
+        }
+      ]
+    },
+    {
+      "id": "HIGHID_EVIDENCE",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_false_highid.cpp",
+          "contains": "TestMappingAndServerHighIdWithoutInboundStayUnverified"
+        },
+        {
+          "file": "tests/test_v92_l05_false_highid.py",
+          "contains": "test_ui_and_firewall_status_consume_verified_predicate"
+        },
+        {
+          "file": "tests/test_v92_l06_double_evidence.py",
+          "contains": "test_relay_route_cannot_start_or_supply_direct_evidence"
+        },
+        {
+          "file": "libnatmap/tests/test_false_highid.cpp",
+          "contains": "TestEndpointChangeBetweenEvidenceFencesOldInbound"
+        },
+        {
+          "file": "libnatmap/tests/test_false_highid.cpp",
+          "contains": "double evidence L06: %d checks, %d failures"
+        }
+      ]
+    },
+    {
+      "id": "HOSTILE_CORPUS",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_hostile_mapper_corpus.cpp",
+          "contains": "size <= kPcpMaximumMessageSize + 1"
+        },
+        {
+          "file": "libnatmap/tests/test_hostile_mapper_corpus.cpp",
+          "contains": "TestReplayAfterNewGenerationIsRejectedWithoutMutation"
+        },
+        {
+          "file": "tests/test_v92_l07_hostile_corpus.py",
+          "contains": "test_product_manager_uses_generation_correlated_admission"
+        },
+        {
+          "file": "libnatmap/tests/test_hostile_mapper_corpus.cpp",
+          "contains": "hostile corpus L07: %d checks, %d failures"
+        }
+      ]
+    },
+    {
+      "id": "WEBSERVER_PRIVACY",
+      "evidence": [
+        {
+          "file": "tests/test_v92_l08_webserver_privacy.py",
+          "contains": "test_every_mapper_discards_the_web_port_argument"
+        },
+        {
+          "file": "tests/test_v92_l08_privacy_runtime.ps1",
+          "contains": "L08_RUNTIME_PASS"
+        },
+        {
+          "file": "srchybrid/EmuleDlg.cpp",
+          "contains": "Never expose the WebServer through the router."
+        },
+        {
+          "file": "srchybrid/Preferences.h",
+          "contains": "GetWSUseUPnP()"
+        }
+      ]
+    },
+    {
+      "id": "ADDRESS_POLICY",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_address_policy.cpp",
+          "contains": "TestIpv4Table"
+        },
+        {
+          "file": "libnatmap/tests/test_address_policy.cpp",
+          "contains": "TestIpv6Table"
+        },
+        {
+          "file": "tests/test_v92_m01_address_policy.py",
+          "contains": "test_overlay_cgnat_never_proves_native_cgnat"
+        },
+        {
+          "file": "libnatmap/include/natmap/address_policy.h",
+          "contains": "PrivateAddressScope"
+        }
+      ]
+    },
+    {
+      "id": "NETWORK_SIGNATURE",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_network_signature.cpp",
+          "contains": "TestStableIdentityAndEveryTopologyField"
+        },
+        {
+          "file": "tests/test_v92_m03_network_signature.py",
+          "contains": "test_signature_excludes_continuously_changing_fields"
+        },
+        {
+          "file": "srchybrid/EmuleDlg.cpp",
+          "contains": "GetCurrentThreadCompartmentId"
+        },
+        {
+          "file": "libnatmap/include/natmap/network_signature.h",
+          "contains": "NetworkSignatureInput"
+        }
+      ]
+    },
+    {
+      "id": "NETWORK_CHANGE",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_network_change.cpp",
+          "contains": "TestInvalidatesEveryPlaneAndAdvancesExactlyOnce"
+        },
+        {
+          "file": "tests/test_v92_m04_network_change.py",
+          "contains": "test_product_fences_then_rediscovers_and_fails_closed_on_generation_error"
+        },
+        {
+          "file": "srchybrid/EmuleDlg.cpp",
+          "contains": "network change fenced request="
+        },
+        {
+          "file": "libnatmap/include/natmap/network_change.h",
+          "contains": "NetworkChangeTransition"
+        }
+      ]
+    },
+    {
+      "id": "MAPPING_RECOVERY",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_mapping_recovery.cpp",
+          "contains": "TestNetworkChangeResetIsControlled"
+        },
+        {
+          "file": "tests/test_v92_m05_backoff.py",
+          "contains": "test_pending_recovery_obeys_due_time_and_maximum"
+        },
+        {
+          "file": "srchybrid/EmuleDlg.cpp",
+          "contains": "mapping recovery exhausted generation="
+        },
+        {
+          "file": "libnatmap/include/natmap/natmap_policy.h",
+          "contains": "class MappingRecoverySchedule"
+        }
+      ]
+    },
+    {
+      "id": "PCP_UPSTREAM",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_pcp_upstream_policy.cpp",
+          "contains": "TestGatewayAndTransportContinuityRejectsDisconnectedInputs"
+        },
+          {
+            "file": "tests/test_v92_mx03_pcp_upstream.py",
+            "contains": "test_product_bridge_consumes_one_atomic_bundle"
+          },
+          {
+            "file": "srchybrid/DirectReachabilityManager.cpp",
+            "contains": "ObservePcpUpstreamBundle"
+          },
+          {
+            "file": "srchybrid/EmuleDlg.cpp",
+            "contains": "TakePcpUpstreamBundle"
+          },
+          {
+            "file": "srchybrid/UPnPImplPCP.cpp",
+            "contains": "SendPcpUpstreamBundleMessage"
+          },
+        {
+          "file": "libnatmap/include/natmap/pcp_upstream_policy.h",
+          "contains": "PcpUpstreamDisposition"
+        }
+      ]
+    },
+    {
+      "id": "IPV6_PRIORITY",
+      "evidence": [
+        {
+          "file": "libnatmap/tests/test_direct_route_selection.cpp",
+          "contains": "TestNormativeTable"
+        },
+        {
+          "file": "libnatmap/tests/test_direct_route_selection.cpp",
+          "contains": "TestDirectV4EndpointBinding"
+        },
+        {
+          "file": "tests/test_v92_m06_ipv6_priority.py",
+          "contains": "test_kad_never_prioritizes_stale_or_candidate_ipv6"
+        },
+        {
+          "file": "tests/test_v92_m06_ipv6_priority.py",
+          "contains": "test_listener_rebinds_before_accepting_a_stale_topology_backlog"
+        },
+        {
+          "file": "srchybrid/DirectReachabilityManager.cpp",
+          "contains": "SelectPreferredRoute("
+        },
+        {
+          "file": "libnatmap/include/natmap/direct_route_selection.h",
+          "contains": "PreferredDirectRoute"
+        }
+      ]
+    },
+    {
+      "id": "HYPERV_PURE_PLAN",
+      "evidence": [
+        {
+          "file": "tools/lab/test_t8_hyperv_plan.ps1",
+          "contains": "T8 Hyper-V pure plan tests PASS"
+        }
+      ]
+    },
+    {
+      "id": "STATE_CAPTURE",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/t8_control_cli.test.js",
+          "contains": "all required CLI commands return exit code zero and one JSON line"
+        }
+      ]
+    },
+    {
+      "id": "CANONICAL_REPORT",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/structured_log.test.js",
+          "contains": "canonical report is whitelist-only, deterministic"
+        }
+      ]
+    },
+    {
+      "id": "PUBLIC_SANITIZATION",
+      "evidence": [
+        {
+          "file": "tools/lab/nat_gateway/test/structured_log.test.js",
+          "contains": "serialized events never expose raw sensitive identifiers"
+        },
+        {
+          "file": "tools/lab/nat_gateway/test/two_client_lab.test.js",
+          "contains": "public snapshot omits addresses and ownership material"
+        }
+      ]
+    }
+  ]
+}

@@ -16,6 +16,7 @@
 //Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 #pragma once
 #include "EMSocket.h"
+#include "natmap/natmap_types.h"
 
 class CServer;
 
@@ -54,4 +55,7 @@ private:
 	bool m_bStartNewMessageLog;
 	bool m_bManualSingleConnect;
 	bool m_bRelayRouted;
+	uint64 m_nDirectTopologyGeneration;
+	uint32 m_nDirectSocketLocalIP;
+	natmap::VerificationAttempt m_ed2kVerificationAttempt;
 };

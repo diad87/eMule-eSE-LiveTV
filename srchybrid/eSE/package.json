@@ -5,7 +5,7 @@
   "bin": "server.js",
   "scripts": {
     "test": "npm run test:live",
-    "test:live": "node --test test/live_tv_regression.test.js",
+    "test:live": "node --test test/*.test.js",
     "start": "node server.js",
     "prebuild": "node tools/bundle_client.js",
     "build": "pkg . --targets node22-win-x64 --output ese-server.exe --compress GZip"
@@ -41,5 +41,10 @@
   },
   "devDependencies": {
     "@yao-pkg/pkg": "^6.21.0"
+  },
+  "overrides": {
+    "@yao-pkg/pkg": {
+      "into-stream": "6.0.0"
+    }
   }
 }

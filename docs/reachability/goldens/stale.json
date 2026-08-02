@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "topology_generation": 8,
+  "created_at_monotonic": 2000,
+  "candidates": [
+    {
+      "candidate_id": "candidate-v1:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "kind": "MAPPED_V4",
+      "transport": "TCP",
+      "local_endpoint": {
+        "address_family": "IPV4",
+        "address_class": "RFC1918",
+        "identity_digest": "endpoint-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "published_endpoint": {
+        "address_family": "IPV4",
+        "address_class": "PUBLIC",
+        "identity_digest": "endpoint-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "network_kind": "NATIVE",
+      "interface_identity_digest": "interface-v1:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "source": "PCP",
+      "scope": "GLOBAL",
+      "mapping_identity": "mapping-v1:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "lease_expires_at": {
+        "basis": "SNAPSHOT_RELATIVE",
+        "remaining_ms": 59000
+      },
+      "ownership_state": "OWNED_BY_US",
+      "verification_state": "STALE",
+      "verification_attempt_id": null,
+      "evidence_digest": null,
+      "reason_code": "STALE_GENERATION",
+      "topology_generation": 7
+    }
+  ],
+  "terminal_reason": "NONE"
+}

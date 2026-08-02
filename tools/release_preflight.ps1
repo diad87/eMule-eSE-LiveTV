@@ -47,6 +47,7 @@ Require-File 'srchybrid\eMule.tmpl'
 Require-File 'tools\release_inputs.json'
 Require-File 'tools\build_all.ps1'
 Require-File 'tools\release_fingerprint.ps1'
+Require-File 'tools\release_zip_integrity.ps1'
 $releaseNotesPath = "docs\RELEASE_NOTES_v$tagVersion.md"
 Require-File $releaseNotesPath
 $releaseExecutionPath = ''
@@ -316,7 +317,7 @@ foreach ($requiredPackagingGuard in @(
     'Copy-GitTrackedTopLevelFiles',
     'Copy-GitTrackedTree',
     'Assert-GitTrackedSource',
-    'Assert-ZipMatchesPackage'
+    'Test-ReleaseZipIntegrity'
 )) {
     if ($packageScript -notmatch [regex]::Escape($requiredPackagingGuard)) {
         Fail "package script is missing guard: $requiredPackagingGuard"

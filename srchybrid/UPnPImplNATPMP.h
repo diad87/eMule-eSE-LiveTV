@@ -22,6 +22,8 @@
 #pragma once
 #include "UPnPImpl.h"
 #include "natmap/natpmp_codec.h"
+#include "natmap/natpmp_gateway_policy.h"
+#include "natmap/natpmp_pair_transaction.h"
 
 class CUPnPImplNATPMP : public CUPnPImpl
 {
@@ -33,8 +35,13 @@ public:
     virtual bool CheckAndRefresh();
     virtual void StopAsyncFind();
     virtual void DeletePorts();
+    virtual void DeletePortsForGeneration(std::uint64_t generation);
     virtual bool IsReady();
     virtual int  GetImplementationID()  { return UPNP_IMPL_NATPMP; }
+    virtual natmap::MapperKind GetMapperKind() const
+        { return natmap::MapperKind::NatPmp; }
+    virtual natmap::MapperSource GetMapperSource() const
+        { return natmap::MapperSource::NatPmp; }
 
     // Thread class for async discovery
     class CStartDiscoveryThread : public CWinThread
@@ -46,14 +53,19 @@ public:
     public:
         virtual BOOL InitInstance();
         virtual int Run();
-        void SetValues(CUPnPImplNATPMP *pOwner) { m_pOwner = pOwner; }
+        void SetValues(CUPnPImplNATPMP *pOwner)
+        {
+            m_pOwner = pOwner;
+            m_operation = pOwner->CaptureMappingOperation();
+        }
 
     private:
         CUPnPImplNATPMP *m_pOwner;
+        MappingOperationContext m_operation;
     };
 
 protected:
-    void DeletePorts(bool bSkipLock);
+    void DeletePorts(bool bSkipLock, std::uint64_t generation);
 
 private:
     enum EReceiveResult
@@ -84,7 +96,7 @@ private:
     static const uint16 NATPMP_RESULT_UNSUPPORTED_OPCODE = 5;
 
     // Internal helpers
-    static uint32 GetDefaultGateway();
+    static SOCKET CreateRoutedSocket(uint32 interfaceIndex);
     bool SendMapRequest(SOCKET sock, uint32 gatewayIP, uint16 nPrivatePort,
         uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime);
     EReceiveResult ReceiveMapResponse(SOCKET sock, uint32 gatewayIP,
@@ -92,14 +104,15 @@ private:
         natmap::NatPmpMapResponse &response);
     bool SendExternalAddrRequest(SOCKET sock, uint32 gatewayIP);
     EReceiveResult ReceiveExternalAddrResponse(SOCKET sock, uint32 gatewayIP,
-        DWORD nTimeoutMs, uint32 &nExternalIP, uint32 &nEpoch);
-    bool QueryExternalAddress(uint32 gatewayIP, uint32 &nExternalIP,
-        uint32 &nEpoch);
+        DWORD nTimeoutMs, natmap::NatPmpExternalAddressResponse &response);
+    natmap::NatPmpExternalAddressDecision QueryExternalAddress(
+        uint32 gatewayIP, uint32 interfaceIndex);
 
-    bool MapPort(uint32 gatewayIP, uint16 nPrivatePort,
+    bool MapPort(uint32 gatewayIP, uint32 interfaceIndex, uint16 nPrivatePort,
         uint16 nSuggestedExternalPort, bool bTCP, uint32 nLifetime,
         natmap::NatPmpMapResponse &response);
-    bool UnmapPort(uint32 gatewayIP, uint16 nPort, bool bTCP);
+    bool UnmapPort(uint32 gatewayIP, uint32 interfaceIndex,
+        uint16 nPort, bool bTCP);
 
     bool StartThread();
     void ReleaseFinishedThread();
@@ -108,8 +121,13 @@ private:
 
     uint32 m_dwGatewayIP;
     uint32 m_dwOldGatewayIP;
+    uint32 m_dwInterfaceIndex;
+    uint32 m_dwOldInterfaceIndex;
     CStartDiscoveryThread *m_pThread;
 
     bool m_bSucceededOnce;
     volatile bool m_bAbortDiscovery;
+    bool m_bMapperEpochObservationValid;
+    uint64 m_nMapperEpochObservedAtSeconds;
+    natmap::NatPmpCleanupProof m_cleanupProof;
 };

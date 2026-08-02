@@ -32,6 +32,7 @@
 #include "StdAfx.h"
 #include "WindowsFirewallHelper.h"
 #include "Log.h"
+#include "natmap/instance_isolation.h"
 #include "OtherFunctions.h"
 
 #ifdef _DEBUG
@@ -56,7 +57,6 @@ CWindowsFirewallHelper::CWindowsFirewallHelper()
 	, m_bCOMInitialized(false)
 {
 }
-
 CWindowsFirewallHelper::~CWindowsFirewallHelper()
 {
 	UnInit();
@@ -167,13 +167,16 @@ bool CWindowsFirewallHelper::IsFirewallEnabled()
 	return (bEnabled == VARIANT_TRUE);
 }
 
-bool CWindowsFirewallHelper::AddPortRule(uint16 nPort, bool bTCP, LPCTSTR szRuleName, LPCTSTR szDescription)
+bool CWindowsFirewallHelper::AddPortRule(uint16 nPort, bool bTCP,
+	LPCTSTR szRuleName, std::uint64_t profileOwnerToken,
+	LPCTSTR szDescription)
 {
 	if (!m_bInited && !Init())
 		return false;
 
-	// First, remove any existing rule with this name to avoid duplicates
-	RemoveRule(szRuleName);
+	// First, remove only an existing rule in this exact owner namespace.
+	if (!RemoveOwnedPortRule(0, bTCP, szRuleName, profileOwnerToken))
+		return false;
 
 	INetFwRules *pRules = NULL;
 	HRESULT hr = m_pPolicy->get_Rules(&pRules);
@@ -225,10 +228,10 @@ bool CWindowsFirewallHelper::AddPortRule(uint16 nPort, bool bTCP, LPCTSTR szRule
 
 	bool bSuccess = SUCCEEDED(hr);
 	if (bSuccess)
-		DebugLog(_T("WindowsFirewallHelper: Successfully added firewall rule '%s' for %s port %hu"),
-			szRuleName, bTCP ? _T("TCP") : _T("UDP"), nPort);
+		DebugLog(_T("WindowsFirewallHelper: Added owned %s firewall rule for port %hu"),
+			bTCP ? _T("TCP") : _T("UDP"), nPort);
 	else
-		DebugLogError(_T("WindowsFirewallHelper: Failed to add firewall rule '%s': 0x%08X"), szRuleName, hr);
+		DebugLogError(_T("WindowsFirewallHelper: Failed to add owned firewall rule: 0x%08X"), hr);
 
 	pRule->Release();
 	pRules->Release();
@@ -236,7 +239,9 @@ bool CWindowsFirewallHelper::AddPortRule(uint16 nPort, bool bTCP, LPCTSTR szRule
 	return bSuccess;
 }
 
-bool CWindowsFirewallHelper::RemoveRule(LPCTSTR szRuleName)
+bool CWindowsFirewallHelper::RemoveOwnedPortRule(
+	uint16 expectedPort, bool bTCP, LPCTSTR szRuleName,
+	std::uint64_t profileOwnerToken)
 {
 	if (!m_bInited && !Init())
 		return false;
@@ -246,13 +251,107 @@ bool CWindowsFirewallHelper::RemoveRule(LPCTSTR szRuleName)
 	if (FAILED(hr) || pRules == NULL)
 		return false;
 
+	INetFwRule *pRule = NULL;
+	hr = pRules->Item(CComBSTR(szRuleName), &pRule);
+	if (FAILED(hr) || pRule == NULL) {
+		pRules->Release();
+		return true; // idempotent: there is no owned rule to remove
+	}
+
+	long protocol = 0;
+	BSTR localPorts = NULL;
+	BSTR applicationName = NULL;
+	NET_FW_RULE_DIRECTION direction = NET_FW_RULE_DIR_MAX;
+	NET_FW_ACTION action = NET_FW_ACTION_MAX;
+	VARIANT_BOOL enabled = VARIANT_FALSE;
+	const bool observed =
+		SUCCEEDED(pRule->get_Protocol(&protocol))
+		&& SUCCEEDED(pRule->get_LocalPorts(&localPorts))
+		&& SUCCEEDED(pRule->get_ApplicationName(&applicationName))
+		&& SUCCEEDED(pRule->get_Direction(&direction))
+		&& SUCCEEDED(pRule->get_Action(&action))
+		&& SUCCEEDED(pRule->get_Enabled(&enabled));
+
+	CString portText(localPorts == NULL ? L"" : localPorts);
+	TCHAR* end = NULL;
+	const unsigned long parsed = _tcstoul(portText, &end, 10);
+	const bool canonicalPort = !portText.IsEmpty() && end != NULL
+		&& *end == _T('\0') && parsed > 0 && parsed <= 65535;
+	const uint16 observedPort = canonicalPort
+		? static_cast<uint16>(parsed) : 0;
+	const natmap::Transport transport = bTCP
+		? natmap::Transport::Tcp : natmap::Transport::Udp;
+	const natmap::OwnedFirewallRuleName ownedName =
+		natmap::BuildOwnedFirewallRuleName(
+			profileOwnerToken, transport);
+	if (profileOwnerToken == 0 || szRuleName == NULL
+		|| CString(szRuleName) != CString(ownedName.data())) {
+		pRule->Release();
+		pRules->Release();
+		return false;
+	}
+
+	BSTR actualRuleName = NULL;
+	const bool observedNameRead =
+		SUCCEEDED(pRule->get_Name(&actualRuleName));
+	natmap::OwnedFirewallRuleName observedName{};
+	bool canonicalName = observedNameRead && actualRuleName != NULL;
+	if (canonicalName) {
+		const UINT length = SysStringLen(actualRuleName);
+		canonicalName = length > 0
+			&& length < observedName.size();
+		for (UINT i = 0; canonicalName && i < length; ++i) {
+			if (actualRuleName[i] > 0x7f) {
+				canonicalName = false;
+				break;
+			}
+			observedName[i] =
+				static_cast<char>(actualRuleName[i]);
+		}
+		if (canonicalName)
+			observedName[length] = '\0';
+	}
+	natmap::FirewallRuleProof proof{};
+	proof.profile_owner_token = profileOwnerToken;
+	proof.transport = transport;
+	proof.local_port = expectedPort != 0 ? expectedPort : observedPort;
+	proof.rule_name = ownedName;
+
+	TCHAR executable[MAX_PATH] = {};
+	const DWORD executableLength =
+		GetModuleFileName(NULL, executable, _countof(executable));
+	const bool sameApplication = executableLength > 0
+		&& executableLength < _countof(executable)
+		&& applicationName != NULL
+		&& CString(applicationName).CompareNoCase(executable) == 0;
+	const bool authorized = observed && canonicalName && sameApplication
+		&& protocol == (bTCP
+			? NET_FW_IP_PROTOCOL_TCP : NET_FW_IP_PROTOCOL_UDP)
+		&& direction == NET_FW_RULE_DIR_IN
+		&& action == NET_FW_ACTION_ALLOW
+		&& enabled == VARIANT_TRUE
+		&& natmap::EvaluateFirewallCleanup(
+			proof, profileOwnerToken, transport,
+			observedPort, observedName) ==
+			natmap::FirewallCleanupDecision::Owned;
+
+	if (actualRuleName != NULL)
+		SysFreeString(actualRuleName);
+	if (localPorts != NULL)
+		SysFreeString(localPorts);
+	if (applicationName != NULL)
+		SysFreeString(applicationName);
+	pRule->Release();
+	if (!authorized) {
+		pRules->Release();
+		DebugLogWarning(_T("WindowsFirewallHelper: refused non-owned firewall cleanup"));
+		return false;
+	}
+
 	hr = pRules->Remove(CComBSTR(szRuleName));
-
-	bool bSuccess = SUCCEEDED(hr);
+	const bool bSuccess = SUCCEEDED(hr);
 	if (bSuccess)
-		DebugLog(_T("WindowsFirewallHelper: Removed firewall rule '%s'"), szRuleName);
-	// Don't log error for rule not found - this is expected when cleaning up
-
+		DebugLog(_T("WindowsFirewallHelper: Removed verified owned firewall rule"));
 	pRules->Release();
 	return bSuccess;
 }
@@ -351,61 +450,4 @@ bool CWindowsFirewallHelper::DoesPortRuleExist(uint16 nPort, bool bTCP)
 	pRules->Release();
 
 	return bFound;
-}
-
-bool CWindowsFirewallHelper::EnsureEmulePorts(uint16 nTCPPort, uint16 nUDPPort)
-{
-	if (!m_bInited && !Init())
-		return false;
-
-	// Only proceed if firewall is actually enabled
-	if (!IsFirewallEnabled()) {
-		DebugLog(_T("WindowsFirewallHelper: Windows Firewall is disabled, no rules needed"));
-		return true; // Not an error - firewall is off
-	}
-
-	DebugLog(_T("WindowsFirewallHelper: Ensuring eMule firewall rules for TCP:%hu UDP:%hu"), nTCPPort, nUDPPort);
-
-	// Remove any old eMule rules first
-	RemoveEmuleRules();
-
-	// Add TCP rule
-	bool bResult = AddPortRule(nTCPPort, true, _T("eMule TCP"),
-		_T("eMule P2P file sharing - TCP port (required for High ID)"));
-
-	if (!bResult) {
-		DebugLogError(_T("WindowsFirewallHelper: Failed to add TCP rule for port %hu"), nTCPPort);
-		return false;
-	}
-
-	// Add UDP rule if UDP port is configured
-	if (nUDPPort != 0) {
-		bResult = AddPortRule(nUDPPort, false, _T("eMule UDP"),
-			_T("eMule P2P file sharing - UDP port (required for Kademlia)"));
-
-		if (!bResult) {
-			DebugLogError(_T("WindowsFirewallHelper: Failed to add UDP rule for port %hu"), nUDPPort);
-			// Don't return false - TCP rule was added successfully
-			// UDP is important but not strictly required for High ID
-		}
-	}
-
-	DebugLog(_T("WindowsFirewallHelper: eMule firewall rules configured successfully"));
-	return true;
-}
-
-bool CWindowsFirewallHelper::RemoveEmuleRules()
-{
-	if (!m_bInited && !Init())
-		return false;
-
-	// Remove rules by the names we create them with
-	RemoveRule(_T("eMule TCP"));
-	RemoveRule(_T("eMule UDP"));
-
-	// Also remove legacy rule names from old FirewallOpener
-	RemoveRule(_T("eMule_TCP_Port"));
-	RemoveRule(_T("eMule_UDP_Port"));
-
-	return true;
 }

@@ -4,7 +4,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { runProcess } = require('./bounded_process_runner');
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
@@ -128,12 +128,17 @@ function findFfmpeg() {
   return 'ffmpeg';
 }
 
-function detectHwEncoder(ffmpegPath) {
+async function detectHwEncoder(ffmpegPath) {
   let encoder = 'libx264';
   let opts = ['-preset', 'ultrafast', '-crf', '23', '-threads', '4'];
   
   try {
-    const out = execSync('"' + ffmpegPath + '" -hide_banner -encoders 2>&1', { timeout: 5000 }).toString();
+    const result = await runProcess(
+      ffmpegPath,
+      ['-hide_banner', '-encoders'],
+      { timeoutMs: 5000, maxOutputBytes: 2 * 1024 * 1024 },
+    );
+    const out = result.stdout + result.stderr;
     if (out.includes('h264_nvenc')) {
       encoder = 'h264_nvenc';
       opts = ['-preset', 'p1', '-rc', 'vbr', '-cq', '28', '-b:v', '0'];
@@ -156,10 +161,15 @@ function detectHwEncoder(ffmpegPath) {
   return { encoder, opts };
 }
 
-function getDuration(file, ffmpegPath) {
+async function getDuration(file, ffmpegPath) {
   try {
     const p = ffmpegPath.replace('ffmpeg.exe', 'ffprobe.exe');
-    return parseFloat(execSync('"' + p + '" -v error -show_entries format=duration -of csv=p=0 "' + file + '"', { timeout: 5000 }).toString().trim()) || 0;
+    const result = await runProcess(
+      p,
+      ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file],
+      { timeoutMs: 5000, maxOutputBytes: 64 * 1024 },
+    );
+    return result.ok ? (parseFloat(result.stdout.trim()) || 0) : 0;
   } catch(e) { return 0; }
 }
 

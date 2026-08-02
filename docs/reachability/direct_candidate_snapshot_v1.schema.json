@@ -1,0 +1,670 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:emule:contract:direct-candidate-snapshot:v1",
+  "title": "DirectCandidateSnapshotV1",
+  "description": "Sanitized, local diagnostic snapshot of direct-reachability candidates. This is not a wire protocol.",
+  "$comment": "SANITIZED_NON_ACTIONABLE_PROJECTION; INTERNAL_TYPED_VIEW_REQUIRED_FOR_ROUTING; NEVER_RECONSTRUCT_ENDPOINTS_FROM_DIGESTS",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "topology_generation",
+    "created_at_monotonic",
+    "candidates",
+    "terminal_reason"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "topology_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "created_at_monotonic": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "candidates": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/candidate"
+      }
+    },
+    "terminal_reason": {
+      "$ref": "#/$defs/reason"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "candidates": {
+            "minItems": 1
+          }
+        },
+        "required": [
+          "candidates"
+        ]
+      },
+      "then": {
+        "properties": {
+          "terminal_reason": {
+            "const": "NONE"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "terminal_reason": {
+            "not": {
+              "const": "NONE"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "HOST_V6",
+        "DIRECT_V4",
+        "MAPPED_V4",
+        "LAN"
+      ]
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "OS",
+        "STATIC",
+        "UPNP_IGD",
+        "PCP",
+        "NAT_PMP"
+      ]
+    },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "GLOBAL",
+        "SAME_LAN"
+      ]
+    },
+    "verification": {
+      "type": "string",
+      "enum": [
+        "CANDIDATE",
+        "VERIFIED",
+        "EXPIRED",
+        "STALE"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "NONE",
+        "DISABLED_BY_PREFERENCE",
+        "NO_LISTENER",
+        "NO_ROUTE",
+        "NO_GATEWAY",
+        "NO_MAPPING_PROTOCOL",
+        "OPERATOR_DENIED",
+        "MAPPING_DENIED",
+        "MAPPING_CONFLICT",
+        "MAPPING_TIMEOUT",
+        "INVALID_RESPONSE",
+        "STALE_GENERATION",
+        "LEASE_EXPIRED",
+        "INTERFACE_CHANGED",
+        "ENDPOINT_DEPENDENT_MAPPING",
+        "INBOUND_FILTERED",
+        "SERVER_CALLBACK_FAILED",
+        "PEER_INCOMPATIBLE",
+        "PORT_IN_USE",
+        "VERIFICATION_TIMEOUT",
+        "CGNAT_WITHOUT_LEASE",
+        "ROUTER_REJECTED_ALL_CANDIDATES"
+      ]
+    },
+    "transport": {
+      "type": "string",
+      "enum": [
+        "TCP",
+        "UDP"
+      ]
+    },
+    "network_kind": {
+      "type": "string",
+      "enum": [
+        "NATIVE",
+        "OVERLAY",
+        "UNKNOWN"
+      ]
+    },
+    "ownership_state": {
+      "type": "string",
+      "enum": [
+        "NOT_APPLICABLE",
+        "OWNED_BY_US",
+        "FOREIGN",
+        "UNVERIFIABLE",
+        "UNKNOWN"
+      ]
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "address_family",
+        "address_class",
+        "identity_digest"
+      ],
+      "properties": {
+        "address_family": {
+          "type": "string",
+          "enum": [
+            "IPV4",
+            "IPV6"
+          ]
+        },
+        "address_class": {
+          "type": "string",
+          "enum": [
+            "LOOPBACK",
+            "LINK_LOCAL",
+            "RFC1918",
+            "SHARED_CGNAT",
+            "MULTICAST",
+            "RESERVED",
+            "DOCUMENTATION",
+            "PUBLIC",
+            "UNIQUE_LOCAL",
+            "GLOBAL",
+            "UNKNOWN"
+          ]
+        },
+        "identity_digest": {
+          "type": "string",
+          "pattern": "^endpoint-v1:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "lease_deadline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basis",
+        "remaining_ms"
+      ],
+      "properties": {
+        "basis": {
+          "const": "SNAPSHOT_RELATIVE"
+        },
+        "remaining_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295000
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "kind",
+        "transport",
+        "local_endpoint",
+        "published_endpoint",
+        "network_kind",
+        "interface_identity_digest",
+        "source",
+        "scope",
+        "mapping_identity",
+        "lease_expires_at",
+        "ownership_state",
+        "verification_state",
+        "verification_attempt_id",
+        "evidence_digest",
+        "reason_code",
+        "topology_generation"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^candidate-v1:[0-9a-f]{64}$"
+        },
+        "kind": {
+          "$ref": "#/$defs/kind"
+        },
+        "transport": {
+          "$ref": "#/$defs/transport"
+        },
+        "local_endpoint": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "published_endpoint": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "network_kind": {
+          "$ref": "#/$defs/network_kind"
+        },
+        "interface_identity_digest": {
+          "type": "string",
+          "pattern": "^interface-v1:[0-9a-f]{64}$"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "mapping_identity": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^mapping-v1:[0-9a-f]{64}$"
+            }
+          ]
+        },
+        "lease_expires_at": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/lease_deadline"
+            }
+          ]
+        },
+        "ownership_state": {
+          "$ref": "#/$defs/ownership_state"
+        },
+        "verification_state": {
+          "$ref": "#/$defs/verification"
+        },
+        "verification_attempt_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^attempt-v1:[0-9a-f]{64}$"
+            }
+          ]
+        },
+        "evidence_digest": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^evidence-v1:[0-9a-f]{64}$"
+            }
+          ]
+        },
+        "reason_code": {
+          "$ref": "#/$defs/reason"
+        },
+        "topology_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "MAPPED_V4"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "enum": [
+                  "UPNP_IGD",
+                  "PCP",
+                  "NAT_PMP"
+                ]
+              },
+              "mapping_identity": {
+                "type": "string"
+              },
+              "ownership_state": {
+                "const": "OWNED_BY_US"
+              },
+              "local_endpoint": {
+                "properties": {
+                  "address_family": {
+                    "const": "IPV4"
+                  }
+                }
+              },
+              "published_endpoint": {
+                "properties": {
+                  "address_family": {
+                    "const": "IPV4"
+                  },
+                  "address_class": {
+                    "const": "PUBLIC"
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "mapping_identity": {
+                "type": "null"
+              },
+              "ownership_state": {
+                "const": "NOT_APPLICABLE"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "MAPPED_V4"
+              },
+              "lease_expires_at": {
+                "not": {
+                  "type": "null"
+                },
+                "properties": {
+                  "remaining_ms": {
+                    "const": 0
+                  }
+                },
+                "required": [
+                  "remaining_ms"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "lease_expires_at"
+            ]
+          },
+          "then": {
+            "properties": {
+              "verification_state": {
+                "const": "EXPIRED"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "HOST_V6"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "enum": [
+                  "OS",
+                  "STATIC"
+                ]
+              },
+              "local_endpoint": {
+                "properties": {
+                  "address_family": {
+                    "const": "IPV6"
+                  },
+                  "address_class": {
+                    "const": "GLOBAL"
+                  }
+                }
+              },
+              "published_endpoint": {
+                "properties": {
+                  "address_family": {
+                    "const": "IPV6"
+                  },
+                  "address_class": {
+                    "const": "GLOBAL"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "DIRECT_V4"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "enum": [
+                  "OS",
+                  "STATIC"
+                ]
+              },
+              "local_endpoint": {
+                "properties": {
+                  "address_family": {
+                    "const": "IPV4"
+                  },
+                  "address_class": {
+                    "const": "PUBLIC"
+                  }
+                }
+              },
+              "published_endpoint": {
+                "properties": {
+                  "address_family": {
+                    "const": "IPV4"
+                  },
+                  "address_class": {
+                    "const": "PUBLIC"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "LAN"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "enum": [
+                  "OS",
+                  "STATIC"
+                ]
+              },
+              "scope": {
+                "const": "SAME_LAN"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "scope": {
+                "const": "GLOBAL"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "HOST_V6",
+                  "DIRECT_V4",
+                  "MAPPED_V4"
+                ]
+              },
+              "verification_state": {
+                "const": "VERIFIED"
+              }
+            },
+            "required": [
+              "kind",
+              "verification_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "network_kind": {
+                "const": "NATIVE"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "verification_state": {
+                "const": "VERIFIED"
+              }
+            },
+            "required": [
+              "verification_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "verification_attempt_id": {
+                "type": "string"
+              },
+              "evidence_digest": {
+                "type": "string"
+              },
+              "reason_code": {
+                "const": "NONE"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "verification_state": {
+                "const": "CANDIDATE"
+              }
+            },
+            "required": [
+              "verification_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "verification_attempt_id": {
+                "type": "null"
+              },
+              "evidence_digest": {
+                "type": "null"
+              },
+              "reason_code": {
+                "const": "NONE"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "verification_state": {
+                "const": "EXPIRED"
+              }
+            },
+            "required": [
+              "verification_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "lease_expires_at": {
+                "$ref": "#/$defs/lease_deadline",
+                "properties": {
+                  "remaining_ms": {
+                    "const": 0
+                  }
+                }
+              },
+              "verification_attempt_id": {
+                "type": "null"
+              },
+              "evidence_digest": {
+                "type": "null"
+              },
+              "reason_code": {
+                "const": "LEASE_EXPIRED"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "verification_state": {
+                "const": "STALE"
+              }
+            },
+            "required": [
+              "verification_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "verification_attempt_id": {
+                "type": "null"
+              },
+              "evidence_digest": {
+                "type": "null"
+              },
+              "reason_code": {
+                "const": "STALE_GENERATION"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

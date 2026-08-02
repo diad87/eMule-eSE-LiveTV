@@ -40,6 +40,7 @@
 #include "Log.h"
 #include "packets.h"
 #include "Statistics.h"
+#include "LiveStreamManager.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -264,6 +265,8 @@ bool CClientList::AttachToAlreadyKnown(CUpDownClient **client, CClientReqSocket 
 	}
 	*client = NULL;
 //***	found_client->SetSourceFrom(tocheck->GetSourceFrom());
+	if (theApp.liveStreamManager != NULL)
+		theApp.liveStreamManager->OnPeerReplaced(tocheck, found_client);
 	delete tocheck;
 	*client = found_client;
 	return true;
@@ -833,7 +836,8 @@ bool CClientList::RequestTCP(Kademlia::CContact *contact, uint8 byConnectOptions
 {
 	uint32 nContactIP = contact->GetNetIP();
 	// don't connect ourself
-	if (theApp.serverconnect->GetLocalIP() == nContactIP && thePrefs.GetPort() == contact->GetTCPPort())
+	if (theApp.serverconnect->GetLocalIP() == nContactIP
+		&& theApp.GetAdvertisedTcpPort() == contact->GetTCPPort())
 		return false;
 
 	CUpDownClient *pNewClient = FindClientByIP(nContactIP, contact->GetTCPPort());
@@ -865,7 +869,8 @@ void CClientList::RequestBuddy(Kademlia::CContact *contact, uint8 byConnectOptio
 {
 	uint32 nContactIP = contact->GetNetIP();
 	// don't connect to ourself
-	if (theApp.serverconnect->GetLocalIP() == nContactIP && thePrefs.GetPort() == contact->GetTCPPort())
+	if (theApp.serverconnect->GetLocalIP() == nContactIP
+		&& theApp.GetAdvertisedTcpPort() == contact->GetTCPPort())
 		return;
 	if (IsKadFirewallCheckIP(nContactIP)) { // doing a kad firewall check with this IP, abort
 		DEBUG_ONLY(DebugLogWarning(_T("KAD TCP Firewall check / Buddy request collision for IP %s"), (LPCTSTR)ipstr(nContactIP)));
@@ -899,7 +904,8 @@ bool CClientList::IncomingBuddy(Kademlia::CContact *contact, Kademlia::CUInt128 
 		DEBUG_ONLY(DebugLogWarning(_T("KAD TCP Firewall check / Buddy request collision for IP %s"), (LPCTSTR)ipstr(nContactIP)));
 		return false;
 	}
-	if (theApp.serverconnect->GetLocalIP() == nContactIP && thePrefs.GetPort() == contact->GetTCPPort())
+	if (theApp.serverconnect->GetLocalIP() == nContactIP
+		&& theApp.GetAdvertisedTcpPort() == contact->GetTCPPort())
 		return false; // don't connect ourself
 
 	//Add client to the lists to be processed.

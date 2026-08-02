@@ -2080,88 +2080,19 @@ bool CClientReqSocket::ProcessExtPacket(const BYTE *packet, uint32 size, UINT op
 				if (thePrefs.GetDebugClientTCPLevel() > 1) // level > 1 to avoid flooding
 					DebugRecv("OP_LiveChunk", client, (size >= 16) ? packet : NULL);
 				theStats.AddDownDataOverheadOther(uRawSize);
-				if (size < 28) break; // streamKey(16) + seqNum(4) + chunkSize(4) + timestamp(4)
-
-				CSafeMemFile data(packet, size);
-				uchar streamKey[16];
-				data.ReadHash16(streamKey);
-				uint32 seqNum = data.ReadUInt32();
-				uint32 timestamp = data.ReadUInt32();
-				uint32 chunkSize = data.ReadUInt32();
-
-				// Sanity check: chunk size must not exceed remaining data
-				if (chunkSize > size - 28 || chunkSize > 4 * 1024 * 1024) break; // max 4MB
-
-				const BYTE* chunkData = packet + 28;
 				if (theApp.liveStreamManager)
-					theApp.liveStreamManager->OnChunkReceived(client, streamKey,
-						seqNum, timestamp, chunkData, chunkSize);
+					theApp.liveStreamManager->IngestChunkPayload(
+						client, OP_LIVE_CHUNK, packet, size);
 			}
 			break;
 		case OP_LIVE_CHUNK_V2:
 			{
-				// v7.7.0 — signed chunk.
-				// Format: streamKey(16) + seqNum(4) + ts(4) + dataSize(4) + bitrate(2)
-				//        + sha256(32) + sig(64) + data(dataSize).
 				if (thePrefs.GetDebugClientTCPLevel() > 1)
 					DebugRecv("OP_LiveChunkV2", client, (size >= 16) ? packet : NULL);
 				theStats.AddDownDataOverheadOther(uRawSize);
-				if (size < 126) break;  // header alone
-
-				CSafeMemFile data(packet, size);
-				uchar streamKey[16];
-				data.ReadHash16(streamKey);
-				uint32 seqNum    = data.ReadUInt32();
-				uint32 timestamp = data.ReadUInt32();
-				uint32 chunkSize = data.ReadUInt32();
-				/*uint16 bitrate =*/ data.ReadUInt16();
-				uchar digest[32];
-				data.Read(digest, 32);
-				uchar sig[64];
-				data.Read(sig, 64);
-
-				if (chunkSize > size - 126 || chunkSize > 4 * 1024 * 1024) break;
-
-				const BYTE* chunkData = packet + 126;
-
-				// 1. Need a pinned pubkey for this streamKey; without it we
-				//    can't verify. Drop silently — V1 path will retry if/when
-				//    an ANNOUNCE carries the pubkey.
-				uchar pubkey[32];
-				if (!theApp.liveStreamManager ||
-				    !theApp.liveStreamManager->GetPinnedPubkey(streamKey, pubkey)) {
-					break;
-				}
-
-				// 2. Verify sha256(data) matches digest. Cheap integrity check
-				//    that also amortises the cost of the signature path: if a
-				//    peer corrupts even one byte we fail here before doing
-				//    the expensive Ed25519 verify.
-				{
-					CryptoPP::SHA256 hash;
-					uchar computed[32];
-					hash.CalculateDigest(computed, chunkData, chunkSize);
-					if (memcmp(computed, digest, 32) != 0) {
-						AddLogLine(true, _T("eSE Live: chunk seq=%u digest mismatch — dropping"), seqNum);
-						break;
-					}
-				}
-
-				// 3. Verify signature over (streamKey || seqNum || digest).
-				{
-					uchar signMsg[16 + 4 + 32];
-					memcpy(signMsg, streamKey, 16);
-					memcpy(signMsg + 16, &seqNum, 4);
-					memcpy(signMsg + 20, digest, 32);
-					if (!eSELive::VerifySignature(pubkey, signMsg, sizeof signMsg, sig)) {
-						AddLogLine(true, _T("eSE Live: chunk seq=%u bad signature — dropping"), seqNum);
-						break;
-					}
-				}
-
-				// All checks passed — hand to the manager exactly like V1.
-				theApp.liveStreamManager->OnChunkReceived(client, streamKey,
-					seqNum, timestamp, chunkData, chunkSize);
+				if (theApp.liveStreamManager)
+					theApp.liveStreamManager->IngestChunkPayload(
+						client, OP_LIVE_CHUNK_V2, packet, size);
 			}
 			break;
 		case OP_LIVE_CHUNK_FRAG:
@@ -2895,6 +2826,7 @@ CListenSocket::CListenSocket()
 	, m_port()
 	, m_nHalfOpen()
 	, m_nComp()
+	, m_nListenerTopologyGeneration(0)
 {
 }
 
@@ -2903,6 +2835,13 @@ CListenSocket::~CListenSocket()
 	CListenSocket::Close();
 	CloseK6PreAuth();
 	KillAllSockets();
+}
+
+void CListenSocket::ArmDirectReachabilityVerification(
+	const natmap::VerificationAttempt& attempt)
+{
+	m_ed2kVerificationAttempt = attempt.IsValid()
+		? attempt : natmap::VerificationAttempt{};
 }
 
 bool CListenSocket::Rebind()
@@ -2958,8 +2897,11 @@ bool CListenSocket::StartListening()
 		}
 	}
 	if (!bUsingV6) {
-		if (!Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, thePrefs.GetBindAddr(), AF_INET))
+		if (!Create(thePrefs.GetPort(), SOCK_STREAM, FD_ACCEPT, thePrefs.GetBindAddr(), AF_INET)) {
+			bListening = false;
+			m_nListenerTopologyGeneration = 0;
 			return false;
+		}
 	}
 	m_bDualStack = bUsingV6;   // v0.71 IPv6 Sprint 9 — expose to UI status bar
 
@@ -3002,15 +2944,29 @@ bool CListenSocket::StartListening()
 	//	VERIFY( SetSockOpt(SO_CONDITIONAL_ACCEPT, &iOptVal, sizeof iOptVal) );
 	//}
 
-	if (!Listen())
+	if (!Listen()) {
+		Close();
+		bListening = false;
+		m_nListenerTopologyGeneration = 0;
 		return false;
+	}
 
 	m_port = thePrefs.GetPort();
+	m_nListenerTopologyGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
 	return true;
 }
 
 void CListenSocket::ReStartListening()
 {
+	if (m_SocketData.hSocket == INVALID_SOCKET) {
+		if (!StartListening()) {
+			bListening = false;
+			m_nListenerTopologyGeneration = 0;
+		}
+		return;
+	}
 	bListening = true;
 
 	ASSERT(m_nPendingConnections >= 0);
@@ -3094,6 +3050,29 @@ int CALLBACK AcceptConnectionCond(LPWSABUF lpCallerId, LPWSABUF /*lpCallerData*/
 
 void CListenSocket::OnAccept(int nErrorCode)
 {
+	const uint64 currentTopologyGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+	if (currentTopologyGeneration != 0
+		&& m_nListenerTopologyGeneration
+			!= currentTopologyGeneration) {
+		// A listening socket can retain completed handshakes from the previous
+		// topology. Drop the old backlog before accepting anything; a peer
+		// connecting during the fence can retry against the rebound listener.
+		m_ed2kVerificationAttempt =
+			natmap::VerificationAttempt{};
+		Close();
+		CloseK6PreAuth();
+		m_nPendingConnections = 0;
+		bListening = false;
+		if (currentTopologyGeneration != 0
+			&& !StartListening()) {
+			bListening = false;
+			m_nListenerTopologyGeneration = 0;
+		}
+		return;
+	}
+
 	if (!nErrorCode) {
 		if (++m_nPendingConnections < 1) {
 			ASSERT(0);
@@ -3133,6 +3112,8 @@ void CListenSocket::OnAccept(int nErrorCode)
 			SOCKADDR_IN SockAddr = {};
 			CAddress NativeV6;
 			bool bNativeV6 = false;
+			const uint64 acceptedTopologyGeneration =
+				m_nListenerTopologyGeneration;
 			int iSockAddrLen = (int)sizeof SockStorage;
 			if (thePrefs.GetConditionalTCPAccept() && !thePrefs.GetProxySettings().bUseProxy) {
 				s_iAcceptConnectionCondRejected = 0;
@@ -3168,7 +3149,6 @@ void CListenSocket::OnAccept(int nErrorCode)
 				newclient->m_SocketData.hSocket = sNew;
 				newclient->AttachHandle();
 				VERIFY(newclient->SetFamily((ADDRESS_FAMILY)SockStorage.ss_family));
-
 				// Normalize address: v4 → SOCKADDR_IN direct;
 				// v6 v4-mapped → extract last 4 bytes; v6 native → drop.
 				if (SockStorage.ss_family == AF_INET) {
@@ -3220,7 +3200,6 @@ void CListenSocket::OnAccept(int nErrorCode)
 					}
 					continue;
 				}
-
 				AddConnection();
 
 				// v0.71 IPv6 Sprint 9 hotfix — normalize as above for the
@@ -3285,13 +3264,16 @@ void CListenSocket::OnAccept(int nErrorCode)
 				CAddress localV6;
 				if (newclient->GetSockName((SOCKADDR*)&localStorage, &localLength))
 					localV6.FromSA((SOCKADDR*)&localStorage, localLength);
-				CFirewallProberV6::Instance().ReportInboundV6Reachable(localV6);
+				CFirewallProberV6::Instance()
+					.ReportInboundV6Reachable(
+						localV6, acceptedTopologyGeneration);
 				DebugLog(_T("Accepted native IPv6 client [%s]"), (LPCTSTR)NativeV6.ToStringC());
 			} else if (IsGoodIP(SockAddr.sin_addr.s_addr, true)
 				&& theApp.directreachability != NULL) {
 				const bool wasVerified =
 					theApp.directreachability->HasVerifiedEd2kReachability();
-				if (theApp.directreachability->ObserveInboundTcpAccept()
+				if (theApp.directreachability->ObserveInboundTcpAccept(
+						m_ed2kVerificationAttempt)
 					&& !wasVerified
 					&& theApp.directreachability->HasVerifiedEd2kReachability())
 					theApp.emuledlg->ShowConnectionState();

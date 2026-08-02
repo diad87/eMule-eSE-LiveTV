@@ -15,6 +15,8 @@ class CUpDownClient;   // v0.71 P3.3 — for first hop client pointer
 
 namespace eSELive {
 
+class LiveCircuitRegistry;
+
 enum class CircuitState : uint8_t {
     Pending    = 0,   // requested, no hops yet
     HalfBuilt  = 1,   // first hop established
@@ -61,7 +63,6 @@ public:
 
     uint32_t Id() const { return m_circ_id; }
     CircuitState State() const { return m_state; }
-    void SetState(CircuitState s) { m_state = s; }
 
     bool AddHop(const CircuitHop& hop);
     size_t HopCount() const { return m_hops.size(); }
@@ -278,6 +279,9 @@ public:
     void WipeKeys();
 
 private:
+    friend class LiveCircuitRegistry;
+    void SetState(CircuitState state) { m_state = state; }
+
     uint32_t m_circ_id;
     CircuitState m_state;
     std::vector<CircuitHop> m_hops;

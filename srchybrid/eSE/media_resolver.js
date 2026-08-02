@@ -22,6 +22,80 @@ const PART_FILE_RE = /^\d+\.part$/;
 // MD4 hash is at byte offset 5 in .part.met files (16 bytes)
 const HASH_OFFSET = 5;
 const HASH_LENGTH = 16;
+const MAX_MET_BYTES = 2 * 1024 * 1024;
+const FS_CONCURRENCY = 8;
+
+function throwIfAborted(signal) {
+  if (!signal || !signal.aborted) return;
+  const error = new Error('Operation aborted');
+  error.name = 'AbortError';
+  throw error;
+}
+
+function rethrowAbort(error) {
+  if (error && error.name === 'AbortError') throw error;
+}
+
+async function mapBounded(items, limit, mapper, signal) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (next < items.length) {
+        throwIfAborted(signal);
+        const index = next++;
+        results[index] = await mapper(items[index], index);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
+
+async function statOrNull(filePath, signal) {
+  try {
+    throwIfAborted(signal);
+    const stat = await fs.promises.stat(filePath);
+    throwIfAborted(signal);
+    return stat;
+  } catch (error) {
+    rethrowAbort(error);
+    return null;
+  }
+}
+
+async function readMetBounded(filePath, signal) {
+  let file;
+  try {
+    throwIfAborted(signal);
+    file = await fs.promises.open(filePath, 'r');
+    const stat = await file.stat();
+    throwIfAborted(signal);
+    const buffer = Buffer.alloc(Math.min(stat.size, MAX_MET_BYTES));
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    throwIfAborted(signal);
+    return buffer.subarray(0, bytesRead);
+  } catch (error) {
+    rethrowAbort(error);
+    return null;
+  } finally {
+    if (file) await file.close().catch(() => {});
+  }
+}
+
+async function loadPartMetadata(tempDir, partFiles, signal) {
+  const records = await mapBounded(partFiles, FS_CONCURRENCY, async partFile => {
+    const metBuffer = await readMetBounded(path.join(tempDir, partFile + '.met'), signal);
+    if (!metBuffer) return null;
+    return {
+      partFile,
+      fileName: extractFileName(metBuffer),
+      hash: extractHash(metBuffer),
+    };
+  }, signal);
+  return records.filter(Boolean);
+}
 
 /**
  * Extract MD4 hash from a .part.met file buffer
@@ -54,9 +128,11 @@ function extractFileName(metBuf) {
  * @param {string} fileName - Name to search for
  * @param {string} incomingDir - Path to eMule Incoming directory 
  * @param {string} tempDir - Path to eMule Temp directory
- * @returns {object|null} { filePath, isPartFile, fileSize, hash?, realFileName? }
+ * @returns {Promise<object|null>} { filePath, isPartFile, fileSize, hash?, realFileName? }
  */
-function resolveMediaFile(fileName, incomingDir, tempDir) {
+async function resolveMediaFile(fileName, incomingDir, tempDir, options = {}) {
+  const signal = options.signal;
+  throwIfAborted(signal);
   // SECURITY: Reject path traversal attempts before touching the filesystem.
   // fileName arrives from HTTP, which is publicly reachable via UPnP.
   const safeName = safeBasename(fileName);
@@ -70,47 +146,49 @@ function resolveMediaFile(fileName, incomingDir, tempDir) {
   // Defence-in-depth: verify the resolved path is still under incomingDir
   // (catches symlink escapes if the user has unusual content in Incoming).
   if (!isPathWithin(incomingPath, incomingDir)) return null;
-  if (fs.existsSync(incomingPath)) {
-    const stat = fs.statSync(incomingPath);
-    return { filePath: incomingPath, isPartFile: false, fileSize: stat.size };
+  const incomingStat = await statOrNull(incomingPath, signal);
+  if (incomingStat) {
+    return { filePath: incomingPath, isPartFile: false, fileSize: incomingStat.size };
   }
 
   // 2. Case-insensitive match in Incoming
   try {
-    const incomingFiles = fs.readdirSync(incomingDir).filter(f => VIDEO_EXTENSIONS_RE.test(f));
+    const incomingFiles = (await fs.promises.readdir(incomingDir))
+      .filter(f => VIDEO_EXTENSIONS_RE.test(f));
+    throwIfAborted(signal);
     for (const f of incomingFiles) {
+      throwIfAborted(signal);
       if (f.toLowerCase() === fileName.toLowerCase()) {
-        const stat = fs.statSync(path.join(incomingDir, f));
-        return { filePath: path.join(incomingDir, f), isPartFile: false, fileSize: stat.size };
+        const matchedPath = path.join(incomingDir, f);
+        const stat = await statOrNull(matchedPath, signal);
+        if (stat) return { filePath: matchedPath, isPartFile: false, fileSize: stat.size };
       }
     }
-  } catch(e) {}
+  } catch(e) { rethrowAbort(e); }
   
   // 3-6. Search in Temp (.part files)
   try {
-    const partFiles = fs.readdirSync(tempDir).filter(f => PART_FILE_RE.test(f));
+    const partFiles = (await fs.promises.readdir(tempDir)).filter(f => PART_FILE_RE.test(f));
+    throwIfAborted(signal);
+    const metadata = await loadPartMetadata(tempDir, partFiles, signal);
     
     // 3. Exact filename match via .part.met metadata
-    for (const pf of partFiles) {
-      const metPath = path.join(tempDir, pf + '.met');
-      if (!fs.existsSync(metPath)) continue;
-      const metBuf = fs.readFileSync(metPath);
-      const metName = extractFileName(metBuf);
-      if (metName && metName === fileName) {
-        const stat = fs.statSync(path.join(tempDir, pf));
-        return { filePath: path.join(tempDir, pf), isPartFile: true, fileSize: stat.size, hash: extractHash(metBuf) };
+    for (const record of metadata) {
+      throwIfAborted(signal);
+      if (record.fileName && record.fileName === fileName) {
+        const partPath = path.join(tempDir, record.partFile);
+        const stat = await statOrNull(partPath, signal);
+        if (stat) return { filePath: partPath, isPartFile: true, fileSize: stat.size, hash: record.hash };
       }
     }
     
     // 4. Case-insensitive match via .part.met
-    for (const pf of partFiles) {
-      const metPath = path.join(tempDir, pf + '.met');
-      if (!fs.existsSync(metPath)) continue;
-      const metBuf = fs.readFileSync(metPath);
-      const metName = extractFileName(metBuf);
-      if (metName && metName.toLowerCase() === fileName.toLowerCase()) {
-        const stat = fs.statSync(path.join(tempDir, pf));
-        return { filePath: path.join(tempDir, pf), isPartFile: true, fileSize: stat.size, hash: extractHash(metBuf) };
+    for (const record of metadata) {
+      throwIfAborted(signal);
+      if (record.fileName && record.fileName.toLowerCase() === fileName.toLowerCase()) {
+        const partPath = path.join(tempDir, record.partFile);
+        const stat = await statOrNull(partPath, signal);
+        if (stat) return { filePath: partPath, isPartFile: true, fileSize: stat.size, hash: record.hash };
       }
     }
     
@@ -118,30 +196,37 @@ function resolveMediaFile(fileName, incomingDir, tempDir) {
     if (/^\d+$/.test(fileName)) {
       const partFile = fileName.padStart(3, '0') + '.part';
       const partPath = path.join(tempDir, partFile);
-      if (fs.existsSync(partPath)) {
-        const stat = fs.statSync(partPath);
-        let hash = '';
-        const metPath = path.join(tempDir, partFile + '.met');
-        if (fs.existsSync(metPath)) {
-          hash = extractHash(fs.readFileSync(metPath));
-        }
-        return { filePath: partPath, isPartFile: true, fileSize: stat.size, hash };
+      const stat = await statOrNull(partPath, signal);
+      if (stat) {
+        const record = metadata.find(item => item.partFile === partFile);
+        return {
+          filePath: partPath,
+          isPartFile: true,
+          fileSize: stat.size,
+          hash: record ? record.hash : '',
+        };
       }
     }
     
     // 6. Substring match (e.g. 'Mufasa' matches 'Mufasa.El.rey.leon...')
     const searchLower = fileName.toLowerCase();
-    for (const pf of partFiles) {
-      const metPath = path.join(tempDir, pf + '.met');
-      if (!fs.existsSync(metPath)) continue;
-      const metBuf = fs.readFileSync(metPath);
-      const metName = extractFileName(metBuf);
-      if (metName && metName.toLowerCase().includes(searchLower)) {
-        const stat = fs.statSync(path.join(tempDir, pf));
-        return { filePath: path.join(tempDir, pf), isPartFile: true, fileSize: stat.size, hash: extractHash(metBuf), realFileName: metName };
+    for (const record of metadata) {
+      throwIfAborted(signal);
+      if (record.fileName && record.fileName.toLowerCase().includes(searchLower)) {
+        const partPath = path.join(tempDir, record.partFile);
+        const stat = await statOrNull(partPath, signal);
+        if (stat) {
+          return {
+            filePath: partPath,
+            isPartFile: true,
+            fileSize: stat.size,
+            hash: record.hash,
+            realFileName: record.fileName,
+          };
+        }
       }
     }
-  } catch(e) {}
+  } catch(e) { rethrowAbort(e); }
   
   return null;
 }
@@ -149,59 +234,74 @@ function resolveMediaFile(fileName, incomingDir, tempDir) {
 /**
  * List all active downloads in the Temp directory with their metadata.
  * @param {string} tempDir - Path to eMule Temp directory
- * @returns {Array} Array of download objects
+ * @returns {Promise<Array>} Array of download objects
  */
-function listDownloads(tempDir) {
-  const downloads = [];
+async function listDownloads(tempDir, options = {}) {
+  const signal = options.signal;
   try {
-    const partFiles = fs.readdirSync(tempDir).filter(f => PART_FILE_RE.test(f));
-    for (const pf of partFiles) {
-      const metFile = path.join(tempDir, pf + '.met');
-      const partPath = path.join(tempDir, pf);
-      if (!fs.existsSync(metFile)) continue;
-      
-      const metBuf = fs.readFileSync(metFile);
-      const fileName = extractFileName(metBuf) || pf;
-      const stat = fs.statSync(partPath);
+    throwIfAborted(signal);
+    const partFiles = (await fs.promises.readdir(tempDir)).filter(f => PART_FILE_RE.test(f));
+    const downloads = await mapBounded(partFiles, FS_CONCURRENCY, async partFile => {
+      const partPath = path.join(tempDir, partFile);
+      const [metBuffer, stat] = await Promise.all([
+        readMetBounded(path.join(tempDir, partFile + '.met'), signal),
+        statOrNull(partPath, signal),
+      ]);
+      if (!metBuffer || !stat) return null;
+      const fileName = extractFileName(metBuffer) || partFile;
       const isActive = (Date.now() - stat.mtimeMs) < 30000; // Modified in last 30s
-      
-      downloads.push({
-        partFile: pf,
-        partNum: pf.replace('.part', ''),
+      return {
+        partFile,
+        partNum: partFile.replace('.part', ''),
         fileName,
         sizeMB: Math.round(stat.size / (1024 * 1024)),
         sizeBytes: stat.size,
         partPath,
         lastModified: stat.mtimeMs,
         active: isActive,
-        hash: extractHash(metBuf)
-      });
-    }
-  } catch(e) {}
-  return downloads;
+        hash: extractHash(metBuffer)
+      };
+    }, signal);
+    return downloads.filter(Boolean);
+  } catch(e) { rethrowAbort(e); }
+  return [];
 }
 
 /**
  * Get list of completed video files in Incoming directory
  * @param {string} incomingDir - Path to eMule Incoming directory
- * @returns {Array} Array of { fileName, filePath, sizeMB }
+ * @returns {Promise<Array>} Array of { fileName, filePath, sizeMB }
  */
-function getCompletedFiles(incomingDir) {
+async function getCompletedFiles(incomingDir, options = {}) {
+  const signal = options.signal;
   try {
-    return fs.readdirSync(incomingDir)
-      .filter(f => VIDEO_EXTENSIONS_RE.test(f))
-      .map(f => {
-        const fp = path.join(incomingDir, f);
-        const stat = fs.statSync(fp);
-        return { fileName: f, filePath: fp, sizeMB: Math.round(stat.size / (1024 * 1024)) };
-      });
-  } catch(e) { return []; }
+    throwIfAborted(signal);
+    const names = (await fs.promises.readdir(incomingDir))
+      .filter(f => VIDEO_EXTENSIONS_RE.test(f));
+    const files = await mapBounded(names, FS_CONCURRENCY, async fileName => {
+      const filePath = path.join(incomingDir, fileName);
+      const stat = await statOrNull(filePath, signal);
+      return stat
+        ? {
+            fileName,
+            filePath,
+            sizeMB: Math.round(stat.size / (1024 * 1024)),
+            mtime: stat.mtimeMs,
+          }
+        : null;
+    }, signal);
+    return files.filter(Boolean);
+  } catch(e) {
+    rethrowAbort(e);
+    return [];
+  }
 }
 
 module.exports = {
   resolveMediaFile,
   listDownloads,
   getCompletedFiles,
+  readMetBounded,
   extractHash,
   extractFileName,
   HASH_OFFSET,

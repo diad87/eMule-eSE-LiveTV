@@ -1,0 +1,15 @@
+{
+  "schema": "ese.mod03.ownership-layering-contract/v2",
+  "supersedes": "docs/architecture/mod03_ownership_layering_contract_v1.json",
+  "status": "PASS",
+  "scope": "M2A additional-extraction ownership overlay; v1 remains immutable historical evidence",
+  "rules": {
+    "new_coordinator_fields": "forbidden; additional services are physically owned by the existing parent named in the M2A matrix",
+    "parent_injection": "a matrix parent is aggregation/injected construction, not an implicit direct include; actual direct includes are only the matrix dependencies array",
+    "mutable_owner": "one owner per transferred field; no public mutable container/reference",
+    "callbacks": "snapshot_unlock_invoke",
+    "layers": "reuse MOD-0.3 v1 deny-unlisted layer model",
+    "ports": "concrete UI/socket/Kad types only in adapters or ports, never domain-state public headers"
+  },
+  "approval": "M2A-00 contract overlay; any additional module or parent change requires a new reviewed revision"
+}

@@ -62,6 +62,8 @@ CServerSocket::CServerSocket(CServerConnect *in_serverconnect, bool bManualSingl
 	, m_bStartNewMessageLog(true)
 	, m_bManualSingleConnect(bManualSingleConnect)
 	, m_bRelayRouted(false)
+	, m_nDirectTopologyGeneration(0)
+	, m_nDirectSocketLocalIP(0)
 {
 }
 
@@ -373,9 +375,19 @@ bool CServerSocket::ProcessPacket(const BYTE *packet, uint32 size, uint8 opcode)
 					SetConnectionState(CS_CONNECTED);
 					theApp.OnlineSig();       // Added By Bouc7
 				}
-				if (!m_bRelayRouted && theApp.directreachability != NULL)
-					theApp.directreachability->ObserveServerIdChange(
-						!::IsLowID(la->clientid));
+				if (!m_bRelayRouted && theApp.directreachability != NULL) {
+					const bool directHandled =
+						theApp.directreachability
+							->ObserveDirectV4ServerState(
+						!::IsLowID(la->clientid),
+						dwServerReportedIP != 0
+							? dwServerReportedIP : la->clientid,
+						m_ed2kVerificationAttempt);
+					if (!directHandled)
+						theApp.directreachability->ObserveServerIdChange(
+							!::IsLowID(la->clientid),
+							m_ed2kVerificationAttempt);
+				}
 				serverconnect->SetClientID(la->clientid);
 				if (m_bRelayRouted && theApp.relayclient != NULL)
 					theApp.relayclient->OnEd2kIdChange(la->clientid, true);

@@ -561,19 +561,15 @@ int main(int argc, char** argv) {
         const auto* bytes = reinterpret_cast<const std::uint8_t*>(&observed);
         const natmap::IpAddress wan_address = natmap::IpAddress::V4(
             bytes[0], bytes[1], bytes[2], bytes[3]);
-        const auto candidates = natmap::BuildUpstreamGatewayCandidates(wan_address);
-        if (candidates.status == natmap::UpstreamDiscoveryStatus::CandidateGateways) {
-            std::printf("Bounded upstream probes (read-only):\n");
-            const auto pcp_client = natmap::PcpIpv4Mapped(
-                bytes[0], bytes[1], bytes[2], bytes[3]);
-            for (std::uint8_t i = 0; i < candidates.count; ++i) {
-                std::uint32_t candidate = 0;
-                std::memcpy(&candidate, candidates.addresses[i].bytes.data(), 4);
-                ProbeMapper(candidate, pcp_client);
-            }
-        } else if (candidates.status ==
-                   natmap::UpstreamDiscoveryStatus::OperatorCgnat) {
-            std::printf("Upstream classification: operator CGNAT; no probes sent.\n");
+        if (wan_address.IsSharedCgnatV4()) {
+            std::printf(
+                "Upstream classification: shared address observed; "
+                "native/overlay origin is unavailable in this diagnostic; "
+                "no probes sent.\n");
+        } else if (wan_address.IsRfc1918V4()) {
+            std::printf(
+                "Upstream classification: private WAN; an explicit route, "
+                "DHCP option or operator policy is required; no probes sent.\n");
         }
     }
 

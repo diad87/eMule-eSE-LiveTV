@@ -2542,12 +2542,14 @@ bool CPartFile::CanAddSource(uint32 userid, uint16 port, uint32 serverip, uint16
 				return false;
 			if (theApp.serverconnect->GetLocalIP() == userid)
 				return false;
-		} else if (theApp.serverconnect->GetClientID() == userid && thePrefs.GetPort() == port)
+		} else if (theApp.serverconnect->GetClientID() == userid
+			&& theApp.GetAdvertisedTcpPort() == port)
 			return false;
 	}
 	if (Kademlia::CKademlia::IsConnected())
 		if (!Kademlia::CKademlia::IsFirewalled())
-			if (Kademlia::CKademlia::GetIPAddress() == hybridID && thePrefs.GetPort() == port)
+			if (Kademlia::CKademlia::GetIPAddress() == hybridID
+				&& theApp.GetAdvertisedTcpPort() == port)
 				return false;
 
 	// A LowID of 0 is not a routable callback id (no server callback slot, no direct

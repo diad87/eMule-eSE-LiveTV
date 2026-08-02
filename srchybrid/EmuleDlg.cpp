@@ -32,6 +32,7 @@
 #include <share.h>
 #include <dbt.h>
 #include <iphlpapi.h>
+#include <netioapi.h>
 #include <vector>
 #include "emule.h"
 #include "emuleDlg.h"
@@ -58,6 +59,8 @@
 #include "SharedFileList.h"
 #include "ED2KLink.h"
 #include "LiveStreamManager.h"
+#include "LiveTunnel.h"
+#include "Mod02BuildIdentity.h"
 #include "RelayClient.h"
 #include "DirectReachabilityManager.h"
 #include "Splashscreen.h"
@@ -97,7 +100,6 @@
 // crypto / Kad headers that we don't want everywhere.
 #include "LiveSubscriptionStore.h"
 #include "LiveBootstrap.h"
-#include "LiveTunnel.h"
 #include "kademlia/kademlia/KadV2SubscriberPin.h"
 #include "kademlia/kademlia/KadV2TunnelPool.h"
 #include "kademlia/kademlia/KadV2ModeSelector.h"
@@ -129,6 +131,9 @@
 #include "PartHashThread.h"
 #include "ImportParts.h"
 
+#include <chrono>
+#include <limits>
+
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #undef THIS_FILE
@@ -141,9 +146,33 @@ extern BOOL FirstTimeWizard();
 
 UINT g_uMainThreadId = 0;
 static const UINT UWM_ARE_YOU_EMULE = RegisterWindowMessage(EMULE_GUID);
+static const UINT_PTR UPNP_LOCAL_FAILURE_MESSAGE = 0x40000000u;
+static const UINT_PTR UPNP_LOCAL_FAILURE_MASK = 0xc0000000u;
+static const UINT_PTR UPNP_LOCAL_FAILURE_TOKEN_MASK = 0x3fffffffu;
 static UINT AFX_CDECL HeadlessActionDelayThread(LPVOID param);
 static UINT AFX_CDECL SelfTestExitThread(LPVOID param);
 static void ScheduleSelfTestExit(int exitCode);
+
+// MOD-0.2 records only fixed, non-sensitive proof markers in the isolated
+// selftest working directory. The external runner rejects a zero exit code if
+// any marker is missing, so an older or bypassed binary cannot look green.
+static void AppendMod02SelfTestMarker(const char* marker) noexcept
+{
+	HANDLE file = ::CreateFileA("mod02-selftest-markers.log", FILE_APPEND_DATA,
+		FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (file == INVALID_HANDLE_VALUE)
+		return;
+	DWORD written = 0;
+	::WriteFile(file, marker, static_cast<DWORD>(strlen(marker)), &written, NULL);
+	::CloseHandle(file);
+}
+
+static uint64 UPnPMonotonicMilliseconds()
+{
+	return static_cast<uint64>(std::chrono::duration_cast<
+		std::chrono::milliseconds>(std::chrono::steady_clock::now()
+			.time_since_epoch()).count());
+}
 
 static void ConfigureEseNetLabConsentAtStartup()
 {
@@ -233,23 +262,76 @@ static void ConfigureEseNetLabConsentAtStartup()
 				: _T("eSE NetLab: OFF; no se anunciaran pruebas de cohorte."));
 }
 
-static uint64 GetUPnPNetworkSignature()
+struct UPnPRouteContext
+{
+	DWORD interfaceIndex;
+	DWORD gatewayAddress;
+	DWORD localAddress;
+	DWORD routeDestination;
+	uint8 routePrefixLength;
+	uint64 adapterLuid;
+	DWORD compartmentId;
+	bool compartmentPresent;
+	natmap::NetworkOrigin origin;
+
+	UPnPRouteContext()
+		: interfaceIndex()
+		, gatewayAddress()
+		, localAddress()
+		, routeDestination()
+		, routePrefixLength()
+		, adapterLuid()
+		, compartmentId()
+		, compartmentPresent()
+		, origin(natmap::NetworkOrigin::Unknown)
+	{
+	}
+};
+
+static bool UPnPPrefixLength(DWORD networkOrderMask, uint8& prefixLength)
+{
+	const uint32 mask = ntohl(networkOrderMask);
+	bool sawZero = false;
+	uint8 length = 0;
+	for (int bit = 31; bit >= 0; --bit) {
+		const bool set = (mask & (1u << bit)) != 0;
+		if (set && sawZero)
+			return false;
+		if (set)
+			++length;
+		else
+			sawZero = true;
+	}
+	prefixLength = length;
+	return true;
+}
+
+static bool GetUPnPRouteContext(UPnPRouteContext& context)
 {
 	MIB_IPFORWARDROW route = {};
 	if (::GetBestRoute(0, 0, &route) != NO_ERROR
 		|| route.dwForwardIfIndex == 0 || route.dwForwardNextHop == 0)
-		return 0;
+		return false;
+	NET_LUID interfaceLuid = {};
+	if (::ConvertInterfaceIndexToLuid(
+			route.dwForwardIfIndex, &interfaceLuid) != NO_ERROR
+		|| interfaceLuid.Value == 0)
+		return false;
+	uint8 routePrefixLength = 0;
+	if (!UPnPPrefixLength(route.dwForwardMask, routePrefixLength))
+		return false;
 
 	ULONG bytes = 0;
 	if (::GetAdaptersInfo(NULL, &bytes) != ERROR_BUFFER_OVERFLOW || bytes == 0)
-		return 0;
+		return false;
 	std::vector<BYTE> storage(bytes);
 	PIP_ADAPTER_INFO adapters =
 		reinterpret_cast<PIP_ADAPTER_INFO>(&storage[0]);
 	if (::GetAdaptersInfo(adapters, &bytes) != NO_ERROR)
-		return 0;
+		return false;
 
 	DWORD localAddress = 0;
+	natmap::NetworkOrigin origin = natmap::NetworkOrigin::Unknown;
 	for (PIP_ADAPTER_INFO adapter = adapters; adapter != NULL;
 		adapter = adapter->Next) {
 		if (adapter->Index != route.dwForwardIfIndex)
@@ -262,22 +344,59 @@ static uint64 GetUPnPNetworkSignature()
 				break;
 			}
 		}
+		natmap::NetworkOriginEvidence originEvidence;
+		originEvidence.adapter_name = adapter->AdapterName;
+		originEvidence.adapter_description = adapter->Description;
+		originEvidence.is_tunnel = adapter->Type == IF_TYPE_TUNNEL;
+		originEvidence.is_loopback =
+			adapter->Type == MIB_IF_TYPE_LOOPBACK;
+		originEvidence.has_default_gateway =
+			route.dwForwardNextHop != 0;
+		origin = natmap::ClassifyNetworkOrigin(originEvidence).origin;
 		break;
 	}
 	if (localAddress == 0)
-		return 0;
+		return false;
 
-	// A small FNV-1a mix is sufficient here: this value is only a process-local
-	// change detector, not a persistent identity or security boundary.
-	uint64 signature = 1469598103934665603ull;
-	const DWORD parts[] = {
-		route.dwForwardIfIndex, route.dwForwardNextHop, localAddress
-	};
-	for (size_t i = 0; i < _countof(parts); ++i) {
-		signature ^= parts[i];
-		signature *= 1099511628211ull;
-	}
-	return signature != 0 ? signature : 1;
+	context.interfaceIndex = route.dwForwardIfIndex;
+	context.gatewayAddress = route.dwForwardNextHop;
+	context.localAddress = localAddress;
+	context.routeDestination = route.dwForwardDest;
+	context.routePrefixLength = routePrefixLength;
+	context.adapterLuid = interfaceLuid.Value;
+	context.compartmentId = ::GetCurrentThreadCompartmentId();
+	context.compartmentPresent = context.compartmentId != 0;
+	context.origin = origin;
+	return true;
+}
+
+static natmap::IpAddress UPnPIpAddress(DWORD networkOrderAddress)
+{
+	const uint8* bytes = reinterpret_cast<const uint8*>(
+		&networkOrderAddress);
+	return natmap::IpAddress::V4(
+		bytes[0], bytes[1], bytes[2], bytes[3]);
+}
+
+static natmap::NetworkSignature GetUPnPNetworkSignature()
+{
+	natmap::NetworkSignature signature;
+	UPnPRouteContext context;
+	if (!GetUPnPRouteContext(context))
+		return signature;
+
+	natmap::NetworkSignatureInput input;
+	input.adapter_luid = context.adapterLuid;
+	input.interface_index = context.interfaceIndex;
+	input.local_address = UPnPIpAddress(context.localAddress);
+	input.gateway_address = UPnPIpAddress(context.gatewayAddress);
+	input.route_destination =
+		UPnPIpAddress(context.routeDestination);
+	input.route_prefix_length = context.routePrefixLength;
+	input.compartment_id = context.compartmentId;
+	input.compartment_present = context.compartmentPresent;
+	natmap::BuildNetworkSignature(input, signature);
+	return signature;
 }
 
 #ifdef HAVE_WIN7_SDK_H
@@ -419,8 +538,21 @@ CemuleDlg::CemuleDlg(CWnd *pParent /*=NULL*/)
 	, m_hTimer()
 	, m_hUPnPTimeOutTimer()
 	, m_bUPnPTimeoutForRefresh()
+	, m_nUPnPTimeoutToken()
+	, m_nNextUPnPTimeoutToken()
+	, m_bUPnPTimeoutTokenExhausted()
+	, m_nPendingUPnPLocalFailureToken()
+	, m_nNextUPnPLocalFailureToken()
+	, m_bUPnPLocalFailureTokenExhausted()
 	, m_hUPnPLeaseTimer()
-	, m_uUPnPNetworkSignature()
+	, m_hIPv6HealthTimer()
+	, m_bUPnPExplicitRequest()
+	, m_bUPnPRouteRecoveryPending()
+	, m_bUPnPResumeMappingRequired()
+	, m_upnpNetworkSignature()
+	, m_upnpRecoverySchedule()
+	, m_mappingResultMailbox(
+		std::make_shared<natmap::MappingResultMailbox>())
 	, notifierenabled()
 {
 	g_uMainThreadId = GetCurrentThreadId();
@@ -1063,27 +1195,44 @@ void CemuleDlg::RunHeadlessAction() noexcept
 			LIVE_LOG("HEADLESS", "Selftest: testpattern + signed chunk loopback");
 			bool passed = false;
 			CString failure;
-			if (theApp.liveStreamManager) {
-				const bool started = theApp.liveStreamManager->StartBroadcastWithSource(
-					_T("testpattern"), _T("Selftest"),
-					_T(""), _T("en"), 1500);
-				if (!started) {
-					failure = _T("test-pattern broadcast failed to start or prebuffer");
-				} else {
-					bool ffmpegRunning = false;
-					int chunkCount = 0;
-					theApp.liveStreamManager->GetBroadcastLivenessStatus(
-						ffmpegRunning, chunkCount);
-					if (!ffmpegRunning || chunkCount < 3) {
-						failure.Format(_T("prebuffer invariant failed (ffmpeg=%d chunks=%d)"),
-							ffmpegRunning ? 1 : 0, chunkCount);
-					} else {
-						passed = theApp.liveStreamManager->RunIsolatedLoopbackSelfTest(failure);
-					}
-				}
-				theApp.liveStreamManager->StopBroadcastFull();
+			AppendMod02SelfTestMarker("SOURCE " ESE_MOD02_CRITICAL_SOURCE_SHA256 "\n");
+			AppendMod02SelfTestMarker("BEGIN CLiveTunnel\n");
+			if (!eSELive::CLiveTunnel::Get().RunCharacterizationSelfTest(failure)) {
+				AppendMod02SelfTestMarker("FAIL CLiveTunnel\n");
+				failure = _T("LiveTunnel characterization: ") + failure;
 			} else {
-				failure = _T("LiveStreamManager is unavailable");
+				AppendMod02SelfTestMarker("PASS CLiveTunnel\n");
+				AppendMod02SelfTestMarker("BEGIN CWebServer\n");
+				if (!CWebServer::RunCharacterizationSelfTest(failure)) {
+					AppendMod02SelfTestMarker("FAIL CWebServer\n");
+					failure = _T("WebServer characterization: ") + failure;
+				} else {
+					AppendMod02SelfTestMarker("PASS CWebServer\n");
+					AppendMod02SelfTestMarker("BEGIN CLiveStreamManager\n");
+					if (theApp.liveStreamManager) {
+						const bool started = theApp.liveStreamManager->StartBroadcastWithSource(
+							_T("testpattern"), _T("Selftest"),
+							_T(""), _T("en"), 1500);
+						if (!started) {
+							failure = _T("test-pattern broadcast failed to start or prebuffer");
+						} else {
+							bool ffmpegRunning = false;
+							int chunkCount = 0;
+							theApp.liveStreamManager->GetBroadcastLivenessStatus(
+								ffmpegRunning, chunkCount);
+							if (!ffmpegRunning || chunkCount < 3) {
+								failure.Format(_T("prebuffer invariant failed (ffmpeg=%d chunks=%d)"),
+									ffmpegRunning ? 1 : 0, chunkCount);
+							} else {
+								passed = theApp.liveStreamManager->RunIsolatedLoopbackSelfTest(failure);
+							}
+						}
+						theApp.liveStreamManager->StopBroadcastFull();
+					} else {
+						failure = _T("LiveStreamManager is unavailable");
+					}
+					AppendMod02SelfTestMarker(passed ? "PASS CLiveStreamManager\n" : "FAIL CLiveStreamManager\n");
+				}
 			}
 			if (passed)
 				LIVE_LOG("HEADLESS", "Selftest PASS — quitting with code 0");
@@ -1198,9 +1347,20 @@ void CALLBACK CemuleDlg::StartupTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*
 				// OP_PUBLICIP_REQ (CFirewallProberV6::SetDetectedV6IP), which
 				// replaced the old api6.ipify.org third-party HTTPS probe.
 				if (thePrefs.IsIPv6Enabled()) {
-					if (theApp.emuledlg->m_hUPnPLeaseTimer == 0)
-						VERIFY((theApp.emuledlg->m_hUPnPLeaseTimer = ::SetTimer(NULL, 0,
-							SEC2MS(30), UPnPLeaseTimer)) != 0);
+					if (theApp.directreachability != NULL) {
+						const uint64 currentTopologyGeneration =
+							theApp.directreachability->GetTopologyGeneration();
+						CFirewallProberV6::Instance().PublishTopologyGeneration(
+							currentTopologyGeneration);
+						// Establish the first generation immediately. Initialize is a
+						// baseline-only decision, so this cannot tear down startup state;
+						// a real early route change will invalidate before the 30s timer.
+						CFirewallProberV6::Instance().OnTopologyGenerationChanged(
+							currentTopologyGeneration);
+					}
+					if (theApp.emuledlg->m_hIPv6HealthTimer == 0)
+						VERIFY((theApp.emuledlg->m_hIPv6HealthTimer = ::SetTimer(NULL, 0,
+							SEC2MS(30), IPv6HealthTimer)) != 0);
 					CFirewallProberV6::Instance().ProbeAsync();
 				}
 
@@ -1596,11 +1756,7 @@ UINT CemuleDlg::GetConnectionStateIconIndex() const
 	}
 	if (theApp.serverconnect->IsConnected())
 	{
-		const bool bVerifiedDirect = theApp.serverconnect->IsConnectedViaRelay()
-			|| theApp.directreachability == NULL
-			|| !theApp.directreachability->IsEnabled()
-			|| theApp.directreachability->HasVerifiedEd2kReachability();
-		idx += theApp.serverconnect->IsLowID() || !bVerifiedDirect ? 3 : 6;
+		idx += theApp.HasVerifiedEd2kHighId() ? 6 : 3;
 	}
 	return idx;
 }
@@ -2091,9 +2247,9 @@ LRESULT CemuleDlg::OnLiveWebLeave(WPARAM, LPARAM lParam)
 	LiveWebLeaveReq *r = (LiveWebLeaveReq *)lParam;
 	if (r == NULL || theApp.liveStreamManager == NULL || theApp.IsClosing())
 		return 0;
-	r->wasViewing = theApp.liveStreamManager->IsViewingLive()
-		&& (!r->hasStreamKey
-			|| memcmp(r->streamKey, theApp.liveStreamManager->GetViewerStreamKey(), 16) == 0);
+	uchar viewerKey[16];
+	r->wasViewing = theApp.liveStreamManager->CopyViewerStreamKey(viewerKey)
+		&& (!r->hasStreamKey || memcmp(r->streamKey, viewerKey, 16) == 0);
 	if (r->wasViewing)
 		theApp.liveStreamManager->LeaveStream();
 	return 1;
@@ -2448,6 +2604,7 @@ void CemuleDlg::OnClose()
 		::InterlockedExchange(&closing, 0);
 		return;
 	}
+	InvalidateLocalUPnPFailure();
 	theApp.m_app_state = APP_STATE_SHUTTINGDOWN;
 	notifierenabled = false;
 	//flush queued messages
@@ -2564,10 +2721,34 @@ void CemuleDlg::OnClose()
 		VERIFY(::KillTimer(NULL, m_hUPnPLeaseTimer));
 		m_hUPnPLeaseTimer = 0;
 	}
+	if (m_hIPv6HealthTimer != 0) {
+		VERIFY(::KillTimer(NULL, m_hIPv6HealthTimer));
+		m_hIPv6HealthTimer = 0;
+	}
+	if (m_hUPnPTimeOutTimer != 0) {
+		RetireUPnPTimeout();
+	}
+	CFirewallProberV6::Instance().BeginShutdownFence();
 	CFirewallProberV6::Instance().DeletePcpMappingsBestEffort();
-	theApp.m_pUPnPFinder->GetImplementation()->StopAsyncFind();
-	if (thePrefs.CloseUPnPOnExit())
-		theApp.m_pUPnPFinder->GetImplementation()->DeletePorts();
+	CUPnPImpl *mappingImpl =
+		theApp.m_pUPnPFinder->GetImplementation();
+	mappingImpl->SetMessageOnResult(NULL, 0);
+	mappingImpl->StopAsyncFind();
+	m_mappingResultGate.CancelPending();
+	InvalidateLocalUPnPFailure();
+	if (theApp.directreachability != NULL)
+		theApp.directreachability->ShutdownMappedCandidates();
+	if (m_mappingResultMailbox)
+		m_mappingResultMailbox->Close();
+	MSG mapperMessage = {};
+	while (::PeekMessage(&mapperMessage, GetSafeHwnd(),
+			UM_UPNP_RESULT, UM_UPNP_RESULT, PM_REMOVE)) {
+	}
+	if (thePrefs.CloseUPnPOnExit()) {
+		const uint64 generation = theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+		mappingImpl->DeletePortsForGeneration(generation);
+	}
 
 	thePrefs.Save();
 	thePerfLog.Shutdown();
@@ -2834,8 +3015,14 @@ void CemuleDlg::StartConnection()
 			return;
 		}
 		if (m_hUPnPTimeOutTimer != 0) {
-			VERIFY(::KillTimer(NULL, m_hUPnPTimeOutTimer));
-			m_hUPnPTimeOutTimer = 0;
+			CUPnPImpl* const impl =
+				theApp.m_pUPnPFinder->GetImplementation();
+			impl->SetMessageOnResult(NULL, 0);
+			m_mappingResultGate.CancelPending();
+			m_mappingResultMailbox->Clear();
+			InvalidateLocalUPnPFailure();
+			RetireUPnPTimeout();
+			impl->StopAsyncFind();
 		}
 		AddLogLine(true, GetResString(IDS_CONNECTING));
 
@@ -4532,6 +4719,14 @@ LRESULT CemuleDlg::OnWebGUIInteraction(WPARAM wParam, LPARAM lParam)
 				transferwnd->UpdateCatTabTitles();
 		}
 		break;
+	case WEBGUIIA_TRANSFER_SNAPSHOT:
+		{
+			WebTransferSnapshotRequest* request =
+				reinterpret_cast<WebTransferSnapshotRequest*>(lParam);
+			if (request != NULL && request->capture != nullptr)
+				request->capture(request->context);
+		}
+		break;
 	}
 
 	return 0;
@@ -4561,18 +4756,77 @@ void CemuleDlg::SetToolTipsDelay(UINT uMilliseconds)
 	sharedfileswnd->SetToolTipsDelay(uMilliseconds);
 }
 
-void CALLBACK CemuleDlg::UPnPTimeOutTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*idEvent*/, DWORD /*dwTime*/) noexcept
+void CALLBACK CemuleDlg::UPnPTimeOutTimer(HWND hwnd, UINT /*uiMsg*/, UINT_PTR idEvent, DWORD /*dwTime*/) noexcept
 {
-	if (theApp.emuledlg != NULL)
+	if (theApp.emuledlg != NULL
+		&& hwnd == theApp.emuledlg->GetSafeHwnd()
+		&& idEvent == theApp.emuledlg->m_hUPnPTimeOutTimer
+		&& idEvent == theApp.emuledlg->m_nUPnPTimeoutToken)
 		theApp.emuledlg->PostMessage(UM_UPNP_RESULT,
 			(WPARAM)CUPnPImpl::UPNP_TIMEOUT,
-			theApp.emuledlg->m_bUPnPTimeoutForRefresh ? 1 : 0);
+			(LPARAM)idEvent);
+}
+
+bool CemuleDlg::ArmUPnPTimeout(UINT nMilliseconds)
+{
+	if (m_hUPnPTimeOutTimer != 0
+		|| m_bUPnPTimeoutTokenExhausted)
+		return false;
+
+	const uint32 maximum = (std::numeric_limits<uint32>::max)();
+	const uint32 token = ++m_nNextUPnPTimeoutToken;
+	if (token == maximum)
+		m_bUPnPTimeoutTokenExhausted = true;
+	const UINT_PTR timer = ::SetTimer(
+		GetSafeHwnd(), token, nMilliseconds, UPnPTimeOutTimer);
+	if (timer == 0)
+		return false;
+	if (timer != token) {
+		::KillTimer(GetSafeHwnd(), timer);
+		return false;
+	}
+	m_hUPnPTimeOutTimer = timer;
+	m_nUPnPTimeoutToken = token;
+	return true;
+}
+
+void CemuleDlg::RetireUPnPTimeout()
+{
+	if (m_hUPnPTimeOutTimer != 0) {
+		VERIFY(::KillTimer(
+			GetSafeHwnd(), m_hUPnPTimeOutTimer));
+		m_hUPnPTimeOutTimer = 0;
+	}
+	m_nUPnPTimeoutToken = 0;
+}
+
+bool CemuleDlg::PostLocalUPnPFailure(bool bWasRefresh)
+{
+	if (m_bUPnPLocalFailureTokenExhausted)
+		return false;
+	const uint32 maximum = static_cast<uint32>(
+		UPNP_LOCAL_FAILURE_TOKEN_MASK);
+	const uint32 token = ++m_nNextUPnPLocalFailureToken;
+	if (token == maximum)
+		m_bUPnPLocalFailureTokenExhausted = true;
+	m_nPendingUPnPLocalFailureToken = token;
+	if (!PostMessage(UM_UPNP_RESULT,
+			static_cast<WPARAM>(UPNP_LOCAL_FAILURE_MESSAGE | token),
+			bWasRefresh ? 1 : 0)) {
+		m_nPendingUPnPLocalFailureToken = 0;
+		return false;
+	}
+	return true;
+}
+
+void CemuleDlg::InvalidateLocalUPnPFailure()
+{
+	m_nPendingUPnPLocalFailureToken = 0;
 }
 
 void CALLBACK CemuleDlg::UPnPLeaseTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*idEvent*/, DWORD /*dwTime*/) noexcept
 {
 	try {
-		CFirewallProberV6::Instance().OnTimerTick();
 		if (theApp.emuledlg != NULL)
 			theApp.emuledlg->CheckUPnPLease();
 	} catch (...) {
@@ -4580,41 +4834,262 @@ void CALLBACK CemuleDlg::UPnPLeaseTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR 
 	}
 }
 
-void CemuleDlg::CheckUPnPLease()
+void CALLBACK CemuleDlg::IPv6HealthTimer(HWND /*hwnd*/, UINT /*uiMsg*/, UINT_PTR /*idEvent*/, DWORD /*dwTime*/) noexcept
 {
-	if (!theApp.IsRunning() || !thePrefs.IsUPnPEnabled()
-		|| theApp.m_pUPnPFinder == NULL || m_hUPnPTimeOutTimer != 0)
-		return;
+	try {
+		if (theApp.directreachability != NULL)
+			CFirewallProberV6::Instance().PublishTopologyGeneration(
+				theApp.directreachability->GetTopologyGeneration());
+		CFirewallProberV6::Instance().OnTimerTick();
+	} catch (...) {
+		DebugLogError(_T("Unexpected exception while scheduling IPv6 health checks"));
+	}
+}
 
+bool CemuleDlg::HandleUPnPNetworkChange(
+	const natmap::NetworkSignature& observedSignature)
+{
+	if (!m_upnpNetworkSignature.IsValid())
+		return false;
+	if (observedSignature.IsValid()
+		&& natmap::SameNetworkSignature(
+			observedSignature, m_upnpNetworkSignature))
+		return false;
+
+	CUPnPImpl *impl = theApp.m_pUPnPFinder != NULL
+		? theApp.m_pUPnPFinder->GetImplementation()
+		: NULL;
+	const natmap::MappingRequestContext cancelledRequest =
+		m_mappingResultGate.has_pending()
+			? m_mappingResultGate.pending()
+			: natmap::MappingRequestContext{};
+	const uint64 previousGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+	const bool wasDirectReachabilityEnabled =
+		theApp.directreachability != NULL
+			&& theApp.directreachability->IsEnabled();
+	natmap::NetworkChangeTransition transition;
+	const bool withdrew =
+		theApp.directreachability != NULL
+			&& theApp.directreachability->ObserveNetworkRouteChange(
+				&transition);
+
+	// Fence the original request before detaching and stopping its producer.
+	// A callback already queued is then rejected by both mailbox and gate.
+	m_mappingResultGate.CancelPending();
+	if (impl != NULL) {
+		impl->SetMessageOnResult(NULL, 0);
+		impl->StopAsyncFind();
+	}
+	if (m_mappingResultMailbox)
+		m_mappingResultMailbox->Clear();
+	InvalidateLocalUPnPFailure();
+	RetireUPnPTimeout();
+	m_bUPnPTimeoutForRefresh = false;
+	m_bUPnPRouteRecoveryPending =
+		!observedSignature.IsValid()
+		|| impl == NULL
+		|| theApp.directreachability == NULL;
+	m_upnpNetworkSignature = theApp.directreachability != NULL
+		? observedSignature
+		: natmap::NetworkSignature{};
+
+	const uint64 currentGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration()
+			: previousGeneration;
+	if (transition.IsApplied())
+		CFirewallProberV6::Instance().OnTopologyGenerationChanged(
+			currentGeneration);
+	const natmap::AdvertisementObservation advertisement{
+		previousGeneration,
+		currentGeneration,
+		withdrew,
+		wasDirectReachabilityEnabled,
+		theApp.directreachability != NULL
+			&& theApp.directreachability->IsEnabled()};
+	if (natmap::ShouldRestartAdvertisementLogin(
+			advertisement,
+			theApp.serverconnect->IsConnected(),
+			theApp.serverconnect->IsConnecting(),
+			theApp.serverconnect->IsConnectedViaRelay())) {
+		LogWarning(_T("Network identity changed; reconnecting without the retired endpoint"));
+		if (theApp.serverconnect->IsConnecting())
+			theApp.serverconnect->StopConnectionTry();
+		if (theApp.serverconnect->IsConnected())
+			theApp.serverconnect->Disconnect();
+		theApp.serverconnect->ConnectToAnyServer();
+	}
+
+	const bool generationAdvanced =
+		transition.IsApplied()
+		&& transition.previous_generation == previousGeneration
+		&& transition.current_generation == currentGeneration;
+	LIVE_LOG("NATMAP",
+		"network change fenced request=%llu attempt=%llu generation=%llu->%llu status=%u",
+		(unsigned long long)cancelledRequest.request_id,
+		(unsigned long long)transition.cancelled_attempt_ids[0],
+		(unsigned long long)previousGeneration,
+		(unsigned long long)currentGeneration,
+		(unsigned)transition.status);
+	if (!generationAdvanced) {
+		LIVE_LOG("NATMAP",
+			"network change cannot advance exactly one generation; rediscovery remains fail-closed");
+		return true;
+	}
+	const uint64 recoveryNow = UPnPMonotonicMilliseconds();
+	if (!m_upnpRecoverySchedule.ResetForNetworkChange(
+			currentGeneration, recoveryNow)) {
+		LIVE_LOG("NATMAP",
+			"network change recovery budget rejected generation=%llu",
+			(unsigned long long)currentGeneration);
+		return true;
+	}
+	if (!observedSignature.IsValid() || impl == NULL) {
+		LIVE_LOG("NATMAP",
+			"network route or mapper unavailable; recovery waits with old identity withdrawn");
+		return true;
+	}
+	if (!m_upnpRecoverySchedule.BeginAttempt(
+			currentGeneration, recoveryNow)) {
+		LIVE_LOG("NATMAP",
+			"network change recovery attempt rejected generation=%llu",
+			(unsigned long long)currentGeneration);
+		return true;
+	}
+
+	// StartUPnP issues a fresh request against currentGeneration. A successful
+	// mapping triggers the normal server re-login and verification path.
+	StartUPnP(true, 0, 0, m_bUPnPExplicitRequest);
+	return true;
+}
+
+bool CemuleDlg::CheckUPnPLease()
+{
+	if (!theApp.IsRunning()
+		|| (!thePrefs.IsUPnPEnabled() && !m_bUPnPExplicitRequest))
+		return false;
+
+	const natmap::NetworkSignature networkSignature =
+		GetUPnPNetworkSignature();
+	if (networkSignature.IsValid()
+		&& !m_upnpNetworkSignature.IsValid())
+		m_upnpNetworkSignature = networkSignature;
+	else if (HandleUPnPNetworkChange(networkSignature))
+		return true;
+
+	if (theApp.m_pUPnPFinder == NULL)
+		return false;
 	CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
 	if (impl == NULL)
-		return;
+		return false;
 
-	const uint64 networkSignature = GetUPnPNetworkSignature();
-	if (networkSignature != 0 && m_uUPnPNetworkSignature == 0)
-		m_uUPnPNetworkSignature = networkSignature;
-	else if (networkSignature != 0
-		&& networkSignature != m_uUPnPNetworkSignature) {
-		if (!impl->IsReady())
-			return;
-		const uint64 previous = m_uUPnPNetworkSignature;
-		m_uUPnPNetworkSignature = networkSignature;
-		LIVE_LOG("NATMAP", "network topology changed signature=%llu->%llu; restarting mapper discovery",
-			(unsigned long long)previous,
-			(unsigned long long)networkSignature);
-		StartUPnP(true);
-		return;
+	if (m_bUPnPRouteRecoveryPending) {
+		UPnPRouteContext route;
+		if (!GetUPnPRouteContext(route))
+			return true;
+		if (theApp.directreachability == NULL)
+			return true;
+		const uint64 generation =
+			theApp.directreachability->GetTopologyGeneration();
+		const uint64 now = UPnPMonotonicMilliseconds();
+		if (!m_upnpRecoverySchedule.IsActive()) {
+			if (!m_upnpRecoverySchedule.ResetForNetworkChange(
+					generation, now))
+				return true;
+		} else if (m_upnpRecoverySchedule.generation() != generation) {
+			if (!m_upnpRecoverySchedule.ResetForNetworkChange(
+					generation, now))
+				return true;
+		}
+		if (m_upnpRecoverySchedule.IsExhausted()) {
+			LIVE_LOG("NATMAP",
+				"mapping recovery exhausted generation=%llu attempts=%u",
+				(unsigned long long)generation,
+				m_upnpRecoverySchedule.attempt_count());
+			return true;
+		}
+		if (m_mappingResultGate.has_pending()
+			|| m_hUPnPTimeOutTimer != 0
+			|| !m_upnpRecoverySchedule.ShouldAttempt(
+				generation, now))
+			return true;
+		if (!m_upnpRecoverySchedule.BeginAttempt(generation, now))
+			return true;
+		LIVE_LOG("NATMAP",
+			"network route restored; mapper recovery round=%u generation=%llu",
+			m_upnpRecoverySchedule.attempt_count(),
+			(unsigned long long)generation);
+		StartUPnP(true, 0, 0, m_bUPnPExplicitRequest);
+		return true;
 	}
-
-	if (!impl->IsReady())
-		return;
 
 	if (impl->IsLeaseExpired()) {
+		const uint64 previousGeneration =
+			theApp.directreachability != NULL
+				? theApp.directreachability->GetTopologyGeneration() : 0;
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability != NULL
+				&& theApp.directreachability->IsEnabled();
+		impl->SetMessageOnResult(NULL, 0);
+		impl->StopAsyncFind();
+		m_mappingResultGate.CancelPending();
+		if (m_mappingResultMailbox)
+			m_mappingResultMailbox->Clear();
+		InvalidateLocalUPnPFailure();
+		RetireUPnPTimeout();
+		m_bUPnPTimeoutForRefresh = false;
+		const bool withdrawn = theApp.directreachability != NULL
+			&& theApp.directreachability->ObserveFiniteMappingExpiry();
+		const uint64 currentGeneration =
+			theApp.directreachability != NULL
+				? theApp.directreachability->GetTopologyGeneration()
+				: previousGeneration;
+		if (!withdrawn)
+			LIVE_LOG("NATMAP",
+				"finite lease deadline observed without an active direct endpoint");
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			currentGeneration,
+			withdrawn,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability != NULL
+				&& theApp.directreachability->IsEnabled()};
+		if (natmap::ShouldRestartAdvertisementLogin(
+				advertisement,
+				theApp.serverconnect->IsConnected(),
+				theApp.serverconnect->IsConnecting(),
+				theApp.serverconnect->IsConnectedViaRelay())) {
+			LogWarning(_T("Finite mapping expired; reconnecting without the retired endpoint"));
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
+			theApp.serverconnect->ConnectToAnyServer();
+		}
+		const uint64 recoveryNow = UPnPMonotonicMilliseconds();
+		if (!m_upnpRecoverySchedule.ResetForNetworkChange(
+				currentGeneration, recoveryNow)
+			|| !m_upnpRecoverySchedule.BeginAttempt(
+				currentGeneration, recoveryNow)) {
+			m_bUPnPRouteRecoveryPending = true;
+			LIVE_LOG("NATMAP",
+				"finite lease recovery could not arm generation=%llu",
+				(unsigned long long)currentGeneration);
+			return true;
+		}
 		LIVE_LOG("NATMAP", "finite lease expired; restarting mapper discovery (impl=%d)",
 			impl->GetImplementationID());
-		StartUPnP(true);
-		return;
+		StartUPnP(true, 0, 0, m_bUPnPExplicitRequest);
+		return true;
 	}
+
+	if (m_hUPnPTimeOutTimer != 0)
+		return true;
+
+	if (!impl->IsReady())
+		return false;
 	if (impl->IsLeaseRefreshDue()) {
 		impl->BeginLeaseRefreshAttempt();
 		if (impl->GetMappingLeaseLifetime() != 0)
@@ -4624,45 +5099,429 @@ void CemuleDlg::CheckUPnPLease()
 			LIVE_LOG("NATMAP", "permanent mapping health probe attempt=%u (impl=%d)",
 				impl->GetLeaseRefreshAttemptCount(), impl->GetImplementationID());
 		RefreshUPnP(true);
+		return true;
 	}
+	return false;
 }
 
 LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 {
-	bool bWasRefresh = lParam != 0;
+	if (!thePrefs.IsUPnPEnabled() && !m_bUPnPExplicitRequest) {
+		m_mappingResultGate.CancelPending();
+		if (m_mappingResultMailbox)
+			m_mappingResultMailbox->Clear();
+		InvalidateLocalUPnPFailure();
+		RetireUPnPTimeout();
+		LIVE_LOG("NATMAP",
+			"discarded mapper callback while automatic mappings are disabled");
+		return 0;
+	}
+	const UINT_PTR rawMessage = static_cast<UINT_PTR>(wParam);
+	const bool bMapperResult =
+		(rawMessage & 0x80000000u) != 0
+		&& (rawMessage & ~static_cast<UINT_PTR>(0xffffffffu)) == 0;
+	const bool bLocalFailure =
+		(rawMessage & UPNP_LOCAL_FAILURE_MASK)
+			== UPNP_LOCAL_FAILURE_MESSAGE
+		&& (rawMessage & ~static_cast<UINT_PTR>(0xffffffffu)) == 0;
+	const bool bTimeout = wParam == CUPnPImpl::UPNP_TIMEOUT;
+	natmap::MapperResultData mapperResultData;
+	natmap::PcpUpstreamResultBundle pcpUpstreamBundle;
+	natmap::RouteBindingIdentity mapperRouteBinding;
+	UINT resultCode = static_cast<UINT>(wParam);
+	bool bWasRefresh = false;
+	bool bPcpUpstreamBundle = false;
+	bool bPcpTcpOnlyCgnatFailure = false;
+
+	if (bMapperResult) {
+		const uint32 deliveryId =
+			static_cast<uint32>(rawMessage & 0x7fffffffu);
+		if (m_mappingResultMailbox)
+			bPcpUpstreamBundle =
+				m_mappingResultMailbox
+					->TakePcpUpstreamBundle(
+						deliveryId, pcpUpstreamBundle);
+		if (bPcpUpstreamBundle)
+			mapperResultData = pcpUpstreamBundle.cpe;
+		else if (!m_mappingResultMailbox
+			|| !m_mappingResultMailbox->Take(
+				deliveryId, mapperResultData)) {
+			LIVE_LOG("NATMAP",
+				"discarded missing/duplicate mapper delivery=%u",
+				(unsigned)deliveryId);
+			return 0;
+		}
+		const uint64 currentGeneration =
+			theApp.directreachability != NULL
+				? theApp.directreachability->GetTopologyGeneration() : 1;
+		const natmap::MapperResult mapperResult(mapperResultData);
+		UPnPRouteContext currentRoute;
+		const bool hasCurrentRoute =
+			GetUPnPRouteContext(currentRoute);
+		const natmap::MappingRouteIdentity routeIdentity =
+			hasCurrentRoute
+				? natmap::MappingRouteIdentity{
+					currentRoute.interfaceIndex,
+					UPnPIpAddress(currentRoute.localAddress),
+					UPnPIpAddress(currentRoute.gatewayAddress)}
+				: natmap::MappingRouteIdentity{};
+		if (hasCurrentRoute) {
+			mapperRouteBinding.local_address =
+				UPnPIpAddress(currentRoute.localAddress);
+			mapperRouteBinding.interface_index =
+				currentRoute.interfaceIndex;
+			mapperRouteBinding.family =
+				natmap::AddressFamily::IPv4;
+			mapperRouteBinding.origin = currentRoute.origin;
+			mapperRouteBinding.interface_present = true;
+		}
+		const natmap::ResultAcceptance acceptance =
+			mapperResult.IsStructurallyValid()
+				? m_mappingResultGate.ConsumeForCurrentRoute(
+					mapperResult, currentGeneration, routeIdentity)
+				: m_mappingResultGate
+					.ConsumeLegacyEnvelopeForCurrentRoute(
+						mapperResultData, currentGeneration,
+						routeIdentity);
+		if (acceptance == natmap::ResultAcceptance::RouteMismatch) {
+			RetireUPnPTimeout();
+			m_bUPnPTimeoutForRefresh = false;
+			InvalidateLocalUPnPFailure();
+			CUPnPImpl *impl =
+				theApp.m_pUPnPFinder->GetImplementation();
+			impl->SetMessageOnResult(NULL, 0);
+			impl->StopAsyncFind();
+			if (m_mappingResultMailbox)
+				m_mappingResultMailbox->Clear();
+
+			const uint64 previousGeneration =
+				theApp.directreachability != NULL
+					? theApp.directreachability
+						->GetTopologyGeneration() : 0;
+			const bool wasDirectReachabilityEnabled =
+				theApp.directreachability != NULL
+					&& theApp.directreachability->IsEnabled();
+			const bool invalidated =
+				theApp.directreachability != NULL
+					&& theApp.directreachability
+						->ObserveNetworkRouteChange();
+			const uint64 recoveryGeneration =
+				theApp.directreachability != NULL
+					? theApp.directreachability
+						->GetTopologyGeneration()
+					: previousGeneration;
+			if (invalidated)
+				CFirewallProberV6::Instance().OnTopologyGenerationChanged(
+					recoveryGeneration);
+			const natmap::AdvertisementObservation advertisement{
+				previousGeneration,
+				recoveryGeneration,
+				invalidated,
+				wasDirectReachabilityEnabled,
+				theApp.directreachability != NULL
+					&& theApp.directreachability->IsEnabled()};
+			if (natmap::ShouldRestartAdvertisementLogin(
+					advertisement,
+					theApp.serverconnect->IsConnected(),
+					theApp.serverconnect->IsConnecting(),
+					theApp.serverconnect->IsConnectedViaRelay())) {
+				LogWarning(_T("Network route changed during mapping; reconnecting without the retired endpoint"));
+				if (theApp.serverconnect->IsConnecting())
+					theApp.serverconnect->StopConnectionTry();
+				if (theApp.serverconnect->IsConnected())
+					theApp.serverconnect->Disconnect();
+				theApp.serverconnect->ConnectToAnyServer();
+			}
+			m_upnpNetworkSignature = natmap::NetworkSignature{};
+			m_bUPnPRouteRecoveryPending = true;
+			const uint64 recoveryNow = UPnPMonotonicMilliseconds();
+			const bool recoveryArmed = invalidated
+				&& m_upnpRecoverySchedule.ResetForNetworkChange(
+					recoveryGeneration, recoveryNow);
+			LIVE_LOG("NATMAP",
+				"discarded mapper result from previous route request=%llu generation=%llu",
+				(unsigned long long)mapperResultData.request_id,
+				(unsigned long long)mapperResultData.topology_generation);
+			if (hasCurrentRoute && theApp.IsRunning()
+				&& (thePrefs.IsUPnPEnabled()
+					|| m_bUPnPExplicitRequest)
+				&& recoveryArmed
+				&& m_upnpRecoverySchedule.BeginAttempt(
+					recoveryGeneration, recoveryNow))
+				StartUPnP(
+					true, 0, 0, m_bUPnPExplicitRequest);
+			return 0;
+		}
+		if (acceptance != natmap::ResultAcceptance::Apply) {
+			LIVE_LOG("NATMAP",
+				"discarded mapper callback acceptance=%u request=%llu generation=%llu current=%llu",
+				(unsigned)acceptance,
+				(unsigned long long)mapperResultData.request_id,
+				(unsigned long long)mapperResultData.topology_generation,
+				(unsigned long long)currentGeneration);
+			return 0;
+		}
+		const bool success = bPcpUpstreamBundle
+			? pcpUpstreamBundle.outcome ==
+				natmap::PcpUpstreamResultBundle::Outcome::Mapped
+			: mapperResultData.status ==
+					natmap::MappingStatus::Created
+				|| mapperResultData.status ==
+					natmap::MappingStatus::Renewed;
+		resultCode = success
+			? CUPnPImpl::UPNP_OK : CUPnPImpl::UPNP_FAILED;
+		bWasRefresh = mapperResultData.operation
+			== natmap::MappingOperation::Refresh;
+		bPcpTcpOnlyCgnatFailure = !bPcpUpstreamBundle
+			&& mapperResultData.mapper == natmap::MapperKind::Pcp
+			&& mapperResultData.source == natmap::MapperSource::PcpCpe
+			&& mapperResultData.status == natmap::MappingStatus::Failed
+			&& mapperResultData.reason ==
+				natmap::ReasonCode::CgnatWithoutLease;
+	} else if (bTimeout) {
+		if (m_nUPnPTimeoutToken == 0
+			|| static_cast<uint32>(lParam) != m_nUPnPTimeoutToken) {
+			LIVE_LOG("NATMAP", "discarded stale mapper timeout token=%u current=%u",
+				(unsigned)static_cast<uint32>(lParam),
+				(unsigned)m_nUPnPTimeoutToken);
+			return 0;
+		}
+		bWasRefresh = m_bUPnPTimeoutForRefresh;
+		m_mappingResultGate.CancelPending();
+		InvalidateLocalUPnPFailure();
+	} else if (bLocalFailure) {
+		const uint32 token = static_cast<uint32>(
+			rawMessage & UPNP_LOCAL_FAILURE_TOKEN_MASK);
+		if (token == 0
+			|| token != m_nPendingUPnPLocalFailureToken
+			|| m_mappingResultGate.has_pending()) {
+			LIVE_LOG("NATMAP",
+				"discarded stale local mapper failure token=%u current=%u",
+				(unsigned)token,
+				(unsigned)m_nPendingUPnPLocalFailureToken);
+			return 0;
+		}
+		m_nPendingUPnPLocalFailureToken = 0;
+		resultCode = CUPnPImpl::UPNP_FAILED;
+		bWasRefresh = lParam != 0;
+	} else {
+		LIVE_LOG("NATMAP",
+			"discarded uncorrelated mapper message result=%u",
+			(unsigned)wParam);
+		return 0;
+	}
+
 	CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
 	LIVE_LOG("NATMAP", "impl=%d result=%u refresh=%u stage=%s(%ld) local=%u/%u external=%u/%u ip=%u lease=%u epoch=%u",
-		impl->GetImplementationID(), (unsigned)wParam, (unsigned)bWasRefresh,
+		impl->GetImplementationID(), (unsigned)resultCode, (unsigned)bWasRefresh,
 		impl->GetDiagnosticStageName(), impl->GetDiagnosticStage(),
 		impl->GetUsedTCPPort(), impl->GetUsedUDPPort(),
 		impl->GetExternalTCPPort(), impl->GetExternalUDPPort(),
 		impl->GetMappingExternalIP(), impl->GetMappingLeaseLifetime(),
 		impl->GetMapperEpoch());
-	if (m_hUPnPTimeOutTimer != 0) {
-		VERIFY(::KillTimer(NULL, m_hUPnPTimeOutTimer));
-		m_hUPnPTimeOutTimer = 0;
-	}
+	RetireUPnPTimeout();
 	m_bUPnPTimeoutForRefresh = false;
-	if (wParam == CUPnPImpl::UPNP_TIMEOUT)
+	if (bTimeout) {
+		impl->SetMessageOnResult(NULL, 0);
 		impl->StopAsyncFind();
+	}
+	if (bPcpUpstreamBundle
+		&& theApp.directreachability != NULL) {
+		const uint64 previousGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability->IsEnabled();
+		const natmap::PcpUpstreamDecision decision =
+			theApp.directreachability->ObservePcpUpstreamBundle(
+				pcpUpstreamBundle, mapperRouteBinding);
+		if (!decision.allows_global_candidate()) {
+			resultCode = CUPnPImpl::UPNP_FAILED;
+			// The delivery can wake the UI before the worker releases its
+			// mapper lock. Join it first; PCP deletion can then acquire the
+			// lock and remove upstream UDP/TCP followed by CPE UDP/TCP.
+			impl->StopAsyncFind();
+			impl->DeletePortsForGeneration(
+				mapperResultData.topology_generation);
+		}
+		const uint64 currentGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const bool observed =
+			decision.allows_global_candidate()
+			|| currentGeneration != previousGeneration;
+		if (decision.allows_global_candidate()
+			&& m_upnpRecoverySchedule.RecordSuccess(
+				mapperResultData.topology_generation)) {
+			m_bUPnPRouteRecoveryPending = false;
+			LIVE_LOG("NATMAP",
+				"PCP CPE/upstream recovery succeeded generation=%llu; backoff reset",
+				(unsigned long long)
+					mapperResultData.topology_generation);
+		}
+		// A negative refresh has just retired an already advertised PCP
+		// CPE/upstream bundle.  Arm exactly one generation-bound retry so the
+		// normal scheduler can recover it.  Initial failures keep the ordinary
+		// fallback path, and stale/duplicate deliveries cannot re-arm it.
+		if (bWasRefresh
+			&& !decision.allows_global_candidate()
+			&& currentGeneration > previousGeneration
+			&& m_upnpRecoverySchedule.ResetForNetworkChange(
+				currentGeneration, UPnPMonotonicMilliseconds())) {
+			m_bUPnPRouteRecoveryPending = true;
+			LIVE_LOG("NATMAP",
+				"PCP upstream refresh withdrew bundle; recovery armed generation=%llu",
+				(unsigned long long)currentGeneration);
+		}
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			currentGeneration,
+			observed,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability->IsEnabled()};
+		if (natmap::ShouldRestartAdvertisementLogin(
+				advertisement,
+				theApp.serverconnect->IsConnected(),
+				theApp.serverconnect->IsConnecting(),
+				theApp.serverconnect->IsConnectedViaRelay())) {
+			LogWarning(_T("Direct reachability endpoint changed or was withdrawn; reconnecting to update the advertised port"));
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
+				theApp.serverconnect->ConnectToAnyServer();
+		}
+	}
+	if (bPcpTcpOnlyCgnatFailure
+		&& theApp.directreachability != NULL) {
+		const uint64 previousGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability->IsEnabled();
+		// The worker has already attempted the CPE TCP DELETE.  Join it before
+		// the exact cleanup retry, then retire any old globally actionable pair
+		// before the normal mapper fallback can select another implementation.
+		impl->StopAsyncFind();
+		impl->DeletePortsForGeneration(
+			mapperResultData.topology_generation);
+		const bool invalidated =
+			theApp.directreachability->ObservePcpCpeAtomicityFailure(
+				natmap::MapperResult(mapperResultData),
+				mapperRouteBinding);
+		const uint64 recoveryGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			recoveryGeneration,
+			invalidated,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability->IsEnabled()};
+		if (natmap::ShouldRestartAdvertisementLogin(
+			advertisement,
+			theApp.serverconnect->IsConnected(),
+			theApp.serverconnect->IsConnecting(),
+			theApp.serverconnect->IsConnectedViaRelay())) {
+			LogWarning(_T("TCP-only PCP CGNAT mapping withdrawn before fallback"));
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
+			theApp.serverconnect->ConnectToAnyServer();
+		}
+		if (recoveryGeneration > previousGeneration
+			&& m_upnpRecoverySchedule.ResetForNetworkChange(
+				recoveryGeneration, UPnPMonotonicMilliseconds())) {
+			m_bUPnPRouteRecoveryPending = true;
+			LIVE_LOG("NATMAP",
+				"PCP atomic pair withdrawn generation=%llu; recovery armed once",
+				(unsigned long long)recoveryGeneration);
+		}
+	}
+
+	// A failed refresh of a finite lease is not proof that the mapping has
+	// vanished: its deadline remains authoritative. A failed health probe of
+	// a permanent mapping is positive loss evidence, so withdraw it before
+	// any retry and bind the bounded recovery budget to the new generation.
+	if (bWasRefresh
+		&& !bPcpUpstreamBundle
+		&& !bPcpTcpOnlyCgnatFailure
+		&& resultCode != CUPnPImpl::UPNP_OK
+		&& impl->GetMappingLeaseLifetime() == 0
+		&& impl->SupportsMappingHealthCheck()
+		&& theApp.directreachability != NULL) {
+		const uint64 previousGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability->IsEnabled();
+		const bool invalidated =
+			theApp.directreachability->ObserveMappingLoss();
+		const uint64 recoveryGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			recoveryGeneration,
+			invalidated,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability->IsEnabled()};
+		if (natmap::ShouldRestartAdvertisementLogin(
+				advertisement,
+				theApp.serverconnect->IsConnected(),
+				theApp.serverconnect->IsConnecting(),
+				theApp.serverconnect->IsConnectedViaRelay())) {
+			LogWarning(_T("Permanent mapping health probe failed; reconnecting without the withdrawn endpoint"));
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
+			theApp.serverconnect->ConnectToAnyServer();
+		}
+		if (recoveryGeneration > previousGeneration
+			&& m_upnpRecoverySchedule.ResetForNetworkChange(
+				recoveryGeneration, UPnPMonotonicMilliseconds())) {
+			m_bUPnPRouteRecoveryPending = true;
+			LIVE_LOG("NATMAP",
+				"permanent mapping withdrawn after failed health probe; recovery generation=%llu",
+				(unsigned long long)recoveryGeneration);
+		}
+	}
 
 //>>> WiZaRd - handle "UPNP_TIMEOUT" events!
-	if (!bWasRefresh && wParam != CUPnPImpl::UPNP_OK) {
+	if (!bWasRefresh && resultCode != CUPnPImpl::UPNP_OK) {
 		//just to be sure, stop any running services and also delete the forwarded ports (if necessary)
-		if (wParam == CUPnPImpl::UPNP_TIMEOUT)
-			impl->DeletePorts();
-		// UPnP failed, check if we can retry it with another implementation
+		if (bTimeout) {
+			const uint64 generation =
+				theApp.directreachability != NULL
+					? theApp.directreachability
+						->GetTopologyGeneration() : 0;
+			impl->DeletePortsForGeneration(generation);
+		}
+		// One recovery attempt is a complete mapper round. Trying the next
+		// implementation stays inside that round; only exhaustion schedules
+		// another round and consumes exponential backoff.
 		if (theApp.m_pUPnPFinder->SwitchImplentation()) {
-			StartUPnP(false);
+			StartUPnP(false, 0, 0, m_bUPnPExplicitRequest);
 			return 0;
 		}
 
 		DebugLog(_T("No more available UPnP implementations left"));
+		if (m_upnpRecoverySchedule.IsActive()) {
+			m_bUPnPRouteRecoveryPending = true;
+			if (m_upnpRecoverySchedule.IsExhausted())
+				LIVE_LOG("NATMAP",
+					"mapping recovery exhausted generation=%llu attempts=%u",
+					(unsigned long long)
+						m_upnpRecoverySchedule.generation(),
+					m_upnpRecoverySchedule.attempt_count());
+			else
+				LIVE_LOG("NATMAP",
+					"mapping recovery round failed; retry=%u due_ms=%llu",
+					m_upnpRecoverySchedule.attempt_count() + 1,
+					(unsigned long long)
+						m_upnpRecoverySchedule.next_attempt_ms());
+		}
 		// eSE Fase 2: Señalizar error crítico UPnP para la API JSON
 		thePrefs.SetUPnPCriticalError(true);
 	}
 
-	if (wParam == CUPnPImpl::UPNP_OK) {
+	if (resultCode == CUPnPImpl::UPNP_OK) {
 		impl->RecordLeaseSuccess();
 		if (impl->GetMappingLeaseLifetime() != 0) {
 			LIVE_LOG("NATMAP", "finite lease scheduler armed lifetime=%u renew_in=%llu seconds",
@@ -4673,34 +5532,87 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 		else
 			LIVE_LOG("NATMAP", "permanent mapping; mapper has no safe refresh operation, network-change recovery remains armed");
 	}
-	if (wParam == CUPnPImpl::UPNP_OK && theApp.directreachability != NULL) {
+	if (resultCode == CUPnPImpl::UPNP_OK
+		&& bMapperResult
+		&& !bPcpUpstreamBundle
+		&& theApp.directreachability != NULL) {
 		const uint64 previousGeneration =
 			theApp.directreachability->GetTopologyGeneration();
-		natmap::MapperKind mapper = natmap::MapperKind::None;
-		if (impl->GetImplementationID() == UPNP_IMPL_NATPMP)
-			mapper = natmap::MapperKind::NatPmp;
-		else if (impl->GetImplementationID() == UPNP_IMPL_PCP)
-			mapper = natmap::MapperKind::Pcp;
-		else if (impl->GetImplementationID() == UPNP_IMPL_MINIUPNPLIB
-			|| impl->GetImplementationID() == UPNP_IMPL_WINDOWSERVICE)
-			mapper = natmap::MapperKind::UpnpIgd;
-		const bool observed = theApp.directreachability->ObserveMappedPorts(mapper,
-			impl->GetMappingExternalIP(), impl->GetUsedTCPPort(),
-			impl->GetExternalTCPPort(), impl->GetUsedUDPPort(),
-			impl->GetExternalUDPPort(), impl->GetMappingLeaseLifetime(),
-			impl->GetMapperEpoch(), bWasRefresh);
-		if (observed && bWasRefresh
-			&& theApp.directreachability->GetTopologyGeneration()
-				!= previousGeneration
-			&& theApp.serverconnect->IsConnected()
-			&& !theApp.serverconnect->IsConnectedViaRelay()) {
-			LogWarning(_T("Direct reachability endpoint changed; reconnecting to advertise the new port"));
-			theApp.serverconnect->Disconnect();
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability->IsEnabled();
+		const bool observed =
+			theApp.directreachability->ObserveMapperResult(
+				natmap::MapperResult(mapperResultData),
+				mapperRouteBinding);
+		if (observed
+			&& m_upnpRecoverySchedule.RecordSuccess(
+				mapperResultData.topology_generation)) {
+			m_bUPnPRouteRecoveryPending = false;
+			LIVE_LOG("NATMAP",
+				"mapping recovery succeeded generation=%llu; backoff reset",
+				(unsigned long long)
+					mapperResultData.topology_generation);
+		}
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			theApp.directreachability->GetTopologyGeneration(),
+			observed,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability->IsEnabled()};
+		if (natmap::ShouldRestartAdvertisementLogin(
+				advertisement,
+				theApp.serverconnect->IsConnected(),
+				theApp.serverconnect->IsConnecting(),
+				theApp.serverconnect->IsConnectedViaRelay())) {
+			LogWarning(_T("Direct reachability endpoint changed or was withdrawn; reconnecting to update the advertised port"));
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
 			theApp.serverconnect->ConnectToAnyServer();
 		}
 	}
+	if (resultCode != CUPnPImpl::UPNP_OK
+		&& bMapperResult
+		// PCP atomic failures were already retired, advertised and scheduled by
+		// the exact CPE path above. Re-running generic epoch-reset recovery
+		// would advance generation twice and mislabel it as NAT-PMP.
+		&& !bPcpTcpOnlyCgnatFailure
+		&& mapperResultData.mapper_epoch_reset
+		&& theApp.directreachability != NULL) {
+		const uint64 previousGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const bool wasDirectReachabilityEnabled =
+			theApp.directreachability->IsEnabled();
+		const bool invalidated =
+			theApp.directreachability->ObserveMapperEpochReset();
+		const uint64 currentGeneration =
+			theApp.directreachability->GetTopologyGeneration();
+		const natmap::AdvertisementObservation advertisement{
+			previousGeneration,
+			currentGeneration,
+			invalidated,
+			wasDirectReachabilityEnabled,
+			theApp.directreachability->IsEnabled()};
+		if (natmap::ShouldRestartAdvertisementLogin(
+				advertisement,
+				theApp.serverconnect->IsConnected(),
+				theApp.serverconnect->IsConnecting(),
+				theApp.serverconnect->IsConnectedViaRelay())) {
+			LogWarning(_T("NAT-PMP mapper reset invalidated direct reachability; reconnecting for fresh evidence"));
+			if (theApp.serverconnect->IsConnecting())
+				theApp.serverconnect->StopConnectionTry();
+			if (theApp.serverconnect->IsConnected())
+				theApp.serverconnect->Disconnect();
+			theApp.serverconnect->ConnectToAnyServer();
+		}
+		if (currentGeneration > previousGeneration
+			&& m_upnpRecoverySchedule.ResetForNetworkChange(
+				currentGeneration, UPnPMonotonicMilliseconds()))
+			m_bUPnPRouteRecoveryPending = true;
+	}
 	if (!bWasRefresh)
-		if (wParam == CUPnPImpl::UPNP_OK) {
+		if (resultCode == CUPnPImpl::UPNP_OK) {
 			// remember the last working implementation
 			thePrefs.SetLastWorkingUPnPImpl(impl->GetImplementationID());
 			Log(GetResString(IDS_UPNPSUCCESS), impl->GetUsedTCPPort(), impl->GetUsedUDPPort());
@@ -4715,12 +5627,13 @@ LRESULT CemuleDlg::OnUPnPResult(WPARAM wParam, LPARAM lParam)
 				impl->GetImplementationID());
 		} else {
 			LogWarning(GetResString(IDS_UPNPFAILED));
-			LIVE_LOG("UPNP", "Mapping FAILED (rc=%u). LowID likely unless STUN/UPnP succeeds elsewhere.", (unsigned)wParam);
+			LIVE_LOG("UPNP", "Mapping FAILED (rc=%u). LowID likely unless STUN/UPnP succeeds elsewhere.", (unsigned)resultCode);
 		}
 
 		if (theApp.IsRunning() && m_bConnectRequestDelayedForUPnP)
 			StartConnection();
 
+		m_bUPnPExplicitRequest = false;
 		return 0;
 }
 
@@ -4730,28 +5643,78 @@ LRESULT CemuleDlg::OnPowerBroadcast(WPARAM wParam, LPARAM lParam)
 	switch (wParam) {
 	case PBT_APMRESUMEAUTOMATIC:
 		theApp.ResetStandbyOff();
-		if (m_bEd2kSuspendDisconnect || m_bKadSuspendDisconnect) {
-			DebugLog(_T("Reconnect after Power state change. wParam=%d lPararm=%ld"), wParam, lParam);
-			RefreshUPnP(true);
-			PostMessage(WM_SYSCOMMAND, MP_CONNECT, 0); // tell to connect. a sec later...
+		{
+			const bool reconnectNetworks =
+				m_bEd2kSuspendDisconnect || m_bKadSuspendDisconnect;
+			const bool resumeMappingRequired =
+				m_bUPnPResumeMappingRequired;
+			m_bUPnPResumeMappingRequired = false;
+			if (reconnectNetworks)
+				DebugLog(_T("Reconnect after Power state change. wParam=%d lPararm=%ld"), wParam, lParam);
+			if (resumeMappingRequired || reconnectNetworks) {
+				if (!CheckUPnPLease()) {
+					if (resumeMappingRequired)
+						StartUPnP(
+							true, 0, 0, m_bUPnPExplicitRequest);
+					else
+						RefreshUPnP(true);
+				}
+			}
+			if (reconnectNetworks)
+				PostMessage(WM_SYSCOMMAND, MP_CONNECT, 0); // tell to connect. a sec later...
 		}
 		return TRUE; // message processed.
 	case PBT_APMSUSPEND:
 		DebugLog(_T("System is going is suspending operation, disconnecting. wParam=%d lPararm=%ld"), wParam, lParam);
 		m_bEd2kSuspendDisconnect = theApp.serverconnect->IsConnected();
 		m_bKadSuspendDisconnect = Kademlia::CKademlia::IsRunning();
+		{
+			const bool mapperRequestPending =
+				m_mappingResultGate.has_pending();
+			m_bUPnPResumeMappingRequired =
+				m_bUPnPResumeMappingRequired || mapperRequestPending;
+			if (mapperRequestPending
+				&& theApp.m_pUPnPFinder != NULL) {
+				CUPnPImpl *impl =
+					theApp.m_pUPnPFinder->GetImplementation();
+				impl->SetMessageOnResult(NULL, 0);
+				impl->StopAsyncFind();
+				m_mappingResultGate.CancelPending();
+				if (m_mappingResultMailbox)
+					m_mappingResultMailbox->Clear();
+				InvalidateLocalUPnPFailure();
+				RetireUPnPTimeout();
+				m_bUPnPTimeoutForRefresh = false;
+				LIVE_LOG("NATMAP",
+					"suspend fenced in-flight mapper request; fresh discovery required on resume");
+			}
+		}
 		CloseConnection();
 		return TRUE; // message processed.
 	}
 	return FALSE; // we do not process this message
 }
 
-void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort, uint16 nForceUDPPort)
+void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort,
+	uint16 nForceUDPPort, bool bExplicitRequest)
 {
+	if (!thePrefs.IsUPnPEnabled() && !bExplicitRequest) {
+		LIVE_LOG("NATMAP",
+			"mapping start skipped while automatic mappings are disabled");
+		return;
+	}
+	if (m_mappingResultGate.has_pending()) {
+		LIVE_LOG("NATMAP",
+			"mapping start skipped while request=%llu is pending",
+			(unsigned long long)
+				m_mappingResultGate.pending().request_id);
+		return;
+	}
+	m_bUPnPExplicitRequest = bExplicitRequest;
 	if (m_hUPnPLeaseTimer == 0)
 		VERIFY((m_hUPnPLeaseTimer = ::SetTimer(NULL, 0, SEC2MS(30), UPnPLeaseTimer)) != 0);
-	if (m_uUPnPNetworkSignature == 0)
-		m_uUPnPNetworkSignature = GetUPnPNetworkSignature();
+	if (!m_upnpNetworkSignature.IsValid())
+		m_upnpNetworkSignature = GetUPnPNetworkSignature();
 	if (theApp.m_pUPnPFinder != NULL && (m_hUPnPTimeOutTimer == 0 || !bReset)) {
 		if (bReset) {
 			theApp.m_pUPnPFinder->Reset();
@@ -4760,17 +5723,53 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort, uint16 nForceUDPPor
 		try {
 			CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
 			if (impl->IsReady()) {
-				impl->SetMessageOnResult(this, UM_UPNP_RESULT);
+				InvalidateLocalUPnPFailure();
+				const uint64 generation = theApp.directreachability != NULL
+					? theApp.directreachability->GetTopologyGeneration() : 1;
+				const natmap::RequestIssue request =
+					m_mappingRequestSequence.Issue(generation,
+						natmap::MappingOperation::Initial);
+				if (!request.IsIssued()) {
+					LIVE_LOG("NATMAP", "mapping request sequence exhausted or invalid");
+					PostLocalUPnPFailure(false);
+					return;
+				}
+				if (!m_mappingResultGate.Arm(
+						request.context, generation)) {
+					LIVE_LOG("NATMAP", "mapping request gate rejected current context");
+					PostLocalUPnPFailure(false);
+					return;
+				}
+				UPnPRouteContext route;
+				const bool hasRoute = GetUPnPRouteContext(route);
+				if (!hasRoute) {
+					m_mappingResultGate.CancelPending();
+					m_bUPnPRouteRecoveryPending = true;
+					LIVE_LOG("NATMAP",
+						"mapping start deferred until a network route is restored");
+					return;
+				}
+				impl->BeginMappingRequest(request.context,
+					route.interfaceIndex,
+					UPnPIpAddress(route.localAddress),
+					UPnPIpAddress(route.gatewayAddress));
+				impl->SetMessageOnResult(
+					this, UM_UPNP_RESULT, m_mappingResultMailbox);
 				m_bUPnPTimeoutForRefresh = false;
-				if (m_hUPnPTimeOutTimer == 0)
-					VERIFY((m_hUPnPTimeOutTimer = ::SetTimer(NULL, 0, SEC2MS(40), (TIMERPROC)UPnPTimeOutTimer)) != 0);
+				if (!ArmUPnPTimeout(SEC2MS(40))) {
+					impl->SetMessageOnResult(NULL, 0);
+					m_mappingResultGate.CancelPending();
+					PostLocalUPnPFailure(false);
+					return;
+				}
+				m_bUPnPRouteRecoveryPending = false;
 				impl->StartDiscovery((nForceTCPPort ? nForceTCPPort : thePrefs.GetPort())
 					, (nForceUDPPort ? nForceUDPPort : thePrefs.GetUDPPort())
 					// Automatic direct reachability is only for eD2K TCP and Kad
 					// UDP. Never expose the WebServer through the router.
 					, 0);
 			} else
-				/*theApp.emuledlg->*/PostMessage(UM_UPNP_RESULT, (WPARAM)CUPnPImpl::UPNP_FAILED, 0);
+				/*theApp.emuledlg->*/PostLocalUPnPFailure(false);
 		} catch (const CUPnPImpl::UPnPError&) {
 			//ignore
 		} catch (CException *ex) {
@@ -4780,21 +5779,128 @@ void CemuleDlg::StartUPnP(bool bReset, uint16 nForceTCPPort, uint16 nForceUDPPor
 		ASSERT(0);
 }
 
+void CemuleDlg::StopUPnP()
+{
+	if (m_hUPnPLeaseTimer != 0) {
+		VERIFY(::KillTimer(NULL, m_hUPnPLeaseTimer));
+		m_hUPnPLeaseTimer = 0;
+	}
+	RetireUPnPTimeout();
+	m_bUPnPTimeoutForRefresh = false;
+
+	CUPnPImpl *impl = theApp.m_pUPnPFinder != NULL
+		? theApp.m_pUPnPFinder->GetImplementation() : NULL;
+	if (impl != NULL) {
+		impl->SetMessageOnResult(NULL, 0);
+		impl->StopAsyncFind();
+	}
+	m_mappingResultGate.CancelPending();
+	InvalidateLocalUPnPFailure();
+	if (impl != NULL) {
+		if (m_mappingResultMailbox)
+			m_mappingResultMailbox->Clear();
+		const uint64 generation = theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+		impl->DeletePortsForGeneration(generation);
+	}
+	if (m_mappingResultMailbox)
+		m_mappingResultMailbox->Clear();
+
+	const uint64 previousGeneration =
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration() : 0;
+	const bool wasDirectReachabilityEnabled =
+		theApp.directreachability != NULL
+			&& theApp.directreachability->IsEnabled();
+	const bool withdrawn = theApp.directreachability != NULL
+		&& theApp.directreachability->DisableMappingsByPreference();
+	const natmap::AdvertisementObservation advertisement{
+		previousGeneration,
+		theApp.directreachability != NULL
+			? theApp.directreachability->GetTopologyGeneration()
+			: previousGeneration,
+		withdrawn,
+		wasDirectReachabilityEnabled,
+		theApp.directreachability != NULL
+			&& theApp.directreachability->IsEnabled()};
+	if (natmap::ShouldRestartAdvertisementLogin(
+			advertisement,
+			theApp.serverconnect->IsConnected(),
+			theApp.serverconnect->IsConnecting(),
+			theApp.serverconnect->IsConnectedViaRelay())) {
+		LogWarning(_T("Automatic mappings disabled; reconnecting without the retired endpoint"));
+		if (theApp.serverconnect->IsConnecting())
+			theApp.serverconnect->StopConnectionTry();
+		if (theApp.serverconnect->IsConnected())
+			theApp.serverconnect->Disconnect();
+		theApp.serverconnect->ConnectToAnyServer();
+	}
+	m_bUPnPExplicitRequest = false;
+	m_bUPnPRouteRecoveryPending = false;
+	m_bUPnPResumeMappingRequired = false;
+	m_upnpRecoverySchedule.Cancel();
+	m_upnpNetworkSignature = natmap::NetworkSignature{};
+}
+
 void CemuleDlg::RefreshUPnP(bool bRequestAnswer)
 {
 	if (!thePrefs.IsUPnPEnabled())
 		return;
+	if (m_mappingResultGate.has_pending()) {
+		LIVE_LOG("NATMAP",
+			"refresh skipped while mapper request=%llu is pending",
+			(unsigned long long)
+				m_mappingResultGate.pending().request_id);
+		return;
+	}
 	if (theApp.m_pUPnPFinder != NULL && m_hUPnPTimeOutTimer == 0) {
 		try {
 			CUPnPImpl *impl = theApp.m_pUPnPFinder->GetImplementation();
 			if (impl->IsReady()) {
+				InvalidateLocalUPnPFailure();
+				const uint64 generation = theApp.directreachability != NULL
+					? theApp.directreachability->GetTopologyGeneration() : 1;
+				const natmap::RequestIssue request =
+					m_mappingRequestSequence.Issue(generation,
+						natmap::MappingOperation::Refresh);
+				if (!request.IsIssued()) {
+					LIVE_LOG("NATMAP", "refresh request sequence exhausted or invalid");
+					return;
+				}
+				if (bRequestAnswer
+					&& !m_mappingResultGate.Arm(
+						request.context, generation)) {
+					LIVE_LOG("NATMAP", "refresh request gate rejected current context");
+					return;
+				}
+				UPnPRouteContext route;
+				const bool hasRoute = GetUPnPRouteContext(route);
+				if (!hasRoute) {
+					if (bRequestAnswer)
+						m_mappingResultGate.CancelPending();
+					return;
+				}
+				impl->BeginMappingRequest(request.context,
+					route.interfaceIndex,
+					UPnPIpAddress(route.localAddress),
+					UPnPIpAddress(route.gatewayAddress));
 				if (bRequestAnswer)
-					impl->SetMessageOnResult(this, UM_UPNP_RESULT);
+					impl->SetMessageOnResult(
+						this, UM_UPNP_RESULT,
+						m_mappingResultMailbox);
 				if (impl->CheckAndRefresh() && bRequestAnswer) {
 					m_bUPnPTimeoutForRefresh = true;
-					VERIFY((m_hUPnPTimeOutTimer = ::SetTimer(NULL, 0, SEC2MS(10), UPnPTimeOutTimer)) != 0);
-				} else
+					if (!ArmUPnPTimeout(SEC2MS(10))) {
+						impl->SetMessageOnResult(NULL, 0);
+						m_mappingResultGate.CancelPending();
+						m_bUPnPTimeoutForRefresh = false;
+						return;
+					}
+				} else {
 					impl->SetMessageOnResult(NULL, 0);
+					if (bRequestAnswer)
+						m_mappingResultGate.CancelPending();
+				}
 			} else
 				DebugLogWarning(_T("RefreshUPnP, implementation not ready"));
 		} catch (const CUPnPImpl::UPnPError&) {

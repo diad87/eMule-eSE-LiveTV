@@ -447,7 +447,8 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 	CString buffer;
 	if (theApp.serverconnect->IsConnected()) {
 		rCtrl << GetResString(IDS_IP) << _T(":") << GetResString(IDS_PORT) << _T(":");
-		if (theApp.serverconnect->IsLowID() && theApp.GetED2KPublicIP() == 0)
+		if (!theApp.HasVerifiedEd2kHighId()
+			&& theApp.GetED2KPublicIP() == 0)
 			buffer = GetResString(IDS_UNKNOWN);
 		else
 			buffer.Format(_T("%s:%u"), (LPCTSTR)ipstr(theApp.GetED2KPublicIP()), theApp.GetAdvertisedTcpPort());
@@ -461,7 +462,8 @@ void CreateNetworkInfo(CRichEditCtrlX &rCtrl, CHARFORMAT &rcfDef, CHARFORMAT &rc
 		rCtrl << _T("\r\n");
 
 		rCtrl << _T("\t");
-		rCtrl << GetResString(theApp.serverconnect->IsLowID() ? IDS_IDLOW : IDS_IDHIGH);
+		rCtrl << GetResString(
+			theApp.HasVerifiedEd2kHighId() ? IDS_IDHIGH : IDS_IDLOW);
 		rCtrl << _T("\r\n");
 
 		CServer *cur_server = theApp.serverconnect->GetCurrentServer();

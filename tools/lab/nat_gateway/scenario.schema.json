@@ -1,0 +1,1109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ese-project.invalid/schemas/v9.2/t8-scenario-v1.json",
+  "title": "eSE v9.2 T8 simulated NAT gateway scenario",
+  "description": "Declarative input for the T8 gateway. Shape only; cross-field invariants are checked by the future scenario loader before binding adapters.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "seed",
+    "clock",
+    "gateway",
+    "listeners",
+    "protocols",
+    "allocation",
+    "initial_state",
+    "faults",
+    "privacy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "ese.v92.t8.scenario/v1"
+    },
+    "scenario_id": {
+      "$ref": "#/$defs/id"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "clock": {
+      "$ref": "#/$defs/clock"
+    },
+    "gateway": {
+      "$ref": "#/$defs/gateway"
+    },
+    "listeners": {
+      "$ref": "#/$defs/listeners"
+    },
+    "protocols": {
+      "$ref": "#/$defs/protocols"
+    },
+    "allocation": {
+      "$ref": "#/$defs/allocation"
+    },
+    "initial_state": {
+      "$ref": "#/$defs/initialState"
+    },
+    "faults": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/fault"
+      }
+    },
+    "privacy": {
+      "$ref": "#/$defs/privacy"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "uint53": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "uint32": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "requestedPort": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "ipAddress": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "ipv4"
+        },
+        {
+          "type": "string",
+          "format": "ipv6"
+        }
+      ]
+    },
+    "transport": {
+      "enum": [
+        "tcp",
+        "udp"
+      ]
+    },
+    "protocol": {
+      "enum": [
+        "upnp",
+        "pcp",
+        "natpmp"
+      ]
+    },
+    "operation": {
+      "enum": [
+        "discover",
+        "get-external-address",
+        "announce",
+        "map",
+        "renew",
+        "delete",
+        "readback",
+        "enumerate"
+      ]
+    },
+    "clock": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "const": "real"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "start_monotonic_ms"
+          ],
+          "properties": {
+            "mode": {
+              "const": "virtual"
+            },
+            "start_monotonic_ms": {
+              "$ref": "#/$defs/uint53"
+            }
+          }
+        }
+      ]
+    },
+    "epoch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "initial_seconds",
+        "restart_seconds"
+      ],
+      "properties": {
+        "initial_seconds": {
+          "$ref": "#/$defs/uint32"
+        },
+        "restart_seconds": {
+          "$ref": "#/$defs/uint32"
+        }
+      }
+    },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gateway_id",
+        "epoch",
+        "initial_generation",
+        "wan_address",
+        "lan_addresses"
+      ],
+      "properties": {
+        "gateway_id": {
+          "$ref": "#/$defs/id"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "initial_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "wan_address": {
+          "$ref": "#/$defs/ipAddress"
+        },
+        "lan_addresses": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ipAddress"
+          }
+        }
+      }
+    },
+    "listenerBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interface_id",
+        "bind_address",
+        "port"
+      ],
+      "properties": {
+        "interface_id": {
+          "$ref": "#/$defs/id"
+        },
+        "bind_address": {
+          "$ref": "#/$defs/ipAddress"
+        },
+        "port": {
+          "$ref": "#/$defs/port"
+        }
+      }
+    },
+    "upnpListener": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interface_id",
+        "bind_address",
+        "ssdp_port",
+        "http_port"
+      ],
+      "properties": {
+        "interface_id": {
+          "$ref": "#/$defs/id"
+        },
+        "bind_address": {
+          "$ref": "#/$defs/ipAddress"
+        },
+        "ssdp_port": {
+          "$ref": "#/$defs/port"
+        },
+        "http_port": {
+          "$ref": "#/$defs/port"
+        }
+      }
+    },
+    "listeners": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upnp",
+        "pcp",
+        "natpmp"
+      ],
+      "properties": {
+        "upnp": {
+          "$ref": "#/$defs/upnpListener"
+        },
+        "pcp": {
+          "$ref": "#/$defs/listenerBase"
+        },
+        "natpmp": {
+          "$ref": "#/$defs/listenerBase"
+        }
+      }
+    },
+    "protocolToggle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "upnpProtocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "igd_version",
+        "readback"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "igd_version": {
+          "enum": [
+            "v1",
+            "v2-minimal"
+          ]
+        },
+        "readback": {
+          "enum": [
+            "full",
+            "unsupported"
+          ]
+        }
+      }
+    },
+    "protocols": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upnp",
+        "pcp",
+        "natpmp"
+      ],
+      "properties": {
+        "upnp": {
+          "$ref": "#/$defs/upnpProtocol"
+        },
+        "pcp": {
+          "$ref": "#/$defs/protocolToggle"
+        },
+        "natpmp": {
+          "$ref": "#/$defs/protocolToggle"
+        }
+      }
+    },
+    "allocation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "strategy"
+          ],
+          "properties": {
+            "strategy": {
+              "const": "requested-or-next"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "strategy",
+            "range_start",
+            "range_end"
+          ],
+          "properties": {
+            "strategy": {
+              "const": "range"
+            },
+            "range_start": {
+              "$ref": "#/$defs/port"
+            },
+            "range_end": {
+              "$ref": "#/$defs/port"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "strategy",
+            "forced_port"
+          ],
+          "properties": {
+            "strategy": {
+              "const": "forced"
+            },
+            "forced_port": {
+              "$ref": "#/$defs/port"
+            }
+          }
+        }
+      ]
+    },
+    "finiteLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lifetime_seconds",
+        "created_monotonic_ms",
+        "expires_monotonic_ms"
+      ],
+      "properties": {
+        "lifetime_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "created_monotonic_ms": {
+          "$ref": "#/$defs/uint53"
+        },
+        "expires_monotonic_ms": {
+          "$ref": "#/$defs/uint53"
+        }
+      }
+    },
+    "permanentLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lifetime_seconds",
+        "created_monotonic_ms",
+        "expires_monotonic_ms"
+      ],
+      "properties": {
+        "lifetime_seconds": {
+          "const": 0
+        },
+        "created_monotonic_ms": {
+          "$ref": "#/$defs/uint53"
+        },
+        "expires_monotonic_ms": {
+          "type": "null"
+        }
+      }
+    },
+    "lease": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/finiteLease"
+        },
+        {
+          "$ref": "#/$defs/permanentLease"
+        }
+      ]
+    },
+    "ownerNone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "none"
+        }
+      }
+    },
+    "ownerUpnp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "instance_id_digest",
+        "gateway_identity_digest",
+        "description"
+      ],
+      "properties": {
+        "kind": {
+          "const": "upnp-journal"
+        },
+        "instance_id_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "gateway_identity_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "ownerPcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "instance_id_digest",
+        "nonce"
+      ],
+      "properties": {
+        "kind": {
+          "const": "pcp-nonce"
+        },
+        "instance_id_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "nonce": {
+          "type": "string",
+          "description": "Private scenario input only; JSONL and reports contain only its digest.",
+          "pattern": "^[a-f0-9]{24}$"
+        }
+      }
+    },
+    "ownerNatPmp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "instance_id_digest",
+        "scope_id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "natpmp-lease-scope"
+        },
+        "instance_id_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "scope_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "owner": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ownerNone"
+        },
+        {
+          "$ref": "#/$defs/ownerUpnp"
+        },
+        {
+          "$ref": "#/$defs/ownerPcp"
+        },
+        {
+          "$ref": "#/$defs/ownerNatPmp"
+        }
+      ]
+    },
+    "mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mapping_id",
+        "protocol",
+        "transport",
+        "client_id",
+        "internal_address",
+        "internal_port",
+        "requested_external_port",
+        "external_address",
+        "external_port",
+        "lease",
+        "owner",
+        "epoch",
+        "generation"
+      ],
+      "properties": {
+        "mapping_id": {
+          "$ref": "#/$defs/id"
+        },
+        "protocol": {
+          "$ref": "#/$defs/protocol"
+        },
+        "transport": {
+          "$ref": "#/$defs/transport"
+        },
+        "client_id": {
+          "$ref": "#/$defs/id"
+        },
+        "internal_address": {
+          "$ref": "#/$defs/ipAddress"
+        },
+        "internal_port": {
+          "$ref": "#/$defs/port"
+        },
+        "requested_external_port": {
+          "$ref": "#/$defs/requestedPort"
+        },
+        "external_address": {
+          "$ref": "#/$defs/ipAddress"
+        },
+        "external_port": {
+          "$ref": "#/$defs/port"
+        },
+        "lease": {
+          "$ref": "#/$defs/lease"
+        },
+        "owner": {
+          "$ref": "#/$defs/owner"
+        },
+        "epoch": {
+          "$ref": "#/$defs/uint32"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "atomic_group_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "requestCounters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "upnp",
+        "pcp",
+        "natpmp"
+      ],
+      "properties": {
+        "total": {
+          "$ref": "#/$defs/uint53"
+        },
+        "upnp": {
+          "$ref": "#/$defs/uint53"
+        },
+        "pcp": {
+          "$ref": "#/$defs/uint53"
+        },
+        "natpmp": {
+          "$ref": "#/$defs/uint53"
+        }
+      }
+    },
+    "responseOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "result_code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9_-]+$"
+        },
+        "lifetime_seconds": {
+          "$ref": "#/$defs/uint32"
+        },
+        "external_address": {
+          "$ref": "#/$defs/ipAddress"
+        },
+        "external_port": {
+          "$ref": "#/$defs/requestedPort"
+        },
+        "epoch": {
+          "$ref": "#/$defs/uint32"
+        }
+      }
+    },
+    "queuedResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "response_id",
+        "due_monotonic_ms",
+        "protocol",
+        "operation",
+        "outcome"
+      ],
+      "properties": {
+        "response_id": {
+          "$ref": "#/$defs/id"
+        },
+        "due_monotonic_ms": {
+          "$ref": "#/$defs/uint53"
+        },
+        "protocol": {
+          "$ref": "#/$defs/protocol"
+        },
+        "operation": {
+          "$ref": "#/$defs/operation"
+        },
+        "transport": {
+          "$ref": "#/$defs/transport"
+        },
+        "client_id": {
+          "$ref": "#/$defs/id"
+        },
+        "mapping_id": {
+          "$ref": "#/$defs/id"
+        },
+        "outcome": {
+          "enum": [
+            "success",
+            "reject",
+            "timeout"
+          ]
+        },
+        "override": {
+          "$ref": "#/$defs/responseOverride"
+        }
+      }
+    },
+    "initialState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mappings",
+        "request_counters",
+        "response_queue"
+      ],
+      "properties": {
+        "mappings": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "$ref": "#/$defs/mapping"
+          }
+        },
+        "request_counters": {
+          "$ref": "#/$defs/requestCounters"
+        },
+        "response_queue": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "$ref": "#/$defs/queuedResponse"
+          }
+        }
+      }
+    },
+    "faultMatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/protocol"
+        },
+        "operation": {
+          "$ref": "#/$defs/operation"
+        },
+        "transport": {
+          "$ref": "#/$defs/transport"
+        },
+        "client_id": {
+          "$ref": "#/$defs/id"
+        },
+        "request_ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "renewal_only": {
+          "type": "boolean"
+        }
+      },
+      "minProperties": 1
+    },
+    "faultTrigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "after_matches",
+        "times"
+      ],
+      "properties": {
+        "after_matches": {
+          "$ref": "#/$defs/uint53"
+        },
+        "times": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      }
+    },
+    "faultDelay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "delay_ms",
+        "jitter_ms"
+      ],
+      "properties": {
+        "type": {
+          "const": "delay"
+        },
+        "delay_ms": {
+          "$ref": "#/$defs/uint32"
+        },
+        "jitter_ms": {
+          "$ref": "#/$defs/uint32"
+        }
+      }
+    },
+    "faultDrop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "drop"
+        }
+      }
+    },
+    "faultDuplicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "copies"
+      ],
+      "properties": {
+        "type": {
+          "const": "duplicate"
+        },
+        "copies": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 16
+        }
+      }
+    },
+    "faultReorder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "release_after_matches"
+      ],
+      "properties": {
+        "type": {
+          "const": "reorder"
+        },
+        "release_after_matches": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      }
+    },
+    "faultWrongSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "interface_id",
+        "source_port"
+      ],
+      "properties": {
+        "type": {
+          "const": "wrong-source"
+        },
+        "interface_id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_port": {
+          "$ref": "#/$defs/port"
+        }
+      }
+    },
+    "faultTruncate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "length_bytes"
+      ],
+      "properties": {
+        "type": {
+          "const": "truncate"
+        },
+        "length_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      }
+    },
+    "faultReplay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "response_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "replay"
+        },
+        "response_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "faultReject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "result_code"
+      ],
+      "properties": {
+        "type": {
+          "const": "reject"
+        },
+        "result_code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9_-]+$"
+        }
+      }
+    },
+    "faultCapLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "lifetime_seconds"
+      ],
+      "properties": {
+        "type": {
+          "const": "cap-lease"
+        },
+        "lifetime_seconds": {
+          "$ref": "#/$defs/uint32"
+        }
+      }
+    },
+    "faultRemoveMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "remove-mapping"
+        }
+      }
+    },
+    "faultRestartGateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "restart_epoch_seconds"
+      ],
+      "properties": {
+        "type": {
+          "const": "restart-gateway"
+        },
+        "restart_epoch_seconds": {
+          "$ref": "#/$defs/uint32"
+        }
+      }
+    },
+    "faultChangeWan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "wan_address"
+      ],
+      "properties": {
+        "type": {
+          "const": "change-wan"
+        },
+        "wan_address": {
+          "$ref": "#/$defs/ipAddress"
+        }
+      }
+    },
+    "faultChangePort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "external_port"
+      ],
+      "properties": {
+        "type": {
+          "const": "change-port"
+        },
+        "external_port": {
+          "$ref": "#/$defs/port"
+        }
+      }
+    },
+    "faultConflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "conflicting_client_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "conflict"
+        },
+        "conflicting_client_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "faultAction": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/faultDelay"
+        },
+        {
+          "$ref": "#/$defs/faultDrop"
+        },
+        {
+          "$ref": "#/$defs/faultDuplicate"
+        },
+        {
+          "$ref": "#/$defs/faultReorder"
+        },
+        {
+          "$ref": "#/$defs/faultWrongSource"
+        },
+        {
+          "$ref": "#/$defs/faultTruncate"
+        },
+        {
+          "$ref": "#/$defs/faultReplay"
+        },
+        {
+          "$ref": "#/$defs/faultReject"
+        },
+        {
+          "$ref": "#/$defs/faultCapLease"
+        },
+        {
+          "$ref": "#/$defs/faultRemoveMapping"
+        },
+        {
+          "$ref": "#/$defs/faultRestartGateway"
+        },
+        {
+          "$ref": "#/$defs/faultChangeWan"
+        },
+        {
+          "$ref": "#/$defs/faultChangePort"
+        },
+        {
+          "$ref": "#/$defs/faultConflict"
+        }
+      ]
+    },
+    "fault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fault_id",
+        "enabled",
+        "match",
+        "trigger",
+        "action"
+      ],
+      "properties": {
+        "fault_id": {
+          "$ref": "#/$defs/id"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "match": {
+          "$ref": "#/$defs/faultMatch"
+        },
+        "trigger": {
+          "$ref": "#/$defs/faultTrigger"
+        },
+        "action": {
+          "$ref": "#/$defs/faultAction"
+        }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "report_mode",
+        "address_mode",
+        "nonce_mode",
+        "payload_mode",
+        "allow_credentials"
+      ],
+      "properties": {
+        "report_mode": {
+          "const": "sanitized"
+        },
+        "address_mode": {
+          "enum": [
+            "class-only",
+            "prefix-digest"
+          ]
+        },
+        "nonce_mode": {
+          "const": "sha256"
+        },
+        "payload_mode": {
+          "const": "omitted"
+        },
+        "allow_credentials": {
+          "const": false
+        }
+      }
+    }
+  }
+}

@@ -88,7 +88,11 @@ class Mod26WebStreamingProductionTest(unittest.TestCase):
         self.assertIn("never spin on WANT_READ/WANT_WRITE", self.web_socket)
 
     def test_every_file_route_uses_one_streaming_response_boundary(self) -> None:
-        self.assertGreaterEqual(self.web_server.count("SendFileResponse("), 4)
+        # W11 folds legacy HLS and static assets into one response adapter, so
+        # four route families now share three productive boundary call sites.
+        self.assertGreaterEqual(self.web_server.count("SendFileResponse("), 3)
+        self.assertIn("if(r.file_response)", self.web_server)
+        self.assertIn("BuildW11LegacyStaticFile", self.web_server)
         self.assertIn('header.name == "range"', self.web_socket)
         self.assertIn("Data.sRange", self.web_server)
         self.assertIn("rangeSeen", self.web_socket)

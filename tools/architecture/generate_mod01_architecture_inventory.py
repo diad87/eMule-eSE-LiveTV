@@ -121,7 +121,56 @@ def logical_lines(text: str) -> int:
 
 
 def strip_comments(line: str) -> str:
-    return line.split("//", 1)[0]
+    """Strip a line comment while preserving ordinary and same-line raw literals."""
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(line):
+        character = line[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+        else:
+            raw_prefix = next(
+                (prefix for prefix in ("u8R\"", "uR\"", "UR\"", "LR\"", "R\"")
+                 if line.startswith(prefix, index)),
+                None,
+            )
+            if raw_prefix is not None:
+                delimiter_start = index + len(raw_prefix)
+                delimiter_end = line.find("(", delimiter_start)
+                if delimiter_end >= 0:
+                    delimiter = line[delimiter_start:delimiter_end]
+                    valid_delimiter = (
+                        len(delimiter) <= 16
+                        and not any(character in " \t\v\f\r\n()\\" for character in delimiter)
+                    )
+                    terminator = ")" + delimiter + '"'
+                    raw_end = line.find(terminator, delimiter_end + 1) if valid_delimiter else -1
+                    if raw_end >= 0:
+                        index = raw_end + len(terminator)
+                        continue
+                    if valid_delimiter:
+                        return line
+            if character == "'":
+                token_start = index
+                while token_start > 0 and (line[token_start - 1].isalnum() or line[token_start - 1] in "._"):
+                    token_start -= 1
+                numeric_token = line[token_start:index].lstrip(".")
+                if numeric_token and numeric_token[0].isdigit() and index + 1 < len(line) and line[index + 1].isalnum():
+                    index += 1
+                    continue
+                quote = character
+            elif character == '"':
+                quote = character
+            elif line.startswith("//", index):
+                return line[:index]
+        index += 1
+    return line
 
 
 def includes(lines: list[str]) -> list[dict[str, str]]:

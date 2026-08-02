@@ -15,6 +15,7 @@ SERVER = ROOT / "srchybrid" / "WebServer.cpp"
 STREAM_CONTROLLER = ROOT / "srchybrid" / "WebLiveApiStreamController.cpp"
 SETTINGS_CONTROLLER = ROOT / "srchybrid" / "WebLiveApiSettingsController.cpp"
 DIAGNOSTICS_CONTROLLER = ROOT / "srchybrid" / "WebLiveApiDiagnosticsController.cpp"
+LEGACY_CONTROLLER = ROOT / "srchybrid" / "WebLiveApiLegacyController.cpp"
 NATIVE = ROOT / "srchybrid" / "tests" / "test_web_api_serializer.cpp"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
@@ -35,6 +36,7 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
         cls.stream_controller = STREAM_CONTROLLER.read_text(encoding="utf-8")
         cls.settings_controller = SETTINGS_CONTROLLER.read_text(encoding="utf-8")
         cls.diagnostics_controller = DIAGNOSTICS_CONTROLLER.read_text(encoding="utf-8")
+        cls.legacy_controller = LEGACY_CONTROLLER.read_text(encoding="utf-8")
         cls.native = NATIVE.read_text(encoding="utf-8")
         cls.ownership = json.loads(OWNERSHIP.read_text(encoding="utf-8"))
         cls.contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
@@ -134,16 +136,14 @@ class Mod24WebApiSerializerTest(unittest.TestCase):
         self.assertNotIn('output.AppendFormat("\\\\u%04x", ch)', self.server)
         self.assertNotIn("Escape minimally for JSON", self.server)
         self.assertNotIn("Escape any quotes/backslashes", self.server)
-        for model_marker in (
-            "ese::web::WebTunnelPingResponseModel{",
-            "ese::web::WebRemoteLinkXmlResponseModel{",
-        ):
-            self.assertIn(model_marker, self.server)
-        # W8/W10 portable controllers own the response escaping after their
+        self.assertIn("ese::web::WebRemoteLinkXmlResponseModel{", self.server)
+        self.assertNotIn("ese::web::WebTunnelPingResponseModel{", self.server)
+        # W8/W10/W11 portable controllers own response escaping after their
         # migration cards; the coordinator must not recreate those serializers.
         self.assertIn("W8EscapeJson", self.stream_controller)
         self.assertIn("std::string Escape(", self.settings_controller)
         self.assertIn("void E(std::string&", self.diagnostics_controller)
+        self.assertIn("std::string Escape(", self.legacy_controller)
         self.assertNotIn("ese::web::WebStringArrayResponseModel model;", self.server)
         for obsolete_fragment in (
             "const CStringA keyJson = EseJsonEscapeA(keyA)",

@@ -134,7 +134,7 @@ class Mod27WebDiagnosticsProductionTest(unittest.TestCase):
         self.assertIn("r.body=Channels(c)", self.status_controller)
         self.assertIn("r.body=Mesh(m)", self.status_controller)
         w9_start = self.web_server.index("// W9 keeps authorization above")
-        w9_end = self.web_server.index("// ---", w9_start)
+        w9_end = self.web_server.index("// W10 owns settings", w9_start)
         w9_dispatch = self.web_server[w9_start:w9_end]
         self.assertIn("RunW9LiveSearchApi(search,port,response)", w9_dispatch)
         for route in (

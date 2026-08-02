@@ -127,7 +127,24 @@ struct W10DiagnosticsResponse { std::string header, body; };
 struct W10DiagnosticsPort { void* context = nullptr; bool (*read_krp_json)(void*, std::string&) = nullptr; bool (*read_preflight)(void*, W10PreflightSnapshot&) = nullptr; bool (*read_metrics)(void*, W10MetricsSnapshot&) = nullptr; void (*read_percentiles)(void*, std::uint32_t&, std::uint32_t&, std::uint32_t&) = nullptr; std::uint32_t (*read_latency_mean)(void*) = nullptr; int (*read_latency_samples)(void*) = nullptr; bool (*read_kad6_metrics)(void*, std::string&) = nullptr; bool (*read_log)(void*, int, std::vector<std::string>&) = nullptr; bool (*read_debug)(void*, W10DebugSnapshot&) = nullptr; };
 bool RunW10LiveDiagnosticsApi(const W10DiagnosticsRequest&, const W10DiagnosticsPort&, W10DiagnosticsResponse&); bool RunW10LiveDiagnosticsCharacterizationSelfTest(std::string& failure);
 } }
-namespace eSELive { M2AModuleHandle M2A_BIND_W8_4974C0F316(const M2AParentPort&); void M2A_UNBIND_W8_4974C0F316(const M2AParentPort&); M2AModuleHandle M2A_BIND_W8_E988965D5A(const M2AParentPort&); void M2A_UNBIND_W8_E988965D5A(const M2AParentPort&); M2AModuleHandle M2A_BIND_W9_52CC9DEBDD(const M2AParentPort&); void M2A_UNBIND_W9_52CC9DEBDD(const M2AParentPort&); M2AModuleHandle M2A_BIND_W9_3B359EBB1A(const M2AParentPort&); void M2A_UNBIND_W9_3B359EBB1A(const M2AParentPort&); M2AModuleHandle M2A_BIND_W10_E9722EA045(const M2AParentPort&); void M2A_UNBIND_W10_E9722EA045(const M2AParentPort&); M2AModuleHandle M2A_BIND_W10_47570D3256(const M2AParentPort&); void M2A_UNBIND_W10_47570D3256(const M2AParentPort&); }
+namespace ese { namespace web {
+enum class W11LegacyOperation { Hls, Dashboard, NetlabReport, TunnelEcho, TunnelPing, Circuits, Peers, TestCircuit, Kad6Release, Kad6Hardening, LiveIndex, LivePlayer };
+struct W11LegacyRequest { W11LegacyOperation operation = W11LegacyOperation::Dashboard; bool loopback = false; std::string resource, range, bytes, text, hops, service, enabled, challenge, confirm, field_sha256, audit_sha256, observed_from, observed_to, admission_attempts, admission_ppm, headroom_bps, gate_mask, valid_until, drain_seconds; };
+struct W11LegacyResponse { std::string header, body; std::string file_path, file_name, public_path, file_range, etag, last_modified, cors_origin; std::uint64_t maximum_bytes = 0; bool file_response = false, hls = false, cors_wildcard = false, concurrent = false, allow_empty = false; };
+struct W11HlsSnapshot { std::string root_path, viewer_key; bool root_exists = false; };
+struct W11StaticFileRequest { std::string web_root, url, public_path, range, etag, last_modified; std::uint64_t maximum_bytes = 0; };
+struct W11NetlabReportSnapshot { std::string version, consent; bool enabled = false, has_ipv4 = false, has_ipv6 = false, firewalled = false, kad_connected = false, keepalive_running = false, utp_connected = false; std::uint32_t hole_attempts = 0, hole_success = 0, hole_sym_nat_fail = 0, hole_spray = 0, kad3_requests = 0, kad3_forwarded = 0, kad3_success = 0, keepalive_pings = 0, keepalive_pongs = 0, keepalive_peers = 0, utp_sockets = 0, relay_kb = 0; std::uint64_t session_received = 0, session_sent = 0; };
+struct W11CircuitSnapshot { std::uint32_t circ_id = 0, age_ms = 0, next_circ_id = 0; std::uint16_t hop_count = 0; unsigned role = 0, state = 0, abort_reason = 0; bool next_hop_set = false, auth_ok = false, strict3 = false, shaped = false, shaping_exposed = false; };
+struct W11PeerSnapshot { std::string ip, address; std::uint16_t port = 0; std::uint32_t fork_caps = 0, ese_caps = 0; };
+struct W11ReleaseEvidence { std::string field_sha256, audit_sha256; std::uint64_t observed_from = 0, observed_to = 0, admission_attempts = 0, headroom_bps = 0, valid_until = 0; std::uint32_t admission_ppm = 0; std::uint16_t gate_mask = 0; };
+struct W11ReleaseSnapshot { std::string status, challenge; bool operator_opt_in = false, evidence_present = false, evidence_valid = false, runtime_healthy = false; bool public_exit_enabled = false, beta_exit_opt_in = false, beta_exit_enabled = false; W11ReleaseEvidence evidence; };
+struct W11HardeningServiceSnapshot { std::string service, state; std::uint64_t changed_at = 0, drain_deadline = 0; bool admitting = false; };
+struct W11HardeningEconomySnapshot { std::string service; bool rho_present = false, sealed = false; double rho = 0.0, admission_ratio = 0.0, rho_p50 = 0.0, rho_p95 = 0.0; std::uint64_t starts_at = 0, ends_at = 0, samples = 0, admission_attempts = 0, admission_successes = 0; };
+struct W11HardeningSnapshot { std::uint64_t revision = 0, active_leases = 0, active_publishes = 0, dial_streams = 0, full_streams = 0, shaping_exposed_circuits = 0; bool source_epoch_store_failed = false, metrics_ready = false, economy_measurement_ready = false, strict_recommended = false; std::uint64_t metrics_start = 0, metrics_end = 0; std::uint32_t metrics_fixed_series = 0, metrics_exported_series = 0; bool exit_notice_running = false; std::uint16_t exit_notice_port = 0; std::uint64_t exit_notice_requests = 0, exit_notice_rejected = 0, exit_notice_bytes_sent = 0; std::vector<W11HardeningServiceSnapshot> services; std::vector<W11HardeningEconomySnapshot> economy; };
+struct W11LegacyPort { void* context = nullptr; bool (*resolve_hls)(void*, const W11LegacyRequest&, W11HlsSnapshot&) = nullptr; void (*note_player_fetch)(void*) = nullptr; bool (*read_netlab_report)(void*, W11NetlabReportSnapshot&) = nullptr; bool (*run_tunnel_echo)(void*, const std::vector<std::uint8_t>&, std::vector<std::uint8_t>&) = nullptr; bool (*run_tunnel_ping)(void*, const std::string&, std::string&) = nullptr; bool (*read_circuits)(void*, std::vector<W11CircuitSnapshot>&) = nullptr; bool (*read_peers)(void*, std::vector<W11PeerSnapshot>&, std::size_t&) = nullptr; bool (*request_test_circuit)(void*, unsigned, std::uint32_t&) = nullptr; bool (*consume_release_challenge)(void*, const std::string&) = nullptr; bool (*request_release)(void*, bool, const W11ReleaseEvidence*, std::uint32_t) = nullptr; bool (*read_release)(void*, bool, W11ReleaseSnapshot&) = nullptr; bool (*request_hardening)(void*, const std::string&, bool, std::uint32_t) = nullptr; bool (*read_hardening)(void*, W11HardeningSnapshot&) = nullptr; };
+bool RunW11LiveLegacyApi(const W11LegacyRequest&, const W11LegacyPort&, W11LegacyResponse&); bool BuildW11LegacyStaticFile(const W11StaticFileRequest&, W11LegacyResponse&); bool RunW11LiveLegacyCharacterizationSelfTest(std::string&);
+} }
+namespace eSELive { M2AModuleHandle M2A_BIND_W8_4974C0F316(const M2AParentPort&); void M2A_UNBIND_W8_4974C0F316(const M2AParentPort&); M2AModuleHandle M2A_BIND_W8_E988965D5A(const M2AParentPort&); void M2A_UNBIND_W8_E988965D5A(const M2AParentPort&); M2AModuleHandle M2A_BIND_W9_52CC9DEBDD(const M2AParentPort&); void M2A_UNBIND_W9_52CC9DEBDD(const M2AParentPort&); M2AModuleHandle M2A_BIND_W9_3B359EBB1A(const M2AParentPort&); void M2A_UNBIND_W9_3B359EBB1A(const M2AParentPort&); M2AModuleHandle M2A_BIND_W10_E9722EA045(const M2AParentPort&); void M2A_UNBIND_W10_E9722EA045(const M2AParentPort&); M2AModuleHandle M2A_BIND_W10_47570D3256(const M2AParentPort&); void M2A_UNBIND_W10_47570D3256(const M2AParentPort&); M2AModuleHandle M2A_BIND_W11_55908BF94D(const M2AParentPort&); void M2A_UNBIND_W11_55908BF94D(const M2AParentPort&); }
 namespace eSELive {
 enum class WebClassicView : std::uint8_t { Unknown = 0, Login, RemoteLinkAdded, RemoteLinkFailed, CommentList, Header, Footer, Server, Shared, Transfer, Search, Graphs, Log, ServerInfo, DebugLog, MyInfo, Stats, Kad, Options };
 enum class WebAdminAction : std::uint8_t { Close, Shutdown, Reboot };
@@ -248,6 +265,26 @@ bool W10DiagnosticsContext::Log(void*,int n,std::vector<std::string>& o) { std::
 bool W10DiagnosticsContext::Debug(void*,ese::web::W10DebugSnapshot& o) { o=ese::web::W10DebugSnapshot();if(theApp.liveStreamManager==NULL)return true;const LiveDebugSnapshot s=theApp.liveStreamManager->BuildDebugSnapshot();o.available=true;o.broadcasting=s.broadcasting;o.viewing=s.viewing;o.emergency_mode=s.emergencyMode;o.uptime_ms=s.uptimeMs;o.total_redistributed=s.totalRedistributed;o.now_ms=GetTickCount();o.kad_connected=s.kad.kadConnected;o.known_streams=s.kad.knownStreams;o.known_streams_clean=s.kad.knownStreamsClean;o.known_streams_legacy=s.kad.knownStreamsLegacy;o.last_publish_time=s.kad.lastPublishTime;o.last_search_time=s.kad.lastSearchTime;o.last_result_time=s.kad.lastResultTime;o.last_result_ip=s.kad.lastResultIP;o.last_result_port=s.kad.lastResultPort;o.view_peers=s.viewPeers;o.broadcast_peers=s.broadcastPeers;o.mesh_peers=s.meshPeers;o.pending_requests=s.pendingRequests;o.chunks_served=s.chunksServed;o.super_seeders=s.superSeeders;o.middle_peers=s.middlePeers;o.leaf_peers=s.leafPeers;o.chunk_count=s.bufCount;o.oldest_sequence=s.oldestSeq;o.newest_sequence=s.newestSeq;o.chunk_bitmap=s.bitmap;o.missing_chunks=s.missingChunks;o.max_capacity=ESE_LIVE_MAX_SEGMENTS;o.hls_segments_written=s.counters.hlsSegmentsWritten;o.hls_playlist_refreshes=s.counters.hlsPlaylistRefresh;o.last_chunk_received_at=static_cast<std::uint32_t>(s.counters.lastChunkReceivedAt);o.segment_duration_seconds=ESE_LIVE_SEGMENT_DURATION;o.kad_publishes=s.counters.kadPublishes;o.kad_searches=s.counters.kadSearches;o.kad_results_accepted=s.counters.kadResultsAccepted;o.kad_results_rejected=s.counters.kadResultsRejected;o.source_dial_attempts=s.counters.sourceDialAttempts;o.subscribe_sent=s.counters.subscribeSent;o.subscribe_accepted=s.counters.subscribeAccepted;o.chunks_requested=s.counters.chunksRequested;o.chunks_received=s.counters.chunksReceived;o.chunks_missing=s.counters.chunksMissing;o.duplicate_chunks_received=s.counters.duplicateChunksReceived;o.requests_suppressed_inflight=s.counters.requestsSuppressedInflight;o.peer_disconnects=s.counters.peerDisconnects;o.skipped_initial_pushes=s.counters.skippedInitialPushes;o.subscribes_rate_limited=s.counters.subscribesRateLimited;o.requests_rate_limited=s.counters.requestsRateLimited;o.ends_rejected_no_auth=s.counters.endsRejectedNoAuth;o.tombstones_evicted=s.counters.tombstonesEvicted;const int count=(std::max)(0,(std::min)(s.peerDetailCount,LiveDebugSnapshot::MAX_PEER_DBG));o.peer_detail.reserve(static_cast<std::size_t>(count));for(int i=0;i<count;++i)o.peer_detail.push_back({s.peerDetail[i].ip,s.peerDetail[i].port,s.peerDetail[i].level,s.peerDetail[i].failCount,s.peerDetail[i].respPct,s.peerDetail[i].rttMs});return true; }
 }
 
+struct W11LegacyContext {
+	static bool Hls(void*,const ese::web::W11LegacyRequest& q,ese::web::W11HlsSnapshot& o){TCHAR tmp[MAX_PATH];GetTempPath(MAX_PATH,tmp);o.root_path=W8Utf8(CString(tmp))+"eMule_RTMP";CString p=OptUtf8ToStr(o.root_path.c_str(),static_cast<int>(o.root_path.size()))+_T("\\")+OptUtf8ToStr(q.resource.c_str(),static_cast<int>(q.resource.size()));o.root_exists=PathFileExists(p)!=FALSE;if(!o.root_exists&&theApp.liveStreamManager){std::array<unsigned char,16> key;if(theApp.liveStreamManager->CopyViewerStreamKey(key.data()))o.viewer_key=W8EncodeKey16(key);}return true;}
+	static void Note(void*){if(theApp.liveStreamManager)theApp.liveStreamManager->NotePlayerFetch();}
+	static bool Netlab(void*,ese::web::W11NetlabReportSnapshot& o){o=ese::web::W11NetlabReportSnapshot();const CAddress v6=CFirewallProberV6::Instance().GetDetectedV6IP();o.version=W9Bytes(CStringA(CT2A(theApp.m_strCurVersionLong)));o.consent=thePrefs.GetEseNetLabConsent()==CPreferences::EseNetLabAccepted?"accepted":thePrefs.GetEseNetLabConsent()==CPreferences::EseNetLabDeclined?"declined":"undecided";o.enabled=thePrefs.IsEseNetLabActive();o.has_ipv4=theApp.GetPublicIP()!=0;o.has_ipv6=v6.GetType()==CAddress::IPv6&&v6.IsPublicIP();o.firewalled=theApp.IsFirewalled();o.kad_connected=Kademlia::CKademlia::IsConnected();const CKadKeepalive::Stats ka=CKadKeepalive::Instance().GetStats();o.keepalive_running=CKadKeepalive::Instance().IsRunning();o.keepalive_pings=ka.pingsSent;o.keepalive_pongs=ka.pongsReceived;o.keepalive_peers=ka.supernodesActive;o.utp_sockets=static_cast<std::uint32_t>(CUtpSocket::GetConnectedSocketCount());o.utp_connected=o.utp_sockets!=0;o.hole_attempts=CStatistics::m_dwHolePunchAttempts;o.hole_success=CStatistics::m_dwHolePunchSuccess;o.hole_sym_nat_fail=CStatistics::m_dwHolePunchSymNATFail;o.hole_spray=CStatistics::m_dwHolePunchSprayReqs;o.kad3_requests=CStatistics::m_dwKad3RdvReqSent;o.kad3_forwarded=CStatistics::m_dwKad3RdvFwd;o.kad3_success=CStatistics::m_dwKad3RdvSuccess;o.session_received=theStats.sessionReceivedBytes;o.session_sent=theStats.sessionSentBytes;o.relay_kb=CStatistics::m_dwRelayBytesFwdKB;return true;}
+	static bool Echo(void*,const std::vector<std::uint8_t>& in,std::vector<std::uint8_t>& out){try{return eSELive::CLiveTunnel::Get().TunnelEchoLarge(in,out,15000);}catch(...){return false;}}
+	static bool Ping(void*,const std::string& in,std::string& out){try{return eSELive::CLiveTunnel::Get().TunnelPing(in,out,5000);}catch(...){return false;}}
+	static bool Circuits(void*,std::vector<ese::web::W11CircuitSnapshot>& out){out.clear();try{std::vector<eSELive::CLiveTunnel::CircuitSnapshot> all;eSELive::CLiveTunnel::Get().GetCircuitsSnapshot(all);out.reserve(all.size());for(const auto&s:all)out.push_back({s.circ_id,s.age_ms,s.next_circ_id,static_cast<std::uint16_t>(s.hop_count),static_cast<unsigned>(s.role),static_cast<unsigned>(s.state),static_cast<unsigned>(s.abort_reason),s.next_hop_set!=0,s.auth_ok!=0,s.strict3!=0,s.shaped!=0,s.shaping_exposed!=0});}catch(...){}return true;}
+	static bool Peers(void*,std::vector<ese::web::W11PeerSnapshot>& out,std::size_t& count){out.clear();count=0;try{std::vector<eSELive::CLiveTunnel::PeerSnapshot> all;eSELive::CLiveTunnel::Get().GetPeersSnapshot(all,count);out.reserve(all.size());for(const auto&p:all)out.push_back({p.has_ipv4?W8Legacy(CString(CAddress::FromIPv4NetworkOrder(p.ip).ToString().c_str())):std::string(),p.address,p.port,p.fork_caps,p.ese_caps});}catch(...){}return true;}
+	static bool Test(void*,unsigned hops,std::uint32_t& id){id=0;try{id=eSELive::CLiveTunnel::Get().RequestTestCircuit(hops,2500);}catch(...){}return id!=0;}
+	static bool Consume(void*,const std::string& text){return eSELive::CLiveTunnel::Get().ConsumeK6ReleaseOperatorChallenge(text);}
+	static bool Digest(const std::string& text,kad6::Hash32& out){if(text.size()!=64)return false;for(size_t i=0;i<32;++i){const char a=text[i*2],b=text[i*2+1];const int hi=a>='0'&&a<='9'?a-'0':a>='a'&&a<='f'?a-'a'+10:a>='A'&&a<='F'?a-'A'+10:-1,lo=b>='0'&&b<='9'?b-'0':b>='a'&&b<='f'?b-'a'+10:b>='A'&&b<='F'?b-'A'+10:-1;if(hi<0||lo<0)return false;out[i]=static_cast<uint8_t>((hi<<4)|lo);}return true;}
+	static bool Release(void*,bool enabled,const ese::web::W11ReleaseEvidence* in,std::uint32_t drain){kad6::K6ReleaseEvidence native;const kad6::K6ReleaseEvidence* p=NULL;if(in){if(!Digest(in->field_sha256,native.field_digest)||!Digest(in->audit_sha256,native.external_audit_digest))return false;native.observed_from=in->observed_from;native.observed_to=in->observed_to;native.admission_attempts=in->admission_attempts;native.admission_success_ppm=in->admission_ppm;native.useful_headroom_bps=in->headroom_bps;native.gate_mask=in->gate_mask;native.valid_until=in->valid_until;p=&native;}try{return eSELive::CLiveTunnel::Get().RequestK6PublicRelease(enabled,p,drain,5000);}catch(...){return false;}}
+	static bool ReadRelease(void*,bool local,ese::web::W11ReleaseSnapshot& o){o=ese::web::W11ReleaseSnapshot();eSELive::CLiveTunnel::K6ReleaseRuntimeSnapshot s;try{eSELive::CLiveTunnel::Get().GetK6ReleaseSnapshot(s);}catch(...){}o.status=kad6::K6ReleaseGateStatusName(s.status);o.operator_opt_in=s.operator_opt_in;o.evidence_present=s.evidence_present;o.evidence_valid=s.evidence_valid;o.runtime_healthy=s.runtime_healthy;o.public_exit_enabled=s.public_exit_enabled;o.beta_exit_opt_in=s.beta_exit_opt_in;o.beta_exit_enabled=s.beta_exit_enabled;o.evidence.gate_mask=s.evidence.gate_mask;o.evidence.observed_from=s.evidence.observed_from;o.evidence.observed_to=s.evidence.observed_to;o.evidence.valid_until=s.evidence.valid_until;o.evidence.admission_attempts=s.evidence.admission_attempts;o.evidence.admission_ppm=s.evidence.admission_success_ppm;o.evidence.headroom_bps=s.evidence.useful_headroom_bps;if(local)try{eSELive::CLiveTunnel::Get().GetK6ReleaseOperatorChallenge(o.challenge);}catch(...){o.challenge.clear();}return true;}
+	static bool Hardening(void*,const std::string& service,bool enabled,std::uint32_t drain){kad6::K6Service s=service=="control"?kad6::K6Service::Control:service=="exit_kad"?kad6::K6Service::ExitKad:service=="exit_ed2k_dial"?kad6::K6Service::ExitEd2kDial:kad6::K6Service::ExitEd2kFull;try{return eSELive::CLiveTunnel::Get().RequestK6ServiceSwitch(s,enabled,drain,3500);}catch(...){return false;}}
+	static bool ReadHardening(void*,ese::web::W11HardeningSnapshot& o){o=ese::web::W11HardeningSnapshot();eSELive::CLiveTunnel::K6HardeningRuntimeSnapshot s;try{eSELive::CLiveTunnel::Get().GetK6HardeningSnapshot(s);}catch(...){}o.revision=s.control.revision;o.active_leases=s.active_leases;o.active_publishes=s.active_publishes;o.dial_streams=s.dial_streams;o.full_streams=s.full_streams;o.shaping_exposed_circuits=s.shaping_exposed_circuits;o.source_epoch_store_failed=s.source_epoch_store_failed;o.metrics_ready=s.metrics.ready;o.metrics_start=s.metrics.start;o.metrics_end=s.metrics.end;o.metrics_fixed_series=s.metrics.fixed_series;o.metrics_exported_series=s.metrics.exported_series;o.economy_measurement_ready=s.economy_measurement_ready;o.strict_recommended=s.strict_recommended;for(size_t i=0;i<s.control.services.size();++i){const kad6::K6ServiceSnapshot& x=s.control.services[i];o.services.push_back({kad6::K6ServiceName(x.service),kad6::K6ServiceStateName(x.state),x.changed_at,x.drain_deadline,(s.control.admission_mask&kad6::K6ServiceBit(x.service))!=0});}for(size_t i=0;i<s.economy.size();++i){const kad6::K6EconomyWindowSnapshot& x=s.economy[i];o.economy.push_back({kad6::K6ServiceName(static_cast<kad6::K6Service>(i)),s.economy_measurement_ready&&std::isfinite(s.rho[i]),x.sealed,s.rho[i],x.admission_ratio,x.rho_p50,x.rho_p95,x.starts_at,x.ends_at,x.samples,x.admission_attempts,x.admission_successes});}K6ExitNoticeServerSnapshot n;try{n=eSELive::CLiveTunnel::Get().GetK6ExitNoticeSnapshot();}catch(...){}o.exit_notice_running=n.running;o.exit_notice_port=n.port;o.exit_notice_requests=n.requests;o.exit_notice_rejected=n.rejected;o.exit_notice_bytes_sent=n.bytes_sent;return true;}
+	static ese::web::W11LegacyPort Port(){return {NULL,Hls,Note,Netlab,Echo,Ping,Circuits,Peers,Test,Consume,Release,ReadRelease,Hardening,ReadHardening};}
+};
+static void SendW11Response(const ThreadData& d,const ese::web::W11LegacyResponse& r){if(r.file_response){ese::web::WebFileResponseOptions o;o.lastModified=r.last_modified;o.etag=r.etag;o.corsOrigin=r.cors_origin;d.pSocket->SendFileResponse(OptUtf8ToStr(r.file_path.c_str(),static_cast<int>(r.file_path.size())),CStringA(r.public_path.c_str()),CStringA(r.file_range.c_str()),o,r.maximum_bytes,r.concurrent,r.allow_empty);return;}d.pSocket->SendData(r.header.data(),static_cast<int>(r.header.size()));d.pSocket->SendData(r.body.data(),static_cast<int>(r.body.size()));}
+static bool RunW11LiveLegacyStaticFile(const ThreadData& d){const CWebServer* pThis=reinterpret_cast<CWebServer*>(d.pThis);if(pThis==NULL)return false;M2AModuleHandle snapshot=CaptureWebTemplateSnapshot(WebTemplateParent(pThis));(void)snapshot;const CStringA lastModified(GetWebTemplateLastModified(WebTemplateParent(pThis))),etag(GetWebTemplateETag(WebTemplateParent(pThis)));ese::web::W11StaticFileRequest q;q.web_root=W8Utf8(thePrefs.GetMuleDirectory(EMULE_WEBSERVERDIR));q.url=W8Utf8(d.sURL);q.public_path=W8Legacy(d.sURL);q.range=W9Bytes(d.sRange);q.last_modified=W9Bytes(lastModified);q.etag=W9Bytes(etag);q.maximum_bytes=static_cast<std::uint64_t>(thePrefs.GetMaxWebUploadFileSizeMB())*1024ull*1024ull;ese::web::W11LegacyResponse r;if(!ese::web::BuildW11LegacyStaticFile(q,r))return false;SendW11Response(d,r);return true;}
+
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #undef THIS_FILE
@@ -309,7 +346,7 @@ CWebServer::CWebServer()
 	, m_bSearchAsc()
 	, m_bIsTempDisabled()
 {
-	M2AModuleHandle streamBinding = M2A_BIND_W8_4974C0F316(M2AParentPort{this}); if (!streamBinding) return; M2AModuleHandle liveTransferBinding = M2A_BIND_W9_52CC9DEBDD(M2AParentPort{this}); if (!liveTransferBinding) return; M2AModuleHandle liveSearchBinding = M2A_BIND_W9_3B359EBB1A(M2AParentPort{this}); if (!liveSearchBinding) return; M2AModuleHandle w10SettingsBinding = M2A_BIND_W10_E9722EA045(M2AParentPort{this}); if (!w10SettingsBinding) return; M2AModuleHandle w10DiagnosticsBinding = M2A_BIND_W10_47570D3256(M2AParentPort{this}); if (!w10DiagnosticsBinding) return; M2AModuleHandle serverListBinding = M2A_BIND_W3_F05B56128F(M2AParentPort{this}); if (!serverListBinding) return; CIni ini(thePrefs.GetConfigFile(), _T("WebServer"));
+	M2AModuleHandle streamBinding = M2A_BIND_W8_4974C0F316(M2AParentPort{this}); if (!streamBinding) return; M2AModuleHandle liveTransferBinding = M2A_BIND_W9_52CC9DEBDD(M2AParentPort{this}); if (!liveTransferBinding) return; M2AModuleHandle liveSearchBinding = M2A_BIND_W9_3B359EBB1A(M2AParentPort{this}); if (!liveSearchBinding) return; M2AModuleHandle w10SettingsBinding = M2A_BIND_W10_E9722EA045(M2AParentPort{this}); if (!w10SettingsBinding) return; M2AModuleHandle w10DiagnosticsBinding = M2A_BIND_W10_47570D3256(M2AParentPort{this}); if (!w10DiagnosticsBinding) return; M2AModuleHandle w11LegacyBinding = M2A_BIND_W11_55908BF94D(M2AParentPort{this}); if (!w11LegacyBinding) return; M2AModuleHandle serverListBinding = M2A_BIND_W3_F05B56128F(M2AParentPort{this}); if (!serverListBinding) return; CIni ini(thePrefs.GetConfigFile(), _T("WebServer"));
 	ini.SerGet(true, WSdownloadColumnHidden, _countof(WSdownloadColumnHidden), _T("downloadColumnHidden"));
 	ini.SerGet(true, WSuploadColumnHidden, _countof(WSuploadColumnHidden), _T("uploadColumnHidden"));
 	ini.SerGet(true, WSqueueColumnHidden, _countof(WSqueueColumnHidden), _T("queueColumnHidden"));
@@ -350,7 +387,7 @@ CWebServer::~CWebServer()
 	ini.WriteInt(_T("SharedSort"), m_Params.SharedSort);
 	if (m_bServerWorking)
 		StopSockets();
-	M2A_UNBIND_W10_E9722EA045(M2AParentPort{this}); M2A_UNBIND_W10_47570D3256(M2AParentPort{this}); M2A_UNBIND_W9_52CC9DEBDD(M2AParentPort{this}); M2A_UNBIND_W9_3B359EBB1A(M2AParentPort{this}); M2A_UNBIND_W8_4974C0F316(M2AParentPort{this}); M2A_UNBIND_W8_E988965D5A(M2AParentPort{this}); M2A_UNBIND_W1_EC6846B80E(M2AParentPort{this}); M2A_UNBIND_W2_9330EBAD15(M2AParentPort{this}); M2A_UNBIND_W2_071B3D442B(M2AParentPort{this}); M2A_UNBIND_W3_F05B56128F(M2AParentPort{this}); M2A_UNBIND_W4_AD763A5EE0(M2AParentPort{this}); M2A_UNBIND_W5_095B87253F(M2AParentPort{this}); M2A_UNBIND_W6_64C04005E2(M2AParentPort{this}); M2A_UNBIND_W6_B161DA740E(M2AParentPort{this});
+	M2A_UNBIND_W11_55908BF94D(M2AParentPort{this}); M2A_UNBIND_W10_E9722EA045(M2AParentPort{this}); M2A_UNBIND_W10_47570D3256(M2AParentPort{this}); M2A_UNBIND_W9_52CC9DEBDD(M2AParentPort{this}); M2A_UNBIND_W9_3B359EBB1A(M2AParentPort{this}); M2A_UNBIND_W8_4974C0F316(M2AParentPort{this}); M2A_UNBIND_W8_E988965D5A(M2AParentPort{this}); M2A_UNBIND_W1_EC6846B80E(M2AParentPort{this}); M2A_UNBIND_W2_9330EBAD15(M2AParentPort{this}); M2A_UNBIND_W2_071B3D442B(M2AParentPort{this}); M2A_UNBIND_W3_F05B56128F(M2AParentPort{this}); M2A_UNBIND_W4_AD763A5EE0(M2AParentPort{this}); M2A_UNBIND_W5_095B87253F(M2AParentPort{this}); M2A_UNBIND_W6_64C04005E2(M2AParentPort{this}); M2A_UNBIND_W6_B161DA740E(M2AParentPort{this});
 }
 
 void CWebServer::_SaveWIConfigArray(BOOL *array, int size, LPCTSTR key)
@@ -455,7 +492,7 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 	}
 	if (!RunWebClassicRequestCharacterizationSelfTest()) { outFailure = _T("web request dispatch route table changed"); return false; } if (!RunWebTemplateCharacterizationSelfTest() || !RunWebPageChromeCharacterizationSelfTest()) { outFailure = _T("web template/header rendering changed"); return false; } if (!RunWebServerPageCharacterizationSelfTest()) { outFailure = _T("web server-list rendering changed"); return false; } if (!RunWebTransferProjectionCharacterizationSelfTest()) { outFailure = _T("web transfer projection changed"); return false; } if (!RunWebTransferActionsCharacterizationSelfTest()) { outFailure = _T("web transfer actions changed"); return false; } if (!RunWebSearchProjectionCharacterizationSelfTest()) { outFailure = _T("web search projection changed"); return false; } if (!RunWebSharedFilesControllerCharacterizationSelfTest()) { outFailure = _T("web shared-files projection changed"); return false; } const ese::web::WebSharedComparison sharedCompatibility{0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}; const ese::web::WebSharedRowProjection sharedProjection = ese::web::WebSharedController::ProjectRow(false, ese::web::WebSharedPriority::Normal, false, 1024, 1, 1, 1); if (ese::web::WebSharedController::Compare(2, false, sharedCompatibility) != -1 || std::string(sharedProjection.priority_token) != "Normal" || !sharedProjection.downloadable || sharedProjection.complete_sources != "1") { outFailure = _T("web shared policy compatibility changed"); return false; }
 	std::string serializerFailure;
-	std::string w8Failure; const CString w8Unicode(_T("\x0416")); if (W8Text(W8Utf8(w8Unicode)) != w8Unicode || W10Text(W8Utf8(w8Unicode)) != w8Unicode) { outFailure = _T("web Live API UTF-8 boundary changed"); return false; } std::string w8Wire, w8Ui, w8Encoded; W8Assign(_T("A b!"),w8Wire,w8Ui,&w8Encoded); if(w8Wire!="A b!" || w8Ui!="A b!" || w8Encoded!="A+b%21") { outFailure = _T("web Live API legacy wire boundary changed"); return false; } if (!RunW8LiveStreamCharacterizationSelfTest(w8Failure) || !ese::web::RunW8LiveStatusCharacterizationSelfTest(w8Failure) || !RunW9LiveTransferCharacterizationSelfTest(w8Failure) || !ese::web::RunW9LiveSearchCharacterizationSelfTest(w8Failure) || !RunW10LiveSettingsCharacterizationSelfTest(w8Failure) || !ese::web::RunW10LiveDiagnosticsCharacterizationSelfTest(w8Failure)) { outFailure = OptUtf8ToStr(w8Failure.data(), static_cast<int>(w8Failure.size())); return false; }
+	std::string w8Failure; const CString w8Unicode(_T("\x0416")); if (W8Text(W8Utf8(w8Unicode)) != w8Unicode || W10Text(W8Utf8(w8Unicode)) != w8Unicode) { outFailure = _T("web Live API UTF-8 boundary changed"); return false; } std::string w8Wire, w8Ui, w8Encoded; W8Assign(_T("A b!"),w8Wire,w8Ui,&w8Encoded); if(w8Wire!="A b!" || w8Ui!="A b!" || w8Encoded!="A+b%21") { outFailure = _T("web Live API legacy wire boundary changed"); return false; } if (!RunW8LiveStreamCharacterizationSelfTest(w8Failure) || !ese::web::RunW8LiveStatusCharacterizationSelfTest(w8Failure) || !RunW9LiveTransferCharacterizationSelfTest(w8Failure) || !ese::web::RunW9LiveSearchCharacterizationSelfTest(w8Failure) || !RunW10LiveSettingsCharacterizationSelfTest(w8Failure) || !ese::web::RunW10LiveDiagnosticsCharacterizationSelfTest(w8Failure) || !ese::web::RunW11LiveLegacyCharacterizationSelfTest(w8Failure)) { outFailure = OptUtf8ToStr(w8Failure.data(), static_cast<int>(w8Failure.size())); return false; }
 	if (!ese::web::RunWebApiSerializerSelfTest(serializerFailure)) {
 		outFailure = OptUtf8ToStr(
 			serializerFailure.data(),
@@ -1364,840 +1401,23 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	default:break;}if(hasSettings){const W10SettingsPort port=W10SettingsContext::Port();W10SettingsResponse response;if(RunW10LiveSettingsApi(settings,port,response)){W8StatusContext::Send(Data.pSocket,response.header,response.body);return;}}
 	ese::web::W10DiagnosticsRequest diagnostics;bool hasDiagnostics=false;switch(Data.webRoute){case ese::web::WebRouteId::ApiKrpStatus:diagnostics.operation=ese::web::W10DiagnosticsOperation::KrpStatus;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLivePreflight:diagnostics.operation=ese::web::W10DiagnosticsOperation::Preflight;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveMetrics:diagnostics.operation=ese::web::W10DiagnosticsOperation::Metrics;hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveLog:diagnostics.operation=ese::web::W10DiagnosticsOperation::Log;diagnostics.log_n=_ttoi(_ParseURL(Data.sURL,_T("n")));hasDiagnostics=true;break;case ese::web::WebRouteId::ApiLiveDebug:diagnostics.operation=ese::web::W10DiagnosticsOperation::Debug;hasDiagnostics=true;break;default:break;}
 	if(hasDiagnostics){W10DiagnosticsContext context;const ese::web::W10DiagnosticsPort port{&context,W10DiagnosticsContext::Krp,W10DiagnosticsContext::Preflight,W10DiagnosticsContext::Metrics,W10DiagnosticsContext::Percentiles,W10DiagnosticsContext::Mean,W10DiagnosticsContext::Samples,W10DiagnosticsContext::Kad6,W10DiagnosticsContext::Log,W10DiagnosticsContext::Debug};ese::web::W10DiagnosticsResponse response;if(ese::web::RunW10LiveDiagnosticsApi(diagnostics,port,response)){W8StatusContext::Send(Data.pSocket,response.header,response.body);return;}}
-
-	// --- /hls/<file> --- Sprint 5: serve HLS files directly from C++ WebServer.
-	// Mirrors what Node.js channel_api.js does at port 8080. Lets the dashboard
-	// (and any HLS player like VLC) work even when ese-server.exe is absent.
-	if (Data.webRoute == ese::web::WebRouteId::LegacyHls) {
-		CStringA req = sURL.Mid(5);
-		// Strip query string
-		int q = req.Find('?'); if (q >= 0) req = req.Left(q);
-		// WebRouteTable has already validated the safe leaf and extension.
-		// Ghost-viewer watchdog: any whitelisted HLS fetch proves a player is
-		// alive — including 404 polls while the playlist isn't written yet.
-		TCHAR tmp[MAX_PATH]; GetTempPath(MAX_PATH, tmp);
-		CString fp;
-		fp.Format(_T("%seMule_RTMP\\%hs"), tmp, (LPCSTR)req);
-		// Viewers reconstruct HLS into a per-stream subdirectory so concurrent
-		// streams cannot collide. Keep the legacy /hls/<file> URL working by
-		// falling back to the active stream namespace when the root file is not
-		// present. Broadcasters still take the root fast path above.
-		if (!PathFileExists(fp) && theApp.liveStreamManager != NULL) {
-			uchar key[16];
-			if (theApp.liveStreamManager->CopyViewerStreamKey(key)) {
-				CStringA keyHex = W8KeyA(key);
-				fp.Format(_T("%seMule_RTMP\\%hs\\%hs"), tmp,
-					(LPCSTR)keyHex, (LPCSTR)req);
-				// A validated viewer-namespace poll proves that the remote
-				// player is alive, even while its first playlist is a 404.
-				theApp.liveStreamManager->NotePlayerFetch();
-			}
-		}
-		ese::web::WebFileResponseOptions hlsOptions;
-		hlsOptions.corsOrigin = "*";
-		Data.pSocket->SendFileResponse(
-			fp,
-			req,
-			Data.sRange,
-			hlsOptions,
-			20ull * 1024ull * 1024ull,
-			true,
-			false);
-		return;
-	}
-
-	// --- /dashboard --- Sprint 5: minimal embedded dashboard (no Node.js needed).
-	// Self-contained HTML page that talks to the C++ WebServer endpoints we
-	// already expose. Lets the user broadcast + diagnose without ese-server.exe.
-	// For the full polished experience, the Node.js dashboard at :8080 is still
-	// preferred — but this guarantees emule.exe alone is functional.
-	// Only catches /dashboard explicitly — leaves "/" and other paths to the
-	// classic eMule WebServer pages so we don't shadow the legacy UI.
-	if (Data.webRoute == ese::web::WebRouteId::Dashboard) {
-		const char* dashHtml =
-"<!DOCTYPE html><html lang=es><head><meta charset=utf-8><title>eSE Live (mini)</title>"
-"<style>body{background:#0a0a0e;color:#e2e8f0;font-family:system-ui;margin:0;padding:20px;max-width:900px;margin:auto}"
-"h1{color:#fff}.box{background:#13141a;border:1px solid #2a2a2e;border-radius:8px;padding:16px;margin:14px 0}"
-"button{background:#4f46e5;color:#fff;border:0;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:700;font-size:13px}"
-"button.stop{background:#dc2626}button.warn{background:#f59e0b}"
-"input{background:#0e0e10;border:1px solid #2a2a2e;color:#ddd;padding:8px;border-radius:5px;font-family:monospace;font-size:12px}"
-"input.wide{width:100%}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}"
-".pf{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}.pf>div{padding:4px 0}"
-".ok{color:#10b981}.err{color:#ef4444}.warn-c{color:#f59e0b}"
-"a{color:#818cf8}code{background:#0e0e10;padding:2px 6px;border-radius:3px;font-size:90%}"
-"#log{font-family:monospace;font-size:11px;color:#94a3b8;background:#0e0e10;padding:8px;border-radius:5px;max-height:140px;overflow-y:auto;white-space:pre-wrap}"
-"</style></head><body>"
-"<h1>🎬 eSE Live <span style=font-size:13px;color:#6b7280>mini dashboard (sin Node.js)</span></h1>"
-"<p style=font-size:13px;color:#9ca3af>Esta es la versión embebida en <code>emule.exe</code>. Para la experiencia completa abre <a href=http://localhost:8080/live>http://localhost:8080/live</a> (requiere ese-server.exe).</p>"
-"<div class=box><h3 style=margin-top:0>🔍 Pre-flight</h3><div class=pf id=pf>cargando...</div></div>"
-"<div class=box><h3 style=margin-top:0>NetLab beta</h3><div id=nl-state style=font-size:12px;color:#94a3b8>cargando...</div>"
-"<div class=row><button id=nl-toggle class=warn>Desactivar todo</button><button id=nl-copy>Copiar informe saneado</button></div></div>"
-"<div class=box><h3 style=margin-top:0>🎬 Emisión</h3>"
-"<div class=row><label>Título: <input id=br-title placeholder='Mi Stream' value='eSE Demo'></label>"
-"<select id=br-source style=padding:8px;background:#0e0e10;color:#ddd;border:1px solid #2a2a2e;border-radius:5px>"
-"<option value=testpattern>Test Pattern</option><option value=screen>Screen Capture</option><option value=rtmp>OBS (RTMP)</option></select>"
-"<select id=br-bitrate style=padding:8px;background:#0e0e10;color:#ddd;border:1px solid #2a2a2e;border-radius:5px>"
-"<option>1500</option><option selected>3000</option><option>5000</option></select>"
-"<button id=br-start>▶ START</button><button id=br-stop class=stop>■ STOP</button></div>"
-"<div id=br-status style=font-size:12px;color:#94a3b8;margin-top:8px>Inactivo.</div>"
-"<div id=br-link style=margin-top:8px;display:none><b>Link:</b> <input id=br-link-input class=wide readonly></div>"
-"</div>"
-"<div class=box><h3 style=margin-top:0>👁 Ver stream</h3>"
-"<div class=row><input id=join-link class=wide placeholder='ed2k://|live|HEX|IP:PUERTO|TITULO|/'><button id=join-btn>Conectar</button></div>"
-"<div id=join-msg style=font-size:12px;color:#94a3b8;margin-top:8px></div>"
-"<div class=row><a href=/hls/stream.m3u8 style=font-size:12px>📺 Abrir HLS directo (VLC)</a></div>"
-"</div>"
-"<div class=box><h3 style=margin-top:0>📊 Estado en vivo</h3><div id=mon style=font-size:12px;font-family:monospace>—</div></div>"
-"<div class=box><h3 style=margin-top:0>📜 Log</h3><div id=log></div></div>"
-"<p style=text-align:center;margin-top:24px;font-size:11px;color:#6b7280>"
-"<a href=/api/status>/api/status</a> · <a href=/api/live/debug>/api/live/debug</a> · <a href=/api/live/preflight>/api/live/preflight</a>"
-"</p>"
-"<script>"
-"function L(t){var l=document.getElementById('log');l.textContent+=new Date().toLocaleTimeString()+' '+t+'\\n';l.scrollTop=l.scrollHeight;}"
-"function PF(){fetch('/api/live/preflight').then(function(r){return r.json();}).then(function(d){var p=document.getElementById('pf');var f=function(ok,t){var c=ok===true?'ok':(ok==='checking'?'warn-c':'err');var i=ok===true?'✅':(ok==='checking'?'⏳':'❌');return '<div class='+c+'>'+i+' '+t+'</div>';};p.innerHTML=f(d.kad_connected,'Kad')+f(d.high_id?true:(d.firewall_checking?'checking':false),d.high_id?'HighID':(d.firewall_checking?'NAT…':'LowID'))+f(d.ffmpeg_found,'FFmpeg')+f(!!d.public_ip,'IP '+(d.public_ip||'?')+':'+d.port);}).catch(function(){});}"
-"function MON(){fetch('/api/live/debug').then(function(r){return r.json();}).then(function(d){var m=document.getElementById('mon');if(!d){m.textContent='-';return;}m.innerHTML='broadcasting='+d.broadcasting+' viewing='+d.viewing+'<br>buffer='+(d.chunks?d.chunks.count+' segs ['+d.chunks.oldestSeq+'..'+d.chunks.newestSeq+']':'')+'<br>peers: view='+(d.peers?d.peers.viewPeers:0)+' broadcast='+(d.peers?d.peers.broadcastPeers:0)+' mesh='+(d.peers?d.peers.meshPeers:0)+'<br>kad: '+(d.discovery?'connected='+d.discovery.kadConnected+' streams='+d.discovery.knownStreams:'?');}).catch(function(){});}"
-"function NL(){fetch('/api/ese/v9').then(function(r){return r.json();}).then(function(d){var n=d.netlab||{};var i=n.independent||{};var s=document.getElementById('nl-state');s.dataset.on=n.enabled?'1':'0';s.textContent='Laboratorio: '+(n.enabled?'ACTIVO':'OFF')+' | base '+(n.consent||'?')+' | avanzado '+(n.advanced_consent||'?')+' | contribucion '+(n.contribution_consent||'?')+' | Punch3 '+((n.staged||{}).ed2k_punch3?'ON':'OFF')+' | KRP '+(i.krp?'ON':'OFF')+' | Kad6 Beta Exit '+(i.kad6_beta_exit?'ON':'OFF');var b=document.getElementById('nl-toggle');b.disabled=n.consent!=='accepted';b.textContent=n.enabled?'Desactivar todo':'Reactivar niveles aceptados';b.className=n.enabled?'stop':'warn';}).catch(function(){});}"
-"PF();MON();NL();setInterval(PF,8000);setInterval(MON,2000);setInterval(NL,5000);"
-"document.getElementById('nl-toggle').onclick=function(){var on=document.getElementById('nl-state').dataset.on==='1'?'0':'1';fetch('/api/ese/v9?on='+on).then(function(){NL();});};"
-"document.getElementById('nl-copy').onclick=function(){fetch('/api/ese/netlab/report').then(function(r){return r.text();}).then(function(t){if(navigator.clipboard&&navigator.clipboard.writeText){return navigator.clipboard.writeText(t);}var x=document.createElement('textarea');x.value=t;document.body.appendChild(x);x.select();document.execCommand('copy');x.remove();}).then(function(){L('Informe NetLab saneado copiado');}).catch(function(){L('No se pudo copiar el informe');});};"
-"document.getElementById('br-start').onclick=function(){var t=encodeURIComponent(document.getElementById('br-title').value||'eSE');var s=document.getElementById('br-source').value;var b=document.getElementById('br-bitrate').value;L('Iniciando broadcast '+s+' '+b+'k…');fetch('/api/live/broadcast/start?source='+s+'&title='+t+'&bitrate='+b).then(function(r){return r.json();}).then(function(d){if(d.success){document.getElementById('br-status').textContent='✅ Emitiendo: '+d.source+' @ '+d.bitrate+' kbps';if(d.link){document.getElementById('br-link').style.display='';document.getElementById('br-link-input').value=d.link;}L('OK link='+d.link);}else{document.getElementById('br-status').textContent='❌ '+(d.error||'fallo');L('FAIL '+d.error);}});};"
-"document.getElementById('br-stop').onclick=function(){fetch('/api/live/broadcast/stop').then(function(r){return r.json();}).then(function(d){document.getElementById('br-status').textContent='Detenido';document.getElementById('br-link').style.display='none';L('Stopped');});};"
-"document.getElementById('join-btn').onclick=function(){var l=document.getElementById('join-link').value.trim();if(!l){return;}L('Joining '+l);fetch('/api/live/direct_join?link='+encodeURIComponent(l)).then(function(r){return r.json();}).then(function(d){var m=document.getElementById('join-msg');if(d.success){m.innerHTML='✅ Conectado a '+d.ip+':'+d.port+'. <a href=/hls/stream.m3u8>Abre el HLS</a>';m.className='ok';L('Joined');}else{m.textContent='❌ '+(d.error||'fallo');m.className='err';}});};"
-"</script></body></html>";
-		size_t bodyLen = strlen(dashHtml);
-		CStringA hdr;
-		hdr.Format(
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: text/html; charset=utf-8\r\n"
-			"Content-Length: %zu\r\n"
-			"Cache-Control: no-cache\r\n\r\n",
-			bodyLen);
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(dashHtml, (int)bodyLen);
-		return;
-	}
-
-	// Local, sanitized cohort report. It deliberately contains no address,
-	// node ID, peer identifier, filename, stream key or central upload hook.
-	if (Data.webRoute == ese::web::WebRouteId::ApiEseNetlabReport) {
-		const CAddress v6 = CFirewallProberV6::Instance().GetDetectedV6IP();
-		const bool hasV4 = theApp.GetPublicIP() != 0;
-		const bool hasV6 = v6.GetType() == CAddress::IPv6 && v6.IsPublicIP();
-		const char* natEstimate = !theApp.IsFirewalled() ? "open_or_mapped" :
-			CStatistics::m_dwHolePunchSymNATFail != 0 ? "symmetric_or_cgnat_suspected" :
-			"lowid_or_double_nat";
-		const CKadKeepalive::Stats ka = CKadKeepalive::Instance().GetStats();
-		const size_t utpConnected = CUtpSocket::GetConnectedSocketCount();
-		const char* layer = CStatistics::m_dwKad3RdvReqSent != 0 ? "punch3" :
-			CStatistics::m_dwHolePunchAttempts != 0 ? "punch2" :
-			ka.pingsSent != 0 ? "keepalive" : hasV6 ? "ipv6" : "direct";
-		const char* fallback = CStatistics::m_dwHolePunchSuccess != 0 ? "none" :
-			CStatistics::m_dwHolePunchSymNATFail != 0 ? "punch_timeout_or_nat_mapping_changed" :
-			!Kademlia::CKademlia::IsConnected() ? "kad_disconnected" : "not_observed";
-		const CStringA version =
-			W8JsonA(CStringA(CT2A(theApp.m_strCurVersionLong)));
-		CStringA json;
-		json.Format(
-			"{\"schema\":\"ESE_NETLAB_REPORT_V1\",\"version\":\"%s\","
-			"\"cohort\":{\"consent\":\"%s\",\"enabled\":%s},"
-			"\"network\":{\"ipv4\":%s,\"ipv6\":%s,\"nat_estimated\":\"%s\"},"
-			"\"last_layer_attempted\":\"%s\",\"fallback_reason\":\"%s\","
-			"\"punch2\":{\"attempts\":%u,\"pinhole_confirmed\":%u,\"nat_failures\":%u,\"spray_extra_packets\":%u},"
-			"\"punch3\":{\"requests\":%u,\"forwarded\":%u,\"signaling_success\":%u},"
-			"\"keepalive\":{\"running\":%s,\"pings\":%u,\"pongs\":%u,\"peers\":%u},"
-			"\"utp_connected\":%s,\"utp_connected_sockets\":%u,"
-			"\"bytes\":{\"session_received\":%I64u,\"session_sent\":%I64u,\"relay_forwarded_kb\":%u},"
-			"\"privacy\":{\"full_ip_stored\":false,\"central_telemetry\":false}}",
-			(LPCSTR)version,
-			thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabAccepted ? "accepted" :
-				thePrefs.GetEseNetLabConsent() == CPreferences::EseNetLabDeclined ? "declined" : "undecided",
-			thePrefs.IsEseNetLabActive() ? "true" : "false",
-			hasV4 ? "true" : "false", hasV6 ? "true" : "false", natEstimate,
-			layer, fallback,
-			(unsigned)CStatistics::m_dwHolePunchAttempts,
-			(unsigned)CStatistics::m_dwHolePunchSuccess,
-			(unsigned)CStatistics::m_dwHolePunchSymNATFail,
-			(unsigned)CStatistics::m_dwHolePunchSprayReqs,
-			(unsigned)CStatistics::m_dwKad3RdvReqSent,
-			(unsigned)CStatistics::m_dwKad3RdvFwd,
-			(unsigned)CStatistics::m_dwKad3RdvSuccess,
-			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
-			(unsigned)ka.pingsSent, (unsigned)ka.pongsReceived, (unsigned)ka.supernodesActive,
-			utpConnected != 0 ? "true" : "false",
-			(unsigned)utpConnected,
-			(unsigned __int64)theStats.sessionReceivedBytes,
-			(unsigned __int64)theStats.sessionSentBytes,
-			(unsigned)CStatistics::m_dwRelayBytesFwdKB);
-		CStringA hdr;
-		hdr.Format("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n",
-			json.GetLength());
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/live/privacy/tunnel_echo?bytes=N --- v8.1 A1.7 test op.
-	// Sends an N-byte payload through the tunnel as a multi-cell
-	// TUN_OP_ECHO_LARGE message and checks the reassembled reply is
-	// byte-identical. Exercises fragmentation + reassembly + dispatcher
-	// end-to-end. "/api/live/privacy/tunnel_echo" is exactly 29 chars.
-	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyTunnelEcho) {
-		CString bytesArg = _ParseURL(Data.sURL, _T("bytes"));
-		int n = bytesArg.IsEmpty() ? 1024 : _ttoi(bytesArg);
-		if (n < 0) n = 0;
-		// Deterministic test pattern so the round-trip is verifiable.
-		std::vector<uint8_t> payload((size_t)n);
-		for (size_t i = 0; i < payload.size(); ++i)
-			payload[i] = (uint8_t)((i * 31u + 7u) & 0xFF);
-		std::vector<uint8_t> reply;
-		bool ok = false;
-		try {
-			ok = eSELive::CLiveTunnel::Get().TunnelEchoLarge(payload, reply, 15000);
-		} catch (...) {}
-		const bool match = ok && reply.size() == payload.size()
-			&& (payload.empty()
-			    || memcmp(reply.data(), payload.data(), payload.size()) == 0);
-
-		CStringA json;
-		json.Format("{\"ok\":%s,\"bytes\":%d,\"replied\":%u,\"match\":%s}",
-			ok ? "true" : "false", n, (unsigned)reply.size(),
-			match ? "true" : "false");
-		CStringA header;
-		header.Format(
-		    "HTTP/1.1 200 OK\r\n"
-		    HTTPInit
-		    "Content-Type: application/json\r\n"
-		    "Content-Length: %d\r\n\r\n",
-		    json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// "/api/live/privacy/tunnel_ping" is exactly 29 chars.
-	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyTunnelPing) {
-		CString textArg = _ParseURL(Data.sURL, _T("text"));
-		if (textArg.IsEmpty()) textArg = _T("hello");
-		std::string text((LPCSTR)CStringA(textArg));
-		std::string reply;
-		bool ok = false;
-		try {
-			ok = eSELive::CLiveTunnel::Get().TunnelPing(text, reply, 5000);
-		} catch (...) {}
-
-		const ese::web::SerializedWebResponse response =
-			ese::web::Serialize(ese::web::WebTunnelPingResponseModel{
-				ok,
-				text,
-				reply,
-				"no active circuit or timeout - build a 2-hop circuit first "
-				"via test_circuit?hops=2"});
-		const CStringA json(
-			response.body.data(),
-			static_cast<int>(response.body.size()));
-
-		CStringA header;
-		header.Format(
-		    "HTTP/1.1 %u %s\r\n"
-		    HTTPInit
-		    "Content-Type: %s\r\n"
-		    "Content-Length: %d\r\n\r\n",
-			response.status_code,
-			response.reason_phrase.c_str(),
-			response.content_type.c_str(),
-		    json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/live/privacy/circuits --- v0.71 B — per-circuit detail.
-	// Enumerates all circuits in CLiveTunnel with id, role, state, age
-	// in ms, hop count, and forwarding state (next_hop_set / next_circ_id
-	// for relay circuits that have already received EXTEND). Used to
-	// verify "Hops: 2" after BuildTestCircuit2Hop succeeds.
-	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyCircuits) {
-		std::vector<eSELive::CLiveTunnel::CircuitSnapshot> snap;
-		try {
-			eSELive::CLiveTunnel::Get().GetCircuitsSnapshot(snap);
-		} catch (...) {}
-
-		CStringA arr;
-		for (size_t i = 0; i < snap.size(); ++i) {
-			if (i > 0) arr += ",";
-			const auto& s = snap[i];
-			CStringA line;
-			line.Format(
-			    "{\"circ_id\":\"0x%08X\",\"role\":\"%s\","
-			    "\"state\":\"%s\",\"age_ms\":%u,"
-			    "\"hop_count\":%u,\"forwarding\":%s,"
-			    "\"next_circ_id\":\"0x%08X\",\"auth_ok\":%s,"
-			    "\"strict3\":%s,\"class5_shaped\":%s,"
-			    "\"traffic_shaping_exposed\":%s,\"abort_reason\":\"%s\"}",
-			    s.circ_id,
-			    s.role == 0 ? "Originator" : "Relay",
-			    (s.state == 0 ? "Pending"
-			      : s.state == 1 ? "HalfBuilt"
-			      : s.state == 2 ? "Built"
-			      : s.state == 3 ? "Active"
-			      : s.state == 4 ? "Destroyed" : "?"),
-			    s.age_ms,
-			    s.hop_count,
-			    s.next_hop_set ? "true" : "false",
-			    s.next_circ_id,
-			    s.auth_ok ? "true" : "false",
-			    s.strict3 ? "true" : "false",
-			    s.shaped ? "true" : "false",
-			    s.shaping_exposed ? "true" : "false",
-			    s.abort_reason == 1 ? "STRICT_V1"
-			      : s.abort_reason == 2 ? "PIN_MISMATCH"
-			      : s.abort_reason == 3 ? "CAPS_FLOOR"
-			      : s.abort_reason == 4 ? "SIG_FAIL"
-			      : s.abort_reason == 5 ? "HANDSHAKE_TIMEOUT"
-			      : s.abort_reason == 6 ? "EXTEND_TIMEOUT" : "NONE");
-			arr += line;
-		}
-
-		CStringA json;
-		json.Format("{\"total\":%u,\"circuits\":[%s]}",
-		    (unsigned)snap.size(), (LPCSTR)arr);
-
-		CStringA header;
-		header.Format(
-		    "HTTP/1.1 200 OK\r\n"
-		    HTTPInit
-		    "Content-Type: application/json\r\n"
-		    "Content-Length: %d\r\n\r\n",
-		    json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/live/privacy/peers --- v0.71 P3.11 — debug helper.
-	// Lists currently connected peers with their TAG_ESE_CAPS bitmap so
-	// the user can verify which peers PC1 actually sees as fork-capable.
-	// Critical for diagnosing why test_circuit creates Pending circuits
-	// that never become Active (most common cause: PC2 not in ClientList,
-	// or PC2 running an older binary that didn't emit TAG_ESE_CAPS).
-	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyPeers) {
-		// v0.72 — served from the main-thread-maintained peer cache; the
-		// worker thread must never dereference CUpDownClient pointers.
-		std::vector<eSELive::CLiveTunnel::PeerSnapshot> all;
-		size_t tunnelingCount = 0;
-		try {
-			eSELive::CLiveTunnel::Get().GetPeersSnapshot(all, tunnelingCount);
-		} catch (...) {}
-
-		CStringA peersJson;
-		for (size_t i = 0; i < all.size(); ++i) {
-			if (i > 0) peersJson += ",";
-			const eSELive::CLiveTunnel::PeerSnapshot& p = all[i];
-			CStringA line;
-			line.Format(
-			    "{\"ip\":\"%s\",\"address\":\"%s\",\"port\":%u,"
-			    "\"forkCaps\":\"0x%08X\",\"eseCaps\":\"0x%08X\","
-			    "\"isFork\":%s}",
-			    p.has_ipv4 ? CAddress::FromIPv4NetworkOrder(p.ip).ToString().c_str() : "",
-			    p.address.c_str(),
-			    (unsigned)p.port,
-			    p.fork_caps, p.ese_caps,
-			    (p.ese_caps & 0x00000100) ? "true" : "false");
-			peersJson += line;
-		}
-
-		CStringA json;
-		json.Format(
-		    "{\"totalConnected\":%u,\"forkTunnelingCapable\":%u,\"peers\":[%s]}",
-		    (unsigned)all.size(),
-		    (unsigned)tunnelingCount,
-		    (LPCSTR)peersJson);
-
-		CStringA header;
-		header.Format(
-		    "HTTP/1.1 200 OK\r\n"
-		    HTTPInit
-		    "Content-Type: application/json\r\n"
-		    "Content-Length: %d\r\n\r\n",
-		    json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/live/privacy/test_circuit --- v0.71 P3.6 — solo testing helper.
-	// Builds a single-hop test circuit through a connected peer that
-	// advertised ESE_CAP_PRIVACY_TUNNELING. Legacy peers are rejected
-	// fail-closed instead of creating an unfinishable Pending circuit.
-	// Length of "/api/live/privacy/test_circuit" is exactly 30 chars.
-	// Left(30) matches both bare URL and URL with ?query suffix.
-	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyTestCircuit) {
-		// v0.71 B — optional ?hops=2 to build a 2-hop circuit. Default
-		// is 1-hop (backward compat). 2-hop requires 2 distinct fork peers.
-		// hops=3 invokes K6-6 STRICT3: three authenticated/shaped IPv6
-		// identities with verified /48+ASN diversity and no repeated known
-		// operator group, with no fallback.
-		const CString hopsArg = _ParseURL(Data.sURL, _T("hops"));
-		const int hops = hopsArg == _T("3") ? 3
-		               : hopsArg == _T("2") ? 2 : 1;
-		uint32_t circId = 0;
-		CStringA result;
-		try {
-			// v0.72 — marshaled to the main thread (the build touches the
-			// ClientList + peer sockets). Waits up to ~2.5 s for the result.
-			circId = eSELive::CLiveTunnel::Get().RequestTestCircuit(hops, 2500);
-		} catch (...) {}
-		if (circId == 0) {
-			result = hops == 3
-				? "{\"ok\":false,\"reason\":\"strict3 unavailable: need 3 authenticated shaped IPv6 peers with verified /48+ASN diversity and no repeated known operator group - check /api/live/privacy/peers\"}"
-				: hops == 2
-				? "{\"ok\":false,\"reason\":\"two-hop circuit unavailable: need 2 distinct connected fork-capable peers - no loopback downgrade\"}"
-				: "{\"ok\":false,\"reason\":\"no connected fork-capable peers - check /api/live/privacy/peers\"}";
-		} else {
-			CStringA tmp;
-			tmp.Format("{\"ok\":true,\"circuit_id\":\"0x%08x\",\"hops_requested\":%d,\"note\":\"poll /api/live/privacy and /api/live/privacy/circuits to watch handshake progress\"}",
-				(unsigned)circId, hops);
-			result = tmp;
-		}
-		CStringA header;
-		header.Format(
-			"HTTP/1.1 200 OK\r\n"
-			HTTPInit
-			"Content-Type: application/json\r\n"
-			"Content-Length: %d\r\n\r\n",
-			result.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(result, result.GetLength());
-		return;
-	}
-
-	// --- /api/live/privacy/kad6/release --- explicit public-exit release gate.
-	// Installation and mutation are loopback-only. The host signs the evidence
-	// with its persistent NodeIdentity; callers never supply a private key.
-	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyKad6Release) {
-		const CString enabledArg = _ParseURL(Data.sURL, _T("enabled"));
-		bool mutationOk = true;
-		CStringA mutationError;
-		if (!enabledArg.IsEmpty()) {
-			const bool local = Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK);
-			const bool validEnabled = enabledArg == _T("0") || enabledArg == _T("1");
-			const CString challengeArg = _ParseURL(Data.sURL, _T("challenge"));
-			if (!local) { mutationOk = false; mutationError = "local_only"; }
-			else if (!validEnabled) { mutationOk = false; mutationError = "bad_enabled"; }
-			else if (!eSELive::CLiveTunnel::Get().ConsumeK6ReleaseOperatorChallenge(
-				std::string(CT2A(challengeArg, CP_UTF8)))) {
-				mutationOk = false; mutationError = "challenge_required_or_expired";
-			}
-			else {
-				kad6::K6ReleaseEvidence evidence;
-				const kad6::K6ReleaseEvidence* evidencePtr = NULL;
-				if (enabledArg == _T("1")) {
-					const CString confirm = _ParseURL(Data.sURL, _T("confirm"));
-					const CString fieldHex = _ParseURL(Data.sURL, _T("field_sha256"));
-					const CString auditHex = _ParseURL(Data.sURL, _T("audit_sha256"));
-					if (confirm != _T("ENABLE_KAD6_PUBLIC_EXIT")) {
-						mutationOk = false; mutationError = "confirmation_required";
-					} else if (!fieldHex.IsEmpty() || !auditHex.IsEmpty()) {
-						auto parseDigest = [](const CString& text,
-							kad6::Hash32& digest) -> bool {
-							if (text.GetLength() != 64) return false;
-							for (int i = 0; i < 32; ++i) {
-								auto nibble = [](TCHAR c) -> int {
-									if (c >= _T('0') && c <= _T('9')) return c - _T('0');
-									if (c >= _T('a') && c <= _T('f')) return c - _T('a') + 10;
-									if (c >= _T('A') && c <= _T('F')) return c - _T('A') + 10;
-									return -1;
-								};
-								const int hi = nibble(text[i * 2]);
-								const int lo = nibble(text[i * 2 + 1]);
-								if (hi < 0 || lo < 0) return false;
-								digest[i] = static_cast<uint8_t>((hi << 4) | lo);
-							}
-							return true;
-						};
-						const CString fromArg = _ParseURL(Data.sURL, _T("observed_from"));
-						const CString toArg = _ParseURL(Data.sURL, _T("observed_to"));
-						const CString attemptsArg = _ParseURL(Data.sURL, _T("admission_attempts"));
-						const CString ppmArg = _ParseURL(Data.sURL, _T("admission_ppm"));
-						const CString headroomArg = _ParseURL(Data.sURL, _T("headroom_bps"));
-						const CString gatesArg = _ParseURL(Data.sURL, _T("gate_mask"));
-						const CString validArg = _ParseURL(Data.sURL, _T("valid_until"));
-						evidence.observed_from = _tcstoui64(fromArg, NULL, 10);
-						evidence.observed_to = _tcstoui64(toArg, NULL, 10);
-						evidence.admission_attempts = _tcstoui64(attemptsArg, NULL, 10);
-						evidence.admission_success_ppm = static_cast<uint32>(
-							_tcstoul(ppmArg, NULL, 10));
-						evidence.useful_headroom_bps = _tcstoui64(headroomArg, NULL, 10);
-						evidence.gate_mask = static_cast<uint16>(_tcstoul(gatesArg, NULL, 0));
-						evidence.valid_until = _tcstoui64(validArg, NULL, 10);
-						if (!parseDigest(fieldHex, evidence.field_digest) ||
-							!parseDigest(auditHex, evidence.external_audit_digest) ||
-							fromArg.IsEmpty() || toArg.IsEmpty() || attemptsArg.IsEmpty() ||
-							ppmArg.IsEmpty() || headroomArg.IsEmpty() || gatesArg.IsEmpty()) {
-							mutationOk = false; mutationError = "incomplete_or_bad_evidence";
-						} else {
-							evidencePtr = &evidence;
-						}
-					}
-				}
-				if (mutationOk) {
-					int drain = _ttoi(_ParseURL(Data.sURL, _T("drain_seconds")));
-					if (drain <= 0) drain = 300;
-					if (drain > static_cast<int>(kad6::kK6MaxDrainSeconds))
-						drain = static_cast<int>(kad6::kK6MaxDrainSeconds);
-					try {
-						mutationOk = eSELive::CLiveTunnel::Get().RequestK6PublicRelease(
-							enabledArg == _T("1"), evidencePtr,
-							static_cast<uint32>(drain), 5000);
-					} catch (...) { mutationOk = false; }
-					if (!mutationOk) mutationError = "gate_rejected_or_runtime_unhealthy";
-				}
-			}
-		}
-		eSELive::CLiveTunnel::K6ReleaseRuntimeSnapshot release;
-		try { eSELive::CLiveTunnel::Get().GetK6ReleaseSnapshot(release); } catch (...) {}
-		std::string operatorChallenge;
-		if (Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK))
-			try { eSELive::CLiveTunnel::Get().GetK6ReleaseOperatorChallenge(
-				operatorChallenge); } catch (...) { operatorChallenge.clear(); }
-		const CStringA challengeJson(operatorChallenge.c_str());
-		CStringA json;
-		json.Format(
-			"{\"ok\":%s,\"error\":\"%s\",\"status\":\"%s\",\"challenge\":\"%s\","
-			"\"operator_opt_in\":%s,\"evidence_present\":%s,\"evidence_valid\":%s,"
-			"\"runtime_healthy\":%s,\"public_exit_enabled\":%s,"
-			"\"beta_exit_opt_in\":%s,\"beta_exit_enabled\":%s,"
-			"\"gate_mask\":%u,\"observed_from\":%llu,\"observed_to\":%llu,"
-			"\"valid_until\":%llu,\"admission_attempts\":%llu,"
-			"\"admission_ppm\":%u,\"headroom_bps\":%llu}",
-			mutationOk ? "true" : "false", (LPCSTR)mutationError,
-			kad6::K6ReleaseGateStatusName(release.status),
-			(LPCSTR)challengeJson,
-			release.operator_opt_in ? "true" : "false",
-			release.evidence_present ? "true" : "false",
-			release.evidence_valid ? "true" : "false",
-			release.runtime_healthy ? "true" : "false",
-			release.public_exit_enabled ? "true" : "false",
-			release.beta_exit_opt_in ? "true" : "false",
-			release.beta_exit_enabled ? "true" : "false",
-			static_cast<unsigned>(release.evidence.gate_mask),
-			static_cast<unsigned long long>(release.evidence.observed_from),
-			static_cast<unsigned long long>(release.evidence.observed_to),
-			static_cast<unsigned long long>(release.evidence.valid_until),
-			static_cast<unsigned long long>(release.evidence.admission_attempts),
-			static_cast<unsigned>(release.evidence.admission_success_ppm),
-			static_cast<unsigned long long>(release.evidence.useful_headroom_bps));
-		CStringA header;
-		header.Format("HTTP/1.1 200 OK\r\n" HTTPInit
-			"Content-Type: application/json\r\nCache-Control: no-store\r\n"
-			"Content-Length: %d\r\n\r\n", json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/live/privacy/kad6/hardening --- K6-7 local incident control.
-	// A mutation is loopback-only even when a remote Web UI token is valid: the
-	// operator stop is intentionally local and never becomes a remote kill switch.
-	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyKad6Hardening) {
-		const CString serviceArg = _ParseURL(Data.sURL, _T("service"));
-		const CString enabledArg = _ParseURL(Data.sURL, _T("enabled"));
-		const CString drainArg = _ParseURL(Data.sURL, _T("drain_seconds"));
-		bool mutationOk = true;
-		CStringA mutationError;
-		if (!serviceArg.IsEmpty() || !enabledArg.IsEmpty()) {
-			kad6::K6Service service = kad6::K6Service::Count;
-			if (serviceArg == _T("control")) service = kad6::K6Service::Control;
-			else if (serviceArg == _T("exit_kad")) service = kad6::K6Service::ExitKad;
-			else if (serviceArg == _T("exit_ed2k_dial")) service = kad6::K6Service::ExitEd2kDial;
-			else if (serviceArg == _T("exit_ed2k_full")) service = kad6::K6Service::ExitEd2kFull;
-			const bool validEnabled = enabledArg == _T("0") || enabledArg == _T("1");
-			const bool local = Data.inadr.S_un.S_addr == htonl(INADDR_LOOPBACK);
-			if (!local) { mutationOk = false; mutationError = "local_only"; }
-			else if (service == kad6::K6Service::Count || !validEnabled) {
-				mutationOk = false; mutationError = "bad_service_or_enabled";
-			} else {
-				int requestedDrain = drainArg.IsEmpty() ? 300 : _ttoi(drainArg);
-				if (requestedDrain < 0) requestedDrain = 0;
-				if (requestedDrain > static_cast<int>(kad6::kK6MaxDrainSeconds))
-					requestedDrain = static_cast<int>(kad6::kK6MaxDrainSeconds);
-				try {
-					mutationOk = eSELive::CLiveTunnel::Get().RequestK6ServiceSwitch(
-						service, enabledArg == _T("1"), static_cast<uint32>(requestedDrain), 3500);
-				} catch (...) { mutationOk = false; }
-				if (!mutationOk) mutationError = "release_gate_or_main_thread_timeout";
-			}
-		}
-
-		eSELive::CLiveTunnel::K6HardeningRuntimeSnapshot snap;
-		try { eSELive::CLiveTunnel::Get().GetK6HardeningSnapshot(snap); } catch (...) {}
-		K6ExitNoticeServerSnapshot notice;
-		try { notice = eSELive::CLiveTunnel::Get().GetK6ExitNoticeSnapshot(); } catch (...) {}
-		CStringA services;
-		for (size_t i = 0; i < snap.control.services.size(); ++i) {
-			if (i != 0) services += ",";
-			const kad6::K6ServiceSnapshot& s = snap.control.services[i];
-			CStringA item;
-			item.Format("{\"service\":\"%s\",\"state\":\"%s\","
-				"\"changed_at\":%llu,\"drain_deadline\":%llu,\"admitting\":%s}",
-				kad6::K6ServiceName(s.service), kad6::K6ServiceStateName(s.state),
-				static_cast<unsigned long long>(s.changed_at),
-				static_cast<unsigned long long>(s.drain_deadline),
-				(snap.control.admission_mask & kad6::K6ServiceBit(s.service)) ? "true" : "false");
-			services += item;
-		}
-		const bool degraded = snap.source_epoch_store_failed || snap.shaping_exposed_circuits != 0;
-		auto occupancyBand = [](uint64 value) -> const char* {
-			return value == 0 ? "zero" : value <= 4 ? "1_4" :
-				value <= 16 ? "5_16" : value <= 64 ? "17_64" : "65_plus";
-		};
-		CStringA economy;
-		for (size_t i = 0; i < snap.economy.size(); ++i) {
-			if (i != 0) economy += ",";
-			const kad6::K6EconomyWindowSnapshot& window = snap.economy[i];
-			CStringA rho;
-			if (snap.economy_measurement_ready && std::isfinite(snap.rho[i]))
-				rho.Format("%.6f", snap.rho[i]);
-			else
-				rho = "null";
-			CStringA item;
-			item.Format("{\"service\":\"%s\",\"rho\":%s,\"sealed\":%s,"
-				"\"starts_at\":%llu,\"ends_at\":%llu,\"samples\":%llu,"
-				"\"admission_attempts\":%llu,\"admission_successes\":%llu,"
-				"\"admission_ratio\":%.6f,\"rho_p50\":%.6f,\"rho_p95\":%.6f}",
-				kad6::K6ServiceName(static_cast<kad6::K6Service>(i)), (LPCSTR)rho,
-				window.sealed ? "true" : "false",
-				static_cast<unsigned long long>(window.starts_at),
-				static_cast<unsigned long long>(window.ends_at),
-				static_cast<unsigned long long>(window.samples),
-				static_cast<unsigned long long>(window.admission_attempts),
-				static_cast<unsigned long long>(window.admission_successes),
-				window.admission_ratio, window.rho_p50, window.rho_p95);
-			economy += item;
-		}
-		CStringA json;
-		json.Format("{\"ok\":%s,\"error\":\"%s\",\"health\":\"%s\","
-			"\"revision\":%llu,\"services\":[%s],"
-			"\"occupancy\":{\"leases\":\"%s\",\"publishes\":\"%s\","
-			"\"dial_streams\":\"%s\",\"full_streams\":\"%s\",\"shaping_exposed\":%s},"
-			"\"source_epoch_store_failed\":%s,"
-			"\"metrics\":{\"window_ready\":%s,\"window_start\":%llu,\"window_end\":%llu,"
-			"\"fixed_series\":%u,\"exported_series\":%u},"
-			"\"economy\":{\"measurement_ready\":%s,\"strict_recommended\":%s,"
-			"\"services\":[%s]},"
-			"\"exit_notice\":{\"running\":%s,\"port\":%u,\"requests\":\"%s\","
-			"\"rejected\":\"%s\",\"bytes_sent\":\"%s\"}}",
-			mutationOk ? "true" : "false", (LPCSTR)mutationError,
-			degraded ? "degraded" : "healthy",
-			static_cast<unsigned long long>(snap.control.revision), (LPCSTR)services,
-			occupancyBand(snap.active_leases), occupancyBand(snap.active_publishes),
-			occupancyBand(snap.dial_streams), occupancyBand(snap.full_streams),
-			snap.shaping_exposed_circuits != 0 ? "true" : "false",
-			snap.source_epoch_store_failed ? "true" : "false",
-			snap.metrics.ready ? "true" : "false",
-			static_cast<unsigned long long>(snap.metrics.start),
-			static_cast<unsigned long long>(snap.metrics.end),
-			static_cast<unsigned>(snap.metrics.fixed_series),
-			static_cast<unsigned>(snap.metrics.exported_series),
-			snap.economy_measurement_ready ? "true" : "false",
-			snap.strict_recommended ? "true" : "false", (LPCSTR)economy,
-			notice.running ? "true" : "false", static_cast<unsigned>(notice.port),
-			occupancyBand(notice.requests), occupancyBand(notice.rejected),
-			occupancyBand(notice.bytes_sent));
-		CStringA header;
-		header.Format("HTTP/1.1 200 OK\r\n" HTTPInit
-			"Content-Type: application/json\r\nCache-Control: no-store\r\n"
-			"Content-Length: %d\r\n\r\n", json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/live/{hash}/stream.m3u8 --- Dynamic HLS playlist
-	// --- /api/live/{hash}/seg_NNNNN.ts --- Segment binary data
-	// --- /live --- Channel discovery page
-	if (Data.webRoute == ese::web::WebRouteId::LiveIndex) {
-		CStringA html =
-			"<!DOCTYPE html><html><head><title>eSE Live - Channels</title>"
-			"<style>"
-			"*{margin:0;padding:0;box-sizing:border-box}"
-			"body{background:#0e0e10;color:#efeff1;font-family:system-ui,-apple-system,sans-serif}"
-			".header{background:#18181b;padding:16px 24px;border-bottom:1px solid #2f2f35}"
-			".header h1{font-size:22px;font-weight:700}"
-			".header h1 span{color:#9147ff}"
-			".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;padding:24px}"
-			".card{background:#1f1f23;border-radius:8px;overflow:hidden;cursor:pointer;transition:transform .15s}"
-			".card:hover{transform:translateY(-4px)}"
-			".card .thumb{height:180px;background:#000;display:flex;align-items:center;justify-content:center;color:#666;font-size:14px}"
-			".card .info{padding:12px}"
-			".card .title{font-weight:600;font-size:15px;margin-bottom:4px}"
-			".card .meta{color:#adadb8;font-size:13px}"
-			".live-dot{display:inline-block;width:8px;height:8px;background:#e74c3c;border-radius:50%;margin-right:4px;animation:pulse 1.5s infinite}"
-			"@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}"
-			".badge{background:#e74c3c;color:#fff;padding:2px 6px;border-radius:3px;font-size:11px;font-weight:700}"
-			".empty{text-align:center;padding:80px 24px;color:#666;font-size:16px}"
-			"</style></head><body>"
-			"<div class='header'><h1><span>eSE</span> Live Channels</h1></div>"
-			"<div class='grid' id='g'></div>"
-			"<div class='empty' id='e'>Loading channels...</div>"
-			"<script>"
-			// SEC: broadcaster-supplied title/category/quality must be HTML-escaped
-			// before being inserted into the DOM. A malicious peer publishing a
-			// title like <img src=x onerror=fetch('/api/live/broadcast/stop')>
-			// would otherwise execute in any viewer that opens this page.
-			"function esc(s){return String(s==null?'':s).replace(/[&<>\"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'})[c]})}"
-			// M1: B = the /s/{ses}/ prefix when the page is served token-routed,
-			// "" when served at /live directly — keeps every fetch and link
-			// inside the authenticated namespace.
-			"const B=location.pathname.replace(/\\/live\\/?$/,'');"
-			"function r(){fetch(B+'/api/live/channels').then(r=>r.json()).then(d=>{"
-			"const g=document.getElementById('g'),e=document.getElementById('e');"
-			"g.innerHTML='';"
-			"if(!d.channels||d.channels.length===0){e.textContent='No live channels right now.';e.style.display='block';return}"
-			"e.style.display='none';"
-			"d.channels.forEach(c=>{"
-			"const card=document.createElement('div');card.className='card';"
-			"card.onclick=()=>location.href=B+'/live/'+encodeURIComponent(c.hash);"
-			"card.innerHTML='<div class=\"thumb\"><span class=\"badge\">LIVE</span></div>'"
-			"+'<div class=\"info\"><div class=\"title\"><span class=\"live-dot\"></span>'+esc(c.title)+'</div>'"
-			"+'<div class=\"meta\">'+esc(c.category)+' | '+esc(c.quality)+' | '+esc(c.viewers)+' viewers</div></div>';"
-			"g.appendChild(card)})})"
-			".catch(()=>{document.getElementById('e').textContent='Failed to load channels.'})}"
-			"r();setInterval(r,5000);"
-			"</script></body></html>";
-
-		CStringA header;
-		header.Format(
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: text/html; charset=utf-8\r\n"
-			"Content-Length: %d\r\n\r\n", html.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(html, html.GetLength());
-		return;
-	}
-
-	// --- /live/{hash} --- Player page with HLS.js
-	if (Data.webRoute == ese::web::WebRouteId::LivePlayer) {
-		CStringA hash = sURL.Mid(6, 32);
-
-		CStringA html;
-		html.Format(
-			"<!DOCTYPE html><html><head><title>eSE Live</title>"
-			"<script src='https://cdn.jsdelivr.net/npm/hls.js@latest'></script>"
-			"<style>"
-			"*{margin:0;padding:0;box-sizing:border-box}"
-			"body{background:#0e0e10;color:#efeff1;font-family:system-ui}"
-			".player{max-width:1280px;margin:0 auto}"
-			"video{width:100%%;background:#000;display:block}"
-			".info{padding:16px}"
-			".info h1{font-size:20px;margin-bottom:8px}"
-			".badge{background:#e74c3c;color:#fff;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:700;margin-right:8px}"
-			".meta{color:#adadb8;font-size:14px}"
-			".back{display:inline-block;color:#9147ff;text-decoration:none;padding:12px 16px;font-size:14px}"
-			".back:hover{text-decoration:underline}"
-			"</style></head><body>"
-			"<a class='back' href='/live'>< Back to channels</a>"
-			"<div class='player'>"
-			"<video id='v' controls autoplay muted></video>"
-			"<div class='info'><h1><span class='badge'>LIVE</span>Stream</h1>"
-			"<div class='meta' id='m'>Connecting...</div></div></div>"
-			"<script>"
-			// M1: same B-prefix trick as the channels page; also fixes the back
-			// link so navigation never falls out of the /s/{ses}/ namespace.
-			"const v=document.getElementById('v');"
-			"const B=location.pathname.split('/live/')[0];"
-			"document.querySelector('.back').href=B+'/live';"
-			"const src=B+'/api/live/%s/stream.m3u8';"
-			// window.Hls guard: with no internet the CDN script never loads and a
-			// bare Hls.isSupported() would throw, killing the native-HLS fallback
-			// below (Safari/iOS plays the stream without hls.js).
-			"if(window.Hls&&Hls.isSupported()){"
-			"const h=new Hls({"
-			"liveSyncDurationCount:3,"
-			"liveMaxLatencyDurationCount:8,"
-			"liveDurationInfinity:true,"
-			"maxBufferLength:30,"
-			"maxMaxBufferLength:60,"
-			"maxBufferHole:2,"
-			"highBufferWatchdogPeriod:2,"
-			"nudgeOffset:0.5,"
-			"manifestLoadingMaxRetry:50,"
-			"levelLoadingMaxRetry:50,"
-			"fragLoadingMaxRetry:50"
-			"});"
-			"h.loadSource(src);h.attachMedia(v);"
-			"h.on(Hls.Events.MANIFEST_PARSED,()=>v.play());"
-			// Audio-distortion fix (2026-06): hls.js requires the two-step media
-			// recovery — if a second fatal mediaError lands shortly after a
-			// recoverMediaError(), swapAudioCodec() must be called first or the
-			// audio is re-appended with the wrong AAC/HE-AAC signaling and plays
-			// at the wrong sample rate (the deep/slow audio after stalls).
-			"let mErrAt=0;"
-			"h.on(Hls.Events.ERROR,(e,d)=>{"
-			"if(!d.fatal)return;"
-			"if(d.type==='mediaError'){"
-			"const n=Date.now();"
-			"if(n-mErrAt<6000){h.swapAudioCodec()}"
-			"mErrAt=n;"
-			"h.recoverMediaError()"
-			"}"
-			"else{setTimeout(()=>{h.loadSource(src);h.attachMedia(v)},3000)}"
-			"});"
-			"setInterval(()=>{if(v.paused&&v.readyState>=2)v.play()},2000);"
-			// Ghost-viewer fix (2026-06): tell eMule we left when the page goes
-			// away (navigation/close). keepalive lets the request outlive the
-			// page. The 60 s idle watchdog in Process() is the backstop for
-			// killed tabs where this never fires.
-			"addEventListener('pagehide',()=>{try{fetch(B+'/api/live/leave?key=%s',{keepalive:true})}catch(_){}});"
-			"const langNames={eng:'English',spa:'Spanish',fre:'French',ger:'German',ita:'Italian',por:'Portuguese',jpn:'Japanese',kor:'Korean',chi:'Chinese',rus:'Russian',ara:'Arabic',und:'Track'};"
-			"const langFlags={eng:'[EN]',spa:'[ES]',fre:'[FR]',ger:'[DE]',ita:'[IT]',por:'[PT]',jpn:'[JP]',rus:'[RU]',kor:'[KR]',chi:'[CN]',ara:'[AR]',und:''};"
-			"function buildAudioSel(tracks,setFn){"
-			"if(document.getElementById('audioSel'))return;"
-			"if(!tracks||tracks.length<2)return;"
-			"const sel=document.createElement('select');"
-			"sel.id='audioSel';"
-			"sel.style.cssText='position:absolute;top:10px;right:10px;z-index:100;background:rgba(0,0,0,0.7);color:#fff;border:1px solid #555;padding:8px 14px;border-radius:8px;font-size:14px;cursor:pointer;backdrop-filter:blur(8px)';"
-			"for(let i=0;i<tracks.length;i++){"
-			"const lang=tracks[i].lang||tracks[i].language||'und';"
-			"const flag=langFlags[lang]||'';"
-			"const name=flag+' '+(langNames[lang]||lang)+' '+(i+1);"
-			"sel.innerHTML+='<option value=\"'+i+'\">'+name+'</option>';"
-			"}"
-			"sel.onchange=()=>setFn(parseInt(sel.value));"
-			"document.querySelector('.player').style.position='relative';"
-			"document.querySelector('.player').appendChild(sel);"
-			"}"
-			"h.on(Hls.Events.AUDIO_TRACKS_UPDATED,()=>{"
-			"const t=h.audioTrackController?h.audioTrackController.audioTracks:[];"
-			"buildAudioSel(t,(i)=>{h.audioTrack=i});"
-			"});"
-			"v.addEventListener('loadedmetadata',()=>{"
-			"if(v.audioTracks&&v.audioTracks.length>=2){"
-			"const t=Array.from(v.audioTracks).map(a=>({lang:a.language||'und'}));"
-			"buildAudioSel(t,(i)=>{"
-			"for(let j=0;j<v.audioTracks.length;j++)v.audioTracks[j].enabled=(j===i);"
-			"});"
-			"}"
-			"});"
-			"}else if(v.canPlayType('application/vnd.apple.mpegurl')){v.src=src}"
-			// SEC: same escaping concern as the channels grid - title is broadcaster-controlled.
-			"function esc(s){return String(s==null?'':s).replace(/[&<>\"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'})[c]})}"
-			"fetch(B+'/api/live/channels').then(r=>r.json()).then(d=>{"
-			"const ch=d.channels.find(c=>c.hash==='%s');"
-			"if(ch){document.querySelector('h1').innerHTML='<span class=\"badge\">LIVE</span> '+esc(ch.title);"
-			"document.getElementById('m').textContent=ch.category+' | '+ch.quality+' | '+ch.viewers+' viewers'}});"
-			"</script></body></html>",
-			(LPCSTR)hash, (LPCSTR)hash, (LPCSTR)hash);
-
-		CStringA header;
-		header.Format(
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: text/html; charset=utf-8\r\n"
-			"Content-Length: %d\r\n\r\n", html.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(html, html.GetLength());
-		return;
-	}
+	// W11 owns the remaining compatibility pages, media files and privacy operations.
+	ese::web::W11LegacyRequest legacy;legacy.loopback=Data.inadr.S_un.S_addr==htonl(INADDR_LOOPBACK);bool hasLegacy=false;
+	switch(Data.webRoute){
+	case ese::web::WebRouteId::LegacyHls:{CStringA resource=sURL.Mid(5);const int query=resource.Find('?');if(query>=0)resource=resource.Left(query);legacy.operation=ese::web::W11LegacyOperation::Hls;legacy.resource=W9Bytes(resource);legacy.range=W9Bytes(Data.sRange);hasLegacy=true;break;}
+	case ese::web::WebRouteId::Dashboard:legacy.operation=ese::web::W11LegacyOperation::Dashboard;hasLegacy=true;break;
+	case ese::web::WebRouteId::ApiEseNetlabReport:legacy.operation=ese::web::W11LegacyOperation::NetlabReport;hasLegacy=true;break;
+	case ese::web::WebRouteId::ApiLivePrivacyTunnelEcho:legacy.operation=ese::web::W11LegacyOperation::TunnelEcho;legacy.bytes=W8Legacy(_ParseURL(Data.sURL,_T("bytes")));hasLegacy=true;break;
+	case ese::web::WebRouteId::ApiLivePrivacyTunnelPing:legacy.operation=ese::web::W11LegacyOperation::TunnelPing;legacy.text=W8Legacy(_ParseURL(Data.sURL,_T("text")));hasLegacy=true;break;
+	case ese::web::WebRouteId::ApiLivePrivacyCircuits:legacy.operation=ese::web::W11LegacyOperation::Circuits;hasLegacy=true;break;
+	case ese::web::WebRouteId::ApiLivePrivacyPeers:legacy.operation=ese::web::W11LegacyOperation::Peers;hasLegacy=true;break;
+	case ese::web::WebRouteId::ApiLivePrivacyTestCircuit:legacy.operation=ese::web::W11LegacyOperation::TestCircuit;legacy.hops=W8Legacy(_ParseURL(Data.sURL,_T("hops")));hasLegacy=true;break;
+	case ese::web::WebRouteId::ApiLivePrivacyKad6Release:legacy.operation=ese::web::W11LegacyOperation::Kad6Release;legacy.enabled=W8Legacy(_ParseURL(Data.sURL,_T("enabled")));legacy.challenge=W8Utf8(_ParseURL(Data.sURL,_T("challenge")));legacy.confirm=W8Legacy(_ParseURL(Data.sURL,_T("confirm")));legacy.field_sha256=W8Legacy(_ParseURL(Data.sURL,_T("field_sha256")));legacy.audit_sha256=W8Legacy(_ParseURL(Data.sURL,_T("audit_sha256")));legacy.observed_from=W8Legacy(_ParseURL(Data.sURL,_T("observed_from")));legacy.observed_to=W8Legacy(_ParseURL(Data.sURL,_T("observed_to")));legacy.admission_attempts=W8Legacy(_ParseURL(Data.sURL,_T("admission_attempts")));legacy.admission_ppm=W8Legacy(_ParseURL(Data.sURL,_T("admission_ppm")));legacy.headroom_bps=W8Legacy(_ParseURL(Data.sURL,_T("headroom_bps")));legacy.gate_mask=W8Legacy(_ParseURL(Data.sURL,_T("gate_mask")));legacy.valid_until=W8Legacy(_ParseURL(Data.sURL,_T("valid_until")));legacy.drain_seconds=W8Legacy(_ParseURL(Data.sURL,_T("drain_seconds")));hasLegacy=true;break;
+	case ese::web::WebRouteId::ApiLivePrivacyKad6Hardening:legacy.operation=ese::web::W11LegacyOperation::Kad6Hardening;legacy.service=W8Legacy(_ParseURL(Data.sURL,_T("service")));legacy.enabled=W8Legacy(_ParseURL(Data.sURL,_T("enabled")));legacy.drain_seconds=W8Legacy(_ParseURL(Data.sURL,_T("drain_seconds")));hasLegacy=true;break;
+	case ese::web::WebRouteId::LiveIndex:legacy.operation=ese::web::W11LegacyOperation::LiveIndex;hasLegacy=true;break;
+	case ese::web::WebRouteId::LivePlayer:legacy.operation=ese::web::W11LegacyOperation::LivePlayer;legacy.resource=W9Bytes(sURL.Mid(6,32));hasLegacy=true;break;
+	default:break;}
+	if(hasLegacy){const ese::web::W11LegacyPort port=W11LegacyContext::Port();ese::web::W11LegacyResponse response;if(ese::web::RunW11LiveLegacyApi(legacy,port,response)){SendW11Response(Data,response);return;}}
 
 	// Fallback 404
 	Data.pSocket->SendReply("HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot found");
@@ -2205,35 +1425,7 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 
 void CWebServer::_ProcessFileReq(const ThreadData &Data)
 {
-	const CWebServer *pThis = reinterpret_cast<CWebServer*>(Data.pThis);
-	if (pThis == NULL)
-		return;
-
-	CString filename(Data.sURL);
-	const CStringA requestPath(Data.sURL);
-
-	filename.Replace(_T('/'), _T('\\'));
-	if (filename[0] == _T('\\'))
-		filename.Delete(0, 1);
-	filename.Insert(0, thePrefs.GetMuleDirectory(EMULE_WEBSERVERDIR));
-
-	const ULONGLONG maximumBytes =
-		static_cast<ULONGLONG>(thePrefs.GetMaxWebUploadFileSizeMB()) *
-		1024ull * 1024ull;
-
-	M2AModuleHandle templateSnapshot = CaptureWebTemplateSnapshot(WebTemplateParent(pThis)); const CStringA lastModified(GetWebTemplateLastModified(WebTemplateParent(pThis)));
-	const CStringA etag(GetWebTemplateETag(WebTemplateParent(pThis)));
-	ese::web::WebFileResponseOptions options;
-	options.lastModified.assign((LPCSTR)lastModified, lastModified.GetLength());
-	options.etag.assign((LPCSTR)etag, etag.GetLength());
-	Data.pSocket->SendFileResponse(
-		filename,
-		requestPath,
-		Data.sRange,
-		options,
-		maximumBytes,
-		false,
-		true);
+	RunW11LiveLegacyStaticFile(Data);
 }
 
 CString CWebServer::_GetWebImageNameForFileType(const CString &filename)

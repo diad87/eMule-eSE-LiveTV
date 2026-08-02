@@ -56,6 +56,8 @@ $criticalSourceRelativePaths = @(
     'srchybrid/WebDiagnostics.cpp', 'srchybrid/WebDiagnostics.h',
     'srchybrid/WebLiveApiStreamController.cpp', 'srchybrid/WebLiveApiStreamController.h',
     'srchybrid/WebLiveApiStatusController.cpp', 'srchybrid/WebLiveApiStatusController.h',
+    'srchybrid/WebLiveApiTransferController.cpp', 'srchybrid/WebLiveApiTransferController.h',
+    'srchybrid/WebLiveApiSearchController.cpp', 'srchybrid/WebLiveApiSearchController.h',
     'srchybrid/eMule.tmpl',
     'srchybrid/ListenSocket.cpp',
     'srchybrid/LiveProtocol.h',

@@ -27,14 +27,12 @@ class Mod27WebDiagnosticsProductionTest(unittest.TestCase):
         cls.web_server = (
             ROOT / "srchybrid" / "WebServer.cpp"
         ).read_text(encoding="utf-8", errors="replace")
-        cls.status_controller_path = (
-            ROOT / "srchybrid" / "WebLiveApiStatusController.cpp"
-        )
         cls.status_controller = (
-            cls.status_controller_path.read_text(encoding="utf-8")
-            if cls.status_controller_path.exists()
-            else ""
-        )
+            ROOT / "srchybrid" / "WebLiveApiStatusController.cpp"
+        ).read_text(encoding="utf-8")
+        cls.search_controller = (
+            ROOT / "srchybrid" / "WebLiveApiSearchController.cpp"
+        ).read_text(encoding="utf-8")
         cls.native_test = (
             ROOT / "srchybrid" / "tests" / "test_web_diagnostics.cpp"
         ).read_text(encoding="utf-8")
@@ -125,22 +123,8 @@ class Mod27WebDiagnosticsProductionTest(unittest.TestCase):
             self.assertIn(message, self.native_test)
         self.assertGreaterEqual(self.native_test.count("=="), 5)
 
-    def test_diagnostic_routes_keep_serializer_ownership_after_w8_extraction(self) -> None:
-        """The W8 facade dispatches status/mesh once; debug remains MOD-2.7-owned.
-
-        Before W8, all three routes were serialized inline in WebServer.cpp.  W8
-        deliberately moves the status and mesh wire serializers behind a portable
-        snapshot port, so counting WebDiagnostics::Serialize calls in the facade
-        would reject the intended extraction.  This checks every route and both
-        serializer owners instead of merely lowering that count.
-        """
-        if not self.status_controller:
-            # Compatibility with the pre-W8 reviewed baseline.
-            self.assertGreaterEqual(
-                self.web_server.count("WebDiagnostics::Serialize("), 3
-            )
-            return
-
+    def test_diagnostic_routes_keep_serializer_ownership_after_w9_extraction(self) -> None:
+        """W8/W9 delegate their families while MOD-2.7 keeps live/debug."""
         dispatch_start = self.web_server.index("// W8 dispatch stays below")
         dispatch_end = self.web_server.index("W8LiveStreamRequest request", dispatch_start)
         dispatch = self.web_server[dispatch_start:dispatch_end]
@@ -156,12 +140,20 @@ class Mod27WebDiagnosticsProductionTest(unittest.TestCase):
                 dispatch,
             )
 
-        # The two extracted routes still have one explicit, portable serializer
-        # each, selected by the facade operation; debug deliberately remains in
-        # the MOD-2.7 serializer until its own migration card is activated.
+        # Extracted routes keep explicit portable serializers.
         self.assertIn("r.body=Status(s,loopback)", self.status_controller)
         self.assertIn("r.body=Channels(c)", self.status_controller)
         self.assertIn("r.body=Mesh(m)", self.status_controller)
+        w9_start = self.web_server.index("// W9 keeps authorization above")
+        w9_end = self.web_server.index("// ---", w9_start)
+        w9_dispatch = self.web_server[w9_start:w9_end]
+        self.assertIn("RunW9LiveSearchApi(search,port,response)", w9_dispatch)
+        for route in (
+            "ApiDebugSourceResolutions", "ApiLiveDiagnose", "ApiLiveKadStreams",
+        ):
+            self.assertEqual(w9_dispatch.count(f"WebRouteId::{route}"), 1)
+        for serializer in ("Sources(n,e)", "Diagnose(!r.key.empty(),valid,s)", "Streams(p,kad,s)"):
+            self.assertIn(serializer, self.search_controller)
         debug_start = self.web_server.index("WebRouteId::ApiLiveDebug")
         debug_block = self.web_server[debug_start:]
         self.assertIn("WebDiagnostics::Serialize(debug)", debug_block)

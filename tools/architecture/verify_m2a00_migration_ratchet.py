@@ -1403,6 +1403,58 @@ def _preexisting_parent_route(
     return False
 
 
+def _preexisting_local_handle_route(
+    current: str,
+    previous: str,
+    classes: tuple[str, ...],
+    marker: str,
+    call_start: int,
+) -> bool:
+    """Allow only consecutive, fail-closed local bindings at member entry."""
+
+    prior_pair = re.compile(
+        r"\s*M2AModuleHandle\s+([A-Za-z_]\w*)\s*=\s*"
+        r"M2A_BIND_[A-Z0-9]+_[0-9A-F]{10}\s*\(\s*"
+        r"M2AParentPort\s*\{\s*this\s*\}\s*\)\s*;\s*"
+        r"if\s*\(\s*!\s*\1\s*\)\s*return\s*;"
+    )
+    target = re.compile(
+        r"\s*M2AModuleHandle\s+([A-Za-z_]\w*)\s*=\s*"
+        rf"{re.escape(marker)}\s*\(\s*M2AParentPort\s*"
+        r"\{\s*this\s*\}\s*\)\s*;\s*"
+        r"if\s*\(\s*!\s*\1\s*\)\s*return"
+        r"(?:\s+(?:false|0|CString\s*\(\s*\)))?\s*;"
+    )
+    for owner in classes:
+        signature = re.compile(
+            rf"\b{re.escape(owner)}::([A-Za-z_]\w*)\s*"
+            r"\([^;{}]*\)\s*(?:const\s*)?(?:noexcept\s*)?"
+            r"(?:->\s*[^{}]+)?\{"
+        )
+        for match in signature.finditer(current):
+            opening = current.find("{", match.start(), match.end())
+            closing = _matching_brace(current, opening)
+            if closing is None or not (opening < call_start < closing):
+                continue
+            if re.search(
+                rf"\b{re.escape(owner)}::{re.escape(match.group(1))}\s*\(",
+                previous,
+            ) is None:
+                continue
+            cursor = opening + 1
+            while current[cursor:call_start].strip():
+                prior = prior_pair.match(current, cursor, call_start)
+                if prior is None:
+                    break
+                cursor = prior.end()
+            if current[cursor:call_start].strip():
+                continue
+            routed = target.match(current, call_start, closing)
+            if routed is not None and routed.end() <= closing:
+                return True
+    return False
+
+
 def _preexisting_web_static_thread_route(
     current: str, previous: str, current_header: str, previous_header: str,
     marker: str, method: str,
@@ -1754,9 +1806,17 @@ def validate_active_card_outcomes(
                     )
                 )
                 for call in assignment.finditer(translated):
-                    if _preexisting_parent_route(
-                        translated, previous, parent_classes, call.start()
-                    ) or (
+                    preexisting_route = (
+                        _preexisting_local_handle_route(
+                            translated, previous, parent_classes, marker,
+                            call.start(),
+                        )
+                        if module["parent"] == "CWebServer"
+                        else _preexisting_parent_route(
+                            translated, previous, parent_classes, call.start()
+                        )
+                    )
+                    if preexisting_route or (
                         same_card_parent is not None
                         and _same_card_parent_constructor_route(
                             translated, same_card_parent["name"], call.start()

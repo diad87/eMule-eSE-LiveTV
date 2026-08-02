@@ -85,7 +85,31 @@ enum class W8LiveStatusOperation { Status, Channels, Mesh }; struct W8LiveStatus
 struct W8LiveMeshSnapshot { std::int64_t mesh_peers = 0, pending_requests = 0, chunks_served = 0; std::uint64_t total_redistributed = 0; std::int64_t super_seeders = 0, middle_peers = 0, leaf_peers = 0; std::uint32_t upload_floor = 0; bool emergency_mode = false; }; struct W8LiveStatusPort { void* context = nullptr; bool (*read_status)(void*, W8LiveStatusSnapshot&) = nullptr; bool (*read_channel)(void*, W8LiveChannelSnapshot&) = nullptr; bool (*read_mesh)(void*, W8LiveMeshSnapshot&) = nullptr; }; struct W8LiveStatusResponse { std::string header; std::string body; };
 bool RunW8LiveStatusApi(W8LiveStatusOperation operation, bool loopback, const W8LiveStatusPort& port, W8LiveStatusResponse& response); bool RunW8LiveStatusCharacterizationSelfTest(std::string& failure);
 } }
-namespace eSELive { M2AModuleHandle M2A_BIND_W8_4974C0F316(const M2AParentPort&); void M2A_UNBIND_W8_4974C0F316(const M2AParentPort&); M2AModuleHandle M2A_BIND_W8_E988965D5A(const M2AParentPort&); void M2A_UNBIND_W8_E988965D5A(const M2AParentPort&); }
+enum class W9LiveTransferOperation { NetworkConnect, Rendezvous, KeepaliveStart, KeepaliveStop, RelayAccept, RelayEgress, RelaySelector, RelayConnect, HolePunch };
+enum class W9LiveTransferRate { NetworkConnect, ManualRendezvous, KeepaliveToggle, ManualHolePunch };
+enum class W9LiveRelayToggle { Accept, Egress, Selector };
+enum class W9LiveTransferGuard { Ok, InvalidIpPort, KadNotReady, HolePunchDisabled, RendezvousDisabled, NetlabConsentRequired, NetlabTargetRequired, UtpNotReady };
+struct W9LiveTransferRequest { W9LiveTransferOperation operation = W9LiveTransferOperation::NetworkConnect; std::string ed2k, kad, target_ip, target_udp_port, rdv_ip, rdv_udp_port; std::string on, stream, buddy_ip, buddy_port, ip, udp_port, spread; };
+struct W9LiveTransferRateDecision { bool allowed = false; std::uint64_t retry_after_ms = 0; };
+struct W9LiveHolePunchResult { W9LiveTransferGuard guard = W9LiveTransferGuard::InvalidIpPort; std::uint32_t attempts_before = 0; std::uint16_t spread = 0; };
+struct W9LiveTransferSnapshot { bool ed2k_connected = false, ed2k_connecting = false, kad_running = false, kad_connected = false; bool kad2_running = false, kad2_connected = false, kad6_running = false, kad6_connected = false; bool netlab_active = false, kad_udp_ready = false, utp_hole_punch_enabled = false; bool kad3_rendezvous_enabled = false, client_utp_ready = false, keepalive_running = false; bool relay_accept = false, relay_egress = false, relay_selector = false, port_predict = false; std::uint32_t kad_configured_mask = 0, kad_running_mask = 0, kad6_verified_contacts = 0; std::uint32_t kad3_rdv_req_sent = 0, kad3_rdv_req_recv = 0, kad3_rdv_challenge_sent = 0, kad3_rdv_fwd = 0, kad3_rdv_success = 0; std::uint32_t keepalive_pings_sent = 0, keepalive_pongs_recv = 0, keepalive_supernodes = 0; std::uint32_t relay_req_recv = 0, relay_accepted = 0, relay_active = 0, relay_bytes_fwd_kb = 0, relay_budget_drops = 0, relay_max_kbps = 0; std::uint32_t reach_direct = 0, reach_punch2 = 0, reach_punch3 = 0, reach_relay = 0; std::uint32_t hole_attempts = 0, hole_success = 0, hole_sym_nat_fail = 0, hole_encrypted = 0, hole_plaintext = 0, hole_spray_reqs = 0, hole_req_recv = 0, hole_challenge_sent = 0; std::uint16_t port_predict_spread = 0; };
+struct W9LiveTransferResponse { unsigned status = 200; std::string reason = "OK", content_type = "application/json", body; bool cors = true, nosniff = true, cache_no_store = false; };
+struct W9LiveTransferPort { void* context = nullptr; std::uint64_t (*now_ms)(void*) = nullptr; W9LiveTransferRateDecision (*check_rate)(void*, W9LiveTransferRate, std::uint64_t, std::uint64_t) = nullptr; bool (*parse_ipv4_legacy)(void*, const std::string&, std::uint32_t&) = nullptr; bool (*read_snapshot)(void*, W9LiveTransferSnapshot&) = nullptr; void (*request_network)(void*, bool, bool, bool&, bool&) = nullptr; W9LiveTransferGuard (*request_rendezvous)(void*, std::uint32_t, std::uint16_t, std::uint32_t, std::uint16_t) = nullptr; W9LiveTransferGuard (*request_keepalive)(void*, bool) = nullptr; void (*set_relay)(void*, W9LiveRelayToggle, bool) = nullptr; void (*request_relay_connect)(void*, const std::array<unsigned char, 16>&, std::uint32_t, std::uint16_t) = nullptr; W9LiveHolePunchResult (*request_hole_punch)(void*, std::uint32_t, std::uint16_t, bool, int) = nullptr; };
+std::string W9BuildLiveTransferHeader(const W9LiveTransferResponse& response); bool RunW9LiveTransferApi(const W9LiveTransferRequest&, W9LiveTransferPort&, W9LiveTransferResponse&); bool RunW9LiveTransferCharacterizationSelfTest(std::string& failure);
+namespace ese { namespace web {
+enum class W9SearchOperation { SourceResolutions, PrivacySubscriptions, TunnelSearch, Diagnose, KadStreams };
+struct W9SearchRequest { W9SearchOperation operation = W9SearchOperation::SourceResolutions; bool loopback = false, keyword_lowered = false; std::string after, add, remove, name, keyword, key; };
+struct W9SourceCandidate { std::string family, endpoint_sha256, outcome, source_origin; };
+struct W9SourceEvent { std::uint64_t sequence = 0; std::string hostname_sha256, file_ed2k_hash, resolver_result, resolved_endpoint_set_sha256, materialized_endpoint_set_sha256; std::uint32_t port = 0, resolved_ipv4 = 0, resolved_ipv6 = 0, materialized_ipv4 = 0, materialized_ipv6 = 0; bool simultaneously_retained = false; std::vector<W9SourceCandidate> candidates; };
+struct W9Subscription { std::array<std::uint8_t, 32> pubkey{}; std::string name; std::uint64_t added = 0; };
+struct W9DirectoryEntry { std::string title, broadcaster_ip; std::uint32_t broadcaster_port = 0, bitrate = 0, viewers = 0, last_seen_age_ms = 0; bool own = false; };
+struct W9DiagnoseSnapshot { bool kad_connected = false, broadcasting = false, viewing = false, in_directory = false, public_ip_available = false; std::string public_ip; std::uint16_t tcp_port = 0; std::uint32_t directory_size = 0; W9DirectoryEntry entry; };
+struct W9KadStream { std::array<std::uint8_t, 16> key{}; std::string title, category, language; std::uint32_t bitrate = 0, viewers = 0, broadcaster_ip = 0, broadcaster_port = 0, started_at = 0, last_seen = 0; bool own = false, kad6_tunnel = false; };
+struct W9SearchPort { void* context = nullptr; std::uint32_t (*now_ms)(void*) = nullptr; bool (*read_source_events)(void*, std::uint64_t, std::uint64_t&, std::vector<W9SourceEvent>&) = nullptr; bool (*add_subscription)(void*, const std::array<std::uint8_t, 32>&, const std::string&, std::string&) = nullptr; bool (*remove_subscription)(void*, const std::array<std::uint8_t, 32>&, std::string&) = nullptr; bool (*list_subscriptions)(void*, std::vector<W9Subscription>&) = nullptr; bool (*tunnel_search)(void*, const std::string&, std::string&, unsigned) = nullptr; bool (*read_diagnose)(void*, const std::array<std::uint8_t, 16>*, W9DiagnoseSnapshot&) = nullptr; void (*request_kad_refresh)(void*) = nullptr; bool (*read_kad_streams)(void*, bool&, std::vector<W9KadStream>&) = nullptr; };
+struct W9SearchResponse { std::string header, body; };
+bool RunW9LiveSearchApi(const W9SearchRequest&, const W9SearchPort&, W9SearchResponse&); bool RunW9LiveSearchCharacterizationSelfTest(std::string& failure);
+} }
+namespace eSELive { M2AModuleHandle M2A_BIND_W8_4974C0F316(const M2AParentPort&); void M2A_UNBIND_W8_4974C0F316(const M2AParentPort&); M2AModuleHandle M2A_BIND_W8_E988965D5A(const M2AParentPort&); void M2A_UNBIND_W8_E988965D5A(const M2AParentPort&); M2AModuleHandle M2A_BIND_W9_52CC9DEBDD(const M2AParentPort&); void M2A_UNBIND_W9_52CC9DEBDD(const M2AParentPort&); M2AModuleHandle M2A_BIND_W9_3B359EBB1A(const M2AParentPort&); void M2A_UNBIND_W9_3B359EBB1A(const M2AParentPort&); }
 namespace eSELive {
 enum class WebClassicView : std::uint8_t { Unknown = 0, Login, RemoteLinkAdded, RemoteLinkFailed, CommentList, Header, Footer, Server, Shared, Transfer, Search, Graphs, Log, ServerInfo, DebugLog, MyInfo, Stats, Kad, Options };
 enum class WebAdminAction : std::uint8_t { Close, Shutdown, Reboot };
@@ -144,6 +168,28 @@ bool W8StatusContext::ReadStatus(void* raw, ese::web::W8LiveStatusSnapshot& out)
 bool W8StatusContext::ReadChannel(void*, ese::web::W8LiveChannelSnapshot& out) { if (theApp.liveStreamManager == NULL) return true; const LiveChannelSnapshot snapshot = theApp.liveStreamManager->GetChannelSnapshot(); out.broadcasting=snapshot.broadcasting; memcpy(out.stream_key.data(), snapshot.streamKey, 16); out.title=W8Legacy(snapshot.title); out.category=W8Legacy(snapshot.category); out.language=W8Legacy(snapshot.language); out.started_at=snapshot.startedAt; out.viewer_count=snapshot.viewerCount; out.bitrate=snapshot.bitrate; return true; }
 bool W8StatusContext::ReadMesh(void*, ese::web::W8LiveMeshSnapshot& out) { if (theApp.liveStreamManager == NULL) return true; const LiveDebugSnapshot snapshot = theApp.liveStreamManager->BuildDebugSnapshot(); out.mesh_peers=snapshot.meshPeers; out.pending_requests=snapshot.pendingRequests; out.chunks_served=snapshot.chunksServed; out.total_redistributed=snapshot.totalRedistributed; out.super_seeders=snapshot.superSeeders; out.middle_peers=snapshot.middlePeers; out.leaf_peers=snapshot.leafPeers; out.upload_floor=snapshot.minUploadRequired; out.emergency_mode=snapshot.emergencyMode; return true; }
 void W8StatusContext::Send(CWebSocket* socket, const std::string& header, const std::string& body) { const CStringA h(header.data(), static_cast<int>(header.size())), b(body.data(), static_cast<int>(body.size())); socket->SendData(h, h.GetLength()); socket->SendData(b, b.GetLength()); }
+struct W9TransferContext { ese::web::WebAuthPolicy* auth; CUpDownClient* target; static std::uint64_t Now(void*); static W9LiveTransferRateDecision Rate(void*,W9LiveTransferRate,std::uint64_t,std::uint64_t); static bool ParseIPv4(void*,const std::string&,std::uint32_t&); static bool Read(void*,W9LiveTransferSnapshot&); static void Network(void*,bool,bool,bool&,bool&); static W9LiveTransferGuard Rendezvous(void*,std::uint32_t,std::uint16_t,std::uint32_t,std::uint16_t); static W9LiveTransferGuard Keepalive(void*,bool); static void Relay(void*,W9LiveRelayToggle,bool); static void RelayConnect(void*,const std::array<unsigned char,16>&,std::uint32_t,std::uint16_t); static W9LiveHolePunchResult HolePunch(void*,std::uint32_t,std::uint16_t,bool,int); };
+std::uint64_t W9TransferContext::Now(void*) { return eSELive::WebRequestAuthNowMs(); }
+W9LiveTransferRateDecision W9TransferContext::Rate(void* raw,W9LiveTransferRate action,std::uint64_t now,std::uint64_t interval) { ese::web::WebAction native=ese::web::WebAction::NetworkConnect; switch(action){case W9LiveTransferRate::NetworkConnect:break;case W9LiveTransferRate::ManualRendezvous:native=ese::web::WebAction::ManualRendezvous;break;case W9LiveTransferRate::KeepaliveToggle:native=ese::web::WebAction::KeepaliveToggle;break;case W9LiveTransferRate::ManualHolePunch:native=ese::web::WebAction::ManualHolePunch;break;} const ese::web::WebRateDecision result=static_cast<W9TransferContext*>(raw)->auth->CheckRateLimit(native,now,interval); return {result.allowed,result.retry_after_ms}; }
+bool W9TransferContext::ParseIPv4(void*,const std::string& text,std::uint32_t& out) { out=static_cast<std::uint32_t>(inet_addr(text.c_str())); return out!=INADDR_NONE&&out!=0; }
+bool W9TransferContext::Read(void*,W9LiveTransferSnapshot& out) { out=W9LiveTransferSnapshot(); out.ed2k_connected=theApp.serverconnect&&theApp.serverconnect->IsConnected(); out.ed2k_connecting=theApp.serverconnect&&theApp.serverconnect->IsConnecting(); out.kad_running=Kademlia::CKademlia::IsRunning(); out.kad_connected=Kademlia::CKademlia::IsAnyConnected(); out.kad_configured_mask=thePrefs.GetKadNetworkMask(); out.kad_running_mask=Kademlia::CKademlia::GetRunningNetworkMask(); out.kad2_running=Kademlia::CKademlia::IsKad2Running(); out.kad2_connected=Kademlia::CKademlia::IsConnected(); out.kad6_running=Kademlia::CKademlia::IsKad6Running(); out.kad6_connected=Kademlia::CKademlia::IsKad6Connected(); out.kad6_verified_contacts=Kademlia::CKademlia::GetKad6VerifiedContacts(); out.netlab_active=thePrefs.IsEseNetLabActive(); out.kad_udp_ready=Kademlia::CKademlia::GetUDPListener()!=NULL; out.utp_hole_punch_enabled=thePrefs.GetUtpHolePunchEnabled(); out.kad3_rendezvous_enabled=thePrefs.GetEseKad3Rendezvous(); out.client_utp_ready=theApp.clientudp&&theApp.clientudp->IsUtpReady(); const CKadKeepalive::Stats keep=CKadKeepalive::Instance().GetStats(); out.keepalive_running=CKadKeepalive::Instance().IsRunning(); out.keepalive_pings_sent=keep.pingsSent; out.keepalive_pongs_recv=keep.pongsReceived; out.keepalive_supernodes=keep.supernodesActive; out.relay_accept=thePrefs.GetEseRelayAccept(); out.relay_egress=thePrefs.GetEseRelayEgress(); out.relay_selector=thePrefs.GetEseReachSelector(); out.relay_req_recv=CStatistics::m_dwRelayReqRecv; out.relay_accepted=CStatistics::m_dwRelayAccepted; out.relay_active=CStatistics::m_dwRelayActive; out.relay_bytes_fwd_kb=CStatistics::m_dwRelayBytesFwdKB; out.relay_budget_drops=CStatistics::m_dwRelayBudgetDrops; out.relay_max_kbps=thePrefs.GetEseRelayMaxKBps(); out.reach_direct=CStatistics::m_dwReachConnDirect; out.reach_punch2=CStatistics::m_dwReachConnPunch2; out.reach_punch3=CStatistics::m_dwReachConnPunch3; out.reach_relay=CStatistics::m_dwReachConnRelay; out.hole_attempts=CStatistics::m_dwHolePunchAttempts; out.hole_success=CStatistics::m_dwHolePunchSuccess; out.hole_sym_nat_fail=CStatistics::m_dwHolePunchSymNATFail; out.hole_encrypted=CStatistics::m_dwHolePunchEncrypted; out.hole_plaintext=CStatistics::m_dwHolePunchPlaintext; out.hole_spray_reqs=CStatistics::m_dwHolePunchSprayReqs; out.hole_req_recv=CStatistics::m_dwHolePunchReqRecv; out.hole_challenge_sent=CStatistics::m_dwHolePunchChallengeSent; out.kad3_rdv_req_sent=CStatistics::m_dwKad3RdvReqSent; out.kad3_rdv_req_recv=CStatistics::m_dwKad3RdvReqRecv; out.kad3_rdv_challenge_sent=CStatistics::m_dwKad3RdvChallengeSent; out.kad3_rdv_fwd=CStatistics::m_dwKad3RdvFwd; out.kad3_rdv_success=CStatistics::m_dwKad3RdvSuccess; out.port_predict=thePrefs.GetEseHolePunchPortPredict(); out.port_predict_spread=static_cast<std::uint16_t>(thePrefs.GetEseHolePunchPortSpread()); return true; }
+void W9TransferContext::Network(void*,bool ed2k,bool kad,bool& ed2kSent,bool& kadSent) { ed2kSent=kadSent=false; if(ed2k&&theApp.serverconnect&&!theApp.serverconnect->IsConnected()&&!theApp.serverconnect->IsConnecting()){SendMessage(theApp.emuledlg->m_hWnd,WEB_GUI_INTERACTION,WEBGUIIA_CONNECTTOSERVER,0);ed2kSent=true;} if(kad&&!Kademlia::CKademlia::IsRunning()){SendMessage(theApp.emuledlg->m_hWnd,WEB_GUI_INTERACTION,WEBGUIIA_KAD_START,0);kadSent=true;} }
+W9LiveTransferGuard W9TransferContext::Rendezvous(void*,std::uint32_t rdv,std::uint16_t rdvPort,std::uint32_t target,std::uint16_t targetPort) { if(!Kademlia::CKademlia::IsConnected()||Kademlia::CKademlia::GetUDPListener()==NULL)return W9LiveTransferGuard::KadNotReady;if(!thePrefs.GetUtpHolePunchEnabled())return W9LiveTransferGuard::HolePunchDisabled;if(!thePrefs.GetEseKad3Rendezvous())return W9LiveTransferGuard::RendezvousDisabled;Kademlia::CKademlia::GetUDPListener()->InitiateKad3Rendezvous(ntohl(rdv),rdvPort,ntohl(target),targetPort);return W9LiveTransferGuard::Ok; }
+W9LiveTransferGuard W9TransferContext::Keepalive(void*,bool start) { if(start&&!thePrefs.IsEseNetLabActive())return W9LiveTransferGuard::NetlabConsentRequired;if(start)CKadKeepalive::Instance().RequestStart();else CKadKeepalive::Instance().RequestStop();return W9LiveTransferGuard::Ok; }
+void W9TransferContext::Relay(void*,W9LiveRelayToggle toggle,bool on) { if(toggle==W9LiveRelayToggle::Accept){thePrefs.SetEseRelayAccept(on);volatile LONG* caps=reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);if(on)::InterlockedOr(caps,static_cast<LONG>(ESE_CAP_LIVE_RELAY));else ::InterlockedAnd(caps,~static_cast<LONG>(ESE_CAP_LIVE_RELAY));}else if(toggle==W9LiveRelayToggle::Egress)thePrefs.SetEseRelayEgress(on);else thePrefs.SetEseReachSelector(on); }
+void W9TransferContext::RelayConnect(void*,const std::array<unsigned char,16>& key,std::uint32_t ip,std::uint16_t port) { CLiveBuddyRelay::Instance().RequestViewerConnect(key.data(),ip,port); }
+W9LiveHolePunchResult W9TransferContext::HolePunch(void* raw,std::uint32_t ip,std::uint16_t port,bool validIp,int requestedSpread) { W9TransferContext& context=*static_cast<W9TransferContext*>(raw);W9LiveHolePunchResult result;result.attempts_before=CStatistics::m_dwHolePunchAttempts;context.target=theApp.clientlist?theApp.clientlist->FindClientByIP_KadPort(ip,port):NULL;if(context.target==NULL&&theApp.clientlist)context.target=theApp.clientlist->FindClientByIP(ip);if(!validIp||ip==INADDR_NONE||ip==0||port==0)result.guard=W9LiveTransferGuard::InvalidIpPort;else if(!thePrefs.IsEseNetLabActive())result.guard=W9LiveTransferGuard::NetlabConsentRequired;else if(context.target==NULL||!context.target->SupportsEseNetLabV1Target())result.guard=W9LiveTransferGuard::NetlabTargetRequired;else if(!Kademlia::CKademlia::IsConnected()||Kademlia::CKademlia::GetUDPListener()==NULL)result.guard=W9LiveTransferGuard::KadNotReady;else if(!thePrefs.GetUtpHolePunchEnabled())result.guard=W9LiveTransferGuard::HolePunchDisabled;else if(theApp.clientudp==NULL||!theApp.clientudp->IsUtpReady())result.guard=W9LiveTransferGuard::UtpNotReady;else{result.spread=requestedSpread>0?static_cast<std::uint16_t>(requestedSpread>8?8:requestedSpread):(thePrefs.GetEseHolePunchPortPredict()?static_cast<std::uint16_t>(thePrefs.GetEseHolePunchPortSpread()):0);Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(ntohl(ip),port,result.spread,true,context.target);result.guard=W9LiveTransferGuard::Ok;}return result; }
+static std::string W9Bytes(const CStringA& value) { return std::string(static_cast<LPCSTR>(value),value.GetLength()); }
+struct W9SearchContext { static std::uint32_t Now(void*); static bool Sources(void*,std::uint64_t,std::uint64_t&,std::vector<ese::web::W9SourceEvent>&); static bool Add(void*,const std::array<std::uint8_t,32>&,const std::string&,std::string&); static bool Remove(void*,const std::array<std::uint8_t,32>&,std::string&); static bool List(void*,std::vector<ese::web::W9Subscription>&); static bool Tunnel(void*,const std::string&,std::string&,unsigned); static bool Diagnose(void*,const std::array<std::uint8_t,16>*,ese::web::W9DiagnoseSnapshot&); static void Refresh(void*); static bool Streams(void*,bool&,std::vector<ese::web::W9KadStream>&); };
+std::uint32_t W9SearchContext::Now(void*) { return GetTickCount(); }
+bool W9SearchContext::Sources(void*,std::uint64_t after,std::uint64_t& sequence,std::vector<ese::web::W9SourceEvent>& out) { sequence=0;out.clear();if(!theApp.downloadqueue)return true;std::vector<SSourceResolutionEvent> native;theApp.downloadqueue->GetSourceResolutionEvents(after,sequence,native);out.reserve(native.size());for(const SSourceResolutionEvent& item:native){ese::web::W9SourceEvent event;event.sequence=item.sequence;event.hostname_sha256=W9Bytes(item.hostnameSha256);event.file_ed2k_hash=W9Bytes(item.fileEd2kHash);event.port=item.port;event.resolver_result=W9Bytes(item.resolverResult);event.resolved_ipv4=item.resolvedIPv4Count;event.resolved_ipv6=item.resolvedIPv6Count;event.resolved_endpoint_set_sha256=W9Bytes(item.resolvedEndpointSetSha256);event.materialized_ipv4=item.materializedIPv4Count;event.materialized_ipv6=item.materializedIPv6Count;event.materialized_endpoint_set_sha256=W9Bytes(item.materializedEndpointSetSha256);event.simultaneously_retained=item.simultaneouslyRetained;event.candidates.reserve(item.candidates.size());for(const SSourceResolutionCandidateEvent& c:item.candidates)event.candidates.push_back({W9Bytes(c.family),W9Bytes(c.endpointSha256),W9Bytes(c.outcome),W9Bytes(c.sourceOrigin)});out.push_back(std::move(event));}return true; }
+bool W9SearchContext::Add(void*,const std::array<std::uint8_t,32>& key,const std::string& name,std::string&) { eSELive::SubscriptionEntry entry={};memcpy(entry.channel_pubkey,key.data(),key.size());entry.name=CStringA(name.data(),static_cast<int>(name.size()));entry.added_unix_ts=static_cast<std::uint64_t>(time(NULL));entry.notifications=true;auto& store=eSELive::CLiveSubscriptionStore::Get();const bool added=store.Add(entry);if(added)store.Save();return added; }
+bool W9SearchContext::Remove(void*,const std::array<std::uint8_t,32>& key,std::string&) { auto& store=eSELive::CLiveSubscriptionStore::Get();const bool removed=store.Remove(key.data());if(removed)store.Save();return removed; }
+bool W9SearchContext::List(void*,std::vector<ese::web::W9Subscription>& out) { std::vector<eSELive::SubscriptionEntry> native;eSELive::CLiveSubscriptionStore::Get().GetAll(native);out.clear();out.reserve(native.size());for(const eSELive::SubscriptionEntry& item:native){ese::web::W9Subscription value;memcpy(value.pubkey.data(),item.channel_pubkey,value.pubkey.size());value.name=W9Bytes(item.name);value.added=item.added_unix_ts;out.push_back(std::move(value));}return true; }
+bool W9SearchContext::Tunnel(void*,const std::string& keyword,std::string& reply,unsigned timeout) { return eSELive::CLiveTunnel::Get().TunneledKadSearch(keyword,reply,timeout); }
+bool W9SearchContext::Diagnose(void*,const std::array<std::uint8_t,16>* key,ese::web::W9DiagnoseSnapshot& out) { out=ese::web::W9DiagnoseSnapshot();out.kad_connected=Kademlia::CKademlia::IsConnected();out.broadcasting=theApp.liveStreamManager&&theApp.liveStreamManager->IsBroadcasting();out.viewing=theApp.liveStreamManager&&theApp.liveStreamManager->IsViewingLive();const std::uint32_t publicIp=theApp.GetPublicIP();out.public_ip_available=publicIp!=0;out.public_ip=W8Legacy(ipstr(publicIp));out.tcp_port=theApp.GetAdvertisedTcpPort();if(key&&theApp.liveStreamManager){LiveStreamEntry entry;if(theApp.liveStreamManager->GetKadBridge().GetStreamInfo(key->data(),entry)){out.in_directory=true;out.entry.title=W8Legacy(entry.title);out.entry.broadcaster_ip=W8Legacy(ipstr(entry.broadcasterIP));out.entry.broadcaster_port=entry.broadcasterPort;out.entry.bitrate=entry.bitrate;out.entry.viewers=entry.viewerCount;out.entry.last_seen_age_ms=GetTickCount()-entry.lastSeen;out.entry.own=entry.isOwnStream;}}out.directory_size=theApp.liveStreamManager?static_cast<std::uint32_t>(theApp.liveStreamManager->GetKadBridge().GetDirectoryCount()):0;return true; }
+void W9SearchContext::Refresh(void*) { if(theApp.liveStreamManager&&theApp.emuledlg)theApp.emuledlg->PostMessage(UM_LIVE_KAD_REFRESH); }
+bool W9SearchContext::Streams(void*,bool& kad,std::vector<ese::web::W9KadStream>& out) { CArray<LiveStreamEntry> native;if(theApp.liveStreamManager)theApp.liveStreamManager->GetKadBridge().GetKnownStreams(native);kad=Kademlia::CKademlia::IsConnected();out.clear();out.reserve(static_cast<std::size_t>(native.GetCount()));for(INT_PTR i=0;i<native.GetCount();++i){const LiveStreamEntry& item=native[i];ese::web::W9KadStream value;memcpy(value.key.data(),item.streamKey,value.key.size());value.title=W8Legacy(item.title);value.category=W8Legacy(item.category);value.language=W8Legacy(item.language);value.bitrate=item.bitrate;value.viewers=item.viewerCount;value.broadcaster_ip=item.broadcasterIP;value.broadcaster_port=item.broadcasterPort;value.started_at=item.startedAt;value.last_seen=item.lastSeen;value.own=item.isOwnStream;value.kad6_tunnel=item.privacyOrigin==ESE_PRIV_ORIGIN_KAD6_TUNNEL;out.push_back(std::move(value));}return true; }
 }
 
 #ifdef _DEBUG
@@ -207,7 +253,7 @@ CWebServer::CWebServer()
 	, m_bSearchAsc()
 	, m_bIsTempDisabled()
 {
-	M2AModuleHandle streamBinding = M2A_BIND_W8_4974C0F316(M2AParentPort{this}); if (!streamBinding) return; M2AModuleHandle serverListBinding = M2A_BIND_W3_F05B56128F(M2AParentPort{this}); if (!serverListBinding) return; CIni ini(thePrefs.GetConfigFile(), _T("WebServer"));
+	M2AModuleHandle streamBinding = M2A_BIND_W8_4974C0F316(M2AParentPort{this}); if (!streamBinding) return; M2AModuleHandle liveTransferBinding = M2A_BIND_W9_52CC9DEBDD(M2AParentPort{this}); if (!liveTransferBinding) return; M2AModuleHandle liveSearchBinding = M2A_BIND_W9_3B359EBB1A(M2AParentPort{this}); if (!liveSearchBinding) return; M2AModuleHandle serverListBinding = M2A_BIND_W3_F05B56128F(M2AParentPort{this}); if (!serverListBinding) return; CIni ini(thePrefs.GetConfigFile(), _T("WebServer"));
 	ini.SerGet(true, WSdownloadColumnHidden, _countof(WSdownloadColumnHidden), _T("downloadColumnHidden"));
 	ini.SerGet(true, WSuploadColumnHidden, _countof(WSuploadColumnHidden), _T("uploadColumnHidden"));
 	ini.SerGet(true, WSqueueColumnHidden, _countof(WSqueueColumnHidden), _T("queueColumnHidden"));
@@ -248,7 +294,7 @@ CWebServer::~CWebServer()
 	ini.WriteInt(_T("SharedSort"), m_Params.SharedSort);
 	if (m_bServerWorking)
 		StopSockets();
-	M2A_UNBIND_W8_4974C0F316(M2AParentPort{this}); M2A_UNBIND_W8_E988965D5A(M2AParentPort{this}); M2A_UNBIND_W1_EC6846B80E(M2AParentPort{this}); M2A_UNBIND_W2_9330EBAD15(M2AParentPort{this}); M2A_UNBIND_W2_071B3D442B(M2AParentPort{this}); M2A_UNBIND_W3_F05B56128F(M2AParentPort{this}); M2A_UNBIND_W4_AD763A5EE0(M2AParentPort{this}); M2A_UNBIND_W5_095B87253F(M2AParentPort{this}); M2A_UNBIND_W6_64C04005E2(M2AParentPort{this}); M2A_UNBIND_W6_B161DA740E(M2AParentPort{this});
+	M2A_UNBIND_W9_52CC9DEBDD(M2AParentPort{this}); M2A_UNBIND_W9_3B359EBB1A(M2AParentPort{this}); M2A_UNBIND_W8_4974C0F316(M2AParentPort{this}); M2A_UNBIND_W8_E988965D5A(M2AParentPort{this}); M2A_UNBIND_W1_EC6846B80E(M2AParentPort{this}); M2A_UNBIND_W2_9330EBAD15(M2AParentPort{this}); M2A_UNBIND_W2_071B3D442B(M2AParentPort{this}); M2A_UNBIND_W3_F05B56128F(M2AParentPort{this}); M2A_UNBIND_W4_AD763A5EE0(M2AParentPort{this}); M2A_UNBIND_W5_095B87253F(M2AParentPort{this}); M2A_UNBIND_W6_64C04005E2(M2AParentPort{this}); M2A_UNBIND_W6_B161DA740E(M2AParentPort{this});
 }
 
 void CWebServer::_SaveWIConfigArray(BOOL *array, int size, LPCTSTR key)
@@ -353,7 +399,7 @@ bool CWebServer::RunCharacterizationSelfTest(CString& outFailure)
 	}
 	if (!RunWebClassicRequestCharacterizationSelfTest()) { outFailure = _T("web request dispatch route table changed"); return false; } if (!RunWebTemplateCharacterizationSelfTest() || !RunWebPageChromeCharacterizationSelfTest()) { outFailure = _T("web template/header rendering changed"); return false; } if (!RunWebServerPageCharacterizationSelfTest()) { outFailure = _T("web server-list rendering changed"); return false; } if (!RunWebTransferProjectionCharacterizationSelfTest()) { outFailure = _T("web transfer projection changed"); return false; } if (!RunWebTransferActionsCharacterizationSelfTest()) { outFailure = _T("web transfer actions changed"); return false; } if (!RunWebSearchProjectionCharacterizationSelfTest()) { outFailure = _T("web search projection changed"); return false; } if (!RunWebSharedFilesControllerCharacterizationSelfTest()) { outFailure = _T("web shared-files projection changed"); return false; } const ese::web::WebSharedComparison sharedCompatibility{0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}; const ese::web::WebSharedRowProjection sharedProjection = ese::web::WebSharedController::ProjectRow(false, ese::web::WebSharedPriority::Normal, false, 1024, 1, 1, 1); if (ese::web::WebSharedController::Compare(2, false, sharedCompatibility) != -1 || std::string(sharedProjection.priority_token) != "Normal" || !sharedProjection.downloadable || sharedProjection.complete_sources != "1") { outFailure = _T("web shared policy compatibility changed"); return false; }
 	std::string serializerFailure;
-	std::string w8Failure; const CString w8Unicode(_T("\x0416")); if (W8Text(W8Utf8(w8Unicode)) != w8Unicode) { outFailure = _T("web Live API UTF-8 boundary changed"); return false; } std::string w8Wire, w8Ui, w8Encoded; W8Assign(_T("A b!"),w8Wire,w8Ui,&w8Encoded); if(w8Wire!="A b!" || w8Ui!="A b!" || w8Encoded!="A+b%21") { outFailure = _T("web Live API legacy wire boundary changed"); return false; } if (!RunW8LiveStreamCharacterizationSelfTest(w8Failure) || !ese::web::RunW8LiveStatusCharacterizationSelfTest(w8Failure)) { outFailure = OptUtf8ToStr(w8Failure.data(), static_cast<int>(w8Failure.size())); return false; }
+	std::string w8Failure; const CString w8Unicode(_T("\x0416")); if (W8Text(W8Utf8(w8Unicode)) != w8Unicode) { outFailure = _T("web Live API UTF-8 boundary changed"); return false; } std::string w8Wire, w8Ui, w8Encoded; W8Assign(_T("A b!"),w8Wire,w8Ui,&w8Encoded); if(w8Wire!="A b!" || w8Ui!="A b!" || w8Encoded!="A+b%21") { outFailure = _T("web Live API legacy wire boundary changed"); return false; } if (!RunW8LiveStreamCharacterizationSelfTest(w8Failure) || !ese::web::RunW8LiveStatusCharacterizationSelfTest(w8Failure) || !RunW9LiveTransferCharacterizationSelfTest(w8Failure) || !ese::web::RunW9LiveSearchCharacterizationSelfTest(w8Failure)) { outFailure = OptUtf8ToStr(w8Failure.data(), static_cast<int>(w8Failure.size())); return false; }
 	if (!ese::web::RunWebApiSerializerSelfTest(serializerFailure)) {
 		outFailure = OptUtf8ToStr(
 			serializerFailure.data(),
@@ -1168,8 +1214,6 @@ int CWebServer::_GetLastUserCat(const ThreadData &Data, long lSession)
 static CStringA EseJsonEscapeA(const CStringA& input) { const std::string value((LPCSTR)input,input.GetLength()); const std::string escaped=ese::web::EscapeJson(value); return CStringA(escaped.data(),static_cast<int>(escaped.size())); }
 static CStringA W8JsonA(const CStringA& input) { const std::string escaped = W8EscapeJson(std::string((LPCSTR)input, input.GetLength())); return CStringA(escaped.data(), static_cast<int>(escaped.size())); }
 static CStringA W8KeyA(const uchar* key) { std::array<unsigned char, 16> value; memcpy(value.data(), key, value.size()); const std::string encoded = W8EncodeKey16(value); return CStringA(encoded.data(), static_cast<int>(encoded.size())); }
-static bool W8KeyFromA(const CStringA& text, uchar* key) { std::array<unsigned char, 16> value; if (!W8DecodeKey16(std::string((LPCSTR)text, text.GetLength()), value)) return false; memcpy(key, value.data(), value.size()); return true; }
-static bool EseHexToKey16A(const CStringA& hex, uchar* outKey) { return outKey != NULL && W8KeyFromA(hex, outKey); }
 
 // eSE Live Streaming & Network Status API
 void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
@@ -1252,190 +1296,11 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 	if (hasStream) {
 		W8LiveAppPort port; W8LiveStreamResponse response; if (RunW8LiveStreamApi(request, port, response)) { if (response.forward_stream_file) { TCHAR temp[MAX_PATH]; GetTempPath(MAX_PATH,temp); const CString hash=OptUtf8ToStr(response.stream_hash.data(),static_cast<int>(response.stream_hash.size())), resourceText=OptUtf8ToStr(response.stream_resource.data(),static_cast<int>(response.stream_resource.size())); const CStringA resource(response.stream_resource.data(),static_cast<int>(response.stream_resource.size())); CString path; path.Format(_T("%seMule_RTMP\\%s\\%s"),temp,(LPCTSTR)hash,(LPCTSTR)resourceText); ese::web::WebFileResponseOptions options; options.corsOrigin="http://127.0.0.1"; Data.pSocket->SendFileResponse(path,resource,Data.sRange,options,20ull*1024ull*1024ull,true,false); return; } W8StatusContext::Send(Data.pSocket,W8BuildLiveStreamHeader(response),response.body); return; }
 	}
-
-	// --- /api/network/connect?ed2k=1&kad=1 ---
-	// Local diagnostic control for headless/minimized multi-PC validation. The
-	// endpoint is covered by the localhost/session gate above and guest sessions
-	// are explicitly denied. SendMessage marshals both requests onto the GUI
-	// thread, matching the authenticated classic WebServer controls.
-	if (Data.webRoute == ese::web::WebRouteId::ApiNetworkConnect) {
-		const CString ed2kArg(_ParseURL(Data.sURL, _T("ed2k")));
-		const CString kadArg(_ParseURL(Data.sURL, _T("kad")));
-		const bool requestEd2k = ed2kArg.IsEmpty() || ed2kArg != _T("0");
-		const bool requestKad = kadArg.IsEmpty() || kadArg != _T("0");
-
-		const ese::web::WebRateDecision connectRate =
-			pThis->m_authPolicy.CheckRateLimit(
-				ese::web::WebAction::NetworkConnect, eSELive::WebRequestAuthNowMs(), 2000);
-		if (!connectRate.allowed) {
-			CStringA json = "{\"success\":false,\"error\":\"rate_limited\",\"retry_after_ms\":";
-			CStringA retry;
-			retry.Format("%I64u}", connectRate.retry_after_ms);
-			json += retry;
-			CStringA hdr;
-			hdr.Format(
-				"HTTP/1.1 429 Too Many Requests\r\n"
-				"Content-Type: application/json\r\n"
-				"Cache-Control: no-store\r\n"
-				"Content-Length: %d\r\n\r\n",
-				json.GetLength());
-			Data.pSocket->SendData(hdr, hdr.GetLength());
-			Data.pSocket->SendData(json, json.GetLength());
-			return;
-		}
-
-		bool ed2kRequested = false;
-		bool kadRequested = false;
-		if (requestEd2k && theApp.serverconnect != NULL
-			&& !theApp.serverconnect->IsConnected()
-			&& !theApp.serverconnect->IsConnecting()) {
-			SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_CONNECTTOSERVER, 0);
-			ed2kRequested = true;
-		}
-		if (requestKad && !Kademlia::CKademlia::IsRunning()) {
-			SendMessage(theApp.emuledlg->m_hWnd, WEB_GUI_INTERACTION, WEBGUIIA_KAD_START, 0);
-			kadRequested = true;
-		}
-
-		CStringA json;
-		json.Format(
-			"{\"success\":true,\"requested\":{\"ed2k\":%s,\"kad\":%s},"
-			"\"state\":{\"ed2k_connected\":%s,\"ed2k_connecting\":%s,"
-			"\"kad_running\":%s,\"kad_connected\":%s,"
-			"\"kad_configured_mask\":%u,\"kad_running_mask\":%u,"
-			"\"kad2_running\":%s,\"kad2_connected\":%s,"
-			"\"kad6_running\":%s,\"kad6_connected\":%s,"
-			"\"kad6_verified_contacts\":%u}}",
-			ed2kRequested ? "true" : "false",
-			kadRequested ? "true" : "false",
-			(theApp.serverconnect != NULL && theApp.serverconnect->IsConnected()) ? "true" : "false",
-			(theApp.serverconnect != NULL && theApp.serverconnect->IsConnecting()) ? "true" : "false",
-			Kademlia::CKademlia::IsRunning() ? "true" : "false",
-			Kademlia::CKademlia::IsAnyConnected() ? "true" : "false",
-			static_cast<unsigned>(thePrefs.GetKadNetworkMask()),
-			static_cast<unsigned>(Kademlia::CKademlia::GetRunningNetworkMask()),
-			Kademlia::CKademlia::IsKad2Running() ? "true" : "false",
-			Kademlia::CKademlia::IsKad2Connected() ? "true" : "false",
-			Kademlia::CKademlia::IsKad6Running() ? "true" : "false",
-			Kademlia::CKademlia::IsKad6Connected() ? "true" : "false",
-			Kademlia::CKademlia::GetKad6VerifiedContacts());
-		CStringA hdr;
-		hdr.Format(
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: application/json\r\n"
-			"Cache-Control: no-store\r\n"
-			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
-			"X-Content-Type-Options: nosniff\r\n"
-			"Content-Length: %d\r\n\r\n",
-			json.GetLength());
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/debug/source-resolutions?after={sequence} --------------------
-	// Local-only, bounded and privacy-preserving evidence for the D01
-	// dual-stack hostname-source gate. It exposes hashes and outcomes, never a
-	// hostname or address. A baseline sequence lets the harness attribute one
-	// injection without clearing process state.
-	if (Data.webRoute == ese::web::WebRouteId::ApiDebugSourceResolutions) {
-		const uint32 clientIP = Data.inadr.S_un.S_addr;
-		if (clientIP != htonl(INADDR_LOOPBACK)) {
-			CStringA json =
-				"{\"error\":\"forbidden\",\"hint\":\"this diagnostic is localhost-only\"}";
-			CStringA header;
-			header.Format(
-				"HTTP/1.1 403 Forbidden\r\n"
-				"Content-Type: application/json\r\n"
-				"Cache-Control: no-store\r\n"
-				"Content-Length: %d\r\n\r\n",
-				json.GetLength());
-			Data.pSocket->SendData(header, header.GetLength());
-			Data.pSocket->SendData(json, json.GetLength());
-			return;
-		}
-
-		uint64 afterSequence = 0;
-		const CString afterArg(_ParseURL(Data.sURL, _T("after")));
-		if (!afterArg.IsEmpty())
-			afterSequence = _tcstoui64(afterArg, NULL, 10);
-
-		uint64 currentSequence = 0;
-		std::vector<SSourceResolutionEvent> events;
-		if (theApp.downloadqueue != NULL) {
-			theApp.downloadqueue->GetSourceResolutionEvents(
-				afterSequence, currentSequence, events);
-		}
-
-		CStringA json;
-		json.Format(
-			"{\"schema\":\"ese.debug.source-resolutions/v1\","
-			"\"sequence\":%I64u,\"events\":[",
-			static_cast<unsigned __int64>(currentSequence));
-		for (size_t eventIndex = 0; eventIndex < events.size(); ++eventIndex) {
-			const SSourceResolutionEvent& event = events[eventIndex];
-			if (eventIndex != 0)
-				json += ',';
-			CStringA eventJson;
-			eventJson.Format(
-				"{\"sequence\":%I64u,"
-				"\"hostname_sha256\":\"%s\","
-				"\"file_ed2k_hash\":\"%s\","
-				"\"port\":%u,"
-				"\"resolver_result\":\"%s\","
-				"\"resolved\":{\"ipv4_count\":%u,\"ipv6_count\":%u,"
-				"\"endpoint_set_sha256\":\"%s\"},"
-				"\"materialized\":{\"ipv4_count\":%u,\"ipv6_count\":%u,"
-				"\"endpoint_set_sha256\":\"%s\","
-				"\"simultaneously_retained\":%s},"
-				"\"candidates\":[",
-				static_cast<unsigned __int64>(event.sequence),
-				(LPCSTR)W8JsonA(event.hostnameSha256),
-				(LPCSTR)W8JsonA(event.fileEd2kHash),
-				static_cast<unsigned>(event.port),
-				(LPCSTR)W8JsonA(event.resolverResult),
-				static_cast<unsigned>(event.resolvedIPv4Count),
-				static_cast<unsigned>(event.resolvedIPv6Count),
-				(LPCSTR)W8JsonA(event.resolvedEndpointSetSha256),
-				static_cast<unsigned>(event.materializedIPv4Count),
-				static_cast<unsigned>(event.materializedIPv6Count),
-				(LPCSTR)W8JsonA(event.materializedEndpointSetSha256),
-				event.simultaneouslyRetained ? "true" : "false");
-			json += eventJson;
-			for (size_t candidateIndex = 0;
-				candidateIndex < event.candidates.size(); ++candidateIndex)
-			{
-				const SSourceResolutionCandidateEvent& candidate =
-					event.candidates[candidateIndex];
-				if (candidateIndex != 0)
-					json += ',';
-				CStringA candidateJson;
-				candidateJson.Format(
-					"{\"family\":\"%s\",\"endpoint_sha256\":\"%s\","
-					"\"outcome\":\"%s\",\"source_origin\":\"%s\"}",
-					(LPCSTR)W8JsonA(candidate.family),
-					(LPCSTR)W8JsonA(candidate.endpointSha256),
-					(LPCSTR)W8JsonA(candidate.outcome),
-					(LPCSTR)W8JsonA(candidate.sourceOrigin));
-				json += candidateJson;
-			}
-			json += "]}";
-		}
-		json += "]}";
-
-		CStringA header;
-		header.Format(
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: application/json\r\n"
-			"Cache-Control: no-store\r\n"
-			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
-			"X-Content-Type-Options: nosniff\r\n"
-			"Content-Length: %d\r\n\r\n",
-			json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
+	// W9 keeps authorization above and delegates only request/wire ownership.
+	W9LiveTransferRequest transfer; bool hasTransfer=false; switch(Data.webRoute){case ese::web::WebRouteId::ApiNetworkConnect:transfer.operation=W9LiveTransferOperation::NetworkConnect;transfer.ed2k=W8Legacy(_ParseURL(Data.sURL,_T("ed2k")));transfer.kad=W8Legacy(_ParseURL(Data.sURL,_T("kad")));hasTransfer=true;break;case ese::web::WebRouteId::ApiHolePunchRendezvousTest:transfer.operation=W9LiveTransferOperation::Rendezvous;transfer.target_ip=W8Legacy(_ParseURL(Data.sURL,_T("target_ip")));transfer.target_udp_port=W8Legacy(_ParseURL(Data.sURL,_T("target_udp_port")));transfer.rdv_ip=W8Legacy(_ParseURL(Data.sURL,_T("rdv_ip")));transfer.rdv_udp_port=W8Legacy(_ParseURL(Data.sURL,_T("rdv_udp_port")));hasTransfer=true;break;case ese::web::WebRouteId::ApiKeepaliveStart:transfer.operation=W9LiveTransferOperation::KeepaliveStart;hasTransfer=true;break;case ese::web::WebRouteId::ApiKeepaliveStop:transfer.operation=W9LiveTransferOperation::KeepaliveStop;hasTransfer=true;break;case ese::web::WebRouteId::ApiRelayAccept:transfer.operation=W9LiveTransferOperation::RelayAccept;transfer.on=W8Legacy(_ParseURL(Data.sURL,_T("on")));hasTransfer=true;break;case ese::web::WebRouteId::ApiRelayEgress:transfer.operation=W9LiveTransferOperation::RelayEgress;transfer.on=W8Legacy(_ParseURL(Data.sURL,_T("on")));hasTransfer=true;break;case ese::web::WebRouteId::ApiRelaySelector:transfer.operation=W9LiveTransferOperation::RelaySelector;transfer.on=W8Legacy(_ParseURL(Data.sURL,_T("on")));hasTransfer=true;break;case ese::web::WebRouteId::ApiRelayConnect:transfer.operation=W9LiveTransferOperation::RelayConnect;transfer.on=W8Legacy(_ParseURL(Data.sURL,_T("on")));transfer.stream=W8Legacy(_ParseURL(Data.sURL,_T("stream")));transfer.buddy_ip=W8Legacy(_ParseURL(Data.sURL,_T("buddy_ip")));transfer.buddy_port=W8Legacy(_ParseURL(Data.sURL,_T("buddy_port")));hasTransfer=true;break;case ese::web::WebRouteId::ApiHolePunchTest:transfer.operation=W9LiveTransferOperation::HolePunch;transfer.ip=W8Legacy(_ParseURL(Data.sURL,_T("ip")));transfer.udp_port=W8Legacy(_ParseURL(Data.sURL,_T("udp_port")));transfer.spread=W8Legacy(_ParseURL(Data.sURL,_T("spread")));hasTransfer=true;break;default:break;}
+	if(hasTransfer){W9TransferContext context{&pThis->m_authPolicy,NULL};W9LiveTransferPort port{&context,W9TransferContext::Now,W9TransferContext::Rate,W9TransferContext::ParseIPv4,W9TransferContext::Read,W9TransferContext::Network,W9TransferContext::Rendezvous,W9TransferContext::Keepalive,W9TransferContext::Relay,W9TransferContext::RelayConnect,W9TransferContext::HolePunch};W9LiveTransferResponse response;if(RunW9LiveTransferApi(transfer,port,response)){W8StatusContext::Send(Data.pSocket,W9BuildLiveTransferHeader(response),response.body);return;}}
+	ese::web::W9SearchRequest search; bool hasSearch=false; switch(Data.webRoute){case ese::web::WebRouteId::ApiDebugSourceResolutions:search.operation=ese::web::W9SearchOperation::SourceResolutions;search.loopback=Data.inadr.S_un.S_addr==htonl(INADDR_LOOPBACK);search.after=W8Legacy(_ParseURL(Data.sURL,_T("after")));hasSearch=true;break;case ese::web::WebRouteId::ApiLivePrivacySubscriptions:search.operation=ese::web::W9SearchOperation::PrivacySubscriptions;search.add=W8Legacy(_ParseURL(Data.sURL,_T("add")));search.remove=W8Legacy(_ParseURL(Data.sURL,_T("remove")));search.name=W8Legacy(_ParseURL(Data.sURL,_T("name")));hasSearch=true;break;case ese::web::WebRouteId::ApiLivePrivacyTunnelSearch:{search.operation=ese::web::W9SearchOperation::TunnelSearch;CStringA keyword(_ParseURL(Data.sURL,_T("keyword")));if(!keyword.IsEmpty())keyword.MakeLower();search.keyword=W9Bytes(keyword);search.keyword_lowered=true;hasSearch=true;break;}case ese::web::WebRouteId::ApiLiveDiagnose:search.operation=ese::web::W9SearchOperation::Diagnose;search.key=W8Legacy(_ParseURL(Data.sURL,_T("key")));hasSearch=true;break;case ese::web::WebRouteId::ApiLiveKadStreams:search.operation=ese::web::W9SearchOperation::KadStreams;hasSearch=true;break;default:break;}
+	if(hasSearch){ese::web::W9SearchPort port{nullptr,W9SearchContext::Now,W9SearchContext::Sources,W9SearchContext::Add,W9SearchContext::Remove,W9SearchContext::List,W9SearchContext::Tunnel,W9SearchContext::Diagnose,W9SearchContext::Refresh,W9SearchContext::Streams};ese::web::W9SearchResponse response;if(ese::web::RunW9LiveSearchApi(search,port,response)){W8StatusContext::Send(Data.pSocket,response.header,response.body);return;}}
 
 	// --- /hls/<file> --- Sprint 5: serve HLS files directly from C++ WebServer.
 	// Mirrors what Node.js channel_api.js does at port 8080. Lets the dashboard
@@ -1546,134 +1411,6 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			bodyLen);
 		Data.pSocket->SendData(hdr, hdr.GetLength());
 		Data.pSocket->SendData(dashHtml, (int)bodyLen);
-		return;
-	}
-
-	// --- /api/holepunch/test --- Manual hole-punch trigger for diagnostics.
-	// Lets the user fire a HOLEPUNCH_REQ at a known LowID peer's Kad endpoint
-	// to verify the uTP NAT traversal works between two specific networks
-	// (e.g. office ↔ home). Returns immediately with the attempt counters;
-	// success is observed indirectly by polling /api/status afterward.
-	//
-	// Usage: GET /api/holepunch/test?ip=1.2.3.4&udp_port=4672
-	//
-	// SAFETY: rate-limited to 1 manual fire per 5 s to avoid being mistaken
-	// for a Sybil attack on the target.
-	// --- /api/holepunch/rdv_test --- Manual R.1 (3-way rendezvous) trigger.
-	// A fires a HOLEPUNCH_REQ(0x68) at rendezvous R asking it to relay toward B.
-	// Usage: GET /api/holepunch/rdv_test?target_ip=B&target_udp_port=4672&rdv_ip=R&rdv_udp_port=4672
-	// Observe kad3_rdv_* in /api/status on A, R and B. Rate-limited 1 fire / 5 s.
-	if (Data.webRoute == ese::web::WebRouteId::ApiHolePunchRendezvousTest) {
-		const ese::web::WebRateDecision rendezvousRate =
-			pThis->m_authPolicy.CheckRateLimit(
-				ese::web::WebAction::ManualRendezvous, eSELive::WebRequestAuthNowMs(), 5000);
-		if (!rendezvousRate.allowed) {
-			CStringA json = "{\"success\":false,\"error\":\"rate_limited\",\"retry_after_ms\":";
-			CStringA n; n.Format("%I64u}", rendezvousRate.retry_after_ms);
-			json += n;
-			CStringA hdr;
-			hdr.Format("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", json.GetLength());
-			Data.pSocket->SendData(hdr, hdr.GetLength());
-			Data.pSocket->SendData(json, json.GetLength());
-			return;
-		}
-
-		CStringA tIpA = CT2A(_ParseURL(Data.sURL, _T("target_ip")));
-		CStringA rIpA = CT2A(_ParseURL(Data.sURL, _T("rdv_ip")));
-		uint32 tIpNet = (uint32)inet_addr((LPCSTR)tIpA);
-		uint16 tPort  = (uint16)_ttoi(_ParseURL(Data.sURL, _T("target_udp_port")));
-		uint32 rIpNet = (uint32)inet_addr((LPCSTR)rIpA);
-		uint16 rPort  = (uint16)_ttoi(_ParseURL(Data.sURL, _T("rdv_udp_port")));
-
-		bool ok = false;
-		const char* errCode = "ok";
-		if (tIpNet == INADDR_NONE || tIpNet == 0 || tPort == 0 || rIpNet == INADDR_NONE || rIpNet == 0 || rPort == 0) {
-			errCode = "invalid_ip_port";
-		} else if (!Kademlia::CKademlia::IsConnected() || Kademlia::CKademlia::GetUDPListener() == NULL) {
-			errCode = "kad_not_ready";
-		} else if (!thePrefs.GetUtpHolePunchEnabled()) {
-			errCode = "holepunch_disabled";
-		} else if (!thePrefs.GetEseKad3Rendezvous()) {
-			errCode = "rendezvous_disabled";
-		} else {
-			// InitiateKad3Rendezvous wants host-order IP/port (Kad convention).
-			Kademlia::CKademlia::GetUDPListener()->InitiateKad3Rendezvous(ntohl(rIpNet), rPort, ntohl(tIpNet), tPort);
-			ok = true;
-		}
-
-		CStringA json;
-		json.Format(
-			"{\"success\":%s,\"error\":\"%s\","
-			"\"kad3_rdv\":{\"req_sent\":%u,\"req_recv\":%u,\"challenge_sent\":%u,\"fwd\":%u,\"rdv_success\":%u}}",
-			ok ? "true" : "false", errCode,
-			(unsigned)CStatistics::m_dwKad3RdvReqSent,
-			(unsigned)CStatistics::m_dwKad3RdvReqRecv,
-			(unsigned)CStatistics::m_dwKad3RdvChallengeSent,
-			(unsigned)CStatistics::m_dwKad3RdvFwd,
-			(unsigned)CStatistics::m_dwKad3RdvSuccess);
-		CStringA hdr;
-		hdr.Format(
-			"HTTP/1.1 %s\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n",
-			ok ? "200 OK" : "400 Bad Request", json.GetLength());
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/keepalive/{start|stop} --- Manual R.2 (Kad keepalive / pinhole) control.
-	// start: RequestStart() flips a cross-thread flag; the Kad thread then self-populates
-	// the supernode pool from the routing table and pings each every 25 s (PING_REQ 0x66),
-	// each answered with a PONG (0x67) that refreshes the pinhole. Observe keepalive_* in
-	// /api/status afterward. RequestStart/Stop are atomic (InterlockedExchange), so they
-	// are safe to call from this webserver worker thread (no Kad/Live state touched here).
-	if (Data.webRoute == ese::web::WebRouteId::ApiKeepaliveStart ||
-		Data.webRoute == ese::web::WebRouteId::ApiKeepaliveStop) {
-		const bool bStart =
-			Data.webRoute == ese::web::WebRouteId::ApiKeepaliveStart;
-		const bool bStop =
-			Data.webRoute == ese::web::WebRouteId::ApiKeepaliveStop;
-		// Throttle state-toggles: a rapid start/stop loop spams the Kad log and re-scans
-		// the routing table. 2 s is invisible to manual testing but kills a toggle flood.
-		const ese::web::WebRateDecision keepaliveRate =
-			(bStart || bStop)
-			? pThis->m_authPolicy.CheckRateLimit(
-				ese::web::WebAction::KeepaliveToggle, eSELive::WebRequestAuthNowMs(), 2000)
-			: ese::web::WebRateDecision{true, 0};
-		if (!keepaliveRate.allowed) {
-			CStringA json = "{\"success\":false,\"error\":\"rate_limited\",\"retry_after_ms\":";
-			CStringA n; n.Format("%I64u}", keepaliveRate.retry_after_ms);
-			json += n;
-			CStringA hdr;
-			hdr.Format("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", json.GetLength());
-			Data.pSocket->SendData(hdr, hdr.GetLength());
-			Data.pSocket->SendData(json, json.GetLength());
-			return;
-		}
-		const char* errCode = "ok";
-		bool ok = true;
-		if (bStart && !thePrefs.IsEseNetLabActive()) {
-			ok = false;
-			errCode = "netlab_consent_required";
-		}
-		else if (bStart) { CKadKeepalive::Instance().RequestStart(); }
-		else if (bStop)  { CKadKeepalive::Instance().RequestStop(); }
-		else { ok = false; errCode = "unknown_action"; }
-
-		CKadKeepalive::Stats ks = CKadKeepalive::Instance().GetStats();
-		CStringA json;
-		json.Format(
-			"{\"success\":%s,\"error\":\"%s\",\"requested\":\"%s\","
-			"\"keepalive\":{\"running\":%s,\"pings_sent\":%u,\"pongs_recv\":%u,\"supernodes\":%u}}",
-			ok ? "true" : "false", errCode,
-			bStart ? "start" : (bStop ? "stop" : "none"),
-			CKadKeepalive::Instance().IsRunning() ? "true" : "false",
-			(unsigned)ks.pingsSent, (unsigned)ks.pongsReceived, (unsigned)ks.supernodesActive);
-		CStringA hdr;
-		hdr.Format(
-			"HTTP/1.1 %s\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n",
-			ok ? "200 OK" : "400 Bad Request", json.GetLength());
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
 		return;
 	}
 
@@ -1869,164 +1606,6 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 		return;
 	}
 
-	// --- /api/relay/{accept|egress|selector|connect} --- R.3 relay floor + selector test/activation.
-	//   accept?on=1   (relay buddy X): flip EseRelayAccept  — accept 0xCF SETUP + serve 0xCE viewers.
-	//   egress?on=1   (broadcaster B): flip EseRelayEgress  — push my stream to a connected HighID buddy.
-	//   selector?on=1 (viewer V):      flip EseReachSelector— Direct->punch2->punch3->relay escalation.
-	//   connect?stream=<32hex>&buddy_ip=<X>&buddy_port=<P> (viewer V): subscribe to relay X via 0xCE.
-	// Same prefs are loadable from emule.ini [eSE]; these flip them at runtime (no restart). on=0 turns off.
-	if (Data.webRoute == ese::web::WebRouteId::ApiRelayAccept ||
-		Data.webRoute == ese::web::WebRouteId::ApiRelayEgress ||
-		Data.webRoute == ese::web::WebRouteId::ApiRelaySelector ||
-		Data.webRoute == ese::web::WebRouteId::ApiRelayConnect) {
-		const bool bOn = (_ParseURL(Data.sURL, _T("on")) != _T("0"));   // default ON unless on=0
-		const char* action = "unknown";
-		bool ok = true;
-		if (Data.webRoute == ese::web::WebRouteId::ApiRelayAccept) {
-			thePrefs.SetEseRelayAccept(bOn);
-			volatile LONG* caps = reinterpret_cast<volatile LONG*>(&g_uEseCapsRuntime);
-			if (bOn) ::InterlockedOr(caps, (LONG)ESE_CAP_LIVE_RELAY);
-			else     ::InterlockedAnd(caps, ~(LONG)ESE_CAP_LIVE_RELAY);
-			action = "accept";
-		}
-		else if (Data.webRoute == ese::web::WebRouteId::ApiRelayEgress)   { thePrefs.SetEseRelayEgress(bOn);   action = "egress"; }
-		else if (Data.webRoute == ese::web::WebRouteId::ApiRelaySelector) { thePrefs.SetEseReachSelector(bOn); action = "selector"; }
-		else if (Data.webRoute == ese::web::WebRouteId::ApiRelayConnect) {
-			CStringA keyA = CT2A(_ParseURL(Data.sURL, _T("stream")));
-			CStringA ipA  = CT2A(_ParseURL(Data.sURL, _T("buddy_ip")));
-			uint16 port   = (uint16)_ttoi(_ParseURL(Data.sURL, _T("buddy_port")));
-			uchar streamKey[16];
-			uint32 ipNet = (uint32)inet_addr((LPCSTR)ipA);
-			if (EseHexToKey16A(keyA, streamKey) && ipNet != INADDR_NONE && ipNet != 0 && port != 0) {
-				CLiveBuddyRelay::Instance().RequestViewerConnect(streamKey, ipNet, port);
-				action = "connect";
-			} else { ok = false; action = "connect_bad_args"; }
-		}
-		else { ok = false; }
-		CStringA json;
-		json.Format("{\"success\":%s,\"action\":\"%s\",\"on\":%s,"
-			"\"relay\":{\"accept\":%s,\"egress\":%s,\"selector\":%s,"
-			"\"req_recv\":%u,\"accepted\":%u,\"active\":%u,\"bytes_fwd_kb\":%u,"
-			"\"budget_drops\":%u,\"max_kbps\":%u},"
-			"\"reach_connects\":{\"direct\":%u,\"punch2\":%u,\"punch3\":%u,\"relay\":%u}}",
-			ok ? "true" : "false", action, bOn ? "true" : "false",
-			thePrefs.GetEseRelayAccept() ? "true" : "false",
-			thePrefs.GetEseRelayEgress() ? "true" : "false",
-			thePrefs.GetEseReachSelector() ? "true" : "false",
-			(unsigned)CStatistics::m_dwRelayReqRecv, (unsigned)CStatistics::m_dwRelayAccepted,
-			(unsigned)CStatistics::m_dwRelayActive, (unsigned)CStatistics::m_dwRelayBytesFwdKB,
-			(unsigned)CStatistics::m_dwRelayBudgetDrops, (unsigned)thePrefs.GetEseRelayMaxKBps(),
-			(unsigned)CStatistics::m_dwReachConnDirect, (unsigned)CStatistics::m_dwReachConnPunch2,
-			(unsigned)CStatistics::m_dwReachConnPunch3, (unsigned)CStatistics::m_dwReachConnRelay);
-		CStringA hdr;
-		hdr.Format("HTTP/1.1 %s\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nX-Content-Type-Options: nosniff\r\nContent-Length: %d\r\n\r\n",
-			ok ? "200 OK" : "400 Bad Request", json.GetLength());
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	if (Data.webRoute == ese::web::WebRouteId::ApiHolePunchTest) {
-		const ese::web::WebRateDecision holePunchRate =
-			pThis->m_authPolicy.CheckRateLimit(
-				ese::web::WebAction::ManualHolePunch, eSELive::WebRequestAuthNowMs(), 5000);
-		if (!holePunchRate.allowed) {
-			CStringA json = "{\"success\":false,\"error\":\"rate_limited\",\"retry_after_ms\":";
-			CStringA n;
-			n.Format("%I64u}", holePunchRate.retry_after_ms);
-			json += n;
-			CStringA hdr;
-			hdr.Format(
-				"HTTP/1.1 429 Too Many Requests\r\n"
-				"Content-Type: application/json\r\n"
-				"Content-Length: %d\r\n\r\n",
-				json.GetLength());
-			Data.pSocket->SendData(hdr, hdr.GetLength());
-			Data.pSocket->SendData(json, json.GetLength());
-			return;
-		}
-
-		CString ipT  (_ParseURL(Data.sURL, _T("ip")));
-		CString portT(_ParseURL(Data.sURL, _T("udp_port")));
-		CStringA ipA = CT2A(ipT);
-		const CStringA ipJson = EseJsonEscapeA(ipA);
-		uint32 ipNet = (uint32)inet_addr((LPCSTR)ipA);
-		uint16 udpPort = (uint16)_ttoi(portT);
-
-		bool ok = false;
-		const char* errCode = "ok";
-		DWORD attemptsBefore = CStatistics::m_dwHolePunchAttempts;
-		uint16 hpSpread = 0;   // [eSE v9] port-predict spread actually used (0 = single-shot); reported in JSON
-		CUpDownClient* targetPeer = theApp.clientlist != NULL
-			? theApp.clientlist->FindClientByIP_KadPort(ipNet, udpPort) : NULL;
-		if (targetPeer == NULL && theApp.clientlist != NULL)
-			targetPeer = theApp.clientlist->FindClientByIP(ipNet);
-
-		if (ipNet == INADDR_NONE || ipNet == 0 || udpPort == 0) {
-			errCode = "invalid_ip_port";
-		} else if (!thePrefs.IsEseNetLabActive()) {
-			errCode = "netlab_consent_required";
-		} else if (targetPeer == NULL || !targetPeer->SupportsEseNetLabV1Target()) {
-			errCode = "netlab_target_required";
-		} else if (!Kademlia::CKademlia::IsConnected() || Kademlia::CKademlia::GetUDPListener() == NULL) {
-			errCode = "kad_not_ready";
-		} else if (!thePrefs.GetUtpHolePunchEnabled()) {
-			errCode = "holepunch_disabled";
-		} else if (theApp.clientudp == NULL || !theApp.clientudp->IsUtpReady()) {
-			errCode = "utp_not_ready";
-		} else {
-			// SendEseHolePunchReq expects host-order IP, host-order port.
-			// [eSE v9] optional ?spread=N (0-8) exercises anti-CGNAT port prediction straight
-			// from the test endpoint without flipping the pref; empty/0 falls back to the
-			// EseHolePunchPortPredict pref so normal test runs are unchanged.
-			int spreadReq = _ttoi(_ParseURL(Data.sURL, _T("spread")));
-			hpSpread = (spreadReq > 0)
-				? (uint16)(spreadReq > 8 ? 8 : spreadReq)
-				: (thePrefs.GetEseHolePunchPortPredict() ? (uint16)thePrefs.GetEseHolePunchPortSpread() : 0);
-			Kademlia::CKademlia::GetUDPListener()->SendEseHolePunchReqSpray(
-				ntohl(ipNet), udpPort, hpSpread, true, targetPeer);
-			ok = true;
-		}
-
-		CStringA json;
-		json.Format(
-			"{\"success\":%s,\"error\":\"%s\","
-			"\"target_ip\":\"%s\",\"target_udp_port\":%u,"
-			"\"attempts_before\":%u,\"attempts_after\":%u,"
-			"\"counters\":{"
-			"\"attempts\":%u,\"success\":%u,\"sym_nat_fail\":%u,"
-			"\"encrypted\":%u,\"plaintext\":%u,\"spray_reqs\":%u,"
-			"\"req_recv\":%u,\"challenge_sent\":%u},"
-			"\"port_predict\":{\"on\":%s,\"spread\":%u,\"used\":%u}}",
-			ok ? "true" : "false",
-			errCode,
-			(LPCSTR)ipJson, (unsigned)udpPort,
-			(unsigned)attemptsBefore, (unsigned)CStatistics::m_dwHolePunchAttempts,
-			(unsigned)CStatistics::m_dwHolePunchAttempts,
-			(unsigned)CStatistics::m_dwHolePunchSuccess,
-			(unsigned)CStatistics::m_dwHolePunchSymNATFail,
-			(unsigned)CStatistics::m_dwHolePunchEncrypted,
-			(unsigned)CStatistics::m_dwHolePunchPlaintext,
-			(unsigned)CStatistics::m_dwHolePunchSprayReqs,
-			(unsigned)CStatistics::m_dwHolePunchReqRecv,
-			(unsigned)CStatistics::m_dwHolePunchChallengeSent,
-			thePrefs.GetEseHolePunchPortPredict() ? "true" : "false",
-			(unsigned)thePrefs.GetEseHolePunchPortSpread(),
-			(unsigned)hpSpread);
-		CStringA hdr;
-		hdr.Format(
-			"HTTP/1.1 %s\r\n"
-			"Content-Type: application/json\r\n"
-			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
-			"X-Content-Type-Options: nosniff\r\n"
-			"Content-Length: %d\r\n\r\n",
-			ok ? "200 OK" : "400 Bad Request",
-			json.GetLength());
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
 	// --- /api/live/preflight --- Read-only health check before broadcasting.
 	// Returns the four conditions that determine whether broadcasting will work:
 	//   1. kad_connected   — your stream metadata can reach the DHT
@@ -2104,158 +1683,6 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			"Content-Type: application/json\r\n"
 			"Content-Length: %d\r\n\r\n",
 			json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/live/privacy/tunnel_ping?text=... --- v0.71 C — data plane demo.
-	// Sends a TUN_OP_PING through any active circuit (1-hop or 2-hop).
-	// The exit relay echoes back as TUN_OP_PING_REPLY with "echo:<text>".
-	// This is the FIRST end-to-end demonstration of the data plane working
-	// through the onion tunnel. If circuits exist but the reply doesn't
-	// arrive within timeoutMs, returns ok:false with reason.
-	// --- /api/live/privacy/subscriptions --- v0.71 P2.A — REST CRUD
-	// over the DPAPI-encrypted subscriptions store. The full MFC dialog
-	// is deferred; REST gives users (or external UI clients) immediate
-	// access via curl to add/list/remove subscriptions.
-	//   GET                       -> list current entries
-	//   GET ?add=<32 hex>&name=N  -> add channel
-	//   GET ?remove=<32 hex>      -> remove channel
-	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacySubscriptions) {
-		const CString addArg = _ParseURL(Data.sURL, _T("add"));
-		const CString rmArg  = _ParseURL(Data.sURL, _T("remove"));
-		const CString nmArg  = _ParseURL(Data.sURL, _T("name"));
-		auto hexToBytes = [](const CString& hex, uint8_t out[32]) -> bool {
-			if (hex.GetLength() != 64) return false;
-			for (int i = 0; i < 32; ++i) {
-				int hi = -1, lo = -1;
-				TCHAR a = hex[i*2], b = hex[i*2+1];
-				if (a >= '0' && a <= '9') hi = a - '0';
-				else if (a >= 'a' && a <= 'f') hi = a - 'a' + 10;
-				else if (a >= 'A' && a <= 'F') hi = a - 'A' + 10;
-				if (b >= '0' && b <= '9') lo = b - '0';
-				else if (b >= 'a' && b <= 'f') lo = b - 'a' + 10;
-				else if (b >= 'A' && b <= 'F') lo = b - 'A' + 10;
-				if (hi < 0 || lo < 0) return false;
-				out[i] = (uint8_t)((hi << 4) | lo);
-			}
-			return true;
-		};
-
-		bool ok = true;
-		CStringA msg = "ok";
-		try {
-			auto& store = eSELive::CLiveSubscriptionStore::Get();
-			if (!addArg.IsEmpty()) {
-				uint8_t pk[32];
-				if (!hexToBytes(addArg, pk)) { ok = false; msg = "invalid pubkey hex (need 64 chars)"; }
-				else {
-					eSELive::SubscriptionEntry e = {};
-					memcpy(e.channel_pubkey, pk, 32);
-					e.name = CStringA(nmArg);
-					e.added_unix_ts = (uint64_t)time(NULL);
-					e.notifications = true;
-					if (!store.Add(e)) { ok = false; msg = "add failed (already subscribed?)"; }
-					else store.Save();
-				}
-			}
-			if (!rmArg.IsEmpty()) {
-				uint8_t pk[32];
-				if (!hexToBytes(rmArg, pk)) { ok = false; msg = "invalid pubkey hex"; }
-				else if (!store.Remove(pk)) { ok = false; msg = "not subscribed"; }
-				else store.Save();
-			}
-
-			// List current entries (always in response).
-			std::vector<eSELive::SubscriptionEntry> all;
-			store.GetAll(all);
-			CStringA arr;
-			for (size_t i = 0; i < all.size(); ++i) {
-				if (i > 0) arr += ",";
-				CStringA pkHex;
-				for (int b = 0; b < 32; ++b) {
-					CStringA pair;
-					pair.Format("%02x", all[i].channel_pubkey[b]);
-					pkHex += pair;
-				}
-				CStringA line;
-				line.Format("{\"pubkey\":\"%s\",\"name\":\"%s\",\"added\":%llu}",
-					(LPCSTR)pkHex, (LPCSTR)W8JsonA(all[i].name),
-					(unsigned long long)all[i].added_unix_ts);
-				arr += line;
-			}
-			CStringA json;
-			json.Format("{\"ok\":%s,\"msg\":\"%s\",\"count\":%u,\"subscriptions\":[%s]}",
-				ok ? "true" : "false", (LPCSTR)msg, (unsigned)all.size(), (LPCSTR)arr);
-			CStringA header;
-			header.Format(
-			    "HTTP/1.1 200 OK\r\n"
-			    HTTPInit
-			    "Content-Type: application/json\r\n"
-			    "Content-Length: %d\r\n\r\n",
-			    json.GetLength());
-			Data.pSocket->SendData(header, header.GetLength());
-			Data.pSocket->SendData(json, json.GetLength());
-		} catch (...) {
-			const char* err = "{\"ok\":false,\"msg\":\"exception in subscriptions handler\"}";
-			CStringA header;
-			header.Format("HTTP/1.1 200 OK\r\n" HTTPInit "Content-Type: application/json\r\nContent-Length: %d\r\n\r\n",
-				(int)strlen(err));
-			Data.pSocket->SendData(header, header.GetLength());
-			Data.pSocket->SendData(err, (int)strlen(err));
-		}
-		return;
-	}
-
-	// --- /api/live/privacy/tunnel_search?keyword=foo --- v8.1 Sprint B —
-	// REAL Kad search through the onion tunnel. Sends TUN_OP_KAD_SEARCH_V2;
-	// the EXIT runs an actual dual-namespace Kad CSearch on V's behalf and
-	// returns rich result records (TUN_OP_KAD_RESULT_V2, multi-cell). The
-	// keyword is emitted to Kad from the EXIT's IP, never V's → V's identity
-	// stays off the DHT. (The keyword does reach the exit in clear; encrypting
-	// it toward the exit is v9.0 roadmap, thesis Decision 12.3.) Length: 31.
-	if (Data.webRoute == ese::web::WebRouteId::ApiLivePrivacyTunnelSearch) {
-		CString kwArg = _ParseURL(Data.sURL, _T("keyword"));
-		if (kwArg.IsEmpty()) kwArg = _T("eselive");
-		CStringA kwA(kwArg);
-		kwA.MakeLower();
-		std::string keyword((LPCSTR)kwA);
-		std::string reply;
-		bool ok = false;
-		try {
-			// 12 s: the exit accumulates real Kad results for ~7 s (the
-			// window) before replying with TUN_OP_KAD_RESULT_V2.
-			ok = eSELive::CLiveTunnel::Get().TunneledKadSearch(keyword, reply, 12000);
-		} catch (...) {}
-
-		CStringA json;
-		if (ok) {
-			// `reply` is already a JSON array of rich result records built by
-			// TunneledKadSearch; embed it directly. Do NOT use Format here - a
-			// '%' in a stream title would be misread as a format spec.
-			const CStringA kwSafe = W8JsonA(kwA);
-			// K6-1 (Kad6 DISCOVERY_ONLY): label the operation honestly. The
-			// originator's IP never touches the DHT (the exit queries Kad from its
-			// OWN IP), but the exit DOES see the keyword in clear (spec K6-SEARCH-010),
-			// and this is discovery ONLY — transfer privacy is a separate policy
-			// (STRICT suppresses direct dials; other profiles may permit them). These are additive
-			// JSON fields; existing consumers of ok/keyword/results are unaffected.
-			json = "{\"ok\":true,\"privacy\":\"DISCOVERY_ONLY\",\"originator_hidden_from_dht\":true,\"exit_sees_keyword\":true,\"keyword\":\"";
-			json += kwSafe;
-			json += "\",\"results\":";
-			json += reply.c_str();
-			json += "}";
-		} else {
-			json = "{\"ok\":false,\"privacy\":\"DISCOVERY_ONLY\",\"reason\":\"no active circuit or timeout - build a circuit first via test_circuit\"}";
-		}
-		CStringA header;
-		header.Format(
-		    "HTTP/1.1 200 OK\r\n"
-		    HTTPInit
-		    "Content-Type: application/json\r\n"
-		    "Content-Length: %d\r\n\r\n",
-		    json.GetLength());
 		Data.pSocket->SendData(header, header.GetLength());
 		Data.pSocket->SendData(json, json.GetLength());
 		return;
@@ -3073,161 +2500,6 @@ void CWebServer::_ProcessLiveAPI(const ThreadData &Data)
 			response.reason_phrase.c_str(),
 			response.content_type.c_str(),
 			json.GetLength());
-		Data.pSocket->SendData(header, header.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/live/diagnose --- DISC-S10: comprehensive self-diagnostic.
-	// Returns JSON with everything a user/support engineer needs to figure
-	// out why a stream isn't discoverable. Usage: /api/live/diagnose?key=HEX32
-	// (key is optional — without it, returns global discovery state).
-	if (Data.webRoute == ese::web::WebRouteId::ApiLiveDiagnose) {
-		CString keyT(_ParseURL(Data.sURL, _T("key")));
-		uchar streamKey[16] = {0};
-		bool keyValid = false;
-		if (keyT.GetLength() == 32) {
-			CStringA keyA = CT2A(keyT);
-			keyValid = W8KeyFromA(keyA, streamKey);
-		}
-
-		// Gather state under no lock — these accessors are atomic/snapshot.
-		bool kadConnected = Kademlia::CKademlia::IsConnected();
-		bool isBroadcasting = (theApp.liveStreamManager
-			&& theApp.liveStreamManager->IsBroadcasting());
-		bool isViewing = (theApp.liveStreamManager
-			&& theApp.liveStreamManager->IsViewingLive());
-		uint32 publicIP = theApp.GetPublicIP();
-		uint16 tcpPort = theApp.GetAdvertisedTcpPort();
-
-		LiveStreamEntry entry;
-		bool inDirectory = false;
-		if (keyValid && theApp.liveStreamManager) {
-			inDirectory = theApp.liveStreamManager->GetKadBridge().GetStreamInfo(streamKey, entry);
-		}
-		int totalKnown = theApp.liveStreamManager
-			? theApp.liveStreamManager->GetKadBridge().GetDirectoryCount() : 0;
-
-		CStringA json;
-		CStringA entryJson = "null";
-		if (inDirectory) {
-			const CStringA titleA =
-				W8JsonA(CStringA(CT2A(entry.title)));
-			CStringA t;
-			t.Format("{\"title\":\"%s\",\"ip\":\"%s\",\"port\":%u,"
-			         "\"bitrate\":%u,\"viewerCount\":%u,"
-			         "\"lastSeenAgeMs\":%u,\"isOwn\":%s}",
-				(LPCSTR)titleA,
-				(LPCSTR)CStringA(ipstr(entry.broadcasterIP)),
-				(unsigned)entry.broadcasterPort,
-				(unsigned)entry.bitrate,
-				(unsigned)entry.viewerCount,
-				(unsigned)(GetTickCount() - entry.lastSeen),
-				entry.isOwnStream ? "true" : "false");
-			entryJson = t;
-		}
-
-		json.Format(
-			"{\"keyProvided\":%s,\"keyValid\":%s,"
-			"\"kadConnected\":%s,\"publicIP\":\"%s\",\"tcpPort\":%u,"
-			"\"isBroadcasting\":%s,\"isViewing\":%s,"
-			"\"directorySize\":%d,\"streamInDirectory\":%s,"
-			"\"directoryEntry\":%s,"
-			"\"hint\":\"%s\"}",
-			keyT.IsEmpty() ? "false" : "true",
-			keyValid ? "true" : "false",
-			kadConnected ? "true" : "false",
-			(LPCSTR)CStringA(ipstr(publicIP)),
-			(unsigned)tcpPort,
-			isBroadcasting ? "true" : "false",
-			isViewing ? "true" : "false",
-			totalKnown,
-			inDirectory ? "true" : "false",
-			(LPCSTR)entryJson,
-			(!kadConnected) ? "Kad is not connected. Wait or check firewall."
-			: (keyValid && !inDirectory) ? "Stream not in local directory. Run JoinStream first or wait for Kad propagation."
-			: (isBroadcasting && !publicIP) ? "Broadcasting but no public IP detected. Check UPnP / port forward."
-			: "OK");
-
-		CStringA hdr;
-		hdr.Format(
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: application/json\r\n"
-			"Cache-Control: no-store\r\n"
-			"Access-Control-Allow-Origin: *\r\n"
-			"Content-Length: %d\r\n\r\n",
-			json.GetLength());
-		Data.pSocket->SendData(hdr, hdr.GetLength());
-		Data.pSocket->SendData(json, json.GetLength());
-		return;
-	}
-
-	// --- /api/live/kad/streams --- Kad-discovered live stream directory
-	if (Data.webRoute == ese::web::WebRouteId::ApiLiveKadStreams) {
-		CArray<LiveStreamEntry> streams;
-		if (theApp.liveStreamManager != NULL) {
-			// SearchStreams drives CSearchManager and adds a row to the Kad
-			// search-list UI control (InsertItem -> cross-thread SendMessage),
-			// all main-thread only. On this webserver worker it would hold the
-			// KadBridge lock across that SendMessage and deadlock the UI
-			// thread. Marshal the search to the main thread; the worker just
-			// reads the already-cached directory below.
-			if (theApp.emuledlg != NULL)
-				theApp.emuledlg->PostMessage(UM_LIVE_KAD_REFRESH);
-			theApp.liveStreamManager->GetKadBridge().GetKnownStreams(streams);
-		}
-
-		CStringA json;
-		json.Format("{\"kadConnected\":%s,\"streams\":[",
-			Kademlia::CKademlia::IsConnected() ? "true" : "false");
-
-		for (INT_PTR i = 0; i < streams.GetCount(); i++) {
-			const LiveStreamEntry& entry = streams[i];
-			CStringA streamKey = W8KeyA(entry.streamKey);
-			CStringA title = W8JsonA(CStringA(CT2A(entry.title)));
-			CStringA category = W8JsonA(CStringA(CT2A(entry.category)));
-			CStringA language = W8JsonA(CStringA(CT2A(entry.language)));
-
-			if (i > 0)
-				json += ",";
-
-			json.AppendFormat(
-				"{\"streamKey\":\"%s\","
-				"\"title\":\"%s\","
-				"\"category\":\"%s\","
-				"\"language\":\"%s\","
-				"\"bitrate\":%u,"
-				"\"viewers\":%u,"
-				"\"broadcasterIP\":%u,"
-				"\"broadcasterPort\":%u,"
-				"\"startedAt\":%u,"
-				"\"lastSeenAgeMs\":%u,"
-				"\"own\":%s,"
-				"\"privacyOrigin\":\"%s\","
-				"\"source\":\"kad\"}",
-				(LPCSTR)streamKey,
-				(LPCSTR)title,
-				(LPCSTR)category,
-				(LPCSTR)language,
-				entry.bitrate,
-				entry.viewerCount,
-				entry.broadcasterIP,
-				entry.broadcasterPort,
-				entry.startedAt,
-				GetTickCount() - entry.lastSeen,
-				entry.isOwnStream ? "true" : "false",
-				entry.privacyOrigin == ESE_PRIV_ORIGIN_KAD6_TUNNEL
-					? "kad6_tunnel" : "direct");
-		}
-		json += "]}";
-
-		CStringA header;
-		header.Format(
-			"HTTP/1.1 200 OK\r\n"
-			"Content-Type: application/json\r\n"
-			"Access-Control-Allow-Origin: http://127.0.0.1\r\n"
-			"X-Content-Type-Options: nosniff\r\n"
-			"Content-Length: %d\r\n\r\n", json.GetLength());
 		Data.pSocket->SendData(header, header.GetLength());
 		Data.pSocket->SendData(json, json.GetLength());
 		return;

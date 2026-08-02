@@ -964,6 +964,18 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
+    <ClCompile Include="WebLiveApiTransferController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <ClCompile Include="WebLiveApiSearchController.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
     <ClCompile Include="WebSharedController.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
@@ -1463,6 +1475,8 @@
     <ClInclude Include="WebSharedFilesController.h" />
     <ClInclude Include="WebLiveApiStreamController.h" />
     <ClInclude Include="WebLiveApiStatusController.h" />
+    <ClInclude Include="WebLiveApiTransferController.h" />
+    <ClInclude Include="WebLiveApiSearchController.h" />
     <ClInclude Include="WebSharedController.h" />
     <ClInclude Include="WebStaticAssets.h" />
     <ClInclude Include="WebDiagnostics.h" />

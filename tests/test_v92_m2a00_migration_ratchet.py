@@ -535,6 +535,56 @@ class M2A00RatchetTest(unittest.TestCase):
             constructor.index("m_handle=M2A_BIND_X"),
         ))
 
+    def test_local_handle_routes_require_consecutive_fail_closed_pairs(self):
+        previous = "void Parent::Run() { return; }\n"
+        first = (
+            "M2AModuleHandle first = "
+            "M2A_BIND_W8_1111111111(M2AParentPort{this}); "
+            "if (!first) return;"
+        )
+        target = (
+            "M2AModuleHandle target = "
+            "M2A_BIND_W9_2222222222(M2AParentPort{this}); "
+            "if (!target) return;"
+        )
+        current = f"void Parent::Run() {{ {first} {target} Work(); }}\n"
+        start = current.index("M2AModuleHandle target")
+        self.assertTrue(GATE._preexisting_local_handle_route(
+            current, previous, ("Parent",),
+            "M2A_BIND_W9_2222222222", start,
+        ))
+        first_start = current.index("M2AModuleHandle first")
+        self.assertTrue(GATE._preexisting_local_handle_route(
+            current, previous, ("Parent",),
+            "M2A_BIND_W8_1111111111", first_start,
+        ))
+        first_without_guard = current.replace("if (!first) return;", "")
+        self.assertFalse(GATE._preexisting_local_handle_route(
+            first_without_guard, previous, ("Parent",),
+            "M2A_BIND_W8_1111111111",
+            first_without_guard.index("M2AModuleHandle first"),
+        ))
+        returning_value = current.replace(
+            "if (!first) return;", "if (!first) return false;"
+        )
+        self.assertTrue(GATE._preexisting_local_handle_route(
+            returning_value, previous, ("Parent",),
+            "M2A_BIND_W8_1111111111",
+            returning_value.index("M2AModuleHandle first"),
+        ))
+        for invalid in (
+            current.replace(f"{first} {target}", f"{first} Prepare(); {target}"),
+            current.replace("if (!first) return;", "if (!other) return;"),
+            current.replace("if (!first) return;", ""),
+            current.replace("M2A_BIND_W8_1111111111", "M2A_BIND_W8_BAD"),
+            current.replace("M2AParentPort{this}", "M2AParentPort{other}", 1),
+        ):
+            invalid_start = invalid.index("M2AModuleHandle target")
+            self.assertFalse(GATE._preexisting_local_handle_route(
+                invalid, previous, ("Parent",),
+                "M2A_BIND_W9_2222222222", invalid_start,
+            ))
+
     def test_web_static_thread_route_is_exact_and_fail_closed(self):
         previous = (
             "CString CWebServer::_Get(const ThreadData &Data) { "

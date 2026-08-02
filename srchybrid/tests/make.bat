@@ -64,7 +64,7 @@ cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /Fetests\build\test_live_tunnel_pending.
 if errorlevel 1 exit /b 1
 tests\build\test_live_tunnel_pending.exe
 if errorlevel 1 exit /b 1
-cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /I..\libkad6\include /Fetests\build\test_live_tunnel_peer_kad.exe tests\test_live_tunnel_peer_kad.cpp LiveTunnelPeerState.cpp LiveTunnelKadBridge.cpp
+cl /nologo /EHsc /O2 /W4 /WX /std:c++17 /I. /I..\libkad6\include /I"%VCToolsInstallDir%atlmfc\src\mfc" /Fetests\build\test_live_tunnel_peer_kad.exe tests\test_live_tunnel_peer_kad.cpp LiveTunnelPeerState.cpp LiveTunnelKadBridge.cpp LiveTunnelGatewayLeaseState.cpp LiveTunnelOriginService.cpp LiveTunnelOriginWorker.cpp ..\libkad6\src\kad6_address.cpp ..\libkad6\src\kad6_endpoint.cpp ..\libkad6\src\kad6_frame.cpp ..\libkad6\src\kad6_frontdoor.cpp ..\libkad6\src\kad6_lease.cpp ..\libkad6\src\kad6_publish.cpp ..\libkad6\src\kad6_tags.cpp
 if errorlevel 1 exit /b 1
 tests\build\test_live_tunnel_peer_kad.exe
 if errorlevel 1 exit /b 1

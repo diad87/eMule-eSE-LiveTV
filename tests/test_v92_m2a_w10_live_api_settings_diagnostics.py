@@ -114,7 +114,7 @@ class W10LiveApiEvidence(unittest.TestCase):
         self.assertGreater(facade_deleted, facade_added)
         inventory = json.loads(W7.read_text(encoding="utf-8"))
         owned = [item for item in inventory["operations"] if item["future_wave"] == "W10"]
-        self.assertEqual(len(owned), 8)
+        self.assertEqual(len(owned), 9)
         self.assertEqual({item["future_owner"] for item in owned}, set(MODULES))
         self.assertEqual(
             next(item for item in inventory["known_findings"] if item["id"] == "W7-SEC-01")["disposition"],

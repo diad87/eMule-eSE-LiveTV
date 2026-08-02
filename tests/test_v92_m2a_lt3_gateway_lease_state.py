@@ -1,7 +1,7 @@
 import pathlib, re, unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]; SOURCE = ROOT / "srchybrid"
 HEADER = (SOURCE / "LiveTunnelGatewayLeaseState.h").read_text(); MODULE = (SOURCE / "LiveTunnelGatewayLeaseState.cpp").read_text(); PROJECT = (SOURCE / "emule.vcxproj").read_text()
-FACADE = (SOURCE / "LiveTunnel.h").read_text() + (SOURCE / "LiveTunnel.cpp").read_text(); ADAPTER = (SOURCE / "Kad6GatewaySocket.cpp").read_text()
+FACADE = (SOURCE / "LiveTunnel.h").read_text() + (SOURCE / "LiveTunnel.cpp").read_text(); ADAPTER = (SOURCE / "Kad6GatewaySocket.cpp").read_text() + (SOURCE / "LiveTunnelKadBridge.cpp").read_text()
 FIELDS = "m_k6SourceLeases m_k6CohortScheduler m_k6PublishBudget m_k6PublishCoalescer m_k6SourceEpochs m_k6SourceEpochsLoaded m_k6SourceEpochsLoadFailed".split()
 class LT3GatewayLeaseState(unittest.TestCase):
     def test_m2a_8361971c3c55d862(self): self.assertIn("M2A_BIND_LT3_876B98A826", MODULE); self.assertIn("LiveTunnelGatewayLeaseState.cpp", PROJECT)

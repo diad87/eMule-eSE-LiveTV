@@ -29,7 +29,7 @@ bool M2A_LT3_PrepareEpochUpdateBridge(
     std::uint64_t&, std::vector<std::uint8_t>&);
 bool M2A_LT3_CommitEpochUpdateBridge(M2AModuleHandle&, std::uint64_t) noexcept;
 void M2A_LT3_RollbackEpochUpdateBridge(M2AModuleHandle&, std::uint64_t) noexcept;
-bool M2A_LT3_PlanGatewayFrameBridge(const M2AModuleHandle&, const std::uint8_t*, std::size_t, std::uint32_t, bool, void*);
+bool M2A_LT3_PlanGatewayFrameBridge(const M2AModuleHandle& handle, const std::uint8_t* wire, std::size_t length, std::uint32_t requestId, bool response, void* output) { if (!handle.Get() || !wire || length == 0 || !output) return false; kad6::K6Frame frame; std::size_t consumed=0; if (kad6::DecodeK6Frame(wire,length,frame,&consumed)!=kad6::Kad6Status::Ok || consumed!=length || frame.request_id!=requestId || frame.session_id!=0 || ((frame.flags&kad6::kK6FlagResponse)!=0)!=response || (frame.flags&kad6::kK6FlagReservedMask)!=0 || (!response && (frame.flags&(kad6::kK6FlagMore|kad6::kK6FlagFinal))!=0)) return false; *static_cast<kad6::K6Frame*>(output)=std::move(frame); return true; }
 bool M2A_LT3_OperateStoresBridge(
     const M2AModuleHandle&, LiveTunnelGatewayStoreOperation,
     void*, void*, void*, void*, void*, void*);

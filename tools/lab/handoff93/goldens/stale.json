@@ -1,0 +1,72 @@
+{
+  "_golden": "stale",
+  "_intent": "The network changed (LAN -> hotspot), so topology_generation advanced 42 -> 43, but the plane still carries evidence minted under generation 42. The marks are stale=true and evidence current=false while expired=false. This is the shape HG07 and H93-11 need: a stale event must never mutate state, and a plane holding stale evidence must never read as VERIFIED.",
+  "schema": "ESE_REACH_STATUS_V1",
+  "available": true,
+  "topology_generation": 43,
+  "planes": {
+    "ed2k_tcp_v4": {
+      "state": "Discovering",
+      "gate_state": "DISCOVERING",
+      "reason": "InterfaceChanged",
+      "reason_code": 13,
+      "generation": 43,
+      "expired": false,
+      "stale": true,
+      "local": { "family": "IPv4", "address_class": "private", "port": 4662, "source": "LocalInterface", "usable": true },
+      "mapped": { "family": "Unspecified", "address_class": "unspecified", "port": 0, "source": "None", "usable": false },
+      "advertised": { "family": "Unspecified", "address_class": "unspecified", "port": 0, "source": "None", "usable": false },
+      "lease": {
+        "mapper": "Pcp", "transport": "Tcp",
+        "requested_external_port": 4662, "granted_external_port": 4662,
+        "lifetime_seconds": 3600, "mapper_epoch": 7,
+        "generation": 42, "owned_by_us": false, "structurally_valid": true
+      },
+      "primary_evidence": { "kind": "ServerHighId", "generation": 42, "current": false },
+      "inbound_evidence": { "kind": "InboundTcpAccept", "generation": 42, "current": false },
+      "classic_high_id_evidence": false
+    },
+    "kad_udp_v4": {
+      "state": "Discovering",
+      "gate_state": "DISCOVERING",
+      "reason": "InterfaceChanged",
+      "reason_code": 13,
+      "generation": 43,
+      "expired": false,
+      "stale": true,
+      "local": { "family": "IPv4", "address_class": "private", "port": 4672, "source": "LocalInterface", "usable": true },
+      "mapped": { "family": "Unspecified", "address_class": "unspecified", "port": 0, "source": "None", "usable": false },
+      "advertised": { "family": "Unspecified", "address_class": "unspecified", "port": 0, "source": "None", "usable": false },
+      "lease": {
+        "mapper": "Pcp", "transport": "Udp",
+        "requested_external_port": 4672, "granted_external_port": 4672,
+        "lifetime_seconds": 3600, "mapper_epoch": 7,
+        "generation": 42, "owned_by_us": false, "structurally_valid": true
+      },
+      "primary_evidence": { "kind": "MappingLease", "generation": 42, "current": false },
+      "inbound_evidence": { "kind": "None", "generation": 0, "current": false },
+      "classic_high_id_evidence": false
+    },
+    "direct_v6": {
+      "state": "Disabled",
+      "gate_state": "DISABLED",
+      "reason": "InterfaceChanged",
+      "reason_code": 13,
+      "generation": 43,
+      "expired": false,
+      "stale": false,
+      "local": { "family": "Unspecified", "address_class": "unspecified", "port": 0, "source": "None", "usable": false },
+      "mapped": { "family": "Unspecified", "address_class": "unspecified", "port": 0, "source": "None", "usable": false },
+      "advertised": { "family": "Unspecified", "address_class": "unspecified", "port": 0, "source": "None", "usable": false },
+      "lease": {
+        "mapper": "None", "transport": "Tcp",
+        "requested_external_port": 0, "granted_external_port": 0,
+        "lifetime_seconds": 0, "mapper_epoch": 0,
+        "generation": 0, "owned_by_us": false, "structurally_valid": false
+      },
+      "primary_evidence": { "kind": "None", "generation": 0, "current": false },
+      "inbound_evidence": { "kind": "None", "generation": 0, "current": false },
+      "classic_high_id_evidence": false
+    }
+  }
+}

@@ -1,0 +1,285 @@
+{
+    "schema":  "ese.lab.handoff-gate-matrix/v1",
+    "gate":  "G92-93-DEV",
+    "generated_at_utc":  "2026-08-07T14:41:16.652Z",
+    "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473",
+    "toolchain":  "inherited-offline-plus-upnp-delta",
+    "run_directory":  "C:\\tmp\\eSE-v9.2-w12-reseal-a4\\artifacts\\g92-93-dev-2e4bf59a",
+    "verdict":  "BLOCKED",
+    "verdict_counts":  {
+                           "PASS":  14,
+                           "FAIL":  0,
+                           "BLOCKED":  0,
+                           "SKIP":  0,
+                           "PENDING":  2,
+                           "MISSING":  0
+                       },
+    "blockers":  [
+                     "H93-15 is PENDING; the gate requires PASS",
+                     "H93-16 is PENDING; the gate requires PASS"
+                 ],
+    "rows":  [
+                 {
+                     "id":  "H93-01",
+                     "group":  "Procedencia",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "provenance inherited by SHA from the sealed offline evidence; additive commits are identified",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-02",
+                     "group":  "Build/regresion",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "inherited native passes plus both incremental offline campaigns PASS",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-03",
+                     "group":  "Schema",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "frozen schema and golden evidence inherited; delta does not alter reach schema",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-04",
+                     "group":  "Compatibilidad",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "compatibility inherited and TCP remains the default protocol",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-05",
+                     "group":  "Desacoplamiento",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "consumer decoupling inherited; delta is confined to the preflight adapter",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-06",
+                     "group":  "Mappers simulados",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "mapper simulations inherited plus offline SOAP and COM UDP lifecycle coverage",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-07",
+                     "group":  "Verificacion",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "correlated-proof behavior inherited; no promotion semantics changed",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-08",
+                     "group":  "Atomicidad",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "atomicity inherited plus protocol-specific UDP lifecycle and failure tests",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-09",
+                     "group":  "Ciclo de vida",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "lifecycle inherited plus bind retry, held listener and fail-closed cleanup tests",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-10",
+                     "group":  "Topologia",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "topology policy inherited; physical adapter selection remains enforced",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-11",
+                     "group":  "Generacion",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "generation and stale-callback evidence inherited; delta does not change generation",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-12",
+                     "group":  "IPv6",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "IPv6 lifecycle evidence inherited; delta is IPv4 UPnP preflight only",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-13",
+                     "group":  "Integracion eMule",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "integration evidence inherited plus incremental campaigns PASS",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-14",
+                     "group":  "Seguridad/evidencia",
+                     "physical":  false,
+                     "verdict":  "PASS",
+                     "note":  "security evidence inherited plus privacy-safe JSON and cleanup-status tests",
+                     "artifacts":  {
+                                       "path":  "summary.json",
+                                       "exists":  true,
+                                       "sha256":  "bb22ead7e1a6eb2f63c597b7106b1cacdc664923b620c637ceef6e0f9fd5ff36",
+                                       "bytes":  4231,
+                                       "schema":  "ese.v92.g92-93-dev.incremental-summary/v1",
+                                       "commit":  "2e4bf59afecdadf0f455f603567ce046d5d68473"
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-15",
+                     "group":  "Fisico corto",
+                     "physical":  true,
+                     "verdict":  "PENDING",
+                     "note":  "blocked in this session: UDP physical mapping attempts were rejected with SOAP fault 501; cleanup and mapping absence were verified, so no transition cycle is claimed",
+                     "artifacts":  {
+
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 },
+                 {
+                     "id":  "H93-16",
+                     "group":  "Ruta fisica",
+                     "physical":  true,
+                     "verdict":  "PENDING",
+                     "note":  "execution host has no wireless interface available and the planned second physical node is offline; no disruptive change or overlay dataplane substitute was attempted",
+                     "artifacts":  {
+
+                                   },
+                     "artifact_ok":  true,
+                     "commit_ok":  true
+                 }
+             ]
+}

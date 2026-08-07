@@ -1,0 +1,22 @@
+{
+  "gate": "G92-93-DEV",
+  "commit": "2e4bf59afecdadf0f455f603567ce046d5d68473",
+  "rows": [
+    {"id":"H93-01","verdict":"PASS","note":"provenance inherited by SHA from the sealed offline evidence; additive commits are identified","artifacts":["summary.json"]},
+    {"id":"H93-02","verdict":"PASS","note":"inherited native passes plus both incremental offline campaigns PASS","artifacts":["summary.json"]},
+    {"id":"H93-03","verdict":"PASS","note":"frozen schema and golden evidence inherited; delta does not alter reach schema","artifacts":["summary.json"]},
+    {"id":"H93-04","verdict":"PASS","note":"compatibility inherited and TCP remains the default protocol","artifacts":["summary.json"]},
+    {"id":"H93-05","verdict":"PASS","note":"consumer decoupling inherited; delta is confined to the preflight adapter","artifacts":["summary.json"]},
+    {"id":"H93-06","verdict":"PASS","note":"mapper simulations inherited plus offline SOAP and COM UDP lifecycle coverage","artifacts":["summary.json"]},
+    {"id":"H93-07","verdict":"PASS","note":"correlated-proof behavior inherited; no promotion semantics changed","artifacts":["summary.json"]},
+    {"id":"H93-08","verdict":"PASS","note":"atomicity inherited plus protocol-specific UDP lifecycle and failure tests","artifacts":["summary.json"]},
+    {"id":"H93-09","verdict":"PASS","note":"lifecycle inherited plus bind retry, held listener and fail-closed cleanup tests","artifacts":["summary.json"]},
+    {"id":"H93-10","verdict":"PASS","note":"topology policy inherited; physical adapter selection remains enforced","artifacts":["summary.json"]},
+    {"id":"H93-11","verdict":"PASS","note":"generation and stale-callback evidence inherited; delta does not change generation","artifacts":["summary.json"]},
+    {"id":"H93-12","verdict":"PASS","note":"IPv6 lifecycle evidence inherited; delta is IPv4 UPnP preflight only","artifacts":["summary.json"]},
+    {"id":"H93-13","verdict":"PASS","note":"integration evidence inherited plus incremental campaigns PASS","artifacts":["summary.json"]},
+    {"id":"H93-14","verdict":"PASS","note":"security evidence inherited plus privacy-safe JSON and cleanup-status tests","artifacts":["summary.json"]},
+    {"id":"H93-15","verdict":"PENDING","simulated":false,"note":"blocked in this session: UDP physical mapping attempts were rejected with SOAP fault 501; cleanup and mapping absence were verified, so no transition cycle is claimed","artifacts":[]},
+    {"id":"H93-16","verdict":"PENDING","simulated":false,"note":"execution host has no wireless interface available and the planned second physical node is offline; no disruptive change or overlay dataplane substitute was attempted","artifacts":[]}
+  ]
+}

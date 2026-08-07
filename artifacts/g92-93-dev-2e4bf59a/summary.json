@@ -1,0 +1,118 @@
+{
+  "schema": "ese.v92.g92-93-dev.incremental-summary/v1",
+  "commit": "2e4bf59afecdadf0f455f603567ce046d5d68473",
+  "scope": "Incremental UPnP TCP/UDP preflight evidence over inherited H93-01..H93-14 offline evidence; no physical gate is promoted",
+  "inheritance": {
+    "evidence_container_commit": "021030e0edcf3ddfa7d545bdf3d204b29784394a",
+    "offline_evidence_commit": "e92ab29e2bdddd1fa68da0f5aa841f068fa5f462",
+    "offline_summary": {
+      "path": "artifacts/g92-93-dev-e92ab29e/offline-summary.json",
+      "sha256": "ad58a58484f08b1f98335f3fcd6e2a525d9e862d8b694867f39a101c8d3479af"
+    },
+    "partial_verdicts": {
+      "path": "artifacts/g92-93-dev-e92ab29e/verdicts.partial.json",
+      "sha256": "2ef5b3e24e103175bbab860ad2f49cb3ec35d9b722891af1de881bebcd6d3a52"
+    },
+    "inherited_rows": [
+      "H93-01", "H93-02", "H93-03", "H93-04", "H93-05", "H93-06",
+      "H93-07", "H93-08", "H93-09", "H93-10", "H93-11", "H93-12",
+      "H93-13", "H93-14"
+    ]
+  },
+  "delta_commits": [
+    {
+      "commit": "ddcccff3bc9922dbd8bb9a8852c9d688fd95aeaf",
+      "subject": "protocol-aware UPnP preflight and fail-closed result projection"
+    },
+    {
+      "commit": "2e4bf59afecdadf0f455f603567ce046d5d68473",
+      "subject": "bind-accredited port selection with listener lifetime coverage"
+    }
+  ],
+  "delta_validation": {
+    "offline_campaigns": [
+      {
+        "scope": "protocol delta and failure projection",
+        "status": "PASS",
+        "exit_code": 0
+      },
+      {
+        "scope": "bind retry, listener lifetime, protocol delta and full regression rerun",
+        "status": "PASS",
+        "exit_code": 0
+      }
+    ],
+    "coverage": [
+      "TCP-default backward compatibility",
+      "protocol-bound ownership descriptions",
+      "SOAP and COM UDP Add/Get/Delete protocol propagation",
+      "SOAP fault 501 and delete failure fail-closed behavior",
+      "TCP and UDP bind rejection and retry",
+      "winning listener held until cleanup",
+      "probe JSON status and address privacy"
+    ],
+    "independent_reviews": [
+      {
+        "reviewer_model_role": "Sol",
+        "scope": "UPnP UDP protocol and fail-closed tests",
+        "verdict": "APPROVE"
+      },
+      {
+        "reviewer_model_role": "Sol",
+        "scope": "bind-accredited port selection hardening",
+        "verdict": "APPROVE"
+      }
+    ]
+  },
+  "physical_observations": {
+    "prior_tcp_mapping": {
+      "protocol": "TCP",
+      "status": "MAPPING_PASS",
+      "promotes_physical_gate": false
+    },
+    "post_hardening_tcp": {
+      "protocol": "TCP",
+      "status": "FAIL",
+      "classification": "SOAP_ACTION_REJECTED_501",
+      "cleanup_complete": true,
+      "mapping_absent": true,
+      "promotes_physical_gate": false
+    },
+    "post_hardening_udp": {
+      "protocol": "UDP",
+      "attempts": 2,
+      "status_each_attempt": "FAIL",
+      "classification_each_attempt": "SOAP_ACTION_REJECTED_501",
+      "cleanup_complete_each_attempt": true,
+      "mapping_absent_each_attempt": true,
+      "promotes_physical_gate": false
+    },
+    "pre_hardening_bind_diagnostic": {
+      "protocol": "TCP",
+      "classification": "LOCAL_BIND_REJECTED",
+      "router_action_attempted": false,
+      "promotes_physical_gate": false
+    }
+  },
+  "physical_blockers": {
+    "H93-15": "Physical transition cycles remain unproven because UDP mapping attempts were rejected in this session.",
+    "H93-16": "The execution host has no wireless interface available and the planned second physical node is offline; no disruptive network change or overlay dataplane substitute was attempted."
+  },
+  "rows": {
+    "H93-01": "PASS", "H93-02": "PASS", "H93-03": "PASS",
+    "H93-04": "PASS", "H93-05": "PASS", "H93-06": "PASS",
+    "H93-07": "PASS", "H93-08": "PASS", "H93-09": "PASS",
+    "H93-10": "PASS", "H93-11": "PASS", "H93-12": "PASS",
+    "H93-13": "PASS", "H93-14": "PASS", "H93-15": "PENDING",
+    "H93-16": "PENDING"
+  },
+  "privacy": {
+    "contains_ip_address": false,
+    "contains_port": false,
+    "contains_nonce": false,
+    "contains_personal_path": false,
+    "contains_host_or_process_identifier": false,
+    "raw_probe_output_persisted": false
+  },
+  "verdict": "OFFLINE_PASS_PHYSICAL_PENDING"
+}

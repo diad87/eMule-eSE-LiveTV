@@ -29,7 +29,9 @@ class W1RequestDispatchTest(unittest.TestCase):
         )
 
     def test_module_project_and_parent_binding_are_physical(self):
-        self.assertLessEqual(len(self.h.splitlines()) + len(self.c.splitlines()), 700)
+        # W12's closed security overlay raises the final governed surface cap
+        # from the W1 activation budget to 850 LOC.
+        self.assertLessEqual(len(self.h.splitlines()) + len(self.c.splitlines()), 850)
         for marker in (
             'ClCompile Include="WebRequestDispatch.cpp"',
             'ClInclude Include="WebRequestDispatch.h"',

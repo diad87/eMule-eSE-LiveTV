@@ -139,7 +139,7 @@ class W8LiveApiEvidence(unittest.TestCase):
     def test_m2a_1920352fa03db0c5(self):
         self.assertTrue(all((SRC / (name + ".cpp")).is_file() for name in MODULES))
         inventory = json.loads(W7.read_text(encoding="utf-8"))
-        self.assertEqual(len(inventory["operations"]), 44)
+        self.assertEqual(len(inventory["operations"]), 45)
         self.assertEqual(
             {item["id"] for item in inventory["operations"] if item["future_wave"] == "W8"},
             set().union(*(item[2] for item in MODULES.values())),

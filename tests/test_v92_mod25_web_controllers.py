@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SERVER = ROOT / "srchybrid" / "WebServer.cpp"
+TRANSFER_PROJECTION = ROOT / "srchybrid" / "WebTransferProjection.cpp"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
 NATIVE = ROOT / "srchybrid" / "tests" / "test_web_controllers.cpp"
@@ -27,6 +28,7 @@ class Mod25WebControllersTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.server = SERVER.read_text(encoding="utf-8")
+        cls.transfer_projection = TRANSFER_PROJECTION.read_text(encoding="utf-8")
         cls.make = MAKE.read_text(encoding="utf-8")
         cls.native = NATIVE.read_text(encoding="utf-8")
         cls.contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
@@ -70,8 +72,6 @@ class Mod25WebControllersTest(unittest.TestCase):
             self.assertIn(f'#include "{header}.h"', self.server)
         for marker in (
             "RunWebTransferActions",
-            "WebTransferController::CompareDownload",
-            "WebTransferController::CompareUpload",
             "WebSearchController::PlanSearch",
             "WebSearchController::PlanDownloads",
             "WebSearchController::PlanColumnChange",
@@ -85,6 +85,12 @@ class Mod25WebControllersTest(unittest.TestCase):
             "WebSharedController::ProjectRow",
         ):
             self.assertIn(marker, self.server)
+        # W4 owns rendering-time projection and sorting now.  Preserve the
+        # MOD-2.5 comparison boundary at the final adapter instead of requiring
+        # the superseded direct CWebServer call.
+        for marker in ("int CompareDownload(", "int CompareUpload("):
+            self.assertIn(marker, self.transfer_projection)
+        self.assertIn("M2A_BIND_W4_AD763A5EE0", self.server)
         for obsolete in (
             "WSdownloadColumnHidden[iMenu]",
             "WSuploadColumnHidden[iMenu]",

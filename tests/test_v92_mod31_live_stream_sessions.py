@@ -22,6 +22,7 @@ NATIVE_TEST = ROOT / "srchybrid" / "tests" / "test_live_stream_sessions.cpp"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 SLICE_BASE = "a48445e560765fc68fc85b0e61a09e2e72b7f9de"
+WIRE_BASE = "d08f8b07"  # v9.1 final wire constants, including 15000 ms reassembly TTL.
 
 
 class Mod31LiveStreamSessionsTest(unittest.TestCase):
@@ -262,7 +263,7 @@ class Mod31LiveStreamSessionsTest(unittest.TestCase):
     def test_wire_files_are_byte_unchanged_and_coordinator_shrinks(self) -> None:
         subprocess.run(
             [
-                "git", "diff", "--quiet", SLICE_BASE, "--",
+                "git", "diff", "--quiet", WIRE_BASE, "--",
                 "srchybrid/LivePackets.cpp",
                 "srchybrid/LivePackets.h",
                 "srchybrid/LiveProtocol.h",

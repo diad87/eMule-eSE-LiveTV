@@ -21,6 +21,7 @@ KAD_SOURCE = ROOT / "srchybrid" / "LiveKadBridge.cpp"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 SLICE_BASE = "e5a5d138376fd78c50438931d591f42cbf02da59"
+WIRE_BASE = "d08f8b07"  # v9.1 final: ESE_FRAG_REASM_TTL is normatively 15000 ms.
 
 
 class Mod37LiveStreamFacadeTest(unittest.TestCase):
@@ -214,7 +215,7 @@ class Mod37LiveStreamFacadeTest(unittest.TestCase):
             "srchybrid/LivePackets.h",
         ):
             baseline = subprocess.run(
-                ["git", "show", f"{SLICE_BASE}:{path}"],
+                ["git", "show", f"{WIRE_BASE}:{path}"],
                 cwd=ROOT,
                 check=True,
                 capture_output=True,

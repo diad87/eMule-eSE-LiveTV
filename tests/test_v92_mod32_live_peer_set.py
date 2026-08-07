@@ -22,6 +22,7 @@ MESH_HEADER = ROOT / "srchybrid" / "LiveMeshManager.h"
 MESH_SOURCE = ROOT / "srchybrid" / "LiveMeshManager.cpp"
 TUNNEL_HEADER = ROOT / "srchybrid" / "LiveTunnel.h"
 TUNNEL_SOURCE = ROOT / "srchybrid" / "LiveTunnel.cpp"
+TUNNEL_BULK_FACADE = ROOT / "srchybrid" / "LiveTunnelBulkFacade.inl"
 NATIVE_TEST = ROOT / "srchybrid" / "tests" / "test_live_peer_set.cpp"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
@@ -156,6 +157,11 @@ class Mod32LivePeerSetTest(unittest.TestCase):
         tunnel = (
             TUNNEL_HEADER.read_text(encoding="utf-8")
             + TUNNEL_SOURCE.read_text(encoding="utf-8")
+            + TUNNEL_BULK_FACADE.read_text(encoding="utf-8")
+        )
+        self.assertIn(
+            '#include "LiveTunnelBulkFacade.inl"',
+            TUNNEL_SOURCE.read_text(encoding="utf-8"),
         )
         self.assertIn("ESE_LIVE_MAX_SOURCE_PEERS = 8u", manager)
         self.assertIn(
@@ -193,7 +199,7 @@ class Mod32LivePeerSetTest(unittest.TestCase):
         self.assertIn("m_uploadTracker[replacement]", mesh)
         relay = tunnel[
             tunnel.index("void CLiveTunnel::ExitRelayPeerList("):
-            tunnel.index("void CLiveTunnel::FinishDueSearchJobs(")
+            tunnel.index("bool CLiveTunnel::SendBulkCellToPeer(")
         ]
         for check in (
             "it->second.bIP != upstreamIP",

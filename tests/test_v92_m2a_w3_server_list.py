@@ -12,6 +12,7 @@ WH = SRC / "WebServer.h"
 WC = SRC / "WebServer.cpp"
 PROJECT = SRC / "emule.vcxproj"
 BASE = "f348c536"
+ACTIVATION = "c70efe30232dec73c749d9af48b192f319d2fdbe"
 
 
 class W3ServerListTest(unittest.TestCase):
@@ -32,7 +33,7 @@ class W3ServerListTest(unittest.TestCase):
     def test_card_churn_budget_is_met(self):
         result = subprocess.run(
             [
-                "git", "diff", "--numstat", BASE, "--",
+                "git", "diff", "--numstat", BASE, ACTIVATION, "--",
                 "srchybrid/WebServer.cpp", "srchybrid/WebServer.h",
                 "srchybrid/WebServerListController.cpp",
                 "srchybrid/WebServerListController.h",

@@ -23,6 +23,7 @@ NATIVE_TEST = ROOT / "srchybrid" / "tests" / "test_live_chunk_window.cpp"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 SLICE_BASE = "d032418e65a2dc64c726c46a275e5841a9a34874"
+WIRE_BASE = "d08f8b07"  # v9.1 final: ESE_FRAG_REASM_TTL is normatively 15000 ms.
 
 
 class Mod33LiveChunkWindowTest(unittest.TestCase):
@@ -168,7 +169,7 @@ class Mod33LiveChunkWindowTest(unittest.TestCase):
             "srchybrid/LivePackets.h",
         ):
             baseline = subprocess.run(
-                ["git", "show", f"{SLICE_BASE}:{path}"],
+                ["git", "show", f"{WIRE_BASE}:{path}"],
                 cwd=ROOT,
                 check=True,
                 capture_output=True,

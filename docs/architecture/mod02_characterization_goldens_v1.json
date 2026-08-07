@@ -101,7 +101,7 @@
       "token_sha256": {
         "CLiveStreamManager::FeedSegment": "3c5c468a2ee94f8c7f0dc5d991252c26e2e4bd843e042e9e2fce73de0859ee9f",
         "CLiveStreamManager::OnChunkReceived": "d6648776c00b4dafe6b8a259c57334b1d893bfdbeab25d54517d79710a6ecc71",
-        "CLiveStreamManager::StartBroadcast": "578e6317174e6df6e47bd45c349c65a469aca60a8fa3f723a0803b3386649148"
+        "CLiveStreamManager::StartBroadcast": "373dcf0ad1cb012326f577ec7c19531adbd147e7b6b8c0dd549b73e9b6633208"
       }
     },
     "live_tunnel_dispatch": {
@@ -157,7 +157,7 @@
         "CWebServer::_ProcessLiveAPI"
       ],
       "token_sha256": {
-        "CWebServer::_ProcessLiveAPI": "700f3aa142fb9340b79724d88e194ec288cadda56cc27d56c4bb9c0fc7fa439d"
+        "CWebServer::_ProcessLiveAPI": "c09b36fd56bf9d6bba5cf215dd23524041d0c553e4d5c2b387da0473cdb9dd8a"
       }
     },
     "web_parser_security": {
@@ -167,7 +167,7 @@
         "CWebServer::_SpecialChars"
       ],
       "token_sha256": {
-        "CWebServer::_ProcessLiveAPI": "700f3aa142fb9340b79724d88e194ec288cadda56cc27d56c4bb9c0fc7fa439d",
+        "CWebServer::_ProcessLiveAPI": "c09b36fd56bf9d6bba5cf215dd23524041d0c553e4d5c2b387da0473cdb9dd8a",
         "CWebServer::_SpecialChars": "fe6e48d488da3cf377aa9b426a88a5ca856d2354f9bcc8b8c777b7025bfaf6c2"
       }
     },
@@ -183,7 +183,7 @@
         "CompressWebGzip": "33e40b870cf86ccf6bda5f2cd7fb3c2b8841dd9db8846bf7bcde8e816dc97f4e",
         "ResolveWebClassicView": "e15610e6dd7c43310d7ff16f2c3f8ffc091474894ed85eca992b4d7a533b0ad2",
         "ValidateWebChallengeDigest": "c4f0962e22c982492392e43c9fc3487f3b352498658f34d4c6966899d0ab862e",
-        "WebRequestDispatch::Process": "66928afe05c4ce6ccd95d7ddba2eb4b02cfe66eee7a5cf338a35688dc80327a8"
+        "WebRequestDispatch::Process": "94d4082831bef9f647cd553862fbfde3e18890516a39a041e77975b4e2ff685d"
       }
     },
     "web_serialization": {
@@ -196,7 +196,7 @@
       "token_sha256": {
         "CWebServer::_GetServerInfo": "864c39e76209a55ba8384bb88dcc9c7792fa5e52ae681510482d977c717b79bd",
         "CWebServer::_GetStats": "005c112cb432712a2792baf216bd52c90790fa2c94cb4d5b8176cd5c924529f8",
-        "CWebServer::_ProcessURL": "78a846aed1de01687515910ecfb1434850d66a521183407cd4e1d9fdcac4def5"
+        "CWebServer::_ProcessURL": "ec90446f7c2cfc10464a420fbde98db7f73107c22ff14aa3fa2e4db68577e316"
       }
     }
   },

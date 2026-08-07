@@ -19,6 +19,7 @@ NATIVE_TEST = ROOT / "srchybrid" / "tests" / "test_live_stream_fanout.cpp"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 SLICE_BASE = "c476950d1590fb7f337cc3010e1a86bdee10537d"
+WIRE_BASE = "d08f8b07"  # v9.1 final: ESE_FRAG_REASM_TTL is normatively 15000 ms.
 
 
 class Mod35LiveStreamFanoutTest(unittest.TestCase):
@@ -207,7 +208,7 @@ class Mod35LiveStreamFanoutTest(unittest.TestCase):
             "srchybrid/LivePackets.h",
         ):
             baseline = subprocess.run(
-                ["git", "show", f"{SLICE_BASE}:{path}"],
+                ["git", "show", f"{WIRE_BASE}:{path}"],
                 cwd=ROOT,
                 check=True,
                 capture_output=True,

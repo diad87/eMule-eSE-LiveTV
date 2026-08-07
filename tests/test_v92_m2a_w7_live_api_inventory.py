@@ -37,6 +37,7 @@ EXPECTED_IDS = {
     "ApiLiveEdgeSabotage", "ApiLiveDebug", "ApiLiveStream",
     "LiveIndex", "LivePlayer",
 }
+POST_W7_GOVERNED_IDS = {"ApiReachStatus"}
 EXPECTED_QUERY_KEYS = {
     "add", "add_sensitive", "admission_attempts", "admission_ppm", "after",
     "audit_sha256", "bitrate", "buddy_ip", "buddy_port", "bytes",
@@ -396,12 +397,12 @@ def validate_inventory(document: dict) -> None:
     ids = [item["id"] for item in operations]
     assert len(ids) == len(set(ids))
     assert set(ids) == EXPECTED_IDS
-    assert _route_enum_ids() == EXPECTED_IDS
+    assert _route_enum_ids() == EXPECTED_IDS | POST_W7_GOVERNED_IDS
     assert EXPECTED_IDS <= _handled_route_ids()
 
     exact = _exact_routes()
-    assert sum(len(paths) for paths in exact.values()) == 44
-    assert len(exact) == 42
+    assert sum(len(paths) for paths in exact.values()) == 45
+    assert len(exact) == 43
     live_sources = _live_sources()
     assert set(re.findall(r'_ParseURL\(\s*Data\.sURL,\s*_T\("([^"]+)"\)\)', live_sources)) == EXPECTED_QUERY_KEYS
     parser_text = PARSER_HEADER.read_text(encoding="utf-8")
@@ -496,7 +497,7 @@ def validate_inventory(document: dict) -> None:
     }
     assert read_only_paths == {
         "/api/status", "/api/live/metrics", "/api/live/channels",
-        "/api/live/mesh", "/api/live/kad/streams",
+        "/api/live/mesh", "/api/live/kad/streams", "/api/reach/status",
     }
     serialized = json.dumps(document, sort_keys=True)
     for forbidden in (
@@ -518,7 +519,7 @@ class W7LiveApiInventoryTest(unittest.TestCase):
         web_text = WEB.read_text(encoding="utf-8")
         for required in (
             "WebRouteMethod::Options", "WebHandler::CorsPreflight",
-            "WebRouteStatus::MethodNotAllowed", "failed token-prefixed stream",
+            "WebRouteStatus::MethodNotAllowed", "retained session credential in HLS path",
             "accepted unknown route",
         ):
             self.assertIn(required, route_text)

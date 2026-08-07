@@ -42,7 +42,7 @@ class W2TemplateHeaderTest(unittest.TestCase):
         self.assertIn("&lt;&amp;&quot;&#8217;\\\\n", self.trc)
 
     def test_etag_and_exact_asset_headers_are_preserved(self):
-        for marker in ("MD5Sum(lastModified).GetHashString()", "_tcsftime_l", '"C"', "options.lastModified.assign", "options.etag.assign"):
+        for marker in ("MD5Sum(lastModified).GetHashString()", "_tcsftime_l", '"C"', "q.last_modified=W9Bytes(lastModified)", "o.lastModified=r.last_modified", "q.etag=W9Bytes(etag)", "o.etag=r.etag"):
             self.assertIn(marker, self.trc + self.wc)
 
     def test_each_request_uses_one_coherent_template_snapshot(self):

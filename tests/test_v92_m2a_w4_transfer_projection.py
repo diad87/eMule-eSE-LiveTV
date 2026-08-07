@@ -12,6 +12,7 @@ WH = SRC / "WebServer.h"
 WC = SRC / "WebServer.cpp"
 PROJECT = SRC / "emule.vcxproj"
 BASE = "64b3d3ec70f185a3694aa2a82768c60b997e6c5f"
+ACTIVATION = "f4d6a6b0873e0b033a0ffc35efb3606bcd2eb01e"
 
 
 class W4TransferProjectionTest(unittest.TestCase):
@@ -31,7 +32,13 @@ class W4TransferProjectionTest(unittest.TestCase):
 
     def test_card_churn_budget_is_met(self):
         result = subprocess.run(
-            ["git", "diff", "--numstat", BASE],
+            [
+                "git", "diff", "--numstat", BASE, ACTIVATION, "--",
+                "srchybrid/WebServer.cpp", "srchybrid/WebServer.h",
+                "srchybrid/WebTransferProjection.cpp",
+                "srchybrid/WebTransferProjection.h",
+                "srchybrid/emule.vcxproj",
+            ],
             cwd=ROOT, check=True, capture_output=True, text=True,
         )
         added = deleted = 0

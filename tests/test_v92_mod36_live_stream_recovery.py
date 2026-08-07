@@ -16,10 +16,12 @@ ADAPTER_SOURCE = ROOT / "srchybrid" / "LiveRecoveryTransportAdapter.cpp"
 MANAGER_HEADER = ROOT / "srchybrid" / "LiveStreamManager.h"
 MANAGER_SOURCE = ROOT / "srchybrid" / "LiveStreamManager.cpp"
 TUNNEL_SOURCE = ROOT / "srchybrid" / "LiveTunnel.cpp"
+TUNNEL_BULK_FACADE = ROOT / "srchybrid" / "LiveTunnelBulkFacade.inl"
 NATIVE_TEST = ROOT / "srchybrid" / "tests" / "test_live_stream_recovery.cpp"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 SLICE_BASE = "03b8bb118d06b7d7407faaff0c7552b6ef51a2d1"
+WIRE_BASE = "d08f8b07"  # v9.1 final: ESE_FRAG_REASM_TTL is normatively 15000 ms.
 
 
 class Mod36LiveStreamRecoveryTest(unittest.TestCase):
@@ -115,6 +117,8 @@ class Mod36LiveStreamRecoveryTest(unittest.TestCase):
 
     def test_tunnel_consumes_fec_and_nack_policy_without_wire_changes(self) -> None:
         tunnel = TUNNEL_SOURCE.read_text(encoding="utf-8")
+        bulk_facade = TUNNEL_BULK_FACADE.read_text(encoding="utf-8")
+        self.assertIn('#include "LiveTunnelBulkFacade.inl"', tunnel)
         for marker in (
             "LiveStreamRecovery::ShouldSendNack(",
             "LiveStreamRecovery::MissingFecBlocks(",
@@ -122,7 +126,7 @@ class Mod36LiveStreamRecoveryTest(unittest.TestCase):
             "Bulk::BulkDecodeSegment(",
             "Bulk::BulkEncodeSegment(",
         ):
-            self.assertIn(marker, tunnel)
+            self.assertIn(marker, bulk_facade)
 
     def test_native_cases_cover_loss_recovery_and_boundaries(self) -> None:
         native = NATIVE_TEST.read_text(encoding="utf-8")
@@ -193,10 +197,9 @@ class Mod36LiveStreamRecoveryTest(unittest.TestCase):
             "srchybrid/LiveProtocol.h",
             "srchybrid/LivePackets.cpp",
             "srchybrid/LivePackets.h",
-            "srchybrid/LiveTunnel.h",
         ):
             baseline = subprocess.run(
-                ["git", "show", f"{SLICE_BASE}:{path}"],
+                ["git", "show", f"{WIRE_BASE}:{path}"],
                 cwd=ROOT,
                 check=True,
                 capture_output=True,

@@ -11,6 +11,10 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 COORDINATOR = ROOT / "srchybrid" / "LiveTunnel.cpp"
+COORDINATOR_METHODS = ROOT / "srchybrid" / "LiveTunnelCoordinatorMethods.inl"
+SEARCH_FACADE = ROOT / "srchybrid" / "LiveTunnelSearchFacade.inl"
+BULK_FACADE = ROOT / "srchybrid" / "LiveTunnelBulkFacade.inl"
+KAD6_GATEWAY = ROOT / "srchybrid" / "Kad6GatewaySocket.cpp"
 COORDINATOR_INTERFACE = ROOT / "srchybrid" / "LiveTunnel.h"
 DISPATCHER = ROOT / "srchybrid" / "LiveRelayDispatcher.cpp"
 DISPATCHER_INTERFACE = ROOT / "srchybrid" / "LiveRelayDispatcher.h"
@@ -31,7 +35,14 @@ class Mod15RelayExitTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.goldens = json.loads(GOLDENS.read_text(encoding="utf-8"))["goldens"]
-        cls.coordinator = COORDINATOR.read_text(encoding="utf-8")
+        cls.coordinator_root = COORDINATOR.read_text(encoding="utf-8")
+        cls.coordinator = "\n".join((
+            cls.coordinator_root,
+            COORDINATOR_METHODS.read_text(encoding="utf-8"),
+            SEARCH_FACADE.read_text(encoding="utf-8"),
+            BULK_FACADE.read_text(encoding="utf-8"),
+            KAD6_GATEWAY.read_text(encoding="utf-8"),
+        ))
         cls.coordinator_interface = COORDINATOR_INTERFACE.read_text(encoding="utf-8")
         cls.dispatcher = DISPATCHER.read_text(encoding="utf-8")
         cls.exit_services = EXIT_SERVICES.read_text(encoding="utf-8")
@@ -95,6 +106,7 @@ class Mod15RelayExitTest(unittest.TestCase):
         self.assertIn("(void)port.DispatchRelayExit(context)", relay)
 
     def test_replay_is_rejected_without_overwriting_live_state(self) -> None:
+        self.assertIn('#include "LiveTunnelSearchFacade.inl"', self.coordinator_root)
         begin = self.body(self.exit_services, "LiveExitServices::Begin")
         self.assertIn("circuit->Id() == 0 || requestId == 0", begin)
         self.assertIn("m_operations.emplace", begin)
@@ -157,6 +169,8 @@ class Mod15RelayExitTest(unittest.TestCase):
         self.assertIn("m_operations.erase(LiveRequestKey", abort)
 
     def test_state_ownership_moved_and_facade_keeps_existing_lock_rank(self) -> None:
+        self.assertIn('#include "LiveTunnelCoordinatorMethods.inl"', self.coordinator_root)
+        self.assertIn('#include "LiveTunnelBulkFacade.inl"', self.coordinator_root)
         for removed in ("m_exitHandlers", "m_exitOps", "struct ExitOperation"):
             self.assertNotIn(removed, self.coordinator_interface)
         self.assertIn(
@@ -224,8 +238,9 @@ class Mod15RelayExitTest(unittest.TestCase):
         self.assertIn("m_exitServices.Clear()", stop)
         self.assertIn("TransitionCircuitDestroyed(circ)", destroy)
         self.assertIn("m_exitServices.AbortCircuit(circuitId)", transition)
-        self.assertIn("m_reassembly.begin()", transition)
+        self.assertIn("LT7_STATE(RelayReassemblyState).begin()", transition)
         self.assertIn("entry->first >> 32", transition)
+        self.assertIn("LT7_STATE(RelayReassemblyState).erase(entry)", transition)
         direct_destroy_transitions = re.findall(
             r"m_circuitRegistry\.Transition\([^;]{0,160}"
             r"CircuitState::Destroyed\);",

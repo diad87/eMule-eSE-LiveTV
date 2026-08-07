@@ -13,6 +13,7 @@ HEADER = ROOT / "srchybrid" / "LiveCircuitRegistry.h"
 SOURCE = ROOT / "srchybrid" / "LiveCircuitRegistry.cpp"
 TUNNEL_HEADER = ROOT / "srchybrid" / "LiveTunnel.h"
 TUNNEL_SOURCE = ROOT / "srchybrid" / "LiveTunnel.cpp"
+TUNNEL_METHODS = ROOT / "srchybrid" / "LiveTunnelCoordinatorMethods.inl"
 HANDSHAKE_SOURCE = ROOT / "srchybrid" / "LiveCircuitHandshake.cpp"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 
@@ -23,7 +24,8 @@ class Mod13LiveCircuitRegistryTest(unittest.TestCase):
         cls.header = HEADER.read_text(encoding="utf-8")
         cls.source = SOURCE.read_text(encoding="utf-8")
         cls.tunnel_header = TUNNEL_HEADER.read_text(encoding="utf-8")
-        cls.tunnel_source = TUNNEL_SOURCE.read_text(encoding="utf-8")
+        cls.tunnel_root = TUNNEL_SOURCE.read_text(encoding="utf-8")
+        cls.tunnel_source = cls.tunnel_root + "\n" + TUNNEL_METHODS.read_text(encoding="utf-8")
         cls.handshake_source = HANDSHAKE_SOURCE.read_text(encoding="utf-8")
 
     def test_public_contract_is_portable_and_has_no_second_lock(self) -> None:
@@ -86,6 +88,7 @@ class Mod13LiveCircuitRegistryTest(unittest.TestCase):
         )
         self.assertIn("m_circuitRegistry.NextRoundRobin()", self.tunnel_source)
         self.assertIn("m_circuitRegistry.RemoveDestroyed(", self.tunnel_source)
+        self.assertIn('#include "LiveTunnelCoordinatorMethods.inl"', self.tunnel_root)
         zero_preflight = self.handshake_source.index(
             "if (circId == 0 || "
             "m_host.HandshakeCircuitRegistry().ContainsAnyLegId(circId))",

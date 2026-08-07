@@ -21,6 +21,7 @@ NATIVE_TEST = ROOT / "srchybrid" / "tests" / "test_live_stream_security.cpp"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 SLICE_BASE = "05c815444d106e305908ee076bd3c2bf62f24883"
+WIRE_BASE = "d08f8b07"  # v9.1 final: ESE_FRAG_REASM_TTL is normatively 15000 ms.
 
 
 class Mod34LiveStreamSecurityTest(unittest.TestCase):
@@ -211,7 +212,7 @@ class Mod34LiveStreamSecurityTest(unittest.TestCase):
             "srchybrid/LivePackets.h",
         ):
             baseline = subprocess.run(
-                ["git", "show", f"{SLICE_BASE}:{path}"],
+                ["git", "show", f"{WIRE_BASE}:{path}"],
                 cwd=ROOT,
                 check=True,
                 capture_output=True,

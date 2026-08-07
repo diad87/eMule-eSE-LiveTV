@@ -13,6 +13,8 @@ HEADER = ROOT / "srchybrid" / "LiveTunnelPending.h"
 SOURCE = ROOT / "srchybrid" / "LiveTunnelPending.cpp"
 TUNNEL_HEADER = ROOT / "srchybrid" / "LiveTunnel.h"
 TUNNEL_SOURCE = ROOT / "srchybrid" / "LiveTunnel.cpp"
+TUNNEL_METHODS = ROOT / "srchybrid" / "LiveTunnelCoordinatorMethods.inl"
+TUNNEL_SEARCH = ROOT / "srchybrid" / "LiveTunnelSearchFacade.inl"
 NATIVE_TEST = ROOT / "srchybrid" / "tests" / "test_live_tunnel_pending.cpp"
 PROJECT = ROOT / "srchybrid" / "emule.vcxproj"
 MAKE = ROOT / "srchybrid" / "tests" / "make.bat"
@@ -24,7 +26,13 @@ class Mod12LiveTunnelPendingTest(unittest.TestCase):
         cls.header = HEADER.read_text(encoding="utf-8")
         cls.source = SOURCE.read_text(encoding="utf-8")
         cls.tunnel_header = TUNNEL_HEADER.read_text(encoding="utf-8")
-        cls.tunnel_source = TUNNEL_SOURCE.read_text(encoding="utf-8")
+        cls.tunnel_root = TUNNEL_SOURCE.read_text(encoding="utf-8")
+        cls.tunnel_methods = TUNNEL_METHODS.read_text(encoding="utf-8")
+        cls.tunnel_source = "\n".join((
+            cls.tunnel_root,
+            cls.tunnel_methods,
+            TUNNEL_SEARCH.read_text(encoding="utf-8"),
+        ))
         cls.native = NATIVE_TEST.read_text(encoding="utf-8")
 
     def test_public_contract_is_portable_narrow_and_planned_size(self) -> None:
@@ -91,11 +99,12 @@ class Mod12LiveTunnelPendingTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, combined)
         self.assertIn("LiveTunnelPending m_pendingRequests;", self.tunnel_header)
-        self.assertEqual(self.tunnel_source.count("m_pendingRequests.Configure("), 9)
+        self.assertEqual(self.tunnel_source.count("m_pendingRequests.Configure("), 5)
         self.assertIn("m_pendingRequests.SetCircuit(req.reqId, cid);", self.tunnel_source)
+        self.assertIn('#include "LiveTunnelCoordinatorMethods.inl"', self.tunnel_root)
 
     def test_tick_uses_registry_snapshot_then_publishes_outside_pending(self) -> None:
-        tick = self.tunnel_source[self.tunnel_source.index("void CLiveTunnel::Tick()"):]
+        tick = self.tunnel_methods[self.tunnel_methods.index("void CLiveTunnel::Tick()"):]
         start = tick.index("// 5. v8.1 A4")
         end = tick.index("// 6. v8.1 A6")
         retry_slice = tick[start:end]
